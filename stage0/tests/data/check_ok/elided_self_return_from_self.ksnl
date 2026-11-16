@@ -1,0 +1,15 @@
+type t.Named
+    name: alloc.string.String<std.alloc.System>
+end t.Named
+
+fn t.Named.pick(self: &t.Named, other: &str) -> &str uses [] panics never
+    if other.is_empty() {
+        return self.name.as_str()
+    }
+    let o = self.name.as_str()
+    o
+end t.Named.pick
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

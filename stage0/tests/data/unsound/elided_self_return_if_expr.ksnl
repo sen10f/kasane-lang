@@ -1,0 +1,15 @@
+// expect: E3010
+type t.Named
+    name: alloc.string.String<std.alloc.System>
+end t.Named
+
+fn t.Named.pick(self: &t.Named, other: &str) -> &str uses [] panics never
+    if self.name.is_empty() {
+        return other
+    }
+    self.name.as_str()
+end t.Named.pick
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

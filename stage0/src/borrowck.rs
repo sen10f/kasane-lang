@@ -3273,9 +3273,21 @@ impl<'a> Low<'a> {
         }
         let mut out = vec![];
         let mut seen: BTreeSet<(usize, String)> = BTreeSet::new();
+        // 省略した戻り値の領域を決める引数 (仕様 4.1: (b) `self` が参照ならそれ、(a) 参照の引数が 1 つならそれ)。
+        let elide_src: Option<usize> = if want.is_empty() && !static_ret {
+            let is_self_ref = |t: &str| t.split_once(':').map_or(false, |x| x.1.trim().starts_with('&'));
+            if d.params.first().map_or(false, |p| p.0 == "self") && is_self_ref(&ptexts[0]) {
+                Some(0)
+            } else {
+                let refs: Vec<usize> = (0..ptexts.len()).filter(|&q| carries_elided_ref(&ptexts[q])).collect();
+                (refs.len() == 1).then(|| refs[0])
+            }
+        } else {
+            None
+        };
         for (v, expected, explicit) in slots {
-            // `&'L T` を返す形で引数そのものを返すのは check_return_lifetime が見る。
-            if ret.trim().starts_with('&') && nname(v) == "Path" && strs(&nf(v)[0]).len() == 1 && d.params.iter().any(|p| p.0 == strs(&nf(v)[0])[0]) {
+            // `&'L T` を返す形で引数そのものを返すのは check_return_lifetime が見る (省略した戻り値は見ないのでここで見る)。
+            if elide_src.is_none() && ret.trim().starts_with('&') && nname(v) == "Path" && strs(&nf(v)[0]).len() == 1 && d.params.iter().any(|p| p.0 == strs(&nf(v)[0])[0]) {
                 continue;
             }
             let mut os = vec![];
@@ -3341,6 +3353,19 @@ impl<'a> Low<'a> {
                         // 省略した入力の参照 (`x: &u32`) は、名前付きの出力の領域 (`'b`・`'static`) に収まらない。
                         // 省略した出力 (`-> &u32`) へ流れるのは省略規則 (4.3) の正規形なので通す。
                         if have.is_empty() {
+                            // 省略した出力の領域は `elide_src` の引数だけ。ほかの参照を運ぶ引数の借用は流せない。
+                            if let Some(src) = elide_src {
+                                if q != src && expected.is_empty() && carries_elided_ref(&ptexts[q]) && seen.insert((nlineno(v), d.params[q].0.clone())) {
+                                    out.push((
+                                        "E3010",
+                                        nlineno(v),
+                                        format!(
+                                            "{}: the returned value carries a borrow from argument `{}` (`{}`), but the elided return lifetime of `{}` comes from argument `{}` (spec 4.1)",
+                                            d.name, d.params[q].0, ptexts[q], ret.trim(), d.params[src].0
+                                        ),
+                                    ));
+                                }
+                            }
                             if carries_elided_ref(&ptexts[q]) && explicit && !expected.is_empty() && seen.insert((nlineno(v), d.params[q].0.clone())) {
                                 out.push((
                                     "E3010",
