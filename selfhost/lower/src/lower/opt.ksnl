@@ -2,6 +2,12 @@
 fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize, m: bool, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let tf = types.ty.find(&c.ar, t)
     let is_ref = types.ty.node(&c.ar, tf).k == types.ty.K.Ref
+    if lower.vec.is_hdr(env, c, t) {
+        // `Vec` / `String` の局所は枠 (frame.bytes 24) に置き、3 つの欄を書く。
+        let slot = lower.cx.def(c, "ptr", "frame.bytes 24")?
+        lower.vec.store_hdr(c, slot, v)?
+        return lower.cx.push_local(c, name, slot + 1usize, m, t, true)
+    }
     if lower.cx.is_bor(c, name) && !is_ref {
         let tt = lower.tyk.text(env, c, t)?
         let mt = lower.cx.cat2("mutref<", tt.as_str())?
@@ -207,6 +213,9 @@ end lower.opt.kind
 fn lower.opt.local_val(env: &types.env.Env, c: &mut lower.cx.Cx, k: usize, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let v = lower.cx.get_val(c, k).wrapping_sub(1usize)
     if lower.cx.is_slot(c, k) {
+        if lower.vec.is_hdr(env, c, t) {
+            return lower.vec.load_hdr(env, c, v, t, !c.s.peek)
+        }
         let tt = lower.tyk.text(env, c, t)?
         let op = lower.cx.cat2("load ", lower.cx.vs(v)?.as_str())?
         return lower.cx.def(c, tt.as_str(), op.as_str())
@@ -484,10 +493,14 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     if loc != 0usize {
         let bt = lower.cx.tyof_t(c, loc - 1usize)
         // 借用の受け手は move 済みの値の読み (`use`)、値の受け手は move (`consume`)。
-        if self_ref {
+        let hdr_recv = lower.vec.is_hdr(env, c, bt)
+        if self_ref && !hdr_recv {
             lower.own.emit(c, loc - 1usize, "own.use ")?
         }
-        if lower.cx.is_slot(c, loc - 1usize) && self_ref {
+        if lower.cx.is_slot(c, loc - 1usize) && self_ref && hdr_recv {
+            // `Vec` / `String` の局所: 枠の番地をそのまま渡す。
+            recv = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
+        } else if lower.cx.is_slot(c, loc - 1usize) && self_ref {
             let slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
             let inner_t = types.ty.strip(&c.ar, bt)
             let st0 = lower.tyk.text(env, c, inner_t)?
@@ -526,8 +539,7 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         } else {
             lower.expr.tyof(c, recv_node)?
         }
-        core.mem.drop(rty3)
-        return lower.str.method(env, c, owner_fqn.as_str(), &vs, t)
+        return lower.vec.call(env, c, owner_fqn.as_str(), rty3, &vs, t)
     }
     if owner_fqn.as_str().starts_with("alloc.vec.Vec.") {
         let rty2 = if loc != 0usize {
@@ -535,7 +547,7 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         } else {
             lower.expr.tyof(c, recv_node)?
         }
-        return lower.vec.method(env, c, owner_fqn.as_str(), rty2, &vs, t)
+        return lower.vec.call(env, c, owner_fqn.as_str(), rty2, &vs, t)
     }
     lower.expr.enqueue(c, key.as_str(), item + 1usize, subs, t)?
     let rt = lower.tyk.text(env, c, t)?

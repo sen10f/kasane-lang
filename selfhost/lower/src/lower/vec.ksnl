@@ -5,6 +5,57 @@ fn lower.vec.arith(c: &mut lower.cx.Cx, op: &str, a: usize, b: usize) -> Result<
     lower.cx.def(c, "usize", s2.as_str())
 end lower.vec.arith
 
+// `Vec` / `String` のメソッドの呼び出し (Rust 版と同じく、生成した小関数の呼び出し)。as_str だけは展開する。
+// 受け手 vs[0] は枠の番地 (ptr)。rty は受け手の型 (参照でもよい)、t は呼び出しの結果の型。
+fn lower.vec.call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usize, vs: &alloc.vec.Vec<usize, std.alloc.System>, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let name = lower.expr.last_seg(fqn)
+    let recv = lower.tyk.at(vs.as_slice(), 0usize)
+    if name == "as_str" {
+        return lower.str.as_str(env, c, recv, t)
+    }
+    let is_str = fqn.starts_with("alloc.string.String.")
+    let ok = if is_str {
+        name == "len" || name == "is_empty" || name == "push_str"
+    } else {
+        name == "len" || name == "is_empty" || name == "push" || name == "pop"
+    }
+    if !ok {
+        lower.cx.fail(c, lower.cx.cat2("Vec / String のメソッド (未対応): ", name)?.as_str())?
+        return lower.expr.dummy(c, t)
+    }
+    let f = types.ty.strip(&c.ar, rty)
+    let n = types.ty.node(&c.ar, f)
+    let mut key = lower.cx.cat2(fqn, "<")?
+    let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let want = if is_str {
+        1usize
+    } else {
+        2usize
+    }
+    for k in core.iter.range(0usize, want) {
+        if k > 0usize {
+            key.push(',')?
+        }
+        if k < n.c {
+            let a = types.ty.arg(&c.ar, n.b, k)
+            key.push_str(lower.tyk.src(env, c, a)?.as_str())?
+            subs.push(k)?
+            subs.push(a)?
+        } else {
+            key.push_str("std.alloc.System")?
+        }
+    }
+    key.push('>')?
+    lower.expr.enqueue(c, key.as_str(), lower.chk.GEN, subs, t)?
+    let rt = lower.tyk.text(env, c, t)?
+    let co = lower.cx.cat2("call ", key.as_str())?
+    let co2 = lower.cx.cat2(co.as_str(), "(")?
+    let co3 = lower.cx.cat2(co2.as_str(), lower.cx.vlist(vs)?.as_str())?
+    let co4 = lower.cx.cat2(co3.as_str(), ")")?
+    let v = lower.cx.def(c, rt.as_str(), co4.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.vec.call
+
 // `Vec` の型 (参照を外した後) の要素の型。
 fn lower.vec.elem(c: &lower.cx.Cx, vt: usize) -> usize uses [] panics may pub
     let f = types.ty.strip(&c.ar, vt)
@@ -17,6 +68,74 @@ fn lower.vec.elem_addr(c: &mut lower.cx.Cx, p1: usize, idx: usize, szc: usize) -
     let off = lower.vec.arith(c, "mul", idx, szc)?
     lower.vec.padd(c, p1, off)
 end lower.vec.elem_addr
+
+// 枠の先頭の番地を解放する (`mem.load.ptr` と `heap.free`)。
+fn lower.vec.free_hdr(c: &mut lower.cx.Cx, slot: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let pv = lower.vec.load_ptr(c, slot)?
+    core.mem.drop(lower.cx.def1(c, "unit", "heap.free ", pv)?)
+    Ok(())
+end lower.vec.free_hdr
+
+// 生成した小関数の本体 (`key` は `alloc.vec.Vec.push<u32,std.alloc.System>` など)。subs は型引数の対 (番号, 型)、ret は結果の型。
+fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>, ret: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.cx.reset(c)?
+    let mut fq = key
+    for w in key.split("<") {
+        fq = w
+        break
+    }
+    let name = lower.expr.last_seg(fq)
+    let is_str = fq.starts_with("alloc.string.String.")
+    let elem = lower.tyk.at(subs.as_slice(), 1usize)
+    let rt = lower.tyk.text(env, c, ret)?
+    let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let recv = lower.cx.newval(c, "ptr")?
+    ps.push(recv)?
+    let mut value = 0usize
+    let mut eff = "[]"
+    if name == "push" {
+        let et = lower.tyk.text(env, c, elem)?
+        value = lower.cx.newval(c, et.as_str())?
+        ps.push(value)?
+        eff = "[alloc]"
+    }
+    if name == "push_str" {
+        let ft = lower.chk.fat(c)?
+        value = lower.cx.newval(c, ft.as_str())?
+        ps.push(value)?
+        eff = "[alloc]"
+    }
+    let _b0 = lower.cx.blk(c, &ps)?
+    lower.cx.goto(c, 0usize)
+    let mut r = lower.cx.R { v: 0usize, t: ret }
+    if name == "len" {
+        r = lower.vec.len(env, c, recv, false, ret)?
+    } else if name == "is_empty" {
+        r = lower.vec.len(env, c, recv, true, ret)?
+    } else if name == "push" {
+        r = lower.vec.push(env, c, recv, elem, value, ret)?
+    } else if name == "pop" {
+        r = lower.vec.pop(env, c, recv, elem, ret)?
+    } else if is_str {
+        r = lower.str.push_str(env, c, recv, value, ret)?
+    }
+    lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(r.v)?.as_str())?)?
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("fn ")?
+    out.push_str(fq)?
+    out.push_str(" key=")?
+    out.push_str(key)?
+    out.push_str(" uses=")?
+    out.push_str(eff)?
+    out.push_str(" panics=never stack=- ret=")?
+    out.push_str(rt.as_str())?
+    out.push('\n')?
+    out.push_str(lower.func.body_text(c)?.as_str())?
+    out.push_str("end ")?
+    out.push_str(fq)?
+    out.push('\n')?
+    lower.func.record(c, out.as_str(), "")
+end lower.vec.gen
 
 // `v[i]` (読み出し): 添字の検査 (index.check) の後で要素を読む。
 fn lower.vec.index(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: usize, idx: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -63,6 +182,13 @@ fn lower.vec.index_expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     lower.vec.index(env, c, recv, elem, idx.v, t)
 end lower.vec.index_expr
 
+// 型 t (参照を外さない) が `Vec` / `String` の値か。値は枠 (`frame.bytes 24`) の局所に置く。
+fn lower.vec.is_hdr(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    n.k == types.ty.K.Adt && lower.tyk.is_vec(env, n.a)
+end lower.vec.is_hdr
+
 // `v.len()` と `v.is_empty()`.
 fn lower.vec.len(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, empty_q: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let len0 = lower.vec.load_usize(c, recv, 8usize)?
@@ -75,6 +201,28 @@ fn lower.vec.len(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, empty_q:
     core.mem.drop(env.srcs.len())
     Ok(lower.cx.R { v: v, t: t })
 end lower.vec.len
+
+// 枠 slot の値を取り出す (移動): 3 つの欄を読み、先頭の番地を null にして、`vec` の値を作る。
+// take が false なら null にしない (読むだけ)。
+fn lower.vec.load_hdr(env: &types.env.Env, c: &mut lower.cx.Cx, slot: usize, t: usize, take: bool) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let pv = lower.vec.load_ptr(c, slot)?
+    let lv = lower.vec.load_usize(c, slot, 8usize)?
+    let cv = lower.vec.load_usize(c, slot, 16usize)?
+    if take {
+        let nul = lower.cx.def(c, "ptr", "const.ptr 0")?
+        core.mem.drop(lower.vec.store_at(c, "ptr", slot, 0usize, nul)?)
+    }
+    let tt = lower.tyk.text(env, c, t)?
+    let mut mk = alloc.string.String.new(std.alloc.SYSTEM)
+    mk.push_str("make(")?
+    mk.push_str(lower.cx.vs(pv)?.as_str())?
+    mk.push_str(", ")?
+    mk.push_str(lower.cx.vs(lv)?.as_str())?
+    mk.push_str(", ")?
+    mk.push_str(lower.cx.vs(cv)?.as_str())?
+    mk.push(')')?
+    lower.cx.def(c, tt.as_str(), mk.as_str())
+end lower.vec.load_hdr
 
 // `mem.load.ptr <p> +0` (枠の先頭の番地)。
 fn lower.vec.load_ptr(c: &mut lower.cx.Cx, p: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
@@ -244,6 +392,17 @@ fn lower.vec.store_at(c: &mut lower.cx.Cx, ty: &str, p: usize, off: usize, v: us
     s.push_str(lower.cx.vs(v)?.as_str())?
     lower.cx.def(c, "unit", s.as_str())
 end lower.vec.store_at
+
+// 値 v (`vec` の集成体) の 3 つの欄を枠 slot へ書く (Rust 版 `store_hdr`)。
+fn lower.vec.store_hdr(c: &mut lower.cx.Cx, slot: usize, v: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let pv = lower.cx.def(c, "ptr", lower.expr.field_src(v, 0usize)?.as_str())?
+    let lv = lower.cx.def(c, "usize", lower.expr.field_src(v, 8usize)?.as_str())?
+    let cv = lower.cx.def(c, "usize", lower.expr.field_src(v, 16usize)?.as_str())?
+    lower.vec.store_at(c, "ptr", slot, 0usize, pv)?
+    lower.vec.store_at(c, "usize", slot, 8usize, lv)?
+    lower.vec.store_at(c, "usize", slot, 16usize, cv)?
+    Ok(())
+end lower.vec.store_hdr
 
 // 整数の定数 `const.usize N` を作る。
 fn lower.vec.usize_c(c: &mut lower.cx.Cx, n: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub

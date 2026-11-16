@@ -32,7 +32,9 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
         let it = lower.cx.item_at(&c, i)
         let subs = lower.cx.subs_at(&c, i)?
         let ret = lower.cx.ret_at(&c, i)
-        if it == lower.chk.GEN {
+        if it == lower.chk.GEN && key.as_str().starts_with("alloc.") {
+            lower.vec.gen(&env, &mut c, key.as_str(), &subs, ret)?
+        } else if it == lower.chk.GEN {
             lower.chk.record(&mut c, key.as_str())?
         } else if it == 0usize {
             lower.func.record(&mut c, "", "定義がない")?

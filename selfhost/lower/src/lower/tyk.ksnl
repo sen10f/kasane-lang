@@ -528,6 +528,65 @@ fn lower.tyk.size_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Resu
     Ok((0usize, 1usize))
 end lower.tyk.size_of
 
+// 型の源の綴り (総称の鍵に使う: `u32`・`&str`・`alloc.string.String<std.alloc.System>`)。
+fn lower.tyk.src(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    if n.k == types.ty.K.Param {
+        let r = lower.inst.lookup(c, n.a)
+        if r != 0usize {
+            return lower.tyk.src(env, c, r)
+        }
+    }
+    if n.k == types.ty.K.Char {
+        return lower.cx.own("char")
+    }
+    if n.k == types.ty.K.Unit {
+        return lower.cx.own("()")
+    }
+    if n.k == types.ty.K.Str {
+        return lower.cx.own("&str")
+    }
+    if n.k == types.ty.K.Ref {
+        let inner = lower.tyk.src(env, c, n.a)?
+        if n.m {
+            return lower.cx.cat2("&mut ", inner.as_str())
+        }
+        return lower.cx.cat2("&", inner.as_str())
+    }
+    if n.k == types.ty.K.Adt {
+        let mut s = lower.tyk.item_fqn(env, n.a)
+        let mut na = n.c
+        // 省いた割り当て器 (System) は補って書く。
+        let fq = lower.tyk.item_fqn(env, n.a)
+        let want = if fq.as_str() == "alloc.string.String" {
+            1usize
+        } else if fq.as_str() == "alloc.vec.Vec" {
+            2usize
+        } else {
+            na
+        }
+        if want > 0usize {
+            s.push('<')?
+            for k in core.iter.range(0usize, want) {
+                if k > 0usize {
+                    s.push(',')?
+                }
+                if k < na {
+                    s.push_str(lower.tyk.src(env, c, types.ty.arg(&c.ar, n.b, k))?.as_str())?
+                } else {
+                    s.push_str("std.alloc.System")?
+                }
+            }
+            s.push('>')?
+        }
+        na = want
+        core.mem.drop(na)
+        return Ok(s)
+    }
+    lower.tyk.text(env, c, t)
+end lower.tyk.src
+
 // types の型 id → KIR の型の文字列。未対応の型は fail して "unit" を返す。
 fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
@@ -593,6 +652,10 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
         return Ok(s)
     }
     if n.k == types.ty.K.Ref {
+        if lower.vec.is_hdr(env, c, n.a) {
+            // `&Vec` / `&String` は枠の番地 (ptr)。
+            return lower.cx.own("ptr")
+        }
         let inner = lower.tyk.text(env, c, n.a)?
         let rt = lower.opt.refty(n.m, inner.as_str())?
         return Ok(rt)
