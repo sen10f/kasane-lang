@@ -51,7 +51,7 @@ end lower.std_calls.has_fn
 fn lower.std_calls.has_method(fqn: &str) -> bool uses [] panics may pub
     let a = fqn == "alloc.string.String.as_str" || fqn == "core.str.len"
     let b = fqn == "core.option.Option.is_none" || fqn == "core.option.Option.is_some"
-    let e = fqn == "core.str.as_bytes" || fqn == "core.slice.sub"
+    let e = fqn == "core.str.as_bytes" || fqn == "core.slice.sub" || fqn == "core.slice.contains"
     let d = e || fqn == "core.slice.len" || fqn == "core.slice.get" || fqn == "core.slice.last"
     a || b || d || fqn == "core.option.Option.unwrap_or" || lower.std_calls.num_op(fqn) != ""
 end lower.std_calls.has_method
@@ -87,6 +87,9 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
         let ls = lower.cx.cat2("field ", lower.cx.vs(fat)?.as_str())?
         let lv = lower.cx.def(c, "usize", lower.cx.cat2(ls.as_str(), ", +8")?.as_str())?
         return Ok(lower.cx.R { v: lv, t: t })
+    }
+    if fqn == "core.slice.contains" {
+        return lower.std_calls.slice_contains(env, c, vs, rty, t)
     }
     if fqn == "core.slice.sub" {
         return lower.std_calls.slice_sub(env, c, vs, rty, t)
@@ -251,6 +254,56 @@ fn lower.std_calls.recv_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
     }
     lower.std_calls.method(env, c, fqn, rty, &vs, t)
 end lower.std_calls.recv_call
+
+// `s.contains(&x)` (要素がスカラー): 添字で先頭から比べ、等しければ true で抜ける (Rust 版と同じ並び)。
+fn lower.std_calls.slice_contains(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let fat = lower.std_calls.val_of(env, c, lower.tyk.at(vs.as_slice(), 0usize), rty)?
+    let sn = types.ty.node(&c.ar, types.ty.strip(&c.ar, rty))
+    let ety = lower.tyk.text(env, c, sn.a)?
+    let (sz, _al) = lower.tyk.size_of(env, c, sn.a)?
+    let want = lower.loops.un(c, ety.as_str(), "load ", lower.tyk.at(vs.as_slice(), 1usize))?
+    let len = lower.loops.fld(c, "usize", fat, "+8")?
+    let ptr = lower.loops.fld(c, "ptr", fat, "+0")?
+    let zero = lower.vec.usize_c(c, 0usize)?
+    let iv = lower.cx.newval(c, "usize")?
+    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    hps.push(iv)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let jp = lower.cx.newval(c, "bool")?
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(jp)?
+    let hb = lower.cx.blk(c, &hps)?
+    let bb = lower.cx.blk(c, &empty)?
+    let jb = lower.cx.blk(c, &jps)?
+    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a0.push(zero)?
+    lower.loops.br(c, hb, &a0)?
+    lower.cx.goto(c, hb)
+    let lt = lower.loops.bin(c, "bool", "icmp.lt.usize", iv, len)?
+    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a1.push(lt)?
+    lower.loops.brif(c, lt, bb, &empty, jb, &a1)?
+    lower.cx.goto(c, bb)
+    let mut off = iv
+    if sz != 1usize {
+        let szc = lower.vec.usize_c(c, sz)?
+        off = lower.loops.bin(c, "usize", "mul.usize.wrap", iv, szc)?
+    }
+    let addr = lower.loops.bin(c, "ptr", "ptr.add", ptr, off)?
+    let ld = lower.cx.cat2("mem.load.", ety.as_str())?
+    let ld2 = lower.cx.cat2(ld.as_str(), lower.cx.cat2(" ", lower.cx.vs(addr)?.as_str())?.as_str())?
+    let el = lower.cx.def(c, ety.as_str(), lower.cx.cat2(ld2.as_str(), " +0")?.as_str())?
+    let eq = lower.loops.bin(c, "bool", lower.cx.cat2("icmp.eq.", ety.as_str())?.as_str(), el, want)?
+    let one = lower.vec.usize_c(c, 1usize)?
+    let nx = lower.loops.bin(c, "usize", "add.usize.wrap", iv, one)?
+    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a2.push(eq)?
+    let mut a3 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a3.push(nx)?
+    lower.loops.brif(c, eq, jb, &a2, hb, &a3)?
+    lower.cx.goto(c, jb)
+    Ok(lower.cx.R { v: jp, t: t })
+end lower.std_calls.slice_contains
 
 fn lower.std_calls.slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, last: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     lower.std_calls.slice_get_in(env, c, vs, rty, last, false, t)
