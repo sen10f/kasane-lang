@@ -15,6 +15,9 @@ const lower.tyk.TUP: usize = 2000000000usize pub
 // `Vec<T>` の枠 `vec` = {ptr, len, cap} (24 バイト。要素の型は枠に入れない)。項目の代わりに番号 VEC を使う。
 const lower.tyk.VEC: usize = 4294967294usize pub
 
+// 要素が所有物の `Vec` の枠 `vec<#E>` の項目の基点 (VECO + 要素の集成体の番号)。配置は `vec` と同じ。
+const lower.tyk.VECO: usize = 1000000000usize pub
+
 // 集成体のレイアウト: 大きさ・そろえ・フィールドの末尾からのバイト位置。
 // 列挙型は `offs` を変種の順に並べ (変種 j の i 番目は vlens の和 + i)、`vlens` に変種ごとの個数を入れる。
 type lower.tyk.Lay pub
@@ -35,6 +38,15 @@ fn lower.tyk.agg_body(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id:
         vs.push_str(lower.cx.dec(id)?.as_str())?
         vs.push_str(" struct vec size=24 align=8 {ptr:ptr@0 len:usize@8 cap:usize@16}\n")?
         return Ok(vs)
+    }
+    if item >= lower.tyk.VECO && item < lower.tyk.BREF {
+        let mut vo = alloc.string.String.new(std.alloc.SYSTEM)
+        vo.push_str("agg#")?
+        vo.push_str(lower.cx.dec(id)?.as_str())?
+        vo.push_str(" struct vec<#")?
+        vo.push_str(lower.cx.dec(item - lower.tyk.VECO)?.as_str())?
+        vo.push_str("> size=24 align=8 {ptr:ptr@0 len:usize@8 cap:usize@16}\n")?
+        return Ok(vo)
     }
     if item == lower.tyk.BREF {
         let mut bs = alloc.string.String.new(std.alloc.SYSTEM)
@@ -334,6 +346,28 @@ fn lower.tyk.is_opt_scalar(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bo
     k == types.ty.K.Int || k == types.ty.K.Bool
 end lower.tyk.is_opt_scalar
 
+// `Vec` / `String` の枠の集成体の項目: 要素が所有物の `Vec` は `VECO + 要素の集成体の番号`、それ以外は `VEC`。
+fn lower.tyk.vec_item(env: &types.env.Env, c: &mut lower.cx.Cx, f: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let n = types.ty.node(&c.ar, f)
+    if !lower.tyk.item_fqn(env, n.a).as_str().ends_with(".Vec") || n.c == 0usize {
+        return Ok(lower.tyk.VEC)
+    }
+    let et = types.ty.arg(&c.ar, n.b, 0usize)
+    if !lower.drop.owns(env, c, et)? {
+        return Ok(lower.tyk.VEC)
+    }
+    let ets = lower.tyk.text(env, c, et)?
+    let num = match ets.as_str().strip_prefix("agg#") {
+        Some(d) => d
+        None => return Ok(lower.tyk.VEC)
+    }
+    let mut v = 0usize
+    for b in num.as_bytes().iter() {
+        v = v * 10usize + usize.from_u8((*b).wrapping_sub(48u8))
+    }
+    Ok(lower.tyk.VECO + v)
+end lower.tyk.vec_item
+
 // 項目が `alloc.vec.Vec` か。
 fn lower.tyk.is_vec(env: &types.env.Env, item: usize) -> bool uses [alloc] panics may pub
     let fq = lower.tyk.item_fqn(env, item)
@@ -448,7 +482,7 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
         let vl = alloc.vec.Vec.new(std.alloc.SYSTEM)
         return Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vl })
     }
-    if item == lower.tyk.VEC {
+    if item == lower.tyk.VEC || (item >= lower.tyk.VECO && item < lower.tyk.BREF) {
         let vo = alloc.vec.Vec.new(std.alloc.SYSTEM)
         let vl = alloc.vec.Vec.new(std.alloc.SYSTEM)
         return Ok(lower.tyk.Lay { size: 24usize, align: 8usize, offs: vo, vlens: vl })
@@ -752,7 +786,8 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
         return Ok(s)
     }
     if (n.k == types.ty.K.Adt && lower.tyk.is_vec(env, n.a)) {
-        let vid = lower.tyk.agg_id(c, lower.tyk.VEC)?
+        let vit = lower.tyk.vec_item(env, c, f)?
+        let vid = lower.tyk.agg_id(c, vit)?
         s.push_str("agg#")?
         s.push_str(lower.cx.dec(vid)?.as_str())?
         return Ok(s)
