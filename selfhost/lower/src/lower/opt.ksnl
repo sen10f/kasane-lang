@@ -577,6 +577,11 @@ fn lower.opt.wrap_ref(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, pt: us
     if vt.as_str().starts_with("ref") || vt.as_str().starts_with("mutref") {
         return Ok(v)
     }
+    if lower.vec.is_hdr(env, c, n.a) {
+        let hslot = lower.cx.def(c, "ptr", "frame.bytes 24")?
+        lower.vec.store_hdr(c, hslot, v)?
+        return Ok(hslot)
+    }
     let it = lower.tyk.text(env, c, n.a)?
     let mt = lower.opt.refty(true, it.as_str())?
     let slot = lower.cx.def(c, mt.as_str(), "alloca")?
