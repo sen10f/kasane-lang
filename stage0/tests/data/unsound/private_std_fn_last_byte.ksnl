@@ -1,0 +1,5 @@
+// expect: E1119
+fn t.main() -> () uses [] panics never
+    let r = std.path.last_byte("abc", b'.')
+    core.mem.drop(r)
+end t.main

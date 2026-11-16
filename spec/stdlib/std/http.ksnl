@@ -65,7 +65,7 @@ fn std.http.Decoder.feed(self: &mut std.http.Decoder, bytes: &[u8]) -> Result<()
 end std.http.Decoder.feed
 
 // `chunk` の先頭 `n` バイトを足す (`n` は読めたバイト数。`chunk` は読み込み用の固定長の配列)。
-fn std.http.Decoder.feed_part(self: &mut std.http.Decoder, chunk: &[u8], n: usize) -> Result<(), std.http.Error> uses [alloc] panics never
+fn std.http.Decoder.feed_part(self: &mut std.http.Decoder, chunk: &[u8], n: usize) -> Result<(), std.http.Error> uses [alloc] panics never pub
     match chunk.sub(0usize, n) {
         Some(part) => self.feed(part)?
         None => return Err(std.http.Error.BadRequest)

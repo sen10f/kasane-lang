@@ -1,0 +1,5 @@
+// expect: E1119
+fn t.main() -> () uses [] panics never
+    let s = std.path.trim_slashes("/a/b/")
+    core.mem.drop(s)
+end t.main

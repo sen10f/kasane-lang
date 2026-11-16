@@ -1,0 +1,5 @@
+// expect: E1119
+fn t.main() -> () uses [alloc] panics never
+    let v = std.json.new_nodes()
+    core.mem.drop(v)
+end t.main

@@ -1,0 +1,5 @@
+// expect: E1119
+fn t.main() -> () uses [] panics never
+    let doc = std.json.new_doc()
+    core.mem.drop(doc)
+end t.main

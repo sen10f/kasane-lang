@@ -1643,10 +1643,9 @@ impl<'a> Checker<'a> {
                     });
                     let Some((n, j)) = hit else { continue };
                     let t = &p.defs[j];
-                    if t.has_impls
-                        || matches!(t.module.split('.').next(), Some("core" | "alloc" | "std"))
-                        || header_is_pub(&t.header)
-                    {
+                    // 標準ライブラリの非 `pub` な定義も、層の外からは見えない (std 同士の内部参照は検査対象外)。
+                    let std_target = matches!(t.module.split('.').next(), Some("core" | "alloc" | "std"));
+                    if t.has_impls || (std_target && in_std_layer) || header_is_pub(&t.header) {
                         break;
                     }
                     // 同一モジュール内の参照は可視。`pub` な定義のヘッダが非公開の型を挙げる誤りは lint の E1010 が見る。
@@ -1683,7 +1682,8 @@ impl<'a> Checker<'a> {
             let crate::types::Ty::Named(n, _) = r.recv.strip() else { continue };
             // 標準ライブラリの型のメソッドは飛ばす (可視性は規範の `.sig` が決める)。フィールドは標準の型も検査する:
             // `alloc.raw.Buf` の `initialized` のような内部の欄を利用者が外から書けてはならない (E1122)。
-            if !r.field && matches!(n.split('.').next(), Some("core" | "alloc" | "std")) {
+            // 標準の型のメソッドは、非 `pub` なら層の外 (利用者のコード) から呼べない。
+            if !r.field && matches!(n.split('.').next(), Some("core" | "alloc" | "std")) && matches!(self.def(r.writer).module.split('.').next(), Some("core" | "alloc" | "std")) {
                 continue;
             }
             let wmod = w.module.clone();
