@@ -320,6 +320,11 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
             let a0node = resolve.ast.item(p, n.b, 0usize)
             let a0 = lower.expr.expr(env, c, p, src, a0node, types.ty.UNKNOWN)?
             dv = a0.v
+            if lower.vec.is_hdr(env, c, a0.t) {
+                // 所有する `Vec` / `String` を捨てる: 先頭の番地を解放する。
+                let fp = lower.cx.def(c, "ptr", lower.expr.field_src(dv, 0usize)?.as_str())?
+                core.mem.drop(lower.cx.def1(c, "unit", "heap.free ", fp)?)
+            }
         }
         core.mem.drop(dv)
         let u = lower.expr.unit(c)?
