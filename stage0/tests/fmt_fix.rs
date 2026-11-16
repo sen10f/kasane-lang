@@ -163,3 +163,48 @@ end t.fill
     let n = Command::new(&bin).output().expect("spawn native");
     assert_eq!(text(&n.stdout), expect);
 }
+
+const MAIN2: &str = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+const FN_A: &str = "fn t.a() -> u8 uses [] panics never pub\n    1u8\nend t.a\n";
+
+fn fmt_ok(name: &str, src: &str) -> String {
+    let t = Tmp::new(name, src);
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0), "{name}");
+    let out = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    // 冪等で、整形後も check が通る。
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{name}: {out}");
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{name}: {out}");
+    out
+}
+
+#[test]
+fn fmt_keeps_header_comment() {
+    let out = fmt_ok("cm_head", &format!("// header comment: keep me\n\n{MAIN2}"));
+    assert_eq!(out, format!("// header comment: keep me\n{MAIN2}"));
+}
+
+#[test]
+fn fmt_keeps_detached_comment_with_next_def_when_sorting() {
+    // main, a の順を a, main に並べ替えても、離れたコメントは次の定義 (a) と動く。
+    let out = fmt_ok("cm_mid", &format!("{MAIN2}\n// about a\n\n{FN_A}"));
+    assert_eq!(out, format!("// about a\n{FN_A}\n{MAIN2}"));
+}
+
+#[test]
+fn fmt_keeps_trailing_comment_and_reports_it() {
+    let t = Tmp::new("cm_tail", &format!("{MAIN2}\n// trailing comment after last def\n"));
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(1));
+    let out = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    assert!(out.contains("// trailing comment after last def"), "{out}");
+}
+
+#[test]
+fn fmt_keeps_comments_on_imports_when_sorting() {
+    let src = format!("// about io\nimport std.io\n// about fs\nimport std.fs\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    io.print(\"x\")\n    fs.exists(\"x\")\n    Ok(())\nend t.main\n");
+    let t = Tmp::new("cm_import", &src);
+    run(&["fmt"], &t.0);
+    let out = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    assert!(out.starts_with("// about fs\nimport std.fs\n// about io\nimport std.io\n"), "{out}");
+    run(&["fmt"], &t.0);
+    assert_eq!(fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap(), out);
+}
