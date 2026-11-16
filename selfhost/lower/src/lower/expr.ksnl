@@ -10,8 +10,7 @@ fn lower.expr.arm_body(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
     Ok(())
 end lower.expr.arm_body
 
-// `x = e` (局所の書き換え)。
-fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, stmt: bool) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let ln = parse.ast.get(&p.ast, n.a)
     let lt = lower.expr.tyof(c, n.a)?
     if (ln.kind == parse.ast.Kind.Unary && ln.a == 42usize) {
@@ -19,7 +18,10 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         let ptr = lower.expr.expr(env, c, p, src, ln.b, types.ty.UNKNOWN)?
         let r = lower.expr.expr(env, c, p, src, n.b, lt)?
         let so = lower.opt.two_op("store ", ptr.v, r.v)?
-        lower.cx.def(c, "unit", so.as_str())?
+        let sv = lower.cx.def(c, "unit", so.as_str())?
+        if stmt {
+            return Ok(lower.cx.R { v: sv, t: types.ty.UNIT })
+        }
         let u = lower.expr.unit(c)?
         return Ok(lower.cx.R { v: u, t: types.ty.UNIT })
     }
@@ -40,7 +42,10 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         let r = lower.expr.expr(env, c, p, src, n.b, lt)?
         let addr = lower.opt.field_addr(env, c, bv, bt, fname, lt)?
         let so = lower.opt.two_op("store ", addr, r.v)?
-        lower.cx.def(c, "unit", so.as_str())?
+        let sv = lower.cx.def(c, "unit", so.as_str())?
+        if stmt {
+            return Ok(lower.cx.R { v: sv, t: types.ty.UNIT })
+        }
         let u = lower.expr.unit(c)?
         return Ok(lower.cx.R { v: u, t: types.ty.UNIT })
     }
@@ -57,6 +62,9 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         let _sd = lower.cx.def(c, "unit", so.as_str())?
     } else {
         lower.cx.set_val(c, loc - 1usize, r.v + 1usize)?
+    }
+    if stmt {
+        return Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
     }
     let u = lower.expr.unit(c)?
     Ok(lower.cx.R { v: u, t: types.ty.UNIT })
@@ -187,6 +195,10 @@ fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         has = false
         if (sn.kind == parse.ast.Kind.Let) {
             lower.expr.letx(env, c, p, src, sn)?
+        } else if (sn.kind == parse.ast.Kind.Assign) {
+            core.mem.drop(lower.expr.assign(env, c, p, src, sn, true)?)
+        } else if (sn.kind == parse.ast.Kind.ExprStmt && lower.expr.is_assign(p, sn.a)) {
+            core.mem.drop(lower.expr.assign(env, c, p, src, parse.ast.get(&p.ast, sn.a), true)?)
         } else if (sn.kind == parse.ast.Kind.ExprStmt) {
             let mut w = types.ty.UNKNOWN
             if last {
@@ -425,7 +437,7 @@ fn lower.expr.expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         return lower.expr.retx(env, c, p, src, n)
     }
     if (k == parse.ast.Kind.Assign) {
-        return lower.expr.assign(env, c, p, src, n)
+        return lower.expr.assign(env, c, p, src, n, false)
     }
     if (k == parse.ast.Kind.ExprStmt) {
         return lower.expr.expr(env, c, p, src, n.a, want)
@@ -532,6 +544,12 @@ fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     }
     Ok(lower.cx.R { v: rv, t: t })
 end lower.expr.ifx
+
+// `x = e` (局所の書き換え)。
+// 式 e が代入か。
+fn lower.expr.is_assign(p: &parse.cur.P, e: usize) -> bool uses [] panics may pub
+    parse.ast.get(&p.ast, e).kind == parse.ast.Kind.Assign
+end lower.expr.is_assign
 
 // メソッド名が `iter` か。
 fn lower.expr.is_iter_name(p: &parse.cur.P, src: &[u8], tok: usize) -> bool uses [] panics may pub
