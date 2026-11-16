@@ -1,0 +1,22 @@
+type t.Hold[T]
+    v: T
+end t.Hold
+
+type t.Hold2[T]
+    h: t.Hold<T>
+end t.Hold2
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = 10u32
+    let w = t.make(&a)
+    match w {
+        t.Hold2 { h: hh } => match hh {
+            t.Hold { v: r } => core.mem.drop(*r)
+        }
+    }
+    Ok(())
+end t.main
+
+fn t.make(r: &u32) -> t.Hold2<&u32> uses [] panics never
+    t.Hold2 { h: t.Hold { v: r } }
+end t.make

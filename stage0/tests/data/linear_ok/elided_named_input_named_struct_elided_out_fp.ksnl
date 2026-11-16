@@ -1,0 +1,13 @@
+type t.P['a]
+    src: &'a str
+end t.P
+
+fn t.get(p: &t.P) -> &str uses [] panics never
+    p.src
+end t.get
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let p = t.P { src: "hi" }
+    core.mem.drop(t.get(&p))
+    Ok(())
+end t.main
