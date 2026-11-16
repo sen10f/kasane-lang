@@ -585,6 +585,8 @@ impl<'a> Low<'a> {
                         continue;
                     }
                     if kind == "&" || kind == "&mut" {
+                        // 取り込んだ変数が運ぶ借用 (`v` が `m.get_mut(..)` の結果なら `m` の借用) もクロージャへ引き継ぐ。
+                        out.push(Src::Alias(name.clone()));
                         out.push(Src::Place { root: name, path: vec![], mutable: kind == "&mut" });
                     } else {
                         // `move r` は値ごと取り込む。`r` が持つ借用 (`&mut x` を持つ参照) もクロージャへ移る。

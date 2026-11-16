@@ -1,0 +1,14 @@
+// expect: E3010
+fn t.bad() -> u32 uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.push(1u32)
+    let r = v.get_mut(0usize)
+    if let Some(x) = r {
+        let c = fn() -> usize capture [&mut x] {
+            0usize
+        }
+        v.push(2u32)
+        core.mem.drop(c())
+    }
+    0u32
+end t.bad
