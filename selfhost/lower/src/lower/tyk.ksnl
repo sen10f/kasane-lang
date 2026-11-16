@@ -543,6 +543,16 @@ fn lower.tyk.real_item(c: &lower.cx.Cx, item: usize) -> usize uses [alloc] panic
     item
 end lower.tyk.real_item
 
+// 型 t が、スカラー (整数・浮動小数・bool・char) への参照か。`Option<&スカラー>` は値の `Option<スカラー>` で持つ。
+fn lower.tyk.ref_scalar(c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
+    let n = types.ty.node(&c.ar, types.ty.find(&c.ar, t))
+    if n.k != types.ty.K.Ref {
+        return false
+    }
+    let k = types.ty.node(&c.ar, types.ty.find(&c.ar, n.a)).k
+    k == types.ty.K.Int || k == types.ty.K.Float || k == types.ty.K.Bool || k == types.ty.K.Char
+end lower.tyk.ref_scalar
+
 // 型 (types の型 id) の大きさとそろえ。集成体はレイアウトから。
 fn lower.tyk.size_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<(usize, usize), resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
@@ -731,7 +741,10 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
         return Ok(rt)
     }
     if n.k == types.ty.K.Adt && lower.opt.kind(env, n.a) == 1usize && n.c == 1usize {
-        let a0 = types.ty.arg(&c.ar, n.b, 0usize)
+        let mut a0 = types.ty.arg(&c.ar, n.b, 0usize)
+        if lower.tyk.ref_scalar(c, a0) {
+            a0 = types.ty.node(&c.ar, types.ty.find(&c.ar, a0)).a
+        }
         let inner = lower.tyk.text(env, c, a0)?
         let mut r = lower.cx.cat2("Option<", inner.as_str())?
         r.push('>')?

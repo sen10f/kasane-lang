@@ -326,7 +326,12 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                         }
                         pt = types.ty.arg(&c.ar, sn.b, ai)
                     }
-                    let pty = lower.tyk.text(env, c, pt)?
+                    let ssx0 = types.ty.node(&c.ar, types.ty.strip(&c.ar, sc.t))
+                    let mut ptx = pt
+                    if ssx0.c == 1usize && lower.tyk.ref_scalar(c, pt) {
+                        ptx = types.ty.node(&c.ar, types.ty.find(&c.ar, pt)).a
+                    }
+                    let pty = lower.tyk.text(env, c, ptx)?
                     pv = lower.cx.def1(c, pty.as_str(), "payload ", sv)?
                     let tr = lower.cx.def(c, "bool", "const.bool true")?
                     let both = lower.expr.two(cond, tr)?
@@ -352,7 +357,14 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                 if sp.kind == parse.ast.Kind.PBind {
                     let stk_tok = parse.cur.peek_at(p, sp.a)
                     let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
-                    let pv2 = lower.opt.wrap_ref(env, c, pv, pt)?
+                    // `Option<&スカラー>` の中身は値のまま束ねる (`*x` は恒等になる)。
+                    let ssx = types.ty.node(&c.ar, types.ty.strip(&c.ar, sc.t))
+                    let sa0 = types.ty.arg(&c.ar, ssx.b, 0usize)
+                    let direct = ssx.c == 1usize && lower.tyk.ref_scalar(c, sa0)
+                    let mut pv2 = pv
+                    if !direct {
+                        pv2 = lower.opt.wrap_ref(env, c, pv, pt)?
+                    }
                     let bv = lower.opt.bind(env, c, stk, pv2, false, pt)?
                     lower.own.declare(env, c, bv, pt)?
                     noncopy = !lower.own.is_copy(env, c, pt)
@@ -620,6 +632,11 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         }
         return lower.vec.call(env, c, owner_fqn.as_str(), rty2, &vs, t)
     }
+    if lower.expr.no_body(env, item) {
+        let why = lower.cx.cat2("本体のない標準のメソッドの呼び出し (未対応): ", owner_fqn.as_str())?
+        lower.cx.fail(c, why.as_str())?
+        return lower.expr.dummy(c, t)
+    }
     lower.expr.enqueue(c, key.as_str(), item + 1usize, subs, t)?
     let rt = lower.tyk.text(env, c, t)?
     let co = lower.cx.cat2("call ", key.as_str())?
@@ -639,6 +656,9 @@ fn lower.opt.wrap_ref(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, pt: us
     }
     let vt = lower.cx.tyof(c, v)
     if vt.as_str().starts_with("ref") || vt.as_str().starts_with("mutref") {
+        return Ok(v)
+    }
+    if types.ty.node(&c.ar, types.ty.find(&c.ar, n.a)).k == types.ty.K.Slice {
         return Ok(v)
     }
     if lower.vec.is_hdr(env, c, n.a) {

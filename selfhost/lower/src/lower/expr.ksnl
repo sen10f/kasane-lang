@@ -395,6 +395,11 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     if fqn.as_str() == "std.io.print_line" {
         return lower.io.print_line(env, c, p, src, n, t)
     }
+    if lower.expr.no_body(env, item) {
+        let why = lower.cx.cat2("本体のない標準の宣言の呼び出し (未対応): ", fqn.as_str())?
+        lower.cx.fail(c, why.as_str())?
+        return lower.expr.dummy(c, t)
+    }
     // 総称の関数は型引数を照合で決めて、インスタンスの鍵 (fqn<型,..>) で下ろす。
     let mut key = lower.cx.own(fqn.as_str())?
     let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -1246,6 +1251,17 @@ fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     Ok(lower.cx.R { v: v, t: t })
 end lower.expr.mcall
 
+// 項目が本体のない宣言 (`.sig` の fn) か。
+fn lower.expr.no_body(env: &types.env.Env, item: usize) -> bool uses [alloc] panics may pub
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return false
+    }
+    parse.ast.get(&p.ast, node).d == 0usize
+end lower.expr.no_body
+
 fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let name = resolve.ast.text(src, n.a, n.b)
     let (first, second) = lower.expr.split2(name)
@@ -1665,6 +1681,11 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
             let op3 = lower.cx.cat2(op2.as_str(), lower.cx.vs(r.v)?.as_str())?
             let v1 = lower.cx.def(c, tt.as_str(), lower.cx.cat2(op3.as_str(), " +0")?.as_str())?
             return Ok(lower.cx.R { v: v1, t: t })
+        }
+        let rkt = lower.cx.tyof(c, r.v)
+        if !rkt.as_str().starts_with("ref") && !rkt.as_str().starts_with("mutref") && rkt.as_str() == tt.as_str() {
+            // 値で持つ `&スカラー` (`Option<&スカラー>` から取った束縛): `*x` は値そのもの。
+            return Ok(lower.cx.R { v: r.v, t: t })
         }
         let op = lower.cx.cat2("load ", lower.cx.vs(r.v)?.as_str())?
         let v = lower.cx.def(c, tt.as_str(), op.as_str())?

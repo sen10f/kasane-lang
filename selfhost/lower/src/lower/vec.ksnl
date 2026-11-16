@@ -17,7 +17,7 @@ fn lower.vec.call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usiz
     let ok = if is_str {
         name == "len" || name == "is_empty" || name == "push_str"
     } else {
-        name == "len" || name == "is_empty" || name == "push" || name == "pop"
+        name == "len" || name == "is_empty" || name == "push" || name == "pop" || name == "as_slice"
     }
     if !ok {
         lower.cx.fail(c, lower.cx.cat2("Vec / String のメソッド (未対応): ", name)?.as_str())?
@@ -130,6 +130,12 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
         r = lower.vec.push(env, c, recv, elem, value, ret)?
     } else if name == "pop" {
         r = lower.vec.pop(env, c, recv, elem, ret)?
+    } else if name == "as_slice" {
+        let pv = lower.vec.load_ptr(c, recv)?
+        let lv = lower.vec.load_usize(c, recv, 8usize)?
+        let mk = lower.cx.cat2("make(", lower.expr.two(pv, lv)?.as_str())?
+        let mv = lower.cx.def(c, rt.as_str(), lower.cx.cat2(mk.as_str(), ")")?.as_str())?
+        r = lower.cx.R { v: mv, t: ret }
     } else if is_str {
         r = lower.str.push_str(env, c, recv, value, ret)?
     }
