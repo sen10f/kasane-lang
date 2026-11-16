@@ -1517,10 +1517,10 @@ fn t.dst_io(c: bool) -> Result<(), t.ErrIo> uses [] panics never\n    t.src_io(c
 fn t.dst_str(c: bool) -> Result<(), t.ErrStr> uses [alloc] panics never\n    t.src_str(c)?\n    Ok(())\nend t.dst_str\n\n\
 fn t.dst_u32(c: bool) -> Result<u32, t.Err32> uses [] panics never\n    let n = t.src_u32(c)?\n    Ok(n)\nend t.dst_u32\n\n\
 fn t.dst_u64(c: bool) -> Result<u64, t.Err32> uses [] panics never\n    t.src_unit(c)?\n    Ok(1007u64)\nend t.dst_u64\n\n\
-fn t.probe_io(c: bool) -> u32 uses [] panics never\n    match t.dst_io(c) {\n        Ok(()) => 1000u32\n        Err(t.ErrIo.Io(_)) => 42u32\n        Err(_) => 9999u32\n    }\nend t.probe_io\n\n\
-fn t.probe_str(c: bool) -> u32 uses [alloc] panics never\n    match t.dst_str(c) {\n        Ok(()) => 1000u32\n        Err(t.ErrStr.S(_)) => 42u32\n        Err(_) => 9999u32\n    }\nend t.probe_str\n\n\
-fn t.probe_u32(c: bool) -> u32 uses [] panics never\n    match t.dst_u32(c) {\n        Ok(n) => n\n        Err(t.Err32.X(e)) => e\n        Err(_) => 9999u32\n    }\nend t.probe_u32\n\n\
-fn t.probe_u64(c: bool) -> u64 uses [] panics never\n    match t.dst_u64(c) {\n        Ok(n) => n\n        Err(t.Err32.X(_)) => 42u64\n        Err(_) => 9999u64\n    }\nend t.probe_u64\n\n\
+fn t.probe_io(c: bool) -> u32 uses [] panics never\n    match t.dst_io(c) {\n        Ok(()) => 1000u32\n        Err(t.ErrIo.Io(_)) => 42u32\n    }\nend t.probe_io\n\n\
+fn t.probe_str(c: bool) -> u32 uses [alloc] panics never\n    match t.dst_str(c) {\n        Ok(()) => 1000u32\n        Err(t.ErrStr.S(_)) => 42u32\n    }\nend t.probe_str\n\n\
+fn t.probe_u32(c: bool) -> u32 uses [] panics never\n    match t.dst_u32(c) {\n        Ok(n) => n\n        Err(t.Err32.X(e)) => e\n    }\nend t.probe_u32\n\n\
+fn t.probe_u64(c: bool) -> u64 uses [] panics never\n    match t.dst_u64(c) {\n        Ok(n) => n\n        Err(t.Err32.X(_)) => 42u64\n    }\nend t.probe_u64\n\n\
 fn t.src_io(c: bool) -> Result<(), std.io.Error> uses [] panics never\n    if c {\n        return Ok(())\n    }\n    Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 })\nend t.src_io\n\n\
 fn t.src_str(c: bool) -> Result<(), alloc.string.String<std.alloc.System>> uses [alloc] panics never\n    if c {\n        return Ok(())\n    }\n    Err(alloc.string.String.new(std.alloc.SYSTEM))\nend t.src_str\n\n\
 fn t.src_u32(c: bool) -> Result<u32, u32> uses [] panics never\n    if c {\n        return Ok(1007u32)\n    }\n    Err(42u32)\nend t.src_u32\n\n\

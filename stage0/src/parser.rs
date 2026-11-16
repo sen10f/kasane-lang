@@ -114,6 +114,8 @@ const INT_SUFFIXES: &[&str] = &[
 pub struct Parser {
     pub(crate) t: Vec<Tok>,
     pub(crate) i: usize,
+    /// `if` / `while` / `match` の頭の式の中の `is` パターン: `{` は本体の始まりで、構造体パターンではない。
+    pat_ns: bool,
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -203,7 +205,7 @@ pub(crate) fn split_number(text: &str, is_float: bool) -> R<(String, Option<Stri
 
 impl Parser {
     pub fn new(t: Vec<Tok>) -> Parser {
-        Parser { t, i: 0 }
+        Parser { t, i: 0, pat_ns: false }
     }
 
     pub(crate) fn cur(&self) -> &Tok {
@@ -599,7 +601,10 @@ impl Parser {
         if self.is_kw("is") {
             // `式 is パターン` = `match 式 { パターン => true, <他> => false }` (名前を束縛しないパターンのみ)。
             self.i += 1;
-            let pat = self.pattern()?;
+            let saved = std::mem::replace(&mut self.pat_ns, ns);
+            let pat = self.pattern();
+            self.pat_ns = saved;
+            let pat = pat?;
             let mut b = vec![];
             crate::check::pat_binds(&pat, &mut b);
             if !b.is_empty() {
@@ -1087,7 +1092,7 @@ impl Parser {
                 self.expect_op(")")?;
                 return Ok(ndl(c.pos(), "PVariant", vec![strs(&segs), V::L(items)]));
             }
-            if self.is_op("{") {
+            if self.is_op("{") && !self.pat_ns {
                 self.i += 1;
                 let mut fl = Vec::new();
                 loop {
