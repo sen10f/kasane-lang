@@ -1,0 +1,23 @@
+// expect-accept
+type t.P['a, 'b]
+    x: &'a u64
+    y: Option<&'b u64>
+end t.P
+
+type t.Q['a, 'b]
+    p: t.P<'a, 'b>
+end t.Q
+
+fn t.main() -> () uses [] panics never
+end t.main
+
+fn t.ok1(p: &mut t.P) -> () uses [] panics never
+    let a = p.x
+    p.x = a
+end t.ok1
+
+fn t.ok2(q: &mut t.Q) -> () uses [] panics never
+    let inner = &q.p
+    let a = inner.x
+    q.p.x = a
+end t.ok2

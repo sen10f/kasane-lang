@@ -1,0 +1,21 @@
+// expect: E3010
+type t.P['a, 'b]
+    x: &'a u64
+    y: Option<&'b u64>
+end t.P
+
+type t.Q['a, 'b]
+    p: t.P<'a, 'b>
+end t.Q
+
+fn t.f4(p: &mut t.P) -> () uses [] panics never
+    match p.y {
+        Some(v) => {
+            p.x = v
+        }
+        None => ()
+    }
+end t.f4
+
+fn t.main() -> () uses [] panics never
+end t.main
