@@ -352,6 +352,11 @@ fn lower.opt.recv_value(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R,
         return lower.cx.def(c, it.as_str(), op.as_str())
     }
     // 値を参照にしたい: 一時のスロットに置いて参照を作る。
+    if lower.vec.is_hdr(env, c, r.t) {
+        let tslot = lower.cx.def(c, "ptr", "frame.bytes 24")?
+        lower.vec.store_hdr(c, tslot, r.v)?
+        return Ok(tslot)
+    }
     let st = lower.tyk.text(env, c, r.t)?
     let mt = lower.opt.refty(true, st.as_str())?
     let slot = lower.cx.def(c, mt.as_str(), "alloca")?

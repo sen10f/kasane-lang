@@ -19,11 +19,11 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     for v in mvh.as_slice().iter() {
         hps.push(*v)?
     }
-    let head = lower.cx.blk(c, &hps)?
     let eps = lower.cx.fresh_vals(c, &ks)?
     let exitb = lower.cx.blk(c, &eps)?
     let cps = lower.cx.fresh_vals(c, &ks)?
     let contb = lower.cx.blk(c, &cps)?
+    let head = lower.cx.blk(c, &hps)?
     let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     a0.push(zero)?
     let cur = lower.cx.cur_vals(c, &ks)?
