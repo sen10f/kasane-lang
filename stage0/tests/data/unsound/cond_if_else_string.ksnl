@@ -1,0 +1,13 @@
+// expect: E2020
+fn t.bad() -> () uses [] panics never
+    let n = 2u8
+    if n {
+        ()
+    } else {
+        ()
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

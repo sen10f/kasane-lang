@@ -1,0 +1,9 @@
+// expect: E2020
+fn t.bad() -> () uses [] panics may
+    let x = true + false
+    core.mem.drop(x)
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -1,0 +1,18 @@
+type t.S pub
+    v: u32
+    s: alloc.string.String<std.alloc.System>
+end t.S
+
+// expect: E2020
+fn t.bad() -> u32 uses [] panics never
+    let a = 1u32
+    *a
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.make() -> t.S uses [] panics never
+    t.S { v: 7u32, s: alloc.string.String.new() }
+end t.make

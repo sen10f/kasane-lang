@@ -1,0 +1,8 @@
+// expect: E2020
+fn t.five() -> u32 uses [] panics never
+    return
+end t.five
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

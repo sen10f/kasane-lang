@@ -3039,7 +3039,7 @@ impl<'a> Checker<'a> {
         let mut tk = crate::types::TypeCk::new(self.p);
         for &i in &user {
             let d = self.def(i);
-            if (d.kw == "fn" && d.body.is_some()) || d.kw == "test" {
+            if (d.kw == "fn" && d.body.is_some()) || d.kw == "test" || (matches!(d.kw.as_str(), "const" | "static") && d.init.is_some()) {
                 tk.check_def(i);
             }
         }

@@ -1,0 +1,17 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.ok(n: i32, f: bool) -> bool uses [] panics may
+    let e = 1u32 < 2u32 && f || false
+    let b = -n
+    let k = !3u8
+    core.mem.drop(k)
+    if e {
+        core.mem.drop(b)
+    }
+    while !f {
+        break
+    }
+    !e
+end t.ok
