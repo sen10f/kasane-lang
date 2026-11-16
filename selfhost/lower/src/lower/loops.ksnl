@@ -302,6 +302,25 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     Ok(lower.cx.R { v: u, t: t })
 end lower.loops.forvec
 
+// `for x in NAME.as_slice().iter()`: NAME は `Vec` の局所 (1 つの名前) か欄の連なり。
+fn lower.loops.forvec_path(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, bname: &str) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    if lower.expr.seg_count(bname) < 2usize {
+        let loc = lower.cx.find(c, bname)
+        if loc != 0usize {
+            let lt = lower.cx.tyof_t(c, loc - 1usize)
+            let hv = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
+            return lower.loops.forvec(env, c, p, src, n, t, true, hv, lt)
+        }
+    } else {
+        let (hp, vt, ok) = lower.expr.hdr_of(env, c, bname)?
+        if ok {
+            return lower.loops.forvec(env, c, p, src, n, t, true, hp, vt)
+        }
+    }
+    lower.cx.fail(c, "for NAME.as_slice().iter() (NAME が Vec でない)")?
+    lower.expr.dummy(c, t)
+end lower.loops.forvec_path
+
 fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let it = parse.ast.get(&p.ast, n.b)
     let mut is_range = false
@@ -339,6 +358,18 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
             }
         } else if (it.kind == parse.ast.Kind.Path) {
             name = resolve.ast.text(src, it.a, it.b)
+        }
+        if it.kind == parse.ast.Kind.MCall && resolve.ast.tok_text(p, src, it.b) == "iter" {
+            let rn = parse.ast.get(&p.ast, it.a)
+            if rn.kind == parse.ast.Kind.Call && resolve.ast.count(p, rn.b) == 0usize {
+                let cn2 = parse.ast.get(&p.ast, rn.a)
+                if cn2.kind == parse.ast.Kind.Path {
+                    let cname = resolve.ast.text(src, cn2.a, cn2.b)
+                    if let Some(bname) = cname.strip_suffix(".as_slice") {
+                        return lower.loops.forvec_path(env, c, p, src, n, t, bname)
+                    }
+                }
+            }
         }
         if name != "" {
             let loc = lower.cx.find(c, name)

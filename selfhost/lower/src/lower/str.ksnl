@@ -9,6 +9,59 @@ fn lower.str.as_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, t: usize
     Ok(lower.cx.R { v: v, t: t })
 end lower.str.as_str
 
+// ブロックの頭 `  bN(...):`。
+fn lower.str.bh(o: &mut alloc.string.String<std.alloc.System>, b: usize, ps: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    o.push_str("  b")?
+    o.push_str(lower.cx.dec(b)?.as_str())?
+    o.push('(')?
+    o.push_str(ps)?
+    o.push_str("):\n")?
+    Ok(())
+end lower.str.bh
+
+// 幅 n (1〜4) の UTF-8 を、ch (%1) から番地 base へ書き、幅の定数を `br b9(%w)` で渡す。
+fn lower.str.enc(o: &mut alloc.string.String<std.alloc.System>, k: &mut usize, base: usize, n: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    for j in core.iter.range(0usize, n) {
+        let mut v = 1usize
+        let shift = 6usize * (n - 1usize - j)
+        if shift > 0usize {
+            let sc = lower.str.row(o, k, "u32", lower.cx.cat2("const.u32 ", lower.cx.dec(shift)?.as_str())?.as_str())?
+            v = lower.str.row(o, k, "u32", lower.str.op2("shr.u32.wrap ", 1usize, sc)?.as_str())?
+        }
+        if j > 0usize {
+            let m = lower.str.row(o, k, "u32", "const.u32 63")?
+            v = lower.str.row(o, k, "u32", lower.str.op2("and.u32 ", v, m)?.as_str())?
+        }
+        let mut lead = 128usize
+        if j == 0usize && n == 2usize {
+            lead = 192usize
+        }
+        if j == 0usize && n == 3usize {
+            lead = 224usize
+        }
+        if j == 0usize && n == 4usize {
+            lead = 240usize
+        }
+        if !(j == 0usize && n == 1usize) {
+            let lc = lower.str.row(o, k, "u32", lower.cx.cat2("const.u32 ", lower.cx.dec(lead)?.as_str())?.as_str())?
+            v = lower.str.row(o, k, "u32", lower.str.op2("or.u32 ", v, lc)?.as_str())?
+        }
+        let mut cs = lower.cx.cat2("conv.u8.u32 %", lower.cx.dec(v)?.as_str())?
+        let b = lower.str.row(o, k, "u8", cs.as_str())?
+        cs = lower.cx.cat2("mem.store.u8 %", lower.cx.dec(base)?.as_str())?
+        cs.push_str(" +")?
+        cs.push_str(lower.cx.dec(j)?.as_str())?
+        cs.push_str(", %")?
+        cs.push_str(lower.cx.dec(b)?.as_str())?
+        let _q1 = lower.str.row(o, k, "unit", cs.as_str())?
+    }
+    let w = lower.str.row(o, k, "usize", lower.cx.cat2("const.usize ", lower.cx.dec(n)?.as_str())?.as_str())?
+    o.push_str("    br b9(%")?
+    o.push_str(lower.cx.dec(w)?.as_str())?
+    o.push_str(")\n")?
+    Ok(())
+end lower.str.enc
+
 // `String::from_str(alloc, text)`: 一時の枠 (スロット) に空から `push_str` して、Ok(枠) または Err。
 fn lower.str.from_str(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let text = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 1usize), types.ty.UNKNOWN)?
@@ -83,6 +136,93 @@ fn lower.str.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, vs: &al
     lower.cx.fail(c, lower.cx.cat2("String のメソッド (未対応): ", name)?.as_str())?
     lower.expr.dummy(c, t)
 end lower.str.method
+
+// `op %a, %b` / `op %a` の綴り。
+fn lower.str.op2(op: &str, a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.push_str(op)?
+    lower.str.pv(&mut s, a)?
+    s.push_str(", ")?
+    lower.str.pv(&mut s, b)?
+    Ok(s)
+end lower.str.op2
+
+// `String.push(ch)` の本体 (Rust 版の形ではない): 4 バイト分の余地を取り、幅で場合分けして UTF-8 を書く。
+fn lower.str.push_char_text(o: &mut alloc.string.String<std.alloc.System>, fq: &str, key: &str, rt: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    o.push_str("fn ")?
+    o.push_str(fq)?
+    o.push_str(" key=")?
+    o.push_str(key)?
+    o.push_str(" uses=[alloc] panics=never stack=- ret=")?
+    o.push_str(rt)?
+    o.push('\n')?
+    lower.str.bh(o, 0usize, "%0: ptr, %1: u32")?
+    let mut k = 2usize
+    let len0 = lower.str.row(o, &mut k, "usize", "mem.load.usize %0 +8")?
+    let cap0 = lower.str.row(o, &mut k, "usize", "mem.load.usize %0 +16")?
+    let four = lower.str.row(o, &mut k, "usize", "const.usize 4")?
+    let need = lower.str.row(o, &mut k, "usize", lower.str.op2("add.usize.wrap ", len0, four)?.as_str())?
+    let over = lower.str.row(o, &mut k, "bool", lower.str.op2("icmp.gt.usize ", need, cap0)?.as_str())?
+    o.push_str("    br_if %")?
+    o.push_str(lower.cx.dec(over)?.as_str())?
+    o.push_str(", b1(), b2()\n")?
+    lower.str.bh(o, 1usize, "")?
+    let s1 = lower.str.row(o, &mut k, "usize", lower.str.op2("add.usize.wrap ", cap0, need)?.as_str())?
+    let two = lower.str.row(o, &mut k, "usize", "const.usize 2")?
+    let s2 = lower.str.row(o, &mut k, "usize", lower.str.op2("mul.usize.wrap ", s1, two)?.as_str())?
+    let ncap = lower.str.row(o, &mut k, "usize", lower.str.op2("add.usize.wrap ", s2, four)?.as_str())?
+    let p0 = lower.str.row(o, &mut k, "ptr", "mem.load.ptr %0 +0")?
+    let np = lower.str.row(o, &mut k, "ptr", lower.str.op2("heap.realloc ", p0, ncap)?.as_str())?
+    let _q2 = lower.str.row(o, &mut k, "unit", lower.cx.cat2("mem.store.ptr %0 +0, %", lower.cx.dec(np)?.as_str())?.as_str())?
+    let _q3 = lower.str.row(o, &mut k, "unit", lower.cx.cat2("mem.store.usize %0 +16, %", lower.cx.dec(ncap)?.as_str())?.as_str())?
+    o.push_str("    br b2()\n")?
+    lower.str.bh(o, 2usize, "")?
+    let p1 = lower.str.row(o, &mut k, "ptr", "mem.load.ptr %0 +0")?
+    let base = lower.str.row(o, &mut k, "ptr", lower.str.op2("ptr.add ", p1, len0)?.as_str())?
+    let c1 = lower.str.row(o, &mut k, "u32", "const.u32 128")?
+    let l1 = lower.str.row(o, &mut k, "bool", lower.str.op2("icmp.lt.u32 ", 1usize, c1)?.as_str())?
+    o.push_str("    br_if %")?
+    o.push_str(lower.cx.dec(l1)?.as_str())?
+    o.push_str(", b3(), b4()\n")?
+    lower.str.bh(o, 3usize, "")?
+    lower.str.enc(o, &mut k, base, 1usize)?
+    lower.str.bh(o, 4usize, "")?
+    let c2 = lower.str.row(o, &mut k, "u32", "const.u32 2048")?
+    let l2 = lower.str.row(o, &mut k, "bool", lower.str.op2("icmp.lt.u32 ", 1usize, c2)?.as_str())?
+    o.push_str("    br_if %")?
+    o.push_str(lower.cx.dec(l2)?.as_str())?
+    o.push_str(", b5(), b6()\n")?
+    lower.str.bh(o, 5usize, "")?
+    lower.str.enc(o, &mut k, base, 2usize)?
+    lower.str.bh(o, 6usize, "")?
+    let c3 = lower.str.row(o, &mut k, "u32", "const.u32 65536")?
+    let l3 = lower.str.row(o, &mut k, "bool", lower.str.op2("icmp.lt.u32 ", 1usize, c3)?.as_str())?
+    o.push_str("    br_if %")?
+    o.push_str(lower.cx.dec(l3)?.as_str())?
+    o.push_str(", b7(), b8()\n")?
+    lower.str.bh(o, 7usize, "")?
+    lower.str.enc(o, &mut k, base, 3usize)?
+    lower.str.bh(o, 8usize, "")?
+    lower.str.enc(o, &mut k, base, 4usize)?
+    let wp = k
+    k = k + 1usize
+    let mut hd = alloc.string.String.new(std.alloc.SYSTEM)
+    hd.push('%')?
+    hd.push_str(lower.cx.dec(wp)?.as_str())?
+    hd.push_str(": usize")?
+    lower.str.bh(o, 9usize, hd.as_str())?
+    let nl = lower.str.row(o, &mut k, "usize", lower.str.op2("add.usize.wrap ", len0, wp)?.as_str())?
+    let _q4 = lower.str.row(o, &mut k, "unit", lower.cx.cat2("mem.store.usize %0 +8, %", lower.cx.dec(nl)?.as_str())?.as_str())?
+    let u = lower.str.row(o, &mut k, "unit", "const.unit ()")?
+    let okv = lower.str.row(o, &mut k, rt, lower.cx.cat2("ok %", lower.cx.dec(u)?.as_str())?.as_str())?
+    o.push_str("    ret %")?
+    o.push_str(lower.cx.dec(okv)?.as_str())?
+    o.push('\n')?
+    o.push_str("end ")?
+    o.push_str(fq)?
+    o.push('\n')?
+    Ok(())
+end lower.str.push_char_text
 
 // `s.push_str(text)`: 足りなければ広げ、バイトを写し、長さを直す。結果は Ok(())。
 fn lower.str.push_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, text: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -168,3 +308,24 @@ fn lower.str.push_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, text: 
     lower.cx.goto(c, jb)
     Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
 end lower.str.push_str
+
+// 値の参照 `%k` を後ろへつなぐ。
+fn lower.str.pv(s: &mut alloc.string.String<std.alloc.System>, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    s.push('%')?
+    s.push_str(lower.cx.dec(k)?.as_str())?
+    Ok(())
+end lower.str.pv
+
+// 行 `    %k: ty = op` を足し、k を返す (k は 1 つ進む)。
+fn lower.str.row(o: &mut alloc.string.String<std.alloc.System>, k: &mut usize, ty: &str, op: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let id = *k
+    *k = id + 1usize
+    o.push_str("    %")?
+    o.push_str(lower.cx.dec(id)?.as_str())?
+    o.push_str(": ")?
+    o.push_str(ty)?
+    o.push_str(" = ")?
+    o.push_str(op)?
+    o.push('\n')?
+    Ok(id)
+end lower.str.row

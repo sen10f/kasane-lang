@@ -1938,6 +1938,12 @@ fn lower.expr.vec_field_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
     }
     let mutable = !through || m0
     let mut ty_in = inner0
+    // 引数は受け手の欄の番地より先に評価する (Rust 版と同じ並び)。
+    let mut avs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for a in core.iter.range(0usize, resolve.ast.count(p, args)) {
+        let av = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, a), types.ty.UNKNOWN)?
+        avs.push(av.v)?
+    }
     // 欄を順にたどる (最後の欄は Vec / String)。型は宣言から決める。
     let mut j = 1usize
     while j + 1usize < nseg {
@@ -1969,9 +1975,8 @@ fn lower.expr.vec_field_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
     let pv = lower.cx.def(c, "ptr", lower.cx.cat2(bc2.as_str(), lower.cx.vs(cur)?.as_str())?.as_str())?
     let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
     vs.push(pv)?
-    for a in core.iter.range(0usize, resolve.ast.count(p, args)) {
-        let av = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, a), types.ty.UNKNOWN)?
-        vs.push(av.v)?
+    for av in avs.as_slice().iter() {
+        vs.push(*av)?
     }
     let r = lower.vec.call(env, c, fqn.as_str(), bt, &vs, t)?
     Ok((r, true))
