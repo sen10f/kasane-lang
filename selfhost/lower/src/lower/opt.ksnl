@@ -1,3 +1,10 @@
+// 入れ子の腕が束ねる名前・値・型。
+type lower.opt.Binds pub
+    names: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    vals: alloc.vec.Vec<usize, std.alloc.System> pub
+    tys: alloc.vec.Vec<usize, std.alloc.System> pub
+end lower.opt.Binds
+
 // 局所の名前を束縛する。借用されるものはスロット (alloca + store) に置く。
 fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize, m: bool, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let tf = types.ty.find(&c.ar, t)
@@ -25,6 +32,13 @@ fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize
     lower.drop.mark(c, lk, fl)?
     Ok(lk)
 end lower.opt.bind
+
+fn lower.opt.binds_new() -> lower.opt.Binds uses [alloc] panics may pub
+    let names = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let vals = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let tys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.opt.Binds { names: names, vals: vals, tys: tys }
+end lower.opt.binds_new
 
 // `Option<&T>` の中身 `bref` の値 bv から、`ref<T>` を取り出す (`field bv, +0` の後に `bitcast.ref<T>.ptr`)。
 fn lower.opt.bref_ref(env: &types.env.Env, c: &mut lower.cx.Cx, bv: usize, pt: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
@@ -284,6 +298,45 @@ fn lower.opt.local_val(env: &types.env.Env, c: &mut lower.cx.Cx, k: usize, t: us
     Ok(v)
 end lower.opt.local_val
 
+// `Err(Enum.Variant(a, b))` の入れ子の腕: 内側の列挙型のタグを比べ (`tag` / `const.i32` / `icmp.eq.i32`)、
+// 束ねる欄ごとに `field` と `const.bool true` と `and.bool` を重ねた条件を返す。束ねる名前・値・型は out に入れる。
+fn lower.opt.nested(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], sp: parse.ast.Node, pv: usize, pt: usize, out: &mut lower.opt.Binds) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let item = types.ty.node(&c.ar, types.ty.strip(&c.ar, pt)).a
+    let name = resolve.ast.text(src, sp.a, sp.b)
+    let vidx = lower.tyk.variant_index(env, item, lower.expr.last_seg(name))?
+    let lay = lower.tyk.layout(env, c, item)?
+    let tgi = lower.cx.def1(c, "i32", "tag ", pv)?
+    let kv = lower.cx.def(c, "i32", lower.cx.cat2("const.i32 ", lower.cx.dec(vidx)?.as_str())?.as_str())?
+    let mut cur = lower.cx.def(c, "bool", lower.cx.cat2("icmp.eq.i32 ", lower.expr.two(tgi, kv)?.as_str())?.as_str())?
+    let mut vbase = 0usize
+    let mut q = 0usize
+    while q < vidx {
+        vbase = vbase + lower.tyk.at(lay.vlens.as_slice(), q)
+        q = q + 1usize
+    }
+    for i in core.iter.range(0usize, resolve.ast.count(p, sp.c)) {
+        let sub = resolve.ast.item(p, sp.c, i)
+        let sn = parse.ast.get(&p.ast, sub)
+        if sn.kind != parse.ast.Kind.PBind && sn.kind != parse.ast.Kind.PWild {
+            lower.cx.fail(c, "match の腕 (入れ子の部分パターンの深さは未対応)")?
+            return Ok(cur)
+        }
+        let off = lower.tyk.at(lay.offs.as_slice(), vbase + i)
+        let ft = lower.expr.tyof(c, sub)?
+        let fty = lower.tyk.text(env, c, ft)?
+        let fv = lower.cx.def(c, fty.as_str(), lower.expr.field_src(pv, off)?.as_str())?
+        let tr = lower.cx.def(c, "bool", "const.bool true")?
+        cur = lower.cx.def(c, "bool", lower.cx.cat2("and.bool ", lower.expr.two(cur, tr)?.as_str())?.as_str())?
+        if sn.kind == parse.ast.Kind.PBind {
+            let tk = parse.cur.peek_at(p, sn.a)
+            out.names.push(lower.cx.own(resolve.ast.text(src, tk.start, tk.stop))?)?
+            out.vals.push(fv)?
+            out.tys.push(ft)?
+        }
+    }
+    Ok(cur)
+end lower.opt.nested
+
 // match の Option / Result: `tag` で分け、中身を `payload` で読む。Some / Ok / Err の腕は真の枝、None は偽。
 fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, sc0: lower.cx.R, sloc: usize, slin: bool) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let sc = lower.opt.deref_val(env, c, sc0)?
@@ -331,6 +384,10 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
             let mut sub = 0usize
             let mut noncopy = false
             let mut bound = false
+            let mut nb = lower.opt.binds_new()
+            let mut nested = false
+            let mut early = false
+            let mut eb = 0usize
             if pat.kind == parse.ast.Kind.PVariant && resolve.ast.count(p, pat.c) == 1usize {
                 sub = resolve.ast.item(p, pat.c, 0usize)
                 let sp = parse.ast.get(&p.ast, sub)
@@ -355,10 +412,25 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                         pty = lower.tyk.bref_text(c)?
                     }
                     pv = lower.cx.def1(c, pty.as_str(), "payload ", sv)?
+                    if sp.kind == parse.ast.Kind.PBind && lower.drop.owns(env, c, pt)? {
+                        // 所有物の束縛は、条件のブロックで先に行う (Rust 版と同じ並び)。
+                        let etk = parse.cur.peek_at(p, sp.a)
+                        let ename = resolve.ast.text(src, etk.start, etk.stop)
+                        eb = lower.opt.bind(env, c, ename, pv, false, pt)?
+                        noncopy = !lower.own.is_copy(env, c, pt)
+                        early = true
+                    }
                     let tr = lower.cx.def(c, "bool", "const.bool true")?
                     let both = lower.expr.two(cond, tr)?
                     let andsrc = lower.cx.cat2("and.bool ", both.as_str())?
                     cond = lower.cx.def(c, "bool", andsrc.as_str())?
+                } else if sp.kind == parse.ast.Kind.PVariant {
+                    pt = lower.expr.tyof(c, sub)?
+                    let pty = lower.tyk.text(env, c, pt)?
+                    pv = lower.cx.def1(c, pty.as_str(), "payload ", sv)?
+                    let inner = lower.opt.nested(env, c, p, src, sp, pv, pt, &mut nb)?
+                    cond = lower.cx.def(c, "bool", lower.cx.cat2("and.bool ", lower.expr.two(cond, inner)?.as_str())?.as_str())?
+                    nested = true
                 } else {
                     lower.cx.fail(c, "match の腕 (入れ子の部分パターンは未対応)")?
                     return lower.expr.dummy(c, t)
@@ -374,7 +446,22 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                 nextbs = nextb
             }
             lower.cx.goto(c, armb)
-            if sub != 0usize {
+            if early {
+                lower.own.declare(env, c, eb, pt)?
+            }
+            let mut ni = 0usize
+            while nested && ni < nb.names.len() {
+                let nn = match nb.names.as_slice().get(ni) {
+                    Some(x) => lower.cx.own(x.as_str())?
+                    None => lower.cx.own("")?
+                }
+                let nt = lower.tyk.at(nb.tys.as_slice(), ni)
+                let nbv = lower.tyk.at(nb.vals.as_slice(), ni)
+                let nbk = lower.opt.bind(env, c, nn.as_str(), nbv, false, nt)?
+                lower.own.declare(env, c, nbk, nt)?
+                ni = ni + 1usize
+            }
+            if sub != 0usize && !nested && !early {
                 let sp = parse.ast.get(&p.ast, sub)
                 if sp.kind == parse.ast.Kind.PBind {
                     let stk_tok = parse.cur.peek_at(p, sp.a)
