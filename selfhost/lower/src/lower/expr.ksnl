@@ -799,8 +799,6 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let rty = lower.tyk.text(env, c, t)?
-    let tag_src = lower.cx.cat2("tag ", lower.cx.vs(sc.v)?.as_str())?
-    let tg = lower.cx.def(c, "i32", tag_src.as_str())?
     let lay = lower.tyk.layout(env, c, item)?
     let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
     let jb = lower.cx.blk(c, &jps)?
@@ -821,14 +819,16 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, jb, mark)?
         } else if (pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath) {
             let name = resolve.ast.text(src, pat.a, pat.b)
+            let tag_src = lower.cx.cat2("tag ", lower.cx.vs(sc.v)?.as_str())?
+            let tg = lower.cx.def(c, "i32", tag_src.as_str())?
             let vidx = lower.tyk.variant_index(env, item, lower.expr.last_seg(name))?
             let kvsrc = lower.cx.cat2("const.i32 ", lower.cx.dec(vidx)?.as_str())?
             let kv = lower.cx.def(c, "i32", kvsrc.as_str())?
             let csrc = lower.expr.two(tg, kv)?
             let cond_src = lower.cx.cat2("icmp.eq.i32 ", csrc.as_str())?
             let cond = lower.cx.def(c, "bool", cond_src.as_str())?
-            let armb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
             let nextb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
+            let armb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
             lower.expr.br_if(c, cond, armb, nextb)?
             lower.cx.goto(c, armb)
             // 変種の基点 (ペイロードの読み出しの位置) と、束縛。
