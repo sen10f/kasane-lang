@@ -203,6 +203,8 @@ impl<'a> Checker<'a> {
             // 束縛そのものへの再代入は、元の値を後始末の前に捨てる。
             "Assign" => place(&f[1]) || (nname(&f[0]) == "Path" && strs(&nf(&f[0])[0]) == [name.to_string()]),
             "Return" => place(&f[0]),
+            // 入れ子の `with` の初期化式に束縛を渡すのも move (`with b = a close ..`)。
+            "With" => place(&f[2]),
             "StructLit" => items(&f[1]).iter().any(|x| place(&items(x)[1])),
             "TupleE" | "ArrayE" => items(&f[0]).iter().any(place),
             "Block" => items(&f[0]).last().map_or(false, |s| nname(s) == "ExprStmt" && place(&nf(s)[0])),
