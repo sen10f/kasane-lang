@@ -3137,6 +3137,52 @@ impl<'a> TypeCk<'a> {
         }
     }
 
+    /// 場所式 `e` (`x` / `x.f` / `x[i]`) を可変に使う (`&mut e` / 代入) とき、根の束縛が `let mut` か `&mut` の参照でなければ E3031
+    /// (メソッド呼び出しの自動の `&mut` と同じ規則)。`*r` を通す書き込みは束縛の `mut` と無関係なので見ない。
+    fn need_mut_place(&mut self, e: &V, what: &str, line: usize) {
+        let (root, direct) = match nname(e) {
+            "Path" => {
+                let segs = strs(&nf(e)[0]);
+                (segs[0].clone(), segs.len() == 1)
+            }
+            "Field" | "Index" => {
+                let mut cur = e;
+                while matches!(nname(cur), "Field" | "Index") {
+                    cur = &nf(cur)[0];
+                }
+                match nname(cur) {
+                    "Path" => {
+                        let segs = strs(&nf(cur)[0]);
+                        (segs[0].clone(), false)
+                    }
+                    _ => return,
+                }
+            }
+            _ => return,
+        };
+        let Some(t) = self.lookup(&root) else { return };
+        if self.loose.contains(&root) || self.mutable.contains(&root) {
+            return;
+        }
+        let t = self.resolve(&t);
+        let bad = match &t {
+            Ty::Unknown | Ty::Var(_) | Ty::Never => false,
+            // `&mut x` で参照の束縛そのものを借りる形は、参照の段数が決まらない束縛があるので見ない。
+            Ty::Ref(..) if what == "borrow" && direct => false,
+            Ty::Ref(true, _) | Ty::Param(_) if !direct => false,
+            // `&mut r.f` を `r: &T` で書く形は、下の「共有参照の欄」の検査が E3031 にする。
+            Ty::Ref(false, _) if what == "borrow" && !direct && matches!(nname(e), "Field" | "Path") => false,
+            _ => true,
+        };
+        if bad {
+            self.diag(
+                "E3031",
+                format!("cannot {} `{}` as mutable: declare it with `let mut {}`", what, root, root),
+                line,
+            );
+        }
+    }
+
     /// `&mut self` のメソッドを呼ぶには、レシーバの局所変数が `let mut` か、`&mut` の参照でなければならない。
     fn need_mut(&mut self, base: &str, method: &str, line: usize) {
         let Some(t) = self.lookup(base) else { return };
@@ -3594,6 +3640,7 @@ impl<'a> TypeCk<'a> {
                 match st(&f[0]).as_str() {
                     "&" => Ty::Ref(false, Box::new(t)),
                     "&mut" => {
+                        self.need_mut_place(&f[1], "borrow", nline(e));
                         // `&mut r.f` の根 `r` が共有参照なら、共有から可変を得ることになる (E3031。`&mut self` のメソッド呼び出しと同じ)。
                         let proj = match nname(&f[1]) {
                             "Field" => true,
@@ -4057,6 +4104,36 @@ impl<'a> TypeCk<'a> {
             "Assign" => {
                 let target = self.infer(&f[0]);
                 let value = self.infer(&f[1]);
+                // 名前・フィールドへの代入は別の箇所が E3001 にする。添字の代入 `a[i] = ..` だけここで見る。
+                match nname(&f[0]) {
+                    "Index" => self.need_mut_place(&f[0], "assign to", nline(&f[0])),
+                    // 共有参照 `&T` の指す先の欄への代入 (`self.n = 1` を `self: &T` で) と、`*r = ..` を `r: &T` で。
+                    "Field" | "Path" | "Unary" => {
+                        let (root, via_deref) = match nname(&f[0]) {
+                            "Unary" if st(&nf(&f[0])[0]) == "*" && nname(&nf(&f[0])[1]) == "Path" => {
+                                (Some(strs(&nf(&nf(&f[0])[1])[0])), true)
+                            }
+                            "Unary" => (None, false),
+                            _ => (self.base_local_segs(&f[0]), false),
+                        };
+                        if let Some(segs) = root {
+                            let n = &segs[0];
+                            let direct = segs.len() == 1;
+                            if self.lookup(n).is_some() && !self.loose.contains(n) && (via_deref || !direct) {
+                                if let Some(t) = self.lookup(n) {
+                                    if matches!(self.resolve(&t), Ty::Ref(false, _)) {
+                                        self.diag(
+                                            "E3031",
+                                            format!("cannot assign through the shared reference `{}`", n),
+                                            nline(&f[0]),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 // 再代入された名前は、以後 `'static` と分かる印を外す (分岐の中の代入でも残さない)。
                 if nname(&f[0]) == "Path" {
                     let segs = strs(&nf(&f[0])[0]);
@@ -5757,6 +5834,18 @@ impl<'a> TypeCk<'a> {
     }
 
     /// 式の根にある局所変数の名前 (`v` / `s.items` → `s`)。
+    /// `x` / `x.f` / `x.f.g` の根の局所変数のパス (`Field` は根まで辿る)。
+    fn base_local_segs(&self, e: &V) -> Option<Vec<String>> {
+        match nname(e) {
+            "Path" => Some(strs(&nf(e)[0])),
+            "Field" => self.base_local_segs(&nf(e)[0]).map(|mut v| {
+                v.push(String::new());
+                v
+            }),
+            _ => None,
+        }
+    }
+
     fn base_local(&self, e: &V) -> Option<String> {
         match nname(e) {
             "Path" => {
