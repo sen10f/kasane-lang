@@ -3,22 +3,14 @@
 
 整数12種・浮動小数2種の系統的なメソッド族を、仕様書 4.1 / 4.5 の規則
 (checked_/wrapping_/saturating_、from_/try_from_/to_ の命名、FQN = core.num.<T>.<名前>) に従って列挙する。
-使い方: python -I gen_num_sig.py [--target wasm32] > spec/stdlib/core/num.sig
+使い方: python -I gen_num_sig.py > spec/stdlib/core/num.sig
 """
 import sys
-import argparse
 sys.stdout.reconfigure(encoding='utf-8', newline=chr(10))
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--target', default='host', choices=['host', 'wasm32'])
-args = parser.parse_args()
-
-# ポインタ幅: host (x86_64/aarch64) は 64bit、wasm32 は 32bit
-PTR_BITS = 32 if args.target == 'wasm32' else 64
-
 INTS = [('i8', 8, True), ('i16', 16, True), ('i32', 32, True), ('i64', 64, True), ('i128', 128, True),
-        ('isize', PTR_BITS, True), ('u8', 8, False), ('u16', 16, False), ('u32', 32, False), ('u64', 64, False),
-        ('u128', 128, False), ('usize', PTR_BITS, False)]
+        ('isize', 64, True), ('u8', 8, False), ('u16', 16, False), ('u32', 32, False), ('u64', 64, False),
+        ('u128', 128, False), ('usize', 64, False)]
 FLOATS = [('f32', 'u32', 32), ('f64', 'u64', 64)]
 TAIL = 'uses [] panics never pub'
 

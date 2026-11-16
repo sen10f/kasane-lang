@@ -119,6 +119,32 @@ fn usize_literal_range_follows_the_target() {
     assert!(!wo.to_lowercase().contains("warning"), "警告は作らない (4.5)\n{}", wo);
 }
 
+/// 配列の長さ・定数の型引数・パターンの `usize` リテラルも対象の幅で検査し、32 ビットで値を失いうる変換
+/// (`usize.from_u64`) は wasm32 では `try_from_u64` だけになる (review3 U3・U4)。
+#[test]
+fn usize_positions_and_conversions_follow_the_target() {
+    let src = "fn t.main() -> () uses [] panics never\n    let a: [u8; 4294967296] = [0u8; 4294967296]\n    let n = core.num.usize.from_u64(5u64)\n    core.mem.drop(a)\n    core.mem.drop(n)\nend t.main\n";
+    let t = Tmp::new("wasm_usize_positions", src);
+    let host = both(&run(&["check"], &t.0));
+    assert!(!host.contains("E2026") && !host.contains("E1101"), "host は 64 ビット\n{}", host);
+    let w = both(&run(&["check", "--target", TRIPLE], &t.0));
+    assert!(w.contains("E2026"), "配列の長さ 4294967296 は wasm32 の usize の範囲外\n{}", w);
+    assert!(w.contains("E1101") && w.contains("usize.from_u64"), "wasm32 に usize.from_u64 は無い\n{}", w);
+}
+
+/// wasm32 の `usize.BITS` / `usize.MAX` は 32 ビットの値で、ビルドして走らせても同じ (review3 U5)。
+#[test]
+fn usize_constants_are_32_bit_on_wasm32() {
+    if !wasm_ready() {
+        eprintln!("skipped: node / wasm-ld-20 / clang のどれかがない");
+        return;
+    }
+    let src = "fn t.main() -> () uses [] panics may\n    core.check.eq(core.num.usize.BITS, 32u32)\n    core.check.eq(core.num.usize.MAX, 4294967295usize)\n    core.check.eq(core.num.isize.MIN, -2147483648isize)\n    let r = usize.try_from_u64(4294967296u64)\n    core.check.eq(r.is_err(), true)\nend t.main\n";
+    let t = Tmp::new("wasm_usize_consts", src);
+    let w = run_wasm(&build_wasm(&t.0));
+    assert_eq!(w.status.code(), Some(0), "{}", both(&w));
+}
+
 /// 未知の三つ組は理由つきで失敗する (対応一覧を出す)。
 #[test]
 fn unknown_target_is_rejected_with_the_supported_list() {
