@@ -226,6 +226,29 @@ fn lower.tyk.field_names(env: &types.env.Env, item: usize) -> Result<alloc.vec.V
     Ok(out)
 end lower.tyk.field_names
 
+// 構造体 item のフィールド name の型 (総称でない構造体向け。見つからなければ UNKNOWN)。
+fn lower.tyk.field_ty(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, name: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(types.ty.UNKNOWN)
+    }
+    let src_r = match env.srcs.as_slice().get(file) {
+        Some(s) => s
+        None => return Ok(types.ty.UNKNOWN)
+    }
+    let src = src_r.text.as_slice()
+    let nd = parse.ast.get(&p.ast, node)
+    for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+        let fd = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+        if resolve.ast.tok_text(p, src, fd.a) == name {
+            return lower.tyk.fty(env, c, p, src, file, nd.c, fd.b)
+        }
+    }
+    Ok(types.ty.UNKNOWN)
+end lower.tyk.field_ty
+
 // 欄の型 (宣言の型の節 tn を読み、具体化の代入を当てる)。総称の名前 (gl の並び) は Param (0 から) として見せる。
 fn lower.tyk.fty(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], file: usize, gl: usize, tn: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let mark = c.tc.sc.len()

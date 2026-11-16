@@ -37,13 +37,8 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
             lower.cx.fail(c, "代入 (フィールドの基が局所でない・未対応)")?
             return Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
         }
-        let bt = lower.cx.tyof_t(c, bloc - 1usize)
-        let bv = lower.cx.get_val(c, bloc - 1usize).wrapping_sub(1usize)
         let fname = resolve.ast.tok_text(p, src, ln.b)
-        let r = lower.expr.expr(env, c, p, src, n.b, lt)?
-        let addr = lower.opt.field_addr(env, c, bv, bt, fname, lt)?
-        let so = lower.opt.two_op("store ", addr, r.v)?
-        let sv = lower.cx.def(c, "unit", so.as_str())?
+        let sv = lower.expr.field_store(env, c, p, src, bloc - 1usize, fname, n.b, lt)?
         if stmt {
             return Ok(lower.cx.R { v: sv, t: types.ty.UNIT })
         }
@@ -51,6 +46,17 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         return Ok(lower.cx.R { v: u, t: types.ty.UNIT })
     }
     let name = resolve.ast.text(src, ln.a, ln.b)
+    let (pf1, pf2) = lower.expr.split2(name)
+    if ln.kind == parse.ast.Kind.Path && pf1 != "" && lower.cx.find(c, pf1) != 0usize {
+        // `局所.フィールド = v` (名前が 2 つの Path): フィールドの番地へ書く。
+        let bloc2 = lower.cx.find(c, pf1)
+        let sv2 = lower.expr.field_store(env, c, p, src, bloc2 - 1usize, pf2, n.b, lt)?
+        if stmt {
+            return Ok(lower.cx.R { v: sv2, t: types.ty.UNIT })
+        }
+        let u2 = lower.expr.unit(c)?
+        return Ok(lower.cx.R { v: u2, t: types.ty.UNIT })
+    }
     let loc = lower.cx.find(c, name)
     if (ln.kind != parse.ast.Kind.Path || loc == 0usize) {
         lower.cx.fail(c, "代入 (局所以外への代入は未対応)")?
@@ -303,6 +309,12 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     let (n1, n2, n3) = lower.expr.split3(name)
     if n1 != "" && lower.cx.find(c, n1) != 0usize && lower.expr.is_wrap_op(n3) {
         return lower.expr.wrapping_field(env, c, p, src, (n1, n2, n3), n.b, t)
+    }
+    if n1 != "" && lower.cx.find(c, n1) != 0usize {
+        let (vr, vok) = lower.expr.vec_field_call(env, c, p, src, e, (n1, n2), n.b, t)?
+        if vok {
+            return Ok(vr)
+        }
     }
     // 解決先は型検査の表 (env の項目 + 1)。
     let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
@@ -693,6 +705,38 @@ fn lower.expr.field_src(v: usize, off: usize) -> Result<alloc.string.String<std.
     s.push_str(lower.cx.dec(off)?.as_str())?
     Ok(s)
 end lower.expr.field_src
+
+// `局所.欄 = 値`: 局所が参照かスロットなら欄の番地へ `store`、値で持つ構造体なら `setfield` で作り直して局所に束ねる。
+fn lower.expr.field_store(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], k: usize, fname: &str, rhs: usize, lt: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let bt = lower.cx.tyof_t(c, k)
+    let bv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+    let r = lower.expr.expr(env, c, p, src, rhs, lt)?
+    let (_inner, through, _m) = lower.opt.deref_ty(c, bt)
+    if !lower.cx.is_slot(c, k) && !through {
+        let (inner, _th, _mm) = lower.opt.deref_ty(c, bt)
+        let rs = types.ty.strip(&c.ar, inner)
+        let rn = types.ty.node(&c.ar, rs)
+        let j = lower.tyk.field_index(env, rn.a, fname)?
+        let lay = lower.tyk.layout(env, c, rn.a)?
+        let off = lower.tyk.at(lay.offs.as_slice(), j)
+        let ft = lower.tyk.text(env, c, lt)?
+        let bty = lower.tyk.text(env, c, bt)?
+        let _old = lower.cx.def(c, ft.as_str(), lower.expr.field_src(bv, off)?.as_str())?
+        let mut so = alloc.string.String.new(std.alloc.SYSTEM)
+        so.push_str("setfield ")?
+        so.push_str(lower.cx.vs(bv)?.as_str())?
+        so.push_str(", +")?
+        so.push_str(lower.cx.dec(off)?.as_str())?
+        so.push_str(", ")?
+        so.push_str(lower.cx.vs(r.v)?.as_str())?
+        let nv = lower.cx.def(c, bty.as_str(), so.as_str())?
+        lower.cx.set_val(c, k, nv + 1usize)?
+        return Ok(nv)
+    }
+    let addr = lower.opt.field_addr(env, c, bv, bt, fname, lt)?
+    let so = lower.opt.two_op("store ", addr, r.v)?
+    lower.cx.def(c, "unit", so.as_str())
+end lower.expr.field_store
 
 // `from_u8` の `u8` (接頭辞がなければ空)。
 fn lower.expr.from_src(nm: &str) -> &str uses [] panics may pub
@@ -1343,7 +1387,13 @@ fn lower.expr.scan(p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Ve
     if k == parse.ast.Kind.Assign && !bor {
         let ln = parse.ast.get(&p.ast, n.a)
         if ln.kind == parse.ast.Kind.Path {
-            out.push(lower.cx.own(resolve.ast.text(src, ln.a, ln.b))?)?
+            let (a1, _a2) = lower.expr.split2(resolve.ast.text(src, ln.a, ln.b))
+            if a1 != "" {
+                // `x.f = v`: x を値で持つ構造体なら `setfield` で作り直す (x も書き換わる局所)。
+                out.push(lower.cx.own(a1)?)?
+            } else {
+                out.push(lower.cx.own(resolve.ast.text(src, ln.a, ln.b))?)?
+            }
         }
         return lower.expr.scan(p, src, n.b, out, bor)
     }
@@ -1748,6 +1798,51 @@ end lower.expr.unesc
 fn lower.expr.unit(c: &mut lower.cx.Cx) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     lower.cx.def(c, "unit", "const.unit ()")
 end lower.expr.unit
+
+// `局所.欄.メソッド(..)` の欄が `Vec` / `String` のとき: 欄の番地 (`fieldaddr` + `bitcast.ptr`) を受け手に渡す。
+// 戻りの 2 つ目が false なら、この形ではない (何も出していない)。
+fn lower.expr.vec_field_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, names: (&str, &str), args: usize, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
+    let (n1, n2) = names
+    let no = lower.cx.R { v: 0usize, t: t }
+    let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
+    if it == 0usize {
+        return Ok((no, false))
+    }
+    let fqn = lower.tyk.item_fqn(env, it - 1usize)
+    if !fqn.as_str().starts_with("alloc.vec.Vec.") && !fqn.as_str().starts_with("alloc.string.String.") {
+        return Ok((no, false))
+    }
+    let k = lower.cx.find(c, n1) - 1usize
+    let bt = lower.cx.tyof_t(c, k)
+    let bv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+    let (inner, through, m) = lower.opt.deref_ty(c, bt)
+    if !through && !lower.cx.is_slot(c, k) {
+        return Ok((no, false))
+    }
+    let rs = types.ty.strip(&c.ar, inner)
+    let rn = types.ty.node(&c.ar, rs)
+    if rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef {
+        return Ok((no, false))
+    }
+    let ft = lower.tyk.field_ty(env, c, rn.a, n2)?
+    if ft == types.ty.UNKNOWN || !lower.vec.is_hdr(env, c, ft) {
+        return Ok((no, false))
+    }
+    let mutable = !through || m
+    let fa = lower.opt.field_addr_m(env, c, bv, bt, n2, ft, mutable)?
+    let fat0 = lower.cx.tyof(c, fa)
+    let bc = lower.cx.cat2("bitcast.ptr.", fat0.as_str())?
+    let bc2 = lower.cx.cat2(bc.as_str(), " ")?
+    let pv = lower.cx.def(c, "ptr", lower.cx.cat2(bc2.as_str(), lower.cx.vs(fa)?.as_str())?.as_str())?
+    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    vs.push(pv)?
+    for j in core.iter.range(0usize, resolve.ast.count(p, args)) {
+        let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, j), types.ty.UNKNOWN)?
+        vs.push(a.v)?
+    }
+    let r = lower.std_calls.method(env, c, fqn.as_str(), ft, &vs, t)?
+    Ok((r, true))
+end lower.expr.vec_field_call
 
 fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
