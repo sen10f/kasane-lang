@@ -674,6 +674,11 @@ end lower.std_calls.str_eq_inline
 // `opt.unwrap_or(d)`: Rust 版と同じ形。tag で分け、Some なら payload、None なら既定の値を、
 // join のブロックの引数で受ける。ブロックは some・none・join の順に作る。
 fn lower.std_calls.unwrap_or(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    if lower.tyk.ref_scalar(c, t) {
+        // `Option<&スカラー>` は値の `Option<スカラー>` で持つ。結果は値 (Rust 版は参照の既定値を読む) で、未対応。
+        lower.cx.fail(c, "Option<&スカラー>.unwrap_or (未対応)")?
+        return lower.expr.dummy(c, t)
+    }
     let recv = lower.tyk.at(vs.as_slice(), 0usize)
     let dflt = lower.tyk.at(vs.as_slice(), 1usize)
     let ov = lower.std_calls.val_of(env, c, recv, rty)?
