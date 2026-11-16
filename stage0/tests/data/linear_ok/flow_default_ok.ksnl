@@ -1,0 +1,84 @@
+fn t.after(s: &str, n: usize) -> &str uses [] panics never
+    core.mem.drop(n)
+    s.trim()
+end t.after
+
+fn t.channel_owned() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics never
+    match std.sync.channel(std.alloc.SYSTEM, 2usize) {
+        Ok((tx, rx)) => {
+            let s = alloc.string.String.new(std.alloc.SYSTEM)
+            core.mem.drop(tx.send(s))
+            match rx.recv() {
+                Ok(x) => std.io.print_line(x.as_str())?
+                Err(_e) => std.io.print_line("closed")?
+            }
+        }
+        Err(_e) => std.io.print_line("alloc")?
+    }
+    Ok(())
+end t.channel_owned
+
+fn t.closure_after() -> u32 uses [] panics never
+    let mut x = 1u32
+    let c = fn() -> u32 capture [&x] {
+        x
+    }
+    let pr = t.pair(c)
+    let (cf, _du) = pr
+    let seen = cf()
+    x = 2u32
+    seen.wrapping_add(x)
+end t.closure_after
+
+fn t.guarded(m: &std.sync.Mutex<u32>) -> u32 uses [thread] panics never
+    let g = m.lock()
+    let r = g.get()
+    *r
+end t.guarded
+
+fn t.main() -> () uses [] panics never
+end t.main
+
+fn t.pair[F: core.ops.Fn<(), u32, [], never>](f: F) -> (F, u32) uses [] panics never
+    (f, 0u32)
+end t.pair
+
+fn t.reborrow_sequential() -> () uses [] panics never
+    let mut a = [1u32, 2u32, 3u32, 4u32]
+    let s = &mut a
+    let left = core.slice.sub_mut(s, 0, 2usize)
+    core.mem.drop(left)
+    let right = core.slice.sub_mut(s, 1, 3usize)
+    core.mem.drop(right)
+end t.reborrow_sequential
+
+fn t.sequential_calls() -> () uses [] panics never
+    let mut a = [3u32, 1u32, 2u32]
+    let r = &mut a
+    core.slice.reverse(r)
+    core.slice.sort_unstable(r)
+    match core.slice.get_mut(r, 0usize) {
+        Some(elem) => core.mem.drop(*elem)
+        None => core.mem.drop(0u32)
+    }
+end t.sequential_calls
+
+fn t.swap2[T](a: &mut T, b: &mut T) -> () uses [] panics never
+    core.mem.swap(a, b)
+end t.swap2
+
+fn t.swapped() -> u32 uses [] panics never
+    let mut x = 1u32
+    let mut y = 2u32
+    core.mem.swap(&mut x, &mut y)
+    t.swap2(&mut x, &mut y)
+    x = x.wrapping_add(y)
+    x
+end t.swapped
+
+fn t.walk(s: &str) -> &str uses [] panics never
+    let mut r = s
+    r = t.after(r, 1usize)
+    r = t.after(r, 1usize)
+    r
+end t.walk

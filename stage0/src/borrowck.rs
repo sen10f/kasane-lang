@@ -138,6 +138,9 @@ struct Low<'a> {
     /// `let x = &<一時値>` / `match &<一時値> { .. }` で、一時値の寿命が束縛先のスコープまで
     /// 延びる変数名。`$temp` ルールで寿命切れと誤検出しないため。
     temp_extended: HashSet<String>,
+    /// 同じ分解 (`Ok((tx, rx))`) で束縛された名前の組。共有参照の受け手への保存 (`tx.send(&s)`) は、組の他の名前にも見える
+    /// (送り手と受け手は同じ領域を共有する)。
+    siblings: HashMap<String, Vec<String>>,
     /// 型が決まっていて、借用を持ち得ない束縛の名前 (スカラー・所有値)。形が分からない分解で、
     /// これ以外の束縛へは右辺の借用を配る (fail-closed)。
     plain: HashSet<String>,
@@ -592,7 +595,22 @@ impl<'a> Low<'a> {
                     .iter()
                     .enumerate()
                     .filter(|(i, _)| flow.as_ref().map_or(true, |f| f.get(*i).copied().unwrap_or(false)))
-                    .flat_map(|(_, a)| { let mut v = self.loan_sources(a); v.extend(self.lit_sources(a)); v })
+                    .flat_map(|(i, a)| {
+                        let mut v = self.loan_sources(a);
+                        v.extend(self.lit_sources(a));
+                        // 参照の仮引数に参照の変数 `s` をそのまま渡すと、暗黙の再借用 (`&mut` なら `&mut *s`、共有なら `&*s`) になる (配列からスライスへの
+                        // 変換も同じ)。戻り値が生きている間、`s` を使うと競合する。
+                        let pty = &self.p.defs[di].params.get(i).map(|p| p.1.clone());
+                        if let (Some(pty), "Path") = (pty, nname(a)) {
+                            if tag(pty) == "ref" {
+                                let mutable = matches!(tel(pty, 1), V::B(true));
+                                if let Some((root, _)) = self.place_of(a).filter(|(r, p)| p.is_empty() && self.locals.contains(r)) {
+                                    v.push(Src::Place { root, path: vec!["*".into()], mutable });
+                                }
+                            }
+                        }
+                        v
+                    })
                     .collect()
             }
             "Closure" => {
@@ -724,7 +742,7 @@ impl<'a> Low<'a> {
                     let mut v = self.loan_sources(recv);
                     // 戻り値が所有値 (借用を含まない名前付きの型) の呼び出しの結果を借りたら、一時値を借りている
                     // (`t.mk().as_str()`)。一時値は文の終わりで死ぬので、束縛して後で使うと dangling。
-                    if v.is_empty() && self.returns_owned_temp(recv) {
+                    if self.returns_owned_temp(recv) {
                         v.push(Src::Place { root: "$temp".into(), path: vec![], mutable: m });
                     }
                     v
@@ -873,7 +891,9 @@ impl<'a> Low<'a> {
             out
         };
         for (k, (_, ty)) in d.params.iter().enumerate() {
-            if !is_mut_ref(ty) {
+            // 共有参照の受け手 (`Sender.send(&self, value: T)`) も、型パラメータを共有する値の引数は
+            // 保存しうる (内部可変性)。読めない形は借用が流れるものとして扱う (仕様 4.1 の安全側)。
+            if !is_mut_ref(ty) && !(tag(ty) == "ref" && d.params.get(k).map_or(false, |p| p.0 == "self")) {
                 continue;
             }
             let rt = tps(tel(ty, 2));
@@ -933,6 +953,13 @@ impl<'a> Low<'a> {
             if srcs.is_empty() {
                 continue;
             }
+            // 共有参照の受け手への保存 (内部可変性) は、同じ分解で束縛された組 (チャネルの送り手と受け手) にも見える。
+            if recv.is_some() && tag(&d.params[0].1) == "ref" && !matches!(tel(&d.params[0].1, 1), V::B(true)) {
+                for o in self.siblings.get(&rroot).cloned().unwrap_or_default() {
+                    self.hold(c, Holder::Var(o.clone()), srcs.clone());
+                    self.hold(c, Holder::Place { root: o, path: vec![] }, srcs.clone());
+                }
+            }
             self.hold(c, Holder::Var(rroot.clone()), srcs.clone());
             self.hold(c, Holder::Place { root: rroot, path: vec![] }, srcs);
         }
@@ -947,6 +974,64 @@ impl<'a> Low<'a> {
                 continue;
             }
             self.bind_receiver_arg_borrow(c, di, args, Some(root.to_string()));
+        }
+    }
+
+    /// `&mut` の仮引数に参照の変数 `s` をそのまま渡す呼び出しは、`*s` の暗黙の再借用 (`&mut *s`) なので、
+    /// `*s` を借りている借用 (`let f = core.slice.first(s)`) が生きている間は E3010 になる。
+    fn reborrow_mut_args(&mut self, c: usize, di: usize, args: &[V], line: usize) {
+        let mut evs = vec![];
+        for (i, a) in args.iter().enumerate() {
+            let Some((_, pty)) = self.p.defs[di].params.get(i) else { continue };
+            if tag(pty) != "ref" || !matches!(tel(pty, 1), V::B(true)) || nname(a) != "Path" {
+                continue;
+            }
+            if let Some((root, path)) = self.place_of(a) {
+                if path.is_empty() && self.locals.contains(&root) {
+                    // 他の引数に変数がある呼び出し (`record(c, "", why)` の `why` が `c` の欄から借りている) は、変数が呼び出しの
+                    // 引数として渡る借用なので、`*s` 全体 (再借用) との競合だけを見る (`selfhost/lower` の形を拒まない)。
+                    let others = args.iter().enumerate().any(|(j, b)| j != i && nname(b) == "Path" && self.place_of(b).map_or(false, |(r, _)| self.locals.contains(&r)));
+                    let p = if others { vec!["*".to_string()] } else { vec![] };
+                    evs.push(Ev::Access { root, path: p, kind: Acc::MutB, line });
+                }
+            }
+        }
+        for ev in evs {
+            self.emit(c, ev);
+        }
+    }
+
+    /// `fn swap2[T](a: &mut T, b: &mut T)` のように、同じ型パラメータそのものを指す `&mut` の引数が 2 つ以上ある呼び出しは、
+    /// 本体が見えなくても中身を入れ替えうる (`core.mem.swap` と同じ)。引数の場所のあいだで借用を足し合う (fail-closed)。
+    fn mix_mut_args(&mut self, c: usize, di: usize, args: &[V]) {
+        let d = &self.p.defs[di];
+        let names = Self::type_param_names(d);
+        let bare = |ty: &V| -> Option<String> {
+            if tag(ty) != "ref" || !matches!(tel(ty, 1), V::B(true)) {
+                return None;
+            }
+            match tel(ty, 2) {
+                V::L(parts) if parts.len() == 3 && matches!(&parts[0], V::S(a) if a == "named") => match &parts[1] {
+                    V::S(n) if names.contains(n) => Some(n.clone()),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let ks: Vec<(usize, String)> = d.params.iter().enumerate().filter_map(|(i, (_, t))| bare(t).map(|n| (i, n))).collect();
+        let mut evs = vec![];
+        for (x, (i, ni)) in ks.iter().enumerate() {
+            for (j, nj) in &ks[x + 1..] {
+                if ni != nj {
+                    continue;
+                }
+                if let (Some(a), Some(b)) = (args.get(*i).and_then(|a| self.mut_place_arg(a)), args.get(*j).and_then(|a| self.mut_place_arg(a))) {
+                    evs.push(Ev::Mix { a, b });
+                }
+            }
+        }
+        for ev in evs {
+            self.emit(c, ev);
         }
     }
 
@@ -1032,7 +1117,23 @@ impl<'a> Low<'a> {
     /// 部分パターンごとに対応する要素・フィールドの借用だけを持たせる (コピー値の要素は黙る)。
     /// 道が分からない形 (関数の戻り値などを分解する `let (a, n) = t.f(&x)`) は何もしない (`false` を返す。
     /// 呼び出し側が従来の読み戻しに任せる)。右辺全体の借用を全束縛に配ることはしない (誤検出を出さない)。
+    fn register_siblings(&mut self, pat: &V) {
+        let mut bs = vec![];
+        pat_binds(pat, &mut bs);
+        if bs.len() >= 2 {
+            for b in &bs {
+                let e = self.siblings.entry(b.clone()).or_default();
+                for o in &bs {
+                    if o != b && !e.contains(o) {
+                        e.push(o.clone());
+                    }
+                }
+            }
+        }
+    }
+
     fn hold_pat(&mut self, n: usize, pat: &V, e: &V) -> bool {
+        self.register_siblings(pat);
         match nname(pat) {
             "PTuple" => {
                 let subs = items(&nf(pat)[0]);
@@ -1125,7 +1226,12 @@ impl<'a> Low<'a> {
                 pat_binds(pat, &mut binds);
                 // 道の先の要素だけを写す。根の変数が直接持つローン (`let p = f(&x)` の p) は、
                 // 要素の道が分からないので束縛へ配らない (コピー値の要素に借用を付けて誤検出しないため)。
+                // ただし根の変数が、呼び出しの戻り値のように道の分からない借用を持つとき (`let pr = t.pair(c); let (f, _) = pr`)
+                // は、借用を持ち得ないと分かる束縛 (`plain`) 以外へ根の借用を配る (仕様 4.1: 読めない流れは流れる)。
                 for b in binds {
+                    if !self.plain.contains(&b) && b != root && self.locals.contains(root) {
+                        self.emit(n, Ev::Alias { to: Holder::Var(b.clone()), from: Holder::Var(root.to_string()) });
+                    }
                     self.emit(n, Ev::Peek { to: Holder::Var(b), root: root.to_string(), path: path.to_vec() });
                 }
             }
@@ -1655,6 +1761,7 @@ impl<'a> Low<'a> {
             moves: self.moves.clone(),
             locals,
             temp_extended: HashSet::new(),
+            siblings: HashMap::new(),
             plain: self.plain.clone(),
             owned: self.owned.clone(),
             nonref: self.nonref.clone(),
@@ -1882,6 +1989,7 @@ impl<'a> Low<'a> {
                     self.edge(c, an);
                     let mut binds = vec![];
                     pat_binds(&a[0], &mut binds);
+                    self.register_siblings(&a[0]);
                     // `match <一時値を含む式> { .. }` では、腕の束縛が持つ一時値の寿命が
                     // `match` 全体の終わりまで延びる (仕様 4.2)。
                     if self.has_temp(&f[0]) {
@@ -2063,6 +2171,8 @@ impl<'a> Low<'a> {
                 let c = self.lower_args_held(args, cur, &mut temps);
                 if let Some(di) = di {
                     self.bind_receiver_arg_borrow(c, di, args, None);
+                    self.mix_mut_args(c, di, args);
+                    self.reborrow_mut_args(c, di, args, nline(e));
                 }
                 self.end_temps(c, temps);
                 if self.call_suspends(callee) || self.susp.contains(&(self.cur, nline(e))) {
@@ -3571,6 +3681,7 @@ impl<'a> Checker<'a> {
             scope_stack: vec![],
             scope_seed,
             temp_extended: HashSet::new(),
+            siblings: HashMap::new(),
             plain,
             owned,
             nonref,
@@ -3771,6 +3882,17 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
             };
             let mut all = under(st_, &a.0, &a.1);
             all.extend(under(st_, &b.0, &b.1));
+            // 変数そのものを入れ替える (`swap(&mut rx, &mut ry)`、`rx: &mut u32`): 変数が持つ借用も互いに入れ替わる。
+            if a.1.is_empty() && b.1.is_empty() {
+                for r in [&a.0, &b.0] {
+                    if let Some(v) = st_.holders.get(&Holder::Var(r.clone())) {
+                        all.extend(v.iter().copied());
+                    }
+                }
+                for r in [&a.0, &b.0] {
+                    st_.holders.entry(Holder::Var(r.clone())).or_default().extend(all.iter().copied());
+                }
+            }
             if !all.is_empty() {
                 st_.holders
                     .entry(Holder::Place { root: a.0.clone(), path: a.1.clone() })
@@ -3912,6 +4034,14 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                     for &id in ids {
                         let l = &low.loans[id];
                         if &l.root != root || !overlaps(&l.path, path) {
+                            continue;
+                        }
+                        // 参照の変数自身が、自分の指す先の再借用を持つ (`s = t.step(s)`) のは自己競合ではない。
+                        if matches!(holder, Holder::Var(v) if v == root) && l.path.first().map_or(false, |x| x == "*") {
+                            continue;
+                        }
+                        // 共有の再借用 `&*r` が生きていても、参照の変数そのものへの代入 (`rest = tail`) は競合しない。
+                        if *kind == Acc::Write && path.is_empty() && !l.mutable && l.path.first().map_or(false, |x| x == "*") {
                             continue;
                         }
                         let who = match holder {

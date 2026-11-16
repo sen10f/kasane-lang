@@ -1,0 +1,12 @@
+// expect: E3010
+fn t.main() -> () uses [] panics never
+    let mut a = [1u32, 2u32, 3u32]
+    let s = &mut a
+    match core.slice.get_mut(s, 0usize) {
+        Some(r) => {
+            core.mem.drop(s.sub_mut(1, 2))
+            core.mem.drop(*r)
+        }
+        None => core.mem.drop(0u32)
+    }
+end t.main

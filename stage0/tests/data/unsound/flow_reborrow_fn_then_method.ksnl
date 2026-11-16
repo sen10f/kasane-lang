@@ -1,0 +1,11 @@
+// expect: E3010
+fn t.main() -> () uses [] panics never
+    let mut v = [1u8, 2u8, 3u8]
+    let s = &mut v
+    let r = core.slice.get_mut(s, 0usize)
+    s.reverse()
+    match r {
+        Some(x) => core.mem.drop(*x)
+        None => core.mem.drop(0u8)
+    }
+end t.main

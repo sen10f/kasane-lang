@@ -1,0 +1,18 @@
+// expect: E3010
+fn t.bad() -> u32 uses [] panics never
+    let mut x = 1u32
+    let c = fn() -> u32 capture [&x] {
+        x
+    }
+    let pr = t.pair(c)
+    let (cf, _du) = pr
+    x = 2u32
+    cf()
+end t.bad
+
+fn t.main() -> () uses [] panics never
+end t.main
+
+fn t.pair[F: core.ops.Fn<(), u32, [], never>](f: F) -> (F, u32) uses [] panics never
+    (f, 0u32)
+end t.pair

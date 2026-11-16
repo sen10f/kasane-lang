@@ -1,0 +1,13 @@
+// expect: E3010
+fn t.main() -> () uses [] panics never
+    let mut a = [1u32, 2u32, 3u32, 4u32]
+    let s = &mut a
+    let l = t.pick(s)
+    let r = t.pick(s)
+    core.mem.drop(l)
+    core.mem.drop(r)
+end t.main
+
+fn t.pick(x: &mut [u32]) -> Option<&mut u32> uses [] panics never
+    core.slice.get_mut(x, 0usize)
+end t.pick
