@@ -1154,6 +1154,68 @@ fn lower.expr.loopx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     Ok(lower.cx.R { v: u, t: t })
 end lower.expr.loopx
 
+// 整数の `match` (リテラルの腕と `_`): 腕ごとに `icmp.eq` で比べ、外れたら次の腕へ。
+// ブロックは腕ごとに (次の腕・この腕の本体) の順。`_` の腕では、行き止まりの `unreachable` のブロックだけ作り、
+// 本体は今のブロック (前の腕の外れた先) に下ろす (Rust 版と同じ並び)。
+fn lower.expr.matchint(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, sc: lower.cx.R, base: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
+    let saved = lower.cx.cur_vals(c, &ks)?
+    let rty = lower.tyk.text(env, c, t)?
+    let sty = lower.tyk.text(env, c, sc.t)?
+    let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
+    let jb = lower.cx.blk(c, &jps)?
+    let nv = resolve.ast.count(p, n.b)
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for j in core.iter.range(0usize, nv) {
+        let arm = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, j))
+        let pat = parse.ast.get(&p.ast, arm.a)
+        let mark = lower.cx.depth(c)
+        if pat.kind == parse.ast.Kind.PWild {
+            let dead = lower.cx.blk(c, &empty)?
+            let here = c.s.cur
+            lower.cx.goto(c, dead)
+            lower.cx.finish(c, lower.cx.own("unreachable")?)?
+            lower.cx.goto(c, here)
+            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
+            lower.cx.goto(c, jb)
+            lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
+            if rty.as_str() == "unit" {
+                let u = lower.expr.unit(c)?
+                return Ok(lower.cx.R { v: u, t: t })
+            }
+            let rv = lower.tyk.at(jps.as_slice(), 0usize)
+            return Ok(lower.cx.R { v: rv, t: t })
+        }
+        if pat.kind != parse.ast.Kind.PLit {
+            let kn = parse.ast.kind_name(pat.kind)
+            lower.cx.fail(c, lower.cx.cat2("match の腕 (未対応の形): ", kn)?.as_str())?
+            return lower.expr.dummy(c, t)
+        }
+        let ln = parse.ast.get(&p.ast, pat.a)
+        let kv = lower.expr.lit(env, c, p, src, ln, sc.t)?
+        let cs = lower.cx.cat2("icmp.eq.", sty.as_str())?
+        let cs2 = lower.cx.cat2(cs.as_str(), " ")?
+        let cond = lower.cx.def(c, "bool", lower.cx.cat2(cs2.as_str(), lower.expr.two(sc.v, kv.v)?.as_str())?.as_str())?
+        let nextb = lower.cx.blk(c, &empty)?
+        let armb = lower.cx.blk(c, &empty)?
+        lower.expr.br_if(c, cond, armb, nextb)?
+        lower.cx.goto(c, armb)
+        lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
+        lower.cx.goto(c, nextb)
+    }
+    lower.cx.finish(c, lower.cx.own("unreachable")?)?
+    lower.cx.goto(c, jb)
+    lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
+    if rty.as_str() == "unit" {
+        let u = lower.expr.unit(c)?
+        return Ok(lower.cx.R { v: u, t: t })
+    }
+    let rv = lower.tyk.at(jps.as_slice(), 0usize)
+    Ok(lower.cx.R { v: rv, t: t })
+end lower.expr.matchint
+
 // match (列挙型のみ): 変種の番号をタグで比べる。変種の中の PBind は `field` で読む。
 fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
@@ -1173,6 +1235,9 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     let sc = lower.opt.deref_val(env, c, sc0)?
     let ss = types.ty.strip(&c.ar, sc.t)
     let sn = types.ty.node(&c.ar, ss)
+    if sn.k == types.ty.K.Int {
+        return lower.expr.matchint(env, c, p, src, n, t, sc, base)
+    }
     if (sn.k != types.ty.K.Adt || types.infer.item_kind(env, sn.a) != parse.ast.Kind.EnumDef) {
         lower.cx.fail(c, "match (列挙型以外は未対応)")?
         return lower.expr.dummy(c, t)
