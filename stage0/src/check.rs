@@ -2100,6 +2100,31 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 定数ジェネリック実引数の範囲検査 (整数リテラル)。宣言の型に合うか見る (E2026)。
+    fn check_const_targ(&mut self, type_name: &str, arg_index: usize, targ: &V, di: usize, line: usize) {
+        // `targ` は `["const", value]` の形。value が整数リテラル (`V::N`) なら検査する。
+        let V::L(fs) = targ else { return };
+        if fs.len() < 2 || st(&fs[0]) != "const" { return; }
+        let val = &fs[1];
+        // 宣言されたジェネリックパラメータの型を引く。
+        let Some(&ti) = self.p.types.get(type_name) else { return; };
+        let d = self.def(ti);
+        let generics: Vec<&(String, String, V)> = d.generics.iter().filter(|g| g.0 == "const").collect();
+        if arg_index >= generics.len() { return; }
+        let (_, _, param_ty) = generics[arg_index];
+        // パラメータの型が整数の基本型なら、その範囲で検査する。
+        let prim_name = if tag(param_ty) == "prim" { Some(st(tel(param_ty, 1))) } else { None };
+        if let Some(ty) = prim_name {
+            if INT_PRIMS.contains(&ty.as_str()) {
+                if let V::N(text) = val {
+                    if let Some(msg) = crate::types::int_literal_problem(text, &ty) {
+                        self.diag("E2026", msg, di, line);
+                    }
+                }
+            }
+        }
+    }
+
     fn ty_names(&mut self, t: &V, di: usize, names: &HashSet<String>, line: usize) {
         match tag(t).as_str() {
             "named" => {
@@ -2129,6 +2154,9 @@ impl<'a> Checker<'a> {
                         }
                     } else if matches!(tag(a).as_str(), "named" | "ref" | "tuple" | "array" | "slice" | "prim") {
                         self.ty_names(a, di, names, line);
+                    } else if tag(a) == "const" {
+                        // 定数ジェネリック実引数 (整数リテラル・真偽値・文字) の範囲検査。
+                        self.check_const_targ(&nm, k, a, di, line);
                     }
                 }
             }
@@ -2138,7 +2166,16 @@ impl<'a> Checker<'a> {
             }
             "ref" if tag(tel(t, 2)) == "dyn" => self.check_dyn_types(tel(tel(t, 2), 1), di),
             "ref" | "ptr" => self.ty_names(tel(t, 2), di, names, line),
-            "slice" | "array" => self.ty_names(tel(t, 1), di, names, line),
+            "slice" => self.ty_names(tel(t, 1), di, names, line),
+            "array" => {
+                self.ty_names(tel(t, 1), di, names, line);
+                // 配列型 `[T; N]` の長さ `N` (整数リテラル) が `usize` の範囲に収まるか検査する (E2026)。
+                if let V::N(text) = tel(t, 2) {
+                    if let Some(msg) = crate::types::int_literal_problem(&text, "usize") {
+                        self.diag("E2026", msg, di, line);
+                    }
+                }
+            }
             "tuple" => {
                 for x in items(tel(t, 1)) {
                     self.ty_names(x, di, names, line);
@@ -5559,6 +5596,23 @@ impl<'a> Checker<'a> {
                     let mut typed: Vec<(String, V)> = vec![];
                     if !is_nil(&sty) {
                         self.bind_pat_types(&items(arm)[0], &sty, &mut typed);
+                        // リテラルパターン (整数リテラル) の範囲検査 (E2026)。
+                        let pat = &items(arm)[0];
+                        if nname(pat) == "PLit" {
+                            let lit = &nf(pat)[0];
+                            if st(&nf(lit)[0]) == "int" {
+                                let text = st(&nf(lit)[1]);
+                                let expected_ty = self.strip(&sty);
+                                if tag(&expected_ty) == "prim" {
+                                    let prim_name = st(tel(&expected_ty, 1));
+                                    if INT_PRIMS.contains(&prim_name.as_str()) {
+                                        if let Some(msg) = crate::types::int_literal_problem(&text, &prim_name) {
+                                            self.diag("E2026", msg, self.d, nline(pat));
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         self.lin_wild(&typed, nline(&items(arm)[0]));
                         self.lin_wild_top(&items(arm)[0], &sty, nline(&items(arm)[0]));
                     }

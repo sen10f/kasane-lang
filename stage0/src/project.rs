@@ -717,6 +717,35 @@ pub fn stdlib_dir() -> PathBuf {
     PathBuf::from("spec/stdlib")
 }
 
+/// 32 ビットのターゲット (wasm32) の `core/num.sig`: `usize` / `isize` の定数を 32 ビットの値にし、
+/// 32 ビットでは値を失いうる変換 (`usize.from_u64`・`isize.from_i64`・`isize.from_u32`) を `try_from_` にする。
+/// 64 ビット用に生成した文面 (`spec/tools/gen_num_sig.py`) を、その行だけ書き換える。
+fn num_sig_32(text: &str) -> String {
+    let fixed = [
+        ("const core.num.usize.BITS:", "const core.num.usize.BITS: u32 = 32u32 pub"),
+        ("const core.num.usize.MAX:", "const core.num.usize.MAX: usize = 4294967295usize pub"),
+        ("const core.num.isize.BITS:", "const core.num.isize.BITS: u32 = 32u32 pub"),
+        ("const core.num.isize.MAX:", "const core.num.isize.MAX: isize = 2147483647isize pub"),
+        ("const core.num.isize.MIN:", "const core.num.isize.MIN: isize = -2147483648isize pub"),
+    ];
+    let lossy = [("usize", "u64"), ("isize", "i64"), ("isize", "u32")];
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let mut l = line.to_string();
+        if let Some((_, new)) = fixed.iter().find(|(p, _)| line.starts_with(p)) {
+            l = new.to_string();
+        }
+        for (t, m) in lossy {
+            if line.starts_with(&format!("fn core.num.{t}.from_{m}(")) {
+                l = format!("fn core.num.{t}.try_from_{m}(x: {m}) -> Result<{t}, core.num.TryFromIntError> uses [] panics never pub");
+            }
+        }
+        out.push_str(&l);
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 pub fn walk_files_for_test(root: &Path, exts: &[&str], out: &mut Vec<PathBuf>) {
     walk_files(root, exts, out)
@@ -734,7 +763,7 @@ pub fn load_stdlib() -> Vec<Source> {
         ps.extend(fs.into_iter().map(|p| (k, p)));
     }
     // 文面は先にまとめて読む (読み込み用の overlay (`--watch` / LSP) があればそちらが優先。`Source::load` と同じ)。
-    let texts: Vec<(String, String)> = ps
+    let mut texts: Vec<(String, String)> = ps
         .iter()
         .map(|(_, p)| {
             let t = match overlay_get(p) {
@@ -747,6 +776,11 @@ pub fn load_stdlib() -> Vec<Source> {
             (p.clone(), t)
         })
         .collect();
+    if crate::ptrwidth::bits() == 32 {
+        for (p, t) in texts.iter_mut().filter(|(p, _)| p.ends_with("core/num.sig")) {
+            *t = num_sig_32(t);
+        }
+    }
     // 構文解析の結果は実行体の識別子と全文面を鍵にして保存してある (stdcache.rs)。命中すれば構文解析しない。
     let use_cache = crate::check_cache::enabled();
     let key = if use_cache { Some(crate::stdcache::key(&texts)) } else { None };
