@@ -716,7 +716,8 @@ fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     br.push_str(", ")?
     br.push_str(lower.cx.target(eb, &empty)?.as_str())?
     lower.cx.finish(c, br)?
-    // then
+    // then (else の入口で局所の値を戻すため、今の値を覚える)
+    let saved = lower.cx.cur_vals(c, &ks)?
     lower.cx.goto(c, tb)
     let tr = lower.expr.expr(env, c, p, src, n.b, t)?
     let then_term = c.s.term
@@ -727,6 +728,7 @@ fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     }
     // else
     lower.cx.goto(c, eb)
+    lower.cx.bind_vals(c, &ks, &saved)?
     let mut er = lower.cx.R { v: 0usize, t: t }
     if n.c != 0usize {
         er = lower.expr.expr(env, c, p, src, n.c, t)?
