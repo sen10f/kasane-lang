@@ -1,0 +1,26 @@
+fn t.h(b: bool) -> i32 uses [] panics never
+    if let true = b {
+        1i32
+    } else {
+        3i32
+    }
+end t.h
+
+fn t.main() -> i32 uses [] panics never
+    let m = usize.MAX
+    let k = core.num.usize.MAX
+    let w = usize.BITS
+    if m == k && w > 0u32 {
+        t.h(true).wrapping_add(t.pair((1i32, false)))
+    } else {
+        0i32
+    }
+end t.main
+
+fn t.pair(p: (i32, bool)) -> i32 uses [] panics never
+    if let (n, false) = p {
+        n
+    } else {
+        0i32
+    }
+end t.pair
