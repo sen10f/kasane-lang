@@ -377,26 +377,31 @@ fn closure_msg() -> String {
 /// 推論で決まった型 (`let v = Vec::new(); v.push(&x)` の `Vec<&u32>`) が、容れ物に参照を入れているか。
 /// 型には領域が残らないので、静的な文字列・配列の可能性が高い `&str` / `&[T]` は見逃す
 /// (`&'static` かどうかは書かれた型だけが決める。流れは `borrowck.rs` の E3010 が見る)。
-pub fn inferred_container_ref(ty: &Ty) -> Option<String> {
-    fn has_ref(ty: &Ty) -> bool {
+pub fn inferred_container_ref(ty: &Ty) -> Option<(String, bool)> {
+    /// 戻り値の真偽: Some(weak)。weak = 参照の先が `str` / スライス / 配列だけ (リテラルなら `'static` でありうる)。
+    fn has_ref(ty: &Ty) -> Option<bool> {
         match ty {
-            Ty::Ref(_, inner) => !matches!(**inner, Ty::Prim(ref s) if s == "str" ) && !matches!(**inner, Ty::Slice(_) | Ty::Array(_, _)),
-            Ty::Tuple(xs) => xs.iter().any(has_ref),
+            Ty::Ref(_, inner) => Some(matches!(**inner, Ty::Prim(ref s) if s == "str") || matches!(**inner, Ty::Slice(_) | Ty::Array(_, _))),
+            Ty::Tuple(xs) => xs.iter().filter_map(has_ref).fold(None, |a, w| Some(a.unwrap_or(true) && w)),
             Ty::Named(n, args) => {
                 let last = n.rsplit('.').next().unwrap_or("");
                 let segs: Vec<&str> = n.split('.').collect();
-                let rc = segs.len() >= 2 && RC_STD.iter().any(|(m, k)| segs[segs.len() - 2] == *m && last == *k);
-                rc || args.iter().any(has_ref)
+                if segs.len() >= 2 && RC_STD.iter().any(|(m, k)| segs[segs.len() - 2] == *m && last == *k) {
+                    return Some(false);
+                }
+                args.iter().filter_map(has_ref).fold(None, |a, w| Some(a.unwrap_or(true) && w))
             }
             Ty::Array(x, _) | Ty::Slice(x) => has_ref(x),
-            _ => false,
+            _ => None,
         }
     }
     match ty {
         Ty::Named(n, args) => {
             let last = n.rsplit('.').next().unwrap_or("");
-            if CONTAINERS.contains(&last) && args.iter().any(has_ref) {
-                return Some(last.to_string());
+            if CONTAINERS.contains(&last) {
+                if let Some(w) = args.iter().filter_map(has_ref).fold(None, |a, w| Some(a.unwrap_or(true) && w)) {
+                    return Some((last.to_string(), w));
+                }
             }
             args.iter().find_map(inferred_container_ref)
         }
@@ -406,12 +411,44 @@ pub fn inferred_container_ref(ty: &Ty) -> Option<String> {
     }
 }
 
+/// `name.push(..)` / `insert` / `push_back` / `push_front` の引数がすべて文字列リテラルで始まり、1 回以上ある
+/// (= 入る参照が `'static` だと示せる)。
+fn static_stores_only(toks: &[Tok], name: &str) -> bool {
+    let mut n = 0;
+    let mut i = 0;
+    while i + 4 < toks.len() {
+        if is_path_tok(&toks[i]) && toks[i].text == name && is_op(&toks[i + 1], ".") && matches!(toks[i + 2].text.as_str(), "push" | "insert" | "push_back" | "push_front") && is_op(&toks[i + 3], "(") {
+            let close = skip_group(toks, i + 3);
+            // 最上位の引数ごとの先頭の語 (最初の引数が `&alloc` などのアロケータ引数でも、最後の引数を見る)
+            let mut depth = 0;
+            let mut starts = vec![i + 4];
+            for k in i + 4..close.saturating_sub(1) {
+                if toks[k].kind == "op" && matches!(toks[k].text.as_str(), "(" | "[" | "{" | "<") {
+                    depth += 1;
+                } else if toks[k].kind == "op" && matches!(toks[k].text.as_str(), ")" | "]" | "}" | ">") {
+                    depth -= 1;
+                } else if depth == 0 && is_op(&toks[k], ",") {
+                    starts.push(k + 1);
+                }
+            }
+            let last = *starts.last().unwrap();
+            if last >= toks.len() || toks[last].kind != "str" {
+                return false;
+            }
+            n += 1;
+        }
+        i += 1;
+    }
+    n > 0
+}
+
 /// 利用者の定義 (`user`) を検査する。`let_tys` は推論済みの `let` の型 (`(定義, 行, 名前)`)。
 pub fn check(p: &Program, user: &[usize], let_tys: &HashMap<(usize, usize, String), Ty>) -> Vec<Hit> {
     let generic = user_generic_names(p, user);
     let mut cache: HashMap<String, Option<Vec<String>>> = HashMap::new();
     let mut out: Vec<Hit> = Vec::new();
     let mut flagged: HashSet<(usize, usize)> = HashSet::new();
+    let mut toks_of: HashMap<usize, Vec<Tok>> = HashMap::new();
     for &di in user {
         let d = &p.defs[di];
         if d.file.ends_with(".sig") || d.line == 0 {
@@ -425,6 +462,7 @@ pub fn check(p: &Program, user: &[usize], let_tys: &HashMap<(usize, usize, Strin
         }
         let text = lines[d.line - 1..end.min(lines.len())].join("\n") + "\n";
         let Ok(toks) = lex(&text) else { continue };
+        toks_of.insert(di, toks.clone());
         let mut sc = Scan { toks, base_line: d.line, di, user_generic: &generic, out: Vec::new(), seen: HashSet::new() };
         match d.kw.as_str() {
             "type" | "enum" => sc.type_decl(&d.name),
@@ -447,13 +485,16 @@ pub fn check(p: &Program, user: &[usize], let_tys: &HashMap<(usize, usize, Strin
             continue;
         }
         let ty = &let_tys[&(*di, *line, name.clone())];
-        if let Some(c) = inferred_container_ref(ty) {
+        if let Some((c, weak)) = inferred_container_ref(ty) {
+            if weak && toks_of.get(di).map_or(false, |t| static_stores_only(t, name)) {
+                continue;
+            }
             out.push(Hit {
                 di: *di,
                 pos: *line,
                 msg: format!(
-                    "`{}` has the inferred type `{}<..>` holding a reference (references are second-class values); use an owned value or an index",
-                    name, c
+                    "`{}` has the inferred type `{}<..>` holding a reference (references are second-class values) and `'static` cannot be shown; annotate it (`let {}: alloc.vec.Vec<&'static str, ..> = ..`, only for string literals and `'static` data) or hold an owned value (`String`) or an index",
+                    name, c, name
                 ),
             });
         }
