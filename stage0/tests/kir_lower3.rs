@@ -2834,6 +2834,25 @@ fn kir_borrow_annotations_do_not_change_execution() {
     assert_eq!(kir_bc(&t.0), Some(vec![]));
 }
 
+/// 入れ子の欄への代入 `self.inner.snd = v` は、欄の宣言の領域 (型引数を代入したもの) で見る。
+/// `snd: &'b u32` に `&'b` の値は通り (誤検出なし)、`&'a` の値は E3010。
+#[test]
+fn kir_borrowck_nested_field_store_uses_declared_region() {
+    let mk = |lt: &str, field: &str| {
+        format!(
+            "type t.Pair['a, 'b]\n    fst: &'a u32\n    snd: &'b u32\nend t.Pair\n\ntype t.Outer['a, 'b]\n    inner: t.Pair<'a, 'b>\nend t.Outer\n\nfn t.Outer.set['a, 'b](self: &mut t.Outer<'a, 'b>, v: &'{lt} u32, _y: &mut t.Outer<'a, 'b>) -> () uses [] panics never\n    self.inner.{field} = v\nend t.Outer.set\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let a = 1u32\n    let b = 2u32\n    let mut p1 = t.Outer {{ inner: t.Pair {{ fst: &a, snd: &b }} }}\n    let mut p2 = t.Outer {{ inner: t.Pair {{ fst: &a, snd: &b }} }}\n    t.Outer.set(&mut p1, &{v}, &mut p2)\n    core.mem.drop(p1)\n    core.mem.drop(p2)\n    Ok(())\nend t.main\n",
+            lt = lt,
+            field = field,
+            v = if lt == "a" { "a" } else { "b" }
+        )
+    };
+    for (i, (lt, field, ok)) in [("b", "snd", true), ("a", "fst", true), ("a", "snd", false), ("b", "fst", false)].into_iter().enumerate() {
+        let t = Tmp::new(&format!("kirbc_nested_store_{}", i), &mk(lt, field));
+        let c = kir_bc(&t.0).unwrap_or_else(|| panic!("{}.{} must be lowerable", lt, field));
+        assert_eq!(c.is_empty(), ok, "v: &'{} stored into inner.{}: KIR codes {:?}", lt, field, c);
+    }
+}
+
 /// 第 2 段で解けるようになった不一致 (move 中の借用・ブロックを出る借用・文の終わりの一時値) は KIR の検査が止める。
 #[test]
 fn kir_borrowck_stage2_catches_scope_and_move_cases() {
