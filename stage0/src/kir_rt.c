@@ -151,7 +151,7 @@ static const char *ksn_fmt(double f, int is32, char *out) {
 const char *ksn_fmt_f64(double f) { return ksn_fmt(f, 0, ksn_fbuf[0]); }
 const char *ksn_fmt_f32(float f) { return ksn_fmt((double)f, 1, ksn_fbuf[1]); }
 
-/* 書式化した文字列を `dst` (32 バイト以上) へ複写し、長さを返す (`String` へ追記する `Display` 用)。 */
+/* 書式化した文字列を `dst` (512 バイト以上) へ複写し、長さを返す (`String` へ追記する `Display` 用)。 */
 long long ksn_fmt_f64_to(double f, char *dst) {
     const char *s = ksn_fmt_f64(f);
     size_t n = strlen(s);

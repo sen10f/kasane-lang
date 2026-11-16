@@ -652,6 +652,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     }
     if cx.write {
         out.push_str(&write_helper(&m.aggs)?);
+        out.push_str(&writeln_helper());
     }
     if cx.eprint {
         out.push_str(&eprint_helper());
@@ -814,6 +815,15 @@ fn write_helper(aggs: &[AggDef]) -> R<String> {
     }
     s.push_str(&format!("  %ez = zext i32 %e to i64\n  %eh = shl i64 %ez, 32\n  %r = or i64 %eh, {cur}\n  ret i64 %r\n}}\n\n"));
     Ok(s)
+}
+
+/// `write.nl` の実体 `@ksn.writeln(fd, ptr, len) -> i64`: 本文と改行を 1 回の `write(2)` で出す (スレッド同士で 1 行が混ざらない)。
+/// 4096 バイト未満なら枠へ複写して 1 回で書く。それ以上は 2 回に分ける (Rust の `println` も巨大な行は途中で切れうる)。結果は `@ksn.write` と同じ。
+fn writeln_helper() -> String {
+    let z = size_ty();
+    format!(
+        "define private i64 @ksn.writeln(i32 %fd, ptr %p, {z} %n) {{\nentry:\n  %small = icmp ult {z} %n, 4096\n  br i1 %small, label %one, label %two\none:\n  %m = add {z} %n, 1\n  %buf = alloca i8, {z} %m\n  call void @llvm.memcpy.p0.p0.{z}(ptr %buf, ptr %p, {z} %n, i1 false)\n  %e = getelementptr i8, ptr %buf, {z} %n\n  store i8 10, ptr %e\n  %r1 = call i64 @ksn.write(i32 %fd, ptr %buf, {z} %m)\n  ret i64 %r1\ntwo:\n  %r2 = call i64 @ksn.write(i32 %fd, ptr %p, {z} %n)\n  %bad = icmp ne i64 %r2, 0\n  br i1 %bad, label %fail, label %nl\nfail:\n  ret i64 %r2\nnl:\n  %nlb = alloca i8\n  store i8 10, ptr %nlb\n  %r3 = call i64 @ksn.write(i32 %fd, ptr %nlb, {z} 1)\n  ret i64 %r3\n}}\n\n"
+    )
 }
 
 /// errno を `(errno << 32) | ErrorKind の変種の添字` の i64 値にする式 (`%e` は `i32` の errno)。
@@ -2260,7 +2270,7 @@ impl<'a> Fe<'a> {
             Op::MemStore { .. } | Op::Store { .. } | Op::HeapFree(_) | Op::IndexCheck { .. } | Op::Panic { .. } | Op::Eprint { .. } | Op::Abort | Op::Exit { .. } => {
                 return Err("unit 以外の結果を持つ副作用命令".into())
             }
-            Op::Write { fd, data } => {
+            Op::Write { fd, data, nl } => {
                 let Ty::Res(_, e) = i.ty else { return Err("write の結果が Result でない".into()) };
                 if vbits(aggs, e.ty()) != 64 {
                     return Err("std.io.Error の幅が 8 バイトでない".into());
@@ -2268,12 +2278,14 @@ impl<'a> Fe<'a> {
                 self.cx.write = true;
                 self.cx.decl(write_decl());
                 self.cx.decl(format!("declare ptr @{}()", errno_name()));
+                self.cx.decl(format!("declare void @llvm.memcpy.p0.p0.{}(ptr, ptr, {}, i1)", size_ty(), size_ty()));
                 let (f, av) = (self.r(*fd), self.r(*data));
                 let pi = self.extract(&av, 128, 0, 64);
                 let p = self.t(format!("inttoptr i64 {} to ptr", pi));
                 let n = self.extract(&av, 128, 8, 64);
                 let n = self.lane_sz(&n);
-                let r = self.t(format!("call i64 @ksn.write(i32 {}, ptr {}, {} {})", f, p, size_ty(), n));
+                let callee = if *nl { "ksn.writeln" } else { "ksn.write" };
+                let r = self.t(format!("call i64 @{}(i32 {}, ptr {}, {} {})", callee, f, p, size_ty(), n));
                 let ok = self.t(format!("icmp eq i64 {}, 0", r));
                 let tag = self.t(format!("xor i1 {}, true", ok));
                 self.pack(&d, 64, &tag, &r);

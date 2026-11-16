@@ -891,7 +891,8 @@ pub enum Op {
     Panic { msg: String, arg: Option<VId> },
     /// 書き出し: ファイル記述子 `fd` (`i32`。1 = stdout、2 = stderr) へ `data` (`fat` = `{ptr, len}`) の全バイトを書く。
     /// 結果は `Result<unit, std.io.Error>` (設計_KIR.md 12.2)。短い書き込みは繰り返し、EINTR は再試行する。`uses [io.console]` の関数だけ。
-    Write { fd: VId, data: VId },
+    /// `nl` が真なら、`data` の後に改行 1 バイトを足して、全体を 1 回の書き込みにする (`std.io.print_line`。スレッド同士で行が混ざらない)。
+    Write { fd: VId, data: VId, nl: bool },
     /// `std.net.listen(addr)`: `socket`+`bind`+`listen`。`addr` は fat (`&str`)。結果は `Result<i32, std.io.Error>`。
     /// 記述子はリスニングソケット。`uses [io.net]` の関数だけ。`panics never` でも置ける。
     NetListen { addr: VId },
@@ -963,7 +964,7 @@ pub enum Op {
     /// 浮動小数を `py_float` / `py_float32` と同じ規則で書式化して stderr へ出力する。
     /// 被演算子は `f32` または `f64`、結果は `unit`。`panics may` のときだけ。
     FmtFloat { bits: u32, a: VId },
-    /// 浮動小数を `FmtFloat` と同じ規則で書式化して、`dst` (32 バイト以上の領域) へ書き、書いたバイト数 (`usize`) を返す。
+    /// 浮動小数を `FmtFloat` と同じ規則で書式化して、`dst` (512 バイト以上の領域) へ書き、書いたバイト数 (`usize`) を返す。
     /// 被演算子は `f32` または `f64`。`String` へ追記する `Display` が使う (`push_display`)。
     FloatText { bits: u32, a: VId, dst: VId },
     /// `p` から `len` バイトを UTF-8 として検証し、正しい接頭辞の長さ (`valid_up_to`) を返す。全体が正しければ `len`。
@@ -1466,7 +1467,7 @@ fn fmt_inst(i: &Inst) -> String {
             Some(v) => format!("panic {} {}", quote_msg(msg), fmt_val(*v)),
             None => format!("panic {}", quote_msg(msg)),
         },
-        Op::Write { fd, data } => format!("write {}, {}", fmt_val(*fd), fmt_val(*data)),
+        Op::Write { fd, data, nl } => format!("write{} {}, {}", if *nl { ".nl" } else { "" }, fmt_val(*fd), fmt_val(*data)),
         Op::RandFill { buf, len, fatal } => format!("rand.fill{} {}, {}", if *fatal { ".fatal" } else { "" }, fmt_val(*buf), fmt_val(*len)),
         Op::NetListen { addr } => format!("net.listen {}", fmt_val(*addr)),
         Op::NetConnect { addr } => format!("net.connect {}", fmt_val(*addr)),
@@ -1909,7 +1910,11 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         }
         ("write", []) => {
             let v = operands(2)?;
-            Ok(Op::Write { fd: v[0], data: v[1] })
+            Ok(Op::Write { fd: v[0], data: v[1], nl: false })
+        }
+        ("write", ["nl"]) => {
+            let v = operands(2)?;
+            Ok(Op::Write { fd: v[0], data: v[1], nl: true })
         }
         ("net", ["listen"]) => {
             let v = operands(1)?;
@@ -2765,7 +2770,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             }
                         }
                     }
-                    Op::Write { fd, data } => {
+                    Op::Write { fd, data, .. } => {
                         if !f.uses.iter().any(|u| u == "io.console") {
                             return Err("write は uses [io.console] の関数だけ".into());
                         }
@@ -3231,7 +3236,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         Op::MemStore { p, v, .. } => vec![*p, *v],
         Op::IndexCheck { i, len } => vec![*i, *len],
         Op::Panic { arg, .. } => arg.iter().copied().collect(),
-        Op::Write { fd, data } => vec![*fd, *data],
+        Op::Write { fd, data, .. } => vec![*fd, *data],
         Op::NetListen { addr } | Op::NetConnect { addr } => vec![*addr],
         Op::NetAccept { sock } | Op::NetFlush { sock } | Op::NetClose { sock } | Op::NetLocalPort { sock } => vec![*sock],
         Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => {

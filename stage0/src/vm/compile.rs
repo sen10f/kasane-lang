@@ -752,7 +752,7 @@ impl<'a> Fc<'a> {
             }
             Op::Abort => Ins::Abort,
             Op::Exit { code } => Ins::Exit { code: self.s(*code) },
-            Op::Write { fd, data } => Ins::Write { d, fd: self.s(*fd), data: self.s(*data) },
+            Op::Write { fd, data, nl } => Ins::Write { d, fd: self.s(*fd), data: self.s(*data), nl: *nl },
             Op::Eprint { data } => Ins::Eprint { data: self.s(*data) },
             Op::FmtFloat { bits, a } => Ins::FmtFloat { a: self.s(*a), bits: *bits },
             Op::FloatText { bits, a, dst } => Ins::FloatText { d, a: self.s(*a), dst: self.s(*dst), bits: *bits },
