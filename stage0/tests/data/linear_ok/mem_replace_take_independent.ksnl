@@ -1,0 +1,22 @@
+type t.H['a]
+    r: &'a u64
+end t.H
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    Ok(())
+end t.main
+
+fn t.ok() -> u64 uses [] panics never
+    let mut a = 5u64
+    let b = 7u64
+    let mut h = t.H { r: &b }
+    let old = core.mem.replace(&mut h, t.H { r: &b })
+    a = 6u64
+    let mut o = Some(t.H { r: &b })
+    let p = o.take()
+    a = a.wrapping_add(1u64)
+    match p {
+        Some(x) => a.wrapping_add(*x.r).wrapping_add(*old.r)
+        None => a
+    }
+end t.ok
