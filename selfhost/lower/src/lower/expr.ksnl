@@ -1,5 +1,6 @@
 // 腕の本体: 値を合流へ渡し、腕の中の束縛の並びを戻す。
-fn lower.expr.arm_body(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], body: usize, t: usize, rty: &str, ks: &alloc.vec.Vec<usize, std.alloc.System>, jb: usize, mark: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.arm_body(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], body: usize, t: usize, rty: &str, ks: &alloc.vec.Vec<usize, std.alloc.System>, saved: &alloc.vec.Vec<usize, std.alloc.System>, jb: usize, mark: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.cx.bind_vals(c, ks, saved)?
     let r = lower.expr.expr(env, c, p, src, body, t)?
     if !c.s.term {
         let a = lower.expr.jargs(c, rty, r.v, ks)?
@@ -297,6 +298,11 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
             return lower.opt.user_method(env, c, p, src, it - 1usize, 0usize, rl, n.b, t)
         }
         return lower.expr.wrapping(env, c, p, src, rv, meth, n.b, t)
+    }
+    // `x.f.wrapping_add(a)`: 局所の欄を読んでから演算する。
+    let (n1, n2, n3) = lower.expr.split3(name)
+    if n1 != "" && lower.cx.find(c, n1) != 0usize && lower.expr.is_wrap_op(n3) {
+        return lower.expr.wrapping_field(env, c, p, src, (n1, n2, n3), n.b, t)
     }
     // 解決先は型検査の表 (env の項目 + 1)。
     let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
@@ -1060,6 +1066,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
+    let saved = lower.cx.cur_vals(c, &ks)?
     let rty = lower.tyk.text(env, c, t)?
     let lay = lower.tyk.layout(env, c, item)?
     let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
@@ -1078,7 +1085,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
             let nb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
             lower.expr.br_to(c, nb)?
             lower.cx.goto(c, nb)
-            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, jb, mark)?
+            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
         } else if (pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath) {
             let name = resolve.ast.text(src, pat.a, pat.b)
             let tag_src = lower.cx.cat2("tag ", lower.cx.vs(sc.v)?.as_str())?
@@ -1128,7 +1135,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
                 }
                 i = i + 1usize
             }
-            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, jb, mark)?
+            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
             lower.cx.goto(c, nextb)
         } else {
             let kn = parse.ast.kind_name(pat.kind)
@@ -1478,6 +1485,28 @@ fn lower.expr.split2(name: &str) -> (&str, &str) uses [] panics may pub
     ("", "")
 end lower.expr.split2
 
+// `a.b.c` を 3 つに分ける (3 つでなければ空)。
+fn lower.expr.split3(name: &str) -> (&str, &str, &str) uses [] panics may pub
+    let mut cnt = 0usize
+    let mut a = ""
+    let mut b = ""
+    let mut d = ""
+    for w in name.split(".") {
+        if cnt == 0usize {
+            a = w
+        } else if cnt == 1usize {
+            b = w
+        } else if cnt == 2usize {
+            d = w
+        }
+        cnt = cnt + 1usize
+    }
+    if cnt == 3usize {
+        return (a, b, d)
+    }
+    ("", "", "")
+end lower.expr.split3
+
 // 構造体リテラル: 式は書かれた順に評価し、`make` の引数は宣言の順に並べる。
 fn lower.expr.structlit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let it = types.env.lookup(env, c.s.file, resolve.ast.text(src, n.a, n.b))?
@@ -1806,3 +1835,31 @@ fn lower.expr.wrapping(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
     let v = lower.cx.def(c, rty.as_str(), o.as_str())?
     Ok(lower.cx.R { v: v, t: t })
 end lower.expr.wrapping
+
+// `局所.欄.wrapping_*(a)`: 欄 (型は結果と同じ) を読み、`op.T.wrap` を出す。
+fn lower.expr.wrapping_field(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], names: (&str, &str, &str), args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let (n1, n2, n3) = names
+    let k = lower.cx.find(c, n1) - 1usize
+    let bt = lower.cx.tyof_t(c, k)
+    let base = lower.opt.local_val(env, c, k, bt)?
+    let fr = lower.opt.field(env, c, base, bt, n2, t)?
+    lower.own.emit(c, k, "own.use ")?
+    let rty = lower.tyk.text(env, c, t)?
+    if resolve.ast.count(p, args) != 1usize {
+        lower.cx.fail(c, "メソッド呼び出し (wrapping_* の引数の個数)")?
+        return lower.expr.dummy(c, t)
+    }
+    let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, 0usize), types.ty.UNKNOWN)?
+    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    let opn = match n3.strip_prefix("wrapping_") {
+        Some(s) => s
+        None => ""
+    }
+    o.push_str(opn)?
+    o.push_str(".")?
+    o.push_str(rty.as_str())?
+    o.push_str(".wrap ")?
+    o.push_str(lower.expr.two(fr.v, a.v)?.as_str())?
+    let v = lower.cx.def(c, rty.as_str(), o.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.expr.wrapping_field

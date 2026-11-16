@@ -276,6 +276,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
+    let saved = lower.cx.cur_vals(c, &ks)?
     let rty = lower.tyk.text(env, c, t)?
     let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
     let jb = lower.cx.blk(c, &jps)?
@@ -295,7 +296,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
             let nb = lower.cx.blk(c, &empty)?
             lower.expr.br_to(c, nb)?
             lower.cx.goto(c, nb)
-            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, jb, mark)?
+            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
         } else if (pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath) {
             let name = resolve.ast.text(src, pat.a, pat.b)
             let last = lower.expr.last_seg(name)
@@ -358,7 +359,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                 }
             }
             lower.own.arm_consume(c, sloc, slin, noncopy, false)?
-            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, jb, mark)?
+            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
             if j + 1usize != nv {
                 lower.cx.goto(c, nextbs)
             }
