@@ -51,7 +51,8 @@ end lower.std_calls.has_fn
 fn lower.std_calls.has_method(fqn: &str) -> bool uses [] panics may pub
     let a = fqn == "alloc.string.String.as_str" || fqn == "core.str.len"
     let b = fqn == "core.option.Option.is_none" || fqn == "core.option.Option.is_some"
-    let d = fqn == "core.slice.len" || fqn == "core.slice.get" || fqn == "core.slice.last"
+    let e = fqn == "core.str.as_bytes" || fqn == "core.slice.sub"
+    let d = e || fqn == "core.slice.len" || fqn == "core.slice.get" || fqn == "core.slice.last"
     a || b || d || fqn == "core.option.Option.unwrap_or" || lower.std_calls.num_op(fqn) != ""
 end lower.std_calls.has_method
 
@@ -69,6 +70,10 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
         let v = lower.cx.def(c, tt.as_str(), mk2.as_str())?
         return Ok(lower.cx.R { v: v, t: t })
     }
+    if fqn == "core.str.as_bytes" {
+        let fat = lower.std_calls.val_of(env, c, recv, rty)?
+        return Ok(lower.cx.R { v: fat, t: t })
+    }
     if fqn == "core.str.len" {
         let fat = lower.std_calls.val_of(env, c, recv, rty)?
         let fs = lower.cx.vs(fat)?
@@ -82,6 +87,9 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
         let ls = lower.cx.cat2("field ", lower.cx.vs(fat)?.as_str())?
         let lv = lower.cx.def(c, "usize", lower.cx.cat2(ls.as_str(), ", +8")?.as_str())?
         return Ok(lower.cx.R { v: lv, t: t })
+    }
+    if fqn == "core.slice.sub" {
+        return lower.std_calls.slice_sub(env, c, vs, rty, t)
     }
     if fqn == "core.slice.get" || fqn == "core.slice.last" {
         return lower.std_calls.slice_get(env, c, vs, rty, fqn == "core.slice.last", t)
@@ -331,6 +339,50 @@ fn lower.std_calls.slice_get_in(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &a
     lower.cx.goto(c, jb)
     Ok(lower.cx.R { v: jp, t: t })
 end lower.std_calls.slice_get_in
+
+// `s.sub(a, b)` (`&[T]` の [a, b)): a <= b && b <= len なら some (make(..))、でなければ none。
+fn lower.std_calls.slice_sub(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let fat = lower.std_calls.val_of(env, c, lower.tyk.at(vs.as_slice(), 0usize), rty)?
+    let from = lower.tyk.at(vs.as_slice(), 1usize)
+    let to = lower.tyk.at(vs.as_slice(), 2usize)
+    let sn = types.ty.node(&c.ar, types.ty.strip(&c.ar, rty))
+    let (sz, _al) = lower.tyk.size_of(env, c, sn.a)?
+    let len = lower.loops.fld(c, "usize", fat, "+8")?
+    let ptr = lower.loops.fld(c, "ptr", fat, "+0")?
+    let c1 = lower.loops.bin(c, "bool", "icmp.le.usize", from, to)?
+    let c2 = lower.loops.bin(c, "bool", "icmp.le.usize", to, len)?
+    let cond = lower.loops.bin(c, "bool", "and.bool", c1, c2)?
+    let rt = lower.tyk.text(env, c, t)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let sb = lower.cx.blk(c, &empty)?
+    let nb = lower.cx.blk(c, &empty)?
+    let jp = lower.cx.newval(c, rt.as_str())?
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(jp)?
+    let jb = lower.cx.blk(c, &jps)?
+    lower.loops.brif(c, cond, sb, &empty, nb, &empty)?
+    lower.cx.goto(c, sb)
+    let mut off = from
+    if sz != 1usize {
+        let szc = lower.vec.usize_c(c, sz)?
+        off = lower.loops.bin(c, "usize", "mul.usize.wrap", from, szc)?
+    }
+    let addr = lower.loops.bin(c, "ptr", "ptr.add", ptr, off)?
+    let ft = lower.cx.tyof(c, fat)
+    let mut cnt = lower.loops.bin(c, "usize", "sub.usize.wrap", to, from)?
+    cnt = lower.loops.make2(c, ft.as_str(), addr, cnt)?
+    let sv = lower.loops.un(c, rt.as_str(), "some ", cnt)?
+    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a1.push(sv)?
+    lower.loops.br(c, jb, &a1)?
+    lower.cx.goto(c, nb)
+    let nv = lower.loops.none_of(c, rt.as_str())?
+    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a2.push(nv)?
+    lower.loops.br(c, jb, &a2)?
+    lower.cx.goto(c, jb)
+    Ok(lower.cx.R { v: jp, t: t })
+end lower.std_calls.slice_sub
 
 // `opt.unwrap_or(d)`: Rust 版と同じ形。tag で分け、Some なら payload、None なら既定の値を、
 // join のブロックの引数で受ける。ブロックは some・none・join の順に作る。

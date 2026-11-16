@@ -172,6 +172,12 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     if (cc == "eq" || cc == "ne") && lower.tyk.plain_enum(env, c, l.t) {
         return lower.chk.enum_cmp(env, c, l, r, cc == "ne", t)
     }
+    if (cc == "eq" || cc == "ne") && lower.tyk.is_fat_ty(c, l.t) {
+        return lower.chk.str_cmp(env, c, l, r, cc == "ne", t)
+    }
+    if (cc == "eq" || cc == "ne") && lower.tyk.is_opt_scalar(env, c, l.t) {
+        return lower.chk.opt_cmp(env, c, l, r, cc == "ne", t)
+    }
     let ty = lower.tyk.text(env, c, l.t)?
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
     let lf3 = types.ty.find(&c.ar, l.t)

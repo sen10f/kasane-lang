@@ -464,6 +464,12 @@ fn lower.loops.ld8(c: &mut lower.cx.Cx, a: usize) -> Result<usize, resolve.Failu
     lower.cx.def(c, "u8", lower.cx.cat2(s.as_str(), " +0")?.as_str())
 end lower.loops.ld8
 
+// `ty = make(%a, %b)`。
+fn lower.loops.make2(c: &mut lower.cx.Cx, ty: &str, a: usize, b: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let s = lower.cx.cat2("make(", lower.expr.two(a, b)?.as_str())?
+    lower.cx.def(c, ty, lower.cx.cat2(s.as_str(), ")")?.as_str())
+end lower.loops.make2
+
 // 先頭 lead 個が usize の値と、可変の局所 ks の新しい値 (ブロックの引数)。
 fn lower.loops.mk(c: &mut lower.cx.Cx, lead: usize, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(alloc.vec.Vec<usize, std.alloc.System>, alloc.vec.Vec<usize, std.alloc.System>), resolve.Failure> uses [alloc] panics may pub
     let mut ld = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -473,6 +479,18 @@ fn lower.loops.mk(c: &mut lower.cx.Cx, lead: usize, ks: &alloc.vec.Vec<usize, st
     let sv = lower.cx.fresh_vals(c, ks)?
     Ok((ld, sv))
 end lower.loops.mk
+
+// `rt = const.rt none`。
+fn lower.loops.none_of(c: &mut lower.cx.Cx, rt: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let s = lower.cx.cat2("const.", rt)?
+    lower.cx.def(c, rt, lower.cx.cat2(s.as_str(), " none")?.as_str())
+end lower.loops.none_of
+
+// `ty = op %a` (op は "some " など)。
+fn lower.loops.un(c: &mut lower.cx.Cx, ty: &str, op: &str, a: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let s = lower.cx.cat2(op, lower.cx.vs(a)?.as_str())?
+    lower.cx.def(c, ty, s.as_str())
+end lower.loops.un
 
 // 先頭 n 個 (0〜3) の値の並び。
 fn lower.loops.vv(n: usize, a: usize, b: usize, d: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
