@@ -35,10 +35,13 @@ fn todo.server.settle(handled: Result<(), todo.error.Error>) -> Result<(), todo.
         Err(error.Error.AuthFailed) => Ok(())
         Err(error.Error.BadRequest) => Ok(())
         Err(error.Error.Closed) => Ok(())
+        Err(error.Error.Config) => Err(error.Error.Config)
         Err(error.Error.Corrupt) => Err(error.Error.Corrupt)
+        Err(error.Error.History) => Err(error.Error.History)
         Err(error.Error.Io(_e)) => Ok(())
         Err(error.Error.Json(_e)) => Ok(())
         Err(error.Error.Net(_e)) => Ok(())
+        Err(error.Error.NotAuthenticated) => Ok(())
         Err(error.Error.NotFound) => Ok(())
         Err(error.Error.TooLarge) => Ok(())
     }
