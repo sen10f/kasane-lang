@@ -1,6 +1,9 @@
 // 型の下ろし: types の型 id を KIR の型の文字列にし、集成体 (構造体・列挙型) の番号とレイアウトを決める。
 // 集成体は見つけた順に agg#N を振る (ksn kir の番号とは一致しないことがある。比べるときは名前で正規化する)。
 // 文字列の参照 (`&str`) の集成体 `fat` = {ptr, len}。項目の代わりに番号 FAT を使う。
+// `Option<&T>` (T は構造体・列挙型) の中身: 要素の番地だけの集成体 `bref`。
+const lower.tyk.BREF: usize = 1999999999usize pub
+
 const lower.tyk.FAT: usize = 4294967295usize pub
 
 // 総称の集成体 (ユーザーの総称の型の具体化) の項目の基点 (INS + 添字、添字は tps の添字)。
@@ -32,6 +35,13 @@ fn lower.tyk.agg_body(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id:
         vs.push_str(lower.cx.dec(id)?.as_str())?
         vs.push_str(" struct vec size=24 align=8 {ptr:ptr@0 len:usize@8 cap:usize@16}\n")?
         return Ok(vs)
+    }
+    if item == lower.tyk.BREF {
+        let mut bs = alloc.string.String.new(std.alloc.SYSTEM)
+        bs.push_str("agg#")?
+        bs.push_str(lower.cx.dec(id)?.as_str())?
+        bs.push_str(" struct bref size=8 align=8 {ptr:ptr@0}\n")?
+        return Ok(bs)
     }
     if item == lower.tyk.FAT {
         let mut fs = alloc.string.String.new(std.alloc.SYSTEM)
@@ -170,6 +180,12 @@ fn lower.tyk.at(xs: &[usize], i: usize) -> usize uses [] panics may pub
         None => 0usize
     }
 end lower.tyk.at
+
+// `bref` の型の綴り (`agg#N`)。
+fn lower.tyk.bref_text(c: &mut lower.cx.Cx) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let id = lower.tyk.agg_id(c, lower.tyk.BREF)?
+    lower.cx.cat2("agg#", lower.cx.dec(id)?.as_str())
+end lower.tyk.bref_text
 
 // 具体化の項目の引数を代入に入れる (元の値は返す)。
 fn lower.tyk.enter(c: &mut lower.cx.Cx, item: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
@@ -543,6 +559,20 @@ fn lower.tyk.real_item(c: &lower.cx.Cx, item: usize) -> usize uses [alloc] panic
     item
 end lower.tyk.real_item
 
+// 型 t が、構造体・列挙型 (`Vec` / `String` でない) への参照か。`Option<&T>` の中身は `bref` で持つ。
+fn lower.tyk.ref_agg(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
+    let n = types.ty.node(&c.ar, types.ty.find(&c.ar, t))
+    if n.k != types.ty.K.Ref {
+        return false
+    }
+    let inn = types.ty.node(&c.ar, types.ty.find(&c.ar, n.a))
+    if inn.k != types.ty.K.Adt || inn.c != 0usize || lower.tyk.is_vec(env, inn.a) {
+        return false
+    }
+    let kind = types.infer.item_kind(env, inn.a)
+    kind == parse.ast.Kind.TypeDef || kind == parse.ast.Kind.EnumDef
+end lower.tyk.ref_agg
+
 // 型 t が、スカラー (整数・浮動小数・bool・char) への参照か。`Option<&スカラー>` は値の `Option<スカラー>` で持つ。
 fn lower.tyk.ref_scalar(c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
     let n = types.ty.node(&c.ar, types.ty.find(&c.ar, t))
@@ -745,7 +775,10 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
         if lower.tyk.ref_scalar(c, a0) {
             a0 = types.ty.node(&c.ar, types.ty.find(&c.ar, a0)).a
         }
-        let inner = lower.tyk.text(env, c, a0)?
+        let mut inner = lower.tyk.text(env, c, a0)?
+        if lower.tyk.ref_agg(env, c, a0) {
+            inner = lower.tyk.bref_text(c)?
+        }
         let mut r = lower.cx.cat2("Option<", inner.as_str())?
         r.push('>')?
         return Ok(r)

@@ -20,6 +20,16 @@ fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize
     lower.cx.push_local(c, name, v + 1usize, m, t, false)
 end lower.opt.bind
 
+// `Option<&T>` の中身 `bref` の値 bv から、`ref<T>` を取り出す (`field bv, +0` の後に `bitcast.ref<T>.ptr`)。
+fn lower.opt.bref_ref(env: &types.env.Env, c: &mut lower.cx.Cx, bv: usize, pt: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let n = types.ty.node(&c.ar, types.ty.find(&c.ar, pt))
+    let it = lower.tyk.text(env, c, n.a)?
+    let rt = lower.opt.refty(false, it.as_str())?
+    let fp = lower.cx.def(c, "ptr", lower.expr.field_src(bv, 0usize)?.as_str())?
+    let bc = lower.cx.cat2("bitcast.", lower.cx.cat2(rt.as_str(), ".ptr ")?.as_str())?
+    lower.cx.def(c, rt.as_str(), lower.cx.cat2(bc.as_str(), lower.cx.vs(fp)?.as_str())?.as_str())
+end lower.opt.bref_ref
+
 // 整数の定数 (`const N: T = 7u32`) の値を、その綴りの定数として置く。整数の綴り以外は VId 0 (未対応)。
 fn lower.opt.const_value(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let file = types.infer.item_file(env, item)
@@ -331,7 +341,10 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                     if ssx0.c == 1usize && lower.tyk.ref_scalar(c, pt) {
                         ptx = types.ty.node(&c.ar, types.ty.find(&c.ar, pt)).a
                     }
-                    let pty = lower.tyk.text(env, c, ptx)?
+                    let mut pty = lower.tyk.text(env, c, ptx)?
+                    if ssx0.c == 1usize && lower.tyk.ref_agg(env, c, pt) {
+                        pty = lower.tyk.bref_text(c)?
+                    }
                     pv = lower.cx.def1(c, pty.as_str(), "payload ", sv)?
                     let tr = lower.cx.def(c, "bool", "const.bool true")?
                     let both = lower.expr.two(cond, tr)?
@@ -362,7 +375,10 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                     let sa0 = types.ty.arg(&c.ar, ssx.b, 0usize)
                     let direct = ssx.c == 1usize && lower.tyk.ref_scalar(c, sa0)
                     let mut pv2 = pv
-                    if !direct {
+                    if ssx.c == 1usize && lower.tyk.ref_agg(env, c, pt) {
+                        // `Option<&構造体>` の中身 (`bref`) から参照を取り出す (`field` と `bitcast`)。
+                        pv2 = lower.opt.bref_ref(env, c, pv, pt)?
+                    } else if !direct {
                         pv2 = lower.opt.wrap_ref(env, c, pv, pt)?
                     }
                     let bv = lower.opt.bind(env, c, stk, pv2, false, pt)?

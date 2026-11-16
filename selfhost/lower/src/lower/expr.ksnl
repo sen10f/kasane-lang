@@ -751,6 +751,69 @@ fn lower.expr.from_src(nm: &str) -> &str uses [] panics may pub
     }
 end lower.expr.from_src
 
+// `Vec` の場所 (局所、または `局所.欄(.欄)*`) のヘッダの番地。戻りは (番地, Vec の型, 成功か)。
+// 欄をたどるときは `fieldaddr` の連鎖と `bitcast.ptr`、局所の `Vec` はその枠 (参照引数は値の ptr)。
+fn lower.expr.hdr_of(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str) -> Result<(usize, usize, bool), resolve.Failure> uses [alloc] panics may pub
+    let mut segs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for w in name.split(".") {
+        segs.push(lower.cx.own(w)?)?
+    }
+    let nseg = segs.len()
+    let first = match segs.as_slice().get(0usize) {
+        Some(s) => lower.cx.own(s.as_str())?
+        None => return Ok((0usize, types.ty.UNKNOWN, false))
+    }
+    let loc = lower.cx.find(c, first.as_str())
+    if loc == 0usize {
+        return Ok((0usize, types.ty.UNKNOWN, false))
+    }
+    let k = loc - 1usize
+    let mut bt = lower.cx.tyof_t(c, k)
+    let mut cur = lower.cx.get_val(c, k).wrapping_sub(1usize)
+    if nseg == 1usize {
+        let (inner1, through1, _m1) = lower.opt.deref_ty(c, bt)
+        if lower.vec.is_hdr(env, c, inner1) && (through1 || lower.cx.is_slot(c, k)) {
+            return Ok((cur, inner1, true))
+        }
+        return Ok((0usize, bt, false))
+    }
+    let (inner0, through, m0) = lower.opt.deref_ty(c, bt)
+    if !through && !lower.cx.is_slot(c, k) {
+        return Ok((0usize, bt, false))
+    }
+    let mutable = !through || m0
+    let mut ty_in = inner0
+    let mut j = 1usize
+    while j < nseg {
+        let rs = types.ty.strip(&c.ar, ty_in)
+        let rn = types.ty.node(&c.ar, rs)
+        if rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef {
+            return Ok((0usize, bt, false))
+        }
+        let fname = match segs.as_slice().get(j) {
+            Some(s) => lower.cx.own(s.as_str())?
+            None => return Ok((0usize, bt, false))
+        }
+        let ft = lower.tyk.field_ty(env, c, rn.a, fname.as_str())?
+        if ft == types.ty.UNKNOWN {
+            return Ok((0usize, bt, false))
+        }
+        let last = j + 1usize == nseg
+        if last != lower.vec.is_hdr(env, c, ft) {
+            return Ok((0usize, bt, false))
+        }
+        cur = lower.opt.field_addr_m(env, c, cur, bt, fname.as_str(), ft, mutable)?
+        bt = ft
+        ty_in = ft
+        j = j + 1usize
+    }
+    let fat0 = lower.cx.tyof(c, cur)
+    let bc = lower.cx.cat2("bitcast.ptr.", fat0.as_str())?
+    let bc2 = lower.cx.cat2(bc.as_str(), " ")?
+    let pv = lower.cx.def(c, "ptr", lower.cx.cat2(bc2.as_str(), lower.cx.vs(cur)?.as_str())?.as_str())?
+    Ok((pv, bt, true))
+end lower.expr.hdr_of
+
 fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
     let cr = lower.expr.expr(env, c, p, src, n.a, types.ty.BOOL)?
@@ -1210,6 +1273,12 @@ end lower.expr.matchx
 
 fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let meth = resolve.ast.tok_text(p, src, n.b)
+    if meth == "get" || meth == "last" {
+        let (sr, sok) = lower.expr.vec_slice_get(env, c, p, src, e, n, t)?
+        if sok {
+            return Ok(sr)
+        }
+    }
     if !lower.expr.is_wrap_op(meth) {
         // 利用者のメソッド (解決先は型検査の表)。
         let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
@@ -1901,6 +1970,55 @@ fn lower.expr.vec_field_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
     let r = lower.vec.call(env, c, fqn.as_str(), bt, &vs, t)?
     Ok((r, true))
 end lower.expr.vec_field_call
+
+// `V.as_slice().get(i)` / `.last()` (V は Vec の場所): ヘッダから直に長さと先頭を読んで下ろす (`as_slice` の呼び出しを挟まない)。
+fn lower.expr.vec_slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
+    let no = lower.cx.R { v: 0usize, t: t }
+    let rn = parse.ast.get(&p.ast, n.a)
+    if rn.kind != parse.ast.Kind.Call || resolve.ast.count(p, rn.b) != 0usize {
+        return Ok((no, false))
+    }
+    let cn = parse.ast.get(&p.ast, rn.a)
+    if cn.kind != parse.ast.Kind.Path {
+        return Ok((no, false))
+    }
+    let cname = resolve.ast.text(src, cn.a, cn.b)
+    if !cname.ends_with(".as_slice") {
+        return Ok((no, false))
+    }
+    let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
+    if it == 0usize {
+        return Ok((no, false))
+    }
+    let sfq = lower.tyk.item_fqn(env, it - 1usize)
+    if sfq.as_str() != "core.slice.get" && sfq.as_str() != "core.slice.last" {
+        return Ok((no, false))
+    }
+    let icn = types.rec.callee_of(&c.tc.rec, c.s.file, n.a)
+    if icn == 0usize || lower.tyk.item_fqn(env, icn - 1usize).as_str() != "alloc.vec.Vec.as_slice" {
+        return Ok((no, false))
+    }
+    let base = cname.strip_suffix(".as_slice")
+    let bname = match base {
+        Some(b) => b
+        None => return Ok((no, false))
+    }
+    let (hp, vt, ok) = lower.expr.hdr_of(env, c, bname)?
+    if !ok {
+        return Ok((no, false))
+    }
+    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    vs.push(hp)?
+    if sfq.as_str() == "core.slice.get" {
+        let an0 = resolve.ast.item(p, n.d, 0usize)
+        let av = lower.expr.expr(env, c, p, src, an0, types.ty.UNKNOWN)?
+        vs.push(av.v)?
+    }
+    let sl = lower.expr.tyof(c, n.a)?
+    core.mem.drop(vt)
+    let r = lower.std_calls.slice_get_hdr(env, c, &vs, sl, sfq.as_str() == "core.slice.last", t)?
+    Ok((r, true))
+end lower.expr.vec_slice_get
 
 fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
