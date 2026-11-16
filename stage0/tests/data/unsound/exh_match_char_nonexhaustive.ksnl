@@ -1,0 +1,11 @@
+// expect: E2021
+fn t.f(c: char) -> u32 uses [] panics never
+    match c {
+        'a' => 1u32
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.f('b'))
+    Ok(())
+end t.main

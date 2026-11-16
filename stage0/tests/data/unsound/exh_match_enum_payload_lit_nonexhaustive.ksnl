@@ -1,0 +1,17 @@
+// expect: E2021
+enum t.E
+    A
+    B(i32)
+end t.E
+
+fn t.f(e: t.E) -> i32 uses [] panics never
+    match e {
+        t.E.A => 1i32
+        t.E.B(1i32) => 2i32
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.f(t.E.B(7i32)))
+    Ok(())
+end t.main

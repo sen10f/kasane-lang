@@ -6068,56 +6068,130 @@ impl<'a> Checker<'a> {
                             "`_` / binding patterns cannot match an enum; list all variants".into(),
                             nline(m),
                         );
+                        return;
                     }
                 }
             }
-            return;
         }
-        let mut names: Vec<(String, String)> = vec![];
+        // 入れ子のパターンも含めた網羅性と、到達しない腕 (パターン行列。`exhaust.rs`)。
+        let mut sfields: HashMap<String, BTreeSet<String>> = HashMap::new();
         for p in &pats {
-            match nname(p) {
-                "PVariant" | "PPath" => {
-                    let segs = strs(&nf(p)[0]);
-                    if let Some(r) = self.p.resolve(&segs, &self.def(self.d).file) {
-                        if let Target::Variant(en, vn) = r.target {
-                            let key = (en, vn);
-                            if !names.contains(&key) {
-                                names.push(key);
-                            }
-                        }
-                    }
-                }
-                "PLit" => {
-                    let lit = &nf(p)[0];
-                    if st(&nf(lit)[0]) == "bool" {
-                        let key = ("bool".to_string(), if matches!(nf(lit)[1], V::B(true)) { "True" } else { "False" }.to_string());
-                        if !names.contains(&key) {
-                            names.push(key);
-                        }
-                    }
-                }
-                _ => {}
+            Self::struct_fields(p, &mut sfields);
+        }
+        let mut xps = vec![];
+        for p in &pats {
+            match self.to_xp(p, &sfields) {
+                Some(x) => xps.push(x),
+                None => return,
             }
         }
-        if names.is_empty() {
-            return;
+        let (wit, dead) = crate::exhaust::analyze(&xps);
+        if let Some(w) = wit {
+            self.tdiag("E2021", format!("non-exhaustive match: pattern `{}` is not covered", w), nline(m));
         }
-        let en = names[0].0.clone();
-        let want: Vec<String> = match en.as_str() {
-            "Option" => vec!["Some".into(), "None".into()],
-            "Result" => vec!["Ok".into(), "Err".into()],
-            "bool" => vec!["True".into(), "False".into()],
-            _ => match self.p.types.get(&en) {
-                Some(&ti) => self.def(ti).variants.iter().map(|v| v.0.clone()).collect(),
-                None => return,
-            },
-        };
-        let have: HashSet<&String> = names.iter().filter(|x| x.0 == en).map(|x| &x.1).collect();
-        let mut missing: Vec<String> = want.iter().filter(|w| !have.contains(w)).cloned().collect();
-        if !missing.is_empty() {
-            missing.sort();
-            let list = missing.iter().map(|x| format!("'{}'", x)).collect::<Vec<_>>().join(", ");
-            self.tdiag("E2021", format!("non-exhaustive match: missing [{}]", list), nline(m));
+        let arms = items(&f[1]);
+        for i in dead {
+            self.tdiag(
+                "E2052",
+                "unreachable `match` arm: the earlier arms already cover every value it matches".into(),
+                nline(&items(&arms[i])[0]),
+            );
+        }
+    }
+
+    fn struct_fields(p: &V, out: &mut HashMap<String, BTreeSet<String>>) {
+        match nname(p) {
+            "PStruct" => {
+                let e = out.entry(strs(&nf(p)[0]).join(".")).or_default();
+                for x in items(&nf(p)[1]) {
+                    e.insert(st(&items(x)[0]));
+                }
+                for x in items(&nf(p)[1]) {
+                    Self::struct_fields(&items(x)[1], out);
+                }
+            }
+            "PTuple" => items(&nf(p)[0]).iter().for_each(|q| Self::struct_fields(q, out)),
+            "PVariant" => items(&nf(p)[1]).iter().for_each(|q| Self::struct_fields(q, out)),
+            "PRef" => Self::struct_fields(&nf(p)[0], out),
+            _ => {}
+        }
+    }
+
+    /// パターンを行列用の形へ。形が合わない (型の誤りは別の検査が報告する) ときは `None` で検査を見送る。
+    fn to_xp(&self, p: &V, sf: &HashMap<String, BTreeSet<String>>) -> Option<crate::exhaust::XP> {
+        use crate::exhaust::XP;
+        use std::rc::Rc;
+        let single = |key: &str, n: usize| Some(Rc::new(vec![(key.to_string(), n)]));
+        match nname(p) {
+            "PWild" | "PBind" => Some(XP::Wild),
+            "PRef" => self.to_xp(&nf(p)[0], sf),
+            "PTuple" => {
+                let args: Option<Vec<XP>> = items(&nf(p)[0]).iter().map(|q| self.to_xp(q, sf)).collect();
+                let args = args?;
+                Some(XP::Ctor { fam: single("tuple", args.len()), key: "tuple".into(), args })
+            }
+            "PStruct" => {
+                let key = strs(&nf(p)[0]).join(".");
+                let names: Vec<String> = sf.get(&key)?.iter().cloned().collect();
+                let mut args = vec![];
+                for n in &names {
+                    let sub = items(&nf(p)[1]).iter().find(|x| st(&items(x)[0]) == *n);
+                    args.push(match sub {
+                        Some(x) => self.to_xp(&items(x)[1], sf)?,
+                        None => XP::Wild,
+                    });
+                }
+                let k = format!("struct:{}", key);
+                Some(XP::Ctor { fam: single(&k, args.len()), key: k, args })
+            }
+            "PLit" => {
+                let lit = &nf(p)[0];
+                let kind = st(&nf(lit)[0]);
+                if kind == "bool" {
+                    let all = Rc::new(vec![("True".to_string(), 0), ("False".to_string(), 0)]);
+                    let k = if matches!(nf(lit)[1], V::B(true)) { "True" } else { "False" };
+                    return Some(XP::Ctor { fam: Some(all), key: k.into(), args: vec![] });
+                }
+                if kind == "unit" {
+                    return Some(XP::Ctor { fam: single("()", 0), key: "()".into(), args: vec![] });
+                }
+                Some(XP::Ctor { fam: None, key: format!("lit:{:?}", nf(lit)), args: vec![] })
+            }
+            "PVariant" | "PPath" => {
+                let segs = strs(&nf(p)[0]);
+                let args: Vec<XP> = if nname(p) == "PVariant" {
+                    items(&nf(p)[1]).iter().map(|q| self.to_xp(q, sf)).collect::<Option<_>>()?
+                } else {
+                    vec![]
+                };
+                let named = |en: &str, vn: &str| (en.to_string(), vn.to_string());
+                let target = match self.p.resolve(&segs, &self.def(self.d).file) {
+                    Some(Resolved { target: Target::Variant(en, vn), .. }) => Some((en, vn)),
+                    _ if segs.len() == 1 && segs[0] == "None" => Some(named("Option", "None")),
+                    _ if segs.len() == 1 && segs[0] == "Some" => Some(named("Option", "Some")),
+                    _ if segs.len() == 1 && segs[0] == "Ok" => Some(named("Result", "Ok")),
+                    _ if segs.len() == 1 && segs[0] == "Err" => Some(named("Result", "Err")),
+                    _ => None,
+                };
+                let Some((en, vn)) = target else {
+                    // 変数に解決しない名前 (定数など): リテラルと同じく無限の族。
+                    return Some(XP::Ctor { fam: None, key: format!("lit:{}", segs.join(".")), args });
+                };
+                let all: Vec<(String, usize)> = match en.as_str() {
+                    "Option" => vec![("Some".into(), 1), ("None".into(), 0)],
+                    "Result" => vec![("Ok".into(), 1), ("Err".into(), 1)],
+                    _ => {
+                        let ti = *self.p.types.get(&en)?;
+                        self.def(ti).variants.iter().map(|v| (v.0.clone(), v.1.len())).collect()
+                    }
+                };
+                let want = all.iter().find(|x| x.0 == vn)?.1;
+                if want != args.len() {
+                    return None;
+                }
+                Some(XP::Ctor { fam: Some(Rc::new(all)), key: vn, args })
+            }
+            _ => None,
         }
     }
 

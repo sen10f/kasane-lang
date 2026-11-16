@@ -1,0 +1,13 @@
+fn t.f(o: Option<u32>) -> () uses [] panics never
+    if o is None {
+        core.mem.drop(1u8)
+    } else {
+        core.mem.drop(2u8)
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    t.f(None)
+    t.f(Some(1u32))
+    Ok(())
+end t.main
