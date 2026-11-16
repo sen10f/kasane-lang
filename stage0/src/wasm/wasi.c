@@ -180,6 +180,8 @@ static void env_load(void) {
     env_ready = 1;
     u32 n = 0, sz = 0;
     if (w_environ_sizes_get(&n, &sz) != 0) return;
+    /* ホストが渡す個数・大きさは 32 ビットの掛け算・足し算を溢れさせうる。大きすぎるなら環境なしにする。 */
+    if (n >= 0x10000000u || sz == 0xffffffffu) return;
     char **tab = (char **)malloc((n + 1) * sizeof(char *));
     char *buf = (char *)malloc(sz + 1);
     if (!tab || !buf) return;
@@ -209,6 +211,7 @@ void _start(void) {
         argc = 0;
         sz = 0;
     }
+    if (argc >= 0x10000000u || sz == 0xffffffffu) w_proc_exit(101);
     char **argv = (char **)malloc((argc + 1) * sizeof(char *));
     char *buf = (char *)malloc(sz + 1);
     if (!argv || !buf) w_proc_exit(101);
@@ -422,7 +425,12 @@ i64 ksn_rt_sys_readdir(const u8 *p, u64 n, u8 *buf, u64 cap, i32 *e) {
         while (off + 24 <= used) {
             u64 next = rd64(dbuf + off);
             u32 nl = rd32(dbuf + off + 16);
-            if (off + 24 + nl > used) break;
+            /* 名前の長さはホストの値。u32 の足し算を溢れさせない。1 項目が buffer に収まらないなら、黙って切らずに失敗にする。 */
+            if (nl > dbuf_len - 24) {
+                err = 36;
+                break;
+            }
+            if (nl > used - off - 24) break;
             const u8 *nm = dbuf + off + 24;
             cookie = next;
             off += 24 + nl;

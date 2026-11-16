@@ -2578,3 +2578,37 @@ fn huge_alloc_requests_are_err_not_wrapped() {
     let out = agree_with_interpreter("huge_alloc", &src);
     assert_eq!(out, "reserve err\ncap err\n");
 }
+
+/// 長い形 `core.num.<T>.try_from_<S>(..)` / `from_<S>(..)` は、短い形と同じに KIR へ下ろせ、ネイティブの出力が `ksn run` と一致する。
+#[test]
+fn long_form_num_conversions_lower_to_kir_and_match_the_interpreter() {
+    let src = r#"fn t.main() -> () uses [io.console] panics may
+    let a = core.num.u32.try_from_u64(5u64)
+    let b = core.num.u64.from_u32(7u32)
+    let c = 4000000000u32.wrapping_add(300000000u32)
+    let d = core.num.u8.try_from_u32(300u32)
+    match a {
+        Ok(v) => core.check.eq(v, 5u32)
+        Err(_e) => core.panic.panic("bad")
+    }
+    core.check.eq(b, 7u64)
+    core.check.eq(c, 5032704u32)
+    core.check.eq(core.num.u32.from_u8(3u8), 3u32)
+    match d {
+        Ok(_v) => core.panic.panic("bad2")
+        Err(_e) => ()
+    }
+    match std.io.print_line("ok") {
+        Ok(u) => u
+        Err(_e) => ()
+    }
+end t.main
+"#;
+    let t = Tmp::new("long_num_conv", src);
+    let i = run(&["run"], &t.0);
+    assert_eq!((text(&i.stdout).trim(), i.status.code()), ("ok", Some(0)), "{}", text(&i.stderr));
+    let b = run(&["build", "--release"], &t.0);
+    assert!(b.status.success(), "{}{}", text(&b.stdout), text(&b.stderr));
+    let o = Command::new(t.0.join("target").join("release").join("t.native")).output().unwrap();
+    assert_eq!((text(&o.stdout).trim(), o.status.code()), ("ok", Some(0)));
+}

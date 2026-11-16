@@ -12,6 +12,7 @@
 #ifdef _WIN32
 #define _CRT_RAND_S /* rand_s (乱数の OS 源) を出す */
 #endif
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -711,6 +712,7 @@ i64 ksn_rt_sys_net_sendto(i32 fd, const u8 *buf, u64 n, const u8 *a, u64 an, i32
 i64 ksn_rt_sys_net_recvfrom(i32 fd, u8 *buf, u64 n, u8 *from, u64 fcap, i32 *e) {
     init_net();
     struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof ss);
     socklen_t sl = sizeof ss;
     ssize_t got;
     for (;;) {
@@ -720,7 +722,12 @@ i64 ksn_rt_sys_net_recvfrom(i32 fd, u8 *buf, u64 n, u8 *from, u64 fcap, i32 *e) 
         return fail(e, errno);
     }
     char txt[80];
-    if (format_addr((struct sockaddr *)&ss, txt, sizeof txt) != 0) return fail_invalid(e);
+    /* カーネルが送信元を書かなかった (接続済みの socket など。sl が family の分も無い) ときは、空の文字列を返す。読み捨てたデータを失わない。 */
+    if (sl < offsetof(struct sockaddr_storage, ss_family) + sizeof ss.ss_family) {
+        txt[0] = 0;
+    } else if (format_addr((struct sockaddr *)&ss, txt, sizeof txt) != 0) {
+        return fail_invalid(e);
+    }
     u64 tl = strlen(txt) + 1;
     if (tl > fcap) return fail_invalid(e);
     memcpy(from, txt, tl);
