@@ -79,9 +79,9 @@ pub(super) fn is_checked_name(m: &str) -> bool {
     checked_op(m).is_some() || is_checked_extra(m)
 }
 
-/// `checked_shl` / `checked_shr` / `checked_abs` (範囲の検査が分岐になる族。`checked_neg` は既存のテストが対象外の例にしているので未対応のまま)。
+/// `checked_shl` / `checked_shr` / `checked_abs` (範囲の検査が分岐になる族)。`checked_neg` は符号付きなら MIN 以外、符号なしなら 0 のときだけ `Some`。
 fn is_checked_extra(m: &str) -> bool {
-    matches!(m, "checked_shl" | "checked_shr" | "checked_abs") || m.starts_with("trunc_to_")
+    matches!(m, "checked_shl" | "checked_shr" | "checked_abs" | "checked_neg") || m.starts_with("trunc_to_")
 }
 
 impl<'a> Lw<'a> {
@@ -123,6 +123,10 @@ impl<'a> Lw<'a> {
                 let lim = self.emit(Ty::U32, Op::Const(rt.bits() as i128));
                 self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::U32, a: n, b: lim })
             }
+            ("checked_neg", None) if !rt.signed() => {
+                let zero = self.emit(rt, Op::Const(0));
+                self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: rt, a: recv, b: zero })
+            }
             _ => {
                 let min = self.emit(rt, Op::Const(rt.min()));
                 self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ne, ty: rt, a: recv, b: min })
@@ -136,6 +140,8 @@ impl<'a> Lw<'a> {
         let v = match (method, amount) {
             ("checked_shl", Some(n)) => self.emit(rt, Op::Shift { left: true, a: recv, n }),
             ("checked_shr", Some(n)) => self.emit(rt, Op::Shift { left: false, a: recv, n }),
+            ("checked_neg", None) if !rt.signed() => recv,
+            ("checked_neg", None) => self.emit(rt, Op::Neg { a: recv, mode: crate::kir::Mode::Wrap }),
             _ => {
                 let neg = self.emit(rt, Op::Neg { a: recv, mode: crate::kir::Mode::Wrap });
                 self.emit(rt, Op::MinMax { max: true, a: recv, b: neg })
@@ -215,6 +221,13 @@ impl<'a> Lw<'a> {
                 let args = items(&f[1]).to_vec();
                 if matches!(self.vty(recv), Ty::Opt(_) | Ty::Res(..)) {
                     return Some(self.optres_on(e, recv, local, &segs[1], &args));
+                }
+            }
+        }
+        if segs.len() == 2 && segs[1] == "next" && items(&f[1]).is_empty() {
+            if let Some(s) = self.lookup(&segs[0]) {
+                if self.slots[s].1 == self.fat_ty() {
+                    return Some(self.chars_next(e, s));
                 }
             }
         }
@@ -599,7 +612,7 @@ impl<'a> Lw<'a> {
         self.cur = Some(join);
         let off = carry as usize;
         for (i, x) in slots.iter().enumerate() {
-            self.slots[*x] = (jp[off + i], slot_tys[i]);
+            self.rebind_slot(*x, jp[off + i], slot_tys[i]);
         }
         Ok(Some(if carry { jp[0] } else { self.unit() }))
     }
@@ -672,6 +685,11 @@ impl<'a> Lw<'a> {
                         }
                         let k = self.emit(t, Op::Const(x));
                         Ok(self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: t, a: v, b: k }))
+                    }
+                    "char" if t == Ty::U32 => {
+                        let x = parse_int(&lf[1]).ok_or_else(|| format!("行 {}: 文字パターンが扱えない", line))?;
+                        let k = self.emit(Ty::U32, Op::Const(x));
+                        Ok(self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U32, a: v, b: k }))
                     }
                     "bool" if t == Ty::Bool => {
                         let k = self.emit(Ty::Bool, Op::Const(matches!(lf[1], V::B(true)) as i128));

@@ -1373,7 +1373,10 @@ fn new_header(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let f = nf(e);
     let line = nline(e);
     let args = items(&f[1]);
-    let system = args.len() == 1 && nname(&args[0]) == "Path" && strs(&nf(&args[0])[0]) == ["std", "alloc", "SYSTEM"];
+    let system = args.len() == 1 && nname(&args[0]) == "Path" && {
+        let sg = strs(&nf(&args[0])[0]);
+        sg == ["std", "alloc", "SYSTEM"] || (sg.len() == 1 && lw.lookup(&sg[0]).is_some() && matches!(lw.src_ty(&args[0]), Ok(Src::Named(n, _)) if n == "std.alloc.System"))
+    };
     if !system {
         return lw.err(line, "Vec / String の生成は std.alloc.SYSTEM だけ段階 1 の対象");
     }
@@ -3075,7 +3078,7 @@ fn user_iter(lw: &mut Lw, e: &V, it: &V, s: usize, di: usize, name: Option<Strin
 
     lw.cur = Some(hb);
     for (k, x) in slots.iter().enumerate() {
-        lw.slots[*x] = (hp[k], slot_tys[k]);
+        lw.rebind_slot(*x, hp[k], slot_tys[k]);
     }
     let Some(o) = lw.call_method(e, di, super::method_lower::Place::Path(strs(&nf(it)[0])), &[])? else {
         return Ok(None);
@@ -3112,7 +3115,7 @@ fn user_iter(lw: &mut Lw, e: &V, it: &V, s: usize, di: usize, name: Option<Strin
 
     lw.cur = Some(xb);
     for (k, x) in slots.iter().enumerate() {
-        lw.slots[*x] = (xp[k], slot_tys[k]);
+        lw.rebind_slot(*x, xp[k], slot_tys[k]);
     }
     Ok(Some(lw.unit()))
 }
@@ -3150,7 +3153,7 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
 
     lw.cur = Some(hb);
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (hp[k + 1], slot_tys[k]);
+        lw.rebind_slot(*s, hp[k + 1], slot_tys[k]);
     }
     let (bb, _) = lw.new_block(&[]);
     let cond = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: c.ity, a: hp[0], b: c.end });
@@ -3222,7 +3225,7 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
 
     lw.cur = Some(xb);
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (xp[k], slot_tys[k]);
+        lw.rebind_slot(*s, xp[k], slot_tys[k]);
     }
     Ok(Some(lw.unit()))
 }
@@ -3540,7 +3543,7 @@ fn user_iter_loop(lw: &mut Lw, e: &V, pat: &V, it_e: &V, body: &V, di: usize, li
     // 先頭: `next(&mut it)` の結果で抜けるか決める。
     lw.cur = Some(hb);
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (hp[k], slot_tys[k]);
+        lw.rebind_slot(*s, hp[k], slot_tys[k]);
     }
     let Some(o) = lw.call_method(it_e, di, super::method_lower::Place::Path(vec![hidden.clone()]), &[])? else {
         return Ok(None);
@@ -3584,7 +3587,7 @@ fn user_iter_loop(lw: &mut Lw, e: &V, pat: &V, it_e: &V, body: &V, di: usize, li
 
     lw.cur = Some(xb);
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (xp[k], slot_tys[k]);
+        lw.rebind_slot(*s, xp[k], slot_tys[k]);
     }
     Ok(Some(lw.unit()))
 }

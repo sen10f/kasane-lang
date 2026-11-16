@@ -494,6 +494,8 @@ impl<'a> Lw<'a> {
     fn lower(mut self) -> LR<Vec<(Func, BTreeSet<String>)>> {
         let d = self.def;
         let body = d.body.as_ref().expect("候補は本体を持つ");
+        let rewritten = ufcs_rewrite(body, self.p, &d.file);
+        let body = rewritten.as_ref().unwrap_or(body);
         let mut params = vec![];
         for (_, t) in &d.params {
             let st = self.decl_ty(t);
@@ -1723,9 +1725,18 @@ impl<'a> Lw<'a> {
         self.cur = Some(jb);
         let off = carry as usize;
         for (i, s) in slots.iter().enumerate() {
-            self.slots[*s] = (jp[off + i], slot_tys[i]);
+            self.rebind_slot(*s, jp[off + i], slot_tys[i]);
         }
         Ok(Some(if carry { jp[0] } else { self.unit() }))
+    }
+
+    /// 局所変数 `s` の値をブロックの引数 `v` に替える (Vec / String のヘッダの型 `hdr_ty` を引き継ぐ)。
+    pub(super) fn rebind_slot(&mut self, s: usize, v: VId, t: Ty) {
+        let old = self.slots[s].0;
+        if let Some(h) = self.coll.hdr_ty.get(&old).copied() {
+            self.coll.hdr_ty.entry(v).or_insert(h);
+        }
+        self.slots[s] = (v, t);
     }
 
     fn while_(&mut self, e: &V) -> LR<Option<VId>> {
@@ -1748,7 +1759,7 @@ impl<'a> Lw<'a> {
         self.goto(hb, entry);
         self.cur = Some(hb);
         for (i, s) in slots.iter().enumerate() {
-            self.slots[*s] = (hp[i], tys[i]);
+            self.rebind_slot(*s, hp[i], tys[i]);
         }
         let (xb, xp) = self.new_block(&tys);
         let mut body_start = hb;
@@ -1778,7 +1789,7 @@ impl<'a> Lw<'a> {
         }
         self.cur = Some(xb);
         for (i, s) in slots.iter().enumerate() {
-            self.slots[*s] = (xp[i], tys[i]);
+            self.rebind_slot(*s, xp[i], tys[i]);
         }
         Ok(Some(self.unit()))
     }
@@ -2077,5 +2088,62 @@ pub fn dump_hidden(prog: Option<&Program>, user: &[usize]) {
     eprint!("{}", kir::print_module(&lo.module));
     for (f, why) in &lo.unsupported {
         eprintln!("kir: 未対応 {}: {}", f, why);
+    }
+}
+
+/// 完全修飾のメソッド呼び出し `core.num.i32.checked_shl(x, n)` / `core.slice.get(&a, i)` を、受け手を第 1 引数にしたメソッド呼び出し
+/// (`x.checked_shl(n)` / `a.get(i)`) の木に直す (式 ID は同じ)。直す所がなければ `None`。
+fn ufcs_rewrite(v: &V, p: &crate::program::Program, file: &str) -> Option<V> {
+    match v {
+        V::Node(n, fs, line, id) => {
+            let mut changed = false;
+            let mut fs2: Vec<V> = fs
+                .iter()
+                .map(|x| match ufcs_rewrite(x, p, file) {
+                    Some(y) => {
+                        changed = true;
+                        y
+                    }
+                    None => x.clone(),
+                })
+                .collect();
+            if *n == "Call" && fs2.len() >= 2 && matches!(fs2.get(2), Some(V::Nil) | None) && nname(&fs2[0]) == "Path" {
+                let segs = strs(&nf(&fs2[0])[0]);
+                let m = segs.last().map(|x| x.as_str()).unwrap_or("");
+                let assoc = m.starts_with("from_") || m.starts_with("try_from") || m == "parse" || m == "new" || m == "with_capacity";
+                let ty_ok = (segs.len() == 4 && segs[1] == "num" && Ty::parse(&segs[2]).is_some()) || (segs.len() == 3 && segs[1] == "slice");
+                let args = items(&fs2[1]).to_vec();
+                let bodiless = matches!(p.resolve(&segs, file).map(|r| r.target), Some(Tgt::Sig(di) | Tgt::Fn(di)) if p.defs[di].body.is_none());
+                if segs[0] == "core" && ty_ok && !assoc && bodiless && !args.is_empty() {
+                    // `&x` / `&mut x` の受け手は、メソッド呼び出しの自動の借用と同じなので `x` にする。
+                    let mut recv = args[0].clone();
+                    if nname(&recv) == "Unary" && matches!(st(&nf(&recv)[0]).as_str(), "&" | "&mut") && nname(&nf(&recv)[1]) == "Path" {
+                        recv = nf(&recv)[1].clone();
+                    }
+                    return Some(V::Node("MCall", vec![recv, V::S(m.to_string()), V::L(args[1..].to_vec()), V::Nil], *line, *id));
+                }
+            }
+            if changed {
+                fs2.shrink_to_fit();
+                Some(V::Node(n, fs2, *line, *id))
+            } else {
+                None
+            }
+        }
+        V::L(xs) => {
+            let mut changed = false;
+            let ys: Vec<V> = xs
+                .iter()
+                .map(|x| match ufcs_rewrite(x, p, file) {
+                    Some(y) => {
+                        changed = true;
+                        y
+                    }
+                    None => x.clone(),
+                })
+                .collect();
+            changed.then(|| V::L(ys))
+        }
+        _ => None,
     }
 }

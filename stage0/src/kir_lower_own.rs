@@ -679,7 +679,7 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
     lw.cur = Some(jb);
     let off = carry as usize;
     for (k, x) in slots.iter().enumerate() {
-        lw.slots[*x] = (jp[off + k], slot_tys[k]);
+        lw.rebind_slot(*x, jp[off + k], slot_tys[k]);
     }
     let _ = Term::Unreachable;
     Ok(Some(if carry { jp[0] } else { lw.unit() }))

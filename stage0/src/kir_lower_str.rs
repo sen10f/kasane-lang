@@ -101,6 +101,16 @@ impl<'a> Lw<'a> {
                     Err(e) => Err(e),
                 })
             }
+            // `s.chars()` を局所に持つ: 残りの `&str` そのものが反復子の状態 (`chars_next` が読んで進める)。
+            "chars" => {
+                if !matches!(kind, coll::Kind::Str) || !args.is_empty() {
+                    return None;
+                }
+                if self.vty(h) != self.fat_ty() || self.ty_of(e).ok() != Some(self.fat_ty()) {
+                    return None;
+                }
+                Some(Ok(Some(h)))
+            }
             // `&str` の先頭/末尾から ASCII 空白だけを削る。結果は元の文字列の部分 (ptr, len) の fat 値。
             "trim" | "trim_start" | "trim_end" => {
                 if !matches!(kind, coll::Kind::Str) {
@@ -774,3 +784,83 @@ impl<'a> Lw<'a> {
 }
 
 
+
+impl<'a> Lw<'a> {
+    /// `it.next()` (`it` は局所の `s.chars()` の反復子 = 残りの `&str`): 空なら `None`、そうでなければ先頭の文字を UTF-8 から復号して
+    /// `Some(c)` にし、`it` を文字の幅だけ進める (`for c in s.chars()` と同じ復号。`it` は合流へ渡す局所)。
+    pub(super) fn chars_next(&mut self, e: &V, s: usize) -> LR<Option<VId>> {
+        let line = nline(e);
+        let res = self.ty_of(e)?;
+        if res != Ty::Opt(Pay::U32) {
+            return self.err(line, "chars の next の結果が Option<char> ではない");
+        }
+        let fat = self.fat_ty();
+        let cur = self.read_slot(s);
+        let ptr = self.emit(Ty::Ptr, Op::Field { a: cur, off: 0 });
+        let len = self.emit(Ty::Usize, Op::Field { a: cur, off: 8 });
+        let zero = self.emit(Ty::Usize, Op::Const(0));
+        let (some_b, _) = self.new_block(&[]);
+        let (t1, _) = self.new_block(&[]);
+        let (t2, _) = self.new_block(&[]);
+        let (w1, _) = self.new_block(&[]);
+        let (w2, _) = self.new_block(&[]);
+        let (w3, _) = self.new_block(&[]);
+        let (w4, _) = self.new_block(&[]);
+        // join(結果, 残りの ptr, 残りの len)
+        let (join, jp) = self.new_block(&[res, Ty::Ptr, Ty::Usize]);
+        let empty = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: len, b: zero });
+        let none = self.emit(res, Op::Const(0));
+        self.branch(empty, (join, vec![none, ptr, len]), (some_b, vec![]));
+        self.cur = Some(some_b);
+        let b0 = self.emit(Ty::U8, Op::MemLoad { p: ptr, off: 0 });
+        let b0u = self.emit(Ty::U32, Op::Conv { src: Ty::U8, a: b0 });
+        let c80 = self.emit(Ty::U32, Op::Const(0x80));
+        let lt80 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::U32, a: b0u, b: c80 });
+        self.branch(lt80, (w1, vec![]), (t1, vec![]));
+        self.cur = Some(t1);
+        let ce0 = self.emit(Ty::U32, Op::Const(0xE0));
+        let lte0 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::U32, a: b0u, b: ce0 });
+        self.branch(lte0, (w2, vec![]), (t2, vec![]));
+        self.cur = Some(t2);
+        let cf0 = self.emit(Ty::U32, Op::Const(0xF0));
+        let ltf0 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::U32, a: b0u, b: cf0 });
+        self.branch(ltf0, (w3, vec![]), (w4, vec![]));
+        for (blk, n, mask) in [(w1, 1u32, 0x7Fi128), (w2, 2, 0x1F), (w3, 3, 0x0F), (w4, 4, 0x07)] {
+            self.cur = Some(blk);
+            let mut acc: Option<VId> = None;
+            for k in 0..n {
+                let ch = if k == 0 {
+                    b0u
+                } else {
+                    let kc = self.emit(Ty::Usize, Op::Const(k as i128));
+                    let p = self.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: kc });
+                    let b = self.emit(Ty::U8, Op::MemLoad { p, off: 0 });
+                    self.emit(Ty::U32, Op::Conv { src: Ty::U8, a: b })
+                };
+                let m = self.emit(Ty::U32, Op::Const(if k == 0 { mask } else { 0x3F }));
+                let masked = self.emit(Ty::U32, Op::Bool(BoolOp::And, ch, m));
+                let sh = 6 * (n - 1 - k);
+                let part = if sh == 0 {
+                    masked
+                } else {
+                    let ns = self.emit(Ty::U32, Op::Const(sh as i128));
+                    self.emit(Ty::U32, Op::Shift { left: true, a: masked, n: ns })
+                };
+                acc = Some(match acc {
+                    None => part,
+                    Some(a) => self.emit(Ty::U32, Op::Bool(BoolOp::Or, a, part)),
+                });
+            }
+            let w = self.emit(Ty::Usize, Op::Const(n as i128));
+            // 不正な長さ (残りが幅より短い) は `&str` の不変条件 (UTF-8) で起きない。
+            let np = self.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: w });
+            let nl = self.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: len, b: w });
+            let some = self.emit(res, Op::Some(acc.expect("n >= 1")));
+            self.goto(join, vec![some, np, nl]);
+        }
+        self.cur = Some(join);
+        let nf2 = self.emit(fat, Op::Make { variant: None, fields: vec![jp[1], jp[2]] });
+        self.assign_slot(s, nf2);
+        Ok(Some(jp[0]))
+    }
+}

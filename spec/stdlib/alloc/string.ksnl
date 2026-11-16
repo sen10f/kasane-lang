@@ -216,6 +216,102 @@ fn alloc.string.String.push_u64[A: alloc.alloc.Allocator](self: &mut alloc.strin
     Ok(())
 end alloc.string.String.push_u64
 
+// `text` の `from` を全て `to` に替えた新しい `String` (空の `from` は置き換えずに複製する)。
+fn alloc.string.String.replace[A: alloc.alloc.Allocator](allocator: A, text: &str, from: &str, to: &str) -> Result<alloc.string.String<A>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(allocator)
+    let hay = text.as_bytes()
+    let n = text.len()
+    let m = from.len()
+    if m == 0usize {
+        match out.push_str(text) {
+            Ok(_done) => {
+            }
+            Err(error) => {
+                return Err(error)
+            }
+        }
+        return Ok(out)
+    }
+    let mut start = 0usize
+    let mut i = 0usize
+    while i < n {
+        let mut same = false
+        if i.wrapping_add(m) <= n {
+            same = true
+            let pat = from.as_bytes()
+            let mut k = 0usize
+            while k < m {
+                let mut eq = false
+                match hay.get(i.wrapping_add(k)) {
+                    Some(x) => {
+                        match pat.get(k) {
+                            Some(y) => {
+                                eq = *x == *y
+                            }
+                            None => {
+                            }
+                        }
+                    }
+                    None => {
+                    }
+                }
+                if eq {
+                    k = k.wrapping_add(1usize)
+                } else {
+                    same = false
+                    k = m
+                }
+            }
+        }
+        if same {
+            match text.split_at(start) {
+                Some((_before, rest)) => {
+                    match rest.split_at(i.wrapping_sub(start)) {
+                        Some((piece, _after)) => {
+                            match out.push_str(piece) {
+                                Ok(_done) => {
+                                }
+                                Err(error) => {
+                                    return Err(error)
+                                }
+                            }
+                        }
+                        None => {
+                        }
+                    }
+                }
+                None => {
+                }
+            }
+            match out.push_str(to) {
+                Ok(_done) => {
+                }
+                Err(error) => {
+                    return Err(error)
+                }
+            }
+            i = i.wrapping_add(m)
+            start = i
+        } else {
+            i = i.wrapping_add(1usize)
+        }
+    }
+    match text.split_at(start) {
+        Some((_before, rest)) => {
+            match out.push_str(rest) {
+                Ok(_done) => {
+                }
+                Err(error) => {
+                    return Err(error)
+                }
+            }
+        }
+        None => {
+        }
+    }
+    Ok(out)
+end alloc.string.String.replace
+
 // 残り `extra` バイトを書ける余裕を確保する (足りなければ `Buf` を `2 * cap + 4` か必要量のどちらか大きい方へ広げる)。
 fn alloc.string.String.reserve_bytes[A: alloc.alloc.Allocator](self: &mut alloc.string.String<A>, extra: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let want = self.buf.len().wrapping_add(extra)
