@@ -370,6 +370,23 @@ impl Place for PlPlace {
         }
     }
 }
+/// 参照越しに分解したタプルの要素の場所 (`match &mut t { (a, b) => *a = .. }`)。
+pub struct TuplePlace(pub Rc<dyn Place>, pub usize);
+impl Place for TuplePlace {
+    fn get(&self) -> Val {
+        match self.0.get() {
+            Val::Tuple(t) => t[self.1].clone(),
+            _ => Val::Unit,
+        }
+    }
+    fn set(&self, v: Val) {
+        if let Val::Tuple(t) = self.0.get() {
+            let mut t2 = (*t).clone();
+            t2[self.1] = v;
+            self.0.set(Val::Tuple(Rc::new(t2)));
+        }
+    }
+}
 pub struct MapPlace(pub Rc<RefCell<MapV>>, pub usize);
 impl Place for MapPlace {
     fn get(&self) -> Val {

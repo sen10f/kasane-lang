@@ -1272,6 +1272,17 @@ impl Interp {
             sc_declare(sc, &st(&f[0]), v);
             return Ok(true);
         }
+        // 参照越しの分解 (`&mut T` / `&T` の値を `Some(v)` などで分解) の束縛は、欄への参照にする (Rust の既定の束縛モード。
+        // ネイティブと同じく `*v = ..` が元の値へ書ける)。参照の連鎖の一番内側の場所を持ち回る。
+        let mut host: Option<Rc<dyn Place>> = None;
+        {
+            let mut cur = v.clone();
+            while let Val::Ref(p) = &cur {
+                host = Some(p.clone());
+                let nx = p.get();
+                cur = nx;
+            }
+        }
         let v = dr(&v);
         match n {
             "PLit" => {
@@ -1285,8 +1296,12 @@ impl Interp {
                 if t.len() != ps.len() {
                     return Ok(false);
                 }
-                for (p, x) in ps.iter().zip(t.iter()) {
-                    if !self.bind(p, x.clone(), sc)? {
+                for (i, (p, x)) in ps.iter().zip(t.iter()).enumerate() {
+                    let x = match &host {
+                        Some(h) => Val::Ref(Rc::new(TuplePlace(h.clone(), i))),
+                        None => x.clone(),
+                    };
+                    if !self.bind(p, x, sc)? {
                         return Ok(false);
                     }
                 }
@@ -1324,8 +1339,12 @@ impl Interp {
                 if e.pl.len() != ps.len() {
                     return Ok(false);
                 }
-                for (p, x) in ps.iter().zip(e.pl.iter()) {
-                    if !self.bind(p, x.clone(), sc)? {
+                for (i, (p, x)) in ps.iter().zip(e.pl.iter()).enumerate() {
+                    let x = match &host {
+                        Some(h) => Val::Ref(Rc::new(PlPlace(h.clone(), i))),
+                        None => x.clone(),
+                    };
+                    if !self.bind(p, x, sc)? {
                         return Ok(false);
                     }
                 }
@@ -1335,7 +1354,10 @@ impl Interp {
                 let Val::Struct(s) = &v else { return Ok(false) };
                 for fp in items(&f[1]) {
                     let fnm = st(&items(fp)[0]);
-                    let x = s.get(&fnm).unwrap_or(Val::Unit);
+                    let x = match &host {
+                        Some(_) => Val::Ref(Rc::new(FieldPlace(s.clone(), fnm.clone()))),
+                        None => s.get(&fnm).unwrap_or(Val::Unit),
+                    };
                     if !self.bind(&items(fp)[1], x, sc)? {
                         return Ok(false);
                     }

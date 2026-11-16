@@ -186,3 +186,165 @@ end t.main
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     assert_eq!(text(&o.stdout), "abc\nabc\nok\n");
 }
+
+const REFBIND_IFLET_MUT_REF_BIND_MISMATCH: &str = r#"// expect-accept
+// if let で &mut Option の中身を可変束縛して書き戻す（match の参照越し束縛、cheat sheet 205 行）
+fn t.bump(opt: &mut Option<i32>, delta: i32) -> bool uses [] panics never
+    if let Some(v) = opt {
+        *v = v.wrapping_add(delta)
+        true
+    } else {
+        false
+    }
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut opt = Some(5i32)
+    core.check.eq(t.bump(&mut opt, 3i32), true)
+    std.io.print_line("iflet_mut ok")
+end t.main
+"#;
+
+#[test]
+fn ref_bind_writes_through_iflet_mut_ref_bind_mismatch() {
+    // 段 2: 参照越しの分解の束縛は欄への参照 (ネイティブと同じ。`*v = ..` が元の値へ書ける)
+    let t = Tmp::new("par_iflet_mut_ref_bind_mismatch", REFBIND_IFLET_MUT_REF_BIND_MISMATCH);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "iflet_mut ok");
+}
+
+const REFBIND_FP_MATCH_ASSIGN_PROBE: &str = r#"// expect-accept
+// match で &mut Option の束縛を通じて代入（if let 版と同じ木走査/ネイティブ分岐の調査）
+fn t.bump_match(opt: &mut Option<i32>, delta: i32) -> bool uses [] panics never
+    match opt {
+        Some(v) => {
+            *v = v.wrapping_add(delta)
+            true
+        }
+        None => {
+            false
+        }
+    }
+end t.bump_match
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut opt = Some(5i32)
+    core.check.eq(t.bump_match(&mut opt, 3i32), true)
+    std.io.print_line("match_assign ok")
+end t.main
+"#;
+
+#[test]
+fn ref_bind_writes_through_fp_match_assign_probe() {
+    // 段 2: 参照越しの分解の束縛は欄への参照 (ネイティブと同じ。`*v = ..` が元の値へ書ける)
+    let t = Tmp::new("par_fp_match_assign_probe", REFBIND_FP_MATCH_ASSIGN_PROBE);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "match_assign ok");
+}
+
+const REFBIND_FP_ENUM_VARIANT_LIKE: &str = r#"// expect-accept
+// &mut 列挙体を match で分解し変種の欄を書き戻す
+enum t.Kind pub
+    A(i32)
+    B(i32)
+end t.Kind
+
+fn t.bump_kind(k: &mut t.Kind, d: i32) -> () uses [] panics never
+    match k {
+        t.Kind.A(v) => {
+            *v = v.wrapping_add(d)
+        }
+        t.Kind.B(v) => {
+            *v = v.wrapping_add(d)
+        }
+    }
+end t.bump_kind
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut k = t.Kind.A(5i32)
+    t.bump_kind(&mut k, 3i32)
+    match k {
+        t.Kind.A(v) => {
+            core.check.eq(v, 8i32)
+        }
+        t.Kind.B(_v) => {
+            core.panic.panic("wrong variant")
+        }
+    }
+    std.io.print_line("enum_variant ok")
+end t.main
+"#;
+
+#[test]
+fn ref_bind_writes_through_fp_enum_variant_like() {
+    // 段 2: 参照越しの分解の束縛は欄への参照 (ネイティブと同じ。`*v = ..` が元の値へ書ける)
+    let t = Tmp::new("par_fp_enum_variant_like", REFBIND_FP_ENUM_VARIANT_LIKE);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "enum_variant ok");
+}
+
+const REFBIND_REFBIND: &str = r#"type t.S
+    a: i32
+    b: i32
+end t.S
+
+fn t.tup(p: &mut (i32, i32)) -> () uses [] panics never
+    let (x, y) = p
+    *x = x.wrapping_add(1i32)
+    *y = y.wrapping_add(10i32)
+end t.tup
+
+fn t.st(s: &mut t.S) -> () uses [] panics never
+    let t.S { a: a, b: b } = s
+    *a = a.wrapping_add(5i32)
+    *b = b.wrapping_add(7i32)
+end t.st
+
+fn t.nest(o: &mut Option<(i32, i32)>) -> () uses [] panics never
+    match o {
+        Some((x, _y)) => {
+            *x = x.wrapping_add(100i32)
+        }
+        None => ()
+    }
+end t.nest
+
+fn t.rd(o: &Option<i32>) -> i32 uses [] panics never
+    match o {
+        Some(v) => *v
+        None => 0i32
+    }
+end t.rd
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut p = (1i32, 2i32)
+    t.tup(&mut p)
+    let (x, y) = p
+    core.check.eq(x, 2i32)
+    core.check.eq(y, 12i32)
+    let mut s = t.S { a: 1i32, b: 2i32 }
+    t.st(&mut s)
+    core.check.eq(s.a, 6i32)
+    core.check.eq(s.b, 9i32)
+    let mut o = Some((1i32, 2i32))
+    t.nest(&mut o)
+    match o {
+        Some((q, _w)) => core.check.eq(q, 101i32)
+        None => core.panic.panic("none")
+    }
+    core.check.eq(t.rd(&Some(4i32)), 4i32)
+    std.io.print_line("refbind ok")
+end t.main
+"#;
+
+#[test]
+fn ref_bind_writes_through_refbind() {
+    // 段 2: 参照越しの分解の束縛は欄への参照 (ネイティブと同じ。`*v = ..` が元の値へ書ける)
+    let t = Tmp::new("par_refbind", REFBIND_REFBIND);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "refbind ok");
+}
