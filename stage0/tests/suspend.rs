@@ -257,15 +257,17 @@ end t.main
     assert!(err.contains("no executor"), "stderr: {}", err);
 }
 
-/// `block_on` の入れ子は第 1 段では実行時の panic。
+/// `block_on` の入れ子の実行時の panic (検査 E4023 の裏の備え)。検査は `block_on(閉包の式)` の形だけ見るので、
+/// 閉包を局所に束縛して渡す形は検査を通り、実行時に止まる。
 #[test]
 fn nested_block_on_panics() {
     let src = "fn t.main() -> () uses [suspend] panics may
-    std.task.block_on(fn() -> () capture [] {
+    let g = fn() -> () capture [] {
         std.task.block_on(fn() -> () capture [] {
             std.task.yield_now()
         })
-    })
+    }
+    std.task.block_on(g)
 end t.main
 ";
     let (_out, rc, err) = run_src("suspend_nested", src);

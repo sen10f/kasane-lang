@@ -1,0 +1,11 @@
+// expect: E4023
+fn t.main() -> () uses [io.console, suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let a = std.task.spawn_local(fn() -> () capture [] {
+            std.task.block_on(fn() -> () capture [] {
+                std.task.yield_now()
+            })
+        })
+        core.mem.drop(a)
+    })
+end t.main

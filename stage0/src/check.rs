@@ -3143,6 +3143,7 @@ impl<'a> Checker<'a> {
         let mut seen = HashSet::new();
         self.diags.retain(|d| seen.insert((d.file.clone(), d.code.clone(), d.fqn.clone(), d.line, d.msg.clone())));
         self.check_recursion();
+        self.check_nested_block_on();
     }
 
     fn check_elision(&mut self, di: usize) {
@@ -5704,7 +5705,12 @@ impl<'a> Checker<'a> {
                 }
                 let (lbase, lstate) = (self.lin.len(), self.lin.clone());
                 let mut inputs = vec![];
+                // 構造体 (`type`) の `{..}` パターンは必ず一致する。`if let` が作る「他の全部」の腕には到達しない。
+                let first_irrefutable = items(&f[1]).first().map_or(false, |a| self.irrefutable_struct_pat(&items(a)[0], &sty));
                 for arm in items(&f[1]) {
+                    if first_irrefutable && nname(&items(arm)[0]) == "PWild" && !nf(&items(arm)[0]).is_empty() {
+                        continue;
+                    }
                     self.lin = lstate.clone();
                     self.moved = base.clone();
                     let mut inner = env.clone();
@@ -6152,6 +6158,25 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 構造体 (列挙でない `type`) を `T { f: p, .. }` で分解するパターンで、各欄のパターンも必ず一致するか。
+    fn irrefutable_struct_pat(&self, pat: &V, ty: &V) -> bool {
+        if nname(pat) != "PStruct" || is_nil(ty) || tag(ty) != "named" {
+            return false;
+        }
+        let Some(&i) = self.p.types.get(&st(tel(ty, 1))) else { return false };
+        if self.def(i).kw != "type" {
+            return false;
+        }
+        fn ok(p: &V) -> bool {
+            match nname(p) {
+                "PWild" | "PBind" => true,
+                "PTuple" => items(&nf(p)[0]).iter().all(ok),
+                _ => false,
+            }
+        }
+        items(&nf(pat)[1]).iter().all(|fl| ok(&items(fl)[1]))
+    }
+
     /// 腕の最上位のパターンが `_` で、スクラティニーが線形な値なら、その値を捨てている (4.4)。
     fn lin_wild_top(&mut self, pat: &V, ty: &V, line: usize) {
         if nname(pat) == "PWild" && self.is_linear(ty) {
@@ -6509,6 +6534,64 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    /// `std.task.block_on` の入れ子 (仕様 5.6、E4023): `block_on` に渡す閉包の本体から、`block_on` を直接呼ぶ、
+    /// または呼び出しグラフ上で `block_on` へ届くユーザの関数を呼ぶものを拒む。呼び出しグラフは名前の候補の和なので保守側に寄る。
+    fn check_nested_block_on(&mut self) {
+        const B: &str = "std.task.block_on";
+        let user = self.user.clone();
+        let mut memo: HashMap<String, bool> = HashMap::new();
+        for &i in &user {
+            if self.def(i).kw != "fn" {
+                continue;
+            }
+            let Some(body) = self.def(i).body.clone() else { continue };
+            self.d = i;
+            let mut nodes = vec![];
+            walk(&body, &mut nodes);
+            for n in nodes {
+                if nname(n) != "Call" {
+                    continue;
+                }
+                let args = items(&nf(n)[1]);
+                if !matches!(self.callee_target(&nf(n)[0], &Env::new()), Some((ref t, _)) if t == B) || args.len() != 1 || nname(&args[0]) != "Closure" {
+                    continue;
+                }
+                let mut inner = vec![];
+                walk(&args[0], &mut inner);
+                for c in inner {
+                    if nname(c) != "Call" || std::ptr::eq(c, n) {
+                        continue;
+                    }
+                    let Some((t, _)) = self.callee_target(&nf(c)[0], &Env::new()) else { continue };
+                    let hit = t == B || {
+                        let mut seen = BTreeSet::new();
+                        self.reaches(&t, B, &mut seen, &mut memo)
+                    };
+                    if hit {
+                        self.tdiag("E4023", format!("`{}` may call `std.task.block_on` inside a `block_on` closure: nested `block_on` is not supported", t), nline(c));
+                    }
+                }
+            }
+        }
+    }
+
+    fn reaches(&self, from: &str, to: &str, seen: &mut BTreeSet<String>, memo: &mut HashMap<String, bool>) -> bool {
+        if from == to {
+            return true;
+        }
+        if let Some(&r) = memo.get(from) {
+            return r;
+        }
+        if !seen.insert(from.to_string()) {
+            return false;
+        }
+        let r = self.graph.get(from).map_or(false, |s| s.iter().any(|c| self.reaches(c, to, seen, memo)));
+        if r {
+            memo.insert(from.to_string(), true);
+        }
+        r
     }
 
     fn check_recursion(&mut self) {

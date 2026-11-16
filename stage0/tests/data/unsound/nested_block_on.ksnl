@@ -1,0 +1,8 @@
+// expect: E4023
+fn t.main() -> () uses [suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        std.task.block_on(fn() -> () capture [] {
+            std.task.yield_now()
+        })
+    })
+end t.main
