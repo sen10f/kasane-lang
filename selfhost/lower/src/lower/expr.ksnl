@@ -1449,6 +1449,8 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
             if loc != 0usize && lower.cx.is_slot(c, loc - 1usize) {
                 slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
                 sty = lower.cx.tyof_t(c, loc - 1usize)
+                // 借用は move 済みの値から作れない (注釈)。
+                lower.own.emit(c, loc - 1usize, "own.use ")?
             }
         }
         if slot == 0usize {
