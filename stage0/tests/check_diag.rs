@@ -100,6 +100,21 @@ fn correct_linear_programs_are_accepted() {
     }
 }
 
+/// 型検査だけを見る正しいコード (`tests/data/check_ok/`。KIR に下ろせない `dyn` を含む) は `ksn check` を通る。
+#[test]
+fn check_only_correct_programs_are_accepted() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/check_ok");
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    assert!(!names.is_empty(), "check_ok cases missing");
+    for p in names {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("check_ok_{}", stem), &fs::read_to_string(&p).unwrap());
+        let o = run(&["check", "--json"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "{}: {}", stem, text(&o.stdout));
+    }
+}
+
 /// 組・構造体・`Some` / `Ok` の中で領域を入れ替えて返す正しいコードは、ヘッダの位置どおりに通る (AST の借用検査)。
 /// 置き場は `linear_ok/` ではない: そこは KIR の検査 (`kir_borrowck_has_no_false_positives`) も通すが、
 /// KIR の検査は戻り値の領域を 1 つにまとめるので、これらを偽陽性にする (既知。`kir_borrowck.rs` の `ret_rg`)。
