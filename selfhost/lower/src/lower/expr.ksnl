@@ -558,7 +558,14 @@ end lower.expr.is_iter_name
 
 // 整数の既定の演算のメソッド (`wrapping_*`): 受け手は値のまま使う。
 fn lower.expr.is_wrapping(m: &str) -> bool uses [] panics may pub
-    m == "wrapping_add" || m == "wrapping_sub" || m == "wrapping_mul"
+    if m == "wrapping_add" || m == "wrapping_sub" || m == "wrapping_mul" {
+        return true
+    }
+    // 受け手を値で取る数値のメソッド (借用にならない)。
+    let a = m == "saturating_add" || m == "saturating_sub" || m == "saturating_mul"
+    let b = m == "checked_add" || m == "checked_sub" || m == "checked_mul"
+    let d = m == "sqrt" || m == "floor" || m == "ceil" || m == "trunc"
+    a || b || d
 end lower.expr.is_wrapping
 
 // 合流への分岐の引数: 結果 (あれば) と可変の局所の現在の値。

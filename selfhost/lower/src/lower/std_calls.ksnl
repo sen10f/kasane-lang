@@ -41,7 +41,7 @@ end lower.std_calls.has_fn
 fn lower.std_calls.has_method(fqn: &str) -> bool uses [] panics may pub
     let a = fqn == "alloc.string.String.as_str" || fqn == "core.str.len"
     let b = fqn == "core.option.Option.is_none" || fqn == "core.option.Option.is_some"
-    a || b || fqn == "core.option.Option.unwrap_or"
+    a || b || fqn == "core.option.Option.unwrap_or" || lower.std_calls.num_op(fqn) != ""
 end lower.std_calls.has_method
 
 // メソッド呼び出し。`vs` は受け手と引数の値 (受け手は宣言の self に合わせて参照か値)。
@@ -81,10 +81,114 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
     if fqn == "core.option.Option.unwrap_or" {
         return lower.std_calls.unwrap_or(env, c, vs, rty, t)
     }
+    let nop = lower.std_calls.num_op(fqn)
+    if nop != "" {
+        return lower.std_calls.num_call(env, c, fqn, nop, vs, rty, t)
+    }
     let why = lower.cx.cat2("標準のメソッド (未対応): ", fqn)?
     lower.cx.fail(c, why.as_str())?
     lower.expr.dummy(c, t)
 end lower.std_calls.method
+
+// 数値のメソッド (`num_op` の表): 受け手 (参照なら読み出す) と引数から、命令を 1 つ置く。
+fn lower.std_calls.num_call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, nop: &str, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let (ty, _m) = lower.std_calls.num_parts(fqn)
+    let recv = lower.std_calls.val_of(env, c, lower.tyk.at(vs.as_slice(), 0usize), rty)?
+    let rs = lower.cx.vs(recv)?
+    let tt = lower.tyk.text(env, c, t)?
+    let mut o = lower.cx.own(nop)?
+    if nop.starts_with("f") {
+        o.push('.')?
+        o.push_str(ty)?
+        o.push(' ')?
+        o.push_str(rs.as_str())?
+    } else if nop.starts_with("checked") {
+        o.push(' ')?
+        o.push_str(lower.expr.two(recv, lower.tyk.at(vs.as_slice(), 1usize))?.as_str())?
+    } else {
+        o.push('.')?
+        o.push_str(ty)?
+        o.push_str(".sat ")?
+        o.push_str(lower.expr.two(recv, lower.tyk.at(vs.as_slice(), 1usize))?.as_str())?
+    }
+    let v = lower.cx.def(c, tt.as_str(), o.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.std_calls.num_call
+
+// `core.num.<型>.<メソッド>` の、命令にそのまま下ろせるものの命令名 (なければ空)。
+// 整数の `saturating_add/sub/mul` は `add.T.sat`、`checked_add/sub/mul` は `checked.add`、
+// 浮動小数の `sqrt` `floor` `ceil` `trunc` `abs` は `fsqrt.T` など。
+fn lower.std_calls.num_op(fqn: &str) -> &'static str uses [] panics may pub
+    let (ty, m) = lower.std_calls.num_parts(fqn)
+    if ty == "" {
+        return ""
+    }
+    let flt = ty == "f64" || ty == "f32"
+    if !flt {
+        if m == "saturating_add" {
+            return "add"
+        }
+        if m == "saturating_sub" {
+            return "sub"
+        }
+        if m == "saturating_mul" {
+            return "mul"
+        }
+        if m == "checked_add" {
+            return "checked.add"
+        }
+        if m == "checked_sub" {
+            return "checked.sub"
+        }
+        if m == "checked_mul" {
+            return "checked.mul"
+        }
+        return ""
+    }
+    if m == "sqrt" {
+        return "fsqrt"
+    }
+    if m == "floor" {
+        return "ffloor"
+    }
+    if m == "ceil" {
+        return "fceil"
+    }
+    if m == "trunc" {
+        return "ftrunc"
+    }
+    if m == "abs" {
+        return "fabs"
+    }
+    ""
+end lower.std_calls.num_op
+
+// `core.num.T.m` を (T, m) に分ける。形が違えば空の組。
+fn lower.std_calls.num_parts(fqn: &str) -> (&str, &str) uses [] panics may pub
+    let mut cnt = 0usize
+    let mut ty = ""
+    let mut m = ""
+    let mut ok = true
+    for w in fqn.split(".") {
+        if cnt == 0usize && w != "core" {
+            ok = false
+        }
+        if cnt == 1usize && w != "num" {
+            ok = false
+        }
+        if cnt == 2usize {
+            ty = w
+        }
+        if cnt == 3usize {
+            m = w
+        }
+        cnt = cnt + 1usize
+    }
+    if !ok || cnt != 4usize {
+        return ("", "")
+    }
+    (ty, m)
+end lower.std_calls.num_parts
 
 // メソッド呼び出しの受け手と引数を評価して、`method` へ渡す。受け手は局所なら値 (スロットなら読み出し)、
 // 式なら式の値。`&self` でも参照の一時を作らない (Rust 版と同じく、値のまま使う)。
