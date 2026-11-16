@@ -1342,7 +1342,7 @@ python3 -I compare.py --group examples --mine native             # 一致 31 / �
 
 ### 24.3 まだ
 
-- `linear_ok` の食い違い 114 関数のうち、最初の差が **`Vec` / `String` 以外**のものが大半: 構造体・列挙型・`Option` / `Result` の局所の「移したかの印」(`frame.bytes 1`。15 件)、`Option<&T>` の中の参照の型 (`ptr`)、欄の参照 (`fieldaddr` の型が `ref<T>` と `ptr` で食い違う)、`match` の腕の束縛の `scope.end`・一時の `Result` の解放 (`String::from_str` の `match` など)、`if` / `while` の合流で引き回す局所の組 (move の後の復活)。
+- `linear_ok` の食い違い 58 関数 (下ろせた 403 のうち)、最初の差が **`Vec` / `String` 以外**のものが大半: 構造体・列挙型・`Option` / `Result` の局所の「移したかの印」(`frame.bytes 1`。15 件)、`Option<&T>` の中の参照の型 (`ptr`)、欄の参照 (`fieldaddr` の型が `ref<T>` と `ptr` で食い違う)、`match` の腕の束縛の `scope.end`・一時の `Result` の解放 (`String::from_str` の `match` など)、`if` / `while` の合流で引き回す局所の組 (move の後の復活)。
 - 一時値の `Vec` / `String` の `scope.end` と解放 (文の終わり) は未対応。`temp_as_str_same_statement` は実行は一致するが、KIR は違う (一時の枠を作る位置)。
 - 生成した小関数の本体は Rust 版の形ではない (呼び出し側だけ一致)。`Vec` のメソッドは `len` `is_empty` `push` `pop`、`String` は `len` `is_empty` `push_str` `as_str` のみ。`Vec.get` `clear` `as_slice` `iter` など、`String.from_str` の Rust 版の形 (`heap.alloc` とコピーのループ) は未着手 (`from_str` は従来の展開)。
 - **2 つ目の項目** (`core.check.eq` の char・小数・文字列、範囲と `Vec` 以外の `for`、スライス、`str` のメソッド) は、この段では手を付けていない。
