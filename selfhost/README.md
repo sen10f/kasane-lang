@@ -1255,3 +1255,59 @@ python3 -I compare.py --group examples --mine native             # 一致 22 / �
 ```
 
 端から端まで: 16.2 章・13.2 章の手順で、`lower.native` の出力 (`unsupported` の行がない本) を `selfhost/emit` の `emit.native` → clang (`kir_rt.c`・`sysrt.c`) → 実行し、Rust 版の `ksn build` の実行ファイルと比べた (作業は `/tmp`)。84 / 89 一致 (前も同じ)。
+
+## 23. KIR への下ろしの段 (4d)
+
+2026-11-16。ブランチ `selfhost/lower-4d` (`selfhost/lower-4c` の先頭から)。触ったのは `selfhost/lower/src/` (新規 `lower/own.ksnl`・`lower/chk.ksnl`、既存の `cx` `expr` `opt` `func` `inst` `tyk`、`lower.ksnl`) とこの章だけ。`stage0/`・`examples/`・テストの期待値は変えていない。
+
+結論を先に: **所有の注釈 (`own.*`) が Rust 版と同じ規則で出るようになり、`linear_ok` の一致が 136 → 201、`examples` が 22 → 31、`demo` は 3/4 になった。** `core.check.eq` の呼び出し側と、`$eq` / `$debug` の生成も入った。`Vec` / `String` の形 (22.3 の 2 つ目) は手を付けていない。
+
+### 23.1 下ろしたもの・直したもの
+
+- **所有の注釈** (`lower.own`。Rust 版 `kir_lower.rs` の `own_declare` / `own_emit` と同じ規則): 局所ごとに注釈の識別子 (`const.unit ()` の値) を `c.v.sl.own` に持つ。Copy でも線形でもない型 (`lower.own.is_copy` / `is_linear`。`derive Copy`・`Option` / `Result` は引数の合成・線形は宣言の印と欄・変種の型を再帰して調べる) の引数と `let` の束縛で、束縛の位置に単位の定数を作る (線形なら続けて `own.owe`)。出す場所は次のとおり。
+  - 局所の値としての読み出し: Copy でなければ `own.consume`。`局所.フィールド` は Copy でなければ `own.part`、Copy なら `own.use`。
+  - `&x` / `&mut x` の局所、借用の受け手 (`x.len()` の `&self`): `own.use`。値の受け手 (`x.into_name()`): `own.consume`。
+  - `Option` / `Result` の `match`: 対象が注釈つきの局所なら読むだけ (`own.use`)。腕の束縛は `own_declare`、非 Copy を束縛する腕 (と、線形な対象の `_` 以外の腕) の入口で対象を `own.consume`。利用者の列挙型の `match` は Rust 版も普通の読み (move) なので、そのまま。
+  - 再代入: 注釈つきの局所なら `own.init`、線形な値なら `own.owe`。
+  - これで `demo.shape.area`・`move_*`・`arm_*`・`temp_*` の差が消えた。入れ子の部分パターン・`let` のパターン・`with` の束縛・`?` や `break` の出口の注釈は未対応 (Rust 版の `drop_from` 側)。
+- **`core.check.eq`** (`lower.chk`): 整数と bool。呼び出し側は Rust 版と同じ形 (`call T.$eq` → `br_if` → 失敗側は `eprint` と `call T.$debug` と `abort` と `unreachable`)。`T.$eq` / `T.$debug` は生成した関数として出力に入る (`main` の下ろしの繰り返しで、項目の印 `lower.chk.GEN` の鍵から文字列を作る)。`$debug` は符号なし・符号つき (`conv.i64.T` で広げて `-` を先に書く)・bool。char・小数・文字列は未対応の理由で止める。
+- **`alloca` の位置**: Rust 版 `flush_allocas` と同じく、入口ブロックの先頭に集める (出力時に並べ替える)。ブロックの終わりで、そのブロックの局所のうちスロットのものを逆順に `scope.end`。
+- **`?` のブロックの順**: 成功の枝を先に作る (Rust 版の並び)。
+- **文字列・文字・バイトのリテラル**: 文字列のエスケープ (`\n \t \r \0 \\ \" \'`) を外した値で `static.bytes` を作る (`\x` / `\u` は未対応)。`'a'` は `const.u32 97`、`b'0'` は `const.u8 48` (UTF-8 も値にする)。**`char` の型の綴りを `char` から `u32` にした** (Rust 版の KIR で `char` は `u32`)。
+- **小さい直し**: `uses=[a,b]` の区切りを Rust 版と同じ `,` (空白なし) に。`wrapping_shl` / `wrapping_shr` (`shl.T.wrap`)、`T.from_str_radix` (`parseint.T`)、`std.env.arg_count` (`env.arg_count`)。型引数のない総称の鍵は `f<>` ではなく `f`。
+
+### 23.2 数字 (この段の開始時に測り直した値との比較)
+
+| 対象 | 前 | 後 |
+| --- | ---: | ---: |
+| `linear_ok` (459 関数): 一致 / 下ろせた | 136 / 403 | **201 / 403** |
+| `examples` (172 関数): 一致 / 下ろせた | 22 / 52 | **31 / 57** |
+| `examples/demo`: 一致 / 全体 | 2 / 4 | **3 / 4** |
+| `examples/tour`: 一致 / 全体 | 4 / 7 | 4 / 7 |
+| 端から端まで (emit → clang → 実行で Rust 版と一致 / `t.main` が全部下ろせた本) | 84 / 89 | **91 / 98** |
+
+- `demo` の残り 1 本 (`demo.main`) は 22.1 で書いたとおり `core.iter.fold(core.iter.range(..), ..)` を含み、Rust 版が段階 1 の対象外とするので、一致の相手がない。`tour` は 22 章と同じ 4/7。
+- 端から端まで: `stage0/tests/data/linear_ok` の 127 本のうち、`t.main` が全部下ろせたものを `lower.native` → `emit.native` → clang → 実行して、Rust 版 `ksn build` の実行ファイルと標準出力・標準エラー・終了コードを比べた。91 本が一致、7 本が clang で通らない (調べた `p09`・`p12`・`e02_d22_move_s_after_v_dead` は `String` を `i192` の値で持つ形で、22.4 の 3 と同じ原因。`lower` が `t.main` を全部下ろせる本が 89 → 98 に増えた)。差のある実行は 0 本。作業は `/tmp`。
+- `ksn check`: `selfhost/` の全パッケージで診断 0 件 (`probes/boxtree` の E4013 だけ期待どおり)。`selfhost/lower` の `ksn fmt --check` は通る。
+
+### 23.3 まだ
+
+- **`Vec` / `String` の形** (22.3 から変わらず。`linear_ok` の食い違い 202 関数のうち、最初の差がこの形のものが約 180): Rust 版は局所を `frame.bytes 24` のスロットに置き、`len` / `is_empty` / `push` を生成した小さい関数 (`alloc.string.String.len<std.alloc.System>` など) の呼び出しにする。`&String` / `&Vec` の引数・戻り値の型は `ptr`。こちらは枠を `vec` の集成体で持ち、メソッドを命令に展開し、型は `ref<agg#N>`。出力の形が型の綴りから変わるので、枠の持ち方 (`lower.vec`・`lower.str`・`lower.loops`・`opt.user_method` の全部) と、生成する小関数の本体 (emit が `mem.load` などを通す必要もある) をまとめて作り直す必要があり、この段では手を付けなかった。
+- **`for` の対象**: 範囲と `Vec` 以外 (`[a, b, c]`・`xs.iter()` の `&[T]`・`split`) 13 件。**スライス `&[T]`** は `fat` の値 (`field %0, +0` が ptr、`+8` が len。`xs.iter()` の `for` は要素を `ptr.add` と `mem.load` で読む。`m.sum` の KIR を `ksn kir` で見られる) で、型の下ろし 22 件・`as_slice` 7 件・`str` のメソッド・`core.slice.*` と一緒に要る。
+- **`panics` / `uses` を省略した関数** (`panics の値 (未対応)` が `examples` で 25 件): Rust 版は `infer.rs` の効果の推論 (不動点) で `uses` / `panics` を決めて頭に書く。`selfhost/effects` は宣言の検査で、推論はまだ。
+- 注釈の残り: 入れ子の部分パターン・`let` のパターン・`with`・出口 (`return` / `?` / `break` / `continue`) の `own.*` / `scope.end`、一時値の `scope.end`。
+- `shortener` ほか: クロージャ (`式の形 (未対応)`)・`HashMap` などの総称の標準型・`never` の型。
+
+### 23.4 処理系の不足 (stage0。直していない)
+
+22.4 の 3 つのまま。この段で新しく見つかったものはない。
+
+### 23.5 再現
+
+```
+cd selfhost/lower && ksn check && ksn fmt --check && ksn build --release
+python3 -I compare.py --group linear_ok --mine native --jobs 8   # 一致 201 / 全体 459 (下ろせた 403)
+python3 -I compare.py --group examples --mine native             # 一致 31 / 全体 172 (下ろせた 57)、demo 3/4、tour 4/7
+```
+
+端から端まで: 22.5 と同じ手順 (`selfhost/emit` の `ksn build --release` で `emit.native` を作り、各 `linear_ok` の本を `lower.native` → `emit.native` → clang (`kir_rt.c`・`sysrt.c`) → 実行)。91 / 98 一致。

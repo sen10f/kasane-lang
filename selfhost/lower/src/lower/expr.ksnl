@@ -63,6 +63,14 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     } else {
         lower.cx.set_val(c, loc - 1usize, r.v + 1usize)?
     }
+    // 再代入: move 済みが解け、線形なら新しい値の義務を負う (所有の注釈があるときだけ)。
+    if lower.own.id(c, loc - 1usize) != 0usize {
+        if lower.own.linear(env, c, r.t)? {
+            lower.own.emit(c, loc - 1usize, "own.owe ")?
+        } else {
+            lower.own.emit(c, loc - 1usize, "own.init ")?
+        }
+    }
     if stmt {
         return Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
     }
@@ -221,12 +229,20 @@ fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
             }
         }
     }
-    lower.expr.trunc(c, mark)
-    if has {
-        return Ok(lower.cx.R { v: res, t: t })
+    if !has {
+        res = lower.expr.unit(c)?
     }
-    let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: t })
+    // 局所の寿命の終わり (借用検査の注釈): スタックスロットの局所を逆順に `scope.end`。
+    let mut k = c.v.vals.len()
+    while k > mark {
+        k = k - 1usize
+        if lower.cx.is_slot(c, k) {
+            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+            let _e = lower.cx.def1(c, "unit", "scope.end ", sv)?
+        }
+    }
+    lower.expr.trunc(c, mark)
+    Ok(lower.cx.R { v: res, t: t })
 end lower.expr.block
 
 // `br_if %c, bT(), bF()` (引数なし) を足す。
@@ -259,7 +275,7 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     let name = resolve.ast.text(src, cn.a, cn.b)
     let (rv, meth) = lower.expr.split2(name)
     if rv != "" && lower.cx.find(c, rv) != 0usize {
-        if meth == "wrapping_add" || meth == "wrapping_sub" || meth == "wrapping_mul" {
+        if lower.expr.is_wrap_op(meth) {
             return lower.expr.wrapping(env, c, p, src, rv, meth, n.b, t)
         }
         // 局所の受け手の利用者のメソッド `x.m(..)`。
@@ -299,6 +315,25 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         core.mem.drop(dv)
         let u = lower.expr.unit(c)?
         return Ok(lower.cx.R { v: u, t: t })
+    }
+    if fqn.as_str() == "std.env.arg_count" {
+        let v = lower.cx.def(c, "usize", "env.arg_count")?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    let (nty, nm) = lower.std_calls.num_parts(fqn.as_str())
+    if nm == "from_str_radix" && resolve.ast.count(p, n.b) == 2usize {
+        let un = types.ty.UNKNOWN
+        let a0 = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 0usize), un)?
+        let a1 = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 1usize), un)?
+        let rt0 = lower.tyk.text(env, c, t)?
+        let op0 = lower.cx.cat2("parseint.", nty)?
+        let op1 = lower.cx.cat2(op0.as_str(), " ")?
+        let op2 = lower.cx.cat2(op1.as_str(), lower.expr.two(a0.v, a1.v)?.as_str())?
+        let v = lower.cx.def(c, rt0.as_str(), op2.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if fqn.as_str() == "core.check.eq" {
+        return lower.chk.eq(env, c, p, src, n, t)
     }
     if fqn.as_str() == "alloc.vec.Vec.new" {
         return lower.vec.new(env, c, t)
@@ -341,6 +376,61 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     let v = lower.cx.def(c, rt.as_str(), o.as_str())?
     Ok(lower.cx.R { v: v, t: rty })
 end lower.expr.call
+
+// 文字リテラルの中身 src[a..b] の値 (エスケープ `\n` `\t` `\r` `\0` `\\` `\'` `\"` と UTF-8)。
+fn lower.expr.chr_val(src: &[u8], a: usize, b: usize) -> (usize, bool) uses [] panics may pub
+    let b0 = match src.get(a) {
+        Some(x) => usize.from_u32(u32.from_u8(*x))
+        None => 0usize
+    }
+    if b0 == 92usize {
+        let e = match src.get(a + 1usize) {
+            Some(x) => usize.from_u32(u32.from_u8(*x))
+            None => 0usize
+        }
+        if e == 110usize {
+            return (10usize, true)
+        }
+        if e == 116usize {
+            return (9usize, true)
+        }
+        if e == 114usize {
+            return (13usize, true)
+        }
+        if e == 48usize {
+            return (0usize, true)
+        }
+        if e == 92usize || e == 34usize || e == 39usize {
+            return (e, true)
+        }
+        return (0usize, false)
+    }
+    if b0 < 128usize {
+        return (b0, true)
+    }
+    let mut n = 0usize
+    let mut v = 0usize
+    if b0 >= 240usize {
+        n = 3usize
+        v = b0 - 240usize
+    } else if b0 >= 224usize {
+        n = 2usize
+        v = b0 - 224usize
+    } else {
+        n = 1usize
+        v = b0 - 192usize
+    }
+    let mut i = 1usize
+    while i <= n && a + i < b {
+        let cb = match src.get(a + i) {
+            Some(x) => usize.from_u32(u32.from_u8(*x))
+            None => 128usize
+        }
+        v = v * 64usize + (cb - 128usize)
+        i = i + 1usize
+    }
+    (v, true)
+end lower.expr.chr_val
 
 // 型の合わない仮の値 (未対応のとき)。
 fn lower.expr.dummy(c: &mut lower.cx.Cx, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -470,22 +560,6 @@ fn lower.expr.field_src(v: usize, off: usize) -> Result<alloc.string.String<std.
     Ok(s)
 end lower.expr.field_src
 
-// バイト列 src[a..b] の 16 進 (小文字 2 桁ずつ)。
-fn lower.expr.hex_range(src: &[u8], a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
-    let digits = "0123456789abcdef"
-    let db = digits.as_bytes()
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    for i in core.iter.range(a, b) {
-        let v = match src.get(i) {
-            Some(x) => usize.from_u32(u32.from_u8(*x))
-            None => 0usize
-        }
-        out.push_str(resolve.ast.text(db, v / 16usize, v / 16usize + 1usize))?
-        out.push_str(resolve.ast.text(db, v % 16usize, v % 16usize + 1usize))?
-    }
-    Ok(out)
-end lower.expr.hex_range
-
 fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
     let cr = lower.expr.expr(env, c, p, src, n.a, types.ty.BOOL)?
@@ -556,9 +630,15 @@ fn lower.expr.is_iter_name(p: &parse.cur.P, src: &[u8], tok: usize) -> bool uses
     resolve.ast.tok_text(p, src, tok) == "iter"
 end lower.expr.is_iter_name
 
+// 整数の `wrapping_add/sub/mul/shl/shr` (命令 `add.T.wrap` など)。
+fn lower.expr.is_wrap_op(m: &str) -> bool uses [] panics may pub
+    let a = m == "wrapping_add" || m == "wrapping_sub" || m == "wrapping_mul"
+    a || m == "wrapping_shl" || m == "wrapping_shr"
+end lower.expr.is_wrap_op
+
 // 整数の既定の演算のメソッド (`wrapping_*`): 受け手は値のまま使う。
 fn lower.expr.is_wrapping(m: &str) -> bool uses [] panics may pub
-    if m == "wrapping_add" || m == "wrapping_sub" || m == "wrapping_mul" {
+    if lower.expr.is_wrap_op(m) {
         return true
     }
     // 受け手を値で取る数値のメソッド (借用にならない)。
@@ -634,7 +714,8 @@ fn lower.expr.letx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     let tk = parse.cur.peek_at(p, pn.a)
     let name = resolve.ast.text(src, tk.start, tk.stop)
     let t = r.t
-    lower.opt.bind(env, c, name, r.v, sn.b != 0usize, t)?
+    let lk = lower.opt.bind(env, c, name, r.v, sn.b != 0usize, t)?
+    lower.own.declare(env, c, lk, t)?
     Ok(())
 end lower.expr.letx
 
@@ -654,6 +735,27 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         let v = lower.cx.def(c, "bool", op)?
         return Ok(lower.cx.R { v: v, t: t })
     }
+    if n.a == 4usize || n.a == 5usize {
+        // 文字 (`'a'`、u32 の値) とバイト (`b'0'`、u8 の値): エスケープと UTF-8 を値にする。
+        let mut qa = tk.start + 1usize
+        let mut op = "const.u32 "
+        if n.a == 5usize {
+            qa = tk.start + 2usize
+            op = "const.u8 "
+        }
+        let (cv, cok) = lower.expr.chr_val(src, qa, tk.stop - 1usize)
+        if !cok {
+            lower.cx.fail(c, "文字リテラル (\\x と \\u は未対応)")?
+            return lower.expr.dummy(c, t)
+        }
+        let lt = if n.a == 5usize {
+            "u8"
+        } else {
+            "u32"
+        }
+        let v = lower.cx.def(c, lt, lower.cx.cat2(op, lower.cx.dec(cv)?.as_str())?.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
     if n.a == 3usize {
         // 文字列: 静的なバイト列と長さから `&str` (fat) を作る。引用符の中のバイトを使う。
         let tk3 = parse.cur.peek_at(p, n.b)
@@ -663,18 +765,18 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             lower.cx.fail(c, "文字列の綴り (未対応)")?
             return lower.expr.dummy(c, t)
         }
-        if resolve.ast.text(src, qa, qb).contains("\\") {
-            lower.cx.fail(c, "文字列のエスケープ (未対応)")?
+        let (hx, nbytes, esc_ok) = lower.expr.unesc(src, qa, qb)?
+        if !esc_ok {
+            lower.cx.fail(c, "文字列のエスケープ (\\x と \\u は未対応)")?
             return lower.expr.dummy(c, t)
         }
-        let hx = lower.expr.hex_range(src, qa, qb)?
         let so = lower.cx.cat2("static.bytes ", hx.as_str())?
         let mut so2 = lower.cx.own("static.bytes")?
-        if qb != qa {
+        if nbytes != 0usize {
             so2 = so
         }
         let ptr = lower.cx.def(c, "ptr", so2.as_str())?
-        let nlen = lower.cx.dec(qb - qa)?
+        let nlen = lower.cx.dec(nbytes)?
         let lo = lower.cx.cat2("const.usize ", nlen.as_str())?
         let len = lower.cx.def(c, "usize", lo.as_str())?
         let mk = lower.expr.two(ptr, len)?
@@ -783,7 +885,19 @@ end lower.expr.loopx
 // match (列挙型のみ): 変種の番号をタグで比べる。変種の中の PBind は `field` で読む。
 fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
+    // 局所の対象は読むだけ (`own.use`)。移すのは、非 Copy の束縛をする腕の入口。
+    // (Option / Result だけ。利用者の列挙型の対象は普通の読み = move)
+    let st0 = lower.expr.tyof(c, n.a)?
+    let sn0 = types.ty.node(&c.ar, types.ty.strip(&c.ar, st0))
+    let is_opt = sn0.k == types.ty.K.Adt && lower.opt.kind(env, sn0.a) != 0usize
+    let mut sloc = 0usize
+    if is_opt {
+        sloc = lower.own.scrut_loc(c, p, src, n.a)
+    }
+    c.s.peek = sloc != 0usize
     let sc0 = lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
+    c.s.peek = false
+    let slin = lower.own.linear(env, c, sc0.t)?
     let sc = lower.opt.deref_val(env, c, sc0)?
     let ss = types.ty.strip(&c.ar, sc.t)
     let sn = types.ty.node(&c.ar, ss)
@@ -793,7 +907,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     }
     let item = sn.a
     if lower.opt.kind(env, item) != 0usize {
-        return lower.opt.optmatch(env, c, p, src, n, t, sc0)
+        return lower.opt.optmatch(env, c, p, src, n, t, sc0, sloc, slin)
     }
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
@@ -892,7 +1006,7 @@ end lower.expr.matchx
 
 fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let meth = resolve.ast.tok_text(p, src, n.b)
-    if meth != "wrapping_add" && meth != "wrapping_sub" && meth != "wrapping_mul" {
+    if !lower.expr.is_wrap_op(meth) {
         // 利用者のメソッド (解決先は型検査の表)。
         let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
         if it != 0usize && types.infer.item_kind(env, it - 1usize) == parse.ast.Kind.FnDef {
@@ -913,8 +1027,16 @@ fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         op = "sub"
     } else if meth == "wrapping_mul" {
         op = "mul"
+    } else if meth == "wrapping_shl" {
+        op = "shl"
+    } else if meth == "wrapping_shr" {
+        op = "shr"
     }
-    let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.d, 0usize), r.t)?
+    let mut want = r.t
+    if meth == "wrapping_shl" || meth == "wrapping_shr" {
+        want = types.ty.UNKNOWN
+    }
+    let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.d, 0usize), want)?
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
     o.push_str(op)?
     o.push_str(".")?
@@ -968,11 +1090,22 @@ fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: pars
         return lower.expr.dummy(c, t)
     }
     if first == "" {
-        // 局所の読み出し: 型は局所の型 (束縛のとき決まったもの)。
+        // 局所の読み出し: 型は局所の型 (束縛のとき決まったもの)。Copy でなければ move (借りる文脈では `use`)。
+        if c.s.peek {
+            lower.own.emit(c, loc - 1usize, "own.use ")?
+        } else if !lower.own.is_copy(env, c, bt) {
+            lower.own.emit(c, loc - 1usize, "own.consume ")?
+        }
         return Ok(lower.cx.R { v: base, t: bt })
     }
     // `局所.フィールド` (構造体の読み出し。参照なら参照越し)。
-    lower.opt.field(env, c, base, bt, second, t)
+    let fr = lower.opt.field(env, c, base, bt, second, t)?
+    if lower.own.is_copy(env, c, t) {
+        lower.own.emit(c, loc - 1usize, "own.use ")?
+    } else {
+        lower.own.emit(c, loc - 1usize, "own.part ")?
+    }
+    Ok(fr)
 end lower.expr.path
 
 // return: 値を返して終わる (unit の関数は unit を返す)。
@@ -1316,6 +1449,8 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
             if loc != 0usize && lower.cx.is_slot(c, loc - 1usize) {
                 slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
                 sty = lower.cx.tyof_t(c, loc - 1usize)
+                // 借用は move 済みの値から作れない (注釈)。
+                lower.own.emit(c, loc - 1usize, "own.use ")?
             }
         }
         if slot == 0usize {
@@ -1357,6 +1492,47 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     let v = lower.cx.def(c, "bool", o.as_str())?
     Ok(lower.cx.R { v: v, t: t })
 end lower.expr.unary
+
+// 文字列リテラルの中身 src[a..b] のエスケープ (`\n` `\t` `\r` `\0` `\\` `\"` `\'`) を外した 16 進と長さ。
+// 未対応のエスケープ (`\x` `\u`) は 3 つ目が false。
+fn lower.expr.unesc(src: &[u8], a: usize, b: usize) -> Result<(alloc.string.String<std.alloc.System>, usize, bool), resolve.Failure> uses [alloc] panics may pub
+    let digits = "0123456789abcdef"
+    let db = digits.as_bytes()
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut n = 0usize
+    let mut i = a
+    while i < b {
+        let mut v = match src.get(i) {
+            Some(x) => usize.from_u32(u32.from_u8(*x))
+            None => 0usize
+        }
+        if v == 92usize {
+            i = i + 1usize
+            let e = match src.get(i) {
+                Some(x) => usize.from_u32(u32.from_u8(*x))
+                None => 0usize
+            }
+            if e == 110usize {
+                v = 10usize
+            } else if e == 116usize {
+                v = 9usize
+            } else if e == 114usize {
+                v = 13usize
+            } else if e == 48usize {
+                v = 0usize
+            } else if e == 92usize || e == 34usize || e == 39usize {
+                v = e
+            } else {
+                return Ok((out, 0usize, false))
+            }
+        }
+        out.push_str(resolve.ast.text(db, v / 16usize, v / 16usize + 1usize))?
+        out.push_str(resolve.ast.text(db, v % 16usize, v % 16usize + 1usize))?
+        n = n + 1usize
+        i = i + 1usize
+    }
+    Ok((out, n, true))
+end lower.expr.unesc
 
 // 単位の値 (`const.unit ()`)。
 fn lower.expr.unit(c: &mut lower.cx.Cx) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
@@ -1430,6 +1606,10 @@ fn lower.expr.wrapping(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
         op = "sub"
     } else if meth == "wrapping_mul" {
         op = "mul"
+    } else if meth == "wrapping_shl" {
+        op = "shl"
+    } else if meth == "wrapping_shr" {
+        op = "shr"
     }
     if op == "" || resolve.ast.count(p, args) != 1usize {
         lower.cx.fail(c, "メソッド呼び出し (wrapping_* 以外は未対応)")?

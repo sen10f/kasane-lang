@@ -42,7 +42,8 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
         let v = lower.cx.newval(c, kt.as_str())?
         ps.push(v)?
         let nm = resolve.ast.tok_text(p, src, prm.a)
-        core.mem.drop(lower.opt.bind(env, c, nm, v, false, pt)?)
+        let pk = lower.opt.bind(env, c, nm, v, false, pt)?
+        lower.own.declare(env, c, pk, pt)?
     }
     let ret = if ret0 != 0usize {
         ret0
@@ -81,7 +82,7 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     let mut first = true
     for j in core.iter.range(0usize, resolve.ast.count(p, at.a)) {
         if !first {
-            out.push_str(", ")?
+            out.push_str(",")?
         }
         first = false
         let en = parse.ast.get(&p.ast, resolve.ast.item(p, at.a, j))
@@ -112,6 +113,16 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
             Some(h) => out.push_str(h.as_str())?
             None => core.mem.drop(0u8)
         }
+        // `alloca` は入口ブロックの先頭へ集める (Rust 版 flush_allocas)。
+        if b == 0usize {
+            for l in c.v.lines.as_slice().iter() {
+                if l.as_str().ends_with(" = alloca") {
+                    out.push_str("    ")?
+                    out.push_str(l.as_str())?
+                    out.push('\n')?
+                }
+            }
+        }
         let mut i = 0usize
         while i < c.v.lines.len() {
             let mine = match c.v.lblk.as_slice().get(i) {
@@ -121,9 +132,11 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
             if mine {
                 match c.v.lines.as_slice().get(i) {
                     Some(l) => {
-                        out.push_str("    ")?
-                        out.push_str(l.as_str())?
-                        out.push('\n')?
+                        if !l.as_str().ends_with(" = alloca") {
+                            out.push_str("    ")?
+                            out.push_str(l.as_str())?
+                            out.push('\n')?
+                        }
                     }
                     None => core.mem.drop(0u8)
                 }

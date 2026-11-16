@@ -579,7 +579,7 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
         return Ok(s)
     }
     if n.k == types.ty.K.Char {
-        s.push_str("char")?
+        s.push_str("u32")?
         return Ok(s)
     }
     if n.k == types.ty.K.Var && n.c == 2usize {

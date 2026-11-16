@@ -1,0 +1,353 @@
+// 生成する関数の項目の印 (項目 + 1 でない値)。
+const lower.chk.GEN: usize = 4294967294usize pub
+
+// `    %k: ty = op` の頭まで (op は呼び出し側が続ける)。
+fn lower.chk.d(o: &mut alloc.string.String<std.alloc.System>, k: usize, ty: &str, op: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    o.push_str("    ")?
+    lower.chk.v(o, k)?
+    o.push_str(": ")?
+    o.push_str(ty)?
+    o.push_str(" = ")?
+    o.push_str(op)?
+    Ok(())
+end lower.chk.d
+
+// `    %k: ty = op` で終わる行 (op に値を含まないもの)。
+fn lower.chk.d0(o: &mut alloc.string.String<std.alloc.System>, k: usize, ty: &str, op: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.chk.d(o, k, ty, op)?
+    lower.chk.nl(o)
+end lower.chk.d0
+
+// `    %k: ty = op %a, %b` (b は 0 のとき出さない・a が usize::MAX なら op だけ)。
+fn lower.chk.d1(o: &mut alloc.string.String<std.alloc.System>, k: usize, ty: &str, op: &str, a: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.chk.d(o, k, ty, op)?
+    lower.chk.v(o, a)?
+    lower.chk.nl(o)
+end lower.chk.d1
+
+fn lower.chk.d2(o: &mut alloc.string.String<std.alloc.System>, k: usize, ty: &str, op: &str, a: usize, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.chk.d(o, k, ty, op)?
+    lower.chk.v(o, a)?
+    lower.chk.p(o, ", ")?
+    lower.chk.v(o, b)?
+    lower.chk.nl(o)
+end lower.chk.d2
+
+// `call T.$debug(v)`。
+fn lower.chk.debug(c: &mut lower.cx.Cx, key: &str, v: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let co = lower.cx.cat2("call ", key)?
+    let co2 = lower.cx.cat2(co.as_str(), "(")?
+    let co3 = lower.cx.cat2(co2.as_str(), lower.cx.vs(v)?.as_str())?
+    let co4 = lower.cx.cat2(co3.as_str(), ")")?
+    let _d = lower.cx.def(c, "unit", co4.as_str())?
+    Ok(())
+end lower.chk.debug
+
+// 10 進に直して書く部分。bl: 繰り返しのブロックの番号、v0: 値 (u64) の番号、k: 命令の番号の始め。
+// 終わりのブロックは bl + 1。値は `b{bl}(%v0: u64, %v0+1: usize)`。
+fn lower.chk.digits(o: &mut alloc.string.String<std.alloc.System>, fat: &str, bl: usize, v0: usize, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let i0 = v0 + 1usize
+    lower.chk.p(o, "  b")?
+    lower.chk.p(o, lower.cx.dec(bl)?.as_str())?
+    lower.chk.p(o, "(")?
+    lower.chk.v(o, v0)?
+    lower.chk.p(o, ": u64, ")?
+    lower.chk.v(o, i0)?
+    lower.chk.l(o, ": usize):")?
+    lower.chk.d0(o, k, "usize", "const.usize 1")?
+    lower.chk.d2(o, k + 1usize, "usize", "sub.usize.wrap ", i0, k)?
+    lower.chk.d0(o, k + 2usize, "u64", "const.u64 10")?
+    lower.chk.d2(o, k + 3usize, "u64", "rem.u64.trap ", v0, k + 2usize)?
+    lower.chk.d2(o, k + 4usize, "u64", "div.u64.trap ", v0, k + 2usize)?
+    lower.chk.d0(o, k + 5usize, "ptr", "static.bytes 30313233343536373839")?
+    lower.chk.d1(o, k + 6usize, "usize", "conv.usize.u64 ", k + 3usize)?
+    lower.chk.d2(o, k + 7usize, "ptr", "ptr.add ", k + 5usize, k + 6usize)?
+    lower.chk.d(o, k + 8usize, "u8", "mem.load.u8 ")?
+    lower.chk.v(o, k + 7usize)?
+    lower.chk.l(o, " +0")?
+    lower.chk.d2(o, k + 9usize, "ptr", "ptr.add ", 1usize, k + 1usize)?
+    lower.chk.d(o, k + 10usize, "unit", "mem.store.u8 ")?
+    lower.chk.v(o, k + 9usize)?
+    lower.chk.p(o, " +0, ")?
+    lower.chk.v(o, k + 8usize)?
+    lower.chk.nl(o)?
+    lower.chk.d0(o, k + 11usize, "u64", "const.u64 0")?
+    lower.chk.d2(o, k + 12usize, "bool", "icmp.eq.u64 ", k + 4usize, k + 11usize)?
+    lower.chk.p(o, "    br_if ")?
+    lower.chk.v(o, k + 12usize)?
+    lower.chk.p(o, ", b")?
+    lower.chk.p(o, lower.cx.dec(bl + 1usize)?.as_str())?
+    lower.chk.p(o, "(")?
+    lower.chk.v(o, k + 1usize)?
+    lower.chk.p(o, "), b")?
+    lower.chk.p(o, lower.cx.dec(bl)?.as_str())?
+    lower.chk.p(o, "(")?
+    lower.chk.v(o, k + 4usize)?
+    lower.chk.p(o, ", ")?
+    lower.chk.v(o, k + 1usize)?
+    lower.chk.l(o, ")")?
+    lower.chk.p(o, "  b")?
+    lower.chk.p(o, lower.cx.dec(bl + 1usize)?.as_str())?
+    lower.chk.p(o, "(")?
+    lower.chk.v(o, k + 13usize)?
+    lower.chk.l(o, ": usize):")?
+    lower.chk.d2(o, k + 14usize, "ptr", "ptr.add ", 1usize, k + 13usize)?
+    lower.chk.d0(o, k + 15usize, "usize", "const.usize 20")?
+    lower.chk.d2(o, k + 16usize, "usize", "sub.usize.wrap ", k + 15usize, k + 13usize)?
+    lower.chk.mk(o, k + 17usize, fat, k + 14usize, k + 16usize)?
+    lower.chk.d1(o, k + 18usize, "unit", "eprint ", k + 17usize)?
+    lower.chk.d0(o, k + 19usize, "unit", "const.unit ()")?
+    lower.chk.p(o, "    ret ")?
+    lower.chk.v(o, k + 19usize)?
+    lower.chk.nl(o)
+end lower.chk.digits
+
+// 固定の文字列 (16 進の綴りと長さ) を stderr へ書く。
+fn lower.chk.eprint(c: &mut lower.cx.Cx, hex: &str, len: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let ft = lower.chk.fat(c)?
+    let so = lower.cx.cat2("static.bytes ", hex)?
+    let ptr = lower.cx.def(c, "ptr", so.as_str())?
+    let lo = lower.cx.cat2("const.usize ", lower.cx.dec(len)?.as_str())?
+    let ln = lower.cx.def(c, "usize", lo.as_str())?
+    let mk = lower.cx.cat2("make(", lower.expr.two(ptr, ln)?.as_str())?
+    let mk2 = lower.cx.cat2(mk.as_str(), ")")?
+    let f = lower.cx.def(c, ft.as_str(), mk2.as_str())?
+    let _e = lower.cx.def1(c, "unit", "eprint ", f)?
+    Ok(())
+end lower.chk.eprint
+
+// `core.check.eq(a, b)`: 値を比べ、違えば左右を stderr に書いて abort する (Rust 版と同じ形)。
+fn lower.chk.eq(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    if resolve.ast.count(p, n.b) != 2usize {
+        lower.cx.fail(c, "core.check.eq の引数の個数")?
+        return lower.expr.dummy(c, t)
+    }
+    let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 0usize), types.ty.UNKNOWN)?
+    let b = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 1usize), a.t)?
+    let ty = lower.tyk.text(env, c, a.t)?
+    let is_char = types.ty.node(&c.ar, types.ty.find(&c.ar, a.t)).k == types.ty.K.Char
+    if is_char || !lower.chk.eq_ok(ty.as_str()) {
+        lower.cx.fail(c, "core.check.eq (整数と bool 以外は未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let none = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let eqk = lower.cx.cat2(ty.as_str(), ".$eq")?
+    let dbk = lower.cx.cat2(ty.as_str(), ".$debug")?
+    lower.expr.enqueue(c, eqk.as_str(), lower.chk.GEN, none, types.ty.BOOL)?
+    let none2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.enqueue(c, dbk.as_str(), lower.chk.GEN, none2, types.ty.UNIT)?
+    let mut args = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    args.push(a.v)?
+    args.push(b.v)?
+    let co = lower.cx.cat2("call ", eqk.as_str())?
+    let co2 = lower.cx.cat2(co.as_str(), "(")?
+    let co3 = lower.cx.cat2(co2.as_str(), lower.cx.vlist(&args)?.as_str())?
+    let co4 = lower.cx.cat2(co3.as_str(), ")")?
+    let cond = lower.cx.def(c, "bool", co4.as_str())?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let cont = lower.cx.blk(c, &empty)?
+    let fail = lower.cx.blk(c, &empty)?
+    let mut br = lower.cx.cat2("br_if ", lower.cx.vs(cond)?.as_str())?
+    br.push_str(", ")?
+    br.push_str(lower.cx.target(cont, &empty)?.as_str())?
+    br.push_str(", ")?
+    br.push_str(lower.cx.target(fail, &empty)?.as_str())?
+    lower.cx.finish(c, br)?
+    lower.cx.goto(c, fail)
+    lower.chk.eprint(c, "70616e69633a20617373657274696f6e206661696c65643a206c6566743a20", 31usize)?
+    lower.chk.debug(c, dbk.as_str(), a.v)?
+    lower.chk.eprint(c, "2c2072696768743a20", 9usize)?
+    lower.chk.debug(c, dbk.as_str(), b.v)?
+    lower.chk.eprint(c, "0a", 1usize)?
+    lower.cx.def(c, "unit", "abort")?
+    lower.cx.finish(c, lower.cx.own("unreachable")?)?
+    lower.cx.goto(c, cont)
+    let u = lower.expr.unit(c)?
+    Ok(lower.cx.R { v: u, t: types.ty.UNIT })
+end lower.chk.eq
+
+// 型の名前 ty が `core.check.eq` で扱える (整数と bool) か。
+fn lower.chk.eq_ok(ty: &str) -> bool uses [] panics may pub
+    if ty == "bool" {
+        return true
+    }
+    lower.chk.is_unsigned(ty) || lower.chk.is_signed(ty)
+end lower.chk.eq_ok
+
+// fat (`&str` の集成体) の型の綴り。
+fn lower.chk.fat(c: &mut lower.cx.Cx) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let id = lower.tyk.agg_id(c, lower.tyk.FAT)?
+    lower.cx.cat2("agg#", lower.cx.dec(id)?.as_str())
+end lower.chk.fat
+
+fn lower.chk.head(o: &mut alloc.string.String<std.alloc.System>, ty: &str, suffix: &str, tail: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.chk.p(o, "fn ")?
+    lower.chk.p(o, ty)?
+    lower.chk.p(o, suffix)?
+    lower.chk.p(o, " key=")?
+    lower.chk.p(o, ty)?
+    lower.chk.p(o, suffix)?
+    lower.chk.p(o, " uses=[] panics=")?
+    lower.chk.l(o, tail)
+end lower.chk.head
+
+fn lower.chk.is_signed(ty: &str) -> bool uses [] panics may pub
+    ty == "i8" || ty == "i16" || ty == "i32" || ty == "i64" || ty == "isize"
+end lower.chk.is_signed
+
+fn lower.chk.is_unsigned(ty: &str) -> bool uses [] panics may pub
+    ty == "u8" || ty == "u16" || ty == "u32" || ty == "u64" || ty == "usize"
+end lower.chk.is_unsigned
+
+fn lower.chk.l(o: &mut alloc.string.String<std.alloc.System>, s: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    o.push_str(s)?
+    o.push('\n')?
+    Ok(())
+end lower.chk.l
+
+// `    %k: fat = make(%a, %b)`。
+fn lower.chk.mk(o: &mut alloc.string.String<std.alloc.System>, k: usize, fat: &str, a: usize, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.chk.d(o, k, fat, "make(")?
+    lower.chk.v(o, a)?
+    lower.chk.p(o, ", ")?
+    lower.chk.v(o, b)?
+    lower.chk.l(o, ")")
+end lower.chk.mk
+
+fn lower.chk.nl(o: &mut alloc.string.String<std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    o.push('\n')?
+    Ok(())
+end lower.chk.nl
+
+// 行の部品: 文字列 `s`、値 `%k`、行末。
+fn lower.chk.p(o: &mut alloc.string.String<std.alloc.System>, s: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    o.push_str(s)?
+    Ok(())
+end lower.chk.p
+
+// 生成した関数 (`T.$eq` / `T.$debug`) を記録する。key の `.` の前が型の名前。
+fn lower.chk.record(c: &mut lower.cx.Cx, key: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut ty = key
+    for w in key.split(".") {
+        ty = w
+        break
+    }
+    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    if key.ends_with("$eq") {
+        lower.chk.text_eq(&mut o, ty)?
+    } else {
+        lower.chk.text_debug(c, &mut o, ty)?
+    }
+    lower.func.record(c, o.as_str(), "")
+end lower.chk.record
+
+// 固定の文字列を stderr へ書く 4 命令 (番号 k から)。
+fn lower.chk.say(o: &mut alloc.string.String<std.alloc.System>, fat: &str, hex: &str, len: &str, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.chk.d(o, k, "ptr", "static.bytes ")?
+    lower.chk.l(o, hex)?
+    lower.chk.d(o, k + 1usize, "usize", "const.usize ")?
+    lower.chk.l(o, len)?
+    lower.chk.mk(o, k + 2usize, fat, k, k + 1usize)?
+    lower.chk.d1(o, k + 3usize, "unit", "eprint ", k + 2usize)
+end lower.chk.say
+
+// `$debug`: bool は true / false、整数は 10 進 (負は先に `-`)。
+fn lower.chk.text_debug(c: &mut lower.cx.Cx, o: &mut alloc.string.String<std.alloc.System>, ty: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let fat = lower.chk.fat(c)?
+    lower.chk.head(o, ty, ".$debug", "may stack=- ret=unit")?
+    if ty == "bool" {
+        lower.chk.l(o, "  b0(%0: bool):")?
+        lower.chk.l(o, "    br_if %0, b1(), b2()")?
+        lower.chk.l(o, "  b1():")?
+        lower.chk.say(o, fat.as_str(), "74727565", "4", 1usize)?
+        lower.chk.l(o, "    br b3()")?
+        lower.chk.l(o, "  b2():")?
+        lower.chk.say(o, fat.as_str(), "66616c7365", "5", 5usize)?
+        lower.chk.l(o, "    br b3()")?
+        lower.chk.l(o, "  b3():")?
+        lower.chk.d0(o, 9usize, "unit", "const.unit ()")?
+        lower.chk.l(o, "    ret %9")?
+        lower.chk.l(o, "end bool.$debug")?
+        return Ok(())
+    }
+    let signed = lower.chk.is_signed(ty)
+    let wide = if signed {
+        "i64"
+    } else {
+        "u64"
+    }
+    lower.chk.p(o, "  b0(%0: ")?
+    lower.chk.p(o, ty)?
+    lower.chk.l(o, "):")?
+    lower.chk.d0(o, 1usize, "ptr", "frame.bytes 20")?
+    lower.chk.d0(o, 2usize, "ptr", "frame.bytes 8")?
+    let mut x = 0usize
+    if ty != "u64" && ty != "i64" {
+        lower.chk.d(o, 3usize, wide, "conv.")?
+        lower.chk.p(o, wide)?
+        lower.chk.p(o, ".")?
+        lower.chk.p(o, ty)?
+        lower.chk.l(o, " %0")?
+        x = 3usize
+    }
+    if !signed {
+        lower.chk.p(o, "    br b1(")?
+        lower.chk.v(o, x)?
+        lower.chk.l(o, ")")?
+        lower.chk.l(o, "  b1(%4: u64):")?
+        lower.chk.d0(o, 5usize, "usize", "const.usize 20")?
+        lower.chk.l(o, "    br b2(%4, %5)")?
+        lower.chk.digits(o, fat.as_str(), 2usize, 6usize, 8usize)?
+        lower.chk.p(o, "end ")?
+        lower.chk.p(o, ty)?
+        lower.chk.l(o, ".$debug")?
+        return Ok(())
+    }
+    lower.chk.d0(o, 4usize, "i64", "const.i64 0")?
+    lower.chk.d(o, 5usize, "bool", "icmp.lt.i64 ")?
+    lower.chk.v(o, x)?
+    lower.chk.l(o, ", %4")?
+    lower.chk.l(o, "    br_if %5, b2(), b3()")?
+    lower.chk.l(o, "  b1(%6: u64):")?
+    lower.chk.d0(o, 7usize, "usize", "const.usize 20")?
+    lower.chk.l(o, "    br b4(%6, %7)")?
+    lower.chk.l(o, "  b2():")?
+    lower.chk.say(o, fat.as_str(), "2d", "1", 8usize)?
+    lower.chk.d1(o, 12usize, "i64", "neg.i64.wrap ", x)?
+    lower.chk.d(o, 13usize, "unit", "mem.store.i64 %2 +0, ")?
+    lower.chk.l(o, "%12")?
+    lower.chk.d0(o, 14usize, "u64", "mem.load.u64 %2 +0")?
+    lower.chk.l(o, "    br b1(%14)")?
+    lower.chk.l(o, "  b3():")?
+    lower.chk.d(o, 15usize, "unit", "mem.store.i64 %2 +0, ")?
+    lower.chk.v(o, x)?
+    lower.chk.nl(o)?
+    lower.chk.d0(o, 16usize, "u64", "mem.load.u64 %2 +0")?
+    lower.chk.l(o, "    br b1(%16)")?
+    lower.chk.digits(o, fat.as_str(), 4usize, 17usize, 19usize)?
+    lower.chk.p(o, "end ")?
+    lower.chk.p(o, ty)?
+    lower.chk.l(o, ".$debug")
+end lower.chk.text_debug
+
+fn lower.chk.text_eq(o: &mut alloc.string.String<std.alloc.System>, ty: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.chk.head(o, ty, ".$eq", "never stack=- ret=bool")?
+    lower.chk.p(o, "  b0(%0: ")?
+    lower.chk.p(o, ty)?
+    lower.chk.p(o, ", %1: ")?
+    lower.chk.p(o, ty)?
+    lower.chk.l(o, "):")?
+    lower.chk.d(o, 2usize, "bool", "icmp.eq.")?
+    lower.chk.p(o, ty)?
+    lower.chk.l(o, " %0, %1")?
+    lower.chk.l(o, "    ret %2")?
+    lower.chk.p(o, "end ")?
+    lower.chk.p(o, ty)?
+    lower.chk.l(o, ".$eq")
+end lower.chk.text_eq
+
+fn lower.chk.v(o: &mut alloc.string.String<std.alloc.System>, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    o.push('%')?
+    o.push_str(lower.cx.dec(k)?.as_str())?
+    Ok(())
+end lower.chk.v
