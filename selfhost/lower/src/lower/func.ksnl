@@ -81,7 +81,7 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     let at = parse.ast.get(&p.ast, sg.d)
     let mark = lower.cx.depth(c)
     let mut bl = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.expr.scan(p, src, n.d, &mut bl, true)?
+    lower.expr.scan(env, c, p, src, n.d, &mut bl, true)?
     c.v.sl.bor = bl
     // 引数: 型は型検査の表 (Param 節)、値の番号を振って局所に入れる。
     let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)

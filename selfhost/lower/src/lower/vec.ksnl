@@ -15,9 +15,9 @@ fn lower.vec.call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usiz
     }
     let is_str = fqn.starts_with("alloc.string.String.")
     let ok = if is_str {
-        name == "len" || name == "is_empty" || name == "push_str" || name == "push" || name == "push_u64"
+        name == "len" || name == "is_empty" || name == "push_str" || name == "push" || name == "push_u64" || name == "clear"
     } else {
-        name == "len" || name == "is_empty" || name == "push" || name == "pop" || name == "as_slice"
+        name == "len" || name == "is_empty" || name == "push" || name == "pop" || name == "as_slice" || name == "clear" || name == "truncate"
     }
     if !ok {
         lower.cx.fail(c, lower.cx.cat2("Vec / String のメソッド (未対応): ", name)?.as_str())?
@@ -77,7 +77,7 @@ fn lower.vec.exit_drops(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
         lower.drop.exit(env, c, p, src, k)?
         if lower.cx.is_slot(c, k) && lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
             let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
-            lower.vec.free_hdr(c, sv)?
+            lower.vec.free_slot(env, c, sv, lower.cx.tyof_t(c, k))?
             core.mem.drop(lower.cx.def1(c, "unit", "scope.end ", sv)?)
         }
     }
@@ -94,7 +94,7 @@ fn lower.vec.exit_scope(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
         if lower.cx.is_slot(c, k) && lower.fs.close_at(c, k) == 0usize {
             let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
             if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
-                lower.vec.free_hdr(c, sv)?
+                lower.vec.free_slot(env, c, sv, lower.cx.tyof_t(c, k))?
             }
             core.mem.drop(lower.cx.def1(c, "unit", "scope.end ", sv)?)
         }
@@ -108,6 +108,15 @@ fn lower.vec.free_hdr(c: &mut lower.cx.Cx, slot: usize) -> Result<(), resolve.Fa
     core.mem.drop(lower.cx.def1(c, "unit", "heap.free ", pv)?)
     Ok(())
 end lower.vec.free_hdr
+
+// 枠 slot の `Vec` / `String` (型 t) を解放する。要素が所有物の `Vec` は、要素も 1 つずつ解放する。
+fn lower.vec.free_slot(env: &types.env.Env, c: &mut lower.cx.Cx, slot: usize, t: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if lower.vec.owns_elems(env, c, t)? {
+        let hv = lower.vec.load_hdr(env, c, slot, types.ty.strip(&c.ar, t), false)?
+        return lower.drop.value(env, c, hv, types.ty.strip(&c.ar, t))
+    }
+    lower.vec.free_hdr(c, slot)
+end lower.vec.free_slot
 
 // 生成した小関数の本体 (`key` は `alloc.vec.Vec.push<u32,std.alloc.System>` など)。subs は型引数の対 (番号, 型)、ret は結果の型。
 fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>, ret: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
@@ -136,6 +145,10 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
     ps.push(recv)?
     let mut value = 0usize
     let mut eff = "[]"
+    if name == "truncate" {
+        value = lower.cx.newval(c, "usize")?
+        ps.push(value)?
+    }
     if name == "push" {
         let et = lower.tyk.text(env, c, elem)?
         value = lower.cx.newval(c, et.as_str())?
@@ -159,6 +172,29 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
         r = lower.vec.push(env, c, recv, elem, value, ret)?
     } else if name == "pop" {
         r = lower.vec.pop(env, c, recv, elem, ret)?
+    } else if name == "clear" {
+        let z = lower.vec.usize_c(c, 0usize)?
+        lower.vec.store_at(c, "usize", recv, 8usize, z)?
+        r = lower.cx.R { v: lower.expr.unit(c)?, t: ret }
+    } else if name == "truncate" {
+        // 長さを縮めるだけ (n < len のときだけ)。要素の解放はしない (所有物の要素は漏れる。README 29 章)。
+        let len0 = lower.vec.load_usize(c, recv, 8usize)?
+        let lts = lower.cx.cat2("icmp.lt.usize ", lower.expr.two(value, len0)?.as_str())?
+        let lt = lower.cx.def(c, "bool", lts.as_str())?
+        let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let setb = lower.cx.blk(c, &empty)?
+        let jb = lower.cx.blk(c, &empty)?
+        let mut brs = lower.cx.cat2("br_if ", lower.cx.vs(lt)?.as_str())?
+        brs.push_str(", ")?
+        brs.push_str(lower.cx.target(setb, &empty)?.as_str())?
+        brs.push_str(", ")?
+        brs.push_str(lower.cx.target(jb, &empty)?.as_str())?
+        lower.cx.finish(c, brs)?
+        lower.cx.goto(c, setb)
+        lower.vec.store_at(c, "usize", recv, 8usize, value)?
+        lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &empty)?.as_str())?)?
+        lower.cx.goto(c, jb)
+        r = lower.cx.R { v: lower.expr.unit(c)?, t: ret }
     } else if name == "as_slice" {
         let pv = lower.vec.load_ptr(c, recv)?
         let lv = lower.vec.load_usize(c, recv, 8usize)?
@@ -260,6 +296,11 @@ fn lower.vec.load_hdr(env: &types.env.Env, c: &mut lower.cx.Cx, slot: usize, t: 
     if take {
         let nul = lower.cx.def(c, "ptr", "const.ptr 0")?
         core.mem.drop(lower.vec.store_at(c, "ptr", slot, 0usize, nul)?)
+        if lower.vec.owns_elems(env, c, t)? {
+            // 要素が所有物の `Vec`: 長さも 0 にする (移した後に要素を解放しない)。
+            let z = lower.vec.usize_c(c, 0usize)?
+            core.mem.drop(lower.vec.store_at(c, "usize", slot, 8usize, z)?)
+        }
     }
     let tt = lower.tyk.text(env, c, t)?
     let mut mk = alloc.string.String.new(std.alloc.SYSTEM)
@@ -324,6 +365,16 @@ fn lower.vec.new(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<l
     let v = lower.cx.def(c, tt.as_str(), mk6.as_str())?
     Ok(lower.cx.R { v: v, t: t })
 end lower.vec.new
+
+// `Vec` の型 t (参照を外した後) の要素が所有物か。
+fn lower.vec.owns_elems(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<bool, resolve.Failure> uses [alloc] panics may pub
+    let f = types.ty.strip(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    if n.k != types.ty.K.Adt || !lower.tyk.is_vec(env, n.a) {
+        return Ok(false)
+    }
+    Ok(lower.tyk.vec_item(env, c, f)? != lower.tyk.VEC)
+end lower.vec.owns_elems
 
 // `ptr.add p, off` (p + off バイト)。
 fn lower.vec.padd(c: &mut lower.cx.Cx, p: usize, off: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub

@@ -1,7 +1,13 @@
 // 要素の型 et が、構造体・列挙型 (`Vec` / `String` でない) か。
 fn lower.std_calls.agg_elem(env: &types.env.Env, c: &lower.cx.Cx, et: usize) -> bool uses [alloc] panics may pub
     let n = types.ty.node(&c.ar, types.ty.find(&c.ar, et))
-    if n.k != types.ty.K.Adt || n.c != 0usize || lower.tyk.is_vec(env, n.a) {
+    if n.k != types.ty.K.Adt {
+        return false
+    }
+    if lower.tyk.is_vec(env, n.a) {
+        return true
+    }
+    if n.c != 0usize {
         return false
     }
     let kind = types.infer.item_kind(env, n.a)
@@ -418,7 +424,7 @@ end lower.std_calls.slice_get
 // `s.get(i)` / `s.last()` (スライスの要素がスカラー): 範囲の検査の後で要素を読み、`carry` で借用の印を付けて `some`。
 // ブロックは some・none・join の順 (Rust 版と同じ)。
 fn lower.std_calls.slice_get_hdr(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, last: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    lower.std_calls.slice_get_in(env, c, vs, rty, last, 1usize, t)
+    lower.std_calls.slice_get_in(env, c, vs, rty, last, 2usize, t)
 end lower.std_calls.slice_get_hdr
 
 // `s.get(i)` / `s.last()` の本体。hdr が true なら、受け手は `Vec` のヘッダの番地 (長さと先頭を `mem.load` で読む)。
@@ -668,6 +674,11 @@ end lower.std_calls.str_eq_inline
 // `opt.unwrap_or(d)`: Rust 版と同じ形。tag で分け、Some なら payload、None なら既定の値を、
 // join のブロックの引数で受ける。ブロックは some・none・join の順に作る。
 fn lower.std_calls.unwrap_or(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    if lower.tyk.ref_scalar(c, t) {
+        // `Option<&スカラー>` は値の `Option<スカラー>` で持つ。結果は値 (Rust 版は参照の既定値を読む) で、未対応。
+        lower.cx.fail(c, "Option<&スカラー>.unwrap_or (未対応)")?
+        return lower.expr.dummy(c, t)
+    }
     let recv = lower.tyk.at(vs.as_slice(), 0usize)
     let dflt = lower.tyk.at(vs.as_slice(), 1usize)
     let ov = lower.std_calls.val_of(env, c, recv, rty)?

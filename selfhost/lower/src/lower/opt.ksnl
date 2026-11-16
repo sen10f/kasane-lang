@@ -344,7 +344,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let own_scrut = lower.drop.temp_scrut(env, c, p, n.a, sc.t)?
     let base = lower.cx.depth(c)
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
+    lower.expr.scan_arms(env, c, p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let saved = lower.cx.cur_vals(c, &ks)?
     let rty = lower.tyk.text(env, c, t)?
@@ -530,9 +530,16 @@ fn lower.opt.owner_k(vname: &str) -> usize uses [] panics may pub
 end lower.opt.owner_k
 
 // 受け手の値を宣言の self に合わせる: 参照が要るのに値なら一時のスロット、参照でないのに参照なら読み出す。
-fn lower.opt.recv_value(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R, want_ref: bool) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.opt.recv_value(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R, want_ref: bool, want_mut: bool) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let (inner, through, m) = lower.opt.deref_ty(c, r.t)
     if want_ref == through {
+        if through && m && !want_mut && !lower.vec.is_hdr(env, c, inner) {
+            // `&mut T` を `&self` のメソッドへ: 共有の参照にする。
+            let it2 = lower.tyk.text(env, c, inner)?
+            let rt2 = lower.opt.refty(false, it2.as_str())?
+            let sh2 = lower.cx.cat2("asshared ", lower.cx.vs(r.v)?.as_str())?
+            return lower.cx.def(c, rt2.as_str(), sh2.as_str())
+        }
         return Ok(r.v)
     }
     if through {
@@ -730,7 +737,7 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         } else {
             let rv = lower.opt.local_val(env, c, loc - 1usize, bt)?
             let rr = lower.cx.R { v: rv, t: bt }
-            recv = lower.opt.recv_value(env, c, rr, self_ref)?
+            recv = lower.opt.recv_value(env, c, rr, self_ref, sdn.m)?
             if !self_ref {
                 lower.drop.moved(c, loc - 1usize)?
                 lower.own.emit(c, loc - 1usize, "own.consume ")?
@@ -738,7 +745,7 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         }
     } else {
         let r = lower.expr.expr(env, c, p, src, recv_node, types.ty.UNKNOWN)?
-        recv = lower.opt.recv_value(env, c, r, self_ref)?
+        recv = lower.opt.recv_value(env, c, r, self_ref, sdn.m)?
     }
     let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
     vs.push(recv)?

@@ -3,7 +3,7 @@
 # 比べる前に、関数の中の値 (%N)・ブロック (bN)・集成体 (agg#N) の番号を、出た順の番号に直す (名前の付け方だけの違いを消す)。
 # 一致 = 正規化した本文が同じ。未対応 = lower が「unsupported」と出した関数 (本文なし)。
 #
-# 使い方: python3 -I compare.py [--group probe|examples|linear_ok|all] [--jobs N] [-v]
+# 使い方: python3 -I compare.py [--group probe|examples|linear_ok|parse|resolve|all] [--jobs N] [-v]
 #   --reasons  未対応の理由の内訳を出す (parse などで)。
 #   --mine native|interp  既定は interp (`ksn run`)。native は `target/release/lower.native` を使う (作れていれば)。
 import argparse
@@ -119,12 +119,15 @@ def rust_fns(pkg, fqns):
     return fns, fails
 
 
+MATCHED = []
 REASONS = {}
 RFAILS = {}
 
 
 def compare_pkg(pkg, mode, label):
     fqns = defs(pkg)
+    if label == "selfhost/resolve":
+        fqns = [q for q in fqns if q.startswith("resolve.")]
     if not fqns:
         return label, 0, 0, 0, 0, "定義がない"
     rust, rfail = rust_fns(pkg, fqns)
@@ -145,12 +148,27 @@ def compare_pkg(pkg, mode, label):
             ok += 1
             if norm(mine[f]) == norm(rust[f]):
                 match += 1
+                MATCHED.append(label + " " + f)
             else:
                 diffs.append(f)
     note = ""
     if rc != 0:
         note = "lower が失敗 (rc=%d): %s" % (rc, err.strip()[-200:])
     return label, match, total, ok, len(unsup), note + (" 差: " + ",".join(diffs[:5]) if diffs else "")
+
+
+def merged_resolve(tmp):
+    """selfhost/resolve は parse を依存に持つ。Rust 版 `ksn kir` は依存パッケージの型 (parse.cur.P など) を下ろせないので、
+    parse と resolve の src を 1 つのパッケージにまとめた一時パッケージで比べる (ソースは書き換えない)。"""
+    p = os.path.join(tmp, "resolve_merged")
+    os.makedirs(os.path.join(p, "src"), exist_ok=True)
+    for pk in ("parse", "resolve"):
+        shutil.copytree(os.path.join(ROOT, "selfhost", pk, "src"), os.path.join(p, "src"), dirs_exist_ok=True)
+    with open(os.path.join(p, "kasane.toml"), "w") as f:
+        f.write('[package]\nname = "resolve"\nversion = "0.1.0"\nedition = 1\nentry = "resolve.main"\n\n[dependencies]\n')
+    with open(os.path.join(p, "kasane.lock"), "w") as f:
+        f.write("version = 1\n")
+    return p
 
 
 def pkgs_probe():
@@ -184,11 +202,12 @@ def pkgs_linear_ok(tmp):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--group", default="probe", choices=["probe", "examples", "linear_ok", "parse", "all"])
+    ap.add_argument("--group", default="probe", choices=["probe", "examples", "linear_ok", "parse", "resolve", "all"])
     ap.add_argument("--mine", default="interp", choices=["interp", "native"])
     ap.add_argument("--jobs", type=int, default=12)
     ap.add_argument("-v", action="store_true")
     ap.add_argument("--reasons", action="store_true")
+    ap.add_argument("--dump", default="", help="一致した関数の名前をこのファイルに書く (退行の突き合わせ用)")
     a = ap.parse_args()
     tmp = tempfile.mkdtemp(prefix="lower-cmp-")
     groups = []
@@ -198,6 +217,8 @@ def main():
         groups += pkgs_examples()
     if a.group in ("parse", "all"):
         groups += [("selfhost/parse", os.path.join(ROOT, "selfhost", "parse"))]
+    if a.group in ("resolve", "all"):
+        groups += [("selfhost/resolve", merged_resolve(tmp))]
     if a.group in ("linear_ok", "all"):
         groups += pkgs_linear_ok(tmp)
     T = M = O = U = 0
@@ -226,6 +247,9 @@ def main():
         for why, n in rc2.most_common():
             print("  %4d  %s" % (n, why))
     print("合計: 一致 %d / 全体 %d (下ろせた %d, 未対応の理由 %d)" % (M, T, O, U))
+    if a.dump:
+        with open(a.dump, "w") as f:
+            f.write("\n".join(sorted(MATCHED)) + "\n")
     shutil.rmtree(tmp, ignore_errors=True)
 
 
