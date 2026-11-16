@@ -1,0 +1,16 @@
+// expect: E1108
+trait t.A
+    fn foo(self: &Self) -> u32 uses [] panics never
+end t.A
+
+trait t.B
+    fn foo(self: &Self) -> u32 uses [] panics never
+end t.B
+
+fn t.bad[T: t.A + t.B](x: &T) -> u32 uses [] panics never
+    x.foo()
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

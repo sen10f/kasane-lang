@@ -1,0 +1,30 @@
+// expect: E4001
+trait t.H[E: uses, P: panics] pub
+    fn handle(self: &mut Self) -> u32 uses [E] panics P
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+impl t.H<[io.console], never> for t.X
+fn t.X.handle(self: &mut t.X) -> u32 uses [io.console] panics never impls t.H<[io.console], never>
+    self.v
+end t.X.handle
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut x = t.X { v: 7u32 }
+    let d = match alloc.boxed.Box.new(std.alloc.SYSTEM, x) {
+        Ok(b) => alloc.boxed.Box.into_dyn(b)
+        Err(e) => {
+            core.mem.drop(e)
+            core.panic.panic("oom")
+        }
+    }
+    t.takes2(d)
+    Ok(())
+end t.main
+
+fn t.takes2(h: alloc.boxed.Box<dyn t.H<[], never> + 'static, std.alloc.System>) -> () uses [] panics never
+    core.mem.drop(h)
+end t.takes2
