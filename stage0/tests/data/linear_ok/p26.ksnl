@@ -71,6 +71,6 @@ fn t.trim_it(s: &alloc.string.String) -> Option<&str> uses [] panics never
     Some(s.as_str())
 end t.trim_it
 
-fn t.wrap(s: &alloc.string.String) -> t.H uses [] panics never
+fn t.wrap['a](s: &'a alloc.string.String) -> t.H<'a> uses [] panics never
     t.H { r: s }
 end t.wrap

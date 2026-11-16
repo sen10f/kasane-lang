@@ -2493,6 +2493,8 @@ enum Origin {
     Local(String),
     /// 引数 (その番号) から借りたもの
     Param(usize),
+    /// 引数の参照を外して読んだ、中の省略した参照 (`x: &'a &u32` の `*x`)。呼び出しごとの新しい領域を持つ。
+    Inner(usize),
 }
 
 impl<'a> Low<'a> {
@@ -2542,18 +2544,22 @@ impl<'a> Low<'a> {
 
     /// 関数 `d` の `q` 番目の引数が、省略したライフタイムの参照 (`x: &u32`) か。ヘッダが読めなければ false。
     fn elided_param(d: &Def, q: usize) -> bool {
-        let Some(head) = d.header.split(" uses ").next() else { return false };
-        let Some(mut i) = head.find(|c| c == '(' || c == '[') else { return false };
+        Self::param_text(d, q).map_or(false, |t| is_elided_ref(&t))
+    }
+
+    /// 関数 `d` の `q` 番目の引数の宣言の文面 (`x: &'a &u32`)。ヘッダが読めなければ None。
+    fn param_text(d: &Def, q: usize) -> Option<String> {
+        let head = d.header.split(" uses ").next()?;
+        let mut i = head.find(|c| c == '(' || c == '[')?;
         if head.as_bytes()[i] == b'[' {
-            let Some(j) = match_close(head, i) else { return false };
-            i = j + 1;
+            i = match_close(head, i)? + 1;
         }
         if head.as_bytes().get(i) != Some(&b'(') {
-            return false;
+            return None;
         }
-        let Some(close) = match_close(head, i) else { return false };
+        let close = match_close(head, i)?;
         let ptexts = split_top(&head[i + 1..close]);
-        ptexts.len() == d.params.len() && is_elided_ref(&ptexts[q])
+        if ptexts.len() == d.params.len() { Some(ptexts[q].clone()) } else { None }
     }
 
     /// 呼び出し `t.E.V(args)` が列挙子の構成なら、列挙の名前・列挙子名・引数 (プレリュードの `Some` 等は除く)。
@@ -2638,7 +2644,7 @@ impl<'a> Low<'a> {
     }
 
     /// 式 `e` が運ぶ借用の出どころ。`inits` は 1 回だけ束縛された `let` の初期化式 (変数をたどる)。
-    fn origins(&self, e: &V, d: &Def, inits: &HashMap<String, &V>, depth: usize, out: &mut Vec<Origin>) {
+    fn origins(&self, e: &V, d: &Def, inits: &Inits, depth: usize, out: &mut Vec<Origin>) {
         if depth > 8 {
             return;
         }
@@ -2651,7 +2657,9 @@ impl<'a> Low<'a> {
         }
         let mut leaves = vec![];
         Self::value_leaves(e, &mut leaves);
+        let saved = inits.pos.get();
         for leaf in leaves {
+            inits.pos.set(inits.at(leaf));
             // 局所のクロージャ・関数値の呼び出し `f(x)`: 結果の借用が引数のどれから来るかはヘッダに頼れないので、
             // 全部の引数の借用が結果へ流れるとみなす (fail-closed)。
             if nname(leaf) == "Call" && nname(&nf(leaf)[0]) == "Path" {
@@ -2664,12 +2672,14 @@ impl<'a> Low<'a> {
             }
             for s in self.borrow_expr_sources(leaf) {
                 self.src_origins(&s, d, inits, depth, out);
+                inits.pos.set(inits.at(leaf));
             }
         }
+        inits.pos.set(saved);
     }
 
     /// 借用の出どころ `s` から、戻り値へ流れる出どころ (局所・引数) を `out` に足す。`origins` の本体。
-    fn src_origins(&self, s: &Src, d: &Def, inits: &HashMap<String, &V>, depth: usize, out: &mut Vec<Origin>) {
+    fn src_origins(&self, s: &Src, d: &Def, inits: &Inits, depth: usize, out: &mut Vec<Origin>) {
         // 欄の読み戻し `p.f` (`Stored`) の先頭の欄名。省略した参照の引数では、欄の領域だけが引数の借用に当たる。
         let read_field = match s {
             Src::Stored { path, .. } => path.first().cloned(),
@@ -2677,13 +2687,13 @@ impl<'a> Low<'a> {
         };
         match s {
             Src::Place { root, path: _, .. } => {
-                if let Some(q) = d.params.iter().position(|p| &p.0 == root) {
+                if let Some(q) = d.params.iter().position(|p| &p.0 == root).filter(|_| !inits.has(root)) {
                     if tag(&d.params[q].1) == "ref" || matches!(s, Src::Place { path, .. } if path.iter().any(|x| x == "*")) {
                         out.push(Origin::Param(q));
                     } else {
                         out.push(Origin::Local(root.clone()));
                     }
-                } else if let Some(init) = inits.get(root) {
+                } else if let Some(init) = inits.plain(root) {
                     // 借用を持つ変数 (`let y = x`) を通した借用は、その変数の出どころ。
                     let mut sub = vec![];
                     self.origins(init, d, inits, depth + 1, &mut sub);
@@ -2691,7 +2701,7 @@ impl<'a> Low<'a> {
                 }
             }
             Src::Alias(v) | Src::Stored { root: v, .. } => {
-                if let Some(q) = d.params.iter().position(|p| &p.0 == v) {
+                if let Some(q) = d.params.iter().position(|p| &p.0 == v).filter(|_| !inits.has(v)) {
                     // 省略した参照の引数の欄を読み戻した値は、欄が名前付き (`'static` でない) の領域を持つときだけ
                     // その引数の領域から来る (`self.name: &'static str` の複写は引数の借用ではない)。
                     let carries = match &read_field {
@@ -2701,9 +2711,9 @@ impl<'a> Low<'a> {
                     if carries {
                         out.push(Origin::Param(q));
                     }
-                } else if let Some(init) = inits.get(v) {
+                } else if let Some(init) = inits.plain(v) {
                     self.origins(init, d, inits, depth + 1, out);
-                } else if let Some(init) = inits.get(&format!("~{}", v)) {
+                } else if let Some(init) = inits.tilde(v) {
                     // 呼び出し・メソッド呼び出しなどを調べる `match` の腕・分解の束縛。受け手の自動借用を含むので、
                     // 引数から来る借用だけを引き継ぐ (局所の借用は E3030 の根拠にしない)。
                     let mut sub = vec![];
@@ -2718,7 +2728,13 @@ impl<'a> Low<'a> {
                 for i in inner {
                     self.src_origins(i, d, inits, depth + 1, &mut sub);
                 }
-                out.extend(sub.into_iter().filter(|o| matches!(o, Origin::Param(_))));
+                for o in sub {
+                    match o {
+                        Origin::Param(q) if Self::param_text(d, q).map_or(false, |t| inner_elided(&t)) => out.push(Origin::Inner(q)),
+                        Origin::Param(_) => out.push(o),
+                        _ => {}
+                    }
+                }
             }
             Src::Contents { .. } => {}
         }
@@ -2856,52 +2872,8 @@ impl<'a> Low<'a> {
         }
         let mut all = vec![];
         walk(body, &mut all);
-        // 1 回だけ束縛された名前 (引数と同名の束縛・複数回の束縛は、名前では決められないので使わない)。
-        let mut count: HashMap<String, usize> = d.params.iter().map(|p| (p.0.clone(), 1)).collect();
-        let mut inits: HashMap<String, &V> = HashMap::new();
-        for n in &all {
-            match nname(n) {
-                "Let" | "For" | "With" => {
-                    let mut b = vec![];
-                    pat_binds(&nf(n)[0], &mut b);
-                    for x in &b {
-                        *count.entry(x.clone()).or_insert(0) += 1;
-                    }
-                    if nname(n) == "Let" && nname(&nf(n)[0]) == "PBind" && !is_nil(&nf(n)[3]) {
-                        inits.insert(st(&nf(&nf(n)[0])[0]), &nf(n)[3]);
-                    } else if nname(n) == "Let" && nf(n).len() > 3 && !is_nil(&nf(n)[3]) {
-                        // 分解 `let (a, _b) = x`: 束縛はどれも右辺の借用を運ぶとみなす。
-                        for x in &b {
-                            inits.insert(format!("~{}", x), &nf(n)[3]);
-                        }
-                    } else if nname(n) == "For" {
-                        // `for r in x.iter()`: 要素の束縛は反復子の借用を運ぶ。
-                        for x in &b {
-                            inits.insert(format!("~{}", x), &nf(n)[1]);
-                        }
-                    }
-                }
-                "Match" => {
-                    // `if let` も `match` の形。局所 (`match o`) を調べるとき、腕の束縛は局所 `o` の借用を運ぶ。
-                    // 関数呼び出し・メソッド呼び出しを調べる式は受け手の自動借用を含むので、束縛へは配らない。
-                    let scrut_is_local = nname(&nf(n)[0]) == "Path";
-                    for arm in items(&nf(n)[1]) {
-                        let mut b = vec![];
-                        pat_binds(&items(arm)[0], &mut b);
-                        for x in &b {
-                            *count.entry(x.clone()).or_insert(0) += 1;
-                            if scrut_is_local {
-                                inits.insert(x.clone(), &nf(n)[0]);
-                            } else {
-                                inits.insert(format!("~{}", x), &nf(n)[0]);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        inits.retain(|k, _| count.get(k.trim_start_matches('~')) == Some(&1));
+        // 局所の束縛は、使う位置から見える一番内側・後ろのものを束縛点ごとに選ぶ (同名の束縛・引数と同名の束縛も区別する)。
+        let inits = Inits::build(body);
         let mut vals: Vec<&V> = vec![];
         Self::value_leaves(body, &mut vals);
         for v in &all {
@@ -2941,6 +2913,19 @@ impl<'a> Low<'a> {
                                 "E3030",
                                 nlineno(v),
                                 format!("returns a reference to the local variable `{}`, which does not live long enough", name),
+                            ));
+                        }
+                    }
+                    Origin::Inner(q) => {
+                        // 名前付きの外側の参照の中の省略した参照は、どの名前付きの出力の領域にも収まらない。
+                        if explicit && !expected.is_empty() && seen.insert((nlineno(v), d.params[q].0.clone())) {
+                            out.push((
+                                "E3010",
+                                nlineno(v),
+                                format!(
+                                    "{}: the returned value carries the inner reference of argument `{}` (`{}`), whose lifetime is elided (a new region per call); the return type `{}` names a lifetime it does not outlive",
+                                    d.name, d.params[q].0, ptexts[q], ret.trim(),
+                                ),
                             ));
                         }
                     }
@@ -3708,12 +3693,135 @@ pub(crate) fn split_top(s: &str) -> Vec<String> {
     out
 }
 
+
+/// 局所の束縛 1 つ (名前・見える範囲・初期化式)。`tilde` は分解・`match` の腕・`for` の束縛 (受け手の自動借用を含む)。
+struct LocalBind<'a> {
+    from: (usize, usize),
+    to: (usize, usize),
+    init: Option<&'a V>,
+    tilde: bool,
+}
+
+/// 関数本体の局所の束縛。同名の束縛が複数あっても、使う位置から見える一番内側・後ろの束縛を選ぶ。
+struct Inits<'a> {
+    binds: HashMap<String, Vec<LocalBind<'a>>>,
+    pos: std::cell::Cell<(usize, usize)>,
+    /// 節点ごとの位置 (自分に位置が無ければ、位置を持つ一番近い祖先の位置)。
+    eff: HashMap<*const V, (usize, usize)>,
+}
+
+fn pos_of(v: &V) -> (usize, usize) {
+    crate::parser::unpack_pos(nline(v))
+}
+
+/// 節点とその子孫の最後の位置。
+fn max_pos(v: &V) -> (usize, usize) {
+    let mut all = vec![];
+    walk(v, &mut all);
+    all.iter().map(|n| pos_of(n)).max().unwrap_or((0, 0))
+}
+
+fn fill_eff(v: &V, up: (usize, usize), out: &mut HashMap<*const V, (usize, usize)>) {
+    let p = if nline(v) != 0 { pos_of(v) } else { up };
+    out.insert(v as *const V, p);
+    for c in children(v) {
+        fill_eff(c, p, out);
+    }
+}
+
+impl<'a> Inits<'a> {
+    fn build(body: &'a V) -> Inits<'a> {
+        let mut me = Inits { binds: HashMap::new(), pos: std::cell::Cell::new((0, 0)), eff: HashMap::new() };
+        fill_eff(body, (0, 0), &mut me.eff);
+        me.scan(body, max_pos(body));
+        me
+    }
+
+    fn add(&mut self, pat: &V, from: (usize, usize), to: (usize, usize), init: Option<&'a V>, simple: bool) {
+        let mut b = vec![];
+        pat_binds(pat, &mut b);
+        for x in b {
+            let tilde = !simple;
+            self.binds.entry(x).or_default().push(LocalBind { from, to, init, tilde });
+        }
+    }
+
+    fn scan(&mut self, n: &'a V, end: (usize, usize)) {
+        let mut end = end;
+        match nname(n) {
+            "Block" => end = max_pos(n),
+            "Let" => {
+                let f = nf(n);
+                let init = if f.len() > 3 && !is_nil(&f[3]) { Some(&f[3]) } else { None };
+                let simple = nname(&f[0]) == "PBind";
+                self.add(&f[0], max_pos(n), end, init, simple);
+            }
+            "For" => {
+                let f = nf(n);
+                self.add(&f[0], max_pos(&f[1]), max_pos(n), Some(&f[1]), false);
+            }
+            "With" => {
+                let f = nf(n);
+                self.add(&f[0], max_pos(&f[2]), max_pos(n), None, true);
+            }
+            "Match" => {
+                let f = nf(n);
+                let scrut_is_local = nname(&f[0]) == "Path";
+                for arm in items(&f[1]) {
+                    // 腕は `V::L` (パターン・本体・ガード) で、`walk` が辿れないので各要素の最後の位置を取る。
+                    let to = items(arm).iter().map(max_pos).max().unwrap_or((0, 0));
+                    self.add(&items(arm)[0], pos_of(&items(arm)[0]), to, Some(&f[0]), scrut_is_local);
+                }
+            }
+            _ => {}
+        }
+        for c in children(n) {
+            self.scan(c, end);
+        }
+    }
+
+    /// 今の使う位置から見える `name` の束縛 (一番後ろから始まるもの)。
+    fn at(&self, v: &V) -> (usize, usize) {
+        self.eff.get(&(v as *const V)).copied().unwrap_or((0, 0))
+    }
+
+    fn visible(&self, name: &str) -> Option<&LocalBind<'a>> {
+        let at = self.pos.get();
+        self.binds.get(name)?.iter().filter(|b| b.from < at && at <= b.to).max_by_key(|b| b.from)
+    }
+
+    fn has(&self, name: &str) -> bool {
+        self.visible(name).is_some()
+    }
+
+    /// 通常の束縛 (`let y = x`・腕の局所の scrutinee) の初期化式。
+    fn plain(&self, name: &str) -> Option<&'a V> {
+        self.visible(name).filter(|b| !b.tilde).and_then(|b| b.init)
+    }
+
+    /// 分解・腕・`for` の束縛の初期化式。
+    fn tilde(&self, name: &str) -> Option<&'a V> {
+        self.visible(name).filter(|b| b.tilde).and_then(|b| b.init)
+    }
+}
+
 /// 文面に現れる名前付きライフタイム (`'static` を除く)。
 /// 引数の型 (`x: &u32`・`self: &Self`) が、省略したライフタイムの参照か (名前のある領域を持たない参照)。
 /// 省略した入力の領域は、呼び出しごとに別の新しい領域であり (仕様 4.3)、どの名前付きの出力にも収まらない。
 fn is_elided_ref(ptext: &str) -> bool {
     let ty = ptext.split_once(':').map_or(ptext, |x| x.1).trim();
     ty.starts_with('&') && !ty.contains('\'')
+}
+
+/// 名前付きの外側の参照 (`&'a ..`) の中に、省略した参照 (`&'a &u32` の内側) を持つ型か。
+fn inner_elided(ptext: &str) -> bool {
+    let ty = ptext.split_once(':').map_or(ptext, |x| x.1).trim();
+    let Some(rest) = ty.strip_prefix('&') else { return false };
+    let Some(rest) = rest.strip_prefix('\'') else { return false };
+    let rest = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+    let rest = rest.trim_start().trim_start_matches("mut").trim_start();
+    let b = rest.as_bytes();
+    rest.contains('&') && !rest.contains("fn(") && (0..b.len()).any(|i| b[i] == b'&' && b.get(i + 1) != Some(&b'\''))
 }
 
 /// 引数の型が、省略したライフタイムの参照をどこかに持つか (`x: &u32`・`x: Option<&u32>`・`x: & &u32`・`x: (&u32, u32)`)。
