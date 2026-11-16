@@ -292,18 +292,32 @@ pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
         }
     }
     let mut items: Vec<It> = vec![];
+    // 離れたコメント (空行を挟んで定義の前に置いたもの。3.2 の先頭の説明を除く) は、空行を詰めて次の定義の
+    // 直前に付ける (定義と一緒に動く)。最後の定義より後のコメントは、直せないのでファイルの末尾に残す。
+    let md0 = crate::doclink::module_doc_len(&lines);
+    let last_end = defs.iter().map(|d| d.end_line.max(d.line)).max().unwrap_or(0);
+    let tail: Vec<String> = lines.iter().skip(last_end).filter(|l| !l.trim().is_empty()).cloned().collect();
     for d in &defs {
-        if dropped.contains(&d.line) {
+        if d.line == 0 {
             continue;
         }
         let mut s = d.line - 1;
         while s > 0 && lines[s - 1].starts_with("//") {
             s -= 1;
         }
+        let mut s0 = s;
+        while s0 > md0 && (lines[s0 - 1].starts_with("//") || lines[s0 - 1].trim().is_empty()) {
+            s0 -= 1;
+        }
+        if dropped.contains(&d.line) {
+            continue;
+        }
         let e = if d.end_line > 0 { d.end_line } else { d.line };
-        let mut body: Vec<String> = lines[s..e].to_vec();
+        let mut body: Vec<String> = lines[s0..s].iter().filter(|l| !l.trim().is_empty()).cloned().collect();
+        let off = body.len();
+        body.extend(lines[s..e].iter().cloned());
         for (i, l) in body.iter_mut().enumerate() {
-            if (l.starts_with("type ") || l.starts_with("enum ")) && (d.kw == "type" || d.kw == "enum") && i == d.line - 1 - s {
+            if (l.starts_with("type ") || l.starts_with("enum ")) && (d.kw == "type" || d.kw == "enum") && i == off + d.line - 1 - s {
                 *l = fix_derive(l);
             }
         }
@@ -339,8 +353,8 @@ pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
         g.sort_by(|a, b| items[*a].name.as_bytes().cmp(items[*b].name.as_bytes()));
     }
     let mut out: Vec<Vec<String>> = vec![];
-    // import の行は項目の最後の行 (直前の `//` `///` は項目の先頭に付くが、import の行ではない)。
-    let imp: Vec<String> = groups[0].iter().map(|&i| items[i].lines.last().unwrap().clone()).collect();
+    // import は 1 つの塊に並べる。直前のコメント (`//` `///`) は import の行と一緒に動く (失わない)。
+    let imp: Vec<String> = groups[0].iter().flat_map(|&i| items[i].lines.clone()).collect();
     if !imp.is_empty() {
         out.push(imp);
     }
@@ -379,6 +393,12 @@ pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
             res.push(String::new());
         }
         res.extend(chunk);
+    }
+    if !tail.is_empty() {
+        if !res.is_empty() {
+            res.push(String::new());
+        }
+        res.extend(tail);
     }
     if res.is_empty() { String::new() } else { res.join("\n") + "\n" }
 }
