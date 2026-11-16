@@ -83,6 +83,23 @@ fn lower.vec.exit_drops(env: &types.env.Env, c: &mut lower.cx.Cx, hi: usize, lo:
     Ok(())
 end lower.vec.exit_drops
 
+// ループを抜ける (`break` / `continue`) とき、局所 [lo, hi) のスロットを逆順に片付ける
+// (`Vec` / `String` は解放して、どれも `scope.end`)。
+fn lower.vec.exit_scope(env: &types.env.Env, c: &mut lower.cx.Cx, hi: usize, lo: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut k = hi
+    while k > lo {
+        k = k - 1usize
+        if lower.cx.is_slot(c, k) {
+            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+            if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
+                lower.vec.free_hdr(c, sv)?
+            }
+            core.mem.drop(lower.cx.def1(c, "unit", "scope.end ", sv)?)
+        }
+    }
+    Ok(())
+end lower.vec.exit_scope
+
 // 枠の先頭の番地を解放する (`mem.load.ptr` と `heap.free`)。
 fn lower.vec.free_hdr(c: &mut lower.cx.Cx, slot: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let pv = lower.vec.load_ptr(c, slot)?

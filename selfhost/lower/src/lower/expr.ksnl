@@ -616,10 +616,10 @@ fn lower.expr.expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         return lower.opt.tryx(env, c, p, src, n, t)
     }
     if (k == parse.ast.Kind.Break) {
-        return lower.expr.jump(c, true, t)
+        return lower.expr.jump(env, c, true, t)
     }
     if (k == parse.ast.Kind.Continue) {
-        return lower.expr.jump(c, false, t)
+        return lower.expr.jump(env, c, false, t)
     }
     if (k == parse.ast.Kind.Return) {
         return lower.expr.retx(env, c, p, src, n)
@@ -947,8 +947,10 @@ fn lower.expr.join_params(c: &mut lower.cx.Cx, rty: &str, ks: &alloc.vec.Vec<usi
 end lower.expr.join_params
 
 // break (`is_break`) と continue: 可変の局所の現在の値を持って飛ぶ。
-fn lower.expr.jump(c: &mut lower.cx.Cx, is_break: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.jump(env: &types.env.Env, c: &mut lower.cx.Cx, is_break: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let a = lower.cx.cur_vals(c, &c.lp.ks)?
+    // ループの中で作ったスロットの局所を、逆順に解放して `scope.end` (Rust 版と同じ)。
+    lower.vec.exit_scope(env, c, c.v.vals.len(), c.lp.base)?
     let mut s = lower.cx.own("br ")?
     if is_break {
         s.push_str(lower.cx.target(c.lp.exit, &a)?.as_str())?
