@@ -119,6 +119,7 @@ def rust_fns(pkg, fqns):
     return fns, fails
 
 
+MATCHED = []
 REASONS = {}
 RFAILS = {}
 
@@ -147,6 +148,7 @@ def compare_pkg(pkg, mode, label):
             ok += 1
             if norm(mine[f]) == norm(rust[f]):
                 match += 1
+                MATCHED.append(label + " " + f)
             else:
                 diffs.append(f)
     note = ""
@@ -205,6 +207,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=12)
     ap.add_argument("-v", action="store_true")
     ap.add_argument("--reasons", action="store_true")
+    ap.add_argument("--dump", default="", help="一致した関数の名前をこのファイルに書く (退行の突き合わせ用)")
     a = ap.parse_args()
     tmp = tempfile.mkdtemp(prefix="lower-cmp-")
     groups = []
@@ -244,6 +247,9 @@ def main():
         for why, n in rc2.most_common():
             print("  %4d  %s" % (n, why))
     print("合計: 一致 %d / 全体 %d (下ろせた %d, 未対応の理由 %d)" % (M, T, O, U))
+    if a.dump:
+        with open(a.dump, "w") as f:
+            f.write("\n".join(sorted(MATCHED)) + "\n")
     shutil.rmtree(tmp, ignore_errors=True)
 
 
