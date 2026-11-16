@@ -1,0 +1,8 @@
+// expect: E5001
+trait t.PtrTr
+    fn get(self: &Self, p: *const i32) -> *const i32 uses [] panics never
+end t.PtrTr
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
