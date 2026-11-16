@@ -1,0 +1,17 @@
+// expect: E2023
+// 列挙子のパターンの欄の数が宣言と違う (`A(i32, i32)` を `A(x, y, z)` で)
+enum t.E pub
+    A(i32, i32)
+    B
+end t.E
+
+fn t.f(e: t.E) -> i32 uses [] panics never
+    match e {
+        t.E.A(x, _y, _z) => x
+        t.E.B => 0i32
+    }
+end t.f
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.f(t.E.B))
+end t.main

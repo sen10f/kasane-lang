@@ -1,0 +1,16 @@
+// expect: E2023
+// 別の列挙型の列挙子で照合する (`t.A` の値を `t.B.Y` で)
+enum t.A pub
+    X
+end t.A
+
+enum t.B pub
+    Y
+end t.B
+
+fn t.main() -> () uses [] panics never
+    let a = t.A.X
+    match a {
+        t.B.Y => core.mem.drop(())
+    }
+end t.main

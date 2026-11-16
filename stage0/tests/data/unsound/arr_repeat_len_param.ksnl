@@ -1,0 +1,12 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.mk(2))
+    Ok(())
+end t.main
+
+// expect: E2026
+// `[e; N]` の長さは定数: 引数も使えない
+fn t.mk(n: usize) -> u32 uses [] panics never
+    let a = [1u32; n]
+    core.mem.drop(a)
+    0
+end t.mk

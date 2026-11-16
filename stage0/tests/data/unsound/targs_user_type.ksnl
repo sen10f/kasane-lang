@@ -1,0 +1,14 @@
+// expect: E2023
+// 利用者の総称の型も型引数の数を検査する
+type t.Pair[A, B] pub
+    a: A
+    b: B
+end t.Pair
+
+fn t.f(p: t.Pair<u32>) -> () uses [] panics never
+    core.mem.drop(p)
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

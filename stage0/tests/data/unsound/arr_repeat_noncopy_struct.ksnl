@@ -1,0 +1,12 @@
+// expect: E3002
+// `[e; N]` の値は Copy に限る (Copy でない構造体は N 個に複製できない)
+type t.Box
+    n: u32
+end t.Box
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let b = t.Box { n: 1u32 }
+    let a = [b; 3]
+    core.mem.drop(a)
+    Ok(())
+end t.main

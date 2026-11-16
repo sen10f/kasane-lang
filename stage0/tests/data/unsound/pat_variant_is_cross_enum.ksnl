@@ -1,0 +1,17 @@
+// expect: E2023
+// `式 is パターン` でも別の列挙型の列挙子はエラー
+enum t.E pub
+    A
+    B
+end t.E
+
+enum t.F pub
+    X
+    Y
+end t.F
+
+fn t.main() -> () uses [] panics never
+    let e = t.E.A
+    core.mem.drop(e is t.F.X)
+    core.mem.drop(t.F.Y)
+end t.main

@@ -1,0 +1,10 @@
+// expect: E2023
+// `Result` の型引数は 2 つ
+fn t.f() -> Result<u32> uses [] panics never
+    Ok(1u32)
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.f())
+    Ok(())
+end t.main
