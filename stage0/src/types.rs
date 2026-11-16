@@ -2335,7 +2335,7 @@ impl<'a> TypeCk<'a> {
                 escape_all(self);
                 return Ty::Unknown;
             }
-            if let Some(t) = self.trait_bound_method(recv, name, args, line) {
+            if let Some(t) = self.trait_bound_method(recv, base, name, args, line) {
                 return t;
             }
             // 型パラメータのレシーバ: 境界 (とそのスーパートレイト) が宣言するメソッドだけを呼べる。
@@ -2615,7 +2615,7 @@ impl<'a> TypeCk<'a> {
         );
     }
 
-    fn trait_bound_method(&mut self, recv: &Ty, name: &str, args: &[Ty], line: usize) -> Option<Ty> {
+    fn trait_bound_method(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize) -> Option<Ty> {
         let deep = self.deep(recv);
         let Ty::Param(pn) = deep.strip().clone() else { return None };
         let d = self.def();
@@ -2706,6 +2706,11 @@ impl<'a> TypeCk<'a> {
             let mut map: HashMap<String, Ty> = HashMap::new();
             map.insert("Self".to_string(), deep.strip().clone());
             seed_effects(td, &mut map);
+            if let Some(b) = base {
+                if matches!(from_v(&params[0].1, &gn), Ty::Ref(true, _)) {
+                    self.need_mut(b, name, line);
+                }
+            }
             // トレイトの型パラメータ (`Fn<Args, R, ..>` の `R` など) を、境界に書かれた実引数に束縛する。
             // 実引数の `Self` (スーパートレイトの `PartialEq<Self>`) は、レシーバの型。
             let tparams: Vec<&(String, String, V)> = td.generics.iter().filter(|g| g.0 != "life").collect();
@@ -2988,8 +2993,8 @@ impl<'a> TypeCk<'a> {
         // トレイト自身に無ければスーパートレイト (`requires`) を推移的に辿る (5.1)。
         // `root` は 5.3 の候補計算 (impl の探索) にも使うので残しておく。
         let mut seen: HashSet<String> = HashSet::new();
-        let mut queue = vec![root.clone()];
-        while let Some(cur) = queue.pop() {
+        let mut queue: Vec<(String, Vec<V>)> = vec![(root.clone(), dargs.0.clone())];
+        while let Some((cur, cur_targs)) = queue.pop() {
             if !seen.insert(cur.clone()) {
                 continue;
             }
@@ -2999,9 +3004,22 @@ impl<'a> TypeCk<'a> {
                 continue;
             }
             let Some((_, params, ret)) = td.trait_sigs.iter().find(|s| s.0 == name) else {
-                for (sup, _) in &td.requires {
+                // スーパートレイトの型引数は、このトレイトの効果変数を `dyn` の実引数で置き換えて渡す。
+                let pairs = crate::check::align_targs(&td.generics, &cur_targs).unwrap_or_default();
+                for (sup, sargs) in &td.requires {
                     if let Some(fq) = crate::check::resolve_trait_fqn(self.p, sup) {
-                        queue.push(fq);
+                        let sa: Vec<V> = items(sargs)
+                            .iter()
+                            .map(|a| {
+                                let var = match (crate::check::targ_effs(a), crate::check::targ_panic(a)) {
+                                    (Some(e), _) if e.len() == 1 => Some(e[0].clone()),
+                                    (_, Some(p)) => Some(p),
+                                    _ => None,
+                                };
+                                var.and_then(|v| pairs.iter().find(|(n, _, _)| *n == v.as_str()).map(|(_, _, t)| (*t).clone())).unwrap_or_else(|| a.clone())
+                            })
+                            .collect();
+                        queue.push((fq, sa));
                     }
                 }
                 continue;
@@ -3018,7 +3036,7 @@ impl<'a> TypeCk<'a> {
             // 型引数のないトレイトの具体的な効果 (`uses [io.console]`) はそのまま使う。実引数が分からなければ変数のまま
             // (効果検査は未束縛の変数を黙って通す)。
             if let Some((_, u, pn)) = td.trait_effs.iter().find(|e| e.0 == name) {
-                let (u2, p2) = crate::check::inst_effects(&td.generics, if cur == root { &dargs.0 } else { &[] }, u, pn);
+                let (u2, p2) = crate::check::inst_effects(&td.generics, &cur_targs, u, pn);
                 // クロージャの本体の中なら、実体化した宣言の効果 (上限) をそのクロージャの効果に数える (5.1)。
                 if !self.def().inferred {
                     if let Some(acc) = self.eff_acc.last_mut() {
@@ -3572,6 +3590,25 @@ impl<'a> TypeCk<'a> {
                 match st(&f[0]).as_str() {
                     "&" => Ty::Ref(false, Box::new(t)),
                     "&mut" => {
+                        // `&mut r.f` の根 `r` が共有参照なら、共有から可変を得ることになる (E3031。`&mut self` のメソッド呼び出しと同じ)。
+                        let proj = match nname(&f[1]) {
+                            "Field" => true,
+                            "Path" => strs(&nf(&f[1])[0]).len() >= 2,
+                            _ => false,
+                        };
+                        if proj {
+                            if let Some(root) = self.base_local(&f[1]) {
+                                if let Some(rt) = self.lookup(&root) {
+                                    if matches!(self.resolve(&rt), Ty::Ref(false, _)) {
+                                        self.diag(
+                                            "E3031",
+                                            format!("cannot borrow a field of `{}` as mutable through the shared reference", root),
+                                            nline(e),
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         // `&mut x` で x の値を後から差し替えられるので、x の `'static` の印を外す。
                         if nname(&f[1]) == "Path" {
                             let segs = strs(&nf(&f[1])[0]);

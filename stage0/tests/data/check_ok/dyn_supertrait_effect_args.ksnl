@@ -1,0 +1,32 @@
+// E4001/E4002: dyn のスーパートレイトメソッドを、効果が一致する側から呼ぶ。
+trait t.Base[E: uses, P: panics]
+    fn base(self: &Self) -> u32 uses [E] panics P
+end t.Base
+
+trait t.Sub[E: uses, P: panics] requires t.Base<E, P>
+    fn sub(self: &Self) -> u32 uses [E] panics P
+end t.Sub
+
+type t.X
+    v: u32
+end t.X
+
+impl t.Base<[], never> for t.X
+fn t.X.base(self: &t.X) -> u32 uses [] panics never impls t.Base<[], never>
+    self.v
+end t.X.base
+
+impl t.Sub<[], never> for t.X
+fn t.X.sub(self: &t.X) -> u32 uses [] panics never impls t.Sub<[], never>
+    self.v
+end t.X.sub
+
+fn t.good(h: &dyn t.Sub<[], never>) -> u32 uses [] panics never
+    h.base()
+end t.good
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x = t.X { v: 5u32 }
+    core.mem.drop(t.good(&x))
+    Ok(())
+end t.main

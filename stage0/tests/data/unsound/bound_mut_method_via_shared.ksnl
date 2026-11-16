@@ -1,0 +1,13 @@
+// expect: E3031
+// トレイト境界の &mut self メソッドを &T 経由で呼ぶ（共有から可変＝不可）
+trait t.T
+    fn m(self: &mut Self) -> () uses [] panics never
+end t.T
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.use[T: t.T](x: &T) -> () uses [] panics never
+    x.m()
+end t.use

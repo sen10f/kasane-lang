@@ -1,0 +1,15 @@
+// expect: E3031
+// &self メソッドから &mut 内部参照を返す（共有から可変への再借用＝不可）
+type t.B
+    v: u32
+end t.B
+
+fn t.B.get_mut(self: &t.B) -> &mut u32 uses [] panics never
+    &mut self.v
+end t.B.get_mut
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let b = t.B { v: 1u32 }
+    core.mem.drop(b.get_mut())
+    Ok(())
+end t.main
