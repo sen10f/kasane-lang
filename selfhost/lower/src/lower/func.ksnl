@@ -42,7 +42,8 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
         let v = lower.cx.newval(c, kt.as_str())?
         ps.push(v)?
         let nm = resolve.ast.tok_text(p, src, prm.a)
-        core.mem.drop(lower.opt.bind(env, c, nm, v, false, pt)?)
+        let pk = lower.opt.bind(env, c, nm, v, false, pt)?
+        lower.own.declare(env, c, pk, pt)?
     }
     let ret = if ret0 != 0usize {
         ret0

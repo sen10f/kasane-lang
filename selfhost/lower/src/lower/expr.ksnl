@@ -634,7 +634,8 @@ fn lower.expr.letx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     let tk = parse.cur.peek_at(p, pn.a)
     let name = resolve.ast.text(src, tk.start, tk.stop)
     let t = r.t
-    lower.opt.bind(env, c, name, r.v, sn.b != 0usize, t)?
+    let lk = lower.opt.bind(env, c, name, r.v, sn.b != 0usize, t)?
+    lower.own.declare(env, c, lk, t)?
     Ok(())
 end lower.expr.letx
 
@@ -968,11 +969,22 @@ fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: pars
         return lower.expr.dummy(c, t)
     }
     if first == "" {
-        // 局所の読み出し: 型は局所の型 (束縛のとき決まったもの)。
+        // 局所の読み出し: 型は局所の型 (束縛のとき決まったもの)。Copy でなければ move (借りる文脈では `use`)。
+        if c.s.peek {
+            lower.own.emit(c, loc - 1usize, "own.use ")?
+        } else if !lower.own.is_copy(env, c, bt) {
+            lower.own.emit(c, loc - 1usize, "own.consume ")?
+        }
         return Ok(lower.cx.R { v: base, t: bt })
     }
     // `局所.フィールド` (構造体の読み出し。参照なら参照越し)。
-    lower.opt.field(env, c, base, bt, second, t)
+    let fr = lower.opt.field(env, c, base, bt, second, t)?
+    if lower.own.is_copy(env, c, t) {
+        lower.own.emit(c, loc - 1usize, "own.use ")?
+    } else {
+        lower.own.emit(c, loc - 1usize, "own.part ")?
+    }
+    Ok(fr)
 end lower.expr.path
 
 // return: 値を返して終わる (unit の関数は unit を返す)。
