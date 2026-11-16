@@ -293,6 +293,28 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         return lower.expr.dummy(c, t)
     }
     let name = resolve.ast.text(src, cn.a, cn.b)
+    lower.expr.call_named(env, c, p, src, e, n, name, t)
+end lower.expr.call
+
+// `self.欄.メソッド(..)`: `self` は 1 語の `Path` で、後ろの `.欄` は `Dot` になる (ふつうの名前は `x.欄.m` が 1 つの `Path`)。
+// 受け手が `self` から始まる `Dot` の連鎖なら、`self.欄.メソッド` の綴り (ソースの連続した範囲) を返す。
+fn lower.expr.self_chain['a](p: &parse.cur.P, src: &'a [u8], recv: usize, meth_tok: usize) -> (&'a str, bool) uses [] panics may pub
+    let mut cur = parse.ast.get(&p.ast, recv)
+    if cur.kind != parse.ast.Kind.Dot {
+        return ("", false)
+    }
+    while cur.kind == parse.ast.Kind.Dot {
+        cur = parse.ast.get(&p.ast, cur.a)
+    }
+    if cur.kind != parse.ast.Kind.Path || resolve.ast.text(src, cur.a, cur.b) != "self" {
+        return ("", false)
+    }
+    let tk = parse.cur.peek_at(p, meth_tok)
+    (resolve.ast.text(src, cur.a, tk.stop), true)
+end lower.expr.self_chain
+
+// 呼び出しの本体。name は呼び先の綴り (`a.b.m`)。n は引数の並びを n.b に持つ `Call` の形の節。
+fn lower.expr.call_named(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, name: &str, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let (rv, meth) = lower.expr.split2(name)
     if rv != "" && lower.cx.find(c, rv) != 0usize {
         if lower.expr.is_wrap_op(meth) {
@@ -443,7 +465,7 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     o.push(')')?
     let v = lower.cx.def(c, rt.as_str(), o.as_str())?
     Ok(lower.cx.R { v: v, t: rty })
-end lower.expr.call
+end lower.expr.call_named
 
 // 文字リテラルの中身 src[a..b] の値 (エスケープ `\n` `\t` `\r` `\0` `\\` `\'` `\"` と UTF-8)。
 fn lower.expr.chr_val(src: &[u8], a: usize, b: usize) -> (usize, bool) uses [] panics may pub
@@ -1494,11 +1516,18 @@ end lower.expr.matchx
 
 fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let meth = resolve.ast.tok_text(p, src, n.b)
+    let (sname, sself) = lower.expr.self_chain(p, src, n.a, n.b)
     if meth == "get" || meth == "last" {
         let (sr, sok) = lower.expr.vec_slice_get(env, c, p, src, e, n, t)?
         if sok {
             return Ok(sr)
         }
+    }
+    if sself && !(meth == "get" || meth == "last") {
+        let mut cn2 = n
+        cn2.kind = parse.ast.Kind.Call
+        cn2.b = n.d
+        return lower.expr.call_named(env, c, p, src, e, cn2, sname, t)
     }
     if !lower.expr.is_wrap_op(meth) {
         // 利用者のメソッド (解決先は型検査の表)。
@@ -2218,14 +2247,23 @@ end lower.expr.vec_field_call
 fn lower.expr.vec_slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
     let no = lower.cx.R { v: 0usize, t: t }
     let rn = parse.ast.get(&p.ast, n.a)
-    if rn.kind != parse.ast.Kind.Call || resolve.ast.count(p, rn.b) != 0usize {
-        return Ok((no, false))
+    let mut cname = ""
+    if rn.kind == parse.ast.Kind.MCall && resolve.ast.tok_text(p, src, rn.b) == "as_slice" && resolve.ast.count(p, rn.d) == 0usize {
+        let (sn, sok) = lower.expr.self_chain(p, src, rn.a, rn.b)
+        if !sok {
+            return Ok((no, false))
+        }
+        cname = sn
+    } else {
+        if rn.kind != parse.ast.Kind.Call || resolve.ast.count(p, rn.b) != 0usize {
+            return Ok((no, false))
+        }
+        let cn = parse.ast.get(&p.ast, rn.a)
+        if cn.kind != parse.ast.Kind.Path {
+            return Ok((no, false))
+        }
+        cname = resolve.ast.text(src, cn.a, cn.b)
     }
-    let cn = parse.ast.get(&p.ast, rn.a)
-    if cn.kind != parse.ast.Kind.Path {
-        return Ok((no, false))
-    }
-    let cname = resolve.ast.text(src, cn.a, cn.b)
     if !cname.ends_with(".as_slice") {
         return Ok((no, false))
     }

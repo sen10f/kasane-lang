@@ -15,9 +15,9 @@ fn lower.vec.call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usiz
     }
     let is_str = fqn.starts_with("alloc.string.String.")
     let ok = if is_str {
-        name == "len" || name == "is_empty" || name == "push_str" || name == "push" || name == "push_u64"
+        name == "len" || name == "is_empty" || name == "push_str" || name == "push" || name == "push_u64" || name == "clear"
     } else {
-        name == "len" || name == "is_empty" || name == "push" || name == "pop" || name == "as_slice"
+        name == "len" || name == "is_empty" || name == "push" || name == "pop" || name == "as_slice" || name == "clear" || name == "truncate"
     }
     if !ok {
         lower.cx.fail(c, lower.cx.cat2("Vec / String のメソッド (未対応): ", name)?.as_str())?
@@ -136,6 +136,10 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
     ps.push(recv)?
     let mut value = 0usize
     let mut eff = "[]"
+    if name == "truncate" {
+        value = lower.cx.newval(c, "usize")?
+        ps.push(value)?
+    }
     if name == "push" {
         let et = lower.tyk.text(env, c, elem)?
         value = lower.cx.newval(c, et.as_str())?
@@ -159,6 +163,29 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
         r = lower.vec.push(env, c, recv, elem, value, ret)?
     } else if name == "pop" {
         r = lower.vec.pop(env, c, recv, elem, ret)?
+    } else if name == "clear" {
+        let z = lower.vec.usize_c(c, 0usize)?
+        lower.vec.store_at(c, "usize", recv, 8usize, z)?
+        r = lower.cx.R { v: lower.expr.unit(c)?, t: ret }
+    } else if name == "truncate" {
+        // 長さを縮めるだけ (n < len のときだけ)。要素の解放はしない (所有物の要素は漏れる。README 29 章)。
+        let len0 = lower.vec.load_usize(c, recv, 8usize)?
+        let lts = lower.cx.cat2("icmp.lt.usize ", lower.expr.two(value, len0)?.as_str())?
+        let lt = lower.cx.def(c, "bool", lts.as_str())?
+        let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let setb = lower.cx.blk(c, &empty)?
+        let jb = lower.cx.blk(c, &empty)?
+        let mut brs = lower.cx.cat2("br_if ", lower.cx.vs(lt)?.as_str())?
+        brs.push_str(", ")?
+        brs.push_str(lower.cx.target(setb, &empty)?.as_str())?
+        brs.push_str(", ")?
+        brs.push_str(lower.cx.target(jb, &empty)?.as_str())?
+        lower.cx.finish(c, brs)?
+        lower.cx.goto(c, setb)
+        lower.vec.store_at(c, "usize", recv, 8usize, value)?
+        lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &empty)?.as_str())?)?
+        lower.cx.goto(c, jb)
+        r = lower.cx.R { v: lower.expr.unit(c)?, t: ret }
     } else if name == "as_slice" {
         let pv = lower.vec.load_ptr(c, recv)?
         let lv = lower.vec.load_usize(c, recv, 8usize)?
