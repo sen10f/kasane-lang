@@ -353,6 +353,61 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     Ok(lower.cx.R { v: v, t: rty })
 end lower.expr.call
 
+// 文字リテラルの中身 src[a..b] の値 (エスケープ `\n` `\t` `\r` `\0` `\\` `\'` `\"` と UTF-8)。
+fn lower.expr.chr_val(src: &[u8], a: usize, b: usize) -> (usize, bool) uses [] panics may pub
+    let b0 = match src.get(a) {
+        Some(x) => usize.from_u32(u32.from_u8(*x))
+        None => 0usize
+    }
+    if b0 == 92usize {
+        let e = match src.get(a + 1usize) {
+            Some(x) => usize.from_u32(u32.from_u8(*x))
+            None => 0usize
+        }
+        if e == 110usize {
+            return (10usize, true)
+        }
+        if e == 116usize {
+            return (9usize, true)
+        }
+        if e == 114usize {
+            return (13usize, true)
+        }
+        if e == 48usize {
+            return (0usize, true)
+        }
+        if e == 92usize || e == 34usize || e == 39usize {
+            return (e, true)
+        }
+        return (0usize, false)
+    }
+    if b0 < 128usize {
+        return (b0, true)
+    }
+    let mut n = 0usize
+    let mut v = 0usize
+    if b0 >= 240usize {
+        n = 3usize
+        v = b0 - 240usize
+    } else if b0 >= 224usize {
+        n = 2usize
+        v = b0 - 224usize
+    } else {
+        n = 1usize
+        v = b0 - 192usize
+    }
+    let mut i = 1usize
+    while i <= n && a + i < b {
+        let cb = match src.get(a + i) {
+            Some(x) => usize.from_u32(u32.from_u8(*x))
+            None => 128usize
+        }
+        v = v * 64usize + (cb - 128usize)
+        i = i + 1usize
+    }
+    (v, true)
+end lower.expr.chr_val
+
 // 型の合わない仮の値 (未対応のとき)。
 fn lower.expr.dummy(c: &mut lower.cx.Cx, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let v = lower.cx.newval(c, "unit")?
@@ -648,6 +703,27 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             op = "const.bool true"
         }
         let v = lower.cx.def(c, "bool", op)?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if n.a == 4usize || n.a == 5usize {
+        // 文字 (`'a'`、u32 の値) とバイト (`b'0'`、u8 の値): エスケープと UTF-8 を値にする。
+        let mut qa = tk.start + 1usize
+        let mut op = "const.u32 "
+        if n.a == 5usize {
+            qa = tk.start + 2usize
+            op = "const.u8 "
+        }
+        let (cv, cok) = lower.expr.chr_val(src, qa, tk.stop - 1usize)
+        if !cok {
+            lower.cx.fail(c, "文字リテラル (\\x と \\u は未対応)")?
+            return lower.expr.dummy(c, t)
+        }
+        let lt = if n.a == 5usize {
+            "u8"
+        } else {
+            "u32"
+        }
+        let v = lower.cx.def(c, lt, lower.cx.cat2(op, lower.cx.dec(cv)?.as_str())?.as_str())?
         return Ok(lower.cx.R { v: v, t: t })
     }
     if n.a == 3usize {

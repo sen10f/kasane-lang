@@ -125,7 +125,8 @@ fn lower.chk.eq(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: 
     let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 0usize), types.ty.UNKNOWN)?
     let b = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 1usize), a.t)?
     let ty = lower.tyk.text(env, c, a.t)?
-    if !lower.chk.eq_ok(ty.as_str()) {
+    let is_char = types.ty.node(&c.ar, types.ty.find(&c.ar, a.t)).k == types.ty.K.Char
+    if is_char || !lower.chk.eq_ok(ty.as_str()) {
         lower.cx.fail(c, "core.check.eq (整数と bool 以外は未対応)")?
         return lower.expr.dummy(c, t)
     }
