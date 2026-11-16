@@ -1,17 +1,19 @@
 // expect: E3040
 type t.Res linear
     id: u32
+    data: alloc.vec.Vec<u64, std.alloc.System>
 end t.Res
 
 fn t.Res.shut(self: t.Res) -> () uses [] panics never
-    let t.Res { id: id } = self
+    let t.Res { id: id, data: data } = self
     core.mem.drop(id)
+    core.mem.drop(data)
 end t.Res.shut
 
-fn t.bad() -> () uses [] panics never
-    with r = t.Res { id: 1u32 } close r.shut() {
+fn t.bad() -> () uses [alloc] panics never
+    with r = t.Res { id: 1u32, data: alloc.vec.Vec.new(std.alloc.SYSTEM) } close r.shut() {
         match r {
-            t.Res { id: id } => core.mem.drop(id)
+            t.Res { id: id, data: data } => core.mem.drop(data)
         }
     }
 end t.bad

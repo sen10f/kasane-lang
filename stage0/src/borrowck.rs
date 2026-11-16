@@ -148,6 +148,11 @@ struct Low<'a> {
     /// 型が記録されていて、参照でないと分かる束縛点。参照の変数 (または型の分からない束縛) の場所への保存は、
     /// その参照の指す先にも保存されたとみなす (`p = &mut h; p.r = s.as_str()`)。ここに入る束縛は指す先を持たない。
     nonref: HashSet<(usize, String)>,
+    /// `with` の束縛点 (行, 名前) と、後始末式の (行, 束縛の名前)。診断の符号 (E3043) を決めるのに使う。
+    with_sites: HashSet<(usize, String)>,
+    with_closes: HashSet<(usize, String)>,
+    /// 本体の値の型が借用を持ち得ない `with` の行 (値の借用は追わない)。
+    with_free: HashSet<usize>,
 }
 
 /// 値を持つ式 (`match` の腕、`if` の枝、ブロック式) の値として外へ運ぶ借用を、どの枝から集めるか。
@@ -512,7 +517,7 @@ impl<'a> Low<'a> {
             },
             "Try" => self.loan_sources(&nf(e)[0]),
             // 値を持つ式: 各枝・各腕の値の借用の和 (枝の終わりで合成の持ち主に集めてある)
-            "Match" | "If" | "Block" => match self.value_vals.get(&(e as *const V as usize)) {
+            "Match" | "If" | "Block" | "With" => match self.value_vals.get(&(e as *const V as usize)) {
                 Some(h) => vec![Src::Alias(h.clone())],
                 None => vec![],
             },
@@ -1653,6 +1658,9 @@ impl<'a> Low<'a> {
             plain: self.plain.clone(),
             owned: self.owned.clone(),
             nonref: self.nonref.clone(),
+            with_sites: self.with_sites.clone(),
+            with_closes: self.with_closes.clone(),
+            with_free: self.with_free.clone(),
         };
         let entry = sub.new_node();
         let exit = sub.new_node();
@@ -1979,13 +1987,30 @@ impl<'a> Low<'a> {
                 self.lower_block_value(e, cur, &holder, &[], base)
             }
             "Unsafe" => self.lower_block(&f[2], cur),
-            // `with 名前 = 初期化式 close 後始末式 { 本体 }`: 本体のあとに後始末式が続く経路で近似する
-            // (本体の `return` / `?` は出口へ直接つなぐので、その経路の後始末は追わない)。
+            // `with 名前 = 初期化式 close 後始末式 { 本体 }` (仕様 4.4): 束縛を作る → 本体 (束縛のスコープの中、値は
+            // ふつうのブロックの値と同じく持ち主へ集める) → 後始末式で束縛を move、と下ろす。本体の値・外への代入が束縛を
+            // 借りて、後始末の move の時点でも生きているなら、競合の報告になる (`borrowck` が E3043 に直す)。
+            // 本体の `return` / `?` は出口へ直接つなぐので、その経路の後始末は追わない。
             "With" => {
+                let name = st(&nf(&f[0])[0]);
                 let c = self.lower_expr(&f[2], cur);
-                self.emit(c, Ev::Def(st(&nf(&f[0])[0])));
-                let end = self.lower_block(&f[4], c);
-                self.lower_expr(&f[3], end)
+                self.emit(c, Ev::ScopeAdd(name.clone()));
+                self.emit(c, Ev::Def(name.clone()));
+                self.with_sites.insert((nline(e), name.clone()));
+                let base = self.scope_stack.len();
+                self.scope_stack.push(vec![(name.clone(), nline(e))]);
+                let end = if self.with_free.contains(&nline(e)) {
+                    self.lower_block(&f[4], c)
+                } else {
+                    let holder = self.value_holder(e);
+                    self.lower_block_value(&f[4], c, &holder, &[], base)
+                };
+                self.with_closes.insert((nline(&f[3]), name));
+                let end = self.lower_expr(&f[3], end);
+                // 束縛の寿命の終わり (`DropScope`) は置かない: 借用が残る誤りは E3043 で報告済みで、
+                // 続く使用を E3010 の二重報告にしない。
+                self.scope_stack.pop();
+                end
             }
             "Call" => {
                 let callee = &f[0];
@@ -3484,8 +3509,15 @@ impl<'a> Checker<'a> {
         // 参照を通した分解 (`match &o { Some(p) => .. }`) は型を記録されないので、入らない (黙る)。
         let mut owned: HashSet<(usize, String)> = HashSet::new();
         let mut nonref: HashSet<(usize, String)> = HashSet::new();
+        let mut with_free: HashSet<usize> = HashSet::new();
         for ((d, line, name), ty) in self.let_tys.iter() {
             if *d != di {
+                continue;
+            }
+            if name == "$with_val" {
+                if self.ty_borrow_free(ty) {
+                    with_free.insert(*line);
+                }
                 continue;
             }
             if self.ty_borrow_free(ty) {
@@ -3517,6 +3549,9 @@ impl<'a> Checker<'a> {
             plain,
             owned,
             nonref,
+            with_sites: HashSet::new(),
+            with_closes: HashSet::new(),
+            with_free,
         };
         // 参照を別の引数の指す先 (Vec 要素・構造体欄) に保存する際の
         // ライフタイム不一致 (d22)。
@@ -3558,6 +3593,8 @@ impl<'a> Checker<'a> {
                 // 中断点をまたぐ借用は E3050 (仕様 5.6)、局所の借用を外へ出すのは E3030。それ以外の借用の競合は E3010。
                 let code = if msg.contains("across a suspension point") {
                     "E3050"
+                } else if msg.starts_with("the `with` body") {
+                    "E3043"
                 } else if msg.starts_with("returns a reference to the local variable") {
                     "E3030"
                 } else {
@@ -3863,6 +3900,8 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                             out.push((*line, format!("cannot use `{}` while it is mutably borrowed by {}", root, who)));
                         } else if matches!(kind, Acc::Write | Acc::MutB | Acc::MutKeep) {
                             out.push((*line, format!("cannot mutate `{}` while it is borrowed by {}", root, who)));
+                        } else if *kind == Acc::Move && low.with_closes.contains(&(*line, root.clone())) {
+                            out.push((*line, format!("the `with` body value or an outer variable borrows from `{}`, which the `close` expression consumes (4.4); it is held by {}", root, who)));
                         } else if *kind == Acc::Move {
                             out.push((*line, format!("cannot move `{}` while it is borrowed by {}", root, who)));
                         }
@@ -3943,7 +3982,11 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                     for &id in ids {
                         let r = &low.loans[id].root;
                         if vars.iter().any(|(v, s)| v == r && low.loans[id].site == Some(*s)) {
-                            let m = format!("returns a reference to the local variable `{}`, which does not live long enough", r);
+                            let m = if vars.iter().any(|(v, s)| v == r && low.with_sites.contains(&(*s, v.clone()))) {
+                                format!("the `with` body value borrows from `{}`, which the `close` expression consumes (4.4)", r)
+                            } else {
+                                format!("returns a reference to the local variable `{}`, which does not live long enough", r)
+                            };
                             if !out.iter().any(|(l, t)| l == line && *t == m) {
                                 out.push((*line, m));
                             }

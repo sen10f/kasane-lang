@@ -1,0 +1,36 @@
+// expect: E3043
+type t.Res linear
+    id: u32
+    inner: Option<alloc.vec.Vec<u64, std.alloc.System>>
+end t.Res
+
+fn t.Res.shut(self: t.Res) -> () uses [] panics never
+    let t.Res { id: id, inner: inner } = self
+    core.mem.drop(id)
+    core.mem.drop(inner)
+end t.Res.shut
+
+fn t.bad() -> u32 uses [] panics never
+    let o = with r = t.mk() close r.shut() {
+        let k = 1u32
+        if k == 1u32 {
+            (1u32, t.wrap(&r))
+        } else {
+            (2u32, t.wrap(&r))
+        }
+    }
+    let (_a, b) = o
+    b.id
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.mk() -> t.Res uses [] panics never
+    t.Res { id: 1u32, inner: None }
+end t.mk
+
+fn t.wrap(x: &t.Res) -> &t.Res uses [] panics never
+    x
+end t.wrap

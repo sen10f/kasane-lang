@@ -60,8 +60,13 @@ impl<'a> Checker<'a> {
         self.tc_expr(&f[4], &inner, &inner_muts, consume);
         // 型が分かり、Copy でも参照でもない束縛だけを検査する。
         let checkable = !is_nil(&ty) && tag(&ty) != "ref" && !self.is_copy(&ty);
+        // E3040: 本体の終わりで束縛 (かその欄) が move 済みなら、後始末式が使えない。構文の形ではなく、
+        // 型検査の一般の move の記録 (`self.moved`) を見る (欄の move・`match` / `if let` の分解・関数の引数も同じ)。
         if checkable {
-            if let Some(line) = self.consuming_use(&f[4], &name, &inner, false, false) {
+            let moved = self.moved_overlap(&name, &[]).map(|(_, l)| l);
+            // 束縛そのものへの再代入は、元の値を後始末の前に捨てる (move の記録を消すので、形で見る)。
+            let reassigned = Self::reassigns(&f[4], &name);
+            if let Some(line) = moved.map(|l| crate::parser::unpack_pos(l).0).or(reassigned) {
                 self.tdiag(
                     "E3040",
                     format!("`{}` cannot be moved or reassigned in the `with` body; the `close` expression consumes it (4.4)", name),
@@ -69,52 +74,7 @@ impl<'a> Checker<'a> {
                 );
             }
         }
-        // 本体の値 (末尾の式) が束縛から借りた参照なら、後始末のあとに残る (E3043)。
-        if checkable {
-            let mut leaves: Vec<&V> = vec![];
-            tail_leaves(&f[4], &mut leaves);
-            if let Some(line) = leaves.iter().find(|l| self.borrows_from(l, &name, &inner)).map(|l| nline(l)) {
-                self.tdiag(
-                    "E3043",
-                    format!("the `with` body value borrows from `{}`, which the `close` expression consumes (4.4)", name),
-                    line,
-                );
-            }
-        }
-        // 本体から外の変数への代入も、束縛の借用を後始末のあとへ残す (E3043)。
-        if checkable {
-            let mut locals_in_body = vec![];
-            let mut assigns: Vec<&V> = vec![];
-            fn scan<'b>(e: &'b V, locals: &mut Vec<String>, assigns: &mut Vec<&'b V>) {
-                match nname(e) {
-                    "Let" => pat_binds(&nf(e)[0], locals),
-                    "Assign" => assigns.push(e),
-                    _ => {}
-                }
-                for c in children(e) {
-                    scan(c, locals, assigns);
-                }
-            }
-            scan(&f[4], &mut locals_in_body, &mut assigns);
-            let hit = assigns.iter().find(|a| {
-                let lhs = &nf(a)[0];
-                let mut x = lhs;
-                while nname(x) == "Field" {
-                    x = &nf(x)[0];
-                }
-                nname(x) == "Path" && {
-                    let root = strs(&nf(x)[0])[0].clone();
-                    root != name && !locals_in_body.contains(&root)
-                } && self.borrows_from(&nf(a)[1], &name, &inner)
-            });
-            if let Some(a) = hit {
-                self.tdiag(
-                    "E3043",
-                    format!("the `with` body assigns a value that borrows from `{}` to an outer variable, which outlives the `close` (4.4)", name),
-                    nline(a),
-                );
-            }
-        }
+        // E3043 (本体の値・外の変数への代入が束縛の借用を運ぶ) は、借用検査 (borrowck.rs の `With`) が見る。
         // 本体での move 記録は、後始末の検査に持ち越さない (後始末は本体とは別の経路)。
         self.revive_place(std::slice::from_ref(&name));
         self.tc_expr(&f[3], &inner, &inner_muts, false);
@@ -124,50 +84,12 @@ impl<'a> Checker<'a> {
         self.revive_place(std::slice::from_ref(&name));
     }
 
-    /// 式 `e` が、束縛 `name` から借りた参照を値にするか: `&name` / `&name.f`、または束縛へのメソッド呼び出しで
-    /// 宣言の戻り値型が参照のもの。メソッドが分からないときは false (黙る)。
-    fn borrows_from(&self, e: &V, name: &str, env: &Env) -> bool {
-        let rooted = |x: &V| -> bool {
-            let mut x = x;
-            loop {
-                match nname(x) {
-                    "Path" => return strs(&nf(x)[0])[0] == name,
-                    "Field" => x = &nf(x)[0],
-                    _ => return false,
-                }
-            }
-        };
-        match nname(e) {
-            // 参照で取り込んだ閉包は束縛の借用を運ぶ。構造体・タプル・配列・`Some(..)` などの要素も同じ。
-            "Closure" => items(&nf(e)[2]).iter().any(|c| st(tel(c, 0)) != "move" && st(tel(c, 1)) == name),
-            "StructLit" => items(&nf(e)[1]).iter().any(|x| self.borrows_from(&items(x)[1], name, env)),
-            "TupleE" | "ArrayE" => items(&nf(e)[0]).iter().any(|x| self.borrows_from(x, name, env)),
-            "Call" if nname(&nf(e)[0]) == "Path" && strs(&nf(&nf(e)[0])[0]).len() <= 2 && {
-                let s = strs(&nf(&nf(e)[0])[0]);
-                s.last().map_or(false, |l| l == "Some" || l == "Ok" || l == "Err") && s[0] != name
-            } =>
-            {
-                items(&nf(e)[1]).iter().any(|x| self.borrows_from(x, name, env))
-            }
-            "Unary" => matches!(st(&nf(e)[0]).as_str(), "&" | "&mut") && rooted(&nf(e)[1]),
-            "Call" if nname(&nf(e)[0]) == "Path" => {
-                let segs = strs(&nf(&nf(e)[0])[0]);
-                segs.len() >= 2 && segs[0] == name && self.method_returns_ref(name, &segs[1..segs.len() - 1], &segs[segs.len() - 1], env)
-            }
-            "MCall" => rooted(&nf(e)[0]) && self.method_returns_ref(name, &[], &st(&nf(e)[1]), env),
-            _ => false,
+    /// 本体 `e` の中に、束縛 `name` そのものへの再代入があれば、その行。
+    fn reassigns(e: &V, name: &str) -> Option<usize> {
+        if nname(e) == "Assign" && nname(&nf(e)[0]) == "Path" && strs(&nf(&nf(e)[0])[0]) == [name.to_string()] {
+            return Some(nline(e));
         }
-    }
-
-    /// 場所 `root.path` の型のメソッド `name` の宣言の戻り値型が参照か。
-    fn method_returns_ref(&self, root: &str, path: &[String], name: &str, env: &Env) -> bool {
-        let Some(ty) = self.place_ty(root, path, env) else { return false };
-        if tag(&ty) != "named" {
-            return false;
-        }
-        let fq = format!("{}.{}", st(tel(&ty, 1)), name);
-        let def = self.p.funcs.get(&fq).or_else(|| self.p.sigs.get(&fq)).map(|&i| self.def(i));
-        def.map_or(false, |d| tag(&d.ret) == "ref")
+        children(e).into_iter().find_map(|c| Self::reassigns(c, name))
     }
 
     /// 式 `e` の中に、束縛 `name` を値として消費する使い方があれば、その位置。
@@ -266,31 +188,6 @@ impl<'a> Checker<'a> {
             "Closure" => items(&f[2]).iter().any(|c| st(tel(c, 0)) == "move" && st(tel(c, 1)) == name),
             _ => false,
         }
-    }
-}
-
-/// ブロック・`if` / `match` の末尾の値になる式 (葉)。
-fn tail_leaves<'b>(e: &'b V, out: &mut Vec<&'b V>) {
-    match nname(e) {
-        "Block" => {
-            if let Some(last) = items(&nf(e)[0]).last() {
-                if nname(last) == "ExprStmt" {
-                    tail_leaves(&nf(last)[0], out);
-                }
-            }
-        }
-        "If" => {
-            tail_leaves(&nf(e)[1], out);
-            if !is_nil(&nf(e)[2]) {
-                tail_leaves(&nf(e)[2], out);
-            }
-        }
-        "Match" => {
-            for arm in items(&nf(e)[1]) {
-                tail_leaves(&items(arm)[1], out);
-            }
-        }
-        _ => out.push(e),
     }
 }
 
