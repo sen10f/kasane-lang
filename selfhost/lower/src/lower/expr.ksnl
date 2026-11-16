@@ -481,22 +481,6 @@ fn lower.expr.field_src(v: usize, off: usize) -> Result<alloc.string.String<std.
     Ok(s)
 end lower.expr.field_src
 
-// バイト列 src[a..b] の 16 進 (小文字 2 桁ずつ)。
-fn lower.expr.hex_range(src: &[u8], a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
-    let digits = "0123456789abcdef"
-    let db = digits.as_bytes()
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    for i in core.iter.range(a, b) {
-        let v = match src.get(i) {
-            Some(x) => usize.from_u32(u32.from_u8(*x))
-            None => 0usize
-        }
-        out.push_str(resolve.ast.text(db, v / 16usize, v / 16usize + 1usize))?
-        out.push_str(resolve.ast.text(db, v % 16usize, v % 16usize + 1usize))?
-    }
-    Ok(out)
-end lower.expr.hex_range
-
 fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
     let cr = lower.expr.expr(env, c, p, src, n.a, types.ty.BOOL)?
@@ -675,18 +659,18 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             lower.cx.fail(c, "文字列の綴り (未対応)")?
             return lower.expr.dummy(c, t)
         }
-        if resolve.ast.text(src, qa, qb).contains("\\") {
-            lower.cx.fail(c, "文字列のエスケープ (未対応)")?
+        let (hx, nbytes, esc_ok) = lower.expr.unesc(src, qa, qb)?
+        if !esc_ok {
+            lower.cx.fail(c, "文字列のエスケープ (\\x と \\u は未対応)")?
             return lower.expr.dummy(c, t)
         }
-        let hx = lower.expr.hex_range(src, qa, qb)?
         let so = lower.cx.cat2("static.bytes ", hx.as_str())?
         let mut so2 = lower.cx.own("static.bytes")?
-        if qb != qa {
+        if nbytes != 0usize {
             so2 = so
         }
         let ptr = lower.cx.def(c, "ptr", so2.as_str())?
-        let nlen = lower.cx.dec(qb - qa)?
+        let nlen = lower.cx.dec(nbytes)?
         let lo = lower.cx.cat2("const.usize ", nlen.as_str())?
         let len = lower.cx.def(c, "usize", lo.as_str())?
         let mk = lower.expr.two(ptr, len)?
@@ -1392,6 +1376,47 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     let v = lower.cx.def(c, "bool", o.as_str())?
     Ok(lower.cx.R { v: v, t: t })
 end lower.expr.unary
+
+// 文字列リテラルの中身 src[a..b] のエスケープ (`\n` `\t` `\r` `\0` `\\` `\"` `\'`) を外した 16 進と長さ。
+// 未対応のエスケープ (`\x` `\u`) は 3 つ目が false。
+fn lower.expr.unesc(src: &[u8], a: usize, b: usize) -> Result<(alloc.string.String<std.alloc.System>, usize, bool), resolve.Failure> uses [alloc] panics may pub
+    let digits = "0123456789abcdef"
+    let db = digits.as_bytes()
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut n = 0usize
+    let mut i = a
+    while i < b {
+        let mut v = match src.get(i) {
+            Some(x) => usize.from_u32(u32.from_u8(*x))
+            None => 0usize
+        }
+        if v == 92usize {
+            i = i + 1usize
+            let e = match src.get(i) {
+                Some(x) => usize.from_u32(u32.from_u8(*x))
+                None => 0usize
+            }
+            if e == 110usize {
+                v = 10usize
+            } else if e == 116usize {
+                v = 9usize
+            } else if e == 114usize {
+                v = 13usize
+            } else if e == 48usize {
+                v = 0usize
+            } else if e == 92usize || e == 34usize || e == 39usize {
+                v = e
+            } else {
+                return Ok((out, 0usize, false))
+            }
+        }
+        out.push_str(resolve.ast.text(db, v / 16usize, v / 16usize + 1usize))?
+        out.push_str(resolve.ast.text(db, v % 16usize, v % 16usize + 1usize))?
+        n = n + 1usize
+        i = i + 1usize
+    }
+    Ok((out, n, true))
+end lower.expr.unesc
 
 // 単位の値 (`const.unit ()`)。
 fn lower.expr.unit(c: &mut lower.cx.Cx) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
