@@ -1,0 +1,25 @@
+// expect: E3010
+type t.Outer['a, 'b]
+    inner: t.Pair<'a, 'b>
+end t.Outer
+
+type t.Pair['a, 'b] derive [Clone, Copy]
+    fst: &'a u32
+    snd: &'b u32
+end t.Pair
+
+fn t.Outer.set_inner_snd_from_v['a, 'b](self: &mut t.Outer<'a, 'b>, v: &'a u32, _y: &mut t.Outer<'a, 'b>) -> () uses [] panics never
+    self.inner.snd = v
+end t.Outer.set_inner_snd_from_v
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = 1u32
+    let b = 2u32
+    let mut p1 = t.Outer { inner: t.Pair { fst: &a, snd: &b } }
+    let mut p2 = t.Outer { inner: t.Pair { fst: &a, snd: &b } }
+    t.Outer.set_inner_snd_from_v(&mut p1, &a, &mut p2)
+    core.mem.drop(p1)
+    core.mem.drop(p2)
+    core.mem.drop(b)
+    Ok(())
+end t.main

@@ -2526,6 +2526,13 @@ impl<'a> Low<'a> {
 }
 
 // ---------------------------------------------------------------- 借用を生む式 (一般化)
+/// 欄の道をたどる位置: 構造体・列挙 (型定義・領域の実引数) か、領域の集合だけ。
+#[derive(Clone)]
+enum Cur {
+    Ty(usize, Vec<String>),
+    Set(BTreeSet<String>),
+}
+
 /// 戻り値へ流れる借用の出どころ。
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum Origin {
@@ -2722,11 +2729,12 @@ impl<'a> Low<'a> {
 
     /// 借用の出どころ `s` から、戻り値へ流れる出どころ (局所・引数) を `out` に足す。`origins` の本体。
     fn src_origins(&self, s: &Src, d: &Def, inits: &Inits, depth: usize, out: &mut Vec<Origin>) {
-        // 欄の読み戻し `p.f` (`Stored`) の先頭の欄名。省略した参照の引数では、欄の領域だけが引数の借用に当たる。
-        let read_field = match s {
-            Src::Stored { path, .. } => path.first().cloned(),
-            _ => None,
+        // 欄の読み戻し `p.f.g` (`Stored`) の道。省略した参照の引数では、先頭の欄の領域だけが引数の借用に当たる。
+        let read_path = match s {
+            Src::Stored { path, .. } => path.clone(),
+            _ => vec![],
         };
+        let read_field = read_path.first().cloned();
         match s {
             Src::Place { root, path: _, .. } => {
                 if root == "$temp" {
@@ -2754,7 +2762,7 @@ impl<'a> Low<'a> {
                         _ => true,
                     };
                     let fld = match &read_field {
-                        Some(f) if f != "*" && carries => self.field_region(d, q, f),
+                        Some(f) if f != "*" && carries => self.field_region_path(d, q, &read_path),
                         _ => None,
                     };
                     if let Some(set) = fld {
@@ -2762,14 +2770,19 @@ impl<'a> Low<'a> {
                     } else if carries {
                         out.push(Origin::Param(q));
                     }
+                } else if let Some(o) = self.bound_origin(d, inits, v) {
+                    // 分解・腕のパターンで取り出した名前は、取り出し元の欄の宣言の領域を引き継ぐ。
+                    out.push(o);
                 } else if let Some(init) = inits.plain(v) {
                     self.origins(init, d, inits, depth + 1, out);
+                    self.assigned_origins(v, d, inits, depth, out);
                 } else if let Some(init) = inits.tilde(v) {
                     // 呼び出し・メソッド呼び出しなどを調べる `match` の腕・分解の束縛。受け手の自動借用を含むので、
                     // 引数から来る借用だけを引き継ぐ (局所の借用は E3030 の根拠にしない)。
                     let mut sub = vec![];
                     self.origins(init, d, inits, depth + 1, &mut sub);
                     out.extend(sub.into_iter().filter(|o| matches!(o, Origin::Param(_))));
+                    self.assigned_origins(v, d, inits, depth, out);
                 }
             }
             // 参照を外した値 (`*x`) は、指す先の値が持つ借用 (`x: & &u32` の内側の領域) を運ぶ。
@@ -2791,9 +2804,19 @@ impl<'a> Low<'a> {
         }
     }
 
-    /// 引数 `q` の型 (`&t.Pair<'a, 'b>`) の欄 `f` の宣言の領域を、型の実引数 (`'a`, `'b`) で置き換えた集合。
-    /// 型が名前付きのライフタイム引数を全部書いていない・欄が型引数で決まる (領域を持たない) ときは None (従来の判定)。
-    fn field_region(&self, d: &Def, q: usize, f: &str) -> Option<BTreeSet<String>> {
+    /// 局所の変数 `v` への代入 `v = e` の右辺が運ぶ欄の領域 (流れに依らず足す。`let mut r = self.fst; r = self.snd`)。
+    fn assigned_origins(&self, v: &str, d: &Def, inits: &Inits, depth: usize, out: &mut Vec<Origin>) {
+        let Some(vs) = inits.assigns.get(v) else { return };
+        for a in vs {
+            let mut sub = vec![];
+            self.origins(a, d, inits, depth + 1, &mut sub);
+            out.extend(sub.into_iter().filter(|o| matches!(o, Origin::Field(..))));
+        }
+    }
+
+    /// 引数 `q` の型 (`&t.Pair<'a, 'b>`) から、欄の道をたどる出発点。型が名前付きのライフタイム引数を全部書いていない
+    /// ときは None (従来の判定)。
+    fn param_cursor(&self, d: &Def, q: usize) -> Option<Cur> {
         let text = Self::param_text(d, q)?;
         let mut ty = text.split_once(':').map_or(text.as_str(), |x| x.1).trim();
         while let Some(t) = ty.strip_prefix('&') {
@@ -2806,28 +2829,209 @@ impl<'a> Low<'a> {
         }
         let (name, args) = type_args(ty);
         let tdi = self.type_of_name(&name)?;
-        let decl = &self.p.defs[tdi];
-        let lifes: Vec<_> = decl.generics.iter().filter(|g| g.0 == "life").collect();
-        let given: Vec<&String> = args.iter().filter(|a| a.starts_with('\'')).collect();
-        if lifes.is_empty() || given.len() != lifes.len() {
+        let n = self.p.defs[tdi].generics.iter().filter(|g| g.0 == "life").count();
+        let given: Vec<String> = args.iter().filter(|a| a.starts_with('\'')).map(|a| a.trim_start_matches('\'').to_string()).collect();
+        if n == 0 || given.len() != n {
             return None;
         }
-        let flts = &decl.field_lifetimes.iter().find(|x| x.0 == f)?.1;
+        Some(Cur::Ty(tdi, given))
+    }
+
+    /// 宣言の領域名 `flts` を、型 `tdi` の実引数 `given` (宣言の順) で置き換える。
+    fn subst_lifetimes(&self, tdi: usize, given: &[String], flts: &[String]) -> Vec<String> {
+        let lifes: Vec<&(String, String, V)> = self.p.defs[tdi].generics.iter().filter(|g| g.0 == "life").collect();
+        flts.iter()
+            .map(|l| match lifes.iter().position(|g| g.1.trim_start_matches('\'') == l.as_str()) {
+                Some(k) => given[k].clone(),
+                None => l.clone(),
+            })
+            .collect()
+    }
+
+    /// 位置 `c` の持つ領域の集合。
+    fn cur_set(c: &Cur) -> BTreeSet<String> {
+        match c {
+            Cur::Ty(_, g) => g.iter().cloned().collect(),
+            Cur::Set(s) => s.clone(),
+        }
+    }
+
+    /// 欄または列挙子の payload の型 `ty` (宣言の領域 `flts` を置き換えた `sub`) の次の位置。
+    /// 型が領域引数だけを取る名前付きの型ならその型の位置、そうでなければ領域の集合だけ。領域を運ばなければ None。
+    fn next_cursor(&self, ty: Option<&V>, flts: &[String], sub: Vec<String>) -> Option<Cur> {
         if flts.is_empty() {
             return None;
         }
-        let mut out = BTreeSet::new();
-        for l in flts {
-            match lifes.iter().position(|g| g.1.trim_start_matches('\'') == l.as_str()) {
-                Some(k) => {
-                    out.insert(given[k].trim_start_matches('\'').to_string());
-                }
-                None => {
-                    out.insert(l.clone());
+        if let Some(V::L(parts)) = ty {
+            if parts.len() >= 2 && st(&parts[0]) == "named" {
+                let segs: Vec<String> = st(&parts[1]).split('.').map(|s| s.to_string()).collect();
+                if let Some(Target::Type(t2)) = self.p.resolve(&segs, &self.file).map(|r| r.target) {
+                    if self.p.defs[t2].generics.iter().filter(|g| g.0 == "life").count() == sub.len() {
+                        return Some(Cur::Ty(t2, sub));
+                    }
                 }
             }
         }
-        Some(out)
+        Some(Cur::Set(sub.into_iter().collect()))
+    }
+
+    /// 位置 `c` の欄 `f` の位置。
+    fn step_field(&self, c: &Cur, f: &str) -> Option<Cur> {
+        let Cur::Ty(tdi, given) = c else { return Some(c.clone()) };
+        let decl = &self.p.defs[*tdi];
+        let flts = &decl.field_lifetimes.iter().find(|x| x.0 == f)?.1;
+        let sub = self.subst_lifetimes(*tdi, given, flts);
+        let ty = decl.fields.iter().find(|x| x.0 == f).map(|x| &x.1);
+        self.next_cursor(ty, flts, sub)
+    }
+
+    /// 位置 `c` (列挙) の列挙子 `vn` の `i` 番目 (全部で `n` 個) の payload の位置。
+    fn step_variant(&self, c: &Cur, vn: &str, i: usize, n: usize) -> Option<Cur> {
+        let Cur::Ty(tdi, given) = c else { return Some(c.clone()) };
+        let decl = &self.p.defs[*tdi];
+        let flts = &decl.field_lifetimes.iter().find(|x| x.0 == vn)?.1;
+        let sub = self.subst_lifetimes(*tdi, given, flts);
+        let ty = if n == 1 { decl.variants.iter().find(|x| x.0 == vn).and_then(|x| x.1.get(i)) } else { None };
+        self.next_cursor(ty, flts, sub)
+    }
+
+    /// 引数 `q` から欄の道 `path` をたどった位置。`*` は読み飛ばす。途中で決まらなくなったら、決まった所までの位置
+    /// (欄の領域の上位集合。段が増えても今までより緩くはならない)。最初の欄が決まらなければ None。
+    fn path_cursor(&self, d: &Def, q: usize, path: &[String]) -> Option<Cur> {
+        let mut c = self.param_cursor(d, q)?;
+        let mut any = false;
+        for f in path.iter().filter(|f| f.as_str() != "*") {
+            match self.step_field(&c, f) {
+                Some(n) => {
+                    c = n;
+                    any = true;
+                }
+                None => {
+                    if !any {
+                        return None;
+                    }
+                    break;
+                }
+            }
+        }
+        any.then_some(c)
+    }
+
+    /// 引数 `q` の欄の道 `path` (`self.inner.snd`) の宣言の領域を、型の実引数で置き換えた集合。何段でもたどる。
+    /// 決まらないとき (領域引数を全部書いていない・欄が領域を持たない) は None (従来の判定)。
+    fn field_region_path(&self, d: &Def, q: usize, path: &[String]) -> Option<BTreeSet<String>> {
+        let s = Self::cur_set(&self.path_cursor(d, q, path)?);
+        (!s.is_empty()).then_some(s)
+    }
+
+    /// パターン `pat` の中の名前 `name` が取り出す位置。`c` はパターンが当たる値の位置。
+    fn pat_cursor(&self, pat: &V, name: &str, c: &Cur) -> Option<Cur> {
+        let whole = || Cur::Set(Self::cur_set(c));
+        match nname(pat) {
+            "PBind" => (st(&nf(pat)[0]) == name).then(|| c.clone()),
+            "PRef" => self.pat_cursor(&nf(pat)[0], name, c),
+            "PTuple" => items(&nf(pat)[0]).iter().find_map(|x| self.pat_cursor(x, name, &whole())),
+            "PStruct" => items(&nf(pat)[1]).iter().find_map(|f| {
+                let fi = items(f);
+                let nc = match c {
+                    Cur::Ty(..) => self.step_field(c, &st(&fi[0])).unwrap_or_else(whole),
+                    Cur::Set(_) => c.clone(),
+                };
+                self.pat_cursor(&fi[1], name, &nc)
+            }),
+            "PVariant" => {
+                let segs = strs(&nf(pat)[0]);
+                let its = items(&nf(pat)[1]);
+                let var = self.p.resolve(&segs, &self.file).and_then(|r| match r.target {
+                    Target::Variant(en, vn) => Some((en, vn)),
+                    _ => None,
+                });
+                let user = match (&var, c) {
+                    (Some((en, _)), Cur::Ty(tdi, _)) => self.type_of_name(en) == Some(*tdi),
+                    _ => false,
+                };
+                its.iter().enumerate().find_map(|(i, x)| {
+                    let nc = if user { self.step_variant(c, &var.as_ref().unwrap().1, i, its.len()).unwrap_or_else(whole) } else { whole() };
+                    self.pat_cursor(x, name, &nc)
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// 分解・腕のパターンで取り出した名前 `v` の出どころ。取り出し元が引数の場所 (`*self`・`self.opt`) なら、
+    /// パターンが指す欄の宣言の領域だけを運ぶ。決まらなければ None (従来の判定)。
+    fn bound_origin(&self, d: &Def, inits: &Inits, v: &str) -> Option<Origin> {
+        let b = inits.visible(v)?;
+        let (pat, init) = (b.pat?, b.init?);
+        let (root, path) = self.place_of(init)?;
+        let q = d.params.iter().position(|p| p.0 == root)?;
+        if inits.has(&root) {
+            return None;
+        }
+        let c = self.path_cursor(d, q, &path).or_else(|| if path.iter().all(|f| f == "*") { self.param_cursor(d, q) } else { None })?;
+        let set = Self::cur_set(&self.pat_cursor(pat, v, &c)?);
+        (!set.is_empty()).then_some(Origin::Field(q, set))
+    }
+
+    /// 引数の欄への代入 `p.f.g = e` が、欄の宣言の領域より短い領域の借用を入れない (E3010)。
+    /// 代入先の欄の宣言の領域 (型引数を代入したもの) と、右辺が運ぶ領域 (欄の読み出し・引数) が合うかを見る。
+    fn check_field_assign(&self, d: &Def, body: &V) -> Vec<(usize, String)> {
+        let Some(head) = d.header.split(" uses ").next() else { return vec![] };
+        let gen_text = match head.find(|c| c == '(' || c == '[') {
+            Some(i) if head.as_bytes()[i] == b'[' => match match_close(head, i) {
+                Some(j) => head[i..=j].to_string(),
+                None => return vec![],
+            },
+            _ => String::new(),
+        };
+        let declared = |h: &String| gen_text.contains(&format!("'{}:", h)) || gen_text.contains(&format!("'{} :", h));
+        let mut all = vec![];
+        walk(body, &mut all);
+        let inits = Inits::build(body);
+        let mut out = vec![];
+        for n in &all {
+            if nname(n) != "Assign" || nf(n).len() < 2 {
+                continue;
+            }
+            let (target, value) = (&nf(n)[0], &nf(n)[1]);
+            let Some((root, path)) = self.place_of(target) else { continue };
+            let fields: Vec<String> = path.into_iter().filter(|f| f != "*").collect();
+            let Some(q) = d.params.iter().position(|p| p.0 == root) else { continue };
+            inits.pos.set(inits.at(n));
+            if fields.is_empty() || inits.has(&root) {
+                continue;
+            }
+            let Some(want) = self.field_region_path(d, q, &fields) else { continue };
+            let mut os = vec![];
+            self.origins(value, d, &inits, 0, &mut os);
+            for o in os {
+                let (have, src) = match o {
+                    Origin::Field(q2, have) => (have, q2),
+                    Origin::Param(q2) => {
+                        let Some(t) = Self::param_text(d, q2) else { continue };
+                        if t.contains("'static") {
+                            continue;
+                        }
+                        (lifetimes(&t), q2)
+                    }
+                    _ => continue,
+                };
+                if have.is_empty() || have.contains("static") || have.intersection(&want).next().is_some() || have.iter().any(|h| declared(h)) {
+                    continue;
+                }
+                let names = |s: &BTreeSet<String>| s.iter().map(|h| format!("'{}", h)).collect::<Vec<_>>().join(", ");
+                out.push((
+                    nlineno(n),
+                    format!(
+                        "{}: stores a borrow with lifetime {} (from argument `{}`) into `{}.{}`, whose declared lifetime is {}; `{}` is not declared to outlive it",
+                        d.name, names(&have), d.params[src].0, root, fields.join("."), names(&want), names(&have),
+                    ),
+                ));
+                break;
+            }
+        }
+        out
     }
 
     /// 名前 (`t.Pair`) が指す型定義。型でなければ None。
@@ -3261,6 +3465,10 @@ impl<'a> Checker<'a> {
         // 参照を別の引数の指す先 (Vec 要素・構造体欄) に保存する際の
         // ライフタイム不一致 (d22)。
         for (line, msg) in low.check_lifetime_store(di, body) {
+            self.tdiag("E3010", msg, line);
+        }
+        // 引数の欄への代入が、欄の宣言の領域と合わない借用を入れる。
+        for (line, msg) in low.check_field_assign(d, body) {
             self.tdiag("E3010", msg, line);
         }
         // 戻り値の参照が、ヘッダの宣言と違う領域の引数から来る (修正プラン A1)。
@@ -3819,6 +4027,8 @@ struct LocalBind<'a> {
     to: (usize, usize),
     init: Option<&'a V>,
     tilde: bool,
+    /// 分解・腕のパターン (`PBind` だけの束縛は None)。束縛が取り出す欄の領域を、取り出し元から引くのに使う。
+    pat: Option<&'a V>,
 }
 
 /// 関数本体の局所の束縛。同名の束縛が複数あっても、使う位置から見える一番内側・後ろの束縛を選ぶ。
@@ -3827,6 +4037,8 @@ struct Inits<'a> {
     pos: std::cell::Cell<(usize, usize)>,
     /// 節点ごとの位置 (自分に位置が無ければ、位置を持つ一番近い祖先の位置)。
     eff: HashMap<*const V, (usize, usize)>,
+    /// 局所の変数への代入 `r = e` の右辺 (変数名ごと)。位置は区別しない (流れに依らない近似)。
+    assigns: HashMap<String, Vec<&'a V>>,
 }
 
 fn pos_of(v: &V) -> (usize, usize) {
@@ -3850,18 +4062,23 @@ fn fill_eff(v: &V, up: (usize, usize), out: &mut HashMap<*const V, (usize, usize
 
 impl<'a> Inits<'a> {
     fn build(body: &'a V) -> Inits<'a> {
-        let mut me = Inits { binds: HashMap::new(), pos: std::cell::Cell::new((0, 0)), eff: HashMap::new() };
+        let mut me = Inits { binds: HashMap::new(), pos: std::cell::Cell::new((0, 0)), eff: HashMap::new(), assigns: HashMap::new() };
         fill_eff(body, (0, 0), &mut me.eff);
         me.scan(body, max_pos(body));
         me
     }
 
-    fn add(&mut self, pat: &V, from: (usize, usize), to: (usize, usize), init: Option<&'a V>, simple: bool) {
+    fn add(&mut self, pat: &'a V, from: (usize, usize), to: (usize, usize), init: Option<&'a V>, simple: bool) {
+        self.add_p(pat, from, to, init, simple, true)
+    }
+
+    fn add_p(&mut self, pat: &'a V, from: (usize, usize), to: (usize, usize), init: Option<&'a V>, simple: bool, with_pat: bool) {
         let mut b = vec![];
         pat_binds(pat, &mut b);
         for x in b {
             let tilde = !simple;
-            self.binds.entry(x).or_default().push(LocalBind { from, to, init, tilde });
+            let pat = if nname(pat) == "PBind" || !with_pat { None } else { Some(pat) };
+            self.binds.entry(x).or_default().push(LocalBind { from, to, init, tilde, pat });
         }
     }
 
@@ -3877,7 +4094,13 @@ impl<'a> Inits<'a> {
             }
             "For" => {
                 let f = nf(n);
-                self.add(&f[0], max_pos(&f[1]), max_pos(n), Some(&f[1]), false);
+                self.add_p(&f[0], max_pos(&f[1]), max_pos(n), Some(&f[1]), false, false);
+            }
+            "Assign" => {
+                let f = nf(n);
+                if f.len() >= 2 && nname(&f[0]) == "Path" && strs(&nf(&f[0])[0]).len() == 1 {
+                    self.assigns.entry(strs(&nf(&f[0])[0])[0].clone()).or_default().push(&f[1]);
+                }
             }
             "With" => {
                 let f = nf(n);

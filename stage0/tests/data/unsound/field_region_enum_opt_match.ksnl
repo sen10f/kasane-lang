@@ -1,0 +1,23 @@
+// expect: E3010
+enum t.E['a, 'b] derive [Clone, Copy]
+    A(Option<&'a u32>)
+    B(Option<&'b u32>)
+end t.E
+
+fn t.E.get_b_as_a['a, 'b](self: &t.E<'a, 'b>, _y: &t.E<'a, 'b>, fb: &'a u32) -> &'a u32 uses [] panics never
+    match *self {
+        t.E.B(o) => match o {
+            Some(r) => r
+            None => fb
+        }
+        t.E.A(_) => fb
+    }
+end t.E.get_b_as_a
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = 1u32
+    let b = 2u32
+    let e = t.E.B(Some(&b))
+    core.mem.drop(*t.E.get_b_as_a(&e, &e, &a))
+    Ok(())
+end t.main
