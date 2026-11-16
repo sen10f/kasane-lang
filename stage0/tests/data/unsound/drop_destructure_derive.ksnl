@@ -1,0 +1,14 @@
+// expect: E3002
+type t.Q derive [Drop]
+    v: i32
+    kid: Option<alloc.boxed.Box<t.Q, std.alloc.System>>
+end t.Q
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main
+
+fn t.takeq(p: t.Q) -> Option<alloc.boxed.Box<t.Q, std.alloc.System>> uses [] panics never
+    let t.Q { v: _v, kid: kid } = p
+    kid
+end t.takeq

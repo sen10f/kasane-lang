@@ -399,6 +399,8 @@ pub struct TypeCk<'a> {
     /// `let` の束縛の型 ((定義の添字, `let` の行, 名前) → 型)。関数の推論が終わった時点で解決した形。
     /// 所有権の検査 (check.rs の move・線形型) が、自前で型を決められない束縛に使う。
     pub let_tys: HashMap<(usize, usize, String), Ty>,
+    /// 型検査が効果の実体化で `suspend` を含むと決めた呼び出し (書き手の定義, 式の位置)。借用検査が中断点にする (E3050)。
+    pub susp_lines: HashSet<(usize, usize)>,
     let_pending: Vec<(usize, String, Ty)>,
     /// 呼び出しの辺 (呼び出し元の関数名 -> 呼び出し先の関数名)。型で解決できたメソッド呼び出しを含む。
     pub edges: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
@@ -532,7 +534,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -5009,6 +5011,11 @@ impl<'a> TypeCk<'a> {
     fn record_effects(&mut self, line: usize, cands: Vec<(String, Vec<String>, Option<String>, Vec<String>, Option<String>)>) {
         if cands.is_empty() {
             return;
+        }
+        // 実体化した効果に `suspend` を含む呼び出しは中断点 (クロージャ・`Fn` 境界の呼び出し越しでも)。
+        // 候補が複数あるときは 1 つでも含めば (fail-closed)。
+        if cands.iter().any(|c| c.1.iter().any(|u| u == "suspend")) {
+            self.susp_lines.insert((self.cur, line));
         }
         if !self.eff_acc.is_empty() {
             // クロージャの効果には、具体名と (囲む関数の) 効果変数の両方を数える。変数は呼び出しごとに

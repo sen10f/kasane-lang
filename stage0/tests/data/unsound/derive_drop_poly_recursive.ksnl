@@ -1,0 +1,8 @@
+// expect: E2051
+type t.B[T] derive [Drop]
+    k: Option<alloc.boxed.Box<t.B<i32>, std.alloc.System>>
+end t.B
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main

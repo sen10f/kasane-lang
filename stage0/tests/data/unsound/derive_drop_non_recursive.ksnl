@@ -1,0 +1,8 @@
+// expect: E2051
+type t.A derive [Drop]
+    v: i32
+end t.A
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main

@@ -1,0 +1,15 @@
+// expect: E3050
+fn t.call[F: core.ops.Fn<(), ()>](f: F) -> () uses [] panics never
+    f()
+end t.call
+
+fn t.main() -> () uses [io.console, suspend] panics may
+    let mut x = 1u32
+    let r = &mut x
+    t.call(
+        fn() -> () capture [] {
+            std.task.yield_now()
+        },
+    )
+    *r = 2u32
+end t.main

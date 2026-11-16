@@ -114,6 +114,8 @@ struct Low<'a> {
     p: &'a Program,
     /// 型検査が解決したメソッド呼び出し先 (書き手の定義, 式の位置, 名前)。
     res: std::rc::Rc<HashMap<(usize, usize, String), Option<Vec<usize>>>>,
+    /// 型検査が中断点と決めた呼び出し (書き手の定義, 式の位置)。
+    susp: std::rc::Rc<HashSet<(usize, usize)>>,
     cur: usize,
     file: String,
     nodes: Vec<Node>,
@@ -1571,6 +1573,7 @@ impl<'a> Low<'a> {
         let mut sub = Low {
             p: self.p,
             res: self.res.clone(),
+            susp: self.susp.clone(),
             cur: self.cur,
             file: self.file.clone(),
             nodes: vec![],
@@ -1947,7 +1950,7 @@ impl<'a> Low<'a> {
                             self.bind_method_setter(c, &name, nline(e), &root, args);
                         }
                         self.end_temps(c, temps);
-                        if self.suspends(None, Some(&name)) {
+                        if self.suspends(None, Some(&name)) || self.susp.contains(&(self.cur, nline(e))) {
                             self.emit(c, Ev::Suspend { line: nline(e) });
                         }
                         return c;
@@ -1978,7 +1981,7 @@ impl<'a> Low<'a> {
                     self.bind_receiver_arg_borrow(c, di, args, None);
                 }
                 self.end_temps(c, temps);
-                if self.call_suspends(callee) {
+                if self.call_suspends(callee) || self.susp.contains(&(self.cur, nline(e))) {
                     self.emit(c, Ev::Suspend { line: nline(e) });
                 }
                 // `core.mem.drop(p)`: 場所の値を消費する。そこに保存された借用はここで死ぬ。
@@ -2008,7 +2011,7 @@ impl<'a> Low<'a> {
                         }
                     }
                     self.end_temps(c, temps);
-                    if self.suspends(None, Some(&name)) {
+                    if self.suspends(None, Some(&name)) || self.susp.contains(&(self.cur, nline(e))) {
                         self.emit(c, Ev::Suspend { line: nline(e) });
                     }
                     return c;
@@ -2020,7 +2023,7 @@ impl<'a> Low<'a> {
                 }
                 c = self.lower_args_held(args, c, &mut temps);
                 self.end_temps(c, temps);
-                if self.suspends(None, Some(&name)) {
+                if self.suspends(None, Some(&name)) || self.susp.contains(&(self.cur, nline(e))) {
                     self.emit(c, Ev::Suspend { line: nline(e) });
                 }
                 c
@@ -3132,6 +3135,7 @@ impl<'a> Checker<'a> {
         let mut low = Low {
             p: self.p,
             res: self.call_res.clone(),
+            susp: self.susp_lines.clone(),
             cur: di,
             file: d.file.clone(),
             nodes: vec![],
