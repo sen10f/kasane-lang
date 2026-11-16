@@ -2774,6 +2774,16 @@ fn kir_borrowck_has_no_false_positives() {
             None => unknown += 1,
         }
     }
+    let mut apps: Vec<PathBuf> = fs::read_dir(root().join("apps")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.join("kasane.toml").exists()).collect();
+    apps.sort();
+    for d in apps {
+        let name = d.file_name().unwrap().to_string_lossy().to_string();
+        match kir_bc(&d) {
+            Some(c) if !c.is_empty() => fps.push(format!("apps/{}: {:?}", name, c)),
+            Some(_) => checked += 1,
+            None => unknown += 1,
+        }
+    }
     eprintln!("kir_borrowck (correct code): checked {} unknown {} false positives {}", checked, unknown, fps.len());
     assert!(fps.is_empty(), "KIR borrowck false positives:\n{}", fps.join("\n"));
     // 下ろせる数が減らないこと (現在値 125 を下限にする。下ろしの対応が増えたら上げる)。
@@ -2881,6 +2891,21 @@ fn kir_borrowck_field_flow_uses_declared_regions() {
     ];
     for (name, src) in &good {
         let t = Tmp::new(&format!("kirbc_ff_ok_{}", name), src);
+        assert_eq!(kir_bc(&t.0), Some(vec![]), "{} must pass", name);
+    }
+}
+
+/// csvtool の `parse_text` で出ていた誤検出 (正しいコード): (1) ループで持ち回す局所 (`field`) を `row.push(field)` で move して作り直す
+/// (2) `match rows.remove(0) { Some(first) => header = first.fields }` で取り出した要素の欄を、容れ物 `rows` の領域と混同しない。
+#[test]
+fn kir_borrowck_loop_carried_local_and_container_element_have_no_false_positive() {
+    let loop_src = "fn t.main() -> () uses [alloc] panics never pub\n    core.mem.drop(t.f())\nend t.main\n\nfn t.f() -> u8 uses [alloc] panics never\n    let clean = alloc.string.String.new(std.alloc.SYSTEM)\n    let mut field = alloc.string.String.new(std.alloc.SYSTEM)\n    let mut row = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    for c in clean.as_str().chars() {\n        core.mem.drop(c)\n        core.mem.drop(row.push(field))\n        field = alloc.string.String.new(std.alloc.SYSTEM)\n    }\n    core.mem.drop(row)\n    core.mem.drop(field)\n    1u8\nend t.f\n";
+    let sv = "alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>";
+    let elem_src = format!(
+        "type t.Row pub\n    fields: {sv}\nend t.Row\n\ntype t.Table pub\n    header: {sv}\n    rows: alloc.vec.Vec<t.Row, std.alloc.System>\nend t.Table\n\nfn t.main() -> () uses [alloc] panics never pub\n    core.mem.drop(t.f())\nend t.main\n\nfn t.f() -> t.Table uses [alloc] panics never\n    let mut rows: alloc.vec.Vec<t.Row, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let mut header = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    match rows.remove(0usize) {{\n        Some(first) => {{\n            header = first.fields\n        }}\n        None => core.mem.drop(0u8)\n    }}\n    let t = t.Table {{ header: header, rows: rows }}\n    t\nend t.f\n"
+    );
+    for (name, src) in [("loop", loop_src.to_string()), ("elem", elem_src)] {
+        let t = Tmp::new(&format!("kirbc_csv_{}", name), &src);
         assert_eq!(kir_bc(&t.0), Some(vec![]), "{} must pass", name);
     }
 }
