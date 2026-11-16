@@ -4238,6 +4238,11 @@ impl<'a> Checker<'a> {
             tys.extend(d.fields.iter().map(|f| &f.1));
             tys.extend(d.variants.iter().flat_map(|v| v.1.iter()));
             tys.extend(d.generics.iter().map(|g| &g.2));
+            // トレイトの宣言のメソッド (必須・既定) のシグネチャ。
+            for (_, ps, r) in &d.trait_sigs {
+                tys.extend(ps.iter().map(|p| &p.1));
+                tys.push(r);
+            }
             if let Some(b) = &d.body {
                 tys.push(b);
             }
@@ -6078,6 +6083,10 @@ impl<'a> Checker<'a> {
             });
             if by_arm {
                 self.tdiag("E2021", "`_` / binding patterns cannot match an enum or bool; list all cases".into(), nline(m));
+                return;
+            }
+            if tag(&s) == "prim" && st(tel(&s, 1)) == "bool" {
+                self.tdiag("E2021", "`_` / binding patterns cannot match a bool; list `true` and `false`".into(), nline(m));
                 return;
             }
             if tag(&s) == "named" {

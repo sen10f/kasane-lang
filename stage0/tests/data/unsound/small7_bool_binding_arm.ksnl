@@ -1,0 +1,11 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.pick(true))
+    Ok(())
+end t.main
+
+// expect: E2021
+fn t.pick(b: bool) -> u8 uses [] panics never
+    match b {
+        x => 1u8
+    }
+end t.pick
