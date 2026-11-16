@@ -1840,7 +1840,7 @@ fn lower.expr.vec_field_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
         let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, j), types.ty.UNKNOWN)?
         vs.push(a.v)?
     }
-    let r = lower.std_calls.method(env, c, fqn.as_str(), ft, &vs, t)?
+    let r = lower.vec.call(env, c, fqn.as_str(), ft, &vs, t)?
     Ok((r, true))
 end lower.expr.vec_field_call
 

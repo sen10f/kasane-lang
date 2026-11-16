@@ -713,6 +713,14 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
         s.push_str("i32")?
         return Ok(s)
     }
+    let rin = types.ty.node(&c.ar, types.ty.find(&c.ar, n.a))
+    if n.k == types.ty.K.Ref && rin.k == types.ty.K.Slice {
+        // `&[T]` / `&mut [T]`: `&str` と同じ fat の値 {ptr, len}。
+        let sid = lower.tyk.agg_id(c, lower.tyk.FAT)?
+        s.push_str("agg#")?
+        s.push_str(lower.cx.dec(sid)?.as_str())?
+        return Ok(s)
+    }
     if n.k == types.ty.K.Ref {
         if lower.vec.is_hdr(env, c, n.a) {
             // `&Vec` / `&String` は枠の番地 (ptr)。
