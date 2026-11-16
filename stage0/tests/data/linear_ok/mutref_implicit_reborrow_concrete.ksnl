@@ -1,0 +1,24 @@
+fn t.main() -> () uses [] panics never
+    let mut a = 0u32
+    let mut b = 0u32
+    t.two(&mut a, &mut b)
+    t.reborrow(&mut a)
+end t.main
+
+fn t.reborrow(x: &mut u32) -> () uses [] panics never
+    let y: &mut u32 = x
+    *y = 4u32
+    t.take(&mut *x)
+    *x = 5u32
+end t.reborrow
+
+fn t.take(x: &mut u32) -> () uses [] panics never
+    *x = 1u32
+end t.take
+
+fn t.two(x: &mut u32, y: &mut u32) -> () uses [] panics never
+    t.take(x)
+    t.take(y)
+    *x = 2u32
+    *y = 3u32
+end t.two

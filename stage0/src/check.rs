@@ -546,6 +546,8 @@ pub struct Checker<'a> {
     ref_binds: HashSet<String>,
     /// `let r = &x` で、`x` を共有参照で借りた束縛 (欄への代入を E3001 にする)。関数ごと。
     shared_lets: HashSet<String>,
+    /// `let r = &mut ..` で束縛した名前 (環境の型は参照を外した先の型になるので、別に覚える)。
+    mut_ref_lets: HashSet<String>,
     /// `let` で束縛した名前 (仮引数と区別する。関数ごと)。
     let_names: HashSet<String>,
     /// `a[i].f` (添字の先のフィールド) を値として使った (関数名, Field 式の ID, 文言, 位置)。
@@ -667,6 +669,7 @@ impl<'a> Checker<'a> {
             index_consumes: Vec::new(),
             ref_binds: HashSet::new(),
             shared_lets: HashSet::new(),
+            mut_ref_lets: HashSet::new(),
             let_names: HashSet::new(),
             mv_types: BTreeMap::new(),
             call_res: Default::default(),
@@ -3915,6 +3918,7 @@ impl<'a> Checker<'a> {
         self.noncopy_closures.clear();
         self.ref_binds.clear();
         self.shared_lets.clear();
+        self.mut_ref_lets.clear();
         self.let_names.clear();
         // `F: core.ops.FnOnce<..>` の型パラメータの引数は、呼ぶと消費される (一度きり)。
         for (pn, pt) in &d.params {
@@ -4327,6 +4331,7 @@ impl<'a> Checker<'a> {
                 // 参照越しの分解 `let p = x` (`x: &T`): 束縛は `&T` の欄。所有値として消費させない (E3002)。
                 let src_is_ref = self.ety_is_ref(&f[3]) || tag(&got) == "ref" || tag(&ty) == "ref";
                 let shared_src = tag(&ty) == "ref" && matches!(tel(&ty, 1), V::B(false));
+                let mut_src = tag(&ty) == "ref" && matches!(tel(&ty, 1), V::B(true));
                 let pat_ty = if src_is_ref && tag(&ty) == "ref" { tel(&ty, 2).clone() } else { ty };
                 if !src_is_ref {
                     self.check_drop_destructure(&f[0], &pat_ty, nline(s));
@@ -4339,6 +4344,11 @@ impl<'a> Checker<'a> {
                 // `let r = &x` (共有参照): 束縛名を覚える。下の包み直しは `&mut` 由来の束縛も共有に見せるので、ここで元の向きを見る。
                 for n in binds {
                     self.let_names.insert(n.clone());
+                    if mut_src && nname(&f[0]) == "PBind" {
+                        self.mut_ref_lets.insert(n.clone());
+                    } else {
+                        self.mut_ref_lets.remove(&n);
+                    }
                     if shared_src && nname(&f[0]) == "PBind" {
                         self.shared_lets.insert(n.clone());
                     } else {
@@ -4617,12 +4627,17 @@ impl<'a> Checker<'a> {
         if segs.len() != 1 {
             return;
         }
-        let Some(t) = env.get(&segs[0]) else { return };
-        if is_nil(t) || tag(t) != "ref" || !matches!(tel(t, 1), V::B(true)) || self.moved_overlap(&segs[0], &[]).is_some() {
+        self.move_mut_name(&segs[0], env, line);
+    }
+
+    fn move_mut_name(&mut self, name: &str, env: &Env, line: usize) {
+        let Some(t) = env.get(name) else { return };
+        let is_mut = (!is_nil(t) && tag(t) == "ref" && matches!(tel(t, 1), V::B(true))) || self.mut_ref_lets.contains(name);
+        if !is_mut || self.moved_overlap(name, &[]).is_some() {
             return;
         }
-        self.moved.insert(segs[0].clone(), line);
-        self.move_sites.insert((line, segs[0].clone()));
+        self.moved.insert(name.to_string(), line);
+        self.move_sites.insert((line, name.to_string()));
     }
 
     /// 参照 (`&T` / `&mut T`) の先のフィールドを、Copy でない型のまま値として使った (move した) なら E3002 (4.1)。
@@ -4937,6 +4952,9 @@ impl<'a> Checker<'a> {
                     let name = st(tel(c, 1));
                     if env.contains_key(&name) {
                         self.use_place(&name, &[], env, nline(e), st(tel(c, 0)) == "move");
+                        if st(tel(c, 0)) == "move" {
+                            self.move_mut_name(&name, env, nline(e));
+                        }
                     }
                 }
                 self.lin_floor = saved_lin.0;
@@ -5245,6 +5263,8 @@ impl<'a> Checker<'a> {
             "TupleE" | "ArrayE" => {
                 for x in items(&f[0]) {
                     self.tc_expr(x, env, muts, true);
+                    // タプル・配列の要素は値の位置 (再借用されない): `&mut` の局所は move。
+                    self.move_mut_ref(x, env, nline(x));
                 }
             }
             "Return" => {
