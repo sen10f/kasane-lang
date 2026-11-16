@@ -1,0 +1,26 @@
+// expect: E3010
+trait t.Tr pub
+    fn get_ref(self: &Self, x: &u32) -> &u32 uses [] panics never
+end t.Tr
+
+type t.X pub
+    mark: u32
+end t.X
+
+impl t.Tr for t.X
+fn t.X.get_ref(self: &t.X, x: &u32) -> &u32 uses [] panics never impls t.Tr
+    x
+end t.X.get_ref
+
+// expect: E3010
+fn t.bad() -> u32 uses [] panics never
+    let mut x = 1u32
+    let obj = t.X { mark: 0u32 }
+    let r = obj.get_ref(&x)
+    x = 2u32
+    *r
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
