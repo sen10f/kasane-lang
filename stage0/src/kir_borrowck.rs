@@ -1115,6 +1115,14 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                         agg_moves.insert((bi, ii), *ptr);
                     }
                 }
+                // 所有を持たない集成体 (印も 0 の書き戻しもない) の move は、`load p` の直後の `own.consume` で分かる。
+                Op::Own { kind: OwnKind::Consume, .. } if ii > 0 => {
+                    if let Op::Load(p) = &b.insts[ii - 1].op {
+                        if matches!(b.insts[ii - 1].ty, Ty::Agg(_)) {
+                            agg_moves.entry((bi, ii)).or_insert(*p);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
