@@ -380,8 +380,8 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     }
     let tg = lower.cx.def1(c, "bool", "tag ", x.v)?
     let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let errb = lower.cx.blk(c, &empty)?
     let okb = lower.cx.blk(c, &empty)?
+    let errb = lower.cx.blk(c, &empty)?
     let mut br = alloc.string.String.new(std.alloc.SYSTEM)
     br.push_str("br_if ")?
     br.push_str(lower.cx.vs(tg)?.as_str())?
