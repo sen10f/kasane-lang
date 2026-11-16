@@ -3046,3 +3046,29 @@ fn kir_only_rejects_floor() {
     assert!(expected >= 268, "only {} borrow/linear programs in unsound/", expected);
     assert!(rejected >= 131, "kir-only rejects only {} of {}", rejected, expected);
 }
+
+/// 所有者の move・drop は、その欄 (欄の欄を含む) から借りた借用も殺す。借用を drop の前に使い終えるなら通る。
+#[test]
+fn kir_borrowck_drop_owner_kills_field_borrows() {
+    let mk = |body: &str| {
+        format!(
+            "type t.S pub\n    v: u32\nend t.S\n\ntype t.W pub\n    s: t.S\n    n: u32\nend t.W\n\nfn t.bad() -> u32 uses [] panics never\n{}\nend t.bad\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n",
+            body
+        )
+    };
+    let s = "    let s = t.S { v: 1u32 }\n";
+    let w = "    let w = t.W { s: t.S { v: 1u32 }, n: 2u32 }\n";
+    let cases: Vec<(String, bool)> = vec![
+        (format!("{s}    let r = &s\n    core.mem.drop(s)\n    r.v"), false),
+        (format!("{s}    let r = &s.v\n    core.mem.drop(s)\n    *r"), false),
+        (format!("{s}    let r = &s.v\n    let t = s\n    core.mem.drop(t)\n    *r"), false),
+        (format!("{w}    let r = &w.s.v\n    core.mem.drop(w)\n    *r"), false),
+        (format!("{s}    let r = &s.v\n    let x = *r\n    core.mem.drop(s)\n    x"), true),
+        (format!("{w}    let r = &w.s.v\n    let x = *r\n    core.mem.drop(w)\n    x"), true),
+    ];
+    for (i, (body, ok)) in cases.iter().enumerate() {
+        let t = Tmp::new(&format!("kirbc_dropown_{}", i), &mk(body));
+        let c = kir_bc(&t.0).unwrap_or_else(|| panic!("case {} must be lowerable", i));
+        assert_eq!(c.is_empty(), *ok, "case {}: KIR codes {:?}\n{}", i, c, body);
+    }
+}
