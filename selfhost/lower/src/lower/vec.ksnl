@@ -155,11 +155,11 @@ end lower.vec.gen
 fn lower.vec.index(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: usize, idx: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let (sz, _al) = lower.tyk.size_of(env, c, elem)?
     let et = lower.tyk.text(env, c, elem)?
-    let szc = lower.vec.usize_c(c, sz)?
     let len0 = lower.vec.load_usize(c, recv, 8usize)?
     let ics = lower.cx.cat2("index.check ", lower.expr.two(idx, len0)?.as_str())?
     lower.cx.def(c, "unit", ics.as_str())?
     let p1 = lower.vec.load_ptr(c, recv)?
+    let szc = lower.vec.usize_c(c, sz)?
     let addr = lower.vec.elem_addr(c, p1, idx, szc)?
     let lds = lower.cx.cat2("mem.load.", et.as_str())?
     let lds2 = lower.cx.cat2(lds.as_str(), " ")?

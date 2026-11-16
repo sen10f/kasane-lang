@@ -1436,6 +1436,14 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         // `*r`: 参照の読み出し。
         let r = lower.expr.expr(env, c, p, src, n.b, types.ty.UNKNOWN)?
         let tt = lower.tyk.text(env, c, t)?
+        if lower.cx.tyof(c, r.v).as_str() == "ptr" {
+            // 生の番地 (`Vec` の要素の借用) の読み出し。
+            let op1 = lower.cx.cat2("mem.load.", tt.as_str())?
+            let op2 = lower.cx.cat2(op1.as_str(), " ")?
+            let op3 = lower.cx.cat2(op2.as_str(), lower.cx.vs(r.v)?.as_str())?
+            let v1 = lower.cx.def(c, tt.as_str(), lower.cx.cat2(op3.as_str(), " +0")?.as_str())?
+            return Ok(lower.cx.R { v: v1, t: t })
+        }
         let op = lower.cx.cat2("load ", lower.cx.vs(r.v)?.as_str())?
         let v = lower.cx.def(c, tt.as_str(), op.as_str())?
         return Ok(lower.cx.R { v: v, t: t })

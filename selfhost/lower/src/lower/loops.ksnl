@@ -9,8 +9,8 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan(p, src, n.c, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
-    let szc = lower.vec.usize_c(c, sz)?
     let len0 = lower.vec.load_usize(c, hv, 8usize)?
+    let p1 = lower.vec.load_ptr(c, hv)?
     let zero = lower.vec.usize_c(c, 0usize)?
     let iv = lower.cx.newval(c, "usize")?
     let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -47,8 +47,14 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     // 本体: 要素の番地と、変数の束縛。
     lower.cx.goto(c, bodyb)
     let mark = lower.cx.depth(c)
-    let p1 = lower.vec.load_ptr(c, hv)?
-    let off = lower.vec.arith(c, "mul", iv, szc)?
+    let mut addr = 0usize
+    if sz == 1usize {
+        addr = lower.vec.padd(c, p1, iv)?
+    } else {
+        let szc = lower.vec.usize_c(c, sz)?
+        let off = lower.vec.arith(c, "mul", iv, szc)?
+        addr = lower.vec.padd(c, p1, off)?
+    }
     let pn = parse.ast.get(&p.ast, n.a)
     if pn.kind != parse.ast.Kind.PBind {
         lower.cx.fail(c, "for の束縛 (名前だけ対応)")?
@@ -56,7 +62,6 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     }
     let ptk = parse.cur.peek_at(p, pn.a)
     let pname = resolve.ast.text(src, ptk.start, ptk.stop)
-    let addr = lower.vec.padd(c, p1, off)?
     let saved_head = c.lp.head
     let saved_exit = c.lp.exit
     let saved_base = c.lp.base
@@ -64,10 +69,8 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let saved_brk = c.lp.brk
     let mut ety = elem
     let ebind = if by_ref {
-        let rt = lower.opt.refty(false, et.as_str())?
-        let rs = lower.cx.cat2("ptr.add ", lower.expr.two(p1, off)?.as_str())?
         ety = types.ty.push(&mut c.ar, types.ty.mk(types.ty.K.Ref, elem, 0usize, 0usize, false))?
-        lower.cx.def(c, rt.as_str(), rs.as_str())?
+        addr
     } else {
         let ls = lower.cx.cat2("mem.load.", et.as_str())?
         let ls2 = lower.cx.cat2(ls.as_str(), " ")?
