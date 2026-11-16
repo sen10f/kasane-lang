@@ -1,0 +1,20 @@
+// expect: E2020
+// as_ref() のエラーは &AllocError：Alloc(AllocError) への変換はペイロード型が一致しないので不可
+enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+end t.Error
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    core.mem.drop(t.use())
+    Ok(())
+end t.main
+
+fn t.src() -> Result<u8, alloc.alloc.AllocError> uses [alloc] panics never
+    Ok(1u8)
+end t.src
+
+fn t.use() -> Result<u8, t.Error> uses [alloc] panics never
+    let r = t.src()
+    let n = r.as_ref()?
+    Ok(*n)
+end t.use

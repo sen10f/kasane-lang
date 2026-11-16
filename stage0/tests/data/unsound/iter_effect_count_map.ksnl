@@ -1,0 +1,13 @@
+// expect: E4001
+// count + map: クロージャが io.console を使うので拒否されるはず
+fn t.main() -> () uses [] panics never
+    core.mem.drop(core.iter.count(
+        core.iter.map(
+            core.iter.range(0u64, 2u64),
+            fn(x: u64) -> u64 capture [] {
+                core.mem.drop(std.io.print_line("x"))
+                x
+            },
+        ),
+    ))
+end t.main

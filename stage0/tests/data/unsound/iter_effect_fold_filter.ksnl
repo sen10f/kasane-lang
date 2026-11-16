@@ -1,0 +1,18 @@
+// expect: E4001
+// fold + filter: 述語クロージャが io.console を使うので拒否されるはず
+fn t.main() -> () uses [] panics never
+    core.mem.drop(core.iter.fold(
+        core.iter.filter(
+            core.iter.range(0u64, 2u64),
+            fn(x: &u64) -> bool capture [] {
+                core.mem.drop(std.io.print_line("x"))
+                core.mem.drop(*x)
+                true
+            },
+        ),
+        0u64,
+        fn(acc: u64, x: u64) -> u64 capture [] {
+            acc.wrapping_add(x)
+        },
+    ))
+end t.main

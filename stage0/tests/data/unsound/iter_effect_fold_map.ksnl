@@ -1,0 +1,17 @@
+// expect: E4001
+// map のクロージャが io.console を使うが、fold / main が uses [] なので効果が漏れて拒否されるはず
+fn t.main() -> () uses [] panics never
+    core.mem.drop(core.iter.fold(
+        core.iter.map(
+            core.iter.range(0u64, 2u64),
+            fn(x: u64) -> u64 capture [] {
+                core.mem.drop(std.io.print_line("x"))
+                x
+            },
+        ),
+        0u64,
+        fn(acc: u64, x: u64) -> u64 capture [] {
+            acc
+        },
+    ))
+end t.main

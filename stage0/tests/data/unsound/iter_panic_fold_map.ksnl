@@ -1,0 +1,17 @@
+// expect: E4002
+// map のクロージャが core.panic.todo() (panics may) を呼ぶ。fold / main が panics never なら拒否されるはず
+fn t.main() -> () uses [] panics never
+    core.mem.drop(core.iter.fold(
+        core.iter.map(
+            core.iter.range(0u64, 2u64),
+            fn(x: u64) -> u64 capture [] {
+                core.panic.todo()
+                x
+            },
+        ),
+        0u64,
+        fn(acc: u64, x: u64) -> u64 capture [] {
+            acc.wrapping_add(x)
+        },
+    ))
+end t.main
