@@ -4820,6 +4820,20 @@ impl<'a> Checker<'a> {
                 if tag(ty) != "named" {
                     return;
                 }
+                // 省いた欄は `_` で捨てるのと同じ (仕様に `..` はなく、欄は省ける)。線形の値を含む欄なら E3003 になるよう、`_` の組を足す。
+                if let Some(&di) = self.p.types.get(&st(tel(ty, 1))) {
+                    let named: Vec<String> = items(&nf(p)[1]).iter().map(|x| st(&items(x)[0])).collect();
+                    for (fname, _, _) in self.def(di).fields.iter() {
+                        if named.contains(fname) {
+                            continue;
+                        }
+                        if let Some(ft) = self.field_ty(ty, fname) {
+                            if self.keeps_ty(&ft) && !is_nil(&ft) {
+                                out.push(("_".to_string(), ft));
+                            }
+                        }
+                    }
+                }
                 for x in items(&nf(p)[1]) {
                     let Some(ft) = self.field_ty(ty, &st(&items(x)[0])) else { continue };
                     let ft = if self.keeps_ty(&ft) { ft } else { V::Nil };
@@ -5186,7 +5200,8 @@ impl<'a> Checker<'a> {
                 // `*r` を値として使う (move) のは、参照の先が Copy のときだけ (4.1)。
                 // `let z = s` で `s` が参照越しの `match` 束縛 (ref_binds) なら `*z` も同様に E3002 (f23)。
                 let operand = &f[1];
-                let deref_non_copy = self.ety_is_ref(operand) && self.ety_non_copy(e)
+                let deref_named = matches!(self.ety(operand), Some(crate::types::Ty::Named(..)));
+                let deref_non_copy = (self.ety_is_ref(operand) || deref_named) && self.ety_non_copy(e)
                     || {
                         nname(operand) == "Path"
                             && {
@@ -5204,9 +5219,14 @@ impl<'a> Checker<'a> {
                     };
                 if consume && deref_non_copy {
                     let text = format!("*{}", short_text(operand));
+                    let hint: String = if deref_named {
+                        "`*` on a `Box` (or other smart pointer) only borrows its contents; take the value out with `alloc.boxed.Box.into_inner(b)`, or borrow it with `&*b` / call `.clone()`".to_string()
+                    } else {
+                        format!("it is behind a reference and its type is not Copy; borrow it with `&{text}` or call `.clone()`")
+                    };
                     self.tdiag(
                         "E3002",
-                        format!("cannot move out of `{text}`: it is behind a reference and its type is not Copy; borrow it with `&{text}` or call `.clone()`"),
+                        format!("cannot move out of `{text}`: {hint}"),
                         nline(e),
                     );
                 }

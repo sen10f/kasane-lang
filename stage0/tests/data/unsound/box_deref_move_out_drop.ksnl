@@ -1,0 +1,19 @@
+// expect: E3002
+fn t.bad() -> () uses [alloc] panics may
+    let s = match alloc.string.String.from_str(std.alloc.SYSTEM, "hi") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("oom")
+    }
+    let b = match alloc.boxed.Box.new(std.alloc.SYSTEM, s) {
+        Ok(b) => b
+        Err(_e) => core.panic.panic("oom")
+    }
+    let x = *b
+    core.mem.drop(x)
+    core.mem.drop(b)
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    t.bad()
+    Ok(())
+end t.main

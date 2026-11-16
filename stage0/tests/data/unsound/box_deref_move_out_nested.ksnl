@@ -1,0 +1,26 @@
+// expect: E3002
+// Box<Box<T>> の外側 Box を *outer で中身の Box<T> に move-out し、その Box<T> を drop した後、
+// 外側 Box を drop すると、Box<T> の drop が T の drop（String バッファ解放）をもう一度実行し、
+// 二重解放になる。
+fn t.bad() -> () uses [alloc] panics may
+    let s = match alloc.string.String.from_str(std.alloc.SYSTEM, "hi") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("oom")
+    }
+    let inner = match alloc.boxed.Box.new(std.alloc.SYSTEM, s) {
+        Ok(b) => b
+        Err(_e) => core.panic.panic("oom")
+    }
+    let outer = match alloc.boxed.Box.new(std.alloc.SYSTEM, inner) {
+        Ok(b) => b
+        Err(_e) => core.panic.panic("oom")
+    }
+    let x = *outer
+    core.mem.drop(x)
+    core.mem.drop(outer)
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    t.bad()
+    Ok(())
+end t.main

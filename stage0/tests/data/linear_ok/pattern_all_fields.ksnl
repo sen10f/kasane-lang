@@ -1,0 +1,24 @@
+type t.Pair linear
+    a: u32
+    b: t.Res
+end t.Pair
+
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.Res.shut(self: t.Res) -> () uses [] panics never
+    let t.Res { id: id } = self
+    core.mem.drop(id)
+end t.Res.shut
+
+fn t.main() -> () uses [] panics never
+    let p = t.mk()
+    let t.Pair { a: x, b: r } = p
+    core.mem.drop(x)
+    r.shut()
+end t.main
+
+fn t.mk() -> t.Pair uses [] panics never
+    t.Pair { a: 1u32, b: t.Res { id: 2u32 } }
+end t.mk

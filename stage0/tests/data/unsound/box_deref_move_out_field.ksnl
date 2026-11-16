@@ -1,0 +1,27 @@
+// expect: E3002
+// Box 欄を持つ構造体から、欄の Box を *w.b で中身 move-out した後、構造体を drop すると、
+// 構造体の drop が欄 b (Box<T>) の drop を実行し、T のリソース（String バッファ）が
+// 二回解放される。
+type t.Wrapper
+    b: alloc.boxed.Box<alloc.string.String>
+end t.Wrapper
+
+fn t.bad() -> () uses [alloc] panics may
+    let s = match alloc.string.String.from_str(std.alloc.SYSTEM, "hi") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("oom")
+    }
+    let b = match alloc.boxed.Box.new(std.alloc.SYSTEM, s) {
+        Ok(b) => b
+        Err(_e) => core.panic.panic("oom")
+    }
+    let w = t.Wrapper { b: b }
+    let x = *w.b
+    core.mem.drop(x)
+    core.mem.drop(w)
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    t.bad()
+    Ok(())
+end t.main
