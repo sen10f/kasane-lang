@@ -32,9 +32,23 @@ enum Loan {
     Param(u32),
     /// 引数の指す先から読んだ値 (戻り値の領域の照合には引数と同じに使うが、引数の指す先への書き込みの出どころには数えない)。
     ParamIn(u32),
+    /// 引数の指す先の、領域を持つ欄 (`freg` のキー = 欄のオフセット) から読んだ値。出どころは欄の宣言の領域。
+    /// (引数, 欄のキー, 読んだ値の先頭からの欄の相対オフセット)。集成体を丸ごと読んだとき、`field` で欄ごとに分ける。
+    ParamFld(u32, u32, u32),
 }
 
 type Set = BTreeSet<Loan>;
+
+/// 欄 (葉) のオフセット → (欄の宣言の領域, 欄の終わりのオフセット)。
+type Freg = HashMap<u32, (Rg, u32)>;
+
+/// オフセット `k` を含む欄のキー (Option の中身など、欄の途中のオフセットも拾う)。
+fn fld_key(m: &Freg, k: u32) -> Option<u32> {
+    if m.contains_key(&k) {
+        return Some(k);
+    }
+    m.iter().filter(|(s, (_, e))| **s <= k && k < *e).map(|(s, _)| *s).max()
+}
 
 pub struct Diag {
     pub code: &'static str,
@@ -391,7 +405,7 @@ struct An<'a> {
     /// 引数ごとの、`'static` だけの領域を持つ欄のオフセット (指す先の構造体の欄)。
     sfo: Vec<BTreeSet<u32>>,
     /// 引数ごとの、指す先の構造体の領域を持つ欄 (入れ子も) のオフセット → 欄の宣言の領域。
-    freg: Vec<HashMap<u32, Rg>>,
+    freg: Vec<Freg>,
 }
 
 /// 引数 `d.params` ごとに、指す先の構造体の欄のうち、宣言の上で領域が `'static` だけのもの (`&'static str` など) のオフセット。
@@ -438,7 +452,7 @@ fn named_type_def(p: &Program, file: &str, t: &V) -> Option<usize> {
 
 /// 構造体 `tdi` (ライフタイム引数 `args`) の、領域を持つ欄 (葉) のオフセット → 欄の宣言の領域 (引数を代入したもの)。
 /// 入れ子の構造体の欄 (`inner: t.Pair<'a, 'b>`) は、型引数を代入して中へたどる。葉の領域は、欄の型の最初のライフタイム。
-fn walk_field_regions(p: &Program, m: &Module, tdi: usize, args: &[Rg], base: u32, depth: u32, out: &mut HashMap<u32, Rg>) {
+fn walk_field_regions(p: &Program, m: &Module, tdi: usize, args: &[Rg], base: u32, depth: u32, out: &mut Freg) {
     let td = &p.defs[tdi];
     let names: Vec<String> = td.generics.iter().filter(|g| g.0 == "life").map(|g| g.1.trim_start_matches('\'').to_string()).collect();
     if depth > 8 || names.len() != args.len() {
@@ -446,6 +460,7 @@ fn walk_field_regions(p: &Program, m: &Module, tdi: usize, args: &[Rg], base: u3
     }
     let Some(agg) = m.aggs.iter().find(|a| a.name == td.name) else { return };
     let AggKind::Struct(fields) = &agg.kind else { return };
+    let end_of = |off: u32| fields.iter().map(|f| f.off).filter(|o| *o > off).min().unwrap_or(agg.size);
     for (fname, fty, _) in &td.fields {
         let Some((_, lts)) = td.field_lifetimes.iter().find(|(n, _)| n == fname) else { continue };
         let Some(f) = fields.iter().find(|f| f.name == *fname) else { continue };
@@ -462,13 +477,13 @@ fn walk_field_regions(p: &Program, m: &Module, tdi: usize, args: &[Rg], base: u3
                 }
             }
         }
-        out.insert(base + f.off, regs[0].clone());
+        out.insert(base + f.off, (regs[0].clone(), base + end_of(f.off)));
     }
 }
 
 /// 引数ごとの、指す先の構造体の欄 (入れ子も) のオフセット → 欄の宣言の領域 (関数のヘッダの領域に直したもの)。
 /// 引数の型のライフタイムの数が構造体の宣言と合わないとき (省略など) は空 (従来どおり引数の中の最初の領域で見る)。
-fn field_regions(p: &Program, m: &Module, d: &Def, hdr: &Hdr) -> Vec<HashMap<u32, Rg>> {
+fn field_regions(p: &Program, m: &Module, d: &Def, hdr: &Hdr) -> Vec<Freg> {
     d.params
         .iter()
         .enumerate()
@@ -562,16 +577,39 @@ impl<'a> An<'a> {
                         out.extend(c.loans.iter().copied());
                     }
                 }
-                Loan::Param(j) | Loan::ParamIn(j) => {
+                Loan::Param(j) | Loan::ParamIn(j) | Loan::ParamFld(j, _, _) => {
                     // `'static` だけの欄 (`&'static str`) を読んだ値は、引数の借用ではない (`self` の借用は数えない)。
                     if self.static_field_load(p, j, off) {
                         continue;
                     }
-                    out.insert(Loan::ParamIn(j));
+                    let mut found = false;
+                    if let (Some((pj, k)), Some(m)) = (self.pabs[p as usize], self.freg.get(j as usize)) {
+                        if pj == j {
+                            let base = k + off;
+                            if let Ty::Agg(ai) = t {
+                                let size = self.aggs.get(ai as usize).map_or(0, |a| a.size);
+                                for (key, _) in m.iter().filter(|(key, _)| **key >= base && **key < base + size) {
+                                    out.insert(Loan::ParamFld(j, *key, *key - base));
+                                    found = true;
+                                }
+                            } else if let Some(key) = fld_key(m, base) {
+                                out.insert(Loan::ParamFld(j, key, 0));
+                                found = true;
+                            }
+                        }
+                    }
+                    if !found {
+                        out.insert(Loan::ParamIn(j));
+                    }
                 }
             }
         }
         out
+    }
+
+    /// 値 `v` を作る命令が、メモリからの読み (`load` / `memload`) か。
+    fn is_load_def(&self, v: VId) -> bool {
+        self.f.blocks.iter().any(|b| b.insts.iter().any(|i| i.dst == v && matches!(i.op, Op::MemLoad { .. } | Op::Load(_))))
     }
 
     /// `p` が入口の引数 `j` の指す先の、`'static` だけの欄 (オフセット `off` を足した先) を指すか。
@@ -613,7 +651,7 @@ impl<'a> An<'a> {
                     let c = st.entry((r, ELEMS)).or_default();
                     c.loans.extend(vorg.iter().copied().filter(|x| *x != Loan::Buf(r)));
                 }
-                Loan::Param(_) | Loan::ParamIn(_) => {}
+                Loan::Param(_) | Loan::ParamIn(_) | Loan::ParamFld(..) => {}
             }
         }
     }
@@ -640,6 +678,31 @@ impl<'a> An<'a> {
                 res.insert(Loan::Slot(d));
             }
             Op::PtrAdd { p, .. } => res = self.org[*p as usize].clone(),
+            Op::Field { a, off } if self.is_load_def(*a) && carries_ty(t) => {
+                let ops = self.org[*a as usize].clone();
+                let fsz = if let Ty::Agg(ai) = t { self.aggs.get(ai as usize).map_or(8, |g| g.size) } else { 0 };
+                let mut js = BTreeSet::new();
+                for l in ops {
+                    match l {
+                        Loan::ParamFld(j, key, rel) => {
+                            js.insert(j);
+                            let hit = if matches!(t, Ty::Agg(_)) { rel >= *off && rel < off + fsz } else { rel == *off };
+                            if hit {
+                                res.insert(Loan::ParamFld(j, key, rel - off));
+                            }
+                        }
+                        o => {
+                            res.insert(o);
+                        }
+                    }
+                }
+                // 該当する欄が見つからなければ、粗い出どころ (引数の中の領域) に戻す。
+                for j in js {
+                    if !res.iter().any(|l| matches!(l, Loan::ParamFld(jj, _, _) if *jj == j)) {
+                        res.insert(Loan::ParamIn(j));
+                    }
+                }
+            }
             Op::FieldAddr { a, .. } | Op::Reborrow(a) | Op::AsShared(a) | Op::Borrow { a, .. } => res = self.org[*a as usize].clone(),
             Op::MemLoad { p, off } => {
                 res = self.load_from(st, *p, *off, t);
@@ -692,6 +755,10 @@ impl<'a> An<'a> {
             op @ (Op::Field { .. } | Op::SetField { .. } | Op::Make { .. } | Op::Some(_) | Op::Ok(_) | Op::Err(_) | Op::Payload(_) | Op::Bitcast { .. } | Op::Conv { .. }) => {
                 if carries_ty(t) {
                     res = self.union_ops(&operands(op));
+                    // 読みでない値からの `field` は、欄の対応が分からない: 粗い出どころに戻す。
+                    if matches!(op, Op::Field { .. }) {
+                        res = res.into_iter().map(|l| if let Loan::ParamFld(j, _, _) = l { Loan::ParamIn(j) } else { l }).collect();
+                    }
                 }
             }
             // 入出力・計算の命令の結果は所有する値 (借用を運ばない)。
@@ -811,7 +878,7 @@ fn holders_of_root(st: &State, root: VId) -> Vec<VId> {
     h
 }
 
-fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, sfo: Vec<BTreeSet<u32>>, freg: Vec<HashMap<u32, Rg>>, file: &str, lines: &[u32]) -> Vec<Diag> {
+fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, sfo: Vec<BTreeSet<u32>>, freg: Vec<Freg>, file: &str, lines: &[u32]) -> Vec<Diag> {
     let n = f.value_count();
     let nb = f.blocks.len();
     let mut ty = vec![Ty::Unit; n];
@@ -1095,18 +1162,24 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                     };
                     if carries_ty(vt) {
                         for l in &an.org[pp as usize] {
-                            if let Loan::Param(j) | Loan::ParamIn(j) = l {
+                            if let Loan::Param(j) | Loan::ParamIn(j) | Loan::ParamFld(j, _, _) = l {
                                 let jn = hdr.params[*j as usize].split(':').next().unwrap_or("").to_string();
                                 // 書き込み先の領域: 引数の中の領域 (なければ参照そのもの)。
                                 let target = match (an.pabs[pp as usize], &i.op) {
-                                    (Some((pj, k)), Op::MemStore { off, .. }) if pj == *j => an.freg.get(*j as usize).and_then(|m| m.get(&(k + off))).cloned(),
-                                    (Some((pj, k)), Op::Store { .. }) if pj == *j => an.freg.get(*j as usize).and_then(|m| m.get(&k)).cloned(),
+                                    (Some((pj, k)), Op::MemStore { off, .. }) if pj == *j => an.freg.get(*j as usize).and_then(|m| fld_key(m, k + off).map(|q| m[&q].0.clone())),
+                                    (Some((pj, k)), Op::Store { .. }) if pj == *j => an.freg.get(*j as usize).and_then(|m| fld_key(m, k).map(|q| m[&q].0.clone())),
                                     _ => None,
                                 }
                                 .unwrap_or_else(|| hdr.inner[*j as usize].first().cloned().unwrap_or_else(|| hdr.outer[*j as usize].clone()));
                                 for vl in &an.org[vv as usize] {
                                     match vl {
                                         Loan::Slot(_) | Loan::Buf(_) => cons.push(Cons { sups: vec![Rg::Local], sub: target.clone(), line, msg: format!("cannot store a borrow of a local variable into `{}` (it outlives the function)", jn) }),
+                                        Loan::ParamFld(k, key, _) => {
+                                            if let Some((src, _)) = an.freg.get(*k as usize).and_then(|m| m.get(key)) {
+                                                let kn = hdr.params[*k as usize].split(':').next().unwrap_or("");
+                                                cons.push(Cons { sups: vec![src.clone()], sub: target.clone(), line, msg: format!("cannot store a borrow read from a field of `{}` (declared lifetime {}) into `{}`: it does not outlive the destination's (declared lifetimes)", kn, format!("{:?}", src), jn) });
+                                            }
+                                        }
                                         Loan::Param(k) if k != j => {
                                             let kn = hdr.params[*k as usize].split(':').next().unwrap_or("");
                                             cons.push(Cons { sups: vec![hdr.outer[*k as usize].clone()], sub: target.clone(), line, msg: format!("cannot store `{}` into `{}`: its lifetime does not outlive the one `{}` holds (header lifetimes)", kn, jn, jn) });
@@ -1153,7 +1226,7 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
             if hdr.ret_has_ref {
                 for l in &an.org[*v as usize] {
                     match l {
-                        Loan::Param(j) | Loan::ParamIn(j) => {
+                        Loan::Param(j) | Loan::ParamIn(j) | Loan::ParamFld(j, _, _) => {
                             let ju = *j as usize;
                             // 戻り値の領域: 書かれていればそれ。省略 / 型引数経由なら、流れる引数自身の領域 (流れないなら該当なし)。
                             let sub = match &hdr.ret_rg {
@@ -1164,6 +1237,11 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                             let mut sups = vec![hdr.outer[ju].clone()];
                             if matches!(l, Loan::ParamIn(_)) {
                                 sups.extend(hdr.inner[ju].iter().cloned());
+                            }
+                            if let Loan::ParamFld(_, key, _) = l {
+                                if let Some((src, _)) = an.freg.get(ju).and_then(|m| m.get(key)) {
+                                    sups = vec![src.clone()];
+                                }
                             }
                             cons.push(Cons { sups, sub, line, msg: format!("cannot return a borrow from `{}`: its lifetime does not outlive the return value's (header lifetimes)", hdr.params[ju].split(':').next().unwrap_or("")) });
                         }

@@ -2853,6 +2853,38 @@ fn kir_borrowck_nested_field_store_uses_declared_region() {
     }
 }
 
+/// 構造体の欄から読んだ借用 (欄の宣言の領域) は、書き込み先の欄・戻り値の領域に照らす。
+/// 別の領域の欄への移し替え (`self.fst = self.snd`、`Some(self.fst)`、3 欄、別の構造体の欄)、`match` で取り出して違う領域で返す形は E3010。
+/// 同じ領域の欄の受け渡しは通る。
+#[test]
+fn kir_borrowck_field_flow_uses_declared_regions() {
+    let main = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let cell = "type t.Cell['a, 'b]\n    fst: &'a u32\n    snd: &'b u32\nend t.Cell\n\n";
+    let opt = "type t.Cell['a, 'b]\n    fst: &'a u32\n    snd: Option<&'b u32>\nend t.Cell\n\n";
+    let tri = "type t.Tri['a, 'b, 'c]\n    fst: &'a u32\n    mid: &'b u32\n    snd: &'c u32\nend t.Tri\n\n";
+    let bad: Vec<(&str, String)> = vec![
+        ("reverse", format!("{}fn t.Cell.f['a, 'b](self: &mut t.Cell<'a, 'b>, _y: &t.Cell<'a, 'b>) -> () uses [] panics never\n    self.fst = self.snd\nend t.Cell.f\n\n{}", cell, main)),
+        ("cross", format!("{}fn t.Cell.f['a, 'b](dst: &mut t.Cell<'a, 'b>, src: &t.Cell<'a, 'b>, _y: &t.Cell<'a, 'b>) -> () uses [] panics never\n    dst.snd = src.fst\nend t.Cell.f\n\n{}", cell, main)),
+        ("option", format!("{}fn t.Cell.f['a, 'b](self: &mut t.Cell<'a, 'b>, _y: &t.Cell<'a, 'b>) -> () uses [] panics never\n    self.snd = Some(self.fst)\nend t.Cell.f\n\n{}", opt, main)),
+        ("three", format!("{}fn t.Tri.f['a, 'b, 'c](self: &mut t.Tri<'a, 'b, 'c>, _y: &t.Tri<'a, 'b, 'c>) -> () uses [] panics never\n    self.mid = self.fst\nend t.Tri.f\n\n{}", tri, main)),
+        ("match", format!("{}fn t.Cell.f['a, 'b](self: &t.Cell<'a, 'b>, _y: &t.Cell<'a, 'b>) -> &'a u32 uses [] panics never\n    match *self {{\n        t.Cell {{ fst: _f, snd: s }} => s\n    }}\nend t.Cell.f\n\n{}", cell, main)),
+    ];
+    for (name, src) in &bad {
+        let t = Tmp::new(&format!("kirbc_ff_bad_{}", name), src);
+        let c = kir_bc(&t.0).unwrap_or_else(|| panic!("{} must be lowerable", name));
+        assert!(c.iter().any(|x| x == "E3010"), "{}: KIR codes {:?}", name, c);
+    }
+    let good: Vec<(&str, String)> = vec![
+        ("same", format!("{}fn t.Cell.f['a, 'b](self: &mut t.Cell<'a, 'b>, _y: &t.Cell<'a, 'b>) -> () uses [] panics never\n    self.snd = self.snd\nend t.Cell.f\n\n{}", cell, main)),
+        ("tri_ok", format!("{}fn t.Tri.f['a, 'b, 'c](self: &mut t.Tri<'a, 'b, 'c>, _y: &t.Tri<'a, 'b, 'c>) -> () uses [] panics never\n    self.snd = self.snd\nend t.Tri.f\n\n{}", tri, main)),
+        ("match_ok", format!("{}fn t.Cell.f['a, 'b](self: &t.Cell<'a, 'b>, _y: &t.Cell<'a, 'b>) -> &'b u32 uses [] panics never\n    match *self {{\n        t.Cell {{ fst: _f, snd: s }} => s\n    }}\nend t.Cell.f\n\n{}", cell, main)),
+    ];
+    for (name, src) in &good {
+        let t = Tmp::new(&format!("kirbc_ff_ok_{}", name), src);
+        assert_eq!(kir_bc(&t.0), Some(vec![]), "{} must pass", name);
+    }
+}
+
 /// 第 2 段で解けるようになった不一致 (move 中の借用・ブロックを出る借用・文の終わりの一時値) は KIR の検査が止める。
 #[test]
 fn kir_borrowck_stage2_catches_scope_and_move_cases() {
