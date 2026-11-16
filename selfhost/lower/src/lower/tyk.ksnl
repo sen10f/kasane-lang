@@ -346,28 +346,6 @@ fn lower.tyk.is_opt_scalar(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bo
     k == types.ty.K.Int || k == types.ty.K.Bool
 end lower.tyk.is_opt_scalar
 
-// `Vec` / `String` の枠の集成体の項目: 要素が所有物の `Vec` は `VECO + 要素の集成体の番号`、それ以外は `VEC`。
-fn lower.tyk.vec_item(env: &types.env.Env, c: &mut lower.cx.Cx, f: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
-    let n = types.ty.node(&c.ar, f)
-    if !lower.tyk.item_fqn(env, n.a).as_str().ends_with(".Vec") || n.c == 0usize {
-        return Ok(lower.tyk.VEC)
-    }
-    let et = types.ty.arg(&c.ar, n.b, 0usize)
-    if !lower.drop.owns(env, c, et)? {
-        return Ok(lower.tyk.VEC)
-    }
-    let ets = lower.tyk.text(env, c, et)?
-    let num = match ets.as_str().strip_prefix("agg#") {
-        Some(d) => d
-        None => return Ok(lower.tyk.VEC)
-    }
-    let mut v = 0usize
-    for b in num.as_bytes().iter() {
-        v = v * 10usize + usize.from_u8((*b).wrapping_sub(48u8))
-    }
-    Ok(lower.tyk.VECO + v)
-end lower.tyk.vec_item
-
 // 項目が `alloc.vec.Vec` か。
 fn lower.tyk.is_vec(env: &types.env.Env, item: usize) -> bool uses [alloc] panics may pub
     let fq = lower.tyk.item_fqn(env, item)
@@ -919,6 +897,28 @@ fn lower.tyk.variant_index(env: &types.env.Env, item: usize, name: &str) -> Resu
     }
     Ok(0usize)
 end lower.tyk.variant_index
+
+// `Vec` / `String` の枠の集成体の項目: 要素が所有物の `Vec` は `VECO + 要素の集成体の番号`、それ以外は `VEC`。
+fn lower.tyk.vec_item(env: &types.env.Env, c: &mut lower.cx.Cx, f: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let n = types.ty.node(&c.ar, f)
+    if !lower.tyk.item_fqn(env, n.a).as_str().ends_with(".Vec") || n.c == 0usize {
+        return Ok(lower.tyk.VEC)
+    }
+    let et = types.ty.arg(&c.ar, n.b, 0usize)
+    if !lower.drop.owns(env, c, et)? {
+        return Ok(lower.tyk.VEC)
+    }
+    let ets = lower.tyk.text(env, c, et)?
+    let num = match ets.as_str().strip_prefix("agg#") {
+        Some(d) => d
+        None => return Ok(lower.tyk.VEC)
+    }
+    let mut v = 0usize
+    for b in num.as_bytes().iter() {
+        v = v * 10usize + usize.from_u8((*b).wrapping_sub(48u8))
+    }
+    Ok(lower.tyk.VECO + v)
+end lower.tyk.vec_item
 
 // 未対応の型の名前 (診断用)。
 fn lower.tyk.why(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub

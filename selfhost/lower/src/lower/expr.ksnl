@@ -536,6 +536,27 @@ fn lower.expr.coerce_shared(env: &types.env.Env, c: &mut lower.cx.Cx, item: usiz
     lower.cx.def(c, ns.as_str(), lower.cx.cat2("asshared ", lower.cx.vs(v)?.as_str())?.as_str())
 end lower.expr.coerce_shared
 
+// 場所の式 (`x.f.g` の 1 つの `Path`、または `self` から始まる `Dot` の連鎖) の綴り。
+fn lower.expr.dotted['a](p: &parse.cur.P, src: &'a [u8], node: usize) -> (&'a str, bool) uses [] panics may pub
+    let n = parse.ast.get(&p.ast, node)
+    if n.kind == parse.ast.Kind.Path {
+        let nm = resolve.ast.text(src, n.a, n.b)
+        return (nm, lower.expr.seg_count(nm) >= 2usize)
+    }
+    if n.kind != parse.ast.Kind.Dot {
+        return ("", false)
+    }
+    let mut cur = n
+    while cur.kind == parse.ast.Kind.Dot {
+        cur = parse.ast.get(&p.ast, cur.a)
+    }
+    if cur.kind != parse.ast.Kind.Path {
+        return ("", false)
+    }
+    let tk = parse.cur.peek_at(p, n.b)
+    (resolve.ast.text(src, cur.a, tk.stop), true)
+end lower.expr.dotted
+
 // 型の合わない仮の値 (未対応のとき)。
 fn lower.expr.dummy(c: &mut lower.cx.Cx, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let v = lower.cx.newval(c, "unit")?
@@ -2162,6 +2183,27 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
             }
         }
         let place = inner.kind == parse.ast.Kind.Dot || inner.kind == parse.ast.Kind.Path
+        if slot == 0usize && place {
+            // `&x.f` の f が `Vec` / `String`: 欄の番地を `borrow.*` する。
+            let ity = lower.expr.tyof(c, n.b)?
+            if lower.vec.is_hdr(env, c, ity) {
+                let (dn, dok) = lower.expr.dotted(p, src, n.b)
+                if dok {
+                    let (hp, _hvt, hok) = lower.expr.hdr_of(env, c, dn)?
+                    if hok {
+                        let tth = lower.tyk.text(env, c, t)?
+                        let hh = if mutable {
+                            "borrow.mut "
+                        } else {
+                            "borrow.shared "
+                        }
+                        let oph = lower.cx.cat2(hh, lower.cx.vs(hp)?.as_str())?
+                        let vh = lower.cx.def(c, tth.as_str(), oph.as_str())?
+                        return Ok(lower.cx.R { v: vh, t: t })
+                    }
+                }
+            }
+        }
         if slot == 0usize && place {
             // `&x.f` / `&mut x.f`: 欄の番地 (`fieldaddr`) をそのまま借りる (一時の複製を作らない)。
             let (fa, _ft, fm, fok) = lower.expr.faddr_chain(env, c, p, src, n.b)?
