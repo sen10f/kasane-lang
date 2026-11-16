@@ -383,6 +383,14 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, j), types.ty.UNKNOWN)?
         args.push(a.v)?
     }
+    // 引数を全部評価してから、`&mut` → `&` の付け替えを順に出す (Rust 版と同じ並び)。
+    let mut cargs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ai = 0usize
+    for av in args.as_slice().iter() {
+        cargs.push(lower.expr.coerce_shared(env, c, item, ai, *av)?)?
+        ai = ai + 1usize
+    }
+    args = cargs
     let rt = lower.tyk.text(env, c, rty)?
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
     o.push_str("call ")?
@@ -448,6 +456,37 @@ fn lower.expr.chr_val(src: &[u8], a: usize, b: usize) -> (usize, bool) uses [] p
     }
     (v, true)
 end lower.expr.chr_val
+
+// `&mut T` の値を、宣言が `&T` の引数 (j 番目) へ渡すときは `asshared` で共有参照にする (Rust 版と同じ)。
+fn lower.expr.coerce_shared(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, j: usize, v: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let vt = lower.cx.tyof(c, v)
+    if !vt.as_str().starts_with("mutref<") {
+        return Ok(v)
+    }
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let cp = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(v)
+    }
+    let fd = parse.ast.get(&cp.ast, node)
+    let sg = parse.ast.get(&cp.ast, fd.c)
+    if j >= resolve.ast.count(cp, sg.b) {
+        return Ok(v)
+    }
+    let pn = resolve.ast.item(cp, sg.b, j)
+    let pt = types.ty.find(&c.ar, types.rec.ty_of(&c.tc.rec, file, pn))
+    let nd = types.ty.node(&c.ar, pt)
+    if nd.k != types.ty.K.Ref || nd.m {
+        return Ok(v)
+    }
+    let rest = match vt.as_str().strip_prefix("mutref<") {
+        Some(r) => r
+        None => return Ok(v)
+    }
+    let ns = lower.cx.cat2("ref<", rest)?
+    lower.cx.def(c, ns.as_str(), lower.cx.cat2("asshared ", lower.cx.vs(v)?.as_str())?.as_str())
+end lower.expr.coerce_shared
 
 // 型の合わない仮の値 (未対応のとき)。
 fn lower.expr.dummy(c: &mut lower.cx.Cx, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub

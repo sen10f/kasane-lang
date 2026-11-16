@@ -211,6 +211,37 @@ fn lower.opt.field_addr_m(env: &types.env.Env, c: &mut lower.cx.Cx, bv: usize, b
     lower.cx.def(c, mt.as_str(), fa.as_str())
 end lower.opt.field_addr_m
 
+// 列挙型 item の変種のうち、欄が 1 つで型の綴りが srcty のもの (`derive From`) の番号 + 1。なければ 0。
+fn lower.opt.from_variant(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, srcty: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    if types.infer.item_kind(env, item) != parse.ast.Kind.EnumDef {
+        return Ok(0usize)
+    }
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(0usize)
+    }
+    let src_r = match env.srcs.as_slice().get(file) {
+        Some(x) => x
+        None => return Ok(0usize)
+    }
+    let src = src_r.text.as_slice()
+    let nd = parse.ast.get(&p.ast, node)
+    for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+        let vn = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+        if resolve.ast.count(p, vn.b) == 1usize {
+            let pn = resolve.ast.item(p, vn.b, 0usize)
+            let pt = lower.tyk.fty(env, c, p, src, file, nd.c, pn)?
+            let tt = lower.tyk.text(env, c, pt)?
+            if tt.as_str() == srcty {
+                return Ok(j + 1usize)
+            }
+        }
+    }
+    Ok(0usize)
+end lower.opt.from_variant
+
 // 項目が Option (1) / Result (2) / それ以外 (0) か。
 fn lower.opt.kind(env: &types.env.Env, item: usize) -> usize uses [alloc] panics may pub
     let f = lower.tyk.item_fqn(env, item)
@@ -430,7 +461,25 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     if k == 2usize {
         let a1 = types.ty.arg(&c.ar, xn.b, 1usize)
         let et = lower.tyk.text(env, c, a1)?
-        let pv = lower.cx.def1(c, et.as_str(), "payload ", x.v)?
+        let mut pv = lower.cx.def1(c, et.as_str(), "payload ", x.v)?
+        // 誤りの型が違えば、戻り値の誤りの型の `From` の変種に包む (`make.vK(payload)`)。
+        let rf = types.ty.find(&c.ar, c.s.ret_t)
+        let rn = types.ty.node(&c.ar, rf)
+        if rn.k == types.ty.K.Adt && rn.c == 2usize {
+            let e2 = types.ty.find(&c.ar, types.ty.arg(&c.ar, rn.b, 1usize))
+            let e2n = types.ty.node(&c.ar, e2)
+            let e2t = lower.tyk.text(env, c, e2)?
+            if e2t.as_str() != et.as_str() && e2n.k == types.ty.K.Adt {
+                let fv = lower.opt.from_variant(env, c, e2n.a, et.as_str())?
+                if fv != 0usize {
+                    let mk0 = lower.cx.cat2("make.v", lower.cx.dec(fv - 1usize)?.as_str())?
+                    let mk1 = lower.cx.cat2(mk0.as_str(), "(")?
+                    let mk2 = lower.cx.cat2(mk1.as_str(), lower.cx.vs(pv)?.as_str())?
+                    let mk3 = lower.cx.cat2(mk2.as_str(), ")")?
+                    pv = lower.cx.def(c, e2t.as_str(), mk3.as_str())?
+                }
+            }
+        }
         let ev = lower.cx.def1(c, rt.as_str(), "err ", pv)?
         lower.vec.exit_drops(env, c, c.v.vals.len(), 0usize)?
         lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(ev)?.as_str())?)?
