@@ -51,6 +51,15 @@ fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     }
     let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 0usize), types.ty.UNKNOWN)?
     let rt = lower.tyk.text(env, c, t)?
+    if fqn == "std.fs.open" || fqn == "std.fs.create" {
+        let op = if fqn == "std.fs.open" {
+            "fs.open "
+        } else {
+            "fs.create "
+        }
+        let fv = lower.cx.def1(c, rt.as_str(), op, a.v)?
+        return Ok(lower.cx.R { v: fv, t: t })
+    }
     if fqn == "std.env.arg" {
         let v = lower.cx.def1(c, rt.as_str(), "env.arg ", a.v)?
         return Ok(lower.cx.R { v: v, t: t })
@@ -119,13 +128,13 @@ end lower.std_calls.has_fn
 
 // 引数が 1 つの組み込み (`call1`) か。
 fn lower.std_calls.has_fn1(fqn: &str) -> bool uses [] panics may pub
-    let a = fqn == "std.env.arg" || fqn == "core.str.from_utf8"
+    let a = fqn == "std.env.arg" || fqn == "core.str.from_utf8" || fqn == "std.fs.open" || fqn == "std.fs.create"
     a || fqn == "core.char.char.try_from_u32"
 end lower.std_calls.has_fn1
 
 // メソッド呼び出しを、この表で下ろせるか。
 fn lower.std_calls.has_method(fqn: &str) -> bool uses [] panics may pub
-    let a = fqn == "alloc.string.String.as_str" || fqn == "core.str.len"
+    let a = fqn == "alloc.string.String.as_str" || fqn == "core.str.len" || fqn == "std.fs.File.close"
     let b = fqn == "core.option.Option.is_none" || fqn == "core.option.Option.is_some"
     let e0 = fqn == "core.str.as_bytes" || fqn == "core.slice.sub" || fqn == "core.slice.contains"
     let e = e0 || fqn == "core.str.ends_with"
@@ -152,6 +161,14 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
         let tt = lower.tyk.text(env, c, t)?
         let v = lower.cx.def(c, tt.as_str(), mk2.as_str())?
         return Ok(lower.cx.R { v: v, t: t })
+    }
+    if fqn == "std.fs.File.close" {
+        // 受け手 (File の値) の記述子を読んで閉じる (`field +0` と `fs.close`)。
+        let fv = lower.std_calls.val_of(env, c, recv, rty)?
+        let fdv = lower.loops.fld(c, "i32", fv, "+0")?
+        let rt0 = lower.tyk.text(env, c, t)?
+        let cv = lower.cx.def1(c, rt0.as_str(), "fs.close ", fdv)?
+        return Ok(lower.cx.R { v: cv, t: t })
     }
     if fqn == "core.str.as_bytes" {
         let fat = lower.std_calls.val_of(env, c, recv, rty)?

@@ -1,5 +1,5 @@
 // モジュールの組み立て: 宣言 → 大域 → 文言 → panic の関数 → 補助 → 関数 → 入口 `main`。
-fn emit.rt.assemble(g: &mut emit.G, entry: &str, nparams: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.rt.assemble(g: &mut emit.G, entry: &str, nparams: usize, res: bool, rty: usize) -> () uses [alloc, io.console, process] panics may pub
     emit.util.push_str(&mut g.outs.out, "; ksn kir llvm 1 (Kasane emitter)\n\n")
     emit.util.push_str(&mut g.outs.out, "declare i32 @dprintf(i32, ptr, ...)\ndeclare void @exit(i32) noreturn\n")
     emit.util.push_str(&mut g.outs.out, "declare ptr @malloc(i64)\ndeclare ptr @realloc(ptr, i64)\n")
@@ -49,9 +49,26 @@ fn emit.rt.assemble(g: &mut emit.G, entry: &str, nparams: usize) -> () uses [all
     } else {
         emit.util.push_str(&mut g.outs.out, "define i32 @main(i32 %argc, ptr %argv) null_pointer_is_valid {\nentry:\n")
         emit.util.push_str(&mut g.outs.out, "  store i32 %argc, ptr @ksn_rt_argc\n  store ptr %argv, ptr @ksn_rt_argv\n")
-        emit.util.push_str(&mut g.outs.out, "  %r = call i8 @\"k.")
-        emit.util.push_str(&mut g.outs.out, entry)
-        emit.util.push_str(&mut g.outs.out, "\"()\n  ret i32 0\n}\n")
+        if res {
+            // `Result<_, E>` を返す入口: Err なら終了コード 1 (Rust 版は stderr に `Error: ...` も出す。ここでは出さない)。
+            let lt = emit.ty.text_of(g, rty, false)
+            let sb = emit.ty.slot(g, rty)
+            emit.util.push_str(&mut g.outs.out, "  %r = call ")
+            emit.util.push_str(&mut g.outs.out, lt.as_str())
+            emit.util.push_str(&mut g.outs.out, " @\"k.")
+            emit.util.push_str(&mut g.outs.out, entry)
+            emit.util.push_str(&mut g.outs.out, "\"()\n  %t = lshr ")
+            emit.util.push_str(&mut g.outs.out, lt.as_str())
+            emit.util.push_str(&mut g.outs.out, " %r, ")
+            emit.util.push_num(&mut g.outs.out, sb)
+            emit.util.push_str(&mut g.outs.out, "\n  %tb = trunc ")
+            emit.util.push_str(&mut g.outs.out, lt.as_str())
+            emit.util.push_str(&mut g.outs.out, " %t to i1\n  %code = zext i1 %tb to i32\n  ret i32 %code\n}\n")
+        } else {
+            emit.util.push_str(&mut g.outs.out, "  %r = call i8 @\"k.")
+            emit.util.push_str(&mut g.outs.out, entry)
+            emit.util.push_str(&mut g.outs.out, "\"()\n  ret i32 0\n}\n")
+        }
     }
 end emit.rt.assemble
 

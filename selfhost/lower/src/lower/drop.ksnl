@@ -14,7 +14,8 @@ fn lower.drop.br(c: &mut lower.cx.Cx, b: usize) -> Result<(), resolve.Failure> u
 end lower.drop.br
 
 // 印を持つ局所 k の出口の解放: 印が立っていれば値を解放する (`mem.load.bool` → `br_if` → 解放 → 合流)。
-fn lower.drop.exit(env: &types.env.Env, c: &mut lower.cx.Cx, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.drop.exit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.fs.close(env, c, p, src, k)?
     let fl = lower.drop.flag_of(c, k)
     if fl == 0usize || c.s.term {
         return Ok(())

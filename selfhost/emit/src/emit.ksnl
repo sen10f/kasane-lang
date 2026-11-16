@@ -198,6 +198,8 @@ fn emit.module(g: &mut emit.G, text: &str, entry: &str) -> () uses [alloc, io.co
     }
     let mut entry_found = false
     let mut entry_params = 0usize
+    let mut entry_ret = 0usize
+    let mut entry_res = false
     i = 0usize
     while i < n {
         let l = emit.line_at(text, &starts, i)
@@ -211,6 +213,8 @@ fn emit.module(g: &mut emit.G, text: &str, entry: &str) -> () uses [alloc, io.co
             }
             if emit.func.key_of(l) == entry {
                 entry_found = true
+                entry_ret = emit.ty.parse(g, emit.func.ret_text(l))
+                entry_res = emit.func.ret_text(l).starts_with("Result<")
                 let hd = emit.line_at(text, &starts, i.wrapping_add(1usize))
                 if hd.contains("%") {
                     entry_params = emit.util.piece_count(hd, "%").wrapping_sub(1usize)
@@ -225,7 +229,7 @@ fn emit.module(g: &mut emit.G, text: &str, entry: &str) -> () uses [alloc, io.co
     if !entry_found {
         core.panic.panic("the entry function is not in the KIR file")
     }
-    emit.rt.assemble(g, entry, entry_params)
+    emit.rt.assemble(g, entry, entry_params, entry_res, entry_ret)
 end emit.module
 
 fn emit.new_g() -> emit.G uses [alloc, io.console, process] panics may pub

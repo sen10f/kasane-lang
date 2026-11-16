@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """`selfhost/parse` を下ろした KIR で端から端まで走らせる検査 (emit → clang → 実行) を、Rust 版でビルドした同じ本と比べる。
 
-`parse.read_file` は `with` と `fs.*` を使い、`lower` はまだ下ろせない。そこでこの検査は parse の写しを /tmp に作り、
-`parse.process` が引数の文字列そのものをソースとして読む形 (`path.as_bytes()`、`read_file` は消す) に替えて使う。
-それ以外の 154 関数は selfhost/parse のまま。入力は examples・linear_ok・selfhost/parse/broken のソースの中身を
-引数として渡す (`--kinds` の有無で 2 回)。標準出力と終了コードが Rust 版 (`ksn build` の実行) と一致するかを数える。
+既定は本物の `selfhost/parse` (変形なし。`parse.read_file` の `with` と `std.fs.*` も下ろす)。parse の写しを /tmp に作って
+ビルドし、入力は examples・linear_ok・selfhost/parse/broken のファイル名を引数として渡す (`--kinds` の有無で 2 回)。
+存在しないファイルの名前でも 1 回走らせる。標準出力と終了コードが Rust 版 (`ksn build` の実行) と一致するかを数える。
+
+`--variant`: 4h の検査。`parse.read_file` を消し、`parse.process` が引数の文字列そのものをソースとして読む形に替える
+(入力はファイルの中身を引数として渡す)。
 
 使い方 (先に selfhost/lower と selfhost/emit を `ksn build --release` しておく):
-    python3 -I e2e_parse.py
+    python3 -I e2e_parse.py [--variant]
 """
 import glob
 import pathlib
@@ -47,9 +49,14 @@ def make_variant(work):
 
 
 def main():
+    variant = "--variant" in sys.argv[1:]
     work = pathlib.Path(tempfile.mkdtemp(prefix="lower-e2e-parse-"))
     try:
-        pkg = make_variant(work)
+        if variant:
+            pkg = make_variant(work)
+        else:
+            pkg = work / "parse"
+            shutil.copytree(ROOT / "selfhost" / "parse", pkg, ignore=shutil.ignore_patterns("target", "broken", "*.py"))
         b = run([KSN, "build"], cwd=pkg)
         ref = pkg / "target" / "debug" / "parse.native"
         if not ref.exists():
@@ -76,13 +83,18 @@ def main():
                        + glob.glob(str(ROOT / "selfhost" / "parse" / "broken" / "*.ksnl")))
         ok = bad = 0
         fails = []
+        inputs = []
         for fn in files:
             txt = open(fn, encoding="utf-8").read()
             if len(txt.encode()) > 120000:
                 continue
+            inputs.append((fn, txt if variant else fn))
+        if not variant:
+            inputs.append(("(存在しないファイル)", str(work / "no_such_file.ksnl")))
+        for fn, arg in inputs:
             for extra in ([], ["--kinds"]):
-                ra = run([str(ref)] + extra + [txt], timeout=60)
-                rb = run([str(work / "p.exe")] + extra + [txt], timeout=60)
+                ra = run([str(ref)] + extra + [arg], timeout=60)
+                rb = run([str(work / "p.exe")] + extra + [arg], timeout=60)
                 if (ra.stdout, ra.returncode) == (rb.stdout, rb.returncode):
                     ok += 1
                 else:

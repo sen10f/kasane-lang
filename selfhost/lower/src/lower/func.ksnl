@@ -113,7 +113,7 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     let r = lower.expr.expr(env, c, p, src, n.d, ret)?
     if !c.s.term {
         // 値で受けた `Vec` / `String` の引数 (枠) は、本体の後で逆順に解放する。
-        lower.vec.exit_drops(env, c, pstop, mark)?
+        lower.vec.exit_drops(env, c, p, src, pstop, mark)?
         if rt.as_str() == "unit" {
             // 本体の値が単位ならそれを返す (Rust 版と同じく、余分な単位の定数を作らない)。
             let bt = lower.tyk.text(env, c, r.t)?
