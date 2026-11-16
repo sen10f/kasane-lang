@@ -2003,6 +2003,9 @@ fn lower.expr.vec_slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.
         Some(b) => b
         None => return Ok((no, false))
     }
+    if lower.expr.seg_count(bname) < 2usize {
+        return Ok((no, false))
+    }
     let (hp, vt, ok) = lower.expr.hdr_of(env, c, bname)?
     if !ok {
         return Ok((no, false))
