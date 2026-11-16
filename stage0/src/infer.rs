@@ -289,3 +289,98 @@ fn fill(v: &mut V, m: &std::collections::HashMap<u32, String>) {
         _ => {}
     }
 }
+
+/// 木走査のインタプリタへ、「所有する値を `core.mem.drop` する呼び出し」を知らせる (設計_インタプリタ一致.md 段 1)。
+/// 型表で引数の型が所有する非 `Copy` の型 (`String` / `Vec` / `HashMap` / 利用者の非 `Copy` の構造体・列挙) の
+/// `core.mem.drop(e)` の呼び出し節点に、4 つ目の欄 `S("own")` を足す。インタプリタはその値を解放済みにして、
+/// あとの読みを panic にする。参照・`Copy`・型が決まらないものは触らない (偽の panic を出さない)。
+/// 欄を足すだけで、式 ID・既存の欄・他の処理は変えない。対象は `user` の fn / test だけ。
+pub fn annotate_owned_drops(p: &mut Program, user: &[usize]) {
+    use std::collections::{HashMap, HashSet};
+    let mut tk = crate::types::TypeCk::new(p);
+    for &i in user {
+        let d = &p.defs[i];
+        if matches!(d.kw.as_str(), "fn" | "test") && d.body.is_some() {
+            tk.check_def(i);
+        }
+    }
+    let owned = |t: &crate::types::Ty| -> bool {
+        match t {
+            crate::types::Ty::Named(n, _) => {
+                if matches!(n.as_str(), "alloc.string.String" | "alloc.vec.Vec" | "alloc.collections.HashMap") {
+                    return true;
+                }
+                match p.types.get(n.as_str()) {
+                    Some(&i) => user.contains(&i) && !p.defs[i].derive.iter().any(|x| x == "Copy"),
+                    None => false,
+                }
+            }
+            _ => false,
+        }
+    };
+    let mut want: HashMap<String, HashSet<u32>> = HashMap::new();
+    for &i in user {
+        if let Some(b) = p.defs[i].body.as_ref() {
+            let mut ids = vec![];
+            drop_calls(b, &mut ids);
+            for (call_id, arg_id) in ids {
+                let _ = call_id;
+                // 型表の型が参照の外れた形 (`?` や `match` の値) を取り違えうるので、局所の変数 (`Path`) の引数だけを数える。
+                if let Some(e) = tk.tytab.get(&(p.defs[i].name.clone(), arg_id)) {
+                    if e.kind == "Path" && owned(&e.ty) {
+                        want.entry(p.defs[i].name.clone()).or_default().insert(call_id);
+                    }
+                }
+            }
+        }
+    }
+    drop(tk);
+    for &i in user {
+        let name = p.defs[i].name.clone();
+        if let (Some(m), Some(b)) = (want.get(&name), p.defs[i].body.as_mut()) {
+            mark_drops(b, m);
+        }
+    }
+}
+
+fn is_mem_drop_call(v: &V) -> bool {
+    if nname(v) != "Call" {
+        return false;
+    }
+    let f = nf(v);
+    if f.len() != 3 || nname(&f[0]) != "Path" {
+        return false;
+    }
+    let segs = crate::check::strs(&nf(&f[0])[0]);
+    segs.len() >= 2 && segs[segs.len() - 1] == "drop" && segs[segs.len() - 2] == "mem" && crate::check::items(&f[1]).len() == 1
+}
+
+fn drop_calls(v: &V, out: &mut Vec<(u32, u32)>) {
+    match v {
+        V::Node(_, fs, _, id) => {
+            if is_mem_drop_call(v) {
+                out.push((*id, crate::parser::nid(&crate::check::items(&fs[1])[0])));
+            }
+            for c in fs {
+                drop_calls(c, out);
+            }
+        }
+        V::L(xs) => xs.iter().for_each(|c| drop_calls(c, out)),
+        _ => {}
+    }
+}
+
+fn mark_drops(v: &mut V, m: &std::collections::HashSet<u32>) {
+    match v {
+        V::Node(_, fs, _, id) => {
+            if fs.len() == 3 && m.contains(id) {
+                fs.push(V::S("own".into()));
+            }
+            for c in fs.iter_mut() {
+                mark_drops(c, m);
+            }
+        }
+        V::L(xs) => xs.iter_mut().for_each(|c| mark_drops(c, m)),
+        _ => {}
+    }
+}

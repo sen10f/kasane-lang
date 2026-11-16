@@ -268,6 +268,7 @@ fn build_program_with(l: &Loaded, taken: Option<&mut Vec<Vec<Def>>>) -> (Program
     crate::derive_json::expand(&mut prog, n_std, &mut user);
     crate::infer::run(&mut prog);
     crate::infer::annotate_int_lits(&mut prog, &user);
+    crate::infer::annotate_owned_drops(&mut prog, &user);
     (prog, user)
 }
 
@@ -499,6 +500,12 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         ck.run();
         crate::vm::tick("checker");
         ck.diags
+    };
+    // 隠しの切り替え (試験用): 借用・線形の診断 (E30xx) を外して実行する。検査器の穴を実行時の検査 (解放済みの値の読み) で確かめる。
+    let diags: Vec<_> = if std::env::var_os("KSN_SKIP_BORROW_DIAGS").is_some() {
+        diags.into_iter().filter(|d| !d.code.starts_with("E30")).collect()
+    } else {
+        diags
     };
     // 同じ呼び出しに対する E1108 は、名前だけの検査と型に基づく検査が両方出しうる。最初の 1 件だけ残す。
     let mut seen_1108: std::collections::HashSet<(String, usize, usize)> = Default::default();
@@ -1459,6 +1466,7 @@ fn spawn_watcher_with(l: &Loaded, allow_add: bool, send: impl Fn(Program, Vec<us
             crate::derive_json::expand(&mut prog, n_std, &mut user);
             crate::infer::run(&mut prog);
             crate::infer::annotate_int_lits(&mut prog, &user);
+            crate::infer::annotate_owned_drops(&mut prog, &user);
             if !send(prog, user) {
                 return;
             }
