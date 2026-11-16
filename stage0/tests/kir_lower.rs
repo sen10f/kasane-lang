@@ -1864,9 +1864,9 @@ fn kir_optres_prints_tagged_types_and_reads_back() {
 
 #[test]
 fn kir_optres_rejects_checked_neg_and_std_payloads_with_a_reason() {
-    // `checked_neg` は段階 1 の対象外。`Option` の中のタプルは集成体として持てる (11.5) が、
+    // 128 ビットの `checked_neg` (Option のペイロードが 128 ビット) は段階 1 の対象外。(`checked_neg` の 64 ビット以下は `kir_native_gaps2.rs`)。`Option` の中のタプルは集成体として持てる (11.5) が、
     // Kasane の定義を持たない扱いの標準ライブラリの型 (`std.io.Stdout`。`std.io.Error` は 12.1 で型表に入った) をペイロードに持つ `Result` は未対応で、理由に型名を出す。
-    let src = "fn t.neg(x: i8) -> Option<i8> uses [] panics never
+    let src = "fn t.neg(x: i128) -> Option<i128> uses [] panics never
     x.checked_neg()
 end t.neg
 
@@ -1881,7 +1881,7 @@ end t.io
     let t = Tmp::new("kir_optres_reject", src);
     let o = run(&["kir", "t.neg"], &t.0);
     assert_eq!(o.status.code(), Some(1));
-    assert!(text(&o.stderr).contains("checked_neg は段階 1 の対象外"), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("型 i128 は Option / Result のペイロードに使えない"), "{}", text(&o.stderr));
     let o = run(&["kir", "t.pr"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     assert!(text(&o.stdout).contains("ret=Option<agg#"), "{}", text(&o.stdout));

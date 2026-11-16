@@ -102,7 +102,7 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
     lw.cur = Some(hb);
     let from = hp[0];
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (hp[k + 1], slot_tys[k]);
+        lw.rebind_slot(*s, hp[k + 1], slot_tys[k]);
     }
     let empty = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: sep_len, b: zero });
     let s_len0 = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: s_len, b: zero });
@@ -115,7 +115,7 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
     let ffrom = fhp[0];
     let fi = fhp[1];
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (fhp[k + 2], slot_tys[k]);
+        lw.rebind_slot(*s, fhp[k + 2], slot_tys[k]);
     }
     // `i + sep_len > s_len` なら、もう区切りは入らない (`s_len - sep_len` は sep が長いと wrap するので使わない。
     // 長さは確保できる大きさなので、足し算は溢れない)。
@@ -130,7 +130,7 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
     let k = chp[1];
     let ci = chp[2];
     for (k2, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (chp[k2 + 3], slot_tys[k2]);
+        lw.rebind_slot(*s, chp[k2 + 3], slot_tys[k2]);
     }
     let k_eq = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: k, b: sep_len });
     lw.branch(k_eq, (bb, body_args(lw, &[cfrom, ci], &slots)), (t1, head_args(lw, &[cfrom, k, ci], &slots)));
@@ -141,7 +141,7 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
     let t1k = chp[1];
     let t1i = chp[2];
     for (k2, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (chp[k2 + 3], slot_tys[k2]);
+        lw.rebind_slot(*s, chp[k2 + 3], slot_tys[k2]);
     }
     let ck = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: t1i, b: t1k });
     let sp = lw.emit(Ty::Ptr, Op::PtrAdd { p: s_ptr, off: ck });
@@ -159,7 +159,7 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
     let bfrom = bp[0];
     let bend = bp[1];
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (bp[k + 2], slot_tys[k]);
+        lw.rebind_slot(*s, bp[k + 2], slot_tys[k]);
     }
     let piece_ptr = lw.emit(Ty::Ptr, Op::PtrAdd { p: s_ptr, off: bfrom });
     let piece_len = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: bend, b: bfrom });
@@ -189,7 +189,7 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
     lw.cur = Some(aft);
     let cend = cbp[0];
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (cbp[k + 1], slot_tys[k]);
+        lw.rebind_slot(*s, cbp[k + 1], slot_tys[k]);
     }
     let done = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: cend, b: s_len });
     let next_from = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: cend, b: sep_len });
@@ -197,7 +197,7 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
 
     lw.cur = Some(xb);
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (xp[k], slot_tys[k]);
+        lw.rebind_slot(*s, xp[k], slot_tys[k]);
     }
     Ok(Some(lw.unit()))
 }
@@ -257,7 +257,7 @@ fn chars_for(lw: &mut Lw, _line: usize, s: VId, name: Option<String>, body: &V) 
     lw.cur = Some(hb);
     let i = hp[0];
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (hp[k + 1], slot_tys[k]);
+        lw.rebind_slot(*s, hp[k + 1], slot_tys[k]);
     }
     let i_eq = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: i, b: s_len });
     lw.branch(i_eq, (xb, slot_vals(lw, &slots)), (hb2, head_args(lw, &[i], &slots)));
@@ -274,7 +274,7 @@ fn chars_for(lw: &mut Lw, _line: usize, s: VId, name: Option<String>, body: &V) 
     lw.cur = Some(t1);
     let t1i = hp[0];
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (hp[k + 1], slot_tys[k]);
+        lw.rebind_slot(*s, hp[k + 1], slot_tys[k]);
     }
     let off = lw.emit(Ty::Ptr, Op::PtrAdd { p: s_ptr, off: t1i });
     let b0 = lw.emit(Ty::U8, Op::MemLoad { p: off, off: 0 });
@@ -287,7 +287,7 @@ fn chars_for(lw: &mut Lw, _line: usize, s: VId, name: Option<String>, body: &V) 
     lw.cur = Some(t2);
     let t2i = hp[0];
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (hp[k + 1], slot_tys[k]);
+        lw.rebind_slot(*s, hp[k + 1], slot_tys[k]);
     }
     let off = lw.emit(Ty::Ptr, Op::PtrAdd { p: s_ptr, off: t2i });
     let b0 = lw.emit(Ty::U8, Op::MemLoad { p: off, off: 0 });
@@ -309,7 +309,7 @@ fn chars_for(lw: &mut Lw, _line: usize, s: VId, name: Option<String>, body: &V) 
     let width = dp[1];
     let di = dp[2];
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (dp[k + 3], slot_tys[k]);
+        lw.rebind_slot(*s, dp[k + 3], slot_tys[k]);
     }
     let next_i = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: di, b: width });
     lw.scopes.push(vec![]);
@@ -327,7 +327,7 @@ fn chars_for(lw: &mut Lw, _line: usize, s: VId, name: Option<String>, body: &V) 
     }
     lw.cur = Some(xb);
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (xp[k], slot_tys[k]);
+        lw.rebind_slot(*s, xp[k], slot_tys[k]);
     }
     Ok(Some(lw.unit()))
 }
@@ -339,7 +339,8 @@ fn width_block(lw: &mut Lw, n: u32, lead_mask: u32, lead_shift: u32,
     lw.cur = Some(blk);
     let i = lw.blocks[blk].params[0].0;
     for (k, s) in slots.iter().enumerate() {
-        lw.slots[*s] = (lw.blocks[blk].params[k + 1].0, slot_tys[k]);
+        let np = lw.blocks[blk].params[k + 1].0;
+        lw.rebind_slot(*s, np, slot_tys[k]);
     }
     let mut acc: Option<VId> = None;
     for k in 0..n {

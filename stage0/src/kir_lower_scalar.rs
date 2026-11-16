@@ -358,11 +358,30 @@ impl<'a> Lw<'a> {
         if !matches!(f.get(2), Some(V::Nil) | None) || nname(&f[0]) != "Path" {
             return Ok(None);
         }
-        let segs = strs(&nf(&f[0])[0]);
+        let mut segs = strs(&nf(&f[0])[0]);
+        let args = items(&f[1]);
+        // 完全修飾の形 `core.num.f64.sin(x)` (受け手が第 1 引数) と `core.num.i64.from_..(v)` / `core.char.char.try_from_u32(x)` (関連関数)。
+        if segs.len() == 4 && segs[0] == "core" && ((segs[1] == "num" && Ty::parse(&segs[2]).is_some()) || (segs[1] == "char" && segs[2] == "char" && segs[3] == "try_from_u32")) {
+            let (ty, name) = (if segs[1] == "char" { "char".to_string() } else { segs[2].clone() }, segs[3].clone());
+            let assoc = name.starts_with("from_") || name.starts_with("try_from") || name == "parse";
+            if assoc {
+                segs = vec![ty, name];
+            } else if let Some((first, rest)) = args.split_first() {
+                let Some(rt) = Ty::parse(&ty) else { return Ok(None) };
+                let Ok(res) = self.ty_of(e) else { return Ok(None) };
+                if num_plan(rt, &name, rest.len()).is_none() {
+                    return Ok(None);
+                }
+                let Some(recv) = self.expr(first)? else { return Ok(Some(None)) };
+                if self.vty(recv) != rt {
+                    return self.err(line, "完全修飾の数値メソッドの受け手の型が違う");
+                }
+                return self.num_method(line, recv, rt, res, &name, rest);
+            }
+        }
         if segs.len() != 2 {
             return Ok(None);
         }
-        let args = items(&f[1]);
         let Ok(res) = self.ty_of(e) else { return Ok(None) };
         if let Some(s) = self.lookup(&segs[0]) {
             // 参照を取られた局所 (スタックスロット) は、読み出しの `load` を通す (`read_slot`)。

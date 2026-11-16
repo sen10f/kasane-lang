@@ -506,6 +506,14 @@ impl<'a> Lw<'a> {
                     if segs.len() >= 2 {
                         out.extend(self.mut_root_of(&segs[..segs.len() - 1], &segs[segs.len() - 1]));
                         out.extend(self.builtin_rng_mut(&segs[..segs.len() - 1], &segs[segs.len() - 1]));
+                        // `it.next()` (局所の `s.chars()`): 残りの `&str` を進める。
+                        if segs.len() == 2 && segs[1] == "next" {
+                            if let Some(s) = self.lookup(&segs[0]) {
+                                if self.slots[s].1 == self.fat_ty() {
+                                    out.push(segs[0].clone());
+                                }
+                            }
+                        }
                     }
                     if segs.len() >= 3 {
                         out.extend(super::own::vec_field_root(self, &segs[..segs.len() - 1]));

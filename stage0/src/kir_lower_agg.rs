@@ -191,6 +191,8 @@ impl AggTab {
                 Ok(self.vec_of(elem))
             }
             Src::Named(name, _) if name == "alloc.string.String" => Ok(self.vec_hdr()),
+            // `core.str.Chars` (局所に持つ `s.chars()`) は、まだ読んでいない残りの `&str` (`fat`)。`next` が先頭の文字を読んで進める。
+            Src::Named(name, _) if name == "core.str.Chars" => Ok(self.fat()),
             Src::Named(name, _) if name == "alloc.alloc.AllocError" => Ok(self.alloc_err()),
             Src::Named(name, _) if name == "alloc.vec.InsertError" => Ok(self.insert_err()),
             // `std.thread.JoinHandle<T, A>` = `{A, usize, *mut T}`。`T` はポインタの向こうにあるので配置には現れない。
@@ -1529,7 +1531,7 @@ impl<'a> Lw<'a> {
         self.cur = Some(jb);
         let off = carry as usize;
         for (i, s) in slots.iter().enumerate() {
-            self.slots[*s] = (jp[off + i], slot_tys[i]);
+            self.rebind_slot(*s, jp[off + i], slot_tys[i]);
         }
         Ok(Some(if carry { jp[0] } else { self.unit() }))
     }
