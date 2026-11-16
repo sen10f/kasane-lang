@@ -373,6 +373,15 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// 解決先の関数の定義。ネイティブ (`Target::Native`) は、同名の sig の定義で見る (借用の流れは宣言した署名で決まる)。
+    fn target_def(&self, t: &Target) -> Option<usize> {
+        match t {
+            Target::Fn(i) | Target::Sig(i) => Some(*i),
+            Target::Native(n) => self.p.sigs.get(n).copied(),
+            _ => None,
+        }
+    }
+
     /// 関数呼び出し (`Path` の呼び先) が中断点か。ネイティブ (`Target::Native`) は、同名の sig の `uses` で見る。
     fn call_suspends(&self, callee: &V) -> bool {
         if nname(callee) != "Path" {
@@ -543,7 +552,12 @@ impl<'a> Low<'a> {
                 // 関数の戻り値が借用を含むなら、借用の引数 (`&x` / `&mut x` / 参照の変数) から借りる
                 let Some(r) = self.p.resolve(&segs, &self.file) else { return vec![] };
                 let di = match r.target {
-                    Target::Fn(i) | Target::Sig(i) => i,
+                    // `core.mem.replace` などは `lower_mem` が固有に扱う (中身の移動で、借用の引数そのものは返らない)。
+                    Target::Native(_) if self.mem_fn(&segs).is_some() => return vec![],
+                    Target::Fn(_) | Target::Sig(_) | Target::Native(_) => match self.target_def(&r.target) {
+                        Some(i) => i,
+                        None => return vec![],
+                    },
                     // `Some(&x)` / `Pair(&a, &b)`: 構築した値が引数の借用を持つ。
                     Target::Variant(..) | Target::Type(_) if r.rest.is_empty() => {
                         return items(&nf(e)[1]).iter().flat_map(|a| self.loan_sources(a)).collect();
@@ -595,6 +609,28 @@ impl<'a> Low<'a> {
         matches!(r.target, Target::Type(_)) && !self.ret_contains_ref(d)
     }
 
+    /// 戻り値が、名前付きの型の値そのもの (参照でも型パラメータそのものでもない) か。借用を持ちうる型引数 (`String<A>`) は問わない:
+    /// その値を借りれば、値が一時なら借用は文の終わりで死ぬ。
+    fn def_returns_value(&self, d: &Def) -> bool {
+        let V::L(parts) = &d.ret else { return false };
+        let [V::S(a), V::S(name), _] = parts.as_slice() else { return false };
+        if a != "named" || d.generics.iter().any(|g| &g.1 == name) {
+            return false;
+        }
+        let segs: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
+        let Some(r) = self.p.resolve(&segs, &self.file) else { return false };
+        matches!(r.target, Target::Type(_))
+    }
+
+    fn method_returns_value(&self, name: &str) -> bool {
+        let Some(cands) = self.p.method_idx.get(name) else { return false };
+        !cands.is_empty()
+            && cands.iter().all(|&i| {
+                let d = &self.p.defs[i];
+                d.params.first().map_or(false, |(n, _)| n == "self") && self.def_returns_value(d)
+            })
+    }
+
     fn method_returns_owned(&self, name: &str) -> bool {
         let Some(cands) = self.p.method_idx.get(name) else { return false };
         !cands.is_empty()
@@ -614,15 +650,15 @@ impl<'a> Low<'a> {
                 let segs = strs(&nf(&nf(e)[0])[0]);
                 if segs.len() >= 2 && self.locals.contains(&segs[0]) {
                     // `w.dup()` の呼び出し形 (メソッド)
-                    return self.method_returns_owned(&segs[segs.len() - 1]);
+                    return self.method_returns_value(&segs[segs.len() - 1]);
                 }
                 let Some(r) = self.p.resolve(&segs, &self.file) else { return false };
-                match r.target {
-                    Target::Fn(i) | Target::Sig(i) if r.rest.is_empty() => self.def_returns_owned(&self.p.defs[i]),
+                match self.target_def(&r.target) {
+                    Some(i) if r.rest.is_empty() => self.def_returns_value(&self.p.defs[i]),
                     _ => false,
                 }
             }
-            "MCall" => self.method_returns_owned(&st(&nf(e)[1])),
+            "MCall" => self.method_returns_value(&st(&nf(e)[1])),
             _ => false,
         }
     }
@@ -668,6 +704,9 @@ impl<'a> Low<'a> {
                         v.push(Src::Place { root: "$temp".into(), path: vec![], mutable: m });
                     }
                     v
+                } else if nname(recv) == "Unary" && matches!(st(&nf(recv)[0]).as_str(), "&" | "&mut") {
+                    // `(&Some(x)).as_ref()`: 借りた値 (一時値を含む) の借用が、メソッドの結果へ通り抜ける。
+                    self.loan_sources(recv)
                 } else {
                     vec![]
                 }
@@ -710,7 +749,11 @@ impl<'a> Low<'a> {
         }
         let ret = head[close + 1..].split_once("->").map_or("", |x| x.1);
         let ret_lts = lifetimes(ret);
-        let flows: Vec<bool> = if !ret_lts.is_empty() {
+        // 戻り値の参照がすべて `&'static` なら、どの引数の借用も戻り値へは流れない (型パラメータ経由は下で足す)。
+        let only_static = ret_lts.is_empty() && ret.contains("&'static") && ret.matches('&').count() == ret.matches("&'static").count();
+        let flows: Vec<bool> = if only_static {
+            vec![false; params.len()]
+        } else if !ret_lts.is_empty() {
             params.iter().map(|p| lifetimes(p).iter().any(|l| ret_lts.contains(l))).collect()
         } else if d.params.first().map_or(false, |p| p.0 == "self" && tag(&p.1) == "ref") {
             (0..params.len()).map(|k| k == 0).collect()
@@ -1969,10 +2012,7 @@ impl<'a> Low<'a> {
                 let mut di: Option<usize> = None;
                 if nname(callee) == "Path" {
                     if let Some(r) = self.p.resolve(&strs(&nf(callee)[0]), &self.file) {
-                        di = match r.target {
-                            Target::Fn(i) | Target::Sig(i) => Some(i),
-                            _ => None,
-                        };
+                        di = self.target_def(&r.target);
                     }
                 }
                 let mut temps = vec![];
@@ -2138,9 +2178,9 @@ impl<'a> Low<'a> {
                                 (self.callees(&name, nline(v), args.len()), args, Some((segs[0].clone(), segs[1..segs.len() - 1].to_vec())))
                             } else {
                                 match self.p.resolve(&segs, &self.file) {
-                                    Some(r) if r.rest.is_empty() => match r.target {
-                                        Target::Fn(i) | Target::Sig(i) => (vec![i], args, None),
-                                        _ => (vec![], &[], None),
+                                    Some(r) if r.rest.is_empty() => match self.target_def(&r.target) {
+                                        Some(i) => (vec![i], args, None),
+                                        None => (vec![], &[], None),
                                     },
                                     _ => (vec![], &[], None),
                                 }
@@ -2687,7 +2727,10 @@ impl<'a> Low<'a> {
         };
         match s {
             Src::Place { root, path: _, .. } => {
-                if let Some(q) = d.params.iter().position(|p| &p.0 == root).filter(|_| !inits.has(root)) {
+                if root == "$temp" {
+                    // 一時値の借用は文の終わりで死ぬ。戻り値へ流れれば、局所の借用と同じく寿命が足りない。
+                    out.push(Origin::Local(root.clone()));
+                } else if let Some(q) = d.params.iter().position(|p| &p.0 == root).filter(|_| !inits.has(root)) {
                     if tag(&d.params[q].1) == "ref" || matches!(s, Src::Place { path, .. } if path.iter().any(|x| x == "*")) {
                         out.push(Origin::Param(q));
                     } else {
@@ -2912,7 +2955,11 @@ impl<'a> Low<'a> {
                             out.push((
                                 "E3030",
                                 nlineno(v),
-                                format!("returns a reference to the local variable `{}`, which does not live long enough", name),
+                                if name == "$temp" {
+                                    "returns a reference to a temporary value, which does not live long enough".to_string()
+                                } else {
+                                    format!("returns a reference to the local variable `{}`, which does not live long enough", name)
+                                },
                             ));
                         }
                     }

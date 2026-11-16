@@ -1,0 +1,9 @@
+// expect: E3010
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let mut x = 1u32
+    if let Ok(b) = alloc.boxed.Box.new(std.alloc.SYSTEM, &x) {
+        x = 2u32
+        core.mem.drop(**b)
+    }
+    Ok(())
+end t.main
