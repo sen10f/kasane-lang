@@ -1,0 +1,29 @@
+// expect: E3043
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.Res.get(self: &t.Res) -> u32 uses [] panics never
+    self.id
+end t.Res.get
+
+fn t.Res.shut(self: t.Res) -> () uses [] panics never
+    let t.Res { id: id } = self
+    core.mem.drop(id)
+end t.Res.shut
+
+fn t.bad() -> () uses [] panics never
+    let mut c = fn() -> u32 capture [] {
+        0u32
+    }
+    with r = t.Res { id: 1u32 } close r.shut() {
+        c = fn() -> u32 capture [&r] {
+            r.get()
+        }
+    }
+    core.mem.drop(c())
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
