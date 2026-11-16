@@ -314,8 +314,14 @@ impl<'a> Low<'a> {
             Some(V::S(tag)) if tag == "fn" || tag == "dyn" || tag == "self" => {
                 out.insert("*".to_string());
             }
-            _ => {
+            // 先頭が名札でない並び (タプルの要素の並びなど) は、先頭も含めて全部見る。
+            Some(V::S(_)) => {
                 for x in xs.iter().skip(1) {
+                    Self::ty_params_in(x, names, out);
+                }
+            }
+            _ => {
+                for x in xs.iter() {
                     Self::ty_params_in(x, names, out);
                 }
             }
@@ -553,14 +559,22 @@ impl<'a> Low<'a> {
                 let Some(r) = self.p.resolve(&segs, &self.file) else { return vec![] };
                 let di = match r.target {
                     // `core.mem.replace` などは `lower_mem` が固有に扱う (中身の移動で、借用の引数そのものは返らない)。
-                    Target::Native(_) if self.mem_fn(&segs).is_some() => return vec![],
+                    Target::Native(_) if self.mem_fn(&segs).is_some() => {
+                        // `replace(&mut d, v)` が返す古い値は、`d` が運んでいた借用を引き継ぐ (`swap` は返さない)。
+                        if self.mem_fn(&segs) == Some("replace") {
+                            if let Some((root, path)) = items(&nf(e)[1]).first().and_then(|a| self.mut_place_arg(a)) {
+                                return vec![Src::Stored { root: root.clone(), path }, Src::Alias(root)];
+                            }
+                        }
+                        return vec![];
+                    }
                     Target::Fn(_) | Target::Sig(_) | Target::Native(_) => match self.target_def(&r.target) {
                         Some(i) => i,
                         None => return vec![],
                     },
                     // `Some(&x)` / `Pair(&a, &b)`: 構築した値が引数の借用を持つ。
                     Target::Variant(..) | Target::Type(_) if r.rest.is_empty() => {
-                        return items(&nf(e)[1]).iter().flat_map(|a| self.loan_sources(a)).collect();
+                        return items(&nf(e)[1]).iter().flat_map(|a| { let mut v = self.loan_sources(a); v.extend(self.lit_sources(a)); v }).collect();
                     }
                     _ => return vec![],
                 };
