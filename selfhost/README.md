@@ -1554,3 +1554,54 @@ python3 -I compare.py --group examples --mine native                 # 一致 57
 python3 -I e2e.py                                                    # linear_ok の端から端まで
 python3 -I e2e_parse.py                                              # selfhost/parse の端から端まで (read_file を除いた写し)
 ```
+
+## 28. KIR への下ろしの段 (4i)
+
+2026-11-16。ブランチ `selfhost/lower-4i` (`selfhost/lower-4h` の先頭から)。触ったのは `selfhost/lower/src/` (新規 `lower/fs.ksnl`、ほか `lower/expr` `drop` `vec` `cx` `std_calls` `opt` `func`)、`selfhost/lower/e2e_parse.py`、`selfhost/emit/src/` (`emit.ksnl` `emit/inst` `emit/rt`)、この章だけ。`stage0/`・`examples/`・テストの期待値は変えていない。
+
+結論を先に: **`selfhost/parse` を変形なしで丸ごと下ろせて (155 関数すべて)、155 関数すべてが Rust 版 (`ksn kir`) と一致する形になった** (前の段は 154 / 154。残りの 1 本 `parse.read_file` は `with` と `std.fs.*`)。下ろした KIR をそのまま `emit` → clang でネイティブにして走らせ、Rust 版でビルドした同じ本と比べると、**examples・linear_ok・broken の 174 本のファイル名を引数に渡した 348 回 (`--kinds` の有無) と、存在しないファイル名を渡した 2 回の、350 回すべてで標準出力と終了コードが一致した** (前の段は `read_file` を消した写しで 348 / 348)。`linear_ok` の一致 363 / 下ろせた 403、`examples` の一致 57 / 下ろせた 65、端から端まで `linear_ok` 99 / 99 は変わらない (退行なし)。
+
+### 28.1 下ろしたもの・直したもの
+
+- **`with [mut] 名前 = 初期化 close 後始末 { 本体 }`** (`lower.fs.withx`。Rust 版 `with_`): 初期化 → 束縛 (借用される名前なのでスロット = `alloca`) → `own.declare` → 後始末の式を束縛の局所に結び付ける → 本体。後始末は局所ごとの欄 (`Sl.cl`、式の節の番号、0 = 無し) に持ち、出口 (本体の終わり・`return`・`?`・`break` / `continue`) で `lower.drop.exit` が、その局所の印の解放より先に式を下ろす (`lower.fs.close`)。式を下ろす間は登録を外し (式の中の出口が二重に後始末しない)、下ろした後で `own.consume` を 1 つだけ出す。`with` の束縛のスロットは `scope.end` しない (Rust 版と同じ)。このため `lower.drop.exit` `lower.vec.exit_drops` `lower.vec.exit_scope` `lower.expr.end_locals` `lower.expr.jump` に `p` と `src` の引数が増えた。
+- **`std.fs`**: `std.fs.open` / `std.fs.create` は `fs.open %path` / `fs.create %path` (`lower.std_calls.call1`)、`File.close` は受け手を読んで `field +0` → `fs.close` (`lower.std_calls.method`)、`std.fs.read_to_end(&mut file, &mut v)` は Rust 版 `read_fd_to_end` と同じブロックの並び (周ごとに残りを 4096 バイト以上に `reserve`、`fs.read`、0 バイトで終わり、失敗は長さを戻して `Err`。`lower.fs.read_to_end`)。
+- **借用される名前の走査**: `scan` が `?` (`Try`) の中と `with` (束縛の名前・初期化・後始末・本体) に入るようになった。
+- **`emit`**: `fs.open` / `fs.create` / `fs.read` / `fs.close` (実行時の `ksn_rt_sys_*` を呼び、負の結果を `Result<_, std.io.Error>` の Err に詰める。Rust 版 `fs_result` と同じ並び)。入口が `Result<_, E>` を返すときは、Err なら終了コード 1 (`emit.rt.assemble`。以前は結果を無視して常に 0 だった)。
+- **`e2e_parse.py`**: 既定は変形なしの本物の `selfhost/parse` (ファイル名を渡す、存在しないファイルも 1 つ)。`--variant` で 4h の写し (`read_file` を消した形) も回せる。
+
+### 28.2 数字
+
+| 対象 | 前 (4h) | 後 (4i) |
+| --- | ---: | ---: |
+| **`selfhost/parse` (155 関数)**: 一致 / 下ろせた | 154 / 154 | **155 / 155** |
+| `linear_ok` (459 関数): 一致 / 下ろせた | 363 / 403 | 363 / 403 |
+| `examples` (172 関数): 一致 / 下ろせた | 57 / 65 | 57 / 65 |
+| 端から端まで `linear_ok` | 99 / 99 | 99 / 99 |
+| **端から端まで 本物の `selfhost/parse`** (Rust 版と標準出力・終了コードが一致 / 実行) | (未着手。写しで 348 / 348) | **350 / 350** (写しも 348 / 348 のまま) |
+
+- 350 = 174 本のファイル名 × (`--kinds` の有無) + 存在しないファイル名 × 2。存在しないファイルは `parse.read_file` の `Err` が `main` から出て終了コード 1 (出力の標準出力は空)。
+- `ksn check`: `selfhost/` の全パッケージで診断 0 件 (`probes/boxtree` の E4013 だけ期待どおり)。`ksn fmt --check`: `lower` と `emit` を含め通る (`selfhost/borrow` の並び順の食い違いはこのブランチの出発点のまま。dev/plan では直してある)。
+
+### 28.3 まだ
+
+- **解放しない形** (27.3 のまま。Rust 版は解放する。実行は安全でメモリが漏れるだけ): 部分的な移動の残りの欄、総称の構造体・列挙型の所有物、要素が所有物の `Vec`、局所が対象の `match` の束縛しない腕での丸ごとの解放。この段では手を付けられなかった。
+- `linear_ok` の食い違い 40 関数、`examples` の残り (`core.iter.fold`・`for` の範囲と `Vec` 以外・クロージャ) は 27.3 のまま。
+- **入口の `Err` の表示**: Rust 版は stderr に `Error: <Debug>` を出す (降格が作る `ksn.entry.debug`)。この下ろし・`emit` は終了コード 1 だけで、stderr の文言は出さない (検査は標準出力と終了コードだけ)。
+- 生成した小関数 (`Vec.push` ほか) の本体は Rust 版の形ではない (24.3 のまま)。
+
+### 28.4 処理系の不足 (stage0。直していない)
+
+新しく見つかったものはない。22.4 の 1・2 は変わらない。
+
+### 28.5 再現
+
+```
+cd selfhost/lower && ksn check && ksn fmt --check && ksn build --release
+(cd ../emit && ksn build --release)
+python3 -I compare.py --group parse --mine native --reasons          # 一致 155 / 全体 155 (下ろせた 155)
+python3 -I compare.py --group linear_ok --mine native --jobs 8       # 一致 363 / 全体 459 (下ろせた 403)
+python3 -I compare.py --group examples --mine native                 # 一致 57 / 全体 172 (下ろせた 65)
+python3 -I e2e.py                                                    # linear_ok の端から端まで (99 / 99)
+python3 -I e2e_parse.py                                              # 本物の selfhost/parse の端から端まで (350 / 350)
+python3 -I e2e_parse.py --variant                                    # read_file を除いた写し (348 / 348)
+```
