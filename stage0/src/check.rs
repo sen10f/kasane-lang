@@ -3044,6 +3044,10 @@ impl<'a> Checker<'a> {
             }
         }
         self.let_tys = std::mem::take(&mut tk.let_tys);
+        // 参照は二級の値 (4.1、E3060)。型の宣言と型の使用の位置を見る (refs_check.rs)。
+        for h in crate::refs_check::check(self.p, &user, &self.let_tys) {
+            self.diag("E3060", h.msg, h.di, h.pos);
+        }
         self.mv_types = std::mem::take(&mut tk.tytab);
         self.call_res = std::rc::Rc::new(std::mem::take(&mut tk.call_res));
         self.susp_lines = std::rc::Rc::new(std::mem::take(&mut tk.susp_lines));
