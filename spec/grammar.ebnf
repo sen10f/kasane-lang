@@ -135,7 +135,7 @@ args_wrap     = LF , CONT_INDENT , expr , "," , LF , { CONT_INDENT , expr , "," 
 chain_cont    = LF , CONT_INDENT , "." ;                          (* 次行が "." で始まる継続 *)
 primary       = literal
               | path , [ "::" , "<" , targ , { "," , targ } , ">" ]
-              | prim_type , "." , ident                           (* i32.try_from_i64 など *)
+              | prim_type , "." , fname                           (* i32.try_from_i64, usize.MAX など *)
               | "self"
               | "(" , expr , ")" | "(" , expr , "," , [ expr , { "," , expr } ] , ")"
               | "[" , [ args | args_wrap ] , "]" | "[" , expr , ";" , const_expr , "]"
@@ -162,7 +162,7 @@ unary_ns      = ( "-" | "!" | "&" | "&" , "mut" | "*" ) , unary_ns | postfix_ns 
 postfix_ns    = primary_ns , { postfix_tail } ;
 primary_ns    = literal
               | path , [ "::" , "<" , targ , { "," , targ } , ">" ]
-              | prim_type , "." , ident
+              | prim_type , "." , fname
               | "self"
               | "(" , expr , ")" | "(" , expr , "," , [ expr , { "," , expr } ] , ")"
               | "[" , [ args | args_wrap ] , "]" | "[" , expr , ";" , const_expr , "]"

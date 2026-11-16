@@ -11,8 +11,10 @@ const RESERVED: &[&str] = &[
     "fn", "type", "enum", "trait", "impl", "const", "static", "extern", "test", "end", "import", "let", "mut", "if",
     "else", "match", "loop", "while", "for", "in", "break", "continue", "return", "true", "false", "self", "Self",
     "pub", "uses", "panics", "unsafe", "move", "with",
-    "dyn", "blanket", "never", "may", "async", "await", "where", "ref", "as", "i8", "i16", "i32", "i64",
-    "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64", "bool", "char", "str",
+    "dyn", "blanket", "never", "may", "async", "await", "where", "ref", "as",
+];
+const PRIMS: &[&str] = &[
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64", "bool", "char", "str",
 ];
 const HEADER_KW: &[&str] = &["fn", "type", "enum", "trait", "impl", "const", "static", "extern", "test", "import", "end"];
 const DEF_START: &[&str] = &["fn", "type", "enum", "trait", "test"];
@@ -274,7 +276,9 @@ impl Lexer {
                 check_digit_groups(&t)?;
             }
             if *kind == "word" {
-                let k = if RESERVED.contains(&t.as_str()) {
+                let k = if PRIMS.contains(&t.as_str()) {
+                    "prim"
+                } else if RESERVED.contains(&t.as_str()) {
                     "kw"
                 } else if self.ident_re.is_match(&t) {
                     "ident"
@@ -870,4 +874,5 @@ mod memo_tests {
         }
         assert!(oks > 20 && errs > 5, "ok {} err {}", oks, errs);
     }
-}
+
+    }

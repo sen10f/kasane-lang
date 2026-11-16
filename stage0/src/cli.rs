@@ -201,13 +201,13 @@ pub struct Loaded {
     pub std: Vec<Source>,
 }
 
-pub(crate) fn load_all(root: &Path) -> Result<Loaded, ProjectError> {
+pub(crate) fn load_all(root: &Path, ptr_bits: Option<u32>) -> Result<Loaded, ProjectError> {
     crate::vm::tick("pre");
     let pkg = load_package(root)?;
     crate::vm::tick("load_pkg");
     let deps = load_deps(&pkg)?;
     crate::vm::tick("load_deps");
-    let std = load_stdlib();
+    let std = load_stdlib(ptr_bits);
     crate::vm::tick("load_std");
     Ok(Loaded { pkg, deps, std })
 }
@@ -288,14 +288,14 @@ fn check_lock(pkg: &Package, deps: &[Package], rep: &mut Report) {
 }
 
 /// 構文・正規形・意味の検査。構文エラーが無ければ Program を返す。
-fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
-    full_check_opts(root, rep, run_mode, false)
+fn full_check(root: &Path, rep: &mut Report, run_mode: bool, ptr_bits: Option<u32>) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
+    full_check_opts(root, rep, run_mode, false, ptr_bits)
 }
 
 /// `ksn test` の検査: 本体に加えて、`src/` の `///` のコード例 (```` ```ksn ````) を `tests/` の統合テストとして読み込む (3.2)。
 /// 例は `tests/doc_<番号>.ksnl` の仮想ファイルになり、その中の診断は元の囲みの行 (`src/...:行`) に直して出す。
-fn full_check_with_examples(root: &Path, rep: &mut Report) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
-    let mut l = load_all(root)?;
+fn full_check_with_examples(root: &Path, rep: &mut Report, ptr_bits: Option<u32>) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
+    let mut l = load_all(root, ptr_bits)?;
     let testsdir = norm(&l.pkg.root.join("tests"));
     let pkg = l.pkg.name.clone();
     // (仮想ファイル, 元のファイル, 仮想ファイルでの本文の先頭行, 元の本文の先頭行)
@@ -355,9 +355,9 @@ fn full_check_with_examples(root: &Path, rep: &mut Report) -> Result<(Loaded, Op
 }
 
 /// `take_std` のとき、返す `Loaded` の標準ライブラリの定義は空 (`Program` に移した)。
-fn full_check_opts(root: &Path, rep: &mut Report, run_mode: bool, take_std: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
+fn full_check_opts(root: &Path, rep: &mut Report, run_mode: bool, take_std: bool, ptr_bits: Option<u32>) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
     // 文法の構築 (正規表現のコンパイルが重い) は、定義単位の再利用が外れたときに初めてやる (grammar.rs)。
-    let l = load_all(root)?;
+    let l = load_all(root, ptr_bits)?;
     crate::vm::tick("load_all");
     full_check_loaded(l, rep, run_mode, take_std)
 }
@@ -561,14 +561,14 @@ pub struct Analysis {
 }
 
 /// パッケージ `root` を検査して診断を返す (出力はしない。ソースは `overlay_set` の上書きを優先して読む)。
-pub fn analyze(root: &Path) -> Analysis {
-    analyze_inc(root, None)
+pub fn analyze(root: &Path, ptr_bits: Option<u32>) -> Analysis {
+    analyze_inc(root, None, ptr_bits)
 }
 
 /// 前回の検査 (読み込んだ `Loaded` と診断) を渡すと、変わったソースとその依存元だけを検査し直す。
 /// 結果は `analyze` (全体検査) と一致する。一致を保証できない形 (`plan_slice` が `None`) は全体を検査する。
-pub fn analyze_inc(root: &Path, prev: Option<(&Loaded, &[Item])>) -> Analysis {
-    let l = load_all(root);
+pub fn analyze_inc(root: &Path, prev: Option<(&Loaded, &[Item])>, ptr_bits: Option<u32>) -> Analysis {
+    let l = load_all(root, ptr_bits);
     match (prev, l) {
         (Some((pl, pitems)), Ok(l)) => match plan_slice(&l, pl) {
             Some(plan) => {
@@ -576,7 +576,7 @@ pub fn analyze_inc(root: &Path, prev: Option<(&Loaded, &[Item])>) -> Analysis {
                 if std::env::var_os("KSN_TIMING").is_some() {
                     eprintln!("[timing] incremental: redo {} / keep {} / of {}", plan.redo.len(), plan.keep.len(), l.pkg.sources.len());
                 }
-                analyze_slice(l, plan, pitems)
+                analyze_slice(l, plan, pitems, ptr_bits)
             }
             None => {
                 if std::env::var_os("KSN_TIMING").is_some() {
@@ -734,7 +734,7 @@ fn plan_slice(l: &Loaded, pl: &Loaded) -> Option<SlicePlan> {
     Some(SlicePlan { redo: (0..a.len()).filter(|&i| redo[i]).collect(), keep: (0..a.len()).filter(|&i| keep[i]).collect() })
 }
 
-fn analyze_slice(mut l: Loaded, plan: SlicePlan, prev_items: &[Item]) -> Analysis {
+fn analyze_slice(mut l: Loaded, plan: SlicePlan, prev_items: &[Item], ptr_bits: Option<u32>) -> Analysis {
     let n = l.pkg.sources.len();
     let all_rel: Vec<String> = l.pkg.sources.iter().map(|s| rel(&s.path)).collect();
     let redo_rel: std::collections::HashSet<&str> = plan.redo.iter().map(|&i| all_rel[i].as_str()).collect();
@@ -754,7 +754,7 @@ fn analyze_slice(mut l: Loaded, plan: SlicePlan, prev_items: &[Item]) -> Analysi
     };
     let Some(sl) = back else {
         // ここには来ないはず (読み込みは済んでいる)。来たら全体検査へ。
-        return analyze_loaded(&l.pkg.root.clone(), load_all(&l.pkg.root));
+        return analyze_loaded(&l.pkg.root.clone(), load_all(&l.pkg.root, ptr_bits));
     };
     let Loaded { pkg, deps, .. } = sl;
     for (src, &i) in pkg.sources.into_iter().zip(&plan.keep) {
@@ -763,7 +763,7 @@ fn analyze_slice(mut l: Loaded, plan: SlicePlan, prev_items: &[Item]) -> Analysi
     l.pkg.sources = slots.into_iter().map(|s| s.unwrap()).collect();
     debug_assert_eq!(l.pkg.sources.len(), n);
     l.deps = deps;
-    l.std = load_stdlib();
+    l.std = load_stdlib(None);
     // 診断: 検査し直したファイルは新しい結果、ほかのソースファイルは前回のもの、ソースでないファイル (kasane.lock ほか) は前回のもの。
     let mut items: Vec<Item> = prev_items
         .iter()
@@ -820,14 +820,14 @@ fn kir_borrowck_hidden(rep: &mut Report, prog: Option<&Program>, user: &[usize],
     }
 }
 
-fn cmd_check(json: bool) -> i32 {
+fn cmd_check(json: bool, ptr_bits: Option<u32>) -> i32 {
     let mut rep = Report::new(json);
     let bc_mode = std::env::var("KSN_BORROWCK").ok().or_else(|| std::env::args().find_map(|a| a.strip_prefix("--borrowck=").map(String::from))).unwrap_or_default();
     let kir_only = bc_mode == "kir-only";
     let kir_bc = bc_mode == "kir" || bc_mode == "kir,own" || kir_only;
     let kir_own = bc_mode == "kir,own" || kir_only;
     match find_root().and_then(|r| {
-        full_check(&r, &mut rep, false).map(|(_, prog, user)| {
+        full_check(&r, &mut rep, false, ptr_bits).map(|(_, prog, user)| {
             crate::kir_lower::dump_hidden(prog.as_ref(), &user);
             if kir_bc {
                 kir_borrowck_hidden(&mut rep, prog.as_ref(), &user, kir_own, kir_only);
@@ -857,6 +857,15 @@ fn target_bits_arg(args: &[String]) -> Result<u32, String> {
     }
 }
 
+/// `--target <三つ組>` からポインタ幅を取得する (エラーにせず、不明なら `None` = 64 ビット扱い)。
+fn ptr_bits_from_args(args: &[String]) -> Option<u32> {
+    let name = args.iter().position(|a| a == "--target").and_then(|i| args.get(i + 1))?;
+    if name == "host" {
+        return Some(64);
+    }
+    crate::kir_llvm::target_of(name).map(|t| t.ptr_bits)
+}
+
 /// `Package::source` の印。標準ライブラリ (`spec/stdlib`) を 1 つのパッケージとして検査するときに使う。
 const STDLIB_SOURCE: &str = "stdlib";
 
@@ -864,7 +873,7 @@ const STDLIB_SOURCE: &str = "stdlib";
 /// `.sig` は規範の宣言なので、検査の対象の外 (`std` 側) に置いて参照だけできるようにする。
 fn stdlib_loaded() -> Loaded {
     let root = stdlib_dir();
-    let (bodies, sigs): (Vec<Source>, Vec<Source>) = load_stdlib().into_iter().partition(|s| s.path.ends_with(".ksnl"));
+    let (bodies, sigs): (Vec<Source>, Vec<Source>) = load_stdlib(None).into_iter().partition(|s| s.path.ends_with(".ksnl"));
     Loaded {
         pkg: Package {
             name: "std".to_string(),
@@ -916,7 +925,7 @@ fn cmd_kir(rest: &[String]) -> i32 {
     let llvm = mode == Some("--llvm");
     let arg_start = mode_pos.map(|p| p + 1).unwrap_or(rest.len());
     let mut rep = Report::new(false);
-    let (root, prog, user) = match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|x| (r, x))) {
+    let (root, prog, user) = match find_root().and_then(|r| full_check(&r, &mut rep, false, None).map(|x| (r, x))) {
         Ok((r, (_, Some(prog), user))) if !rep.fatal() => (r, prog, user),
         Ok(_) => {
             rep.flush();
@@ -1155,7 +1164,7 @@ fn cmd_fix() -> i32 {
                 return 2;
             }
         };
-        if let Err(e) = full_check(&root, &mut rep, false) {
+        if let Err(e) = full_check(&root, &mut rep, false, None) {
             eprintln!("ksn: {}: {}", e.code, e.msg);
             return 2;
         }
@@ -1188,7 +1197,7 @@ fn cmd_fix() -> i32 {
     if code != 0 {
         return code;
     }
-    cmd_check(false)
+    cmd_check(false, None)
 }
 
 fn run_args(args: &[String]) -> (bool, bool, Vec<String>) {
@@ -1209,7 +1218,7 @@ fn run_args(args: &[String]) -> (bool, bool, Vec<String>) {
 pub(crate) fn load_for_debug() -> Result<crate::debug::Target, String> {
     let mut rep = Report::new(false);
     let root = find_root().map_err(|e| format!("ksn: {}: {}", e.code, e.msg))?;
-    let (l, prog, user) = full_check(&root, &mut rep, true).map_err(|e| format!("ksn: {}: {}", e.code, e.msg))?;
+    let (l, prog, user) = full_check(&root, &mut rep, true, None).map_err(|e| format!("ksn: {}: {}", e.code, e.msg))?;
     rep.finish();
     if rep.fatal() {
         let lines: Vec<String> = rep
@@ -1266,6 +1275,7 @@ fn cmd_run(args: &[String]) -> i32 {
     }
     let args = &args[..];
     let (json, watch, rest) = run_args(args);
+    let ptr_bits = ptr_bits_from_args(args);
     let mut rep = Report::new(json);
     crate::vm::tick("start");
     let root = match find_root() {
@@ -1276,7 +1286,7 @@ fn cmd_run(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let (l, prog, user) = match full_check_opts(&root, &mut rep, true, !watch) {
+    let (l, prog, user) = match full_check_opts(&root, &mut rep, true, !watch, ptr_bits) {
         Ok(x) => x,
         Err(e) => {
             rep.add(&e.code, &e.msg, None, 1, 1, true);
@@ -1497,6 +1507,7 @@ fn cmd_test(args: &[String]) -> i32 {
             prefix = Some(a.clone());
         }
     }
+    let ptr_bits = ptr_bits_from_args(&args);
     let mut rep = Report::new(false);
     let root = match find_root() {
         Ok(r) => r,
@@ -1506,7 +1517,7 @@ fn cmd_test(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let (l, prog, user) = match full_check_with_examples(&root, &mut rep) {
+    let (l, prog, user) = match full_check_with_examples(&root, &mut rep, ptr_bits) {
         Ok(x) => x,
         Err(e) => {
             rep.add(&e.code, &e.msg, None, 1, 1, true);
@@ -1729,7 +1740,7 @@ impl Everything {
 
 fn load_everything() -> Result<Everything, ProjectError> {
     let root = find_root()?;
-    let l = load_all(&root)?;
+    let l = load_all(&root, None)?;
     Ok(Everything { l })
 }
 
@@ -2056,7 +2067,7 @@ fn cmd_index(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let l = match load_all(&root) {
+    let l = match load_all(&root, None) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("ksn: {}: {}", e.code, e.msg);
@@ -2102,7 +2113,7 @@ fn cmd_doc(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let l = match load_all(&root) {
+    let l = match load_all(&root, None) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("ksn: {}: {}", e.code, e.msg);
@@ -2191,7 +2202,7 @@ fn cmd_refs(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let l = match load_all(&root) {
+    let l = match load_all(&root, None) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("ksn: {}: {}", e.code, e.msg);
@@ -2216,7 +2227,7 @@ fn cmd_refs(args: &[String]) -> i32 {
 /// 改名の検証 (改名の前後で診断が増えないこと) に使う。
 pub(crate) fn check_error_lines(root: &Path) -> Vec<String> {
     let mut rep = Report::new(false);
-    if let Err(e) = full_check(root, &mut rep, false) {
+    if let Err(e) = full_check(root, &mut rep, false, None) {
         return vec![format!("{}: {}", e.code, e.msg)];
     }
     rep.items
@@ -2241,7 +2252,7 @@ fn cmd_rename(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let l = match load_all(&root) {
+    let l = match load_all(&root, None) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("ksn: {}: {}", e.code, e.msg);
@@ -2667,7 +2678,8 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
             return 1;
         }
     };
-    let (l, prog, user) = match full_check(&root, &mut rep, false) {
+    let ptr_bits = tgt.map(|t| t.ptr_bits);
+    let (l, prog, user) = match full_check(&root, &mut rep, false, ptr_bits) {
         Ok(x) => x,
         Err(e) => {
             rep.add(&e.code, &e.msg, None, 1, 1, true);
@@ -3177,7 +3189,7 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Tar
 /// ビルド成果物の実行入口 (内部コマンド)。
 fn cmd_exec(args: &[String]) -> i32 {
     let root = std::env::current_dir().unwrap_or_default();
-    let l = match load_all(&root) {
+    let l = match load_all(&root, None) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("ksn: {}: {}", e.code, e.msg);
@@ -3236,7 +3248,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
             // `--target wasm32-unknown-unknown` は `usize` / `isize` の幅を 32 ビットにして検査する (リテラルの範囲、修正プラン 4-2)。
             Ok(bits) => {
                 let _width = crate::ptrwidth::Guard::set(bits);
-                cmd_check(rest.iter().any(|a| a == "--json"))
+                cmd_check(rest.iter().any(|a| a == "--json"), Some(bits))
             }
             Err(why) => {
                 eprintln!("{}", why);
@@ -3283,7 +3295,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
 #[cfg(test)]
 pub(crate) fn checked_program_for_test(root: &Path) -> Option<(Program, Vec<usize>)> {
     let mut rep = Report::new(false);
-    match full_check(root, &mut rep, false) {
+    match full_check(root, &mut rep, false, None) {
         Ok((_, Some(prog), user)) if !rep.fatal() => Some((prog, user)),
         _ => None,
     }

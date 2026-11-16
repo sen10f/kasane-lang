@@ -717,12 +717,113 @@ pub fn stdlib_dir() -> PathBuf {
     PathBuf::from("spec/stdlib")
 }
 
+/// `core.num` のシグネチャを生成する (`ptr_bits`: 32 または 64)。Python 版 `gen_num_sig.py` と同じロジック。
+fn generate_num_sig(ptr_bits: u32) -> String {
+    let ints = [
+        ("i8", 8, true), ("i16", 16, true), ("i32", 32, true), ("i64", 64, true), ("i128", 128, true),
+        ("isize", ptr_bits, true), ("u8", 8, false), ("u16", 16, false), ("u32", 32, false), ("u64", 64, false),
+        ("u128", 128, false), ("usize", ptr_bits, false),
+    ];
+    let mut out = String::new();
+    out.push_str("// 生成: project.rs generate_num_sig (手で編集しない)\n");
+    let mut consts = Vec::new();
+    let mut fns = Vec::new();
+    for (n, bits, signed) in ints {
+        let p = format!("core.num.{n}");
+        let (lo, hi) = if signed {
+            (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+        } else {
+            (0i128, ((1u128 << bits) - 1) as i128)
+        };
+        consts.push(format!("const {p}.BITS: u32 = {bits}u32 pub"));
+        consts.push(format!("const {p}.MAX: {n} = {hi}{n} pub"));
+        consts.push(format!("const {p}.MIN: {n} = {lo}{n} pub"));
+        for op in ["add", "sub", "mul", "div", "rem"] {
+            fns.push(format!("fn {p}.checked_{op}(self: {n}, other: {n}) -> Option<{n}> uses [] panics never pub"));
+        }
+        fns.push(format!("fn {p}.checked_neg(self: {n}) -> Option<{n}> uses [] panics never pub"));
+        fns.push(format!("fn {p}.checked_shl(self: {n}, amount: u32) -> Option<{n}> uses [] panics never pub"));
+        fns.push(format!("fn {p}.checked_shr(self: {n}, amount: u32) -> Option<{n}> uses [] panics never pub"));
+        for op in ["add", "sub", "mul"] {
+            fns.push(format!("fn {p}.wrapping_{op}(self: {n}, other: {n}) -> {n} uses [] panics never pub"));
+            fns.push(format!("fn {p}.saturating_{op}(self: {n}, other: {n}) -> {n} uses [] panics never pub"));
+        }
+        fns.push(format!("fn {p}.wrapping_neg(self: {n}) -> {n} uses [] panics never pub"));
+        if signed {
+            fns.push(format!("fn {p}.saturating_neg(self: {n}) -> {n} uses [] panics never pub"));
+        }
+        fns.push(format!("fn {p}.wrapping_shl(self: {n}, amount: u32) -> {n} uses [] panics never pub"));
+        fns.push(format!("fn {p}.wrapping_shr(self: {n}, amount: u32) -> {n} uses [] panics never pub"));
+        fns.push(format!("fn {p}.min(self: {n}, other: {n}) -> {n} uses [] panics never pub"));
+        fns.push(format!("fn {p}.max(self: {n}, other: {n}) -> {n} uses [] panics never pub"));
+        fns.push(format!("fn {p}.count_ones(self: {n}) -> u32 uses [] panics never pub"));
+        fns.push(format!("fn {p}.leading_zeros(self: {n}) -> u32 uses [] panics never pub"));
+        fns.push(format!("fn {p}.trailing_zeros(self: {n}) -> u32 uses [] panics never pub"));
+        fns.push(format!("fn {p}.from_str_radix(text: &str, radix: u32) -> Result<{n}, core.num.ParseIntError> uses [] panics never pub"));
+        fns.push(format!("fn {p}.parse(text: &str) -> Result<{n}, core.num.ParseIntError> uses [] panics never pub"));
+        for (m, mbits, msigned) in ints {
+            if m == n { continue; }
+            let lossless = if msigned == signed { mbits <= bits } else { !msigned && signed && mbits < bits };
+            if lossless {
+                fns.push(format!("fn {p}.from_{m}(x: {m}) -> {n} uses [] panics never pub"));
+            } else {
+                fns.push(format!("fn {p}.try_from_{m}(x: {m}) -> Result<{n}, core.num.TryFromIntError> uses [] panics never pub"));
+            }
+        }
+        if bits <= 32 {
+            fns.push(format!("fn {p}.to_f64(self: {n}) -> f64 uses [] panics never pub"));
+        } else {
+            fns.push(format!("fn {p}.nearest_to_f64(self: {n}) -> f64 uses [] panics never pub"));
+        }
+        fns.push(format!("impl core.iter.Step for {n}\nfn {p}.successor(self: &{n}) -> Option<{n}> uses [] panics never impls core.iter.Step"));
+        if signed {
+            fns.push(format!("fn {p}.checked_abs(self: {n}) -> Option<{n}> uses [] panics never pub"));
+        }
+    }
+    // floats
+    for (f, u, bits) in [("f32", "u32", 32), ("f64", "u64", 64)] {
+        let p = format!("core.num.{f}");
+        fns.push(format!("fn {p}.from_bits(bits: {u}) -> {f} const uses [] panics never pub"));
+        fns.push(format!("fn {p}.to_bits(self: {f}) -> {u} uses [] panics never pub"));
+        for m in ["abs", "floor", "ceil", "trunc", "round_ties_even", "sqrt", "exp", "ln", "sin", "cos", "tan"] {
+            fns.push(format!("fn {p}.{m}(self: {f}) -> {f} uses [] panics never pub"));
+        }
+        for m in ["rem", "min", "max", "atan2"] {
+            fns.push(format!("fn {p}.{m}(self: {f}, other: {f}) -> {f} uses [] panics never pub"));
+        }
+        fns.push(format!("fn {p}.powi(self: {f}, exponent: i32) -> {f} uses [] panics never pub"));
+        fns.push(format!("fn {p}.is_nan(self: {f}) -> bool uses [] panics never pub"));
+        fns.push(format!("fn {p}.is_finite(self: {f}) -> bool uses [] panics never pub"));
+        for (n, _bits, _signed) in ints {
+            fns.push(format!("fn {p}.trunc_to_{n}(self: {f}) -> Option<{n}> uses [] panics never pub"));
+            fns.push(format!("fn {p}.from_{n}_nearest(x: {n}) -> {f} uses [] panics never pub"));
+        }
+        if f == "f32" {
+            fns.push(format!("fn {p}.to_f64(self: {f}) -> f64 uses [] panics never pub"));
+        } else {
+            fns.push(format!("fn {p}.nearest_to_f32(self: {f}) -> f32 uses [] panics never pub"));
+        }
+    }
+    for c in consts { out.push_str(&c); out.push('\n'); }
+    out.push('\n');
+    out.push_str("type core.num.ParseIntError derive [Debug, Clone, Copy, PartialEq, Eq] pub\n");
+    out.push_str("    kind: u8 pub\n");
+    out.push_str("end core.num.ParseIntError\n\n");
+    out.push_str("type core.num.TryFromIntError derive [Debug, Clone, Copy, PartialEq, Eq] pub\n");
+    out.push_str("    kind: u8 pub\n");
+    out.push_str("end core.num.TryFromIntError\n\n");
+    for f in fns { out.push_str(&f); out.push('\n'); }
+    out
+}
+
 #[cfg(test)]
 pub fn walk_files_for_test(root: &Path, exts: &[&str], out: &mut Vec<PathBuf>) {
     walk_files(root, exts, out)
 }
 
-pub fn load_stdlib() -> Vec<Source> {
+/// 標準ライブラリを読み込む。`ptr_bits` が 32 の場合 (wasm32)、`core/num.sig` を
+/// 32 ビット幅の値で生成して使う。省略時は 64 ビット (host)。
+pub fn load_stdlib(ptr_bits: Option<u32>) -> Vec<Source> {
     let root = stdlib_dir();
     let rs = norm(&root);
     let mut ps: Vec<(usize, String)> = vec![];
@@ -734,7 +835,7 @@ pub fn load_stdlib() -> Vec<Source> {
         ps.extend(fs.into_iter().map(|p| (k, p)));
     }
     // 文面は先にまとめて読む (読み込み用の overlay (`--watch` / LSP) があればそちらが優先。`Source::load` と同じ)。
-    let texts: Vec<(String, String)> = ps
+    let mut texts: Vec<(String, String)> = ps
         .iter()
         .map(|(_, p)| {
             let t = match overlay_get(p) {
@@ -747,6 +848,15 @@ pub fn load_stdlib() -> Vec<Source> {
             (p.clone(), t)
         })
         .collect();
+    // wasm32 対象時: core/num.sig を 32 ビット幅で生成して差し替える
+    if ptr_bits == Some(32) {
+        for (p, t) in &mut texts {
+            if p.ends_with("core/num.sig") {
+                *t = generate_num_sig(32);
+                break;
+            }
+        }
+    }
     // 構文解析の結果は実行体の識別子と全文面を鍵にして保存してある (stdcache.rs)。命中すれば構文解析しない。
     let use_cache = crate::check_cache::enabled();
     let key = if use_cache { Some(crate::stdcache::key(&texts)) } else { None };
