@@ -490,14 +490,26 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
         let size = lower.tyk.up(off, al)
         return Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vlens })
     }
-    // 列挙型: 先頭に 4 バイトの i32 のタグ、変種のペイロードはその後ろ。
+    // 列挙型: 先頭に 4 バイトの i32 のタグ、変種のペイロードはその後ろ (列挙型全体のそろえの位置から)。
     let mut endp = 4usize
     let mut al = 4usize
+    for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+        let vn0 = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+        for i in core.iter.range(0usize, resolve.ast.count(p, vn0.b)) {
+            let pn0 = resolve.ast.item(p, vn0.b, i)
+            let pt0 = lower.tyk.fty(env, c, p, src, file, nd.c, pn0)?
+            let (_sz0, a0) = lower.tyk.size_of(env, c, pt0)?
+            if a0 > al {
+                al = a0
+            }
+        }
+    }
+    let pbase = lower.tyk.up(4usize, al)
     for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
         let vn = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
         let cnt = resolve.ast.count(p, vn.b)
         vlens.push(cnt)?
-        let mut vend = 4usize
+        let mut vend = pbase
         for i in core.iter.range(0usize, cnt) {
             let pn = resolve.ast.item(p, vn.b, i)
             let pt = lower.tyk.fty(env, c, p, src, file, nd.c, pn)?

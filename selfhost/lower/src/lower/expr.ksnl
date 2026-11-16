@@ -537,16 +537,24 @@ end lower.expr.dummy
 // 局所の寿命の終わり: [mark, 末尾) の局所を逆順に、印のある値は解放し、スタックスロットは (`Vec` / `String` なら
 // 解放して) `scope.end` (借用検査の注釈)。
 fn lower.expr.end_locals(env: &types.env.Env, c: &mut lower.cx.Cx, mark: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    // 所有する局所 (印のある値・`Vec` / `String` の枠) を逆順に解放し、その後でそれ以外のスロットを逆順に
+    // `scope.end` (Rust 版は所有物の解放が先で、所有しないスロットの寿命の終わりは後)。
     let mut k = c.v.vals.len()
     while k > mark {
         k = k - 1usize
         lower.drop.exit(env, c, k)?
-        if lower.cx.is_slot(c, k) {
+        if lower.cx.is_slot(c, k) && lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
             let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
-            if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
-                lower.vec.free_hdr(c, sv)?
-            }
+            lower.vec.free_hdr(c, sv)?
             let _e = lower.cx.def1(c, "unit", "scope.end ", sv)?
+        }
+    }
+    k = c.v.vals.len()
+    while k > mark {
+        k = k - 1usize
+        if lower.cx.is_slot(c, k) && !lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
+            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+            let _f = lower.cx.def1(c, "unit", "scope.end ", sv)?
         }
     }
     Ok(())

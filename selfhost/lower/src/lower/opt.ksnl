@@ -448,6 +448,11 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
             }
             lower.cx.goto(c, armb)
             if early {
+                if own_scrut {
+                    // 束縛した所有物の読み直し (Rust 版 `drop_unbound`) は、所有の注釈より前。
+                    let ety = lower.tyk.text(env, c, pt)?
+                    core.mem.drop(lower.cx.def1(c, ety.as_str(), "payload ", sv)?)
+                }
                 lower.own.declare(env, c, eb, pt)?
             }
             let mut ni = 0usize
@@ -486,7 +491,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                     }
                 }
             }
-            if own_scrut && bound {
+            if own_scrut && bound && !early {
                 // 束縛した所有物の読み直し (Rust 版 `drop_unbound`)。
                 let bty = lower.tyk.text(env, c, pt)?
                 core.mem.drop(lower.cx.def1(c, bty.as_str(), "payload ", sv)?)
