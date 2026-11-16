@@ -297,8 +297,20 @@ end lower.cx.mlist
 
 // 可変の局所のうち、名前が names に入るもの (sc の添字 < base、順に)。分岐と合流で引き回すものを絞る。
 fn lower.cx.mlist_in(c: &lower.cx.Cx, base: usize, names: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    // Rust 版 `assigned` と同じく、名前が出た順 (宣言の順ではない)。同じ局所は 1 回。
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    for k in core.iter.range(0usize, base) {
+    let mut wi = 0usize
+    while wi < names.len() {
+        let wn = match names.as_slice().get(wi) {
+            Some(w) => lower.cx.own(w.as_str())?
+            None => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+        wi = wi + 1usize
+        let loc = lower.cx.find(c, wn.as_str())
+        if loc == 0usize || loc - 1usize >= base {
+            continue
+        }
+        let k = loc - 1usize
         let mutable = match c.v.mutf.as_slice().get(k) {
             Some(m) => *m
             None => false
@@ -306,23 +318,15 @@ fn lower.cx.mlist_in(c: &lower.cx.Cx, base: usize, names: &alloc.vec.Vec<alloc.s
         if !mutable || lower.cx.is_slot(c, k) {
             continue
         }
-        let nm = match c.v.sl.names.as_slice().get(k) {
-            Some(e) => lower.cx.own(e.as_str())?
-            None => alloc.string.String.new(std.alloc.SYSTEM)
-        }
-        let mut hit = false
-        let mut wi = 0usize
-        while wi < names.len() {
-            let same = match names.as_slice().get(wi) {
-                Some(w) => w.as_str() == nm.as_str()
-                None => false
+        let mut dup = false
+        let mut qi = 0usize
+        while qi < out.len() {
+            if lower.tyk.at(out.as_slice(), qi) == k {
+                dup = true
             }
-            if same {
-                hit = true
-            }
-            wi = wi + 1usize
+            qi = qi + 1usize
         }
-        if hit {
+        if !dup {
             out.push(k)?
         }
     }

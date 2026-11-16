@@ -225,9 +225,9 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let rty = lower.tyk.text(env, c, t)?
     let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
     let jb = lower.cx.blk(c, &jps)?
-    let tg = lower.cx.def1(c, "bool", "tag ", sv)?
     let nv = resolve.ast.count(p, n.b)
     let mut done = false
+    let mut nextbs = 0usize
     for j in core.iter.range(0usize, nv) {
         if done {
             break
@@ -246,29 +246,54 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
             let name = resolve.ast.text(src, pat.a, pat.b)
             let last = lower.expr.last_seg(name)
             let positive = last == "Some" || last == "Err"
+            // Rust 版の形: 腕ごとに tag を読み直し、部分パターン (`x` / `_`) があれば payload を読んで
+            // `const.bool true` と `and.bool` で条件に結ぶ。最後の腕は無条件で飛ぶ (網羅は検査済み)。
+            let tg = lower.cx.def1(c, "bool", "tag ", sv)?
             let mut cond = tg
             if !positive {
                 cond = lower.cx.def1(c, "bool", "not.bool ", tg)?
             }
+            let mut pv = 0usize
+            let mut pt = types.ty.UNKNOWN
+            let mut sub = 0usize
+            if pat.kind == parse.ast.Kind.PVariant && resolve.ast.count(p, pat.c) == 1usize {
+                sub = resolve.ast.item(p, pat.c, 0usize)
+                let sp = parse.ast.get(&p.ast, sub)
+                if sp.kind == parse.ast.Kind.PBind || sp.kind == parse.ast.Kind.PWild {
+                    pt = lower.expr.tyof(c, sub)?
+                    if pt == types.ty.UNKNOWN {
+                        let ss = types.ty.strip(&c.ar, sc.t)
+                        let sn = types.ty.node(&c.ar, ss)
+                        let mut ai = 0usize
+                        if last == "Err" {
+                            ai = 1usize
+                        }
+                        pt = types.ty.arg(&c.ar, sn.b, ai)
+                    }
+                    let pty = lower.tyk.text(env, c, pt)?
+                    pv = lower.cx.def1(c, pty.as_str(), "payload ", sv)?
+                    let tr = lower.cx.def(c, "bool", "const.bool true")?
+                    let both = lower.expr.two(cond, tr)?
+                    let andsrc = lower.cx.cat2("and.bool ", both.as_str())?
+                    cond = lower.cx.def(c, "bool", andsrc.as_str())?
+                } else {
+                    lower.cx.fail(c, "match の腕 (入れ子の部分パターンは未対応)")?
+                    return lower.expr.dummy(c, t)
+                }
+            }
             let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
             let armb = lower.cx.blk(c, &empty)?
-            let nextb = lower.cx.blk(c, &empty)?
-            let mut br = alloc.string.String.new(std.alloc.SYSTEM)
-            br.push_str("br_if ")?
-            br.push_str(lower.cx.vs(cond)?.as_str())?
-            br.push_str(", ")?
-            br.push_str(lower.cx.target(armb, &empty)?.as_str())?
-            br.push_str(", ")?
-            br.push_str(lower.cx.target(nextb, &empty)?.as_str())?
-            lower.cx.finish(c, br)?
+            if j + 1usize == nv {
+                lower.expr.br_to(c, armb)?
+            } else {
+                let nextb = lower.cx.blk(c, &empty)?
+                lower.expr.br_if(c, cond, armb, nextb)?
+                nextbs = nextb
+            }
             lower.cx.goto(c, armb)
-            if pat.kind == parse.ast.Kind.PVariant && resolve.ast.count(p, pat.c) == 1usize {
-                let sub = resolve.ast.item(p, pat.c, 0usize)
+            if sub != 0usize {
                 let sp = parse.ast.get(&p.ast, sub)
                 if sp.kind == parse.ast.Kind.PBind {
-                    let pt = lower.expr.tyof(c, sub)?
-                    let pty = lower.tyk.text(env, c, pt)?
-                    let pv = lower.cx.def1(c, pty.as_str(), "payload ", sv)?
                     let stk_tok = parse.cur.peek_at(p, sp.a)
                     let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
                     let pv2 = lower.opt.wrap_ref(env, c, pv, pt)?
@@ -276,14 +301,13 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                 }
             }
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, jb, mark)?
-            lower.cx.goto(c, nextb)
+            if j + 1usize != nv {
+                lower.cx.goto(c, nextbs)
+            }
         } else {
             lower.cx.fail(c, "match の腕 (Option と Result の形は未対応)")?
             return lower.expr.dummy(c, t)
         }
-    }
-    if !done {
-        lower.cx.finish(c, lower.cx.cat2("unreachable", "")?)?
     }
     lower.cx.goto(c, jb)
     lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?

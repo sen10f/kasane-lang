@@ -157,6 +157,10 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     lower.expr.scan(p, src, n.c, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     // 先頭: 番号 (i) と、可変の局所。
+    let eps = lower.cx.fresh_vals(c, &ks)?
+    let exitb = lower.cx.blk(c, &eps)?
+    let cps = lower.cx.fresh_vals(c, &ks)?
+    let contb = lower.cx.blk(c, &cps)?
     let iv = lower.cx.newval(c, ity.as_str())?
     let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
     hps.push(iv)?
@@ -165,10 +169,6 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         hps.push(*v)?
     }
     let head = lower.cx.blk(c, &hps)?
-    let eps = lower.cx.fresh_vals(c, &ks)?
-    let exitb = lower.cx.blk(c, &eps)?
-    let cps = lower.cx.fresh_vals(c, &ks)?
-    let contb = lower.cx.blk(c, &cps)?
     // 入口: i = lo、可変の局所は今の値。
     let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     a0.push(lo.v)?

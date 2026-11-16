@@ -11,7 +11,10 @@ fn lower.inst.args_of(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let sg = parse.ast.get(&cp.ast, fd.c)
     for j in core.iter.range(0usize, resolve.ast.count(cp, sg.b)) {
         let pn = resolve.ast.item(cp, sg.b, j)
-        let decl = types.rec.ty_of(&c.tc.rec, file, pn)
+        let mut decl = types.rec.ty_of(&c.tc.rec, file, pn)
+        if lower.inst.is_sig(env, item) {
+            decl = lower.inst.sig_ty(env, c, item, j)?
+        }
         if decl != 0usize && j < resolve.ast.count(p, n.b) {
             let act = lower.expr.tyof(c, resolve.ast.item(p, n.b, j))?
             lower.inst.matchp(c, decl, act, &mut pairs)?
@@ -36,6 +39,9 @@ fn lower.inst.decl_ret(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) ->
     let sg = parse.ast.get(&cp.ast, fd.c)
     if sg.c == 0usize {
         return Ok(types.ty.UNIT)
+    }
+    if fd.d == 0usize {
+        return lower.inst.sig_ty(env, c, item, resolve.ast.count(cp, sg.b))
     }
     let mut names = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut nos = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -107,6 +113,19 @@ fn lower.inst.is_generic(env: &types.env.Env, c: &lower.cx.Cx, item: usize) -> b
         None => false
     }
 end lower.inst.is_generic
+
+// 本体のない宣言 (`.sig` の fn) か。本体がないと検査の記録 (`ty_of`) がないので、型は注釈から読む。
+fn lower.inst.is_sig(env: &types.env.Env, item: usize) -> bool uses [] panics may pub
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    match types.env.unit(env, file) {
+        Some(p) => {
+            let n = parse.ast.get(&p.ast, node)
+            n.d == 0usize
+        }
+        None => false
+    }
+end lower.inst.is_sig
 
 // インスタンスの鍵: fqn<型,..> (型引数の文字列は番号の順)。
 fn lower.inst.key(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
@@ -192,12 +211,18 @@ fn lower.inst.method_args(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cu
     if resolve.ast.count(cp, sg.b) == 0usize {
         return Ok(pairs)
     }
-    let sdecl = types.rec.ty_of(&c.tc.rec, file, resolve.ast.item(cp, sg.b, 0usize))
+    let mut sdecl = types.rec.ty_of(&c.tc.rec, file, resolve.ast.item(cp, sg.b, 0usize))
+    if lower.inst.is_sig(env, item) {
+        sdecl = lower.inst.sig_ty(env, c, item, 0usize)?
+    }
     if sdecl != 0usize {
         lower.inst.matchp(c, sdecl, rt, &mut pairs)?
     }
     for j in core.iter.range(1usize, resolve.ast.count(cp, sg.b)) {
-        let decl = types.rec.ty_of(&c.tc.rec, file, resolve.ast.item(cp, sg.b, j))
+        let mut decl = types.rec.ty_of(&c.tc.rec, file, resolve.ast.item(cp, sg.b, j))
+        if lower.inst.is_sig(env, item) {
+            decl = lower.inst.sig_ty(env, c, item, j)?
+        }
         if decl != 0usize && j - 1usize < resolve.ast.count(p, args) {
             let act = lower.expr.tyof(c, resolve.ast.item(p, args, j - 1usize))?
             lower.inst.matchp(c, decl, act, &mut pairs)?
@@ -238,6 +263,45 @@ fn lower.inst.ret_of(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, subs
     core.mem.drop(saved)
     Ok(r)
 end lower.inst.ret_of
+
+// 本体のない総称の宣言の型を、注釈から読む。型引数 (`[K, V, A]`) は番号を宣言の順に決める (項目ごとに決まった番号)。
+// j < 引数の数 なら j 番目の引数の型、j == 引数の数 なら戻り値の型。
+fn lower.inst.sig_ty(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, j: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let cp = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(types.ty.UNKNOWN)
+    }
+    let src = match env.srcs.as_slice().get(file) {
+        Some(s) => s.text.as_slice()
+        None => return Ok(types.ty.UNKNOWN)
+    }
+    let fd = parse.ast.get(&cp.ast, node)
+    let sg = parse.ast.get(&cp.ast, fd.c)
+    let mark = c.tc.sc.len()
+    let tps = types.lower.tparams(cp, sg.a)?
+    let mut i = 0usize
+    while i < tps.len() {
+        let tk = lower.tyk.at(tps.as_slice(), i)
+        let no = 1000000usize + item.wrapping_mul(64usize) + i
+        let pt = types.ty.param(&mut c.ar, no)?
+        types.chk.push(&mut c.tc, resolve.ast.tok_text(cp, src, tk), pt, true)?
+        i = i + 1usize
+    }
+    let cnt = resolve.ast.count(cp, sg.b)
+    let mut r = types.ty.UNKNOWN
+    if j < cnt {
+        let prm = parse.ast.get(&cp.ast, resolve.ast.item(cp, sg.b, j))
+        r = types.lower.ty(env, &mut c.ar, &c.tc, cp, src, file, prm.b)?
+    } else if sg.c == 0usize {
+        r = types.ty.UNIT
+    } else {
+        r = types.lower.ty(env, &mut c.ar, &c.tc, cp, src, file, sg.c)?
+    }
+    types.chk.truncate(&mut c.tc, mark)
+    Ok(r)
+end lower.inst.sig_ty
 
 // 番号の順に並べ直す (鍵の型引数の順)。
 fn lower.inst.sorted(pairs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
