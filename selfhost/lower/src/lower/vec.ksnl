@@ -15,7 +15,7 @@ fn lower.vec.call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usiz
     }
     let is_str = fqn.starts_with("alloc.string.String.")
     let ok = if is_str {
-        name == "len" || name == "is_empty" || name == "push_str" || name == "push"
+        name == "len" || name == "is_empty" || name == "push_str" || name == "push" || name == "push_u64"
     } else {
         name == "len" || name == "is_empty" || name == "push" || name == "pop" || name == "as_slice"
     }
@@ -125,6 +125,11 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
         let mut po = alloc.string.String.new(std.alloc.SYSTEM)
         lower.str.push_char_text(&mut po, fq, key, rt.as_str())?
         return lower.func.record(c, po.as_str(), "")
+    }
+    if is_str && name == "push_u64" {
+        let mut uo = alloc.string.String.new(std.alloc.SYSTEM)
+        lower.str.push_u64_text(&mut uo, fq, key, rt.as_str())?
+        return lower.func.record(c, uo.as_str(), "")
     }
     let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let recv = lower.cx.newval(c, "ptr")?

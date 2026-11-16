@@ -309,6 +309,114 @@ fn lower.str.push_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, text: 
     Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
 end lower.str.push_str
 
+// `String.push_u64(n)` の本体 (Rust 版の形ではない): 20 バイト分の余地を取り、桁数を数えて、後ろの桁から書く。
+fn lower.str.push_u64_text(o: &mut alloc.string.String<std.alloc.System>, fq: &str, key: &str, rt: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    o.push_str("fn ")?
+    o.push_str(fq)?
+    o.push_str(" key=")?
+    o.push_str(key)?
+    o.push_str(" uses=[alloc] panics=never stack=- ret=")?
+    o.push_str(rt)?
+    o.push('\n')?
+    lower.str.bh(o, 0usize, "%0: ptr, %1: u64")?
+    let mut k = 2usize
+    let len0 = lower.str.row(o, &mut k, "usize", "mem.load.usize %0 +8")?
+    let cap0 = lower.str.row(o, &mut k, "usize", "mem.load.usize %0 +16")?
+    let c20 = lower.str.row(o, &mut k, "usize", "const.usize 20")?
+    let need = lower.str.row(o, &mut k, "usize", lower.str.op2("add.usize.wrap ", len0, c20)?.as_str())?
+    let over = lower.str.row(o, &mut k, "bool", lower.str.op2("icmp.gt.usize ", need, cap0)?.as_str())?
+    o.push_str("    br_if %")?
+    o.push_str(lower.cx.dec(over)?.as_str())?
+    o.push_str(", b1(), b2()\n")?
+    lower.str.bh(o, 1usize, "")?
+    let s1 = lower.str.row(o, &mut k, "usize", lower.str.op2("add.usize.wrap ", cap0, need)?.as_str())?
+    let two = lower.str.row(o, &mut k, "usize", "const.usize 2")?
+    let s2 = lower.str.row(o, &mut k, "usize", lower.str.op2("mul.usize.wrap ", s1, two)?.as_str())?
+    let four = lower.str.row(o, &mut k, "usize", "const.usize 4")?
+    let ncap = lower.str.row(o, &mut k, "usize", lower.str.op2("add.usize.wrap ", s2, four)?.as_str())?
+    let p0 = lower.str.row(o, &mut k, "ptr", "mem.load.ptr %0 +0")?
+    let np = lower.str.row(o, &mut k, "ptr", lower.str.op2("heap.realloc ", p0, ncap)?.as_str())?
+    let _q2 = lower.str.row(o, &mut k, "unit", lower.cx.cat2("mem.store.ptr %0 +0, %", lower.cx.dec(np)?.as_str())?.as_str())?
+    let _q3 = lower.str.row(o, &mut k, "unit", lower.cx.cat2("mem.store.usize %0 +16, %", lower.cx.dec(ncap)?.as_str())?.as_str())?
+    o.push_str("    br b2()\n")?
+    lower.str.bh(o, 2usize, "")?
+    let p1 = lower.str.row(o, &mut k, "ptr", "mem.load.ptr %0 +0")?
+    let base = lower.str.row(o, &mut k, "ptr", lower.str.op2("ptr.add ", p1, len0)?.as_str())?
+    let one = lower.str.row(o, &mut k, "usize", "const.usize 1")?
+    let zus = lower.str.row(o, &mut k, "usize", "const.usize 0")?
+    let ten = lower.str.row(o, &mut k, "u64", "const.u64 10")?
+    o.push_str("    br b3(%1, %")?
+    o.push_str(lower.cx.dec(one)?.as_str())?
+    o.push_str(")\n")?
+    // 桁を数える: n >= 10 の間、n /= 10 と d += 1。
+    let n3 = k
+    let d3 = k + 1usize
+    k = k + 2usize
+    let mut h3 = alloc.string.String.new(std.alloc.SYSTEM)
+    lower.str.pv(&mut h3, n3)?
+    h3.push_str(": u64, ")?
+    lower.str.pv(&mut h3, d3)?
+    h3.push_str(": usize")?
+    lower.str.bh(o, 3usize, h3.as_str())?
+    let big = lower.str.row(o, &mut k, "bool", lower.str.op2("icmp.ge.u64 ", n3, ten)?.as_str())?
+    o.push_str("    br_if %")?
+    o.push_str(lower.cx.dec(big)?.as_str())?
+    o.push_str(", b4(), b5()\n")?
+    lower.str.bh(o, 4usize, "")?
+    let n4 = lower.str.row(o, &mut k, "u64", lower.str.op2("div.u64.wrap ", n3, ten)?.as_str())?
+    let d4 = lower.str.row(o, &mut k, "usize", lower.str.op2("add.usize.wrap ", d3, one)?.as_str())?
+    o.push_str("    br b3(%")?
+    o.push_str(lower.cx.dec(n4)?.as_str())?
+    o.push_str(", %")?
+    o.push_str(lower.cx.dec(d4)?.as_str())?
+    o.push_str(")\n")?
+    lower.str.bh(o, 5usize, "")?
+    o.push_str("    br b6(%1, %")?
+    o.push_str(lower.cx.dec(d3)?.as_str())?
+    o.push_str(")\n")?
+    // 後ろの桁から書く: i を 1 つ戻して、x の末尾の桁を base + i へ。
+    let x6 = k
+    let i6 = k + 1usize
+    k = k + 2usize
+    let mut h6 = alloc.string.String.new(std.alloc.SYSTEM)
+    lower.str.pv(&mut h6, x6)?
+    h6.push_str(": u64, ")?
+    lower.str.pv(&mut h6, i6)?
+    h6.push_str(": usize")?
+    lower.str.bh(o, 6usize, h6.as_str())?
+    let i1 = lower.str.row(o, &mut k, "usize", lower.str.op2("sub.usize.wrap ", i6, one)?.as_str())?
+    let r6 = lower.str.row(o, &mut k, "u64", lower.str.op2("rem.u64.wrap ", x6, ten)?.as_str())?
+    let r8 = lower.str.row(o, &mut k, "u8", lower.cx.cat2("conv.u8.u64 %", lower.cx.dec(r6)?.as_str())?.as_str())?
+    let c48 = lower.str.row(o, &mut k, "u8", "const.u8 48")?
+    let ch = lower.str.row(o, &mut k, "u8", lower.str.op2("add.u8.wrap ", r8, c48)?.as_str())?
+    let dst = lower.str.row(o, &mut k, "ptr", lower.str.op2("ptr.add ", base, i1)?.as_str())?
+    let mut sw = lower.cx.cat2("mem.store.u8 %", lower.cx.dec(dst)?.as_str())?
+    sw.push_str(" +0, %")?
+    sw.push_str(lower.cx.dec(ch)?.as_str())?
+    let _sw = lower.str.row(o, &mut k, "unit", sw.as_str())?
+    let x2 = lower.str.row(o, &mut k, "u64", lower.str.op2("div.u64.wrap ", x6, ten)?.as_str())?
+    let dn = lower.str.row(o, &mut k, "bool", lower.str.op2("icmp.eq.usize ", i1, zus)?.as_str())?
+    o.push_str("    br_if %")?
+    o.push_str(lower.cx.dec(dn)?.as_str())?
+    o.push_str(", b7(), b6(%")?
+    o.push_str(lower.cx.dec(x2)?.as_str())?
+    o.push_str(", %")?
+    o.push_str(lower.cx.dec(i1)?.as_str())?
+    o.push_str(")\n")?
+    lower.str.bh(o, 7usize, "")?
+    let nl = lower.str.row(o, &mut k, "usize", lower.str.op2("add.usize.wrap ", len0, d3)?.as_str())?
+    let _q4 = lower.str.row(o, &mut k, "unit", lower.cx.cat2("mem.store.usize %0 +8, %", lower.cx.dec(nl)?.as_str())?.as_str())?
+    let u = lower.str.row(o, &mut k, "unit", "const.unit ()")?
+    let okv = lower.str.row(o, &mut k, rt, lower.cx.cat2("ok %", lower.cx.dec(u)?.as_str())?.as_str())?
+    o.push_str("    ret %")?
+    o.push_str(lower.cx.dec(okv)?.as_str())?
+    o.push('\n')?
+    o.push_str("end ")?
+    o.push_str(fq)?
+    o.push('\n')?
+    Ok(())
+end lower.str.push_u64_text
+
 // 値の参照 `%k` を後ろへつなぐ。
 fn lower.str.pv(s: &mut alloc.string.String<std.alloc.System>, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     s.push('%')?

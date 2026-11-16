@@ -758,7 +758,7 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
         s.push_str(lower.cx.dec(id)?.as_str())?
         return Ok(s)
     }
-    if n.k == types.ty.K.Unit {
+    if n.k == types.ty.K.Unit || n.k == types.ty.K.Never {
         s.push_str("unit")?
         return Ok(s)
     }

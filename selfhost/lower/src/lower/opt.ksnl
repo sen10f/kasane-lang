@@ -404,6 +404,10 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     }
     lower.cx.goto(c, jb)
     lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
+    if types.ty.node(&c.ar, types.ty.find(&c.ar, t)).k == types.ty.K.Never {
+        // どの腕も抜ける (`return` など): 合流のブロックは行き止まり。
+        lower.cx.finish(c, lower.cx.own("unreachable")?)?
+    }
     if rty.as_str() == "unit" {
         let u = lower.expr.unit(c)?
         return Ok(lower.cx.R { v: u, t: t })
