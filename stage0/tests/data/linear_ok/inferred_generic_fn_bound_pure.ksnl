@@ -1,0 +1,13 @@
+fn t.g[F: core.ops.Fn<(u32,), u32>](f: F) -> u32
+    f(1u32)
+end t.g
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.pub_caller())
+end t.main
+
+fn t.pub_caller() -> u32 uses [] panics never pub
+    t.g(fn(x: u32) -> u32 capture [] {
+        x
+    })
+end t.pub_caller

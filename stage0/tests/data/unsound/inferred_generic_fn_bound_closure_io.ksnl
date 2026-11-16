@@ -1,0 +1,15 @@
+// expect: E4001
+fn t.g[F: core.ops.Fn<(), ()>](f: F) -> ()
+    f()
+end t.g
+
+fn t.main() -> () uses [] panics never
+    t.pub_caller()
+end t.main
+
+fn t.pub_caller() -> () uses [] panics never pub
+    let f = fn() -> () capture [] {
+        core.mem.drop(std.io.print_line("y"))
+    }
+    t.g(f)
+end t.pub_caller

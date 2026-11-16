@@ -1,0 +1,22 @@
+trait t.H[E: uses, P: panics]
+    fn handle(self: &Self) -> () uses [E] panics P
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+impl t.H<[], never> for t.X
+fn t.X.handle(self: &t.X) -> () uses [] panics never impls t.H<[], never>
+    core.mem.drop(())
+end t.X.handle
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut x = t.X { v: 7u32 }
+    core.mem.drop(t.sink(&mut x))
+    Ok(())
+end t.main
+
+fn t.sink(h: &dyn t.H<[], never> + 'static) -> () uses [] panics never
+    h.handle()
+end t.sink

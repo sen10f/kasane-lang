@@ -1980,6 +1980,10 @@ impl<'a> TypeCk<'a> {
                 }
                 // `&mut` の下は不変 (`&mut Option<&mut T>` を `&mut Option<&T>` にできない)。
                 let inner_inv = inv || m;
+                // `&str` と `&String` は別の型 (4.2: 暗黙の変換の表に無い)。
+                if matches!((&x, &y), (Ty::Named(n, _), Ty::Prim(p)) | (Ty::Prim(p), Ty::Named(n, _)) if n == "alloc.string.String" && p == "str") {
+                    return Err((a.clone(), b.clone()));
+                }
                 // `&[T; N]` → `&[T]` は参照の直下の値の位置でだけ許す (逆向き・値渡しは許さない)。
                 if let (Ty::Slice(e), Ty::Array(f, _)) = (&x, &y) {
                     if inv {
@@ -4552,6 +4556,28 @@ impl<'a> TypeCk<'a> {
         // 実体化した効果全体をそのクロージャの効果に足す。
         let (fu, fp, du, dm) = self.callee_effects(d, 0, argt, targs);
         self.record_effects(line, vec![(d.name.clone(), fu, fp, du, dm)]);
+        // 4.3: 省略した `Fn*` 境界は、渡したクロージャ・関数の効果をそのまま持つ。効果を推論する (宣言のない)
+        // 呼び出し先は、境界のパラメータの呼び出しを数えないので、呼び出しの所で渡した値の効果を負わせる。
+        if d.inferred {
+            let mut got: Vec<(Vec<String>, bool)> = vec![];
+            let gn = d.gnames();
+            for (k, a) in argt.iter().enumerate() {
+                let Some(p) = d.params.get(k) else { break };
+                for (name, at) in self.param_slots(&from_v(&p.1, &gn), a) {
+                    let omitted = self.fn_bound(d, &name).iter().any(|b| items(tel(b, 1)).get(2).map_or(false, |v| tag(v) == "named" && st(tel(v, 1)).starts_with("E$")));
+                    if !omitted {
+                        continue;
+                    }
+                    if let Some((u, m)) = self.arg_fn_effects(&at) {
+                        got.push((u, m.unwrap_or(false)));
+                    }
+                }
+            }
+            for (u, m) in got {
+                let pn = m.then(|| "may".to_string());
+                self.record_effects(line, vec![(format!("the closure passed to {}", d.name), u.clone(), pn.clone(), u, pn)]);
+            }
+        }
         // `I: Iterator<..>` 境界の引数は、呼び出し先が中で `next` を呼びうる。`for` と同じ求め方で、実引数の型の
         // `next` の効果を呼び出しの効果に足す (イテレータの型は効果の実引数を持たないので、宣言側の `E` / `P` だけでは漏れる)。
         let mut iter_args: Vec<Ty> = vec![];
@@ -5106,8 +5132,16 @@ impl<'a> TypeCk<'a> {
             if bounds.is_empty() {
                 continue;
             }
-            let Ty::Closure { id: Some(node), .. } = at else { continue };
-            let Some((uses, may, unsure)) = self.closure_effs.get(&node) else { continue };
+            // 名前付きの関数・メソッド (`id` なし) は、宣言の `uses` / `panics` を閉包の推論結果と同じに扱う。
+            let (uses, may, unsure) = match &at {
+                Ty::Closure { id: Some(node), .. } => match self.closure_effs.get(node) {
+                    Some((u, m, un)) => (u.clone(), *m, *un),
+                    None => continue,
+                },
+                Ty::Closure { id: None, eff: Eff(Some(info)), .. } => (info.uses.iter().cloned().collect(), info.may.unwrap_or(false), false),
+                _ => continue,
+            };
+            let (uses, may) = (&uses, &may);
             // 境界の具体名との比べは、確実な効果だけで行う (推論された関数・`dyn` 越しの上限は、
             // 囲む関数の宣言との比べ (`closure_effect_bind` / `closure_call_effects`) が見る)。
             // 確実でない効果 (推論された関数・`dyn` 越しの上限) も上限として比べる (fail-closed)。
@@ -5553,6 +5587,27 @@ impl<'a> TypeCk<'a> {
     /// (落としているので参照が現れることはなく、逆向きだけが誤検出になり得る)。
     fn arg_ref_conflict(&self, want: &Ty, got: &Ty, loose: bool) -> Option<(String, String)> {
         let g0 = self.deep(got);
+        // 4.2: クロージャ → `fn(..)` はキャプチャなしのものだけ (環境を持てない)。
+        if let (Ty::Closure { id: None, .. }, Ty::Closure { id: Some(node), .. }) = (want, &g0) {
+            if self.closure_caps.get(node).map_or(false, |c| !c.is_empty()) {
+                return Some((want.show(), "a closure with captures".to_string()));
+            }
+        }
+        // 4.2: `&[T; N]` → `&[T]` は参照の直下だけ。`Option<&[T]>` の位置に `Option<&[T; N]>` は渡せない。
+        // (宣言の型に型パラメータを含まない引数だけを見る。総称の引数どうしの合流 `core.check.eq` は見ない。)
+        if !want.has_param() {
+            if let (Ty::Named(n, xs), Ty::Named(m, ys)) = (want, &g0) {
+                if n == m && matches!(n.as_str(), "Option" | "Result") {
+                    for (x, y) in xs.iter().zip(ys) {
+                        if let (Ty::Ref(_, p), Ty::Ref(_, q)) = (x, &self.deep(y)) {
+                            if matches!((&**p, self.deep(q)), (Ty::Slice(_), Ty::Array(..))) {
+                                return Some((want.show(), g0.show()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         fn plain(t: &Ty) -> bool {
             matches!(t, Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_, _) | Ty::Unit)
         }
