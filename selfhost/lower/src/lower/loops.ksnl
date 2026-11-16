@@ -68,7 +68,7 @@ fn lower.loops.forsplit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     let sep = lower.expr.expr(env, c, p, src, resolve.ast.item(p, it.b, 0usize), types.ty.UNKNOWN)?
     let base = lower.cx.depth(c)
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.expr.scan(p, src, n.c, &mut nms, false)?
+    lower.expr.scan(env, c, p, src, n.c, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let s_ptr = lower.loops.fld(c, "ptr", sv2, "+0")?
     let s_len = lower.loops.fld(c, "usize", sv2, "+8")?
@@ -197,7 +197,7 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let et = lower.tyk.text(env, c, elem)?
     let base = lower.cx.depth(c)
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.expr.scan(p, src, n.c, &mut nms, false)?
+    lower.expr.scan(env, c, p, src, n.c, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let len0 = lower.vec.load_usize(c, hv, 8usize)?
     let p1 = lower.vec.load_ptr(c, hv)?
@@ -393,7 +393,7 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     let ity = lower.tyk.text(env, c, lo.t)?
     let base = lower.cx.depth(c)
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.expr.scan(p, src, n.c, &mut nms, false)?
+    lower.expr.scan(env, c, p, src, n.c, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     // 先頭: 番号 (i) と、可変の局所。
     let eps = lower.cx.fresh_vals(c, &ks)?

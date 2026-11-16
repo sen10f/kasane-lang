@@ -344,7 +344,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let own_scrut = lower.drop.temp_scrut(env, c, p, n.a, sc.t)?
     let base = lower.cx.depth(c)
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
+    lower.expr.scan_arms(env, c, p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let saved = lower.cx.cur_vals(c, &ks)?
     let rty = lower.tyk.text(env, c, t)?

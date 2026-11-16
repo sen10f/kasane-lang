@@ -869,7 +869,7 @@ fn lower.expr.getmut_match(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.c
     let (sz, _al) = lower.tyk.size_of(env, c, elem)?
     let base = lower.cx.depth(c)
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
+    lower.expr.scan_arms(env, c, p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let saved = lower.cx.cur_vals(c, &ks)?
     let rty = lower.tyk.text(env, c, t)?
@@ -982,8 +982,8 @@ fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     let base = lower.cx.depth(c)
     let cr = lower.expr.expr(env, c, p, src, n.a, types.ty.BOOL)?
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.expr.scan(p, src, n.b, &mut nms, false)?
-    lower.expr.scan(p, src, n.c, &mut nms, false)?
+    lower.expr.scan(env, c, p, src, n.b, &mut nms, false)?
+    lower.expr.scan(env, c, p, src, n.c, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let rty = lower.tyk.text(env, c, t)?
     let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -1271,7 +1271,7 @@ end lower.expr.lit
 fn lower.expr.loopx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.expr.scan(p, src, n.a, &mut nms, false)?
+    lower.expr.scan(env, c, p, src, n.a, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let hps = lower.cx.fresh_vals(c, &ks)?
     let head = lower.cx.blk(c, &hps)?
@@ -1319,7 +1319,7 @@ end lower.expr.loopx
 // 本体は今のブロック (前の腕の外れた先) に下ろす (Rust 版と同じ並び)。
 fn lower.expr.matchint(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, sc: lower.cx.R, base: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
+    lower.expr.scan_arms(env, c, p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let saved = lower.cx.cur_vals(c, &ks)?
     let rty = lower.tyk.text(env, c, t)?
@@ -1412,7 +1412,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     }
     let own_scrut = lower.drop.temp_scrut(env, c, p, n.a, sc.t)?
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
+    lower.expr.scan_arms(env, c, p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let saved = lower.cx.cur_vals(c, &ks)?
     let rty = lower.tyk.text(env, c, t)?
@@ -1587,6 +1587,67 @@ fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     Ok(lower.cx.R { v: v, t: t })
 end lower.expr.mcall
 
+// 利用者の `&mut self` のメソッドの呼び出し `x.m(..)` / `x.f.m(..)` / `self.f.m(..)` の根の局所の名前。
+fn lower.expr.mut_recv_root(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node) -> Result<(alloc.string.String<std.alloc.System>, bool), resolve.Failure> uses [alloc] panics may pub
+    let no = (alloc.string.String.new(std.alloc.SYSTEM), false)
+    let mut root = alloc.string.String.new(std.alloc.SYSTEM)
+    if n.kind == parse.ast.Kind.Call {
+        let cn = parse.ast.get(&p.ast, n.a)
+        if cn.kind != parse.ast.Kind.Path {
+            return Ok(no)
+        }
+        let (f1, f2) = lower.expr.split2(resolve.ast.text(src, cn.a, cn.b))
+        if f1 != "" && !lower.expr.is_wrapping(f2) {
+            root = lower.cx.own(f1)?
+        } else {
+            for w in resolve.ast.text(src, cn.a, cn.b).split(".") {
+                root = lower.cx.own(w)?
+                break
+            }
+        }
+    } else {
+        let mut cur = parse.ast.get(&p.ast, n.a)
+        while cur.kind == parse.ast.Kind.Dot {
+            cur = parse.ast.get(&p.ast, cur.a)
+        }
+        if cur.kind != parse.ast.Kind.Path {
+            return Ok(no)
+        }
+        for w in resolve.ast.text(src, cur.a, cur.b).split(".") {
+            root = lower.cx.own(w)?
+            break
+        }
+    }
+    if root.as_str() == "" || lower.cx.find(c, root.as_str()) == 0usize {
+        return Ok(no)
+    }
+    let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
+    if it == 0usize || types.infer.item_kind(env, it - 1usize) != parse.ast.Kind.FnDef {
+        return Ok(no)
+    }
+    let item = it - 1usize
+    if lower.expr.no_body(env, item) {
+        return Ok(no)
+    }
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let cp = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(no)
+    }
+    let fd = parse.ast.get(&cp.ast, node)
+    let sg = parse.ast.get(&cp.ast, fd.c)
+    if resolve.ast.count(cp, sg.b) == 0usize {
+        return Ok(no)
+    }
+    let sdecl = types.rec.ty_of(&c.tc.rec, file, resolve.ast.item(cp, sg.b, 0usize))
+    let sdn = types.ty.node(&c.ar, types.ty.find(&c.ar, sdecl))
+    if sdn.k != types.ty.K.Ref || !sdn.m {
+        return Ok(no)
+    }
+    Ok((root, true))
+end lower.expr.mut_recv_root
+
 // 項目が本体のない宣言 (`.sig` の fn) か。
 fn lower.expr.no_body(env: &types.env.Env, item: usize) -> bool uses [alloc] panics may pub
     let file = types.infer.item_file(env, item)
@@ -1684,7 +1745,7 @@ fn lower.expr.retx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
 end lower.expr.retx
 
 // 式の中で代入されている局所の名前 (`x = e` の x) を集める。分岐と合流で引き回す局所を絞るため。
-fn lower.expr.scan(p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.scan(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     if e == 0usize {
         return Ok(())
     }
@@ -1729,8 +1790,8 @@ fn lower.expr.scan(p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Ve
         }
     }
     if k == parse.ast.Kind.For {
-        lower.expr.scan(p, src, n.b, out, bor)?
-        return lower.expr.scan(p, src, n.c, out, bor)
+        lower.expr.scan(env, c, p, src, n.b, out, bor)?
+        return lower.expr.scan(env, c, p, src, n.c, out, bor)
     }
     if k == parse.ast.Kind.Index && bor {
         let ib = parse.ast.get(&p.ast, n.a)
@@ -1745,6 +1806,13 @@ fn lower.expr.scan(p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Ve
             out.push(lower.cx.own(resolve.ast.text(src, rvb.a, rvb.b))?)?
         }
     }
+    if !bor && (k == parse.ast.Kind.Call || k == parse.ast.Kind.MCall) {
+        let (mr, mok) = lower.expr.mut_recv_root(env, c, p, src, e, n)?
+        if mok {
+            // 利用者の `&mut self` のメソッドを呼ぶ局所は、代入と同じく合流で受け渡す ("!" は可変束縛でなくてもよい印)。
+            out.push(lower.cx.cat2("!", mr.as_str())?)?
+        }
+    }
     if k == parse.ast.Kind.Assign && !bor {
         let ln = parse.ast.get(&p.ast, n.a)
         if ln.kind == parse.ast.Kind.Path {
@@ -1756,78 +1824,78 @@ fn lower.expr.scan(p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Ve
                 out.push(lower.cx.own(resolve.ast.text(src, ln.a, ln.b))?)?
             }
         }
-        return lower.expr.scan(p, src, n.b, out, bor)
+        return lower.expr.scan(env, c, p, src, n.b, out, bor)
     }
     if k == parse.ast.Kind.Block {
-        return lower.expr.scan_list(p, src, n.a, out, bor)
+        return lower.expr.scan_list(env, c, p, src, n.a, out, bor)
     }
     if k == parse.ast.Kind.Try {
-        return lower.expr.scan(p, src, n.a, out, bor)
+        return lower.expr.scan(env, c, p, src, n.a, out, bor)
     }
     if k == parse.ast.Kind.With {
         // 束縛される名前は借用の扱い (スロット)。初期化・後始末・本体の中も見る。
         if bor {
             out.push(lower.cx.own(resolve.ast.tok_text(p, src, n.a))?)?
         }
-        lower.expr.scan(p, src, n.c, out, bor)?
-        lower.expr.scan(p, src, n.d, out, bor)?
-        return lower.expr.scan(p, src, n.e, out, bor)
+        lower.expr.scan(env, c, p, src, n.c, out, bor)?
+        lower.expr.scan(env, c, p, src, n.d, out, bor)?
+        return lower.expr.scan(env, c, p, src, n.e, out, bor)
     }
     if k == parse.ast.Kind.ExprStmt {
-        return lower.expr.scan(p, src, n.a, out, bor)
+        return lower.expr.scan(env, c, p, src, n.a, out, bor)
     }
     if k == parse.ast.Kind.Let {
-        return lower.expr.scan(p, src, n.d, out, bor)
+        return lower.expr.scan(env, c, p, src, n.d, out, bor)
     }
     if k == parse.ast.Kind.If {
-        lower.expr.scan(p, src, n.a, out, bor)?
-        lower.expr.scan(p, src, n.b, out, bor)?
-        return lower.expr.scan(p, src, n.c, out, bor)
+        lower.expr.scan(env, c, p, src, n.a, out, bor)?
+        lower.expr.scan(env, c, p, src, n.b, out, bor)?
+        return lower.expr.scan(env, c, p, src, n.c, out, bor)
     }
     if k == parse.ast.Kind.While {
-        lower.expr.scan(p, src, n.a, out, bor)?
-        return lower.expr.scan(p, src, n.b, out, bor)
+        lower.expr.scan(env, c, p, src, n.a, out, bor)?
+        return lower.expr.scan(env, c, p, src, n.b, out, bor)
     }
     if k == parse.ast.Kind.Loop || k == parse.ast.Kind.Return || k == parse.ast.Kind.Unary {
         if k == parse.ast.Kind.Unary {
-            return lower.expr.scan(p, src, n.b, out, bor)
+            return lower.expr.scan(env, c, p, src, n.b, out, bor)
         }
-        return lower.expr.scan(p, src, n.a, out, bor)
+        return lower.expr.scan(env, c, p, src, n.a, out, bor)
     }
     if k == parse.ast.Kind.Match {
-        lower.expr.scan(p, src, n.a, out, bor)?
-        return lower.expr.scan_arms(p, src, n.b, out, bor)
+        lower.expr.scan(env, c, p, src, n.a, out, bor)?
+        return lower.expr.scan_arms(env, c, p, src, n.b, out, bor)
     }
     if k == parse.ast.Kind.Bin {
-        lower.expr.scan(p, src, n.b, out, bor)?
-        return lower.expr.scan(p, src, n.c, out, bor)
+        lower.expr.scan(env, c, p, src, n.b, out, bor)?
+        return lower.expr.scan(env, c, p, src, n.c, out, bor)
     }
     if k == parse.ast.Kind.Call {
-        return lower.expr.scan_list(p, src, n.b, out, bor)
+        return lower.expr.scan_list(env, c, p, src, n.b, out, bor)
     }
     if k == parse.ast.Kind.MCall {
-        lower.expr.scan(p, src, n.a, out, bor)?
-        return lower.expr.scan_list(p, src, n.d, out, bor)
+        lower.expr.scan(env, c, p, src, n.a, out, bor)?
+        return lower.expr.scan_list(env, c, p, src, n.d, out, bor)
     }
     if k == parse.ast.Kind.Dot {
-        return lower.expr.scan(p, src, n.a, out, bor)
+        return lower.expr.scan(env, c, p, src, n.a, out, bor)
     }
     Ok(())
 end lower.expr.scan
 
 // match の腕の並び: 腕の本体を集める。
-fn lower.expr.scan_arms(p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.scan_arms(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
         let arm = parse.ast.get(&p.ast, resolve.ast.item(p, l, j))
-        lower.expr.scan(p, src, arm.b, out, bor)?
+        lower.expr.scan(env, c, p, src, arm.b, out, bor)?
     }
     Ok(())
 end lower.expr.scan_arms
 
 // 式の並び (リスト) の中を集める。
-fn lower.expr.scan_list(p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.scan_list(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
-        lower.expr.scan(p, src, resolve.ast.item(p, l, j), out, bor)?
+        lower.expr.scan(env, c, p, src, resolve.ast.item(p, l, j), out, bor)?
     }
     Ok(())
 end lower.expr.scan_list
@@ -2345,8 +2413,8 @@ end lower.expr.vec_slice_get
 fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.expr.scan(p, src, n.a, &mut nms, false)?
-    lower.expr.scan(p, src, n.b, &mut nms, false)?
+    lower.expr.scan(env, c, p, src, n.a, &mut nms, false)?
+    lower.expr.scan(env, c, p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let hps = lower.cx.fresh_vals(c, &ks)?
     let head = lower.cx.blk(c, &hps)?
