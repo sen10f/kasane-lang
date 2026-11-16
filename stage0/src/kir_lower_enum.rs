@@ -554,6 +554,40 @@ impl<'a> Lw<'a> {
 
     /// `match e { arms }`。腕ごとに「パターンの判定 → 腕の本体 → 合流」を作る。
     /// 最後の腕は判定を省く (下ろしの前に型検査の網羅性が効いている前提。網羅でない match は検査で止まる)。
+    /// `match o { .. }` で `o` が `&Option<X>` / `&mut Option<X>` (値は `ref<Option>`) のとき。参照の先を 1 度読んで、
+    /// `Some` ならペイロードの番地 (`bref`) を運ぶ `Option<&X>` を作り、それを対象にして `match_` を回す。
+    /// 対象が参照の値でないなら `None` (呼び出し側が従来の経路に進む)。
+    pub(super) fn match_ref_option(&mut self, e: &V, scrut: &V, m: bool, x: &Src) -> LR<Option<Option<VId>>> {
+        let line = nline(e);
+        // 参照の値を評価する。評価で副作用が起きるので、参照でないと分かったら従来の経路へ戻れない: 先に型だけ確かめる。
+        if !matches!(self.ty_of(scrut), Ok(Ty::Ref(_, Pointee::Opt(_)))) {
+            return Ok(None);
+        }
+        let Some(r) = self.expr(scrut)? else { return Ok(Some(None)) };
+        let Ty::Ref(_, Pointee::Opt(pay)) = self.vty(r) else { return Ok(None) };
+        let ot = Ty::Opt(pay);
+        let ov = self.emit(ot, Op::Load(r));
+        let bt = self.aggs.borrow_mut().bref();
+        let Some(bp) = Pay::of(bt) else { return self.err(line, "bref を Option のペイロードにできない") };
+        let opt = Ty::Opt(bp);
+        let tag = self.emit(Ty::Bool, Op::Tag(ov));
+        let (yb, _) = self.new_block(&[]);
+        let (nb, _) = self.new_block(&[]);
+        let (jb, jp) = self.new_block(&[opt]);
+        self.branch(tag, (yb, vec![]), (nb, vec![]));
+        self.cur = Some(yb);
+        let addr = self.emit(Ty::Ptr, Op::Bitcast { src: self.vty(r), a: r });
+        let b = self.emit(bt, Op::Make { variant: None, fields: vec![addr] });
+        let some = self.emit(opt, Op::Some(b));
+        self.goto(jb, vec![some]);
+        self.cur = Some(nb);
+        let none = self.emit(opt, Op::Const(0));
+        self.goto(jb, vec![none]);
+        self.cur = Some(jb);
+        self.coll.scrut_override = Some((jp[0], Src::Named("Option".into(), vec![Src::Ref(m, Box::new(x.clone()))])));
+        Ok(Some(self.match_(e)?))
+    }
+
     pub(super) fn match_(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);
@@ -564,7 +598,9 @@ impl<'a> Lw<'a> {
         // 所有の印を持つ局所の対象は、読む (`use`) だけ。移すのは、非 Copy の束縛をする腕の入口 (下の `consume`)。
         let scrut_local = super::path1(&f[0]).and_then(|n| self.lookup(&n).map(|s| (n, s)));
         let scrut_linear = self.src_ty(&f[0]).is_ok_and(|t| self.src_is_linear(&t, &mut std::collections::HashSet::new()));
+        let ov = self.coll.scrut_override.take();
         let peeked = match &scrut_local {
+            _ if ov.is_some() => ov.as_ref().map(|(v, _)| *v),
             Some((n, s)) if self.coll.own_ids.contains_key(&(n.clone(), *s)) => {
                 self.coll.peek_field = false;
                 self.own_emit(n, *s, crate::kir::OwnKind::Use);
@@ -578,7 +614,10 @@ impl<'a> Lw<'a> {
         let pats: Vec<&V> = arms.iter().map(|a| &items(a)[0]).collect();
         let sc = super::coll::scrut_begin(self, &f[0], s, &pats)?;
         let saved_src = self.coll.scrut_src.take();
-        self.coll.scrut_src = self.src_ty(&f[0]).ok().map(|t| (sty, t));
+        self.coll.scrut_src = match &ov {
+            Some((_, src)) => Some((sty, src.clone())),
+            None => self.src_ty(&f[0]).ok().map(|t| (sty, t)),
+        };
         let bodies: Vec<&V> = arms.iter().map(|a| &items(a)[1]).collect();
         let slots = self.assigned(&bodies);
         let slot_tys: Vec<Ty> = slots.iter().map(|x| self.slots[*x].1).collect();

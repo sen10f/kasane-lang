@@ -409,6 +409,17 @@ impl<'a> Lw<'a> {
                 }
             }
         }
+        // `match o { None => .., Some(b) => .. }` (`o: &Option<T>` / `&mut Option<T>`): 参照の先の `Option` を読んで、
+        // ペイロードの番地を `bref` に包んだ `Option<&T>` として判定する (腕の名前は `&T` の借用で束縛される)。
+        if let Src::Ref(m, inner) = &stt {
+            if let Src::Named(n, a) = &**inner {
+                if n == "Option" && a.len() == 1 {
+                    if let Some(r) = self.match_ref_option(e, &scrut, *m, &a[0])? {
+                        return Ok(r);
+                    }
+                }
+            }
+        }
         match stt {
             Src::Named(n, _) if n == "Option" || n == "Result" => self.match_(e),
             _ => self.match_e(e),
@@ -853,7 +864,7 @@ impl<'a> Lw<'a> {
         match c.init.as_ref() {
             Some(init) if nname(init) == "Lit" && st(&nf(init)[0]) == "int" && ty.is_int() => {
                 let v = parse_int(&nf(init)[1]).ok_or_else(|| "定数の値が扱えない".to_string())?;
-                if !ty.in_range(v) {
+                if !ty.in_range(v) && ty != Ty::U128 {
                     return self.err(nline(e), "定数の値が型の範囲にない");
                 }
                 Ok(self.emit(ty, Op::Const(v)))
@@ -1934,11 +1945,19 @@ fn parse_int(v: &V) -> Option<i128> {
         Some(b) => (true, b.to_string()),
         None => (false, s.clone()),
     };
+    // 大きさは u128 で読む (`i128.MIN` の 2^127 や `u128.MAX` が入る)。`u128` の 2^127 以上は 2 の補数のビット列の i128 で返す (`Ty::max` と同じ約束)。
     let mag = match body.strip_prefix("0x") {
-        Some(h) => i128::from_str_radix(h, 16).ok()?,
-        None => body.parse::<i128>().ok()?,
+        Some(h) => u128::from_str_radix(h, 16).ok()?,
+        None => body.parse::<u128>().ok()?,
     };
-    Some(if neg { -mag } else { mag })
+    if neg {
+        if mag > 1u128 << 127 {
+            return None;
+        }
+        Some((mag as i128).wrapping_neg())
+    } else {
+        Some(mag as i128)
+    }
 }
 
 /// ユーザの関数を下ろす。呼び先が未対応・検査違反の関数は、その呼び出し元とともに外す。
@@ -2141,7 +2160,9 @@ fn ufcs_rewrite(v: &V, p: &crate::program::Program, file: &str) -> Option<V> {
                 let ty_ok = (segs.len() == 4 && segs[1] == "num" && Ty::parse(&segs[2]).is_some()) || (segs.len() == 3 && segs[1] == "slice");
                 let args = items(&fs2[1]).to_vec();
                 let bodiless = matches!(p.resolve(&segs, file).map(|r| r.target), Some(Tgt::Sig(di) | Tgt::Fn(di)) if p.defs[di].body.is_none());
-                if segs[0] == "core" && ty_ok && !assoc && bodiless && !args.is_empty() {
+                // `core.str.find(s, p)` なども受け手を第 1 引数にしたメソッド呼び出しへ (Kasane 版の本体を持つので bodiless は問わない)。
+                let str_ok = segs.len() == 3 && segs[1] == "str" && !assoc && !matches!(m, "from_utf8" | "from_utf8_unchecked");
+                if segs[0] == "core" && ((ty_ok && bodiless) || str_ok) && !assoc && !args.is_empty() {
                     // `&x` / `&mut x` の受け手は、メソッド呼び出しの自動の借用と同じなので `x` にする。
                     let mut recv = args[0].clone();
                     if nname(&recv) == "Unary" && matches!(st(&nf(&recv)[0]).as_str(), "&" | "&mut") && nname(&nf(&recv)[1]) == "Path" {

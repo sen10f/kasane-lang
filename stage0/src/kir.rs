@@ -72,6 +72,8 @@ pub enum Pointee {
     Ptr,
     /// 集成体 (型表 `Module::aggs` の添字)。
     Agg(u32),
+    /// `Option<..>` の値 (`&mut Option<Box<Node>>`。枠の語とタグの配置は `Ty::Opt` のメモリ上の形と同じ)。
+    Opt(Pay),
 }
 
 impl Pointee {
@@ -94,6 +96,7 @@ impl Pointee {
             Pointee::Bool => Ty::Bool,
             Pointee::Ptr => Ty::Ptr,
             Pointee::Agg(i) => Ty::Agg(i),
+            Pointee::Opt(p) => Ty::Opt(p),
         }
     }
 
@@ -117,7 +120,8 @@ impl Pointee {
             Ty::Bool => Pointee::Bool,
             Ty::Ptr => Pointee::Ptr,
             Ty::Agg(i) => Pointee::Agg(i),
-            Ty::Unit | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) => return None,
+            Ty::Opt(p) => Pointee::Opt(p),
+            Ty::Unit | Ty::Ref(..) | Ty::Res(..) => return None,
         })
     }
 }
@@ -330,6 +334,7 @@ impl Ty {
         match self {
             Ty::Agg(i) => Ty::Agg(f(i)),
             Ty::Ref(m, Pointee::Agg(i)) => Ty::Ref(m, Pointee::Agg(f(i))),
+            Ty::Ref(m, Pointee::Opt(p)) => Ty::Ref(m, Pointee::Opt(p.map_aggs(f))),
             Ty::Opt(p) => Ty::Opt(p.map_aggs(f)),
             Ty::Res(t, e) => Ty::Res(t.map_aggs(f), e.map_aggs(f)),
             t => t,
@@ -1220,6 +1225,7 @@ pub fn prune_aggs(m: &mut Module) {
             }
             // 集成体の指す先の参照 (`ref<agg>`) も、その集成体を使っている
             Ty::Ref(_, Pointee::Agg(i)) => mark(Ty::Agg(i), used, todo),
+            Ty::Ref(_, Pointee::Opt(p)) => mark(Ty::Opt(p), used, todo),
             // `Option` / `Result` のペイロードに入る集成体も使われている
             Ty::Opt(p) => mark(p.ty(), used, todo),
             Ty::Res(t0, e0) => {
@@ -3174,6 +3180,7 @@ fn check_agg_ids(m: &Module, t: Ty) -> Result<(), String> {
     match t {
         Ty::Agg(i) | Ty::Ref(_, Pointee::Agg(i)) if (i as usize) < m.aggs.len() => Ok(()),
         Ty::Agg(_) | Ty::Ref(_, Pointee::Agg(_)) => Err("集成体の番号が表にない".into()),
+        Ty::Ref(_, Pointee::Opt(p)) => check_agg_ids(m, Ty::Opt(p)),
         Ty::Opt(p) => check_agg_ids(m, p.ty()),
         Ty::Res(t0, e0) => {
             check_agg_ids(m, t0.ty())?;

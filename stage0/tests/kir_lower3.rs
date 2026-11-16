@@ -584,7 +584,7 @@ fn kir_closure_reports_unsupported_captures_with_a_reason() {
     // 解放の要る値の取り込み、move で取り込んだ値の変更、反復子の未対応の元は理由付きで拒否する。
     let cases: &[(&str, &str, &str)] = &[
         ("t.cap_mutate", "    let mut n = 1usize\n    let f = fn(x: usize) -> usize capture [move n] {\n        n = n.wrapping_add(x)\n        n\n    }\n    f(1usize)\n", "を本体が変更する形"),
-        ("t.take", "    core.iter.count(core.iter.take(core.iter.range(0usize, 5usize), 2usize))\n", "take"),
+        ("t.enumerate", "    core.iter.count(core.iter.enumerate(core.iter.range(0usize, 5usize)))\n", "enumerate"),
     ];
     for (i, (f, body, why)) in cases.iter().enumerate() {
         let src = format!(
