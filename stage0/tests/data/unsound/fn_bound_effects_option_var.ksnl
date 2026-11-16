@@ -1,0 +1,15 @@
+// expect: E4001
+fn t.ap[F: core.ops.Fn<(), (), E, P>, E: uses, P: panics](o: Option<F>) -> () uses [E] panics P
+    match o {
+        Some(f) => f()
+        None => core.mem.drop(0u32)
+    }
+end t.ap
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let c = fn() -> () capture [] {
+        core.mem.drop(std.io.print_line("side effect"))
+    }
+    t.ap(Some(c))
+    Ok(())
+end t.main
