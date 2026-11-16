@@ -591,6 +591,87 @@ fn emit.inst.from_bits(g: &mut emit.G, dst: usize, ty: usize, x: usize, w: usize
     }
 end emit.inst.from_bits
 
+// `fs.open` / `fs.create` / `fs.read` / `fs.close`: 実行時の `ksn_rt_sys_*` を呼ぶ。
+// 負の結果は `Result<_, std.io.Error>` の Err に詰める (Rust 版の `fs_result`)。
+fn emit.inst.fs(g: &mut emit.G, dst: usize, ty: usize, op: &str, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    if emit.ty.slot(g, ty) != 64usize {
+        core.panic.panic("fs: the result slot is not 64 bits")
+    }
+    emit.decl(g, "declare i64 @ksn_rt_sys_open(ptr, i64, i32, ptr)")
+    emit.decl(g, "declare i64 @ksn_rt_sys_read(i32, ptr, i64, ptr)")
+    emit.decl(g, "declare i64 @ksn_rt_sys_close(i32)")
+    let ep = emit.tmp(g)
+    emit.inst.def_head(g, ep)
+    emit.w(g, "alloca [2 x i32], align 4\n")
+    emit.w(g, "  store i64 0, ptr ")
+    emit.wv(g, ep)
+    emit.w(g, ", align 4\n")
+    let r = emit.tmp(g)
+    if op == "open" || op == "create" {
+        let (pi, n) = emit.inst.fat_parts(g, emit.util.arg_vid(args, 0usize))
+        let p = emit.tmp(g)
+        emit.inst.def_head(g, p)
+        emit.w(g, "inttoptr i64 ")
+        emit.wv(g, pi)
+        emit.w(g, " to ptr\n")
+        emit.inst.def_head(g, r)
+        emit.w(g, "call i64 @ksn_rt_sys_open(ptr ")
+        emit.wv(g, p)
+        emit.w(g, ", i64 ")
+        emit.wv(g, n)
+        if op == "create" {
+            emit.w(g, ", i32 1, ptr ")
+        } else {
+            emit.w(g, ", i32 0, ptr ")
+        }
+        emit.wv(g, ep)
+        emit.w(g, ")\n")
+    } else if op == "read" {
+        emit.inst.def_head(g, r)
+        emit.w(g, "call i64 @ksn_rt_sys_read(i32 ")
+        emit.wv(g, emit.util.arg_vid(args, 0usize))
+        emit.w(g, ", ptr ")
+        emit.wv(g, emit.util.arg_vid(args, 1usize))
+        emit.w(g, ", i64 ")
+        emit.wv(g, emit.util.arg_vid(args, 2usize))
+        emit.w(g, ", ptr ")
+        emit.wv(g, ep)
+        emit.w(g, ")\n")
+    } else if op == "close" {
+        emit.inst.def_head(g, r)
+        emit.w(g, "call i64 @ksn_rt_sys_close(i32 ")
+        emit.wv(g, emit.util.arg_vid(args, 0usize))
+        emit.w(g, ")\n")
+    } else {
+        core.panic.panic("unsupported fs instruction in this emitter")
+    }
+    let neg = emit.tmp(g)
+    emit.inst.def_head(g, neg)
+    emit.w(g, "icmp slt i64 ")
+    emit.wv(g, r)
+    emit.w(g, ", 0\n")
+    let ev = emit.tmp(g)
+    emit.inst.def_head(g, ev)
+    emit.w(g, "load i64, ptr ")
+    emit.wv(g, ep)
+    emit.w(g, ", align 4\n")
+    let okp = emit.tmp(g)
+    emit.inst.def_head(g, okp)
+    emit.w(g, "and i64 ")
+    emit.wv(g, r)
+    emit.w(g, ", 9223372036854775807\n")
+    let pay = emit.tmp(g)
+    emit.inst.def_head(g, pay)
+    emit.w(g, "select i1 ")
+    emit.wv(g, neg)
+    emit.w(g, ", i64 ")
+    emit.wv(g, ev)
+    emit.w(g, ", i64 ")
+    emit.wv(g, okp)
+    emit.w(g, "\n")
+    emit.inst.pack_vid(g, dst, 64usize, neg, pay)
+end emit.inst.fs
+
 // `global.bytes NAME SIZE`
 fn emit.inst.global(g: &mut emit.G, dst: usize, _s1: &str, args: &str) -> () uses [alloc, io.console, process] panics may pub
     let t = args.trim()
@@ -793,6 +874,8 @@ fn emit.inst.inst(g: &mut emit.G, l: &str) -> () uses [alloc, io.console, proces
         emit.inst.index_check(g, emit.util.arg_vid(args, 0usize), emit.util.arg_vid(args, 1usize))
     } else if base == "panic" {
         emit.inst.panic(g, dst, rest)
+    } else if base == "fs" {
+        emit.inst.fs(g, dst, ty, s1, args)
     } else if base == "write" {
         let wf = emit.util.arg_vid(args, 0usize)
         let wd = emit.util.arg_vid(args, 1usize)

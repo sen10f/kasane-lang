@@ -625,11 +625,11 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             }
         }
         let ev = lower.cx.def1(c, rt.as_str(), "err ", pv)?
-        lower.vec.exit_drops(env, c, c.v.vals.len(), 0usize)?
+        lower.vec.exit_drops(env, c, p, src, c.v.vals.len(), 0usize)?
         lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(ev)?.as_str())?)?
     } else {
         let nv = lower.cx.def(c, rt.as_str(), lower.cx.cat2("const.", lower.cx.cat2(rt.as_str(), " none")?.as_str())?.as_str())?
-        lower.vec.exit_drops(env, c, c.v.vals.len(), 0usize)?
+        lower.vec.exit_drops(env, c, p, src, c.v.vals.len(), 0usize)?
         lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(nv)?.as_str())?)?
     }
     // 成功の枝: 中身。

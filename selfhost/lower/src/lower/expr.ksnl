@@ -3,7 +3,7 @@ fn lower.expr.arm_body(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
     lower.cx.bind_vals(c, ks, saved)?
     let r = lower.expr.expr(env, c, p, src, body, t)?
     if !c.s.term {
-        lower.expr.end_locals(env, c, mark)?
+        lower.expr.end_locals(env, c, p, src, mark)?
         let a = lower.expr.jargs(c, rty, r.v, ks)?
         let s = lower.cx.cat2("br ", lower.cx.target(jb, &a)?.as_str())?
         lower.cx.finish(c, s)?
@@ -260,7 +260,7 @@ fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     if !has {
         res = lower.expr.unit(c)?
     }
-    lower.expr.end_locals(env, c, mark)?
+    lower.expr.end_locals(env, c, p, src, mark)?
     lower.expr.trunc(c, mark)
     Ok(lower.cx.R { v: res, t: t })
 end lower.expr.block
@@ -351,6 +351,9 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         core.mem.drop(dv)
         let u = lower.expr.unit(c)?
         return Ok(lower.cx.R { v: u, t: t })
+    }
+    if fqn.as_str() == "std.fs.read_to_end" {
+        return lower.fs.read_to_end(env, c, p, src, n, t)
     }
     if fqn.as_str() == "std.env.arg_count" {
         let v = lower.cx.def(c, "usize", "env.arg_count")?
@@ -536,13 +539,13 @@ end lower.expr.dummy
 
 // 局所の寿命の終わり: [mark, 末尾) の局所を逆順に、印のある値は解放し、スタックスロットは (`Vec` / `String` なら
 // 解放して) `scope.end` (借用検査の注釈)。
-fn lower.expr.end_locals(env: &types.env.Env, c: &mut lower.cx.Cx, mark: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.end_locals(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], mark: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     // 所有する局所 (印のある値・`Vec` / `String` の枠) を逆順に解放し、その後でそれ以外のスロットを逆順に
     // `scope.end` (Rust 版は所有物の解放が先で、所有しないスロットの寿命の終わりは後)。
     let mut k = c.v.vals.len()
     while k > mark {
         k = k - 1usize
-        lower.drop.exit(env, c, k)?
+        lower.drop.exit(env, c, p, src, k)?
         if lower.cx.is_slot(c, k) && lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
             let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
             lower.vec.free_hdr(c, sv)?
@@ -552,7 +555,8 @@ fn lower.expr.end_locals(env: &types.env.Env, c: &mut lower.cx.Cx, mark: usize) 
     k = c.v.vals.len()
     while k > mark {
         k = k - 1usize
-        if lower.cx.is_slot(c, k) && !lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
+        let hdr = lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k))
+        if lower.cx.is_slot(c, k) && !hdr && lower.fs.close_at(c, k) == 0usize {
             let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
             let _f = lower.cx.def1(c, "unit", "scope.end ", sv)?
         }
@@ -636,14 +640,17 @@ fn lower.expr.expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     if (k == parse.ast.Kind.For) {
         return lower.loops.forx(env, c, p, src, n, t)
     }
+    if (k == parse.ast.Kind.With) {
+        return lower.fs.withx(env, c, p, src, n, t)
+    }
     if (k == parse.ast.Kind.Try) {
         return lower.opt.tryx(env, c, p, src, n, t)
     }
     if (k == parse.ast.Kind.Break) {
-        return lower.expr.jump(env, c, true, t)
+        return lower.expr.jump(env, c, p, src, true, t)
     }
     if (k == parse.ast.Kind.Continue) {
-        return lower.expr.jump(env, c, false, t)
+        return lower.expr.jump(env, c, p, src, false, t)
     }
     if (k == parse.ast.Kind.Return) {
         return lower.expr.retx(env, c, p, src, n)
@@ -1059,10 +1066,10 @@ fn lower.expr.join_params(c: &mut lower.cx.Cx, rty: &str, ks: &alloc.vec.Vec<usi
 end lower.expr.join_params
 
 // break (`is_break`) と continue: 可変の局所の現在の値を持って飛ぶ。
-fn lower.expr.jump(env: &types.env.Env, c: &mut lower.cx.Cx, is_break: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.jump(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], is_break: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let a = lower.cx.cur_vals(c, &c.lp.ks)?
     // ループの中で作ったスロットの局所を、逆順に解放して `scope.end` (Rust 版と同じ)。
-    lower.vec.exit_scope(env, c, c.v.vals.len(), c.lp.base)?
+    lower.vec.exit_scope(env, c, p, src, c.v.vals.len(), c.lp.base)?
     let mut s = lower.cx.own("br ")?
     if is_break {
         s.push_str(lower.cx.target(c.lp.exit, &a)?.as_str())?
@@ -1624,7 +1631,7 @@ fn lower.expr.retx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         let r = lower.expr.expr(env, c, p, src, n.a, c.s.ret_t)?
         v = r.v
     }
-    lower.vec.exit_drops(env, c, c.v.vals.len(), 0usize)?
+    lower.vec.exit_drops(env, c, p, src, c.v.vals.len(), 0usize)?
     let s = lower.cx.cat2("ret ", lower.cx.vs(v)?.as_str())?
     lower.cx.finish(c, s)?
     lower.expr.dummy(c, types.ty.NEVER)
@@ -1703,6 +1710,18 @@ fn lower.expr.scan(p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Ve
     }
     if k == parse.ast.Kind.Block {
         return lower.expr.scan_list(p, src, n.a, out, bor)
+    }
+    if k == parse.ast.Kind.Try {
+        return lower.expr.scan(p, src, n.a, out, bor)
+    }
+    if k == parse.ast.Kind.With {
+        // 束縛される名前は借用の扱い (スロット)。初期化・後始末・本体の中も見る。
+        if bor {
+            out.push(lower.cx.own(resolve.ast.tok_text(p, src, n.a))?)?
+        }
+        lower.expr.scan(p, src, n.c, out, bor)?
+        lower.expr.scan(p, src, n.d, out, bor)?
+        return lower.expr.scan(p, src, n.e, out, bor)
     }
     if k == parse.ast.Kind.ExprStmt {
         return lower.expr.scan(p, src, n.a, out, bor)
