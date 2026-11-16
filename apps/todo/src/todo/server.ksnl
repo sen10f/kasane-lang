@@ -32,6 +32,7 @@ fn todo.server.settle(handled: Result<(), todo.error.Error>) -> Result<(), todo.
     match handled {
         Ok(_u) => Ok(())
         Err(error.Error.Alloc(a)) => Err(error.Error.Alloc(a))
+        Err(error.Error.AuthFailed) => Ok(())
         Err(error.Error.BadRequest) => Ok(())
         Err(error.Error.Closed) => Ok(())
         Err(error.Error.Corrupt) => Err(error.Error.Corrupt)
