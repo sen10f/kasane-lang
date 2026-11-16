@@ -65,6 +65,6 @@ fn t.same(s: &alloc.string.String) -> &alloc.string.String uses [] panics never
     s
 end t.same
 
-fn t.wrap(s: &alloc.string.String) -> t.H uses [] panics never
+fn t.wrap['a](s: &'a alloc.string.String) -> t.H<'a> uses [] panics never
     t.H { r: s }
 end t.wrap

@@ -1,0 +1,20 @@
+// expect: E3002
+type t.P
+    v: i32
+end t.P
+
+impl core.ops.Drop for t.P
+fn t.P.drop(self: &mut t.P) -> () uses [] panics never impls core.ops.Drop
+    ()
+end t.P.drop
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main
+
+fn t.take(o: Option<t.P>) -> i32 uses [] panics never
+    match o {
+        Some(t.P { v: v }) => v
+        None => 0
+    }
+end t.take

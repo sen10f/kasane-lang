@@ -1,0 +1,12 @@
+// expect: E3020
+enum t.E['b]
+    A(&'b u32)
+end t.E
+
+fn t.f(x: &u32) -> t.E uses [] panics never
+    t.E.A(x)
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

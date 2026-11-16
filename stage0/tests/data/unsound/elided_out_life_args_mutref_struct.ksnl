@@ -1,0 +1,12 @@
+// expect: E3020
+type t.H['b]
+    r: &'b u32
+end t.H
+
+fn t.f(x: &mut u32) -> t.H uses [] panics never
+    t.H { r: x }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

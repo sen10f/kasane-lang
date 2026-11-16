@@ -3159,6 +3159,19 @@ impl<'a> Checker<'a> {
                 .filter(|(i, _)| b.get(i + lt.len()).map_or(true, |c| !(c.is_ascii_alphanumeric() || *c == b'_')))
                 .count()
         }
+        // 4.1: 出力位置の型パスは、ライフタイム引数を省略できない (入力位置だけ省略できる)。
+        let mut missing: Vec<String> = vec![];
+        self.missing_life_args(&self.def(di).ret.clone(), &mut missing);
+        if !missing.is_empty() {
+            let msg = format!(
+                "{}: the output type `{}` takes lifetime arguments that must be named in an output position (write `{}<'a>` and declare `'a`)",
+                self.def(di).name,
+                missing[0],
+                missing[0]
+            );
+            self.diag("E3020", msg, di, 0);
+            return;
+        }
         let d = self.def(di);
         let head = d.header.split(" uses ").next().unwrap_or("");
         if head.contains("['") {
@@ -3192,6 +3205,30 @@ impl<'a> Checker<'a> {
                 di,
                 0,
             );
+        }
+    }
+
+    /// 型 `t` の中の名義型のうち、ライフタイム引数の個数が定義より少ないもの (`-> t.H` で `type t.H['a]`) の名前を集める。
+    fn missing_life_args(&self, t: &V, out: &mut Vec<String>) {
+        if tag(t) == "named" {
+            let name = st(tel(t, 1));
+            let args = items(tel(t, 2));
+            if let Some(&i) = self.p.types.get(&name) {
+                let want = self.def(i).generics.iter().filter(|g| g.0 == "life").count();
+                let have = args.iter().filter(|a| tag(a) == "life").count();
+                if have < want {
+                    out.push(name);
+                }
+            }
+            for a in args {
+                self.missing_life_args(a, out);
+            }
+            return;
+        }
+        if let V::L(xs) = t {
+            for x in xs {
+                self.missing_life_args(x, out);
+            }
         }
     }
 
@@ -3550,19 +3587,25 @@ impl<'a> Checker<'a> {
 
     /// `Drop` を実装した型 (手書き・`derive [Drop]`) を所有値のままパターンで分解することはできない (4.4。分解は欄を取り出し、`drop` が走る前の姿を壊す)。
     fn check_drop_destructure(&mut self, pat: &V, ty: &V, line: usize) {
-        if !matches!(nname(pat), "PStruct" | "PVariant" | "PTuple") || tag(ty) != "named" {
-            return;
-        }
-        let name = st(tel(ty, 1));
-        // 欄を束縛しないパターン (`Leaf`、`Node(_)`) は何も取り出さない。
-        let mut binds = vec![];
-        pat_binds(pat, &mut binds);
-        if !binds.is_empty() && self.p.types.contains_key(&name) && self.implements(&name, "core.ops.Drop") {
-            self.tdiag(
-                "E3002",
-                format!("cannot destructure `{name}` by value: it implements Drop, so its fields cannot be moved out (4.4); match on a reference or use accessors"),
-                line,
-            );
+        // 入れ子のパターン (`Some(P { v: v })`・`(P { v: v }, 1)`) も同じ規則を、その位置の型で当てる。
+        let mut nodes = vec![];
+        self.bind_pat_types_n(pat, ty, &mut vec![], &mut nodes);
+        let mut reported: HashSet<String> = HashSet::new();
+        for (p, t) in nodes {
+            if !matches!(nname(&p), "PStruct" | "PVariant" | "PTuple") || tag(&t) != "named" {
+                continue;
+            }
+            let name = st(tel(&t, 1));
+            // 欄を束縛しないパターン (`Leaf`、`Node(_)`) は何も取り出さない。
+            let mut binds = vec![];
+            pat_binds(&p, &mut binds);
+            if !binds.is_empty() && self.p.types.contains_key(&name) && self.implements(&name, "core.ops.Drop") && reported.insert(name.clone()) {
+                self.tdiag(
+                    "E3002",
+                    format!("cannot destructure `{name}` by value: it implements Drop, so its fields cannot be moved out (4.4); match on a reference or use accessors"),
+                    line,
+                );
+            }
         }
     }
 
@@ -4648,6 +4691,14 @@ impl<'a> Checker<'a> {
     /// それ以外 (PVariant・PStruct・PRef・PLit や、型が決まらないとき) は何も入れず、
     /// 呼び出し側の既定 (V::Nil) に任せる (型が決まらない所では黙る)。
     fn bind_pat_types(&self, p: &V, ty: &V, out: &mut Vec<(String, V)>) {
+        self.bind_pat_types_n(p, ty, out, &mut vec![]);
+    }
+
+    /// `bind_pat_types` と同じ。分解するパターンの節点 (タプル・バリアント・構造体) と、その節点の型も `nodes` に集める。
+    fn bind_pat_types_n(&self, p: &V, ty: &V, out: &mut Vec<(String, V)>, nodes: &mut Vec<(V, V)>) {
+        if matches!(nname(p), "PTuple" | "PVariant" | "PStruct") {
+            nodes.push((p.clone(), ty.clone()));
+        }
         match nname(p) {
             "PBind" => out.push((st(&nf(p)[0]), ty.clone())),
             "PTuple" => {
@@ -4664,7 +4715,7 @@ impl<'a> Checker<'a> {
                     if nname(sub) == "PWild" && !is_nil(&et) {
                         out.push(("_".to_string(), et.clone()));
                     }
-                    self.bind_pat_types(sub, &et, out);
+                    self.bind_pat_types_n(sub, &et, out, nodes);
                 }
             }
             "PVariant" => {
@@ -4711,7 +4762,7 @@ impl<'a> Checker<'a> {
                     if nname(sub) == "PWild" && !is_nil(&pt) {
                         out.push(("_".to_string(), pt.clone()));
                     }
-                    self.bind_pat_types(sub, &pt, out);
+                    self.bind_pat_types_n(sub, &pt, out, nodes);
                 }
             }
             "PStruct" => {
@@ -4726,7 +4777,7 @@ impl<'a> Checker<'a> {
                     if nname(sub) == "PWild" && !is_nil(&ft) {
                         out.push(("_".to_string(), ft.clone()));
                     }
-                    self.bind_pat_types(sub, &ft, out);
+                    self.bind_pat_types_n(sub, &ft, out, nodes);
                 }
             }
             _ => {}

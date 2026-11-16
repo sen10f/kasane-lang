@@ -298,7 +298,7 @@ fn std.json.decode_len(v: std.json.Value) -> Result<usize, std.json.Error> uses 
     }
 end std.json.decode_len
 
-fn std.json.decode_payload(payload: Option<std.json.Value>) -> Result<std.json.Value, std.json.Error> uses [] panics never pub
+fn std.json.decode_payload['a](payload: Option<std.json.Value<'a>>) -> Result<std.json.Value<'a>, std.json.Error> uses [] panics never pub
     match payload {
         Some(x) => Ok(x)
         None => Err(std.json.Error.MissingPayload)
