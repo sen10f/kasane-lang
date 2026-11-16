@@ -419,6 +419,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                         eb = lower.opt.bind(env, c, ename, pv, false, pt)?
                         noncopy = !lower.own.is_copy(env, c, pt)
                         early = true
+                        bound = true
                     }
                     let tr = lower.cx.def(c, "bool", "const.bool true")?
                     let both = lower.expr.two(cond, tr)?

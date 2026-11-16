@@ -1594,8 +1594,9 @@ fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: pars
     if lower.own.is_copy(env, c, t) {
         lower.own.emit(c, loc - 1usize, "own.use ")?
     } else {
-        if lower.drop.flag_of(c, loc - 1usize) != 0usize && !c.s.peek {
-            lower.cx.fail(c, "所有物の欄の部分的な移動 (未対応)")?
+        if !c.s.peek && lower.drop.owns(env, c, t)? {
+            // 所有物の欄を移した: 局所は残りの欄も含めて解放しない (Rust 版は移した欄を空にして残りを解放する)。
+            lower.drop.moved(c, loc - 1usize)?
         }
         lower.own.emit(c, loc - 1usize, "own.part ")?
     }

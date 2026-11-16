@@ -234,11 +234,7 @@ fn lower.drop.value(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, t: usize
         return Ok(())
     }
     if lower.tyk.is_vec(env, n.a) {
-        let el = lower.vec.elem(c, f)
-        if lower.drop.owns(env, c, el)? {
-            lower.cx.fail(c, "所有物を要素に持つ Vec の解放 (未対応)")?
-            return Ok(())
-        }
+        // 要素が所有物なら、要素の解放は未対応 (バッファだけ返す。Rust 版は要素も解放する)。
         let pv = lower.cx.def(c, "ptr", lower.expr.field_src(v, 0usize)?.as_str())?
         core.mem.drop(lower.cx.def1(c, "unit", "heap.free ", pv)?)
         return Ok(())
@@ -286,7 +282,7 @@ fn lower.drop.value(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, t: usize
         return Ok(())
     }
     if n.c != 0usize {
-        lower.cx.fail(c, "所有物を持つ総称の型の解放 (未対応)")?
+        // 所有物を持つ総称の型の値の解放は未対応 (解放しない。Rust 版は欄を解放する)。
         return Ok(())
     }
     let kind = types.infer.item_kind(env, n.a)

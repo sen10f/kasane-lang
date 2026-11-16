@@ -4,6 +4,8 @@ fn emit.rt.assemble(g: &mut emit.G, entry: &str, nparams: usize) -> () uses [all
     emit.util.push_str(&mut g.outs.out, "declare i32 @dprintf(i32, ptr, ...)\ndeclare void @exit(i32) noreturn\n")
     emit.util.push_str(&mut g.outs.out, "declare ptr @malloc(i64)\ndeclare ptr @realloc(ptr, i64)\n")
     emit.util.push_str(&mut g.outs.out, "declare void @free(ptr)\ndeclare i64 @write(i32, ptr, i64)\n")
+    emit.util.push_str(&mut g.outs.out, "declare i64 @ksn_utf8_valid(ptr, i64)\ndeclare i64 @ksn_rt_sys_arg(i64, ptr)\n")
+    emit.util.push_str(&mut g.outs.out, "declare i64 @ksn_rt_sys_arg_count()\n")
     emit.util.push_str(&mut g.outs.out, g.outs.intr.as_str())
     emit.util.push_str(&mut g.outs.out, "\n@ksn.depth = internal thread_local global i64 0\n")
     emit.rt.cstr(g, "ksn.fmt.so", "stack overflow\n")
