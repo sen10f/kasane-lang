@@ -1,0 +1,21 @@
+// expect: E3010
+type t.Hold['a, 'b]
+    fst: &'a u32
+    opt: Option<&'b u32>
+end t.Hold
+
+fn t.Hold.opt_via_iflet_as_fst['a, 'b](self: &t.Hold<'a, 'b>, _y: &t.Hold<'a, 'b>, fb: &'a u32) -> &'a u32 uses [] panics never
+    if let Some(r) = self.opt {
+        r
+    } else {
+        fb
+    }
+end t.Hold.opt_via_iflet_as_fst
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = 1u32
+    let b = 2u32
+    let p = t.Hold { fst: &a, opt: Some(&b) }
+    core.mem.drop(*t.Hold.opt_via_iflet_as_fst(&p, &p, &a))
+    Ok(())
+end t.main

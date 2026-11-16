@@ -1,0 +1,21 @@
+// expect: E3010
+type t.Outer['a, 'b]
+    inner: t.Pair<'a, 'b>
+end t.Outer
+
+type t.Pair['a, 'b]
+    fst: &'a u32
+    snd: &'b u32
+end t.Pair
+
+fn t.Outer.get_snd_as_fst['a, 'b](self: &t.Outer<'a, 'b>, _y: &t.Outer<'a, 'b>) -> &'a u32 uses [] panics never
+    self.inner.snd
+end t.Outer.get_snd_as_fst
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = 1u32
+    let b = 2u32
+    let p = t.Outer { inner: t.Pair { fst: &a, snd: &b } }
+    core.mem.drop(*t.Outer.get_snd_as_fst(&p, &p))
+    Ok(())
+end t.main

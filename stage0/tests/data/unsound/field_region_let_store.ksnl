@@ -1,0 +1,23 @@
+// expect: E3010
+type t.Pair['a, 'b] derive [Clone, Copy]
+    fst: &'a u32
+    snd: &'b u32
+end t.Pair
+
+fn t.Pair.set_snd_via_let['a, 'b](dst: &mut t.Pair<'a, 'b>, src: &t.Pair<'a, 'b>, _y: &t.Pair<'a, 'b>) -> () uses [] panics never
+    let r = src.fst
+    dst.snd = r
+end t.Pair.set_snd_via_let
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = 1u32
+    let b = 2u32
+    let mut p1 = t.Pair { fst: &a, snd: &b }
+    let p2 = t.Pair { fst: &a, snd: &b }
+    let p3 = t.Pair { fst: &a, snd: &b }
+    t.Pair.set_snd_via_let(&mut p1, &p2, &p3)
+    core.mem.drop(p1)
+    core.mem.drop(p2)
+    core.mem.drop(p3)
+    Ok(())
+end t.main
