@@ -1,0 +1,27 @@
+// 穴候補: &mut u32 (vec の要素) を構造体欄に隠して move でクロージャへ取り込み、push で再確保させてから呼ぶ
+type t.RefCell['a]
+    p: &'a mut u32
+end t.RefCell
+
+fn t.bad() -> u32 uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(1u32))
+    let s = v.as_mut_slice()
+    let r = core.slice.get_mut(s, 0usize)
+    let x = match r {
+        Some(x) => x
+        None => return 0u32
+    }
+    let cell = t.RefCell { p: x }
+    let c = fn() -> u32 capture [move cell] {
+        *cell.p
+    }
+    core.mem.drop(c())
+    core.mem.drop(v.push(2u32))
+    0u32
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    core.mem.drop(t.bad())
+    Ok(())
+end t.main
