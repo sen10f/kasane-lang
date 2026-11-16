@@ -840,7 +840,8 @@ impl<'a> Lw<'a> {
         let c = &self.p.defs[ci];
         // `for x in K.split(..)` の `K` は下ろしが作った式 (番号 0) で型表にない。定数の宣言の型を使う。
         let ty = if nid(e) == 0 {
-            match coll::value_ty(self, &from_v(&c.ret, &HashSet::new())) {
+            let src = from_v(&c.ret, &HashSet::new());
+            match coll::value_ty(self, &src).or_else(|| self.conv_t(&src)) {
                 Some(t) => t,
                 None => return self.err(nline(e), format!("定数 {} の型が決まらない", c.name)),
             }
@@ -854,6 +855,16 @@ impl<'a> Lw<'a> {
                     return self.err(nline(e), "定数の値が型の範囲にない");
                 }
                 Ok(self.emit(ty, Op::Const(v)))
+            }
+            // 浮動小数の定数 (`f64.from_bits(0x7ff8000000000000u64)`): ビット列の整数定数を `Bitcast` で浮動小数にする。
+            Some(init) if ty.is_float() && nname(init) == "Call" && matches!(nname(&nf(init)[0]), "Path")
+                && strs(&nf(&nf(init)[0])[0]) == [ty.name().to_string(), "from_bits".to_string()]
+                && items(&nf(init)[1]).len() == 1
+                && nname(&items(&nf(init)[1])[0]) == "Lit" && st(&nf(&items(&nf(init)[1])[0])[0]) == "int" => {
+                let bits = parse_int(&nf(&items(&nf(init)[1])[0])[1]).ok_or_else(|| "定数の値が扱えない".to_string())?;
+                let src = if ty == Ty::F64 { Ty::U64 } else { Ty::U32 };
+                let a = self.emit(src, Op::Const(bits));
+                Ok(self.emit(ty, Op::Bitcast { src, a }))
             }
             Some(init) if nname(init) == "Lit" && st(&nf(init)[0]) == "str" && ty == self.fat_ty() => {
                 coll::str_lit(self, init)
@@ -1073,6 +1084,9 @@ impl<'a> Lw<'a> {
         if let Some(r) = self.const_str_call(e) {
             return r;
         }
+        if let Some(r) = self.const_scalar_call(e) {
+            return r;
+        }
         if let Some(r) = self.trait_side_call(e) {
             return r;
         }
@@ -1229,6 +1243,11 @@ impl<'a> Lw<'a> {
                         let args = items(&f[1]).to_vec();
                         return coll::method_on(self, e, line, None, k, recv, &meth, &args);
                     }
+                }
+                // `x.f.checked_*(..)` / `x.f.trunc_to_*()`: フィールドの数値の受け手。
+                if enum_lower::is_checked_name(&meth) {
+                    let args = items(&f[1]).to_vec();
+                    return self.checked_with(e, recv, &meth, &args);
                 }
                 let aop = match meth.as_str() {
                     "wrapping_add" => Aop::Add,

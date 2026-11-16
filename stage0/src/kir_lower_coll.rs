@@ -1568,7 +1568,7 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     match segs.as_slice() {
         ["alloc", "vec", "Vec", "new"] => Some(new_header(lw, e)),
         ["alloc", "raw", "Buf", "new"] => Some(super::buf::new(lw, e)),
-        ["alloc", "raw", "Buf", "with_capacity"] => Some(super::buf::with_capacity(lw, e)),
+        ["alloc", "raw", "Buf", "with_capacity"] | ["alloc", "vec", "Vec", "with_capacity"] => Some(super::buf::with_capacity(lw, e)),
         ["alloc", "string", "String", "new"] => Some(new_header(lw, e)),
         ["alloc", "string", "String", "from_str"] => {
             Some(lw.from_str_call(e, items(&f[1]), nline(e)))
@@ -2210,10 +2210,11 @@ pub(crate) fn callable(lw: &mut Lw, f: &V) -> LR<(String, Vec<Ty>, Ty)> {
 /// `s.sub(a, b)` (要素がスカラーのスライス): `a <= b <= len` なら `Some(s[a..b])`、外なら `None` (panic しない。木走査の `sub` と同じ)。
 /// 結果は `Option<&[T]>` で、部分スライスの値 `fat` (`{ptr, len}`) をペイロードに持つ (設計_KIR.md 11.6)。
 pub(super) fn slice_sub(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
-    let Kind::Slice(Some(elem)) = kind else {
-        return lw.err(line, "sub の対象は要素型の分かるスライスだけ段階 1 の対象");
+    let (seq, elem) = match kind {
+        Kind::Slice(Some(e)) => (Seq::Fat(h), *e),
+        Kind::Vec(Some(e)) => (Seq::Hdr(h), *e),
+        _ => return lw.err(line, "sub の対象は要素型の分かるスライスか Vec だけ段階 1 の対象"),
     };
-    let elem = *elem;
     let Some(sz) = size_of(elem) else {
         return lw.err(line, format!("sub の要素の型 {} は段階 1 の対象外", elem.name()));
     };
@@ -2230,7 +2231,7 @@ pub(super) fn slice_sub(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V
         return lw.err(line, "fat の型が Option のペイロードにならない");
     };
     let opt = Ty::Opt(fp);
-    let (len, base) = Seq::Fat(h).len_and_base(lw, None);
+    let (len, base) = seq.len_and_base(lw, None);
     let le_ab = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::Usize, a, b: b });
     let le_bl = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::Usize, a: b, b: len });
     let ok = lw.emit(Ty::Bool, Op::Bool(BoolOp::And, le_ab, le_bl));
@@ -2812,6 +2813,8 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
                     Ok(Src::Named(n, a)) if n == "core.slice.Iter" => a.into_iter().next(),
                     Ok(Src::Ref(_, i)) => match *i {
                         Src::Named(n, a) if is_vecn(&n) => a.into_iter().next(),
+                        // `v.as_slice()` の型は `&[T]`
+                        Src::Slice(el) => Some(*el),
                         _ => None,
                     },
                     _ => None,

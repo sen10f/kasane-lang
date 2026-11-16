@@ -176,6 +176,18 @@ pub fn conv(src: Ty, dst: Ty, a: i128) -> i128 {
         // 符号が変わる変換 (`i64` の負の値を `u64` へ) も、LLVM と同じくビットの読み直しで型の範囲に入れる (負のままにしない)。
         return if dst.bits() < src.bits() || src.signed() != dst.signed() { dst.wrap(a) } else { a };
     }
+    if src.is_float() && dst.is_int() {
+        // 飽和し、NaN は 0 (Rust の `as` と LLVM の `fptosi.sat` / `fptoui.sat` と同じ)。
+        let x = to_f64(src, a);
+        let v = if x.is_nan() {
+            0
+        } else if dst.signed() {
+            (x as i64) as i128
+        } else {
+            (x as u64) as i128
+        };
+        return v.clamp(dst.min(), dst.max());
+    }
     if src.is_int() {
         let x = if src == Ty::U128 { a as u128 as f64 } else { a as f64 };
         return from_f64(dst, x);

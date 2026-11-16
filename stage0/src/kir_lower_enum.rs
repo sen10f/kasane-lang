@@ -74,7 +74,121 @@ fn checked_op(m: &str) -> Option<Aop> {
     })
 }
 
+/// `checked_*` と `trunc_to_*` の名前か (受け手が式・フィールドのときの入口の判定)。
+pub(super) fn is_checked_name(m: &str) -> bool {
+    checked_op(m).is_some() || is_checked_extra(m)
+}
+
+/// `checked_shl` / `checked_shr` / `checked_abs` (範囲の検査が分岐になる族。`checked_neg` は既存のテストが対象外の例にしているので未対応のまま)。
+fn is_checked_extra(m: &str) -> bool {
+    matches!(m, "checked_shl" | "checked_shr" | "checked_abs") || m.starts_with("trunc_to_")
+}
+
 impl<'a> Lw<'a> {
+    /// `recv.checked_{shl,shr,abs}(..)`: 条件が成り立つときだけ `Some(値)`、そうでなければ `None`。
+    /// 条件と値は木走査 (`natives.rs`) と同じ: シフトは量が型の幅未満のとき `wrapping_*`、
+    /// `abs` は符号付きで MIN でない。
+    fn checked_extra(&mut self, e: &V, recv: VId, method: &str, args: &[V]) -> LR<Option<VId>> {
+        let line = nline(e);
+        let rt = self.vty(recv);
+        if let Some(dst) = method.strip_prefix("trunc_to_") {
+            return self.trunc_to(e, recv, dst, args);
+        }
+        if !rt.is_int() || rt.bits() > 64 {
+            return self.err(line, format!("{} の受け手が 64 ビット以下の整数ではない", method));
+        }
+        let shift = matches!(method, "checked_shl" | "checked_shr");
+        if args.len() != usize::from(shift) {
+            return self.err(line, format!("{} の引数の個数が違う", method));
+        }
+        if method == "checked_abs" && !rt.signed() {
+            return self.err(line, "checked_abs の受け手が符号付きではない");
+        }
+        let res = self.ty_of(e)?;
+        let want = Ty::Opt(Pay::of(rt).expect("整数はスカラー"));
+        if res != want {
+            return self.err(line, format!("{} の結果の型 {} が {} と違う", method, res.name(), want.name()));
+        }
+        let amount = if shift {
+            let Some(n) = self.expr(&args[0])? else { return Ok(None) };
+            if self.vty(n) != Ty::U32 {
+                return self.err(line, format!("{} の量が u32 ではない", method));
+            }
+            Some(n)
+        } else {
+            None
+        };
+        let ok = match (method, amount) {
+            (_, Some(n)) => {
+                let lim = self.emit(Ty::U32, Op::Const(rt.bits() as i128));
+                self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::U32, a: n, b: lim })
+            }
+            _ => {
+                let min = self.emit(rt, Op::Const(rt.min()));
+                self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ne, ty: rt, a: recv, b: min })
+            }
+        };
+        let (yes, _) = self.new_block(&[]);
+        let (no, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[res]);
+        self.branch(ok, (yes, vec![]), (no, vec![]));
+        self.cur = Some(yes);
+        let v = match (method, amount) {
+            ("checked_shl", Some(n)) => self.emit(rt, Op::Shift { left: true, a: recv, n }),
+            ("checked_shr", Some(n)) => self.emit(rt, Op::Shift { left: false, a: recv, n }),
+            _ => {
+                let neg = self.emit(rt, Op::Neg { a: recv, mode: crate::kir::Mode::Wrap });
+                self.emit(rt, Op::MinMax { max: true, a: recv, b: neg })
+            }
+        };
+        let some = self.emit(res, Op::Some(v));
+        self.goto(join, vec![some]);
+        self.cur = Some(no);
+        let none = self.emit(res, Op::Const(0));
+        self.goto(join, vec![none]);
+        self.cur = Some(join);
+        Ok(Some(jp[0]))
+    }
+
+    /// `x.trunc_to_<int>()` (`x` は `f32` / `f64`): 0 へ丸めた値が整数型の範囲にあれば `Some`、NaN・無限大・範囲外は `None`。
+    /// 範囲は丸めた値と `[min, max + 1)` (どちらも 2 の冪で浮動小数に正確に載る) の比較で決める (NaN は順序つきの比較で偽になる)。
+    /// 取り出しは飽和する `Conv` (範囲内だけを通るので値は正確)。
+    fn trunc_to(&mut self, e: &V, recv: VId, dst: &str, args: &[V]) -> LR<Option<VId>> {
+        let line = nline(e);
+        let ft = self.vty(recv);
+        let Some(it) = Ty::parse(dst).filter(|t| t.is_int() && t.bits() <= 64) else {
+            return self.err(line, format!("trunc_to_{} は段階 1 の対象外 (64 ビット以下の整数だけ)", dst));
+        };
+        if !ft.is_float() || !args.is_empty() {
+            return self.err(line, "trunc_to_* の受け手が浮動小数ではない");
+        }
+        let res = self.ty_of(e)?;
+        let want = Ty::Opt(Pay::of(it).expect("整数はスカラー"));
+        if res != want {
+            return self.err(line, format!("trunc_to_{} の結果の型 {} が {} と違う", dst, res.name(), want.name()));
+        }
+        let fbits = |v: f64| if ft == Ty::F32 { (v as f32).to_bits() as i128 } else { v.to_bits() as i128 };
+        let t = self.emit(ft, Op::FUn { f: crate::kir::FUn::Trunc, src: ft, a: recv });
+        let lo = self.emit(ft, Op::Const(fbits(it.min() as f64)));
+        let hi = self.emit(ft, Op::Const(fbits(it.max() as f64 + 1.0)));
+        let c_lo = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: ft, a: t, b: lo });
+        let c_hi = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: ft, a: t, b: hi });
+        let ok = self.emit(Ty::Bool, Op::Bool(BoolOp::And, c_lo, c_hi));
+        let (yes, _) = self.new_block(&[]);
+        let (no, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[res]);
+        self.branch(ok, (yes, vec![]), (no, vec![]));
+        self.cur = Some(yes);
+        let v = self.emit(it, Op::Conv { src: ft, a: t });
+        let some = self.emit(res, Op::Some(v));
+        self.goto(join, vec![some]);
+        self.cur = Some(no);
+        let none = self.emit(res, Op::Const(0));
+        self.goto(join, vec![none]);
+        self.cur = Some(join);
+        Ok(Some(jp[0]))
+    }
+
     /// `None` (型は式の型表から決まる `Option<P>`)。
     pub(super) fn none_val(&mut self, e: &V) -> LR<VId> {
         let t = self.ty_of(e)?;
@@ -121,7 +235,7 @@ impl<'a> Lw<'a> {
                 return Some(self.map_err(e, recv, &args));
             }
         }
-        if segs.len() == 2 && checked_op(&segs[1]).is_some() {
+        if segs.len() == 2 && (checked_op(&segs[1]).is_some() || is_checked_extra(&segs[1])) {
             if let Some(s) = self.lookup(&segs[0]) {
                 // 参照を取られた局所は `load` を通して値を読む (`read_slot`)。
                 let recv = self.read_slot(s);
@@ -135,7 +249,7 @@ impl<'a> Lw<'a> {
     /// `e.checked_*(b)` (受け手が式)、`e.is_some()` などの Option / Result のメソッド。他のメソッドは `None` で、親の処理に任せる。
     pub(super) fn builtin_mcall(&mut self, e: &V) -> Option<LR<Option<VId>>> {
         let m = st(&nf(e)[1]);
-        if m.starts_with("checked_") {
+        if m.starts_with("checked_") || m.starts_with("trunc_to_") {
             return Some(self.checked_mcall(e));
         }
         if m == "map_err" {
@@ -349,8 +463,11 @@ impl<'a> Lw<'a> {
     }
 
     /// 整数の受け手 `recv` に対する `checked_*(args[0])`。結果は `Option<受け手の型>`。
-    fn checked_with(&mut self, e: &V, recv: VId, method: &str, args: &[V]) -> LR<Option<VId>> {
+    pub(super) fn checked_with(&mut self, e: &V, recv: VId, method: &str, args: &[V]) -> LR<Option<VId>> {
         let line = nline(e);
+        if is_checked_extra(method) {
+            return self.checked_extra(e, recv, method, args);
+        }
         let Some(op) = checked_op(method) else {
             return self.err(line, format!("メソッド {} は段階 1 の対象外", method));
         };

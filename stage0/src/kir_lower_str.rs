@@ -8,7 +8,7 @@
 //!
 //! `kir_lower.rs` の子モジュールとして `Lw` の非公開の項目を使う。
 
-use crate::check::{items, nf, nlineno as nline};
+use crate::check::{items, nf, nlineno as nline, nname, st};
 use crate::kir::{Aop, BoolOp, Cc, Mode, Op, Pay, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
@@ -713,8 +713,31 @@ impl<'a> Lw<'a> {
         if args.len() != 1 {
             return self.err(line, "core.str.from_utf8 の引数は 1 個のはず");
         }
-        let Some(bytes) = self.expr(&args[0])? else { return Ok(None) };
+        // `&[0xffu8, 0xfeu8]` (配列リテラルへの参照): 配列の値がすでにスライスと同じ `{ptr, len}` なので、それをそのまま検査する。
+        let a0 = &args[0];
+        let bytes = if nname(a0) == "Unary" && st(&nf(a0)[0]) == "&" && nname(&nf(a0)[1]) == "ArrayE" {
+            let Some((v, _)) = self.array_lit(&nf(a0)[1])? else { return Ok(None) };
+            v
+        } else if let Some(v) = self.array_local_fat(a0) {
+            v
+        } else {
+            let Some(v) = self.expr(a0)? else { return Ok(None) };
+            v
+        };
         self.from_utf8_of(bytes, line)
+    }
+
+    /// `&a` (`a` は配列リテラルで作ったスライスの局所): 局所が持つスライスの値 (`fat`)。そうでなければ `None`。
+    fn array_local_fat(&mut self, a: &V) -> Option<VId> {
+        if nname(a) != "Unary" || st(&nf(a)[0]) != "&" {
+            return None;
+        }
+        let name = super::path1(&nf(a)[1])?;
+        let s = self.lookup(&name)?;
+        if !matches!(self.coll.kinds.get(&s), Some(coll::Kind::Slice(Some(_)))) || self.slots[s].1 != self.fat_ty() {
+            return None;
+        }
+        Some(if self.is_mem_val(self.slots[s].0) { self.read_slot(s) } else { self.slots[s].0 })
     }
 
     /// `&[u8]` の値 `bytes` (`fat`) を UTF-8 として検査し、`Result<&str, Utf8Error>` にする。
