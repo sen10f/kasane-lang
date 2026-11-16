@@ -16,7 +16,7 @@
 //!   呼び先のヘッダ (`flows`) で引数から流れる。
 
 use crate::check::{st, tag, tel};
-use crate::kir::{operands, AggKind, Func, Module, Op, OwnKind, Term, Ty, VId};
+use crate::kir::{operands, Inst, AggKind, Func, Module, Op, OwnKind, Term, Ty, VId};
 use crate::kir_lower::Lowered;
 use crate::parser::V;
 use crate::program::{Def, Program, Target};
@@ -726,7 +726,7 @@ impl<'a> An<'a> {
                 let key = callee.split('<').next().unwrap_or(callee);
                 match self.callee.get(key) {
                     Some(h) if h.params.len() == args.len() => {
-                        if may_hold(self.aggs, t) && h.ret_has_ref {
+                        if (may_hold(self.aggs, t) || args.iter().any(|a| !self.org[*a as usize].is_empty())) && h.ret_has_ref {
                             for (j, a) in args.iter().enumerate() {
                                 if h.flows[j] {
                                     if h.ret_tp_only && h.ref_param[j] {
@@ -1120,6 +1120,14 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                     if let Op::Load(p) = &b.insts[ii - 1].op {
                         if matches!(b.insts[ii - 1].ty, Ty::Agg(_)) {
                             agg_moves.entry((bi, ii)).or_insert(*p);
+                        }
+                    }
+                    // `with` の後始末式 (`r.close()` / `t.close(r)`) は、`load p` で渡した呼び出しの後に `own.consume` が来る。
+                    if let Op::Call { args, .. } = &b.insts[ii - 1].op {
+                        for &x in args {
+                            if let Some(Inst { op: Op::Load(p), ty: Ty::Agg(_), .. }) = b.insts[..ii - 1].iter().rev().find(|k| k.dst == x) {
+                                agg_moves.entry((bi, ii)).or_insert(*p);
+                            }
                         }
                     }
                 }

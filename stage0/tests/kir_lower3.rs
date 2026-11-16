@@ -3072,3 +3072,231 @@ fn kir_borrowck_drop_owner_kills_field_borrows() {
         assert_eq!(c.is_empty(), *ok, "case {}: KIR codes {:?}\n{}", i, c, body);
     }
 }
+
+/// KIR の検査だけ (`KSN_BORROWCK=kir-only`) の結果: (`checked` か, 出た診断コード)。
+fn kir_only_outcome(dir: &Path) -> (bool, Vec<String>) {
+    let cache = std::env::temp_dir().join(format!("ksn_kironly_oc_cache_{}", std::process::id()));
+    let o = run_with_env(&["check", "--json"], dir, &[("KSN_BORROWCK", "kir-only"), ("KSN_CACHE_DIR", cache.to_str().unwrap())]);
+    let checked = text(&o.stderr).lines().any(|l| l.starts_with("kir-borrowck: checked"));
+    (checked, codes(&text(&o.stdout)))
+}
+
+/// 容れ物から取り出した値 (`pop` / `remove` / `&mut` 越しの `pop`) が運ぶ要素の借用、`with` の本体の値が関数を通して運ぶ束縛の借用、
+/// 総称の関数 (`T` / タプルに包んだ `T`) を通した借用は、KIR の検査だけでも E3010 で拒む (見逃して「checked」にしない)。
+#[test]
+fn kir_only_rejects_borrows_through_containers_generics_and_with() {
+    let cases: Vec<(&str, &str)> = vec![
+        ("pop1", r#"type t.H['a]
+    r: &'a u64
+end t.H
+fn t.bad() -> u64 uses [alloc] panics never
+    let mut a = 5u64
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(t.H { r: &a }))
+    let h = v.pop()
+    a = 6u64
+    match h {
+        Some(x) => *x.r
+        None => 0u64
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+"#),
+        ("pop2", r#"type t.H['a]
+    r: &'a u64
+end t.H
+fn t.bad() -> u64 uses [alloc] panics never
+    let mut a = 5u64
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(t.H { r: &a }))
+    let h = v.remove(0usize)
+    a = 6u64
+    match h {
+        Some(x) => *x.r
+        None => 0u64
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+"#),
+        ("pop3", r#"type t.H['a]
+    r: &'a u64
+end t.H
+fn t.take['a](v: &mut alloc.vec.Vec<t.H<'a>, std.alloc.System>) -> Option<t.H<'a>> uses [] panics never
+    v.pop()
+end t.take
+fn t.bad() -> u64 uses [alloc] panics never
+    let mut a = 5u64
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(t.H { r: &a }))
+    let h = t.take(&mut v)
+    a = 6u64
+    match h {
+        Some(x) => *x.r
+        None => 0u64
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+"#),
+        ("gid", r#"fn t.id[T](x: T) -> T uses [] panics never
+    x
+end t.id
+fn t.bad() -> u64 uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(1u64))
+    let r = t.id(v.get(0usize))
+    core.mem.drop(v.push(2u64))
+    match r {
+        Some(x) => *x
+        None => 0u64
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+"#),
+        ("gtup", r#"fn t.fst[A, B](p: (A, B)) -> A uses [] panics never
+    let (a, b) = p
+    core.mem.drop(b)
+    a
+end t.fst
+fn t.bad() -> u64 uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(1u64))
+    let r = t.fst((v.get(0usize), 1u32))
+    core.mem.drop(v.push(2u64))
+    match r {
+        Some(x) => *x
+        None => 0u64
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+"#),
+        ("wfn", r#"type t.Res linear
+    id: u32
+end t.Res
+fn t.Res.shut(self: t.Res) -> () uses [] panics never
+    let t.Res { id: id } = self
+    core.mem.drop(id)
+end t.Res.shut
+fn t.wrap(x: &t.Res) -> &t.Res uses [] panics never
+    x
+end t.wrap
+fn t.bad() -> u32 uses [] panics never
+    let p = with r = t.Res { id: 1u32 } close r.shut() {
+        t.wrap(&r)
+    }
+    p.id
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+"#),
+        ("wfn3", r#"type t.Res linear
+    id: u32
+end t.Res
+fn t.Res.shut(self: t.Res) -> () uses [] panics never
+    let t.Res { id: id } = self
+    core.mem.drop(id)
+end t.Res.shut
+fn t.wrap(x: &t.Res) -> &t.Res uses [] panics never
+    x
+end t.wrap
+fn t.bad() -> u32 uses [] panics never
+    let p = with r = t.Res { id: 1u32 } close r.shut() {
+        Some(t.wrap(&r))
+    }
+    match p {
+        Some(q) => q.id
+        None => 0u32
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+"#),
+    ];
+    for (name, src) in cases {
+        let t = Tmp::new(&format!("kironly_oc_{}", name), src);
+        let (checked, c) = kir_only_outcome(&t.0);
+        assert!(checked && c.iter().any(|x| x == "E3010"), "{}: checked={} codes={:?}", name, checked, c);
+    }
+}
+
+/// 下ろせない形 (要素が参照の `Vec` など) は、「checked で診断なし」ではなく unknown (検査しない) になる。
+#[test]
+fn kir_only_unlowerable_borrow_forms_are_unknown_not_checked_clean() {
+    let cases: Vec<(&str, &str)> = vec![
+        ("pop4", r#"fn t.bad() -> u64 uses [alloc] panics never
+    let mut a = 5u64
+    let mut v: alloc.vec.Vec<&u64, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(&a))
+    let h = v.pop()
+    a = 6u64
+    match h {
+        Some(x) => *x
+        None => 0u64
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+"#),
+        ("pop5", r#"fn t.bad() -> u64 uses [alloc] panics never
+    let mut a = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut v: alloc.vec.Vec<&alloc.string.String<std.alloc.System>, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(&a))
+    let h = v.pop()
+    a = alloc.string.String.new(std.alloc.SYSTEM)
+    match h {
+        Some(x) => 1u64
+        None => 0u64
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+"#),
+        ("gcc3", r#"fn t.bad() -> u64 uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(1u64))
+    let c = fn() -> u64 capture [&v] {
+        let d = fn() -> u64 capture [&v] {
+            match v.get(0usize) {
+                Some(x) => *x
+                None => 0u64
+            }
+        }
+        d()
+    }
+    core.mem.drop(v.push(2u64))
+    c()
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+"#),
+    ];
+    for (name, src) in cases {
+        let t = Tmp::new(&format!("kironly_unk_{}", name), src);
+        let (checked, c) = kir_only_outcome(&t.0);
+        assert!(!checked || c.iter().any(|x| x == "E3010"), "{}: checked clean (codes {:?})", name, c);
+    }
+}
