@@ -1728,6 +1728,10 @@ fn lower.expr.scan(p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Ve
             }
         }
     }
+    if k == parse.ast.Kind.For {
+        lower.expr.scan(p, src, n.b, out, bor)?
+        return lower.expr.scan(p, src, n.c, out, bor)
+    }
     if k == parse.ast.Kind.Index && bor {
         let ib = parse.ast.get(&p.ast, n.a)
         if ib.kind == parse.ast.Kind.Path {
