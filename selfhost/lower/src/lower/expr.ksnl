@@ -296,23 +296,6 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     lower.expr.call_named(env, c, p, src, e, n, name, t)
 end lower.expr.call
 
-// `self.欄.メソッド(..)`: `self` は 1 語の `Path` で、後ろの `.欄` は `Dot` になる (ふつうの名前は `x.欄.m` が 1 つの `Path`)。
-// 受け手が `self` から始まる `Dot` の連鎖なら、`self.欄.メソッド` の綴り (ソースの連続した範囲) を返す。
-fn lower.expr.self_chain['a](p: &parse.cur.P, src: &'a [u8], recv: usize, meth_tok: usize) -> (&'a str, bool) uses [] panics may pub
-    let mut cur = parse.ast.get(&p.ast, recv)
-    if cur.kind != parse.ast.Kind.Dot {
-        return ("", false)
-    }
-    while cur.kind == parse.ast.Kind.Dot {
-        cur = parse.ast.get(&p.ast, cur.a)
-    }
-    if cur.kind != parse.ast.Kind.Path || resolve.ast.text(src, cur.a, cur.b) != "self" {
-        return ("", false)
-    }
-    let tk = parse.cur.peek_at(p, meth_tok)
-    (resolve.ast.text(src, cur.a, tk.stop), true)
-end lower.expr.self_chain
-
 // 呼び出しの本体。name は呼び先の綴り (`a.b.m`)。n は引数の並びを n.b に持つ `Call` の形の節。
 fn lower.expr.call_named(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, name: &str, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let (rv, meth) = lower.expr.split2(name)
@@ -815,32 +798,60 @@ end lower.expr.from_src
 fn lower.expr.getmut_match(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
     let no = lower.cx.R { v: 0usize, t: t }
     let sn = parse.ast.get(&p.ast, n.a)
-    if sn.kind != parse.ast.Kind.MCall || resolve.ast.tok_text(p, src, sn.b) != "get_mut" {
+    if sn.kind != parse.ast.Kind.MCall {
+        return Ok((no, false))
+    }
+    let gm = resolve.ast.tok_text(p, src, sn.b)
+    let shared = gm == "get"
+    if !shared && gm != "get_mut" {
         return Ok((no, false))
     }
     if resolve.ast.count(p, sn.d) != 1usize || resolve.ast.count(p, n.b) != 2usize {
         return Ok((no, false))
     }
     let rn = parse.ast.get(&p.ast, sn.a)
-    if rn.kind != parse.ast.Kind.Call || resolve.ast.count(p, rn.b) != 0usize {
-        return Ok((no, false))
+    let sfx = if shared {
+        ".as_slice"
+    } else {
+        ".as_mut_slice"
     }
-    let cn = parse.ast.get(&p.ast, rn.a)
-    if cn.kind != parse.ast.Kind.Path {
-        return Ok((no, false))
+    let mut cname = ""
+    if rn.kind == parse.ast.Kind.MCall && resolve.ast.count(p, rn.d) == 0usize && resolve.ast.tok_text(p, src, rn.b) == sfx.strip_prefix(".").unwrap_or("") {
+        let (sn2, sok2) = lower.expr.self_chain(p, src, rn.a, rn.b)
+        if !sok2 {
+            return Ok((no, false))
+        }
+        cname = sn2
+    } else {
+        if rn.kind != parse.ast.Kind.Call || resolve.ast.count(p, rn.b) != 0usize {
+            return Ok((no, false))
+        }
+        let cn = parse.ast.get(&p.ast, rn.a)
+        if cn.kind != parse.ast.Kind.Path {
+            return Ok((no, false))
+        }
+        cname = resolve.ast.text(src, cn.a, cn.b)
     }
-    let cname = resolve.ast.text(src, cn.a, cn.b)
-    let bname = match cname.strip_suffix(".as_mut_slice") {
+    let bname = match cname.strip_suffix(sfx) {
         Some(b) => b
         None => return Ok((no, false))
     }
-    if lower.expr.seg_count(bname) != 1usize {
+    if lower.expr.seg_count(bname) != 1usize && !shared {
         return Ok((no, false))
+    }
+    if shared {
+        // 要素が所有物のときだけ (スカラーの `get` は値の Option のまま)。場所の命令を出す前に型で決める。
+        let sty = lower.expr.tyof(c, sn.a)?
+        let sel = types.ty.node(&c.ar, types.ty.strip(&c.ar, sty)).a
+        if !lower.drop.owns(env, c, sel)? {
+            return Ok((no, false))
+        }
     }
     let (hp, vt, ok) = lower.expr.hdr_of(env, c, bname)?
     if !ok {
         return Ok((no, false))
     }
+    let elem = lower.vec.elem(c, vt)
     let a0 = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, 0usize))
     let a1 = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, 1usize))
     let p0 = parse.ast.get(&p.ast, a0.a)
@@ -850,11 +861,11 @@ fn lower.expr.getmut_match(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.c
     let sp = parse.ast.get(&p.ast, resolve.ast.item(p, p0.c, 0usize))
     let p1 = parse.ast.get(&p.ast, a1.a)
     let none_ok = p1.kind == parse.ast.Kind.PPath || p1.kind == parse.ast.Kind.PWild
-    if sp.kind != parse.ast.Kind.PBind || !none_ok {
+    let wild_ok = shared && sp.kind == parse.ast.Kind.PWild
+    if (sp.kind != parse.ast.Kind.PBind && !wild_ok) || !none_ok {
         return Ok((no, false))
     }
     let idx = lower.expr.expr(env, c, p, src, resolve.ast.item(p, sn.d, 0usize), types.ty.UNKNOWN)?
-    let elem = lower.vec.elem(c, vt)
     let (sz, _al) = lower.tyk.size_of(env, c, elem)?
     let base = lower.cx.depth(c)
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -875,16 +886,22 @@ fn lower.expr.getmut_match(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.c
     let szc = lower.vec.usize_c(c, sz)?
     let off = lower.loops.bin(c, "usize", "mul.usize.wrap", idx.v, szc)?
     let addr = lower.loops.bin(c, "ptr", "ptr.add", ptr, off)?
-    let et = lower.tyk.text(env, c, elem)?
-    let mt = lower.opt.refty(true, et.as_str())?
-    let bc0 = lower.cx.cat2("bitcast.", mt.as_str())?
-    let bc1 = lower.cx.cat2(bc0.as_str(), ".ptr ")?
-    let mr = lower.cx.def1(c, mt.as_str(), bc1.as_str(), addr)?
-    let rt2 = types.ty.push(&mut c.ar, types.ty.mk(types.ty.K.Ref, elem, 0usize, 0usize, true))?
-    let stk_tok = parse.cur.peek_at(p, sp.a)
-    let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
     let mark = lower.cx.depth(c)
-    lower.cx.push_local(c, stk, mr + 1usize, false, rt2, false)?
+    if sp.kind == parse.ast.Kind.PBind {
+        let mut mr = addr
+        if !(shared && lower.vec.is_hdr(env, c, elem)) {
+            let et = lower.tyk.text(env, c, elem)?
+            let mt = lower.opt.refty(!shared, et.as_str())?
+            let bc0 = lower.cx.cat2("bitcast.", mt.as_str())?
+            let bc1 = lower.cx.cat2(bc0.as_str(), ".ptr ")?
+            mr = lower.cx.def1(c, mt.as_str(), bc1.as_str(), addr)?
+        }
+        let rk = types.ty.mk(types.ty.K.Ref, elem, 0usize, 0usize, !shared)
+        let rt2 = types.ty.push(&mut c.ar, rk)?
+        let stk_tok = parse.cur.peek_at(p, sp.a)
+        let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
+        let _lk = lower.cx.push_local(c, stk, mr + 1usize, false, rt2, false)?
+    }
     lower.expr.arm_body(env, c, p, src, a0.b, t, rty.as_str(), &ks, &saved, jb, mark)?
     lower.cx.goto(c, nb)
     let mark2 = lower.cx.depth(c)
@@ -1819,6 +1836,23 @@ fn lower.expr.seg_count(name: &str) -> usize uses [] panics may pub
     }
     n
 end lower.expr.seg_count
+
+// `self.欄.メソッド(..)`: `self` は 1 語の `Path` で、後ろの `.欄` は `Dot` になる (ふつうの名前は `x.欄.m` が 1 つの `Path`)。
+// 受け手が `self` から始まる `Dot` の連鎖なら、`self.欄.メソッド` の綴り (ソースの連続した範囲) を返す。
+fn lower.expr.self_chain['a](p: &parse.cur.P, src: &'a [u8], recv: usize, meth_tok: usize) -> (&'a str, bool) uses [] panics may pub
+    let mut cur = parse.ast.get(&p.ast, recv)
+    if cur.kind != parse.ast.Kind.Dot {
+        return ("", false)
+    }
+    while cur.kind == parse.ast.Kind.Dot {
+        cur = parse.ast.get(&p.ast, cur.a)
+    }
+    if cur.kind != parse.ast.Kind.Path || resolve.ast.text(src, cur.a, cur.b) != "self" {
+        return ("", false)
+    }
+    let tk = parse.cur.peek_at(p, meth_tok)
+    (resolve.ast.text(src, cur.a, tk.stop), true)
+end lower.expr.self_chain
 
 // 可変かどうかの印を立てる (k < 長さ)。set_val と同じ組み直し。
 fn lower.expr.set_mut(c: &mut lower.cx.Cx, k: usize, m: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
