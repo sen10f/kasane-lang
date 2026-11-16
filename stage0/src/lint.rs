@@ -980,7 +980,8 @@ impl Lint {
             }
             let (names, body) = self.idents_declared(it);
             for (kind, nm) in names {
-                if nm == "_" {
+                // `if let true = b` / `(n, false)` の `true` / `false` は予約語のリテラルで束縛ではない。
+                if nm == "_" || nm == "true" || nm == "false" {
                     continue;
                 }
                 if !is_snake(&nm) {
