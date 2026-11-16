@@ -267,6 +267,44 @@ fn discarded_by_type(tk: &crate::types::TypeCk, d: &Def) -> Vec<usize> {
     lines
 }
 
+/// `discarded_by_type` の線形版: 途中の式文 (呼び出し・ブロック以外) の型が線形に決まる行。
+/// 型パラメータは `T: linear` の束縛を見る (`self.lin_gnames` は定義ごとに `d` で引く)。
+fn linear_discarded_by_type(tk: &crate::types::TypeCk, d: &Def, ck: &Checker) -> Vec<usize> {
+    let Some(body) = &d.body else { return vec![] };
+    let mut all = vec![];
+    walk(body, &mut all);
+    let mut lines = vec![];
+    for b in all.iter().filter(|v| nname(v) == "Block") {
+        let stmts = items(&nf(b)[0]);
+        for s in stmts.iter().take(stmts.len().saturating_sub(1)) {
+            if nname(s) != "ExprStmt" || matches!(nname(&nf(s)[0]), "Call" | "MCall" | "Block" | "Unsafe" | "With") {
+                continue;
+            }
+            let Some(et) = tk.expr_type(&d.name, crate::parser::nid(&nf(s)[0])) else { continue };
+            if let Some(v) = ty_to_v_generic(&et.ty) {
+                if ck.is_linear(&v) {
+                    lines.push(nline(s));
+                }
+            }
+        }
+    }
+    lines
+}
+
+/// `TypeCk::to_v` に型パラメータ (名前だけの `named`) を足したもの。線形の判定用。
+fn ty_to_v_generic(t: &crate::types::Ty) -> Option<V> {
+    use crate::types::Ty;
+    let s = |x: &str| V::S(x.to_string());
+    Some(match t {
+        Ty::Param(n) => V::L(vec![s("named"), s(n), V::L(vec![])]),
+        Ty::Tuple(xs) => V::L(vec![s("tuple"), V::L(xs.iter().map(ty_to_v_generic).collect::<Option<Vec<V>>>()?)]),
+        Ty::Array(x, _) => V::L(vec![s("array"), ty_to_v_generic(x)?]),
+        Ty::Named(n, args) => V::L(vec![s("named"), s(n), V::L(args.iter().map(ty_to_v_generic).collect::<Option<Vec<V>>>()?)]),
+        Ty::Ref(..) | Ty::Ptr(..) | Ty::Slice(_) => return None,
+        other => crate::types::TypeCk::to_v(other)?,
+    })
+}
+
 /// 型が具体的に決まっているか (未知・型変数・型パラメータ・クロージャを含まない)。
 fn ty_fully_known(t: &crate::types::Ty) -> bool {
     use crate::types::Ty;
@@ -517,6 +555,8 @@ pub struct Checker<'a> {
     mv_types: BTreeMap<(String, u32), crate::types::ExprTy>,
     /// 型検査が解決したメソッド呼び出し先 (`TypeCk::call_res`)。借用検査が名前でなく解決先で引く。
     call_res: std::rc::Rc<HashMap<(usize, usize, String), Option<Vec<usize>>>>,
+    /// 型検査が中断点と決めた呼び出し (`TypeCk::susp_lines`)。
+    susp_lines: std::rc::Rc<HashSet<(usize, usize)>>,
     final_env: HashMap<String, V>,
     graph: BTreeMap<String, BTreeSet<String>>,
     /// クロージャ節 (5.3 の `関数名#番号`) → そのクロージャの AST ノード。
@@ -630,6 +670,7 @@ impl<'a> Checker<'a> {
             let_names: HashSet::new(),
             mv_types: BTreeMap::new(),
             call_res: Default::default(),
+            susp_lines: Default::default(),
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
             closure_asts: BTreeMap::new(),
@@ -3002,6 +3043,7 @@ impl<'a> Checker<'a> {
         self.let_tys = std::mem::take(&mut tk.let_tys);
         self.mv_types = std::mem::take(&mut tk.tytab);
         self.call_res = std::rc::Rc::new(std::mem::take(&mut tk.call_res));
+        self.susp_lines = std::rc::Rc::new(std::mem::take(&mut tk.susp_lines));
         for &i in &user {
             let d = self.def(i);
             if (d.kw == "fn" || d.kw == "test") && d.body.is_some() {
@@ -3068,6 +3110,18 @@ impl<'a> Checker<'a> {
                 self.d = i;
                 for line in discarded_by_type(&tk, d) {
                     self.tdiag("E2042", "a value other than () is discarded; use core.mem.drop(x)".into(), line);
+                }
+                // 文の位置の `if`/`else`・`match` などの値 (E2042 の対象外の形) が線形なら、捨てる式文と同じに E3003 (4.4)。
+                self.lin_gnames = d
+                    .generics
+                    .iter()
+                    .filter(|g| g.0 == "type" && items(&g.2).iter().any(|b| matches!(b, V::S(x) if x == "linear")))
+                    .map(|g| g.1.clone())
+                    .collect();
+                let lin_lines = linear_discarded_by_type(&tk, d, self);
+                self.lin_gnames.clear();
+                for line in lin_lines {
+                    self.tdiag("E3003", "a linear value produced by this statement is discarded without being consumed".into(), line);
                 }
             }
         }
@@ -3491,6 +3545,35 @@ impl<'a> Checker<'a> {
                     || d.variants.iter().any(|v| v.1.iter().any(|x| self.is_linear_in(x, seen)))
             }
             _ => false,
+        }
+    }
+
+    /// `Drop` を実装した型 (手書き・`derive [Drop]`) を所有値のままパターンで分解することはできない (4.4。分解は欄を取り出し、`drop` が走る前の姿を壊す)。
+    fn check_drop_destructure(&mut self, pat: &V, ty: &V, line: usize) {
+        if !matches!(nname(pat), "PStruct" | "PVariant" | "PTuple") || tag(ty) != "named" {
+            return;
+        }
+        let name = st(tel(ty, 1));
+        // 欄を束縛しないパターン (`Leaf`、`Node(_)`) は何も取り出さない。
+        let mut binds = vec![];
+        pat_binds(pat, &mut binds);
+        if !binds.is_empty() && self.p.types.contains_key(&name) && self.implements(&name, "core.ops.Drop") {
+            self.tdiag(
+                "E3002",
+                format!("cannot destructure `{name}` by value: it implements Drop, so its fields cannot be moved out (4.4); match on a reference or use accessors"),
+                line,
+            );
+        }
+    }
+
+    /// 型推論が決めた束縛の型を V にする。`T: linear` を含む型は型パラメータ込みで取る (呼び出しから得た値も義務を負う)。
+    fn let_ty_v(&self, ty: &crate::types::Ty) -> V {
+        if let Some(v) = crate::types::TypeCk::to_v(ty) {
+            return v;
+        }
+        match ty_to_v_generic(ty) {
+            Some(v) if self.is_linear(&v) => v,
+            _ => V::Nil,
         }
     }
 
@@ -4198,6 +4281,9 @@ impl<'a> Checker<'a> {
                 let src_is_ref = self.ety_is_ref(&f[3]) || tag(&got) == "ref" || tag(&ty) == "ref";
                 let shared_src = tag(&ty) == "ref" && matches!(tel(&ty, 1), V::B(false));
                 let pat_ty = if src_is_ref && tag(&ty) == "ref" { tel(&ty, 2).clone() } else { ty };
+                if !src_is_ref {
+                    self.check_drop_destructure(&f[0], &pat_ty, nline(s));
+                }
                 let mut typed: Vec<(String, V)> = vec![];
                 self.bind_pat_types(&f[0], &pat_ty, &mut typed);
                 self.lin_wild(&typed, nline(s));
@@ -4215,7 +4301,7 @@ impl<'a> Checker<'a> {
                     if is_nil(&t) {
                         // 自前で決まらない束縛は、型推論の結果を使う (未決定の部分を含む型は使わない)。
                         if let Some(ty) = self.let_tys.get(&(self.d, nline(s), n.clone())) {
-                            t = crate::types::TypeCk::to_v(ty).unwrap_or(V::Nil);
+                            t = self.let_ty_v(ty);
                         }
                     }
                     if src_is_ref && !is_nil(&t) && tag(&t) != "ref" && !self.is_copy(&t) {
@@ -4916,7 +5002,14 @@ impl<'a> Checker<'a> {
                     self.check_bounds(c, items(&f[1]), env, nline(e));
                 }
                 if let Some((c, off)) = lin_callee {
-                    self.check_linear_args(c, off, items(&f[1]), env, nline(e));
+                    let recv_ty = match nname(fnn) {
+                        "Path" if off == 1 => {
+                            let segs = strs(&nf(fnn)[0]);
+                            self.place_ty(&segs[0], &segs[1..segs.len() - 1], env)
+                        }
+                        _ => None,
+                    };
+                    self.check_linear_args(c, off, recv_ty, items(&f[1]), env, nline(e));
                 }
             }
             "MCall" => {
@@ -4961,6 +5054,11 @@ impl<'a> Checker<'a> {
                 }
                 for a in items(&f[2]) {
                     self.tc_expr(a, env, muts, true);
+                }
+                // 線形な型を線形でない型パラメータへ渡していないか (レシーバの型だけに現れる型パラメータも)。
+                let rty = self.lin_ty(&f[0], env);
+                if let Some(md) = self.method_of_named(&rty, &st(&f[1])).filter(|m| m.is_method()) {
+                    self.check_linear_args(md, 1, Some(rty), items(&f[2]), env, nline(e));
                 }
             }
             "Unary" if matches!(st(&f[0]).as_str(), "&" | "&mut") => {
@@ -5023,6 +5121,20 @@ impl<'a> Checker<'a> {
                     self.int_op_may_panic("unary `-`", nline(e));
                 }
                 self.tc_expr(&f[1], env, muts, false);
+            }
+            // 短絡 `a && b` / `a || b`: 右辺は通らない経路がある分岐として扱う (4.4。右辺だけで消費した線形値は E3003)。
+            "Bin" if matches!(st(&f[0]).as_str(), "&&" | "||") => {
+                self.tc_expr(&f[1], env, muts, false);
+                let (lbase, lstate) = (self.lin.len(), self.lin.clone());
+                let ln = nlineno(e);
+                self.tc_expr(&f[2], env, muts, false);
+                self.lin.truncate(lbase);
+                let after = std::mem::replace(&mut self.lin, lstate.clone());
+                let mut inputs = vec![(format!("the left side of `{}` at line {ln} decides the result", st(&f[0])), lstate)];
+                if !self.diverges(&f[2]) {
+                    inputs.push((format!("the right side of `{}` at line {ln} runs", st(&f[0])), after));
+                }
+                self.lin_merge(inputs, lbase, nline(e));
             }
             "Bin" if matches!(st(&f[0]).as_str(), "+" | "-" | "*" | "/" | "%") => {
                 if self.is_int_ty(&self.ty_of(&f[1], env)) || self.is_int_ty(&self.ty_of(&f[2], env)) {
@@ -5248,7 +5360,7 @@ impl<'a> Checker<'a> {
                 let mut t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
                 if is_nil(&t) {
                     if let Some(ty) = self.let_tys.get(&(self.d, line, n.clone())) {
-                        t = crate::types::TypeCk::to_v(ty).unwrap_or(V::Nil);
+                        t = self.let_ty_v(ty);
                     }
                 }
                 (n, t)
@@ -5585,6 +5697,11 @@ impl<'a> Checker<'a> {
                         self.lin_consume_place(&segs[0], &segs[1..], env);
                     }
                 }
+                if !sref {
+                    for arm in items(&f[1]) {
+                        self.check_drop_destructure(&items(arm)[0], &sty, nline(&items(arm)[0]));
+                    }
+                }
                 let (lbase, lstate) = (self.lin.len(), self.lin.clone());
                 let mut inputs = vec![];
                 for arm in items(&f[1]) {
@@ -5621,7 +5738,7 @@ impl<'a> Checker<'a> {
                         if is_nil(&t) {
                             // 自前で決まらない腕の束縛は、型推論の結果を使う (4.1)。
                             if let Some(ty) = self.let_tys.get(&(self.d, nline(&items(arm)[0]), n.clone())) {
-                                t = crate::types::TypeCk::to_v(ty).unwrap_or(V::Nil);
+                                t = self.let_ty_v(ty);
                             }
                         }
                         if sref && is_nil(&t) && !is_nil(&sty0) {
@@ -6239,7 +6356,7 @@ impl<'a> Checker<'a> {
     /// 型パラメータが `linear` と宣言されていない関数に、線形な値を渡していないか (4.4・8.3)。
     /// `off` は、引数列に対する仮引数列のずれ (`v.push(x)` の `self` で 1)。仮引数の型と実引数の型を
     /// 構造で突き合わせ、線形でない型パラメータに線形な型が束縛されるとき E3006。
-    fn check_linear_args(&mut self, c: &Def, off: usize, args: &[V], env: &Env, line: usize) {
+    fn check_linear_args(&mut self, c: &Def, off: usize, recv: Option<V>, args: &[V], env: &Env, line: usize) {
         let nonlin: HashSet<String> = c
             .generics
             .iter()
@@ -6248,6 +6365,20 @@ impl<'a> Checker<'a> {
             .collect();
         if nonlin.is_empty() {
             return;
+        }
+        // レシーバ (`self` の仮引数) も突き合わせる: `r.ok()` の `X` はレシーバの型にだけ現れる。
+        if let (Some(rt), true) = (recv, off >= 1) {
+            if let Some((_, pt)) = c.params.first() {
+                let mut hit = vec![];
+                self.lin_unify(pt, &rt, &nonlin, &mut hit);
+                if let Some((p, t)) = hit.first() {
+                    self.tdiag(
+                        "E3006",
+                        format!("linear value of type {t} is passed for the type parameter `{p}` of {}, which is not declared `linear` (4.4)", c.name),
+                        line,
+                    );
+                }
+            }
         }
         for (i, a) in args.iter().enumerate() {
             let Some((_, pt)) = c.params.get(i + off) else { break };

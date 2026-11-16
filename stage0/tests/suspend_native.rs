@@ -280,6 +280,7 @@ fn native_owned_values_across_suspension_match_interpreter() {
     let src = with_say(
         "type t.Holder derive [Drop] pub
     items: alloc.vec.Vec<u32, std.alloc.System>
+    next: Option<alloc.boxed.Box<t.Holder, std.alloc.System>>
 end t.Holder
 
 fn t.work(n: u32) -> u32 uses [alloc, io.console, suspend] panics may
@@ -287,7 +288,7 @@ fn t.work(n: u32) -> u32 uses [alloc, io.console, suspend] panics may
     core.mem.drop(v.push(n))
     std.task.yield_now()
     core.mem.drop(v.push(n.wrapping_add(1u32)))
-    let h = t.Holder { items: v }
+    let h = t.Holder { items: v, next: None }
     std.task.yield_now()
     let total = h.items.len()
     let total32 = u32.try_from_usize(total).unwrap_or(0u32)

@@ -31,22 +31,28 @@ fn mentions(p: &Program, file: &str, t: &V, name: &str) -> bool {
 }
 
 /// `t` が `Box<name, A>` か。
-fn is_box_of(p: &Program, file: &str, t: &V, name: &str) -> bool {
+/// 再帰の出現は `Self` そのもの (自分の型パラメータをそのまま渡した `name<T, ..>`) に限る。`name<i32>` のような多相再帰は反復で破棄できない。
+fn is_box_of(p: &Program, file: &str, t: &V, name: &str, own: &[String]) -> bool {
     if tag(t) != "named" || fqn(p, file, &st(tel(t, 1))) != "alloc.boxed.Box" {
         return false;
     }
     let a = type_args(t);
-    a.len() == 2 && tag(a[0]) == "named" && fqn(p, file, &st(tel(a[0], 1))) == name && !mentions(p, file, a[1], name)
+    if !(a.len() == 2 && tag(a[0]) == "named" && fqn(p, file, &st(tel(a[0], 1))) == name && !mentions(p, file, a[1], name)) {
+        return false;
+    }
+    let targs: Vec<&V> = type_args(a[0]);
+    targs.len() == own.len()
+        && targs.iter().zip(own).all(|(x, n)| tag(x) == "named" && st(tel(x, 1)) == *n && type_args(x).is_empty())
 }
 
 /// フィールド (ペイロード) の型 `t` の再帰の出現が、反復で破棄できる形 (`Box<Self>` / `Option<Box<Self>>`) か。
-pub(crate) fn recursive_slot(p: &Program, file: &str, t: &V, name: &str) -> bool {
-    if is_box_of(p, file, t, name) {
+pub(crate) fn recursive_slot(p: &Program, file: &str, t: &V, name: &str, own: &[String]) -> bool {
+    if is_box_of(p, file, t, name, own) {
         return true;
     }
     if tag(t) == "named" && matches!(fqn(p, file, &st(tel(t, 1))).as_str(), "Option" | "core.option.Option") {
         let a = type_args(t);
-        return a.len() == 1 && is_box_of(p, file, a[0], name);
+        return a.len() == 1 && is_box_of(p, file, a[0], name, own);
     }
     false
 }
@@ -68,8 +74,12 @@ pub(crate) fn problems(p: &Program, d: &Def, mutual: bool) -> Vec<String> {
     } else {
         d.variants.iter().flat_map(|v| v.1.iter()).collect()
     };
+    let own: Vec<String> = d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect();
+    if !tys.iter().any(|t| mentions(p, &d.file, t, &d.name)) {
+        out.push(format!("{} does not recur; derive [Drop] is for self-recursive types (a non-recursive type is dropped as usual)", d.name));
+    }
     for t in tys {
-        if mentions(p, &d.file, t, &d.name) && !recursive_slot(p, &d.file, t, &d.name) {
+        if mentions(p, &d.file, t, &d.name) && !recursive_slot(p, &d.file, t, &d.name, &own) {
             out.push(format!(
                 "{} recurs through a field type other than Box<{0}> or Option<Box<{0}>> (derive [Drop] cannot bound the depth through Vec, tuples, references and the like)",
                 d.name
