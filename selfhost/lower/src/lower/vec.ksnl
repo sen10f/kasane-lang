@@ -15,9 +15,9 @@ fn lower.vec.call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usiz
     }
     let is_str = fqn.starts_with("alloc.string.String.")
     let ok = if is_str {
-        name == "len" || name == "is_empty" || name == "push_str"
+        name == "len" || name == "is_empty" || name == "push_str" || name == "push"
     } else {
-        name == "len" || name == "is_empty" || name == "push" || name == "pop"
+        name == "len" || name == "is_empty" || name == "push" || name == "pop" || name == "as_slice"
     }
     if !ok {
         lower.cx.fail(c, lower.cx.cat2("Vec / String のメソッド (未対応): ", name)?.as_str())?
@@ -83,6 +83,23 @@ fn lower.vec.exit_drops(env: &types.env.Env, c: &mut lower.cx.Cx, hi: usize, lo:
     Ok(())
 end lower.vec.exit_drops
 
+// ループを抜ける (`break` / `continue`) とき、局所 [lo, hi) のスロットを逆順に片付ける
+// (`Vec` / `String` は解放して、どれも `scope.end`)。
+fn lower.vec.exit_scope(env: &types.env.Env, c: &mut lower.cx.Cx, hi: usize, lo: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut k = hi
+    while k > lo {
+        k = k - 1usize
+        if lower.cx.is_slot(c, k) {
+            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+            if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
+                lower.vec.free_hdr(c, sv)?
+            }
+            core.mem.drop(lower.cx.def1(c, "unit", "scope.end ", sv)?)
+        }
+    }
+    Ok(())
+end lower.vec.exit_scope
+
 // 枠の先頭の番地を解放する (`mem.load.ptr` と `heap.free`)。
 fn lower.vec.free_hdr(c: &mut lower.cx.Cx, slot: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let pv = lower.vec.load_ptr(c, slot)?
@@ -102,6 +119,11 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
     let is_str = fq.starts_with("alloc.string.String.")
     let elem = lower.tyk.at(subs.as_slice(), 1usize)
     let rt = lower.tyk.text(env, c, ret)?
+    if is_str && name == "push" {
+        let mut po = alloc.string.String.new(std.alloc.SYSTEM)
+        lower.str.push_char_text(&mut po, fq, key, rt.as_str())?
+        return lower.func.record(c, po.as_str(), "")
+    }
     let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let recv = lower.cx.newval(c, "ptr")?
     ps.push(recv)?
@@ -130,6 +152,12 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
         r = lower.vec.push(env, c, recv, elem, value, ret)?
     } else if name == "pop" {
         r = lower.vec.pop(env, c, recv, elem, ret)?
+    } else if name == "as_slice" {
+        let pv = lower.vec.load_ptr(c, recv)?
+        let lv = lower.vec.load_usize(c, recv, 8usize)?
+        let mk = lower.cx.cat2("make(", lower.expr.two(pv, lv)?.as_str())?
+        let mv = lower.cx.def(c, rt.as_str(), lower.cx.cat2(mk.as_str(), ")")?.as_str())?
+        r = lower.cx.R { v: mv, t: ret }
     } else if is_str {
         r = lower.str.push_str(env, c, recv, value, ret)?
     }

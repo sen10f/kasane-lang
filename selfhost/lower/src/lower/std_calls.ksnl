@@ -1,3 +1,13 @@
+// 要素の型 et が、構造体・列挙型 (`Vec` / `String` でない) か。
+fn lower.std_calls.agg_elem(env: &types.env.Env, c: &lower.cx.Cx, et: usize) -> bool uses [alloc] panics may pub
+    let n = types.ty.node(&c.ar, types.ty.find(&c.ar, et))
+    if n.k != types.ty.K.Adt || n.c != 0usize || lower.tyk.is_vec(env, n.a) {
+        return false
+    }
+    let kind = types.infer.item_kind(env, n.a)
+    kind == parse.ast.Kind.TypeDef || kind == parse.ast.Kind.EnumDef
+end lower.std_calls.agg_elem
+
 // KIR への下ろし (4a): 本体のない標準の宣言 (`.sig` だけ。Rust 版は組み込みの KIR 命令に下ろす) の呼び出し。
 // 呼び出し側 (`lower.expr.call` と `lower.opt.user_method`) は、解決先の FQN がこの表にあるときだけ来る。
 // 表にないものは従来どおり `本体のない宣言` で止まる。命令の形は Rust 版の `ksn kir` と同じにする。
@@ -41,7 +51,9 @@ end lower.std_calls.has_fn
 fn lower.std_calls.has_method(fqn: &str) -> bool uses [] panics may pub
     let a = fqn == "alloc.string.String.as_str" || fqn == "core.str.len"
     let b = fqn == "core.option.Option.is_none" || fqn == "core.option.Option.is_some"
-    a || b || fqn == "core.option.Option.unwrap_or" || lower.std_calls.num_op(fqn) != ""
+    let e = fqn == "core.str.as_bytes" || fqn == "core.slice.sub" || fqn == "core.slice.contains"
+    let d = e || fqn == "core.slice.len" || fqn == "core.slice.get" || fqn == "core.slice.last"
+    a || b || d || fqn == "core.option.Option.unwrap_or" || lower.std_calls.num_op(fqn) != ""
 end lower.std_calls.has_method
 
 // メソッド呼び出し。`vs` は受け手と引数の値 (受け手は宣言の self に合わせて参照か値)。
@@ -58,6 +70,10 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
         let v = lower.cx.def(c, tt.as_str(), mk2.as_str())?
         return Ok(lower.cx.R { v: v, t: t })
     }
+    if fqn == "core.str.as_bytes" {
+        let fat = lower.std_calls.val_of(env, c, recv, rty)?
+        return Ok(lower.cx.R { v: fat, t: t })
+    }
     if fqn == "core.str.len" {
         let fat = lower.std_calls.val_of(env, c, recv, rty)?
         let fs = lower.cx.vs(fat)?
@@ -65,6 +81,21 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
         let ln2 = lower.cx.cat2(ln.as_str(), ", +8")?
         let v = lower.cx.def(c, "usize", ln2.as_str())?
         return Ok(lower.cx.R { v: v, t: t })
+    }
+    if fqn == "core.slice.len" {
+        let fat = lower.std_calls.val_of(env, c, recv, rty)?
+        let ls = lower.cx.cat2("field ", lower.cx.vs(fat)?.as_str())?
+        let lv = lower.cx.def(c, "usize", lower.cx.cat2(ls.as_str(), ", +8")?.as_str())?
+        return Ok(lower.cx.R { v: lv, t: t })
+    }
+    if fqn == "core.slice.contains" {
+        return lower.std_calls.slice_contains(env, c, vs, rty, t)
+    }
+    if fqn == "core.slice.sub" {
+        return lower.std_calls.slice_sub(env, c, vs, rty, t)
+    }
+    if fqn == "core.slice.get" || fqn == "core.slice.last" {
+        return lower.std_calls.slice_get(env, c, vs, rty, fqn == "core.slice.last", t)
     }
     if fqn == "core.option.Option.is_none" || fqn == "core.option.Option.is_some" {
         let ov = lower.std_calls.val_of(env, c, recv, rty)?
@@ -223,6 +254,188 @@ fn lower.std_calls.recv_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
     }
     lower.std_calls.method(env, c, fqn, rty, &vs, t)
 end lower.std_calls.recv_call
+
+// `s.contains(&x)` (要素がスカラー): 添字で先頭から比べ、等しければ true で抜ける (Rust 版と同じ並び)。
+fn lower.std_calls.slice_contains(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let fat = lower.std_calls.val_of(env, c, lower.tyk.at(vs.as_slice(), 0usize), rty)?
+    let sn = types.ty.node(&c.ar, types.ty.strip(&c.ar, rty))
+    let ety = lower.tyk.text(env, c, sn.a)?
+    let (sz, _al) = lower.tyk.size_of(env, c, sn.a)?
+    let want = lower.loops.un(c, ety.as_str(), "load ", lower.tyk.at(vs.as_slice(), 1usize))?
+    let len = lower.loops.fld(c, "usize", fat, "+8")?
+    let ptr = lower.loops.fld(c, "ptr", fat, "+0")?
+    let zero = lower.vec.usize_c(c, 0usize)?
+    let iv = lower.cx.newval(c, "usize")?
+    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    hps.push(iv)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let jp = lower.cx.newval(c, "bool")?
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(jp)?
+    let hb = lower.cx.blk(c, &hps)?
+    let bb = lower.cx.blk(c, &empty)?
+    let jb = lower.cx.blk(c, &jps)?
+    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a0.push(zero)?
+    lower.loops.br(c, hb, &a0)?
+    lower.cx.goto(c, hb)
+    let lt = lower.loops.bin(c, "bool", "icmp.lt.usize", iv, len)?
+    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a1.push(lt)?
+    lower.loops.brif(c, lt, bb, &empty, jb, &a1)?
+    lower.cx.goto(c, bb)
+    let mut off = iv
+    if sz != 1usize {
+        let szc = lower.vec.usize_c(c, sz)?
+        off = lower.loops.bin(c, "usize", "mul.usize.wrap", iv, szc)?
+    }
+    let addr = lower.loops.bin(c, "ptr", "ptr.add", ptr, off)?
+    let ld = lower.cx.cat2("mem.load.", ety.as_str())?
+    let ld2 = lower.cx.cat2(ld.as_str(), lower.cx.cat2(" ", lower.cx.vs(addr)?.as_str())?.as_str())?
+    let el = lower.cx.def(c, ety.as_str(), lower.cx.cat2(ld2.as_str(), " +0")?.as_str())?
+    let eq = lower.loops.bin(c, "bool", lower.cx.cat2("icmp.eq.", ety.as_str())?.as_str(), el, want)?
+    let one = lower.vec.usize_c(c, 1usize)?
+    let nx = lower.loops.bin(c, "usize", "add.usize.wrap", iv, one)?
+    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a2.push(eq)?
+    let mut a3 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a3.push(nx)?
+    lower.loops.brif(c, eq, jb, &a2, hb, &a3)?
+    lower.cx.goto(c, jb)
+    Ok(lower.cx.R { v: jp, t: t })
+end lower.std_calls.slice_contains
+
+fn lower.std_calls.slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, last: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    lower.std_calls.slice_get_in(env, c, vs, rty, last, false, t)
+end lower.std_calls.slice_get
+
+// `s.get(i)` / `s.last()` (スライスの要素がスカラー): 範囲の検査の後で要素を読み、`carry` で借用の印を付けて `some`。
+// ブロックは some・none・join の順 (Rust 版と同じ)。
+fn lower.std_calls.slice_get_hdr(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, last: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    lower.std_calls.slice_get_in(env, c, vs, rty, last, true, t)
+end lower.std_calls.slice_get_hdr
+
+// `s.get(i)` / `s.last()` の本体。hdr が true なら、受け手は `Vec` のヘッダの番地 (長さと先頭を `mem.load` で読む)。
+fn lower.std_calls.slice_get_in(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, last: bool, hdr: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let recv = lower.tyk.at(vs.as_slice(), 0usize)
+    let sn = types.ty.node(&c.ar, types.ty.strip(&c.ar, rty))
+    let et = sn.a
+    let ek = types.ty.node(&c.ar, types.ty.find(&c.ar, et)).k
+    let scalar = ek == types.ty.K.Int || ek == types.ty.K.Bool || ek == types.ty.K.Float
+    if !scalar && !lower.std_calls.agg_elem(env, c, et) {
+        lower.cx.fail(c, "slice.get / last (要素が構造体・列挙型・スカラーでない・未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let ety = lower.tyk.text(env, c, et)?
+    let (sz, _al) = lower.tyk.size_of(env, c, et)?
+    let mut len = 0usize
+    let mut ptr = 0usize
+    if hdr {
+        len = lower.vec.load_usize(c, recv, 8usize)?
+        ptr = lower.vec.load_ptr(c, recv)?
+    } else {
+        let fat = lower.std_calls.val_of(env, c, recv, rty)?
+        let fs = lower.cx.vs(fat)?
+        len = lower.cx.def(c, "usize", lower.cx.cat2("field ", lower.cx.cat2(fs.as_str(), ", +8")?.as_str())?.as_str())?
+        ptr = lower.cx.def(c, "ptr", lower.cx.cat2("field ", lower.cx.cat2(fs.as_str(), ", +0")?.as_str())?.as_str())?
+    }
+    let mut idx = lower.tyk.at(vs.as_slice(), 1usize)
+    let mut cond = 0usize
+    if last {
+        let zero = lower.cx.def(c, "usize", "const.usize 0")?
+        cond = lower.cx.def(c, "bool", lower.cx.cat2("icmp.lt.usize ", lower.expr.two(zero, len)?.as_str())?.as_str())?
+        let one = lower.cx.def(c, "usize", "const.usize 1")?
+        idx = lower.cx.def(c, "usize", lower.cx.cat2("sub.usize.wrap ", lower.expr.two(len, one)?.as_str())?.as_str())?
+    } else {
+        cond = lower.cx.def(c, "bool", lower.cx.cat2("icmp.lt.usize ", lower.expr.two(idx, len)?.as_str())?.as_str())?
+    }
+    let rt = lower.tyk.text(env, c, t)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let sb = lower.cx.blk(c, &empty)?
+    let nb = lower.cx.blk(c, &empty)?
+    let jp = lower.cx.newval(c, rt.as_str())?
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(jp)?
+    let jb = lower.cx.blk(c, &jps)?
+    let mut br = lower.cx.cat2("br_if ", lower.cx.vs(cond)?.as_str())?
+    br.push_str(", ")?
+    br.push_str(lower.cx.target(sb, &empty)?.as_str())?
+    br.push_str(", ")?
+    br.push_str(lower.cx.target(nb, &empty)?.as_str())?
+    lower.cx.finish(c, br)?
+    lower.cx.goto(c, sb)
+    let mut off = idx
+    if sz != 1usize {
+        let szc = lower.vec.usize_c(c, sz)?
+        off = lower.cx.def(c, "usize", lower.cx.cat2("mul.usize.wrap ", lower.expr.two(idx, szc)?.as_str())?.as_str())?
+    }
+    let addr = lower.cx.def(c, "ptr", lower.cx.cat2("ptr.add ", lower.expr.two(ptr, off)?.as_str())?.as_str())?
+    let mut ev = addr
+    if scalar {
+        let ld = lower.cx.cat2("mem.load.", lower.cx.cat2(ety.as_str(), lower.cx.cat2(" ", lower.cx.cat2(lower.cx.vs(addr)?.as_str(), " +0")?.as_str())?.as_str())?.as_str())?
+        ev = lower.cx.def(c, ety.as_str(), ld.as_str())?
+        let _cr = lower.cx.def(c, "unit", lower.cx.cat2("carry ", lower.expr.two(addr, ev)?.as_str())?.as_str())?
+    } else {
+        // 構造体・列挙型の要素: 番地だけの `bref` に包む。
+        let bt = lower.tyk.bref_text(c)?
+        ev = lower.cx.def(c, bt.as_str(), lower.cx.cat2("make(", lower.cx.cat2(lower.cx.vs(addr)?.as_str(), ")")?.as_str())?.as_str())?
+    }
+    let sv = lower.cx.def(c, rt.as_str(), lower.cx.cat2("some ", lower.cx.vs(ev)?.as_str())?.as_str())?
+    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a1.push(sv)?
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a1)?.as_str())?)?
+    lower.cx.goto(c, nb)
+    let nv = lower.cx.def(c, rt.as_str(), lower.cx.cat2("const.", lower.cx.cat2(rt.as_str(), " none")?.as_str())?.as_str())?
+    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a2.push(nv)?
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a2)?.as_str())?)?
+    lower.cx.goto(c, jb)
+    Ok(lower.cx.R { v: jp, t: t })
+end lower.std_calls.slice_get_in
+
+// `s.sub(a, b)` (`&[T]` の [a, b)): a <= b && b <= len なら some (make(..))、でなければ none。
+fn lower.std_calls.slice_sub(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let fat = lower.std_calls.val_of(env, c, lower.tyk.at(vs.as_slice(), 0usize), rty)?
+    let from = lower.tyk.at(vs.as_slice(), 1usize)
+    let to = lower.tyk.at(vs.as_slice(), 2usize)
+    let sn = types.ty.node(&c.ar, types.ty.strip(&c.ar, rty))
+    let (sz, _al) = lower.tyk.size_of(env, c, sn.a)?
+    let len = lower.loops.fld(c, "usize", fat, "+8")?
+    let ptr = lower.loops.fld(c, "ptr", fat, "+0")?
+    let c1 = lower.loops.bin(c, "bool", "icmp.le.usize", from, to)?
+    let c2 = lower.loops.bin(c, "bool", "icmp.le.usize", to, len)?
+    let cond = lower.loops.bin(c, "bool", "and.bool", c1, c2)?
+    let rt = lower.tyk.text(env, c, t)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let sb = lower.cx.blk(c, &empty)?
+    let nb = lower.cx.blk(c, &empty)?
+    let jp = lower.cx.newval(c, rt.as_str())?
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(jp)?
+    let jb = lower.cx.blk(c, &jps)?
+    lower.loops.brif(c, cond, sb, &empty, nb, &empty)?
+    lower.cx.goto(c, sb)
+    let mut off = from
+    if sz != 1usize {
+        let szc = lower.vec.usize_c(c, sz)?
+        off = lower.loops.bin(c, "usize", "mul.usize.wrap", from, szc)?
+    }
+    let addr = lower.loops.bin(c, "ptr", "ptr.add", ptr, off)?
+    let ft = lower.cx.tyof(c, fat)
+    let mut cnt = lower.loops.bin(c, "usize", "sub.usize.wrap", to, from)?
+    cnt = lower.loops.make2(c, ft.as_str(), addr, cnt)?
+    let sv = lower.loops.un(c, rt.as_str(), "some ", cnt)?
+    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a1.push(sv)?
+    lower.loops.br(c, jb, &a1)?
+    lower.cx.goto(c, nb)
+    let nv = lower.loops.none_of(c, rt.as_str())?
+    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a2.push(nv)?
+    lower.loops.br(c, jb, &a2)?
+    lower.cx.goto(c, jb)
+    Ok(lower.cx.R { v: jp, t: t })
+end lower.std_calls.slice_sub
 
 // `opt.unwrap_or(d)`: Rust 版と同じ形。tag で分け、Some なら payload、None なら既定の値を、
 // join のブロックの引数で受ける。ブロックは some・none・join の順に作る。
