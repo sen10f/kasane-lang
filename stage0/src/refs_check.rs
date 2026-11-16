@@ -411,9 +411,42 @@ pub fn inferred_container_ref(ty: &Ty) -> Option<(String, bool)> {
     }
 }
 
+/// `let [mut] name = a.b.f(..)` の `f` が、戻り値に `&'static` を書いた関数 (`-> Vec<&'static str, A>`)。
+fn init_from_static_fn(p: &Program, toks: &[Tok], name: &str) -> bool {
+    for i in 0..toks.len().saturating_sub(4) {
+        let mut j = i;
+        if !(toks[j].kind == "kw" && toks[j].text == "let") {
+            continue;
+        }
+        j += 1;
+        if toks[j].kind == "kw" && toks[j].text == "mut" {
+            j += 1;
+        }
+        if !(is_path_tok(&toks[j]) && toks[j].text == name && j + 2 < toks.len() && is_op(&toks[j + 1], "=")) {
+            continue;
+        }
+        let mut k = j + 2;
+        let mut path = String::new();
+        while k < toks.len() && (is_path_tok(&toks[k]) || is_op(&toks[k], ".")) {
+            path.push_str(&toks[k].text);
+            k += 1;
+        }
+        if k < toks.len() && is_op(&toks[k], "(") {
+            let suffix = format!(".{}", path);
+            return p.defs.iter().any(|d| {
+                d.kw == "fn" && (d.name == path || d.name.ends_with(&suffix)) && d.header.split("->").nth(1).map_or(false, |r| r.contains("&'static"))
+            });
+        }
+    }
+    false
+}
+
 /// `name.push(..)` / `insert` / `push_back` / `push_front` の引数がすべて文字列リテラルで始まり、1 回以上ある
 /// (= 入る参照が `'static` だと示せる)。
-fn static_stores_only(toks: &[Tok], name: &str) -> bool {
+fn static_stores_only(p: &Program, toks: &[Tok], name: &str) -> bool {
+    if init_from_static_fn(p, toks, name) {
+        return true;
+    }
     let mut n = 0;
     let mut i = 0;
     while i + 4 < toks.len() {
@@ -431,8 +464,9 @@ fn static_stores_only(toks: &[Tok], name: &str) -> bool {
                     starts.push(k + 1);
                 }
             }
-            let last = *starts.last().unwrap();
-            if last >= toks.len() || toks[last].kind != "str" {
+            // どの引数もリテラルで始まり (変数・参照は `'static` と示せない)、文字列リテラルが 1 つ以上ある
+            let lit = |k: usize| k < toks.len() && matches!(toks[k].kind, "str" | "int" | "float" | "char" | "byte" | "bstr");
+            if !starts.iter().all(|&k| lit(k) || (k < toks.len() && toks[k].kind == "kw" && matches!(toks[k].text.as_str(), "true" | "false"))) || !starts.iter().any(|&k| k < toks.len() && toks[k].kind == "str") {
                 return false;
             }
             n += 1;
@@ -486,7 +520,7 @@ pub fn check(p: &Program, user: &[usize], let_tys: &HashMap<(usize, usize, Strin
         }
         let ty = &let_tys[&(*di, *line, name.clone())];
         if let Some((c, weak)) = inferred_container_ref(ty) {
-            if weak && toks_of.get(di).map_or(false, |t| static_stores_only(t, name)) {
+            if weak && toks_of.get(di).map_or(false, |t| static_stores_only(p, t, name)) {
                 continue;
             }
             out.push(Hit {
