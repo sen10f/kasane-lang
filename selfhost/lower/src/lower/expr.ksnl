@@ -68,7 +68,7 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         let slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
         if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, loc - 1usize)) {
             // 古い値を解放してから、新しい値の欄を書く。
-            lower.vec.free_hdr(c, slot)?
+            lower.vec.free_slot(env, c, slot, lower.cx.tyof_t(c, loc - 1usize))?
             lower.vec.store_hdr(c, slot, r.v)?
         } else {
             let so = lower.opt.two_op("store ", slot, r.v)?
@@ -574,7 +574,7 @@ fn lower.expr.end_locals(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         lower.drop.exit(env, c, p, src, k)?
         if lower.cx.is_slot(c, k) && lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
             let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
-            lower.vec.free_hdr(c, sv)?
+            lower.vec.free_slot(env, c, sv, lower.cx.tyof_t(c, k))?
             let _e = lower.cx.def1(c, "unit", "scope.end ", sv)?
         }
     }
