@@ -18,6 +18,11 @@ fn lower.pat.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             return Ok(())
         }
         let lay = lower.tyk.layout(env, c, rn.a)?
+        // 欄を全部先に読み、その後で名前に束ねる (Rust 版と同じ並び)。
+        let mut fvs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut sts = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut offs = alloc.vec.Vec.new(std.alloc.SYSTEM)
         for j in core.iter.range(0usize, resolve.ast.count(p, pat.c)) {
             let fi = parse.ast.get(&p.ast, resolve.ast.item(p, pat.c, j))
             let fname = resolve.ast.tok_text(p, src, fi.a)
@@ -27,7 +32,29 @@ fn lower.pat.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             let st0 = lower.expr.tyof(c, sub)?
             let st = lower.pat.bind_ty(c, through, mutable, st0)?
             let fv = lower.pat.field_val(env, c, v, through, mutable, off, st)?
+            fvs.push(fv)?
+            sts.push(st)?
+            subs.push(sub)?
+            offs.push(off)?
+        }
+        for j in core.iter.range(0usize, fvs.len()) {
+            let sub = lower.tyk.at(subs.as_slice(), j)
+            let fv = lower.tyk.at(fvs.as_slice(), j)
+            let st = lower.tyk.at(sts.as_slice(), j)
             lower.pat.bind(env, c, p, src, sub, fv, st, m)?
+        }
+        if !through && lower.drop.owns(env, c, t)? {
+            // 束ねなかった所有物の確かめ (Rust 版 `drop_unbound`): 所有する欄を逆順に読み直す。
+            let mut j = fvs.len()
+            while j > 0usize {
+                j = j - 1usize
+                let st = lower.tyk.at(sts.as_slice(), j)
+                if lower.drop.owns(env, c, st)? {
+                    let ft = lower.tyk.text(env, c, st)?
+                    let fs = lower.expr.field_src(v, lower.tyk.at(offs.as_slice(), j))?
+                    core.mem.drop(lower.cx.def(c, ft.as_str(), fs.as_str())?)
+                }
+            }
         }
         return Ok(())
     }

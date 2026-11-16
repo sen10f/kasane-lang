@@ -394,6 +394,84 @@ fn emit.inst.edges_of(g: &mut emit.G, to: usize, args: &str) -> () uses [alloc, 
     }
 end emit.inst.edges_of
 
+// `env.arg %k` (`Option<&str>`): 実行時の `ksn_rt_sys_arg` で番地と長さを読み、範囲外なら none、あれば some (fat)。
+fn emit.inst.env_arg(g: &mut emit.G, dst: usize, ty: usize, k: usize) -> () uses [alloc, io.console, process] panics may pub
+    if emit.ty.slot(g, ty) != 128usize {
+        core.panic.panic("env.arg: the Option<&str> slot is not 128 bits")
+    }
+    let lenp = emit.tmp(g)
+    let ptr = emit.tmp(g)
+    let len = emit.tmp(g)
+    let isnull = emit.tmp(g)
+    let len128 = emit.tmp(g)
+    let fat_hi = emit.tmp(g)
+    let ptr128 = emit.tmp(g)
+    let fat = emit.tmp(g)
+    let tag = emit.tmp(g)
+    let fat129 = emit.tmp(g)
+    let some = emit.tmp(g)
+    emit.inst.def_head(g, lenp)
+    emit.w(g, "alloca i64, align 8\n  store i64 0, ptr ")
+    emit.wv(g, lenp)
+    emit.w(g, ", align 8\n")
+    emit.inst.def_head(g, ptr)
+    emit.w(g, "call i64 @ksn_rt_sys_arg(i64 ")
+    emit.wv(g, k)
+    emit.w(g, ", ptr ")
+    emit.wv(g, lenp)
+    emit.w(g, ")\n")
+    emit.inst.def_head(g, len)
+    emit.w(g, "load i64, ptr ")
+    emit.wv(g, lenp)
+    emit.w(g, ", align 8\n")
+    emit.inst.def_head(g, isnull)
+    emit.w(g, "icmp eq i64 ")
+    emit.wv(g, ptr)
+    emit.w(g, ", 0\n")
+    emit.inst.def_head(g, len128)
+    emit.w(g, "zext i64 ")
+    emit.wv(g, len)
+    emit.w(g, " to i128\n")
+    emit.inst.def_head(g, fat_hi)
+    emit.w(g, "shl i128 ")
+    emit.wv(g, len128)
+    emit.w(g, ", 64\n")
+    emit.inst.def_head(g, ptr128)
+    emit.w(g, "zext i64 ")
+    emit.wv(g, ptr)
+    emit.w(g, " to i128\n")
+    emit.inst.def_head(g, fat)
+    emit.w(g, "or i128 ")
+    emit.wv(g, fat_hi)
+    emit.w(g, ", ")
+    emit.wv(g, ptr128)
+    emit.w(g, "\n")
+    emit.inst.def_head(g, tag)
+    emit.w(g, "shl i129 1, 128\n")
+    emit.inst.def_head(g, fat129)
+    emit.w(g, "zext i128 ")
+    emit.wv(g, fat)
+    emit.w(g, " to i129\n")
+    emit.inst.def_head(g, some)
+    emit.w(g, "or i129 ")
+    emit.wv(g, tag)
+    emit.w(g, ", ")
+    emit.wv(g, fat129)
+    emit.w(g, "\n")
+    emit.inst.def_head(g, dst)
+    emit.w(g, "select i1 ")
+    emit.wv(g, isnull)
+    emit.w(g, ", i129 0, i129 ")
+    emit.wv(g, some)
+    emit.w(g, "\n")
+end emit.inst.env_arg
+
+// `env.arg_count` (usize): 実行時の `ksn_rt_sys_arg_count`。
+fn emit.inst.env_arg_count(g: &mut emit.G, dst: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.inst.def_head(g, dst)
+    emit.w(g, "call i64 @ksn_rt_sys_arg_count()\n")
+end emit.inst.env_arg_count
+
 // `eprint data`: stderr へ全部書く (`@ksn.eprint`)。
 fn emit.inst.eprint(g: &mut emit.G, data: usize) -> () uses [alloc, io.console, process] panics may pub
     g.flags.eprint_used = true
@@ -671,8 +749,17 @@ fn emit.inst.inst(g: &mut emit.G, l: &str) -> () uses [alloc, io.console, proces
         emit.inst.fieldaddr(g, dst, fa, fo)
     } else if base == "asshared" || base == "reborrow" || base == "borrow" {
         emit.inst.bare_ptr(g, dst, emit.util.arg_vid(args, 0usize))
-    } else if base == "scope" || base == "own" {
+    } else if base == "scope" || base == "own" || base == "carry" {
         core.mem.drop(0u8)
+    } else if base == "utf8" {
+        let up = emit.util.arg_vid(args, 0usize)
+        emit.inst.utf8_valid(g, dst, up, emit.util.arg_vid(args, 1usize))
+    } else if base == "env" {
+        if s1 == "arg_count" {
+            emit.inst.env_arg_count(g, dst)
+        } else {
+            emit.inst.env_arg(g, dst, ty, emit.util.arg_vid(args, 0usize))
+        }
     } else if base == "frame" {
         emit.inst.frame(g, dst, emit.util.dec(args.trim()))
     } else if base == "global" {
@@ -1566,6 +1653,16 @@ fn emit.inst.unit_def(g: &mut emit.G, dst: usize) -> () uses [alloc, io.console,
     emit.inst.def_head(g, dst)
     emit.w(g, "add i8 0, 0\n")
 end emit.inst.unit_def
+
+// `utf8.valid %p, %n` (usize): 先頭から有効な UTF-8 の長さ (実行時の `ksn_utf8_valid`)。
+fn emit.inst.utf8_valid(g: &mut emit.G, dst: usize, p: usize, n: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.inst.def_head(g, dst)
+    emit.w(g, "call i64 @ksn_utf8_valid(ptr ")
+    emit.wv(g, p)
+    emit.w(g, ", i64 ")
+    emit.wv(g, n)
+    emit.w(g, ")\n")
+end emit.inst.utf8_valid
 
 fn emit.inst.vt(g: &emit.G, v: usize) -> usize uses [] panics may pub
     *g.lay.vty.get(v).unwrap_or(&0usize)

@@ -3,6 +3,7 @@ fn lower.expr.arm_body(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
     lower.cx.bind_vals(c, ks, saved)?
     let r = lower.expr.expr(env, c, p, src, body, t)?
     if !c.s.term {
+        lower.expr.end_locals(env, c, mark)?
         let a = lower.expr.jargs(c, rty, r.v, ks)?
         let s = lower.cx.cat2("br ", lower.cx.target(jb, &a)?.as_str())?
         lower.cx.finish(c, s)?
@@ -173,6 +174,11 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         return lower.chk.enum_cmp(env, c, l, r, cc == "ne", t)
     }
     if (cc == "eq" || cc == "ne") && lower.tyk.is_fat_ty(c, l.t) {
+        let lk = types.ty.node(&c.ar, types.ty.find(&c.ar, l.t)).k
+        let rk = types.ty.node(&c.ar, types.ty.find(&c.ar, r.t)).k
+        if lk == types.ty.K.Str && rk == types.ty.K.Str {
+            return lower.std_calls.str_eq_inline(c, l, r, cc == "ne", t)
+        }
         return lower.chk.str_cmp(env, c, l, r, cc == "ne", t)
     }
     if (cc == "eq" || cc == "ne") && lower.tyk.is_opt_scalar(env, c, l.t) {
@@ -254,18 +260,7 @@ fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     if !has {
         res = lower.expr.unit(c)?
     }
-    // 局所の寿命の終わり (借用検査の注釈): スタックスロットの局所を逆順に `scope.end`。
-    let mut k = c.v.vals.len()
-    while k > mark {
-        k = k - 1usize
-        if lower.cx.is_slot(c, k) {
-            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
-            if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
-                lower.vec.free_hdr(c, sv)?
-            }
-            let _e = lower.cx.def1(c, "unit", "scope.end ", sv)?
-        }
-    }
+    lower.expr.end_locals(env, c, mark)?
     lower.expr.trunc(c, mark)
     Ok(lower.cx.R { v: res, t: t })
 end lower.expr.block
@@ -401,6 +396,9 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     if fqn.as_str() == "std.io.print_line" {
         return lower.io.print_line(env, c, p, src, n, t)
     }
+    if lower.std_calls.has_fn1(fqn.as_str()) {
+        return lower.std_calls.call1(env, c, p, src, n, t, fqn.as_str())
+    }
     if lower.expr.no_body(env, item) {
         let why = lower.cx.cat2("本体のない標準の宣言の呼び出し (未対応): ", fqn.as_str())?
         lower.cx.fail(c, why.as_str())?
@@ -535,6 +533,32 @@ fn lower.expr.dummy(c: &mut lower.cx.Cx, t: usize) -> Result<lower.cx.R, resolve
     let v = lower.cx.newval(c, "unit")?
     Ok(lower.cx.R { v: v, t: t })
 end lower.expr.dummy
+
+// 局所の寿命の終わり: [mark, 末尾) の局所を逆順に、印のある値は解放し、スタックスロットは (`Vec` / `String` なら
+// 解放して) `scope.end` (借用検査の注釈)。
+fn lower.expr.end_locals(env: &types.env.Env, c: &mut lower.cx.Cx, mark: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    // 所有する局所 (印のある値・`Vec` / `String` の枠) を逆順に解放し、その後でそれ以外のスロットを逆順に
+    // `scope.end` (Rust 版は所有物の解放が先で、所有しないスロットの寿命の終わりは後)。
+    let mut k = c.v.vals.len()
+    while k > mark {
+        k = k - 1usize
+        lower.drop.exit(env, c, k)?
+        if lower.cx.is_slot(c, k) && lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
+            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+            lower.vec.free_hdr(c, sv)?
+            let _e = lower.cx.def1(c, "unit", "scope.end ", sv)?
+        }
+    }
+    k = c.v.vals.len()
+    while k > mark {
+        k = k - 1usize
+        if lower.cx.is_slot(c, k) && !lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
+            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+            let _f = lower.cx.def1(c, "unit", "scope.end ", sv)?
+        }
+    }
+    Ok(())
+end lower.expr.end_locals
 
 // 関数の下ろしを予約する (未処理なら末尾に足す)。
 fn lower.expr.enqueue(c: &mut lower.cx.Cx, key: &str, item1: usize, subs: alloc.vec.Vec<usize, std.alloc.System>, ret: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
@@ -756,6 +780,94 @@ fn lower.expr.from_src(nm: &str) -> &str uses [] panics may pub
         None => ""
     }
 end lower.expr.from_src
+
+// `match NAME.as_mut_slice().get_mut(i)` で `Some(x)` と `None` の腕 (NAME は `Vec` の局所):
+// Option を作らず、範囲の検査で枝を分け、要素の番地を `&mut T` の値として束ねる (Rust 版の形)。
+fn lower.expr.getmut_match(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
+    let no = lower.cx.R { v: 0usize, t: t }
+    let sn = parse.ast.get(&p.ast, n.a)
+    if sn.kind != parse.ast.Kind.MCall || resolve.ast.tok_text(p, src, sn.b) != "get_mut" {
+        return Ok((no, false))
+    }
+    if resolve.ast.count(p, sn.d) != 1usize || resolve.ast.count(p, n.b) != 2usize {
+        return Ok((no, false))
+    }
+    let rn = parse.ast.get(&p.ast, sn.a)
+    if rn.kind != parse.ast.Kind.Call || resolve.ast.count(p, rn.b) != 0usize {
+        return Ok((no, false))
+    }
+    let cn = parse.ast.get(&p.ast, rn.a)
+    if cn.kind != parse.ast.Kind.Path {
+        return Ok((no, false))
+    }
+    let cname = resolve.ast.text(src, cn.a, cn.b)
+    let bname = match cname.strip_suffix(".as_mut_slice") {
+        Some(b) => b
+        None => return Ok((no, false))
+    }
+    if lower.expr.seg_count(bname) != 1usize {
+        return Ok((no, false))
+    }
+    let (hp, vt, ok) = lower.expr.hdr_of(env, c, bname)?
+    if !ok {
+        return Ok((no, false))
+    }
+    let a0 = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, 0usize))
+    let a1 = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, 1usize))
+    let p0 = parse.ast.get(&p.ast, a0.a)
+    if p0.kind != parse.ast.Kind.PVariant || resolve.ast.count(p, p0.c) != 1usize {
+        return Ok((no, false))
+    }
+    let sp = parse.ast.get(&p.ast, resolve.ast.item(p, p0.c, 0usize))
+    let p1 = parse.ast.get(&p.ast, a1.a)
+    let none_ok = p1.kind == parse.ast.Kind.PPath || p1.kind == parse.ast.Kind.PWild
+    if sp.kind != parse.ast.Kind.PBind || !none_ok {
+        return Ok((no, false))
+    }
+    let idx = lower.expr.expr(env, c, p, src, resolve.ast.item(p, sn.d, 0usize), types.ty.UNKNOWN)?
+    let elem = lower.vec.elem(c, vt)
+    let (sz, _al) = lower.tyk.size_of(env, c, elem)?
+    let base = lower.cx.depth(c)
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
+    let saved = lower.cx.cur_vals(c, &ks)?
+    let rty = lower.tyk.text(env, c, t)?
+    let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
+    let len = lower.vec.load_usize(c, hp, 8usize)?
+    let ptr = lower.vec.load_ptr(c, hp)?
+    let cond = lower.loops.bin(c, "bool", "icmp.lt.usize", idx.v, len)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let sb = lower.cx.blk(c, &empty)?
+    let nb = lower.cx.blk(c, &empty)?
+    let jb = lower.cx.blk(c, &jps)?
+    lower.expr.br_if(c, cond, sb, nb)?
+    lower.cx.goto(c, sb)
+    let szc = lower.vec.usize_c(c, sz)?
+    let off = lower.loops.bin(c, "usize", "mul.usize.wrap", idx.v, szc)?
+    let addr = lower.loops.bin(c, "ptr", "ptr.add", ptr, off)?
+    let et = lower.tyk.text(env, c, elem)?
+    let mt = lower.opt.refty(true, et.as_str())?
+    let bc0 = lower.cx.cat2("bitcast.", mt.as_str())?
+    let bc1 = lower.cx.cat2(bc0.as_str(), ".ptr ")?
+    let mr = lower.cx.def1(c, mt.as_str(), bc1.as_str(), addr)?
+    let rt2 = types.ty.push(&mut c.ar, types.ty.mk(types.ty.K.Ref, elem, 0usize, 0usize, true))?
+    let stk_tok = parse.cur.peek_at(p, sp.a)
+    let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
+    let mark = lower.cx.depth(c)
+    lower.cx.push_local(c, stk, mr + 1usize, false, rt2, false)?
+    lower.expr.arm_body(env, c, p, src, a0.b, t, rty.as_str(), &ks, &saved, jb, mark)?
+    lower.cx.goto(c, nb)
+    let mark2 = lower.cx.depth(c)
+    lower.expr.arm_body(env, c, p, src, a1.b, t, rty.as_str(), &ks, &saved, jb, mark2)?
+    lower.cx.goto(c, jb)
+    lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
+    if rty.as_str() == "unit" {
+        let u = lower.expr.unit(c)?
+        return Ok((lower.cx.R { v: u, t: t }, true))
+    }
+    Ok((lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t }, true))
+end lower.expr.getmut_match
 
 // `Vec` の場所 (局所、または `局所.欄(.欄)*`) のヘッダの番地。戻りは (番地, Vec の型, 成功か)。
 // 欄をたどるときは `fieldaddr` の連鎖と `bitcast.ptr`、局所の `Vec` はその枠 (参照引数は値の ptr)。
@@ -1220,6 +1332,10 @@ end lower.expr.matchint
 
 // match (列挙型のみ): 変種の番号をタグで比べる。変種の中の PBind は `field` で読む。
 fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let (gr, gok) = lower.expr.getmut_match(env, c, p, src, n, t)?
+    if gok {
+        return Ok(gr)
+    }
     let base = lower.cx.depth(c)
     // 局所の対象は読むだけ (`own.use`)。移すのは、非 Copy の束縛をする腕の入口。
     // (Option / Result だけ。利用者の列挙型の対象は普通の読み = move)
@@ -1248,6 +1364,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     if lower.opt.kind(env, item) != 0usize {
         return lower.opt.optmatch(env, c, p, src, n, t, sc0, sloc, slin)
     }
+    let own_scrut = lower.drop.temp_scrut(env, c, p, n.a, sc.t)?
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
@@ -1270,6 +1387,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
             let nb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
             lower.expr.br_to(c, nb)?
             lower.cx.goto(c, nb)
+            lower.drop.arm_head(env, c, own_scrut, false, sc.v, sc.t)?
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
         } else if (pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath) {
             let name = resolve.ast.text(src, pat.a, pat.b)
@@ -1300,6 +1418,9 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
             if pat.kind == parse.ast.Kind.PVariant {
                 subs = resolve.ast.count(p, pat.c)
             }
+            let mut bound = false
+            let mut boffs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let mut btys = alloc.vec.Vec.new(std.alloc.SYSTEM)
             let mut i = 0usize
             while i < subs {
                 let sub = resolve.ast.item(p, pat.c, i)
@@ -1317,9 +1438,29 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
                     let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
                     let fv2 = lower.opt.wrap_ref(env, c, fv, pt)?
                     let _bf = lower.opt.bind(env, c, stk, fv2, false, pt)?
+                    if lower.drop.owns(env, c, pt)? {
+                        bound = true
+                        if own_scrut {
+                            boffs.push(off)?
+                            btys.push(pty)?
+                        }
+                    }
                 }
                 i = i + 1usize
             }
+            // 束縛した所有物の欄を、後ろから読み直す (Rust 版 `drop_unbound` が束縛を確かめる読み)。
+            let mut bi = boffs.len()
+            while bi > 0usize {
+                bi = bi - 1usize
+                let bt = match btys.as_slice().get(bi) {
+                    Some(x) => lower.cx.own(x.as_str())?
+                    None => lower.cx.own("unit")?
+                }
+                let bo = lower.tyk.at(boffs.as_slice(), bi)
+                let fs = lower.expr.field_src(sc.v, bo)?
+                core.mem.drop(lower.cx.def(c, bt.as_str(), fs.as_str())?)
+            }
+            lower.drop.arm_head(env, c, own_scrut, bound, sc.v, sc.t)?
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
             lower.cx.goto(c, nextb)
         } else {
@@ -1451,6 +1592,7 @@ fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: pars
         if c.s.peek {
             lower.own.emit(c, loc - 1usize, "own.use ")?
         } else if !lower.own.is_copy(env, c, bt) {
+            lower.drop.moved(c, loc - 1usize)?
             lower.own.emit(c, loc - 1usize, "own.consume ")?
         }
         return Ok(lower.cx.R { v: base, t: bt })
@@ -1460,6 +1602,10 @@ fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: pars
     if lower.own.is_copy(env, c, t) {
         lower.own.emit(c, loc - 1usize, "own.use ")?
     } else {
+        if !c.s.peek && lower.drop.owns(env, c, t)? {
+            // 所有物の欄を移した: 局所は残りの欄も含めて解放しない (Rust 版は移した欄を空にして残りを解放する)。
+            lower.drop.moved(c, loc - 1usize)?
+        }
         lower.own.emit(c, loc - 1usize, "own.part ")?
     }
     Ok(fr)

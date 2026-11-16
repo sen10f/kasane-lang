@@ -258,7 +258,10 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let saved_ks = lower.cx.copy_u(&c.lp.ks)?
     let saved_brk = c.lp.brk
     let mut ety = elem
-    let ebind = if by_ref {
+    let ek = types.ty.node(&c.ar, types.ty.find(&c.ar, elem)).k
+    let sc1 = ek == types.ty.K.Int || ek == types.ty.K.Bool || ek == types.ty.K.Float
+    let scalar_el = sc1 || ek == types.ty.K.Char
+    let ebind = if by_ref && !scalar_el {
         ety = types.ty.push(&mut c.ar, types.ty.mk(types.ty.K.Ref, elem, 0usize, 0usize, false))?
         addr
     } else {

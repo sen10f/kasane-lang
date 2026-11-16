@@ -9,8 +9,16 @@ fn lower.func.body_text(c: &lower.cx.Cx) -> Result<alloc.string.String<std.alloc
         }
         // `alloca` は入口ブロックの先頭へ集める (Rust 版 flush_allocas)。
         if b == 0usize {
+            // 枠 (`frame.bytes`) が先、その後に `alloca` (どちらも作った順)。
             for l in c.v.lines.as_slice().iter() {
-                if l.as_str().ends_with(" = alloca") || l.as_str().ends_with(" = frame.bytes 24") {
+                if l.as_str().ends_with(" = frame.bytes 24") || l.as_str().ends_with(" = frame.bytes 1") {
+                    out.push_str("    ")?
+                    out.push_str(l.as_str())?
+                    out.push('\n')?
+                }
+            }
+            for l in c.v.lines.as_slice().iter() {
+                if l.as_str().ends_with(" = alloca") {
                     out.push_str("    ")?
                     out.push_str(l.as_str())?
                     out.push('\n')?
@@ -26,7 +34,7 @@ fn lower.func.body_text(c: &lower.cx.Cx) -> Result<alloc.string.String<std.alloc
             if mine {
                 match c.v.lines.as_slice().get(i) {
                     Some(l) => {
-                        if !(l.as_str().ends_with(" = alloca") || l.as_str().ends_with(" = frame.bytes 24")) {
+                        if !(l.as_str().ends_with(" = alloca") || l.as_str().ends_with(" = frame.bytes 24") || l.as_str().ends_with(" = frame.bytes 1")) {
                             out.push_str("    ")?
                             out.push_str(l.as_str())?
                             out.push('\n')?

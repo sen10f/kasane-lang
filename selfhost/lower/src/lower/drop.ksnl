@@ -1,0 +1,355 @@
+// 腕の頭 (束縛の後): 対象を所有していて、この腕が所有物を束縛しないなら、対象の値を丸ごと解放する。
+fn lower.drop.arm_head(env: &types.env.Env, c: &mut lower.cx.Cx, own_scrut: bool, bound: bool, sv: usize, t: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if own_scrut && !bound {
+        return lower.drop.value(env, c, sv, t)
+    }
+    Ok(())
+end lower.drop.arm_head
+
+// 所有物を持つ値 (構造体・列挙型・Option / Result の局所) の「移したかの印」と解放は、Rust 版
+// `kir_lower_coll.rs` の `Owned::Val` (印は `frame.bytes 1`) と `drop_value` の写し。
+// `br bN()` で終わる。
+fn lower.drop.br(c: &mut lower.cx.Cx, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.expr.br_to(c, b)
+end lower.drop.br
+
+// 印を持つ局所 k の出口の解放: 印が立っていれば値を解放する (`mem.load.bool` → `br_if` → 解放 → 合流)。
+fn lower.drop.exit(env: &types.env.Env, c: &mut lower.cx.Cx, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let fl = lower.drop.flag_of(c, k)
+    if fl == 0usize || c.s.term {
+        return Ok(())
+    }
+    let fp = fl - 1usize
+    let on = lower.cx.def(c, "bool", lower.cx.cat2("mem.load.bool ", lower.cx.cat2(lower.cx.vs(fp)?.as_str(), " +0")?.as_str())?.as_str())?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let yes = lower.cx.blk(c, &empty)?
+    let join = lower.cx.blk(c, &empty)?
+    lower.expr.br_if(c, on, yes, join)?
+    lower.cx.goto(c, yes)
+    let t = lower.cx.tyof_t(c, k)
+    let sv = lower.opt.local_val(env, c, k, t)?
+    lower.drop.value(env, c, sv, t)?
+    lower.drop.br(c, join)?
+    lower.cx.goto(c, join)
+    Ok(())
+end lower.drop.exit
+
+// 局所 k の印 (枠の番地の VId + 1。無ければ 0)。
+fn lower.drop.flag_of(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
+    match c.v.sl.flag.as_slice().get(k) {
+        Some(x) => *x
+        None => 0usize
+    }
+end lower.drop.flag_of
+
+// 値 v の欄 (位置 j、`offs` はレイアウトの位置) を `field` で読む。
+fn lower.drop.fld(c: &mut lower.cx.Cx, v: usize, ty: &str, offs: &[usize], j: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let src = lower.expr.field_src(v, lower.tyk.at(offs, j))?
+    lower.cx.def(c, ty, src.as_str())
+end lower.drop.fld
+
+// 局所 k を束縛した直後: 所有物を持つ値 (`Vec` / `String` 以外) なら印を立てる (`pre` が作った枠 fl + 1、0 = 無し)。
+fn lower.drop.mark(c: &mut lower.cx.Cx, k: usize, fl: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if fl == 0usize {
+        return Ok(())
+    }
+    lower.drop.put(c, k, fl)?
+    lower.drop.set(c, fl - 1usize, true)
+end lower.drop.mark
+
+// 局所 k の値を移した: 印を落とす (印を持たなければ何もしない)。
+fn lower.drop.moved(c: &mut lower.cx.Cx, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let f = lower.drop.flag_of(c, k)
+    if f == 0usize {
+        return Ok(())
+    }
+    lower.drop.set(c, f - 1usize, false)
+end lower.drop.moved
+
+// 型 t が所有物 (`Vec` / `String`) を (入れ子を含めて) 持つか。参照・スカラーは持たない。
+fn lower.drop.owns(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<bool, resolve.Failure> uses [alloc] panics may pub
+    let mut seen = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.drop.owns_in(env, c, t, &mut seen)
+end lower.drop.owns
+
+fn lower.drop.owns_in(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, seen: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<bool, resolve.Failure> uses [alloc] panics may pub
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    if n.k == types.ty.K.Param {
+        let r = lower.inst.lookup(c, n.a)
+        if r != 0usize {
+            return lower.drop.owns_in(env, c, r, seen)
+        }
+        return Ok(false)
+    }
+    if n.k == types.ty.K.Tuple {
+        for j in core.iter.range(0usize, n.c) {
+            if lower.drop.owns_in(env, c, types.ty.arg(&c.ar, n.b, j), seen)? {
+                return Ok(true)
+            }
+        }
+        return Ok(false)
+    }
+    if n.k != types.ty.K.Adt {
+        return Ok(false)
+    }
+    if lower.tyk.is_vec(env, n.a) {
+        return Ok(true)
+    }
+    if lower.opt.kind(env, n.a) != 0usize {
+        for j in core.iter.range(0usize, n.c) {
+            if lower.drop.owns_in(env, c, types.ty.arg(&c.ar, n.b, j), seen)? {
+                return Ok(true)
+            }
+        }
+        return Ok(false)
+    }
+    let kind = types.infer.item_kind(env, n.a)
+    if kind != parse.ast.Kind.TypeDef && kind != parse.ast.Kind.EnumDef {
+        return Ok(false)
+    }
+    for x in seen.as_slice().iter() {
+        if *x == n.a {
+            return Ok(false)
+        }
+    }
+    seen.push(n.a)?
+    let file = types.infer.item_file(env, n.a)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(false)
+    }
+    let src_r = match env.srcs.as_slice().get(file) {
+        Some(s) => s
+        None => return Ok(false)
+    }
+    let src = src_r.text.as_slice()
+    let nd = parse.ast.get(&p.ast, types.infer.item_node(env, n.a))
+    let saved = lower.own.enter_ty(c, f)?
+    let mut found = false
+    if kind == parse.ast.Kind.TypeDef {
+        for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+            let fd = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+            let ft = lower.tyk.fty(env, c, p, src, file, nd.c, fd.b)?
+            if lower.drop.owns_in(env, c, ft, seen)? {
+                found = true
+            }
+        }
+    } else {
+        for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+            let vn = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+            for i in core.iter.range(0usize, resolve.ast.count(p, vn.b)) {
+                let pt = lower.tyk.fty(env, c, p, src, file, nd.c, resolve.ast.item(p, vn.b, i))?
+                if lower.drop.owns_in(env, c, pt, seen)? {
+                    found = true
+                }
+            }
+        }
+    }
+    lower.tyk.leave(c, saved)
+    Ok(found)
+end lower.drop.owns_in
+
+// 束縛の前に、印の枠 (`frame.bytes 1`) を作る (枠の `alloca` は入口へ集まるので、作る順が出力の順になる)。
+// 所有物を持つ値 (`Vec` / `String` 以外) だけ。枠の VId + 1 を返す (無ければ 0)。
+fn lower.drop.pre(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    if lower.vec.is_hdr(env, c, t) {
+        return Ok(0usize)
+    }
+    if !lower.drop.owns(env, c, t)? {
+        return Ok(0usize)
+    }
+    let fl = lower.cx.def(c, "ptr", "frame.bytes 1")?
+    Ok(fl + 1usize)
+end lower.drop.pre
+
+// 局所 k の印を置く。
+fn lower.drop.put(c: &mut lower.cx.Cx, k: usize, id: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut tail = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    while c.v.sl.flag.len() > k + 1usize {
+        match c.v.sl.flag.pop() {
+            Some(x) => tail.push(x)?
+            None => core.mem.drop(0u8)
+        }
+    }
+    core.mem.drop(c.v.sl.flag.pop())
+    c.v.sl.flag.push(id)?
+    while tail.len() > 0usize {
+        match tail.pop() {
+            Some(x) => c.v.sl.flag.push(x)?
+            None => core.mem.drop(0u8)
+        }
+    }
+    Ok(())
+end lower.drop.put
+
+// 印の枠 fl に真偽を書く (`const.bool` と `mem.store.bool`)。
+fn lower.drop.set(c: &mut lower.cx.Cx, fl: usize, on: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut op = "const.bool false"
+    if on {
+        op = "const.bool true"
+    }
+    let b = lower.cx.def(c, "bool", op)?
+    core.mem.drop(lower.vec.store_at(c, "bool", fl, 0usize, b)?)
+    Ok(())
+end lower.drop.set
+
+// match の対象が、この match が所有する一時の値 (呼び出し・`?` の結果) で、所有物を持つか。
+fn lower.drop.temp_scrut(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, node: usize, t: usize) -> Result<bool, resolve.Failure> uses [alloc] panics may pub
+    let k = parse.ast.get(&p.ast, node).kind
+    if k != parse.ast.Kind.Call && k != parse.ast.Kind.MCall && k != parse.ast.Kind.Try {
+        return Ok(false)
+    }
+    lower.drop.owns(env, c, t)
+end lower.drop.temp_scrut
+
+// 所有する値 v (型 t) の解放を、いまの位置に出す。所有物を持たない型は何も出さない。
+// 構造体は欄を逆順に、`Option` / `Result` はタグで枝を分けてペイロードを、列挙型は変種ごとの比べで枝を分ける (Rust 版 `drop_value`)。
+fn lower.drop.value(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, t: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if c.s.term {
+        return Ok(())
+    }
+    if !lower.drop.owns(env, c, t)? {
+        return Ok(())
+    }
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    if n.k == types.ty.K.Param {
+        return lower.drop.value(env, c, v, lower.inst.lookup(c, n.a))
+    }
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if n.k == types.ty.K.Tuple {
+        let ti = lower.tup.item(env, c, f)?
+        let lay = lower.tyk.layout(env, c, ti)?
+        let mut j = n.c
+        while j > 0usize {
+            j = j - 1usize
+            let ft = types.ty.arg(&c.ar, n.b, j)
+            if lower.drop.owns(env, c, ft)? {
+                let fx = lower.tyk.text(env, c, ft)?
+                let fv = lower.drop.fld(c, v, fx.as_str(), lay.offs.as_slice(), j)?
+                lower.drop.value(env, c, fv, ft)?
+            }
+        }
+        return Ok(())
+    }
+    if lower.tyk.is_vec(env, n.a) {
+        // 要素が所有物なら、要素の解放は未対応 (バッファだけ返す。Rust 版は要素も解放する)。
+        let pv = lower.cx.def(c, "ptr", lower.expr.field_src(v, 0usize)?.as_str())?
+        core.mem.drop(lower.cx.def1(c, "unit", "heap.free ", pv)?)
+        return Ok(())
+    }
+    let ok = lower.opt.kind(env, n.a)
+    if ok == 1usize {
+        let a0 = types.ty.arg(&c.ar, n.b, 0usize)
+        let tg = lower.cx.def1(c, "bool", "tag ", v)?
+        let yes = lower.cx.blk(c, &empty)?
+        let join = lower.cx.blk(c, &empty)?
+        lower.expr.br_if(c, tg, yes, join)?
+        lower.cx.goto(c, yes)
+        let pt = lower.tyk.text(env, c, a0)?
+        let pv = lower.cx.def1(c, pt.as_str(), "payload ", v)?
+        lower.drop.value(env, c, pv, a0)?
+        lower.drop.br(c, join)?
+        lower.cx.goto(c, join)
+        return Ok(())
+    }
+    if ok == 2usize {
+        let tg = lower.cx.def1(c, "bool", "tag ", v)?
+        let errb = lower.cx.blk(c, &empty)?
+        let okb = lower.cx.blk(c, &empty)?
+        let join = lower.cx.blk(c, &empty)?
+        lower.expr.br_if(c, tg, errb, okb)?
+        let mut side = 0usize
+        while side < 2usize {
+            let mut b = okb
+            let mut ai = 0usize
+            if side == 0usize {
+                b = errb
+                ai = 1usize
+            }
+            lower.cx.goto(c, b)
+            let at = types.ty.arg(&c.ar, n.b, ai)
+            if lower.drop.owns(env, c, at)? {
+                let pt = lower.tyk.text(env, c, at)?
+                let pv = lower.cx.def1(c, pt.as_str(), "payload ", v)?
+                lower.drop.value(env, c, pv, at)?
+            }
+            lower.drop.br(c, join)?
+            side = side + 1usize
+        }
+        lower.cx.goto(c, join)
+        return Ok(())
+    }
+    if n.c != 0usize {
+        // 所有物を持つ総称の型の値の解放は未対応 (解放しない。Rust 版は欄を解放する)。
+        return Ok(())
+    }
+    let kind = types.infer.item_kind(env, n.a)
+    let file = types.infer.item_file(env, n.a)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(())
+    }
+    let src_r = match env.srcs.as_slice().get(file) {
+        Some(s) => s
+        None => return Ok(())
+    }
+    let src = src_r.text.as_slice()
+    let nd = parse.ast.get(&p.ast, types.infer.item_node(env, n.a))
+    let lay = lower.tyk.layout(env, c, n.a)?
+    if kind == parse.ast.Kind.TypeDef {
+        let mut j = resolve.ast.count(p, nd.d)
+        while j > 0usize {
+            j = j - 1usize
+            let fd = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+            let ft = lower.tyk.fty(env, c, p, src, file, nd.c, fd.b)?
+            if lower.drop.owns(env, c, ft)? {
+                let fx = lower.tyk.text(env, c, ft)?
+                let fv = lower.drop.fld(c, v, fx.as_str(), lay.offs.as_slice(), j)?
+                lower.drop.value(env, c, fv, ft)?
+            }
+        }
+        return Ok(())
+    }
+    // 列挙型: 先に合流のブロックを作り、所有物を持つ変種ごとにタグを比べる。
+    let join = lower.cx.blk(c, &empty)?
+    let tg = lower.cx.def1(c, "i32", "tag ", v)?
+    let mut base = 0usize
+    for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+        let vn = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+        let cnt = resolve.ast.count(p, vn.b)
+        let mut any = false
+        for i in core.iter.range(0usize, cnt) {
+            let pt = lower.tyk.fty(env, c, p, src, file, nd.c, resolve.ast.item(p, vn.b, i))?
+            if lower.drop.owns(env, c, pt)? {
+                any = true
+            }
+        }
+        if any {
+            let kk = lower.cx.def(c, "i32", lower.cx.cat2("const.i32 ", lower.cx.dec(j)?.as_str())?.as_str())?
+            let cs = lower.cx.cat2("icmp.eq.i32 ", lower.expr.two(tg, kk)?.as_str())?
+            let cv = lower.cx.def(c, "bool", cs.as_str())?
+            let yes = lower.cx.blk(c, &empty)?
+            let no = lower.cx.blk(c, &empty)?
+            lower.expr.br_if(c, cv, yes, no)?
+            lower.cx.goto(c, yes)
+            let mut i = cnt
+            while i > 0usize {
+                i = i - 1usize
+                let pt = lower.tyk.fty(env, c, p, src, file, nd.c, resolve.ast.item(p, vn.b, i))?
+                if lower.drop.owns(env, c, pt)? {
+                    let fx = lower.tyk.text(env, c, pt)?
+                    let fv = lower.drop.fld(c, v, fx.as_str(), lay.offs.as_slice(), base + i)?
+                    lower.drop.value(env, c, fv, pt)?
+                }
+            }
+            lower.drop.br(c, join)?
+            lower.cx.goto(c, no)
+        }
+        base = base + cnt
+    }
+    lower.drop.br(c, join)?
+    lower.cx.goto(c, join)
+    Ok(())
+end lower.drop.value
