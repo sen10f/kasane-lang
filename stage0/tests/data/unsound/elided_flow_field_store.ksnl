@@ -1,0 +1,12 @@
+type t.Hold['a]
+    r: &'a u32
+end t.Hold
+
+fn t.c(h: &mut t.Hold, x: &u32) -> () uses [] panics never
+    h.r = x
+end t.c
+
+// expect: E3010
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

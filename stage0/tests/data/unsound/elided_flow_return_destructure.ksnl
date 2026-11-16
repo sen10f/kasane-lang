@@ -1,0 +1,10 @@
+// expect: E3010
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.n['a](x: &(u32, u32), y: &'a u32) -> &'a u32 uses [] panics never
+    core.mem.drop(y)
+    let (a, _b) = x
+    a
+end t.n
