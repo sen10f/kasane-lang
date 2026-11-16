@@ -2237,7 +2237,7 @@ impl<'a> Low<'a> {
                     };
                     // 欄の型が参照でなければ型検査の担当なので黙る (欄の参照は省略不可のため、
                     // element_lt が空ならこの検査の対象外)。
-                    if !path.is_empty() && element_lt.is_empty() {
+                    if !path.is_empty() && path != ["*"] && element_lt.is_empty() {
                         continue;
                     }
                     let Some(value) = f.get(1) else { continue };
@@ -2477,13 +2477,8 @@ impl<'a> Low<'a> {
         let segs: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
         let Some(r) = self.p.resolve(&segs, &self.file) else { return BTreeSet::new() };
         let Target::Type(tdi) = r.target else { return BTreeSet::new() };
-        let mut out = BTreeSet::new();
-        for (fname2, fty, _) in &self.p.defs[tdi].fields {
-            if fname2 == fname {
-                out = lifetimes(&fty.dump());
-            }
-        }
-        out
+        // 型の抽象木には領域が残らないので、宣言の `field_lifetimes` (`'static` を含む) を見る。
+        self.p.defs[tdi].field_lifetimes.iter().filter(|(f, _)| f == fname).flat_map(|(_, lts)| lts.iter().cloned()).collect()
     }
 }
 
@@ -2654,46 +2649,75 @@ impl<'a> Low<'a> {
         let mut leaves = vec![];
         Self::value_leaves(e, &mut leaves);
         for leaf in leaves {
-            for s in self.borrow_expr_sources(leaf) {
-                // 欄の読み戻し `p.f` (`Stored`) の先頭の欄名。省略した参照の引数では、欄の領域だけが引数の借用に当たる。
-                let read_field = match &s {
-                    Src::Stored { path, .. } => path.first().cloned(),
-                    _ => None,
-                };
-                match s {
-                    Src::Place { root, path, .. } => {
-                        if let Some(q) = d.params.iter().position(|p| p.0 == root) {
-                            if tag(&d.params[q].1) == "ref" || path.iter().any(|x| x == "*") {
-                                out.push(Origin::Param(q));
-                            } else {
-                                out.push(Origin::Local(root));
-                            }
-                        } else if let Some(init) = inits.get(&root) {
-                            // 借用を持つ変数 (`let y = x`) を通した借用は、その変数の出どころ。
-                            let mut sub = vec![];
-                            self.origins(init, d, inits, depth + 1, &mut sub);
-                            if sub.is_empty() { out.push(Origin::Local(root)) } else { out.extend(sub) }
-                        }
+            // 局所のクロージャ・関数値の呼び出し `f(x)`: 結果の借用が引数のどれから来るかはヘッダに頼れないので、
+            // 全部の引数の借用が結果へ流れるとみなす (fail-closed)。
+            if nname(leaf) == "Call" && nname(&nf(leaf)[0]) == "Path" {
+                let segs = strs(&nf(&nf(leaf)[0])[0]);
+                if segs.len() == 1 && self.locals.contains(&segs[0]) {
+                    for a in items(&nf(leaf)[1]) {
+                        self.origins(a, d, inits, depth + 1, out);
                     }
-                    Src::Alias(v) | Src::Stored { root: v, .. } => {
-                        if let Some(q) = d.params.iter().position(|p| p.0 == v) {
-                            // 省略した参照の引数の欄を読み戻した値は、欄が名前付き (`'static` でない) の領域を持つときだけ
-                            // その引数の領域から来る (`self.name: &'static str` の複写は引数の借用ではない)。
-                            let carries = match &read_field {
-                                Some(f) if f != "*" && Self::elided_param(d, q) => !self.field_named_lifetimes(d, q, f).is_empty(),
-                                _ => true,
-                            };
-                            if carries {
-                                out.push(Origin::Param(q));
-                            }
-                        } else if let Some(init) = inits.get(&v) {
-                            self.origins(init, d, inits, depth + 1, out);
-                        }
-                    }
-                    // 参照を外した値の借用は、戻り値の出どころの検査 (省略した引数の領域) では追わない。
-                    Src::Deref(_) | Src::Contents { .. } => {}
                 }
             }
+            for s in self.borrow_expr_sources(leaf) {
+                self.src_origins(&s, d, inits, depth, out);
+            }
+        }
+    }
+
+    /// 借用の出どころ `s` から、戻り値へ流れる出どころ (局所・引数) を `out` に足す。`origins` の本体。
+    fn src_origins(&self, s: &Src, d: &Def, inits: &HashMap<String, &V>, depth: usize, out: &mut Vec<Origin>) {
+        // 欄の読み戻し `p.f` (`Stored`) の先頭の欄名。省略した参照の引数では、欄の領域だけが引数の借用に当たる。
+        let read_field = match s {
+            Src::Stored { path, .. } => path.first().cloned(),
+            _ => None,
+        };
+        match s {
+            Src::Place { root, path: _, .. } => {
+                if let Some(q) = d.params.iter().position(|p| &p.0 == root) {
+                    if tag(&d.params[q].1) == "ref" || matches!(s, Src::Place { path, .. } if path.iter().any(|x| x == "*")) {
+                        out.push(Origin::Param(q));
+                    } else {
+                        out.push(Origin::Local(root.clone()));
+                    }
+                } else if let Some(init) = inits.get(root) {
+                    // 借用を持つ変数 (`let y = x`) を通した借用は、その変数の出どころ。
+                    let mut sub = vec![];
+                    self.origins(init, d, inits, depth + 1, &mut sub);
+                    if sub.is_empty() { out.push(Origin::Local(root.clone())) } else { out.extend(sub) }
+                }
+            }
+            Src::Alias(v) | Src::Stored { root: v, .. } => {
+                if let Some(q) = d.params.iter().position(|p| &p.0 == v) {
+                    // 省略した参照の引数の欄を読み戻した値は、欄が名前付き (`'static` でない) の領域を持つときだけ
+                    // その引数の領域から来る (`self.name: &'static str` の複写は引数の借用ではない)。
+                    let carries = match &read_field {
+                        Some(f) if f != "*" && Self::elided_param(d, q) => !self.field_named_lifetimes(d, q, f).is_empty(),
+                        _ => true,
+                    };
+                    if carries {
+                        out.push(Origin::Param(q));
+                    }
+                } else if let Some(init) = inits.get(v) {
+                    self.origins(init, d, inits, depth + 1, out);
+                } else if let Some(init) = inits.get(&format!("~{}", v)) {
+                    // 呼び出し・メソッド呼び出しなどを調べる `match` の腕・分解の束縛。受け手の自動借用を含むので、
+                    // 引数から来る借用だけを引き継ぐ (局所の借用は E3030 の根拠にしない)。
+                    let mut sub = vec![];
+                    self.origins(init, d, inits, depth + 1, &mut sub);
+                    out.extend(sub.into_iter().filter(|o| matches!(o, Origin::Param(_))));
+                }
+            }
+            // 参照を外した値 (`*x`) は、指す先の値が持つ借用 (`x: & &u32` の内側の領域) を運ぶ。
+            Src::Deref(inner) => {
+                // 指す先の値を取り出すので、局所そのものを借りたことにはならない (引数から来る借用だけを引き継ぐ)。
+                let mut sub = vec![];
+                for i in inner {
+                    self.src_origins(i, d, inits, depth + 1, &mut sub);
+                }
+                out.extend(sub.into_iter().filter(|o| matches!(o, Origin::Param(_))));
+            }
+            Src::Contents { .. } => {}
         }
     }
 
@@ -2842,6 +2866,16 @@ impl<'a> Low<'a> {
                     }
                     if nname(n) == "Let" && nname(&nf(n)[0]) == "PBind" && !is_nil(&nf(n)[3]) {
                         inits.insert(st(&nf(&nf(n)[0])[0]), &nf(n)[3]);
+                    } else if nname(n) == "Let" && nf(n).len() > 3 && !is_nil(&nf(n)[3]) {
+                        // 分解 `let (a, _b) = x`: 束縛はどれも右辺の借用を運ぶとみなす。
+                        for x in &b {
+                            inits.insert(format!("~{}", x), &nf(n)[3]);
+                        }
+                    } else if nname(n) == "For" {
+                        // `for r in x.iter()`: 要素の束縛は反復子の借用を運ぶ。
+                        for x in &b {
+                            inits.insert(format!("~{}", x), &nf(n)[1]);
+                        }
                     }
                 }
                 "Match" => {
@@ -2855,6 +2889,8 @@ impl<'a> Low<'a> {
                             *count.entry(x.clone()).or_insert(0) += 1;
                             if scrut_is_local {
                                 inits.insert(x.clone(), &nf(n)[0]);
+                            } else {
+                                inits.insert(format!("~{}", x), &nf(n)[0]);
                             }
                         }
                     }
@@ -2862,7 +2898,7 @@ impl<'a> Low<'a> {
                 _ => {}
             }
         }
-        inits.retain(|k, _| count.get(k) == Some(&1));
+        inits.retain(|k, _| count.get(k.trim_start_matches('~')) == Some(&1));
         let mut vals: Vec<&V> = vec![];
         Self::value_leaves(body, &mut vals);
         for v in &all {
@@ -2913,7 +2949,7 @@ impl<'a> Low<'a> {
                         // 省略した入力の参照 (`x: &u32`) は、名前付きの出力の領域 (`'b`・`'static`) に収まらない。
                         // 省略した出力 (`-> &u32`) へ流れるのは省略規則 (4.3) の正規形なので通す。
                         if have.is_empty() {
-                            if is_elided_ref(&ptexts[q]) && explicit && !expected.is_empty() && seen.insert((nlineno(v), d.params[q].0.clone())) {
+                            if carries_elided_ref(&ptexts[q]) && explicit && !expected.is_empty() && seen.insert((nlineno(v), d.params[q].0.clone())) {
                                 out.push((
                                     "E3010",
                                     nlineno(v),
@@ -3674,6 +3710,14 @@ pub(crate) fn split_top(s: &str) -> Vec<String> {
 fn is_elided_ref(ptext: &str) -> bool {
     let ty = ptext.split_once(':').map_or(ptext, |x| x.1).trim();
     ty.starts_with('&') && !ty.contains('\'')
+}
+
+/// 引数の型が、省略したライフタイムの参照をどこかに持つか (`x: &u32`・`x: Option<&u32>`・`x: & &u32`・`x: (&u32, u32)`)。
+/// 名前付きのライフタイムが 1 つでも書かれている型は、領域を名前で読めるので対象外 (`is_elided_ref` と同じく省略した入力は
+/// 呼び出しごとの新しい領域)。関数ポインタ型 (`fn(&u32) -> u32`) の `&` は呼ばれるときの領域なので数えない。
+fn carries_elided_ref(ptext: &str) -> bool {
+    let ty = ptext.split_once(':').map_or(ptext, |x| x.1).trim();
+    ty.contains('&') && !ty.contains('\'') && !ty.contains("fn(")
 }
 
 /// `lifetimes` と同じ (名前付きの領域)。ただし `'static` も含める。戻り値の型が `'static` を名指すかを見るため。

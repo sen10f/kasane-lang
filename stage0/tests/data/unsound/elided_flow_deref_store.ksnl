@@ -1,0 +1,8 @@
+// expect: E3010
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.s(out: &mut &u32, x: &u32) -> () uses [] panics never
+    *out = x
+end t.s
