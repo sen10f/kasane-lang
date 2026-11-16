@@ -1950,3 +1950,18 @@ selfhost の試作 (`selfhost/README.md` 9.4 の 3・4) で、構造体のフィ
 - `&str` の `try_clone` (`&&str` の受け手も)。`Vec<&str>.extend_from_slice` が下りる。
 - 局所の `s.split(sep)` の `next`: 反復子は平らな 5 つの欄 `{rest_ptr, rest_len, sep_ptr, sep_len, done}` の集成体 `split_it` (40 バイト)。`for x in s.split(sep)` と同じ規則 (空の区切り・空の残りは最後の片、`"a,"` は `"a"` と `""`)。`it.next()` が進める局所は、ループの合流へ受け渡す局所に入れる (`scan_mut`)。29.3 で退いていた形の一部 (`Split` の値を局所に持つ形) が下りるようになった。`Chars` は従来どおり。
 - 取りこぼした形: `Split` を関数の引数・戻り値・構造体の欄にする、`it.next()` 以外のアダプタ (`count` / `collect` など)。局所の `next` だけ。
+
+## 31. ネイティブの下ろしの穴 その 4 (kir/native-gaps-4、E9040 の再調査、2026-11-16)
+
+穴探しで書いた正しいプログラム 145 本を `ksn build --release` にかけ、E9040 で残った 68 本の理由の多い順に直した (ネイティブ 77 → 120 本)。
+- `core.str.find` / `split_at` / `trim` / `starts_with` / `eq_ignore_ascii_case` などの完全修飾 (`ufcs_rewrite`): `core.num` / `core.slice` と同じく、受け手を第 1 引数にしたメソッド呼び出しへ直す。`from_utf8` 系は関連関数なので対象外。
+- `core.iter.take(it, n)` を融合した連なりの段にした (`kir_lower_iter.rs`)。個数の数をループの受け渡しに加え、通した個数が `n` に達したら元を引かずに終わる。入れ子の `take` は小さい方が効く。
+- 利用者の反復子 (`core.iter.Iterator` を実装する型の式・局所) を `fold` / `count` の元にした。値を隠しのスタックスロットに置き、毎周 `next(&mut it)` を呼ぶ (`for` と同じ)。要素はスカラーだけ。
+- `Pointee::Opt(Pay)`: `&Option<T>` / `&mut Option<T>` の参照を持てるようにした (`Option` の値は枠とタグの整数をメモリに置いた形)。連結リストの `list_push(head: &mut Option<Box<Node>>, ..)` と `core.mem.replace(head, None)` が下りる。`prune_aggs` の番号の振り直し・検証・使用の印が `Pointee::Opt` の中の集成体を見る。
+- `match o { None => .., Some(b) => .. }` (`o: &Option<T>`): 参照の先を 1 度読み、`Some` ならペイロードの番地を運ぶ `Option<&T>` (`bref`) を作って、既存の `Option<&T>` の判定・束縛に任せる (`match_ref_option`、`Lw::coll.scrut_override`)。腕の名前は `&T` の借用で束縛される。
+- `&mut (*r.as_mut()).child` / `&(*f(x)).a.b`: 名前でない根の `*` の先のフィールドのアドレス (`place_via_deref`)。
+- 参照越しの構造体パターン (`match n { t.Node { val: v, child: c } => .. }`、`n: &Node`): 欄を借りて束縛する (`bind_struct_pat`)。`Option` の欄は欄のアドレス (`&Option<T>`) で束縛する。`match_e` は腕の入れ物 (スコープ) を判定の前に作る。
+- `char` のリテラルパターン (`'é' => ..`) を `match_e` の判定に追加。`parse_int` を `u128` で読み、`i128.MIN` / `u128.MAX` の定数を扱えるようにした。
+- `capture [&x]` のスカラー: 呼び出し側は `&x` を渡し、本体は入口で読んだ値を `x` として使う (共有の借用の間は変わらない)。
+
+残した形: `Option<i128>` / `Option<u128>` と `i128` / `u128` の `Display` / `checked_*` / `u64.try_from_u128` (`Option` の枠に 128 ビットが入らない)、`enumerate` (要素が組)、`Vec.iter()` を元にした `fold`、`fold` の累積が組、`String.join`、`Result.map`、空の配列リテラル、`core.slice.sort` の `String` の要素、`Vec<Box<スカラー>>.push`、`dyn` の共有参照を引数に取る関数、`std.json.to_string`。拒否される前提のプログラム (`expect-reject`) の `core.panic.todo` と効果の漏れの 4 本は対象外。

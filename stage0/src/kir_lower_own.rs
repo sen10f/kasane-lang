@@ -545,7 +545,11 @@ pub(super) fn bind_struct_pat(lw: &mut Lw, line: usize, pat: &V, r: VId, src: Op
         match nname(sub) {
             "PBind" if !matches!(nf(sub).get(1), Some(V::B(true))) => {
                 let name = st(&nf(sub)[0]);
-                if coll::owns(lw, fd.ty) {
+                if matches!(fd.ty, Ty::Opt(_)) {
+                    // `Option` の欄は、欄のアドレスを `&Option<T>` として束縛する (`match o { Some(b) => .. }` が読む)。
+                    let rt = lw.vty(fa);
+                    lw.bind(&name, fa, rt);
+                } else if coll::owns(lw, fd.ty) {
                     let p = lw.emit(Ty::Ptr, Op::Bitcast { src: lw.vty(fa), a: fa });
                     bind_elem_ref(lw, line, &name, p, fd.ty, fsrc.as_ref(), false)?;
                 } else {

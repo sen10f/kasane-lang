@@ -138,6 +138,8 @@ pub(crate) struct CollCx {
     pub(crate) pat_srcs: BTreeMap<String, Src>,
     /// `Option<&T>` の `Some(..)` の中の束縛 (判定のときは作らず、腕の頭 = 当たったあとで作る。`None` の番地を読まないため。設計_KIR.md 17.18)。
     pub(crate) pending_bref: Vec<(V, VId, Ty)>,
+    /// 参照越しの `Option` (`&Option<T>`) を `match` するとき、評価済みの `Option<&T>` (`bref`) の値とその型。`match_` が 1 度だけ取る。
+    pub(crate) scrut_override: Option<(VId, Src)>,
     /// Vec / String のヘッダ (フレームの領域) → 値の型 (`vec` または要素が所有物の `vec<#N>`)。移すときの型と、解放のとき要素を解放するかに使う。
     pub(crate) hdr_ty: BTreeMap<VId, Ty>,
     /// 構造体のフィールド (場所) を `match` の対象として読んだ直後か (`scrut_begin` が読んで下ろす)。値は移していない。
@@ -3323,6 +3325,13 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
                 let sl = child.lookup(n).expect("直前に束縛した名前");
                 child.coll.kinds.insert(sl, k.clone());
             }
+            CapHow::SharedScalar => {
+                let Ty::Ref(_, p) = t else { unreachable!("SharedScalar は参照") };
+                let v = child.emit(p.ty(), Op::Load(vs[0]));
+                child.bind_let(n, v, p.ty());
+                let sl = child.lookup(n).expect("直前に束縛した名前");
+                child.coll.borrowed.insert(sl);
+            }
             // クロージャの値: 取り込みの値を引き継ぎ、本体の引数の位置に置き直す。
             CapHow::Closure(k) => {
                 let tok = child.emit(Ty::Unit, Op::Const(0));
@@ -3388,6 +3397,8 @@ enum CapHow {
     Own(Kind),
     /// クロージャの値 (取り込みを持ち回る)。
     Closure(Kind),
+    /// `capture [&x]` のスカラー `x`: 呼び出し側は `&x` を渡し、本体は入口で 1 度読んだ値を `x` として使う (共有の借用の間は変わらない)。
+    SharedScalar,
 }
 
 /// `capture [...]` の各項目を、クロージャを作る位置で評価する。戻り値: (項目, 値で取り込んだ名前)。
@@ -3472,7 +3483,12 @@ fn capture_values(lw: &mut Lw, caps: &V, body: &V, line: usize, fn_once: bool) -
                 }
             }
         };
-        out.push(CapItem { name, vals: vec![v], tys: vec![lw.vty(v)], how: CapHow::Plain });
+        let how = if kind == "&" && matches!(lw.vty(v), Ty::Ref(false, p) if p.ty().is_scalar() && p.ty() != Ty::Unit && !matches!(p, Pointee::Ptr)) {
+            CapHow::SharedScalar
+        } else {
+            CapHow::Plain
+        };
+        out.push(CapItem { name, vals: vec![v], tys: vec![lw.vty(v)], how });
     }
     Ok((out, moved))
 }

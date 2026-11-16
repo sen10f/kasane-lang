@@ -301,6 +301,17 @@ impl<'a> Lw<'a> {
                 }
             }
         }
+        // 1''. `&mut (*r.as_mut()).child` / `&(*f(x)).a.b`: 参照を返す式の先のフィールドのアドレス (名前でない根の `*`)。
+        if nname(operand) == "Field" {
+            if let Some(cur) = self.place_via_deref(operand, line)? {
+                let Some(cur) = cur else { return Ok(None) };
+                let v = self.coerce(cur, rt);
+                if self.vty(v) != rt {
+                    return self.err(line, "参照の型が合わない (共有参照から可変参照は取れない)");
+                }
+                return Ok(Some(v));
+            }
+        }
         // 2. `&*r` / `&mut *r`: 参照を付け替えるだけ
         if nname(operand) == "Unary" && st(&nf(operand)[0]) == "*" {
             let Some(r) = self.expr(&nf(operand)[1])? else {
@@ -328,6 +339,27 @@ impl<'a> Lw<'a> {
         let ptr = self.alloca(p);
         self.emit(Ty::Unit, Op::Store { ptr, val: v });
         Ok(Some(self.ref_value(ptr, p, shared)))
+    }
+
+    /// `(*X).f.g` の形 (`X` は名前でなく、集成体への参照を返す式) の場所のアドレス。この形でなければ外側の `None`。
+    fn place_via_deref(&mut self, v: &V, line: usize) -> LR<Option<Option<VId>>> {
+        match nname(v) {
+            "Field" => {
+                let f = nf(v);
+                match self.place_via_deref(&f[0], line)? {
+                    None => Ok(None),
+                    Some(None) => Ok(Some(None)),
+                    Some(Some(base)) => Ok(Some(Some(self.field_addr(base, &st(&f[1]), line)?))),
+                }
+            }
+            "Unary" if st(&nf(v)[0]) == "*" && !matches!(nname(&nf(v)[1]), "Path" | "Field") => {
+                if !matches!(self.ty_of(&nf(v)[1]), Ok(Ty::Ref(_, Pointee::Agg(_)))) {
+                    return Ok(None);
+                }
+                Ok(Some(self.expr(&nf(v)[1])?))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// `*r` を読む。

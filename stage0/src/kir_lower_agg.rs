@@ -262,6 +262,8 @@ impl AggTab {
             }
             Src::Ref(m, inner) if matches!(&**inner, Src::Named(..) | Src::Tuple(_)) => match self.lower_ty(p, file, inner)? {
                 Ty::Agg(i) => Ok(Ty::Ref(*m, Pointee::Agg(i))),
+                // `&mut Option<Box<Node>>` (連結リスト・木の付け替え): `Option` の値をメモリに置いた先への参照。
+                t @ Ty::Opt(_) => Ok(Ty::Ref(*m, Pointee::of(t).expect("Option は参照の指す先になれる"))),
                 _ => Err(format!("参照の指す先 {} は段階 1 の対象外", show(inner))),
             },
             // `&[T; N]` / `&mut [T; N]`: 配列の値は `{ptr, len}` の `fat` なので、参照は `ref<fat>` / `mutref<fat>`。
@@ -1252,6 +1254,19 @@ impl<'a> Lw<'a> {
                         let c = self.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty, a: val, b: k });
                         self.test(c, fl);
                     }
+                    // 文字リテラル (`'é'`): `char` は u32 のコード。
+                    "char" => {
+                        let Some(fl) = fail else {
+                            return self.err(line, "let の束縛は反駁可能でない");
+                        };
+                        if ty != Ty::U32 {
+                            return self.err(line, "char のパターンの型が違う");
+                        }
+                        let v = parse_int(&lf[1]).ok_or_else(|| format!("行 {}: 文字パターンが扱えない", line))?;
+                        let k = self.emit(Ty::U32, Op::Const(v));
+                        let c = self.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty: Ty::U32, a: val, b: k });
+                        self.test(c, fl);
+                    }
                     // 文字列リテラル: 値 (`&str` の fat) とバイト列が等しいか
                     "str" => {
                         let Some(fl) = fail else {
@@ -1325,6 +1340,10 @@ impl<'a> Lw<'a> {
                     let fv = self.emit(fd.ty, Op::Field { a: val, off: fd.off });
                     out.extend(self.pat(sp, fv, fd.ty, fail)?);
                 }
+            }
+            // `match n { t.Node { val: v, child: c } => .. }` (`n: &Node`): 欄を借りて束縛する (`bind_struct_pat`)。
+            "PStruct" if matches!(ty, Ty::Ref(_, Pointee::Agg(_))) => {
+                super::own::bind_struct_pat(self, line, p, val, None)?;
             }
             "PStruct" => {
                 let Ty::Agg(ai) = ty else {
@@ -1512,8 +1531,9 @@ impl<'a> Lw<'a> {
         for (i, (pat, body)) in arms.into_iter().enumerate() {
             let next = self.new_block(&[]).0;
             self.slots = saved.clone();
-            let binds = self.pat(pat, sv, sty, Some(next))?;
+            // 腕の束縛の入れ物は、判定の前に作る (参照越しの構造体パターンは `pat` の中でこの腕の名前を直接束縛する)。
             self.scopes.push(vec![]);
+            let binds = self.pat(pat, sv, sty, Some(next))?;
             let mut srcs = std::collections::BTreeMap::new();
             if let Some(ss) = &scrut_src {
                 super::coll::pat_srcs(self, pat, ss, &mut srcs);
