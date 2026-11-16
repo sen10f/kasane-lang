@@ -136,6 +136,22 @@ impl<'a> Checker<'a> {
             return Some(nline(e));
         }
         let f = nf(e);
+        if uncond {
+            // 全経路で消費するなら消費とみなす: `if` は両方の腕、`match` はすべての腕 (E3003 と同じ考え方)。
+            let all = |bodies: Vec<&V>| -> bool {
+                !bodies.is_empty() && bodies.into_iter().all(|b| self.consuming_use(b, name, env, whole, true).is_some())
+            };
+            match nname(e) {
+                "If" if !is_nil(&f[2]) && all(vec![&f[1], &f[2]]) => return Some(nline(e)),
+                "Match" => {
+                    let scrut_is_place = nname(&f[0]) == "Path" && strs(&nf(&f[0])[0]) == [name.to_string()];
+                    if scrut_is_place || all(items(&f[1]).iter().map(|a| &items(a)[1]).collect()) {
+                        return Some(nline(e));
+                    }
+                }
+                _ => {}
+            }
+        }
         let kids: Vec<&V> = match nname(e) {
             "If" if uncond => vec![&f[0]],
             "Match" if uncond => vec![&f[0]],
