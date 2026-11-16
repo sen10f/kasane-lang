@@ -1,0 +1,22 @@
+fn t.f(o: Option<bool>) -> u8 uses [] panics never
+    match o {
+        Some(true) => 1u8
+        Some(false) => 2u8
+        None => 0u8
+    }
+end t.f
+
+fn t.g(p: (u8, bool)) -> u8 uses [] panics never
+    match p {
+        (n, true) => n
+        (_n, false) => 0u8
+    }
+end t.g
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = t.f(Some(true))
+    let b = t.g((3u8, true))
+    core.mem.drop(a)
+    core.mem.drop(b)
+    Ok(())
+end t.main

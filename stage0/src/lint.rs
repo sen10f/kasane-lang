@@ -1029,7 +1029,7 @@ impl Lint {
                     arm_body.push_str(&rest[..cut]);
                 }
                 for nm in m[1].split(',').map(|x| x.trim()) {
-                    if !nm.is_empty() && nm != "_" && is_snake(nm) && !nm.starts_with('_') && count_word(&arm_body, nm) == 0 {
+                    if !nm.is_empty() && nm != "_" && nm != "true" && nm != "false" && is_snake(nm) && !nm.starts_with('_') && count_word(&arm_body, nm) == 0 {
                         self.err("unused", n, format!("unused pattern binding {}", nm));
                     }
                 }
