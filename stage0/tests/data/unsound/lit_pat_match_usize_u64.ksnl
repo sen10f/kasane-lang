@@ -1,0 +1,8 @@
+// expect: E2023
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(match 1usize {
+        0u64 => true
+        _ => false
+    })
+    Ok(())
+end t.main

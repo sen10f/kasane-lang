@@ -4182,6 +4182,29 @@ impl<'a> TypeCk<'a> {
                     self.bind_pat(p, &t);
                 }
             }
+            // 接尾辞付きの数値リテラルのパターンは、照合する値の型と一致しなければならない (`match 1u32 { 0u64 => .. }`)。
+            // 値の型が基本型に決まっているときだけ比べる (参照・型変数は黙る)。
+            "PLit" => {
+                let lit = &f[0];
+                let lf = nf(lit);
+                let suffix = match st(&lf[0]).as_str() {
+                    "int" => lf.get(2),
+                    "float" => lf.get(1),
+                    _ => None,
+                };
+                if let Some(V::S(s)) = suffix {
+                    let want = self.deep(ty);
+                    if let Ty::Prim(w) = want.strip() {
+                        if w != s && INTS.iter().chain(["f32", "f64"].iter()).any(|x| x == w) {
+                            self.diag(
+                                "E2023",
+                                format!("literal pattern of type `{}` does not match the scrutinee type `{}`", s, w),
+                                self.pat_line,
+                            );
+                        }
+                    }
+                }
+            }
             _ => {
                 let mut b = vec![];
                 pat_binds(pat, &mut b);
@@ -4527,6 +4550,33 @@ impl<'a> TypeCk<'a> {
         // 実体化した効果全体をそのクロージャの効果に足す。
         let (fu, fp, du, dm) = self.callee_effects(d, 0, argt, targs);
         self.record_effects(line, vec![(d.name.clone(), fu, fp, du, dm)]);
+        // `I: Iterator<..>` 境界の引数は、呼び出し先が中で `next` を呼びうる。`for` と同じ求め方で、実引数の型の
+        // `next` の効果を呼び出しの効果に足す (イテレータの型は効果の実引数を持たないので、宣言側の `E` / `P` だけでは漏れる)。
+        let mut iter_args: Vec<Ty> = vec![];
+        {
+            let d = &self.p.defs[i];
+            let gn = d.gnames();
+            let iter_params: Vec<String> = d
+                .generics
+                .iter()
+                .filter(|g| g.0 == "type" && items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]) == "core.iter.Iterator")))
+                .map(|g| g.1.clone())
+                .collect();
+            if !iter_params.is_empty() {
+                for (k, p) in d.params.iter().enumerate() {
+                    let Some(a) = argt.get(k) else { continue };
+                    for (n, at) in self.param_slots(&from_v(&p.1, &gn), a) {
+                        if iter_params.contains(&n) {
+                            iter_args.push(at);
+                        }
+                    }
+                }
+            }
+        }
+        for at in iter_args {
+            self.for_next_effects(&at, line);
+        }
+        let d = &self.p.defs[i];
         let gn = d.gnames();
         // 明示型引数 (`f::<..>`, 4.3) のうち型・定数の実引数を、宣言のパラメータに束縛する。
         // 効果・panic の実引数は効果検査 (check.rs の inst_def_effects) で使う。
@@ -5580,7 +5630,8 @@ impl<'a> TypeCk<'a> {
         if self.unresolved(got.strip()) {
             return None;
         }
-        let key = got.strip().show();
+        // 参照の段数も含めて比べる (`&E1` のエラーは、ペイロードが `E1` のバリアントへは包めない)。
+        let key = got.show();
         if key == want.strip().show() {
             return None;
         }
