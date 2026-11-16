@@ -1,7 +1,8 @@
 // 局所の名前を束縛する。借用されるものはスロット (alloca + store) に置く。
 fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize, m: bool, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let tf = types.ty.find(&c.ar, t)
-    let is_ref = types.ty.node(&c.ar, tf).k == types.ty.K.Ref
+    let tk = types.ty.node(&c.ar, tf).k
+    let is_ref = tk == types.ty.K.Ref || tk == types.ty.K.Str
     if lower.vec.is_hdr(env, c, t) {
         // `Vec` / `String` の局所は枠 (frame.bytes 24) に置き、3 つの欄を書く。
         let slot = lower.cx.def(c, "ptr", "frame.bytes 24")?
