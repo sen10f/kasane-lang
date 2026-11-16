@@ -1,0 +1,11 @@
+// expect: E4002
+fn t.boom(a: i32) -> i32 uses [] panics may
+    a
+end t.boom
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    for x in core.iter.map(core.iter.range(0i32, 3i32), t.boom) {
+        core.mem.drop(x)
+    }
+    Ok(())
+end t.main

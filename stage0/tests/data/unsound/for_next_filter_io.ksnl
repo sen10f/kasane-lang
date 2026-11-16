@@ -1,0 +1,11 @@
+// expect: E4001
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    for x in core.iter.filter(core.iter.range(0u32, 2u32), fn(i: &u32) -> bool capture [] {
+        core.mem.drop(std.io.print_line("x"))
+        core.mem.drop(*i)
+        true
+    }) {
+        core.mem.drop(x)
+    }
+    Ok(())
+end t.main

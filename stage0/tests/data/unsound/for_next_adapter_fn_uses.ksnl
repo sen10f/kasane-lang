@@ -1,0 +1,12 @@
+// expect: E4001
+fn t.loud(a: i32) -> i32 uses [io.console] panics never
+    a
+end t.loud
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let it = core.iter.map(core.iter.range(0i32, 3i32), t.loud)
+    for x in it {
+        core.mem.drop(x)
+    }
+    Ok(())
+end t.main

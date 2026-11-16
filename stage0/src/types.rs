@@ -2280,6 +2280,7 @@ impl<'a> TypeCk<'a> {
 
     fn call_method_in(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
         let loose = std::mem::take(&mut self.arg_loose);
+        let arg_stat = std::mem::take(&mut self.arg_static);
         // トレイトオブジェクト (5.1): `&dyn Tr` のメソッド呼び出しは、Tr とそのスーパートレイトの
         // シグネチャで検査する (Self は `dyn Tr` 自身)。
         let deep = self.deep(recv);
@@ -2394,6 +2395,11 @@ impl<'a> TypeCk<'a> {
         // 検査は全候補が違反するときだけ、クロージャの効果には全候補に共通する部分だけを足す (保守側)。
         // 候補が 1 つに決まるときだけ、`Fn` 境界の具体的な効果とクロージャの効果を比べる (5.1 / 4.3)。
         // 受け手 (`self`) も引数と同じに扱う (`self: &S<F>` の `F` の `Fn` 境界)。
+        // `'static` の境界 (P0-6): 関数呼び出しと同じ判定。候補が複数なら全部に当てる (fail-closed)。
+        for (i, _) in &fit {
+            let d = &self.p.defs[*i];
+            self.note_static_args(d, 1, args, &arg_stat, line);
+        }
         let with_self: Vec<Ty> = std::iter::once(recv.clone()).chain(args.iter().cloned()).collect();
         if let [(di, _)] = fit.as_slice() {
             self.check_closure_bounds(&self.p.defs[*di], 0, &with_self, line);
@@ -2819,20 +2825,42 @@ impl<'a> TypeCk<'a> {
         }
         let (owners, _) = self.owners_for(&base);
         let mut effs = vec![];
+        let mut inner: Vec<Ty> = vec![];
         for o in &owners {
             let Some(&di) = self.owners.get(o).and_then(|m| m.get("next")).and_then(|v| v.first()) else { continue };
             let c = &self.p.defs[di];
             if c.params.len() != 1 {
                 continue;
             }
-            let (fu, fp, _, _) = self.callee_effects(c, 1, &[], &[]);
+            // 受け手 (`self: &mut S<F..>`) の型を渡す: `F` の `Fn` 境界の効果 (`Map` の `E` / `P`) を、型の実引数の
+            // クロージャから束ねる (型の効果引数は `Ty` に残らないので、`F` から再構成する)。
+            let self_arg = Ty::Ref(true, Box::new(base.clone()));
+            let (fu, fp, _, _) = self.callee_effects(c, 0, &[self_arg.clone()], &[]);
             // 型の効果引数 (`Enumerate<I, T, E, P>` の `E` / `P`) は型に残らないので、実体の分からない変数は
             // 明示の `it.next()` と同じく数えない (宣言の具体名と `may` / `never` だけ数える)。
             let fu: Vec<String> = fu.into_iter().filter(|e| !crate::check::is_effect_var(e)).collect();
             let fp = fp.filter(|p| !crate::check::is_panic_var(p));
             effs.push((c.name.clone(), fu.clone(), fp.clone(), fu, fp));
+            // `next` が内側のイテレータ (`I: Iterator<..>` の欄) を呼ぶなら、その `next` の効果も数える (入れ子のアダプタ)。
+            let gn = c.gnames();
+            let iter_params: Vec<String> = c
+                .generics
+                .iter()
+                .filter(|g| g.0 == "type" && items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]) == "core.iter.Iterator")))
+                .map(|g| g.1.clone())
+                .collect();
+            if !iter_params.is_empty() {
+                for (n, at) in self.param_slots(&from_v(&c.params[0].1, &gn), &self_arg) {
+                    if iter_params.contains(&n) {
+                        inner.push(at);
+                    }
+                }
+            }
         }
         self.record_effects(line, effs);
+        for at in inner {
+            self.for_next_effects(&at, line);
+        }
     }
 
     /// トレイトのメソッド `name` の宣言された効果 (`uses` / `panics`) を、境界の実引数 `bargs` で実体化する
@@ -3449,6 +3477,7 @@ impl<'a> TypeCk<'a> {
                 let args: Vec<Ty> = items(&f[2]).iter().map(|a| self.infer(a)).collect();
                 let base = self.base_local(&f[0]);
                 self.arg_loose = items(&f[2]).iter().map(|a| self.root_loose(a)).collect();
+                self.arg_static = items(&f[2]).iter().map(|a| self.static_expr(a)).collect();
                 self.call_method(&recv, base.as_deref(), &st(&f[1]), &args, nline(e), items(&f[3]), false)
             }
             "Field" => {
@@ -3889,6 +3918,11 @@ impl<'a> TypeCk<'a> {
                     self.check_fn_conv_dir(&ann, &rhs);
                     if let Some((want, got)) = self.ref_level_conflict(&ann, &rhs) {
                         self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}{}", want, got, self.deref_hint(&ann)), nline(s));
+                    } else if self.value_typed_expr(&f[3]) {
+                        // 逆向き: 値を参照の注釈へ (`let r: &u64 = 5u64`)。
+                        if let Some((want, got)) = self.value_for_ref_conflict(&ann, &rhs) {
+                            self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}; take a reference with `&`", want, got), nline(s));
+                        }
                     }
                     ann
                 } else {
@@ -4264,6 +4298,7 @@ impl<'a> TypeCk<'a> {
             }
             self.log_step(nline(callee), segs.len() - 1, false, &segs[segs.len() - 1], &t);
             self.arg_loose = loose_args;
+            self.arg_static = arg_stat;
             // `x.m(..)` の経路形の呼び先ノードに、受け手の型を載せる (KIR が トレイト側の impl (3.2) を引くため)。
             let cid = crate::parser::nid(callee);
             if segs.len() == 2 && cid != 0 && !self.p.trait_side.is_empty() {
@@ -4376,7 +4411,7 @@ impl<'a> TypeCk<'a> {
         let loose = std::mem::take(&mut self.arg_loose);
         let arg_stat = std::mem::take(&mut self.arg_static);
         let d = &self.p.defs[i];
-        self.note_static_args(d, argt, &arg_stat, line);
+        self.note_static_args(d, 0, argt, &arg_stat, line);
         // 5.5: spawn に渡したクロージャの取り込みは `Send` でなければならない (推論の終わりに見る)。
         if d.name == "std.thread.spawn" {
             if let Some(Ty::Closure { id: Some(node), .. }) = argt.get(1).map(|a| self.resolve(a)) {
@@ -4882,7 +4917,7 @@ impl<'a> TypeCk<'a> {
     /// `closure_effect_bind` が扱うので、ここでは具体名の部分だけを見る。
     /// 呼び先の宣言で `'static` の境界を持つ位置 (`&'static T` の引数・`'static` 境界の型パラメータを含む引数) に
     /// 渡した値を覚える。`&'static T` は出どころが `'static` と分かる式だけを通す (`static_expr`)。
-    fn note_static_args(&mut self, d: &Def, argt: &[Ty], arg_stat: &[bool], line: usize) {
+    fn note_static_args(&mut self, d: &Def, off: usize, argt: &[Ty], arg_stat: &[bool], line: usize) {
         let gn = d.gnames();
         let bounded: HashSet<String> = d
             .generics
@@ -4892,9 +4927,9 @@ impl<'a> TypeCk<'a> {
             .collect();
         let refs = static_ref_params(&d.header);
         for (k, a) in argt.iter().enumerate() {
-            let Some(p) = d.params.get(k) else { break };
+            let Some(p) = d.params.get(k + off) else { break };
             let origin = arg_stat.get(k).copied().unwrap_or(false);
-            if refs.get(k).copied().unwrap_or(false) {
+            if refs.get(k + off).copied().unwrap_or(false) {
                 self.static_checks.push((Ty::Ref(false, Box::new(Ty::Unit)), origin, line, format!("the argument `{}` of `{}` (`&'static`)", p.0, d.name)));
             } else if mentions_param(&from_v(&p.1, &gn), &bounded) {
                 self.static_checks.push((a.clone(), origin, line, format!("the argument `{}` of `{}` (a `'static` bound)", p.0, d.name)));
@@ -5307,6 +5342,28 @@ impl<'a> TypeCk<'a> {
             }
             (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => xs.iter().zip(ys.iter()).any(|(x, y)| self.owned_ref_clash(x, y)),
             _ => false,
+        }
+    }
+
+    /// 式の型が「宣言どおりの値の型」と信用できるか。パターン束縛は外側の参照を落とした型を持つので、
+    /// 分岐・ブロック・ループを経る式 (その束縛を値にしうる) は信用しない。
+    fn value_typed_expr(&self, e: &V) -> bool {
+        match nname(e) {
+            "Lit" | "Call" | "MCall" | "StructLit" | "Binary" => true,
+            "Path" => !self.root_loose(e),
+            _ => false,
+        }
+    }
+
+    /// 参照の注釈 `&T` に、参照でない値の型が来ているか (`let r: &u64 = 5u64`)。型が決まらない・型パラメータが絡むときは黙る。
+    fn value_for_ref_conflict(&self, want: &Ty, got: &Ty) -> Option<(String, String)> {
+        let (w, g) = (self.deep(want), self.deep(got));
+        if self.undetermined(&w) || self.undetermined(&g) || w.has_param() || g.has_param() {
+            return None;
+        }
+        match (&w, &g) {
+            (Ty::Ref(..), Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_, _) | Ty::Unit) => Some((w.show(), g.show())),
+            _ => None,
         }
     }
 
