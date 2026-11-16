@@ -76,6 +76,10 @@ struct Hdr {
     /// 各引数の型の文面に現れる型引数 (`value: T` の `T`)。`&mut Self` と同じ型引数を持つ引数の借用は、呼び出しで `&mut` の指す先へ入る。
     tps: Vec<BTreeSet<String>>,
     mut_ref: Vec<bool>,
+    /// 戻り値の借用が型引数 `T` だけを理由に流れてくる (戻り値の型に `&` も寿命もない: `remove` / `pop` の `Option<T>`)。
+    ret_tp_only: bool,
+    /// 引数の型が参照 (`&` で始まる)。
+    ref_param: Vec<bool>,
     carries: Vec<bool>,
     /// 引数ごとの、参照そのものの領域 (`&'a T` の `'a`、省略なら引数ごとの新しい領域) と、中の領域 (`&mut H<'b>` の `'b`)。
     outer: Vec<Rg>,
@@ -312,7 +316,9 @@ fn parse_hdr(d: &Def) -> Option<Hdr> {
         }
     }
     let ret_amp = ret.contains('&');
-    Some(Hdr { params, ret_has_ref, ret_amp, flows, lts, tps, mut_ref, carries, outer, inner, ret_rg, facts })
+    let ret_tp_only = ret_has_ref && !ret_amp && ret_lts.is_empty();
+    let ref_param = params.iter().map(|p| p.split_once(':').map_or(p.as_str(), |x| x.1).trim().starts_with('&')).collect();
+    Some(Hdr { params, ret_has_ref, ret_amp, flows, lts, tps, mut_ref, ret_tp_only, ref_param, carries, outer, inner, ret_rg, facts })
 }
 
 fn carries_ty(t: Ty) -> bool {
@@ -723,7 +729,24 @@ impl<'a> An<'a> {
                         if may_hold(self.aggs, t) && h.ret_has_ref {
                             for (j, a) in args.iter().enumerate() {
                                 if h.flows[j] {
-                                    res.extend(self.org[*a as usize].iter().copied());
+                                    if h.ret_tp_only && h.ref_param[j] {
+                                        // `&mut Vec<T>` から `T` を取り出す (`remove` / `pop`): 値は容れ物の領域そのものではなく、
+                                        // 容れ物が持っている要素の借用だけを運ぶ。
+                                        for l in self.org[*a as usize].iter() {
+                                            match *l {
+                                                Loan::Slot(r) | Loan::Buf(r) => {
+                                                    if let Some(c) = st.get(&(r, ELEMS)) {
+                                                        res.extend(c.loans.iter().copied());
+                                                    }
+                                                }
+                                                o => {
+                                                    res.insert(o);
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        res.extend(self.org[*a as usize].iter().copied());
+                                    }
                                 }
                             }
                         }
@@ -903,6 +926,15 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
     }
     // 場所 (根のスロット + オフセット)。定義の順がブロック順と限らないので、変化がなくなるまで繰り返す。
     let mut place: Vec<Option<(VId, Option<u32>)>> = vec![None; n];
+    // まだどの入口の値も決まっていないブロック引数 (場所の合流で無視する)。
+    let mut pending = vec![false; n];
+    for b in f.blocks.iter().skip(1) {
+        for (v, t) in &b.params {
+            if matches!(t, Ty::Ptr | Ty::Ref(..)) {
+                pending[*v as usize] = true;
+            }
+        }
+    }
     loop {
         let mut ch = false;
         for b in &f.blocks {
@@ -918,6 +950,51 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                 if np != place[i.dst as usize] {
                     place[i.dst as usize] = np;
                     ch = true;
+                }
+            }
+        }
+        // ブロック引数 (ループで持ち回す局所へのポインタなど): 合流する値の場所がすべて同じ根なら、その場所を引き継ぐ
+        // (まだ決まっていない引数・自分自身は無視。根が同じでオフセットが違えばオフセット不明)。
+        for (bi, b) in f.blocks.iter().enumerate() {
+            for (k, (pv, pty)) in b.params.iter().enumerate() {
+                if bi == 0 || !matches!(pty, Ty::Ptr | Ty::Ref(..)) {
+                    continue;
+                }
+                let mut acc: Option<Option<(VId, Option<u32>)>> = None;
+                for pb in &f.blocks {
+                    let args: Vec<&Vec<VId>> = match &pb.term {
+                        Term::Br((t, a)) if *t == bi => vec![a],
+                        Term::BrIf(_, (t1, a1), (t2, a2)) => {
+                            let mut v = vec![];
+                            if *t1 == bi {
+                                v.push(a1);
+                            }
+                            if *t2 == bi {
+                                v.push(a2);
+                            }
+                            v
+                        }
+                        _ => vec![],
+                    };
+                    for a in args {
+                        let Some(&v) = a.get(k) else { continue };
+                        if v == *pv || pending[v as usize] {
+                            continue;
+                        }
+                        let q = place[v as usize];
+                        acc = Some(match (acc, q) {
+                            (None, q) => q,
+                            (Some(Some((r1, o1))), Some((r2, o2))) if r1 == r2 => Some((r1, if o1 == o2 { o1 } else { None })),
+                            _ => None,
+                        });
+                    }
+                }
+                if let Some(np) = acc {
+                    pending[*pv as usize] = false;
+                    if np != place[*pv as usize] {
+                        place[*pv as usize] = np;
+                        ch = true;
+                    }
                 }
             }
         }
