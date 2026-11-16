@@ -15,8 +15,6 @@ use common::*;
 #[test]
 fn json_to_string_works_in_native_release() {
     let src = [
-        "import std.json",
-        "",
         "type t.Point derive [ToJson, FromJson] pub",
         "    x: i64 pub",
         "    y: i64 pub",
@@ -24,7 +22,7 @@ fn json_to_string_works_in_native_release() {
         "",
         "fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics never",
         "    let p = t.Point { x: 1i64, y: 2i64 }",
-        "    let mut out = std.json.new_text()",
+        "    let mut out = alloc.string.String.new(std.alloc.SYSTEM)",
         "    p.to_json(&mut out)?",
         "    core.mem.drop(std.io.print_line(out.as_str()))",
         "    Ok(())",
@@ -100,7 +98,6 @@ fn struct_field_vec_ref_return_works_in_native() {
 #[test]
 fn json_and_vec_ref_together_in_native() {
     let src = [
-        "import std.json",
         "import alloc.string",
         "import alloc.vec",
         "",
@@ -142,7 +139,7 @@ fn json_and_vec_ref_together_in_native() {
         "    }",
         "    // Test struct reference return and JSON serialization",
         "    let p = t.Store.get_point(&s)",
-        "    let mut out = std.json.new_text()",
+        "    let mut out = alloc.string.String.new(std.alloc.SYSTEM)",
         "    p.to_json(&mut out)?",
         "    core.mem.drop(std.io.print_line(out.as_str()))",
         "    Ok(())",
