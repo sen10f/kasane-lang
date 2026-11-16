@@ -288,6 +288,7 @@ end lower.opt.local_val
 fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, sc0: lower.cx.R, sloc: usize, slin: bool) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let sc = lower.opt.deref_val(env, c, sc0)?
     let sv = sc.v
+    let own_scrut = lower.drop.temp_scrut(env, c, p, n.a, sc.t)?
     let base = lower.cx.depth(c)
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
@@ -312,6 +313,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
             let nb = lower.cx.blk(c, &empty)?
             lower.expr.br_to(c, nb)?
             lower.cx.goto(c, nb)
+            lower.drop.arm_head(env, c, own_scrut, false, sv, sc.t)?
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
         } else if (pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath) {
             let name = resolve.ast.text(src, pat.a, pat.b)
@@ -328,6 +330,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
             let mut pt = types.ty.UNKNOWN
             let mut sub = 0usize
             let mut noncopy = false
+            let mut bound = false
             if pat.kind == parse.ast.Kind.PVariant && resolve.ast.count(p, pat.c) == 1usize {
                 sub = resolve.ast.item(p, pat.c, 0usize)
                 let sp = parse.ast.get(&p.ast, sub)
@@ -390,8 +393,17 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                     let bv = lower.opt.bind(env, c, stk, pv2, false, pt)?
                     lower.own.declare(env, c, bv, pt)?
                     noncopy = !lower.own.is_copy(env, c, pt)
+                    if lower.drop.owns(env, c, pt)? {
+                        bound = true
+                    }
                 }
             }
+            if own_scrut && bound {
+                // 束縛した所有物の読み直し (Rust 版 `drop_unbound`)。
+                let bty = lower.tyk.text(env, c, pt)?
+                core.mem.drop(lower.cx.def1(c, bty.as_str(), "payload ", sv)?)
+            }
+            lower.drop.arm_head(env, c, own_scrut, bound, sv, sc.t)?
             lower.own.arm_consume(c, sloc, slin, noncopy, false)?
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
             if j + 1usize != nv {

@@ -3,6 +3,7 @@ fn lower.expr.arm_body(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
     lower.cx.bind_vals(c, ks, saved)?
     let r = lower.expr.expr(env, c, p, src, body, t)?
     if !c.s.term {
+        lower.expr.end_locals(env, c, mark)?
         let a = lower.expr.jargs(c, rty, r.v, ks)?
         let s = lower.cx.cat2("br ", lower.cx.target(jb, &a)?.as_str())?
         lower.cx.finish(c, s)?
@@ -254,19 +255,7 @@ fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     if !has {
         res = lower.expr.unit(c)?
     }
-    // 局所の寿命の終わり (借用検査の注釈): スタックスロットの局所を逆順に `scope.end`。
-    let mut k = c.v.vals.len()
-    while k > mark {
-        k = k - 1usize
-        lower.drop.exit(env, c, k)?
-        if lower.cx.is_slot(c, k) {
-            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
-            if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
-                lower.vec.free_hdr(c, sv)?
-            }
-            let _e = lower.cx.def1(c, "unit", "scope.end ", sv)?
-        }
-    }
+    lower.expr.end_locals(env, c, mark)?
     lower.expr.trunc(c, mark)
     Ok(lower.cx.R { v: res, t: t })
 end lower.expr.block
@@ -536,6 +525,24 @@ fn lower.expr.dummy(c: &mut lower.cx.Cx, t: usize) -> Result<lower.cx.R, resolve
     let v = lower.cx.newval(c, "unit")?
     Ok(lower.cx.R { v: v, t: t })
 end lower.expr.dummy
+
+// 局所の寿命の終わり: [mark, 末尾) の局所を逆順に、印のある値は解放し、スタックスロットは (`Vec` / `String` なら
+// 解放して) `scope.end` (借用検査の注釈)。
+fn lower.expr.end_locals(env: &types.env.Env, c: &mut lower.cx.Cx, mark: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut k = c.v.vals.len()
+    while k > mark {
+        k = k - 1usize
+        lower.drop.exit(env, c, k)?
+        if lower.cx.is_slot(c, k) {
+            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+            if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
+                lower.vec.free_hdr(c, sv)?
+            }
+            let _e = lower.cx.def1(c, "unit", "scope.end ", sv)?
+        }
+    }
+    Ok(())
+end lower.expr.end_locals
 
 // 関数の下ろしを予約する (未処理なら末尾に足す)。
 fn lower.expr.enqueue(c: &mut lower.cx.Cx, key: &str, item1: usize, subs: alloc.vec.Vec<usize, std.alloc.System>, ret: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
@@ -1249,6 +1256,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     if lower.opt.kind(env, item) != 0usize {
         return lower.opt.optmatch(env, c, p, src, n, t, sc0, sloc, slin)
     }
+    let own_scrut = lower.drop.temp_scrut(env, c, p, n.a, sc.t)?
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
@@ -1271,6 +1279,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
             let nb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
             lower.expr.br_to(c, nb)?
             lower.cx.goto(c, nb)
+            lower.drop.arm_head(env, c, own_scrut, false, sc.v, sc.t)?
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
         } else if (pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath) {
             let name = resolve.ast.text(src, pat.a, pat.b)
@@ -1301,6 +1310,9 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
             if pat.kind == parse.ast.Kind.PVariant {
                 subs = resolve.ast.count(p, pat.c)
             }
+            let mut bound = false
+            let mut boffs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let mut btys = alloc.vec.Vec.new(std.alloc.SYSTEM)
             let mut i = 0usize
             while i < subs {
                 let sub = resolve.ast.item(p, pat.c, i)
@@ -1318,9 +1330,29 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
                     let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
                     let fv2 = lower.opt.wrap_ref(env, c, fv, pt)?
                     let _bf = lower.opt.bind(env, c, stk, fv2, false, pt)?
+                    if lower.drop.owns(env, c, pt)? {
+                        bound = true
+                        if own_scrut {
+                            boffs.push(off)?
+                            btys.push(pty)?
+                        }
+                    }
                 }
                 i = i + 1usize
             }
+            // 束縛した所有物の欄を、後ろから読み直す (Rust 版 `drop_unbound` が束縛を確かめる読み)。
+            let mut bi = boffs.len()
+            while bi > 0usize {
+                bi = bi - 1usize
+                let bt = match btys.as_slice().get(bi) {
+                    Some(x) => lower.cx.own(x.as_str())?
+                    None => lower.cx.own("unit")?
+                }
+                let bo = lower.tyk.at(boffs.as_slice(), bi)
+                let fs = lower.expr.field_src(sc.v, bo)?
+                core.mem.drop(lower.cx.def(c, bt.as_str(), fs.as_str())?)
+            }
+            lower.drop.arm_head(env, c, own_scrut, bound, sc.v, sc.t)?
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
             lower.cx.goto(c, nextb)
         } else {

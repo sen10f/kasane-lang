@@ -1,3 +1,11 @@
+// 腕の頭 (束縛の後): 対象を所有していて、この腕が所有物を束縛しないなら、対象の値を丸ごと解放する。
+fn lower.drop.arm_head(env: &types.env.Env, c: &mut lower.cx.Cx, own_scrut: bool, bound: bool, sv: usize, t: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if own_scrut && !bound {
+        return lower.drop.value(env, c, sv, t)
+    }
+    Ok(())
+end lower.drop.arm_head
+
 // 所有物を持つ値 (構造体・列挙型・Option / Result の局所) の「移したかの印」と解放は、Rust 版
 // `kir_lower_coll.rs` の `Owned::Val` (印は `frame.bytes 1`) と `drop_value` の写し。
 // `br bN()` で終わる。
@@ -185,6 +193,15 @@ fn lower.drop.set(c: &mut lower.cx.Cx, fl: usize, on: bool) -> Result<(), resolv
     core.mem.drop(lower.vec.store_at(c, "bool", fl, 0usize, b)?)
     Ok(())
 end lower.drop.set
+
+// match の対象が、この match が所有する一時の値 (呼び出し・`?` の結果) で、所有物を持つか。
+fn lower.drop.temp_scrut(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, node: usize, t: usize) -> Result<bool, resolve.Failure> uses [alloc] panics may pub
+    let k = parse.ast.get(&p.ast, node).kind
+    if k != parse.ast.Kind.Call && k != parse.ast.Kind.MCall && k != parse.ast.Kind.Try {
+        return Ok(false)
+    }
+    lower.drop.owns(env, c, t)
+end lower.drop.temp_scrut
 
 // 所有する値 v (型 t) の解放を、いまの位置に出す。所有物を持たない型は何も出さない。
 // 構造体は欄を逆順に、`Option` / `Result` はタグで枝を分けてペイロードを、列挙型は変種ごとの比べで枝を分ける (Rust 版 `drop_value`)。

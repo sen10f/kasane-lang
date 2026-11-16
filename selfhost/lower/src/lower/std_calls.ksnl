@@ -51,10 +51,17 @@ end lower.std_calls.has_fn
 fn lower.std_calls.has_method(fqn: &str) -> bool uses [] panics may pub
     let a = fqn == "alloc.string.String.as_str" || fqn == "core.str.len"
     let b = fqn == "core.option.Option.is_none" || fqn == "core.option.Option.is_some"
-    let e = fqn == "core.str.as_bytes" || fqn == "core.slice.sub" || fqn == "core.slice.contains"
+    let e0 = fqn == "core.str.as_bytes" || fqn == "core.slice.sub" || fqn == "core.slice.contains"
+    let e = e0 || fqn == "core.str.ends_with"
     let d = e || fqn == "core.slice.len" || fqn == "core.slice.get" || fqn == "core.slice.last"
     a || b || d || fqn == "core.option.Option.unwrap_or" || lower.std_calls.num_op(fqn) != ""
 end lower.std_calls.has_method
+
+// `mem.load.u8 %p +0`。
+fn lower.std_calls.ld8(c: &mut lower.cx.Cx, p: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let s = lower.cx.cat2("mem.load.u8 ", lower.cx.vs(p)?.as_str())?
+    lower.cx.def(c, "u8", lower.cx.cat2(s.as_str(), " +0")?.as_str())
+end lower.std_calls.ld8
 
 // メソッド呼び出し。`vs` は受け手と引数の値 (受け手は宣言の self に合わせて参照か値)。
 // `rty` は受け手の式の型 (参照の中身の型を読むのに使う)。
@@ -93,6 +100,9 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
     }
     if fqn == "core.slice.sub" {
         return lower.std_calls.slice_sub(env, c, vs, rty, t)
+    }
+    if fqn == "core.str.ends_with" {
+        return lower.std_calls.str_ends_with(env, c, vs, rty, t)
     }
     if fqn == "core.slice.get" || fqn == "core.slice.last" {
         if lower.vec.is_hdr(env, c, types.ty.strip(&c.ar, rty)) {
@@ -447,6 +457,65 @@ fn lower.std_calls.slice_sub(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &allo
     lower.cx.goto(c, jb)
     Ok(lower.cx.R { v: jp, t: t })
 end lower.std_calls.slice_sub
+
+// `s.ends_with(sfx)`: 末尾から sfx の長さ分を、添字で先頭から比べる (Rust 版と同じ並び)。
+fn lower.std_calls.str_ends_with(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let a = lower.std_calls.val_of(env, c, lower.tyk.at(vs.as_slice(), 0usize), rty)?
+    let sf = lower.tyk.at(vs.as_slice(), 1usize)
+    let ap = lower.loops.fld(c, "ptr", a, "+0")?
+    let al = lower.loops.fld(c, "usize", a, "+8")?
+    let sp = lower.loops.fld(c, "ptr", sf, "+0")?
+    let sl = lower.loops.fld(c, "usize", sf, "+8")?
+    let zero = lower.vec.usize_c(c, 0usize)?
+    let one = lower.vec.usize_c(c, 1usize)?
+    let empty_q = lower.loops.bin(c, "bool", "icmp.eq.usize", sl, zero)?
+    let short = lower.loops.bin(c, "bool", "icmp.lt.usize", al, sl)?
+    let off = lower.loops.bin(c, "usize", "sub.usize.wrap", al, sl)?
+    let base = lower.loops.bin(c, "ptr", "ptr.add", ap, off)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let iv = lower.cx.newval(c, "usize")?
+    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    hps.push(iv)?
+    let jp = lower.cx.newval(c, "bool")?
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(jp)?
+    let tv = lower.cx.def(c, "bool", "const.bool true")?
+    let fv = lower.cx.def(c, "bool", "const.bool false")?
+    let b1 = lower.cx.blk(c, &empty)?
+    let b2 = lower.cx.blk(c, &hps)?
+    let b3 = lower.cx.blk(c, &empty)?
+    let b4 = lower.cx.blk(c, &empty)?
+    let b5 = lower.cx.blk(c, &empty)?
+    let b6 = lower.cx.blk(c, &jps)?
+    lower.loops.brif(c, empty_q, b4, &empty, b1, &empty)?
+    lower.cx.goto(c, b1)
+    let mut z = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    z.push(zero)?
+    lower.loops.brif(c, short, b5, &empty, b2, &z)?
+    lower.cx.goto(c, b2)
+    let ge = lower.loops.bin(c, "bool", "icmp.ge.usize", iv, sl)?
+    lower.loops.brif(c, ge, b4, &empty, b3, &empty)?
+    lower.cx.goto(c, b3)
+    let p1 = lower.loops.bin(c, "ptr", "ptr.add", base, iv)?
+    let p2 = lower.loops.bin(c, "ptr", "ptr.add", sp, iv)?
+    let l1 = lower.std_calls.ld8(c, p1)?
+    let l2 = lower.std_calls.ld8(c, p2)?
+    let eq = lower.loops.bin(c, "bool", "icmp.eq.u8", l1, l2)?
+    let nx = lower.loops.bin(c, "usize", "add.usize.wrap", iv, one)?
+    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a1.push(nx)?
+    lower.loops.brif(c, eq, b2, &a1, b5, &empty)?
+    lower.cx.goto(c, b4)
+    let mut at = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    at.push(tv)?
+    lower.loops.br(c, b6, &at)?
+    lower.cx.goto(c, b5)
+    let mut af = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    af.push(fv)?
+    lower.loops.br(c, b6, &af)?
+    lower.cx.goto(c, b6)
+    Ok(lower.cx.R { v: jp, t: t })
+end lower.std_calls.str_ends_with
 
 // `opt.unwrap_or(d)`: Rust 版と同じ形。tag で分け、Some なら payload、None なら既定の値を、
 // join のブロックの引数で受ける。ブロックは some・none・join の順に作る。
