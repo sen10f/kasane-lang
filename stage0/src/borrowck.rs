@@ -2778,6 +2778,10 @@ impl<'a> Low<'a> {
                 } else if let Some(o) = self.bound_origin(d, inits, v) {
                     // 分解・腕のパターンで取り出した名前は、取り出し元の欄の宣言の領域を引き継ぐ。
                     out.push(o);
+                } else if let Some(o) = self.alias_field_origin(d, inits, v, &read_path, 0) {
+                    // `let inner = &q.p` を通した欄の読み出し `inner.y` は、`q.p.y` の宣言の領域。
+                    out.push(o);
+                    self.assigned_origins(v, d, inits, depth, out);
                 } else if let Some(init) = inits.plain(v) {
                     self.origins(init, d, inits, depth + 1, out);
                     self.assigned_origins(v, d, inits, depth, out);
@@ -2809,6 +2813,35 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// 局所 `v` が引数の場所への参照 (`let v = &q.p`、またはその別名) なら、そこからの欄の読み出し `v.<read>` の
+    /// 欄の宣言の領域 (`q.p.<read>`)。読み出す欄が無い・決まらないときは None (従来の判定)。
+    fn alias_field_origin(&self, d: &Def, inits: &Inits, v: &str, read: &[String], depth: usize) -> Option<Origin> {
+        if read.is_empty() || depth > 8 {
+            return None;
+        }
+        let init = inits.plain(v)?;
+        let (q, mut path) = match nname(init) {
+            "Unary" if matches!(st(&nf(init)[0]).as_str(), "&" | "&mut") => {
+                let (root, path) = self.place_of(&nf(init)[1])?;
+                if inits.has(&root) {
+                    return None;
+                }
+                (d.params.iter().position(|p| p.0 == root)?, path)
+            }
+            "Path" if strs(&nf(init)[0]).len() == 1 => {
+                let w = &strs(&nf(init)[0])[0];
+                return self.alias_field_origin(d, inits, w, read, depth + 1);
+            }
+            _ => return None,
+        };
+        path.extend(read.iter().cloned());
+        let first = path.iter().find(|f| f.as_str() != "*")?;
+        if Self::elided_param(d, q) && self.field_named_lifetimes(d, q, first).is_empty() {
+            return None;
+        }
+        self.field_region_path(d, q, &path).map(|set| Origin::Field(q, set))
+    }
+
     /// 局所の変数 `v` への代入 `v = e` の右辺が運ぶ欄の領域 (流れに依らず足す。`let mut r = self.fst; r = self.snd`)。
     fn assigned_origins(&self, v: &str, d: &Def, inits: &Inits, depth: usize, out: &mut Vec<Origin>) {
         let Some(vs) = inits.assigns.get(v) else { return };
@@ -2835,7 +2868,11 @@ impl<'a> Low<'a> {
         let (name, args) = type_args(ty);
         let tdi = self.type_of_name(&name)?;
         let n = self.p.defs[tdi].generics.iter().filter(|g| g.0 == "life").count();
-        let given: Vec<String> = args.iter().filter(|a| a.starts_with('\'')).map(|a| a.trim_start_matches('\'').to_string()).collect();
+        let mut given: Vec<String> = args.iter().filter(|a| a.starts_with('\'')).map(|a| a.trim_start_matches('\'').to_string()).collect();
+        // 領域引数を 1 つも書かない (省略した) 型は、領域ごとに互いに関係の無い新しい領域として扱う (明示と同じ判定)。
+        if n > 0 && given.is_empty() {
+            given = (0..n).map(|k| format!("_e{}_{}", q, k)).collect();
+        }
         if n == 0 || given.len() != n {
             return None;
         }

@@ -1,0 +1,22 @@
+// expect: E3010
+type t.P['a, 'b]
+    x: &'a u64
+    y: Option<&'b u64>
+end t.P
+
+type t.Q['a, 'b]
+    p: t.P<'a, 'b>
+end t.Q
+
+fn t.f2(q: &mut t.Q) -> () uses [] panics never
+    let inner = &q.p
+    match inner.y {
+        Some(v) => {
+            q.p.x = v
+        }
+        None => ()
+    }
+end t.f2
+
+fn t.main() -> () uses [] panics never
+end t.main
