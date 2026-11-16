@@ -264,9 +264,8 @@ fn lower.tyk.is_generic_adt(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> b
     if n.k != types.ty.K.Adt || n.c == 0usize {
         return false
     }
-    // 標準ライブラリの総称の型 (alloc・core・std) は、具体化の再帰を別に扱うまで未対応のままにする。
-    let fq = lower.tyk.item_fqn(env, n.a)
-    if fq.as_str().starts_with("alloc.") || fq.as_str().starts_with("core.") || fq.as_str().starts_with("std.") {
+    // 型引数が未決め (Param) の具体化は下ろせない (展開が止まらない)。標準の型もここを通る。
+    if lower.inst.has_param(c, f) {
         return false
     }
     let kind = types.infer.item_kind(env, n.a)
