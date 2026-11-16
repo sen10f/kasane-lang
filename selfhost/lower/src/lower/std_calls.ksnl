@@ -42,10 +42,86 @@ fn lower.std_calls.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     lower.expr.dummy(c, t)
 end lower.std_calls.call
 
+// 引数 1 つの組み込み: `std.env.arg(k)` は `env.arg`、`core.str.from_utf8(b)` は `utf8.valid` の検査、
+// `char.try_from_u32(x)` は範囲の検査 (0x10FFFF 未満でサロゲートを除く)。
+fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, fqn: &str) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    if resolve.ast.count(p, n.b) != 1usize {
+        lower.cx.fail(c, "組み込みの引数の個数")?
+        return lower.expr.dummy(c, t)
+    }
+    let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 0usize), types.ty.UNKNOWN)?
+    let rt = lower.tyk.text(env, c, t)?
+    if fqn == "std.env.arg" {
+        let v = lower.cx.def1(c, rt.as_str(), "env.arg ", a.v)?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(lower.cx.newval(c, rt.as_str())?)?
+    if fqn == "core.char.char.try_from_u32" {
+        let hi = lower.cx.def(c, "u32", "const.u32 1114112")?
+        let lo = lower.cx.def(c, "u32", "const.u32 55296")?
+        let sg = lower.cx.def(c, "u32", "const.u32 57343")?
+        let c1 = lower.loops.bin(c, "bool", "icmp.lt.u32", a.v, hi)?
+        let c2 = lower.loops.bin(c, "bool", "icmp.lt.u32", a.v, lo)?
+        let c3 = lower.loops.bin(c, "bool", "icmp.gt.u32", a.v, sg)?
+        let c4 = lower.loops.bin(c, "bool", "or.bool", c2, c3)?
+        let c5 = lower.loops.bin(c, "bool", "and.bool", c1, c4)?
+        let sb = lower.cx.blk(c, &empty)?
+        let nb = lower.cx.blk(c, &empty)?
+        let jb = lower.cx.blk(c, &jps)?
+        lower.loops.brif(c, c5, sb, &empty, nb, &empty)?
+        lower.cx.goto(c, sb)
+        let sv = lower.cx.def1(c, rt.as_str(), "some ", a.v)?
+        let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        a1.push(sv)?
+        lower.loops.br(c, jb, &a1)?
+        lower.cx.goto(c, nb)
+        let nn = lower.cx.cat2("const.", lower.cx.cat2(rt.as_str(), " none")?.as_str())?
+        let nv = lower.cx.def(c, rt.as_str(), nn.as_str())?
+        let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        a2.push(nv)?
+        lower.loops.br(c, jb, &a2)?
+        lower.cx.goto(c, jb)
+        return Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+    }
+    // from_utf8: 先頭から有効な長さを `utf8.valid` で求め、全体と等しければ Ok(bytes)。
+    let ptr = lower.loops.fld(c, "ptr", a.v, "+0")?
+    let len = lower.loops.fld(c, "usize", a.v, "+8")?
+    let ok = lower.loops.bin(c, "usize", "utf8.valid", ptr, len)?
+    let eq = lower.loops.bin(c, "bool", "icmp.eq.usize", ok, len)?
+    let b1 = lower.cx.blk(c, &empty)?
+    let b2 = lower.cx.blk(c, &empty)?
+    let jb = lower.cx.blk(c, &jps)?
+    lower.loops.brif(c, eq, b1, &empty, b2, &empty)?
+    lower.cx.goto(c, b1)
+    let okv = lower.cx.def1(c, rt.as_str(), "ok ", a.v)?
+    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a1.push(okv)?
+    lower.loops.br(c, jb, &a1)?
+    lower.cx.goto(c, b2)
+    let rn = types.ty.node(&c.ar, types.ty.find(&c.ar, t))
+    let et = lower.tyk.text(env, c, types.ty.arg(&c.ar, rn.b, 1usize))?
+    let mks = lower.cx.cat2("make(", lower.cx.cat2(lower.cx.vs(ok)?.as_str(), ")")?.as_str())?
+    let mk = lower.cx.def(c, et.as_str(), mks.as_str())?
+    let ev = lower.cx.def1(c, rt.as_str(), "err ", mk)?
+    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a2.push(ev)?
+    lower.loops.br(c, jb, &a2)?
+    lower.cx.goto(c, jb)
+    Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+end lower.std_calls.call1
+
 // 自由関数の呼び出しを、この表で下ろせるか。
 fn lower.std_calls.has_fn(fqn: &str) -> bool uses [] panics may pub
     fqn == "alloc.string.String.new" || fqn == "core.panic.panic"
 end lower.std_calls.has_fn
+
+// 引数が 1 つの組み込み (`call1`) か。
+fn lower.std_calls.has_fn1(fqn: &str) -> bool uses [] panics may pub
+    let a = fqn == "std.env.arg" || fqn == "core.str.from_utf8"
+    a || fqn == "core.char.char.try_from_u32"
+end lower.std_calls.has_fn1
 
 // メソッド呼び出しを、この表で下ろせるか。
 fn lower.std_calls.has_method(fqn: &str) -> bool uses [] panics may pub
@@ -516,6 +592,61 @@ fn lower.std_calls.str_ends_with(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &
     lower.cx.goto(c, b6)
     Ok(lower.cx.R { v: jp, t: t })
 end lower.std_calls.str_ends_with
+
+// `&str` どうしの `==` / `!=` (Rust 版 `str_eq`): 長さを比べ、1 バイトずつ比べるループをその場に出す。
+fn lower.std_calls.str_eq_inline(c: &mut lower.cx.Cx, l: lower.cx.R, r: lower.cx.R, ne: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let pa = lower.loops.fld(c, "ptr", l.v, "+0")?
+    let la = lower.loops.fld(c, "usize", l.v, "+8")?
+    let pb = lower.loops.fld(c, "ptr", r.v, "+0")?
+    let lb = lower.loops.fld(c, "usize", r.v, "+8")?
+    let zero = lower.vec.usize_c(c, 0usize)?
+    let one = lower.vec.usize_c(c, 1usize)?
+    let len_eq = lower.loops.bin(c, "bool", "icmp.eq.usize", la, lb)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let iv = lower.cx.newval(c, "usize")?
+    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    hps.push(iv)?
+    let jp = lower.cx.newval(c, "bool")?
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(jp)?
+    let hd = lower.cx.blk(c, &hps)?
+    let body = lower.cx.blk(c, &empty)?
+    let okb = lower.cx.blk(c, &empty)?
+    let bad = lower.cx.blk(c, &empty)?
+    let join = lower.cx.blk(c, &jps)?
+    let tv = lower.cx.def(c, "bool", "const.bool true")?
+    let fv = lower.cx.def(c, "bool", "const.bool false")?
+    let mut z = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    z.push(zero)?
+    lower.loops.brif(c, len_eq, hd, &z, bad, &empty)?
+    lower.cx.goto(c, hd)
+    let done = lower.loops.bin(c, "bool", "icmp.ge.usize", iv, la)?
+    lower.loops.brif(c, done, okb, &empty, body, &empty)?
+    lower.cx.goto(c, body)
+    let ba = lower.loops.bin(c, "ptr", "ptr.add", pa, iv)?
+    let bb = lower.loops.bin(c, "ptr", "ptr.add", pb, iv)?
+    let ca = lower.std_calls.ld8(c, ba)?
+    let cb = lower.std_calls.ld8(c, bb)?
+    let eq = lower.loops.bin(c, "bool", "icmp.eq.u8", ca, cb)?
+    let ni = lower.loops.bin(c, "usize", "add.usize.wrap", iv, one)?
+    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a1.push(ni)?
+    lower.loops.brif(c, eq, hd, &a1, bad, &empty)?
+    lower.cx.goto(c, okb)
+    let mut at = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    at.push(tv)?
+    lower.loops.br(c, join, &at)?
+    lower.cx.goto(c, bad)
+    let mut af = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    af.push(fv)?
+    lower.loops.br(c, join, &af)?
+    lower.cx.goto(c, join)
+    if !ne {
+        return Ok(lower.cx.R { v: jp, t: t })
+    }
+    let nv = lower.cx.def1(c, "bool", "not.bool ", jp)?
+    Ok(lower.cx.R { v: nv, t: t })
+end lower.std_calls.str_eq_inline
 
 // `opt.unwrap_or(d)`: Rust 版と同じ形。tag で分け、Some なら payload、None なら既定の値を、
 // join のブロックの引数で受ける。ブロックは some・none・join の順に作る。
