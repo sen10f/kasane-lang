@@ -1492,7 +1492,7 @@ python3 -I compare.py --group examples --mine native                 # 一致 44
 cd selfhost/lower && ksn check && ksn fmt --check && ksn build --release
 python3 -I compare.py --group parse --mine native --reasons          # 一致 144 / 全体 155 (下ろせた 145)
 python3 -I compare.py --group linear_ok --mine native --jobs 8       # 一致 347 / 全体 459 (下ろせた 401)
-python3 -I compare.py --group examples --mine native                 # 一致 49 / 全体 172 (下ろせた 59)、demo 3/4、tour 4/7
+python3 -I compare.py --group examples --mine native                 # 一致 49 / 全体 172 (下ろせた 58)、demo 3/4、tour 4/7
 ```
 
 ## 27. KIR への下ろしの段 (4h)
@@ -1604,4 +1604,63 @@ python3 -I compare.py --group examples --mine native                 # 一致 57
 python3 -I e2e.py                                                    # linear_ok の端から端まで (99 / 99)
 python3 -I e2e_parse.py                                              # 本物の selfhost/parse の端から端まで (350 / 350)
 python3 -I e2e_parse.py --variant                                    # read_file を除いた写し (348 / 348)
+```
+
+## 29. KIR への下ろしの段 (4j): selfhost/resolve
+
+2026-11-16。ブランチ `selfhost/lower-4j` (`selfhost/lower-4i` の先頭から)。触ったのは `selfhost/lower/src/` (`lower/expr` `vec` `drop` `str` `std_calls` `opt` `tyk` `cx` `func` `loops`)、`selfhost/lower/compare.py`、この章だけ。`stage0/`・`examples/`・`apps/`・テストの期待値・`selfhost/resolve` のソースは変えていない。
+
+結論を先に: **`selfhost/resolve` (名前解決の段、68 関数) を `selfhost/lower` で下ろして Rust 版 (`ksn kir`) と比べた。一致 55 / 下ろせた 58 / 全 68** (最初は 29 / 50 / 68。まとめた形で測り直した出発点)。名前解決の段は `parse` を依存に持つが、Rust 版 `ksn kir` は依存パッケージの型 (`parse.cur.P` ほか) の関数を下ろせない (最初は 68 のうち 33 本が「Rust 版が下ろせない」で比べられなかった)。そこで `compare.py --group resolve` は、`parse` と `resolve` の `src` を 1 つにまとめた一時パッケージを作って比べる (ソースは書き換えない。比べる対象は `resolve.*` の関数だけ)。端から端まで (`e2e_resolve.py`) は **作れていない**: 実行に要る `HashMap` (`resolve.table` の記号表。29.3) を下ろせないため。
+
+### 29.1 下ろしたもの・直したもの
+
+- **`Vec` / `String` のメソッド**: `truncate` (`Vec`)・`clear` (`Vec` / `String`) を生成した小関数にした (`lower.vec.gen`)。長さを書くだけで、要素は解放しない (Rust 版は `truncate` / `clear` で要素を解放する。小関数の本体は比べない)。
+- **`self.欄.メソッド(..)`**: パーサは `self` だけ 1 語の `Path` で、後ろの `.欄` を `Dot` にする (ふつうの `x.欄.m` は 1 つの `Path`)。`lower.expr.self_chain` で `self` から始まる `Dot` の連鎖を綴りにし、`lower.expr.call_named` (旧 `call` の本体) と `vec_slice_get` / `getmut_match` に渡す。これで `self.gens.len()` などが、`x.gens.len()` と同じ `fieldaddr` + `bitcast.ptr` の形になった。
+- **`as_slice().get(i)`**: スカラー要素の `carry` の第 1 引数は、`Vec` の場所ではヘッダの番地 (Rust 版)。`match v.as_slice().get(k) { Some(p) => .. None => .. }` で要素が所有物 (`String` / 構造体) のときは、Rust 版と同じく `Option` を作らず、範囲の検査で枝を分け、要素の番地をそのまま束縛する (`lower.expr.getmut_match` を `get` にも広げた。型は `lower.drop.owns` で、場所の命令を出す前に決める)。
+- **`String.from_str`**: `heap.alloc n` + 1 バイトずつ複写する周 + `ok make(ptr, n, n)` (Rust 版と同じ形。以前は空から `push_str` する形で、ブロックの並びが違った)。
+- **欄の `Vec` のメソッドは受け手の欄の番地を先に作り、その後で引数を評価する** (前の段の逆。実際の Rust 版の並び)。
+- **値で持つ構造体の欄の `Vec` / `String` のメソッド** (`st.tails.push(x)`、`st` は局所の `St` の値): 欄を枠 (`frame.bytes 24`) に写し、呼び、枠から読み戻して `setfield` で `st` を作り直す (`lower.expr.vec_val_call`)。以前はこの形で、受け手を持たない `call alloc.vec.Vec.push(%v)` を出していた (誤り)。
+- **合流で受け渡す局所** (Rust 版の `assigned` = 代入 + `mut_recv_names`): `&mut self` の利用者のメソッドを呼ぶ局所 (`st: &mut St` の `st.push_local(..)`、可変束縛でなくてよい) と、所有物を持つ構造体の局所の欄を読む / 呼ぶ `x.f...` の根を、ループ・分岐の合流の引数に入れる (`lower.expr.scan` に `env` と `c` を足し、`lower.expr.mut_recv_root` と `lower.expr.scan_field_root` で判定。`mlist_in` は `!` 付きの名前を「可変束縛でなくてもよい」と読む)。
+- **借用される名前の走査** (`scan`) が `for` の本体の中も見る (本体の `&n` の `n` がスロットにならなかった)。
+- **`&mut` の局所を `&self` のメソッドに渡す** → `asshared` (`lower.opt.recv_value` に `want_mut` を足した)。`&x.f` / `&mut x.f` で f が `Vec` / `String` のときは、欄の番地 (`fieldaddr` + `bitcast.ptr`) を `borrow.shared` / `borrow.mut` する (以前は欄を読んで一時の枠に写していた)。
+- **要素が所有物の `Vec` の枠は別の集成体 `vec<#N>`** (`lower.tyk.VECO`)。Rust 版は `Vec<String>` と `String` のヘッダを別の `agg` にする。同じ関数に両方が出ると、番号がずれていた。
+- **要素が所有物の `Vec` の解放と移動** (前の段まで「解放しない」だったもの): 解放は要素を 1 つずつ解放する周 + バッファの `heap.free` (`lower.drop.elems`。構造体の欄・局所のスロットの出口・代入の古い値)、移動 (`mem.load` ×3 のあと先頭の番地を null にする) は長さも 0 にする。
+- `Option<&スカラー>.unwrap_or(&既定)` は、結果の型を誤って下ろして実行時に落ちたので、未対応に戻した (`e01_method_chain_borrow_ok` が `clear` を下ろせるようになって初めて露見した)。
+
+### 29.2 数字
+
+| 対象 | 前 (4i) | 後 (4j) |
+| --- | ---: | ---: |
+| **`selfhost/resolve` (68 関数)**: 一致 / 下ろせた | (比べられず。依存の型で Rust 版が 33 本下ろせない。まとめた形で 29 / 50) | **55 / 58** |
+| `selfhost/parse` (155 関数): 一致 / 下ろせた | 155 / 155 | 155 / 155 |
+| `linear_ok` (459 関数): 一致 / 下ろせた | 363 / 403 | 367 / 402 |
+| `examples` (172 関数): 一致 / 下ろせた | 57 / 65 | 63 / 68 |
+| 端から端まで `linear_ok` | 99 / 99 | 99 / 99 |
+| 端から端まで 本物の `selfhost/parse` | 350 / 350 | 350 / 350 |
+| 端から端まで `selfhost/resolve` | - | **未着手 (作れていない)** |
+
+### 29.3 まだ (`selfhost/resolve` の残り 13 関数: 下ろせない 10 + 違う 3)
+
+- **下ろせない 10 本**: `HashMap` (`new` / `get` / `insert` と、`resolve.table` の記号表 `Table.defs.m` / `variants.m` を持つ `resolve.table.new` `put_def` `put_var` `scope.lookup_key`)。Rust 版は `HashMap.get<K,V,A>` / `find` / `find_hashed` / `hash_key` / `Fnv64` を生成した小関数 (約 300 行の KIR) として持つ。この下ろしにはまだ無い。`core.str` の本体のないメソッド (`strip_prefix` `strip_suffix` `trim` `trim_end` `split_once`、`resolve.load.base` `manifest.quoted` `manifest.read` `report.line_from` `scope.find`) は、Rust 版は呼び出しの場所に 40〜60 行の周として展開する (`ksn kir` で確かめられる)。
+- **値を持つ列挙型の `==` (`resolve.scope.member`、`Res.Def(Kind)`)**: Rust 版は `Res.$eq` を呼ぶ。この下ろしは `icmp.eq.agg#N` を出していた (実行すると誤り) ので、集成体 (`agg#`) の `==` / `!=` は未対応にした (29.1 の数字はこの後のもの)。`T.$eq` を生成すれば下ろせる。
+- **下ろせるが Rust 版と違う 3 本**: `resolve.table.state` (`HashMap.get` の呼び出しの形)、`resolve.load.collect` (`std.fs.read_dir` と `Vec<Entry>` の解放)、`resolve.main`。
+- `truncate` / `clear` は要素を解放しない (所有物の要素は漏れる。安全)。
+- 前の段の残り (28.3): 解放しない形のうち総称の構造体・列挙型の所有物、`linear_ok` の食い違い、`examples` の残り。
+
+### 29.4 処理系の不足 (stage0。直していない)
+
+- `ksn kir FQN` は、依存パッケージの型を引数・戻り値に持つ関数 (`resolve.walk.*` など、`parse.cur.P` を取るもの) を「標準ライブラリの型は段階 N の対象外」で下ろせない。再現: `cd selfhost/resolve && ksn kir resolve.walk.block`。比べるには、依存を同じパッケージに入れる (29 章の `compare.py`)。
+
+### 29.5 再現
+
+```
+cd selfhost/lower && ksn check && ksn fmt --check && ksn build --release
+(cd ../emit && ksn build --release)
+python3 -I compare.py --group resolve --mine native --reasons        # 一致 55 / 全体 68 (下ろせた 58)
+python3 -I compare.py --group parse --mine native                    # 155 / 155
+python3 -I compare.py --group linear_ok --mine native --jobs 8       # 367 / 402
+python3 -I compare.py --group examples --mine native                 # 63 / 68
+python3 -I e2e.py                                                    # 99 / 99
+python3 -I e2e_parse.py                                              # 350 / 350
+python3 -I compare.py ... --dump FILE                                # 一致した関数の名前を書く (退行の突き合わせ)
 ```

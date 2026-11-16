@@ -185,6 +185,11 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         return lower.chk.opt_cmp(env, c, l, r, cc == "ne", t)
     }
     let ty = lower.tyk.text(env, c, l.t)?
+    if ty.as_str().starts_with("agg#") {
+        // 集成体 (値を持つ列挙型・構造体) の `==` は `T.$eq` の呼び出しで、`icmp` は使えない。
+        lower.cx.fail(c, "集成体の比較 (未対応)")?
+        return lower.expr.dummy(c, t)
+    }
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
     let lf3 = types.ty.find(&c.ar, l.t)
     if types.ty.node(&c.ar, lf3).k == types.ty.K.Float {
