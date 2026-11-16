@@ -197,12 +197,24 @@ fn lower.std_calls.recv_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
     let mut rty = 0usize
     if loc != 0usize {
         rty = lower.cx.tyof_t(c, loc - 1usize)
-        let rv = lower.opt.local_val(env, c, loc - 1usize, rty)?
-        vs.push(rv)?
+        if lower.cx.is_slot(c, loc - 1usize) && lower.vec.is_hdr(env, c, rty) {
+            // `Vec` / `String` の局所は枠の番地をそのまま渡す (移動しない)。
+            vs.push(lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize))?
+        } else {
+            let rv = lower.opt.local_val(env, c, loc - 1usize, rty)?
+            vs.push(rv)?
+        }
     } else {
         let r = lower.expr.expr(env, c, p, src, recv_node, types.ty.UNKNOWN)?
         rty = r.t
-        vs.push(r.v)?
+        if lower.vec.is_hdr(env, c, r.t) {
+            // 値の `Vec` / `String` (一時値) は枠に置いてから番地を渡す。
+            let tslot = lower.cx.def(c, "ptr", "frame.bytes 24")?
+            lower.vec.store_hdr(c, tslot, r.v)?
+            vs.push(tslot)?
+        } else {
+            vs.push(r.v)?
+        }
     }
     let na = resolve.ast.count(p, args)
     for j in core.iter.range(0usize, na) {

@@ -58,8 +58,14 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     let r = lower.expr.expr(env, c, p, src, n.b, lt)?
     if lower.cx.is_slot(c, loc - 1usize) {
         let slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
-        let so = lower.opt.two_op("store ", slot, r.v)?
-        let _sd = lower.cx.def(c, "unit", so.as_str())?
+        if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, loc - 1usize)) {
+            // 古い値を解放してから、新しい値の欄を書く。
+            lower.vec.free_hdr(c, slot)?
+            lower.vec.store_hdr(c, slot, r.v)?
+        } else {
+            let so = lower.opt.two_op("store ", slot, r.v)?
+            let _sd = lower.cx.def(c, "unit", so.as_str())?
+        }
     } else {
         lower.cx.set_val(c, loc - 1usize, r.v + 1usize)?
     }
@@ -238,6 +244,9 @@ fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         k = k - 1usize
         if lower.cx.is_slot(c, k) {
             let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+            if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
+                lower.vec.free_hdr(c, sv)?
+            }
             let _e = lower.cx.def1(c, "unit", "scope.end ", sv)?
         }
     }
@@ -311,6 +320,11 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
             let a0node = resolve.ast.item(p, n.b, 0usize)
             let a0 = lower.expr.expr(env, c, p, src, a0node, types.ty.UNKNOWN)?
             dv = a0.v
+            if lower.vec.is_hdr(env, c, a0.t) {
+                // 所有する `Vec` / `String` を捨てる: 先頭の番地を解放する。
+                let fp = lower.cx.def(c, "ptr", lower.expr.field_src(dv, 0usize)?.as_str())?
+                core.mem.drop(lower.cx.def1(c, "unit", "heap.free ", fp)?)
+            }
         }
         core.mem.drop(dv)
         let u = lower.expr.unit(c)?
@@ -1121,6 +1135,7 @@ fn lower.expr.retx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         let r = lower.expr.expr(env, c, p, src, n.a, c.s.ret_t)?
         v = r.v
     }
+    lower.vec.exit_drops(env, c, c.v.vals.len(), 0usize)?
     let s = lower.cx.cat2("ret ", lower.cx.vs(v)?.as_str())?
     lower.cx.finish(c, s)?
     lower.expr.dummy(c, types.ty.NEVER)
@@ -1421,6 +1436,14 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         // `*r`: 参照の読み出し。
         let r = lower.expr.expr(env, c, p, src, n.b, types.ty.UNKNOWN)?
         let tt = lower.tyk.text(env, c, t)?
+        if lower.cx.tyof(c, r.v).as_str() == "ptr" {
+            // 生の番地 (`Vec` の要素の借用) の読み出し。
+            let op1 = lower.cx.cat2("mem.load.", tt.as_str())?
+            let op2 = lower.cx.cat2(op1.as_str(), " ")?
+            let op3 = lower.cx.cat2(op2.as_str(), lower.cx.vs(r.v)?.as_str())?
+            let v1 = lower.cx.def(c, tt.as_str(), lower.cx.cat2(op3.as_str(), " +0")?.as_str())?
+            return Ok(lower.cx.R { v: v1, t: t })
+        }
         let op = lower.cx.cat2("load ", lower.cx.vs(r.v)?.as_str())?
         let v = lower.cx.def(c, tt.as_str(), op.as_str())?
         return Ok(lower.cx.R { v: v, t: t })
@@ -1456,14 +1479,24 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         if slot == 0usize {
             let x = lower.expr.expr(env, c, p, src, n.b, types.ty.UNKNOWN)?
             sty = x.t
-            let st = lower.tyk.text(env, c, sty)?
-            let mt = lower.opt.refty(true, st.as_str())?
-            slot = lower.cx.def(c, mt.as_str(), "alloca")?
-            let so = lower.opt.two_op("store ", slot, x.v)?
-            let _sd = lower.cx.def(c, "unit", so.as_str())?
+            if lower.vec.is_hdr(env, c, sty) {
+                slot = lower.cx.def(c, "ptr", "frame.bytes 24")?
+                lower.vec.store_hdr(c, slot, x.v)?
+            } else {
+                let st = lower.tyk.text(env, c, sty)?
+                let mt = lower.opt.refty(true, st.as_str())?
+                slot = lower.cx.def(c, mt.as_str(), "alloca")?
+                let so = lower.opt.two_op("store ", slot, x.v)?
+                let _sd = lower.cx.def(c, "unit", so.as_str())?
+            }
         }
         let tt = lower.tyk.text(env, c, t)?
-        let head = if mutable {
+        let hdr_b = lower.vec.is_hdr(env, c, sty)
+        let head = if hdr_b && mutable {
+            "borrow.mut "
+        } else if hdr_b {
+            "borrow.shared "
+        } else if mutable {
             "reborrow "
         } else {
             "asshared "
