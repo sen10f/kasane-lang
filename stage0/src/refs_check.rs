@@ -14,6 +14,28 @@ use crate::lexer::{lex, Tok};
 use crate::program::Program;
 use crate::types::Ty;
 
+/// 読み込んだファイルの文面 (ファイル名 → 文面)。`ksn rename` の試走・LSP のように、ディスクと違う文面を検査することがあるので、
+/// `program::load_file` が最後に読んだ文面をここに覚える (ディスクは使わない)。
+static SOURCES: std::sync::Mutex<Option<HashMap<String, std::sync::Arc<String>>>> = std::sync::Mutex::new(None);
+
+pub fn remember(path: &str, src: &str) {
+    if path.ends_with(".sig") {
+        return;
+    }
+    if let Ok(mut g) = SOURCES.lock() {
+        g.get_or_insert_with(HashMap::new).insert(path.to_string(), std::sync::Arc::new(src.to_string()));
+    }
+}
+
+fn source_of(path: &str) -> Option<std::sync::Arc<String>> {
+    if let Ok(g) = SOURCES.lock() {
+        if let Some(s) = g.as_ref().and_then(|m| m.get(path)) {
+            return Some(s.clone());
+        }
+    }
+    std::fs::read_to_string(path).ok().map(std::sync::Arc::new)
+}
+
 /// 診断 1 件 (定義の添字、行と列を符号化した位置、メッセージ)。
 pub struct Hit {
     pub di: usize,
@@ -489,7 +511,7 @@ fn static_stores_only(p: &Program, toks: &[Tok], name: &str) -> bool {
 /// 利用者の定義 (`user`) を検査する。`let_tys` は推論済みの `let` の型 (`(定義, 行, 名前)`)。
 pub fn check(p: &Program, user: &[usize], let_tys: &HashMap<(usize, usize, String), Ty>) -> Vec<Hit> {
     let generic = user_generic_names(p, user);
-    let mut cache: HashMap<String, Option<Vec<String>>> = HashMap::new();
+    let mut cache: HashMap<String, Option<std::sync::Arc<String>>> = HashMap::new();
     let mut out: Vec<Hit> = Vec::new();
     let mut flagged: HashSet<(usize, usize)> = HashSet::new();
     let mut toks_of: HashMap<usize, Vec<Tok>> = HashMap::new();
@@ -498,10 +520,11 @@ pub fn check(p: &Program, user: &[usize], let_tys: &HashMap<(usize, usize, Strin
         if d.file.ends_with(".sig") || d.line == 0 {
             continue;
         }
-        let lines = cache.entry(d.file.clone()).or_insert_with(|| std::fs::read_to_string(&d.file).ok().map(|s| s.split('\n').map(|l| l.to_string()).collect()));
-        let Some(lines) = lines else { continue };
+        let src = cache.entry(d.file.clone()).or_insert_with(|| source_of(&d.file));
+        let Some(src) = src else { continue };
+        let lines: Vec<&str> = src.split('\n').collect();
         let end = if d.end_line >= d.line { d.end_line } else { d.line };
-        if d.line > lines.len() {
+        if d.line > lines.len() || lines[d.line - 1] != d.header {
             continue;
         }
         let text = lines[d.line - 1..end.min(lines.len())].join("\n") + "\n";

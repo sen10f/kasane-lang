@@ -362,7 +362,7 @@ fn std.json.decode_usize(doc: &std.json.Doc, v: std.json.Value) -> Result<usize,
     }
 end std.json.decode_usize
 
-fn std.json.decode_variant['a](doc: &'a std.json.Doc, v: std.json.Value) -> Result<(&'a str, Option<std.json.Value>), std.json.Error> uses [] panics never pub
+fn std.json.decode_variant(doc: &std.json.Doc, v: std.json.Value) -> Result<(&str, Option<std.json.Value>), std.json.Error> uses [] panics never pub
     if std.json.text_at(doc, v.at).is_some() {
         let name = std.json.str_at(doc, v.at)?
         return Ok((name, None))
@@ -506,7 +506,7 @@ fn std.json.num_at(doc: &std.json.Doc, at: usize) -> Option<&str>
     }
 end std.json.num_at
 
-fn std.json.number_text['a](doc: &'a std.json.Doc, v: std.json.Value) -> Result<&'a str, std.json.Error>
+fn std.json.number_text(doc: &std.json.Doc, v: std.json.Value) -> Result<&str, std.json.Error>
     match std.json.num_at(doc, v.at) {
         Some(s) => Ok(s)
         None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))

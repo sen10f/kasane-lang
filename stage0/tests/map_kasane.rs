@@ -17,6 +17,13 @@ fn block(sig: &str, head: &str, end: &str) -> String {
     rest[..stop].to_string()
 }
 
+/// `from` で始まる箇所から `to` の終わりまでを取り除く。
+fn drop_from(src: &str, from: &str, to: &str) -> String {
+    let a = src.find(from).unwrap_or_else(|| panic!("{} がない", from));
+    let b = a + src[a..].find(to).unwrap_or_else(|| panic!("{} がない", to)) + to.len();
+    format!("{}{}", &src[..a], &src[b..])
+}
+
 fn scratch_source() -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("spec").join("stdlib").join("alloc");
     let sig = fs::read_to_string(root.join("collections.sig")).unwrap();
@@ -26,11 +33,15 @@ fn scratch_source() -> String {
         block(&sig, "type alloc.collections.MapEntry", "end alloc.collections.MapEntry"),
         block(&sig, "type alloc.collections.HashMap[", "end alloc.collections.HashMap"),
         block(&sig, "enum alloc.collections.HashCell", "end alloc.collections.HashCell"),
-        block(&sig, "type alloc.collections.HashMapIter", "end alloc.collections.HashMapIter"),
     ]
     .join("\n\n");
     // 規範の FQN を `scr.` に写す (利用者のパッケージの中で同じ型・同じ関数になる)。
-    format!("{}\n\n{}\n\n{}", types, ksnl, MAIN).replace("alloc.collections.", "scr.")
+    // 参照は二級の値 (E3060): 利用者のパッケージは参照を運ぶ型 (`HashMapIter['a, K, V]`) を宣言できないので、
+    // 反復子 (`HashMap.iter` と `HashMapIter` の `Iterator` 実装) は写さない。反復の順序は標準ライブラリ本体の試験が見る。
+    let ksnl = drop_from(&ksnl, "fn alloc.collections.HashMap.iter[", "end alloc.collections.HashMap.iter");
+    let ksnl = drop_from(&ksnl, "impl['a, K, V] core.iter.Iterator<(&'a K, &'a V)", "end alloc.collections.HashMapIter.next");
+    let main = drop_from(MAIN, "    // 反復は挿入順", "    core.check.eq(j, keys.len())\n");
+    format!("{}\n\n{}\n\n{}", types, ksnl, main).replace("alloc.collections.", "scr.")
 }
 
 const MAIN: &str = r#"

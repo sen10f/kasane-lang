@@ -1660,6 +1660,8 @@ end t.main
                 "(std.http.Request,usize)" => (112, 8, vec![0, 104], vec![]),
 
                 // `Option<&str>` (枠 128 ビット + タグ = 17 バイトを 8 の倍数に広げて 24 バイト) を持つ組。`fat` は 16 バイト。
+                // `std.json.decode_variant` の `(&str, Option<Value>)`: `Value` は添字だけ (8 バイト) なので `Option<Value>` は 16 バイト。
+                n if n.starts_with("(fat,Option<agg") => (32, 8, vec![0, 16], vec![]),
                 n if n.starts_with("(fat,Option<") => (40, 8, vec![0, 16], vec![]),
                 other => panic!("期待値のない型: {}", other),
             };

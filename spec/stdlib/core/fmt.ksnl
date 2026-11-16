@@ -17,7 +17,10 @@ type core.fmt.Formatter pub
 end core.fmt.Formatter
 
 fn core.fmt.Formatter.new(limit: usize) -> core.fmt.Formatter const uses [] panics never pub
-    let cap = if limit > 256usize { 256usize } else { limit }
+    let mut cap = limit
+    if cap > 256usize {
+        cap = 256usize
+    }
     core.fmt.Formatter { buf: [0u8; 256], len: 0usize, limit: cap }
 end core.fmt.Formatter.new
 

@@ -1,13 +1,14 @@
+// expect: E3060
 type t.Hold[T]
     v: T
 end t.Hold
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = 10u32
-    let h = if true {
-        t.make(&a)
-    } else {
-        t.make(&a)
+    let tag = true
+    let h = match tag {
+        true => t.make(&a)
+        false => t.make(&a)
     }
     match h {
         t.Hold { v: r } => core.mem.drop(*r)

@@ -161,6 +161,7 @@ impl Source {
 
     fn from_text_in(path: &str, module: String, text: String, is_test: bool) -> Source {
         let lines = text.split('\n').map(String::from).collect();
+        crate::refs_check::remember(path, &text);
         let (defs, error) = match load_file(path, &module, &text) {
             Ok(d) => (d, None),
             Err(e) => (vec![], Some(decode_err(&e))),

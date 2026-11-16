@@ -117,23 +117,7 @@ fn check_only_correct_programs_are_accepted() {
 /// KIR の検査は戻り値の領域を 1 つにまとめるので、これらを偽陽性にする (既知。`kir_borrowck.rs` の `ret_rg`)。
 #[test]
 fn lifetime_slot_correct_swaps_are_accepted() {
-    let cases: [(&str, &str); 4] = [
-        (
-            "pair_swap",
-            "type t.Pair['a, 'b]
-    f: &'a u32
-    s: &'b u32
-end t.Pair
-
-fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    Ok(())
-end t.main
-
-fn t.pair_swap['a, 'b](f: &'a u32, s: &'b u32) -> t.Pair<'b, 'a> uses [] panics never
-    t.Pair { f: s, s: f }
-end t.pair_swap
-",
-        ),
+    let cases: [(&str, &str); 3] = [
         (
             "tuple_swap",
             "fn t.main() -> Result<(), std.io.Error> uses [] panics never

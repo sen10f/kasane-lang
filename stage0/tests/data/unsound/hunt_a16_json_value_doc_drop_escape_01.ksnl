@@ -1,11 +1,11 @@
-// expect: E3010
-// std.json.parse で得た Doc から root() で Value を取り、Doc を drop してから Value を使う
+// expect: E3002
+// std.json.parse で得た Doc から root() で Value (添字だけ) を取り、Doc を drop してから読む
 fn t.bad() -> () uses [alloc] panics never
     match std.json.parse("{\"a\": 42}") {
         Ok(doc) => {
             let v = doc.root()
             core.mem.drop(doc)
-            let _b = std.json.is_null(v)
+            let _b = std.json.is_null(&doc, v)
         }
         Err(_e) => ()
     }

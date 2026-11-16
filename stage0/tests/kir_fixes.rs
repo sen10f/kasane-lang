@@ -204,12 +204,11 @@ fn a_vec_field_reached_through_a_shared_reference_field_is_readable() {
     let src = "type t.Doc pub\n\
                \x20   nodes: alloc.vec.Vec<u32, std.alloc.System>\n\
                end t.Doc\n\n\
-               type t.View['a] derive [Clone, Copy] pub\n\
-               \x20   doc: &'a t.Doc\n\
+               type t.View derive [Clone, Copy] pub\n\
                \x20   at: usize\n\
                end t.View\n\n\
-               fn t.first(v: t.View) -> Option<u32> uses [] panics never\n\
-               \x20   match v.doc.nodes.as_slice().get(v.at) {\n\
+               fn t.first(doc: &t.Doc, v: t.View) -> Option<u32> uses [] panics never\n\
+               \x20   match doc.nodes.as_slice().get(v.at) {\n\
                \x20       Some(n) => Some(*n)\n\
                \x20       None => None\n\
                \x20   }\n\
@@ -221,8 +220,8 @@ fn a_vec_field_reached_through_a_shared_reference_field_is_readable() {
                \x20       Err(_) => 1u8\n\
                \x20   }\n\
                \x20   let d = t.Doc { nodes: nodes }\n\
-               \x20   let v = t.View { doc: &d, at: 0usize }\n\
-               \x20   match t.first(v) {\n\
+               \x20   let v = t.View { at: 0usize }\n\
+               \x20   match t.first(&d, v) {\n\
                \x20       Some(x) => {\n\
                \x20           if x == 41u32 {\n\
                \x20               std.io.print_line(\"first 41\")?\n\
