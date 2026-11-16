@@ -22,6 +22,8 @@ pub fn bits(ty: &str) -> u32 {
         "i16" | "u16" => 16,
         "i32" | "u32" => 32,
         "i128" | "u128" => 128,
+        // `usize` / `isize` は対象の幅 (`ksn check --target wasm32-*` では 32)。`ksn run` は常に 64。
+        "isize" | "usize" => crate::ptrwidth::bits(),
         _ => 64,
     }
 }
