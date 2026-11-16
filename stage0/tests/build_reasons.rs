@@ -5,14 +5,11 @@ use common::*;
 
 #[test]
 fn build_shows_all_lower_reasons() {
-    // `dyn` トレイトオブジェクトを引数に取る関数は KIR に下ろせない。
+    // 128 ビット整数を `Option` に入れる形 (`Option<i128>`) は KIR に下ろせない。
     // `t.call` と `t.helper` の 2 つが下ろせず、両方の理由が出ること。
-    let src = "trait t.Speak[E: uses, P: panics]\n    fn speak(self: &Self) -> u32 uses [E] panics P\nend t.Speak\n\n\
-type t.Dog\n    n: u32\nend t.Dog\n\n\
-impl t.Speak<[], never> for t.Dog\nfn t.Dog.speak(self: &t.Dog) -> u32 uses [] panics never impls t.Speak<[], never>\n    self.n\nend t.Dog.speak\n\n\
-fn t.call(s: &dyn t.Speak<[], never>) -> u32 uses [] panics never\n    s.speak()\nend t.call\n\n\
-fn t.helper(s: &dyn t.Speak<[], never>) -> u32 uses [] panics never\n    s.speak()\nend t.helper\n\n\
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    let d = t.Dog { n: 3u32 }\n    core.check.eq(t.call(&d), 3u32)\n    core.check.eq(t.helper(&d), 3u32)\n    std.io.print_line(\"x\")\nend t.main\n";
+    let src = "fn t.call(x: Option<i128>) -> u32 uses [] panics never\n    match x {\n        Some(_) => 1u32\n        None => 0u32\n    }\nend t.call\n\n\
+fn t.helper(x: Option<i128>) -> u32 uses [] panics never\n    match x {\n        Some(_) => 1u32\n        None => 0u32\n    }\nend t.helper\n\n\
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.call(None), 0u32)\n    core.check.eq(t.helper(None), 0u32)\n    std.io.print_line(\"x\")\nend t.main\n";
     let t = Tmp::new("build_reasons", src);
     let b = run(&["build"], &t.0);
     let out = text(&b.stdout) + &text(&b.stderr);

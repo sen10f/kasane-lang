@@ -21,6 +21,14 @@ fn elem_ok(lw: &Lw, t: Ty) -> bool {
 }
 
 impl<'a> Lw<'a> {
+    /// `[]` の値 (`{ptr, len=0}`)。長さ 0 なので読まれない。要素の型は値に出ない (文脈の型は検査が持つ)。
+    pub(super) fn empty_array(&mut self) -> VId {
+        let base = self.emit(Ty::Ptr, Op::FrameBytes { size: 1 });
+        let n = self.emit(Ty::Usize, Op::Const(0));
+        let fat = self.fat_ty();
+        self.emit(fat, Op::Make { variant: None, fields: vec![base, n] })
+    }
+
     /// `[e1, e2, ...]` の値 (`{ptr, len}`) と要素の型。対象外なら理由付きで止める。
     pub(super) fn array_lit(&mut self, e: &V) -> LR<Option<(VId, Ty)>> {
         let line = nline(e);

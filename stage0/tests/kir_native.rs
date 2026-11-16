@@ -2368,13 +2368,15 @@ fn t.Dog.speak(self: &t.Dog) -> u32 uses [] panics never impls t.Speak<[], never
     self.n
 end t.Dog.speak
 
-fn t.call(s: &dyn t.Speak<[], never>) -> u32 uses [] panics never
-    s.speak()
+fn t.call(x: Option<i128>) -> u32 uses [] panics never
+    match x {
+        Some(_) => 1u32
+        None => t.Dog { n: 3u32 }.speak()
+    }
 end t.call
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let d = t.Dog { n: 3u32 }
-    core.check.eq(t.call(&d), 3u32)
+    core.check.eq(t.call(None), 3u32)
     std.io.print_line(\"x\")
 end t.main
 ";

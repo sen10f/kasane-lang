@@ -22,7 +22,6 @@ fn alloc.string.String.eq[A: alloc.alloc.Allocator](self: &alloc.string.String<A
 fn alloc.string.String.from_str[A: alloc.alloc.Allocator](allocator: A, text: &str) -> Result<alloc.string.String<A>, alloc.alloc.AllocError> uses [alloc] panics never pub
 impl[A: alloc.alloc.Allocator] core.hash.Hash for alloc.string.String<A>
 fn alloc.string.String.hash[A: alloc.alloc.Allocator, H: core.hash.Hasher](self: &alloc.string.String<A>, state: &mut H) -> () uses [] panics never impls core.hash.Hash
-fn alloc.string.String.join[A: alloc.alloc.Allocator](allocator: A, parts: &[&str], separator: &str) -> Result<alloc.string.String<A>, alloc.alloc.AllocError> uses [alloc] panics never pub
 fn alloc.string.String.new[A: alloc.alloc.Allocator](allocator: A) -> alloc.string.String<A> uses [] panics never pub
 impl[A: alloc.alloc.Allocator] core.cmp.PartialOrd<alloc.string.String<A>> for alloc.string.String<A>
 fn alloc.string.String.partial_cmp[A: alloc.alloc.Allocator](self: &alloc.string.String<A>, other: &alloc.string.String<A>) -> Option<core.cmp.Ordering> uses [] panics never impls core.cmp.PartialOrd<alloc.string.String<A>>

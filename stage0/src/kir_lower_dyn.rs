@@ -201,6 +201,42 @@ fn into_dyn(lw: &mut Lw, e: &V, args: &[V]) -> LR<Option<VId>> {
     Ok(Some(lw.emit(dt, Op::Make { variant: None, fields: vec![p, k] })))
 }
 
+/// 借用 `&T` / `&mut T` (`T` は利用者の構造体・列挙型) の値 `v` を、型 `target` (`dynref<Tr>` = `&dyn Tr`) にする。
+/// 既に `target` の型ならそのまま。(トレイト, 具体型) の組を vtable に登録する。
+pub(super) fn coerce_dynref(lw: &mut Lw, v: VId, target: Ty, line: usize) -> LR<VId> {
+    if lw.vty(v) == target {
+        return Ok(v);
+    }
+    let Some(tr) = lw.aggs.borrow().dynbox_trait(target) else { return Ok(v) };
+    let Ty::Ref(_, Pointee::Agg(ai)) = lw.vty(v) else {
+        return lw.err(line, format!("&dyn にする値の型 {} は対象外 (構造体・列挙型への借用だけ)", lw.vty(v).name()));
+    };
+    let concrete_name = lw.aggs.borrow().defs[ai as usize].name.clone();
+    if !concrete_name.contains('.') || concrete_name.contains('<') {
+        return lw.err(line, format!("dyn にする型 {} は対象外 (型引数付きなど)", concrete_name));
+    }
+    let concrete = Ty::Agg(ai);
+    let vt = {
+        let mut a = lw.aggs.borrow_mut();
+        match a.dynr.vts.iter().position(|x| x.tr == tr && x.concrete_name == concrete_name) {
+            Some(k) => k,
+            None => {
+                a.dynr.vts.push(VtEntry { tr, concrete_name, concrete, file: lw.def.file.clone() });
+                a.dynr.vts.len() - 1
+            }
+        }
+    };
+    let src = lw.vty(v);
+    let p = lw.emit(Ty::Ptr, Op::Bitcast { src, a: v });
+    let k = lw.emit(Ty::Usize, Op::Const(vt as i128));
+    Ok(lw.emit(target, Op::Make { variant: None, fields: vec![p, k] }))
+}
+
+/// 型 `t` が `&dyn Tr` (`dynref<..>`) か。
+pub(super) fn is_dynref(lw: &Lw, t: Ty) -> bool {
+    matches!(t, Ty::Agg(i) if lw.aggs.borrow().defs[i as usize].name.starts_with("dynref<"))
+}
+
 /// Box の値 (または参照) `recv` へのメソッド呼び出し。
 fn method(lw: &mut Lw, e: &V, recv: VId, m: &str, args: &[V]) -> LR<Option<VId>> {
     let line = nline(e);
@@ -228,8 +264,15 @@ fn method(lw: &mut Lw, e: &V, recv: VId, m: &str, args: &[V]) -> LR<Option<VId>>
     let Some(tr) = lw.aggs.borrow().dynbox_trait(bt) else {
         return lw.err(line, format!("Box のメソッド {} は対象外", m));
     };
+    if matches!(m, "as_ref" | "as_mut") && !is_dynref(lw, bt) {
+        // `&dyn Tr` / `&mut dyn Tr`: 同じ組を所有しない型にする。
+        let dr = lw.aggs.borrow_mut().dynbox_named("dynref", &tr);
+        let p = lw.emit(Ty::Ptr, Op::Field { a: recv, off: 0 });
+        let vt = lw.emit(Ty::Usize, Op::Field { a: recv, off: 8 });
+        return Ok(Some(lw.emit(dr, Op::Make { variant: None, fields: vec![p, vt] })));
+    }
     if matches!(m, "as_ref" | "as_mut" | "into_inner") {
-        return lw.err(line, format!("Box<dyn> の {} (&dyn / &mut dyn を作る) は対象外", m));
+        return lw.err(line, format!("Box<dyn> の {} は対象外", m));
     }
     let p = lw.emit(Ty::Ptr, Op::Field { a: recv, off: 0 });
     let vt = lw.emit(Ty::Usize, Op::Field { a: recv, off: 8 });

@@ -625,6 +625,7 @@ impl<'a> Lw<'a> {
             "Index" => coll::index_read(self, e),
             "For" => coll::for_expr(self, e),
             "Closure" => coll::closure_lit(self, e),
+            "ArrayE" if items(&nf(e)[0]).is_empty() => Ok(Some(self.empty_array())),
             "ArrayE" => self.array_lit(e).map(|o| o.map(|(v, _)| v)),
             "ArrayRep" => self.array_rep(e),
             other => self.err(nline(e), format!("式 {} は段階 1 の対象外", other)),
@@ -1641,6 +1642,15 @@ impl<'a> Lw<'a> {
                     return self.err(line, "core.iter.range の範囲は同じ整数の型だけ段階 1 の対象");
                 }
                 let Some(v) = self.expr(&f[3])? else { return Ok(St::Div) };
+                // `let h: &dyn Tr = &a`: 宣言の型が `&dyn` なら (番地, vtable の番号) の組にする。
+                let v = if matches!(from_v(&f[2], &Default::default()), Src::Ref(_, ref i) if matches!(**i, Src::Dyn(..))) {
+                    match self.conv_t(&from_v(&f[2], &Default::default())) {
+                        Some(tt) => dyn_lower::coerce_dynref(self, v, tt, line)?,
+                        None => v,
+                    }
+                } else {
+                    v
+                };
                 let t = self.vty(v);
                 coll::bind_owned(self, &name, v, t);
                 coll::bind_guard(self, &name, v);

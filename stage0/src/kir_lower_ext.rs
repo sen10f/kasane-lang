@@ -30,6 +30,12 @@ fn elem_src(lw: &Lw, t: Ty) -> Option<Src> {
                 let n = if sender { "std.sync.Sender" } else { "std.sync.Receiver" };
                 return Some(Src::Named(n.into(), vec![inner]));
             }
+            // `Box<T>` (`box<..>`): 中身の型を戻せれば `Box<T, System>`。
+            if let Some(el) = aggs.box_elem(t) {
+                drop(aggs);
+                let inner = elem_src(lw, el)?;
+                return Some(Src::Named("alloc.boxed.Box".into(), vec![inner, Src::Named("std.alloc.System".into(), vec![])]));
+            }
             let n = &aggs.defs[i as usize].name;
             // `Vec` / `String` のヘッダ (`vec`、要素が所有物なら `vec<#N>`): 配置と解放は同じなので、`String` / `Vec<要素>` に戻す。
             // `&str` と `&[T]` の値 (`fat`): 配置は同じなので `&str`。

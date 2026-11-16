@@ -1965,3 +1965,17 @@ selfhost の試作 (`selfhost/README.md` 9.4 の 3・4) で、構造体のフィ
 - `capture [&x]` のスカラー: 呼び出し側は `&x` を渡し、本体は入口で読んだ値を `x` として使う (共有の借用の間は変わらない)。
 
 残した形: `Option<i128>` / `Option<u128>` と `i128` / `u128` の `Display` / `checked_*` / `u64.try_from_u128` (`Option` の枠に 128 ビットが入らない)、`enumerate` (要素が組)、`Vec.iter()` を元にした `fold`、`fold` の累積が組、`String.join`、`Result.map`、空の配列リテラル、`core.slice.sort` の `String` の要素、`Vec<Box<スカラー>>.push`、`dyn` の共有参照を引数に取る関数、`std.json.to_string`。拒否される前提のプログラム (`expect-reject`) の `core.panic.todo` と効果の漏れの 4 本は対象外。
+
+## 32. ネイティブの下ろしの穴 その 5 (kir/native-gaps-5、E9040 の再調査、2026-11-16)
+
+穴探しの正しいプログラム 145 本を `ksn build --release` にかけた (前の担当の後は 127 本、この担当の後は 139 本がネイティブ)。試験は `stage0/tests/kir_native_gaps5.rs`。
+- 空の配列リテラル `[]`: 値は `{ptr, len=0}` (`empty_array`、フレームに 1 バイトを取る)。要素の型は値に出ない。`for x in []` のように要素の型が要る所は従来どおり未対応。`bench/tasks/fsm/reference.ksnl` がネイティブになる。
+- `Result.map` / `and_then` / `ok` (`res_map`): `map_err` と同じ作り (タグで分岐し、`Ok` の中身へ関数を呼ぶ)。所有物を持つ `Result` は局所なら移す。
+- `String.join`: `alloc/string.ksnl` に Kasane の本体を書いた (`String.replace` と同じ作り。`.sig` の宣言は外した)。
+- `slice.sort` の `String`: クロージャの引数の型 (`&String`) を `sig_ty` で読む (`closure_lit` / `closure_kind_from_table`)。`core.slice.sort<String>` の単相化が下りる。
+- 反復子の連なり (`kir_lower_iter.rs`): `core.iter.enumerate(it)` の段 (個数を take と同じ受け渡しで運び、要素を `(usize, T)` の組にする)、`X.iter()` の元 (局所の Vec・スライス、または `&[T]` の式。要素は `&T`)、組など所有物を持たない集成体の `fold` の累積。
+- `Vec<Box<スカラー>>.push`: `elem_src` が `Box<T, System>` を戻せる。
+- `&dyn Tr` / `&mut dyn Tr`: `dynref<Tr>` (`dynbox` と同じ `{ptr, vt}`、所有しない)。引数 (`coerce_args`) と宣言の型つき `let` で `&T` から作り、vtable を登録する (`coerce_dynref`)。呼び出しは `Box<dyn>` と同じ補助関数。`Box<dyn>.as_ref()` / `as_mut()` も `dynref` を作る。
+- `std.json.to_string<T>` (`derive [ToJson]`): 構造体のフィールドが `String` / `Vec` のとき、受け手の型を構造体の定義から引く (`recv_src`) ことと、`String` / `Vec` のフィールドの `&self` をヘッダのアドレスで渡すこと (`recv_path`) で下りる。
+
+残した形: `Option<i128>` / `Option<u128>` と `i128` / `u128` の `Display` / `checked_*` / `u64.try_from_u128` (6 本)。`Option` のペイロードの枠は 64 ビットまでで、128 ビットを入れるには `Pay` と 4 つの下ろし先 (LLVM・`kir_exec`・`vm`・KIR の文面) の枠の大きさの変更と、64 ビットへ狭める命令 (今の `Conv` は広げる向きだけ) の追加が要る。`Display` だけなら `FloatText` と同じ形の命令 1 つで足りる。
