@@ -632,3 +632,92 @@ pub fn hkey(v: &Val) -> String {
         }
     }
 }
+
+// ---------------------------------------------------------------- 解放済みの値の印 (設計_インタプリタ一致.md 段 1)
+//
+// インタプリタの値は `Rc` の共有で、`core.mem.drop` は何も解放しない。ネイティブでは解放後の読みは未定義動作なので、
+// 検査器が決めた「所有する値の `core.mem.drop`」(`infer::annotate_owned_drops` が呼び出しの節点に印を付ける) で、
+// その値の `Rc` の番地を「死んだ」表に載せ、あとでその値を読む (引数・レシーバ・欄・添字) と panic にする。
+// 表は `Weak` を持つので、番地は `Rc` が生きている間は再利用されない。
+
+enum DeadKeep {
+    #[allow(dead_code)]
+    S(std::rc::Weak<str>),
+    #[allow(dead_code)]
+    V(std::rc::Weak<RefCell<Vec<Val>>>),
+    #[allow(dead_code)]
+    St(std::rc::Weak<StructV>),
+    #[allow(dead_code)]
+    B(std::rc::Weak<StrBufV>),
+    #[allow(dead_code)]
+    M(std::rc::Weak<RefCell<MapV>>),
+}
+impl DeadKeep {
+    fn alive(&self) -> bool {
+        match self {
+            DeadKeep::S(w) => w.strong_count() > 0,
+            DeadKeep::V(w) => w.strong_count() > 0,
+            DeadKeep::St(w) => w.strong_count() > 0,
+            DeadKeep::B(w) => w.strong_count() > 0,
+            DeadKeep::M(w) => w.strong_count() > 0,
+        }
+    }
+}
+thread_local! {
+    static DEAD: RefCell<HashMap<usize, DeadKeep>> = RefCell::new(HashMap::new());
+    static ANY_DEAD: Cell<bool> = const { Cell::new(false) };
+}
+
+fn dead_add(addr: usize, k: DeadKeep) {
+    ANY_DEAD.with(|a| a.set(true));
+    DEAD.with(|d| {
+        let mut d = d.borrow_mut();
+        if d.len() > 4096 && d.len().is_power_of_two() {
+            d.retain(|_, k| k.alive());
+        }
+        d.insert(addr, k);
+    });
+}
+
+/// 所有する値を「解放済み」にする。`String` は中の格納とその写し (`as_str` が返した `Rc<str>`) も含める。
+/// 要素・欄は再帰しない (参照を持つ欄を巻き込まないため)。
+pub fn mark_dead(v: &Val) {
+    match v {
+        Val::Struct(s) => {
+            if s.ty == "alloc.string.String" {
+                if let Some(Val::StrBuf(b)) = s.get("items") {
+                    mark_dead(&Val::StrBuf(b));
+                }
+            }
+            dead_add(Rc::as_ptr(s) as *const u8 as usize, DeadKeep::St(Rc::downgrade(s)));
+        }
+        Val::StrBuf(b) => {
+            let snap = b.snapshot();
+            dead_add(Rc::as_ptr(&snap) as *const u8 as usize, DeadKeep::S(Rc::downgrade(&snap)));
+            dead_add(Rc::as_ptr(b) as *const u8 as usize, DeadKeep::B(Rc::downgrade(b)));
+        }
+        Val::Vec(r) | Val::Arr(r) => dead_add(Rc::as_ptr(r) as *const u8 as usize, DeadKeep::V(Rc::downgrade(r))),
+        Val::Map(m) => dead_add(Rc::as_ptr(m) as *const u8 as usize, DeadKeep::M(Rc::downgrade(m))),
+        _ => {}
+    }
+}
+
+/// 値 (の番地) が解放済みなら panic にする。表が空の間は 1 回の `Cell` 読みだけ。
+#[inline]
+pub fn check_alive(v: &Val) -> Result<(), Ctl> {
+    if !ANY_DEAD.with(|a| a.get()) {
+        return Ok(());
+    }
+    let addr = match v {
+        Val::Struct(s) => Rc::as_ptr(s) as *const u8 as usize,
+        Val::StrBuf(b) => Rc::as_ptr(b) as *const u8 as usize,
+        Val::Str(s) => Rc::as_ptr(s) as *const u8 as usize,
+        Val::Vec(r) | Val::Arr(r) | Val::View(r, _, _) => Rc::as_ptr(r) as *const u8 as usize,
+        Val::Map(m) => Rc::as_ptr(m) as *const u8 as usize,
+        _ => return Ok(()),
+    };
+    if DEAD.with(|d| d.borrow().contains_key(&addr)) {
+        return panic("use after free: the value was already dropped (core.mem.drop) but is read through a borrow");
+    }
+    Ok(())
+}

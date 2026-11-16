@@ -795,6 +795,7 @@ impl Interp {
             "Path" => self.e_path(e, sc),
             "Field" => {
                 let b = dr(&self.eval(&f[0], sc)?);
+                check_alive(&b)?;
                 let name = st(&f[1]);
                 if let Val::Struct(s) = &b {
                     if let Some(v) = s.get(&name) {
@@ -809,6 +810,7 @@ impl Interp {
             }
             "Index" => {
                 let b = dr(&self.eval(&f[0], sc)?);
+                check_alive(&b)?;
                 let i = match dr(&self.eval(&f[1], sc)?) {
                     Val::Int(x, _) => x,
                     _ => return panic("bad index"),
@@ -1451,6 +1453,10 @@ impl Interp {
                 // `core.mem.drop(tx)`: 変数の値を落とす (チャネルの端なら閉じる)。
                 if let (Some(a), Some(v)) = (items(&f[1]).first(), args.first()) {
                     self.move_out(a, sc, v);
+                    // 検査器が「所有する値」と決めた呼び出し (`infer::annotate_owned_drops`) は、値を解放済みにする。
+                    if matches!(f.get(3), Some(V::S(m)) if m == "own") {
+                        mark_dead(v);
+                    }
                 }
             }
             return self.call_resolved(&r, args);
@@ -1464,6 +1470,7 @@ impl Interp {
         let mut out = vec![];
         for a in items(args) {
             let v = self.eval(a, sc)?;
+            check_alive(&v)?;
             // チャネルの端を値で渡すのは移動: 呼び出し側の変数を空にする (残すと、送信側が閉じない)。
             self.move_out(a, sc, &v);
             out.push(self.cp(v));
@@ -1635,6 +1642,7 @@ impl Interp {
 
     pub fn invoke_method(&mut self, recv: Val, name: &str, args: Vec<Val>, place: Option<(&V, &Scope)>) -> Res {
         let v = dr(&recv);
+        check_alive(&v)?;
         let mut d = self.find_method(&v, name);
         if d.is_none() && !matches!(v, Val::Struct(_) | Val::Enum(_)) {
             if let Some(kind) = Self::prim_kind(&v) {
