@@ -267,7 +267,7 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     let name = resolve.ast.text(src, cn.a, cn.b)
     let (rv, meth) = lower.expr.split2(name)
     if rv != "" && lower.cx.find(c, rv) != 0usize {
-        if meth == "wrapping_add" || meth == "wrapping_sub" || meth == "wrapping_mul" {
+        if lower.expr.is_wrap_op(meth) {
             return lower.expr.wrapping(env, c, p, src, rv, meth, n.b, t)
         }
         // 局所の受け手の利用者のメソッド `x.m(..)`。
@@ -307,6 +307,22 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         core.mem.drop(dv)
         let u = lower.expr.unit(c)?
         return Ok(lower.cx.R { v: u, t: t })
+    }
+    if fqn.as_str() == "std.env.arg_count" {
+        let v = lower.cx.def(c, "usize", "env.arg_count")?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    let (nty, nm) = lower.std_calls.num_parts(fqn.as_str())
+    if nm == "from_str_radix" && resolve.ast.count(p, n.b) == 2usize {
+        let un = types.ty.UNKNOWN
+        let a0 = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 0usize), un)?
+        let a1 = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 1usize), un)?
+        let rt0 = lower.tyk.text(env, c, t)?
+        let op0 = lower.cx.cat2("parseint.", nty)?
+        let op1 = lower.cx.cat2(op0.as_str(), " ")?
+        let op2 = lower.cx.cat2(op1.as_str(), lower.expr.two(a0.v, a1.v)?.as_str())?
+        let v = lower.cx.def(c, rt0.as_str(), op2.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
     }
     if fqn.as_str() == "core.check.eq" {
         return lower.chk.eq(env, c, p, src, n, t)
@@ -606,9 +622,15 @@ fn lower.expr.is_iter_name(p: &parse.cur.P, src: &[u8], tok: usize) -> bool uses
     resolve.ast.tok_text(p, src, tok) == "iter"
 end lower.expr.is_iter_name
 
+// 整数の `wrapping_add/sub/mul/shl/shr` (命令 `add.T.wrap` など)。
+fn lower.expr.is_wrap_op(m: &str) -> bool uses [] panics may pub
+    let a = m == "wrapping_add" || m == "wrapping_sub" || m == "wrapping_mul"
+    a || m == "wrapping_shl" || m == "wrapping_shr"
+end lower.expr.is_wrap_op
+
 // 整数の既定の演算のメソッド (`wrapping_*`): 受け手は値のまま使う。
 fn lower.expr.is_wrapping(m: &str) -> bool uses [] panics may pub
-    if m == "wrapping_add" || m == "wrapping_sub" || m == "wrapping_mul" {
+    if lower.expr.is_wrap_op(m) {
         return true
     }
     // 受け手を値で取る数値のメソッド (借用にならない)。
@@ -976,7 +998,7 @@ end lower.expr.matchx
 
 fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let meth = resolve.ast.tok_text(p, src, n.b)
-    if meth != "wrapping_add" && meth != "wrapping_sub" && meth != "wrapping_mul" {
+    if !lower.expr.is_wrap_op(meth) {
         // 利用者のメソッド (解決先は型検査の表)。
         let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
         if it != 0usize && types.infer.item_kind(env, it - 1usize) == parse.ast.Kind.FnDef {
@@ -997,8 +1019,16 @@ fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         op = "sub"
     } else if meth == "wrapping_mul" {
         op = "mul"
+    } else if meth == "wrapping_shl" {
+        op = "shl"
+    } else if meth == "wrapping_shr" {
+        op = "shr"
     }
-    let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.d, 0usize), r.t)?
+    let mut want = r.t
+    if meth == "wrapping_shl" || meth == "wrapping_shr" {
+        want = types.ty.UNKNOWN
+    }
+    let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.d, 0usize), want)?
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
     o.push_str(op)?
     o.push_str(".")?
@@ -1566,6 +1596,10 @@ fn lower.expr.wrapping(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
         op = "sub"
     } else if meth == "wrapping_mul" {
         op = "mul"
+    } else if meth == "wrapping_shl" {
+        op = "shl"
+    } else if meth == "wrapping_shr" {
+        op = "shr"
     }
     if op == "" || resolve.ast.count(p, args) != 1usize {
         lower.cx.fail(c, "メソッド呼び出し (wrapping_* 以外は未対応)")?

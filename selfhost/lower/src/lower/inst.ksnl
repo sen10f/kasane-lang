@@ -129,6 +129,9 @@ end lower.inst.is_sig
 
 // インスタンスの鍵: fqn<型,..> (型引数の文字列は番号の順)。
 fn lower.inst.key(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    if subs.len() == 0usize {
+        return lower.cx.own(fqn)
+    }
     let mut s = lower.cx.cat2(fqn, "<")?
     let mut i = 0usize
     while i + 1usize < subs.len() {
