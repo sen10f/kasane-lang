@@ -734,69 +734,112 @@ impl<'a> Low<'a> {
         Some(flows)
     }
 
-    /// `fn keep['a](v: &mut Vec<&'a String>, s: &'a String) -> &'a String` のように、
-    /// ヘッダの名前付きライフタイム `'a` が、`&mut X<..'a..>` 型の引数 (受け手 R) と
-    /// 参照の引数 (借用元 S) の両方に現れるとき、S の借用を R の場所に結びつけ、
-    /// R の最後の使用まで生かす。`v` が生きている間は `s` を move できない (E3010)。
-    /// 戻り値への借用追跡 (flow_params / ret_contains_ref) と同じ仕組み。
-    fn bind_receiver_arg_borrow(&mut self, c: usize, di: usize, args: &[V], recv: Option<String>) {
-        let d = &self.p.defs[di];
-        let Some(mut flow) = Self::flow_params(d) else { return };
-        if recv.is_some() {
-            // メソッド形のセッターは戻り値に流れなくても、同じ名前の領域を共有する引数を保存しうる。
-            flow = vec![true; flow.len()];
-        }
-        let lts: Vec<String> = d
-            .generics
-            .iter()
-            .filter(|g| g.0 == "life")
-            .map(|g| g.1.trim_start_matches('\'').to_string())
-            .collect();
-        if lts.is_empty() {
-            return;
-        }
-        // ヘッダの仮引数の文面からライフタイムを取る (ty.dump() にはライフタイムが含まれない)。
-        let head = match d.header.split(" uses ").next() { Some(h) => h, None => return };
+    /// ヘッダの仮引数の文面 (`x: &'a T` など。`ty.dump()` にはライフタイムが含まれないのでヘッダから取る)。
+    fn param_texts(d: &Def) -> Option<Vec<String>> {
+        let head = d.header.split(" uses ").next()?;
         let b = head.as_bytes();
-        let mut i = match head.find(|c| c == '(' || c == '[') { Some(i) => i, None => return };
+        let mut i = head.find(|c| c == '(' || c == '[')?;
         if b[i] == b'[' {
-            i = match match_close(head, i) { Some(j) => j + 1, None => return };
+            i = match_close(head, i)? + 1;
         }
         if b.get(i) != Some(&b'(') {
-            return;
+            return None;
         }
-        let close = match match_close(head, i) { Some(j) => j, None => return };
-        let ptexts: Vec<String> = split_top(&head[i + 1..close]);
-        if ptexts.len() != d.params.len() { return; }
+        let close = match_close(head, i)?;
+        let ptexts = split_top(&head[i + 1..close]);
+        if ptexts.len() != d.params.len() {
+            return None;
+        }
+        Some(ptexts)
+    }
 
-        let mut receivers: Vec<usize> = vec![];
-        let mut sources: Vec<usize> = vec![];
-        for (k, ((_, ty), &f)) in d.params.iter().zip(flow.iter()).enumerate() {
-            let ltys = lifetimes(&ptexts[k]);
-            if !f || tag(ty) != "ref" {
-                continue;
+    /// 関数・メソッドの定義 `d` が、ある引数 (受け手 R、`&mut` で指す先が借用を入れうる) に、別の引数 (借用元 S) の借用を
+    /// 保存しうる組 (R の番号, S の番号)。ヘッダだけで決める (本体は見ない)。
+    /// - 名前付きライフタイム: `fn keep['a](v: &mut Vec<&'a String>, s: &'a String)` のように `'a` が R と S の両方に現れる。
+    ///   R は `&mut` で指す先がさらに参照・ライフタイムを持つもの、S はそれ以外の参照の引数。
+    /// - 型パラメータ: `fn put[T](o: &mut T, x: T)` のように、R の指す先と S が型パラメータ (`fn` / `dyn` も含む) を共有する。
+    ///   S が参照のときは、R の指す先も参照を持つものだけ (`x: &T` を `Vec<T>` に入れるのは複製で、`x` そのものは保存されない)。
+    /// `method_form` は、メソッド形の呼び出しで戻り値に流れなくても同じ領域を共有する引数を保存しうる、の意。
+    fn recv_src_pairs(d: &Def, method_form: bool) -> Vec<(usize, usize)> {
+        let Some(ptexts) = Self::param_texts(d) else { return vec![] };
+        let mut flow = Self::flow_params(d).unwrap_or_else(|| vec![true; d.params.len()]);
+        if method_form {
+            flow = vec![true; flow.len()];
+        }
+        let is_mut_ref = |ty: &V| tag(ty) == "ref" && matches!(tel(ty, 1), V::B(true));
+        // 参照の本体の文面 (`&'a mut Vec<&'a T>` → `Vec<&'a T>`)。
+        let pointee_text = |k: usize| -> String {
+            let t = ptexts[k].split_once(':').map_or("", |x| x.1).trim();
+            let t = t.strip_prefix('&').unwrap_or(t).trim_start();
+            let t = if t.starts_with('\'') { t.split_once(' ').map_or("", |x| x.1) } else { t };
+            t.trim_start().strip_prefix("mut ").unwrap_or(t).to_string()
+        };
+        let mut pairs: Vec<(usize, usize)> = vec![];
+        let lts: Vec<String> = d.generics.iter().filter(|g| g.0 == "life").map(|g| g.1.trim_start_matches('\'').to_string()).collect();
+        if !lts.is_empty() {
+            let (mut receivers, mut sources) = (vec![], vec![]);
+            for (k, (_, ty)) in d.params.iter().enumerate() {
+                let ltys = lifetimes(&ptexts[k]);
+                if !flow[k] || tag(ty) != "ref" || !lts.iter().any(|l| ltys.contains(l)) {
+                    continue;
+                }
+                // `r: &'a mut u32` のように指す先が参照を持たない `&mut` は借用元 (保存される側)。
+                let pt = pointee_text(k);
+                if is_mut_ref(ty) && (pt.contains('&') || pt.contains('\'')) {
+                    receivers.push(k);
+                } else {
+                    sources.push(k);
+                }
             }
-            if !lts.iter().any(|l| ltys.contains(l)) {
-                continue;
-            }
-            // `&mut` で、指す先がさらに参照・ライフタイムを持つもの (`&mut &'a T`、`&mut Vec<&'a T>`、`&mut H<'a>`) だけが
-            // 受け手。`r: &'a mut u32` のように指す先が参照を持たない `&mut` は借用元 (保存される側)。
-            let pointee = ptexts[k].split_once(':').map_or("", |x| x.1).trim();
-            let pointee = pointee.strip_prefix('&').unwrap_or(pointee).trim_start();
-            let pointee = if pointee.starts_with('\'') { pointee.split_once(' ').map_or("", |x| x.1) } else { pointee };
-            let pointee = pointee.trim_start().strip_prefix("mut ").unwrap_or(pointee);
-            if matches!(tel(ty, 1), V::B(true)) && (pointee.contains('&') || pointee.contains('\'')) {
-                receivers.push(k);
-            } else {
-                sources.push(k);
+            for &r in &receivers {
+                for &s in &sources {
+                    pairs.push((r, s));
+                }
             }
         }
-        if receivers.is_empty() || sources.is_empty() {
-            return;
+        let names = Self::type_param_names(d);
+        let tps = |t: &V| {
+            let mut out = HashSet::new();
+            Self::ty_params_in(t, &names, &mut out);
+            out
+        };
+        for (k, (_, ty)) in d.params.iter().enumerate() {
+            if !is_mut_ref(ty) {
+                continue;
+            }
+            let rt = tps(tel(ty, 2));
+            if rt.is_empty() {
+                continue;
+            }
+            let r_holds_ref = { let t = pointee_text(k); t.contains('&') || t.contains('\'') };
+            for (j, (_, sty)) in d.params.iter().enumerate() {
+                if j == k || pairs.contains(&(k, j)) {
+                    continue;
+                }
+                let st_ = tps(sty);
+                if st_.is_disjoint(&rt) {
+                    continue;
+                }
+                if tag(sty) == "ref" && !r_holds_ref {
+                    continue;
+                }
+                pairs.push((k, j));
+            }
         }
+        pairs
+    }
+
+    /// `fn keep['a](v: &mut Vec<&'a String>, s: &'a String) -> &'a String` や `fn put[T](o: &mut T, x: T)` のように、
+    /// ヘッダが「受け手 R の指す先に借用元 S の借用が入りうる」と言う組 (`recv_src_pairs`) では、S の借用を R の場所に
+    /// 結びつけ、R の最後の使用まで生かす。`v` が生きている間は `s` を move できない (E3010)。R が参照の変数なら、
+    /// 指す先にも保存される (`hold` の `Through`)。戻り値への借用追跡 (flow_params / ret_contains_ref) と同じ仕組み。
+    fn bind_receiver_arg_borrow(&mut self, c: usize, di: usize, args: &[V], recv: Option<String>) {
+        let d = &self.p.defs[di];
+        let pairs = Self::recv_src_pairs(d, recv.is_some());
         // メソッド形 (`h.set(x)`) では、レシーバは args に入っていないので 1 つずらす。
         let shift = usize::from(recv.is_some());
-        for &r in &receivers {
+        let sig: Vec<bool> = d.params.iter().map(|(_, ty)| tag(ty) == "ref" && matches!(tel(ty, 1), V::B(true))).collect();
+        for (r, s) in pairs {
             let rroot = if let Some(rr) = &recv {
                 if r != 0 { continue }
                 rr.clone()
@@ -805,27 +848,24 @@ impl<'a> Low<'a> {
                 let Some((rroot, _)) = self.arg_place(a) else { continue };
                 rroot
             };
-            for &s in &sources {
-                if s < shift { continue }
-                let Some(b) = args.get(s - shift) else { continue };
-                let mutable = matches!(tel(&d.params[s].1, 1), V::B(true));
-                let Some(sroot) = self.borrow_root(b) else {
-                    // `s.as_str()` のように借用を返す式: その借用元をレシーバが持つ。
-                    let srcs: Vec<Src> = self.borrow_expr_sources(b).into_iter().filter(|s| !matches!(s, Src::Stored { .. })).collect();
-                    if !srcs.is_empty() {
-                        self.hold(c, Holder::Var(rroot.clone()), srcs);
+            if s < shift { continue }
+            let Some(b) = args.get(s - shift) else { continue };
+            let mutable = sig[s];
+            let srcs: Vec<Src> = match self.borrow_root(b) {
+                Some(sroot) => {
+                    if sroot == rroot {
+                        continue;
                     }
-                    continue;
-                };
-                if sroot == rroot {
-                    continue;
+                    vec![Src::Place { root: sroot, path: vec![], mutable }]
                 }
-                let id = self.new_loan(sroot.clone(), vec![], mutable);
-                self.emit(c, Ev::Loan {
-                    holder: Holder::Var(rroot.clone()),
-                    id,
-                });
+                // `s.as_str()` のように借用を返す式: その借用元をレシーバが持つ。
+                None => self.borrow_expr_sources(b).into_iter().filter(|s| !matches!(s, Src::Stored { .. })).collect(),
+            };
+            if srcs.is_empty() {
+                continue;
             }
+            self.hold(c, Holder::Var(rroot.clone()), srcs.clone());
+            self.hold(c, Holder::Place { root: rroot, path: vec![] }, srcs);
         }
     }
 
@@ -2077,6 +2117,53 @@ impl<'a> Low<'a> {
             match nname(v) {
                 "MCall" | "Call" => {
                     let f = nf(v);
+                    // 呼び出し先のヘッダが「受け手 R の指す先に借用元 S の借用が入りうる」と言うなら、その引数の組も保存とみなす。
+                    // 省略した参照の引数を、名前付きのライフタイムで結ぶ関数へ転送する形 (`t.inner(v, x)`) も、名前の一覧に頼らず見る。
+                    {
+                        let (callees, args, recv): (Vec<usize>, &[V], Option<(String, Vec<String>)>) = if nname(v) == "MCall" {
+                            if f.len() < 3 { (vec![], &[], None) } else {
+                                let args = items(&f[2]);
+                                (self.callees(&st(&f[1]), nline(v), args.len()), args, self.place_of(&f[0]))
+                            }
+                        } else if nname(&f[0]) != "Path" {
+                            (vec![], &[], None)
+                        } else {
+                            let segs = strs(&nf(&f[0])[0]);
+                            let args = items(&f[1]);
+                            if segs.len() >= 2 && self.locals.contains(&segs[0]) {
+                                let name = segs[segs.len() - 1].clone();
+                                (self.callees(&name, nline(v), args.len()), args, Some((segs[0].clone(), segs[1..segs.len() - 1].to_vec())))
+                            } else {
+                                match self.p.resolve(&segs, &self.file) {
+                                    Some(r) if r.rest.is_empty() => match r.target {
+                                        Target::Fn(i) | Target::Sig(i) => (vec![i], args, None),
+                                        _ => (vec![], &[], None),
+                                    },
+                                    _ => (vec![], &[], None),
+                                }
+                            }
+                        };
+                        for di2 in callees {
+                            let method_form = recv.is_some() || self.p.defs[di2].params.first().map_or(false, |p| p.0 == "self") && nname(v) == "MCall";
+                            let shift = usize::from(method_form);
+                            for (r, sidx) in Self::recv_src_pairs(&self.p.defs[di2], method_form) {
+                                let place = if method_form {
+                                    if r != 0 { continue }
+                                    recv.clone()
+                                } else {
+                                    args.get(r).and_then(|a| self.arg_place(a))
+                                };
+                                let Some((root, path)) = place else { continue };
+                                if !(path.is_empty() || path == ["*"]) {
+                                    continue;
+                                }
+                                let Some(&p) = param_of.get(root.as_str()) else { continue };
+                                if sidx < shift { continue }
+                                let Some(value) = args.get(sidx - shift) else { continue };
+                                check_store(p, value, line);
+                            }
+                        }
+                    }
                     let info = match nname(v) {
                         "MCall" => {
                             if f.len() < 3 {
