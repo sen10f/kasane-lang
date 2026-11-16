@@ -148,6 +148,17 @@ for rel in sh_pkgs:
          f'got={got} want={want} rc={r.returncode}\n' + (r.stdout + r.stderr)[-800:])
 print(f'     selfhost の ksn check: {len(sh_pkgs)} パッケージ, {time.monotonic() - t0:.1f} 秒')
 
+# apps/ の各パッケージは診断 0 件で、整形済み (回帰の基準。AGENTS.md)。
+t0 = time.monotonic()
+app_pkgs = sorted(d for d in os.listdir(os.path.join(ROOT, 'apps'))
+                  if os.path.isfile(os.path.join(ROOT, 'apps', d, 'kasane.toml')))
+for name in app_pkgs:
+    cwd = os.path.join(ROOT, 'apps', name)
+    for args in (['check'], ['fmt', '--check']):
+        r = subprocess.run([RSEXE] + args, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+        step(f'apps: ksn {" ".join(args)} apps/{name}', r.returncode == 0, (r.stdout + r.stderr)[-800:])
+print(f'     apps の ksn check / fmt --check: {len(app_pkgs)} パッケージ, {time.monotonic() - t0:.1f} 秒')
+
 print()
 print('ALL TESTS PASSED' if not failures else f'{len(failures)} FAILED: {failures}')
 sys.exit(1 if failures else 0)
