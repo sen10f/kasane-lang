@@ -1,9 +1,9 @@
+// 関数名 (`c.ar.len`) の呼び出し: 受け手 (`c.ar`) の道で借りる。
+const borrow.walk.CALLNAME: usize = 3usize pub
+
 const borrow.walk.READ: usize = 1usize pub
 
 const borrow.walk.RECV: usize = 2usize pub
-
-// 関数名 (`c.ar.len`) の呼び出し: 受け手 (`c.ar`) の道で借りる。
-const borrow.walk.CALLNAME: usize = 3usize pub
 
 const borrow.walk.VAL: usize = 0usize pub
 
@@ -84,6 +84,14 @@ fn borrow.walk.borrow_of(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, e: usize,
     borrow.cx.access_at(cx, root.wrapping_sub(1usize), k, tok, ps, pe)?
     Ok(0usize)
 end borrow.walk.borrow_of
+
+// 位置 i のバイト (範囲外は 0)。
+fn borrow.walk.byte_at(src: &[u8], i: usize) -> u8 uses [] panics never pub
+    match src.get(i) {
+        Some(c) => *c
+        None => 0u8
+    }
+end borrow.walk.byte_at
 
 // 呼び出し: 関数の名前は局所でなければ何もしない。局所の関数値は読むだけ。受け手付きの名前 (`s.len`) は受け手として扱う。
 fn borrow.walk.call(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.ast.Node) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
@@ -166,41 +174,6 @@ fn borrow.walk.check_pairs(cx: &mut borrow.cx.Cx, roots: &alloc.vec.Vec<usize, s
     }
     Ok(())
 end borrow.walk.check_pairs
-
-// 識別子の終わり (バイト位置)。識別子の字は英数字と `_`。
-fn borrow.walk.ident_end(src: &[u8], i: usize) -> usize uses [] panics never pub
-    let mut k = i
-    loop {
-        match src.get(k) {
-            Some(c) => {
-                if !borrow.walk.ident_byte(*c) {
-                    return k
-                }
-                k = k.wrapping_add(1usize)
-            }
-            None => return k
-        }
-    }
-end borrow.walk.ident_end
-
-fn borrow.walk.ident_byte(c: u8) -> bool uses [] panics never pub
-    c == 95u8 || (c >= 48u8 && c <= 57u8) || (c >= 65u8 && c <= 90u8) || (c >= 97u8 && c <= 122u8)
-end borrow.walk.ident_byte
-
-fn borrow.walk.is_dot_at(src: &[u8], i: usize) -> bool uses [] panics never pub
-    match src.get(i) {
-        Some(c) => *c == 46u8
-        None => false
-    }
-end borrow.walk.is_dot_at
-
-// 位置 i のバイト (範囲外は 0)。
-fn borrow.walk.byte_at(src: &[u8], i: usize) -> u8 uses [] panics never pub
-    match src.get(i) {
-        Some(c) => *c
-        None => 0u8
-    }
-end borrow.walk.byte_at
 
 // 閉包 (トークン from から本体の終わりまで) に名前が出る外の局所を、判断保留にする。
 fn borrow.walk.closure_mark(cx: &mut borrow.cx.Cx, from: usize, body: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
@@ -416,6 +389,26 @@ fn borrow.walk.expr_cls(tab: &borrow.base.Tab, cx: &borrow.cx.Cx, e: usize) -> u
     borrow.base.UNK
 end borrow.walk.expr_cls
 
+fn borrow.walk.ident_byte(c: u8) -> bool uses [] panics never pub
+    c == 95u8 || (c >= 48u8 && c <= 57u8) || (c >= 65u8 && c <= 90u8) || (c >= 97u8 && c <= 122u8)
+end borrow.walk.ident_byte
+
+// 識別子の終わり (バイト位置)。識別子の字は英数字と `_`。
+fn borrow.walk.ident_end(src: &[u8], i: usize) -> usize uses [] panics never pub
+    let mut k = i
+    loop {
+        match src.get(k) {
+            Some(c) => {
+                if !borrow.walk.ident_byte(*c) {
+                    return k
+                }
+                k = k.wrapping_add(1usize)
+            }
+            None => return k
+        }
+    }
+end borrow.walk.ident_end
+
 // 分岐: 各枝を同じ初期状態から走査し、発散しない枝の状態を合流する。
 fn borrow.walk.if_expr(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.ast.Node) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
     let dc = borrow.walk.expr(tab, cx, n.a, borrow.walk.READ)?
@@ -443,6 +436,13 @@ fn borrow.walk.if_expr(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.as
     borrow.cx.restore(cx, &s0)
     Ok(1usize)
 end borrow.walk.if_expr
+
+fn borrow.walk.is_dot_at(src: &[u8], i: usize) -> bool uses [] panics never pub
+    match src.get(i) {
+        Some(c) => *c == 46u8
+        None => false
+    }
+end borrow.walk.is_dot_at
 
 // 生存する枝の状態を合流する。最初の一つは写し、以降は borrow.cx.join_into で合わせる。
 fn borrow.walk.join_one(cx: &borrow.cx.Cx, acc: &mut alloc.vec.Vec<usize, std.alloc.System>, cur: &alloc.vec.Vec<usize, std.alloc.System>, have: &mut usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub

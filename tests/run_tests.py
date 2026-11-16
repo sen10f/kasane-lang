@@ -148,6 +148,14 @@ for rel in sh_pkgs:
          f'got={got} want={want} rc={r.returncode}\n' + (r.stdout + r.stderr)[-800:])
 print(f'     selfhost の ksn check: {len(sh_pkgs)} パッケージ, {time.monotonic() - t0:.1f} 秒')
 
+# selfhost の本体のパッケージは整形済み (試しの probes/ は除く)。
+for rel in sh_pkgs:
+    if '/probes' in rel:
+        continue
+    r = subprocess.run([RSEXE, 'fmt', '--check'], cwd=os.path.join(ROOT, rel), capture_output=True, text=True,
+                       encoding='utf-8', errors='replace')
+    step(f'selfhost: ksn fmt --check {rel}', r.returncode == 0, (r.stdout + r.stderr)[-800:])
+
 # apps/ の各パッケージは診断 0 件で、整形済み (回帰の基準。AGENTS.md)。
 t0 = time.monotonic()
 app_pkgs = sorted(d for d in os.listdir(os.path.join(ROOT, 'apps'))
