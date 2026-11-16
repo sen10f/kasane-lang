@@ -226,6 +226,47 @@ impl<'a> Lw<'a> {
     }
 }
 
+impl<'a> Lw<'a> {
+    /// `K.m(args)` (`K` は整数・浮動小数の `const`。`core.num.i64.MIN.checked_div(-1i64)` など)。
+    /// 定数の値を作って局所に束縛し、`x.m(args)` (局所の受け手) の呼び出しに書き換えて、既存の下ろしに渡す。
+    /// 受け手が整数・浮動小数の定数でなければ `None` (親の処理へ)。
+    pub(super) fn const_scalar_call(&mut self, e: &V) -> Option<LR<Option<VId>>> {
+        let f = nf(e);
+        if nname(&f[0]) != "Path" {
+            return None;
+        }
+        let segs = crate::check::strs(&nf(&f[0])[0]);
+        if segs.len() < 2 || self.lookup(&segs[0]).is_some() {
+            return None;
+        }
+        let r = self.p.resolve(&segs, &self.def.file)?;
+        let crate::program::Target::Const(ci) = r.target else { return None };
+        if r.rest.len() != 1 {
+            return None;
+        }
+        let declared = crate::types::from_v(&self.p.defs[ci].ret, &std::collections::HashSet::new());
+        let is_num = matches!(&declared, Src::Prim(p) if Ty::parse(p).is_some_and(|t| t.is_int() || t.is_float()));
+        if !is_num {
+            return None;
+        }
+        // 定数の式は下ろしが作る (型表にない) ので、番号 0 の式として渡す。型は宣言から決まる。
+        let recv = match self.const_val(ci, &V::Nil) {
+            Ok(v) => v,
+            Err(why) => return Some(Err(why)),
+        };
+        let tmp = format!("$const{}", self.slots.len());
+        let t = self.vty(recv);
+        self.bind(&tmp, recv, t);
+        let V::Node(pn, pf, pl, pid) = &f[0] else { return None };
+        let mut pf = pf.clone();
+        pf[0] = V::L(vec![V::S(tmp), V::S(r.rest[0].clone())]);
+        let mut nfv = f.to_vec();
+        nfv[0] = V::Node(pn, pf, *pl, *pid);
+        let V::Node(en, _, el, eid) = e else { return None };
+        Some(self.call(&V::Node(en, nfv, *el, *eid)))
+    }
+}
+
 // ------------------------------------------------ `const` の `&str` への直接のメソッド呼び出し (`K.as_bytes()` / `K.split(" ")`)
 
 impl<'a> Lw<'a> {

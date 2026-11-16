@@ -2491,7 +2491,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                     }
                     Op::Conv { src, a } => {
-                        if ty_of(*a)? != *src || !conv_ok(*src, i.ty) {
+                        if ty_of(*a)? != *src || !(conv_ok(*src, i.ty) || float_to_int_ok(*src, i.ty)) {
                             return Err(format!("{} から {} への変換は使えない", src.name(), i.ty.name()));
                         }
                     }
@@ -3285,6 +3285,11 @@ pub fn conv_ok(src: Ty, dst: Ty) -> bool {
         return int_into(src, dst);
     }
     (src.is_int() && dst.is_float()) || (src == Ty::F32 && dst == Ty::F64) || (src == Ty::F64 && dst == Ty::F32)
+}
+
+/// 浮動小数から 64 ビット以下の整数への変換 (飽和し、NaN は 0。`trunc_to_*` が範囲を確かめた後に使う)。
+pub fn float_to_int_ok(src: Ty, dst: Ty) -> bool {
+    src.is_float() && dst.is_int() && dst.bits() <= 64
 }
 
 /// モジュールを検査する。違反のあった関数を (鍵, 理由) で返す。空なら正しい。

@@ -1799,6 +1799,14 @@ impl<'a> Fe<'a> {
         let dst = i.ty;
         if src.is_int() && dst.is_int() {
             self.int_cast(&d, &v, src.bits(), dst.bits(), src.signed());
+        } else if src.is_float() && dst.is_int() {
+            // 飽和する変換 (NaN は 0)。`trunc_to_*` は範囲を確かめてから使う。
+            let (st, ft) = (self.lt(src), if src == Ty::F32 { "f32" } else { "f64" });
+            let k = if dst.signed() { "fptosi" } else { "fptoui" };
+            let name = format!("llvm.{}.sat.i{}.{}", k, dst.bits(), ft);
+            let dt = self.lt(dst);
+            self.decl(format!("declare {} @{}({})", dt, name, st));
+            self.line(format!("{} = call {} @{}({} {})", d, dt, name, st, v));
         } else if src.is_int() {
             let st = self.lt(src);
             let k = if src.signed() { "sitofp" } else { "uitofp" };

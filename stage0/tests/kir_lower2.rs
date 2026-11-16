@@ -1470,9 +1470,9 @@ fn kir_scalar_text_reads_back_with_float_and_bit_ops() {
 
 #[test]
 fn kir_scalar_reports_unsupported_numeric_methods_with_a_reason() {
-    // `trunc_to_*` は `Option` を返すので段階 1 の型に入らない。理由を付けて拒否する。
+    // `trunc_to_i128` は 128 ビットの `Option` なので段階 1 の型に入らない (64 ビット以下の `trunc_to_*` は `kir_native_gaps.rs`)。理由を付けて拒否する。
     let src = "fn t.a_tr(a: f64) -> bool uses [] panics never
-    match a.trunc_to_i32() {
+    match a.trunc_to_i128() {
         Some(_v) => true
         None => false
     }
