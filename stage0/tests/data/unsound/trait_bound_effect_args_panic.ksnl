@@ -1,0 +1,23 @@
+// expect: E4002
+type t.A
+    n: u32
+end t.A
+
+trait t.Handler[E: uses, P: panics]
+    fn handle(self: &Self) -> u32 uses [E] panics P
+end t.Handler
+
+impl t.Handler<[], may> for t.A
+fn t.A.handle(self: &t.A) -> u32 uses [] panics may impls t.Handler<[], may>
+    core.panic.panic("boom")
+end t.A.handle
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = t.A { n: 1u32 }
+    core.mem.drop(t.run(&a))
+    Ok(())
+end t.main
+
+fn t.run[H: t.Handler<[], never>](h: &H) -> u32 uses [] panics never
+    h.handle()
+end t.run

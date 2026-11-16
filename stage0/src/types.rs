@@ -2391,14 +2391,16 @@ impl<'a> TypeCk<'a> {
         // 効果 (4.3 / 5.1): 引数の個数が合う候補 (型で決まった所有者のメソッド) をすべて見る。
         // 検査は全候補が違反するときだけ、クロージャの効果には全候補に共通する部分だけを足す (保守側)。
         // 候補が 1 つに決まるときだけ、`Fn` 境界の具体的な効果とクロージャの効果を比べる (5.1 / 4.3)。
+        // 受け手 (`self`) も引数と同じに扱う (`self: &S<F>` の `F` の `Fn` 境界)。
+        let with_self: Vec<Ty> = std::iter::once(recv.clone()).chain(args.iter().cloned()).collect();
         if let [(di, _)] = fit.as_slice() {
-            self.check_closure_bounds(&self.p.defs[*di], 1, args, line);
+            self.check_closure_bounds(&self.p.defs[*di], 0, &with_self, line);
         }
         let effs: Vec<(String, Vec<String>, Option<String>, Vec<String>, Option<String>)> = fit
             .iter()
             .map(|(i, _)| {
                 let c = &self.p.defs[*i];
-                let (fu, fp, du, dm) = self.callee_effects(c, 1, args, targs);
+                let (fu, fp, du, dm) = self.callee_effects(c, 0, &with_self, targs);
                 let (cu, cp) = if local { (fu.clone(), fp.clone()) } else { (du, dm) };
                 (c.name.clone(), fu, fp, cu, cp)
             })
@@ -2781,6 +2783,56 @@ impl<'a> TypeCk<'a> {
         Ty::Unknown
     }
 
+    /// `for x in it` が暗黙に呼ぶ `next` の効果を、明示の `it.next()` と同じに数える。型パラメータなら
+    /// `Iterator` 境界の効果実引数、それ以外は `next` の宣言の効果 (呼び出し元の検査へ回す)。
+    fn for_next_effects(&mut self, it: &Ty, line: usize) {
+        let deep = self.deep(it);
+        let mut base = deep.strip().clone();
+        while let Ty::Ref(_, x) = base {
+            base = self.deep(&x).strip().clone();
+        }
+        match &base {
+            Ty::Array(..) | Ty::Slice(_) => return,
+            Ty::Named(n, _) if n == "alloc.vec.Vec" => return,
+            Ty::Param(pn) => {
+                let d = self.def();
+                let mut found = vec![];
+                for g in d.generics.iter().filter(|g| g.0 == "type" && &g.1 == pn) {
+                    for b in items(&g.2) {
+                        if !matches!(b, V::L(bx) if st(&bx[0]) == "core.iter.Iterator") {
+                            continue;
+                        }
+                        let ta = items(tel(b, 1));
+                        let uses = ta.get(1).and_then(crate::check::targ_effs).unwrap_or_default();
+                        let panics = ta.get(2).and_then(crate::check::targ_panic);
+                        found.push((uses, panics));
+                    }
+                }
+                for (uses, panics) in found {
+                    self.check_trait_effects("core.iter.Iterator.next".into(), uses, panics, line);
+                }
+                return;
+            }
+            _ => {}
+        }
+        let (owners, _) = self.owners_for(&base);
+        let mut effs = vec![];
+        for o in &owners {
+            let Some(&di) = self.owners.get(o).and_then(|m| m.get("next")).and_then(|v| v.first()) else { continue };
+            let c = &self.p.defs[di];
+            if c.params.len() != 1 {
+                continue;
+            }
+            let (fu, fp, _, _) = self.callee_effects(c, 1, &[], &[]);
+            // 型の効果引数 (`Enumerate<I, T, E, P>` の `E` / `P`) は型に残らないので、実体の分からない変数は
+            // 明示の `it.next()` と同じく数えない (宣言の具体名と `may` / `never` だけ数える)。
+            let fu: Vec<String> = fu.into_iter().filter(|e| !crate::check::is_effect_var(e)).collect();
+            let fp = fp.filter(|p| !crate::check::is_panic_var(p));
+            effs.push((c.name.clone(), fu.clone(), fp.clone(), fu, fp));
+        }
+        self.record_effects(line, effs);
+    }
+
     /// トレイトのメソッド `name` の宣言された効果 (`uses` / `panics`) を、境界の実引数 `bargs` で実体化する
     /// (4.3 / 5.1)。トレイトの効果変数 (`E: uses`) は、対応する実引数が具体的な `uses [..]` / `never` / `may` の
     /// ときだけ束縛し、束縛が分からない効果変数は落とす（黙る）。戻り値は具体名だけの uses と、確定した panics。
@@ -3011,6 +3063,58 @@ impl<'a> TypeCk<'a> {
         }
     }
 
+    /// 境界 `T: Tr<.., [E..], P>` の効果・panic の実引数を、`T` に当たる型の `impl Tr<..>` (型パラメータなら
+    /// 呼び出し元の同じトレイトの境界) の実引数と比べる。impl の効果が境界の効果に含まれなければ E4001、
+    /// 境界が `never` で impl が `may` なら E4002。どちらかが効果変数なら実体が決まらないので黙る。
+    fn check_bound_effect_args(&mut self, tr: &str, want: &[V], t: &Ty, line: usize) {
+        let Some(&ti) = self.p.types.get(tr) else { return };
+        let td = &self.p.defs[ti];
+        if td.kw != "trait" || !td.generics.iter().any(|g| g.0 == "uses" || g.0 == "panics") {
+            return;
+        }
+        let got: Vec<V> = match t {
+            Ty::Named(n, _) => match self.impl_targs_of(tr, n) {
+                Some(a) => a,
+                None => return,
+            },
+            Ty::Param(pn) => {
+                let found = self.def().generics.iter().filter(|g| g.0 == "type" && &g.1 == pn).flat_map(|g| items(&g.2).to_vec()).find_map(|b| match &b {
+                    V::L(bx) if st(&bx[0]) == tr => Some(items(tel(&b, 1)).to_vec()),
+                    _ => None,
+                });
+                match found {
+                    Some(a) => a,
+                    None => return,
+                }
+            }
+            _ => return,
+        };
+        let mut out: Vec<(&'static str, String)> = vec![];
+        for (k, g) in td.generics.iter().enumerate() {
+            match g.0.as_str() {
+                "uses" => {
+                    let (Some(w), Some(h)) = (want.get(k).and_then(crate::check::targ_effs), got.get(k).and_then(crate::check::targ_effs)) else { continue };
+                    if w.iter().chain(h.iter()).any(|e| crate::check::is_effect_var(e)) {
+                        continue;
+                    }
+                    for e in h.iter().filter(|e| !crate::check::covers(&w, e)) {
+                        out.push(("E4001", format!("the impl of `{}` for `{}` uses effect `{}` but the bound declares `uses [{}]`", tr, t.show(), e, w.join(", "))));
+                    }
+                }
+                "panics" => {
+                    let (Some(w), Some(h)) = (want.get(k).and_then(crate::check::targ_panic), got.get(k).and_then(crate::check::targ_panic)) else { continue };
+                    if w == "never" && h == "may" {
+                        out.push(("E4002", format!("the impl of `{}` for `{}` may panic but the bound declares `panics never`", tr, t.show())));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (c, m) in out {
+            self.diag(c, m, line);
+        }
+    }
+
     /// 型パラメータの境界 (`T: core.cmp.Ord` など) を、解決された型が満たすか。
     fn check_bounds(&mut self, d: &Def, map: &HashMap<String, Ty>, line: usize, direct_only_skip: bool) {
         let _ = direct_only_skip;
@@ -3027,6 +3131,7 @@ impl<'a> TypeCk<'a> {
                 if tr == "core.marker.Send" || tr == "core.marker.Sync" || tr.starts_with("core.ops.Fn") {
                     continue;
                 }
+                self.check_bound_effect_args(&tr, items(tel(b, 1)), t, line);
                 let known = self.p.types.get(&tr).map_or(false, |&i| self.p.defs[i].kw == "trait")
                     || crate::check::DERIVE_TRAITS.iter().any(|(_, v)| *v == tr);
                 if !known {
@@ -3556,6 +3661,7 @@ impl<'a> TypeCk<'a> {
                 let src = self.last_site;
                 self.scopes.push(HashMap::new());
                 let elem = self.iter_elem(&it);
+                self.for_next_effects(&it, nline(e));
                 self.bind_pat_from(&f[0], &elem, src, nline(e));
                 self.note_pat_binds(&f[0], nline(e));
                 self.loop_breaks.push(false);
@@ -4540,33 +4646,25 @@ impl<'a> TypeCk<'a> {
     /// 受け側の境界が具体的で渡し側に効果変数・panic 変数があり、実体化が分からないなら
     /// fail-closed で E4001 / E4002 を報告する。
     fn check_fn_param_bound_effects(&mut self, callee: &Def, raw: &Ty, got: &Ty, line: usize) {
-        // 参照は透過的: `&F` / `&mut F` も `F` と同じ境界を持つ。
-        let mut raw = raw;
-        while let Ty::Ref(_, x) = raw {
-            raw = x;
+        for (wname, gt) in self.param_slots(raw, got) {
+            let Some((wu, wp)) = self.fn_bound_effects(callee, &wname) else { continue };
+            let Ty::Param(gname) = &gt else { continue };
+            let d = self.def();
+            let Some((gu, gp)) = self.fn_bound_effects(d, gname) else { continue };
+            let want = EffInfo {
+                decl: true,
+                uses: wu,
+                may: wp,
+                name: format!("parameter `{}` of `{}`", wname, callee.name),
+            };
+            let got = EffInfo {
+                decl: false,
+                uses: gu,
+                may: gp,
+                name: format!("type parameter `{}` of `{}`", gname, d.name),
+            };
+            self.check_fn_eff(&want, &got, line);
         }
-        let mut got = got.clone();
-        while let Ty::Ref(_, x) = got {
-            got = self.resolve(&x);
-        }
-        let Ty::Param(wname) = raw else { return };
-        let Some((wu, wp)) = self.fn_bound_effects(callee, wname) else { return };
-        let Ty::Param(gname) = &got else { return };
-        let d = self.def();
-        let Some((gu, gp)) = self.fn_bound_effects(d, gname) else { return };
-        let want = EffInfo {
-            decl: true,
-            uses: wu,
-            may: wp,
-            name: format!("parameter `{}` of `{}`", wname, callee.name),
-        };
-        let got = EffInfo {
-            decl: false,
-            uses: gu,
-            may: gp,
-            name: format!("type parameter `{}` of `{}`", gname, d.name),
-        };
-        self.check_fn_eff(&want, &got, line);
     }
 
     /// 関数の値 (クロージャの節・関数項目・関数ポインタ値) の効果 (`uses`, `may`)。分からないものは None。
@@ -4625,14 +4723,10 @@ impl<'a> TypeCk<'a> {
                 }
                 continue;
             }
-            let Ty::Param(name) = pt else { continue };
+            for (name, at) in self.param_slots(&from_v(&p.1, &gn), a) {
             let bounds = self.fn_bound(d, &name);
             if bounds.is_empty() {
                 continue;
-            }
-            let mut at = self.deep(a);
-            while let Ty::Ref(_, x) = at {
-                at = self.deep(&x);
             }
             let Some((uses, may)) = self.arg_fn_effects(&at) else { continue };
             for b in &bounds {
@@ -4653,9 +4747,44 @@ impl<'a> TypeCk<'a> {
                     *out.panics.entry(pv).or_default() |= m;
                 }
             }
+            }
         }
         self.iter_effect_bind(d, off, argt, &mut out);
         out
+    }
+
+    /// パラメータの型 `pt` (型パラメータを含む) と実引数の型 `a` を構造的に突き合わせ、型パラメータ
+    /// (`F` / `Option<F>` / `&S<F>` / `(F, u32)` の `F`) に当たる実引数の部分の型 (解決済み、参照は外す) を集める。
+    fn param_slots(&self, pt: &Ty, a: &Ty) -> Vec<(String, Ty)> {
+        let mut out = vec![];
+        self.param_slots_walk(pt, a, &mut out);
+        out
+    }
+
+    fn param_slots_walk(&self, pt: &Ty, a: &Ty, out: &mut Vec<(String, Ty)>) {
+        let mut at = self.deep(a);
+        while let Ty::Ref(_, x) = at {
+            at = self.deep(&x);
+        }
+        let mut pt = pt;
+        while let Ty::Ref(_, x) = pt {
+            pt = x;
+        }
+        match (pt, &at) {
+            (Ty::Param(n), _) => out.push((n.clone(), at)),
+            (Ty::Named(n, pa), Ty::Named(m, aa)) if n == m && pa.len() == aa.len() => {
+                for (x, y) in pa.iter().zip(aa) {
+                    self.param_slots_walk(x, y, out);
+                }
+            }
+            (Ty::Tuple(pa), Ty::Tuple(aa)) if pa.len() == aa.len() => {
+                for (x, y) in pa.iter().zip(aa) {
+                    self.param_slots_walk(x, y, out);
+                }
+            }
+            (Ty::Array(x, _), Ty::Array(y, _)) | (Ty::Slice(x), Ty::Slice(y)) => self.param_slots_walk(x, y, out),
+            _ => {}
+        }
     }
 
     /// `I: core.iter.Iterator<T, E, P>` の境界を持つ引数 (`it: I`) の効果変数・panic 変数を、引数の型の
@@ -4781,14 +4910,10 @@ impl<'a> TypeCk<'a> {
             while let Ty::Ref(_, x) = pt {
                 pt = *x;
             }
-            let Ty::Param(name) = pt else { continue };
+            for (name, at) in self.param_slots(&from_v(&p.1, &gn), a) {
             let bounds = self.fn_bound(d, &name);
             if bounds.is_empty() {
                 continue;
-            }
-            let mut at = self.deep(a);
-            while let Ty::Ref(_, x) = at {
-                at = self.deep(&x);
             }
             let Ty::Closure { id: Some(node), .. } = at else { continue };
             let Some((uses, may, unsure)) = self.closure_effs.get(&node) else { continue };
@@ -4823,6 +4948,7 @@ impl<'a> TypeCk<'a> {
                         ));
                     }
                 }
+            }
             }
         }
         for (c, m) in out {

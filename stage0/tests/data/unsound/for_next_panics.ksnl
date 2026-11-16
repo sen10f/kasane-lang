@@ -1,0 +1,21 @@
+// expect: E4002
+type t.Up
+    cur: u32
+end t.Up
+
+impl core.iter.Iterator<u32, [], may> for t.Up
+fn t.Up.next(self: &mut t.Up) -> Option<u32> uses [] panics may impls core.iter.Iterator<u32, [], may>
+    if self.cur >= 2u32 {
+        core.panic.panic("boom")
+    }
+    self.cur = self.cur.wrapping_add(1u32)
+    Some(self.cur)
+end t.Up.next
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let u = t.Up { cur: 0u32 }
+    for x in u {
+        core.mem.drop(x)
+    }
+    Ok(())
+end t.main

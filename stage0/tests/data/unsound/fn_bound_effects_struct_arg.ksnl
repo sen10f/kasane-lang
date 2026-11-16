@@ -1,0 +1,18 @@
+// expect: E4001
+type t.S[F]
+    f: F
+end t.S
+
+fn t.call2[F: core.ops.Fn<(), (), [], never>](s: &t.S<F>) -> () uses [] panics never
+    let g = &s.f
+    g()
+end t.call2
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let c = fn() -> () capture [] {
+        core.mem.drop(std.io.print_line("side effect"))
+    }
+    let s = t.S { f: c }
+    t.call2(&s)
+    Ok(())
+end t.main
