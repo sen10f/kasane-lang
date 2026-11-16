@@ -1766,7 +1766,7 @@ fn lower.expr.retx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
 end lower.expr.retx
 
 // 式の中で代入されている局所の名前 (`x = e` の x) を集める。分岐と合流で引き回す局所を絞るため。
-fn lower.expr.scan(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.scan(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     if e == 0usize {
         return Ok(())
     }
@@ -1825,6 +1825,25 @@ fn lower.expr.scan(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &
         let mname = resolve.ast.tok_text(p, src, n.b)
         if rvb.kind == parse.ast.Kind.Path && !lower.expr.is_wrapping(mname) {
             out.push(lower.cx.own(resolve.ast.text(src, rvb.a, rvb.b))?)?
+        }
+    }
+    if !bor && k == parse.ast.Kind.Path {
+        // 所有物を持つ構造体の局所の欄 (`x.f`): 根の局所を、代入と同じく合流で受け渡す (欄の移動・書き戻しが見える)。
+        lower.expr.scan_field_root(env, c, resolve.ast.text(src, n.a, n.b), out)?
+    }
+    if !bor && k == parse.ast.Kind.Dot {
+        let mut cur = n
+        while cur.kind == parse.ast.Kind.Dot {
+            cur = parse.ast.get(&p.ast, cur.a)
+        }
+        if cur.kind == parse.ast.Kind.Path {
+            lower.expr.scan_field_root(env, c, resolve.ast.text(src, cur.a, cur.b), out)?
+        }
+    }
+    if !bor && k == parse.ast.Kind.Call {
+        let cnp = parse.ast.get(&p.ast, n.a)
+        if cnp.kind == parse.ast.Kind.Path {
+            lower.expr.scan_field_root(env, c, resolve.ast.text(src, cnp.a, cnp.b), out)?
         }
     }
     if !bor && (k == parse.ast.Kind.Call || k == parse.ast.Kind.MCall) {
@@ -1905,7 +1924,7 @@ fn lower.expr.scan(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &
 end lower.expr.scan
 
 // match の腕の並び: 腕の本体を集める。
-fn lower.expr.scan_arms(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.scan_arms(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
         let arm = parse.ast.get(&p.ast, resolve.ast.item(p, l, j))
         lower.expr.scan(env, c, p, src, arm.b, out, bor)?
@@ -1913,8 +1932,29 @@ fn lower.expr.scan_arms(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, s
     Ok(())
 end lower.expr.scan_arms
 
+// 名前 `x.f...` の根の局所 x が所有物を持つ値 (参照でない) なら、名前を out に足す。
+fn lower.expr.scan_field_root(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if lower.expr.seg_count(name) < 2usize {
+        return Ok(())
+    }
+    let mut root = ""
+    for w in name.split(".") {
+        root = w
+        break
+    }
+    let loc = lower.cx.find(c, root)
+    if loc == 0usize {
+        return Ok(())
+    }
+    let t = lower.cx.tyof_t(c, loc - 1usize)
+    if lower.drop.owns(env, c, t)? {
+        out.push(lower.cx.own(root)?)?
+    }
+    Ok(())
+end lower.expr.scan_field_root
+
 // 式の並び (リスト) の中を集める。
-fn lower.expr.scan_list(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.scan_list(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
         lower.expr.scan(env, c, p, src, resolve.ast.item(p, l, j), out, bor)?
     }
@@ -2343,6 +2383,14 @@ fn lower.expr.vec_field_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
     let mut cur = lower.cx.get_val(c, k).wrapping_sub(1usize)
     let (inner0, through, m0) = lower.opt.deref_ty(c, bt)
     if !through && !lower.cx.is_slot(c, k) {
+        // 値で持つ構造体の欄の `Vec` / `String` (`st.tails.push(x)`): 枠に写し、呼んで、書き戻す。
+        if nseg == 3usize {
+            let fnm = match segs.as_slice().get(1usize) {
+                Some(s) => lower.cx.own(s.as_str())?
+                None => return Ok((no, false))
+            }
+            return lower.expr.vec_val_call(env, c, p, src, fqn.as_str(), k, fnm.as_str(), args, t)
+        }
         return Ok((no, false))
     }
     let mutable = !through || m0
@@ -2451,6 +2499,49 @@ fn lower.expr.vec_slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.
     let r = lower.std_calls.slice_get_hdr(env, c, &vs, sl, sfq.as_str() == "core.slice.last", t)?
     Ok((r, true))
 end lower.expr.vec_slice_get
+
+// 値で持つ構造体の局所 k の欄 fname (`Vec` / `String`) のメソッド: 枠に写して呼び、書き戻す。
+fn lower.expr.vec_val_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], fqn: &str, k: usize, fname: &str, args: usize, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
+    let no = lower.cx.R { v: 0usize, t: t }
+    let bt = lower.cx.tyof_t(c, k)
+    let bv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+    let rs = types.ty.strip(&c.ar, bt)
+    let rn = types.ty.node(&c.ar, rs)
+    if rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef {
+        return Ok((no, false))
+    }
+    let ft = lower.tyk.field_ty(env, c, rn.a, fname)?
+    if ft == types.ty.UNKNOWN || !lower.vec.is_hdr(env, c, ft) {
+        return Ok((no, false))
+    }
+    let j = lower.tyk.field_index(env, rn.a, fname)?
+    let lay = lower.tyk.layout(env, c, rn.a)?
+    let off = lower.tyk.at(lay.offs.as_slice(), j)
+    let hty = lower.tyk.text(env, c, ft)?
+    let bty = lower.tyk.text(env, c, bt)?
+    let fv = lower.cx.def(c, hty.as_str(), lower.expr.field_src(bv, off)?.as_str())?
+    let slot = lower.cx.def(c, "ptr", "frame.bytes 24")?
+    lower.vec.store_hdr(c, slot, fv)?
+    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    vs.push(slot)?
+    for a in core.iter.range(0usize, resolve.ast.count(p, args)) {
+        let av = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, a), types.ty.UNKNOWN)?
+        vs.push(av.v)?
+    }
+    let r = lower.vec.call(env, c, fqn, ft, &vs, t)?
+    let nh = lower.vec.load_hdr(env, c, slot, ft, false)?
+    let _old = lower.cx.def(c, hty.as_str(), lower.expr.field_src(bv, off)?.as_str())?
+    let mut so = alloc.string.String.new(std.alloc.SYSTEM)
+    so.push_str("setfield ")?
+    so.push_str(lower.cx.vs(bv)?.as_str())?
+    so.push_str(", +")?
+    so.push_str(lower.cx.dec(off)?.as_str())?
+    so.push_str(", ")?
+    so.push_str(lower.cx.vs(nh)?.as_str())?
+    let nv = lower.cx.def(c, bty.as_str(), so.as_str())?
+    lower.cx.set_val(c, k, nv + 1usize)?
+    Ok((r, true))
+end lower.expr.vec_val_call
 
 fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)

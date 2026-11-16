@@ -13,6 +13,43 @@ fn lower.drop.br(c: &mut lower.cx.Cx, b: usize) -> Result<(), resolve.Failure> u
     lower.expr.br_to(c, b)
 end lower.drop.br
 
+// 要素が所有物の `Vec` の値 v (先頭の番地 pv) の要素を、添字の小さい方から 1 つずつ解放する周。
+fn lower.drop.elems(env: &types.env.Env, c: &mut lower.cx.Cx, pv: usize, v: usize, et: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let lv = lower.cx.def(c, "usize", lower.expr.field_src(v, 8usize)?.as_str())?
+    let zero = lower.vec.usize_c(c, 0usize)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    hps.push(lower.cx.newval(c, "usize")?)?
+    let hb = lower.cx.blk(c, &hps)?
+    let bb = lower.cx.blk(c, &empty)?
+    let eb = lower.cx.blk(c, &empty)?
+    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a0.push(zero)?
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(hb, &a0)?.as_str())?)?
+    lower.cx.goto(c, hb)
+    let i = lower.tyk.at(hps.as_slice(), 0usize)
+    let lt = lower.loops.bin(c, "bool", "icmp.lt.usize", i, lv)?
+    lower.expr.br_if(c, lt, bb, eb)?
+    lower.cx.goto(c, bb)
+    let (sz, _al) = lower.tyk.size_of(env, c, et)?
+    let szc = lower.vec.usize_c(c, sz)?
+    let addr = lower.vec.elem_addr(c, pv, i, szc)?
+    let ety = lower.tyk.text(env, c, et)?
+    let mt = lower.opt.refty(true, ety.as_str())?
+    let bc0 = lower.cx.cat2("bitcast.", mt.as_str())?
+    let bc1 = lower.cx.cat2(bc0.as_str(), ".ptr ")?
+    let mr = lower.cx.def1(c, mt.as_str(), bc1.as_str(), addr)?
+    let ev = lower.cx.def1(c, ety.as_str(), "load ", mr)?
+    lower.drop.value(env, c, ev, et)?
+    let one = lower.vec.usize_c(c, 1usize)?
+    let ni = lower.vec.arith(c, "add", i, one)?
+    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a1.push(ni)?
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(hb, &a1)?.as_str())?)?
+    lower.cx.goto(c, eb)
+    Ok(())
+end lower.drop.elems
+
 // 印を持つ局所 k の出口の解放: 印が立っていれば値を解放する (`mem.load.bool` → `br_if` → 解放 → 合流)。
 fn lower.drop.exit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     lower.fs.close(env, c, p, src, k)?
@@ -235,8 +272,12 @@ fn lower.drop.value(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, t: usize
         return Ok(())
     }
     if lower.tyk.is_vec(env, n.a) {
-        // 要素が所有物なら、要素の解放は未対応 (バッファだけ返す。Rust 版は要素も解放する)。
         let pv = lower.cx.def(c, "ptr", lower.expr.field_src(v, 0usize)?.as_str())?
+        let isv = lower.tyk.item_fqn(env, n.a).as_str().ends_with(".Vec") && n.c > 0usize
+        if isv && lower.drop.owns(env, c, types.ty.arg(&c.ar, n.b, 0usize))? {
+            // 要素が所有物の `Vec`: 要素を 1 つずつ解放してから、バッファを返す (Rust 版と同じ周)。
+            lower.drop.elems(env, c, pv, v, types.ty.arg(&c.ar, n.b, 0usize))?
+        }
         core.mem.drop(lower.cx.def1(c, "unit", "heap.free ", pv)?)
         return Ok(())
     }
