@@ -976,8 +976,15 @@ impl<'a> Vm<'a> {
                     self.flush();
                     return Ok(Outcome::Exit(c));
                 }
-                Ins::Write { d, fd, data } => {
+                Ins::Write { d, fd, data, nl } => {
                     let bytes = Self::fat_bytes(rp, *data as usize)?;
+                    let joined;
+                    let bytes = if *nl {
+                        joined = [bytes, b"\n"].concat();
+                        &joined[..]
+                    } else {
+                        bytes
+                    };
                     match self.out_write(r!(*fd) as i32 as i128, bytes) {
                         Ok(()) => w!(*d, 0),
                         Err(e) => {

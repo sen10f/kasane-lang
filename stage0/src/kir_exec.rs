@@ -826,11 +826,14 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     bm.free(get(&stack[top], p))?;
                     0
                 }
-                Op::Write { fd, data } => {
+                Op::Write { fd, data, nl } => {
                     let h = get(&stack[top], data) as usize;
                     let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
                     let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
-                    let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+                    let mut bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+                    if *nl {
+                        bytes.push(b'\n');
+                    }
                     match write_fd(get(&stack[top], fd), &bytes) {
                         Ok(()) => 0,
                         Err(e) => {

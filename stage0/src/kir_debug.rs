@@ -241,10 +241,10 @@ fn int_fn(t: Ty, fat: Ty) -> Func {
 }
 
 /// `&str` / `String` の中身をそのまま `String` へ書く (`Display`)。値の先頭 2 語が `{ptr, len}`。
-/// `f32` / `f64` の表示: 32 バイトの枠へ書式化して (`FloatText`)、書いた分を出す。
+/// `f32` / `f64` の表示: 512 バイトの枠 (`{}` は指数を使わず、非正規化数は 330 字ほど) へ書式化して (`FloatText`)、書いた分を出す。
 fn float_fn(t: Ty, fat: Ty) -> Func {
     let mut b = Fb::new_d(&[t], fat);
-    let buf = b.emit(Ty::Ptr, Op::FrameBytes { size: 40 });
+    let buf = b.emit(Ty::Ptr, Op::FrameBytes { size: 512 });
     let n = b.emit(Ty::Usize, Op::FloatText { bits: if t == Ty::F32 { 32 } else { 64 }, a: b.v, dst: buf });
     b.put(buf, n);
     b.finish(&key(&format!("{}.disp", t.name())))
@@ -623,6 +623,8 @@ impl<'a> Gen<'a> {
             (Src::Prim(s), Ty::Bool) if s == "bool" => Ok(self.scalar("bool", || bool_fn(fat))),
             (Src::Prim(s), Ty::U32) if s == "char" => Ok(self.scalar("char", || char_fn(fat))),
             (Src::Prim(_), t) if t.is_int() && t.bits() <= 64 => Ok(self.scalar(&t.name(), || int_fn(t, fat))),
+            // `f32` / `f64` の Debug は Display と同じ文字列。
+            (Src::Prim(_), t) if t.is_float() => Ok(self.scalar(&format!("{}.disp", t.name()), || float_fn(t, fat))),
             (_, t) if is_str(src, t, fat) => Ok(self.scalar("str", || str_fn(fat))),
             (Src::Named(name, _), t) if name == "alloc.string.String" && (matches!(t, Ty::Agg(_)) || (self.sink && t == Ty::Ptr)) => Ok(self.string_debug(t, fat)),
             (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg(name, i, file),

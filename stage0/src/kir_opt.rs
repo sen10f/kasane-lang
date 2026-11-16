@@ -288,7 +288,7 @@ pub(crate) fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::MemStore { p, v, .. } => vec![p, v],
         Op::IndexCheck { i, len } => vec![i, len],
         Op::Panic { arg, .. } => arg.iter_mut().collect(),
-        Op::Write { fd, data } => vec![fd, data],
+        Op::Write { fd, data, .. } => vec![fd, data],
         Op::Eprint { data } => vec![data],
         Op::Exit { code } => vec![code],
         Op::FmtFloat { a, .. } => vec![a],

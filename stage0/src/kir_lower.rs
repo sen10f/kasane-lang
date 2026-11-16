@@ -1425,7 +1425,7 @@ impl<'a> Lw<'a> {
         Ok(None)
     }
 
-    /// `std.io.print_line(s)`: `write 1, s` の後に `write 1, "\n"` (設計_KIR.md 12.2)。どちらかが失敗したら、その `Err` が結果になる。
+    /// `std.io.print_line(s)`: `s` と改行を 1 回の書き込み (`write.nl`) で出す (設計_KIR.md 12.2)。失敗したらその `Err` が結果になる。
     fn print_line(&mut self, args: &[V], line: usize) -> LR<Option<VId>> {
         if args.len() != 1 {
             return self.err(line, "std.io.print_line の引数は 1 個のはず");
@@ -1438,19 +1438,8 @@ impl<'a> Lw<'a> {
         let io = self.aggs.borrow_mut().io_error(self.p).map_err(|e| format!("行 {}: {}", line, e))?;
         let res = Ty::Res(kir::Pay::Unit, kir::Pay::of(io).expect("集成体はペイロードになる"));
         let fd = self.emit(Ty::I32, Op::Const(1));
-        let r1 = self.emit(res, Op::Write { fd, data: s });
-        let failed = self.emit(Ty::Bool, Op::Tag(r1));
-        let (nb, _) = self.new_block(&[]);
-        let (jb, jp) = self.new_block(&[res]);
-        self.branch(failed, (jb, vec![r1]), (nb, vec![]));
-        self.cur = Some(nb);
-        let data = self.emit(Ty::Ptr, Op::StaticBytes(vec![b'\n']));
-        let one = self.emit(Ty::Usize, Op::Const(1));
-        let nl = self.emit(fat, Op::Make { variant: None, fields: vec![data, one] });
-        let r2 = self.emit(res, Op::Write { fd, data: nl });
-        self.goto(jb, vec![r2]);
-        self.cur = Some(jb);
-        Ok(Some(jp[0]))
+        let r1 = self.emit(res, Op::Write { fd, data: s, nl: true });
+        Ok(Some(r1))
     }
 
     /// `e.m(args)` (受け手が式の形)。整数の `wrapping_add` / `wrapping_sub` / `wrapping_mul` だけを扱う。
