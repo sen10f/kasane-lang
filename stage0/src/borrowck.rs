@@ -112,6 +112,8 @@ enum Src {
 
 struct Low<'a> {
     p: &'a Program,
+    /// `check_return_flow` が今見ている関数の `Inits` (`ret_slots` が束縛した局所の初期値へ辿るため。0 は無し)。
+    ret_inits: std::cell::Cell<usize>,
     /// 型検査が解決したメソッド呼び出し先 (書き手の定義, 式の位置, 名前)。
     res: std::rc::Rc<HashMap<(usize, usize, String), Option<Vec<usize>>>>,
     /// 型検査が中断点と決めた呼び出し (書き手の定義, 式の位置)。
@@ -1840,6 +1842,7 @@ impl<'a> Low<'a> {
         }
         let mut sub = Low {
             p: self.p,
+            ret_inits: std::cell::Cell::new(0),
             res: self.res.clone(),
             susp: self.susp.clone(),
             cur: self.cur,
@@ -3370,6 +3373,17 @@ impl<'a> Low<'a> {
         // 戻り値の型の後ろの修飾 (`-> core.fmt.Formatter<'a> const`) は型ではない。
         let ty = ty.trim();
         let ty = ty.strip_suffix(" const").unwrap_or(ty).trim_end();
+        // 包んだ値・呼び出しを束縛した局所 (`let r = (y, x); t.id(r)`) は、束縛の初期値の位置ごとに照らす。
+        if nname(e) == "Path" && strs(&nf(e)[0]).len() == 1 && self.ret_inits.get() != 0 {
+            // 安全性: `check_return_flow` が `Inits` を持っている間だけ非 0 (その関数の中でだけ使う)。
+            let inits: &Inits<'v> = unsafe { &*(self.ret_inits.get() as *const Inits<'v>) };
+            inits.pos.set(inits.at(e));
+            if let Some(init) = inits.plain(&strs(&nf(e)[0])[0]) {
+                if self.wrapped_parts(init).is_some() || nname(init) == "Call" {
+                    return self.ret_slots(init, ty, out);
+                }
+            }
+        }
         // 型の文面が領域を明示しているか (`'a` / `'static`)。明示がなければ、出力の領域は省略規則 (4.3) で決まる。
         let explicit = ty.contains('\'') || self.named_without_life_generics(ty);
         // 型の引数 `T<a, b>` を (名前, 引数)。
@@ -3549,7 +3563,7 @@ impl<'a> Low<'a> {
         let Some(i) = self.target_def(&r.target).filter(|_| r.rest.is_empty()) else { return false };
         let cd = &self.p.defs[i];
         let args = items(&f[1]);
-        if Self::ret_has_type_param(cd) || args.len() != cd.params.len() {
+        if args.len() != cd.params.len() {
             return false;
         }
         let Some(head) = cd.header.split(" uses ").next() else { return false };
@@ -3557,6 +3571,29 @@ impl<'a> Low<'a> {
         let Some(close) = match_close(head, open) else { return false };
         let ptexts = split_top(&head[open + 1..close]);
         let Some((_, cret)) = head[close + 1..].split_once("->") else { return false };
+        if Self::ret_has_type_param(cd) {
+            // 戻り値が型パラメータ `T` そのもの (`fn id[T](x: T) -> T`): `T` 型の引数は同じ位置へそのまま流れる。
+            // `T` を別の形 (`&T`・`Vec<T>`) でも含む引数があれば、位置が決まらないので呼び出し全体を 1 つの葉にする。
+            let t = cret.trim();
+            if !Self::type_param_names(cd).iter().any(|n| n == t) {
+                return false;
+            }
+            let ty_of = |pt: &String| pt.split_once(':').map_or(pt.trim().to_string(), |x| x.1.trim().to_string());
+            let mut tmp = vec![];
+            for (k, pt) in ptexts.iter().enumerate() {
+                let pty = ty_of(pt);
+                if pty == t {
+                    self.ret_slots(&args[k], ty, &mut tmp);
+                } else if pty.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == t) {
+                    return false;
+                }
+            }
+            if tmp.is_empty() {
+                return false;
+            }
+            out.extend(tmp);
+            return true;
+        }
         if ptexts.len() != args.len() || !cret.contains('\'') {
             return false;
         }
@@ -3625,6 +3662,7 @@ impl<'a> Low<'a> {
         walk(body, &mut all);
         // 局所の束縛は、使う位置から見える一番内側・後ろのものを束縛点ごとに選ぶ (同名の束縛・引数と同名の束縛も区別する)。
         let inits = Inits::build(body);
+        self.ret_inits.set(&inits as *const Inits as usize);
         let mut vals: Vec<&V> = vec![];
         Self::value_leaves(body, &mut vals);
         for v in &all {
@@ -3669,6 +3707,32 @@ impl<'a> Low<'a> {
         for v in vals {
             self.ret_slots(v, ret, &mut slots);
         }
+        // 関数の中で定義した閉包の本体の値も、閉包の戻り値の注釈 (`fn() -> (&'a u32, &'b u32)`) の位置ごとの領域と照らす。
+        // 注釈の名前付きライフタイムは、取り込んだ引数の領域と同じ名前で書く。注釈が領域を持たない閉包は今のまま。
+        for n in &all {
+            if nname(n) != "Closure" || nf(n).len() < 5 {
+                continue;
+            }
+            let h = st(&nf(n)[4]);
+            let Some((_, r)) = h.split_once("->") else { continue };
+            if !r.contains('\'') {
+                continue;
+            }
+            let cret = r
+                .replace("& ", "&")
+                .replace(" ,", ",")
+                .replace("( ", "(")
+                .replace(" )", ")")
+                .replace(" <", "<")
+                .replace("< ", "<")
+                .replace(" >", ">")
+                .replace(" . ", ".");
+            let mut ls = vec![];
+            Self::value_leaves(&nf(n)[3], &mut ls);
+            for l in ls {
+                self.ret_slots(l, cret.trim(), &mut slots);
+            }
+        }
         // `Err(e)?` は、エラーの値 `e` を戻り値の `Result<_, E>` のエラーの位置へ返す (`?` の早期の戻り)。
         if let Some(et) = ret.trim().strip_prefix("Result<").and_then(|r| r.strip_suffix('>')).and_then(|r| split_top(r).get(1).cloned()) {
             for n in &all {
@@ -3679,6 +3743,7 @@ impl<'a> Low<'a> {
                 }
             }
         }
+        self.ret_inits.set(0);
         let mut out = vec![];
         let mut seen: BTreeSet<(usize, String)> = BTreeSet::new();
         // 省略した戻り値の領域を決める引数 (仕様 4.1: (b) `self` が参照ならそれ、(a) 参照の引数が 1 つならそれ)。
@@ -3977,6 +4042,7 @@ impl<'a> Checker<'a> {
         let plain = self.plain_binds(di);
         let mut low = Low {
             p: self.p,
+            ret_inits: std::cell::Cell::new(0),
             res: self.call_res.clone(),
             susp: self.susp_lines.clone(),
             cur: di,

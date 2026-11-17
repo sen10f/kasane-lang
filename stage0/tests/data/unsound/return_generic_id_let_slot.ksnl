@@ -1,0 +1,13 @@
+// expect: E3010
+fn t.f['a, 'b](x: &'a u32, y: &'b u32) -> (&'a u32, &'b u32) uses [] panics never
+    let r = (y, x)
+    t.id(r)
+end t.f
+
+fn t.id[T](x: T) -> T uses [] panics never
+    x
+end t.id
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
