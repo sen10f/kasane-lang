@@ -1,3 +1,5 @@
+// expect: E3040
+// with の本体での値の分解は消費 (E3040)
 type t.Res linear
     id: u32
 end t.Res
@@ -8,27 +10,12 @@ fn t.Res.shut(self: t.Res) -> () uses [] panics never
 end t.Res.shut
 
 fn t.a() -> () uses [] panics never
-    let r = t.Res { id: 1u32 }
-    match r {
-        t.Res { id: _ } => ()
-    }
-    r.shut()
-end t.a
-
-fn t.b() -> () uses [] panics never
-    let r = t.Res { id: 1u32 }
-    if let t.Res { id: _ } = r {
-    }
-    r.shut()
-end t.b
-
-fn t.c() -> () uses [] panics never
     with r = t.Res { id: 1u32 } close r.shut() {
         match r {
             t.Res { id: _ } => ()
         }
     }
-end t.c
+end t.a
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())

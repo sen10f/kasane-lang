@@ -1,0 +1,24 @@
+// expect-accept
+// 覗くだけなら借りて分解する (借りた分解は消費しない)。その後 r.shut()
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.Res.shut(self: t.Res) -> () uses [] panics never
+    let t.Res { id: id } = self
+    core.mem.drop(id)
+end t.Res.shut
+
+fn t.a() -> () uses [] panics never
+    let r = t.Res { id: 1u32 }
+    match &r {
+        t.Res { id: id } => core.mem.drop(*id)
+    }
+    if let t.Res { id: _ } = &r {
+    }
+    r.shut()
+end t.a
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

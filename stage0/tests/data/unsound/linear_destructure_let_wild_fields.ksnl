@@ -1,6 +1,5 @@
-// expect-accept
-// `let` の分解で束縛しない欄 (`_`) だけなら、値は move されず、線形な値は分解で消費されるので、
-// 同じ形の `match` と `if let` と同じく `r` は分解のあとでも残る (E3002 にならない)。
+// expect: E3002
+// let の分解も同じ
 type t.Res linear
     id: u32
 end t.Res

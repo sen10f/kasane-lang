@@ -1,0 +1,21 @@
+// expect: E3002
+// Copy の欄を束縛しても消費 (2 回閉じる)
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.Res.shut(self: t.Res) -> () uses [] panics never
+    let t.Res { id: id } = self
+    core.mem.drop(id)
+end t.Res.shut
+
+fn t.a() -> () uses [] panics never
+    let r = t.Res { id: 1u32 }
+    let t.Res { id: id } = r
+    core.mem.drop(id)
+    r.shut()
+end t.a
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
