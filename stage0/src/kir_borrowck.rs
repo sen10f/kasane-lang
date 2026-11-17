@@ -793,7 +793,8 @@ impl<'a> An<'a> {
             }
             Op::Const(_) | Op::StaticBytes(_) | Op::GlobalBytes { .. } | Op::HeapAlloc(_) | Op::HeapRealloc { .. } | Op::FnPtr { .. } => {}
             op @ (Op::Field { .. } | Op::SetField { .. } | Op::Make { .. } | Op::Some(_) | Op::Ok(_) | Op::Err(_) | Op::Payload(_) | Op::Bitcast { .. } | Op::Conv { .. }) => {
-                if carries_ty(t) {
+                // `Err` の中身を取り出す (`?` の Err の経路) など、取り出した値の型が借用を持ち得ないなら、親の借用は運ばない。
+                if carries_ty(t) && !(matches!(op, Op::Payload(_) | Op::Field { .. }) && !may_hold(self.aggs, t)) {
                     res = self.union_ops(&operands(op));
                     // 読みでない値からの `field` は、欄の対応が分からない: 粗い出どころに戻す。
                     if matches!(op, Op::Field { .. }) {

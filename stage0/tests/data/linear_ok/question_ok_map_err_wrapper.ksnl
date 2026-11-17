@@ -1,0 +1,21 @@
+// KIR falsely rejects map_err then `?` on a wrapper returning
+// Result<&str, AllocError> from String.as_str(). AST accepts; KIR E3010.
+enum t.Error derive [Debug, Clone, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+end t.Error
+
+fn t.conv(e: alloc.alloc.AllocError) -> t.Error uses [] panics never
+    t.Error.Alloc(e)
+end t.conv
+
+fn t.get_str(s: &alloc.string.String<std.alloc.System>) -> Result<&str, alloc.alloc.AllocError> uses [] panics never
+    Ok(s.as_str())
+end t.get_str
+
+fn t.main() -> Result<(), t.Error> uses [alloc] panics never
+    let s = alloc.string.String.from_str(std.alloc.SYSTEM, "hello")?
+    let r = t.get_str(&s).map_err(t.conv)?
+    core.mem.drop(r)
+    core.mem.drop(s)
+    Ok(())
+end t.main

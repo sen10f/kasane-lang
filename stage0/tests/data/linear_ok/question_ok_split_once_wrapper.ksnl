@@ -1,0 +1,23 @@
+// KIR falsely rejects a wrapper function returning Result<(&str, &str), E> from
+// String.as_str().split_once() followed by `?`. AST accepts; KIR says the
+// borrowed value does not live long enough. The code is sound.
+enum t.Error derive [Debug, Clone, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Missing
+end t.Error
+
+fn t.main() -> Result<(), t.Error> uses [alloc] panics never
+    let s = alloc.string.String.from_str(std.alloc.SYSTEM, "key=value")?
+    let (k, v) = t.split_kv(&s)?
+    core.mem.drop(k)
+    core.mem.drop(v)
+    core.mem.drop(s)
+    Ok(())
+end t.main
+
+fn t.split_kv(s: &alloc.string.String<std.alloc.System>) -> Result<(&str, &str), t.Error> uses [] panics never
+    match s.as_str().split_once("=") {
+        Some(pair) => Ok(pair)
+        None => Err(t.Error.Missing)
+    }
+end t.split_kv
