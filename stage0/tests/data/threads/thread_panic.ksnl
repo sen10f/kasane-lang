@@ -10,7 +10,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
         Err(_e) => core.panic.panic("spawn failed")
     }
     let n = handle.join()
-    std.io.print_line("not reached")
+    core.mem.drop(std.io.print_line("not reached"))
     core.check.eq(n, 0u32)
     Ok(())
 end t.main

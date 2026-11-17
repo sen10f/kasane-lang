@@ -74,7 +74,7 @@ fn echo_output_is_captured() {
     core.check.eq(st.signal, 0i32)
     core.check.eq(out.len(), 12usize)
     core.check.eq(er.len(), 0usize)
-    std.io.print_line("echo ok")
+    core.mem.drop(std.io.print_line("echo ok"))
     Ok(())
 end t.main
 "#;
@@ -106,7 +106,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, process] panics
     core.check.eq(b, 0i32)
     core.check.eq(bo, 14usize)
     core.check.eq(be, 0usize)
-    std.io.print_line("sh ok")
+    core.mem.drop(std.io.print_line("sh ok"))
     Ok(())
 end t.main
 "#;
@@ -156,7 +156,7 @@ fn pipes_feed_cat_through_stdin_and_stdout() {
     core.check.eq(total, 11usize)
     let st = child.wait()?
     core.check.eq(st.code, 0i32)
-    std.io.print_line("pipes ok")
+    core.mem.drop(std.io.print_line("pipes ok"))
     Ok(())
 end t.main
 "#;
@@ -182,7 +182,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console, process] panics may
     let b = t.status("kill -9 $$")?
     core.check.eq(b.code, -1i32)
     core.check.eq(b.signal, 9i32)
-    std.io.print_line("status ok")
+    core.mem.drop(std.io.print_line("status ok"))
     Ok(())
 end t.main
 "#;
@@ -193,7 +193,7 @@ end t.main
 fn missing_program_is_an_error_value() {
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, process] panics may
     let c = std.process.Command.new("/no/such/ksn-program")
-    match c.spawn() {
+    core.mem.drop(match c.spawn() {
         Ok(child) => {
             core.mem.drop(child.wait())
             std.io.print_line("spawned")
@@ -202,20 +202,20 @@ fn missing_program_is_an_error_value() {
             core.check.eq(e.kind, std.io.ErrorKind.NotFound)
             std.io.print_line("not found")
         }
-    }
+    })
     let mut d = std.process.Command.new("/no/such/ksn-program")
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut er = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match d.output(&mut out, &mut er) {
+    core.mem.drop(match d.output(&mut out, &mut er) {
         Ok(_st) => std.io.print_line("ran")
         Err(e) => {
             core.check.eq(e.kind, std.io.ErrorKind.NotFound)
             std.io.print_line("output: not found")
         }
-    }
+    })
     let mut w = std.process.Command.new("/bin/echo")
     w.current_dir("/no/such/ksn-dir")
-    match w.spawn() {
+    core.mem.drop(match w.spawn() {
         Ok(child) => {
             core.mem.drop(child.wait())
             std.io.print_line("spawned")
@@ -224,7 +224,7 @@ fn missing_program_is_an_error_value() {
             core.check.eq(e.kind, std.io.ErrorKind.NotFound)
             std.io.print_line("dir: not found")
         }
-    }
+    })
     Ok(())
 end t.main
 "#;
@@ -234,13 +234,13 @@ end t.main
 #[test]
 fn inherited_stdout_reaches_the_parent_in_order() {
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, process] panics may
-    std.io.print_line("before")
+    core.mem.drop(std.io.print_line("before"))
     let mut c = std.process.Command.new("/bin/echo")
     c.arg("child")
     let child = c.spawn()?
     let st = child.wait()?
     core.check.eq(st.code, 0i32)
-    std.io.print_line("after")
+    core.mem.drop(std.io.print_line("after"))
     Ok(())
 end t.main
 "#;
@@ -259,7 +259,7 @@ fn cancel_discards_a_command_and_threads_spawn_concurrently() {
         d.arg("xy")
         let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
         let mut er = alloc.vec.Vec.new(std.alloc.SYSTEM)
-        match d.output(&mut out, &mut er) {
+        core.mem.drop(match d.output(&mut out, &mut er) {
             Ok(st) => {
                 if st.code == 0i32 {
                     sum = sum + 1u64
@@ -267,7 +267,7 @@ fn cancel_discards_a_command_and_threads_spawn_concurrently() {
             }
             Err(_e) => {
             }
-        }
+        })
         if out.len() == 3usize {
             sum = sum + 100u64
         }
@@ -295,7 +295,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, process, thread
     let d = t.spawn_job()
     let total = a.join() + b.join() + c2.join() + d.join()
     core.check.eq(total, 8080u64)
-    std.io.print_line("threads ok")
+    core.mem.drop(std.io.print_line("threads ok"))
     Ok(())
 end t.main
 "#;

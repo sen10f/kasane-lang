@@ -34,14 +34,14 @@ end t.main
 
 fn t.message(i: u32) -> alloc.string.String uses [alloc] panics may
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-    match s.push_str("hello") {
+    core.mem.drop(match s.push_str("hello") {
         Ok(_u) => 0u32
         Err(_e) => core.panic.panic("oom")
-    }
-    match s.push_u64(u64.from_u32(i)) {
+    })
+    core.mem.drop(match s.push_u64(u64.from_u32(i)) {
         Ok(_u) => 0u32
         Err(_e) => core.panic.panic("oom")
-    }
+    })
     s
 end t.message
 
@@ -60,10 +60,10 @@ end t.oom
 fn t.produce(tx: std.sync.Sender<alloc.string.String>, count: u32) -> () uses [alloc, thread] panics may
     let mut i = 1u32
     while i <= count {
-        match tx.send(t.message(i)) {
+        core.mem.drop(match tx.send(t.message(i)) {
             Ok(_u) => 0u32
             Err(_e) => core.panic.panic("send failed")
-        }
+        })
         i = i + 1u32
     }
 end t.produce

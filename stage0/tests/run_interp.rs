@@ -27,7 +27,7 @@ fn run_panic_exits_101() {
 
 #[test]
 fn run_ok_exits_0_and_prints() {
-    let t = Tmp::new("ok", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"hi\")\n    Ok(())\nend t.main\n");
+    let t = Tmp::new("ok", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(std.io.print_line(\"hi\"))\n    Ok(())\nend t.main\n");
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0));
     assert_eq!(text(&o.stdout).trim(), "hi");

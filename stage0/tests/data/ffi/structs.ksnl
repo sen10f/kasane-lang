@@ -160,6 +160,6 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
         core.check.eq(back.b, 18i32)
         t.small_free(heap)
     }
-    std.io.print_line("struct ok")
+    core.mem.drop(std.io.print_line("struct ok"))
     Ok(())
 end t.main

@@ -555,7 +555,7 @@ fn test_both_runs_a_test_without_uses_that_calls_alloc_and_console_functions_on_
         return;
     }
     let src = format!(
-        "{}\nfn t.main.collect(n: u32) -> usize uses [alloc, io.console] panics may\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    match v.push(n) {{\n        Ok(_) => ()\n        Err(_e) => core.panic.panic(\"oom\")\n    }}\n    std.io.print_line(\"collected\")\n    v.len()\nend t.main.collect\n\n\
+        "{}\nfn t.main.collect(n: u32) -> usize uses [alloc, io.console] panics may\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    match v.push(n) {{\n        Ok(_) => ()\n        Err(_e) => core.panic.panic(\"oom\")\n    }}\n    core.mem.drop(std.io.print_line(\"collected\"))\n    v.len()\nend t.main.collect\n\n\
          test t.main.test_alloc_and_console_callees\n    core.check.eq(t.main.collect(3u32), 1usize)\nend t.main.test_alloc_and_console_callees\n\n\
          test t.main.test_alloc_and_console_callees_fail\n    core.check.eq(t.main.collect(3u32), 2usize)\nend t.main.test_alloc_and_console_callees_fail\n",
         BOTH_SRC

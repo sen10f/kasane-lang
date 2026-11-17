@@ -143,30 +143,30 @@ fn clif_deque_program() -> String {
         "    core.check.eq(q.len(), 0usize)".to_string(),
         "    core.check.eq(q.pop_front(), None)".to_string(),
         "    core.check.eq(q.pop_back(), None)".to_string(),
-        "    match q.push_back(1u32) {".to_string(),
+        "    core.mem.drop(match q.push_back(1u32) {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
-        "    match q.push_back(2u32) {".to_string(),
+        "    })".to_string(),
+        "    core.mem.drop(match q.push_back(2u32) {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
-        "    match q.push_back(3u32) {".to_string(),
+        "    })".to_string(),
+        "    core.mem.drop(match q.push_back(3u32) {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
-        "    match q.push_front(0u32) {".to_string(),
+        "    })".to_string(),
+        "    core.mem.drop(match q.push_front(0u32) {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
+        "    })".to_string(),
         "    core.check.eq(q.len(), 4usize)".to_string(),
         "    core.check.eq(q.pop_front(), Some(0u32))".to_string(),
         "    core.check.eq(q.pop_back(), Some(3u32))".to_string(),
         "    core.check.eq(q.len(), 2usize)".to_string(),
-        "    match q.push_front(9u32) {".to_string(),
+        "    core.mem.drop(match q.push_front(9u32) {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
+        "    })".to_string(),
         "    core.check.eq(q.pop_front(), Some(9u32))".to_string(),
         "    core.check.eq(q.pop_front(), Some(1u32))".to_string(),
         "    core.check.eq(q.pop_front(), Some(2u32))".to_string(),
@@ -175,10 +175,10 @@ fn clif_deque_program() -> String {
         "    let mut i = 0u32".to_string(),
         "    let mut next = 0u32".to_string(),
         "    while i < 1000u32 {".to_string(),
-        "        match q.push_back(i) {".to_string(),
+        "        core.mem.drop(match q.push_back(i) {".to_string(),
         "            Ok(_) => 0u8".to_string(),
         "            Err(_) => 1u8".to_string(),
-        "        }".to_string(),
+        "        })".to_string(),
         "        if i % 3u32 == 0u32 {".to_string(),
         "            core.check.eq(q.pop_front(), Some(next))".to_string(),
         "            next = next.wrapping_add(1u32)".to_string(),
@@ -193,10 +193,10 @@ fn clif_deque_program() -> String {
         "    // 先頭に積んで末尾から取り出す (最後に入れたものが最初に出る)。".to_string(),
         "    let mut j = 0u32".to_string(),
         "    while j < 500u32 {".to_string(),
-        "        match q.push_front(j) {".to_string(),
+        "        core.mem.drop(match q.push_front(j) {".to_string(),
         "            Ok(_) => 0u8".to_string(),
         "            Err(_) => 1u8".to_string(),
-        "        }".to_string(),
+        "        })".to_string(),
         "        j = j.wrapping_add(1u32)".to_string(),
         "    }".to_string(),
         "    let mut k = 0u32".to_string(),
@@ -207,27 +207,27 @@ fn clif_deque_program() -> String {
         "    core.check.eq(q.is_empty(), true)".to_string(),
         "    // 浮動小数と、解放が要る要素 (String) も Vec と同じように扱う。".to_string(),
         "    let mut f = t.fresh_f()".to_string(),
-        "    match f.push_back(1.5f64) {".to_string(),
+        "    core.mem.drop(match f.push_back(1.5f64) {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
-        "    match f.push_front(0.25f64) {".to_string(),
+        "    })".to_string(),
+        "    core.mem.drop(match f.push_front(0.25f64) {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
+        "    })".to_string(),
         "    core.check.eq(f.pop_back(), Some(1.5f64))".to_string(),
         "    core.check.eq(f.len(), 1usize)".to_string(),
         "    let mut s = t.fresh_s()".to_string(),
         "    let a = alloc.string.String.from_str(std.alloc.SYSTEM, \"hi\").unwrap()".to_string(),
-        "    match s.push_front(a) {".to_string(),
+        "    core.mem.drop(match s.push_front(a) {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
+        "    })".to_string(),
         "    let b = alloc.string.String.from_str(std.alloc.SYSTEM, \"yo\").unwrap()".to_string(),
-        "    match s.push_back(b) {".to_string(),
+        "    core.mem.drop(match s.push_back(b) {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
+        "    })".to_string(),
         "    core.check.eq(s.len(), 2usize)".to_string(),
         "    match s.pop_front() {".to_string(),
         "        Some(x) => core.check.eq(x.as_str(), \"hi\")".to_string(),
@@ -238,13 +238,13 @@ fn clif_deque_program() -> String {
         "        None => core.check.eq(1u8, 2u8)".to_string(),
         "    }".to_string(),
         "    let mut bag = t.Bag { q: t.fresh(), tag: 7u32 }".to_string(),
-        "    match bag.q.push_back(5u32) {".to_string(),
+        "    core.mem.drop(match bag.q.push_back(5u32) {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
+        "    })".to_string(),
         "    core.check.eq(bag.q.len(), 1usize)".to_string(),
         "    core.check.eq(bag.tag, 7u32)".to_string(),
-        "    std.io.print_line(\"deque ok\")".to_string(),
+        "    core.mem.drop(std.io.print_line(\"deque ok\"))".to_string(),
         "    Ok(())".to_string(),
         "end t.main".to_string(),
         String::new(),
@@ -278,7 +278,7 @@ fn a_split_iterator_held_in_a_variable_runs_natively() {
         "    core.check.eq(it.next(), Some(\"a\"))",
         "    core.check.eq(it.next(), Some(\"b\"))",
         "    core.check.eq(it.next(), None)",
-        "    std.io.print_line(\"it ok\")",
+        "    core.mem.drop(std.io.print_line(\"it ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -434,7 +434,7 @@ fn clif_trunc_program() -> String {
         "    core.check.eq(5.9f64.trunc_to_u16(), Some(5u16))",
         "    core.check.eq(5.9f64.trunc_to_u32(), Some(5u32))",
         "    core.check.eq(5.9f32.trunc_to_u32(), Some(5u32))",
-        "    std.io.print_line(\"trunc ok\")",
+        "    core.mem.drop(std.io.print_line(\"trunc ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -529,7 +529,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
         t.abs(0i32 - 7i32)
     }
     core.check.eq(a, 7i32)
-    std.io.print_line(\"ok\")
+    core.mem.drop(std.io.print_line(\"ok\"))
     Ok(())
 end t.main
 ";
@@ -706,7 +706,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
         t.fabsf(0.0f32 - 2.5f32)
     }
     core.check.eq(c.to_bits(), 2.5f32.to_bits())
-    std.io.print_line("math ok")
+    core.mem.drop(std.io.print_line("math ok"))
     Ok(())
 end t.main
 "#;
@@ -779,7 +779,7 @@ fn native_box_of_a_scalar_runs_in_the_native_build() {
         "        Ok(b) => core.check.eq(*b.as_ref(), 4i64)",
         "        Err(_e) => core.panic.panic(\"oom\")",
         "    }",
-        "    std.io.print_line(\"scalar box ok\")",
+        "    core.mem.drop(std.io.print_line(\"scalar box ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -1094,7 +1094,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
         t.free_f64(p)
         t.free_f32(q)
     }
-    std.io.print_line("ffi float ok")
+    core.mem.drop(std.io.print_line("ffi float ok"))
     Ok(())
 end t.main
 "#;
@@ -1153,7 +1153,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
         core.check.eq(t.k_sum_i32(core.ptr.as_const(p), 3usize), 102i32)
         t.free_i32(p)
     }
-    std.io.print_line("i32 ok")
+    core.mem.drop(std.io.print_line("i32 ok"))
     Ok(())
 end t.main
 "#;
@@ -1199,7 +1199,7 @@ fn ptr_more_place_pointers_alias_their_places_and_null_is_detected() {
         core.check.eq(core.ptr.read(core.ptr.add(p, 0usize)), 42i32)
         core.check.eq(core.ptr.read(core.ptr.cast::<i32, i32>(p)), 42i32)
     }
-    std.io.print_line("place ok")
+    core.mem.drop(std.io.print_line("place ok"))
     core.check.eq(x, 42i32)
     Ok(())
 end t.main
@@ -1272,7 +1272,7 @@ fn ptr_more_access_past_a_pinned_value_panics() {
     ];
     for (name, body) in cases {
         let src = format!(
-            "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    let mut x: i32 = 1i32\n    unsafe \"libc\" \"past end\" {{\n        {}\n    }}\n    std.io.print_line(\"after\")\n    Ok(())\nend t.main\n",
+            "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    let mut x: i32 = 1i32\n    unsafe \"libc\" \"past end\" {{\n        {}\n    }}\n    core.mem.drop(std.io.print_line(\"after\"))\n    Ok(())\nend t.main\n",
             body
         );
         let (_t, r) = run_unsafe_pkg(name, &src);
@@ -1324,7 +1324,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     unsafe "libc" "null to C" {
         core.check.eq(t.k_sum_f64(core.ptr.null_mut::<f64>(), 0usize), 0.0f64)
     }
-    std.io.print_line("cast ok")
+    core.mem.drop(std.io.print_line("cast ok"))
     Ok(())
 end t.main
 "#;
@@ -1412,7 +1412,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     unsafe "libc" "free the buffer" {
         t.free_u8(buf)
     }
-    std.io.print_line("variadic ok")
+    core.mem.drop(std.io.print_line("variadic ok"))
     Ok(())
 end t.main
 "#;
@@ -2033,7 +2033,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
         t.k_sum_then(1.0f64, t.Dbl2 { x: 1.0f64, y: 1.0f64 }, 1.0f64)
     }
     core.check.eq(st, 1111.0f64)
-    std.io.print_line("struct ffi ok")
+    core.mem.drop(std.io.print_line("struct ffi ok"))
     Ok(())
 end t.main
 "#;
@@ -2249,7 +2249,7 @@ fn llvm_build_of_print_line_main_matches_run() {
 fn llvm_build_owned_strings_rings_and_moves_match_run() {
     // `String.push_str` / `push(char)`、`&mut self` の構造体のフィールドの Vec (`get` / `get_mut`)、分解、フィールドからの移動、
     // `Vec<String>` を含む `main` が、`ksn run` と同じ表示・終了コードで LLVM から作れる (設計_KIR.md 13.7)。
-    let body = "    core.check.eq(t.str_build(50usize), 100usize)\n    core.check.eq(t.str_chars(), 2031u32)\n    core.check.eq(t.ring_run(3usize), 528u32)\n    core.check.eq(t.pair_run(2u32), 13usize)\n    core.check.eq(t.destruct_struct(4u32), 7usize)\n    core.check.eq(t.field_move_reassign(4u32), 6usize)\n    core.check.eq(t.vs_run(5u32), 20usize)\n    core.check.eq(t.names_push(4u32), 4usize)\n    core.check.eq(t.mode_run(), 2u32)\n    std.io.print_line(\"owned ok\")\n";
+    let body = "    core.check.eq(t.str_build(50usize), 100usize)\n    core.check.eq(t.str_chars(), 2031u32)\n    core.check.eq(t.ring_run(3usize), 528u32)\n    core.check.eq(t.pair_run(2u32), 13usize)\n    core.check.eq(t.destruct_struct(4u32), 7usize)\n    core.check.eq(t.field_move_reassign(4u32), 6usize)\n    core.check.eq(t.vs_run(5u32), 20usize)\n    core.check.eq(t.names_push(4u32), 4usize)\n    core.check.eq(t.mode_run(), 2u32)\n    core.mem.drop(std.io.print_line(\"owned ok\"))\n";
     let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
     let t = Tmp::new("llvm_build_owned", &format!("{}{}", KIR_OWN2_FNS, main));
     if let Some((r, n)) = llvm_build_and_run(&t) {

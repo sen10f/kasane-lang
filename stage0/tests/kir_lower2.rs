@@ -1021,7 +1021,7 @@ fn const_str_pkg(name: &str, body: &str) -> Tmp {
 #[test]
 fn kir_const_str_match_tree_walker() {
     // 木走査で定数の文字列と長さが正しいこと、参照実行器 / ネイティブでも同じ値になること。
-    let t = const_str_pkg("kir_const_str", "    std.io.print_line(t.CONFIG)\n    core.check.eq(t.len_cfg(), 13usize)\n");
+    let t = const_str_pkg("kir_const_str", "    core.mem.drop(std.io.print_line(t.CONFIG))\n    core.check.eq(t.len_cfg(), 13usize)\n");
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", "kir_const_str", text(&o.stderr));
     assert_eq!(text(&o.stdout).trim(), "hello, kasane", "tree-walker 出力");
@@ -1218,7 +1218,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     core.check.eq(t.use_it(), 60u32)
     core.check.eq(t.pass_slice(), 30u32)
     core.check.eq(t.for_ref(&[1u32, 2u32, 3u32]), 6u32)
-    std.io.print_line("ok")
+    core.mem.drop(std.io.print_line("ok"))
     Ok(())
 end t.main
 

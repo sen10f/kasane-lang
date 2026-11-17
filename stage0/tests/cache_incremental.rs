@@ -105,18 +105,18 @@ fn clif_map_methods_program() -> String {
     [
         "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
         "    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)",
-        "    match m.insert(3u32, 30u32) {",
+        "    core.mem.drop(match m.insert(3u32, 30u32) {",
         "        Ok(_o) => 0u8",
         "        Err(_e) => 1u8",
-        "    }",
-        "    match m.insert(1u32, 10u32) {",
+        "    })",
+        "    core.mem.drop(match m.insert(1u32, 10u32) {",
         "        Ok(_o) => 0u8",
         "        Err(_e) => 1u8",
-        "    }",
-        "    match m.insert(2u32, 20u32) {",
+        "    })",
+        "    core.mem.drop(match m.insert(2u32, 20u32) {",
         "        Ok(_o) => 0u8",
         "        Err(_e) => 1u8",
-        "    }",
+        "    })",
         "    let mut vseq = 0u32",
         "    let mut kseq = 0u32",
         "    for (k, v) in m.iter() {",
@@ -136,18 +136,18 @@ fn clif_map_methods_program() -> String {
         "    core.check.eq(m.get(1u32), Some(111u32))",
         "    core.check.eq(m.get_mut(9u32).is_none(), true)",
         "    let mut b = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)",
-        "    match b.insert(3u32, 30u32) {",
+        "    core.mem.drop(match b.insert(3u32, 30u32) {",
         "        Ok(_o) => 0u8",
         "        Err(_e) => 1u8",
-        "    }",
-        "    match b.insert(1u32, 10u32) {",
+        "    })",
+        "    core.mem.drop(match b.insert(1u32, 10u32) {",
         "        Ok(_o) => 0u8",
         "        Err(_e) => 1u8",
-        "    }",
-        "    match b.insert(2u32, 20u32) {",
+        "    })",
+        "    core.mem.drop(match b.insert(2u32, 20u32) {",
         "        Ok(_o) => 0u8",
         "        Err(_e) => 1u8",
-        "    }",
+        "    })",
         "    match b.get_mut(2u32) {",
         "        Some(r) => {",
         "            *r = 222u32",
@@ -158,7 +158,7 @@ fn clif_map_methods_program() -> String {
         "    }",
         "    core.check.eq(b.get(2u32), Some(222u32))",
         "    core.check.eq(b.get_mut(8u32).is_none(), true)",
-        "    std.io.print_line(\"map methods ok\")",
+        "    core.mem.drop(std.io.print_line(\"map methods ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -202,7 +202,7 @@ fn clif_sync_program() -> String {
         "    *g.get_mut() = 42u32",
         "    core.check.eq(*g.get(), 42u32)",
         "    core.mem.drop(g)",
-        "    std.io.print_line(\"sync ok\")",
+        "    core.mem.drop(std.io.print_line(\"sync ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -591,7 +591,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     }
     core.check.eq(a, 5i32)
     core.check.eq(b, 6i64)
-    std.io.print_line(\"ok\")
+    core.mem.drop(std.io.print_line(\"ok\"))
     Ok(())
 end t.main
 ";
@@ -1552,7 +1552,7 @@ fn check_cache_parallel_processes_agree() {
 /// `T: alloc.alloc.TryClone` のジェネリック関数経由でも複製できる。`run` と `build` (LLVM → 下ろせなければバンドル) の出力が一致する。
 #[test]
 fn derive_try_clone_runs_and_builds_alike() {
-    let src = "type t.P derive [Debug, Clone, Copy, TryClone] pub\n    x: u32\n    y: u32\nend t.P\n\nenum t.E derive [TryClone] pub\n    A(u32)\n    B(t.P)\nend t.E\n\ntype t.W derive [TryClone] pub\n    p: t.P\n    n: u32\nend t.W\n\nfn t.dup[T: alloc.alloc.TryClone](v: &T) -> Result<T, alloc.alloc.AllocError> uses [alloc] panics never\n    v.try_clone()\nend t.dup\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let w = t.W { p: t.P { x: 1u32, y: 2u32 }, n: 3u32 }\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    match v.push(w) {\n        Ok(_u) => 0u8\n        Err(_e) => 1u8\n    }\n    match t.dup(&v) {\n        Ok(c) => {\n            core.check.eq(c.len(), 1usize)\n            std.io.print_line(\"ok\")\n        }\n        Err(_e) => std.io.print_line(\"err\")\n    }\n    match v.try_clone() {\n        Ok(c) => core.check.eq(c.len(), 1usize)\n        Err(_e) => core.check.eq(1u8, 2u8)\n    }\n    match t.dup(&t.E.B(t.P { x: 1u32, y: 2u32 })) {\n        Ok(_c) => std.io.print_line(\"e ok\")\n        Err(_e) => std.io.print_line(\"err\")\n    }\n    Ok(())\nend t.main\n";
+    let src = "type t.P derive [Debug, Clone, Copy, TryClone] pub\n    x: u32\n    y: u32\nend t.P\n\nenum t.E derive [TryClone] pub\n    A(u32)\n    B(t.P)\nend t.E\n\ntype t.W derive [TryClone] pub\n    p: t.P\n    n: u32\nend t.W\n\nfn t.dup[T: alloc.alloc.TryClone](v: &T) -> Result<T, alloc.alloc.AllocError> uses [alloc] panics never\n    v.try_clone()\nend t.dup\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let w = t.W { p: t.P { x: 1u32, y: 2u32 }, n: 3u32 }\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(match v.push(w) {\n        Ok(_u) => 0u8\n        Err(_e) => 1u8\n    })\n    core.mem.drop(match t.dup(&v) {\n        Ok(c) => {\n            core.check.eq(c.len(), 1usize)\n            std.io.print_line(\"ok\")\n        }\n        Err(_e) => std.io.print_line(\"err\")\n    })\n    core.mem.drop(match v.try_clone() {\n        Ok(c) => core.check.eq(c.len(), 1usize)\n        Err(_e) => core.check.eq(1u8, 2u8)\n    })\n    core.mem.drop(match t.dup(&t.E.B(t.P { x: 1u32, y: 2u32 })) {\n        Ok(_c) => std.io.print_line(\"e ok\")\n        Err(_e) => std.io.print_line(\"err\")\n    })\n    Ok(())\nend t.main\n";
     let t = Tmp::new("derive_try_clone_ok", src);
     let chk = run(&["check"], &t.0);
     assert_eq!(chk.status.code(), Some(0), "{}{}", text(&chk.stdout), text(&chk.stderr));

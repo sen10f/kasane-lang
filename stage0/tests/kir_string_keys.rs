@@ -181,7 +181,7 @@ fn t.run() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(m.len(), 0usize)
     core.mem.drop(m.insert(t.mk("again"), 1u64))
     core.check.eq(m.get(&t.mk("again")), Some(1u64))
-    std.io.print_line("sum")
+    core.mem.drop(std.io.print_line("sum"))
     Ok(())
 end t.run
 "#,
@@ -229,7 +229,7 @@ fn btreemap_with_string_keys() {
     core.check.eq(m.remove(&t.mk("fig")), None)
     core.check.eq(m.contains_key(&t.mk("fig")), false)
     core.check.eq(m.len(), 34usize)
-    std.io.print_line("btree ok")
+    core.mem.drop(std.io.print_line("btree ok"))
     Ok(())
 end t.run
 "#
@@ -254,7 +254,7 @@ fn btreemap_and_hashmap_with_str_keys() {
     let mut h = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     core.mem.drop(h.insert("x", 9u32))
     core.check.eq(h.get("x"), Some(9u32))
-    std.io.print_line("str ok")
+    core.mem.drop(std.io.print_line("str ok"))
     Ok(())
 end t.run
 "#,
@@ -290,15 +290,15 @@ fn t.run() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq("a" < "b", true)
     core.check.eq("b" <= "a", false)
     core.check.eq("é" > "z", true)
-    std.io.print_line(t.name(a.cmp(&b)))
-    std.io.print_line(t.name(b.cmp(&a)))
-    std.io.print_line(t.name(a.cmp(&a)))
-    std.io.print_line(t.name(a2.cmp(&a)))
-    std.io.print_line(t.name("zz".cmp("z")))
-    match a.partial_cmp(&b) {
+    core.mem.drop(std.io.print_line(t.name(a.cmp(&b))))
+    core.mem.drop(std.io.print_line(t.name(b.cmp(&a))))
+    core.mem.drop(std.io.print_line(t.name(a.cmp(&a))))
+    core.mem.drop(std.io.print_line(t.name(a2.cmp(&a))))
+    core.mem.drop(std.io.print_line(t.name("zz".cmp("z"))))
+    core.mem.drop(match a.partial_cmp(&b) {
         Some(o) => std.io.print_line(t.name(o))
         None => std.io.print_line("none")
-    }
+    })
     core.check.eq(a.cmp(&b), core.cmp.Ordering.Less)
     Ok(())
 end t.run
@@ -373,10 +373,10 @@ fn t.run() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(t.pick(None), 40u32)
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str("type"))
-    match s.as_str() {
+    core.mem.drop(match s.as_str() {
         "type" => std.io.print_line("matched type")
         _ => std.io.print_line("no match")
-    }
+    })
     Ok(())
 end t.run
 "#,
@@ -412,7 +412,7 @@ fn t.run() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(t.count(), 8usize)
     core.check.eq(t.OPS.len(), 8usize)
     core.check.eq(t.OPS.starts_with("()"), true)
-    std.io.print_line("const ok")
+    core.mem.drop(std.io.print_line("const ok"))
     Ok(())
 end t.run
 "#,
@@ -473,7 +473,7 @@ fn t.run() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(t.first(&v), t.tok(1u32, 10usize, 1usize))
     let copy = *v.get(1usize).unwrap()
     core.check.eq(copy.line, 2usize)
-    std.io.print_line("deref ok")
+    core.mem.drop(std.io.print_line("deref ok"))
     Ok(())
 end t.run
 "#
@@ -512,7 +512,7 @@ fn t.run() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
         n = n.wrapping_add(x.code)
     }
     core.check.eq(n, 3u32)
-    std.io.print_line("for ok")
+    core.mem.drop(std.io.print_line("for ok"))
     Ok(())
 end t.run
 "#
@@ -536,7 +536,7 @@ fn as_str_on_a_matched_string() {
         }
         Err(_e) => core.check.eq(true, false)
     }
-    std.io.print_line("as_str ok")
+    core.mem.drop(std.io.print_line("as_str ok"))
     Ok(())
 end t.run
 "#

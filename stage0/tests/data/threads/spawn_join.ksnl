@@ -31,7 +31,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
         Err(_e) => core.panic.panic("spawn failed")
     }
     core.check.eq(h2.join(), true)
-    std.io.print_line("spawn ok")
+    core.mem.drop(std.io.print_line("spawn ok"))
     Ok(())
 end t.main
 

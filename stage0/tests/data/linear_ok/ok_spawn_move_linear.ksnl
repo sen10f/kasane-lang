@@ -43,10 +43,10 @@ fn t.pool(rx: std.sync.Receiver<t.Res>, tx: std.sync.Sender<t.Res>) -> u32 uses 
             t.drain(more)
         },
     )
-    match tx.send(t.open()) {
+    core.mem.drop(match tx.send(t.open()) {
         Ok(_u) => 0u32
         Err(back) => t.close(back.value)
-    }
+    })
     core.mem.drop(tx)
     let own = t.drain(rx)
     match spawned {

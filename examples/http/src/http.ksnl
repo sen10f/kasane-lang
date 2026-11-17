@@ -127,7 +127,7 @@ fn http.exchange(listener: &std.net.TcpListener, address: &str) -> Result<usize,
     with mut client = std.net.connect(address)? close core.mem.drop(client.close()) {
         with mut server = listener.accept()? close core.mem.drop(server.close()) {
             http.client_send(&mut client, address)?
-            http.server(&mut server)?
+            core.mem.drop(http.server(&mut server)?)
             http.client_receive(&mut client)
         }
     }

@@ -34,7 +34,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     core.check.eq(sum, 870u32)
     let fin = t.M.lock()
     core.check.eq(*fin.get(), 30u64)
-    std.io.print_line("pool ok")
+    core.mem.drop(std.io.print_line("pool ok"))
     Ok(())
 end t.main
 

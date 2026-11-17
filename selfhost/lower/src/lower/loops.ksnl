@@ -151,7 +151,7 @@ fn lower.loops.forsplit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     let mark = lower.cx.depth(c)
     let ptk = parse.cur.peek_at(p, pn.a)
     let pname = resolve.ast.text(src, ptk.start, ptk.stop)
-    lower.cx.push_local(c, pname, piece + 1usize, false, ety, false)?
+    core.mem.drop(lower.cx.push_local(c, pname, piece + 1usize, false, ety, false)?)
     let saved_head = c.lp.head
     let saved_exit = c.lp.exit
     let saved_base = c.lp.base
@@ -162,7 +162,7 @@ fn lower.loops.forsplit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     c.lp.base = base
     c.lp.ks = lower.cx.copy_u(&ks)?
     c.lp.brk = 0usize
-    lower.expr.expr(env, c, p, src, n.c, types.ty.UNKNOWN)?
+    core.mem.drop(lower.expr.expr(env, c, p, src, n.c, types.ty.UNKNOWN)?)
     if !c.s.term {
         let g1 = lower.loops.args(c, &ks, &lower.loops.vv(1usize, bend, 0usize, 0usize)?)?
         lower.loops.br(c, ab, &g1)?
@@ -270,13 +270,13 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
         let ls3 = lower.cx.cat2(ls2.as_str(), lower.cx.vs(addr)?.as_str())?
         lower.cx.def(c, et.as_str(), lower.cx.cat2(ls3.as_str(), " +0")?.as_str())?
     }
-    lower.cx.push_local(c, pname, ebind + 1usize, false, ety, false)?
+    core.mem.drop(lower.cx.push_local(c, pname, ebind + 1usize, false, ety, false)?)
     c.lp.head = contb
     c.lp.exit = exitb
     c.lp.base = base
     c.lp.ks = lower.cx.copy_u(&ks)?
     c.lp.brk = 0usize
-    lower.expr.expr(env, c, p, src, n.c, types.ty.UNKNOWN)?
+    core.mem.drop(lower.expr.expr(env, c, p, src, n.c, types.ty.UNKNOWN)?)
     if !c.s.term {
         let a1 = lower.cx.cur_vals(c, &ks)?
         lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(contb, &a1)?.as_str())?)?
@@ -444,7 +444,7 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     }
     let ptk = parse.cur.peek_at(p, pn.a)
     let pname = resolve.ast.text(src, ptk.start, ptk.stop)
-    lower.cx.push_local(c, pname, iv + 1usize, false, lo.t, false)?
+    core.mem.drop(lower.cx.push_local(c, pname, iv + 1usize, false, lo.t, false)?)
     let saved_head = c.lp.head
     let saved_exit = c.lp.exit
     let saved_base = c.lp.base
@@ -455,7 +455,7 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     c.lp.base = base
     c.lp.ks = lower.cx.copy_u(&ks)?
     c.lp.brk = 0usize
-    lower.expr.expr(env, c, p, src, n.c, types.ty.UNKNOWN)?
+    core.mem.drop(lower.expr.expr(env, c, p, src, n.c, types.ty.UNKNOWN)?)
     if !c.s.term {
         let a1 = lower.cx.cur_vals(c, &ks)?
         let s2 = lower.cx.cat2("br ", lower.cx.target(contb, &a1)?.as_str())?

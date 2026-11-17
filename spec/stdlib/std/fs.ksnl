@@ -72,7 +72,7 @@ end std.fs.oom
 
 fn std.fs.read_dir(path: &str) -> Result<alloc.vec.Vec<std.fs.DirEntry, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics never pub
     let mut raw: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    std.fs.read_dir_raw(path, &mut raw)?
+    core.mem.drop(std.fs.read_dir_raw(path, &mut raw)?)
     let bytes = raw.as_slice()
     let total = bytes.len()
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)

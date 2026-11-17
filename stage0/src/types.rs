@@ -3651,8 +3651,8 @@ impl<'a> TypeCk<'a> {
                     }
                     let t = self.stmt(s);
                     // 途中の式文のブロック・`unsafe`・`with` の値は捨てる (4.6, E2042)。
-                    // `if`(else あり)・`match`・ループ本体の末尾は、既存の検査 0 件のテストが捨てる形を使うため未対応。
-                    if i + 1 < stmts.len() && nname(s) == "ExprStmt" && matches!(nname(&nf(s)[0]), "Block" | "Unsafe" | "With") {
+                    // 途中の式文はすべて対象 (呼び出し・メソッド・`if`/`else`・`match` を含む)。`If` の else 無しは下の `If` 側で報告済み。
+                    if i + 1 < stmts.len() && nname(s) == "ExprStmt" && !(nname(&nf(s)[0]) == "If" && is_nil(&nf(&nf(s)[0])[2])) {
                         self.discard_value(&t, nline(s), "this statement");
                     }
                     if i + 1 == stmts.len() && nname(s) == "ExprStmt" {
@@ -4234,7 +4234,6 @@ impl<'a> TypeCk<'a> {
     }
 
     /// 4.6: `while` / `loop` / `for` の本体の末尾の値は捨てる。本体の末尾が `()` / `!` 以外なら E2042。
-    /// 末尾が `else` のある `if` と `match` の形は対象外 (従来どおり黙る。統括者の判断)。
     /// `break` は値を取らない (パーサは `break` の値を受けない) ので、`loop` の型は `()` か `!` のまま。
     fn loop_body_discard(&mut self, body: &V, t: &Ty) {
         if nname(body) != "Block" {
@@ -4246,9 +4245,6 @@ impl<'a> TypeCk<'a> {
             return;
         }
         let tail = &nf(last)[0];
-        if (nname(tail) == "If" && !is_nil(&nf(tail)[2])) || nname(tail) == "Match" {
-            return;
-        }
         self.discard_value(t, nline(last), "the end of this loop body");
     }
 

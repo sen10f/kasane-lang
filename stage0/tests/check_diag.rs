@@ -2282,7 +2282,7 @@ fn a_generic_function_calls_trait_methods_of_its_concrete_type_arguments() {
         "    let s2 = t.Sq { side: 4u32 }",
         "    core.check.eq(t.total(&c1, &c2), 15u32)",
         "    core.check.eq(t.total(&s1, &s2), 25u32)",
-        "    std.io.print_line(\"trait generic ok\")",
+        "    core.mem.drop(std.io.print_line(\"trait generic ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -3207,13 +3207,13 @@ fn with_cleanup_runs_the_same_way_in_the_native_build() {
 fn with_does_not_run_its_cleanup_on_panic() {
     // 5.2: panic は巻き戻さない。後始末は走らず、終了コードは 101。
     let body = r#"fn t.shut(n: u32) -> () uses [io.console] panics never
-    std.io.print_line("shut")
+    core.mem.drop(std.io.print_line("shut"))
     core.mem.drop(n)
 end t.shut
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     with n = 1u32 close t.shut(n) {
-        std.io.print_line("body")
+        core.mem.drop(std.io.print_line("body"))
         core.panic.panic("boom")
     }
     Ok(())
@@ -4139,7 +4139,7 @@ fn inferred_callee_inside_a_closure_binds_the_fn_bound_effect_as_an_upper_bound(
         "{}{}",
         INFERRED_PRELUDE,
         "fn t.h(b: &t.B) -> u8
-    b.m()
+    core.mem.drop(b.m())
     0
 end t.h
 

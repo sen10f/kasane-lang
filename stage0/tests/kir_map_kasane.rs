@@ -133,7 +133,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(s.count("b"), 1u32)
     core.check.eq(s.count("z"), 0u32)
     core.check.eq(s.hits, 5u32)
-    std.io.print_line("field map ok")
+    core.mem.drop(std.io.print_line("field map ok"))
     Ok(())
 end t.main
 "#,
@@ -183,7 +183,7 @@ fn get_mut_writes_back_and_iteration_keeps_insertion_order() {
         idx = idx.wrapping_add(1usize)
     }
     core.check.eq(idx, 7usize)
-    std.io.print_line("order ok")
+    core.mem.drop(std.io.print_line("order ok"))
     Ok(())
 end t.main
 "#,
@@ -213,7 +213,7 @@ fn btreemap_of_integers_insert_get_remove_runs_natively() {
     core.check.eq(b.contains_key(&23u32), false)
     core.check.eq(b.remove(&0u32), Some(0u32))
     core.check.eq(b.len(), 19usize)
-    std.io.print_line("btree ok")
+    core.mem.drop(std.io.print_line("btree ok"))
     Ok(())
 end t.main
 "#,

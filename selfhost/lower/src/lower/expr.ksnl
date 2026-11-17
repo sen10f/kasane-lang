@@ -1318,7 +1318,7 @@ fn lower.expr.loopx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     c.lp.base = base
     c.lp.brk = 0usize
     c.lp.ks = lower.cx.copy_u(&ks)?
-    lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
+    core.mem.drop(lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?)
     if !c.s.term {
         let a = lower.cx.cur_vals(c, &ks)?
         let s2 = lower.cx.cat2("br ", lower.cx.target(head, &a)?.as_str())?
@@ -2584,7 +2584,7 @@ fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     c.lp.base = base
     c.lp.brk = 0usize
     c.lp.ks = lower.cx.copy_u(&ks)?
-    lower.expr.expr(env, c, p, src, n.b, types.ty.UNKNOWN)?
+    core.mem.drop(lower.expr.expr(env, c, p, src, n.b, types.ty.UNKNOWN)?)
     if !c.s.term {
         let a = lower.cx.cur_vals(c, &ks)?
         let s2 = lower.cx.cat2("br ", lower.cx.target(head, &a)?.as_str())?

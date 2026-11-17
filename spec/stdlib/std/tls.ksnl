@@ -407,7 +407,7 @@ end std.tls.set_verify
 // 接続を閉じる前の処理: close_notify を送って (失敗は無視)、セッションを解放する。
 fn std.tls.shutdown_and_free(ssl: *mut u8) -> () uses [io.net] panics never
     unsafe "tls" "SSL_shutdown sends close_notify, best effort; then the session is freed" {
-        std.tls.c_ssl_shutdown(ssl)
+        core.mem.drop(std.tls.c_ssl_shutdown(ssl))
         std.tls.c_ssl_free(ssl)
     }
 end std.tls.shutdown_and_free

@@ -7,7 +7,7 @@ fn t.deep(n: u64) -> u64 uses [] panics never stack 1000000
 end t.deep
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
-    std.io.print_line("start")
+    core.mem.drop(std.io.print_line("start"))
     let spawned = std.thread.spawn(
         std.alloc.SYSTEM,
         fn() -> u64 capture [] {
@@ -19,7 +19,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
         Err(_e) => core.panic.panic("spawn failed")
     }
     let n = handle.join()
-    std.io.print_line("unreachable")
+    core.mem.drop(std.io.print_line("unreachable"))
     core.check.eq(n, 0u64)
     Ok(())
 end t.main

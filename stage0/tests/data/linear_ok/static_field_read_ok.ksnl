@@ -8,6 +8,6 @@ end t.Q.rest
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     let q = t.Q { src: "hello" }
-    std.io.print_line(q.rest())
+    core.mem.drop(std.io.print_line(q.rest()))
     Ok(())
 end t.main
