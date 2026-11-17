@@ -1,0 +1,19 @@
+// expect: E3010
+// if/else の腕から opt (String 所有) への借用 r を作り合流、opt を drop してから r を通して len() を読む＝解放後の参照越し使用
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let opt = Some(alloc.string.String.new(std.alloc.SYSTEM))
+    let r = if true {
+        opt.as_ref()
+    } else {
+        opt.as_ref()
+    }
+    core.mem.drop(opt)
+    match r {
+        Some(s) => {
+            let n = s.as_str().len()
+            core.mem.drop(n)
+        }
+        None => ()
+    }
+    Ok(())
+end t.main

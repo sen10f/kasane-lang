@@ -305,6 +305,30 @@ fn ty_to_v_generic(t: &crate::types::Ty) -> Option<V> {
     })
 }
 
+/// 型の表現 `t` の入れ子の中に、決まらない部分 (`Nil`) があるか。
+fn v_has_nil(t: &V) -> bool {
+    match t {
+        V::Nil => true,
+        V::L(xs) => xs.iter().any(v_has_nil),
+        _ => false,
+    }
+}
+
+/// `ty_to_v_generic` と同じだが、決まらない型 (型変数・未知) は `Nil` の型引数にする。
+fn ty_to_v_loose(t: &crate::types::Ty) -> Option<V> {
+    use crate::types::Ty;
+    let s = |x: &str| V::S(x.to_string());
+    Some(match t {
+        Ty::Unknown | Ty::Var(_) => V::Nil,
+        Ty::Param(n) => V::L(vec![s("named"), s(n), V::L(vec![])]),
+        Ty::Tuple(xs) => V::L(vec![s("tuple"), V::L(xs.iter().map(ty_to_v_loose).collect::<Option<Vec<V>>>()?)]),
+        Ty::Array(x, _) => V::L(vec![s("array"), ty_to_v_loose(x)?]),
+        Ty::Named(n, args) => V::L(vec![s("named"), s(n), V::L(args.iter().map(ty_to_v_loose).collect::<Option<Vec<V>>>()?)]),
+        Ty::Ref(..) | Ty::Ptr(..) | Ty::Slice(_) => return None,
+        other => crate::types::TypeCk::to_v(other)?,
+    })
+}
+
 /// 型が具体的に決まっているか (未知・型変数・型パラメータ・クロージャを含まない)。
 fn ty_fully_known(t: &crate::types::Ty) -> bool {
     use crate::types::Ty;
@@ -499,6 +523,8 @@ pub struct Checker<'a> {
     pub diags: Vec<Diag>,
     cur_uses: Option<Vec<String>>,
     cur_panics: String,
+    /// 閉包の本体を見ている間の、`capture` に列挙されていない外側の局所の名前 (入れ子は一番内側が末尾)。
+    closure_blocked: Vec<HashSet<String>>,
     /// いま `const fn` の本体を検査中か (呼べるのは const fn と組み込みのみ、3.2)。
     in_const_fn: bool,
     pub unsafe_modules: Vec<String>,
@@ -645,6 +671,7 @@ impl<'a> Checker<'a> {
             diags: vec![],
             cur_uses: None,
             cur_panics: "may".into(),
+            closure_blocked: Vec::new(),
             in_const_fn: false,
             unsafe_modules: vec![],
             integration_files: HashSet::new(),
@@ -2487,15 +2514,30 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                let mut inner = locals.clone();
                 let names: Vec<String> = items(&f[0]).iter().map(|p| st(&items(p)[0])).collect();
                 self.shadow_check(&names, locals, di, nline(e));
-                inner.extend(names);
+                // 本体から見える外側の局所は、`capture` に列挙したものだけ (仕様 4.3)。他は `blocked` に入れ、使えば E1101。
+                let mut inner: HashSet<String> = names.iter().cloned().collect();
+                for c in items(&f[2]) {
+                    if let Some(n) = items(c).get(1) {
+                        inner.insert(st(n));
+                    }
+                }
+                let blocked: HashSet<String> = locals.iter().filter(|n| !inner.contains(*n)).cloned().collect();
+                self.closure_blocked.push(blocked);
                 self.visit(&f[3], &mut inner, di, true);
+                self.closure_blocked.pop();
             }
             "Path" => {
                 let segs = strs(&f[0]);
-                if !locals.contains(&segs[0]) {
+                if !locals.contains(&segs[0]) && self.closure_blocked.last().is_some_and(|b| b.contains(&segs[0])) {
+                    self.diag(
+                        "E1101",
+                        format!("unresolved name {}: the closure body uses an outer binding that is not in its `capture` list (write `capture [&{0}]` or `capture [move {0}]`)", segs[0]),
+                        di,
+                        nline(e),
+                    );
+                } else if !locals.contains(&segs[0]) {
                     if let Some(r) = self.resolve_path(&segs, di, nline(e)) {
                         // 列挙型の後ろに無い列挙子 (`E.Nope`) は未解決の名前 (E1101)。型の一部として解けない。
                         if self.is_enum_member_miss(&r) {
@@ -3290,6 +3332,15 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 参照越しの照合で得た値の型 `t` が、参照として束縛される (move できない) Copy でない型か。
+    /// 型パラメータそのものは、`Copy` の境界が無ければ Copy でない。
+    fn ref_bound_non_copy(&self, t: &V) -> bool {
+        if tag(t) == "named" && items(tel(t, 2)).is_empty() && self.names.contains(&st(tel(t, 1))) {
+            return !self.generic_may_be_copy(&st(tel(t, 1)));
+        }
+        !self.is_generic(t, &self.names) && !self.is_copy(t)
+    }
+
     fn is_copy(&self, t: &V) -> bool {
         if is_nil(t) {
             return true;
@@ -3554,7 +3605,10 @@ impl<'a> Checker<'a> {
     /// 分解の束縛へ流してよい型か: 汎用でない型、または線形と分かる汎用の型 (`T: linear` の `T` など)。
     /// 線形でない汎用の型は、従来どおり決まらない (Nil) として黙る。
     fn keeps_ty(&self, t: &V) -> bool {
-        !self.is_generic(t, &self.names) || self.is_linear(t)
+        !self.is_generic(t, &self.names)
+            || self.is_linear(t)
+            // 型パラメータそのもの (`Copy` の境界なし) は、参照越しの照合で得た束縛を move 禁止にするため型を残す。
+            || (tag(t) == "named" && items(tel(t, 2)).is_empty() && self.names.contains(&st(tel(t, 1))) && !self.generic_may_be_copy(&st(tel(t, 1))))
     }
 
     fn is_linear_in(&self, t: &V, seen: &mut HashSet<String>) -> bool {
@@ -3620,6 +3674,9 @@ impl<'a> Checker<'a> {
         }
         match ty_to_v_generic(ty) {
             Some(v) if self.is_linear(&v) => v,
+            // 型引数が決まらない・型パラメータを含む束縛 (`Some(String.new(a))`、`Box<H>`) も、Copy でないと示せるなら
+            // その型で束縛する (move を記録する。Copy と示せない型を黙らせない、fail-closed)。
+            _ if self.ty_certainly_not_copy(ty) => ty_to_v_loose(ty).unwrap_or(V::Nil),
             _ => V::Nil,
         }
     }
@@ -4364,6 +4421,17 @@ impl<'a> Checker<'a> {
                         // 自前で決まらない束縛は、型推論の結果を使う (未決定の部分を含む型は使わない)。
                         if let Some(ty) = self.let_tys.get(&(self.d, nline(s), n.clone())) {
                             t = self.let_ty_v(ty);
+                        }
+                    }
+                    // 型引数の一部が決まらない束縛 (`Some(String.new(a))` の `Option<_>`) は、推論の結果が Copy でないと示せるなら
+                    // その型で束縛する (Nil を Copy とみなして move を落とさない、fail-closed)。
+                    if !is_nil(&t) && !src_is_ref && v_has_nil(&t) {
+                        if let Some(ty) = self.let_tys.get(&(self.d, nline(s), n.clone())) {
+                            if self.ty_certainly_not_copy(ty) {
+                                if let Some(v) = ty_to_v_loose(ty) {
+                                    t = v;
+                                }
+                            }
                         }
                     }
                     if src_is_ref && !is_nil(&t) && tag(&t) != "ref" && !self.is_copy(&t) {
@@ -5200,7 +5268,7 @@ impl<'a> Checker<'a> {
                 // `*r` を値として使う (move) のは、参照の先が Copy のときだけ (4.1)。
                 // `let z = s` で `s` が参照越しの `match` 束縛 (ref_binds) なら `*z` も同様に E3002 (f23)。
                 let operand = &f[1];
-                let deref_named = matches!(self.ety(operand), Some(crate::types::Ty::Named(..)));
+                let deref_named = matches!(self.ety(operand), Some(crate::types::Ty::Named(n, _)) if n == "alloc.boxed.Box");
                 let deref_non_copy = (self.ety_is_ref(operand) || deref_named) && self.ety_non_copy(e)
                     || {
                         nname(operand) == "Path"
@@ -5213,14 +5281,20 @@ impl<'a> Checker<'a> {
                                         if tag(&cur) == "ref" {
                                             cur = self.strip(&cur).clone();
                                         }
-                                        !is_nil(&cur) && !self.is_generic(&cur, &self.names) && !self.is_copy(&cur)
+                                        !is_nil(&cur)
+                                            && (if tag(&cur) == "named" && items(tel(&cur, 2)).is_empty() && self.names.contains(&st(tel(&cur, 1))) {
+                                                // 総称の型パラメータは `Copy` の境界があるときだけ取り出せる。
+                                                !self.generic_may_be_copy(&st(tel(&cur, 1)))
+                                            } else {
+                                                !self.is_generic(&cur, &self.names) && !self.is_copy(&cur)
+                                            })
                                     })
                             }
                     };
                 if consume && deref_non_copy {
                     let text = format!("*{}", short_text(operand));
                     let hint: String = if deref_named {
-                        "`*` on a `Box` (or other smart pointer) only borrows its contents; take the value out with `alloc.boxed.Box.into_inner(b)`, or borrow it with `&*b` / call `.clone()`".to_string()
+                        "`*` on a `Box` only borrows its contents; take the value out with `alloc.boxed.Box.into_inner(b)`, or borrow it with `&*b` / call `.clone()`".to_string()
                     } else {
                         format!("it is behind a reference and its type is not Copy; borrow it with `&{text}` or call `.clone()`")
                     };
@@ -5895,7 +5969,7 @@ impl<'a> Checker<'a> {
                         }
                         // 参照越しの照合で得た Copy でない値は、参照 (`&T` / `&mut T`) として束縛される。
                         // 参照越しの照合で得た Copy でない値は、参照 (`&T` / `&mut T`) として束縛される。
-                        if sref && !is_nil(&t) && tag(&t) != "ref" && !self.is_generic(&t, &self.names) && !self.is_copy(&t) {
+                        if sref && !is_nil(&t) && tag(&t) != "ref" && self.ref_bound_non_copy(&t) {
                             t = V::L(vec![V::S("ref".into()), V::B(smut), t]);
                             self.ref_binds.insert(n.clone());
                         } else {

@@ -1,0 +1,16 @@
+// expect: E3002
+fn t.main() -> () uses [] panics never
+    let mut o: Option<u32> = Some(1u32)
+    core.mem.drop(t.take_opt(&mut o))
+end t.main
+
+fn t.take_opt[T](o: &mut Option<T>) -> T uses [] panics never
+    match o {
+        Some(v) => {
+            let z = *v
+            z
+        }
+        None => loop {
+        }
+    }
+end t.take_opt

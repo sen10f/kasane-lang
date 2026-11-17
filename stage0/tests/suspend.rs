@@ -458,7 +458,7 @@ end t.call
 
 fn t.main() -> () uses [io.console, suspend] panics may
     let p = t.Pause { n: 4u32 }
-    let r = std.task.block_on(fn() -> u32 capture [] {
+    let r = std.task.block_on(fn() -> u32 capture [move p] {
         t.call(&p)
     })
     if r == 5u32 {
