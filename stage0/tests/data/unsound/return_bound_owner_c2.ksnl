@@ -1,0 +1,10 @@
+fn t.f(x: &u32) -> Option<&u32> uses [] panics never
+    let t = Some(*x)
+    let r = t.as_ref()
+    r
+end t.f
+
+// expect: E3030
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

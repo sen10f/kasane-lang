@@ -1,0 +1,12 @@
+fn t.f['a, 'b](x: &'a u32, _y: &'b u32) -> (&'static u32, &'a u32) uses [] panics never
+    let m = Some((x, x))
+    match m {
+        Some(p) => p
+        None => (x, x)
+    }
+end t.f
+
+// expect: E3010
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

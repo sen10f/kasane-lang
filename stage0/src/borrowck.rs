@@ -3314,6 +3314,51 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// 葉 `v` が分解・腕の束縛 (`Some(p)`) で、その束縛の取り出し元が、借用を持つ所有値の局所を借りた式
+    /// (`t.as_ref()`・`&t`・それを包んだ値・別の束縛) なら、その局所を `os` に足す。入れ子の `match` / `if let` も辿る。
+    fn bound_owner(&self, inits: &Inits, v: &V, depth: usize, os: &mut Vec<Origin>) {
+        if depth > 6 || nname(v) != "Path" || strs(&nf(v)[0]).len() != 1 {
+            return;
+        }
+        inits.pos.set(inits.at(v));
+        let Some(init) = inits.tilde(&strs(&nf(v)[0])[0]) else { return };
+        let mut recv: Option<&V> = match nname(init) {
+            "MCall" if self.method_borrows(&st(&nf(init)[1])).is_some() && self.method_ties_self(&st(&nf(init)[1]), nline(init), items(&nf(init)[2]).len()) => Some(&nf(init)[0]),
+            "Unary" if matches!(st(&nf(init)[0]).as_str(), "&" | "&mut") => Some(&nf(init)[1]),
+            _ => None,
+        };
+        let mut root: Option<String> = None;
+        if nname(init) == "Call" && nname(&nf(init)[0]) == "Path" {
+            let sg = strs(&nf(&nf(init)[0])[0]);
+            if sg.len() == 2 && self.locals.contains(&sg[0]) && self.method_borrows(&sg[1]).is_some() && self.method_ties_self(&sg[1], nline(init), items(&nf(init)[1]).len()) {
+                root = Some(sg[0].clone());
+            }
+        }
+        if let Some(mut r) = recv.take() {
+            if nname(r) == "Unary" && matches!(st(&nf(r)[0]).as_str(), "&" | "&mut") {
+                r = &nf(r)[1];
+            }
+            if nname(r) == "Path" && strs(&nf(r)[0]).len() == 1 {
+                root = Some(strs(&nf(r)[0])[0].clone());
+            }
+        }
+        if let Some(root) = root {
+            inits.pos.set(inits.at(init));
+            if self.owning_local(inits, &root) {
+                os.push(Origin::Local(root));
+            }
+            return;
+        }
+        // 取り出し元が包んだ値 (`match Some(p) { Some(q) => q }`) や別の束縛なら、その中身の束縛へ辿る。
+        if nname(init) == "Path" {
+            self.bound_owner(inits, init, depth + 1, os);
+        } else if let Some(parts) = self.wrapped_parts(init) {
+            for p in parts {
+                self.bound_owner(inits, p, depth + 1, os);
+            }
+        }
+    }
+
     /// メソッド `name` の戻り値の参照が、省略規則で `self` の借用に結びつくか (戻り値に参照があり、名前付きの領域がない)。
     fn method_ties_self(&self, name: &str, pos: usize, nargs: usize) -> bool {
         let cands = self.callees(name, pos, nargs);
@@ -3528,36 +3573,7 @@ impl<'a> Low<'a> {
             }
             // 葉が、包んだ値の局所を借りた束縛 (`match t.as_ref() { Some(p) => p }`・`match &t { Some(p) => p }`) そのものなら、
             // 局所の借用を外へ出している。束縛のメソッド呼び出し (`p.trim()`) は中身を取り出すので対象にしない。
-            if nname(v) == "Path" && strs(&nf(v)[0]).len() == 1 {
-                inits.pos.set(inits.at(v));
-                if let Some(init) = inits.tilde(&strs(&nf(v)[0])[0]) {
-                    let recv = match nname(init) {
-                        "MCall" if self.method_borrows(&st(&nf(init)[1])).is_some() && self.method_ties_self(&st(&nf(init)[1]), nline(init), items(&nf(init)[2]).len()) => Some(&nf(init)[0]),
-                        "Unary" if matches!(st(&nf(init)[0]).as_str(), "&" | "&mut") => Some(&nf(init)[1]),
-                        _ => None,
-                    };
-                    let call_root = if nname(init) == "Call" && nname(&nf(init)[0]) == "Path" {
-                        let sg = strs(&nf(&nf(init)[0])[0]);
-                        (sg.len() == 2 && self.locals.contains(&sg[0]) && self.method_borrows(&sg[1]).is_some() && self.method_ties_self(&sg[1], nline(init), items(&nf(init)[1]).len())).then(|| sg[0].clone())
-                    } else {
-                        None
-                    };
-                    if let Some(root) = call_root {
-                        inits.pos.set(inits.at(init));
-                        if self.owning_local(&inits, &root) {
-                            os.push(Origin::Local(root));
-                        }
-                    }
-                    let recv = recv.map(|r| if nname(r) == "Unary" && matches!(st(&nf(r)[0]).as_str(), "&" | "&mut") { &nf(r)[1] } else { r });
-                    if let Some(r) = recv.filter(|r| nname(r) == "Path" && strs(&nf(r)[0]).len() == 1) {
-                        let root = strs(&nf(r)[0])[0].clone();
-                        inits.pos.set(inits.at(init));
-                        if self.owning_local(&inits, &root) {
-                            os.push(Origin::Local(root));
-                        }
-                    }
-                }
-            }
+            self.bound_owner(&inits, v, 0, &mut os);
             for o in os {
                 match o {
                     Origin::Local(name) => {
