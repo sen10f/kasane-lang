@@ -517,7 +517,7 @@ fn kir_as_str_and_as_slice_borrow_the_header() {
     let b = s.as_bytes()
     let mut acc = 0u32
     for x in b {
-        acc = acc.wrapping_add(u32.from_u8(x))
+        acc = acc.wrapping_add(u32.from_u8(*x))
     }
     acc
 end t.sum_bytes
@@ -525,7 +525,7 @@ end t.sum_bytes
 fn t.sum_slice(v: &[u16]) -> u32 uses [] panics never
     let mut acc = 0u32
     for x in v {
-        acc = acc.wrapping_add(u32.from_u16(x))
+        acc = acc.wrapping_add(u32.from_u16(*x))
     }
     acc
 end t.sum_slice

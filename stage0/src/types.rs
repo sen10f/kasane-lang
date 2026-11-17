@@ -439,6 +439,8 @@ pub struct TypeCk<'a> {
     pat_src: Option<usize>,
     /// 参照越しの分解で束縛している最中か (束縛した名前は参照の段数が決まらない)。
     nest: u32,
+    /// 参照で取り込んだ Copy な名前 (閉包の本体の間だけ)。
+    cap_copy: HashSet<String>,
     /// 参照を分解して束縛している最中の既定の束縛モード (`Some(true)` は `&mut`、`Some(false)` は `&`)。
     pat_mode: Option<bool>,
     /// いま束縛しているパターンの値が、型を確実に知っている出どころ (リテラル・注釈・関数の呼び出し・構造体リテラル・確かな名前) か。
@@ -534,7 +536,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_copy: HashSet::new(), pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1553,6 +1555,11 @@ impl<'a> TypeCk<'a> {
             }
             _ => false,
         }
+    }
+
+    /// `*` の対象が、参照で取り込んだ Copy の名前 (本体では値にも `*x` にも書かれる) か。
+    fn root_cap_copy(&self, e: &V) -> bool {
+        !self.cap_copy.is_empty() && nname(e) == "Path" && self.cap_copy.contains(&strs(&nf(e)[0])[0])
     }
 
     fn set_static(&mut self, name: &str, on: bool) {
@@ -3778,7 +3785,7 @@ impl<'a> TypeCk<'a> {
                         Ty::Ref(_, x) => *x,
                         Ty::Unknown => Ty::Unknown,
                         // 参照でも生ポインタでもない値の `*` は型の誤り (パターンで得た名前の段数が未確定のときは Unknown になるので、ここへは来ない)。
-                        other @ (Ty::Prim(_) | Ty::Unit | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_)) if !self.mentions_loose(&f[1]) => {
+                        other @ (Ty::Prim(_) | Ty::Unit | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_)) if !self.root_cap_copy(&f[1]) => {
                             self.diag("E2020", format!("type mismatch: cannot dereference a value of type {}: `*` applies only to a reference or a raw pointer", other.show()), nline(e));
                             other
                         }
@@ -3985,14 +3992,15 @@ impl<'a> TypeCk<'a> {
                 let it = self.infer(&f[1]);
                 let src = self.last_site;
                 self.scopes.push(HashMap::new());
-                let elem = self.iter_elem(&it);
+                let mut elem = self.iter_elem(&it);
+                // 参照を回す (`for x in &v` / `&mut v` / スライスの参照) と、要素は `&要素` / `&mut 要素` (Rust と同じ)。
+                if let Ty::Ref(m, inner) = self.deep(&it) {
+                    if matches!(self.deep(&inner).strip(), Ty::Array(..) | Ty::Slice(_)) || matches!(self.deep(&inner).strip(), Ty::Named(n, _) if n == "alloc.vec.Vec") {
+                        elem = Ty::Ref(m, Box::new(elem));
+                    }
+                }
                 self.for_next_effects(&it, nline(e));
-                // 参照を回す (`for x in &v` / スライスの参照) と、要素の型は参照の段数を落とした型になる (段数は決まらない)。
-                let by_ref = matches!(self.deep(&it), Ty::Ref(..));
-                let saved_loose = self.pat_loose;
-                self.pat_loose |= by_ref;
                 self.bind_pat_from(&f[0], &elem, src, nline(e));
-                self.pat_loose = saved_loose;
                 self.note_pat_binds(&f[0], nline(e));
                 self.loop_breaks.push(false);
                 let t = self.infer(&f[2]);
@@ -4018,8 +4026,8 @@ impl<'a> TypeCk<'a> {
                 // 取り込んだ値の型も覚える (spawn の `Send` 検査 (5.5) は、推論の終わりに型を決めてから見る)。
                 let mut caps: Vec<(String, String, Ty)> = vec![];
                 let mut statics: HashSet<String> = HashSet::new();
+                let mut cap_copy_new: Vec<String> = vec![];
                 // 参照で取り込んだ Copy な名前は、本体では値のように見えるが実際は参照 (段数が決まらない = loose)。本体の間だけ。
-                let mut cap_loose: Vec<String> = vec![];
                 for c in items(&f[2]) {
                     let (Some(V::S(k)), Some(V::S(n))) = (items(c).first(), items(c).get(1)) else { continue };
                     let Some(t) = self.lookup(n) else { continue };
@@ -4047,9 +4055,10 @@ impl<'a> TypeCk<'a> {
                             s.insert(n.clone(), r);
                         }
                     } else {
-                        // 値のまま見える取り込みは、本体の中では `*x` が通ってよい名前なので、外の「確かな型」の印を遮る。
-                        if self.loose.insert(n.clone()) {
-                            cap_loose.push(n.clone());
+                        // 仕様 4.3 は `&a` の取り込みを本体で `&T` と定めるが、既存の正しいコード (試験・perf) は Copy の取り込みを
+                        // 値 (`x`) としても `*x` としても書く。例外として、この名前に限り `*` の E2020 を出さない (本体の間だけ)。
+                        if self.cap_copy.insert(n.clone()) {
+                            cap_copy_new.push(n.clone());
                         }
                         let was_static = self.lookup_static(n);
                         if let Some(s) = self.scopes.last_mut() {
@@ -4060,6 +4069,7 @@ impl<'a> TypeCk<'a> {
                         }
                     }
                 }
+
                 self.closure_caps.insert(node.clone(), caps);
                 self.closure_static.insert(node.clone(), statics);
                 for p in items(&f[0]) {
@@ -4071,8 +4081,8 @@ impl<'a> TypeCk<'a> {
                 // クロージャの中の `?` は、クロージャの戻り値型のエラー型と比べる。
                 self.rets.push(ret.clone());
                 let body = self.infer(&f[3]);
-                for n in &cap_loose {
-                    self.loose.remove(n);
+                for n in &cap_copy_new {
+                    self.cap_copy.remove(n);
                 }
                 self.rets.pop();
                 self.scopes.pop();

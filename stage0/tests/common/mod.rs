@@ -2149,7 +2149,7 @@ end t.grow
 fn t.sum(v: &alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics may
     let mut total = 0u32
     for x in v {
-        total = total.wrapping_add(x)
+        total = total.wrapping_add(*x)
     }
     total
 end t.sum
@@ -2629,7 +2629,7 @@ fn t.sum_bytes(s: &str) -> u32 uses [] panics never
     let b = s.as_bytes()
     let mut acc = 0u32
     for x in b {
-        acc = acc.wrapping_add(u32.from_u8(x))
+        acc = acc.wrapping_add(u32.from_u8(*x))
     }
     acc
 end t.sum_bytes
