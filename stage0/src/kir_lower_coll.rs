@@ -1071,6 +1071,11 @@ fn root_name(e: &V) -> Option<String> {
     }
 }
 
+/// `let P = 局所` の分解 (型 `t` の値に当てる) が、所有物を移すか (`match` の腕の `pat_cover` と同じ判定)。
+pub(crate) fn pat_moves_owned(lw: &Lw, p: &V, t: Ty) -> LR<bool> {
+    Ok(pat_cover(lw, p, t)? == Cover::All)
+}
+
 /// 腕 `i` の頭 (パターンが当たった後): 所有していて、この腕が所有物を束縛しないなら、対象の値を丸ごと解放する。
 pub(crate) fn scrut_arm(lw: &mut Lw, sc: &Option<Scrut>, i: usize, pat: &V, sv: VId) -> LR<()> {
     if let Some(sc) = sc {

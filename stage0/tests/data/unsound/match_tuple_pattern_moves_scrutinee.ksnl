@@ -1,0 +1,10 @@
+// expect: E3002
+// タプルの変数を分解して Copy でない要素を束縛すると、変数全体が move される (名前付きの型だけでなく)。
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let pair = (alloc.string.String.new(std.alloc.SYSTEM), 3u32)
+    match pair {
+        (a, _) => core.mem.drop(a)
+    }
+    core.mem.drop(pair)
+    Ok(())
+end t.main

@@ -1,0 +1,12 @@
+// expect-accept
+// core.mem.replace で配列要素への可変参照をすり替えた後、元の変数を再代入する（borrow は終わっている）
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = 1u32
+    let mut y = 2u32
+    let mut a = [&mut x]
+    core.mem.drop(core.mem.replace(&mut a[0], &mut y))
+    x = 4u32
+    core.mem.drop(x)
+    core.mem.drop(a)
+    Ok(())
+end t.main
