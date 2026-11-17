@@ -1,0 +1,10 @@
+const t.K: u8 = t.f(1u8)
+
+fn t.f(x: u8) -> u8 const uses [] panics may
+    x + 255u8
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.K)
+    Ok(())
+end t.main

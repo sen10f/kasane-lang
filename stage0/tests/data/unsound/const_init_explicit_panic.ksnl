@@ -1,0 +1,14 @@
+// expect: E4024
+const t.K: u32 = t.f(0u32)
+
+fn t.f(x: u32) -> u32 const uses [] panics may
+    if x == 0u32 {
+        core.panic.panic("boom")
+    }
+    x
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.K)
+    Ok(())
+end t.main
