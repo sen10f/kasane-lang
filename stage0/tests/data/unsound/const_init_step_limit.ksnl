@@ -1,0 +1,15 @@
+// expect: E4024
+const t.K: u32 = t.spin()
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.K)
+    Ok(())
+end t.main
+
+fn t.spin() -> u32 const uses [] panics may
+    let mut i: u32 = 0u32
+    while true {
+        i = i.wrapping_add(1u32)
+    }
+    i
+end t.spin

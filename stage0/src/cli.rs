@@ -532,6 +532,8 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
 
 /// 利用者の `const` / `static` の初期化式を評価し、評価中の panic (ゼロ除算・溢れ・範囲外・`panic` など) を
 /// E4024 にする (仕様 4.1)。評価できないもの (panic 以外の中断) は黙る。
+/// 評価ステップの上限 (仕様 4.1 の処理系定義の値): 1 つの初期化式あたり 1,000 万の式。超えたら E4024 (無限ループする `const fn` など)。
+const CONST_STEP_LIMIT: u64 = 10_000_000;
 fn eval_const_inits(prog: Program, user: &[usize]) -> (Program, Vec<crate::check::Diag>) {
     let idx: Vec<usize> = user
         .iter()
@@ -545,16 +547,24 @@ fn eval_const_inits(prog: Program, user: &[usize]) -> (Program, Vec<crate::check
     let mut out = vec![];
     {
         let mut it = crate::interp::Interp::new(rc.clone());
+        it.step_limit = Some(CONST_STEP_LIMIT);
         for &i in &idx {
+            // 上限は初期化式ごとに数える (1 つの式が他の式の予算を使い切らないように)。
+            it.steps = 0;
             if let Err(crate::value::Ctl::Panic(m)) = it.const_value(i) {
                 let d = &rc.defs[i];
+                let msg = if m == crate::interp::STEP_LIMIT_MSG {
+                    format!("evaluating the initializer of `{}` did not finish: it exceeded {} evaluation steps, the limit of constant evaluation (4.1)", d.name, CONST_STEP_LIMIT)
+                } else {
+                    format!("evaluating the initializer of `{}` panics: {} (4.1: a panic during const evaluation is a compile error)", d.name, m)
+                };
                 out.push(crate::check::Diag {
                     file: d.file.clone(),
                     code: "E4024".into(),
                     fqn: d.name.clone(),
                     line: d.line,
                     col: 0,
-                    msg: format!("evaluating the initializer of `{}` panics: {} (4.1: a panic during const evaluation is a compile error)", d.name, m),
+                    msg,
                 });
             }
         }

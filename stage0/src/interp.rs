@@ -18,9 +18,16 @@ const PRIMS: &[&str] = &[
     "bool", "char", "str",
 ];
 
+/// 定数の評価 (`const` / `static` の初期化式) が超えた場合の panic の文面 (cli.rs の E4024 が見分ける)。
+pub const STEP_LIMIT_MSG: &str = "the evaluation of the constant exceeded the step limit";
+
 pub struct Interp {
     pub p: Rc<Program>,
     pub depth: usize,
+    /// 評価した式の数 (定数の評価の上限のため。`step_limit` が `Some` のときだけ数える)
+    pub steps: u64,
+    /// 評価ステップの上限 (仕様 4.1)。`None` は上限なし (実行時)。
+    pub step_limit: Option<u64>,
     pub const_cache: HashMap<String, Val>,
     pub args: Vec<String>,
     pub out: std::io::BufWriter<Box<dyn Write>>,
@@ -195,6 +202,8 @@ impl Interp {
         Interp {
             p,
             depth: 0,
+            steps: 0,
+            step_limit: None,
             const_cache: HashMap::new(),
             args: vec![],
             out: std::io::BufWriter::new(Box::new(std::io::stdout())),
@@ -622,6 +631,12 @@ impl Interp {
     }
 
     pub fn eval(&mut self, e: &V, sc: &Scope) -> Res {
+        if let Some(l) = self.step_limit {
+            self.steps += 1;
+            if self.steps > l {
+                return Err(Ctl::Panic(STEP_LIMIT_MSG.into()));
+            }
+        }
         let f = nf(e);
         match nname(e) {
             "Lit" => Ok(self.lit(e)),
