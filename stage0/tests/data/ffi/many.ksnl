@@ -58,7 +58,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     }
     core.check.is_true(fd == 3.5f64)
     let fe = unsafe "ffi" "closure callback" {
-        t.apply_dbl(fn(x: f64, y: f32, z: i32) -> f64 capture [] {
+        t.apply_dbl(fn(x: f64, _y: f32, _z: i32) -> f64 capture [] {
             x
         }, 4.0f64, 1.0f32, 3i32)
     }

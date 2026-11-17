@@ -2314,7 +2314,7 @@ end t.try_run
 fn t.push_oom(n: u32) -> Result<usize, u8> uses [alloc] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     v.push(n).map_err(t.oom)?
-    v.push(n).map_err(fn(x: alloc.alloc.AllocError) -> u8 capture [] {
+    v.push(n).map_err(fn(_x: alloc.alloc.AllocError) -> u8 capture [] {
         2u8
     })?
     Ok(v.len())
@@ -2888,7 +2888,7 @@ pub const ELIDE_AP: &str = "fn t.ap[F: core.ops.Fn<(usize,), u8>](f: F) -> u8 us
 
 pub fn elide_main(uses: &str, panics: &str, body: &str) -> String {
     format!(
-        "{}fn t.boom() -> u8 uses [] panics may\n    core.panic.panic(\"x\")\nend t.boom\n\nfn t.main() -> Result<(), std.io.Error> uses [{}] panics {}\n    core.mem.drop(t.ap(fn(i: usize) -> u8 capture [] {{\n{}\n    }}))\n    Ok(())\nend t.main\n",
+        "{}fn t.boom() -> u8 uses [] panics may\n    core.panic.panic(\"x\")\nend t.boom\n\nfn t.main() -> Result<(), std.io.Error> uses [{}] panics {}\n    core.mem.drop(t.ap(fn(_i: usize) -> u8 capture [] {{\n{}\n    }}))\n    Ok(())\nend t.main\n",
         ELIDE_AP, uses, panics, body
     )
 }

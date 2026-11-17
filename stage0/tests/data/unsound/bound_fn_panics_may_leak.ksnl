@@ -1,0 +1,32 @@
+// expect: E4002
+fn t.apply_io[F: core.ops.Fn<(u32,), u32, [io.fs], may>](f: F) -> u32 uses [io.fs] panics never
+    f(2u32)
+end t.apply_io
+
+fn t.fs(x: u32) -> u32 uses [io.fs] panics never
+    x
+end t.fs
+
+fn t.keep(x: u32) -> u32 uses [] panics never
+    x
+end t.keep
+
+fn t.len(s: &str) -> usize uses [] panics never
+    s.len()
+end t.len
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.z1() -> u32 uses [io.fs] panics never
+    t.apply_io(t.keep)
+end t.z1
+
+fn t.z2() -> u32 uses [io.fs] panics never
+    t.apply_io(t.fs)
+end t.z2
+
+fn t.z3() -> usize uses [] panics never
+    t.len("literal")
+end t.z3

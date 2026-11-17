@@ -4800,6 +4800,19 @@ impl<'a> TypeCk<'a> {
                 }
                 // `F: core.ops.Fn<(A,), R, E, P>` の境界を持つ型パラメータの値の呼び出し。
                 if let Some(cl) = self.fn_bound_closure(&t) {
+                    // 境界が宣言する効果 (`Fn<.., [io.fs], may>`) は呼び出しの効果 (トレイトの境界のメソッド・
+                    // `dyn` の呼び出しと同じ扱い)。効果変数・panic 変数の境界は今の規則のまま (数えない)。
+                    if let Ty::Param(pn) = self.deep(&t).strip().clone() {
+                        let d = self.def();
+                        if let Some((bu, bp)) = self.fn_bound_effects(d, &pn) {
+                            let uses: Vec<String> =
+                                bu.into_iter().filter(|u| !d.generics.iter().any(|g| g.0 == "uses" && &g.1 == u)).collect();
+                            let panics = (bp == Some(true)).then(|| "may".to_string());
+                            if !uses.is_empty() || panics.is_some() {
+                                self.check_trait_effects(format!("the `{}` bound of `{}`", segs[0], pn), uses, panics, line);
+                            }
+                        }
+                    }
                     if let Some(r) = self.call_closure(&cl, &argt, line, None) {
                         return r;
                     }

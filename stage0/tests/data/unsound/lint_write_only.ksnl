@@ -1,0 +1,11 @@
+// expect: E1020
+fn t.main() -> () uses [] panics never
+    t.write_only()
+    ()
+end t.main
+
+fn t.write_only() -> () uses [] panics never
+    let mut z = 1u32
+    z = 2u32
+    ()
+end t.write_only
