@@ -334,12 +334,213 @@ pub fn annotate_owned_drops(p: &mut Program, user: &[usize]) {
             }
         }
     }
+    let mut want_arms: HashMap<String, HashMap<u32, Vec<Vec<String>>>> = HashMap::new();
+    // 段 2: 所有する局所の `let` と `for` の束縛は、借用の文脈でしか使われないなら、囲みの終わり (反復の終わり) で死ぬ。
+    for &i in user {
+        let d = &p.defs[i];
+        let Some(b) = d.body.as_ref() else { continue };
+        let mut found = HashSet::new();
+        let mut arms = HashMap::new();
+        scope_ends(b, d, p, &tk, &owned, &mut found, &mut arms);
+        if !found.is_empty() {
+            want.entry(d.name.clone()).or_default().extend(found);
+        }
+        if !arms.is_empty() {
+            want_arms.insert(d.name.clone(), arms);
+        }
+    }
     drop(tk);
     for &i in user {
         let name = p.defs[i].name.clone();
         if let (Some(m), Some(b)) = (want.get(&name), p.defs[i].body.as_mut()) {
             mark_drops(b, m);
         }
+        if let (Some(m), Some(b)) = (want_arms.get(&name), p.defs[i].body.as_mut()) {
+            mark_arms(b, m);
+        }
+    }
+}
+
+/// 局所の名前 `x` の使われ方が、借用の文脈 (欄・添字の土台、`&x` / `&mut x`、`self` が参照のメソッドのレシーバ、代入先)
+/// だけなら、そのような `Path` の数を返す。それ以外 (move かもしれない使い方) があれば `None`。
+fn borrow_only_uses(v: &V, x: &str, p: &Program) -> Option<usize> {
+    fn recv_borrows(name: &str, p: &Program) -> bool {
+        match p.method_idx.get(name) {
+            Some(c) if !c.is_empty() => c.iter().all(|&ci| p.defs[ci].params.first().is_some_and(|(_, t)| crate::check::tag(t) == "ref")),
+            _ => false,
+        }
+    }
+    fn root_is(v: &V, x: &str) -> Option<usize> {
+        if nname(v) != "Path" {
+            return None;
+        }
+        let segs = strs(&nf(v)[0]);
+        if !segs.is_empty() && segs[0] == x { Some(segs.len()) } else { None }
+    }
+    fn walk(v: &V, x: &str, p: &Program, n: &mut usize) -> bool {
+        match v {
+            V::Node(kind, fs, _, _) => {
+                if *kind == "Path" {
+                    // `x` 単独の値の使い方は move かもしれない。`x.f` (欄の読み) は借用の側。
+                    return match root_is(v, x) {
+                        Some(1) => false,
+                        Some(_) => {
+                            *n += 1;
+                            true
+                        }
+                        None => true,
+                    };
+                }
+                let mut approved: Option<usize> = match *kind {
+                    "Field" | "Index" => Some(0),
+                    "Unary" if fs.len() == 2 && matches!(st(&fs[0]).as_str(), "&" | "&mut") => Some(1),
+                    "Assign" => Some(0),
+                    "MCall" if recv_borrows(&st(&fs[1]), p) => Some(0),
+                    _ => None,
+                };
+                // `x.m(..)` / `x.f.m(..)` は、`Call` の呼び先が `x` から始まる `Path` になる。
+                if *kind == "Call" {
+                    if let Some(len) = root_is(&fs[0], x) {
+                        let segs = strs(&nf(&fs[0])[0]);
+                        if len >= 2 && recv_borrows(&segs[len - 1], p) {
+                            *n += 1;
+                            return fs[1..].iter().all(|c| walk(c, x, p, n));
+                        }
+                        return false;
+                    }
+                    approved = None;
+                }
+                for (k, c) in fs.iter().enumerate() {
+                    if approved == Some(k) && root_is(c, x) == Some(1) {
+                        *n += 1;
+                        continue;
+                    }
+                    if !walk(c, x, p, n) {
+                        return false;
+                    }
+                }
+                true
+            }
+            V::L(xs) => xs.iter().all(|c| walk(c, x, p, n)),
+            _ => true,
+        }
+    }
+    let mut n = 0;
+    if walk(v, x, p, &mut n) { Some(n) } else { None }
+}
+
+/// 木の中の文字列 `x` の出現数 (欄名・パターン・capture 節・ほかの束縛を含む)。
+fn count_str(v: &V, x: &str) -> usize {
+    match v {
+        V::S(s) => usize::from(s == x),
+        V::Node(_, fs, _, _) => fs.iter().map(|c| count_str(c, x)).sum(),
+        V::L(xs) => xs.iter().map(|c| count_str(c, x)).sum(),
+        _ => 0,
+    }
+}
+
+fn scope_ends(
+    v: &V,
+    d: &Def,
+    p: &Program,
+    tk: &crate::types::TypeCk,
+    owned: &dyn Fn(&crate::types::Ty) -> bool,
+    out: &mut std::collections::HashSet<u32>,
+    arms: &mut std::collections::HashMap<u32, Vec<Vec<String>>>,
+) {
+    let simple = |pat: &V| -> Option<String> {
+        if nname(pat) == "PBind" { Some(st(&nf(pat)[0])) } else { None }
+    };
+    // 定義全体で、その名前の出現が (束縛 1 回 + 借用の使い方) だけなら安全 (同名の別の束縛・capture・欄名があれば諦める)。
+    let safe = |x: &str, rest: &[V], scope: &V| -> bool {
+        let mut n = 0;
+        for r in rest {
+            match borrow_only_uses(r, x, p) {
+                Some(k) => n += k,
+                None => return false,
+            }
+        }
+        let total = count_str(scope, x) + d.params.iter().filter(|(pn, _)| pn == x).count();
+        total == 1 + n
+    };
+    match v {
+        V::Node(kind, fs, _, id) => {
+            if *kind == "Block" {
+                let stmts = items(&fs[0]);
+                for (k, s) in stmts.iter().enumerate() {
+                    if nname(s) == "Let" && nf(s).len() == 4 {
+                        let lf = nf(s);
+                        if let Some(x) = simple(&lf[0]) {
+                            let init_ty = tk.tytab.get(&(d.name.clone(), crate::parser::nid(&lf[3])));
+                            if matches!(init_ty, Some(e) if owned(&e.ty)) && matches!(nname(&lf[3]), "Call" | "MCall") && safe(&x, &stmts[k + 1..], v) {
+                                out.insert(crate::parser::nid(s));
+                            }
+                        }
+                    }
+                }
+            }
+            if *kind == "For" && fs.len() == 3 {
+                if let Some(x) = simple(&fs[0]) {
+                    let it_ty = tk.tytab.get(&(d.name.clone(), crate::parser::nid(&fs[1])));
+                    let elem_owned = match it_ty {
+                        Some(e) if nname(&fs[1]) == "Path" => match &e.ty {
+                            crate::types::Ty::Named(n, a) if n == "alloc.vec.Vec" => a.first().is_some_and(|t| owned(t)),
+                            crate::types::Ty::Array(t, _) => owned(t),
+                            _ => false,
+                        },
+                        _ => false,
+                    };
+                    if elem_owned && safe(&x, std::slice::from_ref(&fs[2]), v) {
+                        out.insert(*id);
+                    }
+                }
+            }
+            // `match` の腕の束縛: 所有する値 (`Option<T>` / `Result<T, E>` の `T` / `E`) を値で受けて、腕の中で借用の文脈でしか
+            // 使わないなら、腕の終わりで死ぬ。
+            if *kind == "Match" && fs.len() == 2 {
+                let sty = tk.tytab.get(&(d.name.clone(), crate::parser::nid(&fs[0]))).map(|e| e.ty.clone());
+                if let Some(crate::types::Ty::Named(en, targs)) = sty {
+                    let mut per_arm: Vec<Vec<String>> = vec![];
+                    let mut any = false;
+                    for arm in items(&fs[1]) {
+                        let parts = items(arm);
+                        let mut names = vec![];
+                        if parts.len() == 2 && nname(&parts[0]) == "PVariant" {
+                            let pf = nf(&parts[0]);
+                            let segs = strs(&pf[0]);
+                            let subs = items(&pf[1]);
+                            let ti = match (en.as_str(), segs.last().map(|x| x.as_str())) {
+                                ("Option", Some("Some")) | ("Result", Some("Ok")) => Some(0),
+                                ("Result", Some("Err")) => Some(1),
+                                _ => None,
+                            };
+                            if let (Some(ti), 1) = (ti, subs.len()) {
+                                if let (Some(x), Some(t)) = (simple(&subs[0]), targs.get(ti)) {
+                                    if owned(t) && matches!(nname(&fs[0]), "Path" | "Call" | "MCall") {
+                                        if let Some(n) = borrow_only_uses(&parts[1], &x, p) {
+                                            let total = count_str(arm, &x) + d.params.iter().filter(|(pn, _)| *pn == x).count();
+                                            if total == 1 + n {
+                                                names.push(x);
+                                                any = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        per_arm.push(names);
+                    }
+                    if any {
+                        arms.insert(*id, per_arm);
+                    }
+                }
+            }
+            for c in fs {
+                scope_ends(c, d, p, tk, owned, out, arms);
+            }
+        }
+        V::L(xs) => xs.iter().for_each(|c| scope_ends(c, d, p, tk, owned, out, arms)),
+        _ => {}
     }
 }
 
@@ -372,8 +573,14 @@ fn drop_calls(v: &V, out: &mut Vec<(u32, u32)>) {
 
 fn mark_drops(v: &mut V, m: &std::collections::HashSet<u32>) {
     match v {
-        V::Node(_, fs, _, id) => {
-            if fs.len() == 3 && m.contains(id) {
+        V::Node(kind, fs, _, id) => {
+            // 呼び出し (欄 3 つ → `S("own")` を 4 つ目に)、`let` (4 つ → 5 つ目)、`for` (3 つ → 4 つ目)
+            let want_len = match *kind {
+                "Call" | "For" => 3,
+                "Let" => 4,
+                _ => 0,
+            };
+            if want_len != 0 && fs.len() == want_len && m.contains(id) {
                 fs.push(V::S("own".into()));
             }
             for c in fs.iter_mut() {
@@ -381,6 +588,23 @@ fn mark_drops(v: &mut V, m: &std::collections::HashSet<u32>) {
             }
         }
         V::L(xs) => xs.iter_mut().for_each(|c| mark_drops(c, m)),
+        _ => {}
+    }
+}
+
+fn mark_arms(v: &mut V, m: &std::collections::HashMap<u32, Vec<Vec<String>>>) {
+    match v {
+        V::Node(kind, fs, _, id) => {
+            if *kind == "Match" && fs.len() == 2 {
+                if let Some(per_arm) = m.get(id) {
+                    fs.push(V::L(per_arm.iter().map(|ns| V::L(ns.iter().map(|n| V::S(n.clone())).collect())).collect()));
+                }
+            }
+            for c in fs.iter_mut() {
+                mark_arms(c, m);
+            }
+        }
+        V::L(xs) => xs.iter_mut().for_each(|c| mark_arms(c, m)),
         _ => {}
     }
 }

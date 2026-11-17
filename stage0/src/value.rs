@@ -345,12 +345,25 @@ impl Place for FieldPlace {
         self.0.set(&self.1, v);
     }
 }
-pub struct IdxPlace(pub Rc<RefCell<Vec<Val>>>, pub usize);
+pub struct IdxPlace(pub Rc<RefCell<Vec<Val>>>, pub usize, u32);
+impl IdxPlace {
+    pub fn new(l: Rc<RefCell<Vec<Val>>>, i: usize) -> IdxPlace {
+        let e = vec_epoch(&l);
+        IdxPlace(l, i, e)
+    }
+}
 impl Place for IdxPlace {
     fn get(&self) -> Val {
+        if self.2 != vec_epoch(&self.0) {
+            // 再確保の前に取った要素への参照: 解放済みの値を返す (読むと panic)。
+            return dead_sentinel();
+        }
         self.0.borrow()[self.1].clone()
     }
     fn set(&self, v: Val) {
+        if self.2 != vec_epoch(&self.0) {
+            return;
+        }
         self.0.borrow_mut()[self.1] = v;
     }
 }
@@ -737,4 +750,50 @@ pub fn check_alive(v: &Val) -> Result<(), Ctl> {
         return panic("use after free: the value was already dropped (core.mem.drop) but is read through a borrow");
     }
     Ok(())
+}
+
+thread_local! {
+    static EPOCH: RefCell<HashMap<usize, u32>> = RefCell::new(HashMap::new());
+    static ANY_EPOCH: Cell<bool> = const { Cell::new(false) };
+}
+/// `Vec` の世代 (再確保の回数。再確保をまねた回数)。再確保したことがなければ 0。
+pub fn vec_epoch(l: &Rc<RefCell<Vec<Val>>>) -> u32 {
+    if !ANY_EPOCH.with(|a| a.get()) {
+        return 0;
+    }
+    EPOCH.with(|e| e.borrow().get(&(Rc::as_ptr(l) as *const u8 as usize)).copied().unwrap_or(0))
+}
+/// `Vec` の再確保をまねる: 世代を進め、再確保の前に取った要素への参照 (`IdxPlace`) を古い (解放済み) ものにする。
+/// 検査を通ったプログラムは、`push` をまたいで要素への借用を持たないので、どの `push` で再確保したことにしても
+/// 出力は変わらない。償却のため、長さが 2 の冪のときだけ呼ぶ。
+pub fn relocate_vec(l: &Rc<RefCell<Vec<Val>>>) {
+    ANY_EPOCH.with(|a| a.set(true));
+    EPOCH.with(|e| *e.borrow_mut().entry(Rc::as_ptr(l) as *const u8 as usize).or_insert(0) += 1);
+}
+fn dead_sentinel() -> Val {
+    let sv = Rc::new(StructV { ty: "<freed>".into(), f: RefCell::new(vec![]) });
+    dead_add(Rc::as_ptr(&sv) as *const u8 as usize, DeadKeep::St(Rc::downgrade(&sv)));
+    Val::Struct(sv)
+}
+
+/// 再確保で移る要素の構造体を新しい `Rc` に置き換え、古い `Rc` (`get` が返した要素の借用が持つもの) を解放済みにする。
+pub fn relocate_elems(items: &mut [Val]) {
+    for it in items.iter_mut() {
+        if let Val::StrBuf(b) = it {
+            // `String` の値 (ヘッダ) が移る。中身の格納 (ヒープ) は動かないので、`as_str` の写しは生きたまま。
+            let nb = Rc::new(StrBufV {
+                bytes: RefCell::new(b.bytes.borrow().clone()),
+                cap: Cell::new(b.cap.get()),
+                snap: RefCell::new(b.snap.borrow().clone()),
+            });
+            dead_add(Rc::as_ptr(b) as *const u8 as usize, DeadKeep::B(Rc::downgrade(b)));
+            *it = Val::StrBuf(nb);
+            continue;
+        }
+        if let Val::Struct(sv) = it {
+            let nv = Rc::new(StructV { ty: sv.ty.clone(), f: RefCell::new(sv.f.borrow().clone()) });
+            dead_add(Rc::as_ptr(sv) as *const u8 as usize, DeadKeep::St(Rc::downgrade(sv)));
+            *it = Val::Struct(nv);
+        }
+    }
 }

@@ -348,3 +348,71 @@ fn ref_bind_writes_through_refbind() {
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     assert_eq!(text(&o.stdout).trim(), "refbind ok");
 }
+
+// 段 2: drop を伴わない死 (スコープの終わり・`for` の束縛・`match` の腕の束縛・`Vec` の再確保)。unsound/ の再現を検査なしで走らせる。
+macro_rules! dead_case {
+    ($test:ident, $file:literal) => {
+        #[test]
+        fn $test() {
+            assert_dead_read(concat!("par_", $file), include_str!(concat!("data/unsound/", $file, ".ksnl")));
+        }
+    };
+}
+dead_case!(scope_end_block_local, "flow_store_through_mut_alias");
+dead_case!(scope_end_block_value, "header_lifetime_return_other");
+dead_case!(for_binding_dies_each_iteration, "flow_for_binding_outlives");
+dead_case!(match_arm_binding_dies_with_the_arm, "flow_match_arm_binding_outlives");
+dead_case!(match_temp_scrutinee_binding_dies, "match_arm_owned_as_str_escape");
+dead_case!(vec_growth_invalidates_element_borrows, "fqn_same_name_shared_push");
+dead_case!(vec_growth_invalidates_field_vec_borrows, "flow_ref_field_borrow_inherits_loan");
+
+#[test]
+fn scope_end_marks_do_not_touch_live_values() {
+    // 正しいプログラム: ブロックの局所の String を借用して使い切る、値を返す・move する、`for` で要素を使う、
+    // `match` の腕で値を使う、`push` を繰り返して読む。どれも出力は変わらない。
+    let src = r#"fn t.mk(s: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics never
+    match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(v) => v
+        Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+    }
+end t.mk
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let n = {
+        let s = t.mk("hello")
+        s.len()
+    }
+    core.check.eq(n, 5usize)
+    let kept = {
+        let s = t.mk("kept")
+        s
+    }
+    std.io.print_line(kept.as_str())?
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < 100u32 {
+        core.mem.drop(v.push(t.mk("item")))
+        i = i + 1u32
+    }
+    let mut total = 0usize
+    for s in v {
+        total = total + s.len()
+    }
+    core.check.eq(total, 400usize)
+    match Some(t.mk("arm")) {
+        Some(s) => std.io.print_line(s.as_str())?
+        None => ()
+    }
+    let w = match Some(t.mk("moved")) {
+        Some(s) => s
+        None => t.mk("none")
+    }
+    std.io.print_line(w.as_str())?
+    std.io.print_line("ok")
+end t.main
+"#;
+    let t = Tmp::new("par_scope_live", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout), "kept\narm\nmoved\nok\n");
+}

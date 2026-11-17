@@ -1420,7 +1420,7 @@ impl Interp {
                 _ => none(),
             }),
             "get_mut" => Ok(match idx(Some(&a0)) {
-                Some(i) if i < len => some(Val::Ref(Rc::new(IdxPlace(items, i)))),
+                Some(i) if i < len => some(Val::Ref(Rc::new(IdxPlace::new(items, i)))),
                 _ => none(),
             }),
             "as_slice" | "as_mut_slice" => Ok(Val::View(items, 0, len)),
@@ -1441,6 +1441,11 @@ impl Interp {
                     return Ok(err(alloc_error()));
                 }
                     if n > cap(s) {
+                        // 実際の再確保: 古い領域の要素への借用を解放済みにする (`value.rs` の `relocate_*`)。
+                        if len > 0 {
+                            relocate_vec(&items);
+                            relocate_elems(&mut items.borrow_mut());
+                        }
                         s.set("capacity", usz(n));
                     }
                 }
@@ -1493,7 +1498,7 @@ impl Interp {
             }
             "get_mut" => {
                 let i = idx(&a0);
-                return Ok(if i >= 0 && (i as usize) < len { some(Val::Ref(Rc::new(IdxPlace(list, base + i as usize)))) } else { none() });
+                return Ok(if i >= 0 && (i as usize) < len { some(Val::Ref(Rc::new(IdxPlace::new(list, base + i as usize)))) } else { none() });
             }
             "first" => return Ok(if len > 0 { some(list.borrow()[base].clone()) } else { none() }),
             "last" => return Ok(if len > 0 { some(list.borrow()[base + len - 1].clone()) } else { none() }),
