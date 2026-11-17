@@ -356,7 +356,7 @@ end t.pick
 fn t.rest(s: &str) -> u32 uses [] panics never
     match s {
         "x" => 1u32
-        other => 7u32
+        _other => 7u32
     }
 end t.rest
 

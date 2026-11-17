@@ -1005,7 +1005,7 @@ fn t.strs(_n: u32) -> u32 uses [alloc] panics may
         }
         None => core.panic.panic("missing")
     }
-    for (k, v) in m.iter() {
+    for (_k, v) in m.iter() {
         acc = acc.wrapping_add(*v)
     }
     acc

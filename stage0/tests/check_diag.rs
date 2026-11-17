@@ -3648,7 +3648,7 @@ fn closure_index_instantiates_the_panic_var_as_may() {
     // クロージャの本体の添字は panic しうるので、P は `may` に実体化される。
     let bad = "fn t.f(v: &[u8]) -> u8 uses [] panics never
     t.apply(
-        fn(x: u8) -> u8 capture [&v] {
+        fn(_x: u8) -> u8 capture [&v] {
             v[0]
         },
         1u8,
@@ -3675,7 +3675,7 @@ end t.f
 
 fn t.g(s: t.S) -> u8 uses [] panics never
     s.via(
-        fn(x: u8) -> u8 capture [] {
+        fn(_x: u8) -> u8 capture [] {
             core.panic.panic(\"no\")
         },
     )
@@ -3960,7 +3960,7 @@ end t.bad_let
 
 fn t.bad_panic(s: t.S, x: u8) -> u8 uses [] panics never
     t.bnd_none(
-        fn(y: u8) -> u8 capture [&s] {
+        fn(_y: u8) -> u8 capture [&s] {
             s.boom()
         },
         x,
@@ -3970,11 +3970,11 @@ end t.bad_panic
 "#;
 
 // 境界の定義・推論された関数・覆われる / 効果のない呼び出し元・メソッド (どれも黙る)。
-const BOUND_REST: &str = r#"fn t.bnd_io[F: core.ops.Fn<(u8,), u8, [io], never>](f: F, x: u8) -> u8 uses [] panics never pub
+const BOUND_REST: &str = r#"fn t.bnd_io[F: core.ops.Fn<(u8,), u8, [io], never>](f: F, x: u8) -> u8 uses [io] panics never pub
     f(x)
 end t.bnd_io
 
-fn t.bnd_may[F: core.ops.Fn<(u8,), u8, [], may>](f: F, x: u8) -> u8 uses [] panics never pub
+fn t.bnd_may[F: core.ops.Fn<(u8,), u8, [], may>](f: F, x: u8) -> u8 uses [] panics may pub
     f(x)
 end t.bnd_may
 
@@ -3997,9 +3997,9 @@ fn t.ok_io(s: t.S, x: u8) -> u8 uses [io] panics never
     )
 end t.ok_io
 
-fn t.ok_may(s: t.S, x: u8) -> u8 uses [] panics never
+fn t.ok_may(s: t.S, x: u8) -> u8 uses [] panics may
     t.bnd_may(
-        fn(y: u8) -> u8 capture [&s] {
+        fn(_y: u8) -> u8 capture [&s] {
             s.boom()
         },
         x,
@@ -4008,7 +4008,7 @@ end t.ok_may
 
 fn t.ok_pure(s: t.S, x: u8) -> u8 uses [] panics never
     t.bnd_none(
-        fn(y: u8) -> u8 capture [&s] {
+        fn(_y: u8) -> u8 capture [&s] {
             s.peek()
         },
         x,

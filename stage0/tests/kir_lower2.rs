@@ -719,7 +719,7 @@ end t.box_n
 fn t.first(pr: (i32, bool)) -> i32 uses [] panics never
     match pr {
         (x, true) => x
-        (x, false) => 0i32
+        (_x, false) => 0i32
     }
 end t.first
 

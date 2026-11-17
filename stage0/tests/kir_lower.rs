@@ -1942,7 +1942,7 @@ end t.sum_opt
 
 fn t.first_x(n: i64) -> i64 uses [] panics never
     match t.find(n) {
-        Some(t.Point { x: a, y: b }) => a
+        Some(t.Point { x: a, y: _b }) => a
         None => 0i64
     }
 end t.first_x
