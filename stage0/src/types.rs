@@ -439,13 +439,10 @@ pub struct TypeCk<'a> {
     pat_src: Option<usize>,
     /// 参照越しの分解で束縛している最中か (束縛した名前は参照の段数が決まらない)。
     nest: u32,
-    pat_loose: bool,
+    /// 参照を分解して束縛している最中の既定の束縛モード (`Some(true)` は `&mut`、`Some(false)` は `&`)。
+    pat_mode: Option<bool>,
     /// いま束縛しているパターンの値が、型を確実に知っている出どころ (リテラル・注釈・関数の呼び出し・構造体リテラル・確かな名前) か。
     pat_exact: bool,
-    /// 参照の段数が決まらない局所変数の名前 (`arg_ref_conflict` の `loose`)。
-    loose: HashSet<String>,
-    /// 直後の呼び出しの各実引数が、参照の段数が決まらない束縛を根に持つか。
-    arg_loose: Vec<bool>,
     /// `Box.into_dyn` の呼び出しの (元の `T`, 変換先 `D`, 行)。関数の推論が終わってから検査する。
     unsize: Vec<(Ty, Ty, usize)>,
     pat_line: usize,
@@ -537,7 +534,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, pat_loose: false, pat_exact: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1508,18 +1505,18 @@ impl<'a> TypeCk<'a> {
     }
 
     fn bind(&mut self, name: &str, ty: Ty) {
-        let exact_here = self.pat_exact && !self.pat_loose && self.exactly_owned(&ty);
+        // 参照を分解して得た名前は、欄の型への参照になる (Rust の既定の束縛モード)。
+        let exact_here = self.pat_exact && self.exactly_owned(&ty);
+        let ty = match self.pat_mode {
+            Some(m) => Ty::Ref(m, Box::new(ty)),
+            None => ty,
+        };
         if self.strict {
             let id = self.new_site(self.pat_line, format!("the binding `{}`", name), ty.clone());
             if let Some(src) = self.pat_src {
                 self.sites[id].deps.push(src);
             }
             self.local_sites.insert(name.to_string(), id);
-        }
-        if self.pat_loose {
-            self.loose.insert(name.to_string());
-        } else {
-            self.loose.remove(name);
         }
         if let Some(s) = self.scopes.last_mut() {
             s.remove(&static_mark(name));
@@ -1548,28 +1545,11 @@ impl<'a> TypeCk<'a> {
     fn exact_source(&self, e: &V) -> bool {
         match nname(e) {
             "Lit" | "Call" | "StructLit" => true,
+            // `&e` / `&mut e` / `*e` は、`e` の型が確かなら確か (参照の段数は演算子が決める)。
+            "Unary" => matches!(st(&nf(e)[0]).as_str(), "&" | "&mut" | "*") && self.exact_source(&nf(e)[1]),
             "Path" => {
                 let segs = strs(&nf(e)[0]);
                 segs.len() == 1 && self.scopes.iter().rev().find(|s| s.contains_key(&segs[0])).map_or(false, |s| s.contains_key(&exact_mark(&segs[0])))
-            }
-            _ => false,
-        }
-    }
-
-    /// 式の中に、参照の段数が決まらない局所変数の名前があるか。
-    fn mentions_loose(&self, e: &V) -> bool {
-        if self.loose.is_empty() {
-            return false;
-        }
-        match e {
-            V::L(xs) | V::Node(_, xs, _, _) => {
-                if nname(e) == "Path" {
-                    let segs = strs(&nf(e)[0]);
-                    if self.loose.contains(&segs[0]) {
-                        return true;
-                    }
-                }
-                xs.iter().any(|x| self.mentions_loose(x))
             }
             _ => false,
         }
@@ -1618,19 +1598,6 @@ impl<'a> TypeCk<'a> {
                     _ => false,
                 }
             }
-            _ => false,
-        }
-    }
-
-    /// 実引数の式の根が、参照の段数が決まらない局所変数 (フィールド・添字・`*` を通してよい) か。
-    fn root_loose(&self, e: &V) -> bool {
-        match nname(e) {
-            "Path" => {
-                let segs = strs(&nf(e)[0]);
-                self.loose.contains(&segs[0]) && self.lookup(&segs[0]).is_some()
-            }
-            "Field" | "Index" => self.root_loose(&nf(e)[0]),
-            "Unary" => self.root_loose(&nf(e)[1]),
             _ => false,
         }
     }
@@ -2392,7 +2359,6 @@ impl<'a> TypeCk<'a> {
     }
 
     fn call_method_in(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
-        let loose = std::mem::take(&mut self.arg_loose);
         let arg_stat = std::mem::take(&mut self.arg_static);
         // トレイトオブジェクト (5.1): `&dyn Tr` のメソッド呼び出しは、Tr とそのスーパートレイトの
         // シグネチャで検査する (Self は `dyn Tr` 自身)。
@@ -2561,7 +2527,7 @@ impl<'a> TypeCk<'a> {
         for (k, a) in args.iter().enumerate() {
             let raw_pt = from_v(&d.params[k + 1].1, &gn);
             let pt = self.inst(&raw_pt, &mut map);
-            if let Some((want, got)) = self.arg_ref_conflict(&raw_pt, a, loose.get(k).copied().unwrap_or(false)) {
+            if let Some((want, got)) = self.arg_ref_conflict(&raw_pt, a) {
                 self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, name, want, got, ref_hint(&want, &got, self.ty_copy_ref(&raw_pt))), line);
             }
             if let Err(e) = self.unify2(&pt, a) {
@@ -3258,7 +3224,7 @@ impl<'a> TypeCk<'a> {
             _ => return,
         };
         let Some(t) = self.lookup(&root) else { return };
-        if self.loose.contains(&root) || self.mutable.contains(&root) {
+        if self.mutable.contains(&root) {
             return;
         }
         let t = self.resolve(&t);
@@ -3710,7 +3676,6 @@ impl<'a> TypeCk<'a> {
                 self.log_recv(f, 4, false, &st(&f[1]), &recv);
                 let args: Vec<Ty> = items(&f[2]).iter().map(|a| self.infer(a)).collect();
                 let base = self.base_local(&f[0]);
-                self.arg_loose = items(&f[2]).iter().map(|a| self.root_loose(a)).collect();
                 self.arg_static = items(&f[2]).iter().map(|a| self.static_expr(a)).collect();
                 self.call_method(&recv, base.as_deref(), &st(&f[1]), &args, nline(e), items(&f[3]), false)
             }
@@ -4320,12 +4285,9 @@ impl<'a> TypeCk<'a> {
                 }
                 let mut names = vec![];
                 pat_binds(&f[0], &mut names);
-                // 参照の段数が決まらない名前を式の中に含む右辺の束縛は、型が値でも実体は参照かもしれない (`let r = match &t.make() { S { v: x } => x }`)。
-                // 型が記録されない束縛は借用を持ち得ないとは扱われない (借用検査が右辺の借用を渡す)。
-                let from_loose = self.mentions_loose(&f[3]);
                 for n in names {
                     if let Some(t) = self.lookup(&n) {
-                        self.let_pending.push((nline(s), n, if from_loose { Ty::Unknown } else { t }));
+                        self.let_pending.push((nline(s), n, t));
                     }
                 }
                 Ty::Unit
@@ -4348,7 +4310,7 @@ impl<'a> TypeCk<'a> {
                         if let Some(segs) = root {
                             let n = &segs[0];
                             let direct = segs.len() == 1;
-                            if self.lookup(n).is_some() && !self.loose.contains(n) && (via_deref || !direct) {
+                            if self.lookup(n).is_some() && (via_deref || !direct) {
                                 if let Some(t) = self.lookup(n) {
                                     if matches!(self.resolve(&t), Ty::Ref(false, _)) {
                                         self.diag(
@@ -4400,14 +4362,10 @@ impl<'a> TypeCk<'a> {
     }
 
     /// `match` の腕・`for` のパターンの束縛の型を `let_tys` に記録する (move の追跡 E3002 が使う)。
-    /// 参照の段数が決まらない束縛 (`loose`) は記録しない (黙る)。
     fn note_pat_binds(&mut self, pat: &V, line: usize) {
         let mut names = vec![];
         pat_binds(pat, &mut names);
         for n in names {
-            if self.loose.contains(&n) {
-                continue;
-            }
             if let Some(t) = self.lookup(&n) {
                 self.let_pending.push((line, n, t));
             }
@@ -4424,12 +4382,23 @@ impl<'a> TypeCk<'a> {
     }
 
     fn bind_pat(&mut self, pat: &V, ty: &Ty) {
-        // 分解パターンが参照を受けたら、中の束縛は外側の参照を落とした型になる (参照の段数は決まらない)。
-        if matches!(nname(pat), "PTuple" | "PStruct" | "PVariant") && matches!(self.resolve(ty), Ty::Ref(..)) && !self.pat_loose {
-            self.pat_loose = true;
-            self.bind_pat_inner(pat, ty);
-            self.pat_loose = false;
-            return;
+        // 分解パターン (名前を取り出す形) が参照を受けたら、参照を外して中を照合し、取り出した名前は欄の型への参照になる
+        // (Rust の既定の束縛モード): `&T` は `&欄の型`、`&mut T` は `&mut 欄の型`。入れ子の参照は共有が勝つ。
+        if matches!(nname(pat), "PTuple" | "PStruct" | "PVariant") {
+            let full = self.deep(ty);
+            if matches!(full, Ty::Ref(..)) {
+                let (mut all_mut, mut cur) = (true, &full);
+                while let Ty::Ref(m, inner) = cur {
+                    all_mut &= *m;
+                    cur = inner;
+                }
+                let base = cur.clone();
+                let saved = self.pat_mode;
+                self.pat_mode = Some(saved.unwrap_or(true) && all_mut);
+                self.bind_pat_inner(pat, &base);
+                self.pat_mode = saved;
+                return;
+            }
         }
         self.bind_pat_inner(pat, ty)
     }
@@ -4444,7 +4413,9 @@ impl<'a> TypeCk<'a> {
                     Ty::Ref(_, x) => *x,
                     other => other,
                 };
-                self.bind_pat(&f[0], &inner)
+                let saved = self.pat_mode.take();
+                self.bind_pat(&f[0], &inner);
+                self.pat_mode = saved;
             }
             "PTuple" => {
                 let ts: Vec<Ty> = match self.deep(ty).strip() {
@@ -4778,7 +4749,6 @@ impl<'a> TypeCk<'a> {
 
     fn call(&mut self, callee: &V, args: &[V], line: usize, targs: &[V]) -> Ty {
         let argt: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
-        let loose_args: Vec<bool> = args.iter().map(|a| self.root_loose(a)).collect();
         // 構造体リテラルの引数: 従来の検査は型引数を見ないので、呼び出し側でも型引数の矛盾を見る。
         let sl: Vec<bool> = args.iter().map(|a| nname(a) == "StructLit").collect();
         let arg_stat: Vec<bool> = args.iter().map(|a| self.static_expr(a)).collect();
@@ -4845,7 +4815,6 @@ impl<'a> TypeCk<'a> {
                 t = self.field_ty(&t, s);
             }
             self.log_step(nline(callee), segs.len() - 1, false, &segs[segs.len() - 1], &t);
-            self.arg_loose = loose_args;
             self.arg_static = arg_stat;
             // `x.m(..)` の経路形の呼び先ノードに、受け手の型を載せる (KIR が トレイト側の impl (3.2) を引くため)。
             let cid = crate::parser::nid(callee);
@@ -4913,7 +4882,6 @@ impl<'a> TypeCk<'a> {
             }
             Target::Native(ref fq) | Target::Value(ref fq) if self.p.sigs.contains_key(fq) => {
                 let i = self.p.sigs[fq];
-                self.arg_loose = loose_args;
                 self.arg_static = arg_stat;
                 self.call_def(i, &argt, line, &sl, targs)
             }
@@ -4945,7 +4913,6 @@ impl<'a> TypeCk<'a> {
                 Ty::Unknown
             }
             Target::Fn(i) | Target::Sig(i) => {
-                self.arg_loose = loose_args;
                 self.arg_static = arg_stat;
                 self.call_def(i, &argt, line, &sl, targs)
             }
@@ -4966,7 +4933,6 @@ impl<'a> TypeCk<'a> {
     /// `sl` は、各引数の式が構造体リテラルかどうか。従来の検査は構造体リテラルの型引数を見ない
     /// (名前しか比べない) ので、同じ名前どうしの型引数の矛盾はここで報告する。
     fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V]) -> Ty {
-        let loose = std::mem::take(&mut self.arg_loose);
         let arg_stat = std::mem::take(&mut self.arg_static);
         let d = &self.p.defs[i];
         self.note_static_args(d, 0, argt, &arg_stat, line);
@@ -5076,7 +5042,7 @@ impl<'a> TypeCk<'a> {
             let Some(p) = d.params.get(k) else { break };
             let raw = from_v(&p.1, &gn);
             let pt = self.inst(&raw, &mut map);
-            if let Some((want, got)) = self.arg_ref_conflict(&raw, a, loose.get(k).copied().unwrap_or(false)) {
+            if let Some((want, got)) = self.arg_ref_conflict(&raw, a) {
                 self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, d.name, want, got, ref_hint(&want, &got, self.ty_copy_ref(&raw))), line);
             }
             let is_extern = d.kw == "extern";
@@ -5960,12 +5926,12 @@ impl<'a> TypeCk<'a> {
         }
     }
 
-    /// 式の型が「宣言どおりの値の型」と信用できるか。パターン束縛は外側の参照を落とした型を持つので、
-    /// 分岐・ブロック・ループを経る式 (その束縛を値にしうる) は信用しない。
+    /// 式の型が「宣言どおりの値の型」と信用できるか。
+    /// 分岐・ブロック・ループを経る式は信用しない。
     fn value_typed_expr(&self, e: &V) -> bool {
         match nname(e) {
             "Lit" | "Call" | "MCall" | "StructLit" | "Binary" => true,
-            "Path" => !self.root_loose(e),
+            "Path" => true,
             _ => false,
         }
     }
@@ -6009,10 +5975,8 @@ impl<'a> TypeCk<'a> {
     /// `want` は宣言の引数型 (型パラメータを含んでよい)、`got` は実引数の型。参照の段を左右そろえて
     /// 外し、片方だけが参照のまま値に当たったら食い違い。許すのは両側が参照 (`&mut T` → `&T`、
     /// `&[T; N]` → `&[T]`、`&T` → `&dyn Tr` を含む) の組だけ。決まっていない・型パラメータ・クロージャ・`dyn`・
-    /// `!` が絡むときは黙る。`loose` は実引数が「参照の段数が決まらない束縛」(参照越しの分解で得た名前) の
-    /// とき。その束縛は外側の参照を落とした型を持つので、値が要る所に参照が来る向きだけを見る
-    /// (落としているので参照が現れることはなく、逆向きだけが誤検出になり得る)。
-    fn arg_ref_conflict(&self, want: &Ty, got: &Ty, loose: bool) -> Option<(String, String)> {
+    /// `!` が絡むときは黙る。
+    fn arg_ref_conflict(&self, want: &Ty, got: &Ty) -> Option<(String, String)> {
         let g0 = self.deep(got);
         // 4.2: クロージャ → `fn(..)` はキャプチャなしのものだけ (環境を持てない)。
         if let (Ty::Closure { id: None, .. }, Ty::Closure { id: Some(node), .. }) = (want, &g0) {
@@ -6047,7 +6011,7 @@ impl<'a> TypeCk<'a> {
                     gi = b;
                 }
                 (w, Ty::Ref(..)) if plain(w) && !w.has_param() => return Some((want.show(), g0.show())),
-                (Ty::Ref(_, a), g) if !loose && plain(g) && !self.undetermined(g) && !matches!(**a, Ty::Param(_) | Ty::Unknown) && !self.undetermined(&g0) => {
+                (Ty::Ref(_, a), g) if plain(g) && !self.undetermined(g) && !matches!(**a, Ty::Param(_) | Ty::Unknown) && !self.undetermined(&g0) => {
                     return Some((want.show(), g0.show()));
                 }
                 _ => return None,

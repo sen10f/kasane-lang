@@ -1,0 +1,11 @@
+// expect: E3031
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let o = Some(1u32)
+    match &o {
+        Some(p) => {
+            *p = 2u32
+        }
+        None => core.mem.drop(())
+    }
+    Ok(())
+end t.main

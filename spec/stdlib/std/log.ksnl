@@ -37,9 +37,9 @@ fn std.log.build_line(level: std.log.Level, msg: &str, fields: &[(&str, &str)]) 
         match fields.get(k) {
             Some((key, value)) => {
                 out.push(',')?
-                std.json.push_quoted(&mut out, key)?
+                std.json.push_quoted(&mut out, *key)?
                 out.push(':')?
-                std.json.push_quoted(&mut out, value)?
+                std.json.push_quoted(&mut out, *value)?
             }
             None => return Ok(out)
         }

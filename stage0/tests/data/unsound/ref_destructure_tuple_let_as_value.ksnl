@@ -1,0 +1,12 @@
+// expect: E2023
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let pair = (1u32, 2u32)
+    let (a, b) = &pair
+    core.mem.drop(t.sink(a))
+    core.mem.drop(b)
+    Ok(())
+end t.main
+
+fn t.sink(x: u32) -> () uses [] panics never
+    core.mem.drop(x)
+end t.sink

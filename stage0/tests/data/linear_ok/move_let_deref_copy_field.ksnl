@@ -1,6 +1,6 @@
 fn t.f(x: &(alloc.string.String, usize)) -> usize uses [] panics never
     let (n, k) = x
-    t.peek(n).wrapping_add(k)
+    t.peek(n).wrapping_add(*k)
 end t.f
 
 fn t.main() -> () uses [alloc] panics never

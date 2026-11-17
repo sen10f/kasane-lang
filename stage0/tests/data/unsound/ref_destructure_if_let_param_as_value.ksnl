@@ -1,0 +1,18 @@
+// expect: E2023
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.pick(&Some(1u32)))
+    Ok(())
+end t.main
+
+fn t.pick(r: &Option<u32>) -> u32 uses [] panics never
+    if let Some(p) = r {
+        let q = p
+        t.sink(q)
+    } else {
+        0u32
+    }
+end t.pick
+
+fn t.sink(x: u32) -> u32 uses [] panics never
+    x
+end t.sink

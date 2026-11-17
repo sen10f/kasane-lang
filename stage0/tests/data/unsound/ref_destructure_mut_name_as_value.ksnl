@@ -1,0 +1,13 @@
+// expect: E2023
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut o = Some(1u32)
+    match &mut o {
+        Some(p) => core.mem.drop(t.sink(p))
+        None => core.mem.drop(())
+    }
+    Ok(())
+end t.main
+
+fn t.sink(x: u32) -> () uses [] panics never
+    core.mem.drop(x)
+end t.sink

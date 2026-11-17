@@ -2975,10 +2975,13 @@ fn call_arguments_keep_reference_levels() {
     // 許す暗黙の調整: 参照どうし・`&mut T` → `&T`・`&[T; N]` → `&[T]`・明示の `*` / `&`。
     let ok = "core.mem.drop(t.val(*r))\n    core.mem.drop(t.rf(r))\n    core.mem.drop(t.rf(&mut m))\n    core.mem.drop(t.rf(&x))\n    core.mem.drop(t.sl(&arr))";
     assert!(codes_of("arg_ref_ok", &run_body(ok)).is_empty());
-    // 参照越しの分解で得た名前は参照の段数が決まらない (仕様 4.2 は束縛の段数を定めない) ので、どちらにも使える。
-    let pat = "match &Some(x) {\n        Some(p) => {\n            core.mem.drop(t.val(p))\n            core.mem.drop(t.rf(p))\n        }\n        None => ()\n    }";
+    // 参照越しの分解で得た名前は欄の型への参照 (Rust の既定の束縛モード): 参照の位置にはそのまま、値の位置には `*` が要る。
+    let pat = "match &Some(x) {\n        Some(p) => {\n            core.mem.drop(t.val(*p))\n            core.mem.drop(t.rf(p))\n        }\n        None => ()\n    }";
     let pat_src = main_wrap(prefix, &format!("    let x = 1u8\n    {}\n", pat));
-    assert!(codes_of("arg_pat_loose", &pat_src).is_empty());
+    assert!(codes_of("arg_pat_ref", &pat_src).is_empty());
+    let pat_bad = "match &Some(x) {\n        Some(p) => core.mem.drop(t.val(p))\n        None => ()\n    }";
+    let pat_bad_src = main_wrap(prefix, &format!("    let x = 1u8\n    {}\n", pat_bad));
+    assert!(codes_of("arg_pat_ref_for_val", &pat_bad_src).contains(&"E2023".to_string()));
 }
 
 fn sn_main(t: &Tmp) -> String {
