@@ -1,0 +1,16 @@
+// expect: E3010
+type t.S
+    n: u32
+end t.S
+
+fn t.f(r: &u32, s: &mut t.S) -> () uses [] panics never
+    s.n = 2u32
+    core.mem.drop(*r)
+end t.f
+
+fn t.main() -> () uses [] panics never
+    let mut x = t.S { n: 1u32 }
+    let s = &mut x
+    let r = &s.n
+    t.f(r, s)
+end t.main

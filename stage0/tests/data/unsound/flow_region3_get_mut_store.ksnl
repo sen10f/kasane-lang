@@ -1,0 +1,18 @@
+// expect: E3010
+// 4.1 領域規則(3): 別の入力の指す先へ保存できない. 破る版.
+fn t.main() -> () uses [] panics never
+    let mut buf = [&0u32, &0u32, &0u32, &0u32]
+    let x = 9u32
+    t.store3(&mut buf, &x)
+end t.main
+
+fn t.store3(v: &mut [&u32], x: &u32) -> () uses [] panics never
+    match v.get_mut(0usize) {
+        Some(p) => {
+            *p = x
+        }
+        None => {
+            core.mem.drop(0u8)
+        }
+    }
+end t.store3

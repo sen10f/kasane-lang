@@ -983,16 +983,56 @@ impl<'a> Low<'a> {
             }
             if let Some((root, path)) = self.place_of(a) {
                 if path.is_empty() && self.locals.contains(&root) {
-                    // 他の引数に変数がある呼び出し (`record(c, "", why)` の `why` が `c` の欄から借りている) は、変数が呼び出しの
-                    // 引数として渡る借用なので、`*s` 全体 (再借用) との競合だけを見る (`selfhost/lower` の形を拒まない)。
-                    let others = args.iter().enumerate().any(|(j, b)| j != i && nname(b) == "Path" && self.place_of(b).map_or(false, |(r, _)| self.locals.contains(&r)));
-                    let p = if others { vec!["*".to_string()] } else { vec![] };
+                    // `&mut` の仮引数へ渡す参照の変数は `*s` 全体の再借用: 他の引数が `s` の欄から借りていれば (`t.f(s, &s.n)` /
+                    // `let r = &s.n` の `t.f(s, r)`) E3010 (`selfhost/lower` の `record(c, "", why)` の形も同じ)。
+                    let p: Vec<String> = vec![];
                     evs.push(Ev::Access { root, path: p, kind: Acc::MutB, line });
                 }
             }
         }
         for ev in evs {
             self.emit(c, ev);
+        }
+    }
+
+    /// 同じ参照の変数 (または同じ場所) を、1 回の呼び出しの 2 つの参照の仮引数へ渡すと、暗黙の再借用が 2 つ重なる
+    /// (`t.two(ra, ra)`、`core.mem.swap(ra, ra)`)。どちらかが `&mut` なら E3010。左から順に、`*場所` への借用を呼び出しの間保つ。
+    fn dup_reborrow_args(&mut self, c: usize, di: usize, args: &[V], line: usize, temps: &mut Vec<String>) {
+        let mut seen: Vec<(String, Vec<String>)> = vec![];
+        for (i, a) in args.iter().enumerate() {
+            let Some((_, pty)) = self.p.defs[di].params.get(i) else { continue };
+            if tag(pty) != "ref" || nname(a) != "Path" {
+                continue;
+            }
+            let mutable = matches!(tel(pty, 1), V::B(true));
+            let Some((root, path)) = self.place_of(a) else { continue };
+            if !self.locals.contains(&root) || Self::has_index(a) {
+                continue;
+            }
+            let mut p = path;
+            p.push("*".to_string());
+            // 重なる場所を 2 つ以上の仮引数へ渡すときだけ見る (他の引数は触らない)。
+            if !seen.iter().any(|(r, q)| *r == root && overlaps(q, &p)) {
+                if args.iter().enumerate().skip(i + 1).any(|(j, b)| {
+                    nname(b) == "Path"
+                        && self.p.defs[di].params.get(j).map_or(false, |(_, t)| tag(t) == "ref")
+                        && self.place_of(b).map_or(false, |(r, q)| {
+                            let mut q = q;
+                            q.push("*".to_string());
+                            r == root && overlaps(&q, &p)
+                        })
+                }) {
+                    seen.push((root.clone(), p.clone()));
+                } else {
+                    continue;
+                }
+            }
+            self.emit(c, Ev::Access { root: root.clone(), path: p.clone(), kind: if mutable { Acc::MutB } else { Acc::Read }, line });
+            let name = format!("$e{}", self.iters);
+            self.iters += 1;
+            self.emit(c, Ev::Def(name.clone()));
+            self.hold(c, Holder::Var(name.clone()), vec![Src::Place { root, path: p, mutable }]);
+            temps.push(name);
         }
     }
 
@@ -2228,6 +2268,7 @@ impl<'a> Low<'a> {
                     self.bind_receiver_arg_borrow(c, di, args, None);
                     self.mix_mut_args(c, di, args);
                     self.reborrow_mut_args(c, di, args, nline(e));
+                    self.dup_reborrow_args(c, di, args, nline(e), &mut temps);
                 }
                 self.end_temps(c, temps);
                 if self.call_suspends(callee) || self.susp.contains(&(self.cur, nline(e))) {
@@ -2480,7 +2521,33 @@ impl<'a> Low<'a> {
                         continue;
                     }
                     let Some((root, path)) = self.place_of(&f[0]) else { continue };
-                    let Some(&p) = param_of.get(root.as_str()) else { continue };
+                    let Some(&p) = param_of.get(root.as_str()) else {
+                        // 引数から借りた局所 (`match v.get_mut(0) { Some(p) => *p = x .. }`、`let p = &mut *v`) を通した書き込み
+                        // `*p = x` は、その引数の指す先への保存 (規則 (3))。出どころを求めて、引数ごとに同じ検査をかける。
+                        if path.is_empty() || path == ["*"] {
+                            let inner = match nname(&f[0]) {
+                                "Unary" if st(&nf(&f[0])[0]) == "*" => &nf(&f[0])[1],
+                                "Index" => &nf(&f[0])[0],
+                                _ => &f[0],
+                            };
+                            if nname(inner) == "Path" && self.place_of(inner).map_or(false, |(_, q)| q.is_empty()) {
+                                let ins = Inits::build(body);
+                                ins.pos.set(ins.at(v));
+                                let mut os = vec![];
+                                self.origins(inner, d, &ins, 0, &mut os);
+                                if let Some(value) = f.get(1) {
+                                    for o in os {
+                                        if let Origin::Param(p2) = o {
+                                            if is_ref[p2] {
+                                                check_store(p2, value, line);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    };
                     // `*p = v` は引数そのものの指す先への書き込み (欄ではない)。その指す先の領域は `p` の型の領域。
                     let element_lt = if path.is_empty() || path == ["*"] {
                         lt[p].clone()
@@ -3835,7 +3902,8 @@ impl<'a> Checker<'a> {
     fn ty_borrow_free(&self, t: &crate::types::Ty) -> bool {
         use crate::types::Ty;
         match t {
-            Ty::Prim(_) | Ty::Unit | Ty::Never => true,
+            // `dyn Tr` は `Box<dyn Tr + 'static>` としてしか書けない (E2047): 借用を持たない所有物。
+            Ty::Prim(_) | Ty::Unit | Ty::Never | Ty::Dyn(..) => true,
             Ty::Tuple(xs) => xs.iter().all(|x| self.ty_borrow_free(x)),
             Ty::Array(x, _) | Ty::Slice(x) => self.ty_borrow_free(x),
             Ty::Named(n, args) => {
