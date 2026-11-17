@@ -1,0 +1,15 @@
+// expect: E3031
+fn t.bad(o: u32) -> () uses [] panics never
+    let c = fn(x: u32) -> () capture [] {
+        t.bump(&mut x)
+    }
+    c(o)
+end t.bad
+
+fn t.bump(x: &mut u32) -> () uses [] panics never
+    *x = 1u32
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

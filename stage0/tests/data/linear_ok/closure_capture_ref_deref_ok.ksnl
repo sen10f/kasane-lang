@@ -1,0 +1,14 @@
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    let k = 7u64
+    let mut m = 1u64
+    let f = fn(x: u64) -> u64 capture [&k] {
+        x.wrapping_mul(*k)
+    }
+    let g = fn() -> () capture [&mut m] {
+        *m = (*m).wrapping_add(1u64)
+    }
+    g()
+    core.mem.drop(f(2u64))
+    core.mem.drop(m)
+    Ok(())
+end t.main
