@@ -3093,6 +3093,7 @@ impl<'a> Checker<'a> {
             if self.def(i).kw == "trait" {
                 self.check_trait_lifetimes(i);
             }
+            self.check_lifetime_names(i);
             if self.def(i).kw == "fn" {
                 self.check_elision(i);
             }
@@ -3217,6 +3218,101 @@ impl<'a> Checker<'a> {
         self.diags.retain(|d| seen.insert((d.file.clone(), d.code.clone(), d.fqn.clone(), d.line, if d.code == "E2042" { String::new() } else { d.msg.clone() })));
         self.check_recursion();
         self.check_nested_block_on();
+    }
+
+    /// 4.1: ライフタイムは型パラメータ列 (`['a, T]`) の先頭で宣言する。宣言していない名前 (`'static` 以外) を、
+    /// ヘッダ・欄の型で使ったら E1126。
+    fn check_lifetime_names(&mut self, di: usize) {
+        fn used(txt: &str) -> Vec<String> {
+            let cs: Vec<char> = txt.chars().collect();
+            let mut out = vec![];
+            let (mut i, mut in_str) = (0, false);
+            while i < cs.len() {
+                let c = cs[i];
+                if in_str {
+                    if c == '\\' {
+                        i += 1;
+                    } else if c == '"' {
+                        in_str = false;
+                    }
+                } else if c == '"' {
+                    in_str = true;
+                } else if c == '\'' {
+                    let mut j = i + 1;
+                    while j < cs.len() && (cs[j].is_alphanumeric() || cs[j] == '_') {
+                        j += 1;
+                    }
+                    // 文字リテラル (`'a'`・`'\n'`) ではなく、小文字で始まる名前だけ。
+                    if j > i + 1 && cs[i + 1].is_ascii_lowercase() && cs.get(j) != Some(&'\'') {
+                        out.push(cs[i + 1..j].iter().collect());
+                    }
+                    i = j.max(i + 1);
+                    continue;
+                }
+                i += 1;
+            }
+            out
+        }
+        let d = self.def(di);
+        if !matches!(d.kw.as_str(), "fn" | "type" | "enum" | "trait" | "impl" | "extern" | "const" | "static") {
+            return;
+        }
+        let head = d.header.split(" uses ").next().unwrap_or("");
+        // 直前の `impl['a, T] ..` の行 (間に `fn` だけを挟む) の型パラメータ列も、メソッドから見える。
+        let mut inherited: Vec<String> = vec![];
+        if d.kw == "fn" {
+            let mut before: Vec<&Def> = self.p.defs.iter().filter(|x| x.file == d.file && x.line < d.line).collect();
+            before.sort_by_key(|x| std::cmp::Reverse(x.line));
+            for x in before {
+                if x.kw == "impl" || x.kw == "trait" {
+                    let h = x.header.split(" uses ").next().unwrap_or("");
+                    let end = h.find(']').unwrap_or(h.len());
+                    inherited = used(&h[..end]);
+                    break;
+                }
+                if x.kw != "fn" {
+                    break;
+                }
+            }
+        }
+        // 型パラメータ列は名前の直後の `[..]` (最初の `(` より前)。
+        let paren = head.find('(').unwrap_or(head.len());
+        let mut declared: Vec<String> = inherited;
+        if let Some(o) = head[..paren].find('[') {
+            let mut depth = 0;
+            let mut end = head.len();
+            for (k, c) in head[o..].char_indices() {
+                match c {
+                    '[' => depth += 1,
+                    ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = o + k;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            declared.extend(used(&head[o..end]));
+            // 宣言の列そのものでは、`'b: 'a` の右辺も使用 (宣言済みの名前だけが書ける)。ここでは宣言として数える。
+            let mut names: Vec<String> = used(head);
+            names.extend(d.field_lifetimes.iter().flat_map(|f| f.1.clone()));
+            return self.report_undeclared_lifetimes(di, &declared, names);
+        }
+        let mut names: Vec<String> = used(head);
+        names.extend(d.field_lifetimes.iter().flat_map(|f| f.1.clone()));
+        self.report_undeclared_lifetimes(di, &declared, names)
+    }
+
+    fn report_undeclared_lifetimes(&mut self, di: usize, declared: &[String], names: Vec<String>) {
+        for n in names {
+            if n != "static" && !declared.contains(&n) {
+                let msg = format!("{}: lifetime `'{}` is not declared (declare it at the head of the type parameter list, for example `['{}]`)", self.def(di).name, n, n);
+                self.diag("E1126", msg, di, 0);
+                return;
+            }
+        }
     }
 
     fn check_elision(&mut self, di: usize) {
