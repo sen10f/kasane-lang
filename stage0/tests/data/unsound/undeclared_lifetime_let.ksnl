@@ -1,0 +1,9 @@
+// expect: E1126
+fn t.bad(x: u32) -> u32 uses [] panics never
+    let y: &'a u32 = &x
+    *y
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

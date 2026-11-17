@@ -1,0 +1,8 @@
+// expect: E1126
+trait t.Tr
+    fn m(self: &Self) -> &'a u32 uses [] panics never
+end t.Tr
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
