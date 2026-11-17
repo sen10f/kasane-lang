@@ -1,0 +1,62 @@
+// expect-accept
+// 埋め込み文章を単語に分割し HashMap で頻度を数えて出力する実用的な小プログラム。木走査とネイティブで出力が一致するべき。
+const t.WORDS: &str = "to be or not to be that is the question whether tis nobler in the mind to suffer"
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    for w in t.WORDS.split(" ") {
+        match m.get(&w) {
+            Some(n) => {
+                let cur: u32 = *n
+                let nn = cur.wrapping_add(1u32)
+                match m.insert(w, nn) {
+                    Ok(_r) => {
+                    }
+                    Err(_e) => {
+                        core.panic.panic("insert")
+                    }
+                }
+            }
+            None => {
+                match m.insert(w, 1u32) {
+                    Ok(_r) => {
+                    }
+                    Err(_e) => {
+                        core.panic.panic("insert")
+                    }
+                }
+            }
+        }
+    }
+    for (w, c) in m.iter() {
+        let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+        match line.push_str(*w) {
+            Ok(()) => {
+            }
+            Err(_e) => {
+                core.panic.panic("push_str")
+            }
+        }
+        match line.push_str(" ") {
+            Ok(()) => {
+            }
+            Err(_e) => {
+                core.panic.panic("push_str")
+            }
+        }
+        match line.push_i64(i64.from_u32(*c)) {
+            Ok(()) => {
+            }
+            Err(_e) => {
+                core.panic.panic("push_i64")
+            }
+        }
+        match std.io.print_line(line.as_str()) {
+            Ok(()) => {
+            }
+            Err(_e) => {
+                core.panic.panic("print_line")
+            }
+        }
+    }
+end t.main

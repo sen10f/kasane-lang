@@ -1,0 +1,14 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    match m.insert("k", s) {
+        Ok(_old) => {
+        }
+        Err(_e) => {
+            core.panic.panic("insert")
+        }
+    }
+    core.check.eq(m.len(), 1usize)
+    std.io.print_line("ok")
+    Ok(())
+end t.main
