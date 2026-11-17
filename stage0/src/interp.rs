@@ -552,11 +552,40 @@ impl Interp {
 
     // ------------------------------------------------------------ 評価
     pub fn eval_block_body(&mut self, blk: &V, sc: &Scope) -> Res {
+        self.run_stmts(items(&nf(blk)[0]), sc)
+    }
+
+    /// 文を順に実行する。`infer::annotate_owned_drops` が印を付けた `let` (所有する局所で、借用の文脈でしか使われないもの) の
+    /// 束縛は、囲みを抜けるとき (値・`return`・`?`・`break` のどの経路でも) 解放済みにする。panic・終了は巻き戻さない。
+    fn run_stmts(&mut self, stmts: &[V], sc: &Scope) -> Res {
         let mut v = Val::Unit;
-        for s in items(&nf(blk)[0]) {
-            v = self.exec_stmt(s, sc)?;
+        let mut dying: Vec<String> = vec![];
+        for s in stmts {
+            let r = self.exec_stmt(s, sc);
+            match r {
+                Ok(x) => v = x,
+                Err(e) => {
+                    if !matches!(e, Ctl::Panic(_) | Ctl::Exit(_)) {
+                        Self::kill_bindings(&dying, sc);
+                    }
+                    return Err(e);
+                }
+            }
+            if nname(s) == "Let" && matches!(nf(s).get(4), Some(V::S(m)) if m == "own") {
+                dying.push(st(&nf(&nf(s)[0])[0]));
+            }
         }
+        // 末尾の式の値が束縛そのものを返す形は、印を付ける側が (借用の文脈でない使い方として) 除いている。
+        Self::kill_bindings(&dying, sc);
         Ok(v)
+    }
+
+    fn kill_bindings(names: &[String], sc: &Scope) {
+        for n in names {
+            if let Some(v) = sc.borrow().vars.get(n) {
+                mark_dead(v);
+            }
+        }
     }
 
     fn exec_stmt(&mut self, s: &V, sc: &Scope) -> Res {
@@ -589,11 +618,7 @@ impl Interp {
 
     fn eval_block(&mut self, blk: &V, sc: &Scope) -> Res {
         let inner = new_scope(Some(sc), Rc::from(""));
-        let mut v = Val::Unit;
-        for s in items(&nf(blk)[0]) {
-            v = self.exec_stmt(s, &inner)?;
-        }
-        Ok(v)
+        self.run_stmts(items(&nf(blk)[0]), &inner)
     }
 
     pub fn eval(&mut self, e: &V, sc: &Scope) -> Res {
@@ -717,10 +742,20 @@ impl Interp {
             "Match" => {
                 let v = self.eval(&f[0], sc)?;
                 self.move_out(&f[0], sc, &v);
-                for arm in items(&f[1]) {
+                for (ai, arm) in items(&f[1]).iter().enumerate() {
                     let s2 = new_scope(Some(sc), Rc::from(""));
                     if self.bind(&items(arm)[0], v.clone(), &s2)? {
-                        return self.eval(&items(arm)[1], &s2);
+                        let r = self.eval(&items(arm)[1], &s2);
+                        // `infer::annotate_owned_drops` が印を付けた腕の束縛 (値で受けた所有する値) は、腕の終わりで死ぬ。
+                        if let Some(per_arm) = f.get(2) {
+                            if !matches!(r, Err(Ctl::Panic(_)) | Err(Ctl::Exit(_))) {
+                                if let Some(ns) = items(per_arm).get(ai) {
+                                    let names: Vec<String> = items(ns).iter().map(st).collect();
+                                    Self::kill_bindings(&names, &s2);
+                                }
+                            }
+                        }
+                        return r;
                     }
                 }
                 panic(format!("non-exhaustive match at line {}", nlineno(e)))
@@ -756,7 +791,11 @@ impl Interp {
                     }
                     let s2 = new_scope(Some(sc), Rc::from(""));
                     self.bind(&f[0], en.pl[0].clone(), &s2)?;
-                    match self.eval(&f[2], &s2) {
+                    let r = self.eval(&f[2], &s2);
+                    if matches!(f.get(3), Some(V::S(m)) if m == "own") && !matches!(r, Err(Ctl::Panic(_)) | Err(Ctl::Exit(_))) {
+                        Self::kill_bindings(&[st(&nf(&f[0])[0])], &s2);
+                    }
+                    match r {
                         Ok(_) | Err(Ctl::Continue) => {}
                         Err(Ctl::Break) => break,
                         Err(e) => return Err(e),
@@ -1203,13 +1242,13 @@ impl Interp {
                         if i < 0 || i as usize >= l.borrow().len() {
                             return panic(format!("index out of bounds: the len is {} but the index is {}", l.borrow().len(), i));
                         }
-                        Ok(Val::Ref(Rc::new(IdxPlace(l, i as usize))))
+                        Ok(Val::Ref(Rc::new(IdxPlace::new(l, i as usize))))
                     }
                     Val::View(l, a, bnd) => {
                         if i < 0 || i as usize >= bnd - a {
                             return panic(format!("index out of bounds: the len is {} but the index is {}", bnd - a, i));
                         }
-                        Ok(Val::Ref(Rc::new(IdxPlace(l, a + i as usize))))
+                        Ok(Val::Ref(Rc::new(IdxPlace::new(l, a + i as usize))))
                     }
                     _ => panic("bad place"),
                 }
@@ -1272,6 +1311,17 @@ impl Interp {
             sc_declare(sc, &st(&f[0]), v);
             return Ok(true);
         }
+        // 参照越しの分解 (`&mut T` / `&T` の値を `Some(v)` などで分解) の束縛は、欄への参照にする (Rust の既定の束縛モード。
+        // ネイティブと同じく `*v = ..` が元の値へ書ける)。参照の連鎖の一番内側の場所を持ち回る。
+        let mut host: Option<Rc<dyn Place>> = None;
+        {
+            let mut cur = v.clone();
+            while let Val::Ref(p) = &cur {
+                host = Some(p.clone());
+                let nx = p.get();
+                cur = nx;
+            }
+        }
         let v = dr(&v);
         match n {
             "PLit" => {
@@ -1285,8 +1335,12 @@ impl Interp {
                 if t.len() != ps.len() {
                     return Ok(false);
                 }
-                for (p, x) in ps.iter().zip(t.iter()) {
-                    if !self.bind(p, x.clone(), sc)? {
+                for (i, (p, x)) in ps.iter().zip(t.iter()).enumerate() {
+                    let x = match &host {
+                        Some(h) => Val::Ref(Rc::new(TuplePlace(h.clone(), i))),
+                        None => x.clone(),
+                    };
+                    if !self.bind(p, x, sc)? {
                         return Ok(false);
                     }
                 }
@@ -1324,8 +1378,12 @@ impl Interp {
                 if e.pl.len() != ps.len() {
                     return Ok(false);
                 }
-                for (p, x) in ps.iter().zip(e.pl.iter()) {
-                    if !self.bind(p, x.clone(), sc)? {
+                for (i, (p, x)) in ps.iter().zip(e.pl.iter()).enumerate() {
+                    let x = match &host {
+                        Some(h) => Val::Ref(Rc::new(PlPlace(h.clone(), i))),
+                        None => x.clone(),
+                    };
+                    if !self.bind(p, x, sc)? {
                         return Ok(false);
                     }
                 }
@@ -1335,7 +1393,10 @@ impl Interp {
                 let Val::Struct(s) = &v else { return Ok(false) };
                 for fp in items(&f[1]) {
                     let fnm = st(&items(fp)[0]);
-                    let x = s.get(&fnm).unwrap_or(Val::Unit);
+                    let x = match &host {
+                        Some(_) => Val::Ref(Rc::new(FieldPlace(s.clone(), fnm.clone()))),
+                        None => s.get(&fnm).unwrap_or(Val::Unit),
+                    };
                     if !self.bind(&items(fp)[1], x, sc)? {
                         return Ok(false);
                     }

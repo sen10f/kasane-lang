@@ -186,3 +186,233 @@ end t.main
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     assert_eq!(text(&o.stdout), "abc\nabc\nok\n");
 }
+
+const REFBIND_IFLET_MUT_REF_BIND_MISMATCH: &str = r#"// expect-accept
+// if let で &mut Option の中身を可変束縛して書き戻す（match の参照越し束縛、cheat sheet 205 行）
+fn t.bump(opt: &mut Option<i32>, delta: i32) -> bool uses [] panics never
+    if let Some(v) = opt {
+        *v = v.wrapping_add(delta)
+        true
+    } else {
+        false
+    }
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut opt = Some(5i32)
+    core.check.eq(t.bump(&mut opt, 3i32), true)
+    std.io.print_line("iflet_mut ok")
+end t.main
+"#;
+
+#[test]
+fn ref_bind_writes_through_iflet_mut_ref_bind_mismatch() {
+    // 段 2: 参照越しの分解の束縛は欄への参照 (ネイティブと同じ。`*v = ..` が元の値へ書ける)
+    let t = Tmp::new("par_iflet_mut_ref_bind_mismatch", REFBIND_IFLET_MUT_REF_BIND_MISMATCH);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "iflet_mut ok");
+}
+
+const REFBIND_FP_MATCH_ASSIGN_PROBE: &str = r#"// expect-accept
+// match で &mut Option の束縛を通じて代入（if let 版と同じ木走査/ネイティブ分岐の調査）
+fn t.bump_match(opt: &mut Option<i32>, delta: i32) -> bool uses [] panics never
+    match opt {
+        Some(v) => {
+            *v = v.wrapping_add(delta)
+            true
+        }
+        None => {
+            false
+        }
+    }
+end t.bump_match
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut opt = Some(5i32)
+    core.check.eq(t.bump_match(&mut opt, 3i32), true)
+    std.io.print_line("match_assign ok")
+end t.main
+"#;
+
+#[test]
+fn ref_bind_writes_through_fp_match_assign_probe() {
+    // 段 2: 参照越しの分解の束縛は欄への参照 (ネイティブと同じ。`*v = ..` が元の値へ書ける)
+    let t = Tmp::new("par_fp_match_assign_probe", REFBIND_FP_MATCH_ASSIGN_PROBE);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "match_assign ok");
+}
+
+const REFBIND_FP_ENUM_VARIANT_LIKE: &str = r#"// expect-accept
+// &mut 列挙体を match で分解し変種の欄を書き戻す
+enum t.Kind pub
+    A(i32)
+    B(i32)
+end t.Kind
+
+fn t.bump_kind(k: &mut t.Kind, d: i32) -> () uses [] panics never
+    match k {
+        t.Kind.A(v) => {
+            *v = v.wrapping_add(d)
+        }
+        t.Kind.B(v) => {
+            *v = v.wrapping_add(d)
+        }
+    }
+end t.bump_kind
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut k = t.Kind.A(5i32)
+    t.bump_kind(&mut k, 3i32)
+    match k {
+        t.Kind.A(v) => {
+            core.check.eq(v, 8i32)
+        }
+        t.Kind.B(_v) => {
+            core.panic.panic("wrong variant")
+        }
+    }
+    std.io.print_line("enum_variant ok")
+end t.main
+"#;
+
+#[test]
+fn ref_bind_writes_through_fp_enum_variant_like() {
+    // 段 2: 参照越しの分解の束縛は欄への参照 (ネイティブと同じ。`*v = ..` が元の値へ書ける)
+    let t = Tmp::new("par_fp_enum_variant_like", REFBIND_FP_ENUM_VARIANT_LIKE);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "enum_variant ok");
+}
+
+const REFBIND_REFBIND: &str = r#"type t.S
+    a: i32
+    b: i32
+end t.S
+
+fn t.tup(p: &mut (i32, i32)) -> () uses [] panics never
+    let (x, y) = p
+    *x = x.wrapping_add(1i32)
+    *y = y.wrapping_add(10i32)
+end t.tup
+
+fn t.st(s: &mut t.S) -> () uses [] panics never
+    let t.S { a: a, b: b } = s
+    *a = a.wrapping_add(5i32)
+    *b = b.wrapping_add(7i32)
+end t.st
+
+fn t.nest(o: &mut Option<(i32, i32)>) -> () uses [] panics never
+    match o {
+        Some((x, _y)) => {
+            *x = x.wrapping_add(100i32)
+        }
+        None => ()
+    }
+end t.nest
+
+fn t.rd(o: &Option<i32>) -> i32 uses [] panics never
+    match o {
+        Some(v) => *v
+        None => 0i32
+    }
+end t.rd
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut p = (1i32, 2i32)
+    t.tup(&mut p)
+    let (x, y) = p
+    core.check.eq(x, 2i32)
+    core.check.eq(y, 12i32)
+    let mut s = t.S { a: 1i32, b: 2i32 }
+    t.st(&mut s)
+    core.check.eq(s.a, 6i32)
+    core.check.eq(s.b, 9i32)
+    let mut o = Some((1i32, 2i32))
+    t.nest(&mut o)
+    match o {
+        Some((q, _w)) => core.check.eq(q, 101i32)
+        None => core.panic.panic("none")
+    }
+    core.check.eq(t.rd(&Some(4i32)), 4i32)
+    std.io.print_line("refbind ok")
+end t.main
+"#;
+
+#[test]
+fn ref_bind_writes_through_refbind() {
+    // 段 2: 参照越しの分解の束縛は欄への参照 (ネイティブと同じ。`*v = ..` が元の値へ書ける)
+    let t = Tmp::new("par_refbind", REFBIND_REFBIND);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "refbind ok");
+}
+
+// 段 2: drop を伴わない死 (スコープの終わり・`for` の束縛・`match` の腕の束縛・`Vec` の再確保)。unsound/ の再現を検査なしで走らせる。
+macro_rules! dead_case {
+    ($test:ident, $file:literal) => {
+        #[test]
+        fn $test() {
+            assert_dead_read(concat!("par_", $file), include_str!(concat!("data/unsound/", $file, ".ksnl")));
+        }
+    };
+}
+dead_case!(scope_end_block_local, "flow_store_through_mut_alias");
+dead_case!(scope_end_block_value, "header_lifetime_return_other");
+dead_case!(for_binding_dies_each_iteration, "flow_for_binding_outlives");
+dead_case!(match_arm_binding_dies_with_the_arm, "flow_match_arm_binding_outlives");
+dead_case!(match_temp_scrutinee_binding_dies, "match_arm_owned_as_str_escape");
+dead_case!(vec_growth_invalidates_element_borrows, "fqn_same_name_shared_push");
+dead_case!(vec_growth_invalidates_field_vec_borrows, "flow_ref_field_borrow_inherits_loan");
+
+#[test]
+fn scope_end_marks_do_not_touch_live_values() {
+    // 正しいプログラム: ブロックの局所の String を借用して使い切る、値を返す・move する、`for` で要素を使う、
+    // `match` の腕で値を使う、`push` を繰り返して読む。どれも出力は変わらない。
+    let src = r#"fn t.mk(s: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics never
+    match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(v) => v
+        Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+    }
+end t.mk
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let n = {
+        let s = t.mk("hello")
+        s.len()
+    }
+    core.check.eq(n, 5usize)
+    let kept = {
+        let s = t.mk("kept")
+        s
+    }
+    std.io.print_line(kept.as_str())?
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < 100u32 {
+        core.mem.drop(v.push(t.mk("item")))
+        i = i + 1u32
+    }
+    let mut total = 0usize
+    for s in v {
+        total = total + s.len()
+    }
+    core.check.eq(total, 400usize)
+    match Some(t.mk("arm")) {
+        Some(s) => std.io.print_line(s.as_str())?
+        None => ()
+    }
+    let w = match Some(t.mk("moved")) {
+        Some(s) => s
+        None => t.mk("none")
+    }
+    std.io.print_line(w.as_str())?
+    std.io.print_line("ok")
+end t.main
+"#;
+    let t = Tmp::new("par_scope_live", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout), "kept\narm\nmoved\nok\n");
+}
