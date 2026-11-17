@@ -2534,7 +2534,7 @@ impl<'a> TypeCk<'a> {
         for (k, a) in args.iter().enumerate() {
             let raw_pt = from_v(&d.params[k + 1].1, &gn);
             let pt = self.inst(&raw_pt, &mut map);
-            if let Some((want, got)) = self.arg_ref_conflict(&raw_pt, a) {
+            if let Some((want, got)) = self.arg_ref_conflict(&raw_pt, a).or_else(|| self.param_arg_ref_conflict(&raw_pt, &pt, a)) {
                 self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, name, want, got, ref_hint(&want, &got, self.ty_copy_ref(&raw_pt))), line);
             }
             if let Err(e) = self.unify2(&pt, a) {
@@ -4314,7 +4314,24 @@ impl<'a> TypeCk<'a> {
                             "Unary" if st(&nf(&f[0])[0]) == "*" && nname(&nf(&f[0])[1]) == "Path" => {
                                 (Some(strs(&nf(&nf(&f[0])[1])[0])), true)
                             }
-                            "Unary" => (None, false),
+                            "Unary" => {
+                                // `*e = ..` の被演算子が名前以外の式 (呼び出し・メソッド呼び出し・欄・添字):
+                                // 式の型が共有の参照 `&T` なら E3031 (`*c.get() = 5` を `get -> &u64` で)。
+                                if st(&nf(&f[0])[0]) == "*" {
+                                    let id = crate::parser::nid(&nf(&f[0])[1]);
+                                    let ot = self.expr_pending.get(&id).map(|x| x.2.clone());
+                                    if let Some(ot) = ot {
+                                        if matches!(self.resolve(&ot), Ty::Ref(false, _)) {
+                                            self.diag(
+                                                "E3031",
+                                                "cannot assign through a shared reference returned by an expression".to_string(),
+                                                nline(&f[0]),
+                                            );
+                                        }
+                                    }
+                                }
+                                (None, false)
+                            }
                             _ => (self.base_local_segs(&f[0]), false),
                         };
                         if let Some(segs) = root {
@@ -5052,7 +5069,7 @@ impl<'a> TypeCk<'a> {
             let Some(p) = d.params.get(k) else { break };
             let raw = from_v(&p.1, &gn);
             let pt = self.inst(&raw, &mut map);
-            if let Some((want, got)) = self.arg_ref_conflict(&raw, a) {
+            if let Some((want, got)) = self.arg_ref_conflict(&raw, a).or_else(|| self.param_arg_ref_conflict(&raw, &pt, a)) {
                 self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, d.name, want, got, ref_hint(&want, &got, self.ty_copy_ref(&raw))), line);
             }
             let is_extern = d.kw == "extern";
@@ -5986,6 +6003,23 @@ impl<'a> TypeCk<'a> {
     /// 外し、片方だけが参照のまま値に当たったら食い違い。許すのは両側が参照 (`&mut T` → `&T`、
     /// `&[T; N]` → `&[T]`、`&T` → `&dyn Tr` を含む) の組だけ。決まっていない・型パラメータ・クロージャ・`dyn`・
     /// `!` が絡むときは黙る。
+    /// 引数の宣言の型が型パラメータそのもの (`value: T`) で、`T` が参照でない型に決まっているのに参照を渡す
+    /// (`Sender<String>.send(&s)`): 最上位でも参照の段数は透過しない (E2023)。
+    fn param_arg_ref_conflict(&self, raw: &Ty, pt: &Ty, got: &Ty) -> Option<(String, String)> {
+        if !matches!(raw, Ty::Param(_)) {
+            return None;
+        }
+        let g = self.deep(got);
+        if !matches!(g, Ty::Ref(..)) {
+            return None;
+        }
+        let w = self.deep(pt);
+        if matches!(w, Ty::Named(..) | Ty::Tuple(_) | Ty::Array(..)) && !self.undetermined(&w) {
+            return Some((w.show(), g.show()));
+        }
+        None
+    }
+
     fn arg_ref_conflict(&self, want: &Ty, got: &Ty) -> Option<(String, String)> {
         let g0 = self.deep(got);
         // 4.2: クロージャ → `fn(..)` はキャプチャなしのものだけ (環境を持てない)。

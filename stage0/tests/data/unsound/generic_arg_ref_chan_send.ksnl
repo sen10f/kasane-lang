@@ -1,0 +1,22 @@
+// expect: E2023
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, thread] panics never
+    let made = std.sync.channel::<alloc.string.String, std.alloc.System>(std.alloc.SYSTEM, 4usize)
+    let (tx, rx) = made?
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut got = alloc.string.String.new(std.alloc.SYSTEM)
+    match tx.send(&s) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match rx.recv() {
+        Ok(g) => {
+            got = g
+        }
+        Err(_e) => ()
+    }
+    core.mem.drop(tx)
+    core.mem.drop(rx)
+    core.mem.drop(got)
+    core.mem.drop(s)
+    Ok(())
+end t.main

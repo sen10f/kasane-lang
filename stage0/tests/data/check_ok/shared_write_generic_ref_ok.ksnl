@@ -1,0 +1,22 @@
+type t.Cell
+    n: u64
+end t.Cell
+
+fn t.Cell.get_mut(self: &mut t.Cell) -> &mut u64 uses [] panics never
+    &mut self.n
+end t.Cell.get_mut
+
+fn t.id[T](x: T) -> T uses [] panics never
+    x
+end t.id
+
+fn t.main() -> () uses [] panics never
+    let mut c = t.Cell { n: 0u64 }
+    *c.get_mut() = 5u64
+    let n = 7u64
+    let r = t.id(&n)
+    let m = t.id::<&u64>(&n)
+    core.mem.drop(r)
+    core.mem.drop(m)
+    core.mem.drop(c)
+end t.main
