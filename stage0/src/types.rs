@@ -6014,7 +6014,7 @@ impl<'a> TypeCk<'a> {
             return None;
         }
         let w = self.deep(pt);
-        if matches!(w, Ty::Named(..) | Ty::Tuple(_) | Ty::Array(..)) && !self.undetermined(&w) {
+        if matches!(w, Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_) | Ty::Array(..)) && !self.undetermined(&w) {
             return Some((w.show(), g.show()));
         }
         None

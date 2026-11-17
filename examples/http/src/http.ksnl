@@ -217,7 +217,7 @@ fn http.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, 
     }
     for i in core.iter.range(0usize, n) {
         match chunk.get(i) {
-            Some(b) => data.push(b)?
+            Some(b) => data.push(*b)?
             None => return Err(http.io_failed())
         }
     }
