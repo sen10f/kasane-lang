@@ -2890,7 +2890,7 @@ impl<'a> Low<'a> {
         };
         let read_field = read_path.first().cloned();
         match s {
-            Src::Place { root, path: _, .. } => {
+            Src::Place { root, path, .. } => {
                 if root == "$temp" {
                     // 一時値の借用は文の終わりで死ぬ。戻り値へ流れれば、局所の借用と同じく寿命が足りない。
                     out.push(Origin::Local(root.clone()));
@@ -2904,7 +2904,13 @@ impl<'a> Low<'a> {
                     // 借用を持つ変数 (`let y = x`) を通した借用は、その変数の出どころ。
                     let mut sub = vec![];
                     self.origins(init, d, inits, depth + 1, &mut sub);
-                    if sub.is_empty() { out.push(Origin::Local(root.clone())) } else { out.extend(sub) }
+                    // 初期値が包んだ値 (`Ok(x)`・組・構造体) なら、変数は参照ではなく局所の値そのもの: 借りれば局所の借用でもある
+                    // (`let t = Ok(x); (&t).as_ref()`)。参照の変数 (`let y = x`) を通した再借用は中身の出どころだけ。
+                    let owns = self.wrapped_parts(init).is_some() && !path.iter().any(|x| x == "*");
+                    if sub.is_empty() || owns {
+                        out.push(Origin::Local(root.clone()));
+                    }
+                    out.extend(sub);
                 }
             }
             Src::Alias(v) | Src::Stored { root: v, .. } => {
@@ -3364,6 +3370,19 @@ impl<'a> Low<'a> {
         for v in &all {
             if nname(v) == "Return" && !is_nil(&nf(v)[0]) {
                 Self::value_leaves(&nf(v)[0], &mut vals);
+            }
+        }
+        // 包んだ値を束縛した局所をそのまま返す形 (`let z = Some((y, x)); z`) は、束縛の初期値の位置ごとに照らす。
+        for v in vals.iter_mut() {
+            for _ in 0..4 {
+                if nname(v) != "Path" || strs(&nf(v)[0]).len() != 1 {
+                    break;
+                }
+                inits.pos.set(inits.at(v));
+                match inits.plain(&strs(&nf(v)[0])[0]) {
+                    Some(init) if self.wrapped_parts(init).is_some() => *v = init,
+                    _ => break,
+                }
             }
         }
         // 葉ごとに、その葉が運んでよい領域 (戻り値の型の位置) を付ける。
@@ -4366,7 +4385,10 @@ impl<'a> Inits<'a> {
                 for arm in items(&f[1]) {
                     // 腕は `V::L` (パターン・本体・ガード) で、`walk` が辿れないので各要素の最後の位置を取る。
                     let to = items(arm).iter().map(max_pos).max().unwrap_or((0, 0));
-                    self.add(&items(arm)[0], pos_of(&items(arm)[0]), to, Some(&f[0]), scrut_is_local);
+                    // 腕のパターンが名前だけ (`match &x { rr => .. }`) なら、束縛は対象の値そのもの (参照の別名) で、
+                    // 分解ではない。対象が `&place` のときも `let rr = &x` と同じに扱う。
+                    let whole = nname(&items(arm)[0]) == "PBind" && nname(&f[0]) == "Unary" && matches!(st(&nf(&f[0])[0]).as_str(), "&" | "&mut");
+                    self.add(&items(arm)[0], pos_of(&items(arm)[0]), to, Some(&f[0]), scrut_is_local || whole);
                 }
             }
             _ => {}
