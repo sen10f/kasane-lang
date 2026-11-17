@@ -1821,6 +1821,14 @@ impl<'a> TypeCk<'a> {
                 let (wt, wa, n) = (wt.clone(), wa.clone(), n.clone());
                 self.check_dyn_impl(&wt, &wa, &n);
             }
+            // 型パラメータ `H` を `dyn Tr` へ渡せるのは、宣言された境界 (とそのスーパートレイト) に `Tr` があるときだけ。
+            (Ty::Dyn(wt, _), Ty::Param(pn)) => {
+                if let Some(root) = crate::check::resolve_trait_fqn(self.p, wt) {
+                    if param_bound_implies(self.p, self.def(), pn, &root) == Some(false) {
+                        self.diag("E2046", format!("the type parameter `{}` does not implement the trait `{}`: add the bound `{}: {}`", pn, root, pn, root), self.cur_line);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -3295,6 +3303,13 @@ impl<'a> TypeCk<'a> {
                 continue;
             };
             let Some(root) = crate::check::resolve_trait_fqn(self.p, tr) else { continue };
+            // 型パラメータ: 宣言された境界 (とそのスーパートレイト) が `Tr` を含むときだけ `into_dyn` できる。
+            if let Ty::Param(pn) = t.strip() {
+                if param_bound_implies(self.p, self.def(), pn, &root) == Some(false) {
+                    self.diag("E2046", format!("the type parameter `{}` does not implement the trait `{}`: add the bound `{}: {}`", pn, root, pn, root), line);
+                }
+                continue;
+            }
             let Ty::Named(n, _) = t.strip() else { continue };
             let Some(&i) = self.p.types.get(n) else { continue };
             let (tr, dargs, n2) = (tr.clone(), dargs.clone(), n.clone());
@@ -3428,6 +3443,12 @@ impl<'a> TypeCk<'a> {
             // 型パラメータは、いま検査している定義の境界が `tr` を (スーパートレイトまで辿って) 含むときだけ満たす。
             // 境界に無ければ原因になる (`fn f[T](a: T) { g(a) }` で `g` が `T: Eq` を要るとき、E2030)。
             Ty::Param(pn) => (param_bound_implies(self.p, self.def(), pn, tr) == Some(false)).then(|| t.clone()),
+            // 基本型が利用者のトレイトを満たすのは、その `impl` があるとき (または全型への `impl blanket`) だけ。
+            // 標準のトレイト (`Clone` `Display` など) の組み込みの実装は表に無いので、ここでは見ない。
+            Ty::Prim(p) if !(tr.starts_with("core.") || tr.starts_with("alloc.") || tr.starts_with("std.")) => {
+                let has = self.p.impls.contains(&(tr.to_string(), p.clone())) || self.p.impls.contains(&(tr.to_string(), "blanket".to_string()));
+                (!has).then(|| t.clone())
+            }
             Ty::Prim(p) if p == "f32" || p == "f64" => {
                 matches!(tr, "core.cmp.Eq" | "core.cmp.Ord" | "core.hash.Hash").then(|| t.clone())
             }

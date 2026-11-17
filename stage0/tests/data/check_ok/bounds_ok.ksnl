@@ -1,0 +1,28 @@
+import alloc.boxed
+
+type t.Counter pub
+    seen: u32
+end t.Counter
+
+trait t.Handler[E: uses, P: panics] pub
+    fn handle(self: &mut Self, event: &str) -> u32 uses [E] panics P
+end t.Handler
+
+type t.Slot
+    handler: alloc.boxed.Box<dyn t.Handler<[io.console], never> + 'static, std.alloc.System>
+end t.Slot
+
+impl t.Handler<[], never> for t.Counter
+fn t.Counter.handle(self: &mut t.Counter, _event: &str) -> u32 uses [] panics never impls t.Handler<[], never>
+    self.seen = self.seen.wrapping_add(1u32)
+    self.seen
+end t.Counter.handle
+
+fn t.main() -> () uses [alloc] panics never
+    core.mem.drop(t.wrap(t.Counter { seen: 0u32 }))
+end t.main
+
+fn t.wrap[H: t.Handler<[io.console], never> + 'static](handler: H) -> Result<t.Slot, alloc.alloc.AllocError> uses [alloc] panics never
+    let b = boxed.Box.new(std.alloc.SYSTEM, handler)?
+    Ok(t.Slot { handler: boxed.Box.into_dyn(b) })
+end t.wrap

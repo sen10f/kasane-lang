@@ -1,0 +1,18 @@
+// expect: E2030
+// 同じ検査はメソッドの形 (`bus.register(x)`) でも (`bool`)
+type t.Bus pub
+    x: u32
+end t.Bus
+
+trait t.Handler[E: uses, P: panics] pub
+    fn handle(self: &mut Self, event: &str) -> u32 uses [E] panics P
+end t.Handler
+
+fn t.Bus.register[H: t.Handler<[io.console], never>](self: &mut t.Bus, handler: H) -> () uses [] panics never pub
+    core.mem.drop(handler)
+end t.Bus.register
+
+fn t.main() -> () uses [] panics never
+    let mut bus = t.Bus { x: 0u32 }
+    bus.register(true)
+end t.main
