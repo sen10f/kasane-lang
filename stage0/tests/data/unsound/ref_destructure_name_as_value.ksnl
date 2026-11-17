@@ -1,0 +1,18 @@
+// expect: E2023
+enum t.Opt derive [Debug] pub
+    Some(u32)
+    None
+end t.Opt
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let o = t.Opt.Some(1u32)
+    match &o {
+        t.Opt.Some(p) => core.mem.drop(t.sink(p))
+        t.Opt.None => core.mem.drop(())
+    }
+    Ok(())
+end t.main
+
+fn t.sink(x: u32) -> () uses [] panics never
+    core.mem.drop(x)
+end t.sink

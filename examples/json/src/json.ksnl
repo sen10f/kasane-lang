@@ -320,10 +320,10 @@ fn json.write(doc: &json.Doc, src: &[u8], node: usize, out: &mut alloc.string.St
         Some(json.Node.Null) => json.put(out, "null")
         Some(json.Node.Bool(true)) => json.put(out, "true")
         Some(json.Node.Bool(false)) => json.put(out, "false")
-        Some(json.Node.Number(a, b)) => json.push_range(out, src, a, b)
+        Some(json.Node.Number(a, b)) => json.push_range(out, src, *a, *b)
         Some(json.Node.Str(a, b)) => {
             out.push('"')?
-            json.push_range(out, src, a, b)?
+            json.push_range(out, src, *a, *b)?
             out.push('"')?
             Ok(())
         }

@@ -1,0 +1,14 @@
+type t.Pt
+    x: u32
+    y: u32
+end t.Pt
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut pt = t.Pt { x: 1u32, y: 2u32 }
+    let t.Pt { x: px, y: py } = &mut pt
+    *px = px.wrapping_add(1u32)
+    *py = 5u32
+    core.check.eq(pt.x, 2u32)
+    core.check.eq(pt.y, 5u32)
+    Ok(())
+end t.main

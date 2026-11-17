@@ -1,0 +1,13 @@
+// expect: E2023
+fn t.bump(x: &mut u32) -> () uses [] panics never
+    *x = x.wrapping_add(1u32)
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let o = Some(1u32)
+    match &o {
+        Some(p) => core.mem.drop(t.bump(p))
+        None => core.mem.drop(())
+    }
+    Ok(())
+end t.main

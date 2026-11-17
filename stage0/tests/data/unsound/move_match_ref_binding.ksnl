@@ -24,7 +24,7 @@ end t.peek
 fn t.q(o: &Option<alloc.string.String>) -> usize uses [io.console] panics never
     match o {
         Some(s) => {
-            t.consume(s)
+            t.consume(*s)
             t.peek(s)
         }
         None => 0usize
