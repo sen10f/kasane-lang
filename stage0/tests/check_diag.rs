@@ -2165,7 +2165,7 @@ fn a_wrong_string_comparison_in_the_native_build_fails_the_check() {
 
 #[test]
 fn a_wrong_slice_result_in_the_native_build_fails_the_check() {
-    let (_t, exe_path, out) = build_native("clif_slice_bad", &clif_slice_program("    core.check.eq(s.last(), Some(5u32))"), false);
+    let (_t, exe_path, out) = build_native("clif_slice_bad", &clif_slice_program("    core.check.eq(s.last(), Some(&5u32))"), false);
     let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
@@ -2235,7 +2235,7 @@ fn a_failed_conversion_check_in_the_native_build_exits_with_101() {
 
 #[test]
 fn a_wrong_map_lookup_in_the_native_build_fails_the_check() {
-    let (_t, exe_path, out) = build_native("clif_map_bad", &clif_map_program("    core.check.eq(m.get(\"a\"), Some(1u8))"), false);
+    let (_t, exe_path, out) = build_native("clif_map_bad", &clif_map_program("    core.check.eq(m.get(&\"a\"), Some(&1u8))"), false);
     let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));

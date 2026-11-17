@@ -1,0 +1,19 @@
+fn t.a(x: &u32) -> Result<&u32, &u32> uses [] panics never
+    let r: Result<&u32, &u32> = Ok(x)
+    r
+end t.a
+
+fn t.b(v: &[u8]) -> bool uses [] panics never
+    v.get(0usize) == Some(&1u8)
+end t.b
+
+fn t.c(v: &[u32]) -> Option<u32> uses [] panics never
+    match v.get(0usize) {
+        Some(x) => Some(*x)
+        None => None
+    }
+end t.c
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

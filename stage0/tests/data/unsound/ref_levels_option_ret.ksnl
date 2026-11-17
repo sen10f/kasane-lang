@@ -1,0 +1,8 @@
+// expect: E2020
+fn t.f(v: &[u32]) -> Option<u32> uses [] panics never
+    v.get(0usize)
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

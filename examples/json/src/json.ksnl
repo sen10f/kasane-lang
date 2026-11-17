@@ -24,7 +24,7 @@ end json.Node
 fn json.array(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error> uses [alloc] panics never stack 4096
     let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut i = json.skip_ws(src, pos.wrapping_add(1usize))
-    if src.get(i) == Some(b']') {
+    if src.get(i) == Some(&b']') {
         let at = json.push_node(doc, json.Node.Array(doc.links.len(), 0usize))?
         return Ok((at, i.wrapping_add(1usize)))
     }
@@ -150,7 +150,7 @@ end json.main
 
 fn json.number(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error>
     let mut i = pos
-    if src.get(i) == Some(b'-') {
+    if src.get(i) == Some(&b'-') {
         i = i.wrapping_add(1usize)
     }
     let int_end = json.digits(src, i)
@@ -158,7 +158,7 @@ fn json.number(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usi
         return Err(json.Error.BadNumber(pos))
     }
     i = int_end
-    if src.get(i) == Some(b'.') {
+    if src.get(i) == Some(&b'.') {
         let frac_end = json.digits(src, i.wrapping_add(1usize))
         if frac_end == i.wrapping_add(1usize) {
             return Err(json.Error.BadNumber(pos))
@@ -166,10 +166,10 @@ fn json.number(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usi
         i = frac_end
     }
     let e = src.get(i)
-    if e == Some(b'e') || e == Some(b'E') {
+    if e == Some(&b'e') || e == Some(&b'E') {
         let mut k = i.wrapping_add(1usize)
         let sign = src.get(k)
-        if sign == Some(b'+') || sign == Some(b'-') {
+        if sign == Some(&b'+') || sign == Some(&b'-') {
             k = k.wrapping_add(1usize)
         }
         let exp_end = json.digits(src, k)
@@ -185,18 +185,18 @@ end json.number
 fn json.object(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error> uses [alloc] panics never stack 4096
     let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut i = json.skip_ws(src, pos.wrapping_add(1usize))
-    if src.get(i) == Some(b'}') {
+    if src.get(i) == Some(&b'}') {
         let at = json.push_node(doc, json.Node.Object(doc.links.len(), 0usize))?
         return Ok((at, i.wrapping_add(1usize)))
     }
     let mut close = 0usize
     loop {
-        if src.get(i) != Some(b'"') {
+        if src.get(i) != Some(&b'"') {
             return Err(json.Error.Unexpected(i))
         }
         let (key, after_key) = json.string(doc, src, i)?
         let colon = json.skip_ws(src, after_key)
-        if src.get(colon) != Some(b':') {
+        if src.get(colon) != Some(&b':') {
             return Err(json.Error.Unexpected(colon))
         }
         let (val, after_val) = json.value(doc, src, json.skip_ws(src, colon.wrapping_add(1usize)))?

@@ -201,7 +201,7 @@ fn std_net_loopback_round_trip() {
         "    Err(_e) => 0usize",
         "}",
         "core.check.eq(n, 4usize)",
-        "core.check.eq(buf.get(0usize), Some(112u8))",
+        "core.check.eq(buf.get(0usize), Some(&112u8))",
         "core.check.eq(server.write(b\"pong!\").is_ok(), true)",
         "core.mem.drop(server.close())",
         "let mut buf2 = [0u8; 16]",

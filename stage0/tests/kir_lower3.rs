@@ -14,8 +14,8 @@ fn kir_eq_operator_on_option_result_aggregates_match_tree_walker() {
     // `==` / `!=` が Option / Result / 派生の構造体・列挙型 / `&[u8]` / `&str` でも下ろせ、木走査と一致する。
     let fns = "type t.P derive [Copy, Clone, PartialEq]\n    a: u8\n    b: i32\nend t.P\n\n\
 enum t.E derive [Copy, Clone, PartialEq]\n    One(u8, bool)\n    Zero\nend t.E\n\n\
-fn t.opt(b: &[u8], i: usize) -> bool uses [] panics never\n    b.get(i) == Some(b']')\nend t.opt\n\n\
-fn t.opt_ne(b: &[u8], i: usize) -> bool uses [] panics never\n    b.get(i) != Some(b']')\nend t.opt_ne\n\n\
+fn t.opt(b: &[u8], i: usize) -> bool uses [] panics never\n    b.get(i) == Some(&b']')\nend t.opt\n\n\
+fn t.opt_ne(b: &[u8], i: usize) -> bool uses [] panics never\n    b.get(i) != Some(&b']')\nend t.opt_ne\n\n\
 fn t.res(x: u8, y: u8) -> bool uses [] panics never\n    let mut a: Result<u8, u8> = Err(x)\n    let mut b: Result<u8, u8> = Err(y)\n    if x > 5u8 {\n        a = Ok(x)\n    }\n    if y > 5u8 {\n        b = Ok(y)\n    }\n    a == b\nend t.res\n\n\
 fn t.pair(x: u8, y: u8) -> bool uses [] panics never\n    t.P { a: x, b: -3i32 } == t.P { a: y, b: -3i32 }\nend t.pair\n\n\
 fn t.en(x: u8, y: u8) -> bool uses [] panics never\n    t.E.One(x, true) != t.E.One(y, true)\nend t.en\n\n\
@@ -984,22 +984,22 @@ fn t.strs(_n: u32) -> u32 uses [alloc] panics may
         Err(_e) => core.panic.panic("oom")
     }
     let mut acc = 0u32
-    match m.get("alpha") {
+    match m.get(&"alpha") {
         Some(v) => {
             acc = acc.wrapping_add(*v)
         }
         None => core.panic.panic("missing")
     }
-    match m.get("gamma") {
+    match m.get(&"gamma") {
         Some(_v) => core.panic.panic("phantom")
         None => {
             acc = acc.wrapping_add(100u32)
         }
     }
-    if m.contains_key("beta") {
+    if m.contains_key(&"beta") {
         acc = acc.wrapping_add(1000u32)
     }
-    match m.remove("beta") {
+    match m.remove(&"beta") {
         Some(v) => {
             acc = acc.wrapping_add(v.wrapping_mul(10000u32))
         }

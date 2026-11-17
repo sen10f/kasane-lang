@@ -121,7 +121,7 @@ fn features.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics m
         Ok(_old) => 0u8
         Err(_e) => 1u8
     }
-    core.check.eq(m.get("a"), Some(1u8))
+    core.check.eq(m.get(&"a"), Some(&1u8))
     core.check.eq(m.len(), 1usize)
     let arr = [1u8, 2u8, 3u8]
     core.check.eq(arr.len(), 3usize)

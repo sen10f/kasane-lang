@@ -542,7 +542,7 @@ fn std.json.parse_array(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: u
     let mut items = std.json.new_links()
     let mut i = std.json.skip_ws(src, pos.wrapping_add(1usize))
     let mut close = i
-    if src.get(i) != Some(b']') {
+    if src.get(i) != Some(&b']') {
         loop {
             let (child, after) = std.json.parse_value(doc, src, i, depth.wrapping_add(1usize))?
             items.push(child)?
@@ -626,18 +626,18 @@ end std.json.parse_literal
 
 fn std.json.parse_number(doc: &mut std.json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), std.json.Error>
     let mut i = pos
-    if src.get(i) == Some(b'-') {
+    if src.get(i) == Some(&b'-') {
         i = i.wrapping_add(1usize)
     }
     let int_end = std.json.digits(src, i)
     if int_end == i {
         return Err(std.json.Error.BadNumber(pos))
     }
-    if src.get(i) == Some(b'0') && int_end != i.wrapping_add(1usize) {
+    if src.get(i) == Some(&b'0') && int_end != i.wrapping_add(1usize) {
         return Err(std.json.Error.BadNumber(pos))
     }
     i = int_end
-    if src.get(i) == Some(b'.') {
+    if src.get(i) == Some(&b'.') {
         let frac_end = std.json.digits(src, i.wrapping_add(1usize))
         if frac_end == i.wrapping_add(1usize) {
             return Err(std.json.Error.BadNumber(pos))
@@ -645,10 +645,10 @@ fn std.json.parse_number(doc: &mut std.json.Doc, src: &[u8], pos: usize) -> Resu
         i = frac_end
     }
     let e = src.get(i)
-    if e == Some(b'e') || e == Some(b'E') {
+    if e == Some(&b'e') || e == Some(&b'E') {
         let mut k = i.wrapping_add(1usize)
         let sign = src.get(k)
-        if sign == Some(b'+') || sign == Some(b'-') {
+        if sign == Some(&b'+') || sign == Some(&b'-') {
             k = k.wrapping_add(1usize)
         }
         let exp_end = std.json.digits(src, k)
@@ -667,15 +667,15 @@ fn std.json.parse_object(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: 
     let mut items = std.json.new_links()
     let mut i = std.json.skip_ws(src, pos.wrapping_add(1usize))
     let mut close = i
-    if src.get(i) != Some(b'}') {
+    if src.get(i) != Some(&b'}') {
         loop {
-            if src.get(i) != Some(b'"') {
+            if src.get(i) != Some(&b'"') {
                 return Err(std.json.Error.Unexpected(i))
             }
             let (key, after_key) = std.json.parse_string(src, i)?
             let key_at = std.json.push_node(doc, std.json.Node.Str(key))?
             let colon = std.json.skip_ws(src, after_key)
-            if src.get(colon) != Some(b':') {
+            if src.get(colon) != Some(&b':') {
                 return Err(std.json.Error.Unexpected(colon))
             }
             let start = std.json.skip_ws(src, colon.wrapping_add(1usize))
@@ -737,7 +737,7 @@ fn std.json.parse_unicode(src: &[u8], pos: usize, out: &mut alloc.string.String<
         return Err(std.json.Error.BadEscape(pos))
     }
     if first >= 55296u32 && first <= 56319u32 {
-        if src.get(next) != Some(b'\\') || src.get(next.wrapping_add(1usize)) != Some(b'u') {
+        if src.get(next) != Some(&b'\\') || src.get(next.wrapping_add(1usize)) != Some(&b'u') {
             return Err(std.json.Error.BadEscape(pos))
         }
         let low = std.json.hex4(src, next.wrapping_add(2usize))?

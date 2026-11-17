@@ -39,7 +39,10 @@ fn realtime.Ring.pop(self: &mut realtime.Ring) -> Option<u32> uses [] panics nev
     if self.len == 0usize {
         return None
     }
-    let v = self.items.get(self.head)
+    let v = match self.items.get(self.head) {
+        Some(x) => Some(*x)
+        None => None
+    }
     self.head = self.head.wrapping_add(1usize).checked_rem(self.cap).unwrap_or(0usize)
     self.len = self.len.wrapping_sub(1usize)
     v

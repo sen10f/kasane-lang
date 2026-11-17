@@ -726,10 +726,10 @@ pub fn clif_slice_program(tail: &str) -> String {
         "    core.check.eq(t.index_sum(s), 6usize)",
         "    core.check.eq(t.pick(s, 2usize), 3u32)",
         "    core.check.eq(t.pick(s, 9usize), 999u32)",
-        "    core.check.eq(s.get(1usize), Some(2u32))",
+        "    core.check.eq(s.get(1usize), Some(&2u32))",
         "    core.check.eq(s.get(7usize), None)",
-        "    core.check.eq(s.first(), Some(1u32))",
-        "    core.check.eq(s.last(), Some(4u32))",
+        "    core.check.eq(s.first(), Some(&1u32))",
+        "    core.check.eq(s.last(), Some(&4u32))",
         "    match s.sub(1usize, 3usize) {",
         "        Some(part) => core.check.eq(part.len(), 2usize)",
         "        None => core.check.eq(1u8, 2u8)",
@@ -1123,8 +1123,8 @@ pub fn clif_std_program(tail: &str) -> String {
         "    let arr = [1u8, 2u8, 3u8, 4u8, 5u8]",
         "    core.check.eq(arr.len(), 5usize)",
         "    core.check.eq(arr.get(7usize), None)",
-        "    core.check.eq(arr.first(), Some(1u8))",
-        "    core.check.eq(arr.last(), Some(5u8))",
+        "    core.check.eq(arr.first(), Some(&1u8))",
+        "    core.check.eq(arr.last(), Some(&5u8))",
         "    core.check.eq(arr.contains(&3u8), true)",
         "    core.check.eq(arr.contains(&9u8), false)",
         "    let mid = arr.sub(1usize, 4usize)",
@@ -1183,15 +1183,15 @@ pub fn clif_map_program(tail: &str) -> String {
         "        Ok(_old) => 0u8",
         "        Err(_e) => 1u8",
         "    }",
-        "    core.check.eq(m.get(\"a\"), Some(1u8))",
-        "    core.check.eq(m.get(\"zz\"), None)",
+        "    core.check.eq(m.get(&\"a\"), Some(&1u8))",
+        "    core.check.eq(m.get(&\"zz\"), None)",
         "    core.check.eq(m.len(), 2usize)",
         "    core.check.eq(m.insert(\"a\", 5u8), Ok(Some(1u8)))",
-        "    core.check.eq(m.get(\"a\"), Some(5u8))",
+        "    core.check.eq(m.get(&\"a\"), Some(&5u8))",
         "    core.check.eq(m.len(), 2usize)",
-        "    core.check.eq(m.contains_key(\"b\"), true)",
-        "    core.check.eq(m.remove(\"b\"), Some(2u8))",
-        "    core.check.eq(m.contains_key(\"b\"), false)",
+        "    core.check.eq(m.contains_key(&\"b\"), true)",
+        "    core.check.eq(m.remove(&\"b\"), Some(2u8))",
+        "    core.check.eq(m.contains_key(&\"b\"), false)",
         "    core.check.eq(m.is_empty(), false)",
         "    let mut b = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)",
         "    let i1 = b.insert(3u8, 30u8)",
@@ -1201,9 +1201,9 @@ pub fn clif_map_program(tail: &str) -> String {
         "    core.check.eq(i2, Ok(None))",
         "    core.check.eq(i3, Ok(Some(30u8)))",
         "    core.check.eq(b.len(), 2usize)",
-        "    core.check.eq(b.get(3u8), Some(33u8))",
-        "    core.check.eq(b.contains_key(2u8), false)",
-        "    core.check.eq(b.remove(1u8), Some(10u8))",
+        "    core.check.eq(b.get(&3u8), Some(&33u8))",
+        "    core.check.eq(b.contains_key(&2u8), false)",
+        "    core.check.eq(b.remove(&1u8), Some(10u8))",
         "    core.check.eq(b.len(), 1usize)",
         "    let mut big = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)",
         "    for k in core.iter.range(0u32, 50u32) {",
@@ -1214,7 +1214,7 @@ pub fn clif_map_program(tail: &str) -> String {
         "        }",
         "    }",
         "    core.check.eq(big.len(), 50usize)",
-        "    core.check.eq(big.get(21u32), Some(3u32))",
+        "    core.check.eq(big.get(&21u32), Some(&3u32))",
         tail,
         "    std.io.print_line(\"map ok\")",
         "    Ok(())",
@@ -2701,7 +2701,10 @@ fn t.ring_pop(self: &mut t.Ring) -> Option<u32> uses [] panics never
     if self.len == 0usize {
         return None
     }
-    let v = self.items.get(self.head)
+    let v = match self.items.get(self.head) {
+        Some(x) => Some(*x)
+        None => None
+    }
     self.head = self.head.wrapping_add(1usize).checked_rem(self.cap).unwrap_or(0usize)
     self.len = self.len.wrapping_sub(1usize)
     v
