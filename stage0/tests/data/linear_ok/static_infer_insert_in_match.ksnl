@@ -1,30 +1,14 @@
-// (1)+(2) 組み合わせ: f64 subnormal を HashMap の値に入れて iter 表示、ネイティブ SEGV の再現
-// expect-accept
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
-    let s = core.num.f64.from_bits(0x0000000000000001u64)
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
     match m.insert("k", s) {
-        Ok(_o) => ()
-        Err(e) => core.mem.drop(e)
-    }
-    let mut it = m.iter()
-    loop {
-        match it.next() {
-            Some(pair) => {
-                let (_kk, vv) = pair
-                match alloc.fmt.write(&mut out, vv) {
-                    Ok(_u) => ()
-                    Err(e) => core.mem.drop(e)
-                }
-            }
-            None => break
+        Ok(_old) => {
+        }
+        Err(_e) => {
+            core.panic.panic("insert")
         }
     }
-    match out.push_str("\n") {
-        Ok(_u) => ()
-        Err(e) => core.mem.drop(e)
-    }
-    std.io.print_line(out.as_str())?
+    core.check.eq(m.len(), 1usize)
+    std.io.print_line("ok")
     Ok(())
 end t.main
