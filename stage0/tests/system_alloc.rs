@@ -27,6 +27,22 @@ const SRC: &str = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.conso
         core.ptr.read::<u8>(core.ptr.add::<u8>(r, 15usize))
     }
     std.alloc.SYSTEM.dealloc(r, alloc.alloc.Layout { size: 64usize, align: 8usize })
+    // 大きさ 0 は 1 バイトとして確保する (木走査もネイティブも。`malloc(0)` の NULL を `Err` にしない)。
+    let zl = alloc.alloc.Layout { size: 0usize, align: 1usize }
+    let z = match std.alloc.SYSTEM.alloc(zl) {
+        Ok(z) => z
+        Err(_) => core.panic.panic(\"zero alloc\")
+    }
+    let z2 = match std.alloc.SYSTEM.realloc(z, zl, 0usize) {
+        Ok(z2) => z2
+        Err(_) => core.panic.panic(\"zero realloc\")
+    }
+    let zv = unsafe \"ptr\" \"write and read the one-byte block\" {
+        core.ptr.write::<u8>(z2, 5u8)
+        core.ptr.read::<u8>(z2)
+    }
+    std.alloc.SYSTEM.dealloc(z2, zl)
+    core.check.eq(zv, 5u8)
     if a == 7u8 && b == 9u8 {
         std.io.print_line(\"kept\")?
     } else {

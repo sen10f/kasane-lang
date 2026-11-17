@@ -444,6 +444,23 @@ fn append_str(lw: &mut Lw, e: &V, line: usize, h: VId, args: &[V]) -> LR<Option<
 #[allow(dead_code)]
 fn _unused(_: Pointee) {}
 
+/// 大きさ 0 は 1 バイトにする (木走査と同じ。`malloc(0)` は NULL を返し得る)。
+fn at_least_one(lw: &mut Lw, size: VId) -> VId {
+    let zero = usize_const(lw, 0);
+    let is0 = cmp(lw, Cc::Eq, size, zero);
+    let (join, jp) = lw.new_block(&[Ty::Usize]);
+    let (z, _) = lw.new_block(&[]);
+    let (nz, _) = lw.new_block(&[]);
+    lw.branch(is0, (z, vec![]), (nz, vec![]));
+    lw.cur = Some(z);
+    let one = usize_const(lw, 1);
+    lw.goto(join, vec![one]);
+    lw.cur = Some(nz);
+    lw.goto(join, vec![size]);
+    lw.cur = Some(join);
+    jp[0]
+}
+
 /// `std.alloc.System` の `alloc(layout)` / `dealloc(ptr, layout)` / `realloc(ptr, old, new_size)`。ヒープ命令 1 つ (`Layout` の `align` は使わない。
 /// 確保器は `malloc` / `realloc` / `free` で、最大の基本整列を返す)。確保の失敗 (null) と、`alloc` / `realloc` の `isize::MAX` 超えは `Err(AllocError)`。
 pub(super) fn system_alloc(lw: &mut Lw, e: &V, m: &str, args: &[V], line: usize) -> LR<Option<VId>> {
@@ -471,13 +488,15 @@ pub(super) fn system_alloc(lw: &mut Lw, e: &V, m: &str, args: &[V], line: usize)
         let max = usize_const(lw, (((1u128 << (crate::ptrwidth::bits() - 1)) - 1) as i128).min(i128::MAX));
         let fits = cmp(lw, Cc::Le, size, max);
         alloc_check(lw, fits, rt, join);
-        (size, lw.emit(Ty::Ptr, Op::HeapAlloc(size)))
+        let b = at_least_one(lw, size);
+        (b, lw.emit(Ty::Ptr, Op::HeapAlloc(b)))
     } else {
         let size = vs[2];
         let max = usize_const(lw, (((1u128 << (crate::ptrwidth::bits() - 1)) - 1) as i128).min(i128::MAX));
         let fits = cmp(lw, Cc::Le, size, max);
         alloc_check(lw, fits, rt, join);
-        (size, lw.emit(Ty::Ptr, Op::HeapRealloc { p: vs[0], size }))
+        let b = at_least_one(lw, size);
+        (b, lw.emit(Ty::Ptr, Op::HeapRealloc { p: vs[0], size: b }))
     };
     let _ = bytes;
     check_non_null(lw, p, rt, join);
