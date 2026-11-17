@@ -1,0 +1,23 @@
+type t.S
+    name: alloc.string.String
+    n: u64
+end t.S
+
+type t.W[T]
+    v: T
+end t.W
+
+enum t.E
+    A(u64)
+end t.E
+
+fn t.main() -> () uses [alloc] panics never
+    let k = 5u64
+    let r = &k
+    let x = t.S { name: alloc.string.String.new(std.alloc.SYSTEM), n: *r }
+    let w = t.W { v: *r }
+    let e = t.E.A(*r)
+    core.mem.drop(x)
+    core.mem.drop(w)
+    core.mem.drop(e)
+end t.main
