@@ -25,7 +25,7 @@ fn t.main() -> () uses [alloc, io.console] panics never
         Err(_e) => {
         }
     }
-    match pages.get("top") {
+    match pages.get(&"top") {
         Some(content) => {
             core.mem.drop(std.io.print_line(content.as_str()))
         }
@@ -33,7 +33,7 @@ fn t.main() -> () uses [alloc, io.console] panics never
             core.mem.drop(std.io.print_line(t.PAGE_NOT_FOUND))
         }
     }
-    match pages.get("missing") {
+    match pages.get(&"missing") {
         Some(_content) => {
         }
         None => {
