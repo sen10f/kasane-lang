@@ -15,7 +15,7 @@ fn std.net.UdpSocket.recv_from(self: &std.net.UdpSocket, buffer: &mut [u8], from
     let n = self.recv_from_raw(buffer, &mut raw)?
     let mut stop = 0usize
     while stop < 128usize {
-        if raw.get(stop) == Some(0u8) {
+        if raw.get(stop) == Some(&0u8) {
             break
         }
         stop = stop.wrapping_add(1usize)
@@ -41,7 +41,7 @@ fn std.net.resolve(host: &str, port: u16) -> Result<alloc.vec.Vec<alloc.string.S
     let mut start = 0usize
     let mut i = 0usize
     while i < total {
-        if buf.get(i) == Some(0u8) {
+        if buf.get(i) == Some(&0u8) {
             let s = std.net.text_range(&buf, start, i)?
             match out.push(s) {
                 Ok(_u) => {

@@ -234,7 +234,7 @@ fn std.datetime.parse_rfc3339(text: &str) -> Result<std.datetime.DateTime, std.d
     }
     let mut at = 19usize
     let mut nanos = 0i64
-    if b.get(at) == Some(b'.') {
+    if b.get(at) == Some(&b'.') {
         at = at.wrapping_add(1usize)
         let start = at
         let mut kept = 0usize

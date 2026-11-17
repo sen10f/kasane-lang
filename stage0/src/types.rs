@@ -438,6 +438,7 @@ pub struct TypeCk<'a> {
     /// いま束縛しているパターンの値の出どころの記録と行。
     pat_src: Option<usize>,
     /// 参照越しの分解で束縛している最中か (束縛した名前は参照の段数が決まらない)。
+    nest: u32,
     pat_loose: bool,
     /// いま束縛しているパターンの値が、型を確実に知っている出どころ (リテラル・注釈・関数の呼び出し・構造体リテラル・確かな名前) か。
     pat_exact: bool,
@@ -536,7 +537,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, pat_exact: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, pat_loose: false, pat_exact: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1952,7 +1953,15 @@ impl<'a> TypeCk<'a> {
         self.unify_v(a, b, false)
     }
 
-    /// `inv` が true なら不変の位置 (参照の可変性も、配列とスライスも、一切の変換を許さない)。
+    /// 型の構造の中 (型引数・要素・参照の先) へ入って単一化する。中では参照の段数を透過しない。
+    fn unify_in(&mut self, a: &Ty, b: &Ty, inv: bool) -> Result<(), (Ty, Ty)> {
+        self.nest += 1;
+        let r = self.unify_v(a, b, inv);
+        self.nest -= 1;
+        r
+    }
+
+        /// `inv` が true なら不変の位置 (参照の可変性も、配列とスライスも、一切の変換を許さない)。
     fn unify_v(&mut self, a: &Ty, b: &Ty, inv: bool) -> Result<(), (Ty, Ty)> {
         // 単一化前に、どちらかが型変数に束縛されていればその変数を記録する
         // (resolve で束縛先が展開されてしまうため)。
@@ -2042,7 +2051,7 @@ impl<'a> TypeCk<'a> {
                     (t, Ty::Slice(e) | Ty::Array(e, _)) if !inv && !matches!(t, Ty::Slice(_) | Ty::Array(..) | Ty::Var(_)) => (x.clone(), (**e).clone()),
                     _ => (x, y),
                 };
-                self.unify_v(&x, &y, true).map_err(|_| (a.clone(), b.clone()))?;
+                self.unify_in(&x, &y, true).map_err(|_| (a.clone(), b.clone()))?;
                 // 期待が `*const`・実際が `*mut` は値の位置でだけ許す (`*mut T` → `*const T`)。逆は不一致。
                 if m == n || (!inv && !m && n) { Ok(()) } else { Err((a.clone(), b.clone())) }
             }
@@ -2069,11 +2078,13 @@ impl<'a> TypeCk<'a> {
                         return Err((a.clone(), b.clone()));
                     }
                     let (e, f) = ((**e).clone(), (**f).clone());
-                    return self.unify_v(&e, &f, inner_inv);
+                    return self.unify_in(&e, &f, inner_inv);
                 }
-                self.unify_v(&x, &y, inner_inv)
+                self.unify_in(&x, &y, inner_inv)
             }
             // 参照は透過的。左右の順序 (期待, 実際) は診断の文面に使うので保つ。
+            // 型の構造の中 (型引数・タプルの要素・参照の先など) では、参照の段数も型の一部。
+            (Ty::Ref(..), _) | (_, Ty::Ref(..)) if self.nest > 0 && !matches!(a, Ty::Var(_) | Ty::Param(_)) && !matches!(b, Ty::Var(_) | Ty::Param(_)) => Err((a.clone(), b.clone())),
             (Ty::Ref(_, x), y) => {
                 let (x, y) = (x.clone(), y.clone());
                 self.unify_v(&x, &y, inv)
@@ -2104,7 +2115,7 @@ impl<'a> TypeCk<'a> {
                 // 型引数は不変 (`Option` / `Result` は値として運ぶだけなので共変)。
                 let arg_inv = inv || !matches!(n.as_str(), "Option" | "Result");
                 for (x, y) in xs.iter().zip(&ys) {
-                    self.unify_v(x, y, arg_inv)?;
+                    self.unify_in(x, y, arg_inv)?;
                 }
                 Ok(())
             }
@@ -2114,7 +2125,7 @@ impl<'a> TypeCk<'a> {
                 }
                 let (xs, ys) = (xs.clone(), ys.clone());
                 for (x, y) in xs.iter().zip(&ys) {
-                    self.unify_v(x, y, inv)?;
+                    self.unify_in(x, y, inv)?;
                 }
                 Ok(())
             }
@@ -2128,9 +2139,9 @@ impl<'a> TypeCk<'a> {
                 let (xs, ys, rx, ry) = (xs.clone(), ys.clone(), (**rx).clone(), (**ry).clone());
                 // 引数は反変 (期待と実際を入れ替えて比べる)、戻り値は共変。
                 for (x, y) in xs.iter().zip(&ys) {
-                    self.unify_v(y, x, inv).map_err(|(p, q)| (q, p))?;
+                    self.unify_in(y, x, inv).map_err(|(p, q)| (q, p))?;
                 }
-                self.unify_v(&rx, &ry, inv)?;
+                self.unify_in(&rx, &ry, inv)?;
                 // どちらかが型変数に束縛されていれば、束縛先も効果の和に更新する。
                 for opt in [va, vb] {
                     if let Some((x, Some(Ty::Closure { .. }))) = opt {
@@ -2143,7 +2154,7 @@ impl<'a> TypeCk<'a> {
             // 配列とスライスは別の型 (`&[T; N]` → `&[T]` は参照の腕だけが許す)。
             (Ty::Slice(x), Ty::Slice(y)) | (Ty::Array(x, _), Ty::Array(y, _)) => {
                 let (x, y) = (x.clone(), y.clone());
-                self.unify_v(&x, &y, inv)
+                self.unify_in(&x, &y, inv)
             }
             (Ty::Slice(_), Ty::Array(..)) | (Ty::Array(..), Ty::Slice(_)) => Err((a.clone(), b.clone())),
             (Ty::Unit, Ty::Unit) => Ok(()),

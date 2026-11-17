@@ -213,10 +213,10 @@ fn kir_btree_map_matches_tree_walker() {
     core.check.eq(i2, Ok(None))
     core.check.eq(i3, Ok(Some(30u8)))
     core.check.eq(m.len(), 2usize)
-    core.check.eq(m.get(3u8), Some(33u8))
-    core.check.eq(m.contains_key(2u8), false)
-    core.check.eq(m.remove(1u8), Some(10u8))
-    core.check.eq(m.remove(1u8), None)
+    core.check.eq(m.get(&3u8), Some(&33u8))
+    core.check.eq(m.contains_key(&2u8), false)
+    core.check.eq(m.remove(&1u8), Some(10u8))
+    core.check.eq(m.remove(&1u8), None)
     core.check.eq(m.is_empty(), false)
     true"),
         // 負のキーと、ソートの順 (先頭・末尾・中ほどの削除)
@@ -224,14 +224,14 @@ fn kir_btree_map_matches_tree_walker() {
     for k in [5i32, -3i32, 9i32, 0i32, -10i32, 7i32] {
         core.mem.drop(m.insert(k, k.wrapping_mul(2i32)))
     }
-    core.check.eq(m.get(-3i32), Some(-6i32))
-    core.check.eq(m.get(4i32), None)
-    core.check.eq(m.remove(5i32), Some(10i32))
-    core.check.eq(m.remove(5i32), None)
-    core.check.eq(m.remove(-10i32), Some(-20i32))
-    core.check.eq(m.remove(9i32), Some(18i32))
+    core.check.eq(m.get(&-3i32), Some(&-6i32))
+    core.check.eq(m.get(&4i32), None)
+    core.check.eq(m.remove(&5i32), Some(10i32))
+    core.check.eq(m.remove(&5i32), None)
+    core.check.eq(m.remove(&-10i32), Some(-20i32))
+    core.check.eq(m.remove(&9i32), Some(18i32))
     core.check.eq(m.len(), 3usize)
-    core.check.eq(m.get(7i32), Some(14i32))
+    core.check.eq(m.get(&7i32), Some(&14i32))
     true"),
         // 容量を何度も広げる (降順に 40 個入れる)、偶数の削除、先頭の削除
         ("t.bt_grow", "    let mut m = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)
@@ -239,27 +239,27 @@ fn kir_btree_map_matches_tree_walker() {
         core.mem.drop(m.insert(41i64 - k, k * 10i64))
     }
     core.check.eq(m.len(), 40usize)
-    core.check.eq(m.get(1i64), Some(400i64))
-    core.check.eq(m.get(40i64), Some(10i64))
-    core.check.eq(m.get(41i64), None)
+    core.check.eq(m.get(&1i64), Some(&400i64))
+    core.check.eq(m.get(&40i64), Some(&10i64))
+    core.check.eq(m.get(&41i64), None)
     for k in core.iter.range(1i64, 41i64) {
         if k % 2i64 == 0i64 {
             core.mem.drop(m.remove(k))
         }
     }
     core.check.eq(m.len(), 20usize)
-    core.check.eq(m.get(2i64), None)
-    core.check.eq(m.get(3i64), Some(380i64))
-    core.check.eq(m.remove(1i64), Some(400i64))
+    core.check.eq(m.get(&2i64), None)
+    core.check.eq(m.get(&3i64), Some(&380i64))
+    core.check.eq(m.remove(&1i64), Some(400i64))
     core.check.eq(m.len(), 19usize)
     true"),
         // bool と char のキー
         ("t.bt_char", "    let mut m = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)
     core.mem.drop(m.insert('z', true))
     core.mem.drop(m.insert('a', false))
-    core.check.eq(m.get('a'), Some(false))
-    core.check.eq(m.get('z'), Some(true))
-    core.check.eq(m.get('m'), None)
+    core.check.eq(m.get(&'a'), Some(&false))
+    core.check.eq(m.get(&'z'), Some(&true))
+    core.check.eq(m.get(&'m'), None)
     true"),
     ];
     let mut src = String::new();

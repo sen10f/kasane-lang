@@ -93,7 +93,7 @@ fn std.fs.read_dir(path: &str) -> Result<alloc.vec.Vec<std.fs.DirEntry, std.allo
         let start = i.wrapping_add(1usize)
         let mut j = start
         while j < total {
-            if bytes.get(j) == Some(0u8) {
+            if bytes.get(j) == Some(&0u8) {
                 break
             }
             j = j.wrapping_add(1usize)

@@ -76,7 +76,7 @@ fn std.path.last_byte(text: &str, wanted: u8) -> Option<usize> uses [] panics ne
     let mut i = bytes.len()
     while i > 0usize {
         i = i.wrapping_sub(1usize)
-        if bytes.get(i) == Some(wanted) {
+        if bytes.get(i) == Some(&wanted) {
             return Some(i)
         }
     }
