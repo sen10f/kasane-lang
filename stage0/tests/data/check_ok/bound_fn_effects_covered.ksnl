@@ -1,0 +1,21 @@
+fn t.apply_io[F: core.ops.Fn<(u32,), u32, [io.fs], may>](f: F) -> u32 uses [io.fs] panics may
+    f(2u32)
+end t.apply_io
+
+fn t.apply_never[F: core.ops.Fn<(u32,), u32, [], never>](f: F) -> u32 uses [] panics never
+    f(2u32)
+end t.apply_never
+
+fn t.apply_var[F: core.ops.Fn<(u32,), u32, E, P>, E: uses, P: panics](f: F) -> u32 uses [E] panics P
+    f(2u32)
+end t.apply_var
+
+fn t.keep(x: u32) -> u32 uses [] panics never
+    x
+end t.keep
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.apply_never(t.keep))
+    core.mem.drop(t.apply_var(t.keep))
+    Ok(())
+end t.main

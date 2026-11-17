@@ -243,56 +243,237 @@ fn split_top(s: &str, sep: char) -> Vec<String> {
     out
 }
 
-/// `let (a, t.V(b, _), (c, d)) = ..` の分解パターンから束縛名を集める。
-/// 単純な識別子だけを束縛とし、`path(args)` のバリアント分解や入れ子タプルは
-/// 中身の単純な識別子だけを束縛とする (リテラルや `_` は黙る)。
-fn tuple_let_binds(s: &str, names: &mut Vec<(&'static str, String)>) {
-    for part in split_top(s, ',') {
-        let part = part.trim();
-        if part.is_empty() || part == "_" {
-            continue;
-        }
-        if let Some(paren) = part.find('(') {
-            if part.ends_with(')') && part[..paren].chars().all(|c| word_char(c) || c == '.') {
-                // `t.One.V(m, n)` のバリアント分解: 対応する `)` までを引数とする。
-                let mut depth = 0i32;
-                let mut end = None;
-                for (k, ch) in part[paren..].char_indices() {
-                    match ch {
-                        '(' => depth += 1,
-                        ')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                end = Some(paren + k);
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
+/// 対応する閉じカッコの位置 (`open` は開きカッコの位置)。
+fn matching_close(s: &str, open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    for (k, ch) in s[open..].char_indices() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + k);
                 }
-                if let Some(end) = end {
-                    tuple_let_binds(&part[paren + 1..end], names);
-                    continue;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// パターンの文字列から束縛名を集める (束縛を集める唯一の所。`let` / `if let` / `while let` / `for` /
+/// クロージャの引数 / `match` の腕で共通)。タプル・`path(args)`・`path { f: p, .. }`・入れ子・`mut` / `ref` /
+/// `&`・`x @ p`・`A | B` (最初の選択肢) を辿る。小文字または `_` で始まる単純な識別子が束縛で、
+/// `_` 単体・リテラル・`true` / `false` と FQN の成分は束縛ではない。大文字始まり (`None` など) は、
+/// 反駁できない `let` / `for` の中 (`allow_upper`。命名 E0010 のため) だけ束縛とする。
+fn pattern_binds(pat: &str, allow_upper: bool, out: &mut Vec<String>) {
+    let pat = pat.trim();
+    if let Some(alts) = Some(split_top(pat, '|')).filter(|a| a.len() > 1) {
+        pattern_binds(&alts[0], allow_upper, out);
+        return;
+    }
+    let mut p = pat;
+    loop {
+        let q = p.trim_start();
+        let q = q.strip_prefix("mut ").or_else(|| q.strip_prefix("ref ")).or_else(|| q.strip_prefix('&')).unwrap_or(q);
+        if q.len() == p.len() {
+            break;
+        }
+        p = q;
+    }
+    let p = p.trim();
+    if p.is_empty() || p == "_" || p == ".." {
+        return;
+    }
+    if let Some((name, rest)) = p.split_once('@') {
+        let name = name.trim();
+        if !rest.starts_with('=') && is_plain_bind(name) {
+            pattern_binds(name, allow_upper, out);
+            pattern_binds(rest, allow_upper, out);
+            return;
+        }
+    }
+    if p.starts_with('(') || p.starts_with('[') {
+        if let Some(end) = matching_close(p, 0) {
+            for part in split_top(&p[1..end], ',') {
+                pattern_binds(&part, allow_upper, out);
+            }
+        }
+        return;
+    }
+    let path_end = p.find(|c: char| !(word_char(c) || c == '.')).unwrap_or(p.len());
+    let (path, rest) = p.split_at(path_end);
+    let rest = rest.trim_start();
+    if rest.starts_with('(') || rest.starts_with('{') {
+        // `t.V(a, b)` / `t.S { f: p, g }`
+        if let Some(end) = matching_close(rest, 0) {
+            let inner = &rest[1..end];
+            if rest.starts_with('(') {
+                for part in split_top(inner, ',') {
+                    pattern_binds(&part, allow_upper, out);
+                }
+            } else {
+                for part in split_top(inner, ',') {
+                    match part.split_once(':') {
+                        Some((_, v)) => pattern_binds(v, allow_upper, out),
+                        None => pattern_binds(&part, allow_upper, out),
+                    }
                 }
             }
         }
-        if part.starts_with('(') && part.ends_with(')') {
-            tuple_let_binds(&part[1..part.len() - 1], names);
-            continue;
-        }
-        if is_plain_bind(part) {
-            names.push(("let", part.to_string()));
-        }
+        return;
+    }
+    if rest.is_empty() && is_plain_bind(path) && path.starts_with(|c: char| c.is_ascii_lowercase() || c == '_' || (allow_upper && c.is_ascii_uppercase())) && path != "true" && path != "false" {
+        out.push(path.to_string());
     }
 }
 
+/// 本体のテキストから、束縛のパターンの文字列を集める: `(種類, パターン)`。種類は未使用の判定に使う
+/// (`let` = 変数、`cparam` = クロージャの引数)。`match` の腕は腕ごとの範囲で数えるので含めない。
+fn binding_sites(body: &str) -> Vec<(&'static str, String, bool)> {
+    let mut out: Vec<(&'static str, String, bool)> = vec![];
+    let bytes = body.as_bytes();
+    let kw_at = |i: usize, kw: &str| -> bool {
+        body[i..].starts_with(kw) && body[..i].chars().next_back().map_or(true, |c| !(word_char(c) || c == '.'))
+    };
+    for i in 0..body.len() {
+        if !body.is_char_boundary(i) {
+            continue;
+        }
+        if kw_at(i, "let ") || kw_at(i, "for ") || kw_at(i, "with ") {
+            let kw_len = if body[i..].starts_with("let ") || body[i..].starts_with("for ") { 4 } else { 5 };
+            let start = i + kw_len;
+            let is_for = body[i..].starts_with("for ");
+            let mut depth = 0i32;
+            let mut end = body.len();
+            for (k, ch) in body[start..].char_indices() {
+                let at = start + k;
+                match ch {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth -= 1,
+                    _ => {}
+                }
+                if depth < 0 || (depth == 0 && (ch == ';' || ch == '\n')) {
+                    end = at;
+                    break;
+                }
+                if depth == 0 && is_for && body[at..].starts_with(" in ") {
+                    end = at;
+                    break;
+                }
+                if depth == 0 && !is_for && ch == '=' && bytes.get(at + 1) != Some(&b'=') && bytes.get(at + 1) != Some(&b'>') {
+                    end = at;
+                    break;
+                }
+                if depth == 0 && !is_for && ch == ':' {
+                    end = at;
+                    break;
+                }
+            }
+            let refutable = body[..i].trim_end().ends_with("if") || body[..i].trim_end().ends_with("while");
+            out.push(("let", body[start..end].to_string(), !refutable));
+        } else if kw_at(i, "fn(") {
+            let open = i + 2;
+            if let Some(close) = matching_close(body, open) {
+                for part in split_top(&body[open + 1..close], ',') {
+                    // 関数型 `fn(u32)` は名前を持たない。クロージャの引数は `名前: 型`。
+                    if let Some((name, _)) = part.split_once(':') {
+                        out.push(("cparam", name.to_string(), false));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// 束縛として数える単純な識別子: 英字または `_` で始まり、英数字と `_` のみ (`_` 単体と数値リテラルは除く)。
-/// 大文字で始まる名前も束縛 (バリアントは FQN で書くので `.` を含む)。命名の検査 (E0010) の対象にする。
 fn is_plain_bind(s: &str) -> bool {
     !s.is_empty()
         && s != "_"
         && s.chars().all(word_char)
         && matches!(s.chars().next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+}
+
+/// `capture [.., &mut nm, ..]` に現れる `nm` の数。
+fn count_capture_mut(text: &str, nm: &str) -> usize {
+    let re_cap = re!(r"\bcapture \[([^\]]*)\]");
+    let mut n = 0;
+    for m in re_cap.captures_iter(text) {
+        n += m[1].split(',').filter(|c| c.trim().strip_prefix("&mut ").map_or(false, |r| r.trim() == nm)).count();
+    }
+    n
+}
+
+/// 代入の左辺として現れる `nm` の数 (`nm = ..` が文の頭にある。`==` と `=>` は除く)。
+fn count_assign(text: &str, nm: &str) -> usize {
+    let mut n = 0;
+    for (i, _) in text.match_indices(nm) {
+        let before = text[..i].chars().next_back();
+        let after = text[i + nm.len()..].chars().next();
+        if !(before.map_or(true, |c| !(word_char(c) || c == '.')) && after.map_or(true, |c| !word_char(c))) {
+            continue;
+        }
+        let rest = text[i + nm.len()..].trim_start_matches([' ', '\t']);
+        if !rest.starts_with('=') || rest.starts_with("==") || rest.starts_with("=>") {
+            continue;
+        }
+        let pre = text[..i].trim_end_matches([' ', '\t']);
+        if pre.is_empty() || pre.ends_with(['\n', '{', ';']) || pre.ends_with("=>") {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// `match` の腕: `(パターン, ガードと本体)`。腕は行頭の `パターン =>` で、本体は同じ行の残り (空なら次の行)。
+/// `{` で終わるなら対応する `}` までのブロック全体。
+fn arms(body: &str) -> Vec<(String, String)> {
+    let re_arm = re!(r"(?m)^[ \t]*([^\n]*?)[ \t]*=>(.*)$");
+    let mut out = vec![];
+    for m in re_arm.captures_iter(body) {
+        let mut pat = m[1].to_string();
+        // 腕でない行 (行頭が文の続き) を避けるため、パターンは `let` / `=` を含まない。
+        if pat.is_empty() || pat.contains(" = ") || pat.starts_with("let ") || pat.starts_with("if let ") {
+            continue;
+        }
+        let mut guard = String::new();
+        if let Some(idx) = pat.find(" if ") {
+            guard = pat[idx..].to_string();
+            pat.truncate(idx);
+        }
+        let mut arm_body = format!("{} {}", guard, &m[2]);
+        let mut rest_start = m.get(0).unwrap().end();
+        if m[2].trim().is_empty() {
+            let rest = &body[rest_start..];
+            let rest = rest.strip_prefix('\n').unwrap_or(rest);
+            let line = rest.lines().next().unwrap_or("");
+            rest_start += (body[rest_start..].len() - rest.len()) + line.len();
+            arm_body.push_str(line);
+        }
+        if arm_body.trim_end().ends_with('{') {
+            let rest = &body[rest_start..];
+            let mut depth = 1i32;
+            let mut cut = rest.len();
+            for (i, ch) in rest.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            cut = i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            arm_body.push(chr_nl());
+            arm_body.push_str(&rest[..cut]);
+        }
+        out.push((pat, arm_body));
+    }
+    out
 }
 
 fn bracket(s: &str, start: usize) -> String {
@@ -840,101 +1021,16 @@ impl Lint {
         // (`'` は Kasane でバイトリテラル `b'X'` やライフタイム `'static` にも使われるため、
         //  strip 対象から外している。)
         let body = strip_literals_and_comments(&it.body.join("\n"));
-        let re_let = re!(r"\blet (?:mut )?([a-z_][A-Za-z0-9_]*)\b");
-        for m in re_let.captures_iter(&body) {
-            let end = m.get(0).unwrap().end();
-            let rest = body[end..].trim_start();
-            // `let t.Res { .. } = x` の FQN の先頭成分 (`t`) は束縛ではない。
-            if rest.starts_with('{') || (rest.starts_with('.') && !rest.starts_with("..")) {
-                continue;
-            }
-            names.push(("let", m[1].to_string()));
-        }
-        // `let (a, t.V(b, _), c) = ..` のタプル分解。`[^)]*` は最初の `)` で区切って
-        // `t.V(m` のような破片を名前と誤るため、入れ子のカッコを数えてトップレベル
-        // の `,` で分ける。単純な識別子だけを束縛とし、`path(args)` のバリアント
-        // 分解は引数の中の単純な識別子だけを束縛とする。
-        let re_let_tup = re!(r"\blet \(");
-        for m in re_let_tup.find_iter(&body) {
-            let open = m.end() - 1;
-            let mut depth = 0i32;
-            let mut close = None;
-            for (k, ch) in body[open..].char_indices() {
-                match ch {
-                    '(' => depth += 1,
-                    ')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            close = Some(open + k);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let Some(close) = close else { continue };
-            tuple_let_binds(&body[open + 1..close], &mut names);
-        }
+        // 束縛の場所 (`let` / `if let` / `while let` / `for` / `with` / クロージャの引数) は、パターンの
+        // 文字列を取り出して `pattern_binds` へ渡す一か所で集める。`match` の腕は、腕ごとの範囲で数えるので
+        // `names_one` が同じ `pattern_binds` で集める。
         let re_st = re!(r"\blet [A-Za-z0-9_.]+ \{([^}]*)\}");
-        for m in re_st.captures_iter(&body) {
-            for f in m[1].split(',') {
-                // フィールドの束縛先が単純な識別子のときだけ束縛とみなす（入れ子パターン `a: t.V(x)`・
-                // リテラル `a: 1u8` の文字列全体を名前として数えない）。
-                if let Some((_, v)) = f.split_once(':') {
-                    let v = v.split(':').next().unwrap().trim();
-                    if !v.is_empty() && v.chars().all(word_char) && !v.starts_with(|c: char| c.is_ascii_digit()) {
-                        names.push(("let", v.to_string()));
-                    }
-                }
+        for (kind, pat, upper) in binding_sites(&body) {
+            let mut bs = vec![];
+            pattern_binds(&pat, upper, &mut bs);
+            for b in bs {
+                names.push((kind, b));
             }
-        }
-        // `let t.V(x, _) = ..` のバリアント分解: 引数のうち単純な識別子 (小文字始まり) だけを束縛とみなす。
-        // 入れ子のパターン `t.W(..)`・リテラル・大文字の名前は数えない (黙る)。
-        let re_letv = re!(r"\blet ([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\(");
-        for m in re_letv.captures_iter(&body) {
-            let open = m.get(0).unwrap().end() - 1;
-            let mut depth = 0i32;
-            let mut close = None;
-            for (k, ch) in body[open..].char_indices() {
-                match ch {
-                    '(' => depth += 1,
-                    ')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            close = Some(open + k);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let Some(close) = close else { continue };
-            for arg in split_top(&body[open + 1..close], ',') {
-                let plain = arg.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
-                    && arg.chars().all(word_char)
-                    && arg != "_";
-                if plain {
-                    names.push(("let", arg));
-                }
-            }
-        }
-        let re_fn = re!(r"\bfn\(([^)]*)\)");
-        for m in re_fn.captures_iter(&body) {
-            for p in split_top(&m[1], ',') {
-                let nm = p.split(':').next().unwrap().trim().to_string();
-                if !nm.is_empty() {
-                    names.push(("param", nm));
-                }
-            }
-        }
-        let re_for = re!(r"\bfor ([a-z_][a-z0-9_]*) in\b");
-        for m in re_for.captures_iter(&body) {
-            names.push(("let", m[1].to_string()));
-        }
-        // `with [mut] 名前 = ..` (4.4)。後始末式が名前を使うので、宣言とあわせて 2 回以上現れる。
-        let re_with = re!(r"\bwith (?:mut )?([a-z_][a-z0-9_]*) =");
-        for m in re_with.captures_iter(&body) {
-            names.push(("let", m[1].to_string()));
         }
         // 構造体パターンのフィールドラベル (`b` in `let t.L { b: b } = l`) は変数の使用ではない。
         // 使用回数を数える前に空白へ置き換え、束縛名と同じラベルを使用として数えないようにする。
@@ -979,7 +1075,20 @@ impl Lint {
                 return;
             }
             let (names, body) = self.idents_declared(it);
+            // 同じ名前の宣言は 1 つの判定にまとめる (宣言の数 `decls` を、出現の数から引く)。
+            let arm_list = arms(&body);
+            let mut arm_names: Vec<String> = vec![];
+            for (pat, _) in &arm_list {
+                pattern_binds(pat, false, &mut arm_names);
+            }
+            let mut seen: Vec<(&'static str, String, usize)> = vec![];
             for (kind, nm) in names {
+                match seen.iter_mut().find(|(k, m, _)| *k == kind && *m == nm) {
+                    Some(e) => e.2 += 1,
+                    None => seen.push((kind, nm, 1)),
+                }
+            }
+            for (kind, nm, decls) in seen {
                 // `if let true = b` / `(n, false)` の `true` / `false` は予約語のリテラルで束縛ではない。
                 if nm == "_" || nm == "true" || nm == "false" {
                     continue;
@@ -998,38 +1107,29 @@ impl Lint {
                         self.err("unused", n, format!("unused parameter {}", nm));
                     }
                 } else if nm.starts_with('_') {
-                    if cnt > 1 {
+                    // `match` の腕の同名の束縛 (`Some(_x) =>`) は別の宣言なので、その分は使用に数えない。
+                    let arm_decls = arm_names.iter().filter(|a| **a == nm).count();
+                    if cnt > decls + arm_decls {
                         self.err("unused", n, format!("{} is marked unused but used", nm));
                     }
-                } else if cnt < 2 {
-                    self.err("unused", n, format!("unused variable {}", nm));
+                } else {
+                    // 読む出現 = 全体 − 宣言 − 代入の左辺 (`x = ..` の文)。書くだけの変数は未使用。
+                    // 書くだけの変数を `capture [&mut x]` で取り込む並びも、読む使用ではない。
+                    let assigns = count_assign(&body, &nm);
+                    let cap_mut = if assigns > 0 { count_capture_mut(&body, &nm) } else { 0 };
+                    let reads = cnt.saturating_sub(decls + assigns + cap_mut);
+                    if reads == 0 {
+                        let what = if kind == "cparam" { "parameter" } else { "variable" };
+                        self.err("unused", n, format!("unused {} {}", what, nm));
+                    }
                 }
             }
-            for m in re_arm.captures_iter(&body) {
-                // 腕の本体: 同じ行の残り。`{` で終わるなら対応する `}` までのブロック全体。
-                let mut arm_body = m[2].to_string();
-                if arm_body.trim_end().ends_with('{') {
-                    let rest = &body[m.get(0).unwrap().end()..];
-                    let mut depth = 1i32;
-                    let mut cut = rest.len();
-                    for (i, ch) in rest.char_indices() {
-                        match ch {
-                            '{' => depth += 1,
-                            '}' => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    cut = i;
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    arm_body.push(chr_nl());
-                    arm_body.push_str(&rest[..cut]);
-                }
-                for nm in m[1].split(',').map(|x| x.trim()) {
-                    if !nm.is_empty() && nm != "_" && nm != "true" && nm != "false" && is_snake(nm) && !nm.starts_with('_') && count_word(&arm_body, nm) == 0 {
+            for (pat, guard_and_body) in arm_list {
+                let mut bs = vec![];
+                pattern_binds(&pat, false, &mut bs);
+                bs.dedup();
+                for nm in bs {
+                    if is_snake(&nm) && !nm.starts_with('_') && count_word(&guard_and_body, &nm) == 0 {
                         self.err("unused", n, format!("unused pattern binding {}", nm));
                     }
                 }
