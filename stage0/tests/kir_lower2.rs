@@ -1704,7 +1704,7 @@ fn kir_refs_text_shows_slots_and_reference_types() {
 #[test]
 fn kir_refs_reference_to_unsupported_pointee_keeps_its_reason() {
     // 指す先が整数・浮動小数・bool・利用者の構造体でない参照 (標準の型) は、従来どおり理由付きで未対応になる。
-    let src = "fn t.first(s: &std.io.Stdout) -> u8 uses [] panics never
+    let src = "fn t.first(s: &std.time.Instant) -> u8 uses [] panics never
     let _t = s
     0u8
 end t.first
@@ -2408,7 +2408,7 @@ fn kir_agg_refs_vec_fields_are_read_through_references() {
 fn kir_agg_refs_reports_unsupported_references_with_a_reason() {
     // 指す先が標準の型の参照は、理由を付けて拒否する (要素が集成体のスライス `&[t.P]` は下ろせる)。
     let cases: &[(&str, &str, &str)] = &[
-        ("fn t.f(e: &std.io.Stdout) -> u8 uses [] panics never\n    let _t = e\n    0u8\nend t.f\n", "t.f", "引数の型"),
+        ("fn t.f(e: &std.time.Instant) -> u8 uses [] panics never\n    let _t = e\n    0u8\nend t.f\n", "t.f", "引数の型"),
     ];
     for (i, (src, f, why)) in cases.iter().enumerate() {
         let src = format!("{}\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n", src);

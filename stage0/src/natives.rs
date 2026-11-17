@@ -14,7 +14,7 @@ use crate::value::Scope;
 
 pub const NATIVE_NAMES: &[&str] = &[
     "core.mem.drop", "core.mem.swap", "core.mem.replace", "core.mem.size_of", "core.panic.panic",
-    "core.panic.todo", "core.panic.unreachable", "core.check.eq", "core.check.is_true", "std.io.print_line", "std.io.write_stderr", "std.process.exit",
+    "core.panic.todo", "core.panic.unreachable", "core.check.eq", "core.check.is_true", "std.io.print_line", "std.io.write_stderr", "std.io.stdin", "std.io.stdout", "std.io.stderr", "std.process.exit",
     "std.process.abort", "std.env.arg", "std.env.arg_count", "std.env.var", "core.iter.range", "core.iter.map",
     "core.iter.filter", "core.iter.enumerate", "core.iter.take", "core.iter.count", "core.iter.fold",
     "core.str.from_utf8", "alloc.vec.Vec.new", "alloc.raw.Buf.new", "alloc.raw.Buf.with_capacity", "alloc.vec.Vec.with_capacity", "alloc.string.String.new",
@@ -22,7 +22,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.collections.HashMap.new", "alloc.collections.BtreeMap.new",
     "alloc.collections.VecDeque.new",
     "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.system_nanos", "std.time.Duration.from_millis", "std.thread.spawn",
-    "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
+    "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new", "core.sync.AtomicBool.new", "core.sync.AtomicU64.new", "core.sync.AtomicUsize.new",
     "std.task.block_on", "std.task.spawn_local", "std.task.yield_now", "std.task.await_js",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.rand.fill_secure", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
     "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.net.UdpSocket.bind", "std.net.resolve_raw", "std.process.Command.new",
@@ -659,6 +659,14 @@ impl Interp {
                     Err(e) => Ok(err(io_error(&e))),
                 }
             }
+            "std.io.stdin" | "std.io.stdout" | "std.io.stderr" => {
+                let (ty, fd) = match name {
+                    "std.io.stdin" => ("std.io.Stdin", 0),
+                    "std.io.stdout" => ("std.io.Stdout", 1),
+                    _ => ("std.io.Stderr", 2),
+                };
+                Ok(Val::Struct(Rc::new(StructV { ty: ty.into(), f: RefCell::new(vec![("descriptor".into(), int(fd, "i32"))]) })))
+            }
             "std.process.exit" => match dr(&a0) {
                 Val::Int(c, _) => Err(Ctl::Exit(c as i32)),
                 _ => Err(Ctl::Exit(1)),
@@ -817,6 +825,14 @@ impl Interp {
                 let tx = Val::Chan(Rc::new(ChanEnd::new(st.clone(), true)));
                 let rx = Val::Chan(Rc::new(ChanEnd::new(st, false)));
                 Ok(ok(Val::Tuple(Rc::new(vec![tx, rx]))))
+            }
+            "core.sync.AtomicBool.new" | "core.sync.AtomicU64.new" | "core.sync.AtomicUsize.new" => {
+                let ty = &name[..name.len() - 4];
+                let v = match dr(&a0) {
+                    Val::Bool(b) => int(b as i128, "u8"),
+                    other => other,
+                };
+                Ok(Val::Struct(Rc::new(StructV { ty: ty.into(), f: RefCell::new(vec![("value".into(), v)]) })))
             }
             "std.sync.Mutex.new" => Ok(Val::Mutex(Rc::new(CellPlace(RefCell::new(a0))))),
             "std.rand.Rng.from_seed" => Ok(Val::Rng(Rc::new(Cell::new(if let Val::Int(i, _) = dr(&a0) { i as u64 } else { 0 })))),
@@ -1176,6 +1192,12 @@ impl Interp {
                 }
                 if s.ty == "std.fs.File" {
                     return self.file_method(s, name, &args);
+                }
+                if s.ty.starts_with("core.sync.Atomic") {
+                    return atomic_method(s, name, &args);
+                }
+                if matches!(s.ty.as_str(), "std.io.Stdin" | "std.io.Stdout" | "std.io.Stderr") {
+                    return self.std_stream_method(s, name, &args);
                 }
                 if s.ty == "std.sync.MutexGuard" && (name == "get" || name == "get_mut") {
                     return Ok(s.get("cell").unwrap());
@@ -1892,7 +1914,98 @@ pub(crate) fn bytes_of(v: &Val) -> Vec<u8> {
     seq_items(&dr(v)).unwrap_or_default().iter().map(|x| if let Val::Int(i, _) = dr(x) { i as u8 } else { 0 }).collect()
 }
 
+/// `core.sync.AtomicBool` / `AtomicU64` / `AtomicUsize` のメソッド。木走査の実行は 1 本ずつ進むので、順序の引数は読み捨てて素の読み書きにする。
+/// `AtomicBool` の値は欄の型 (`u8`) のまま 0 / 1 で持ち、`bool` との変換はここだけで行う。
+fn atomic_method(s: &Rc<StructV>, name: &str, args: &[Val]) -> Res {
+    let is_bool = s.ty == "core.sync.AtomicBool";
+    let Some(Val::Int(cur, tag)) = s.get("value") else { return panic("invalid atomic") };
+    let out = |v: i128| if is_bool { Val::Bool(v != 0) } else { Val::Int(v, tag) };
+    let arg = |i: usize| match args.get(i).map(dr) {
+        Some(Val::Bool(b)) => b as i128,
+        Some(Val::Int(v, _)) => v,
+        _ => 0,
+    };
+    match name {
+        "load" => Ok(out(cur)),
+        "store" => {
+            s.set("value", Val::Int(arg(0), tag));
+            Ok(Val::Unit)
+        }
+        "swap" => {
+            s.set("value", Val::Int(arg(0), tag));
+            Ok(out(cur))
+        }
+        "fetch_add" if !is_bool => {
+            let bits = if s.ty == "core.sync.AtomicU64" { 64 } else { usize::BITS };
+            let m = if bits == 64 { u64::MAX as i128 } else { usize::MAX as i128 };
+            s.set("value", Val::Int((cur + arg(0)) & m, tag));
+            Ok(out(cur))
+        }
+        "compare_exchange" => {
+            if cur == arg(0) {
+                s.set("value", Val::Int(arg(1), tag));
+                Ok(ok(out(cur)))
+            } else {
+                Ok(err(out(cur)))
+            }
+        }
+        _ => panic(format!("no method {} on {}", name, s.ty)),
+    }
+}
+
 impl Interp {
+    /// `std.io.Stdin` / `Stdout` / `Stderr` のメソッド (`read` / `write` / `flush`)。標準出力は `print_line` と同じ出力の溜めを通す。
+    fn std_stream_method(&mut self, s: &Rc<StructV>, name: &str, args: &[Val]) -> Res {
+        use std::io::{Read, Write};
+        let a0 = args.first().cloned().unwrap_or(Val::Unit);
+        match (s.ty.as_str(), name) {
+            ("std.io.Stdout", "write") => {
+                let data = bytes_of(&a0);
+                let _ = self.out.write_all(&data);
+                Ok(ok(usz(data.len())))
+            }
+            ("std.io.Stdout", "flush") => Ok(match self.out.flush() {
+                Ok(()) => ok(Val::Unit),
+                Err(e) => err(io_error(&e)),
+            }),
+            ("std.io.Stderr", "write") => {
+                let data = bytes_of(&a0);
+                let _ = self.out.flush();
+                Ok(match std::io::stderr().write_all(&data) {
+                    Ok(()) => ok(usz(data.len())),
+                    Err(e) => err(io_error(&e)),
+                })
+            }
+            ("std.io.Stderr", "flush") => Ok(ok(Val::Unit)),
+            ("std.io.Stdin", "read") => {
+                let target = as_raw(&dr(&a0));
+                let cap = seq_len(&target).unwrap_or(0);
+                let mut buf = vec![0u8; cap];
+                let n = match std::io::stdin().lock().read(&mut buf) {
+                    Ok(n) => n,
+                    Err(e) => return Ok(err(io_error(&e))),
+                };
+                match &target {
+                    Val::View(l, a, _) => {
+                        let mut l = l.borrow_mut();
+                        for (i, b) in buf[..n].iter().enumerate() {
+                            l[*a + i] = int(*b as i128, "u8");
+                        }
+                    }
+                    Val::Arr(l) | Val::Vec(l) => {
+                        let mut l = l.borrow_mut();
+                        for (i, b) in buf[..n].iter().enumerate() {
+                            l[i] = int(*b as i128, "u8");
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(ok(usz(n)))
+            }
+            _ => panic(format!("no method {} on {}", name, s.ty)),
+        }
+    }
+
     /// std.fs.File のメソッド (read / write / flush / sync / close)。
     fn file_method(&mut self, s: &Rc<StructV>, name: &str, args: &[Val]) -> Res {
         use std::io::{Read, Write};

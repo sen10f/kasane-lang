@@ -93,7 +93,7 @@ use net_lower::{is_net_ty, net_call, net_free_call, net_method};
 // `std.fs` (ファイル) の下ろし (設計_KIR.md 12 章)。
 #[path = "kir_lower_fs.rs"]
 mod fs_lower;
-use fs_lower::{is_fs_ty, fs_call, fs_method};
+use fs_lower::{is_fs_ty, fs_call, fs_method, std_stream_call};
 #[path = "kir_lower_proc.rs"]
 mod proc_lower;
 use proc_lower::{is_proc_ty, proc_call, proc_method};
@@ -1302,6 +1302,9 @@ impl<'a> Lw<'a> {
         let callee_name = segs.join(".");
         if matches!(callee_name.as_str(), "std.net.listen" | "std.net.connect") {
             return net_call(self, e, callee_name == "std.net.listen", line);
+        }
+        if matches!(callee_name.as_str(), "std.io.stdin" | "std.io.stdout" | "std.io.stderr") {
+            return std_stream_call(self, &callee_name, args, line);
         }
         if matches!(callee_name.as_str(), "std.net.resolve_raw" | "std.net.UdpSocket.bind") {
             return net_free_call(self, e, &callee_name, line);
