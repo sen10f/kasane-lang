@@ -372,6 +372,160 @@ class Lint:
             if stack:
                 self.err('indent', it['end'] + 1, 'unclosed block/bracket in body')
 
+    def matching_close(self, s, op):
+        d = 0
+        for k in range(op, len(s)):
+            if s[k] in '([{':
+                d += 1
+            elif s[k] in ')]}':
+                d -= 1
+                if d == 0:
+                    return k
+        return None
+
+    def pattern_binds(self, pat, allow_upper, out):
+        """パターンの文字列から束縛名を集める (タプル・path(args)・path { f: p }・入れ子・mut/ref/&・@・|)。"""
+        pat = pat.strip()
+        alts = self.split_top(pat, '|')
+        if len(alts) > 1:
+            self.pattern_binds(alts[0], allow_upper, out)
+            return
+        p = pat
+        while True:
+            q = p.lstrip()
+            for pre in ('mut ', 'ref ', '&'):
+                if q.startswith(pre):
+                    q = q[len(pre):]
+                    break
+            if len(q) == len(p):
+                break
+            p = q
+        p = p.strip()
+        if p in ('', '_', '..'):
+            return
+        if '@' in p:
+            name, rest = p.split('@', 1)
+            name = name.strip()
+            if not rest.startswith('=') and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name):
+                self.pattern_binds(name, allow_upper, out)
+                self.pattern_binds(rest, allow_upper, out)
+                return
+        if p[0] in '([':
+            end = self.matching_close(p, 0)
+            if end is not None:
+                for part in self.split_top(p[1:end]):
+                    self.pattern_binds(part, allow_upper, out)
+            return
+        m = re.match(r'[A-Za-z0-9_.]*', p)
+        path, rest = p[:m.end()], p[m.end():].lstrip()
+        if rest[:1] in ('(', '{') and rest:
+            end = self.matching_close(rest, 0)
+            if end is not None:
+                inner = rest[1:end]
+                for part in self.split_top(inner):
+                    if rest[0] == '{' and ':' in part:
+                        self.pattern_binds(part.split(':', 1)[1], allow_upper, out)
+                    else:
+                        self.pattern_binds(part, allow_upper, out)
+            return
+        if rest == '' and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', path) and path not in ('true', 'false'):
+            if path[0].islower() or path[0] == '_' or (allow_upper and path[0].isupper()):
+                out.append(path)
+
+    def binding_sites(self, body):
+        """(種類, パターン, 大文字の名前も束縛か)。let / if let / while let / for / with / クロージャの引数。"""
+        out = []
+        for m in re.finditer(r'(?<![A-Za-z0-9_.])(let |for |with |fn\()', body):
+            kw, i = m.group(1), m.start()
+            if kw == 'fn(':
+                op = i + 2
+                close = self.matching_close(body, op)
+                if close is not None:
+                    for part in self.split_top(body[op + 1:close]):
+                        if ':' in part:
+                            out.append(('cparam', part.split(':', 1)[0], False))
+                continue
+            start = m.end()
+            is_for = kw == 'for '
+            d, end = 0, len(body)
+            for at in range(start, len(body)):
+                ch = body[at]
+                if ch in '([{':
+                    d += 1
+                elif ch in ')]}':
+                    d -= 1
+                if d < 0 or (d == 0 and ch in ';\n'):
+                    end = at
+                    break
+                if d == 0 and is_for and body.startswith(' in ', at):
+                    end = at
+                    break
+                if d == 0 and not is_for and ch == '=' and body[at + 1:at + 2] not in ('=', '>'):
+                    end = at
+                    break
+                if d == 0 and not is_for and ch == ':':
+                    end = at
+                    break
+            before = body[:i].rstrip()
+            refutable = before.endswith('if') or before.endswith('while')
+            out.append(('let', body[start:end], not refutable))
+        return out
+
+    def count_assign(self, text, nm):
+        n = 0
+        for m in re.finditer(r'(?<![A-Za-z0-9_.])' + re.escape(nm) + r'(?![A-Za-z0-9_])', text):
+            rest = text[m.end():].lstrip(' \t')
+            if not rest.startswith('=') or rest.startswith('==') or rest.startswith('=>'):
+                continue
+            pre = text[:m.start()].rstrip(' \t')
+            if pre == '' or pre[-1] in '\n{;' or pre.endswith('=>'):
+                n += 1
+        return n
+
+    def count_capture_mut(self, text, nm):
+        n = 0
+        for m in re.finditer(r'\bcapture \[([^\]]*)\]', text):
+            for c in m.group(1).split(','):
+                c = c.strip()
+                if c.startswith('&mut ') and c[5:].strip() == nm:
+                    n += 1
+        return n
+
+    def arms(self, body):
+        """match の腕: (パターン, ガードと本体)。行頭の `パターン =>`。本体は同じ行の残り (空なら次の行)、`{` で終わればブロック全体。"""
+        out = []
+        for m in re.finditer(r'^[ \t]*([^\n]*?)[ \t]*=>(.*)$', body, re.M):
+            pat = m.group(1)
+            if not pat or ' = ' in pat or pat.startswith('let ') or pat.startswith('if let '):
+                continue
+            guard = ''
+            idx = pat.find(' if ')
+            if idx >= 0:
+                guard, pat = pat[idx:], pat[:idx]
+            arm_body = guard + ' ' + m.group(2)
+            rest_start = m.end()
+            if not m.group(2).strip():
+                rest = body[rest_start:]
+                if rest.startswith('\n'):
+                    rest = rest[1:]
+                line = rest.split('\n', 1)[0]
+                rest_start += (len(body[rest_start:]) - len(rest)) + len(line)
+                arm_body += line
+            if arm_body.rstrip().endswith('{'):
+                rest = body[rest_start:]
+                d, cut = 1, len(rest)
+                for k, ch in enumerate(rest):
+                    if ch == '{':
+                        d += 1
+                    elif ch == '}':
+                        d -= 1
+                        if d == 0:
+                            cut = k
+                            break
+                arm_body += '\n' + rest[:cut]
+            out.append((pat, arm_body))
+        return out
+
     def idents_declared(self, it):
         names = []
         head = it['text']
@@ -407,26 +561,12 @@ class Lint:
                     if nm and nm != 'self':
                         names.append(('param', nm))
         body = '\n'.join(it['body'])
-        for m in re.finditer(r'\blet (?:mut )?([a-z_][A-Za-z0-9_]*)\b(?!\s*\{)', body):
-            names.append(('let', m.group(1)))
-        for m in re.finditer(r'\blet \(([^)]*)\)', body):
-            for nm in m.group(1).split(','):
-                nm = nm.strip()
-                if nm:
-                    names.append(('let', nm))
-        for m in re.finditer(r'\blet [A-Za-z0-9_.]+ \{([^}]*)\}', body):
-            for f in m.group(1).split(','):
-                if ':' in f:
-                    names.append(('let', f.split(':')[1].strip()))
-        for m in re.finditer(r'\bfn\(([^)]*)\)', body):
-            for p in self.split_top(m.group(1)):
-                nm = p.split(':')[0].strip()
-                if nm:
-                    names.append(('param', nm))
-        for m in re.finditer(r'\bfor ([a-z_][a-z0-9_]*) in\b', body):
-            names.append(('let', m.group(1)))
-        for m in re.finditer(r'\bwith (?:mut )?([a-z_][a-z0-9_]*) =', body):
-            names.append(('let', m.group(1)))
+        # 束縛は pattern_binds の 1 か所で集める (stage0 の lint.rs と同じ規則)
+        for kind, pat, upper in self.binding_sites(body):
+            bs = []
+            self.pattern_binds(pat, upper, bs)
+            for nm in bs:
+                names.append((kind, nm))
         return names, body
 
     def check_names_and_unused(self, items):
@@ -441,42 +581,41 @@ class Lint:
                 continue
             names, body = self.idents_declared(it)
             head = it['text']
+            arm_list = self.arms(body)
+            arm_names = []
+            for pat, _ in arm_list:
+                self.pattern_binds(pat, False, arm_names)
+            seen = {}
             for kind, nm in names:
-                if nm == '_':
+                seen[(kind, nm)] = seen.get((kind, nm), 0) + 1
+            for (kind, nm), decls in seen.items():
+                if nm in ('_', 'true', 'false'):
                     continue
                 if not SNAKE.match(nm):
                     self.err('name', n, f'{kind} {nm} not snake_case')
                     continue
                 cnt = len(re.findall(r'(?<![A-Za-z0-9_.])' + re.escape(nm) + r'(?![A-Za-z0-9_])', body))
                 if kind == 'param':
-                    cnt_head = len(re.findall(r'(?<![A-Za-z0-9_.])' + re.escape(nm) + r'(?=:)', head))
                     if nm.startswith('_'):
                         if cnt > 0:
                             self.err('unused', n, f'{nm} is marked unused but used')
                     elif cnt == 0:
                         self.err('unused', n, f'unused parameter {nm}')
+                elif nm.startswith('_'):
+                    if cnt > decls + arm_names.count(nm):
+                        self.err('unused', n, f'{nm} is marked unused but used')
                 else:
-                    if nm.startswith('_'):
-                        if cnt > 1:
-                            self.err('unused', n, f'{nm} is marked unused but used')
-                    elif cnt < 2:
-                        self.err('unused', n, f'unused variable {nm}')
-            # match 腕のパターン束縛 (Name(a, b) =>)
-            body_lines = body.split('\n')
-            for k, bl in enumerate(body_lines):
-                m = re.match(r'^(\s*)[A-Za-z0-9_.]+\(([^)]*)\)\s*=>(.*)$', bl)
-                if not m:
-                    continue
-                rest = m.group(3)
-                # 腕の本体が `{` で始まるブロックなら、同じ字下げの `}` までの行も本体に数える
-                if rest.rstrip().endswith('{'):
-                    ind = m.group(1)
-                    for nl in body_lines[k + 1:]:
-                        rest += '\n' + nl
-                        if nl.rstrip() == ind + '}':
-                            break
-                for nm in [x.strip() for x in m.group(2).split(',')]:
-                    if nm and nm != '_' and SNAKE.match(nm) and not nm.startswith('_'):
+                    assigns = self.count_assign(body, nm)
+                    cap_mut = self.count_capture_mut(body, nm) if assigns > 0 else 0
+                    if max(cnt - (decls + assigns + cap_mut), 0) == 0:
+                        what = 'parameter' if kind == 'cparam' else 'variable'
+                        self.err('unused', n, f'unused {what} {nm}')
+            # match の腕のパターン束縛 (腕の範囲だけで数える)
+            for pat, rest in arm_list:
+                bs = []
+                self.pattern_binds(pat, False, bs)
+                for nm in dict.fromkeys(bs):
+                    if SNAKE.match(nm) and not nm.startswith('_'):
                         if not re.search(r'(?<![A-Za-z0-9_.])' + re.escape(nm) + r'(?![A-Za-z0-9_])', rest):
                             self.err('unused', n, f'unused pattern binding {nm}')
 
