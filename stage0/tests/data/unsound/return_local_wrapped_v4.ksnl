@@ -1,0 +1,12 @@
+// expect: E3030
+fn t.bad(x: &u32) -> Option<&u32> uses [io.console] panics never
+    let t = Some(x)
+    match t.as_ref() {
+        Some(p) => Some(p)
+        None => None
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    Ok(())
+end t.main

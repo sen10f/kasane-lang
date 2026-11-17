@@ -3321,13 +3321,106 @@ impl<'a> Low<'a> {
                 match inner {
                     Some(t) => self.ret_slots(&args[0], &t, out),
                     None => {
-                        if !self.ctor_slots(e, ty, out) {
+                        if !self.ctor_slots(e, ty, out) && !self.call_slots(e, ty, out) {
                             out.push((e, lifetimes_with_static(ty), explicit));
                         }
                     }
                 }
             }
             _ => out.push((e, lifetimes_with_static(ty), explicit)),
+        }
+    }
+
+    /// メソッド `name` の戻り値の参照が、省略規則で `self` の借用に結びつくか (戻り値に参照があり、名前付きの領域がない)。
+    fn method_ties_self(&self, name: &str, pos: usize, nargs: usize) -> bool {
+        let cands = self.callees(name, pos, nargs);
+        !cands.is_empty()
+            && cands.iter().all(|&i| {
+                let r = self.p.defs[i].header.split(" uses ").next().and_then(|h| h.rsplit_once("->")).map_or("", |x| x.1).to_string();
+                r.contains('&') && !r.contains('\'')
+            })
+    }
+
+    /// 局所 `name` (今の位置から見える束縛) が、借用を中に持つ所有値か: 初期値が包んだ値、または戻り値が参照ではなく
+    /// 領域を持つ型 (`MutexGuard<'a, T>`) の呼び出し。これを借りて返せば局所の借用を外へ出す。
+    fn owning_local(&self, inits: &Inits, name: &str) -> bool {
+        let Some(init) = inits.plain(name) else { return false };
+        if self.wrapped_parts(init).is_some() {
+            return true;
+        }
+        let (mname, nargs) = match nname(init) {
+            "MCall" => (st(&nf(init)[1]), items(&nf(init)[2]).len()),
+            "Call" if nname(&nf(init)[0]) == "Path" => {
+                let sg = strs(&nf(&nf(init)[0])[0]);
+                if sg.len() < 2 || !self.locals.contains(&sg[0]) {
+                    return false;
+                }
+                (sg[sg.len() - 1].clone(), items(&nf(init)[1]).len())
+            }
+            _ => return false,
+        };
+        let cands = self.callees(&mname, nline(init), nargs);
+        !cands.is_empty()
+            && cands.iter().all(|&i| {
+                let r = self.p.defs[i].header.split(" uses ").next().and_then(|h| h.rsplit_once("->")).map_or("", |x| x.1).trim().to_string();
+                !r.starts_with('&') && !r.starts_with('(') && r.contains("<'")
+            })
+    }
+
+    /// 名前付きの領域だけで戻り値が決まる関数の呼び出し `t.mk(y, x)` を、位置ごとに分ける。呼び先の戻り値の位置に現れる
+    /// 領域 `'l` を持つ引数を、呼び出し側の戻り値の同じ位置 (の型) に照らす。分けられなければ false (呼び出し全体を 1 つの葉にする)。
+    fn call_slots<'v>(&self, e: &'v V, ty: &str, out: &mut Vec<(&'v V, BTreeSet<String>, bool)>) -> bool {
+        let f = nf(e);
+        if nname(&f[0]) != "Path" {
+            return false;
+        }
+        let segs = strs(&nf(&f[0])[0]);
+        if segs.len() == 1 && self.locals.contains(&segs[0]) {
+            return false;
+        }
+        let Some(r) = self.p.resolve(&segs, &self.file) else { return false };
+        let Some(i) = self.target_def(&r.target).filter(|_| r.rest.is_empty()) else { return false };
+        let cd = &self.p.defs[i];
+        let args = items(&f[1]);
+        if Self::ret_has_type_param(cd) || args.len() != cd.params.len() {
+            return false;
+        }
+        let Some(head) = cd.header.split(" uses ").next() else { return false };
+        let Some(open) = head.find('(') else { return false };
+        let Some(close) = match_close(head, open) else { return false };
+        let ptexts = split_top(&head[open + 1..close]);
+        let Some((_, cret)) = head[close + 1..].split_once("->") else { return false };
+        if ptexts.len() != args.len() || !cret.contains('\'') {
+            return false;
+        }
+        fn rec<'v>(me: &Low, c: &str, t: &str, args: &'v [V], ptexts: &[String], out: &mut Vec<(&'v V, BTreeSet<String>, bool)>) -> bool {
+            let (c, t) = (c.trim(), t.trim());
+            if c.starts_with('(') && t.starts_with('(') {
+                let (cs, ts) = (split_top(&c[1..c.len() - 1]), split_top(&t[1..t.len() - 1]));
+                if cs.len() != ts.len() {
+                    return false;
+                }
+                return cs.iter().zip(&ts).all(|(a, b)| rec(me, a, b, args, ptexts, out));
+            }
+            let (cn, ca) = type_args(c);
+            let (tn, ta) = type_args(t);
+            if !ca.is_empty() && cn == tn && ca.len() == ta.len() && !c.starts_with('&') {
+                return ca.iter().zip(&ta).all(|(a, b)| rec(me, a, b, args, ptexts, out));
+            }
+            let lts = lifetimes(c);
+            for (k, pt) in ptexts.iter().enumerate() {
+                if lifetimes(pt).iter().any(|l| lts.contains(l)) {
+                    me.ret_slots(&args[k], t, out);
+                }
+            }
+            true
+        }
+        let mut tmp = vec![];
+        if rec(self, cret, ty, args, &ptexts, &mut tmp) && !tmp.is_empty() {
+            out.extend(tmp);
+            true
+        } else {
+            false
         }
     }
 
@@ -3373,18 +3466,37 @@ impl<'a> Low<'a> {
             }
         }
         // 包んだ値を束縛した局所をそのまま返す形 (`let z = Some((y, x)); z`) は、束縛の初期値の位置ごとに照らす。
-        for v in vals.iter_mut() {
-            for _ in 0..4 {
-                if nname(v) != "Path" || strs(&nf(v)[0]).len() != 1 {
-                    break;
-                }
+        let mut expanded: Vec<&V> = vec![];
+        let mut work: Vec<(&V, usize)> = vals.iter().map(|v| (*v, 0)).collect();
+        while let Some((v, depth)) = work.pop() {
+            if depth < 4 {
                 inits.pos.set(inits.at(v));
-                match inits.plain(&strs(&nf(v)[0])[0]) {
-                    Some(init) if self.wrapped_parts(init).is_some() => *v = init,
-                    _ => break,
+                let local1 = |e: &V| -> Option<String> {
+                    (nname(e) == "Path" && strs(&nf(e)[0]).len() == 1).then(|| strs(&nf(e)[0])[0].clone())
+                };
+                if let Some(name) = local1(v) {
+                    match inits.plain(&name) {
+                        Some(init) if self.wrapped_parts(init).is_some() || local1(init).map_or(false, |n2| inits.plain(&n2).is_some()) || nname(init) == "Call" => {
+                            work.push((init, depth + 1));
+                            continue;
+                        }
+                        _ => {}
+                    }
+                } else if nname(v) == "Call" && items(&nf(v)[1]).is_empty() {
+                    // 局所の閉包の呼び出し `c()`: 閉包の本体の値を、関数の値として照らす。
+                    if let Some(init) = local1(&nf(v)[0]).and_then(|n| inits.plain(&n)) {
+                        if nname(init) == "Closure" && nf(init).len() >= 5 {
+                            let mut ls = vec![];
+                            Self::value_leaves(&nf(init)[3], &mut ls);
+                            work.extend(ls.into_iter().map(|l| (l, depth + 1)));
+                            continue;
+                        }
+                    }
                 }
             }
+            expanded.push(v);
         }
+        let vals = expanded;
         // 葉ごとに、その葉が運んでよい領域 (戻り値の型の位置) を付ける。
         let mut slots: Vec<(&V, BTreeSet<String>, bool)> = vec![];
         for v in vals {
@@ -3421,6 +3533,48 @@ impl<'a> Low<'a> {
             }
             let mut os = vec![];
             self.origins(v, d, &inits, 0, &mut os);
+            // 葉が、借用を持つ所有値の局所へのメソッド呼び出し (`let g = m.lock(); g.get()`) なら、その局所を借りて返している。
+            if nname(v) == "Call" && nname(&nf(v)[0]) == "Path" {
+                let sg = strs(&nf(&nf(v)[0])[0]);
+                if sg.len() == 2 && self.locals.contains(&sg[0]) && self.method_borrows(&sg[1]).is_some() && self.method_ties_self(&sg[1], nline(v), items(&nf(v)[1]).len()) {
+                    inits.pos.set(inits.at(v));
+                    if inits.plain(&sg[0]).map_or(false, |i| nname(i) != "Path") && self.owning_local(&inits, &sg[0]) && !d.params.iter().any(|p| p.0 == sg[0]) {
+                        os.push(Origin::Local(sg[0].clone()));
+                    }
+                }
+            }
+            // 葉が、包んだ値の局所を借りた束縛 (`match t.as_ref() { Some(p) => p }`・`match &t { Some(p) => p }`) そのものなら、
+            // 局所の借用を外へ出している。束縛のメソッド呼び出し (`p.trim()`) は中身を取り出すので対象にしない。
+            if nname(v) == "Path" && strs(&nf(v)[0]).len() == 1 {
+                inits.pos.set(inits.at(v));
+                if let Some(init) = inits.tilde(&strs(&nf(v)[0])[0]) {
+                    let recv = match nname(init) {
+                        "MCall" if self.method_borrows(&st(&nf(init)[1])).is_some() && self.method_ties_self(&st(&nf(init)[1]), nline(init), items(&nf(init)[2]).len()) => Some(&nf(init)[0]),
+                        "Unary" if matches!(st(&nf(init)[0]).as_str(), "&" | "&mut") => Some(&nf(init)[1]),
+                        _ => None,
+                    };
+                    let call_root = if nname(init) == "Call" && nname(&nf(init)[0]) == "Path" {
+                        let sg = strs(&nf(&nf(init)[0])[0]);
+                        (sg.len() == 2 && self.locals.contains(&sg[0]) && self.method_borrows(&sg[1]).is_some() && self.method_ties_self(&sg[1], nline(init), items(&nf(init)[1]).len())).then(|| sg[0].clone())
+                    } else {
+                        None
+                    };
+                    if let Some(root) = call_root {
+                        inits.pos.set(inits.at(init));
+                        if self.owning_local(&inits, &root) {
+                            os.push(Origin::Local(root));
+                        }
+                    }
+                    let recv = recv.map(|r| if nname(r) == "Unary" && matches!(st(&nf(r)[0]).as_str(), "&" | "&mut") { &nf(r)[1] } else { r });
+                    if let Some(r) = recv.filter(|r| nname(r) == "Path" && strs(&nf(r)[0]).len() == 1) {
+                        let root = strs(&nf(r)[0])[0].clone();
+                        inits.pos.set(inits.at(init));
+                        if self.owning_local(&inits, &root) {
+                            os.push(Origin::Local(root));
+                        }
+                    }
+                }
+            }
             for o in os {
                 match o {
                     Origin::Local(name) => {
