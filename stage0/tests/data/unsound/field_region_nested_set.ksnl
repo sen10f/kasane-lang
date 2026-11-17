@@ -1,4 +1,4 @@
-// expect: E3010
+// expect: E3060
 type t.Outer['a, 'b]
     inner: t.Pair<'a, 'b>
 end t.Outer

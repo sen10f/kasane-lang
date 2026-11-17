@@ -535,9 +535,8 @@ fn nll_clean(name: &str, prefix: &str, b: &[&str]) {
     assert_eq!(o.status.code(), Some(0), "{}: {}", name, text(&o.stdout));
 }
 
-const NLL_FNS: &str = "type t.P['a]\n    a: &'a mut u8\n    b: &'a mut u8\nend t.P\n\n\
-    type t.S\n    a: u8\n    b: u8\nend t.S\n\n\
-    fn t.f_pair['a](a: &'a mut u8, b: &'a mut u8) -> t.P<'a> uses [] panics never\n    t.P { a: a, b: b }\nend t.f_pair\n\n\
+const NLL_FNS: &str = "type t.S\n    a: u8\n    b: u8\nend t.S\n\n\
+    fn t.f_pair['a](a: &'a mut u8, b: &'a mut u8) -> (&'a mut u8, &'a mut u8) uses [] panics never\n    (a, b)\nend t.f_pair\n\n\
     fn t.f_pick['a, 'b](x: &'a u8, _y: &'b u8) -> &'a u8 uses [] panics never\n    x\nend t.f_pick\n\n\
     fn t.f_two(a: &mut u8, b: &mut u8) -> () uses [] panics never\n    *a = 1u8\n    *b = 2u8\nend t.f_two\n\n\
     fn t.f_use(a: &u8, b: &u8) -> () uses [] panics never\n    core.mem.drop(a)\n    core.mem.drop(b)\nend t.f_use\n\n";
@@ -550,9 +549,9 @@ fn nll_expr_accepts_disjoint_and_shared_borrows_in_one_expression() {
         &[
             "let mut s = t.S { a: 1u8, b: 2u8 }",
             "t.f_two(&mut s.a, &mut s.b)",
-            "let p = t.P { a: &mut s.a, b: &mut s.b }",
-            "*p.a = 5u8",
-            "*p.b = 6u8",
+            "let (pa, pb) = (&mut s.a, &mut s.b)",
+            "*pa = 5u8",
+            "*pb = 6u8",
             "let x = 1u8",
             "t.f_use(&x, &x)",
             "let arr = [&x, &x]",
@@ -622,14 +621,14 @@ fn nll_boundary_struct_result_keeps_the_argument_borrows() {
     let (bad, out) = has_e3010(
         "nll_boundary_struct",
         NLL_FNS,
-        &["let mut a = 1u8", "let mut b = 2u8", "let p = t.f_pair(&mut a, &mut b)", "a = 3u8", "*p.b = 4u8"],
+        &["let mut a = 1u8", "let mut b = 2u8", "let (_pa, pb) = t.f_pair(&mut a, &mut b)", "a = 3u8", "*pb = 4u8"],
     );
     assert!(bad, "{}", out);
     // 戻り値を使い終えてから触る分には通る。
     nll_clean(
         "nll_boundary_struct_ok",
         NLL_FNS,
-        &["let mut a = 1u8", "let mut b = 2u8", "let p = t.f_pair(&mut a, &mut b)", "*p.b = 4u8", "a = 3u8", "core.check.eq(a, 3u8)"],
+        &["let mut a = 1u8", "let mut b = 2u8", "let (_pa, pb) = t.f_pair(&mut a, &mut b)", "*pb = 4u8", "a = 3u8", "core.check.eq(a, 3u8)"],
     );
 }
 
@@ -673,10 +672,8 @@ fn nll_closure_body_may_read_a_shared_capture_and_write_a_mut_capture() {
 
 #[test]
 fn nll_store_keeps_every_borrow_pushed_into_one_container() {
-    nll_clean(
-        "nll_store_two_ok",
-        "",
-        &[
+    // 参照は二級の値 (E3060): 容れ物に参照を入れる形は、借用の流れを見る前に型の位置で拒む。
+    let src = main_wrap("", &body(&[
             "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
             "let mut x = 1u8",
             "let y = 2u8",
@@ -691,8 +688,10 @@ fn nll_store_keeps_every_borrow_pushed_into_one_container() {
             "core.check.eq(v.len(), 2usize)",
             "x = 2u8",
             "core.check.eq(x, 2u8)",
-        ],
-    );
+        ])).replace("uses [io.console]", "uses [alloc, io.console]");
+    let t = Tmp::new("nll_store_two_ok", &src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E3060"), "{}", out);
 }
 
 #[test]
@@ -1756,12 +1755,12 @@ fn nll_accepts_a_copy_field_of_a_moved_struct_destructured_later() {
     // 借用を持つフィールド `f` (r) は、書き換えより前に使い終えている。
     no_diagnostics(
         "nll_destr_struct_move_neg",
-        NLL_REF_FIELD,
+        "",
         &[
             "let mut x = 1u8",
-            "let s = t.S { f: &x, b: 2u8 }",
+            "let s = (&x, 2u8)",
             "let s2 = s",
-            "let t.S { f: r, b: n } = s2",
+            "let (r, n) = s2",
             "core.check.eq(*r, 1u8)",
             "x = 2u8",
             "core.check.eq(n, 2u8)",

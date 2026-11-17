@@ -620,8 +620,7 @@ fn bundle_launcher_is_executable_and_location_independent() {
     use std::os::unix::fs::PermissionsExt;
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let n = 42u32
-    let mut buf = [0u8; 16]
-    let mut f = core.fmt.Formatter.new(&mut buf)
+    let mut f = core.fmt.Formatter.new(16usize)
     core.mem.drop(n.display_fmt(&mut f))
     match core.str.from_utf8(f.written()) {
         Ok(s) => std.io.print_line(s)?

@@ -35,9 +35,6 @@ fn diagnostics_each_case_reports_its_code() {
 /// (別の診断で落ちているだけのケースを許さない)。まだ検査できない穴は `KNOWN_HOLES` に名前を載せる (その間は「通ること」を
 /// 確かめるので、塞いだら一覧から外さないとテストが落ちる = 一覧は減る方向にしか変わらない)。
 const KNOWN_HOLES: &[&str] = &[
-    // 借用を持つ変数 (`let w = t.mk(&x)`) のフィールドを読み戻す (`let r = w.r`) と、借用が読んだ側へ移らない
-    // (変数の型が分からないので、`w.n` のような Copy の値と区別できず、移すと誤検出になる)。
-    "boundary_field_read_back",
 ];
 
 #[test]
@@ -120,23 +117,7 @@ fn check_only_correct_programs_are_accepted() {
 /// KIR の検査は戻り値の領域を 1 つにまとめるので、これらを偽陽性にする (既知。`kir_borrowck.rs` の `ret_rg`)。
 #[test]
 fn lifetime_slot_correct_swaps_are_accepted() {
-    let cases: [(&str, &str); 4] = [
-        (
-            "pair_swap",
-            "type t.Pair['a, 'b]
-    f: &'a u32
-    s: &'b u32
-end t.Pair
-
-fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    Ok(())
-end t.main
-
-fn t.pair_swap['a, 'b](f: &'a u32, s: &'b u32) -> t.Pair<'b, 'a> uses [] panics never
-    t.Pair { f: s, s: f }
-end t.pair_swap
-",
-        ),
+    let cases: [(&str, &str); 3] = [
         (
             "tuple_swap",
             "fn t.main() -> Result<(), std.io.Error> uses [] panics never

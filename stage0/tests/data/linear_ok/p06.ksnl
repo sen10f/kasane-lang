@@ -4,10 +4,6 @@ type t.Buf
     n: usize
 end t.Buf
 
-type t.H['a]
-    r: &'a alloc.string.String
-end t.H
-
 type t.S
     name: alloc.string.String
     other: alloc.string.String
@@ -65,7 +61,3 @@ end t.pick
 fn t.same(s: &alloc.string.String) -> &alloc.string.String uses [] panics never
     s
 end t.same
-
-fn t.wrap['a](s: &'a alloc.string.String) -> t.H<'a> uses [] panics never
-    t.H { r: s }
-end t.wrap

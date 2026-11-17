@@ -4,10 +4,6 @@ type t.Buf
     n: usize
 end t.Buf
 
-type t.H['a]
-    r: &'a alloc.string.String
-end t.H
-
 type t.S
     name: alloc.string.String
     other: alloc.string.String
@@ -36,12 +32,12 @@ fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
     core.mem.drop(s)
 end t.consume
 
-fn t.keeps(v: &mut alloc.vec.Vec<&str, std.alloc.System>, s: &'static str) -> () uses [alloc] panics never
+fn t.keeps(v: &mut alloc.vec.Vec<&'static str, std.alloc.System>, s: &'static str) -> () uses [alloc] panics never
     core.mem.drop(v.push(s))
 end t.keeps
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v: alloc.vec.Vec<&'static str, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     t.keeps(&mut v, "abc")
     core.check.eq(v.len(), 1usize)
     Ok(())
@@ -69,7 +65,3 @@ end t.pick
 fn t.same(s: &alloc.string.String) -> &alloc.string.String uses [] panics never
     s
 end t.same
-
-fn t.wrap['a](s: &'a alloc.string.String) -> t.H<'a> uses [] panics never
-    t.H { r: s }
-end t.wrap

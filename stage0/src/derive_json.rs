@@ -6,7 +6,7 @@
 //! - `ToJson`: `impl std.json.ToJson for T` と `fn T.to_json(self: &T, out: ..)`。構造体は `{"フィールド名": 値, ..}`、
 //!   列挙は `"Variant"` (ペイロードなし)、`{"Variant": 値}` (ペイロード 1 つ)、`{"Variant": [値, ..]}` (2 つ以上)。
 //!   フィールドの出力はそのフィールドの型の `to_json` を呼ぶ (トレイトの動的な解決。型パラメータは `T: ToJson` を境界に足す)。
-//! - `FromJson`: 印のトレイト `impl std.json.FromJson for T` と、関連関数 `fn T.from_json(v: std.json.Value)`。
+//! - `FromJson`: 印のトレイト `impl std.json.FromJson for T` と、関連関数 `fn T.from_json(doc: &std.json.Doc, v: std.json.Value)`。
 //!   トレイトのメソッドは `self` が必須 (3.2) なので、解読は型ごとの関連関数で、フィールドの型から文面を決めて展開する
 //!   (整数・`bool`・`alloc.string.String`・`Vec`・`Option` は `std.json.decode_*` と補助関数、名義型は `<型>.from_json`)。
 
@@ -175,35 +175,35 @@ impl<'a> Gen<'a> {
     /// 値 `v` (`std.json.Value`) を `s` の型に解読する式 (末尾に `?` を含む)。
     fn expr(&mut self, s: &Shape, v: &str) -> String {
         match s {
-            Shape::Int(n) => format!("std.json.decode_{}({})?", n, v),
-            Shape::Bool => format!("std.json.decode_bool({})?", v),
-            Shape::Text => format!("std.json.decode_string({})?", v),
-            Shape::Named(n) => format!("{}.from_json({})?", n, v),
+            Shape::Int(n) => format!("std.json.decode_{}(doc, {})?", n, v),
+            Shape::Bool => format!("std.json.decode_bool(doc, {})?", v),
+            Shape::Text => format!("std.json.decode_string(doc, {})?", v),
+            Shape::Named(n) => format!("{}.from_json(doc, {})?", n, v),
             Shape::Vec(x) => {
                 let inner = self.expr(x, "e");
                 let k = self.helpers.len();
                 let body = format!(
-                    "fn {o}.from_json_{k}(v: std.json.Value) -> Result<{t}, std.json.Error> uses [alloc] panics never\n    let len = std.json.decode_len(v)?\n    let mut out: {t} = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    for k in core.iter.range(0usize, len) {{\n        let e = std.json.decode_item(v, k)?\n        out.push({inner})?\n    }}\n    Ok(out)\nend {o}.from_json_{k}\n",
+                    "fn {o}.from_json_{k}(doc: &std.json.Doc, v: std.json.Value) -> Result<{t}, std.json.Error> uses [alloc] panics never\n    let len = std.json.decode_len(doc, v)?\n    let mut out: {t} = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    for k in core.iter.range(0usize, len) {{\n        let e = std.json.decode_item(doc, v, k)?\n        out.push({inner})?\n    }}\n    Ok(out)\nend {o}.from_json_{k}\n",
                     o = self.owner,
                     k = k,
                     t = ty_text(s),
                     inner = inner
                 );
                 self.helpers.push(body);
-                format!("{}.from_json_{}({})?", self.owner, k, v)
+                format!("{}.from_json_{}(doc, {})?", self.owner, k, v)
             }
             Shape::Opt(x) => {
                 let inner = self.expr(x, "v");
                 let k = self.helpers.len();
                 let body = format!(
-                    "fn {o}.from_json_{k}(v: std.json.Value) -> Result<{t}, std.json.Error> uses [alloc] panics never\n    if std.json.is_null(v) {{\n        return Ok(None)\n    }}\n    Ok(Some({inner}))\nend {o}.from_json_{k}\n",
+                    "fn {o}.from_json_{k}(doc: &std.json.Doc, v: std.json.Value) -> Result<{t}, std.json.Error> uses [alloc] panics never\n    if std.json.is_null(doc, v) {{\n        return Ok(None)\n    }}\n    Ok(Some({inner}))\nend {o}.from_json_{k}\n",
                     o = self.owner,
                     k = k,
                     t = ty_text(s),
                     inner = inner
                 );
                 self.helpers.push(body);
-                format!("{}.from_json_{}({})?", self.owner, k, v)
+                format!("{}.from_json_{}(doc, {})?", self.owner, k, v)
             }
         }
     }
@@ -280,13 +280,13 @@ fn from_json_text(p: &Program, d: &Def) -> Result<String, String> {
         let mut inits = vec![];
         for (i, f) in d.fields.iter().enumerate() {
             let sh = shape(p, &d.file, &f.1)?;
-            let e = g.expr(&sh, &format!("std.json.decode_field(v, \"{}\", {}usize)?", f.0, i));
+            let e = g.expr(&sh, &format!("std.json.decode_field(doc, v, \"{}\", {}usize)?", f.0, i));
             body += &format!("    let f{} = {}\n", i, e);
             inits.push(format!("{}: f{}", f.0, i));
         }
         body += &format!("    Ok({} {{ {} }})\n", n, inits.join(", "));
     } else {
-        body += "    let (name, payload) = std.json.decode_variant(v)?\n";
+        body += "    let (name, payload) = std.json.decode_variant(doc, v)?\n";
         for (vn, tys) in &d.variants {
             body += &format!("    if name == \"{}\" {{\n", vn);
             match tys.len() {
@@ -297,12 +297,12 @@ fn from_json_text(p: &Program, d: &Def) -> Result<String, String> {
                     body += &format!("        let p = std.json.decode_payload(payload)?\n        return Ok({}.{}({}))\n", n, vn, e);
                 }
                 k => {
-                    body += &format!("        let p = std.json.decode_payload(payload)?\n        std.json.decode_tuple(p, {}usize)?\n", k);
+                    body += &format!("        let p = std.json.decode_payload(payload)?\n        std.json.decode_tuple(doc, p, {}usize)?\n", k);
                     let mut args = vec![];
                     for (i, t) in tys.iter().enumerate() {
                         let sh = shape(p, &d.file, t)?;
                         let e = g.expr(&sh, &format!("e{}", i));
-                        body += &format!("        let e{} = std.json.decode_item(p, {}usize)?\n", i, i);
+                        body += &format!("        let e{} = std.json.decode_item(doc, p, {}usize)?\n", i, i);
                         args.push(e);
                     }
                     body += &format!("        return Ok({}.{}({}))\n", n, vn, args.join(", "));
@@ -314,7 +314,7 @@ fn from_json_text(p: &Program, d: &Def) -> Result<String, String> {
     }
     let mut s = format!("impl std.json.FromJson for {}\n\n", n);
     s += &format!(
-        "fn {n}.from_json(v: std.json.Value) -> Result<{n}, std.json.Error> uses [alloc] panics never{vis}\n{body}end {n}.from_json\n",
+        "fn {n}.from_json(doc: &std.json.Doc, v: std.json.Value) -> Result<{n}, std.json.Error> uses [alloc] panics never{vis}\n{body}end {n}.from_json\n",
         n = n,
         vis = vis,
         body = body

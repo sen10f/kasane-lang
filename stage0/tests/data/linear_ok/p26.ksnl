@@ -4,10 +4,6 @@ type t.Buf
     n: usize
 end t.Buf
 
-type t.H['a]
-    r: &'a alloc.string.String
-end t.H
-
 type t.S
     name: alloc.string.String
     other: alloc.string.String
@@ -70,7 +66,3 @@ end t.same
 fn t.trim_it(s: &alloc.string.String) -> Option<&str> uses [] panics never
     Some(s.as_str())
 end t.trim_it
-
-fn t.wrap['a](s: &'a alloc.string.String) -> t.H<'a> uses [] panics never
-    t.H { r: s }
-end t.wrap

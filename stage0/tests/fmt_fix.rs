@@ -65,35 +65,29 @@ fn formatter_edge_cases_run_natively() {
     let mn = core.num.i64.MIN
     let mx = core.num.u64.MAX
     let m5 = -5i8
-    let mut b1 = [0u8; 32]
-    let mut f1 = core.fmt.Formatter.new(&mut b1)
+    let mut f1 = core.fmt.Formatter.new(32usize)
     core.mem.drop(mn.display_fmt(&mut f1))
     core.check.eq(core.str.from_utf8(f1.written()), Ok("-9223372036854775808"))
-    let mut b2 = [0u8; 32]
-    let mut f2 = core.fmt.Formatter.new(&mut b2)
+    let mut f2 = core.fmt.Formatter.new(32usize)
     core.mem.drop(mx.display_fmt(&mut f2))
     core.check.eq(core.str.from_utf8(f2.written()), Ok("18446744073709551615"))
     let z = 0u8
-    let mut b3 = [0u8; 4]
-    let mut f3 = core.fmt.Formatter.new(&mut b3)
+    let mut f3 = core.fmt.Formatter.new(4usize)
     core.mem.drop(z.display_fmt(&mut f3))
     core.check.eq(core.str.from_utf8(f3.written()), Ok("0"))
     let ce = 'é'
     let ca = 'あ'
-    let mut b4 = [0u8; 5]
-    let mut f4 = core.fmt.Formatter.new(&mut b4)
+    let mut f4 = core.fmt.Formatter.new(5usize)
     core.mem.drop(ce.display_fmt(&mut f4))
     core.mem.drop(ca.display_fmt(&mut f4))
     core.check.eq(core.str.from_utf8(f4.written()), Ok("éあ"))
-    let mut b5 = [0u8; 8]
-    let mut f5 = core.fmt.Formatter.new(&mut b5)
+    let mut f5 = core.fmt.Formatter.new(8usize)
     core.check.is_true(f5.written().len() == 0usize)
     core.check.is_true(core.fmt.Formatter.write_str(&mut f5, "12345678").is_ok())
     core.check.is_true(core.fmt.Formatter.write_str(&mut f5, "9").is_err())
     core.check.eq(core.str.from_utf8(f5.written()), Ok("12345678"))
     let big = 12345i32
-    let mut b6 = [0u8; 3]
-    let mut f6 = core.fmt.Formatter.new(&mut b6)
+    let mut f6 = core.fmt.Formatter.new(3usize)
     core.check.is_true(big.display_fmt(&mut f6).is_err())
     core.check.eq(core.str.from_utf8(f6.written()), Ok(""))
     let cx = 'x'
@@ -101,8 +95,7 @@ fn formatter_edge_cases_run_natively() {
     let cq = '\''
     let ca2 = 'あ'
     let tt = true
-    let mut b7 = [0u8; 32]
-    let mut f7 = core.fmt.Formatter.new(&mut b7)
+    let mut f7 = core.fmt.Formatter.new(32usize)
     core.mem.drop(cx.debug_fmt(&mut f7))
     core.mem.drop(cn.debug_fmt(&mut f7))
     core.mem.drop(cq.debug_fmt(&mut f7))

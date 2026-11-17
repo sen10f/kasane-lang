@@ -3042,9 +3042,9 @@ fn kir_only_rejects_floor() {
     }
     eprintln!("kir-only: borrow/linear expected {} rejected {}; correct code rejected {:?}", expected, rejected, fps);
     assert!(fps.is_empty(), "kir-only rejects correct code:\n{}", fps.join("\n"));
-    // 下限 (現在値。下げない)。
-    assert!(expected >= 268, "only {} borrow/linear programs in unsound/", expected);
-    assert!(rejected >= 131, "kir-only rejects only {} of {}", rejected, expected);
+    // 下限 (現在値。下げない)。参照は二級の値 (E3060) にした 0.11 で、欄・容れ物に参照を置く形の 97 本は期待が E3060 になり数えない。
+    assert!(expected >= 267, "only {} borrow/linear programs in unsound/", expected);
+    assert!(rejected >= 125, "kir-only rejects only {} of {}", rejected, expected);
 }
 
 /// 所有者の move・drop は、その欄 (欄の欄を含む) から借りた借用も殺す。借用を drop の前に使い終えるなら通る。

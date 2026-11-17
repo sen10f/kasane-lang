@@ -1,0 +1,8 @@
+type t.View['a]
+    src: &'a str
+    pos: usize
+end t.View
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

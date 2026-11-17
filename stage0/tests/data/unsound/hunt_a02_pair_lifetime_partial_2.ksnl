@@ -1,4 +1,4 @@
-// expect: E3010
+// expect: E3060
 type t.Pair['a, 'b]
     f: &'a u32
     s: &'b u32

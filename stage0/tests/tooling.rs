@@ -119,23 +119,19 @@ fn with_test_runs_in_both_the_interpreter_and_native_with_ksn_test_both() {
 fn scalar_display_and_derived_methods_run_in_both() {
     let test = "test t.main.test_scalar_display
     let n: i64 = -7i64
-    let mut buf = [0u8; 32]
-    let mut f = core.fmt.Formatter.new(&mut buf)
+    let mut f = core.fmt.Formatter.new(32usize)
     core.mem.drop(n.display_fmt(&mut f))
     core.check.eq(core.str.from_utf8(f.written()), Ok(\"-7\"))
     let big: u32 = 4294967295u32
-    let mut buf2 = [0u8; 16]
-    let mut f2 = core.fmt.Formatter.new(&mut buf2)
+    let mut f2 = core.fmt.Formatter.new(16usize)
     core.mem.drop(big.display_fmt(&mut f2))
     core.check.eq(core.str.from_utf8(f2.written()), Ok(\"4294967295\"))
     let c: char = 'x'
-    let mut buf3 = [0u8; 8]
-    let mut f3 = core.fmt.Formatter.new(&mut buf3)
+    let mut f3 = core.fmt.Formatter.new(8usize)
     core.mem.drop(c.display_fmt(&mut f3))
     core.check.eq(core.str.from_utf8(f3.written()), Ok(\"x\"))
     let t: bool = true
-    let mut buf4 = [0u8; 8]
-    let mut f4 = core.fmt.Formatter.new(&mut buf4)
+    let mut f4 = core.fmt.Formatter.new(8usize)
     core.mem.drop(t.display_fmt(&mut f4))
     core.check.eq(core.str.from_utf8(f4.written()), Ok(\"true\"))
     core.check.eq(n != 3i64, true)

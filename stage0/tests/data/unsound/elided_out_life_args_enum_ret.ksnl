@@ -1,4 +1,4 @@
-// expect: E3020
+// expect: E3060
 enum t.E['b]
     A(&'b u32)
 end t.E

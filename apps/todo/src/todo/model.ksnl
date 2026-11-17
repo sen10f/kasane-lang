@@ -41,43 +41,43 @@ end todo.model.User
 
 fn todo.model.decode_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.Todo, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
     let root = std.json.decode_payload(std.json.Doc.value_at(doc, at))?
-    let len = std.json.decode_len(root)?
+    let len = std.json.decode_len(doc, root)?
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for i in core.iter.range(0usize, len) {
-        let item = std.json.decode_item(root, i)?
-        out.push(todo.model.from_json_value(item)?)?
+        let item = std.json.decode_item(doc, root, i)?
+        out.push(todo.model.from_json_value(doc, item)?)?
     }
     Ok(out)
 end todo.model.decode_array
 
 fn todo.model.decode_extra_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.TodoExtra, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
     let root = std.json.decode_payload(std.json.Doc.value_at(doc, at))?
-    let len = std.json.decode_len(root)?
+    let len = std.json.decode_len(doc, root)?
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for i in core.iter.range(0usize, len) {
-        let item = std.json.decode_item(root, i)?
-        out.push(todo.model.from_extra_json_value(item)?)?
+        let item = std.json.decode_item(doc, root, i)?
+        out.push(todo.model.from_extra_json_value(doc, item)?)?
     }
     Ok(out)
 end todo.model.decode_extra_array
 
 fn todo.model.decode_session_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.Session, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
     let root = std.json.decode_payload(std.json.Doc.value_at(doc, at))?
-    let len = std.json.decode_len(root)?
+    let len = std.json.decode_len(doc, root)?
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for i in core.iter.range(0usize, len) {
-        let item = std.json.decode_item(root, i)?
-        out.push(todo.model.from_session_json_value(item)?)?
+        let item = std.json.decode_item(doc, root, i)?
+        out.push(todo.model.from_session_json_value(doc, item)?)?
     }
     Ok(out)
 end todo.model.decode_session_array
 
-fn todo.model.decode_string_array(value: std.json.Value) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
-    let len = std.json.decode_len(value)?
+fn todo.model.decode_string_array(doc: &std.json.Doc, value: std.json.Value) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
+    let len = std.json.decode_len(doc, value)?
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for i in core.iter.range(0usize, len) {
-        let item = std.json.decode_item(value, i)?
-        let text = std.json.decode_string(item)?
+        let item = std.json.decode_item(doc, value, i)?
+        let text = std.json.decode_string(doc, item)?
         if text.len() > todo.model.MAX_TAG {
             return Err(std.json.Error.OutOfRange)
         }
@@ -88,11 +88,11 @@ end todo.model.decode_string_array
 
 fn todo.model.decode_user_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.User, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
     let root = std.json.decode_payload(std.json.Doc.value_at(doc, at))?
-    let len = std.json.decode_len(root)?
+    let len = std.json.decode_len(doc, root)?
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for i in core.iter.range(0usize, len) {
-        let item = std.json.decode_item(root, i)?
-        out.push(todo.model.from_user_json_value(item)?)?
+        let item = std.json.decode_item(doc, root, i)?
+        out.push(todo.model.from_user_json_value(doc, item)?)?
     }
     Ok(out)
 end todo.model.decode_user_array
@@ -111,9 +111,9 @@ fn todo.model.extra_to_json(extra: &todo.model.TodoExtra) -> Result<alloc.string
     Ok(out)
 end todo.model.extra_to_json
 
-fn todo.model.from_create_value(value: std.json.Value) -> Result<(alloc.string.String<std.alloc.System>, alloc.string.String<std.alloc.System>), std.json.Error> uses [alloc, time] panics never pub
-    let title_v = std.json.decode_field(value, "title", 0usize)?
-    let title = std.json.decode_string(title_v)?
+fn todo.model.from_create_value(doc: &std.json.Doc, value: std.json.Value) -> Result<(alloc.string.String<std.alloc.System>, alloc.string.String<std.alloc.System>), std.json.Error> uses [alloc, time] panics never pub
+    let title_v = std.json.decode_field(doc, value, "title", 0usize)?
+    let title = std.json.decode_string(doc, title_v)?
     if title.len() > todo.model.MAX_TITLE {
         return Err(std.json.Error.OutOfRange)
     }
@@ -122,21 +122,21 @@ fn todo.model.from_create_value(value: std.json.Value) -> Result<(alloc.string.S
     Ok((title, created_at))
 end todo.model.from_create_value
 
-fn todo.model.from_extra_json_value(value: std.json.Value) -> Result<todo.model.TodoExtra, std.json.Error> uses [alloc] panics never pub
-    let updated_v = std.json.decode_field(value, "updated_at", 0usize)?
-    let updated_at = std.json.decode_string(updated_v)?
-    let tags_v = std.json.decode_field(value, "tags", 1usize)?
-    let tags = todo.model.decode_string_array(tags_v)?
-    let deadline_v = std.json.decode_field(value, "deadline", 2usize)?
-    let deadline = match std.json.decode_string(deadline_v) {
+fn todo.model.from_extra_json_value(doc: &std.json.Doc, value: std.json.Value) -> Result<todo.model.TodoExtra, std.json.Error> uses [alloc] panics never pub
+    let updated_v = std.json.decode_field(doc, value, "updated_at", 0usize)?
+    let updated_at = std.json.decode_string(doc, updated_v)?
+    let tags_v = std.json.decode_field(doc, value, "tags", 1usize)?
+    let tags = todo.model.decode_string_array(doc, tags_v)?
+    let deadline_v = std.json.decode_field(doc, value, "deadline", 2usize)?
+    let deadline = match std.json.decode_string(doc, deadline_v) {
         Ok(d) => d
         Err(_e) => match alloc.string.String.from_str(std.alloc.SYSTEM, "") {
             Ok(s) => s
             Err(_e2) => return Err(std.json.Error.OutOfRange)
         }
     }
-    let owner_v = std.json.decode_field(value, "owner_id", 3usize)?
-    let owner_id = std.json.decode_i64(owner_v)?
+    let owner_v = std.json.decode_field(doc, value, "owner_id", 3usize)?
+    let owner_id = std.json.decode_i64(doc, owner_v)?
     let ua = updated_at
     let tg = tags
     let dl = deadline
@@ -144,18 +144,18 @@ fn todo.model.from_extra_json_value(value: std.json.Value) -> Result<todo.model.
     Ok(todo.model.TodoExtra { updated_at: ua, tags: tg, deadline: dl, owner_id: od })
 end todo.model.from_extra_json_value
 
-fn todo.model.from_json_value(value: std.json.Value) -> Result<todo.model.Todo, std.json.Error> uses [alloc] panics never pub
-    let id_v = std.json.decode_field(value, "id", 0usize)?
-    let id = std.json.decode_i64(id_v)?
-    let title_v = std.json.decode_field(value, "title", 1usize)?
-    let title = std.json.decode_string(title_v)?
+fn todo.model.from_json_value(doc: &std.json.Doc, value: std.json.Value) -> Result<todo.model.Todo, std.json.Error> uses [alloc] panics never pub
+    let id_v = std.json.decode_field(doc, value, "id", 0usize)?
+    let id = std.json.decode_i64(doc, id_v)?
+    let title_v = std.json.decode_field(doc, value, "title", 1usize)?
+    let title = std.json.decode_string(doc, title_v)?
     if title.len() > todo.model.MAX_TITLE {
         return Err(std.json.Error.OutOfRange)
     }
-    let done_v = std.json.decode_field(value, "done", 2usize)?
-    let done = std.json.decode_bool(done_v)?
-    let created_v = std.json.decode_field(value, "created_at", 3usize)?
-    let created_at = std.json.decode_string(created_v)?
+    let done_v = std.json.decode_field(doc, value, "done", 2usize)?
+    let done = std.json.decode_bool(doc, done_v)?
+    let created_v = std.json.decode_field(doc, value, "created_at", 3usize)?
+    let created_at = std.json.decode_string(doc, created_v)?
     let i = id
     let t = title
     let d = done
@@ -163,53 +163,53 @@ fn todo.model.from_json_value(value: std.json.Value) -> Result<todo.model.Todo, 
     Ok(todo.model.Todo { id: i, title: t, done: d, created_at: ca })
 end todo.model.from_json_value
 
-fn todo.model.from_session_json_value(value: std.json.Value) -> Result<todo.model.Session, std.json.Error> uses [alloc] panics never pub
-    let token_v = std.json.decode_field(value, "token", 0usize)?
-    let token = std.json.decode_string(token_v)?
-    let user_id_v = std.json.decode_field(value, "user_id", 1usize)?
-    let user_id = std.json.decode_i64(user_id_v)?
-    let expires_v = std.json.decode_field(value, "expires_at", 2usize)?
-    let expires_at = std.json.decode_i64(expires_v)?
+fn todo.model.from_session_json_value(doc: &std.json.Doc, value: std.json.Value) -> Result<todo.model.Session, std.json.Error> uses [alloc] panics never pub
+    let token_v = std.json.decode_field(doc, value, "token", 0usize)?
+    let token = std.json.decode_string(doc, token_v)?
+    let user_id_v = std.json.decode_field(doc, value, "user_id", 1usize)?
+    let user_id = std.json.decode_i64(doc, user_id_v)?
+    let expires_v = std.json.decode_field(doc, value, "expires_at", 2usize)?
+    let expires_at = std.json.decode_i64(doc, expires_v)?
     let tk = token
     let uid = user_id
     let ea = expires_at
     Ok(todo.model.Session { token: tk, user_id: uid, expires_at: ea })
 end todo.model.from_session_json_value
 
-fn todo.model.from_update_value(value: std.json.Value) -> Result<todo.model.UpdateFields, std.json.Error> uses [alloc] panics never pub
-    let title_v = std.json.decode_field(value, "title", 0usize)?
-    let title = match std.json.decode_string(title_v) {
+fn todo.model.from_update_value(doc: &std.json.Doc, value: std.json.Value) -> Result<todo.model.UpdateFields, std.json.Error> uses [alloc] panics never pub
+    let title_v = std.json.decode_field(doc, value, "title", 0usize)?
+    let title = match std.json.decode_string(doc, title_v) {
         Ok(t) => Some(t)
         Err(_e) => None
     }
-    let done_v = std.json.decode_field(value, "done", 1usize)?
-    let done = match std.json.decode_bool(done_v) {
+    let done_v = std.json.decode_field(doc, value, "done", 1usize)?
+    let done = match std.json.decode_bool(doc, done_v) {
         Ok(d) => Some(d)
         Err(_e) => None
     }
-    let deadline_v = std.json.decode_field(value, "deadline", 2usize)?
-    let deadline = match std.json.decode_string(deadline_v) {
+    let deadline_v = std.json.decode_field(doc, value, "deadline", 2usize)?
+    let deadline = match std.json.decode_string(doc, deadline_v) {
         Ok(d) => Some(d)
         Err(_e) => None
     }
-    let tags = match std.json.decode_field(value, "tags", 3usize) {
-        Ok(tags_v) => todo.model.decode_string_array(tags_v)?
+    let tags = match std.json.decode_field(doc, value, "tags", 3usize) {
+        Ok(tags_v) => todo.model.decode_string_array(doc, tags_v)?
         Err(_e) => alloc.vec.Vec.new(std.alloc.SYSTEM)
     }
     Ok(todo.model.UpdateFields { title: title, done: done, deadline: deadline, tags: tags })
 end todo.model.from_update_value
 
-fn todo.model.from_user_json_value(value: std.json.Value) -> Result<todo.model.User, std.json.Error> uses [alloc] panics never pub
-    let id_v = std.json.decode_field(value, "id", 0usize)?
-    let id = std.json.decode_i64(id_v)?
-    let username_v = std.json.decode_field(value, "username", 1usize)?
-    let username = std.json.decode_string(username_v)?
-    let hash_v = std.json.decode_field(value, "password_hash", 2usize)?
-    let password_hash = std.json.decode_string(hash_v)?
-    let salt_v = std.json.decode_field(value, "salt", 3usize)?
-    let salt = std.json.decode_string(salt_v)?
-    let created_v = std.json.decode_field(value, "created_at", 4usize)?
-    let created_at = std.json.decode_string(created_v)?
+fn todo.model.from_user_json_value(doc: &std.json.Doc, value: std.json.Value) -> Result<todo.model.User, std.json.Error> uses [alloc] panics never pub
+    let id_v = std.json.decode_field(doc, value, "id", 0usize)?
+    let id = std.json.decode_i64(doc, id_v)?
+    let username_v = std.json.decode_field(doc, value, "username", 1usize)?
+    let username = std.json.decode_string(doc, username_v)?
+    let hash_v = std.json.decode_field(doc, value, "password_hash", 2usize)?
+    let password_hash = std.json.decode_string(doc, hash_v)?
+    let salt_v = std.json.decode_field(doc, value, "salt", 3usize)?
+    let salt = std.json.decode_string(doc, salt_v)?
+    let created_v = std.json.decode_field(doc, value, "created_at", 4usize)?
+    let created_at = std.json.decode_string(doc, created_v)?
     let i = id
     let un = username
     let ph = password_hash

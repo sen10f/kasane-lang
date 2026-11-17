@@ -9,7 +9,7 @@ fn t.bad() -> usize uses [] panics never
     t.peek(h.r)
 end t.bad
 
-// expect: E3010
+// expect: E3060
 fn t.consume(s: alloc.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.consume

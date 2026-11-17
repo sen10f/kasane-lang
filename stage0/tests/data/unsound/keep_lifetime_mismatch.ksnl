@@ -1,4 +1,4 @@
-// expect: E3010
+// expect: E3060
 fn t.keep(v: &mut alloc.vec.Vec<&alloc.string.String, std.alloc.System>, s: &alloc.string.String) -> () uses [alloc] panics never
     core.mem.drop(v.push(s))
 end t.keep

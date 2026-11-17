@@ -41,6 +41,7 @@ mod value;
 mod parser;
 mod program;
 mod resolve;
+mod refs_check;
 mod rustisms;
 mod stdcache;
 mod types;

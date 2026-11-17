@@ -7,7 +7,7 @@ type t.O
     opt: Option<alloc.string.String>
 end t.O
 
-// expect: E3010
+// expect: E3060
 type t.S
     name: alloc.string.String
     other: alloc.string.String
