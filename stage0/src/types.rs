@@ -1420,6 +1420,25 @@ impl<'a> TypeCk<'a> {
                         {
                             u.consumed = true;
                         }
+                        // `r.m(..)` (`r` は取り込んだ値そのもの) で `m` が `self` を値で受けるなら消費する (線形の値も同じ規則)。
+                        if segs.len() == 2 && segs[0] == name && non_copy {
+                            if let Some(t) = self.lookup(name) {
+                                let tn = match self.deep(&t) {
+                                    Ty::Named(n, _) => Some(n),
+                                    Ty::Prim(p) => Some(p),
+                                    _ => None,
+                                };
+                                if let Some(tn) = tn {
+                                    let fq = format!("{}.{}", tn, segs[1]);
+                                    let di = self.p.funcs.get(&fq).or_else(|| self.p.sigs.get(&fq)).copied();
+                                    if let Some(di) = di {
+                                        if matches!(self.p.defs[di].params.first(), Some((pn, pt)) if pn == "self" && tag(pt) != "ref") {
+                                            u.consumed = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 for c in crate::check::children(e) {

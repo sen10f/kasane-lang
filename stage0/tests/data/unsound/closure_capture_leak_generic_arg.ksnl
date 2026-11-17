@@ -1,0 +1,13 @@
+// expect: E1101
+fn t.main() -> () uses [] panics never
+    let x = 7u8
+    let c = fn () -> u8 capture [] {
+        x
+    }
+    let v = t.run_once(c)
+    core.mem.drop(v)
+end t.main
+
+fn t.run_once[F: core.ops.FnOnce<(), u8, E, P>, E: uses, P: panics](f: F) -> u8 uses [E] panics P
+    f.call_once(())
+end t.run_once

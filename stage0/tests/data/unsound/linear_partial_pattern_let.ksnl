@@ -1,0 +1,28 @@
+// expect: E3003
+type t.Pair linear
+    a: u32
+    b: t.Res
+end t.Pair
+
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.Res.shut(self: t.Res) -> () uses [] panics never
+    let t.Res { id: id } = self
+    core.mem.drop(id)
+end t.Res.shut
+
+fn t.bad() -> () uses [] panics never
+    let p = t.mk()
+    let t.Pair { a: x } = p
+    core.mem.drop(x)
+end t.bad
+
+fn t.main() -> () uses [] panics never
+    t.bad()
+end t.main
+
+fn t.mk() -> t.Pair uses [] panics never
+    t.Pair { a: 1u32, b: t.Res { id: 2u32 } }
+end t.mk

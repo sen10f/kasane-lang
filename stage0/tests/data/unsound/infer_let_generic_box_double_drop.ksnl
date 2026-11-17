@@ -1,0 +1,10 @@
+// expect: E3002
+fn t.main() -> () uses [alloc] panics never
+    t.reg(1u32)
+end t.main
+
+fn t.reg[H](h: H) -> () uses [alloc] panics never
+    let b = alloc.boxed.Box.new(std.alloc.SYSTEM, h)
+    core.mem.drop(b)
+    core.mem.drop(b)
+end t.reg

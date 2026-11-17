@@ -1,0 +1,6 @@
+// expect: E3002
+fn t.main() -> () uses [alloc] panics never
+    let a = Some(alloc.string.String.new(std.alloc.SYSTEM))
+    core.mem.drop(a)
+    core.mem.drop(a)
+end t.main
