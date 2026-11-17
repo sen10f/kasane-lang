@@ -796,6 +796,25 @@ fn analyze_slice(mut l: Loaded, plan: SlicePlan, prev_items: &[Item]) -> Analysi
 ///
 /// `only` (`KSN_BORROWCK=kir-only`、計測用): AST の借用・線形の診断 (E3010 / E3030 / E3002 / E3003) を外し、
 /// KIR の結果だけを残す。KIR に下ろせないときは何も出さない (AST に戻さない)。既定の検査は変わらない。
+fn kir_borrowck_union(rep: &mut Report, prog: Option<&Program>, user: &[usize]) {
+    // 既定: AST の結果は残し、KIR の診断を足す (どちらかが拒めば拒む)。下ろせないときは AST の結果だけ。
+    // すでに致命の診断があるなら足すものはない (誤りのあるプログラムは KIR に下ろす前提を満たさず、下ろす側が落ちることもある)。
+    if rep.items.iter().any(|i| i.fatal) {
+        return;
+    }
+    let Some(p) = prog else { return };
+    let lo = crate::kir_lower::lower_user(p, user);
+    if let crate::kir_borrowck::Outcome::Checked(ds) = crate::kir_borrowck::check(p, user, &lo, false) {
+        for d in &ds {
+            let line = d.line.max(1);
+            if rep.items.iter().any(|i| i.code == d.code && i.file.as_deref() == Some(d.file.as_str()) && i.line == line) {
+                continue;
+            }
+            rep.add(d.code, &format!("[kir] {}", d.msg), Some(&d.file), line, 1, true);
+        }
+    }
+}
+
 fn kir_borrowck_hidden(rep: &mut Report, prog: Option<&Program>, user: &[usize], own: bool, only: bool) {
     let drop_ast = |rep: &mut Report| rep.items.retain(|i| !matches!(i.code.as_str(), "E3010" | "E3030" | "E3002" | "E3003"));
     let Some(p) = prog else {
@@ -838,6 +857,8 @@ fn cmd_check(json: bool) -> i32 {
             crate::kir_lower::dump_hidden(prog.as_ref(), &user);
             if kir_bc {
                 kir_borrowck_hidden(&mut rep, prog.as_ref(), &user, kir_own, kir_only);
+            } else if bc_mode != "ast" {
+                kir_borrowck_union(&mut rep, prog.as_ref(), &user);
             }
         })
     }) {

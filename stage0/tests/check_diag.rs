@@ -34,8 +34,7 @@ fn diagnostics_each_case_reports_its_code() {
 /// 失敗しなければならない。1 行目が `// expect: Exxxx` のファイルは、そのコードの診断で落ちることも確かめる
 /// (別の診断で落ちているだけのケースを許さない)。まだ検査できない穴は `KNOWN_HOLES` に名前を載せる (その間は「通ること」を
 /// 確かめるので、塞いだら一覧から外さないとテストが落ちる = 一覧は減る方向にしか変わらない)。
-const KNOWN_HOLES: &[&str] = &[
-];
+const KNOWN_HOLES: &[&str] = &[];
 
 #[test]
 fn unsound_programs_are_rejected() {
