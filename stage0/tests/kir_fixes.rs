@@ -53,10 +53,10 @@ fn a_one_armed_if_with_a_non_unit_tail_lowers_natively() {
 fn a_one_armed_if_discards_an_owned_tail_value() {
     let src = "fn t.name() -> alloc.string.String<std.alloc.System> uses [alloc] panics never\n\
                \x20   let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n\
-               \x20   match s.push_str(\"abc\") {\n\
+               \x20   core.mem.drop(match s.push_str(\"abc\") {\n\
                \x20       Ok(_) => 0u8\n\
                \x20       Err(_) => 1u8\n\
-               \x20   }\n\
+               \x20   })\n\
                \x20   s\n\
                end t.name\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n\
@@ -115,10 +115,10 @@ fn a_result_of_a_borrowed_owning_element_lowers_natively() {
                end t.n_of\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n\
                \x20   let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n\
-               \x20   match v.push(t.P { name: alloc.string.String.new(std.alloc.SYSTEM), n: 7u32 }) {\n\
+               \x20   core.mem.drop(match v.push(t.P { name: alloc.string.String.new(std.alloc.SYSTEM), n: 7u32 }) {\n\
                \x20       Ok(_) => 0u8\n\
                \x20       Err(_) => 1u8\n\
-               \x20   }\n\
+               \x20   })\n\
                \x20   let n = t.n_of(&v)?\n\
                \x20   if n == 7u32 {\n\
                \x20       std.io.print_line(\"seven\")?\n\
@@ -165,22 +165,22 @@ fn an_option_of_a_borrowed_enum_matches_variant_patterns() {
                fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n\
                \x20   let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n\
                \x20   let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n\
-               \x20   match s.push_str(\"abc\") {\n\
+               \x20   core.mem.drop(match s.push_str(\"abc\") {\n\
                \x20       Ok(_) => 0u8\n\
                \x20       Err(_) => 1u8\n\
-               \x20   }\n\
-               \x20   match v.push(t.Node.Num(s)) {\n\
+               \x20   })\n\
+               \x20   core.mem.drop(match v.push(t.Node.Num(s)) {\n\
                \x20       Ok(_) => 0u8\n\
                \x20       Err(_) => 1u8\n\
-               \x20   }\n\
-               \x20   match v.push(t.Node.Pair(3u32, 4u32)) {\n\
+               \x20   })\n\
+               \x20   core.mem.drop(match v.push(t.Node.Pair(3u32, 4u32)) {\n\
                \x20       Ok(_) => 0u8\n\
                \x20       Err(_) => 1u8\n\
-               \x20   }\n\
-               \x20   match v.push(t.Node.Empty) {\n\
+               \x20   })\n\
+               \x20   core.mem.drop(match v.push(t.Node.Empty) {\n\
                \x20       Ok(_) => 0u8\n\
                \x20       Err(_) => 1u8\n\
-               \x20   }\n\
+               \x20   })\n\
                \x20   if t.sum_at(&v, 0usize) == 100u32 {\n\
                \x20       std.io.print_line(\"num\")?\n\
                \x20   }\n\
@@ -215,10 +215,10 @@ fn a_vec_field_reached_through_a_shared_reference_field_is_readable() {
                end t.first\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n\
                \x20   let mut nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)\n\
-               \x20   match nodes.push(41u32) {\n\
+               \x20   core.mem.drop(match nodes.push(41u32) {\n\
                \x20       Ok(_) => 0u8\n\
                \x20       Err(_) => 1u8\n\
-               \x20   }\n\
+               \x20   })\n\
                \x20   let d = t.Doc { nodes: nodes }\n\
                \x20   let v = t.View { at: 0usize }\n\
                \x20   match t.first(&d, v) {\n\

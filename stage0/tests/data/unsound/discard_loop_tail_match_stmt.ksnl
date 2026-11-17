@@ -1,0 +1,14 @@
+// expect: E2042
+fn t.f(o: Option<u32>) -> () uses [] panics never
+    loop {
+        match o {
+            Some(_) => 1u32
+            None => 5u32
+        }
+        break
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

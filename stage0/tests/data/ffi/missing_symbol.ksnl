@@ -1,7 +1,7 @@
 extern t.nope(x: i32) -> i32 link "LIB:no_such_function"
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    std.io.print_line("before")
+    core.mem.drop(std.io.print_line("before"))
     let r = unsafe "ffi" "missing symbol" {
         t.nope(1i32)
     }

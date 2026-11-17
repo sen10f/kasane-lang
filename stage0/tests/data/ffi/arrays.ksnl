@@ -40,6 +40,6 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
         t.deep_sum(d)
     }
     core.check.is_true(sum == 7.75f64)
-    std.io.print_line("arrays ok")
+    core.mem.drop(std.io.print_line("arrays ok"))
     Ok(())
 end t.main

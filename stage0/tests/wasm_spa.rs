@@ -98,7 +98,7 @@ fn import_and_export_follow_the_wasm_abi() {
         eprintln!("skipped: node / wasm-ld-20 / clang のどれかがない");
         return;
     }
-    let src = "extern w1.host_add(a: u32, b: u32) -> u32 link \"env:ksn_host_add\"\n\nfn w1.ksn_twice(x: u32) -> u32 uses [] panics never\n    unsafe \"w1\" \"call the JS import\" {\n        w1.host_add(x, x)\n    }\nend w1.ksn_twice\n\nfn w1.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"ok\")\n    Ok(())\nend w1.main\n";
+    let src = "extern w1.host_add(a: u32, b: u32) -> u32 link \"env:ksn_host_add\"\n\nfn w1.ksn_twice(x: u32) -> u32 uses [] panics never\n    unsafe \"w1\" \"call the JS import\" {\n        w1.host_add(x, x)\n    }\nend w1.ksn_twice\n\nfn w1.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    core.mem.drop(std.io.print_line(\"ok\"))\n    Ok(())\nend w1.main\n";
     let t = pkg("w1", &[("w1.ksnl", src)]);
     let wasm = build_wasm(&t.0);
     let abi = Command::new("node").arg(root().join("tools/wasm/run.mjs")).arg("--abi").arg(&wasm).output().unwrap();

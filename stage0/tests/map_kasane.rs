@@ -162,7 +162,7 @@ fn scr.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
         }
     }
     core.check.eq(j, keys.len())
-    std.io.print_line("ok")
+    core.mem.drop(std.io.print_line("ok"))
     Ok(())
 end scr.main
 

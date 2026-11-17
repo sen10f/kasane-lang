@@ -77,7 +77,7 @@ fn threads.produce(tx: std.sync.Sender<u32>, count: u32) -> () uses [thread] pan
     let mut i = 1u32
     while i <= count {
         match tx.send(i) {
-            Ok(_u) => 0u32
+            Ok(_u) => ()
             Err(_e) => core.panic.panic("send failed")
         }
         i = i + 1u32

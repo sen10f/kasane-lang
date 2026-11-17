@@ -179,6 +179,6 @@ end t.run
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(t.run().is_ok(), true)
-    std.io.print_line("str ext ok")
+    core.mem.drop(std.io.print_line("str ext ok"))
     Ok(())
 end t.main

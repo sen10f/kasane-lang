@@ -784,10 +784,10 @@ fn t.churn(n: u32) -> u32 uses [alloc] panics may
     let mut i = 0u32
     let mut acc = 0u32
     while i < n {
-        match m.insert(i, i) {
+        core.mem.drop(match m.insert(i, i) {
             Ok(_old) => 0u8
             Err(_e) => core.panic.panic("oom")
-        }
+        })
         if i >= 4u32 {
             match m.remove(&(i.wrapping_sub(4u32))) {
                 Some(v) => {
@@ -808,10 +808,10 @@ fn t.fill(n: u32) -> u32 uses [alloc] panics may
     let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     let mut i = 0u32
     while i < n {
-        match m.insert(i, i.wrapping_mul(3u32).wrapping_add(1u32)) {
+        core.mem.drop(match m.insert(i, i.wrapping_mul(3u32).wrapping_add(1u32)) {
             Ok(_old) => 0u8
             Err(_e) => core.panic.panic("oom")
-        }
+        })
         i = i.wrapping_add(1u32)
     }
     let mut acc = 0u32
@@ -834,10 +834,10 @@ fn t.len_after(n: u32) -> usize uses [alloc] panics may
     let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     let mut i = 0u32
     while i < n {
-        match m.insert(i % 7u32, i) {
+        core.mem.drop(match m.insert(i % 7u32, i) {
             Ok(_old) => 0u8
             Err(_e) => core.panic.panic("oom")
-        }
+        })
         i = i.wrapping_add(1u32)
     }
     m.len()
@@ -858,10 +858,10 @@ fn t.missing(n: u32) -> u32 uses [alloc] panics may
     }
     let mut i = 0u32
     while i < n {
-        match m.insert(i, i) {
+        core.mem.drop(match m.insert(i, i) {
             Ok(_old) => 0u8
             Err(_e) => core.panic.panic("oom")
-        }
+        })
         i = i.wrapping_add(1u32)
     }
     if m.contains_key(&(n.wrapping_add(3u32))) {
@@ -893,10 +893,10 @@ fn t.order(n: u32) -> u32 uses [alloc] panics may
     let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     let mut i = 0u32
     while i < n {
-        match m.insert(i.wrapping_mul(7919u32), i) {
+        core.mem.drop(match m.insert(i.wrapping_mul(7919u32), i) {
             Ok(_old) => 0u8
             Err(_e) => core.panic.panic("oom")
-        }
+        })
         i = i.wrapping_add(1u32)
     }
     i = 0u32
@@ -949,10 +949,10 @@ fn t.signed(n: i32) -> i32 uses [alloc] panics may
     let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     let mut i = 0i32
     while i < n {
-        match m.insert(0i32.wrapping_sub(i), i) {
+        core.mem.drop(match m.insert(0i32.wrapping_sub(i), i) {
             Ok(_old) => 0u8
             Err(_e) => core.panic.panic("oom")
-        }
+        })
         i = i.wrapping_add(1i32)
     }
     let mut acc = 0i32
@@ -971,18 +971,18 @@ end t.signed
 
 fn t.strs(_n: u32) -> u32 uses [alloc] panics may
     let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
-    match m.insert("alpha", 1u32) {
+    core.mem.drop(match m.insert("alpha", 1u32) {
         Ok(_old) => 0u8
         Err(_e) => core.panic.panic("oom")
-    }
-    match m.insert("beta", 2u32) {
+    })
+    core.mem.drop(match m.insert("beta", 2u32) {
         Ok(_old) => 0u8
         Err(_e) => core.panic.panic("oom")
-    }
-    match m.insert("alpha", 10u32) {
+    })
+    core.mem.drop(match m.insert("alpha", 10u32) {
         Ok(_old) => 0u8
         Err(_e) => core.panic.panic("oom")
-    }
+    })
     let mut acc = 0u32
     match m.get(&"alpha") {
         Some(v) => {
@@ -1061,10 +1061,10 @@ fn kir_map_get_mut_in_a_match_lowers_and_writes_through() {
     // `match m.get_mut(k)` の `Some(v)` が指す番地に書いた値が、マップに残ること (木走査と同じ) を確かめる。
     let t = Tmp::new("kir_map_get_mut", "fn t.bump(n: u32) -> u32 uses [alloc] panics may
     let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
-    match m.insert(1u32, n) {
+    core.mem.drop(match m.insert(1u32, n) {
         Ok(_old) => 0u8
         Err(_e) => core.panic.panic(\"oom\")
-    }
+    })
     match m.get_mut(&1u32) {
         Some(v) => {
             *v = n.wrapping_add(1u32)

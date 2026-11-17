@@ -33,7 +33,7 @@ fn native_matches_run(name: &str, src: &str, want_out: &str, want_code: i32) {
 #[test]
 fn a_never_returning_fn_in_a_match_arm_exits_with_its_code() {
     let src = r#"fn t.fail(msg: &str, code: i32) -> ! uses [io.console, process] panics never
-    std.io.print_line(msg)
+    core.mem.drop(std.io.print_line(msg))
     std.process.exit(code)
 end t.fail
 
@@ -144,7 +144,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let prev = core.mem.replace(&mut r.name, alloc.string.String.from_str(std.alloc.SYSTEM, "new").unwrap())
     std.io.print_line(prev.as_str())?
     std.io.print_line(r.name.as_str())?
-    core.mem.replace(&mut x, alloc.string.String.from_str(std.alloc.SYSTEM, "discard").unwrap())
+    core.mem.drop(core.mem.replace(&mut x, alloc.string.String.from_str(std.alloc.SYSTEM, "discard").unwrap()))
     std.io.print_line(x.as_str())?
     Ok(())
 end t.main
@@ -163,10 +163,10 @@ fn core_mem_swap_exchanges_owned_strings_and_vecs() {
     std.io.print_line(b.as_str())?
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut w = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match w.push(7u32) {
+    core.mem.drop(match w.push(7u32) {
         Ok(_) => 0u8
         Err(_) => 1u8
-    }
+    })
     core.mem.swap(&mut v, &mut w)
     core.check.eq(v.len(), 1usize)
     core.check.eq(w.len(), 0usize)
@@ -250,18 +250,18 @@ end t.first_over
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match v.push(1u32) {
+    core.mem.drop(match v.push(1u32) {
         Ok(_) => 0u8
         Err(_) => 1u8
-    }
-    match v.push(5u32) {
+    })
+    core.mem.drop(match v.push(5u32) {
         Ok(_) => 0u8
         Err(_) => 1u8
-    }
-    match v.push(9u32) {
+    })
+    core.mem.drop(match v.push(9u32) {
         Ok(_) => 0u8
         Err(_) => 1u8
-    }
+    })
     core.check.eq(t.first_over(v.as_slice(), 3u32), 5u32)
     core.check.eq(t.first_over(v.as_slice(), 9u32), 0u32)
     std.io.print_line("slice ok")?

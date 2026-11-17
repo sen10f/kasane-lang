@@ -240,7 +240,7 @@ fn t.reversed() -> u64 uses [alloc, io.console, thread] panics may
 end t.reversed
 
 fn t.say(n: u32) -> u32 uses [io.console] panics may
-    std.io.print_line("thread")
+    core.mem.drop(std.io.print_line("thread"))
     n
 end t.say
 
@@ -263,12 +263,12 @@ fn t.order_print() -> u32 uses [alloc, io.console, thread] panics may
         Ok(h) => h
         Err(_e) => core.panic.panic("spawn failed")
     }
-    std.io.print_line("spawned")
+    core.mem.drop(std.io.print_line("spawned"))
     let r = b.join()
-    std.io.print_line("joined b")
+    core.mem.drop(std.io.print_line("joined b"))
     let ra = a.join()
     let rc = c.join()
-    std.io.print_line("joined all")
+    core.mem.drop(std.io.print_line("joined all"))
     ra.wrapping_mul(100u32).wrapping_add(r.wrapping_mul(10u32)).wrapping_add(rc)
 end t.order_print
 
@@ -395,10 +395,10 @@ fn t.str_pipe() -> Result<usize, std.io.Error> uses [alloc, thread] panics may
         fn() -> () capture [move tx] {
             let mut i = 1u32
             while i < 6u32 {
-                match tx.send(t.word(i)) {
+                core.mem.drop(match tx.send(t.word(i)) {
                     Ok(_u) => 0u32
                     Err(_e) => core.panic.panic("send failed")
-                }
+                })
                 i = i.wrapping_add(1u32)
             }
         },
@@ -587,10 +587,10 @@ end t.mutex_adds
 fn t.produce(tx: std.sync.Sender<u32>, from: u32, count: u32) -> () uses [thread] panics may
     let mut i = 0u32
     while i < count {
-        match tx.send(from + i) {
+        core.mem.drop(match tx.send(from + i) {
             Ok(_u) => 0u32
             Err(_e) => core.panic.panic("send failed")
-        }
+        })
         i = i + 1u32
     }
 end t.produce
@@ -899,10 +899,10 @@ end t.fan300
 fn t.pc_produce(tx: std.sync.Sender<u32>, from: u32, count: u32) -> () uses [thread] panics may
     let mut i = 0u32
     while i < count {
-        match tx.send(from + i) {
+        core.mem.drop(match tx.send(from + i) {
             Ok(_u) => 0u32
             Err(_e) => core.panic.panic("send failed")
-        }
+        })
         i = i + 1u32
     }
 end t.pc_produce

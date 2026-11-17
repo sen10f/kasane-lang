@@ -193,7 +193,7 @@ fn fmt_keeps_trailing_comment_and_reports_it() {
 
 #[test]
 fn fmt_keeps_comments_on_imports_when_sorting() {
-    let src = format!("// about io\nimport std.io\n// about fs\nimport std.fs\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    io.print(\"x\")\n    fs.exists(\"x\")\n    Ok(())\nend t.main\n");
+    let src = format!("// about io\nimport std.io\n// about fs\nimport std.fs\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    io.print(\"x\")\n    core.mem.drop(fs.exists(\"x\"))\n    Ok(())\nend t.main\n");
     let t = Tmp::new("cm_import", &src);
     run(&["fmt"], &t.0);
     let out = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();

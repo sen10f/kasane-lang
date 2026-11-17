@@ -23,7 +23,7 @@ fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize
         let mt2 = lower.cx.cat2(mt.as_str(), ">")?
         let slot = lower.cx.def(c, mt2.as_str(), "alloca")?
         let st = lower.opt.two_op("store ", slot, v)?
-        lower.cx.def(c, "unit", st.as_str())?
+        core.mem.drop(lower.cx.def(c, "unit", st.as_str())?)
         let bk = lower.cx.push_local(c, name, slot + 1usize, m, t, true)?
         lower.drop.mark(c, bk, fl)?
         return Ok(bk)
@@ -557,7 +557,7 @@ fn lower.opt.recv_value(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R,
     let mt = lower.opt.refty(true, st.as_str())?
     let slot = lower.cx.def(c, mt.as_str(), "alloca")?
     let so = lower.opt.two_op("store ", slot, r.v)?
-    lower.cx.def(c, "unit", so.as_str())?
+    core.mem.drop(lower.cx.def(c, "unit", so.as_str())?)
     let rt = lower.opt.refty(m, st.as_str())?
     let sh = lower.cx.cat2("asshared ", lower.cx.vs(slot)?.as_str())?
     lower.cx.def(c, rt.as_str(), sh.as_str())
@@ -809,7 +809,7 @@ fn lower.opt.wrap_ref(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, pt: us
     let mt = lower.opt.refty(true, it.as_str())?
     let slot = lower.cx.def(c, mt.as_str(), "alloca")?
     let so = lower.opt.two_op("store ", slot, v)?
-    lower.cx.def(c, "unit", so.as_str())?
+    core.mem.drop(lower.cx.def(c, "unit", so.as_str())?)
     let rt = lower.opt.refty(false, it.as_str())?
     let sh = lower.cx.cat2("asshared ", lower.cx.vs(slot)?.as_str())?
     lower.cx.def(c, rt.as_str(), sh.as_str())

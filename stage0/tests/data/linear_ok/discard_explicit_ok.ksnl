@@ -1,0 +1,17 @@
+fn t.f(v: &mut alloc.vec.Vec<u8, std.alloc.System>, o: Option<u32>) -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
+    v.push(1u8)?
+    core.mem.drop(v.pop())
+    core.mem.drop(match o {
+        Some(x) => x
+        None => 5u32
+    })
+    match o {
+        Some(_) => ()
+        None => ()
+    }
+    Ok(())
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

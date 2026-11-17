@@ -138,7 +138,7 @@ fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics
     core.check.eq(first, 25i64)
     let total = t.churn(CHURN_N)?
     core.check.eq(total, 3i64 * 1i64 * CHURN_NI)
-    std.io.print_line("box dyn ok")
+    core.mem.drop(std.io.print_line("box dyn ok"))
     Ok(())
 end t.run
 

@@ -34,6 +34,6 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     h4.join()
     let g = t.COUNTER.lock()
     core.check.eq(*g.get(), 40000u64)
-    std.io.print_line("counter ok")
+    core.mem.drop(std.io.print_line("counter ok"))
     Ok(())
 end t.main

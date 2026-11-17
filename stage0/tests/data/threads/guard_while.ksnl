@@ -29,7 +29,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     }
     let v = worker.join()
     core.check.eq(v, 3u64)
-    std.io.print_line("guard while ok")
+    core.mem.drop(std.io.print_line("guard while ok"))
     Ok(())
 end t.main
 

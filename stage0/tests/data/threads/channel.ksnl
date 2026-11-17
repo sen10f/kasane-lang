@@ -49,16 +49,16 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     }
     let mut i = 0u32
     while i < 50u32 {
-        match text_tx.send(t.message(i)) {
+        core.mem.drop(match text_tx.send(t.message(i)) {
             Ok(_u) => 0u32
             Err(_e) => core.panic.panic("send failed")
-        }
+        })
         i = i + 1u32
     }
     core.mem.drop(text_tx)
     let total = consumer.join()
     core.check.eq(total, 50usize * 5usize + 10usize + 40usize * 2usize)
-    std.io.print_line("channel ok")
+    core.mem.drop(std.io.print_line("channel ok"))
     Ok(())
 end t.main
 
@@ -69,23 +69,23 @@ end t.oom
 fn t.produce(tx: std.sync.Sender<u32>, count: u32) -> () uses [thread] panics may
     let mut i = 1u32
     while i <= count {
-        match tx.send(i.wrapping_mul(i)) {
+        core.mem.drop(match tx.send(i.wrapping_mul(i)) {
             Ok(_u) => 0u32
             Err(_e) => core.panic.panic("send failed")
-        }
+        })
         i = i + 1u32
     }
 end t.produce
 
 fn t.message(i: u32) -> alloc.string.String uses [alloc] panics may
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-    match s.push_str("hello") {
+    core.mem.drop(match s.push_str("hello") {
         Ok(_u) => 0u32
         Err(_e) => core.panic.panic("oom")
-    }
-    match s.push_u64(u64.from_u32(i)) {
+    })
+    core.mem.drop(match s.push_u64(u64.from_u32(i)) {
         Ok(_u) => 0u32
         Err(_e) => core.panic.panic("oom")
-    }
+    })
     s
 end t.message

@@ -43,7 +43,7 @@ fn lower.std_calls.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     }
     let mut o = lower.cx.cat2("panic \"", msg)?
     o.push('"')?
-    lower.cx.def(c, "unit", o.as_str())?
+    core.mem.drop(lower.cx.def(c, "unit", o.as_str())?)
     lower.cx.finish(c, lower.cx.own("unreachable")?)?
     lower.expr.dummy(c, t)
 end lower.std_calls.call

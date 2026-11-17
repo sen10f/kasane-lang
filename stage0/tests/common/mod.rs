@@ -199,7 +199,7 @@ pub fn clif_program(last_check: &str) -> String {
         "    core.check.eq(t.both(true, false), true)",
         "    core.check.eq(t.both(true, true), false)",
         last_check,
-        "    std.io.print_line(\"clif ok\")",
+        "    core.mem.drop(std.io.print_line(\"clif ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -301,7 +301,7 @@ pub fn clif_arith_program(tail: &str) -> String {
         "    core.check.eq(t.area(1.5f64, 2.0f64), 3.5f64)",
         "    core.check.eq(t.area(1.0f64, 1.0f64) > 1.0f64, true)",
         tail,
-        "    std.io.print_line(\"arith ok\")",
+        "    core.mem.drop(std.io.print_line(\"arith ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -393,7 +393,7 @@ pub fn clif_struct_program(tail: &str) -> String {
         "    core.check.eq(t.classify(1u32), 20u8)",
         "    core.check.eq(t.classify(9u32), 30u8)",
         tail,
-        "    std.io.print_line(\"struct ok\")",
+        "    core.mem.drop(std.io.print_line(\"struct ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -475,7 +475,7 @@ pub fn clif_option_program(tail: &str) -> String {
         "    core.check.eq(t.pair_sum(t.pair_of(5u32)), 11u32)",
         "    core.check.eq(t.pair_sum(t.pair_of(0u32)), 0u32)",
         tail,
-        "    std.io.print_line(\"option ok\")",
+        "    core.mem.drop(std.io.print_line(\"option ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -495,10 +495,10 @@ pub fn clif_vec_program(tail: &str) -> String {
         "    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)",
         "    let mut i = 0u32",
         "    while i < count {",
-        "        match v.push(i.wrapping_mul(i)) {",
+        "        core.mem.drop(match v.push(i.wrapping_mul(i)) {",
         "            Ok(_) => 0u8",
         "            Err(_) => 1u8",
-        "        }",
+        "        })",
         "        i = i.wrapping_add(1u32)",
         "    }",
         "    v",
@@ -531,17 +531,17 @@ pub fn clif_vec_program(tail: &str) -> String {
         "    core.check.eq(big.len(), 1000usize)",
         "    core.check.eq(t.sum(&big), 332833500u32)",
         "    let mut bag = t.Bag { items: t.fill(2u32), n: 7u32 }",
-        "    match bag.items.push(9u32) {",
+        "    core.mem.drop(match bag.items.push(9u32) {",
         "        Ok(_) => 0u8",
         "        Err(_) => 1u8",
-        "    }",
+        "    })",
         "    core.check.eq(bag.items.len(), 3usize)",
         "    core.check.eq(bag.items[2usize], 9u32)",
         "    let s = \"hello\"",
         "    core.check.eq(s.len(), 5usize)",
-        "    std.io.print_line(s)",
+        "    core.mem.drop(std.io.print_line(s))",
         tail,
-        "    std.io.print_line(\"vec ok\")",
+        "    core.mem.drop(std.io.print_line(\"vec ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -564,10 +564,10 @@ pub fn clif_string_program(tail: &str) -> String {
         "    let mut i = 0u32".to_string(),
         "    while i < n {".to_string(),
         "        let g = t.greeting(\"x\")".to_string(),
-        "        match v.push(g) {".to_string(),
+        "        core.mem.drop(match v.push(g) {".to_string(),
         "            Ok(_) => 0u8".to_string(),
         "            Err(_) => 1u8".to_string(),
-        "        }".to_string(),
+        "        })".to_string(),
         "        i = i.wrapping_add(1u32)".to_string(),
         "    }".to_string(),
         "    v".to_string(),
@@ -588,14 +588,14 @@ pub fn clif_string_program(tail: &str) -> String {
         String::new(),
         format!("fn t.greeting(who: &str) -> {}", sv),
         "    let mut s = alloc.string.String.new(std.alloc.SYSTEM)".to_string(),
-        "    match s.push_str(\"hello, \") {".to_string(),
+        "    core.mem.drop(match s.push_str(\"hello, \") {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
-        "    match s.push_str(who) {".to_string(),
+        "    })".to_string(),
+        "    core.mem.drop(match s.push_str(who) {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
+        "    })".to_string(),
         "    s".to_string(),
         "end t.greeting".to_string(),
         String::new(),
@@ -618,17 +618,17 @@ pub fn clif_string_program(tail: &str) -> String {
         String::new(),
         "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may".to_string(),
         "    let g = t.greeting(\"world\")".to_string(),
-        "    std.io.print_line(g.as_str())".to_string(),
+        "    core.mem.drop(std.io.print_line(g.as_str()))".to_string(),
         "    core.check.eq(g.as_str(), \"hello, world\")".to_string(),
         "    core.check.eq(g.len(), 12usize)".to_string(),
         "    let docs = t.build(100u32)".to_string(),
         "    core.check.eq(docs.len(), 100usize)".to_string(),
         "    let mut d = t.Doc { name: t.greeting(\"doc\"), parts: t.build(3u32) }".to_string(),
         "    core.check.eq(d.name.as_str(), \"hello, doc\")".to_string(),
-        "    match d.parts.push(t.greeting(\"more\")) {".to_string(),
+        "    core.mem.drop(match d.parts.push(t.greeting(\"more\")) {".to_string(),
         "        Ok(_) => 0u8".to_string(),
         "        Err(_) => 1u8".to_string(),
-        "    }".to_string(),
+        "    })".to_string(),
         "    core.check.eq(d.parts.len(), 4usize)".to_string(),
         "    d.name = t.greeting(\"renamed\")".to_string(),
         "    core.check.eq(d.name.as_str(), \"hello, renamed\")".to_string(),
@@ -646,7 +646,7 @@ pub fn clif_string_program(tail: &str) -> String {
         "    }".to_string(),
         "    core.mem.drop(docs)".to_string(),
         tail.to_string(),
-        "    std.io.print_line(\"string ok\")".to_string(),
+        "    core.mem.drop(std.io.print_line(\"string ok\"))".to_string(),
         "    Ok(())".to_string(),
         "end t.main".to_string(),
         String::new(),
@@ -687,10 +687,10 @@ pub fn clif_slice_program(tail: &str) -> String {
         "fn t.make(n: u32) -> alloc.vec.Vec<u32, std.alloc.System>",
         "    let mut v = t.fresh()",
         "    for k in core.iter.range(1u32, n.wrapping_add(1u32)) {",
-        "        match v.push(k) {",
+        "        core.mem.drop(match v.push(k) {",
         "            Ok(_) => 0u8",
         "            Err(_) => 1u8",
-        "        }",
+        "        })",
         "    }",
         "    v",
         "end t.make",
@@ -744,7 +744,7 @@ pub fn clif_slice_program(tail: &str) -> String {
         "    core.check.eq(w[2usize], 3u32)",
         "    core.check.eq(t.first_byte(\"A\"), 65u8)",
         tail,
-        "    std.io.print_line(\"slice ok\")",
+        "    core.mem.drop(std.io.print_line(\"slice ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -778,10 +778,10 @@ pub fn clif_tuple_program(tail: &str) -> String {
         "",
         "fn t.named(n: u32) -> (u32, alloc.string.String<std.alloc.System>)",
         "    let mut s = alloc.string.String.new(std.alloc.SYSTEM)",
-        "    match s.push_str(\"n\") {",
+        "    core.mem.drop(match s.push_str(\"n\") {",
         "        Ok(_) => 0u8",
         "        Err(_) => 1u8",
-        "    }",
+        "    })",
         "    (n, s)",
         "end t.named",
         "",
@@ -817,7 +817,7 @@ pub fn clif_tuple_program(tail: &str) -> String {
         "    core.check.eq(k, 7u32)",
         "    core.check.eq(name.as_str(), \"n\")",
         tail,
-        "    std.io.print_line(\"tuple ok\")",
+        "    core.mem.drop(std.io.print_line(\"tuple ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -854,7 +854,7 @@ pub fn clif_methods_program(tail: &str) -> String {
         "    core.check.eq(t.Phase.Idle.next(), t.Phase.Run)",
         "    core.check.eq(t.Phase.Idle.next().next(), t.Phase.Idle)",
         tail,
-        "    std.io.print_line(\"methods ok\")",
+        "    core.mem.drop(std.io.print_line(\"methods ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -887,10 +887,10 @@ pub fn clif_mutref_program(tail: &str) -> String {
         "fn t.make(n: u32) -> alloc.vec.Vec<u32, std.alloc.System>",
         "    let mut v = t.fresh()",
         "    for k in core.iter.range(1u32, n.wrapping_add(1u32)) {",
-        "        match v.push(k) {",
+        "        core.mem.drop(match v.push(k) {",
         "            Ok(_) => 0u8",
         "            Err(_) => 1u8",
-        "        }",
+        "        })",
         "    }",
         "    v",
         "end t.make",
@@ -915,7 +915,7 @@ pub fn clif_mutref_program(tail: &str) -> String {
         "    t.bump(&mut v[0usize])",
         "    core.check.eq(v[0usize], 3u32)",
         tail,
-        "    std.io.print_line(\"mutref ok\")",
+        "    core.mem.drop(std.io.print_line(\"mutref ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -976,7 +976,7 @@ pub fn clif_try_program(tail: &str) -> String {
         "    core.check.eq(v.len(), 4usize)",
         "    core.check.eq(v[3usize], 16u32)",
         tail,
-        "    std.io.print_line(\"try ok\")",
+        "    core.mem.drop(std.io.print_line(\"try ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -1024,10 +1024,10 @@ pub fn clif_closure_program(tail: &str) -> String {
         "    core.check.eq(add_base(5i32), 105i32)",
         "    let mut v = t.fresh()",
         "    for k in core.iter.range(1i32, 6i32) {",
-        "        match v.push(k) {",
+        "        core.mem.drop(match v.push(k) {",
         "            Ok(_u) => 0u8",
         "            Err(_e) => 1u8",
-        "        }",
+        "        })",
         "    }",
         "    core.check.eq(core.iter.count(v.iter()), 5usize)",
         "    core.check.eq(core.iter.count(core.iter.take(v.iter(), 3usize)), 3usize)",
@@ -1049,7 +1049,7 @@ pub fn clif_closure_program(tail: &str) -> String {
         "    core.check.eq(seen, 2usize)",
         "    core.check.eq(sum, 3i32)",
         tail,
-        "    std.io.print_line(\"closure ok\")",
+        "    core.mem.drop(std.io.print_line(\"closure ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -1104,7 +1104,7 @@ pub fn clif_iterator_program(tail: &str) -> String {
         "    let long = t.Upto { cur: 5u32, stop: 100u32 }",
         "    core.check.eq(core.iter.count(core.iter.take(long, 3usize)), 3usize)",
         tail,
-        "    std.io.print_line(\"iterator ok\")",
+        "    core.mem.drop(std.io.print_line(\"iterator ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -1135,10 +1135,10 @@ pub fn clif_std_program(tail: &str) -> String {
         "    core.check.eq(opt, None)",
         "    let mut v = t.fresh()",
         "    for k in core.iter.range(1u8, 4u8) {",
-        "        match v.push(k.wrapping_mul(10u8)) {",
+        "        core.mem.drop(match v.push(k.wrapping_mul(10u8)) {",
         "            Ok(_u) => 0u8",
         "            Err(_e) => 1u8",
-        "        }",
+        "        })",
         "    }",
         "    core.check.eq(v.remove(0usize), Some(10u8))",
         "    core.check.eq(v.len(), 2usize)",
@@ -1162,7 +1162,7 @@ pub fn clif_std_program(tail: &str) -> String {
         "    core.check.eq('x'.is_ascii_whitespace(), false)",
         "    core.check.eq(3i32.to_f64(), 3.0f64)",
         tail,
-        "    std.io.print_line(\"std ok\")",
+        "    core.mem.drop(std.io.print_line(\"std ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -1175,14 +1175,14 @@ pub fn clif_map_program(tail: &str) -> String {
     [
         "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
         "    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)",
-        "    match m.insert(\"a\", 1u8) {",
+        "    core.mem.drop(match m.insert(\"a\", 1u8) {",
         "        Ok(_old) => 0u8",
         "        Err(_e) => 1u8",
-        "    }",
-        "    match m.insert(\"b\", 2u8) {",
+        "    })",
+        "    core.mem.drop(match m.insert(\"b\", 2u8) {",
         "        Ok(_old) => 0u8",
         "        Err(_e) => 1u8",
-        "    }",
+        "    })",
         "    core.check.eq(m.get(&\"a\"), Some(&1u8))",
         "    core.check.eq(m.get(&\"zz\"), None)",
         "    core.check.eq(m.len(), 2usize)",
@@ -1208,15 +1208,15 @@ pub fn clif_map_program(tail: &str) -> String {
         "    let mut big = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)",
         "    for k in core.iter.range(0u32, 50u32) {",
         "        let key = k.wrapping_mul(7u32) % 50u32",
-        "        match big.insert(key, k) {",
+        "        core.mem.drop(match big.insert(key, k) {",
         "            Ok(_old) => 0u8",
         "            Err(_e) => 1u8",
-        "        }",
+        "        })",
         "    }",
         "    core.check.eq(big.len(), 50usize)",
         "    core.check.eq(big.get(&21u32), Some(&3u32))",
         tail,
-        "    std.io.print_line(\"map ok\")",
+        "    core.mem.drop(std.io.print_line(\"map ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -1272,7 +1272,7 @@ pub fn clif_generic_program(tail: &str) -> String {
         "    core.check.eq(nested.second.first, 1u32)",
         "    core.check.eq(nested.first.or_else(0u8), 2u8)",
         tail,
-        "    std.io.print_line(\"generic ok\")",
+        "    core.mem.drop(std.io.print_line(\"generic ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -1313,7 +1313,7 @@ pub fn clif_fn_bound_program(tail: &str) -> String {
         "    }",
         "    core.check.eq(t.map_one(2i32, wide), 10i64)",
         tail,
-        "    std.io.print_line(\"fn bound ok\")",
+        "    core.mem.drop(std.io.print_line(\"fn bound ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -1377,7 +1377,7 @@ pub fn clif_capture_program(tail: &str) -> String {
         "    }",
         "    core.check.eq(t.apply(both, 10u32), 23u32)",
         tail,
-        "    std.io.print_line(\"capture ok\")",
+        "    core.mem.drop(std.io.print_line(\"capture ok\"))",
         "    Ok(())",
         "end t.main",
         "",
@@ -1418,7 +1418,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
         core.check.eq(t.strlen(core.ptr.as_const(p)), 1usize)
         t.free(p)
     }
-    std.io.print_line(\"ffi ok\")
+    core.mem.drop(std.io.print_line(\"ffi ok\"))
     Ok(())
 end t.main
 ";
@@ -1485,7 +1485,7 @@ fn t.R.get(self: &t.R) -> u32
 end t.R.get
 
 fn t.R.new(id: u32) -> t.R
-    if id == 1u32 {
+    core.mem.drop(if id == 1u32 {
         std.io.print_line("open 1")
     } else {
         if id == 2u32 {
@@ -1493,7 +1493,7 @@ fn t.R.new(id: u32) -> t.R
         } else {
             std.io.print_line("open")
         }
-    }
+    })
     t.R { id: id }
 end t.R.new
 
@@ -1505,7 +1505,7 @@ fn t.R.open(id: u32) -> Result<t.R, u8>
 end t.R.open
 
 fn t.R.shut(self: t.R) -> ()
-    if self.id == 1u32 {
+    core.mem.drop(if self.id == 1u32 {
         std.io.print_line("shut 1")
     } else {
         if self.id == 2u32 {
@@ -1513,7 +1513,7 @@ fn t.R.shut(self: t.R) -> ()
         } else {
             std.io.print_line("shut")
         }
-    }
+    })
     core.mem.drop(self.id)
 end t.R.shut
 
@@ -1819,7 +1819,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
         t.strlen(core.ptr.as_const(s))
     }
     core.check.eq(n, 9usize)
-    std.io.print_line("libc struct ok")
+    core.mem.drop(std.io.print_line("libc struct ok"))
     Ok(())
 end t.main
 "#;
@@ -2400,8 +2400,8 @@ fn t.cap_mut(n: u64) -> u64 uses [] panics may
         *total = (*total).wrapping_add(x)
         *total
     }
-    f(n)
-    f(n)
+    core.mem.drop(f(n))
+    core.mem.drop(f(n))
     let r = f(5u64)
     r.wrapping_add(total)
 end t.cap_mut

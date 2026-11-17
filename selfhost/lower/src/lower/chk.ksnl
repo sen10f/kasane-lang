@@ -182,7 +182,7 @@ fn lower.chk.eq(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: 
     lower.chk.eprint(c, "2c2072696768743a20", 9usize)?
     lower.chk.debug(c, dbk.as_str(), b.v)?
     lower.chk.eprint(c, "0a", 1usize)?
-    lower.cx.def(c, "unit", "abort")?
+    core.mem.drop(lower.cx.def(c, "unit", "abort")?)
     lower.cx.finish(c, lower.cx.own("unreachable")?)?
     lower.cx.goto(c, cont)
     let u = lower.expr.unit(c)?

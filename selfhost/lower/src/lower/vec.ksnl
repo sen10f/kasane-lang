@@ -174,7 +174,7 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
         r = lower.vec.pop(env, c, recv, elem, ret)?
     } else if name == "clear" {
         let z = lower.vec.usize_c(c, 0usize)?
-        lower.vec.store_at(c, "usize", recv, 8usize, z)?
+        core.mem.drop(lower.vec.store_at(c, "usize", recv, 8usize, z)?)
         r = lower.cx.R { v: lower.expr.unit(c)?, t: ret }
     } else if name == "truncate" {
         // 長さを縮めるだけ (n < len のときだけ)。要素の解放はしない (所有物の要素は漏れる。README 29 章)。
@@ -191,7 +191,7 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
         brs.push_str(lower.cx.target(jb, &empty)?.as_str())?
         lower.cx.finish(c, brs)?
         lower.cx.goto(c, setb)
-        lower.vec.store_at(c, "usize", recv, 8usize, value)?
+        core.mem.drop(lower.vec.store_at(c, "usize", recv, 8usize, value)?)
         lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &empty)?.as_str())?)?
         lower.cx.goto(c, jb)
         r = lower.cx.R { v: lower.expr.unit(c)?, t: ret }
@@ -228,7 +228,7 @@ fn lower.vec.index(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: 
     let et = lower.tyk.text(env, c, elem)?
     let len0 = lower.vec.load_usize(c, recv, 8usize)?
     let ics = lower.cx.cat2("index.check ", lower.expr.two(idx, len0)?.as_str())?
-    lower.cx.def(c, "unit", ics.as_str())?
+    core.mem.drop(lower.cx.def(c, "unit", ics.as_str())?)
     let p1 = lower.vec.load_ptr(c, recv)?
     let szc = lower.vec.usize_c(c, sz)?
     let addr = lower.vec.elem_addr(c, p1, idx, szc)?
@@ -412,7 +412,7 @@ fn lower.vec.pop(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: us
     lower.cx.goto(c, popb)
     let one = lower.vec.usize_c(c, 1usize)?
     let nl = lower.vec.arith(c, "sub", len0, one)?
-    lower.vec.store_at(c, "usize", recv, 8usize, nl)?
+    core.mem.drop(lower.vec.store_at(c, "usize", recv, 8usize, nl)?)
     let p1 = lower.vec.load_ptr(c, recv)?
     let addr = lower.vec.elem_addr(c, p1, nl, szc)?
     let lds = lower.cx.cat2("mem.load.", et.as_str())?
@@ -460,17 +460,17 @@ fn lower.vec.push(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: u
     let p0 = lower.vec.load_ptr(c, recv)?
     let rls = lower.cx.cat2("heap.realloc ", lower.expr.two(p0, bytes)?.as_str())?
     let np = lower.cx.def(c, "ptr", rls.as_str())?
-    lower.vec.store_at(c, "ptr", recv, 0usize, np)?
-    lower.vec.store_at(c, "usize", recv, 16usize, nc)?
+    core.mem.drop(lower.vec.store_at(c, "ptr", recv, 0usize, np)?)
+    core.mem.drop(lower.vec.store_at(c, "usize", recv, 16usize, nc)?)
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(okb, &empty)?.as_str())?)?
     // 書く。
     lower.cx.goto(c, okb)
     let p1 = lower.vec.load_ptr(c, recv)?
     let addr = lower.vec.elem_addr(c, p1, len0, szc)?
-    lower.vec.store_at(c, et.as_str(), addr, 0usize, value)?
+    core.mem.drop(lower.vec.store_at(c, et.as_str(), addr, 0usize, value)?)
     let one = lower.vec.usize_c(c, 1usize)?
     let nl = lower.vec.arith(c, "add", len0, one)?
-    lower.vec.store_at(c, "usize", recv, 8usize, nl)?
+    core.mem.drop(lower.vec.store_at(c, "usize", recv, 8usize, nl)?)
     let u = lower.expr.unit(c)?
     let oks = lower.cx.cat2("ok ", lower.cx.vs(u)?.as_str())?
     let okv = lower.cx.def(c, rt.as_str(), oks.as_str())?
@@ -498,9 +498,9 @@ fn lower.vec.store_hdr(c: &mut lower.cx.Cx, slot: usize, v: usize) -> Result<(),
     let pv = lower.cx.def(c, "ptr", lower.expr.field_src(v, 0usize)?.as_str())?
     let lv = lower.cx.def(c, "usize", lower.expr.field_src(v, 8usize)?.as_str())?
     let cv = lower.cx.def(c, "usize", lower.expr.field_src(v, 16usize)?.as_str())?
-    lower.vec.store_at(c, "ptr", slot, 0usize, pv)?
-    lower.vec.store_at(c, "usize", slot, 8usize, lv)?
-    lower.vec.store_at(c, "usize", slot, 16usize, cv)?
+    core.mem.drop(lower.vec.store_at(c, "ptr", slot, 0usize, pv)?)
+    core.mem.drop(lower.vec.store_at(c, "usize", slot, 8usize, lv)?)
+    core.mem.drop(lower.vec.store_at(c, "usize", slot, 16usize, cv)?)
     Ok(())
 end lower.vec.store_hdr
 

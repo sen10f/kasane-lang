@@ -102,7 +102,7 @@ fn lower.str.from_str(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let sts = lower.cx.cat2("mem.store.u8 ", lower.cx.vs(dp)?.as_str())?
     let sts2 = lower.cx.cat2(sts.as_str(), " +0, ")?
     let sts3 = lower.cx.cat2(sts2.as_str(), lower.cx.vs(ld)?.as_str())?
-    lower.cx.def(c, "unit", sts3.as_str())?
+    core.mem.drop(lower.cx.def(c, "unit", sts3.as_str())?)
     let ni = lower.vec.arith(c, "add", i, one)?
     let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     a1.push(ni)?
@@ -255,8 +255,8 @@ fn lower.str.push_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, text: 
     let p0 = lower.vec.load_ptr(c, h)?
     let rls = lower.cx.cat2("heap.realloc ", lower.expr.two(p0, ncap)?.as_str())?
     let np = lower.cx.def(c, "ptr", rls.as_str())?
-    lower.vec.store_at(c, "ptr", h, 0usize, np)?
-    lower.vec.store_at(c, "usize", h, 16usize, ncap)?
+    core.mem.drop(lower.vec.store_at(c, "ptr", h, 0usize, np)?)
+    core.mem.drop(lower.vec.store_at(c, "usize", h, 16usize, ncap)?)
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(okb, &empty)?.as_str())?)?
     // 写す: バイト i を dst + i へ (i は 0 から tlen まで)。
     lower.cx.goto(c, okb)
@@ -290,7 +290,7 @@ fn lower.str.push_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, text: 
     let sts = lower.cx.cat2("mem.store.u8 ", lower.cx.vs(da)?.as_str())?
     let sts2 = lower.cx.cat2(sts.as_str(), " +0, ")?
     let sts3 = lower.cx.cat2(sts2.as_str(), lower.cx.vs(byte)?.as_str())?
-    lower.cx.def(c, "unit", sts3.as_str())?
+    core.mem.drop(lower.cx.def(c, "unit", sts3.as_str())?)
     let one = lower.vec.usize_c(c, 1usize)?
     let iv1 = lower.vec.arith(c, "add", ivs, one)?
     let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -298,7 +298,7 @@ fn lower.str.push_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, text: 
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(hb, &a1)?.as_str())?)?
     // 出口: 長さを直し、Ok(())。
     lower.cx.goto(c, exitb)
-    lower.vec.store_at(c, "usize", h, 8usize, need)?
+    core.mem.drop(lower.vec.store_at(c, "usize", h, 8usize, need)?)
     let u = lower.expr.unit(c)?
     let okv = lower.cx.def1(c, rt.as_str(), "ok ", u)?
     let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)

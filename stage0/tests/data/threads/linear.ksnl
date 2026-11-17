@@ -8,7 +8,7 @@ end t.addr
 fn t.bump(state_tx: std.sync.Sender<u64>, state_rx: std.sync.Receiver<u64>, rounds: u32) -> () uses [thread] panics may
     let mut i = 0u32
     while i < rounds {
-        match state_rx.recv() {
+        core.mem.drop(match state_rx.recv() {
             Ok(n) => {
                 match state_tx.send(n + 1u64) {
                     Ok(_u) => 0u32
@@ -16,7 +16,7 @@ fn t.bump(state_tx: std.sync.Sender<u64>, state_rx: std.sync.Receiver<u64>, roun
                 }
             }
             Err(_e) => core.panic.panic("state lost")
-        }
+        })
         i = i + 1u32
     }
 end t.bump
@@ -140,13 +140,13 @@ fn t.session(listener: &std.net.TcpListener) -> Result<(), std.io.Error> uses [a
     let mut i = 0u32
     while i < 12u32 {
         core.mem.drop(t.client(addr.as_str()).close())
-        match listener.accept() {
+        core.mem.drop(match listener.accept() {
             Ok(s) => match tx.send(s) {
                 Ok(_u) => 0u32
                 Err(back) => t.handle(back.value)
             }
             Err(_e) => core.panic.panic("accept failed")
-        }
+        })
         i = i + 1u32
     }
     core.mem.drop(tx)
@@ -155,13 +155,13 @@ fn t.session(listener: &std.net.TcpListener) -> Result<(), std.io.Error> uses [a
     let left = std.sync.channel::<std.net.TcpStream, std.alloc.System>(std.alloc.SYSTEM, 2usize)
     let (left_tx, left_rx) = left.map_err(t.oom)?
     core.mem.drop(t.client(addr.as_str()).close())
-    match listener.accept() {
+    core.mem.drop(match listener.accept() {
         Ok(s) => match left_tx.send(s) {
             Ok(_u) => 0u32
             Err(back) => t.handle(back.value)
         }
         Err(_e) => core.panic.panic("accept failed")
-    }
+    })
     core.mem.drop(left_tx)
     core.check.eq(t.drain(left_rx), 1u32)
     let made_state = std.sync.channel::<u64, std.alloc.System>(
@@ -193,10 +193,10 @@ fn t.session(listener: &std.net.TcpListener) -> Result<(), std.io.Error> uses [a
         Ok(h) => h
         Err(_e) => core.panic.panic("spawn failed")
     }
-    match state_tx.send(0u64) {
+    core.mem.drop(match state_tx.send(0u64) {
         Ok(_u) => 0u32
         Err(_e) => core.panic.panic("send failed")
-    }
+    })
     ha.join()
     hb.join()
     match state_rx.recv() {

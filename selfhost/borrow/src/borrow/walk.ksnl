@@ -34,7 +34,7 @@ fn borrow.walk.assign(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.ast
         }
         return Ok(d)
     }
-    borrow.walk.expr(tab, cx, n.a, borrow.walk.READ)?
+    core.mem.drop(borrow.walk.expr(tab, cx, n.a, borrow.walk.READ)?)
     Ok(d)
 end borrow.walk.assign
 
@@ -206,7 +206,7 @@ fn borrow.walk.declare_pat(cx: &mut borrow.cx.Cx, pat: usize, cls: usize) -> Res
         if tc != borrow.base.UNK {
             cl = tc
         }
-        borrow.cx.declare_tok(cx, n.a, cl, 0usize)?
+        core.mem.drop(borrow.cx.declare_tok(cx, n.a, cl, 0usize)?)
         return Ok(())
     }
     if n.kind == parse.ast.Kind.PRef {
@@ -574,15 +574,15 @@ fn borrow.walk.loop_expr(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.
     let s0 = borrow.cx.snap(cx)?
     let mut body = n.a
     if n.kind == parse.ast.Kind.While {
-        borrow.walk.expr(tab, cx, n.a, borrow.walk.READ)?
+        core.mem.drop(borrow.walk.expr(tab, cx, n.a, borrow.walk.READ)?)
         body = n.b
     }
     if n.kind == parse.ast.Kind.For {
-        borrow.walk.expr(tab, cx, n.b, borrow.walk.VAL)?
+        core.mem.drop(borrow.walk.expr(tab, cx, n.b, borrow.walk.VAL)?)
         borrow.walk.declare_pat(cx, n.a, borrow.base.UNK)?
         body = n.c
     }
-    borrow.walk.expr(tab, cx, body, borrow.walk.VAL)?
+    core.mem.drop(borrow.walk.expr(tab, cx, body, borrow.walk.VAL)?)
     for k in core.iter.range(0usize, mark) {
         let before = match s0.as_slice().get(k) {
             Some(x) => *x
@@ -800,11 +800,11 @@ end borrow.walk.stmt
 
 // with 式: 名前は後始末の中で使えない (分類は不明)。本体を走査する。
 fn borrow.walk.with_expr(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.ast.Node) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
-    borrow.walk.expr(tab, cx, n.c, borrow.walk.VAL)?
+    core.mem.drop(borrow.walk.expr(tab, cx, n.c, borrow.walk.VAL)?)
     let mark = cx.dat.locs.len()
     borrow.cx.undec(cx)
-    borrow.cx.declare_tok(cx, n.a, borrow.base.UNK, n.b)?
-    borrow.walk.expr(tab, cx, n.d, borrow.walk.READ)?
+    core.mem.drop(borrow.cx.declare_tok(cx, n.a, borrow.base.UNK, n.b)?)
+    core.mem.drop(borrow.walk.expr(tab, cx, n.d, borrow.walk.READ)?)
     let d = borrow.walk.block(tab, cx, n.e, 0usize)?
     borrow.cx.scope_exit(cx, mark, n.tok)?
     Ok(d)

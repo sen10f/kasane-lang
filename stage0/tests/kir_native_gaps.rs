@@ -151,18 +151,18 @@ end t.main
 fn native_vec_sub_out_of_range_and_reversed_match_interpreter() {
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match v.push(1u8) {
+    core.mem.drop(match v.push(1u8) {
         Ok(()) => {
         }
         Err(_) => {
         }
-    }
-    match v.push(2u8) {
+    })
+    core.mem.drop(match v.push(2u8) {
         Ok(()) => {
         }
         Err(_) => {
         }
-    }
+    })
     match v.sub(0usize, 3usize) {
         Some(_) => std.io.print_line("some")?
         None => std.io.print_line("none")?
@@ -181,18 +181,18 @@ end t.main
 fn native_vec_sub_reversed_matches_interpreter() {
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match v.push(1u8) {
+    core.mem.drop(match v.push(1u8) {
         Ok(()) => {
         }
         Err(_) => {
         }
-    }
-    match v.push(2u8) {
+    })
+    core.mem.drop(match v.push(2u8) {
         Ok(()) => {
         }
         Err(_) => {
         }
-    }
+    })
     match v.sub(2usize, 1usize) {
         Some(_) => std.io.print_line("some")?
         None => std.io.print_line("none")?

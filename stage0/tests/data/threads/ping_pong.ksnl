@@ -7,7 +7,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
         std.alloc.SYSTEM,
         fn() -> () capture [move job_rx, move reply_tx] {
             loop {
-                match job_rx.recv() {
+                core.mem.drop(match job_rx.recv() {
                     Ok(n) => {
                         match reply_tx.send(n + 1u32) {
                             Ok(_u) => 0u32
@@ -15,7 +15,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
                         }
                     }
                     Err(_e) => break
-                }
+                })
             }
         },
     )
@@ -25,10 +25,10 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     }
     let mut round = 1u32
     while round <= 3u32 {
-        match job_tx.send(round) {
+        core.mem.drop(match job_tx.send(round) {
             Ok(_u) => 0u32
             Err(_e) => core.panic.panic("send failed")
-        }
+        })
         match reply_rx.recv() {
             Ok(n) => {
                 core.check.eq(n, round + 1u32)
@@ -39,7 +39,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     }
     core.mem.drop(job_tx)
     worker.join()
-    std.io.print_line("ping pong ok")
+    core.mem.drop(std.io.print_line("ping pong ok"))
     Ok(())
 end t.main
 

@@ -9,7 +9,7 @@ use std::fs;
 use std::process::Command;
 
 const PROG: &str = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    std.io.print_line(\"bundle ok\")
+    core.mem.drop(std.io.print_line(\"bundle ok\"))
     Ok(())
 end t.main
 ";

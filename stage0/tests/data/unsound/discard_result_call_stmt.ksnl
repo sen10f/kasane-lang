@@ -1,0 +1,5 @@
+// expect: E2042
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    std.io.print_line("hi")
+    Ok(())
+end t.main

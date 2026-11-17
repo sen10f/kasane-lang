@@ -23,7 +23,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     core.check.eq(v, 1u64)
     let fin = t.M.lock()
     core.check.eq(*fin.get(), 1u64)
-    std.io.print_line("guard temp ok")
+    core.mem.drop(std.io.print_line("guard temp ok"))
     Ok(())
 end t.main
 
