@@ -1607,7 +1607,7 @@ impl Interp {
 
     /// アドレス `addr` を指す、要素型 `elem` のポインタの値。スカラーの要素型はタグとして値に載せる (同じアドレスを別の型で
     /// 指す `cast` の結果が、元のポインタの型を変えないように)。スカラーでなければアドレスに覚える。
-    fn ptr_value(&self, addr: i128, elem: &str) -> Val {
+    pub(crate) fn ptr_value(&self, addr: i128, elem: &str) -> Val {
         match ptr_tag(elem) {
             Some(t) => Val::Int(addr, Some(t)),
             None => {

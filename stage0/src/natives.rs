@@ -1193,6 +1193,9 @@ impl Interp {
                 if s.ty == "std.fs.File" {
                     return self.file_method(s, name, &args);
                 }
+                if s.ty == "std.alloc.System" {
+                    return self.system_alloc_method(name, &args);
+                }
                 if s.ty.starts_with("core.sync.Atomic") {
                     return atomic_method(s, name, &args);
                 }
@@ -1954,6 +1957,48 @@ fn atomic_method(s: &Rc<StructV>, name: &str, args: &[Val]) -> Res {
 }
 
 impl Interp {
+    /// `std.alloc.System` の `alloc` / `dealloc` / `realloc`: ホストの確保器 (`std::alloc`) の上。返すポインタは `*mut u8`。
+    /// 大きさ 0 は 1 バイトとして確保する (`dealloc` / `realloc` も同じ規則)。`align` が 2 の冪でないか、大きすぎれば `Err(AllocError)`。
+    fn system_alloc_method(&mut self, name: &str, args: &[Val]) -> Res {
+        let layout_of = |v: Option<&Val>| -> Option<std::alloc::Layout> {
+            let Some(Val::Struct(l)) = v.map(dr) else { return None };
+            let (Some(Val::Int(sz, _)), Some(Val::Int(al, _))) = (l.get("size"), l.get("align")) else { return None };
+            std::alloc::Layout::from_size_align((sz as usize).max(1), al as usize).ok()
+        };
+        let addr = |v: Option<&Val>| match v.map(dr) {
+            Some(Val::Int(a, _)) => a as usize,
+            _ => 0,
+        };
+        match name {
+            "alloc" => Ok(match layout_of(args.first()) {
+                Some(l) => {
+                    let p = unsafe { std::alloc::alloc(l) };
+                    if p.is_null() { err(alloc_error()) } else { ok(self.ptr_value(p as usize as i128, "u8")) }
+                }
+                None => err(alloc_error()),
+            }),
+            "dealloc" => {
+                if let Some(l) = layout_of(args.get(1)) {
+                    let p = addr(args.first());
+                    if p != 0 {
+                        unsafe { std::alloc::dealloc(p as *mut u8, l) };
+                    }
+                }
+                Ok(Val::Unit)
+            }
+            "realloc" => {
+                let (Some(old), Some(Val::Int(n, _))) = (layout_of(args.get(1)), args.get(2).map(dr)) else { return Ok(err(alloc_error())) };
+                let p = addr(args.first());
+                if p == 0 || n as usize > isize::MAX as usize - old.align() {
+                    return Ok(err(alloc_error()));
+                }
+                let q = unsafe { std::alloc::realloc(p as *mut u8, old, (n as usize).max(1)) };
+                Ok(if q.is_null() { err(alloc_error()) } else { ok(self.ptr_value(q as usize as i128, "u8")) })
+            }
+            _ => panic(format!("no method {} on System", name)),
+        }
+    }
+
     /// `std.io.Stdin` / `Stdout` / `Stderr` のメソッド (`read` / `write` / `flush`)。標準出力は `print_line` と同じ出力の溜めを通す。
     fn std_stream_method(&mut self, s: &Rc<StructV>, name: &str, args: &[Val]) -> Res {
         use std::io::{Read, Write};

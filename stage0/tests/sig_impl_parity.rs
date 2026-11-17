@@ -129,10 +129,7 @@ fn every_sig_free_function_has_a_tree_walker_body() {
     assert!(m.is_empty(), ".sig に宣言があるのに木走査の本体がない自由関数:\n{}", m.join("\n"));
 }
 
-// `std.alloc.System.{alloc, dealloc, realloc}` は生のポインタの記憶を要り、木走査は持たない (`ksn build` を促して止まる)。仕様 (`.sig`) から外すか、
-// 木走査に生の記憶を足すかは未決 (統括者と利用者の判断)。決まったらこの `ignore` を外す。
 #[test]
-#[ignore = "std.alloc.System の alloc/dealloc/realloc は木走査に実装がない (未決)"]
 fn every_sig_method_has_a_tree_walker_body() {
     let m = missing(true);
     assert!(m.is_empty(), ".sig に宣言があるのに木走査の本体がないメソッド:\n{}", m.join("\n"));

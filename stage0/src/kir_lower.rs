@@ -1300,6 +1300,14 @@ impl<'a> Lw<'a> {
             return self.print_line(args, line);
         }
         let callee_name = segs.join(".");
+        // `std.alloc.SYSTEM.alloc(..)` / `sys.dealloc(..)` / `sys.realloc(..)` (`sys: std.alloc.System`): ヒープの確保・解放。
+        if matches!(segs.last().map(|s| s.as_str()), Some("alloc" | "dealloc" | "realloc")) {
+            let is_sys = segs.len() == 4 && segs[..3] == ["std", "alloc", "SYSTEM"]
+                || segs.len() == 2 && self.lookup(&segs[0]).is_some_and(|s| matches!(self.slots[s].1, Ty::Agg(a) if self.aggs.borrow().defs[a as usize].name == "std.alloc.System"));
+            if is_sys {
+                return buf::system_alloc(self, e, &segs[segs.len() - 1].clone(), args, line);
+            }
+        }
         if matches!(callee_name.as_str(), "std.net.listen" | "std.net.connect") {
             return net_call(self, e, callee_name == "std.net.listen", line);
         }
