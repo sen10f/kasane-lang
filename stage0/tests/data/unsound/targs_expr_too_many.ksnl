@@ -1,0 +1,10 @@
+// expect: E2023
+// 式の中の明示の型引数の数も宣言と一致しなければならない (`t.id` は型引数 1 つ)
+fn t.id[T](x: T) -> T uses [] panics never
+    x
+end t.id
+
+fn t.main() -> () uses [] panics never
+    let v = t.id::<u32, u64>(1u32)
+    core.mem.drop(v)
+end t.main

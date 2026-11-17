@@ -1,0 +1,7 @@
+// expect: E2023
+// `let` の分解でも同じ検査 (3 要素に 2 要素)
+fn t.main() -> () uses [] panics never
+    let p = (1u32, 2u32, 3u32)
+    let (a, b) = p
+    core.mem.drop((a, b))
+end t.main

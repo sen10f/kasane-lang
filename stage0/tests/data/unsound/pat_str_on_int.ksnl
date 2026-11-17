@@ -1,0 +1,10 @@
+// expect: E2023
+// 整数の値に文字列リテラルのパターンは使えない
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x: u32 = 1u32
+    match x {
+        "x" => core.mem.drop(())
+        _ => core.mem.drop(())
+    }
+    Ok(())
+end t.main

@@ -1,0 +1,5 @@
+// expect: E2001
+// `core.mem.drop` は引数 1 つ
+fn t.main() -> () uses [] panics never
+    core.mem.drop()
+end t.main

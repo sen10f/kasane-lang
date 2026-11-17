@@ -1,0 +1,17 @@
+// expect: E2023
+// 欄のある列挙子を欄なしのパターンで書く (`t.E.A` は `A(_)` と書く)
+enum t.E pub
+    A(i32)
+    B
+end t.E
+
+fn t.f(e: t.E) -> bool uses [] panics never
+    match e {
+        t.E.A => true
+        t.E.B => false
+    }
+end t.f
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.f(t.E.B))
+end t.main

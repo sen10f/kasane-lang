@@ -1,0 +1,87 @@
+const t.N: usize = 3
+
+type t.P derive [Clone, Copy] pub
+    n: u32
+end t.P
+
+type t.Pair[A, B] pub
+    a: A
+    b: B
+end t.Pair
+
+type t.W pub
+    s: alloc.string.String
+end t.W
+
+fn t.fill[const M: usize](x: u8) -> [u8; M] uses [] panics never
+    [x; M]
+end t.fill
+
+fn t.id[T](x: T) -> T uses [] panics never
+    x
+end t.id
+
+fn t.kind(c: char, b: bool, n: u32) -> u32 uses [] panics never
+    let a = match c {
+        'a' => 1u32
+        _ => 0u32
+    }
+    let k = match b {
+        true => 1u32
+        false => 0u32
+    }
+    let m = match n {
+        7 => 1u32
+        _ => 0u32
+    }
+    a.wrapping_add(k).wrapping_add(m)
+end t.kind
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = [1u32, 2u32, 3u32]
+    let b = [0u8; 4]
+    let c = [t.P { n: 1u32 }; 2]
+    let d: [Option<u32>; t.N] = [None; t.N]
+    let e = [Some(1u32), None]
+    let f: [u8; 2] = t.fill::<2>(9u8)
+    let pr: t.Pair<u32, u8> = t.Pair { a: 1u32, b: 2u8 }
+    let o: Option<u32> = Some(1u32)
+    t.sink(t.id::<u32>(1u32))
+    t.sink(t.run::<u32, []>(2u32))
+    let r: Result<u32, u8> = Ok(1u32)
+    core.mem.drop((a, b, c, d, e, f, pr, r))
+    let mut p = Some(2u32)
+    match &p {
+        Some(q) => t.sink(*q)
+        None => core.mem.drop(())
+    }
+    match &mut p {
+        Some(q) => {
+            *q = 5u32
+        }
+        None => core.mem.drop(())
+    }
+    let tp = (1u32, 2u32)
+    let (x, y) = &tp
+    t.sink(*x)
+    t.sink(*y)
+    core.mem.drop(o)
+    core.mem.drop(p)
+    Ok(())
+end t.main
+
+fn t.name(s: &str) -> u32 uses [] panics never
+    match s {
+        "foo" => 1u32
+        "bär" => 3u32
+        _ => 2u32
+    }
+end t.name
+
+fn t.run[T, E: uses](x: T) -> T uses [E] panics never
+    x
+end t.run
+
+fn t.sink(x: u32) -> () uses [] panics never
+    core.mem.drop(x)
+end t.sink

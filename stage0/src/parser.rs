@@ -367,7 +367,12 @@ impl Parser {
         let c = self.cur().clone();
         if c.kind == "int" {
             self.i += 1;
-            return Ok(V::N(split_number(&c.text, false)?.0));
+            let (digits, suffix) = split_number(&c.text, false)?;
+            // 長さは `usize` (4.5): 別の整数型の接尾辞は付けられない。
+            if let Some(sfx) = suffix.filter(|x| x != "usize") {
+                return self.err(&format!("an array length is a `usize`: remove the suffix `{}`", sfx));
+            }
+            return Ok(V::N(digits));
         }
         if self.accept_op("(") {
             let v = self.const_expr()?;

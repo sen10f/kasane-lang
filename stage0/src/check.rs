@@ -2211,6 +2211,25 @@ impl<'a> Checker<'a> {
                 } else if !self.p.types.contains_key(&nm) {
                     self.diag("E1102", format!("unknown type {}", nm), di, line);
                 }
+                // 型引数の数は宣言と一致しなければならない (`Option<u32, u8>` も `Option` だけも誤り)。
+                // 省いてよいのは末尾のアロケータ引数 (`alloc.string.String` の `A`。`types.rs` の `omitted_arg`)。
+                let want: Option<(usize, usize)> = match nm.as_str() {
+                    "Option" => Some((1, 1)),
+                    "Result" => Some((2, 2)),
+                    _ => self.p.types.get(&nm).map(|&ti| self.def(ti)).filter(|d| matches!(d.kw.as_str(), "type" | "enum")).map(|d| {
+                        let gs: Vec<_> = d.generics.iter().filter(|g| g.0 != "life").collect();
+                        let is_alloc = |g: &&(String, String, V)| g.0 == "type" && items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]) == "alloc.alloc.Allocator"));
+                        let optional = gs.iter().rev().take_while(|g| is_alloc(g)).count();
+                        (gs.len() - optional, gs.len())
+                    }),
+                };
+                if let Some((lo, hi)) = want {
+                    let got = items(tel(t, 2)).iter().filter(|a| tag(a) != "life").count();
+                    if (got < lo || got > hi) && !names.contains(&nm) {
+                        let n = if lo == hi { format!("{}", hi) } else { format!("{} to {}", lo, hi) };
+                        self.diag("E2023", format!("`{}` takes {} type argument(s), found {}", nm, n, got), di, line);
+                    }
+                }
                 for (k, a) in items(tel(t, 2)).iter().enumerate() {
                     if tag(a) == "dyn" {
                         // `dyn` は `alloc.boxed.Box` の第1型引数にだけ置ける。ライフタイム境界は `'static` のみ (5.1)。
@@ -2650,6 +2669,11 @@ impl<'a> Checker<'a> {
                         } else if matches!(r.target, Target::Native(_)) && r.rest.is_empty() {
                             let fq = self.p.expand(&segs, "").join(".");
                             if let Some(&si) = self.p.sigs.get(&fq) {
+                                // 組み込み・標準の関数も `.sig` の宣言と引数の数を照らす (利用者の関数と同じ E2001)。
+                                let (want, n) = (self.def(si).params.len(), items(&f[1]).len());
+                                if want != n {
+                                    self.diag("E2001", format!("{} takes {} argument(s) but {} given", self.def(si).name, want, n), di, nline(e));
+                                }
                                 self.effects(self.def(si), di, nline(e), free, items(&f[2]));
                             }
                         }
@@ -5362,6 +5386,18 @@ impl<'a> Checker<'a> {
                 for x in items(&f[1]) {
                     self.tc_expr(&items(x)[1], env, muts, true);
                 }
+            }
+            // `[e; N]`: 値 `e` は N 個に複製されるので `Copy` に限る (所有物を持つ型は二重に解放される)。
+            "ArrayRep" => {
+                if self.ety_non_copy(&f[0]) {
+                    self.tdiag(
+                        "E3002",
+                        "the value repeated by `[e; N]` must be `Copy`: its type is not; build the elements one by one (or use `alloc.vec.Vec`)".to_string(),
+                        nline(e),
+                    );
+                }
+                self.tc_expr(&f[0], env, muts, true);
+                self.move_mut_ref(&f[0], env, nline(&f[0]));
             }
             "TupleE" | "ArrayE" => {
                 for x in items(&f[0]) {

@@ -1,0 +1,9 @@
+// expect: E2023
+// `Result` の値を `Option` の列挙子 (`Some` / `None`) で照合するのは誤り
+fn t.main() -> () uses [] panics never
+    let r = u8.try_from_u32(300u32)
+    match r {
+        Some(x) => core.mem.drop(x)
+        None => core.mem.drop(0u8)
+    }
+end t.main

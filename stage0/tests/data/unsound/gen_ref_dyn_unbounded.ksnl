@@ -1,0 +1,12 @@
+// expect: E2046
+// 境界の無い型パラメータの参照は `&dyn Tr` にできない
+trait t.Show pub
+    fn show(self: &Self) -> u32 uses [] panics never
+end t.Show
+
+fn t.a[H](h: &H) -> &dyn t.Show + 'static uses [] panics never
+    h
+end t.a
+
+fn t.main() -> () uses [] panics never
+end t.main

@@ -1,0 +1,16 @@
+// expect: E2023
+// `if let` でも同じ検査 (構造体のパターンの名前)
+type t.S
+    v: u32
+end t.S
+
+type t.T
+    v: u32
+end t.T
+
+fn t.main() -> () uses [] panics never
+    let s = t.S { v: 7u32 }
+    if let t.T { v: _v } = s {
+        core.mem.drop(())
+    }
+end t.main

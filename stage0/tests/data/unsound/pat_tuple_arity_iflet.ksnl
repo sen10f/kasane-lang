@@ -1,0 +1,8 @@
+// expect: E2023
+// `if let` でも同じ検査
+fn t.main() -> () uses [] panics never
+    let p = (1u32, 2u32)
+    if let (a,) = p {
+        core.mem.drop(a)
+    }
+end t.main

@@ -1,0 +1,19 @@
+// expect: E2023
+// 構造体のパターンの名前が値の型と違う (`t.S` の値を `t.T { .. }` で照合すると誤った腕に入る)
+type t.S
+    v: u32
+end t.S
+
+type t.T
+    v: u32
+end t.T
+
+fn t.f(s: t.S) -> bool uses [] panics never
+    match s {
+        t.T { v: _v } => true
+    }
+end t.f
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.f(t.S { v: 7u32 }))
+end t.main

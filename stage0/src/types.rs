@@ -1892,6 +1892,14 @@ impl<'a> TypeCk<'a> {
                 let (wt, wa, n) = (wt.clone(), wa.clone(), n.clone());
                 self.check_dyn_impl(&wt, &wa, &n);
             }
+            // 型パラメータ `H` を `dyn Tr` へ渡せるのは、宣言された境界 (とそのスーパートレイト) に `Tr` があるときだけ。
+            (Ty::Dyn(wt, _), Ty::Param(pn)) => {
+                if let Some(root) = crate::check::resolve_trait_fqn(self.p, wt) {
+                    if param_bound_implies(self.p, self.def(), pn, &root) == Some(false) {
+                        self.diag("E2046", format!("the type parameter `{}` does not implement the trait `{}`: add the bound `{}: {}`", pn, root, pn, root), self.cur_line);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -2195,8 +2203,15 @@ impl<'a> TypeCk<'a> {
     /// 効果 (`uses [..]`) と panic (`never` / `may`) の実引数は効果検査 (check.rs) で扱うのでここでは無視する。
     /// 実引数の種別が宣言と並ばない (誤った) 呼び出しでは何も束縛しない (黙る)。
     /// 型の実引数は、書かれた位置 (呼び出し元) の型パラメータ名で解釈する。
-    fn seed_targs(&mut self, d: &Def, targs: &[V], map: &mut HashMap<String, Ty>) {
+    fn seed_targs(&mut self, d: &Def, targs: &[V], map: &mut HashMap<String, Ty>, line: usize) {
         if targs.is_empty() {
+            return;
+        }
+        // 明示型引数の数は宣言と一致しなければならない (型・定数・効果・panic の実引数をすべて数える。ライフタイムは除く)。
+        let want = d.generics.iter().filter(|g| g.0 != "life").count();
+        let got = targs.iter().filter(|a| tag(a) != "life").count();
+        if want != got {
+            self.diag("E2023", format!("`{}` takes {} explicit type argument(s) (types, constants, effects and panics), found {}", d.name, want, got), line);
             return;
         }
         let Some(pairs) = crate::check::align_targs(&d.generics, targs) else { return };
@@ -2467,13 +2482,13 @@ impl<'a> TypeCk<'a> {
         }
         let fit: Vec<(usize, String)> = cands.iter().cloned().filter(|(i, _)| self.p.defs[*i].params.len() == args.len() + 1).collect();
         if fit.is_empty() {
-            if cands.len() == 1 && complete {
-                let d = &self.p.defs[cands[0].0];
-                self.diag(
-                    "E2022",
-                    format!("method `{}` takes {} argument(s) but {} given", name, d.params.len() - 1, args.len()),
-                    line,
-                );
+            // どの候補も引数の数が合わない: 候補が複数でも (レシーバの型の持ち主が全部分かっているなら) 誤り。
+            if !cands.is_empty() && complete {
+                let mut wants: Vec<usize> = cands.iter().map(|(i, _)| self.p.defs[*i].params.len().saturating_sub(1)).collect();
+                wants.sort();
+                wants.dedup();
+                let w: Vec<String> = wants.iter().map(|n| n.to_string()).collect();
+                self.diag("E2022", format!("method `{}` takes {} argument(s) but {} given", name, w.join(" or "), args.len()), line);
             }
             escape_all(self);
             return Ty::Unknown;
@@ -2526,7 +2541,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let mut map: HashMap<String, Ty> = HashMap::new();
-        self.seed_targs(d, targs, &mut map);
+        self.seed_targs(d, targs, &mut map, line);
         seed_effects(d, &mut map);
         let self_ty = from_v(&d.params[0].1, &gn);
         let self_ty = self.inst(&self_ty, &mut map);
@@ -3409,6 +3424,13 @@ impl<'a> TypeCk<'a> {
                 continue;
             };
             let Some(root) = crate::check::resolve_trait_fqn(self.p, tr) else { continue };
+            // 型パラメータ: 宣言された境界 (とそのスーパートレイト) が `Tr` を含むときだけ `into_dyn` できる。
+            if let Ty::Param(pn) = t.strip() {
+                if param_bound_implies(self.p, self.def(), pn, &root) == Some(false) {
+                    self.diag("E2046", format!("the type parameter `{}` does not implement the trait `{}`: add the bound `{}: {}`", pn, root, pn, root), line);
+                }
+                continue;
+            }
             let Ty::Named(n, _) = t.strip() else { continue };
             let Some(&i) = self.p.types.get(n) else { continue };
             let (tr, dargs, n2) = (tr.clone(), dargs.clone(), n.clone());
@@ -3542,6 +3564,12 @@ impl<'a> TypeCk<'a> {
             // 型パラメータは、いま検査している定義の境界が `tr` を (スーパートレイトまで辿って) 含むときだけ満たす。
             // 境界に無ければ原因になる (`fn f[T](a: T) { g(a) }` で `g` が `T: Eq` を要るとき、E2030)。
             Ty::Param(pn) => (param_bound_implies(self.p, self.def(), pn, tr) == Some(false)).then(|| t.clone()),
+            // 基本型が利用者のトレイトを満たすのは、その `impl` があるとき (または全型への `impl blanket`) だけ。
+            // 標準のトレイト (`Clone` `Display` など) の組み込みの実装は表に無いので、ここでは見ない。
+            Ty::Prim(p) if !(tr.starts_with("core.") || tr.starts_with("alloc.") || tr.starts_with("std.")) => {
+                let has = self.p.impls.contains(&(tr.to_string(), p.clone())) || self.p.impls.contains(&(tr.to_string(), "blanket".to_string()));
+                (!has).then(|| t.clone())
+            }
             Ty::Prim(p) if p == "f32" || p == "f64" => {
                 matches!(tr, "core.cmp.Eq" | "core.cmp.Ord" | "core.hash.Hash").then(|| t.clone())
             }
@@ -3896,8 +3924,12 @@ impl<'a> TypeCk<'a> {
             "ArrayE" => {
                 let ts: Vec<Ty> = items(&f[0]).iter().map(|x| self.infer(x)).collect();
                 let elem = self.fresh(0);
-                for t in &ts {
-                    let _ = self.unify2(&elem, t);
+                for (k, t) in ts.iter().enumerate() {
+                    // 要素の型はすべて同じでなければならない (`[1u32, 2u8]` は誤り)。
+                    if let Err(err) = self.unify2(&elem, t) {
+                        let (want, got) = self.type_conflict(&err).unwrap_or_else(|| Self::raw_pair(&err));
+                        self.diag("E2023", format!("array element {}: expected `{}`, found `{}`", k + 1, want, got), nline(e));
+                    }
                 }
                 // 配列リテラルでクロージャが合流する: 実際の効果を和にして要素型に残す。
                 if let Ty::Var(v) = &elem {
@@ -4166,6 +4198,19 @@ impl<'a> TypeCk<'a> {
                 if let Some(msg) = array_len_problem(&f[1]) {
                     self.diag("E2026", msg, nline(e));
                 }
+                // 長さが名前なら、定数 (`const`) か定数ジェネリックのパラメータでなければならない (局所変数は不可)。
+                if let V::L(xs) = &f[1] {
+                    if xs.len() == 2 {
+                        let nm = st(&xs[1]);
+                        let segs: Vec<String> = nm.split('.').map(String::from).collect();
+                        let is_const_param = segs.len() == 1 && self.def().generics.iter().any(|g| g.0 == "const" && g.1 == nm);
+                        let is_const = self.lookup(&segs[0]).is_none()
+                            && matches!(self.p.resolve(&segs, &self.def().file), Some(r) if r.rest.is_empty() && matches!(r.target, Target::Const(_)));
+                        if !is_const_param && !is_const {
+                            self.diag("E2026", format!("the length of `[e; N]` must be an integer literal or a `const` name, but `{}` is not a constant", nm), nline(e));
+                        }
+                    }
+                }
                 Ty::Array(Box::new(t), array_len(&f[1]))
             }
             _ => {
@@ -4386,6 +4431,19 @@ impl<'a> TypeCk<'a> {
                     Ty::Tuple(ts) => ts.clone(),
                     _ => vec![],
                 };
+                // タプルのパターンの要素数は、照合する値の型と同じでなければならない (値が具体的な型のときだけ)。
+                {
+                    let scrut = self.deep(ty);
+                    let n = items(&f[0]).len();
+                    let bad = match scrut.strip() {
+                        Ty::Tuple(ts) => ts.len() != n,
+                        Ty::Prim(_) | Ty::Named(..) | Ty::Array(..) | Ty::Slice(_) | Ty::Unit => true,
+                        _ => false,
+                    };
+                    if bad {
+                        self.diag("E2023", format!("a tuple pattern of {} element(s) cannot match a value of type `{}`", n, scrut.show()), self.pat_line);
+                    }
+                }
                 for (i, p) in items(&f[0]).iter().enumerate() {
                     let t = ts.get(i).cloned().unwrap_or(Ty::Unknown);
                     self.bind_pat(p, &t);
@@ -4402,6 +4460,16 @@ impl<'a> TypeCk<'a> {
                             let n = td.generics.iter().filter(|g| g.0 == "type").count();
                             let args: Vec<Ty> = (0..n).map(|_| self.fresh(0)).collect();
                             let t = Ty::Named(td.name.clone(), args);
+                            // 構造体のパターンの名前は、照合する値の型と同じでなければならない (値が具体的な型のときだけ)。
+                            let scrut = self.deep(ty);
+                            let bad = match scrut.strip() {
+                                Ty::Named(n, _) => *n != td.name,
+                                Ty::Prim(_) | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_) | Ty::Unit => true,
+                                _ => false,
+                            };
+                            if bad {
+                                self.diag("E2023", format!("the pattern `{}` is a struct of type `{}`, but the value has type `{}`", segs.join("."), td.name, scrut.show()), self.pat_line);
+                            }
                             let _ = self.unify2(ty, &t);
                             fty = Some((td.name.clone(), t));
                         }
@@ -4424,9 +4492,26 @@ impl<'a> TypeCk<'a> {
                 let segs = strs(&f[0]);
                 self.shape_for_variant(&segs, ty);
                 let payload: Vec<Ty> = self.variant_payload(&segs, ty);
+                // 列挙子のパターンの欄の数は、宣言のペイロードの数と同じでなければならない。
+                if let Some(want) = self.variant_arity(&segs) {
+                    let got = items(&f[1]).len();
+                    if want != got {
+                        self.diag("E2023", format!("the pattern `{}` has {} field(s), but the variant has {}", segs.join("."), got, want), self.pat_line);
+                    }
+                }
                 for (i, p) in items(&f[1]).iter().enumerate() {
                     let t = payload.get(i).cloned().unwrap_or(Ty::Unknown);
                     self.bind_pat(p, &t);
+                }
+            }
+            // 欄のない列挙子 (`None`、`t.E.B`) や定数のパターン: 列挙子は照合する値の列挙型に属し、欄の数が 0 でなければならない。
+            "PPath" => {
+                let segs = strs(&f[0]);
+                self.shape_for_variant(&segs, ty);
+                if let Some(want) = self.variant_arity(&segs) {
+                    if want != 0 {
+                        self.diag("E2023", format!("the pattern `{}` has no fields, but the variant has {}", segs.join("."), want), self.pat_line);
+                    }
                 }
             }
             // 接尾辞付きの数値リテラルのパターンは、照合する値の型と一致しなければならない (`match 1u32 { 0u64 => .. }`)。
@@ -4439,6 +4524,32 @@ impl<'a> TypeCk<'a> {
                     "float" => lf.get(1),
                     _ => None,
                 };
+                // リテラルの種類は、照合する値の型と合わなければならない (`match 1u32 { "x" => .. }`)。
+                // 値の型が具体的に決まっているときだけ比べる (参照は外して見る。型変数・型パラメータ・不明は黙る)。
+                {
+                    let kind = st(&lf[0]);
+                    let scrut = self.deep(ty);
+                    let base = scrut.strip();
+                    let concrete = matches!(base, Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_) | Ty::Unit);
+                    let is_int = |t: &Ty| matches!(t, Ty::Prim(p) if INTS.contains(&p.as_str()));
+                    let is_float = |t: &Ty| matches!(t, Ty::Prim(p) if p == "f32" || p == "f64");
+                    let (ok, what) = match kind.as_str() {
+                        "str" => (matches!(base, Ty::Prim(p) if p == "str"), "&str"),
+                        "char" => (matches!(base, Ty::Prim(p) if p == "char"), "char"),
+                        "byte" => (matches!(base, Ty::Prim(p) if p == "u8"), "u8"),
+                        "bool" => (matches!(base, Ty::Prim(p) if p == "bool"), "bool"),
+                        "int" => (is_int(base), "an integer"),
+                        "float" => (is_float(base), "a float"),
+                        _ => (true, ""),
+                    };
+                    if concrete && !ok {
+                        self.diag(
+                            "E2023",
+                            format!("the {} literal pattern cannot match a value of type `{}` (expected {})", kind, scrut.show(), what),
+                            self.pat_line,
+                        );
+                    }
+                }
                 if let Some(V::S(s)) = suffix {
                     let want = self.deep(ty);
                     if let Ty::Prim(w) = want.strip() {
@@ -4485,8 +4596,40 @@ impl<'a> TypeCk<'a> {
             None
         };
         if let Some(w) = want {
+            // 列挙子は、照合する値の列挙型に属さなければならない (`Result` の値を `Some(..)` で照合するのは誤り)。
+            // 値の型が具体的に決まっているときだけ比べる (参照は外して見る)。
+            if let Ty::Named(en, _) = &w {
+                let scrut = self.deep(ty);
+                let mismatch = match scrut.strip() {
+                    Ty::Named(n, _) => n != en,
+                    Ty::Prim(_) | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_) | Ty::Unit => true,
+                    _ => false,
+                };
+                if mismatch {
+                    self.diag("E2023", format!("the pattern `{}` is a variant of `{}`, but the value has type `{}`", segs.join("."), en, scrut.show()), self.pat_line);
+                    return;
+                }
+            }
             let _ = self.unify2(&w, ty);
         }
+    }
+
+    /// 列挙子のペイロードの数 (宣言から分かるもの)。`Some` / `Ok` / `Err` は 1、`None` は 0。
+    fn variant_arity(&self, segs: &[String]) -> Option<usize> {
+        let name = segs.last()?;
+        if segs.len() == 1 {
+            match name.as_str() {
+                "Some" | "Ok" | "Err" => return Some(1),
+                "None" => return Some(0),
+                _ => {}
+            }
+        }
+        let r = self.p.resolve(segs, &self.def().file)?;
+        if let Target::Variant(en, vn) = &r.target {
+            let td = self.type_def(en)?;
+            return td.variants.iter().find(|v| &v.0 == vn).map(|v| v.1.len());
+        }
+        None
     }
 
     fn variant_payload(&self, segs: &[String], ty: &Ty) -> Vec<Ty> {
@@ -4710,6 +4853,16 @@ impl<'a> TypeCk<'a> {
         }
         match r.target {
             Target::Variant(en, vn) => {
+                // 列挙子の構築も、宣言のペイロードの数と引数の数が合わなければ E2001 (関数の呼び出しと同じ)。
+                let want = match (en.as_str(), vn.as_str()) {
+                    ("Option", "Some") | ("Result", "Ok" | "Err") => Some(1),
+                    _ => self.type_def(&en).and_then(|td| td.variants.iter().find(|v| v.0 == vn).map(|v| v.1.len())),
+                };
+                if let Some(want) = want {
+                    if want != argt.len() {
+                        self.diag("E2001", format!("{} takes {} argument(s) but {} given", vn, want, argt.len()), line);
+                    }
+                }
                 let a0 = argt.first().cloned().unwrap_or(Ty::Unknown);
                 match (en.as_str(), vn.as_str()) {
                     ("Option", "Some") => Ty::Named("Option".into(), vec![a0]),
@@ -4851,7 +5004,7 @@ impl<'a> TypeCk<'a> {
         // 効果・panic の実引数は効果検査 (check.rs の inst_def_effects) で使う。
         // 実引数が並ばない (誤った) 呼び出しでは何も束縛せず、引数からの推論に任せる (黙る)。
         let mut map: HashMap<String, Ty> = HashMap::new();
-        self.seed_targs(d, targs, &mut map);
+        self.seed_targs(d, targs, &mut map, line);
         seed_effects(d, &mut map);
         // Fn 境界を受け取る引数の位置と、渡されたクロージャの型 (決まっているものだけ)。
         let mut fn_args: Vec<(usize, String)> = vec![];

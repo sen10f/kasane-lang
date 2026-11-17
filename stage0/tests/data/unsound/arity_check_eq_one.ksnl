@@ -1,0 +1,6 @@
+// expect: E2001
+// 標準・組み込みの関数も、引数の数を `.sig` の宣言と照らす (`core.check.eq` は 2 つ)
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    core.check.eq(7u32)
+    Ok(())
+end t.main

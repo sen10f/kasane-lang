@@ -1,0 +1,10 @@
+// expect: E2023
+// 整数の値に `char` のパターンは使えない
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x: u32 = 1u32
+    match x {
+        'a' => core.mem.drop(())
+        _ => core.mem.drop(())
+    }
+    Ok(())
+end t.main
