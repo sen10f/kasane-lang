@@ -165,9 +165,9 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     out.push_str("end ")?
     out.push_str(fqn)?
     out.push('\n')?
-    let why = c.s.unsup.as_str()
     if c.s.unsup.len() > 0usize {
-        return lower.func.record(c, "", why)
+        let why = lower.cx.cat2(c.s.unsup.as_str(), "")?
+        return lower.func.record(c, "", why.as_str())
     }
     lower.func.record(c, out.as_str(), "")
 end lower.func.lower_item
