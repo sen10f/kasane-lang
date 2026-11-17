@@ -1,0 +1,12 @@
+type t.Wrap[T]
+    inner: T
+end t.Wrap
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let w = t.Wrap { inner: "abc" }
+    core.mem.drop(w.inner)
+    let n = t.Wrap { inner: 7u32 }
+    core.mem.drop(n.inner)
+    core.mem.drop(t.Wrap { inner: 8u32 }.inner)
+    Ok(())
+end t.main

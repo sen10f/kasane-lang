@@ -249,6 +249,19 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                     d.has_impls = true;
                 }
                 elide_fn_effects(&mut d).map_err(|m| format!("E0002|{}|1|{}", sp.line, m))?;
+                // 本体の `let x: 型 = ..` の型注釈が使うライフタイム。型の抽象木には残らないので、ここで名前を集める。
+                // 宣言の有無は `check_lifetime_names` が見る (E1126)。トレイトのメソッドの名前と同じ置き場 (`field_lifetimes`) を使う。
+                let mut lts: Vec<String> = vec![];
+                for bl in &body_lines {
+                    let bt = line_tokens(bl.trim(), 1)?;
+                    let Some(l) = bt.iter().position(|t| t.kind == "kw" && t.text == "let") else { continue };
+                    let Some(c) = bt[l..].iter().position(|t| t.kind == "op" && t.text == ":").map(|k| k + l) else { continue };
+                    let eq = bt[c..].iter().position(|t| t.kind == "op" && t.text == "=").map_or(bt.len(), |k| k + c);
+                    lts.extend(bt[c..eq].iter().filter(|t| t.kind == "life").map(|t| t.text.trim_start_matches('\'').to_string()));
+                }
+                if !lts.is_empty() {
+                    d.field_lifetimes.push(("let".to_string(), lts));
+                }
             }
             "type" | "enum" => {
                 p.i = 1;

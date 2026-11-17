@@ -11,6 +11,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::lexer::{lex, Tok};
+use crate::parser::V;
 use crate::program::Program;
 use crate::types::Ty;
 
@@ -174,6 +175,31 @@ fn rc_in(toks: &[Tok], a: usize, b: usize) -> Option<usize> {
 }
 
 /// 総称の `type` / `enum` の型名の末尾 (利用者の定義だけ)。
+/// 型 (V) が総称の名前 (`names`) を含むか。
+fn v_mentions(v: &V, names: &[String]) -> bool {
+    match v {
+        V::S(s) => names.iter().any(|n| n == s),
+        V::L(xs) | V::Node(_, xs, _, _) => xs.iter().any(|x| v_mentions(x, names)),
+        _ => false,
+    }
+}
+
+/// 引数の型 `&T` のうち、参照の先が `str` / スライス / 配列でないもの (それらは `'static` でありうる)。
+fn strong_ref_v(v: &V) -> bool {
+    let V::L(xs) = v else { return false };
+    if !matches!(xs.first(), Some(V::S(k)) if k == "ref") || xs.len() != 3 {
+        return false;
+    }
+    match &xs[2] {
+        V::L(ys) => match ys.first() {
+            Some(V::S(k)) if k == "slice" || k == "array" => false,
+            Some(V::S(k)) if k == "prim" => !matches!(ys.get(1), Some(V::S(s)) if s == "str"),
+            _ => true,
+        },
+        _ => true,
+    }
+}
+
 fn user_generic_names(p: &Program, user: &[usize]) -> HashSet<String> {
     let mut out = HashSet::new();
     for &i in user {
@@ -356,6 +382,91 @@ impl<'a> Scan<'a> {
     }
 
     /// `toks[pos]` を含む括弧の呼び出し先 (`a.b.push(`/`Box.new(` のパス)。決まらなければ `None`。
+    /// 利用者の総称の構造体リテラル `W { f: v }` で、総称の型 `T` の欄 (型が `T` を含む) に参照を入れる式。
+    /// 束縛 (`let w = W { .. }`) の推論と同じ判定を、リテラルの式そのものに当てる。`let` に束縛せず
+    /// `W { f: &x }.f` や関数の引数で使っても、参照を運ぶ型引数になるので拒む。`'static` と示せる値は通す。
+    fn literal_refs(&mut self, p: &Program, let_tys: &HashMap<(usize, usize, String), Ty>, params: &[(String, V)]) {
+        let n = self.toks.len();
+        let statics = static_names(p, &self.toks);
+        let mut i = 0;
+        while i + 1 < n {
+            let t = &self.toks[i];
+            if t.kind != "upper" || !is_op(&self.toks[i + 1], "{") || !self.user_generic.contains(&t.text) {
+                i += 1;
+                continue;
+            }
+            let name = t.text.clone();
+            let close = skip_group(&self.toks, i + 1);
+            // パターン (`let W { .. } = ..`・`W { .. } =>`) は値を作らない。
+            let pattern = (close < n && (is_op(&self.toks[close], "=") || is_op(&self.toks[close], "=>")))
+                || (i > 0 && self.toks[i - 1].kind == "kw" && matches!(self.toks[i - 1].text.as_str(), "let" | "mut" | "type" | "enum"));
+            let Some(td) = p.defs.iter().find(|d| d.kw == "type" && d.name.rsplit('.').next() == Some(name.as_str())) else {
+                i += 1;
+                continue;
+            };
+            let gen_names: Vec<String> = td.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect();
+            if pattern || close < i + 3 || gen_names.is_empty() {
+                i += 1;
+                continue;
+            }
+            // 欄の並び `f: 値` (値は次の `,` まで。括弧の中の `,` は読み飛ばす) と、省略形 `f` (値は同名の変数)。
+            let end = close - 1;
+            let mut j = i + 2;
+            while j < end {
+                if self.toks[j].kind != "ident" {
+                    break;
+                }
+                let fname = self.toks[j].text.clone();
+                let (va, vb, next) = if j + 1 < end && is_op(&self.toks[j + 1], ":") {
+                    let mut k = j + 2;
+                    while k < end && !is_op(&self.toks[k], ",") {
+                        k = if self.toks[k].kind == "op" && matches!(self.toks[k].text.as_str(), "(" | "[" | "{") { skip_group(&self.toks, k) } else { k + 1 };
+                    }
+                    (j + 2, k, k + 1)
+                } else {
+                    (j, j + 1, j + 2)
+                };
+                let generic_field = td.fields.iter().any(|(f, ty, _)| *f == fname && v_mentions(ty, &gen_names));
+                if generic_field && va < vb {
+                    let line = self.base_line + self.toks[va].line - 1;
+                    let stored = if is_op(&self.toks[va], "&") || is_op(&self.toks[va], "&&") {
+                        Some(!static_expr(p, &self.toks, va, vb, &statics))
+                    } else if vb == va + 1 && self.toks[va].kind == "ident" {
+                        let v = self.toks[va].text.clone();
+                        Some(!statics.contains(&v) && self.local_is_strong_ref(let_tys, params, &v, line))
+                    } else {
+                        None
+                    };
+                    if stored == Some(true) {
+                        self.hit(
+                            "literal",
+                            va,
+                            format!(
+                                "`{}` literal stores a reference in its generic field `{}` (references are second-class values); use an owned value or an index (`&'static T` is allowed)",
+                                name, fname
+                            ),
+                        );
+                    }
+                }
+                j = next;
+            }
+            i += 1;
+        }
+    }
+
+    /// 名前 `v` が、位置 `line` より前に参照 (強い参照。`str` / スライス / 配列の参照は除く) を束ねているか。
+    /// 同じ名前の `let` が前にあれば最後のものの型、無ければ引数の型。
+    fn local_is_strong_ref(&self, let_tys: &HashMap<(usize, usize, String), Ty>, params: &[(String, V)], v: &str, line: usize) -> bool {
+        let last_let = let_tys
+            .iter()
+            .filter(|((d, l, nm), _)| *d == self.di && nm == v && crate::parser::unpack_pos(*l).0 < line)
+            .max_by_key(|((_, l, _), _)| crate::parser::unpack_pos(*l).0);
+        match last_let {
+            Some((_, ty)) => matches!(ty, Ty::Ref(_, inner) if !matches!(**inner, Ty::Prim(ref s) if s == "str") && !matches!(**inner, Ty::Slice(_) | Ty::Array(_, _))),
+            None => params.iter().any(|(n, ty)| n == v && strong_ref_v(ty)),
+        }
+    }
+
     fn enclosing_callee(&self, pos: usize) -> Option<Vec<String>> {
         let mut depth = 0i32;
         let mut k = pos as isize;
@@ -718,6 +829,7 @@ pub fn check(p: &Program, user: &[usize], let_tys: &HashMap<(usize, usize, Strin
             "fn" | "test" | "impl" | "const" | "static" | "trait" => {
                 sc.containers();
                 sc.closures();
+                sc.literal_refs(p, let_tys, &d.params);
             }
             _ => {}
         }

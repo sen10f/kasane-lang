@@ -1,0 +1,16 @@
+// expect: E3060
+type t.Wrap[T]
+    inner: T
+end t.Wrap
+
+fn t.bad(x: &u32) -> () uses [] panics never
+    core.mem.drop(t.take(t.Wrap { inner: x }))
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.take[T](w: t.Wrap<T>) -> () uses [] panics never
+    core.mem.drop(w)
+end t.take
