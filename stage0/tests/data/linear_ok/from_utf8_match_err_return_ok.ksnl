@@ -1,0 +1,28 @@
+// expect-accept
+// core.str.from_utf8 は &[u8] を受け &str を返す。buf への borrow は s の使用終了と
+// ともに終わるはず。match の一方のアームが return しても、buf の drop（スコープ末）
+// より前に borrow が終わるので通るべき正しいコードだが E3010 で拒否される（fp_regress）。
+// 前コミット (3a047b1 等) では OK。bin/current/COMMIT = 8f7bcde5 で拒否。
+enum t.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
+    Utf8(core.str.Utf8Error)
+    Io(std.io.Error)
+end t.Error
+
+fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics never
+    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match core.str.from_utf8(buf.as_slice()) {
+        Ok(s) => {
+            match std.io.print_line(s) {
+                Ok(_done) => {
+                }
+                Err(error) => {
+                    return Err(t.Error.Io(error))
+                }
+            }
+        }
+        Err(error) => {
+            return Err(t.Error.Utf8(error))
+        }
+    }
+    Ok(())
+end t.main

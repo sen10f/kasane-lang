@@ -1,0 +1,21 @@
+// KIR falsely rejects nested wrappers (wrapper calling wrapper) returning
+// Result<&str, E> from String.as_str() followed by `?`. AST accepts; KIR E3010.
+enum t.Error derive [Debug, Clone, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+end t.Error
+
+fn t.inner(s: &alloc.string.String<std.alloc.System>) -> Result<&str, t.Error> uses [] panics never
+    Ok(s.as_str())
+end t.inner
+
+fn t.main() -> Result<(), t.Error> uses [alloc] panics never
+    let s = alloc.string.String.from_str(std.alloc.SYSTEM, "hello")?
+    let r = t.outer(&s)?
+    core.mem.drop(r)
+    core.mem.drop(s)
+    Ok(())
+end t.main
+
+fn t.outer(s: &alloc.string.String<std.alloc.System>) -> Result<&str, t.Error> uses [] panics never
+    t.inner(s)
+end t.outer

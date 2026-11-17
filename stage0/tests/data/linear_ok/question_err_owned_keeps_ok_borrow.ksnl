@@ -1,0 +1,21 @@
+fn t.main() -> Result<(), core.str.Utf8Error> uses [] panics never
+    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let text = core.str.from_utf8(buf.as_slice())?
+    core.mem.drop(text.len())
+    core.mem.drop(t.read(&buf)?)
+    core.mem.drop(t.read_match(&buf)?)
+    Ok(())
+end t.main
+
+fn t.read(buf: &alloc.vec.Vec<u8, std.alloc.System>) -> Result<usize, core.str.Utf8Error> uses [] panics never
+    let text = core.str.from_utf8(buf.as_slice())?
+    Ok(text.len())
+end t.read
+
+fn t.read_match(buf: &alloc.vec.Vec<u8, std.alloc.System>) -> Result<usize, core.str.Utf8Error> uses [] panics never
+    let text = match core.str.from_utf8(buf.as_slice()) {
+        Ok(s) => s
+        Err(e) => return Err(e)
+    }
+    Ok(text.len())
+end t.read_match

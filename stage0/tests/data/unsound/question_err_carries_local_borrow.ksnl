@@ -1,0 +1,14 @@
+// expect: E3030
+fn t.f['a]() -> Result<u32, &'a str> uses [alloc] panics never
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let n = t.z(s.as_str())?
+    Ok(n)
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.z(s: &str) -> Result<u32, &str> uses [] panics never
+    Err(s)
+end t.z
