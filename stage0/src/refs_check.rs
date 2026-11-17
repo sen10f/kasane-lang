@@ -399,7 +399,7 @@ fn closure_msg() -> String {
 /// 推論で決まった型 (`let v = Vec::new(); v.push(&x)` の `Vec<&u32>`) が、容れ物に参照を入れているか。
 /// 型には領域が残らないので、静的な文字列・配列の可能性が高い `&str` / `&[T]` は見逃す
 /// (`&'static` かどうかは書かれた型だけが決める。流れは `borrowck.rs` の E3010 が見る)。
-pub fn inferred_container_ref(ty: &Ty) -> Option<(String, bool, Vec<usize>)> {
+pub fn inferred_container_ref(ty: &Ty, user_generic: &HashSet<String>) -> Option<(String, bool, Vec<usize>)> {
     /// 戻り値の真偽: Some(weak)。weak = 参照の先が `str` / スライス / 配列だけ (リテラルなら `'static` でありうる)。
     fn has_ref(ty: &Ty) -> Option<bool> {
         match ty {
@@ -420,16 +420,16 @@ pub fn inferred_container_ref(ty: &Ty) -> Option<(String, bool, Vec<usize>)> {
     match ty {
         Ty::Named(n, args) => {
             let last = n.rsplit('.').next().unwrap_or("");
-            if CONTAINERS.contains(&last) {
+            if CONTAINERS.contains(&last) || user_generic.contains(last) {
                 if let Some(w) = args.iter().filter_map(has_ref).fold(None, |a, w| Some(a.unwrap_or(true) && w)) {
                     let idx: Vec<usize> = args.iter().enumerate().filter(|(_, a)| has_ref(a).is_some()).map(|(i, _)| i).collect();
                     return Some((last.to_string(), w, idx));
                 }
             }
-            args.iter().find_map(inferred_container_ref)
+            args.iter().find_map(|a| inferred_container_ref(a, user_generic))
         }
-        Ty::Tuple(xs) => xs.iter().find_map(inferred_container_ref),
-        Ty::Ref(_, x) | Ty::Array(x, _) | Ty::Slice(x) => inferred_container_ref(x),
+        Ty::Tuple(xs) => xs.iter().find_map(|a| inferred_container_ref(a, user_generic)),
+        Ty::Ref(_, x) | Ty::Array(x, _) | Ty::Slice(x) => inferred_container_ref(x, user_generic),
         _ => None,
     }
 }
@@ -480,6 +480,56 @@ fn init_from_static_fn(p: &Program, toks: &[Tok], name: &str) -> bool {
                 d.kw == "fn" && (d.name == path || d.name.ends_with(&suffix)) && d.header.split("->").nth(1).map_or(false, |r| r.contains("&'static"))
             });
         }
+    }
+    false
+}
+
+/// `let [mut] name = T { f: e, .. }` で、どの欄の値も `'static` の式かリテラルか。
+fn init_literal_static(p: &Program, toks: &[Tok], name: &str, statics: &HashSet<String>) -> bool {
+    for i in 0..toks.len().saturating_sub(4) {
+        let mut j = i + 1;
+        if !(toks[i].kind == "kw" && toks[i].text == "let") {
+            continue;
+        }
+        if toks[j].kind == "kw" && toks[j].text == "mut" {
+            j += 1;
+        }
+        if !(is_path_tok(&toks[j]) && toks[j].text == name && is_op(&toks[j + 1], "=")) {
+            continue;
+        }
+        let mut k = j + 2;
+        while k < toks.len() && (is_path_tok(&toks[k]) || is_op(&toks[k], ".")) {
+            k += 1;
+        }
+        if !(k < toks.len() && is_op(&toks[k], "{")) {
+            return false;
+        }
+        let close = skip_group(toks, k);
+        let end = close.saturating_sub(1);
+        let mut depth = 0;
+        let mut starts = vec![k + 1];
+        for m in k + 1..end {
+            if toks[m].kind == "op" && matches!(toks[m].text.as_str(), "(" | "[" | "{") {
+                depth += 1;
+            } else if toks[m].kind == "op" && matches!(toks[m].text.as_str(), ")" | "]" | "}") {
+                depth -= 1;
+            } else if depth == 0 && is_op(&toks[m], ",") {
+                starts.push(m + 1);
+            }
+        }
+        starts.push(end + 1);
+        for w in starts.windows(2) {
+            let (a, b) = (w[0], (w[1] - 1).min(end));
+            // `欄: 値` の値の部分
+            if a + 1 >= b || !is_op(&toks[a + 1], ":") {
+                return false;
+            }
+            let lit = b == a + 3 && matches!(toks[a + 2].kind, "int" | "float" | "char" | "byte");
+            if !lit && !static_expr(p, toks, a + 2, b, statics) {
+                return false;
+            }
+        }
+        return true;
     }
     false
 }
@@ -589,6 +639,10 @@ fn static_stores_only(p: &Program, toks: &[Tok], name: &str, container: &str, re
         return true;
     }
     let statics = static_names(p, toks);
+    if !CONTAINERS.contains(&container) {
+        // 利用者の総称型: 構造体リテラルの欄の値がすべて `'static` と示せるリテラル・束縛のときだけ通す
+        return init_literal_static(p, toks, name, &statics);
+    }
     let mut n = 0;
     let mut i = 0;
     while i + 4 < toks.len() {
@@ -680,7 +734,7 @@ pub fn check(p: &Program, user: &[usize], let_tys: &HashMap<(usize, usize, Strin
             continue;
         }
         let ty = &let_tys[&(*di, *line, name.clone())];
-        if let Some((c, weak, ref_args)) = inferred_container_ref(ty) {
+        if let Some((c, weak, ref_args)) = inferred_container_ref(ty, &generic) {
             // 型注釈つきの `let` は、書かれた型 (上の字句の検査) が決める
             if toks_of.get(di).map_or(false, |t| annotated_let(t, name)) {
                 continue;
