@@ -401,7 +401,7 @@ fn t.list_sum(o: &Option<alloc.boxed.Box<t.ListNode, std.alloc.System>>) -> i64 
         None => 0i64
         Some(b) => {
             let nb = b.as_ref()
-            (*nb.val).wrapping_add(t.list_sum(&nb.next))
+            nb.val.wrapping_add(t.list_sum(&nb.next))
         }
     }
 end t.list_sum
@@ -680,7 +680,7 @@ fn t.list_sum(o: &Option<alloc.boxed.Box<t.ListNode, std.alloc.System>>) -> i64 
         None => 0i64
         Some(b) => {
             let nb = b.as_ref()
-            (*nb.val).wrapping_add(t.list_sum(&nb.next))
+            nb.val.wrapping_add(t.list_sum(&nb.next))
         }
     }
 end t.list_sum
