@@ -1,0 +1,7 @@
+// expect: E3010
+fn t.main() -> () uses [] panics never
+    let mut a = 1u32
+    let ra = &mut a
+    core.mem.swap(ra, ra)
+    core.mem.drop(*ra)
+end t.main

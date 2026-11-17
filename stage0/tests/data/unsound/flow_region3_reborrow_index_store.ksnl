@@ -1,0 +1,11 @@
+// expect: E3010
+fn t.main() -> () uses [] panics may
+    let mut buf = [&0u32, &0u32]
+    let x = 9u32
+    t.store3(&mut buf, &x)
+end t.main
+
+fn t.store3(v: &mut [&u32], x: &u32) -> () uses [] panics may
+    let w = &mut *v
+    w[0usize] = x
+end t.store3
