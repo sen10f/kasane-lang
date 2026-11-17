@@ -1,0 +1,11 @@
+// expect: E3010
+// opt_swap['a, 'b] が &'a u32 と &'b u32 を受け取りつつ Option<(&'a u32, &'b u32)> を返すが、
+// let z = Some((y, x)); z で x の 'b と y の 'a を入れ替えても E3010 未検出で rc=0 通過。
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.opt_swap['a, 'b](x: &'a u32, y: &'b u32) -> Option<(&'a u32, &'b u32)> uses [] panics never
+    let z = Some((y, x))
+    z
+end t.opt_swap

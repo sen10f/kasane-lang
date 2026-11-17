@@ -1,0 +1,11 @@
+// expect: E3010
+fn t.f['a, 'b, 'c](x: &'a u32, y: &'b u32, z: &'c u32) -> (&'a u32, &'b u32, &'c u32) uses [] panics never
+    let c = fn() -> (&'a u32, &'b u32, &'c u32) capture [move x, move y, move z] {
+        (z, y, x)
+    }
+    c()
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
