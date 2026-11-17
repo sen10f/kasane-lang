@@ -5761,6 +5761,10 @@ impl<'a> Checker<'a> {
     /// 分解のパターン `pat` (`match` の腕・`let` の左辺) が、スクラティニー (型 `sty`) の値を move するか。
     /// 束縛 (`_` を除く) に Copy でない値が 1 つでもあれば move する (4.1)。`match`・`let`・`if let` で同じ規則。
     fn pat_moves_scrut(&self, pat: &V, sty: &V) -> bool {
+        // 線形な値を値のまま分解したら、パターンに依らず消費 (= move) する (仕様 4.4)。覗くだけなら `&r` を分解する。
+        if nname(pat) != "PWild" && !is_nil(sty) && tag(sty) != "ref" && !self.is_generic(sty, &self.names) && self.is_linear(sty) {
+            return true;
+        }
         self.arm_bindings(pat, sty, nline(pat))
             .iter()
             .any(|(n, t)| n != "_" && !is_nil(t) && !self.is_generic(t, &self.names) && !self.is_copy(t))

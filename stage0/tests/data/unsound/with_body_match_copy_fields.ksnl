@@ -1,4 +1,5 @@
-// expect-accept
+// expect: E3040
+// 線形な値を値のまま分解したら Copy の欄だけでも消費。with の本体では E3040 (覗くだけなら match &r)
 type t.Res linear
     id: u32
     inner: Option<alloc.vec.Vec<u64, std.alloc.System>>

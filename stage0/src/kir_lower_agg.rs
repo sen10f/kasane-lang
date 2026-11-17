@@ -1063,11 +1063,10 @@ impl<'a> Lw<'a> {
         // 名前の局所を分解するとき、束縛が所有物を移さないなら (`match` と同じく) 局所は読むだけで、移さない。
         // 判定できない形 (エラーになる形) は従来どおり移す。
         let local = super::path1(init).and_then(|n| self.lookup(&n).map(|s| (n, s)));
-        // 線形な値は、構造体の分解 (`let T { f: _ } = x`、Copy の欄だけ) 以外の分解で消費される (`match` の腕と同じ)。
+        // 線形な値は、値のまま分解したらパターンに依らず消費される (仕様 4.4。`_` だけ・Copy の欄だけも)。
         let scrut_linear = self.src_ty(init).is_ok_and(|t| self.src_is_linear(&t, &mut std::collections::HashSet::new()));
-        let struct_pat = nname(pat) == "PStruct";
         let moves = match &local {
-            Some((_, s)) => super::coll::pat_moves_owned(self, pat, self.slots[*s].1).unwrap_or(true) || (scrut_linear && !struct_pat),
+            Some((_, s)) => super::coll::pat_moves_owned(self, pat, self.slots[*s].1).unwrap_or(true) || scrut_linear,
             None => true,
         };
         let (v, moved) = if moves {
@@ -1089,14 +1088,6 @@ impl<'a> Lw<'a> {
         };
         let t = self.vty(v);
         let binds = self.pat(pat, v, t, None)?;
-        // 構造体の分解は線形な値の義務を果たすが、Copy の欄だけを束縛するなら値は move しない (`match` の腕と同じ、部分の印)。
-        if !moved && scrut_linear && struct_pat {
-            if let Some((n, s)) = &local {
-                if self.coll.own_ids.contains_key(&(n.clone(), *s)) {
-                    self.own_emit(n, *s, crate::kir::OwnKind::Part);
-                }
-            }
-        }
         if moved && super::coll::owns(self, t) {
             // 所有物を持つ値の分解: 束縛した部分は変数が所有し、束縛しなかった所有物は分解の時点で解放する (設計_KIR.md 13.7)。
             let mut srcs = std::collections::BTreeMap::new();
@@ -1602,11 +1593,8 @@ impl<'a> Lw<'a> {
             }
             super::coll::scrut_arm(self, &sc, i, pat, sv)?;
             if let Some((n, s)) = &scrut_local {
-                if srcs.values().any(|src| !self.src_is_copy(src)) || (scrut_linear && nname(pat) != "PWild" && nname(pat) != "PStruct") {
+                if srcs.values().any(|src| !self.src_is_copy(src)) || (scrut_linear && nname(pat) != "PWild") {
                     self.own_emit(n, *s, crate::kir::OwnKind::Consume);
-                } else if scrut_linear && nname(pat) == "PStruct" {
-                    // 構造体の分解は線形な値の義務を果たすが、Copy の欄だけを束縛するなら値は move しない (AST と同じ)。
-                    self.own_emit(n, *s, crate::kir::OwnKind::Part);
                 }
             }
             if let Some(v) = self.expr(body)? {
