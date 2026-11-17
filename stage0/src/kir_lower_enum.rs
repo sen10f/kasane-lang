@@ -757,8 +757,10 @@ impl<'a> Lw<'a> {
             // 線形な対象は、`_` 以外の腕では義務を果たす (空の変種の腕も含む)。
             if let Some((n, s)) = &scrut_local {
                 // `if let` の省略された else (構文が作る `PWild`) は消費しない: 対象の線形値の義務が残る (AST と同じ)。
-                if arm_binds.iter().any(|(_, src)| !self.src_is_copy(src)) || (scrut_linear && nname(pat) != "PWild") {
+                if arm_binds.iter().any(|(_, src)| !self.src_is_copy(src)) || (scrut_linear && !matches!(nname(pat), "PWild" | "PStruct")) {
                     self.own_emit(n, *s, crate::kir::OwnKind::Consume);
+                } else if scrut_linear && nname(pat) == "PStruct" {
+                    self.own_emit(n, *s, crate::kir::OwnKind::Part);
                 }
             }
             self.bref_bind(line)?;

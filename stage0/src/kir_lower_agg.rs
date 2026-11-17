@@ -1516,7 +1516,18 @@ impl<'a> Lw<'a> {
     pub(super) fn match_e(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);
-        let Some(sv) = self.expr_peek(&f[0])? else { return Ok(None) };
+        // 所有の印を持つ局所の対象は読む (`use`) だけ。移すのは、非 Copy の値を束縛する腕・線形な値を (名前を束縛せず `_` / 構造体でなく) 分解する腕の入口。
+        let scrut_local = super::path1(&f[0]).and_then(|n| self.lookup(&n).map(|s| (n, s))).filter(|(n, s)| self.coll.own_ids.contains_key(&(n.clone(), *s)));
+        let scrut_linear = self.src_ty(&f[0]).is_ok_and(|t| self.src_is_linear(&t, &mut std::collections::HashSet::new()));
+        let sv = match &scrut_local {
+            Some((n, s)) => {
+                self.coll.peek_field = false;
+                self.own_emit(n, *s, crate::kir::OwnKind::Use);
+                Some(super::coll::path_peek(self, *s))
+            }
+            None => self.expr_peek(&f[0])?,
+        };
+        let Some(sv) = sv else { return Ok(None) };
         let sty = self.vty(sv);
         let res: Option<Ty> = match self.src_ty(e)? {
             Src::Never => None,
@@ -1556,6 +1567,14 @@ impl<'a> Lw<'a> {
                 self.coll.hint = None;
             }
             super::coll::scrut_arm(self, &sc, i, pat, sv)?;
+            if let Some((n, s)) = &scrut_local {
+                if srcs.values().any(|src| !self.src_is_copy(src)) || (scrut_linear && nname(pat) != "PWild" && nname(pat) != "PStruct") {
+                    self.own_emit(n, *s, crate::kir::OwnKind::Consume);
+                } else if scrut_linear && nname(pat) == "PStruct" {
+                    // 構造体の分解は線形な値の義務を果たすが、Copy の欄だけを束縛するなら値は move しない (AST と同じ)。
+                    self.own_emit(n, *s, crate::kir::OwnKind::Part);
+                }
+            }
             if let Some(v) = self.expr(body)? {
                 if let Some(t) = res {
                     if self.vty(v) != t && carry {
