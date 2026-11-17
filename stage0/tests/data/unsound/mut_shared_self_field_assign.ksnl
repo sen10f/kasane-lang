@@ -1,0 +1,12 @@
+// expect: E3031
+type t.Foo pub
+    x: u32
+end t.Foo
+
+fn t.Foo.set(self: &t.Foo) -> () uses [] panics never pub
+    self.x = 1u32
+end t.Foo.set
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
