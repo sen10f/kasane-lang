@@ -93,7 +93,7 @@ use net_lower::{is_net_ty, net_call, net_free_call, net_method};
 // `std.fs` (ファイル) の下ろし (設計_KIR.md 12 章)。
 #[path = "kir_lower_fs.rs"]
 mod fs_lower;
-use fs_lower::{is_fs_ty, fs_call, fs_method};
+use fs_lower::{is_fs_ty, fs_call, fs_method, std_stream_call};
 #[path = "kir_lower_proc.rs"]
 mod proc_lower;
 use proc_lower::{is_proc_ty, proc_call, proc_method};
@@ -1300,8 +1300,19 @@ impl<'a> Lw<'a> {
             return self.print_line(args, line);
         }
         let callee_name = segs.join(".");
+        // `std.alloc.SYSTEM.alloc(..)` / `sys.dealloc(..)` / `sys.realloc(..)` (`sys: std.alloc.System`): ヒープの確保・解放。
+        if matches!(segs.last().map(|s| s.as_str()), Some("alloc" | "dealloc" | "realloc")) {
+            let is_sys = segs.len() == 4 && segs[..3] == ["std", "alloc", "SYSTEM"]
+                || segs.len() == 2 && self.lookup(&segs[0]).is_some_and(|s| matches!(self.slots[s].1, Ty::Agg(a) if self.aggs.borrow().defs[a as usize].name == "std.alloc.System"));
+            if is_sys {
+                return buf::system_alloc(self, e, &segs[segs.len() - 1].clone(), args, line);
+            }
+        }
         if matches!(callee_name.as_str(), "std.net.listen" | "std.net.connect") {
             return net_call(self, e, callee_name == "std.net.listen", line);
+        }
+        if matches!(callee_name.as_str(), "std.io.stdin" | "std.io.stdout" | "std.io.stderr") {
+            return std_stream_call(self, &callee_name, args, line);
         }
         if matches!(callee_name.as_str(), "std.net.resolve_raw" | "std.net.UdpSocket.bind") {
             return net_free_call(self, e, &callee_name, line);

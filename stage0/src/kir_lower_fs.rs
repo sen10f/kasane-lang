@@ -285,6 +285,16 @@ pub(super) fn fs_call(lw: &mut Lw, _e: &V, name: &str, args: &[V], line: usize) 
 /// `std.fs.File` のメソッド `close`/`flush`/`read`/`sync`/`write`。
 pub(super) fn fs_method(lw: &mut Lw, _e: &V, name: &str, recv: VId, rt: Ty, args: &[V], line: usize) -> LR<Option<VId>> {
     let fd = fs_fd(lw, recv, rt, line)?;
+    // 標準入出力は、ネイティブでは利用者側の溜めを持たない。`flush` は何もしない (`fsync` は管や端末で失敗する)。
+    let is_std = match rt {
+        Ty::Agg(ai) | Ty::Ref(_, Pointee::Agg(ai)) => lw.aggs.borrow().defs[ai as usize].name.starts_with("std.io."),
+        _ => false,
+    };
+    if is_std && name == "flush" {
+        let u = lw.emit(Ty::Unit, Op::Const(0));
+        let res_ty = fs_err_ty(lw, Ty::Unit);
+        return Ok(Some(lw.emit(res_ty, Op::Ok(u))));
+    }
     let (op, res_ty) = match name {
         "close" => {
             if !args.is_empty() {
@@ -331,9 +341,34 @@ pub(super) fn is_fs_ty(lw: &Lw, rt: Ty) -> bool {
         Ty::Agg(ai) | Ty::Ref(_, Pointee::Agg(ai)) => {
             matches!(
                 lw.aggs.borrow().defs[ai as usize].name.as_str(),
-                "std.fs.File"
+                "std.fs.File" | "std.io.Stdin" | "std.io.Stdout" | "std.io.Stderr"
             )
         }
         _ => false,
     }
+}
+
+/// `std.io.stdin()` / `stdout()` / `stderr()`: 記述子 0 / 1 / 2 だけを持つ構造体。
+pub(super) fn std_stream_call(lw: &mut Lw, name: &str, args: &[V], line: usize) -> LR<Option<VId>> {
+    if !args.is_empty() {
+        return lw.err(line, format!("{} の引数は 0 個のはず", name));
+    }
+    let (ty, fd) = match name {
+        "std.io.stdin" => ("std.io.Stdin", 0),
+        "std.io.stdout" => ("std.io.Stdout", 1),
+        _ => ("std.io.Stderr", 2),
+    };
+    let segs: Vec<String> = ty.split('.').map(|s| s.to_string()).collect();
+    let Some(r) = lw.p.resolve(&segs, &lw.def.file) else {
+        return lw.err(line, format!("{} の定義がない", ty));
+    };
+    let Tgt::Type(di) = r.target else {
+        return lw.err(line, format!("{} が型ではない", ty));
+    };
+    let agg = match lw.aggs.borrow_mut().intern_def(lw.p, di) {
+        Ok(Ty::Agg(i)) => i,
+        _ => return lw.err(line, format!("{} の KIR 型表登録に失敗", ty)),
+    };
+    let f = lw.emit(Ty::I32, Op::Const(fd));
+    Ok(Some(lw.emit(Ty::Agg(agg), Op::Make { variant: None, fields: vec![f] })))
 }
