@@ -1,0 +1,8 @@
+// expect: E2020
+fn t.bad(a: f32, b: f32) -> f32 uses [] panics never
+    a % b
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

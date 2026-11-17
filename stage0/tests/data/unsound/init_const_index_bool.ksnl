@@ -1,0 +1,9 @@
+// expect: E2020
+const t.IDX: usize = true
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let a = [1u8]
+    let b = a[t.IDX]
+    core.mem.drop(b)
+    Ok(())
+end t.main

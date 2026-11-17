@@ -1,0 +1,6 @@
+// expect: E2020
+static t.N: u32 = true
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

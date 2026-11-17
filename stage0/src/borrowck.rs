@@ -219,17 +219,6 @@ impl<'a> Low<'a> {
         }
     }
 
-    /// `&<一時値>` / `&mut <一時値>` (例: `&(3i32 + 4i32)`、`&Some(x)`)。一時値への直接の
-    /// 参照で、寿命が束縛先のスコープまで延びる。
-    fn is_direct_temp_ref(&self, e: &V) -> bool {
-        if nname(e) != "Unary" {
-            return false;
-        }
-        let f = nf(e);
-        let op = st(&f[0]);
-        (op == "&" || op == "&mut") && self.place_of(&f[1]).is_none()
-    }
-
     /// 式 `e` の評価で一時値 (`$temp` への貸し出し) が作られるか。
     /// `match` / `for` / `if` / `while` の対象式の中の `$temp` は、その文の終わりまで
     /// 生きる (仕様 4.2)。
@@ -1527,13 +1516,7 @@ impl<'a> Low<'a> {
                 let c = if is_nil(init) { cur } else { self.lower_expr(init, cur) };
                 let mut binds = vec![];
                 pat_binds(&f[0], &mut binds);
-                // `let x = &<一時値>` / `let x = &mut <一時値>` では、一時値の寿命が `x`
-                // のスコープまで延びる (Rust と同じ)。
-                if self.is_direct_temp_ref(init) {
-                    for b in &binds {
-                        self.temp_extended.insert(b.clone());
-                    }
-                }
+                // `let x = &<一時値>` でも一時値は文の終端で落ちる (寿命の延長はしない。名前を付けて持つ: `let tmp = ..; let x = &tmp`)。
                 // `let r2 = *rr` (`rr: &&T`) も `loan_sources` の `Deref` が運ぶ (型が借用を持ち得ないと分かる束縛 `plain` には配らない)。
                 let srcs = if is_nil(init) || nname(&f[0]) != "PBind" { vec![] } else { self.loan_sources(init) };
                 for (k, b) in binds.iter().enumerate() {
@@ -4465,6 +4448,19 @@ fn is_static_operand(e: &V) -> bool {
     match nname(e) {
         "Lit" | "Path" => true,
         "Unary" => st(&nf(e)[0]) == "-" && nname(&nf(e)[1]) == "Lit",
+        // `&(3i32 + 4i32)`: リテラルだけの算術は定数の昇格 (`'static`)。
+        "Bin" => {
+            let f = nf(e);
+            fn lits(e: &V) -> bool {
+                match nname(e) {
+                    "Lit" => true,
+                    "Bin" => lits(&nf(e)[1]) && lits(&nf(e)[2]),
+                    "Unary" => st(&nf(e)[0]) == "-" && lits(&nf(e)[1]),
+                    _ => false,
+                }
+            }
+            lits(&f[1]) && lits(&f[2])
+        }
         _ => false,
     }
 }

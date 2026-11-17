@@ -439,6 +439,8 @@ pub struct TypeCk<'a> {
     pat_src: Option<usize>,
     /// 参照越しの分解で束縛している最中か (束縛した名前は参照の段数が決まらない)。
     pat_loose: bool,
+    /// いま束縛しているパターンの値が、型を確実に知っている出どころ (リテラル・注釈・関数の呼び出し・構造体リテラル・確かな名前) か。
+    pat_exact: bool,
     /// 参照の段数が決まらない局所変数の名前 (`arg_ref_conflict` の `loose`)。
     loose: HashSet<String>,
     /// 直後の呼び出しの各実引数が、参照の段数が決まらない束縛を根に持つか。
@@ -534,7 +536,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, pat_exact: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -594,7 +596,8 @@ impl<'a> TypeCk<'a> {
 
     pub fn check_def(&mut self, di: usize) {
         let d = &self.p.defs[di];
-        let Some(body) = &d.body else { return };
+        // `const` / `static` は、初期化式の型を宣言の型と照らす (本体の代わりに初期化式を検査する)。
+        let Some(body) = d.body.as_ref().or(if matches!(d.kw.as_str(), "const" | "static") { d.init.as_ref() } else { None }) else { return };
         self.cur = di;
         self.recv_start = self.recv_log.len();
         self.expr_pending.clear();
@@ -622,6 +625,9 @@ impl<'a> TypeCk<'a> {
             let ty = from_v(t, &gn);
             // 関数自身の型パラメータ (Ty::Param) は、単一化では「分からない型」と同じに働くが、
             // メソッド呼び出しでは境界のトレイトを引くために名前を残す。
+            if matches!(ty, Ty::Prim(_)) {
+                self.scopes[0].insert(exact_mark(n), Ty::Unit);
+            }
             self.scopes[0].insert(n.clone(), ty);
         }
         // `&'static T` と宣言した引数は `'static` の値 (呼び出し側が `'static` を渡す義務を負う)。
@@ -638,16 +644,15 @@ impl<'a> TypeCk<'a> {
         if let Err(err) = self.unify2(&ret, &value) {
             {
                 let (want, got) = self.ann_conflict(&ret, &value, &err).unwrap_or_else(|| Self::raw_pair(&err));
-                let stmts = items(&nf(body)[0]);
-                let line = stmts.last().map(nline).unwrap_or(0);
-                self.diag("E2020", format!("type mismatch in return value: expected {}, found {}{}", want, got, conv_hint(&want, &got)), line);
+                let line = if nname(body) == "Block" { items(&nf(body)[0]).last().map(nline).unwrap_or(0) } else { nline(body) };
+                let what = if self.def().body.is_none() { "initializer" } else { "return value" };
+                self.diag("E2020", format!("type mismatch in {}: expected {}, found {}{}", what, want, got, conv_hint(&want, &got)), line);
             }
         }
         // 戻り値は「受け側」の関数型が分かる: 宣言 × 宣言の効果の食い違いをここで報告する。
         self.check_fn_conv_dir(&ret, &value);
         if let Some((want, got)) = self.ref_level_conflict(&ret, &value) {
-            let stmts = items(&nf(body)[0]);
-            let line = stmts.last().map(nline).unwrap_or(0);
+            let line = if nname(body) == "Block" { items(&nf(body)[0]).last().map(nline).unwrap_or(0) } else { nline(body) };
             self.diag("E2020", format!("type mismatch in return value: expected {}, found {}{}", want, got, self.deref_hint(&ret)), line);
         }
         self.check_dangling(body, &ret);
@@ -1483,6 +1488,7 @@ impl<'a> TypeCk<'a> {
     }
 
     fn bind(&mut self, name: &str, ty: Ty) {
+        let exact_here = self.pat_exact && !self.pat_loose && self.exactly_owned(&ty);
         if self.strict {
             let id = self.new_site(self.pat_line, format!("the binding `{}`", name), ty.clone());
             if let Some(src) = self.pat_src {
@@ -1497,12 +1503,58 @@ impl<'a> TypeCk<'a> {
         }
         if let Some(s) = self.scopes.last_mut() {
             s.remove(&static_mark(name));
+            s.remove(&exact_mark(name));
+            if exact_here {
+                s.insert(exact_mark(name), Ty::Unit);
+            }
             s.insert(name.to_string(), ty);
         }
     }
 
     /// 見えている `name` の束縛に、`'static` と分かっている印を付ける (on) / 外す。印は束縛と同じ scope に置く。
     /// 外すのは再代入・`&mut` の借用・`&mut` の取り込みのとき (後から局所の借用を入れられるので、印を残せない)。
+    /// 型が、参照の段数まで確かな所有値の型か (基本型・型引数のない名前付きの型・それらのタプル)。
+    /// 総称の引数や参照越しの分解を通った型は、参照の段数が落ちていることがあるので確かではない。
+    fn exactly_owned(&self, t: &Ty) -> bool {
+        match self.resolve(t) {
+            Ty::Prim(_) | Ty::Unit => true,
+            Ty::Named(_, a) => a.is_empty(),
+            Ty::Tuple(ts) => ts.iter().all(|x| self.exactly_owned(x)),
+            _ => false,
+        }
+    }
+
+    /// 式の型が、参照の段数まで確かか (リテラル・関数の呼び出し・構造体リテラル・確かな局所変数)。
+    fn exact_source(&self, e: &V) -> bool {
+        match nname(e) {
+            "Lit" | "Call" | "StructLit" => true,
+            "Path" => {
+                let segs = strs(&nf(e)[0]);
+                segs.len() == 1 && self.scopes.iter().rev().find(|s| s.contains_key(&segs[0])).map_or(false, |s| s.contains_key(&exact_mark(&segs[0])))
+            }
+            _ => false,
+        }
+    }
+
+    /// 式の中に、参照の段数が決まらない局所変数の名前があるか。
+    fn mentions_loose(&self, e: &V) -> bool {
+        if self.loose.is_empty() {
+            return false;
+        }
+        match e {
+            V::L(xs) | V::Node(_, xs, _, _) => {
+                if nname(e) == "Path" {
+                    let segs = strs(&nf(e)[0]);
+                    if self.loose.contains(&segs[0]) {
+                        return true;
+                    }
+                }
+                xs.iter().any(|x| self.mentions_loose(x))
+            }
+            _ => false,
+        }
+    }
+
     fn set_static(&mut self, name: &str, on: bool) {
         if let Some(s) = self.scopes.iter_mut().rev().find(|s| s.contains_key(name)) {
             if on {
@@ -3494,6 +3546,15 @@ impl<'a> TypeCk<'a> {
 
     // ------------------------------------------------------------ 式
     /// 式を推論する。計測が有効なら結果を記録する (`cov_record`)。本体は `infer_node`。
+    /// `if` / `while` の条件は `bool` でなければならない (型が決まらないときは黙る)。
+    fn check_cond(&mut self, c: &V, what: &str, line: usize) {
+        let t = self.infer(c);
+        if self.unify2(&Ty::Prim("bool".into()), &t).is_err() {
+            let got = self.deep(&t).show();
+            self.diag("E2020", format!("type mismatch: the condition of {} must be `bool`, found {}", what, got), line);
+        }
+    }
+
     fn infer(&mut self, e: &V) -> Ty {
         let saved = self.cur_line;
         if nline(e) != 0 {
@@ -3637,6 +3698,26 @@ impl<'a> TypeCk<'a> {
                         acc.1 = true;
                     }
                 }
+                // 単項 `-` は符号付き整数・浮動小数だけ、`!` は `bool` と整数だけ (オペランドの型が決まっていて外れるものは型の誤り)。
+                if matches!(st(&f[0]).as_str(), "-" | "!") {
+                    let d = self.deep(&t).strip().clone();
+                    let neg = st(&f[0]) == "-";
+                    let bad = match &d {
+                        Ty::Prim(p) => {
+                            if neg {
+                                matches!(p.as_str(), "bool" | "char" | "str")
+                            } else {
+                                matches!(p.as_str(), "char" | "str" | "f32" | "f64")
+                            }
+                        }
+                        Ty::Unit | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_) | Ty::Ptr(..) => true,
+                        Ty::Named(..) => true,
+                        _ => false,
+                    };
+                    if bad {
+                        self.diag("E2020", format!("type mismatch: unary `{}` cannot be applied to {}", st(&f[0]), d.show()), nline(e));
+                    }
+                }
                 match st(&f[0]).as_str() {
                     "&" => Ty::Ref(false, Box::new(t)),
                     "&mut" => {
@@ -3673,6 +3754,11 @@ impl<'a> TypeCk<'a> {
                     "*" => match self.resolve(&t) {
                         Ty::Ref(_, x) => *x,
                         Ty::Unknown => Ty::Unknown,
+                        // 参照でも生ポインタでもない値の `*` は型の誤り (パターンで得た名前の段数が未確定のときは Unknown になるので、ここへは来ない)。
+                        other @ (Ty::Prim(_) | Ty::Unit | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_)) if matches!(nname(&f[1]), "Path" | "Lit") && self.exact_source(&f[1]) => {
+                            self.diag("E2020", format!("type mismatch: cannot dereference a value of type {}: `*` applies only to a reference or a raw pointer", other.show()), nline(e));
+                            other
+                        }
                         other => other,
                     },
                     _ => t,
@@ -3683,12 +3769,33 @@ impl<'a> TypeCk<'a> {
                 let b = self.infer(&f[2]);
                 let op = st(&f[0]);
                 if op == "&&" || op == "||" {
+                    for (x, ex) in [(&a, &f[1]), (&b, &f[2])] {
+                        if self.unify2(&Ty::Prim("bool".into()), x).is_err() {
+                            let got = self.deep(x).show();
+                            self.diag("E2020", format!("type mismatch: an operand of `{}` must be `bool`, found {}", op, got), nline(ex));
+                        }
+                    }
                     return Ty::Prim("bool".into());
                 }
                 if let Err(err) = self.unify2(&a, &b) {
                     {
                         let (l, r) = self.prim_conflict(&err).unwrap_or_else(|| Self::raw_pair(&err));
                         self.diag("E2024", format!("operands of `{}` have different types: `{}` and `{}`", op, l, r), nline(e));
+                    }
+                }
+                // 算術 `+ - * / %` は整数・浮動小数だけ (`true + false`、`'a' * 2` は型の誤り)。
+                // `%` は整数だけ (浮動小数は `rem` メソッド)、`& | ^` は整数と `bool` だけ (4.1)。
+                if matches!(op.as_str(), "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^") {
+                    if let Ty::Prim(p) = self.deep(&a).strip() {
+                        let p = p.as_str();
+                        let bad = match op.as_str() {
+                            "%" => matches!(p, "bool" | "char" | "str" | "f32" | "f64"),
+                            "&" | "|" | "^" => matches!(p, "char" | "str" | "f32" | "f64"),
+                            _ => matches!(p, "bool" | "char"),
+                        };
+                        if bad {
+                            self.diag("E2020", format!("type mismatch: operator `{}` cannot be applied to `{}`", op, p), nline(e));
+                        }
                     }
                 }
                 // 整数の算術はオーバーフロー・0 除算で panic しうる (クロージャの本体では `panics may` の根拠にする)。
@@ -3789,7 +3896,7 @@ impl<'a> TypeCk<'a> {
                 Ty::Array(Box::new(elem), Some(ts.len() as u128))
             }
             "If" => {
-                self.infer(&f[0]);
+                self.check_cond(&f[0], "`if`", nline(e));
                 let mut a = self.infer(&f[1]);
                 let has_else = !is_nil(&f[2]);
                 if !has_else {
@@ -3820,25 +3927,32 @@ impl<'a> TypeCk<'a> {
             "Match" => {
                 let s = self.infer(&f[0]);
                 let src = self.last_site;
-                let mut out = Ty::Unknown;
+                let mut out: Option<Ty> = None;
                 for arm in items(&f[1]) {
                     self.scopes.push(HashMap::new());
+                    let saved_exact = self.pat_exact;
+                    self.pat_exact = self.exact_source(&f[0]);
                     self.bind_pat_from(&items(arm)[0], &s, src, nline(&items(arm)[0]));
+                    self.pat_exact = saved_exact;
                     self.note_pat_binds(&items(arm)[0], nline(&items(arm)[0]));
                     let t = self.infer(&items(arm)[1]);
                     self.scopes.pop();
                     if t == Ty::Never {
                         continue;
                     }
-                    if out == Ty::Unknown {
-                        out = t;
-                    } else {
+                    // 合流の型は、`!` でない腕の型を順に単一化した結果 (`!` の腕は型を決めない)。
+                    out = Some(match out {
+                        None => t,
                         // 6 の 2: 他の腕と型を一致させる (`Some(v) => Ok(v)` と `None => Err(a)` など)。
-                        out = self.join_arm(&out, &t, nline(e), "`match` arms");
-                    }
+                        Some(o) => self.join_arm(&o, &t, nline(e), "`match` arms"),
+                    });
                 }
                 // 腕がすべて発散するなら、match 自身も発散する。
-                if out == Ty::Unknown && !items(&f[1]).is_empty() { Ty::Never } else { out }
+                match out {
+                    Some(o) => o,
+                    None if !items(&f[1]).is_empty() => Ty::Never,
+                    None => Ty::Unknown,
+                }
             }
             "For" => {
                 let it = self.infer(&f[1]);
@@ -3883,6 +3997,13 @@ impl<'a> TypeCk<'a> {
                         if self.lookup_static(n) {
                             statics.insert(n.clone());
                         }
+                        let was_static = self.lookup_static(n);
+                        if let Some(s) = self.scopes.last_mut() {
+                            s.insert(n.clone(), t.clone());
+                            if was_static {
+                                s.insert(static_mark(n), Ty::Unit);
+                            }
+                        }
                         continue;
                     }
                     // Copy な型 (整数など) は、読むだけなら値のままで害がない。移せる (Copy でない) 型だけ参照にする。
@@ -3890,6 +4011,15 @@ impl<'a> TypeCk<'a> {
                         let r = Ty::Ref(k == "&mut", Box::new(t));
                         if let Some(s) = self.scopes.last_mut() {
                             s.insert(n.clone(), r);
+                        }
+                    } else {
+                        // 値のまま見える取り込みは、本体の中では `*x` が通ってよい名前なので、外の「確かな型」の印を遮る。
+                        let was_static = self.lookup_static(n);
+                        if let Some(s) = self.scopes.last_mut() {
+                            s.insert(n.clone(), t.clone());
+                            if was_static {
+                                s.insert(static_mark(n), Ty::Unit);
+                            }
                         }
                     }
                 }
@@ -3961,10 +4091,19 @@ impl<'a> TypeCk<'a> {
                         }
                     }
                 }
+                // 値の無い `return` は、戻り値型が `()` の関数・クロージャだけ。
+                if nname(e) == "Return" && is_nil(&f[0]) {
+                    if let Some(ret) = self.rets.last().cloned() {
+                        if self.unify2(&ret, &Ty::Unit).is_err() {
+                            let want = self.deep(&ret).show();
+                            self.diag("E2020", format!("type mismatch in return value: expected {}, found (): `return` without a value in a function that returns {}", want, want), nline(e));
+                        }
+                    }
+                }
                 Ty::Never
             }
             "While" => {
-                self.infer(&f[0]);
+                self.check_cond(&f[0], "`while`", nline(e));
                 self.loop_breaks.push(false);
                 let t = self.infer(&f[1]);
                 self.loop_breaks.pop();
@@ -4088,15 +4227,21 @@ impl<'a> TypeCk<'a> {
                     pat_binds(&f[0], &mut b);
                     self.mutable.extend(b);
                 }
+                let saved_exact = self.pat_exact;
+                self.pat_exact = !is_nil(&f[2]) || self.exact_source(&f[3]);
                 self.bind_pat_from(&f[0], &ty, src, nline(s));
+                self.pat_exact = saved_exact;
                 if init_static && nname(&f[0]) == "PBind" {
                     self.set_static(&st(&nf(&f[0])[0]), true);
                 }
                 let mut names = vec![];
                 pat_binds(&f[0], &mut names);
+                // 参照の段数が決まらない名前を式の中に含む右辺の束縛は、型が値でも実体は参照かもしれない (`let r = match &t.make() { S { v: x } => x }`)。
+                // 型が記録されない束縛は借用を持ち得ないとは扱われない (借用検査が右辺の借用を渡す)。
+                let from_loose = self.mentions_loose(&f[3]);
                 for n in names {
                     if let Some(t) = self.lookup(&n) {
-                        self.let_pending.push((nline(s), n, t));
+                        self.let_pending.push((nline(s), n, if from_loose { Ty::Unknown } else { t }));
                     }
                 }
                 Ty::Unit
@@ -6061,6 +6206,10 @@ fn mentions_param(t: &Ty, names: &HashSet<String>) -> bool {
 }
 
 /// `'static` と分かる束縛に付ける印の名前 (変数名と衝突しないよう、空白と制御文字を含む)。
+fn exact_mark(name: &str) -> String {
+    format!("\u{1}exact:{}", name)
+}
+
 fn static_mark(name: &str) -> String {
     format!("\u{1}static {}", name)
 }

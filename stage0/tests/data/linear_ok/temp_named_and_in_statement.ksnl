@@ -1,0 +1,20 @@
+type t.S pub
+    v: u32
+end t.S
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    core.check.eq(t.ok(), 21u32)
+    Ok(())
+end t.main
+
+fn t.make() -> t.S uses [] panics never
+    t.S { v: 7u32 }
+end t.make
+
+fn t.ok() -> u32 uses [] panics may
+    let tmp = t.make()
+    let r = &tmp.v
+    let n = *r
+    let m = *&t.make().v
+    n + m + t.make().v
+end t.ok

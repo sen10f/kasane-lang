@@ -1,0 +1,10 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let r = &t.make_string().as_str().len()
+    core.mem.drop(*r)
+    Ok(())
+end t.main
+
+// expect: E3010
+fn t.make_string() -> alloc.string.String<std.alloc.System> uses [alloc] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.make_string

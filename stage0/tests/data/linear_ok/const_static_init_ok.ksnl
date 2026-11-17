@@ -1,0 +1,9 @@
+const t.A: [u8; 2] = [1u8, 2u8]
+
+static t.M: u64 = 4u64
+
+const t.N: u32 = 3u32
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

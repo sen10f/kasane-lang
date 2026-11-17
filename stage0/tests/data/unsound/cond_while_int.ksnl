@@ -1,0 +1,10 @@
+// expect: E2020
+fn t.bad() -> () uses [] panics never
+    while 1u32 {
+        break
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
