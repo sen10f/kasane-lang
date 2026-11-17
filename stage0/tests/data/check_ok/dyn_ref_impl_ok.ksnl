@@ -1,0 +1,22 @@
+trait t.H[E: uses, P: panics]
+    fn handle(self: &Self) -> u32 uses [E] panics P
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+impl t.H<[], never> for t.X
+fn t.X.handle(self: &t.X) -> u32 uses [] panics never impls t.H<[], never>
+    self.v
+end t.X.handle
+
+fn t.sink(h: &dyn t.H<[], never> + 'static) -> u32 uses [] panics never
+    h.handle()
+end t.sink
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = t.X { v: 7u32 }
+    core.check.eq(t.sink(&mut x), 7u32)
+    Ok(())
+end t.main

@@ -1,0 +1,24 @@
+// expect: E2046
+// さらに inherent の戻り値の型はトレイトと違う (u32 に対して u64)。
+// ディスパッチが inherent を名前で見つけて呼べば、呼び出し側は u32 を期待するので食い違う。
+trait t.H[E: uses, P: panics]
+    fn handle(self: &Self) -> u32 uses [E] panics P
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+fn t.X.handle(self: &t.X) -> u64 uses [] panics never
+    4294967301u64
+end t.X.handle
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = t.X { v: 7u32 }
+    core.check.eq(t.sink(&mut x), 7u32)
+    Ok(())
+end t.main
+
+fn t.sink(h: &dyn t.H<[], never> + 'static) -> u32 uses [] panics never
+    h.handle()
+end t.sink

@@ -1882,7 +1882,13 @@ impl<'a> TypeCk<'a> {
     /// `dyn Tr<want..>` の受け側へ型 `ty` の値を渡す: `ty` の `impl Tr<got..>` の実引数を渡し側として比べる。
     fn check_dyn_impl(&mut self, tr: &str, want: &TArgs, ty: &str) {
         let Some(root) = crate::check::resolve_trait_fqn(self.p, tr) else { return };
-        let Some(got) = self.impl_targs_of(&root, ty) else { return };
+        let Some(got) = self.impl_targs_of(&root, ty) else {
+            // 実装の宣言が無い型は `dyn Tr` にできない (同名の固有メソッドでは代用しない)。
+            if self.p.types.contains_key(ty) {
+                self.diag("E2046", format!("`{}` does not implement the trait `{}`", ty, root), self.cur_line);
+            }
+            return;
+        };
         self.check_dyn_conv(tr, want, &TArgs(got));
     }
 
@@ -3420,9 +3426,6 @@ impl<'a> TypeCk<'a> {
             let (tr, dargs, n2) = (tr.clone(), dargs.clone(), n.clone());
             self.cur_line = line;
             self.check_dyn_impl(&tr, &dargs, &n2);
-            if !self.p.impls.iter().any(|(tb, tgt)| tgt == n && crate::check::resolve_trait_fqn(self.p, tb).as_deref() == Some(root.as_str())) {
-                self.diag("E2046", format!("`{}` does not implement the trait `{}`", n, root), line);
-            }
             let def = &self.p.defs[i];
             let has_ref = def.fields.iter().any(|f| v_has_ref(&f.1)) || def.variants.iter().any(|v| v.1.iter().any(v_has_ref));
             if has_ref {
