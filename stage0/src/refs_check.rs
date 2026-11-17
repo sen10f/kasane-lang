@@ -399,7 +399,7 @@ fn closure_msg() -> String {
 /// 推論で決まった型 (`let v = Vec::new(); v.push(&x)` の `Vec<&u32>`) が、容れ物に参照を入れているか。
 /// 型には領域が残らないので、静的な文字列・配列の可能性が高い `&str` / `&[T]` は見逃す
 /// (`&'static` かどうかは書かれた型だけが決める。流れは `borrowck.rs` の E3010 が見る)。
-pub fn inferred_container_ref(ty: &Ty) -> Option<(String, bool)> {
+pub fn inferred_container_ref(ty: &Ty) -> Option<(String, bool, Vec<usize>)> {
     /// 戻り値の真偽: Some(weak)。weak = 参照の先が `str` / スライス / 配列だけ (リテラルなら `'static` でありうる)。
     fn has_ref(ty: &Ty) -> Option<bool> {
         match ty {
@@ -422,7 +422,8 @@ pub fn inferred_container_ref(ty: &Ty) -> Option<(String, bool)> {
             let last = n.rsplit('.').next().unwrap_or("");
             if CONTAINERS.contains(&last) {
                 if let Some(w) = args.iter().filter_map(has_ref).fold(None, |a, w| Some(a.unwrap_or(true) && w)) {
-                    return Some((last.to_string(), w));
+                    let idx: Vec<usize> = args.iter().enumerate().filter(|(_, a)| has_ref(a).is_some()).map(|(i, _)| i).collect();
+                    return Some((last.to_string(), w, idx));
                 }
             }
             args.iter().find_map(inferred_container_ref)
@@ -430,6 +431,16 @@ pub fn inferred_container_ref(ty: &Ty) -> Option<(String, bool)> {
         Ty::Tuple(xs) => xs.iter().find_map(inferred_container_ref),
         Ty::Ref(_, x) | Ty::Array(x, _) | Ty::Slice(x) => inferred_container_ref(x),
         _ => None,
+    }
+}
+
+/// 容れ物の型に合わせた注釈の例 (診断の文面)。
+fn annotation_example(container: &str) -> String {
+    match container {
+        "HashMap" | "BtreeMap" => format!("alloc.collections.{}<&'static str, V, std.alloc.System>", container),
+        "VecDeque" => "alloc.collections.VecDeque<&'static str, std.alloc.System>".to_string(),
+        "Vec" => "alloc.vec.Vec<&'static str, std.alloc.System>".to_string(),
+        other => format!("{}<&'static str, ..>", other),
     }
 }
 
@@ -473,35 +484,152 @@ fn init_from_static_fn(p: &Program, toks: &[Tok], name: &str) -> bool {
     false
 }
 
-/// `name.push(..)` / `insert` / `push_back` / `push_front` の引数がすべて文字列リテラルで始まり、1 回以上ある
-/// (= 入る参照が `'static` だと示せる)。
-fn static_stores_only(p: &Program, toks: &[Tok], name: &str) -> bool {
+/// `'static` の `&str` を作る受け手のメソッド (署名の省略の規則 (a)(b): 戻り値は受け手の借用)。
+const STATIC_METHODS: &[&str] = &["split", "lines", "trim", "trim_start", "trim_end", "as_str", "split_whitespace", "as_bytes", "chars"];
+
+/// 式の語 `toks[a..b]` が `'static` の参照だと示せるか: 文字列リテラル、`const` / `static` の参照 (`: &str` など)、
+/// `'static` と示せた束縛 (`statics`)、およびそれらに `STATIC_METHODS` を連ねたもの。
+fn static_expr(p: &Program, toks: &[Tok], a: usize, b: usize, statics: &HashSet<String>) -> bool {
+    if a >= b {
+        return false;
+    }
+    if b == a + 1 && toks[a].kind == "str" {
+        return true;
+    }
+    // 先頭の `&` / `*` は外す
+    let a = if is_op(&toks[a], "&") && a + 1 < b { a + 1 } else { a };
+    // 分節 (名前、呼び出しか) の列
+    let mut segs: Vec<(String, bool)> = vec![];
+    let mut i = a;
+    while i < b {
+        if !is_path_tok(&toks[i]) {
+            return false;
+        }
+        let name = toks[i].text.clone();
+        i += 1;
+        let mut call = false;
+        if i < b && is_op(&toks[i], "(") {
+            i = skip_group(toks, i);
+            call = true;
+        }
+        segs.push((name, call));
+        if i < b {
+            if !is_op(&toks[i], ".") {
+                return false;
+            }
+            i += 1;
+            if i >= b {
+                return false;
+            }
+        }
+    }
+    // 呼び出しの前までを土台にする
+    let first_call = segs.iter().position(|s| s.1).unwrap_or(segs.len());
+    if first_call == 0 {
+        return false;
+    }
+    let (base, rest) = (&segs[..first_call], &segs[first_call..]);
+    if base.is_empty() || !rest.iter().all(|s| s.1 && STATIC_METHODS.contains(&s.0.as_str())) {
+        return false;
+    }
+    if base.len() == 1 && statics.contains(&base[0].0) {
+        return true;
+    }
+    let path = base.iter().map(|s| s.0.as_str()).collect::<Vec<_>>().join(".");
+    let suffix = format!(".{}", path);
+    p.defs.iter().any(|d| matches!(d.kw.as_str(), "const" | "static") && (d.name == path || d.name.ends_with(&suffix)) && d.header.split(':').nth(1).map_or(false, |t| t.trim_start().starts_with('&')))
+}
+
+/// `'static` と示せる束縛の名前 (`let x = <静的な式>` と `for x in <静的な式> {`)。連鎖は不動点まで。
+fn static_names(p: &Program, toks: &[Tok]) -> HashSet<String> {
+    let mut out: HashSet<String> = HashSet::new();
+    loop {
+        let before = out.len();
+        for i in 0..toks.len() {
+            if toks[i].kind != "kw" {
+                continue;
+            }
+            let (kw, mut j) = (toks[i].text.as_str(), i + 1);
+            if kw == "let" {
+                if j < toks.len() && toks[j].kind == "kw" && toks[j].text == "mut" {
+                    j += 1;
+                }
+                if j + 1 < toks.len() && is_path_tok(&toks[j]) && is_op(&toks[j + 1], "=") {
+                    let mut e = j + 2;
+                    while e < toks.len() && toks[e].kind != "nl" {
+                        e += 1;
+                    }
+                    if static_expr(p, toks, j + 2, e, &out) {
+                        out.insert(toks[j].text.clone());
+                    }
+                }
+            } else if kw == "for" {
+                if j + 1 < toks.len() && is_path_tok(&toks[j]) && toks[j + 1].kind == "kw" && toks[j + 1].text == "in" {
+                    let mut e = j + 2;
+                    while e < toks.len() && !is_op(&toks[e], "{") && toks[e].kind != "nl" {
+                        e += 1;
+                    }
+                    if static_expr(p, toks, j + 2, e, &out) {
+                        out.insert(toks[j].text.clone());
+                    }
+                }
+            }
+        }
+        if out.len() == before {
+            return out;
+        }
+    }
+}
+
+/// 呼び出し `name.push(..)` / `insert` / `push_back` / `push_front` で、参照を持つ型引数 (`ref_args`) に入る引数が
+/// すべて `'static` と示せ、そのような呼び出しが 1 回以上ある。呼び出しの位置 (文・引数・`match` の対象・`?`・`let` の右辺)
+/// には依らず、語の列から `name . メソッド (` を探す 1 か所で決める。
+fn static_stores_only(p: &Program, toks: &[Tok], name: &str, container: &str, ref_args: &[usize]) -> bool {
     if init_from_static_fn(p, toks, name) {
         return true;
     }
+    let statics = static_names(p, toks);
     let mut n = 0;
     let mut i = 0;
     while i + 4 < toks.len() {
-        if is_path_tok(&toks[i]) && toks[i].text == name && is_op(&toks[i + 1], ".") && matches!(toks[i + 2].text.as_str(), "push" | "insert" | "push_back" | "push_front") && is_op(&toks[i + 3], "(") {
-            let close = skip_group(toks, i + 3);
-            // 最上位の引数ごとの先頭の語 (最初の引数が `&alloc` などのアロケータ引数でも、最後の引数を見る)
-            let mut depth = 0;
-            let mut starts = vec![i + 4];
-            for k in i + 4..close.saturating_sub(1) {
-                if toks[k].kind == "op" && matches!(toks[k].text.as_str(), "(" | "[" | "{" | "<") {
-                    depth += 1;
-                } else if toks[k].kind == "op" && matches!(toks[k].text.as_str(), ")" | "]" | "}" | ">") {
-                    depth -= 1;
-                } else if depth == 0 && is_op(&toks[k], ",") {
-                    starts.push(k + 1);
+        if is_path_tok(&toks[i]) && toks[i].text == name && is_op(&toks[i + 1], ".") && is_op(&toks[i + 3], "(") {
+            let method = toks[i + 2].text.as_str();
+            // 引数の位置 → 容れ物の型引数の添字
+            let positions: Option<Vec<usize>> = match (container, method) {
+                (_, "push" | "push_back" | "push_front") => Some(ref_args.iter().filter(|&&k| k == 0).map(|_| 0).collect()),
+                ("HashMap" | "BtreeMap", "insert") => Some(ref_args.iter().filter(|&&k| k < 2).cloned().collect()),
+                ("Vec" | "VecDeque", "insert") => Some(ref_args.iter().filter(|&&k| k == 0).map(|_| 1).collect()),
+                _ => None,
+            };
+            if let Some(positions) = positions {
+                let close = skip_group(toks, i + 3);
+                let end = close.saturating_sub(1);
+                let mut depth = 0;
+                let mut starts = vec![i + 4];
+                for k in i + 4..end {
+                    if toks[k].kind == "op" && matches!(toks[k].text.as_str(), "(" | "[" | "{" | "<") {
+                        depth += 1;
+                    } else if toks[k].kind == "op" && matches!(toks[k].text.as_str(), ")" | "]" | "}" | ">") {
+                        depth -= 1;
+                    } else if depth == 0 && is_op(&toks[k], ",") {
+                        starts.push(k + 1);
+                    }
                 }
+                starts.push(end + 1);
+                for pos in positions {
+                    if pos + 1 >= starts.len() {
+                        return false;
+                    }
+                    let (a, mut b) = (starts[pos], starts[pos + 1] - 1);
+                    if b > end {
+                        b = end;
+                    }
+                    if !static_expr(p, toks, a, b, &statics) {
+                        return false;
+                    }
+                }
+                n += 1;
             }
-            // どの引数もリテラルで始まり (変数・参照は `'static` と示せない)、文字列リテラルが 1 つ以上ある
-            let lit = |k: usize| k < toks.len() && matches!(toks[k].kind, "str" | "int" | "float" | "char" | "byte" | "bstr");
-            if !starts.iter().all(|&k| lit(k) || (k < toks.len() && toks[k].kind == "kw" && matches!(toks[k].text.as_str(), "true" | "false"))) || !starts.iter().any(|&k| k < toks.len() && toks[k].kind == "str") {
-                return false;
-            }
-            n += 1;
         }
         i += 1;
     }
@@ -552,20 +680,23 @@ pub fn check(p: &Program, user: &[usize], let_tys: &HashMap<(usize, usize, Strin
             continue;
         }
         let ty = &let_tys[&(*di, *line, name.clone())];
-        if let Some((c, weak)) = inferred_container_ref(ty) {
+        if let Some((c, weak, ref_args)) = inferred_container_ref(ty) {
             // 型注釈つきの `let` は、書かれた型 (上の字句の検査) が決める
             if toks_of.get(di).map_or(false, |t| annotated_let(t, name)) {
                 continue;
             }
-            if weak && toks_of.get(di).map_or(false, |t| static_stores_only(p, t, name)) {
+            if weak && toks_of.get(di).map_or(false, |t| static_stores_only(p, t, name, &c, &ref_args)) {
                 continue;
             }
             out.push(Hit {
                 di: *di,
                 pos: *line,
                 msg: format!(
-                    "`{}` has the inferred type `{}<..>` holding a reference (references are second-class values) and `'static` cannot be shown; annotate it (`let {}: alloc.vec.Vec<&'static str, ..> = ..`, only for string literals and `'static` data) or hold an owned value (`String`) or an index",
-                    name, c, name
+                    "`{}` has the inferred type `{}<..>` holding a reference (references are second-class values) and `'static` cannot be shown; annotate it (`let {}: {} = ..`, only for string literals and `'static` data such as a `const` `&str`) or hold an owned value (`String`) or an index",
+                    name,
+                    c,
+                    name,
+                    annotation_example(&c)
                 ),
             });
         }
