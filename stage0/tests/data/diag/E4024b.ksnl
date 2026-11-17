@@ -1,0 +1,6 @@
+static t.K: u32 = [1u32, 2u32][5]
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.K)
+    Ok(())
+end t.main

@@ -493,7 +493,7 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
     }
     let (prog, user) = if take_std { build_program_take(&mut l) } else { build_program(&l) };
     crate::vm::tick("build_prog");
-    let diags = {
+    let mut diags = {
         let mut ck = Checker::new(&prog, user.clone());
         ck.unsafe_modules = crate::project::unsafe_modules(&l.pkg.manifest);
         ck.integration_files = l.pkg.sources.iter().filter(|s| s.is_test).map(|s| s.path.clone()).collect();
@@ -501,6 +501,9 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         crate::vm::tick("checker");
         ck.diags
     };
+    // 他の診断が無いときだけ、`const` / `static` の初期化式を評価して、評価中の panic を E4024 にする (4.1)。
+    let (prog, const_diags) = if diags.is_empty() { eval_const_inits(prog, &user) } else { (prog, vec![]) };
+    diags.extend(const_diags);
     // 隠しの切り替え (試験用): 借用・線形の診断 (E30xx) を外して実行する。検査器の穴を実行時の検査 (解放済みの値の読み) で確かめる。
     let diags: Vec<_> = if std::env::var_os("KSN_SKIP_BORROW_DIAGS").is_some() {
         diags.into_iter().filter(|d| !d.code.starts_with("E30")).collect()
@@ -525,6 +528,41 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         });
     }
     Ok((l, Some(prog), user))
+}
+
+/// 利用者の `const` / `static` の初期化式を評価し、評価中の panic (ゼロ除算・溢れ・範囲外・`panic` など) を
+/// E4024 にする (仕様 4.1)。評価できないもの (panic 以外の中断) は黙る。
+fn eval_const_inits(prog: Program, user: &[usize]) -> (Program, Vec<crate::check::Diag>) {
+    let idx: Vec<usize> = user
+        .iter()
+        .copied()
+        .filter(|&i| matches!(prog.defs[i].kw.as_str(), "const" | "static") && prog.defs[i].init.is_some())
+        .collect();
+    if idx.is_empty() {
+        return (prog, vec![]);
+    }
+    let rc = Rc::new(prog);
+    let mut out = vec![];
+    {
+        let mut it = crate::interp::Interp::new(rc.clone());
+        for &i in &idx {
+            if let Err(crate::value::Ctl::Panic(m)) = it.const_value(i) {
+                let d = &rc.defs[i];
+                out.push(crate::check::Diag {
+                    file: d.file.clone(),
+                    code: "E4024".into(),
+                    fqn: d.name.clone(),
+                    line: d.line,
+                    col: 0,
+                    msg: format!("evaluating the initializer of `{}` panics: {} (4.1: a panic during const evaluation is a compile error)", d.name, m),
+                });
+            }
+        }
+    }
+    match Rc::try_unwrap(rc) {
+        Ok(p) => (p, out),
+        Err(_) => unreachable!("the interpreter is dropped before the program is taken back"),
+    }
 }
 
 // ------------------------------------------------------------ コマンド

@@ -1,0 +1,16 @@
+const t.A: u8 = t.f(1u8)
+
+const t.K: u32 = 4u32 / 2u32
+
+static t.S: u32 = [1u32, 2u32][1]
+
+fn t.f(x: u8) -> u8 const uses [] panics may
+    x + 1u8
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.K)
+    core.mem.drop(t.A)
+    core.mem.drop(t.S)
+    Ok(())
+end t.main
