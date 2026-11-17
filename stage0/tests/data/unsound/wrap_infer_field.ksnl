@@ -1,0 +1,13 @@
+// expect: E3060
+type t.Wrap[T]
+    inner: T
+end t.Wrap
+
+fn t.f(x: &u32) -> &u32 uses [] panics never
+    let w = t.Wrap { inner: x }
+    w.inner
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -1,0 +1,12 @@
+type t.Wrap[T]
+    inner: T
+end t.Wrap
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let a = t.Wrap { inner: "lit" }
+    let b = t.Wrap { inner: 5u32 }
+    core.check.eq(a.inner, "lit")
+    core.check.eq(b.inner, 5u32)
+    std.io.print_line("ok")
+    Ok(())
+end t.main
