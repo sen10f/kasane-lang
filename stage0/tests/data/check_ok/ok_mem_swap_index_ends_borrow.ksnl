@@ -1,0 +1,13 @@
+// expect-accept
+// core.mem.swap で要素 a[0] と参照の変数 r を入れ替えたあと、x (a[0] の古い借用) は自由に使える。
+// r は今 x を指すので、r を通した書き込みは x への書き込みになる (a[0] は y を指す)。
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = 1u32
+    let mut y = 2u32
+    let mut r = &mut y
+    let mut a = [&mut x]
+    core.mem.swap(&mut a[0], &mut r)
+    *r = 5u32
+    core.mem.drop(a)
+    Ok(())
+end t.main

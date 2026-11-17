@@ -132,11 +132,6 @@ pub(crate) fn index_text(e: &V) -> String {
     };
     format!("{}[{}]", seg(&f[0]), seg(&f[1]))
 }
-/// enum 風の型 (`Option` / `Result` / ユーザー定義の enum) か。パターンで中身を取り出すと、その場所の全体が move される。
-fn sty0_is_enumlike(t: &V) -> bool {
-    tag(t) == "named"
-}
-
 /// 診断の文面に出す式の短い表記 (書かれたとおりでなくてよい)。
 fn short_text(e: &V) -> String {
     let f = nf(e);
@@ -4392,7 +4387,10 @@ impl<'a> Checker<'a> {
             "Let" => {
                 self.lin_closure_took = false;
                 let spawn_began = self.spawn_begin(&f[3], env);
-                self.tc_expr(&f[3], env, muts, true);
+                // 名前だけの束縛 (`let y = x`) は右辺を値として移す。分解 (`let T { f: _ } = x`) は `match` と同じく、
+                // 束縛が Copy でないときだけ move する (下の `let_destructure_consume`)。
+                let destructure = nname(&f[0]) != "PBind";
+                self.tc_expr(&f[3], env, muts, !destructure);
                 if is_nil(&f[2]) && nname(&f[0]) == "PBind" {
                     self.move_mut_ref(&f[3], env, nline(s));
                 }
@@ -4408,6 +4406,9 @@ impl<'a> Checker<'a> {
                 let took = nname(&f[3]) == "Closure" && self.lin_closure_took;
                 self.lin_closure_took = false;
                 let got = self.ty_of(&f[3], env);
+                if destructure {
+                    self.let_destructure_consume(&f[3], &f[0], &got, env, nline(s));
+                }
                 if !is_nil(&f[2]) {
                     self.mismatch(&f[2], &got, nline(s), "let binding");
                     if !self.is_generic(&f[2], &self.names) {
@@ -5661,6 +5662,47 @@ impl<'a> Checker<'a> {
         through
     }
 
+    /// 分解のパターン `pat` (`match` の腕・`let` の左辺) が、スクラティニー (型 `sty`) の値を move するか。
+    /// 束縛 (`_` を除く) に Copy でない値が 1 つでもあれば move する (4.1)。`match`・`let`・`if let` で同じ規則。
+    fn pat_moves_scrut(&self, pat: &V, sty: &V) -> bool {
+        self.arm_bindings(pat, sty, nline(pat))
+            .iter()
+            .any(|(n, t)| n != "_" && !is_nil(t) && !self.is_generic(t, &self.names) && !self.is_copy(t))
+    }
+
+    /// 分解でスクラティニー `e` を move する。参照の先・添字の先からは move できない (E3002、`hint` で書き換えを示す)。
+    /// 局所の場所 (変数・フィールドの道) なら、その場所の全体 (道の先頭から) を move とみなす。
+    fn scrut_move(&mut self, e: &V, hint: &str, env: &Env, line: usize) {
+        if self.scrut_behind_ref(e, env) {
+            self.tdiag(
+                "E3002",
+                format!(
+                    "cannot move out of `{}` in a pattern: it is behind a reference or an index and the pattern binds a value that is not Copy; {} instead",
+                    short_text(e),
+                    hint.replace("{}", &short_text(e))
+                ),
+                line,
+            );
+        } else if let Some((root, path)) = self.scrut_place(e, env) {
+            self.record_move(&root, &path, env, line);
+        }
+    }
+
+    /// `let P = e` の分解 (`P` が名前だけでない): `match` と同じく、スクラティニーの線形な値は分解で消費され、
+    /// Copy でない束縛があれば move する。右辺は `tc_expr` で消費せずにここで決める。
+    fn let_destructure_consume(&mut self, scrut: &V, pat: &V, sty: &V, env: &Env, line: usize) {
+        if nname(scrut) == "Path" {
+            let segs = strs(&nf(scrut)[0]);
+            if env.contains_key(&segs[0]) {
+                self.lin_consume_place(&segs[0], &segs[1..], env);
+            }
+        }
+        let sref = self.ety_is_ref(scrut) || tag(sty) == "ref";
+        if !sref && self.pat_moves_scrut(pat, sty) {
+            self.scrut_move(scrut, "destructure `&{}` instead", env, line);
+        }
+    }
+
     /// スクラティニー `e` が局所の場所 (変数・フィールドの道) ならその (根, 道)。
     fn scrut_place(&self, e: &V, env: &Env) -> Option<(String, Vec<String>)> {
         let (root, path) = match nname(e) {
@@ -5914,28 +5956,9 @@ impl<'a> Checker<'a> {
                     || (tag(&sty0) == "ref" && matches!(tel(&sty0, 1), V::B(true)));
                 // 腕が Copy でない値を束縛して取り出すなら、スクラティニーの場所は move される (4.1)。
                 // 参照の先・添字の先からは move できない (E3002)。スクラティニーが参照そのものなら、束縛は `&T`。
-                let moving = !sref
-                    && items(&f[1]).iter().any(|a| {
-                        self.arm_bindings(&items(a)[0], &sty0, nline(&items(a)[0]))
-                            .iter()
-                            .any(|(n, t)| n != "_" && !is_nil(t) && !self.is_generic(t, &self.names) && !self.is_copy(t))
-                    });
+                let moving = !sref && items(&f[1]).iter().any(|a| self.pat_moves_scrut(&items(a)[0], &sty0));
                 if moving {
-                    if self.scrut_behind_ref(&f[0], env) {
-                        self.tdiag(
-                            "E3002",
-                            format!(
-                                "cannot move out of `{}` in a `match`: it is behind a reference or an index and the pattern binds a value that is not Copy; match on `&{}` instead",
-                                short_text(&f[0]),
-                                short_text(&f[0])
-                            ),
-                            nline(e),
-                        );
-                    } else if let Some((root, path)) = self.scrut_place(&f[0], env) {
-                        if !path.is_empty() || sty0_is_enumlike(&sty0) {
-                            self.record_move(&root, &path, env, nline(e));
-                        }
-                    }
+                    self.scrut_move(&f[0], "match on `&{}` instead", env, nline(e));
                 }
                 let base = self.moved.clone();
                 // 腕の終わりの move の和。各腕は `base` から始まるので、全腕が同じ場所を復活させれば (`rx = back`) 復活が残る。

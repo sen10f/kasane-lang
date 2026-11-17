@@ -559,6 +559,12 @@ impl<'a> Low<'a> {
                     Target::Native(_) if self.mem_fn(&segs).is_some() => {
                         // `replace(&mut d, v)` が返す古い値は、`d` が運んでいた借用を引き継ぐ (`swap` は返さない)。
                         if self.mem_fn(&segs) == Some("replace") {
+                            // 定数の添字の要素からの取り出しは、`lower_mem` が一時の持ち主へ移した古い借用を運ぶ。
+                            if let Some(a) = items(&nf(e)[1]).first() {
+                                if let Some((root, _)) = self.mut_slot_arg(a) {
+                                    return vec![Src::Alias(Self::mem_old_name(nline(e), &root))];
+                                }
+                            }
                             if let Some((root, path)) = items(&nf(e)[1]).first().and_then(|a| self.mut_place_arg(a)) {
                                 return vec![Src::Stored { root: root.clone(), path }, Src::Alias(root)];
                             }
@@ -1684,11 +1690,35 @@ impl<'a> Low<'a> {
         if nname(a) == "Unary" && st(&nf(a)[0]) == "&mut" { self.place_of(&nf(a)[1]) } else { None }
     }
 
+    /// `&mut a[0]` のように定数の添字の要素を指す引数の、要素の保存場所 (根, 道 + `#0`)。配列リテラルの要素は
+    /// `#i` に保存される (`store_value`) ので、その要素の借用だけを指せる。添字が定数でない・入れ子の添字なら `None`。
+    fn mut_slot_arg(&self, a: &V) -> Option<(String, Vec<String>)> {
+        if nname(a) != "Unary" || st(&nf(a)[0]) != "&mut" {
+            return None;
+        }
+        let target = &nf(a)[1];
+        if nname(target) != "Index" || nname(&nf(target)[1]) != "Lit" || Self::has_index(&nf(target)[0]) {
+            return None;
+        }
+        let (root, mut path) = self.place_of(target)?;
+        path.push(format!("#{}", nf(&nf(target)[1])[1].dump()));
+        Some((root, path))
+    }
+
+    /// `replace` / `swap` が場所から取り出した古い値の一時の持ち主の名前。呼び出し箇所 (行と根) で決まる。
+    /// 同じ行・同じ根の複数の呼び出しは同じ持ち主になる (合流は借用を長く生かすので fail-closed)。
+    fn mem_old_name(line: usize, root: &str) -> String {
+        format!("$old@{}:{}", line, root)
+    }
+
     /// `core.mem.replace(&mut d, v)` / `core.mem.swap(&mut a, &mut b)`: 場所のあいだで借用が入れ替わる。
-    /// 保守的に、入れた値の借用を場所に足し (古いローンは殺さない)、swap は互いのローンを足し合う。
+    /// 定数の添字の要素 (`a[0]`) は、その要素の保存場所 (`#0`) だけを上書きする。古い借用は取り出されて
+    /// 一時の持ち主 (`mem_old_name`) へ移り、要素からは消える (`replace` の戻り値はそれを運ぶ)。
+    /// 添字が定数でない場所は要素を区別できないので、古い借用を殺さず足すだけ (fail-closed)。
     fn lower_mem(&mut self, kind: &str, args: &[V], e: &V, cur: usize) -> Option<usize> {
         let (a0, a1) = (args.first()?, args.get(1)?);
         let d0 = self.mut_place_arg(a0)?;
+        let s0 = self.mut_slot_arg(a0);
         let mut c = self.lower_index_parts(&nf(a0)[1], cur);
         let d1 = if kind == "swap" {
             let d1 = self.mut_place_arg(a1)?;
@@ -1698,6 +1728,7 @@ impl<'a> Low<'a> {
             c = self.lower_expr(a1, c);
             None
         };
+        let s1 = if kind == "swap" { self.mut_slot_arg(a1) } else { None };
         let line = nline(e);
         let mut temps = vec![];
         if kind == "replace" {
@@ -1707,11 +1738,52 @@ impl<'a> Low<'a> {
             self.emit(c, Ev::Use(root.clone()));
             self.emit(c, Ev::Access { root: root.clone(), path: path.clone(), kind: Acc::MutKeep, line });
         }
-        if let Some(d1) = d1 {
-            self.emit(c, Ev::Mix { a: d0.clone(), b: d1 });
-        } else {
-            let srcs = self.operand_sources(a1);
-            self.hold(c, Holder::Place { root: d0.0.clone(), path: d0.1.clone() }, srcs);
+        match d1 {
+            Some(d1) if s0.is_some() || s1.is_some() => {
+                // 定数の添字の要素がある swap: 両側の古い借用を一時の持ち主に取り出し、
+                // 精密に指した要素 (と全体を上書きする場所) から消して、互いに入れ替える。
+                let sides = [(a0, d0.clone(), s0), (a1, d1.clone(), s1)];
+                let mut olds = vec![];
+                for (i, (_, d, s)) in sides.iter().enumerate() {
+                    let (root, path) = s.clone().unwrap_or_else(|| d.clone());
+                    let old = format!("{}#{}", Self::mem_old_name(line, &root), i);
+                    self.emit(c, Ev::Def(old.clone()));
+                    self.emit(c, Ev::Load { to: Holder::Var(old.clone()), from_root: root.clone(), from_path: path.clone() });
+                    if path.is_empty() {
+                        self.emit(c, Ev::Alias { to: Holder::Var(old.clone()), from: Holder::Var(root.clone()) });
+                    }
+                    olds.push((root, path, old));
+                }
+                // 要素 (精密) か、添字を通らない場所 (全体の上書き) なら、古い借用は消える。添字の要素は殺さない (fail-closed)。
+                for (i, (a, _, s)) in sides.iter().enumerate() {
+                    if s.is_some() || !Self::has_index(&nf(a)[1]) {
+                        let (root, path, _) = &olds[i];
+                        self.emit(c, Ev::KillUnder { root: root.clone(), path: path.clone() });
+                    }
+                }
+                for (i, (root, path, _)) in olds.iter().enumerate() {
+                    let other = &olds[1 - i].2;
+                    self.emit(c, Ev::Alias { to: Holder::Place { root: root.clone(), path: path.clone() }, from: Holder::Var(other.clone()) });
+                    if path.is_empty() {
+                        self.emit(c, Ev::Alias { to: Holder::Var(root.clone()), from: Holder::Var(other.clone()) });
+                    }
+                }
+            }
+            Some(d1) => self.emit(c, Ev::Mix { a: d0.clone(), b: d1 }),
+            None => {
+                let srcs = self.operand_sources(a1);
+                match s0 {
+                    Some((sr, sp)) => {
+                        // 古い要素の借用を取り出して (戻り値の持ち主)、要素から消し、新しい値を入れる。
+                        let old = Self::mem_old_name(line, &sr);
+                        self.emit(c, Ev::Def(old.clone()));
+                        self.emit(c, Ev::Load { to: Holder::Var(old), from_root: sr.clone(), from_path: sp.clone() });
+                        self.emit(c, Ev::KillUnder { root: sr.clone(), path: sp.clone() });
+                        self.hold(c, Holder::Place { root: sr, path: sp }, srcs);
+                    }
+                    None => self.hold(c, Holder::Place { root: d0.0.clone(), path: d0.1.clone() }, srcs),
+                }
+            }
         }
         self.end_temps(c, temps);
         Some(c)

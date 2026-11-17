@@ -1,0 +1,9 @@
+// expect: E3002
+// `let` の分解も `match` と同じく、Copy でない束縛があれば右辺の変数を move する。
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let pair = (alloc.string.String.new(std.alloc.SYSTEM), 3u32)
+    let (a, _) = pair
+    core.mem.drop(a)
+    core.mem.drop(pair)
+    Ok(())
+end t.main

@@ -1,0 +1,14 @@
+// expect-accept
+// core.mem.replace で要素 a[0] の借用 (x) を取り出して捨てた後、x は再び使える。a[1] (z) は残るので、z への再代入は拒む
+// (ここでは a[0] の差し替えだけを見る)。
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = 1u32
+    let mut z = 3u32
+    let mut y = 2u32
+    let mut a = [&mut x, &mut z]
+    core.mem.drop(core.mem.replace(&mut a[0], &mut y))
+    x = 9u32
+    core.mem.drop(x)
+    core.mem.drop(a)
+    Ok(())
+end t.main
