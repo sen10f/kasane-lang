@@ -329,7 +329,7 @@ fn json.write(doc: &json.Doc, src: &[u8], node: usize, out: &mut alloc.string.St
         }
         Some(json.Node.Array(first, count)) => {
             out.push('[')?
-            for k in core.iter.range(0usize, count) {
+            for k in core.iter.range(0usize, *count) {
                 if k > 0usize {
                     out.push(',')?
                 }
@@ -340,7 +340,7 @@ fn json.write(doc: &json.Doc, src: &[u8], node: usize, out: &mut alloc.string.St
         }
         Some(json.Node.Object(first, pairs)) => {
             out.push('{')?
-            for k in core.iter.range(0usize, pairs) {
+            for k in core.iter.range(0usize, *pairs) {
                 if k > 0usize {
                     out.push(',')?
                 }

@@ -1,0 +1,14 @@
+// expect: E2023
+type t.P
+    n: u64
+end t.P
+
+fn t.id[T](x: T) -> T uses [] panics never
+    x
+end t.id
+
+fn t.main() -> () uses [] panics never
+    let p = t.P { n: 5u64 }
+    let r = t.id::<t.P>(&p)
+    core.mem.drop(r)
+end t.main

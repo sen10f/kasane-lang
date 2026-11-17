@@ -1,0 +1,7 @@
+// expect: E2023
+fn t.main() -> () uses [alloc] panics never
+    let b = 7u8
+    let mut v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.push(&b)
+    core.mem.drop(v)
+end t.main

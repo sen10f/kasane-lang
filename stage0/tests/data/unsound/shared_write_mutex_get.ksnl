@@ -1,0 +1,20 @@
+// expect: E3031
+static t.CNT: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console, thread] panics never
+    let guard = t.CNT.lock()
+    *guard.get() = 5u64
+    core.mem.drop(guard)
+    let g2 = t.CNT.lock()
+    let v = *g2.get()
+    core.mem.drop(g2)
+    let msg = match v {
+        5u64 => "wrote-through-shared"
+        _ => "no-write"
+    }
+    match std.io.print_line(msg) {
+        Ok(_) => ()
+        Err(_e) => ()
+    }
+    Ok(())
+end t.main

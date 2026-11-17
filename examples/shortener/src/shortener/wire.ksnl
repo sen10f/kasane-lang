@@ -8,7 +8,7 @@ fn shortener.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.ve
     let n = stream.read(&mut chunk)?
     for i in core.iter.range(0usize, n) {
         match chunk.get(i) {
-            Some(b) => data.push(b)?
+            Some(b) => data.push(*b)?
             None => return Err(error.io_failed())
         }
     }
