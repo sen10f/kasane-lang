@@ -1,0 +1,12 @@
+fn t.f(x: &u32) -> Option<&u32> uses [] panics never
+    let t = Some(x)
+    match t {
+        Some(p) => Some(p)
+        None => None
+    }
+end t.f
+
+// ok: 返す値は引数の借用だけ
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

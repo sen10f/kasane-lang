@@ -1,0 +1,10 @@
+// expect: E1126
+fn t.leaked_lifetime(text: &'a str) -> &'a str
+    text
+end t.leaked_lifetime
+
+fn t.main() -> () uses [] panics never
+    let s = "hello"
+    let r = t.leaked_lifetime(s)
+    core.mem.drop(r)
+end t.main
