@@ -3813,7 +3813,7 @@ impl<'a> TypeCk<'a> {
                         Ty::Ref(_, x) => *x,
                         Ty::Unknown => Ty::Unknown,
                         // 参照でも生ポインタでもない値の `*` は型の誤り (パターンで得た名前の段数が未確定のときは Unknown になるので、ここへは来ない)。
-                        other @ (Ty::Prim(_) | Ty::Unit | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_)) if matches!(nname(&f[1]), "Path" | "Lit") && self.exact_source(&f[1]) => {
+                        other @ (Ty::Prim(_) | Ty::Unit | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_)) if !self.mentions_loose(&f[1]) => {
                             self.diag("E2020", format!("type mismatch: cannot dereference a value of type {}: `*` applies only to a reference or a raw pointer", other.show()), nline(e));
                             other
                         }
@@ -3993,7 +3993,7 @@ impl<'a> TypeCk<'a> {
                 for arm in items(&f[1]) {
                     self.scopes.push(HashMap::new());
                     let saved_exact = self.pat_exact;
-                    self.pat_exact = self.exact_source(&f[0]);
+                    self.pat_exact = true;
                     self.bind_pat_from(&items(arm)[0], &s, src, nline(&items(arm)[0]));
                     self.pat_exact = saved_exact;
                     self.note_pat_binds(&items(arm)[0], nline(&items(arm)[0]));
@@ -4022,7 +4022,12 @@ impl<'a> TypeCk<'a> {
                 self.scopes.push(HashMap::new());
                 let elem = self.iter_elem(&it);
                 self.for_next_effects(&it, nline(e));
+                // 参照を回す (`for x in &v` / スライスの参照) と、要素の型は参照の段数を落とした型になる (段数は決まらない)。
+                let by_ref = matches!(self.deep(&it), Ty::Ref(..));
+                let saved_loose = self.pat_loose;
+                self.pat_loose |= by_ref;
                 self.bind_pat_from(&f[0], &elem, src, nline(e));
+                self.pat_loose = saved_loose;
                 self.note_pat_binds(&f[0], nline(e));
                 self.loop_breaks.push(false);
                 let t = self.infer(&f[2]);
@@ -4048,6 +4053,8 @@ impl<'a> TypeCk<'a> {
                 // 取り込んだ値の型も覚える (spawn の `Send` 検査 (5.5) は、推論の終わりに型を決めてから見る)。
                 let mut caps: Vec<(String, String, Ty)> = vec![];
                 let mut statics: HashSet<String> = HashSet::new();
+                // 参照で取り込んだ Copy な名前は、本体では値のように見えるが実際は参照 (段数が決まらない = loose)。本体の間だけ。
+                let mut cap_loose: Vec<String> = vec![];
                 for c in items(&f[2]) {
                     let (Some(V::S(k)), Some(V::S(n))) = (items(c).first(), items(c).get(1)) else { continue };
                     let Some(t) = self.lookup(n) else { continue };
@@ -4076,6 +4083,9 @@ impl<'a> TypeCk<'a> {
                         }
                     } else {
                         // 値のまま見える取り込みは、本体の中では `*x` が通ってよい名前なので、外の「確かな型」の印を遮る。
+                        if self.loose.insert(n.clone()) {
+                            cap_loose.push(n.clone());
+                        }
                         let was_static = self.lookup_static(n);
                         if let Some(s) = self.scopes.last_mut() {
                             s.insert(n.clone(), t.clone());
@@ -4096,6 +4106,9 @@ impl<'a> TypeCk<'a> {
                 // クロージャの中の `?` は、クロージャの戻り値型のエラー型と比べる。
                 self.rets.push(ret.clone());
                 let body = self.infer(&f[3]);
+                for n in &cap_loose {
+                    self.loose.remove(n);
+                }
                 self.rets.pop();
                 self.scopes.pop();
                 self.closure_nodes.pop();
@@ -4299,7 +4312,7 @@ impl<'a> TypeCk<'a> {
                     self.mutable.extend(b);
                 }
                 let saved_exact = self.pat_exact;
-                self.pat_exact = !is_nil(&f[2]) || self.exact_source(&f[3]);
+                self.pat_exact = true;
                 self.bind_pat_from(&f[0], &ty, src, nline(s));
                 self.pat_exact = saved_exact;
                 if init_static && nname(&f[0]) == "PBind" {
