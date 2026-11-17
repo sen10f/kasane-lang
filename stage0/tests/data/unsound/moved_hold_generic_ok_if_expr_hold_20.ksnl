@@ -1,3 +1,4 @@
+// expect: E3060
 type t.Hold[T]
     v: T
 end t.Hold
