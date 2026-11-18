@@ -501,6 +501,8 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         crate::vm::tick("checker");
         ck.diags
     };
+    // 新しい検査 (TAST、tast_check.rs) の差し込み口: `KSN_CHECKER` = old (既定) / new / shadow。
+    let mut diags = crate::tast_check::select(&prog, &user, diags);
     // 他の診断が無いときだけ、`const` / `static` の初期化式を評価して、評価中の panic を E4024 にする (4.1)。
     let (prog, const_diags) = if diags.is_empty() { eval_const_inits(prog, &user) } else { (prog, vec![]) };
     diags.extend(const_diags);
