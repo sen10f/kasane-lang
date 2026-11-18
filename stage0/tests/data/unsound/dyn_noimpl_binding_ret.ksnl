@@ -1,0 +1,22 @@
+// expect: E2046
+trait t.H[E: uses, P: panics]
+    fn handle(self: &Self) -> u32 uses [E] panics P
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+fn t.X.handle(self: &t.X) -> u32 uses [] panics never
+    self.v
+end t.X.handle
+
+fn t.aa_bind() -> () uses [] panics never
+    let mut x = t.X { v: 7u32 }
+    let h: &dyn t.H<[], never> + 'static = &mut x
+    core.mem.drop(h)
+end t.aa_bind
+
+fn t.pick(x: &mut t.X) -> &dyn t.H<[], never> + 'static uses [] panics never
+    x
+end t.pick

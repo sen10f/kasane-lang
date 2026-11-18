@@ -1,0 +1,24 @@
+// expect: E2046
+// さらに inherent は panics may で実際に panic するのに、dyn 側の型は panics never。
+// 効果 (uses) の版 (probe_impl_inherent_dyn_effect) の panics 次元。
+trait t.H[E: uses, P: panics]
+    fn handle(self: &Self) -> u32 uses [E] panics P
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+fn t.X.handle(self: &t.X) -> u32 uses [] panics may
+    core.panic.panic("panics-never escaped")
+end t.X.handle
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut x = t.X { v: 7u32 }
+    core.mem.drop(t.sink(&mut x))
+    Ok(())
+end t.main
+
+fn t.sink(h: &dyn t.H<[], never> + 'static) -> u32 uses [] panics never
+    h.handle()
+end t.sink

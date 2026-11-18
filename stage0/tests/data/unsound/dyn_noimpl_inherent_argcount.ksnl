@@ -1,0 +1,24 @@
+// expect: E2046
+// さらに inherent の引数はトレイトより 1 個多い (extra: u32)。
+// ディスパッチが inherent を名前で見つけて呼べば、引数の数が合わない。
+trait t.H[E: uses, P: panics]
+    fn handle(self: &Self) -> u32 uses [E] panics P
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+fn t.X.handle(self: &t.X, extra: u32) -> u32 uses [] panics never
+    self.v.wrapping_add(extra)
+end t.X.handle
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = t.X { v: 7u32 }
+    core.check.eq(t.sink(&mut x), 7u32)
+    Ok(())
+end t.main
+
+fn t.sink(h: &dyn t.H<[], never> + 'static) -> u32 uses [] panics never
+    h.handle()
+end t.sink
