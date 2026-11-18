@@ -37,20 +37,10 @@ pub fn root() -> PathBuf {
 /// 一時パッケージ `t` を作る。
 pub struct Tmp(pub PathBuf);
 impl Tmp {
-    /// 一時パッケージ `t`。`.ksnl` にコメントは置けない (E0059) ので、試験の入力に説明のコメントの行があれば外す
-    /// (`strip_ksnh` と同じ)。コメントそのものを試験するときは `new_raw` (そのまま置く) か `new_ksnh` (`.ksnh` を正にする)。
+    /// 一時パッケージ `t`。`.ksnl` にコメントは置けない (E0059) ので、試験の入力に説明のコメントの行があれば外し (`strip_ksnh`)、
+    /// `ksn fmt` の出力にそろえる (E0020)。コメントそのものを試験するときは `new_raw` (そのまま置く) か `new_ksnh` (`.ksnh` を正にする)。
     pub fn new(name: &str, src: &str) -> Tmp {
-        Tmp::new_raw(name, &strip_ksnh(src))
-    }
-
-    pub fn new_raw(name: &str, src: &str) -> Tmp {
-        let d = std::env::temp_dir().join(format!("ksn_test_{}_{}", std::process::id(), name));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(d.join("src")).unwrap();
-        fs::write(d.join("kasane.toml"), TOML).unwrap();
-        fs::write(d.join("kasane.lock"), "version = 1\n").unwrap();
-        fs::write(d.join("src").join("t.ksnl"), src).unwrap();
-        let t = Tmp(d);
+        let t = Tmp::new_raw(name, &strip_ksnh(src));
         t.fmt();
         t
     }
@@ -76,6 +66,7 @@ impl Tmp {
     pub fn new_ksnh(name: &str, ksnh: &str) -> Tmp {
         let t = Tmp::new_raw(name, &strip_ksnh(ksnh));
         fs::write(t.0.join("src").join("t.ksnh"), ksnh).unwrap();
+        t.fmt();
         t
     }
 }
