@@ -1,0 +1,25 @@
+fn t.a(s: &str) -> usize uses [alloc] panics never
+    let mut v: alloc.vec.Vec<char, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut it = s.chars()
+    loop {
+        match it.next() {
+            Some(c) => {
+                match v.push(c) {
+                    Ok(_u) => ()
+                    Err(_e) => ()
+                }
+            }
+            None => {
+                break
+            }
+        }
+    }
+    let n = v.len()
+    core.mem.drop(v)
+    n
+end t.a
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    core.mem.drop(t.a("abc"))
+    Ok(())
+end t.main

@@ -1,0 +1,31 @@
+// expect: E3010
+fn t.b() -> usize uses [alloc] panics never
+    let mut src = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match src.push(1u32) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    let mut dst = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match src.get(0) {
+        Some(r) => {
+            match dst.push(r) {
+                Ok(_u) => ()
+                Err(_e) => ()
+            }
+        }
+        None => ()
+    }
+    match src.push(2u32) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    let n = dst.len()
+    core.mem.drop(dst)
+    core.mem.drop(src)
+    n
+end t.b
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    core.mem.drop(t.b())
+    Ok(())
+end t.main

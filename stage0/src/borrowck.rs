@@ -2112,7 +2112,8 @@ impl<'a> Low<'a> {
                             self.emit(an, Ev::ScopeAdd(b.clone()));
                             // 形が分からない分解 (`(a, n) => ..` を関数呼び出しの戻り値に対して行う) は、
                             // 型が借用を持ち得ないと分かる束縛 (`plain`) 以外へ右辺の借用を配る (fail-closed)。
-                            if !(matches!(nname(&a[0]), "PTuple" | "PStruct") && self.plain.contains(b)) {
+                            // `Some(c)` のような列挙子の腕も同じ (`c: char` は借用を運ばない)。
+                            if !self.plain.contains(b) {
                                 let srcs = self.loan_sources(&f[0]);
                                 self.hold(an, Holder::Var(b.clone()), srcs);
                             }
