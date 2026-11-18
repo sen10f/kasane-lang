@@ -1,0 +1,8 @@
+static t.A: u64 = t.B + 1u64
+
+static t.B: u64 = 1u64
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.A)
+    Ok(())
+end t.main

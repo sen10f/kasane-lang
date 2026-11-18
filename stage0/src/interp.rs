@@ -20,6 +20,12 @@ const PRIMS: &[&str] = &[
 
 /// 定数の評価 (`const` / `static` の初期化式) が超えた場合の panic の文面 (cli.rs の E4024 が見分ける)。
 pub const STEP_LIMIT_MSG: &str = "the evaluation of the constant exceeded the step limit";
+/// 定数の評価が、評価中の自分自身に戻った (関数越しの循環。cli.rs の E4024 が見分ける)。
+pub const CONST_CYCLE_MSG: &str = "the evaluation of the constant depends on itself";
+/// 定数の評価が入れ子で深すぎる (Rust のスタックを守る上限。cli.rs の E4024 が見分ける)。
+pub const CONST_DEPTH_MSG: &str = "the evaluation of the constants is nested too deeply";
+/// `const_value` の入れ子の上限 (関数呼び出しの深さ 2500 と同じ程度。Rust のスタックは実行の子スレッドで 1 GiB)。
+const CONST_DEPTH_LIMIT: usize = 2000;
 
 pub struct Interp {
     pub p: Rc<Program>,
@@ -29,6 +35,8 @@ pub struct Interp {
     /// 評価ステップの上限 (仕様 4.1)。`None` は上限なし (実行時)。
     pub step_limit: Option<u64>,
     pub const_cache: HashMap<String, Val>,
+    /// 評価中の定数の名前 (外側から順)。自分自身に戻る循環と、入れ子の深さを見る。
+    const_busy: Vec<String>,
     pub args: Vec<String>,
     pub out: std::io::BufWriter<Box<dyn Write>>,
     /// `ksn debug` / `ksn dap` のデバッガ (`None` なら何も起きない。debug.rs)
@@ -205,6 +213,7 @@ impl Interp {
             steps: 0,
             step_limit: None,
             const_cache: HashMap::new(),
+            const_busy: vec![],
             args: vec![],
             out: std::io::BufWriter::new(Box::new(std::io::stdout())),
             dbg: None,
@@ -382,9 +391,18 @@ impl Interp {
         if let Some(v) = self.const_cache.get(&d.name) {
             return Ok(v.clone());
         }
+        // 評価中の定数に戻ってきたら循環 (`static A = B` / `static B = A`、関数越しの読み戻し)。無限に再帰せず panic にする。
+        if self.const_busy.iter().any(|n| *n == d.name) {
+            return Err(Ctl::Panic(CONST_CYCLE_MSG.into()));
+        }
+        if self.const_busy.len() >= CONST_DEPTH_LIMIT {
+            return Err(Ctl::Panic(CONST_DEPTH_MSG.into()));
+        }
         let sc = new_scope(None, Rc::from(d.file.as_str()));
-        let v = self.eval(d.init.as_ref().unwrap(), &sc)?;
-        let v = self.coerce(v, &d.ret);
+        self.const_busy.push(d.name.clone());
+        let r = self.eval(d.init.as_ref().unwrap(), &sc);
+        self.const_busy.pop();
+        let v = self.coerce(r?, &d.ret);
         self.const_cache.insert(d.name.clone(), v.clone());
         Ok(v)
     }
