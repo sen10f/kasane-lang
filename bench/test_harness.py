@@ -6,6 +6,7 @@ NVIDIA には接続しない。使い方: python -I bench/test_harness.py
 import glob
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -145,6 +146,12 @@ def main():
         check('Authorization header sent as Bearer', set(Mock.auth) == {'Bearer ' + KEY}, set(Mock.auth))
         check('usage tokens recorded', s['prompt_tokens'] > 0 and s['completion_tokens'] > 0)
         check('API key not in stdout/stderr/results', not leaked(out1, r.stdout, r.stderr))
+        # 1 回目の答案の正規形: 正解 (palindrome・digit_sum) は true、構文の誤り (fn broken) は fmt が失敗して false。
+        check('canonical recorded per first answer',
+              by['palindrome']['attempts'][0]['canonical'] is True and d['attempts'][0]['canonical'] is False
+              and g['attempts'][-1]['canonical'] is True, d['attempts'][0])
+        check('summary: first answers 3, canonical 2', (s['first_answers'], s['first_canonical']) == (3, 2),
+              (s['first_answers'], s['first_canonical']))
 
         # 2. ローカル既定: 鍵なしなら Authorization を送らない。誤答だけの課題は fail (invalid ではない)。
         Mock.auth.clear()
@@ -175,6 +182,28 @@ def main():
                            encoding='utf-8', errors='replace', env=env)
         check('missing key env: exits non-zero naming the variable',
               r.returncode != 0 and 'NVIDIA_API_KEY' in r.stderr, r.stderr)
+
+        # 5. 定義の並びが違う正しいコード: `ksn fmt` を先に通すので pass になり、canonical は false と記録される。
+        #    参照解を段落 (空行) ごとに逆順にしたもの。並びの正しい参照解は canonical が true。
+        blocks = [b for b in re.split(r'\n\n+', ref('digit_sum').strip('\n')) if b.strip()]
+        SCENARIOS['digit_sum'] = [ok(fence('\n\n'.join(reversed(blocks))))]
+        out5 = os.path.join(td, 'r5')
+        r, s = run(['--base', base, '--docs', 'none', '--tasks', 'digit_sum', '--repairs', '0'], out5)
+        res = s['results'][0] if s else {}
+        check('out-of-order but correct: pass at attempt 1 (fmt first)',
+              res.get('final') == 'pass' and len(res.get('attempts', [])) == 1 and r.returncode == 0,
+              r.stdout + r.stderr)
+        check('out-of-order: canonical false recorded',
+              res.get('attempts', [{}])[0].get('canonical') is False, res)
+        check('out-of-order: summary counts it as a non-canonical first answer',
+              (s['first_answers'], s['first_canonical']) == (1, 0), s and (s['first_answers'], s['first_canonical']))
+        SCENARIOS['digit_sum'] = [ok(fence(ref('digit_sum')))]
+        out6 = os.path.join(td, 'r6')
+        r, s = run(['--base', base, '--docs', 'none', '--tasks', 'digit_sum', '--repairs', '0'], out6)
+        res = s['results'][0] if s else {}
+        check('in-order reference: pass, canonical true',
+              res.get('final') == 'pass' and res['attempts'][0].get('canonical') is True
+              and (s['first_answers'], s['first_canonical']) == (1, 1), res)
     srv.shutdown()
     print('ALL HARNESS TESTS PASSED' if not failures else f'FAILED: {failures}')
     sys.exit(1 if failures else 0)
