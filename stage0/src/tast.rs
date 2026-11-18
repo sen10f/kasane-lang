@@ -52,6 +52,10 @@ pub enum Coercion {
     Unsize { from: Ty, to: Ty },
     /// クロージャ → 関数型 `fn(..)`。
     ClosureToFn,
+    /// 受け手の自動参照外し (`&&T`・`&mut &T`・`Box<T>` の受け手を `n` 段外して `self` に合わせる)。
+    AutoDeref { n: u8 },
+    /// `?` のエラー型の変換: `derive [From]` の `enum` のバリアントで包む (`?` の節点に付く。元のエラー型, 戻り値のエラー型, バリアント名)。
+    ErrInto { from: Ty, to: Ty, variant: String },
 }
 
 /// 場所 (place) の表現 (設計 2.3 の述語 `place(e)`)。値の式は `None`。
@@ -111,6 +115,8 @@ pub struct SideTabs {
     pub conv_pending: Vec<(Key, Ty, Ty)>,
     /// 【担当 C の作業用】受け手の (鍵, 受け手の型, `self` パラメータの宣言の型)。同上。
     pub recv_pending: Vec<(Key, Ty, Ty)>,
+    /// 【担当 C の作業用】`?` のエラー変換 (`?` の鍵, 元のエラー型, 戻り値のエラー型, バリアント名)。同上。
+    pub err_pending: Vec<(Key, Ty, Ty, String)>,
     /// 【担当 E】閉包の取り込み (節名 `FQN#連番` が鍵。`Ty::Closure { id }` で引く)。`check_def` の終わりに解決済みの型で入る。
     pub closure_caps: HashMap<String, Vec<Capture>>,
 }

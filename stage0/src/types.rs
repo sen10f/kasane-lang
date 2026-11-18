@@ -654,6 +654,17 @@ impl<'a> TypeCk<'a> {
         self.rets.push(ret.clone());
         let value = self.infer(body);
         self.rets.pop();
+        {
+            let tail = if nname(body) == "Block" {
+                match items(&nf(body)[0]).last() {
+                    Some(l) if nname(l) == "ExprStmt" => nf(l)[0].clone(),
+                    _ => body.clone(),
+                }
+            } else {
+                body.clone()
+            };
+            self.note_conv(&tail, &ret, &value);
+        }
         if let Err(err) = self.unify2(&ret, &value) {
             {
                 let (want, got) = self.ann_conflict(&ret, &value, &err).unwrap_or_else(|| Self::raw_pair(&err));
@@ -2447,7 +2458,13 @@ impl<'a> TypeCk<'a> {
     /// 【担当 C】メソッド呼び出しの暗黙の変換の候補を積む (型が決まる関数の終わりに `flush_conv` が表へ移す)。
     /// 候補が 1 つに決まったときだけ (`fit` が 1 件)。受け手の鍵は `MCall` の受け手の節点、`s.m()` 形 (パスの形) は呼び出しの節点。
     fn note_method_conv(&mut self, recv_id: u32, recv: &Ty, args: &[Ty], arg_ids: &[u32], fit: Option<&[usize]>) {
-        let Some([di]) = fit else { return };
+        let Some([di]) = fit else {
+            if std::env::var("KSN_DUMP_SIDE").map_or(false, |v| v == "1") {
+                let why = match fit { None => "no-fit (dyn / unknown receiver / not found)", Some([]) => "no-candidate", _ => "multiple-candidates" };
+                eprintln!("coerce_none\t{}\t{}\t{}", self.def().name, recv_id, why);
+            }
+            return;
+        };
         let d = &self.p.defs[*di];
         let gn = d.gnames();
         let Some(p0) = d.params.first() else { return };
@@ -2462,19 +2479,116 @@ impl<'a> TypeCk<'a> {
         }
     }
 
+    /// 【担当 C】式 `e` が型 `want` の位置へ入る (代入の右辺・`let` の初期値・`return`・本体の末尾・欄・列挙子の中身)。型が決まる関数の終わりに `flush_conv` が印へ変える。
+    fn note_conv(&mut self, e: &V, want: &Ty, got: &Ty) {
+        self.side.conv_pending.push(((self.cur, crate::parser::nid(e)), want.clone(), got.clone()));
+    }
+
+    /// 【担当 C】受け手の変換 (`r` = 実際の受け手の型、`selfp` = `self` パラメータの宣言の型)。決まらないとき `Err(理由)`。
+    fn recv_conv(r: &Ty, selfp: &Ty) -> Result<Vec<crate::tast::Coercion>, &'static str> {
+        use crate::tast::Coercion;
+        // 参照の層をはがす (各層の可変性を持つ)。
+        fn peel(t: &Ty) -> (Vec<bool>, &Ty) {
+            let mut v = vec![];
+            let mut c = t;
+            while let Ty::Ref(m, i) = c {
+                v.push(*m);
+                c = i;
+            }
+            (v, c)
+        }
+        fn head(t: &Ty) -> u8 {
+            match t {
+                Ty::Named(..) => 1,
+                Ty::Prim(_) => 2,
+                Ty::Slice(_) => 3,
+                Ty::Array(..) => 4,
+                Ty::Tuple(_) => 5,
+                Ty::Dyn(..) => 6,
+                Ty::Param(_) => 7,
+                Ty::Closure { .. } => 8,
+                _ => 0,
+            }
+        }
+        let (rm, ri) = peel(r);
+        let (sm, si) = peel(selfp);
+        if matches!(ri, Ty::Var(_) | Ty::Unknown | Ty::Never) {
+            return Err("recv-type-undetermined");
+        }
+        if matches!(ri, Ty::Param(_)) && !sm.is_empty() && rm.is_empty() {
+            return Ok(vec![Coercion::AutoRef(sm[0])]);
+        }
+        // `Box<T>` の受け手は、`self` の型の頭に合うまで外す。
+        let box_inner = |t: &Ty| -> Option<Ty> {
+            match t {
+                Ty::Named(n, a) if n == "alloc.boxed.Box" => a.first().cloned(),
+                _ => None,
+            }
+        };
+        let same_head = |a: &Ty, b: &Ty| match (a, b) {
+            (Ty::Named(x, _), Ty::Named(y, _)) => x == y,
+            _ => head(a) == head(b),
+        };
+        let mut cur = ri.clone();
+        let mut boxes = 0u8;
+        while !same_head(&cur, si) && !matches!(si, Ty::Param(_)) {
+            match box_inner(&cur) {
+                Some(x) => {
+                    cur = x;
+                    boxes += 1;
+                }
+                None => break,
+            }
+        }
+        if !same_head(&cur, si) && !matches!(si, Ty::Param(_)) {
+            return Err(if matches!(ri, Ty::Dyn(..)) { "recv-dyn" } else { "recv-no-match" });
+        }
+        let mut cs = vec![];
+        if boxes > 0 {
+            cs.push(Coercion::AutoDeref { n: rm.len() as u8 + boxes });
+            if let Some(m) = sm.first() {
+                cs.push(Coercion::AutoRef(*m));
+            }
+            return Ok(cs);
+        }
+        let (rd, sd) = (rm.len(), sm.len());
+        if rd > sd {
+            let n = rd - sd;
+            cs.push(Coercion::AutoDeref { n: n as u8 });
+            // 着いた層が `&mut` で `self` が `&` なら再借用。
+            if sd > 0 && rm[n] && !sm[0] {
+                cs.push(Coercion::Reborrow { to_mut: false });
+            }
+        } else if rd == sd {
+            if sd > 0 && rm[0] && !sm[0] {
+                cs.push(Coercion::Reborrow { to_mut: false });
+            }
+        } else if rd == 0 {
+            cs.push(Coercion::AutoRef(sm[0]));
+        }
+        Ok(cs)
+    }
+
     /// 【担当 C】型が決まった後で、積んだ候補から `SideTabs::coercions` を埋める。
     fn flush_conv(&mut self) {
         use crate::tast::Coercion;
         let fqn = self.def().name.clone();
+        let dump = std::env::var("KSN_DUMP_SIDE").map_or(false, |v| v == "1");
         for (key, recv, selfp) in std::mem::take(&mut self.side.recv_pending) {
             let r = self.deep(&recv);
-            let cs: Vec<Coercion> = match (&r, &selfp) {
-                (Ty::Ref(true, _), Ty::Ref(false, _)) => vec![Coercion::Reborrow { to_mut: false }],
-                (Ty::Ref(..) | Ty::Var(_) | Ty::Unknown | Ty::Never | Ty::Param(_), _) => vec![],
-                (_, Ty::Ref(m, _)) => vec![Coercion::AutoRef(*m)],
-                _ => vec![],
-            };
-            self.put_conv(&fqn, key, cs);
+            let sp = self.deep(&selfp);
+            match Self::recv_conv(&r, &sp) {
+                Ok(cs) => self.put_conv(&fqn, key, cs),
+                Err(why) => {
+                    if dump {
+                        eprintln!("coerce_none\t{}\t{}\t{}", fqn, key.1, why);
+                    }
+                }
+            }
+        }
+        for (key, from, to, variant) in std::mem::take(&mut self.side.err_pending) {
+            let (f, t) = (self.deep(&from), self.deep(&to));
+            self.put_conv(&fqn, key, vec![Coercion::ErrInto { from: f, to: t, variant }]);
         }
         for (key, want, got) in std::mem::take(&mut self.side.conv_pending) {
             let (w, g) = (self.deep(&want), self.deep(&got));
@@ -2491,6 +2605,13 @@ impl<'a> TypeCk<'a> {
                     }
                 }
                 (Ty::Closure { id: None, .. }, Ty::Closure { id: Some(_), .. }) => cs.push(Coercion::ClosureToFn),
+                (Ty::Named(wn, wa), Ty::Named(gn, ga)) if wn == "alloc.boxed.Box" && gn == wn => {
+                    if let (Some(Ty::Dyn(..)), Some(x)) = (wa.first(), ga.first()) {
+                        if !matches!(x, Ty::Dyn(..) | Ty::Var(_) | Ty::Unknown | Ty::Param(_)) {
+                            cs.push(Coercion::Unsize { from: g.clone(), to: w.clone() });
+                        }
+                    }
+                }
                 _ => {}
             }
             self.put_conv(&fqn, key, cs);
@@ -3896,7 +4017,7 @@ impl<'a> TypeCk<'a> {
                     _ => Ty::Unknown,
                 };
                 // 4.1: `?` はエラー型が完全一致するときだけ使える。
-                self.check_try_err(&t, nline(e));
+                self.check_try_err(&t, nline(e), crate::parser::nid(e));
                 inner
             }
             "Index" => {
@@ -4087,6 +4208,7 @@ impl<'a> TypeCk<'a> {
                         }
                     }
                     let declared = self.field_ty(&Ty::Named(fq.clone(), args.clone()), &st(&items(x)[0]));
+                    self.note_conv(&items(x)[1], &declared, &vt);
                     // 欄の宣言の型と値の型で参照の段数は透過しない (呼び出しの引数と同じ規則、E2023)。
                     {
                         let fname = st(&items(x)[0]);
@@ -4325,6 +4447,7 @@ impl<'a> TypeCk<'a> {
                     // 4.3: `return` の値は、いま囲んでいる関数・クロージャの戻り値型と比べる (末尾の値と同じ規則)。
                     // `rets` は関数・クロージャの入れ子に合わせて積まれている。
                     if let Some(ret) = self.rets.last().cloned() {
+                        self.note_conv(&f[0], &ret, &v);
                         if let Err(err) = self.unify2(&ret, &v) {
                             {
                                 let (want, got) = self.ann_conflict(&ret, &v, &err).unwrap_or_else(|| Self::raw_pair(&err));
@@ -4460,6 +4583,7 @@ impl<'a> TypeCk<'a> {
                 let gn = self.def().gnames();
                 let ty = if !is_nil(&f[2]) {
                     let ann = from_v(&f[2], &gn);
+                    self.note_conv(&f[3], &ann, &rhs);
                     if let Err(err) = self.unify2(&ann, &rhs) {
                         {
                             let (want, got) = self.ann_conflict(&ann, &rhs, &err).unwrap_or_else(|| Self::raw_pair(&err));
@@ -4504,6 +4628,7 @@ impl<'a> TypeCk<'a> {
             "Assign" => {
                 let target = self.infer(&f[0]);
                 let value = self.infer(&f[1]);
+                self.note_conv(&f[1], &target, &value);
                 // 名前・フィールドへの代入は別の箇所が E3001 にする。添字の代入 `a[i] = ..` だけここで見る。
                 match nname(&f[0]) {
                     "Index" => self.need_mut_place(&f[0], "assign to", nline(&f[0])),
@@ -4986,6 +5111,7 @@ impl<'a> TypeCk<'a> {
     /// ユーザー定義の enum の列挙子 `en.vn(args)` の型。型パラメータは新しい型変数にし、
     /// ペイロードの宣言型と実引数を単一化して決める。
     fn variant_ctor(&mut self, en: &str, vn: &str, argt: &[Ty], line: usize) -> Ty {
+        let arg_ids = std::mem::take(&mut self.side.arg_ids);
         let Some(td) = self.type_def(en) else { return Ty::Named(en.to_string(), vec![]) };
         let gn = td.gnames();
         let order: Vec<&String> = td.generics.iter().filter(|g| g.0 == "type").map(|g| &g.1).collect();
@@ -4995,9 +5121,12 @@ impl<'a> TypeCk<'a> {
             for (n, a) in order.iter().zip(&targs) {
                 bind.insert((*n).clone(), a.clone());
             }
-            for (pt, a) in payload.iter().zip(argt) {
+            for (k, (pt, a)) in payload.iter().zip(argt).enumerate() {
                 let raw = from_v(pt, &gn);
                 let declared = subst(&raw, &bind);
+                if arg_ids.len() == argt.len() {
+                    self.side.conv_pending.push(((self.cur, arg_ids[k]), declared.clone(), a.clone()));
+                }
                 // 欄と同じく、ペイロードの宣言の型と値の型で参照の段数は透過しない (E2023)。
                 if let Some((want, got)) = self.arg_ref_conflict(&raw, a).or_else(|| self.param_arg_ref_conflict(&raw, &declared, a)) {
                     self.diag("E2023", format!("payload of `{}`: expected `{}`, found `{}`", vn, want, got), line);
@@ -6386,7 +6515,7 @@ impl<'a> TypeCk<'a> {
     /// `?` は式を置いた関数 (クロージャ) の戻り値型へ脱糖するので、そこで受けられるのは
     /// オペランドと同じ種類の `Option` / `Result` だけ。エラー型は単一化して比べる。
     /// どちらかが分からないときは黙る (Cranelift バックエンドも同じ条件で拒否する)。
-    fn check_try_err(&mut self, operand: &Ty, line: usize) {
+    fn check_try_err(&mut self, operand: &Ty, line: usize, id: u32) {
         let got = self.deep(operand);
         let Ty::Named(gn, ga) = got.strip() else { return };
         if gn != "Result" && gn != "Option" {
@@ -6404,7 +6533,10 @@ impl<'a> TypeCk<'a> {
                     let e_got = ga[1].clone();
                     // 4.1: 型が違っても `E2` が `derive [From]` で `E1` を唯一のペイロードに持つバリアントがあれば、包んで返す。
                     match self.from_conversion(&e_want, &e_got) {
-                        Some(crate::program::FromVariant::One(_)) => return,
+                        Some(crate::program::FromVariant::One(v)) => {
+                            self.side.err_pending.push(((self.cur, id), e_got.clone(), e_want.clone(), v));
+                            return;
+                        }
                         Some(crate::program::FromVariant::Many(vs)) => {
                             let (w, g) = (self.deep(&e_want).strip().show(), self.deep(&e_got).strip().show());
                             self.diag(
