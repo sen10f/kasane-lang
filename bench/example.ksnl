@@ -3,10 +3,6 @@ type bench.Stats derive [Debug, Clone] pub
     count: u32
 end bench.Stats
 
-fn bench.Stats.new() -> bench.Stats uses [] panics never pub
-    bench.Stats { total: 0u32, count: 0u32 }
-end bench.Stats.new
-
 fn bench.Stats.add(self: &mut bench.Stats, v: u32) -> () uses [] panics may pub
     self.total = self.total + v
     self.count = self.count + 1u32
@@ -20,15 +16,9 @@ fn bench.Stats.mean(self: &bench.Stats) -> Option<u32> uses [] panics may pub
     }
 end bench.Stats.mean
 
-fn bench.sum_even(n: u32) -> u32
-    let mut total = 0u32
-    for i in core.iter.range(0u32, n) {
-        if i % 2u32 == 0u32 {
-            total = total + i
-        }
-    }
-    total
-end bench.sum_even
+fn bench.Stats.new() -> bench.Stats uses [] panics never pub
+    bench.Stats { total: 0u32, count: 0u32 }
+end bench.Stats.new
 
 fn bench.first_big(xs: &[u32], limit: u32) -> Option<u32>
     let mut i = 0usize
@@ -48,9 +38,15 @@ fn bench.first_big(xs: &[u32], limit: u32) -> Option<u32>
     found
 end bench.first_big
 
-test bench.sum_even.test_basic
-    core.check.eq(bench.sum_even(7u32), 12u32)
-end bench.sum_even.test_basic
+fn bench.sum_even(n: u32) -> u32
+    let mut total = 0u32
+    for i in core.iter.range(0u32, n) {
+        if i % 2u32 == 0u32 {
+            total = total + i
+        }
+    }
+    total
+end bench.sum_even
 
 test bench.Stats.test_mean
     let mut s = bench.Stats.new()
@@ -59,3 +55,7 @@ test bench.Stats.test_mean
     s.add(8u32)
     core.check.eq(s.mean(), Some(6u32))
 end bench.Stats.test_mean
+
+test bench.sum_even.test_basic
+    core.check.eq(bench.sum_even(7u32), 12u32)
+end bench.sum_even.test_basic
