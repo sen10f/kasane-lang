@@ -2804,7 +2804,9 @@ impl<'a> Checker<'a> {
                         return;
                     }
                     // 5.5: spawn に渡すクロージャは 'static。局所束縛への参照キャプチャは不可。
-                    if self.p.expand(&segs, &self.def(di).file).join(".") == "std.thread.spawn" {
+                    if self.p.expand(&segs, &self.def(di).file).join(".") == "std.thread.spawn"
+                        || self.p.expand(&segs, &self.def(di).file).join(".") == "std.thread.spawn_deep"
+                    {
                         if let Some(cl) = items(&f[1]).get(1) {
                             if nname(cl) == "Closure" {
                                 // 5.5: spawn の結果型 T も `Send` でなければならない。
@@ -7335,6 +7337,13 @@ impl<'a> Checker<'a> {
             self.d = i;
             if rec && never && d.stack.is_none() {
                 self.tdiag("E4010", format!("recursive `panics never` function {} requires `stack <bytes>`", n), 0);
+            }
+            if let Some(m) = d.depth {
+                if self.p.entry.as_deref() != Some(n.as_str()) {
+                    self.tdiag("E4014", format!("`depth` is only allowed on the entry function ({})", n), 0);
+                } else if m == 0 || m > crate::kir_exec::MAX_DEPTH_LIMIT as u64 {
+                    self.tdiag("E4015", format!("`depth {}` is out of range (1..={})", m, crate::kir_exec::MAX_DEPTH_LIMIT), 0);
+                }
             }
             if d.stack.is_some() && !(rec && never) {
                 self.tdiag("E4011", format!("`stack` is only allowed on recursive `panics never` functions ({})", n), 0);

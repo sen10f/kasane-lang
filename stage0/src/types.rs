@@ -5412,7 +5412,7 @@ impl<'a> TypeCk<'a> {
         let d = &self.p.defs[i];
         self.note_static_args(d, 0, argt, &arg_stat, line);
         // 5.5: spawn に渡したクロージャの取り込みは `Send` でなければならない (推論の終わりに見る)。
-        if d.name == "std.thread.spawn" {
+        if d.name == "std.thread.spawn" || d.name == "std.thread.spawn_deep" {
             if let Some(Ty::Closure { id: Some(node), .. }) = argt.get(1).map(|a| self.resolve(a)) {
                 self.spawn_closures.push((node, line));
             }

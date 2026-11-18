@@ -53,7 +53,7 @@ const CONTAINERS: &[&str] = &[
 const RC_STD: &[(&str, &str)] =
     &[("slice", "Iter"), ("str", "Chars"), ("str", "Split"), ("collections", "HashMapIter"), ("sync", "MutexGuard")];
 /// 値を保存・送る関数・メソッドの名前 (クロージャを渡すと E3060)。
-const STORE_FNS: &[&str] = &["push", "insert", "push_back", "push_front", "send", "try_send", "spawn", "spawn_local", "into_dyn", "set", "put"];
+const STORE_FNS: &[&str] = &["push", "insert", "push_back", "push_front", "send", "try_send", "spawn", "spawn_deep", "spawn_local", "into_dyn", "set", "put"];
 const STORE_NEW: &[&str] = &["Box", "Rc", "Arc", "Mutex", "RwLock", "Cell", "RefCell"];
 
 fn is_op(t: &Tok, s: &str) -> bool {

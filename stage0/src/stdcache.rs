@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use crate::parser::V;
 use crate::program::Def;
 
-const MAGIC: &[u8; 8] = b"KSNSTD02";
+const MAGIC: &[u8; 8] = b"KSNSTD03";
 
 fn dir() -> std::path::PathBuf {
     crate::project::cache_dir().join("std")
@@ -124,7 +124,7 @@ impl W {
     fn def(&mut self, d: &Def) {
         // 全フィールドを名指しで分解する (Def にフィールドが増えたらここがコンパイルエラーになる)。
         let Def {
-            kw, name, line, end_line, file: _, module: _, header, generics, params, ret, is_const, uses, inferred, panics, stack,
+            kw, name, line, end_line, file: _, module: _, header, generics, params, ret, is_const, uses, inferred, panics, stack, depth,
             derive, linear, layout_c, fields, field_lifetimes, variants, elided_refs, body, init, has_impls, impls_trait, methods, trait_sigs,
             trait_effs, requires, generic_methods, trait_method_generics, trait_sig_text, impl_trait, link, impl_for, impl_targs,
         } = d;
@@ -152,6 +152,13 @@ impl W {
             None => self.b(false),
         }
         match stack {
+            Some(n) => {
+                self.b(true);
+                self.n(*n);
+            }
+            None => self.b(false),
+        }
+        match depth {
             Some(n) => {
                 self.b(true);
                 self.n(*n);
@@ -359,6 +366,7 @@ impl<'a> Rd<'a> {
         let inferred = self.b()?;
         let panics = if self.b()? { Some(self.s()?) } else { None };
         let stack = if self.b()? { Some(self.n()?) } else { None };
+        let depth = if self.b()? { Some(self.n()?) } else { None };
         let derive = self.strs()?;
         let linear = self.b()?;
         let layout_c = self.b()?;
@@ -418,6 +426,7 @@ impl<'a> Rd<'a> {
             inferred,
             panics,
             stack,
+            depth,
             derive,
             linear,
             layout_c,
