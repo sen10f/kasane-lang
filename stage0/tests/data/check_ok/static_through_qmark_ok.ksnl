@@ -1,0 +1,26 @@
+// Result<&'static str, E> を ? で取り出した値を &'static str 引数に渡すと
+// E2037 で拒まれていた。
+// 同じ &'static str 型の値でも関数の直接の結果なら通る (内部矛盾)。
+// 本体の 'static 宣言は検査済み (局所借用の返却は E3030 で拒まれる) ので、
+// 宣言を信じて ? 越しでも受けるのが正当。実用上は「要素を Result で返すヘルパ」の
+// あと 'static 引数に渡す形がすべて書けなくなる。
+enum t.E derive [Debug, Clone, Copy] pub
+    Bad
+end t.E
+
+fn t.main() -> Result<(), t.E> uses [] panics never
+    core.mem.drop(t.take(t.pick(0usize)?))
+    Ok(())
+end t.main
+
+fn t.pick(k: usize) -> Result<&'static str, t.E> uses [] panics never
+    let names = ["A", "B"]
+    if let Some(row) = names.get(k) {
+        return Ok(*row)
+    }
+    Ok("")
+end t.pick
+
+fn t.take(s: &'static str) -> usize uses [] panics never
+    s.len()
+end t.take

@@ -1,0 +1,28 @@
+// 'static の参照だけを返す関数の結果の match の分解と、全腕が 'static の match 式は 'static の引数に渡せる。
+enum t.E derive [Debug, Clone, Copy] pub
+    Bad
+end t.E
+
+fn t.main() -> Result<(), t.E> uses [] panics never
+    let a = match t.pick(0usize) {
+        Ok(s) => t.take(s)
+        Err(_) => 0usize
+    }
+    let b = t.take(match t.pick(1usize) {
+        Ok(s) => s
+        Err(_) => "z"
+    })
+    core.mem.drop(a.wrapping_add(b))
+    Ok(())
+end t.main
+
+fn t.pick(k: usize) -> Result<&'static str, t.E> uses [] panics never
+    if k > 5usize {
+        return Err(t.E.Bad)
+    }
+    Ok("x")
+end t.pick
+
+fn t.take(s: &'static str) -> usize uses [] panics never
+    s.len()
+end t.take

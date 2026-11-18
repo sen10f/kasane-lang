@@ -1,0 +1,19 @@
+// expect: E2037
+// 局所を借りうる `Result<&u8, _>` の結果は、`?` で取り出しても `'static` ではない。
+enum t.E derive [Debug, Clone, Copy] pub
+    Bad
+end t.E
+
+fn t.main() -> Result<(), t.E> uses [] panics never
+    let v = 1u8
+    core.mem.drop(t.take(t.pick2(&v)?))
+    Ok(())
+end t.main
+
+fn t.pick2(v: &u8) -> Result<&u8, t.E> uses [] panics never
+    Ok(v)
+end t.pick2
+
+fn t.take(s: &'static u8) -> u8 uses [] panics never
+    *s
+end t.take
