@@ -5142,9 +5142,13 @@ fn stdlib_injected_type_error_is_reported() {
     let dir = std::env::temp_dir().join(format!("ksn_test_{}_stdlib_neg", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     copy_tree(&root().join("spec").join("stdlib"), &dir.join("stdlib"));
-    let mut log = fs::read_to_string(dir.join("stdlib").join("std").join("log.ksnl")).unwrap();
-    log.push_str("\nfn std.log.bad_probe() -> u32 uses [] panics never\n    let x: u32 = \"no\"\n    x\nend std.log.bad_probe\n");
-    fs::write(dir.join("stdlib").join("std").join("log.ksnl"), log).unwrap();
+    // `log` は `.ksnh` (コメント付き) と `.ksnl` の対。両方に同じ関数を足す。
+    for ext in ["ksnh", "ksnl"] {
+        let f = dir.join("stdlib").join("std").join(format!("log.{}", ext));
+        let mut log = fs::read_to_string(&f).unwrap();
+        log.push_str("\nfn std.log.bad_probe() -> u32 uses [] panics never\n    let x: u32 = \"no\"\n    x\nend std.log.bad_probe\n");
+        fs::write(&f, log).unwrap();
+    }
     let o = run_with_env(&["check-stdlib", "--json"], &root(), &[("KSN_STDLIB", dir.join("stdlib").to_str().unwrap())]);
     let out = text(&o.stdout);
     let _ = fs::remove_dir_all(&dir);
