@@ -1,15 +1,6 @@
 import alloc.boxed
 import alloc.vec
 
-trait t.Tagged
-    fn tag(self: &Self) -> i64 uses [] panics never
-end t.Tagged
-
-trait t.Shape requires t.Tagged
-    fn area(self: &Self) -> i64 uses [] panics never
-    fn grow(self: &mut Self) -> () uses [] panics never
-end t.Shape
-
 type t.Named
     name: alloc.string.String
     n: i64
@@ -21,27 +12,21 @@ type t.Rect
 end t.Rect
 
 type t.Reg
-    items: vec.Vec<boxed.Box<dyn t.Shape + 'static, std.alloc.System>, std.alloc.System>
+    items: alloc.vec.Vec<alloc.boxed.Box<dyn t.Shape + 'static, std.alloc.System>, std.alloc.System>
 end t.Reg
+
+trait t.Shape requires t.Tagged
+    fn area(self: &Self) -> i64 uses [] panics never
+    fn grow(self: &mut Self) -> () uses [] panics never
+end t.Shape
 
 type t.Sq
     side: i64
 end t.Sq
 
-impl t.Tagged for t.Named
-fn t.Named.tag(self: &t.Named) -> i64 uses [] panics never impls t.Tagged
-    100i64
-end t.Named.tag
-
-impl t.Tagged for t.Rect
-fn t.Rect.tag(self: &t.Rect) -> i64 uses [] panics never impls t.Tagged
-    20i64
-end t.Rect.tag
-
-impl t.Tagged for t.Sq
-fn t.Sq.tag(self: &t.Sq) -> i64 uses [] panics never impls t.Tagged
-    3i64
-end t.Sq.tag
+trait t.Tagged
+    fn tag(self: &Self) -> i64 uses [] panics never
+end t.Tagged
 
 impl t.Shape for t.Named
 fn t.Named.area(self: &t.Named) -> i64 uses [] panics never impls t.Shape
@@ -52,6 +37,11 @@ fn t.Named.grow(self: &mut t.Named) -> () uses [] panics never impls t.Shape
     self.n = self.n.wrapping_add(10i64)
 end t.Named.grow
 
+impl t.Tagged for t.Named
+fn t.Named.tag(self: &t.Named) -> i64 uses [] panics never impls t.Tagged
+    100i64
+end t.Named.tag
+
 impl t.Shape for t.Rect
 fn t.Rect.area(self: &t.Rect) -> i64 uses [] panics never impls t.Shape
     self.w.wrapping_mul(self.h)
@@ -61,14 +51,10 @@ fn t.Rect.grow(self: &mut t.Rect) -> () uses [] panics never impls t.Shape
     self.w = self.w.wrapping_add(1i64)
 end t.Rect.grow
 
-impl t.Shape for t.Sq
-fn t.Sq.area(self: &t.Sq) -> i64 uses [] panics never impls t.Shape
-    self.side.wrapping_mul(self.side)
-end t.Sq.area
-
-fn t.Sq.grow(self: &mut t.Sq) -> () uses [] panics never impls t.Shape
-    self.side = self.side.wrapping_add(1i64)
-end t.Sq.grow
+impl t.Tagged for t.Rect
+fn t.Rect.tag(self: &t.Rect) -> i64 uses [] panics never impls t.Tagged
+    20i64
+end t.Rect.tag
 
 fn t.Reg.add[S: t.Shape](self: &mut t.Reg, s: S) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let b = boxed.Box.new(std.alloc.SYSTEM, s)?
@@ -104,6 +90,20 @@ fn t.Reg.total(self: &t.Reg) -> i64 uses [] panics never
     sum
 end t.Reg.total
 
+impl t.Shape for t.Sq
+fn t.Sq.area(self: &t.Sq) -> i64 uses [] panics never impls t.Shape
+    self.side.wrapping_mul(self.side)
+end t.Sq.area
+
+fn t.Sq.grow(self: &mut t.Sq) -> () uses [] panics never impls t.Shape
+    self.side = self.side.wrapping_add(1i64)
+end t.Sq.grow
+
+impl t.Tagged for t.Sq
+fn t.Sq.tag(self: &t.Sq) -> i64 uses [] panics never impls t.Tagged
+    3i64
+end t.Sq.tag
+
 fn t.bump(s: &mut dyn t.Shape + 'static) -> () uses [] panics never
     s.grow()
 end t.bump
@@ -120,6 +120,14 @@ fn t.churn(count: u32) -> Result<i64, alloc.alloc.AllocError> uses [alloc] panic
     }
     Ok(acc)
 end t.churn
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    match t.run() {
+        Ok(_u) => core.check.is_true(true)
+        Err(_e) => core.panic.panic("out of memory")
+    }
+    Ok(())
+end t.main
 
 fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
     let mut reg = t.Reg.new()
@@ -145,11 +153,3 @@ end t.run
 fn t.show(s: &dyn t.Shape + 'static) -> i64 uses [] panics never
     s.area()
 end t.show
-
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    match t.run() {
-        Ok(_u) => core.check.is_true(true)
-        Err(_e) => core.panic.panic("out of memory")
-    }
-    Ok(())
-end t.main

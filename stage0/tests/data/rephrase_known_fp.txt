@@ -96,6 +96,7 @@ fp id ok_early_return_after_consume#1
 fp id ok_early_return_after_consume#2
 fp id ok_loop_break#1
 fp id ok_loop_break#2
+fp id ok_move_closure#1
 fp id ok_option_holds_linear#1
 fp id ok_option_holds_linear#2
 fp id ok_pair_both_fields#0

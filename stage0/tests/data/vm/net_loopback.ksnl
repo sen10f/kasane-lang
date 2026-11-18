@@ -1,3 +1,7 @@
+fn t.main() -> () uses [alloc, io.net] panics may
+    t.net_roundtrip()
+end t.main
+
 fn t.net_roundtrip() -> () uses [alloc, io.net] panics may
     match std.net.listen("127.0.0.1:0") {
         Ok(l) => {
@@ -52,7 +56,3 @@ fn t.net_roundtrip() -> () uses [alloc, io.net] panics may
         Err(_e) => core.panic.panic("listen failed")
     }
 end t.net_roundtrip
-
-fn t.main() -> () uses [alloc, io.net] panics may
-    t.net_roundtrip()
-end t.main

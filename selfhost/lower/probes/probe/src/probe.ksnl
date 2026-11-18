@@ -1,20 +1,16 @@
-type probe.P pub
-    x: i32
-    y: u8
-end probe.P
-
 enum probe.E pub
     A(i32)
     B
 end probe.E
 
+type probe.P pub
+    x: i32
+    y: u8
+end probe.P
+
 fn probe.add(a: i32, b: i32) -> i32 uses [] panics never
     a.wrapping_add(b)
 end probe.add
-
-fn probe.mk(a: i32) -> probe.P uses [] panics never
-    probe.P { x: a, y: 3u8 }
-end probe.mk
 
 fn probe.cnt(n: u32) -> u32 uses [] panics never
     let mut i: u32 = 0u32
@@ -27,15 +23,19 @@ fn probe.cnt(n: u32) -> u32 uses [] panics never
     i
 end probe.cnt
 
+fn probe.main() -> () uses [io.console] panics never
+    let p = probe.mk(probe.add(1i32, 2i32))
+    let z = p.x
+    core.mem.drop(z)
+end probe.main
+
+fn probe.mk(a: i32) -> probe.P uses [] panics never
+    probe.P { x: a, y: 3u8 }
+end probe.mk
+
 fn probe.pick(e: probe.E) -> i32 uses [] panics never
     match e {
         probe.E.A(v) => v
         probe.E.B => 0i32
     }
 end probe.pick
-
-fn probe.main() -> () uses [io.console] panics never
-    let p = probe.mk(probe.add(1i32, 2i32))
-    let z = p.x
-    core.mem.drop(z)
-end probe.main

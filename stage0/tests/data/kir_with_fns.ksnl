@@ -1,39 +1,93 @@
-fn t.nv() -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics may
-    alloc.vec.Vec.new(std.alloc.SYSTEM)
-end t.nv
-
 fn t.lg(log: &mut u32, k: u32) -> () uses [] panics may
     *log = *log * 10u32 + k
 end t.lg
 
-fn t.w_tail(n: u32, log: &mut u32) -> u32 uses [] panics may
-    with s = n + 1u32 close t.lg(log, s) {
-        s * 2u32
-    }
-end t.w_tail
+fn t.nv() -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics may
+    alloc.vec.Vec.new(std.alloc.SYSTEM)
+end t.nv
 
-fn t.w_ret(n: u32, log: &mut u32) -> u32 uses [] panics may
-    with s = 3u32 close t.lg(log, s) {
-        if n > 3u32 {
-            return 7u32
+fn t.run_close_match(n: u32) -> u32 uses [] panics may
+    let mut log = 0u32
+    let r = t.w_close_match(n, &mut log)
+    log * 1000u32 + r
+end t.run_close_match
+
+fn t.run_loop(n: u32) -> u32 uses [] panics may
+    let mut log = 0u32
+    let r = t.w_loop(n, &mut log)
+    log * 1000u32 + r
+end t.run_loop
+
+fn t.run_nested(n: u32) -> u32 uses [] panics may
+    let mut log = 0u32
+    let r = t.w_nested(n, &mut log)
+    log * 1000u32 + r
+end t.run_nested
+
+fn t.run_ret(n: u32) -> u32 uses [] panics may
+    let mut log = 0u32
+    let r = t.w_ret(n, &mut log)
+    log * 1000u32 + r
+end t.run_ret
+
+fn t.run_tail(n: u32) -> u32 uses [] panics may
+    let mut log = 0u32
+    let r = t.w_tail(n, &mut log)
+    log * 1000u32 + r
+end t.run_tail
+
+fn t.run_try(n: u32) -> u32 uses [] panics may
+    let mut log = 0u32
+    let r = t.w_try(n, &mut log)
+    match r {
+        Ok(x) => {
+            log * 1000u32 + x
         }
-        n
+        Err(e) => {
+            log * 1000u32 + e + 500u32
+        }
     }
-end t.w_ret
+end t.run_try
 
-fn t.w_try_in(n: u32) -> Result<u32, u32> uses [] panics may
-    if n > 3u32 {
-        return Err(n)
+fn t.w_body_owned(n: u32) -> usize uses [alloc] panics may
+    let w = with s = n close core.mem.drop(s) {
+        let mut b = t.nv()
+        match b.push(1u8) {
+            Ok(_u) => {
+            }
+            Err(_e) => {
+            }
+        }
+        match b.push(2u8) {
+            Ok(_u) => {
+            }
+            Err(_e) => {
+            }
+        }
+        b
     }
-    Ok(n)
-end t.w_try_in
+    w.len()
+end t.w_body_owned
 
-fn t.w_try(n: u32, log: &mut u32) -> Result<u32, u32> uses [] panics may
-    with s = 2u32 close t.lg(log, s) {
-        let x = t.w_try_in(n)?
-        Ok(x + s)
+fn t.w_close_match(n: u32, log: &mut u32) -> u32 uses [] panics may
+    with s = n close match s {
+        0u32 => {
+            t.lg(log, 9u32)
+        }
+        _ => {
+            if s > 5u32 {
+                t.lg(log, 8u32)
+            } else {
+                t.lg(log, s)
+            }
+        }
+    } {
+        if n == 3u32 {
+            return 30u32
+        }
+        n + 1u32
     }
-end t.w_try
+end t.w_close_match
 
 fn t.w_loop(n: u32, log: &mut u32) -> u32 uses [] panics may
     let mut sum = 0u32
@@ -64,90 +118,14 @@ fn t.w_nested(n: u32, log: &mut u32) -> u32 uses [] panics may
     }
 end t.w_nested
 
-fn t.w_close_match(n: u32, log: &mut u32) -> u32 uses [] panics may
-    with s = n close match s {
-        0u32 => {
-            t.lg(log, 9u32)
+fn t.w_ret(n: u32, log: &mut u32) -> u32 uses [] panics may
+    with s = 3u32 close t.lg(log, s) {
+        if n > 3u32 {
+            return 7u32
         }
-        _ => {
-            if s > 5u32 {
-                t.lg(log, 8u32)
-            } else {
-                t.lg(log, s)
-            }
-        }
-    } {
-        if n == 3u32 {
-            return 30u32
-        }
-        n + 1u32
+        n
     }
-end t.w_close_match
-
-fn t.w_str_borrow(n: u32) -> usize uses [alloc] panics may
-    let mut v = t.nv()
-    match v.push(1u8) {
-        Ok(_u) => {
-        }
-        Err(_e) => {
-        }
-    }
-    with mut s = v close core.mem.drop(s) {
-        if n > 0u32 {
-            return 99usize
-        }
-        3usize
-    }
-end t.w_str_borrow
-
-fn t.w_vec_own(n: u32) -> usize uses [alloc] panics may
-    with mut s = t.nv() close core.mem.drop(s) {
-        match s.push(1u8) {
-            Ok(_u) => {
-            }
-            Err(_e) => {
-            }
-        }
-        match s.push(2u8) {
-            Ok(_u) => {
-            }
-            Err(_e) => {
-            }
-        }
-        if n > 0u32 {
-            return s.len() + 10usize
-        }
-        s.len()
-    }
-end t.w_vec_own
-
-fn t.w_val_own(n: u32) -> u32 uses [alloc] panics may
-    let mut v = t.nv()
-    let r = with mut s = v close core.mem.drop(s) {
-        n + 1u32
-    }
-    r
-end t.w_val_own
-
-fn t.w_body_owned(n: u32) -> usize uses [alloc] panics may
-    let w = with s = n close core.mem.drop(s) {
-        let mut b = t.nv()
-        match b.push(1u8) {
-            Ok(_u) => {
-            }
-            Err(_e) => {
-            }
-        }
-        match b.push(2u8) {
-            Ok(_u) => {
-            }
-            Err(_e) => {
-            }
-        }
-        b
-    }
-    w.len()
-end t.w_body_owned
+end t.w_ret
 
 fn t.w_sock(n: u32) -> u32 uses [io.net] panics may
     match std.net.listen("127.0.0.1:0") {
@@ -180,6 +158,22 @@ fn t.w_sock(n: u32) -> u32 uses [io.net] panics may
     }
 end t.w_sock
 
+fn t.w_str_borrow(n: u32) -> usize uses [alloc] panics may
+    let mut v = t.nv()
+    match v.push(1u8) {
+        Ok(_u) => {
+        }
+        Err(_e) => {
+        }
+    }
+    with mut s = v close core.mem.drop(s) {
+        if n > 0u32 {
+            return 99usize
+        }
+        3usize
+    }
+end t.w_str_borrow
+
 fn t.w_str_close(n: u32) -> usize uses [alloc] panics may
     let mut total = 0usize
     let mut i = 0u32
@@ -201,45 +195,51 @@ fn t.w_str_close(n: u32) -> usize uses [alloc] panics may
     total
 end t.w_str_close
 
-fn t.run_tail(n: u32) -> u32 uses [] panics may
-    let mut log = 0u32
-    let r = t.w_tail(n, &mut log)
-    log * 1000u32 + r
-end t.run_tail
-
-fn t.run_ret(n: u32) -> u32 uses [] panics may
-    let mut log = 0u32
-    let r = t.w_ret(n, &mut log)
-    log * 1000u32 + r
-end t.run_ret
-
-fn t.run_try(n: u32) -> u32 uses [] panics may
-    let mut log = 0u32
-    let r = t.w_try(n, &mut log)
-    match r {
-        Ok(x) => {
-            log * 1000u32 + x
-        }
-        Err(e) => {
-            log * 1000u32 + e + 500u32
-        }
+fn t.w_tail(n: u32, log: &mut u32) -> u32 uses [] panics may
+    with s = n + 1u32 close t.lg(log, s) {
+        s * 2u32
     }
-end t.run_try
+end t.w_tail
 
-fn t.run_loop(n: u32) -> u32 uses [] panics may
-    let mut log = 0u32
-    let r = t.w_loop(n, &mut log)
-    log * 1000u32 + r
-end t.run_loop
+fn t.w_try(n: u32, log: &mut u32) -> Result<u32, u32> uses [] panics may
+    with s = 2u32 close t.lg(log, s) {
+        let x = t.w_try_in(n)?
+        Ok(x + s)
+    }
+end t.w_try
 
-fn t.run_nested(n: u32) -> u32 uses [] panics may
-    let mut log = 0u32
-    let r = t.w_nested(n, &mut log)
-    log * 1000u32 + r
-end t.run_nested
+fn t.w_try_in(n: u32) -> Result<u32, u32> uses [] panics may
+    if n > 3u32 {
+        return Err(n)
+    }
+    Ok(n)
+end t.w_try_in
 
-fn t.run_close_match(n: u32) -> u32 uses [] panics may
-    let mut log = 0u32
-    let r = t.w_close_match(n, &mut log)
-    log * 1000u32 + r
-end t.run_close_match
+fn t.w_val_own(n: u32) -> u32 uses [alloc] panics may
+    let mut v = t.nv()
+    let r = with mut s = v close core.mem.drop(s) {
+        n + 1u32
+    }
+    r
+end t.w_val_own
+
+fn t.w_vec_own(n: u32) -> usize uses [alloc] panics may
+    with mut s = t.nv() close core.mem.drop(s) {
+        match s.push(1u8) {
+            Ok(_u) => {
+            }
+            Err(_e) => {
+            }
+        }
+        match s.push(2u8) {
+            Ok(_u) => {
+            }
+            Err(_e) => {
+            }
+        }
+        if n > 0u32 {
+            return s.len() + 10usize
+        }
+        s.len()
+    }
+end t.w_vec_own

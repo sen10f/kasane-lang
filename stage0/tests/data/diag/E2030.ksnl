@@ -2,11 +2,11 @@ type t.P pub
     a: u8
 end t.P
 
-fn t.show[T: core.fmt.Debug](v: T) -> () uses [] panics never
-    core.mem.drop(v)
-end t.show
-
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     t.show(t.P { a: 1u8 })
     Ok(())
 end t.main
+
+fn t.show[T: core.fmt.Debug](v: T) -> () uses [] panics never
+    core.mem.drop(v)
+end t.show

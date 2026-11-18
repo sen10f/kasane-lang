@@ -5,7 +5,7 @@ end t.Res
 
 fn t.bad() -> u32 uses [] panics never
     let r = t.open()
-    let f = fn () -> u32 capture [move r] {
+    let f = fn() -> u32 capture [move r] {
         1u32
     }
     f()
