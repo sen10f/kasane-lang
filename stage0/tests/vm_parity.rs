@@ -419,6 +419,8 @@ fn vm_run_matches_tree_walker_on_programs_from_cli_tests() {
         fs::write(d.join("kasane.toml"), "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[dependencies]\n").unwrap();
         fs::write(d.join("kasane.lock"), "version = 1\n").unwrap();
         fs::write(d.join("src").join("t.ksnl"), text).unwrap();
+        // 書き方は 1 通り (E0020): 試験の入力は `ksn fmt` の出力にそろえる。
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
         let (r, kind) = compare(&format!("{} #{}", name, i), &["run"], &d, false, 60);
         counts[kind as usize].fetch_add(1, Ordering::SeqCst);
         if kind == Kind::CheckFailed && std::env::var("VM_PARITY_SHOW").is_ok() {

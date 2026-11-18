@@ -1,0 +1,7 @@
+fn t.f() -> u32 uses [] panics never
+    return 1u32
+end t.f
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.f())
+end t.main

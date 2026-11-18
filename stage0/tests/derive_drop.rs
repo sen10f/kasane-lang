@@ -34,6 +34,8 @@ impl Tmp {
         fs::write(d.join("kasane.toml"), TOML).unwrap();
         fs::write(d.join("kasane.lock"), "version = 1\n").unwrap();
         fs::write(d.join("src").join("t.ksnl"), src).unwrap();
+        // 書き方は 1 通り (E0020): 試験の入力は `ksn fmt` の出力にそろえる。
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
         Tmp(d)
     }
 }
@@ -224,6 +226,9 @@ fn derive_drop_is_documented_in_explain_and_listed_by_get_derived() {
 fn derive_drop_has_a_place_in_the_derive_order() {
     let src = "enum t.L derive [PartialEq, Drop, Clone] pub\n    Nil\n    Cons(i64, alloc.boxed.Box<t.L, std.alloc.System>)\nend t.L\n";
     let t = Tmp::new("order", src);
+    // `Tmp::new` は `ksn fmt` を通すので、並び違いの入力を書き戻す (E0020 の確認)。
+    fs::write(t.0.join("src").join("t.ksnl"), src).unwrap();
+    assert_ne!(run(&["check"], &t.0).status.code(), Some(0));
     assert_ne!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
     run(&["fmt"], &t.0);
     let s = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();

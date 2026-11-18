@@ -3,7 +3,7 @@ type t.S
 end t.S
 
 fn t.S.m(self: &t.S, x: &u32) -> &u32 uses [] panics never
-    return x
+    x
 end t.S.m
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

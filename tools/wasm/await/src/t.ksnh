@@ -1,24 +1,5 @@
 extern t.raw_timer_start(ms: i32) -> u32 link "env:ksn_timer_start"
 
-fn t.timer_start(ms: i32) -> u32 uses [] panics never
-    unsafe "t" "call the JS import ksn_timer_start (a timer that resolves later)" {
-        t.raw_timer_start(ms)
-    }
-end t.timer_start
-
-fn t.say(text: &str) -> () uses [io.console] panics never
-    match std.io.print_line(text) {
-        Ok(u) => u
-        Err(_e) => ()
-    }
-end t.say
-
-// JS の Promise (タイマー) の完了を待つ (仕様 5.6 の第 5 段)。完了の値は JS が `ksn_resume` で渡す。
-fn t.wait_value(ms: i32) -> i32 uses [suspend] panics may
-    let h = t.timer_start(ms)
-    std.task.await_js(h)
-end t.wait_value
-
 // 先に two 個のタイマーを作り、遅い方を先に待つ。速い方の結果は、待つ前に JS から届く (結果の置き場に残る)。
 fn t.buffered() -> () uses [io.console, suspend] panics may
     let slow = t.timer_start(30)
@@ -44,3 +25,22 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console, suspend] panics may
     })
     Ok(())
 end t.main
+
+fn t.say(text: &str) -> () uses [io.console] panics never
+    match std.io.print_line(text) {
+        Ok(u) => u
+        Err(_e) => ()
+    }
+end t.say
+
+fn t.timer_start(ms: i32) -> u32 uses [] panics never
+    unsafe "t" "call the JS import ksn_timer_start (a timer that resolves later)" {
+        t.raw_timer_start(ms)
+    }
+end t.timer_start
+
+// JS の Promise (タイマー) の完了を待つ (仕様 5.6 の第 5 段)。完了の値は JS が `ksn_resume` で渡す。
+fn t.wait_value(ms: i32) -> i32 uses [suspend] panics may
+    let h = t.timer_start(ms)
+    std.task.await_js(h)
+end t.wait_value

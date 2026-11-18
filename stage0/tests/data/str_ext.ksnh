@@ -1,22 +1,3 @@
-fn t.pieces(text: &str, sep: &str) -> usize uses [] panics never
-    let mut n = 0usize
-    for p in text.split(sep) {
-        n = n.wrapping_add(1usize)
-        if p.is_empty() {
-            n = n.wrapping_add(100usize)
-        }
-    }
-    n
-end t.pieces
-
-fn t.joined(text: &str, sep: &str) -> usize uses [] panics never
-    let mut total = 0usize
-    for p in text.split(sep) {
-        total = total.wrapping_mul(10usize).wrapping_add(p.len())
-    }
-    total
-end t.joined
-
 fn t.first_piece_is(text: &str, sep: &str, want: &str) -> bool uses [] panics never
     let mut ok = false
     let mut first = true
@@ -29,6 +10,26 @@ fn t.first_piece_is(text: &str, sep: &str, want: &str) -> bool uses [] panics ne
     ok
 end t.first_piece_is
 
+fn t.fmt_i(v: i64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.push_i64(v)?
+    Ok(s)
+end t.fmt_i
+
+fn t.fmt_u(v: u64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.push_u64(v)?
+    Ok(s)
+end t.fmt_u
+
+fn t.joined(text: &str, sep: &str) -> usize uses [] panics never
+    let mut total = 0usize
+    for p in text.split(sep) {
+        total = total.wrapping_mul(10usize).wrapping_add(p.len())
+    }
+    total
+end t.joined
+
 fn t.last_piece_is(text: &str, sep: &str, want: &str) -> bool uses [] panics never
     let mut ok = false
     for p in text.split(sep) {
@@ -37,17 +38,22 @@ fn t.last_piece_is(text: &str, sep: &str, want: &str) -> bool uses [] panics nev
     ok
 end t.last_piece_is
 
-fn t.fmt_u(v: u64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-    s.push_u64(v)?
-    Ok(s)
-end t.fmt_u
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.check.eq(t.run().is_ok(), true)
+    core.mem.drop(std.io.print_line("str ext ok"))
+    Ok(())
+end t.main
 
-fn t.fmt_i(v: i64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-    s.push_i64(v)?
-    Ok(s)
-end t.fmt_i
+fn t.pieces(text: &str, sep: &str) -> usize uses [] panics never
+    let mut n = 0usize
+    for p in text.split(sep) {
+        n = n.wrapping_add(1usize)
+        if p.is_empty() {
+            n = n.wrapping_add(100usize)
+        }
+    }
+    n
+end t.pieces
 
 fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
     // ends_with / contains
@@ -176,9 +182,3 @@ fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
     core.check.eq(alloc.string.String.join(std.alloc.SYSTEM, &parts, "")?.as_str(), "abbccc")
     Ok(())
 end t.run
-
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    core.check.eq(t.run().is_ok(), true)
-    core.mem.drop(std.io.print_line("str ext ok"))
-    Ok(())
-end t.main

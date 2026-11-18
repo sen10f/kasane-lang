@@ -486,7 +486,10 @@ fn rename_finds_both_spellings_and_keeps_each_form() {
     let u = p.read("src/app/util.ksnl").replace("h.double().wrapping_add(h.len)", "h.double().wrapping_add(net.make(h.len).len).wrapping_add(app.net.make(0u32).len)");
     let u = u.replace("fn app.util.total(h: &app.net.Header)", "fn app.util.total(h: &net.Header)");
     p.write("src/app/util.ksnl", &u);
-    assert_eq!(p.ksn(&["check"]).status.code(), Some(0), "{}", text(&p.ksn(&["check"]).stdout));
+    // 正規形でない書き方は check の誤り (E0020、書き方は 1 通り)。rename はそれでも両方の形を見つけて、それぞれの形のまま直す。
+    let c = p.ksn(&["check"]);
+    assert_eq!(c.status.code(), Some(1), "{}", text(&c.stdout));
+    assert!(text(&c.stdout).contains("E0020"), "{}", text(&c.stdout));
     let o = p.ksn(&["rename", "app.net.make", "app.net.build"]);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     let s = p.read("src/app/util.ksnl");
@@ -495,7 +498,9 @@ fn rename_finds_both_spellings_and_keeps_each_form() {
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     let s = p.read("src/app/util.ksnl");
     assert!(s.contains("fn app.util.total(h: &net.Head)"), "{}", s);
-    assert_eq!(p.ksn(&["check"]).status.code(), Some(0));
+    // `fmt` が正規形にすれば check も test も通る。
+    assert_eq!(p.ksn(&["fmt"]).status.code(), Some(0));
+    assert_eq!(p.ksn(&["check"]).status.code(), Some(0), "{}", text(&p.ksn(&["check"]).stdout));
     assert_eq!(p.ksn(&["test"]).status.code(), Some(0));
 }
 

@@ -214,3 +214,113 @@ fn fmt_keeps_comments_on_imports_when_sorting() {
     run(&["fmt"], &t.0);
     assert_eq!(fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap(), out);
 }
+
+// ---- 書き方は 1 通り (段 2、設計_書き方は1通り.md の D1・D4・D14・S7・S16): `ksn fmt` の出力と違えば check の誤り (E0020) ----
+
+fn fmt_roundtrip(name: &str, src: &str, want: &str) {
+    let t = Tmp::new_raw(name, src);
+    let c = run(&["check", "--json"], &t.0);
+    let out = text(&c.stdout);
+    assert_eq!(c.status.code(), Some(1), "{}: check must fail: {}", name, out);
+    assert!(codes(&out).iter().any(|c| c == "E0020"), "{}: {}", name, out);
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0), "{}", name);
+    let got = text(&fs::read(t.0.join("src/t.ksnl")).unwrap());
+    assert_eq!(got, want, "{}: fmt result", name);
+    // 冪等 (2 回かけても同じ) で、直した結果は check を通る。
+    let again = run(&["fmt"], &t.0);
+    assert!(!text(&again.stdout).contains("reformatted"), "{}: {}", name, text(&again.stdout));
+    assert_eq!(text(&fs::read(t.0.join("src/t.ksnl")).unwrap()), want, "{}: idempotent", name);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}: {}", name, text(&run(&["check"], &t.0).stdout));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{}", name);
+}
+
+fn wrap_body(body: &str) -> String {
+    format!(
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n{}    Ok(())\nend t.main\n",
+        body
+    )
+}
+
+#[test]
+fn token_spacing_is_one_way_extra_and_missing_spaces_are_errors() {
+    let want = wrap_body("    let v = core.num.u32.wrapping_add(1u32, 2u32)\n    core.check.eq(v, 3u32)\n");
+    // 二重の空白・呼び出しの括弧の前の空白・`,` の後ろの詰め・括弧の内側の空白。
+    let a = wrap_body("    let v = core.num.u32.wrapping_add (1u32,   2u32)\n    core.check.eq(v, 3u32)\n");
+    fmt_roundtrip("sp_call", &a, &want);
+    let b = wrap_body("    let v = core . num . u32 . wrapping_add( 1u32 ,2u32 )\n    core.check.eq(v, 3u32)\n");
+    fmt_roundtrip("sp_dots", &b, &want);
+    let c = wrap_body("    let v=core.num.u32.wrapping_add(1u32, 2u32)\n    core.check.eq(v,3u32)\n");
+    fmt_roundtrip("sp_eq", &c, &want);
+}
+
+#[test]
+fn token_spacing_binary_prefix_generic_and_arrow() {
+    let want = "fn t.f(x: &mut Vec<u32, std.alloc.System>, n: u32) -> Option<&u32> uses [] panics never\n    let k = !(n < 3u32)\n    let m = -1i32\n    let r = &*x\n    r.get(0usize)\nend t.f\n";
+    let _ = want;
+    // `-` と数字の間の空白 (仕様 3.7)、二項演算子の詰め、`->` と型引数の周りの空白、`&` と `mut` の間。
+    let src = wrap_body("    let a = - 1i32\n    let b = a+1i32\n    let c = a  -  b\n    let d: Option < i32 > = Some(c)\n    core.mem.drop(d)\n");
+    let want = wrap_body("    let a = -1i32\n    let b = a + 1i32\n    let c = a - b\n    let d: Option<i32> = Some(c)\n    core.mem.drop(d)\n");
+    fmt_roundtrip("sp_ops", &src, &want);
+    let hdr = "fn t.f(x: &mut u32)->() uses [] panics never\n    *x = 1u32\nend t.f\n\nfn t.main() -> () uses [] panics never\n    let mut v = 0u32\n    t.f(& mut v)\nend t.main\n";
+    let hwant = "fn t.f(x: &mut u32) -> () uses [] panics never\n    *x = 1u32\nend t.f\n\nfn t.main() -> () uses [] panics never\n    let mut v = 0u32\n    t.f(&mut v)\nend t.main\n";
+    fmt_roundtrip("sp_hdr", hdr, hwant);
+}
+
+#[test]
+fn list_order_in_headers_is_fixed_by_fmt_and_is_an_error_in_check() {
+    // uses・capture の並び (D14): fmt が並べ替え、check は E0020。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.fs, io.console] panics may\n    Ok(())\nend t.main\n";
+    let want = "fn t.main() -> Result<(), std.io.Error> uses [io.console, io.fs] panics may\n    Ok(())\nend t.main\n";
+    fmt_roundtrip("order_uses", src, want);
+    let src = wrap_body("    let a = 1u32\n    let b = 2u32\n    let f = fn() -> u32 capture [&b, &a] {\n        *a + *b\n    }\n    core.check.eq(f(), 3u32)\n");
+    let want = wrap_body("    let a = 1u32\n    let b = 2u32\n    let f = fn() -> u32 capture [&a, &b] {\n        *a + *b\n    }\n    core.check.eq(f(), 3u32)\n");
+    fmt_roundtrip("order_capture", &src, &want);
+}
+
+#[test]
+fn a_tail_return_is_fixed_by_fmt_and_is_an_error_in_check() {
+    // S7: 関数本体の末尾の `return x` は式 `x` に、`if` / `else` の枝と `match` の腕も同じ。値のない `return` は `()`。
+    let src = "fn t.pick(n: u32) -> u32 uses [] panics never\n    if n < 2u32 {\n        return n\n    } else {\n        return n.wrapping_add(1u32)\n    }\nend t.pick\n\n\
+               fn t.nop(o: Option<u32>) -> () uses [] panics never\n    match o {\n        Some(_) => return\n        None => ()\n    }\nend t.nop\n\n\
+               fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\n    t.nop(None)\n    return\nend t.main\n";
+    let want = "fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\n    t.nop(None)\n    ()\nend t.main\n\n\
+                fn t.nop(o: Option<u32>) -> () uses [] panics never\n    match o {\n        Some(_) => ()\n        None => ()\n    }\nend t.nop\n\n\
+                fn t.pick(n: u32) -> u32 uses [] panics never\n    if n < 2u32 {\n        n\n    } else {\n        n.wrapping_add(1u32)\n    }\nend t.pick\n";
+    fmt_roundtrip("tail_return", src, want);
+    // 途中の `return` (末尾でない) と、`else` の無い `if` の中の `return` は残る。
+    let keep = "fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\nend t.main\n\n\
+                fn t.pick(n: u32) -> u32 uses [] panics never\n    if n < 2u32 {\n        return n\n    }\n    n.wrapping_add(1u32)\nend t.pick\n";
+    let t = Tmp::new_raw("tail_return_keep", keep);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn while_true_is_fixed_to_loop_by_fmt_and_is_an_error_in_check() {
+    // S16
+    let src = wrap_body("    let mut i = 0u32\n    while true {\n        i = i.wrapping_add(1u32)\n        if i == 3u32 {\n            break\n        }\n    }\n");
+    let want = wrap_body("    let mut i = 0u32\n    loop {\n        i = i.wrapping_add(1u32)\n        if i == 3u32 {\n            break\n        }\n    }\n");
+    fmt_roundtrip("while_true", &src, &want);
+}
+
+#[test]
+fn fmt_is_idempotent_on_the_example_packages() {
+    // 正しいコード (examples) は 1 バイトも変わらず、2 回かけても同じ。
+    for name in ["demo", "features", "tour", "json"] {
+        let d = root().join("examples").join(name);
+        let o = run(&["fmt", "--check"], &d);
+        assert_eq!(o.status.code(), Some(0), "{}: {}", name, text(&o.stdout));
+        assert_eq!(run(&["check"], &d).status.code(), Some(0), "{}", name);
+    }
+}
+
+#[test]
+fn fmt_twice_equals_fmt_once_on_messy_sources() {
+    let messy = wrap_body("    let   a=1u32\n    core . check . eq (a ,1u32)\n");
+    let t = Tmp::new_raw("messy_twice", &messy);
+    run(&["fmt"], &t.0);
+    let once = text(&fs::read(t.0.join("src/t.ksnl")).unwrap());
+    run(&["fmt"], &t.0);
+    let twice = text(&fs::read(t.0.join("src/t.ksnl")).unwrap());
+    assert_eq!(once, twice);
+}

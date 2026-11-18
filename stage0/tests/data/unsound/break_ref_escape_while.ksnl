@@ -1,6 +1,6 @@
 fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
     let mut r = &t.mk()
-    while true {
+    loop {
         let b = t.mk()
         r = &b
         break

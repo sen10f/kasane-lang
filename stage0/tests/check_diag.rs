@@ -572,11 +572,15 @@ fn match_arm_binding_used_in_block_is_not_unused() {
 // ---- 小型モデル向けの方針: 正規形の緩和 / 存在しないメソッド ----
 
 #[test]
-fn misordered_definitions_pass_check_and_are_fixed_by_fmt() {
+fn misordered_definitions_fail_check_and_are_fixed_by_fmt() {
+    // 書き方は 1 通り: `ksn fmt` の出力と違うファイルは check の誤り (E0020、致命)。`fmt` で直る。
     let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n\n\
                fn t.a() -> u8 uses [] panics never pub\n    1u8\nend t.a\n";
-    let t = Tmp::new("loose_order", src);
-    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
+    let t = Tmp::new_raw("loose_order", src);
+    let c = run(&["check"], &t.0);
+    assert_eq!(c.status.code(), Some(1), "{}", text(&c.stdout));
+    assert!(text(&c.stdout).contains("E0020"), "{}", text(&c.stdout));
+    assert!(!text(&c.stdout).contains("non-fatal"), "{}", text(&c.stdout));
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(1));
     assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
@@ -587,7 +591,7 @@ fn misordered_definitions_pass_check_and_are_fixed_by_fmt() {
 fn semantic_errors_are_still_reported_in_misordered_files() {
     let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    t.nothing()\n    Ok(())\nend t.main\n\n\
                fn t.a() -> u8 uses [] panics never pub\n    1u8\nend t.a\n";
-    let t = Tmp::new("loose_sem", src);
+    let t = Tmp::new_raw("loose_sem", src);
     let o = run(&["check", "--json"], &t.0);
     assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1101"), "{}", text(&o.stdout));
 }
@@ -1133,7 +1137,7 @@ fn type_used_as_value_suggests_the_constant() {
 fn junk_header_lines_are_never_silently_accepted() {
     // fmt が捨てる先頭行を、check が黙って通してはならない。
     let src = "uses std.collections.HashMap\n\nfn t.main() -> Result<(), std.io.Error>\n    Ok(())\nend t.main\n";
-    let t = Tmp::new("junk_header", src);
+    let t = Tmp::new_raw("junk_header", src);
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
     assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E0054"), "{}", text(&o.stdout));
@@ -3063,11 +3067,12 @@ fn sn_main(t: &Tmp) -> String {
     text(&fs::read(t.0.join("src/t.ksnl")).unwrap())
 }
 
-/// 非正規形のソースが check を通り、fmt で期待の正規形になり、冪等で、正規形が check / fmt --check を通る。
+/// 非正規形のソースが check の誤り (E0020) になり、fmt で期待の正規形になり、冪等で、正規形が check / fmt --check を通る。
 fn sn_roundtrip(name: &str, src: &str, want: &str) {
     let t = sn_pkg(name, src);
     let c = run(&["check"], &t.0);
-    assert_eq!(c.status.code(), Some(0), "{}: check: {}{}", name, text(&c.stdout), text(&c.stderr));
+    assert_eq!(c.status.code(), Some(1), "{}: check must fail: {}{}", name, text(&c.stdout), text(&c.stderr));
+    assert!(text(&c.stdout).contains("E0020"), "{}: {}", name, text(&c.stdout));
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(1), "{}: fmt --check must report a diff", name);
     assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0), "{}", name);
     assert_eq!(sn_main(&t), want, "{}: fmt result", name);
@@ -3086,13 +3091,13 @@ fn short_names_canonical_source_passes() {
 }
 
 #[test]
-fn short_form_of_an_imported_type_in_a_header_is_accepted_and_fmt_makes_it_fqn() {
+fn short_form_of_an_imported_type_in_a_header_is_an_error_and_fmt_makes_it_fqn() {
     let src = SN_CANON.replace("x: &t.lib.Item", "x: &lib.Item");
     sn_roundtrip("sn_hdr_short", &src, SN_CANON);
 }
 
 #[test]
-fn fqn_of_an_imported_module_in_a_body_is_accepted_and_fmt_shortens_it() {
+fn fqn_of_an_imported_module_in_a_body_is_an_error_and_fmt_shortens_it() {
     let src = SN_CANON.replace("lib.make()", "t.lib.make()");
     sn_roundtrip("sn_body_fqn", &src, SN_CANON);
     // 型注釈・構造体リテラルの中でも短縮される。
@@ -3102,11 +3107,11 @@ fn fqn_of_an_imported_module_in_a_body_is_accepted_and_fmt_shortens_it() {
 }
 
 #[test]
-fn an_import_used_only_through_a_header_is_accepted_and_fmt_removes_it() {
+fn an_import_used_only_through_a_header_is_an_error_and_fmt_removes_it() {
     let hdr = "fn t.get(x: &lib.Item) -> u8 uses [] panics never\n    x.n\nend t.get\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
     let want = "fn t.get(x: &t.lib.Item) -> u8 uses [] panics never\n    x.n\nend t.get\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
     sn_roundtrip("sn_hdr_only_short", &format!("import t.lib\n\n{}", hdr), want);
-    // ヘッダの FQN だけが参照する import も、check は未使用にせず、fmt が外す。
+    // ヘッダの FQN だけが参照する import も、check は未使用にせず (E1020 ではなく E0020)、fmt が外す。
     sn_roundtrip("sn_hdr_only_fqn", &format!("import t.lib\n\n{}", want), want);
 }
 
@@ -3476,33 +3481,33 @@ fn e0010_not_fired_for_tuple_variant_pattern_bindings() {
 }
 
 #[test]
-fn e0010_still_fires_for_bad_names_in_tuple_lets_and_e0020_stays_non_fatal() {
-    // タプル分解の大文字の束縛名は E0010 のまま (fmt では直らない)。同じファイルの定義順の違反 (E0020) は
-    // fmt で直るので non-fatal として出る。
+fn e0010_still_fires_for_bad_names_in_tuple_lets_and_e0020_is_fatal() {
+    // タプル分解の大文字の束縛名は E0010 のまま (fmt では直らない)。同じファイルの定義順の違反 (E0020) も致命で出る。
     let src = "fn t.mk() -> u32 uses [] panics never\n    1u32\nend t.mk\n\nfn t.main() -> () uses [] panics never\n    let (Foo, y) = (1u32, 2u32)\n    core.mem.drop(Foo)\n    core.mem.drop(y)\nend t.main\n";
-    let t = Tmp::new("e0010_tup_upper", src);
+    let t = Tmp::new_raw("e0010_tup_upper", src);
     let o = run(&["check"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(1), "{}", out);
     assert!(out.contains("E0010: let Foo not snake_case"), "{}", out);
-    assert!(out.contains("E0020 (non-fatal):"), "{}", out);
 }
 
 #[test]
-fn e0020_order_violation_does_not_fail_check() {
-    // 定義順・uses 並びの違反 (E0020) は ksn fmt で直せるため、check は
-    // 非致命的として終了コード 0 のままにする (#D)。fmt --check は
-    // 従来どおり検出する。
+fn e0020_order_violation_fails_check() {
+    // 定義順・uses の並びの違反は `ksn fmt` が直す揺れで、書き方は 1 通りなので check の誤り (E0020、致命)。
     let unordered = "fn t.b() -> u8 uses [] panics never\n    0u8\nend t.b\n\nfn t.a() -> u8 uses [] panics never\n    0u8\nend t.a\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.a(), 0u8)\n    core.check.eq(t.b(), 0u8)\n    Ok(())\nend t.main\n";
-    let t = Tmp::new("e0020_def_order", unordered);
+    let t = Tmp::new_raw("e0020_def_order", unordered);
     let o = run(&["check"], &t.0);
-    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
+    assert!(text(&o.stdout).contains("E0020"), "{}", text(&o.stdout));
 
     let uses_order = "fn t.main() -> Result<(), std.io.Error> uses [io.fs, io.console] panics may\n    Ok(())\nend t.main\n";
-    let u = Tmp::new("e0020_uses_order", uses_order);
+    let u = Tmp::new_raw("e0020_uses_order", uses_order);
     let o = run(&["check"], &u.0);
-    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
     assert!(text(&o.stdout).contains("E0020"), "{}", text(&o.stdout));
+    // `fmt` が直し、直したあとは通る。
+    assert_eq!(run(&["fmt"], &u.0).status.code(), Some(0));
+    assert_eq!(run(&["check"], &u.0).status.code(), Some(0));
 }
 
 // 木走査: `&x` は共有で、本体の `*x` で読める。

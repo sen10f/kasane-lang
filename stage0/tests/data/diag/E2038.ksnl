@@ -1,7 +1,7 @@
-fn t.helper() -> u8 uses [] panics never
-    1u8
-end t.helper
-
 fn t.cf() -> u8 const uses [] panics never
     t.helper()
 end t.cf
+
+fn t.helper() -> u8 uses [] panics never
+    1u8
+end t.helper

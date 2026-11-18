@@ -62,6 +62,19 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     Ok(())
 end t.main
 
+fn t.message(i: u32) -> alloc.string.String uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(match s.push_str("hello") {
+        Ok(_u) => 0u32
+        Err(_e) => core.panic.panic("oom")
+    })
+    core.mem.drop(match s.push_u64(u64.from_u32(i)) {
+        Ok(_u) => 0u32
+        Err(_e) => core.panic.panic("oom")
+    })
+    s
+end t.message
+
 fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
     std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
 end t.oom
@@ -76,16 +89,3 @@ fn t.produce(tx: std.sync.Sender<u32>, count: u32) -> () uses [thread] panics ma
         i = i + 1u32
     }
 end t.produce
-
-fn t.message(i: u32) -> alloc.string.String uses [alloc] panics may
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-    core.mem.drop(match s.push_str("hello") {
-        Ok(_u) => 0u32
-        Err(_e) => core.panic.panic("oom")
-    })
-    core.mem.drop(match s.push_u64(u64.from_u32(i)) {
-        Ok(_u) => 0u32
-        Err(_e) => core.panic.panic("oom")
-    })
-    s
-end t.message

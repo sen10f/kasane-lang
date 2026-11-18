@@ -1,7 +1,7 @@
 fn t.main() -> () uses [] panics never
     let x = 7u8
     let y = 1u8
-    let c = fn () -> u8 capture [&y] {
+    let c = fn() -> u8 capture [&y] {
         x
     }
     core.mem.drop(c())

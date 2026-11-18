@@ -14,7 +14,7 @@ end t.main
 
 fn t.pick(o: Option<t.L>) -> t.L uses [] panics never
     match o {
-        Some(l) => return l
-        None => return t.L { v: 0u32 }
+        Some(l) => l
+        None => t.L { v: 0u32 }
     }
 end t.pick

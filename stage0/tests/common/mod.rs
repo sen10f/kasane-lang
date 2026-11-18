@@ -50,6 +50,24 @@ impl Tmp {
         fs::write(d.join("kasane.toml"), TOML).unwrap();
         fs::write(d.join("kasane.lock"), "version = 1\n").unwrap();
         fs::write(d.join("src").join("t.ksnl"), src).unwrap();
+        let t = Tmp(d);
+        t.fmt();
+        t
+    }
+
+    /// 書き方は 1 通り (E0020) なので、試験の入力は `ksn fmt` の出力にそろえる。`fmt` を通さずに試すときは `Tmp::new_raw`。
+    pub fn fmt(&self) {
+        let _ = run(&["fmt"], &self.0);
+    }
+
+    /// `ksn fmt` を通さない版 (E0020 などの整形の誤りそのものを試すとき)。
+    pub fn new_raw(name: &str, src: &str) -> Tmp {
+        let d = std::env::temp_dir().join(format!("ksn_test_{}_{}", std::process::id(), name));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("src")).unwrap();
+        fs::write(d.join("kasane.toml"), TOML).unwrap();
+        fs::write(d.join("kasane.lock"), "version = 1\n").unwrap();
+        fs::write(d.join("src").join("t.ksnl"), src).unwrap();
         Tmp(d)
     }
 }
@@ -131,6 +149,7 @@ pub fn tmp_files(name: &str, files: &[(&str, &str)]) -> Tmp {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, body).unwrap();
     }
+    t.fmt();
     t
 }
 
@@ -1493,7 +1512,8 @@ pub const SN_LIB: &str = "type t.lib.Item pub\n    n: u8 pub\nend t.lib.Item\n\n
 pub const SN_CANON: &str = "import t.lib\n\nfn t.get(x: &t.lib.Item) -> u8 uses [] panics never\n    x.n\nend t.get\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let item = lib.make()\n    let n = t.get(&item)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
 
 pub fn sn_pkg(name: &str, src: &str) -> Tmp {
-    let t = Tmp::new(name, src);
+    // 名前の参照形 (3.3) の試験: `fmt` を通さない入力を使う。
+    let t = Tmp::new_raw(name, src);
     fs::create_dir_all(t.0.join("src/t")).unwrap();
     fs::write(t.0.join("src/t/lib.ksnl"), SN_LIB).unwrap();
     t

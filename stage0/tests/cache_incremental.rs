@@ -1705,7 +1705,7 @@ fn lsp_incremental_matches_full_check() {
     let t = Tmp::new_raw("lsp_inc", "");
     let src = t.0.join("src");
     fs::create_dir_all(src.join("t")).unwrap();
-    let mk_main = "import t.b\n\nfn t.main() -> u32 uses [] panics never\n    t.b.base(1u32)\nend t.main\n";
+    let mk_main = "import t.b\n\nfn t.main() -> u32 uses [] panics never\n    b.base(1u32)\nend t.main\n";
     let mk_b = |sig: &str| format!("fn t.b.base{} uses [] panics never pub\n    x\nend t.b.base\n", sig);
     let mk_leaf = |name: &str, body: &str| format!("fn t.{n}.f(x: u32) -> u32 uses [] panics never pub\n    {b}\nend t.{n}.f\n", n = name, b = body);
     fs::write(src.join("t.ksnl"), mk_main).unwrap();

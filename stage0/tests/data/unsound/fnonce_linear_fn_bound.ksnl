@@ -9,7 +9,7 @@ end t.Res.shut
 
 fn t.bad() -> () uses [] panics never
     let r = t.open()
-    t.twice(fn () -> () capture [move r] {
+    t.twice(fn() -> () capture [move r] {
         r.shut()
     })
 end t.bad
