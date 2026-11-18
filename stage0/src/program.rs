@@ -54,6 +54,10 @@ pub struct Def {
     pub requires: Vec<(String, V)>,
     /// ジェネリクス `[..]` を持つトレイトメソッドの名前 (dyn 安全性 5.1)。
     pub generic_methods: Vec<String>,
+    /// トレイトのメソッドごとの自身のジェネリクス (メソッド名, (種別, 名前, 境界) の列)。`tast_rules/impl_sig.rs` が impl の側と照らす。
+    pub trait_method_generics: Vec<(String, Vec<(String, String, V)>)>,
+    /// トレイトのメソッドの宣言行の文面 (メソッド名, 行)。型の `V` に残らないライフタイムを `impl_sig.rs` が読む。
+    pub trait_sig_text: Vec<(String, String)>,
     pub impl_trait: String,
     /// `extern` の `link "名前"` (省略時は FQN の末尾)。`link "ライブラリ:名前"` は、共有ライブラリを実行時に
     /// `dlopen` / `LoadLibrary` して `名前` を引く (3.8)。
@@ -373,6 +377,8 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                     let mut sig_ok = true;
                     match bp.generics() {
                         Ok(g) => {
+                            d.trait_method_generics.push((mname.clone(), conv_generics(&g)));
+                            d.trait_sig_text.push((mname.clone(), st.to_string()));
                             if !items(&g).is_empty() {
                                 d.generic_methods.push(mname.clone());
                             }

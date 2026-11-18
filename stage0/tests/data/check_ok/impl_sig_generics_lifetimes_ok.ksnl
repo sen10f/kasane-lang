@@ -1,0 +1,21 @@
+// メソッド自身の型パラメータは名前が違ってもよく、impl は宣言より少ない境界でよい。ライフタイムは省略の規則と同じ分け方なら通る。
+trait t.H
+    fn f[U: core.ops.Clone](self: &Self, a: &U, b: &u8) -> &u8 uses [] panics never
+    fn g(self: &Self, a: &u8) -> &u8 uses [] panics never
+end t.H
+
+type t.X
+    v: u8
+end t.X
+
+impl t.H for t.X
+fn t.X.f[V](self: &t.X, a: &V, b: &u8) -> &u8 uses [] panics never impls t.H
+    core.mem.drop(a)
+    core.mem.drop(b)
+    &self.v
+end t.X.f
+
+fn t.X.g['a](self: &'a t.X, a: &u8) -> &'a u8 uses [] panics never impls t.H
+    core.mem.drop(a)
+    &self.v
+end t.X.g

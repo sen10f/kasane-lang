@@ -126,7 +126,7 @@ impl W {
         let Def {
             kw, name, line, end_line, file: _, module: _, header, generics, params, ret, is_const, uses, inferred, panics, stack,
             derive, linear, layout_c, fields, field_lifetimes, variants, elided_refs, body, init, has_impls, impls_trait, methods, trait_sigs,
-            trait_effs, requires, generic_methods, impl_trait, link, impl_for, impl_targs,
+            trait_effs, requires, generic_methods, trait_method_generics, trait_sig_text, impl_trait, link, impl_for, impl_targs,
         } = d;
         self.s(kw);
         self.s(name);
@@ -207,6 +207,21 @@ impl W {
         }
         self.params(requires);
         self.strs(generic_methods);
+        self.n(trait_method_generics.len() as u64);
+        for (m, gs) in trait_method_generics {
+            self.s(m);
+            self.n(gs.len() as u64);
+            for (a, b, c) in gs {
+                self.s(a);
+                self.s(b);
+                self.v(c);
+            }
+        }
+        self.n(trait_sig_text.len() as u64);
+        for (m, t) in trait_sig_text {
+            self.s(m);
+            self.s(t);
+        }
         self.s(impl_trait);
         self.s(link);
         self.v(impl_for);
@@ -372,6 +387,17 @@ impl<'a> Rd<'a> {
         let trait_effs = (0..n).map(|_| Some((self.s()?, self.strs()?, self.s()?))).collect::<O<Vec<_>>>()?;
         let requires = self.params()?;
         let generic_methods = self.strs()?;
+        let n = self.len()?;
+        let trait_method_generics = (0..n)
+            .map(|_| {
+                let m = self.s()?;
+                let k = self.len()?;
+                let gs = (0..k).map(|_| Some((self.s()?, self.s()?, self.v()?))).collect::<O<Vec<_>>>()?;
+                Some((m, gs))
+            })
+            .collect::<O<Vec<_>>>()?;
+        let n = self.len()?;
+        let trait_sig_text = (0..n).map(|_| Some((self.s()?, self.s()?))).collect::<O<Vec<_>>>()?;
         let impl_trait = self.s()?;
         let link = self.s()?;
         let impl_for = self.v()?;
@@ -408,6 +434,8 @@ impl<'a> Rd<'a> {
             trait_effs,
             requires,
             generic_methods,
+            trait_method_generics,
+            trait_sig_text,
             impl_trait,
             link,
             impl_for,

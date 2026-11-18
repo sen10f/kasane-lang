@@ -18,7 +18,9 @@ pub fn check(prog: &Program, user: &[usize]) -> Vec<Diag> {
     if std::env::var_os("KSN_DUMP_TAST").is_some() {
         eprint!("{}", crate::tast::dump(prog, &tast));
     }
+    // 規則 I (impl の署名・過不足・効果) と規則 D (`&T` → `&dyn Tr` の実装の有無) (S2B)。
     let mut out = Vec::new();
+    out.extend(crate::tast_rules::impl_sig::check(prog, user, &tast, &tk.side));
     out.extend(crate::tast_rules::ref_levels::check(prog, user, &tast, &tk));
     out
 }
