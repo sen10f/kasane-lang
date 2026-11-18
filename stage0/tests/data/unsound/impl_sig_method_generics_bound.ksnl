@@ -1,0 +1,19 @@
+// expect: E1122
+trait t.A
+end t.A
+
+trait t.B
+end t.B
+
+trait t.H
+    fn f[U: t.A](self: &Self, a: U) -> U uses [] panics never
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+impl t.H for t.X
+fn t.X.f[U: t.A + t.B](self: &t.X, a: U) -> U uses [] panics never impls t.H
+    a
+end t.X.f
