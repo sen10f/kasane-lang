@@ -435,7 +435,10 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                         init.remove(k);
                     }
                 }
-                d.init = Some(Parser::new(init).expr(false)?);
+                // 式 ID を振る (本体と同じ。TAST の型の表が初期化式を引けるように)。
+                let mut e = Parser::new(init).expr(false)?;
+                crate::parser::number_nodes(&mut e, &mut 0);
+                d.init = Some(e);
             }
             "extern" => {
                 p.i = 1;
