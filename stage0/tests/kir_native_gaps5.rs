@@ -20,8 +20,7 @@ fn check(name: &str, src: &str) -> String {
 /// 空の配列リテラル (`&[]` の引数・型注釈つきの `[]`・from_utf8)
 #[test]
 fn native_g5_empty_array() {
-    let out = check("g5_empty_array", r#"// 空の配列リテラル: &[] を &[u8] の引数に、let で型を付けて、from_utf8 に
-fn t.total(xs: &[u32]) -> u32 uses [] panics never
+    let out = check("g5_empty_array", r#"fn t.total(xs: &[u32]) -> u32 uses [] panics never
     let mut s = 0u32
     for x in xs.iter() {
         s = s.wrapping_add(*x)
@@ -59,8 +58,7 @@ end t.main
 /// `Result.map` / `and_then` / `ok` (Ok と Err、局所と式の受け手、所有物のエラー)
 #[test]
 fn native_g5_result_map() {
-    let out = check("g5_result_map", r#"// Result.map / and_then / ok: Ok と Err の両方、局所と式の受け手、エラーの型が i64 と String
-fn t.half(x: u32) -> Result<u32, i64> uses [] panics may
+    let out = check("g5_result_map", r#"fn t.half(x: u32) -> Result<u32, i64> uses [] panics may
     if x % 2u32 == 0u32 {
         Ok(x / 2u32)
     } else {
@@ -147,8 +145,7 @@ end t.main
 /// `String.join` (複数・1 つ・空・マルチバイト・長い連結)
 #[test]
 fn native_g5_string_join() {
-    let out = check("g5_string_join", r#"// String.join: 複数・1 つ・空・区切りが空・マルチバイト、長い連結 (確保の拡張)
-fn t.show(r: Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError>) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let out = check("g5_string_join", r#"fn t.show(r: Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError>) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     match r {
         Ok(s) => {
             std.io.print_line(s.as_str())?
@@ -184,8 +181,7 @@ end t.main
 /// `slice.sort` / `sort_by` を `String` の要素で (13 個以上で併合の経路も通る)
 #[test]
 fn native_g5_sort_strings() {
-    let out = check("g5_sort_strings", r#"// slice.sort を String の要素で (13 個以上で併合の経路も通る)、sort_by で長さ順、重複・空文字列
-fn t.add(v: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, text: &str) -> () uses [alloc] panics never
+    let out = check("g5_sort_strings", r#"fn t.add(v: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, text: &str) -> () uses [alloc] panics never
     match alloc.string.String.from_str(std.alloc.SYSTEM, text) {
         Ok(s) => core.mem.drop(v.push(s))
         Err(e) => core.mem.drop(e)
@@ -237,8 +233,7 @@ end t.main
 /// `enumerate` と `Vec.iter()` を元にした `fold` / `count`、組の累積
 #[test]
 fn native_g5_iter_forms() {
-    let out = check("g5_iter_forms", r#"// enumerate と Vec.iter() を元にした fold / count、組の累積
-fn t.p_u64(x: u64) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let out = check("g5_iter_forms", r#"fn t.p_u64(x: u64) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(alloc.fmt.write(&mut s, &x))
     std.io.print_line(s.as_str())?
@@ -316,8 +311,7 @@ end t.main
 /// `Vec<Box<u32>>.push` と `Vec<Box<u8>>`
 #[test]
 fn native_g5_vec_box() {
-    let out = check("g5_vec_box", r#"// Vec<Box<u32>> に push し、反復して読む
-fn t.fill(v: &mut alloc.vec.Vec<alloc.boxed.Box<u32, std.alloc.System>, std.alloc.System>, n: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let out = check("g5_vec_box", r#"fn t.fill(v: &mut alloc.vec.Vec<alloc.boxed.Box<u32, std.alloc.System>, std.alloc.System>, n: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let mut i = 0u32
     while i < n {
         let b = alloc.boxed.Box.new(std.alloc.SYSTEM, i.wrapping_mul(7u32))?
@@ -364,8 +358,7 @@ end t.main
 /// `&dyn Tr` / `&mut dyn Tr` を引数に取る関数 (2 つの実装・let の型注釈・Box<dyn> の as_ref)
 #[test]
 fn native_g5_dyn_ref() {
-    let out = check("g5_dyn_ref", r#"// &dyn / &mut dyn を引数に取る関数: 2 つの実装、let の型注釈、Box<dyn> の as_ref
-trait t.Tr[E: uses, P: panics] pub
+    let out = check("g5_dyn_ref", r#"trait t.Tr[E: uses, P: panics] pub
     fn m(self: &Self) -> u32 uses [E] panics P
 end t.Tr
 
@@ -448,8 +441,7 @@ end t.main
 /// `std.json.to_string` (`derive [ToJson]` の構造体・入れ子・列挙・Vec)
 #[test]
 fn native_g5_json_to_string() {
-    let out = check("g5_json_to_string", r#"// derive [ToJson] の型を std.json.to_string で: 構造体 (String・数値・bool・Vec のフィールド)、入れ子、列挙
-type t.Inner derive [ToJson] pub
+    let out = check("g5_json_to_string", r#"type t.Inner derive [ToJson] pub
     id: u32
     ok: bool
 end t.Inner

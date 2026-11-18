@@ -20,8 +20,7 @@ fn check(name: &str, src: &str) -> String {
 /// core.str の完全修飾 find / rfind (マルチバイトのバイト位置)
 #[test]
 fn native_str_find_rfind_multibyte() {
-    let out = check("g4_str_find_rfind_multibyte", r#"// str.find / str.rfind のマルチバイト文字のバイト位置
-fn t.p_u64(x: u64) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let out = check("g4_str_find_rfind_multibyte", r#"fn t.p_u64(x: u64) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(alloc.fmt.write(&mut s, &x))
     std.io.print_line(s.as_str())?
@@ -54,8 +53,7 @@ end t.main
 /// core.str の完全修飾 eq_ignore_ascii_case
 #[test]
 fn native_str_eq_ignore_ascii_case() {
-    let out = check("g4_str_eq_ignore_ascii_case", r#"// str.eq_ignore_ascii_case: ASCII だけ大小を無視 (非ASCIIは区別)
-fn t.p_bool(x: bool) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let out = check("g4_str_eq_ignore_ascii_case", r#"fn t.p_bool(x: bool) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(alloc.fmt.write(&mut s, &x))
     std.io.print_line(s.as_str())?
@@ -77,8 +75,7 @@ end t.main
 /// take の個数 (count)
 #[test]
 fn native_take_count() {
-    let out = check("g4_take_count_04", r#"// take で先頭 7 件を取り出して count: 7
-enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    let out = check("g4_take_count_04", r#"enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
     Io(std.io.Error)
 end t.Error
@@ -98,8 +95,7 @@ end t.main
 /// map -> filter -> take -> fold
 #[test]
 fn native_long_chain() {
-    let out = check("g4_long_chain_09", r#"// map -> filter -> take -> fold の長い連鎖
-enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    let out = check("g4_long_chain_09", r#"enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
     Io(std.io.Error)
 end t.Error
@@ -125,7 +121,6 @@ fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics never
             acc.wrapping_add(x)
         },
     )
-    // map: 0,2,4,...; filter 5<v<16: 6,8,10,12,14; take 4: 6,8,10,12 => 36
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_i64(total)?
     std.io.print_line(s.as_str())?
@@ -138,8 +133,7 @@ end t.main
 /// filter -> take -> count
 #[test]
 fn native_filter_take_count() {
-    let out = check("g4_filter_take_count_16", r#"// filter + take + count: 偶数のうち先頭 5 件 -> 5
-enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    let out = check("g4_filter_take_count_16", r#"enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
     Io(std.io.Error)
 end t.Error
@@ -168,8 +162,7 @@ end t.main
 /// filter -> map -> take -> fold
 #[test]
 fn native_big_chain() {
-    let out = check("g4_big_chain_28", r#"// 長い連鎖: range -> filter(偶数) -> map(*2) -> take 2 -> fold(和) = 0+4 = 4
-enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    let out = check("g4_big_chain_28", r#"enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
     Io(std.io.Error)
 end t.Error
@@ -207,8 +200,7 @@ end t.main
 /// 利用者の反復子を fold で消費
 #[test]
 fn native_custom_iter_fold() {
-    let out = check("g4_custom_iter_fold_06", r#"// 利用者定義の Iterator を fold で消費する: 0+1+2+3 = 6
-type t.Upto2 pub
+    let out = check("g4_custom_iter_fold_06", r#"type t.Upto2 pub
     cur: u64
     stop: u64
 end t.Upto2
@@ -248,8 +240,7 @@ end t.main
 /// 利用者の反復子の filter -> fold
 #[test]
 fn native_custom_iter_filter_fold() {
-    let out = check("g4_custom_iter_filter_fold_27", r#"// 利用者イテラを filter して fold: 0..4 の偶数だけ和 = 0+2 = 2
-type t.Upto10 pub
+    let out = check("g4_custom_iter_filter_fold_27", r#"type t.Upto10 pub
     cur: u64
     stop: u64
 end t.Upto10
@@ -294,8 +285,7 @@ end t.main
 /// 空の利用者の反復子 (fold と count)
 #[test]
 fn native_empty_custom_iter() {
-    let out = check("g4_empty_custom_iter_31", r#"// 最初から空の利用者イテラ (stop == cur): fold = 初期値, count = 0
-type t.Upto11 pub
+    let out = check("g4_empty_custom_iter_31", r#"type t.Upto11 pub
     cur: u64
     stop: u64
 end t.Upto11
@@ -337,8 +327,7 @@ end t.main
 /// 利用者の反復子を for と fold の両方へ
 #[test]
 fn native_two_instances() {
-    let out = check("g4_two_instances_17", r#"// 非クローンな利用者イテラを for と fold の両方へ (別々のインスタンス)
-type t.Upto4 pub
+    let out = check("g4_two_instances_17", r#"type t.Upto4 pub
     cur: u64
     stop: u64
 end t.Upto4
@@ -577,7 +566,6 @@ fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics never
             let sum1 = t.node_sum(root.as_ref())
             let mut r = root
             let child = core.mem.replace(&mut (*r.as_mut()).child, None)
-            // child は root から外れた。root のみを使い、その後両方を別々に解放
             match child {
                 None => ()
                 Some(c) => {
@@ -700,7 +688,6 @@ fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics never
         Ok(()) => ()
         Err(e) => core.mem.drop(e)
     }
-    // 1 番目を外し、残りを tail にして別々に解放
     let first = core.mem.replace(&mut head, None)
     match first {
         None => ()
@@ -729,8 +716,7 @@ end t.Error
 /// char のリテラルパターン (マルチバイト)
 #[test]
 fn native_char_literal_patterns() {
-    let out = check("g4_char_literal_patterns", r#"// char のリテラルパターン (マルチバイト文字) の木走査とネイティブの一致
-fn t.char_case(c: char) -> &'static str uses [] panics never
+    let out = check("g4_char_literal_patterns", r#"fn t.char_case(c: char) -> &'static str uses [] panics never
     match c {
         'é' => "e-acute"
         '日' => "nihon"
@@ -755,8 +741,7 @@ end t.main
 /// chars() の中の char のリテラルパターン
 #[test]
 fn native_chars_char_pattern_loop() {
-    let out = check("g4_chars_char_pattern_loop", r#"// chars() の反復子の中で char のリテラルパターンを照合
-fn t.p_u64(x: u64) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let out = check("g4_chars_char_pattern_loop", r#"fn t.p_u64(x: u64) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(alloc.fmt.write(&mut s, &x))
     std.io.print_line(s.as_str())?
@@ -784,8 +769,7 @@ end t.main
 /// capture [&x] のスカラーを map のクロージャで読む
 #[test]
 fn native_map_capture() {
-    let out = check("g4_map_capture_07", r#"// クロージャがローカルを取り込む map: 10+11+12 = 33
-enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    let out = check("g4_map_capture_07", r#"enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
     Io(std.io.Error)
 end t.Error

@@ -12,7 +12,7 @@ use common::*;
 #[test]
 fn fmt_check_fails_on_noncanonical_source() {
     let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never   \n    Ok(())\nend t.main\n";
-    let t = Tmp::new("fmtbad", src);
+    let t = Tmp::new_raw("fmtbad", src);
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(1));
     // 整形すると冪等に通る。
     assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
@@ -23,7 +23,7 @@ fn fmt_check_fails_on_noncanonical_source() {
 fn ksn_fix_also_formats() {
     let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n\n\
                fn t.a() -> u8 uses [] panics never pub\n    1u8\nend t.a\n";
-    let t = Tmp::new("fix_fmt", src);
+    let t = Tmp::new_raw("fix_fmt", src);
     assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
 }
@@ -39,7 +39,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 ";
-    let t = Tmp::new("infer_fmt", src);
+    let t = Tmp::new_raw("infer_fmt", src);
     let o = run(&["fmt", "--check"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
 }
@@ -49,7 +49,7 @@ fn ksn_fix_removes_semicolons_and_rewrites_paths_and_compound_assignment() {
     let src = "fn t.a() -> u8 uses [] panics may\n    let mut x = 1u8;\n    x += 2u8;\n    t::b(x)\nend t.a\n\n\
                fn t.b(v: u8) -> u8 uses [] panics never\n    v\nend t.b\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a())\n    Ok(())\nend t.main\n";
-    let t = Tmp::new("rustisms_fix", src);
+    let t = Tmp::new_raw("rustisms_fix", src);
     let o = run(&["fix"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
     let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
@@ -62,7 +62,7 @@ fn ksn_fix_removes_semicolons_and_rewrites_paths_and_compound_assignment() {
 fn ksn_fix_adds_deref_to_a_reference_operand_of_an_operator() {
     let src = "fn t.a(c: &u8, n: u8) -> bool uses [] panics never\n    c >= b'0' && n == c && c < 58u8\nend t.a\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.a(&1u8, 2u8))\n    Ok(())\nend t.main\n";
-    let t = Tmp::new("op_ref_fix", src);
+    let t = Tmp::new_raw("op_ref_fix", src);
     let o = run(&["fix"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
     let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
@@ -117,7 +117,7 @@ fn formatter_edge_cases_run_natively() {
 end t.main.test_fmt_edges
 "#;
     let src = format!("{}\n{}", main_wrap("", ""), test);
-    let t = Tmp::new("fmt_edges_both", &src);
+    let t = Tmp::new_raw("fmt_edges_both", &src);
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
@@ -153,7 +153,7 @@ end t.fill
 "#;
     let body = "    let mut b = alloc.string.String.new(std.alloc.SYSTEM)\n    let mut c = alloc.string.String.new(std.alloc.SYSTEM)\n    match t.fill(&mut b) {\n        Ok(_u) => ()\n        Err(_e) => ()\n    }\n    std.io.print_line(b.as_str())?\n    match c.push_display(&b) {\n        Ok(_u) => ()\n        Err(_e) => ()\n    }\n    if b == c {\n        std.io.print_line(\"same\")?\n    }\n    match c.push_debug(&b) {\n        Ok(_u) => ()\n        Err(_e) => ()\n    }\n    std.io.print_line(c.as_str())?\n";
     let full = format!("{}fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", prefix, body);
-    let t = Tmp::new("fmt_builder_both", &full);
+    let t = Tmp::new_raw("fmt_builder_both", &full);
     let o = run(&["run"], &t.0);
     let ran = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", ran, text(&o.stderr));
@@ -172,12 +172,14 @@ const MAIN2: &str = "fn t.main() -> Result<(), std.io.Error> uses [] panics neve
 const FN_A: &str = "fn t.a() -> u8 uses [] panics never pub\n    1u8\nend t.a\n";
 
 fn fmt_ok(name: &str, src: &str) -> String {
-    let t = Tmp::new(name, src);
+    let t = Tmp::new_raw(name, src);
     assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0), "{name}");
     let out = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
     // 冪等で、整形後も check が通る。
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{name}: {out}");
-    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{name}: {out}");
+    // 整形後の `.ksnl` にコメントが残っていれば E0059 (`.ksnl` にコメントは置けない。人は `.ksnh` を書く)。
+    let c = run(&["check"], &t.0).status.code();
+    assert!(c == Some(0) || (out.lines().any(|l| l.trim_start().starts_with("//")) && c == Some(1)), "{name}: {out}");
     out
 }
 
@@ -196,7 +198,7 @@ fn fmt_keeps_detached_comment_with_next_def_when_sorting() {
 
 #[test]
 fn fmt_keeps_trailing_comment_and_reports_it() {
-    let t = Tmp::new("cm_tail", &format!("{MAIN2}\n// trailing comment after last def\n"));
+    let t = Tmp::new_raw("cm_tail", &format!("{MAIN2}\n// trailing comment after last def\n"));
     assert_eq!(run(&["fmt"], &t.0).status.code(), Some(1));
     let out = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
     assert!(out.contains("// trailing comment after last def"), "{out}");
@@ -205,7 +207,7 @@ fn fmt_keeps_trailing_comment_and_reports_it() {
 #[test]
 fn fmt_keeps_comments_on_imports_when_sorting() {
     let src = format!("// about io\nimport std.io\n// about fs\nimport std.fs\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    io.print(\"x\")\n    core.mem.drop(fs.exists(\"x\"))\n    Ok(())\nend t.main\n");
-    let t = Tmp::new("cm_import", &src);
+    let t = Tmp::new_raw("cm_import", &src);
     run(&["fmt"], &t.0);
     let out = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
     assert!(out.starts_with("// about fs\nimport std.fs\n// about io\nimport std.io\n"), "{out}");

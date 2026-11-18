@@ -37,7 +37,13 @@ pub fn root() -> PathBuf {
 /// 一時パッケージ `t` を作る。
 pub struct Tmp(pub PathBuf);
 impl Tmp {
+    /// 一時パッケージ `t`。`.ksnl` にコメントは置けない (E0059) ので、試験の入力に説明のコメントの行があれば外す
+    /// (`strip_ksnh` と同じ)。コメントそのものを試験するときは `new_raw` (そのまま置く) か `new_ksnh` (`.ksnh` を正にする)。
     pub fn new(name: &str, src: &str) -> Tmp {
+        Tmp::new_raw(name, &strip_ksnh(src))
+    }
+
+    pub fn new_raw(name: &str, src: &str) -> Tmp {
         let d = std::env::temp_dir().join(format!("ksn_test_{}_{}", std::process::id(), name));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(d.join("src")).unwrap();
@@ -47,6 +53,27 @@ impl Tmp {
         Tmp(d)
     }
 }
+impl Tmp {
+    /// `.ksnh` (コメント付き) を正にした一時パッケージ: `src/t.ksnh` と、その `strip` の `src/t.ksnl` を置く。
+    pub fn new_ksnh(name: &str, ksnh: &str) -> Tmp {
+        let t = Tmp::new_raw(name, &strip_ksnh(ksnh));
+        fs::write(t.0.join("src").join("t.ksnh"), ksnh).unwrap();
+        t
+    }
+}
+
+/// `ksn strip` と同じ変換 (先頭の非空白が `//` の行を消す。ファイル先頭のコメントの塊の直後の空行も消す)。
+pub fn strip_ksnh(text: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let is_c = |l: &str| l.trim_start_matches(' ').starts_with("//");
+    let mut keep: Vec<bool> = lines.iter().map(|l| !is_c(l)).collect();
+    let head = lines.iter().take_while(|l| is_c(l)).count();
+    if head > 0 && head + 1 < lines.len() && lines[head].is_empty() {
+        keep[head] = false;
+    }
+    lines.iter().zip(&keep).filter(|(_, k)| **k).map(|(l, _)| *l).collect::<Vec<_>>().join("\n")
+}
+
 impl Drop for Tmp {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);

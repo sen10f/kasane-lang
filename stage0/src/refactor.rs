@@ -1566,12 +1566,39 @@ fn add_pub(l: &Loaded, plan: &mut Plan, name: &str, field: Option<&str>, added: 
 
 // ------------------------------------------------------------ 検証と適用
 
+/// `.ksnh` の変更ごとに、横の `.ksnl` (コメントを外したもの) の変更を足す。`.ksnh` が正で、`ksn check` が一致を確かめる (E9050)。
+/// `.ksnh` から移るファイル、またはコメントを持つ新しいファイルは、`.ksnh` として書く (`.ksnl` にコメントは置けない)。
+fn with_ksnl(changes: &[FileChange]) -> Vec<FileChange> {
+    let ksnl_of = |p: &str| format!("{}.ksnl", p.trim_end_matches(".ksnh"));
+    let ksnh_of = |p: &str| format!("{}.ksnh", p.trim_end_matches(".ksnl").trim_end_matches(".ksnh"));
+    let mut out = vec![];
+    for c in changes {
+        let from_ksnh = c.old_path.as_deref().map_or(false, |o| o.ends_with(".ksnh"));
+        let has_comment = crate::ksnh::strip(&c.new_text) != c.new_text;
+        let as_ksnh = c.new_path.ends_with(".ksnh") || (c.new_path.ends_with(".ksnl") && (from_ksnh || has_comment));
+        if !as_ksnh {
+            out.push(FileChange { old_path: c.old_path.clone(), new_path: c.new_path.clone(), old_text: c.old_text.clone(), new_text: c.new_text.clone() });
+            continue;
+        }
+        let new_path = ksnh_of(&c.new_path);
+        out.push(FileChange { old_path: c.old_path.clone(), new_path: new_path.clone(), old_text: c.old_text.clone(), new_text: c.new_text.clone() });
+        out.push(FileChange {
+            old_path: c.old_path.as_deref().filter(|o| o.ends_with(".ksnh")).map(ksnl_of),
+            new_path: ksnl_of(&new_path),
+            old_text: String::new(),
+            new_text: crate::ksnh::strip(&c.new_text),
+        });
+    }
+    out
+}
+
 /// 計画をディスクに触れずに (上書きとして) 適用し、`ksn check` の診断が増えないことを確かめる。
 pub fn verify(root: &std::path::Path, plan: &Plan) -> Result<(), String> {
+    let changes = with_ksnl(&plan.changes);
     use crate::project::{overlay_clear, overlay_hide, overlay_set};
     let before = crate::cli::check_error_lines(root);
     overlay_clear();
-    for c in &plan.changes {
+    for c in &changes {
         if let Some(o) = &c.old_path {
             if *o != c.new_path {
                 overlay_hide(o);
@@ -1597,6 +1624,7 @@ pub fn verify(root: &std::path::Path, plan: &Plan) -> Result<(), String> {
 
 /// 計画をディスクに書く。途中で失敗したら元に戻す。
 pub fn apply(plan: &Plan) -> Result<(), String> {
+    let changes = with_ksnl(&plan.changes);
     let mut undo: Vec<(String, Option<Vec<u8>>)> = vec![];
     let touch = |p: &str, undo: &mut Vec<(String, Option<Vec<u8>>)>| {
         if !undo.iter().any(|u| u.0 == p) {
@@ -1605,7 +1633,7 @@ pub fn apply(plan: &Plan) -> Result<(), String> {
     };
     let mut res: Result<(), String> = Ok(());
     let mut removed_dirs: Vec<String> = vec![];
-    for c in &plan.changes {
+    for c in &changes {
         touch(&c.new_path, &mut undo);
         if let Some(o) = &c.old_path {
             touch(o, &mut undo);
@@ -1615,7 +1643,7 @@ pub fn apply(plan: &Plan) -> Result<(), String> {
         touch(p, &mut undo);
     }
     'outer: {
-        for c in &plan.changes {
+        for c in &changes {
             if let Some(dir) = std::path::Path::new(&c.new_path).parent() {
                 if let Err(e) = std::fs::create_dir_all(dir) {
                     res = Err(format!("cannot create {}: {}", crate::cli::rel(&norm(dir)), e));
@@ -1627,9 +1655,9 @@ pub fn apply(plan: &Plan) -> Result<(), String> {
                 break 'outer;
             }
         }
-        for c in &plan.changes {
+        for c in &changes {
             if let Some(o) = &c.old_path {
-                if *o != c.new_path && !plan.changes.iter().any(|d| d.new_path == *o) {
+                if *o != c.new_path && !changes.iter().any(|d| d.new_path == *o) {
                     if let Err(e) = std::fs::remove_file(o) {
                         res = Err(format!("cannot remove {}: {}", crate::cli::rel(o), e));
                         break 'outer;

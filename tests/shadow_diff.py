@@ -65,9 +65,12 @@ def run_one(item):
         open(os.path.join(tmp, 'kasane.lock'), 'w').write('version = 1\n')
         shutil.copy(path, os.path.join(tmp, 'src', 't.ksnl'))
         cwd = tmp
-        for l in open(path, encoding='utf-8'):
-            if l.startswith('// target: '):
-                args += ['--target', l.split(':', 1)[1].strip()]
+        # 印 (`target: X`) は横の `<名前>.expect` にある (`.ksnl` にコメントは置けない)。
+        exp = os.path.splitext(path)[0] + '.expect'
+        if os.path.exists(exp):
+            for l in open(exp, encoding='utf-8'):
+                if l.startswith('target:'):
+                    args += ['--target', l.split(':', 1)[1].strip()]
     env = dict(os.environ, KSN_CHECKER='shadow')
     r = subprocess.run([EXE] + args, cwd=cwd, env=env, capture_output=True, text=True, encoding='utf-8', errors='replace')
     found = set()

@@ -258,10 +258,11 @@ fn build_spa() -> (Tmp, PathBuf) {
 fn todo_spa_generated_files_match_the_definition() {
     let t = copy_pkg("apps/todo_spa", "gen");
     fs::remove_file(t.0.join("src/todo_spa/dom.ksnl")).unwrap();
+    fs::remove_file(t.0.join("src/todo_spa/dom.ksnh")).unwrap();
     fs::remove_file(t.0.join("web/dom.mjs")).unwrap();
     let o = run(&["bindgen", "bindgen/dom.bindgen"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", both(&o));
-    for rel in ["src/todo_spa/dom.ksnl", "web/dom.mjs"] {
+    for rel in ["src/todo_spa/dom.ksnh", "src/todo_spa/dom.ksnl", "web/dom.mjs"] {
         let now = fs::read_to_string(t.0.join(rel)).unwrap();
         let committed = fs::read_to_string(root().join("apps/todo_spa").join(rel)).unwrap();
         assert_eq!(now, committed, "{} が定義と違う (ksn bindgen で作り直す)", rel);

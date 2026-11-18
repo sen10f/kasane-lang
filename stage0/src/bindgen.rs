@@ -323,8 +323,11 @@ pub fn cmd_bindgen(rest: &[String]) -> i32 {
             return 2;
         }
     };
-    let (ksnl, js) = (gen_ksnl(&d), gen_js(&d));
-    for (p, text) in [(&d.ksnl, ksnl), (&d.js, js)] {
+    // 生成の注意書きのコメントは `.ksnh` が持ち、`.ksnl` はそれを `strip` したもの (`.ksnl` にコメントは置けない)。
+    let (ksnh, js) = (gen_ksnl(&d), gen_js(&d));
+    let ksnh_path = format!("{}.ksnh", d.ksnl.trim_end_matches(".ksnl"));
+    let ksnl = crate::ksnh::strip(&ksnh);
+    for (p, text) in [(&ksnh_path, ksnh), (&d.ksnl, ksnl), (&d.js, js)] {
         let p = Path::new(p);
         if let Some(dir) = p.parent().filter(|x| !x.as_os_str().is_empty()) {
             if let Err(e) = fs::create_dir_all(dir) {

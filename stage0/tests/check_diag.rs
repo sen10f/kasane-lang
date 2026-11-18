@@ -20,7 +20,7 @@ fn diagnostics_each_case_reports_its_code() {
     for p in names {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
         let code = &stem[..5];
-        let t = Tmp::new(&stem, &fs::read_to_string(&p).unwrap());
+        let t = Tmp::new_raw(&stem, &fs::read_to_string(&p).unwrap());
         // 横に `<名前>.ksnh` があるケースは、それも `src/t.ksnh` に置く (コメントそのものや `.ksnl` との一致を試すもの)。
         if let Ok(h) = fs::read_to_string(p.with_extension("ksnh")) {
             fs::write(t.0.join("src").join("t.ksnh"), h).unwrap();
