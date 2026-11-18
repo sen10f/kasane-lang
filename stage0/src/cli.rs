@@ -544,17 +544,21 @@ fn eval_const_inits(prog: Program, user: &[usize]) -> (Program, Vec<crate::check
         return (prog, vec![]);
     }
     let rc = Rc::new(prog);
-    let mut out = vec![];
+    let (mut out, skip) = const_init_cycles(&rc, &idx);
     {
         let mut it = crate::interp::Interp::new(rc.clone());
         it.step_limit = Some(CONST_STEP_LIMIT);
-        for &i in &idx {
+        for &i in idx.iter().filter(|i| !skip.contains(i)) {
             // 上限は初期化式ごとに数える (1 つの式が他の式の予算を使い切らないように)。
             it.steps = 0;
             if let Err(crate::value::Ctl::Panic(m)) = it.const_value(i) {
                 let d = &rc.defs[i];
                 let msg = if m == crate::interp::STEP_LIMIT_MSG {
                     format!("evaluating the initializer of `{}` did not finish: it exceeded {} evaluation steps, the limit of constant evaluation (4.1)", d.name, CONST_STEP_LIMIT)
+                } else if m == crate::interp::CONST_CYCLE_MSG {
+                    format!("the initializer of `{}` is cyclic: it depends on itself through a function call (4.1: a `const` / `static` cannot depend on itself)", d.name)
+                } else if m == crate::interp::CONST_DEPTH_MSG {
+                    format!("evaluating the initializer of `{}` nests the constants too deeply (4.1)", d.name)
                 } else {
                     format!("evaluating the initializer of `{}` panics: {} (4.1: a panic during const evaluation is a compile error)", d.name, m)
                 };
@@ -573,6 +577,103 @@ fn eval_const_inits(prog: Program, user: &[usize]) -> (Program, Vec<crate::check
         Ok(p) => (p, out),
         Err(_) => unreachable!("the interpreter is dropped before the program is taken back"),
     }
+}
+
+/// `const` / `static` の初期化式が直接参照する `const` / `static` の辺から循環を探す (4.1)。
+/// 循環に入る定義ごとに E4024 を返し (`A -> B -> A` と示す)、循環に入るか循環へ届く定義の番号を返す (評価しない)。
+/// 関数越しの循環は評価の入れ子の検査 (interp.rs `const_value`) が見つける。
+fn const_init_cycles(prog: &Program, idx: &[usize]) -> (Vec<crate::check::Diag>, std::collections::HashSet<usize>) {
+    use crate::check::{nf, nname, strs, walk};
+    use crate::program::Target;
+    let is_init: std::collections::HashSet<usize> = idx.iter().copied().collect();
+    let mut edges: HashMap<usize, Vec<usize>> = HashMap::new();
+    for &i in idx {
+        let d = &prog.defs[i];
+        let mut nodes = vec![];
+        walk(d.init.as_ref().unwrap(), &mut nodes);
+        let mut out: Vec<usize> = vec![];
+        for n in nodes {
+            if nname(n) != "Path" {
+                continue;
+            }
+            let segs = strs(&nf(n)[0]);
+            if let Some(r) = prog.resolve(&segs, &d.file) {
+                if let Target::Const(j) = r.target {
+                    if is_init.contains(&j) && !out.contains(&j) {
+                        out.push(j);
+                    }
+                }
+            }
+        }
+        edges.insert(i, out);
+    }
+    // i から i へ戻る最短の道 (i ... u の並び。u から i へ戻る辺がある)。
+    let cycle_through = |i: usize| -> Option<Vec<usize>> {
+        let mut parent: HashMap<usize, usize> = HashMap::new();
+        let mut seen = std::collections::HashSet::from([i]);
+        let mut q = std::collections::VecDeque::from([i]);
+        while let Some(u) = q.pop_front() {
+            for &v in &edges[&u] {
+                if v == i {
+                    let mut chain = vec![u];
+                    let mut x = u;
+                    while x != i {
+                        x = parent[&x];
+                        chain.push(x);
+                    }
+                    chain.reverse();
+                    return Some(chain);
+                }
+                if seen.insert(v) {
+                    parent.insert(v, u);
+                    q.push_back(v);
+                }
+            }
+        }
+        None
+    };
+    let mut diags = vec![];
+    let mut cyclic: std::collections::HashSet<usize> = Default::default();
+    for &i in idx {
+        let Some(chain) = cycle_through(i) else { continue };
+        if chain.iter().any(|j| cyclic.contains(j)) {
+            continue; // 同じ循環は最初の 1 件で報告する
+        }
+        let names: Vec<String> = chain.iter().map(|&j| prog.defs[j].name.clone()).collect();
+        let d = &prog.defs[i];
+        diags.push(crate::check::Diag {
+            file: d.file.clone(),
+            code: "E4024".into(),
+            fqn: d.name.clone(),
+            line: d.line,
+            col: 0,
+            msg: format!(
+                "the initializer of `{}` is cyclic: {} -> {} (4.1: a `const` / `static` cannot depend on itself)",
+                d.name,
+                names.join(" -> "),
+                names[0]
+            ),
+        });
+        cyclic.extend(chain);
+    }
+    // 循環に入る定義と、循環へ届く定義は評価しない (評価すると循環の先で止まる)。
+    let mut skip = std::collections::HashSet::new();
+    for &i in idx {
+        let mut seen = std::collections::HashSet::from([i]);
+        let mut q = vec![i];
+        while let Some(u) = q.pop() {
+            if cyclic.contains(&u) {
+                skip.insert(i);
+                break;
+            }
+            for &v in &edges[&u] {
+                if seen.insert(v) {
+                    q.push(v);
+                }
+            }
+        }
+    }
+    (diags, skip)
 }
 
 // ------------------------------------------------------------ コマンド

@@ -1,0 +1,10 @@
+// expect: E4024
+static t.A: u64 = t.B
+
+static t.B: u64 = t.C
+
+static t.C: u64 = t.A
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
