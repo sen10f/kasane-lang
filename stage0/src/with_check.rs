@@ -44,7 +44,7 @@ impl<'a> Checker<'a> {
         let mut ty = self.ty_of(&f[2], env);
         if is_nil(&ty) {
             // 初期化式の型は `?` などで自前では決まらないので、型推論の結果を使う。
-            if let Some(t) = self.let_tys.get(&(self.d, nline(e), name.clone())) {
+            if let Some(t) = self.let_tys.get(&(self.d, crate::parser::nid(&f[0]))) {
                 ty = crate::types::TypeCk::to_v(t).unwrap_or(V::Nil);
             }
         }

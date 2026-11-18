@@ -398,10 +398,15 @@ pub struct TypeCk<'a> {
     rets: Vec<Ty>,
     /// `let` の束縛の型 ((定義の添字, `let` の行, 名前) → 型)。関数の推論が終わった時点で解決した形。
     /// 所有権の検査 (check.rs の move・線形型) が、自前で型を決められない束縛に使う。
-    pub let_tys: HashMap<(usize, usize, String), Ty>,
+    /// 鍵は (定義の添字, 束縛する `PBind` ノードの式 ID)。`with` の本体の値 (`$with_val`) だけは `With` ノードの式 ID。
+    /// 式 ID は本体ごとに一意なので、同じ行の同名の束縛も別の項になる (旧: (定義, 行, 名前) で衝突して `Unknown`)。
+    pub let_tys: HashMap<(usize, u32), Ty>,
+    /// 旧い鍵 (定義の添字, `let` の行, 名前) の導出の表。行と名前で引く検査 (`refs_check`・`plain_binds` など、
+    /// 式の木を持たない側) だけが使う。同じ行の同名で型の違う束縛は `Unknown` に潰す (旧来の挙動のまま)。
+    pub let_tys_line: HashMap<(usize, usize, String), Ty>,
     /// 型検査が効果の実体化で `suspend` を含むと決めた呼び出し (書き手の定義, 式の位置)。借用検査が中断点にする (E3050)。
     pub susp_lines: HashSet<(usize, usize)>,
-    let_pending: Vec<(usize, String, Ty)>,
+    let_pending: Vec<(usize, String, u32, Ty)>,
     /// 呼び出しの辺 (呼び出し元の関数名 -> 呼び出し先の関数名)。型で解決できたメソッド呼び出しを含む。
     pub edges: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// 入れ子のクロージャ本体に対応する呼び出しグラフの節 (5.3)。スタックの先頭がいま推論中のクロージャ。
@@ -420,9 +425,9 @@ pub struct TypeCk<'a> {
     pub resolved_calls: Vec<ResolvedCall>,
     /// メソッド呼び出し・フィールド参照のレシーバの型 (改名ツール用)。
     pub recv_log: Vec<RecvSite>,
-    /// メソッド呼び出しごと (書き手の定義, 式の位置, 名前) の解決先。`None` は決められない呼び出し
+    /// メソッド呼び出しごと (書き手の定義, 呼び出しノードの式 ID) の解決先。メソッド形は `MCall`、`x.m(..)` の経路形は `Call` のノード。`None` は決められない呼び出し
     /// (借用検査は安全側に倒す)。候補が複数なら引数の個数が合うものすべて。
-    pub call_res: HashMap<(usize, usize, String), Option<Vec<usize>>>,
+    pub call_res: HashMap<(usize, u32), Option<Vec<usize>>>,
     last_fit: Option<Vec<usize>>,
     recv_start: usize,
     /// いま推論している `Path` ノードの位置 (`path()` が局所変数の連鎖を記録するのに使う)。
@@ -536,7 +541,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -670,17 +675,30 @@ impl<'a> TypeCk<'a> {
             let t = self.recv_log[k].recv.clone();
             self.recv_log[k].recv = self.deep(&t);
         }
-        // 同じ行の同じ名前の束縛 (1 行に並べた腕など) が違う型なら、決められない (Unknown = 黙る)。
+        // 式 ID の鍵: 同じ ID が複数回推論されて型が違うなら、決められない (Unknown = 黙る)。
+        // 行と名前の鍵 (導出の表): 同じ行の同じ名前の束縛 (1 行に並べた腕など) が違う型なら、同じく Unknown。
         let mut seen: HashMap<(usize, String), Ty> = HashMap::new();
-        for (line, name, t) in std::mem::take(&mut self.let_pending) {
+        let mut by_id: HashMap<u32, Ty> = HashMap::new();
+        for (line, name, id, t) in std::mem::take(&mut self.let_pending) {
             let t = self.deep(&t);
+            if id != 0 {
+                match by_id.get(&id) {
+                    Some(old) if *old != t => {
+                        self.let_tys.insert((di, id), Ty::Unknown);
+                    }
+                    _ => {
+                        by_id.insert(id, t.clone());
+                        self.let_tys.insert((di, id), t.clone());
+                    }
+                }
+            }
             match seen.get(&(line, name.clone())) {
                 Some(old) if *old != t => {
-                    self.let_tys.insert((di, line, name), Ty::Unknown);
+                    self.let_tys_line.insert((di, line, name), Ty::Unknown);
                 }
                 _ => {
                     seen.insert((line, name.clone()), t.clone());
-                    self.let_tys.insert((di, line, name), t);
+                    self.let_tys_line.insert((di, line, name), t);
                 }
             }
         }
@@ -2355,11 +2373,11 @@ impl<'a> TypeCk<'a> {
     /// 通らない (パスとして構文解析される) ので、型で解決できたときに実体化した効果全体を検査する。
     /// それ以外 (`x.f().m()` などの MCall) は従来の名前ベースの検査が宣言どおりの効果を見るので、
     /// クロージャから推論した部分だけを検査する。
-    fn call_method(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
+    fn call_method(&mut self, id: u32, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
         let saved = self.last_fit.take();
         let t = self.call_method_in(recv, base, name, args, line, targs, local);
         let fit = std::mem::replace(&mut self.last_fit, saved);
-        let key = (self.cur, line, name.to_string());
+        let key = (self.cur, id);
         match (self.call_res.get_mut(&key), fit) {
             (None, f) => {
                 self.call_res.insert(key, f);
@@ -3679,14 +3697,14 @@ impl<'a> TypeCk<'a> {
                 self.path_pos = 0;
                 t
             }
-            "Call" => self.call(&f[0], items(&f[1]), nline(e), items(&f[2])),
+            "Call" => self.call(crate::parser::nid(e), &f[0], items(&f[1]), nline(e), items(&f[2])),
             "MCall" => {
                 let recv = self.infer(&f[0]);
                 self.log_recv(f, 4, false, &st(&f[1]), &recv);
                 let args: Vec<Ty> = items(&f[2]).iter().map(|a| self.infer(a)).collect();
                 let base = self.base_local(&f[0]);
                 self.arg_static = items(&f[2]).iter().map(|a| self.static_expr(a)).collect();
-                self.call_method(&recv, base.as_deref(), &st(&f[1]), &args, nline(e), items(&f[3]), false)
+                self.call_method(crate::parser::nid(e), &recv, base.as_deref(), &st(&f[1]), &args, nline(e), items(&f[3]), false)
             }
             "Field" => {
                 let r = self.infer(&f[0]);
@@ -4175,11 +4193,11 @@ impl<'a> TypeCk<'a> {
                 }
                 self.bind_pat_from(&f[0], &init, src, nline(e));
                 if let Some(t) = self.lookup(&st(&nf(&f[0])[0])) {
-                    self.let_pending.push((nline(e), st(&nf(&f[0])[0]), t));
+                    self.let_pending.push((nline(e), st(&nf(&f[0])[0]), crate::parser::nid(&f[0]), t));
                 }
                 let body = self.infer(&f[4]);
                 // 本体の値の型 (借用を持ち得ない型なら、借用検査は値の借用を追わない)。
-                self.let_pending.push((nline(e), "$with_val".to_string(), body.clone()));
+                self.let_pending.push((nline(e), "$with_val".to_string(), crate::parser::nid(e), body.clone()));
                 let cl = self.infer(&f[3]);
                 if let Ty::Named(..) | Ty::Prim(_) | Ty::Tuple(_) | Ty::Ref(..) = self.deep(&cl) {
                     self.diag("E2045", format!("the `close` expression of `with` must have type (), found {}", self.deep(&cl).show()), nline(&f[3]));
@@ -4291,10 +4309,10 @@ impl<'a> TypeCk<'a> {
                     self.set_static(&st(&nf(&f[0])[0]), true);
                 }
                 let mut names = vec![];
-                pat_binds(&f[0], &mut names);
-                for n in names {
+                crate::check::pat_bind_nodes(&f[0], &mut names);
+                for (n, id) in names {
                     if let Some(t) = self.lookup(&n) {
-                        self.let_pending.push((nline(s), n, t));
+                        self.let_pending.push((nline(s), n, id, t));
                     }
                 }
                 Ty::Unit
@@ -4388,10 +4406,10 @@ impl<'a> TypeCk<'a> {
     /// `match` の腕・`for` のパターンの束縛の型を `let_tys` に記録する (move の追跡 E3002 が使う)。
     fn note_pat_binds(&mut self, pat: &V, line: usize) {
         let mut names = vec![];
-        pat_binds(pat, &mut names);
-        for n in names {
+        crate::check::pat_bind_nodes(pat, &mut names);
+        for (n, id) in names {
             if let Some(t) = self.lookup(&n) {
-                self.let_pending.push((line, n, t));
+                self.let_pending.push((line, n, id, t));
             }
         }
     }
@@ -4776,7 +4794,7 @@ impl<'a> TypeCk<'a> {
         Ty::Named(en.to_string(), targs)
     }
 
-    fn call(&mut self, callee: &V, args: &[V], line: usize, targs: &[V]) -> Ty {
+    fn call(&mut self, call_id: u32, callee: &V, args: &[V], line: usize, targs: &[V]) -> Ty {
         let argt: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
         // 構造体リテラルの引数: 従来の検査は型引数を見ないので、呼び出し側でも型引数の矛盾を見る。
         let sl: Vec<bool> = args.iter().map(|a| nname(a) == "StructLit").collect();
@@ -4850,7 +4868,7 @@ impl<'a> TypeCk<'a> {
             if segs.len() == 2 && cid != 0 && !self.p.trait_side.is_empty() {
                 self.expr_pending.insert(cid, ("RecvPath".to_string(), nline(callee), t.clone()));
             }
-            return self.call_method(&t, Some(&segs[0]), &segs[segs.len() - 1], &argt, line, targs, true);
+            return self.call_method(call_id, &t, Some(&segs[0]), &segs[segs.len() - 1], &argt, line, targs, true);
         }
         let _ = &argt;
         let Some(r) = self.p.resolve(&segs, &self.def().file) else {
@@ -4868,7 +4886,7 @@ impl<'a> TypeCk<'a> {
                 if unit_variant && self.p.types.contains_key(en) {
                     let recv = Ty::Named(en.clone(), vec![]);
                     let m = r.rest[0].clone();
-                    return self.call_method(&recv, None, &m, &argt, line, targs, false);
+                    return self.call_method(call_id, &recv, None, &m, &argt, line, targs, false);
                 }
             }
         }
@@ -4877,7 +4895,7 @@ impl<'a> TypeCk<'a> {
             if r.rest.len() == 1 && matches!(r.target, Target::Variant(..) | Target::Const(_)) {
                 let prefix = &segs[..segs.len() - 1];
                 let recv = self.path(prefix);
-                return self.call_method(&recv, None, &r.rest[0], &argt, line, targs, false);
+                return self.call_method(call_id, &recv, None, &r.rest[0], &argt, line, targs, false);
             }
             argt.iter().for_each(|a| self.escape(a));
             return Ty::Unknown;

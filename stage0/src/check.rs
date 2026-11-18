@@ -358,6 +358,33 @@ pub(crate) fn pat_binds(p: &V, out: &mut Vec<String>) {
     }
 }
 
+/// パターンが導入する名前とその `PBind` ノードの式 ID (`pat_binds` と同じ順)。`let_tys` の鍵。
+pub(crate) fn pat_bind_nodes(p: &V, out: &mut Vec<(String, u32)>) {
+    match nname(p) {
+        "PBind" => out.push((st(&nf(p)[0]), crate::parser::nid(p))),
+        "PTuple" | "PVariant" => {
+            let it = if nname(p) == "PTuple" { &nf(p)[0] } else { &nf(p)[1] };
+            for x in items(it) {
+                pat_bind_nodes(x, out);
+            }
+        }
+        "PStruct" => {
+            for f in items(&nf(p)[1]) {
+                pat_bind_nodes(&items(f)[1], out);
+            }
+        }
+        "PRef" => pat_bind_nodes(&nf(p)[0], out),
+        _ => {}
+    }
+}
+
+/// パターン `p` の中で名前 `name` を束縛する `PBind` の式 ID (無ければ 0)。
+pub(crate) fn pat_bind_id(p: &V, name: &str) -> u32 {
+    let mut v = vec![];
+    pat_bind_nodes(p, &mut v);
+    v.into_iter().find(|(n, _)| n == name).map_or(0, |(_, id)| id)
+}
+
 /// 効果変数・panic 変数の名前か (大文字で始まる。具体名 `io.console` や `never` / `may` とは違う)。
 pub(crate) fn is_effect_var(eff: &str) -> bool {
     eff.chars().next().map_or(false, |c| c.is_uppercase())
@@ -548,7 +575,9 @@ pub struct Checker<'a> {
     /// 現在の関数の型パラメータのうち `linear` と宣言されたもの。その型 `T` の値は線形として扱う (4.4)。
     lin_gnames: HashSet<String>,
     /// 型推論 (types.rs) が決めた `let` の束縛の型。自前の `ty_of` で決まらない束縛に使う。
-    let_tys: HashMap<(usize, usize, String), crate::types::Ty>,
+    let_tys: HashMap<(usize, u32), crate::types::Ty>,
+    /// 旧い鍵 (定義, 行, 名前) の導出の表 (`refs_check` 用)。
+    let_tys_line: HashMap<(usize, usize, String), crate::types::Ty>,
     /// `a[i]` で要素を move した (consume された) 添字式の (関数名, 式 ID)。
     /// `tc_expr` 時点では Vec 等の基の型が `Nil` なので、型表 (`tytab`) が確定した
     /// `typeck()` の後処理で要素型を引いて E3002 を出す (4.1)。
@@ -577,7 +606,7 @@ pub struct Checker<'a> {
     /// 型表 (`TypeCk::tytab`) の写し。`tc_fn` より前に作り、注釈のない `let` の型を引くのに使う (4.1)。
     mv_types: BTreeMap<(String, u32), crate::types::ExprTy>,
     /// 型検査が解決したメソッド呼び出し先 (`TypeCk::call_res`)。借用検査が名前でなく解決先で引く。
-    call_res: std::rc::Rc<HashMap<(usize, usize, String), Option<Vec<usize>>>>,
+    call_res: std::rc::Rc<HashMap<(usize, u32), Option<Vec<usize>>>>,
     /// 型検査が中断点と決めた呼び出し (`TypeCk::susp_lines`)。
     susp_lines: std::rc::Rc<HashSet<(usize, usize)>>,
     final_env: HashMap<String, V>,
@@ -714,6 +743,7 @@ impl<'a> Checker<'a> {
             lin_loops: vec![],
             lin_gnames: HashSet::new(),
             let_tys: HashMap::new(),
+            let_tys_line: HashMap::new(),
             fnonce_locals: HashSet::new(),
             noncopy_closures: HashSet::new(),
             spawn_scan: Vec::new(),
@@ -3214,8 +3244,9 @@ impl<'a> Checker<'a> {
             }
         }
         self.let_tys = std::mem::take(&mut tk.let_tys);
+        self.let_tys_line = std::mem::take(&mut tk.let_tys_line);
         // 参照は二級の値 (4.1、E3060)。型の宣言と型の使用の位置を見る (refs_check.rs)。
-        for h in crate::refs_check::check(self.p, &user, &self.let_tys) {
+        for h in crate::refs_check::check(self.p, &user, &self.let_tys_line) {
             self.diag("E3060", h.msg, h.di, h.pos);
         }
         self.mv_types = std::mem::take(&mut tk.tytab);
@@ -4656,14 +4687,14 @@ impl<'a> Checker<'a> {
                     let mut t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
                     if is_nil(&t) {
                         // 自前で決まらない束縛は、型推論の結果を使う (未決定の部分を含む型は使わない)。
-                        if let Some(ty) = self.let_tys.get(&(self.d, nline(s), n.clone())) {
+                        if let Some(ty) = self.let_tys.get(&(self.d, pat_bind_id(&f[0], &n))) {
                             t = self.let_ty_v(ty);
                         }
                     }
                     // 型引数の一部が決まらない束縛 (`Some(String.new(a))` の `Option<_>`) は、推論の結果が Copy でないと示せるなら
                     // その型で束縛する (Nil を Copy とみなして move を落とさない、fail-closed)。
                     if !is_nil(&t) && !src_is_ref && v_has_nil(&t) {
-                        if let Some(ty) = self.let_tys.get(&(self.d, nline(s), n.clone())) {
+                        if let Some(ty) = self.let_tys.get(&(self.d, pat_bind_id(&f[0], &n))) {
                             if self.ty_certainly_not_copy(ty) {
                                 if let Some(v) = ty_to_v_loose(ty) {
                                     t = v;
@@ -4693,7 +4724,7 @@ impl<'a> Checker<'a> {
                     }
                     self.revive_place(std::slice::from_ref(&n));
                     let once = matches!(
-                        self.let_tys.get(&(self.d, nline(s), n.clone())),
+                        self.let_tys.get(&(self.d, pat_bind_id(&f[0], &n))),
                         Some(crate::types::Ty::Closure { cap: crate::types::Cap::FnOnce, .. })
                     );
                     if once {
@@ -5820,7 +5851,7 @@ impl<'a> Checker<'a> {
             .map(|n| {
                 let mut t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
                 if is_nil(&t) {
-                    if let Some(ty) = self.let_tys.get(&(self.d, line, n.clone())) {
+                    if let Some(ty) = self.let_tys.get(&(self.d, pat_bind_id(pat, &n))) {
                         t = self.let_ty_v(ty);
                     }
                 }
@@ -6229,7 +6260,7 @@ impl<'a> Checker<'a> {
                         let mut t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
                         if is_nil(&t) {
                             // 自前で決まらない腕の束縛は、型推論の結果を使う (4.1)。
-                            if let Some(ty) = self.let_tys.get(&(self.d, nline(&items(arm)[0]), n.clone())) {
+                            if let Some(ty) = self.let_tys.get(&(self.d, pat_bind_id(&items(arm)[0], &n))) {
                                 t = self.let_ty_v(ty);
                             }
                         }
@@ -6309,7 +6340,7 @@ impl<'a> Checker<'a> {
                         for x in b {
                             let mut t = self
                                 .let_tys
-                                .get(&(self.d, nline(e), x.clone()))
+                                .get(&(self.d, pat_bind_id(&f[0], &x)))
                                 .and_then(crate::types::TypeCk::to_v)
                                 .unwrap_or(V::Nil);
                             if is_nil(&t) {
