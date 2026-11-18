@@ -7,6 +7,7 @@ mod exhaust;
 mod doclink;
 mod headers;
 mod lexer;
+mod ksnh;
 mod lexrules;
 mod check;
 mod check_cache;
