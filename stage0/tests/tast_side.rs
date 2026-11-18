@@ -354,3 +354,54 @@ fn s1c2_unmarked_reasons_listed() {
     let out = dump_side("s1c2_d", src);
     assert!(out.lines().any(|l| l.starts_with("coerce_none\t") && l.contains("t.d")), "{}", out);
 }
+
+// --- G35: `Box<T>` の受け手のメソッド ---
+
+const G35_SRC: &str = "type t.X
+    v: u32
+end t.X
+
+fn t.X.bump(self: &mut t.X) -> () uses [] panics never
+    self.v = 7u32
+end t.X.bump
+
+fn t.X.get(self: &t.X) -> u32 uses [] panics never
+    self.v
+end t.X.get
+
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    let mut b = alloc.boxed.Box.new(std.alloc.SYSTEM, t.X { v: 3u32 })?
+    b.bump()
+    let n = b.get()
+    let inner = alloc.boxed.Box.new(std.alloc.SYSTEM, t.X { v: 5u32 })?
+    let bb = alloc.boxed.Box.new(std.alloc.SYSTEM, inner)?
+    let m = bb.get()
+    core.check.eq(n, 7u32)
+    core.check.eq(m, 5u32)
+    core.mem.drop(b)
+    core.mem.drop(bb)
+    Ok(())
+end t.main
+";
+
+#[test]
+fn g35_box_receiver_autoderef_marked() {
+    let rows = dump("g35_a", G35_SRC, "coercions");
+    let all = rows.join("\n");
+    assert!(all.contains("AutoDeref { n: 1 }"), "{}", all);
+    assert!(all.contains("AutoDeref { n: 2 }"), "{}", all);
+    let t = Tmp::new("g35_b", G35_SRC);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn g35_box_receiver_run_and_native_agree() {
+    let t = Tmp::new("g35_c", G35_SRC);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let (_t, exe_path, out) = build_native("g35_d", G35_SRC, true);
+    let p = exe_path.unwrap_or_else(|| panic!("no native: {}", out));
+    let o = std::process::Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}

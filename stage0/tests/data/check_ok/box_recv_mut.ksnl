@@ -1,0 +1,14 @@
+type t.X
+    v: u32
+end t.X
+
+fn t.X.bump(self: &mut t.X) -> () uses [] panics never
+    self.v = 4u32
+end t.X.bump
+
+fn t.go() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let mut b = alloc.boxed.Box.new(std.alloc.SYSTEM, t.X { v: 3u32 })?
+    b.bump()
+    core.mem.drop(b)
+    Ok(())
+end t.go

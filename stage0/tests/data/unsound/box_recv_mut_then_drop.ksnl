@@ -1,0 +1,16 @@
+// expect: E3010
+type t.X
+    v: u32
+end t.X
+
+fn t.X.get_mut(self: &mut t.X) -> &mut u32 uses [] panics never
+    &mut self.v
+end t.X.get_mut
+
+fn t.go() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let mut b = alloc.boxed.Box.new(std.alloc.SYSTEM, t.X { v: 3u32 })?
+    let r = b.get_mut()
+    core.mem.drop(b)
+    *r = 1u32
+    Ok(())
+end t.go
