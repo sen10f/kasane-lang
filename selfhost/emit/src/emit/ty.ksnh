@@ -34,7 +34,7 @@ end emit.ty.get
 // 整数の幅 (ビット)。整数以外は 0。
 fn emit.ty.int_bits(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
     let t = emit.ty.get(g, id)
-    if t.kind == (emit.ty.K_INT) {
+    if t.kind == emit.ty.K_INT {
         usize.from_u32(t.bits)
     } else {
         0usize
@@ -49,14 +49,14 @@ end emit.ty.is_signed
 // 値の LLVM の型を `out` へ書く (`text_of` の本体)。
 fn emit.ty.lty_into(g: &emit.G, id: usize, out: &mut alloc.string.String<std.alloc.System>) -> () uses [alloc, io.console, process] panics may pub
     let t = emit.ty.get(g, id)
-    if t.kind == (emit.ty.K_UNIT) {
+    if t.kind == emit.ty.K_UNIT {
         emit.util.push_str(out, "i8")
-    } else if t.kind == (emit.ty.K_BOOL) {
+    } else if t.kind == emit.ty.K_BOOL {
         emit.util.push_str(out, "i1")
-    } else if t.kind == (emit.ty.K_INT) {
+    } else if t.kind == emit.ty.K_INT {
         emit.util.push_str(out, "i")
         emit.util.push_num(out, usize.from_u32(t.bits))
-    } else if t.kind == (emit.ty.K_PTR) || t.kind == (emit.ty.K_REF) {
+    } else if t.kind == emit.ty.K_PTR || t.kind == emit.ty.K_REF {
         emit.util.push_str(out, "ptr")
     } else {
         emit.util.push_str(out, "i")
@@ -66,7 +66,7 @@ end emit.ty.lty_into
 
 // メモリ上の型を `out` へ書く (`bool` は `i8`)。
 fn emit.ty.mty_into(g: &emit.G, id: usize, out: &mut alloc.string.String<std.alloc.System>) -> () uses [alloc, io.console, process] panics may pub
-    if emit.ty.get(g, id).kind == (emit.ty.K_BOOL) {
+    if emit.ty.get(g, id).kind == emit.ty.K_BOOL {
         emit.util.push_str(out, "i8")
     } else {
         emit.ty.lty_into(g, id, out)
@@ -172,13 +172,13 @@ end emit.ty.push
 fn emit.ty.slot(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
     let t = emit.ty.get(g, id)
     let mut m = 64usize
-    if t.kind == (emit.ty.K_OPT) {
+    if t.kind == emit.ty.K_OPT {
         let w = emit.ty.vbits(g, t.a)
         if w > m {
             m = w
         }
     }
-    if t.kind == (emit.ty.K_RES) {
+    if t.kind == emit.ty.K_RES {
         let w1 = emit.ty.vbits(g, t.a)
         let w2 = emit.ty.vbits(g, t.b)
         if w1 > m {
@@ -241,15 +241,15 @@ end emit.ty.text_of
 // 値の大きさ (ビット)。集成体は `size * 8`、`Option` / `Result` は `1 + 枠`。
 fn emit.ty.vbits(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
     let t = emit.ty.get(g, id)
-    if t.kind == (emit.ty.K_UNIT) {
+    if t.kind == emit.ty.K_UNIT {
         0usize
-    } else if t.kind == (emit.ty.K_BOOL) {
+    } else if t.kind == emit.ty.K_BOOL {
         1usize
-    } else if t.kind == (emit.ty.K_INT) {
+    } else if t.kind == emit.ty.K_INT {
         usize.from_u32(t.bits)
-    } else if t.kind == (emit.ty.K_PTR) || t.kind == (emit.ty.K_REF) {
+    } else if t.kind == emit.ty.K_PTR || t.kind == emit.ty.K_REF {
         64usize
-    } else if t.kind == (emit.ty.K_AGG) {
+    } else if t.kind == emit.ty.K_AGG {
         emit.agg.size_bits(g, t.a)
     } else {
         1usize.wrapping_add(emit.ty.slot(g, id))

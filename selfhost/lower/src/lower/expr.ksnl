@@ -14,7 +14,7 @@ end lower.expr.arm_body
 fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, stmt: bool) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let ln = parse.ast.get(&p.ast, n.a)
     let lt = lower.expr.tyof(c, n.a)?
-    if (ln.kind == parse.ast.Kind.Unary && ln.a == 42usize) {
+    if ln.kind == parse.ast.Kind.Unary && ln.a == 42usize {
         let ptr = lower.expr.expr(env, c, p, src, ln.b, types.ty.UNKNOWN)?
         let r = lower.expr.expr(env, c, p, src, n.b, lt)?
         let so = lower.opt.two_op("store ", ptr.v, r.v)?
@@ -25,7 +25,7 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         let u = lower.expr.unit(c)?
         return Ok(lower.cx.R { v: u, t: types.ty.UNIT })
     }
-    if (ln.kind == parse.ast.Kind.Dot) {
+    if ln.kind == parse.ast.Kind.Dot {
         let base = parse.ast.get(&p.ast, ln.a)
         let mut bloc = 0usize
         if base.kind == parse.ast.Kind.Path {
@@ -55,7 +55,7 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         return Ok(lower.cx.R { v: u2, t: types.ty.UNIT })
     }
     let loc = lower.cx.find(c, name)
-    if (ln.kind != parse.ast.Kind.Path || loc == 0usize) {
+    if ln.kind != parse.ast.Kind.Path || loc == 0usize {
         lower.cx.fail(c, "代入 (局所以外への代入は未対応)")?
         return Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
     }
@@ -105,7 +105,7 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     if op == 307usize || op == 308usize {
         return lower.expr.shortc(env, c, p, src, n, t, op == 308usize)
     }
-    if (op == 43usize || op == 45usize || op == 42usize || op == 47usize || op == 37usize) {
+    if op == 43usize || op == 45usize || op == 42usize || op == 47usize || op == 37usize {
         let l = lower.expr.expr(env, c, p, src, n.b, t)?
         let r = lower.expr.expr(env, c, p, src, n.c, l.t)?
         let ty = lower.tyk.text(env, c, l.t)?
@@ -138,7 +138,7 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         let v = lower.cx.def(c, rt.as_str(), aop4.as_str())?
         return Ok(lower.cx.R { v: v, t: t })
     }
-    if (op == 38usize || op == 124usize || op == 94usize) {
+    if op == 38usize || op == 124usize || op == 94usize {
         let l = lower.expr.expr(env, c, p, src, n.b, t)?
         let r = lower.expr.expr(env, c, p, src, n.c, l.t)?
         let ty = lower.tyk.text(env, c, l.t)?
@@ -223,13 +223,13 @@ fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         let sn = parse.ast.get(&p.ast, s)
         let last = j + 1usize == cnt
         has = false
-        if (sn.kind == parse.ast.Kind.Let) {
+        if sn.kind == parse.ast.Kind.Let {
             lower.expr.letx(env, c, p, src, sn)?
-        } else if (sn.kind == parse.ast.Kind.Assign) {
+        } else if sn.kind == parse.ast.Kind.Assign {
             core.mem.drop(lower.expr.assign(env, c, p, src, sn, true)?)
-        } else if (sn.kind == parse.ast.Kind.ExprStmt && lower.expr.is_assign(p, sn.a)) {
+        } else if sn.kind == parse.ast.Kind.ExprStmt && lower.expr.is_assign(p, sn.a) {
             core.mem.drop(lower.expr.assign(env, c, p, src, parse.ast.get(&p.ast, sn.a), true)?)
-        } else if (sn.kind == parse.ast.Kind.ExprStmt) {
+        } else if sn.kind == parse.ast.Kind.ExprStmt {
             let mut w = types.ty.UNKNOWN
             if last {
                 w = t
@@ -279,7 +279,7 @@ end lower.expr.br_to
 
 fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let cn = parse.ast.get(&p.ast, n.a)
-    if (cn.kind != parse.ast.Kind.Path) {
+    if cn.kind != parse.ast.Kind.Path {
         lower.cx.fail(c, "呼び出しの先 (未対応)")?
         return lower.expr.dummy(c, t)
     }
@@ -316,10 +316,10 @@ fn lower.expr.call_named(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         return lower.expr.dummy(c, t)
     }
     let item = it - 1usize
-    if (types.infer.item_kind(env, item) == parse.ast.Kind.Variant) {
+    if types.infer.item_kind(env, item) == parse.ast.Kind.Variant {
         return lower.opt.ctor(env, c, p, src, n, t, item)
     }
-    if (types.infer.item_kind(env, item) != parse.ast.Kind.FnDef) {
+    if types.infer.item_kind(env, item) != parse.ast.Kind.FnDef {
         lower.cx.fail(c, "関数でない呼び出し (列挙子の構築など、未対応)")?
         return lower.expr.dummy(c, t)
     }
@@ -589,73 +589,73 @@ fn lower.expr.expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     }
     let t = lower.expr.tyof(c, e)?
     let k = n.kind
-    if (k == parse.ast.Kind.Lit) {
+    if k == parse.ast.Kind.Lit {
         return lower.expr.lit(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.Path) {
+    if k == parse.ast.Kind.Path {
         return lower.expr.path(env, c, src, n, t)
     }
-    if (k == parse.ast.Kind.Bin) {
+    if k == parse.ast.Kind.Bin {
         return lower.expr.bin(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.Unary) {
+    if k == parse.ast.Kind.Unary {
         return lower.expr.unary(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.Call) {
+    if k == parse.ast.Kind.Call {
         return lower.expr.call(env, c, p, src, e, n, t)
     }
-    if (k == parse.ast.Kind.MCall) {
+    if k == parse.ast.Kind.MCall {
         return lower.expr.mcall(env, c, p, src, e, n, t)
     }
-    if (k == parse.ast.Kind.Dot) {
+    if k == parse.ast.Kind.Dot {
         return lower.expr.field(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.StructLit) {
+    if k == parse.ast.Kind.StructLit {
         return lower.expr.structlit(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.Block) {
+    if k == parse.ast.Kind.Block {
         return lower.expr.block(env, c, p, src, n.a, t)
     }
-    if (k == parse.ast.Kind.If) {
+    if k == parse.ast.Kind.If {
         return lower.expr.ifx(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.Match) {
+    if k == parse.ast.Kind.Match {
         return lower.expr.matchx(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.While) {
+    if k == parse.ast.Kind.While {
         return lower.expr.whilex(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.Loop) {
+    if k == parse.ast.Kind.Loop {
         return lower.expr.loopx(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.TupleE) {
+    if k == parse.ast.Kind.TupleE {
         return lower.tup.make(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.Index) {
+    if k == parse.ast.Kind.Index {
         return lower.vec.index_expr(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.For) {
+    if k == parse.ast.Kind.For {
         return lower.loops.forx(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.With) {
+    if k == parse.ast.Kind.With {
         return lower.fs.withx(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.Try) {
+    if k == parse.ast.Kind.Try {
         return lower.opt.tryx(env, c, p, src, n, t)
     }
-    if (k == parse.ast.Kind.Break) {
+    if k == parse.ast.Kind.Break {
         return lower.expr.jump(env, c, p, src, true, t)
     }
-    if (k == parse.ast.Kind.Continue) {
+    if k == parse.ast.Kind.Continue {
         return lower.expr.jump(env, c, p, src, false, t)
     }
-    if (k == parse.ast.Kind.Return) {
+    if k == parse.ast.Kind.Return {
         return lower.expr.retx(env, c, p, src, n)
     }
-    if (k == parse.ast.Kind.Assign) {
+    if k == parse.ast.Kind.Assign {
         return lower.expr.assign(env, c, p, src, n, false)
     }
-    if (k == parse.ast.Kind.ExprStmt) {
+    if k == parse.ast.Kind.ExprStmt {
         return lower.expr.expr(env, c, p, src, n.a, want)
     }
     lower.cx.fail(c, "式の形 (未対応)")?
@@ -692,7 +692,7 @@ fn lower.expr.faddr_chain(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cu
             m = m0
         }
         fname = second
-    } else if (n.kind == parse.ast.Kind.Dot) {
+    } else if n.kind == parse.ast.Kind.Dot {
         let (bv1, bt1, m1, ok) = lower.expr.faddr_chain(env, c, p, src, n.a)?
         if !ok {
             return Ok((0usize, bt1, false, false))
@@ -712,7 +712,7 @@ fn lower.expr.faddr_chain(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cu
     let (inner, _th, _mm) = lower.opt.deref_ty(c, bt)
     let rs = types.ty.strip(&c.ar, inner)
     let rn = types.ty.node(&c.ar, rs)
-    if (rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef) {
+    if rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef {
         return Ok((0usize, ft, false, false))
     }
     let a = lower.opt.field_addr_m(env, c, bv, bt, fname, ft, m)?
@@ -725,7 +725,7 @@ fn lower.expr.field(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     let (inner, _through, _m) = lower.opt.deref_ty(c, r.t)
     let rs = types.ty.strip(&c.ar, inner)
     let rn = types.ty.node(&c.ar, rs)
-    if (rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef) {
+    if rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef {
         lower.cx.fail(c, "フィールドの読み出し (構造体以外は未対応)")?
         return lower.expr.dummy(c, t)
     }
@@ -845,7 +845,7 @@ fn lower.expr.getmut_match(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.c
     let p1 = parse.ast.get(&p.ast, a1.a)
     let none_ok = p1.kind == parse.ast.Kind.PPath || p1.kind == parse.ast.Kind.PWild
     let wild_ok = shared && sp.kind == parse.ast.Kind.PWild
-    if (sp.kind != parse.ast.Kind.PBind && !wild_ok) || !none_ok {
+    if sp.kind != parse.ast.Kind.PBind && !wild_ok || !none_ok {
         return Ok((no, false))
     }
     let idx = lower.expr.expr(env, c, p, src, resolve.ast.item(p, sn.d, 0usize), types.ty.UNKNOWN)?
@@ -1097,12 +1097,12 @@ end lower.expr.last_seg
 
 fn lower.expr.letx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], sn: parse.ast.Node) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let pn = parse.ast.get(&p.ast, sn.a)
-    if (sn.d != 0usize && (pn.kind == parse.ast.Kind.PStruct || pn.kind == parse.ast.Kind.PTuple)) {
+    if sn.d != 0usize && (pn.kind == parse.ast.Kind.PStruct || pn.kind == parse.ast.Kind.PTuple) {
         let rr = lower.expr.expr(env, c, p, src, sn.d, types.ty.UNKNOWN)?
         lower.pat.bind(env, c, p, src, sn.a, rr.v, rr.t, sn.b != 0usize)?
         return Ok(())
     }
-    if (sn.d == 0usize || pn.kind != parse.ast.Kind.PBind) {
+    if sn.d == 0usize || pn.kind != parse.ast.Kind.PBind {
         lower.cx.fail(c, "let (初期化式のない束縛と、PBind 以外の形は未対応)")?
         return Ok(())
     }
@@ -1155,7 +1155,7 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         let tk3 = parse.cur.peek_at(p, n.b)
         let qa = tk3.start + 1usize
         let qb = tk3.stop - 1usize
-        if (resolve.ast.text(src, tk3.start, tk3.start + 1usize) != "\"") {
+        if resolve.ast.text(src, tk3.start, tk3.start + 1usize) != "\"" {
             lower.cx.fail(c, "文字列の綴り (未対応)")?
             return lower.expr.dummy(c, t)
         }
@@ -1356,7 +1356,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     if sn.k == types.ty.K.Int {
         return lower.expr.matchint(env, c, p, src, n, t, sc, base)
     }
-    if (sn.k != types.ty.K.Adt || types.infer.item_kind(env, sn.a) != parse.ast.Kind.EnumDef) {
+    if sn.k != types.ty.K.Adt || types.infer.item_kind(env, sn.a) != parse.ast.Kind.EnumDef {
         lower.cx.fail(c, "match (列挙型以外は未対応)")?
         return lower.expr.dummy(c, t)
     }
@@ -1382,14 +1382,14 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         let arm = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, j))
         let pat = parse.ast.get(&p.ast, arm.a)
         let mark = lower.cx.depth(c)
-        if (pat.kind == parse.ast.Kind.PWild) {
+        if pat.kind == parse.ast.Kind.PWild {
             done = true
             let nb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
             lower.expr.br_to(c, nb)?
             lower.cx.goto(c, nb)
             lower.drop.arm_head(env, c, own_scrut, false, sc.v, sc.t)?
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
-        } else if (pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath) {
+        } else if pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath {
             let name = resolve.ast.text(src, pat.a, pat.b)
             let tag_src = lower.cx.cat2("tag ", lower.cx.vs(sc.v)?.as_str())?
             let tg = lower.cx.def(c, "i32", tag_src.as_str())?
@@ -1424,7 +1424,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
             while i < subs {
                 let sub = resolve.ast.item(p, pat.c, i)
                 let sp = parse.ast.get(&p.ast, sub)
-                if (sp.kind == parse.ast.Kind.PBind) {
+                if sp.kind == parse.ast.Kind.PBind {
                     let off = match lay.offs.as_slice().get(vbase + i) {
                         Some(x) => *x
                         None => 0usize
@@ -1719,9 +1719,9 @@ fn lower.expr.scan(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     }
     if k == parse.ast.Kind.For && bor {
         let fit = parse.ast.get(&p.ast, n.b)
-        if (fit.kind == parse.ast.Kind.Path) {
+        if fit.kind == parse.ast.Kind.Path {
             out.push(lower.cx.own(resolve.ast.text(src, fit.a, fit.b))?)?
-        } else if (fit.kind == parse.ast.Kind.Call) {
+        } else if fit.kind == parse.ast.Kind.Call {
             let fcn = parse.ast.get(&p.ast, fit.a)
             if fcn.kind == parse.ast.Kind.Path {
                 let (g1, _g2) = lower.expr.split2(resolve.ast.text(src, fcn.a, fcn.b))
@@ -1994,7 +1994,7 @@ end lower.expr.split3
 
 fn lower.expr.structlit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let it = types.env.lookup(env, c.s.file, resolve.ast.text(src, n.a, n.b))?
-    if (it == 0usize || types.infer.item_kind(env, it - 1usize) != parse.ast.Kind.TypeDef) {
+    if it == 0usize || types.infer.item_kind(env, it - 1usize) != parse.ast.Kind.TypeDef {
         lower.cx.fail(c, "構造体リテラル (構造体以外は未対応)")?
         return lower.expr.dummy(c, t)
     }
@@ -2096,7 +2096,7 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         let mutable = n.a == 1000usize
         let mut slot = 0usize
         let mut sty = types.ty.UNKNOWN
-        if (inner.kind == parse.ast.Kind.Unary && inner.a == 42usize) {
+        if inner.kind == parse.ast.Kind.Unary && inner.a == 42usize {
             let rr = lower.expr.expr(env, c, p, src, inner.b, types.ty.UNKNOWN)?
             let tt2 = lower.tyk.text(env, c, t)?
             let head2 = if mutable {

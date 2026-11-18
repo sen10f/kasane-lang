@@ -15,7 +15,7 @@ fn std.time.div_floor(a: i64, b: i64) -> i64 uses [] panics never pub
         Some(q) => {
             match a.checked_rem(b) {
                 Some(r) => {
-                    if r != 0i64 && ((r < 0i64) != (b < 0i64)) {
+                    if r != 0i64 && (r < 0i64) != (b < 0i64) {
                         q.wrapping_sub(1i64)
                     } else {
                         q

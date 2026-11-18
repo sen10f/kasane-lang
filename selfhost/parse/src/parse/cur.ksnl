@@ -40,7 +40,7 @@ fn parse.cur.dot_continues(p: &parse.cur.P) -> bool uses [] panics never pub
         return false
     }
     let t = parse.cur.peek(p, 1usize)
-    parse.tok.is_plain_name(t) || (t.kind == parse.tok.Kind.Kw && t.code == parse.tok.KW_BLANKET)
+    parse.tok.is_plain_name(t) || t.kind == parse.tok.Kind.Kw && t.code == parse.tok.KW_BLANKET
 end parse.cur.dot_continues
 
 fn parse.cur.enter(p: &mut parse.cur.P) -> Result<(), parse.err.Error> uses [] panics never pub

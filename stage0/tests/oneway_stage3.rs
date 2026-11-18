@@ -9,7 +9,7 @@ use common::*;
 use std::fs;
 
 fn wrap(body: &str) -> String {
-    format!("fn t.main() -> () uses [] panics never\n{}end t.main\n", body)
+    format!("fn t.main() -> () uses [] panics may\n{}end t.main\n", body)
 }
 
 fn main_src(t: &Tmp) -> String {
@@ -62,4 +62,27 @@ fn d18_float_spelling() {
     roundtrip("d18_f5", "    core.mem.drop(1.0e+3f64)\n", "    core.mem.drop(1000.0f64)\n");
     roundtrip("d18_f6", "    core.mem.drop(12.5e-9f64)\n", "    core.mem.drop(1.25e-8f64)\n");
     canonical("d18_fok", "    core.mem.drop(0.0001f64)\n    core.mem.drop(9999999999999999.0f64)\n    core.mem.drop(2.5e-7f32)\n");
+}
+
+// ---- D10: 冗長な括弧 ----
+
+#[test]
+fn d10_redundant_parens_are_removed() {
+    roundtrip("d10_let", "    let a = (1u32)\n    core.mem.drop(a)\n", "    let a = 1u32\n    core.mem.drop(a)\n");
+    roundtrip("d10_dbl", "    core.mem.drop(((1u32)))\n", "    core.mem.drop(1u32)\n");
+    roundtrip("d10_if", "    let a = 1u32\n    if (a == 1u32) {\n        core.mem.drop(a)\n    }\n", "    let a = 1u32\n    if a == 1u32 {\n        core.mem.drop(a)\n    }\n");
+    roundtrip(
+        "d10_prec",
+        "    let a = 1u32\n    let b = (a * 2u32) + (a)\n    core.mem.drop((b > 1u32) && (b < 9u32))\n",
+        "    let a = 1u32\n    let b = a * 2u32 + a\n    core.mem.drop(b > 1u32 && b < 9u32)\n",
+    );
+    roundtrip("d10_recv", "    let a = 1u32\n    core.mem.drop((a).wrapping_add(1u32))\n", "    let a = 1u32\n    core.mem.drop(a.wrapping_add(1u32))\n");
+    roundtrip("d10_unary", "    let a = 1i32\n    core.mem.drop(-(a))\n", "    let a = 1i32\n    core.mem.drop(-a)\n");
+}
+
+#[test]
+fn d10_needed_parens_stay() {
+    canonical("d10_ok1", "    let a = 1u32\n    core.mem.drop((a + 1u32) * 2u32)\n    core.mem.drop(a - (a - 1u32))\n");
+    canonical("d10_ok2", "    let a = 1i32\n    core.mem.drop(-(1i32))\n    core.mem.drop(!(a < 2i32 || a > 9i32))\n    core.mem.drop((a, a))\n");
+    canonical("d10_ok3", "    let a = 1u32\n    core.mem.drop((a == 1u32) == (a == 2u32))\n    core.mem.drop(a | 1u32 == 1u32 || a != 0u32)\n");
 }

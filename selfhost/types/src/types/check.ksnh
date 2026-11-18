@@ -17,10 +17,10 @@ end types.check.all
 // 定義 1 件。
 fn types.check.def(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], file: usize, d: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let n = parse.ast.get(&p.ast, d)
-    if (n.kind == parse.ast.Kind.FnDef) {
+    if n.kind == parse.ast.Kind.FnDef {
         return types.check.fn_def(env, ar, cx, p, src, file, d)
     }
-    if (n.kind == parse.ast.Kind.TestDef) {
+    if n.kind == parse.ast.Kind.TestDef {
         if n.d != 0usize {
             let saved = cx.ret
             cx.ret = types.ty.UNKNOWN
@@ -29,7 +29,7 @@ fn types.check.def(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.
         }
         return Ok(())
     }
-    if (n.kind == parse.ast.Kind.ConstDef || n.kind == parse.ast.Kind.StaticDef) {
+    if n.kind == parse.ast.Kind.ConstDef || n.kind == parse.ast.Kind.StaticDef {
         let declared = types.lower.ty(env, ar, cx, p, src, file, n.c)?
         if n.d != 0usize {
             let t = types.infer.expr(env, ar, cx, p, src, n.d, declared)?

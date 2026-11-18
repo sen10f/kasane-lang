@@ -431,6 +431,38 @@ fn fix_tails(defs: &[crate::program::Def], lines: &mut [String]) {
     }
 }
 
+/// 冗長な括弧 (D10) を外す。関数・テストの本体の中だけ。優先順位に要る括弧と、構造体リテラルを `if` などの頭に置くための括弧は残す。
+fn fix_parens(defs: &[crate::program::Def], lines: &mut [String]) {
+    let src = lines.join("\n") + "\n";
+    let Ok(all) = lexer::lex(&src) else { return };
+    let mut edits: Vec<(usize, usize)> = vec![];
+    for d in defs {
+        if !matches!(d.kw.as_str(), "fn" | "test") || d.body.is_none() || d.end_line <= d.line + 1 {
+            continue;
+        }
+        let toks: Vec<Tok> = all.iter().filter(|t| t.line > d.line && t.line < d.end_line && t.kind != "eof").cloned().collect();
+        for (a, b) in crate::parser::redundant_parens(toks) {
+            edits.push((a.line, a.col));
+            edits.push((b.line, b.col));
+        }
+    }
+    edits.sort();
+    edits.dedup();
+    let mut touched: HashSet<usize> = HashSet::new();
+    for (l, c) in edits.into_iter().rev() {
+        let Some(line) = lines.get_mut(l - 1) else { continue };
+        let mut ch: Vec<char> = line.chars().collect();
+        if ch.get(c - 1).map_or(false, |x| *x == '(' || *x == ')') {
+            ch.remove(c - 1);
+            *line = ch.into_iter().collect();
+            touched.insert(l - 1);
+        }
+    }
+    for k in touched {
+        lines[k] = crate::spacing::canon_line(&lines[k]);
+    }
+}
+
 fn group(kw: &str) -> usize {
     match kw {
         "import" => 0,
@@ -471,6 +503,7 @@ pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
     };
     if canon {
         fix_tails(&defs, &mut lines);
+        fix_parens(&defs, &mut lines);
     }
     // 3.3: 名前の参照形を正規形にする (ヘッダは FQN、本体は import 済みモジュールの短縮形)。
     let mut lines = lines;

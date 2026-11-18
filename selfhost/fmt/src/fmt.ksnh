@@ -709,8 +709,8 @@ fn fmt.name_of(kw: &str, l: &str) -> Result<alloc.string.String<std.alloc.System
                 Some(x) => *x
                 None => 0u8
             }
-            let is_id1 = (c >= 48u8 && c <= 57u8) || (c >= 65u8 && c <= 90u8)
-            let is_id = is_id1 || c == 95u8 || (c >= 97u8 && c <= 122u8) || c == 46u8
+            let is_id1 = c >= 48u8 && c <= 57u8 || c >= 65u8 && c <= 90u8
+            let is_id = is_id1 || c == 95u8 || c >= 97u8 && c <= 122u8 || c == 46u8
             if is_id {
                 end_pos = end_pos.wrapping_add(1usize)
             } else {

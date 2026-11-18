@@ -108,7 +108,7 @@ test wiki.csrf.generate_token.test_token_is_hex
             Some(b) => *b
             None => 0u8
         }
-        let ok = (c >= b'0' && c <= b'9') || (c >= b'a' && c <= b'f')
+        let ok = c >= b'0' && c <= b'9' || c >= b'a' && c <= b'f'
         if !ok {
             all_hex = false
         }

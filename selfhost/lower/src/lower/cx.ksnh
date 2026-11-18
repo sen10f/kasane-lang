@@ -324,7 +324,7 @@ fn lower.cx.mlist_in(c: &lower.cx.Cx, base: usize, names: &alloc.vec.Vec<alloc.s
             Some(m) => *m
             None => false
         }
-        if (!mutable && !wforce) || lower.cx.is_slot(c, k) {
+        if !mutable && !wforce || lower.cx.is_slot(c, k) {
             continue
         }
         let mut dup = false

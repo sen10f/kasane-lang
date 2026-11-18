@@ -262,7 +262,7 @@ fn notes.store.Store.tags(self: &notes.store.Store) -> Result<alloc.vec.Vec<allo
                             while k < o_len {
                                 match o.get(k) {
                                     Some(existing) => {
-                                        if (*existing) == (*g) {
+                                        if *existing == *g {
                                             found = true
                                         }
                                     }

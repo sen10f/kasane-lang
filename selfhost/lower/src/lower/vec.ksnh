@@ -243,7 +243,7 @@ end lower.vec.index
 fn lower.vec.index_expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let bt = lower.expr.tyof(c, n.a)?
     let (inner, through, _m) = lower.opt.deref_ty(c, bt)
-    if !(lower.tyk.is_vec_ty(env, c, inner)) {
+    if !lower.tyk.is_vec_ty(env, c, inner) {
         lower.cx.fail(c, "添字 (Vec 以外は未対応)")?
         return lower.expr.dummy(c, t)
     }

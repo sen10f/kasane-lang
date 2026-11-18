@@ -21,7 +21,7 @@ end types.infer.adt_fqn
 fn types.infer.adt_prefix(env: &types.env.Env, ar: &types.ty.Arena, rs: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = types.ty.node(ar, rs)
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    if (n.k == types.ty.K.Adt) {
+    if n.k == types.ty.K.Adt {
         match env.tab.items.as_slice().get(n.a) {
             Some(it) => out.push_str(it.fqn.as_str())?
             None => core.mem.drop(0u8)
@@ -70,9 +70,9 @@ fn types.infer.block(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut type
         let sn = parse.ast.get(&p.ast, s)
         let last = j.wrapping_add(1usize) == cnt
         out = types.ty.UNIT
-        if (sn.kind == parse.ast.Kind.Let) {
+        if sn.kind == parse.ast.Kind.Let {
             types.infer.let_stmt(env, ar, cx, p, src, sn)?
-        } else if (sn.kind == parse.ast.Kind.ExprStmt) {
+        } else if sn.kind == parse.ast.Kind.ExprStmt {
             let mut wt = types.ty.UNKNOWN
             if last {
                 wt = want
@@ -89,7 +89,7 @@ fn types.infer.block(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut type
             if last {
                 out = t
             }
-        } else if (sn.kind == parse.ast.Kind.Assign) {
+        } else if sn.kind == parse.ast.Kind.Assign {
             core.mem.drop(types.infer.expr(env, ar, cx, p, src, s, types.ty.UNKNOWN)?)
         } else {
             let t = types.infer.expr(env, ar, cx, p, src, s, want)?
@@ -255,54 +255,54 @@ end types.infer.expr
 fn types.infer.expr_in(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], e: usize, want: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never stack 8192 pub
     let n = parse.ast.get(&p.ast, e)
     let k = n.kind
-    if (k == parse.ast.Kind.Lit) {
+    if k == parse.ast.Kind.Lit {
         return Ok(types.infer.literal(ar, cx, p, src, n, want)?)
     }
-    if (k == parse.ast.Kind.Path) {
+    if k == parse.ast.Kind.Path {
         return types.infer.path(env, ar, cx, src, n)
     }
-    if (k == parse.ast.Kind.Call) {
+    if k == parse.ast.Kind.Call {
         return types.infer.call(env, ar, cx, p, src, n)
     }
-    if (k == parse.ast.Kind.MCall) {
+    if k == parse.ast.Kind.MCall {
         return types.infer.mcall(env, ar, cx, p, src, n)
     }
-    if (k == parse.ast.Kind.Dot) {
+    if k == parse.ast.Kind.Dot {
         return types.infer.field(env, ar, cx, p, src, n)
     }
-    if (k == parse.ast.Kind.Bin) {
+    if k == parse.ast.Kind.Bin {
         return types.infer.bin(env, ar, cx, p, src, n, want)
     }
-    if (k == parse.ast.Kind.Unary) {
+    if k == parse.ast.Kind.Unary {
         return types.infer.unary(env, ar, cx, p, src, n, want)
     }
-    if (k == parse.ast.Kind.Block) {
+    if k == parse.ast.Kind.Block {
         return types.infer.block(env, ar, cx, p, src, n.a, want)
     }
-    if (k == parse.ast.Kind.If) {
+    if k == parse.ast.Kind.If {
         return types.infer.ifx(env, ar, cx, p, src, n, want)
     }
-    if (k == parse.ast.Kind.Match) {
+    if k == parse.ast.Kind.Match {
         return types.infer.matchx(env, ar, cx, p, src, n, want)
     }
-    if (k == parse.ast.Kind.For) {
+    if k == parse.ast.Kind.For {
         return types.infer.forx(env, ar, cx, p, src, n)
     }
-    if (k == parse.ast.Kind.While) {
+    if k == parse.ast.Kind.While {
         let c = types.infer.expr(env, ar, cx, p, src, n.a, types.ty.BOOL)?
         let cl = resolve.ast.line_of(p, parse.ast.get(&p.ast, n.a).tok)
         types.infer.coerce(ar, cx, c, types.ty.BOOL, cl)?
         core.mem.drop(types.infer.expr(env, ar, cx, p, src, n.b, types.ty.UNKNOWN)?)
         return Ok(types.ty.UNIT)
     }
-    if (k == parse.ast.Kind.Loop) {
+    if k == parse.ast.Kind.Loop {
         core.mem.drop(types.infer.expr(env, ar, cx, p, src, n.a, types.ty.UNKNOWN)?)
         return Ok(types.ty.NEVER)
     }
-    if (k == parse.ast.Kind.Break || k == parse.ast.Kind.Continue) {
+    if k == parse.ast.Kind.Break || k == parse.ast.Kind.Continue {
         return Ok(types.ty.NEVER)
     }
-    if (k == parse.ast.Kind.Return) {
+    if k == parse.ast.Kind.Return {
         let line = resolve.ast.line_of(p, n.tok)
         if n.a != 0usize {
             let t = types.infer.expr(env, ar, cx, p, src, n.a, cx.ret)?
@@ -310,10 +310,10 @@ fn types.infer.expr_in(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut ty
         }
         return Ok(types.ty.NEVER)
     }
-    if (k == parse.ast.Kind.Unsafe) {
+    if k == parse.ast.Kind.Unsafe {
         return types.infer.expr(env, ar, cx, p, src, n.c, want)
     }
-    if (k == parse.ast.Kind.With) {
+    if k == parse.ast.Kind.With {
         let it = types.infer.expr(env, ar, cx, p, src, n.c, types.ty.UNKNOWN)?
         let mark = types.chk.mark(cx)
         types.chk.push(cx, resolve.ast.tok_text(p, src, n.a), it, false)?
@@ -322,13 +322,13 @@ fn types.infer.expr_in(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut ty
         types.chk.truncate(cx, mark)
         return Ok(bt)
     }
-    if (k == parse.ast.Kind.Closure) {
+    if k == parse.ast.Kind.Closure {
         return types.infer.closure(env, ar, cx, p, src, n)
     }
-    if (k == parse.ast.Kind.StructLit) {
+    if k == parse.ast.Kind.StructLit {
         return types.infer.structlit(env, ar, cx, p, src, n)
     }
-    if (k == parse.ast.Kind.TupleE) {
+    if k == parse.ast.Kind.TupleE {
         let mut ids = alloc.vec.Vec.new(std.alloc.SYSTEM)
         for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
             let ex2 = resolve.ast.item(p, n.a, j)
@@ -341,7 +341,7 @@ fn types.infer.expr_in(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut ty
         let (b, c) = types.ty.args(ar, &ids)?
         return Ok(types.ty.push(ar, types.ty.mk(types.ty.K.Tuple, 0usize, b, c, false))?)
     }
-    if (k == parse.ast.Kind.ArrayE) {
+    if k == parse.ast.Kind.ArrayE {
         let el = types.ty.fresh(ar, false)?
         for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
             let item = resolve.ast.item(p, n.a, j)
@@ -351,41 +351,41 @@ fn types.infer.expr_in(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut ty
         }
         return Ok(types.ty.push(ar, types.ty.mk(types.ty.K.Array, el, 0usize, 0usize, false))?)
     }
-    if (k == parse.ast.Kind.ArrayRep) {
+    if k == parse.ast.Kind.ArrayRep {
         let el = types.infer.expr(env, ar, cx, p, src, n.a, types.ty.UNKNOWN)?
         core.mem.drop(types.infer.expr(env, ar, cx, p, src, n.b, types.ty.USIZE)?)
         return Ok(types.ty.push(ar, types.ty.mk(types.ty.K.Array, el, 0usize, 0usize, false))?)
     }
-    if (k == parse.ast.Kind.Index) {
+    if k == parse.ast.Kind.Index {
         let bt = types.infer.expr(env, ar, cx, p, src, n.a, types.ty.UNKNOWN)?
         core.mem.drop(types.infer.expr(env, ar, cx, p, src, n.b, types.ty.USIZE)?)
         let s = types.ty.strip(ar, bt)
         let sn = types.ty.node(ar, s)
-        if (sn.k == types.ty.K.Array || sn.k == types.ty.K.Slice) {
+        if sn.k == types.ty.K.Array || sn.k == types.ty.K.Slice {
             return Ok(sn.a)
         }
         return Ok(types.ty.UNKNOWN)
     }
-    if (k == parse.ast.Kind.Try) {
+    if k == parse.ast.Kind.Try {
         let t = types.infer.expr(env, ar, cx, p, src, n.a, types.ty.UNKNOWN)?
         let s = types.ty.find(ar, t)
         let sn = types.ty.node(ar, s)
-        if (sn.k == types.ty.K.Adt && sn.c >= 1usize) {
+        if sn.k == types.ty.K.Adt && sn.c >= 1usize {
             return Ok(types.ty.arg(ar, sn.b, 0usize))
         }
         return Ok(types.ty.UNKNOWN)
     }
-    if (k == parse.ast.Kind.Assign) {
+    if k == parse.ast.Kind.Assign {
         let lt = types.infer.expr(env, ar, cx, p, src, n.a, types.ty.UNKNOWN)?
         let rt = types.infer.expr(env, ar, cx, p, src, n.b, lt)?
         let line = resolve.ast.line_of(p, n.tok)
         types.infer.coerce(ar, cx, rt, lt, line)?
         return Ok(types.ty.UNIT)
     }
-    if (k == parse.ast.Kind.ExprStmt) {
+    if k == parse.ast.Kind.ExprStmt {
         return types.infer.expr(env, ar, cx, p, src, n.a, want)
     }
-    if (k == parse.ast.Kind.Let) {
+    if k == parse.ast.Kind.Let {
         types.infer.let_stmt(env, ar, cx, p, src, n)?
         return Ok(types.ty.UNIT)
     }
@@ -397,7 +397,7 @@ fn types.infer.field(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut type
     let rs = types.ty.strip(ar, rt)
     let rn = types.ty.node(ar, rs)
     let fname = resolve.ast.tok_text(p, src, n.b)
-    if (rn.k != types.ty.K.Adt) {
+    if rn.k != types.ty.K.Adt {
         return Ok(types.ty.UNKNOWN)
     }
     let args = types.infer.adt_args(ar, rs)?
@@ -416,7 +416,7 @@ fn types.infer.field_ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut t
         None => return Ok(types.ty.UNKNOWN)
     }
     let n = parse.ast.get(&p2.ast, node)
-    if (n.kind != parse.ast.Kind.TypeDef) {
+    if n.kind != parse.ast.Kind.TypeDef {
         return Ok(types.ty.UNKNOWN)
     }
     for j in core.iter.range(0usize, resolve.ast.count(p2, n.d)) {
@@ -520,10 +520,10 @@ fn types.infer.ifx(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.
         want2 = want
     }
     let t2 = types.infer.expr(env, ar, cx, p, src, n.c, want2)?
-    if (types.ty.node(ar, t1).k == types.ty.K.Never) {
+    if types.ty.node(ar, t1).k == types.ty.K.Never {
         return Ok(t2)
     }
-    if (types.ty.node(ar, t2).k == types.ty.K.Never) {
+    if types.ty.node(ar, t2).k == types.ty.K.Never {
         return Ok(t1)
     }
     let eline = resolve.ast.line_of(p, parse.ast.get(&p.ast, n.c).tok)
@@ -599,7 +599,7 @@ fn types.infer.item_of(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut ty
     }
     let r = types.ty.strip(ar, ret)
     let rn = types.ty.node(ar, r)
-    if (rn.k == types.ty.K.Adt && rn.c >= 1usize) {
+    if rn.k == types.ty.K.Adt && rn.c >= 1usize {
         return Ok(types.ty.arg(ar, rn.b, 0usize))
     }
     Ok(types.ty.UNKNOWN)
@@ -650,7 +650,7 @@ fn types.infer.let_stmt(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut t
         cx.pend.let_lines.push(line)?
     }
     let pn = parse.ast.get(&p.ast, s.a)
-    if (pn.kind == parse.ast.Kind.PBind && bt == types.ty.UNKNOWN) {
+    if pn.kind == parse.ast.Kind.PBind && bt == types.ty.UNKNOWN {
         let tk = parse.cur.peek_at(p, pn.a)
         types.infer.unknown_bind(cx, line, resolve.ast.text(src, tk.start, tk.stop))?
     }
@@ -687,7 +687,7 @@ fn types.infer.literal(ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &pars
             return Ok(suf)
         }
         let wn = types.ty.node(ar, types.ty.strip(ar, want))
-        if (wn.k == types.ty.K.Int) {
+        if wn.k == types.ty.K.Int {
             return Ok(types.ty.strip(ar, want))
         }
         let v = types.ty.fresh(ar, true)?
@@ -752,9 +752,9 @@ fn types.infer.matchx(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut typ
         types.infer.pat(env, ar, cx, p, src, arm.a, st)?
         let bt = types.infer.expr(env, ar, cx, p, src, arm.b, want)?
         types.chk.truncate(cx, mark)
-        if (types.ty.node(ar, bt).k == types.ty.K.Never) {
+        if types.ty.node(ar, bt).k == types.ty.K.Never {
             core.mem.drop(0u8)
-        } else if (types.ty.node(ar, result).k == types.ty.K.Never) {
+        } else if types.ty.node(ar, result).k == types.ty.K.Never {
             result = bt
         } else {
             let line = resolve.ast.line_of(p, parse.ast.get(&p.ast, arm.b).tok)
@@ -874,7 +874,7 @@ fn types.infer.pat(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.
     types.rec.note(cx, pt, ty)
     let n = parse.ast.get(&p.ast, pt)
     let k = n.kind
-    if (k == parse.ast.Kind.PBind) {
+    if k == parse.ast.Kind.PBind {
         let tk = parse.cur.peek_at(p, n.a)
         let name = resolve.ast.text(src, tk.start, tk.stop)
         let upper = match src.get(tk.start) {
@@ -891,7 +891,7 @@ fn types.infer.pat(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.
         types.chk.push(cx, name, bt, false)?
         return Ok(())
     }
-    if (k == parse.ast.Kind.PVariant) {
+    if k == parse.ast.Kind.PVariant {
         let it = types.env.lookup(env, cx.file, resolve.ast.text(src, n.a, n.b))?
         let rs = types.ty.strip(ar, ty)
         if it == 0usize {
@@ -923,7 +923,7 @@ fn types.infer.pat(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.
         }
         return Ok(())
     }
-    if (k == parse.ast.Kind.PStruct) {
+    if k == parse.ast.Kind.PStruct {
         let it = types.env.lookup(env, cx.file, resolve.ast.text(src, n.a, n.b))?
         for j in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
             let f = parse.ast.get(&p.ast, resolve.ast.item(p, n.c, j))
@@ -942,19 +942,19 @@ fn types.infer.pat(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.
         }
         return Ok(())
     }
-    if (k == parse.ast.Kind.PTuple) {
+    if k == parse.ast.Kind.PTuple {
         let rs = types.ty.strip(ar, ty)
         let rn = types.ty.node(ar, rs)
         for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
             let mut el = types.ty.UNKNOWN
-            if (rn.k == types.ty.K.Tuple) {
+            if rn.k == types.ty.K.Tuple {
                 el = types.ty.arg(ar, rn.b, j)
             }
             types.infer.pat(env, ar, cx, p, src, resolve.ast.item(p, n.a, j), el)?
         }
         return Ok(())
     }
-    if (k == parse.ast.Kind.PRef) {
+    if k == parse.ast.Kind.PRef {
         return types.infer.pat(env, ar, cx, p, src, n.a, ty)
     }
     Ok(())
@@ -1021,22 +1021,22 @@ end types.infer.payload_ty
 fn types.infer.prefix(ar: &types.ty.Arena, rs: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = types.ty.node(ar, rs)
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    if (n.k == types.ty.K.Int) {
+    if n.k == types.ty.K.Int {
         out.push_str("core.num.")?
         out.push_str(types.ty.int_name(n.a))?
-    } else if (n.k == types.ty.K.Float) {
+    } else if n.k == types.ty.K.Float {
         if n.a == 0usize {
             out.push_str("core.num.f32")?
         } else {
             out.push_str("core.num.f64")?
         }
-    } else if (n.k == types.ty.K.Bool) {
+    } else if n.k == types.ty.K.Bool {
         out.push_str("core.bool.bool")?
-    } else if (n.k == types.ty.K.Char) {
+    } else if n.k == types.ty.K.Char {
         out.push_str("core.char.char")?
-    } else if (n.k == types.ty.K.Str) {
+    } else if n.k == types.ty.K.Str {
         out.push_str("core.str")?
-    } else if (n.k == types.ty.K.Slice || n.k == types.ty.K.Array) {
+    } else if n.k == types.ty.K.Slice || n.k == types.ty.K.Array {
         out.push_str("core.slice")?
     }
     Ok(out)
@@ -1089,7 +1089,7 @@ fn types.infer.sig_of(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut typ
         None => return Ok((params, types.ty.UNKNOWN))
     }
     let fnode = parse.ast.get(&p2.ast, node)
-    if (fnode.kind != parse.ast.Kind.FnDef) {
+    if fnode.kind != parse.ast.Kind.FnDef {
         return Ok((params, types.ty.UNKNOWN))
     }
     let sg = parse.ast.get(&p2.ast, fnode.c)
@@ -1164,7 +1164,7 @@ fn types.infer.unary(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut type
         let t = types.infer.expr(env, ar, cx, p, src, n.b, types.ty.UNKNOWN)?
         let s = types.ty.find(ar, t)
         let sn = types.ty.node(ar, s)
-        if (sn.k == types.ty.K.Ref) {
+        if sn.k == types.ty.K.Ref {
             return Ok(sn.a)
         }
         return Ok(types.ty.UNKNOWN)

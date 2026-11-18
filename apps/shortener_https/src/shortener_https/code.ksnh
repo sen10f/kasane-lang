@@ -67,7 +67,7 @@ fn shortener_https.code.is_canonical(text: &str) -> bool uses [] panics never
         return false
     }
     for c in text.chars() {
-        let ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z')
+        let ok = c >= '0' && c <= '9' || c >= 'a' && c <= 'z'
         if !ok {
             return false
         }

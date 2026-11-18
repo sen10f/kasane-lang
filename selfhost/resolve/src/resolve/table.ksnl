@@ -76,7 +76,7 @@ fn resolve.table.is_pub(n: &parse.ast.Node) -> bool uses [] panics never pub
         return n.f == 1usize
     }
     if k == parse.ast.Kind.TypeDef || k == parse.ast.Kind.EnumDef {
-        return (n.f & 1usize) == 1usize
+        return n.f & 1usize == 1usize
     }
     k == parse.ast.Kind.ExternDef
 end resolve.table.is_pub

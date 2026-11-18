@@ -18,7 +18,7 @@ type lower.tyk.Lay pub
 end lower.tyk.Lay
 
 fn lower.tyk.agg_body(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
-    if (item >= lower.tyk.TUP && item < lower.tyk.INS) {
+    if item >= lower.tyk.TUP && item < lower.tyk.INS {
         return lower.tup.agg_line(env, c, item, id)
     }
     if item == lower.tyk.VEC {
@@ -57,7 +57,7 @@ fn lower.tyk.agg_body(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id:
     let kind = types.infer.item_kind(env, real)
     let file = types.infer.item_file(env, real)
     let node = types.infer.item_node(env, real)
-    let fqn = if (item >= lower.tyk.INS && item < lower.tyk.VEC) {
+    let fqn = if item >= lower.tyk.INS && item < lower.tyk.VEC {
         lower.tup.name(env, c, lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.INS))?
     } else {
         match env.tab.items.as_slice().get(item) {
@@ -77,7 +77,7 @@ fn lower.tyk.agg_body(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id:
     let nd = parse.ast.get(&p.ast, node)
     s.push_str("agg#")?
     s.push_str(lower.cx.dec(id)?.as_str())?
-    if (kind == parse.ast.Kind.TypeDef) {
+    if kind == parse.ast.Kind.TypeDef {
         s.push_str(" struct ")?
     } else {
         s.push_str(" enum ")?
@@ -88,7 +88,7 @@ fn lower.tyk.agg_body(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id:
     s.push_str(" align=")?
     s.push_str(lower.cx.dec(lay.align)?.as_str())?
     s.push_str(" {")?
-    if (kind == parse.ast.Kind.TypeDef) {
+    if kind == parse.ast.Kind.TypeDef {
         for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
             let fd = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
             let ft = lower.tyk.fty(env, c, p, src, file, nd.c, fd.b)?
@@ -152,7 +152,7 @@ fn lower.tyk.agg_id(c: &mut lower.cx.Cx, item: usize) -> Result<usize, resolve.F
 end lower.tyk.agg_id
 
 fn lower.tyk.agg_line(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
-    if (item >= lower.tyk.INS && item < lower.tyk.VEC) {
+    if item >= lower.tyk.INS && item < lower.tyk.VEC {
         let saved = lower.tyk.enter(c, item)?
         let r = lower.tyk.agg_body(env, c, item, id)
         lower.tyk.leave(c, saved)
@@ -359,41 +359,41 @@ fn lower.tyk.key_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, item: us
 end lower.tyk.key_of
 
 fn lower.tyk.kind_word(k: types.ty.K) -> &'static str uses [] panics may pub
-    if (k == types.ty.K.Ref) {
+    if k == types.ty.K.Ref {
         return "参照"
     }
-    if (k == types.ty.K.Tuple) {
+    if k == types.ty.K.Tuple {
         return "組"
     }
-    if (k == types.ty.K.Str) {
+    if k == types.ty.K.Str {
         return "str"
     }
-    if (k == types.ty.K.Array) {
+    if k == types.ty.K.Array {
         return "配列"
     }
-    if (k == types.ty.K.Slice) {
+    if k == types.ty.K.Slice {
         return "スライス"
     }
-    if (k == types.ty.K.Param) {
+    if k == types.ty.K.Param {
         return "型引数"
     }
-    if (k == types.ty.K.Fnty) {
+    if k == types.ty.K.Fnty {
         return "関数の型"
     }
-    if (k == types.ty.K.Var) {
+    if k == types.ty.K.Var {
         return "決まらない型"
     }
-    if (k == types.ty.K.Never) {
+    if k == types.ty.K.Never {
         return "never"
     }
-    if (k == types.ty.K.Opaque) {
+    if k == types.ty.K.Opaque {
         return "不透明"
     }
     "その他"
 end lower.tyk.kind_word
 
 fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Result<lower.tyk.Lay, resolve.Failure> uses [alloc] panics may pub
-    if (item >= lower.tyk.INS && item < lower.tyk.VEC) {
+    if item >= lower.tyk.INS && item < lower.tyk.VEC {
         if c.v.subst.len() > 400usize {
             let nm = lower.tup.name(env, c, lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.INS))?
             let msg = lower.cx.cat2("総称の型の大きさ (再帰する型は未対応): ", nm.as_str())?
@@ -407,7 +407,7 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
         lower.tyk.leave(c, saved)
         return Ok(r)
     }
-    if (item >= lower.tyk.TUP && item < lower.tyk.INS) {
+    if item >= lower.tyk.TUP && item < lower.tyk.INS {
         let tt = lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.TUP)
         let f = types.ty.find(&c.ar, tt)
         let n = types.ty.node(&c.ar, f)
@@ -428,7 +428,7 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
         let vl = alloc.vec.Vec.new(std.alloc.SYSTEM)
         return Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vl })
     }
-    if item == lower.tyk.VEC || (item >= lower.tyk.VECO && item < lower.tyk.BREF) {
+    if item == lower.tyk.VEC || item >= lower.tyk.VECO && item < lower.tyk.BREF {
         let vo = alloc.vec.Vec.new(std.alloc.SYSTEM)
         let vl = alloc.vec.Vec.new(std.alloc.SYSTEM)
         return Ok(lower.tyk.Lay { size: 24usize, align: 8usize, offs: vo, vlens: vl })
@@ -453,7 +453,7 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
     }
     let src = src_r.text.as_slice()
     let nd = parse.ast.get(&p.ast, node)
-    if (kind == parse.ast.Kind.TypeDef) {
+    if kind == parse.ast.Kind.TypeDef {
         let mut off = 0usize
         let mut al = 1usize
         for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
@@ -561,7 +561,7 @@ fn lower.tyk.prim_size(t: usize) -> usize uses [] panics may pub
 end lower.tyk.prim_size
 
 fn lower.tyk.real_item(c: &lower.cx.Cx, item: usize) -> usize uses [alloc] panics may pub
-    if (item >= lower.tyk.INS && item < lower.tyk.VEC) {
+    if item >= lower.tyk.INS && item < lower.tyk.VEC {
         let ty = lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.INS)
         let f = types.ty.find(&c.ar, ty)
         return types.ty.node(&c.ar, f).a
@@ -607,12 +607,12 @@ fn lower.tyk.size_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Resu
     if n.k == types.ty.K.Str {
         return Ok((16usize, 8usize))
     }
-    if (n.k == types.ty.K.Tuple && n.c > 0usize) {
+    if n.k == types.ty.K.Tuple && n.c > 0usize {
         let ti = lower.tup.item(env, c, f)?
         let lay = lower.tyk.layout(env, c, ti)?
         return Ok((lay.size, lay.align))
     }
-    if (n.k == types.ty.K.Adt && lower.tyk.is_vec(env, n.a)) {
+    if n.k == types.ty.K.Adt && lower.tyk.is_vec(env, n.a) {
         return Ok((24usize, 8usize))
     }
     if n.k == types.ty.K.Unit {
@@ -720,14 +720,14 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
         s.push_str("bool")?
         return Ok(s)
     }
-    if (n.k == types.ty.K.Adt && lower.tyk.is_vec(env, n.a)) {
+    if n.k == types.ty.K.Adt && lower.tyk.is_vec(env, n.a) {
         let vit = lower.tyk.vec_item(env, c, f)?
         let vid = lower.tyk.agg_id(c, vit)?
         s.push_str("agg#")?
         s.push_str(lower.cx.dec(vid)?.as_str())?
         return Ok(s)
     }
-    if (n.k == types.ty.K.Tuple && n.c > 0usize) {
+    if n.k == types.ty.K.Tuple && n.c > 0usize {
         let ti = lower.tup.item(env, c, f)?
         let tid = lower.tyk.agg_id(c, ti)?
         s.push_str("agg#")?
@@ -804,7 +804,7 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
     }
     if n.k == types.ty.K.Adt && n.c == 0usize {
         let kind = types.infer.item_kind(env, n.a)
-        if (kind == parse.ast.Kind.TypeDef || kind == parse.ast.Kind.EnumDef) {
+        if kind == parse.ast.Kind.TypeDef || kind == parse.ast.Kind.EnumDef {
             let id = lower.tyk.agg_id(c, n.a)?
             s.push_str("agg#")?
             s.push_str(lower.cx.dec(id)?.as_str())?
@@ -873,7 +873,7 @@ end lower.tyk.vec_item
 fn lower.tyk.why(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let n = types.ty.node(&c.ar, f)
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-    if (n.k == types.ty.K.Adt) {
+    if n.k == types.ty.K.Adt {
         let name = lower.tyk.item_fqn(env, n.a)
         s.push_str(name.as_str())?
         s.push_str(" (引数 ")?

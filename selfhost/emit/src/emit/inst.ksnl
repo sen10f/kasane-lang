@@ -202,7 +202,7 @@ fn emit.inst.bitnot(g: &mut emit.G, dst: usize, ty: usize, args: &str) -> () use
     emit.ty.wlty(g, ty)
     emit.w(g, " ")
     emit.wv(g, a)
-    if emit.ty.get(g, ty).kind == (emit.ty.K_BOOL) {
+    if emit.ty.get(g, ty).kind == emit.ty.K_BOOL {
         emit.w(g, ", true\n")
     } else {
         emit.w(g, ", -1\n")
@@ -546,17 +546,17 @@ end emit.inst.frame
 
 fn emit.inst.from_bits(g: &mut emit.G, dst: usize, ty: usize, x: usize, w: usize) -> () uses [alloc, io.console, process] panics may pub
     let k = emit.ty.get(g, ty).kind
-    if k == (emit.ty.K_BOOL) {
+    if k == emit.ty.K_BOOL {
         emit.inst.def_head(g, dst)
         emit.w(g, "icmp ne i8 ")
         emit.wv(g, x)
         emit.w(g, ", 0\n")
-    } else if k == (emit.ty.K_PTR) || k == (emit.ty.K_REF) {
+    } else if k == emit.ty.K_PTR || k == emit.ty.K_REF {
         emit.inst.def_head(g, dst)
         emit.w(g, "inttoptr i64 ")
         emit.wv(g, x)
         emit.w(g, " to ptr\n")
-    } else if k == (emit.ty.K_OPT) || k == (emit.ty.K_RES) {
+    } else if k == emit.ty.K_OPT || k == emit.ty.K_RES {
         let l = emit.ty.vbits(g, ty)
         emit.inst.def_head(g, dst)
         emit.w(g, "trunc i")
@@ -861,7 +861,7 @@ fn emit.inst.inst(g: &mut emit.G, l: &str) -> () uses [alloc, io.console, proces
     } else {
         core.panic.panic("unsupported KIR instruction in this emitter")
     }
-    if kind == (emit.ty.K_UNIT) && base != "call" {
+    if kind == emit.ty.K_UNIT && base != "call" {
         emit.inst.unit_def(g, dst)
     }
 end emit.inst.inst
@@ -890,23 +890,23 @@ end emit.inst.int_text
 
 fn emit.inst.konst(g: &mut emit.G, dst: usize, ty: usize, _s1: &str, lit: &str) -> () uses [alloc, io.console, process] panics may pub
     let k = emit.ty.get(g, ty).kind
-    if k == (emit.ty.K_BOOL) {
+    if k == emit.ty.K_BOOL {
         emit.inst.def_head(g, dst)
         if lit == "true" {
             emit.w(g, "add i1 1, 0\n")
         } else {
             emit.w(g, "add i1 0, 0\n")
         }
-    } else if k == (emit.ty.K_INT) {
+    } else if k == emit.ty.K_INT {
         emit.inst.int_text(g, dst, ty, lit)
-    } else if k == (emit.ty.K_UNIT) {
+    } else if k == emit.ty.K_UNIT {
         core.mem.drop(dst)
-    } else if k == (emit.ty.K_OPT) {
+    } else if k == emit.ty.K_OPT {
         emit.inst.def_head(g, dst)
         emit.w(g, "add ")
         emit.ty.wlty(g, ty)
         emit.w(g, " 0, 0\n")
-    } else if k == (emit.ty.K_PTR) {
+    } else if k == emit.ty.K_PTR {
         emit.inst.def_head(g, dst)
         emit.w(g, "getelementptr i8, ptr null, i64 0\n")
     } else {
@@ -916,7 +916,7 @@ end emit.inst.konst
 
 fn emit.inst.load(g: &mut emit.G, dst: usize, ty: usize, p: usize) -> () uses [alloc, io.console, process] panics may pub
     let mt = emit.ty.text_of(g, ty, true)
-    if emit.ty.get(g, ty).kind == (emit.ty.K_BOOL) {
+    if emit.ty.get(g, ty).kind == emit.ty.K_BOOL {
         let t = emit.tmp(g)
         emit.inst.def_head(g, t)
         emit.w(g, "load i8, ptr ")
@@ -992,7 +992,7 @@ end emit.inst.make
 
 fn emit.inst.mem_load(g: &mut emit.G, dst: usize, ty: usize, p: usize, off: usize) -> () uses [alloc, io.console, process] panics may pub
     let addr = emit.inst.addr_at(g, p, off)
-    if emit.ty.get(g, ty).kind == (emit.ty.K_BOOL) {
+    if emit.ty.get(g, ty).kind == emit.ty.K_BOOL {
         let t = emit.tmp(g)
         emit.inst.def_head(g, t)
         emit.w(g, "load i8, ptr ")
@@ -1016,7 +1016,7 @@ end emit.inst.mem_load
 fn emit.inst.mem_store(g: &mut emit.G, p: usize, off: usize, v: usize) -> () uses [alloc, io.console, process] panics may pub
     let addr = emit.inst.addr_at(g, p, off)
     let vt = emit.inst.vt(g, v)
-    if emit.ty.get(g, vt).kind == (emit.ty.K_BOOL) {
+    if emit.ty.get(g, vt).kind == emit.ty.K_BOOL {
         let z = emit.tmp(g)
         emit.inst.def_head(g, z)
         emit.w(g, "zext i1 ")
@@ -1319,7 +1319,7 @@ fn emit.inst.payload(g: &mut emit.G, dst: usize, ty: usize, a: usize) -> () uses
             emit.w(g, "\n")
         }
         let k = emit.ty.get(g, ty).kind
-        if k == (emit.ty.K_PTR) || k == (emit.ty.K_REF) {
+        if k == emit.ty.K_PTR || k == emit.ty.K_REF {
             emit.inst.def_head(g, dst)
             emit.w(g, "inttoptr i64 ")
             emit.wv(g, x)
@@ -1517,7 +1517,7 @@ end emit.inst.static_bytes
 
 fn emit.inst.store(g: &mut emit.G, p: usize, v: usize) -> () uses [alloc, io.console, process] panics may pub
     let vt = emit.inst.vt(g, v)
-    if emit.ty.get(g, vt).kind == (emit.ty.K_BOOL) {
+    if emit.ty.get(g, vt).kind == emit.ty.K_BOOL {
         let z = emit.tmp(g)
         emit.inst.def_head(g, z)
         emit.w(g, "zext i1 ")
@@ -1542,7 +1542,7 @@ end emit.inst.store
 fn emit.inst.tag(g: &mut emit.G, dst: usize, ty: usize, a: usize) -> () uses [alloc, io.console, process] panics may pub
     let at = emit.inst.vt(g, a)
     let k = emit.ty.get(g, at).kind
-    if k == (emit.ty.K_AGG) {
+    if k == emit.ty.K_AGG {
         let n = emit.agg.size_bits(g, emit.ty.get(g, at).a)
         let x = emit.inst.extract(g, a, n, 0usize, 32usize)
         emit.inst.copy_from(g, dst, ty, x)
@@ -1636,21 +1636,21 @@ end emit.inst.term
 
 fn emit.inst.to_bits(g: &mut emit.G, fty: usize, v: usize) -> usize uses [alloc, io.console, process] panics may pub
     let k = emit.ty.get(g, fty).kind
-    if k == (emit.ty.K_BOOL) {
+    if k == emit.ty.K_BOOL {
         let t = emit.tmp(g)
         emit.inst.def_head(g, t)
         emit.w(g, "zext i1 ")
         emit.wv(g, v)
         emit.w(g, " to i8\n")
         t
-    } else if k == (emit.ty.K_PTR) || k == (emit.ty.K_REF) {
+    } else if k == emit.ty.K_PTR || k == emit.ty.K_REF {
         let t = emit.tmp(g)
         emit.inst.def_head(g, t)
         emit.w(g, "ptrtoint ptr ")
         emit.wv(g, v)
         emit.w(g, " to i64\n")
         t
-    } else if k == (emit.ty.K_OPT) || k == (emit.ty.K_RES) {
+    } else if k == emit.ty.K_OPT || k == emit.ty.K_RES {
         let w = emit.agg.field_w(g, fty)
         let t = emit.tmp(g)
         emit.inst.def_head(g, t)
@@ -1718,14 +1718,14 @@ fn emit.inst.wrap_opt(g: &mut emit.G, dst: usize, ty: usize, tag: bool, a: usize
         }
         let mut x = a
         let k = emit.ty.get(g, vt).kind
-        if k == (emit.ty.K_PTR) || k == (emit.ty.K_REF) {
+        if k == emit.ty.K_PTR || k == emit.ty.K_REF {
             x = emit.tmp(g)
             emit.inst.def_head(g, x)
             emit.w(g, "ptrtoint ptr ")
             emit.wv(g, a)
             emit.w(g, " to i64\n")
         }
-        let wx = if k == (emit.ty.K_PTR) || k == (emit.ty.K_REF) {
+        let wx = if k == emit.ty.K_PTR || k == emit.ty.K_REF {
             64usize
         } else {
             w

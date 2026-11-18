@@ -9,7 +9,7 @@ fn t.net_roundtrip() -> () uses [alloc, io.net] panics may
                 Ok(p) => p
                 Err(_e) => core.panic.panic("local_port failed")
             }
-            core.check.eq((port == 0u16), false)
+            core.check.eq(port == 0u16, false)
             let mut address = alloc.string.String.new(std.alloc.SYSTEM)
             match address.push_str("127.0.0.1:") {
                 Ok(_u) => ()

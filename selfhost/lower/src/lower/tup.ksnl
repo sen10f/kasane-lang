@@ -91,7 +91,7 @@ fn lower.tup.name(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
         r.push_str(inner.as_str())?
         return Ok(r)
     }
-    if (n.k == types.ty.K.Tuple && n.c > 0usize) {
+    if n.k == types.ty.K.Tuple && n.c > 0usize {
         return lower.tup.text(env, c, f)
     }
     lower.tyk.text(env, c, t)

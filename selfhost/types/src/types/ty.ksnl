@@ -107,7 +107,7 @@ end types.ty.copy
 fn types.ty.default_lit(ar: &mut types.ty.Arena, v: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let r = types.ty.find(ar, v)
     let n = types.ty.node(ar, r)
-    if (n.k == types.ty.K.Var && n.c == 1usize) {
+    if n.k == types.ty.K.Var && n.c == 1usize {
         core.mem.drop(types.ty.bind(ar, r, types.ty.I32, 1usize)?)
     }
     Ok(())
@@ -118,7 +118,7 @@ fn types.ty.find(ar: &types.ty.Arena, id: usize) -> usize uses [] panics never p
     let mut steps = 0usize
     loop {
         let n = types.ty.node(ar, cur)
-        if (n.k != types.ty.K.Var || !n.m || steps > 10_000usize) {
+        if n.k != types.ty.K.Var || !n.m || steps > 10_000usize {
             break
         }
         cur = n.a
@@ -231,7 +231,7 @@ fn types.ty.strip(ar: &types.ty.Arena, id: usize) -> usize uses [] panics never 
     let mut steps = 0usize
     loop {
         let n = types.ty.node(ar, cur)
-        if (n.k != types.ty.K.Ref || steps > 100usize) {
+        if n.k != types.ty.K.Ref || steps > 100usize {
             break
         }
         cur = types.ty.find(ar, n.a)
@@ -248,54 +248,54 @@ fn types.ty.unify(ar: &mut types.ty.Arena, x: usize, y: usize) -> Result<bool, a
     }
     let na = types.ty.node(ar, a)
     let nb = types.ty.node(ar, b)
-    if (na.k == types.ty.K.Unknown || nb.k == types.ty.K.Unknown) {
+    if na.k == types.ty.K.Unknown || nb.k == types.ty.K.Unknown {
         return Ok(true)
     }
-    if (na.k == types.ty.K.Never || nb.k == types.ty.K.Never) {
+    if na.k == types.ty.K.Never || nb.k == types.ty.K.Never {
         return Ok(true)
     }
-    if (na.k == types.ty.K.Param || nb.k == types.ty.K.Param) {
+    if na.k == types.ty.K.Param || nb.k == types.ty.K.Param {
         return Ok(true)
     }
-    if (na.k == types.ty.K.Opaque || nb.k == types.ty.K.Opaque) {
+    if na.k == types.ty.K.Opaque || nb.k == types.ty.K.Opaque {
         return Ok(true)
     }
-    if (na.k == types.ty.K.Fnty && nb.k == types.ty.K.Fnty) {
+    if na.k == types.ty.K.Fnty && nb.k == types.ty.K.Fnty {
         return Ok(true)
     }
-    if (na.k == types.ty.K.Var && nb.k == types.ty.K.Var) {
+    if na.k == types.ty.K.Var && nb.k == types.ty.K.Var {
         if na.c == 1usize && nb.c == 0usize {
             return types.ty.bind(ar, b, a, 0usize)
         }
         return types.ty.bind(ar, a, b, 0usize)
     }
-    if (na.k == types.ty.K.Var) {
+    if na.k == types.ty.K.Var {
         return types.ty.bind(ar, a, b, na.c)
     }
-    if (nb.k == types.ty.K.Var) {
+    if nb.k == types.ty.K.Var {
         return types.ty.bind(ar, b, a, nb.c)
     }
-    if (na.k == types.ty.K.Ref) {
+    if na.k == types.ty.K.Ref {
         return types.ty.unify(ar, na.a, b)
     }
-    if (nb.k == types.ty.K.Ref) {
+    if nb.k == types.ty.K.Ref {
         return types.ty.unify(ar, a, nb.a)
     }
     let a_arr = na.k == types.ty.K.Array
     let b_arr = nb.k == types.ty.K.Array
     let a_sl = na.k == types.ty.K.Slice
     let b_sl = nb.k == types.ty.K.Slice
-    let arr_slice = (a_arr && b_sl) || (a_sl && b_arr)
+    let arr_slice = a_arr && b_sl || a_sl && b_arr
     if arr_slice {
         return types.ty.unify(ar, na.a, nb.a)
     }
     if na.k != nb.k {
         return Ok(false)
     }
-    if (na.k == types.ty.K.Int || na.k == types.ty.K.Float) {
+    if na.k == types.ty.K.Int || na.k == types.ty.K.Float {
         return Ok(na.a == nb.a)
     }
-    if (na.k == types.ty.K.Adt) {
+    if na.k == types.ty.K.Adt {
         if na.a != nb.a {
             return Ok(false)
         }
@@ -305,13 +305,13 @@ fn types.ty.unify(ar: &mut types.ty.Arena, x: usize, y: usize) -> Result<bool, a
         }
         return types.ty.unify_list(ar, na.b, nb.b, common)
     }
-    if (na.k == types.ty.K.Tuple) {
+    if na.k == types.ty.K.Tuple {
         if na.c != nb.c {
             return Ok(false)
         }
         return types.ty.unify_list(ar, na.b, nb.b, na.c)
     }
-    if (na.k == types.ty.K.Array || na.k == types.ty.K.Slice) {
+    if na.k == types.ty.K.Array || na.k == types.ty.K.Slice {
         return types.ty.unify(ar, na.a, nb.a)
     }
     Ok(true)

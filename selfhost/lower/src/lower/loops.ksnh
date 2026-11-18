@@ -327,7 +327,7 @@ end lower.loops.forvec_path
 fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let it = parse.ast.get(&p.ast, n.b)
     let mut is_range = false
-    if (it.kind == parse.ast.Kind.Call && resolve.ast.count(p, it.b) == 2usize) {
+    if it.kind == parse.ast.Kind.Call && resolve.ast.count(p, it.b) == 2usize {
         let ce = types.rec.callee_of(&c.tc.rec, c.s.file, n.b)
         if ce != 0usize {
             let fq = lower.tyk.item_fqn(env, ce - 1usize)
@@ -335,11 +335,11 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         }
     }
     if !is_range {
-        if (it.kind == parse.ast.Kind.Call && resolve.ast.count(p, it.b) == 1usize) {
+        if it.kind == parse.ast.Kind.Call && resolve.ast.count(p, it.b) == 1usize {
             let cn1 = parse.ast.get(&p.ast, it.a)
             if cn1.kind == parse.ast.Kind.Path {
                 let (g1, g2) = lower.expr.split2(resolve.ast.text(src, cn1.a, cn1.b))
-                if (g1 != "" && g2 == "split") {
+                if g1 != "" && g2 == "split" {
                     let loc1 = lower.cx.find(c, g1)
                     if loc1 != 0usize {
                         return lower.loops.forsplit(env, c, p, src, n, t, loc1 - 1usize)
@@ -350,16 +350,16 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         // `v.iter()` (参照の要素) と `v` (値の要素) の Vec。枠の番地は局所のスロット (または参照の値)。
         let mut name = ""
         let mut by_ref = false
-        if (it.kind == parse.ast.Kind.Call && resolve.ast.count(p, it.b) == 0usize) {
+        if it.kind == parse.ast.Kind.Call && resolve.ast.count(p, it.b) == 0usize {
             let cn = parse.ast.get(&p.ast, it.a)
             if cn.kind == parse.ast.Kind.Path {
                 let (f1, f2) = lower.expr.split2(resolve.ast.text(src, cn.a, cn.b))
-                if (f1 != "" && f2 == "iter") {
+                if f1 != "" && f2 == "iter" {
                     name = f1
                     by_ref = true
                 }
             }
-        } else if (it.kind == parse.ast.Kind.Path) {
+        } else if it.kind == parse.ast.Kind.Path {
             name = resolve.ast.text(src, it.a, it.b)
         }
         if it.kind == parse.ast.Kind.MCall && resolve.ast.tok_text(p, src, it.b) == "iter" {

@@ -116,6 +116,13 @@ pub struct Parser {
     pub(crate) i: usize,
     /// `if` / `while` / `match` の頭の式の中の `is` パターン: `{` は本体の始まりで、構造体パターンではない。
     pat_ns: bool,
+    /// 直前に解析した式の「最上位の形」の強さ (0 = 式の位置にしか置けない `return` や `if` など、1 = `||`、2 = `&&`、3 = 比較・`is`、
+    /// 4..8 = `|` `^` `&` `+ -` `* / %`、9 = 前置、10 = 後置・一次式)。冗長な括弧の判定 (D10) 用。
+    lvl: u8,
+    /// 括弧の群 (開きのトークン位置 → (閉じの位置, 中の式の強さ, 中の最上位に `{` があるか))。タプル・ユニットは含めない。
+    pmap: std::collections::HashMap<usize, (usize, u8, bool)>,
+    /// 冗長と判った括弧の群 (開きの位置, 閉じの位置)。
+    pub(crate) red: Vec<(usize, usize)>,
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -205,7 +212,7 @@ pub(crate) fn split_number(text: &str, is_float: bool) -> R<(String, Option<Stri
 
 impl Parser {
     pub fn new(t: Vec<Tok>) -> Parser {
-        Parser { t, i: 0, pat_ns: false }
+        Parser { t, i: 0, pat_ns: false, lvl: 10, pmap: Default::default(), red: vec![] }
     }
 
     pub(crate) fn cur(&self) -> &Tok {
@@ -552,16 +559,42 @@ impl Parser {
     }
 
     // ---- 式
+    /// `s` から始まる直前の式が、括弧 1 つだけで、その強さが `need` 以上なら冗長な括弧として記録する。
+    fn opnd(&mut self, s: usize, need: u8, ns: bool, prefix: &str) {
+        let Some(&(close, lv, brace)) = self.pmap.get(&s) else { return };
+        if close + 1 != self.i || lv < need || (ns && brace) {
+            return;
+        }
+        let inner = &self.t[s + 1];
+        // `-(1i32)` を `-1i32` (負の数のリテラル) にしない・`&(&x)` を `&&x` (別のトークン) にしない。
+        if prefix == "-" && matches!(inner.kind, "int" | "float") {
+            return;
+        }
+        if prefix == "&" && inner.text.starts_with('&') {
+            return;
+        }
+        self.red.push((s, close));
+    }
+
     pub fn expr(&mut self, ns: bool) -> R<V> {
+        let s = self.i;
+        let r = self.expr_inner(ns)?;
+        self.opnd(s, 0, ns, "");
+        Ok(r)
+    }
+
+    fn expr_inner(&mut self, ns: bool) -> R<V> {
         let c = self.cur().clone();
         if c.kind == "kw" {
             match c.text.as_str() {
                 "break" => {
                     self.i += 1;
+                    self.lvl = 0;
                     return Ok(ndl(c.pos(), "Break", vec![]));
                 }
                 "continue" => {
                     self.i += 1;
+                    self.lvl = 0;
                     return Ok(ndl(c.pos(), "Continue", vec![]));
                 }
                 "return" => {
@@ -570,6 +603,7 @@ impl Parser {
                     if self.cur().kind != "nl" && self.cur().kind != "eof" && !self.is_op("}") {
                         e = Some(self.expr(ns)?);
                     }
+                    self.lvl = 0;
                     return Ok(ndl(c.pos(), "Return", vec![opt(e)]));
                 }
                 _ => {}
@@ -579,31 +613,43 @@ impl Parser {
     }
 
     pub(crate) fn or_expr(&mut self, ns: bool) -> R<V> {
+        let s0 = self.i;
         let mut l = self.and_expr(ns)?;
         while self.is_op("||") {
             let ln = self.cur().pos();
+            self.opnd(s0, 1, ns, "");
             self.i += 1;
+            let s1 = self.i;
             let r = self.and_expr(ns)?;
+            self.opnd(s1, 2, ns, "");
             l = ndl(anchor(ln, &l), "Bin", vec![s("||"), l, r]);
+            self.lvl = 1;
         }
         Ok(l)
     }
 
     pub(crate) fn and_expr(&mut self, ns: bool) -> R<V> {
+        let s0 = self.i;
         let mut l = self.cmp_expr(ns)?;
         while self.is_op("&&") {
             let ln = self.cur().pos();
+            self.opnd(s0, 2, ns, "");
             self.i += 1;
+            let s1 = self.i;
             let r = self.cmp_expr(ns)?;
+            self.opnd(s1, 3, ns, "");
             l = ndl(anchor(ln, &l), "Bin", vec![s("&&"), l, r]);
+            self.lvl = 2;
         }
         Ok(l)
     }
 
     pub(crate) fn cmp_expr(&mut self, ns: bool) -> R<V> {
+        let s0 = self.i;
         let l = self.bin_level(0, ns)?;
         let c = self.cur().clone();
         if self.is_kw("is") {
+            self.opnd(s0, 4, ns, "");
             // `式 is パターン` = `match 式 { パターン => true, <他> => false }` (名前を束縛しないパターンのみ)。
             self.i += 1;
             let saved = std::mem::replace(&mut self.pat_ns, ns);
@@ -618,11 +664,16 @@ impl Parser {
             let t = ndl(c.pos(), "Lit", vec![s("bool"), V::B(true)]);
             let f = ndl(c.pos(), "Lit", vec![s("bool"), V::B(false)]);
             let arms = vec![V::L(vec![pat, t]), V::L(vec![ndl(c.pos(), "PWild", vec![V::B(true)]), f])];
+            self.lvl = 3;
             return Ok(ndl(anchor(c.pos(), &l), "Match", vec![l, V::L(arms)]));
         }
         if c.kind == "op" && matches!(c.text.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=") {
+            self.opnd(s0, 4, ns, "");
             self.i += 1;
+            let s1 = self.i;
             let r = self.bin_level(0, ns)?;
+            self.opnd(s1, 4, ns, "");
+            self.lvl = 3;
             return Ok(ndl(anchor(c.pos(), &l), "Bin", vec![V::S(c.text), l, r]));
         }
         Ok(l)
@@ -633,13 +684,18 @@ impl Parser {
         if lv == LEVELS.len() {
             return self.unary(ns);
         }
+        let s0 = self.i;
         let mut l = self.bin_level(lv + 1, ns)?;
         while self.cur().kind == "op" && LEVELS[lv].contains(&self.cur().text.as_str()) {
             let op = self.cur().text.clone();
             let ln = self.cur().pos();
+            self.opnd(s0, 4 + lv as u8, ns, "");
             self.i += 1;
+            let s1 = self.i;
             let r = self.bin_level(lv + 1, ns)?;
+            self.opnd(s1, 5 + lv as u8, ns, "");
             l = ndl(anchor(ln, &l), "Bin", vec![V::S(op), l, r]);
+            self.lvl = 4 + lv as u8;
         }
         Ok(l)
     }
@@ -649,16 +705,25 @@ impl Parser {
         if c.kind == "op" {
             if matches!(c.text.as_str(), "-" | "!" | "*") {
                 self.i += 1;
+                let s1 = self.i;
                 let e = self.unary(ns)?;
+                self.opnd(s1, 9, ns, &c.text);
+                self.lvl = 9;
                 return Ok(ndl(c.pos(), "Unary", vec![V::S(c.text), e]));
             }
             if c.text == "&" {
                 self.i += 1;
                 if self.accept_kw("mut") {
+                    let s1 = self.i;
                     let e = self.unary(ns)?;
+                    self.opnd(s1, 9, ns, "&mut");
+                    self.lvl = 9;
                     return Ok(ndl(c.pos(), "Unary", vec![s("&mut"), e]));
                 }
+                let s1 = self.i;
                 let e = self.unary(ns)?;
+                self.opnd(s1, 9, ns, "&");
+                self.lvl = 9;
                 return Ok(ndl(c.pos(), "Unary", vec![s("&"), e]));
             }
         }
@@ -684,11 +749,20 @@ impl Parser {
     }
 
     pub(crate) fn postfix(&mut self, ns: bool) -> R<V> {
+        let s0 = self.i;
         let mut e = self.primary(ns)?;
+        let mut first = true;
         loop {
             let c = self.cur().clone();
             if c.kind != "op" {
                 break;
+            }
+            if first && matches!(c.text.as_str(), "." | "[" | "?") {
+                self.opnd(s0, 10, ns, "");
+            }
+            if matches!(c.text.as_str(), "." | "(" | "[" | "?") {
+                first = false;
+                self.lvl = 10;
             }
             match c.text.as_str() {
                 "." => {
@@ -762,6 +836,19 @@ impl Parser {
 
     pub(crate) fn primary(&mut self, ns: bool) -> R<V> {
         let c = self.cur().clone();
+        let r = self.primary_inner(ns)?;
+        let block = (c.kind == "kw" && matches!(c.text.as_str(), "if" | "match" | "loop" | "while" | "for" | "unsafe" | "with" | "fn"))
+            || (c.kind == "op" && c.text == "{");
+        if block {
+            self.lvl = 0;
+        } else {
+            self.lvl = 10;
+        }
+        Ok(r)
+    }
+
+    fn primary_inner(&mut self, ns: bool) -> R<V> {
+        let c = self.cur().clone();
         match c.kind {
             "int" | "float" | "str" | "char" | "bstr" | "byte" => return self.lit_tok(&c),
             "kw" => match c.text.as_str() {
@@ -807,12 +894,30 @@ impl Parser {
             },
             "op" => match c.text.as_str() {
                 "(" => {
+                    let open = self.i;
                     self.i += 1;
                     if self.accept_op(")") {
+                        self.lvl = 10;
                         return Ok(ndl(c.pos(), "Lit", vec![s("unit")]));
                     }
                     let first = self.expr(false)?;
+                    let ilvl = self.lvl;
                     if self.accept_op(")") {
+                        let close = self.i - 1;
+                        let mut depth = 0i32;
+                        let mut brace = false;
+                        for t in &self.t[open + 1..close] {
+                            if t.kind == "op" {
+                                match t.text.as_str() {
+                                    "(" | "[" => depth += 1,
+                                    ")" | "]" => depth -= 1,
+                                    "{" if depth == 0 => brace = true,
+                                    _ => {}
+                                }
+                            }
+                        }
+                        self.pmap.insert(open, (close, ilvl, brace));
+                        self.lvl = 10;
                         return Ok(first);
                     }
                     let mut items = vec![first];
@@ -1136,4 +1241,21 @@ pub fn parse_body(mut toks: Vec<Tok>, base: usize) -> R<V> {
     let mut body = nd("Block", vec![V::L(stmts)]);
     number_nodes(&mut body, &mut 0);
     Ok(body)
+}
+
+/// 本体のトークン列 (`nl` を含む。`eof` は無くてよい) の中の、冗長な括弧の群 `(開き, 閉じ)` (D10)。解析に失敗したら空。
+pub fn redundant_parens(mut toks: Vec<Tok>) -> Vec<(Tok, Tok)> {
+    let (line, col) = toks.last().map_or((1, 1), |t| (t.line, t.col + 1));
+    toks.push(Tok { kind: "eof", text: String::new(), line, col });
+    let mut p = Parser::new(toks);
+    p.skip_nl();
+    while !p.at_eof() {
+        if p.stmt().is_err() || p.expect_nl().is_err() {
+            return vec![];
+        }
+    }
+    let mut r = p.red.clone();
+    r.sort();
+    r.dedup();
+    r.into_iter().map(|(a, b)| (p.t[a].clone(), p.t[b].clone())).collect()
 }

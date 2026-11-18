@@ -83,7 +83,7 @@ fn resolve.table.is_pub(n: &parse.ast.Node) -> bool uses [] panics never pub
     }
     // 型の flags は bit 0 が pub (bit 1 は linear、bit 2 は layout)。
     if k == parse.ast.Kind.TypeDef || k == parse.ast.Kind.EnumDef {
-        return (n.f & 1usize) == 1usize
+        return n.f & 1usize == 1usize
     }
     k == parse.ast.Kind.ExternDef
 end resolve.table.is_pub

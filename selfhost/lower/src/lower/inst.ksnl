@@ -228,12 +228,12 @@ fn lower.inst.names_of(c: &lower.cx.Cx, cp: &parse.cur.P, src: &[u8], tn: usize,
     let tnode = parse.ast.get(&cp.ast, tn)
     let df = types.ty.find(&c.ar, d)
     let dn = types.ty.node(&c.ar, df)
-    if (tnode.kind == parse.ast.Kind.TNamed && dn.k == types.ty.K.Param) {
+    if tnode.kind == parse.ast.Kind.TNamed && dn.k == types.ty.K.Param {
         out.push(lower.cx.own(resolve.ast.text(src, tnode.a, tnode.b))?)?
         nos.push(dn.a)?
         return Ok(())
     }
-    if (tnode.kind == parse.ast.Kind.TRef && dn.k == types.ty.K.Ref) {
+    if tnode.kind == parse.ast.Kind.TRef && dn.k == types.ty.K.Ref {
         return lower.inst.names_of(c, cp, src, tnode.a, dn.a, out, nos)
     }
     Ok(())

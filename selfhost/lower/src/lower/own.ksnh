@@ -3,7 +3,7 @@ fn lower.own.arm_consume(c: &mut lower.cx.Cx, sloc: usize, slin: bool, noncopy: 
     if sloc != 0usize && noncopy {
         lower.drop.moved(c, sloc - 1usize)?
     }
-    if sloc != 0usize && (noncopy || (slin && !wild)) {
+    if sloc != 0usize && (noncopy || slin && !wild) {
         lower.own.emit(c, sloc - 1usize, "own.consume ")?
     }
     Ok(())

@@ -390,7 +390,7 @@ fn borrow.walk.expr_cls(tab: &borrow.base.Tab, cx: &borrow.cx.Cx, e: usize) -> u
 end borrow.walk.expr_cls
 
 fn borrow.walk.ident_byte(c: u8) -> bool uses [] panics never pub
-    c == 95u8 || (c >= 48u8 && c <= 57u8) || (c >= 65u8 && c <= 90u8) || (c >= 97u8 && c <= 122u8)
+    c == 95u8 || c >= 48u8 && c <= 57u8 || c >= 65u8 && c <= 90u8 || c >= 97u8 && c <= 122u8
 end borrow.walk.ident_byte
 
 // 識別子の終わり (バイト位置)。識別子の字は英数字と `_`。
