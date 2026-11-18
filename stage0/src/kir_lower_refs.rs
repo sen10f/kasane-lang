@@ -245,11 +245,11 @@ impl<'a> Lw<'a> {
             }
         }
         // スカラー (所有物を持たない) 要素の `&v[i]` / `&mut v[i]`: 要素のアドレス
-        if nname(operand) == "Index" && !matches!(self.src_ty(e), Ok(Src::Ref(_, ref i)) if super::coll::is_hdr_named(i)) {
+        if nname(operand) == "Index" && !matches!(self.src_ty(e), Ok(Src::Ref(_, ref i, _)) if super::coll::is_hdr_named(i)) {
             return super::coll::index_ref(self, operand, shared, line);
         }
         // 0. Vec / String の借用は、ヘッダのアドレスそのもの (ヘッダは所有者の関数のフレームにある)。
-        if let Ok(Src::Ref(_, inner)) = self.src_ty(e) {
+        if let Ok(Src::Ref(_, inner, _)) = self.src_ty(e) {
             if super::coll::is_hdr_named(&inner) {
                 let h = super::coll::borrow_header(self, operand, line)?;
                 // 借用の開始の注釈 (設計_KIR.md 24 章): 実行では `h` の複製。借用検査が、この値の生きている間を借用の区間と読む。
@@ -387,9 +387,9 @@ impl<'a> Lw<'a> {
             // `for x in &v` のスカラーの要素の変数 `x` は値で持つので、`*x` は値そのもの
             _ if super::coll::local_slot(self, &f[1]).is_some_and(|s| self.coll.borrowed.contains(&s)) => Ok(Some(r)),
             t => match self.src_ty(&f[1]) {
-                Ok(Src::Ref(_, inner)) if super::conv(&inner) == Some(t) => Ok(Some(r)),
+                Ok(Src::Ref(_, inner, _)) if super::conv(&inner) == Some(t) => Ok(Some(r)),
                 // `match v.last() { Some(t) => *t }`: 所有物を持たない集成体 (`Copy` の構造体) の `Option<&T>` の束縛は値そのもの (複製)。
-                Ok(Src::Ref(_, inner)) if matches!(t, Ty::Agg(_)) && !super::coll::owns(self, t) && self.conv_t(&inner) == Some(t) => Ok(Some(r)),
+                Ok(Src::Ref(_, inner, _)) if matches!(t, Ty::Agg(_)) && !super::coll::owns(self, t) && self.conv_t(&inner) == Some(t) => Ok(Some(r)),
                 // 参照越しの分解 (`match &x { Some(p) => *p }`) で得た名前は、型表では段数が決まらない (検査は済んでいる)。
                 Ok(Src::Prim(s)) if Ty::parse(&s) == Some(t) => Ok(Some(r)),
                 _ => self.err(line, "* の被演算子が参照でない"),

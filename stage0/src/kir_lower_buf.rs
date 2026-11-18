@@ -98,7 +98,7 @@ fn alloc_err_pay(lw: &mut Lw) -> Pay {
 /// 引数のアロケータが `std.alloc.System` か確かめ、変数・フィールドなら評価だけする (定数 `std.alloc.SYSTEM` は値を作らない)。
 fn allocator_arg(lw: &mut Lw, line: usize, a: &V) -> LR<bool> {
     match lw.src_ty(a) {
-        Ok(Src::Named(n, _)) if n == "std.alloc.System" => {}
+        Ok(Src::Named(n, _, _)) if n == "std.alloc.System" => {}
         _ => return lw.err(line, "Buf のアロケータは std.alloc.System だけ段階 1 の対象"),
     }
     let literal = crate::check::nname(a) == "Path" && crate::check::strs(&nf(a)[0]) == ["std", "alloc", "SYSTEM"];
@@ -147,11 +147,11 @@ pub(super) fn with_capacity(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     if !lw.aggs.borrow().is_vec(vt) {
         return lw.err(line, "Buf.with_capacity の結果の型が Result<Buf, AllocError> でない");
     }
-    let Ok(Src::Named(_, rargs)) = lw.src_ty(e) else {
+    let Ok(Src::Named(_, rargs, _)) = lw.src_ty(e) else {
         return lw.err(line, "Buf.with_capacity の結果の型が決まらない");
     };
     let elem = match rargs.first() {
-        Some(Src::Named(_, ba)) => ba.first().and_then(|t| coll::sig_ty(lw, t)),
+        Some(Src::Named(_, ba, _)) => ba.first().and_then(|t| coll::sig_ty(lw, t)),
         _ => None,
     };
     let Some(sz) = elem.and_then(|t| coll::elem_size(lw, t)) else {

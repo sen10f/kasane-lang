@@ -506,7 +506,10 @@ impl Parser {
     }
 
     pub(crate) fn ref_rest(&mut self) -> R<V> {
+        // 領域 (`&'a T` の `'a`) は 4 つ目の要素に残す (なければ `Nil`)。型の見た目・等しさには入れない (設計 9 章)。
+        let mut life = V::Nil;
         if self.cur().kind == "life" {
+            life = V::S(self.cur().text.clone());
             self.i += 1;
         }
         let m = self.accept_kw("mut");
@@ -516,17 +519,17 @@ impl Parser {
             if self.accept_op(";") {
                 let n = self.const_expr()?;
                 self.expect_op("]")?;
-                return Ok(V::L(vec![s("ref"), V::B(m), V::L(vec![s("array"), t, n])]));
+                return Ok(V::L(vec![s("ref"), V::B(m), V::L(vec![s("array"), t, n]), life]));
             }
             self.expect_op("]")?;
-            return Ok(V::L(vec![s("ref"), V::B(m), V::L(vec![s("slice"), t])]));
+            return Ok(V::L(vec![s("ref"), V::B(m), V::L(vec![s("slice"), t]), life]));
         }
         if self.cur().kind == "prim" && self.cur().text == "str" {
             self.i += 1;
-            return Ok(V::L(vec![s("ref"), V::B(m), V::L(vec![s("prim"), s("str")])]));
+            return Ok(V::L(vec![s("ref"), V::B(m), V::L(vec![s("prim"), s("str")]), life]));
         }
         let t = self.ty()?;
-        Ok(V::L(vec![s("ref"), V::B(m), t]))
+        Ok(V::L(vec![s("ref"), V::B(m), t, life]))
     }
 
     pub(crate) fn params(&mut self) -> R<V> {
