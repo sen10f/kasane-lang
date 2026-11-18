@@ -662,7 +662,7 @@ fn nll_closure_body_may_read_a_shared_capture_and_write_a_mut_capture() {
             "let x = 1u8",
             "let mut y = 2u8",
             "let c = fn() -> u8 capture [&x, &mut y] {",
-            "    y = x",
+            "    *y = *x",
             "    y",
             "}",
             "core.check.eq(c(), 1u8)",
