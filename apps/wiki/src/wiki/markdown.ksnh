@@ -268,7 +268,7 @@ fn wiki.markdown.inline(text: &str) -> Result<alloc.string.String<std.alloc.Syst
             1usize
         } else if cp.to_u32() <= 2047u32 {
             2usize
-        } else if cp.to_u32() <= 65535u32 {
+        } else if cp.to_u32() <= 65_535u32 {
             3usize
         } else {
             4usize

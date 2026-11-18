@@ -7,7 +7,7 @@ fn std.time.SystemTime.unix_nanos(self: &std.time.SystemTime) -> i64 uses [] pan
 end std.time.SystemTime.unix_nanos
 
 fn std.time.SystemTime.unix_seconds(self: &std.time.SystemTime) -> i64 uses [] panics never pub
-    std.time.div_floor(self.nanos, 1000000000i64)
+    std.time.div_floor(self.nanos, 1_000_000_000i64)
 end std.time.SystemTime.unix_seconds
 
 fn std.time.div_floor(a: i64, b: i64) -> i64 uses [] panics never pub

@@ -129,7 +129,7 @@ fn types.ty.find(ar: &types.ty.Arena, id: usize) -> usize uses [] panics never p
     let mut steps = 0usize
     loop {
         let n = types.ty.node(ar, cur)
-        if (n.k != types.ty.K.Var || !n.m || steps > 10000usize) {
+        if (n.k != types.ty.K.Var || !n.m || steps > 10_000usize) {
             break
         }
         cur = n.a

@@ -7,7 +7,7 @@ fn std.time.SystemTime.unix_nanos(self: &std.time.SystemTime) -> i64 uses [] pan
 end std.time.SystemTime.unix_nanos
 
 fn std.time.SystemTime.unix_seconds(self: &std.time.SystemTime) -> i64 uses [] panics never pub
-    std.time.div_floor(self.nanos, 1000000000i64)
+    std.time.div_floor(self.nanos, 1_000_000_000i64)
 end std.time.SystemTime.unix_seconds
 
 // 床除算 (負の数は 0 方向ではなく小さい方へ丸める)。`/` は 0 方向に切るので、負の端数だけ 1 減らす。

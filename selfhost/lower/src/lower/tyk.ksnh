@@ -2,21 +2,21 @@
 // 集成体は見つけた順に agg#N を振る (ksn kir の番号とは一致しないことがある。比べるときは名前で正規化する)。
 // 文字列の参照 (`&str`) の集成体 `fat` = {ptr, len}。項目の代わりに番号 FAT を使う。
 // `Option<&T>` (T は構造体・列挙型) の中身: 要素の番地だけの集成体 `bref`。
-const lower.tyk.BREF: usize = 1999999999usize pub
+const lower.tyk.BREF: usize = 1_999_999_999usize pub
 
-const lower.tyk.FAT: usize = 4294967295usize pub
+const lower.tyk.FAT: usize = 4_294_967_295usize pub
 
 // 総称の集成体 (ユーザーの総称の型の具体化) の項目の基点 (INS + 添字、添字は tps の添字)。
-const lower.tyk.INS: usize = 2500000000usize pub
+const lower.tyk.INS: usize = 2_500_000_000usize pub
 
 // 組の集成体の項目の基点 (TUP + 添字)。
-const lower.tyk.TUP: usize = 2000000000usize pub
+const lower.tyk.TUP: usize = 2_000_000_000usize pub
 
 // `Vec<T>` の枠 `vec` = {ptr, len, cap} (24 バイト。要素の型は枠に入れない)。項目の代わりに番号 VEC を使う。
-const lower.tyk.VEC: usize = 4294967294usize pub
+const lower.tyk.VEC: usize = 4_294_967_294usize pub
 
 // 要素が所有物の `Vec` の枠 `vec<#E>` の項目の基点 (VECO + 要素の集成体の番号)。配置は `vec` と同じ。
-const lower.tyk.VECO: usize = 1000000000usize pub
+const lower.tyk.VECO: usize = 1_000_000_000usize pub
 
 // 集成体のレイアウト: 大きさ・そろえ・フィールドの末尾からのバイト位置。
 // 列挙型は `offs` を変種の順に並べ (変種 j の i 番目は vlens の和 + i)、`vlens` に変種ごとの個数を入れる。

@@ -1,7 +1,7 @@
 import wiki.router
 import wiki.store
 
-const wiki.server.MAX_BODY: usize = 65536usize
+const wiki.server.MAX_BODY: usize = 65_536usize
 
 const wiki.server.MAX_HEAD: usize = 8192usize
 
@@ -148,7 +148,7 @@ fn wiki.server.serve_listener(listener: &std.net.TcpListener, page_store: &mut w
 end wiki.server.serve_listener
 
 test wiki.server.MAX_BODY.test_value
-    core.check.eq(65536usize, 65536usize)
+    core.check.eq(65_536usize, 65_536usize)
 end wiki.server.MAX_BODY.test_value
 
 test wiki.server.MAX_HEAD.test_value

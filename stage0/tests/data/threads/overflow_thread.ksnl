@@ -1,4 +1,4 @@
-fn t.deep(n: u64) -> u64 uses [] panics never stack 1000000
+fn t.deep(n: u64) -> u64 uses [] panics never stack 1_000_000
     if n == 0u64 {
         0u64
     } else {
@@ -11,7 +11,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     let spawned = std.thread.spawn(
         std.alloc.SYSTEM,
         fn() -> u64 capture [] {
-            t.deep(1000000000u64)
+            t.deep(1_000_000_000u64)
         },
     )
     let handle = match spawned {

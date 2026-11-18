@@ -107,7 +107,7 @@ test shortener_https.json.stats_body.test_shape
         Ok(s) => core.check.eq(s.as_str(), "{\"links\":0}")
         Err(_e) => core.panic.panic("stats_body")
     }
-    match shortener_https.json.stats_body(12345usize) {
+    match shortener_https.json.stats_body(12_345usize) {
         Ok(s) => core.check.eq(s.as_str(), "{\"links\":12345}")
         Err(_e) => core.panic.panic("stats_body")
     }

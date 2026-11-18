@@ -1,4 +1,4 @@
-const t.C: u32 = 5000000000u32
+const t.C: u32 = 5_000_000_000u32
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     core.mem.drop(t.C)

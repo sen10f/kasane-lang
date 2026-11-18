@@ -1,7 +1,7 @@
 import shortener.error
 import shortener.http
 
-const shortener.wire.MAX_REPLY: usize = 65536usize
+const shortener.wire.MAX_REPLY: usize = 65_536usize
 
 fn shortener.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<usize, shortener.error.Error> uses [alloc, io.net] panics never
     let mut chunk = [0u8; 512]

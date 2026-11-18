@@ -1,4 +1,4 @@
-const hashmap.EXPECT_HITS: u32 = 5999000u32
+const hashmap.EXPECT_HITS: u32 = 5_999_000u32
 
 const hashmap.EXPECT_MISSES: u32 = 2000u32
 

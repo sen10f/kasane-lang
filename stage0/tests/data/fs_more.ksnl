@@ -112,7 +112,7 @@ fn t.files() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics 
     let md = std.fs.metadata("d/moved.txt")?
     t.show("moved size", t.num_u64(md.size))
     t.show("moved kind", t.kind_of(md.kind))
-    t.flag("moved modified", md.modified_ns > 1000000000u64)
+    t.flag("moved modified", md.modified_ns > 1_000_000_000u64)
     let dm = std.fs.metadata("d/a")?
     t.show("dir kind", t.kind_of(dm.kind))
     match std.fs.metadata("d/missing") {

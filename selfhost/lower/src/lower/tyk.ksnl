@@ -1,14 +1,14 @@
-const lower.tyk.BREF: usize = 1999999999usize pub
+const lower.tyk.BREF: usize = 1_999_999_999usize pub
 
-const lower.tyk.FAT: usize = 4294967295usize pub
+const lower.tyk.FAT: usize = 4_294_967_295usize pub
 
-const lower.tyk.INS: usize = 2500000000usize pub
+const lower.tyk.INS: usize = 2_500_000_000usize pub
 
-const lower.tyk.TUP: usize = 2000000000usize pub
+const lower.tyk.TUP: usize = 2_000_000_000usize pub
 
-const lower.tyk.VEC: usize = 4294967294usize pub
+const lower.tyk.VEC: usize = 4_294_967_294usize pub
 
-const lower.tyk.VECO: usize = 1000000000usize pub
+const lower.tyk.VECO: usize = 1_000_000_000usize pub
 
 type lower.tyk.Lay pub
     size: usize pub

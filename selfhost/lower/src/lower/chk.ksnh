@@ -1,5 +1,5 @@
 // 生成する関数の項目の印 (項目 + 1 でない値)。
-const lower.chk.GEN: usize = 4294967294usize pub
+const lower.chk.GEN: usize = 4_294_967_294usize pub
 
 // `    %k: ty = op` の頭まで (op は呼び出し側が続ける)。
 fn lower.chk.d(o: &mut alloc.string.String<std.alloc.System>, k: usize, ty: &str, op: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub

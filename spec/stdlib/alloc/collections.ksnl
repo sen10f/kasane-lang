@@ -547,7 +547,7 @@ end alloc.collections.HashMapIter.next
 fn alloc.collections.hash_key[K: core.hash.Hash](key: &K) -> usize uses [] panics never
     let mut state = core.hash.Fnv64.new()
     key.hash(&mut state)
-    match u32.try_from_u64(state.finish() & 4294967295u64) {
+    match u32.try_from_u64(state.finish() & 4_294_967_295u64) {
         Ok(lo) => {
             usize.from_u32(lo)
         }

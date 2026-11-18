@@ -1,4 +1,4 @@
-const t.N: usize = 4294967296
+const t.N: usize = 4_294_967_296
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let x: usize = t.N

@@ -290,7 +290,7 @@ end emit.reset_fn
 
 fn emit.tmp(g: &mut emit.G) -> usize uses [] panics may pub
     g.misc.n = g.misc.n.wrapping_add(1usize)
-    1000000usize.wrapping_add(g.misc.n)
+    1_000_000usize.wrapping_add(g.misc.n)
 end emit.tmp
 
 fn emit.w(g: &mut emit.G, s: &str) -> () uses [alloc, io.console, process] panics may pub

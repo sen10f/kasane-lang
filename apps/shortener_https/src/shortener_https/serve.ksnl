@@ -1,6 +1,6 @@
 import shortener_https.router
 
-const shortener_https.serve.MAX_BODY: usize = 65536usize
+const shortener_https.serve.MAX_BODY: usize = 65_536usize
 
 const shortener_https.serve.MAX_HEAD: usize = 8192usize
 

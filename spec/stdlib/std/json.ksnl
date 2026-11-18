@@ -733,19 +733,19 @@ fn std.json.parse_unicode(src: &[u8], pos: usize, out: &mut alloc.string.String<
     let first = std.json.hex4(src, pos.wrapping_add(2usize))?
     let mut code = first
     let mut next = pos.wrapping_add(6usize)
-    if first >= 56320u32 && first <= 57343u32 {
+    if first >= 56_320u32 && first <= 57_343u32 {
         return Err(std.json.Error.BadEscape(pos))
     }
-    if first >= 55296u32 && first <= 56319u32 {
+    if first >= 55_296u32 && first <= 56_319u32 {
         if src.get(next) != Some(&b'\\') || src.get(next.wrapping_add(1usize)) != Some(&b'u') {
             return Err(std.json.Error.BadEscape(pos))
         }
         let low = std.json.hex4(src, next.wrapping_add(2usize))?
-        if low < 56320u32 || low > 57343u32 {
+        if low < 56_320u32 || low > 57_343u32 {
             return Err(std.json.Error.BadEscape(pos))
         }
-        let high_bits = first.wrapping_sub(55296u32).wrapping_shl(10u32)
-        code = 65536u32.wrapping_add(high_bits).wrapping_add(low.wrapping_sub(56320u32))
+        let high_bits = first.wrapping_sub(55_296u32).wrapping_shl(10u32)
+        code = 65_536u32.wrapping_add(high_bits).wrapping_add(low.wrapping_sub(56_320u32))
         next = next.wrapping_add(6usize)
     }
     match char.try_from_u32(code) {

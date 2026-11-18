@@ -52,7 +52,7 @@ fn alloc.string.String.push[A: alloc.alloc.Allocator](self: &mut alloc.string.St
     if code >= 2048u32 {
         n = 3usize
     }
-    if code >= 65536u32 {
+    if code >= 65_536u32 {
         n = 4usize
     }
     match self.reserve_bytes(n) {

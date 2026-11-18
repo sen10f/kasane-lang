@@ -1,10 +1,10 @@
-const loops.EXPECT_PRIMES: u32 = 17984u32
+const loops.EXPECT_PRIMES: u32 = 17_984u32
 
-const loops.EXPECT_SUM: u64 = 499999500000u64
+const loops.EXPECT_SUM: u64 = 499_999_500_000u64
 
-const loops.N_SIEVE: usize = 200000usize
+const loops.N_SIEVE: usize = 200_000usize
 
-const loops.N_SUM: u64 = 1000000u64
+const loops.N_SUM: u64 = 1_000_000u64
 
 fn loops.count_primes(n: usize) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics may pub
     let mut flags = alloc.vec.Vec.new(std.alloc.SYSTEM)

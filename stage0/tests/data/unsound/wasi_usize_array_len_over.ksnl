@@ -1,5 +1,5 @@
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let x = [0u8; 4294967296]
+    let x = [0u8; 4_294_967_296]
     core.mem.drop(x)
     Ok(())
 end t.main

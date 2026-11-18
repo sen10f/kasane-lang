@@ -1,4 +1,4 @@
-const lower.chk.GEN: usize = 4294967294usize pub
+const lower.chk.GEN: usize = 4_294_967_294usize pub
 
 fn lower.chk.d(o: &mut alloc.string.String<std.alloc.System>, k: usize, ty: &str, op: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     o.push_str("    ")?

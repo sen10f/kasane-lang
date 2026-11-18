@@ -131,9 +131,9 @@ fn todo_spa.app.on_fetch(tag: u32, status: i32) -> Result<(), alloc.alloc.AllocE
 end todo_spa.app.on_fetch
 
 fn todo_spa.app.on_list_body() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
-    let mut buf = [0u8; 16384]
+    let mut buf = [0u8; 16_384]
     let n = dom.fetch_body(&mut buf)
-    if n < 0i32 || n > 16384i32 {
+    if n < 0i32 || n > 16_384i32 {
         todo_spa.app.status("一覧が大きすぎる (16 KiB まで)")
         return Ok(())
     }
@@ -146,7 +146,7 @@ fn todo_spa.app.on_list_body() -> Result<(), alloc.alloc.AllocError> uses [alloc
 end todo_spa.app.on_list_body
 
 fn todo_spa.app.read_storage(key: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may
-    let mut buf = [0u8; 16384]
+    let mut buf = [0u8; 16_384]
     let n = dom.storage_get(key, &mut buf)
     todo_spa.app.text_of(&buf, n)
 end todo_spa.app.read_storage
@@ -282,7 +282,7 @@ fn todo_spa.app.toggle_item(id: u32) -> Result<(), alloc.alloc.AllocError> uses 
 end todo_spa.app.toggle_item
 
 fn todo_spa.app.write_cache(lines: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
-    if lines.len() > 16384usize {
+    if lines.len() > 16_384usize {
         todo_spa.app.status("一覧が大きすぎる (16 KiB まで)")
     } else {
         dom.storage_set(todo_spa.app.ITEMS_KEY, lines)

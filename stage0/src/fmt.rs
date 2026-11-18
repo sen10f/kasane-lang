@@ -461,7 +461,7 @@ pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
     if canon {
         // 1 行の中のトークンの間隔 (spacing.rs の表)。
         for l in lines.iter_mut() {
-            *l = fix_lists(&crate::spacing::canon_line(l));
+            *l = fix_lists(&crate::spacing::canon_line(&crate::canon::numbers_line(l)));
         }
     }
     let joined = lines.join("\n") + "\n";

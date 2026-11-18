@@ -272,7 +272,7 @@ fn lower.inst.sig_ty(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, j: u
     let mut i = 0usize
     while i < tps.len() {
         let tk = lower.tyk.at(tps.as_slice(), i)
-        let no = 1000000usize + item.wrapping_mul(64usize) + i
+        let no = 1_000_000usize + item.wrapping_mul(64usize) + i
         let pt = types.ty.param(&mut c.ar, no)?
         types.chk.push(&mut c.tc, resolve.ast.tok_text(cp, src, tk), pt, true)?
         i = i + 1usize
