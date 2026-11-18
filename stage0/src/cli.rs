@@ -404,6 +404,12 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
             match &s.ksnl {
                 None => rep.add("E9050", "the .ksnl next to this .ksnh is missing; run `ksn strip`", Some(&fl), 1, 1, true),
                 Some(k) => {
+                    // `strip` の出力は、`.ksnh` が正規形なら必ず `ksn fmt` の正規形になる (設計_ksnhとロック.md 1.2)。破れていれば E0020。
+                    let stripped = crate::ksnh::strip(&s.text);
+                    let kp = format!("{}.ksnl", s.path.trim_end_matches(".ksnh"));
+                    if crate::fmt::format_source(&s.text, &s.path) == s.text && crate::fmt::format_source(&stripped, &kp) != stripped {
+                        rep.add("E0020", "the .ksnl made by stripping this .ksnh differs from its `ksn fmt` output; the comments are placed where stripping leaves a non-canonical file", Some(&fl), 1, 1, true);
+                    }
                     if let Some(ln) = crate::ksnh::first_mismatch(&s.text, k) {
                         rep.add("E9050", "the .ksnl does not match this .ksnh with its comments removed; run `ksn strip` (or `ksn fmt`)", Some(&fl), ln, 1, true);
                     }

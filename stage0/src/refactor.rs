@@ -1568,7 +1568,7 @@ fn add_pub(l: &Loaded, plan: &mut Plan, name: &str, field: Option<&str>, added: 
 
 /// `.ksnh` の変更ごとに、横の `.ksnl` (コメントを外したもの) の変更を足す。`.ksnh` が正で、`ksn check` が一致を確かめる (E9050)。
 /// `.ksnh` から移るファイル、またはコメントを持つ新しいファイルは、`.ksnh` として書く (`.ksnl` にコメントは置けない)。
-fn with_ksnl(changes: &[FileChange]) -> Vec<FileChange> {
+pub(crate) fn with_ksnl(changes: &[FileChange]) -> Vec<FileChange> {
     let ksnl_of = |p: &str| format!("{}.ksnl", p.trim_end_matches(".ksnh"));
     let ksnh_of = |p: &str| format!("{}.ksnh", p.trim_end_matches(".ksnl").trim_end_matches(".ksnh"));
     let mut out = vec![];
@@ -1585,7 +1585,7 @@ fn with_ksnl(changes: &[FileChange]) -> Vec<FileChange> {
         out.push(FileChange {
             old_path: c.old_path.as_deref().filter(|o| o.ends_with(".ksnh")).map(ksnl_of),
             new_path: ksnl_of(&new_path),
-            old_text: String::new(),
+            old_text: c.old_path.as_deref().filter(|o| o.ends_with(".ksnh")).and_then(|o| crate::project::read_text(&ksnl_of(o))).unwrap_or_default(),
             new_text: crate::ksnh::strip(&c.new_text),
         });
     }

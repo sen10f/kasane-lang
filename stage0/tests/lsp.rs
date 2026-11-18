@@ -15,6 +15,8 @@ const WAIT: Duration = Duration::from_secs(20);
 
 /// 非 ASCII (あ = BMP、😀 = BMP 外で UTF-16 では 2 単位) の後ろに誤りのある行を含む。
 const SRC_BAD: &str = "\
+/// 2 つの数を足す。
+/// 2 行目の説明。
 fn t.add(a: u32, b: u32) -> u32 uses [] panics never pub
     a.wrapping_add(b)
 end t.add
@@ -26,6 +28,8 @@ end t.main
 ";
 
 const SRC_GOOD: &str = "\
+/// 2 つの数を足す。
+/// 2 行目の説明。
 fn t.add(a: u32, b: u32) -> u32 uses [] panics never pub
     a.wrapping_add(b)
 end t.add
@@ -43,7 +47,12 @@ impl Tmp {
         fs::create_dir_all(d.join("src")).unwrap();
         fs::write(d.join("kasane.toml"), TOML).unwrap();
         fs::write(d.join("kasane.lock"), "version = 1\n").unwrap();
-        fs::write(d.join("src").join("t.ksnl"), src).unwrap();
+        // コメント (`///` の文書) のある入力は `.ksnh` が正で、`.ksnl` はその `strip` (`.ksnl` にコメントは置けない)。
+        let ksnl: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).map(|l| format!("{l}\n")).collect();
+        if ksnl != src {
+            fs::write(d.join("src").join("t.ksnh"), src).unwrap();
+        }
+        fs::write(d.join("src").join("t.ksnl"), ksnl).unwrap();
         // 書き方は 1 通り (E0020): 試験の入力は `ksn fmt` の出力にそろえる。
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
         // 正規化 (macOS の /var など) してから使う。
@@ -267,7 +276,7 @@ fn diagnostics_with_utf16_range_and_clearing_on_change() {
     // `;` は Rust 風の書き方 (E0040)。その手前に "あ😀" があるので、列の変換が効いていないと位置がずれる。
     let semi = SRC_GOOD.replace("    t.add(1u32, 2u32)\nend t.main", "    let n = \"あ😀\";\n    t.add(1u32, 2u32)\nend t.main");
     let t = Tmp::new("diag", &semi);
-    let uri = t.uri("src/t.ksnl");
+    let uri = t.uri("src/t.ksnh");
     let mut c = Client::start();
     c.initialize(&t.0);
     c.open(&uri, &semi);
@@ -275,33 +284,33 @@ fn diagnostics_with_utf16_range_and_clearing_on_change() {
     let d = ds.iter().find(|d| d["code"] == "E0040").unwrap_or_else(|| panic!("no E0040 in {:?}", ds));
     assert_eq!(d["severity"], 1);
     assert_eq!(d["source"], "ksn");
-    let line = semi.lines().nth(5).unwrap();
+    let line = semi.lines().nth(7).unwrap();
     let scalar = line.chars().position(|ch| ch == ';').unwrap();
     let utf16: usize = line.split(';').next().unwrap().encode_utf16().count();
     assert_eq!(utf16, scalar + 1, "the line must contain a non-BMP character");
-    assert_eq!(d["range"]["start"], json!({"line": 5, "character": utf16}));
-    assert_eq!(d["range"]["end"], json!({"line": 5, "character": utf16 + 1}));
+    assert_eq!(d["range"]["start"], json!({"line": 7, "character": utf16}));
+    assert_eq!(d["range"]["end"], json!({"line": 7, "character": utf16 + 1}));
 
     // 保存せずに直す (didChange): 診断が消える。
     c.notify("textDocument/didChange", json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": [{"text": SRC_GOOD}]}));
     let ds = c.diagnostics_until(&uri, |d| d.is_empty());
     assert!(ds.is_empty());
     // ディスクは壊れたまま。
-    assert_eq!(fs::read_to_string(t.file("src/t.ksnl")).unwrap(), semi);
+    assert_eq!(fs::read_to_string(t.file("src/t.ksnh")).unwrap(), semi);
     c.shutdown();
 }
 
 #[test]
 fn code_action_applies_the_fix() {
     let t = Tmp::new("fix", SRC_BAD);
-    let uri = t.uri("src/t.ksnl");
+    let uri = t.uri("src/t.ksnh");
     let mut c = Client::start();
     c.initialize(&t.0);
     c.open(&uri, SRC_BAD);
     c.diagnostics_until(&uri, |d| !d.is_empty());
     let acts = c.call(
         "textDocument/codeAction",
-        json!({"textDocument": tdoc(&uri), "range": {"start": {"line": 5, "character": 0}, "end": {"line": 5, "character": 0}}, "context": {"diagnostics": []}}),
+        json!({"textDocument": tdoc(&uri), "range": {"start": {"line": 7, "character": 0}, "end": {"line": 7, "character": 0}}, "context": {"diagnostics": []}}),
     );
     let a = acts.as_array().unwrap().iter().find(|a| a["title"].as_str().unwrap().contains("E1108")).expect("quickfix for E1108");
     assert_eq!(a["kind"], "quickfix");
@@ -319,29 +328,30 @@ fn code_action_applies_the_fix() {
 #[test]
 fn hover_definition_references() {
     let t = Tmp::new("nav", SRC_GOOD);
-    let uri = t.uri("src/t.ksnl");
+    let uri = t.uri("src/t.ksnh");
     let mut c = Client::start();
     c.initialize(&t.0);
     c.open(&uri, SRC_GOOD);
-    // 行 5 の `t.add(` の add の上。
-    let h = c.call("textDocument/hover", at(&uri, 5, 8));
+    // 行 7 の `t.add(` の add の上。
+    let h = c.call("textDocument/hover", at(&uri, 7, 8));
     let md = h["contents"]["value"].as_str().unwrap();
     assert!(md.contains("fn t.add(a: u32, b: u32) -> u32 uses [] panics never pub"), "{}", md);
+    assert!(md.contains("2 つの数を足す。\n2 行目の説明。"), "{}", md);
     // 何もない場所は null。
-    assert_eq!(c.call("textDocument/hover", at(&uri, 1, 0)), Value::Null);
+    assert_eq!(c.call("textDocument/hover", at(&uri, 3, 0)), Value::Null);
 
-    let d = c.call("textDocument/definition", at(&uri, 5, 8));
+    let d = c.call("textDocument/definition", at(&uri, 7, 8));
     let loc = &d.as_array().unwrap()[0];
     assert_eq!(loc["uri"], uri);
-    assert_eq!(loc["range"]["start"], json!({"line": 0, "character": 3}));
-    assert_eq!(loc["range"]["end"], json!({"line": 0, "character": 8}));
+    assert_eq!(loc["range"]["start"], json!({"line": 2, "character": 3}));
+    assert_eq!(loc["range"]["end"], json!({"line": 2, "character": 8}));
 
-    let r = c.call("textDocument/references", json!({"textDocument": tdoc(&uri), "position": {"line": 0, "character": 5}, "context": {"includeDeclaration": false}}));
+    let r = c.call("textDocument/references", json!({"textDocument": tdoc(&uri), "position": {"line": 2, "character": 5}, "context": {"includeDeclaration": false}}));
     let rs = r.as_array().unwrap();
     assert_eq!(rs.len(), 1, "{:?}", rs);
-    assert_eq!(rs[0]["range"]["start"], json!({"line": 5, "character": 4}));
-    assert_eq!(rs[0]["range"]["end"], json!({"line": 5, "character": 9}));
-    let r = c.call("textDocument/references", json!({"textDocument": tdoc(&uri), "position": {"line": 0, "character": 5}, "context": {"includeDeclaration": true}}));
+    assert_eq!(rs[0]["range"]["start"], json!({"line": 7, "character": 4}));
+    assert_eq!(rs[0]["range"]["end"], json!({"line": 7, "character": 9}));
+    let r = c.call("textDocument/references", json!({"textDocument": tdoc(&uri), "position": {"line": 2, "character": 5}, "context": {"includeDeclaration": true}}));
     assert_eq!(r.as_array().unwrap().len(), 2);
     c.shutdown();
 }
@@ -349,22 +359,22 @@ fn hover_definition_references() {
 #[test]
 fn rename_with_prepare() {
     let t = Tmp::new("rename", SRC_GOOD);
-    let uri = t.uri("src/t.ksnl");
+    let uri = t.uri("src/t.ksnh");
     let mut c = Client::start();
     c.initialize(&t.0);
     c.open(&uri, SRC_GOOD);
-    let p = c.call("textDocument/prepareRename", at(&uri, 0, 5));
+    let p = c.call("textDocument/prepareRename", at(&uri, 2, 5));
     assert_eq!(p["placeholder"], "add");
-    assert_eq!(p["range"], json!({"start": {"line": 0, "character": 5}, "end": {"line": 0, "character": 8}}));
-    let w = c.call("textDocument/rename", json!({"textDocument": tdoc(&uri), "position": {"line": 0, "character": 5}, "newName": "plus"}));
+    assert_eq!(p["range"], json!({"start": {"line": 2, "character": 5}, "end": {"line": 2, "character": 8}}));
+    let w = c.call("textDocument/rename", json!({"textDocument": tdoc(&uri), "position": {"line": 2, "character": 5}, "newName": "plus"}));
     let out = apply(SRC_GOOD, &w["changes"][&uri]);
     assert!(out.contains("fn t.plus(a: u32") && out.contains("end t.plus") && out.contains("    t.plus(1u32, 2u32)"), "{}", out);
     assert!(!out.contains("t.add"));
     // モジュールの移動を伴う名前は断る。
-    let e = c.call_raw("textDocument/rename", json!({"textDocument": tdoc(&uri), "position": {"line": 0, "character": 5}, "newName": "x.y"}));
+    let e = c.call_raw("textDocument/rename", json!({"textDocument": tdoc(&uri), "position": {"line": 2, "character": 5}, "newName": "x.y"}));
     assert!(e.get("error").is_some(), "{}", e);
     // 定義でない場所は改名できない。
-    let e = c.call_raw("textDocument/prepareRename", at(&uri, 1, 0));
+    let e = c.call_raw("textDocument/prepareRename", at(&uri, 3, 0));
     assert!(e.get("error").is_some(), "{}", e);
     c.shutdown();
 }
@@ -498,7 +508,7 @@ const t.LIMIT: u32 = 5u32
 #[test]
 fn robust_against_malformed_input_and_broken_manifest() {
     let t = Tmp::new("robust", SRC_GOOD);
-    let uri = t.uri("src/t.ksnl");
+    let uri = t.uri("src/t.ksnh");
     let mut c = Client::start();
     c.initialize(&t.0);
     // 壊れた JSON、オブジェクトでない値、method の無い要求、未知のメソッド、Content-Length の無いヘッダ。
@@ -558,4 +568,47 @@ fn requests_before_initialize_are_rejected() {
         assert!(Instant::now() < deadline, "server did not exit");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// `.ksnl` を開いたとき: 同じモジュールの `.ksnh` から `///` の文書を引き、位置は `.ksnl` の座標で返す。
+#[test]
+fn ksnl_open_reads_docs_from_the_sibling_ksnh() {
+    let t = Tmp::new("ksnl_docs", SRC_GOOD);
+    let uri = t.uri("src/t.ksnl");
+    let ksnl = fs::read_to_string(t.file("src/t.ksnl")).unwrap();
+    assert!(!ksnl.contains("///"));
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    c.open(&uri, &ksnl);
+    // `.ksnl` では `t.add(` の呼び出しは 5 行目 (`///` の 2 行が無い)。
+    let h = c.call("textDocument/hover", at(&uri, 5, 8));
+    let md = h["contents"]["value"].as_str().unwrap();
+    assert!(md.contains("2 つの数を足す。\n2 行目の説明。"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 5, 8));
+    let loc = &d.as_array().unwrap()[0];
+    assert_eq!(loc["uri"], uri);
+    assert_eq!(loc["range"]["start"], json!({"line": 0, "character": 3}));
+    let r = c.call("textDocument/references", json!({"textDocument": tdoc(&uri), "position": {"line": 0, "character": 5}, "context": {"includeDeclaration": true}}));
+    assert_eq!(r.as_array().unwrap().len(), 2);
+    c.shutdown();
+}
+
+/// `.ksnh` の整形: コメントを残して整形し、保存すると横の `.ksnl` が `strip` で作り直される。
+#[test]
+fn ksnh_formatting_and_save_rebuild_the_ksnl() {
+    let src = "/// 説明。\nconst t.LIMIT: u32 = 5u32\n";
+    let bad = "const t.LIMIT: u32 = 5u32\n\n\n/// 説明。\nfn t.main() -> () uses [] panics never pub\n    ()\nend t.main\n";
+    let t = Tmp::new("ksnh_fmt", src);
+    let uri = t.uri("src/t.ksnh");
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    c.open(&uri, bad);
+    let e = c.call("textDocument/formatting", json!({"textDocument": tdoc(&uri), "options": {"tabSize": 4, "insertSpaces": true}}));
+    let out = apply(bad, &e);
+    assert!(out.contains("/// 説明。\nfn t.main") && !out.contains("\n\n\n"), "{}", out);
+    c.notify("textDocument/didSave", json!({"textDocument": {"uri": uri}, "text": out}));
+    c.call("textDocument/documentSymbol", json!({"textDocument": tdoc(&uri)}));
+    let ksnl = fs::read_to_string(t.file("src/t.ksnl")).unwrap();
+    assert!(!ksnl.contains("///") && ksnl.contains("fn t.main"), "{}", ksnl);
+    c.shutdown();
 }

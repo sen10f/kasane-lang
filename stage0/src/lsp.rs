@@ -385,6 +385,32 @@ fn kind_ok(kw: &str) -> bool {
     matches!(kw, "fn" | "type" | "enum" | "trait" | "test" | "const" | "static" | "extern")
 }
 
+/// 文書の上書き。`.ksnh` のときは、横の `.ksnl` を `strip` したものも上書きする (編集中に E9050 を出さない。
+/// ディスクの `.ksnl` は保存 (didSave) で書く)。
+fn set_overlay(path: &str, text: Option<String>) {
+    if let Some(stem) = path.strip_suffix(".ksnh") {
+        overlay_set(&format!("{}.ksnl", stem), text.as_deref().map(crate::ksnh::strip));
+    }
+    overlay_set(path, text);
+}
+
+/// `.ksnl` に横の `.ksnh` があれば、その `.ksnh` のパス (読み込んだソースは `.ksnh` なので、名前解決の鍵になる)。
+fn ksnh_sibling(path: &str) -> Option<String> {
+    let h = format!("{}.ksnh", path.strip_suffix(".ksnl")?);
+    crate::project::read_text(&h).map(|_| h)
+}
+
+/// `.ksnh` の位置 (パス・1 始まりの行) を、`.ksnl` を開いているとき用に `.ksnl` のものへ直す。
+fn to_ksnl(path: &str, line1: usize) -> (String, usize) {
+    match path.strip_suffix(".ksnh") {
+        Some(stem) => {
+            let map = crate::ksnh::line_map(&crate::project::read_text(path).unwrap_or_default());
+            (format!("{}.ksnl", stem), map.get(line1.wrapping_sub(1)).copied().unwrap_or(line1))
+        }
+        None => (path.to_string(), line1),
+    }
+}
+
 fn doc_comment(s: &Source, d: &Def) -> String {
     let start = cli::def_start(s, d);
     let hdr = d.line.saturating_sub(1);
@@ -451,12 +477,22 @@ impl Server {
     /// 現在の診断をファイルごとに配信する。診断の無くなったファイルは空で消す。
     fn publish(&mut self, root: &Path) {
         let Some(st) = self.roots.get_mut(root) else { return };
-        let mut by_file: HashMap<String, Vec<&cli::Item>> = HashMap::new();
+        let mut by_file: HashMap<String, Vec<cli::Item>> = HashMap::new();
         for it in &st.items {
-            let p = match &it.file {
+            let mut it = it.clone();
+            let mut p = match &it.file {
                 Some(f) => norm(&root.join(f)),
                 None => norm(&root.join("kasane.toml")),
             };
+            // `.ksnh` のモジュールを `.ksnl` で開いているだけのときは、診断を `.ksnl` の位置にして配る。
+            if let Some(stem) = p.strip_suffix(".ksnh") {
+                let k = format!("{}.ksnl", stem);
+                if !self.docs.values().any(|d| d.path == p) && self.docs.values().any(|d| d.path == k) {
+                    let (_, l) = to_ksnl(&p, it.line);
+                    it.line = l;
+                    p = k;
+                }
+            }
             by_file.entry(p).or_default().push(it);
         }
         // 開いている文書は診断が無くても空を送る。
@@ -532,7 +568,7 @@ impl Server {
             return;
         };
         let path = canon(&path);
-        overlay_set(&path, Some(text.clone()));
+        set_overlay(&path, Some(text.clone()));
         self.docs.insert(uri.to_string(), Doc { path, text });
         self.doc_changed(uri);
     }
@@ -555,7 +591,7 @@ impl Server {
                 }
             }
         }
-        overlay_set(&d.path, Some(d.text.clone()));
+        set_overlay(&d.path, Some(d.text.clone()));
         let uri = uri.to_string();
         self.doc_changed(&uri);
     }
@@ -563,7 +599,7 @@ impl Server {
     fn close(&mut self, p: &Value) {
         let Some(uri) = p.pointer("/textDocument/uri").and_then(|u| u.as_str()) else { return };
         if let Some(d) = self.docs.remove(uri) {
-            overlay_set(&d.path, None);
+            set_overlay(&d.path, None);
             if self.rootless.remove(uri) {
                 notify("textDocument/publishDiagnostics", json!({"uri": uri, "diagnostics": []}));
             }
@@ -579,7 +615,13 @@ impl Server {
         if let Some(t) = p.get("text").and_then(|t| t.as_str()) {
             if let Some(d) = self.docs.get_mut(uri) {
                 d.text = t.to_string();
-                overlay_set(&d.path, Some(t.to_string()));
+                set_overlay(&d.path, Some(t.to_string()));
+            }
+        }
+        // `.ksnh` の保存では、横の `.ksnl` も `strip` で作り直す (`ksn fmt` / `ksn strip` と同じ)。
+        if let Some(d) = self.docs.get(uri) {
+            if let Some(stem) = d.path.strip_suffix(".ksnh") {
+                let _ = std::fs::write(format!("{}.ksnl", stem), crate::ksnh::strip(&d.text));
             }
         }
         // 保存で他のファイルも変わりうるので、パッケージ全体を検査し直す。
@@ -615,6 +657,8 @@ impl Server {
         let Some(root) = self.root_for(uri)? else { return Ok(None) };
         let d = self.doc(uri)?;
         let (path, text) = (d.path.clone(), d.text.clone());
+        // `.ksnl` を開いているときも、読み込んだソースは `.ksnh` なので、名前解決は `.ksnh` のパスで行う。
+        let path = ksnh_sibling(&path).unwrap_or(path);
         let lines = lines_of(&text);
         let Some(ltxt) = lines.get(line) else { return Ok(None) };
         let idx = scalar_of(ltxt, ch);
@@ -670,8 +714,9 @@ impl Server {
     }
 
     /// 定義の位置 (URI, 範囲)。名前はヘッダ行の中で探す。
-    fn def_location(s: &Source, line1: usize, name: &str) -> Value {
-        let text = crate::project::read_text(&s.path).unwrap_or_else(|| s.text.clone());
+    fn def_location(s: &Source, line1: usize, name: &str, want_ksnl: bool) -> Value {
+        let (spath, line1) = if want_ksnl { to_ksnl(&s.path, line1) } else { (s.path.clone(), line1) };
+        let text = crate::project::read_text(&spath).unwrap_or_else(|| s.text.clone());
         let lines = lines_of(&text);
         let li = line1.saturating_sub(1);
         let l = lines.get(li).copied().unwrap_or("");
@@ -682,7 +727,7 @@ impl Server {
             }
             None => (0, l.chars().count()),
         };
-        json!({"uri": path_to_uri(&s.path), "range": line_range(&lines, li, a, b)})
+        json!({"uri": path_to_uri(&spath), "range": line_range(&lines, li, a, b)})
     }
 
     // ---------------------------------------------------- 要求
@@ -714,12 +759,15 @@ impl Server {
         let Some(loc) = self.locate(&uri, p)? else { return Ok(Value::Null) };
         let Some((l, _)) = self.ctx(&loc.root) else { return Ok(Value::Null) };
         let srcs = Self::sources(l);
+        let want_ksnl = self.docs.get(&uri).map_or(false, |d| d.path.ends_with(".ksnl"));
+        let Some((l, _)) = self.ctx(&loc.root) else { return Ok(Value::Null) };
+        let srcs = Self::sources(l);
         let mut out = vec![];
         for f in &loc.fqns {
             let last = f.rsplit('.').next().unwrap_or(f);
             match cli::find_def(&srcs, f) {
-                Some(Found::Def(d, s)) => out.push(Self::def_location(s, d.line, &d.name)),
-                Some(Found::Line(s, ln)) => out.push(Self::def_location(s, ln, last)),
+                Some(Found::Def(d, s)) => out.push(Self::def_location(s, d.line, &d.name, want_ksnl)),
+                Some(Found::Line(s, ln)) => out.push(Self::def_location(s, ln, last, want_ksnl)),
                 None => {}
             }
         }
@@ -739,6 +787,7 @@ impl Server {
         let Some((l, prog)) = self.ctx(&root) else { return Ok(Value::Null) };
         let _ = prog;
         let sites = crate::refactor::refs(l, &target).map_err(|m| (REQUEST_FAILED, m))?;
+        let want_ksnl = self.docs.get(&uri).map_or(false, |d| d.path.ends_with(".ksnl"));
         let mut out: Vec<Value> = vec![];
         let mut texts: HashMap<String, String> = HashMap::new();
         for st in sites {
@@ -749,10 +798,10 @@ impl Server {
             if st.kind == "definition" && !decl {
                 continue;
             }
-            let path = st.file.clone();
+            let (path, line1) = if want_ksnl { to_ksnl(&st.file, st.line) } else { (st.file.clone(), st.line) };
             let text = texts.entry(path.clone()).or_insert_with(|| crate::project::read_text(&path).unwrap_or_default());
             let lines = lines_of(text);
-            let li = st.line.saturating_sub(1);
+            let li = line1.saturating_sub(1);
             out.push(json!({"uri": path_to_uri(&path), "range": line_range(&lines, li, st.col - 1, st.end_col - 1)}));
         }
         Ok(Value::Array(out))
@@ -816,7 +865,7 @@ impl Server {
         let mut changes = serde_json::Map::new();
         let mut file_ops: Vec<Value> = vec![];
         let mut manifest_note = false;
-        for c in &plan.changes {
+        for c in &crate::refactor::with_ksnl(&plan.changes) {
             let from = c.old_path.clone().unwrap_or_else(|| c.new_path.clone());
             let edits = line_diff_edits(&c.old_text, &c.new_text);
             if from != c.new_path {
@@ -845,7 +894,7 @@ impl Server {
         let uri = param_uri(p)?;
         let d = self.doc(&uri)?;
         let (path, text) = (d.path.clone(), d.text.clone());
-        if !path.ends_with(".ksnl") {
+        if !path.ends_with(".ksnl") && !path.ends_with(".ksnh") {
             return Ok(json!([]));
         }
         let root = find_root(&path);
@@ -911,7 +960,7 @@ impl Server {
             for s in &l.pkg.sources {
                 for d in s.defs.iter().filter(|d| kind_ok(&d.kw)) {
                     if q.is_empty() || d.name.to_lowercase().contains(&q) {
-                        out.push(json!({"name": d.name, "kind": symbol_kind(d), "location": Self::def_location(s, d.line, &d.name)}));
+                        out.push(json!({"name": d.name, "kind": symbol_kind(d), "location": Self::def_location(s, d.line, &d.name, false)}));
                     }
                 }
             }
