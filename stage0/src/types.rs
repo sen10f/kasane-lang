@@ -494,6 +494,8 @@ pub struct TypeCk<'a> {
     pub tytab: BTreeMap<(String, u32), ExprTy>,
     /// TAST の側の表 (`tast.rs`)。担当 A〜D が埋める。今は空。
     pub side: crate::tast::SideTabs,
+    /// 担当 B: この定義で記録した呼び出しの型引数 (呼び出しノードの ID, 型変数のまま)。`check_def` の終わりに `deep` して `side.type_args` へ。
+    targs_pending: Vec<(u32, Vec<Ty>)>,
 }
 
 /// strict モードで集める、式または束縛の型の記録。
@@ -543,7 +545,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -722,7 +724,57 @@ impl<'a> TypeCk<'a> {
         }
         self.flush_expr_types();
         self.flush_conv();
+        self.flush_type_args(di);
         self.cov_flush();
+    }
+
+    /// 担当 B: 呼び出しごとに覚えた型引数を、型変数を解決して `side.type_args` に移す。
+    /// 同じ呼び出しノードが再推論されて結果が違うときは、全部 `Unknown` (決められない = 黙る側)。
+    fn flush_type_args(&mut self, di: usize) {
+        for (id, ts) in std::mem::take(&mut self.targs_pending) {
+            let ts: Vec<Ty> = ts.iter().map(|t| self.deep(t)).collect();
+            match self.side.type_args.get_mut(&(di, id)) {
+                Some(old) if *old != ts => *old = vec![Ty::Unknown; old.len().max(ts.len())],
+                Some(_) => {}
+                None => {
+                    self.side.type_args.insert((di, id), ts);
+                }
+            }
+        }
+    }
+
+    /// 担当 B: 呼び出し先 `d` の型パラメータ (型・定数) の実体を、宣言の `generics` の順に覚える。
+    /// メソッドでは `impl` の型引数が先、メソッド自身の型引数が後 (`Def::generics` の並びのまま)。
+    /// 引数にも戻り値にも現れず決まらないものは `Unknown`。
+    fn note_type_args(&mut self, id: u32, d: &Def, map: &HashMap<String, Ty>) {
+        if id == 0 {
+            return;
+        }
+        let ts: Vec<Ty> = d
+            .generics
+            .iter()
+            .filter(|g| g.0 == "type" || g.0 == "const")
+            .map(|g| map.get(&g.1).cloned().unwrap_or(Ty::Unknown))
+            .collect();
+        if !ts.is_empty() {
+            self.targs_pending.push((id, ts));
+        }
+    }
+
+    /// `KSN_DUMP_SIDE=1` の出力 (1 行目が表の名前 `# type_args`)。(定義 FQN, 式 ID) の順。
+    pub fn dump_type_args(&self) -> String {
+        let mut rows: Vec<(String, u32, String)> = self
+            .side
+            .type_args
+            .iter()
+            .map(|((di, id), ts)| (self.p.defs[*di].name.clone(), *id, ts.iter().map(|t| t.show()).collect::<Vec<_>>().join(", ")))
+            .collect();
+        rows.sort();
+        let mut out = String::from("# type_args\n");
+        for (f, id, s) in rows {
+            out.push_str(&format!("{}\t#{}\t[{}]\n", f, id, s));
+        }
+        out
     }
 
     /// 型の中に、決まっていない部分 (`Unknown` / 未解決の型変数) があれば true。
@@ -2463,7 +2515,7 @@ impl<'a> TypeCk<'a> {
     fn call_method(&mut self, id: u32, recv_id: u32, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
         let saved = self.last_fit.take();
         let arg_ids = std::mem::take(&mut self.side.arg_ids);
-        let t = self.call_method_in(recv, base, name, args, line, targs, local);
+        let t = self.call_method_in(id, recv, base, name, args, line, targs, local);
         let fit = std::mem::replace(&mut self.last_fit, saved);
         self.note_method_conv(recv_id, recv, args, &arg_ids, fit.as_deref());
         let key = (self.cur, id);
@@ -2477,7 +2529,7 @@ impl<'a> TypeCk<'a> {
         t
     }
 
-    fn call_method_in(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
+    fn call_method_in(&mut self, call_id: u32, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
         let arg_stat = std::mem::take(&mut self.arg_static);
         // トレイトオブジェクト (5.1): `&dyn Tr` のメソッド呼び出しは、Tr とそのスーパートレイトの
         // シグネチャで検査する (Self は `dyn Tr` 自身)。
@@ -2679,6 +2731,7 @@ impl<'a> TypeCk<'a> {
         self.check_bounds(d, &map, line, false);
         let ret = from_v(&d.ret, &gn);
         let r = self.inst(&ret, &mut map);
+        self.note_type_args(call_id, d, &map);
         self.box_hooks(d, &map, line);
         r
     }
@@ -5104,7 +5157,7 @@ impl<'a> TypeCk<'a> {
             Target::Native(ref fq) | Target::Value(ref fq) if self.p.sigs.contains_key(fq) => {
                 let i = self.p.sigs[fq];
                 self.arg_static = arg_stat;
-                self.call_def(i, &argt, line, &sl, targs)
+                self.call_def(call_id, i, &argt, line, &sl, targs)
             }
             // 規範のシグネチャにない基本型の関連関数 (`usize.try_from_u64` など)。実行系は整数の変換を一般の規則で
             // 受け付けるが、規範はシグネチャなので拒否する (メソッドの E1108 と同じ方針)。近い名前を提案する。
@@ -5135,7 +5188,7 @@ impl<'a> TypeCk<'a> {
             }
             Target::Fn(i) | Target::Sig(i) => {
                 self.arg_static = arg_stat;
-                self.call_def(i, &argt, line, &sl, targs)
+                self.call_def(call_id, i, &argt, line, &sl, targs)
             }
             _ => {
                 argt.iter().for_each(|a| self.escape(a));
@@ -5153,7 +5206,7 @@ impl<'a> TypeCk<'a> {
     ///
     /// `sl` は、各引数の式が構造体リテラルかどうか。従来の検査は構造体リテラルの型引数を見ない
     /// (名前しか比べない) ので、同じ名前どうしの型引数の矛盾はここで報告する。
-    fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V]) -> Ty {
+    fn call_def(&mut self, call_id: u32, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V]) -> Ty {
         let arg_stat = std::mem::take(&mut self.arg_static);
         let arg_ids = std::mem::take(&mut self.side.arg_ids);
         let d = &self.p.defs[i];
@@ -5351,6 +5404,7 @@ impl<'a> TypeCk<'a> {
                 );
             }
         }
+        self.note_type_args(call_id, d, &map);
         self.box_hooks(d, &map, line);
         r
     }

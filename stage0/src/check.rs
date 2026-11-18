@@ -3361,6 +3361,10 @@ impl<'a> Checker<'a> {
             }
             eprintln!("# pat_tys let_tys_mismatch={}", mism);
         }
+        // 確認 (隠し機能): `KSN_DUMP_SIDE=1` のとき側の表を stderr に出す (表ごとに、1 行目が `# 表の名前`)。
+        if std::env::var_os("KSN_DUMP_SIDE").is_some() {
+            eprint!("{}", tk.dump_type_args());
+        }
         // 計測 (隠し機能): `KSN_TYPE_SURVEY=1` のとき TAST の事前調査の表を stderr に出す (survey.rs)。読むだけ。
         if std::env::var_os("KSN_TYPE_SURVEY").is_some() {
             crate::survey::run(self.p, &user, &tk.tytab, &self.call_res, &self.let_tys);
