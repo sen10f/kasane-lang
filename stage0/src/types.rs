@@ -2696,6 +2696,17 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
+        // `Box<T>` (`T` は具体の型) のレシーバ: `Box` 自身のメソッドが無ければ、中身 `T` のメソッドを探す (自動参照外し、4.2)。
+        if let Ty::Named(n, a) = deep.strip().clone() {
+            if n == "alloc.boxed.Box" && !self.owners.get("alloc.boxed.Box").map_or(false, |m| m.contains_key(name)) {
+                if let Some(inner) = a.first().map(|x| self.deep(x)) {
+                    if !matches!(inner.strip(), Ty::Var(_) | Ty::Unknown | Ty::Never) {
+                        self.arg_static = arg_stat;
+                        return self.call_method_in(call_id, &inner, base, name, args, line, targs, local);
+                    }
+                }
+            }
+        }
         let (owners, complete) = self.owners_for(recv);
         let mut cands: Vec<(usize, String)> = vec![];
         let escape_all = |this: &mut Self| {

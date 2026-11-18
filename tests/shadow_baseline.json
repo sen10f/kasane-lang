@@ -1183,6 +1183,12 @@
 ],
 [
 "old_only",
+"stage0/tests/data/unsound/box_recv_mut_then_drop.ksnl",
+13,
+"E3010"
+],
+[
+"old_only",
 "stage0/tests/data/unsound/break_ref_escape_for.ksnl",
 10,
 "E3010"
