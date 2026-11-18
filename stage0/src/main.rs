@@ -45,6 +45,7 @@ mod refs_check;
 mod rustisms;
 mod stdcache;
 mod survey;
+mod tast_check;
 mod types;
 mod typecov;
 mod vm;

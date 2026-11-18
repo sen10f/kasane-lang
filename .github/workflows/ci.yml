@@ -30,3 +30,5 @@ jobs:
           workspaces: stage0
       - name: フル検証
         run: python3 tests/run_tests.py
+      - name: 旧新の検査の差 (shadow、台帳との突き合わせ)
+        run: python3 tests/shadow_diff.py --full
