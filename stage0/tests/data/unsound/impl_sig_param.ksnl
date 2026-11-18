@@ -1,0 +1,13 @@
+// expect: E1122
+trait t.H
+    fn f(self: &Self, a: u32) -> u32 uses [] panics never
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+impl t.H for t.X
+fn t.X.f(self: &t.X, a: u64) -> u32 uses [] panics never impls t.H
+    self.v
+end t.X.f

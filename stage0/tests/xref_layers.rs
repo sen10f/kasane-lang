@@ -162,8 +162,8 @@ fn user_root_impls_trait_is_not_layer_checked() {
             "t.ksnl",
             "type t.R\n    got: usize\nend t.R\n\n\
              impl std.io.Read<[]> for t.R\n\
-             fn t.R.read(self: &mut t.R, _buffer: &mut [u8]) -> usize uses [] panics never impls std.io.Read<[]>\n    \
-             self.got\nend t.R.read\n\n\
+             fn t.R.read(self: &mut t.R, _buffer: &mut [u8]) -> Result<usize, std.io.Error> uses [] panics never impls std.io.Read<[]>\n    \
+             Ok(self.got)\nend t.R.read\n\n\
              fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n",
         )],
     );

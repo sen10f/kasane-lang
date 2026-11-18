@@ -1,0 +1,12 @@
+trait t.H
+    fn f(self: &Self, a: u32) -> u32 uses [] panics never
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+impl t.H for t.X
+fn t.X.f(self: &t.X, a: u32) -> u64 uses [] panics never impls t.H
+    4294967301u64
+end t.X.f
