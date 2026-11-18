@@ -69,6 +69,7 @@ fn s1c_coercions_recorded() {
     assert!(all.contains("Unsize") && all.contains("Dyn(\"t.H\""), "{}", all);
     // 受け手がもう参照の `x.handle()` (`t.ro` の中) には印が付かない。
     assert!(!rows.iter().any(|r| r.contains("\tt.ro\t")), "{}", all);
+}
 
 // --- S1D: pat_tys ---
 
@@ -94,4 +95,5 @@ fn s1d_pat_tys_nested_shared_wins() {
     let src = "fn t.main() -> i32\n    let mut o: Option<(i32, i32)> = Some((1, 2))\n    let r = &mut o\n    match &r {\n        Some((x, y)) => 0\n        None => 1\n    }\nend t.main\n";
     let out = dump_side("s1d_nested", src);
     assert!(out.contains("PBind x : &i32 Ref"), "{out}");
-    assert!(out.contains("let_tys_mismatch=0"), "{out}");}
+    assert!(out.contains("let_tys_mismatch=0"), "{out}");
+}
