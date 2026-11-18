@@ -1,0 +1,3 @@
+expect: E2026
+target: wasm32-wasi
+note: wasm32-wasi では isize は 32 ビット。static の符号付きの上限超えは E2026

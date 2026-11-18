@@ -336,12 +336,11 @@ fn full_check_with_examples(root: &Path, rep: &mut Report) -> Result<(Loaded, Op
                 })
             });
             let mut text = String::new();
-            let mut head = 2;
+            let mut head = 1;
             if uses_mod {
                 text.push_str(&format!("import {}\n\n", s.module));
                 head += 2;
             }
-            text.push_str(&format!("// {}:{}\n", rel(&s.path), ex.line));
             text.push_str(&format!("test {}\n", name));
             for line in &ex.body {
                 if line.trim().is_empty() {

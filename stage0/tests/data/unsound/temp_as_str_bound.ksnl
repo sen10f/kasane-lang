@@ -1,4 +1,3 @@
-// expect: E3010
 fn t.bad() -> usize uses [] panics never
     let r = t.mk().as_str()
     let z = t.mk()

@@ -1,4 +1,3 @@
-// expect: E3010
 type t.Holder
     v: u32
 end t.Holder

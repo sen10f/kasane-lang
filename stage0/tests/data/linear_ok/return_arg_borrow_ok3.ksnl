@@ -2,7 +2,6 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     Ok(())
 end t.main
 
-// ok: 引数の借用を返す(局所の借用ではない)
 fn t.ok(x: &u32) -> &u32 uses [io.console] panics never
     let y = x
     y

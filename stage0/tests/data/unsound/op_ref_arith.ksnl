@@ -1,5 +1,3 @@
-// expect: E2024
-// 演算子は参照を外さない (4.2): `&u32 + u32` は `*x + 1u32` と書く。
 fn t.bad(x: &u32) -> u32 uses [] panics may
     x + 1u32
 end t.bad

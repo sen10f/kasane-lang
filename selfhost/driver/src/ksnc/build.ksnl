@@ -1,4 +1,3 @@
-// 検査: `ksn check` をパッケージ dir で走らせる。
 fn ksnc.build.check(ksn: &str, dir: &str) -> Result<(), ksnc.Failure> uses [alloc, io.console, process] panics never pub
     let mut cmd = std.process.Command.new(ksn)
     cmd.arg("check")
@@ -9,7 +8,6 @@ fn ksnc.build.check(ksn: &str, dir: &str) -> Result<(), ksnc.Failure> uses [allo
     ksnc.tool.expect_ok("ksnc: ksn check が失敗した\n", st.code, &out, &err)
 end ksnc.build.check
 
-// 検査 (Rust 版) の出力を標準出力へ流す版 (`--stages=both` 用)。成功なら true。
 fn ksnc.build.check_show(ksn: &str, dir: &str) -> Result<bool, ksnc.Failure> uses [alloc, io.console, process] panics may pub
     let mut cmd = std.process.Command.new(ksn)
     cmd.arg("check")
@@ -18,7 +16,6 @@ fn ksnc.build.check_show(ksn: &str, dir: &str) -> Result<bool, ksnc.Failure> use
     Ok(code == 0i32)
 end ksnc.build.check_show
 
-// 整形 (Rust 版): `ksn fmt` (check なら `--check`) をパッケージ dir で走らせ、出力を流す。成功なら true。
 fn ksnc.build.fmt(ksn: &str, dir: &str, check: bool) -> Result<bool, ksnc.Failure> uses [alloc, io.console, process] panics may pub
     let mut cmd = std.process.Command.new(ksn)
     cmd.arg("fmt")
@@ -30,8 +27,6 @@ fn ksnc.build.fmt(ksn: &str, dir: &str, check: bool) -> Result<bool, ksnc.Failur
     Ok(code == 0i32)
 end ksnc.build.fmt
 
-// 下ろし → 実行ファイル: `ksn build` を走らせる。その clang は KSN_CLANG で ksnc (この実行ファイル) に向ける。
-// 出力 (target/<kind>/<名前>.native と .ll) は ksn の既定の場所に置かれる。
 fn ksnc.build.make(ksn: &str, root: &str, dir: &str, release: bool, target: &str) -> Result<(), ksnc.Failure> uses [alloc, env, io.console, io.fs, process] panics never pub
     let me = ksnc.tool.env_or("KSNC_SELF")
     let self_exe = if me == "" {
@@ -39,11 +34,7 @@ fn ksnc.build.make(ksn: &str, root: &str, dir: &str, release: bool, target: &str
     } else {
         alloc.string.String.from_str(std.alloc.SYSTEM, me)?
     }
-    // ksn が呼ぶ clang は ksnc に差し替える。ksnc は実際の clang を KSNC_CLANG から読む (無ければ KSN_CLANG、それも無ければ clang)。
     let real = ksnc.tool.clang()?
-    // ksn のビルドキャッシュは使わせない (ksn の既定の ~/.ksn/cache とは別の target/ksnc-cache を使う)。
-    // 当たると clang の段 (ksnc) を通らず、ksn が前に作った実行ファイルを写すだけになる。
-    // 毎回空にする: ksn のキャッシュ鍵は KSN_CLANG (この段) の中身を含まないので、前の clang の段の結果を再利用してしまう。
     let cache = std.path.join(dir, "target/ksnc-cache")?
     let mut rm = std.process.Command.new("rm")
     rm.arg("-rf")

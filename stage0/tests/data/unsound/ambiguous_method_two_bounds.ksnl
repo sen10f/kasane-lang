@@ -1,4 +1,3 @@
-// expect: E1108
 trait t.A
     fn foo(self: &Self) -> u32 uses [] panics never
 end t.A

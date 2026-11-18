@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.bad(a: &[u32; 3]) -> &alloc.vec.Vec<u32, std.alloc.System> uses [] panics never
     a
 end t.bad

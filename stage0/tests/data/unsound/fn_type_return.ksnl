@@ -1,4 +1,3 @@
-// expect: E4001
 fn t.loud() -> u32 uses [io.console] panics never
     core.mem.drop(std.io.print_line("x"))
     1u32

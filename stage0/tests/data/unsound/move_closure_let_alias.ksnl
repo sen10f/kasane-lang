@@ -1,4 +1,3 @@
-// expect: E3002
 fn t.bad() -> () uses [] panics never
     let s = t.mk()
     let f = fn() -> usize capture [move s] {

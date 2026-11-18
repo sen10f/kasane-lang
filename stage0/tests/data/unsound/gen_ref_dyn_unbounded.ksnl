@@ -1,5 +1,3 @@
-// expect: E2046
-// 境界の無い型パラメータの参照は `&dyn Tr` にできない
 trait t.Show pub
     fn show(self: &Self) -> u32 uses [] panics never
 end t.Show

@@ -1,4 +1,3 @@
-// 失敗の種類。HTTP の解析 (`std.http`)、ソケット、ファイル、ストレージを一つにまとめる。
 enum wiki.error.Error derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
     BadRequest

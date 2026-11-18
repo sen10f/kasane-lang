@@ -1,4 +1,3 @@
-// expect-accept
 type t.Res linear
     id: u32
     inner: Option<alloc.vec.Vec<u64, std.alloc.System>>

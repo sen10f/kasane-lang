@@ -1,11 +1,8 @@
-// expect: E4001
 fn t.apply(p: fn() -> u32 uses [] panics never) -> u32 uses [] panics never
     p()
 end t.apply
 
 fn t.g[E: uses, P: panics](p: fn() -> u32 uses [E] panics P) -> u32 uses [] panics never
-    // `fn() -> u32 uses [E] panics P` を `fn() -> u32 uses [] panics never` 型として
-    // 渡す。渡し側に効果変数・panic 変数があり、受け側が具体的なので fail-closed。
     t.apply(p)
 end t.g
 

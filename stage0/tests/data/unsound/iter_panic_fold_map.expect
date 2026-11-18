@@ -1,0 +1,2 @@
+expect: E4002
+note: map のクロージャが core.panic.todo() (panics may) を呼ぶ。fold / main が panics never なら拒否されるはず

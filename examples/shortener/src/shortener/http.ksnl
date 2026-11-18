@@ -252,7 +252,6 @@ fn shortener.http.test_head(text: &str) -> Result<shortener.http.Head, shortener
     shortener.http.parse_head(text.as_bytes())
 end shortener.http.test_head
 
-/// `Head` は `String` を持ち `PartialEq` / `Debug` を derive できないので、エラー側だけを比べるテスト用の写し。
 fn shortener.http.test_head_err(text: &str) -> Result<(), shortener.error.Error> uses [alloc] panics never
     match shortener.http.test_head(text) {
         Ok(_h) => Ok(())

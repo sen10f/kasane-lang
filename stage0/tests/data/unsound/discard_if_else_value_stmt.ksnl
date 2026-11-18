@@ -1,4 +1,3 @@
-// expect: E2042
 fn t.f(c: bool) -> () uses [] panics never
     if c {
         1u32

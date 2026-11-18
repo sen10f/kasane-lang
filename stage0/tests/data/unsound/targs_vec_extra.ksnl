@@ -1,5 +1,3 @@
-// expect: E2023
-// `alloc.vec.Vec` の型引数は 2 つまで (要素の型とアロケータ)
 fn t.f(v: alloc.vec.Vec<u8, std.alloc.System, u8>) -> () uses [] panics never
     core.mem.drop(v)
 end t.f

@@ -1,7 +1,5 @@
-/// 最大長。
 const app.net.MAX_LEN: usize = 1_024 pub
 
-/// ヘッダ。
 type app.net.Header derive [Debug, Clone] pub
     size: usize pub
     flags: u8
@@ -29,7 +27,6 @@ fn app.net.build(buf: &[u8]) -> Result<app.net.Header, app.net.ParseError> uses 
 end app.net.build
 
 fn app.net.parse_header(buf: &[u8]) -> Result<app.net.Header, app.net.ParseError> uses [] panics never pub
-    // 空入力は即エラー
     if buf.is_empty() {
         return Err(app.net.ParseError.Empty)
     }

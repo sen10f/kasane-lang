@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.main() -> () uses [] panics may
     let v: alloc.vec.Vec<u64, std.alloc.System> = 7u64
     core.mem.drop(v.len())

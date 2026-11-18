@@ -1,0 +1,137 @@
+// 集成体の行 (`agg#N tuple (..) size=S align=A {T@0 T@4}`) を作る。項目 item = TUP + 添字。
+fn lower.tup.agg_line(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let t = lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.TUP)
+    let lay = lower.tyk.layout(env, c, item)?
+    let tw = lower.tup.text(env, c, t)?
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.push_str("agg#")?
+    s.push_str(lower.cx.dec(id)?.as_str())?
+    s.push_str(" tuple ")?
+    s.push_str(tw.as_str())?
+    s.push_str(" size=")?
+    s.push_str(lower.cx.dec(lay.size)?.as_str())?
+    s.push_str(" align=")?
+    s.push_str(lower.cx.dec(lay.align)?.as_str())?
+    s.push_str(" {")?
+    for k in core.iter.range(0usize, n.c) {
+        let et = types.ty.arg(&c.ar, n.b, k)
+        let tt = lower.tyk.text(env, c, et)?
+        if k > 0usize {
+            s.push(' ')?
+        }
+        s.push_str(tt.as_str())?
+        s.push('@')?
+        s.push_str(lower.cx.dec(lower.tyk.at(lay.offs.as_slice(), k))?.as_str())?
+    }
+    s.push_str("}\n")?
+    Ok(s)
+end lower.tup.agg_line
+
+// 組の分解 `let (a, b) = e` (要素の部分のパターン)。値が参照なら欄の番地から。
+fn lower.tup.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], pn: usize, v: usize, t: usize, m: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let pat = parse.ast.get(&p.ast, pn)
+    let (inner, through, mutable) = lower.opt.deref_ty(c, t)
+    let item = lower.tup.item(env, c, inner)?
+    let lay = lower.tyk.layout(env, c, item)?
+    for j in core.iter.range(0usize, resolve.ast.count(p, pat.a)) {
+        let sub = resolve.ast.item(p, pat.a, j)
+        let sk = parse.ast.get(&p.ast, sub)
+        if sk.kind != parse.ast.Kind.PWild {
+            let st0 = lower.expr.tyof(c, sub)?
+            let st = lower.pat.bind_ty(c, through, mutable, st0)?
+            let off = lower.tyk.at(lay.offs.as_slice(), j)
+            let fv = lower.pat.field_val(env, c, v, through, mutable, off, st)?
+            lower.pat.bind(env, c, p, src, sub, fv, st, m)?
+        }
+    }
+    Ok(())
+end lower.tup.bind
+
+// 組の型の集成体の項目 (TUP + 添字)。同じ綴りのものは既存の添字を返す。
+fn lower.tup.item(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    lower.tup.reg(env, c, t, lower.tyk.TUP)
+end lower.tup.item
+
+// 組の値の構築 `(a, b)`: 要素を書かれた順に評価し、`make` で作る。
+fn lower.tup.make(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
+        let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.a, j), types.ty.UNKNOWN)?
+        vs.push(a.v)?
+    }
+    let item = lower.tup.item(env, c, t)?
+    let id = lower.tyk.agg_id(c, item)?
+    let mut ts = lower.cx.cat2("agg#", lower.cx.dec(id)?.as_str())?
+    let mk = lower.cx.cat2("make(", lower.cx.vlist(&vs)?.as_str())?
+    let mk2 = lower.cx.cat2(mk.as_str(), ")")?
+    let v = lower.cx.def(c, ts.as_str(), mk2.as_str())?
+    ts.push(' ')?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.tup.make
+
+// 組の欄の名 (綴り用): 項目は FQN、参照は `&`、組は括弧、基本の型は型の綴り。
+fn lower.tup.name(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    if n.k == types.ty.K.Adt {
+        let mut r = lower.tyk.item_fqn(env, n.a)
+        if n.c > 0usize {
+            r.push('<')?
+            for k in core.iter.range(0usize, n.c) {
+                if k > 0usize {
+                    r.push(',')?
+                }
+                let an = lower.tup.name(env, c, types.ty.arg(&c.ar, n.b, k))?
+                r.push_str(an.as_str())?
+            }
+            r.push('>')?
+        }
+        return Ok(r)
+    }
+    if n.k == types.ty.K.Ref {
+        let inner = lower.tup.name(env, c, n.a)?
+        let mut r = lower.cx.own("&")?
+        r.push_str(inner.as_str())?
+        return Ok(r)
+    }
+    if (n.k == types.ty.K.Tuple && n.c > 0usize) {
+        return lower.tup.text(env, c, f)
+    }
+    lower.tyk.text(env, c, t)
+end lower.tup.name
+
+// 登録表 (tps) に同じ綴りの型がなければ足し、基点 base + 添字を返す。組と総称の具体化で共用。
+fn lower.tup.reg(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, base: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let want = lower.tup.name(env, c, t)?
+    let mut k = 0usize
+    while k < c.g.tps.len() {
+        let ts = lower.tyk.at(c.g.tps.as_slice(), k)
+        let tw = lower.tup.name(env, c, ts)?
+        if tw.as_str() == want.as_str() {
+            return Ok(base + k)
+        }
+        k = k + 1usize
+    }
+    c.g.tps.push(t)?
+    Ok(base + k)
+end lower.tup.reg
+
+// 組の綴り `(T1,T2)` (要素の型の綴りを並べる)。
+fn lower.tup.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.push('(')?
+    for k in core.iter.range(0usize, n.c) {
+        if k > 0usize {
+            s.push(',')?
+        }
+        let et = types.ty.arg(&c.ar, n.b, k)
+        let tt = lower.tup.name(env, c, et)?
+        s.push_str(tt.as_str())?
+    }
+    s.push(')')?
+    Ok(s)
+end lower.tup.text

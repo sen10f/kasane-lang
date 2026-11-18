@@ -1,14 +1,8 @@
-// 段 1・2 (Kasane 製): 読み込みと名前解決の診断。
-// 読み込みは kasane.toml・自パッケージと直接の path 依存の src/・spec/stdlib。
-// 処理は selfhost/resolve の resolve.main と同じ順。違いは、表示せず診断の本文を集めること。
-// `text` は診断の本文と誤りの数。`check` は既定の経路で、誤りがあれば本文を流して失敗する。
-// 検査の結果: 本文 (行の並び) と誤りの数。
 type ksnc.front.Text pub
     text: alloc.string.String<std.alloc.System> pub
     errors: usize pub
 end ksnc.front.Text
 
-// 段 1・2 の既定の経路: 誤りがあれば本文を流して失敗する。
 fn ksnc.front.check(dir: &str, std_dir: &str) -> Result<(), ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
     let r = ksnc.front.text(dir, std_dir)?
     if r.errors != 0usize {

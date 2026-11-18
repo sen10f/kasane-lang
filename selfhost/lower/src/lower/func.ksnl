@@ -1,4 +1,3 @@
-// ブロックの本文 (`  b0(..):` と命令)。`alloca` / `frame.bytes 24` は入口ブロックの先頭へ集める。
 fn lower.func.body_text(c: &lower.cx.Cx) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     let mut b = 0usize
@@ -7,9 +6,7 @@ fn lower.func.body_text(c: &lower.cx.Cx) -> Result<alloc.string.String<std.alloc
             Some(h) => out.push_str(h.as_str())?
             None => core.mem.drop(0u8)
         }
-        // `alloca` は入口ブロックの先頭へ集める (Rust 版 flush_allocas)。
         if b == 0usize {
-            // 枠 (`frame.bytes`) が先、その後に `alloca` (どちらも作った順)。
             for l in c.v.lines.as_slice().iter() {
                 if l.as_str().ends_with(" = frame.bytes 24") || l.as_str().ends_with(" = frame.bytes 1") {
                     out.push_str("    ")?
@@ -50,8 +47,6 @@ fn lower.func.body_text(c: &lower.cx.Cx) -> Result<alloc.string.String<std.alloc
     Ok(out)
 end lower.func.body_text
 
-// 関数 1 本の下ろし: 頭 (引数・戻り値・効果・panics・stack) と本体。結果は `c.g.tx` に、成否は `c.g.oks` に入れる。
-// 呼び出し側 (lower.main) は名前の順に 1 回ずつ呼ぶので、両者は同じ添字になる。
 fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, key: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>, ret0: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     lower.cx.reset(c)?
     let fqn_s = lower.tyk.item_fqn(env, item)
@@ -83,7 +78,6 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     let mut bl = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan(env, c, p, src, n.d, &mut bl, true)?
     c.v.sl.bor = bl
-    // 引数: 型は型検査の表 (Param 節)、値の番号を振って局所に入れる。
     let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let np = resolve.ast.count(p, sg.b)
     for j in core.iter.range(0usize, np) {
@@ -112,10 +106,8 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     lower.cx.goto(c, 0usize)
     let r = lower.expr.expr(env, c, p, src, n.d, ret)?
     if !c.s.term {
-        // 値で受けた `Vec` / `String` の引数 (枠) は、本体の後で逆順に解放する。
         lower.vec.exit_drops(env, c, p, src, pstop, mark)?
         if rt.as_str() == "unit" {
-            // 本体の値が単位ならそれを返す (Rust 版と同じく、余分な単位の定数を作らない)。
             let bt = lower.tyk.text(env, c, r.t)?
             let mut u = r.v
             if bt.as_str() != "unit" {
@@ -127,7 +119,6 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
         }
     }
     lower.expr.trunc(c, mark)
-    // 頭の行。
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     out.push_str("fn ")?
     out.push_str(fqn)?
@@ -172,7 +163,6 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     lower.func.record(c, out.as_str(), "")
 end lower.func.lower_item
 
-// 結果を記録する (成功なら本文、失敗なら理由)。順番は呼び出しの順。
 fn lower.func.record(c: &mut lower.cx.Cx, text: &str, why: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     if why.len() > 0usize {
         c.g.oks.push(false)?

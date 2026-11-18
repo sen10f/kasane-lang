@@ -1,4 +1,3 @@
-// expect: E2042
 fn t.f(v: &mut alloc.vec.Vec<u8, std.alloc.System>) -> () uses [alloc] panics may
     v.push(1u8)
     ()

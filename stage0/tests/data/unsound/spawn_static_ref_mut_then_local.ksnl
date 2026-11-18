@@ -1,4 +1,3 @@
-// expect: E2037
 fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
     let local = alloc.string.String.new(std.alloc.SYSTEM)
     let mut s = "hello"

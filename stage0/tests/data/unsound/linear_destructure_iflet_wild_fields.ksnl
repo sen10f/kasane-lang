@@ -1,5 +1,3 @@
-// expect: E3002
-// if let も同じ
 type t.Res linear
     id: u32
 end t.Res

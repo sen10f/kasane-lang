@@ -1,4 +1,3 @@
-// expect: E3002
 type t.Q derive [Drop]
     v: i32
     kid: Option<alloc.boxed.Box<t.Q, std.alloc.System>>

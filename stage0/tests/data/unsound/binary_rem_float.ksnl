@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.bad(a: f32, b: f32) -> f32 uses [] panics never
     a % b
 end t.bad

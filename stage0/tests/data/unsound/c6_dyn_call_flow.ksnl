@@ -1,5 +1,3 @@
-// expect: E3010
-// `dyn` 越しのメソッド: 引数の借用が戻り値へ流れうる (今は KIR 側の検査が拒む。AST 側は候補が無いときだけ逆転)
 trait t.Pick
     fn pick(self: &Self, x: &u64) -> &u64 uses [] panics never
 end t.Pick

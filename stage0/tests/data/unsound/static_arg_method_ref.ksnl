@@ -1,4 +1,3 @@
-// expect: E2037
 type t.S
     n: u32
 end t.S

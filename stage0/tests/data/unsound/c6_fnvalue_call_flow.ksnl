@@ -1,5 +1,3 @@
-// expect: E3010
-// 関数値の呼び出し: 引数の借用が戻り値へ流れうる
 fn t.id(x: &u64) -> &u64 uses [] panics never
     x
 end t.id

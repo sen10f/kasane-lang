@@ -1,9 +1,7 @@
-// expect: E2023
 type t.Out
     inner: t.S
 end t.Out
 
-// mut3060_litfield_uaf と同じ消費だが、t.S のリテラルを t.Out の欄に直接埋める。
 type t.S
     name: alloc.string.String
     n: usize

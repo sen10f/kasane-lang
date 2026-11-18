@@ -10,7 +10,6 @@ fn t.bad() -> () uses [] panics never
     t.consume(s)
 end t.bad
 
-// expect: E3002
 fn t.consume(s: alloc.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.consume

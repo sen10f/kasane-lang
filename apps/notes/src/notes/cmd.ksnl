@@ -12,8 +12,6 @@ const notes.cmd.COL_TITLE: usize = 24usize
 
 const notes.cmd.NOTES_DIR: &str = ".notes"
 
-// ---- add ----
-// notes add <title> <body> [tag...]
 fn notes.cmd.add(start: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs, time] panics may pub
     let title = match std.env.arg(start) {
         Some(t) => t
@@ -48,8 +46,6 @@ fn notes.cmd.add(start: usize) -> Result<(), notes.error.Error> uses [alloc, env
     Ok(())
 end notes.cmd.add
 
-// ---- edit ----
-// notes edit <id> <title> <body>
 fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs, time] panics may pub
     let id_text = match std.env.arg(id_index) {
         Some(s) => s
@@ -93,14 +89,11 @@ fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Res
     Ok(())
 end notes.cmd.edit
 
-// メモの保存先ディレクトリを作成する。
 fn notes.cmd.ensure_dir() -> Result<(), notes.error.Error> uses [alloc, io.fs] panics never pub
     std.fs.create_dir_all(notes.cmd.NOTES_DIR)?
     Ok(())
 end notes.cmd.ensure_dir
 
-// ---- export ----
-// notes export <path> <format>  (format: json | md)
 fn notes.cmd.export(path_index: usize, format_index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics never pub
     let path = match std.env.arg(path_index) {
         Some(p) => p
@@ -171,7 +164,6 @@ fn notes.cmd.export(path_index: usize, format_index: usize) -> Result<(), notes.
     Ok(())
 end notes.cmd.export
 
-// i64 を幅指定で文字列化する。
 fn notes.cmd.fmt_i64(value: i64, width: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     let spec = alloc.fmt.Spec.new().with_left().with_width(width)
@@ -179,7 +171,6 @@ fn notes.cmd.fmt_i64(value: i64, width: usize) -> Result<alloc.string.String<std
     Ok(out)
 end notes.cmd.fmt_i64
 
-// ---- list ----
 fn notes.cmd.list() -> Result<(), notes.error.Error> uses [alloc, io.console, io.fs] panics never pub
     let db = notes.cmd.load_store()?
     notes.cmd.print_header()?
@@ -197,13 +188,11 @@ fn notes.cmd.list() -> Result<(), notes.error.Error> uses [alloc, io.console, io
     Ok(())
 end notes.cmd.list
 
-// ストアをロードする（ディレクトリがない場合は作成する）。
 fn notes.cmd.load_store() -> Result<notes.store.Store, notes.error.Error> uses [alloc, io.fs] panics never pub
     notes.cmd.ensure_dir()?
     store.Store.load(notes.cmd.NOTES_DIR)
 end notes.cmd.load_store
 
-// 文字列を指定幅で左詰めにする（幅を超える場合はそのまま）。
 fn notes.cmd.pad_left(text: &str, width: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     if text.len() >= width {
@@ -220,7 +209,6 @@ fn notes.cmd.pad_left(text: &str, width: usize) -> Result<alloc.string.String<st
     Ok(out)
 end notes.cmd.pad_left
 
-// テーブルのヘッダ行を出力する。
 fn notes.cmd.print_header() -> Result<(), notes.error.Error> uses [alloc, io.console] panics never pub
     let mut line = alloc.string.String.new(std.alloc.SYSTEM)
     let id_col = notes.cmd.pad_left("ID", notes.cmd.COL_ID)?
@@ -235,7 +223,6 @@ fn notes.cmd.print_header() -> Result<(), notes.error.Error> uses [alloc, io.con
     Ok(())
 end notes.cmd.print_header
 
-// 1 メモをテーブル形式で1行出力する。
 fn notes.cmd.print_row(n: &notes.note.Note) -> Result<(), notes.error.Error> uses [alloc, io.console] panics never pub
     let mut line = alloc.string.String.new(std.alloc.SYSTEM)
     let id_text = notes.cmd.fmt_i64(n.id, notes.cmd.COL_ID)?
@@ -251,8 +238,6 @@ fn notes.cmd.print_row(n: &notes.note.Note) -> Result<(), notes.error.Error> use
     Ok(())
 end notes.cmd.print_row
 
-// ---- rm ----
-// notes rm <id>
 fn notes.cmd.rm(index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics may pub
     let id_text = match std.env.arg(index) {
         Some(s) => s
@@ -267,8 +252,6 @@ fn notes.cmd.rm(index: usize) -> Result<(), notes.error.Error> uses [alloc, env,
     Ok(())
 end notes.cmd.rm
 
-// ---- search ----
-// notes search <query>
 fn notes.cmd.search(index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics never pub
     let q = match std.env.arg(index) {
         Some(s) => s
@@ -296,8 +279,6 @@ fn notes.cmd.search(index: usize) -> Result<(), notes.error.Error> uses [alloc, 
     Ok(())
 end notes.cmd.search
 
-// ---- show ----
-// notes show <id>
 fn notes.cmd.show(index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics never pub
     let id_text = match std.env.arg(index) {
         Some(s) => s
@@ -330,8 +311,6 @@ fn notes.cmd.show(index: usize) -> Result<(), notes.error.Error> uses [alloc, en
     Ok(())
 end notes.cmd.show
 
-// ---- tag ----
-// notes tag <id> <tag>
 fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics never pub
     let id_text = match std.env.arg(id_index) {
         Some(s) => s
@@ -375,7 +354,6 @@ fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Er
     Ok(())
 end notes.cmd.tag
 
-// タグベクトルをカンマ区切り文字列にする。
 fn notes.cmd.tags_to_string(tags: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     let all = tags.as_slice()
@@ -396,7 +374,6 @@ fn notes.cmd.tags_to_string(tags: &alloc.vec.Vec<alloc.string.String<std.alloc.S
     Ok(out)
 end notes.cmd.tags_to_string
 
-// JSON 文字列リテラルを出力用にエスケープして書き出す。
 fn notes.cmd.write_json_string(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     out.push_str("\"")?
     for c in text.chars() {

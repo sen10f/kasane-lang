@@ -1,4 +1,3 @@
-// expect: E2049
 enum t.Error derive [From] pub
     First(t.Inner)
     Second(t.Inner)

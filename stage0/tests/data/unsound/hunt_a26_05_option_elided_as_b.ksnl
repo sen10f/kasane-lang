@@ -1,4 +1,3 @@
-// expect: E3010
 fn t.bad['b](x: &u32, _y: &'b u32) -> Option<&'b u32> uses [] panics never
     Some(x)
 end t.bad

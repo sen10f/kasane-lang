@@ -1,4 +1,3 @@
-// expect: E1108
 type t.Plain
     a: u8
 end t.Plain

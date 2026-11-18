@@ -1,0 +1,335 @@
+// 種別の並び (kind_index の順) を空白区切りで持つ。
+const parse.ast.KIND_NAMES: &str = "Arm ArrayE ArrayRep Assign Attrs Bin Block Break Call Capture Closure ConstDef ConstInt ConstPath Continue Dot Effect EnumDef ExprStmt ExternDef FieldDecl FieldInit FnDef FnSig For GParam If ImplLine Import Index Let Linear List Lit Loop MCall Match Nil PBind PField PLit PPath PRef PStruct PTuple PVariant PWild Param Path Return StaticDef StructLit TArgConst TArgEffects TArgLife TArgPanic TArray TDyn TFn TNamed TNever TPrim TPtr TRef TSelf TSlice TTuple TestDef TraitDef TraitFn TraitRef Try TupleE TypeDef Unary Unsafe Variant While With" pub
+
+type parse.ast.Ast pub
+    defs: alloc.vec.Vec<usize, std.alloc.System> pub
+    links: alloc.vec.Vec<usize, std.alloc.System> pub
+    nodes: alloc.vec.Vec<parse.ast.Node, std.alloc.System> pub
+end parse.ast.Ast
+
+enum parse.ast.Kind derive [Debug, Clone, Copy, PartialEq] pub
+    Arm
+    ArrayE
+    ArrayRep
+    Assign
+    Attrs
+    Bin
+    Block
+    Break
+    Call
+    Capture
+    Closure
+    ConstDef
+    ConstInt
+    ConstPath
+    Continue
+    Dot
+    Effect
+    EnumDef
+    ExprStmt
+    ExternDef
+    FieldDecl
+    FieldInit
+    FnDef
+    FnSig
+    For
+    GParam
+    If
+    ImplLine
+    Import
+    Index
+    Let
+    Linear
+    List
+    Lit
+    Loop
+    MCall
+    Match
+    Nil
+    PBind
+    PField
+    PLit
+    PPath
+    PRef
+    PStruct
+    PTuple
+    PVariant
+    PWild
+    Param
+    Path
+    Return
+    StaticDef
+    StructLit
+    TArgConst
+    TArgEffects
+    TArgLife
+    TArgPanic
+    TArray
+    TDyn
+    TFn
+    TNamed
+    TNever
+    TPrim
+    TPtr
+    TRef
+    TSelf
+    TSlice
+    TTuple
+    TestDef
+    TraitDef
+    TraitFn
+    TraitRef
+    Try
+    TupleE
+    TypeDef
+    Unary
+    Unsafe
+    Variant
+    While
+    With
+end parse.ast.Kind
+
+type parse.ast.Node derive [Debug, Clone, Copy, PartialEq] pub
+    a: usize pub
+    b: usize pub
+    c: usize pub
+    d: usize pub
+    e: usize pub
+    f: usize pub
+    kind: parse.ast.Kind pub
+    tok: usize pub
+end parse.ast.Node
+
+fn parse.ast.add0(ast: &mut parse.ast.Ast, kind: parse.ast.Kind, tok: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    parse.ast.push(ast, parse.ast.mk(kind, tok, 0usize, 0usize, 0usize, 0usize))
+end parse.ast.add0
+
+fn parse.ast.add1(ast: &mut parse.ast.Ast, kind: parse.ast.Kind, tok: usize, a: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    parse.ast.push(ast, parse.ast.mk(kind, tok, a, 0usize, 0usize, 0usize))
+end parse.ast.add1
+
+fn parse.ast.add2(ast: &mut parse.ast.Ast, kind: parse.ast.Kind, tok: usize, a: usize, b: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    parse.ast.push(ast, parse.ast.mk(kind, tok, a, b, 0usize, 0usize))
+end parse.ast.add2
+
+fn parse.ast.add3(ast: &mut parse.ast.Ast, kind: parse.ast.Kind, tok: usize, a: usize, b: usize, c: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    parse.ast.push(ast, parse.ast.mk(kind, tok, a, b, c, 0usize))
+end parse.ast.add3
+
+fn parse.ast.add4(ast: &mut parse.ast.Ast, kind: parse.ast.Kind, tok: usize, a: usize, b: usize, c: usize, d: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    parse.ast.push(ast, parse.ast.mk(kind, tok, a, b, c, d))
+end parse.ast.add4
+
+// 6 個の子を持つノード (定義の頭など)。
+fn parse.ast.add6(ast: &mut parse.ast.Ast, kind: parse.ast.Kind, tok: usize, a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    let mut n = parse.ast.mk(kind, tok, a, b, c, d)
+    n.e = e
+    n.f = f
+    parse.ast.push(ast, n)
+end parse.ast.add6
+
+fn parse.ast.copy(n: &parse.ast.Node) -> parse.ast.Node uses [] panics never
+    parse.ast.Node { a: n.a, b: n.b, c: n.c, d: n.d, e: n.e, f: n.f, kind: n.kind, tok: n.tok }
+end parse.ast.copy
+
+fn parse.ast.get(ast: &parse.ast.Ast, at: usize) -> parse.ast.Node uses [] panics never pub
+    match ast.nodes.as_slice().get(at) {
+        Some(n) => parse.ast.copy(n)
+        None => parse.ast.mk(parse.ast.Kind.Nil, 0usize, 0usize, 0usize, 0usize, 0usize)
+    }
+end parse.ast.get
+
+fn parse.ast.kind_index(kind: parse.ast.Kind) -> usize uses [] panics never pub
+    match kind {
+        parse.ast.Kind.Arm => 0usize
+        parse.ast.Kind.ArrayE => 1usize
+        parse.ast.Kind.ArrayRep => 2usize
+        parse.ast.Kind.Assign => 3usize
+        parse.ast.Kind.Attrs => 4usize
+        parse.ast.Kind.Bin => 5usize
+        parse.ast.Kind.Block => 6usize
+        parse.ast.Kind.Break => 7usize
+        parse.ast.Kind.Call => 8usize
+        parse.ast.Kind.Capture => 9usize
+        parse.ast.Kind.Closure => 10usize
+        parse.ast.Kind.ConstDef => 11usize
+        parse.ast.Kind.ConstInt => 12usize
+        parse.ast.Kind.ConstPath => 13usize
+        parse.ast.Kind.Continue => 14usize
+        parse.ast.Kind.Dot => 15usize
+        parse.ast.Kind.Effect => 16usize
+        parse.ast.Kind.EnumDef => 17usize
+        parse.ast.Kind.ExprStmt => 18usize
+        parse.ast.Kind.ExternDef => 19usize
+        parse.ast.Kind.FieldDecl => 20usize
+        parse.ast.Kind.FieldInit => 21usize
+        parse.ast.Kind.FnDef => 22usize
+        parse.ast.Kind.FnSig => 23usize
+        parse.ast.Kind.For => 24usize
+        parse.ast.Kind.GParam => 25usize
+        parse.ast.Kind.If => 26usize
+        parse.ast.Kind.ImplLine => 27usize
+        parse.ast.Kind.Import => 28usize
+        parse.ast.Kind.Index => 29usize
+        parse.ast.Kind.Let => 30usize
+        parse.ast.Kind.Linear => 31usize
+        parse.ast.Kind.List => 32usize
+        parse.ast.Kind.Lit => 33usize
+        parse.ast.Kind.Loop => 34usize
+        parse.ast.Kind.MCall => 35usize
+        parse.ast.Kind.Match => 36usize
+        parse.ast.Kind.Nil => 37usize
+        parse.ast.Kind.PBind => 38usize
+        parse.ast.Kind.PField => 39usize
+        parse.ast.Kind.PLit => 40usize
+        parse.ast.Kind.PPath => 41usize
+        parse.ast.Kind.PRef => 42usize
+        parse.ast.Kind.PStruct => 43usize
+        parse.ast.Kind.PTuple => 44usize
+        parse.ast.Kind.PVariant => 45usize
+        parse.ast.Kind.PWild => 46usize
+        parse.ast.Kind.Param => 47usize
+        parse.ast.Kind.Path => 48usize
+        parse.ast.Kind.Return => 49usize
+        parse.ast.Kind.StaticDef => 50usize
+        parse.ast.Kind.StructLit => 51usize
+        parse.ast.Kind.TArgConst => 52usize
+        parse.ast.Kind.TArgEffects => 53usize
+        parse.ast.Kind.TArgLife => 54usize
+        parse.ast.Kind.TArgPanic => 55usize
+        parse.ast.Kind.TArray => 56usize
+        parse.ast.Kind.TDyn => 57usize
+        parse.ast.Kind.TFn => 58usize
+        parse.ast.Kind.TNamed => 59usize
+        parse.ast.Kind.TNever => 60usize
+        parse.ast.Kind.TPrim => 61usize
+        parse.ast.Kind.TPtr => 62usize
+        parse.ast.Kind.TRef => 63usize
+        parse.ast.Kind.TSelf => 64usize
+        parse.ast.Kind.TSlice => 65usize
+        parse.ast.Kind.TTuple => 66usize
+        parse.ast.Kind.TestDef => 67usize
+        parse.ast.Kind.TraitDef => 68usize
+        parse.ast.Kind.TraitFn => 69usize
+        parse.ast.Kind.TraitRef => 70usize
+        parse.ast.Kind.Try => 71usize
+        parse.ast.Kind.TupleE => 72usize
+        parse.ast.Kind.TypeDef => 73usize
+        parse.ast.Kind.Unary => 74usize
+        parse.ast.Kind.Unsafe => 75usize
+        parse.ast.Kind.Variant => 76usize
+        parse.ast.Kind.While => 77usize
+        parse.ast.Kind.With => 78usize
+    }
+end parse.ast.kind_index
+
+fn parse.ast.kind_name(kind: parse.ast.Kind) -> &'static str uses [] panics never pub
+    match kind {
+        parse.ast.Kind.Arm => "Arm"
+        parse.ast.Kind.ArrayE => "ArrayE"
+        parse.ast.Kind.ArrayRep => "ArrayRep"
+        parse.ast.Kind.Assign => "Assign"
+        parse.ast.Kind.Attrs => "Attrs"
+        parse.ast.Kind.Bin => "Bin"
+        parse.ast.Kind.Block => "Block"
+        parse.ast.Kind.Break => "Break"
+        parse.ast.Kind.Call => "Call"
+        parse.ast.Kind.Capture => "Capture"
+        parse.ast.Kind.Closure => "Closure"
+        parse.ast.Kind.ConstDef => "ConstDef"
+        parse.ast.Kind.ConstInt => "ConstInt"
+        parse.ast.Kind.ConstPath => "ConstPath"
+        parse.ast.Kind.Continue => "Continue"
+        parse.ast.Kind.Dot => "Dot"
+        parse.ast.Kind.Effect => "Effect"
+        parse.ast.Kind.EnumDef => "EnumDef"
+        parse.ast.Kind.ExprStmt => "ExprStmt"
+        parse.ast.Kind.ExternDef => "ExternDef"
+        parse.ast.Kind.FieldDecl => "FieldDecl"
+        parse.ast.Kind.FieldInit => "FieldInit"
+        parse.ast.Kind.FnDef => "FnDef"
+        parse.ast.Kind.FnSig => "FnSig"
+        parse.ast.Kind.For => "For"
+        parse.ast.Kind.GParam => "GParam"
+        parse.ast.Kind.If => "If"
+        parse.ast.Kind.ImplLine => "ImplLine"
+        parse.ast.Kind.Import => "Import"
+        parse.ast.Kind.Index => "Index"
+        parse.ast.Kind.Let => "Let"
+        parse.ast.Kind.Linear => "Linear"
+        parse.ast.Kind.List => "List"
+        parse.ast.Kind.Lit => "Lit"
+        parse.ast.Kind.Loop => "Loop"
+        parse.ast.Kind.MCall => "MCall"
+        parse.ast.Kind.Match => "Match"
+        parse.ast.Kind.Nil => "Nil"
+        parse.ast.Kind.PBind => "PBind"
+        parse.ast.Kind.PField => "PField"
+        parse.ast.Kind.PLit => "PLit"
+        parse.ast.Kind.PPath => "PPath"
+        parse.ast.Kind.PRef => "PRef"
+        parse.ast.Kind.PStruct => "PStruct"
+        parse.ast.Kind.PTuple => "PTuple"
+        parse.ast.Kind.PVariant => "PVariant"
+        parse.ast.Kind.PWild => "PWild"
+        parse.ast.Kind.Param => "Param"
+        parse.ast.Kind.Path => "Path"
+        parse.ast.Kind.Return => "Return"
+        parse.ast.Kind.StaticDef => "StaticDef"
+        parse.ast.Kind.StructLit => "StructLit"
+        parse.ast.Kind.TArgConst => "TArgConst"
+        parse.ast.Kind.TArgEffects => "TArgEffects"
+        parse.ast.Kind.TArgLife => "TArgLife"
+        parse.ast.Kind.TArgPanic => "TArgPanic"
+        parse.ast.Kind.TArray => "TArray"
+        parse.ast.Kind.TDyn => "TDyn"
+        parse.ast.Kind.TFn => "TFn"
+        parse.ast.Kind.TNamed => "TNamed"
+        parse.ast.Kind.TNever => "TNever"
+        parse.ast.Kind.TPrim => "TPrim"
+        parse.ast.Kind.TPtr => "TPtr"
+        parse.ast.Kind.TRef => "TRef"
+        parse.ast.Kind.TSelf => "TSelf"
+        parse.ast.Kind.TSlice => "TSlice"
+        parse.ast.Kind.TTuple => "TTuple"
+        parse.ast.Kind.TestDef => "TestDef"
+        parse.ast.Kind.TraitDef => "TraitDef"
+        parse.ast.Kind.TraitFn => "TraitFn"
+        parse.ast.Kind.TraitRef => "TraitRef"
+        parse.ast.Kind.Try => "Try"
+        parse.ast.Kind.TupleE => "TupleE"
+        parse.ast.Kind.TypeDef => "TypeDef"
+        parse.ast.Kind.Unary => "Unary"
+        parse.ast.Kind.Unsafe => "Unsafe"
+        parse.ast.Kind.Variant => "Variant"
+        parse.ast.Kind.While => "While"
+        parse.ast.Kind.With => "With"
+    }
+end parse.ast.kind_name
+
+// 一時の添字列を links に移し、List ノードを作る。List の a = links の開始位置、b = 個数。
+fn parse.ast.list(ast: &mut parse.ast.Ast, items: &alloc.vec.Vec<usize, std.alloc.System>, tok: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    let first = ast.links.len()
+    for v in items.as_slice().iter() {
+        ast.links.push(*v)?
+    }
+    parse.ast.add2(ast, parse.ast.Kind.List, tok, first, items.len())
+end parse.ast.list
+
+fn parse.ast.mk(kind: parse.ast.Kind, tok: usize, a: usize, b: usize, c: usize, d: usize) -> parse.ast.Node uses [] panics never pub
+    parse.ast.Node { a: a, b: b, c: c, d: d, e: 0usize, f: 0usize, kind: kind, tok: tok }
+end parse.ast.mk
+
+fn parse.ast.new() -> Result<parse.ast.Ast, parse.err.Error> uses [alloc] panics never pub
+    let defs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let links = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    nodes.push(parse.ast.mk(parse.ast.Kind.Nil, 0usize, 0usize, 0usize, 0usize, 0usize))?
+    Ok(parse.ast.Ast { defs: defs, links: links, nodes: nodes })
+end parse.ast.new
+
+fn parse.ast.push(ast: &mut parse.ast.Ast, node: parse.ast.Node) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    let at = ast.nodes.len()
+    ast.nodes.push(node)?
+    Ok(at)
+end parse.ast.push

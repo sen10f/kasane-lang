@@ -3,7 +3,6 @@ type t.Pair
     b: t.Res
 end t.Pair
 
-// expect: E3002
 type t.Res linear
     id: u32
 end t.Res

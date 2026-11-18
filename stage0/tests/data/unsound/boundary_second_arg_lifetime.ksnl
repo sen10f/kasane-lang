@@ -1,4 +1,3 @@
-// expect: E3010
 fn t.a_pick['a, 'b](_x: &'a u32, y: &'b u32) -> &'b u32 uses [] panics never
     y
 end t.a_pick

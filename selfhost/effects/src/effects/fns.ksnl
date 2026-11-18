@@ -5,8 +5,6 @@ type effects.fns.Fns pub
     map: effects.fns.Map pub
 end effects.fns.Fns
 
-// 関数の表。全ファイルの FnDef (本体の有無を問わず) を番号で持つ。FQN → 番号は HashMap。
-// ヘッダの効果 (uses) は空白区切りの文字列で持つ。`hasu` が偽なら効果と panic は本体から推論される (5.1)。
 type effects.fns.Info derive [Debug, Clone, Copy, PartialEq] pub
     file: usize pub
     line: usize pub
@@ -56,7 +54,6 @@ fn effects.fns.add(fs: &mut effects.fns.Fns, p: &parse.cur.P, src: &[u8], file: 
     Ok(())
 end effects.fns.add
 
-// 1 ファイルの FnDef を足す。sig の宣言は、同じ名前が既にあれば足さない (実装の方を残す)。
 fn effects.fns.add_file(fs: &mut effects.fns.Fns, p: &parse.cur.P, src: &[u8], file: usize, own: bool, sig: bool) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     for d in p.ast.defs.as_slice().iter() {
         let n = parse.ast.get(&p.ast, *d)
@@ -80,7 +77,6 @@ fn effects.fns.copy(d: &effects.fns.Info) -> effects.fns.Info uses [] panics nev
     effects.fns.mk(d.file, d.line, d.body, d.pan, hu, sk, d.own)
 end effects.fns.copy
 
-// FQN (キー) の番号。表に無ければ None。
 fn effects.fns.lookup(fs: &effects.fns.Fns, key: &str) -> Result<Option<usize>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let k = alloc.string.String.from_str(std.alloc.SYSTEM, key)?
     let dm = &fs.map.m
@@ -90,12 +86,10 @@ fn effects.fns.lookup(fs: &effects.fns.Fns, key: &str) -> Result<Option<usize>, 
     }
 end effects.fns.lookup
 
-// 情報 1 件を作る (引数の順は Info のフィールドの順)。
 fn effects.fns.mk(f: usize, l: usize, b: usize, p: usize, h: bool, s: bool, o: bool) -> effects.fns.Info uses [] panics never pub
     effects.fns.Info { file: f, line: l, body: b, pan: p, hasu: h, stk: s, own: o }
 end effects.fns.mk
 
-// 番号 ix の FQN。
 fn effects.fns.name_of(fs: &effects.fns.Fns, ix: usize) -> &str uses [] panics never pub
     let empty = ""
     match fs.names.as_slice().get(ix) {
@@ -113,12 +107,10 @@ fn effects.fns.new() -> Result<effects.fns.Fns, alloc.alloc.AllocError> uses [al
     Ok(effects.fns.Fns { items: items, names: names, eff: effs, map: map })
 end effects.fns.new
 
-// 番号 ix の情報 (範囲外は本体のない空の情報)。
 fn effects.fns.none() -> effects.fns.Info uses [] panics never pub
     effects.fns.mk(0usize, 0usize, 0usize, 0usize, false, false, false)
 end effects.fns.none
 
-// 番号 ix の効果の列 (空白区切り)。ヘッダに uses が無ければ空。
 fn effects.fns.uses_of(fs: &effects.fns.Fns, ix: usize) -> &str uses [] panics never pub
     let empty = ""
     match fs.eff.as_slice().get(ix) {

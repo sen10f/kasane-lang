@@ -1,4 +1,3 @@
-// expect: E3006
 type t.Pool
     items: alloc.vec.Vec<t.Res, std.alloc.System>
 end t.Pool

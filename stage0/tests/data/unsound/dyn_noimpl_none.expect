@@ -1,0 +1,3 @@
+expect: E2046
+note: mut_g10d の g10o: impl ブロックもメソッドも無い型を &dyn に渡すと ksn check が通り、
+note: 実行は dyn ディスパッチで「panic: no method handle found for value X { v: 7 }」(rc=101)。

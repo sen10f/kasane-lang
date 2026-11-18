@@ -1,0 +1,81 @@
+// ksnc: Kasane のビルドのドライバ (修正プラン 5-5)。
+// 段の並びと担当は `ksnc --stages` と selfhost/README.md の「ドライバの段」「統合の段」を見る。
+// 既定 (`--stages=rust`) は、読み込みと名前解決を selfhost/resolve (Kasane 製) に、
+// 検査と KIR → LLVM IR を Rust 版 ksn に任せ、実行ファイルを作る clang の段だけを ksnc 自身が担う
+// (ksn の KSN_CLANG 経由で、この実行ファイルを clang の代わりに呼ばせる。clang.ksnl)。
+// `--stages=kasane` は検査・整形・下ろし・LLVM 出力を Kasane 製の部品で行う。
+// `--stages=both` は Rust 版と Kasane 版を両方走らせ、並べて出す。
+enum ksnc.Failure derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Io(std.io.Error)
+    Front(resolve.Failure)
+    Fmt(fmt.Failure)
+    Diag
+    Tool
+    Usage
+end ksnc.Failure
+
+fn ksnc.main() -> Result<(), ksnc.Failure> uses [alloc, env, io.console, io.fs, process] panics may
+    // ksn が KSN_CLANG として呼んだときは clang の段になる (KSNC_SHIM は ksnc が ksn を起動するときだけ付ける)。
+    match std.env.var("KSNC_SHIM") {
+        Some(_s) => return ksnc.clang.shim()
+        None => core.mem.drop(0u8)
+    }
+    let n = std.env.arg_count()
+    if n == 1usize && ksnc.tool.env_or_arg(0usize) == "--stages" {
+        std.io.print_line(ksnc.plan.text())?
+        return Ok(())
+    }
+    let mut verb = ""
+    let mut release = false
+    let mut target = "host"
+    let mut dir = "."
+    let mut check = false
+    let mut stages = "rust"
+    let mut i = 0usize
+    while i < n {
+        let a = ksnc.tool.env_or_arg(i)
+        if a == "--release" {
+            release = true
+        } else if a == "--check" {
+            check = true
+        } else if a == "--target" {
+            i = i.wrapping_add(1usize)
+            target = ksnc.tool.env_or_arg(i)
+        } else if a.starts_with("--stages=") {
+            stages = ksnc.tool.after(a, "--stages=")
+        } else if verb == "" {
+            verb = a
+        } else if a != "" {
+            dir = a
+        }
+        i = i.wrapping_add(1usize)
+    }
+    if verb != "check" && verb != "build" && verb != "fmt" {
+        ksnc.tool.say_err("usage: ksnc check|build|fmt [--stages=rust|kasane|both] ")?
+        ksnc.tool.say_err("[--release] [--target <三つ組>] [--check] [DIR] | ksnc --stages\n")?
+        return Err(ksnc.Failure.Usage)
+    }
+    if stages != "rust" && stages != "kasane" && stages != "both" {
+        ksnc.tool.say_err("ksnc: --stages は rust・kasane・both のどれか\n")?
+        return Err(ksnc.Failure.Usage)
+    }
+    let pwd = ksnc.tool.env_or("PWD")
+    let abs = ksnc.tool.absolute(pwd, dir)?
+    let root = ksnc.tool.root_of(abs.as_str())?
+    let ksn = ksnc.tool.ksn_path(root.as_str())?
+    let std_dir = ksnc.tool.std_dir(root.as_str())?
+    if verb == "fmt" {
+        ksnc.stage.fmt(stages, ksn.as_str(), abs.as_str(), check)?
+        return Ok(())
+    }
+    if verb == "check" {
+        ksnc.stage.check(stages, ksn.as_str(), abs.as_str(), std_dir.as_str())?
+        return Ok(())
+    }
+    let ks = ksn.as_str()
+    let rt = root.as_str()
+    let ab = abs.as_str()
+    ksnc.stage.build(stages, ks, rt, ab, release, target)?
+    Ok(())
+end ksnc.main

@@ -1,4 +1,3 @@
-// 失敗の種類。HTTP の解析 (`std.http`)、TLS (`std.tls`)、ソケット、ファイル、保存の形式を一つにまとめる。
 enum shortener_https.error.Error derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
     BadRequest

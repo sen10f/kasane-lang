@@ -436,7 +436,6 @@ fn alloc.collections.HashMap.rebuild[K: core.cmp.Eq + core.hash.Hash, V, A: allo
             }
         }
     }
-    // 古い添字の区間と増やした空きの区間を入れ替えて、組の列を slots の後ろへ送る (挿入順は保つ)。
     let mid = old.wrapping_add(n)
     self.reverse_range(old, mid)
     self.reverse_range(mid, total)
@@ -548,7 +547,6 @@ end alloc.collections.HashMapIter.next
 fn alloc.collections.hash_key[K: core.hash.Hash](key: &K) -> usize uses [] panics never
     let mut state = core.hash.Fnv64.new()
     key.hash(&mut state)
-    // 索引には下位 32 ビットを使う (どの型幅のターゲットでも `usize` に収まる)。
     match u32.try_from_u64(state.finish() & 4294967295u64) {
         Ok(lo) => {
             usize.from_u32(lo)

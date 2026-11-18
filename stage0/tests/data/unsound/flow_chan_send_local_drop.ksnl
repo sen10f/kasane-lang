@@ -1,4 +1,3 @@
-// expect: E3010
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics never
     match std.sync.channel(std.alloc.SYSTEM, 2usize) {
         Ok((tx, rx)) => {

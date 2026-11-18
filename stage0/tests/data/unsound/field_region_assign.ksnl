@@ -1,4 +1,3 @@
-// expect: E3060
 type t.Pair['a, 'b] derive [Clone, Copy]
     fst: &'a u32
     snd: &'b u32

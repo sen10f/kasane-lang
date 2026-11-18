@@ -1,4 +1,3 @@
-// expect: E3006
 fn t.bad(l: &std.net.TcpListener) -> Result<(), std.net.Error> uses [alloc, io.net] panics never
     let s = l.accept()?
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)

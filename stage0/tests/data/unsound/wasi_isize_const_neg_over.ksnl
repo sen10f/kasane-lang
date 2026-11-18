@@ -1,6 +1,3 @@
-// expect: E2026
-// target: wasm32-wasi
-// wasm32-wasi では isize は 32 ビット。符号付きの下限を下回る const は E2026
 const t.N: isize = -2147483649
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

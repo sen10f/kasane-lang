@@ -1,0 +1,4 @@
+note: expect-accept
+note: 閉包が &mut v をキャプチャし内部で ? を使い、呼び出し後 v.push が可（キャプチャ borrow 終了 + NLL）。
+note: 閉包が &mut v をキャプチャし、内部で ? を使って push
+note: f() の呼び出しとともに &mut v のキャプチャ borrow が終わるので push が可（NLL）

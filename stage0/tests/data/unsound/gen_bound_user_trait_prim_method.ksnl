@@ -1,5 +1,3 @@
-// expect: E2030
-// 同じ検査はメソッドの形 (`bus.register(x)`) でも (`bool`)
 type t.Bus pub
     x: u32
 end t.Bus

@@ -1,25 +1,15 @@
-// 型の下ろし: types の型 id を KIR の型の文字列にし、集成体 (構造体・列挙型) の番号とレイアウトを決める。
-// 集成体は見つけた順に agg#N を振る (ksn kir の番号とは一致しないことがある。比べるときは名前で正規化する)。
-// 文字列の参照 (`&str`) の集成体 `fat` = {ptr, len}。項目の代わりに番号 FAT を使う。
-// `Option<&T>` (T は構造体・列挙型) の中身: 要素の番地だけの集成体 `bref`。
 const lower.tyk.BREF: usize = 1999999999usize pub
 
 const lower.tyk.FAT: usize = 4294967295usize pub
 
-// 総称の集成体 (ユーザーの総称の型の具体化) の項目の基点 (INS + 添字、添字は tps の添字)。
 const lower.tyk.INS: usize = 2500000000usize pub
 
-// 組の集成体の項目の基点 (TUP + 添字)。
 const lower.tyk.TUP: usize = 2000000000usize pub
 
-// `Vec<T>` の枠 `vec` = {ptr, len, cap} (24 バイト。要素の型は枠に入れない)。項目の代わりに番号 VEC を使う。
 const lower.tyk.VEC: usize = 4294967294usize pub
 
-// 要素が所有物の `Vec` の枠 `vec<#E>` の項目の基点 (VECO + 要素の集成体の番号)。配置は `vec` と同じ。
 const lower.tyk.VECO: usize = 1000000000usize pub
 
-// 集成体のレイアウト: 大きさ・そろえ・フィールドの末尾からのバイト位置。
-// 列挙型は `offs` を変種の順に並べ (変種 j の i 番目は vlens の和 + i)、`vlens` に変種ごとの個数を入れる。
 type lower.tyk.Lay pub
     size: usize pub
     align: usize pub
@@ -27,7 +17,6 @@ type lower.tyk.Lay pub
     vlens: alloc.vec.Vec<usize, std.alloc.System> pub
 end lower.tyk.Lay
 
-// 集成体の行の本体 (総称の具体化は `agg_line` が代入を入れてから呼ぶ)。
 fn lower.tyk.agg_body(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     if (item >= lower.tyk.TUP && item < lower.tyk.INS) {
         return lower.tup.agg_line(env, c, item, id)
@@ -150,7 +139,6 @@ fn lower.tyk.agg_body(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id:
     Ok(s)
 end lower.tyk.agg_body
 
-// 集成体の番号 (なければ登録する)。
 fn lower.tyk.agg_id(c: &mut lower.cx.Cx, item: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let mut k = 0usize
     for it in c.g.aggs.as_slice().iter() {
@@ -173,7 +161,6 @@ fn lower.tyk.agg_line(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id:
     lower.tyk.agg_body(env, c, item, id)
 end lower.tyk.agg_line
 
-// 集成体の定義の行 (`agg#N struct FQN size=S align=A {...}`) を、登録の順に全部作る。
 fn lower.tyk.agg_lines(env: &types.env.Env, c: &mut lower.cx.Cx) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     let mut i = 0usize
@@ -185,7 +172,6 @@ fn lower.tyk.agg_lines(env: &types.env.Env, c: &mut lower.cx.Cx) -> Result<alloc
     Ok(out)
 end lower.tyk.agg_lines
 
-// 並びの i 番目 (なければ 0)。
 fn lower.tyk.at(xs: &[usize], i: usize) -> usize uses [] panics may pub
     match xs.get(i) {
         Some(x) => *x
@@ -193,13 +179,11 @@ fn lower.tyk.at(xs: &[usize], i: usize) -> usize uses [] panics may pub
     }
 end lower.tyk.at
 
-// `bref` の型の綴り (`agg#N`)。
 fn lower.tyk.bref_text(c: &mut lower.cx.Cx) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let id = lower.tyk.agg_id(c, lower.tyk.BREF)?
     lower.cx.cat2("agg#", lower.cx.dec(id)?.as_str())
 end lower.tyk.bref_text
 
-// 具体化の項目の引数を代入に入れる (元の値は返す)。
 fn lower.tyk.enter(c: &mut lower.cx.Cx, item: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let saved = lower.cx.copy_u(&c.v.subst)?
     let ty = lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.INS)
@@ -207,7 +191,6 @@ fn lower.tyk.enter(c: &mut lower.cx.Cx, item: usize) -> Result<alloc.vec.Vec<usi
     let n = types.ty.node(&c.ar, f)
     let mut na = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for k in core.iter.range(0usize, n.c) {
-        // 代入は (総称の番号, 型) の組。総称の番号は定義の並び (0 から) と同じ。
         na.push(k)?
         na.push(types.ty.arg(&c.ar, n.b, k))?
     }
@@ -215,7 +198,6 @@ fn lower.tyk.enter(c: &mut lower.cx.Cx, item: usize) -> Result<alloc.vec.Vec<usi
     Ok(saved)
 end lower.tyk.enter
 
-// 構造体のフィールドの添字 (見つからなければ 0。呼び出し側は未対応として扱う)。
 fn lower.tyk.field_index(env: &types.env.Env, item: usize, name: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let names = lower.tyk.field_names(env, item)?
     let mut k = 0usize
@@ -232,7 +214,6 @@ fn lower.tyk.field_index(env: &types.env.Env, item: usize, name: &str) -> Result
     Ok(0usize)
 end lower.tyk.field_index
 
-// 構造体の宣言の順のフィールド名 (0 から)。
 fn lower.tyk.field_names(env: &types.env.Env, item: usize) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let file = types.infer.item_file(env, item)
@@ -254,7 +235,6 @@ fn lower.tyk.field_names(env: &types.env.Env, item: usize) -> Result<alloc.vec.V
     Ok(out)
 end lower.tyk.field_names
 
-// 構造体 item のフィールド name の型 (総称でない構造体向け。見つからなければ UNKNOWN)。
 fn lower.tyk.field_ty(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, name: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -277,7 +257,6 @@ fn lower.tyk.field_ty(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, nam
     Ok(types.ty.UNKNOWN)
 end lower.tyk.field_ty
 
-// 欄の型 (宣言の型の節 tn を読み、具体化の代入を当てる)。総称の名前 (gl の並び) は Param (0 から) として見せる。
 fn lower.tyk.fty(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], file: usize, gl: usize, tn: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let mark = c.tc.sc.len()
     let toks = types.lower.tparams(p, gl)?
@@ -309,7 +288,6 @@ fn lower.tyk.int_bytes(name: &str) -> usize uses [] panics may pub
     8usize
 end lower.tyk.int_bytes
 
-// 型 t が `&str` / `&[T]` (fat の値)。
 fn lower.tyk.is_fat_ty(c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
     let n = types.ty.node(&c.ar, types.ty.find(&c.ar, t))
     if n.k == types.ty.K.Str {
@@ -318,13 +296,11 @@ fn lower.tyk.is_fat_ty(c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics ma
     n.k == types.ty.K.Ref && types.ty.node(&c.ar, types.ty.find(&c.ar, n.a)).k == types.ty.K.Slice
 end lower.tyk.is_fat_ty
 
-// 総称の型 (引数のある構造体・列挙型) か。Option と Result は別に扱う。
 fn lower.tyk.is_generic_adt(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> bool uses [alloc] panics may pub
     let n = types.ty.node(&c.ar, f)
     if n.k != types.ty.K.Adt || n.c == 0usize {
         return false
     }
-    // 型引数が未決め (Param) の具体化は下ろせない (展開が止まらない)。標準の型もここを通る。
     if lower.inst.has_param(c, f) {
         return false
     }
@@ -332,7 +308,6 @@ fn lower.tyk.is_generic_adt(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> b
     kind == parse.ast.Kind.TypeDef || kind == parse.ast.Kind.EnumDef
 end lower.tyk.is_generic_adt
 
-// 型 t が `Option<整数・bool>` (値の Option)。
 fn lower.tyk.is_opt_scalar(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
     let n = types.ty.node(&c.ar, types.ty.find(&c.ar, t))
     if n.k != types.ty.K.Adt || n.c != 1usize || lower.opt.kind(env, n.a) != 1usize {
@@ -346,20 +321,17 @@ fn lower.tyk.is_opt_scalar(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bo
     k == types.ty.K.Int || k == types.ty.K.Bool
 end lower.tyk.is_opt_scalar
 
-// 項目が `alloc.vec.Vec` か。
 fn lower.tyk.is_vec(env: &types.env.Env, item: usize) -> bool uses [alloc] panics may pub
     let fq = lower.tyk.item_fqn(env, item)
     fq.as_str() == "alloc.vec.Vec" || fq.as_str() == "alloc.string.String"
 end lower.tyk.is_vec
 
-// 型 (参照を外した後) が Vec か。
 fn lower.tyk.is_vec_ty(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
     let f = types.ty.strip(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
     n.k == types.ty.K.Adt && lower.tyk.is_vec(env, n.a)
 end lower.tyk.is_vec_ty
 
-// 項目の FQN (なければ空)。
 fn lower.tyk.item_fqn(env: &types.env.Env, item: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
     match env.tab.items.as_slice().get(item) {
         Some(it) => {
@@ -378,7 +350,6 @@ fn lower.tyk.item_fqn(env: &types.env.Env, item: usize) -> alloc.string.String<s
     }
 end lower.tyk.item_fqn
 
-// 構造体リテラルの型の集成体の番号の項目: 総称の具体化なら具体化の項目、それ以外は定義の項目。
 fn lower.tyk.key_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, item: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
     if lower.tyk.is_generic_adt(env, c, f) {
@@ -387,7 +358,6 @@ fn lower.tyk.key_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, item: us
     Ok(item)
 end lower.tyk.key_of
 
-// 型の種類の名前 (診断用)。
 fn lower.tyk.kind_word(k: types.ty.K) -> &'static str uses [] panics may pub
     if (k == types.ty.K.Ref) {
         return "参照"
@@ -422,10 +392,8 @@ fn lower.tyk.kind_word(k: types.ty.K) -> &'static str uses [] panics may pub
     "その他"
 end lower.tyk.kind_word
 
-// 項目 (構造体・列挙型) のレイアウト。
 fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Result<lower.tyk.Lay, resolve.Failure> uses [alloc] panics may pub
     if (item >= lower.tyk.INS && item < lower.tyk.VEC) {
-        // 代入の組が深すぎる = 総称の型が自分を含む (再帰)。未対応として空の大きさを返す。
         if c.v.subst.len() > 400usize {
             let nm = lower.tup.name(env, c, lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.INS))?
             let msg = lower.cx.cat2("総称の型の大きさ (再帰する型は未対応): ", nm.as_str())?
@@ -502,7 +470,6 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
         let size = lower.tyk.up(off, al)
         return Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vlens })
     }
-    // 列挙型: 先頭に 4 バイトの i32 のタグ、変種のペイロードはその後ろ (列挙型全体のそろえの位置から)。
     let mut endp = 4usize
     let mut al = 4usize
     for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
@@ -545,7 +512,6 @@ fn lower.tyk.leave(c: &mut lower.cx.Cx, saved: alloc.vec.Vec<usize, std.alloc.Sy
     c.v.subst = saved
 end lower.tyk.leave
 
-// 列挙型の項目の変種の数。
 fn lower.tyk.nvariants(env: &types.env.Env, item: usize) -> usize uses [alloc] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -557,7 +523,6 @@ fn lower.tyk.nvariants(env: &types.env.Env, item: usize) -> usize uses [alloc] p
     resolve.ast.count(p, nd.d)
 end lower.tyk.nvariants
 
-// 型 t が、どの変種も値を持たない (欄のない) 利用者の列挙型か。
 fn lower.tyk.plain_enum(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
@@ -584,7 +549,6 @@ fn lower.tyk.plain_enum(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool 
     cnt > 0usize
 end lower.tyk.plain_enum
 
-// 整数・bool・文字の大きさ (バイト) とそろえ。未知は 0。
 fn lower.tyk.prim_size(t: usize) -> usize uses [] panics may pub
     let f = t
     if f == types.ty.BOOL {
@@ -596,7 +560,6 @@ fn lower.tyk.prim_size(t: usize) -> usize uses [] panics may pub
     0usize
 end lower.tyk.prim_size
 
-// 具体化の項目 (INS + 添字) から、元の定義の項目。それ以外はそのまま。
 fn lower.tyk.real_item(c: &lower.cx.Cx, item: usize) -> usize uses [alloc] panics may pub
     if (item >= lower.tyk.INS && item < lower.tyk.VEC) {
         let ty = lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.INS)
@@ -606,7 +569,6 @@ fn lower.tyk.real_item(c: &lower.cx.Cx, item: usize) -> usize uses [alloc] panic
     item
 end lower.tyk.real_item
 
-// 型 t が、構造体・列挙型 (`Vec` / `String` でない) への参照か。`Option<&T>` の中身は `bref` で持つ。
 fn lower.tyk.ref_agg(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
     let n = types.ty.node(&c.ar, types.ty.find(&c.ar, t))
     if n.k != types.ty.K.Ref {
@@ -620,7 +582,6 @@ fn lower.tyk.ref_agg(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool use
     kind == parse.ast.Kind.TypeDef || kind == parse.ast.Kind.EnumDef
 end lower.tyk.ref_agg
 
-// 型 t が、スカラー (整数・浮動小数・bool・char) への参照か。`Option<&スカラー>` は値の `Option<スカラー>` で持つ。
 fn lower.tyk.ref_scalar(c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
     let n = types.ty.node(&c.ar, types.ty.find(&c.ar, t))
     if n.k != types.ty.K.Ref {
@@ -630,7 +591,6 @@ fn lower.tyk.ref_scalar(c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics m
     k == types.ty.K.Int || k == types.ty.K.Float || k == types.ty.K.Bool || k == types.ty.K.Char
 end lower.tyk.ref_scalar
 
-// 型 (types の型 id) の大きさとそろえ。集成体はレイアウトから。
 fn lower.tyk.size_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<(usize, usize), resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
@@ -677,7 +637,6 @@ fn lower.tyk.size_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Resu
     Ok((0usize, 1usize))
 end lower.tyk.size_of
 
-// 型の源の綴り (総称の鍵に使う: `u32`・`&str`・`alloc.string.String<std.alloc.System>`)。
 fn lower.tyk.src(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
@@ -706,7 +665,6 @@ fn lower.tyk.src(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<a
     if n.k == types.ty.K.Adt {
         let mut s = lower.tyk.item_fqn(env, n.a)
         let mut na = n.c
-        // 省いた割り当て器 (System) は補って書く。
         let fq = lower.tyk.item_fqn(env, n.a)
         let want = if fq.as_str() == "alloc.string.String" {
             1usize
@@ -736,7 +694,6 @@ fn lower.tyk.src(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<a
     lower.tyk.text(env, c, t)
 end lower.tyk.src
 
-// types の型 id → KIR の型の文字列。未対応の型は fail して "unit" を返す。
 fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
@@ -792,18 +749,15 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
         return Ok(s)
     }
     if n.k == types.ty.K.Var && n.c == 2usize {
-        // 型の決まらない小数リテラル: 既定の f64。
         s.push_str("f64")?
         return Ok(s)
     }
     if n.k == types.ty.K.Var && n.c == 1usize {
-        // 型の決まらない整数リテラル: 既定の i32 (検査器の既定と同じ)。
         s.push_str("i32")?
         return Ok(s)
     }
     let rin = types.ty.node(&c.ar, types.ty.find(&c.ar, n.a))
     if n.k == types.ty.K.Ref && rin.k == types.ty.K.Slice {
-        // `&[T]` / `&mut [T]`: `&str` と同じ fat の値 {ptr, len}。
         let sid = lower.tyk.agg_id(c, lower.tyk.FAT)?
         s.push_str("agg#")?
         s.push_str(lower.cx.dec(sid)?.as_str())?
@@ -811,7 +765,6 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
     }
     if n.k == types.ty.K.Ref {
         if lower.vec.is_hdr(env, c, n.a) {
-            // `&Vec` / `&String` は枠の番地 (ptr)。
             return lower.cx.own("ptr")
         }
         let inner = lower.tyk.text(env, c, n.a)?
@@ -865,7 +818,6 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
     Ok(s)
 end lower.tyk.text
 
-// そろえ `a` の倍数に切り上げる。
 fn lower.tyk.up(x: usize, a: usize) -> usize uses [] panics may pub
     if a <= 1usize {
         return x
@@ -873,7 +825,6 @@ fn lower.tyk.up(x: usize, a: usize) -> usize uses [] panics may pub
     (x + a - 1usize) / a * a
 end lower.tyk.up
 
-// 列挙型の変種の添字 (宣言の順)。見つからなければ 0 (呼び出し側が形を確かめる)。
 fn lower.tyk.variant_index(env: &types.env.Env, item: usize, name: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -898,7 +849,6 @@ fn lower.tyk.variant_index(env: &types.env.Env, item: usize, name: &str) -> Resu
     Ok(0usize)
 end lower.tyk.variant_index
 
-// `Vec` / `String` の枠の集成体の項目: 要素が所有物の `Vec` は `VECO + 要素の集成体の番号`、それ以外は `VEC`。
 fn lower.tyk.vec_item(env: &types.env.Env, c: &mut lower.cx.Cx, f: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let n = types.ty.node(&c.ar, f)
     if !lower.tyk.item_fqn(env, n.a).as_str().ends_with(".Vec") || n.c == 0usize {
@@ -920,7 +870,6 @@ fn lower.tyk.vec_item(env: &types.env.Env, c: &mut lower.cx.Cx, f: usize) -> Res
     Ok(lower.tyk.VECO + v)
 end lower.tyk.vec_item
 
-// 未対応の型の名前 (診断用)。
 fn lower.tyk.why(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let n = types.ty.node(&c.ar, f)
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)

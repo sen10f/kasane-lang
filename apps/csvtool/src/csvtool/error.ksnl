@@ -1,8 +1,5 @@
 import alloc.string
 
-// アプリ全体で共通のエラー型。
-// `derive [From]` は `enum` だけに使える (E2050)。`From` バリアントは元のエラー型を
-// 唯一のペイロードに持つ (同じ型を運ぶバリアントが 1 つずつなら E2049 にならない)。
 enum csvtool.error.Error derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
     Io(std.io.Error)

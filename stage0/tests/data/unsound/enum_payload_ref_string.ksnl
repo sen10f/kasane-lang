@@ -1,4 +1,3 @@
-// expect: E2020
 enum t.E pub
     A(alloc.string.String<std.alloc.System>)
 end t.E

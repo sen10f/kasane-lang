@@ -1,4 +1,3 @@
-// expect: E2023
 fn t.bad() -> u64 uses [] panics never
     t.num(fn() -> () capture [] {
         core.mem.drop(1u32)
@@ -9,7 +8,6 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-// expect: E2023
 fn t.num(n: u64) -> u64 uses [] panics never
     n.wrapping_add(1u64)
 end t.num

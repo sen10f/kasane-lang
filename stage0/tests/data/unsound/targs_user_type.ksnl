@@ -1,5 +1,3 @@
-// expect: E2023
-// 利用者の総称の型も型引数の数を検査する
 type t.Pair[A, B] pub
     a: A
     b: B

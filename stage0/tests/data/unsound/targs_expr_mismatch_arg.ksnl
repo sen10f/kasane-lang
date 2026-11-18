@@ -1,5 +1,3 @@
-// expect: E2023
-// 明示した型引数は引数の型の照合に使う (`T = u32` に `1i32` は渡せない)
 fn t.id[T](x: T) -> T uses [] panics never
     x
 end t.id

@@ -14,7 +14,6 @@ fn t.closed_port() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] 
         Ok(p) => p
         Err(_e) => 0u16
     }
-    // 同じ番号をもう一度 bind すると使用中。
     let busy = t.addr(port)
     match std.net.listen(busy.as_str()) {
         Ok(other) => {

@@ -1,0 +1,2 @@
+expect: E1122
+note: Vec の pub フィールド buf (raw.Buf) の initialized を偽装し、get で未初期化領域への参照を得る

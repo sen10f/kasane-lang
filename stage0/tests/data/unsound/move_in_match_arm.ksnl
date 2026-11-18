@@ -1,4 +1,3 @@
-// expect: E3002
 type t.Wrap
     v: alloc.vec.Vec<u32, std.alloc.System>
 end t.Wrap

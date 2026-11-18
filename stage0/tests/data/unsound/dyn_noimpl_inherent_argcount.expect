@@ -1,0 +1,3 @@
+expect: E2046
+note: さらに inherent の引数はトレイトより 1 個多い (extra: u32)。
+note: ディスパッチが inherent を名前で見つけて呼べば、引数の数が合わない。

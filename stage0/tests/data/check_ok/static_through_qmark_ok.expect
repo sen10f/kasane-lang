@@ -1,0 +1,6 @@
+note: Result<&'static str, E> を ? で取り出した値を &'static str 引数に渡すと
+note: E2037 で拒まれていた。
+note: 同じ &'static str 型の値でも関数の直接の結果なら通る (内部矛盾)。
+note: 本体の 'static 宣言は検査済み (局所借用の返却は E3030 で拒まれる) ので、
+note: 宣言を信じて ? 越しでも受けるのが正当。実用上は「要素を Result で返すヘルパ」の
+note: あと 'static 引数に渡す形がすべて書けなくなる。

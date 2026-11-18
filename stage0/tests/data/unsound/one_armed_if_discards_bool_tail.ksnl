@@ -1,4 +1,3 @@
-// expect: E2042
 fn t.is_match(x: u8) -> bool uses [] panics never
     let matched = x == 1u8
     if matched {

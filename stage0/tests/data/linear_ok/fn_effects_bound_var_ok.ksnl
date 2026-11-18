@@ -1,6 +1,3 @@
-// `F: Fn<.., E, P>` の値を同じ `F: Fn<.., E, P>` を求める場所へ渡す (変数を同じ変数へ) と、
-// `fn() uses [] panics never` を `F: Fn<.., E, P>` を求める場所へ渡す (具体的を変数へ) は正しい:
-// 実体化と効果の検査は呼び出し側で行う。
 fn t.forward[F: core.ops.Fn<(), u32, E, P>, E: uses, P: panics](f: F, g: F) -> u32 uses [E] panics P
     core.mem.drop(t.id(g))
     f.call(())

@@ -1,4 +1,3 @@
-// expect: E2044
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let n = core.mem.size_of()
     core.mem.drop(n)

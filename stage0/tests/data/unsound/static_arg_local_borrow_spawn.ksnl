@@ -1,4 +1,3 @@
-// expect: E2037
 fn t.id(r: &'static str) -> &'static str uses [] panics never
     r
 end t.id

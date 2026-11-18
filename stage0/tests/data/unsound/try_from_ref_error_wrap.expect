@@ -1,0 +1,2 @@
+expect: E2020
+note: as_ref() のエラーは &AllocError：Alloc(AllocError) への変換はペイロード型が一致しないので不可

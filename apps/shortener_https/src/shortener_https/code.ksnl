@@ -127,8 +127,6 @@ test shortener_https.code.to_index.test_rejects_noncanonical
     core.check.eq(shortener_https.code.to_index("01000"), None)
     core.check.eq(shortener_https.code.to_index("10A0"), None)
     core.check.eq(shortener_https.code.to_index("+1000"), None)
-    // "stats" は正当な符号 (添字 48349648)。ルータが /stats を先に判定するので、
-    // 衝突は約 4800 万件目まで起きない
     core.check.eq(shortener_https.code.to_index("stats"), Some(48349648u64))
     core.check.eq(shortener_https.code.to_index("zzzzzzzzzzzzz"), None)
     core.check.eq(shortener_https.code.to_index("3w5e11264sgsg"), None)

@@ -1,4 +1,3 @@
-// expect: E1119
 fn t.main() -> Result<(), std.http.Error> uses [alloc] panics never
     let mut d = std.http.Decoder.new(8192usize, 65536usize)
     d.consume(0usize)?

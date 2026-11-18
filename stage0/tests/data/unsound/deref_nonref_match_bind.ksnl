@@ -3,7 +3,6 @@ type t.S pub
     s: alloc.string.String<std.alloc.System>
 end t.S
 
-// expect: E2020
 fn t.bad() -> u32 uses [] panics never
     match t.make() {
         t.S { v: rv, s: _ } => *rv

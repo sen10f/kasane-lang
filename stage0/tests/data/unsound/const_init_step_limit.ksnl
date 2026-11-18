@@ -1,4 +1,3 @@
-// expect: E4024
 const t.K: u32 = t.spin()
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

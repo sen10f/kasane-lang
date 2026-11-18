@@ -1,0 +1,305 @@
+import todo_spa.dom
+import todo_spa.model
+
+// 状態は持たない。正は apps/todo のサーバで、localStorage (ITEMS_KEY) は最後に受け取った一覧の写し。
+// 操作のたびにサーバへ送り、完了の通知 (ksn_fetch_done) を受けてから一覧を取り直す。
+// イベントの tag は `id * 4 + 種類` (種類 0 = 追加、1 = 完了の切り替え、2 = 削除)。
+// 試験用の固定の利用者 (ログインの画面はない)。起動のたびに登録し (既にあれば 400 で無視)、ログインして cookie を受ける。
+const todo_spa.app.ACCOUNT: &str = "{\"username\":\"demo\",\"password\":\"demo-pass\"}"
+
+const todo_spa.app.API_KEY: &str = "todo_spa.api"
+
+const todo_spa.app.ITEMS_KEY: &str = "todo_spa.items"
+
+const todo_spa.app.TAG_LIST: u32 = 1u32
+
+const todo_spa.app.TAG_LOGIN: u32 = 4u32
+
+const todo_spa.app.TAG_MUT: u32 = 2u32
+
+const todo_spa.app.TAG_REG: u32 = 3u32
+
+fn todo_spa.app.add_item() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    let input = dom.by_id("todo-input")
+    let mut buf = [0u8; 512]
+    let n = dom.input_value(input, &mut buf)
+    let text = todo_spa.app.text_of(&buf, n)?
+    let trimmed = text.as_str().trim()
+    if trimmed.is_empty() {
+        todo_spa.app.status("題を入れてください")
+        return Ok(())
+    }
+    let mut body = alloc.string.String.new(std.alloc.SYSTEM)
+    body.push_str("{\"title\":\"")?
+    model.push_json_text(&mut body, trimmed)?
+    body.push_str("\"}")?
+    dom.set_value(input, "")
+    todo_spa.app.send("POST", "/todos", body.as_str(), todo_spa.app.TAG_MUT)
+end todo_spa.app.add_item
+
+// 画面の骨組み。部品は id で引く (`by_id`)。
+fn todo_spa.app.build_ui() -> () uses [] panics never
+    let body = dom.body()
+    let title = dom.create("h1")
+    dom.set_text(title, "TODO")
+    dom.append(body, title)
+    let input = dom.create("input")
+    dom.set_attr(input, "id", "todo-input")
+    dom.set_attr(input, "placeholder", "やること")
+    dom.append(body, input)
+    let add = dom.create("button")
+    dom.set_attr(add, "id", "todo-add")
+    dom.set_text(add, "追加")
+    dom.listen(add, "click", 0u32)
+    dom.append(body, add)
+    let status = dom.create("p")
+    dom.set_attr(status, "id", "todo-status")
+    dom.append(body, status)
+    let list = dom.create("ul")
+    dom.set_attr(list, "id", "todo-list")
+    dom.append(body, list)
+end todo_spa.app.build_ui
+
+fn todo_spa.app.decimal(id: u32) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.push_u64(u64.from_u32(id))?
+    Ok(s)
+end todo_spa.app.decimal
+
+fn todo_spa.app.delete_item(id: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    let want = todo_spa.app.decimal(id)?
+    let mut path = alloc.string.String.new(std.alloc.SYSTEM)
+    path.push_str("/todos/")?
+    path.push_str(want.as_str())?
+    todo_spa.app.send("DELETE", path.as_str(), "", todo_spa.app.TAG_MUT)
+end todo_spa.app.delete_item
+
+// 一覧 (cache) の中で id が `want` の行の完了の状態。
+fn todo_spa.app.find_done(cache: &str, want: &str) -> Option<bool> uses [] panics never
+    for line in cache.split("\n") {
+        match model.split_line(line) {
+            None => {
+                core.mem.drop(line)
+            }
+            Some((id, done, raw)) => {
+                core.mem.drop(raw)
+                if id == want {
+                    return Some(done == "1")
+                }
+            }
+        }
+    }
+    None
+end todo_spa.app.find_done
+
+// ログイン: 成功すると、サーバの Set-Cookie の session を以後の要求が運ぶ (ブラウザは自動で付ける)。
+fn todo_spa.app.login() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    todo_spa.app.send("POST", "/login", todo_spa.app.ACCOUNT, todo_spa.app.TAG_LOGIN)
+end todo_spa.app.login
+
+fn todo_spa.app.on_event(tag: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may pub
+    let id = tag / 4u32
+    let kind = tag % 4u32
+    if kind == 0u32 {
+        todo_spa.app.add_item()
+    } else if kind == 1u32 {
+        todo_spa.app.toggle_item(id)
+    } else {
+        todo_spa.app.delete_item(id)
+    }
+end todo_spa.app.on_event
+
+fn todo_spa.app.on_fetch(tag: u32, status: i32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may pub
+    let ok = status >= 200i32 && status < 300i32
+    if tag == todo_spa.app.TAG_REG {
+        todo_spa.app.login()?
+    } else if tag == todo_spa.app.TAG_LOGIN {
+        if ok {
+            todo_spa.app.refresh()?
+        } else {
+            todo_spa.app.status_code("ログインできない", status)?
+        }
+    } else if status == 401i32 {
+        todo_spa.app.status("ログインが切れた。ログインし直す")
+        todo_spa.app.login()?
+    } else if tag == todo_spa.app.TAG_LIST {
+        if ok {
+            todo_spa.app.on_list_body()?
+        } else {
+            todo_spa.app.status_code("一覧を取得できない", status)?
+            todo_spa.app.show_cache()?
+        }
+    } else if ok {
+        todo_spa.app.refresh()?
+    } else {
+        todo_spa.app.status_code("操作に失敗", status)?
+    }
+    Ok(())
+end todo_spa.app.on_fetch
+
+// 一覧の取得が成功したとき: 本体を読んで localStorage に写し、表示する。
+fn todo_spa.app.on_list_body() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    let mut buf = [0u8; 16384]
+    let n = dom.fetch_body(&mut buf)
+    if n < 0i32 || n > 16384i32 {
+        todo_spa.app.status("一覧が大きすぎる (16 KiB まで)")
+        return Ok(())
+    }
+    let text = todo_spa.app.text_of(&buf, n)?
+    let lines = model.from_server(text.as_str())?
+    todo_spa.app.write_cache(lines.as_str())?
+    todo_spa.app.show_cache()?
+    todo_spa.app.status("同期しました")
+    Ok(())
+end todo_spa.app.on_list_body
+
+// `storage_get` の結果を文字列にする。無い・大きすぎるときは空。
+fn todo_spa.app.read_storage(key: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may
+    let mut buf = [0u8; 16384]
+    let n = dom.storage_get(key, &mut buf)
+    todo_spa.app.text_of(&buf, n)
+end todo_spa.app.read_storage
+
+fn todo_spa.app.refresh() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    todo_spa.app.send("GET", "/todos", "", todo_spa.app.TAG_LIST)
+end todo_spa.app.refresh
+
+fn todo_spa.app.render(lines: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    let list = dom.by_id("todo-list")
+    dom.clear(list)
+    for line in lines.split("\n") {
+        match model.split_line(line) {
+            None => {
+                core.mem.drop(line)
+            }
+            Some((id, done, raw)) => {
+                todo_spa.app.render_item(list, id, done == "1", raw)?
+            }
+        }
+    }
+    Ok(())
+end todo_spa.app.render
+
+// 一覧の 1 件を、ul の子 li として作る。id が数でなければ飛ばす。
+fn todo_spa.app.render_item(list: u32, id_text: &str, done: bool, raw: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    match u32.parse(id_text) {
+        Err(e) => {
+            core.mem.drop(e)
+            Ok(())
+        }
+        Ok(id) => {
+            let title = model.unescape(raw)?
+            let mut label = alloc.string.String.new(std.alloc.SYSTEM)
+            if done {
+                label.push_str("✓ ")?
+            }
+            label.push_str(title.as_str())?
+            let li = dom.create("li")
+            let span = dom.create("span")
+            dom.set_text(span, label.as_str())
+            dom.append(li, span)
+            let toggle = dom.create("button")
+            let mut toggle_text = "完了"
+            if done {
+                toggle_text = "未完了に戻す"
+            }
+            dom.set_text(toggle, toggle_text)
+            dom.listen(toggle, "click", id * 4u32 + 1u32)
+            dom.append(li, toggle)
+            let del = dom.create("button")
+            dom.set_text(del, "削除")
+            dom.listen(del, "click", id * 4u32 + 2u32)
+            dom.append(li, del)
+            dom.append(list, li)
+            Ok(())
+        }
+    }
+end todo_spa.app.render_item
+
+// サーバへ送る。`path` は `/todos` か `/todos/<id>`。完了は ksn_fetch_done で知らされる。
+// 接頭辞は localStorage の API_KEY (空なら同じ場所から)。
+fn todo_spa.app.send(method: &str, path: &str, body: &str, tag: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    let base = todo_spa.app.read_storage(todo_spa.app.API_KEY)?
+    let mut url = alloc.string.String.new(std.alloc.SYSTEM)
+    url.push_str(base.as_str())?
+    url.push_str(path)?
+    dom.fetch(method, url.as_str(), body, tag)
+    Ok(())
+end todo_spa.app.send
+
+// localStorage の一覧を表示する。
+fn todo_spa.app.show_cache() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    let cache = todo_spa.app.read_storage(todo_spa.app.ITEMS_KEY)?
+    todo_spa.app.render(cache.as_str())
+end todo_spa.app.show_cache
+
+fn todo_spa.app.start() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may pub
+    todo_spa.app.build_ui()
+    todo_spa.app.show_cache()?
+    todo_spa.app.send("POST", "/register", todo_spa.app.ACCOUNT, todo_spa.app.TAG_REG)?
+    Ok(())
+end todo_spa.app.start
+
+fn todo_spa.app.status(message: &str) -> () uses [] panics never
+    dom.set_text(dom.by_id("todo-status"), message)
+end todo_spa.app.status
+
+fn todo_spa.app.status_code(message: &str, code: i32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    text.push_str(message)?
+    text.push_str(" (")?
+    text.push_i64(i64.from_i32(code))?
+    text.push_str(")")?
+    todo_spa.app.status(text.as_str())
+    Ok(())
+end todo_spa.app.status_code
+
+// バッファの先頭 `n` バイトを UTF-8 の文字列にする (負・範囲外・不正なら空)。
+fn todo_spa.app.text_of(buf: &[u8], n: i32) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may
+    match usize.try_from_i32(n) {
+        Err(e) => {
+            core.mem.drop(e)
+            Ok(alloc.string.String.new(std.alloc.SYSTEM))
+        }
+        Ok(len) => match buf.sub(0usize, len) {
+            None => Ok(alloc.string.String.new(std.alloc.SYSTEM))
+            Some(bytes) => match core.str.from_utf8(bytes) {
+                Err(e) => {
+                    core.mem.drop(e)
+                    Ok(alloc.string.String.new(std.alloc.SYSTEM))
+                }
+                Ok(text) => alloc.string.String.from_str(std.alloc.SYSTEM, text)
+            }
+        }
+    }
+end todo_spa.app.text_of
+
+fn todo_spa.app.toggle_item(id: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    let cache = todo_spa.app.read_storage(todo_spa.app.ITEMS_KEY)?
+    let want = todo_spa.app.decimal(id)?
+    match todo_spa.app.find_done(cache.as_str(), want.as_str()) {
+        None => {
+            todo_spa.app.status("項目が見つからない")
+            Ok(())
+        }
+        Some(done) => {
+            let mut body = "{\"done\":true}"
+            if done {
+                body = "{\"done\":false}"
+            }
+            let mut path = alloc.string.String.new(std.alloc.SYSTEM)
+            path.push_str("/todos/")?
+            path.push_str(want.as_str())?
+            todo_spa.app.send("PATCH", path.as_str(), body, todo_spa.app.TAG_MUT)
+        }
+    }
+end todo_spa.app.toggle_item
+
+fn todo_spa.app.write_cache(lines: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    if lines.len() > 16384usize {
+        todo_spa.app.status("一覧が大きすぎる (16 KiB まで)")
+    } else {
+        dom.storage_set(todo_spa.app.ITEMS_KEY, lines)
+    }
+    Ok(())
+end todo_spa.app.write_cache

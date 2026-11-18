@@ -1,0 +1,3 @@
+note: KIR falsely rejects a wrapper function returning Result<(&str, &str), E> from
+note: String.as_str().split_once() followed by `?`. AST accepts; KIR says the
+note: borrowed value does not live long enough. The code is sound.

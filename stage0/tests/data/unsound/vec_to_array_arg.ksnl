@@ -1,4 +1,3 @@
-// expect: E2023
 fn t.bad(v: &alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics may
     t.first(v)
 end t.bad

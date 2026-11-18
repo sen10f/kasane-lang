@@ -1,0 +1,215 @@
+// E4013 (5.3): 再帰を含む型 (自己参照・相互再帰) には `core.ops.Drop` の明示実装か
+// `derive [Drop]` が要る。
+// Rust 版 (stage0/src/check.rs の recursive_types と check_declarations) の写し。
+// 型の欄 (type の欄の型、enum の各 variant の型) に書かれた型名の有向グラフで、閉路に乗る型を再帰とみなす。
+// 比べるのは書かれたままの名前 (Rust 版と同じ)。対象はユーザーの単位 (own かつ sig でない) だけ。
+// Drop の実装は、ユーザーの `impl core.ops.Drop for 型` の対象型の中に型名が出るものを数える
+// (ty_mentions と同じ)。
+type effects.drop.Acc pub
+    nm: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    un: alloc.vec.Vec<usize, std.alloc.System> pub
+    nd: alloc.vec.Vec<usize, std.alloc.System> pub
+    dv: alloc.vec.Vec<bool, std.alloc.System> pub
+    ofr: alloc.vec.Vec<usize, std.alloc.System> pub
+    onm: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    dfor: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+end effects.drop.Acc
+
+fn effects.drop.acc_new() -> Result<effects.drop.Acc, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let nm = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let un = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let nd = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let dv = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let ofr = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let onm = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let dfor = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let acc = effects.drop.Acc { nm: nm, un: un, nd: nd, dv: dv, ofr: ofr, onm: onm, dfor: dfor }
+    Ok(acc)
+end effects.drop.acc_new
+
+// 再帰する型 (閉路に乗る型) で Drop がないものに E4013 を出す。診断は定義の行で、パスは定義のあるファイル。
+fn effects.drop.check(acc: &mut effects.walk.Acc, tout: &types.export.Out) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    let mut d = effects.drop.acc_new()?
+    let mut i = 0usize
+    for s in tout.env.srcs.as_slice().iter() {
+        if s.own && !s.sig {
+            match types.env.unit(&tout.env, i) {
+                Some(p) => effects.drop.collect(&mut d, p, s.text.as_slice(), i)?
+                None => core.mem.drop(0u8)
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    // 辺: 型 f の欄に名前 j が出る (書かれた名前が一致する) ならば f → j。
+    let mut edges = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for o in core.iter.range(0usize, d.onm.len()) {
+        let f = match d.ofr.as_slice().get(o) {
+            Some(v) => *v
+            None => 0usize
+        }
+        for j in core.iter.range(0usize, d.nm.len()) {
+            let same = match d.onm.as_slice().get(o) {
+                Some(x) => match d.nm.as_slice().get(j) {
+                    Some(y) => x.as_str() == y.as_str()
+                    None => false
+                }
+                None => false
+            }
+            if same {
+                edges.push(f)?
+                edges.push(j)?
+            }
+        }
+    }
+    for k in core.iter.range(0usize, d.nm.len()) {
+        if !effects.walk.reaches(&edges, k)? {
+            continue
+        }
+        let derived = match d.dv.as_slice().get(k) {
+            Some(b) => *b
+            None => false
+        }
+        let mut dropped = derived
+        for j in core.iter.range(0usize, d.dfor.len()) {
+            let hit = match d.nm.as_slice().get(k) {
+                Some(x) => match d.dfor.as_slice().get(j) {
+                    Some(y) => x.as_str() == y.as_str()
+                    None => false
+                }
+                None => false
+            }
+            if hit {
+                dropped = true
+            }
+        }
+        if dropped {
+            continue
+        }
+        let u = match d.un.as_slice().get(k) {
+            Some(v) => *v
+            None => 0usize
+        }
+        let nd = match d.nd.as_slice().get(k) {
+            Some(v) => *v
+            None => 0usize
+        }
+        match tout.env.srcs.as_slice().get(u) {
+            Some(s) => {
+                acc.rep.path.clear()
+                acc.rep.path.push_str(s.path.as_str())?
+            }
+            None => core.mem.drop(0u8)
+        }
+        let line = match types.env.unit(&tout.env, u) {
+            Some(p) => resolve.ast.line_of(p, parse.ast.get(&p.ast, nd).tok)
+            None => 0usize
+        }
+        let mut msg = alloc.string.String.new(std.alloc.SYSTEM)
+        msg.push_str("recursive type ")?
+        match d.nm.as_slice().get(k) {
+            Some(x) => msg.push_str(x.as_str())?
+            None => core.mem.drop(0u8)
+        }
+        msg.push_str(" requires an explicit core.ops.Drop impl")?
+        effects.walk.diag(acc, "E4013", line, msg.as_str(), "")?
+    }
+    Ok(())
+end effects.drop.check
+
+// 単位 unit の型の定義と Drop の実装を集める。
+fn effects.drop.collect(d: &mut effects.drop.Acc, p: &parse.cur.P, src: &[u8], unit: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    for dn in p.ast.defs.as_slice().iter() {
+        let n = parse.ast.get(&p.ast, *dn)
+        let is_impl = n.kind == parse.ast.Kind.ImplLine
+        if n.kind == parse.ast.Kind.TypeDef || n.kind == parse.ast.Kind.EnumDef {
+            let k = d.nm.len()
+            d.nm.push(effects.drop.own_text(resolve.ast.text(src, n.a, n.b))?)?
+            d.un.push(unit)?
+            d.nd.push(*dn)?
+            d.dv.push(effects.drop.has_derive(p, src, n.e))?
+            let mut tys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            for m in core.iter.range(0usize, resolve.ast.count(p, n.d)) {
+                effects.drop.item_names(p, resolve.ast.item(p, n.d, m), &mut tys)?
+            }
+            for nd in tys.as_slice().iter() {
+                let t = parse.ast.get(&p.ast, *nd)
+                d.ofr.push(k)?
+                d.onm.push(effects.drop.own_text(resolve.ast.text(src, t.a, t.b))?)?
+            }
+        } else if is_impl {
+            let tr = parse.ast.get(&p.ast, n.d)
+            let trn = resolve.ast.text(src, tr.a, tr.b)
+            let is_drop = trn == "core.ops.Drop"
+            if is_drop {
+                let mut tys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                effects.drop.names(p, n.e, &mut tys)?
+                for nd in tys.as_slice().iter() {
+                    let t = parse.ast.get(&p.ast, *nd)
+                    d.dfor.push(effects.drop.own_text(resolve.ast.text(src, t.a, t.b))?)?
+                }
+            }
+        }
+    }
+    Ok(())
+end effects.drop.collect
+
+// derive の並び (List の Effect、a は名前の字句位置) に Drop があるか。
+fn effects.drop.has_derive(p: &parse.cur.P, src: &[u8], l: usize) -> bool uses [] panics never pub
+    for k in core.iter.range(0usize, resolve.ast.count(p, l)) {
+        let e = parse.ast.get(&p.ast, resolve.ast.item(p, l, k))
+        if resolve.ast.tok_text(p, src, e.a) == "Drop" {
+            return true
+        }
+    }
+    false
+end effects.drop.has_derive
+
+// 型の定義の 1 項目 (FieldDecl の型、Variant の各型) の中の型名。
+fn effects.drop.item_names(p: &parse.cur.P, it: usize, out: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let n = parse.ast.get(&p.ast, it)
+    if n.kind == parse.ast.Kind.FieldDecl {
+        return effects.drop.names(p, n.b, out)
+    }
+    if n.kind == parse.ast.Kind.Variant {
+        for k in core.iter.range(0usize, resolve.ast.count(p, n.b)) {
+            effects.drop.names(p, resolve.ast.item(p, n.b, k), out)?
+        }
+    }
+    Ok(())
+end effects.drop.item_names
+
+// 型の木の中の型名 (TNamed の節) を out に集める。Rust の collect_ty_names と同じ節 (引数・参照・ポインタ・添字・組) をたどる。
+fn effects.drop.names(p: &parse.cur.P, ty: usize, out: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
+    if ty == 0usize {
+        return Ok(())
+    }
+    let n = parse.ast.get(&p.ast, ty)
+    if n.kind == parse.ast.Kind.TNamed {
+        out.push(ty)?
+        if n.c != 0usize {
+            for k in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
+                effects.drop.names(p, resolve.ast.item(p, n.c, k), out)?
+            }
+        }
+        return Ok(())
+    }
+    if n.kind == parse.ast.Kind.TRef || n.kind == parse.ast.Kind.TPtr {
+        return effects.drop.names(p, n.a, out)
+    }
+    if n.kind == parse.ast.Kind.TSlice || n.kind == parse.ast.Kind.TArray {
+        return effects.drop.names(p, n.a, out)
+    }
+    if n.kind == parse.ast.Kind.TTuple {
+        for k in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
+            effects.drop.names(p, resolve.ast.item(p, n.a, k), out)?
+        }
+    }
+    Ok(())
+end effects.drop.names
+
+// 型の表の名前 (String) を作る。
+fn effects.drop.own_text(s: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    o.push_str(s)?
+    Ok(o)
+end effects.drop.own_text

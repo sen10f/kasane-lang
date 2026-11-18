@@ -1,0 +1,2 @@
+expect: E2023
+note: mut3060_litfield_uaf と同じ消費だが、t.S のリテラルを t.Out の欄に直接埋める。

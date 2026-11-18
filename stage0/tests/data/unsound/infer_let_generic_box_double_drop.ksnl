@@ -1,4 +1,3 @@
-// expect: E3002
 fn t.main() -> () uses [alloc] panics never
     t.reg(1u32)
 end t.main

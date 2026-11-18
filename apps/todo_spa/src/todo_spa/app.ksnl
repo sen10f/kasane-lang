@@ -1,10 +1,6 @@
 import todo_spa.dom
 import todo_spa.model
 
-// 状態は持たない。正は apps/todo のサーバで、localStorage (ITEMS_KEY) は最後に受け取った一覧の写し。
-// 操作のたびにサーバへ送り、完了の通知 (ksn_fetch_done) を受けてから一覧を取り直す。
-// イベントの tag は `id * 4 + 種類` (種類 0 = 追加、1 = 完了の切り替え、2 = 削除)。
-// 試験用の固定の利用者 (ログインの画面はない)。起動のたびに登録し (既にあれば 400 で無視)、ログインして cookie を受ける。
 const todo_spa.app.ACCOUNT: &str = "{\"username\":\"demo\",\"password\":\"demo-pass\"}"
 
 const todo_spa.app.API_KEY: &str = "todo_spa.api"
@@ -37,7 +33,6 @@ fn todo_spa.app.add_item() -> Result<(), alloc.alloc.AllocError> uses [alloc] pa
     todo_spa.app.send("POST", "/todos", body.as_str(), todo_spa.app.TAG_MUT)
 end todo_spa.app.add_item
 
-// 画面の骨組み。部品は id で引く (`by_id`)。
 fn todo_spa.app.build_ui() -> () uses [] panics never
     let body = dom.body()
     let title = dom.create("h1")
@@ -74,7 +69,6 @@ fn todo_spa.app.delete_item(id: u32) -> Result<(), alloc.alloc.AllocError> uses 
     todo_spa.app.send("DELETE", path.as_str(), "", todo_spa.app.TAG_MUT)
 end todo_spa.app.delete_item
 
-// 一覧 (cache) の中で id が `want` の行の完了の状態。
 fn todo_spa.app.find_done(cache: &str, want: &str) -> Option<bool> uses [] panics never
     for line in cache.split("\n") {
         match model.split_line(line) {
@@ -92,7 +86,6 @@ fn todo_spa.app.find_done(cache: &str, want: &str) -> Option<bool> uses [] panic
     None
 end todo_spa.app.find_done
 
-// ログイン: 成功すると、サーバの Set-Cookie の session を以後の要求が運ぶ (ブラウザは自動で付ける)。
 fn todo_spa.app.login() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
     todo_spa.app.send("POST", "/login", todo_spa.app.ACCOUNT, todo_spa.app.TAG_LOGIN)
 end todo_spa.app.login
@@ -137,7 +130,6 @@ fn todo_spa.app.on_fetch(tag: u32, status: i32) -> Result<(), alloc.alloc.AllocE
     Ok(())
 end todo_spa.app.on_fetch
 
-// 一覧の取得が成功したとき: 本体を読んで localStorage に写し、表示する。
 fn todo_spa.app.on_list_body() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
     let mut buf = [0u8; 16384]
     let n = dom.fetch_body(&mut buf)
@@ -153,7 +145,6 @@ fn todo_spa.app.on_list_body() -> Result<(), alloc.alloc.AllocError> uses [alloc
     Ok(())
 end todo_spa.app.on_list_body
 
-// `storage_get` の結果を文字列にする。無い・大きすぎるときは空。
 fn todo_spa.app.read_storage(key: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may
     let mut buf = [0u8; 16384]
     let n = dom.storage_get(key, &mut buf)
@@ -180,7 +171,6 @@ fn todo_spa.app.render(lines: &str) -> Result<(), alloc.alloc.AllocError> uses [
     Ok(())
 end todo_spa.app.render
 
-// 一覧の 1 件を、ul の子 li として作る。id が数でなければ飛ばす。
 fn todo_spa.app.render_item(list: u32, id_text: &str, done: bool, raw: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
     match u32.parse(id_text) {
         Err(e) => {
@@ -216,8 +206,6 @@ fn todo_spa.app.render_item(list: u32, id_text: &str, done: bool, raw: &str) -> 
     }
 end todo_spa.app.render_item
 
-// サーバへ送る。`path` は `/todos` か `/todos/<id>`。完了は ksn_fetch_done で知らされる。
-// 接頭辞は localStorage の API_KEY (空なら同じ場所から)。
 fn todo_spa.app.send(method: &str, path: &str, body: &str, tag: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
     let base = todo_spa.app.read_storage(todo_spa.app.API_KEY)?
     let mut url = alloc.string.String.new(std.alloc.SYSTEM)
@@ -227,7 +215,6 @@ fn todo_spa.app.send(method: &str, path: &str, body: &str, tag: u32) -> Result<(
     Ok(())
 end todo_spa.app.send
 
-// localStorage の一覧を表示する。
 fn todo_spa.app.show_cache() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
     let cache = todo_spa.app.read_storage(todo_spa.app.ITEMS_KEY)?
     todo_spa.app.render(cache.as_str())
@@ -254,7 +241,6 @@ fn todo_spa.app.status_code(message: &str, code: i32) -> Result<(), alloc.alloc.
     Ok(())
 end todo_spa.app.status_code
 
-// バッファの先頭 `n` バイトを UTF-8 の文字列にする (負・範囲外・不正なら空)。
 fn todo_spa.app.text_of(buf: &[u8], n: i32) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may
     match usize.try_from_i32(n) {
         Err(e) => {

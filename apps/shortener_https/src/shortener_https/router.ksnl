@@ -2,7 +2,6 @@ import shortener_https.error
 import shortener_https.json
 import shortener_https.store
 
-// 応答の中身。`location` が空でなければ `Location` ヘッダになる。
 type shortener_https.router.Reply pub
     body: alloc.string.String<std.alloc.System> pub
     location: alloc.string.String<std.alloc.System> pub
@@ -34,12 +33,10 @@ fn shortener_https.router.lookup(db: &shortener_https.store.Store, path: &str) -
     }
 end shortener_https.router.lookup
 
-// 応答を組み立てる (`location` は空でなければ `Location`)。
 fn shortener_https.router.reply(status: u16, body: alloc.string.String<std.alloc.System>, location: alloc.string.String<std.alloc.System>) -> shortener_https.router.Reply uses [] panics never pub
     shortener_https.router.Reply { body: body, location: location, status: status }
 end shortener_https.router.reply
 
-// 要求 1 件の経路。`method` と `path` は要求行のまま、`body` は本体の文字列 (UTF-8 として読めたもの)。
 fn shortener_https.router.route(db: &mut shortener_https.store.Store, method: &str, path: &str, body: &str) -> Result<shortener_https.router.Reply, shortener_https.error.Error> uses [alloc, io.fs] panics never pub
     if method == "GET" {
         if path == "/stats" {

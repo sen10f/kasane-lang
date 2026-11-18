@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.f(out: &mut alloc.string.String<std.alloc.System>) -> Option<()> uses [] panics never
     Some(out)
 end t.f

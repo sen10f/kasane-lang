@@ -6,7 +6,6 @@ fn t.f(x: &u32) -> &u32 uses [] panics never
     }
 end t.f
 
-// expect: E3030
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

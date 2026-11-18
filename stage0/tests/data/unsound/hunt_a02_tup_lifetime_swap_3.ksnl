@@ -2,7 +2,6 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-// expect: E3010
 fn t.tup_swap['a, 'b](x: &'a u32, y: &'b u32) -> (&'a u32, &'b u32) uses [] panics never
     (y, x)
 end t.tup_swap

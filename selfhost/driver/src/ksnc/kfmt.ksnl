@@ -1,4 +1,3 @@
-// 「接頭辞 + パス」の 1 行。
 fn ksnc.kfmt.line(pre: &str, path: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     match s.push_str(pre) {
@@ -12,10 +11,6 @@ fn ksnc.kfmt.line(pre: &str, path: &str) -> alloc.string.String<std.alloc.System
     s
 end ksnc.kfmt.line
 
-// 整形 (Kasane 版、--stages=kasane): 自パッケージの src の .ksnl (.sig を除く) を
-// selfhost/fmt の format_source で整形する。出力は Rust 版の ksn fmt に近い形。
-// would reformat PATH (--check のとき) か reformatted PATH。--check では書き換えない。
-// 変わったファイルの数を返す。
 fn ksnc.kfmt.run(dir: &str, check: bool) -> Result<usize, ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
     let own_src = resolve.manifest.join(dir, "src")?
     let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -27,7 +22,6 @@ fn ksnc.kfmt.run(dir: &str, check: bool) -> Result<usize, ksnc.Failure> uses [al
                 Ok(t) => t
                 Err(_e) => return Err(ksnc.Failure.Tool)
             }
-            // selfhost/fmt の fmt.process と同じく、整形の結果に最終の改行を付けて出す (format_source は付けない)。
             let body = fmt.format_source(text)?
             let mut nt = alloc.string.String.new(std.alloc.SYSTEM)
             nt.push_str(body.as_str())?

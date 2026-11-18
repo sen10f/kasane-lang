@@ -8,8 +8,6 @@ fn t.main() -> () uses [] panics never
     core.mem.drop(n)
 end t.main
 
-// expect: E2037
-// 一つの腕が局所の借用を返す `match` の値は `'static` ではない。
 fn t.take(s: &'static u8) -> u8 uses [] panics never
     *s
 end t.take

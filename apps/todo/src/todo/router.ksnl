@@ -9,7 +9,6 @@ const todo.router.SESSION_COOKIE_MAX_AGE: u64 = 3600u64 pub
 
 const todo.router.SESSION_COOKIE_NAME: &str = "session" pub
 
-// セッショントークンからユーザー ID を解決する。期限切れセッションは削除する。
 fn todo.router.authenticate_user(db: &mut todo.store.Store, token: &str, now: i64) -> Result<i64, todo.error.Error> uses [alloc, io.fs] panics never pub
     match db.find_session(token) {
         Some(s) => {

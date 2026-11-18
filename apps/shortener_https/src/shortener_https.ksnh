@@ -1,0 +1,71 @@
+import shortener_https.error
+import shortener_https.serve
+import shortener_https.store
+
+// 使い方: `shortener_https <address> <connections> <db> <cert.pem> <key.pem>`。
+// `connections` が 0 なら止めずに待つ。接続 1 本ごとに TLS の握手をし、その上で keep-alive の
+// 要求を順に処理する。ログは標準エラーに 1 行 1 件の JSON。証明書とキーは PEM。
+// アドレスのポートが 0 なら、実際に使ったポートを `listening` のログに書く。
+fn shortener_https.main() -> Result<(), shortener_https.error.Error> uses [alloc, env, io.console, io.fs, io.net, time] panics may
+    if std.env.arg_count() < 5usize {
+        core.mem.drop(std.log.error("usage", &[("args", "address connections db cert key")]))
+        return Err(error.Error.BadRequest)
+    }
+    let address = match std.env.arg(0usize) {
+        Some(a) => a
+        None => return Err(error.Error.BadRequest)
+    }
+    let connections = match std.env.arg(1usize) {
+        Some(c) => usize.parse(c).map_err(error.bad_number)?
+        None => return Err(error.Error.BadRequest)
+    }
+    let db_path = match std.env.arg(2usize) {
+        Some(p) => p
+        None => return Err(error.Error.BadRequest)
+    }
+    let cert = match std.env.arg(3usize) {
+        Some(p) => p
+        None => return Err(error.Error.BadRequest)
+    }
+    let key = match std.env.arg(4usize) {
+        Some(p) => p
+        None => return Err(error.Error.BadRequest)
+    }
+    let served = shortener_https.run(address, connections, db_path, cert, key)?
+    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    text.push_u64(u64.from_usize(served))?
+    core.mem.drop(std.log.info("stopped", &[("requests", text.as_str())]))
+    Ok(())
+end shortener_https.main
+
+// 証明書と鍵を読み、待ち受けを開き、接続を受けて処理する。返すのは処理した要求の数。
+fn shortener_https.run(address: &str, connections: usize, db_path: &str, cert: &str, key: &str) -> Result<usize, shortener_https.error.Error> uses [alloc, io.console, io.fs, io.net, time] panics never
+    with acceptor = std.tls.TlsAcceptor.load(cert, key)? close core.mem.drop(acceptor.close()) {
+        with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
+            shortener_https.serve_listener(&listener, &acceptor, connections, db_path)
+        }
+    }
+end shortener_https.run
+
+fn shortener_https.serve_listener(listener: &std.net.TcpListener, acceptor: &std.tls.TlsAcceptor, connections: usize, db_path: &str) -> Result<usize, shortener_https.error.Error> uses [alloc, io.console, io.fs, io.net, time] panics never
+    let mut db = store.Store.load(db_path)?
+    let port = listener.local_port()?
+    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    text.push_u64(u64.from_u16(port))?
+    core.mem.drop(std.log.info("listening", &[("port", text.as_str())]))
+    let mut accepted = 0usize
+    let mut served = 0usize
+    while connections == 0usize || accepted < connections {
+        let tcp = listener.accept()?
+        accepted = accepted.saturating_add(1usize)
+        match acceptor.accept(tcp) {
+            Ok(tls) => {
+                served = served.saturating_add(serve.connection(tls, &mut db)?)
+            }
+            Err(_e) => {
+                core.mem.drop(std.log.warn("handshake failed", &[("peer", "client")]))
+            }
+        }
+    }
+    Ok(served)
+end shortener_https.serve_listener

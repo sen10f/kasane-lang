@@ -1,10 +1,3 @@
-// ksnc: Kasane のビルドのドライバ (修正プラン 5-5)。
-// 段の並びと担当は `ksnc --stages` と selfhost/README.md の「ドライバの段」「統合の段」を見る。
-// 既定 (`--stages=rust`) は、読み込みと名前解決を selfhost/resolve (Kasane 製) に、
-// 検査と KIR → LLVM IR を Rust 版 ksn に任せ、実行ファイルを作る clang の段だけを ksnc 自身が担う
-// (ksn の KSN_CLANG 経由で、この実行ファイルを clang の代わりに呼ばせる。clang.ksnl)。
-// `--stages=kasane` は検査・整形・下ろし・LLVM 出力を Kasane 製の部品で行う。
-// `--stages=both` は Rust 版と Kasane 版を両方走らせ、並べて出す。
 enum ksnc.Failure derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
     Io(std.io.Error)
@@ -16,7 +9,6 @@ enum ksnc.Failure derive [Debug, Clone, Copy, PartialEq, From] pub
 end ksnc.Failure
 
 fn ksnc.main() -> Result<(), ksnc.Failure> uses [alloc, env, io.console, io.fs, process] panics may
-    // ksn が KSN_CLANG として呼んだときは clang の段になる (KSNC_SHIM は ksnc が ksn を起動するときだけ付ける)。
     match std.env.var("KSNC_SHIM") {
         Some(_s) => return ksnc.clang.shim()
         None => core.mem.drop(0u8)

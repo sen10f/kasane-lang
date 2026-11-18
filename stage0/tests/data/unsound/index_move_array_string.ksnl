@@ -1,4 +1,3 @@
-// expect: E3002
 fn t.main() -> () uses [alloc] panics may
     let a = [alloc.string.String.new(std.alloc.SYSTEM), alloc.string.String.new(std.alloc.SYSTEM)]
     let x = a[0usize]

@@ -1,5 +1,3 @@
-// expect: E3002
-// Copy の欄を束縛しても消費 (2 回閉じる)
 type t.Res linear
     id: u32
 end t.Res

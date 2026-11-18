@@ -1,8 +1,5 @@
 import alloc.string
 
-// アプリ全体で共通のエラー型。
-// `derive [From]` は `enum` だけに使える (E2050)。`From` バリアントは元のエラー型を
-// 唯一のペイロードに持つ 1 つだけに限られる (E2049)。
 enum todo.error.Error derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
     AuthFailed

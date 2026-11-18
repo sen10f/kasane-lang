@@ -1,6 +1,3 @@
-// expect: E2026
-// target: wasm32-wasi
-// wasm32-wasi では usize は 32 ビット。static の初期化式が範囲外なら E2026
 static t.N: usize = 4294967296
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

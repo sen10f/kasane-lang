@@ -1,21 +1,15 @@
-// 段 4 (Kasane 版): KIR への下ろし。selfhost/lower の lower.main と同じ手順
-// (入口の FQN から呼ばれた関数を順に下ろし、集成体の行・関数を名前の順に並べる) を、
-// 表示せず KIR のテキストにして返す。下ろせなかった関数は本文を出さず、理由を bad に集める。
 type ksnc.kir.Kir pub
     text: alloc.string.String<std.alloc.System> pub
     bad: alloc.string.String<std.alloc.System> pub
     nbad: usize pub
 end ksnc.kir.Kir
 
-// 入口 `entry` (FQN) から届く関数を下ろす。パッケージの読み込みは selfhost/types の env (resolve と同じ読み込み)。
 fn ksnc.kir.lower(dir: &str, std_dir: &str, entry: &str) -> Result<ksnc.kir.Kir, ksnc.Failure> uses [alloc, io.fs] panics may pub
-    // lower.main と同じ手順: 型検査の出力 (env・arena・検査文脈) から下ろしの文脈を作る。
     let tout = types.export.run(dir, std_dir)?
     let env = tout.env
     let mut c = lower.cx.new(tout.ar, tout.cx)?
     let none = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.enqueue(&mut c, entry, types.env.get_def(&env.tab, entry), none, 0usize)?
-    // 呼ばれた関数を順に下ろす (下ろす途中で呼び出し先が増える)。
     let mut i = 0usize
     while i < c.g.nms.len() {
         let key = lower.cx.name_of(&c, i)?
@@ -38,7 +32,6 @@ fn ksnc.kir.lower(dir: &str, std_dir: &str, entry: &str) -> Result<ksnc.kir.Kir,
     if c.g.aggs.len() > 0usize {
         out.push('\n')?
     }
-    // 関数は名前の順 (選択で並べる)。
     let mut used = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for _k in core.iter.range(0usize, c.g.nms.len()) {
         used.push(false)?
@@ -68,7 +61,6 @@ fn ksnc.kir.lower(dir: &str, std_dir: &str, entry: &str) -> Result<ksnc.kir.Kir,
         if pick == c.g.nms.len() {
             break
         }
-        // 取り出した印を付ける (組み直し)。
         let mut nused = alloc.vec.Vec.new(std.alloc.SYSTEM)
         let mut q = 0usize
         for flag in used.as_slice().iter() {

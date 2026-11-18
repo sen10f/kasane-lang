@@ -1,4 +1,3 @@
-// expect: E4001
 fn t.foo[E: uses](f: fn() -> () uses [E] panics never) -> () uses [] panics never
     let c = fn() -> () capture [&f] {
         f()

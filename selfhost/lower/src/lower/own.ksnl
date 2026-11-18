@@ -1,4 +1,3 @@
-// 腕に入るとき、対象の局所を移す (非 Copy の値を束縛する腕、線形な対象の `_` 以外の腕)。
 fn lower.own.arm_consume(c: &mut lower.cx.Cx, sloc: usize, slin: bool, noncopy: bool, wild: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     if sloc != 0usize && noncopy {
         lower.drop.moved(c, sloc - 1usize)?
@@ -9,7 +8,6 @@ fn lower.own.arm_consume(c: &mut lower.cx.Cx, sloc: usize, slin: bool, noncopy: 
     Ok(())
 end lower.own.arm_consume
 
-// 局所 k (添字) を所有の注釈で追う。束縛の位置に単位の定数を作る。Copy でも線形でもない型だけ。線形なら義務 (`own.owe`) を負う。
 fn lower.own.declare(env: &types.env.Env, c: &mut lower.cx.Cx, k: usize, t: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let linear = lower.own.linear(env, c, t)?
     if lower.own.is_copy(env, c, t) && !linear {
@@ -23,7 +21,6 @@ fn lower.own.declare(env: &types.env.Env, c: &mut lower.cx.Cx, k: usize, t: usiz
     Ok(())
 end lower.own.declare
 
-// 項目の派生 (derive) に want があるか。
 fn lower.own.derives(env: &types.env.Env, item: usize, want: &str) -> bool uses [] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -46,7 +43,6 @@ fn lower.own.derives(env: &types.env.Env, item: usize, want: &str) -> bool uses 
     false
 end lower.own.derives
 
-// 局所 k に注釈があれば `own.KIND %id` を出す (kind: "own.consume " など)。
 fn lower.own.emit(c: &mut lower.cx.Cx, k: usize, kind: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let id = lower.own.id(c, k)
     if id != 0usize {
@@ -55,7 +51,6 @@ fn lower.own.emit(c: &mut lower.cx.Cx, k: usize, kind: &str) -> Result<(), resol
     Ok(())
 end lower.own.emit
 
-// 総称の型 f の型引数を、定義の総称の番号 (0 から) への代入にする (戻すのは `lower.tyk.leave`)。
 fn lower.own.enter_ty(c: &mut lower.cx.Cx, f: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let saved = lower.cx.copy_u(&c.v.subst)?
     let n = types.ty.node(&c.ar, f)
@@ -75,7 +70,6 @@ fn lower.own.id(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
     }
 end lower.own.id
 
-// 型が Copy か (決まらない型・参照・型パラメータは Copy とみなす)。
 fn lower.own.is_copy(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
@@ -104,7 +98,6 @@ fn lower.own.is_copy(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool use
     true
 end lower.own.is_copy
 
-// 型が線形か (組・配列の要素、型引数、宣言の印、欄・変種の型。Sender は除く)。seen は調べ済みの項目。
 fn lower.own.is_linear(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, seen: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<bool, resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
@@ -179,7 +172,6 @@ fn lower.own.is_linear(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, seen:
     Ok(found)
 end lower.own.is_linear
 
-// 項目が線形の宣言か (flags の 2 の位)。
 fn lower.own.item_linear(env: &types.env.Env, item: usize) -> bool uses [] panics may pub
     let file = types.infer.item_file(env, item)
     let p = match types.env.unit(env, file) {
@@ -195,7 +187,6 @@ fn lower.own.linear(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Resul
     lower.own.is_linear(env, c, t, &mut seen)
 end lower.own.linear
 
-// match の対象が単純な名前の局所なら、その局所 (添字 + 1、なければ 0)。
 fn lower.own.scrut_loc(c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], node: usize) -> usize uses [] panics may pub
     let nd = parse.ast.get(&p.ast, node)
     if nd.kind != parse.ast.Kind.Path {
@@ -212,7 +203,6 @@ fn lower.own.scrut_loc(c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], node: usize
     0usize
 end lower.own.scrut_loc
 
-// 局所 k の注釈の識別子 (VId + 1、無ければ 0) を置く。
 fn lower.own.set(c: &mut lower.cx.Cx, k: usize, id: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let mut tail = alloc.vec.Vec.new(std.alloc.SYSTEM)
     while c.v.sl.own.len() > k + 1usize {

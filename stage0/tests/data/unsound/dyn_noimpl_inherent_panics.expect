@@ -1,0 +1,3 @@
+expect: E2046
+note: さらに inherent は panics may で実際に panic するのに、dyn 側の型は panics never。
+note: 効果 (uses) の版 (probe_impl_inherent_dyn_effect) の panics 次元。

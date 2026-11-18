@@ -1,5 +1,3 @@
-// expect: E3002
-// `[e; N]` の値に所有物 (Vec) は使えない
 fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let a = [v; 2]

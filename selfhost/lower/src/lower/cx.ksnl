@@ -1,6 +1,3 @@
-// 下ろしの状態と出力の部品。値 (%N) は関数ごとの番号、ブロック (bN) も関数ごと。
-// 関数の本体は `hdr` (ブロックの頭) と `lines` (命令、所属のブロックは `lblk`) に溜め、最後に並べる。
-// 局所の現在の値は `vals` (types の検査の並び `tc.sc` と同じ添字。値は VId + 1、0 は無し) と `mutf` (可変かどうか)。
 type lower.cx.Cx pub
     ar: types.ty.Arena pub
     tc: types.chk.Ctx pub
@@ -10,7 +7,6 @@ type lower.cx.Cx pub
     s: lower.cx.Sc pub
 end lower.cx.Cx
 
-// 全体で共有する表: 集成体・関数 (名前・本文・成否)。
 type lower.cx.Glob pub
     itm: alloc.vec.Vec<usize, std.alloc.System> pub
     sbs: alloc.vec.Vec<alloc.vec.Vec<usize, std.alloc.System>, std.alloc.System> pub
@@ -22,7 +18,6 @@ type lower.cx.Glob pub
     tps: alloc.vec.Vec<usize, std.alloc.System> pub
 end lower.cx.Glob
 
-// 最も内側のループ: 飛び先と、可変の局所の範囲 (sc の添字の上限)、break の数。
 type lower.cx.Lp pub
     head: usize pub
     exit: usize pub
@@ -31,13 +26,11 @@ type lower.cx.Lp pub
     ks: alloc.vec.Vec<usize, std.alloc.System> pub
 end lower.cx.Lp
 
-// 値の結果: VId と、その型 (types の型 id)。
 type lower.cx.R derive [Clone, Copy] pub
     v: usize pub
     t: usize pub
 end lower.cx.R
 
-// 今の位置と、関数の戻り値・ファイル・未対応の理由。
 type lower.cx.Sc pub
     cur: usize pub
     term: bool pub
@@ -47,7 +40,6 @@ type lower.cx.Sc pub
     peek: bool pub
 end lower.cx.Sc
 
-// 関数ごとの出力: 値の型、ブロックの頭、命令と所属ブロック、局所の値と可変の印。
 type lower.cx.Sl pub
     names: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
     tys: alloc.vec.Vec<usize, std.alloc.System> pub
@@ -69,7 +61,6 @@ type lower.cx.Vs pub
     mutf: alloc.vec.Vec<bool, std.alloc.System> pub
 end lower.cx.Vs
 
-// 並びの値を、局所 ks に順に入れる (合流の後)。
 fn lower.cx.bind_vals(c: &mut lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>, vs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let mut i = 0usize
     for k in ks.as_slice().iter() {
@@ -82,7 +73,6 @@ fn lower.cx.bind_vals(c: &mut lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.S
     Ok(())
 end lower.cx.bind_vals
 
-// 新しいブロック。`ps` は引数 (値の番号。呼び出し側が newval で作ったもの)。頭の行を記録し、番号を返す。
 fn lower.cx.blk(c: &mut lower.cx.Cx, ps: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let b = c.v.hdr.len()
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
@@ -105,7 +95,6 @@ fn lower.cx.blk(c: &mut lower.cx.Cx, ps: &alloc.vec.Vec<usize, std.alloc.System>
     Ok(b)
 end lower.cx.blk
 
-// 2 つの文字列をつなぐ。
 fn lower.cx.cat2(a: &str, b: &str) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_str(a)?
@@ -113,7 +102,6 @@ fn lower.cx.cat2(a: &str, b: &str) -> Result<alloc.string.String<std.alloc.Syste
     Ok(s)
 end lower.cx.cat2
 
-// 添字の並びの複製。
 fn lower.cx.copy_u(xs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for x in xs.as_slice().iter() {
@@ -122,7 +110,6 @@ fn lower.cx.copy_u(xs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.
     Ok(out)
 end lower.cx.copy_u
 
-// 可変の局所の現在の値の並び (mlist の順)。
 fn lower.cx.cur_vals(c: &lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for k in ks.as_slice().iter() {
@@ -131,14 +118,12 @@ fn lower.cx.cur_vals(c: &lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System
     Ok(out)
 end lower.cx.cur_vals
 
-// 10 進の文字列を作る。
 fn lower.cx.dec(v: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_u64(u64.from_usize(v))?
     Ok(s)
 end lower.cx.dec
 
-// 値を 1 つ作る命令 `%v: ty = op` を足し、その値を返す。
 fn lower.cx.def(c: &mut lower.cx.Cx, ty: &str, op: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let v = lower.cx.newval(c, ty)?
     if !c.s.term {
@@ -152,18 +137,15 @@ fn lower.cx.def(c: &mut lower.cx.Cx, ty: &str, op: &str) -> Result<usize, resolv
     Ok(v)
 end lower.cx.def
 
-// `pre %v` という命令を、型 ty で作る (値を 1 つ取る命令の短い形)。
 fn lower.cx.def1(c: &mut lower.cx.Cx, ty: &str, pre: &str, v: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let s = lower.cx.cat2(pre, lower.cx.vs(v)?.as_str())?
     lower.cx.def(c, ty, s.as_str())
 end lower.cx.def1
 
-// 局所の並びの長さ (ブロックの印に使う)。
 fn lower.cx.depth(c: &lower.cx.Cx) -> usize uses [] panics may pub
     c.v.vals.len()
 end lower.cx.depth
 
-// 命令を現在のブロックに足す (終わったブロックには足さない)。
 fn lower.cx.emit(c: &mut lower.cx.Cx, line: alloc.string.String<std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     if !c.s.term {
         c.v.lines.push(line)?
@@ -172,7 +154,6 @@ fn lower.cx.emit(c: &mut lower.cx.Cx, line: alloc.string.String<std.alloc.System
     Ok(())
 end lower.cx.emit
 
-// 未対応の形を 1 つだけ記録する (最初の理由)。下ろしは続けるが、関数は出力しない。
 fn lower.cx.fail(c: &mut lower.cx.Cx, why: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     if c.s.unsup.len() == 0usize {
         c.s.unsup.push_str(why)?
@@ -180,7 +161,6 @@ fn lower.cx.fail(c: &mut lower.cx.Cx, why: &str) -> Result<(), resolve.Failure> 
     Ok(())
 end lower.cx.fail
 
-// 局所の名前を後ろから探す (k + 1、なければ 0)。
 fn lower.cx.find(c: &lower.cx.Cx, name: &str) -> usize uses [] panics may pub
     let mut k = c.v.sl.names.len()
     while k > 0usize {
@@ -196,14 +176,12 @@ fn lower.cx.find(c: &lower.cx.Cx, name: &str) -> usize uses [] panics may pub
     0usize
 end lower.cx.find
 
-// 終わりの命令 (`br` `ret` `unreachable` など) を足し、ブロックを終わりにする。
 fn lower.cx.finish(c: &mut lower.cx.Cx, op: alloc.string.String<std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     lower.cx.emit(c, op)?
     c.s.term = true
     Ok(())
 end lower.cx.finish
 
-// 可変の局所の並びに対応する新しい値 (型は今の値の型) を作る。
 fn lower.cx.fresh_vals(c: &mut lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for k in ks.as_slice().iter() {
@@ -214,7 +192,6 @@ fn lower.cx.fresh_vals(c: &mut lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.
     Ok(out)
 end lower.cx.fresh_vals
 
-// 局所 k の現在の値 (なければ 0)。
 fn lower.cx.get_val(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
     match c.v.vals.as_slice().get(k) {
         Some(v) => *v
@@ -222,13 +199,11 @@ fn lower.cx.get_val(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
     }
 end lower.cx.get_val
 
-// ブロックへ移る (以後の命令はそこへ入る)。
 fn lower.cx.goto(c: &mut lower.cx.Cx, b: usize) -> () uses [] panics may pub
     c.s.cur = b
     c.s.term = false
 end lower.cx.goto
 
-// 名前が関数の中で借用されている (`&x` `&mut x`) か。借用されるものはスロットに置く。
 fn lower.cx.is_bor(c: &lower.cx.Cx, name: &str) -> bool uses [] panics may pub
     let mut i = 0usize
     while i < c.v.sl.bor.len() {
@@ -244,7 +219,6 @@ fn lower.cx.is_bor(c: &lower.cx.Cx, name: &str) -> bool uses [] panics may pub
     false
 end lower.cx.is_bor
 
-// 局所 k はスロットか。
 fn lower.cx.is_slot(c: &lower.cx.Cx, k: usize) -> bool uses [] panics may pub
     match c.v.sl.slotf.as_slice().get(k) {
         Some(x) => *x
@@ -252,12 +226,10 @@ fn lower.cx.is_slot(c: &lower.cx.Cx, k: usize) -> bool uses [] panics may pub
     }
 end lower.cx.is_slot
 
-// 関数の項目 (環境の項目 + 1、0 = 定義がない) の添字 k。
 fn lower.cx.item_at(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
     lower.tyk.at(c.g.itm.as_slice(), k)
 end lower.cx.item_at
 
-// 名前順の比較 (UTF-8 のバイト順)。
 fn lower.cx.lt(a: &str, b: &str) -> bool uses [] panics may pub
     let ab = a.as_bytes()
     let bb = b.as_bytes()
@@ -283,7 +255,6 @@ fn lower.cx.lt(a: &str, b: &str) -> bool uses [] panics may pub
     false
 end lower.cx.lt
 
-// 可変の局所 (sc の添字 < base) の添字の並び。ループと分岐の合流で引き回す。
 fn lower.cx.mlist(c: &lower.cx.Cx, base: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for k in core.iter.range(0usize, base) {
@@ -299,9 +270,7 @@ fn lower.cx.mlist(c: &lower.cx.Cx, base: usize) -> Result<alloc.vec.Vec<usize, s
     Ok(out)
 end lower.cx.mlist
 
-// 可変の局所のうち、名前が names に入るもの (sc の添字 < base、順に)。分岐と合流で引き回すものを絞る。
 fn lower.cx.mlist_in(c: &lower.cx.Cx, base: usize, names: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
-    // Rust 版 `assigned` と同じく、名前が出た順 (宣言の順ではない)。同じ局所は 1 回。
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut wi = 0usize
     while wi < names.len() {
@@ -342,7 +311,6 @@ fn lower.cx.mlist_in(c: &lower.cx.Cx, base: usize, names: &alloc.vec.Vec<alloc.s
     Ok(out)
 end lower.cx.mlist_in
 
-// 関数の名前 (k 番目、なければ空)。
 fn lower.cx.name_of(c: &lower.cx.Cx, k: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     match c.g.nms.as_slice().get(k) {
         Some(s) => lower.cx.own(s.as_str())
@@ -369,22 +337,18 @@ fn lower.cx.new(ar: types.ty.Arena, tc: types.chk.Ctx) -> Result<lower.cx.Cx, re
     Ok(lower.cx.Cx { ar: ar, tc: tc, g: g, v: v, lp: lp, s: s })
 end lower.cx.new
 
-// 値を新しく作る (型の文字列を記録し、番号を返す)。
 fn lower.cx.newval(c: &mut lower.cx.Cx, ty: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let v = c.v.vty.len()
     c.v.vty.push(lower.cx.own(ty)?)?
     Ok(v)
 end lower.cx.newval
 
-// 文字列の複製。
 fn lower.cx.own(s: &str) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
     o.push_str(s)?
     Ok(o)
 end lower.cx.own
 
-// 局所を 1 つ足す (名前・値 (VId + 1)・可変・型・スロットか)。添字を返す。
-// スロットのときは v がスロット (mutref) の値、読むときは load する。
 fn lower.cx.push_local(c: &mut lower.cx.Cx, name: &str, v: usize, m: bool, t: usize, slot: bool) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     c.v.sl.names.push(lower.cx.own(name)?)?
     c.v.sl.tys.push(t)?
@@ -397,7 +361,6 @@ fn lower.cx.push_local(c: &mut lower.cx.Cx, name: &str, v: usize, m: bool, t: us
     Ok(c.v.vals.len() - 1usize)
 end lower.cx.push_local
 
-// 関数の下ろしの前に、関数ごとの状態を空にする (型の並びと arena は残す)。
 fn lower.cx.reset(c: &mut lower.cx.Cx) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     c.v = lower.cx.vs_new()
     c.s.unsup = alloc.string.String.new(std.alloc.SYSTEM)
@@ -407,12 +370,10 @@ fn lower.cx.reset(c: &mut lower.cx.Cx) -> Result<(), resolve.Failure> uses [allo
     Ok(())
 end lower.cx.reset
 
-// 関数の戻り値の型 (総称のインスタンスは呼び出しで決まる。0 = 宣言から)。
 fn lower.cx.ret_at(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
     lower.tyk.at(c.g.rts.as_slice(), k)
 end lower.cx.ret_at
 
-// 局所 k の値を書き換える (k < 長さ)。Vec は添字の代入がないので、末尾を外して組み直す。
 fn lower.cx.set_val(c: &mut lower.cx.Cx, k: usize, v: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let mut tail = alloc.vec.Vec.new(std.alloc.SYSTEM)
     while c.v.vals.len() > k {
@@ -421,7 +382,6 @@ fn lower.cx.set_val(c: &mut lower.cx.Cx, k: usize, v: usize) -> Result<(), resol
             None => core.mem.drop(0u8)
         }
     }
-    // tail は逆順 (最後の要素が先頭にある)。先頭 (= 元の k 番目) を捨てて v を置く。
     let _old = tail.pop()
     c.v.vals.push(v)?
     while tail.len() > 0usize {
@@ -433,7 +393,6 @@ fn lower.cx.set_val(c: &mut lower.cx.Cx, k: usize, v: usize) -> Result<(), resol
     Ok(())
 end lower.cx.set_val
 
-// 局所の並びの空の状態 (名前・型・スロットの印・借用される名前)。
 fn lower.cx.sl_new() -> lower.cx.Sl uses [alloc] panics may pub
     let nm = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let ty = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -445,7 +404,6 @@ fn lower.cx.sl_new() -> lower.cx.Sl uses [alloc] panics may pub
     lower.cx.Sl { names: nm, tys: ty, slotf: sf, bor: br, own: ow, flag: fg, cl: cl }
 end lower.cx.sl_new
 
-// 型引数の組の複製 (k 番目)。
 fn lower.cx.subs_at(c: &lower.cx.Cx, k: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match c.g.sbs.as_slice().get(k) {
@@ -459,7 +417,6 @@ fn lower.cx.subs_at(c: &lower.cx.Cx, k: usize) -> Result<alloc.vec.Vec<usize, st
     Ok(out)
 end lower.cx.subs_at
 
-// 分岐先 `bN(args)`。
 fn lower.cx.target(b: usize, args: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_str("b")?
@@ -470,7 +427,6 @@ fn lower.cx.target(b: usize, args: &alloc.vec.Vec<usize, std.alloc.System>) -> R
     Ok(s)
 end lower.cx.target
 
-// 局所を mark の長さに戻す。
 fn lower.cx.trunc_to(c: &mut lower.cx.Cx, mark: usize) -> () uses [alloc] panics may pub
     while c.v.sl.names.len() > mark {
         let _a = c.v.sl.names.pop()
@@ -498,7 +454,6 @@ fn lower.cx.trunc_to(c: &mut lower.cx.Cx, mark: usize) -> () uses [alloc] panics
     }
 end lower.cx.trunc_to
 
-// 値の型の文字列 (範囲外は unit)。
 fn lower.cx.tyof(c: &lower.cx.Cx, v: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
     match c.v.vty.as_slice().get(v) {
         Some(s) => {
@@ -511,7 +466,6 @@ fn lower.cx.tyof(c: &lower.cx.Cx, v: usize) -> alloc.string.String<std.alloc.Sys
     }
 end lower.cx.tyof
 
-// 局所 k の型 (types の型 id)。
 fn lower.cx.tyof_t(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
     match c.v.sl.tys.as_slice().get(k) {
         Some(t) => *t
@@ -519,7 +473,6 @@ fn lower.cx.tyof_t(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
     }
 end lower.cx.tyof_t
 
-// 値の並び `%a, %b` (空なら空文字列)。
 fn lower.cx.vlist(vs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     let mut first = true
@@ -533,7 +486,6 @@ fn lower.cx.vlist(vs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.s
     Ok(s)
 end lower.cx.vlist
 
-// `%N` の文字列。
 fn lower.cx.vs(v: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push('%')?
@@ -541,7 +493,6 @@ fn lower.cx.vs(v: usize) -> Result<alloc.string.String<std.alloc.System>, resolv
     Ok(s)
 end lower.cx.vs
 
-// 関数ごとの出力の空の状態。
 fn lower.cx.vs_new() -> lower.cx.Vs uses [alloc] panics may pub
     let sl = lower.cx.sl_new()
     let sb = alloc.vec.Vec.new(std.alloc.SYSTEM)

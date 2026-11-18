@@ -13,7 +13,6 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     Ok(())
 end t.main
 
-// expect: E3010
 fn t.pick[A, B](p: ((A, B), u32)) -> A uses [] panics never
     let ((a, b), _n) = p
     core.mem.drop(b)

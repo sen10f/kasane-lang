@@ -1,4 +1,3 @@
-// expect: E4024
 static t.A: u64 = t.B
 
 static t.B: u64 = t.A

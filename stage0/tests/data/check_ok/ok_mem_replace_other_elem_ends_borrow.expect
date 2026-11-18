@@ -1,0 +1,3 @@
+note: expect-accept
+note: core.mem.replace で要素 a[0] の借用 (x) を取り出して捨てた後、x は再び使える。a[1] (z) は残るので、z への再代入は拒む
+note: (ここでは a[0] の差し替えだけを見る)。

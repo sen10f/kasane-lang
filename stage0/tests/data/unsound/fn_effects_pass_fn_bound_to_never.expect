@@ -1,0 +1,3 @@
+expect: E4001
+note: `F: Fn<.., E, P>` の値を `Fn<.., [], never>` を求める場所に渡す:
+note: 効果変数・panic 変数が渡し側にあり、受け側が具体的なので fail-closed。

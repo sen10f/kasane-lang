@@ -1,4 +1,3 @@
-// expect: E2020
 const t.IDX: usize = true
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics may

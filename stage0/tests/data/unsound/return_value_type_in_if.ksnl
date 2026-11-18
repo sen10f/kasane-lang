@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.f(c: bool) -> u8 uses [] panics never
     if c {
         return 1u16

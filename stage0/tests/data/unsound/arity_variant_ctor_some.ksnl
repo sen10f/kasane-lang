@@ -1,5 +1,3 @@
-// expect: E2001
-// 列挙子の構築の引数の数も宣言と合わせる (`Some` は 1 つ)
 fn t.main() -> () uses [] panics never
     let a: Option<u32> = Some(1u32, 2u32)
     core.mem.drop(a)

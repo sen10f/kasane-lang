@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.f(c: bool) -> u32 uses [] panics never
     let x = if c {
         5u32

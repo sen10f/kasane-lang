@@ -1,0 +1,2 @@
+expect: E4001
+note: fold + filter: 述語クロージャが io.console を使うので拒否されるはず

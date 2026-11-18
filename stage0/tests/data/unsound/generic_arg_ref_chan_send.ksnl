@@ -1,4 +1,3 @@
-// expect: E2023
 fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, thread] panics never
     let made = std.sync.channel::<alloc.string.String, std.alloc.System>(std.alloc.SYSTEM, 4usize)
     let (tx, rx) = made?

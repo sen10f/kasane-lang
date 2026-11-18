@@ -1,5 +1,3 @@
-// KIR falsely rejects nested wrappers (wrapper calling wrapper) returning
-// Result<&str, E> from String.as_str() followed by `?`. AST accepts; KIR E3010.
 enum t.Error derive [Debug, Clone, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
 end t.Error

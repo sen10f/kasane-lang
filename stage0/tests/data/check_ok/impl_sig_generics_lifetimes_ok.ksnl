@@ -1,4 +1,3 @@
-// メソッド自身の型パラメータは名前が違ってもよく、impl は宣言より少ない境界でよい。ライフタイムは省略の規則と同じ分け方なら通る。
 trait t.H
     fn f[U: core.ops.Clone](self: &Self, a: &U, b: &u8) -> &u8 uses [] panics never
     fn g(self: &Self, a: &u8) -> &u8 uses [] panics never

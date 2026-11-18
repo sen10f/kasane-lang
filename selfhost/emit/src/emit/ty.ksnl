@@ -23,7 +23,6 @@ type emit.ty.Ty derive [Clone, Copy] pub
     b: usize pub
 end emit.ty.Ty
 
-// 型 `id` の記録。
 fn emit.ty.get(g: &emit.G, id: usize) -> emit.ty.Ty uses [io.console, process] panics may pub
     match g.tab.tys.get(id) {
         Some(t) => *t
@@ -31,7 +30,6 @@ fn emit.ty.get(g: &emit.G, id: usize) -> emit.ty.Ty uses [io.console, process] p
     }
 end emit.ty.get
 
-// 整数の幅 (ビット)。整数以外は 0。
 fn emit.ty.int_bits(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
     let t = emit.ty.get(g, id)
     if t.kind == (emit.ty.K_INT) {
@@ -41,12 +39,10 @@ fn emit.ty.int_bits(g: &emit.G, id: usize) -> usize uses [io.console, process] p
     }
 end emit.ty.int_bits
 
-// 符号付きの整数か。
 fn emit.ty.is_signed(g: &emit.G, id: usize) -> bool uses [io.console, process] panics may pub
     emit.ty.get(g, id).signed
 end emit.ty.is_signed
 
-// 値の LLVM の型を `out` へ書く (`text_of` の本体)。
 fn emit.ty.lty_into(g: &emit.G, id: usize, out: &mut alloc.string.String<std.alloc.System>) -> () uses [alloc, io.console, process] panics may pub
     let t = emit.ty.get(g, id)
     if t.kind == (emit.ty.K_UNIT) {
@@ -64,7 +60,6 @@ fn emit.ty.lty_into(g: &emit.G, id: usize, out: &mut alloc.string.String<std.all
     }
 end emit.ty.lty_into
 
-// メモリ上の型を `out` へ書く (`bool` は `i8`)。
 fn emit.ty.mty_into(g: &emit.G, id: usize, out: &mut alloc.string.String<std.alloc.System>) -> () uses [alloc, io.console, process] panics may pub
     if emit.ty.get(g, id).kind == (emit.ty.K_BOOL) {
         emit.util.push_str(out, "i8")
@@ -73,7 +68,6 @@ fn emit.ty.mty_into(g: &emit.G, id: usize, out: &mut alloc.string.String<std.all
     }
 end emit.ty.mty_into
 
-// 型の文字列を読んで、表に入れた番号を返す。未対応の型 (浮動小数など) は `emit.fail`。
 fn emit.ty.parse(g: &mut emit.G, s: &str) -> usize uses [alloc, io.console, process] panics may pub
     if s == "unit" {
         return emit.ty.push(g, emit.ty.K_UNIT, 0u32, false, false, 0usize, 0usize)
@@ -168,7 +162,6 @@ fn emit.ty.push(g: &mut emit.G, kind: u32, bits: u32, signed: bool, mutbl: bool,
     at
 end emit.ty.push
 
-// `Option` / `Result` の枠 (ペイロードの最大の幅、64 以上)。
 fn emit.ty.slot(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
     let t = emit.ty.get(g, id)
     let mut m = 64usize
@@ -191,7 +184,6 @@ fn emit.ty.slot(g: &emit.G, id: usize) -> usize uses [io.console, process] panic
     m
 end emit.ty.slot
 
-// `a, b` を最上位のカンマで二つに分ける (括弧 `<>` の深さで数える)。
 fn emit.ty.split_top(s: &str) -> (&str, &str) uses [io.console, process] panics may pub
     let b = s.as_bytes()
     let mut depth = 0u32
@@ -227,7 +219,6 @@ fn emit.ty.split_top(s: &str) -> (&str, &str) uses [io.console, process] panics 
     core.panic.panic("internal: missing comma in Result type")
 end emit.ty.split_top
 
-// 型 `id` の LLVM の型の文字列 (`mem` なら `bool` を `i8` にする)。`g` は読むだけ。
 fn emit.ty.text_of(g: &emit.G, id: usize, mem: bool) -> alloc.string.String<std.alloc.System> uses [alloc, io.console, process] panics may pub
     let mut out = emit.util.new_str()
     if mem {
@@ -238,7 +229,6 @@ fn emit.ty.text_of(g: &emit.G, id: usize, mem: bool) -> alloc.string.String<std.
     out
 end emit.ty.text_of
 
-// 値の大きさ (ビット)。集成体は `size * 8`、`Option` / `Result` は `1 + 枠`。
 fn emit.ty.vbits(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
     let t = emit.ty.get(g, id)
     if t.kind == (emit.ty.K_UNIT) {
@@ -256,13 +246,11 @@ fn emit.ty.vbits(g: &emit.G, id: usize) -> usize uses [io.console, process] pani
     }
 end emit.ty.vbits
 
-// 値の LLVM の型 (`lty`)。
 fn emit.ty.wlty(g: &mut emit.G, id: usize) -> () uses [alloc, io.console, process] panics may pub
     let s = emit.ty.text_of(g, id, false)
     emit.w(g, s.as_str())
 end emit.ty.wlty
 
-// メモリ上の型 (`mty`)。`bool` は 1 バイト (`i8`) として置く。
 fn emit.ty.wmty(g: &mut emit.G, id: usize) -> () uses [alloc, io.console, process] panics may pub
     let s = emit.ty.text_of(g, id, true)
     emit.w(g, s.as_str())

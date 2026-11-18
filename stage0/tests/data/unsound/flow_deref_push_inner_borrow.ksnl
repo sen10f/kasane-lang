@@ -1,4 +1,3 @@
-// expect: E3060
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let mut a = alloc.vec.Vec.new(std.alloc.SYSTEM)
     {

@@ -1,10 +1,8 @@
-// expect: E3060
 fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
     core.mem.drop(std.io.print_line(s.as_str()))
     core.mem.drop(s)
 end t.consume
 
-// `s` を `v` (と `v` に入れた `s` への借用) の最後の使用の後に move する正しい形。
 fn t.keep['a](v: &mut alloc.vec.Vec<&'a alloc.string.String, std.alloc.System>, s: &'a alloc.string.String) -> &'a alloc.string.String uses [alloc] panics never
     core.mem.drop(v.push(s))
     s

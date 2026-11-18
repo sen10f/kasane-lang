@@ -1,0 +1,4 @@
+expect: E3030
+note: 言い換え穴: `match v.get(0) { Some => r, None => r }` は E3030（ローカル tmp への参照 r を返す）だが、
+note: `match &tmp { rr => match v.get(0) { Some(_q) => rr, None => rr } }` で変数を 1 段束縛するとすり抜ける。
+note: 戻り値 &u32 は実際にはローカル `tmp` へのダングル参照。main で *r を読むとダングル参照を読む。

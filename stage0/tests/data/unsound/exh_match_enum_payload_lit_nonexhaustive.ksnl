@@ -1,4 +1,3 @@
-// expect: E2021
 enum t.E
     A
     B(i32)

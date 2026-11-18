@@ -1,0 +1,2 @@
+expect: E2001
+note: 関連関数 `alloc.vec.Vec.new` はアロケータを取る

@@ -27,7 +27,6 @@ fn parse.pat.lit_class(kind: parse.tok.Kind) -> usize uses [] panics never pub
     }
 end parse.pat.lit_class
 
-// 現在位置のリテラルトークンを Lit ノードにする。
 fn parse.pat.lit_node(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
     let at = p.pos
     let class = parse.pat.lit_class(parse.cur.kind(p))
@@ -35,7 +34,6 @@ fn parse.pat.lit_node(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> use
     parse.ast.add2(&mut p.ast, parse.ast.Kind.Lit, at, class, at)
 end parse.pat.lit_node
 
-// 名前で始まるパターン: `_`、束縛、パス、`V(..)`、`S { f: p }`。
 fn parse.pat.named(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let at = p.pos
     let t = parse.cur.tok(p)
@@ -83,7 +81,6 @@ fn parse.pat.named(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [
     parse.ast.add2(&mut p.ast, parse.ast.Kind.PPath, at, start, stop)
 end parse.pat.named
 
-// パターン。
 fn parse.pat.pattern(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096 pub
     parse.cur.enter(p)?
     let r = parse.pat.pattern_inner(p)
@@ -116,7 +113,6 @@ fn parse.pat.pattern_inner(p: &mut parse.cur.P) -> Result<usize, parse.err.Error
     Err(parse.cur.fail(p, parse.err.E_EXPECT_PATTERN, 0u32))
 end parse.pat.pattern_inner
 
-// `(` p, ... `)`: ユニットまたはタプルのパターン。
 fn parse.pat.tuple(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let at = p.pos
     parse.cur.advance(p)

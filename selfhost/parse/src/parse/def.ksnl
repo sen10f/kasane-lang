@@ -5,7 +5,6 @@ fn parse.def.accept_pub(p: &mut parse.cur.P) -> usize uses [] panics never
     0usize
 end parse.def.accept_pub
 
-// 本体: `end` の手前までの文。Block を返す。
 fn parse.def.body(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let at = p.pos
     let mut stmts = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -21,7 +20,6 @@ fn parse.def.body(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [a
     parse.ast.add1(&mut p.ast, parse.ast.Kind.Block, at, l)
 end parse.def.body
 
-// const / static: c = 型, d = 初期化式, e = pub。
 fn parse.def.constant(p: &mut parse.cur.P, kind: parse.ast.Kind) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let at = p.pos
     parse.cur.advance(p)
@@ -35,7 +33,6 @@ fn parse.def.constant(p: &mut parse.cur.P, kind: parse.ast.Kind) -> Result<usize
     parse.ast.add6(&mut p.ast, kind, at, a, b, t, init, vis, 0usize)
 end parse.def.constant
 
-// `derive [A, B]`。List (子は名前のトークンを a に持つ Param) を返す。
 fn parse.def.derive(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let at = p.pos
     parse.cur.advance(p)
@@ -52,7 +49,6 @@ fn parse.def.derive(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses 
     parse.ast.list(&mut p.ast, &items, at)
 end parse.def.derive
 
-// `end FQN` を読み、名前が定義と同じか確かめる。
 fn parse.def.end_name(p: &mut parse.cur.P, src: &[u8], a: usize, b: usize) -> Result<(), parse.err.Error> uses [] panics never
     parse.cur.expect_kw(p, parse.tok.KW_END)?
     let at = parse.cur.tok(p)
@@ -63,7 +59,6 @@ fn parse.def.end_name(p: &mut parse.cur.P, src: &[u8], a: usize, b: usize) -> Re
     parse.cur.expect_nl(p)
 end parse.def.end_name
 
-// extern: c = パラメータ, d = 戻り値の型, e = link の文字列トークン + 1。
 fn parse.def.extern_def(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let at = p.pos
     parse.cur.advance(p)
@@ -85,7 +80,6 @@ fn parse.def.extern_def(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> u
     parse.ast.add6(&mut p.ast, parse.ast.Kind.ExternDef, at, a, b, ps, ret, link, 0usize)
 end parse.def.extern_def
 
-// フィールド行 `名前: 型 [pub]`。FieldDecl の a = 名前, b = 型, c = pub。
 fn parse.def.field(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let name = parse.cur.name_tok(p)?
     parse.cur.expect_ch(p, b':')?
@@ -94,7 +88,6 @@ fn parse.def.field(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [
     parse.ast.add3(&mut p.ast, parse.ast.Kind.FieldDecl, name, name, t, vis)
 end parse.def.field
 
-// ファイル全体を解析し、定義のノードを ast.defs に並べる。sig = true は .sig (fn に本体なし)。
 fn parse.def.file(p: &mut parse.cur.P, src: &[u8], sig: bool) -> Result<(), parse.err.Error> uses [alloc] panics never pub
     loop {
         parse.cur.skip_nl(p)
@@ -107,7 +100,6 @@ fn parse.def.file(p: &mut parse.cur.P, src: &[u8], sig: bool) -> Result<(), pars
     Ok(())
 end parse.def.file
 
-// fn: c = FnSig (a = ジェネリクス, b = パラメータ, c = 戻り値, d = Attrs), d = 本体 (.sig では 0), e = pub。
 fn parse.def.fn_def(p: &mut parse.cur.P, src: &[u8], sig: bool) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let at = p.pos
     parse.cur.advance(p)
@@ -130,7 +122,6 @@ fn parse.def.fn_def(p: &mut parse.cur.P, src: &[u8], sig: bool) -> Result<usize,
     parse.ast.add6(&mut p.ast, parse.ast.Kind.FnDef, at, a, b, sg, body, vis, 0usize)
 end parse.def.fn_def
 
-// impl 行: a, b = 行全体の範囲, c = ジェネリクス, d = トレイト参照, e = 対象の型。
 fn parse.def.impl_line(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let at = p.pos
     let start = parse.cur.start_byte(p)
@@ -144,7 +135,6 @@ fn parse.def.impl_line(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> us
     parse.ast.add6(&mut p.ast, parse.ast.Kind.ImplLine, at, start, stop, generics, tr, t, 0usize)
 end parse.def.impl_line
 
-// import: a, b = モジュール名の範囲。
 fn parse.def.import_line(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let at = p.pos
     parse.cur.advance(p)
@@ -153,7 +143,6 @@ fn parse.def.import_line(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> 
     parse.ast.add2(&mut p.ast, parse.ast.Kind.Import, at, a, b)
 end parse.def.import_line
 
-// 定義 1 つ。
 fn parse.def.one(p: &mut parse.cur.P, src: &[u8], sig: bool) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let t = parse.cur.tok(p)
     if t.kind != parse.tok.Kind.Kw {
@@ -196,7 +185,6 @@ fn parse.def.one(p: &mut parse.cur.P, src: &[u8], sig: bool) -> Result<usize, pa
     Err(parse.cur.fail(p, parse.err.E_TOPLEVEL, 0u32))
 end parse.def.one
 
-// type / enum: c = ジェネリクス, d = 項目の List, e = derive, f = フラグ。
 fn parse.def.record(p: &mut parse.cur.P, src: &[u8], kind: parse.ast.Kind, is_enum: bool) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let at = p.pos
     parse.cur.advance(p)
@@ -222,7 +210,6 @@ fn parse.def.record(p: &mut parse.cur.P, src: &[u8], kind: parse.ast.Kind, is_en
     parse.ast.add6(&mut p.ast, kind, at, a, b, generics, l, derive, flags)
 end parse.def.record
 
-// 2 つの範囲のバイト列が等しいか。
 fn parse.def.same(src: &[u8], a: usize, b: usize, c: usize, d: usize) -> bool uses [] panics never
     match src.sub(a, b) {
         Some(x) => {
@@ -235,7 +222,6 @@ fn parse.def.same(src: &[u8], a: usize, b: usize, c: usize, d: usize) -> bool us
     }
 end parse.def.same
 
-// test: d = 本体。
 fn parse.def.test_def(p: &mut parse.cur.P, src: &[u8]) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let at = p.pos
     parse.cur.advance(p)
@@ -246,7 +232,6 @@ fn parse.def.test_def(p: &mut parse.cur.P, src: &[u8]) -> Result<usize, parse.er
     parse.ast.add4(&mut p.ast, parse.ast.Kind.TestDef, at, a, b, 0usize, body)
 end parse.def.test_def
 
-// trait: c = ジェネリクス, d = requires の List, e = メソッドの List, f = pub。
 fn parse.def.trait_def(p: &mut parse.cur.P, src: &[u8]) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let at = p.pos
     parse.cur.advance(p)
@@ -276,8 +261,6 @@ fn parse.def.trait_def(p: &mut parse.cur.P, src: &[u8]) -> Result<usize, parse.e
     parse.ast.add6(&mut p.ast, parse.ast.Kind.TraitDef, at, a, b, generics, rl, fl, vis)
 end parse.def.trait_def
 
-// トレイトの必須メソッド行 `fn 名前[..](..) -> T uses [..] panics P`。
-// TraitFn の a = 名前, b = ジェネリクス, c = パラメータ, d = 戻り値, e = Attrs。
 fn parse.def.trait_fn(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never
     parse.cur.expect_kw(p, parse.tok.KW_FN)?
     let name = parse.cur.name_tok(p)?
@@ -291,8 +274,6 @@ fn parse.def.trait_fn(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> use
     parse.ast.add6(&mut p.ast, parse.ast.Kind.TraitFn, name, name, generics, ps, ret, attrs, 0usize)
 end parse.def.trait_fn
 
-// type / enum の頭の属性 (layout c / derive / linear / pub)。フラグ: 1 pub, 2 linear, 4 layout c。
-// (derive の List, フラグ) を返す。
 fn parse.def.type_attrs(p: &mut parse.cur.P) -> Result<(usize, usize), parse.err.Error> uses [alloc] panics never
     let mut flags = 0usize
     let mut derive = 0usize
@@ -310,7 +291,6 @@ fn parse.def.type_attrs(p: &mut parse.cur.P) -> Result<(usize, usize), parse.err
     Ok((derive, flags))
 end parse.def.type_attrs
 
-// バリアント行 `名前 [(型, ...)]`。Variant の a = 名前, b = 型の List。
 fn parse.def.variant(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let name = parse.cur.name_tok(p)?
     let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)

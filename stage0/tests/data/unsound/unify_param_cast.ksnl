@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.cast[T, U](x: T) -> U uses [] panics never
     x
 end t.cast

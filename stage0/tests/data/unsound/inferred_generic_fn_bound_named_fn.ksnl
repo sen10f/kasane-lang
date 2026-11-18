@@ -1,4 +1,3 @@
-// expect: E4001
 fn t.g[F: core.ops.Fn<(), ()>](f: F) -> ()
     f()
 end t.g

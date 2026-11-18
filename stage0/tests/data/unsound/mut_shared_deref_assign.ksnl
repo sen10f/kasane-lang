@@ -1,4 +1,3 @@
-// expect: E3031
 fn t.bad(r: &u32) -> () uses [] panics never
     *r = 1u32
 end t.bad

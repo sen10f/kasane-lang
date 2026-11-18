@@ -1,4 +1,3 @@
-// expect: E2024
 fn t.cast[T, U](x: T, y: U) -> U uses [] panics never
     let mut z = y
     z = x

@@ -1,4 +1,3 @@
-// expect: E2037
 type t.Hold[T: 'static]
     x: T
 end t.Hold

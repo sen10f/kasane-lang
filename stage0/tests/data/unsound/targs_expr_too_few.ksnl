@@ -3,8 +3,6 @@ fn t.main() -> () uses [] panics never
     core.mem.drop(v)
 end t.main
 
-// expect: E2023
-// 明示するなら全部: 型引数 2 つの関数に 1 つだけ渡す
 fn t.pick[A, B](a: A, b: B) -> A uses [] panics never
     core.mem.drop(b)
     a

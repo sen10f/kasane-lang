@@ -809,7 +809,7 @@ enum Out {
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-fn check_src(src: &str) -> (i32, Vec<String>) {
+fn check_src(src: &str, target: Option<&str>) -> (i32, Vec<String>) {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     let d = std::env::temp_dir().join(format!("ksn_rephrase_{}_{}", std::process::id(), n));
     let _ = fs::remove_dir_all(&d);
@@ -817,10 +817,9 @@ fn check_src(src: &str) -> (i32, Vec<String>) {
     fs::write(d.join("kasane.toml"), TOML).unwrap();
     fs::write(d.join("kasane.lock"), "version = 1\n").unwrap();
     fs::write(d.join("src").join("t.ksnl"), src).unwrap();
-    let target = src.lines().find_map(|l| l.trim().strip_prefix("// target:")).map(|w| w.trim().to_string());
     let mut args = vec!["check"];
-    if let Some(tg) = &target {
-        args.extend(["--target", tg.as_str()]);
+    if let Some(tg) = target {
+        args.extend(["--target", tg]);
     }
     args.push("--json");
     let o = run(&args, &d);
@@ -857,7 +856,8 @@ fn run_dir(dir: &Path, unsound: bool) -> Report {
                 let p = &names[k];
                 let stem = p.file_stem().unwrap().to_string_lossy().to_string();
                 let src = fs::read_to_string(p).unwrap();
-                let want = src.lines().find_map(|l| l.trim().strip_prefix("// expect:")).map(|w| w.trim().to_string());
+                let want = expect_value(p, "expect");
+                let target = expect_value(p, "target");
                 for tf in TRANSFORMS {
                     let vs = variants(&src, tf, max);
                     let mut r = rep.lock().unwrap();
@@ -868,7 +868,7 @@ fn run_dir(dir: &Path, unsound: bool) -> Report {
                     *r.applied.entry(tf).or_insert(0) += vs.len();
                     drop(r);
                     for (n, v) in vs.iter().enumerate() {
-                        let (rc, got) = check_src(v);
+                        let (rc, got) = check_src(v, target.as_deref());
                         let key = format!("{} {}#{}", tf, stem, n);
                         let mut r = rep.lock().unwrap();
                         r.total += 1;
@@ -949,13 +949,13 @@ fn rephrase_valid_stay_accepted() {
 #[test]
 fn rephrase_generator_sanity() {
     let src = "type t.S\n    n: u32\nend t.S\n\nfn t.S.get(self: &t.S, k: u32) -> u32 uses [] panics never\n    self.n.wrapping_add(k)\nend t.S.get\n\nfn t.use_it(s: &t.S, o: Option<u32>) -> u32 uses [] panics never\n    let a = t.S.get(s, 1u32)\n    let b = s.get(a)\n    if let Some(v) = o {\n        v.wrapping_add(b)\n    } else {\n        b\n    }\nend t.use_it\n\nfn t.main() -> () uses [] panics never\n    let s = t.S { n: 1u32 }\n    core.mem.drop(t.use_it(&s, Some(2u32)))\nend t.main\n";
-    assert_eq!(check_src(src).0, 0);
+    assert_eq!(check_src(src, None).0, 0);
     let mut applied = BTreeMap::new();
     for tf in TRANSFORMS {
         let vs = variants(src, tf, 50);
         applied.insert(*tf, vs.len());
         for v in vs {
-            let (rc, got) = check_src(&v);
+            let (rc, got) = check_src(&v, None);
             assert_eq!(rc, 0, "{} が壊した: {:?}\n{}", tf, got, v);
         }
     }

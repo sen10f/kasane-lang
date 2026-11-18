@@ -2,10 +2,6 @@ import shortener_https.error
 import shortener_https.serve
 import shortener_https.store
 
-// 使い方: `shortener_https <address> <connections> <db> <cert.pem> <key.pem>`。
-// `connections` が 0 なら止めずに待つ。接続 1 本ごとに TLS の握手をし、その上で keep-alive の
-// 要求を順に処理する。ログは標準エラーに 1 行 1 件の JSON。証明書とキーは PEM。
-// アドレスのポートが 0 なら、実際に使ったポートを `listening` のログに書く。
 fn shortener_https.main() -> Result<(), shortener_https.error.Error> uses [alloc, env, io.console, io.fs, io.net, time] panics may
     if std.env.arg_count() < 5usize {
         core.mem.drop(std.log.error("usage", &[("args", "address connections db cert key")]))
@@ -38,7 +34,6 @@ fn shortener_https.main() -> Result<(), shortener_https.error.Error> uses [alloc
     Ok(())
 end shortener_https.main
 
-// 証明書と鍵を読み、待ち受けを開き、接続を受けて処理する。返すのは処理した要求の数。
 fn shortener_https.run(address: &str, connections: usize, db_path: &str, cert: &str, key: &str) -> Result<usize, shortener_https.error.Error> uses [alloc, io.console, io.fs, io.net, time] panics never
     with acceptor = std.tls.TlsAcceptor.load(cert, key)? close core.mem.drop(acceptor.close()) {
         with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {

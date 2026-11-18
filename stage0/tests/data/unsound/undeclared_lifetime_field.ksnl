@@ -2,7 +2,6 @@ type t.H
     r: &'a u32
 end t.H
 
-// expect: E1126
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

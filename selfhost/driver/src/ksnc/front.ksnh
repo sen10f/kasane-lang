@@ -1,0 +1,54 @@
+// 段 1・2 (Kasane 製): 読み込みと名前解決の診断。
+// 読み込みは kasane.toml・自パッケージと直接の path 依存の src/・spec/stdlib。
+// 処理は selfhost/resolve の resolve.main と同じ順。違いは、表示せず診断の本文を集めること。
+// `text` は診断の本文と誤りの数。`check` は既定の経路で、誤りがあれば本文を流して失敗する。
+// 検査の結果: 本文 (行の並び) と誤りの数。
+type ksnc.front.Text pub
+    text: alloc.string.String<std.alloc.System> pub
+    errors: usize pub
+end ksnc.front.Text
+
+// 段 1・2 の既定の経路: 誤りがあれば本文を流して失敗する。
+fn ksnc.front.check(dir: &str, std_dir: &str) -> Result<(), ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
+    let r = ksnc.front.text(dir, std_dir)?
+    if r.errors != 0usize {
+        ksnc.tool.say_err(r.text.as_str())?
+        return Err(ksnc.Failure.Diag)
+    }
+    Ok(())
+end ksnc.front.check
+
+fn ksnc.front.text(dir: &str, std_dir: &str) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
+    let man = resolve.manifest.read(dir)?
+    let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let own_src = resolve.manifest.join(dir, "src")?
+    resolve.load.collect(own_src.as_str(), "", true, &mut srcs)?
+    let deps = man.deps
+    for d in deps.as_slice().iter() {
+        let pdir = resolve.manifest.join(dir, d.path.as_str())?
+        let dsrc = resolve.manifest.join(pdir.as_str(), "src")?
+        resolve.load.collect(dsrc.as_str(), "", false, &mut srcs)?
+    }
+    resolve.load.collect(std_dir, "", false, &mut srcs)?
+    let mut rep = resolve.report.new()?
+    let mut t = resolve.table.new()?
+    let mut i = 0usize
+    for s in srcs.as_slice().iter() {
+        match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut rep)? {
+            Some(p) => resolve.table.add_file(&mut t, &p, s.text.as_slice(), i, &mut rep)?
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    i = 0usize
+    for s in srcs.as_slice().iter() {
+        if s.own {
+            match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut rep)? {
+                Some(p) => resolve.walk.file(&t, &p, s.text.as_slice(), i, &mut rep)?
+                None => core.mem.drop(0u8)
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(ksnc.front.Text { text: rep.text, errors: rep.errors })
+end ksnc.front.text

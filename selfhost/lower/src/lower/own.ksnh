@@ -1,0 +1,233 @@
+// 腕に入るとき、対象の局所を移す (非 Copy の値を束縛する腕、線形な対象の `_` 以外の腕)。
+fn lower.own.arm_consume(c: &mut lower.cx.Cx, sloc: usize, slin: bool, noncopy: bool, wild: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if sloc != 0usize && noncopy {
+        lower.drop.moved(c, sloc - 1usize)?
+    }
+    if sloc != 0usize && (noncopy || (slin && !wild)) {
+        lower.own.emit(c, sloc - 1usize, "own.consume ")?
+    }
+    Ok(())
+end lower.own.arm_consume
+
+// 局所 k (添字) を所有の注釈で追う。束縛の位置に単位の定数を作る。Copy でも線形でもない型だけ。線形なら義務 (`own.owe`) を負う。
+fn lower.own.declare(env: &types.env.Env, c: &mut lower.cx.Cx, k: usize, t: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let linear = lower.own.linear(env, c, t)?
+    if lower.own.is_copy(env, c, t) && !linear {
+        return Ok(())
+    }
+    let id = lower.expr.unit(c)?
+    lower.own.set(c, k, id + 1usize)?
+    if linear {
+        let _o = lower.cx.def1(c, "unit", "own.owe ", id)?
+    }
+    Ok(())
+end lower.own.declare
+
+// 項目の派生 (derive) に want があるか。
+fn lower.own.derives(env: &types.env.Env, item: usize, want: &str) -> bool uses [] panics may pub
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return false
+    }
+    let src_r = match env.srcs.as_slice().get(file) {
+        Some(s) => s
+        None => return false
+    }
+    let src = src_r.text.as_slice()
+    let nd = parse.ast.get(&p.ast, node)
+    for k in core.iter.range(0usize, resolve.ast.count(p, nd.e)) {
+        let it = parse.ast.get(&p.ast, resolve.ast.item(p, nd.e, k))
+        if resolve.ast.tok_text(p, src, it.a) == want {
+            return true
+        }
+    }
+    false
+end lower.own.derives
+
+// 局所 k に注釈があれば `own.KIND %id` を出す (kind: "own.consume " など)。
+fn lower.own.emit(c: &mut lower.cx.Cx, k: usize, kind: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let id = lower.own.id(c, k)
+    if id != 0usize {
+        let _o = lower.cx.def1(c, "unit", kind, id - 1usize)?
+    }
+    Ok(())
+end lower.own.emit
+
+// 総称の型 f の型引数を、定義の総称の番号 (0 から) への代入にする (戻すのは `lower.tyk.leave`)。
+fn lower.own.enter_ty(c: &mut lower.cx.Cx, f: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let saved = lower.cx.copy_u(&c.v.subst)?
+    let n = types.ty.node(&c.ar, f)
+    let mut na = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for k in core.iter.range(0usize, n.c) {
+        na.push(k)?
+        na.push(types.ty.arg(&c.ar, n.b, k))?
+    }
+    c.v.subst = na
+    Ok(saved)
+end lower.own.enter_ty
+
+fn lower.own.id(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
+    match c.v.sl.own.as_slice().get(k) {
+        Some(x) => *x
+        None => 0usize
+    }
+end lower.own.id
+
+// 型が Copy か (決まらない型・参照・型パラメータは Copy とみなす)。
+fn lower.own.is_copy(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    if n.k == types.ty.K.Tuple {
+        for j in core.iter.range(0usize, n.c) {
+            if !lower.own.is_copy(env, c, types.ty.arg(&c.ar, n.b, j)) {
+                return false
+            }
+        }
+        return true
+    }
+    if n.k == types.ty.K.Array || n.k == types.ty.K.Slice {
+        return lower.own.is_copy(env, c, n.a)
+    }
+    if n.k == types.ty.K.Adt {
+        if lower.opt.kind(env, n.a) != 0usize {
+            for j in core.iter.range(0usize, n.c) {
+                if !lower.own.is_copy(env, c, types.ty.arg(&c.ar, n.b, j)) {
+                    return false
+                }
+            }
+            return true
+        }
+        return lower.own.derives(env, n.a, "Copy")
+    }
+    true
+end lower.own.is_copy
+
+// 型が線形か (組・配列の要素、型引数、宣言の印、欄・変種の型。Sender は除く)。seen は調べ済みの項目。
+fn lower.own.is_linear(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, seen: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<bool, resolve.Failure> uses [alloc] panics may pub
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    if n.k == types.ty.K.Tuple {
+        for j in core.iter.range(0usize, n.c) {
+            if lower.own.is_linear(env, c, types.ty.arg(&c.ar, n.b, j), seen)? {
+                return Ok(true)
+            }
+        }
+        return Ok(false)
+    }
+    if n.k == types.ty.K.Array {
+        return lower.own.is_linear(env, c, n.a, seen)
+    }
+    if n.k != types.ty.K.Adt {
+        return Ok(false)
+    }
+    if lower.tyk.item_fqn(env, n.a).as_str() == "std.sync.Sender" {
+        return Ok(false)
+    }
+    for j in core.iter.range(0usize, n.c) {
+        if lower.own.is_linear(env, c, types.ty.arg(&c.ar, n.b, j), seen)? {
+            return Ok(true)
+        }
+    }
+    if lower.own.item_linear(env, n.a) {
+        return Ok(true)
+    }
+    let kind = types.infer.item_kind(env, n.a)
+    if kind != parse.ast.Kind.TypeDef && kind != parse.ast.Kind.EnumDef {
+        return Ok(false)
+    }
+    for x in seen.as_slice().iter() {
+        if *x == n.a {
+            return Ok(false)
+        }
+    }
+    seen.push(n.a)?
+    let file = types.infer.item_file(env, n.a)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(false)
+    }
+    let src_r = match env.srcs.as_slice().get(file) {
+        Some(s) => s
+        None => return Ok(false)
+    }
+    let src = src_r.text.as_slice()
+    let nd = parse.ast.get(&p.ast, types.infer.item_node(env, n.a))
+    let saved = lower.own.enter_ty(c, f)?
+    let mut found = false
+    if kind == parse.ast.Kind.TypeDef {
+        for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+            let fd = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+            let ft = lower.tyk.fty(env, c, p, src, file, nd.c, fd.b)?
+            if lower.own.is_linear(env, c, ft, seen)? {
+                found = true
+            }
+        }
+    } else {
+        for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+            let vn = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+            for i in core.iter.range(0usize, resolve.ast.count(p, vn.b)) {
+                let pt = lower.tyk.fty(env, c, p, src, file, nd.c, resolve.ast.item(p, vn.b, i))?
+                if lower.own.is_linear(env, c, pt, seen)? {
+                    found = true
+                }
+            }
+        }
+    }
+    lower.tyk.leave(c, saved)
+    Ok(found)
+end lower.own.is_linear
+
+// 項目が線形の宣言か (flags の 2 の位)。
+fn lower.own.item_linear(env: &types.env.Env, item: usize) -> bool uses [] panics may pub
+    let file = types.infer.item_file(env, item)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return false
+    }
+    let nd = parse.ast.get(&p.ast, types.infer.item_node(env, item))
+    nd.f == 2usize || nd.f == 3usize || nd.f == 6usize || nd.f == 7usize
+end lower.own.item_linear
+
+fn lower.own.linear(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<bool, resolve.Failure> uses [alloc] panics may pub
+    let mut seen = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.own.is_linear(env, c, t, &mut seen)
+end lower.own.linear
+
+// match の対象が単純な名前の局所なら、その局所 (添字 + 1、なければ 0)。
+fn lower.own.scrut_loc(c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], node: usize) -> usize uses [] panics may pub
+    let nd = parse.ast.get(&p.ast, node)
+    if nd.kind != parse.ast.Kind.Path {
+        return 0usize
+    }
+    let name = resolve.ast.text(src, nd.a, nd.b)
+    if name.contains(".") {
+        return 0usize
+    }
+    let loc = lower.cx.find(c, name)
+    if loc != 0usize && lower.own.id(c, loc - 1usize) != 0usize {
+        return loc
+    }
+    0usize
+end lower.own.scrut_loc
+
+// 局所 k の注釈の識別子 (VId + 1、無ければ 0) を置く。
+fn lower.own.set(c: &mut lower.cx.Cx, k: usize, id: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut tail = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    while c.v.sl.own.len() > k + 1usize {
+        match c.v.sl.own.pop() {
+            Some(x) => tail.push(x)?
+            None => core.mem.drop(0u8)
+        }
+    }
+    core.mem.drop(c.v.sl.own.pop())
+    c.v.sl.own.push(id)?
+    while tail.len() > 0usize {
+        match tail.pop() {
+            Some(x) => c.v.sl.own.push(x)?
+            None => core.mem.drop(0u8)
+        }
+    }
+    Ok(())
+end lower.own.set

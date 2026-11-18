@@ -1,4 +1,3 @@
-// `'static` の参照だけを返す関数の結果は、`?` と束縛を挟んでも `'static` の引数に渡せる。
 enum t.E derive [Debug, Clone, Copy] pub
     Bad
 end t.E

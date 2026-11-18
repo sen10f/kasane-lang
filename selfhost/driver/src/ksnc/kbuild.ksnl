@@ -1,10 +1,3 @@
-// 段 4・5 (Kasane 版、--stages=kasane の ksnc build): 下ろし (selfhost/lower) →
-// LLVM IR (selfhost/emit) → clang。Rust 版 (ksn build) の成果物を上書きしないよう、
-// 出力は target/kasane/<release|debug>/<名前>.native と .ll に置く。
-// 下ろせない関数があれば理由を出して失敗する (Rust 版へは戻らない)。
-// ホストの三つ組だけ対応する (--target は失敗)。
-// clang の引数は ksn の shim (clang.ksnl) と同じ形: -O2 (release) か -O1、IR、必要なら
-// stage0/src の kir_rt.c と sysrt.c。
 fn ksnc.kbuild.make(dir: &str, root: &str, std_dir: &str, release: bool, target: &str) -> Result<(), ksnc.Failure> uses [alloc, env, io.console, io.fs, process] panics may pub
     if target != "host" {
         ksnc.tool.say_err("ksnc: --stages=kasane は --target host だけ対応する\n")?
@@ -18,7 +11,6 @@ fn ksnc.kbuild.make(dir: &str, root: &str, std_dir: &str, release: bool, target:
         ksnc.tool.say_err(kir.bad.as_str())?
         return Err(ksnc.Failure.Tool)
     }
-    // LLVM IR: Kasane 版の emit (入口 main の包みを含む)。
     let mut g = emit.new_g()
     emit.module(&mut g, kir.text.as_str(), entry.as_str())
     let mut kind = "debug"
@@ -40,8 +32,6 @@ fn ksnc.kbuild.make(dir: &str, root: &str, std_dir: &str, release: bool, target:
     let mut exe = alloc.string.String.from_str(std.alloc.SYSTEM, base.as_str())?
     exe.push_str(".native")?
     std.fs.write_atomic(ll_path.as_str(), g.outs.out.as_bytes())?
-    // 実行時補助 (Rust 版 kir_llvm::needs_runtime と同じ判定)。
-    // 本文は stage0/src のものをそのまま使う (写さない)。
     let ir = g.outs.out.as_str()
     let sys = ir.contains("@ksn_rt_sys_")
     let rt_a = ir.contains("@ksn_fmt_") || ir.contains("@ksn_utf8_") || sys

@@ -1,4 +1,3 @@
-// expect: E4001
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     for x in core.iter.map(core.iter.range(0u32, 2u32), fn(i: u32) -> u32 capture [] {
         let mut w = alloc.vec.Vec.new(std.alloc.SYSTEM)

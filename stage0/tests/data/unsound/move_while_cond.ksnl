@@ -1,4 +1,3 @@
-// expect: E3002
 fn t.bad() -> () uses [] panics never
     let mut s = t.mk()
     while t.eat(s) {

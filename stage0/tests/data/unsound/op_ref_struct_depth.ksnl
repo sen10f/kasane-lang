@@ -1,5 +1,3 @@
-// expect: E2024
-// 型が構造体でも、参照の段数が違う比較は拒む (`&Foo == Foo`)。
 type t.Foo derive [PartialEq] pub
     n: u32
 end t.Foo

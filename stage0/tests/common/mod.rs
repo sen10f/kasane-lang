@@ -2986,3 +2986,17 @@ test t.main.test_round_trip
     }
 end t.main.test_round_trip
 "#;
+
+/// ケースの横の `<名前>.expect` の `key: value` の行 (`expect:` / `target:` / `ok:` / `note:`)。
+/// 試験の入力の `.ksnl` にはコメントを置けないので、印はここに書く。無ければ空。
+pub fn expect_entries(ksnl: &Path) -> Vec<(String, String)> {
+    let Ok(t) = fs::read_to_string(ksnl.with_extension("expect")) else { return vec![] };
+    t.lines()
+        .filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+        .collect()
+}
+
+/// `expect_entries` の最初の `key` の値。
+pub fn expect_value(ksnl: &Path, key: &str) -> Option<String> {
+    expect_entries(ksnl).into_iter().find(|(k, _)| k == key).map(|(_, v)| v)
+}

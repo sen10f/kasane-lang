@@ -1,0 +1,42 @@
+import alloc.string
+
+// アプリ全体で共通のエラー型。
+// `derive [From]` は `enum` だけに使える (E2050)。`From` バリアントは元のエラー型を
+// 唯一のペイロードに持つ (同じ型を運ぶバリアントが 1 つずつなら E2049 にならない)。
+enum notes.error.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Io(std.io.Error)
+    Json(std.json.Error)
+    NotFound
+    Usage
+    NoEditor
+    Corrupt
+end notes.error.Error
+
+fn notes.error.corrupt() -> notes.error.Error uses [] panics never pub
+    notes.error.Error.Corrupt
+end notes.error.corrupt
+
+fn notes.error.no_editor() -> notes.error.Error uses [] panics never pub
+    notes.error.Error.NoEditor
+end notes.error.no_editor
+
+fn notes.error.not_found() -> notes.error.Error uses [] panics never pub
+    notes.error.Error.NotFound
+end notes.error.not_found
+
+fn notes.error.push_failed(value: alloc.string.PushBytesError) -> notes.error.Error uses [] panics never pub
+    match value {
+        string.PushBytesError.Alloc(a) => notes.error.Error.Alloc(a)
+        string.PushBytesError.InvalidUtf8(_u) => notes.error.Error.Corrupt
+    }
+end notes.error.push_failed
+
+fn notes.error.usage() -> notes.error.Error uses [] panics never pub
+    notes.error.Error.Usage
+end notes.error.usage
+
+test notes.error.not_found.test_variants
+    core.check.eq(notes.error.Error.NotFound, notes.error.Error.NotFound)
+    core.check.eq(notes.error.Error.Usage, notes.error.Error.Usage)
+end notes.error.not_found.test_variants

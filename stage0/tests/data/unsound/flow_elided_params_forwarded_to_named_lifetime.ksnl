@@ -1,4 +1,3 @@
-// expect: E3060
 fn t.inner['a](v: &mut alloc.vec.Vec<&'a str, std.alloc.System>, x: &'a str) -> () uses [alloc] panics never
     core.mem.drop(v.push(x))
 end t.inner

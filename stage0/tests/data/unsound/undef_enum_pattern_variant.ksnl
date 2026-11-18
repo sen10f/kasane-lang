@@ -1,4 +1,3 @@
-// expect: E1101
 enum t.E
     A
     B(i32)

@@ -1,4 +1,3 @@
-// expect: E4010
 fn t.main() -> Result<(), std.io.Error> uses [] panics may
     core.check.eq(t.spin::<never>(3u8), 0u8)
     Ok(())

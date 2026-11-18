@@ -1,4 +1,3 @@
-// expect: E3002
 type t.S pub
     v: u32
 end t.S

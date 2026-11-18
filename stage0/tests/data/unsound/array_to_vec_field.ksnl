@@ -1,4 +1,3 @@
-// expect: E2023
 type t.H
     v: &'static alloc.vec.Vec<u32, std.alloc.System>
 end t.H

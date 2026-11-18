@@ -6,7 +6,6 @@ fn t.outer[F: core.ops.Fn<(), u32, E, P>, E: uses, P: panics](f: &F) -> u32 uses
     t.strict(f)
 end t.outer
 
-// expect: E4001
 fn t.strict[F: core.ops.Fn<(), u32, [], never>](f: F) -> u32 uses [] panics never
     f.call(())
 end t.strict

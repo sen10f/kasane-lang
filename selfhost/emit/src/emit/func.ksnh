@@ -1,0 +1,377 @@
+// (3) 組み立て: 関数の見出し・入口 (`entry` `so` `go`)・各ブロックの phi と本体を、`g.outs.fns` の末尾へ足す。
+fn emit.func.assemble(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
+    let rt = g.flags.ret
+    let p0 = *g.lay.bpst.get(0usize).unwrap_or(&0usize)
+    let p1 = *g.lay.bpst.get(1usize).unwrap_or(&0usize)
+    let key = emit.func.copy_str(&g.flags.fkey)
+    emit.w(g, "define internal ")
+    emit.ty.wlty(g, rt)
+    emit.w(g, " @\"k.")
+    emit.w(g, key.as_str())
+    emit.w(g, "\"(")
+    emit.func.write_params(g, p0, p1)
+    emit.w(g, ") null_pointer_is_valid {\nentry:\n")
+    let hoisted = emit.func.copy_str(&g.buf.hoisted)
+    g.buf.hoisted = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.w(g, hoisted.as_str())
+    emit.w(g, "  %depth = load i64, ptr @ksn.depth\n  %over = icmp uge i64 %depth, 2500\n")
+    emit.w(g, "  br i1 %over, label %so, label %go\nso:\n  call void @ksn.overflow()\n")
+    emit.w(g, "  unreachable\n")
+    emit.w(g, "go:\n  %depth1 = add i64 %depth, 1\n  store i64 %depth1, ptr @ksn.depth\n")
+    emit.w(g, "  br label %b0\n")
+    let nb = g.misc.nblk
+    let mut k = 0usize
+    while k < nb {
+        if emit.func.reached(g, k) {
+            emit.w(g, "b")
+            emit.wn(g, k)
+            emit.w(g, ":\n")
+            emit.func.phis(g, k)
+            let blk = emit.func.block_copy(g, k)
+            emit.w(g, blk.as_str())
+        }
+        k = k.wrapping_add(1usize)
+    }
+    emit.w(g, "}\n\n")
+    let text = emit.func.copy_str(&g.buf.cur)
+    g.buf.cur = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.push_str(&mut g.outs.fns, text.as_str())
+end emit.func.assemble
+
+// 確定したブロック `k` の本文の複製。
+fn emit.func.block_copy(g: &emit.G, k: usize) -> alloc.string.String<std.alloc.System> uses [alloc, io.console, process] panics may pub
+    match g.flow.blocks.get(k) {
+        Some(s) => emit.func.copy_str(s)
+        None => alloc.string.String.new(std.alloc.SYSTEM)
+    }
+end emit.func.block_copy
+
+// (2) 本体: ブロックごとに命令を `g.buf.cur` へ書き、終わりに `g.flow.blocks` へ積む。到達できないブロックは中身を書かない。
+fn emit.func.body(g: &mut emit.G, text: &str, starts: &alloc.vec.Vec<usize, std.alloc.System>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
+    let mut k = i.wrapping_add(1usize)
+    let mut state = 0usize
+    while k < j {
+        let l = emit.line_at(text, starts, k)
+        state = emit.func.body_line(g, l, state)
+        k = k.wrapping_add(1usize)
+    }
+    if state != 0usize {
+        emit.func.flush_block(g)
+    }
+end emit.func.body
+
+// 本体の 1 行。状態: 0 = まだ見出しがない、1 = 書く、2 = 到達できないブロック (書かない)。
+fn emit.func.body_line(g: &mut emit.G, l: &str, state: usize) -> usize uses [alloc, io.console, process] panics may pub
+    if emit.func.is_header(l) {
+        if state != 0usize {
+            emit.func.flush_block(g)
+        }
+        let bidx = emit.func.header_index(l)
+        g.misc.curfromblk = true
+        g.misc.curnum = bidx
+        if emit.func.reached(g, bidx) {
+            1usize
+        } else {
+            2usize
+        }
+    } else if state == 1usize {
+        emit.func.body_text(g, l)
+        1usize
+    } else {
+        state
+    }
+end emit.func.body_line
+
+// 命令・終端の 1 行を書く。
+fn emit.func.body_text(g: &mut emit.G, l: &str) -> () uses [alloc, io.console, process] panics may pub
+    if l.starts_with("%") {
+        emit.inst.inst(g, l)
+    } else if l.starts_with("br") || l.starts_with("ret") || l.starts_with("unreachable") {
+        emit.inst.term(g, l)
+    }
+end emit.func.body_text
+
+// 文字列の複製 (`String` は移せないので、中身を新しい文字列へ写す)。
+fn emit.func.copy_str(s: &alloc.string.String<std.alloc.System>) -> alloc.string.String<std.alloc.System> uses [alloc, io.console, process] panics may pub
+    let mut out = emit.util.new_str()
+    emit.util.push_str(&mut out, s.as_str())
+    out
+end emit.func.copy_str
+
+// 辺 `e` (範囲内であること)。
+fn emit.func.edge_at(g: &emit.G, e: usize) -> emit.Edge uses [io.console, process] panics may pub
+    match g.flow.edges.get(e) {
+        Some(x) => *x
+        None => core.panic.panic("internal: edge index")
+    }
+end emit.func.edge_at
+
+// 1 関数 (`text` の `starts` で `i` 行目が `fn` 行、`j` 行目が `end` 行) を LLVM の関数として `g.outs.fns` へ足す。
+fn emit.func.emit_fn(g: &mut emit.G, text: &str, starts: &alloc.vec.Vec<usize, std.alloc.System>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.reset_fn(g)
+    g.misc.fidx = g.misc.fidx.wrapping_add(1usize)
+    let head = emit.line_at(text, starts, i)
+    emit.func.store_key(g, head)
+    emit.func.store_ret(g, head)
+    emit.func.scan(g, text, starts, i, j)
+    emit.func.reach(g)
+    emit.func.body(g, text, starts, i, j)
+    emit.func.assemble(g)
+end emit.func.emit_fn
+
+// `g.buf.cur` の中身を `g.flow.blocks` に積み、新しい空の作業場所にする。
+fn emit.func.flush_block(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
+    let done = emit.func.copy_str(&g.buf.cur)
+    g.buf.cur = alloc.string.String.new(std.alloc.SYSTEM)
+    match g.flow.blocks.push(done) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+end emit.func.flush_block
+
+fn emit.func.header_index(l: &str) -> usize uses [] panics may pub
+    emit.util.dec(emit.util.after(l, 1usize))
+end emit.func.header_index
+
+// `bN(...):` のブロックの見出し。
+fn emit.func.is_header(l: &str) -> bool uses [] panics may pub
+    l.starts_with("b") && l.ends_with(":") && l.contains("(")
+end emit.func.is_header
+
+// `fn NAME key=KEY ...` の KEY。
+fn emit.func.key_of(l: &str) -> &str uses [] panics may pub
+    match l.split_once("key=") {
+        Some(q) => {
+            let (_a, r) = q
+            emit.util.head(r)
+        }
+        None => "?"
+    }
+end emit.func.key_of
+
+// 引数 `q` (ブロック `k` の `q - q0` 番目) の phi 1 行。
+fn emit.func.phi_one(g: &mut emit.G, k: usize, q0: usize, q: usize) -> () uses [alloc, io.console, process] panics may pub
+    let j = q.wrapping_sub(q0)
+    let vid = *g.lay.bpar.get(q).unwrap_or(&0usize)
+    let tid = *g.lay.bpty.get(q).unwrap_or(&0usize)
+    emit.w(g, "  %v")
+    emit.wn(g, vid)
+    emit.w(g, " = phi ")
+    emit.ty.wlty(g, tid)
+    emit.w(g, " ")
+    let mut first = true
+    if k == 0usize {
+        emit.w(g, "[ %arg")
+        emit.wn(g, j)
+        emit.w(g, ", %go ]")
+        first = false
+    }
+    let mut e = 0usize
+    while e < g.flow.edges.len() {
+        let ed = emit.func.edge_at(g, e)
+        if ed.to == k && ed.j == j {
+            if !first {
+                emit.w(g, ", ")
+            }
+            first = false
+            emit.w(g, "[ ")
+            emit.wv(g, ed.v)
+            emit.w(g, ", %")
+            emit.wfrom(g, ed.fromblk, ed.num)
+            emit.w(g, " ]")
+        }
+        e = e.wrapping_add(1usize)
+    }
+    emit.w(g, "\n")
+end emit.func.phi_one
+
+// ブロック `k` の引数の phi。入口 (0) は `go` からの `%argN` を先頭の辺にする。
+fn emit.func.phis(g: &mut emit.G, k: usize) -> () uses [alloc, io.console, process] panics may pub
+    let q0 = *g.lay.bpst.get(k).unwrap_or(&0usize)
+    let q1 = *g.lay.bpst.get(k.wrapping_add(1usize)).unwrap_or(&0usize)
+    let mut q = q0
+    while q < q1 {
+        emit.func.phi_one(g, k, q0, q)
+        q = q.wrapping_add(1usize)
+    }
+end emit.func.phis
+
+fn emit.func.push_bool(v: &mut alloc.vec.Vec<bool, std.alloc.System>, x: bool) -> () uses [alloc, io.console, process] panics may pub
+    match v.push(x) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+end emit.func.push_bool
+
+// 引数 `%v: T` を一つ登録する。
+fn emit.func.push_param(g: &mut emit.G, item: &str) -> () uses [alloc, io.console, process] panics may pub
+    let vid = emit.util.vid(emit.util.nth(item, ":", 0usize))
+    let tid = emit.ty.parse(g, emit.util.nth(item, ":", 1usize))
+    emit.util.vec_set(&mut g.lay.vty, vid, tid)
+    emit.func.push_usize(&mut g.lay.bpar, vid)
+    emit.func.push_usize(&mut g.lay.bpty, tid)
+end emit.func.push_param
+
+// ブロック `x` の後続を `stk` へ積む。
+fn emit.func.push_succs(g: &mut emit.G, x: usize) -> () uses [alloc, io.console, process] panics may pub
+    let mut e = 0usize
+    while e < g.flow.succ.len() {
+        let from = *g.flow.succ.get(e).unwrap_or(&0usize)
+        let to = *g.flow.succ.get(e.wrapping_add(1usize)).unwrap_or(&0usize)
+        if from == x {
+            emit.func.push_usize(&mut g.flow.stk, to)
+        }
+        e = e.wrapping_add(2usize)
+    }
+end emit.func.push_succs
+
+fn emit.func.push_usize(v: &mut alloc.vec.Vec<usize, std.alloc.System>, x: usize) -> () uses [alloc, io.console, process] panics may pub
+    match v.push(x) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+end emit.func.push_usize
+
+// 到達できるブロック (入口 0 から `succ` をたどる)。
+fn emit.func.reach(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
+    let nb = g.misc.nblk
+    let mut b = 0usize
+    while b < nb {
+        emit.func.push_bool(&mut g.lay.reach, false)
+        b = b.wrapping_add(1usize)
+    }
+    emit.func.push_usize(&mut g.flow.stk, 0usize)
+    while g.flow.stk.len() > 0usize {
+        let x = match g.flow.stk.pop() {
+            Some(v) => v
+            None => 0usize
+        }
+        if !emit.func.reached(g, x) {
+            emit.util.set_bool(&mut g.lay.reach, x, true)
+            emit.func.push_succs(g, x)
+        }
+    }
+end emit.func.reach
+
+// 到達できるか。
+fn emit.func.reached(g: &emit.G, k: usize) -> bool uses [] panics may pub
+    match g.lay.reach.get(k) {
+        Some(x) => *x
+        None => false
+    }
+end emit.func.reached
+
+fn emit.func.ret_text(head: &str) -> &str uses [io.console, process] panics may pub
+    match head.split_once("ret=") {
+        Some(q) => {
+            let (_a, r) = q
+            r.trim()
+        }
+        None => core.panic.panic("internal: function header without ret=")
+    }
+end emit.func.ret_text
+
+// (1) 走査: 値の型 (`vty`)、ブロックの引数 (`bpar` / `bpty` / `bpst`)、後続 (`succ`)。
+fn emit.func.scan(g: &mut emit.G, text: &str, starts: &alloc.vec.Vec<usize, std.alloc.System>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
+    let mut k = i.wrapping_add(1usize)
+    let mut cur = 0usize
+    while k < j {
+        let l = emit.line_at(text, starts, k)
+        cur = emit.func.scan_line(g, l, cur)
+        k = k.wrapping_add(1usize)
+    }
+    emit.func.push_usize(&mut g.lay.bpst, g.lay.bpar.len())
+    g.misc.nblk = g.lay.bpst.len().wrapping_sub(1usize)
+end emit.func.scan
+
+// `br_if %c, bA(..), bB(..)` の後続。
+fn emit.func.scan_br_if(g: &mut emit.G, l: &str, cur: usize) -> () uses [alloc, io.console, process] panics may pub
+    let r1 = emit.util.after_first(emit.util.after(l, 6usize), ", ")
+    let ta = emit.util.nth(r1, "), ", 0usize)
+    let tb = emit.util.nth(r1, "), ", 1usize)
+    emit.func.push_usize(&mut g.flow.succ, cur)
+    emit.func.push_usize(&mut g.flow.succ, emit.func.target(ta))
+    emit.func.push_usize(&mut g.flow.succ, cur)
+    emit.func.push_usize(&mut g.flow.succ, emit.func.target(tb))
+end emit.func.scan_br_if
+
+// 命令の型の登録 `%D: T = ...`。
+fn emit.func.scan_def(g: &mut emit.G, l: &str) -> () uses [alloc, io.console, process] panics may pub
+    let dst = emit.util.vid(emit.util.nth(l, ":", 0usize))
+    let before_eq = emit.util.nth(l, "=", 0usize)
+    let tid = emit.ty.parse(g, emit.util.nth(before_eq, ":", 1usize))
+    emit.util.vec_set(&mut g.lay.vty, dst, tid)
+end emit.func.scan_def
+
+// 1 行の走査。今のブロックの番号 `cur` を返す (見出しなら新しいブロックの番号)。
+fn emit.func.scan_line(g: &mut emit.G, l: &str, cur: usize) -> usize uses [alloc, io.console, process] panics may pub
+    if emit.func.is_header(l) {
+        let bidx = emit.func.header_index(l)
+        emit.func.push_usize(&mut g.lay.bpst, g.lay.bpar.len())
+        emit.func.scan_params(g, l)
+        bidx
+    } else if l.starts_with("%") {
+        emit.func.scan_def(g, l)
+        cur
+    } else if l.starts_with("br_if ") {
+        emit.func.scan_br_if(g, l, cur)
+        cur
+    } else if l.starts_with("br ") {
+        emit.func.push_usize(&mut g.flow.succ, cur)
+        emit.func.push_usize(&mut g.flow.succ, emit.func.target(emit.util.after(l, 3usize)))
+        cur
+    } else {
+        cur
+    }
+end emit.func.scan_line
+
+// 見出し `bN(%1: T, %2: U):` の引数を登録する。
+fn emit.func.scan_params(g: &mut emit.G, l: &str) -> () uses [alloc, io.console, process] panics may pub
+    let r = emit.util.after(l, emit.util.open_pos(l).wrapping_add(1usize))
+    let inner = match r.strip_suffix("):") {
+        Some(x) => x
+        None => core.panic.panic("internal: block header")
+    }
+    let np_item_lu = emit.util.piece_count(inner, ", ")
+    let mut kk_item_lu = 0usize
+    while kk_item_lu < np_item_lu {
+        let item = emit.util.piece_at(inner, ", ", kk_item_lu)
+        if !item.is_empty() {
+            emit.func.push_param(g, item)
+        }
+        kk_item_lu = kk_item_lu.wrapping_add(1usize)
+    }
+end emit.func.scan_params
+
+// `fn NAME key=KEY ...` の KEY を `g.flags.fkey` へ入れる。
+fn emit.func.store_key(g: &mut emit.G, head: &str) -> () uses [alloc, io.console, process] panics may pub
+    let key = emit.func.key_of(head)
+    g.flags.fkey = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.push_str(&mut g.flags.fkey, key)
+end emit.func.store_key
+
+// `fn ... ret=T` の戻り値の型を `g.flags.ret` へ入れる。
+fn emit.func.store_ret(g: &mut emit.G, head: &str) -> () uses [alloc, io.console, process] panics may pub
+    let t = emit.func.ret_text(head)
+    g.flags.ret = emit.ty.parse(g, t)
+end emit.func.store_ret
+
+// `br` / `br_if` の対象 `bN(...)` の N。
+fn emit.func.target(tok: &str) -> usize uses [] panics may pub
+    emit.util.dec(emit.util.after(tok, 1usize))
+end emit.func.target
+
+// 関数の仮引数 `T %argN` (入口ブロックの引数の並び)。
+fn emit.func.write_params(g: &mut emit.G, p0: usize, p1: usize) -> () uses [alloc, io.console, process] panics may pub
+    let mut p = p0
+    while p < p1 {
+        if p > p0 {
+            emit.w(g, ", ")
+        }
+        let tid = *g.lay.bpty.get(p).unwrap_or(&0usize)
+        emit.ty.wlty(g, tid)
+        emit.w(g, " %arg")
+        emit.wn(g, p.wrapping_sub(p0))
+        p = p.wrapping_add(1usize)
+    }
+end emit.func.write_params

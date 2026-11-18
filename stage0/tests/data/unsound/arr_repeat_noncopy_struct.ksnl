@@ -1,5 +1,3 @@
-// expect: E3002
-// `[e; N]` の値は Copy に限る (Copy でない構造体は N 個に複製できない)
 type t.Box
     n: u32
 end t.Box

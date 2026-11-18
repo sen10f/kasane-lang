@@ -6,7 +6,6 @@ fn t.Hold.put(self: &mut t.Hold, x: &u32) -> () uses [] panics never
     self.r = x
 end t.Hold.put
 
-// expect: E3060
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

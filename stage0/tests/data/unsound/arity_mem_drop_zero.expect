@@ -1,0 +1,2 @@
+expect: E2001
+note: `core.mem.drop` は引数 1 つ

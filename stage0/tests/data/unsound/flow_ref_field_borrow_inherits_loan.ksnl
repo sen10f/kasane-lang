@@ -1,4 +1,3 @@
-// expect: E3010
 type t.P
     v: alloc.vec.Vec<alloc.string.String, std.alloc.System>
 end t.P

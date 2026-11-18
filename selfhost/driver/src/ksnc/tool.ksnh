@@ -1,0 +1,180 @@
+// dir を絶対パスにする。PWD (シェルの作業ディレクトリ) を前に付ける。子プロセスは作業ディレクトリを変えるので、
+// ksn や clang の場所も絶対にしておく必要がある。
+fn ksnc.tool.absolute(pwd: &str, dir: &str) -> Result<alloc.string.String<std.alloc.System>, ksnc.Failure> uses [alloc] panics never pub
+    if pwd == "" || dir.starts_with("/") {
+        return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, dir)?)
+    }
+    Ok(std.path.join(pwd, dir)?)
+end ksnc.tool.absolute
+
+// 接頭辞 p の後ろ (p で始まらなければ空)。
+fn ksnc.tool.after['a](s: &'a str, p: &str) -> &'a str uses [] panics never pub
+    match s.strip_prefix(p) {
+        Some(v) => v
+        None => ksnc.tool.empty()
+    }
+end ksnc.tool.after
+
+// 実際の C コンパイラ: KSNC_CLANG (ksnc build が ksn に渡す)、無ければ KSN_CLANG、それも無ければ clang。
+fn ksnc.tool.clang() -> Result<alloc.string.String<std.alloc.System>, ksnc.Failure> uses [alloc, env] panics never pub
+    let a = ksnc.tool.env_or("KSNC_CLANG")
+    if a != "" {
+        return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, a)?)
+    }
+    let b = ksnc.tool.env_or("KSN_CLANG")
+    if b != "" {
+        return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, b)?)
+    }
+    Ok(alloc.string.String.from_str(std.alloc.SYSTEM, "clang")?)
+end ksnc.tool.clang
+
+// 子プロセスの出力を標準エラーへ流す (失敗時の理由を出す用)。
+fn ksnc.tool.dump(out: &alloc.vec.Vec<u8, std.alloc.System>, err: &alloc.vec.Vec<u8, std.alloc.System>) -> Result<(), std.io.Error> uses [io.console] panics never pub
+    core.mem.drop(std.io.write_stderr(out.as_slice())?)
+    core.mem.drop(std.io.write_stderr(err.as_slice())?)
+    Ok(())
+end ksnc.tool.dump
+
+// 空の文字列 (環境変数の無いとき用)。
+fn ksnc.tool.empty() -> &'static str uses [] panics never pub
+    ""
+end ksnc.tool.empty
+
+// kasane.toml の [package] の entry (引用符の中身)。無ければ失敗 (ksn build と同じく、入口のないパッケージは作れない)。
+fn ksnc.tool.entry(dir: &str) -> Result<alloc.string.String<std.alloc.System>, ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
+    let path = resolve.manifest.join(dir, "kasane.toml")?
+    let bytes = resolve.load.read_bytes(path.as_str())?
+    let text = match core.str.from_utf8(bytes.as_slice()) {
+        Ok(s) => s
+        Err(_e) => return Err(ksnc.Failure.Tool)
+    }
+    let mut sec = 0usize
+    for raw in text.split("\n") {
+        let line = raw.trim()
+        if line == "[package]" {
+            sec = 1usize
+        } else if line.starts_with("[") {
+            sec = 0usize
+        } else if sec == 1usize {
+            match line.split_once(" = ") {
+                Some((k, v)) => {
+                    if k == "entry" {
+                        let q = resolve.manifest.quoted(v)
+                        return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, q)?)
+                    }
+                }
+                None => core.mem.drop(0u8)
+            }
+        }
+    }
+    ksnc.tool.say_err("ksnc: kasane.toml に entry がない\n")?
+    Err(ksnc.Failure.Tool)
+end ksnc.tool.entry
+
+// 環境変数の値 (無ければ空)。
+fn ksnc.tool.env_or(name: &str) -> &'static str uses [env] panics never pub
+    let v = std.env.var(name)
+    match v {
+        Some(s) => s
+        None => ksnc.tool.empty()
+    }
+end ksnc.tool.env_or
+
+// 引数の i 番目 (無ければ空)。
+fn ksnc.tool.env_or_arg(i: usize) -> &'static str uses [env] panics never pub
+    let v = std.env.arg(i)
+    match v {
+        Some(s) => s
+        None => ksnc.tool.empty()
+    }
+end ksnc.tool.env_or_arg
+
+// 子プロセスの結果が 0 でなければ、その出力を流して失敗にする。
+fn ksnc.tool.expect_ok(what: &str, code: i32, out: &alloc.vec.Vec<u8, std.alloc.System>, err: &alloc.vec.Vec<u8, std.alloc.System>) -> Result<(), ksnc.Failure> uses [io.console] panics never pub
+    if code == 0i32 {
+        return Ok(())
+    }
+    ksnc.tool.say_err(what)?
+    ksnc.tool.dump(out, err)?
+    Err(ksnc.Failure.Tool)
+end ksnc.tool.expect_ok
+
+// ksn の実行ファイル: KSNC_KSN、無ければ <root>/stage0/target/release/ksn、それも無ければ PATH の ksn。
+fn ksnc.tool.ksn_path(root: &str) -> Result<alloc.string.String<std.alloc.System>, ksnc.Failure> uses [alloc, env, io.fs] panics never pub
+    match std.env.var("KSNC_KSN") {
+        Some(p) => return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, p)?)
+        None => core.mem.drop(0u8)
+    }
+    let cand = std.path.join(root, "stage0/target/release/ksn")?
+    if std.fs.exists(cand.as_str()) {
+        return Ok(cand)
+    }
+    Ok(alloc.string.String.from_str(std.alloc.SYSTEM, "ksn")?)
+end ksnc.tool.ksn_path
+
+// リポジトリの根: dir から上へ辿って `spec/stdlib` を含む最初のディレクトリ (6 段まで)。
+fn ksnc.tool.root(dir: &str) -> Result<alloc.string.String<std.alloc.System>, ksnc.Failure> uses [alloc, io.console, io.fs] panics never pub
+    let mut base = alloc.string.String.from_str(std.alloc.SYSTEM, dir)?
+    let mut k = 0usize
+    while k < 6usize {
+        let probe = std.path.join(base.as_str(), "spec/stdlib")?
+        if std.fs.exists(probe.as_str()) {
+            return Ok(base)
+        }
+        let up = std.path.join(base.as_str(), "..")?
+        base = up
+        k = k.wrapping_add(1usize)
+    }
+    ksnc.tool.say_err("ksnc: spec/stdlib が見つからない (パッケージの上の 6 段まで探した)\n")?
+    Err(ksnc.Failure.Tool)
+end ksnc.tool.root
+
+// リポジトリの根: KSNC_ROOT があればそれ、無ければ dir から辿る (tool.root)。リポジトリの外の作業場所から使うとき用。
+fn ksnc.tool.root_of(dir: &str) -> Result<alloc.string.String<std.alloc.System>, ksnc.Failure> uses [alloc, env, io.console, io.fs] panics may pub
+    match std.env.var("KSNC_ROOT") {
+        Some(r) => return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, r)?)
+        None => core.mem.drop(0u8)
+    }
+    ksnc.tool.root(dir)
+end ksnc.tool.root_of
+
+// 子プロセスを走らせ、出力 (標準出力・標準エラー) を標準出力へ流す。終了コードを返す。
+fn ksnc.tool.run_show(cmd: std.process.Command, what: &str) -> Result<i32, ksnc.Failure> uses [alloc, io.console, process] panics may pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut err = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let st = cmd.output(&mut out, &mut err)?
+    ksnc.tool.show(&out)?
+    ksnc.tool.show(&err)?
+    if st.code != 0i32 {
+        ksnc.tool.say_err(what)?
+    }
+    Ok(st.code)
+end ksnc.tool.run_show
+
+// 標準エラーへ書く (末尾の改行は呼び手が付ける)。
+fn ksnc.tool.say_err(text: &str) -> Result<(), std.io.Error> uses [io.console] panics never pub
+    core.mem.drop(std.io.write_stderr(text.as_bytes())?)
+    Ok(())
+end ksnc.tool.say_err
+
+// バイト列を、末尾の改行を除いて標準出力へ流す (空なら何もしない)。
+fn ksnc.tool.show(b: &alloc.vec.Vec<u8, std.alloc.System>) -> Result<(), ksnc.Failure> uses [io.console] panics may pub
+    if b.len() == 0usize {
+        return Ok(())
+    }
+    let text = match core.str.from_utf8(b.as_slice()) {
+        Ok(s) => s
+        Err(_e) => return Err(ksnc.Failure.Tool)
+    }
+    std.io.print_line(text.trim_end())?
+    Ok(())
+end ksnc.tool.show
+
+// 標準ライブラリの場所: KSN_STDLIB、無ければ <root>/spec/stdlib。
+fn ksnc.tool.std_dir(root: &str) -> Result<alloc.string.String<std.alloc.System>, ksnc.Failure> uses [alloc, env] panics never pub
+    match std.env.var("KSN_STDLIB") {
+        Some(p) => return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, p)?)
+        None => core.mem.drop(0u8)
+    }
+    Ok(std.path.join(root, "spec/stdlib")?)
+end ksnc.tool.std_dir

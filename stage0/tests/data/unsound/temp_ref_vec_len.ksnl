@@ -4,7 +4,6 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     Ok(())
 end t.main
 
-// expect: E3010
 fn t.make_vec() -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics never
     alloc.vec.Vec.new(std.alloc.SYSTEM)
 end t.make_vec

@@ -1,0 +1,97 @@
+enum resolve.Failure derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Io(std.io.Error)
+    Manifest
+end resolve.Failure
+
+fn resolve.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.fs] panics never
+    let pkg = match std.env.arg(0usize) {
+        Some(s) => s
+        None => return Ok(())
+    }
+    let std_dir = match std.env.arg(1usize) {
+        Some(s) => s
+        None => return Ok(())
+    }
+    let man = resolve.manifest.read(pkg)?
+    // (1) 読み込み: 自パッケージ、直接の path 依存の src/、標準ライブラリ。
+    let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let own_src = resolve.manifest.join(pkg, "src")?
+    resolve.load.collect(own_src.as_str(), "", true, &mut srcs)?
+    let deps = man.deps
+    for d in deps.as_slice().iter() {
+        let dir = resolve.manifest.join(pkg, d.path.as_str())?
+        let dsrc = resolve.manifest.join(dir.as_str(), "src")?
+        resolve.load.collect(dsrc.as_str(), "", false, &mut srcs)?
+    }
+    resolve.load.collect(std_dir, "", false, &mut srcs)?
+    let mut rep = resolve.report.new()?
+    // (2) 表: 全ファイルの定義と列挙子。
+    let mut t = resolve.table.new()?
+    let mut i = 0usize
+    for s in srcs.as_slice().iter() {
+        match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut rep)? {
+            Some(p) => resolve.table.add_file(&mut t, &p, s.text.as_slice(), i, &mut rep)?
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    // (3) 自パッケージの定義一覧と本体の解決。
+    i = 0usize
+    for s in srcs.as_slice().iter() {
+        if s.own {
+            match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut rep)? {
+                Some(p) => {
+                    rep.path.clear()
+                    rep.path.push_str(s.path.as_str())?
+                    resolve.report.defs(&mut rep, &p, s.text.as_slice())?
+                    resolve.walk.file(&t, &p, s.text.as_slice(), i, &mut rep)?
+                }
+                None => core.mem.drop(0u8)
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    rep.text.push_str("summary refs ")?
+    rep.text.push_u64(u64.from_usize(rep.refs))?
+    rep.text.push_str(" errors ")?
+    rep.text.push_u64(u64.from_usize(rep.errors))?
+    rep.text.push_str(" files ")?
+    rep.text.push_u64(u64.from_usize(srcs.len()))?
+    rep.text.push('\n')?
+    std.io.print_line(rep.text.as_str())?
+    Ok(())
+end resolve.main
+
+// 1 ファイルを解析する。構文エラーは報告して None (そのファイルは表にも解決にも入れない)。
+fn resolve.parse_file(src: &[u8], path: &str, sig: bool, rep: &mut resolve.report.Report) -> Result<Option<parse.cur.P>, resolve.Failure> uses [alloc] panics never pub
+    let mut toks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    rep.path.clear()
+    rep.path.push_str(path)?
+    rep.sig = sig
+    match parse.lex.lex(src, &mut toks) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(parse.err.Error.Syntax(a, _b, c, d)) => {
+            resolve.report.syntax(rep, a, c, d)?
+            return Ok(None)
+        }
+        Err(parse.err.Error.Alloc(e)) => return Err(resolve.Failure.Alloc(e))
+    }
+    let mut p = match parse.cur.new(toks) {
+        Ok(q) => q
+        Err(parse.err.Error.Syntax(a, _b, c, d)) => {
+            resolve.report.syntax(rep, a, c, d)?
+            return Ok(None)
+        }
+        Err(parse.err.Error.Alloc(e)) => return Err(resolve.Failure.Alloc(e))
+    }
+    match parse.def.file(&mut p, src, sig) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(parse.err.Error.Syntax(a, _b, c, d)) => {
+            resolve.report.syntax(rep, a, c, d)?
+            return Ok(None)
+        }
+        Err(parse.err.Error.Alloc(e)) => return Err(resolve.Failure.Alloc(e))
+    }
+    Ok(Some(p))
+end resolve.parse_file

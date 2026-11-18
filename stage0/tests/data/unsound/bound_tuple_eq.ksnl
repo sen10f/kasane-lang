@@ -1,4 +1,3 @@
-// expect: E2030
 type t.Plain
     a: u8
 end t.Plain

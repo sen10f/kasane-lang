@@ -2,7 +2,6 @@ type t.Boxed
     x: u32
 end t.Boxed
 
-// expect: E4001
 enum t.MyError derive [Debug, Clone, Copy, PartialEq, From] pub
     Io(std.io.Error)
     Alloc(alloc.alloc.AllocError)

@@ -11,7 +11,6 @@ fn parse.expr.and_expr(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err
     Ok(l)
 end parse.expr.and_expr
 
-// `[` で始まる式: 配列・繰り返し配列 `[x; N]`。
 fn parse.expr.array(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let at = p.pos
     parse.cur.advance(p)
@@ -43,7 +42,6 @@ fn parse.expr.bin(p: &mut parse.cur.P, op: parse.tok.Tok, l: usize, r: usize) ->
     parse.ast.add3(&mut p.ast, parse.ast.Kind.Bin, at, usize.from_u32(op.code), l, r)
 end parse.expr.bin
 
-// 二項演算子 5 段 (| ^ & + - * / %)。lv = 5 で単項へ。
 fn parse.expr.bin_level(p: &mut parse.cur.P, lv: usize, ns: bool) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     if lv == 5usize {
         return parse.expr.unary(p, ns)
@@ -61,7 +59,6 @@ fn parse.expr.bin_level(p: &mut parse.cur.P, lv: usize, ns: bool) -> Result<usiz
     Ok(l)
 end parse.expr.bin_level
 
-// `{` 文 ... `}`。Block の a = 文の List。
 fn parse.expr.block(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     parse.cur.enter(p)?
     let at = p.pos
@@ -80,7 +77,6 @@ fn parse.expr.block(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses 
     parse.ast.add1(&mut p.ast, parse.ast.Kind.Block, at, l)
 end parse.expr.block
 
-// `(` e, ... `)`。List を返す。末尾の `,` は許す。
 fn parse.expr.call_args(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let at = p.pos
     parse.cur.expect_ch(p, b'(')?
@@ -100,7 +96,6 @@ fn parse.expr.call_args(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> u
     parse.ast.list(&mut p.ast, &items, at)
 end parse.expr.call_args
 
-// キャプチャ 1 つ。Capture の a = 0 move / 1 & / 2 &mut、b = 名前のトークン。
 fn parse.expr.capture(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let at = p.pos
     let mut mode = 0usize
@@ -115,7 +110,6 @@ fn parse.expr.capture(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> use
     parse.ast.add2(&mut p.ast, parse.ast.Kind.Capture, at, mode, name)
 end parse.expr.capture
 
-// `fn(params) -> T capture [..] { .. }`。
 fn parse.expr.closure(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let at = p.pos
     parse.cur.advance(p)
@@ -141,8 +135,6 @@ fn parse.expr.closure(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> use
     parse.ast.add4(&mut p.ast, parse.ast.Kind.Closure, at, ps, ret, cl, body)
 end parse.expr.closure
 
-// 比較は非結合で 1 回だけ。`式 is パターン` もここで処理する
-// (grammar.ebnf の cmp_expr と Rust 版 parser.rs の cmp_expr に合わせる)。
 fn parse.expr.cmp_expr(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let l = parse.expr.bin_level(p, 0usize, ns)?
     let op = parse.cur.tok(p)
@@ -171,7 +163,6 @@ fn parse.expr.cmp_expr(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err
     Ok(l)
 end parse.expr.cmp_expr
 
-// 式。
 fn parse.expr.expr(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096 pub
     parse.cur.enter(p)?
     let r = parse.expr.expr_inner(p, ns)
@@ -227,8 +218,6 @@ fn parse.expr.if_expr(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> use
     parse.ast.add3(&mut p.ast, parse.ast.Kind.If, at, cond, then, els)
 end parse.expr.if_expr
 
-// `if let` の残り (`let` の後)。stage0/src/parser.rs と同じく `match 式 { パターン => { .. }, _ => else側 }` に下ろす。
-// else が無いときは空のブロックを入れる。
 fn parse.expr.if_let_rest(p: &mut parse.cur.P, at: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let pat = parse.pat.pattern(p)?
     parse.cur.expect_ch(p, b'=')?
@@ -275,7 +264,6 @@ fn parse.expr.is_unary_op(code: u32) -> bool uses [] panics never
     code == 45u32 || code == 33u32 || code == 42u32
 end parse.expr.is_unary_op
 
-// 構造体リテラルの `{` の先読み (`名前 :`)。
 fn parse.expr.looks_struct_lit(p: &parse.cur.P) -> bool uses [] panics never
     let a = parse.cur.peek(p, 1usize)
     let b = parse.cur.peek(p, 2usize)
@@ -313,7 +301,6 @@ fn parse.expr.or_expr(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err.
     Ok(l)
 end parse.expr.or_expr
 
-// `(` で始まる式: ユニット・括弧・タプル。
 fn parse.expr.paren(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let at = p.pos
     parse.cur.advance(p)
@@ -337,7 +324,6 @@ fn parse.expr.paren(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses 
     parse.ast.add1(&mut p.ast, parse.ast.Kind.TupleE, at, l)
 end parse.expr.paren
 
-// 名前で始まる式: パス、`::<型引数>`、構造体リテラル。
 fn parse.expr.path(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let at = p.pos
     let start = parse.cur.start_byte(p)
@@ -357,7 +343,6 @@ fn parse.expr.path(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err.Err
     parse.ast.add3(&mut p.ast, parse.ast.Kind.Path, at, start, stop, targs)
 end parse.expr.path
 
-// 後置: `.名前` `.名前(..)` `(..)` `[..]` `?`。
 fn parse.expr.postfix(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let mut e = parse.expr.primary(p, ns)?
     loop {
@@ -422,7 +407,6 @@ fn parse.expr.primary(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err.
     Err(parse.cur.fail(p, parse.err.E_EXPECT_EXPR, 0u32))
 end parse.expr.primary
 
-// 予約語で始まる式: true / false / self / if / match / loop / while / for / unsafe / with / fn。
 fn parse.expr.primary_kw(p: &mut parse.cur.P, code: u32) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let at = p.pos
     if parse.tok.is_bool_kw(code) {
@@ -480,7 +464,6 @@ fn parse.expr.primary_kw(p: &mut parse.cur.P, code: u32) -> Result<usize, parse.
     Err(parse.cur.fail(p, parse.err.E_EXPECT_EXPR, 0u32))
 end parse.expr.primary_kw
 
-// 文: let / 代入 / 式文。
 fn parse.expr.stmt(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096 pub
     let at = p.pos
     if parse.cur.accept_kw(p, parse.tok.KW_LET) {
@@ -544,8 +527,6 @@ fn parse.expr.unary(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err.Er
     parse.expr.postfix(p, ns)
 end parse.expr.unary
 
-// `with [mut] 名前 = 初期化 close 後始末 { .. }`。With: a = 名前トークン, b = mut, c = 初期化,
-// d = 後始末, e = 本体。
 fn parse.expr.with_expr(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let at = p.pos
     parse.cur.advance(p)

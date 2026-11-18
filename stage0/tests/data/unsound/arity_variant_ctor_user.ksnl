@@ -1,5 +1,3 @@
-// expect: E2001
-// 利用者の列挙子 (`A(i32, i32)` に 1 つ)
 enum t.E pub
     A(i32, i32)
     B

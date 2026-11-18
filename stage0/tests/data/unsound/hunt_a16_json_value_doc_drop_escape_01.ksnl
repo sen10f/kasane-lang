@@ -1,5 +1,3 @@
-// expect: E3002
-// std.json.parse で得た Doc から root() で Value (添字だけ) を取り、Doc を drop してから読む
 fn t.bad() -> () uses [alloc] panics never
     match std.json.parse("{\"a\": 42}") {
         Ok(doc) => {

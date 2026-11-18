@@ -1,5 +1,3 @@
-// 型検査 (セルフホストの段の一部)。使い方: ksn run -- PKG_DIR STD_DIR
-// 出力: `error CODE 路径:行: 内容` の行と、末尾の `summary errors N unknown M files K`。
 fn types.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.fs] panics never
     let pkg = match std.env.arg(0usize) {
         Some(s) => s

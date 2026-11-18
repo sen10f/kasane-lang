@@ -1,5 +1,3 @@
-// expect: E3040
-// with の本体での値の分解は消費 (E3040)
 type t.Res linear
     id: u32
 end t.Res

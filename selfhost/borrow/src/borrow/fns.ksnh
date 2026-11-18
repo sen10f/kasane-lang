@@ -1,0 +1,77 @@
+// 1 ファイルの関数定義をすべて検査する。
+fn borrow.fns.check_file(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut ds = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for d in cx.p.ast.defs.as_slice().iter() {
+        ds.push(*d)?
+    }
+    for d in ds.as_slice().iter() {
+        let n = parse.ast.get(&cx.p.ast, *d)
+        if n.kind == parse.ast.Kind.FnDef {
+            borrow.fns.check_fn(tab, cx, *d)?
+        }
+    }
+    Ok(())
+end borrow.fns.check_file
+
+// 関数定義 d 1 件を検査する (本体がない宣言は読まない)。
+fn borrow.fns.check_fn(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, d: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let fnode = parse.ast.get(&cx.p.ast, d)
+    if fnode.d == 0usize {
+        return Ok(())
+    }
+    let body = parse.ast.get(&cx.p.ast, fnode.d)
+    let sg = parse.ast.get(&cx.p.ast, fnode.c)
+    cx.dat.locs.truncate(0usize)
+    cx.dat.brs.truncate(0usize)
+    cx.dat.depth = 0usize
+    cx.dat.nexts.truncate(0usize)
+    cx.dat.nexts.push(0usize)?
+    cx.dat.bends.truncate(0usize)
+    let fin = borrow.base.block_end(&cx.p, body.tok)
+    cx.dat.bends.push(fin)?
+    cx.fnr = borrow.cx.FnInfo { ret_ref: 0usize, ret_life: 0usize, elide: 0usize }
+    if sg.c != 0usize {
+        let rn = parse.ast.get(&cx.p.ast, sg.c)
+        if rn.kind == parse.ast.Kind.TRef {
+            cx.fnr.ret_ref = 1usize
+            cx.fnr.ret_life = rn.c
+        }
+    }
+    let cnt = resolve.ast.count(&cx.p, sg.b)
+    let mut refs = 0usize
+    let mut sole = 0usize
+    let mut self_k = 0usize
+    for k in core.iter.range(0usize, cnt) {
+        let prm = parse.ast.get(&cx.p.ast, resolve.ast.item(&cx.p, sg.b, k))
+        let cls = borrow.base.ty_cls(tab, &cx.p, cx.src.as_slice(), prm.b)
+        let idx = borrow.cx.declare_tok(cx, prm.a, cls, 0usize)?
+        let tn = parse.ast.get(&cx.p.ast, prm.b)
+        let isref = borrow.base.flag(tn.kind == parse.ast.Kind.TRef)
+        let life = borrow.base.pick(isref == 1usize, tn.c, 0usize)
+        borrow.cx.set_ref_info(cx, idx, isref, life, 1usize)
+        if isref == 1usize {
+            refs = refs.wrapping_add(1usize)
+            sole = idx.wrapping_add(1usize)
+            if resolve.ast.tok_text(&cx.p, cx.src.as_slice(), prm.a) == "self" {
+                self_k = idx.wrapping_add(1usize)
+            }
+        }
+    }
+    if self_k != 0usize {
+        cx.fnr.elide = self_k
+    } else {
+        if refs == 1usize {
+            cx.fnr.elide = sole
+        }
+    }
+    core.mem.drop(borrow.walk.block(tab, cx, fnode.d, 1usize)?)
+    for k in core.iter.range(0usize, cnt) {
+        let l = borrow.cx.loc(cx, k)
+        if l.cl == borrow.base.LIN && l.st == borrow.cx.ST_LIVE {
+            borrow.cx.diag(cx, "E3003", fnode.tok, "線形の引数を消費せずに関数を出る")?
+        }
+    }
+    cx.dat.locs.truncate(0usize)
+    cx.dat.brs.truncate(0usize)
+    Ok(())
+end borrow.fns.check_fn

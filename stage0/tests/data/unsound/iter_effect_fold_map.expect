@@ -1,0 +1,2 @@
+expect: E4001
+note: map のクロージャが io.console を使うが、fold / main が uses [] なので効果が漏れて拒否されるはず

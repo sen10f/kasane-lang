@@ -1,4 +1,3 @@
-// expect: E3010
 fn t.b() -> usize uses [alloc] panics never
     let mut src = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match src.push(1u32) {

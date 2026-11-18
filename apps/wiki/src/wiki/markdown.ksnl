@@ -32,7 +32,6 @@ fn wiki.markdown.find_closing_backtick(text: &str, from: usize) -> Option<usize>
     None
 end wiki.markdown.find_closing_backtick
 
-// 段落を flush して `<p>` で包む。
 fn wiki.markdown.flush_paragraph(out: &mut alloc.string.String<std.alloc.System>, block: &mut alloc.string.String<std.alloc.System>) -> Result<(), wiki.error.Error> uses [alloc] panics never
     let inline = wiki.markdown.inline(block.as_str())?
     out.push_str("<p>")?
@@ -69,7 +68,6 @@ fn wiki.markdown.heading_level(line: &str) -> Option<u32> uses [] panics never
     }
 end wiki.markdown.heading_level
 
-// インライン要素を変換: コード、強調、リンク、残りはエスケープ。
 fn wiki.markdown.inline(text: &str) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     let mut i = 0usize
@@ -79,7 +77,6 @@ fn wiki.markdown.inline(text: &str) -> Result<alloc.string.String<std.alloc.Syst
             Some(v) => *v
             None => 0u8
         }
-        // インラインコード `...`
         if b == b'`' {
             let closing = wiki.markdown.find_closing_backtick(text, i.saturating_add(1usize))
             match closing {
@@ -99,14 +96,12 @@ fn wiki.markdown.inline(text: &str) -> Result<alloc.string.String<std.alloc.Syst
                 }
             }
         }
-        // 太字 **...**
         if i.saturating_add(1usize) < total && b == b'*' {
             let b2 = match text.as_bytes().get(i.saturating_add(1usize)) {
                 Some(v) => *v
                 None => 0u8
             }
             if b2 == b'*' {
-                // **強調**: 閉じる "**" を探す（単独の "*" では閉じない）
                 let mut p = i.saturating_add(2usize)
                 let mut strong_ok = false
                 let mut found2 = 0usize
@@ -135,12 +130,10 @@ fn wiki.markdown.inline(text: &str) -> Result<alloc.string.String<std.alloc.Syst
                     i = found2.saturating_add(2usize)
                     continue
                 }
-                // "**" の閉じが無ければ最初の "*" をそのまま出力
                 out.push('*')?
                 i = i.saturating_add(1usize)
                 continue
             }
-            // イタリック *...*
             let closing = wiki.markdown.find_closing(text, i.saturating_add(1usize), b'*')
             match closing {
                 Some(found) => {
@@ -159,7 +152,6 @@ fn wiki.markdown.inline(text: &str) -> Result<alloc.string.String<std.alloc.Syst
                 }
             }
         }
-        // [[WikiPage]] ウィキリンク
         if i.saturating_add(1usize) < total && b == b'[' {
             let b2 = match text.as_bytes().get(i.saturating_add(1usize)) {
                 Some(v) => *v
@@ -198,7 +190,6 @@ fn wiki.markdown.inline(text: &str) -> Result<alloc.string.String<std.alloc.Syst
                     }
                 }
             }
-            // [text](url) リンク
             let closing = wiki.markdown.find_closing(text, i.saturating_add(1usize), b']')
             match closing {
                 Some(found) => {
@@ -244,7 +235,6 @@ fn wiki.markdown.inline(text: &str) -> Result<alloc.string.String<std.alloc.Syst
                 }
             }
         }
-        // それ以外は 1 文字出力（ASCII 以外は UTF-8 バイト列そのままコピー）
         let cp = match char.try_from_u32(u32.from_u8(b)) {
             Some(ch) => ch
             None => {
@@ -287,7 +277,6 @@ fn wiki.markdown.is_blank(line: &str) -> bool uses [] panics never
     true
 end wiki.markdown.is_blank
 
-// `s` の `from` から `to` までの部分文字列を返す（`str` に `sub` がないためバイト列経由で取得）。
 fn wiki.markdown.substring(s: &str, from: usize, to: usize) -> &str uses [] panics never pub
     let bytes = s.as_bytes()
     match bytes.sub(from, to) {
@@ -299,10 +288,6 @@ fn wiki.markdown.substring(s: &str, from: usize, to: usize) -> &str uses [] pani
     }
 end wiki.markdown.substring
 
-// Markdown の部分集合を HTML に変換する。
-// 対応: 見出し (1-6 レベル)、段落、強調 (**bold / *italic*)、リンク ([text](url) と [[WikiPage]])、
-// 箇条書き (- item)、コード (`inline` と ```fenced```)。
-// 入力中のテキストは必ず HTML エスケープする。
 fn wiki.markdown.to_html(text: &str) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     let mut block = alloc.string.String.new(std.alloc.SYSTEM)

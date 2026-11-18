@@ -1,4 +1,3 @@
-// expect: E3002
 fn t.consume(s: alloc.string.String) -> () uses [alloc] panics never
     core.mem.drop(s)
 end t.consume

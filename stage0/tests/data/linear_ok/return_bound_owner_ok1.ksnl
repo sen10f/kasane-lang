@@ -6,7 +6,6 @@ fn t.f(x: &u32) -> Option<&u32> uses [] panics never
     }
 end t.f
 
-// ok: 返す値は引数の借用だけ
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

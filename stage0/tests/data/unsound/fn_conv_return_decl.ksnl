@@ -1,4 +1,3 @@
-// expect: E4001
 fn t.conv(p: fn() -> u32 uses [io.console] panics may) -> fn() -> u32 uses [] panics never uses [] panics never
     p
 end t.conv

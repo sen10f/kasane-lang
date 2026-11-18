@@ -1,5 +1,3 @@
-// expect: E3031
-// &self メソッドから &mut 内部参照を返す（共有から可変への再借用＝不可）
 type t.B
     v: u32
 end t.B

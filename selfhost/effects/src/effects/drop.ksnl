@@ -1,10 +1,3 @@
-// E4013 (5.3): 再帰を含む型 (自己参照・相互再帰) には `core.ops.Drop` の明示実装か
-// `derive [Drop]` が要る。
-// Rust 版 (stage0/src/check.rs の recursive_types と check_declarations) の写し。
-// 型の欄 (type の欄の型、enum の各 variant の型) に書かれた型名の有向グラフで、閉路に乗る型を再帰とみなす。
-// 比べるのは書かれたままの名前 (Rust 版と同じ)。対象はユーザーの単位 (own かつ sig でない) だけ。
-// Drop の実装は、ユーザーの `impl core.ops.Drop for 型` の対象型の中に型名が出るものを数える
-// (ty_mentions と同じ)。
 type effects.drop.Acc pub
     nm: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
     un: alloc.vec.Vec<usize, std.alloc.System> pub
@@ -27,7 +20,6 @@ fn effects.drop.acc_new() -> Result<effects.drop.Acc, alloc.alloc.AllocError> us
     Ok(acc)
 end effects.drop.acc_new
 
-// 再帰する型 (閉路に乗る型) で Drop がないものに E4013 を出す。診断は定義の行で、パスは定義のあるファイル。
 fn effects.drop.check(acc: &mut effects.walk.Acc, tout: &types.export.Out) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let mut d = effects.drop.acc_new()?
     let mut i = 0usize
@@ -40,7 +32,6 @@ fn effects.drop.check(acc: &mut effects.walk.Acc, tout: &types.export.Out) -> Re
         }
         i = i.wrapping_add(1usize)
     }
-    // 辺: 型 f の欄に名前 j が出る (書かれた名前が一致する) ならば f → j。
     let mut edges = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for o in core.iter.range(0usize, d.onm.len()) {
         let f = match d.ofr.as_slice().get(o) {
@@ -116,7 +107,6 @@ fn effects.drop.check(acc: &mut effects.walk.Acc, tout: &types.export.Out) -> Re
     Ok(())
 end effects.drop.check
 
-// 単位 unit の型の定義と Drop の実装を集める。
 fn effects.drop.collect(d: &mut effects.drop.Acc, p: &parse.cur.P, src: &[u8], unit: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     for dn in p.ast.defs.as_slice().iter() {
         let n = parse.ast.get(&p.ast, *dn)
@@ -153,7 +143,6 @@ fn effects.drop.collect(d: &mut effects.drop.Acc, p: &parse.cur.P, src: &[u8], u
     Ok(())
 end effects.drop.collect
 
-// derive の並び (List の Effect、a は名前の字句位置) に Drop があるか。
 fn effects.drop.has_derive(p: &parse.cur.P, src: &[u8], l: usize) -> bool uses [] panics never pub
     for k in core.iter.range(0usize, resolve.ast.count(p, l)) {
         let e = parse.ast.get(&p.ast, resolve.ast.item(p, l, k))
@@ -164,7 +153,6 @@ fn effects.drop.has_derive(p: &parse.cur.P, src: &[u8], l: usize) -> bool uses [
     false
 end effects.drop.has_derive
 
-// 型の定義の 1 項目 (FieldDecl の型、Variant の各型) の中の型名。
 fn effects.drop.item_names(p: &parse.cur.P, it: usize, out: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = parse.ast.get(&p.ast, it)
     if n.kind == parse.ast.Kind.FieldDecl {
@@ -178,7 +166,6 @@ fn effects.drop.item_names(p: &parse.cur.P, it: usize, out: &mut alloc.vec.Vec<u
     Ok(())
 end effects.drop.item_names
 
-// 型の木の中の型名 (TNamed の節) を out に集める。Rust の collect_ty_names と同じ節 (引数・参照・ポインタ・添字・組) をたどる。
 fn effects.drop.names(p: &parse.cur.P, ty: usize, out: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
     if ty == 0usize {
         return Ok(())
@@ -207,7 +194,6 @@ fn effects.drop.names(p: &parse.cur.P, ty: usize, out: &mut alloc.vec.Vec<usize,
     Ok(())
 end effects.drop.names
 
-// 型の表の名前 (String) を作る。
 fn effects.drop.own_text(s: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
     o.push_str(s)?

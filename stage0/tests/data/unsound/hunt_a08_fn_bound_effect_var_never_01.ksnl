@@ -1,4 +1,3 @@
-// expect: E4001
 fn t.gen[F: core.ops.Fn<(), u32, E, P>, E: uses, P: panics](f: F) -> u32 uses [] panics never
     f.call(())
 end t.gen

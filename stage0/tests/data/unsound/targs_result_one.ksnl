@@ -1,5 +1,3 @@
-// expect: E2023
-// `Result` の型引数は 2 つ
 fn t.f() -> Result<u32> uses [] panics never
     Ok(1u32)
 end t.f

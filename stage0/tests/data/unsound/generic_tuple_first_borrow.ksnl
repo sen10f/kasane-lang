@@ -9,7 +9,6 @@ fn t.bad() -> usize uses [alloc] panics never
     }
 end t.bad
 
-// expect: E3010
 fn t.fst[A, B](p: (A, B)) -> A uses [] panics never
     let (a, b) = p
     core.mem.drop(b)

@@ -1,4 +1,3 @@
-// expect: E2021
 fn t.f(n: u32) -> u32 uses [] panics never
     match n {
         1u32 => 1u32

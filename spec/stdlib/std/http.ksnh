@@ -1,0 +1,509 @@
+// `std.http`: HTTP/1.0・1.1 の要求の解析と応答の組み立て。すべて Kasane で書いた規範 (`.sig` は持たない)。
+// 解析は受け取ったバイト列の上で行う。`Decoder` は読み残しを持つので、keep-alive の 1 接続で
+// 複数の要求を順に取れる (パイプライン・同じ接続の次の要求)。読み書きは `std.io.Read` / `std.io.Write`
+// の実装 (`TcpStream`、`std.tls.TlsStream` など) を境界で受ける。
+// 上限: 要求行と空行までのヘッダの大きさは `max_head`、本体 (`Content-Length` または chunked の合計) は
+// `max_body`。超えたら `HeadTooLarge` / `BodyTooLarge` を返し、それ以上は読まない。
+// `Transfer-Encoding` は `chunked` だけを受け、ほかは `Unsupported`。`Content-Length` と併用すると `BadRequest`。
+// 読み残しを持つ解析器。`feed` で受け取ったバイトを足し、`next` で 1 件ずつ取り出す。
+type std.http.Decoder pub
+    buf: alloc.vec.Vec<u8, std.alloc.System>
+    max_body: usize
+    max_head: usize
+end std.http.Decoder
+
+enum std.http.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    BadRequest
+    BodyTooLarge
+    HeadTooLarge
+    Io(std.io.Error)
+    Truncated
+    Unsupported
+end std.http.Error
+
+// 本体の枠組み: chunked なら `chunked`、そうでなければ `Content-Length` の値 `length` (上限内)。
+type std.http.Framing
+    chunked: bool
+    length: usize
+end std.http.Framing
+
+// 解析の途中結果 (要求行とヘッダ、本体の枠組み)。本体は別に集める。
+type std.http.Head
+    framing: std.http.Framing
+    headers: alloc.vec.Vec<std.http.Header, std.alloc.System>
+    http11: bool
+    method: alloc.string.String<std.alloc.System>
+    path: alloc.string.String<std.alloc.System>
+end std.http.Head
+
+// 要求の 1 件。`path` は `/` で始まるものだけを受ける (絶対形の要求対象は `BadRequest`)。
+type std.http.Header pub
+    name: alloc.string.String<std.alloc.System> pub
+    value: alloc.string.String<std.alloc.System> pub
+end std.http.Header
+
+type std.http.Request pub
+    body: alloc.vec.Vec<u8, std.alloc.System> pub
+    headers: alloc.vec.Vec<std.http.Header, std.alloc.System> pub
+    http11: bool pub
+    method: alloc.string.String<std.alloc.System> pub
+    path: alloc.string.String<std.alloc.System> pub
+end std.http.Request
+
+// 先頭の `used` バイトを捨てる (読み残しを先頭に詰め直す)。
+fn std.http.Decoder.consume(self: &mut std.http.Decoder, used: usize) -> Result<(), std.http.Error> uses [alloc] panics never
+    let rest = std.http.copy_tail(self.buf.as_slice(), used)?
+    self.buf.clear()
+    self.buf.extend_from_slice(rest.as_slice())?
+    Ok(())
+end std.http.Decoder.consume
+
+fn std.http.Decoder.feed(self: &mut std.http.Decoder, bytes: &[u8]) -> Result<(), std.http.Error> uses [alloc] panics never pub
+    self.buf.extend_from_slice(bytes)?
+    Ok(())
+end std.http.Decoder.feed
+
+// `chunk` の先頭 `n` バイトを足す (`n` は読めたバイト数。`chunk` は読み込み用の固定長の配列)。
+fn std.http.Decoder.feed_part(self: &mut std.http.Decoder, chunk: &[u8], n: usize) -> Result<(), std.http.Error> uses [alloc] panics never pub
+    match chunk.sub(0usize, n) {
+        Some(part) => self.feed(part)?
+        None => return Err(std.http.Error.BadRequest)
+    }
+    Ok(())
+end std.http.Decoder.feed_part
+
+fn std.http.Decoder.is_empty(self: &std.http.Decoder) -> bool uses [] panics never pub
+    self.buf.is_empty()
+end std.http.Decoder.is_empty
+
+fn std.http.Decoder.new(max_head: usize, max_body: usize) -> std.http.Decoder uses [] panics never pub
+    let buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    std.http.Decoder { buf: buf, max_body: max_body, max_head: max_head }
+end std.http.Decoder.new
+
+// 1 件の要求を取り出す。足りなければ `None` (バイトは残る)。読み残しは先頭に詰め直す。
+fn std.http.Decoder.next(self: &mut std.http.Decoder) -> Result<Option<std.http.Request>, std.http.Error> uses [alloc] panics never pub
+    let taken = std.http.take_request(self.buf.as_slice(), self.max_head, self.max_body)?
+    match taken {
+        Some((request, used)) => {
+            self.consume(used)?
+            Ok(Some(request))
+        }
+        None => Ok(None)
+    }
+end std.http.Decoder.next
+
+// 名前 (大文字小文字を区別しない) の最初のヘッダの値。
+fn std.http.Request.header(self: &std.http.Request, name: &str) -> Option<&str> uses [] panics never pub
+    for k in core.iter.range(0usize, self.headers.len()) {
+        match self.headers.as_slice().get(k) {
+            Some(h) => {
+                if h.name.as_str().eq_ignore_ascii_case(name) {
+                    return Some(h.value.as_str())
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    None
+end std.http.Request.header
+
+// `Connection` ヘッダを見て、応答のあとも接続を保つかを決める。1.1 は既定で保ち、1.0 は既定で閉じる。
+fn std.http.Request.keep_alive(self: &std.http.Request) -> bool uses [] panics never pub
+    match self.header("connection") {
+        Some(v) => {
+            if v.eq_ignore_ascii_case("close") {
+                return false
+            }
+            if v.eq_ignore_ascii_case("keep-alive") {
+                return true
+            }
+            self.http11
+        }
+        None => self.http11
+    }
+end std.http.Request.keep_alive
+
+// 本体の枠組みを要求に組み立てる。
+fn std.http.assemble(head: std.http.Head, body: alloc.vec.Vec<u8, std.alloc.System>) -> std.http.Request uses [] panics never
+    let headers = head.headers
+    let http11 = head.http11
+    let method = head.method
+    let path = head.path
+    std.http.Request { body: body, headers: headers, http11: http11, method: method, path: path }
+end std.http.assemble
+
+// `data` の `i` 番目のバイト。範囲外は 0 (呼び出し側が長さを確かめる)。
+fn std.http.byte_at(data: &[u8], i: usize) -> u8 uses [] panics never
+    match data.get(i) {
+        Some(b) => *b
+        None => 0u8
+    }
+end std.http.byte_at
+
+// `from` から `to` までの 16 進数 (`;` より後の chunk 拡張は読まない)。空・16 進以外・上限超えは不正。
+fn std.http.chunk_size(data: &[u8], from: usize, to: usize, max_body: usize) -> Result<usize, std.http.Error> uses [] panics never
+    let mut n = 0usize
+    let mut digits = 0usize
+    let mut i = from
+    while i < to {
+        let c = std.http.byte_at(data, i)
+        if c == b';' {
+            break
+        }
+        let v = match std.http.hex_value(c) {
+            Some(d) => d
+            None => return Err(std.http.Error.BadRequest)
+        }
+        if n > max_body {
+            return Err(std.http.Error.BodyTooLarge)
+        }
+        n = n.saturating_mul(16usize).saturating_add(v)
+        digits = digits.saturating_add(1usize)
+        i = i.saturating_add(1usize)
+    }
+    if digits == 0usize {
+        return Err(std.http.Error.BadRequest)
+    }
+    if n > max_body {
+        return Err(std.http.Error.BodyTooLarge)
+    }
+    Ok(n)
+end std.http.chunk_size
+
+// `data` の `used` 以降を新しい `Vec` にする。
+fn std.http.copy_tail(data: &[u8], used: usize) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.http.Error> uses [alloc] panics never
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match data.sub(used, data.len()) {
+        Some(part) => out.extend_from_slice(part)?
+        None => return Err(std.http.Error.BadRequest)
+    }
+    Ok(out)
+end std.http.copy_tail
+
+// `i` の位置に CRLF があるか。
+fn std.http.crlf_at(data: &[u8], i: usize) -> bool uses [] panics never
+    std.http.byte_at(data, i) == b'\r' && std.http.byte_at(data, i.saturating_add(1usize)) == b'\n'
+end std.http.crlf_at
+
+// 本体を chunked で読む。`data` は本体の先頭からの残り。完了したら本体を `body` に積み、使った長さを返す。足りなければ `None`。
+fn std.http.decode_chunked(data: &[u8], max_body: usize, body: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<Option<usize>, std.http.Error> uses [alloc] panics never
+    let mut pos = 0usize
+    loop {
+        let line_end = match std.http.find_crlf(data, pos) {
+            Some(e) => e
+            None => return Ok(None)
+        }
+        let size = std.http.chunk_size(data, pos, line_end, max_body)?
+        if size == 0usize {
+            return std.http.skip_trailers(data, line_end.saturating_add(2usize))
+        }
+        let data_start = line_end.saturating_add(2usize)
+        let data_end = data_start.saturating_add(size)
+        let next = data_end.saturating_add(2usize)
+        if data.len() < next {
+            return Ok(None)
+        }
+        if !std.http.crlf_at(data, data_end) {
+            return Err(std.http.Error.BadRequest)
+        }
+        if body.len().saturating_add(size) > max_body {
+            return Err(std.http.Error.BodyTooLarge)
+        }
+        let part = match data.sub(data_start, data_end) {
+            Some(p) => p
+            None => return Err(std.http.Error.BadRequest)
+        }
+        body.extend_from_slice(part)?
+        pos = next
+    }
+end std.http.decode_chunked
+
+// `from` 以降で最初の CRLF の位置 (CR の位置)。
+fn std.http.find_crlf(data: &[u8], from: usize) -> Option<usize> uses [] panics never
+    let len = data.len()
+    let mut i = from
+    while i.saturating_add(1usize) < len {
+        if std.http.crlf_at(data, i) {
+            return Some(i)
+        }
+        i = i.saturating_add(1usize)
+    }
+    None
+end std.http.find_crlf
+
+// 空行 (CRLFCRLF) の終わりの位置。見つからなければ `None`。
+fn std.http.find_head_end(data: &[u8]) -> Option<usize> uses [] panics never
+    let len = data.len()
+    let mut i = 0usize
+    while i.saturating_add(4usize) <= len {
+        if std.http.crlf_at(data, i) && std.http.crlf_at(data, i.saturating_add(2usize)) {
+            return Some(i.saturating_add(4usize))
+        }
+        i = i.saturating_add(1usize)
+    }
+    None
+end std.http.find_head_end
+
+// 16 進の 1 桁。
+fn std.http.hex_value(c: u8) -> Option<usize> uses [] panics never
+    if c >= b'0' && c <= b'9' {
+        return Some(usize.from_u8(c.wrapping_sub(b'0')))
+    }
+    if c >= b'a' && c <= b'f' {
+        return Some(usize.from_u8(c.wrapping_sub(b'a').wrapping_add(10u8)))
+    }
+    if c >= b'A' && c <= b'F' {
+        return Some(usize.from_u8(c.wrapping_sub(b'A').wrapping_add(10u8)))
+    }
+    None
+end std.http.hex_value
+
+fn std.http.is_method(text: &str) -> bool uses [] panics never
+    if text.is_empty() {
+        return false
+    }
+    for c in text.chars() {
+        if c < 'A' || c > 'Z' {
+            return false
+        }
+    }
+    true
+end std.http.is_method
+
+// 要求行とヘッダを読む。`head` は空行 (CRLFCRLF) までを含む。
+fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, std.http.Error> uses [alloc] panics never
+    let text = match core.str.from_utf8(head) {
+        Ok(t) => t
+        Err(_e) => return Err(std.http.Error.BadRequest)
+    }
+    let (line, rest) = match text.split_once("\r\n") {
+        Some(pair) => pair
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let (method_text, after) = match line.split_once(" ") {
+        Some(pair) => pair
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let (path_text, version) = match after.split_once(" ") {
+        Some(pair) => pair
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let mut v11 = false
+    if version == "HTTP/1.1" {
+        v11 = true
+    } else if version != "HTTP/1.0" {
+        return Err(std.http.Error.BadRequest)
+    }
+    if !std.http.is_method(method_text) || !path_text.starts_with("/") {
+        return Err(std.http.Error.BadRequest)
+    }
+    let mut headers = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut length = 0usize
+    let mut has_length = false
+    let mut has_encoding = false
+    let mut chunked = false
+    for field in rest.split("\r\n") {
+        if !field.is_empty() {
+            let (key, raw_value) = match field.split_once(":") {
+                Some(pair) => pair
+                None => return Err(std.http.Error.BadRequest)
+            }
+            if key.is_empty() || key.contains(" ") || key.contains("\t") {
+                return Err(std.http.Error.BadRequest)
+            }
+            let value = raw_value.trim()
+            if key.eq_ignore_ascii_case("content-length") {
+                if has_length {
+                    return Err(std.http.Error.BadRequest)
+                }
+                has_length = true
+                length = std.http.parse_length(value, max_body)?
+            } else if key.eq_ignore_ascii_case("transfer-encoding") {
+                has_encoding = true
+                if !value.eq_ignore_ascii_case("chunked") {
+                    return Err(std.http.Error.Unsupported)
+                }
+                chunked = true
+            }
+            let name = alloc.string.String.from_str(std.alloc.SYSTEM, key)?
+            let text_value = alloc.string.String.from_str(std.alloc.SYSTEM, value)?
+            headers.push(std.http.Header { name: name, value: text_value })?
+        }
+    }
+    if has_encoding && has_length {
+        return Err(std.http.Error.BadRequest)
+    }
+    let method = alloc.string.String.from_str(std.alloc.SYSTEM, method_text)?
+    let path = alloc.string.String.from_str(std.alloc.SYSTEM, path_text)?
+    let frame = std.http.Framing { chunked: chunked, length: length }
+    Ok(std.http.Head { framing: frame, headers: headers, http11: v11, method: method, path: path })
+end std.http.parse_head
+
+// `Content-Length` の値。数字だけ。上限を超えれば `BodyTooLarge` (桁あふれも含む)。
+fn std.http.parse_length(value: &str, max_body: usize) -> Result<usize, std.http.Error> uses [] panics never
+    if value.is_empty() {
+        return Err(std.http.Error.BadRequest)
+    }
+    for c in value.chars() {
+        if c < '0' || c > '9' {
+            return Err(std.http.Error.BadRequest)
+        }
+    }
+    match usize.parse(value) {
+        Ok(n) => {
+            if n > max_body {
+                return Err(std.http.Error.BodyTooLarge)
+            }
+            Ok(n)
+        }
+        Err(_e) => Err(std.http.Error.BodyTooLarge)
+    }
+end std.http.parse_length
+
+// 読み込み: 要求を 1 件取る。`source` からは必要なだけ読んで `decoder` に足す。接続が閉じた時点で
+// 読み残しがなければ `None` (keep-alive の終わり)、途中で閉じたら `Truncated`。
+fn std.http.read_request[R: linear + std.io.Read<[io.net]>](source: &mut R, decoder: &mut std.http.Decoder) -> Result<Option<std.http.Request>, std.http.Error> uses [alloc, io.net] panics never pub
+    loop {
+        match decoder.next()? {
+            Some(request) => return Ok(Some(request))
+            None => core.mem.drop(0u8)
+        }
+        let mut chunk = [0u8; 1024]
+        let n = source.read(&mut chunk)?
+        if n == 0usize {
+            if decoder.is_empty() {
+                return Ok(None)
+            }
+            return Err(std.http.Error.Truncated)
+        }
+        decoder.feed_part(&chunk, n)?
+    }
+end std.http.read_request
+
+// 状態の理由句。知らない番号は `Unknown`。
+fn std.http.reason(status: u16) -> &'static str uses [] panics never pub
+    match status {
+        200u16 => "OK"
+        201u16 => "Created"
+        204u16 => "No Content"
+        301u16 => "Moved Permanently"
+        302u16 => "Found"
+        400u16 => "Bad Request"
+        404u16 => "Not Found"
+        405u16 => "Method Not Allowed"
+        413u16 => "Payload Too Large"
+        431u16 => "Request Header Fields Too Large"
+        500u16 => "Internal Server Error"
+        501u16 => "Not Implemented"
+        503u16 => "Service Unavailable"
+        _ => "Unknown"
+    }
+end std.http.reason
+
+// 応答を 1 本のバイト列にする。`head` は追加のヘッダ行 (各行は CRLF で終わる。空文字列でもよい)。
+// `Content-Length` と `Connection` は処理系が付ける。
+fn std.http.render(status: u16, head: &str, body: &[u8], keep_alive: bool) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.http.Error> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str("HTTP/1.1 ")?
+    line.push_u64(u64.from_u16(status))?
+    line.push_str(" ")?
+    line.push_str(std.http.reason(status))?
+    line.push_str("\r\n")?
+    out.extend_from_slice(line.as_str().as_bytes())?
+    out.extend_from_slice(head.as_bytes())?
+    let mut length = alloc.string.String.new(std.alloc.SYSTEM)
+    length.push_u64(u64.from_usize(body.len()))?
+    out.extend_from_slice(b"Content-Length: ")?
+    out.extend_from_slice(length.as_str().as_bytes())?
+    out.extend_from_slice(b"\r\n")?
+    if keep_alive {
+        out.extend_from_slice(b"Connection: keep-alive\r\n\r\n")?
+    } else {
+        out.extend_from_slice(b"Connection: close\r\n\r\n")?
+    }
+    out.extend_from_slice(body)?
+    Ok(out)
+end std.http.render
+
+// 本体の終わり (大きさ 0 のチャンクのあとのトレーラ) を越える。空行で終わる。`Some` は使った長さ (本体の先頭から)。
+fn std.http.skip_trailers(data: &[u8], from: usize) -> Result<Option<usize>, std.http.Error> uses [] panics never
+    let mut pos = from
+    loop {
+        let stop = match std.http.find_crlf(data, pos) {
+            Some(e) => e
+            None => return Ok(None)
+        }
+        if stop == pos {
+            return Ok(Some(stop.saturating_add(2usize)))
+        }
+        pos = stop.saturating_add(2usize)
+    }
+end std.http.skip_trailers
+
+// 1 件の要求を `data` から取り出す。`Some((要求, 使った長さ))`。足りなければ `None`。
+fn std.http.take_request(data: &[u8], max_head: usize, max_body: usize) -> Result<Option<(std.http.Request, usize)>, std.http.Error> uses [alloc] panics never
+    let head_end = match std.http.find_head_end(data) {
+        Some(n) => n
+        None => {
+            if data.len() > max_head {
+                return Err(std.http.Error.HeadTooLarge)
+            }
+            return Ok(None)
+        }
+    }
+    if head_end > max_head {
+        return Err(std.http.Error.HeadTooLarge)
+    }
+    let head_bytes = match data.sub(0usize, head_end) {
+        Some(h) => h
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let head = std.http.parse_head(head_bytes, max_body)?
+    if head.framing.chunked {
+        let rest = match data.sub(head_end, data.len()) {
+            Some(r) => r
+            None => return Err(std.http.Error.BadRequest)
+        }
+        let mut chunks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        return match std.http.decode_chunked(rest, max_body, &mut chunks)? {
+            Some(used) => {
+                let request = std.http.assemble(head, chunks)
+                Ok(Some((request, head_end.saturating_add(used))))
+            }
+            None => Ok(None)
+        }
+    }
+    let total = head_end.saturating_add(head.framing.length)
+    if data.len() < total {
+        return Ok(None)
+    }
+    let part = match data.sub(head_end, total) {
+        Some(p) => p
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let mut plain = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    plain.extend_from_slice(part)?
+    Ok(Some((std.http.assemble(head, plain), total)))
+end std.http.take_request
+
+// 応答のバイト列を書き切る (途中で部分的に書かれたら残りを続けて書く)。書けなければ `Io`。
+fn std.http.write_all[W: linear + std.io.Write<[io.net]>](out: &mut W, bytes: &[u8]) -> Result<(), std.http.Error> uses [io.net] panics never pub
+    let mut sent = 0usize
+    while sent < bytes.len() {
+        let rest = match bytes.sub(sent, bytes.len()) {
+            Some(r) => r
+            None => return Err(std.http.Error.BadRequest)
+        }
+        let n = out.write(rest)?
+        if n == 0usize {
+            let broken = std.io.Error { kind: std.io.ErrorKind.BrokenPipe, code: 0i32 }
+            return Err(std.http.Error.Io(broken))
+        }
+        sent = sent.saturating_add(n)
+    }
+    out.flush()?
+    Ok(())
+end std.http.write_all

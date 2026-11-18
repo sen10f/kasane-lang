@@ -32,7 +32,6 @@ fn wiki.store.PageStore.list_pages(self: &mut wiki.store.PageStore) -> Result<al
         }
         i = i.saturating_add(1usize)
     }
-    // core.slice.sort はネイティブバックエンドで segfault するため未使用。
     Ok(out)
 end wiki.store.PageStore.list_pages
 
@@ -179,7 +178,6 @@ fn wiki.store.PageStore.page_versions(self: &mut wiki.store.PageStore, name: &st
         }
         i = i.saturating_add(1usize)
     }
-    // core.slice.sort はネイティブバックエンドで segfault するため未使用。
     Ok(out)
 end wiki.store.PageStore.page_versions
 
@@ -379,7 +377,6 @@ test wiki.store.PageStore.sanitize_name.test_unicode_and_control
     core.check.eq(wiki.store.PageStore.sanitize_name(".."), false)
     core.check.eq(wiki.store.PageStore.sanitize_name("a/b"), false)
     core.check.eq(wiki.store.PageStore.sanitize_name("a\\b"), false)
-    // 制御文字は拒否
     let mut ctrl = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(ctrl.push('a')?)
     match char.try_from_u32(0u32) {

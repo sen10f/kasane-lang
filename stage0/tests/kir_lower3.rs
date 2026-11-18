@@ -2993,7 +2993,7 @@ fn kir_own_linearity_agreement_floor() {
 }
 
 /// 第 5 段 (計測): AST の借用・線形の検査を外し、KIR の検査だけ (隠しの切り替え `KSN_BORROWCK=kir-only`) で見る。
-/// `// expect:` が E3010 / E3030 / E3002 / E3003 の `unsound/` (借用・線形の不正) のうち拒否できた数の下限と、
+/// `.expect` の `expect:` が E3010 / E3030 / E3002 / E3003 の `unsound/` (借用・線形の不正) のうち拒否できた数の下限と、
 /// 正しいコード (`linear_ok/`、参照解、`examples/`) の誤拒否 0 を固定する。足りない件数と理由は設計_KIR.md 24.10。
 #[test]
 fn kir_only_rejects_floor() {
@@ -3005,7 +3005,7 @@ fn kir_only_rejects_floor() {
     let (mut expected, mut rejected) = (0, 0);
     for p in sorted_ksnl("unsound") {
         let src = fs::read_to_string(&p).unwrap();
-        let bl = src.lines().any(|l| l.starts_with("// expect:") && ["E3010", "E3030", "E3002", "E3003"].iter().any(|c| l.contains(c)));
+        let bl = expect_entries(&p).iter().any(|(k, v)| k == "expect" && ["E3010", "E3030", "E3002", "E3003"].iter().any(|c| v.contains(c)));
         if !bl {
             continue;
         }

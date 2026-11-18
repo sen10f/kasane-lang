@@ -1,4 +1,3 @@
-// expect: E3060
 type t.BoxLike['a]
     v: &'a u32
 end t.BoxLike

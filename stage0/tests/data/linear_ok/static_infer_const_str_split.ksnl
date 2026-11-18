@@ -1,5 +1,3 @@
-// expect-accept
-// 埋め込み文章を単語に分割し HashMap で頻度を数えて出力する実用的な小プログラム。木走査とネイティブで出力が一致するべき。
 const t.WORDS: &str = "to be or not to be that is the question whether tis nobler in the mind to suffer"
 
 fn t.main() -> () uses [alloc, io.console] panics may

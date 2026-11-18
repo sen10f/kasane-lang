@@ -1,4 +1,3 @@
-// expect: E4001
 fn t.bad(f: fn(u32) -> u32 uses [io.console] panics may) -> u32 uses [] panics never
     f(1u32)
 end t.bad

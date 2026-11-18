@@ -1,4 +1,3 @@
-// モジュールの組み立て: 宣言 → 大域 → 文言 → panic の関数 → 補助 → 関数 → 入口 `main`。
 fn emit.rt.assemble(g: &mut emit.G, entry: &str, nparams: usize, res: bool, rty: usize) -> () uses [alloc, io.console, process] panics may pub
     emit.util.push_str(&mut g.outs.out, "; ksn kir llvm 1 (Kasane emitter)\n\n")
     emit.util.push_str(&mut g.outs.out, "declare i32 @dprintf(i32, ptr, ...)\ndeclare void @exit(i32) noreturn\n")
@@ -35,7 +34,6 @@ fn emit.rt.assemble(g: &mut emit.G, entry: &str, nparams: usize, res: bool, rty:
     emit.util.push_str(&mut g.outs.out, g.outs.fns.as_str())
     emit.util.push_str(&mut g.outs.out, "@ksn_rt_argc = global i32 0\n@ksn_rt_argv = global ptr null\n")
     if nparams > 0usize {
-        // 引数のある入口: Rust 版と同じく、呼び出しの個数が合わない文言を出して終了コード 101。
         let mut msg = emit.util.new_str()
         emit.util.push_str(&mut msg, "panic: arity mismatch calling ")
         emit.util.push_str(&mut msg, entry)
@@ -50,7 +48,6 @@ fn emit.rt.assemble(g: &mut emit.G, entry: &str, nparams: usize, res: bool, rty:
         emit.util.push_str(&mut g.outs.out, "define i32 @main(i32 %argc, ptr %argv) null_pointer_is_valid {\nentry:\n")
         emit.util.push_str(&mut g.outs.out, "  store i32 %argc, ptr @ksn_rt_argc\n  store ptr %argv, ptr @ksn_rt_argv\n")
         if res {
-            // `Result<_, E>` を返す入口: Err なら終了コード 1 (Rust 版は stderr に `Error: ...` も出す。ここでは出さない)。
             let lt = emit.ty.text_of(g, rty, false)
             let sb = emit.ty.slot(g, rty)
             emit.util.push_str(&mut g.outs.out, "  %r = call ")
@@ -72,7 +69,6 @@ fn emit.rt.assemble(g: &mut emit.G, entry: &str, nparams: usize, res: bool, rty:
     }
 end emit.rt.assemble
 
-// C の文字列の大域 `@name = private ... c"text\0"` (text は改行などを含めてそのまま、末尾に NUL を足す)。
 fn emit.rt.cstr(g: &mut emit.G, name: &str, text: &str) -> () uses [alloc, io.console, process] panics may pub
     let mut bytes: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let bb_b_ak = text.as_bytes()
@@ -97,7 +93,6 @@ fn emit.rt.cstr(g: &mut emit.G, name: &str, text: &str) -> () uses [alloc, io.co
     emit.util.push_str(&mut g.outs.out, "\"\n")
 end emit.rt.cstr
 
-// `ksn.eprint(ptr, n)`: stderr へ全部書く (エラーは捨てる)。
 fn emit.rt.eprint_helper(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
     emit.util.push_str(&mut g.outs.out, "define private void @ksn.eprint(ptr %p, i64 %n) {\nentry:\n  br label %loop\n")
     emit.util.push_str(&mut g.outs.out, "loop:\n  %off = phi i64 [0, %entry], [%off2, %adv]\n  %left = sub i64 %n, %off\n")
@@ -108,7 +103,6 @@ fn emit.rt.eprint_helper(g: &mut emit.G) -> () uses [alloc, io.console, process]
     emit.util.push_str(&mut g.outs.out, "  br label %loop\nret:\n  ret void\n}\n\n")
 end emit.rt.eprint_helper
 
-// errno と ErrorKind の添字の対応 (Rust 版 `write_helper` と同じ表。後ろの行が前の選択を上書きする)。
 fn emit.rt.errno_row(k: usize) -> (u32, usize) uses [] panics may pub
     if k == 0usize {
         (1u32, 1usize)
@@ -131,7 +125,6 @@ fn emit.rt.errno_row(k: usize) -> (u32, usize) uses [] panics may pub
     }
 end emit.rt.errno_row
 
-// `panic: <文言>` の文言と、対応する panic の関数。
 fn emit.rt.panic_fn(g: &mut emit.G, name: &str, msg: &str) -> () uses [alloc, io.console, process] panics may pub
     let mut text = emit.util.new_str()
     emit.util.push_str(&mut text, "panic: ")
@@ -149,8 +142,6 @@ fn emit.rt.panic_fn(g: &mut emit.G, name: &str, msg: &str) -> () uses [alloc, io
     emit.util.push_str(&mut g.outs.out, ")\n  call void @exit(i32 101)\n  unreachable\n}\n\n")
 end emit.rt.panic_fn
 
-// `ksn.write(fd, ptr, n)`: 全部書くまで繰り返す (EINTR は再試行)。成功は 0、失敗は `(errno << 32) | ErrorKind の添字`。
-// ErrorKind の添字は `std.io.ErrorKind` の宣言順 (NotFound=0 ... Other=9)。
 fn emit.rt.write_helper(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
     emit.util.push_str(&mut g.outs.out, "define private i64 @ksn.write(i32 %fd, ptr %p, i64 %n) {\nentry:\n")
     emit.util.push_str(&mut g.outs.out, "  br label %loop\nloop:\n")
@@ -164,7 +155,6 @@ fn emit.rt.write_helper(g: &mut emit.G) -> () uses [alloc, io.console, process] 
     emit.util.push_str(&mut g.outs.out, "  %ep = call ptr @__errno_location()\n  %e = load i32, ptr %ep\n")
     emit.util.push_str(&mut g.outs.out, "  %intr = icmp eq i32 %e, 4\n  br i1 %intr, label %loop, label %err\nok:\n")
     emit.util.push_str(&mut g.outs.out, "  ret i64 0\nerr:\n")
-    // 既定は Other (9)。`cur` は今の値の名前 (最初は定数 9、以後は `%k<番号>`)。
     let mut cur = emit.util.new_str()
     emit.util.push_str(&mut cur, "9")
     let mut k = 0usize

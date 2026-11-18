@@ -1,5 +1,3 @@
-// expect: E4001
-// fold + filter: 述語クロージャが io.console を使うので拒否されるはず
 fn t.main() -> () uses [] panics never
     core.mem.drop(core.iter.fold(
         core.iter.filter(

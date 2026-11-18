@@ -6,14 +6,12 @@ const borrow.base.MOVE: usize = 2usize pub
 
 const borrow.base.MREF: usize = 5usize pub
 
-// `&mut e` の演算子の符号 (parse.expr.OP_REF_MUT は非公開なので同じ値を置く。`&` は 38)。
 const borrow.base.OP_REF_MUT: usize = 1000usize pub
 
 const borrow.base.SREF: usize = 4usize pub
 
 const borrow.base.UNK: usize = 0usize pub
 
-// パッケージの型と関数の表 (末尾の名前から引く。同じ名前が二つあれば不明にする)。
 type borrow.base.Tab pub
     tnames: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
     tcls: alloc.vec.Vec<usize, std.alloc.System> pub
@@ -21,7 +19,6 @@ type borrow.base.Tab pub
     fcls: alloc.vec.Vec<usize, std.alloc.System> pub
 end borrow.base.Tab
 
-// 開き波括弧 open に対応する閉じ波括弧のトークン番号 (見つからなければトークン数)。
 fn borrow.base.block_end(p: &parse.cur.P, open: usize) -> usize uses [] panics never pub
     let n = p.toks.len()
     let mut depth = 0usize
@@ -41,7 +38,6 @@ fn borrow.base.block_end(p: &parse.cur.P, open: usize) -> usize uses [] panics n
     n
 end borrow.base.block_end
 
-// 複数の要素 (Option の引数・組の要素) の分類を合わせる。不明が一つでもあれば不明。
 fn borrow.base.combine(a: usize, b: usize) -> usize uses [] panics never pub
     let x = borrow.base.norm(a)
     let y = borrow.base.norm(b)
@@ -57,7 +53,6 @@ fn borrow.base.combine(a: usize, b: usize) -> usize uses [] panics never pub
     borrow.base.COPY
 end borrow.base.combine
 
-// 名前の最初の成分 (`a.b.c` → `a`)。
 fn borrow.base.first_seg(s: &str) -> &str uses [] panics never pub
     for c in s.split(".") {
         return c
@@ -65,7 +60,6 @@ fn borrow.base.first_seg(s: &str) -> &str uses [] panics never pub
     s
 end borrow.base.first_seg
 
-// 真なら 1、偽なら 0。
 fn borrow.base.flag(c: bool) -> usize uses [] panics never pub
     if c {
         return 1usize
@@ -73,7 +67,6 @@ fn borrow.base.flag(c: bool) -> usize uses [] panics never pub
     0usize
 end borrow.base.flag
 
-// 関数の戻り値の分類 (末尾の名前から引く)。
 fn borrow.base.fn_lookup(tab: &borrow.base.Tab, name: &str) -> usize uses [] panics never pub
     let n = tab.fnames.len()
     let mut k = 0usize
@@ -93,7 +86,6 @@ fn borrow.base.fn_lookup(tab: &borrow.base.Tab, name: &str) -> usize uses [] pan
     borrow.base.UNK
 end borrow.base.fn_lookup
 
-// 標準の所有コンテナ (要素を持ち、移動する)。
 fn borrow.base.is_container(name: &str) -> bool uses [] panics never pub
     if name == "String" || name == "Vec" || name == "Box" || name == "HashMap" {
         return true
@@ -104,24 +96,20 @@ fn borrow.base.is_container(name: &str) -> bool uses [] panics never pub
     name == "Rc" || name == "Arc"
 end borrow.base.is_container
 
-// トークンの符号が予約語 code か。
 fn borrow.base.is_kw_tok(p: &parse.cur.P, ti: usize, code: u32) -> bool uses [] panics never pub
     let t = parse.cur.peek_at(p, ti)
     t.kind == parse.tok.Kind.Kw && t.code == code
 end borrow.base.is_kw_tok
 
-// 記号 (ASCII の符号) か。
 fn borrow.base.is_op_tok(p: &parse.cur.P, ti: usize, code: u32) -> bool uses [] panics never pub
     let t = parse.cur.peek_at(p, ti)
     t.kind == parse.tok.Kind.Op && t.code == code
 end borrow.base.is_op_tok
 
-// トークンの種類が文字列リテラルか。
 fn borrow.base.is_str_tok(p: &parse.cur.P, ti: usize) -> bool uses [] panics never pub
     parse.cur.peek_at(p, ti).kind == parse.tok.Kind.Str
 end borrow.base.is_str_tok
 
-// 参照は値として見たとき、共有なら Copy、可変なら移動する。
 fn borrow.base.norm(c: usize) -> usize uses [] panics never pub
     if c == borrow.base.SREF {
         return borrow.base.COPY
@@ -132,7 +120,6 @@ fn borrow.base.norm(c: usize) -> usize uses [] panics never pub
     c
 end borrow.base.norm
 
-// 条件に応じて a か b を返す (一行の if 式の代わり)。
 fn borrow.base.pick(c: bool, a: usize, b: usize) -> usize uses [] panics never pub
     if c {
         return a
@@ -140,7 +127,6 @@ fn borrow.base.pick(c: bool, a: usize, b: usize) -> usize uses [] panics never p
     b
 end borrow.base.pick
 
-// 関数の表に名前を入れる (同名は不明)。
 fn borrow.base.put_fn(tab: &mut borrow.base.Tab, name: &str, cls: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = tab.fnames.len()
     let mut k = 0usize
@@ -160,7 +146,6 @@ fn borrow.base.put_fn(tab: &mut borrow.base.Tab, name: &str, cls: usize) -> Resu
     Ok(())
 end borrow.base.put_fn
 
-// 型の表に名前を入れる。既にあれば不明 (0) にする。
 fn borrow.base.put_ty(tab: &mut borrow.base.Tab, name: &str, cls: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = tab.tnames.len()
     let mut k = 0usize
@@ -180,7 +165,6 @@ fn borrow.base.put_ty(tab: &mut borrow.base.Tab, name: &str, cls: usize) -> Resu
     Ok(())
 end borrow.base.put_ty
 
-// Vec<usize> の k 番目を書き換える (範囲外は何もしない)。
 fn borrow.base.set_usize(v: &mut alloc.vec.Vec<usize, std.alloc.System>, k: usize, val: usize) -> () uses [] panics never pub
     match v.as_mut_slice().get_mut(k) {
         Some(x) => {
@@ -198,13 +182,11 @@ fn borrow.base.tab_new() -> borrow.base.Tab uses [] panics never pub
     borrow.base.Tab { tnames: tn, tcls: tc, fnames: fnm, fcls: fc }
 end borrow.base.tab_new
 
-// 節の範囲のトークン (開始・終わりのバイト位置)。
 fn borrow.base.tok_range(p: &parse.cur.P, ti: usize) -> (usize, usize) uses [] panics never pub
     let t = parse.cur.peek_at(p, ti)
     (t.start, t.stop)
 end borrow.base.tok_range
 
-// 型の節の分類 (型の注釈から)。t は型の節の番号 (0 は注釈なし = 不明)。
 fn borrow.base.ty_cls(tab: &borrow.base.Tab, p: &parse.cur.P, src: &[u8], t: usize) -> usize uses [] panics never stack 8192 pub
     if t == 0usize {
         return borrow.base.UNK
@@ -257,7 +239,6 @@ fn borrow.base.ty_cls(tab: &borrow.base.Tab, p: &parse.cur.P, src: &[u8], t: usi
     borrow.base.UNK
 end borrow.base.ty_cls
 
-// 型の名前 (末尾の成分) の分類。知らなければ不明。
 fn borrow.base.ty_lookup(tab: &borrow.base.Tab, name: &str) -> usize uses [] panics never pub
     let n = tab.tnames.len()
     let mut k = 0usize

@@ -1,0 +1,2 @@
+expect: E2023
+note: `Result` の値を `Option` の列挙子 (`Some` / `None`) で照合するのは誤り

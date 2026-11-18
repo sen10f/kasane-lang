@@ -2,7 +2,6 @@ type t.Boxed
     x: u32
 end t.Boxed
 
-// expect: E4001
 trait t.Tr[E: uses]
     fn m(self: &Self) -> () uses [E] panics never
 end t.Tr

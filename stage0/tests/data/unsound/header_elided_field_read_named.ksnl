@@ -1,4 +1,3 @@
-// expect: E3060
 type t.P['a]
     src: &'a str
 end t.P

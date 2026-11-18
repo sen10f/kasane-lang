@@ -1,0 +1,116 @@
+// 根の局所 k を戻り値が借りている。値の局所 (Copy・移動・線形) なら E3030、分からなければ判断保留。
+fn borrow.esc.check_root(cx: &mut borrow.cx.Cx, k: usize, tok: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let l = borrow.cx.loc(cx, k)
+    if l.cl == borrow.base.COPY || l.cl == borrow.base.MOVE || l.cl == borrow.base.LIN {
+        borrow.cx.diag(cx, "E3030", tok, "局所の借用を戻り値として外へ出す")?
+    } else {
+        if l.cl == borrow.base.UNK {
+            borrow.cx.undec(cx)
+        }
+    }
+    Ok(())
+end borrow.esc.check_root
+
+// 戻り値の式 e を検査する。Some・Ok・Err は中身を見る。
+fn borrow.esc.escape(cx: &mut borrow.cx.Cx, e: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
+    if e == 0usize {
+        return Ok(())
+    }
+    let n = parse.ast.get(&cx.p.ast, e)
+    if n.kind == parse.ast.Kind.Call {
+        let cn = parse.ast.get(&cx.p.ast, n.a)
+        if cn.kind == parse.ast.Kind.Path {
+            let cs = resolve.ast.last_part(resolve.ast.text(cx.src.as_slice(), cn.a, cn.b))
+            let is_wrap = cs == "Some" || cs == "Ok" || cs == "Err"
+            if is_wrap && resolve.ast.count(&cx.p, n.b) == 1usize {
+                return borrow.esc.escape(cx, resolve.ast.item(&cx.p, n.b, 0usize))
+            }
+        }
+        return Ok(())
+    }
+    if n.kind == parse.ast.Kind.StructLit || n.kind == parse.ast.Kind.TupleE {
+        let l = borrow.base.pick(n.kind == parse.ast.Kind.TupleE, n.a, n.c)
+        for k in core.iter.range(0usize, resolve.ast.count(&cx.p, l)) {
+            borrow.esc.escape(cx, borrow.esc.field_value(cx, resolve.ast.item(&cx.p, l, k)))?
+        }
+        return Ok(())
+    }
+    if n.kind == parse.ast.Kind.Unary {
+        if n.a == 38usize || n.a == borrow.base.OP_REF_MUT {
+            let root = borrow.cx.place_root(cx, n.b)
+            if root != 0usize {
+                borrow.esc.check_root(cx, root.wrapping_sub(1usize), n.tok)?
+            }
+        }
+        return Ok(())
+    }
+    if n.kind == parse.ast.Kind.Path {
+        let s = resolve.ast.text(cx.src.as_slice(), n.a, n.b)
+        if resolve.ast.last_part(s) != s {
+            return Ok(())
+        }
+        let idx = borrow.cx.find_text(cx, s)
+        if idx == 0usize {
+            return Ok(())
+        }
+        let k = idx.wrapping_sub(1usize)
+        let l = borrow.cx.loc(cx, k)
+        if l.rf != 0usize {
+            borrow.esc.check_root(cx, l.rf.wrapping_sub(1usize), n.tok)?
+        }
+        if l.ir == 1usize && l.pa == 1usize {
+            borrow.esc.lifetime(cx, k, n.tok)?
+        }
+    }
+    Ok(())
+end borrow.esc.escape
+
+// 構造体リテラルの欄 (FieldInit) の値の式。それ以外は自分自身。
+fn borrow.esc.field_value(cx: &borrow.cx.Cx, e: usize) -> usize uses [] panics never pub
+    let n = parse.ast.get(&cx.p.ast, e)
+    if n.kind == parse.ast.Kind.FieldInit {
+        return n.b
+    }
+    e
+end borrow.esc.field_value
+
+// ライフタイムの番号 tk (TRef の c は名前の次のトークン) が指す寿命が want か (0 は省略)。
+fn borrow.esc.life_is(cx: &borrow.cx.Cx, tk: usize, want: &str) -> bool uses [] panics never pub
+    if tk == 0usize {
+        return false
+    }
+    resolve.ast.tok_text(&cx.p, cx.src.as_slice(), tk.wrapping_sub(1usize)) == want
+end borrow.esc.life_is
+
+// 参照の引数 (局所 k) を戻り値として返す。寿命が合わなければ E3010。
+fn borrow.esc.lifetime(cx: &mut borrow.cx.Cx, k: usize, tok: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    if cx.fnr.ret_ref != 1usize {
+        return Ok(())
+    }
+    let l = borrow.cx.loc(cx, k)
+    if borrow.esc.life_is(cx, l.li, "'static") || borrow.esc.life_is(cx, l.li, "static") {
+        return Ok(())
+    }
+    if cx.fnr.ret_life != 0usize {
+        if borrow.esc.same_life(cx, l.li) {
+            return Ok(())
+        }
+        borrow.cx.diag(cx, "E3010", tok, "戻り値の寿命と合わない引数を返す")?
+        return Ok(())
+    }
+    if cx.fnr.elide == k.wrapping_add(1usize) {
+        return Ok(())
+    }
+    borrow.cx.undec(cx)
+    Ok(())
+end borrow.esc.lifetime
+
+// 戻り値の寿命 (cx.fnr.ret_life) と参照引数の寿命 pl が同じ名前か。
+fn borrow.esc.same_life(cx: &borrow.cx.Cx, pl: usize) -> bool uses [] panics never pub
+    if pl == 0usize || cx.fnr.ret_life == 0usize {
+        return false
+    }
+    let a = resolve.ast.tok_text(&cx.p, cx.src.as_slice(), pl.wrapping_sub(1usize))
+    let b = resolve.ast.tok_text(&cx.p, cx.src.as_slice(), cx.fnr.ret_life.wrapping_sub(1usize))
+    a == b
+end borrow.esc.same_life

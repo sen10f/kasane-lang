@@ -1,4 +1,3 @@
-// expect: E2026
 const t.OVER: u8 = 200u8 + 100u8
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

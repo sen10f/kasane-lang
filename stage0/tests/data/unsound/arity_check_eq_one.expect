@@ -1,0 +1,2 @@
+expect: E2001
+note: 標準・組み込みの関数も、引数の数を `.sig` の宣言と照らす (`core.check.eq` は 2 つ)
