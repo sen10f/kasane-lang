@@ -44,6 +44,7 @@ mod resolve;
 mod refs_check;
 mod rustisms;
 mod stdcache;
+mod survey;
 mod types;
 mod typecov;
 mod vm;
