@@ -7174,7 +7174,13 @@ impl<'a> Checker<'a> {
             let d = self.def(i);
             let n = d.name.clone();
             let rec = cyclic.contains(&n);
-            let never = d.panics.as_deref() == Some("never");
+            // `Fn*` 境界の効果を省いた `panics never` は `panics P$F` に読み替えられている (program.rs)。
+            // 読み替えた変数 (`P$` 始まり。利用者が書いた `panics P` は対象外) は `never` と同じに扱う。
+            let never = match d.panics.as_deref() {
+                Some("never") => true,
+                Some(v) => v.starts_with("P$") && d.generics.iter().any(|g| g.0 == "panics" && g.1 == v),
+                None => false,
+            };
             self.d = i;
             if rec && never && d.stack.is_none() {
                 self.tdiag("E4010", format!("recursive `panics never` function {} requires `stack <bytes>`", n), 0);

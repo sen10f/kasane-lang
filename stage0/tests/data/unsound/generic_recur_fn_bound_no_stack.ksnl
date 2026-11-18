@@ -1,0 +1,16 @@
+// expect: E4010
+fn t.apply_r[F: core.ops.Fn<(u64,), u64>](f: F, x: u64, n: u32) -> u64 uses [] panics never
+    if n == 0u32 {
+        return x
+    }
+    let y = f(x)
+    t.apply_r(f, y, n.wrapping_sub(1u32))
+end t.apply_r
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let inc = fn(v: u64) -> u64 capture [] {
+        v.wrapping_add(1u64)
+    }
+    core.check.eq(t.apply_r(inc, 2u64, 3000u32), 3002u64)
+    Ok(())
+end t.main
