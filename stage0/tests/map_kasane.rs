@@ -236,6 +236,8 @@ impl Tmp {
         fs::write(d.join("kasane.toml"), TOML).unwrap();
         fs::write(d.join("kasane.lock"), "version = 1\n").unwrap();
         fs::write(d.join("src").join("scr.ksnl"), src).unwrap();
+        // 書き方は 1 通り (E0020): 標準の本体を写して組み立てた入力は `ksn fmt` の出力にそろえる。
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
         Tmp(d)
     }
 }

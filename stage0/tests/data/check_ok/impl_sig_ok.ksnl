@@ -12,9 +12,11 @@ impl t.C<u32> for t.X
 fn t.X.get(self: &t.X, x: u32) -> u32 uses [] panics never impls t.C<u32>
     x.wrapping_add(self.v)
 end t.X.get
+
 fn t.X.me(self: &t.X) -> &t.X uses [] panics never impls t.C<u32>
     self
 end t.X.me
+
 fn t.X.own(self: t.X, n: u32) -> Option<u32> uses [] panics never impls t.C<u32>
     Some(n.wrapping_add(self.v))
 end t.X.own

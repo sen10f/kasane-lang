@@ -220,7 +220,7 @@ fn two_upper(s: &str) -> bool {
     cs.windows(2).any(|w| w[0].is_ascii_uppercase() && w[1].is_ascii_uppercase())
 }
 
-fn split_top(s: &str, sep: char) -> Vec<String> {
+pub(crate) fn split_top(s: &str, sep: char) -> Vec<String> {
     let mut out = vec![];
     let mut d = 0i32;
     let mut cur = String::new();
@@ -476,7 +476,7 @@ fn arms(body: &str) -> Vec<(String, String)> {
     out
 }
 
-fn bracket(s: &str, start: usize) -> String {
+pub(crate) fn bracket(s: &str, start: usize) -> String {
     let mut d = 0;
     for (i, ch) in s[start..].char_indices() {
         if ch == '[' {
@@ -491,7 +491,7 @@ fn bracket(s: &str, start: usize) -> String {
     String::new()
 }
 
-fn strip_args(s: &str) -> String {
+pub(crate) fn strip_args(s: &str) -> String {
     let mut out = String::new();
     let mut d = 0i32;
     for ch in s.chars() {

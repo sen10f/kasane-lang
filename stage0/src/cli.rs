@@ -24,7 +24,7 @@ fn lint_code(c: &str) -> &'static str {
     match c {
         "fqn" => "E1001",
         "name" => "E0010",
-        "order" => "E0020",
+        "order" | "fmtdiff" => "E0020",
         "attr" => "E0021",
         "blank" => "E0030",
         "indent" => "E0031",
@@ -457,8 +457,8 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
                 fc
             }
             None => {
-                // 正規形でなくても、`ksn fmt` で正規形になり、その結果が検査を通るなら、並び順や空行は
-                // エラーにしない (`fmt --check` が差分として報告する)。意味に関する誤りは従来どおり報告する。
+                // 正規形でなくても、`ksn fmt` で正規形になり、その結果が検査を通るなら、個々の診断の代わりに
+                // 「`ksn fmt` の出力と違う」(E0020) を 1 件出す。意味に関する誤りは従来どおり報告する。
                 // 整形は安いので毎回やる。lint と文法は定義ごとの結果を再利用する (check_cache.rs)。
                 let run_lint = |text: &str, memo: &mut crate::check_cache::FileMemo| {
                     if use_cache {
@@ -475,7 +475,16 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
                     && !s.text.contains('\t')
                     && run_lint(&formatted, &mut memo).is_empty()
                     && (if use_cache { grammar.check_memo(&formatted, &mut memo.gram) } else { grammar.check(&formatted) }).0;
-                let lint = if skip { vec![] } else { run_lint(&lt, &mut memo) };
+                let mut lint = if skip { vec![] } else { run_lint(&lt, &mut memo) };
+                // 書き方は 1 通り (設計_書き方は1通り.md の D1): `ksn fmt` の出力と違うファイルは誤り (E0020、致命)。
+                // `ksn fmt` が直せる揺れ (間隔・並び・空行・名前の参照形・末尾の `return` など) をこの 1 つの規則で拾う。
+                if formatted != s.text && docs(&formatted) == docs(&s.text) && !s.text.contains('\t') {
+                    let (a, b): (Vec<&str>, Vec<&str>) = (s.text.lines().collect(), formatted.lines().collect());
+                    let n = (0..a.len().max(b.len())).filter(|&i| a.get(i) != b.get(i)).count();
+                    let first = (0..a.len().max(b.len())).find(|&i| a.get(i) != b.get(i)).unwrap_or(0);
+                    let msg = format!("the file differs from the `ksn fmt` output ({} line(s) differ, first at line {}): run `ksn fmt`", n, first + 1);
+                    lint.push(("fmtdiff".to_string(), first + 1, msg));
+                }
                 crate::check_cache::FileCheck { skip, lint }
             }
         };
@@ -485,15 +494,13 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         if use_cache {
             crate::check_cache::store(&s.path, &relpath, &memo);
         }
+        for (code, ln, msg) in fc.lint {
+            // `order` (E0020) も致命 (書き方は 1 通り。`ksn fmt` が直せるものは skip の分岐で 1 件にまとめる)。
+            let fatal = !(run_mode && code == "unused");
+            rep.add(lint_code(&code), &msg, Some(&fl), ln, 0, fatal);
+        }
         if fc.skip {
             continue;
-        }
-        for (code, ln, msg) in fc.lint {
-            // `order` (E0020: 定義順・群内順・uses/属性の並び順)は `ksn fmt` で
-            // 機械的に直せる違反。check では非致命的として報告し、終了コードに
-            // 影響させない (`fmt --check` が差分として検出する)。
-            let fatal = !(run_mode && code == "unused") && code != "order";
-            rep.add(lint_code(&code), &msg, Some(&fl), ln, 0, fatal);
         }
         let (ok, msg, ln) = gram;
         if !ok && !guided.contains(&ln) {

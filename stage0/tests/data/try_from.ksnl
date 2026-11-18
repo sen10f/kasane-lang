@@ -16,6 +16,12 @@ fn t.fail(code: u32) -> Result<u32, t.Inner> uses [] panics never
     Err(t.Inner { code: code })
 end t.fail
 
+fn t.keep(e: t.AppError) -> Result<u32, t.AppError> uses [] panics never
+    let r: Result<u32, t.AppError> = Err(e)
+    let n = r?
+    Ok(n)
+end t.keep
+
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(t.run(0u32), Ok(11u32))
     core.check.eq(t.run(7u32), Err(t.AppError.Code(t.Inner { code: 7u32 })))
@@ -47,12 +53,6 @@ fn t.push_one() -> Result<(), t.AppError> uses [alloc] panics never
     v.push(2u8)?
     Ok(())
 end t.push_one
-
-fn t.keep(e: t.AppError) -> Result<u32, t.AppError> uses [] panics never
-    let r: Result<u32, t.AppError> = Err(e)
-    let n = r?
-    Ok(n)
-end t.keep
 
 fn t.run(code: u32) -> Result<u32, t.AppError> uses [] panics never
     let n = t.fail(code)?

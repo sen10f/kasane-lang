@@ -220,6 +220,217 @@ fn fix_derive(header: &str) -> String {
     format!("{}derive [{}]{}", &header[..whole.start()], names.join(", "), &header[whole.end()..])
 }
 
+/// `uses [..]`・`capture [..]`・`requires ..`・境界 `A + B` の並びを正規形にする (lint.rs の `order` と同じ規則)。
+fn fix_lists(line: &str) -> String {
+    // 文字列を含む行は触らない (リテラルの中身を書き換えない)。
+    if line.contains('"') || line.trim_start().starts_with("//") {
+        return line.to_string();
+    }
+    let mut l = line.to_string();
+    // uses: 具体の効果 (小文字始まり) をバイト順、効果変数 (大文字始まり) は元の順で後ろ。
+    let mut from = 0;
+    while let Some(p) = l[from..].find("uses [") {
+        let open = from + p + 5;
+        let inner = crate::lint::bracket(&l, open);
+        let els = crate::lint::split_top(&inner, ',');
+        let mut conc: Vec<String> = els.iter().filter(|e| e.chars().next().map_or(false, |c| c.is_lowercase())).cloned().collect();
+        let var: Vec<String> = els.iter().filter(|e| e.chars().next().map_or(false, |c| c.is_uppercase())).cloned().collect();
+        conc.sort();
+        conc.extend(var);
+        if conc.len() == els.len() && conc != els {
+            l = format!("{}{}{}", &l[..open + 1], conc.join(", "), &l[open + 1 + inner.len()..]);
+        }
+        from = open + 1;
+    }
+    // capture: 名前 (`&` `&mut ` `move ` を除いた) の順。
+    if let Some(p) = l.find("capture [") {
+        let open = p + 8;
+        let inner = crate::lint::bracket(&l, open);
+        let els = crate::lint::split_top(&inner, ',');
+        let key = |c: &String| -> String {
+            for pre in ["&mut ", "&", "move "] {
+                if let Some(r) = c.strip_prefix(pre) {
+                    return r.to_string();
+                }
+            }
+            c.clone()
+        };
+        let mut sorted = els.clone();
+        sorted.sort_by_key(|c| key(c));
+        if sorted != els {
+            l = format!("{}{}{}", &l[..open + 1], sorted.join(", "), &l[open + 1 + inner.len()..]);
+        }
+    }
+    // trait の requires (行末、`pub` が付くことがある)。
+    if l.starts_with("trait ") {
+        if let Some(p) = l.find(" requires ") {
+            let rest = &l[p + 10..];
+            let (body, tail) = match rest.strip_suffix(" pub") {
+                Some(b) => (b, " pub"),
+                None => (rest, ""),
+            };
+            let rs = crate::lint::split_top(body, ',');
+            let mut sorted = rs.clone();
+            sorted.sort();
+            if sorted != rs {
+                l = format!("{} requires {}{}", &l[..p], sorted.join(", "), tail);
+            }
+        }
+    }
+    // 境界の `+` の並び (`linear` が先、通常は名前順、ライフタイムは最後)。
+    let gen_open = if l.starts_with("impl[") {
+        Some(4)
+    } else {
+        Regex::new(r"^(?:fn|type|enum|trait)\s+[A-Za-z0-9_.]+\[").unwrap().find(&l).map(|m| m.end() - 1)
+    };
+    if let Some(open) = gen_open {
+        let gen = crate::lint::bracket(&l, open);
+        let ents = crate::lint::split_top(&gen, ',');
+        let mut changed = false;
+        let fixed: Vec<String> = ents
+            .iter()
+            .map(|ent| {
+                let Some((name, b)) = ent.split_once(':') else { return ent.clone() };
+                let bound = b.trim();
+                if bound == "uses" || bound == "panics" || !crate::lint::strip_args(bound).contains('+') {
+                    return ent.clone();
+                }
+                let parts: Vec<String> = crate::lint::split_top(bound, '+').iter().map(|p| p.trim().to_string()).collect();
+                let rank = |p: &String| -> (u8, String) {
+                    if p == "linear" {
+                        (0, String::new())
+                    } else if p.starts_with('\'') {
+                        (2, p.clone())
+                    } else {
+                        (1, p.clone())
+                    }
+                };
+                let mut sorted = parts.clone();
+                sorted.sort_by_key(|p| rank(p));
+                if sorted != parts {
+                    changed = true;
+                }
+                format!("{}: {}", name, sorted.join(" + "))
+            })
+            .collect();
+        if changed {
+            l = format!("{}{}{}", &l[..open + 1], fixed.join(", "), &l[open + 1 + gen.len()..]);
+        }
+    }
+    l
+}
+
+/// 末尾位置の `return` (4.6、S7): 関数・クロージャの本体のブロックの最後の式、その `if` (`else` あり) の枝と `match` の腕。
+/// `(行, 列, 値あり)` を集める。値なしの `return` は `()` に、値ありは `return ` を外す。
+fn tail_returns(v: &crate::parser::V, unit: bool, out: &mut Vec<(usize, usize, bool)>) {
+    use crate::parser::V;
+    let V::Node(kind, ch, pos, _) = v else { return };
+    match *kind {
+        "Block" => {
+            if let Some(V::L(stmts)) = ch.first() {
+                if let Some(V::Node("ExprStmt", e, _, _)) = stmts.last() {
+                    if let Some(x) = e.first() {
+                        tail_returns(x, unit, out);
+                    }
+                }
+            }
+        }
+        "Return" => {
+            let (l, c) = crate::parser::unpack_pos(*pos);
+            let has = !matches!(ch.first(), Some(V::Nil) | None);
+            // 値のない `return` は、戻り値が `()` の関数だけ `()` に直す (そうでないものは元から誤りで、意味を変えない)。
+            if has || unit {
+                out.push((l, c, has));
+            }
+        }
+        "If" => {
+            if ch.len() == 3 && !matches!(ch[2], V::Nil) {
+                tail_returns(&ch[1], unit, out);
+                tail_returns(&ch[2], unit, out);
+            }
+        }
+        "Match" => {
+            if let Some(V::L(arms)) = ch.get(1) {
+                for a in arms {
+                    if let V::L(pb) = a {
+                        if let Some(b) = pb.get(1) {
+                            tail_returns(b, unit, out);
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_unit(t: &crate::parser::V) -> bool {
+    use crate::parser::V;
+    matches!(t, V::L(xs) if xs.len() == 2 && matches!(&xs[0], V::S(k) if k == "tuple") && matches!(&xs[1], V::L(i) if i.is_empty()))
+}
+
+/// 本体の全ノードを歩き、関数本体 (`root`) とクロージャの本体から末尾の `return` を集める。
+fn collect_tail_returns(v: &crate::parser::V, root: Option<bool>, out: &mut Vec<(usize, usize, bool)>) {
+    use crate::parser::V;
+    match v {
+        V::Node(kind, ch, _, _) => {
+            if let Some(unit) = root {
+                tail_returns(v, unit, out);
+            }
+            if *kind == "Closure" {
+                if let Some(b) = ch.get(3) {
+                    tail_returns(b, ch.get(1).map_or(false, is_unit), out);
+                }
+            }
+            for c in ch {
+                collect_tail_returns(c, None, out);
+            }
+        }
+        V::L(xs) => {
+            for c in xs {
+                collect_tail_returns(c, None, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// S7 (末尾の `return`) と S16 (`while true`) を直す。行数は変えない。
+fn fix_tails(defs: &[crate::program::Def], lines: &mut [String]) {
+    let mut edits: Vec<(usize, usize, bool)> = vec![];
+    for d in defs {
+        if matches!(d.kw.as_str(), "fn" | "test") {
+            if let Some(b) = &d.body {
+                collect_tail_returns(b, Some(is_unit(&d.ret)), &mut edits);
+            }
+        }
+    }
+    edits.sort();
+    edits.dedup();
+    for (l, c, has) in edits.into_iter().rev() {
+        let Some(line) = lines.get_mut(l - 1) else { continue };
+        let mut ch: Vec<char> = line.chars().collect();
+        let at = c.saturating_sub(1);
+        let word: Vec<char> = "return".chars().collect();
+        if ch.get(at..at + 6) != Some(&word[..]) {
+            continue;
+        }
+        if has && ch.get(at + 6) == Some(&' ') {
+            ch.splice(at..at + 7, std::iter::empty());
+        } else if !has {
+            ch.splice(at..at + 6, "()".chars());
+        } else {
+            continue;
+        }
+        *line = ch.into_iter().collect();
+    }
+    for l in lines.iter_mut() {
+        if l.trim_start() == "while true {" {
+            *l = l.replacen("while true", "loop", 1);
+        }
+    }
+}
+
 fn group(kw: &str) -> usize {
     match kw {
         "import" => 0,
@@ -246,12 +457,21 @@ pub fn format_source(text: &str, path: &str) -> String {
 
 /// `canon` が偽なら、名前の参照形 (3.3) は書き換えず、定義の並びと空行だけを整える (`ksn rename` 用)。
 pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
-    let lines = mechanical(text);
+    let mut lines = mechanical(text);
+    if canon {
+        // 1 行の中のトークンの間隔 (spacing.rs の表)。
+        for l in lines.iter_mut() {
+            *l = fix_lists(&crate::spacing::canon_line(l));
+        }
+    }
     let joined = lines.join("\n") + "\n";
     let defs = match load_file(path, "", &joined) {
         Ok(d) => d,
         Err(_) => return joined,
     };
+    if canon {
+        fix_tails(&defs, &mut lines);
+    }
     // 3.3: 名前の参照形を正規形にする (ヘッダは FQN、本体は import 済みモジュールの短縮形)。
     let mut lines = lines;
     let imps: Vec<Imp> = defs

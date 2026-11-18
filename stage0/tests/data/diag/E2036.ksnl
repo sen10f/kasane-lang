@@ -2,6 +2,6 @@ type t.Inner pub
     x: u8
 end t.Inner
 
-type t.Outer derive [Copy, Clone] pub
+type t.Outer derive [Clone, Copy] pub
     i: t.Inner
 end t.Outer

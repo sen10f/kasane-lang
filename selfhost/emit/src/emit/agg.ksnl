@@ -172,15 +172,15 @@ fn emit.agg.size_of(g: &emit.G, t: usize) -> usize uses [io.console, process] pa
     } else if k.kind == (emit.ty.K_BOOL) {
         1usize
     } else if k.kind == (emit.ty.K_INT) {
-        usize.from_u32(k.bits)/ 8usize
+        usize.from_u32(k.bits) / 8usize
     } else if k.kind == (emit.ty.K_PTR) || k.kind == (emit.ty.K_REF) {
         8usize
     } else if k.kind == (emit.ty.K_AGG) {
         emit.agg.get(g, k.a).size
     } else {
         let bits = 1usize.wrapping_add(emit.ty.slot(g, t))
-        let bytes = bits.wrapping_add(7usize)/ 8usize
-        bytes.wrapping_add(7usize)/ 8usize.wrapping_mul(8usize)
+        let bytes = bits.wrapping_add(7usize) / 8usize
+        bytes.wrapping_add(7usize) / 8usize.wrapping_mul(8usize)
     }
 end emit.agg.size_of
 

@@ -1,30 +1,3 @@
-fn t.name_of(n: u32) -> &'static str
-    match n {
-        0u32 => "zero"
-        1u32 => "one"
-        _ => "many"
-    }
-end t.name_of
-
-fn t.trimmed(text: &str) -> &str
-    text.trim()
-end t.trimmed
-
-fn t.pick['a](flag: bool, a: &'a str, b: &'a str) -> &'a str
-    if flag {
-        return a
-    }
-    b
-end t.pick
-
-fn t.head(bytes: &[u8]) -> &[u8]
-    bytes
-end t.head
-
-fn t.view(buf: &alloc.string.String<std.alloc.System>) -> &str
-    buf.as_str()
-end t.view
-
 fn t.biggest['a](a: &'a u32, b: &'a u32) -> &'a u32
     if *a > *b {
         return a
@@ -35,6 +8,10 @@ end t.biggest
 fn t.empty_bytes() -> &'static [u8]
     b""
 end t.empty_bytes
+
+fn t.head(bytes: &[u8]) -> &[u8]
+    bytes
+end t.head
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(t.name_of(0u32), "zero")
@@ -55,3 +32,26 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.mem.drop(line.push_str(t.trimmed("  and  ")))
     std.io.print_line(line.as_str())
 end t.main
+
+fn t.name_of(n: u32) -> &'static str
+    match n {
+        0u32 => "zero"
+        1u32 => "one"
+        _ => "many"
+    }
+end t.name_of
+
+fn t.pick['a](flag: bool, a: &'a str, b: &'a str) -> &'a str
+    if flag {
+        return a
+    }
+    b
+end t.pick
+
+fn t.trimmed(text: &str) -> &str
+    text.trim()
+end t.trimmed
+
+fn t.view(buf: &alloc.string.String<std.alloc.System>) -> &str
+    buf.as_str()
+end t.view

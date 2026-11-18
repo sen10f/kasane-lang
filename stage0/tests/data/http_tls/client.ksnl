@@ -1,13 +1,3 @@
-// `std.tls` の利用者側の試験。引数: `<アドレス> <CA の PEM>`。サーバへ `GET /stats` を送り、最初の行を書く。
-// そのあと、既定の CA (この証明書は信頼されない) と、名前の違うホストへの接続が拒否されることを書く。
-fn t.push_part(out: &mut alloc.vec.Vec<u8, std.alloc.System>, chunk: &[u8], n: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
-    match chunk.sub(0usize, n) {
-        Some(part) => out.extend_from_slice(part)?
-        None => core.mem.drop(0u8)
-    }
-    Ok(())
-end t.push_part
-
 fn t.fetch(address: &str, ca: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.tls.Error> uses [alloc, io.fs, io.net] panics may
     let conn = std.tls.connect_with(address, "localhost", ca)?
     let mut tls = conn
@@ -73,3 +63,13 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, env, io.console, io.fs, io.
     }
     Ok(())
 end t.main
+
+// `std.tls` の利用者側の試験。引数: `<アドレス> <CA の PEM>`。サーバへ `GET /stats` を送り、最初の行を書く。
+// そのあと、既定の CA (この証明書は信頼されない) と、名前の違うホストへの接続が拒否されることを書く。
+fn t.push_part(out: &mut alloc.vec.Vec<u8, std.alloc.System>, chunk: &[u8], n: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    match chunk.sub(0usize, n) {
+        Some(part) => out.extend_from_slice(part)?
+        None => core.mem.drop(0u8)
+    }
+    Ok(())
+end t.push_part

@@ -38,6 +38,12 @@ end t.known_f64
 fn t.main() -> () uses [] panics never
 end t.main
 
+fn t.same(a: f64, b: f64) -> bool uses [] panics never
+    let na = a.is_nan()
+    let nb = b.is_nan()
+    (na && nb) || (!na && !nb && a.to_bits() == b.to_bits())
+end t.same
+
 fn t.special() -> bool uses [] panics never
     let big = 1000.0f64
     let inf = big.exp()
@@ -47,12 +53,6 @@ fn t.special() -> bool uses [] panics never
     let ok_ln = zero.ln() == -inf && neg.ln().is_nan()
     ok_inf && ok_ln && (-big).exp() == 0.0f64
 end t.special
-
-fn t.same(a: f64, b: f64) -> bool uses [] panics never
-    let na = a.is_nan()
-    let nb = b.is_nan()
-    (na && nb) || (!na && !nb && a.to_bits() == b.to_bits())
-end t.same
 
 fn t.special_bits() -> bool uses [] panics never
     let inf = 1000.0f64.exp()

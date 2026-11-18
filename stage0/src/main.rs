@@ -26,6 +26,7 @@ mod kir_opt;
 mod kir_suspend;
 mod kir_scalar;
 mod fmt;
+mod spacing;
 mod bindgen;
 mod grammar;
 mod lint;

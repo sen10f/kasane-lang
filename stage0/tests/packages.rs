@@ -694,6 +694,8 @@ fn vis_check(name: &str, main: &str, sub: &str) -> (i32, String) {
     let w = Work::new(name);
     let root = w.path("t");
     make_pkg(&root, "t", true, "", &[("src/t.ksnl", main), ("src/t/sub.ksnl", sub)]);
+    // 書き方は 1 通り (E0020): 組み立てた入力は `ksn fmt` の出力にそろえる。
+    let _ = w.ksn(&["fmt"], &root);
     let o = w.ksn(&["check"], &root);
     (o.status.code().unwrap_or(-1), all(&o))
 }

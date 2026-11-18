@@ -8,7 +8,7 @@ end t.main
 
 fn t.spin() -> u32 const uses [] panics may
     let mut i: u32 = 0u32
-    while true {
+    loop {
         i = i.wrapping_add(1u32)
     }
     i

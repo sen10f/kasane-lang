@@ -1,3 +1,7 @@
+enum t.E
+    A(u64)
+end t.E
+
 type t.S
     name: alloc.string.String
     n: u64
@@ -6,10 +10,6 @@ end t.S
 type t.W[T]
     v: T
 end t.W
-
-enum t.E
-    A(u64)
-end t.E
 
 fn t.main() -> () uses [alloc] panics never
     let k = 5u64

@@ -177,14 +177,26 @@ def evaluate(code, tests):
         open(os.path.join(td, 'kasane.lock'), 'w', newline='\n').write('version = 1\n')
         nl = chr(10)
         src = code.rstrip(nl) + nl
-        if tests:
-            src += nl + tests.rstrip(nl) + nl
-        open(os.path.join(td, 'src', 'bench.ksnl'), 'w', newline='\n', encoding='utf-8').write(src)
+        path = os.path.join(td, 'src', 'bench.ksnl')
+        open(path, 'w', newline='\n', encoding='utf-8').write(src)
+        # 書き方は 1 通り (E0020): まずモデルのコードだけを検査する (`ksn fmt` の出力と違えば check の誤り)。
         rc, out = run_ksn_retry(['check'], td)
         if rc < 0:
             return 'infra', f'ksn check がシグナル {-rc} で落ちた', []
         if rc != 0:
             return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out)
+        if tests:
+            # テストの追記は採点側の組み立てなので、並びは `ksn fmt` に任せる。
+            src += nl + tests.rstrip(nl) + nl
+            open(path, 'w', newline='\n', encoding='utf-8').write(src)
+            rc, out = run_ksn_retry(['fmt'], td)
+            if rc < 0:
+                return 'infra', f'ksn fmt がシグナル {-rc} で落ちた', []
+            rc, out = run_ksn_retry(['check'], td)
+            if rc < 0:
+                return 'infra', f'ksn check がシグナル {-rc} で落ちた', []
+            if rc != 0:
+                return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out)
         rc, out = run_ksn_retry(['test'], td)
         if rc < 0:
             return 'infra', f'ksn test がシグナル {-rc} で落ちた', []

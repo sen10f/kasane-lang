@@ -24,16 +24,6 @@ fn t.add(a: i32, b: i32) -> i32 uses [] panics never pub
     s
 end t.add
 
-fn t.noisy() -> Result<(), std.io.Error> uses [alloc, io.console] panics may pub
-    std.io.print_line(\"noisy\")
-end t.noisy
-
-fn t.work(p: t.P) -> i32 uses [] panics never pub
-    let sum = t.add(p.x, p.y)
-    let twice = sum.wrapping_mul(2i32)
-    twice
-end t.work
-
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let p = t.P { x: 3i32, y: 4i32 }
     let w = t.work(p)
@@ -45,6 +35,16 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(w, 14i32)
     Ok(())
 end t.main
+
+fn t.noisy() -> Result<(), std.io.Error> uses [alloc, io.console] panics may pub
+    std.io.print_line(\"noisy\")
+end t.noisy
+
+fn t.work(p: t.P) -> i32 uses [] panics never pub
+    let sum = t.add(p.x, p.y)
+    let twice = sum.wrapping_mul(2i32)
+    twice
+end t.work
 
 test t.add.test_basic
     core.check.eq(t.add(1i32, 2i32), 3i32)
