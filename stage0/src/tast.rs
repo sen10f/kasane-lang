@@ -145,6 +145,8 @@ pub struct TExpr {
     pub res: Option<Callee>,
     /// 呼び出し節点の型引数の実体 (`SideTabs::type_args`)。
     pub targs: Vec<Ty>,
+    /// `Call` / `MCall` だけ: 書いた明示型引数 (`f::<..>`) の数 (ライフタイムを除く)。書いていなければ `None`。
+    pub tf: Option<usize>,
 }
 
 /// 節点の形。式の形ごとの場合分けは、ここ (木を組む側) に 1 回だけ置く (設計 2.3 の末尾)。
@@ -199,6 +201,10 @@ pub struct TPat {
     pub children: Vec<TPat>,
     /// `PBind` の名前。
     pub name: Option<String>,
+    /// `PVariant` / `PPath` / `PStruct` の経路 (書いたまま)。
+    pub path: Vec<String>,
+    /// `PLit` のリテラルの種類と接尾辞 (`["int", "u64"]`、接尾辞が無ければ種類だけ)。
+    pub lit: Vec<String>,
 }
 
 /// 関数・閉包の引数の束縛 (宣言の型から `from_v` で引き直した型)。
@@ -362,15 +368,37 @@ impl<'a> Builder<'a> {
 
     fn pat(&mut self, v: &V) -> TPat {
         let V::Node(kind, f, ln, id) = v else {
-            return TPat { id: 0, kind: "", line: 0, info: None, children: vec![], name: None };
+            return TPat { id: 0, kind: "", line: 0, info: None, children: vec![], name: None, path: vec![], lit: vec![] };
         };
         let mut children = vec![];
         let mut name = None;
+        let mut path = vec![];
+        let mut lit = vec![];
         match *kind {
             "PBind" => name = Some(sv(&f[0])),
             "PTuple" => children = lv(&f[0]).iter().map(|x| self.pat(x)).collect(),
-            "PVariant" => children = lv(&f[1]).iter().map(|x| self.pat(x)).collect(),
-            "PStruct" => children = lv(&f[1]).iter().filter_map(|x| lv(x).get(1)).map(|x| self.pat(x)).collect(),
+            "PVariant" => {
+                path = lv(&f[0]).iter().map(sv).collect();
+                children = lv(&f[1]).iter().map(|x| self.pat(x)).collect()
+            }
+            "PPath" => path = lv(&f[0]).iter().map(sv).collect(),
+            "PLit" => {
+                let lf = fs(&f[0]);
+                let k = lf.first().map(sv).unwrap_or_default();
+                let sfx = match k.as_str() {
+                    "int" => lf.get(2),
+                    "float" => lf.get(1),
+                    _ => None,
+                };
+                lit.push(k);
+                if let Some(V::S(x)) = sfx {
+                    lit.push(x.clone());
+                }
+            }
+            "PStruct" => {
+                path = lv(&f[0]).iter().map(sv).collect();
+                children = lv(&f[1]).iter().filter_map(|x| lv(x).get(1)).map(|x| self.pat(x)).collect()
+            }
             "PRef" => children = vec![self.pat(&f[0])],
             _ => {}
         }
@@ -379,7 +407,7 @@ impl<'a> Builder<'a> {
         if info.is_some() {
             self.stats.pats_info += 1;
         }
-        TPat { id: *id, kind, line: crate::parser::unpack_pos(*ln).0, info, children, name }
+        TPat { id: *id, kind, line: crate::parser::unpack_pos(*ln).0, info, children, name, path, lit }
     }
 
     fn exprs(&mut self, v: &V) -> Vec<TExpr> {
@@ -409,7 +437,7 @@ impl<'a> Builder<'a> {
     /// 式の節点を組む。`callee` は `Call` の第 1 子 (被覆の数え方だけが違う)。
     fn expr(&mut self, v: &V, callee: bool) -> TExpr {
         let V::Node(kind, f, ln, id) = v else {
-            return TExpr { id: 0, line: 0, kind: TKind::Other { name: "?", children: vec![] }, ty: Ty::Unknown, place: None, conv: vec![], res: None, targs: vec![] };
+            return TExpr { id: 0, line: 0, kind: TKind::Other { name: "?", children: vec![] }, ty: Ty::Unknown, place: None, conv: vec![], res: None, targs: vec![], tf: None };
         };
         let key = (self.di, *id);
         let mut place = None;
@@ -566,7 +594,16 @@ impl<'a> Builder<'a> {
         self.stats.with_res += res.is_some() as usize;
         self.stats.with_targs += !targs.is_empty() as usize;
         self.stats.with_conv += !conv.is_empty() as usize;
-        TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs }
+        let tf = match *kind {
+            "Call" => f.get(2),
+            "MCall" => f.get(3),
+            _ => None,
+        }
+        .and_then(|t| match t {
+            V::L(xs) => Some(xs.iter().filter(|a| !matches!(a, V::L(y) if matches!(y.first(), Some(V::S(s)) if s == "life"))).count()),
+            _ => None,
+        });
+        TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs, tf }
     }
 }
 
