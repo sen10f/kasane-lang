@@ -212,3 +212,42 @@ pub fn build(_p: &Program, _user: &[DefId], _tytab: &std::collections::BTreeMap<
     let _ = std::marker::PhantomData::<V>;
     Tast::default()
 }
+
+/// `KSN_DUMP_SIDE=1`: `resolved_fn` を (定義名, 式 ID) 順に出す。1 行目は `side resolved_fn`。
+pub fn dump_resolved_fn(p: &Program, side: &SideTabs) -> String {
+    let mut keys: Vec<&Key> = side.resolved_fn.keys().collect();
+    keys.sort_by(|a, b| (&p.defs[a.0].name, a.1).cmp(&(&p.defs[b.0].name, b.1)));
+    let mut o = String::from("side resolved_fn\n");
+    for k in keys {
+        let c = match &side.resolved_fn[k] {
+            Callee::Def(i) => format!("Def {}", p.defs[*i].name),
+            Callee::Methods(v) => format!("Methods {}", v.iter().map(|i| p.defs[*i].name.as_str()).collect::<Vec<_>>().join(" | ")),
+            Callee::Variant(e, v) => format!("Variant {}.{}", e, v),
+            Callee::Local(n) => format!("Local {}", n),
+            Callee::Dyn(i) => format!("Dyn {}", p.defs[*i].name),
+            Callee::Unknown => "Unknown".to_string(),
+        };
+        o.push_str(&format!("{}\t{}\t{}\n", p.defs[k.0].name, k.1, c));
+    }
+    o
+}
+
+/// `KSN_TYPE_SURVEY=1`: `resolved_fn` の種類別の件数 (stderr の末尾に出す)。
+pub fn survey_resolved_fn(side: &SideTabs) -> String {
+    let mut n = [0usize; 6];
+    for c in side.resolved_fn.values() {
+        n[match c {
+            Callee::Def(_) => 0,
+            Callee::Methods(_) => 1,
+            Callee::Variant(..) => 2,
+            Callee::Local(_) => 3,
+            Callee::Dyn(_) => 4,
+            Callee::Unknown => 5,
+        }] += 1;
+    }
+    let tot: usize = n.iter().sum();
+    format!(
+        "resolved_fn\ttotal={}\tDef={}\tMethods={}\tVariant={}\tLocal={}\tDyn={}\tUnknown={}\n",
+        tot, n[0], n[1], n[2], n[3], n[4], n[5]
+    )
+}

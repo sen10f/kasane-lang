@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::check::{edit_distance, is_nil, items, nf, nline, nname, pat_binds, st, strs, tag, tel, Diag};
 use crate::parser::V;
+use crate::tast::Callee;
 use crate::program::{Def, Program, Target};
 use crate::check::borrowck::match_close;
 
@@ -2380,6 +2381,18 @@ impl<'a> TypeCk<'a> {
         let t = self.call_method_in(recv, base, name, args, line, targs, local);
         let fit = std::mem::replace(&mut self.last_fit, saved);
         let key = (self.cur, id);
+        // 側の表 (S1A): `dyn` 越し (`Box<dyn Tr>` も) は `Callee::Dyn`、それ以外は下で `call_res` から写す。
+        let dyn_tr = {
+            let deep = self.deep(recv);
+            match deep.strip().clone() {
+                Ty::Dyn(tr, _) => Some(tr),
+                Ty::Named(n, a) if n == "alloc.boxed.Box" && !matches!(name, "as_ref" | "as_mut" | "into_inner" | "drop") => match a.first().map(|x| self.deep(x)) {
+                    Some(Ty::Dyn(tr, _)) => Some(tr),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
         match (self.call_res.get_mut(&key), fit) {
             (None, f) => {
                 self.call_res.insert(key, f);
@@ -2387,7 +2400,23 @@ impl<'a> TypeCk<'a> {
             (Some(Some(old)), Some(f)) => old.extend(f),
             (Some(slot), _) => *slot = None,
         }
+        let callee = match dyn_tr.and_then(|tr| crate::check::resolve_trait_fqn(self.p, &tr)).and_then(|r| self.p.types.get(&r).copied()) {
+            Some(ti) => Callee::Dyn(ti),
+            None => match self.call_res.get(&key) {
+                Some(Some(v)) if v.len() == 1 => Callee::Def(v[0]),
+                Some(Some(v)) if !v.is_empty() => Callee::Methods(v.clone()),
+                _ => Callee::Unknown,
+            },
+        };
+        self.note_callee(id, callee);
         t
+    }
+
+    /// 側の表 `resolved_fn` へ呼び出し節点の解決先を書く (式 ID 0 = 未採番は書かない。同じ鍵への再訪は後勝ち)。
+    fn note_callee(&mut self, id: u32, c: Callee) {
+        if id != 0 {
+            self.side.resolved_fn.insert((self.cur, id), c);
+        }
     }
 
     fn call_method_in(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
@@ -4845,6 +4874,7 @@ impl<'a> TypeCk<'a> {
         // その位置にクロージャ式が直接書かれているか (効果検査 ② が変数経由を避けるのに使う)。
         if nname(callee) != "Path" {
             // `fn(..) {..}(x)` のように、クロージャを直接呼ぶ形。
+            self.note_callee(call_id, Callee::Local(String::new()));
             let t = self.infer(callee);
             if let Some(r) = self.call_closure(&t, &argt, line, Some("closure")) {
                 return r;
@@ -4858,6 +4888,7 @@ impl<'a> TypeCk<'a> {
             self.dep_on_local(&segs[0]);
             if segs.len() < 2 {
                 // `f(x)`: クロージャを持つ局所変数の直接呼び出し。
+                self.note_callee(call_id, Callee::Local(segs[0].clone()));
                 let mut t = self.lookup(&segs[0]).unwrap();
                 // `FnMut` のクロージャは可変借用で呼ぶ (4.2)。共有参照 `&f` を一つでも通して呼ぶと、
                 // 可変借用を共有参照越しに作ることになる (E3031。メソッドの `&mut self` と同じ)。
@@ -4915,6 +4946,7 @@ impl<'a> TypeCk<'a> {
         }
         let _ = &argt;
         let Some(r) = self.p.resolve(&segs, &self.def().file) else {
+            self.note_callee(call_id, Callee::Unknown);
             self.quiet_here();
             argt.iter().for_each(|a| self.escape(a));
             return Ty::Unknown;
@@ -4940,8 +4972,15 @@ impl<'a> TypeCk<'a> {
                 let recv = self.path(prefix);
                 return self.call_method(call_id, &recv, None, &r.rest[0], &argt, line, targs, false);
             }
+            self.note_callee(call_id, Callee::Unknown);
             argt.iter().for_each(|a| self.escape(a));
             return Ty::Unknown;
+        }
+        match &r.target {
+            Target::Variant(en, vn) => self.note_callee(call_id, Callee::Variant(en.clone(), vn.clone())),
+            Target::Fn(i) | Target::Sig(i) => self.note_callee(call_id, Callee::Def(*i)),
+            Target::Native(fq) | Target::Value(fq) if self.p.sigs.contains_key(fq) => self.note_callee(call_id, Callee::Def(self.p.sigs[fq])),
+            _ => self.note_callee(call_id, Callee::Unknown),
         }
         match r.target {
             Target::Variant(en, vn) => {

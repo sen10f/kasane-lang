@@ -3310,9 +3310,14 @@ impl<'a> Checker<'a> {
         if std::env::var_os("KSN_DUMP_TYPES").is_some() {
             eprint!("{}", tk.dump_types());
         }
+        // 確認 (隠し機能): `KSN_DUMP_SIDE=1` のとき側の表を stderr に出す (各表の 1 行目は `side <表の名前>`)。
+        if std::env::var_os("KSN_DUMP_SIDE").is_some() {
+            eprint!("{}", crate::tast::dump_resolved_fn(self.p, &tk.side));
+        }
         // 計測 (隠し機能): `KSN_TYPE_SURVEY=1` のとき TAST の事前調査の表を stderr に出す (survey.rs)。読むだけ。
         if std::env::var_os("KSN_TYPE_SURVEY").is_some() {
             crate::survey::run(self.p, &user, &tk.tytab, &self.call_res, &self.let_tys);
+            eprint!("{}", crate::tast::survey_resolved_fn(&tk.side));
         }
         // 4.6 (型表): 型推論が型を決めた式文の捨て。`ty_of` では決まらない形 (標準ライブラリの
         // ジェネリック型のメソッドの戻り値、`v.pop();` の `Option` など) をここで拾う。
