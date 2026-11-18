@@ -159,7 +159,9 @@ pub enum TKind {
     Match { scrut: Box<TExpr>, arms: Vec<TArm> },
     /// 閉包: 引数の束縛・取り込み (`closure_caps`)・本体。
     Closure { params: Vec<TBinding>, captures: Vec<Capture>, body: Box<TExpr> },
-    /// 上に無い形 (`For` `While` `Loop` `Return` `Try` `StructLit` `TupleE` `ArrayE` ...)。種別名と子の式。
+    /// 構造体リテラル `T { f: e, .. }` (型の FQN の書いたまま, 欄名と値の式)。規則が欄の宣言の型と値の型を照らす。
+    StructLit { name: String, fields: Vec<(String, TExpr)> },
+    /// 上に無い形 (`For` `While` `Loop` `Return` `Try` `TupleE` `ArrayE` ...)。種別名と子の式。
     Other { name: &'static str, children: Vec<TExpr> },
 }
 
@@ -455,6 +457,10 @@ impl<'a> Builder<'a> {
                 let rhs = self.expr(&f[2], false);
                 TKind::Binary { op: sv(&f[0]), lhs: Box::new(lhs), rhs: Box::new(rhs) }
             }
+            "StructLit" => {
+                let fields = lv(&f[1]).iter().map(|x| (sv(&lv(x)[0]), self.expr(&lv(x)[1], false))).collect();
+                TKind::StructLit { name: sv(&f[0]), fields }
+            }
             "Block" => {
                 self.scopes.push(HashMap::new());
                 let stmts = lv(&f[0]).iter().map(|s| self.stmt(s)).collect();
@@ -617,6 +623,7 @@ fn dump_expr(e: &TExpr, n: usize, o: &mut String) {
         TKind::If { cond, then, els } => ("If".into(), [Some(&**cond), Some(&**then), els.as_deref()].into_iter().flatten().collect()),
         TKind::Match { scrut, .. } => ("Match".into(), vec![&**scrut]),
         TKind::Closure { captures, body, .. } => (format!("Closure caps=[{}]", captures.iter().map(|c| format!("{} {}: {}", c.kind, c.name, c.ty.show())).collect::<Vec<_>>().join(", ")), vec![&**body]),
+        TKind::StructLit { fields, .. } => ("StructLit".into(), fields.iter().map(|(_, x)| x).collect()),
         TKind::Other { name, children } => (name.to_string(), children.iter().collect()),
     };
     o.push_str(&format!("#{} {} L{} : {}", e.id, label, e.line, if matches!(e.ty, Ty::Unknown) { "?".to_string() } else { e.ty.show() }));

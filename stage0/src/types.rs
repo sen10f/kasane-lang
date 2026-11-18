@@ -128,7 +128,7 @@ impl Ty {
             Ty::Dyn(t, _) => format!("dyn {}", t),
         }
     }
-    fn has_param(&self) -> bool {
+    pub(crate) fn has_param(&self) -> bool {
         match self {
             Ty::Param(_) => true,
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| x.has_param()),
@@ -6143,7 +6143,7 @@ impl<'a> TypeCk<'a> {
     /// 2 つの型の文字列を返す。型が決まっていない・型パラメータを含む場合は黙る。
     /// 逆向き (参照が要る所に値) は、パターン束縛が外側の参照を落とす近似があるので見ない。
     /// 型 `t` (参照は剥がす) が Copy か。決まらない型・型パラメータは true (従来の案内のまま)。
-    fn ty_copy_ref(&self, t: &Ty) -> bool {
+    pub(crate) fn ty_copy_ref(&self, t: &Ty) -> bool {
         let mut t = self.deep(t);
         while let Ty::Ref(_, inner) = t {
             t = *inner;

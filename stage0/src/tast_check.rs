@@ -18,7 +18,9 @@ pub fn check(prog: &Program, user: &[usize]) -> Vec<Diag> {
     if std::env::var_os("KSN_DUMP_TAST").is_some() {
         eprint!("{}", crate::tast::dump(prog, &tast));
     }
-    Vec::new()
+    let mut out = Vec::new();
+    out.extend(crate::tast_rules::ref_levels::check(prog, user, &tast, &tk));
+    out
 }
 
 /// `KSN_CHECKER` の値。
