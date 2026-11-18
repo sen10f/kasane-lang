@@ -129,13 +129,37 @@ pub fn module_of(path: &str, root: &str) -> String {
     m.replace('/', ".")
 }
 
+/// ソースを読む。不正な UTF-8 のときは置き換えた本文と、最初の不正なバイトの (行, 列) を返す (E0007)。
+fn read_source(path: &str) -> (String, Option<(usize, usize)>) {
+    if let Some(t) = overlay_get(path) {
+        return (t, None);
+    }
+    let bytes = fs::read(path).unwrap_or_default();
+    match String::from_utf8(bytes) {
+        Ok(t) => (t, None),
+        Err(e) => {
+            let at = e.utf8_error().valid_up_to();
+            let head = String::from_utf8_lossy(&e.as_bytes()[..at]).to_string();
+            let line = head.matches('\n').count() + 1;
+            let col = head.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+            (String::from_utf8_lossy(e.as_bytes()).to_string(), Some((line, col)))
+        }
+    }
+}
+
 impl Source {
+    /// 不正な UTF-8 だったファイルは E0007 (ほかの字句エラーより優先)。
+    fn mark_bad_utf8(&mut self, bad: Option<(usize, usize)>) {
+        if let Some((line, col)) = bad {
+            self.error = Some(PErr { code: "E0007".into(), line, col, msg: "invalid UTF-8 byte sequence (source files must be valid UTF-8)".into() });
+        }
+    }
+
     pub fn load(path: &str, srcdir: &str) -> Source {
-        let text = match overlay_get(path) {
-            Some(t) => t,
-            None => String::from_utf8_lossy(&fs::read(path).unwrap_or_default()).to_string(),
-        };
-        Source::from_text(path, srcdir, text)
+        let (text, bad) = read_source(path);
+        let mut src = Source::from_text(path, srcdir, text);
+        src.mark_bad_utf8(bad);
+        src
     }
 
     pub fn from_text(path: &str, srcdir: &str, text: String) -> Source {
@@ -145,12 +169,11 @@ impl Source {
 
     /// `tests/` 配下のファイル。モジュール名は `<パッケージ>.tests.<ファイル>` (3.2 / 3.6)。
     pub fn load_test(path: &str, testsdir: &str, pkg: &str) -> Source {
-        let text = match overlay_get(path) {
-            Some(t) => t,
-            None => String::from_utf8_lossy(&fs::read(path).unwrap_or_default()).to_string(),
-        };
+        let (text, bad) = read_source(path);
         let module = format!("{}.tests.{}", pkg, module_of(path, testsdir));
-        Source::from_text_in(path, module, text, true)
+        let mut src = Source::from_text_in(path, module, text, true);
+        src.mark_bad_utf8(bad);
+        src
     }
 
     /// テキストから `tests/` 配下のファイルを作る (`ksn test` が `///` のコード例を読み込むときに使う。3.2)。
