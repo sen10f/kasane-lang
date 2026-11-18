@@ -421,6 +421,22 @@ impl<'a> Low<'a> {
     }
 
     // ------------------------------------------------------------ 借用の出どころ
+    /// 呼び先が読めない呼び出し (関数でない呼び先・解決失敗・定義なし・局所の閉包や関数値・`dyn` 越しのメソッド) は、
+    /// 全部の引数の借用が戻り値へ流れうるとする (仕様 4.1「領域が読めないときは借用が流れる」、C6 級 1)。
+    fn unknown_call_sources(&self, e: &V) -> Vec<Src> {
+        let mut v = vec![];
+        if nname(e) == "Call" {
+            for a in items(&nf(e)[1]) {
+                v.extend(self.loan_sources(a));
+                v.extend(self.lit_sources(a));
+            }
+            if nname(&nf(e)[0]) != "Path" {
+                v.extend(self.loan_sources(&nf(e)[0]));
+            }
+        }
+        v
+    }
+
     fn loan_sources(&self, e: &V) -> Vec<Src> {
         match nname(e) {
             "Unary" => {
@@ -525,13 +541,15 @@ impl<'a> Low<'a> {
             }
             "Call" => {
                 if nname(&nf(e)[0]) != "Path" {
-                    return vec![];
+                    return self.unknown_call_sources(e);
                 }
                 let segs = strs(&nf(&nf(e)[0])[0]);
                 if segs.len() == 1 && self.locals.contains(&segs[0]) {
                     // 局所のクロージャ・関数値の呼び出し: 結果は取り込んだ借用を持ちうる (束縛の型が借用を持たないと
                     // 分かる場合は、Let で外す)。
-                    return vec![Src::Alias(segs[0].clone())];
+                    let mut v = vec![Src::Alias(segs[0].clone())];
+                    v.extend(self.unknown_call_sources(e));
+                    return v;
                 }
                 if segs.len() >= 2 && self.locals.contains(&segs[0]) {
                     // `v.first()` の呼び出し形: レシーバは segs[..-1]
@@ -555,7 +573,7 @@ impl<'a> Low<'a> {
                     };
                 }
                 // 関数の戻り値が借用を含むなら、借用の引数 (`&x` / `&mut x` / 参照の変数) から借りる
-                let Some(r) = self.p.resolve(&segs, &self.file) else { return vec![] };
+                let Some(r) = self.p.resolve(&segs, &self.file) else { return self.unknown_call_sources(e) };
                 let di = match r.target {
                     // `core.mem.replace` などは `lower_mem` が固有に扱う (中身の移動で、借用の引数そのものは返らない)。
                     Target::Native(_) if self.mem_fn(&segs).is_some() => {
@@ -575,15 +593,18 @@ impl<'a> Low<'a> {
                     }
                     Target::Fn(_) | Target::Sig(_) | Target::Native(_) => match self.target_def(&r.target) {
                         Some(i) => i,
-                        None => return vec![],
+                        None => return self.unknown_call_sources(e),
                     },
                     // `Some(&x)` / `Pair(&a, &b)`: 構築した値が引数の借用を持つ。
                     Target::Variant(..) | Target::Type(_) if r.rest.is_empty() => {
                         return items(&nf(e)[1]).iter().flat_map(|a| { let mut v = self.loan_sources(a); v.extend(self.lit_sources(a)); v }).collect();
                     }
-                    _ => return vec![],
+                    _ => return self.unknown_call_sources(e),
                 };
-                if !r.rest.is_empty() || !self.ret_contains_ref(&self.p.defs[di]) {
+                if !r.rest.is_empty() {
+                    return self.unknown_call_sources(e);
+                }
+                if !self.ret_contains_ref(&self.p.defs[di]) {
                     return vec![];
                 }
                 // ヘッダのライフタイム (省略規則を含む) で、戻り値へ流れる引数だけを取る。読めなければ全部。
@@ -720,6 +741,19 @@ impl<'a> Low<'a> {
 
     fn method_sources(&self, recv: &V, name: &str, pos: usize, args: &[V]) -> Vec<Src> {
         let Some(m) = self.method_borrows(name) else {
+            // 候補の定義が 1 つも無い (`dyn` 越しなど): 呼び先が読めないので、レシーバと全部の引数の借用が流れる。
+            if self.callees(name, pos, args.len()).is_empty() {
+                let mut v = self.loan_sources(recv);
+                if let Some((root, path)) = self.place_of(recv) {
+                    v.push(Src::Stored { root: root.clone(), path });
+                    v.push(Src::Alias(root));
+                }
+                for a in args {
+                    v.extend(self.loan_sources(a));
+                    v.extend(self.lit_sources(a));
+                }
+                return v;
+            }
             return self.passthrough_sources(name, pos, self.place_of(recv), Some(recv), args);
         };
         let mut out = match self.place_of(recv) {

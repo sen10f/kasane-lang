@@ -1,0 +1,14 @@
+trait t.Pick
+    fn pick(self: &Self, x: &u64) -> u64 uses [] panics never
+end t.Pick
+
+fn t.main() -> () uses [] panics may
+end t.main
+
+fn t.run(h: &dyn t.Pick) -> () uses [] panics may
+    let mut y = 5u64
+    let q = h.pick(&y)
+    y = 7u64
+    core.check.eq(q, 5u64)
+    core.check.eq(y, 7u64)
+end t.run

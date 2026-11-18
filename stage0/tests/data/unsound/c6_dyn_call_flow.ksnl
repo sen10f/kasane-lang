@@ -1,0 +1,15 @@
+// expect: E3010
+// `dyn` 越しのメソッド: 引数の借用が戻り値へ流れうる (今は KIR 側の検査が拒む。AST 側は候補が無いときだけ逆転)
+trait t.Pick
+    fn pick(self: &Self, x: &u64) -> &u64 uses [] panics never
+end t.Pick
+
+fn t.main() -> () uses [] panics may
+end t.main
+
+fn t.run(h: &dyn t.Pick) -> () uses [] panics may
+    let mut y = 5u64
+    let q = h.pick(&y)
+    y = 7u64
+    core.check.eq(*q, 7u64)
+end t.run

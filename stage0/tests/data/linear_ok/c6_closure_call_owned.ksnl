@@ -1,0 +1,10 @@
+fn t.main() -> () uses [] panics may
+    let mut y = 5u64
+    let f = fn(x: &u64) -> u64 capture [] {
+        *x
+    }
+    let q = f(&y)
+    y = 7u64
+    core.check.eq(q, 5u64)
+    core.check.eq(y, 7u64)
+end t.main
