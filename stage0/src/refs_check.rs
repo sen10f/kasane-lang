@@ -187,7 +187,7 @@ fn v_mentions(v: &V, names: &[String]) -> bool {
 /// 引数の型 `&T` のうち、参照の先が `str` / スライス / 配列でないもの (それらは `'static` でありうる)。
 fn strong_ref_v(v: &V) -> bool {
     let V::L(xs) = v else { return false };
-    if !matches!(xs.first(), Some(V::S(k)) if k == "ref") || xs.len() != 3 {
+    if !matches!(xs.first(), Some(V::S(k)) if k == "ref") || xs.len() < 3 {
         return false;
     }
     match &xs[2] {
