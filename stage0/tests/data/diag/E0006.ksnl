@@ -1,0 +1,3 @@
+fn t.main() -> () uses [] panics never
+    let s = "é"
+end t.main

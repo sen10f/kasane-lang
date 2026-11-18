@@ -2309,9 +2309,9 @@ end t.Bad
 fn t.mk() -> t.Bad uses [] panics never
     let inner = t.Inner { a: -128i8, b: 18446744073709551615u64, c: '\\n' }
     let kind = t.Kind.Pair(-7i32, false)
-    let inner2 = t.Inner { a: 0i8, b: 0u64, c: '\\u{e9}' }
+    let inner2 = t.Inner { a: 0i8, b: 0u64, c: 'é' }
     let k2 = t.Kind.Named(inner2)
-    t.Bad { neg: -12345i64, zero: 0i32, flag: true, ch: 'x', text: \"a\\\"b\\\\c\\nd \\u{e9}\", inner: inner, kind: kind, k2: k2, k3: t.Kind.Plain, small: 255u8, min: -9223372036854775808i64, quote: '\\'' }
+    t.Bad { neg: -12345i64, zero: 0i32, flag: true, ch: 'x', text: \"a\\\"b\\\\c\\nd é\", inner: inner, kind: kind, k2: k2, k3: t.Kind.Plain, small: 255u8, min: -9223372036854775808i64, quote: '\\'' }
 end t.mk
 
 fn t.main() -> Result<(), t.Bad> uses [] panics never

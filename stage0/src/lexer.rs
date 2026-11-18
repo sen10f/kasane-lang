@@ -77,10 +77,10 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, String> {
             let is_b = c == 'b' && i + 1 < l && (chars[i + 1] == '"' || chars[i + 1] == '\'');
             if c == '"' || (is_b && chars[i + 1] == '"') {
                 let mut j = i + if is_b { 2 } else { 1 };
+                let lit = if is_b { crate::lexrules::Lit::BStr } else { crate::lexrules::Lit::Str };
                 while j < l && chars[j] != '"' {
                     if chars[j] == '\\' {
-                        check_escape(&chars, j, ln)?;
-                        j += 2;
+                        j += check_escape(&chars, j, ln, lit)?;
                     } else {
                         j += 1;
                     }
@@ -95,17 +95,9 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, String> {
             }
             if c == '\'' || (is_b && chars[i + 1] == '\'') {
                 let j = i + if is_b { 2 } else { 1 };
-                if j < l && chars[j] == '\\' {
-                    check_escape(&chars, j, ln)?;
-                }
+                let lit = if is_b { crate::lexrules::Lit::BChar } else { crate::lexrules::Lit::Char };
                 let k = if j < l && chars[j] == '\\' {
-                    if j + 1 < l && chars[j + 1] == 'x' {
-                        j + 4
-                    } else if j + 1 < l && chars[j + 1] == 'u' {
-                        chars[j..].iter().position(|&x| x == '}').map(|p| j + p + 1).unwrap_or(l)
-                    } else {
-                        j + 2
-                    }
+                    j + check_escape(&chars, j, ln, lit)?
                 } else {
                     j + 1
                 };
@@ -229,12 +221,9 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, String> {
     Ok(toks)
 }
 
-fn check_escape(chars: &[char], j: usize, ln: usize) -> Result<(), String> {
-    match chars.get(j + 1) {
-        Some(c) if matches!(*c, 'n' | 't' | 'r' | '\\' | '0' | '\'' | '"' | 'x' | 'u') => Ok(()),
-        Some(c) => Err(format!("E0001|{}|1|bad escape \\{}", ln, c)),
-        None => Err(format!("E0001|{}|1|unterminated string", ln)),
-    }
+/// エスケープを検査して、その長さ (文字数) を返す。誤りは `コード|行|列|文面` (列はバックスラッシュ)。
+fn check_escape(chars: &[char], j: usize, ln: usize, lit: crate::lexrules::Lit) -> Result<usize, String> {
+    crate::lexrules::check_escape(chars, j, lit).map_err(|(code, msg)| format!("{}|{}|{}|{}", code, ln, j + 1, msg))
 }
 
 /// ヘッダ位置でのみ特別な意味を持つ語。識別子としても使える (文脈キーワード)。

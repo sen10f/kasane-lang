@@ -9,7 +9,8 @@ use std::collections::HashSet;
 const DERIVE_ORDER: &[&str] = &["Debug", "Clone", "Copy", "TryClone", "Drop", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash", "From", "ToJson", "FromJson"];
 
 pub fn mechanical(text: &str) -> Vec<String> {
-    let t = text.replace("\r\n", "\n").replace('\r', "\n");
+    // 単独の CR は触らない (文字列の中の CR を改行に変えて意味を変えない。CR は check が誤りにする)。
+    let t = text.replace("\r\n", "\n");
     let mut out: Vec<String> = vec![];
     for l in t.split('\n') {
         let mut l = l.trim_end_matches(|c| c == ' ' || c == '\t').to_string();

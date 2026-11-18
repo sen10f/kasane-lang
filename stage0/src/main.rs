@@ -7,6 +7,7 @@ mod exhaust;
 mod doclink;
 mod headers;
 mod lexer;
+mod lexrules;
 mod check;
 mod check_cache;
 mod cli;
@@ -52,12 +53,18 @@ mod types;
 mod typecov;
 mod vm;
 
+/// 実行用の主スレッドのスタック (仮想メモリの予約。深さの上限 `kir_exec::MAX_DEPTH` の木走査を支える)。
+const MAIN_STACK: usize = 4 << 30;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let dev = ["lex", "defs", "bodies", "headers", "resolve", "dev-check", "dev-run", "dev-test"];
     if args.len() >= 2 && !dev.contains(&args[1].as_str()) {
         let rest: Vec<String> = args[1..].to_vec();
-        let child = std::thread::Builder::new().stack_size(1 << 30).spawn(move || cli::main_cli(rest)).unwrap();
+        let child = std::thread::Builder::new().stack_size(MAIN_STACK).spawn(move || {
+            interp::set_stack_floor(MAIN_STACK);
+            cli::main_cli(rest)
+        }).unwrap();
         std::process::exit(child.join().unwrap_or(2));
     }
     dev_main(args);
@@ -167,8 +174,11 @@ fn dev_main(_args: Vec<String>) {
     } else if args.len() >= 4 && (args[1] == "dev-run" || args[1] == "dev-test") {
         let rest: Vec<String> = args[1..].to_vec();
         let child = std::thread::Builder::new()
-            .stack_size(1 << 30)
-            .spawn(move || run_or_test(&rest))
+            .stack_size(MAIN_STACK)
+            .spawn(move || {
+                interp::set_stack_floor(MAIN_STACK);
+                run_or_test(&rest)
+            })
             .unwrap();
         let code = child.join().unwrap_or(2);
         std::process::exit(code);

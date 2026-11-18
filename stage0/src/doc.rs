@@ -40,6 +40,8 @@ fn esc(s: &str) -> String {
             '>' => o.push_str("&gt;"),
             '"' => o.push_str("&quot;"),
             '\'' => o.push_str("&#39;"),
+            // 向きを変える文字・見えない文字は見える形にする (lexrules.rs。ソースには書けないが、二重の備え)。
+            _ if crate::lexrules::forbidden(c) => o.push_str(&format!("&lt;U+{:04X}&gt;", c as u32)),
             _ => o.push(c),
         }
     }

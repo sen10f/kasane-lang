@@ -645,6 +645,8 @@ pub struct Checker<'a> {
     /// クロージャ節 (5.3 の `関数名#番号`) → そのクロージャの AST ノード。
     /// スタック上界の見積り (E4012) が、節のフレームを関数と同じ式で計算するために使う。
     closure_asts: BTreeMap<String, V>,
+    /// 明示型引数 `f::<never>` で panic 変数を `never` に実体化して呼ばれた関数の名前 (再帰の `stack` の要求に使う)。
+    never_inst: HashSet<String>,
     /// 現在の関数のファイルで `import` したモジュールの末尾名 (シャドーイング検査用)。
     import_tails: HashSet<String>,
 }
@@ -791,6 +793,7 @@ impl<'a> Checker<'a> {
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
             closure_asts: BTreeMap::new(),
+            never_inst: HashSet::new(),
             import_tails: HashSet::new(),
         }
     }
@@ -2843,6 +2846,11 @@ impl<'a> Checker<'a> {
                                 );
                             }
                             // 4.3: 明示型引数 (`f::<[io.fs], never>`) があれば効果変数を実体化する。
+                            if let Some((_, Some(p))) = inst_def_effects(callee, items(&f[2])) {
+                                if p == "never" {
+                                    self.never_inst.insert(callee.name.clone());
+                                }
+                            }
                             self.effects(callee, di, nline(e), free, items(&f[2]));
                         } else if matches!(r.target, Target::Native(_)) && r.rest.is_empty() {
                             let fq = self.p.expand(&segs, "").join(".");
@@ -3379,9 +3387,14 @@ impl<'a> Checker<'a> {
         if std::env::var_os("KSN_DUMP_SIDE").is_some() {
             eprint!("{}", tk.dump_type_args());
         }
+        // 確認 (隠し機能): `KSN_DUMP_SIDE=1` のとき側の表を stderr に出す (各表の 1 行目は `side <表の名前>`)。
+        if std::env::var_os("KSN_DUMP_SIDE").is_some() {
+            eprint!("{}", crate::tast::dump_resolved_fn(self.p, &tk.side));
+        }
         // 計測 (隠し機能): `KSN_TYPE_SURVEY=1` のとき TAST の事前調査の表を stderr に出す (survey.rs)。読むだけ。
         if std::env::var_os("KSN_TYPE_SURVEY").is_some() {
             crate::survey::run(self.p, &user, &tk.tytab, &self.call_res, &self.let_tys);
+            eprint!("{}", crate::tast::survey_resolved_fn(&tk.side));
         }
         // 4.6 (型表): 型推論が型を決めた式文の捨て。`ty_of` では決まらない形 (標準ライブラリの
         // ジェネリック型のメソッドの戻り値、`v.pop();` の `Option` など) をここで拾う。
@@ -7310,10 +7323,13 @@ impl<'a> Checker<'a> {
             let n = d.name.clone();
             let rec = cyclic.contains(&n);
             // `Fn*` 境界の効果を省いた `panics never` は `panics P$F` に読み替えられている (program.rs)。
-            // 読み替えた変数 (`P$` 始まり。利用者が書いた `panics P` は対象外) は `never` と同じに扱う。
+            // 読み替えた変数 (`P$` 始まり) は `never` と同じに扱う。利用者が書いた `panics P` は、
+            // 明示型引数 `f::<never>` で `never` に実体化されて呼ばれたときだけ `never` と同じに扱う
+            // (閉包の推論で実体化される `P` は types.rs の中にあり、ここからは見えない: 残る穴)。
+            let generic_p = |v: &str| d.generics.iter().any(|g| g.0 == "panics" && g.1 == v);
             let never = match d.panics.as_deref() {
                 Some("never") => true,
-                Some(v) => v.starts_with("P$") && d.generics.iter().any(|g| g.0 == "panics" && g.1 == v),
+                Some(v) => (v.starts_with("P$") && generic_p(v)) || (is_panic_var(v) && generic_p(v) && self.never_inst.contains(&n)),
                 None => false,
             };
             self.d = i;

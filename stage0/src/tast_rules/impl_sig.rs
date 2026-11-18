@@ -614,6 +614,7 @@ fn walk(e: &TExpr, f: &mut dyn FnMut(&TExpr)) {
             }
         }
         TKind::Closure { body, .. } => walk(body, f),
+        TKind::StructLit { fields, .. } => fields.iter().for_each(|(_, x)| walk(x, f)),
         TKind::Other { children, .. } => children.iter().for_each(|c| walk(c, f)),
         TKind::Lit(_) | TKind::Path(_) => {}
     }

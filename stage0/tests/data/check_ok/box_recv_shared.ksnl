@@ -1,0 +1,18 @@
+type t.X
+    v: u32
+end t.X
+
+fn t.X.get(self: &t.X) -> u32 uses [] panics never
+    self.v
+end t.X.get
+
+fn t.go() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let b = alloc.boxed.Box.new(std.alloc.SYSTEM, t.X { v: 3u32 })?
+    let n = b.get()
+    let r = &b
+    let m = r.get()
+    core.mem.drop(n)
+    core.mem.drop(m)
+    core.mem.drop(b)
+    Ok(())
+end t.go

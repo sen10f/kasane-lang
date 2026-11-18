@@ -1,7 +1,7 @@
 //! KIR の参照実行器 (設計_KIR.md 5 章 段階 1 の「素朴なインタプリタ」)。
 //!
 //! 目的は、木走査インタプリタ (`interp.rs`) と出力・終了コード・panic の文言が一致することを確かめる基準を作ること。
-//! 速さは求めない。呼び出しは明示的なフレーム列で持ち、Rust の再帰を使わない。深さの上限は木走査と同じ 2500 (終了コード 102)。
+//! 速さは求めない。呼び出しは明示的なフレーム列で持ち、Rust の再帰を使わない。深さの上限は木走査と同じ `MAX_DEPTH` (終了コード 102)。
 //! 浮動小数と 128 ビット整数の規則は `kir_scalar.rs` にある。
 
 use std::collections::{BTreeMap, HashMap};
@@ -123,8 +123,11 @@ fn place(idx: usize, blobs: &[Vec<u8>], base: usize, out: &mut Vec<Vec<u8>>) -> 
     (base + out.len() - 1) as i128
 }
 
-/// 木走査インタプリタの呼び出し深さの上限 (`interp.rs` の `depth > 2500`)。
-const MAX_DEPTH: usize = 2500;
+/// 呼び出し深さの上限 (4 つの実行系すべての唯一の定義: 木走査 `interp.rs`・VM `vm/run.rs`・この参照実行器・LLVM `kir_llvm.rs`)。
+/// 値の根拠: ネイティブの 1 回の呼び出しの枠は、`selfhost/` の再帰下降 (`k.parse.expr.unary` 3.4 KiB、`k.types.infer.expr` 3.5〜4.4 KiB、
+/// `k.resolve.parse_file` 4.3〜4.7 KiB が最大) でも 5 KiB 未満。枠の上限を 8 KiB と見て 100000 × 8 KiB = 約 800 MiB を
+/// ネイティブのスレッドのスタック (`NATIVE_STACK_BYTES` = 1 GiB) に収める。
+pub const MAX_DEPTH: usize = 100_000;
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome {

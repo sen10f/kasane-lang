@@ -164,8 +164,27 @@ pub(crate) fn conv_params(v: &V) -> Vec<(String, V)> {
     items(v).iter().map(|p| (text(&items(p)[0]), items(p)[1].clone())).collect()
 }
 
+/// 字句エラー `コード|行|列|文面` の行を `by` だけ後ろへずらす (定義の一部だけを切り出して字句解析したとき)。
+fn shift_err(e: String, by: usize) -> String {
+    shift_err_col(e, by, 0)
+}
+
+/// `shift_err` で、列も `cols` だけ後ろへずらす (字下げを落とした行を字句解析したとき)。
+fn shift_err_col(e: String, by: usize, cols: usize) -> String {
+    let mut it = e.splitn(4, '|');
+    let (Some(c), Some(l), Some(col), Some(m)) = (it.next(), it.next(), it.next(), it.next()) else { return e };
+    match (l.parse::<usize>(), col.parse::<usize>()) {
+        (Ok(n), Ok(k)) => format!("{}|{}|{}|{}", c, n + by, k + cols, m),
+        _ => e,
+    }
+}
+
+fn indent_of(l: &str) -> usize {
+    l.chars().take_while(|c| *c == ' ').count()
+}
+
 fn line_tokens(line: &str, ln: usize) -> R<Vec<lexer::Tok>> {
-    let mut toks = lexer::lex(&format!("{}\n", line))?;
+    let mut toks = lexer::lex(&format!("{}\n", line)).map_err(|e| shift_err(e, ln - 1))?;
     for t in toks.iter_mut() {
         t.line = ln;
     }
@@ -256,8 +275,8 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 // 本体の `let x: 型 = ..` の型注釈が使うライフタイム。型の抽象木には残らないので、ここで名前を集める。
                 // 宣言の有無は `check_lifetime_names` が見る (E1126)。トレイトのメソッドの名前と同じ置き場 (`field_lifetimes`) を使う。
                 let mut lts: Vec<String> = vec![];
-                for bl in &body_lines {
-                    let bt = line_tokens(bl.trim(), 1)?;
+                for (bi, bl) in body_lines.iter().enumerate() {
+                    let bt = line_tokens(bl.trim(), 1).map_err(|e| shift_err_col(e, sp.line + bi, indent_of(bl)))?;
                     let Some(l) = bt.iter().position(|t| t.kind == "kw" && t.text == "let") else { continue };
                     let Some(c) = bt[l..].iter().position(|t| t.kind == "op" && t.text == ":").map(|k| k + l) else { continue };
                     let eq = bt[c..].iter().position(|t| t.kind == "op" && t.text == "=").map_or(bt.len(), |k| k + c);
@@ -285,12 +304,12 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                     p.expect_op("]")?;
                 }
                 d.linear = p.accept_kw("linear");
-                for bl in &body_lines {
+                for (bi, bl) in body_lines.iter().enumerate() {
                     let st = bl.trim();
                     if st.is_empty() {
                         continue;
                     }
-                    let mut bp = Parser::new(line_tokens(st, 1)?);
+                    let mut bp = Parser::new(line_tokens(st, 1).map_err(|e| shift_err_col(e, sp.line + bi, indent_of(bl)))?);
                     if sp.kw == "type" {
                         let fnm = bp.name_tok()?;
                         bp.expect_op(":")?;
@@ -344,12 +363,12 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                         }
                     }
                 }
-                for bl in &body_lines {
+                for (bi, bl) in body_lines.iter().enumerate() {
                     let st = bl.trim();
                     if st.is_empty() {
                         continue;
                     }
-                    let mut bp = Parser::new(line_tokens(st, 1)?);
+                    let mut bp = Parser::new(line_tokens(st, 1).map_err(|e| shift_err_col(e, sp.line + bi, indent_of(bl)))?);
                     bp.expect_kw("fn")?;
                     let mname = bp.name_tok()?;
                     d.methods.push(mname.clone());
@@ -450,7 +469,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
         }
         if (sp.kw == "fn" && !sig) || sp.kw == "test" {
             let body = body_lines.join("\n") + "\n";
-            d.body = Some(parse_body(lexer::lex(&body)?, sp.line)?);
+            d.body = Some(parse_body(lexer::lex(&body).map_err(|e| shift_err(e, sp.line))?, sp.line)?);
         }
         Ok(d)
     };

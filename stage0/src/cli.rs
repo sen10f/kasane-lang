@@ -414,7 +414,17 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         if s.text.contains('\r') {
             rep.add("E0001", "CR (CRLF) is not allowed; use LF", Some(&fl), 1, 1, true);
         }
+        // 字句の規則 (lexrules.rs): 書けない文字 (E0004)・NFC でない文字列とコメント (E0006)。
+        let lexf = crate::lexrules::scan(&s.text);
+        for f in &lexf {
+            rep.add(f.code, &f.msg, Some(&fl), f.line, f.col, true);
+        }
         if let Some(e) = &s.error {
+            // 書けない文字が原因の字句エラー (同じ行の E0001 / E0003 など) は重ねて出さない。
+            let dup = matches!(e.code.as_str(), "E0001" | "E0003") && lexf.iter().any(|f| f.code == "E0004" && f.line == e.line);
+            if dup {
+                continue;
+            }
             if !(e.code == "E0002" && guided.contains(&e.line)) {
                 rep.add(&e.code, &e.msg, Some(&fl), e.line, e.col, true);
             }
@@ -1332,7 +1342,7 @@ fn cmd_todo() -> i32 {
 /// `ksn fix`: `check` の修正案をすべて適用し、`fmt` で整える。
 fn cmd_fix() -> i32 {
     let mut total = 0usize;
-    for _ in 0..5 {
+    for _ in 0..200 {
         let mut rep = Report::new(false);
         let root = match find_root() {
             Ok(r) => r,
@@ -2082,7 +2092,7 @@ fn cmd_get(args: &[String]) -> i32 {
             1
         }
         Some(Found::Line(s, ln)) => {
-            println!("{}", s.lines[ln - 1]);
+            println!("{}", crate::lexrules::visible(&s.lines[ln - 1]));
             0
         }
         Some(Found::Def(d, s)) => {
@@ -2107,7 +2117,7 @@ fn cmd_get(args: &[String]) -> i32 {
             }
             let start = def_start(s, d);
             let end = if d.end_line > 0 { d.end_line } else { d.line };
-            println!("{}", s.lines[start..end].join("\n"));
+            println!("{}", crate::lexrules::visible(&s.lines[start..end].join("\n")));
             0
         }
     }
@@ -2137,7 +2147,7 @@ fn cmd_context(args: &[String]) -> i32 {
     let text = s.lines[start..end].join("
 ");
     println!("// target: {}", d.name);
-    println!("{}", text);
+    println!("{}", crate::lexrules::visible(&text));
     let mut refs: Vec<(String, String)> = vec![];
     for s2 in &srcs {
         for d2 in &s2.defs {
@@ -2507,6 +2517,15 @@ fn cmd_fmt(args: &[String]) -> i32 {
                 fs::write(&s.path, &nt).unwrap();
                 text = nt;
             }
+        }
+        // 字句の規則 (lexrules.rs): 書けない文字・NFC でない文字は fmt では直せない (`ksn check` と同じ判定にする)。
+        for f in crate::lexrules::scan(&text).iter() {
+            diff = true;
+            println!("{}:{}:{}: {}: {}", rel(&s.path), f.line, f.col, f.code, f.msg);
+        }
+        if let Some(e) = s.error.as_ref().filter(|e| e.code == "E0007") {
+            diff = true;
+            println!("{}:{}:{}: {}: {}", rel(&s.path), e.line, e.col, e.code, e.msg);
         }
         let relpath = lint_rel(s, &srcroot);
         for (code, l, m) in Lint::new(&relpath, &text.replace("\r\n", "\n")).run() {
@@ -3310,7 +3329,8 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
         if wasi {
             args.push(p(&owasi));
         }
-        args.extend([s("--no-entry"), s("--export=ksn_main")]);
+        // 影のスタック (線形メモリ上のスタック) も呼び出し深さの上限まで足りる大きさに (既定は 64 KiB)。
+        args.extend([s("--no-entry"), s("--export=ksn_main"), s("-z"), s("stack-size=268435456")]);
         if wasi {
             args.push(s("--export=_start"));
         }

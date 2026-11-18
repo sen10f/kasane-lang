@@ -207,3 +207,201 @@ fn s1b_type_args_method_and_resolved() {
     let row = rows.iter().find(|r| r.contains("u32")).unwrap_or_else(|| panic!("{rows:?}"));
     assert!(row.contains("u8") && !row.contains('_'), "{row}");
 }
+
+// --- S1A: resolved_fn ---
+
+/// `check` の stderr から、`side <名前>` で始まる表の行だけを取り出す。
+fn side(table: &str, src: &str, name: &str) -> Vec<String> {
+    let t = Tmp::new(name, src);
+    let o = run_with_env(&["check"], &t.0, &[("KSN_DUMP_SIDE", "1")]);
+    let err = text(&o.stderr);
+    let mut on = false;
+    let mut rows = vec![];
+    for l in err.lines() {
+        if let Some(n) = l.strip_prefix("side ") {
+            on = n == table;
+            continue;
+        }
+        if on {
+            rows.push(l.to_string());
+        }
+    }
+    rows
+}
+
+#[test]
+fn s1a_resolved_fn_kinds() {
+    let src = "\
+trait t.Speak pub
+    fn say(self: &Self) -> i64 uses [] panics never
+end t.Speak
+
+enum t.Shape pub
+    A(u32)
+    B
+end t.Shape
+
+fn t.helper(x: u32) -> u32 uses [] panics never
+    x
+end t.helper
+
+fn t.call_dyn(s: &dyn t.Speak) -> i64 uses [] panics never
+    s.say()
+end t.call_dyn
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let a = t.helper(1u32)
+    let s = t.Shape.A(a)
+    let f = fn(x: u32) -> u32 capture [] {
+        x
+    }
+    let b = f(a)
+    let n = a.wrapping_add(b)
+    Ok(())
+end t.main
+";
+    let rows = side("resolved_fn", src, "s1a_kinds");
+    let has = |pat: &str| rows.iter().any(|r| r.contains(pat));
+    assert!(has("t.main\t") && has("Def t.helper"), "{rows:?}");
+    assert!(has("Variant t.Shape.A"), "{rows:?}");
+    assert!(has("Local f"), "{rows:?}");
+    assert!(has("Dyn t.Speak"), "{rows:?}");
+    assert!(has("Def core.num.u32.wrapping_add") || has("wrapping_add"), "{rows:?}");
+}
+
+
+// --- S1C2: 変換の印の残り ---
+
+const S1C2_SRC: &str = "trait t.H
+    fn handle(self: &Self) -> u32 uses [] panics never
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+impl t.H for t.X
+fn t.X.handle(self: &t.X) -> u32 uses [] panics never impls t.H
+    self.v
+end t.X.handle
+
+fn t.X.get(self: &t.X) -> u32 uses [] panics never
+    self.v
+end t.X.get
+
+fn t.dd(r: &&t.X) -> u32 uses [] panics never
+    r.get()
+end t.dd
+
+fn t.dm(r: &mut &t.X) -> u32 uses [] panics never
+    r.get()
+end t.dm
+
+fn t.ret(a: &[u32; 2]) -> &[u32] uses [] panics never
+    return a
+end t.ret
+
+fn t.tail(a: &[u32; 2]) -> &[u32] uses [] panics never
+    a
+end t.tail
+
+fn t.main() -> () uses [] panics never pub
+    let a = [1u32, 2u32]
+    let s: &[u32] = &a
+    let mut m: &[u32] = &a
+    m = &a
+    let x = t.X { v: 1u32 }
+    let h: &dyn t.H = &x
+    core.mem.drop(s)
+    core.mem.drop(m)
+    core.mem.drop(h)
+end t.main
+";
+
+#[test]
+fn s1c2_deref_and_other_positions() {
+    let rows = dump("s1c2_a", S1C2_SRC, "coercions").join("\n");
+    assert!(rows.contains("AutoDeref { n: 1 }"), "{}", rows);
+    // `&mut &X` も 1 段外す。`Box<X>` の受け手はまだメソッドが引けない (検査が E2044 にする) ので印は付かない。
+    assert!(rows.lines().any(|l| l.contains("\tt.dm\t") && l.contains("AutoDeref { n: 1 }")), "{}", rows);
+    for f in ["t.ret", "t.tail", "t.main"] {
+        assert!(rows.lines().any(|l| l.contains(&format!("\t{}\t", f)) && l.contains("ArrayToSlice")), "{} {}", f, rows);
+    }
+    // let / 代入 / dyn の 3 件 (main)
+    let n = rows.lines().filter(|l| l.contains("\tt.main\t")).count();
+    assert!(n >= 3, "{}", rows);
+}
+
+#[test]
+fn s1c2_struct_field_and_variant_payload() {
+    let src = "type t.W\n    s: &[u32]\nend t.W\n\nenum t.E\n    A(&[u32])\nend t.E\n\nfn t.main() -> () uses [] panics never pub\n    let a = [1u32, 2u32]\n    let w = t.W { s: &a }\n    let e = t.E.A(&a)\n    core.mem.drop(w)\n    core.mem.drop(e)\nend t.main\n";
+    let rows = dump("s1c2_b", src, "coercions");
+    assert!(rows.len() >= 2 && rows.iter().all(|r| r.contains("ArrayToSlice")), "{:?}", rows);
+}
+
+#[test]
+fn s1c2_try_error_conversion() {
+    let src = "enum t.E1\n    X\nend t.E1\n\nenum t.E2 derive [From]\n    A(t.E1)\nend t.E2\n\nfn t.f() -> Result<u32, t.E1> uses [] panics never\n    Err(t.E1.X)\nend t.f\n\nfn t.g() -> Result<u32, t.E2> uses [] panics never\n    let v = t.f()?\n    Ok(v)\nend t.g\n\nfn t.h() -> Result<u32, t.E1> uses [] panics never\n    let v = t.f()?\n    Ok(v)\nend t.h\n";
+    let rows = dump("s1c2_c", src, "coercions");
+    assert!(rows.iter().any(|r| r.contains("\tt.g\t") && r.contains("ErrInto") && r.contains("\"A\"")), "{:?}", rows);
+    // 完全一致の `?` には印が付かない。
+    assert!(!rows.iter().any(|r| r.contains("\tt.h\t")), "{:?}", rows);
+}
+
+#[test]
+fn s1c2_unmarked_reasons_listed() {
+    let src = "trait t.H\n    fn handle(self: &Self) -> u32 uses [] panics never\nend t.H\n\nfn t.d(h: &dyn t.H) -> u32 uses [] panics never\n    h.handle()\nend t.d\n";
+    let out = dump_side("s1c2_d", src);
+    assert!(out.lines().any(|l| l.starts_with("coerce_none\t") && l.contains("t.d")), "{}", out);
+}
+
+// --- G35: `Box<T>` の受け手のメソッド ---
+
+const G35_SRC: &str = "type t.X
+    v: u32
+end t.X
+
+fn t.X.bump(self: &mut t.X) -> () uses [] panics never
+    self.v = 7u32
+end t.X.bump
+
+fn t.X.get(self: &t.X) -> u32 uses [] panics never
+    self.v
+end t.X.get
+
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    let mut b = alloc.boxed.Box.new(std.alloc.SYSTEM, t.X { v: 3u32 })?
+    b.bump()
+    let n = b.get()
+    let inner = alloc.boxed.Box.new(std.alloc.SYSTEM, t.X { v: 5u32 })?
+    let bb = alloc.boxed.Box.new(std.alloc.SYSTEM, inner)?
+    let m = bb.get()
+    core.check.eq(n, 7u32)
+    core.check.eq(m, 5u32)
+    core.mem.drop(b)
+    core.mem.drop(bb)
+    Ok(())
+end t.main
+";
+
+#[test]
+fn g35_box_receiver_autoderef_marked() {
+    let rows = dump("g35_a", G35_SRC, "coercions");
+    let all = rows.join("\n");
+    assert!(all.contains("AutoDeref { n: 1 }"), "{}", all);
+    assert!(all.contains("AutoDeref { n: 2 }"), "{}", all);
+    let t = Tmp::new("g35_b", G35_SRC);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn g35_box_receiver_run_and_native_agree() {
+    let t = Tmp::new("g35_c", G35_SRC);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let (_t, exe_path, out) = build_native("g35_d", G35_SRC, true);
+    let p = exe_path.unwrap_or_else(|| panic!("no native: {}", out));
+    let o = std::process::Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}

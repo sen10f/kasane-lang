@@ -1,0 +1,3 @@
+fn t.main() -> () uses [] panics never
+    let s = "a‮b"
+end t.main

@@ -27,6 +27,21 @@ if (process.argv[2] === '--abi') {
     process.exit(0);
 }
 
+// 深いスタック (呼び出しの深さの上限 100000 まで。仕様 5.3) のために、実行は大きなスタックの Worker スレッドで行う。
+// 主スレッドの JS のスタックは約 1 MB で、`trap: Maximum call stack size exceeded` が先に起きるため。
+import { Worker, isMainThread, workerData } from 'node:worker_threads';
+if (isMainThread) {
+    const w = new Worker(new URL(import.meta.url), { argv: process.argv.slice(2), workerData: 1, resourceLimits: { stackSizeMb: 512 } });
+    w.on('error', (e) => {
+        console.error(e);
+        process.exitCode = 2;
+    });
+    w.on('exit', (c) => {
+        process.exitCode = process.exitCode || c;
+    });
+    await new Promise(() => {});
+}
+
 const file = process.argv[2];
 if (!file) {
     console.error('usage: node tools/wasm/run.mjs <file.wasm> | --abi <file.wasm>');

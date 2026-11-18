@@ -52,6 +52,10 @@ pub enum Coercion {
     Unsize { from: Ty, to: Ty },
     /// クロージャ → 関数型 `fn(..)`。
     ClosureToFn,
+    /// 受け手の自動参照外し (`&&T`・`&mut &T`・`Box<T>` の受け手を `n` 段外して `self` に合わせる)。
+    AutoDeref { n: u8 },
+    /// `?` のエラー型の変換: `derive [From]` の `enum` のバリアントで包む (`?` の節点に付く。元のエラー型, 戻り値のエラー型, バリアント名)。
+    ErrInto { from: Ty, to: Ty, variant: String },
 }
 
 /// 場所 (place) の表現 (設計 2.3 の述語 `place(e)`)。値の式は `None`。
@@ -111,6 +115,8 @@ pub struct SideTabs {
     pub conv_pending: Vec<(Key, Ty, Ty)>,
     /// 【担当 C の作業用】受け手の (鍵, 受け手の型, `self` パラメータの宣言の型)。同上。
     pub recv_pending: Vec<(Key, Ty, Ty)>,
+    /// 【担当 C の作業用】`?` のエラー変換 (`?` の鍵, 元のエラー型, 戻り値のエラー型, バリアント名)。同上。
+    pub err_pending: Vec<(Key, Ty, Ty, String)>,
     /// 【担当 E】閉包の取り込み (節名 `FQN#連番` が鍵。`Ty::Closure { id }` で引く)。`check_def` の終わりに解決済みの型で入る。
     pub closure_caps: HashMap<String, Vec<Capture>>,
 }
@@ -159,7 +165,9 @@ pub enum TKind {
     Match { scrut: Box<TExpr>, arms: Vec<TArm> },
     /// 閉包: 引数の束縛・取り込み (`closure_caps`)・本体。
     Closure { params: Vec<TBinding>, captures: Vec<Capture>, body: Box<TExpr> },
-    /// 上に無い形 (`For` `While` `Loop` `Return` `Try` `StructLit` `TupleE` `ArrayE` ...)。種別名と子の式。
+    /// 構造体リテラル `T { f: e, .. }` (型の FQN の書いたまま, 欄名と値の式)。規則が欄の宣言の型と値の型を照らす。
+    StructLit { name: String, fields: Vec<(String, TExpr)> },
+    /// 上に無い形 (`For` `While` `Loop` `Return` `Try` `TupleE` `ArrayE` ...)。種別名と子の式。
     Other { name: &'static str, children: Vec<TExpr> },
 }
 
@@ -455,6 +463,10 @@ impl<'a> Builder<'a> {
                 let rhs = self.expr(&f[2], false);
                 TKind::Binary { op: sv(&f[0]), lhs: Box::new(lhs), rhs: Box::new(rhs) }
             }
+            "StructLit" => {
+                let fields = lv(&f[1]).iter().map(|x| (sv(&lv(x)[0]), self.expr(&lv(x)[1], false))).collect();
+                TKind::StructLit { name: sv(&f[0]), fields }
+            }
             "Block" => {
                 self.scopes.push(HashMap::new());
                 let stmts = lv(&f[0]).iter().map(|s| self.stmt(s)).collect();
@@ -617,6 +629,7 @@ fn dump_expr(e: &TExpr, n: usize, o: &mut String) {
         TKind::If { cond, then, els } => ("If".into(), [Some(&**cond), Some(&**then), els.as_deref()].into_iter().flatten().collect()),
         TKind::Match { scrut, .. } => ("Match".into(), vec![&**scrut]),
         TKind::Closure { captures, body, .. } => (format!("Closure caps=[{}]", captures.iter().map(|c| format!("{} {}: {}", c.kind, c.name, c.ty.show())).collect::<Vec<_>>().join(", ")), vec![&**body]),
+        TKind::StructLit { fields, .. } => ("StructLit".into(), fields.iter().map(|(_, x)| x).collect()),
         TKind::Other { name, children } => (name.to_string(), children.iter().collect()),
     };
     o.push_str(&format!("#{} {} L{} : {}", e.id, label, e.line, if matches!(e.ty, Ty::Unknown) { "?".to_string() } else { e.ty.show() }));
@@ -681,4 +694,43 @@ fn show_place(p: &Place) -> String {
         Place::Deref(b, _) => format!("*{}", show_place(b)),
         Place::Temp(id) => format!("tmp#{}", id),
     }
+}
+
+/// `KSN_DUMP_SIDE=1`: `resolved_fn` を (定義名, 式 ID) 順に出す。1 行目は `side resolved_fn`。
+pub fn dump_resolved_fn(p: &Program, side: &SideTabs) -> String {
+    let mut keys: Vec<&Key> = side.resolved_fn.keys().collect();
+    keys.sort_by(|a, b| (&p.defs[a.0].name, a.1).cmp(&(&p.defs[b.0].name, b.1)));
+    let mut o = String::from("side resolved_fn\n");
+    for k in keys {
+        let c = match &side.resolved_fn[k] {
+            Callee::Def(i) => format!("Def {}", p.defs[*i].name),
+            Callee::Methods(v) => format!("Methods {}", v.iter().map(|i| p.defs[*i].name.as_str()).collect::<Vec<_>>().join(" | ")),
+            Callee::Variant(e, v) => format!("Variant {}.{}", e, v),
+            Callee::Local(n) => format!("Local {}", n),
+            Callee::Dyn(i) => format!("Dyn {}", p.defs[*i].name),
+            Callee::Unknown => "Unknown".to_string(),
+        };
+        o.push_str(&format!("{}\t{}\t{}\n", p.defs[k.0].name, k.1, c));
+    }
+    o
+}
+
+/// `KSN_TYPE_SURVEY=1`: `resolved_fn` の種類別の件数 (stderr の末尾に出す)。
+pub fn survey_resolved_fn(side: &SideTabs) -> String {
+    let mut n = [0usize; 6];
+    for c in side.resolved_fn.values() {
+        n[match c {
+            Callee::Def(_) => 0,
+            Callee::Methods(_) => 1,
+            Callee::Variant(..) => 2,
+            Callee::Local(_) => 3,
+            Callee::Dyn(_) => 4,
+            Callee::Unknown => 5,
+        }] += 1;
+    }
+    let tot: usize = n.iter().sum();
+    format!(
+        "resolved_fn\ttotal={}\tDef={}\tMethods={}\tVariant={}\tLocal={}\tDyn={}\tUnknown={}\n",
+        tot, n[0], n[1], n[2], n[3], n[4], n[5]
+    )
 }

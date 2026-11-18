@@ -75,6 +75,22 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             }
             vec![]
         }
+        // 字句の規則 (lexrules.rs): エスケープを唯一の書き方に直す (E0005)、NFC に直す (E0006)。
+        "E0005" => {
+            let Some(text) = get(line) else { return vec![] };
+            let Some(tag) = msg.strip_prefix('[').and_then(|m| m.split(']').next()) else { return vec![] };
+            let Some(lit) = crate::lexrules::Lit::of_tag(tag) else { return vec![] };
+            let Some((len, rep)) = crate::lexrules::escape_fix(text, col, lit) else { return vec![] };
+            let start: usize = text.char_indices().nth(col - 1).map_or(text.len(), |(b, _)| b);
+            let end: usize = text.char_indices().nth(col - 1 + len).map_or(text.len(), |(b, _)| b);
+            vec![span(file, line, text, start, end, rep)]
+        }
+        "E0006" => {
+            let Some(text) = get(line) else { return vec![] };
+            let Some(rep) = crate::lexrules::nfc_fix(text, col) else { return vec![] };
+            let start: usize = text.char_indices().nth(col - 1).map_or(text.len(), |(b, _)| b);
+            vec![span(file, line, text, start, text.len(), rep)]
+        }
         // Rust 風の書き方 (rustisms.rs): `;` を消す、`::` を `.` にする、複合代入を展開する。
         "E0040" | "E0041" => {
             let Some(text) = get(line) else { return vec![] };
