@@ -23,6 +23,37 @@ pub struct Diag {
 }
 
 // ---------------------------------------------------------------- V の読み取り補助
+/// 式 `e` の値として外へ出る葉 (`if` / `match` の腕・ブロックの末尾の式を通す)。値を運ぶ式の共通の見方:
+/// 移動・線形・`&mut` の重なりの検査は、ブロックや腕で包まれた名前を、包まれていない名前と同じに扱う。
+pub(crate) fn value_leaves<'v>(e: &'v V, out: &mut Vec<&'v V>) {
+    match nname(e) {
+        "Block" => {
+            if let Some(last) = items(&nf(e)[0]).last() {
+                match nname(last) {
+                    "ExprStmt" => value_leaves(&nf(last)[0], out),
+                    "Let" | "Assign" => {}
+                    _ => value_leaves(last, out),
+                }
+            }
+        }
+        "If" => {
+            let f = nf(e);
+            value_leaves(&f[1], out);
+            if !is_nil(&f[2]) {
+                value_leaves(&f[2], out);
+            }
+        }
+        "Match" => {
+            for arm in items(&nf(e)[1]) {
+                if let Some(b) = items(arm).last() {
+                    value_leaves(b, out);
+                }
+            }
+        }
+        _ => out.push(e),
+    }
+}
+
 pub(crate) fn nname(v: &V) -> &str {
     match v {
         V::Node(n, _, _, _) => n,
@@ -4012,6 +4043,26 @@ impl<'a> Checker<'a> {
                 }
                 cur
             }
+            "Block" => {
+                // ブロックの値の型は末尾の式の型。ブロックで束縛した名前は外の同名を隠すので、環境から外して引く。
+                let mut shadow = vec![];
+                for s in items(&f[0]) {
+                    if nname(s) == "Let" {
+                        pat_binds(&nf(s)[0], &mut shadow);
+                    }
+                }
+                let Some(last) = items(&f[0]).last() else { return V::Nil };
+                let tail = match nname(last) {
+                    "ExprStmt" => &nf(last)[0],
+                    "Let" | "Assign" => return V::Nil,
+                    _ => last,
+                };
+                let mut sub = env.clone();
+                for n in &shadow {
+                    sub.remove(n);
+                }
+                self.ty_of(tail, &sub)
+            }
             "Field" => {
                 // 一時値のフィールド (`t.make().lin`、4.4)。受け手の型が決まり、
                 // 構造体のフィールドとして解決できるときだけ型を返す (分からなければ黙る)。
@@ -4661,7 +4712,19 @@ impl<'a> Checker<'a> {
                 // 参照越しの分解 `let p = x` (`x: &T`): 束縛は `&T` の欄。所有値として消費させない (E3002)。
                 let src_is_ref = self.ety_is_ref(&f[3]) || tag(&got) == "ref" || tag(&ty) == "ref";
                 let shared_src = tag(&ty) == "ref" && matches!(tel(&ty, 1), V::B(false));
-                let mut_src = tag(&ty) == "ref" && matches!(tel(&ty, 1), V::B(true));
+                // 値を運ぶ式 (`let r = { rpa }`) の葉がすべて `&mut` の束縛なら、`r` も `&mut` の束縛。
+                let carried_mut = nname(&f[0]) == "PBind" && is_nil(&f[2]) && {
+                    let mut ls = vec![];
+                    value_leaves(&f[3], &mut ls);
+                    !ls.is_empty()
+                        && ls.iter().all(|l| {
+                            nname(l) == "Path" && {
+                                let sg = strs(&nf(l)[0]);
+                                sg.len() == 1 && self.mut_ref_lets.contains(&sg[0])
+                            }
+                        })
+                };
+                let mut_src = (tag(&ty) == "ref" && matches!(tel(&ty, 1), V::B(true))) || carried_mut;
                 let pat_ty = if src_is_ref && tag(&ty) == "ref" { tel(&ty, 2).clone() } else { ty };
                 if !src_is_ref {
                     self.check_drop_destructure(&f[0], &pat_ty, nline(s));
@@ -4961,14 +5024,17 @@ impl<'a> Checker<'a> {
     /// 受け渡し) が起きない位置 (型注釈のない `let y = x`・列挙子の引数・型パラメータそのものを受ける引数) で move になる。
     /// 以後の `x` の使用は E3002。
     fn move_mut_ref(&mut self, a: &V, env: &Env, line: usize) {
-        if nname(a) != "Path" {
-            return;
+        let mut leaves = vec![];
+        value_leaves(a, &mut leaves);
+        for l in leaves {
+            if nname(l) != "Path" {
+                continue;
+            }
+            let segs = strs(&nf(l)[0]);
+            if segs.len() == 1 {
+                self.move_mut_name(&segs[0], env, line);
+            }
         }
-        let segs = strs(&nf(a)[0]);
-        if segs.len() != 1 {
-            return;
-        }
-        self.move_mut_name(&segs[0], env, line);
     }
 
     fn move_mut_name(&mut self, name: &str, env: &Env, line: usize) {
