@@ -754,13 +754,27 @@ impl<'a> Checker<'a> {
 
     pub fn run(&mut self) {
         let user = self.user.clone();
-        let mut seen: HashSet<String> = HashSet::new();
+        // 名前ごとに最初の定義を覚える (重複の文面で 1 つ目の位置を示すため)。
+        let mut seen: HashMap<String, usize> = HashMap::new();
         for &i in &user {
             let d = self.def(i);
             if matches!(d.kw.as_str(), "fn" | "type" | "enum" | "trait" | "const" | "static" | "extern" | "test") {
-                if !seen.insert(d.name.clone()) {
-                    self.diag("E1103", format!("duplicate definition of {}", d.name), i, 0);
-                }
+                let Some(&first) = seen.get(&d.name) else {
+                    seen.insert(d.name.clone(), i);
+                    continue;
+                };
+                let msg = if self.def(first).kw == "test" && d.kw == "test" {
+                    let f = self.def(first);
+                    let (l1, _) = crate::parser::unpack_pos(f.line);
+                    let (l2, _) = crate::parser::unpack_pos(d.line);
+                    format!(
+                        "duplicate definition of {}: 同じ名前の `test` が 2 つある (1 つ目は {}:{} 行目、2 つ目は {} 行目)。どちらかの名前を変えるか消す",
+                        d.name, f.file, l1, l2
+                    )
+                } else {
+                    format!("duplicate definition of {}", d.name)
+                };
+                self.diag("E1103", msg, i, 0);
             }
         }
         self.check_declarations();
