@@ -36,7 +36,7 @@ fn bench.first_big(xs: &[u32], limit: u32) -> Option<u32>
     while i < xs.len() {
         match xs.get(i) {
             Some(v) => {
-                if v > limit {
+                if *v > limit {
                     found = Some(*v)
                     break
                 }

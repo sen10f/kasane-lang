@@ -385,7 +385,7 @@ fn std.json.digits(src: &[u8], pos: usize) -> usize
     loop {
         match src.get(i) {
             Some(c) => {
-                if c >= b'0' && c <= b'9' {
+                if *c >= b'0' && *c <= b'9' {
                     i = i.wrapping_add(1usize)
                 } else {
                     break
@@ -718,7 +718,7 @@ fn std.json.parse_string(src: &[u8], pos: usize) -> Result<(alloc.string.String<
                 run = i
             }
             Some(c) => {
-                if c < 32u8 {
+                if *c < 32u8 {
                     return Err(std.json.Error.Unexpected(i))
                 }
                 i = i.wrapping_add(1usize)
@@ -833,7 +833,7 @@ fn std.json.skip_ws(src: &[u8], pos: usize) -> usize
     loop {
         match src.get(i) {
             Some(c) => {
-                if c == b' ' || c == b'\n' || c == b'\t' || c == b'\r' {
+                if *c == b' ' || *c == b'\n' || *c == b'\t' || *c == b'\r' {
                     i = i.wrapping_add(1usize)
                 } else {
                     break

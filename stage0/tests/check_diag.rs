@@ -1173,7 +1173,7 @@ fn well_typed_programs_with_inference_produce_no_type_errors() {
             "for i in core.iter.range(0usize, n) {",
             "    match v.get(i) {",
             "        Some(x) => {",
-            "            total = total + x",
+            "            total = total + *x",
             "        }",
             "        None => {",
             "        }",

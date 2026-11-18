@@ -1,0 +1,9 @@
+// expect: E2024
+// 比較も参照を外さない (4.2): `c: &u8` に対し `c == b' '` ではなく `*c == b' '`。
+fn t.bad(c: &u8) -> bool uses [] panics never
+    c == b' '
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

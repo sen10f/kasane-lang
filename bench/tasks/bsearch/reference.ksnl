@@ -5,10 +5,10 @@ fn bench.bsearch(xs: &[i32], target: i32) -> Option<usize>
         let mid = lo + (hi - lo) / 2usize
         match xs.get(mid) {
             Some(v) => {
-                if v == target {
+                if *v == target {
                     return Some(mid)
                 }
-                if v < target {
+                if *v < target {
                     lo = mid + 1usize
                 } else {
                     hi = mid

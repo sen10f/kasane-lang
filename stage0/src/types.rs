@@ -2617,6 +2617,41 @@ impl<'a> TypeCk<'a> {
     /// 比較のメソッド (`eq` / `cmp` / `partial_cmp`) または比較演算子 (`==` `<` など) を、受け手の利用者型・標準の型が
     /// 対応するトレイトを持たないのに使ったとき E1108 (true を返す)。宣言 (`p.types`) のある型だけを見る。
     /// 型変数・型パラメータ・宣言のない型は黙る。Vec / String は 4.2 の表どおり比較のトレイトを持たない。
+    /// 二項演算子の被演算子の参照の段数 (G24, 4.2): 段数の違う組は型に依らず E2024 (`&u8 == u8`、`&Foo == Foo`、`&&str == &str`)。
+    /// 同じ段数の参照どうし (`&str == &str`、`&Foo == &Foo`、スライス、`&u32 == &u32`) は通す。型が決まらないものは見ない。
+    fn operator_ref_operands(&mut self, a: &Ty, b: &Ty, op: &str, line: usize) {
+        fn depth(t: &Ty) -> usize {
+            let mut n = 0;
+            let mut t = t;
+            while let Ty::Ref(_, i) = t {
+                n += 1;
+                t = i;
+            }
+            n
+        }
+        let (da, db) = (self.deep(a), self.deep(b));
+        let known = |t: &Ty| !matches!(t, Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Never);
+        if !known(da.strip()) || !known(db.strip()) {
+            return;
+        }
+        let (na, nb) = (depth(&da), depth(&db));
+        if na == nb {
+            return;
+        }
+        let side = if na > nb { "left" } else { "right" };
+        self.diag(
+            "E2024",
+            format!(
+                "operands of `{}` are `{}` and `{}` (the {} operand has more references): a reference is not dereferenced implicitly: write `*c` (an operator does not dereference, 4.2)",
+                op,
+                da.show(),
+                db.show(),
+                side
+            ),
+            line,
+        );
+    }
+
     fn cmp_trait_missing(&mut self, recv: &Ty, name: &str, line: usize) -> bool {
         // 浮動小数は `Partial*` だけを実装し、`Eq` / `Ord` / `Hash` は実装しない (4.3)。
         if let Ty::Prim(p) = self.deep(recv).strip() {
@@ -3732,7 +3767,11 @@ impl<'a> TypeCk<'a> {
                 }
                 // 単項 `-` は符号付き整数・浮動小数だけ、`!` は `bool` と整数だけ (オペランドの型が決まっていて外れるものは型の誤り)。
                 if matches!(st(&f[0]).as_str(), "-" | "!") {
-                    let d = self.deep(&t).strip().clone();
+                    let d0 = self.deep(&t);
+                    if matches!(&d0, Ty::Ref(_, i) if matches!(&**i, Ty::Prim(p) if p != "str")) {
+                        self.diag("E2024", format!("operand of unary `{}` is `{}`: a reference is not dereferenced implicitly: write `*c` (an operator does not dereference, 4.2)", st(&f[0]), d0.show()), nline(e));
+                    }
+                    let d = d0.strip().clone();
                     let neg = st(&f[0]) == "-";
                     let bad = match &d {
                         Ty::Prim(p) => {
@@ -3809,6 +3848,8 @@ impl<'a> TypeCk<'a> {
                     }
                     return Ty::Prim("bool".into());
                 }
+                // 演算子の被演算子は暗黙に参照を外さない (4.2: 自動参照外しはメソッドのレシーバだけ)。unify の前に、解決済みの型で見る。
+                self.operator_ref_operands(&a, &b, &op, nline(e));
                 if let Err(err) = self.unify2(&a, &b) {
                     {
                         let (l, r) = self.prim_conflict(&err).unwrap_or_else(|| Self::raw_pair(&err));

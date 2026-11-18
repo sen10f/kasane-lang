@@ -1,0 +1,13 @@
+// expect: E2024
+// 型が構造体でも、参照の段数が違う比較は拒む (`&Foo == Foo`)。
+type t.Foo derive [PartialEq] pub
+    n: u32
+end t.Foo
+
+fn t.bad(a: &t.Foo, b: t.Foo) -> bool uses [] panics never
+    a == b
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

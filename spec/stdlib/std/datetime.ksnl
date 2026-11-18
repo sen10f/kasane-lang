@@ -138,7 +138,7 @@ end std.datetime.days_in_month
 fn std.datetime.digit_at(b: &[u8], at: usize) -> Option<i64> uses [] panics never
     match b.get(at) {
         Some(c) => {
-            if c >= b'0' && c <= b'9' {
+            if *c >= b'0' && *c <= b'9' {
                 Some(i64.from_u8(c.wrapping_sub(b'0')))
             } else {
                 None
@@ -152,7 +152,7 @@ end std.datetime.digit_at
 fn std.datetime.expect_byte(b: &[u8], at: usize, want: u8, alt: u8) -> Result<(), std.datetime.Error> uses [] panics never
     match b.get(at) {
         Some(c) => {
-            if c == want || c == alt {
+            if *c == want || *c == alt {
                 Ok(())
             } else {
                 Err(std.datetime.Error.Unexpected(at))
@@ -264,9 +264,9 @@ fn std.datetime.parse_rfc3339(text: &str) -> Result<std.datetime.DateTime, std.d
     let mut offset = 0i64
     match b.get(at) {
         Some(c) => {
-            if c == b'Z' || c == b'z' {
+            if *c == b'Z' || *c == b'z' {
                 at = at.wrapping_add(1usize)
-            } else if c == b'+' || c == b'-' {
+            } else if *c == b'+' || *c == b'-' {
                 let oh = std.datetime.read_fixed(b, at.wrapping_add(1usize), 2usize)?
                 std.datetime.expect_byte(b, at.wrapping_add(3usize), b':', b':')?
                 let om = std.datetime.read_fixed(b, at.wrapping_add(4usize), 2usize)?
@@ -274,7 +274,7 @@ fn std.datetime.parse_rfc3339(text: &str) -> Result<std.datetime.DateTime, std.d
                     return Err(std.datetime.Error.OutOfRange(at.wrapping_add(1usize)))
                 }
                 offset = oh.wrapping_mul(60i64).wrapping_add(om)
-                if c == b'-' {
+                if *c == b'-' {
                     offset = offset.wrapping_neg()
                 }
                 at = at.wrapping_add(6usize)
