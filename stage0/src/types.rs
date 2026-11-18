@@ -705,6 +705,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         self.flush_expr_types();
+        self.flush_conv();
         self.cov_flush();
     }
 
@@ -2375,10 +2376,80 @@ impl<'a> TypeCk<'a> {
     /// 通らない (パスとして構文解析される) ので、型で解決できたときに実体化した効果全体を検査する。
     /// それ以外 (`x.f().m()` などの MCall) は従来の名前ベースの検査が宣言どおりの効果を見るので、
     /// クロージャから推論した部分だけを検査する。
-    fn call_method(&mut self, id: u32, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
+    /// 【担当 C】メソッド呼び出しの暗黙の変換の候補を積む (型が決まる関数の終わりに `flush_conv` が表へ移す)。
+    /// 候補が 1 つに決まったときだけ (`fit` が 1 件)。受け手の鍵は `MCall` の受け手の節点、`s.m()` 形 (パスの形) は呼び出しの節点。
+    fn note_method_conv(&mut self, recv_id: u32, recv: &Ty, args: &[Ty], arg_ids: &[u32], fit: Option<&[usize]>) {
+        let Some([di]) = fit else { return };
+        let d = &self.p.defs[*di];
+        let gn = d.gnames();
+        let Some(p0) = d.params.first() else { return };
+        self.side.recv_pending.push(((self.cur, recv_id), recv.clone(), from_v(&p0.1, &gn)));
+        if arg_ids.len() == args.len() {
+            for (k, a) in args.iter().enumerate() {
+                if let Some(p) = d.params.get(k + 1) {
+                    let pt = from_v(&p.1, &gn);
+                    self.side.conv_pending.push(((self.cur, arg_ids[k]), pt, a.clone()));
+                }
+            }
+        }
+    }
+
+    /// 【担当 C】型が決まった後で、積んだ候補から `SideTabs::coercions` を埋める。
+    fn flush_conv(&mut self) {
+        use crate::tast::Coercion;
+        let fqn = self.def().name.clone();
+        for (key, recv, selfp) in std::mem::take(&mut self.side.recv_pending) {
+            let r = self.deep(&recv);
+            let cs: Vec<Coercion> = match (&r, &selfp) {
+                (Ty::Ref(true, _), Ty::Ref(false, _)) => vec![Coercion::Reborrow { to_mut: false }],
+                (Ty::Ref(..) | Ty::Var(_) | Ty::Unknown | Ty::Never | Ty::Param(_), _) => vec![],
+                (_, Ty::Ref(m, _)) => vec![Coercion::AutoRef(*m)],
+                _ => vec![],
+            };
+            self.put_conv(&fqn, key, cs);
+        }
+        for (key, want, got) in std::mem::take(&mut self.side.conv_pending) {
+            let (w, g) = (self.deep(&want), self.deep(&got));
+            let mut cs = vec![];
+            match (&w, &g) {
+                (Ty::Ref(wm, wi), Ty::Ref(gm, gi)) => {
+                    if *gm && !*wm {
+                        cs.push(Coercion::Reborrow { to_mut: false });
+                    }
+                    match (&**wi, &**gi) {
+                        (Ty::Slice(_), Ty::Array(..)) => cs.push(Coercion::ArrayToSlice),
+                        (Ty::Dyn(..), x) if !matches!(x, Ty::Dyn(..) | Ty::Var(_) | Ty::Unknown | Ty::Param(_)) => cs.push(Coercion::Unsize { from: g.clone(), to: w.clone() }),
+                        _ => {}
+                    }
+                }
+                (Ty::Closure { id: None, .. }, Ty::Closure { id: Some(_), .. }) => cs.push(Coercion::ClosureToFn),
+                _ => {}
+            }
+            self.put_conv(&fqn, key, cs);
+        }
+    }
+
+    fn put_conv(&mut self, fqn: &str, key: crate::tast::Key, cs: Vec<crate::tast::Coercion>) {
+        if cs.is_empty() {
+            return;
+        }
+        if std::env::var("KSN_DUMP_SIDE").map_or(false, |v| v == "1") {
+            eprintln!("coercions\t{}\t{}\t{:?}", fqn, key.1, cs);
+        }
+        let e = self.side.coercions.entry(key).or_default();
+        for c in cs {
+            if !e.contains(&c) {
+                e.push(c);
+            }
+        }
+    }
+
+    fn call_method(&mut self, id: u32, recv_id: u32, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
         let saved = self.last_fit.take();
+        let arg_ids = std::mem::take(&mut self.side.arg_ids);
         let t = self.call_method_in(recv, base, name, args, line, targs, local);
         let fit = std::mem::replace(&mut self.last_fit, saved);
+        self.note_method_conv(recv_id, recv, args, &arg_ids, fit.as_deref());
         let key = (self.cur, id);
         match (self.call_res.get_mut(&key), fit) {
             (None, f) => {
@@ -3739,9 +3810,10 @@ impl<'a> TypeCk<'a> {
                 let recv = self.infer(&f[0]);
                 self.log_recv(f, 4, false, &st(&f[1]), &recv);
                 let args: Vec<Ty> = items(&f[2]).iter().map(|a| self.infer(a)).collect();
+                self.side.arg_ids = items(&f[2]).iter().map(crate::parser::nid).collect();
                 let base = self.base_local(&f[0]);
                 self.arg_static = items(&f[2]).iter().map(|a| self.static_expr(a)).collect();
-                self.call_method(crate::parser::nid(e), &recv, base.as_deref(), &st(&f[1]), &args, nline(e), items(&f[3]), false)
+                self.call_method(crate::parser::nid(e), crate::parser::nid(&f[0]), &recv, base.as_deref(), &st(&f[1]), &args, nline(e), items(&f[3]), false)
             }
             "Field" => {
                 let r = self.infer(&f[0]);
@@ -4839,6 +4911,7 @@ impl<'a> TypeCk<'a> {
 
     fn call(&mut self, call_id: u32, callee: &V, args: &[V], line: usize, targs: &[V]) -> Ty {
         let argt: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
+        self.side.arg_ids = args.iter().map(crate::parser::nid).collect();
         // 構造体リテラルの引数: 従来の検査は型引数を見ないので、呼び出し側でも型引数の矛盾を見る。
         let sl: Vec<bool> = args.iter().map(|a| nname(a) == "StructLit").collect();
         let arg_stat: Vec<bool> = args.iter().map(|a| self.static_expr(a)).collect();
@@ -4911,7 +4984,7 @@ impl<'a> TypeCk<'a> {
             if segs.len() == 2 && cid != 0 && !self.p.trait_side.is_empty() {
                 self.expr_pending.insert(cid, ("RecvPath".to_string(), nline(callee), t.clone()));
             }
-            return self.call_method(call_id, &t, Some(&segs[0]), &segs[segs.len() - 1], &argt, line, targs, true);
+            return self.call_method(call_id, call_id, &t, Some(&segs[0]), &segs[segs.len() - 1], &argt, line, targs, true);
         }
         let _ = &argt;
         let Some(r) = self.p.resolve(&segs, &self.def().file) else {
@@ -4929,7 +5002,7 @@ impl<'a> TypeCk<'a> {
                 if unit_variant && self.p.types.contains_key(en) {
                     let recv = Ty::Named(en.clone(), vec![]);
                     let m = r.rest[0].clone();
-                    return self.call_method(call_id, &recv, None, &m, &argt, line, targs, false);
+                    return self.call_method(call_id, call_id, &recv, None, &m, &argt, line, targs, false);
                 }
             }
         }
@@ -4938,7 +5011,7 @@ impl<'a> TypeCk<'a> {
             if r.rest.len() == 1 && matches!(r.target, Target::Variant(..) | Target::Const(_)) {
                 let prefix = &segs[..segs.len() - 1];
                 let recv = self.path(prefix);
-                return self.call_method(call_id, &recv, None, &r.rest[0], &argt, line, targs, false);
+                return self.call_method(call_id, call_id, &recv, None, &r.rest[0], &argt, line, targs, false);
             }
             argt.iter().for_each(|a| self.escape(a));
             return Ty::Unknown;
@@ -5024,6 +5097,7 @@ impl<'a> TypeCk<'a> {
     /// (名前しか比べない) ので、同じ名前どうしの型引数の矛盾はここで報告する。
     fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V]) -> Ty {
         let arg_stat = std::mem::take(&mut self.arg_static);
+        let arg_ids = std::mem::take(&mut self.side.arg_ids);
         let d = &self.p.defs[i];
         self.note_static_args(d, 0, argt, &arg_stat, line);
         // 5.5: spawn に渡したクロージャの取り込みは `Send` でなければならない (推論の終わりに見る)。
@@ -5134,6 +5208,9 @@ impl<'a> TypeCk<'a> {
             let pt = self.inst(&raw, &mut map);
             if let Some((want, got)) = self.arg_ref_conflict(&raw, a).or_else(|| self.param_arg_ref_conflict(&raw, &pt, a)) {
                 self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, d.name, want, got, ref_hint(&want, &got, self.ty_copy_ref(&raw))), line);
+            }
+            if arg_ids.len() == argt.len() {
+                self.side.conv_pending.push(((self.cur, arg_ids[k]), pt.clone(), a.clone()));
             }
             let is_extern = d.kw == "extern";
             self.conv_quiet = is_extern;
