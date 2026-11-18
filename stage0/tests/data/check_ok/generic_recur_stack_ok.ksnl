@@ -1,0 +1,16 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    Ok(())
+end t.main
+
+// expect: E4010
+fn t.ping[F: core.ops.Fn<(u64,), u64>](f: F, x: u64, n: u32) -> u64 uses [] panics never stack 4096
+    if n == 0u32 {
+        return x
+    }
+    let y = f(x)
+    t.pong(f, y, n.wrapping_sub(1u32))
+end t.ping
+
+fn t.pong[F: core.ops.Fn<(u64,), u64>](f: F, x: u64, n: u32) -> u64 uses [] panics never stack 4096
+    t.ping(f, x, n)
+end t.pong
