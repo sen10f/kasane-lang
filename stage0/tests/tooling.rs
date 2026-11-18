@@ -598,7 +598,7 @@ fn test_both_stack_overflow_is_exit_102_on_both_sides() {
     // 木走査は深さ上限で `Exit(102)`、LLVM は終了コード 102 (stderr に `stack overflow`)。どちらも終了の種類 `exit(102)` で比べて一致する。
     let src = "fn t.down(n: u64) -> u64 uses [] panics never stack 4096\n    if n == 0u64 {\n        return 0u64\n    }\n    t.down(n.wrapping_sub(1u64)).wrapping_add(1u64)\nend t.down\n\n\
                fn t.main() -> () uses [] panics never\nend t.main\n\n\
-               test t.main.test_deep\n    core.check.eq(t.down(10000u64), 10000u64)\nend t.main.test_deep\n";
+               test t.main.test_deep\n    core.check.eq(t.down(200000u64), 200000u64)\nend t.main.test_deep\n";
     let t = Tmp::new("both_stack_102", src);
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);

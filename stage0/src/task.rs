@@ -28,7 +28,7 @@ pub const DEADLOCK_TASK: &str = "deadlock: every std.task task is waiting for an
 /// 取り消されたタスクの結果を `join_task` で受けたときの panic の文面。木走査とネイティブで同じ文面にする。
 pub const TASK_CANCELLED: &str = "std.task.Task.join_task: the task was cancelled";
 
-/// タスクのスレッドのスタック量 (木走査の再帰の深さの上限 (約 2500 フレーム) を支える。`main` と同じ)。
+/// タスクのスレッドのスタック量 (木走査の再帰の深さの上限 `kir_exec::MAX_DEPTH` を支える。`main` と同じ)。
 /// 仮想メモリの予約なので、使わない分は実メモリを取らない。
 const STACK_BYTES: usize = 1 << 30;
 
@@ -179,6 +179,7 @@ impl Interp {
         std::thread::Builder::new()
             .stack_size(STACK_BYTES)
             .spawn(move || {
+                crate::interp::set_stack_floor(STACK_BYTES);
                 let p = ptr;
                 s2.wait_turn(id);
                 // SAFETY: 合図を受けたので、いまこのスレッドだけが `Interp` に触る (`SendPtr` の説明)。

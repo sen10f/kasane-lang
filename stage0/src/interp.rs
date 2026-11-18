@@ -27,6 +27,26 @@ pub const CONST_DEPTH_MSG: &str = "the evaluation of the constants is nested too
 /// `const_value` の入れ子の上限 (関数呼び出しの深さ 2500 と同じ程度。Rust のスタックは実行の子スレッドで 1 GiB)。
 const CONST_DEPTH_LIMIT: usize = 2000;
 
+thread_local! {
+    /// このスレッドの Rust のスタックの下限 (これより低い番地まで使うと溢れる)。0 は未設定 (検査しない)。
+    static STACK_FLOOR: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// 実行用のスレッドの先頭で、スタックの大きさ `size` (スレッドを作ったときの値) を登録する。
+/// 木走査の 1 回の呼び出しが使う Rust のスタックは本体の入れ子しだいなので、深さの上限 (`kir_exec::MAX_DEPTH`) より先に
+/// スタックが尽きそうなときは、Rust の `SIGSEGV` / abort にせず `stack overflow` と終了コード 102 で止める (余白は 16 MiB)。
+pub fn set_stack_floor(size: usize) {
+    let here = 0u8;
+    let top = &here as *const u8 as usize;
+    STACK_FLOOR.with(|f| f.set(top.saturating_sub(size).saturating_add(16 << 20)));
+}
+
+fn stack_exhausted() -> bool {
+    let here = 0u8;
+    let sp = &here as *const u8 as usize;
+    STACK_FLOOR.with(|f| sp < f.get())
+}
+
 pub struct Interp {
     pub p: Rc<Program>,
     pub depth: usize,
@@ -435,7 +455,7 @@ impl Interp {
             self.dbg_guard_def(d)?;
         }
         self.depth += 1;
-        if self.depth > 2500 {
+        if self.depth > crate::kir_exec::MAX_DEPTH || stack_exhausted() {
             eprintln!("stack overflow");
             return Err(Ctl::Exit(102));
         }

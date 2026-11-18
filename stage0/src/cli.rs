@@ -3310,7 +3310,8 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
         if wasi {
             args.push(p(&owasi));
         }
-        args.extend([s("--no-entry"), s("--export=ksn_main")]);
+        // 影のスタック (線形メモリ上のスタック) も呼び出し深さの上限まで足りる大きさに (既定は 64 KiB)。
+        args.extend([s("--no-entry"), s("--export=ksn_main"), s("-z"), s("stack-size=268435456")]);
         if wasi {
             args.push(s("--export=_start"));
         }
