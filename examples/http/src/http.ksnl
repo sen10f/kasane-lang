@@ -87,7 +87,7 @@ fn http.content_length(buf: &[u8], head_end: usize) -> Result<usize, http.Error>
             loop {
                 match buf.get(j) {
                     Some(c) => {
-                        if c >= b'0' && c <= b'9' {
+                        if *c >= b'0' && *c <= b'9' {
                             value = value * 10usize + usize.from_u8(c.wrapping_sub(b'0'))
                             seen = true
                             j = j.wrapping_add(1usize)
@@ -185,10 +185,10 @@ fn http.parse_request_line(buf: &[u8]) -> Result<http.Request, http.Error>
     loop {
         match buf.get(i) {
             Some(c) => {
-                if c == b' ' {
+                if *c == b' ' {
                     break
                 }
-                if c == b'\r' || c == b'\n' {
+                if *c == b'\r' || *c == b'\n' {
                     return Err(http.Error.BadRequest)
                 }
                 i = i.wrapping_add(1usize)

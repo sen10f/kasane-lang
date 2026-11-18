@@ -1205,7 +1205,7 @@ fn kir_array_ref_match_tree_walker() {
 fn t.for_ref(a: &[u32; 3]) -> u32 uses [] panics may
     let mut s = 0u32
     for x in a {
-        s = s + x
+        s = s + *x
     }
     s
 end t.for_ref
@@ -2156,7 +2156,7 @@ fn t.digits(src: &[u8], pos: usize) -> usize uses [] panics never
     loop {
         match src.get(i) {
             Some(c) => {
-                if c >= b'0' && c <= b'9' {
+                if *c >= b'0' && *c <= b'9' {
                     i = i.wrapping_add(1usize)
                 } else {
                     break
@@ -2177,7 +2177,7 @@ fn t.skip_ws(src: &[u8], pos: usize) -> usize uses [] panics never
     loop {
         match src.get(i) {
             Some(c) => {
-                if c == b' ' || c == b'\\n' || c == b'\\t' || c == b'\\r' {
+                if *c == b' ' || *c == b'\\n' || *c == b'\\t' || *c == b'\\r' {
                     i = i.wrapping_add(1usize)
                 } else {
                     break

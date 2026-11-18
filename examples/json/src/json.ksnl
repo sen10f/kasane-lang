@@ -64,7 +64,7 @@ fn json.digits(src: &[u8], pos: usize) -> usize
     loop {
         match src.get(i) {
             Some(c) => {
-                if c >= b'0' && c <= b'9' {
+                if *c >= b'0' && *c <= b'9' {
                     i = i.wrapping_add(1usize)
                 } else {
                     break
@@ -99,7 +99,7 @@ fn json.escape(src: &[u8], pos: usize) -> Result<usize, json.Error>
             Ok(stop)
         }
         Some(c) => {
-            if c == b'"' || c == b'\\' || c == b'/' || c == b'b' || c == b'f' || c == b'n' || c == b'r' || c == b't' {
+            if *c == b'"' || *c == b'\\' || *c == b'/' || *c == b'b' || *c == b'f' || *c == b'n' || *c == b'r' || *c == b't' {
                 Ok(pos.wrapping_add(2usize))
             } else {
                 Err(json.Error.BadEscape(pos))
@@ -268,7 +268,7 @@ fn json.skip_ws(src: &[u8], pos: usize) -> usize
     loop {
         match src.get(i) {
             Some(c) => {
-                if c == b' ' || c == b'\n' || c == b'\t' || c == b'\r' {
+                if *c == b' ' || *c == b'\n' || *c == b'\t' || *c == b'\r' {
                     i = i.wrapping_add(1usize)
                 } else {
                     break
@@ -290,7 +290,7 @@ fn json.string(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usi
                 i = json.escape(src, i)?
             }
             Some(c) => {
-                if c < 32u8 {
+                if *c < 32u8 {
                     return Err(json.Error.Unexpected(i))
                 }
                 i = i.wrapping_add(1usize)

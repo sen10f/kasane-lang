@@ -58,6 +58,17 @@ fn ksn_fix_removes_semicolons_and_rewrites_paths_and_compound_assignment() {
     assert!(fixed.contains("t.b(x)"), "{}", fixed);
 }
 
+#[test]
+fn ksn_fix_adds_deref_to_a_reference_operand_of_an_operator() {
+    let src = "fn t.a(c: &u8, n: u8) -> bool uses [] panics never\n    c >= b'0' && n == c && c < 58u8\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.a(&1u8, 2u8))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("op_ref_fix", src);
+    let o = run(&["fix"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("*c >= b'0' && n == *c && *c < 58u8"), "{}", fixed);
+}
+
 /// Formatter の境界: i64.MIN / u64.MAX / 0 / マルチバイトの char / バッファがちょうど・不足 / debug の char。
 #[test]
 fn formatter_edge_cases_run_natively() {

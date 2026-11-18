@@ -1,0 +1,21 @@
+// expect-accept
+// 参照の演算は `*c` と書く。同じ段数の参照どうし (`&str == &str`、`&Foo == &Foo`) は通る。
+type t.Foo derive [PartialEq] pub
+    n: u32
+end t.Foo
+
+fn t.digit(c: &u8) -> bool uses [] panics never
+    *c >= b'0' && *c <= b'9'
+end t.digit
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.same(a: &t.Foo, b: &t.Foo, s: &str, u: &str) -> bool uses [] panics never
+    a == b && s == u
+end t.same
+
+fn t.sum(x: &u32, y: &u32) -> u32 uses [] panics never
+    x.wrapping_add(*y).wrapping_add(*x)
+end t.sum

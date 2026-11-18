@@ -135,6 +135,31 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             let new = format!("{}{} = {} {} {}", &c[1], &c[2], &c[2], &c[3], &c[4]);
             vec![span(file, line, text, 0, text.len(), new)]
         }
+        // 演算子の片側だけ参照が多い (types.rs の operator_ref_operands): 単純な名前の被演算子に `*` を足す。
+        "E2024" => {
+            let re = Regex::new(r"^operands of `([^`]+)` are .*\(the (left|right) operand has more references\)").unwrap_or_else(|_| unreachable!());
+            let Some(c) = re.captures(msg) else { return vec![] };
+            let Some(text) = get(line) else { return vec![] };
+            let bytes: Vec<(usize, char)> = text.char_indices().collect();
+            let Some(&(b0, _)) = bytes.get(col.wrapping_sub(1)) else { return vec![] };
+            let rest = &text[b0..];
+            let id = r"[A-Za-z_][A-Za-z0-9_]*";
+            let op = regex::escape(&c[1]);
+            let at = if &c[2] == "left" {
+                // 左の被演算子が単純な名前 (`c >= ..`)。
+                let pat = format!(r"^{}\s*{}\s", id, op);
+                if !Regex::new(&pat).unwrap().is_match(rest) {
+                    return vec![];
+                }
+                b0
+            } else {
+                // 右の被演算子が単純な名前 (`.. >= n`)。左は空白を含まない一語に限る。
+                let pat = format!(r"^(\S+\s*{}\s*){}\b([^.(\w\[']|$)", op, id);
+                let Some(m) = Regex::new(&pat).unwrap().captures(rest) else { return vec![] };
+                b0 + m[1].len()
+            };
+            vec![span(file, line, text, at, at, "*".to_string())]
+        }
         "E2041" => {
             let Some(text) = get(line) else { return vec![] };
             let indent = text.len() - text.trim_start().len();

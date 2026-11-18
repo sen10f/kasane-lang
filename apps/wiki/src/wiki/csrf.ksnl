@@ -24,7 +24,7 @@ fn wiki.csrf.generate_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.a
         match buf.as_slice().get(i) {
             Some(b) => {
                 let hi = b.wrapping_shr(4u32)
-                let lo = b & 15u8
+                let lo = *b & 15u8
                 hex.push(wiki.csrf.hex_digit(hi))?
                 hex.push(wiki.csrf.hex_digit(lo))?
             }
