@@ -1,7 +1,3 @@
-// CSRF 保護トークンの発行・検証。トークンを Vec に登録し、verify で使い捨て（削除）する。
-// CsrfManager はトークン保持用の型だが、`&mut self` 経由でのフィールド可変アクセスは
-// 段階 1 の KIR 制約（参照を通したフィールドの移動）に抵触するため、
-// generate_token / verify_token は Vec<String> を直接受け取る。
 type wiki.csrf.CsrfManager pub
     tokens: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>
 end wiki.csrf.CsrfManager
@@ -34,7 +30,6 @@ fn wiki.csrf.generate_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.a
         }
         i = i.saturating_add(1usize)
     }
-    // Clone hex for the return value before moving it into tokens
     let mut hex_copy = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(hex_copy.push_str(hex.as_str())?)
     core.mem.drop(tokens.push(hex)?)
@@ -92,7 +87,6 @@ test wiki.csrf.generate_token.test_generate_and_verify
     let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let token = wiki.csrf.generate_token(&mut tokens)?
     core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), true)
-    // 使い捨て: 2 度目は false
     core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), false)
 end wiki.csrf.generate_token.test_generate_and_verify
 
@@ -136,7 +130,6 @@ end wiki.csrf.hex_digit.test_cases
 test wiki.csrf.verify_token.test_case_sensitive
     let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let token = wiki.csrf.generate_token(&mut tokens)?
-    // 末尾に 1 文字追加したものは一致しないはず
     let mut modified = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(modified.push_str(token.as_str())?)
     core.mem.drop(modified.push('x')?)
@@ -152,8 +145,6 @@ test wiki.csrf.verify_token.test_token_removed_after_use
     let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let token = wiki.csrf.generate_token(&mut tokens)?
     core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), true)
-    // 2 度目は false (使い捨て)
     core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), false)
-    // 3 度目も false
     core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), false)
 end wiki.csrf.verify_token.test_token_removed_after_use

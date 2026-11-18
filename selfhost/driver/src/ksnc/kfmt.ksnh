@@ -1,0 +1,47 @@
+// 「接頭辞 + パス」の 1 行。
+fn ksnc.kfmt.line(pre: &str, path: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    match s.push_str(pre) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("ksnc: out of memory")
+    }
+    match s.push_str(path) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("ksnc: out of memory")
+    }
+    s
+end ksnc.kfmt.line
+
+// 整形 (Kasane 版、--stages=kasane): 自パッケージの src の .ksnl (.sig を除く) を
+// selfhost/fmt の format_source で整形する。出力は Rust 版の ksn fmt に近い形。
+// would reformat PATH (--check のとき) か reformatted PATH。--check では書き換えない。
+// 変わったファイルの数を返す。
+fn ksnc.kfmt.run(dir: &str, check: bool) -> Result<usize, ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
+    let own_src = resolve.manifest.join(dir, "src")?
+    let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    resolve.load.collect(own_src.as_str(), "", true, &mut srcs)?
+    let mut changed = 0usize
+    for s in srcs.as_slice().iter() {
+        if s.own && !s.sig {
+            let text = match core.str.from_utf8(s.text.as_slice()) {
+                Ok(t) => t
+                Err(_e) => return Err(ksnc.Failure.Tool)
+            }
+            // selfhost/fmt の fmt.process と同じく、整形の結果に最終の改行を付けて出す (format_source は付けない)。
+            let body = fmt.format_source(text)?
+            let mut nt = alloc.string.String.new(std.alloc.SYSTEM)
+            nt.push_str(body.as_str())?
+            nt.push('\n')?
+            if nt.as_str() != text {
+                changed = changed.wrapping_add(1usize)
+                if check {
+                    std.io.print_line(ksnc.kfmt.line("would reformat ", s.path.as_str()).as_str())?
+                } else {
+                    std.io.print_line(ksnc.kfmt.line("reformatted ", s.path.as_str()).as_str())?
+                    std.fs.write_atomic(s.path.as_str(), nt.as_bytes())?
+                }
+            }
+        }
+    }
+    Ok(changed)
+end ksnc.kfmt.run

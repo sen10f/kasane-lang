@@ -1,4 +1,3 @@
-// 派生 (derive) の一覧に want の名前があるか。l は List (0 は無し)。
 fn borrow.tabfill.derives(p: &parse.cur.P, src: &[u8], l: usize, want: &str) -> bool uses [] panics never pub
     for k in core.iter.range(0usize, resolve.ast.count(p, l)) {
         let it = parse.ast.get(&p.ast, resolve.ast.item(p, l, k))
@@ -9,7 +8,6 @@ fn borrow.tabfill.derives(p: &parse.cur.P, src: &[u8], l: usize, want: &str) -> 
     false
 end borrow.tabfill.derives
 
-// 関数定義の戻り値の分類 (戻り値が無ければ COPY)。型の表を作った後に呼ぶ。
 fn borrow.tabfill.fns(tab: &mut borrow.base.Tab, p: &parse.cur.P, src: &[u8]) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     for d in p.ast.defs.as_slice().iter() {
         let n = parse.ast.get(&p.ast, *d)
@@ -26,7 +24,6 @@ fn borrow.tabfill.fns(tab: &mut borrow.base.Tab, p: &parse.cur.P, src: &[u8]) ->
     Ok(())
 end borrow.tabfill.fns
 
-// 型の定義 (struct・enum) の分類: 線形 (flags の 2 の位) は LIN、Copy を派生していれば COPY、他は MOVE。
 fn borrow.tabfill.types(tab: &mut borrow.base.Tab, p: &parse.cur.P, src: &[u8]) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     for d in p.ast.defs.as_slice().iter() {
         let n = parse.ast.get(&p.ast, *d)

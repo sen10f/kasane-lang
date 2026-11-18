@@ -1,0 +1,45 @@
+/// 最大長。
+const app.net.MAX_LEN: usize = 1_024 pub
+
+/// ヘッダ。
+type app.net.Header derive [Debug, Clone] pub
+    size: usize pub
+    flags: u8
+end app.net.Header
+
+enum app.net.ParseError derive [Debug] pub
+    Empty
+    TooShort(usize)
+end app.net.ParseError
+
+fn app.net.Header.len(self: &app.net.Header) -> usize uses [] panics never pub
+    self.size
+end app.net.Header.len
+
+fn app.net.build(buf: &[u8]) -> Result<app.net.Header, app.net.ParseError> uses [] panics never pub
+    let n = buf
+        .iter()
+        .skip_leading_zero_bytes_before_counting_the_remaining_bytes_in_this_buffer()
+        .count()
+    let parsed_header_result_from_the_first_stage_of_the_build_pipeline_xx = app.net.parse_header(
+        buf,
+    )
+    core.mem.drop(n)
+    parsed_header_result_from_the_first_stage_of_the_build_pipeline_xx
+end app.net.build
+
+fn app.net.parse_header(buf: &[u8]) -> Result<app.net.Header, app.net.ParseError> uses [] panics never pub
+    // 空入力は即エラー
+    if buf.is_empty() {
+        return Err(app.net.ParseError.Empty)
+    }
+    let first = match buf.get(0) {
+        Some(b) => *b
+        None => return Err(app.net.ParseError.Empty)
+    }
+    let mut total = 0usize
+    for b in buf.iter() {
+        total = total.wrapping_add(usize.from_u8(*b))
+    }
+    Ok(app.net.Header { size: total, flags: first })
+end app.net.parse_header

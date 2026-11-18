@@ -1,9 +1,7 @@
-// expect: E3010
 type t.Sq
     side: u64
 end t.Sq
 
-// 分野11: dyn メソッドが &Self 型のデータへの参照を返し、オブジェクトのドロップ後に使う。
 trait t.Tag pub
     fn tag(self: &Self) -> &u64 uses [] panics never
 end t.Tag

@@ -2,7 +2,6 @@ type t.Box[T] derive [TryClone]
     x: T
 end t.Box
 
-// expect: E1108
 type t.NoJson
     a: u8
 end t.NoJson

@@ -1,0 +1,2 @@
+expect: E1122
+note: raw.Buf の pub フィールド initialized を偽装し、get で初期化済みでない領域への参照を得る

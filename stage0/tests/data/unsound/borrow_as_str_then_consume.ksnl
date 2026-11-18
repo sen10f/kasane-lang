@@ -5,7 +5,6 @@ fn t.bad() -> usize uses [] panics never
     r.len()
 end t.bad
 
-// expect: E3010
 fn t.consume(s: alloc.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.consume

@@ -1,4 +1,3 @@
-// expect: E1126
 fn t.leaked_lifetime(text: &'a str) -> &'a str
     text
 end t.leaked_lifetime

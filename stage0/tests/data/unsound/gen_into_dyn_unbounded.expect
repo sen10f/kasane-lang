@@ -1,0 +1,2 @@
+expect: E2046
+note: 境界の無い型パラメータの `Box` は `into_dyn` できない (`H: t.Handler` が要る)

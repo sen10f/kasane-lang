@@ -464,14 +464,16 @@ fn a_rename_that_would_break_check_is_rolled_back() {
 fn doc_comment_mentions_are_not_rewritten_but_reported() {
     let p = Pkg::fixture("doc");
     let u = p.read("src/app/util.ksnl").replace("fn app.util.parsed", "/// Calls app.net.make indirectly.\nfn app.util.parsed");
-    p.write("src/app/util.ksnl", &u);
+    // コメントは `.ksnh` が持つ (`.ksnl` は `strip` したもの)。
+    p.write("src/app/util.ksnh", &u);
+    p.write("src/app/util.ksnl", &u.lines().filter(|l| !l.trim_start().starts_with("//")).map(|l| format!("{l}\n")).collect::<String>());
     p.assert_healthy("setup");
     let before = p.ksn(&["refs", "app.net.make"]);
     assert!(text(&before.stdout).contains("[doc comment (not rewritten)]"), "{}", text(&before.stdout));
     let o = p.ksn(&["rename", "app.net.make", "app.net.build"]);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("doc comment mentions app.net.make (not rewritten)"), "{}", text(&o.stderr));
-    assert!(p.read("src/app/util.ksnl").contains("/// Calls app.net.make indirectly."));
+    assert!(p.read("src/app/util.ksnh").contains("/// Calls app.net.make indirectly."));
     p.assert_healthy("after");
 }
 

@@ -3,13 +3,11 @@ enum parse.Failure derive [Debug, Clone, Copy, PartialEq, From] pub
     Io(std.io.Error)
 end parse.Failure
 
-// 1 ファイル分の結果。解析に失敗したときは Syntax (行, バイト位置, 符号, 期待)。
 enum parse.Outcome pub
     Done(alloc.string.String<std.alloc.System>)
     Syntax(usize, usize, u32, u32)
 end parse.Outcome
 
-// 字句解析と構文解析。
 fn parse.analyze(src: &[u8], path: &str, sig: bool, kinds: bool) -> Result<parse.Outcome, parse.Failure> uses [alloc] panics never
     let mut toks = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match parse.lex.lex(src, &mut toks) {
@@ -31,7 +29,6 @@ fn parse.analyze(src: &[u8], path: &str, sig: bool, kinds: bool) -> Result<parse
     Ok(parse.Outcome.Done(out))
 end parse.analyze
 
-// バイト位置の桁 (1 始まり、文字数)。
 fn parse.col_of(src: &[u8], pos: usize) -> usize uses [] panics never
     let mut ls = pos
     while ls > 0usize && parse.lex.at(src, ls.wrapping_sub(1usize)) != b'\n' {
@@ -82,7 +79,6 @@ fn parse.def_kind(kind: parse.ast.Kind) -> &'static str uses [] panics never
     "?"
 end parse.def_kind
 
-// エラー 1 件を `error パス:行:桁: 説明 [期待]` にする。
 fn parse.error_text(src: &[u8], path: &str, line: usize, pos: usize, code: u32, want: u32) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     out.push_str("error ")?
@@ -131,15 +127,12 @@ fn parse.process(path: &str, kinds: bool) -> Result<(), parse.Failure> uses [all
     Ok(())
 end parse.process
 
-// ノード種別ごとの個数を ` 種別=個数` で 1 行に追記する (0 個は省く)。
 fn parse.push_kinds(p: &parse.cur.P, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let names = parse.ast.KIND_NAMES
     let mut counts = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for _w in names.split(" ") {
         counts.push(0usize)?
     }
-    // const / static の初期化式は ksn bodies が解析しないので数えない。定義 1 つのノードは
-    // 直前の定義のノードの次から、その定義のノード自身まで続く。
     let mut first = 1usize
     for d in p.ast.defs.as_slice().iter() {
         let kind = parse.ast.get(&p.ast, *d).kind
@@ -195,7 +188,6 @@ fn parse.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, st
     Ok(buf)
 end parse.read_file
 
-// 定義ごとに「種別 名前 行番号」を 1 行、最後にノード数。
 fn parse.summary(p: &parse.cur.P, src: &[u8], path: &str, kinds: bool) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     out.push_str("== ")?

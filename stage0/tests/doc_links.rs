@@ -43,7 +43,7 @@ fn doc_file(t: &Tmp, n: &str) -> String {
 
 #[test]
 fn doc_links_point_to_definition_anchors_and_module_doc_is_shown() {
-    let t = Tmp::new("doc_links_ok", DEMO);
+    let t = Tmp::new_ksnh("doc_links_ok", DEMO);
     let o = run(&["check"], &t.0);
     assert!(o.status.success(), "{}", text(&o.stdout));
     let o = run(&["doc"], &t.0);
@@ -64,7 +64,7 @@ fn doc_links_point_to_definition_anchors_and_module_doc_is_shown() {
 #[test]
 fn doc_link_to_unknown_definition_fails_check_and_doc() {
     let src = format!("{}\n/// 壊れた [`t.Missing`] と [`no.such`]。\nfn t.broken() -> u8 uses [] panics never pub\n    1u8\nend t.broken\n", DEMO);
-    let t = Tmp::new("doc_links_bad", &src);
+    let t = Tmp::new_ksnh("doc_links_bad", &src);
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
     let out = text(&o.stdout);
@@ -81,7 +81,7 @@ fn doc_link_to_unknown_definition_fails_check_and_doc() {
 fn doc_link_to_a_field_is_rejected() {
     // フィールドは FQN のリンクの先にならない (3.2)
     let src = format!("{}\n/// [`t.Counter.n`]\nfn t.f() -> u8 uses [] panics never pub\n    1u8\nend t.f\n", DEMO);
-    let t = Tmp::new("doc_links_field", &src);
+    let t = Tmp::new_ksnh("doc_links_field", &src);
     let o = run(&["check"], &t.0);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
     assert!(text(&o.stdout).contains("E1125"), "{}", text(&o.stdout));
@@ -89,7 +89,7 @@ fn doc_link_to_a_field_is_rejected() {
 
 #[test]
 fn index_is_one_json_line_per_definition_in_fqn_order_and_is_stable() {
-    let t = Tmp::new("doc_index", DEMO);
+    let t = Tmp::new_ksnh("doc_index", DEMO);
     let o = run(&["index"], &t.0);
     assert!(o.status.success(), "{}", text(&o.stderr));
     let a = text(&o.stdout);
@@ -110,7 +110,7 @@ fn index_is_one_json_line_per_definition_in_fqn_order_and_is_stable() {
     // 定義の欄: 種別・ファイル・行・ヘッダ・本文・契約・テスト・公開
     let bump = lines.iter().find(|l| l.contains("\"fqn\":\"t.Counter.bump\"")).expect("bump");
     assert!(bump.contains("\"kind\":\"fn\""), "{}", bump);
-    assert!(bump.contains("\"file\":\"src/t.ksnl\""), "{}", bump);
+    assert!(bump.contains("\"file\":\"src/t.ksnh\""), "{}", bump);
     assert!(bump.contains("\"uses\":[]") && bump.contains("\"panics\":\"never\""), "{}", bump);
     assert!(bump.contains("\"tests\":[\"t.Counter.bump.test_once\"]"), "{}", bump);
     assert!(bump.contains("\"pub\":true"), "{}", bump);
@@ -124,7 +124,7 @@ fn index_is_one_json_line_per_definition_in_fqn_order_and_is_stable() {
 #[test]
 fn index_lists_private_definitions_with_pub_false() {
     let src = format!("{}\nfn t.secret() -> u8 uses [] panics never\n    1u8\nend t.secret\n", DEMO);
-    let t = Tmp::new("doc_index_private", &src);
+    let t = Tmp::new_ksnh("doc_index_private", &src);
     let a = text(&run(&["index"], &t.0).stdout);
     let line = a.lines().find(|l| l.contains("\"fqn\":\"t.secret\"")).expect("secret");
     assert!(line.contains("\"pub\":false"), "{}", line);
@@ -133,25 +133,25 @@ fn index_lists_private_definitions_with_pub_false() {
 #[test]
 fn examples_run_under_ksn_test_and_report_their_source_line() {
     // 正しい例は通る (`--doc` は例だけ)
-    let t = Tmp::new("doc_ex_ok", DEMO);
+    let t = Tmp::new_ksnh("doc_ex_ok", DEMO);
     let o = run(&["test", "--doc"], &t.0);
     assert!(o.status.success(), "{}{}", text(&o.stdout), text(&o.stderr));
-    // 誤った例 (型の誤り) は、元の囲みの行 (src/t.ksnl の行) で報告される
+    // 誤った例 (型の誤り) は、元の囲みの行 (src/t.ksnh の行) で報告される
     let bad = DEMO.replace("core.check.eq(c.bump(), 1u32)", "core.check.eq(c.bump(), true)");
-    let t = Tmp::new("doc_ex_bad", &bad);
+    let t = Tmp::new_ksnh("doc_ex_bad", &bad);
     let o = run(&["test", "--doc"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     let out = text(&o.stdout) + &text(&o.stderr);
     let line = bad.lines().position(|l| l.contains("core.check.eq(c.bump(), true)")).unwrap() + 1;
     let fence = bad.lines().position(|l| l.starts_with("/// ```ksn")).unwrap() + 1;
-    assert!(out.contains(&format!("src/t.ksnl:{}", fence)) || out.contains(&format!("src/t.ksnl:{}", line)), "{}", out);
+    assert!(out.contains(&format!("src/t.ksnh:{}", fence)) || out.contains(&format!("src/t.ksnh:{}", line)), "{}", out);
     assert!(out.contains("in a doc example"), "{}", out);
 }
 
 #[test]
 fn doc_example_failing_at_run_time_fails_its_test() {
     let bad = DEMO.replace("core.check.eq(c.bump(), 1u32)", "core.check.eq(c.bump(), 2u32)");
-    let t = Tmp::new("doc_ex_run", &bad);
+    let t = Tmp::new_ksnh("doc_ex_run", &bad);
     let o = run(&["test", "--doc"], &t.0);
     assert_eq!(o.status.code(), Some(1), "{}{}", text(&o.stdout), text(&o.stderr));
     let out = text(&o.stdout) + &text(&o.stderr);
@@ -160,10 +160,10 @@ fn doc_example_failing_at_run_time_fails_its_test() {
 
 #[test]
 fn module_doc_survives_fmt_and_a_doc_before_import_is_an_error() {
-    let t = Tmp::new("doc_fmt", DEMO);
+    let t = Tmp::new_ksnh("doc_fmt", DEMO);
     let o = run(&["fmt", "--check"], &t.0);
     assert!(o.status.success(), "{}{}", text(&o.stdout), text(&o.stderr));
-    let t = Tmp::new("doc_adjacent", "/// 直後に import\nimport core.option\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n");
+    let t = Tmp::new_ksnh("doc_adjacent", "/// 直後に import\nimport core.option\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n");
     let o = run(&["check"], &t.0);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
     assert!(text(&o.stdout).contains("E0002"), "{}", text(&o.stdout));

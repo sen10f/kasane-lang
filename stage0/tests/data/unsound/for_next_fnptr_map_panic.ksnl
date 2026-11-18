@@ -1,4 +1,3 @@
-// expect: E4002
 fn t.boom(u: u32) -> u32 uses [] panics may
     core.panic.panic("x")
     u

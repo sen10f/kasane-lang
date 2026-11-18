@@ -1,0 +1,4 @@
+expect: E3002
+note: Vec<Box<T>> の要素 v[0] から * で Box<T> を move-out し、その Box を drop した後、
+note: Vec を drop すると Vec の drop が要素の Box<T> の drop を実行し、T のリソース
+note: (String バッファ) が二回解放される。

@@ -1,4 +1,3 @@
-// expect: E3010
 fn t.main() -> () uses [thread] panics never
     let m = std.sync.Mutex.new(10u32)
     let r = m.lock().get_mut()

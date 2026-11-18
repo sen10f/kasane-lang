@@ -1,0 +1,2 @@
+note: expect-accept
+note: core.mem.replace で配列要素への可変参照をすり替えた後、元の変数を再代入する（borrow は終わっている）

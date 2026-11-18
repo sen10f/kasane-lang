@@ -1,5 +1,3 @@
-// expect: E2026
-// `[e; N]` の長さは定数: 局所変数は使えない
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let n: usize = 3
     let a = [1u32; n]

@@ -1,0 +1,2 @@
+expect: E3002
+note: `let` の分解も `match` と同じく、Copy でない束縛があれば右辺の変数を move する。

@@ -8,14 +8,12 @@ type types.chk.Ctx pub
     rec: types.rec.Rec pub
 end types.chk.Ctx
 
-// 検査の状態: 名前の並び (局所と総称)・整数リテラルの変数・戻り値の型・診断の文。
 type types.chk.Ent pub
     name: alloc.string.String<std.alloc.System> pub
     ty: usize pub
     generic: bool pub
 end types.chk.Ent
 
-// 関数の終わりに決める項目: 整数リテラル (行つき) と、let の束縛の型 (行つき)。
 type types.chk.Pend pub
     lits: alloc.vec.Vec<usize, std.alloc.System> pub
     lit_lines: alloc.vec.Vec<usize, std.alloc.System> pub
@@ -23,7 +21,6 @@ type types.chk.Pend pub
     let_lines: alloc.vec.Vec<usize, std.alloc.System> pub
 end types.chk.Pend
 
-// 診断の文の出力。sigcall は直前に完了した関数呼び出しが .sig の宣言だったか (E2042 の判定用)。
 type types.chk.Rep pub
     out: alloc.string.String<std.alloc.System> pub
     path: alloc.string.String<std.alloc.System> pub
@@ -31,7 +28,6 @@ type types.chk.Rep pub
     sigcall: bool pub
 end types.chk.Rep
 
-// 診断 1 件: `error CODE 路径:行: 内容`。
 fn types.chk.diag(cx: &mut types.chk.Ctx, code: &str, line: usize, msg: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     cx.rep.out.push_str("error ")?
     cx.rep.out.push_str(code)?
@@ -46,7 +42,6 @@ fn types.chk.diag(cx: &mut types.chk.Ctx, code: &str, line: usize, msg: &str) ->
     Ok(())
 end types.chk.diag
 
-// 名前を最も内側から探す (添字 + 1、なければ 0)。
 fn types.chk.find(cx: &types.chk.Ctx, name: &str, generic: bool) -> usize uses [] panics never pub
     let mut found = 0usize
     for k in core.iter.range(0usize, cx.sc.len()) {
@@ -91,7 +86,6 @@ fn types.chk.truncate(cx: &mut types.chk.Ctx, m: usize) -> () uses [] panics nev
     cx.sc.truncate(m)
 end types.chk.truncate
 
-// 添字 k (find の結果 - 1) の型。
 fn types.chk.ty_at(cx: &types.chk.Ctx, k: usize) -> usize uses [] panics never pub
     match cx.sc.as_slice().get(k) {
         Some(e) => e.ty

@@ -1,18 +1,6 @@
 import alloc.string
 import todo.error
 
-// 設定ファイル (JSON) の読み込み。
-//
-// 設定ファイルの例:
-//   {
-//     "address": "127.0.0.1:8080",
-//     "db_path": "todos.json",
-//     "history_path": "history.log",
-//     "session_ttl_seconds": 3600,
-//     "max_title": 2048
-//   }
-//
-// 欠落している欄は規定値を使う。
 const todo.config.DEFAULT_ADDRESS: &str = "127.0.0.1:8080"
 
 const todo.config.DEFAULT_DB_PATH: &str = "todos.json"
@@ -31,7 +19,6 @@ type todo.config.Config derive [Debug] pub
     max: usize pub
 end todo.config.Config
 
-// 規定値の設定を作る。
 fn todo.config.default() -> Result<todo.config.Config, todo.error.Error> uses [alloc] panics never pub
     let a = alloc.string.String.from_str(std.alloc.SYSTEM, todo.config.DEFAULT_ADDRESS)?
     let b = alloc.string.String.from_str(std.alloc.SYSTEM, todo.config.DEFAULT_DB_PATH)?
@@ -41,7 +28,6 @@ fn todo.config.default() -> Result<todo.config.Config, todo.error.Error> uses [a
     Ok(todo.config.Config { addr: a, db: b, hist: h, ttl: t, max: m })
 end todo.config.default
 
-// 設定ファイルを読み込む。ファイルがないときは規定値を返す。
 fn todo.config.load(path: &str) -> Result<todo.config.Config, todo.error.Error> uses [alloc, io.fs] panics never pub
     if !std.fs.exists(path) {
         return todo.config.default()
@@ -65,7 +51,6 @@ fn todo.config.load(path: &str) -> Result<todo.config.Config, todo.error.Error> 
     Ok(todo.config.Config { addr: a, db: b, hist: h, ttl: t, max: m })
 end todo.config.load
 
-// 文字列の JSON フィールドを読む。欠落または型不一致なら `fallback` を返す。
 fn todo.config.read_string_field(doc: &std.json.Doc, v: std.json.Value, name: &str, fallback: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
     match std.json.decode_field(doc, v, name, 0usize) {
         Ok(value) => match std.json.decode_string(doc, value) {
@@ -82,7 +67,6 @@ fn todo.config.read_string_field(doc: &std.json.Doc, v: std.json.Value, name: &s
     }
 end todo.config.read_string_field
 
-// 整数の JSON フィールドを読む。欠落または型不一致なら `fallback` を返す。
 fn todo.config.read_u64_field(doc: &std.json.Doc, v: std.json.Value, name: &str, fallback: u64) -> Result<u64, todo.error.Error> uses [] panics never pub
     match std.json.decode_field(doc, v, name, 0usize) {
         Ok(value) => match std.json.decode_u64(doc, value) {
@@ -103,7 +87,6 @@ fn todo.config.read_usize_field(doc: &std.json.Doc, v: std.json.Value, name: &st
     }
 end todo.config.read_usize_field
 
-// store.read_text と同じ読み込みをここで行う (store は model に依存するため循環を避ける)。
 fn todo.config.store_read_text(path: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, io.fs] panics never
     let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
     with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
@@ -114,7 +97,6 @@ fn todo.config.store_read_text(path: &str) -> Result<alloc.string.String<std.all
     Ok(text)
 end todo.config.store_read_text
 
-// 設定の妥当性を検査する。
 fn todo.config.validate(config: &todo.config.Config) -> Result<(), todo.error.Error> uses [] panics never pub
     if config.addr.is_empty() {
         return Err(error.Error.Config)

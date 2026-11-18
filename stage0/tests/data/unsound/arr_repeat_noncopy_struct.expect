@@ -1,0 +1,2 @@
+expect: E3002
+note: `[e; N]` の値は Copy に限る (Copy でない構造体は N 個に複製できない)

@@ -4,7 +4,6 @@ const shortener_https.serve.MAX_BODY: usize = 65536usize
 
 const shortener_https.serve.MAX_HEAD: usize = 8192usize
 
-// 要求 1 件に答える。返すのは接続を保つか (`Connection` の判定)。
 fn shortener_https.serve.answer(stream: &mut std.tls.TlsStream, db: &mut shortener_https.store.Store, request: &std.http.Request) -> Result<bool, shortener_https.error.Error> uses [alloc, io.console, io.fs, io.net, time] panics never
     let keep = request.keep_alive()
     let method = request.method.as_str()
@@ -18,15 +17,11 @@ fn shortener_https.serve.answer(stream: &mut std.tls.TlsStream, db: &mut shorten
     Ok(keep)
 end shortener_https.serve.answer
 
-// 接続を閉じる (TLS の close_notify と TCP の close)。
 fn shortener_https.serve.close_stream(stream: std.tls.TlsStream) -> Result<(), shortener_https.error.Error> uses [io.net] panics never pub
     stream.close()?
     Ok(())
 end shortener_https.serve.close_stream
 
-// 1 本の TLS 接続の中で、要求を順に処理する (keep-alive)。返すのは処理した要求の数。
-// 要求の解析と応答の組み立ては `std.http`、暗号は `std.tls`、ログは `std.log` (1 行 1 件の JSON)。
-// 途中で失敗しても、接続は必ず閉じる (線形な値の消費)。
 fn shortener_https.serve.connection(conn: std.tls.TlsStream, db: &mut shortener_https.store.Store) -> Result<usize, shortener_https.error.Error> uses [alloc, io.console, io.fs, io.net, time] panics never pub
     let mut stream = conn
     let max_head = shortener_https.serve.MAX_HEAD
@@ -39,7 +34,6 @@ fn shortener_https.serve.connection(conn: std.tls.TlsStream, db: &mut shortener_
     Ok(served)
 end shortener_https.serve.connection
 
-// 要求ごとのログ (`request`): 方法・経路・状態・接続を保つか。
 fn shortener_https.serve.log_request(method: &str, path: &str, status: u16, keep: bool) -> Result<(), shortener_https.error.Error> uses [alloc, io.console, time] panics never
     let mut code = alloc.string.String.new(std.alloc.SYSTEM)
     code.push_u64(u64.from_u16(status))?
@@ -52,7 +46,6 @@ fn shortener_https.serve.log_request(method: &str, path: &str, status: u16, keep
     Ok(())
 end shortener_https.serve.log_request
 
-// 解析できなかった要求への応答。接続は閉じる。相手が途中で閉じたときは何も返さない。
 fn shortener_https.serve.refuse(stream: &mut std.tls.TlsStream, failure: std.http.Error) -> Result<(), shortener_https.error.Error> uses [alloc, io.console, io.net, time] panics never
     let status = match failure {
         std.http.Error.BadRequest => 400u16
@@ -73,7 +66,6 @@ fn shortener_https.serve.refuse(stream: &mut std.tls.TlsStream, failure: std.htt
     Ok(())
 end shortener_https.serve.refuse
 
-// 応答を 1 件書く。`Location` は空でなければ付ける。`Connection` は `keep` に従う。
 fn shortener_https.serve.send(stream: &mut std.tls.TlsStream, reply: &shortener_https.router.Reply, keep: bool) -> Result<(), shortener_https.error.Error> uses [alloc, io.net] panics never
     let mut head = alloc.string.String.new(std.alloc.SYSTEM)
     head.push_str("Content-Type: application/json\r\n")?
@@ -87,7 +79,6 @@ fn shortener_https.serve.send(stream: &mut std.tls.TlsStream, reply: &shortener_
     Ok(())
 end shortener_https.serve.send
 
-// 要求を読んで答える。接続が閉じるか、接続を保たない要求まで続ける。返すのは処理した要求の数。
 fn shortener_https.serve.serve_all(stream: &mut std.tls.TlsStream, db: &mut shortener_https.store.Store, decoder: &mut std.http.Decoder) -> Result<usize, shortener_https.error.Error> uses [alloc, io.console, io.fs, io.net, time] panics never
     let mut served = 0usize
     let mut more = true

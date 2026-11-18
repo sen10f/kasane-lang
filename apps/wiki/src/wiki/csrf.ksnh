@@ -1,0 +1,159 @@
+// CSRF 保護トークンの発行・検証。トークンを Vec に登録し、verify で使い捨て（削除）する。
+// CsrfManager はトークン保持用の型だが、`&mut self` 経由でのフィールド可変アクセスは
+// 段階 1 の KIR 制約（参照を通したフィールドの移動）に抵触するため、
+// generate_token / verify_token は Vec<String> を直接受け取る。
+type wiki.csrf.CsrfManager pub
+    tokens: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>
+end wiki.csrf.CsrfManager
+
+fn wiki.csrf.CsrfManager.new() -> Result<wiki.csrf.CsrfManager, wiki.error.Error> uses [alloc] panics never pub
+    let vec = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    Ok(wiki.csrf.CsrfManager { tokens: vec })
+end wiki.csrf.CsrfManager.new
+
+fn wiki.csrf.generate_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc, rand, time] panics never pub
+    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for _ in core.iter.range(0usize, 32usize) {
+        buf.push(0u8)?
+    }
+    std.rand.fill_secure(buf.as_mut_slice())?
+    let mut hex = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    let n = buf.len()
+    while i < n {
+        match buf.as_slice().get(i) {
+            Some(b) => {
+                let hi = b.wrapping_shr(4u32)
+                let lo = *b & 15u8
+                hex.push(wiki.csrf.hex_digit(hi))?
+                hex.push(wiki.csrf.hex_digit(lo))?
+            }
+            None => {
+                core.mem.drop(0u8)
+            }
+        }
+        i = i.saturating_add(1usize)
+    }
+    // Clone hex for the return value before moving it into tokens
+    let mut hex_copy = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(hex_copy.push_str(hex.as_str())?)
+    core.mem.drop(tokens.push(hex)?)
+    Ok(hex_copy)
+end wiki.csrf.generate_token
+
+fn wiki.csrf.hex_digit(v: u8) -> char uses [] panics never pub
+    if v < 10u8 {
+        match char.try_from_u32(u32.from_u8(b'0'.wrapping_add(v))) {
+            Some(c) => c
+            None => '0'
+        }
+    } else {
+        match char.try_from_u32(u32.from_u8(b'a'.wrapping_add(v.wrapping_sub(10u8)))) {
+            Some(c) => c
+            None => 'a'
+        }
+    }
+end wiki.csrf.hex_digit
+
+fn wiki.csrf.verify_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, token: &str) -> bool uses [alloc] panics never pub
+    let mut i = 0usize
+    let n = tokens.len()
+    while i < n {
+        match tokens.as_slice().get(i) {
+            Some(s) => {
+                if s.as_str() == token {
+                    match tokens.remove(i) {
+                        Some(_v) => {
+                            return true
+                        }
+                        None => {
+                            core.mem.drop(0u8)
+                        }
+                    }
+                }
+            }
+            None => {
+                core.mem.drop(0u8)
+            }
+        }
+        i = i.saturating_add(1usize)
+    }
+    false
+end wiki.csrf.verify_token
+
+test wiki.csrf.generate_token.test_distinct_tokens
+    let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let t1 = wiki.csrf.generate_token(&mut tokens)?
+    let t2 = wiki.csrf.generate_token(&mut tokens)?
+    core.check.eq(t1.as_str() == t2.as_str(), false)
+end wiki.csrf.generate_token.test_distinct_tokens
+
+test wiki.csrf.generate_token.test_generate_and_verify
+    let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let token = wiki.csrf.generate_token(&mut tokens)?
+    core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), true)
+    // 使い捨て: 2 度目は false
+    core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), false)
+end wiki.csrf.generate_token.test_generate_and_verify
+
+test wiki.csrf.generate_token.test_token_is_hex
+    let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let token = wiki.csrf.generate_token(&mut tokens)?
+    let s = token.as_str()
+    let mut i = 0usize
+    let n = s.len()
+    let mut all_hex = true
+    while i < n {
+        let c = match s.as_bytes().get(i) {
+            Some(b) => *b
+            None => 0u8
+        }
+        let ok = (c >= b'0' && c <= b'9') || (c >= b'a' && c <= b'f')
+        if !ok {
+            all_hex = false
+        }
+        i = i.saturating_add(1usize)
+    }
+    core.check.eq(all_hex, true)
+    core.check.eq(n, 64usize)
+end wiki.csrf.generate_token.test_token_is_hex
+
+test wiki.csrf.hex_digit.test_boundary
+    core.check.eq(wiki.csrf.hex_digit(0u8), '0')
+    core.check.eq(wiki.csrf.hex_digit(1u8), '1')
+    core.check.eq(wiki.csrf.hex_digit(9u8), '9')
+    core.check.eq(wiki.csrf.hex_digit(10u8), 'a')
+    core.check.eq(wiki.csrf.hex_digit(15u8), 'f')
+end wiki.csrf.hex_digit.test_boundary
+
+test wiki.csrf.hex_digit.test_cases
+    core.check.eq(wiki.csrf.hex_digit(0u8), '0')
+    core.check.eq(wiki.csrf.hex_digit(9u8), '9')
+    core.check.eq(wiki.csrf.hex_digit(10u8), 'a')
+    core.check.eq(wiki.csrf.hex_digit(15u8), 'f')
+end wiki.csrf.hex_digit.test_cases
+
+test wiki.csrf.verify_token.test_case_sensitive
+    let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let token = wiki.csrf.generate_token(&mut tokens)?
+    // 末尾に 1 文字追加したものは一致しないはず
+    let mut modified = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(modified.push_str(token.as_str())?)
+    core.mem.drop(modified.push('x')?)
+    core.check.eq(wiki.csrf.verify_token(&mut tokens, modified.as_str()), false)
+end wiki.csrf.verify_token.test_case_sensitive
+
+test wiki.csrf.verify_token.test_reject_unknown
+    let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.check.eq(wiki.csrf.verify_token(&mut tokens, "deadbeef"), false)
+end wiki.csrf.verify_token.test_reject_unknown
+
+test wiki.csrf.verify_token.test_token_removed_after_use
+    let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let token = wiki.csrf.generate_token(&mut tokens)?
+    core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), true)
+    // 2 度目は false (使い捨て)
+    core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), false)
+    // 3 度目も false
+    core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), false)
+end wiki.csrf.verify_token.test_token_removed_after_use

@@ -6,7 +6,6 @@ type resolve.report.Report pub
     sig: bool pub
 end resolve.report.Report
 
-// 定義の名前。impl 行は行全体 (ksn defs と同じ)、ほかは FQN (ノードの a..b)。
 fn resolve.report.def_name['a](p: &parse.cur.P, src: &'a [u8], n: parse.ast.Node) -> &'a str uses [] panics never pub
     if n.kind == parse.ast.Kind.ImplLine {
         return resolve.report.line_from(src, parse.cur.peek_at(p, n.tok).start)
@@ -14,7 +13,6 @@ fn resolve.report.def_name['a](p: &parse.cur.P, src: &'a [u8], n: parse.ast.Node
     resolve.ast.text(src, n.a, n.b)
 end resolve.report.def_name
 
-// 定義の一覧 (1 ファイル分)。
 fn resolve.report.defs(rep: &mut resolve.report.Report, p: &parse.cur.P, src: &[u8]) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     rep.text.push_str("== ")?
     rep.text.push_str(rep.path.as_str())?
@@ -31,7 +29,6 @@ fn resolve.report.defs(rep: &mut resolve.report.Report, p: &parse.cur.P, src: &[
     Ok(())
 end resolve.report.defs
 
-// 診断 1 件。name は空でなければ末尾に付ける。
 fn resolve.report.diag(rep: &mut resolve.report.Report, code: &str, line: usize, msg: &str, name: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     rep.text.push_str("error ")?
     rep.text.push_str(code)?
@@ -50,7 +47,6 @@ fn resolve.report.diag(rep: &mut resolve.report.Report, code: &str, line: usize,
     Ok(())
 end resolve.report.diag
 
-// 種別の語 (ksn defs の kw と同じ。impl は ImplLine)。
 fn resolve.report.kind_word(kind: parse.ast.Kind) -> &'static str uses [] panics never pub
     if kind == parse.ast.Kind.ConstDef {
         return "const"
@@ -85,7 +81,6 @@ fn resolve.report.kind_word(kind: parse.ast.Kind) -> &'static str uses [] panics
     "?"
 end resolve.report.kind_word
 
-// バイト位置 start から行末までの文字列 (末尾の空白を除く)。
 fn resolve.report.line_from(src: &[u8], start: usize) -> &str uses [] panics never pub
     let mut last = start
     let mut stop = false
@@ -115,14 +110,12 @@ fn resolve.report.new() -> Result<resolve.report.Report, alloc.alloc.AllocError>
     Ok(resolve.report.Report { text: text, path: path, errors: 0usize, refs: 0usize, sig: nosig })
 end resolve.report.new
 
-// 以後の診断・定義の行に使うパスを設定する。
 fn resolve.report.set_path(rep: &mut resolve.report.Report, path: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     rep.path.clear()
     rep.path.push_str(path)?
     Ok(())
 end resolve.report.set_path
 
-// 構文エラー 1 件 (パーサの符号を文言にする)。
 fn resolve.report.syntax(rep: &mut resolve.report.Report, line: usize, code: u32, want: u32) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     rep.text.push_str("error PARSE ")?
     rep.text.push_str(rep.path.as_str())?

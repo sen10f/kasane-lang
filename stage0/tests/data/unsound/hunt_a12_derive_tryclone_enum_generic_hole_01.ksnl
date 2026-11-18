@@ -1,4 +1,3 @@
-// expect: E1108
 type t.NoClone
     a: u8
 end t.NoClone

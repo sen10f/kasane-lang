@@ -1,0 +1,431 @@
+// `std.tls`: TLS。OpenSSL の `libssl.so.3` / `libcrypto.so.3` を `extern` で動的に読んで呼ぶ (`link "ライブラリ:名前"`)。
+// `unsafe` の許可は同梱の `std` が暗黙に持つ。どちらの共有ライブラリも無ければ、外部関数の読み込みの失敗として
+// `panic: cannot load the shared library ...` を出して終了コード 101 になる (3.8)。
+// サーバ: `TlsAcceptor.load` が PEM の証明書チェーンと秘密鍵を読み、`accept` が受けた `TcpStream` を包む。
+// クライアント: `connect` と `connect_with` は証明書とホスト名の検証を既定で行う (CA は既定の場所、
+// または `ca_file` の PEM)。検証を外す経路はない。
+// `TlsStream` の読み書きは `TcpStream` の fd の上で行い、タイムアウトは `TcpStream` の設定に従う。
+// `TlsStream` と `TlsAcceptor` は線形: `close` で消費する。
+// `TlsStream` は `std.io.Read` / `std.io.Write` を実装する。
+// 1 回の読み書きは `MAX_CHUNK` バイトまで (`i32` の長さに収めるため)。
+const std.tls.MAX_CHUNK: usize = 16384usize
+
+const std.tls.PEM_FILE: i32 = 1i32
+
+const std.tls.SET_MIN_PROTO: i32 = 123i32
+
+const std.tls.SNI_HOST_NAME: i32 = 55i32
+
+const std.tls.TLS12: i64 = 771i64
+
+const std.tls.VERIFY_PEER: i32 = 1i32
+
+const std.tls.ZERO_RETURN: i32 = 6i32
+
+enum std.tls.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Io(std.io.Error)
+    Load(u64)
+    Name
+    Net(std.net.Error)
+    Ssl(i32)
+    Verify(i64)
+end std.tls.Error
+
+// サーバの設定 (`SSL_CTX`)。`accept` の度に、この設定から接続ごとのセッションを作る。
+type std.tls.TlsAcceptor linear pub
+    ctx: *mut u8
+end std.tls.TlsAcceptor
+
+// TLS の接続 1 本。`tcp` の fd の上に `ssl` のセッションがある。
+type std.tls.TlsStream linear pub
+    ssl: *mut u8
+    tcp: std.net.TcpStream
+end std.tls.TlsStream
+
+extern std.tls.c_err_get_error() -> u64 link "libcrypto.so.3:ERR_get_error"
+
+extern std.tls.c_ssl_accept(ssl: *mut u8) -> i32 link "libssl.so.3:SSL_accept"
+
+extern std.tls.c_ssl_connect(ssl: *mut u8) -> i32 link "libssl.so.3:SSL_connect"
+
+extern std.tls.c_ssl_ctrl(ssl: *mut u8, cmd: i32, larg: i64, parg: *const u8) -> i64 link "libssl.so.3:SSL_ctrl"
+
+extern std.tls.c_ssl_ctx_check_private_key(ctx: *mut u8) -> i32 link "libssl.so.3:SSL_CTX_check_private_key"
+
+extern std.tls.c_ssl_ctx_ctrl(ctx: *mut u8, cmd: i32, larg: i64, parg: *mut u8) -> i64 link "libssl.so.3:SSL_CTX_ctrl"
+
+extern std.tls.c_ssl_ctx_free(ctx: *mut u8) -> () link "libssl.so.3:SSL_CTX_free"
+
+extern std.tls.c_ssl_ctx_load_verify_locations(ctx: *mut u8, file: *const u8, dir: *const u8) -> i32 link "libssl.so.3:SSL_CTX_load_verify_locations"
+
+extern std.tls.c_ssl_ctx_new(method: *const u8) -> *mut u8 link "libssl.so.3:SSL_CTX_new"
+
+extern std.tls.c_ssl_ctx_set_default_verify_paths(ctx: *mut u8) -> i32 link "libssl.so.3:SSL_CTX_set_default_verify_paths"
+
+extern std.tls.c_ssl_ctx_set_verify(ctx: *mut u8, mode: i32, callback: *mut u8) -> () link "libssl.so.3:SSL_CTX_set_verify"
+
+extern std.tls.c_ssl_ctx_use_certificate_chain_file(ctx: *mut u8, file: *const u8) -> i32 link "libssl.so.3:SSL_CTX_use_certificate_chain_file"
+
+extern std.tls.c_ssl_ctx_use_private_key_file(ctx: *mut u8, file: *const u8, kind: i32) -> i32 link "libssl.so.3:SSL_CTX_use_PrivateKey_file"
+
+extern std.tls.c_ssl_free(ssl: *mut u8) -> () link "libssl.so.3:SSL_free"
+
+extern std.tls.c_ssl_get_error(ssl: *mut u8, ret: i32) -> i32 link "libssl.so.3:SSL_get_error"
+
+extern std.tls.c_ssl_get_verify_result(ssl: *mut u8) -> i64 link "libssl.so.3:SSL_get_verify_result"
+
+extern std.tls.c_ssl_new(ctx: *mut u8) -> *mut u8 link "libssl.so.3:SSL_new"
+
+extern std.tls.c_ssl_read(ssl: *mut u8, buffer: *mut u8, num: i32) -> i32 link "libssl.so.3:SSL_read"
+
+extern std.tls.c_ssl_set1_host(ssl: *mut u8, host: *const u8) -> i32 link "libssl.so.3:SSL_set1_host"
+
+extern std.tls.c_ssl_set_fd(ssl: *mut u8, fd: i32) -> i32 link "libssl.so.3:SSL_set_fd"
+
+extern std.tls.c_ssl_shutdown(ssl: *mut u8) -> i32 link "libssl.so.3:SSL_shutdown"
+
+extern std.tls.c_ssl_write(ssl: *mut u8, buffer: *const u8, num: i32) -> i32 link "libssl.so.3:SSL_write"
+
+extern std.tls.c_tls_client_method() -> *const u8 link "libssl.so.3:TLS_client_method"
+
+extern std.tls.c_tls_server_method() -> *const u8 link "libssl.so.3:TLS_server_method"
+
+// 受けた `TcpStream` の上で TLS の握手をする。失敗したら `tcp` を閉じて理由を返す。
+fn std.tls.TlsAcceptor.accept(self: &std.tls.TlsAcceptor, tcp: std.net.TcpStream) -> Result<std.tls.TlsStream, std.tls.Error> uses [io.net] panics never pub
+    let fd = tcp.fd()
+    let ssl = std.tls.new_session(self.ctx)
+    if std.tls.is_null(ssl) {
+        return std.tls.refuse(tcp, std.tls.Error.Ssl(0i32))
+    }
+    if std.tls.set_fd(ssl, fd) != 1i32 {
+        std.tls.free_session(ssl)
+        return std.tls.refuse(tcp, std.tls.Error.Ssl(0i32))
+    }
+    let ret = std.tls.accept_session(ssl)
+    if ret != 1i32 {
+        let failed = std.tls.handshake_failure(ssl, ret)
+        std.tls.free_session(ssl)
+        return std.tls.refuse(tcp, failed)
+    }
+    Ok(std.tls.TlsStream { ssl: ssl, tcp: tcp })
+end std.tls.TlsAcceptor.accept
+
+// サーバの設定を閉じる (接続ごとのセッションは `TlsStream.close` で解放済みであること)。
+fn std.tls.TlsAcceptor.close(self: std.tls.TlsAcceptor) -> () uses [] panics never pub
+    let std.tls.TlsAcceptor { ctx: ctx } = self
+    std.tls.free_ctx(ctx)
+end std.tls.TlsAcceptor.close
+
+// PEM の証明書チェーンと秘密鍵を読む。秘密鍵が証明書と合わなければ `Load`。
+fn std.tls.TlsAcceptor.load(cert_file: &str, key_file: &str) -> Result<std.tls.TlsAcceptor, std.tls.Error> uses [alloc, io.fs] panics never pub
+    let cert = std.tls.c_string(cert_file)?
+    let key = std.tls.c_string(key_file)?
+    let ctx = std.tls.new_ctx(std.tls.server_method())
+    if std.tls.is_null(ctx) {
+        return Err(std.tls.Error.Ssl(0i32))
+    }
+    let loaded = std.tls.ctx_use_cert(ctx, cert.as_slice())
+    if loaded != 1i32 {
+        let failed = std.tls.Error.Load(std.tls.last_error())
+        std.tls.free_ctx(ctx)
+        return Err(failed)
+    }
+    let key_ok = std.tls.ctx_use_key(ctx, key.as_slice())
+    if key_ok != 1i32 || std.tls.ctx_check_key(ctx) != 1i32 {
+        let failed = std.tls.Error.Load(std.tls.last_error())
+        std.tls.free_ctx(ctx)
+        return Err(failed)
+    }
+    Ok(std.tls.TlsAcceptor { ctx: ctx })
+end std.tls.TlsAcceptor.load
+
+// 接続の終わり: close_notify を送り (届かなくてもよい)、セッションを解放して、TCP を閉じる。
+fn std.tls.TlsStream.close(self: std.tls.TlsStream) -> Result<(), std.net.Error> uses [io.net] panics never pub
+    let std.tls.TlsStream { ssl: ssl, tcp: tcp } = self
+    std.tls.shutdown_and_free(ssl)
+    tcp.close()
+end std.tls.TlsStream.close
+
+impl std.io.Write<[io.net]> for std.tls.TlsStream
+fn std.tls.TlsStream.flush(self: &mut std.tls.TlsStream) -> Result<(), std.io.Error> uses [io.net] panics never impls std.io.Write<[io.net]>
+    Ok(())
+end std.tls.TlsStream.flush
+
+impl std.io.Read<[io.net]> for std.tls.TlsStream
+fn std.tls.TlsStream.read(self: &mut std.tls.TlsStream, buffer: &mut [u8]) -> Result<usize, std.io.Error> uses [io.net] panics never impls std.io.Read<[io.net]>
+    let want = std.tls.chunk_len(buffer.len())
+    let got = std.tls.ssl_read(self.ssl, buffer, want)
+    if got > 0i32 {
+        return match usize.try_from_i32(got) {
+            Ok(n) => Ok(n)
+            Err(_e) => Err(std.tls.io_failure(0i32))
+        }
+    }
+    let code = std.tls.failure_code(self.ssl, got)
+    if code == std.tls.ZERO_RETURN {
+        return Ok(0usize)
+    }
+    Err(std.tls.io_failure(code))
+end std.tls.TlsStream.read
+
+fn std.tls.TlsStream.write(self: &mut std.tls.TlsStream, buffer: &[u8]) -> Result<usize, std.io.Error> uses [io.net] panics never impls std.io.Write<[io.net]>
+    let want = std.tls.chunk_len(buffer.len())
+    let put = std.tls.ssl_write(self.ssl, buffer, want)
+    if put > 0i32 {
+        return match usize.try_from_i32(put) {
+            Ok(n) => Ok(n)
+            Err(_e) => Err(std.tls.io_failure(0i32))
+        }
+    }
+    Err(std.tls.io_failure(std.tls.failure_code(self.ssl, put)))
+end std.tls.TlsStream.write
+
+fn std.tls.accept_session(ssl: *mut u8) -> i32 uses [] panics never
+    unsafe "tls" "SSL_accept runs the server handshake on the session's socket" {
+        std.tls.c_ssl_accept(ssl)
+    }
+end std.tls.accept_session
+
+fn std.tls.bind_host(ssl: *mut u8, host: &[u8]) -> i32 uses [] panics never
+    let name = std.tls.byte_ptr(host)
+    let checked = unsafe "tls" "SSL_set1_host copies the NUL-terminated name" {
+        std.tls.c_ssl_set1_host(ssl, name)
+    }
+    let sni = unsafe "tls" "SSL_ctrl sets the SNI host name; the name is copied" {
+        std.tls.c_ssl_ctrl(ssl, std.tls.SNI_HOST_NAME, 0i64, name)
+    }
+    if sni == 0i64 {
+        return 0i32
+    }
+    checked
+end std.tls.bind_host
+
+// `value` の先頭の要素を指す (元の `Vec` の中身が生きている間だけ)。
+fn std.tls.byte_ptr(value: &[u8]) -> *const u8 uses [] panics never
+    unsafe "tls" "the pointer names the vector's first byte; the caller keeps the vector alive" {
+        core.ptr.from_ref(value)
+    }
+end std.tls.byte_ptr
+
+// 文字列を NUL 終端のバイト列にする。文字列に NUL があれば `Name`。
+fn std.tls.c_string(text: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.tls.Error> uses [alloc] panics never
+    if text.contains("\0") {
+        return Err(std.tls.Error.Name)
+    }
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    out.extend_from_slice(text.as_bytes())?
+    out.push(0u8)?
+    Ok(out)
+end std.tls.c_string
+
+// 1 回の読み書きの長さ (`i32`)。`MAX_CHUNK` で打ち切る。
+fn std.tls.chunk_len(n: usize) -> i32 uses [] panics never
+    if n > std.tls.MAX_CHUNK {
+        return 16384i32
+    }
+    match i32.try_from_usize(n) {
+        Ok(v) => v
+        Err(_e) => 16384i32
+    }
+end std.tls.chunk_len
+
+fn std.tls.client_method() -> *const u8 uses [] panics never
+    unsafe "tls" "TLS_client_method returns a static method table" {
+        std.tls.c_tls_client_method()
+    }
+end std.tls.client_method
+
+// クライアント: 既定の CA で証明書とホスト名を検証して接続する。
+fn std.tls.connect(address: &str, host: &str) -> Result<std.tls.TlsStream, std.tls.Error> uses [alloc, io.fs, io.net] panics never pub
+    std.tls.connect_with(address, host, "")
+end std.tls.connect
+
+fn std.tls.connect_session(ssl: *mut u8) -> i32 uses [] panics never
+    unsafe "tls" "SSL_connect runs the client handshake on the session's socket" {
+        std.tls.c_ssl_connect(ssl)
+    }
+end std.tls.connect_session
+
+// クライアント: `ca_file` (PEM) の CA で検証する。空文字列なら既定の CA。`host` は証明書の名前と照合する (SNI にも使う)。
+fn std.tls.connect_with(address: &str, host: &str, ca_file: &str) -> Result<std.tls.TlsStream, std.tls.Error> uses [alloc, io.fs, io.net] panics never pub
+    let host_name = std.tls.c_string(host)?
+    let ca_path = std.tls.c_string(ca_file)?
+    let tcp = std.net.connect(address)?
+    let ctx = std.tls.new_ctx(std.tls.client_method())
+    if std.tls.is_null(ctx) {
+        return std.tls.refuse(tcp, std.tls.Error.Ssl(0i32))
+    }
+    std.tls.set_verify(ctx)
+    if ca_file.is_empty() {
+        core.mem.drop(std.tls.ctx_default_ca(ctx))
+    } else if std.tls.ctx_load_ca(ctx, ca_path.as_slice()) != 1i32 {
+        let failed = std.tls.Error.Load(std.tls.last_error())
+        std.tls.free_ctx(ctx)
+        return std.tls.refuse(tcp, failed)
+    }
+    let ssl = std.tls.new_session(ctx)
+    std.tls.free_ctx(ctx)
+    if std.tls.is_null(ssl) {
+        return std.tls.refuse(tcp, std.tls.Error.Ssl(0i32))
+    }
+    let bound = std.tls.bind_host(ssl, host_name.as_slice())
+    if bound != 1i32 || std.tls.set_fd(ssl, tcp.fd()) != 1i32 {
+        std.tls.free_session(ssl)
+        return std.tls.refuse(tcp, std.tls.Error.Ssl(0i32))
+    }
+    let ret = std.tls.connect_session(ssl)
+    if ret != 1i32 {
+        let failed = std.tls.handshake_failure(ssl, ret)
+        std.tls.free_session(ssl)
+        return std.tls.refuse(tcp, failed)
+    }
+    Ok(std.tls.TlsStream { ssl: ssl, tcp: tcp })
+end std.tls.connect_with
+
+fn std.tls.ctx_check_key(ctx: *mut u8) -> i32 uses [] panics never
+    unsafe "tls" "SSL_CTX_check_private_key compares the certificate and the key" {
+        std.tls.c_ssl_ctx_check_private_key(ctx)
+    }
+end std.tls.ctx_check_key
+
+// 既定の CA (システムの束) を使う。読めなければ検証は証明書が通らず失敗する (黙って外さない)。
+fn std.tls.ctx_default_ca(ctx: *mut u8) -> i32 uses [] panics never
+    unsafe "tls" "the default verify paths are the system's CA bundle" {
+        std.tls.c_ssl_ctx_set_default_verify_paths(ctx)
+    }
+end std.tls.ctx_default_ca
+
+fn std.tls.ctx_load_ca(ctx: *mut u8, file: &[u8]) -> i32 uses [io.fs] panics never
+    let path = std.tls.byte_ptr(file)
+    unsafe "tls" "SSL_CTX_load_verify_locations reads the PEM file at the NUL-ended path" {
+        std.tls.c_ssl_ctx_load_verify_locations(ctx, path, core.ptr.null_mut())
+    }
+end std.tls.ctx_load_ca
+
+fn std.tls.ctx_use_cert(ctx: *mut u8, file: &[u8]) -> i32 uses [io.fs] panics never
+    let path = std.tls.byte_ptr(file)
+    unsafe "tls" "SSL_CTX_use_certificate_chain_file reads the PEM chain named by the path" {
+        std.tls.c_ssl_ctx_use_certificate_chain_file(ctx, path)
+    }
+end std.tls.ctx_use_cert
+
+fn std.tls.ctx_use_key(ctx: *mut u8, file: &[u8]) -> i32 uses [io.fs] panics never
+    let path = std.tls.byte_ptr(file)
+    unsafe "tls" "SSL_CTX_use_PrivateKey_file reads the PEM key named by the path" {
+        std.tls.c_ssl_ctx_use_private_key_file(ctx, path, std.tls.PEM_FILE)
+    }
+end std.tls.ctx_use_key
+
+// `SSL_get_error` の値 (`ret` は直前の呼び出しの戻り値)。
+fn std.tls.failure_code(ssl: *mut u8, ret: i32) -> i32 uses [] panics never
+    unsafe "tls" "SSL_get_error only inspects the session's last result" {
+        std.tls.c_ssl_get_error(ssl, ret)
+    }
+end std.tls.failure_code
+
+fn std.tls.free_ctx(ctx: *mut u8) -> () uses [] panics never
+    unsafe "tls" "SSL_CTX_free releases the context created by SSL_CTX_new" {
+        std.tls.c_ssl_ctx_free(ctx)
+    }
+end std.tls.free_ctx
+
+fn std.tls.free_session(ssl: *mut u8) -> () uses [] panics never
+    unsafe "tls" "SSL_free releases the session created by SSL_new" {
+        std.tls.c_ssl_free(ssl)
+    }
+end std.tls.free_session
+
+// 失敗したら `Verify` (検証の理由)、そうでなければ `SSL_get_error` の値を `Ssl` にする。
+fn std.tls.handshake_failure(ssl: *mut u8, ret: i32) -> std.tls.Error uses [] panics never
+    let verify = std.tls.verify_result(ssl)
+    if verify != 0i64 {
+        return std.tls.Error.Verify(verify)
+    }
+    std.tls.Error.Ssl(std.tls.failure_code(ssl, ret))
+end std.tls.handshake_failure
+
+// `SSL_get_error` などの値を `std.io.Error` に写す (種類は `Other`、`code` に値)。
+fn std.tls.io_failure(code: i32) -> std.io.Error uses [] panics never
+    std.io.Error { kind: std.io.ErrorKind.Other, code: code }
+end std.tls.io_failure
+
+fn std.tls.is_null(pointer: *mut u8) -> bool uses [] panics never
+    unsafe "tls" "compares the address only; the pointer is not dereferenced" {
+        core.ptr.is_null(core.ptr.as_const(pointer))
+    }
+end std.tls.is_null
+
+// 直前の OpenSSL のエラー (キューの先頭、無ければ 0)。読んだものはキューから消える。
+fn std.tls.last_error() -> u64 uses [] panics never
+    unsafe "tls" "ERR_get_error pops the thread's error queue" {
+        std.tls.c_err_get_error()
+    }
+end std.tls.last_error
+
+fn std.tls.new_ctx(method: *const u8) -> *mut u8 uses [] panics never
+    unsafe "tls" "SSL_CTX_new allocates a context from a static method table" {
+        std.tls.c_ssl_ctx_new(method)
+    }
+end std.tls.new_ctx
+
+fn std.tls.new_session(ctx: *mut u8) -> *mut u8 uses [] panics never
+    unsafe "tls" "SSL_new allocates a session that refers to the context" {
+        std.tls.c_ssl_new(ctx)
+    }
+end std.tls.new_session
+
+// 失敗した握手などで `tcp` を閉じて、理由を返す。
+fn std.tls.refuse(tcp: std.net.TcpStream, failed: std.tls.Error) -> Result<std.tls.TlsStream, std.tls.Error> uses [io.net] panics never
+    core.mem.drop(tcp.close())
+    Err(failed)
+end std.tls.refuse
+
+// サーバ・クライアントの方式の表 (static)。
+fn std.tls.server_method() -> *const u8 uses [] panics never
+    unsafe "tls" "TLS_server_method returns a static method table" {
+        std.tls.c_tls_server_method()
+    }
+end std.tls.server_method
+
+fn std.tls.set_fd(ssl: *mut u8, fd: i32) -> i32 uses [] panics never
+    unsafe "tls" "SSL_set_fd binds the session to the socket, which the TcpStream owns" {
+        std.tls.c_ssl_set_fd(ssl, fd)
+    }
+end std.tls.set_fd
+
+// 証明書とホスト名の検証を有効にする (既定の経路は TLS 1.2 以上)。
+fn std.tls.set_verify(ctx: *mut u8) -> () uses [] panics never
+    unsafe "tls" "SSL_CTX_set_verify enables peer verification; no custom callback" {
+        let no_callback: *mut u8 = core.ptr.null_mut()
+        std.tls.c_ssl_ctx_set_verify(ctx, std.tls.VERIFY_PEER, no_callback)
+        let no_arg: *mut u8 = core.ptr.null_mut()
+        core.mem.drop(std.tls.c_ssl_ctx_ctrl(ctx, std.tls.SET_MIN_PROTO, std.tls.TLS12, no_arg))
+    }
+end std.tls.set_verify
+
+// 接続を閉じる前の処理: close_notify を送って (失敗は無視)、セッションを解放する。
+fn std.tls.shutdown_and_free(ssl: *mut u8) -> () uses [io.net] panics never
+    unsafe "tls" "SSL_shutdown sends close_notify, best effort; then the session is freed" {
+        core.mem.drop(std.tls.c_ssl_shutdown(ssl))
+        std.tls.c_ssl_free(ssl)
+    }
+end std.tls.shutdown_and_free
+
+fn std.tls.ssl_read(ssl: *mut u8, buffer: &mut [u8], want: i32) -> i32 uses [] panics never
+    unsafe "tls" "SSL_read writes at most `want` bytes into the slice (alive for the call)" {
+        std.tls.c_ssl_read(ssl, core.ptr.from_mut(buffer), want)
+    }
+end std.tls.ssl_read
+
+fn std.tls.ssl_write(ssl: *mut u8, buffer: &[u8], want: i32) -> i32 uses [] panics never
+    unsafe "tls" "SSL_write reads at most `want` bytes from the slice (alive for the call)" {
+        std.tls.c_ssl_write(ssl, core.ptr.from_ref(buffer), want)
+    }
+end std.tls.ssl_write
+
+fn std.tls.verify_result(ssl: *mut u8) -> i64 uses [] panics never
+    unsafe "tls" "SSL_get_verify_result reports the outcome of the peer check" {
+        std.tls.c_ssl_get_verify_result(ssl)
+    }
+end std.tls.verify_result

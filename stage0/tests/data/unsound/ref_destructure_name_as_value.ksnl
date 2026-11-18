@@ -1,4 +1,3 @@
-// expect: E2023
 enum t.Opt derive [Debug] pub
     Some(u32)
     None

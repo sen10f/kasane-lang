@@ -1,0 +1,350 @@
+const types.ty.BOOL: usize = 2usize pub
+
+const types.ty.CHAR: usize = 3usize pub
+
+const types.ty.F32: usize = 6usize pub
+
+const types.ty.F64: usize = 7usize pub
+
+const types.ty.I32: usize = 10usize pub
+
+// 整数は ids 8..19 (INT_NAMES の順)。
+const types.ty.INT0: usize = 8usize pub
+
+const types.ty.INT_NAMES: &str = "i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize" pub
+
+const types.ty.NEVER: usize = 5usize pub
+
+const types.ty.STR: usize = 4usize pub
+
+const types.ty.UNIT: usize = 1usize pub
+
+const types.ty.UNKNOWN: usize = 0usize pub
+
+const types.ty.USIZE: usize = 19usize pub
+
+type types.ty.Arena pub
+    nodes: alloc.vec.Vec<types.ty.Node, std.alloc.System> pub
+    lst: alloc.vec.Vec<usize, std.alloc.System> pub
+    params: usize pub
+end types.ty.Arena
+
+// 型の表現。型は arena (types.ty.Arena) の添字で表す。ids 0..19 は固定の型 (下の定数)。
+// 型変数 (Var) は束縛されると m = true になり、a が束縛先の型。c = 1 は整数リテラル由来の変数。
+enum types.ty.K derive [Debug, Clone, Copy, PartialEq] pub
+    Unknown
+    Unit
+    Bool
+    Char
+    Str
+    Never
+    Float
+    Int
+    Ref
+    Tuple
+    Adt
+    Param
+    Var
+    Array
+    Slice
+    Fnty
+    Opaque
+end types.ty.K
+
+// a: Int/Float の種類、Ref/Array/Slice の中身、Adt の型の添字 (items)、Param の番号。
+// b: Adt/Tuple の引数の列の開始 (lst の添字)、Var の束縛先。c: 引数の個数。m: Ref の可変、Var の束縛済み。
+type types.ty.Node derive [Debug, Clone, Copy, PartialEq] pub
+    k: types.ty.K pub
+    a: usize pub
+    b: usize pub
+    c: usize pub
+    m: bool pub
+end types.ty.Node
+
+fn types.ty.adt(ar: &mut types.ty.Arena, item: usize, ids: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let (b, c) = types.ty.args(ar, ids)?
+    types.ty.push(ar, types.ty.mk(types.ty.K.Adt, item, b, c, false))
+end types.ty.adt
+
+// Adt / Tuple の k 番目の引数 (範囲外は UNKNOWN)。
+fn types.ty.arg(ar: &types.ty.Arena, start: usize, k: usize) -> usize uses [] panics never pub
+    match ar.lst.as_slice().get(start.wrapping_add(k)) {
+        Some(v) => *v
+        None => types.ty.UNKNOWN
+    }
+end types.ty.arg
+
+// 引数の列を lst に入れ、(開始, 個数) を返す。
+fn types.ty.args(ar: &mut types.ty.Arena, ids: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(usize, usize), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let first = ar.lst.len()
+    for v in ids.as_slice().iter() {
+        ar.lst.push(*v)?
+    }
+    Ok((first, ids.len()))
+end types.ty.args
+
+// 変数 v を t に束縛する (v は未束縛の Var)。整数リテラル変数は整数型とだけ一致する。
+fn types.ty.bind(ar: &mut types.ty.Arena, v: usize, t: usize, litc: usize) -> Result<bool, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut n = types.ty.node(ar, v)
+    if litc != 0usize {
+        let tn = types.ty.node(ar, t)
+        let mut want_k = types.ty.K.Float
+        if litc == 1usize {
+            want_k = types.ty.K.Int
+        }
+        if tn.k != want_k {
+            return Ok(false)
+        }
+    }
+    n.a = t
+    n.m = true
+    match ar.nodes.as_mut_slice().get_mut(v) {
+        Some(slot) => {
+            slot.a = t
+            slot.m = true
+        }
+        None => core.mem.drop(0u8)
+    }
+    Ok(true)
+end types.ty.bind
+
+// 添字の型を複写する (Copy の構造体の参照外しは段階 1 で下りないので、フィールドから作り直す)。
+fn types.ty.copy(n: &types.ty.Node) -> types.ty.Node uses [] panics never pub
+    types.ty.Node { k: n.k, a: n.a, b: n.b, c: n.c, m: n.m }
+end types.ty.copy
+
+// 既定の型: 束縛されていない整数リテラル変数は i32。
+fn types.ty.default_lit(ar: &mut types.ty.Arena, v: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let r = types.ty.find(ar, v)
+    let n = types.ty.node(ar, r)
+    if (n.k == types.ty.K.Var && n.c == 1usize) {
+        core.mem.drop(types.ty.bind(ar, r, types.ty.I32, 1usize)?)
+    }
+    Ok(())
+end types.ty.default_lit
+
+// 束縛済みの型変数をたどる。
+fn types.ty.find(ar: &types.ty.Arena, id: usize) -> usize uses [] panics never pub
+    let mut cur = id
+    let mut steps = 0usize
+    loop {
+        let n = types.ty.node(ar, cur)
+        if (n.k != types.ty.K.Var || !n.m || steps > 10000usize) {
+            break
+        }
+        cur = n.a
+        steps = steps.wrapping_add(1usize)
+    }
+    cur
+end types.ty.find
+
+// 新しい型変数。lit は整数リテラル由来 (整数型とだけ一致する)。
+fn types.ty.fresh(ar: &mut types.ty.Arena, lit: bool) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut c = 0usize
+    if lit {
+        c = 1usize
+    }
+    types.ty.push(ar, types.ty.mk(types.ty.K.Var, 0usize, 0usize, c, false))
+end types.ty.fresh
+
+// 小数リテラル由来の型変数 (c = 2)。
+fn types.ty.fresh_float(ar: &mut types.ty.Arena) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
+    types.ty.push(ar, types.ty.mk(types.ty.K.Var, 0usize, 0usize, 2usize, false))
+end types.ty.fresh_float
+
+// 束縛されていない (整数リテラルでない) 型変数を含むか。
+fn types.ty.has_free(ar: &types.ty.Arena, id: usize, depth: usize) -> bool uses [] panics never stack 4096 pub
+    if depth > 64usize {
+        return false
+    }
+    let r = types.ty.find(ar, id)
+    let n = types.ty.node(ar, r)
+    if n.k == types.ty.K.Var {
+        return n.c == 0usize
+    }
+    if n.k == types.ty.K.Adt || n.k == types.ty.K.Tuple {
+        for k in core.iter.range(0usize, n.c) {
+            if types.ty.has_free(ar, types.ty.arg(ar, n.b, k), depth.wrapping_add(1usize)) {
+                return true
+            }
+        }
+        return false
+    }
+    if n.k == types.ty.K.Ref || n.k == types.ty.K.Array || n.k == types.ty.K.Slice {
+        return types.ty.has_free(ar, n.a, depth.wrapping_add(1usize))
+    }
+    false
+end types.ty.has_free
+
+// 整数の名前 (`i32` など) の型。整数でなければ UNKNOWN。
+fn types.ty.int_id(name: &str) -> usize uses [] panics never pub
+    let mut k = 0usize
+    let names_w = types.ty.INT_NAMES
+    for w in names_w.split(" ") {
+        if w == name {
+            let base = types.ty.INT0
+            return base.wrapping_add(k)
+        }
+        k = k.wrapping_add(1usize)
+    }
+    types.ty.UNKNOWN
+end types.ty.int_id
+
+// 整数の種類の名前 (Int の a)。
+fn types.ty.int_name(k: usize) -> &'static str uses [] panics never pub
+    let mut i = 0usize
+    let names_w = types.ty.INT_NAMES
+    for w in names_w.split(" ") {
+        if i == k {
+            return w
+        }
+        i = i.wrapping_add(1usize)
+    }
+    "?"
+end types.ty.int_name
+
+fn types.ty.mk(k: types.ty.K, a: usize, b: usize, c: usize, m: bool) -> types.ty.Node uses [] panics never pub
+    types.ty.Node { k: k, a: a, b: b, c: c, m: m }
+end types.ty.mk
+
+fn types.ty.new() -> Result<types.ty.Arena, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let lst = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ar = types.ty.Arena { nodes: nodes, lst: lst, params: 0usize }
+    ar.nodes.push(types.ty.mk(types.ty.K.Unknown, 0usize, 0usize, 0usize, false))?
+    ar.nodes.push(types.ty.mk(types.ty.K.Unit, 0usize, 0usize, 0usize, false))?
+    ar.nodes.push(types.ty.mk(types.ty.K.Bool, 0usize, 0usize, 0usize, false))?
+    ar.nodes.push(types.ty.mk(types.ty.K.Char, 0usize, 0usize, 0usize, false))?
+    ar.nodes.push(types.ty.mk(types.ty.K.Str, 0usize, 0usize, 0usize, false))?
+    ar.nodes.push(types.ty.mk(types.ty.K.Never, 0usize, 0usize, 0usize, false))?
+    ar.nodes.push(types.ty.mk(types.ty.K.Float, 0usize, 0usize, 0usize, false))?
+    ar.nodes.push(types.ty.mk(types.ty.K.Float, 1usize, 0usize, 0usize, false))?
+    for k in core.iter.range(0usize, 12usize) {
+        ar.nodes.push(types.ty.mk(types.ty.K.Int, k, 0usize, 0usize, false))?
+    }
+    Ok(ar)
+end types.ty.new
+
+fn types.ty.node(ar: &types.ty.Arena, id: usize) -> types.ty.Node uses [] panics never pub
+    match ar.nodes.as_slice().get(id) {
+        Some(n) => types.ty.copy(n)
+        None => types.ty.mk(types.ty.K.Unknown, 0usize, 0usize, 0usize, false)
+    }
+end types.ty.node
+
+// 新しい仮の型 (本体の中の総称引数。具体化されない)。
+fn types.ty.param(ar: &mut types.ty.Arena, name_no: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
+    types.ty.push(ar, types.ty.mk(types.ty.K.Param, name_no, 0usize, 0usize, false))
+end types.ty.param
+
+fn types.ty.push(ar: &mut types.ty.Arena, n: types.ty.Node) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let at = ar.nodes.len()
+    ar.nodes.push(n)?
+    Ok(at)
+end types.ty.push
+
+// 参照を外す (参照の段数は見ない)。
+fn types.ty.strip(ar: &types.ty.Arena, id: usize) -> usize uses [] panics never pub
+    let mut cur = types.ty.find(ar, id)
+    let mut steps = 0usize
+    loop {
+        let n = types.ty.node(ar, cur)
+        if (n.k != types.ty.K.Ref || steps > 100usize) {
+            break
+        }
+        cur = types.ty.find(ar, n.a)
+        steps = steps.wrapping_add(1usize)
+    }
+    cur
+end types.ty.strip
+
+// 単一化。どちらかが未知・仮の型・! なら一致とみなす (fail-open)。参照は段数を見ず、中身を比べる。
+// 変数は束縛する。成功なら true。型の不一致だけ false を返す。
+fn types.ty.unify(ar: &mut types.ty.Arena, x: usize, y: usize) -> Result<bool, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
+    let a = types.ty.find(ar, x)
+    let b = types.ty.find(ar, y)
+    if a == b {
+        return Ok(true)
+    }
+    let na = types.ty.node(ar, a)
+    let nb = types.ty.node(ar, b)
+    if (na.k == types.ty.K.Unknown || nb.k == types.ty.K.Unknown) {
+        return Ok(true)
+    }
+    if (na.k == types.ty.K.Never || nb.k == types.ty.K.Never) {
+        return Ok(true)
+    }
+    if (na.k == types.ty.K.Param || nb.k == types.ty.K.Param) {
+        return Ok(true)
+    }
+    if (na.k == types.ty.K.Opaque || nb.k == types.ty.K.Opaque) {
+        return Ok(true)
+    }
+    if (na.k == types.ty.K.Fnty && nb.k == types.ty.K.Fnty) {
+        return Ok(true)
+    }
+    if (na.k == types.ty.K.Var && nb.k == types.ty.K.Var) {
+        if na.c == 1usize && nb.c == 0usize {
+            return types.ty.bind(ar, b, a, 0usize)
+        }
+        return types.ty.bind(ar, a, b, 0usize)
+    }
+    if (na.k == types.ty.K.Var) {
+        return types.ty.bind(ar, a, b, na.c)
+    }
+    if (nb.k == types.ty.K.Var) {
+        return types.ty.bind(ar, b, a, nb.c)
+    }
+    if (na.k == types.ty.K.Ref) {
+        return types.ty.unify(ar, na.a, b)
+    }
+    if (nb.k == types.ty.K.Ref) {
+        return types.ty.unify(ar, a, nb.a)
+    }
+    let a_arr = na.k == types.ty.K.Array
+    let b_arr = nb.k == types.ty.K.Array
+    let a_sl = na.k == types.ty.K.Slice
+    let b_sl = nb.k == types.ty.K.Slice
+    let arr_slice = (a_arr && b_sl) || (a_sl && b_arr)
+    if arr_slice {
+        return types.ty.unify(ar, na.a, nb.a)
+    }
+    if na.k != nb.k {
+        return Ok(false)
+    }
+    if (na.k == types.ty.K.Int || na.k == types.ty.K.Float) {
+        return Ok(na.a == nb.a)
+    }
+    if (na.k == types.ty.K.Adt) {
+        if na.a != nb.a {
+            return Ok(false)
+        }
+        // 既定の総称引数を省いた書き方 (`alloc.string.String` の A) は、少ない方の個数だけ比べる。
+        let mut common = nb.c
+        if na.c < nb.c {
+            common = na.c
+        }
+        return types.ty.unify_list(ar, na.b, nb.b, common)
+    }
+    if (na.k == types.ty.K.Tuple) {
+        if na.c != nb.c {
+            return Ok(false)
+        }
+        return types.ty.unify_list(ar, na.b, nb.b, na.c)
+    }
+    if (na.k == types.ty.K.Array || na.k == types.ty.K.Slice) {
+        return types.ty.unify(ar, na.a, nb.a)
+    }
+    Ok(true)
+end types.ty.unify
+
+fn types.ty.unify_list(ar: &mut types.ty.Arena, xs: usize, ys: usize, n: usize) -> Result<bool, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
+    for k in core.iter.range(0usize, n) {
+        let p = types.ty.arg(ar, xs, k)
+        let q = types.ty.arg(ar, ys, k)
+        if !types.ty.unify(ar, p, q)? {
+            return Ok(false)
+        }
+    }
+    Ok(true)
+end types.ty.unify_list

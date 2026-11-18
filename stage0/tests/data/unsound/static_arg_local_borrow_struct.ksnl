@@ -1,4 +1,3 @@
-// expect: E2037
 type t.S
     r: &'static str
 end t.S

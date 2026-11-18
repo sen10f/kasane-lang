@@ -1,5 +1,3 @@
-// expect: E2023
-// `&str` の値に整数リテラルのパターンは使えない
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let s: &str = "a"
     match s {

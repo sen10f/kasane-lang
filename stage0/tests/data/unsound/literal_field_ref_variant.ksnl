@@ -1,4 +1,3 @@
-// expect: E2023
 enum t.E
     A(alloc.string.String)
 end t.E

@@ -1,0 +1,27 @@
+// 失敗の種類。HTTP の解析 (`std.http`)、TLS (`std.tls`)、ソケット、ファイル、保存の形式を一つにまとめる。
+enum shortener_https.error.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    BadRequest
+    Corrupt
+    Full
+    Http(std.http.Error)
+    Io(std.io.Error)
+    Mismatch
+    Net(std.net.Error)
+    Tls(std.tls.Error)
+end shortener_https.error.Error
+
+fn shortener_https.error.bad_number(_value: core.num.ParseIntError) -> shortener_https.error.Error uses [] panics never pub
+    shortener_https.error.Error.BadRequest
+end shortener_https.error.bad_number
+
+fn shortener_https.error.io_failed() -> shortener_https.error.Error uses [] panics never pub
+    shortener_https.error.Error.Io(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 })
+end shortener_https.error.io_failed
+
+fn shortener_https.error.push_failed(value: alloc.string.PushBytesError) -> shortener_https.error.Error uses [] panics never pub
+    match value {
+        alloc.string.PushBytesError.Alloc(a) => shortener_https.error.Error.Alloc(a)
+        alloc.string.PushBytesError.InvalidUtf8(_u) => shortener_https.error.Error.BadRequest
+    }
+end shortener_https.error.push_failed

@@ -1,5 +1,3 @@
-// expect: E3060
-// 穴候補: 構造体欄に隠した &mut (vec 要素) が生きている間に vec 自体をムーブして解放してから呼ぶ
 type t.RefCell['a]
     p: &'a mut u32
 end t.RefCell

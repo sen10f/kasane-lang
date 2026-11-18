@@ -1,4 +1,3 @@
-// 種別の並び (kind_index の順) を空白区切りで持つ。
 const parse.ast.KIND_NAMES: &str = "Arm ArrayE ArrayRep Assign Attrs Bin Block Break Call Capture Closure ConstDef ConstInt ConstPath Continue Dot Effect EnumDef ExprStmt ExternDef FieldDecl FieldInit FnDef FnSig For GParam If ImplLine Import Index Let Linear List Lit Loop MCall Match Nil PBind PField PLit PPath PRef PStruct PTuple PVariant PWild Param Path Return StaticDef StructLit TArgConst TArgEffects TArgLife TArgPanic TArray TDyn TFn TNamed TNever TPrim TPtr TRef TSelf TSlice TTuple TestDef TraitDef TraitFn TraitRef Try TupleE TypeDef Unary Unsafe Variant While With" pub
 
 type parse.ast.Ast pub
@@ -120,7 +119,6 @@ fn parse.ast.add4(ast: &mut parse.ast.Ast, kind: parse.ast.Kind, tok: usize, a: 
     parse.ast.push(ast, parse.ast.mk(kind, tok, a, b, c, d))
 end parse.ast.add4
 
-// 6 個の子を持つノード (定義の頭など)。
 fn parse.ast.add6(ast: &mut parse.ast.Ast, kind: parse.ast.Kind, tok: usize, a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
     let mut n = parse.ast.mk(kind, tok, a, b, c, d)
     n.e = e
@@ -307,7 +305,6 @@ fn parse.ast.kind_name(kind: parse.ast.Kind) -> &'static str uses [] panics neve
     }
 end parse.ast.kind_name
 
-// 一時の添字列を links に移し、List ノードを作る。List の a = links の開始位置、b = 個数。
 fn parse.ast.list(ast: &mut parse.ast.Ast, items: &alloc.vec.Vec<usize, std.alloc.System>, tok: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
     let first = ast.links.len()
     for v in items.as_slice().iter() {

@@ -1,4 +1,3 @@
-// expect: E3002
 type t.S
     name: Option<alloc.string.String>
 end t.S

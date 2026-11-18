@@ -1,4 +1,3 @@
-// 一時値ではなく束縛された線形値なら、&self メソッドを呼んでも後で丸ごと消費できる。
 type t.Res linear
     id: u32
 end t.Res

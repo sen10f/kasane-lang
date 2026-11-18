@@ -1,13 +1,9 @@
-// 型検査の結果を外へ出す入口 (効果・借用の段が使う)。診断の文は types.main と同じく作るが、呼び出し側は無視してよい。
-// 使い方: let out = types.export.run(pkg, std_dir)?、その後 out.env (単位・定義の表)、out.ar (型の arena)、
-// out.cx.rec (節ごとの型・呼び出しの解決先。types.rec.ty_of / ck_of / callee_of で読む)。
 type types.export.Out pub
     env: types.env.Env pub
     ar: types.ty.Arena pub
     cx: types.chk.Ctx pub
 end types.export.Out
 
-// 読み込み → 型の検査 (記録つき)。診断は out.cx.rep.out にある。
 fn types.export.run(pkg: &str, std_dir: &str) -> Result<types.export.Out, resolve.Failure> uses [alloc, io.fs] panics never pub
     let env = types.env.load(pkg, std_dir)?
     let mut ar = types.ty.new()?
@@ -16,7 +12,6 @@ fn types.export.run(pkg: &str, std_dir: &str) -> Result<types.export.Out, resolv
     Ok(types.export.Out { env: env, ar: ar, cx: cx })
 end types.export.run
 
-// 節 node (単位 file) の型を、束縛をたどって読む (記録なしは UNKNOWN)。
 fn types.export.ty_of(out: &types.export.Out, file: usize, node: usize) -> usize uses [] panics never pub
     let t = types.rec.ty_of(&out.cx.rec, file, node)
     types.ty.find(&out.ar, t)

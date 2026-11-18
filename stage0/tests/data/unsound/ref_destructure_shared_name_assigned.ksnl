@@ -1,4 +1,3 @@
-// expect: E3031
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let o = Some(1u32)
     match &o {

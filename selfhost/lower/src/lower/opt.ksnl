@@ -1,17 +1,14 @@
-// 入れ子の腕が束ねる名前・値・型。
 type lower.opt.Binds pub
     names: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
     vals: alloc.vec.Vec<usize, std.alloc.System> pub
     tys: alloc.vec.Vec<usize, std.alloc.System> pub
 end lower.opt.Binds
 
-// 局所の名前を束縛する。借用されるものはスロット (alloca + store) に置く。
 fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize, m: bool, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let tf = types.ty.find(&c.ar, t)
     let tk = types.ty.node(&c.ar, tf).k
     let is_ref = tk == types.ty.K.Ref || tk == types.ty.K.Str
     if lower.vec.is_hdr(env, c, t) {
-        // `Vec` / `String` の局所は枠 (frame.bytes 24) に置き、3 つの欄を書く。
         let slot = lower.cx.def(c, "ptr", "frame.bytes 24")?
         lower.vec.store_hdr(c, slot, v)?
         return lower.cx.push_local(c, name, slot + 1usize, m, t, true)
@@ -40,7 +37,6 @@ fn lower.opt.binds_new() -> lower.opt.Binds uses [alloc] panics may pub
     lower.opt.Binds { names: names, vals: vals, tys: tys }
 end lower.opt.binds_new
 
-// `Option<&T>` の中身 `bref` の値 bv から、`ref<T>` を取り出す (`field bv, +0` の後に `bitcast.ref<T>.ptr`)。
 fn lower.opt.bref_ref(env: &types.env.Env, c: &mut lower.cx.Cx, bv: usize, pt: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let n = types.ty.node(&c.ar, types.ty.find(&c.ar, pt))
     let it = lower.tyk.text(env, c, n.a)?
@@ -50,7 +46,6 @@ fn lower.opt.bref_ref(env: &types.env.Env, c: &mut lower.cx.Cx, bv: usize, pt: u
     lower.cx.def(c, rt.as_str(), lower.cx.cat2(bc.as_str(), lower.cx.vs(fp)?.as_str())?.as_str())
 end lower.opt.bref_ref
 
-// 整数の定数 (`const N: T = 7u32`) の値を、その綴りの定数として置く。整数の綴り以外は VId 0 (未対応)。
 fn lower.opt.const_value(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -68,7 +63,6 @@ fn lower.opt.const_value(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     }
     let init = parse.ast.get(&p2.ast, cn.d)
     if (init.kind != parse.ast.Kind.Lit || init.a != 1usize) {
-        // それ以外の定数: 初期化式を、定数の書かれたファイルの中で下ろす (型・名前はそのファイルで読む)。
         let saved = c.s.file
         c.s.file = file
         let r = lower.expr.expr(env, c, p2, src2, cn.d, t)?
@@ -78,7 +72,6 @@ fn lower.opt.const_value(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     lower.expr.lit(env, c, p2, src2, init, t)
 end lower.opt.const_value
 
-// 列挙子の構築: Some / Ok / Err (Option・Result) と、利用者の列挙型の変種 (`make.vK(..)`)。
 fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, item: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let owner = types.infer.item_owner(env, item).wrapping_sub(1usize)
     let k = lower.opt.kind(env, owner)
@@ -86,7 +79,6 @@ fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     let vname = lower.expr.last_seg(fq.as_str())
     let nargs = resolve.ast.count(p, n.b)
     if k == 0usize {
-        // 利用者の列挙型: 変種の番号 k と、フィールドの値を並べた make.vK。
         let vi = lower.tyk.variant_index(env, owner, vname)?
         let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
         for j in core.iter.range(0usize, nargs) {
@@ -107,7 +99,6 @@ fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         return lower.expr.dummy(c, t)
     }
     let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 0usize), types.ty.UNKNOWN)?
-    // 戻り値の型: 表が決まっていれば使い、決まらなければ引数から組み立てる (Option は引数、Result は残りを戻り値の型から)。
     let mut rty = t
     let tf = types.ty.find(&c.ar, t)
     let tn = types.ty.node(&c.ar, tf)
@@ -159,7 +150,6 @@ fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     Ok(lower.cx.R { v: v, t: rty })
 end lower.opt.ctor
 
-// 参照の型 (ref / mutref) の中身と可変かどうか。参照でなければ (e, false, false)。
 fn lower.opt.deref_ty(c: &lower.cx.Cx, t: usize) -> (usize, bool, bool) uses [] panics may pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
@@ -169,7 +159,6 @@ fn lower.opt.deref_ty(c: &lower.cx.Cx, t: usize) -> (usize, bool, bool) uses [] 
     (t, false, false)
 end lower.opt.deref_ty
 
-// 参照の値なら中身を読む (match の対象が `&e` のとき)。
 fn lower.opt.deref_val(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let (inner, through, _m) = lower.opt.deref_ty(c, r.t)
     if !through {
@@ -181,7 +170,6 @@ fn lower.opt.deref_val(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R) 
     Ok(lower.cx.R { v: v, t: inner })
 end lower.opt.deref_val
 
-// `fieldaddr %v, +off` の文字列。
 fn lower.opt.faddr_src(v: usize, off: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_str("fieldaddr ")?
@@ -191,7 +179,6 @@ fn lower.opt.faddr_src(v: usize, off: usize) -> Result<alloc.string.String<std.a
     Ok(s)
 end lower.opt.faddr_src
 
-// 構造体 (`bt` の中身) のフィールド name を、値 v から読む。参照越しなら fieldaddr + load。
 fn lower.opt.field(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, bt: usize, name: &str, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let (inner, through, mutable) = lower.opt.deref_ty(c, bt)
     let rs = types.ty.strip(&c.ar, inner)
@@ -212,8 +199,6 @@ fn lower.opt.field(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, bt: usize
     Ok(lower.cx.R { v: fv, t: t })
 end lower.opt.field
 
-// 構造体のフィールドの番地 (`fieldaddr`)。bv は参照 (ref / mutref) か、スロット (mutref<構造体>)。
-// 結果の型は `mutref<F>` (F は fty の型)。
 fn lower.opt.field_addr(env: &types.env.Env, c: &mut lower.cx.Cx, bv: usize, bt: usize, name: &str, fty: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let (inner, _through, _m) = lower.opt.deref_ty(c, bt)
     let rs = types.ty.strip(&c.ar, inner)
@@ -227,7 +212,6 @@ fn lower.opt.field_addr(env: &types.env.Env, c: &mut lower.cx.Cx, bv: usize, bt:
     lower.cx.def(c, mt.as_str(), fa.as_str())
 end lower.opt.field_addr
 
-// `field_addr` の可変性を指定する版 (`&x.f` の連鎖。Rust 版は土台の参照と同じ可変性の `fieldaddr` を出す)。
 fn lower.opt.field_addr_m(env: &types.env.Env, c: &mut lower.cx.Cx, bv: usize, bt: usize, name: &str, fty: usize, mutable: bool) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let (inner, _through, _m) = lower.opt.deref_ty(c, bt)
     let rs = types.ty.strip(&c.ar, inner)
@@ -241,7 +225,6 @@ fn lower.opt.field_addr_m(env: &types.env.Env, c: &mut lower.cx.Cx, bv: usize, b
     lower.cx.def(c, mt.as_str(), fa.as_str())
 end lower.opt.field_addr_m
 
-// 列挙型 item の変種のうち、欄が 1 つで型の綴りが srcty のもの (`derive From`) の番号 + 1。なければ 0。
 fn lower.opt.from_variant(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, srcty: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     if types.infer.item_kind(env, item) != parse.ast.Kind.EnumDef {
         return Ok(0usize)
@@ -272,7 +255,6 @@ fn lower.opt.from_variant(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize,
     Ok(0usize)
 end lower.opt.from_variant
 
-// 項目が Option (1) / Result (2) / それ以外 (0) か。
 fn lower.opt.kind(env: &types.env.Env, item: usize) -> usize uses [alloc] panics may pub
     let f = lower.tyk.item_fqn(env, item)
     if f.as_str() == "core.option.Option" {
@@ -284,7 +266,6 @@ fn lower.opt.kind(env: &types.env.Env, item: usize) -> usize uses [alloc] panics
     0usize
 end lower.opt.kind
 
-// 局所 k の値 (スロットなら読み出す)。t は局所の型。
 fn lower.opt.local_val(env: &types.env.Env, c: &mut lower.cx.Cx, k: usize, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let v = lower.cx.get_val(c, k).wrapping_sub(1usize)
     if lower.cx.is_slot(c, k) {
@@ -298,8 +279,6 @@ fn lower.opt.local_val(env: &types.env.Env, c: &mut lower.cx.Cx, k: usize, t: us
     Ok(v)
 end lower.opt.local_val
 
-// `Err(Enum.Variant(a, b))` の入れ子の腕: 内側の列挙型のタグを比べ (`tag` / `const.i32` / `icmp.eq.i32`)、
-// 束ねる欄ごとに `field` と `const.bool true` と `and.bool` を重ねた条件を返す。束ねる名前・値・型は out に入れる。
 fn lower.opt.nested(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], sp: parse.ast.Node, pv: usize, pt: usize, out: &mut lower.opt.Binds) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let item = types.ty.node(&c.ar, types.ty.strip(&c.ar, pt)).a
     let name = resolve.ast.text(src, sp.a, sp.b)
@@ -337,7 +316,6 @@ fn lower.opt.nested(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     Ok(cur)
 end lower.opt.nested
 
-// match の Option / Result: `tag` で分け、中身を `payload` で読む。Some / Ok / Err の腕は真の枝、None は偽。
 fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, sc0: lower.cx.R, sloc: usize, slin: bool) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let sc = lower.opt.deref_val(env, c, sc0)?
     let sv = sc.v
@@ -372,8 +350,6 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
             let name = resolve.ast.text(src, pat.a, pat.b)
             let last = lower.expr.last_seg(name)
             let positive = last == "Some" || last == "Err"
-            // Rust 版の形: 腕ごとに tag を読み直し、部分パターン (`x` / `_`) があれば payload を読んで
-            // `const.bool true` と `and.bool` で条件に結ぶ。最後の腕は無条件で飛ぶ (網羅は検査済み)。
             let tg = lower.cx.def1(c, "bool", "tag ", sv)?
             let mut cond = tg
             if !positive {
@@ -413,7 +389,6 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                     }
                     pv = lower.cx.def1(c, pty.as_str(), "payload ", sv)?
                     if sp.kind == parse.ast.Kind.PBind && lower.drop.owns(env, c, pt)? {
-                        // 所有物の束縛は、条件のブロックで先に行う (Rust 版と同じ並び)。
                         let etk = parse.cur.peek_at(p, sp.a)
                         let ename = resolve.ast.text(src, etk.start, etk.stop)
                         eb = lower.opt.bind(env, c, ename, pv, false, pt)?
@@ -449,7 +424,6 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
             lower.cx.goto(c, armb)
             if early {
                 if own_scrut {
-                    // 束縛した所有物の読み直し (Rust 版 `drop_unbound`) は、所有の注釈より前。
                     let ety = lower.tyk.text(env, c, pt)?
                     core.mem.drop(lower.cx.def1(c, ety.as_str(), "payload ", sv)?)
                 }
@@ -472,13 +446,11 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                 if sp.kind == parse.ast.Kind.PBind {
                     let stk_tok = parse.cur.peek_at(p, sp.a)
                     let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
-                    // `Option<&スカラー>` の中身は値のまま束ねる (`*x` は恒等になる)。
                     let ssx = types.ty.node(&c.ar, types.ty.strip(&c.ar, sc.t))
                     let sa0 = types.ty.arg(&c.ar, ssx.b, 0usize)
                     let direct = ssx.c == 1usize && lower.tyk.ref_scalar(c, sa0)
                     let mut pv2 = pv
                     if ssx.c == 1usize && lower.tyk.ref_agg(env, c, pt) {
-                        // `Option<&構造体>` の中身 (`bref`) から参照を取り出す (`field` と `bitcast`)。
                         pv2 = lower.opt.bref_ref(env, c, pv, pt)?
                     } else if !direct {
                         pv2 = lower.opt.wrap_ref(env, c, pv, pt)?
@@ -492,7 +464,6 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                 }
             }
             if own_scrut && bound && !early {
-                // 束縛した所有物の読み直し (Rust 版 `drop_unbound`)。
                 let bty = lower.tyk.text(env, c, pt)?
                 core.mem.drop(lower.cx.def1(c, bty.as_str(), "payload ", sv)?)
             }
@@ -510,7 +481,6 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     lower.cx.goto(c, jb)
     lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
     if types.ty.node(&c.ar, types.ty.find(&c.ar, t)).k == types.ty.K.Never {
-        // どの腕も抜ける (`return` など): 合流のブロックは行き止まり。
         lower.cx.finish(c, lower.cx.own("unreachable")?)?
     }
     if rty.as_str() == "unit" {
@@ -521,7 +491,6 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     Ok(lower.cx.R { v: rv, t: t })
 end lower.opt.optmatch
 
-// 変種の名前から、組み立てる型の引数の数 (Option は 1、Result は 2) を決める。
 fn lower.opt.owner_k(vname: &str) -> usize uses [] panics may pub
     if vname == "Some" {
         return 1usize
@@ -529,12 +498,10 @@ fn lower.opt.owner_k(vname: &str) -> usize uses [] panics may pub
     2usize
 end lower.opt.owner_k
 
-// 受け手の値を宣言の self に合わせる: 参照が要るのに値なら一時のスロット、参照でないのに参照なら読み出す。
 fn lower.opt.recv_value(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R, want_ref: bool, want_mut: bool) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let (inner, through, m) = lower.opt.deref_ty(c, r.t)
     if want_ref == through {
         if through && m && !want_mut && !lower.vec.is_hdr(env, c, inner) {
-            // `&mut T` を `&self` のメソッドへ: 共有の参照にする。
             let it2 = lower.tyk.text(env, c, inner)?
             let rt2 = lower.opt.refty(false, it2.as_str())?
             let sh2 = lower.cx.cat2("asshared ", lower.cx.vs(r.v)?.as_str())?
@@ -547,7 +514,6 @@ fn lower.opt.recv_value(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R,
         let op = lower.cx.cat2("load ", lower.cx.vs(r.v)?.as_str())?
         return lower.cx.def(c, it.as_str(), op.as_str())
     }
-    // 値を参照にしたい: 一時のスロットに置いて参照を作る。
     if lower.vec.is_hdr(env, c, r.t) {
         let tslot = lower.cx.def(c, "ptr", "frame.bytes 24")?
         lower.vec.store_hdr(c, tslot, r.v)?
@@ -563,7 +529,6 @@ fn lower.opt.recv_value(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R,
     lower.cx.def(c, rt.as_str(), sh.as_str())
 end lower.opt.recv_value
 
-// 参照の型の文字列 (`ref<T>` / `mutref<T>`)。
 fn lower.opt.refty(mutable: bool, t: &str) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let head = if mutable {
         "mutref<"
@@ -574,7 +539,6 @@ fn lower.opt.refty(mutable: bool, t: &str) -> Result<alloc.string.String<std.all
     lower.cx.cat2(h.as_str(), ">")
 end lower.opt.refty
 
-// `e?`: Result なら Err のとき戻り値の Err を返し、Option なら None を返す。それ以外は値の中身。
 fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let x = lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
     let xf = types.ty.find(&c.ar, x.t)
@@ -606,14 +570,12 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         br.push_str(lower.cx.target(errb, &empty)?.as_str())?
     }
     lower.cx.finish(c, br)?
-    // 失敗の枝: 戻り値の型で作り直して返す。
     lower.cx.goto(c, errb)
     let rt = lower.tyk.text(env, c, c.s.ret_t)?
     if k == 2usize {
         let a1 = types.ty.arg(&c.ar, xn.b, 1usize)
         let et = lower.tyk.text(env, c, a1)?
         let mut pv = lower.cx.def1(c, et.as_str(), "payload ", x.v)?
-        // 誤りの型が違えば、戻り値の誤りの型の `From` の変種に包む (`make.vK(payload)`)。
         let rf = types.ty.find(&c.ar, c.s.ret_t)
         let rn = types.ty.node(&c.ar, rf)
         if rn.k == types.ty.K.Adt && rn.c == 2usize {
@@ -639,20 +601,17 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         lower.vec.exit_drops(env, c, p, src, c.v.vals.len(), 0usize)?
         lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(nv)?.as_str())?)?
     }
-    // 成功の枝: 中身。
     lower.cx.goto(c, okb)
     let tt = lower.tyk.text(env, c, t)?
     let val = lower.cx.def1(c, tt.as_str(), "payload ", x.v)?
     Ok(lower.cx.R { v: val, t: t })
 end lower.opt.tryx
 
-// `op %a, %b` の文字列。
 fn lower.opt.two_op(op: &str, a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let t = lower.expr.two(a, b)?
     lower.cx.cat2(op, t.as_str())
 end lower.opt.two_op
 
-// 変種の値 (値のない変種 `E.B`): `make.vK()`。Option / Result の変種は対象外 (None は path で扱う)。
 fn lower.opt.unit_variant(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let owner = types.infer.item_owner(env, item).wrapping_sub(1usize)
     if lower.opt.kind(env, owner) != 0usize {
@@ -670,8 +629,6 @@ fn lower.opt.unit_variant(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize,
     Ok(lower.cx.R { v: v, t: t })
 end lower.opt.unit_variant
 
-// メソッドの呼び出し (利用者の関数): 受け手は宣言の `self` の型に合わせて参照する (自動参照・自動逆参照)。
-// recv は受け手の式 (局所の名前なら loc の添字、それ以外は recv_node の式)。
 fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], item: usize, recv_node: usize, loc: usize, args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let sfq = lower.tyk.item_fqn(env, item)
     if lower.std_calls.has_method(sfq.as_str()) {
@@ -704,22 +661,18 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     let self_node = resolve.ast.item(cp, sg.b, 0usize)
     let sdecl = types.rec.ty_of(&c.tc.rec, file, self_node)
     let sdn = types.ty.node(&c.ar, types.ty.find(&c.ar, sdecl))
-    // `Vec` のメソッドの self は常に参照 (宣言が .sig にあり、型の表に記録がない)。
     let mut self_ref = sdn.k == types.ty.K.Ref
     if lower.tyk.item_fqn(env, item).as_str().starts_with("alloc.vec.Vec.") || lower.tyk.item_fqn(env, item).as_str().starts_with("alloc.string.String.") {
         self_ref = true
     }
-    // 受け手の値。
     let mut recv = 0usize
     if loc != 0usize {
         let bt = lower.cx.tyof_t(c, loc - 1usize)
-        // 借用の受け手は move 済みの値の読み (`use`)、値の受け手は move (`consume`)。
         let hdr_recv = lower.vec.is_hdr(env, c, bt)
         if self_ref && !hdr_recv {
             lower.own.emit(c, loc - 1usize, "own.use ")?
         }
         if lower.cx.is_slot(c, loc - 1usize) && self_ref && hdr_recv {
-            // `Vec` / `String` の局所: 枠の番地をそのまま渡す。
             recv = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
         } else if lower.cx.is_slot(c, loc - 1usize) && self_ref {
             let slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
@@ -786,7 +739,6 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     Ok(lower.cx.R { v: v, t: t })
 end lower.opt.user_method
 
-// 束縛の型が参照で、値が参照でないとき (パターンの既定の束縛): 値をスロットに置いて参照にする。
 fn lower.opt.wrap_ref(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, pt: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, pt)
     let n = types.ty.node(&c.ar, f)

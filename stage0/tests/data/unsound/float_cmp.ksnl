@@ -1,4 +1,3 @@
-// expect: E1108
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = 1.0f64
     let b = 2.0f64

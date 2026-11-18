@@ -1,4 +1,3 @@
-// expect: E2024
 fn t.main() -> () uses [] panics may
     let mut p = (1u64, 2u64, 3u64)
     p = (1u64, 2u64)

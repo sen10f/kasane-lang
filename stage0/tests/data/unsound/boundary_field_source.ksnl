@@ -1,4 +1,3 @@
-// expect: E3010
 type t.H
     s: alloc.string.String
 end t.H

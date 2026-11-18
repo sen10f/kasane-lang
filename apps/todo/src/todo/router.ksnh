@@ -1,0 +1,529 @@
+import alloc.string
+import todo.auth
+import todo.error
+import todo.http
+import todo.model
+import todo.store
+
+const todo.router.SESSION_COOKIE_MAX_AGE: u64 = 3600u64 pub
+
+const todo.router.SESSION_COOKIE_NAME: &str = "session" pub
+
+// セッショントークンからユーザー ID を解決する。期限切れセッションは削除する。
+fn todo.router.authenticate_user(db: &mut todo.store.Store, token: &str, now: i64) -> Result<i64, todo.error.Error> uses [alloc, io.fs] panics never pub
+    match db.find_session(token) {
+        Some(s) => {
+            if s.expires_at <= now {
+                core.mem.drop(db.remove_session(token)?)
+                return Err(error.Error.NotAuthenticated)
+            }
+            Ok(s.user_id)
+        }
+        None => Err(error.Error.NotAuthenticated)
+    }
+end todo.router.authenticate_user
+
+fn todo.router.create(db: &mut todo.store.Store, owner_id: i64, body: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, time] panics never
+    let doc = std.json.parse(body).map_err(error.from_json)?
+    let root = doc.root()
+    let (title, created_at) = model.from_create_value(&doc, root).map_err(error.from_json)?
+    let added = db.add(title.as_str(), created_at.as_str(), owner_id)?
+    let s = model.to_json(added)?
+    Ok(http.json_response(201u16, s))
+end todo.router.create
+
+fn todo.router.error_body(message: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("{\"error\":")?
+    model.push_quoted(&mut out, message)?
+    out.push_str("}")?
+    Ok(out)
+end todo.router.error_body
+
+fn todo.router.error_response(status: u16, message: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc] panics never pub
+    let body = todo.router.error_body(message)?
+    Ok(http.json_response(status, body))
+end todo.router.error_response
+
+fn todo.router.extract_session_token(cookie_header: &str) -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics never pub
+    let name = todo.router.SESSION_COOKIE_NAME
+    let start = match cookie_header.find(name) {
+        Some(p) => p
+        None => return None
+    }
+    let after_name_start = start.wrapping_add(name.len())
+    let (_, after_name) = match cookie_header.split_at(after_name_start) {
+        Some(pair) => pair
+        None => return None
+    }
+    if !after_name.starts_with("=") {
+        return None
+    }
+    let (_, token_value) = match after_name.split_at(1usize) {
+        Some(pair) => pair
+        None => return None
+    }
+    let semi = match token_value.find(";") {
+        Some(p) => p
+        None => token_value.len()
+    }
+    let (token_text, _) = match token_value.split_at(semi) {
+        Some(pair) => pair
+        None => return None
+    }
+    if token_text.is_empty() {
+        return None
+    }
+    match alloc.string.String.from_str(std.alloc.SYSTEM, token_text) {
+        Ok(s) => Some(s)
+        Err(_e) => None
+    }
+end todo.router.extract_session_token
+
+fn todo.router.get_one(db: &todo.store.Store, id: i64) -> Result<todo.http.Response, todo.error.Error> uses [alloc] panics never
+    match db.get(id) {
+        Some(t) => {
+            let s = model.to_json(t)?
+            Ok(http.json_response(200u16, s))
+        }
+        None => todo.router.error_response(404u16, "not found")
+    }
+end todo.router.get_one
+
+fn todo.router.list_all(db: &todo.store.Store, q: &str, page: usize, page_size: usize) -> Result<todo.http.Response, todo.error.Error> uses [alloc] panics never
+    let body = db.search(q, page, page_size)?
+    Ok(http.json_response(200u16, body))
+end todo.router.list_all
+
+fn todo.router.login(db: &mut todo.store.Store, body: &str, ttl_seconds: u64) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, rand, time] panics never pub
+    let doc = std.json.parse(body).map_err(error.from_json)?
+    let root = doc.root()
+    let username_v = std.json.decode_field(&doc, root, "username", 0usize)?
+    let username = std.json.decode_string(&doc, username_v)?
+    let password_v = std.json.decode_field(&doc, root, "password", 1usize)?
+    let password = std.json.decode_string(&doc, password_v)?
+    let user = match db.find_user_by_username(username.as_str()) {
+        Some(u) => u
+        None => return todo.router.error_response(401u16, "invalid credentials")
+    }
+    if !auth.verify(password.as_str(), user.salt.as_str(), user.password_hash.as_str()) {
+        return todo.router.error_response(401u16, "invalid credentials")
+    }
+    let now_secs = std.datetime.DateTime.now().unix_seconds()
+    let ttl_i64 = match i64.try_from_u64(ttl_seconds) {
+        Ok(n) => n
+        Err(_e) => return todo.router.error_response(400u16, "bad ttl")
+    }
+    let expires_at = now_secs.wrapping_add(ttl_i64)
+    let token = auth.make_token()?
+    let added = db.add_session(token.as_str(), user.id, expires_at)?
+    let mut response = http.json_response(200u16, model.session_to_json(added)?)
+    let mut cookie_value = alloc.string.String.from_str(std.alloc.SYSTEM, "session=")?
+    cookie_value.push_str(token.as_str())?
+    cookie_value.push_str("; Path=/")?
+    response.set_cookie = cookie_value
+    Ok(response)
+end todo.router.login
+
+fn todo.router.logout(db: &mut todo.store.Store, token: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs] panics never pub
+    core.mem.drop(db.remove_session(token)?)
+    let body = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut response = http.json_response(200u16, body)
+    let cookie_text = "session=; Path=/; Max-Age=0"
+    let mut cookie_value = alloc.string.String.from_str(std.alloc.SYSTEM, cookie_text)?
+    response.set_cookie = cookie_value
+    Ok(response)
+end todo.router.logout
+
+fn todo.router.patch(db: &mut todo.store.Store, _owner_id: i64, id: i64, body: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs] panics never
+    let doc = std.json.parse(body).map_err(error.from_json)?
+    let root = doc.root()
+    let done_v = std.json.decode_field(&doc, root, "done", 0usize)?
+    let done = match std.json.decode_bool(&doc, done_v) {
+        Ok(d) => d
+        Err(_e) => return todo.router.error_response(400u16, "bad done")
+    }
+    let updated = db.set_done(id, done)?
+    let s = model.to_json(updated)?
+    Ok(http.json_response(200u16, s))
+end todo.router.patch
+
+fn todo.router.query_param(query: &str, name: &str) -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics never pub
+    let mut start = 0usize
+    while start < query.len() {
+        let (_, rest) = match query.split_at(start) {
+            Some(pair) => pair
+            None => return None
+        }
+        let eq_pos = match rest.find(name) {
+            Some(p) => start.wrapping_add(p)
+            None => return None
+        }
+        if eq_pos > 0usize {
+            let prev_start = eq_pos.wrapping_sub(1usize)
+            let (_, prev_rest) = match query.split_at(prev_start) {
+                Some(pair) => pair
+                None => return None
+            }
+            let (prev, _) = match prev_rest.split_at(1usize) {
+                Some(pair) => pair
+                None => return None
+            }
+            if prev != "&" {
+                start = eq_pos.wrapping_add(name.len())
+                continue
+            }
+        }
+        let after_name_start = eq_pos.wrapping_add(name.len())
+        let (_, after_name) = match query.split_at(after_name_start) {
+            Some(pair) => pair
+            None => return None
+        }
+        if !after_name.starts_with("=") {
+            start = after_name_start
+            continue
+        }
+        let after_eq_start = after_name_start.wrapping_add(1usize)
+        let (_, after_eq) = match query.split_at(after_eq_start) {
+            Some(pair) => pair
+            None => return None
+        }
+        let amp_pos = match after_eq.find("&") {
+            Some(p) => after_eq_start.wrapping_add(p)
+            None => query.len()
+        }
+        let value_start = after_eq_start
+        let value_len = amp_pos.wrapping_sub(value_start)
+        let (_, value_rest) = match query.split_at(value_start) {
+            Some(pair) => pair
+            None => return None
+        }
+        let (value_text, _) = match value_rest.split_at(value_len) {
+            Some(pair) => pair
+            None => return None
+        }
+        match alloc.string.String.from_str(std.alloc.SYSTEM, value_text) {
+            Ok(s) => return Some(s)
+            Err(_e) => return None
+        }
+    }
+    None
+end todo.router.query_param
+
+fn todo.router.read_page(query: &str) -> usize uses [alloc] panics never
+    match todo.router.query_param(query, "page") {
+        Some(s) => match usize.parse(s.as_str()) {
+            Ok(n) => n
+            Err(_e) => 1usize
+        }
+        None => 1usize
+    }
+end todo.router.read_page
+
+fn todo.router.read_page_size(query: &str) -> usize uses [alloc] panics never
+    match todo.router.query_param(query, "page_size") {
+        Some(s) => match usize.parse(s.as_str()) {
+            Ok(n) => n
+            Err(_e) => store.DEFAULT_PAGE_SIZE
+        }
+        None => store.DEFAULT_PAGE_SIZE
+    }
+end todo.router.read_page_size
+
+fn todo.router.register(db: &mut todo.store.Store, body: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, rand, time] panics never pub
+    let doc = std.json.parse(body).map_err(error.from_json)?
+    let root = doc.root()
+    let username_v = std.json.decode_field(&doc, root, "username", 0usize)?
+    let username = std.json.decode_string(&doc, username_v)?
+    if username.len() > store.MAX_TITLE {
+        return todo.router.error_response(400u16, "username too long")
+    }
+    let password_v = std.json.decode_field(&doc, root, "password", 1usize)?
+    let password = std.json.decode_string(&doc, password_v)?
+    let salt = auth.make_salt()?
+    let hash = auth.hash_password(password.as_str(), salt.as_str())?
+    let now = std.datetime.DateTime.now().to_rfc3339()?
+    let added = db.add_user(username.as_str(), hash.as_str(), salt.as_str(), now.as_str())?
+    let s = model.user_to_json(added)?
+    Ok(http.json_response(201u16, s))
+end todo.router.register
+
+fn todo.router.remove_one(db: &mut todo.store.Store, id: i64) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs] panics never
+    match db.remove(id) {
+        Ok(_u) => {
+            let empty = alloc.string.String.new(std.alloc.SYSTEM)
+            Ok(http.json_response(204u16, empty))
+        }
+        Err(error.Error.NotFound) => todo.router.error_response(404u16, "not found")
+        Err(e) => Err(e)
+    }
+end todo.router.remove_one
+
+fn todo.router.route(db: &mut todo.store.Store, request: &todo.http.Request) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, rand, time] panics never pub
+    let now = std.datetime.DateTime.now().unix_seconds()
+    let (base_path, query) = todo.router.split_query(request.path.as_str())
+    let path = base_path.as_str()
+    let cookie_text = request.cookie.as_str()
+    let session_token = if cookie_text.is_empty() {
+        alloc.string.String.new(std.alloc.SYSTEM)
+    } else {
+        match todo.router.extract_session_token(cookie_text) {
+            Some(t) => t
+            None => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+    }
+    match request.method {
+        http.Method.Get => {
+            if path == "/todos" {
+                let q_string = match todo.router.query_param(query.as_str(), "q") {
+                    Some(v) => v
+                    None => alloc.string.String.new(std.alloc.SYSTEM)
+                }
+                let q = q_string.as_str()
+                let page = todo.router.read_page(query.as_str())
+                let page_size = todo.router.read_page_size(query.as_str())
+                return todo.router.list_all(db, q, page, page_size)
+            }
+            if path == "/stats" {
+                return todo.router.stats(db)
+            }
+            if path.starts_with("/todos/") {
+                let id_text = match path.strip_prefix("/todos/") {
+                    Some(t) => t
+                    None => return todo.router.error_response(400u16, "bad path")
+                }
+                let id = match i64.parse(id_text) {
+                    Ok(n) => n
+                    Err(_e) => return todo.router.error_response(400u16, "bad id")
+                }
+                return todo.router.get_one(db, id)
+            }
+            todo.router.error_response(404u16, "not found")
+        }
+        http.Method.Post => {
+            if path == "/todos" {
+                let owner_id = if !session_token.is_empty() {
+                    match todo.router.authenticate_user(db, session_token.as_str(), now) {
+                        Ok(uid) => uid
+                        Err(_e) => return todo.router.error_response(401u16, "unauthorized")
+                    }
+                } else {
+                    return todo.router.error_response(401u16, "unauthorized")
+                }
+                return todo.router.create(db, owner_id, request.body.as_str())
+            }
+            if path == "/register" {
+                return todo.router.register(db, request.body.as_str())
+            }
+            if path == "/login" {
+                let a = alloc.string.String.new(std.alloc.SYSTEM)
+                let b = alloc.string.String.new(std.alloc.SYSTEM)
+                let h = alloc.string.String.new(std.alloc.SYSTEM)
+                let t = todo.router.SESSION_COOKIE_MAX_AGE
+                let m = 2048usize
+                let config = todo.config.Config { addr: a, db: b, hist: h, ttl: t, max: m }
+                return todo.router.login(db, request.body.as_str(), config.ttl)
+            }
+            if path == "/logout" {
+                let owner_id = if !session_token.is_empty() {
+                    match todo.router.authenticate_user(db, session_token.as_str(), now) {
+                        Ok(uid) => uid
+                        Err(_e) => return todo.router.error_response(401u16, "unauthorized")
+                    }
+                } else {
+                    return todo.router.error_response(401u16, "unauthorized")
+                }
+                core.mem.drop(owner_id)
+                return todo.router.logout(db, session_token.as_str())
+            }
+            todo.router.error_response(405u16, "method not allowed")
+        }
+        http.Method.Patch => {
+            if path.starts_with("/todos/") {
+                let owner_id = if !session_token.is_empty() {
+                    match todo.router.authenticate_user(db, session_token.as_str(), now) {
+                        Ok(uid) => uid
+                        Err(_e) => return todo.router.error_response(401u16, "unauthorized")
+                    }
+                } else {
+                    return todo.router.error_response(401u16, "unauthorized")
+                }
+                core.mem.drop(owner_id)
+                let id_text = match path.strip_prefix("/todos/") {
+                    Some(t) => t
+                    None => return todo.router.error_response(400u16, "bad path")
+                }
+                let id = match i64.parse(id_text) {
+                    Ok(n) => n
+                    Err(_e) => return todo.router.error_response(400u16, "bad id")
+                }
+                return todo.router.patch(db, 0i64, id, request.body.as_str())
+            }
+            todo.router.error_response(405u16, "method not allowed")
+        }
+        http.Method.Delete => {
+            if path.starts_with("/todos/") {
+                let owner_id = if !session_token.is_empty() {
+                    match todo.router.authenticate_user(db, session_token.as_str(), now) {
+                        Ok(uid) => uid
+                        Err(_e) => return todo.router.error_response(401u16, "unauthorized")
+                    }
+                } else {
+                    return todo.router.error_response(401u16, "unauthorized")
+                }
+                core.mem.drop(owner_id)
+                let id_text = match path.strip_prefix("/todos/") {
+                    Some(t) => t
+                    None => return todo.router.error_response(400u16, "bad path")
+                }
+                let id = match i64.parse(id_text) {
+                    Ok(n) => n
+                    Err(_e) => return todo.router.error_response(400u16, "bad id")
+                }
+                return todo.router.remove_one(db, id)
+            }
+            todo.router.error_response(405u16, "method not allowed")
+        }
+        http.Method.Other => todo.router.error_response(405u16, "method not allowed")
+    }
+end todo.router.route
+
+fn todo.router.split_query(path: &str) -> (alloc.string.String<std.alloc.System>, alloc.string.String<std.alloc.System>) uses [alloc] panics never pub
+    let qmark = path.find("?")
+    match qmark {
+        Some(p) => {
+            let (base_text, _) = match path.split_at(p) {
+                Some(pair) => pair
+                None => (path, "")
+            }
+            let (_, rest) = match path.split_at(p.wrapping_add(1usize)) {
+                Some(pair) => pair
+                None => (path, "")
+            }
+            let base_s = match alloc.string.String.from_str(std.alloc.SYSTEM, base_text) {
+                Ok(s) => s
+                Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+            }
+            let query_s = match alloc.string.String.from_str(std.alloc.SYSTEM, rest) {
+                Ok(s) => s
+                Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+            }
+            (base_s, query_s)
+        }
+        None => {
+            let base_s = match alloc.string.String.from_str(std.alloc.SYSTEM, path) {
+                Ok(s) => s
+                Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+            }
+            let query_s = alloc.string.String.new(std.alloc.SYSTEM)
+            (base_s, query_s)
+        }
+    }
+end todo.router.split_query
+
+fn todo.router.stats(db: &todo.store.Store) -> Result<todo.http.Response, todo.error.Error> uses [alloc] panics never pub
+    let stats = db.stats()?
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("{\"total\":")?
+    out.push_u64(u64.from_usize(stats.total))?
+    out.push_str(",\"completed\":")?
+    out.push_u64(u64.from_usize(stats.completed))?
+    out.push_str(",\"active\":")?
+    out.push_u64(u64.from_usize(stats.active))?
+    out.push_str(",\"users\":")?
+    out.push_u64(u64.from_usize(stats.users))?
+    out.push_str(",\"sessions\":")?
+    out.push_u64(u64.from_usize(stats.sessions))?
+    out.push_str("}")?
+    Ok(http.json_response(200u16, out))
+end todo.router.stats
+
+fn todo.router.store_len(db: &todo.store.Store) -> usize uses [] panics never pub
+    db.len()
+end todo.router.store_len
+
+fn todo.router.test_call(db: &mut todo.store.Store, method: todo.http.Method, path: &str, body: &str, cookie: &str) -> todo.http.Response uses [alloc, io.fs, rand, time] panics may
+    let copy_path = match alloc.string.String.from_str(std.alloc.SYSTEM, path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("alloc")
+    }
+    let copy_body = match alloc.string.String.from_str(std.alloc.SYSTEM, body) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("alloc")
+    }
+    let ck = match alloc.string.String.from_str(std.alloc.SYSTEM, cookie) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("alloc")
+    }
+    let request = http.Request { body: copy_body, cookie: ck, method: method, path: copy_path }
+    match todo.router.route(db, &request) {
+        Ok(r) => r
+        Err(_e) => core.panic.panic("route failed")
+    }
+end todo.router.test_call
+
+fn todo.router.test_store() -> todo.store.Store uses [alloc] panics may
+    match store.Store.new("", "") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+end todo.router.test_store
+
+test todo.router.route.test_create_get_list
+    let mut db = todo.router.test_store()
+    core.mem.drop(db.add_session("test-token", 1i64, 9999999999i64)?)
+    let r1 = todo.router.test_call(&mut db, http.Method.Post, "/todos", "{\"title\":\"買い物\"}", "session=test-token")
+    core.check.eq(r1.status, 201u16)
+    let prefix1 = "{\"id\":1,\"title\":\"買い物\",\"done\":false,\"created_at\":\"2"
+    core.check.eq(r1.body.as_str().starts_with(prefix1), true)
+    let r2 = todo.router.test_call(&mut db, http.Method.Get, "/todos", "", "")
+    core.check.eq(r2.status, 200u16)
+    core.check.eq(r2.body.as_str().contains("\"todos\":[{\"id\":1"), true)
+    let r3 = todo.router.test_call(&mut db, http.Method.Get, "/todos/1", "", "")
+    core.check.eq(r3.status, 200u16)
+    let prefix3 = "{\"id\":1,\"title\":\"買い物\",\"done\":false"
+    core.check.eq(r3.body.as_str().starts_with(prefix3), true)
+end todo.router.route.test_create_get_list
+
+test todo.router.route.test_delete_removes
+    let mut db = todo.router.test_store()
+    core.mem.drop(db.add_session("test-token", 1i64, 9999999999i64)?)
+    let d1 = todo.router.test_call(&mut db, http.Method.Post, "/todos", "{\"title\":\"test\"}", "session=test-token")
+    core.mem.drop(d1)
+    let r4 = todo.router.test_call(&mut db, http.Method.Delete, "/todos/1", "", "session=test-token")
+    core.check.eq(r4.status, 204u16)
+    let r5 = todo.router.test_call(&mut db, http.Method.Get, "/todos/1", "", "")
+    core.check.eq(r5.status, 404u16)
+    let r6 = todo.router.test_call(&mut db, http.Method.Get, "/todos", "", "")
+    core.check.eq(r6.body.as_str().contains("\"todos\":[]"), true)
+end todo.router.route.test_delete_removes
+
+test todo.router.route.test_method_not_allowed
+    let mut db = todo.router.test_store()
+    let g1 = todo.router.test_call(&mut db, http.Method.Get, "/todos/1", "", "")
+    core.check.eq(g1.status, 404u16)
+    let p1 = todo.router.test_call(&mut db, http.Method.Post, "/todos/1", "", "")
+    core.check.eq(p1.status, 405u16)
+    let g2 = todo.router.test_call(&mut db, http.Method.Get, "/todos", "", "")
+    core.check.eq(g2.status, 200u16)
+    core.check.eq(db.len(), 0usize)
+end todo.router.route.test_method_not_allowed
+
+test todo.router.route.test_patch_toggles_done
+    let mut db = todo.router.test_store()
+    core.mem.drop(db.add_session("test-token", 1i64, 9999999999i64)?)
+    let pt1 = todo.router.test_call(&mut db, http.Method.Post, "/todos", "{\"title\":\"test\"}", "session=test-token")
+    core.mem.drop(pt1)
+    let r7 = todo.router.test_call(&mut db, http.Method.Patch, "/todos/1", "{\"done\":true}", "session=test-token")
+    core.check.eq(r7.status, 200u16)
+    core.check.eq(r7.body.as_str().contains("\"done\":true"), true)
+    let r8 = todo.router.test_call(&mut db, http.Method.Get, "/todos/1", "", "")
+    core.check.eq(r8.status, 200u16)
+    core.check.eq(r8.body.as_str().contains("\"done\":true"), true)
+end todo.router.route.test_patch_toggles_done
+
+test todo.router.route.test_unknown_id_is_404
+    let mut db = todo.router.test_store()
+    let g = todo.router.test_call(&mut db, http.Method.Get, "/todos/999", "", "")
+    core.check.eq(g.status, 404u16)
+end todo.router.route.test_unknown_id_is_404

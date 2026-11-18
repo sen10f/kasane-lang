@@ -1,0 +1,440 @@
+import wiki.error
+
+type wiki.store.PageStore pub
+    data_dir: alloc.string.String<std.alloc.System>
+    pages_dir: alloc.string.String<std.alloc.System>
+end wiki.store.PageStore
+
+fn wiki.store.PageStore.current_path(self: &wiki.store.PageStore, name: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics never pub
+    let mut p = self.page_dir(name)
+    core.mem.drop(p.push_str("/current"))
+    p
+end wiki.store.PageStore.current_path
+
+fn wiki.store.PageStore.list_pages(self: &mut wiki.store.PageStore) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, wiki.error.Error> uses [alloc, io.fs] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if !std.fs.exists(self.pages_dir.as_str()) {
+        return Ok(out)
+    }
+    let entries = std.fs.read_dir(self.pages_dir.as_str())?
+    let mut i = 0usize
+    let n = entries.len()
+    while i < n {
+        match entries.as_slice().get(i) {
+            Some(e) => {
+                if e.kind == std.fs.FileKind.Dir {
+                    let mut cloned = alloc.string.String.new(std.alloc.SYSTEM)
+                    core.mem.drop(cloned.push_str(e.name.as_str()))
+                    core.mem.drop(out.push(cloned)?)
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.saturating_add(1usize)
+    }
+    // core.slice.sort はネイティブバックエンドで segfault するため未使用。
+    Ok(out)
+end wiki.store.PageStore.list_pages
+
+fn wiki.store.PageStore.load_latest(self: &mut wiki.store.PageStore, name: &str) -> Option<alloc.string.String<std.alloc.System>> uses [alloc, io.fs] panics never pub
+    if !wiki.store.PageStore.sanitize_name(name) {
+        return None
+    }
+    let current = self.current_path(name)
+    if !std.fs.exists(current.as_str()) {
+        let versions = match self.page_versions(name) {
+            Ok(v) => v
+            Err(_e) => return None
+        }
+        let mut max: u64 = 0u64
+        let mut i = 0usize
+        let n = versions.len()
+        while i < n {
+            match versions.as_slice().get(i) {
+                Some(v) => {
+                    if *v > max {
+                        max = *v
+                    }
+                }
+                None => core.mem.drop(0u8)
+            }
+            i = i.saturating_add(1usize)
+        }
+        if max == 0u64 {
+            return None
+        }
+        return self.load_version(name, usize.from_u64(max))
+    }
+    let ver_text = match wiki.store.PageStore.read_text_file(current.as_str()) {
+        Ok(t) => t
+        Err(_e) => return None
+    }
+    let version = match usize.parse(ver_text.as_str()) {
+        Ok(v) => v
+        Err(_e) => return None
+    }
+    self.load_version(name, version)
+end wiki.store.PageStore.load_latest
+
+fn wiki.store.PageStore.load_version(self: &mut wiki.store.PageStore, name: &str, version: usize) -> Option<alloc.string.String<std.alloc.System>> uses [alloc, io.fs] panics never pub
+    if !wiki.store.PageStore.sanitize_name(name) {
+        return None
+    }
+    let path = self.page_path(name, u64.from_usize(version))
+    if !std.fs.exists(path.as_str()) {
+        return None
+    }
+    match wiki.store.PageStore.read_text_file(path.as_str()) {
+        Ok(t) => Some(t)
+        Err(_e) => None
+    }
+end wiki.store.PageStore.load_version
+
+fn wiki.store.PageStore.new(data_dir: &str) -> Result<wiki.store.PageStore, wiki.error.Error> uses [alloc, io.fs] panics never pub
+    let saved = alloc.string.String.from_str(std.alloc.SYSTEM, data_dir)?
+    let mut pages = alloc.string.String.from_str(std.alloc.SYSTEM, data_dir)?
+    core.mem.drop(pages.push_str("/pages"))
+    std.fs.create_dir_all(pages.as_str())?
+    Ok(wiki.store.PageStore { data_dir: saved, pages_dir: pages })
+end wiki.store.PageStore.new
+
+fn wiki.store.PageStore.next_version(self: &mut wiki.store.PageStore, name: &str) -> Result<u64, wiki.error.Error> uses [alloc, io.fs] panics never pub
+    let versions = self.page_versions(name)?
+    let mut max: u64 = 0u64
+    let mut i = 0usize
+    let n = versions.len()
+    while i < n {
+        match versions.as_slice().get(i) {
+            Some(v) => {
+                if *v > max {
+                    max = *v
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.saturating_add(1usize)
+    }
+    Ok(max.saturating_add(1u64))
+end wiki.store.PageStore.next_version
+
+fn wiki.store.PageStore.page_dir(self: &wiki.store.PageStore, name: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics never pub
+    let mut p = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(p.push_str(self.pages_dir.as_str()))
+    core.mem.drop(p.push_str("/"))
+    core.mem.drop(p.push_str(name))
+    p
+end wiki.store.PageStore.page_dir
+
+fn wiki.store.PageStore.page_exists(self: &wiki.store.PageStore, name: &str) -> bool uses [alloc, io.fs] panics never pub
+    if !wiki.store.PageStore.sanitize_name(name) {
+        return false
+    }
+    std.fs.exists(self.current_path(name).as_str())
+end wiki.store.PageStore.page_exists
+
+fn wiki.store.PageStore.page_path(self: &wiki.store.PageStore, name: &str, version: u64) -> alloc.string.String<std.alloc.System> uses [alloc] panics never pub
+    let mut p = self.page_dir(name)
+    core.mem.drop(p.push_str("/"))
+    let mut v = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push_u64(version))
+    core.mem.drop(p.push_str(v.as_str()))
+    core.mem.drop(p.push_str(".md"))
+    p
+end wiki.store.PageStore.page_path
+
+fn wiki.store.PageStore.page_versions(self: &mut wiki.store.PageStore, name: &str) -> Result<alloc.vec.Vec<u64, std.alloc.System>, wiki.error.Error> uses [alloc, io.fs] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let dir = self.page_dir(name)
+    if !std.fs.exists(dir.as_str()) {
+        return Ok(out)
+    }
+    let entries = std.fs.read_dir(dir.as_str())?
+    let mut i = 0usize
+    let n = entries.len()
+    while i < n {
+        match entries.as_slice().get(i) {
+            Some(e) => {
+                if e.kind == std.fs.FileKind.File {
+                    let fname = e.name.as_str()
+                    if fname.len() > 3usize && fname.ends_with(".md") {
+                        let cut = fname.len().wrapping_sub(3usize)
+                        let splitted = fname.split_at(cut)
+                        let head = match splitted {
+                            Some((h, _t)) => {
+                                h
+                            }
+                            None => {
+                                ""
+                            }
+                        }
+                        let num_text = alloc.string.String.from_str(std.alloc.SYSTEM, head)?
+                        match u64.parse(num_text.as_str()) {
+                            Ok(v) => core.mem.drop(out.push(v)?)
+                            Err(_e) => core.mem.drop(0u8)
+                        }
+                    }
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.saturating_add(1usize)
+    }
+    // core.slice.sort はネイティブバックエンドで segfault するため未使用。
+    Ok(out)
+end wiki.store.PageStore.page_versions
+
+fn wiki.store.PageStore.read_text_file(path: &str) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc, io.fs] panics never pub
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
+    }
+    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(text.push_bytes(data.as_slice()))
+    Ok(text)
+end wiki.store.PageStore.read_text_file
+
+fn wiki.store.PageStore.sanitize_name(name: &str) -> bool uses [] panics never pub
+    if name.is_empty() {
+        return false
+    }
+    if name == "." || name == ".." {
+        return false
+    }
+    for c in name.chars() {
+        if c == '/' || c == '\\' || c == '\0' {
+            return false
+        }
+        if c.to_u32() < 32u32 {
+            return false
+        }
+    }
+    true
+end wiki.store.PageStore.sanitize_name
+
+fn wiki.store.PageStore.save_version(self: &mut wiki.store.PageStore, name: &str, content: &str, version: u64) -> Result<(), wiki.error.Error> uses [alloc, io.fs] panics never pub
+    if !wiki.store.PageStore.sanitize_name(name) {
+        return Err(error.Error.BadRequest)
+    }
+    std.fs.create_dir_all(self.page_dir(name).as_str())?
+    let path = self.page_path(name, version)
+    wiki.store.PageStore.write_atomic_str(path.as_str(), content)?
+    let current = self.current_path(name)
+    let mut ver_text = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(ver_text.push_u64(version))
+    wiki.store.PageStore.write_atomic_str(current.as_str(), ver_text.as_str())?
+    Ok(())
+end wiki.store.PageStore.save_version
+
+fn wiki.store.PageStore.write_atomic_str(path: &str, text: &str) -> Result<(), wiki.error.Error> uses [alloc, io.fs] panics never
+    std.fs.write_atomic(path, text.as_bytes())?
+    Ok(())
+end wiki.store.PageStore.write_atomic_str
+
+test wiki.store.PageStore.current_path.test_format
+    let path = "/tmp/wiki-test-store-current"
+    core.mem.drop(wiki.remove_dir_all(path))
+    let mut page_store = match wiki.store.PageStore.new(path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+    let cur = wiki.store.PageStore.current_path(&page_store, "Hello")
+    core.check.eq(cur.as_str(), "/tmp/wiki-test-store-current/pages/Hello/current")
+end wiki.store.PageStore.current_path.test_format
+
+test wiki.store.PageStore.list_pages.test_empty_and_sorted
+    let path = "/tmp/wiki-test-store-list-empty"
+    core.mem.drop(wiki.remove_dir_all(path))
+    let mut page_store = match wiki.store.PageStore.new(path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+    let page_list = wiki.store.PageStore.list_pages(&mut page_store)?
+    core.check.eq(page_list.len(), 0usize)
+    core.mem.drop(wiki.store.PageStore.save_version(&mut page_store, "Beta", "b\n", 1u64)?)
+    core.mem.drop(wiki.store.PageStore.save_version(&mut page_store, "Alpha", "a\n", 1u64)?)
+    let page_list2 = wiki.store.PageStore.list_pages(&mut page_store)?
+    core.check.eq(page_list2.len(), 2usize)
+    match page_list2.as_slice().get(0usize) {
+        Some(a) => core.check.eq(a.as_str(), "Alpha")
+        None => core.panic.panic("missing Alpha")
+    }
+    match page_list2.as_slice().get(1usize) {
+        Some(b) => core.check.eq(b.as_str(), "Beta")
+        None => core.panic.panic("missing Beta")
+    }
+end wiki.store.PageStore.list_pages.test_empty_and_sorted
+
+test wiki.store.PageStore.load_latest.test_nonexistent_page
+    let path = "/tmp/wiki-test-store-nonexistent-page"
+    core.mem.drop(wiki.remove_dir_all(path))
+    let mut page_store = match wiki.store.PageStore.new(path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+    let loaded = wiki.store.PageStore.load_latest(&mut page_store, "NoSuch")
+    core.check.eq(loaded.is_none(), true)
+end wiki.store.PageStore.load_latest.test_nonexistent_page
+
+test wiki.store.PageStore.load_version.test_nonexistent_version
+    let path = "/tmp/wiki-test-store-nonexistent-ver"
+    core.mem.drop(wiki.remove_dir_all(path))
+    let mut page_store = match wiki.store.PageStore.new(path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+    core.mem.drop(wiki.store.PageStore.save_version(&mut page_store, "P", "v1\n", 1u64)?)
+    let v99 = wiki.store.PageStore.load_version(&mut page_store, "P", 99usize)
+    core.check.eq(v99.is_none(), true)
+end wiki.store.PageStore.load_version.test_nonexistent_version
+
+test wiki.store.PageStore.new.test_creates_pages_dir
+    let path = "/tmp/wiki-test-store-new-dir"
+    core.mem.drop(wiki.remove_dir_all(path))
+    match wiki.store.PageStore.new(path) {
+        Ok(_s) => {
+            let mut pages_path = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+            core.mem.drop(pages_path.push_str("/pages"))
+            core.check.eq(std.fs.exists(pages_path.as_str()), true)
+        }
+        Err(_e) => core.panic.panic("new failed")
+    }
+end wiki.store.PageStore.new.test_creates_pages_dir
+
+test wiki.store.PageStore.next_version.test_after_versions
+    let path = "/tmp/wiki-test-store-next-after"
+    core.mem.drop(wiki.remove_dir_all(path))
+    let mut page_store = match wiki.store.PageStore.new(path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+    core.mem.drop(wiki.store.PageStore.save_version(&mut page_store, "P", "v1\n", 1u64)?)
+    core.mem.drop(wiki.store.PageStore.save_version(&mut page_store, "P", "v3\n", 3u64)?)
+    let next = wiki.store.PageStore.next_version(&mut page_store, "P")?
+    core.check.eq(next, 4u64)
+end wiki.store.PageStore.next_version.test_after_versions
+
+test wiki.store.PageStore.next_version.test_empty
+    let path = "/tmp/wiki-test-store-next-empty"
+    core.mem.drop(wiki.remove_dir_all(path))
+    let mut page_store = match wiki.store.PageStore.new(path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+    let next = wiki.store.PageStore.next_version(&mut page_store, "NewPage")?
+    core.check.eq(next, 1u64)
+end wiki.store.PageStore.next_version.test_empty
+
+test wiki.store.PageStore.page_exists.test_cases
+    let path = "/tmp/wiki-test-store-exists"
+    core.mem.drop(wiki.remove_dir_all(path))
+    let mut page_store = match wiki.store.PageStore.new(path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+    core.check.eq(wiki.store.PageStore.page_exists(&page_store, "A"), false)
+    core.mem.drop(wiki.store.PageStore.save_version(&mut page_store, "A", "a\n", 1u64)?)
+    core.check.eq(wiki.store.PageStore.page_exists(&page_store, "A"), true)
+end wiki.store.PageStore.page_exists.test_cases
+
+test wiki.store.PageStore.page_path.test_format
+    let path = "/tmp/wiki-test-store-pagepath"
+    core.mem.drop(wiki.remove_dir_all(path))
+    let mut page_store = match wiki.store.PageStore.new(path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+    let pp = wiki.store.PageStore.page_path(&page_store, "Hello", 5u64)
+    core.check.eq(pp.as_str(), "/tmp/wiki-test-store-pagepath/pages/Hello/5.md")
+end wiki.store.PageStore.page_path.test_format
+
+test wiki.store.PageStore.page_versions.test_empty
+    let path = "/tmp/wiki-test-store-versions-empty"
+    core.mem.drop(wiki.remove_dir_all(path))
+    let mut page_store = match wiki.store.PageStore.new(path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+    let versions = wiki.store.PageStore.page_versions(&mut page_store, "NoPage")?
+    core.check.eq(versions.len(), 0usize)
+end wiki.store.PageStore.page_versions.test_empty
+
+test wiki.store.PageStore.sanitize_name.test_cases
+    core.check.eq(wiki.store.PageStore.sanitize_name("Hello"), true)
+    core.check.eq(wiki.store.PageStore.sanitize_name("Hello_World"), true)
+    core.check.eq(wiki.store.PageStore.sanitize_name("hello-world"), true)
+    core.check.eq(wiki.store.PageStore.sanitize_name(""), false)
+    core.check.eq(wiki.store.PageStore.sanitize_name("."), false)
+    core.check.eq(wiki.store.PageStore.sanitize_name(".."), false)
+    core.check.eq(wiki.store.PageStore.sanitize_name("a/b"), false)
+    core.check.eq(wiki.store.PageStore.sanitize_name("a\\b"), false)
+end wiki.store.PageStore.sanitize_name.test_cases
+
+test wiki.store.PageStore.sanitize_name.test_unicode_and_control
+    core.check.eq(wiki.store.PageStore.sanitize_name("Hello_World"), true)
+    core.check.eq(wiki.store.PageStore.sanitize_name("hello-world"), true)
+    core.check.eq(wiki.store.PageStore.sanitize_name("a.b"), true)
+    core.check.eq(wiki.store.PageStore.sanitize_name("a b"), true)
+    core.check.eq(wiki.store.PageStore.sanitize_name(""), false)
+    core.check.eq(wiki.store.PageStore.sanitize_name("."), false)
+    core.check.eq(wiki.store.PageStore.sanitize_name(".."), false)
+    core.check.eq(wiki.store.PageStore.sanitize_name("a/b"), false)
+    core.check.eq(wiki.store.PageStore.sanitize_name("a\\b"), false)
+    // 制御文字は拒否
+    let mut ctrl = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(ctrl.push('a')?)
+    match char.try_from_u32(0u32) {
+        Some(nul) => core.mem.drop(ctrl.push(nul)?)
+        None => core.mem.drop(0u8)
+    }
+    core.mem.drop(ctrl.push('b')?)
+    core.check.eq(wiki.store.PageStore.sanitize_name(ctrl.as_str()), false)
+end wiki.store.PageStore.sanitize_name.test_unicode_and_control
+
+test wiki.store.PageStore.save_version.test_hello_persist_router
+    core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-router"))
+    let mut ps = wiki.store.PageStore.new("/tmp/wiki-test-router")?
+    core.mem.drop(wiki.store.PageStore.save_version(&mut ps, "Hello", "Hello world\n", 1u64)?)
+    let ex = wiki.store.PageStore.page_exists(&ps, "Hello")
+    core.check.eq(ex, true)
+    let loaded = wiki.store.PageStore.load_latest(&mut ps, "Hello")
+    match loaded {
+        Some(c) => core.check.eq(c.as_str(), "Hello world\n")
+        None => core.panic.panic("load_latest returned None")
+    }
+end wiki.store.PageStore.save_version.test_hello_persist_router
+
+test wiki.store.PageStore.save_version.test_round_trip
+    let path = "/tmp/wiki-test-store-round-trip"
+    core.mem.drop(wiki.remove_dir_all(path))
+    let mut page_store = match wiki.store.PageStore.new(path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+    let content_v1 = "# Title\n\nbody text\n"
+    core.mem.drop(wiki.store.PageStore.save_version(&mut page_store, "Hello", content_v1, 1u64)?)
+    core.check.eq(wiki.store.PageStore.page_exists(&page_store, "Hello"), true)
+    let loaded = wiki.store.PageStore.load_latest(&mut page_store, "Hello")
+    match loaded {
+        Some(c) => core.check.eq(c.as_str(), "# Title\n\nbody text\n")
+        None => core.panic.panic("load_latest returned None")
+    }
+    let v1 = wiki.store.PageStore.load_version(&mut page_store, "Hello", 1usize)
+    match v1 {
+        Some(c) => core.check.eq(c.as_str(), "# Title\n\nbody text\n")
+        None => core.panic.panic("load_version returned None")
+    }
+    let content_v2 = "# Title v2\n\nbody v2\n"
+    core.mem.drop(wiki.store.PageStore.save_version(&mut page_store, "Hello", content_v2, 2u64)?)
+    let versions = wiki.store.PageStore.page_versions(&mut page_store, "Hello")?
+    core.check.eq(versions.len(), 2usize)
+    match versions.as_slice().get(0usize) {
+        Some(v) => core.check.eq(*v, 1u64)
+        None => core.panic.panic("missing v1")
+    }
+    match versions.as_slice().get(1usize) {
+        Some(v) => core.check.eq(*v, 2u64)
+        None => core.panic.panic("missing v2")
+    }
+    let next = wiki.store.PageStore.next_version(&mut page_store, "Hello")?
+    core.check.eq(next, 3u64)
+end wiki.store.PageStore.save_version.test_round_trip

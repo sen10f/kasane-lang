@@ -6,7 +6,6 @@ fn alloc.string.String.is_empty[A: alloc.alloc.Allocator](self: &alloc.string.St
     self.buf.is_empty()
 end alloc.string.String.is_empty
 
-// `parts` を `separator` で連結した新しい `String` (`parts` が空なら空の文字列)。
 fn alloc.string.String.join[A: alloc.alloc.Allocator](allocator: A, parts: &[&str], separator: &str) -> Result<alloc.string.String<A>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(allocator)
     let n = parts.len()
@@ -62,7 +61,6 @@ fn alloc.string.String.push[A: alloc.alloc.Allocator](self: &mut alloc.string.St
             return Err(error)
         }
     }
-    // 先頭のバイトは長さの印 (0xC0 / 0xE0 / 0xF0) と上の桁、続きは 0x80 と下の 6 ビット (シフトで取り出す。除算は使えない)。
     let mut lead = 0u32
     if n == 2usize {
         lead = 192u32
@@ -144,7 +142,6 @@ fn alloc.string.String.push_i64[A: alloc.alloc.Allocator](self: &mut alloc.strin
         }
     }
     let start = self.buf.len()
-    // 負の数は桁ごとに負の余りを取り、符号を反転して数える (`i64::MIN` も溢れない)。
     let mut v = value
     loop {
         let rest = match v.checked_div(10i64) {
@@ -249,7 +246,6 @@ fn alloc.string.String.push_u64[A: alloc.alloc.Allocator](self: &mut alloc.strin
     Ok(())
 end alloc.string.String.push_u64
 
-// `text` の `from` を全て `to` に替えた新しい `String` (空の `from` は置き換えずに複製する)。
 fn alloc.string.String.replace[A: alloc.alloc.Allocator](allocator: A, text: &str, from: &str, to: &str) -> Result<alloc.string.String<A>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(allocator)
     let hay = text.as_bytes()
@@ -345,7 +341,6 @@ fn alloc.string.String.replace[A: alloc.alloc.Allocator](allocator: A, text: &st
     Ok(out)
 end alloc.string.String.replace
 
-// 残り `extra` バイトを書ける余裕を確保する (足りなければ `Buf` を `2 * cap + 4` か必要量のどちらか大きい方へ広げる)。
 fn alloc.string.String.reserve_bytes[A: alloc.alloc.Allocator](self: &mut alloc.string.String<A>, extra: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let want = self.buf.len().wrapping_add(extra)
     let cap = self.buf.cap()

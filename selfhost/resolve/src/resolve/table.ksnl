@@ -6,7 +6,6 @@ type resolve.table.Def derive [Debug, Clone, Copy, PartialEq] pub
     sig: bool pub
 end resolve.table.Def
 
-// FQN (String) → 添字 (items の位置)。
 type resolve.table.Map pub
     m: alloc.collections.HashMap<alloc.string.String<std.alloc.System>, usize, std.alloc.System> pub
 end resolve.table.Map
@@ -17,7 +16,6 @@ type resolve.table.Table pub
     items: alloc.vec.Vec<resolve.table.Def, std.alloc.System> pub
 end resolve.table.Table
 
-// 1 ファイルの定義と列挙子を表に入れる。file はファイル番号。sig は rep.sig (宣言ファイルか)。
 fn resolve.table.add_file(t: &mut resolve.table.Table, p: &parse.cur.P, src: &[u8], file: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let sig = rep.sig
     for d in p.ast.defs.as_slice().iter() {
@@ -42,7 +40,6 @@ fn resolve.table.add_file(t: &mut resolve.table.Table, p: &parse.cur.P, src: &[u
     Ok(())
 end resolve.table.add_file
 
-// 列挙型の列挙子 (List の子は Variant。a = 名前のトークン) を `型.列挙子` で入れる。重複は入れない。
 fn resolve.table.add_variants(t: &mut resolve.table.Table, p: &parse.cur.P, src: &[u8], file: usize, sig: bool, owner: &str, list: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     for k in core.iter.range(0usize, resolve.ast.count(p, list)) {
         let v = parse.ast.get(&p.ast, resolve.ast.item(p, list, k))
@@ -59,7 +56,6 @@ fn resolve.table.add_variants(t: &mut resolve.table.Table, p: &parse.cur.P, src:
     Ok(())
 end resolve.table.add_variants
 
-// 添字 ix の定義 (範囲外は種別 Nil の空の定義)。
 fn resolve.table.at(t: &resolve.table.Table, ix: usize) -> resolve.table.Def uses [] panics never pub
     match t.items.as_slice().get(ix) {
         Some(d) => resolve.table.copy(d)
@@ -67,12 +63,10 @@ fn resolve.table.at(t: &resolve.table.Table, ix: usize) -> resolve.table.Def use
     }
 end resolve.table.at
 
-// 定義の複写 (Copy の構造体の参照外しは段階 1 で下りないので、フィールドから作り直す)。
 fn resolve.table.copy(d: &resolve.table.Def) -> resolve.table.Def uses [] panics never pub
     resolve.table.Def { kind: d.kind, file: d.file, line: d.line, public: d.public, sig: d.sig }
 end resolve.table.copy
 
-// 可視性 (`pub`)。拡張 extern は外から使う前提で公開扱い、テストは対象外。
 fn resolve.table.is_pub(n: &parse.ast.Node) -> bool uses [] panics never pub
     let k = n.kind
     if k == parse.ast.Kind.FnDef || k == parse.ast.Kind.ConstDef || k == parse.ast.Kind.StaticDef {
@@ -81,7 +75,6 @@ fn resolve.table.is_pub(n: &parse.ast.Node) -> bool uses [] panics never pub
     if k == parse.ast.Kind.TraitDef {
         return n.f == 1usize
     }
-    // 型の flags は bit 0 が pub (bit 1 は linear、bit 2 は layout)。
     if k == parse.ast.Kind.TypeDef || k == parse.ast.Kind.EnumDef {
         return (n.f & 1usize) == 1usize
     }
@@ -101,7 +94,6 @@ fn resolve.table.new() -> Result<resolve.table.Table, alloc.alloc.AllocError> us
     Ok(resolve.table.Table { defs: defs, variants: variants, items: items })
 end resolve.table.new
 
-// 定義 1 件を items に足し、key を添字で表に入れる (defs か variants の表)。
 fn resolve.table.put_def(t: &mut resolve.table.Table, key: alloc.string.String<std.alloc.System>, def: resolve.table.Def) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let ix = t.items.len()
     t.items.push(def)?
@@ -118,7 +110,6 @@ fn resolve.table.put_var(t: &mut resolve.table.Table, key: alloc.string.String<s
     Ok(())
 end resolve.table.put_var
 
-// 既存の登録の状態: 0 = なし、1 = 宣言と実装の組 (sig の違い)、2 = 重複。
 fn resolve.table.state(t: &resolve.table.Table, m: &resolve.table.Map, key: &alloc.string.String<std.alloc.System>, sig: bool) -> usize uses [] panics never pub
     let mm = &m.m
     match mm.get(key) {

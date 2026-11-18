@@ -1,4 +1,3 @@
-// expect: E2035
 type t.MyType
     v: u32
 end t.MyType

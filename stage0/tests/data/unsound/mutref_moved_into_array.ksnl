@@ -1,4 +1,3 @@
-// expect: E3002
 fn t.bad(x: &mut u32) -> Result<(), std.io.Error> uses [] panics never
     let a = [x]
     *x = 1u32

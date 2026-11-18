@@ -1,4 +1,3 @@
-// expect: E3060
 fn t.keep['a](v: &mut alloc.vec.Vec<&'a alloc.string.String, std.alloc.System>, s: &'a alloc.string.String) -> &'a alloc.string.String uses [alloc] panics never
     core.mem.drop(v.push(s))
     s

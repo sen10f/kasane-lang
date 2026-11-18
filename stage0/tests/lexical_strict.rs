@@ -12,7 +12,8 @@ fn prog(body: &str) -> String {
 }
 
 fn check_codes_of(name: &str, src: &str) -> Vec<String> {
-    let t = Tmp::new(name, src);
+    // コメントは `.ksnh` が持つ (`.ksnl` にコメントは置けない)。字句の規則はコメントにもかかる。
+    let t = Tmp::new_ksnh(name, src);
     codes(&text(&run(&["check", "--json"], &t.0).stdout))
 }
 

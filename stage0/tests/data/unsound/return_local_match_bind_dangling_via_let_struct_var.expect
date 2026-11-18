@@ -1,0 +1,4 @@
+expect: E3030
+note: 言い換え穴: `t.Holder { r: &x }` は E3030（ローカル `x` への参照を &'static u32 フィールドに入れる）だが、
+note: `match &x { rr => t.Holder { r: rr } }` と match の腕で変数を 1 段束縛すると拒否されなくなる。
+note: 戻り値 t.Holder は実際にはローカル `x` へのダングル参照。main で h.r を読むとダングル参照を読む。

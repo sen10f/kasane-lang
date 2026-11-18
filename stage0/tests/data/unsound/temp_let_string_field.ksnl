@@ -3,7 +3,6 @@ type t.S pub
     s: alloc.string.String<std.alloc.System>
 end t.S
 
-// expect: E3010
 fn t.bad() -> usize uses [] panics never
     let r = &t.make().s
     r.as_str().len()

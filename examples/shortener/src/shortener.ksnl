@@ -73,7 +73,6 @@ fn shortener.serve_cli() -> Result<(), shortener.error.Error> uses [alloc, env, 
         Some(p) => p
         None => return Err(error.Error.BadRequest)
     }
-    // 4 つ目の引数 (ワーカー数) があれば、受け付けた接続をワーカーのスレッドに渡して並行に処理する (0 または省略で 1 接続ずつ)。
     let workers = match std.env.arg(3usize) {
         Some(w) => usize.parse(w).map_err(error.bad_number)?
         None => 0usize

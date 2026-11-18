@@ -1,5 +1,3 @@
-// expect: E3002
-// 線形の値を値のまま分解したら、_ だけでも消費 (仕様 4.4)。後の使用は E3002
 type t.Res linear
     id: u32
 end t.Res

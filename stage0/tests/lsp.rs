@@ -47,7 +47,12 @@ impl Tmp {
         fs::create_dir_all(d.join("src")).unwrap();
         fs::write(d.join("kasane.toml"), TOML).unwrap();
         fs::write(d.join("kasane.lock"), "version = 1\n").unwrap();
-        fs::write(d.join("src").join("t.ksnl"), src).unwrap();
+        // コメント (`///` の文書) のある入力は `.ksnh` が正で、`.ksnl` はその `strip` (`.ksnl` にコメントは置けない)。
+        let ksnl: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).map(|l| format!("{l}\n")).collect();
+        if ksnl != src {
+            fs::write(d.join("src").join("t.ksnh"), src).unwrap();
+        }
+        fs::write(d.join("src").join("t.ksnl"), ksnl).unwrap();
         // 書き方は 1 通り (E0020): 試験の入力は `ksn fmt` の出力にそろえる。
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
         // 正規化 (macOS の /var など) してから使う。
@@ -271,7 +276,7 @@ fn diagnostics_with_utf16_range_and_clearing_on_change() {
     // `;` は Rust 風の書き方 (E0040)。その手前に "あ😀" があるので、列の変換が効いていないと位置がずれる。
     let semi = SRC_GOOD.replace("    t.add(1u32, 2u32)\nend t.main", "    let n = \"あ😀\";\n    t.add(1u32, 2u32)\nend t.main");
     let t = Tmp::new("diag", &semi);
-    let uri = t.uri("src/t.ksnl");
+    let uri = t.uri("src/t.ksnh");
     let mut c = Client::start();
     c.initialize(&t.0);
     c.open(&uri, &semi);
@@ -291,14 +296,14 @@ fn diagnostics_with_utf16_range_and_clearing_on_change() {
     let ds = c.diagnostics_until(&uri, |d| d.is_empty());
     assert!(ds.is_empty());
     // ディスクは壊れたまま。
-    assert_eq!(fs::read_to_string(t.file("src/t.ksnl")).unwrap(), semi);
+    assert_eq!(fs::read_to_string(t.file("src/t.ksnh")).unwrap(), semi);
     c.shutdown();
 }
 
 #[test]
 fn code_action_applies_the_fix() {
     let t = Tmp::new("fix", SRC_BAD);
-    let uri = t.uri("src/t.ksnl");
+    let uri = t.uri("src/t.ksnh");
     let mut c = Client::start();
     c.initialize(&t.0);
     c.open(&uri, SRC_BAD);
@@ -323,7 +328,7 @@ fn code_action_applies_the_fix() {
 #[test]
 fn hover_definition_references() {
     let t = Tmp::new("nav", SRC_GOOD);
-    let uri = t.uri("src/t.ksnl");
+    let uri = t.uri("src/t.ksnh");
     let mut c = Client::start();
     c.initialize(&t.0);
     c.open(&uri, SRC_GOOD);
@@ -354,7 +359,7 @@ fn hover_definition_references() {
 #[test]
 fn rename_with_prepare() {
     let t = Tmp::new("rename", SRC_GOOD);
-    let uri = t.uri("src/t.ksnl");
+    let uri = t.uri("src/t.ksnh");
     let mut c = Client::start();
     c.initialize(&t.0);
     c.open(&uri, SRC_GOOD);
@@ -503,7 +508,7 @@ const t.LIMIT: u32 = 5u32
 #[test]
 fn robust_against_malformed_input_and_broken_manifest() {
     let t = Tmp::new("robust", SRC_GOOD);
-    let uri = t.uri("src/t.ksnl");
+    let uri = t.uri("src/t.ksnh");
     let mut c = Client::start();
     c.initialize(&t.0);
     // 壊れた JSON、オブジェクトでない値、method の無い要求、未知のメソッド、Content-Length の無いヘッダ。
@@ -563,4 +568,47 @@ fn requests_before_initialize_are_rejected() {
         assert!(Instant::now() < deadline, "server did not exit");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// `.ksnl` を開いたとき: 同じモジュールの `.ksnh` から `///` の文書を引き、位置は `.ksnl` の座標で返す。
+#[test]
+fn ksnl_open_reads_docs_from_the_sibling_ksnh() {
+    let t = Tmp::new("ksnl_docs", SRC_GOOD);
+    let uri = t.uri("src/t.ksnl");
+    let ksnl = fs::read_to_string(t.file("src/t.ksnl")).unwrap();
+    assert!(!ksnl.contains("///"));
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    c.open(&uri, &ksnl);
+    // `.ksnl` では `t.add(` の呼び出しは 5 行目 (`///` の 2 行が無い)。
+    let h = c.call("textDocument/hover", at(&uri, 5, 8));
+    let md = h["contents"]["value"].as_str().unwrap();
+    assert!(md.contains("2 つの数を足す。\n2 行目の説明。"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 5, 8));
+    let loc = &d.as_array().unwrap()[0];
+    assert_eq!(loc["uri"], uri);
+    assert_eq!(loc["range"]["start"], json!({"line": 0, "character": 3}));
+    let r = c.call("textDocument/references", json!({"textDocument": tdoc(&uri), "position": {"line": 0, "character": 5}, "context": {"includeDeclaration": true}}));
+    assert_eq!(r.as_array().unwrap().len(), 2);
+    c.shutdown();
+}
+
+/// `.ksnh` の整形: コメントを残して整形し、保存すると横の `.ksnl` が `strip` で作り直される。
+#[test]
+fn ksnh_formatting_and_save_rebuild_the_ksnl() {
+    let src = "/// 説明。\nconst t.LIMIT: u32 = 5u32\n";
+    let bad = "const t.LIMIT: u32 = 5u32\n\n\n/// 説明。\nfn t.main() -> () uses [] panics never pub\n    ()\nend t.main\n";
+    let t = Tmp::new("ksnh_fmt", src);
+    let uri = t.uri("src/t.ksnh");
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    c.open(&uri, bad);
+    let e = c.call("textDocument/formatting", json!({"textDocument": tdoc(&uri), "options": {"tabSize": 4, "insertSpaces": true}}));
+    let out = apply(bad, &e);
+    assert!(out.contains("/// 説明。\nfn t.main") && !out.contains("\n\n\n"), "{}", out);
+    c.notify("textDocument/didSave", json!({"textDocument": {"uri": uri}, "text": out}));
+    c.call("textDocument/documentSymbol", json!({"textDocument": tdoc(&uri)}));
+    let ksnl = fs::read_to_string(t.file("src/t.ksnl")).unwrap();
+    assert!(!ksnl.contains("///") && ksnl.contains("fn t.main"), "{}", ksnl);
+    c.shutdown();
 }

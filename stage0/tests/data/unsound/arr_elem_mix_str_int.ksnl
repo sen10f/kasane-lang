@@ -1,5 +1,3 @@
-// expect: E2023
-// 文字列と整数を同じ配列に入れる
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = ["a", 1u32]
     core.mem.drop(a)

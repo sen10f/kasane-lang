@@ -1,0 +1,124 @@
+import shortener_https.error
+import shortener_https.json
+import shortener_https.store
+
+// 応答の中身。`location` が空でなければ `Location` ヘッダになる。
+type shortener_https.router.Reply pub
+    body: alloc.string.String<std.alloc.System> pub
+    location: alloc.string.String<std.alloc.System> pub
+    status: u16 pub
+end shortener_https.router.Reply
+
+fn shortener_https.router.empty() -> alloc.string.String<std.alloc.System> uses [alloc] panics never pub
+    alloc.string.String.new(std.alloc.SYSTEM)
+end shortener_https.router.empty
+
+fn shortener_https.router.error_reply(status: u16, message: &str) -> Result<shortener_https.router.Reply, shortener_https.error.Error> uses [alloc] panics never pub
+    let body = json.error_body(message)?
+    let location = shortener_https.router.empty()
+    Ok(shortener_https.router.Reply { body: body, location: location, status: status })
+end shortener_https.router.error_reply
+
+fn shortener_https.router.lookup(db: &shortener_https.store.Store, path: &str) -> Result<shortener_https.router.Reply, shortener_https.error.Error> uses [alloc] panics never
+    let code_text = match path.strip_prefix("/") {
+        Some(c) => c
+        None => return shortener_https.router.error_reply(400u16, "bad path")
+    }
+    match db.lookup(code_text) {
+        Some(url) => {
+            let body = json.link_body(code_text, url)?
+            let location = alloc.string.String.from_str(std.alloc.SYSTEM, url)?
+            Ok(shortener_https.router.Reply { body: body, location: location, status: 302u16 })
+        }
+        None => shortener_https.router.error_reply(404u16, "not found")
+    }
+end shortener_https.router.lookup
+
+// 応答を組み立てる (`location` は空でなければ `Location`)。
+fn shortener_https.router.reply(status: u16, body: alloc.string.String<std.alloc.System>, location: alloc.string.String<std.alloc.System>) -> shortener_https.router.Reply uses [] panics never pub
+    shortener_https.router.Reply { body: body, location: location, status: status }
+end shortener_https.router.reply
+
+// 要求 1 件の経路。`method` と `path` は要求行のまま、`body` は本体の文字列 (UTF-8 として読めたもの)。
+fn shortener_https.router.route(db: &mut shortener_https.store.Store, method: &str, path: &str, body: &str) -> Result<shortener_https.router.Reply, shortener_https.error.Error> uses [alloc, io.fs] panics never pub
+    if method == "GET" {
+        if path == "/stats" {
+            let stats = json.stats_body(db.len())?
+            let location = shortener_https.router.empty()
+            let reply = shortener_https.router.reply(200u16, stats, location)
+            return Ok(reply)
+        }
+        if path == "/shorten" {
+            return shortener_https.router.error_reply(405u16, "method not allowed")
+        }
+        return shortener_https.router.lookup(db, path)
+    }
+    if method == "POST" {
+        if path == "/shorten" {
+            return shortener_https.router.shorten(db, body)
+        }
+        return shortener_https.router.error_reply(405u16, "method not allowed")
+    }
+    shortener_https.router.error_reply(405u16, "method not allowed")
+end shortener_https.router.route
+
+fn shortener_https.router.shorten(db: &mut shortener_https.store.Store, body: &str) -> Result<shortener_https.router.Reply, shortener_https.error.Error> uses [alloc, io.fs] panics never
+    let url = body.trim()
+    if !store.is_valid_url(url) {
+        return shortener_https.router.error_reply(400u16, "invalid url")
+    }
+    match db.add(url) {
+        Ok(code_text) => {
+            let out = json.link_body(code_text.as_str(), url)?
+            let location = shortener_https.router.empty()
+            Ok(shortener_https.router.Reply { body: out, location: location, status: 201u16 })
+        }
+        Err(error.Error.Alloc(a)) => Err(error.Error.Alloc(a))
+        Err(_other) => shortener_https.router.error_reply(500u16, "storage failure")
+    }
+end shortener_https.router.shorten
+
+fn shortener_https.router.test_call(db: &mut shortener_https.store.Store, method: &str, path: &str, body: &str) -> shortener_https.router.Reply uses [alloc, io.fs] panics may
+    match shortener_https.router.route(db, method, path, body) {
+        Ok(r) => r
+        Err(_e) => core.panic.panic("route failed")
+    }
+end shortener_https.router.test_call
+
+fn shortener_https.router.test_store() -> shortener_https.store.Store uses [alloc] panics may
+    match store.Store.new("") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+end shortener_https.router.test_store
+
+test shortener_https.router.route.test_get_known_code_redirects
+    let mut db = shortener_https.router.test_store()
+    core.mem.drop(shortener_https.router.test_call(&mut db, "POST", "/shorten", "http://a.test/x"))
+    let r = shortener_https.router.test_call(&mut db, "GET", "/1000", "")
+    core.check.eq(r.status, 302u16)
+    core.check.eq(r.location.as_str(), "http://a.test/x")
+    core.check.eq(r.body.as_str(), "{\"code\":\"1000\",\"url\":\"http://a.test/x\"}")
+end shortener_https.router.route.test_get_known_code_redirects
+
+test shortener_https.router.route.test_method_not_allowed
+    let mut db = shortener_https.router.test_store()
+    let posted = shortener_https.router.test_call(&mut db, "DELETE", "/shorten", "http://a.test/")
+    core.check.eq(posted.status, 405u16)
+    core.check.eq(shortener_https.router.test_call(&mut db, "PUT", "/1000", "").status, 405u16)
+    core.check.eq(shortener_https.router.test_call(&mut db, "POST", "/stats", "").status, 405u16)
+    core.check.eq(shortener_https.router.test_call(&mut db, "GET", "/shorten", "").status, 405u16)
+    core.check.eq(db.len(), 0usize)
+end shortener_https.router.route.test_method_not_allowed
+
+test shortener_https.router.route.test_shorten_and_stats
+    let mut db = shortener_https.router.test_store()
+    let r = shortener_https.router.test_call(&mut db, "POST", "/shorten", "  http://a.test/x\r\n")
+    core.check.eq(r.status, 201u16)
+    core.check.eq(r.body.as_str(), "{\"code\":\"1000\",\"url\":\"http://a.test/x\"}")
+    let ftp = shortener_https.router.test_call(&mut db, "POST", "/shorten", "ftp://a.test/")
+    core.check.eq(ftp.status, 400u16)
+    let stats = shortener_https.router.test_call(&mut db, "GET", "/stats", "")
+    core.check.eq(stats.body.as_str(), "{\"links\":1}")
+    core.check.eq(shortener_https.router.test_call(&mut db, "GET", "/1001", "").status, 404u16)
+end shortener_https.router.route.test_shorten_and_stats

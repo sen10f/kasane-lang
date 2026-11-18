@@ -324,7 +324,6 @@ fn notes.store.note_path(dir: &str, id: i64) -> Result<alloc.string.String<std.a
     Ok(p)
 end notes.store.note_path
 
-// 1 メモを JSON オブジェクトとしてシリアライズする（std.json.to_string は KIR ステージ1で未対応のため手動）。
 fn notes.store.note_to_json(n: &notes.note.Note) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     out.push_str("{\"id\":")?
@@ -399,7 +398,6 @@ fn notes.store.string_copy(s: &alloc.string.String<std.alloc.System>) -> Result<
     alloc.string.String.from_str(std.alloc.SYSTEM, (*s).as_str())
 end notes.store.string_copy
 
-// ディレクトリ（存在すれば中身ごと）を削除する。
 fn notes.store.test_reset_dir() -> Result<(), notes.error.Error> uses [alloc, io.fs] panics never
     notes.store.remove_dir_all(notes.store.TEST_DIR)?
     std.fs.create_dir_all(notes.store.TEST_DIR)?

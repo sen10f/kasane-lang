@@ -1,0 +1,2 @@
+note: KIR falsely rejects map_err then `?` on a wrapper returning
+note: Result<&str, AllocError> from String.as_str(). AST accepts; KIR E3010.

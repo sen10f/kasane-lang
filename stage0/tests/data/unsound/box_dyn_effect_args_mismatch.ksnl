@@ -1,4 +1,3 @@
-// expect: E4001
 trait t.H[E: uses, P: panics] pub
     fn handle(self: &mut Self) -> u32 uses [E] panics P
 end t.H

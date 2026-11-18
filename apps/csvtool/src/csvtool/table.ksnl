@@ -1,18 +1,15 @@
 import alloc.string
 
-// 1 行のフィールド列。
 type csvtool.table.Row pub
     fields: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
 end csvtool.table.Row
 
-// 読み込んだ 1 つの表。ヘッダー (先頭行) と残りの行、出力に使う区切り文字を持つ。
 type csvtool.table.Table pub
     header: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
     rows: alloc.vec.Vec<csvtool.table.Row, std.alloc.System> pub
     delim: char pub
 end csvtool.table.Table
 
-// 1 セルを参照で得る (範囲外は None)。
 fn csvtool.table.Table.cell(self: &csvtool.table.Table, row: usize, col: usize) -> Option<&str> uses [] panics never pub
     let all = self.rows.as_slice()
     match all.get(row) {
@@ -27,7 +24,6 @@ fn csvtool.table.Table.cell(self: &csvtool.table.Table, row: usize, col: usize) 
     }
 end csvtool.table.Table.cell
 
-// 列指定 ("3" は 1 基準の番号、それ以外はヘッダー名) を 0 基準の列番号にする。
 fn csvtool.table.Table.col_index(self: &csvtool.table.Table, spec: &str) -> Option<usize> uses [] panics never pub
     match csvtool.table.parse_index(spec) {
         Some(n) => {
@@ -44,7 +40,6 @@ fn csvtool.table.Table.col_index(self: &csvtool.table.Table, spec: &str) -> Opti
     }
 end csvtool.table.Table.col_index
 
-// ヘッダーの 1 項目を参照で得る (範囲外は None)。
 fn csvtool.table.Table.header_name(self: &csvtool.table.Table, col: usize) -> Option<&str> uses [] panics never pub
     let h = self.header.as_slice()
     match h.get(col) {
@@ -53,17 +48,14 @@ fn csvtool.table.Table.header_name(self: &csvtool.table.Table, col: usize) -> Op
     }
 end csvtool.table.Table.header_name
 
-// 表の行数 (ヘッダーを除く)。
 fn csvtool.table.Table.height(self: &csvtool.table.Table) -> usize uses [] panics never pub
     self.rows.len()
 end csvtool.table.Table.height
 
-// 表の列数 (ヘッダーの項目数)。
 fn csvtool.table.Table.width(self: &csvtool.table.Table) -> usize uses [] panics never pub
     self.header.len()
 end csvtool.table.Table.width
 
-// ヘッダー名で列を探す (0 基準)。
 fn csvtool.table.name_index(self: &csvtool.table.Table, spec: &str) -> Option<usize> uses [] panics never
     let h = self.header.as_slice()
     let mut i = 0usize
@@ -82,7 +74,6 @@ fn csvtool.table.name_index(self: &csvtool.table.Table, spec: &str) -> Option<us
     None
 end csvtool.table.name_index
 
-// 数字だけの列指定を 1 基準の番号として読む (数字以外を含む、または空なら None)。
 fn csvtool.table.parse_index(spec: &str) -> Option<usize> uses [] panics never
     if spec.is_empty() {
         return None

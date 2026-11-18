@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.five() -> u32 uses [] panics never
     return
 end t.five

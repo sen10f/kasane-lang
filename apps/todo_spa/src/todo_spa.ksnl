@@ -1,6 +1,5 @@
 import todo_spa.app
 
-// JS から呼ぶ (export): クリックなどのイベント。tag は `ksn_event` の受け口の約束 (todo_spa.app)。
 fn todo_spa.ksn_event(tag: u32) -> () uses [alloc] panics may
     match app.on_event(tag) {
         Ok(u) => core.mem.drop(u)
@@ -8,7 +7,6 @@ fn todo_spa.ksn_event(tag: u32) -> () uses [alloc] panics may
     }
 end todo_spa.ksn_event
 
-// JS から呼ぶ (export): fetch の完了。status 0 は通信の失敗。
 fn todo_spa.ksn_fetch_done(tag: u32, status: i32) -> () uses [alloc] panics may
     match app.on_fetch(tag, status) {
         Ok(u) => core.mem.drop(u)
@@ -16,7 +14,6 @@ fn todo_spa.ksn_fetch_done(tag: u32, status: i32) -> () uses [alloc] panics may
     }
 end todo_spa.ksn_fetch_done
 
-// 入口。画面を作って、localStorage の一覧を出し、サーバの一覧を取り直す (web/boot.mjs が呼ぶ `ksn_main`)。
 fn todo_spa.main() -> () uses [alloc] panics may
     match app.start() {
         Ok(u) => core.mem.drop(u)

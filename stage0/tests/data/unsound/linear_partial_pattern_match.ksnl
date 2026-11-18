@@ -1,4 +1,3 @@
-// expect: E3003
 type t.Pair linear
     a: u32
     b: t.Res

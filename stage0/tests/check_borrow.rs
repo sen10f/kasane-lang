@@ -715,7 +715,7 @@ fn nll_mem_replace_with_a_dead_holder_is_accepted() {
 #[test]
 fn linear_ok_cases_pass_check() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
-    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(!names.is_empty(), "linear_ok cases missing");
     let mut failures = Vec::new();

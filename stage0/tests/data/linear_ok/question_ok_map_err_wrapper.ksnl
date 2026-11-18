@@ -1,5 +1,3 @@
-// KIR falsely rejects map_err then `?` on a wrapper returning
-// Result<&str, AllocError> from String.as_str(). AST accepts; KIR E3010.
 enum t.Error derive [Debug, Clone, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
 end t.Error

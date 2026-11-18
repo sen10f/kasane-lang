@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.bad() -> () uses [] panics never
     let n = 2u8
     if n {

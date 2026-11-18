@@ -1,7 +1,3 @@
-// expect: E3030
-// 言い換え穴: `m.lock().get()` は E3030（一時値のロックガードへの参照を返す）だが、
-// `let g = m.lock(); g.get()` とガードを変数に 1 段束縛するとすり抜ける。
-// 戻り値 &u32 は実際にはローカルガード g へのダングル参照。main で *r を読むとダングル参照を読む。
 fn t.borrow(m: &std.sync.Mutex<u32>) -> &u32 uses [thread] panics never
     let g = m.lock()
     g.get()

@@ -1,4 +1,3 @@
-// expect: E4001
 trait t.Base[E: uses, P: panics]
     fn base(self: &Self) -> () uses [E] panics P
 end t.Base

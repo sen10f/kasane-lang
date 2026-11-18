@@ -1,4 +1,3 @@
-// expect: E1102
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     let v: alloc.vec.Vec<Foo> = alloc.vec.Vec.new()
     core.mem.drop(v)

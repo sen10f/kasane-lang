@@ -1,4 +1,3 @@
-// expect: E1122
 trait t.H
     fn f[U](self: &Self, a: U) -> U uses [] panics never
 end t.H

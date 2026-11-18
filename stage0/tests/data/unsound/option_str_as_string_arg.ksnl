@@ -1,4 +1,3 @@
-// expect: E2023
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let x: &str = "hi"
     core.mem.drop(t.sink(Some(x)))

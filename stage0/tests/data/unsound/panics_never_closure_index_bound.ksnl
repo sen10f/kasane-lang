@@ -1,4 +1,3 @@
-// expect: E4002
 fn t.ap[F: core.ops.Fn<(usize,), u8, [], never>](f: &F) -> u8 uses [] panics never
     f.call((9usize,))
 end t.ap

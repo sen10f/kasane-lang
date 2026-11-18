@@ -1,0 +1,125 @@
+// KIR への下ろし (修正プラン 5-5 の下ろしの段)。使い方: ksn run -- PKG_DIR STD_DIR FQN...
+// 出力: Rust 版 `ksn kir FQN` と同じ形 (`kir 1`、集成体の行、関数の並び) の KIR のテキスト。
+// 下ろせなかった関数は `unsupported FQN: 理由` の行にして、本体は出さない。
+fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.fs] panics may
+    let pkg = match std.env.arg(0usize) {
+        Some(s) => s
+        None => return Ok(())
+    }
+    let std_dir = match std.env.arg(1usize) {
+        Some(s) => s
+        None => return Ok(())
+    }
+    let tout = types.export.run(pkg, std_dir)?
+    let env = tout.env
+    let mut c = lower.cx.new(tout.ar, tout.cx)?
+    let mut j = 2usize
+    loop {
+        match std.env.arg(j) {
+            Some(s) => {
+                let it = types.env.get_def(&env.tab, s)
+                let none = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                lower.expr.enqueue(&mut c, s, it, none, 0usize)?
+            }
+            None => break
+        }
+        j = j + 1usize
+    }
+    // 呼ばれた関数を順に下ろす (下ろす途中で呼び出し先が増える)。
+    let mut i = 0usize
+    while i < c.g.nms.len() {
+        let key = lower.cx.name_of(&c, i)?
+        let it = lower.cx.item_at(&c, i)
+        let subs = lower.cx.subs_at(&c, i)?
+        let ret = lower.cx.ret_at(&c, i)
+        if it == lower.chk.GEN && key.as_str().starts_with("alloc.") {
+            lower.vec.gen(&env, &mut c, key.as_str(), &subs, ret)?
+        } else if it == lower.chk.GEN {
+            lower.chk.record(&env, &mut c, key.as_str(), &subs)?
+        } else if it == 0usize {
+            lower.func.record(&mut c, "", "定義がない")?
+        } else if (types.infer.item_kind(&env, it - 1usize) != parse.ast.Kind.FnDef) {
+            lower.func.record(&mut c, "", "関数でない")?
+        } else {
+            lower.func.lower_item(&env, &mut c, it - 1usize, key.as_str(), &subs, ret)?
+        }
+        i = i + 1usize
+    }
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("kir 1\n\n")?
+    let aggs = lower.tyk.agg_lines(&env, &mut c)?
+    out.push_str(aggs.as_str())?
+    if c.g.aggs.len() > 0usize {
+        out.push('\n')?
+    }
+    // 関数は名前の順 (選択で並べる)。
+    let mut used = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for _k in core.iter.range(0usize, c.g.nms.len()) {
+        used.push(false)?
+    }
+    let mut firstf = true
+    let mut bad = alloc.string.String.new(std.alloc.SYSTEM)
+    loop {
+        let mut pick = c.g.nms.len()
+        for k in core.iter.range(0usize, c.g.nms.len()) {
+            let taken = match used.as_slice().get(k) {
+                Some(x) => *x
+                None => true
+            }
+            if !taken {
+                if pick == c.g.nms.len() {
+                    pick = k
+                } else {
+                    let a = lower.cx.name_of(&c, k)?
+                    let b = lower.cx.name_of(&c, pick)?
+                    if lower.cx.lt(a.as_str(), b.as_str()) {
+                        pick = k
+                    }
+                }
+            }
+        }
+        if pick == c.g.nms.len() {
+            break
+        }
+        // 取り出した印を付ける (組み直し)。
+        let mut nused = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut q = 0usize
+        for flag in used.as_slice().iter() {
+            if q == pick {
+                nused.push(true)?
+            } else {
+                nused.push(*flag)?
+            }
+            q = q + 1usize
+        }
+        used = nused
+        let ok = match c.g.oks.as_slice().get(pick) {
+            Some(b) => *b
+            None => false
+        }
+        let text = match c.g.tx.as_slice().get(pick) {
+            Some(s) => lower.cx.own(s.as_str())?
+            None => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+        let nm = match c.g.nms.as_slice().get(pick) {
+            Some(s) => lower.cx.own(s.as_str())?
+            None => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+        if ok {
+            if !firstf {
+                out.push('\n')?
+            }
+            firstf = false
+            out.push_str(text.as_str())?
+        } else {
+            bad.push_str("unsupported ")?
+            bad.push_str(nm.as_str())?
+            bad.push_str(": ")?
+            bad.push_str(text.as_str())?
+            bad.push('\n')?
+        }
+    }
+    out.push_str(bad.as_str())?
+    std.io.print_line(out.as_str())?
+    Ok(())
+end lower.main

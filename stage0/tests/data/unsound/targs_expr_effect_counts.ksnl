@@ -3,8 +3,6 @@ fn t.main() -> () uses [] panics never
     core.mem.drop(v)
 end t.main
 
-// expect: E2023
-// 効果の実引数 `[..]` も数に入る (`t.run` は `T` と `E` の 2 つ)
 fn t.run[T, E: uses](x: T) -> T uses [E] panics never
     x
 end t.run

@@ -1,4 +1,3 @@
-// expect: E2023
 type t.P
     a: u64
 end t.P

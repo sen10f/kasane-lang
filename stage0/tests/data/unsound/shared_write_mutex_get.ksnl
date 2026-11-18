@@ -1,4 +1,3 @@
-// expect: E3031
 static t.CNT: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console, thread] panics never

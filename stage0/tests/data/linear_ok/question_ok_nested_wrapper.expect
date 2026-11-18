@@ -1,0 +1,2 @@
+note: KIR falsely rejects nested wrappers (wrapper calling wrapper) returning
+note: Result<&str, E> from String.as_str() followed by `?`. AST accepts; KIR E3010.

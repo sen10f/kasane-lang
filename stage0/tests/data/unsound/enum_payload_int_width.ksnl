@@ -1,4 +1,3 @@
-// expect: E2020
 enum t.E pub
     A(u32)
 end t.E

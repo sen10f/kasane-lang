@@ -1,4 +1,3 @@
-// expect: E3030
 fn t.bad(x: &u32) -> Option<&Option<&u32>> uses [io.console] panics never
     let t = Some(x)
     Some(&t)

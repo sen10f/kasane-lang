@@ -1,4 +1,3 @@
-// expect: E1123
 trait t.Shape pub
     fn area(self: &Self) -> i64 uses [] panics never
 end t.Shape

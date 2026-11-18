@@ -1,0 +1,273 @@
+import wiki.markdown
+import wiki.store
+
+// `name` への被リンク元ページ名を一覧する。
+fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, wiki.error.Error> uses [alloc, io.fs] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let pages = store.PageStore.list_pages(page_store)?
+    let mut i = 0usize
+    let n = pages.len()
+    while i < n {
+        match pages.as_slice().get(i) {
+            Some(page_name) => {
+                if page_name.as_str() != name {
+                    let pn = page_name.as_str()
+                    let content = match store.PageStore.load_latest(page_store, pn) {
+                        Some(c) => c
+                        None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
+                    }
+                    let links = wiki.link.extract_wiki_links(content.as_str())?
+                    let mut j = 0usize
+                    let m = links.len()
+                    while j < m {
+                        match links.as_slice().get(j) {
+                            Some(link) => {
+                                if link.as_str() == name {
+                                    let mut cloned = alloc.string.String.new(std.alloc.SYSTEM)
+                                    cloned.push_str(page_name.as_str())?
+                                    core.mem.drop(out.push(cloned)?)
+                                    break
+                                }
+                            }
+                            None => core.mem.drop(0u8)
+                        }
+                        j = j.saturating_add(1usize)
+                    }
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.saturating_add(1usize)
+    }
+    // core.slice.sort はネイティブバックエンドで segfault するため未使用。
+    // 重複除去はソートを前提とせず、O(n^2) で全要素と比較する。
+    let mut deduped = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut k = 0usize
+    let n2 = out.len()
+    while k < n2 {
+        match out.as_slice().get(k) {
+            Some(v) => {
+                let mut found = false
+                let mut j = 0usize
+                let m = deduped.len()
+                while j < m {
+                    match deduped.as_slice().get(j) {
+                        Some(d) => {
+                            let d_ref: &alloc.string.String<std.alloc.System> = d
+                            if d_ref.as_str() == v.as_str() {
+                                found = true
+                            }
+                        }
+                        None => core.mem.drop(0u8)
+                    }
+                    j = j.saturating_add(1usize)
+                }
+                if !found {
+                    let mut v_copy = alloc.string.String.new(std.alloc.SYSTEM)
+                    core.mem.drop(v_copy.push_str(v.as_str())?)
+                    core.mem.drop(deduped.push(v_copy)?)
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        k = k.saturating_add(1usize)
+    }
+    Ok(deduped)
+end wiki.link.backlinks_for
+
+// `[[WikiPage]]` 形式のウィキリンクを抽出する。
+fn wiki.link.extract_wiki_links(text: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    let total = text.len()
+    while i < total {
+        let b = match text.as_bytes().get(i) {
+            Some(v) => *v
+            None => 0u8
+        }
+        let b2 = if i.saturating_add(1usize) < total {
+            match text.as_bytes().get(i.saturating_add(1usize)) {
+                Some(v) => *v
+                None => 0u8
+            }
+        } else {
+            0u8
+        }
+        if b == b'[' && b2 == b'[' {
+            let closing = markdown.find_closing(text, i.saturating_add(2usize), b']')
+            match closing {
+                Some(found) => {
+                    if found.saturating_add(1usize) < total {
+                        let b3 = match text.as_bytes().get(found.saturating_add(1usize)) {
+                            Some(v) => *v
+                            None => 0u8
+                        }
+                        if b3 == b']' {
+                            let page_start = i.saturating_add(2usize)
+                            let page = markdown.substring(text, page_start, found)
+                            if !page.is_empty() {
+                                let s = alloc.string.String.from_str(std.alloc.SYSTEM, page)?
+                                core.mem.drop(out.push(s)?)
+                            }
+                            i = found.saturating_add(2usize)
+                            continue
+                        }
+                    }
+                    i = i.saturating_add(1usize)
+                    continue
+                }
+                None => {
+                    i = i.saturating_add(1usize)
+                    continue
+                }
+            }
+        }
+        i = i.saturating_add(1usize)
+    }
+    // core.slice.sort はネイティブバックエンドで segfault するため未使用。
+    // 重複除去はソートを前提とせず、O(n^2) で全要素と比較する。
+    let mut deduped = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut k = 0usize
+    let n2 = out.len()
+    while k < n2 {
+        match out.as_slice().get(k) {
+            Some(v) => {
+                let mut found = false
+                let mut j = 0usize
+                let m = deduped.len()
+                while j < m {
+                    match deduped.as_slice().get(j) {
+                        Some(d) => {
+                            let d_ref: &alloc.string.String<std.alloc.System> = d
+                            if d_ref.as_str() == v.as_str() {
+                                found = true
+                            }
+                        }
+                        None => core.mem.drop(0u8)
+                    }
+                    j = j.saturating_add(1usize)
+                }
+                if !found {
+                    let mut v_copy = alloc.string.String.new(std.alloc.SYSTEM)
+                    core.mem.drop(v_copy.push_str(v.as_str())?)
+                    core.mem.drop(deduped.push(v_copy)?)
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        k = k.saturating_add(1usize)
+    }
+    Ok(deduped)
+end wiki.link.extract_wiki_links
+
+test wiki.link.backlinks_for.test_cases
+    core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-backlinks"))
+    let mut page_store = store.PageStore.new("/tmp/wiki-test-backlinks")?
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "A", "content [[B]] here\n", 1u64)?)
+    let b_page = "content [[A]] and [[C]]\n"
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "B", b_page, 1u64)?)
+    let links = wiki.link.backlinks_for(&mut page_store, "A")?
+    core.check.eq(links.len(), 1usize)
+    match links.as_slice().get(0usize) {
+        Some(l) => core.check.eq(l.as_str(), "B")
+        None => core.panic.panic("missing B")
+    }
+end wiki.link.backlinks_for.test_cases
+
+test wiki.link.backlinks_for.test_multiple_backlinks
+    core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-backlinks-multi"))
+    let mut page_store = store.PageStore.new("/tmp/wiki-test-backlinks-multi")?
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "C", "link to [[A]] and [[B]]\n", 1u64)?)
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "D", "also [[A]]\n", 1u64)?)
+    let links = wiki.link.backlinks_for(&mut page_store, "A")?
+    core.check.eq(links.len(), 2usize)
+end wiki.link.backlinks_for.test_multiple_backlinks
+
+test wiki.link.backlinks_for.test_no_backlinks
+    core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-backlinks-none"))
+    let mut page_store = store.PageStore.new("/tmp/wiki-test-backlinks-none")?
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "A", "no links here\n", 1u64)?)
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "B", "nothing\n", 1u64)?)
+    let links = wiki.link.backlinks_for(&mut page_store, "A")?
+    core.check.eq(links.len(), 0usize)
+end wiki.link.backlinks_for.test_no_backlinks
+
+test wiki.link.backlinks_for.test_self_link_excluded
+    core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-backlinks-self"))
+    let mut page_store = store.PageStore.new("/tmp/wiki-test-backlinks-self")?
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "A", "link to [[A]] myself\n", 1u64)?)
+    let links = wiki.link.backlinks_for(&mut page_store, "A")?
+    core.check.eq(links.len(), 0usize)
+end wiki.link.backlinks_for.test_self_link_excluded
+
+test wiki.link.extract_wiki_links.test_adjacent_links
+    match wiki.link.extract_wiki_links("[[A]][[B]][[C]]") {
+        Ok(v) => {
+            core.check.eq(v.len(), 3usize)
+            match v.as_slice().get(0usize) {
+                Some(a) => core.check.eq(a.as_str(), "A")
+                None => core.panic.panic("missing A")
+            }
+            match v.as_slice().get(1usize) {
+                Some(b) => core.check.eq(b.as_str(), "B")
+                None => core.panic.panic("missing B")
+            }
+            match v.as_slice().get(2usize) {
+                Some(c) => core.check.eq(c.as_str(), "C")
+                None => core.panic.panic("missing C")
+            }
+        }
+        Err(_e) => core.panic.panic("adjacent links")
+    }
+end wiki.link.extract_wiki_links.test_adjacent_links
+
+test wiki.link.extract_wiki_links.test_cases
+    match wiki.link.extract_wiki_links("[[A]] and [[B]] and [[A]]") {
+        Ok(v) => {
+            core.check.eq(v.len(), 2usize)
+            match v.as_slice().get(0usize) {
+                Some(a) => core.check.eq(a.as_str(), "A")
+                None => core.panic.panic("missing first")
+            }
+            match v.as_slice().get(1usize) {
+                Some(b) => core.check.eq(b.as_str(), "B")
+                None => core.panic.panic("missing second")
+            }
+        }
+        Err(_e) => core.panic.panic("extract")
+    }
+end wiki.link.extract_wiki_links.test_cases
+
+test wiki.link.extract_wiki_links.test_incomplete_link
+    match wiki.link.extract_wiki_links("[[no close") {
+        Ok(v) => core.check.eq(v.len(), 0usize)
+        Err(_e) => core.panic.panic("incomplete link")
+    }
+end wiki.link.extract_wiki_links.test_incomplete_link
+
+test wiki.link.extract_wiki_links.test_no_links
+    match wiki.link.extract_wiki_links("no links here") {
+        Ok(v) => core.check.eq(v.len(), 0usize)
+        Err(_e) => core.panic.panic("no links")
+    }
+end wiki.link.extract_wiki_links.test_no_links
+
+test wiki.link.extract_wiki_links.test_single_bracket_not_link
+    match wiki.link.extract_wiki_links("[not a link]") {
+        Ok(v) => core.check.eq(v.len(), 0usize)
+        Err(_e) => core.panic.panic("single bracket")
+    }
+end wiki.link.extract_wiki_links.test_single_bracket_not_link
+
+test wiki.link.extract_wiki_links.test_single_link
+    match wiki.link.extract_wiki_links("see [[HomePage]] here") {
+        Ok(v) => {
+            core.check.eq(v.len(), 1usize)
+            match v.as_slice().get(0usize) {
+                Some(a) => core.check.eq(a.as_str(), "HomePage")
+                None => core.panic.panic("missing HomePage")
+            }
+        }
+        Err(_e) => core.panic.panic("single link")
+    }
+end wiki.link.extract_wiki_links.test_single_link

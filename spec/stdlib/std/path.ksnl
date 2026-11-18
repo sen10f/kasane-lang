@@ -107,8 +107,6 @@ fn std.path.parent(path: &str) -> Option<&str> uses [] panics never pub
 end std.path.parent
 
 fn std.path.trim_slashes(path: &str) -> &str uses [] panics never
-    // 末尾の `/` を 1 つずつ落とす (先頭の 1 文字は残す)。切るのは最後に 1 回だけにして、
-    // 借用を `path` の元の位置から取る (同じ変数へ借りた値を戻すと借用検査 E3010 になる)。
     let mut keep = path.len()
     loop {
         if keep < 2usize {

@@ -3,7 +3,6 @@ fn t.j['a](x: & &u32, y: &'a u32) -> &'a u32 uses [] panics never
     *x
 end t.j
 
-// expect: E3010
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

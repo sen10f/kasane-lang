@@ -1,5 +1,3 @@
-// expect-accept
-// 覗くだけなら借りて分解する (借りた分解は消費しない)。その後 r.shut()
 type t.Res linear
     id: u32
 end t.Res

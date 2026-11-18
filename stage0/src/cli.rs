@@ -167,16 +167,26 @@ impl Report {
         self.finish();
         for it in &self.items {
             if self.json {
+                // `.ksnh` の診断は、`file` / `line` を `.ksnl` のものにして、人用の行を `ksnh_line` に足す (U4)。
+                let (file, line, extra) = match it.file.as_deref().filter(|f| f.ends_with(".ksnh")) {
+                    Some(f) => {
+                        let map = crate::ksnh::line_map(&read_text(f).unwrap_or_default());
+                        let l = map.get(it.line.wrapping_sub(1)).copied().unwrap_or(it.line);
+                        (Some(format!("{}.ksnl", f.trim_end_matches(".ksnh"))), l, format!(", \"ksnh_line\": {}", it.line))
+                    }
+                    None => (it.file.clone(), it.line, String::new()),
+                };
                 println!(
-                    "{{\"code\": {}, \"fatal\": {}, \"fqn\": {}, \"file\": {}, \"line\": {}, \"col\": {}, \"message\": {}, \"fix\": {}}}",
+                    "{{\"code\": {}, \"fatal\": {}, \"fqn\": {}, \"file\": {}, \"line\": {}, \"col\": {}, \"message\": {}, \"fix\": {}{}}}",
                     json_str(&it.code),
                     it.fatal,
                     it.fqn.as_ref().map_or("null".to_string(), |x| json_str(x)),
-                    it.file.as_ref().map_or("null".to_string(), |x| json_str(x)),
-                    it.line,
+                    file.as_ref().map_or("null".to_string(), |x| json_str(x)),
+                    line,
                     it.col,
                     json_str(&it.message),
-                    fix_json(&it.fix)
+                    fix_json(&it.fix),
+                    extra
                 );
             } else {
                 let loc = match &it.file {
@@ -326,12 +336,11 @@ fn full_check_with_examples(root: &Path, rep: &mut Report) -> Result<(Loaded, Op
                 })
             });
             let mut text = String::new();
-            let mut head = 2;
+            let mut head = 1;
             if uses_mod {
                 text.push_str(&format!("import {}\n\n", s.module));
                 head += 2;
             }
-            text.push_str(&format!("// {}:{}\n", rel(&s.path), ex.line));
             text.push_str(&format!("test {}\n", name));
             for line in &ex.body {
                 if line.trim().is_empty() {
@@ -391,7 +400,25 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
     for s in &l.pkg.sources {
         let fl = rel(&s.path);
         if s.path.ends_with(".ksnh") {
-            rep.add("E1107", "the .ksnh extension is no longer supported; rename the file to .ksnl", Some(&fl), 1, 1, true);
+            // `.ksnh` が正。`strip(.ksnh)` が横の `.ksnl` とバイト一致しなければ E9050。
+            match &s.ksnl {
+                None => rep.add("E9050", "the .ksnl next to this .ksnh is missing; run `ksn strip`", Some(&fl), 1, 1, true),
+                Some(k) => {
+                    // `strip` の出力は、`.ksnh` が正規形なら必ず `ksn fmt` の正規形になる (設計_ksnhとロック.md 1.2)。破れていれば E0020。
+                    let stripped = crate::ksnh::strip(&s.text);
+                    let kp = format!("{}.ksnl", s.path.trim_end_matches(".ksnh"));
+                    if crate::fmt::format_source(&s.text, &s.path) == s.text && crate::fmt::format_source(&stripped, &kp) != stripped {
+                        rep.add("E0020", "the .ksnl made by stripping this .ksnh differs from its `ksn fmt` output; the comments are placed where stripping leaves a non-canonical file", Some(&fl), 1, 1, true);
+                    }
+                    if let Some(ln) = crate::ksnh::first_mismatch(&s.text, k) {
+                        rep.add("E9050", "the .ksnl does not match this .ksnh with its comments removed; run `ksn strip` (or `ksn fmt`)", Some(&fl), ln, 1, true);
+                    }
+                }
+            }
+        } else if s.path.ends_with(".ksnl") && s.error.as_ref().map_or(true, |e| e.code != "E0007") {
+            for ln in crate::ksnh::comment_lines_in_ksnl(&s.text) {
+                rep.add("E0059", "a comment cannot be placed in a .ksnl; write it in a .ksnh next to it", Some(&fl), ln, 1, true);
+            }
         }
         // 文面だけで決まる検査 (文法・正規形・lint) は、キャッシュが有効ならファイル単位で再利用する
         // (check_cache.rs、設計_増分検査.md)。無効のときは従来どおり毎回計算する。
@@ -1067,7 +1094,13 @@ const STDLIB_SOURCE: &str = "stdlib";
 /// `.sig` は規範の宣言なので、検査の対象の外 (`std` 側) に置いて参照だけできるようにする。
 fn stdlib_loaded() -> Loaded {
     let root = stdlib_dir();
-    let (bodies, sigs): (Vec<Source>, Vec<Source>) = load_stdlib().into_iter().partition(|s| s.path.ends_with(".ksnl"));
+    let (bodies, sigs): (Vec<Source>, Vec<Source>) = load_stdlib().into_iter().partition(|s| s.path.ends_with(".ksnl") || s.path.ends_with(".ksnh"));
+    let mut bodies = bodies;
+    for b in bodies.iter_mut() {
+        if let Some(stem) = b.path.strip_suffix(".ksnh") {
+            b.ksnl = read_text(&format!("{}.ksnl", stem));
+        }
+    }
     Loaded {
         pkg: Package {
             name: "std".to_string(),
@@ -1590,6 +1623,12 @@ fn spawn_watcher_with(l: &Loaded, allow_add: bool, send: impl Fn(Program, Vec<us
             w.mtime = m;
             let new = Source::load(&w.path, &srcroot);
             if new.error.is_none() && new.lines == w.lines {
+                continue;
+            }
+            // `.ksnh` のコメントだけの編集では再読み込みしない (`.ksnl` が変わらない)。
+            if new.error.is_none() && w.path.ends_with(".ksnh") && crate::ksnh::strip(&new.text) == crate::ksnh::strip(&w.lines.join("\n")) {
+                w.lines = new.lines.clone();
+                w.defs = new.defs.clone();
                 continue;
             }
             if let Some(e) = &new.error {
@@ -2494,6 +2533,34 @@ fn cmd_rename(args: &[String]) -> i32 {
     0
 }
 
+/// `ksn strip [--check]`: `.ksnh` からコメントの行を外して、横の `.ksnl` を書く (`--check` は書かず食い違いだけ報告)。
+fn cmd_strip(args: &[String]) -> i32 {
+    let check = args.iter().any(|a| a == "--check");
+    let pkg = match find_root().and_then(|r| load_package(&r)) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let mut bad = false;
+    for s in pkg.sources.iter().filter(|s| s.path.ends_with(".ksnh")) {
+        let want = crate::ksnh::strip(&s.text);
+        let out = format!("{}.ksnl", s.path.trim_end_matches(".ksnh"));
+        if s.ksnl.as_deref() == Some(want.as_str()) {
+            continue;
+        }
+        if check {
+            bad = true;
+            println!("{}: E9050: the .ksnl does not match (run `ksn strip`)", rel(&s.path));
+        } else {
+            fs::write(&out, &want).unwrap();
+            println!("stripped {}", rel(&out));
+        }
+    }
+    if bad { 1 } else { 0 }
+}
+
 fn cmd_fmt(args: &[String]) -> i32 {
     let check = args.iter().any(|a| a == "--check");
     let root = match find_root() {
@@ -2517,6 +2584,18 @@ fn cmd_fmt(args: &[String]) -> i32 {
     for s in &pkg.sources {
         let nt = if s.error.is_none() { format_source(&s.text, &s.path) } else { mechanical_collapse(&s.text) };
         let mut text = s.text.clone();
+        // `.ksnh` の整形のあと、横の `.ksnl` を `strip` で作り直す (`--check` は食い違いも差分とする)。
+        if s.path.ends_with(".ksnh") {
+            let want = crate::ksnh::strip(&nt);
+            if s.ksnl.as_deref() != Some(want.as_str()) {
+                changed = true;
+                let out = format!("{}.ksnl", s.path.trim_end_matches(".ksnh"));
+                println!("{} {}", if check { "would reformat" } else { "reformatted" }, rel(&out));
+                if !check {
+                    fs::write(&out, &want).unwrap();
+                }
+            }
+        }
         if nt != s.text {
             changed = true;
             println!("{} {}", if check { "would reformat" } else { "reformatted" }, rel(&s.path));
@@ -2664,7 +2743,7 @@ fn cmd_vendor() -> i32 {
         }
         let dest = root.join("vendor").join(&dp.name);
         let _ = fs::remove_dir_all(&dest);
-        copy_tree(&dp.root, &dest, &[]);
+        copy_distributed(&dp.root, &dest);
         let _ = fs::write(dest.join(".ksn-source"), format!("{}\n", dp.source));
     }
     0
@@ -2680,6 +2759,25 @@ fn dir_size(p: &Path) -> u64 {
         }
     }
     n
+}
+
+/// 配る単位 (`kasane.toml` と `src/**/*.ksnl`。`hash` の対象と同じ) だけを複製する。`.ksnh` は複製しない。
+fn copy_distributed(src: &Path, dst: &Path) {
+    fn go(s: &Path, d: &Path) {
+        let Ok(rd) = fs::read_dir(s) else { return };
+        for e in rd.flatten() {
+            let (p, name) = (e.path(), e.file_name());
+            if p.is_dir() {
+                go(&p, &d.join(&name));
+            } else if p.extension().map_or(false, |x| x == "ksnl") {
+                let _ = fs::create_dir_all(d);
+                let _ = fs::copy(&p, d.join(&name));
+            }
+        }
+    }
+    let _ = fs::create_dir_all(dst);
+    let _ = fs::copy(src.join("kasane.toml"), dst.join("kasane.toml"));
+    go(&src.join("src"), &dst.join("src"));
 }
 
 fn copy_tree(src: &Path, dst: &Path, skip: &[&str]) {
@@ -3467,6 +3565,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "refs" => cmd_refs(&rest),
         "rename" => cmd_rename(&rest),
         "fmt" => cmd_fmt(&rest),
+        "strip" => cmd_strip(&rest),
         "fix" => cmd_fix(),
         "todo" => cmd_todo(),
         "context" => cmd_context(&rest),

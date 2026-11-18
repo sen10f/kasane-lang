@@ -1,0 +1,492 @@
+import notes.error
+import notes.note
+
+const notes.store.TEST_DIR: &str = "/home/kasane-wt/notes-cli/.notes-test-data"
+
+type notes.store.Store pub
+    dir: alloc.string.String<std.alloc.System>
+    notes: alloc.vec.Vec<notes.note.Note, std.alloc.System>
+end notes.store.Store
+
+fn notes.store.Store.add(self: &mut notes.store.Store, memo: notes.note.Note) -> Result<i64, notes.error.Error> uses [alloc, io.fs] panics never pub
+    let id = notes.store.Store.next_id(self)?
+    let mut n = memo
+    n.id = id
+    notes.store.Store.save_note(self, &n)?
+    core.mem.drop(self.notes.push(n)?)
+    Ok(id)
+end notes.store.Store.add
+
+fn notes.store.Store.all_notes_len(self: &notes.store.Store) -> usize uses [] panics never pub
+    self.notes.len()
+end notes.store.Store.all_notes_len
+
+fn notes.store.Store.get(self: &notes.store.Store, id: i64) -> Option<&notes.note.Note> uses [] panics never pub
+    let mut i = 0usize
+    let n = self.notes.len()
+    while i < n {
+        match notes.store.Store.get_at(self, i) {
+            Some(memo) => {
+                if memo.id == id {
+                    return Some(memo)
+                }
+            }
+            None => return None
+        }
+        i = i.wrapping_add(1usize)
+    }
+    None
+end notes.store.Store.get
+
+fn notes.store.Store.get_at(self: &notes.store.Store, index: usize) -> Option<&notes.note.Note> uses [] panics never pub
+    let all = self.notes.as_slice()
+    match all.get(index) {
+        Some(n) => Some(n)
+        None => None
+    }
+end notes.store.Store.get_at
+
+fn notes.store.Store.len(self: &notes.store.Store) -> usize uses [] panics never pub
+    self.notes.len()
+end notes.store.Store.len
+
+fn notes.store.Store.load(dir: &str) -> Result<notes.store.Store, notes.error.Error> uses [alloc, io.fs] panics never pub
+    match std.fs.create_dir_all(dir) {
+        Ok(_u) => {
+        }
+        Err(e) => return Err(error.Error.Io(e))
+    }
+    let mut store = notes.store.Store.new(dir)?
+    let entries = std.fs.read_dir(dir)?
+    let all = entries.as_slice()
+    let mut i = 0usize
+    let n = all.len()
+    while i < n {
+        match all.get(i) {
+            Some(e) => {
+                if e.kind == std.fs.FileKind.File {
+                    let name = e.name.as_str()
+                    if name.len() > 5usize && name.ends_with(".json") {
+                        let base = match name.split_at(name.len().wrapping_sub(5usize)) {
+                            Some((b, _tail)) => b
+                            None => name
+                        }
+                        match i64.parse(base) {
+                            Ok(id) => {
+                                let path = notes.store.note_path(store.dir.as_str(), id)?
+                                match notes.store.read_text(path.as_str()) {
+                                    Ok(text) => {
+                                        match std.json.parse(text.as_str()) {
+                                            Ok(doc) => {
+                                                match note.Note.from_json(&doc, doc.root()) {
+                                                    Ok(parsed) => {
+                                                        core.mem.drop(store.notes.push(parsed)?)
+                                                    }
+                                                    Err(_e) => core.mem.drop(0u8)
+                                                }
+                                            }
+                                            Err(_e) => core.mem.drop(0u8)
+                                        }
+                                    }
+                                    Err(_e) => core.mem.drop(0u8)
+                                }
+                            }
+                            Err(_e) => core.mem.drop(0u8)
+                        }
+                    }
+                }
+            }
+            None => return Err(error.Error.Corrupt)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(store)
+end notes.store.Store.load
+
+fn notes.store.Store.new(dir: &str) -> Result<notes.store.Store, notes.error.Error> uses [alloc] panics never pub
+    let d = alloc.string.String.from_str(std.alloc.SYSTEM, dir)?
+    let ns = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let r = notes.store.Store { dir: d, notes: ns }
+    Ok(r)
+end notes.store.Store.new
+
+fn notes.store.Store.next_id(self: &notes.store.Store) -> Result<i64, notes.error.Error> uses [] panics never pub
+    let mut max = 0i64
+    let mut i = 0usize
+    let n = self.notes.len()
+    while i < n {
+        match notes.store.Store.get_at(self, i) {
+            Some(memo) => {
+                if memo.id > max {
+                    max = memo.id
+                }
+            }
+            None => return Err(error.Error.Corrupt)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(max.wrapping_add(1i64))
+end notes.store.Store.next_id
+
+fn notes.store.Store.path(self: &notes.store.Store) -> &str uses [] panics never pub
+    self.dir.as_str()
+end notes.store.Store.path
+
+fn notes.store.Store.remove(self: &mut notes.store.Store, id: i64) -> Result<(), notes.error.Error> uses [alloc, io.fs] panics may pub
+    let index = notes.store.index_of(self, id)?
+    core.mem.drop(self.notes.remove(index))
+    let path = notes.store.note_path(self.dir.as_str(), id)?
+    std.fs.remove_file(path.as_str())?
+    Ok(())
+end notes.store.Store.remove
+
+fn notes.store.Store.save_note(self: &notes.store.Store, n: &notes.note.Note) -> Result<(), notes.error.Error> uses [alloc, io.fs] panics never pub
+    let path = notes.store.note_path(self.dir.as_str(), n.id)?
+    let text = notes.store.note_to_json(n)?
+    std.fs.write_atomic(path.as_str(), text.as_bytes())?
+    Ok(())
+end notes.store.Store.save_note
+
+fn notes.store.Store.search_ids(self: &notes.store.Store, q: &str) -> Result<alloc.vec.Vec<i64, std.alloc.System>, notes.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    let n = self.notes.len()
+    while i < n {
+        match notes.store.Store.get_at(self, i) {
+            Some(memo) => {
+                let mut matched = false
+                if memo.title.as_str().contains(q) {
+                    matched = true
+                }
+                if !matched && memo.body.as_str().contains(q) {
+                    matched = true
+                }
+                if !matched {
+                    let tg = memo.tags.as_slice()
+                    let mut j = 0usize
+                    let m = tg.len()
+                    while j < m {
+                        match tg.get(j) {
+                            Some(tag) => {
+                                if tag.as_str().contains(q) {
+                                    matched = true
+                                }
+                            }
+                            None => core.mem.drop(0u8)
+                        }
+                        j = j.wrapping_add(1usize)
+                    }
+                }
+                if matched {
+                    core.mem.drop(out.push(memo.id)?)
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(out)
+end notes.store.Store.search_ids
+
+fn notes.store.Store.set(self: &mut notes.store.Store, id: i64, u: notes.note.Note) -> Result<(), notes.error.Error> uses [alloc, io.fs] panics never pub
+    let index = notes.store.index_of(self, id)?
+    {
+        let n = match notes.store.Store.get_at(self, index) {
+            Some(n) => n
+            None => return Err(error.Error.NotFound)
+        }
+        core.mem.drop(n)
+    }
+    let title = u.title
+    let body = u.body
+    let tags = u.tags
+    let created_at = u.created_at
+    let title_s = title.as_str()
+    let body_s = body.as_str()
+    let created_s = created_at.as_str()
+    let mut replaced = note.Note.new(0i64, title_s, body_s, tags, created_s)?
+    replaced.id = id
+    notes.store.Store.save_note(self, &replaced)?
+    core.mem.drop(self.notes.remove(index))
+    core.mem.drop(self.notes.push(replaced)?)
+    Ok(())
+end notes.store.Store.set
+
+fn notes.store.Store.tagged_ids(self: &notes.store.Store, tag: &str) -> Result<alloc.vec.Vec<i64, std.alloc.System>, notes.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    let n = self.notes.len()
+    while i < n {
+        match notes.store.Store.get_at(self, i) {
+            Some(memo) => {
+                let tg = memo.tags.as_slice()
+                let mut j = 0usize
+                let m = tg.len()
+                while j < m {
+                    match tg.get(j) {
+                        Some(t) => {
+                            if t.as_str() == tag {
+                                core.mem.drop(out.push(memo.id)?)
+                                break
+                            }
+                        }
+                        None => core.mem.drop(0u8)
+                    }
+                    j = j.wrapping_add(1usize)
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(out)
+end notes.store.Store.tagged_ids
+
+fn notes.store.Store.tags(self: &notes.store.Store) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    let n = self.notes.len()
+    while i < n {
+        match notes.store.Store.get_at(self, i) {
+            Some(memo) => {
+                let tg = memo.tags.as_slice()
+                let mut j = 0usize
+                let m = tg.len()
+                while j < m {
+                    match tg.get(j) {
+                        Some(g) => {
+                            let mut found = false
+                            let o = out.as_slice()
+                            let mut k = 0usize
+                            let o_len = o.len()
+                            while k < o_len {
+                                match o.get(k) {
+                                    Some(existing) => {
+                                        if (*existing) == (*g) {
+                                            found = true
+                                        }
+                                    }
+                                    None => core.mem.drop(0u8)
+                                }
+                                k = k.wrapping_add(1usize)
+                            }
+                            if !found {
+                                let c = alloc.string.String.from_str(std.alloc.SYSTEM, g.as_str())?
+                                core.mem.drop(out.push(c)?)
+                            }
+                        }
+                        None => core.mem.drop(0u8)
+                    }
+                    j = j.wrapping_add(1usize)
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(out)
+end notes.store.Store.tags
+
+fn notes.store.index_of(store: &notes.store.Store, id: i64) -> Result<usize, notes.error.Error> uses [] panics never pub
+    let mut i = 0usize
+    let n = store.notes.len()
+    while i < n {
+        match notes.store.Store.get_at(store, i) {
+            Some(memo) => {
+                if memo.id == id {
+                    return Ok(i)
+                }
+            }
+            None => return Err(error.Error.Corrupt)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Err(error.Error.NotFound)
+end notes.store.index_of
+
+fn notes.store.note_path(dir: &str, id: i64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut p = alloc.string.String.from_str(std.alloc.SYSTEM, dir)?
+    match p.push_str("/") {
+        Ok(_u) => {
+        }
+        Err(e) => return Err(e)
+    }
+    match p.push_i64(id) {
+        Ok(_u) => {
+        }
+        Err(e) => return Err(e)
+    }
+    match p.push_str(".json") {
+        Ok(_u) => {
+        }
+        Err(e) => return Err(e)
+    }
+    Ok(p)
+end notes.store.note_path
+
+// 1 メモを JSON オブジェクトとしてシリアライズする（std.json.to_string は KIR ステージ1で未対応のため手動）。
+fn notes.store.note_to_json(n: &notes.note.Note) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("{\"id\":")?
+    let id_spec = alloc.fmt.Spec.new()
+    alloc.fmt.write_i64(&mut out, n.id, &id_spec)?
+    out.push_str(",\"title\":")?
+    notes.store.write_json_string(&mut out, n.title.as_str())?
+    out.push_str(",\"body\":")?
+    notes.store.write_json_string(&mut out, n.body.as_str())?
+    out.push_str(",\"tags\":[")?
+    let tg = n.tags.as_slice()
+    let mut i = 0usize
+    let m = tg.len()
+    while i < m {
+        match tg.get(i) {
+            Some(tag) => {
+                if i > 0usize {
+                    out.push_str(",")?
+                }
+                notes.store.write_json_string(&mut out, tag.as_str())?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    out.push_str("],\"created_at\":")?
+    notes.store.write_json_string(&mut out, n.created_at.as_str())?
+    out.push_str(",\"updated_at\":")?
+    notes.store.write_json_string(&mut out, n.updated_at.as_str())?
+    out.push_str("}")?
+    Ok(out)
+end notes.store.note_to_json
+
+fn notes.store.read_text(path: &str) -> Result<alloc.string.String<std.alloc.System>, notes.error.Error> uses [alloc, io.fs] panics never
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
+    }
+    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    text.push_bytes(data.as_slice()).map_err(error.push_failed)?
+    Ok(text)
+end notes.store.read_text
+
+fn notes.store.remove_dir_all(path: &str) -> Result<(), notes.error.Error> uses [alloc, io.fs] panics never stack 256
+    if !std.fs.exists(path) {
+        return Ok(())
+    }
+    let entries = std.fs.read_dir(path)?
+    let mut i = 0usize
+    let n = entries.len()
+    while i < n {
+        match entries.as_slice().get(i) {
+            Some(e) => {
+                let mut p = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+                core.mem.drop(p.push_str("/"))
+                core.mem.drop(p.push_str(e.name.as_str()))
+                if e.kind == std.fs.FileKind.Dir {
+                    core.mem.drop(notes.store.remove_dir_all(p.as_str()))
+                } else {
+                    core.mem.drop(std.fs.remove_file(p.as_str()))
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    core.mem.drop(std.fs.remove_dir(path))
+    Ok(())
+end notes.store.remove_dir_all
+
+fn notes.store.string_copy(s: &alloc.string.String<std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    alloc.string.String.from_str(std.alloc.SYSTEM, (*s).as_str())
+end notes.store.string_copy
+
+// ディレクトリ（存在すれば中身ごと）を削除する。
+fn notes.store.test_reset_dir() -> Result<(), notes.error.Error> uses [alloc, io.fs] panics never
+    notes.store.remove_dir_all(notes.store.TEST_DIR)?
+    std.fs.create_dir_all(notes.store.TEST_DIR)?
+    Ok(())
+end notes.store.test_reset_dir
+
+fn notes.store.write_json_string(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    out.push_str("\"")?
+    for c in text.chars() {
+        if c == '"' {
+            out.push_str("\\\"")?
+        } else if c == '\\' {
+            out.push_str("\\\\")?
+        } else if c == '\n' {
+            out.push_str("\\n")?
+        } else if c == '\r' {
+            out.push_str("\\r")?
+        } else if c == '\t' {
+            out.push_str("\\t")?
+        } else {
+            out.push(c)?
+        }
+    }
+    out.push_str("\"")?
+    Ok(())
+end notes.store.write_json_string
+
+test notes.store.Store.new.test_reset_and_load
+    notes.store.test_reset_dir()?
+    let mut store = notes.store.Store.load(notes.store.TEST_DIR)?
+    core.check.eq(store.len(), 0usize)
+    let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(tags.push(alloc.string.String.from_str(std.alloc.SYSTEM, "仕事")?))
+    let n = note.Note.new(0i64, "打ち合わせ", "プロジェクトの打ち合わせ", tags, "2026-11-15T09:00:00Z")?
+    let id = notes.store.Store.add(&mut store, n)?
+    core.check.eq(id, 1i64)
+    core.check.eq(store.len(), 1usize)
+    let loaded = notes.store.Store.load(notes.store.TEST_DIR)?
+    core.check.eq(loaded.len(), 1usize)
+    let got = loaded.get(1i64)
+    match got {
+        Some(memo) => {
+            core.check.eq(memo.title.as_str(), "打ち合わせ")
+            core.check.eq(memo.tags.len(), 1usize)
+        }
+        None => core.panic.panic("note not found")
+    }
+end notes.store.Store.new.test_reset_and_load
+
+test notes.store.Store.search_ids.test_search_and_tags
+    notes.store.test_reset_dir()?
+    let mut store = notes.store.Store.load(notes.store.TEST_DIR)?
+    let mut tags1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(tags1.push(alloc.string.String.from_str(std.alloc.SYSTEM, "仕事")?))
+    core.mem.drop(tags1.push(alloc.string.String.from_str(std.alloc.SYSTEM, "緊急")?))
+    let note1 = note.Note.new(0i64, "打ち合わせ", "プロジェクトの打ち合わせ", tags1, "2026-11-15T09:00:00Z")?
+    core.mem.drop(notes.store.Store.add(&mut store, note1)?)
+    let mut tags2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(tags2.push(alloc.string.String.from_str(std.alloc.SYSTEM, "買い物")?))
+    let note2 = note.Note.new(0i64, "牛乳を買う", "午後3時に牛乳を買う", tags2, "2026-11-15T15:00:00Z")?
+    core.mem.drop(notes.store.Store.add(&mut store, note2)?)
+    let found = notes.store.Store.search_ids(&store, "牛乳")?
+    core.check.eq(found.len(), 1usize)
+    let all_tags = notes.store.Store.tags(&store)?
+    core.check.eq(all_tags.len(), 3usize)
+    let tagged = notes.store.Store.tagged_ids(&store, "仕事")?
+    core.check.eq(tagged.len(), 1usize)
+end notes.store.Store.search_ids.test_search_and_tags
+
+test notes.store.Store.set.test_set_and_remove
+    notes.store.test_reset_dir()?
+    let mut store = notes.store.Store.load(notes.store.TEST_DIR)?
+    let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let memo = note.Note.new(0i64, "元", "本文", tags, "2026-11-15T09:00:00Z")?
+    let id = notes.store.Store.add(&mut store, memo)?
+    let mut tags2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(tags2.push(alloc.string.String.from_str(std.alloc.SYSTEM, "変更")?))
+    let u = note.Note.new(0i64, "変更後", "新しい本文", tags2, "2026-11-16T09:00:00Z")?
+    notes.store.Store.set(&mut store, id, u)?
+    let got = store.get(id)
+    match got {
+        Some(found) => {
+            core.check.eq(found.title.as_str(), "変更後")
+            core.check.eq(found.body.as_str(), "新しい本文")
+        }
+        None => core.panic.panic("note not found")
+    }
+    notes.store.Store.remove(&mut store, id)?
+    core.check.eq(store.len(), 0usize)
+end notes.store.Store.set.test_set_and_remove

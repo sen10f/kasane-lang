@@ -1,0 +1,3 @@
+expect: E4001
+note: `fn() -> u32 uses [E] panics P` を `fn() -> u32 uses [] panics never` 型として
+note: 渡す。渡し側に効果変数・panic 変数があり、受け側が具体的なので fail-closed。

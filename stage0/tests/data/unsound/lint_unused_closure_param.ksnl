@@ -1,4 +1,3 @@
-// expect: E1020
 fn t.main() -> () uses [] panics never
     let f = fn(x: u32) -> u32 capture [] {
         0u32

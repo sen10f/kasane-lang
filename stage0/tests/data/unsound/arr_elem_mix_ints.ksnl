@@ -1,5 +1,3 @@
-// expect: E2023
-// 配列リテラルの要素の型は全部同じ (`[1u32, 2u8]` は誤り)
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = [1u8, 2u8, 3u16]
     core.mem.drop(a)

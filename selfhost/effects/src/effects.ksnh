@@ -1,0 +1,75 @@
+fn effects.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.fs] panics never
+    let pkg = match std.env.arg(0usize) {
+        Some(s) => s
+        None => return Ok(())
+    }
+    let std_dir = match std.env.arg(1usize) {
+        Some(s) => s
+        None => return Ok(())
+    }
+    // (1) 読み込み・構文解析・型検査 (型の表つき)。単位の添字は env の srcs と揃う。
+    // 構文エラーの単位は空の単位になる (resolve が報告する)。
+    let tout = types.export.run(pkg, std_dir)?
+    let mut acc = effects.walk.acc_new()?
+    // (2) 定義の表と関数の表: 全単位の FnDef。sig の宣言は実装を上書きしない。
+    let mut t = resolve.table.new()?
+    let mut fs = effects.fns.new()?
+    let mut i = 0usize
+    for s in tout.env.srcs.as_slice().iter() {
+        match types.env.unit(&tout.env, i) {
+            Some(p) => {
+                acc.rep.sig = s.sig
+                resolve.table.add_file(&mut t, p, s.text.as_slice(), i, &mut acc.rep)?
+                effects.fns.add_file(&mut fs, p, s.text.as_slice(), i, s.own, s.sig)?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    // 利用者が panics never の unwrap を定義しているか (あれば .unwrap() は判断できない)。
+    for j in core.iter.range(0usize, fs.items.len()) {
+        let nm = effects.fns.name_of(&fs, j)
+        if effects.fns.at(&fs, j).pan == 1usize && nm.ends_with(".unwrap") {
+            effects.walk.bump(&mut acc, 9usize)
+        }
+    }
+    // (3) 本体の走査。全単位 (辺は依存の関数も要る)。診断は自パッケージだけ。
+    // メソッドの解決先は、型の表から単位ごとに用意してから走査する。
+    i = 0usize
+    for s in tout.env.srcs.as_slice().iter() {
+        match types.env.unit(&tout.env, i) {
+            Some(p) => {
+                effects.tyinfo.fill(&mut acc, &tout, &fs, i, p)?
+                acc.rep.path.clear()
+                acc.rep.path.push_str(s.path.as_str())?
+                effects.run.walk_file(&t, &fs, p, s.text.as_slice(), i, &mut acc)?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    // (3b) 型の宣言 (E4013): 再帰する型には Drop の明示実装か derive [Drop] が要る (5.3)。
+    effects.drop.check(&mut acc, &tout)?
+    // (4) スタック (E4010): 候補のうち呼び出しの図で自分に戻るものに、stack が要る。
+    let ncand = acc.cs.len()
+    for j in core.iter.range(0usize, ncand) {
+        let c = match acc.cs.as_slice().get(j) {
+            Some(v) => *v
+            None => 0usize
+        }
+        let und = match acc.cu.as_slice().get(j) {
+            Some(b) => *b
+            None => false
+        }
+        if effects.walk.reaches(&acc.edges, c)? {
+            effects.run.report_rec(&mut acc, &fs, &tout.env.srcs, c)?
+        } else if und {
+            effects.walk.bump(&mut acc, 8usize)
+        }
+    }
+    // (5) 出力: 診断と集計。
+    let s = effects.run.summary(&acc)?
+    acc.rep.text.push_str(s.as_str())?
+    std.io.print_line(acc.rep.text.as_str())?
+    Ok(())
+end effects.main

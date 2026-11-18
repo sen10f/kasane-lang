@@ -1,14 +1,11 @@
 import alloc.string
 import csvtool.parse
 
-// キー (列名またはグループ名) と統計の組。summary と groupby の出力で共通に使う。
 type csvtool.agg.Group pub
     key: alloc.string.String<std.alloc.System> pub
     stats: csvtool.agg.Stats pub
 end csvtool.agg.Group
 
-// 1 つの列 (または 1 つのグループ) の数値統計。
-// 数値は小数第 2 位までを 0.01 単位の整数にして持つ ("3.5" -> 350)。
 type csvtool.agg.Stats derive [Debug, Clone, Copy, PartialEq] pub
     rows: i64 pub
     numeric: i64 pub
@@ -18,7 +15,6 @@ type csvtool.agg.Stats derive [Debug, Clone, Copy, PartialEq] pub
     ovf: bool pub
 end csvtool.agg.Stats
 
-// 1 つのフィールドを統計に加える。数字として読めないフィールドは行数だけ数える。
 fn csvtool.agg.Stats.add(self: &mut csvtool.agg.Stats, text: &str) -> () uses [] panics never pub
     self.rows = self.rows.wrapping_add(1i64)
     match csvtool.agg.parse_num(text) {
@@ -52,7 +48,6 @@ fn csvtool.agg.Stats.new() -> csvtool.agg.Stats uses [] panics never pub
     csvtool.agg.Stats { rows: 0i64, numeric: 0i64, sum: 0i64, min: 0i64, max: 0i64, ovf: false }
 end csvtool.agg.Stats.new
 
-// 1 つの列を表全体で集計する (欠けているセルは行数に入れない)。
 fn csvtool.agg.column_stats(tbl: &csvtool.table.Table, col: usize) -> Result<csvtool.agg.Stats, csvtool.error.Error> uses [] panics never pub
     let mut st = csvtool.agg.Stats.new()
     let mut r = 0usize
@@ -69,7 +64,6 @@ fn csvtool.agg.column_stats(tbl: &csvtool.table.Table, col: usize) -> Result<csv
     Ok(st)
 end csvtool.agg.column_stats
 
-// ASCII の 1 桁を i64 にする (数字以外は None)。
 fn csvtool.agg.digit(c: char) -> Option<i64> uses [] panics never
     if c >= '0' && c <= '9' {
         let d = c.to_u32().wrapping_sub('0'.to_u32())
@@ -79,7 +73,6 @@ fn csvtool.agg.digit(c: char) -> Option<i64> uses [] panics never
     }
 end csvtool.agg.digit
 
-// 統計の平均を表示用の文字列にする。数値がなければ "-"、桁あふれがあれば "ovf"。
 fn csvtool.agg.fmt_avg(stats: &csvtool.agg.Stats) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     if stats.ovf {
         return alloc.string.String.from_str(std.alloc.SYSTEM, "ovf")
@@ -93,8 +86,6 @@ fn csvtool.agg.fmt_avg(stats: &csvtool.agg.Stats) -> Result<alloc.string.String<
     }
 end csvtool.agg.fmt_avg
 
-// 0.01 単位の整数を表示用の文字列にする (350 -> "3.5"、400 -> "4"、5 -> "0.05"、
-// -5 -> "-0.05")。絶対値が i64 の最大を超える符号反転は "ovf"。
 fn csvtool.agg.fmt_scaled(value: i64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     match value.checked_abs() {
@@ -144,7 +135,6 @@ fn csvtool.agg.fmt_scaled(value: i64) -> Result<alloc.string.String<std.alloc.Sy
     Ok(out)
 end csvtool.agg.fmt_scaled
 
-// キーでグループに分けて、値の列を集計し、キーの順に整列して返す。
 fn csvtool.agg.groupby(tbl: &csvtool.table.Table, key_col: usize, val_col: usize) -> Result<alloc.vec.Vec<csvtool.agg.Group, std.alloc.System>, csvtool.error.Error> uses [alloc] panics never pub
     let mut groups = csvtool.agg.groups_new()
     let mut r = 0usize
@@ -197,13 +187,10 @@ fn csvtool.agg.groupby(tbl: &csvtool.table.Table, key_col: usize, val_col: usize
     Ok(out)
 end csvtool.agg.groupby
 
-// 空のグループ列 (Vec<Group> の型を決めるための補助)。
 fn csvtool.agg.groups_new() -> alloc.vec.Vec<csvtool.agg.Group, std.alloc.System> uses [alloc] panics never
     alloc.vec.Vec.new(std.alloc.SYSTEM)
 end csvtool.agg.groups_new
 
-// 数字のフィールドを 0.01 単位の整数にして読む ("-3.5" -> -350)。
-// 小数第 3 位以下は切り捨て、大きすぎる値や数字以外は None。
 fn csvtool.agg.parse_num(text: &str) -> Option<i64> uses [] panics never pub
     let t = text.trim()
     if t.is_empty() {
@@ -265,7 +252,6 @@ fn csvtool.agg.parse_num(text: &str) -> Option<i64> uses [] panics never pub
                             frac = frac.wrapping_mul(10i64).wrapping_add(d)
                             frac_len = frac_len.wrapping_add(1usize)
                         }
-                        // 小数第 3 位以降は切り捨て
                     }
                     None => return None
                 }

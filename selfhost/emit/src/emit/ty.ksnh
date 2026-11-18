@@ -1,0 +1,269 @@
+const emit.ty.K_AGG: u32 = 5u32 pub
+
+const emit.ty.K_BOOL: u32 = 2u32 pub
+
+const emit.ty.K_INT: u32 = 1u32 pub
+
+const emit.ty.K_OPT: u32 = 6u32 pub
+
+const emit.ty.K_PTR: u32 = 3u32 pub
+
+const emit.ty.K_REF: u32 = 4u32 pub
+
+const emit.ty.K_RES: u32 = 7u32 pub
+
+const emit.ty.K_UNIT: u32 = 0u32 pub
+
+type emit.ty.Ty derive [Clone, Copy] pub
+    kind: u32 pub
+    bits: u32 pub
+    signed: bool pub
+    mutbl: bool pub
+    a: usize pub
+    b: usize pub
+end emit.ty.Ty
+
+// 型 `id` の記録。
+fn emit.ty.get(g: &emit.G, id: usize) -> emit.ty.Ty uses [io.console, process] panics may pub
+    match g.tab.tys.get(id) {
+        Some(t) => *t
+        None => core.panic.panic("internal: type id out of range")
+    }
+end emit.ty.get
+
+// 整数の幅 (ビット)。整数以外は 0。
+fn emit.ty.int_bits(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
+    let t = emit.ty.get(g, id)
+    if t.kind == (emit.ty.K_INT) {
+        usize.from_u32(t.bits)
+    } else {
+        0usize
+    }
+end emit.ty.int_bits
+
+// 符号付きの整数か。
+fn emit.ty.is_signed(g: &emit.G, id: usize) -> bool uses [io.console, process] panics may pub
+    emit.ty.get(g, id).signed
+end emit.ty.is_signed
+
+// 値の LLVM の型を `out` へ書く (`text_of` の本体)。
+fn emit.ty.lty_into(g: &emit.G, id: usize, out: &mut alloc.string.String<std.alloc.System>) -> () uses [alloc, io.console, process] panics may pub
+    let t = emit.ty.get(g, id)
+    if t.kind == (emit.ty.K_UNIT) {
+        emit.util.push_str(out, "i8")
+    } else if t.kind == (emit.ty.K_BOOL) {
+        emit.util.push_str(out, "i1")
+    } else if t.kind == (emit.ty.K_INT) {
+        emit.util.push_str(out, "i")
+        emit.util.push_num(out, usize.from_u32(t.bits))
+    } else if t.kind == (emit.ty.K_PTR) || t.kind == (emit.ty.K_REF) {
+        emit.util.push_str(out, "ptr")
+    } else {
+        emit.util.push_str(out, "i")
+        emit.util.push_num(out, emit.ty.vbits(g, id))
+    }
+end emit.ty.lty_into
+
+// メモリ上の型を `out` へ書く (`bool` は `i8`)。
+fn emit.ty.mty_into(g: &emit.G, id: usize, out: &mut alloc.string.String<std.alloc.System>) -> () uses [alloc, io.console, process] panics may pub
+    if emit.ty.get(g, id).kind == (emit.ty.K_BOOL) {
+        emit.util.push_str(out, "i8")
+    } else {
+        emit.ty.lty_into(g, id, out)
+    }
+end emit.ty.mty_into
+
+// 型の文字列を読んで、表に入れた番号を返す。未対応の型 (浮動小数など) は `emit.fail`。
+fn emit.ty.parse(g: &mut emit.G, s: &str) -> usize uses [alloc, io.console, process] panics may pub
+    if s == "unit" {
+        return emit.ty.push(g, emit.ty.K_UNIT, 0u32, false, false, 0usize, 0usize)
+    }
+    if s == "bool" {
+        return emit.ty.push(g, emit.ty.K_BOOL, 1u32, false, false, 0usize, 0usize)
+    }
+    if s == "ptr" {
+        return emit.ty.push(g, emit.ty.K_PTR, 64u32, false, false, 0usize, 0usize)
+    }
+    if s == "i8" {
+        return emit.ty.push(g, emit.ty.K_INT, 8u32, true, false, 0usize, 0usize)
+    }
+    if s == "i16" {
+        return emit.ty.push(g, emit.ty.K_INT, 16u32, true, false, 0usize, 0usize)
+    }
+    if s == "i32" {
+        return emit.ty.push(g, emit.ty.K_INT, 32u32, true, false, 0usize, 0usize)
+    }
+    if s == "i64" || s == "isize" {
+        return emit.ty.push(g, emit.ty.K_INT, 64u32, true, false, 0usize, 0usize)
+    }
+    if s == "i128" {
+        return emit.ty.push(g, emit.ty.K_INT, 128u32, true, false, 0usize, 0usize)
+    }
+    if s == "u8" {
+        return emit.ty.push(g, emit.ty.K_INT, 8u32, false, false, 0usize, 0usize)
+    }
+    if s == "u16" {
+        return emit.ty.push(g, emit.ty.K_INT, 16u32, false, false, 0usize, 0usize)
+    }
+    if s == "u32" {
+        return emit.ty.push(g, emit.ty.K_INT, 32u32, false, false, 0usize, 0usize)
+    }
+    if s == "u64" || s == "usize" {
+        return emit.ty.push(g, emit.ty.K_INT, 64u32, false, false, 0usize, 0usize)
+    }
+    if s == "u128" {
+        return emit.ty.push(g, emit.ty.K_INT, 128u32, false, false, 0usize, 0usize)
+    }
+    match s.strip_prefix("agg#") {
+        Some(rest) => {
+            let ai = emit.util.dec(rest)
+            return emit.ty.push(g, emit.ty.K_AGG, 0u32, false, false, ai, 0usize)
+        }
+        None => core.mem.drop(0u8)
+    }
+    match s.strip_prefix("mutref<") {
+        Some(rest) => {
+            let inner = emit.util.strip_gt(rest)
+            let p = emit.ty.parse(g, inner)
+            return emit.ty.push(g, emit.ty.K_REF, 64u32, false, true, p, 0usize)
+        }
+        None => core.mem.drop(0u8)
+    }
+    match s.strip_prefix("ref<") {
+        Some(rest) => {
+            let inner = emit.util.strip_gt(rest)
+            let p = emit.ty.parse(g, inner)
+            return emit.ty.push(g, emit.ty.K_REF, 64u32, false, false, p, 0usize)
+        }
+        None => core.mem.drop(0u8)
+    }
+    match s.strip_prefix("Option<") {
+        Some(rest) => {
+            let inner = emit.util.strip_gt(rest)
+            let p = emit.ty.parse(g, inner)
+            return emit.ty.push(g, emit.ty.K_OPT, 0u32, false, false, p, 0usize)
+        }
+        None => core.mem.drop(0u8)
+    }
+    match s.strip_prefix("Result<") {
+        Some(rest) => {
+            let inner = emit.util.strip_gt(rest)
+            let (x, y) = emit.ty.split_top(inner)
+            let a = emit.ty.parse(g, x)
+            let b = emit.ty.parse(g, y)
+            return emit.ty.push(g, emit.ty.K_RES, 0u32, false, false, a, b)
+        }
+        None => core.mem.drop(0u8)
+    }
+    core.panic.panic("unsupported type in KIR (floats and others are not in this emitter yet)")
+end emit.ty.parse
+
+fn emit.ty.push(g: &mut emit.G, kind: u32, bits: u32, signed: bool, mutbl: bool, a: usize, b: usize) -> usize uses [alloc, io.console, process] panics may pub
+    let at = g.tab.tys.len()
+    let t = emit.ty.Ty { kind: kind, bits: bits, signed: signed, mutbl: mutbl, a: a, b: b }
+    match g.tab.tys.push(t) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+    at
+end emit.ty.push
+
+// `Option` / `Result` の枠 (ペイロードの最大の幅、64 以上)。
+fn emit.ty.slot(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
+    let t = emit.ty.get(g, id)
+    let mut m = 64usize
+    if t.kind == (emit.ty.K_OPT) {
+        let w = emit.ty.vbits(g, t.a)
+        if w > m {
+            m = w
+        }
+    }
+    if t.kind == (emit.ty.K_RES) {
+        let w1 = emit.ty.vbits(g, t.a)
+        let w2 = emit.ty.vbits(g, t.b)
+        if w1 > m {
+            m = w1
+        }
+        if w2 > m {
+            m = w2
+        }
+    }
+    m
+end emit.ty.slot
+
+// `a, b` を最上位のカンマで二つに分ける (括弧 `<>` の深さで数える)。
+fn emit.ty.split_top(s: &str) -> (&str, &str) uses [io.console, process] panics may pub
+    let b = s.as_bytes()
+    let mut depth = 0u32
+    let mut i = 0usize
+    while i < b.len() {
+        let c = match b.get(i) {
+            Some(x) => *x
+            None => 0u8
+        }
+        if c == 60u8 {
+            depth = depth.wrapping_add(1u32)
+        }
+        if c == 62u8 {
+            depth = depth.wrapping_sub(1u32)
+        }
+        if c == 44u8 && depth == 0u32 {
+            match s.split_at(i) {
+                Some(q) => {
+                    let (x, y) = q
+                    match y.split_at(1usize) {
+                        Some(q3) => {
+                            let (_c, z) = q3
+                            return (x, z)
+                        }
+                        None => core.panic.panic("internal: bad type pair")
+                    }
+                }
+                None => core.panic.panic("internal: bad type pair")
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    core.panic.panic("internal: missing comma in Result type")
+end emit.ty.split_top
+
+// 型 `id` の LLVM の型の文字列 (`mem` なら `bool` を `i8` にする)。`g` は読むだけ。
+fn emit.ty.text_of(g: &emit.G, id: usize, mem: bool) -> alloc.string.String<std.alloc.System> uses [alloc, io.console, process] panics may pub
+    let mut out = emit.util.new_str()
+    if mem {
+        emit.ty.mty_into(g, id, &mut out)
+    } else {
+        emit.ty.lty_into(g, id, &mut out)
+    }
+    out
+end emit.ty.text_of
+
+// 値の大きさ (ビット)。集成体は `size * 8`、`Option` / `Result` は `1 + 枠`。
+fn emit.ty.vbits(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
+    let t = emit.ty.get(g, id)
+    if t.kind == (emit.ty.K_UNIT) {
+        0usize
+    } else if t.kind == (emit.ty.K_BOOL) {
+        1usize
+    } else if t.kind == (emit.ty.K_INT) {
+        usize.from_u32(t.bits)
+    } else if t.kind == (emit.ty.K_PTR) || t.kind == (emit.ty.K_REF) {
+        64usize
+    } else if t.kind == (emit.ty.K_AGG) {
+        emit.agg.size_bits(g, t.a)
+    } else {
+        1usize.wrapping_add(emit.ty.slot(g, id))
+    }
+end emit.ty.vbits
+
+// 値の LLVM の型 (`lty`)。
+fn emit.ty.wlty(g: &mut emit.G, id: usize) -> () uses [alloc, io.console, process] panics may pub
+    let s = emit.ty.text_of(g, id, false)
+    emit.w(g, s.as_str())
+end emit.ty.wlty
+
+// メモリ上の型 (`mty`)。`bool` は 1 バイト (`i8`) として置く。
+fn emit.ty.wmty(g: &mut emit.G, id: usize) -> () uses [alloc, io.console, process] panics may pub
+    let s = emit.ty.text_of(g, id, true)
+    emit.w(g, s.as_str())
+end emit.ty.wmty

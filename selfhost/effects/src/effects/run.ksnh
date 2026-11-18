@@ -1,0 +1,58 @@
+// E4010 の診断 1 件。候補 c の定義の行で報告する (パスは定義のあるファイル)。
+fn effects.run.report_rec(acc: &mut effects.walk.Acc, fs: &effects.fns.Fns, srcs: &alloc.vec.Vec<resolve.load.Src, std.alloc.System>, c: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    let info = effects.fns.at(fs, c)
+    match srcs.as_slice().get(info.file) {
+        Some(s) => {
+            acc.rep.path.clear()
+            acc.rep.path.push_str(s.path.as_str())?
+        }
+        None => core.mem.drop(0u8)
+    }
+    let name = effects.fns.name_of(fs, c)
+    let msg = "recursive `panics never` function requires a `stack` size"
+    effects.walk.diag(acc, "E4010", info.line, msg, name)?
+    Ok(())
+end effects.run.report_rec
+
+// 末尾の集計 1 行。判断できなかった数の内訳を出す (compare.py が読む)。
+fn effects.run.summary(acc: &effects.walk.Acc) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("summary errors ")?
+    out.push_u64(u64.from_usize(acc.rep.errors))?
+    out.push_str(" ok ")?
+    out.push_u64(u64.from_usize(effects.walk.get(acc, 0usize)))?
+    out.push_str(" und_value ")?
+    out.push_u64(u64.from_usize(effects.walk.get(acc, 1usize)))?
+    out.push_str(" und_method ")?
+    out.push_u64(u64.from_usize(effects.walk.get(acc, 2usize)))?
+    out.push_str(" und_infer ")?
+    out.push_u64(u64.from_usize(effects.walk.get(acc, 3usize)))?
+    out.push_str(" und_var ")?
+    out.push_u64(u64.from_usize(effects.walk.get(acc, 4usize)))?
+    out.push_str(" und_missing ")?
+    out.push_u64(u64.from_usize(effects.walk.get(acc, 5usize)))?
+    out.push_str(" und_closure ")?
+    out.push_u64(u64.from_usize(effects.walk.get(acc, 6usize)))?
+    out.push_str(" und_op ")?
+    out.push_u64(u64.from_usize(effects.walk.get(acc, 7usize)))?
+    out.push_str(" und_rec ")?
+    out.push_u64(u64.from_usize(effects.walk.get(acc, 8usize)))?
+    out.push('\n')?
+    Ok(out)
+end effects.run.summary
+
+// 1 ファイルの関数の本体を走査する (FnDef のうち本体のあるもの)。
+fn effects.run.walk_file(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.P, src: &[u8], file: usize, acc: &mut effects.walk.Acc) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    let mut st = resolve.scope.new(file, p, src)?
+    for d in p.ast.defs.as_slice().iter() {
+        let n = parse.ast.get(&p.ast, *d)
+        if n.kind == parse.ast.Kind.FnDef && n.d != 0usize {
+            let name = resolve.ast.text(src, n.a, n.b)
+            match effects.fns.lookup(fs, name)? {
+                Some(fi) => effects.walk.fn_body(t, fs, p, src, &mut st, fi, n, acc)?
+                None => core.mem.drop(0u8)
+            }
+        }
+    }
+    Ok(())
+end effects.run.walk_file

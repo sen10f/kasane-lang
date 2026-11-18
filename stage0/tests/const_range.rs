@@ -5,8 +5,7 @@
 mod common;
 use common::*;
 
-const WASM_SRC: &str = r#"// target: wasm32-unknown-unknown
-const t.BIG: usize = 5000000000usize
+const WASM_SRC: &str = r#"const t.BIG: usize = 5000000000usize
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())

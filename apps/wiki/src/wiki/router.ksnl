@@ -5,14 +5,12 @@ import wiki.markdown
 import wiki.search
 import wiki.store
 
-// 応答の中身。`location` が空でなければ `Location` ヘッダになる。
 type wiki.router.Reply pub
     body: alloc.string.String<std.alloc.System> pub
     location: alloc.string.String<std.alloc.System> pub
     status: u16 pub
 end wiki.router.Reply
 
-// `Name` の編集フォームを表示する (CSRF トークン付き)。
 fn wiki.router.edit_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand, time] panics never
     let token = csrf.generate_token(csrf_tokens)?
     let content = match store.PageStore.load_latest(page_store, name) {
@@ -34,7 +32,6 @@ fn wiki.router.error_reply(status: u16, message: &str) -> Result<wiki.router.Rep
     Ok(wiki.router.Reply { body: body, location: location, status: status })
 end wiki.router.error_reply
 
-// `Name` の履歴を表示する。
 fn wiki.router.history_page(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
     if !store.PageStore.page_exists(page_store, name) {
         return wiki.router.error_reply(404u16, "not found")
@@ -45,7 +42,6 @@ fn wiki.router.history_page(page_store: &mut wiki.store.PageStore, name: &str) -
     Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
 end wiki.router.history_page
 
-// ページ一覧を表示する。
 fn wiki.router.list_pages(page_store: &mut wiki.store.PageStore) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
     let pages = store.PageStore.list_pages(page_store)?
     let body = html.list_view(pages.as_slice())?
@@ -53,7 +49,6 @@ fn wiki.router.list_pages(page_store: &mut wiki.store.PageStore) -> Result<wiki.
     Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
 end wiki.router.list_pages
 
-// 新規作成フォームを表示する (CSRF トークン付き)。
 fn wiki.router.new_page(csrf_tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, rand, time] panics never
     let token = csrf.generate_token(csrf_tokens)?
     let body = html.edit_form("New Page", "", token.as_str())?
@@ -61,7 +56,6 @@ fn wiki.router.new_page(csrf_tokens: &mut alloc.vec.Vec<alloc.string.String<std.
     Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
 end wiki.router.new_page
 
-// `Name` への被リンク一覧を表示する。
 fn wiki.router.page_backlinks(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
     if !store.PageStore.page_exists(page_store, name) {
         return wiki.router.error_reply(404u16, "not found")
@@ -72,7 +66,6 @@ fn wiki.router.page_backlinks(page_store: &mut wiki.store.PageStore, name: &str)
     Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
 end wiki.router.page_backlinks
 
-// `Name` から出るリンク先一覧を表示する。
 fn wiki.router.page_links(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
     if !store.PageStore.page_exists(page_store, name) {
         return wiki.router.error_reply(404u16, "not found")
@@ -87,7 +80,6 @@ fn wiki.router.page_links(page_store: &mut wiki.store.PageStore, name: &str) -> 
     Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
 end wiki.router.page_links
 
-// ページ名をパスから取り出す (`/page/Name` → `Name`)。見つからなければ None。
 fn wiki.router.page_name_from_path(path: &str, prefix: &str) -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics never
     match path.strip_prefix(prefix) {
         Some(rest) => {
@@ -104,7 +96,6 @@ fn wiki.router.page_name_from_path(path: &str, prefix: &str) -> Option<alloc.str
     }
 end wiki.router.page_name_from_path
 
-// クエリ文字列から `key` の値を取り出す。
 fn wiki.router.query_param(query: &str, key: &str) -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics never
     for pair in query.split("&") {
         match pair.split_once("=") {
@@ -126,12 +117,8 @@ fn wiki.router.reply(status: u16, body: alloc.string.String<std.alloc.System>, l
     wiki.router.Reply { body: body, location: location, status: status }
 end wiki.router.reply
 
-// 要求 1 件の経路。`method` と `path` は要求行のまま、`body` は本体の文字列。
 fn wiki.router.route(page_store: &mut wiki.store.PageStore, method: &str, path: &str, body: &str, csrf_tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand, time] panics never pub
-    // `path` は `std.rand.fill_secure` の呼び出し後に文字列引数として渡されると
-    // 処理系側で破損することがあるため、すぐヒープ文字列にコピーして以降はそのコピーを使う。
     let path_heap = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
-    // クエリ文字列を分離。
     let (path_part, query) = match path_heap.as_str().split_once("?") {
         Some(pair) => pair
         None => (path_heap.as_str(), "")
@@ -153,7 +140,6 @@ fn wiki.router.route(page_store: &mut wiki.store.PageStore, method: &str, path: 
             return wiki.router.new_page(csrf_tokens)
         }
         if path_part.starts_with("/history/") {
-            // "/history/" は 9 文字。それ以降を rest としてヒープ文字列に組み立てる。
             let bytes = path_part.as_bytes()
             let n = path_part.len()
             let mut i = 9usize
@@ -167,7 +153,6 @@ fn wiki.router.route(page_store: &mut wiki.store.PageStore, method: &str, path: 
                 }
                 i = i.saturating_add(1usize)
             }
-            // rest の中で最初の "/" を探す
             let rest_bytes = rest.as_bytes()
             let rest_len = rest.as_str().len()
             let mut slash_pos = 0usize
@@ -188,7 +173,6 @@ fn wiki.router.route(page_store: &mut wiki.store.PageStore, method: &str, path: 
                 }
             }
             if found_slash {
-                // /history/Name/Version 形式
                 let mut page_name = alloc.string.String.new(std.alloc.SYSTEM)
                 let mut j = 0usize
                 while j < slash_pos {
@@ -245,9 +229,7 @@ fn wiki.router.route(page_store: &mut wiki.store.PageStore, method: &str, path: 
     wiki.router.error_reply(405u16, "method not allowed")
 end wiki.router.route
 
-// `Name` を保存する (CSRF 検証あり)。
 fn wiki.router.save_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, name: &str, body: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand, time] panics never
-    // CSRF トークンを検証する (`csrf=...` のフォーム本体から読む)。
     let token = match wiki.router.query_param(body, "csrf") {
         Some(t) => t
         None => return wiki.router.error_reply(403u16, "csrf token missing")
@@ -267,7 +249,6 @@ fn wiki.router.save_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mu
     Ok(wiki.router.Reply { body: reply_body, location: location, status: 303u16 })
 end wiki.router.save_page
 
-// 全文検索をする。
 fn wiki.router.search_pages(page_store: &mut wiki.store.PageStore, query: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
     let pages = store.PageStore.list_pages(page_store)?
     let mut index = search.index_new()
@@ -292,7 +273,6 @@ fn wiki.router.search_pages(page_store: &mut wiki.store.PageStore, query: &str) 
     Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
 end wiki.router.search_pages
 
-// `Name` のページを表示する。
 fn wiki.router.show_page(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
     if !store.PageStore.page_exists(page_store, name) {
         return wiki.router.error_reply(404u16, "not found")
@@ -309,7 +289,6 @@ fn wiki.router.show_page(page_store: &mut wiki.store.PageStore, name: &str) -> R
     Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
 end wiki.router.show_page
 
-// `Name` の指定版を表示する。
 fn wiki.router.show_version(page_store: &mut wiki.store.PageStore, name: &str, version: usize) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
     let content = match store.PageStore.load_version(page_store, name, version) {
         Some(c) => c
@@ -347,10 +326,6 @@ end wiki.router.test_store
 test wiki.router.route.test_create_and_show
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    // 直接 store に保存して表示を確かめる。
-    // 注意: std.rand.fill_secure (wiki.csrf のテストで先に呼ばれる) の後は、文字列リテラルを
-    // 関数引数として渡すと処理系側で破損することがあるため、パスはリテラルを使わずに
-    // ヒープ文字列として組み立てる (サーバ側はソケット読み込みなので影響を受けない)。
     let saved = store.PageStore.save_version(&mut page_store, "Hello", "Hello world\n", 1u64)?
     core.mem.drop(saved)
     let mut req_path = alloc.string.String.new(std.alloc.SYSTEM)
@@ -368,7 +343,6 @@ test wiki.router.route.test_create_and_show
     let p = req_path.as_str()
     let resp2 = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", p, "")
     core.check.eq(resp2.status, 200u16)
-    // 新規作成フォーム (CSRF トークン生成で rand を使う)
     let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/new", "")
     core.check.eq(resp.status, 200u16)
 end wiki.router.route.test_create_and_show
@@ -515,12 +489,9 @@ end wiki.router.route.test_query_param
 test wiki.router.route.test_save_page
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    // CSRF トークンを生成
     let form_resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/new", "")
     core.check.eq(form_resp.status, 200u16)
-    // トークンをフォームから抽出（簡易：generate_token で直接取得）
     let token = csrf.generate_token(&mut csrf_tokens)?
-    // POST /save/TestPage に CSRF トークンと content を付与
     let mut body = alloc.string.String.from_str(std.alloc.SYSTEM, "csrf=")?
     core.mem.drop(body.push_str(token.as_str())?)
     core.mem.drop(body.push_str("&content=Hello+World")?)
@@ -566,7 +537,6 @@ test wiki.router.route.test_save_page_then_show
     let b = body.as_str()
     let save_resp = wiki.router.test_route(ps, ct, "POST", "/save/NewPage", b)
     core.check.eq(save_resp.status, 303u16)
-    // 保存後の表示
     let mut path = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(path.push_str("/page/NewPage")?)
     let p = path.as_str()

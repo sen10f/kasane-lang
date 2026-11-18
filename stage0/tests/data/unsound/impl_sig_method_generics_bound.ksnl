@@ -1,4 +1,3 @@
-// expect: E1122
 trait t.A
 end t.A
 

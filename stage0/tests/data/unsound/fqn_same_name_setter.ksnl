@@ -2,7 +2,6 @@ type t.G
     n: u32
 end t.G
 
-// expect: E3060
 type t.H['a]
     r: &'a str
 end t.H

@@ -3,7 +3,6 @@ type t.S pub
     s: alloc.string.String<std.alloc.System>
 end t.S
 
-// expect: E3010
 fn t.bad() -> u32 uses [] panics never
     let r = &t.make().v
     *r

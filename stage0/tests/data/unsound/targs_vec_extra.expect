@@ -1,0 +1,2 @@
+expect: E2023
+note: `alloc.vec.Vec` の型引数は 2 つまで (要素の型とアロケータ)

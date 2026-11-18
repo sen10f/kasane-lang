@@ -1,4 +1,3 @@
-// expect: E3002
 fn t.bad() -> () uses [alloc] panics may
     let s = match alloc.string.String.from_str(std.alloc.SYSTEM, "hi") {
         Ok(s) => s

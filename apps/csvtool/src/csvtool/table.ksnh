@@ -1,0 +1,139 @@
+import alloc.string
+
+// 1 行のフィールド列。
+type csvtool.table.Row pub
+    fields: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+end csvtool.table.Row
+
+// 読み込んだ 1 つの表。ヘッダー (先頭行) と残りの行、出力に使う区切り文字を持つ。
+type csvtool.table.Table pub
+    header: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    rows: alloc.vec.Vec<csvtool.table.Row, std.alloc.System> pub
+    delim: char pub
+end csvtool.table.Table
+
+// 1 セルを参照で得る (範囲外は None)。
+fn csvtool.table.Table.cell(self: &csvtool.table.Table, row: usize, col: usize) -> Option<&str> uses [] panics never pub
+    let all = self.rows.as_slice()
+    match all.get(row) {
+        Some(r) => {
+            let fs = r.fields.as_slice()
+            match fs.get(col) {
+                Some(s) => Some(s.as_str())
+                None => None
+            }
+        }
+        None => None
+    }
+end csvtool.table.Table.cell
+
+// 列指定 ("3" は 1 基準の番号、それ以外はヘッダー名) を 0 基準の列番号にする。
+fn csvtool.table.Table.col_index(self: &csvtool.table.Table, spec: &str) -> Option<usize> uses [] panics never pub
+    match csvtool.table.parse_index(spec) {
+        Some(n) => {
+            if n == 0usize {
+                return None
+            }
+            let idx = n.wrapping_sub(1usize)
+            if idx < self.header.len() {
+                return Some(idx)
+            }
+            None
+        }
+        None => csvtool.table.name_index(self, spec)
+    }
+end csvtool.table.Table.col_index
+
+// ヘッダーの 1 項目を参照で得る (範囲外は None)。
+fn csvtool.table.Table.header_name(self: &csvtool.table.Table, col: usize) -> Option<&str> uses [] panics never pub
+    let h = self.header.as_slice()
+    match h.get(col) {
+        Some(s) => Some(s.as_str())
+        None => None
+    }
+end csvtool.table.Table.header_name
+
+// 表の行数 (ヘッダーを除く)。
+fn csvtool.table.Table.height(self: &csvtool.table.Table) -> usize uses [] panics never pub
+    self.rows.len()
+end csvtool.table.Table.height
+
+// 表の列数 (ヘッダーの項目数)。
+fn csvtool.table.Table.width(self: &csvtool.table.Table) -> usize uses [] panics never pub
+    self.header.len()
+end csvtool.table.Table.width
+
+// ヘッダー名で列を探す (0 基準)。
+fn csvtool.table.name_index(self: &csvtool.table.Table, spec: &str) -> Option<usize> uses [] panics never
+    let h = self.header.as_slice()
+    let mut i = 0usize
+    let n = h.len()
+    while i < n {
+        match h.get(i) {
+            Some(name) => {
+                if name.as_str() == spec {
+                    return Some(i)
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    None
+end csvtool.table.name_index
+
+// 数字だけの列指定を 1 基準の番号として読む (数字以外を含む、または空なら None)。
+fn csvtool.table.parse_index(spec: &str) -> Option<usize> uses [] panics never
+    if spec.is_empty() {
+        return None
+    }
+    let mut value = 0usize
+    for c in spec.chars() {
+        if c < '0' || c > '9' {
+            return None
+        }
+        let d = usize.from_u32(c.to_u32().wrapping_sub('0'.to_u32()))
+        match value.checked_mul(10usize) {
+            Some(m) => match m.checked_add(d) {
+                Some(v) => {
+                    value = v
+                }
+                None => return None
+            }
+            None => return None
+        }
+    }
+    Some(value)
+end csvtool.table.parse_index
+
+test csvtool.table.Table.cell.test_cell_and_bounds
+    let mut header = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(header.push(string.String.from_str(std.alloc.SYSTEM, "a")?))
+    let mut row = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(row.push(string.String.from_str(std.alloc.SYSTEM, "x")?))
+    core.mem.drop(row.push(string.String.from_str(std.alloc.SYSTEM, "y")?))
+    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(rows.push(csvtool.table.Row { fields: row })?)
+    let t = csvtool.table.Table { header: header, rows: rows, delim: ',' }
+    core.check.eq(t.cell(0usize, 1usize), Some("y"))
+    core.check.eq(t.cell(0usize, 2usize), None)
+    core.check.eq(t.cell(1usize, 0usize), None)
+    core.check.eq(t.header_name(0usize), Some("a"))
+    core.check.eq(t.header_name(1usize), None)
+end csvtool.table.Table.cell.test_cell_and_bounds
+
+test csvtool.table.Table.col_index.test_name_and_number
+    let mut header = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(header.push(string.String.from_str(std.alloc.SYSTEM, "name")?))
+    core.mem.drop(header.push(string.String.from_str(std.alloc.SYSTEM, "amount")?))
+    let rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let t = csvtool.table.Table { header: header, rows: rows, delim: ',' }
+    core.check.eq(t.col_index("amount"), Some(1usize))
+    core.check.eq(t.col_index("2"), Some(1usize))
+    core.check.eq(t.col_index("0"), None)
+    core.check.eq(t.col_index("nope"), None)
+    core.check.eq(t.col_index("9"), None)
+    core.check.eq(t.col_index(""), None)
+    core.check.eq(t.width(), 2usize)
+    core.check.eq(t.height(), 0usize)
+end csvtool.table.Table.col_index.test_name_and_number

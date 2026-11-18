@@ -1,5 +1,3 @@
-// expect: E3010
-// 局所の閉包の呼び出し: 引数の借用が戻り値へ流れうる (仕様 4.1、領域が読めないときは流れる)
 fn t.main() -> () uses [] panics may
     let mut y = 5u64
     let f = fn(x: &u64) -> &u64 capture [] {

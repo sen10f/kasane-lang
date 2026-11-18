@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.bad() -> () uses [] panics may
     let x = true + false
     core.mem.drop(x)

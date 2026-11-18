@@ -10,8 +10,6 @@ fn std.time.SystemTime.unix_seconds(self: &std.time.SystemTime) -> i64 uses [] p
     std.time.div_floor(self.nanos, 1000000000i64)
 end std.time.SystemTime.unix_seconds
 
-// 床除算 (負の数は 0 方向ではなく小さい方へ丸める)。`/` は 0 方向に切るので、負の端数だけ 1 減らす。
-// 0 で割る呼び出しは作らない (呼び出し側の定数だけ)。`panics never` のため `checked_*` を使う。
 fn std.time.div_floor(a: i64, b: i64) -> i64 uses [] panics never pub
     match a.checked_div(b) {
         Some(q) => {
@@ -30,7 +28,6 @@ fn std.time.div_floor(a: i64, b: i64) -> i64 uses [] panics never pub
     }
 end std.time.div_floor
 
-// 床除算の余り (`a - div_floor(a, b) * b`。`b` が正なら 0 以上 `b` 未満)。
 fn std.time.rem_floor(a: i64, b: i64) -> i64 uses [] panics never pub
     a.wrapping_sub(std.time.div_floor(a, b).wrapping_mul(b))
 end std.time.rem_floor

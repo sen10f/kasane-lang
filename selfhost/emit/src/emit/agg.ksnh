@@ -1,0 +1,201 @@
+type emit.agg.Agg derive [Clone, Copy] pub
+    size: usize pub
+    is_enum: bool pub
+    fstart: usize pub
+    fcount: usize pub
+end emit.agg.Agg
+
+type emit.agg.Var derive [Clone, Copy] pub
+    agg: usize pub
+    variant: usize pub
+    start: usize pub
+    count: usize pub
+end emit.agg.Var
+
+// 列挙型の変種 `k` (`Name(型@off,型@off)`) を登録する。
+fn emit.agg.enum_variant(g: &mut emit.G, id: usize, k: usize, tok: &str) -> () uses [alloc, io.console, process] panics may pub
+    let vstart = g.tab.foffs.len()
+    let inner = emit.util.inner(emit.util.after(tok, emit.util.open_pos(tok)))
+    let mut vcount = 0usize
+    let np_item_t = emit.util.piece_count(inner, ",")
+    let mut kk_item_t = 0usize
+    while kk_item_t < np_item_t {
+        let item = emit.util.piece_at(inner, ",", kk_item_t)
+        if item.contains("@") {
+            emit.agg.push_field(g, item, true)
+            vcount = vcount.wrapping_add(1usize)
+        }
+        kk_item_t = kk_item_t.wrapping_add(1usize)
+    }
+    emit.agg.push_var(g, id, k, vstart, vcount)
+end emit.agg.enum_variant
+
+// 集成体 `agg` の変種 `variant` (構造体は 0) の `j` 番目のフィールドのオフセットと型。
+fn emit.agg.field(g: &emit.G, agg: usize, variant: usize, j: usize) -> (usize, usize) uses [io.console, process] panics may pub
+    let a = emit.agg.get(g, agg)
+    if a.is_enum {
+        let v = emit.agg.var(g, agg, variant)
+        if j >= v.count {
+            core.panic.panic("internal: variant field index out of range")
+        }
+        let k = v.start.wrapping_add(j)
+        return (*g.tab.foffs.get(k).unwrap_or(&0usize), *g.tab.ftys.get(k).unwrap_or(&0usize))
+    }
+    if j >= a.fcount {
+        core.panic.panic("internal: field index out of range")
+    }
+    let k = a.fstart.wrapping_add(j)
+    (*g.tab.foffs.get(k).unwrap_or(&0usize), *g.tab.ftys.get(k).unwrap_or(&0usize))
+end emit.agg.field
+
+// フィールドの幅 (ビット) = `size_of * 8`。単位型のフィールドは置けない。
+fn emit.agg.field_w(g: &emit.G, t: usize) -> usize uses [io.console, process] panics may pub
+    let k = emit.ty.get(g, t)
+    if k.kind == (emit.ty.K_UNIT) {
+        core.panic.panic("unit-typed field is not supported")
+    }
+    emit.agg.size_of(g, t).wrapping_mul(8usize)
+end emit.agg.field_w
+
+fn emit.agg.get(g: &emit.G, id: usize) -> emit.agg.Agg uses [io.console, process] panics may pub
+    match g.tab.aggs.get(id) {
+        Some(a) => *a
+        None => core.panic.panic("internal: aggregate id out of range")
+    }
+end emit.agg.get
+
+// 定義行 `agg#N struct|tuple|enum NAME size=S align=A {body}` を読む。`agg#` で始まる行だけを渡す。
+fn emit.agg.parse_line(g: &mut emit.G, line: &str) -> () uses [alloc, io.console, process] panics may pub
+    let (head, rest) = match line.split_once("{") {
+        Some(p) => p
+        None => core.panic.panic("internal: aggregate line without body")
+    }
+    let body = match rest.strip_suffix("}") {
+        Some(b) => b
+        None => core.panic.panic("internal: aggregate body without closing brace")
+    }
+    let id = match head.split_once(" ") {
+        Some(q) => {
+            let (n, _r) = q
+            emit.util.dec(n.strip_prefix("agg#").unwrap_or(n))
+        }
+        None => core.panic.panic("internal: aggregate header")
+    }
+    let size = match head.split_once("size=") {
+        Some(q) => {
+            let (_h, r) = q
+            emit.util.dec(r)
+        }
+        None => core.panic.panic("internal: aggregate size")
+    }
+    let is_enum = head.contains(" enum ")
+    let fstart = g.tab.foffs.len()
+    let mut fcount = 0usize
+    if is_enum {
+        let mut k = 0usize
+        let np_tok_cn = emit.util.piece_count(body, " ")
+        let mut kk_tok_cn = 0usize
+        while kk_tok_cn < np_tok_cn {
+            let tok = emit.util.piece_at(body, " ", kk_tok_cn)
+            emit.agg.enum_variant(g, id, k, tok)
+            k = k.wrapping_add(1usize)
+            kk_tok_cn = kk_tok_cn.wrapping_add(1usize)
+        }
+    } else {
+        let np_tok_cs = emit.util.piece_count(body, " ")
+        let mut kk_tok_cs = 0usize
+        while kk_tok_cs < np_tok_cs {
+            let tok = emit.util.piece_at(body, " ", kk_tok_cs)
+            if tok.contains("@") {
+                emit.agg.push_field(g, tok, false)
+                fcount = fcount.wrapping_add(1usize)
+            }
+            kk_tok_cs = kk_tok_cs.wrapping_add(1usize)
+        }
+    }
+    let a = emit.agg.Agg { size: size, is_enum: is_enum, fstart: fstart, fcount: fcount }
+    match g.tab.aggs.push(a) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+end emit.agg.parse_line
+
+// フィールド `[名前:]型@オフセット` (列挙型では `型@オフセット`) を一つ足す。`@` が無ければ何もしない。
+fn emit.agg.push_field(g: &mut emit.G, tok: &str, _variant: bool) -> () uses [alloc, io.console, process] panics may pub
+    let (left, right) = match tok.split_once("@") {
+        Some(p) => p
+        None => return
+    }
+    let off = emit.util.dec(right)
+    let ty_text = match left.split_once(":") {
+        Some(q) => {
+            let (_n, t) = q
+            t
+        }
+        None => left
+    }
+    let tid = emit.ty.parse(g, ty_text)
+    match g.tab.foffs.push(off) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+    match g.tab.ftys.push(tid) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+end emit.agg.push_field
+
+fn emit.agg.push_var(g: &mut emit.G, agg: usize, variant: usize, start: usize, count: usize) -> () uses [alloc, io.console, process] panics may pub
+    let v = emit.agg.Var { agg: agg, variant: variant, start: start, count: count }
+    match g.tab.vars.push(v) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+end emit.agg.push_var
+
+// 集成体 `id` の大きさ (ビット)。`Rust` 版の `agg_bits` と同じく、大きさ 0 は 1 バイトとして扱う。
+fn emit.agg.size_bits(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
+    let a = emit.agg.get(g, id)
+    let s = if a.size == 0usize {
+        1usize
+    } else {
+        a.size
+    }
+    s.wrapping_mul(8usize)
+end emit.agg.size_bits
+
+// 型 `t` の大きさ (バイト) (Rust 版の `kir::size_of` と同じ)。
+fn emit.agg.size_of(g: &emit.G, t: usize) -> usize uses [io.console, process] panics may pub
+    let k = emit.ty.get(g, t)
+    if k.kind == (emit.ty.K_UNIT) {
+        0usize
+    } else if k.kind == (emit.ty.K_BOOL) {
+        1usize
+    } else if k.kind == (emit.ty.K_INT) {
+        usize.from_u32(k.bits) / 8usize
+    } else if k.kind == (emit.ty.K_PTR) || k.kind == (emit.ty.K_REF) {
+        8usize
+    } else if k.kind == (emit.ty.K_AGG) {
+        emit.agg.get(g, k.a).size
+    } else {
+        let bits = 1usize.wrapping_add(emit.ty.slot(g, t))
+        let bytes = bits.wrapping_add(7usize) / 8usize
+        bytes.wrapping_add(7usize) / 8usize.wrapping_mul(8usize)
+    }
+end emit.agg.size_of
+
+// 列挙型の変種の記録 (`variant` 番目)。
+fn emit.agg.var(g: &emit.G, agg: usize, variant: usize) -> emit.agg.Var uses [io.console, process] panics may pub
+    let mut i = 0usize
+    while i < g.tab.vars.len() {
+        let v = match g.tab.vars.get(i) {
+            Some(x) => *x
+            None => core.panic.panic("internal: variant table")
+        }
+        if v.agg == agg && v.variant == variant {
+            return v
+        }
+        i = i.wrapping_add(1usize)
+    }
+    core.panic.panic("internal: no such variant")
+end emit.agg.var

@@ -1,0 +1,47 @@
+import csvtool.cmd
+import csvtool.error
+
+const csvtool.USAGE: &str = "usage: csvtool <summary|groupby|head|select|count|cols> <path> [column...]"
+
+// CSV/TSV の集計ツール。
+//   csvtool summary <path> [column...]   列ごとの件数・合計・最小・最大・平均
+//   csvtool groupby <path> <key> <val>   キーの値ごとに値の列を集計
+//   csvtool head <path> <n>              先頭 n 行
+//   csvtool select <path> <column...>    列の選択
+//   csvtool count <path>                 データ行数
+//   csvtool cols <path>                  列の一覧
+// 列は 1 基準の番号 ("2") かヘッダー名 ("amount") で指定する。
+fn csvtool.main() -> Result<(), csvtool.error.Error> uses [alloc, env, io.console, io.fs] panics never pub
+    if std.env.arg_count() < 2usize {
+        std.io.print_line(csvtool.USAGE)?
+        return Err(error.usage())
+    }
+    let sub = match std.env.arg(1usize) {
+        Some(s) => s
+        None => return Err(error.usage())
+    }
+    if sub == "summary" {
+        return cmd.summary(2usize)
+    }
+    if sub == "groupby" {
+        return cmd.groupby(2usize)
+    }
+    if sub == "head" {
+        return cmd.head(2usize)
+    }
+    if sub == "select" {
+        return cmd.select(2usize)
+    }
+    if sub == "count" {
+        return cmd.count(2usize)
+    }
+    if sub == "cols" {
+        return cmd.cols(2usize)
+    }
+    std.io.print_line(csvtool.USAGE)?
+    Err(error.usage())
+end csvtool.main
+
+test csvtool.main.test_usage_constant
+    core.check.eq(csvtool.USAGE, "usage: csvtool <summary|groupby|head|select|count|cols> <path> [column...]")
+end csvtool.main.test_usage_constant

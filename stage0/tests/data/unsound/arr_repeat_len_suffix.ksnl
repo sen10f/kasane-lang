@@ -1,5 +1,3 @@
-// expect: E0002
-// 配列の長さは usize: 別の整数型の接尾辞は付けられない
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = [1u32; 3u32]
     core.mem.drop(a)

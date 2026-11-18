@@ -1,0 +1,150 @@
+// `with` の後始末 (局所 k に結び付けた式。Rust 版の `run_close`): 登録を一時的に外して式を下ろし、
+// 続けて束縛の消費 (`own.consume`) を 1 つだけ出す。出口 (`return` / `?` / `break` / ブロックの終わり) ごとに呼ぶ。
+fn lower.fs.close(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let node = lower.fs.close_at(c, k)
+    if node == 0usize || c.s.term {
+        return Ok(())
+    }
+    lower.fs.set_close(c, k, 0usize)?
+    core.mem.drop(lower.expr.expr(env, c, p, src, node, types.ty.UNKNOWN)?)
+    lower.fs.set_close(c, k, node)?
+    lower.own.emit(c, k, "own.consume ")
+end lower.fs.close
+
+// 局所 k の後始末の式 (0 = 無し)。
+fn lower.fs.close_at(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
+    match c.v.sl.cl.as_slice().get(k) {
+        Some(x) => *x
+        None => 0usize
+    }
+end lower.fs.close_at
+
+// `std.fs.read_to_end(&mut file, &mut v)`: Rust 版 `read_fd_to_end` と同じブロックの並び。
+// 周ごとに残りを 4096 バイト以上にして (`reserve`)、残りの容量すべてを `fs.read` で読み、0 バイトで終わる。
+// 失敗したら足したバイトを捨てて (長さを戻して) `Err` を返す。
+fn lower.fs.read_to_end(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    if resolve.ast.count(p, n.b) != 2usize {
+        lower.cx.fail(c, "std.fs.read_to_end の引数の個数")?
+        return lower.expr.dummy(c, t)
+    }
+    let un = types.ty.UNKNOWN
+    let f = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 0usize), un)?
+    let fa = lower.cx.def(c, "mutref<i32>", lower.cx.cat2("fieldaddr ", lower.cx.cat2(lower.cx.vs(f.v)?.as_str(), ", +0")?.as_str())?.as_str())?
+    let fd = lower.cx.def1(c, "i32", "load ", fa)?
+    let hr = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 1usize), un)?
+    let h = hr.v
+    let rt = lower.tyk.text(env, c, t)?
+    let orig = lower.vec.load_usize(c, h, 8usize)?
+    let zero = lower.vec.usize_c(c, 0usize)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    hps.push(lower.cx.newval(c, "usize")?)?
+    let mut xps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    xps.push(lower.cx.newval(c, rt.as_str())?)?
+    let hd = lower.cx.blk(c, &hps)?
+    let exit = lower.cx.blk(c, &xps)?
+    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a0.push(zero)?
+    lower.loops.br(c, hd, &a0)?
+    lower.cx.goto(c, hd)
+    let total = lower.tyk.at(hps.as_slice(), 0usize)
+    // reserve (残り 4096 バイト以上)。
+    let chunk = lower.vec.usize_c(c, 4096usize)?
+    let len0 = lower.vec.load_usize(c, h, 8usize)?
+    let cap0 = lower.vec.load_usize(c, h, 16usize)?
+    let need = lower.vec.arith(c, "add", len0, chunk)?
+    let over = lower.loops.bin(c, "bool", "icmp.gt.usize", need, cap0)?
+    let growb = lower.cx.blk(c, &empty)?
+    let contb = lower.cx.blk(c, &empty)?
+    lower.loops.brif(c, over, growb, &empty, contb, &empty)?
+    lower.cx.goto(c, growb)
+    let dbl = lower.vec.arith(c, "add", cap0, cap0)?
+    let four = lower.vec.usize_c(c, 4usize)?
+    let c4 = lower.vec.arith(c, "add", dbl, four)?
+    let nc = lower.loops.bin(c, "usize", "max.usize", c4, need)?
+    let p0 = lower.vec.load_ptr(c, h)?
+    let np = lower.loops.bin(c, "ptr", "heap.realloc", p0, nc)?
+    core.mem.drop(lower.vec.store_at(c, "ptr", h, 0usize, np)?)
+    core.mem.drop(lower.vec.store_at(c, "usize", h, 16usize, nc)?)
+    lower.loops.br(c, contb, &empty)?
+    lower.cx.goto(c, contb)
+    let base = lower.vec.load_ptr(c, h)?
+    let len = lower.vec.load_usize(c, h, 8usize)?
+    let cap = lower.vec.load_usize(c, h, 16usize)?
+    let dst = lower.loops.bin(c, "ptr", "ptr.add", base, len)?
+    let room = lower.vec.arith(c, "sub", cap, len)?
+    let rd = lower.cx.cat2("fs.read ", lower.cx.vs(fd)?.as_str())?
+    let rd2 = lower.cx.cat2(rd.as_str(), lower.cx.cat2(", ", lower.expr.two(dst, room)?.as_str())?.as_str())?
+    let r = lower.cx.def(c, rt.as_str(), rd2.as_str())?
+    let is_err = lower.cx.def1(c, "bool", "tag ", r)?
+    let on_err = lower.cx.blk(c, &empty)?
+    let on_ok = lower.cx.blk(c, &empty)?
+    lower.loops.brif(c, is_err, on_err, &empty, on_ok, &empty)?
+    lower.cx.goto(c, on_err)
+    core.mem.drop(lower.vec.store_at(c, "usize", h, 8usize, orig)?)
+    let mut ea = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    ea.push(r)?
+    lower.loops.br(c, exit, &ea)?
+    lower.cx.goto(c, on_ok)
+    let got = lower.cx.def1(c, "usize", "payload ", r)?
+    let zn = lower.vec.usize_c(c, 0usize)?
+    let at_end = lower.loops.bin(c, "bool", "icmp.eq.usize", got, zn)?
+    let done = lower.cx.blk(c, &empty)?
+    let more = lower.cx.blk(c, &empty)?
+    lower.loops.brif(c, at_end, done, &empty, more, &empty)?
+    lower.cx.goto(c, done)
+    let okv = lower.cx.def1(c, rt.as_str(), "ok ", total)?
+    let mut da = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    da.push(okv)?
+    lower.loops.br(c, exit, &da)?
+    lower.cx.goto(c, more)
+    let nl = lower.vec.arith(c, "add", len, got)?
+    core.mem.drop(lower.vec.store_at(c, "usize", h, 8usize, nl)?)
+    let nt = lower.vec.arith(c, "add", total, got)?
+    let mut ma = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    ma.push(nt)?
+    lower.loops.br(c, hd, &ma)?
+    lower.cx.goto(c, exit)
+    Ok(lower.cx.R { v: lower.tyk.at(xps.as_slice(), 0usize), t: t })
+end lower.fs.read_to_end
+
+// 局所 k の後始末の式を置く (0 = 外す)。
+fn lower.fs.set_close(c: &mut lower.cx.Cx, k: usize, node: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut tail = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    while c.v.sl.cl.len() > k + 1usize {
+        match c.v.sl.cl.pop() {
+            Some(x) => tail.push(x)?
+            None => core.mem.drop(0u8)
+        }
+    }
+    core.mem.drop(c.v.sl.cl.pop())
+    c.v.sl.cl.push(node)?
+    while tail.len() > 0usize {
+        match tail.pop() {
+            Some(x) => c.v.sl.cl.push(x)?
+            None => core.mem.drop(0u8)
+        }
+    }
+    Ok(())
+end lower.fs.set_close
+
+// `with [mut] 名前 = 初期化 close 後始末 { 本体 }`。Rust 版 `with_`: 初期化 → 束縛 (借用される名前はスロット) → 本体。
+// 後始末は、出口 (`return` / `?` / `break` / `continue`) と本体の終わりで、束縛の局所に結び付けた式として下ろす。
+// With: a = 名前トークン, b = mut, c = 初期化, d = 後始末, e = 本体。
+fn lower.fs.withx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let mark = lower.cx.depth(c)
+    let init = lower.expr.expr(env, c, p, src, n.c, types.ty.UNKNOWN)?
+    if c.s.term {
+        return lower.expr.dummy(c, t)
+    }
+    let name = resolve.ast.tok_text(p, src, n.a)
+    let lk = lower.opt.bind(env, c, name, init.v, n.b != 0usize, init.t)?
+    lower.own.declare(env, c, lk, init.t)?
+    lower.fs.set_close(c, lk, n.d)?
+    let r = lower.expr.expr(env, c, p, src, n.e, t)?
+    if !c.s.term {
+        lower.expr.end_locals(env, c, p, src, mark)?
+    }
+    lower.expr.trunc(c, mark)
+    Ok(lower.cx.R { v: r.v, t: t })
+end lower.fs.withx

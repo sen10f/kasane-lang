@@ -1,0 +1,128 @@
+type effects.fns.Fns pub
+    items: alloc.vec.Vec<effects.fns.Info, std.alloc.System> pub
+    names: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    eff: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    map: effects.fns.Map pub
+end effects.fns.Fns
+
+// 関数の表。全ファイルの FnDef (本体の有無を問わず) を番号で持つ。FQN → 番号は HashMap。
+// ヘッダの効果 (uses) は空白区切りの文字列で持つ。`hasu` が偽なら効果と panic は本体から推論される (5.1)。
+type effects.fns.Info derive [Debug, Clone, Copy, PartialEq] pub
+    file: usize pub
+    line: usize pub
+    body: usize pub
+    pan: usize pub
+    hasu: bool pub
+    stk: bool pub
+    own: bool pub
+end effects.fns.Info
+
+type effects.fns.Map pub
+    m: alloc.collections.HashMap<alloc.string.String<std.alloc.System>, usize, std.alloc.System> pub
+end effects.fns.Map
+
+fn effects.fns.add(fs: &mut effects.fns.Fns, p: &parse.cur.P, src: &[u8], file: usize, own: bool, sig: bool, n: parse.ast.Node) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let name = resolve.ast.text(src, n.a, n.b)
+    let key = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let dm = &fs.map.m
+    let known = dm.contains_key(&key)
+    if sig && known {
+        return Ok(())
+    }
+    let sg = parse.ast.get(&p.ast, n.c)
+    let at = parse.ast.get(&p.ast, sg.d)
+    let mut ul = alloc.string.String.new(std.alloc.SYSTEM)
+    let has = at.a != 0usize
+    if has {
+        for j in core.iter.range(0usize, resolve.ast.count(p, at.a)) {
+            let e = parse.ast.get(&p.ast, resolve.ast.item(p, at.a, j))
+            if j != 0usize {
+                ul.push(' ')?
+            }
+            ul.push_str(resolve.ast.text(src, e.a, e.b))?
+        }
+    }
+    let line = resolve.ast.line_of(p, n.tok)
+    let stk = at.d != 0usize
+    let bd = n.d
+    let pn = at.b
+    let info = effects.fns.mk(file, line, bd, pn, has, stk, own)
+    let idx = fs.items.len()
+    fs.items.push(info)?
+    fs.names.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
+    fs.eff.push(ul)?
+    let mm = &mut fs.map.m
+    core.mem.drop(mm.insert(key, idx)?)
+    Ok(())
+end effects.fns.add
+
+// 1 ファイルの FnDef を足す。sig の宣言は、同じ名前が既にあれば足さない (実装の方を残す)。
+fn effects.fns.add_file(fs: &mut effects.fns.Fns, p: &parse.cur.P, src: &[u8], file: usize, own: bool, sig: bool) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    for d in p.ast.defs.as_slice().iter() {
+        let n = parse.ast.get(&p.ast, *d)
+        if n.kind == parse.ast.Kind.FnDef {
+            effects.fns.add(fs, p, src, file, own, sig, n)?
+        }
+    }
+    Ok(())
+end effects.fns.add_file
+
+fn effects.fns.at(fs: &effects.fns.Fns, ix: usize) -> effects.fns.Info uses [] panics never pub
+    match fs.items.as_slice().get(ix) {
+        Some(d) => effects.fns.copy(d)
+        None => effects.fns.none()
+    }
+end effects.fns.at
+
+fn effects.fns.copy(d: &effects.fns.Info) -> effects.fns.Info uses [] panics never pub
+    let hu = d.hasu
+    let sk = d.stk
+    effects.fns.mk(d.file, d.line, d.body, d.pan, hu, sk, d.own)
+end effects.fns.copy
+
+// FQN (キー) の番号。表に無ければ None。
+fn effects.fns.lookup(fs: &effects.fns.Fns, key: &str) -> Result<Option<usize>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let k = alloc.string.String.from_str(std.alloc.SYSTEM, key)?
+    let dm = &fs.map.m
+    match dm.get(&k) {
+        Some(ix) => Ok(Some(*ix))
+        None => Ok(None)
+    }
+end effects.fns.lookup
+
+// 情報 1 件を作る (引数の順は Info のフィールドの順)。
+fn effects.fns.mk(f: usize, l: usize, b: usize, p: usize, h: bool, s: bool, o: bool) -> effects.fns.Info uses [] panics never pub
+    effects.fns.Info { file: f, line: l, body: b, pan: p, hasu: h, stk: s, own: o }
+end effects.fns.mk
+
+// 番号 ix の FQN。
+fn effects.fns.name_of(fs: &effects.fns.Fns, ix: usize) -> &str uses [] panics never pub
+    let empty = ""
+    match fs.names.as_slice().get(ix) {
+        Some(s) => s.as_str()
+        None => empty
+    }
+end effects.fns.name_of
+
+fn effects.fns.new() -> Result<effects.fns.Fns, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let names = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let effs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let map = effects.fns.Map { m: m }
+    Ok(effects.fns.Fns { items: items, names: names, eff: effs, map: map })
+end effects.fns.new
+
+// 番号 ix の情報 (範囲外は本体のない空の情報)。
+fn effects.fns.none() -> effects.fns.Info uses [] panics never pub
+    effects.fns.mk(0usize, 0usize, 0usize, 0usize, false, false, false)
+end effects.fns.none
+
+// 番号 ix の効果の列 (空白区切り)。ヘッダに uses が無ければ空。
+fn effects.fns.uses_of(fs: &effects.fns.Fns, ix: usize) -> &str uses [] panics never pub
+    let empty = ""
+    match fs.eff.as_slice().get(ix) {
+        Some(s) => s.as_str()
+        None => empty
+    }
+end effects.fns.uses_of

@@ -1,4 +1,3 @@
-// expect: E3031
 type t.Cell
     n: u64
 end t.Cell

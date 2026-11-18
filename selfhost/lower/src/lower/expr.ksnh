@@ -1,0 +1,2664 @@
+// 腕の本体: 値を合流へ渡し、腕の中の束縛の並びを戻す。
+fn lower.expr.arm_body(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], body: usize, t: usize, rty: &str, ks: &alloc.vec.Vec<usize, std.alloc.System>, saved: &alloc.vec.Vec<usize, std.alloc.System>, jb: usize, mark: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.cx.bind_vals(c, ks, saved)?
+    let r = lower.expr.expr(env, c, p, src, body, t)?
+    if !c.s.term {
+        lower.expr.end_locals(env, c, p, src, mark)?
+        let a = lower.expr.jargs(c, rty, r.v, ks)?
+        let s = lower.cx.cat2("br ", lower.cx.target(jb, &a)?.as_str())?
+        lower.cx.finish(c, s)?
+    }
+    lower.expr.trunc(c, mark)
+    Ok(())
+end lower.expr.arm_body
+
+fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, stmt: bool) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let ln = parse.ast.get(&p.ast, n.a)
+    let lt = lower.expr.tyof(c, n.a)?
+    if (ln.kind == parse.ast.Kind.Unary && ln.a == 42usize) {
+        // `*r = v`: 参照越しの書き込み。
+        let ptr = lower.expr.expr(env, c, p, src, ln.b, types.ty.UNKNOWN)?
+        let r = lower.expr.expr(env, c, p, src, n.b, lt)?
+        let so = lower.opt.two_op("store ", ptr.v, r.v)?
+        let sv = lower.cx.def(c, "unit", so.as_str())?
+        if stmt {
+            return Ok(lower.cx.R { v: sv, t: types.ty.UNIT })
+        }
+        let u = lower.expr.unit(c)?
+        return Ok(lower.cx.R { v: u, t: types.ty.UNIT })
+    }
+    if (ln.kind == parse.ast.Kind.Dot) {
+        // `局所.フィールド = v`: フィールドの番地へ書く (局所はスロットか参照)。
+        let base = parse.ast.get(&p.ast, ln.a)
+        let mut bloc = 0usize
+        if base.kind == parse.ast.Kind.Path {
+            bloc = lower.cx.find(c, resolve.ast.text(src, base.a, base.b))
+        }
+        if bloc == 0usize {
+            lower.cx.fail(c, "代入 (フィールドの基が局所でない・未対応)")?
+            return Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
+        }
+        let fname = resolve.ast.tok_text(p, src, ln.b)
+        let sv = lower.expr.field_store(env, c, p, src, bloc - 1usize, fname, n.b, lt)?
+        if stmt {
+            return Ok(lower.cx.R { v: sv, t: types.ty.UNIT })
+        }
+        let u = lower.expr.unit(c)?
+        return Ok(lower.cx.R { v: u, t: types.ty.UNIT })
+    }
+    let name = resolve.ast.text(src, ln.a, ln.b)
+    let (pf1, pf2) = lower.expr.split2(name)
+    if ln.kind == parse.ast.Kind.Path && pf1 != "" && lower.cx.find(c, pf1) != 0usize {
+        // `局所.フィールド = v` (名前が 2 つの Path): フィールドの番地へ書く。
+        let bloc2 = lower.cx.find(c, pf1)
+        let sv2 = lower.expr.field_store(env, c, p, src, bloc2 - 1usize, pf2, n.b, lt)?
+        if stmt {
+            return Ok(lower.cx.R { v: sv2, t: types.ty.UNIT })
+        }
+        let u2 = lower.expr.unit(c)?
+        return Ok(lower.cx.R { v: u2, t: types.ty.UNIT })
+    }
+    let loc = lower.cx.find(c, name)
+    if (ln.kind != parse.ast.Kind.Path || loc == 0usize) {
+        lower.cx.fail(c, "代入 (局所以外への代入は未対応)")?
+        return Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
+    }
+    let r = lower.expr.expr(env, c, p, src, n.b, lt)?
+    if lower.cx.is_slot(c, loc - 1usize) {
+        let slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
+        if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, loc - 1usize)) {
+            // 古い値を解放してから、新しい値の欄を書く。
+            lower.vec.free_slot(env, c, slot, lower.cx.tyof_t(c, loc - 1usize))?
+            lower.vec.store_hdr(c, slot, r.v)?
+        } else {
+            let so = lower.opt.two_op("store ", slot, r.v)?
+            let _sd = lower.cx.def(c, "unit", so.as_str())?
+        }
+    } else {
+        lower.cx.set_val(c, loc - 1usize, r.v + 1usize)?
+    }
+    // 再代入: move 済みが解け、線形なら新しい値の義務を負う (所有の注釈があるときだけ)。
+    if lower.own.id(c, loc - 1usize) != 0usize {
+        if lower.own.linear(env, c, r.t)? {
+            lower.own.emit(c, loc - 1usize, "own.owe ")?
+        } else {
+            lower.own.emit(c, loc - 1usize, "own.init ")?
+        }
+    }
+    if stmt {
+        return Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
+    }
+    let u = lower.expr.unit(c)?
+    Ok(lower.cx.R { v: u, t: types.ty.UNIT })
+end lower.expr.assign
+
+fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let op = n.a
+    let mut cc = ""
+    if op == 303usize {
+        cc = "eq"
+    } else if op == 304usize {
+        cc = "ne"
+    } else if op == 305usize {
+        cc = "le"
+    } else if op == 306usize {
+        cc = "ge"
+    } else if op == 60usize {
+        cc = "lt"
+    } else if op == 62usize {
+        cc = "gt"
+    }
+    if op == 307usize || op == 308usize {
+        return lower.expr.shortc(env, c, p, src, n, t, op == 308usize)
+    }
+    if (op == 43usize || op == 45usize || op == 42usize || op == 47usize || op == 37usize) {
+        // 整数の算術 (溢れと 0 除算は trap)。
+        let l = lower.expr.expr(env, c, p, src, n.b, t)?
+        let r = lower.expr.expr(env, c, p, src, n.c, l.t)?
+        let ty = lower.tyk.text(env, c, l.t)?
+        let mut an = "add"
+        if op == 45usize {
+            an = "sub"
+        } else if op == 42usize {
+            an = "mul"
+        } else if op == 47usize {
+            an = "div"
+        } else if op == 37usize {
+            an = "rem"
+        }
+        let lf = types.ty.find(&c.ar, l.t)
+        let is_fl = types.ty.node(&c.ar, lf).k == types.ty.K.Float
+        let aop = if is_fl {
+            lower.cx.cat2("f", an)?
+        } else {
+            lower.cx.cat2(an, "")?
+        }
+        let aop2 = lower.cx.cat2(aop.as_str(), ".")?
+        let aop2b = lower.cx.cat2(aop2.as_str(), ty.as_str())?
+        let aop3 = if is_fl {
+            lower.cx.cat2(aop2b.as_str(), " ")?
+        } else {
+            lower.cx.cat2(aop2b.as_str(), ".trap ")?
+        }
+        let aop4 = lower.cx.cat2(aop3.as_str(), lower.expr.two(l.v, r.v)?.as_str())?
+        let rt = lower.tyk.text(env, c, t)?
+        let v = lower.cx.def(c, rt.as_str(), aop4.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if (op == 38usize || op == 124usize || op == 94usize) {
+        // ビットの演算 (整数と bool): 非短絡の and / or / xor。
+        let l = lower.expr.expr(env, c, p, src, n.b, t)?
+        let r = lower.expr.expr(env, c, p, src, n.c, l.t)?
+        let ty = lower.tyk.text(env, c, l.t)?
+        let mut bn = "and"
+        if op == 124usize {
+            bn = "or"
+        } else if op == 94usize {
+            bn = "xor"
+        }
+        let b1 = lower.cx.cat2(bn, ".")?
+        let b2 = lower.cx.cat2(b1.as_str(), ty.as_str())?
+        let b3 = lower.cx.cat2(b2.as_str(), " ")?
+        let b4 = lower.cx.cat2(b3.as_str(), lower.expr.two(l.v, r.v)?.as_str())?
+        let rt = lower.tyk.text(env, c, t)?
+        let v = lower.cx.def(c, rt.as_str(), b4.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if cc == "" {
+        lower.cx.fail(c, "二項演算 (未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let l = lower.expr.expr(env, c, p, src, n.b, types.ty.UNKNOWN)?
+    let r = lower.expr.expr(env, c, p, src, n.c, l.t)?
+    if (cc == "eq" || cc == "ne") && lower.tyk.plain_enum(env, c, l.t) {
+        return lower.chk.enum_cmp(env, c, l, r, cc == "ne", t)
+    }
+    if (cc == "eq" || cc == "ne") && lower.tyk.is_fat_ty(c, l.t) {
+        let lk = types.ty.node(&c.ar, types.ty.find(&c.ar, l.t)).k
+        let rk = types.ty.node(&c.ar, types.ty.find(&c.ar, r.t)).k
+        if lk == types.ty.K.Str && rk == types.ty.K.Str {
+            return lower.std_calls.str_eq_inline(c, l, r, cc == "ne", t)
+        }
+        return lower.chk.str_cmp(env, c, l, r, cc == "ne", t)
+    }
+    if (cc == "eq" || cc == "ne") && lower.tyk.is_opt_scalar(env, c, l.t) {
+        return lower.chk.opt_cmp(env, c, l, r, cc == "ne", t)
+    }
+    let ty = lower.tyk.text(env, c, l.t)?
+    if ty.as_str().starts_with("agg#") {
+        // 集成体 (値を持つ列挙型・構造体) の `==` は `T.$eq` の呼び出しで、`icmp` は使えない。
+        lower.cx.fail(c, "集成体の比較 (未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    let lf3 = types.ty.find(&c.ar, l.t)
+    if types.ty.node(&c.ar, lf3).k == types.ty.K.Float {
+        o.push_str("fcmp.")?
+    } else {
+        o.push_str("icmp.")?
+    }
+    o.push_str(cc)?
+    o.push('.')?
+    o.push_str(ty.as_str())?
+    o.push(' ')?
+    o.push_str(lower.expr.two(l.v, r.v)?.as_str())?
+    let v = lower.cx.def(c, "bool", o.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.expr.bin
+
+// 合流の後: 可変の局所を合流の引数に入れ替える。
+fn lower.expr.bind_join(c: &mut lower.cx.Cx, rty: &str, ks: &alloc.vec.Vec<usize, std.alloc.System>, jps: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut mv = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut skip = 1usize
+    if rty == "unit" {
+        skip = 0usize
+    }
+    let mut i = 0usize
+    for v in jps.as_slice().iter() {
+        if i >= skip {
+            mv.push(*v)?
+        }
+        i = i + 1usize
+    }
+    lower.cx.bind_vals(c, ks, &mv)
+end lower.expr.bind_join
+
+// 波括弧のブロック: 局所の並びは終わりに戻す。値は最後の文の値 (なければ unit)。
+fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let mark = lower.cx.depth(c)
+    let cnt = resolve.ast.count(p, l)
+    let mut has = false
+    let mut res = 0usize
+    for j in core.iter.range(0usize, cnt) {
+        let s = resolve.ast.item(p, l, j)
+        let sn = parse.ast.get(&p.ast, s)
+        let last = j + 1usize == cnt
+        has = false
+        if (sn.kind == parse.ast.Kind.Let) {
+            lower.expr.letx(env, c, p, src, sn)?
+        } else if (sn.kind == parse.ast.Kind.Assign) {
+            core.mem.drop(lower.expr.assign(env, c, p, src, sn, true)?)
+        } else if (sn.kind == parse.ast.Kind.ExprStmt && lower.expr.is_assign(p, sn.a)) {
+            core.mem.drop(lower.expr.assign(env, c, p, src, parse.ast.get(&p.ast, sn.a), true)?)
+        } else if (sn.kind == parse.ast.Kind.ExprStmt) {
+            let mut w = types.ty.UNKNOWN
+            if last {
+                w = t
+            }
+            let r = lower.expr.expr(env, c, p, src, sn.a, w)?
+            if last {
+                res = r.v
+                has = true
+            }
+        } else {
+            let mut w = types.ty.UNKNOWN
+            if last {
+                w = t
+            }
+            let r = lower.expr.expr(env, c, p, src, s, w)?
+            if last {
+                res = r.v
+                has = true
+            }
+        }
+    }
+    if !has {
+        res = lower.expr.unit(c)?
+    }
+    lower.expr.end_locals(env, c, p, src, mark)?
+    lower.expr.trunc(c, mark)
+    Ok(lower.cx.R { v: res, t: t })
+end lower.expr.block
+
+// `br_if %c, bT(), bF()` (引数なし) を足す。
+fn lower.expr.br_if(c: &mut lower.cx.Cx, cond: usize, tb: usize, fb: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let e = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.push_str("br_if ")?
+    s.push_str(lower.cx.vs(cond)?.as_str())?
+    s.push_str(", ")?
+    s.push_str(lower.cx.target(tb, &e)?.as_str())?
+    s.push_str(", ")?
+    s.push_str(lower.cx.target(fb, &e)?.as_str())?
+    lower.cx.finish(c, s)
+end lower.expr.br_if
+
+// `br bN()` (引数なし) を現在のブロックに足す。
+fn lower.expr.br_to(c: &mut lower.cx.Cx, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let e = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let s = lower.cx.cat2("br ", lower.cx.target(b, &e)?.as_str())?
+    lower.cx.finish(c, s)
+end lower.expr.br_to
+
+// 関数呼び出し: 項目の関数の直接の呼び出し、または `局所.wrapping_*(..)` の形。
+fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let cn = parse.ast.get(&p.ast, n.a)
+    if (cn.kind != parse.ast.Kind.Path) {
+        lower.cx.fail(c, "呼び出しの先 (未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let name = resolve.ast.text(src, cn.a, cn.b)
+    lower.expr.call_named(env, c, p, src, e, n, name, t)
+end lower.expr.call
+
+// 呼び出しの本体。name は呼び先の綴り (`a.b.m`)。n は引数の並びを n.b に持つ `Call` の形の節。
+fn lower.expr.call_named(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, name: &str, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let (rv, meth) = lower.expr.split2(name)
+    if rv != "" && lower.cx.find(c, rv) != 0usize {
+        if lower.expr.is_wrap_op(meth) {
+            return lower.expr.wrapping(env, c, p, src, rv, meth, n.b, t)
+        }
+        // 局所の受け手の利用者のメソッド `x.m(..)`。
+        let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
+        if it != 0usize && types.infer.item_kind(env, it - 1usize) == parse.ast.Kind.FnDef {
+            let rl = lower.cx.find(c, rv)
+            return lower.opt.user_method(env, c, p, src, it - 1usize, 0usize, rl, n.b, t)
+        }
+        return lower.expr.wrapping(env, c, p, src, rv, meth, n.b, t)
+    }
+    // `x.f.wrapping_add(a)`: 局所の欄を読んでから演算する。
+    let (n1, n2, n3) = lower.expr.split3(name)
+    if n1 != "" && lower.cx.find(c, n1) != 0usize && lower.expr.is_wrap_op(n3) {
+        return lower.expr.wrapping_field(env, c, p, src, (n1, n2, n3), n.b, t)
+    }
+    if lower.expr.seg_count(name) >= 3usize && !lower.expr.is_wrap_op(lower.expr.last_seg(name)) {
+        let (vr, vok) = lower.expr.vec_field_call(env, c, p, src, e, name, n.b, t)?
+        if vok {
+            return Ok(vr)
+        }
+    }
+    // 解決先は型検査の表 (env の項目 + 1)。
+    let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
+    if it == 0usize {
+        lower.cx.fail(c, "呼び出しの解決先が記録されていない")?
+        return lower.expr.dummy(c, t)
+    }
+    let item = it - 1usize
+    if (types.infer.item_kind(env, item) == parse.ast.Kind.Variant) {
+        return lower.opt.ctor(env, c, p, src, n, t, item)
+    }
+    if (types.infer.item_kind(env, item) != parse.ast.Kind.FnDef) {
+        lower.cx.fail(c, "関数でない呼び出し (列挙子の構築など、未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let fqn = match env.tab.items.as_slice().get(item) {
+        Some(x) => lower.cx.own(x.fqn.as_str())?
+        None => alloc.string.String.new(std.alloc.SYSTEM)
+    }
+    // `core.mem.drop(x)`: 組み込み (本体のない宣言)。引数を評価し、単位の値を返す。
+    if fqn.as_str() == "core.mem.drop" {
+        let mut dv = 0usize
+        if resolve.ast.count(p, n.b) == 1usize {
+            let a0node = resolve.ast.item(p, n.b, 0usize)
+            let a0 = lower.expr.expr(env, c, p, src, a0node, types.ty.UNKNOWN)?
+            dv = a0.v
+            if lower.vec.is_hdr(env, c, a0.t) {
+                // 所有する `Vec` / `String` を捨てる: 先頭の番地を解放する。
+                let fp = lower.cx.def(c, "ptr", lower.expr.field_src(dv, 0usize)?.as_str())?
+                core.mem.drop(lower.cx.def1(c, "unit", "heap.free ", fp)?)
+            }
+        }
+        core.mem.drop(dv)
+        let u = lower.expr.unit(c)?
+        return Ok(lower.cx.R { v: u, t: t })
+    }
+    if fqn.as_str() == "std.fs.read_to_end" {
+        return lower.fs.read_to_end(env, c, p, src, n, t)
+    }
+    if fqn.as_str() == "std.env.arg_count" {
+        let v = lower.cx.def(c, "usize", "env.arg_count")?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    let (nty, nm) = lower.std_calls.num_parts(fqn.as_str())
+    if nm == "from_str_radix" && resolve.ast.count(p, n.b) == 2usize {
+        let un = types.ty.UNKNOWN
+        let a0 = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 0usize), un)?
+        let a1 = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 1usize), un)?
+        let rt0 = lower.tyk.text(env, c, t)?
+        let op0 = lower.cx.cat2("parseint.", nty)?
+        let op1 = lower.cx.cat2(op0.as_str(), " ")?
+        let op2 = lower.cx.cat2(op1.as_str(), lower.expr.two(a0.v, a1.v)?.as_str())?
+        let v = lower.cx.def(c, rt0.as_str(), op2.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if lower.expr.is_widen(nty, nm) && resolve.ast.count(p, n.b) == 1usize {
+        // `u32.from_u8(x)` などの整数の広げ: `conv.DST.SRC x` (Rust 版と同じ)。
+        let sty = lower.expr.from_src(nm)
+        let an = resolve.ast.item(p, n.b, 0usize)
+        let a0 = lower.expr.expr(env, c, p, src, an, types.ty.UNKNOWN)?
+        let cv0 = lower.cx.cat2("conv.", nty)?
+        let cv1 = lower.cx.cat2(cv0.as_str(), ".")?
+        let cv2 = lower.cx.cat2(cv1.as_str(), sty)?
+        let cv3 = lower.cx.cat2(cv2.as_str(), " ")?
+        let cv4 = lower.cx.cat2(cv3.as_str(), lower.cx.vs(a0.v)?.as_str())?
+        let cv = lower.cx.def(c, nty, cv4.as_str())?
+        return Ok(lower.cx.R { v: cv, t: t })
+    }
+    if fqn.as_str() == "core.check.eq" {
+        return lower.chk.eq(env, c, p, src, n, t)
+    }
+    if fqn.as_str() == "alloc.vec.Vec.new" {
+        return lower.vec.new(env, c, t)
+    }
+    if fqn.as_str() == "alloc.string.String.new" {
+        return lower.vec.new(env, c, t)
+    }
+    if fqn.as_str() == "alloc.string.String.from_str" {
+        return lower.str.from_str(env, c, p, src, n, t)
+    }
+    if fqn.as_str() == "std.io.print_line" {
+        return lower.io.print_line(env, c, p, src, n, t)
+    }
+    if lower.std_calls.has_fn1(fqn.as_str()) {
+        return lower.std_calls.call1(env, c, p, src, n, t, fqn.as_str())
+    }
+    if lower.expr.no_body(env, item) {
+        let why = lower.cx.cat2("本体のない標準の宣言の呼び出し (未対応): ", fqn.as_str())?
+        lower.cx.fail(c, why.as_str())?
+        return lower.expr.dummy(c, t)
+    }
+    // 総称の関数は型引数を照合で決めて、インスタンスの鍵 (fqn<型,..>) で下ろす。
+    let mut key = lower.cx.own(fqn.as_str())?
+    let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rty = t
+    if lower.inst.is_generic(env, c, item) {
+        subs = lower.inst.args_of(env, c, p, item, n)?
+        key = lower.inst.key(env, c, fqn.as_str(), &subs)?
+        // 戻り値は宣言から代入する (呼び出しの型の表は、総称の中の呼び出しで決まらないことがある)。
+        let rr = lower.inst.ret_of(env, c, item, &subs)?
+        if rr != types.ty.UNKNOWN {
+            rty = rr
+        }
+    }
+    lower.expr.enqueue(c, key.as_str(), item + 1usize, subs, rty)?
+    let mut args = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for j in core.iter.range(0usize, resolve.ast.count(p, n.b)) {
+        let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, j), types.ty.UNKNOWN)?
+        args.push(a.v)?
+    }
+    // 引数を全部評価してから、`&mut` → `&` の付け替えを順に出す (Rust 版と同じ並び)。
+    let mut cargs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ai = 0usize
+    for av in args.as_slice().iter() {
+        cargs.push(lower.expr.coerce_shared(env, c, item, ai, *av)?)?
+        ai = ai + 1usize
+    }
+    args = cargs
+    let rt = lower.tyk.text(env, c, rty)?
+    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    o.push_str("call ")?
+    o.push_str(key.as_str())?
+    o.push('(')?
+    o.push_str(lower.cx.vlist(&args)?.as_str())?
+    o.push(')')?
+    let v = lower.cx.def(c, rt.as_str(), o.as_str())?
+    Ok(lower.cx.R { v: v, t: rty })
+end lower.expr.call_named
+
+// 文字リテラルの中身 src[a..b] の値 (エスケープ `\n` `\t` `\r` `\0` `\\` `\'` `\"` と UTF-8)。
+fn lower.expr.chr_val(src: &[u8], a: usize, b: usize) -> (usize, bool) uses [] panics may pub
+    let b0 = match src.get(a) {
+        Some(x) => usize.from_u32(u32.from_u8(*x))
+        None => 0usize
+    }
+    if b0 == 92usize {
+        let e = match src.get(a + 1usize) {
+            Some(x) => usize.from_u32(u32.from_u8(*x))
+            None => 0usize
+        }
+        if e == 110usize {
+            return (10usize, true)
+        }
+        if e == 116usize {
+            return (9usize, true)
+        }
+        if e == 114usize {
+            return (13usize, true)
+        }
+        if e == 48usize {
+            return (0usize, true)
+        }
+        if e == 92usize || e == 34usize || e == 39usize {
+            return (e, true)
+        }
+        return (0usize, false)
+    }
+    if b0 < 128usize {
+        return (b0, true)
+    }
+    let mut n = 0usize
+    let mut v = 0usize
+    if b0 >= 240usize {
+        n = 3usize
+        v = b0 - 240usize
+    } else if b0 >= 224usize {
+        n = 2usize
+        v = b0 - 224usize
+    } else {
+        n = 1usize
+        v = b0 - 192usize
+    }
+    let mut i = 1usize
+    while i <= n && a + i < b {
+        let cb = match src.get(a + i) {
+            Some(x) => usize.from_u32(u32.from_u8(*x))
+            None => 128usize
+        }
+        v = v * 64usize + (cb - 128usize)
+        i = i + 1usize
+    }
+    (v, true)
+end lower.expr.chr_val
+
+// `&mut T` の値を、宣言が `&T` の引数 (j 番目) へ渡すときは `asshared` で共有参照にする (Rust 版と同じ)。
+fn lower.expr.coerce_shared(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, j: usize, v: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let vt = lower.cx.tyof(c, v)
+    if !vt.as_str().starts_with("mutref<") {
+        return Ok(v)
+    }
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let cp = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(v)
+    }
+    let fd = parse.ast.get(&cp.ast, node)
+    let sg = parse.ast.get(&cp.ast, fd.c)
+    if j >= resolve.ast.count(cp, sg.b) {
+        return Ok(v)
+    }
+    let pn = resolve.ast.item(cp, sg.b, j)
+    let pt = types.ty.find(&c.ar, types.rec.ty_of(&c.tc.rec, file, pn))
+    let nd = types.ty.node(&c.ar, pt)
+    if nd.k != types.ty.K.Ref || nd.m {
+        return Ok(v)
+    }
+    let rest = match vt.as_str().strip_prefix("mutref<") {
+        Some(r) => r
+        None => return Ok(v)
+    }
+    let ns = lower.cx.cat2("ref<", rest)?
+    lower.cx.def(c, ns.as_str(), lower.cx.cat2("asshared ", lower.cx.vs(v)?.as_str())?.as_str())
+end lower.expr.coerce_shared
+
+// 場所の式 (`x.f.g` の 1 つの `Path`、または `self` から始まる `Dot` の連鎖) の綴り。
+fn lower.expr.dotted['a](p: &parse.cur.P, src: &'a [u8], node: usize) -> (&'a str, bool) uses [] panics may pub
+    let n = parse.ast.get(&p.ast, node)
+    if n.kind == parse.ast.Kind.Path {
+        let nm = resolve.ast.text(src, n.a, n.b)
+        return (nm, lower.expr.seg_count(nm) >= 2usize)
+    }
+    if n.kind != parse.ast.Kind.Dot {
+        return ("", false)
+    }
+    let mut cur = n
+    while cur.kind == parse.ast.Kind.Dot {
+        cur = parse.ast.get(&p.ast, cur.a)
+    }
+    if cur.kind != parse.ast.Kind.Path {
+        return ("", false)
+    }
+    let tk = parse.cur.peek_at(p, n.b)
+    (resolve.ast.text(src, cur.a, tk.stop), true)
+end lower.expr.dotted
+
+// 型の合わない仮の値 (未対応のとき)。
+fn lower.expr.dummy(c: &mut lower.cx.Cx, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let v = lower.cx.newval(c, "unit")?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.expr.dummy
+
+// 局所の寿命の終わり: [mark, 末尾) の局所を逆順に、印のある値は解放し、スタックスロットは (`Vec` / `String` なら
+// 解放して) `scope.end` (借用検査の注釈)。
+fn lower.expr.end_locals(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], mark: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    // 所有する局所 (印のある値・`Vec` / `String` の枠) を逆順に解放し、その後でそれ以外のスロットを逆順に
+    // `scope.end` (Rust 版は所有物の解放が先で、所有しないスロットの寿命の終わりは後)。
+    let mut k = c.v.vals.len()
+    while k > mark {
+        k = k - 1usize
+        lower.drop.exit(env, c, p, src, k)?
+        if lower.cx.is_slot(c, k) && lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
+            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+            lower.vec.free_slot(env, c, sv, lower.cx.tyof_t(c, k))?
+            let _e = lower.cx.def1(c, "unit", "scope.end ", sv)?
+        }
+    }
+    k = c.v.vals.len()
+    while k > mark {
+        k = k - 1usize
+        let hdr = lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k))
+        if lower.cx.is_slot(c, k) && !hdr && lower.fs.close_at(c, k) == 0usize {
+            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+            let _f = lower.cx.def1(c, "unit", "scope.end ", sv)?
+        }
+    }
+    Ok(())
+end lower.expr.end_locals
+
+// 関数の下ろしを予約する (未処理なら末尾に足す)。
+fn lower.expr.enqueue(c: &mut lower.cx.Cx, key: &str, item1: usize, subs: alloc.vec.Vec<usize, std.alloc.System>, ret: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut i = 0usize
+    while i < c.g.nms.len() {
+        let same = match c.g.nms.as_slice().get(i) {
+            Some(s) => s.as_str() == key
+            None => false
+        }
+        if same {
+            return Ok(())
+        }
+        i = i + 1usize
+    }
+    c.g.nms.push(lower.cx.own(key)?)?
+    c.g.itm.push(item1)?
+    c.g.sbs.push(subs)?
+    c.g.rts.push(ret)?
+    Ok(())
+end lower.expr.enqueue
+
+// 式。`want` は期待する型 (types の型 id。分からなければ UNKNOWN)。
+fn lower.expr.expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, want: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let n = parse.ast.get(&p.ast, e)
+    if c.s.term {
+        return lower.expr.dummy(c, want)
+    }
+    let t = lower.expr.tyof(c, e)?
+    let k = n.kind
+    if (k == parse.ast.Kind.Lit) {
+        return lower.expr.lit(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.Path) {
+        return lower.expr.path(env, c, src, n, t)
+    }
+    if (k == parse.ast.Kind.Bin) {
+        return lower.expr.bin(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.Unary) {
+        return lower.expr.unary(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.Call) {
+        return lower.expr.call(env, c, p, src, e, n, t)
+    }
+    if (k == parse.ast.Kind.MCall) {
+        return lower.expr.mcall(env, c, p, src, e, n, t)
+    }
+    if (k == parse.ast.Kind.Dot) {
+        return lower.expr.field(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.StructLit) {
+        return lower.expr.structlit(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.Block) {
+        return lower.expr.block(env, c, p, src, n.a, t)
+    }
+    if (k == parse.ast.Kind.If) {
+        return lower.expr.ifx(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.Match) {
+        return lower.expr.matchx(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.While) {
+        return lower.expr.whilex(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.Loop) {
+        return lower.expr.loopx(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.TupleE) {
+        return lower.tup.make(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.Index) {
+        return lower.vec.index_expr(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.For) {
+        return lower.loops.forx(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.With) {
+        return lower.fs.withx(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.Try) {
+        return lower.opt.tryx(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.Break) {
+        return lower.expr.jump(env, c, p, src, true, t)
+    }
+    if (k == parse.ast.Kind.Continue) {
+        return lower.expr.jump(env, c, p, src, false, t)
+    }
+    if (k == parse.ast.Kind.Return) {
+        return lower.expr.retx(env, c, p, src, n)
+    }
+    if (k == parse.ast.Kind.Assign) {
+        return lower.expr.assign(env, c, p, src, n, false)
+    }
+    if (k == parse.ast.Kind.ExprStmt) {
+        return lower.expr.expr(env, c, p, src, n.a, want)
+    }
+    lower.cx.fail(c, "式の形 (未対応)")?
+    lower.expr.dummy(c, t)
+end lower.expr.expr
+
+// `&x.f.g` の連鎖: 土台の局所 (構造体のスロット・構造体への参照) から `fieldaddr` をたどる。
+// 戻りは (番地の値, 番地の指す型, 可変か, 成功か)。`x.f` は Path (名前が 2 つ)、それ以外の入れ子は Dot。
+fn lower.expr.faddr_chain(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], node: usize) -> Result<(usize, usize, bool, bool), resolve.Failure> uses [alloc] panics may pub
+    let n = parse.ast.get(&p.ast, node)
+    let mut bv = 0usize
+    let mut bt = types.ty.UNKNOWN
+    let mut m = false
+    let mut fname = ""
+    if n.kind == parse.ast.Kind.Path {
+        let (first, second) = lower.expr.split2(resolve.ast.text(src, n.a, n.b))
+        if first == "" {
+            return Ok((0usize, bt, false, false))
+        }
+        let loc = lower.cx.find(c, first)
+        if loc == 0usize {
+            return Ok((0usize, bt, false, false))
+        }
+        bt = lower.cx.tyof_t(c, loc - 1usize)
+        bv = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
+        if lower.cx.is_slot(c, loc - 1usize) {
+            if lower.vec.is_hdr(env, c, bt) {
+                return Ok((0usize, bt, false, false))
+            }
+            m = true
+        } else {
+            let (_inner, through, m0) = lower.opt.deref_ty(c, bt)
+            if !through {
+                return Ok((0usize, bt, false, false))
+            }
+            m = m0
+        }
+        fname = second
+    } else if (n.kind == parse.ast.Kind.Dot) {
+        let (bv1, bt1, m1, ok) = lower.expr.faddr_chain(env, c, p, src, n.a)?
+        if !ok {
+            return Ok((0usize, bt1, false, false))
+        }
+        bv = bv1
+        bt = bt1
+        m = m1
+        fname = resolve.ast.tok_text(p, src, n.b)
+    } else {
+        return Ok((0usize, bt, false, false))
+    }
+    let ft = lower.expr.tyof(c, node)?
+    let (_i2, thr2, _m2) = lower.opt.deref_ty(c, ft)
+    if thr2 || lower.vec.is_hdr(env, c, ft) {
+        return Ok((0usize, ft, false, false))
+    }
+    let (inner, _th, _mm) = lower.opt.deref_ty(c, bt)
+    let rs = types.ty.strip(&c.ar, inner)
+    let rn = types.ty.node(&c.ar, rs)
+    if (rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef) {
+        return Ok((0usize, ft, false, false))
+    }
+    let a = lower.opt.field_addr_m(env, c, bv, bt, fname, ft, m)?
+    Ok((a, ft, m, true))
+end lower.expr.faddr_chain
+
+// フィールドの読み出し (構造体のみ)。
+fn lower.expr.field(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let r = lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
+    let fname = resolve.ast.tok_text(p, src, n.b)
+    let (inner, _through, _m) = lower.opt.deref_ty(c, r.t)
+    let rs = types.ty.strip(&c.ar, inner)
+    let rn = types.ty.node(&c.ar, rs)
+    if (rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef) {
+        lower.cx.fail(c, "フィールドの読み出し (構造体以外は未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    lower.opt.field(env, c, r.v, r.t, fname, t)
+end lower.expr.field
+
+// `field %v, +off` の文字列。
+fn lower.expr.field_src(v: usize, off: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.push_str("field ")?
+    s.push_str(lower.cx.vs(v)?.as_str())?
+    s.push_str(", +")?
+    s.push_str(lower.cx.dec(off)?.as_str())?
+    Ok(s)
+end lower.expr.field_src
+
+// `局所.欄 = 値`: 局所が参照かスロットなら欄の番地へ `store`、値で持つ構造体なら `setfield` で作り直して局所に束ねる。
+fn lower.expr.field_store(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], k: usize, fname: &str, rhs: usize, lt: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let bt = lower.cx.tyof_t(c, k)
+    let bv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+    let r = lower.expr.expr(env, c, p, src, rhs, lt)?
+    let (_inner, through, _m) = lower.opt.deref_ty(c, bt)
+    if !lower.cx.is_slot(c, k) && !through {
+        let (inner, _th, _mm) = lower.opt.deref_ty(c, bt)
+        let rs = types.ty.strip(&c.ar, inner)
+        let rn = types.ty.node(&c.ar, rs)
+        let j = lower.tyk.field_index(env, rn.a, fname)?
+        let lay = lower.tyk.layout(env, c, rn.a)?
+        let off = lower.tyk.at(lay.offs.as_slice(), j)
+        let ft = lower.tyk.text(env, c, lt)?
+        let bty = lower.tyk.text(env, c, bt)?
+        let _old = lower.cx.def(c, ft.as_str(), lower.expr.field_src(bv, off)?.as_str())?
+        let mut so = alloc.string.String.new(std.alloc.SYSTEM)
+        so.push_str("setfield ")?
+        so.push_str(lower.cx.vs(bv)?.as_str())?
+        so.push_str(", +")?
+        so.push_str(lower.cx.dec(off)?.as_str())?
+        so.push_str(", ")?
+        so.push_str(lower.cx.vs(r.v)?.as_str())?
+        let nv = lower.cx.def(c, bty.as_str(), so.as_str())?
+        lower.cx.set_val(c, k, nv + 1usize)?
+        return Ok(nv)
+    }
+    let addr = lower.opt.field_addr(env, c, bv, bt, fname, lt)?
+    let so = lower.opt.two_op("store ", addr, r.v)?
+    lower.cx.def(c, "unit", so.as_str())
+end lower.expr.field_store
+
+// `from_u8` の `u8` (接頭辞がなければ空)。
+fn lower.expr.from_src(nm: &str) -> &str uses [] panics may pub
+    match nm.strip_prefix("from_") {
+        Some(s) => s
+        None => ""
+    }
+end lower.expr.from_src
+
+// `match NAME.as_mut_slice().get_mut(i)` で `Some(x)` と `None` の腕 (NAME は `Vec` の局所):
+// Option を作らず、範囲の検査で枝を分け、要素の番地を `&mut T` の値として束ねる (Rust 版の形)。
+fn lower.expr.getmut_match(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
+    let no = lower.cx.R { v: 0usize, t: t }
+    let sn = parse.ast.get(&p.ast, n.a)
+    if sn.kind != parse.ast.Kind.MCall {
+        return Ok((no, false))
+    }
+    let gm = resolve.ast.tok_text(p, src, sn.b)
+    let shared = gm == "get"
+    if !shared && gm != "get_mut" {
+        return Ok((no, false))
+    }
+    if resolve.ast.count(p, sn.d) != 1usize || resolve.ast.count(p, n.b) != 2usize {
+        return Ok((no, false))
+    }
+    let rn = parse.ast.get(&p.ast, sn.a)
+    let sfx = if shared {
+        ".as_slice"
+    } else {
+        ".as_mut_slice"
+    }
+    let mut cname = ""
+    if rn.kind == parse.ast.Kind.MCall && resolve.ast.count(p, rn.d) == 0usize && resolve.ast.tok_text(p, src, rn.b) == sfx.strip_prefix(".").unwrap_or("") {
+        let (sn2, sok2) = lower.expr.self_chain(p, src, rn.a, rn.b)
+        if !sok2 {
+            return Ok((no, false))
+        }
+        cname = sn2
+    } else {
+        if rn.kind != parse.ast.Kind.Call || resolve.ast.count(p, rn.b) != 0usize {
+            return Ok((no, false))
+        }
+        let cn = parse.ast.get(&p.ast, rn.a)
+        if cn.kind != parse.ast.Kind.Path {
+            return Ok((no, false))
+        }
+        cname = resolve.ast.text(src, cn.a, cn.b)
+    }
+    let bname = match cname.strip_suffix(sfx) {
+        Some(b) => b
+        None => return Ok((no, false))
+    }
+    if lower.expr.seg_count(bname) != 1usize && !shared {
+        return Ok((no, false))
+    }
+    if shared {
+        // 要素が所有物のときだけ (スカラーの `get` は値の Option のまま)。場所の命令を出す前に型で決める。
+        let sty = lower.expr.tyof(c, sn.a)?
+        let sel = types.ty.node(&c.ar, types.ty.strip(&c.ar, sty)).a
+        if !lower.drop.owns(env, c, sel)? {
+            return Ok((no, false))
+        }
+    }
+    let (hp, vt, ok) = lower.expr.hdr_of(env, c, bname)?
+    if !ok {
+        return Ok((no, false))
+    }
+    let elem = lower.vec.elem(c, vt)
+    let a0 = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, 0usize))
+    let a1 = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, 1usize))
+    let p0 = parse.ast.get(&p.ast, a0.a)
+    if p0.kind != parse.ast.Kind.PVariant || resolve.ast.count(p, p0.c) != 1usize {
+        return Ok((no, false))
+    }
+    let sp = parse.ast.get(&p.ast, resolve.ast.item(p, p0.c, 0usize))
+    let p1 = parse.ast.get(&p.ast, a1.a)
+    let none_ok = p1.kind == parse.ast.Kind.PPath || p1.kind == parse.ast.Kind.PWild
+    let wild_ok = shared && sp.kind == parse.ast.Kind.PWild
+    if (sp.kind != parse.ast.Kind.PBind && !wild_ok) || !none_ok {
+        return Ok((no, false))
+    }
+    let idx = lower.expr.expr(env, c, p, src, resolve.ast.item(p, sn.d, 0usize), types.ty.UNKNOWN)?
+    let (sz, _al) = lower.tyk.size_of(env, c, elem)?
+    let base = lower.cx.depth(c)
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan_arms(env, c, p, src, n.b, &mut nms, false)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
+    let saved = lower.cx.cur_vals(c, &ks)?
+    let rty = lower.tyk.text(env, c, t)?
+    let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
+    let len = lower.vec.load_usize(c, hp, 8usize)?
+    let ptr = lower.vec.load_ptr(c, hp)?
+    let cond = lower.loops.bin(c, "bool", "icmp.lt.usize", idx.v, len)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let sb = lower.cx.blk(c, &empty)?
+    let nb = lower.cx.blk(c, &empty)?
+    let jb = lower.cx.blk(c, &jps)?
+    lower.expr.br_if(c, cond, sb, nb)?
+    lower.cx.goto(c, sb)
+    let szc = lower.vec.usize_c(c, sz)?
+    let off = lower.loops.bin(c, "usize", "mul.usize.wrap", idx.v, szc)?
+    let addr = lower.loops.bin(c, "ptr", "ptr.add", ptr, off)?
+    let mark = lower.cx.depth(c)
+    if sp.kind == parse.ast.Kind.PBind {
+        let mut mr = addr
+        if !(shared && lower.vec.is_hdr(env, c, elem)) {
+            let et = lower.tyk.text(env, c, elem)?
+            let mt = lower.opt.refty(!shared, et.as_str())?
+            let bc0 = lower.cx.cat2("bitcast.", mt.as_str())?
+            let bc1 = lower.cx.cat2(bc0.as_str(), ".ptr ")?
+            mr = lower.cx.def1(c, mt.as_str(), bc1.as_str(), addr)?
+        }
+        let rk = types.ty.mk(types.ty.K.Ref, elem, 0usize, 0usize, !shared)
+        let rt2 = types.ty.push(&mut c.ar, rk)?
+        let stk_tok = parse.cur.peek_at(p, sp.a)
+        let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
+        let _lk = lower.cx.push_local(c, stk, mr + 1usize, false, rt2, false)?
+    }
+    lower.expr.arm_body(env, c, p, src, a0.b, t, rty.as_str(), &ks, &saved, jb, mark)?
+    lower.cx.goto(c, nb)
+    let mark2 = lower.cx.depth(c)
+    lower.expr.arm_body(env, c, p, src, a1.b, t, rty.as_str(), &ks, &saved, jb, mark2)?
+    lower.cx.goto(c, jb)
+    lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
+    if rty.as_str() == "unit" {
+        let u = lower.expr.unit(c)?
+        return Ok((lower.cx.R { v: u, t: t }, true))
+    }
+    Ok((lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t }, true))
+end lower.expr.getmut_match
+
+// `Vec` の場所 (局所、または `局所.欄(.欄)*`) のヘッダの番地。戻りは (番地, Vec の型, 成功か)。
+// 欄をたどるときは `fieldaddr` の連鎖と `bitcast.ptr`、局所の `Vec` はその枠 (参照引数は値の ptr)。
+fn lower.expr.hdr_of(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str) -> Result<(usize, usize, bool), resolve.Failure> uses [alloc] panics may pub
+    let mut segs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for w in name.split(".") {
+        segs.push(lower.cx.own(w)?)?
+    }
+    let nseg = segs.len()
+    let first = match segs.as_slice().get(0usize) {
+        Some(s) => lower.cx.own(s.as_str())?
+        None => return Ok((0usize, types.ty.UNKNOWN, false))
+    }
+    let loc = lower.cx.find(c, first.as_str())
+    if loc == 0usize {
+        return Ok((0usize, types.ty.UNKNOWN, false))
+    }
+    let k = loc - 1usize
+    let mut bt = lower.cx.tyof_t(c, k)
+    let mut cur = lower.cx.get_val(c, k).wrapping_sub(1usize)
+    if nseg == 1usize {
+        let (inner1, through1, _m1) = lower.opt.deref_ty(c, bt)
+        if lower.vec.is_hdr(env, c, inner1) && (through1 || lower.cx.is_slot(c, k)) {
+            return Ok((cur, inner1, true))
+        }
+        return Ok((0usize, bt, false))
+    }
+    let (inner0, through, m0) = lower.opt.deref_ty(c, bt)
+    if !through && !lower.cx.is_slot(c, k) {
+        return Ok((0usize, bt, false))
+    }
+    let mutable = !through || m0
+    let mut ty_in = inner0
+    let mut j = 1usize
+    while j < nseg {
+        let rs = types.ty.strip(&c.ar, ty_in)
+        let rn = types.ty.node(&c.ar, rs)
+        if rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef {
+            return Ok((0usize, bt, false))
+        }
+        let fname = match segs.as_slice().get(j) {
+            Some(s) => lower.cx.own(s.as_str())?
+            None => return Ok((0usize, bt, false))
+        }
+        let ft = lower.tyk.field_ty(env, c, rn.a, fname.as_str())?
+        if ft == types.ty.UNKNOWN {
+            return Ok((0usize, bt, false))
+        }
+        let last = j + 1usize == nseg
+        if last != lower.vec.is_hdr(env, c, ft) {
+            return Ok((0usize, bt, false))
+        }
+        cur = lower.opt.field_addr_m(env, c, cur, bt, fname.as_str(), ft, mutable)?
+        bt = ft
+        ty_in = ft
+        j = j + 1usize
+    }
+    let fat0 = lower.cx.tyof(c, cur)
+    let bc = lower.cx.cat2("bitcast.ptr.", fat0.as_str())?
+    let bc2 = lower.cx.cat2(bc.as_str(), " ")?
+    let pv = lower.cx.def(c, "ptr", lower.cx.cat2(bc2.as_str(), lower.cx.vs(cur)?.as_str())?.as_str())?
+    Ok((pv, bt, true))
+end lower.expr.hdr_of
+
+fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let base = lower.cx.depth(c)
+    let cr = lower.expr.expr(env, c, p, src, n.a, types.ty.BOOL)?
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan(env, c, p, src, n.b, &mut nms, false)?
+    lower.expr.scan(env, c, p, src, n.c, &mut nms, false)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
+    let rty = lower.tyk.text(env, c, t)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let tb = lower.cx.blk(c, &empty)?
+    let eb = lower.cx.blk(c, &empty)?
+    let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
+    let jb = lower.cx.blk(c, &jps)?
+    let mut br = lower.cx.own("br_if ")?
+    br.push_str(lower.cx.vs(cr.v)?.as_str())?
+    br.push_str(", ")?
+    br.push_str(lower.cx.target(tb, &empty)?.as_str())?
+    br.push_str(", ")?
+    br.push_str(lower.cx.target(eb, &empty)?.as_str())?
+    lower.cx.finish(c, br)?
+    // then (else の入口で局所の値を戻すため、今の値を覚える)
+    let saved = lower.cx.cur_vals(c, &ks)?
+    lower.cx.goto(c, tb)
+    let tr = lower.expr.expr(env, c, p, src, n.b, t)?
+    let then_term = c.s.term
+    if !then_term {
+        let a = lower.expr.jargs(c, rty.as_str(), tr.v, &ks)?
+        let s = lower.cx.cat2("br ", lower.cx.target(jb, &a)?.as_str())?
+        lower.cx.finish(c, s)?
+    }
+    // else
+    lower.cx.goto(c, eb)
+    lower.cx.bind_vals(c, &ks, &saved)?
+    let mut er = lower.cx.R { v: 0usize, t: t }
+    if n.c != 0usize {
+        er = lower.expr.expr(env, c, p, src, n.c, t)?
+    }
+    let else_term = c.s.term
+    if !else_term {
+        let a = lower.expr.jargs(c, rty.as_str(), er.v, &ks)?
+        let s = lower.cx.cat2("br ", lower.cx.target(jb, &a)?.as_str())?
+        lower.cx.finish(c, s)?
+    }
+    // join
+    lower.cx.goto(c, jb)
+    if then_term && else_term {
+        lower.cx.finish(c, lower.cx.own("unreachable")?)?
+        return lower.expr.dummy(c, t)
+    }
+    lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
+    if rty.as_str() == "unit" {
+        let u = lower.expr.unit(c)?
+        return Ok(lower.cx.R { v: u, t: t })
+    }
+    let rv = match jps.as_slice().get(0usize) {
+        Some(x) => *x
+        None => 0usize
+    }
+    Ok(lower.cx.R { v: rv, t: t })
+end lower.expr.ifx
+
+// `x = e` (局所の書き換え)。
+// 式 e が代入か。
+fn lower.expr.is_assign(p: &parse.cur.P, e: usize) -> bool uses [] panics may pub
+    parse.ast.get(&p.ast, e).kind == parse.ast.Kind.Assign
+end lower.expr.is_assign
+
+// メソッド名が `iter` か。
+fn lower.expr.is_iter_name(p: &parse.cur.P, src: &[u8], tok: usize) -> bool uses [] panics may pub
+    resolve.ast.tok_text(p, src, tok) == "iter"
+end lower.expr.is_iter_name
+
+// `core.num.DST.from_SRC` (整数どうしの広げ) か。
+fn lower.expr.is_widen(nty: &str, nm: &str) -> bool uses [alloc] panics may pub
+    if !nm.starts_with("from_") || nm == "from_str_radix" {
+        return false
+    }
+    let sty = lower.expr.from_src(nm)
+    let src_ok = lower.chk.is_unsigned(sty) || lower.chk.is_signed(sty)
+    src_ok && (lower.chk.is_unsigned(nty) || lower.chk.is_signed(nty))
+end lower.expr.is_widen
+
+// 整数の `wrapping_add/sub/mul/shl/shr` (命令 `add.T.wrap` など)。
+fn lower.expr.is_wrap_op(m: &str) -> bool uses [] panics may pub
+    let a = m == "wrapping_add" || m == "wrapping_sub" || m == "wrapping_mul"
+    a || m == "wrapping_shl" || m == "wrapping_shr"
+end lower.expr.is_wrap_op
+
+// 整数の既定の演算のメソッド (`wrapping_*`): 受け手は値のまま使う。
+fn lower.expr.is_wrapping(m: &str) -> bool uses [] panics may pub
+    if lower.expr.is_wrap_op(m) {
+        return true
+    }
+    // 受け手を値で取る数値のメソッド (借用にならない)。
+    let a = m == "saturating_add" || m == "saturating_sub" || m == "saturating_mul"
+    let b = m == "checked_add" || m == "checked_sub" || m == "checked_mul"
+    let d = m == "sqrt" || m == "floor" || m == "ceil" || m == "trunc"
+    a || b || d
+end lower.expr.is_wrapping
+
+// 合流への分岐の引数: 結果 (あれば) と可変の局所の現在の値。
+fn lower.expr.jargs(c: &lower.cx.Cx, rty: &str, res: usize, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let mut a = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if rty != "unit" {
+        a.push(res)?
+    }
+    let cv = lower.cx.cur_vals(c, ks)?
+    for v in cv.as_slice().iter() {
+        a.push(*v)?
+    }
+    Ok(a)
+end lower.expr.jargs
+
+// 合流の値を作る (結果の型が unit でなければ先頭の引数になる)。
+fn lower.expr.join_params(c: &mut lower.cx.Cx, rty: &str, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if rty != "unit" {
+        ps.push(lower.cx.newval(c, rty)?)?
+    }
+    let mv = lower.cx.fresh_vals(c, ks)?
+    for v in mv.as_slice().iter() {
+        ps.push(*v)?
+    }
+    Ok(ps)
+end lower.expr.join_params
+
+// break (`is_break`) と continue: 可変の局所の現在の値を持って飛ぶ。
+fn lower.expr.jump(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], is_break: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let a = lower.cx.cur_vals(c, &c.lp.ks)?
+    // ループの中で作ったスロットの局所を、逆順に解放して `scope.end` (Rust 版と同じ)。
+    lower.vec.exit_scope(env, c, p, src, c.v.vals.len(), c.lp.base)?
+    let mut s = lower.cx.own("br ")?
+    if is_break {
+        s.push_str(lower.cx.target(c.lp.exit, &a)?.as_str())?
+        c.lp.brk = c.lp.brk + 1usize
+    } else {
+        s.push_str(lower.cx.target(c.lp.head, &a)?.as_str())?
+    }
+    lower.cx.finish(c, s)?
+    lower.expr.dummy(c, t)
+end lower.expr.jump
+
+// 名前の最後の成分 (`A.B.C` → `C`)。
+fn lower.expr.last_seg(name: &str) -> &str uses [] panics may pub
+    let mut out = name
+    for w in name.split(".") {
+        out = w
+    }
+    out
+end lower.expr.last_seg
+
+// `let` 文 (束縛は PBind だけ)。初期化式は束縛より前の並びで下ろす。
+fn lower.expr.letx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], sn: parse.ast.Node) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let pn = parse.ast.get(&p.ast, sn.a)
+    if (sn.d != 0usize && (pn.kind == parse.ast.Kind.PStruct || pn.kind == parse.ast.Kind.PTuple)) {
+        let rr = lower.expr.expr(env, c, p, src, sn.d, types.ty.UNKNOWN)?
+        lower.pat.bind(env, c, p, src, sn.a, rr.v, rr.t, sn.b != 0usize)?
+        return Ok(())
+    }
+    if (sn.d == 0usize || pn.kind != parse.ast.Kind.PBind) {
+        lower.cx.fail(c, "let (初期化式のない束縛と、PBind 以外の形は未対応)")?
+        return Ok(())
+    }
+    // 初期化式は束縛より前の局所で下ろす (`let x = x + 1` の右辺の x は外の x)。
+    let r = lower.expr.expr(env, c, p, src, sn.d, types.ty.UNKNOWN)?
+    let tk = parse.cur.peek_at(p, pn.a)
+    let name = resolve.ast.text(src, tk.start, tk.stop)
+    let t = r.t
+    let lk = lower.opt.bind(env, c, name, r.v, sn.b != 0usize, t)?
+    lower.own.declare(env, c, lk, t)?
+    Ok(())
+end lower.expr.letx
+
+fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let ty = lower.tyk.text(env, c, t)?
+    if n.a == 8usize {
+        let v = lower.expr.unit(c)?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    let tk = parse.cur.peek_at(p, n.b)
+    let txt = resolve.ast.text(src, tk.start, tk.stop)
+    if n.a == 7usize {
+        let mut op = "const.bool false"
+        if txt == "true" {
+            op = "const.bool true"
+        }
+        let v = lower.cx.def(c, "bool", op)?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if n.a == 4usize || n.a == 5usize {
+        // 文字 (`'a'`、u32 の値) とバイト (`b'0'`、u8 の値): エスケープと UTF-8 を値にする。
+        let mut qa = tk.start + 1usize
+        let mut op = "const.u32 "
+        if n.a == 5usize {
+            qa = tk.start + 2usize
+            op = "const.u8 "
+        }
+        let (cv, cok) = lower.expr.chr_val(src, qa, tk.stop - 1usize)
+        if !cok {
+            lower.cx.fail(c, "文字リテラル (\\x と \\u は未対応)")?
+            return lower.expr.dummy(c, t)
+        }
+        let lt = if n.a == 5usize {
+            "u8"
+        } else {
+            "u32"
+        }
+        let v = lower.cx.def(c, lt, lower.cx.cat2(op, lower.cx.dec(cv)?.as_str())?.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if n.a == 3usize {
+        // 文字列: 静的なバイト列と長さから `&str` (fat) を作る。引用符の中のバイトを使う。
+        let tk3 = parse.cur.peek_at(p, n.b)
+        let qa = tk3.start + 1usize
+        let qb = tk3.stop - 1usize
+        if (resolve.ast.text(src, tk3.start, tk3.start + 1usize) != "\"") {
+            lower.cx.fail(c, "文字列の綴り (未対応)")?
+            return lower.expr.dummy(c, t)
+        }
+        let (hx, nbytes, esc_ok) = lower.expr.unesc(src, qa, qb)?
+        if !esc_ok {
+            lower.cx.fail(c, "文字列のエスケープ (\\x と \\u は未対応)")?
+            return lower.expr.dummy(c, t)
+        }
+        let so = lower.cx.cat2("static.bytes ", hx.as_str())?
+        let mut so2 = lower.cx.own("static.bytes")?
+        if nbytes != 0usize {
+            so2 = so
+        }
+        let ptr = lower.cx.def(c, "ptr", so2.as_str())?
+        let nlen = lower.cx.dec(nbytes)?
+        let lo = lower.cx.cat2("const.usize ", nlen.as_str())?
+        let len = lower.cx.def(c, "usize", lo.as_str())?
+        let mk = lower.expr.two(ptr, len)?
+        let mk2 = lower.cx.cat2("make(", mk.as_str())?
+        let mk3 = lower.cx.cat2(mk2.as_str(), ")")?
+        let ft = lower.tyk.text(env, c, t)?
+        let v = lower.cx.def(c, ft.as_str(), mk3.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if n.a == 2usize {
+        // 小数: 接尾辞 (f32 / f64) を外し、綴りが `.` を含むようにして Rust 版の表示 (Debug) と合わせる。
+        let mut stop_at = txt.len()
+        let tb = txt.as_bytes()
+        let mut k = 0usize
+        while k < txt.len() {
+            let is_f = match tb.get(k) {
+                Some(x) => *x == 102u8
+                None => false
+            }
+            if is_f {
+                stop_at = k
+                break
+            }
+            k = k + 1usize
+        }
+        let body = resolve.ast.text(src, tk.start, tk.start + stop_at)
+        let mut fo3 = lower.cx.cat2("const.", ty.as_str())?
+        fo3.push(' ')?
+        fo3.push_str(body)?
+        if !body.contains(".") {
+            fo3.push_str(".0")?
+        }
+        let v = lower.cx.def(c, ty.as_str(), fo3.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if n.a != 1usize {
+        lower.cx.fail(c, "リテラルの種類 (未対応)")?
+        let d = lower.expr.dummy(c, t)?
+        return Ok(d)
+    }
+    // 10 進の整数 (接尾辞は型に出ているので読み捨てる)。
+    let mut acc = 0usize
+    let mut digits = true
+    for ch in txt.as_bytes().iter() {
+        if digits && *ch >= 48u8 && *ch <= 57u8 {
+            acc = acc * 10usize + usize.from_u32(u32.from_u8(*ch - 48u8))
+        } else {
+            digits = false
+        }
+    }
+    let mut op = alloc.string.String.new(std.alloc.SYSTEM)
+    op.push_str("const.")?
+    op.push_str(ty.as_str())?
+    op.push(' ')?
+    op.push_str(lower.cx.dec(acc)?.as_str())?
+    let v = lower.cx.def(c, ty.as_str(), op.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.expr.lit
+
+fn lower.expr.loopx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let base = lower.cx.depth(c)
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan(env, c, p, src, n.a, &mut nms, false)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
+    let hps = lower.cx.fresh_vals(c, &ks)?
+    let head = lower.cx.blk(c, &hps)?
+    let eps = lower.cx.fresh_vals(c, &ks)?
+    let exitb = lower.cx.blk(c, &eps)?
+    let cur = lower.cx.cur_vals(c, &ks)?
+    let s0 = lower.cx.cat2("br ", lower.cx.target(head, &cur)?.as_str())?
+    lower.cx.finish(c, s0)?
+    lower.cx.goto(c, head)
+    lower.cx.bind_vals(c, &ks, &hps)?
+    let sh = c.lp.head
+    let se = c.lp.exit
+    let sb = c.lp.base
+    let sk = c.lp.brk
+    let sks = lower.cx.copy_u(&c.lp.ks)?
+    c.lp.head = head
+    c.lp.exit = exitb
+    c.lp.base = base
+    c.lp.brk = 0usize
+    c.lp.ks = lower.cx.copy_u(&ks)?
+    core.mem.drop(lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?)
+    if !c.s.term {
+        let a = lower.cx.cur_vals(c, &ks)?
+        let s2 = lower.cx.cat2("br ", lower.cx.target(head, &a)?.as_str())?
+        lower.cx.finish(c, s2)?
+    }
+    let got = c.lp.brk
+    c.lp.head = sh
+    c.lp.exit = se
+    c.lp.base = sb
+    c.lp.brk = sk
+    c.lp.ks = sks
+    lower.cx.goto(c, exitb)
+    if got == 0usize {
+        lower.cx.finish(c, lower.cx.own("unreachable")?)?
+        return lower.expr.dummy(c, t)
+    }
+    lower.cx.bind_vals(c, &ks, &eps)?
+    let u = lower.expr.unit(c)?
+    Ok(lower.cx.R { v: u, t: t })
+end lower.expr.loopx
+
+// 整数の `match` (リテラルの腕と `_`): 腕ごとに `icmp.eq` で比べ、外れたら次の腕へ。
+// ブロックは腕ごとに (次の腕・この腕の本体) の順。`_` の腕では、行き止まりの `unreachable` のブロックだけ作り、
+// 本体は今のブロック (前の腕の外れた先) に下ろす (Rust 版と同じ並び)。
+fn lower.expr.matchint(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, sc: lower.cx.R, base: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan_arms(env, c, p, src, n.b, &mut nms, false)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
+    let saved = lower.cx.cur_vals(c, &ks)?
+    let rty = lower.tyk.text(env, c, t)?
+    let sty = lower.tyk.text(env, c, sc.t)?
+    let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
+    let jb = lower.cx.blk(c, &jps)?
+    let nv = resolve.ast.count(p, n.b)
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for j in core.iter.range(0usize, nv) {
+        let arm = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, j))
+        let pat = parse.ast.get(&p.ast, arm.a)
+        let mark = lower.cx.depth(c)
+        if pat.kind == parse.ast.Kind.PWild {
+            let dead = lower.cx.blk(c, &empty)?
+            let here = c.s.cur
+            lower.cx.goto(c, dead)
+            lower.cx.finish(c, lower.cx.own("unreachable")?)?
+            lower.cx.goto(c, here)
+            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
+            lower.cx.goto(c, jb)
+            lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
+            if rty.as_str() == "unit" {
+                let u = lower.expr.unit(c)?
+                return Ok(lower.cx.R { v: u, t: t })
+            }
+            let rv = lower.tyk.at(jps.as_slice(), 0usize)
+            return Ok(lower.cx.R { v: rv, t: t })
+        }
+        if pat.kind != parse.ast.Kind.PLit {
+            let kn = parse.ast.kind_name(pat.kind)
+            lower.cx.fail(c, lower.cx.cat2("match の腕 (未対応の形): ", kn)?.as_str())?
+            return lower.expr.dummy(c, t)
+        }
+        let ln = parse.ast.get(&p.ast, pat.a)
+        let kv = lower.expr.lit(env, c, p, src, ln, sc.t)?
+        let cs = lower.cx.cat2("icmp.eq.", sty.as_str())?
+        let cs2 = lower.cx.cat2(cs.as_str(), " ")?
+        let cond = lower.cx.def(c, "bool", lower.cx.cat2(cs2.as_str(), lower.expr.two(sc.v, kv.v)?.as_str())?.as_str())?
+        let nextb = lower.cx.blk(c, &empty)?
+        let armb = lower.cx.blk(c, &empty)?
+        lower.expr.br_if(c, cond, armb, nextb)?
+        lower.cx.goto(c, armb)
+        lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
+        lower.cx.goto(c, nextb)
+    }
+    lower.cx.finish(c, lower.cx.own("unreachable")?)?
+    lower.cx.goto(c, jb)
+    lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
+    if rty.as_str() == "unit" {
+        let u = lower.expr.unit(c)?
+        return Ok(lower.cx.R { v: u, t: t })
+    }
+    let rv = lower.tyk.at(jps.as_slice(), 0usize)
+    Ok(lower.cx.R { v: rv, t: t })
+end lower.expr.matchint
+
+// match (列挙型のみ): 変種の番号をタグで比べる。変種の中の PBind は `field` で読む。
+fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let (gr, gok) = lower.expr.getmut_match(env, c, p, src, n, t)?
+    if gok {
+        return Ok(gr)
+    }
+    let base = lower.cx.depth(c)
+    // 局所の対象は読むだけ (`own.use`)。移すのは、非 Copy の束縛をする腕の入口。
+    // (Option / Result だけ。利用者の列挙型の対象は普通の読み = move)
+    let st0 = lower.expr.tyof(c, n.a)?
+    let sn0 = types.ty.node(&c.ar, types.ty.strip(&c.ar, st0))
+    let is_opt = sn0.k == types.ty.K.Adt && lower.opt.kind(env, sn0.a) != 0usize
+    let mut sloc = 0usize
+    if is_opt {
+        sloc = lower.own.scrut_loc(c, p, src, n.a)
+    }
+    c.s.peek = sloc != 0usize
+    let sc0 = lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
+    c.s.peek = false
+    let slin = lower.own.linear(env, c, sc0.t)?
+    let sc = lower.opt.deref_val(env, c, sc0)?
+    let ss = types.ty.strip(&c.ar, sc.t)
+    let sn = types.ty.node(&c.ar, ss)
+    if sn.k == types.ty.K.Int {
+        return lower.expr.matchint(env, c, p, src, n, t, sc, base)
+    }
+    if (sn.k != types.ty.K.Adt || types.infer.item_kind(env, sn.a) != parse.ast.Kind.EnumDef) {
+        lower.cx.fail(c, "match (列挙型以外は未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let item = sn.a
+    if lower.opt.kind(env, item) != 0usize {
+        return lower.opt.optmatch(env, c, p, src, n, t, sc0, sloc, slin)
+    }
+    let own_scrut = lower.drop.temp_scrut(env, c, p, n.a, sc.t)?
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan_arms(env, c, p, src, n.b, &mut nms, false)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
+    let saved = lower.cx.cur_vals(c, &ks)?
+    let rty = lower.tyk.text(env, c, t)?
+    let lay = lower.tyk.layout(env, c, item)?
+    let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
+    let jb = lower.cx.blk(c, &jps)?
+    let nv = resolve.ast.count(p, n.b)
+    let mut done = false
+    for j in core.iter.range(0usize, nv) {
+        if done {
+            break
+        }
+        let arm = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, j))
+        let pat = parse.ast.get(&p.ast, arm.a)
+        let mark = lower.cx.depth(c)
+        if (pat.kind == parse.ast.Kind.PWild) {
+            done = true
+            let nb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
+            lower.expr.br_to(c, nb)?
+            lower.cx.goto(c, nb)
+            lower.drop.arm_head(env, c, own_scrut, false, sc.v, sc.t)?
+            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
+        } else if (pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath) {
+            let name = resolve.ast.text(src, pat.a, pat.b)
+            let tag_src = lower.cx.cat2("tag ", lower.cx.vs(sc.v)?.as_str())?
+            let tg = lower.cx.def(c, "i32", tag_src.as_str())?
+            let vidx = lower.tyk.variant_index(env, item, lower.expr.last_seg(name))?
+            let kvsrc = lower.cx.cat2("const.i32 ", lower.cx.dec(vidx)?.as_str())?
+            let kv = lower.cx.def(c, "i32", kvsrc.as_str())?
+            let csrc = lower.expr.two(tg, kv)?
+            let cond_src = lower.cx.cat2("icmp.eq.i32 ", csrc.as_str())?
+            let cond = lower.cx.def(c, "bool", cond_src.as_str())?
+            let nextb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
+            let armb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
+            lower.expr.br_if(c, cond, armb, nextb)?
+            lower.cx.goto(c, armb)
+            // 変種の基点 (ペイロードの読み出しの位置) と、束縛。
+            let mut vbase = 0usize
+            let mut q = 0usize
+            while q < vidx {
+                let add = match lay.vlens.as_slice().get(q) {
+                    Some(x) => *x
+                    None => 0usize
+                }
+                vbase = vbase + add
+                q = q + 1usize
+            }
+            let mut subs = 0usize
+            if pat.kind == parse.ast.Kind.PVariant {
+                subs = resolve.ast.count(p, pat.c)
+            }
+            let mut bound = false
+            let mut boffs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let mut btys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let mut i = 0usize
+            while i < subs {
+                let sub = resolve.ast.item(p, pat.c, i)
+                let sp = parse.ast.get(&p.ast, sub)
+                if (sp.kind == parse.ast.Kind.PBind) {
+                    let off = match lay.offs.as_slice().get(vbase + i) {
+                        Some(x) => *x
+                        None => 0usize
+                    }
+                    let pt = lower.expr.tyof(c, sub)?
+                    let pty = lower.tyk.text(env, c, pt)?
+                    let fsrc = lower.expr.field_src(sc.v, off)?
+                    let fv = lower.cx.def(c, pty.as_str(), fsrc.as_str())?
+                    let stk_tok = parse.cur.peek_at(p, sp.a)
+                    let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
+                    let fv2 = lower.opt.wrap_ref(env, c, fv, pt)?
+                    let _bf = lower.opt.bind(env, c, stk, fv2, false, pt)?
+                    if lower.drop.owns(env, c, pt)? {
+                        bound = true
+                        if own_scrut {
+                            boffs.push(off)?
+                            btys.push(pty)?
+                        }
+                    }
+                }
+                i = i + 1usize
+            }
+            // 束縛した所有物の欄を、後ろから読み直す (Rust 版 `drop_unbound` が束縛を確かめる読み)。
+            let mut bi = boffs.len()
+            while bi > 0usize {
+                bi = bi - 1usize
+                let bt = match btys.as_slice().get(bi) {
+                    Some(x) => lower.cx.own(x.as_str())?
+                    None => lower.cx.own("unit")?
+                }
+                let bo = lower.tyk.at(boffs.as_slice(), bi)
+                let fs = lower.expr.field_src(sc.v, bo)?
+                core.mem.drop(lower.cx.def(c, bt.as_str(), fs.as_str())?)
+            }
+            lower.drop.arm_head(env, c, own_scrut, bound, sc.v, sc.t)?
+            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
+            lower.cx.goto(c, nextb)
+        } else {
+            let kn = parse.ast.kind_name(pat.kind)
+            lower.cx.fail(c, lower.cx.cat2("match の腕 (未対応の形): ", kn)?.as_str())?
+            return lower.expr.dummy(c, t)
+        }
+    }
+    if !done {
+        lower.cx.finish(c, lower.cx.cat2("unreachable", "")?)?
+    }
+    lower.cx.goto(c, jb)
+    lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
+    if rty.as_str() == "unit" {
+        let u = lower.expr.unit(c)?
+        return Ok(lower.cx.R { v: u, t: t })
+    }
+    let rv = match jps.as_slice().get(0usize) {
+        Some(x) => *x
+        None => 0usize
+    }
+    Ok(lower.cx.R { v: rv, t: t })
+end lower.expr.matchx
+
+fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let meth = resolve.ast.tok_text(p, src, n.b)
+    let (sname, sself) = lower.expr.self_chain(p, src, n.a, n.b)
+    if meth == "get" || meth == "last" {
+        let (sr, sok) = lower.expr.vec_slice_get(env, c, p, src, e, n, t)?
+        if sok {
+            return Ok(sr)
+        }
+    }
+    if sself && !(meth == "get" || meth == "last") {
+        let mut cn2 = n
+        cn2.kind = parse.ast.Kind.Call
+        cn2.b = n.d
+        return lower.expr.call_named(env, c, p, src, e, cn2, sname, t)
+    }
+    if !lower.expr.is_wrap_op(meth) {
+        // 利用者のメソッド (解決先は型検査の表)。
+        let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
+        if it != 0usize && types.infer.item_kind(env, it - 1usize) == parse.ast.Kind.FnDef {
+            let rn = parse.ast.get(&p.ast, n.a)
+            let mut rl = 0usize
+            if rn.kind == parse.ast.Kind.Path {
+                rl = lower.cx.find(c, resolve.ast.text(src, rn.a, rn.b))
+            }
+            return lower.opt.user_method(env, c, p, src, it - 1usize, n.a, rl, n.d, t)
+        }
+        lower.cx.fail(c, "メソッド呼び出し (解決できない・未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let r = lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
+    let rty = lower.tyk.text(env, c, r.t)?
+    let mut op = "add"
+    if meth == "wrapping_sub" {
+        op = "sub"
+    } else if meth == "wrapping_mul" {
+        op = "mul"
+    } else if meth == "wrapping_shl" {
+        op = "shl"
+    } else if meth == "wrapping_shr" {
+        op = "shr"
+    }
+    let mut want = r.t
+    if meth == "wrapping_shl" || meth == "wrapping_shr" {
+        want = types.ty.UNKNOWN
+    }
+    let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.d, 0usize), want)?
+    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    o.push_str(op)?
+    o.push_str(".")?
+    o.push_str(rty.as_str())?
+    o.push_str(".wrap ")?
+    o.push_str(lower.expr.two(r.v, a.v)?.as_str())?
+    let v = lower.cx.def(c, rty.as_str(), o.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.expr.mcall
+
+// 利用者の `&mut self` のメソッドの呼び出し `x.m(..)` / `x.f.m(..)` / `self.f.m(..)` の根の局所の名前。
+fn lower.expr.mut_recv_root(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node) -> Result<(alloc.string.String<std.alloc.System>, bool), resolve.Failure> uses [alloc] panics may pub
+    let no = (alloc.string.String.new(std.alloc.SYSTEM), false)
+    let mut root = alloc.string.String.new(std.alloc.SYSTEM)
+    if n.kind == parse.ast.Kind.Call {
+        let cn = parse.ast.get(&p.ast, n.a)
+        if cn.kind != parse.ast.Kind.Path {
+            return Ok(no)
+        }
+        let (f1, f2) = lower.expr.split2(resolve.ast.text(src, cn.a, cn.b))
+        if f1 != "" && !lower.expr.is_wrapping(f2) {
+            root = lower.cx.own(f1)?
+        } else {
+            for w in resolve.ast.text(src, cn.a, cn.b).split(".") {
+                root = lower.cx.own(w)?
+                break
+            }
+        }
+    } else {
+        let mut cur = parse.ast.get(&p.ast, n.a)
+        while cur.kind == parse.ast.Kind.Dot {
+            cur = parse.ast.get(&p.ast, cur.a)
+        }
+        if cur.kind != parse.ast.Kind.Path {
+            return Ok(no)
+        }
+        for w in resolve.ast.text(src, cur.a, cur.b).split(".") {
+            root = lower.cx.own(w)?
+            break
+        }
+    }
+    if root.as_str() == "" || lower.cx.find(c, root.as_str()) == 0usize {
+        return Ok(no)
+    }
+    let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
+    if it == 0usize || types.infer.item_kind(env, it - 1usize) != parse.ast.Kind.FnDef {
+        return Ok(no)
+    }
+    let item = it - 1usize
+    if lower.expr.no_body(env, item) {
+        return Ok(no)
+    }
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let cp = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(no)
+    }
+    let fd = parse.ast.get(&cp.ast, node)
+    let sg = parse.ast.get(&cp.ast, fd.c)
+    if resolve.ast.count(cp, sg.b) == 0usize {
+        return Ok(no)
+    }
+    let sdecl = types.rec.ty_of(&c.tc.rec, file, resolve.ast.item(cp, sg.b, 0usize))
+    let sdn = types.ty.node(&c.ar, types.ty.find(&c.ar, sdecl))
+    if sdn.k != types.ty.K.Ref || !sdn.m {
+        return Ok(no)
+    }
+    Ok((root, true))
+end lower.expr.mut_recv_root
+
+// 項目が本体のない宣言 (`.sig` の fn) か。
+fn lower.expr.no_body(env: &types.env.Env, item: usize) -> bool uses [alloc] panics may pub
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return false
+    }
+    parse.ast.get(&p.ast, node).d == 0usize
+end lower.expr.no_body
+
+fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let name = resolve.ast.text(src, n.a, n.b)
+    let (first, second) = lower.expr.split2(name)
+    let mut lname = name
+    if first != "" {
+        lname = first
+    }
+    let loc = lower.cx.find(c, lname)
+    if loc == 0usize {
+        // 局所でない `None` (Option の値)。
+        let last = lower.expr.last_seg(name)
+        if last == "None" && first == "" {
+            let tt = lower.tyk.text(env, c, t)?
+            let op = lower.cx.cat2("const.", tt.as_str())?
+            let op2 = lower.cx.cat2(op.as_str(), " none")?
+            let v = lower.cx.def(c, tt.as_str(), op2.as_str())?
+            return Ok(lower.cx.R { v: v, t: t })
+        }
+        // 項目の値: 整数の定数 (初期化式が整数の綴り) と、利用者の列挙型の変種 (値を持たないもの)。
+        let it = types.env.lookup(env, c.s.file, name)?
+        if it != 0usize {
+            let item = it - 1usize
+            let ik = types.infer.item_kind(env, item)
+            if ik == parse.ast.Kind.ConstDef {
+                let r = lower.opt.const_value(env, c, item, t)?
+                if r.v != 0usize {
+                    return Ok(r)
+                }
+            }
+            if ik == parse.ast.Kind.Variant {
+                return lower.opt.unit_variant(env, c, item, t)
+            }
+        }
+        lower.cx.fail(c, "名前が局所でない (定数・関数の値は未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let bt = lower.cx.tyof_t(c, loc - 1usize)
+    let base = lower.opt.local_val(env, c, loc - 1usize, bt)?
+    if lower.cx.get_val(c, loc - 1usize) == 0usize {
+        lower.cx.fail(c, "局所の値がない")?
+        return lower.expr.dummy(c, t)
+    }
+    if first == "" {
+        // 局所の読み出し: 型は局所の型 (束縛のとき決まったもの)。Copy でなければ move (借りる文脈では `use`)。
+        if c.s.peek {
+            lower.own.emit(c, loc - 1usize, "own.use ")?
+        } else if !lower.own.is_copy(env, c, bt) {
+            lower.drop.moved(c, loc - 1usize)?
+            lower.own.emit(c, loc - 1usize, "own.consume ")?
+        }
+        return Ok(lower.cx.R { v: base, t: bt })
+    }
+    // `局所.フィールド` (構造体の読み出し。参照なら参照越し)。
+    let fr = lower.opt.field(env, c, base, bt, second, t)?
+    if lower.own.is_copy(env, c, t) {
+        lower.own.emit(c, loc - 1usize, "own.use ")?
+    } else {
+        if !c.s.peek && lower.drop.owns(env, c, t)? {
+            // 所有物の欄を移した: 局所は残りの欄も含めて解放しない (Rust 版は移した欄を空にして残りを解放する)。
+            lower.drop.moved(c, loc - 1usize)?
+        }
+        lower.own.emit(c, loc - 1usize, "own.part ")?
+    }
+    Ok(fr)
+end lower.expr.path
+
+// return: 値を返して終わる (unit の関数は unit を返す)。
+fn lower.expr.retx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let rt = lower.tyk.text(env, c, c.s.ret_t)?
+    let mut v = 0usize
+    if rt.as_str() == "unit" {
+        if n.a != 0usize {
+            let _rv = lower.expr.expr(env, c, p, src, n.a, c.s.ret_t)?
+        }
+        v = lower.expr.unit(c)?
+    } else {
+        let r = lower.expr.expr(env, c, p, src, n.a, c.s.ret_t)?
+        v = r.v
+    }
+    lower.vec.exit_drops(env, c, p, src, c.v.vals.len(), 0usize)?
+    let s = lower.cx.cat2("ret ", lower.cx.vs(v)?.as_str())?
+    lower.cx.finish(c, s)?
+    lower.expr.dummy(c, types.ty.NEVER)
+end lower.expr.retx
+
+// 式の中で代入されている局所の名前 (`x = e` の x) を集める。分岐と合流で引き回す局所を絞るため。
+fn lower.expr.scan(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if e == 0usize {
+        return Ok(())
+    }
+    let n = parse.ast.get(&p.ast, e)
+    let k = n.kind
+    if k == parse.ast.Kind.Unary && bor {
+        let inner = parse.ast.get(&p.ast, n.b)
+        if (n.a == 38usize || n.a == 1000usize) && inner.kind == parse.ast.Kind.Path {
+            out.push(lower.cx.own(resolve.ast.text(src, inner.a, inner.b))?)?
+        }
+    }
+    if k == parse.ast.Kind.Assign && bor {
+        let lnb = parse.ast.get(&p.ast, n.a)
+        if lnb.kind == parse.ast.Kind.Dot {
+            let base = parse.ast.get(&p.ast, lnb.a)
+            if base.kind == parse.ast.Kind.Path {
+                out.push(lower.cx.own(resolve.ast.text(src, base.a, base.b))?)?
+            }
+        }
+    }
+    if k == parse.ast.Kind.Call && bor {
+        let cnb = parse.ast.get(&p.ast, n.a)
+        if cnb.kind == parse.ast.Kind.Path {
+            let (f1, f2) = lower.expr.split2(resolve.ast.text(src, cnb.a, cnb.b))
+            if f1 != "" && !lower.expr.is_wrapping(f2) {
+                out.push(lower.cx.own(f1)?)?
+            }
+        }
+    }
+    if k == parse.ast.Kind.For && bor {
+        let fit = parse.ast.get(&p.ast, n.b)
+        if (fit.kind == parse.ast.Kind.Path) {
+            out.push(lower.cx.own(resolve.ast.text(src, fit.a, fit.b))?)?
+        } else if (fit.kind == parse.ast.Kind.Call) {
+            let fcn = parse.ast.get(&p.ast, fit.a)
+            if fcn.kind == parse.ast.Kind.Path {
+                let (g1, _g2) = lower.expr.split2(resolve.ast.text(src, fcn.a, fcn.b))
+                if g1 != "" {
+                    out.push(lower.cx.own(g1)?)?
+                }
+            }
+        }
+    }
+    if k == parse.ast.Kind.For {
+        lower.expr.scan(env, c, p, src, n.b, out, bor)?
+        return lower.expr.scan(env, c, p, src, n.c, out, bor)
+    }
+    if k == parse.ast.Kind.Index && bor {
+        let ib = parse.ast.get(&p.ast, n.a)
+        if ib.kind == parse.ast.Kind.Path {
+            out.push(lower.cx.own(resolve.ast.text(src, ib.a, ib.b))?)?
+        }
+    }
+    if k == parse.ast.Kind.MCall && bor {
+        let rvb = parse.ast.get(&p.ast, n.a)
+        let mname = resolve.ast.tok_text(p, src, n.b)
+        if rvb.kind == parse.ast.Kind.Path && !lower.expr.is_wrapping(mname) {
+            out.push(lower.cx.own(resolve.ast.text(src, rvb.a, rvb.b))?)?
+        }
+    }
+    if !bor && k == parse.ast.Kind.Path {
+        // 所有物を持つ構造体の局所の欄 (`x.f`): 根の局所を、代入と同じく合流で受け渡す (欄の移動・書き戻しが見える)。
+        lower.expr.scan_field_root(env, c, resolve.ast.text(src, n.a, n.b), out)?
+    }
+    if !bor && k == parse.ast.Kind.Dot {
+        let mut cur = n
+        while cur.kind == parse.ast.Kind.Dot {
+            cur = parse.ast.get(&p.ast, cur.a)
+        }
+        if cur.kind == parse.ast.Kind.Path {
+            lower.expr.scan_field_root(env, c, resolve.ast.text(src, cur.a, cur.b), out)?
+        }
+    }
+    if !bor && k == parse.ast.Kind.Call {
+        let cnp = parse.ast.get(&p.ast, n.a)
+        if cnp.kind == parse.ast.Kind.Path {
+            lower.expr.scan_field_root(env, c, resolve.ast.text(src, cnp.a, cnp.b), out)?
+        }
+    }
+    if !bor && (k == parse.ast.Kind.Call || k == parse.ast.Kind.MCall) {
+        let (mr, mok) = lower.expr.mut_recv_root(env, c, p, src, e, n)?
+        if mok {
+            // 利用者の `&mut self` のメソッドを呼ぶ局所は、代入と同じく合流で受け渡す ("!" は可変束縛でなくてもよい印)。
+            out.push(lower.cx.cat2("!", mr.as_str())?)?
+        }
+    }
+    if k == parse.ast.Kind.Assign && !bor {
+        let ln = parse.ast.get(&p.ast, n.a)
+        if ln.kind == parse.ast.Kind.Path {
+            let (a1, _a2) = lower.expr.split2(resolve.ast.text(src, ln.a, ln.b))
+            if a1 != "" {
+                // `x.f = v`: x を値で持つ構造体なら `setfield` で作り直す (x も書き換わる局所)。
+                out.push(lower.cx.own(a1)?)?
+            } else {
+                out.push(lower.cx.own(resolve.ast.text(src, ln.a, ln.b))?)?
+            }
+        }
+        return lower.expr.scan(env, c, p, src, n.b, out, bor)
+    }
+    if k == parse.ast.Kind.Block {
+        return lower.expr.scan_list(env, c, p, src, n.a, out, bor)
+    }
+    if k == parse.ast.Kind.Try {
+        return lower.expr.scan(env, c, p, src, n.a, out, bor)
+    }
+    if k == parse.ast.Kind.With {
+        // 束縛される名前は借用の扱い (スロット)。初期化・後始末・本体の中も見る。
+        if bor {
+            out.push(lower.cx.own(resolve.ast.tok_text(p, src, n.a))?)?
+        }
+        lower.expr.scan(env, c, p, src, n.c, out, bor)?
+        lower.expr.scan(env, c, p, src, n.d, out, bor)?
+        return lower.expr.scan(env, c, p, src, n.e, out, bor)
+    }
+    if k == parse.ast.Kind.ExprStmt {
+        return lower.expr.scan(env, c, p, src, n.a, out, bor)
+    }
+    if k == parse.ast.Kind.Let {
+        return lower.expr.scan(env, c, p, src, n.d, out, bor)
+    }
+    if k == parse.ast.Kind.If {
+        lower.expr.scan(env, c, p, src, n.a, out, bor)?
+        lower.expr.scan(env, c, p, src, n.b, out, bor)?
+        return lower.expr.scan(env, c, p, src, n.c, out, bor)
+    }
+    if k == parse.ast.Kind.While {
+        lower.expr.scan(env, c, p, src, n.a, out, bor)?
+        return lower.expr.scan(env, c, p, src, n.b, out, bor)
+    }
+    if k == parse.ast.Kind.Loop || k == parse.ast.Kind.Return || k == parse.ast.Kind.Unary {
+        if k == parse.ast.Kind.Unary {
+            return lower.expr.scan(env, c, p, src, n.b, out, bor)
+        }
+        return lower.expr.scan(env, c, p, src, n.a, out, bor)
+    }
+    if k == parse.ast.Kind.Match {
+        lower.expr.scan(env, c, p, src, n.a, out, bor)?
+        return lower.expr.scan_arms(env, c, p, src, n.b, out, bor)
+    }
+    if k == parse.ast.Kind.Bin {
+        lower.expr.scan(env, c, p, src, n.b, out, bor)?
+        return lower.expr.scan(env, c, p, src, n.c, out, bor)
+    }
+    if k == parse.ast.Kind.Call {
+        return lower.expr.scan_list(env, c, p, src, n.b, out, bor)
+    }
+    if k == parse.ast.Kind.MCall {
+        lower.expr.scan(env, c, p, src, n.a, out, bor)?
+        return lower.expr.scan_list(env, c, p, src, n.d, out, bor)
+    }
+    if k == parse.ast.Kind.Dot {
+        return lower.expr.scan(env, c, p, src, n.a, out, bor)
+    }
+    Ok(())
+end lower.expr.scan
+
+// match の腕の並び: 腕の本体を集める。
+fn lower.expr.scan_arms(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
+        let arm = parse.ast.get(&p.ast, resolve.ast.item(p, l, j))
+        lower.expr.scan(env, c, p, src, arm.b, out, bor)?
+    }
+    Ok(())
+end lower.expr.scan_arms
+
+// 名前 `x.f...` の根の局所 x が所有物を持つ値 (参照でない) なら、名前を out に足す。
+fn lower.expr.scan_field_root(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if lower.expr.seg_count(name) < 2usize {
+        return Ok(())
+    }
+    let mut root = ""
+    for w in name.split(".") {
+        root = w
+        break
+    }
+    let loc = lower.cx.find(c, root)
+    if loc == 0usize {
+        return Ok(())
+    }
+    let t = lower.cx.tyof_t(c, loc - 1usize)
+    if lower.drop.owns(env, c, t)? {
+        out.push(lower.cx.own(root)?)?
+    }
+    Ok(())
+end lower.expr.scan_field_root
+
+// 式の並び (リスト) の中を集める。
+fn lower.expr.scan_list(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
+        lower.expr.scan(env, c, p, src, resolve.ast.item(p, l, j), out, bor)?
+    }
+    Ok(())
+end lower.expr.scan_list
+
+// 名前の `.` 区切りの数。
+fn lower.expr.seg_count(name: &str) -> usize uses [] panics may pub
+    let mut n = 0usize
+    for _w in name.split(".") {
+        n = n + 1usize
+    }
+    n
+end lower.expr.seg_count
+
+// `self.欄.メソッド(..)`: `self` は 1 語の `Path` で、後ろの `.欄` は `Dot` になる (ふつうの名前は `x.欄.m` が 1 つの `Path`)。
+// 受け手が `self` から始まる `Dot` の連鎖なら、`self.欄.メソッド` の綴り (ソースの連続した範囲) を返す。
+fn lower.expr.self_chain['a](p: &parse.cur.P, src: &'a [u8], recv: usize, meth_tok: usize) -> (&'a str, bool) uses [] panics may pub
+    let mut cur = parse.ast.get(&p.ast, recv)
+    if cur.kind != parse.ast.Kind.Dot {
+        return ("", false)
+    }
+    while cur.kind == parse.ast.Kind.Dot {
+        cur = parse.ast.get(&p.ast, cur.a)
+    }
+    if cur.kind != parse.ast.Kind.Path || resolve.ast.text(src, cur.a, cur.b) != "self" {
+        return ("", false)
+    }
+    let tk = parse.cur.peek_at(p, meth_tok)
+    (resolve.ast.text(src, cur.a, tk.stop), true)
+end lower.expr.self_chain
+
+// 可変かどうかの印を立てる (k < 長さ)。set_val と同じ組み直し。
+fn lower.expr.set_mut(c: &mut lower.cx.Cx, k: usize, m: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut tail = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    while c.v.mutf.len() > k {
+        match c.v.mutf.pop() {
+            Some(x) => tail.push(x)?
+            None => core.mem.drop(0u8)
+        }
+    }
+    let _old = tail.pop()
+    c.v.mutf.push(m)?
+    while tail.len() > 0usize {
+        match tail.pop() {
+            Some(x) => c.v.mutf.push(x)?
+            None => core.mem.drop(0u8)
+        }
+    }
+    Ok(())
+end lower.expr.set_mut
+
+// `a && b` / `a || b`: 右辺は必要なときだけ評価する (短絡)。Rust 版 `short_circuit` と同じ枝。
+fn lower.expr.shortc(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, is_or: bool) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let a = lower.expr.expr(env, c, p, src, n.b, types.ty.BOOL)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let rhs = lower.cx.blk(c, &empty)?
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(lower.cx.newval(c, "bool")?)?
+    let jb = lower.cx.blk(c, &jps)?
+    let kc = if is_or {
+        "const.bool true"
+    } else {
+        "const.bool false"
+    }
+    let k = lower.cx.def(c, "bool", kc)?
+    let mut kv = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    kv.push(k)?
+    let mut ev = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut br = lower.cx.cat2("br_if ", lower.cx.vs(a.v)?.as_str())?
+    br.push_str(", ")?
+    if is_or {
+        br.push_str(lower.cx.target(jb, &kv)?.as_str())?
+        br.push_str(", ")?
+        br.push_str(lower.cx.target(rhs, &ev)?.as_str())?
+    } else {
+        br.push_str(lower.cx.target(rhs, &ev)?.as_str())?
+        br.push_str(", ")?
+        br.push_str(lower.cx.target(jb, &kv)?.as_str())?
+    }
+    lower.cx.finish(c, br)?
+    lower.cx.goto(c, rhs)
+    let b = lower.expr.expr(env, c, p, src, n.c, types.ty.BOOL)?
+    ev.push(b.v)?
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &ev)?.as_str())?)?
+    lower.cx.goto(c, jb)
+    Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+end lower.expr.shortc
+
+// 名前が `a.b` の形なら (a, b) を返す。それ以外は ("", "")。
+fn lower.expr.split2(name: &str) -> (&str, &str) uses [] panics may pub
+    let mut cnt = 0usize
+    let mut first = ""
+    let mut second = ""
+    for w in name.split(".") {
+        if cnt == 0usize {
+            first = w
+        } else if cnt == 1usize {
+            second = w
+        }
+        cnt = cnt + 1usize
+    }
+    if cnt == 2usize {
+        return (first, second)
+    }
+    ("", "")
+end lower.expr.split2
+
+// `a.b.c` を 3 つに分ける (3 つでなければ空)。
+fn lower.expr.split3(name: &str) -> (&str, &str, &str) uses [] panics may pub
+    let mut cnt = 0usize
+    let mut a = ""
+    let mut b = ""
+    let mut d = ""
+    for w in name.split(".") {
+        if cnt == 0usize {
+            a = w
+        } else if cnt == 1usize {
+            b = w
+        } else if cnt == 2usize {
+            d = w
+        }
+        cnt = cnt + 1usize
+    }
+    if cnt == 3usize {
+        return (a, b, d)
+    }
+    ("", "", "")
+end lower.expr.split3
+
+// 構造体リテラル: 式は書かれた順に評価し、`make` の引数は宣言の順に並べる。
+fn lower.expr.structlit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let it = types.env.lookup(env, c.s.file, resolve.ast.text(src, n.a, n.b))?
+    if (it == 0usize || types.infer.item_kind(env, it - 1usize) != parse.ast.Kind.TypeDef) {
+        lower.cx.fail(c, "構造体リテラル (構造体以外は未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let item = it - 1usize
+    let mut names = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for j in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
+        let fi = parse.ast.get(&p.ast, resolve.ast.item(p, n.c, j))
+        let r = lower.expr.expr(env, c, p, src, fi.b, types.ty.UNKNOWN)?
+        names.push(lower.cx.own(resolve.ast.tok_text(p, src, fi.a))?)?
+        vs.push(r.v)?
+    }
+    let decl = lower.tyk.field_names(env, item)?
+    let mut ordered = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut di = 0usize
+    while di < decl.len() {
+        let dn = match decl.as_slice().get(di) {
+            Some(x) => lower.cx.own(x.as_str())?
+            None => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+        di = di + 1usize
+        let mut found = 0usize
+        let mut i = 0usize
+        while i < names.len() {
+            let same = match names.as_slice().get(i) {
+                Some(x) => x.as_str() == dn.as_str()
+                None => false
+            }
+            if same {
+                found = i + 1usize
+            }
+            i = i + 1usize
+        }
+        if found == 0usize {
+            lower.cx.fail(c, "構造体リテラル (フィールドの不足)")?
+            return lower.expr.dummy(c, t)
+        }
+        let vv = match vs.as_slice().get(found - 1usize) {
+            Some(x) => *x
+            None => 0usize
+        }
+        ordered.push(vv)?
+    }
+    let key = lower.tyk.key_of(env, c, t, item)?
+    let agg = lower.tyk.agg_id(c, key)?
+    let mut ty = alloc.string.String.new(std.alloc.SYSTEM)
+    ty.push_str("agg#")?
+    ty.push_str(lower.cx.dec(agg)?.as_str())?
+    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    o.push_str("make(")?
+    o.push_str(lower.cx.vlist(&ordered)?.as_str())?
+    o.push(')')?
+    let v = lower.cx.def(c, ty.as_str(), o.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.expr.structlit
+
+// 式と文の下ろし。各式は (VId, 型) を返す。型は types の推論 (`types.infer.expr`) をその場で使う。
+// 未対応の形は `lower.cx.fail` で記録し、型だけ合った仮の値を返す (関数は出力しない)。
+// 局所の並び (types の sc) と vals・mutf の長さを合わせる (types の push の後に呼ぶ)。
+fn lower.expr.sync(c: &mut lower.cx.Cx) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    core.mem.drop(c.v.vals.len())
+    Ok(())
+end lower.expr.sync
+
+// 局所の並びを mark の長さに戻す (ブロックの終わり)。
+fn lower.expr.trunc(c: &mut lower.cx.Cx, mark: usize) -> () uses [alloc] panics may pub
+    lower.cx.trunc_to(c, mark)
+end lower.expr.trunc
+
+// 2 つの値の並び `%a, %b`。
+fn lower.expr.two(a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    vs.push(a)?
+    vs.push(b)?
+    lower.cx.vlist(&vs)
+end lower.expr.two
+
+// 節 e の型 (型検査の表。束縛をたどった型、記録がなければ UNKNOWN)。
+fn lower.expr.tyof(c: &mut lower.cx.Cx, e: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let t = types.ty.find(&c.ar, types.rec.ty_of(&c.tc.rec, c.s.file, e))
+    lower.inst.subst(c, t)
+end lower.expr.tyof
+
+fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    if n.a == 42usize {
+        // `*r`: 参照の読み出し。
+        let r = lower.expr.expr(env, c, p, src, n.b, types.ty.UNKNOWN)?
+        let tt = lower.tyk.text(env, c, t)?
+        if lower.cx.tyof(c, r.v).as_str() == "ptr" {
+            // 生の番地 (`Vec` の要素の借用) の読み出し。
+            let op1 = lower.cx.cat2("mem.load.", tt.as_str())?
+            let op2 = lower.cx.cat2(op1.as_str(), " ")?
+            let op3 = lower.cx.cat2(op2.as_str(), lower.cx.vs(r.v)?.as_str())?
+            let v1 = lower.cx.def(c, tt.as_str(), lower.cx.cat2(op3.as_str(), " +0")?.as_str())?
+            return Ok(lower.cx.R { v: v1, t: t })
+        }
+        let rkt = lower.cx.tyof(c, r.v)
+        if !rkt.as_str().starts_with("ref") && !rkt.as_str().starts_with("mutref") && rkt.as_str() == tt.as_str() {
+            // 値で持つ `&スカラー` (`Option<&スカラー>` から取った束縛): `*x` は値そのもの。
+            return Ok(lower.cx.R { v: r.v, t: t })
+        }
+        let op = lower.cx.cat2("load ", lower.cx.vs(r.v)?.as_str())?
+        let v = lower.cx.def(c, tt.as_str(), op.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if n.a == 38usize || n.a == 1000usize {
+        // `&x` / `&mut x`: 局所はスロットの参照、それ以外は一時のスロットに置いてから参照する。
+        let inner = parse.ast.get(&p.ast, n.b)
+        let mutable = n.a == 1000usize
+        let mut slot = 0usize
+        let mut sty = types.ty.UNKNOWN
+        if (inner.kind == parse.ast.Kind.Unary && inner.a == 42usize) {
+            // `&*r` / `&mut *r`: 同じ参照の再借用 (asshared / reborrow)。
+            let rr = lower.expr.expr(env, c, p, src, inner.b, types.ty.UNKNOWN)?
+            let tt2 = lower.tyk.text(env, c, t)?
+            let head2 = if mutable {
+                "reborrow "
+            } else {
+                "asshared "
+            }
+            let op2 = lower.cx.cat2(head2, lower.cx.vs(rr.v)?.as_str())?
+            let v2 = lower.cx.def(c, tt2.as_str(), op2.as_str())?
+            return Ok(lower.cx.R { v: v2, t: t })
+        }
+        if inner.kind == parse.ast.Kind.Path {
+            let loc = lower.cx.find(c, resolve.ast.text(src, inner.a, inner.b))
+            if loc != 0usize && lower.cx.is_slot(c, loc - 1usize) {
+                slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
+                sty = lower.cx.tyof_t(c, loc - 1usize)
+                // 借用は move 済みの値から作れない (注釈)。
+                lower.own.emit(c, loc - 1usize, "own.use ")?
+            }
+        }
+        let place = inner.kind == parse.ast.Kind.Dot || inner.kind == parse.ast.Kind.Path
+        if slot == 0usize && place {
+            // `&x.f` の f が `Vec` / `String`: 欄の番地を `borrow.*` する。
+            let ity = lower.expr.tyof(c, n.b)?
+            if lower.vec.is_hdr(env, c, ity) {
+                let (dn, dok) = lower.expr.dotted(p, src, n.b)
+                if dok {
+                    let (hp, _hvt, hok) = lower.expr.hdr_of(env, c, dn)?
+                    if hok {
+                        let tth = lower.tyk.text(env, c, t)?
+                        let hh = if mutable {
+                            "borrow.mut "
+                        } else {
+                            "borrow.shared "
+                        }
+                        let oph = lower.cx.cat2(hh, lower.cx.vs(hp)?.as_str())?
+                        let vh = lower.cx.def(c, tth.as_str(), oph.as_str())?
+                        return Ok(lower.cx.R { v: vh, t: t })
+                    }
+                }
+            }
+        }
+        if slot == 0usize && place {
+            // `&x.f` / `&mut x.f`: 欄の番地 (`fieldaddr`) をそのまま借りる (一時の複製を作らない)。
+            let (fa, _ft, fm, fok) = lower.expr.faddr_chain(env, c, p, src, n.b)?
+            if fok && (fm || !mutable) {
+                if fm && !mutable {
+                    let tt3 = lower.tyk.text(env, c, t)?
+                    let o3 = lower.cx.cat2("asshared ", lower.cx.vs(fa)?.as_str())?
+                    let v3 = lower.cx.def(c, tt3.as_str(), o3.as_str())?
+                    return Ok(lower.cx.R { v: v3, t: t })
+                }
+                return Ok(lower.cx.R { v: fa, t: t })
+            }
+        }
+        if slot == 0usize {
+            let x = lower.expr.expr(env, c, p, src, n.b, types.ty.UNKNOWN)?
+            sty = x.t
+            if lower.vec.is_hdr(env, c, sty) {
+                slot = lower.cx.def(c, "ptr", "frame.bytes 24")?
+                lower.vec.store_hdr(c, slot, x.v)?
+            } else {
+                let st = lower.tyk.text(env, c, sty)?
+                let mt = lower.opt.refty(true, st.as_str())?
+                slot = lower.cx.def(c, mt.as_str(), "alloca")?
+                let so = lower.opt.two_op("store ", slot, x.v)?
+                let _sd = lower.cx.def(c, "unit", so.as_str())?
+            }
+        }
+        let tt = lower.tyk.text(env, c, t)?
+        let hdr_b = lower.vec.is_hdr(env, c, sty)
+        let head = if hdr_b && mutable {
+            "borrow.mut "
+        } else if hdr_b {
+            "borrow.shared "
+        } else if mutable {
+            "reborrow "
+        } else {
+            "asshared "
+        }
+        let op = lower.cx.cat2(head, lower.cx.vs(slot)?.as_str())?
+        let v = lower.cx.def(c, tt.as_str(), op.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if n.a == 45usize {
+        let x = lower.expr.expr(env, c, p, src, n.b, t)?
+        let tt = lower.tyk.text(env, c, t)?
+        let nop = lower.cx.cat2("neg.", tt.as_str())?
+        let nop2 = lower.cx.cat2(nop.as_str(), ".trap ")?
+        let nop3 = lower.cx.cat2(nop2.as_str(), lower.cx.vs(x.v)?.as_str())?
+        let v = lower.cx.def(c, tt.as_str(), nop3.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if n.a != 33usize {
+        lower.cx.fail(c, "単項演算 (! 以外は未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let x = lower.expr.expr(env, c, p, src, n.b, types.ty.BOOL)?
+    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    o.push_str("not.bool ")?
+    o.push_str(lower.cx.vs(x.v)?.as_str())?
+    let v = lower.cx.def(c, "bool", o.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.expr.unary
+
+// 文字列リテラルの中身 src[a..b] のエスケープ (`\n` `\t` `\r` `\0` `\\` `\"` `\'`) を外した 16 進と長さ。
+// 未対応のエスケープ (`\x` `\u`) は 3 つ目が false。
+fn lower.expr.unesc(src: &[u8], a: usize, b: usize) -> Result<(alloc.string.String<std.alloc.System>, usize, bool), resolve.Failure> uses [alloc] panics may pub
+    let digits = "0123456789abcdef"
+    let db = digits.as_bytes()
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut n = 0usize
+    let mut i = a
+    while i < b {
+        let mut v = match src.get(i) {
+            Some(x) => usize.from_u32(u32.from_u8(*x))
+            None => 0usize
+        }
+        if v == 92usize {
+            i = i + 1usize
+            let e = match src.get(i) {
+                Some(x) => usize.from_u32(u32.from_u8(*x))
+                None => 0usize
+            }
+            if e == 110usize {
+                v = 10usize
+            } else if e == 116usize {
+                v = 9usize
+            } else if e == 114usize {
+                v = 13usize
+            } else if e == 48usize {
+                v = 0usize
+            } else if e == 92usize || e == 34usize || e == 39usize {
+                v = e
+            } else {
+                return Ok((out, 0usize, false))
+            }
+        }
+        out.push_str(resolve.ast.text(db, v / 16usize, v / 16usize + 1usize))?
+        out.push_str(resolve.ast.text(db, v % 16usize, v % 16usize + 1usize))?
+        n = n + 1usize
+        i = i + 1usize
+    }
+    Ok((out, n, true))
+end lower.expr.unesc
+
+// 単位の値 (`const.unit ()`)。
+fn lower.expr.unit(c: &mut lower.cx.Cx) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    lower.cx.def(c, "unit", "const.unit ()")
+end lower.expr.unit
+
+// `局所.欄(.欄)*.メソッド(..)` の最後の欄が `Vec` / `String` のとき: 欄の番地 (`fieldaddr` の連鎖 + `bitcast.ptr`) を受け手に渡す。
+// 戻りの 2 つ目が false なら、この形ではない (欄の番地の命令だけを出していることがある)。
+fn lower.expr.vec_field_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, name: &str, args: usize, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
+    let no = lower.cx.R { v: 0usize, t: t }
+    let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
+    if it == 0usize {
+        return Ok((no, false))
+    }
+    let fqn = lower.tyk.item_fqn(env, it - 1usize)
+    if !fqn.as_str().starts_with("alloc.vec.Vec.") && !fqn.as_str().starts_with("alloc.string.String.") {
+        return Ok((no, false))
+    }
+    let mut segs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for w in name.split(".") {
+        segs.push(lower.cx.own(w)?)?
+    }
+    let nseg = segs.len()
+    let first = match segs.as_slice().get(0usize) {
+        Some(s) => lower.cx.own(s.as_str())?
+        None => return Ok((no, false))
+    }
+    let loc = lower.cx.find(c, first.as_str())
+    if loc == 0usize {
+        return Ok((no, false))
+    }
+    let k = loc - 1usize
+    let mut bt = lower.cx.tyof_t(c, k)
+    let mut cur = lower.cx.get_val(c, k).wrapping_sub(1usize)
+    let (inner0, through, m0) = lower.opt.deref_ty(c, bt)
+    if !through && !lower.cx.is_slot(c, k) {
+        // 値で持つ構造体の欄の `Vec` / `String` (`st.tails.push(x)`): 枠に写し、呼んで、書き戻す。
+        if nseg == 3usize {
+            let fnm = match segs.as_slice().get(1usize) {
+                Some(s) => lower.cx.own(s.as_str())?
+                None => return Ok((no, false))
+            }
+            return lower.expr.vec_val_call(env, c, p, src, fqn.as_str(), k, fnm.as_str(), args, t)
+        }
+        return Ok((no, false))
+    }
+    let mutable = !through || m0
+    let mut ty_in = inner0
+    // 欄を順にたどる (最後の欄は Vec / String)。型は宣言から決める。
+    let mut j = 1usize
+    while j + 1usize < nseg {
+        let rs = types.ty.strip(&c.ar, ty_in)
+        let rn = types.ty.node(&c.ar, rs)
+        if rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef {
+            return Ok((no, false))
+        }
+        let fname = match segs.as_slice().get(j) {
+            Some(s) => lower.cx.own(s.as_str())?
+            None => return Ok((no, false))
+        }
+        let ft = lower.tyk.field_ty(env, c, rn.a, fname.as_str())?
+        if ft == types.ty.UNKNOWN {
+            return Ok((no, false))
+        }
+        let last = j + 2usize == nseg
+        if last != lower.vec.is_hdr(env, c, ft) {
+            return Ok((no, false))
+        }
+        cur = lower.opt.field_addr_m(env, c, cur, bt, fname.as_str(), ft, mutable)?
+        bt = ft
+        ty_in = ft
+        j = j + 1usize
+    }
+    let fat0 = lower.cx.tyof(c, cur)
+    let bc = lower.cx.cat2("bitcast.ptr.", fat0.as_str())?
+    let bc2 = lower.cx.cat2(bc.as_str(), " ")?
+    let pv = lower.cx.def(c, "ptr", lower.cx.cat2(bc2.as_str(), lower.cx.vs(cur)?.as_str())?.as_str())?
+    // 受け手の欄の番地の後で引数を評価する (Rust 版と同じ並び)。
+    let mut avs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for a in core.iter.range(0usize, resolve.ast.count(p, args)) {
+        let av = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, a), types.ty.UNKNOWN)?
+        avs.push(av.v)?
+    }
+    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    vs.push(pv)?
+    for av in avs.as_slice().iter() {
+        vs.push(*av)?
+    }
+    let r = lower.vec.call(env, c, fqn.as_str(), bt, &vs, t)?
+    Ok((r, true))
+end lower.expr.vec_field_call
+
+// `V.as_slice().get(i)` / `.last()` (V は Vec の場所): ヘッダから直に長さと先頭を読んで下ろす (`as_slice` の呼び出しを挟まない)。
+fn lower.expr.vec_slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
+    let no = lower.cx.R { v: 0usize, t: t }
+    let rn = parse.ast.get(&p.ast, n.a)
+    let mut cname = ""
+    if rn.kind == parse.ast.Kind.MCall && resolve.ast.tok_text(p, src, rn.b) == "as_slice" && resolve.ast.count(p, rn.d) == 0usize {
+        let (sn, sok) = lower.expr.self_chain(p, src, rn.a, rn.b)
+        if !sok {
+            return Ok((no, false))
+        }
+        cname = sn
+    } else {
+        if rn.kind != parse.ast.Kind.Call || resolve.ast.count(p, rn.b) != 0usize {
+            return Ok((no, false))
+        }
+        let cn = parse.ast.get(&p.ast, rn.a)
+        if cn.kind != parse.ast.Kind.Path {
+            return Ok((no, false))
+        }
+        cname = resolve.ast.text(src, cn.a, cn.b)
+    }
+    if !cname.ends_with(".as_slice") {
+        return Ok((no, false))
+    }
+    let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
+    if it == 0usize {
+        return Ok((no, false))
+    }
+    let sfq = lower.tyk.item_fqn(env, it - 1usize)
+    if sfq.as_str() != "core.slice.get" && sfq.as_str() != "core.slice.last" {
+        return Ok((no, false))
+    }
+    let icn = types.rec.callee_of(&c.tc.rec, c.s.file, n.a)
+    if icn == 0usize || lower.tyk.item_fqn(env, icn - 1usize).as_str() != "alloc.vec.Vec.as_slice" {
+        return Ok((no, false))
+    }
+    let base = cname.strip_suffix(".as_slice")
+    let bname = match base {
+        Some(b) => b
+        None => return Ok((no, false))
+    }
+    if lower.expr.seg_count(bname) < 2usize {
+        return Ok((no, false))
+    }
+    let (hp, vt, ok) = lower.expr.hdr_of(env, c, bname)?
+    if !ok {
+        return Ok((no, false))
+    }
+    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    vs.push(hp)?
+    if sfq.as_str() == "core.slice.get" {
+        let an0 = resolve.ast.item(p, n.d, 0usize)
+        let av = lower.expr.expr(env, c, p, src, an0, types.ty.UNKNOWN)?
+        vs.push(av.v)?
+    }
+    let sl = lower.expr.tyof(c, n.a)?
+    core.mem.drop(vt)
+    let r = lower.std_calls.slice_get_hdr(env, c, &vs, sl, sfq.as_str() == "core.slice.last", t)?
+    Ok((r, true))
+end lower.expr.vec_slice_get
+
+// 値で持つ構造体の局所 k の欄 fname (`Vec` / `String`) のメソッド: 枠に写して呼び、書き戻す。
+fn lower.expr.vec_val_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], fqn: &str, k: usize, fname: &str, args: usize, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
+    let no = lower.cx.R { v: 0usize, t: t }
+    let bt = lower.cx.tyof_t(c, k)
+    let bv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+    let rs = types.ty.strip(&c.ar, bt)
+    let rn = types.ty.node(&c.ar, rs)
+    if rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef {
+        return Ok((no, false))
+    }
+    let ft = lower.tyk.field_ty(env, c, rn.a, fname)?
+    if ft == types.ty.UNKNOWN || !lower.vec.is_hdr(env, c, ft) {
+        return Ok((no, false))
+    }
+    let j = lower.tyk.field_index(env, rn.a, fname)?
+    let lay = lower.tyk.layout(env, c, rn.a)?
+    let off = lower.tyk.at(lay.offs.as_slice(), j)
+    let hty = lower.tyk.text(env, c, ft)?
+    let bty = lower.tyk.text(env, c, bt)?
+    let fv = lower.cx.def(c, hty.as_str(), lower.expr.field_src(bv, off)?.as_str())?
+    let slot = lower.cx.def(c, "ptr", "frame.bytes 24")?
+    lower.vec.store_hdr(c, slot, fv)?
+    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    vs.push(slot)?
+    for a in core.iter.range(0usize, resolve.ast.count(p, args)) {
+        let av = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, a), types.ty.UNKNOWN)?
+        vs.push(av.v)?
+    }
+    let r = lower.vec.call(env, c, fqn, ft, &vs, t)?
+    let nh = lower.vec.load_hdr(env, c, slot, ft, false)?
+    let _old = lower.cx.def(c, hty.as_str(), lower.expr.field_src(bv, off)?.as_str())?
+    let mut so = alloc.string.String.new(std.alloc.SYSTEM)
+    so.push_str("setfield ")?
+    so.push_str(lower.cx.vs(bv)?.as_str())?
+    so.push_str(", +")?
+    so.push_str(lower.cx.dec(off)?.as_str())?
+    so.push_str(", ")?
+    so.push_str(lower.cx.vs(nh)?.as_str())?
+    let nv = lower.cx.def(c, bty.as_str(), so.as_str())?
+    lower.cx.set_val(c, k, nv + 1usize)?
+    Ok((r, true))
+end lower.expr.vec_val_call
+
+fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let base = lower.cx.depth(c)
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan(env, c, p, src, n.a, &mut nms, false)?
+    lower.expr.scan(env, c, p, src, n.b, &mut nms, false)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
+    let hps = lower.cx.fresh_vals(c, &ks)?
+    let head = lower.cx.blk(c, &hps)?
+    let eps = lower.cx.fresh_vals(c, &ks)?
+    let exitb = lower.cx.blk(c, &eps)?
+    let cur = lower.cx.cur_vals(c, &ks)?
+    let s0 = lower.cx.cat2("br ", lower.cx.target(head, &cur)?.as_str())?
+    lower.cx.finish(c, s0)?
+    lower.cx.goto(c, head)
+    lower.cx.bind_vals(c, &ks, &hps)?
+    let cr = lower.expr.expr(env, c, p, src, n.a, types.ty.BOOL)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let body = lower.cx.blk(c, &empty)?
+    let mut s1 = lower.cx.own("br_if ")?
+    s1.push_str(lower.cx.vs(cr.v)?.as_str())?
+    s1.push_str(", ")?
+    s1.push_str(lower.cx.target(body, &empty)?.as_str())?
+    s1.push_str(", ")?
+    s1.push_str(lower.cx.target(exitb, &hps)?.as_str())?
+    lower.cx.finish(c, s1)?
+    lower.cx.goto(c, body)
+    let sh = c.lp.head
+    let se = c.lp.exit
+    let sb = c.lp.base
+    let sk = c.lp.brk
+    let sks = lower.cx.copy_u(&c.lp.ks)?
+    c.lp.head = head
+    c.lp.exit = exitb
+    c.lp.base = base
+    c.lp.brk = 0usize
+    c.lp.ks = lower.cx.copy_u(&ks)?
+    core.mem.drop(lower.expr.expr(env, c, p, src, n.b, types.ty.UNKNOWN)?)
+    if !c.s.term {
+        let a = lower.cx.cur_vals(c, &ks)?
+        let s2 = lower.cx.cat2("br ", lower.cx.target(head, &a)?.as_str())?
+        lower.cx.finish(c, s2)?
+    }
+    c.lp.head = sh
+    c.lp.exit = se
+    c.lp.base = sb
+    c.lp.brk = sk
+    c.lp.ks = sks
+    lower.cx.goto(c, exitb)
+    lower.cx.bind_vals(c, &ks, &eps)?
+    let u = lower.expr.unit(c)?
+    Ok(lower.cx.R { v: u, t: t })
+end lower.expr.whilex
+
+// `局所.wrapping_add(x)` などの形 (整数の既定の演算の下ろし)。
+fn lower.expr.wrapping(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], rv: &str, meth: &str, args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let k = lower.cx.find(c, rv) - 1usize
+    let rv0 = lower.opt.local_val(env, c, k, lower.cx.tyof_t(c, k))?
+    let rr = lower.opt.deref_val(env, c, lower.cx.R { v: rv0, t: lower.cx.tyof_t(c, k) })?
+    let rvv = rr.v
+    let rty = lower.tyk.text(env, c, rr.t)?
+    let mut op = ""
+    if meth == "wrapping_add" {
+        op = "add"
+    } else if meth == "wrapping_sub" {
+        op = "sub"
+    } else if meth == "wrapping_mul" {
+        op = "mul"
+    } else if meth == "wrapping_shl" {
+        op = "shl"
+    } else if meth == "wrapping_shr" {
+        op = "shr"
+    }
+    if op == "" || resolve.ast.count(p, args) != 1usize {
+        lower.cx.fail(c, "メソッド呼び出し (wrapping_* 以外は未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, 0usize), types.ty.UNKNOWN)?
+    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    o.push_str(op)?
+    o.push_str(".")?
+    o.push_str(rty.as_str())?
+    o.push_str(".wrap ")?
+    o.push_str(lower.expr.two(rvv, a.v)?.as_str())?
+    let v = lower.cx.def(c, rty.as_str(), o.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.expr.wrapping
+
+// `局所.欄.wrapping_*(a)`: 欄 (型は結果と同じ) を読み、`op.T.wrap` を出す。
+fn lower.expr.wrapping_field(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], names: (&str, &str, &str), args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let (n1, n2, n3) = names
+    let k = lower.cx.find(c, n1) - 1usize
+    let bt = lower.cx.tyof_t(c, k)
+    let base = lower.opt.local_val(env, c, k, bt)?
+    let fr = lower.opt.field(env, c, base, bt, n2, t)?
+    lower.own.emit(c, k, "own.use ")?
+    let rty = lower.tyk.text(env, c, t)?
+    if resolve.ast.count(p, args) != 1usize {
+        lower.cx.fail(c, "メソッド呼び出し (wrapping_* の引数の個数)")?
+        return lower.expr.dummy(c, t)
+    }
+    let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, 0usize), types.ty.UNKNOWN)?
+    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    let opn = match n3.strip_prefix("wrapping_") {
+        Some(s) => s
+        None => ""
+    }
+    o.push_str(opn)?
+    o.push_str(".")?
+    o.push_str(rty.as_str())?
+    o.push_str(".wrap ")?
+    o.push_str(lower.expr.two(fr.v, a.v)?.as_str())?
+    let v = lower.cx.def(c, rty.as_str(), o.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.expr.wrapping_field

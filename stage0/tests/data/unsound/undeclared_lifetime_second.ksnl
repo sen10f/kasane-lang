@@ -2,7 +2,6 @@ fn t.f['a](x: &'a u32, y: &'b u32) -> &'a u32 uses [] panics never
     x
 end t.f
 
-// expect: E1126
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

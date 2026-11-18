@@ -1,4 +1,3 @@
-// expect: E3030
 fn t.borrow(m: &std.sync.Mutex<u32>) -> &u32 uses [thread] panics never
     m.lock().get()
 end t.borrow

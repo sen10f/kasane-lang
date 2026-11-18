@@ -1,4 +1,3 @@
-// 1 ファイルの関数定義をすべて検査する。
 fn borrow.fns.check_file(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut ds = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for d in cx.p.ast.defs.as_slice().iter() {
@@ -13,7 +12,6 @@ fn borrow.fns.check_file(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx) -> Result
     Ok(())
 end borrow.fns.check_file
 
-// 関数定義 d 1 件を検査する (本体がない宣言は読まない)。
 fn borrow.fns.check_fn(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, d: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let fnode = parse.ast.get(&cx.p.ast, d)
     if fnode.d == 0usize {

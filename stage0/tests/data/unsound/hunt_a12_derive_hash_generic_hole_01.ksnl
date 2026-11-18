@@ -2,7 +2,6 @@ type t.Box[T] derive [PartialEq, Eq, Hash]
     x: T
 end t.Box
 
-// expect: E1108
 type t.NoHash
     a: u8
 end t.NoHash

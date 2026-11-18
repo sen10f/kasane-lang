@@ -42,7 +42,6 @@ fn parse.lex.is_upper(c: u8) -> bool uses [] panics never
     c >= b'A' && c <= b'Z'
 end parse.lex.is_upper
 
-// 負の整数リテラルを始めてよい位置か (直前が値で終わっていなければ可)。
 fn parse.lex.is_value_kw(code: u32) -> bool uses [] panics never
     code == parse.tok.KW_SELF || code == parse.tok.KW_TRUE || code == parse.tok.KW_FALSE
 end parse.lex.is_value_kw
@@ -51,7 +50,6 @@ fn parse.lex.is_word(c: u8) -> bool uses [] panics never
     parse.lex.is_lower(c) || parse.lex.is_upper(c) || parse.lex.is_digit(c) || c == b'_'
 end parse.lex.is_word
 
-// 直前のトークン。無ければ Nl の見張り。
 fn parse.lex.last(toks: &alloc.vec.Vec<parse.tok.Tok, std.alloc.System>) -> parse.tok.Tok uses [] panics never
     match toks.as_slice().last() {
         Some(t) => parse.tok.new(t.kind, t.code, t.start, t.stop, t.line)
@@ -59,7 +57,6 @@ fn parse.lex.last(toks: &alloc.vec.Vec<parse.tok.Tok, std.alloc.System>) -> pars
     }
 end parse.lex.last
 
-// 全体を字句に分ける。末尾に Eof を置く。
 fn parse.lex.lex(src: &[u8], toks: &mut alloc.vec.Vec<parse.tok.Tok, std.alloc.System>) -> Result<(), parse.err.Error> uses [alloc] panics never pub
     let n = src.len()
     let mut line = 1usize
@@ -73,7 +70,6 @@ fn parse.lex.lex(src: &[u8], toks: &mut alloc.vec.Vec<parse.tok.Tok, std.alloc.S
     parse.lex.emit(toks, parse.tok.Kind.Eof, 0u32, n, n, line)
 end parse.lex.lex
 
-// 1 行を字句に分ける。ls は行頭、le は行末 (LF の位置)。
 fn parse.lex.line(toks: &mut alloc.vec.Vec<parse.tok.Tok, std.alloc.System>, src: &[u8], ls: usize, le: usize, line: usize) -> Result<(), parse.err.Error> uses [alloc] panics never
     let mut i = ls
     while i < le && parse.lex.at(src, i) == b' ' {
@@ -193,7 +189,6 @@ fn parse.lex.lit_start_ok(toks: &alloc.vec.Vec<parse.tok.Tok, std.alloc.System>)
     }
 end parse.lex.lit_start_ok
 
-// 数値リテラル。i は先頭 (負号があればその位置)。(終わりの次の位置, 浮動小数か) を返す。
 fn parse.lex.number(src: &[u8], i: usize, le: usize, neg: bool) -> (usize, bool) uses [] panics never
     let mut j = i
     if neg {
@@ -272,7 +267,6 @@ fn parse.lex.op2(a: u8, b: u8) -> u32 uses [] panics never
     0u32
 end parse.lex.op2
 
-// 文字・バイト・ライフタイム。i は `'` (バイトなら `b`) の位置。
 fn parse.lex.quote(src: &[u8], i: usize, le: usize, line: usize, is_b: bool) -> Result<(parse.tok.Kind, usize), parse.err.Error> uses [] panics never
     let j = if is_b {
         i.wrapping_add(2usize)
@@ -335,7 +329,6 @@ fn parse.lex.skip_digits(src: &[u8], from: usize, le: usize, hex: bool) -> usize
     j
 end parse.lex.skip_digits
 
-// i は開き引用符の位置。閉じ引用符の次の位置を返す。
 fn parse.lex.string(src: &[u8], i: usize, le: usize, line: usize) -> Result<usize, parse.err.Error> uses [] panics never
     let mut j = i.wrapping_add(1usize)
     loop {
@@ -356,7 +349,6 @@ fn parse.lex.string(src: &[u8], i: usize, le: usize, line: usize) -> Result<usiz
     Ok(j.wrapping_add(1usize))
 end parse.lex.string
 
-// UTF-8 の先頭バイトから文字のバイト数。
 fn parse.lex.utf8_len(c: u8) -> usize uses [] panics never
     if c < 128u8 {
         return 1usize

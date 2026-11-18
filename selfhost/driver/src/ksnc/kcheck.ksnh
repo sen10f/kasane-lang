@@ -1,0 +1,127 @@
+// 借用の段 (borrow.main の本体)。`tout` は型の段の結果。
+fn ksnc.kcheck.borrow(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.console, io.fs] panics may
+    let mut rep = resolve.report.new()?
+    let mut tab = borrow.base.tab_new()
+    let mut k = 0usize
+    for s in tout.env.srcs.as_slice().iter() {
+        if s.own && !s.sig {
+            match types.env.unit(&tout.env, k) {
+                Some(p) => borrow.tabfill.types(&mut tab, p, s.text.as_slice())?
+                None => core.mem.drop(0u8)
+            }
+        }
+        k = k.wrapping_add(1usize)
+    }
+    k = 0usize
+    for s in tout.env.srcs.as_slice().iter() {
+        if s.own && !s.sig {
+            match types.env.unit(&tout.env, k) {
+                Some(p) => borrow.tabfill.fns(&mut tab, p, s.text.as_slice())?
+                None => core.mem.drop(0u8)
+            }
+        }
+        k = k.wrapping_add(1usize)
+    }
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut errors = 0usize
+    k = 0usize
+    for s in tout.env.srcs.as_slice().iter() {
+        if s.own && !s.sig {
+            match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut rep)? {
+                Some(p) => {
+                    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                    for b in s.text.as_slice().iter() {
+                        buf.push(*b)?
+                    }
+                    let mut cx = borrow.cx.new(p, buf, s.path.as_str())?
+                    cx.tcls = borrow.tcls.table(tout, k, &tab)?
+                    borrow.fns.check_file(&tab, &mut cx)?
+                    out.push_str(cx.rep.out.as_str())?
+                    errors = errors.wrapping_add(cx.rep.errors)
+                }
+                None => core.mem.drop(0u8)
+            }
+        }
+        k = k.wrapping_add(1usize)
+    }
+    Ok(ksnc.front.Text { text: out, errors: errors })
+end ksnc.kcheck.borrow
+
+// 効果の段 (effects.main の (2)〜(5))。`tout` は型の段の結果。
+fn ksnc.kcheck.effects(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.console, io.fs] panics may
+    let mut acc = effects.walk.acc_new()?
+    let mut t = resolve.table.new()?
+    let mut fs = effects.fns.new()?
+    let mut i = 0usize
+    for s in tout.env.srcs.as_slice().iter() {
+        match types.env.unit(&tout.env, i) {
+            Some(p) => {
+                acc.rep.sig = s.sig
+                resolve.table.add_file(&mut t, p, s.text.as_slice(), i, &mut acc.rep)?
+                effects.fns.add_file(&mut fs, p, s.text.as_slice(), i, s.own, s.sig)?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    for j in core.iter.range(0usize, fs.items.len()) {
+        let nm = effects.fns.name_of(&fs, j)
+        if effects.fns.at(&fs, j).pan == 1usize && nm.ends_with(".unwrap") {
+            effects.walk.bump(&mut acc, 9usize)
+        }
+    }
+    i = 0usize
+    for s in tout.env.srcs.as_slice().iter() {
+        match types.env.unit(&tout.env, i) {
+            Some(p) => {
+                effects.tyinfo.fill(&mut acc, tout, &fs, i, p)?
+                acc.rep.path.clear()
+                acc.rep.path.push_str(s.path.as_str())?
+                effects.run.walk_file(&t, &fs, p, s.text.as_slice(), i, &mut acc)?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    effects.drop.check(&mut acc, tout)?
+    let ncand = acc.cs.len()
+    for j in core.iter.range(0usize, ncand) {
+        let c = match acc.cs.as_slice().get(j) {
+            Some(v) => *v
+            None => 0usize
+        }
+        let und = match acc.cu.as_slice().get(j) {
+            Some(b) => *b
+            None => false
+        }
+        if effects.walk.reaches(&acc.edges, c)? {
+            effects.run.report_rec(&mut acc, &fs, &tout.env.srcs, c)?
+        } else if und {
+            effects.walk.bump(&mut acc, 8usize)
+        }
+    }
+    let s = effects.run.summary(&acc)?
+    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    text.push_str(acc.rep.text.as_str())?
+    text.push_str(s.as_str())?
+    text.push('\n')?
+    Ok(ksnc.front.Text { text: text, errors: acc.rep.errors })
+end ksnc.kcheck.effects
+
+// 段 3 (Kasane 版): 検査を名前解決・型・効果・借用の順に行う。
+// 名前解決は selfhost/resolve、型は selfhost/types、効果は selfhost/effects、借用は selfhost/borrow。
+// 各段の本文は、それぞれの main が表示するものと同じ (誤りの行と末尾の summary)。
+// ここでは表示せず、本文と誤りの数を返す。効果と借用は、それぞれの main の手順をここで組み直したもの。
+fn ksnc.kcheck.run(dir: &str, std_dir: &str) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
+    let mut all = ksnc.front.text(dir, std_dir)?
+    let tout = types.export.run(dir, std_dir)?
+    all.text.push_str(tout.cx.rep.out.as_str())?
+    all.errors = all.errors.wrapping_add(tout.cx.rep.errors)
+    let eff = ksnc.kcheck.effects(&tout)?
+    all.text.push_str(eff.text.as_str())?
+    all.errors = all.errors.wrapping_add(eff.errors)
+    let bor = ksnc.kcheck.borrow(&tout)?
+    all.text.push_str(bor.text.as_str())?
+    all.errors = all.errors.wrapping_add(bor.errors)
+    Ok(all)
+end ksnc.kcheck.run

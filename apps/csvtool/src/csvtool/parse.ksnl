@@ -9,9 +9,6 @@ const csvtool.parse.ST_QUOTED: u8 = 2u8
 
 const csvtool.parse.ST_TEXT: u8 = 1u8
 
-// 区切り文字でテキストを表に分解する。`"..."` で囲んだフィールドは区切り文字・
-// 改行・`""` (エスケープされた引用符) を含められる。空行は読み飛ばす。
-// `data.delim` には引数の区切り文字をそのまま入れる。
 fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Table, csvtool.error.Error> uses [alloc] panics never pub
     let clean = alloc.string.String.replace(std.alloc.SYSTEM, text, "\r\n", "\n")?
     let clean2 = alloc.string.String.replace(std.alloc.SYSTEM, clean.as_str(), "\r", "\n")?
@@ -71,7 +68,6 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
                 core.mem.drop(rows.push(table.Row { fields: row })?)
                 row = alloc.vec.Vec.new(std.alloc.SYSTEM)
             } else {
-                // 引用の直後に他の文字が来たときは、いったん閉じて普通のフィールドとして続ける
                 core.mem.drop(field.push('"')?)
                 core.mem.drop(field.push(c)?)
                 state = csvtool.parse.ST_TEXT
@@ -98,8 +94,6 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
     Ok(t)
 end csvtool.parse.parse_text
 
-// 区切り文字を拡張子と最初の行から決める (.tsv / .tab はタブ、.csv はカンマ、
-// それ以外は最初の行のタブとカンマの数が多いほう)。
 fn csvtool.parse.sniff_delim(path: &str, text: &str) -> char uses [] panics never pub
     if path.ends_with(".tsv") || path.ends_with(".tab") {
         return '\t'

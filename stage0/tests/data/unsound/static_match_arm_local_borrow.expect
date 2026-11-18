@@ -1,0 +1,2 @@
+expect: E2037
+note: 一つの腕が局所の借用を返す `match` の値は `'static` ではない。

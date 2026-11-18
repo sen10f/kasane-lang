@@ -1,4 +1,3 @@
-// expect: E4001
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let it = core.iter.map(
         core.iter.range(0i32, 3i32),

@@ -1,4 +1,3 @@
-// expect: E4002
 type t.Up
     cur: u32
 end t.Up

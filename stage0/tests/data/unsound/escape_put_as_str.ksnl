@@ -1,4 +1,3 @@
-// expect: E3010
 fn t.bad() -> usize uses [alloc] panics never
     let mut r = "d"
     {

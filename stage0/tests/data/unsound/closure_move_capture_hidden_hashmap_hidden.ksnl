@@ -1,5 +1,3 @@
-// expect: E3060
-// 穴候補: HashMap::get_mut の &mut を構造体欄に隠して move でクロージャへ取り込み、insert で再ハッシュさせてから呼ぶ
 type t.RefCell['a]
     p: &'a mut u32
 end t.RefCell

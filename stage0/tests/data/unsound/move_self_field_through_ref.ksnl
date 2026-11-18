@@ -1,4 +1,3 @@
-// expect: E3002
 type t.O
     opt: Option<alloc.string.String>
     inner: t.S

@@ -1,4 +1,3 @@
-// expect: E2023
 fn t.bump(x: &mut u32) -> () uses [] panics never
     *x = x.wrapping_add(1u32)
 end t.bump

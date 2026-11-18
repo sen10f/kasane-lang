@@ -1,4 +1,3 @@
-// expect: E3002
 type t.S
     name: alloc.string.String
     other: alloc.string.String

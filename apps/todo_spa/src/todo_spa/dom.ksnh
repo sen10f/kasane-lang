@@ -1,0 +1,162 @@
+// 生成: ksn bindgen (修正プラン 5-3)。直接編集しない。module todo_spa.dom
+extern todo_spa.dom.raw_append(parent: u32, child: u32) -> () link "env:ksn_dom_append"
+
+extern todo_spa.dom.raw_body() -> u32 link "env:ksn_dom_body"
+
+extern todo_spa.dom.raw_by_id(id_ptr: *const u8, id_len: usize) -> u32 link "env:ksn_dom_by_id"
+
+extern todo_spa.dom.raw_clear(node: u32) -> () link "env:ksn_dom_clear"
+
+extern todo_spa.dom.raw_create(tag_ptr: *const u8, tag_len: usize) -> u32 link "env:ksn_dom_create"
+
+extern todo_spa.dom.raw_create_text(text_ptr: *const u8, text_len: usize) -> u32 link "env:ksn_dom_create_text"
+
+extern todo_spa.dom.raw_fetch(method_ptr: *const u8, method_len: usize, url_ptr: *const u8, url_len: usize, body_ptr: *const u8, body_len: usize, tag: u32) -> () link "env:ksn_dom_fetch"
+
+extern todo_spa.dom.raw_fetch_body(buf_ptr: *mut u8, buf_cap: usize) -> i32 link "env:ksn_dom_fetch_body"
+
+extern todo_spa.dom.raw_input_value(node: u32, buf_ptr: *mut u8, buf_cap: usize) -> i32 link "env:ksn_dom_input_value"
+
+extern todo_spa.dom.raw_listen(node: u32, event_ptr: *const u8, event_len: usize, tag: u32) -> () link "env:ksn_dom_listen"
+
+extern todo_spa.dom.raw_remove(node: u32) -> () link "env:ksn_dom_remove"
+
+extern todo_spa.dom.raw_set_attr(node: u32, name_ptr: *const u8, name_len: usize, value_ptr: *const u8, value_len: usize) -> () link "env:ksn_dom_set_attr"
+
+extern todo_spa.dom.raw_set_text(node: u32, text_ptr: *const u8, text_len: usize) -> () link "env:ksn_dom_set_text"
+
+extern todo_spa.dom.raw_set_value(node: u32, text_ptr: *const u8, text_len: usize) -> () link "env:ksn_dom_set_value"
+
+extern todo_spa.dom.raw_storage_get(key_ptr: *const u8, key_len: usize, buf_ptr: *mut u8, buf_cap: usize) -> i32 link "env:ksn_dom_storage_get"
+
+extern todo_spa.dom.raw_storage_set(key_ptr: *const u8, key_len: usize, value_ptr: *const u8, value_len: usize) -> () link "env:ksn_dom_storage_set"
+
+fn todo_spa.dom.append(parent: u32, child: u32) -> () uses [] panics never pub
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_append" {
+        todo_spa.dom.raw_append(parent, child)
+    }
+end todo_spa.dom.append
+
+fn todo_spa.dom.body() -> u32 uses [] panics never pub
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_body" {
+        todo_spa.dom.raw_body()
+    }
+end todo_spa.dom.body
+
+fn todo_spa.dom.by_id(id: &str) -> u32 uses [] panics never pub
+    let id_len = id.len()
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_by_id" {
+        let id_p = core.ptr.from_ref(id.as_bytes())
+        todo_spa.dom.raw_by_id(id_p, id_len)
+    }
+end todo_spa.dom.by_id
+
+fn todo_spa.dom.clear(node: u32) -> () uses [] panics never pub
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_clear" {
+        todo_spa.dom.raw_clear(node)
+    }
+end todo_spa.dom.clear
+
+fn todo_spa.dom.create(tag: &str) -> u32 uses [] panics never pub
+    let tag_len = tag.len()
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_create" {
+        let tag_p = core.ptr.from_ref(tag.as_bytes())
+        todo_spa.dom.raw_create(tag_p, tag_len)
+    }
+end todo_spa.dom.create
+
+fn todo_spa.dom.create_text(text: &str) -> u32 uses [] panics never pub
+    let text_len = text.len()
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_create_text" {
+        let text_p = core.ptr.from_ref(text.as_bytes())
+        todo_spa.dom.raw_create_text(text_p, text_len)
+    }
+end todo_spa.dom.create_text
+
+fn todo_spa.dom.fetch(method: &str, url: &str, body: &str, tag: u32) -> () uses [] panics never pub
+    let method_len = method.len()
+    let url_len = url.len()
+    let body_len = body.len()
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_fetch" {
+        let method_p = core.ptr.from_ref(method.as_bytes())
+        let url_p = core.ptr.from_ref(url.as_bytes())
+        let body_p = core.ptr.from_ref(body.as_bytes())
+        todo_spa.dom.raw_fetch(method_p, method_len, url_p, url_len, body_p, body_len, tag)
+    }
+end todo_spa.dom.fetch
+
+fn todo_spa.dom.fetch_body(buf: &mut [u8]) -> i32 uses [] panics never pub
+    let buf_cap = buf.len()
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_fetch_body" {
+        let buf_p = core.ptr.from_mut(buf)
+        todo_spa.dom.raw_fetch_body(buf_p, buf_cap)
+    }
+end todo_spa.dom.fetch_body
+
+fn todo_spa.dom.input_value(node: u32, buf: &mut [u8]) -> i32 uses [] panics never pub
+    let buf_cap = buf.len()
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_input_value" {
+        let buf_p = core.ptr.from_mut(buf)
+        todo_spa.dom.raw_input_value(node, buf_p, buf_cap)
+    }
+end todo_spa.dom.input_value
+
+fn todo_spa.dom.listen(node: u32, event: &str, tag: u32) -> () uses [] panics never pub
+    let event_len = event.len()
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_listen" {
+        let event_p = core.ptr.from_ref(event.as_bytes())
+        todo_spa.dom.raw_listen(node, event_p, event_len, tag)
+    }
+end todo_spa.dom.listen
+
+fn todo_spa.dom.remove(node: u32) -> () uses [] panics never pub
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_remove" {
+        todo_spa.dom.raw_remove(node)
+    }
+end todo_spa.dom.remove
+
+fn todo_spa.dom.set_attr(node: u32, name: &str, value: &str) -> () uses [] panics never pub
+    let name_len = name.len()
+    let value_len = value.len()
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_set_attr" {
+        let name_p = core.ptr.from_ref(name.as_bytes())
+        let value_p = core.ptr.from_ref(value.as_bytes())
+        todo_spa.dom.raw_set_attr(node, name_p, name_len, value_p, value_len)
+    }
+end todo_spa.dom.set_attr
+
+fn todo_spa.dom.set_text(node: u32, text: &str) -> () uses [] panics never pub
+    let text_len = text.len()
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_set_text" {
+        let text_p = core.ptr.from_ref(text.as_bytes())
+        todo_spa.dom.raw_set_text(node, text_p, text_len)
+    }
+end todo_spa.dom.set_text
+
+fn todo_spa.dom.set_value(node: u32, text: &str) -> () uses [] panics never pub
+    let text_len = text.len()
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_set_value" {
+        let text_p = core.ptr.from_ref(text.as_bytes())
+        todo_spa.dom.raw_set_value(node, text_p, text_len)
+    }
+end todo_spa.dom.set_value
+
+fn todo_spa.dom.storage_get(key: &str, buf: &mut [u8]) -> i32 uses [] panics never pub
+    let key_len = key.len()
+    let buf_cap = buf.len()
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_storage_get" {
+        let key_p = core.ptr.from_ref(key.as_bytes())
+        let buf_p = core.ptr.from_mut(buf)
+        todo_spa.dom.raw_storage_get(key_p, key_len, buf_p, buf_cap)
+    }
+end todo_spa.dom.storage_get
+
+fn todo_spa.dom.storage_set(key: &str, value: &str) -> () uses [] panics never pub
+    let key_len = key.len()
+    let value_len = value.len()
+    unsafe "todo_spa.dom" "call the JS import ksn_dom_storage_set" {
+        let key_p = core.ptr.from_ref(key.as_bytes())
+        let value_p = core.ptr.from_ref(value.as_bytes())
+        todo_spa.dom.raw_storage_set(key_p, key_len, value_p, value_len)
+    }
+end todo_spa.dom.storage_set

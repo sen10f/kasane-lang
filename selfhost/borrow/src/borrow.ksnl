@@ -1,7 +1,3 @@
-// 借用・線形性の検査 (セルフホストの段)。使い方: ksn run -- PKG_DIR STD_DIR
-// 出力: `error CODE 路径:行: 内容` の行と、末尾の `summary errors N undec M files K`。
-// undec は判断保留 (誤りとは数えない。受理は errors 0 かつ undec 0)。
-// 型は types.export (型検査の結果の表) から取る。単位の添字は env の srcs と揃う。
 fn borrow.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.fs] panics never
     let pkg = match std.env.arg(0usize) {
         Some(s) => s

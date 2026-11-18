@@ -1,4 +1,3 @@
-// expect: E1126
 fn t.bad(x: u32) -> u32 uses [] panics never
     let y: &'a u32 = &x
     *y

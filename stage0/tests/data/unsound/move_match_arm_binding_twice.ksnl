@@ -1,4 +1,3 @@
-// expect: E3002
 fn t.bad(v: &mut alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> () uses [] panics never
     match v.pop() {
         Some(s) => {

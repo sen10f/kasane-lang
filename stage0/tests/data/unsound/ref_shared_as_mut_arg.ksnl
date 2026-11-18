@@ -1,4 +1,3 @@
-// expect: E2023
 fn t.bad() -> u32 uses [] panics never
     let x = 1u32
     t.grow(&x)

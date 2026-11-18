@@ -16,7 +16,7 @@ fn string_literal_containing_if_let_ok_does_not_report_e1020() {
     Ok(())
 end t.main
 "#;
-    let t = Tmp::new("lit_if_let", src);
+    let t = Tmp::new_ksnh("lit_if_let", src);
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
     assert!(

@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.bad() -> () uses [] panics never
     while 1u32 {
         break

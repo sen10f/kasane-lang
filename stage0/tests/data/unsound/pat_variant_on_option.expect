@@ -1,0 +1,2 @@
+expect: E2023
+note: `Option` の値を `Ok` / `Err` で照合するのは誤り

@@ -1,4 +1,3 @@
-// expect: E3010
 fn t.bad() -> u32 uses [alloc] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     v.push(1u32)

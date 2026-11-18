@@ -1,4 +1,3 @@
-// 生成: ksn bindgen (修正プラン 5-3)。直接編集しない。module todo_spa.dom
 extern todo_spa.dom.raw_append(parent: u32, child: u32) -> () link "env:ksn_dom_append"
 
 extern todo_spa.dom.raw_body() -> u32 link "env:ksn_dom_body"

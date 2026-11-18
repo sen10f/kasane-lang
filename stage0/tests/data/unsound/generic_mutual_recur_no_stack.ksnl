@@ -1,9 +1,7 @@
-// expect: E4010
 fn t.main() -> Result<(), std.io.Error> uses [] panics may
     Ok(())
 end t.main
 
-// expect: E4010
 fn t.ping[F: core.ops.Fn<(u64,), u64>](f: F, x: u64, n: u32) -> u64 uses [] panics never
     if n == 0u32 {
         return x

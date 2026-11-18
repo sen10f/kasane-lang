@@ -1,5 +1,3 @@
-// expect: E2020
-// as_ref() のエラーは &AllocError：Alloc(AllocError) への変換はペイロード型が一致しないので不可
 enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
 end t.Error

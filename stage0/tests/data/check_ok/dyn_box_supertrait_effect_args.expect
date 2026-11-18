@@ -1,0 +1,1 @@
+note: E4001/E4002: Box<dyn t.Sub<[], never>> のスーパートレイトメソッド base を []/never 側から呼ぶ。

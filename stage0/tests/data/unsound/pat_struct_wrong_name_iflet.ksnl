@@ -1,5 +1,3 @@
-// expect: E2023
-// `if let` でも同じ検査 (構造体のパターンの名前)
 type t.S
     v: u32
 end t.S

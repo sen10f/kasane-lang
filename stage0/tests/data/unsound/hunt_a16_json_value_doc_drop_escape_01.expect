@@ -1,0 +1,2 @@
+expect: E3002
+note: std.json.parse で得た Doc から root() で Value (添字だけ) を取り、Doc を drop してから読む

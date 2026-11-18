@@ -1,0 +1,2 @@
+note: expect-accept
+note: 参照の演算は `*c` と書く。同じ段数の参照どうし (`&str == &str`、`&Foo == &Foo`) は通る。

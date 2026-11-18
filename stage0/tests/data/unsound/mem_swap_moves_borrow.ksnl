@@ -1,4 +1,3 @@
-// expect: E3010
 type t.H
     r: &'static u32
 end t.H

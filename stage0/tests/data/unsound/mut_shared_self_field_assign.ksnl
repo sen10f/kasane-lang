@@ -1,4 +1,3 @@
-// expect: E3031
 type t.Foo pub
     x: u32
 end t.Foo

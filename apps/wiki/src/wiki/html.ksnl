@@ -32,7 +32,6 @@ fn wiki.html.error_page(message: &str) -> Result<alloc.string.String<std.alloc.S
     wiki.html.page_shell("エラー", out.as_str())
 end wiki.html.error_page
 
-// HTML の特殊文字を必ず実体参照にする (`& < > " '`)。
 fn wiki.html.escape(text: &str) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     for c in text.chars() {
@@ -169,7 +168,6 @@ fn wiki.html.page_view(name: &str, content_html: &str, versions: &[u64], backlin
     out.push_str("\">リンク</a> | <a href=\"/backlinks/")?
     out.push_str(escaped_name.as_str())?
     out.push_str("\">被リンク</a></p>")?
-    // 履歴一覧（最新版順に表示するため逆順に）
     out.push_str("<h2>履歴</h2><ul>")?
     let mut i = versions.len()
     while i > 0usize {
@@ -191,7 +189,6 @@ fn wiki.html.page_view(name: &str, content_html: &str, versions: &[u64], backlin
         i = at
     }
     out.push_str("</ul>")?
-    // 被リンク一覧
     out.push_str("<h2>被リンク</h2><ul>")?
     let mut j = 0usize
     let m = backlinks.len()

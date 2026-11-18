@@ -1,4 +1,3 @@
-// expect: E3010
 enum t.E derive [Debug, Clone, Copy, PartialEq, From] pub
     Borrowed(&'static u32)
 end t.E

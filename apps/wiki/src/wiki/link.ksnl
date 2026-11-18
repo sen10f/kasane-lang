@@ -1,7 +1,6 @@
 import wiki.markdown
 import wiki.store
 
-// `name` への被リンク元ページ名を一覧する。
 fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, wiki.error.Error> uses [alloc, io.fs] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let pages = store.PageStore.list_pages(page_store)?
@@ -39,8 +38,6 @@ fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) ->
         }
         i = i.saturating_add(1usize)
     }
-    // core.slice.sort はネイティブバックエンドで segfault するため未使用。
-    // 重複除去はソートを前提とせず、O(n^2) で全要素と比較する。
     let mut deduped = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut k = 0usize
     let n2 = out.len()
@@ -75,7 +72,6 @@ fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) ->
     Ok(deduped)
 end wiki.link.backlinks_for
 
-// `[[WikiPage]]` 形式のウィキリンクを抽出する。
 fn wiki.link.extract_wiki_links(text: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut i = 0usize
@@ -124,8 +120,6 @@ fn wiki.link.extract_wiki_links(text: &str) -> Result<alloc.vec.Vec<alloc.string
         }
         i = i.saturating_add(1usize)
     }
-    // core.slice.sort はネイティブバックエンドで segfault するため未使用。
-    // 重複除去はソートを前提とせず、O(n^2) で全要素と比較する。
     let mut deduped = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut k = 0usize
     let n2 = out.len()

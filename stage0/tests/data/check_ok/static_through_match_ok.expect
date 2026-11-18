@@ -1,0 +1,1 @@
+note: 'static の参照だけを返す関数の結果の match の分解と、全腕が 'static の match 式は 'static の引数に渡せる。

@@ -2,7 +2,6 @@ fn t.eat(s: alloc.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.eat
 
-// expect: E3002
 fn t.main(c: bool) -> Result<(), std.io.Error> uses [alloc] panics may
     if c {
         let b = t.mk()

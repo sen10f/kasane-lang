@@ -1,4 +1,3 @@
-// expect: E2024
 fn t.f(v: &[u8]) -> bool uses [] panics never
     v.get(0usize) == Some(1u8)
 end t.f

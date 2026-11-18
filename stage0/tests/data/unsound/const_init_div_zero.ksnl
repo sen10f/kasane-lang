@@ -1,4 +1,3 @@
-// expect: E4024
 const t.K: u32 = 1u32 / 0u32
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

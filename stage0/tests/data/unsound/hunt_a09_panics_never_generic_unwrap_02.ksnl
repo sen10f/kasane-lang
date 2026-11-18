@@ -3,7 +3,6 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-// expect: E4002
 fn t.unwrap_o[P: panics](o: Option<u32>) -> u32 uses [] panics P
     o.unwrap()
 end t.unwrap_o

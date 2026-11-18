@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.f(o: Option<u32>) -> u32 uses [] panics never
     match o {
         Some(n) => n

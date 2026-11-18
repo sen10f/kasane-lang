@@ -1,7 +1,5 @@
 import alloc.boxed
 
-// expect: E2046
-// 境界の無い型パラメータの `Box` は `into_dyn` できない (`H: t.Handler` が要る)
 trait t.Handler pub
     fn handle(self: &mut Self) -> u32 uses [] panics never
 end t.Handler

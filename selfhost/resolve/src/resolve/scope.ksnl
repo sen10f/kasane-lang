@@ -1,7 +1,5 @@
-// 基本型の名前 (4.5)。`i32.MAX` や `u64.from_usize` の先頭に来る。
 const resolve.scope.PRIMS: &str = "i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 bool char str" pub
 
-// 解決の結果。
 enum resolve.scope.Res derive [Debug, Clone, Copy, PartialEq] pub
     Local
     Generic
@@ -13,12 +11,6 @@ enum resolve.scope.Res derive [Debug, Clone, Copy, PartialEq] pub
     Member
 end resolve.scope.Res
 
-// 名前の解決 (仕様 3.3 の順)。名前 `a.b.c` の先頭成分 a を、
-// (1) 局所束縛 (本体の変数・引数。閉包の中は外側のうちキャプチャしたものだけ)、
-// (2) ジェネリクス引数 (ヘッダ)、
-// (3) import の末尾名 (`import app.net` の `net` → `app.net`)、
-// (4) それ以外は FQN として、の順に調べる。プレリュード (Option/Some/...) と基本型の名前は別扱い (4.2 / 4.5)。
-// 1 ファイルの解決の状態。locals[base..] が今見える局所束縛。
 type resolve.scope.St pub
     file: usize pub
     tails: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
@@ -56,7 +48,6 @@ fn resolve.scope.St.has_local(self: &resolve.scope.St, name: &str) -> bool uses 
     false
 end resolve.scope.St.has_local
 
-// import の末尾名 name に一致する import の添字 + 1 (なければ 0)。
 fn resolve.scope.St.import_index(self: &resolve.scope.St, name: &str) -> usize uses [] panics never pub
     for j in core.iter.range(0usize, self.tails.len()) {
         match self.tails.as_slice().get(j) {
@@ -71,7 +62,6 @@ fn resolve.scope.St.import_index(self: &resolve.scope.St, name: &str) -> usize u
     0usize
 end resolve.scope.St.import_index
 
-// 局所束縛の数 (ブロックの入口で取り、出口で truncate する)。
 fn resolve.scope.St.mark(self: &resolve.scope.St) -> usize uses [] panics never pub
     self.locals.len()
 end resolve.scope.St.mark
@@ -90,7 +80,6 @@ fn resolve.scope.St.truncate(self: &mut resolve.scope.St, mark: usize) -> () use
     self.locals.truncate(mark)
 end resolve.scope.St.truncate
 
-// 名前 name (1 成分以上) を解決する。
 fn resolve.scope.find(t: &resolve.table.Table, st: &resolve.scope.St, name: &str) -> Result<resolve.scope.Res, alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
     let (first, rest) = match name.split_once(".") {
         Some((a, b)) => (a, b)
@@ -128,8 +117,6 @@ fn resolve.scope.find(t: &resolve.table.Table, st: &resolve.scope.St, name: &str
     if direct != resolve.scope.Res.Missing {
         return Ok(direct)
     }
-    // `値.メソッド` (`threads.TOTAL.lock`、`realtime.Phase.Idle.next`) は、接頭辞が値 (定数・静的・列挙子)
-    // なら残りは型検査でメソッドとして解く。ここでは接頭辞が値かどうかだけを見る (Member)。
     resolve.scope.member(t, st, key.as_str())
 end resolve.scope.find
 
@@ -143,7 +130,6 @@ fn resolve.scope.is_prim(name: &str) -> bool uses [] panics never pub
     false
 end resolve.scope.is_prim
 
-// 定義の表で FQN key を引く。別ファイルの非 pub は Private。
 fn resolve.scope.lookup_key(t: &resolve.table.Table, key: &str, file: usize) -> Result<resolve.scope.Res, alloc.alloc.AllocError> uses [alloc] panics never pub
     let k = alloc.string.String.from_str(std.alloc.SYSTEM, key)?
     let dm = &t.defs.m
@@ -151,8 +137,6 @@ fn resolve.scope.lookup_key(t: &resolve.table.Table, key: &str, file: usize) -> 
         Some(ix) => {
             let d = resolve.table.at(t, *ix)
             if !d.public && d.file != file {
-                // `core` / `alloc` / `std` の標準ライブラリ定義は可視性チェックの対象外
-                // (stage0/src/check.rs と同じ)。`pub` なしでも std.http.Decoder.feed_part 等が参照できる。
                 let root = match key.split_once(".") {
                     Some((r, _)) => r
                     None => key
@@ -172,7 +156,6 @@ fn resolve.scope.lookup_key(t: &resolve.table.Table, key: &str, file: usize) -> 
     }
 end resolve.scope.lookup_key
 
-// 接頭辞が値 (列挙子・定数・静的) に解決できるなら Member (残りは型検査でメソッドとして解く)。
 fn resolve.scope.member(t: &resolve.table.Table, st: &resolve.scope.St, name: &str) -> Result<resolve.scope.Res, alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
     let pre = resolve.scope.prefix(name)?
     if pre.len() == 0usize {
@@ -191,7 +174,6 @@ fn resolve.scope.member(t: &resolve.table.Table, st: &resolve.scope.St, name: &s
     Ok(resolve.scope.Res.Missing)
 end resolve.scope.member
 
-// 空の状態 (ファイル番号だけ入れる)。
 fn resolve.scope.mk(file: usize) -> Result<resolve.scope.St, alloc.alloc.AllocError> uses [alloc] panics never pub
     let a = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let b = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -200,7 +182,6 @@ fn resolve.scope.mk(file: usize) -> Result<resolve.scope.St, alloc.alloc.AllocEr
     Ok(resolve.scope.St { file: file, tails: a, fulls: b, gens: c, locals: d, base: 0usize })
 end resolve.scope.mk
 
-// ファイルの import から状態を作る。末尾名は最後の成分。
 fn resolve.scope.new(file: usize, p: &parse.cur.P, src: &[u8]) -> Result<resolve.scope.St, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut st = resolve.scope.mk(file)?
     for d in p.ast.defs.as_slice().iter() {
@@ -215,7 +196,6 @@ fn resolve.scope.new(file: usize, p: &parse.cur.P, src: &[u8]) -> Result<resolve
     Ok(st)
 end resolve.scope.new
 
-// 末尾の成分を外した接頭辞 (`a.b.c` → `a.b`。成分が 1 つだけなら空)。
 fn resolve.scope.prefix(name: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     let mut prev = ""

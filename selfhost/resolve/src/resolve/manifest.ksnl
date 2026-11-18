@@ -1,5 +1,3 @@
-// kasane.toml の読み取り。必要な部分だけ: [package] の name と、[dependencies] の path 依存。
-// それ以外の書式 (git 依存など) は読まない (この段では path 依存だけを使う)。
 type resolve.manifest.Dep pub
     name: alloc.string.String<std.alloc.System> pub
     path: alloc.string.String<std.alloc.System> pub
@@ -10,14 +8,12 @@ type resolve.manifest.Pkg pub
     deps: alloc.vec.Vec<resolve.manifest.Dep, std.alloc.System> pub
 end resolve.manifest.Pkg
 
-// 依存 1 件 (名前と path)。
 fn resolve.manifest.dep(name: &str, path: &str) -> Result<resolve.manifest.Dep, alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
     let p = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
     Ok(resolve.manifest.Dep { name: n, path: p })
 end resolve.manifest.dep
 
-// dir と rel を `/` で結ぶ。
 fn resolve.manifest.join(dir: &str, rel: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     out.push_str(dir)?
@@ -26,7 +22,6 @@ fn resolve.manifest.join(dir: &str, rel: &str) -> Result<alloc.string.String<std
     Ok(out)
 end resolve.manifest.join
 
-// `"..."` の中身 (引用符がなければそのまま)。
 fn resolve.manifest.quoted(v: &str) -> &str uses [] panics never pub
     let a = match v.strip_prefix("\"") {
         Some(s) => s
@@ -38,7 +33,6 @@ fn resolve.manifest.quoted(v: &str) -> &str uses [] panics never pub
     }
 end resolve.manifest.quoted
 
-// kasane.toml を読む。dir はパッケージのディレクトリ。
 fn resolve.manifest.read(dir: &str) -> Result<resolve.manifest.Pkg, resolve.Failure> uses [alloc, io.fs] panics never pub
     let path = resolve.manifest.join(dir, "kasane.toml")?
     let bytes = resolve.load.read_bytes(path.as_str())?
@@ -48,7 +42,6 @@ fn resolve.manifest.read(dir: &str) -> Result<resolve.manifest.Pkg, resolve.Fail
     }
     let mut name = alloc.string.String.new(std.alloc.SYSTEM)
     let mut deps = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    // 0 = その他, 1 = [package], 2 = [dependencies]
     let mut sec = 0usize
     for raw in text.split("\n") {
         let line = raw.trim()

@@ -2532,7 +2532,7 @@ fn elided_fn_effects_carry_the_closure_effect_to_the_caller() {
 #[test]
 fn linear_ok_programs_build_native_and_match_run() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
-    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(names.len() >= 100, "linear_ok cases missing");
     let mut bad = vec![];

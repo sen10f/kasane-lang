@@ -1,4 +1,3 @@
-// expect: E2036
 type t.Raw
     n: u32
 end t.Raw

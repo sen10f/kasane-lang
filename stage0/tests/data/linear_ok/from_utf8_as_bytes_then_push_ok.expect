@@ -1,0 +1,4 @@
+note: expect-accept
+note: core.str.as_bytes(s) で &[u8] を借り、最後の使用後 s.push_str が可（NLL）。
+note: from_utf8 を介さない as_bytes 単独の形。
+note: b (&s) の最後の使用とともに s への borrow が終わるので push_str が可（NLL）

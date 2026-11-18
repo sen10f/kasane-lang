@@ -1,5 +1,3 @@
-// expect: E2023
-// `Option` の値を `Ok` / `Err` で照合するのは誤り
 fn t.main() -> () uses [] panics never
     let o: Option<u8> = Some(1u8)
     match o {

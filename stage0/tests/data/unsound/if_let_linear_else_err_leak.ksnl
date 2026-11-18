@@ -1,4 +1,3 @@
-// expect: E3003
 type t.L linear pub
     v: u32
 end t.L

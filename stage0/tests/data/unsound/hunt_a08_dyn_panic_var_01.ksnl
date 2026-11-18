@@ -2,7 +2,6 @@ type t.Boxed
     x: u32
 end t.Boxed
 
-// expect: E4002
 trait t.Tr[E: uses, P: panics]
     fn m(self: &Self) -> () uses [E] panics P
 end t.Tr

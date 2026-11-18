@@ -1,5 +1,3 @@
-// expect-accept
-// 閉包が &mut v をキャプチャし内部で ? を使い、呼び出し後 v.push が可（キャプチャ borrow 終了 + NLL）。
 enum t.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
     Io(std.io.Error)
     Alloc(alloc.alloc.AllocError)
@@ -8,13 +6,11 @@ end t.Error
 fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.mem.drop(v.push(1i64)?)
-    // 閉包が &mut v をキャプチャし、内部で ? を使って push
     let mut f = fn() -> Result<(), t.Error> capture [&mut v] {
         core.mem.drop(v.push(2i64)?)
         Ok(())
     }
     core.mem.drop(f()?)
-    // f() の呼び出しとともに &mut v のキャプチャ borrow が終わるので push が可（NLL）
     core.mem.drop(v.push(3i64)?)
     match v.get(2usize) {
         None => {

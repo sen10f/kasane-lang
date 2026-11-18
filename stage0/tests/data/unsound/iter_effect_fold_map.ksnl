@@ -1,5 +1,3 @@
-// expect: E4001
-// map のクロージャが io.console を使うが、fold / main が uses [] なので効果が漏れて拒否されるはず
 fn t.main() -> () uses [] panics never
     core.mem.drop(core.iter.fold(
         core.iter.map(

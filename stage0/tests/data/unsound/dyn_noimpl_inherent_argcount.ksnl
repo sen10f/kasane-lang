@@ -1,6 +1,3 @@
-// expect: E2046
-// さらに inherent の引数はトレイトより 1 個多い (extra: u32)。
-// ディスパッチが inherent を名前で見つけて呼べば、引数の数が合わない。
 trait t.H[E: uses, P: panics]
     fn handle(self: &Self) -> u32 uses [E] panics P
 end t.H

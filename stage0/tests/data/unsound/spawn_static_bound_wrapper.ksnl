@@ -1,4 +1,3 @@
-// expect: E2037
 fn t.go[F: core.marker.Send + core.ops.FnOnce<(), usize, E, P> + 'static, E: uses, P: panics](f: F) -> Result<std.thread.JoinHandle<usize, std.alloc.System>, std.thread.SpawnError> uses [alloc, thread, E] panics P
     std.thread.spawn(std.alloc.SYSTEM, f)
 end t.go

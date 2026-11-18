@@ -1,4 +1,3 @@
-// expect: E1102
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     let q: Foo = 1i32
     core.mem.drop(q)

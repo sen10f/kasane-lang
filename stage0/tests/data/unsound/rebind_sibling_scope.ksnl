@@ -9,7 +9,6 @@ fn t.f(p: &[u8], c: bool) -> Option<&u8> uses [] panics never
     }
 end t.f
 
-// expect: E3030
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

@@ -118,6 +118,8 @@ pub struct Source {
     pub error: Option<PErr>,
     /// `tests/` 配下の統合テストのファイルか (3.2)。
     pub is_test: bool,
+    /// `.ksnh` から読んだソースのとき、横の `.ksnl` の本文 (無ければ `None`)。`path` は `.ksnh`。
+    pub ksnl: Option<String>,
 }
 
 pub fn module_of(path: &str, root: &str) -> String {
@@ -159,7 +161,15 @@ impl Source {
         let (text, bad) = read_source(path);
         let mut src = Source::from_text(path, srcdir, text);
         src.mark_bad_utf8(bad);
+        src.attach_ksnl();
         src
+    }
+
+    /// `.ksnh` のソースに、横の `.ksnl` の本文を付ける。
+    fn attach_ksnl(&mut self) {
+        if let Some(stem) = self.path.strip_suffix(".ksnh") {
+            self.ksnl = read_text(&format!("{}.ksnl", stem));
+        }
     }
 
     pub fn from_text(path: &str, srcdir: &str, text: String) -> Source {
@@ -173,6 +183,7 @@ impl Source {
         let module = format!("{}.tests.{}", pkg, module_of(path, testsdir));
         let mut src = Source::from_text_in(path, module, text, true);
         src.mark_bad_utf8(bad);
+        src.attach_ksnl();
         src
     }
 
@@ -189,7 +200,7 @@ impl Source {
             Ok(d) => (d, None),
             Err(e) => (vec![], Some(decode_err(&e))),
         };
-        Source { path: path.to_string(), module, text, lines, defs, error, is_test }
+        Source { path: path.to_string(), module, text, lines, defs, error, is_test, ksnl: None }
     }
 }
 
@@ -357,33 +368,43 @@ fn walk_files(dir: &Path, exts: &[&str], out: &mut Vec<PathBuf>) {
     }
 }
 
-pub fn load_dir_sources(srcdir: &Path) -> Vec<Source> {
+/// 読むファイルの一覧。`use_ksnh` のとき、`.ksnh` があるモジュールは `.ksnh` だけを (正として) 読み、横の `.ksnl` は
+/// `Source::ksnl` に持つ。依存は `.ksnh` を読まない (`use_ksnh` が偽。`.ksnl` だけ)。
+fn pick_sources(mut ps: Vec<String>, use_ksnh: bool) -> Vec<String> {
+    ps.sort();
+    ps.dedup();
+    ps.retain(|p| overlay_get(p).map_or(true, |t| t != HIDDEN));
+    if !use_ksnh {
+        ps.retain(|p| p.ends_with(".ksnl"));
+        return ps;
+    }
+    let hs: std::collections::HashSet<String> = ps.iter().filter(|p| p.ends_with(".ksnh")).map(|p| p.trim_end_matches(".ksnh").to_string()).collect();
+    ps.retain(|p| !p.ends_with(".ksnl") || !hs.contains(p.trim_end_matches(".ksnl")));
+    ps
+}
+
+pub fn load_dir_sources(srcdir: &Path, use_ksnh: bool) -> Vec<Source> {
     let mut paths = vec![];
     walk_files(srcdir, &["ksnl", "ksnh"], &mut paths);
     let mut ps: Vec<String> = paths.iter().map(|p| norm(p)).collect();
     let sd = norm(srcdir);
     ps.extend(overlay_paths_under(&sd));
-    ps.sort();
-    ps.dedup();
-    ps.retain(|p| overlay_get(p).map_or(true, |t| t != HIDDEN));
-    ps.iter().map(|p| Source::load(p, &sd)).collect()
+    pick_sources(ps, use_ksnh).iter().map(|p| Source::load(p, &sd)).collect()
 }
 
 /// `<root>/tests/` 配下の統合テスト (3.2)。依存パッケージの `tests/` は読まない。
 pub fn load_test_sources(root: &Path, pkg: &str) -> Vec<Source> {
     let td = root.join("tests");
     let mut paths = vec![];
-    walk_files(&td, &["ksnl"], &mut paths);
+    walk_files(&td, &["ksnl", "ksnh"], &mut paths);
     let mut ps: Vec<String> = paths.iter().map(|p| norm(p)).collect();
     let tds = norm(&td);
-    ps.extend(overlay_paths_under(&tds).into_iter().filter(|p| p.ends_with(".ksnl")));
-    ps.sort();
-    ps.dedup();
-    ps.iter().map(|p| Source::load_test(p, &tds, pkg)).collect()
+    ps.extend(overlay_paths_under(&tds));
+    pick_sources(ps, true).iter().map(|p| Source::load_test(p, &tds, pkg)).collect()
 }
 
 pub fn load_package(root: &Path) -> Result<Package, ProjectError> {
-    let mut p = load_package_src(root)?;
+    let mut p = load_package_src_opt(root, true)?;
     let t = load_test_sources(&p.root, &p.name);
     p.sources.extend(t);
     Ok(p)
@@ -391,6 +412,10 @@ pub fn load_package(root: &Path) -> Result<Package, ProjectError> {
 
 /// `src/` だけを読む (依存パッケージ用)。
 pub fn load_package_src(root: &Path) -> Result<Package, ProjectError> {
+    load_package_src_opt(root, false)
+}
+
+fn load_package_src_opt(root: &Path, use_ksnh: bool) -> Result<Package, ProjectError> {
     let root = fs::canonicalize(root).unwrap_or(root.to_path_buf());
     let root = PathBuf::from(norm(&root).trim_start_matches("//?/"));
     let m = read_manifest(&root)?;
@@ -399,7 +424,7 @@ pub fn load_package_src(root: &Path) -> Result<Package, ProjectError> {
         return perr(&c, msg);
     }
     let name = m["package"]["name"].as_str().unwrap().to_string();
-    let sources = load_dir_sources(&root.join("src"));
+    let sources = load_dir_sources(&root.join("src"), use_ksnh);
     Ok(Package { name, root, manifest: m, sources, source: String::new() })
 }
 
@@ -781,8 +806,11 @@ pub fn load_stdlib() -> Vec<Source> {
     let mut ps: Vec<(usize, String)> = vec![];
     for (k, ext) in ["sig", "ksnl"].iter().enumerate() {
         let mut fs = vec![];
-        walk_files(&root, &[ext], &mut fs);
-        let mut fs: Vec<String> = fs.iter().map(|p| norm(p)).collect();
+        walk_files(&root, &[*ext, "ksnh"], &mut fs);
+        let mut fs: Vec<String> = fs.iter().map(|p| norm(p)).filter(|p| p.ends_with(&format!(".{}", ext)) || (k == 1 && p.ends_with(".ksnh"))).collect();
+        if k == 1 {
+            fs = pick_sources(fs, true);
+        }
         fs.sort();
         ps.extend(fs.into_iter().map(|p| (k, p)));
     }
@@ -819,7 +847,7 @@ pub fn load_stdlib() -> Vec<Source> {
                 .zip(defs)
                 .map(|(((path, text), module), defs)| {
                     let lines = text.split('\n').map(String::from).collect();
-                    Source { path, module, text, lines, defs, error: None, is_test: false }
+                    Source { path, module, text, lines, defs, error: None, is_test: false, ksnl: None }
                 })
                 .collect();
         }

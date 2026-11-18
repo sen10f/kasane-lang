@@ -187,9 +187,7 @@ end t.main
     assert_eq!(text(&o.stdout), "abc\nabc\nok\n");
 }
 
-const REFBIND_IFLET_MUT_REF_BIND_MISMATCH: &str = r#"// expect-accept
-// if let で &mut Option の中身を可変束縛して書き戻す（match の参照越し束縛、cheat sheet 205 行）
-fn t.bump(opt: &mut Option<i32>, delta: i32) -> bool uses [] panics never
+const REFBIND_IFLET_MUT_REF_BIND_MISMATCH: &str = r#"fn t.bump(opt: &mut Option<i32>, delta: i32) -> bool uses [] panics never
     if let Some(v) = opt {
         *v = v.wrapping_add(delta)
         true
@@ -214,9 +212,7 @@ fn ref_bind_writes_through_iflet_mut_ref_bind_mismatch() {
     assert_eq!(text(&o.stdout).trim(), "iflet_mut ok");
 }
 
-const REFBIND_FP_MATCH_ASSIGN_PROBE: &str = r#"// expect-accept
-// match で &mut Option の束縛を通じて代入（if let 版と同じ木走査/ネイティブ分岐の調査）
-fn t.bump_match(opt: &mut Option<i32>, delta: i32) -> bool uses [] panics never
+const REFBIND_FP_MATCH_ASSIGN_PROBE: &str = r#"fn t.bump_match(opt: &mut Option<i32>, delta: i32) -> bool uses [] panics never
     match opt {
         Some(v) => {
             *v = v.wrapping_add(delta)
@@ -244,9 +240,7 @@ fn ref_bind_writes_through_fp_match_assign_probe() {
     assert_eq!(text(&o.stdout).trim(), "match_assign ok");
 }
 
-const REFBIND_FP_ENUM_VARIANT_LIKE: &str = r#"// expect-accept
-// &mut 列挙体を match で分解し変種の欄を書き戻す
-enum t.Kind pub
+const REFBIND_FP_ENUM_VARIANT_LIKE: &str = r#"enum t.Kind pub
     A(i32)
     B(i32)
 end t.Kind

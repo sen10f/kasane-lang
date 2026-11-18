@@ -1,0 +1,380 @@
+import alloc.string
+import csvtool.parse
+
+// キー (列名またはグループ名) と統計の組。summary と groupby の出力で共通に使う。
+type csvtool.agg.Group pub
+    key: alloc.string.String<std.alloc.System> pub
+    stats: csvtool.agg.Stats pub
+end csvtool.agg.Group
+
+// 1 つの列 (または 1 つのグループ) の数値統計。
+// 数値は小数第 2 位までを 0.01 単位の整数にして持つ ("3.5" -> 350)。
+type csvtool.agg.Stats derive [Debug, Clone, Copy, PartialEq] pub
+    rows: i64 pub
+    numeric: i64 pub
+    sum: i64 pub
+    min: i64 pub
+    max: i64 pub
+    ovf: bool pub
+end csvtool.agg.Stats
+
+// 1 つのフィールドを統計に加える。数字として読めないフィールドは行数だけ数える。
+fn csvtool.agg.Stats.add(self: &mut csvtool.agg.Stats, text: &str) -> () uses [] panics never pub
+    self.rows = self.rows.wrapping_add(1i64)
+    match csvtool.agg.parse_num(text) {
+        Some(v) => {
+            self.numeric = self.numeric.wrapping_add(1i64)
+            if self.numeric == 1i64 {
+                self.min = v
+                self.max = v
+            } else {
+                if v < self.min {
+                    self.min = v
+                }
+                if v > self.max {
+                    self.max = v
+                }
+            }
+            match self.sum.checked_add(v) {
+                Some(s) => {
+                    self.sum = s
+                }
+                None => {
+                    self.ovf = true
+                }
+            }
+        }
+        None => core.mem.drop(0u8)
+    }
+end csvtool.agg.Stats.add
+
+fn csvtool.agg.Stats.new() -> csvtool.agg.Stats uses [] panics never pub
+    csvtool.agg.Stats { rows: 0i64, numeric: 0i64, sum: 0i64, min: 0i64, max: 0i64, ovf: false }
+end csvtool.agg.Stats.new
+
+// 1 つの列を表全体で集計する (欠けているセルは行数に入れない)。
+fn csvtool.agg.column_stats(tbl: &csvtool.table.Table, col: usize) -> Result<csvtool.agg.Stats, csvtool.error.Error> uses [] panics never pub
+    let mut st = csvtool.agg.Stats.new()
+    let mut r = 0usize
+    let n = tbl.height()
+    while r < n {
+        match tbl.cell(r, col) {
+            Some(text) => {
+                csvtool.agg.Stats.add(&mut st, text)
+            }
+            None => core.mem.drop(0u8)
+        }
+        r = r.wrapping_add(1usize)
+    }
+    Ok(st)
+end csvtool.agg.column_stats
+
+// ASCII の 1 桁を i64 にする (数字以外は None)。
+fn csvtool.agg.digit(c: char) -> Option<i64> uses [] panics never
+    if c >= '0' && c <= '9' {
+        let d = c.to_u32().wrapping_sub('0'.to_u32())
+        Some(i64.from_u32(d))
+    } else {
+        None
+    }
+end csvtool.agg.digit
+
+// 統計の平均を表示用の文字列にする。数値がなければ "-"、桁あふれがあれば "ovf"。
+fn csvtool.agg.fmt_avg(stats: &csvtool.agg.Stats) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    if stats.ovf {
+        return alloc.string.String.from_str(std.alloc.SYSTEM, "ovf")
+    }
+    if stats.numeric == 0i64 {
+        return alloc.string.String.from_str(std.alloc.SYSTEM, "-")
+    }
+    match stats.sum.checked_div(stats.numeric) {
+        Some(avg) => csvtool.agg.fmt_scaled(avg)
+        None => alloc.string.String.from_str(std.alloc.SYSTEM, "ovf")
+    }
+end csvtool.agg.fmt_avg
+
+// 0.01 単位の整数を表示用の文字列にする (350 -> "3.5"、400 -> "4"、5 -> "0.05"、
+// -5 -> "-0.05")。絶対値が i64 の最大を超える符号反転は "ovf"。
+fn csvtool.agg.fmt_scaled(value: i64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    match value.checked_abs() {
+        Some(m) => {
+            if value < 0i64 {
+                out.push_str("-")?
+            }
+            match m.checked_div(100i64) {
+                Some(whole) => {
+                    let spec = alloc.fmt.Spec.new()
+                    alloc.fmt.write_i64(&mut out, whole, &spec)?
+                }
+                None => core.mem.drop(0u8)
+            }
+            match m.checked_rem(100i64) {
+                Some(rem) => {
+                    if rem != 0i64 {
+                        out.push_str(".")?
+                        match rem.checked_rem(10i64) {
+                            Some(r10) => {
+                                if r10 == 0i64 {
+                                    match rem.checked_div(10i64) {
+                                        Some(h) => {
+                                            let base = alloc.fmt.Spec.new()
+                                            let spec = base.with_width(1usize).with_fill('0')
+                                            alloc.fmt.write_i64(&mut out, h, &spec)?
+                                        }
+                                        None => core.mem.drop(0u8)
+                                    }
+                                } else {
+                                    let base = alloc.fmt.Spec.new()
+                                    let spec = base.with_width(2usize).with_fill('0')
+                                    alloc.fmt.write_i64(&mut out, rem, &spec)?
+                                }
+                            }
+                            None => core.mem.drop(0u8)
+                        }
+                    }
+                }
+                None => core.mem.drop(0u8)
+            }
+        }
+        None => {
+            out.push_str("ovf")?
+        }
+    }
+    Ok(out)
+end csvtool.agg.fmt_scaled
+
+// キーでグループに分けて、値の列を集計し、キーの順に整列して返す。
+fn csvtool.agg.groupby(tbl: &csvtool.table.Table, key_col: usize, val_col: usize) -> Result<alloc.vec.Vec<csvtool.agg.Group, std.alloc.System>, csvtool.error.Error> uses [alloc] panics never pub
+    let mut groups = csvtool.agg.groups_new()
+    let mut r = 0usize
+    let n = tbl.height()
+    while r < n {
+        match tbl.cell(r, key_col) {
+            Some(k) => {
+                let mut idx = groups.len()
+                let gs = groups.as_slice()
+                let gl = gs.len()
+                let mut gi = 0usize
+                while gi < gl {
+                    match gs.get(gi) {
+                        Some(g) => {
+                            if g.key.as_str() == k {
+                                idx = gi
+                            }
+                        }
+                        None => core.mem.drop(0u8)
+                    }
+                    gi = gi.wrapping_add(1usize)
+                }
+                let v = match tbl.cell(r, val_col) {
+                    Some(v) => v
+                    None => ""
+                }
+                if idx == gl {
+                    let key = alloc.string.String.from_str(std.alloc.SYSTEM, k)?
+                    let mut st = csvtool.agg.Stats.new()
+                    csvtool.agg.Stats.add(&mut st, v)
+                    core.mem.drop(groups.push(csvtool.agg.Group { key: key, stats: st })?)
+                } else {
+                    match groups.as_mut_slice().get_mut(idx) {
+                        Some(g) => {
+                            csvtool.agg.Stats.add(&mut g.stats, v)
+                        }
+                        None => core.mem.drop(0u8)
+                    }
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        r = r.wrapping_add(1usize)
+    }
+    let mut out = groups
+    let s = out.as_mut_slice()
+    s.sort_by(fn(a: &csvtool.agg.Group, b: &csvtool.agg.Group) -> core.cmp.Ordering capture [] {
+        a.key.cmp(&b.key)
+    })
+    Ok(out)
+end csvtool.agg.groupby
+
+// 空のグループ列 (Vec<Group> の型を決めるための補助)。
+fn csvtool.agg.groups_new() -> alloc.vec.Vec<csvtool.agg.Group, std.alloc.System> uses [alloc] panics never
+    alloc.vec.Vec.new(std.alloc.SYSTEM)
+end csvtool.agg.groups_new
+
+// 数字のフィールドを 0.01 単位の整数にして読む ("-3.5" -> -350)。
+// 小数第 3 位以下は切り捨て、大きすぎる値や数字以外は None。
+fn csvtool.agg.parse_num(text: &str) -> Option<i64> uses [] panics never pub
+    let t = text.trim()
+    if t.is_empty() {
+        return None
+    }
+    let mut body = t
+    let mut neg = false
+    match t.strip_prefix("-") {
+        Some(rest) => {
+            neg = true
+            body = rest
+        }
+        None => {
+            match t.strip_prefix("+") {
+                Some(rest) => {
+                    body = rest
+                }
+                None => core.mem.drop(0u8)
+            }
+        }
+    }
+    if body.is_empty() {
+        return None
+    }
+    let mut it = body.chars()
+    let mut int_part = 0i64
+    let mut int_len = 0usize
+    loop {
+        match it.next() {
+            Some('.') => break
+            Some(c) => {
+                match csvtool.agg.digit(c) {
+                    Some(d) => {
+                        match int_part.checked_mul(10i64) {
+                            Some(m) => match m.checked_add(d) {
+                                Some(v) => {
+                                    int_part = v
+                                    int_len = int_len.wrapping_add(1usize)
+                                }
+                                None => return None
+                            }
+                            None => return None
+                        }
+                    }
+                    None => return None
+                }
+            }
+            None => break
+        }
+    }
+    let mut frac = 0i64
+    let mut frac_len = 0usize
+    loop {
+        match it.next() {
+            Some(c) => {
+                match csvtool.agg.digit(c) {
+                    Some(d) => {
+                        if frac_len < 2usize {
+                            frac = frac.wrapping_mul(10i64).wrapping_add(d)
+                            frac_len = frac_len.wrapping_add(1usize)
+                        }
+                        // 小数第 3 位以降は切り捨て
+                    }
+                    None => return None
+                }
+            }
+            None => break
+        }
+    }
+    if int_len == 0usize && frac_len == 0usize {
+        return None
+    }
+    if frac_len == 1usize {
+        frac = frac.wrapping_mul(10i64)
+    }
+    match int_part.checked_mul(100i64) {
+        Some(base) => match base.checked_add(frac) {
+            Some(v) => {
+                if neg {
+                    return v.checked_neg()
+                }
+                Some(v)
+            }
+            None => None
+        }
+        None => None
+    }
+end csvtool.agg.parse_num
+
+test csvtool.agg.Stats.add.test_stats
+    let mut st = csvtool.agg.Stats.new()
+    csvtool.agg.Stats.add(&mut st, "3")
+    csvtool.agg.Stats.add(&mut st, "-1.5")
+    csvtool.agg.Stats.add(&mut st, "abc")
+    csvtool.agg.Stats.add(&mut st, " 2.25 ")
+    core.check.eq(st.rows, 4i64)
+    core.check.eq(st.numeric, 3i64)
+    core.check.eq(st.min, -150i64)
+    core.check.eq(st.max, 300i64)
+    core.check.eq(st.sum, 375i64)
+    core.check.eq(st.ovf, false)
+end csvtool.agg.Stats.add.test_stats
+
+test csvtool.agg.column_stats.test_column
+    let t = parse.parse_text("name,age\nalice,30\nbob,\ncarol,35\n", ',')?
+    let age = match t.col_index("age") {
+        Some(c) => c
+        None => core.panic.panic("column not found")
+    }
+    let st = csvtool.agg.column_stats(&t, age)?
+    core.check.eq(st.rows, 3i64)
+    core.check.eq(st.numeric, 2i64)
+    core.check.eq(st.sum, 6500i64)
+    let avg = csvtool.agg.fmt_avg(&st)?
+    core.check.eq(avg.as_str(), "32.5")
+end csvtool.agg.column_stats.test_column
+
+test csvtool.agg.fmt_scaled.test_cases
+    let a = csvtool.agg.fmt_scaled(4200i64)?
+    core.check.eq(a.as_str(), "42")
+    let b = csvtool.agg.fmt_scaled(350i64)?
+    core.check.eq(b.as_str(), "3.5")
+    let c = csvtool.agg.fmt_scaled(5i64)?
+    core.check.eq(c.as_str(), "0.05")
+    let d = csvtool.agg.fmt_scaled(-5i64)?
+    core.check.eq(d.as_str(), "-0.05")
+    let e = csvtool.agg.fmt_scaled(-350i64)?
+    core.check.eq(e.as_str(), "-3.5")
+    let f = csvtool.agg.fmt_scaled(1050i64)?
+    core.check.eq(f.as_str(), "10.5")
+    let g = csvtool.agg.fmt_scaled(0i64)?
+    core.check.eq(g.as_str(), "0")
+end csvtool.agg.fmt_scaled.test_cases
+
+test csvtool.agg.groupby.test_two_groups_sorted
+    let t = parse.parse_text("cat,val\nb,2\na,1\na,3\n", ',')?
+    let groups = csvtool.agg.groupby(&t, 0usize, 1usize)?
+    core.check.eq(groups.len(), 2usize)
+    match groups.as_slice().get(0usize) {
+        Some(g) => {
+            core.check.eq(g.key.as_str(), "a")
+            core.check.eq(g.stats.rows, 2i64)
+            core.check.eq(g.stats.sum, 400i64)
+            core.check.eq(g.stats.min, 100i64)
+            core.check.eq(g.stats.max, 300i64)
+        }
+        None => core.mem.drop(0u8)
+    }
+    match groups.as_slice().get(1usize) {
+        Some(g) => {
+            core.check.eq(g.key.as_str(), "b")
+            core.check.eq(g.stats.sum, 200i64)
+        }
+        None => core.mem.drop(0u8)
+    }
+end csvtool.agg.groupby.test_two_groups_sorted
+
+test csvtool.agg.parse_num.test_cases
+    core.check.eq(csvtool.agg.parse_num("42"), Some(4200i64))
+    core.check.eq(csvtool.agg.parse_num("-3.5"), Some(-350i64))
+    core.check.eq(csvtool.agg.parse_num("+7"), Some(700i64))
+    core.check.eq(csvtool.agg.parse_num(" 7 "), Some(700i64))
+    core.check.eq(csvtool.agg.parse_num("1.234"), Some(123i64))
+    core.check.eq(csvtool.agg.parse_num("0.05"), Some(5i64))
+    core.check.eq(csvtool.agg.parse_num(".5"), Some(50i64))
+    core.check.eq(csvtool.agg.parse_num("-0.05"), Some(-5i64))
+    core.check.eq(csvtool.agg.parse_num("3."), Some(300i64))
+    core.check.eq(csvtool.agg.parse_num("abc"), None)
+    core.check.eq(csvtool.agg.parse_num(""), None)
+    core.check.eq(csvtool.agg.parse_num("."), None)
+    core.check.eq(csvtool.agg.parse_num("-"), None)
+    core.check.eq(csvtool.agg.parse_num("1a"), None)
+    core.check.eq(csvtool.agg.parse_num("--1"), None)
+end csvtool.agg.parse_num.test_cases

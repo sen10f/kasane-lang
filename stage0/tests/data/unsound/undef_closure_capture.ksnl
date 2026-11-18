@@ -1,4 +1,3 @@
-// expect: E1101
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     let f = fn(x: i32) -> i32 capture [&zz] {
         x

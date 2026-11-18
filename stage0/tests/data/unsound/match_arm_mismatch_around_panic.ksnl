@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.bad(o: Option<u32>) -> () uses [] panics may
     let r = match o {
         Some(_) => 0u64

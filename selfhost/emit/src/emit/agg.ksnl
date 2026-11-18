@@ -12,7 +12,6 @@ type emit.agg.Var derive [Clone, Copy] pub
     count: usize pub
 end emit.agg.Var
 
-// 列挙型の変種 `k` (`Name(型@off,型@off)`) を登録する。
 fn emit.agg.enum_variant(g: &mut emit.G, id: usize, k: usize, tok: &str) -> () uses [alloc, io.console, process] panics may pub
     let vstart = g.tab.foffs.len()
     let inner = emit.util.inner(emit.util.after(tok, emit.util.open_pos(tok)))
@@ -30,7 +29,6 @@ fn emit.agg.enum_variant(g: &mut emit.G, id: usize, k: usize, tok: &str) -> () u
     emit.agg.push_var(g, id, k, vstart, vcount)
 end emit.agg.enum_variant
 
-// 集成体 `agg` の変種 `variant` (構造体は 0) の `j` 番目のフィールドのオフセットと型。
 fn emit.agg.field(g: &emit.G, agg: usize, variant: usize, j: usize) -> (usize, usize) uses [io.console, process] panics may pub
     let a = emit.agg.get(g, agg)
     if a.is_enum {
@@ -48,7 +46,6 @@ fn emit.agg.field(g: &emit.G, agg: usize, variant: usize, j: usize) -> (usize, u
     (*g.tab.foffs.get(k).unwrap_or(&0usize), *g.tab.ftys.get(k).unwrap_or(&0usize))
 end emit.agg.field
 
-// フィールドの幅 (ビット) = `size_of * 8`。単位型のフィールドは置けない。
 fn emit.agg.field_w(g: &emit.G, t: usize) -> usize uses [io.console, process] panics may pub
     let k = emit.ty.get(g, t)
     if k.kind == (emit.ty.K_UNIT) {
@@ -64,7 +61,6 @@ fn emit.agg.get(g: &emit.G, id: usize) -> emit.agg.Agg uses [io.console, process
     }
 end emit.agg.get
 
-// 定義行 `agg#N struct|tuple|enum NAME size=S align=A {body}` を読む。`agg#` で始まる行だけを渡す。
 fn emit.agg.parse_line(g: &mut emit.G, line: &str) -> () uses [alloc, io.console, process] panics may pub
     let (head, rest) = match line.split_once("{") {
         Some(p) => p
@@ -120,7 +116,6 @@ fn emit.agg.parse_line(g: &mut emit.G, line: &str) -> () uses [alloc, io.console
     }
 end emit.agg.parse_line
 
-// フィールド `[名前:]型@オフセット` (列挙型では `型@オフセット`) を一つ足す。`@` が無ければ何もしない。
 fn emit.agg.push_field(g: &mut emit.G, tok: &str, _variant: bool) -> () uses [alloc, io.console, process] panics may pub
     let (left, right) = match tok.split_once("@") {
         Some(p) => p
@@ -153,7 +148,6 @@ fn emit.agg.push_var(g: &mut emit.G, agg: usize, variant: usize, start: usize, c
     }
 end emit.agg.push_var
 
-// 集成体 `id` の大きさ (ビット)。`Rust` 版の `agg_bits` と同じく、大きさ 0 は 1 バイトとして扱う。
 fn emit.agg.size_bits(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
     let a = emit.agg.get(g, id)
     let s = if a.size == 0usize {
@@ -164,7 +158,6 @@ fn emit.agg.size_bits(g: &emit.G, id: usize) -> usize uses [io.console, process]
     s.wrapping_mul(8usize)
 end emit.agg.size_bits
 
-// 型 `t` の大きさ (バイト) (Rust 版の `kir::size_of` と同じ)。
 fn emit.agg.size_of(g: &emit.G, t: usize) -> usize uses [io.console, process] panics may pub
     let k = emit.ty.get(g, t)
     if k.kind == (emit.ty.K_UNIT) {
@@ -184,7 +177,6 @@ fn emit.agg.size_of(g: &emit.G, t: usize) -> usize uses [io.console, process] pa
     }
 end emit.agg.size_of
 
-// 列挙型の変種の記録 (`variant` 番目)。
 fn emit.agg.var(g: &emit.G, agg: usize, variant: usize) -> emit.agg.Var uses [io.console, process] panics may pub
     let mut i = 0usize
     while i < g.tab.vars.len() {

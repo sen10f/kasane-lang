@@ -1,7 +1,3 @@
-// `std.datetime`: UTC の暦 (グレゴリオ暦・閏秒なし)。すべて Kasane で書いた規範 (`.sig` は持たない)。
-// 日数と日付の変換は Howard Hinnant の civil-from-days / days-from-civil の算法 (紀元 1970-01-01 からの日数)。
-// `panics never` のため、整数の `+ - * /` は使わず `wrapping_*` と `std.time.div_floor` / `rem_floor` を使う。
-// 年・月・日・時・分・秒・ナノ秒はすべて `i64`（`DateTime` の各フィールド）。
 type std.datetime.DateTime derive [Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash] pub
     year: i64 pub
     month: i64 pub
@@ -19,14 +15,11 @@ enum std.datetime.Error derive [Debug, Clone, Copy, PartialEq, Eq] pub
     Unexpected(usize)
 end std.datetime.Error
 
-// 現在の UTC の日時。
 fn std.datetime.DateTime.now() -> std.datetime.DateTime uses [time] panics never pub
     let t = std.time.SystemTime.now()
     std.datetime.from_system_time(&t)
 end std.datetime.DateTime.now
 
-// RFC 3339 の書き出し (`2026-11-14T10:20:30Z`、ナノ秒が 0 でなければ `.` と 9 桁の小数を付け、末尾の 0 は省く)。
-// 年は 4 桁に揃える。0000〜9999 の外の年は RFC 3339 の形にならないが、そのまま符号付きで書く。
 fn std.datetime.DateTime.to_rfc3339(self: &std.datetime.DateTime) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     if self.year < 0i64 {
@@ -47,7 +40,6 @@ fn std.datetime.DateTime.to_rfc3339(self: &std.datetime.DateTime) -> Result<allo
     std.datetime.push_digits(&mut out, self.second, 2usize)?
     if self.nanos != 0i64 {
         out.push('.')?
-        // 9 桁で書いてから、末尾の 0 を 1 桁ずつ落とす (`500000000` → `5`、`050000000` → `05`)。
         let mut frac = self.nanos
         let mut width = 9usize
         while width > 1usize && std.time.rem_floor(frac, 10i64) == 0i64 {
@@ -60,14 +52,12 @@ fn std.datetime.DateTime.to_rfc3339(self: &std.datetime.DateTime) -> Result<allo
     Ok(out)
 end std.datetime.DateTime.to_rfc3339
 
-// UNIX 秒 (ナノ秒は切り捨て)。
 fn std.datetime.DateTime.unix_seconds(self: &std.datetime.DateTime) -> i64 uses [] panics never pub
     let days = std.datetime.days_from_civil(self.year, self.month, self.day)
     let secs = days.wrapping_mul(86400i64).wrapping_add(self.hour.wrapping_mul(3600i64))
     secs.wrapping_add(self.minute.wrapping_mul(60i64)).wrapping_add(self.second)
 end std.datetime.DateTime.unix_seconds
 
-// 紀元からの日数 `days` の日付 (年・月・日)。時刻の欄は 0 にした `DateTime` で返す。
 fn std.datetime.date_of_days(days: i64) -> std.datetime.DateTime uses [] panics never pub
     let z = days.wrapping_add(719468i64)
     let era = std.time.div_floor(z, 146097i64)
@@ -96,7 +86,6 @@ fn std.datetime.date_of_days(days: i64) -> std.datetime.DateTime uses [] panics 
     std.datetime.make(year, month, day, 0i64, 0i64, 0i64, 0i64)
 end std.datetime.date_of_days
 
-// 日付 (年・月・日) から紀元 1970-01-01 からの日数。`month` は 1〜12、`day` は 1 以上。
 fn std.datetime.days_from_civil(year: i64, month: i64, day: i64) -> i64 uses [] panics never pub
     let y = if month <= 2i64 {
         year.wrapping_sub(1i64)
@@ -117,7 +106,6 @@ fn std.datetime.days_from_civil(year: i64, month: i64, day: i64) -> i64 uses [] 
     era.wrapping_mul(146097i64).wrapping_add(doe).wrapping_sub(719468i64)
 end std.datetime.days_from_civil
 
-// 月の日数。`month` が 1〜12 の外なら 0。
 fn std.datetime.days_in_month(year: i64, month: i64) -> i64 uses [] panics never pub
     if month == 2i64 {
         if std.datetime.is_leap_year(year) {
@@ -134,7 +122,6 @@ fn std.datetime.days_in_month(year: i64, month: i64) -> i64 uses [] panics never
     0i64
 end std.datetime.days_in_month
 
-// 数字 1 文字 (`b[at]` が `0`〜`9`) の値。
 fn std.datetime.digit_at(b: &[u8], at: usize) -> Option<i64> uses [] panics never
     match b.get(at) {
         Some(c) => {
@@ -148,7 +135,6 @@ fn std.datetime.digit_at(b: &[u8], at: usize) -> Option<i64> uses [] panics neve
     }
 end std.datetime.digit_at
 
-// `at` の 1 バイトが `want` か `alt` であることを確かめる。
 fn std.datetime.expect_byte(b: &[u8], at: usize, want: u8, alt: u8) -> Result<(), std.datetime.Error> uses [] panics never
     match b.get(at) {
         Some(c) => {
@@ -162,19 +148,16 @@ fn std.datetime.expect_byte(b: &[u8], at: usize, want: u8, alt: u8) -> Result<()
     }
 end std.datetime.expect_byte
 
-// 実時刻 (`std.time.SystemTime`) の UTC の日時。
 fn std.datetime.from_system_time(t: &std.time.SystemTime) -> std.datetime.DateTime uses [] panics never pub
     std.datetime.from_unix_nanos(t.unix_nanos())
 end std.datetime.from_system_time
 
-// UNIX ナノ秒 (負もよい。`i64` の範囲で約 ±292 年) から UTC の日時。
 fn std.datetime.from_unix_nanos(nanos: i64) -> std.datetime.DateTime uses [] panics never pub
     let base = std.datetime.from_unix_seconds(std.time.div_floor(nanos, 1000000000i64))
     let ns = std.time.rem_floor(nanos, 1000000000i64)
     std.datetime.with_time(base, base.hour, base.minute, base.second, ns)
 end std.datetime.from_unix_nanos
 
-// UNIX 秒 (1970-01-01T00:00:00Z からの秒、負もよい) から UTC の日時 (ナノ秒は 0)。
 fn std.datetime.from_unix_seconds(seconds: i64) -> std.datetime.DateTime uses [] panics never pub
     let days = std.time.div_floor(seconds, 86400i64)
     let sod = std.time.rem_floor(seconds, 86400i64)
@@ -184,7 +167,6 @@ fn std.datetime.from_unix_seconds(seconds: i64) -> std.datetime.DateTime uses []
     std.datetime.with_time(date, hour, minute, std.time.rem_floor(sod, 60i64), 0i64)
 end std.datetime.from_unix_seconds
 
-// 閏年か (グレゴリオ暦: 4 で割れて 100 で割れない年、または 400 で割れる年)。
 fn std.datetime.is_leap_year(year: i64) -> bool uses [] panics never pub
     if std.time.rem_floor(year, 4i64) != 0i64 {
         return false
@@ -195,15 +177,10 @@ fn std.datetime.is_leap_year(year: i64) -> bool uses [] panics never pub
     std.time.rem_floor(year, 400i64) == 0i64
 end std.datetime.is_leap_year
 
-// 7 つの欄から `DateTime` を作る (構造体リテラルは 1 行に書く決まりなので、関数にまとめる)。
 fn std.datetime.make(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64, n: i64) -> std.datetime.DateTime uses [] panics never pub
     std.datetime.DateTime { year: y, month: m, day: d, hour: h, minute: mi, second: s, nanos: n }
 end std.datetime.make
 
-// RFC 3339 の解析 (`YYYY-MM-DDTHH:MM:SS[.小数]オフセット`)。`T` / `t`、`Z` / `z`、`±HH:MM` を受け付ける。
-// 結果は UTC に直す (オフセットを引く)。小数は 9 桁まで使い、10 桁目以降は切り捨てる。
-// 閏秒 (秒 60) は受け付けない。位置は入力のバイトの添字。
-// 字面は `YYYY-MM-DDTHH:MM:SS` の固定位置 (添字 0〜18)。範囲外の欄は、その欄の先頭の添字を `OutOfRange` が指す。
 fn std.datetime.parse_rfc3339(text: &str) -> Result<std.datetime.DateTime, std.datetime.Error> uses [] panics never pub
     let b = text.as_bytes()
     let year = std.datetime.read_fixed(b, 0usize, 4usize)?
@@ -293,7 +270,6 @@ fn std.datetime.parse_rfc3339(text: &str) -> Result<std.datetime.DateTime, std.d
     Ok(std.datetime.with_time(utc, utc.hour, utc.minute, utc.second, nanos))
 end std.datetime.parse_rfc3339
 
-// 書き出しで 1 桁ずつ書く (`value` は 0 以上、`width` 桁。足りない上位は 0 で埋める)。
 fn std.datetime.push_digits(out: &mut alloc.string.String<std.alloc.System>, value: i64, width: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let mut p = 1i64
     let mut k = 1usize
@@ -311,7 +287,6 @@ fn std.datetime.push_digits(out: &mut alloc.string.String<std.alloc.System>, val
     Ok(())
 end std.datetime.push_digits
 
-// `at` から `count` 桁の 10 進数を読む。途中で数字でなければ、その位置の位置付きエラー。
 fn std.datetime.read_fixed(b: &[u8], at: usize, count: usize) -> Result<i64, std.datetime.Error> uses [] panics never
     let mut v = 0i64
     let mut k = 0usize
@@ -333,7 +308,6 @@ fn std.datetime.read_fixed(b: &[u8], at: usize, count: usize) -> Result<i64, std
     Ok(v)
 end std.datetime.read_fixed
 
-// 時刻の欄 (時・分・秒・ナノ秒) だけを差し替えた値。
 fn std.datetime.with_time(base: std.datetime.DateTime, hour: i64, minute: i64, second: i64, nanos: i64) -> std.datetime.DateTime uses [] panics never pub
     std.datetime.make(base.year, base.month, base.day, hour, minute, second, nanos)
 end std.datetime.with_time

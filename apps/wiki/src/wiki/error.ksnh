@@ -1,0 +1,18 @@
+// 失敗の種類。HTTP の解析 (`std.http`)、ソケット、ファイル、ストレージを一つにまとめる。
+enum wiki.error.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    BadRequest
+    Corrupt
+    Http(std.http.Error)
+    Io(std.io.Error)
+    Net(std.net.Error)
+    NotFound
+end wiki.error.Error
+
+fn wiki.error.bad_number(_value: core.num.ParseIntError) -> wiki.error.Error uses [] panics never pub
+    wiki.error.Error.BadRequest
+end wiki.error.bad_number
+
+fn wiki.error.io_failed() -> wiki.error.Error uses [] panics never pub
+    wiki.error.Error.Io(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 })
+end wiki.error.io_failed

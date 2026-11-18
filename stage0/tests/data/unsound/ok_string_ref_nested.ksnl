@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.f(out: &mut alloc.string.String<std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [] panics never
     Ok(out)
 end t.f

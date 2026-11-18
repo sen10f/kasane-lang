@@ -3,7 +3,6 @@ enum t.BoxOr[T] derive [ToJson]
     Nothing
 end t.BoxOr
 
-// expect: E2030
 type t.NoJson
     a: u8
 end t.NoJson

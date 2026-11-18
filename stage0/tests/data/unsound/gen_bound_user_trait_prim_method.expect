@@ -1,0 +1,2 @@
+expect: E2030
+note: 同じ検査はメソッドの形 (`bus.register(x)`) でも (`bool`)

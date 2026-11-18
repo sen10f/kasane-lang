@@ -1,5 +1,3 @@
-// `with` の後始末 (局所 k に結び付けた式。Rust 版の `run_close`): 登録を一時的に外して式を下ろし、
-// 続けて束縛の消費 (`own.consume`) を 1 つだけ出す。出口 (`return` / `?` / `break` / ブロックの終わり) ごとに呼ぶ。
 fn lower.fs.close(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let node = lower.fs.close_at(c, k)
     if node == 0usize || c.s.term {
@@ -11,7 +9,6 @@ fn lower.fs.close(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     lower.own.emit(c, k, "own.consume ")
 end lower.fs.close
 
-// 局所 k の後始末の式 (0 = 無し)。
 fn lower.fs.close_at(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
     match c.v.sl.cl.as_slice().get(k) {
         Some(x) => *x
@@ -19,9 +16,6 @@ fn lower.fs.close_at(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
     }
 end lower.fs.close_at
 
-// `std.fs.read_to_end(&mut file, &mut v)`: Rust 版 `read_fd_to_end` と同じブロックの並び。
-// 周ごとに残りを 4096 バイト以上にして (`reserve`)、残りの容量すべてを `fs.read` で読み、0 バイトで終わる。
-// 失敗したら足したバイトを捨てて (長さを戻して) `Err` を返す。
 fn lower.fs.read_to_end(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     if resolve.ast.count(p, n.b) != 2usize {
         lower.cx.fail(c, "std.fs.read_to_end の引数の個数")?
@@ -48,7 +42,6 @@ fn lower.fs.read_to_end(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     lower.loops.br(c, hd, &a0)?
     lower.cx.goto(c, hd)
     let total = lower.tyk.at(hps.as_slice(), 0usize)
-    // reserve (残り 4096 バイト以上)。
     let chunk = lower.vec.usize_c(c, 4096usize)?
     let len0 = lower.vec.load_usize(c, h, 8usize)?
     let cap0 = lower.vec.load_usize(c, h, 16usize)?
@@ -108,7 +101,6 @@ fn lower.fs.read_to_end(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     Ok(lower.cx.R { v: lower.tyk.at(xps.as_slice(), 0usize), t: t })
 end lower.fs.read_to_end
 
-// 局所 k の後始末の式を置く (0 = 外す)。
 fn lower.fs.set_close(c: &mut lower.cx.Cx, k: usize, node: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let mut tail = alloc.vec.Vec.new(std.alloc.SYSTEM)
     while c.v.sl.cl.len() > k + 1usize {
@@ -128,9 +120,6 @@ fn lower.fs.set_close(c: &mut lower.cx.Cx, k: usize, node: usize) -> Result<(), 
     Ok(())
 end lower.fs.set_close
 
-// `with [mut] 名前 = 初期化 close 後始末 { 本体 }`。Rust 版 `with_`: 初期化 → 束縛 (借用される名前はスロット) → 本体。
-// 後始末は、出口 (`return` / `?` / `break` / `continue`) と本体の終わりで、束縛の局所に結び付けた式として下ろす。
-// With: a = 名前トークン, b = mut, c = 初期化, d = 後始末, e = 本体。
 fn lower.fs.withx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let mark = lower.cx.depth(c)
     let init = lower.expr.expr(env, c, p, src, n.c, types.ty.UNKNOWN)?

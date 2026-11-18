@@ -18,7 +18,6 @@ fn lower.pat.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             return Ok(())
         }
         let lay = lower.tyk.layout(env, c, rn.a)?
-        // 欄を全部先に読み、その後で名前に束ねる (Rust 版と同じ並び)。
         let mut fvs = alloc.vec.Vec.new(std.alloc.SYSTEM)
         let mut sts = alloc.vec.Vec.new(std.alloc.SYSTEM)
         let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -44,7 +43,6 @@ fn lower.pat.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             lower.pat.bind(env, c, p, src, sub, fv, st, m)?
         }
         if !through && lower.drop.owns(env, c, t)? {
-            // 束ねなかった所有物の確かめ (Rust 版 `drop_unbound`): 所有する欄を逆順に読み直す。
             let mut j = fvs.len()
             while j > 0usize {
                 j = j - 1usize
@@ -65,8 +63,6 @@ fn lower.pat.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     Ok(())
 end lower.pat.bind
 
-// 参照を通して束縛する欄の型。スカラー以外 (参照でない) は番地を借りるので `&T` (可変なら `&mut T`)。
-// スカラーは読み出して値で束縛する (Rust の既定の束縛の形と同じ)。
 fn lower.pat.bind_ty(c: &mut lower.cx.Cx, through: bool, mutable: bool, sub_t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     if !through {
         return Ok(sub_t)
@@ -83,8 +79,6 @@ fn lower.pat.bind_ty(c: &mut lower.cx.Cx, through: bool, mutable: bool, sub_t: u
     Ok(rid)
 end lower.pat.bind_ty
 
-// 分解の欄の値 (番地 off の欄、部分のパターンの型 sub_t)。値が参照 (through) なら欄の番地 (`fieldaddr`) を取り、
-// 部分の型が参照なら番地を、値なら読み出す。値の分解のときは欄を読み、部分の型が参照なら一時のスロットに置く。
 fn lower.pat.field_val(env: &types.env.Env, c: &mut lower.cx.Cx, base: usize, through: bool, mutable: bool, off: usize, sub_t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let sf = types.ty.find(&c.ar, sub_t)
     let sn = types.ty.node(&c.ar, sf)

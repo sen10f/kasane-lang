@@ -1,0 +1,4 @@
+expect: E3002
+note: Box 欄を持つ構造体から、欄の Box を *w.b で中身 move-out した後、構造体を drop すると、
+note: 構造体の drop が欄 b (Box<T>) の drop を実行し、T のリソース（String バッファ）が
+note: 二回解放される。

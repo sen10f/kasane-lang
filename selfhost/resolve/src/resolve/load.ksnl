@@ -1,5 +1,3 @@
-// ソースの集め方 (3.6)。ルートの下の `.ksnl` / `.sig` を再帰的に集め、ファイルのパスからモジュール名を決める。
-// `a/b.ksnl` のモジュール名は `a.b`。ルートがパッケージの `src/` のときも、標準ライブラリ (`spec/stdlib/`) のときも同じ規則。
 type resolve.load.Src pub
     path: alloc.string.String<std.alloc.System> pub
     module: alloc.string.String<std.alloc.System> pub
@@ -8,7 +6,6 @@ type resolve.load.Src pub
     text: alloc.vec.Vec<u8, std.alloc.System> pub
 end resolve.load.Src
 
-// 拡張子を外した名前 (`.ksnl` / `.sig`)。
 fn resolve.load.base(name: &str) -> &str uses [] panics never pub
     match name.strip_suffix(".ksnl") {
         Some(b) => b
@@ -19,7 +16,6 @@ fn resolve.load.base(name: &str) -> &str uses [] panics never pub
     }
 end resolve.load.base
 
-// dir の下のソースを集める。pfx はこのディレクトリのモジュール名 (ルートなら空)。
 fn resolve.load.collect(dir: &str, pfx: &str, own: bool, out: &mut alloc.vec.Vec<resolve.load.Src, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc, io.fs] panics never stack 4096 pub
     let ents = std.fs.read_dir(dir)?
     for e in ents.as_slice().iter() {
@@ -44,7 +40,6 @@ fn resolve.load.collect(dir: &str, pfx: &str, own: bool, out: &mut alloc.vec.Vec
     Ok(())
 end resolve.load.collect
 
-// モジュール名 pfx.base (pfx が空なら base)。
 fn resolve.load.module_of(pfx: &str, base: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut m = alloc.string.String.new(std.alloc.SYSTEM)
     if pfx != "" {
@@ -55,7 +50,6 @@ fn resolve.load.module_of(pfx: &str, base: &str) -> Result<alloc.string.String<s
     Ok(m)
 end resolve.load.module_of
 
-// 1 ファイルを丸ごと読む。
 fn resolve.load.read_bytes(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, resolve.Failure> uses [alloc, io.fs] panics never pub
     let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
     with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
@@ -64,7 +58,6 @@ fn resolve.load.read_bytes(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.Sys
     Ok(buf)
 end resolve.load.read_bytes
 
-// 読み込んだ 1 ファイル。
 fn resolve.load.src(path: alloc.string.String<std.alloc.System>, module: alloc.string.String<std.alloc.System>, sig: bool, own: bool, text: alloc.vec.Vec<u8, std.alloc.System>) -> resolve.load.Src uses [] panics never pub
     resolve.load.Src { path: path, module: module, sig: sig, own: own, text: text }
 end resolve.load.src

@@ -171,10 +171,20 @@ end t.fill
 const MAIN2: &str = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
 const FN_A: &str = "fn t.a() -> u8 uses [] panics never pub\n    1u8\nend t.a\n";
 
+/// コメントのある `.ksnh` だけを置いた一時パッケージ (`.ksnl` は `ksn fmt` が作る)。
+fn ksnh_only(name: &str, src: &str) -> Tmp {
+    let t = Tmp::new_raw(name, "");
+    fs::remove_file(t.0.join("src").join("t.ksnl")).unwrap();
+    fs::write(t.0.join("src").join("t.ksnh"), src).unwrap();
+    t
+}
+
 fn fmt_ok(name: &str, src: &str) -> String {
-    let t = Tmp::new(name, src);
+    let t = ksnh_only(name, src);
     assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0), "{name}");
-    let out = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    let out = fs::read_to_string(t.0.join("src").join("t.ksnh")).unwrap();
+    // `.ksnl` は整形した `.ksnh` の `strip`。
+    assert_eq!(fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap(), strip_ksnh(&out), "{name}");
     // 冪等で、整形後も check が通る。
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{name}: {out}");
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{name}: {out}");
@@ -196,21 +206,21 @@ fn fmt_keeps_detached_comment_with_next_def_when_sorting() {
 
 #[test]
 fn fmt_keeps_trailing_comment_and_reports_it() {
-    let t = Tmp::new("cm_tail", &format!("{MAIN2}\n// trailing comment after last def\n"));
+    let t = ksnh_only("cm_tail", &format!("{MAIN2}\n// trailing comment after last def\n"));
     assert_eq!(run(&["fmt"], &t.0).status.code(), Some(1));
-    let out = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    let out = fs::read_to_string(t.0.join("src").join("t.ksnh")).unwrap();
     assert!(out.contains("// trailing comment after last def"), "{out}");
 }
 
 #[test]
 fn fmt_keeps_comments_on_imports_when_sorting() {
     let src = format!("// about io\nimport std.io\n// about fs\nimport std.fs\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    io.print(\"x\")\n    core.mem.drop(fs.exists(\"x\"))\n    Ok(())\nend t.main\n");
-    let t = Tmp::new("cm_import", &src);
+    let t = ksnh_only("cm_import", &src);
     run(&["fmt"], &t.0);
-    let out = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    let out = fs::read_to_string(t.0.join("src").join("t.ksnh")).unwrap();
     assert!(out.starts_with("// about fs\nimport std.fs\n// about io\nimport std.io\n"), "{out}");
     run(&["fmt"], &t.0);
-    assert_eq!(fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap(), out);
+    assert_eq!(fs::read_to_string(t.0.join("src").join("t.ksnh")).unwrap(), out);
 }
 
 // ---- 書き方は 1 通り (段 2、設計_書き方は1通り.md の D1・D4・D14・S7・S16): `ksn fmt` の出力と違えば check の誤り (E0020) ----

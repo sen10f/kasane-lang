@@ -1,4 +1,3 @@
-// E4010 の診断 1 件。候補 c の定義の行で報告する (パスは定義のあるファイル)。
 fn effects.run.report_rec(acc: &mut effects.walk.Acc, fs: &effects.fns.Fns, srcs: &alloc.vec.Vec<resolve.load.Src, std.alloc.System>, c: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let info = effects.fns.at(fs, c)
     match srcs.as_slice().get(info.file) {
@@ -14,7 +13,6 @@ fn effects.run.report_rec(acc: &mut effects.walk.Acc, fs: &effects.fns.Fns, srcs
     Ok(())
 end effects.run.report_rec
 
-// 末尾の集計 1 行。判断できなかった数の内訳を出す (compare.py が読む)。
 fn effects.run.summary(acc: &effects.walk.Acc) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     out.push_str("summary errors ")?
@@ -41,7 +39,6 @@ fn effects.run.summary(acc: &effects.walk.Acc) -> Result<alloc.string.String<std
     Ok(out)
 end effects.run.summary
 
-// 1 ファイルの関数の本体を走査する (FnDef のうち本体のあるもの)。
 fn effects.run.walk_file(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.P, src: &[u8], file: usize, acc: &mut effects.walk.Acc) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let mut st = resolve.scope.new(file, p, src)?
     for d in p.ast.defs.as_slice().iter() {

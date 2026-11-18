@@ -1,0 +1,6 @@
+note: expect-accept
+note: with の外で buf を宣言し、with の中で open → read_to_end → from_utf8 → 使用、
+note: with を抜けた後 buf.push で再利用（NLL、std.fs 読み込み結果を借りる形）。
+note: まずファイルを作成して中身を書く
+note: with の中で open → read_to_end → from_utf8 → 使用
+note: with を抜けた後 buf を再利用（read_to_end / from_utf8 の borrow は終了）

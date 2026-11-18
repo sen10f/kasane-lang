@@ -1,4 +1,3 @@
-// expect: E3043
 type t.Res linear
     id: u32
     tag: u32

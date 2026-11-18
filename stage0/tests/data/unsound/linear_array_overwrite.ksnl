@@ -1,4 +1,3 @@
-// expect: E3003
 type t.Res linear
     id: u32
 end t.Res

@@ -1,0 +1,2 @@
+expect: E3010
+note: if/else の腕から opt (String 所有) への借用 r を作り合流、opt を drop してから r を通して len() を読む＝解放後の参照越し使用

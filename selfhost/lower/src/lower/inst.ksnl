@@ -1,4 +1,3 @@
-// 呼び出し n (引数の列) の型引数: 宣言の引数の型と、実際の引数の型の照合。番号の順に並べた組。
 fn lower.inst.args_of(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, item: usize, n: parse.ast.Node) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -23,7 +22,6 @@ fn lower.inst.args_of(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     lower.inst.sorted(&pairs)
 end lower.inst.args_of
 
-// 総称の関数の宣言の戻り値の型 (型引数は Param のまま)。注釈の名前を、引数の型の番号と結びつけて読む。
 fn lower.inst.decl_ret(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -70,7 +68,6 @@ fn lower.inst.decl_ret(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) ->
     Ok(r)
 end lower.inst.decl_ret
 
-// 型の中に型引数 (K.Param) があるか。
 fn lower.inst.has_param(c: &lower.cx.Cx, t: usize) -> bool uses [] panics may pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
@@ -90,8 +87,6 @@ fn lower.inst.has_param(c: &lower.cx.Cx, t: usize) -> bool uses [] panics may pu
     false
 end lower.inst.has_param
 
-// 項目 (FnDef) が総称か: 署名に型引数の並びがあるか、宣言の引数 (self を含む) に型引数があるとき
-// (総称の型の impl の中のメソッド)。
 fn lower.inst.is_generic(env: &types.env.Env, c: &lower.cx.Cx, item: usize) -> bool uses [] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -114,7 +109,6 @@ fn lower.inst.is_generic(env: &types.env.Env, c: &lower.cx.Cx, item: usize) -> b
     }
 end lower.inst.is_generic
 
-// 本体のない宣言 (`.sig` の fn) か。本体がないと検査の記録 (`ty_of`) がないので、型は注釈から読む。
 fn lower.inst.is_sig(env: &types.env.Env, item: usize) -> bool uses [] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -127,7 +121,6 @@ fn lower.inst.is_sig(env: &types.env.Env, item: usize) -> bool uses [] panics ma
     }
 end lower.inst.is_sig
 
-// インスタンスの鍵: fqn<型,..> (型引数の文字列は番号の順)。
 fn lower.inst.key(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     if subs.len() == 0usize {
         return lower.cx.own(fqn)
@@ -147,7 +140,6 @@ fn lower.inst.key(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, subs: &al
     Ok(s)
 end lower.inst.key
 
-// 代入の中の番号 no の具体型 (なければ 0)。
 fn lower.inst.lookup(c: &lower.cx.Cx, no: usize) -> usize uses [] panics may pub
     let mut i = 0usize
     while i + 1usize < c.v.subst.len() {
@@ -163,7 +155,6 @@ fn lower.inst.lookup(c: &lower.cx.Cx, no: usize) -> usize uses [] panics may pub
     0usize
 end lower.inst.lookup
 
-// 宣言の型 decl (Param を含む) と実際の型 act の照合: 未決めの番号に act を入れる。
 fn lower.inst.matchp(c: &mut lower.cx.Cx, decl: usize, act: usize, out: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let d = types.ty.find(&c.ar, decl)
     let dn = types.ty.node(&c.ar, d)
@@ -200,7 +191,6 @@ fn lower.inst.matchp(c: &mut lower.cx.Cx, decl: usize, act: usize, out: &mut all
     Ok(())
 end lower.inst.matchp
 
-// メソッドの型引数: 受け手の型 (rt) と、引数の列 (args) の照合。宣言の self は受け手と照合する。
 fn lower.inst.method_args(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, item: usize, rt: usize, args: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -234,8 +224,6 @@ fn lower.inst.method_args(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cu
     lower.inst.sorted(&pairs)
 end lower.inst.method_args
 
-// 型の注釈 tn (構文) と、それに対応する型 d (型引数を含む) から、名前 (型引数の名前) と番号の組を集める。
-// 注釈の `T` / `&T` の形だけを見る (他の形は読まない)。
 fn lower.inst.names_of(c: &lower.cx.Cx, cp: &parse.cur.P, src: &[u8], tn: usize, d: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, nos: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let tnode = parse.ast.get(&cp.ast, tn)
     let df = types.ty.find(&c.ar, d)
@@ -251,7 +239,6 @@ fn lower.inst.names_of(c: &lower.cx.Cx, cp: &parse.cur.P, src: &[u8], tn: usize,
     Ok(())
 end lower.inst.names_of
 
-// 総称の関数の呼び出しの戻り値の型 (型引数で代入した宣言の戻り値)。
 fn lower.inst.ret_of(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, subs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let d = lower.inst.decl_ret(env, c, item)?
     let mut sb = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -267,8 +254,6 @@ fn lower.inst.ret_of(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, subs
     Ok(r)
 end lower.inst.ret_of
 
-// 本体のない総称の宣言の型を、注釈から読む。型引数 (`[K, V, A]`) は番号を宣言の順に決める (項目ごとに決まった番号)。
-// j < 引数の数 なら j 番目の引数の型、j == 引数の数 なら戻り値の型。
 fn lower.inst.sig_ty(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, j: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -306,7 +291,6 @@ fn lower.inst.sig_ty(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, j: u
     Ok(r)
 end lower.inst.sig_ty
 
-// 番号の順に並べ直す (鍵の型引数の順)。
 fn lower.inst.sorted(pairs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut used = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -357,7 +341,6 @@ fn lower.inst.sorted(pairs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<a
     Ok(out)
 end lower.inst.sorted
 
-// 型 t の中の型引数を、現在の代入で置き換える。変わらなければ型の添字 (find 済み) を返す。
 fn lower.inst.subst(c: &mut lower.cx.Cx, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)

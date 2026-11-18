@@ -1,0 +1,5 @@
+note: expect-accept
+note: String.as_bytes() で &[u8] を得て from_utf8 で &str を得、Ok 腕で使用、Err 腕で return。
+note: その後 s.push_str が可のはず（NLL: borrow は s の使用終了とともに終わる）。
+note: Vec 版 (found/fp_regress_from_utf8_borrow) とは別の形（String + as_bytes + 使用後）。
+note: s への borrow は from_utf8 の使用とともに終わるので push_str が可（NLL）

@@ -1,4 +1,3 @@
-// expect: E3010
 fn t.h() -> u32 uses [alloc] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.mem.drop(v.push(1u32))

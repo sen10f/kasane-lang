@@ -1,4 +1,3 @@
-// expect: E1101
 fn t.main() -> () uses [] panics never
     let x = 7u8
     let c = fn() -> u8 capture [] {

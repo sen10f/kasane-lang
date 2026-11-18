@@ -1,10 +1,8 @@
-// expect: E2023
 fn t.bad() -> u64 uses [] panics may
     let q = [1u64, 2u64]
     t.last(&q)
 end t.bad
 
-// expect: E2023
 fn t.last(p: &[u64; 3]) -> u64 uses [] panics may
     p[2usize]
 end t.last

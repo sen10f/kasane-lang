@@ -1,7 +1,5 @@
-// UTF-8 でない・範囲外の名前の表示用。
 const resolve.ast.BAD: &str = "?" pub
 
-// List ノードの個数 (List でなければ 0)。
 fn resolve.ast.count(p: &parse.cur.P, l: usize) -> usize uses [] panics never pub
     let n = parse.ast.get(&p.ast, l)
     if n.kind == parse.ast.Kind.List {
@@ -10,7 +8,6 @@ fn resolve.ast.count(p: &parse.cur.P, l: usize) -> usize uses [] panics never pu
     0usize
 end resolve.ast.count
 
-// List の k 番目の子 (範囲外は 0 = Nil)。
 fn resolve.ast.item(p: &parse.cur.P, l: usize, k: usize) -> usize uses [] panics never pub
     let n = parse.ast.get(&p.ast, l)
     match p.ast.links.as_slice().get(n.a.wrapping_add(k)) {
@@ -19,7 +16,6 @@ fn resolve.ast.item(p: &parse.cur.P, l: usize, k: usize) -> usize uses [] panics
     }
 end resolve.ast.item
 
-// 名前の末尾の成分 (`a.b.c` → `c`)。
 fn resolve.ast.last_part(s: &str) -> &str uses [] panics never pub
     let mut tail = s
     for c in s.split(".") {
@@ -28,12 +24,10 @@ fn resolve.ast.last_part(s: &str) -> &str uses [] panics never pub
     tail
 end resolve.ast.last_part
 
-// トークン ti の行番号。
 fn resolve.ast.line_of(p: &parse.cur.P, ti: usize) -> usize uses [] panics never pub
     parse.cur.peek_at(p, ti).line
 end resolve.ast.line_of
 
-// バイト範囲 [a, b) の文字列 (UTF-8 でなければ空)。
 fn resolve.ast.text(src: &[u8], a: usize, b: usize) -> &str uses [] panics never pub
     let bad = resolve.ast.BAD
     match src.sub(a, b) {
@@ -47,7 +41,6 @@ fn resolve.ast.text(src: &[u8], a: usize, b: usize) -> &str uses [] panics never
     }
 end resolve.ast.text
 
-// トークン ti の文字列。
 fn resolve.ast.tok_text['a](p: &parse.cur.P, src: &'a [u8], ti: usize) -> &'a str uses [] panics never pub
     let t = parse.cur.peek_at(p, ti)
     resolve.ast.text(src, t.start, t.stop)

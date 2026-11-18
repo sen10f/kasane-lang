@@ -1,4 +1,3 @@
-// expect: E3010
 type t.W
     n: u32
 end t.W

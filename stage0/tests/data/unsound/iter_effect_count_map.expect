@@ -1,0 +1,2 @@
+expect: E4001
+note: count + map: クロージャが io.console を使うので拒否されるはず

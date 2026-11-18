@@ -1,14 +1,11 @@
-// 引数 i 番目 (無ければ空)。
 fn ksnc.clang.at(i: usize) -> &'static str uses [env] panics never pub
     ksnc.tool.env_or_arg(i)
 end ksnc.clang.at
 
-// 引数の並び (ksn が渡した、clang へそのまま渡す引数)。
 fn ksnc.clang.new_list() -> alloc.vec.Vec<&'static str, std.alloc.System> uses [] panics never pub
     alloc.vec.Vec.new(std.alloc.SYSTEM)
 end ksnc.clang.new_list
 
-// ksn が渡した引数を読み、clang の引数を組み直して実行する。
 fn ksnc.clang.shim() -> Result<(), ksnc.Failure> uses [alloc, env, io.console, io.fs, process] panics never pub
     let root = ksnc.tool.env_or("KSNC_ROOT")
     if root == "" {
@@ -43,7 +40,6 @@ fn ksnc.clang.shim() -> Result<(), ksnc.Failure> uses [alloc, env, io.console, i
             opt = a
             i = i.wrapping_add(1usize)
         } else {
-            // -lm と -pthread は下で付け直す。そのほか (--target=… や sysroot の探索先) は渡す。
             if a != "-lm" && a != "-pthread" && a != "-Wno-override-module" {
                 extra.push(a)?
             }
@@ -54,7 +50,6 @@ fn ksnc.clang.shim() -> Result<(), ksnc.Failure> uses [alloc, env, io.console, i
         ksnc.tool.say_err("ksnc: clang の段: -x ir と -o が要る\n")?
         return Err(ksnc.Failure.Tool)
     }
-    // IR を実行ファイルの隣へ残す (<名前>.ll)。
     let bytes = resolve.load.read_bytes(ir)?
     let base = match exe.strip_suffix(".native") {
         Some(b) => b
@@ -63,8 +58,6 @@ fn ksnc.clang.shim() -> Result<(), ksnc.Failure> uses [alloc, env, io.console, i
     let mut ll = alloc.string.String.from_str(std.alloc.SYSTEM, base)?
     ll.push_str(".ll")?
     std.fs.write_atomic(ll.as_str(), bytes.as_slice())?
-    // ランタイム C は stage0/src の同じ内容を、ksn と同じ名前 (<名前>.ll.rt.c・<名前>.ll.sys.c) で隣に写して渡す。
-    // 名前が違うと、実行ファイルに埋まる文字列が変わる (バイト列の一致の確認に効く)。
     let clang = ksnc.tool.clang()?
     let mut rt_path = alloc.string.String.from_str(std.alloc.SYSTEM, base)?
     rt_path.push_str(".ll.rt.c")?

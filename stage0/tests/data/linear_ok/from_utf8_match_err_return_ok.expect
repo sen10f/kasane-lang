@@ -1,0 +1,5 @@
+note: expect-accept
+note: core.str.from_utf8 は &[u8] を受け &str を返す。buf への borrow は s の使用終了と
+note: ともに終わるはず。match の一方のアームが return しても、buf の drop（スコープ末）
+note: より前に borrow が終わるので通るべき正しいコードだが E3010 で拒否される（fp_regress）。
+note: 前コミット (3a047b1 等) では OK。bin/current/COMMIT = 8f7bcde5 で拒否。

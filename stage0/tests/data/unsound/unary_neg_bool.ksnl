@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.bad() -> () uses [] panics never
     let a = true
     let b = -a

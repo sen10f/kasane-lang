@@ -1,5 +1,3 @@
-// expect-accept
-// area 28/29: wiki 風の正しいプログラム（60-150 行）。HashMap でページ名→内容を保存・取得・一覧。ネイティブでも動くかを確認。
 const t.PAGE_NOT_FOUND: &str = "page not found"
 
 fn t.main() -> () uses [alloc, io.console] panics never

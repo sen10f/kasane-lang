@@ -1,4 +1,3 @@
-// expect: E3010
 fn t.bad(x: &u32) -> Result<&'static u32, std.io.Error> uses [io.console] panics never
     Ok(x)
 end t.bad

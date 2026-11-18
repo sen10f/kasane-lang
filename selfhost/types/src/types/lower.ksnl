@@ -1,4 +1,3 @@
-// 基本型の名前 (TPrim の綴り)。
 fn types.lower.prim(name: &str) -> usize uses [] panics never pub
     if name == "bool" {
         return types.ty.BOOL
@@ -18,8 +17,6 @@ fn types.lower.prim(name: &str) -> usize uses [] panics never pub
     types.ty.int_id(name)
 end types.lower.prim
 
-// 型の列 (型引数・タプルの要素)。総称の種類 (ライフタイム・効果・panic) は列に入れない。
-// 定数の引数は位置だけ取る (UNKNOWN)。
 fn types.lower.targs(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.chk.Ctx, p: &parse.cur.P, src: &[u8], file: usize, l: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     if l == 0usize {
@@ -41,7 +38,6 @@ fn types.lower.targs(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.ch
     Ok(out)
 end types.lower.targs
 
-// 定義の総称の並び (ライフタイム・効果・panic を除く型と定数) の名前トークン。gl は GParam の並び (0 なら空)。
 fn types.lower.tparams(p: &parse.cur.P, gl: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     if gl == 0usize {
@@ -56,8 +52,6 @@ fn types.lower.tparams(p: &parse.cur.P, gl: usize) -> Result<alloc.vec.Vec<usize
     Ok(out)
 end types.lower.tparams
 
-// 型の注釈 (AST の型ノード) を型の arena の id にする。名前は cx の総称の並び、それ以外は env で引く。
-// file は名前を解く単位 (import の範囲)。p と src はその単位の解析結果と本文。
 fn types.lower.ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.chk.Ctx, p: &parse.cur.P, src: &[u8], file: usize, t: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
     if t == 0usize {
         return Ok(types.ty.UNIT)
@@ -117,7 +111,6 @@ fn types.lower.ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.chk.C
         return Ok(types.ty.NEVER)
     }
     if (k == parse.ast.Kind.TFn) {
-        // fn(A, B) -> R: 引数の列 (型ノードの List) と戻り値。
         let ps = types.lower.targs(env, ar, cx, p, src, file, n.a)?
         let ret = types.lower.ty(env, ar, cx, p, src, file, n.b)?
         let (b, c) = types.ty.args(ar, &ps)?

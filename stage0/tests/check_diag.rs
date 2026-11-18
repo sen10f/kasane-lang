@@ -21,6 +21,10 @@ fn diagnostics_each_case_reports_its_code() {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
         let code = &stem[..5];
         let t = Tmp::new_raw(&stem, &fs::read_to_string(&p).unwrap());
+        // 横に `<名前>.ksnh` があるケースは、それも `src/t.ksnh` に置く (コメントそのものや `.ksnl` との一致を試すもの)。
+        if let Ok(h) = fs::read_to_string(p.with_extension("ksnh")) {
+            fs::write(t.0.join("src").join("t.ksnh"), h).unwrap();
+        }
         let o = run(&["check", "--json"], &t.0);
         let got = codes(&text(&o.stdout));
         if o.status.code() != Some(1) || !got.iter().any(|c| c == code) {
@@ -31,7 +35,7 @@ fn diagnostics_each_case_reports_its_code() {
 }
 
 /// 通ってはいけないコード (`tests/data/unsound/`)。1 ファイル 1 ケースで、どれも `ksn check` が
-/// 失敗しなければならない。1 行目が `// expect: Exxxx` のファイルは、そのコードの診断で落ちることも確かめる
+/// 失敗しなければならない。横の `<名前>.expect` に `expect: Exxxx` があるケースは、そのコードの診断で落ちることも確かめる
 /// (別の診断で落ちているだけのケースを許さない)。まだ検査できない穴は `KNOWN_HOLES` に名前を載せる (その間は「通ること」を
 /// 確かめるので、塞いだら一覧から外さないとテストが落ちる = 一覧は減る方向にしか変わらない)。
 const KNOWN_HOLES: &[&str] = &["impl_sig_method_generics_count", "impl_sig_method_generics_bound", "impl_sig_lifetime_ret"];
@@ -47,8 +51,8 @@ fn unsound_programs_are_rejected() {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
         let src = fs::read_to_string(&p).unwrap();
         let t = Tmp::new(&format!("unsound_{}", stem), &src);
-        // `// target: X` は `ksn check --target X` で検査する (ポインタの幅などターゲットで変わる穴)。
-        let target = src.lines().find_map(|l| l.trim().strip_prefix("// target:")).map(|w| w.trim().to_string());
+        // `.expect` の `target: X` は `ksn check --target X` で検査する (ポインタの幅などターゲットで変わる穴)。
+        let target = expect_value(&p, "target");
         let mut args = vec!["check"];
         if let Some(tg) = &target {
             args.extend(["--target", tg.as_str()]);
@@ -57,15 +61,15 @@ fn unsound_programs_are_rejected() {
         let o = run(&args, &t.0);
         let rejected = o.status.code() == Some(1);
         let hole = KNOWN_HOLES.contains(&stem.as_str());
-        // `// expect: Exxxx` は全行から探す (どの行にあってもよい)。穴以外は必ず持つ。
-        let want = src.lines().find_map(|l| l.trim().strip_prefix("// expect:")).map(|w| w.trim().to_string());
+        // `expect: Exxxx` は`.expect` から読む。穴以外は必ず持つ。
+        let want = expect_value(&p, "expect");
         if hole && rejected {
             failures.push(format!("{}: now rejected; remove it from KNOWN_HOLES", stem));
         } else if !hole && !rejected {
             failures.push(format!("{}: passes check but must be rejected (rc={:?})", stem, o.status.code()));
         } else if !hole {
             match want {
-                None => failures.push(format!("{}: no `// expect: Exxxx` line (every unsound case names its code)", stem)),
+                None => failures.push(format!("{}: no `expect: Exxxx` in the .expect file (every unsound case names its code)", stem)),
                 Some(want) => {
                     let got = codes(&text(&o.stdout));
                     if !got.iter().any(|c| *c == want) {
@@ -84,7 +88,7 @@ fn unsound_programs_are_rejected() {
 #[test]
 fn correct_linear_programs_are_accepted() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
-    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(names.len() >= 8, "linear_ok cases missing");
     for p in names {
@@ -100,7 +104,7 @@ fn correct_linear_programs_are_accepted() {
 #[test]
 fn check_only_correct_programs_are_accepted() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/check_ok");
-    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(!names.is_empty(), "check_ok cases missing");
     for p in names {
@@ -366,14 +370,67 @@ fn gap_ksn_rt_link() {
 }
 
 #[test]
-fn ksnh_extension_is_rejected() {
+fn ksnh_without_ksnl_is_e9050() {
     let t = Tmp::new("ksnh", &main_wrap("", ""));
-    fs::write(t.0.join("src/t/old.ksnh"), "").unwrap_or_else(|_| {
+    fs::write(t.0.join("src/t/old.ksnh"), "// c\nfn t.old.f() -> () uses [] panics never\nend t.old.f\n").unwrap_or_else(|_| {
         fs::create_dir_all(t.0.join("src/t")).unwrap();
         fs::write(t.0.join("src/t/old.ksnh"), "").unwrap();
     });
     let o = run(&["check", "--json"], &t.0);
-    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1107"), "{}", text(&o.stdout));
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E9050"), "{}", text(&o.stdout));
+}
+
+/// `.ksnh` が正: コメントを足した `.ksnh` と `ksn strip` で作った `.ksnl` は `check` / `fmt --check` / `run` を通る。
+/// `.ksnl` を直す (または `.ksnh` のコードを直す) と食い違って E9050。診断は `.ksnh` の行で出て、`--json` は `.ksnl` の行と `ksnh_line`。
+#[test]
+fn ksnh_pair_check_strip_and_line_numbers() {
+    let t = Tmp::new("ksnh_pair", "");
+    let h = "/// module doc\n\n// the entry\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    // ok\n    Ok(())\nend t.main\n";
+    fs::remove_file(t.0.join("src/t.ksnl")).unwrap();
+    fs::write(t.0.join("src/t.ksnh"), h).unwrap();
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(1)); // `.ksnl` が無い
+    assert_eq!(run(&["strip"], &t.0).status.code(), Some(0));
+    let l = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert_eq!(l, "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n");
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
+    assert_eq!(run(&["strip", "--check"], &t.0).status.code(), Some(0));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
+    // コメントだけを変えた `.ksnh`: `.ksnl` は変わらないので E9050 にならない。
+    fs::write(t.0.join("src/t.ksnh"), h.replace("// ok", "// changed")).unwrap();
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    // コードを変えた `.ksnh`: 食い違い (E9050)。`--json` の `file` / `line` は `.ksnl`、`ksnh_line` は `.ksnh`。
+    fs::write(t.0.join("src/t.ksnh"), h.replace("    Ok(())", "    let a = 1u32\n    core.mem.drop(a)\n    Ok(())")).unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E9050"), "{}", out);
+    assert!(out.contains("\"file\": \"src/t.ksnl\"") || out.contains("t.ksnl"), "{}", out);
+    assert!(out.contains("\"ksnh_line\": "), "{}", out);
+    // 人用の出力は `.ksnh`
+    assert!(text(&run(&["check"], &t.0).stdout).contains("t.ksnh:"));
+    // `strip` で直る。
+    assert_eq!(run(&["strip"], &t.0).status.code(), Some(0));
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+/// 依存の `.ksnh` は読まない (`.ksnl` だけ)。`ksn vendor` も複製しない。
+#[test]
+fn ksnh_in_a_dependency_is_not_read() {
+    let t = Tmp::new("ksnh_dep", &main_wrap("", ""));
+    let dep = t.0.join("dep");
+    fs::create_dir_all(dep.join("src")).unwrap();
+    fs::write(dep.join("kasane.toml"), "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = 1\n\n[dependencies]\n").unwrap();
+    fs::write(dep.join("src/dep.ksnl"), "fn dep.one() -> u32 uses [] panics never pub\n    1u32\nend dep.one\n").unwrap();
+    fs::write(dep.join("src/dep.ksnh"), "// broken: not matching\nfn dep.one() -> u32 uses [] panics never pub\n    2u32\nend dep.one\n").unwrap();
+    fs::write(
+        t.0.join("kasane.toml"),
+        format!("{}dep = {{ path = \"dep\" }}\n", TOML),
+    )
+    .unwrap();
+    fs::write(t.0.join("src/t.ksnl"), main_wrap("", "    core.mem.drop(dep.one())\n")).unwrap();
+    run(&["update"], &t.0);
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
 }
 
 #[test]
@@ -5090,9 +5147,13 @@ fn stdlib_injected_type_error_is_reported() {
     let dir = std::env::temp_dir().join(format!("ksn_test_{}_stdlib_neg", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     copy_tree(&root().join("spec").join("stdlib"), &dir.join("stdlib"));
-    let mut log = fs::read_to_string(dir.join("stdlib").join("std").join("log.ksnl")).unwrap();
-    log.push_str("\nfn std.log.bad_probe() -> u32 uses [] panics never\n    let x: u32 = \"no\"\n    x\nend std.log.bad_probe\n");
-    fs::write(dir.join("stdlib").join("std").join("log.ksnl"), log).unwrap();
+    // `log` は `.ksnh` (コメント付き) と `.ksnl` の対。両方に同じ関数を足す。
+    for ext in ["ksnh", "ksnl"] {
+        let f = dir.join("stdlib").join("std").join(format!("log.{}", ext));
+        let mut log = fs::read_to_string(&f).unwrap();
+        log.push_str("\nfn std.log.bad_probe() -> u32 uses [] panics never\n    let x: u32 = \"no\"\n    x\nend std.log.bad_probe\n");
+        fs::write(&f, log).unwrap();
+    }
     let o = run_with_env(&["check-stdlib", "--json"], &root(), &[("KSN_STDLIB", dir.join("stdlib").to_str().unwrap())]);
     let out = text(&o.stdout);
     let _ = fs::remove_dir_all(&dir);

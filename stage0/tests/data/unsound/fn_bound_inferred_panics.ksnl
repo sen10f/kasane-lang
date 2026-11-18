@@ -1,4 +1,3 @@
-// expect: E4002
 fn t.bad() -> u32 uses [] panics never
     t.strict(fn() -> u32 capture [] {
         t.boom()

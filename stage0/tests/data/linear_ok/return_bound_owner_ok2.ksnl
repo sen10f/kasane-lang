@@ -6,7 +6,6 @@ fn t.f(x: &str) -> &str uses [] panics never
     }
 end t.f
 
-// ok: 返す値は引数の借用だけ
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

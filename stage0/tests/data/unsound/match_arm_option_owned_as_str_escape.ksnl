@@ -1,4 +1,3 @@
-// expect: E3030
 fn t.dangling(s: &str) -> &str uses [alloc] panics never
     let o = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
         Ok(v) => Some(v)

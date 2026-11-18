@@ -7,7 +7,6 @@ fn t.main() -> () uses [] panics never
     core.mem.drop(v)
 end t.main
 
-// expect: E3010
 fn t.make_list() -> [u32; 2] uses [] panics never
     [1u32, 2u32]
 end t.make_list

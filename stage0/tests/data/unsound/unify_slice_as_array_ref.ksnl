@@ -1,4 +1,3 @@
-// expect: E2023
 fn t.last(p: &[u64; 3]) -> u64 uses [] panics may
     p[2usize]
 end t.last

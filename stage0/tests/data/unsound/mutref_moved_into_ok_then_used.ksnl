@@ -1,4 +1,3 @@
-// expect: E3002
 fn t.bad(x: &mut u32) -> Result<&mut u32, std.io.Error> uses [io.console] panics never
     let o = Ok(x)
     *x = 5u32

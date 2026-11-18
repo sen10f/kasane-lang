@@ -175,7 +175,6 @@ fn get_mut_writes_back_and_iteration_keeps_insertion_order() {
     }
     core.check.eq(m.len(), 7usize)
     core.check.eq(m.get(&1u32), Some(&100u32))
-    // 挿入の順 (削除した組の後ろの組は詰まる): 5 7 12 9 1 11 3
     let want = [5u32, 7u32, 12u32, 9u32, 1u32, 11u32, 3u32]
     let vals = [1u32, 4u32, 5u32, 7u32, 100u32, 10u32, 11u32]
     let mut idx = 0usize

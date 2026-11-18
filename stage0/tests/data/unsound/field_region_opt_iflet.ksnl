@@ -1,4 +1,3 @@
-// expect: E3060
 type t.Hold['a, 'b]
     fst: &'a u32
     opt: Option<&'b u32>

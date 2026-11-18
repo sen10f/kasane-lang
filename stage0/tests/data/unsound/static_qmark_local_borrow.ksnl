@@ -1,5 +1,3 @@
-// expect: E2037
-// 局所を借りうる `Result<&u8, _>` の結果は、`?` で取り出しても `'static` ではない。
 enum t.E derive [Debug, Clone, Copy] pub
     Bad
 end t.E

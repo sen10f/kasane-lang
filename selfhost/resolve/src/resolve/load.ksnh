@@ -1,0 +1,70 @@
+// ソースの集め方 (3.6)。ルートの下の `.ksnl` / `.sig` を再帰的に集め、ファイルのパスからモジュール名を決める。
+// `a/b.ksnl` のモジュール名は `a.b`。ルートがパッケージの `src/` のときも、標準ライブラリ (`spec/stdlib/`) のときも同じ規則。
+type resolve.load.Src pub
+    path: alloc.string.String<std.alloc.System> pub
+    module: alloc.string.String<std.alloc.System> pub
+    sig: bool pub
+    own: bool pub
+    text: alloc.vec.Vec<u8, std.alloc.System> pub
+end resolve.load.Src
+
+// 拡張子を外した名前 (`.ksnl` / `.sig`)。
+fn resolve.load.base(name: &str) -> &str uses [] panics never pub
+    match name.strip_suffix(".ksnl") {
+        Some(b) => b
+        None => match name.strip_suffix(".sig") {
+            Some(b) => b
+            None => name
+        }
+    }
+end resolve.load.base
+
+// dir の下のソースを集める。pfx はこのディレクトリのモジュール名 (ルートなら空)。
+fn resolve.load.collect(dir: &str, pfx: &str, own: bool, out: &mut alloc.vec.Vec<resolve.load.Src, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc, io.fs] panics never stack 4096 pub
+    let ents = std.fs.read_dir(dir)?
+    for e in ents.as_slice().iter() {
+        let name = e.name.as_str()
+        let full = resolve.manifest.join(dir, name)?
+        match e.kind {
+            std.fs.FileKind.Dir => {
+                let sub = resolve.load.module_of(pfx, name)?
+                resolve.load.collect(full.as_str(), sub.as_str(), own, out)?
+            }
+            std.fs.FileKind.File => {
+                if name.ends_with(".ksnl") || name.ends_with(".sig") {
+                    let text = resolve.load.read_bytes(full.as_str())?
+                    let module = resolve.load.module_of(pfx, resolve.load.base(name))?
+                    let is_sig = name.ends_with(".sig")
+                    out.push(resolve.load.src(full, module, is_sig, own, text))?
+                }
+            }
+            std.fs.FileKind.Other => core.mem.drop(0u8)
+        }
+    }
+    Ok(())
+end resolve.load.collect
+
+// モジュール名 pfx.base (pfx が空なら base)。
+fn resolve.load.module_of(pfx: &str, base: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut m = alloc.string.String.new(std.alloc.SYSTEM)
+    if pfx != "" {
+        m.push_str(pfx)?
+        m.push('.')?
+    }
+    m.push_str(base)?
+    Ok(m)
+end resolve.load.module_of
+
+// 1 ファイルを丸ごと読む。
+fn resolve.load.read_bytes(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, resolve.Failure> uses [alloc, io.fs] panics never pub
+    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut buf)?)
+    }
+    Ok(buf)
+end resolve.load.read_bytes
+
+// 読み込んだ 1 ファイル。
+fn resolve.load.src(path: alloc.string.String<std.alloc.System>, module: alloc.string.String<std.alloc.System>, sig: bool, own: bool, text: alloc.vec.Vec<u8, std.alloc.System>) -> resolve.load.Src uses [] panics never pub
+    resolve.load.Src { path: path, module: module, sig: sig, own: own, text: text }
+end resolve.load.src

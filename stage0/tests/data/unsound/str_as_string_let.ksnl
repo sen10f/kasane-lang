@@ -1,4 +1,3 @@
-// expect: E2020
 fn t.bad() -> usize uses [] panics never
     let x: &alloc.string.String<std.alloc.System> = "zzz"
     x.len()

@@ -2,7 +2,6 @@ type t.Holder[T: linear]
     v: T
 end t.Holder
 
-// expect: E3003
 type t.Res linear
     id: u32
 end t.Res

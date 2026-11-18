@@ -1,4 +1,3 @@
-// expect: E4001
 fn t.ap[F: core.ops.Fn<(), (), E, P>, E: uses, P: panics](o: Option<F>) -> () uses [E] panics P
     match o {
         Some(f) => f()
