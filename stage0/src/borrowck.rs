@@ -201,6 +201,11 @@ impl<'a> Low<'a> {
                 Some((r, p))
             }
             "Index" => self.place_of(&nf(e)[0]),
+            // 名前をそのまま運ぶブロック (`{ s }`) は、その名前と同じ場所 (値を運ぶ式の共通の見方)。
+            "Block" => match Self::carried(e) {
+                l if std::ptr::eq(l, e) => None,
+                l => self.place_of(l),
+            },
             "Unary" if st(&nf(e)[0]) == "*" => {
                 let (r, mut p) = self.place_of(&nf(e)[1])?;
                 p.push("*".into());
@@ -619,10 +624,10 @@ impl<'a> Low<'a> {
                         // 参照の仮引数に参照の変数 `s` をそのまま渡すと、暗黙の再借用 (`&mut` なら `&mut *s`、共有なら `&*s`) になる (配列からスライスへの
                         // 変換も同じ)。戻り値が生きている間、`s` を使うと競合する。
                         let pty = &self.p.defs[di].params.get(i).map(|p| p.1.clone());
-                        if let (Some(pty), "Path") = (pty, nname(a)) {
+                        if let (Some(pty), Some(ap)) = (pty, Self::carried_path(a)) {
                             if tag(pty) == "ref" {
                                 let mutable = matches!(tel(pty, 1), V::B(true));
-                                if let Some((root, _)) = self.place_of(a).filter(|(r, p)| p.is_empty() && self.locals.contains(r)) {
+                                if let Some((root, _)) = self.place_of(ap).filter(|(r, p)| p.is_empty() && self.locals.contains(r)) {
                                     v.push(Src::Place { root, path: vec!["*".into()], mutable });
                                 }
                             }
@@ -1008,15 +1013,45 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// 式 `a` が値をそのまま運ぶブロック (`{ ra }`、`{ &mut a }`) なら、運ばれる末尾の式。ブロックでなければ `a` 自身。
+    /// 運ぶのが 1 つの葉で、ブロックが束縛した名前を葉が使わないとき (外の名前を隠していないとき) だけ通す。
+    fn carried<'v>(a: &'v V) -> &'v V {
+        if nname(a) != "Block" {
+            return a;
+        }
+        let mut ls = vec![];
+        value_leaves(a, &mut ls);
+        let [leaf] = ls.as_slice() else { return a };
+        let mut bound = vec![];
+        let mut inner: Vec<&V> = vec![];
+        walk(a, &mut inner);
+        for n in &inner {
+            if nname(n) == "Let" {
+                pat_binds(&nf(n)[0], &mut bound);
+            }
+        }
+        let mut used: Vec<&V> = vec![];
+        walk(leaf, &mut used);
+        let shadows = used.iter().any(|u| nname(u) == "Path" && strs(&nf(u)[0]).first().map_or(false, |r| bound.contains(r)));
+        if shadows { a } else { Self::carried(leaf) }
+    }
+
+    /// 引数 `a` が名前 (場所) をそのまま運ぶ式なら、その名前の式 (`{ ra }` も同じ名前)。
+    fn carried_path<'v>(a: &'v V) -> Option<&'v V> {
+        let l = Self::carried(a);
+        if nname(l) == "Path" { Some(l) } else { None }
+    }
+
     /// `&mut` の仮引数に参照の変数 `s` をそのまま渡す呼び出しは、`*s` の暗黙の再借用 (`&mut *s`) なので、
     /// `*s` を借りている借用 (`let f = core.slice.first(s)`) が生きている間は E3010 になる。
     fn reborrow_mut_args(&mut self, c: usize, di: usize, args: &[V], line: usize) {
         let mut evs = vec![];
         for (i, a) in args.iter().enumerate() {
             let Some((_, pty)) = self.p.defs[di].params.get(i) else { continue };
-            if tag(pty) != "ref" || !matches!(tel(pty, 1), V::B(true)) || nname(a) != "Path" {
+            if tag(pty) != "ref" || !matches!(tel(pty, 1), V::B(true)) {
                 continue;
             }
+            let Some(a) = Self::carried_path(a) else { continue };
             if let Some((root, path)) = self.place_of(a) {
                 if path.is_empty() && self.locals.contains(&root) {
                     // `&mut` の仮引数へ渡す参照の変数は `*s` 全体の再借用: 他の引数が `s` の欄から借りていれば (`t.f(s, &s.n)` /
@@ -1037,9 +1072,10 @@ impl<'a> Low<'a> {
         let mut seen: Vec<(String, Vec<String>)> = vec![];
         for (i, a) in args.iter().enumerate() {
             let Some((_, pty)) = self.p.defs[di].params.get(i) else { continue };
-            if tag(pty) != "ref" || nname(a) != "Path" {
+            if tag(pty) != "ref" {
                 continue;
             }
+            let Some(a) = Self::carried_path(a) else { continue };
             let mutable = matches!(tel(pty, 1), V::B(true));
             let Some((root, path)) = self.place_of(a) else { continue };
             if !self.locals.contains(&root) || Self::has_index(a) {
@@ -1050,9 +1086,9 @@ impl<'a> Low<'a> {
             // 重なる場所を 2 つ以上の仮引数へ渡すときだけ見る (他の引数は触らない)。
             if !seen.iter().any(|(r, q)| *r == root && overlaps(q, &p)) {
                 if args.iter().enumerate().skip(i + 1).any(|(j, b)| {
-                    nname(b) == "Path"
+                    Self::carried_path(b).is_some()
                         && self.p.defs[di].params.get(j).map_or(false, |(_, t)| tag(t) == "ref")
-                        && self.place_of(b).map_or(false, |(r, q)| {
+                        && Self::carried_path(b).and_then(|b| self.place_of(b)).map_or(false, |(r, q)| {
                             let mut q = q;
                             q.push("*".to_string());
                             r == root && overlaps(&q, &p)
@@ -1763,12 +1799,14 @@ impl<'a> Low<'a> {
 
     /// `&mut <場所>` の引数の場所。
     fn mut_place_arg(&self, a: &V) -> Option<(String, Vec<String>)> {
+        let a = Self::carried(a);
         if nname(a) == "Unary" && st(&nf(a)[0]) == "&mut" { self.place_of(&nf(a)[1]) } else { None }
     }
 
     /// `&mut a[0]` のように定数の添字の要素を指す引数の、要素の保存場所 (根, 道 + `#0`)。配列リテラルの要素は
     /// `#i` に保存される (`store_value`) ので、その要素の借用だけを指せる。添字が定数でない・入れ子の添字なら `None`。
     fn mut_slot_arg(&self, a: &V) -> Option<(String, Vec<String>)> {
+        let a = Self::carried(a);
         if nname(a) != "Unary" || st(&nf(a)[0]) != "&mut" {
             return None;
         }
@@ -1795,10 +1833,18 @@ impl<'a> Low<'a> {
         let (a0, a1) = (args.first()?, args.get(1)?);
         let d0 = self.mut_place_arg(a0)?;
         let s0 = self.mut_slot_arg(a0);
-        let mut c = self.lower_index_parts(&nf(a0)[1], cur);
+        // 値を運ぶブロック (`{ &mut a }`) は、中の文の事象を先に出してから、運ばれる末尾の式を見る。
+        let mut c = cur;
+        if nname(a0) == "Block" {
+            c = self.lower_expr(a0, c);
+        }
+        c = self.lower_index_parts(&nf(Self::carried(a0))[1], c);
         let d1 = if kind == "swap" {
             let d1 = self.mut_place_arg(a1)?;
-            c = self.lower_index_parts(&nf(a1)[1], c);
+            if nname(a1) == "Block" {
+                c = self.lower_expr(a1, c);
+            }
+            c = self.lower_index_parts(&nf(Self::carried(a1))[1], c);
             Some(d1)
         } else {
             c = self.lower_expr(a1, c);
@@ -2875,34 +2921,9 @@ impl<'a> Low<'a> {
         v
     }
 
-    /// 式 `e` の値として外へ出る葉 (`if` / `match` / ブロックの末尾を通す)。
+    /// 式 `e` の値として外へ出る葉 (`if` / `match` / ブロックの末尾を通す)。共通の規則は `check::value_leaves`。
     fn value_leaves<'v>(e: &'v V, out: &mut Vec<&'v V>) {
-        match nname(e) {
-            "Block" => {
-                if let Some(last) = items(&nf(e)[0]).last() {
-                    match nname(last) {
-                        "ExprStmt" => Self::value_leaves(&nf(last)[0], out),
-                        "Let" | "Assign" => {}
-                        _ => Self::value_leaves(last, out),
-                    }
-                }
-            }
-            "If" => {
-                let f = nf(e);
-                Self::value_leaves(&f[1], out);
-                if !is_nil(&f[2]) {
-                    Self::value_leaves(&f[2], out);
-                }
-            }
-            "Match" => {
-                for arm in items(&nf(e)[1]) {
-                    if let Some(b) = items(arm).last() {
-                        Self::value_leaves(b, out);
-                    }
-                }
-            }
-            _ => out.push(e),
-        }
+        value_leaves(e, out)
     }
 
     /// 関数 `d` の `q` 番目の引数が、省略したライフタイムの参照 (`x: &u32`) か。ヘッダが読めなければ false。

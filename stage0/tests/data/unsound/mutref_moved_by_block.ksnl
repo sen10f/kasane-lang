@@ -1,0 +1,14 @@
+// expect: E3002
+fn t.bad() -> () uses [] panics never
+    let mut x = 1u32
+    let r = &mut x
+    let r2 = {
+        r
+    }
+    *r = 2u32
+    core.mem.drop(r2)
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
