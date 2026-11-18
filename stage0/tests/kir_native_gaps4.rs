@@ -796,7 +796,7 @@ fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics never
         core.iter.map(
             core.iter.range(0u64, 3u64),
             fn(x: u64) -> u64 capture [&base] {
-                x.wrapping_add(base)
+                x.wrapping_add(*base)
             },
         ),
         0u64,
