@@ -704,6 +704,16 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
+        // 担当 D: パターンの型の型変数を、この関数の表のうちに解決する (型変数は関数ごと)。
+        let keys: Vec<_> = self.side.pat_tys.keys().filter(|k| k.0 == di).copied().collect();
+        for k in keys {
+            let mut info = self.side.pat_tys[&k].clone();
+            info.ty = self.deep(&info.ty);
+            if let Some(b) = info.bind.as_mut() {
+                b.1 = self.deep(&b.1);
+            }
+            self.side.pat_tys.insert(k, info);
+        }
         self.flush_expr_types();
         self.cov_flush();
     }
@@ -4478,6 +4488,7 @@ impl<'a> TypeCk<'a> {
                     cur = inner;
                 }
                 let base = cur.clone();
+                self.note_pat_ty(pat, &full, None);
                 let saved = self.pat_mode;
                 self.pat_mode = Some(saved.unwrap_or(true) && all_mut);
                 self.bind_pat_inner(pat, &base);
@@ -4485,7 +4496,48 @@ impl<'a> TypeCk<'a> {
                 return;
             }
         }
+        let bind = if nname(pat) == "PBind" {
+            let name = st(&nf(pat)[0]);
+            let mode = match self.pat_mode {
+                Some(true) => crate::tast::BindMode::RefMut,
+                Some(false) => crate::tast::BindMode::Ref,
+                None => crate::tast::BindMode::Move,
+            };
+            let bty = match self.pat_mode {
+                Some(m) => Ty::Ref(m, Box::new(ty.clone())),
+                None => ty.clone(),
+            };
+            Some((name, bty, mode))
+        } else {
+            None
+        };
+        self.note_pat_ty(pat, ty, bind);
         self.bind_pat_inner(pat, ty)
+    }
+
+    /// パターン節点の型と束縛の形を `side.pat_tys` に記す (TAST の側の表、担当 D)。
+    /// 同じ節点が違う型で 2 回推論されたら `Unknown` (`let_tys` と同じ扱い)。型変数は `check_def` の終わりに解決する。
+    fn note_pat_ty(&mut self, pat: &V, ty: &Ty, bind: Option<(String, Ty, crate::tast::BindMode)>) {
+        let id = crate::parser::nid(pat);
+        if id == 0 {
+            return;
+        }
+        let key = (self.cur, id);
+        let mut info = crate::tast::PatInfo { ty: self.deep(ty), bind: bind.map(|(n, t, m)| (n, self.deep(&t), m)) };
+        if let Some(old) = self.side.pat_tys.get(&key) {
+            let mut old = old.clone();
+            old.ty = self.deep(&old.ty);
+            if let Some(b) = old.bind.as_mut() {
+                b.1 = self.deep(&b.1);
+            }
+            if old != info {
+                info.ty = Ty::Unknown;
+                if let Some(b) = info.bind.as_mut() {
+                    b.1 = Ty::Unknown;
+                }
+            }
+        }
+        self.side.pat_tys.insert(key, info);
     }
 
     fn bind_pat_inner(&mut self, pat: &V, ty: &Ty) {

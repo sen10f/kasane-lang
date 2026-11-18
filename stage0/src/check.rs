@@ -3310,6 +3310,26 @@ impl<'a> Checker<'a> {
         if std::env::var_os("KSN_DUMP_TYPES").is_some() {
             eprint!("{}", tk.dump_types());
         }
+        // 確認 (隠し機能): `KSN_DUMP_SIDE=1` のとき側の表を stderr に出す。表ごとに 1 行目が表の名前 (`# pat_tys`)。
+        if std::env::var_os("KSN_DUMP_SIDE").is_some() {
+            let mut rows: Vec<_> = tk.side.pat_tys.iter().collect();
+            rows.sort_by_key(|(k, _)| **k);
+            let mut mism = 0;
+            eprintln!("# pat_tys");
+            for (k, i) in rows {
+                let d = &self.def(k.0).name;
+                match &i.bind {
+                    Some((n, t, m)) => {
+                        if self.let_tys.get(&(k.0, k.1)).map_or(false, |lt| lt != t) {
+                            mism += 1;
+                        }
+                        eprintln!("{} #{} PBind {} : {} {:?} (pat {})", d, k.1, n, t.show(), m, i.ty.show());
+                    }
+                    None => eprintln!("{} #{} pat : {}", d, k.1, i.ty.show()),
+                }
+            }
+            eprintln!("# pat_tys let_tys_mismatch={}", mism);
+        }
         // 計測 (隠し機能): `KSN_TYPE_SURVEY=1` のとき TAST の事前調査の表を stderr に出す (survey.rs)。読むだけ。
         if std::env::var_os("KSN_TYPE_SURVEY").is_some() {
             crate::survey::run(self.p, &user, &tk.tytab, &self.call_res, &self.let_tys);
