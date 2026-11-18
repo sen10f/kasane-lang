@@ -44,7 +44,7 @@ struct Calls {
     indirect: usize,
 }
 
-pub fn run(p: &Program, user: &[usize], tytab: &BTreeMap<(String, u32), ExprTy>, call_res: &HashMap<(usize, usize, String), Option<Vec<usize>>>, let_tys: &HashMap<(usize, usize, String), Ty>) {
+pub fn run(p: &Program, user: &[usize], tytab: &BTreeMap<(String, u32), ExprTy>, call_res: &HashMap<(usize, u32), Option<Vec<usize>>>, let_tys: &HashMap<(usize, u32), Ty>) {
     let verbose = std::env::var("KSN_TYPE_SURVEY").is_ok_and(|v| v == "2");
     let mut rows: BTreeMap<String, Row> = BTreeMap::new();
     let mut c = Calls::default();
@@ -78,7 +78,7 @@ pub fn run(p: &Program, user: &[usize], tytab: &BTreeMap<(String, u32), ExprTy>,
         eprintln!("kind\t{}\t{}\t{}\t{}\t{}", k, r.n, r.known, r.partial, r.absent);
     }
     eprintln!(
-        "calls\tmcalls={} unique={} multi={} unresolved_none={} absent={} key_collide={} autoref_needed={} (recv_known={})",
+        "calls\tmcalls={} unique={} multi={} unresolved_none={} absent={} old_key_collide(ExprIdで解消済み)={} autoref_needed={} (recv_known={})",
         c.mcalls, c.m_unique, c.m_multi, c.m_none, c.m_absent, c.m_key_collide, c.m_autoref, c.m_autoref_known
     );
     eprintln!(
@@ -109,8 +109,8 @@ struct Cx<'a> {
     p: &'a Program,
     di: usize,
     tytab: &'a BTreeMap<(String, u32), ExprTy>,
-    call_res: &'a HashMap<(usize, usize, String), Option<Vec<usize>>>,
-    let_tys: &'a HashMap<(usize, usize, String), Ty>,
+    call_res: &'a HashMap<(usize, u32), Option<Vec<usize>>>,
+    let_tys: &'a HashMap<(usize, u32), Ty>,
     key_count: &'a HashMap<(usize, usize, String), usize>,
     rows: &'a mut BTreeMap<String, Row>,
     c: &'a mut Calls,
@@ -166,18 +166,19 @@ impl Cx<'_> {
         }
     }
 
-    fn mcall(&mut self, _v: &V, fs: &[V], line: usize) {
+    fn mcall(&mut self, v: &V, fs: &[V], line: usize) {
         let name = st(&fs[1]);
-        self.method_site(&name, line, self.ty_of(&fs[0]).map(|e| e.ty.clone()));
+        self.method_site(&name, line, nid(v), self.ty_of(&fs[0]).map(|e| e.ty.clone()));
     }
 
-    fn method_site(&mut self, name: &str, line: usize, recv: Option<Ty>) {
+    fn method_site(&mut self, name: &str, line: usize, id: u32, recv: Option<Ty>) {
         self.c.mcalls += 1;
-        let key = (self.di, line, name.to_string());
-        if self.key_count.get(&key).is_some_and(|&n| n > 1) {
+        // 旧い鍵 (定義, 行, 名前) なら衝突した呼び出しの数 (今は式 ID の鍵なので衝突しない。移行前との比較用)。
+        let old_key = (self.di, line, name.to_string());
+        if self.key_count.get(&old_key).is_some_and(|&n| n > 1) {
             self.c.m_key_collide += 1;
         }
-        let callee = match self.call_res.get(&key) {
+        let callee = match self.call_res.get(&(self.di, id)) {
             Some(Some(v)) if v.len() == 1 => {
                 self.c.m_unique += 1;
                 Some(v[0])
@@ -210,7 +211,7 @@ impl Cx<'_> {
         }
     }
 
-    fn call(&mut self, _v: &V, fs: &[V], line: usize) {
+    fn call(&mut self, v: &V, fs: &[V], line: usize) {
         let callee = &fs[0];
         if nname(callee) != "Path" {
             self.c.indirect += 1;
@@ -236,7 +237,7 @@ impl Cx<'_> {
                 // 局所変数の経路 (`s.m(..)` はメソッド、`f(x)` はクロージャ)、または `Enum.V.m()` など。
                 if segs.len() >= 2 {
                     let name = segs.last().unwrap().clone();
-                    self.method_site(&name, line, None);
+                    self.method_site(&name, line, nid(v), None);
                 } else {
                     self.c.free += 1;
                     self.c.free_unresolved += 1;
@@ -270,10 +271,11 @@ impl Cx<'_> {
                             }
                         }
                         for (pt, l) in sites {
+                            let _ = l;
                             let mut names = vec![];
-                            crate::check::pat_binds(pt, &mut names);
+                            crate::check::pat_bind_nodes(pt, &mut names);
                             o.7 += names.len();
-                            o.1 += names.iter().filter(|n| self.let_tys.contains_key(&(self.di, l, (*n).clone()))).count();
+                            o.1 += names.iter().filter(|(_, id)| self.let_tys.contains_key(&(self.di, *id))).count();
                         }
                     }
                     "Closure" => {

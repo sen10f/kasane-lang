@@ -115,7 +115,7 @@ struct Low<'a> {
     /// `check_return_flow` が今見ている関数の `Inits` (`ret_slots` が束縛した局所の初期値へ辿るため。0 は無し)。
     ret_inits: std::cell::Cell<usize>,
     /// 型検査が解決したメソッド呼び出し先 (書き手の定義, 式の位置, 名前)。
-    res: std::rc::Rc<HashMap<(usize, usize, String), Option<Vec<usize>>>>,
+    res: std::rc::Rc<HashMap<(usize, u32), Option<Vec<usize>>>>,
     /// 型検査が中断点と決めた呼び出し (書き手の定義, 式の位置)。
     susp: std::rc::Rc<HashSet<(usize, usize)>>,
     cur: usize,
@@ -229,11 +229,11 @@ impl<'a> Low<'a> {
     }
 
     // ------------------------------------------------------------ メソッド・関数の署名
-    /// 位置 `pos` のメソッド呼び出し `name` の候補。型検査が解決先を決めていればそれだけ、決められないときは
+    /// 呼び出しノードの式 ID `pos` のメソッド呼び出し `name` の候補。型検査が解決先を決めていればそれだけ、決められないときは
     /// 同名のすべて (fail-closed)。`nargs` は `self` を除く引数の個数で、合わない候補は外す。
-    fn callees(&self, name: &str, pos: usize, nargs: usize) -> Vec<usize> {
+    fn callees(&self, name: &str, pos: u32, nargs: usize) -> Vec<usize> {
         let all: &[usize] = self.p.method_idx.get(name).map_or(&[], |v| v.as_slice());
-        let c: Vec<usize> = match self.res.get(&(self.cur, pos, name.to_string())) {
+        let c: Vec<usize> = match self.res.get(&(self.cur, pos)) {
             Some(Some(r)) if !r.is_empty() => r.clone(),
             _ => all.to_vec(),
         };
@@ -242,7 +242,7 @@ impl<'a> Low<'a> {
 
     /// 位置 `pos` のメソッド呼び出しの `self` の受け方。候補のどれかが `&mut self` なら `Mut` (fail-closed)、
     /// すべて `&self` なら `Shared`、それ以外 (値で受ける・候補なし) は `Other`。
-    fn self_mode(&self, name: &str, pos: usize, nargs: usize) -> SelfMode {
+    fn self_mode(&self, name: &str, pos: u32, nargs: usize) -> SelfMode {
         let mut mode: Option<SelfMode> = None;
         for i in self.callees(name, pos, nargs) {
             let d = &self.p.defs[i];
@@ -537,7 +537,7 @@ impl<'a> Low<'a> {
                 if matches!(name.as_str(), "unwrap" | "expect" | "unwrap_or") && self.place_of(recv).is_none() {
                     return self.loan_sources(recv);
                 }
-                self.method_sources(recv, &name, nline(e), items(&nf(e)[2]))
+                self.method_sources(recv, &name, crate::parser::nid(e), items(&nf(e)[2]))
             }
             "Call" => {
                 if nname(&nf(e)[0]) != "Path" {
@@ -556,7 +556,7 @@ impl<'a> Low<'a> {
                     let name = segs[segs.len() - 1].clone();
                     let recv_segs = segs[..segs.len() - 1].to_vec();
                     if matches!(name.as_str(), "unwrap" | "expect" | "unwrap_or") {
-                        return self.passthrough_sources(&name, nline(e), Some((recv_segs[0].clone(), recv_segs[1..].to_vec())), None, items(&nf(e)[1]));
+                        return self.passthrough_sources(&name, crate::parser::nid(e), Some((recv_segs[0].clone(), recv_segs[1..].to_vec())), None, items(&nf(e)[1]));
                     }
                     return match self.method_borrows(&name) {
                         Some(m) => {
@@ -566,10 +566,10 @@ impl<'a> Low<'a> {
                             ];
                             // レシーバの変数が持つ借用 (`let w = mk(&mut x); w.get()`) も結果へ流れる。
                             out.push(Src::Alias(recv_segs[0].clone()));
-                            out.extend(self.method_arg_sources(&name, nline(e), items(&nf(e)[1])));
+                            out.extend(self.method_arg_sources(&name, crate::parser::nid(e), items(&nf(e)[1])));
                             out
                         }
-                        None => self.passthrough_sources(&name, nline(e), Some((recv_segs[0].clone(), recv_segs[1..].to_vec())), None, items(&nf(e)[1])),
+                        None => self.passthrough_sources(&name, crate::parser::nid(e), Some((recv_segs[0].clone(), recv_segs[1..].to_vec())), None, items(&nf(e)[1])),
                     };
                 }
                 // 関数の戻り値が借用を含むなら、借用の引数 (`&x` / `&mut x` / 参照の変数) から借りる
@@ -725,7 +725,7 @@ impl<'a> Low<'a> {
 
     /// 戻り値が型パラメータを含む (`v.pop()` / `o.unwrap()`) メソッド: レシーバを新しく借りはしないが、
     /// レシーバの中の借用と、型パラメータを共有する引数の借用は戻り値へ通り抜ける (fail-closed)。
-    fn passthrough_sources(&self, name: &str, pos: usize, place: Option<(String, Vec<String>)>, recv: Option<&V>, args: &[V]) -> Vec<Src> {
+    fn passthrough_sources(&self, name: &str, pos: u32, place: Option<(String, Vec<String>)>, recv: Option<&V>, args: &[V]) -> Vec<Src> {
         let cands = self.callees(name, pos, args.len());
         if !cands.iter().any(|&i| Self::ret_has_type_param(&self.p.defs[i])) {
             return vec![];
@@ -739,7 +739,7 @@ impl<'a> Low<'a> {
         out
     }
 
-    fn method_sources(&self, recv: &V, name: &str, pos: usize, args: &[V]) -> Vec<Src> {
+    fn method_sources(&self, recv: &V, name: &str, pos: u32, args: &[V]) -> Vec<Src> {
         let Some(m) = self.method_borrows(name) else {
             // 候補の定義が 1 つも無い (`dyn` 越しなど): 呼び先が読めないので、レシーバと全部の引数の借用が流れる。
             if self.callees(name, pos, args.len()).is_empty() {
@@ -790,7 +790,7 @@ impl<'a> Low<'a> {
     }
 
     /// メソッドの `self` 以外の引数のうち、戻り値へ流れるもの (すべての候補のヘッダが一致して流すとき) の借用。
-    fn method_arg_sources(&self, name: &str, pos: usize, args: &[V]) -> Vec<Src> {
+    fn method_arg_sources(&self, name: &str, pos: u32, args: &[V]) -> Vec<Src> {
         // 候補のどれかが流すなら流す (fail-closed。解決先が決まらないときは同名で個数の合うものすべて)。
         let mut flow: Vec<bool> = vec![false; args.len()];
         for i in self.callees(name, pos, args.len()) {
@@ -998,7 +998,7 @@ impl<'a> Low<'a> {
 
     /// メソッド呼び出し `h.set(x)`: 名前のメソッドがただ 1 つなら、そのヘッダで `&mut self` と参照の引数が
     /// 同じライフタイムを共有するとき、引数の借用をレシーバ `h` に持たせる。
-    fn bind_method_setter(&mut self, c: usize, name: &str, pos: usize, root: &str, args: &[V]) {
+    fn bind_method_setter(&mut self, c: usize, name: &str, pos: u32, root: &str, args: &[V]) {
         // 解決先が決まらないときは、同名で個数の合う候補すべての束縛を足す (fail-closed)。
         for di in self.callees(name, pos, args.len()) {
             if self.p.defs[di].params.first().map_or(true, |p| p.0 != "self") {
@@ -1929,7 +1929,7 @@ impl<'a> Low<'a> {
     }
 
     /// レシーバに `&mut self` で触れるときのアクセスの種類。
-    fn recv_kind(&self, name: &str, pos: usize, nargs: usize) -> Acc {
+    fn recv_kind(&self, name: &str, pos: u32, nargs: usize) -> Acc {
         match self.self_mode(name, pos, nargs) {
             SelfMode::Mut if matches!(name, "push" | "push_back" | "push_front" | "insert" | "extend" | "extend_from_slice" | "append") => Acc::MutKeep,
             SelfMode::Mut => Acc::MutB,
@@ -2265,7 +2265,7 @@ impl<'a> Low<'a> {
                         let name = segs[segs.len() - 1].clone();
                         let root = segs[0].clone();
                         let path = segs[1..segs.len() - 1].to_vec();
-                        let mut kind = self.recv_kind(&name, nline(e), args.len());
+                        let mut kind = self.recv_kind(&name, crate::parser::nid(e), args.len());
                         // `self` を値で受けるメソッド (`x.into_name()` など) はレシーバを move する:
                         // check 側が move_sites に載せたレシーバの場所なら、Read を Move に格上げする。
                         if kind == Acc::Read && self.moves.contains(&(nline(e), place_key(&root, &path))) {
@@ -2275,7 +2275,7 @@ impl<'a> Low<'a> {
                         self.emit(c, Ev::Access { root: root.clone(), path: path.clone(), kind, line: nline(e) });
                         self.store_into(c, &name, &root, &path, args);
                         if path.is_empty() {
-                            self.bind_method_setter(c, &name, nline(e), &root, args);
+                            self.bind_method_setter(c, &name, crate::parser::nid(e), &root, args);
                         }
                         self.end_temps(c, temps);
                         if self.suspends(None, Some(&name)) || self.susp.contains(&(self.cur, nline(e))) {
@@ -2330,12 +2330,12 @@ impl<'a> Low<'a> {
                 if self.place_of(recv).is_some() {
                     let c = self.lower_index_parts(recv, cur);
                     let c = self.lower_args_held(args, c, &mut temps);
-                    self.access(c, recv, self.recv_kind(&name, nline(e), args.len()), nline(recv));
+                    self.access(c, recv, self.recv_kind(&name, crate::parser::nid(e), args.len()), nline(recv));
                     // `v.push(&x)` / `m.insert(k, &x)`: レシーバの中に借用を保存する。
                     if let Some((root, path)) = self.place_of(recv) {
                         self.store_into(c, &name, &root, &path, args);
                         if path.is_empty() {
-                            self.bind_method_setter(c, &name, nline(e), &root, args);
+                            self.bind_method_setter(c, &name, crate::parser::nid(e), &root, args);
                         }
                     }
                     self.end_temps(c, temps);
@@ -2454,7 +2454,7 @@ impl<'a> Low<'a> {
                         let (callees, args, recv): (Vec<usize>, &[V], Option<(String, Vec<String>)>) = if nname(v) == "MCall" {
                             if f.len() < 3 { (vec![], &[], None) } else {
                                 let args = items(&f[2]);
-                                (self.callees(&st(&f[1]), nline(v), args.len()), args, self.place_of(&f[0]))
+                                (self.callees(&st(&f[1]), crate::parser::nid(v), args.len()), args, self.place_of(&f[0]))
                             }
                         } else if nname(&f[0]) != "Path" {
                             (vec![], &[], None)
@@ -2463,7 +2463,7 @@ impl<'a> Low<'a> {
                             let args = items(&f[1]);
                             if segs.len() >= 2 && self.locals.contains(&segs[0]) {
                                 let name = segs[segs.len() - 1].clone();
-                                (self.callees(&name, nline(v), args.len()), args, Some((segs[0].clone(), segs[1..segs.len() - 1].to_vec())))
+                                (self.callees(&name, crate::parser::nid(v), args.len()), args, Some((segs[0].clone(), segs[1..segs.len() - 1].to_vec())))
                             } else {
                                 match self.p.resolve(&segs, &self.file) {
                                     Some(r) if r.rest.is_empty() => match self.target_def(&r.target) {
@@ -3511,14 +3511,14 @@ impl<'a> Low<'a> {
         inits.pos.set(inits.at(v));
         let Some(init) = inits.tilde(&strs(&nf(v)[0])[0]) else { return };
         let mut recv: Option<&V> = match nname(init) {
-            "MCall" if self.method_borrows(&st(&nf(init)[1])).is_some() && self.method_ties_self(&st(&nf(init)[1]), nline(init), items(&nf(init)[2]).len()) => Some(&nf(init)[0]),
+            "MCall" if self.method_borrows(&st(&nf(init)[1])).is_some() && self.method_ties_self(&st(&nf(init)[1]), crate::parser::nid(init), items(&nf(init)[2]).len()) => Some(&nf(init)[0]),
             "Unary" if matches!(st(&nf(init)[0]).as_str(), "&" | "&mut") => Some(&nf(init)[1]),
             _ => None,
         };
         let mut root: Option<String> = None;
         if nname(init) == "Call" && nname(&nf(init)[0]) == "Path" {
             let sg = strs(&nf(&nf(init)[0])[0]);
-            if sg.len() == 2 && self.locals.contains(&sg[0]) && self.method_borrows(&sg[1]).is_some() && self.method_ties_self(&sg[1], nline(init), items(&nf(init)[1]).len()) {
+            if sg.len() == 2 && self.locals.contains(&sg[0]) && self.method_borrows(&sg[1]).is_some() && self.method_ties_self(&sg[1], crate::parser::nid(init), items(&nf(init)[1]).len()) {
                 root = Some(sg[0].clone());
             }
         }
@@ -3548,7 +3548,7 @@ impl<'a> Low<'a> {
     }
 
     /// メソッド `name` の戻り値の参照が、省略規則で `self` の借用に結びつくか (戻り値に参照があり、名前付きの領域がない)。
-    fn method_ties_self(&self, name: &str, pos: usize, nargs: usize) -> bool {
+    fn method_ties_self(&self, name: &str, pos: u32, nargs: usize) -> bool {
         let cands = self.callees(name, pos, nargs);
         !cands.is_empty()
             && cands.iter().all(|&i| {
@@ -3575,7 +3575,7 @@ impl<'a> Low<'a> {
             }
             _ => return false,
         };
-        let cands = self.callees(&mname, nline(init), nargs);
+        let cands = self.callees(&mname, crate::parser::nid(init), nargs);
         !cands.is_empty()
             && cands.iter().all(|&i| {
                 let r = self.p.defs[i].header.split(" uses ").next().and_then(|h| h.rsplit_once("->")).map_or("", |x| x.1).trim().to_string();
@@ -3803,7 +3803,7 @@ impl<'a> Low<'a> {
             // 葉が、借用を持つ所有値の局所へのメソッド呼び出し (`let g = m.lock(); g.get()`) なら、その局所を借りて返している。
             if nname(v) == "Call" && nname(&nf(v)[0]) == "Path" {
                 let sg = strs(&nf(&nf(v)[0])[0]);
-                if sg.len() == 2 && self.locals.contains(&sg[0]) && self.method_borrows(&sg[1]).is_some() && self.method_ties_self(&sg[1], nline(v), items(&nf(v)[1]).len()) {
+                if sg.len() == 2 && self.locals.contains(&sg[0]) && self.method_borrows(&sg[1]).is_some() && self.method_ties_self(&sg[1], crate::parser::nid(v), items(&nf(v)[1]).len()) {
                     inits.pos.set(inits.at(v));
                     if inits.plain(&sg[0]).map_or(false, |i| nname(i) != "Path") && self.owning_local(&inits, &sg[0]) && !d.params.iter().any(|p| p.0 == sg[0]) {
                         os.push(Origin::Local(sg[0].clone()));
@@ -3984,7 +3984,7 @@ impl<'a> Checker<'a> {
     fn plain_binds(&self, di: usize) -> HashSet<String> {
         let mut yes: HashSet<String> = HashSet::new();
         let mut no: HashSet<String> = HashSet::new();
-        for ((d, _, name), ty) in self.let_tys.iter() {
+        for ((d, _, name), ty) in self.let_tys_line.iter() {
             if *d != di {
                 continue;
             }
@@ -4057,7 +4057,7 @@ impl<'a> Checker<'a> {
         let mut owned: HashSet<(usize, String)> = HashSet::new();
         let mut nonref: HashSet<(usize, String)> = HashSet::new();
         let mut with_free: HashSet<usize> = HashSet::new();
-        for ((d, line, name), ty) in self.let_tys.iter() {
+        for ((d, line, name), ty) in self.let_tys_line.iter() {
             if *d != di {
                 continue;
             }
