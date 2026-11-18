@@ -758,7 +758,7 @@ fn kir_trim_match_tree_walker() {
     let d = "no_ws".trim().eq("no_ws")
     let e = "  leading".trim_start().eq("leading")
     let f = "trailing  ".trim_end().eq("trailing")
-    let g = " \x0bhello\x0b ".trim().eq("\x0bhello\x0b")
+    let g = " \u{b}hello\u{b} ".trim().eq("\u{b}hello\u{b}")
     let h = match "  abc".strip_prefix("  ") {
         Some(_t) => true
         None => false

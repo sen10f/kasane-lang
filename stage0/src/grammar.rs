@@ -217,8 +217,8 @@ impl Lexer {
     fn new() -> Lexer {
         let suffix = r"(?:i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize)";
         let fsuffix = r"(?:f32|f64)";
-        let ch = r#"'(?:\\(?:x[0-7][0-9a-f]|u\{[0-9a-f]{1,6}\}|[\\ntr0'])|[^'\\\n])'"#;
-        let st = r#""(?:\\(?:x[0-7][0-9a-f]|u\{[0-9a-f]{1,6}\}|[\\ntr0"])|[^"\\\n])*""#;
+        let ch = r#"'(?:\\(?:u\{[0-9a-f]{1,6}\}|[\\ntr0'])|[^'\\\n])'"#;
+        let st = r#""(?:\\(?:u\{[0-9a-f]{1,6}\}|[\\ntr0"])|[^"\\\n])*""#;
         let bch = r#"b'(?:\\(?:x[0-9a-f]{2}|[\\ntr0'])|[\x20-\x26\x28-\x5b\x5d-\x7e])'"#;
         let bst = r#"b"(?:\\(?:x[0-9a-f]{2}|[\\ntr0"])|[\x20\x21\x23-\x5b\x5d-\x7e])*""#;
         let groups = vec!["bstr", "bchr", "str", "chr", "life", "float", "int", "word", "op"];
