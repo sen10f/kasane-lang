@@ -48,6 +48,7 @@ mod stdcache;
 mod survey;
 mod tast;
 mod tast_check;
+mod tast_rules;
 mod types;
 mod typecov;
 mod vm;
