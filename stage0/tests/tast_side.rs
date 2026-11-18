@@ -268,3 +268,89 @@ end t.main
     assert!(has("Dyn t.Speak"), "{rows:?}");
     assert!(has("Def core.num.u32.wrapping_add") || has("wrapping_add"), "{rows:?}");
 }
+
+
+// --- S1C2: 変換の印の残り ---
+
+const S1C2_SRC: &str = "trait t.H
+    fn handle(self: &Self) -> u32 uses [] panics never
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+impl t.H for t.X
+fn t.X.handle(self: &t.X) -> u32 uses [] panics never impls t.H
+    self.v
+end t.X.handle
+
+fn t.X.get(self: &t.X) -> u32 uses [] panics never
+    self.v
+end t.X.get
+
+fn t.dd(r: &&t.X) -> u32 uses [] panics never
+    r.get()
+end t.dd
+
+fn t.dm(r: &mut &t.X) -> u32 uses [] panics never
+    r.get()
+end t.dm
+
+fn t.ret(a: &[u32; 2]) -> &[u32] uses [] panics never
+    return a
+end t.ret
+
+fn t.tail(a: &[u32; 2]) -> &[u32] uses [] panics never
+    a
+end t.tail
+
+fn t.main() -> () uses [] panics never pub
+    let a = [1u32, 2u32]
+    let s: &[u32] = &a
+    let mut m: &[u32] = &a
+    m = &a
+    let x = t.X { v: 1u32 }
+    let h: &dyn t.H = &x
+    core.mem.drop(s)
+    core.mem.drop(m)
+    core.mem.drop(h)
+end t.main
+";
+
+#[test]
+fn s1c2_deref_and_other_positions() {
+    let rows = dump("s1c2_a", S1C2_SRC, "coercions").join("\n");
+    assert!(rows.contains("AutoDeref { n: 1 }"), "{}", rows);
+    // `&mut &X` も 1 段外す。`Box<X>` の受け手はまだメソッドが引けない (検査が E2044 にする) ので印は付かない。
+    assert!(rows.lines().any(|l| l.contains("\tt.dm\t") && l.contains("AutoDeref { n: 1 }")), "{}", rows);
+    for f in ["t.ret", "t.tail", "t.main"] {
+        assert!(rows.lines().any(|l| l.contains(&format!("\t{}\t", f)) && l.contains("ArrayToSlice")), "{} {}", f, rows);
+    }
+    // let / 代入 / dyn の 3 件 (main)
+    let n = rows.lines().filter(|l| l.contains("\tt.main\t")).count();
+    assert!(n >= 3, "{}", rows);
+}
+
+#[test]
+fn s1c2_struct_field_and_variant_payload() {
+    let src = "type t.W\n    s: &[u32]\nend t.W\n\nenum t.E\n    A(&[u32])\nend t.E\n\nfn t.main() -> () uses [] panics never pub\n    let a = [1u32, 2u32]\n    let w = t.W { s: &a }\n    let e = t.E.A(&a)\n    core.mem.drop(w)\n    core.mem.drop(e)\nend t.main\n";
+    let rows = dump("s1c2_b", src, "coercions");
+    assert!(rows.len() >= 2 && rows.iter().all(|r| r.contains("ArrayToSlice")), "{:?}", rows);
+}
+
+#[test]
+fn s1c2_try_error_conversion() {
+    let src = "enum t.E1\n    X\nend t.E1\n\nenum t.E2 derive [From]\n    A(t.E1)\nend t.E2\n\nfn t.f() -> Result<u32, t.E1> uses [] panics never\n    Err(t.E1.X)\nend t.f\n\nfn t.g() -> Result<u32, t.E2> uses [] panics never\n    let v = t.f()?\n    Ok(v)\nend t.g\n\nfn t.h() -> Result<u32, t.E1> uses [] panics never\n    let v = t.f()?\n    Ok(v)\nend t.h\n";
+    let rows = dump("s1c2_c", src, "coercions");
+    assert!(rows.iter().any(|r| r.contains("\tt.g\t") && r.contains("ErrInto") && r.contains("\"A\"")), "{:?}", rows);
+    // 完全一致の `?` には印が付かない。
+    assert!(!rows.iter().any(|r| r.contains("\tt.h\t")), "{:?}", rows);
+}
+
+#[test]
+fn s1c2_unmarked_reasons_listed() {
+    let src = "trait t.H\n    fn handle(self: &Self) -> u32 uses [] panics never\nend t.H\n\nfn t.d(h: &dyn t.H) -> u32 uses [] panics never\n    h.handle()\nend t.d\n";
+    let out = dump_side("s1c2_d", src);
+    assert!(out.lines().any(|l| l.starts_with("coerce_none\t") && l.contains("t.d")), "{}", out);
+}
