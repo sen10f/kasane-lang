@@ -1,6 +1,6 @@
 //! VM の実行ループ (設計_KIR.md 4.2 / 4.3)。呼び出しは明示的なフレーム列 (Rust の再帰を使わない)。
 //!
-//! 意味は参照実行器 (`kir_exec.rs`) と同じ: panic の文言、呼び出し深さの上限 (2500、超えたら 102)。値の表現は `bc.rs` の先頭の通り
+//! 意味は参照実行器 (`kir_exec.rs`) と同じ: panic の文言、呼び出し深さの上限 (`kir_exec::MAX_DEPTH`、超えたら 102)。値の表現は `bc.rs` の先頭の通り
 //! (8 バイトのスロット、集成体と `Option` / `Result` はフレームの中のスロット列。置き場も戻るときの複製もない)。違いは次の 3 点:
 //! - バイト記憶は実メモリ (`malloc` / `realloc` / `free` の実アドレス。7 章 1 の決定)。仮想アドレスの検査・未初期化の検出・漏れの検査はしない
 //!   (null 付近のアドレスだけは内部エラーにする)。
@@ -15,8 +15,8 @@ use crate::kir::{payload_of, Aop, Mode, Ty, TAG_BIT};
 use crate::kir_exec::{self, Outcome};
 use crate::kir_scalar;
 
-/// 木走査インタプリタの呼び出し深さの上限 (`interp.rs` の `depth > 2500`)。
-const MAX_DEPTH: usize = 2500;
+/// 呼び出し深さの上限 (`kir_exec::MAX_DEPTH` と同じ)。
+const MAX_DEPTH: usize = crate::kir_exec::MAX_DEPTH;
 
 extern "C" {
     fn malloc(n: usize) -> *mut std::ffi::c_void;

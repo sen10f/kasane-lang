@@ -626,13 +626,13 @@ fn kir_lower_panics_and_depth_match_tree_walker() {
         assert_eq!(text(&k.stderr).trim(), format!("panic: {}", msg), "kir: {}", call);
     }
     // 深さの超過: 木走査と同じく 102 と "stack overflow"
-    let t = kir_pkg("kir_depth", "    let _x = t.down(5000u64)\n");
+    let t = kir_pkg("kir_depth", "    let _x = t.down(200000u64)\n");
     assert_eq!(run(&["run"], &t.0).status.code(), Some(102));
-    let k = kir_run(&["kir", "t.down", "--run", "5000"], &t.0);
+    let k = kir_run(&["kir", "t.down", "--run", "200000"], &t.0);
     assert_eq!(k.status.code(), Some(102));
     assert!(text(&k.stderr).contains("stack overflow"), "{}", text(&k.stderr));
-    let ok = kir_run(&["kir", "t.down", "--run", "2000"], &t.0);
-    assert_eq!(text(&ok.stdout).trim(), "2000");
+    let ok = kir_run(&["kir", "t.down", "--run", "99000"], &t.0);
+    assert_eq!(text(&ok.stdout).trim(), "99000");
 }
 
 #[test]

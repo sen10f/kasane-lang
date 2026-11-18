@@ -7,7 +7,7 @@
 //!   集成体は大きさ (バイト) × 8 ビットの整数 `iN` (フィールドは `Module::aggs` のオフセットどおりのビット位置に置く)、
 //!   `Option` / `Result` は整数 `iN` (N = 1 + 枠。タグは最上位のビット、枠は 64 ビット以上でペイロードのどれも入る幅。設計_KIR.md 11.6)。
 //! - panic は stderr に `panic: <文言>` を出して終了コード 101。呼び出し深さは大域の計数で数え、
-//!   参照実行器と同じ条件 (呼び出し元の深さが 2500 以上) で `stack overflow` と終了コード 102。
+//!   参照実行器と同じ条件 (呼び出し元の深さが `MAX_DEPTH` 以上) で `stack overflow` と終了コード 102。
 //! - 浮動小数の超越関数は `fmath` の `Ops` を LLVM IR の命令列に写した内部関数 (`@ksn.m.*`) を呼ぶ。libm は使わない
 //!   (`floor` / `sqrt` / `frem` など丸めが一意に決まる演算は LLVM の組み込みを使う)。
 //! - 出力は決定的 (同じ KIR からは同じバイト列)。
@@ -23,7 +23,9 @@ use crate::kir::{
 };
 
 /// 呼び出し深さの上限 (`kir_exec::MAX_DEPTH` と同じ)。
-const MAX_DEPTH: u32 = 2500;
+const MAX_DEPTH: u32 = crate::kir_exec::MAX_DEPTH as u32;
+/// ネイティブの主スレッドと `spawn` したスレッドのスタックの大きさ。`MAX_DEPTH` × 枠の上限 (8 KiB) が収まる (`kir_exec::MAX_DEPTH` の注を見る)。
+pub const NATIVE_STACK_BYTES: u64 = 1 << 30;
 
 type R<T> = Result<T, String>;
 
@@ -190,7 +192,7 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
         "ksn.thr.start" => {
             let exec = m.find("ksn.thr.exec")?;
             let body = format!(
-                "  %p = inttoptr i64 %arg0 to ptr\n  %t = getelementptr i8, ptr %p, i64 16\n  %attr = alloca [64 x i8], align 16\n  %a0 = call i32 @pthread_attr_init(ptr %attr)\n  %a1 = call i32 @pthread_attr_setstacksize(ptr %attr, i64 16777216)\n  %m = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %l = load i64, ptr @ksn.rt.live\n  %l1 = add i64 %l, 1\n  store i64 %l1, ptr @ksn.rt.live\n  %mu = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  %r = call i32 @pthread_create(ptr %t, ptr %attr, ptr @ksn.rt.tramp, ptr %p)\n  %a2 = call i32 @pthread_attr_destroy(ptr %attr)\n  %bad = icmp ne i32 %r, 0\n  br i1 %bad, label %fail, label %ok\nfail:\n  call void @exit(i32 101)\n  unreachable\nok:\n  ret i8 0\n"
+                "  %p = inttoptr i64 %arg0 to ptr\n  %t = getelementptr i8, ptr %p, i64 16\n  %attr = alloca [64 x i8], align 16\n  %a0 = call i32 @pthread_attr_init(ptr %attr)\n  %a1 = call i32 @pthread_attr_setstacksize(ptr %attr, i64 1073741824)\n  %m = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %l = load i64, ptr @ksn.rt.live\n  %l1 = add i64 %l, 1\n  store i64 %l1, ptr @ksn.rt.live\n  %mu = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  %r = call i32 @pthread_create(ptr %t, ptr %attr, ptr @ksn.rt.tramp, ptr %p)\n  %a2 = call i32 @pthread_attr_destroy(ptr %attr)\n  %bad = icmp ne i32 %r, 0\n  br i1 %bad, label %fail, label %ok\nfail:\n  call void @exit(i32 101)\n  unreachable\nok:\n  ret i8 0\n"
             );
             let tramp = format!(
                 "define internal ptr @ksn.rt.tramp(ptr %p) {{\nentry:\n  %i = ptrtoint ptr %p to i64\n  %r = call i8 {}(i64 %i)\n  %m = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %l = load i64, ptr @ksn.rt.live\n  %l1 = sub i64 %l, 1\n  store i64 %l1, ptr @ksn.rt.live\n  store i64 2, ptr %p\n  %g = load i64, ptr @ksn.rt.gen\n  %g1 = add i64 %g, 1\n  store i64 %g1, ptr @ksn.rt.gen\n  store i64 0, ptr @ksn.rt.blocked\n  %bc = call i32 @pthread_cond_broadcast(ptr @ksn.rt.cv)\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  ret ptr null\n}}\n\n",
@@ -555,6 +557,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, &extern_dl, &m.funcs, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
     }
     let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
+    let main = if is_wasm(target) { main } else { on_big_stack(&mut cx, main) };
     let mut math = String::new();
     for mf in cx.math.clone() {
         math.push('\n');
@@ -693,6 +696,29 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             + "\n";
     }
     Ok(out)
+}
+
+/// 入口 `main` を `NATIVE_STACK_BYTES` のスタックの別スレッドで動かす形にする (呼び出し深さの上限 `MAX_DEPTH` まで OS のスタックが足りるように。
+/// 主スレッドのスタックは通常 8 MiB)。元の `main` は `@ksn.rt.entry0(argc, argv)` に改名して残す。スレッドを作れなければ主スレッドのまま走らせる。
+fn on_big_stack(cx: &mut Ctx, main: String) -> String {
+    let head = "define i32 @main(i32 %argc, ptr %argv) null_pointer_is_valid {\nentry:\n";
+    let Some(rest) = main.strip_prefix(head) else { return main };
+    for d in [
+        "declare i32 @pthread_create(ptr, ptr, ptr, ptr)",
+        "declare i32 @pthread_join(i64, ptr)",
+        "declare i32 @pthread_attr_init(ptr)",
+        "declare i32 @pthread_attr_setstacksize(ptr, i64)",
+        "declare i32 @pthread_attr_destroy(ptr)",
+    ] {
+        cx.decl(d);
+    }
+    cx.globals.push_str("@ksn.rt.main_argc = internal global i32 0\n@ksn.rt.main_argv = internal global ptr null\n");
+    format!(
+        "define internal ptr @ksn.rt.entry(ptr %p) null_pointer_is_valid {{\nentry:\n  %a = load i32, ptr @ksn.rt.main_argc\n  %v = load ptr, ptr @ksn.rt.main_argv\n  %c = call i32 @ksn.rt.entry0(i32 %a, ptr %v)\n  %w = zext i32 %c to i64\n  %q = inttoptr i64 %w to ptr\n  ret ptr %q\n}}\n\n\
+         define i32 @main(i32 %argc, ptr %argv) null_pointer_is_valid {{\nentry:\n  store i32 %argc, ptr @ksn.rt.main_argc\n  store ptr %argv, ptr @ksn.rt.main_argv\n  %attr = alloca [64 x i8], align 16\n  %tid = alloca i64\n  %res = alloca ptr\n  store ptr null, ptr %res\n  %a0 = call i32 @pthread_attr_init(ptr %attr)\n  %a1 = call i32 @pthread_attr_setstacksize(ptr %attr, i64 {})\n  %r = call i32 @pthread_create(ptr %tid, ptr %attr, ptr @ksn.rt.entry, ptr null)\n  %a2 = call i32 @pthread_attr_destroy(ptr %attr)\n  %bad = icmp ne i32 %r, 0\n  br i1 %bad, label %direct, label %joined\ndirect:\n  %d = call i32 @ksn.rt.entry0(i32 %argc, ptr %argv)\n  ret i32 %d\njoined:\n  %t = load i64, ptr %tid\n  %j = call i32 @pthread_join(i64 %t, ptr %res)\n  %pv = load ptr, ptr %res\n  %iv = ptrtoint ptr %pv to i64\n  %code = trunc i64 %iv to i32\n  ret i32 %code\n}}\n\n\
+         define internal i32 @ksn.rt.entry0(i32 %argc, ptr %argv) null_pointer_is_valid {{\nentry:\n{}",
+        NATIVE_STACK_BYTES, rest
+    )
 }
 
 /// プログラムの入口 `main` (`emit_program`)。
