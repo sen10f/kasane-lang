@@ -1,0 +1,24 @@
+// expect: E2023
+type t.Out
+    inner: t.S
+end t.Out
+
+// mut3060_litfield_uaf と同じ消費だが、t.S のリテラルを t.Out の欄に直接埋める。
+type t.S
+    name: alloc.string.String
+    n: usize
+end t.S
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let s = t.mk()
+    let out = t.Out { inner: t.S { name: &s, n: 1usize } }
+    let t.Out { inner: inner } = out
+    let t.S { name: moved, n: _n } = inner
+    core.mem.drop(moved)
+    core.mem.drop(s)
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk

@@ -1,0 +1,13 @@
+// expect: E2023
+type t.W[T]
+    v: T
+    w: T
+end t.W
+
+fn t.main() -> () uses [alloc] panics never
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let t2 = alloc.string.String.new(std.alloc.SYSTEM)
+    let x = t.W { v: t2, w: &s }
+    core.mem.drop(x)
+    core.mem.drop(s)
+end t.main

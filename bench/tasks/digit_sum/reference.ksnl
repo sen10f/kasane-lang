@@ -14,7 +14,7 @@ fn bench.digit_sum(text: &str) -> Result<u32, bench.ParseError>
         match bytes.get(i) {
             Some(c) => {
                 if c < 48u8 || c > 57u8 {
-                    return Err(bench.ParseError.BadChar(c))
+                    return Err(bench.ParseError.BadChar(*c))
                 }
                 total = total + u32.from_u8(c - 48u8)
             }

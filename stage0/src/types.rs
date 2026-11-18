@@ -3886,6 +3886,16 @@ impl<'a> TypeCk<'a> {
                         }
                     }
                     let declared = self.field_ty(&Ty::Named(fq.clone(), args.clone()), &st(&items(x)[0]));
+                    // 欄の宣言の型と値の型で参照の段数は透過しない (呼び出しの引数と同じ規則、E2023)。
+                    {
+                        let fname = st(&items(x)[0]);
+                        if let Some((_, fv)) = decl_fields.iter().find(|(n, _)| *n == fname) {
+                            let raw = from_v(fv, &gn);
+                            if let Some((want, got)) = self.arg_ref_conflict(&raw, &vt).or_else(|| self.param_arg_ref_conflict(&raw, &declared, &vt)) {
+                                self.diag("E2023", format!("field `{}` of `{}`: expected `{}`, found `{}`", fname, fq, want, got), nline(e));
+                            }
+                        }
+                    }
                     if let Err(err) = self.unify2(&declared, &vt) {
                         {
                             let (want, got) = self.type_conflict(&err).or_else(|| self.vec_seq_mismatch(&declared, &vt)).unwrap_or_else(|| Self::raw_pair(&err));
@@ -4758,7 +4768,12 @@ impl<'a> TypeCk<'a> {
                 bind.insert((*n).clone(), a.clone());
             }
             for (pt, a) in payload.iter().zip(argt) {
-                let declared = subst(&from_v(pt, &gn), &bind);
+                let raw = from_v(pt, &gn);
+                let declared = subst(&raw, &bind);
+                // 欄と同じく、ペイロードの宣言の型と値の型で参照の段数は透過しない (E2023)。
+                if let Some((want, got)) = self.arg_ref_conflict(&raw, a).or_else(|| self.param_arg_ref_conflict(&raw, &declared, a)) {
+                    self.diag("E2023", format!("payload of `{}`: expected `{}`, found `{}`", vn, want, got), line);
+                }
                 // 列挙子のペイロードの食い違いは、関数の戻り値と同じく E2020 にする (黙ると `E.A(5u8)` を通してしまう)。
                 if let Err(err) = self.unify2(&declared, a) {
                     {
