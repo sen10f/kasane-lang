@@ -238,10 +238,7 @@ impl<'a> W<'a> {
                 let d = match &e.res {
                     Some(Callee::Def(d)) => Some(*d),
                     Some(Callee::Methods(v)) if v.len() == 1 => Some(v[0]),
-                    _ => match self.tk.call_res.get(&(self.di, e.id)) {
-                        Some(Some(v)) if v.len() == 1 => Some(v[0]),
-                        _ => None,
-                    },
+                    _ => None,
                 };
                 if let Some(d) = d {
                     let d = &self.p.defs[d];
@@ -372,11 +369,13 @@ impl<'a> W<'a> {
     fn call(&mut self, e: &TExpr, callee: &TExpr, args: &[TExpr]) {
         let TKind::Path(segs) = &callee.kind else { return };
         let file = &self.p.defs[self.di].file;
-        // 解決先: 印があれば印、無ければ経路を引く。
-        let target = match &e.res {
-            Some(Callee::Def(d)) => Some(Target::Fn(*d)),
-            Some(Callee::Variant(en, vn)) => Some(Target::Variant(en.clone(), vn.clone())),
-            _ => self.p.resolve(segs, file).filter(|r| r.rest.is_empty()).map(|r| r.target),
+        // 経路そのものが解決できれば、それが解決先 (自由関数・列挙子)。解決できず `x.m(..)` の経路形なら、印の `Def` か
+        // `call_res` のメソッドで、先頭の `self` は経路の `x`。
+        let by_path = self.p.resolve(segs, file).filter(|r| r.rest.is_empty()).map(|r| r.target);
+        let target = match (&by_path, &e.res) {
+            (Some(t), _) => Some(t.clone()),
+            (None, Some(Callee::Variant(en, vn))) => Some(Target::Variant(en.clone(), vn.clone())),
+            _ => None,
         };
         match target {
             Some(Target::Fn(i)) | Some(Target::Sig(i)) => {
@@ -405,13 +404,15 @@ impl<'a> W<'a> {
                 }
             }
             _ => {
-                // `x.m(..)` の経路形 (印が無いときは `call_res`)。
-                if let Some(Some(v)) = self.tk.call_res.get(&(self.di, e.id)) {
-                    if v.len() == 1 {
-                        let d = &self.p.defs[v[0]];
-                        if d.is_method() {
-                            self.check_args(d, 1, &e.targs, args, segs.last().map(|s| s.as_str()).unwrap_or(""), e.line);
-                        }
+                let d = match &e.res {
+                    Some(Callee::Def(d)) => Some(*d),
+                    Some(Callee::Methods(v)) if v.len() == 1 => Some(v[0]),
+                    _ => None,
+                };
+                if let Some(d) = d {
+                    let d = &self.p.defs[d];
+                    if d.is_method() {
+                        self.check_args(d, 1, &e.targs, args, segs.last().map(|s| s.as_str()).unwrap_or(""), e.line);
                     }
                 }
             }
