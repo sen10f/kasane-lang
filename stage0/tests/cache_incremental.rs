@@ -168,7 +168,7 @@ fn clif_map_methods_program() -> String {
 
 #[test]
 fn the_llvm_backend_compiles_map_get_mut_and_hashmap_iter() {
-    let t = Tmp::new_raw("clif_map_meth", &clif_map_methods_program());
+    let t = Tmp::new("clif_map_meth", &clif_map_methods_program());
     let interp = run(&["run"], &t.0);
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
     for release in [false, true] {
@@ -212,7 +212,7 @@ fn clif_sync_program() -> String {
 
 #[test]
 fn the_llvm_backend_compiles_mutex_lock_and_guard() {
-    let t = Tmp::new_raw("clif_sync", &clif_sync_program());
+    let t = Tmp::new("clif_sync", &clif_sync_program());
     let interp = run(&["run"], &t.0);
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
     for release in [false, true] {
@@ -303,7 +303,7 @@ fn the_tour_example_runs_natively_through_the_native_build() {
 
 #[test]
 fn ffi_extern_calls_and_raw_pointers_work_natively() {
-    let t = Tmp::new_raw("ffi_native", FFI_SRC);
+    let t = Tmp::new("ffi_native", FFI_SRC);
     fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
@@ -554,7 +554,7 @@ fn clif_hashmap_index_program() -> String {
 fn the_hashmap_index_stays_consistent_across_growth_removal_and_reinsertion() {
     // 索引表（ハッシュ → 組の添字）は、表が育つとき・中ほどの削除で添字が詰まるとき・再挿入のときも、
     // 検索結果と挿入順を保つ。インタプリタと LLVM (デバッグ) で同じ出力になる。
-    let t = Tmp::new_raw("hm_index", &clif_hashmap_index_program());
+    let t = Tmp::new("hm_index", &clif_hashmap_index_program());
     let interp = run(&["run"], &t.0);
     assert_eq!(interp.status.code(), Some(0), "{}{}", text(&interp.stdout), text(&interp.stderr));
     assert_eq!(text(&interp.stdout).trim(), "index ok");
@@ -595,7 +595,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     Ok(())
 end t.main
 ";
-    let t = Tmp::new_raw("ffi_dup_symbol", src);
+    let t = Tmp::new("ffi_dup_symbol", src);
     fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
     let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi_dup", std::process::id()));
     let b = Command::new(exe())
@@ -629,7 +629,7 @@ fn bundle_launcher_is_executable_and_location_independent() {
     Ok(())
 end t.main
 ";
-    let t = Tmp::new_raw("bundle_launcher", src);
+    let t = Tmp::new("bundle_launcher", src);
     let cache = std::env::temp_dir().join(format!("ksn_bundle_cache_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let o = Command::new(exe())
@@ -693,8 +693,8 @@ fn build_with_cache(ksn: &str, cwd: &Path, cache: &Path, extra: &[&str], envs: &
 fn concurrent_builds_with_the_same_key_both_succeed() {
     // 同じキー (同じソースの別のパッケージ dir) を同じキャッシュへ並行にビルドしても、どちらも成功する。
     // 以前は作業用の `<key>.tmp` を共有して互いに消し合い、`fs::rename(..).unwrap()` で panic しえた。
-    let a = Tmp::new_raw("cache_race_a", CACHE_SRC);
-    let b = Tmp::new_raw("cache_race_b", CACHE_SRC);
+    let a = Tmp::new("cache_race_a", CACHE_SRC);
+    let b = Tmp::new("cache_race_b", CACHE_SRC);
     for round in 0..4 {
         let cache = std::env::temp_dir().join(format!("ksn_cache_race_{}_{}", std::process::id(), round));
         let _ = fs::remove_dir_all(&cache);
@@ -722,7 +722,7 @@ fn concurrent_builds_with_the_same_key_both_succeed() {
 fn cache_hit_reuses_native_artifact_without_compiling() {
     // 1 回目は compile_llvm を通り、生成物がキャッシュに入る。2 回目は同じキーで
     // "cache hit" となり、compile_llvm (KSN_TIME の印) を通らずに生成物を複製する。
-    let t = Tmp::new_raw("cache_artifact", CACHE_SRC);
+    let t = Tmp::new("cache_artifact", CACHE_SRC);
     let cache = std::env::temp_dir().join(format!("ksn_cache_art_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let exe_file = if cfg!(windows) { "t.exe" } else { "t.native" };
@@ -756,7 +756,7 @@ fn cache_hit_reuses_native_artifact_without_compiling() {
 fn build_key_changes_with_ksn_binary_profile_and_backend() {
     // キーは ksn 本体のバイト列・debug/release・バックエンドで分かれる。
     // ksn 本体の変化は、同じ実行ファイルの末尾にバイトを足した別物で代用する (Linux / Windows は末尾を無視して動く)。
-    let t = Tmp::new_raw("cache_key", CACHE_SRC);
+    let t = Tmp::new("cache_key", CACHE_SRC);
     let cache = std::env::temp_dir().join(format!("ksn_cache_key_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let bin_dir = std::env::temp_dir().join(format!("ksn_cache_key_bin_{}", std::process::id()));
@@ -809,7 +809,7 @@ fn build_key_changes_with_ksn_binary_profile_and_backend() {
 fn bundle_is_rebuilt_when_sources_change() {
     // `ksn test --both` のバンドルは、ソースが変われば作り直す。
     // 以前は target/debug に ksn があるだけで再利用され、追加したテストが "no such test" になった。
-    let t = Tmp::new_raw("bundle_fresh", CACHE_SRC);
+    let t = Tmp::new("bundle_fresh", CACHE_SRC);
     let cache = std::env::temp_dir().join(format!("ksn_cache_bundle_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let test_both = |name: &str| {
@@ -839,7 +839,7 @@ fn bundle_is_rebuilt_when_sources_change() {
 fn fmath_functions_agree_across_backends_and_match_known_values() {
     // 数学関数 (`fmath`) は、インタプリタと LLVM で同じビット列を返し、既知の値に近い。
     // `tests/data/fmath_both.ksnl`: 既知値 (f32 は 2〜3 ulp 以内)、特殊値 (atan2 の ±∞ / NaN 組を含む)、9 関数の総和 (ビット列の突き合わせ)。
-    let t = Tmp::new_raw("fmath_both", include_str!("data/fmath_both.ksnl"));
+    let t = Tmp::new("fmath_both", include_str!("data/fmath_both.ksnl"));
     let cache = std::env::temp_dir().join(format!("ksn_cache_fmath_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let o = Command::new(exe())
@@ -866,7 +866,7 @@ fn fmath_functions_agree_across_backends_and_match_known_values() {
 #[test]
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn ffi_struct_by_value_works_on_both_backends_with_libc() {
-    let t = Tmp::new_raw("ffi_struct_libc", FFI_LIBC_STRUCT_SRC);
+    let t = Tmp::new("ffi_struct_libc", FFI_LIBC_STRUCT_SRC);
     fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
     let o = run(&["check"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
@@ -916,7 +916,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     std.io.print_line(\"x\")
 end t.main
 ";
-    let t = Tmp::new_raw("release_no_bundle", src);
+    let t = Tmp::new("release_no_bundle", src);
     let cache = std::env::temp_dir().join(format!("ksn_cache_{}_release_no_bundle", std::process::id()));
     let build = |extra: &[&str]| {
         let mut args = vec!["build"];
@@ -946,7 +946,7 @@ end t.main
 /// 3-2: clang が無いときも、リリースは退避せず E9040 で止まる (デバッグは理由を出して退避する)。
 #[test]
 fn release_build_without_clang_fails_instead_of_bundling() {
-    let t = Tmp::new_raw("release_no_clang", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"ok\")\nend t.main\n");
+    let t = Tmp::new("release_no_clang", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"ok\")\nend t.main\n");
     let cache = std::env::temp_dir().join(format!("ksn_cache_{}_release_no_clang", std::process::id()));
     let build = |extra: &[&str]| {
         let mut args = vec!["build"];
@@ -1147,7 +1147,7 @@ fn check_cache_matches_uncached_for_unsound_and_linear_ok() {
         assert!(!names.is_empty());
         for (i, p) in names.into_iter().enumerate() {
             let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-            let t = Tmp::new_raw(&format!("cc_{}_{}", sub, stem), &fs::read_to_string(&p).unwrap());
+            let t = Tmp::new(&format!("cc_{}_{}", sub, stem), &fs::read_to_string(&p).unwrap());
             if i % 3 == 0 || sub == "linear_ok" {
                 assert_cache_same(&format!("{}/{}", sub, stem), &t.0, &cache);
             } else {
@@ -1163,7 +1163,7 @@ fn check_cache_matches_uncached_for_unsound_and_linear_ok() {
 #[test]
 fn check_cache_follows_edits_to_a_definition_and_its_dependents() {
     let cache = cache_tmp("edits");
-    let t = Tmp::new_raw("cc_edits", "");
+    let t = Tmp::new("cc_edits", "");
     let a_path = t.0.join("src").join("t.ksnl");
     let b_path = t.0.join("src").join("t").join("b.ksnl");
     fs::create_dir_all(b_path.parent().unwrap()).unwrap();
@@ -1199,7 +1199,7 @@ fn check_cache_survives_corruption() {
     let cache = cache_tmp("corrupt");
     // lint の診断 (未使用の変数) が出るので、保存した内容を書き換えると結果が変わりうる。
     let src = "fn t.main() -> () uses [] panics never\n    let unused = 1u32\nend t.main\n";
-    let t = Tmp::new_raw("cc_corrupt", src);
+    let t = Tmp::new("cc_corrupt", src);
     let base = check_cached(&t.0, None);
     assert_eq!(base.0, Some(1), "{:?}", base);
     let _ = check_cached(&t.0, Some(&cache));
@@ -1282,7 +1282,7 @@ fn def_cache_step(label: &str, t: &Tmp, cache: &Path, text: &str) {
 #[test]
 fn check_cache_per_definition_edits_match_uncached() {
     let cache = cache_tmp("defs");
-    let t = Tmp::new_raw("cc_defs", DEF_CACHE_BASE);
+    let t = Tmp::new("cc_defs", DEF_CACHE_BASE);
     def_cache_step("base", &t, &cache, DEF_CACHE_BASE);
     let ed = |from: &str, to: &str| {
         assert!(DEF_CACHE_BASE.contains(from), "{}", from);
@@ -1335,7 +1335,7 @@ fn check_cache_per_definition_edits_match_uncached() {
 #[test]
 fn check_cache_line_mutations_match_uncached() {
     let cache = cache_tmp("mutations");
-    let t = Tmp::new_raw("cc_mut", DEF_CACHE_BASE);
+    let t = Tmp::new("cc_mut", DEF_CACHE_BASE);
     let lines: Vec<&str> = DEF_CACHE_BASE.lines().collect();
     let mut seed: u64 = 0x2545F4914F6CDD1D;
     let mut rnd = |n: usize| {
@@ -1389,7 +1389,7 @@ fn check_cached_env(dir: &Path, env: &[(&str, &str)]) -> (Option<i32>, String, S
 
 /// 文面だけの検査 (未使用の変数の lint) が出るファイルを `n` 本持つパッケージ (`t.ksnl` と `t/f<i>.ksnl`)。
 fn many_files_package(name: &str, n: usize) -> Tmp {
-    let t = Tmp::new_raw(name, "fn t.main() -> () uses [] panics never\n    let unused = 1u32\nend t.main\n");
+    let t = Tmp::new(name, "fn t.main() -> () uses [] panics never\n    let unused = 1u32\nend t.main\n");
     let d = t.0.join("src").join("t");
     fs::create_dir_all(&d).unwrap();
     for i in 0..n {
@@ -1553,7 +1553,7 @@ fn check_cache_parallel_processes_agree() {
 #[test]
 fn derive_try_clone_runs_and_builds_alike() {
     let src = "type t.P derive [Debug, Clone, Copy, TryClone] pub\n    x: u32\n    y: u32\nend t.P\n\nenum t.E derive [TryClone] pub\n    A(u32)\n    B(t.P)\nend t.E\n\ntype t.W derive [TryClone] pub\n    p: t.P\n    n: u32\nend t.W\n\nfn t.dup[T: alloc.alloc.TryClone](v: &T) -> Result<T, alloc.alloc.AllocError> uses [alloc] panics never\n    v.try_clone()\nend t.dup\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let w = t.W { p: t.P { x: 1u32, y: 2u32 }, n: 3u32 }\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(match v.push(w) {\n        Ok(_u) => 0u8\n        Err(_e) => 1u8\n    })\n    core.mem.drop(match t.dup(&v) {\n        Ok(c) => {\n            core.check.eq(c.len(), 1usize)\n            std.io.print_line(\"ok\")\n        }\n        Err(_e) => std.io.print_line(\"err\")\n    })\n    core.mem.drop(match v.try_clone() {\n        Ok(c) => core.check.eq(c.len(), 1usize)\n        Err(_e) => core.check.eq(1u8, 2u8)\n    })\n    core.mem.drop(match t.dup(&t.E.B(t.P { x: 1u32, y: 2u32 })) {\n        Ok(_c) => std.io.print_line(\"e ok\")\n        Err(_e) => std.io.print_line(\"err\")\n    })\n    Ok(())\nend t.main\n";
-    let t = Tmp::new_raw("derive_try_clone_ok", src);
+    let t = Tmp::new("derive_try_clone_ok", src);
     let chk = run(&["check"], &t.0);
     assert_eq!(chk.status.code(), Some(0), "{}{}", text(&chk.stdout), text(&chk.stderr));
     let interp = run(&["run"], &t.0);
@@ -1702,7 +1702,7 @@ impl Drop for LspDrive {
 
 #[test]
 fn lsp_incremental_matches_full_check() {
-    let t = Tmp::new_raw("lsp_inc", "");
+    let t = Tmp::new("lsp_inc", "");
     let src = t.0.join("src");
     fs::create_dir_all(src.join("t")).unwrap();
     let mk_main = "import t.b\n\nfn t.main() -> u32 uses [] panics never\n    b.base(1u32)\nend t.main\n";
@@ -1752,7 +1752,7 @@ fn lsp_incremental_matches_full_check() {
 
 #[test]
 fn derive_json_round_trips_and_builds_alike() {
-    let t = Tmp::new_raw("derive_json_round", DERIVE_JSON_SRC);
+    let t = Tmp::new("derive_json_round", DERIVE_JSON_SRC);
     let chk = run(&["check"], &t.0);
     assert_eq!(chk.status.code(), Some(0), "{}{}", text(&chk.stdout), text(&chk.stderr));
     let interp = run(&["run"], &t.0);
@@ -1778,7 +1778,7 @@ fn derive_json_round_trips_and_builds_alike() {
 #[test]
 fn build_key_changes_with_ksn_clang_args() {
     // `KSN_CLANG_ARGS` を変えるとキャッシュキーが変わり、前の成果物が `cache hit` で出ない。
-    let t = Tmp::new_raw("cache_key_clang_args", CACHE_SRC);
+    let t = Tmp::new("cache_key_clang_args", CACHE_SRC);
     let cache = std::env::temp_dir().join(format!("ksn_cache_key_clang_args_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let hit = |o: &Output| text(&o.stdout).contains("cache hit");
