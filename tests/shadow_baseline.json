@@ -3649,6 +3649,12 @@
 ],
 [
 "old_only",
+"stage0/tests/data/unsound/generic_recur_panics_var_no_stack.ksnl",
+7,
+"E4010"
+],
+[
+"old_only",
 "stage0/tests/data/unsound/generic_ref_iflet_deref_move.ksnl",
 9,
 "E3002"

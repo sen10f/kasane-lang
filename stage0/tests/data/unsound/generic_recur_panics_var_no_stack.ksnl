@@ -1,0 +1,12 @@
+// expect: E4010
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    core.check.eq(t.spin::<never>(3u8), 0u8)
+    Ok(())
+end t.main
+
+fn t.spin[P: panics](n: u8) -> u8 uses [] panics P
+    if n == 0u8 {
+        return 0u8
+    }
+    t.spin::<P>(n.wrapping_sub(1u8))
+end t.spin
