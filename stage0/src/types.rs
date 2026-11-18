@@ -714,6 +714,12 @@ impl<'a> TypeCk<'a> {
             }
             self.side.pat_tys.insert(k, info);
         }
+        // TAST (設計 8.4 担当 E): 閉包の取り込みを、型変数を解決して節名の鍵で側の表へ移す。
+        for (node, caps) in std::mem::take(&mut self.closure_caps) {
+            let caps_t: Vec<crate::tast::Capture> = caps.iter().map(|(k, n, t)| crate::tast::Capture { kind: k.clone(), name: n.clone(), ty: self.deep(t) }).collect();
+            self.closure_caps.insert(node.clone(), caps);
+            self.side.closure_caps.insert(node, caps_t);
+        }
         self.flush_expr_types();
         self.flush_conv();
         self.cov_flush();

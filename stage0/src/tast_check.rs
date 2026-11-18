@@ -6,7 +6,18 @@ use crate::check::Diag;
 use crate::program::Program;
 
 /// 新しい検査。`prog` は構築済みのプログラム、`user` は利用者の定義の添字。
-pub fn check(_prog: &Program, _user: &[usize]) -> Vec<Diag> {
+pub fn check(prog: &Program, user: &[usize]) -> Vec<Diag> {
+    let mut tk = crate::types::TypeCk::new(prog);
+    for &i in user {
+        let d = &prog.defs[i];
+        if (d.kw == "fn" && d.body.is_some()) || d.kw == "test" || (matches!(d.kw.as_str(), "const" | "static") && d.init.is_some()) {
+            tk.check_def(i);
+        }
+    }
+    let tast = crate::tast::build(prog, user, &tk.tytab, &tk.side, &tk.let_tys);
+    if std::env::var_os("KSN_DUMP_TAST").is_some() {
+        eprint!("{}", crate::tast::dump(prog, &tast));
+    }
     Vec::new()
 }
 
@@ -45,7 +56,13 @@ fn js(s: &str) -> String {
 /// 返すのは実際に報告する診断 (`old` / `new` / `shadow` のどれでも旧に従う。`new` は新だけ)。
 pub fn select(prog: &Program, user: &[usize], old: Vec<Diag>) -> Vec<Diag> {
     match mode() {
-        Mode::Old => old,
+        Mode::Old => {
+            // 確認用: 木を出すだけ (診断は旧いまま)。
+            if std::env::var_os("KSN_DUMP_TAST").is_some() {
+                let _ = check(prog, user);
+            }
+            old
+        }
         Mode::New => check(prog, user),
         Mode::Shadow => {
             let new = check(prog, user);

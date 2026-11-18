@@ -111,6 +111,8 @@ pub struct SideTabs {
     pub conv_pending: Vec<(Key, Ty, Ty)>,
     /// 【担当 C の作業用】受け手の (鍵, 受け手の型, `self` パラメータの宣言の型)。同上。
     pub recv_pending: Vec<(Key, Ty, Ty)>,
+    /// 【担当 E】閉包の取り込み (節名 `FQN#連番` が鍵。`Ty::Closure { id }` で引く)。`check_def` の終わりに解決済みの型で入る。
+    pub closure_caps: HashMap<String, Vec<Capture>>,
 }
 
 /// 閉包の取り込み (`TypeCk::closure_caps` を式 ID の鍵に直した形。種別は `&` / `&mut` / `move`)。
@@ -181,6 +183,8 @@ pub struct TArm {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TPat {
     pub id: PatId,
+    /// 節点の種別 (`PBind` `PTuple` ...)。
+    pub kind: &'static str,
     pub line: usize,
     pub info: Option<PatInfo>,
     /// 子のパターン (`PTuple` / `PVariant` / `PStruct` / `PRef` の中身)。
@@ -203,18 +207,478 @@ pub struct TBody {
     pub params: Vec<TBinding>,
     pub ret: Ty,
     pub body: TExpr,
+    /// 本体の全式 (呼び先の経路を除く) に確定した型が付いている。
+    pub complete: bool,
 }
 
 /// プログラム全体の TAST (利用者の定義だけ)。
 #[derive(Clone, Debug, Default)]
 pub struct Tast {
     pub bodies: std::collections::BTreeMap<DefId, TBody>,
+    pub stats: Stats,
 }
 
-/// 【担当 E】型表 (`TypeCk::tytab`)・`SideTabs`・`let_tys`・`closure_caps` と `V` の木から TAST を組む。
-/// `V` を 1 回辿り、式の形の `match` はここにだけ置く。未確定の型が 1 つでもある本体は組まない (E2044 が先に止める)。
-/// 今は空の TAST を返す (どこからも呼ばれない)。
-pub fn build(_p: &Program, _user: &[DefId], _tytab: &std::collections::BTreeMap<(String, u32), crate::types::ExprTy>, _side: &SideTabs, _let_tys: &HashMap<Key, Ty>) -> Tast {
-    let _ = std::marker::PhantomData::<V>;
-    Tast::default()
+/// 組んだ木の被覆の数え上げ。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Stats {
+    /// 式の節点の数 (呼び先の経路を除く) と、そのうち型表に確定した型があるもの。
+    pub exprs: usize,
+    pub typed: usize,
+    /// 呼び先の経路 (`Call` の第 1 子) の数と、型があるもの。
+    pub callees: usize,
+    pub callees_typed: usize,
+    /// 解決先・型引数・変換の印が付いた節点の数 (A〜C の表が埋まれば増える)。
+    pub with_res: usize,
+    pub with_targs: usize,
+    pub with_conv: usize,
+    /// パターン節点の数と、`PatInfo` が付いたもの (D)。
+    pub pats: usize,
+    pub pats_info: usize,
+}
+
+/// 型の中に決まっていない部分 (`Unknown` / 型変数) があれば true。
+fn has_unknown(t: &Ty) -> bool {
+    match t {
+        Ty::Unknown | Ty::Var(_) => true,
+        Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(has_unknown),
+        Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => has_unknown(x),
+        Ty::Closure { args, ret, .. } => args.iter().any(has_unknown) || has_unknown(ret),
+        _ => false,
+    }
+}
+
+/// 【担当 E】型表 (`TypeCk::tytab`)・`SideTabs`・`let_tys` と `V` の木から TAST を組む。
+/// `V` を 1 回辿り、式の形の `match` はここにだけ置く。A〜D の表は空でも組め、埋まれば `res` `targs` `conv` `info` に入る。
+/// 型が付かない節点は `ty = Ty::Unknown` (文など型表に入らない節点は `Ty::Unit`)。`TBody::complete` が本体の完全さ。
+pub fn build(p: &Program, user: &[DefId], tytab: &std::collections::BTreeMap<(String, u32), crate::types::ExprTy>, side: &SideTabs, let_tys: &HashMap<Key, Ty>) -> Tast {
+    let mut out = Tast::default();
+    for &di in user {
+        let d = &p.defs[di];
+        let body = if d.kw == "fn" || d.kw == "test" {
+            d.body.as_ref()
+        } else if matches!(d.kw.as_str(), "const" | "static") {
+            d.init.as_ref()
+        } else {
+            None
+        };
+        let Some(body) = body else { continue };
+        let gn = d.gnames();
+        let mut b = Builder { di, fqn: &d.name, tytab, side, let_tys, scopes: vec![HashMap::new()], gn: &gn, stats: Stats::default(), missing: false };
+        let mut params = vec![];
+        for (n, t) in &d.params {
+            b.scopes[0].insert(n.clone(), 0);
+            params.push(TBinding { name: n.clone(), ty: crate::types::from_v(t, &gn) });
+        }
+        let ret = crate::types::from_v(&d.ret, &gn);
+        let tb = b.expr(body, false);
+        let st = b.stats.clone();
+        let complete = !b.missing;
+        out.bodies.insert(di, TBody { def: di, params, ret, body: tb, complete });
+        let s = &mut out.stats;
+        s.exprs += st.exprs;
+        s.typed += st.typed;
+        s.callees += st.callees;
+        s.callees_typed += st.callees_typed;
+        s.with_res += st.with_res;
+        s.with_targs += st.with_targs;
+        s.with_conv += st.with_conv;
+        s.pats += st.pats;
+        s.pats_info += st.pats_info;
+    }
+    out
+}
+
+struct Builder<'a> {
+    di: DefId,
+    fqn: &'a str,
+    tytab: &'a std::collections::BTreeMap<(String, u32), crate::types::ExprTy>,
+    side: &'a SideTabs,
+    let_tys: &'a HashMap<Key, Ty>,
+    /// 局所の名前 → その `PBind` の ID (引数・`self` は 0)。Kasane は影を禁じるので入れ子ごとに積む。
+    scopes: Vec<HashMap<String, PatId>>,
+    gn: &'a std::collections::HashSet<String>,
+    stats: Stats,
+    missing: bool,
+}
+
+fn nodes(v: &V) -> Vec<&V> {
+    match v {
+        V::L(xs) => xs.iter().flat_map(nodes).collect(),
+        V::Node(..) => vec![v],
+        _ => vec![],
+    }
+}
+
+fn nm(v: &V) -> &'static str {
+    match v {
+        V::Node(n, ..) => n,
+        _ => "",
+    }
+}
+
+fn fs(v: &V) -> &[V] {
+    match v {
+        V::Node(_, f, ..) => f,
+        _ => &[],
+    }
+}
+
+fn sv(v: &V) -> String {
+    match v {
+        V::S(s) | V::N(s) => s.clone(),
+        V::B(b) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn lv(v: &V) -> &[V] {
+    match v {
+        V::L(xs) => xs,
+        _ => &[],
+    }
+}
+
+impl<'a> Builder<'a> {
+    fn lookup(&self, n: &str) -> Option<PatId> {
+        self.scopes.iter().rev().find_map(|s| s.get(n).copied())
+    }
+
+    fn bind_pat(&mut self, pat: &TPat) {
+        if let (Some(n), Some(sc)) = (&pat.name, self.scopes.last_mut()) {
+            sc.insert(n.clone(), pat.id);
+        }
+        for c in &pat.children {
+            self.bind_pat(c);
+        }
+    }
+
+    fn pat(&mut self, v: &V) -> TPat {
+        let V::Node(kind, f, ln, id) = v else {
+            return TPat { id: 0, kind: "", line: 0, info: None, children: vec![], name: None };
+        };
+        let mut children = vec![];
+        let mut name = None;
+        match *kind {
+            "PBind" => name = Some(sv(&f[0])),
+            "PTuple" => children = lv(&f[0]).iter().map(|x| self.pat(x)).collect(),
+            "PVariant" => children = lv(&f[1]).iter().map(|x| self.pat(x)).collect(),
+            "PStruct" => children = lv(&f[1]).iter().filter_map(|x| lv(x).get(1)).map(|x| self.pat(x)).collect(),
+            "PRef" => children = vec![self.pat(&f[0])],
+            _ => {}
+        }
+        let info = self.side.pat_tys.get(&(self.di, *id)).cloned();
+        self.stats.pats += 1;
+        if info.is_some() {
+            self.stats.pats_info += 1;
+        }
+        TPat { id: *id, kind, line: crate::parser::unpack_pos(*ln).0, info, children, name }
+    }
+
+    fn exprs(&mut self, v: &V) -> Vec<TExpr> {
+        nodes(v).into_iter().map(|x| self.expr(x, false)).collect()
+    }
+
+    fn stmt(&mut self, v: &V) -> TStmt {
+        match nm(v) {
+            "Let" => {
+                let f = fs(v);
+                let init = if matches!(f[3], V::Node(..)) { Some(self.expr(&f[3], false)) } else { None };
+                let pat = self.pat(&f[0]);
+                self.bind_pat(&pat);
+                TStmt::Let { pat, init }
+            }
+            "Assign" => {
+                let f = fs(v);
+                let place = self.expr(&f[0], false);
+                let value = self.expr(&f[1], false);
+                TStmt::Assign { place, value }
+            }
+            "ExprStmt" => TStmt::Expr(self.expr(&fs(v)[0], false)),
+            _ => TStmt::Expr(self.expr(v, false)),
+        }
+    }
+
+    /// 式の節点を組む。`callee` は `Call` の第 1 子 (被覆の数え方だけが違う)。
+    fn expr(&mut self, v: &V, callee: bool) -> TExpr {
+        let V::Node(kind, f, ln, id) = v else {
+            return TExpr { id: 0, line: 0, kind: TKind::Other { name: "?", children: vec![] }, ty: Ty::Unknown, place: None, conv: vec![], res: None, targs: vec![] };
+        };
+        let key = (self.di, *id);
+        let mut place = None;
+        let tkind = match *kind {
+            "Lit" => TKind::Lit(f.iter().map(sv).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(":")),
+            "Path" => {
+                let segs: Vec<String> = lv(&f[0]).iter().map(sv).collect();
+                // `p.x.y` は局所 `p` から始まる経路でも欄の連なり (呼び先の `v.len` は欄ではないので除く)。
+                if !callee {
+                    if let Some(pid) = self.lookup(&segs[0]) {
+                        let mut pl = Place::Local(segs[0].clone(), pid);
+                        for fld in &segs[1..] {
+                            pl = Place::Field(Box::new(pl), fld.clone());
+                        }
+                        place = Some(pl);
+                    }
+                }
+                TKind::Path(segs)
+            }
+            "Call" => {
+                let c = self.expr(&f[0], true);
+                let args = self.exprs(&f[1]);
+                TKind::Call { callee: Box::new(c), args }
+            }
+            "MCall" => {
+                let recv = self.expr(&f[0], false);
+                let args = self.exprs(&f[2]);
+                TKind::MCall { recv: Box::new(recv), name: sv(&f[1]), args }
+            }
+            "Field" => {
+                let base = self.expr(&f[0], false);
+                place = Some(Place::Field(Box::new(base_place(&base)), sv(&f[1])));
+                TKind::Field { base: Box::new(base), name: sv(&f[1]) }
+            }
+            "Index" => {
+                let base = self.expr(&f[0], false);
+                let index = self.expr(&f[1], false);
+                place = Some(Place::Index(Box::new(base_place(&base))));
+                TKind::Index { base: Box::new(base), index: Box::new(index) }
+            }
+            "Unary" => {
+                let operand = self.expr(&f[1], false);
+                let op = sv(&f[0]);
+                if op == "*" {
+                    place = Some(Place::Deref(Box::new(base_place(&operand)), operand.ty.clone()));
+                }
+                TKind::Unary { op, operand: Box::new(operand) }
+            }
+            "Bin" => {
+                let lhs = self.expr(&f[1], false);
+                let rhs = self.expr(&f[2], false);
+                TKind::Binary { op: sv(&f[0]), lhs: Box::new(lhs), rhs: Box::new(rhs) }
+            }
+            "Block" => {
+                self.scopes.push(HashMap::new());
+                let stmts = lv(&f[0]).iter().map(|s| self.stmt(s)).collect();
+                self.scopes.pop();
+                TKind::Block(stmts)
+            }
+            "If" => {
+                let cond = self.expr(&f[0], false);
+                let then = self.expr(&f[1], false);
+                let els = if matches!(f[2], V::Node(..)) { Some(Box::new(self.expr(&f[2], false))) } else { None };
+                TKind::If { cond: Box::new(cond), then: Box::new(then), els }
+            }
+            "Match" => {
+                let scrut = self.expr(&f[0], false);
+                let mut arms = vec![];
+                for a in lv(&f[1]) {
+                    let a = lv(a);
+                    self.scopes.push(HashMap::new());
+                    let pat = self.pat(&a[0]);
+                    self.bind_pat(&pat);
+                    let (guard, bi) = if a.len() > 2 { (Some(self.expr(&a[1], false)), 2) } else { (None, 1) };
+                    let body = self.expr(&a[bi], false);
+                    self.scopes.pop();
+                    arms.push(TArm { pat, guard, body });
+                }
+                TKind::Match { scrut: Box::new(scrut), arms }
+            }
+            "Closure" => {
+                self.scopes.push(HashMap::new());
+                let mut params = vec![];
+                for q in lv(&f[0]) {
+                    let q = lv(q);
+                    let name = sv(&q[0]);
+                    self.scopes.last_mut().unwrap().insert(name.clone(), 0);
+                    params.push(TBinding { name, ty: crate::types::from_v(&q[1], self.gn) });
+                }
+                let body = self.expr(&f[3], false);
+                self.scopes.pop();
+                let captures = match self.tytab.get(&(self.fqn.to_string(), *id)).map(|e| &e.ty) {
+                    Some(Ty::Closure { id: Some(node), .. }) => self.side.closure_caps.get(node).cloned().unwrap_or_default(),
+                    _ => vec![],
+                };
+                TKind::Closure { params, captures, body: Box::new(body) }
+            }
+            "For" => {
+                let it = self.expr(&f[1], false);
+                self.scopes.push(HashMap::new());
+                let pat = self.pat(&f[0]);
+                self.bind_pat(&pat);
+                let body = self.expr(&f[2], false);
+                self.scopes.pop();
+                TKind::Other { name: "For", children: vec![it, body] }
+            }
+            "With" => {
+                let init = self.expr(&f[2], false);
+                self.scopes.push(HashMap::new());
+                let pat = self.pat(&f[0]);
+                self.bind_pat(&pat);
+                let mut children = vec![init];
+                if matches!(f[3], V::Node(..)) {
+                    children.push(self.expr(&f[3], false));
+                }
+                children.push(self.expr(&f[4], false));
+                self.scopes.pop();
+                TKind::Other { name: "With", children }
+            }
+            // 上に無い形 (`While` `Loop` `Return` `Try` `StructLit` `TupleE` `ArrayE` `ArrayRep` `Unsafe` `Break` `Continue` ...):
+            // 子の式を順に集める (構造体リテラルの欄の組・文字列などの葉は節点でないので落ちる)。
+            other => {
+                let children = f.iter().flat_map(nodes).map(|x| self.expr(x, false)).collect();
+                TKind::Other { name: other, children }
+            }
+        };
+        let et = self.tytab.get(&(self.fqn.to_string(), *id));
+        let ty = match et {
+            Some(e) => e.ty.clone(),
+            None => Ty::Unknown,
+        };
+        let known = et.is_some() && !has_unknown(&ty);
+        if callee {
+            self.stats.callees += 1;
+            if known {
+                self.stats.callees_typed += 1;
+            }
+        } else {
+            self.stats.exprs += 1;
+            if known {
+                self.stats.typed += 1;
+            } else {
+                self.missing = true;
+            }
+        }
+        let _ = self.let_tys;
+        let res = self.side.resolved_fn.get(&key).cloned();
+        let targs = self.side.type_args.get(&key).cloned().unwrap_or_default();
+        let conv = self.side.coercions.get(&key).cloned().unwrap_or_default();
+        self.stats.with_res += res.is_some() as usize;
+        self.stats.with_targs += !targs.is_empty() as usize;
+        self.stats.with_conv += !conv.is_empty() as usize;
+        TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs }
+    }
+}
+
+/// 場所でない式 (呼び出しの結果など) は一時値の場所で指す。
+fn base_place(e: &TExpr) -> Place {
+    e.place.clone().unwrap_or(Place::Temp(e.id))
+}
+
+/// `KSN_DUMP_TAST=1` の出力: 1 節点 1 行、字下げは木の深さ。並びは (DefId, 木の順) で安定。
+pub fn dump(p: &Program, t: &Tast) -> String {
+    let mut o = String::new();
+    for (di, b) in &t.bodies {
+        o.push_str(&format!("body {} complete={}\n", p.defs[*di].name, b.complete));
+        for q in &b.params {
+            o.push_str(&format!("  param {}: {}\n", q.name, q.ty.show()));
+        }
+        dump_expr(&b.body, 1, &mut o);
+    }
+    let s = &t.stats;
+    o.push_str(&format!(
+        "stats exprs={} typed={} callees={} callees_typed={} res={} targs={} conv={} pats={} pats_info={}\n",
+        s.exprs, s.typed, s.callees, s.callees_typed, s.with_res, s.with_targs, s.with_conv, s.pats, s.pats_info
+    ));
+    o
+}
+
+fn ind(n: usize, o: &mut String) {
+    for _ in 0..n {
+        o.push_str("  ");
+    }
+}
+
+fn dump_pat(q: &TPat, n: usize, o: &mut String) {
+    ind(n, o);
+    o.push_str(&format!("pat#{} {} L{}", q.id, q.kind, q.line));
+    if let Some(nm) = &q.name {
+        o.push_str(&format!(" name={}", nm));
+    }
+    if let Some(i) = &q.info {
+        o.push_str(&format!(" ty={}", i.ty.show()));
+    }
+    o.push('\n');
+    for c in &q.children {
+        dump_pat(c, n + 1, o);
+    }
+}
+
+fn dump_expr(e: &TExpr, n: usize, o: &mut String) {
+    ind(n, o);
+    let (label, subs): (String, Vec<&TExpr>) = match &e.kind {
+        TKind::Lit(s) => (format!("Lit {}", s), vec![]),
+        TKind::Path(s) => (format!("Path {}", s.join(".")), vec![]),
+        TKind::Call { callee, args } => ("Call".into(), std::iter::once(&**callee).chain(args.iter()).collect()),
+        TKind::MCall { recv, name, args } => (format!("MCall .{}", name), std::iter::once(&**recv).chain(args.iter()).collect()),
+        TKind::Field { base, name } => (format!("Field .{}", name), vec![&**base]),
+        TKind::Index { base, index } => ("Index".into(), vec![&**base, &**index]),
+        TKind::Unary { op, operand } => (format!("Unary {}", op), vec![&**operand]),
+        TKind::Binary { op, lhs, rhs } => (format!("Binary {}", op), vec![&**lhs, &**rhs]),
+        TKind::Block(_) => ("Block".into(), vec![]),
+        TKind::If { cond, then, els } => ("If".into(), [Some(&**cond), Some(&**then), els.as_deref()].into_iter().flatten().collect()),
+        TKind::Match { scrut, .. } => ("Match".into(), vec![&**scrut]),
+        TKind::Closure { captures, body, .. } => (format!("Closure caps=[{}]", captures.iter().map(|c| format!("{} {}: {}", c.kind, c.name, c.ty.show())).collect::<Vec<_>>().join(", ")), vec![&**body]),
+        TKind::Other { name, children } => (name.to_string(), children.iter().collect()),
+    };
+    o.push_str(&format!("#{} {} L{} : {}", e.id, label, e.line, if matches!(e.ty, Ty::Unknown) { "?".to_string() } else { e.ty.show() }));
+    if let Some(pl) = &e.place {
+        o.push_str(&format!(" place={}", show_place(pl)));
+    }
+    if let Some(r) = &e.res {
+        o.push_str(&format!(" res={:?}", r));
+    }
+    if !e.targs.is_empty() {
+        o.push_str(&format!(" targs=[{}]", e.targs.iter().map(|t| t.show()).collect::<Vec<_>>().join(", ")));
+    }
+    if !e.conv.is_empty() {
+        o.push_str(&format!(" conv={:?}", e.conv));
+    }
+    o.push('\n');
+    for x in subs {
+        dump_expr(x, n + 1, o);
+    }
+    match &e.kind {
+        TKind::Block(stmts) => {
+            for s in stmts {
+                match s {
+                    TStmt::Let { pat, init } => {
+                        ind(n + 1, o);
+                        o.push_str("Let\n");
+                        dump_pat(pat, n + 2, o);
+                        if let Some(i) = init {
+                            dump_expr(i, n + 2, o);
+                        }
+                    }
+                    TStmt::Expr(x) => dump_expr(x, n + 1, o),
+                    TStmt::Assign { place, value } => {
+                        ind(n + 1, o);
+                        o.push_str("Assign\n");
+                        dump_expr(place, n + 2, o);
+                        dump_expr(value, n + 2, o);
+                    }
+                }
+            }
+        }
+        TKind::Match { arms, .. } => {
+            for a in arms {
+                ind(n + 1, o);
+                o.push_str("Arm\n");
+                dump_pat(&a.pat, n + 2, o);
+                if let Some(g) = &a.guard {
+                    dump_expr(g, n + 2, o);
+                }
+                dump_expr(&a.body, n + 2, o);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn show_place(p: &Place) -> String {
+    match p {
+        Place::Local(n, id) => format!("{}@{}", n, id),
+        Place::Field(b, f) => format!("{}.{}", show_place(b), f),
+        Place::Index(b) => format!("{}[]", show_place(b)),
+        Place::Deref(b, _) => format!("*{}", show_place(b)),
+        Place::Temp(id) => format!("tmp#{}", id),
+    }
 }
