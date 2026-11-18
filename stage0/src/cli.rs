@@ -90,6 +90,9 @@ fn fix_json(fixes: &[crate::fixes::Fix]) -> String {
     format!("[{}]", parts.join(", "))
 }
 
+/// 修正案がある診断の文面の末尾に足す旨 (人の読む文面だけ)。
+const FIXABLE_NOTE: &str = " (`ksn fix` で直せる)";
+
 /// 各診断に修正案を付ける (ソースは診断のファイルから読む)。
 fn attach_fixes(items: &mut [Item]) {
     let mut cache: HashMap<String, Vec<String>> = HashMap::new();
@@ -99,6 +102,10 @@ fn attach_fixes(items: &mut [Item]) {
             .entry(file.clone())
             .or_insert_with(|| read_text(&file).unwrap_or_default().split(char::from(10u8)).map(String::from).collect());
         it.fix = crate::fixes::fixes_for(&it.code, &it.message, &file, it.line, it.col, lines);
+        // 機械的に直せる診断は、人の読む文面の末尾にその旨を足す (code・並び順は変えない)。
+        if !it.fix.is_empty() && !it.message.ends_with(FIXABLE_NOTE) {
+            it.message.push_str(FIXABLE_NOTE);
+        }
     }
 }
 

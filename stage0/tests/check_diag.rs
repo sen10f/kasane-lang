@@ -980,8 +980,26 @@ fn match_arm_trailing_comma_is_fixed_by_ksn_fix() {
     let src = "fn t.a(x: u8) -> u8\n    match x {\n        0u8 => 1u8,\n        _ => 2u8,\n    }\nend t.a\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(1u8))\n    Ok(())\nend t.main\n";
     let t = Tmp::new("arm_comma", src);
-    let got = codes(&text(&run(&["check", "--json"], &t.0).stdout));
-    assert!(got.iter().any(|g| g == "E0049"), "{:?}", got);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|g| g == "E0049"), "{}", out);
+    // 直せる診断は文面の末尾に `ksn fix` の旨が付く (code は変わらない)。
+    assert!(out.contains("remove the trailing `,` (`ksn fix` で直せる)"), "{}", out);
+    let o = run(&["fix"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("        0u8 => 1u8\n        _ => 2u8\n"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn duplicate_test_names_say_which_one_to_rename_or_remove() {
+    let src = "test t.fib.test_small\n    core.mem.drop(1u8)\nend t.fib.test_small\n\n\
+               test t.fib.test_small\n    core.mem.drop(2u8)\nend t.fib.test_small\n";
+    let t = Tmp::new("dup_test", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|g| g == "E1103"), "{}", out);
+    assert!(out.contains("同じ名前の `test` が 2 つある"), "{}", out);
+    assert!(out.contains("2 つ目は 5 行目"), "{}", out);
 }
 
 // ---- 診断の改善 (4): match の腕 (`=>` の後の改行・腕の本体の代入) ----
