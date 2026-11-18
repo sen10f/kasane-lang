@@ -105,6 +105,12 @@ pub struct SideTabs {
     /// 【担当 D】パターンの節点ごとの型と束縛モード。
     /// 埋める所: `bind_pat` / `bind_pat_from` (`pat_mode` を読んでいる所)。`PBind` の型は `let_tys` と一致させる。
     pub pat_tys: HashMap<Key, PatInfo>,
+    /// 【担当 C の作業用】呼び出しの引数の式 ID (`call` / `MCall` が積み、`call_def` / `call_method_in` が取る)。
+    pub arg_ids: Vec<ExprId>,
+    /// 【担当 C の作業用】引数の (鍵, 期待の型, 実際の型)。型が決まる関数の終わり (`flush_expr_types`) で `coercions` に変える。
+    pub conv_pending: Vec<(Key, Ty, Ty)>,
+    /// 【担当 C の作業用】受け手の (鍵, 受け手の型, `self` パラメータの宣言の型)。同上。
+    pub recv_pending: Vec<(Key, Ty, Ty)>,
 }
 
 /// 閉包の取り込み (`TypeCk::closure_caps` を式 ID の鍵に直した形。種別は `&` / `&mut` / `move`)。
