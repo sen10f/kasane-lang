@@ -1,0 +1,4 @@
+fn t.main() -> () uses [] panics never
+    let xs = [1.0f64, 2.0f64]
+    core.mem.drop(xs.len())
+end t.main
