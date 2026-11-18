@@ -1,0 +1,21 @@
+// `'static` の参照だけを返す関数の結果は、`?` と束縛を挟んでも `'static` の引数に渡せる。
+enum t.E derive [Debug, Clone, Copy] pub
+    Bad
+end t.E
+
+fn t.main() -> Result<(), t.E> uses [] panics never
+    let r = t.pick(0usize)?
+    core.mem.drop(t.take(r))
+    Ok(())
+end t.main
+
+fn t.pick(k: usize) -> Result<&'static str, t.E> uses [] panics never
+    if k > 5usize {
+        return Err(t.E.Bad)
+    }
+    Ok("x")
+end t.pick
+
+fn t.take(s: &'static str) -> usize uses [] panics never
+    s.len()
+end t.take

@@ -478,6 +478,8 @@ pub struct TypeCk<'a> {
     arg_static: Vec<bool>,
     /// `'static` の境界を持つ位置へ渡した値: (型, 出どころが `'static`, 行, 説明)。関数の終わりに型が決まってから見る。
     static_checks: Vec<(Ty, bool, usize, String)>,
+    /// 値が `'static` と分かった `match` 式の ID (全腕の値が `static_expr`)。
+    static_nodes: HashSet<u32>,
     /// 推論中のクロージャ本体の効果 (`closure_nodes` と同じ深さのスタック)。型で解決できた呼び出しの
     /// 効果と添字の panic だけを足す (下からの近似。分からない呼び出しは足さない = 誤検出を出さない)。
     /// 3 つ目は「推論が確実でない」印 (推論された関数 `infer.rs` の効果を含む呼び出しがあった、
@@ -546,7 +548,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], static_nodes: HashSet::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1691,6 +1693,9 @@ impl<'a> TypeCk<'a> {
                 }
                 matches!(self.p.resolve(&segs, &self.def().file).map(|r| r.target), Some(Target::Const(_)))
             }
+            // `e?`: 戻り値の参照がすべて `'static` と宣言された関数の結果は、`?` で取り出しても `'static`。
+            "Try" => self.static_expr(&nf(e)[0]),
+            "Match" => self.static_nodes.contains(&crate::parser::nid(e)),
             "Call" => {
                 let callee = &nf(e)[0];
                 if nname(callee) != "Path" {
@@ -4337,6 +4342,8 @@ impl<'a> TypeCk<'a> {
             "Match" => {
                 let s = self.infer(&f[0]);
                 let src = self.last_site;
+                let scrut_static = self.static_expr(&f[0]);
+                let mut arms_static = true;
                 let mut out: Option<Ty> = None;
                 for arm in items(&f[1]) {
                     self.scopes.push(HashMap::new());
@@ -4345,7 +4352,18 @@ impl<'a> TypeCk<'a> {
                     self.bind_pat_from(&items(arm)[0], &s, src, nline(&items(arm)[0]));
                     self.pat_exact = saved_exact;
                     self.note_pat_binds(&items(arm)[0], nline(&items(arm)[0]));
+                    // 走査の対象が `'static` の値だけを持つなら、分解で得た名前も `'static`。
+                    if scrut_static {
+                        let mut bs = vec![];
+                        pat_binds(&items(arm)[0], &mut bs);
+                        for b in bs {
+                            self.set_static(&b, true);
+                        }
+                    }
                     let t = self.infer(&items(arm)[1]);
+                    if t != Ty::Never && !self.static_expr(&items(arm)[1]) {
+                        arms_static = false;
+                    }
                     self.scopes.pop();
                     if t == Ty::Never {
                         continue;
@@ -4356,6 +4374,9 @@ impl<'a> TypeCk<'a> {
                         // 6 の 2: 他の腕と型を一致させる (`Some(v) => Ok(v)` と `None => Err(a)` など)。
                         Some(o) => self.join_arm(&o, &t, nline(e), "`match` arms"),
                     });
+                }
+                if arms_static && out.is_some() {
+                    self.static_nodes.insert(crate::parser::nid(e));
                 }
                 // 腕がすべて発散するなら、match 自身も発散する。
                 match out {
