@@ -21,7 +21,11 @@ impl V {
             V::S(s) | V::N(s) => s.clone(),
             V::B(b) => (if *b { "true" } else { "false" }).to_string(),
             V::Nil => "-".to_string(),
-            V::L(xs) => format!("[{}]", xs.iter().map(|x| x.dump()).collect::<Vec<_>>().join(" ")),
+            // `ref` 型の 4 つ目 (`&'a T` の `'a`、設計 9 章) は型の同一性に入れない: 比べる・名前に使う `dump` には出さない。
+            V::L(xs) => {
+                let xs = if xs.len() == 4 && matches!(&xs[0], V::S(k) if k == "ref") { &xs[..3] } else { &xs[..] };
+                format!("[{}]", xs.iter().map(|x| x.dump()).collect::<Vec<_>>().join(" "))
+            }
             V::Node(n, fs, _, _) => {
                 let mut s = format!("({}", n);
                 let fs = if *n == "Lit" && matches!(fs.first(), Some(V::S(k)) if k == "float") { &fs[..2] } else { &fs[..] };
