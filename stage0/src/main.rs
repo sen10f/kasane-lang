@@ -8,6 +8,7 @@ mod doclink;
 mod headers;
 mod lexer;
 mod ksnh;
+mod ksnh_sync;
 mod lexrules;
 mod check;
 mod check_cache;
