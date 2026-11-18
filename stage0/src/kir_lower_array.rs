@@ -20,6 +20,11 @@ fn elem_ok(lw: &Lw, t: Ty) -> bool {
     t.is_int() || t.is_float() || matches!(t, Ty::Bool | Ty::Ptr) || (matches!(t, Ty::Agg(_)) && !owns_heap_pub(lw, t))
 }
 
+/// 要素 `size` バイトを `n` 個並べた領域の大きさ。`FrameBytes` の幅 (u32) に入らないときは `None` (溢れで panic させない)。
+fn frame_bytes(size: u32, n: u64) -> Option<u32> {
+    u32::try_from(n.checked_mul(size as u64)?).ok()
+}
+
 impl<'a> Lw<'a> {
     /// `[]` の値 (`{ptr, len=0}`)。長さ 0 なので読まれない。要素の型は値に出ない (文脈の型は検査が持つ)。
     pub(super) fn empty_array(&mut self) -> VId {
@@ -50,8 +55,13 @@ impl<'a> Lw<'a> {
         if vs.iter().any(|v| self.vty(*v) != et) {
             return self.err(line, "配列の要素の型がそろっていない");
         }
-        let size = elem_size(self, et).expect("要素の大きさ");
-        let base = self.emit(Ty::Ptr, Op::FrameBytes { size: size * vs.len() as u32 });
+        let Some(size) = elem_size(self, et) else {
+            return self.err(line, "配列の要素の大きさが決まらない (段階 1 の対象外)");
+        };
+        let Some(total) = frame_bytes(size, vs.len() as u64) else {
+            return self.err(line, "配列が大きすぎる (段階 1 の対象外)");
+        };
+        let base = self.emit(Ty::Ptr, Op::FrameBytes { size: total });
         for (i, v) in vs.iter().enumerate() {
             let p = if i == 0 { base } else {
                 let off = self.emit(Ty::Usize, Op::Const((size * i as u32) as i128));
@@ -80,9 +90,14 @@ impl<'a> Lw<'a> {
         if !(et.is_int() || et.is_float() || matches!(et, Ty::Bool | Ty::Ptr)) {
             return self.err(line, "配列の要素の型は段階 1 の対象外 (要素は整数・浮動小数・bool・ptr だけ)");
         }
-        let size = elem_size(self, et).expect("要素の大きさ");
+        let Some(size) = elem_size(self, et) else {
+            return self.err(line, "配列の要素の大きさが決まらない (段階 1 の対象外)");
+        };
+        let Some(total) = frame_bytes(size, n) else {
+            return self.err(line, "配列が大きすぎる (段階 1 の対象外)");
+        };
         // 空の配列 (`[x; 0]`) も領域は 1 バイト確保する (`frame.bytes` は 1 以上のはず。長さ 0 なので読まれない)。
-        let base = self.emit(Ty::Ptr, Op::FrameBytes { size: (size * n as u32).max(1) });
+        let base = self.emit(Ty::Ptr, Op::FrameBytes { size: total.max(1) });
         let zero = self.emit(Ty::Usize, Op::Const(0));
         let (hb, hp) = self.new_block(&[Ty::Usize]);
         self.goto(hb, vec![zero]);
