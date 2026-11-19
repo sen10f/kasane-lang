@@ -1,0 +1,8 @@
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let k = alloc.string.String.from_str(std.alloc.SYSTEM, "a")?
+    core.mem.drop(m.insert(k, 1u32)?)
+    let probe = alloc.string.String.from_str(std.alloc.SYSTEM, "a")?
+    core.mem.drop(m.contains_key(&probe))
+    Ok(())
+end t.main

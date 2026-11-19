@@ -127,7 +127,7 @@ end resolve.scope.is_prim
 fn resolve.scope.lookup_key(t: &resolve.table.Table, key: &str, file: usize) -> Result<resolve.scope.Res, alloc.alloc.AllocError> uses [alloc] panics never pub
     let k = alloc.string.String.from_str(std.alloc.SYSTEM, key)?
     let dm = &t.defs.m
-    match dm.get(&k) {
+    match dm.get_str(k.as_str()) {
         Some(ix) => {
             let d = resolve.table.at(t, *ix)
             if !d.public && d.file != file {
@@ -144,7 +144,7 @@ fn resolve.scope.lookup_key(t: &resolve.table.Table, key: &str, file: usize) -> 
         None => core.mem.drop(0u8)
     }
     let vm = &t.variants.m
-    match vm.get(&k) {
+    match vm.get_str(k.as_str()) {
         Some(_v) => Ok(resolve.scope.Res.Variant)
         None => Ok(resolve.scope.Res.Missing)
     }

@@ -200,6 +200,23 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             };
             vec![span(file, line, text, at, at, "*".to_string())]
         }
+        "E2054" => {
+            // `m.get(&s)` → `m.get_str(s.as_str())`。その行に `.NAME(` が 1 回だけで、引数が `&名前の鎖` か名前の鎖 (`&String` の値) のとき。
+            let re = Regex::new(r"`([a-z_]+)` on a `HashMap`").unwrap();
+            let Some(c) = re.captures(msg) else { return vec![] };
+            let name = &c[1];
+            let Some(text) = get(line) else { return vec![] };
+            let call = format!(".{}(", name);
+            if text.matches(&call).count() != 1 {
+                return vec![];
+            }
+            let at = text.find(&call).unwrap();
+            let arg_at = at + call.len();
+            let arg = Regex::new(r"^(&(?:mut )?)?([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\)").unwrap();
+            let Some(m) = arg.captures(&text[arg_at..]) else { return vec![] };
+            let whole = m.get(0).unwrap();
+            vec![span(file, line, text, at + 1, arg_at + whole.end(), format!("{}_str({}.as_str())", name, &m[2]))]
+        }
         "E2053" => {
             // 冗長な型の注釈 (D17): `let x: T = e` の `: T ` を外す (`let x = e`)。1 行の `let` に限る。
             let Some(text) = get(line) else { return vec![] };

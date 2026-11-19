@@ -2062,6 +2062,11 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
             return Ok(Some(lw.emit(rt, Op::Ok(v))));
         }
     }
+    // `s.try_clone()` (`String`): 中身のバイト列のコピーを新しく確保して `Ok(String)` (`String.from_str` と同じ下ろし)。
+    if m == "try_clone" && args.is_empty() && kind == Kind::String {
+        let text = hdr_view(lw, h);
+        return lw.string_from_fat(text, line);
+    }
     // `x.hash(&mut state)` (`&str` / `String`、仕様 4.2): バイト列を `Fnv64.write_bytes` へ渡す。受け手が `&&str` なら値を読む。
     if m == "hash" && args.len() == 1 && matches!(kind, Kind::Str | Kind::String) {
         let bytes = if kind == Kind::Str { load_fat_ref(lw, h) } else { hdr_view(lw, h) };
