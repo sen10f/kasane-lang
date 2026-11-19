@@ -451,7 +451,7 @@ fn ptr_add_const_and_cast_const_keep_const_and_run_in_both() {
     // from_ref の `*const` を add_const (count 0) と cast_const::<i32, i32> で読み直す。from_mut の `*mut` を add_const で
     // const に落としたものも読める。不変のスカラー変数 `x` の `from_ref(&x)` も、スタックスロットのアドレスとして扱い、
     // インタプリタとネイティブの両方で同じ結果になる。
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
@@ -849,7 +849,7 @@ fn kir_lower_string_call_result_as_str_and_const_split_lower_and_match_run() {
         main_wrap("", ""),
         "const t.main.SAMPLE: &str = \"a=b\\nc=d\\n\"
 
-fn t.main.make(s: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+fn t.main.make(s: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics never
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(out.push_str(s))
     out

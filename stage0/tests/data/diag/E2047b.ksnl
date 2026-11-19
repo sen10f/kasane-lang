@@ -15,6 +15,6 @@ fn t.f(b: &alloc.boxed.Box<dyn t.Shape, std.alloc.System>) -> i64 uses [] panics
     b.area()
 end t.f
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     std.io.print_line("x")
 end t.main

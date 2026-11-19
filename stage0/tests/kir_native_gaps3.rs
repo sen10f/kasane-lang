@@ -18,7 +18,7 @@ fn check(name: &str, src: &str) -> String {
 }
 
 const SHOW: &str = r#"
-fn t.line(s: &alloc.string.String<std.alloc.System>) -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.line(s: &alloc.string.String<std.alloc.System>) -> Result<(), std.io.Error> uses [io.console] panics never
     std.io.print_line(s.as_str())?
     Ok(())
 end t.line

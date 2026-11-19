@@ -6,7 +6,7 @@ fn t.eat(s: t.S) -> u32 uses [] panics never
     s.v
 end t.eat
 
-fn t.main() -> Result<(), std.io.Error> uses [] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let s = t.S { v: 1u32 }
     core.mem.drop(t.eat(s))
     core.mem.drop(s.v)

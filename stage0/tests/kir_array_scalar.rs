@@ -93,7 +93,7 @@ fn t.slice_sum(xs: &[f64]) -> f64 uses [] panics never
     s
 end t.slice_sum
 
-fn t.vec_sum() -> f64 uses [alloc] panics may
+fn t.vec_sum() -> f64 uses [alloc] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.mem.drop(v.push(1.5f64))
     core.mem.drop(v.push(2.25f64))

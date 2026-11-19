@@ -143,7 +143,7 @@ end t.main
 #[test]
 fn native_option_array_across_suspension_match_interpreter() {
     let src = with_say(
-        "fn t.pick(n: u32) -> Option<u32> uses [suspend] panics may
+        "fn t.pick(n: u32) -> Option<u32> uses [suspend] panics never
     std.task.yield_now()
     if n > 2u32 {
         Some(n.wrapping_mul(2u32))
@@ -152,7 +152,7 @@ fn native_option_array_across_suspension_match_interpreter() {
     }
 end t.pick
 
-fn t.work(seed: u32) -> u32 uses [io.console, suspend] panics may
+fn t.work(seed: u32) -> u32 uses [suspend] panics may
     let arr = [seed, seed.wrapping_add(1u32), seed.wrapping_add(2u32)]
     let mut total = 0u32
     let mut i = 0usize
@@ -285,7 +285,7 @@ fn native_owned_values_across_suspension_match_interpreter() {
     next: Option<alloc.boxed.Box<t.Holder, std.alloc.System>>
 end t.Holder
 
-fn t.work(n: u32) -> u32 uses [alloc, io.console, suspend] panics may
+fn t.work(n: u32) -> u32 uses [alloc, suspend] panics never
     let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.mem.drop(v.push(n))
     std.task.yield_now()
@@ -329,7 +329,7 @@ fn native_result_return_and_across_suspension_match_interpreter() {
     }
 end t.step
 
-fn t.work(n: u32) -> Result<u32, u32> uses [suspend] panics may
+fn t.work(n: u32) -> Result<u32, u32> uses [suspend] panics never
     let a = t.step(n)
     std.task.yield_now()
     let b = t.step(1u32)
@@ -390,7 +390,7 @@ fn native_question_mark_in_suspending_fn_matches_interpreter() {
     }
 end t.step
 
-fn t.work(n: u32) -> Result<u32, u32> uses [suspend] panics may
+fn t.work(n: u32) -> Result<u32, u32> uses [suspend] panics never
     let a = t.step(n)?
     std.task.yield_now()
     let b = t.step(1u32)?
@@ -516,7 +516,7 @@ end t.main
 #[test]
 fn stale_task_from_earlier_block_on_panics_101() {
     let src = with_say(
-        "fn t.mk() -> std.task.Task<alloc.string.String<std.alloc.System>> uses [alloc, io.console, suspend] panics may
+        "fn t.mk() -> std.task.Task<alloc.string.String<std.alloc.System>> uses [] panics may
     std.task.block_on(fn() -> std.task.Task<alloc.string.String<std.alloc.System>> capture [] {
         std.task.spawn_local(
             fn() -> alloc.string.String<std.alloc.System> capture [] {
@@ -550,7 +550,7 @@ end t.main
 #[test]
 fn stale_task_big_id_panic_message_matches_interpreter() {
     let src = with_say(
-        "fn t.mk() -> std.task.Task<alloc.string.String<std.alloc.System>> uses [alloc, io.console, suspend] panics may
+        "fn t.mk() -> std.task.Task<alloc.string.String<std.alloc.System>> uses [] panics may
     std.task.block_on(fn() -> std.task.Task<alloc.string.String<std.alloc.System>> capture [] {
         std.task.spawn_local(
             fn() -> alloc.string.String<std.alloc.System> capture [] {
@@ -623,7 +623,7 @@ end t.main
 #[test]
 fn native_block_on_in_two_threads_does_not_share_the_executor() {
     let src = with_say(
-        "fn t.run(n: u32) -> u64 uses [alloc, suspend] panics may
+        "fn t.run(n: u32) -> u64 uses [suspend] panics may
     std.task.block_on(fn() -> u64 capture [move n] {
         let mut total = 0u64
         for i in core.iter.range(0u32, n) {

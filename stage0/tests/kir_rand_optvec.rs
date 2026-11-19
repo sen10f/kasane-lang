@@ -52,7 +52,7 @@ end t.main
 /// 局所の `Rng` を `loop` の中で進めると、状態は次の周に残る。木走査とネイティブの結果が一致し、連続する値が同じにならない。
 #[test]
 fn rand_state_advances_across_loop_iterations_in_native() {
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let mut r = std.rand.Rng.from_seed(7u64)
     let a = r.next_u64()
     let mut i = 0u32
@@ -165,7 +165,7 @@ const OPT_FIELD_SRC: &str = "type t.Store pub
     n: u32 pub
 end t.Store
 
-fn t.fresh(n: u32) -> t.Store uses [alloc] panics never
+fn t.fresh(n: u32) -> t.Store uses [] panics never
     let nm = alloc.string.String.new(std.alloc.SYSTEM)
     t.Store { tok: None, name: Some(nm), n: n }
 end t.fresh

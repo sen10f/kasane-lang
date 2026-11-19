@@ -36,7 +36,7 @@ pub fn run(p: &mut Program) {
     }
 }
 
-fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
+pub(crate) fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
     let d = &p.defs[di];
     let Some(body) = &d.body else { return (vec![], false) };
     let locals = local_names(d, body);

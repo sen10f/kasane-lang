@@ -6,7 +6,7 @@ fn t.get_str(s: &alloc.string.String<std.alloc.System>) -> Result<&str, t.Error>
     Ok(s.as_str())
 end t.get_str
 
-fn t.main() -> Result<(), t.Error> uses [alloc] panics never
+fn t.main() -> Result<(), t.Error> uses [] panics never
     let s = alloc.string.String.new(std.alloc.SYSTEM)
     let r = t.get_str(&s)?
     core.mem.drop(r)

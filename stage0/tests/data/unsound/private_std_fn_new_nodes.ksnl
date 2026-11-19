@@ -1,4 +1,4 @@
-fn t.main() -> () uses [alloc] panics never
+fn t.main() -> () uses [] panics never
     let v = std.json.new_nodes()
     core.mem.drop(v)
 end t.main

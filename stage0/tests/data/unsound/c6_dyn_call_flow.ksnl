@@ -2,7 +2,7 @@ trait t.Pick
     fn pick(self: &Self, x: &u64) -> &u64 uses [] panics never
 end t.Pick
 
-fn t.main() -> () uses [] panics may
+fn t.main() -> () uses [] panics never
 end t.main
 
 fn t.run(h: &dyn t.Pick) -> () uses [] panics may

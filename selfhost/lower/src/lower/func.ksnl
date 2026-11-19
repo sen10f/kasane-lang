@@ -163,7 +163,7 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     lower.func.record(c, out.as_str(), "")
 end lower.func.lower_item
 
-fn lower.func.record(c: &mut lower.cx.Cx, text: &str, why: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.func.record(c: &mut lower.cx.Cx, text: &str, why: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     if why.len() > 0usize {
         c.g.oks.push(false)?
         c.g.tx.push(lower.cx.cat2(why, "")?)?

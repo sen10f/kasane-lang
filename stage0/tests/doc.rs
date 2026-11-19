@@ -26,6 +26,8 @@ impl Tmp {
         fs::write(d.join("src").join("t.ksnl"), src).unwrap();
         // 書き方は 1 通り (E0020): 試験の入力は `ksn fmt` の出力にそろえる。
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
+        // 効果の宣言は本体の効果と完全に一致させる (D5・D13): 固定の見出し (`main_wrap`) などを直す。
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025").current_dir(&d).output();
         Tmp(d)
     }
 }
@@ -64,7 +66,7 @@ fn t.first(xs: &[u8]) -> u8 uses [] panics may stack 64 pub
     xs[0usize]
 end t.first
 
-fn t.secret(a: i32) -> i32
+fn t.secret(a: i32) -> i32 uses [] panics never
     t.add(a, 1i32)
 end t.secret
 
@@ -180,7 +182,8 @@ fn doc_pages_show_contract_tests_and_escape_text() {
     let m = strip_tags(&raw);
     assert!(m.contains("fn t.secret(a: i32) -> i32"));
     assert!(m.contains("core.check.eq(t.secret(1i32), 2i32)"));
-    assert!(raw.contains("class=\"tag infer\"") && raw.contains("class=\"tag pure inf\""));
+    // 効果の省略は誤り (D13) なので、推論された契約の印 (`tag infer`) はもう出ない。
+    assert!(!raw.contains("class=\"tag infer\""));
 }
 
 #[test]

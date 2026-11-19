@@ -1,4 +1,4 @@
-fn t.bad() -> () uses [] panics may
+fn t.bad() -> () uses [] panics never
     let x = true + false
     core.mem.drop(x)
 end t.bad

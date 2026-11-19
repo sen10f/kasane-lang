@@ -3,7 +3,7 @@ type ksnc.front.Text pub
     errors: usize pub
 end ksnc.front.Text
 
-fn ksnc.front.check(dir: &str, std_dir: &str) -> Result<(), ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
+fn ksnc.front.check(dir: &str, std_dir: &str) -> Result<(), ksnc.Failure> uses [alloc, io.console, io.fs] panics never pub
     let r = ksnc.front.text(dir, std_dir)?
     if r.errors != 0usize {
         ksnc.tool.say_err(r.text.as_str())?
@@ -12,7 +12,7 @@ fn ksnc.front.check(dir: &str, std_dir: &str) -> Result<(), ksnc.Failure> uses [
     Ok(())
 end ksnc.front.check
 
-fn ksnc.front.text(dir: &str, std_dir: &str) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
+fn ksnc.front.text(dir: &str, std_dir: &str) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.fs] panics never pub
     let man = resolve.manifest.read(dir)?
     let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let own_src = resolve.manifest.join(dir, "src")?

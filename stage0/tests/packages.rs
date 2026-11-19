@@ -72,7 +72,7 @@ fn code_in(o: &Output, code: &str) -> bool {
 
 // ------------------------------------------------------------ 統合テスト (tests/)
 
-const LIB_SRC: &str = "fn t.add(a: u32, b: u32) -> u32 uses [] panics never pub\n    a.wrapping_add(b)\nend t.add\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"t ok\")\nend t.main\n\nfn t.secret() -> u32 uses [] panics never\n    7u32\nend t.secret\n\ntest t.add.test_unit\n    core.check.eq(t.add(1u32, 2u32), 3u32)\nend t.add.test_unit\n";
+const LIB_SRC: &str = "fn t.add(a: u32, b: u32) -> u32 uses [] panics never pub\n    a.wrapping_add(b)\nend t.add\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"t ok\")\nend t.main\n\nfn t.secret() -> u32 uses [] panics never\n    7u32\nend t.secret\n\ntest t.add.test_unit\n    core.check.eq(t.add(1u32, 2u32), 3u32)\nend t.add.test_unit\n";
 const SUB_SRC: &str = "fn t.sub.twice(x: u32) -> u32 uses [] panics never pub\n    t.add(x, x)\nend t.sub.twice\n";
 const INT_OK: &str = "fn t.tests.basic.helper(x: u32) -> u32 uses [] panics never\n    t.sub.twice(x)\nend t.tests.basic.helper\n\ntest t.tests.basic.test_modules_work_together\n    core.check.eq(t.tests.basic.helper(4u32), 8u32)\n    core.check.eq(t.add(1u32, 1u32), 2u32)\nend t.tests.basic.test_modules_work_together\n";
 
@@ -733,7 +733,7 @@ fn visibility_of_members_across_modules() {
 
 #[test]
 fn std_sys_is_not_referenceable_from_user_packages() {
-    let main = "import std.sys.os\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"x\")\nend t.main\n";
+    let main = "import std.sys.os\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"x\")\nend t.main\n";
     let (rc, out) = vis_check("std_sys_import", main, "");
     assert_eq!(rc, 1, "{}", out);
     assert!(out.contains("E1124"), "{}", out);

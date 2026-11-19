@@ -3,6 +3,7 @@ type t.S
 end t.S
 
 fn t.S.loud(self: t.S) -> u32 uses [io.console] panics never
+    core.mem.drop(std.io.print_line("x"))
     1u32
 end t.S.loud
 

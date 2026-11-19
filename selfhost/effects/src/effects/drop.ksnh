@@ -15,7 +15,7 @@ type effects.drop.Acc pub
     dfor: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
 end effects.drop.Acc
 
-fn effects.drop.acc_new() -> Result<effects.drop.Acc, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn effects.drop.acc_new() -> Result<effects.drop.Acc, alloc.alloc.AllocError> uses [] panics never pub
     let nm = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let un = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let nd = alloc.vec.Vec.new(std.alloc.SYSTEM)

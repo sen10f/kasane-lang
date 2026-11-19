@@ -2,7 +2,7 @@ type t.Wrap
     v: alloc.vec.Vec<u32, std.alloc.System>
 end t.Wrap
 
-fn t.bad() -> usize uses [alloc] panics never
+fn t.bad() -> usize uses [] panics never
     let v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut n = 0usize
     while n < 3usize {

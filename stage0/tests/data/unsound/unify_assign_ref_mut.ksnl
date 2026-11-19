@@ -1,4 +1,4 @@
-fn t.main() -> () uses [alloc] panics may
+fn t.main() -> () uses [alloc] panics never
     let mut v: alloc.vec.Vec<u64, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut w: alloc.vec.Vec<u64, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.mem.drop(v.push(1u64))

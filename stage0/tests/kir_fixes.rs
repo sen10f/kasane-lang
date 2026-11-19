@@ -33,11 +33,11 @@ fn strict_native_matches_run(name: &str, src: &str) -> String {
 /// (旧: 合流の引数の型が合わず `b3 の引数の型が合わない` で退避していた)。
 #[test]
 fn a_one_armed_if_with_a_non_unit_tail_lowers_natively() {
-    let src = "fn t.hello(x: u32) -> Result<u32, std.io.Error> uses [io.console] panics may\n\
+    let src = "fn t.hello(x: u32) -> Result<u32, std.io.Error> uses [io.console] panics never\n\
                \x20   std.io.print_line(\"hi\")?\n\
                \x20   Ok(x)\n\
                end t.hello\n\n\
-               fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n\
+               fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n\
                \x20   let c = true\n\
                \x20   if c {\n\
                \x20       core.mem.drop(t.hello(3u32)?)\n\
@@ -59,7 +59,7 @@ fn a_one_armed_if_discards_an_owned_tail_value() {
                \x20   })\n\
                \x20   s\n\
                end t.name\n\n\
-               fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n\
+               fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never\n\
                \x20   let c = true\n\
                \x20   if c {\n\
                \x20       core.mem.drop(t.name())\n\
@@ -78,7 +78,7 @@ fn a_std_type_declared_in_kasane_source_lowers_natively() {
                \x20   let doc = std.json.parse(text)?\n\
                \x20   std.json.decode_i64(&doc, doc.root())\n\
                end t.read\n\n\
-               fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n\
+               fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never\n\
                \x20   match t.read(\"42\") {\n\
                \x20       Ok(n) => {\n\
                \x20           if n == 42i64 {\n\
@@ -113,7 +113,7 @@ fn a_result_of_a_borrowed_owning_element_lowers_natively() {
                \x20   let p = t.pick(v)?\n\
                \x20   Ok(p.n)\n\
                end t.n_of\n\n\
-               fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n\
+               fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never\n\
                \x20   let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n\
                \x20   core.mem.drop(match v.push(t.P { name: alloc.string.String.new(std.alloc.SYSTEM), n: 7u32 }) {\n\
                \x20       Ok(_) => 0u8\n\
@@ -162,7 +162,7 @@ fn an_option_of_a_borrowed_enum_matches_variant_patterns() {
                \x20       None => 0u32\n\
                \x20   }\n\
                end t.sum_at\n\n\
-               fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n\
+               fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never\n\
                \x20   let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n\
                \x20   let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n\
                \x20   core.mem.drop(match s.push_str(\"abc\") {\n\
@@ -213,7 +213,7 @@ fn a_vec_field_reached_through_a_shared_reference_field_is_readable() {
                \x20       None => None\n\
                \x20   }\n\
                end t.first\n\n\
-               fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n\
+               fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never\n\
                \x20   let mut nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)\n\
                \x20   core.mem.drop(match nodes.push(41u32) {\n\
                \x20       Ok(_) => 0u8\n\

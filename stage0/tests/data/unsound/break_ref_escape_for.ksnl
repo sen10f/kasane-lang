@@ -1,4 +1,4 @@
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     let mut r = &t.mk()
     for i in core.iter.range(0u8, 2u8) {
         let b = t.mk()

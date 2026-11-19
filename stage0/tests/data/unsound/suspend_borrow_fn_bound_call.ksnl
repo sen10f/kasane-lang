@@ -2,7 +2,7 @@ fn t.call[F: core.ops.Fn<(), ()>](f: F) -> () uses [] panics never
     f()
 end t.call
 
-fn t.main() -> () uses [io.console, suspend] panics may
+fn t.main() -> () uses [suspend] panics never
     let mut x = 1u32
     let r = &mut x
     t.call(

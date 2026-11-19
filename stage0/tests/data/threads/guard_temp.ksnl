@@ -27,6 +27,6 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     Ok(())
 end t.main
 
-fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
     std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
 end t.oom

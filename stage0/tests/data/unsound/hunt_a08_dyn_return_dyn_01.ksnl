@@ -11,7 +11,7 @@ fn t.Boxed.m(self: &Self) -> () uses [io.console] panics never impls t.Tr<[io.co
     core.mem.drop(std.io.print_line("x"))
 end t.Boxed.m
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let b = t.Boxed { x: 1u32 }
     let d = t.wrap(&b)
     core.mem.drop(t.take(d))
@@ -22,6 +22,6 @@ fn t.take[E: uses, P: panics](h: &dyn t.Tr<E, P>) -> () uses [] panics never
     h.m()
 end t.take
 
-fn t.wrap[E: uses, P: panics](h: &dyn t.Tr<E, P>) -> &dyn t.Tr<E, P>
+fn t.wrap[E: uses, P: panics](h: &dyn t.Tr<E, P>) -> &dyn t.Tr<E, P> uses [] panics never
     h
 end t.wrap

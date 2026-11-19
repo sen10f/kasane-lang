@@ -1,0 +1,8 @@
+fn t.f(a: u8) -> u8 uses [] panics may
+    a
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    core.mem.drop(t.f(1u8))
+    Ok(())
+end t.main

@@ -36,7 +36,7 @@ fn t.evens(a: &[u32]) -> &[u32] uses [] panics never
     a
 end t.evens
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let mut n = 0u32
     for x in t.evens(&[1u32, 2u32, 3u32]) {
         n = n + *x

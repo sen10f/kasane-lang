@@ -2,13 +2,13 @@ type t.S
     r: &'static str
 end t.S
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     let w = t.wrapped()
     core.mem.drop(std.io.print_line(w.r))
     Ok(())
 end t.main
 
-fn t.mk() -> alloc.string.String uses [alloc] panics never
+fn t.mk() -> alloc.string.String uses [] panics never
     alloc.string.String.new(std.alloc.SYSTEM)
 end t.mk
 
@@ -16,7 +16,7 @@ fn t.wrap(r: &'static str) -> t.S uses [] panics never
     t.S { r: r }
 end t.wrap
 
-fn t.wrapped() -> t.S uses [alloc] panics never
+fn t.wrapped() -> t.S uses [] panics never
     let s = t.mk()
     t.wrap(s.as_str())
 end t.wrapped

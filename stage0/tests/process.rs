@@ -32,6 +32,8 @@ impl Tmp {
         fs::write(d.join("src").join("t.ksnl"), src).unwrap();
         // 書き方は 1 通り (E0020): 試験の入力は `ksn fmt` の出力にそろえる。
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
+        // 効果の宣言は本体の効果と完全に一致させる (D5・D13): 固定の見出し (`main_wrap`) などを直す。
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025").current_dir(&d).output();
         Tmp(d)
     }
 }
@@ -85,7 +87,7 @@ end t.main
 
 #[test]
 fn shell_exit_code_stderr_env_and_cwd() {
-    let src = r#"fn t.run_sh(script: &str, key: &str, value: &str, dir: &str) -> Result<(i32, usize, usize), std.io.Error> uses [alloc, process] panics may
+    let src = r#"fn t.run_sh(script: &str, key: &str, value: &str, dir: &str) -> Result<(i32, usize, usize), std.io.Error> uses [alloc, process] panics never
     let mut c = std.process.Command.new("/bin/sh")
     c.arg("-c")
     c.arg(script)
@@ -118,7 +120,7 @@ end t.main
 
 #[test]
 fn pipes_feed_cat_through_stdin_and_stdout() {
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, process] panics may
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console, process] panics may
     let mut c = std.process.Command.new("/bin/cat")
     c.stdin_piped()
     c.stdout_piped()
@@ -167,7 +169,7 @@ end t.main
 
 #[test]
 fn wait_reports_exit_code_and_signal() {
-    let src = r#"fn t.status(script: &str) -> Result<std.process.ExitStatus, std.io.Error> uses [process] panics may
+    let src = r#"fn t.status(script: &str) -> Result<std.process.ExitStatus, std.io.Error> uses [process] panics never
     let mut c = std.process.Command.new("/bin/sh")
     c.arg("-c")
     c.arg(script)
@@ -235,7 +237,7 @@ end t.main
 
 #[test]
 fn inherited_stdout_reaches_the_parent_in_order() {
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, process] panics may
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console, process] panics may
     core.mem.drop(std.io.print_line("before"))
     let mut c = std.process.Command.new("/bin/echo")
     c.arg("child")

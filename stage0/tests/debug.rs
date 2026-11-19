@@ -24,7 +24,7 @@ fn t.add(a: i32, b: i32) -> i32 uses [] panics never pub
     s
 end t.add
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let p = t.P { x: 3i32, y: 4i32 }
     let w = t.work(p)
     std.io.print_line(\"hello\")?
@@ -36,7 +36,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     Ok(())
 end t.main
 
-fn t.noisy() -> Result<(), std.io.Error> uses [alloc, io.console] panics may pub
+fn t.noisy() -> Result<(), std.io.Error> uses [io.console] panics never pub
     std.io.print_line(\"noisy\")
 end t.noisy
 

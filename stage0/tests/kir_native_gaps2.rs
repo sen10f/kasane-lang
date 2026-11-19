@@ -11,7 +11,7 @@ fn assert_native_release(name: &str, src: &str) {
 }
 
 const SHOW: &str = r#"
-fn t.p_u64(x: u64) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.p_u64(x: u64) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(alloc.fmt.write(&mut s, &x))
     std.io.print_line(s.as_str())?

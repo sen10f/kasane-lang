@@ -2,7 +2,7 @@ fn t.lg(log: &mut u32, k: u32) -> () uses [] panics may
     *log = *log * 10u32 + k
 end t.lg
 
-fn t.nv() -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics may
+fn t.nv() -> alloc.vec.Vec<u8, std.alloc.System> uses [] panics never
     alloc.vec.Vec.new(std.alloc.SYSTEM)
 end t.nv
 
@@ -49,7 +49,7 @@ fn t.run_try(n: u32) -> u32 uses [] panics may
     }
 end t.run_try
 
-fn t.w_body_owned(n: u32) -> usize uses [alloc] panics may
+fn t.w_body_owned(n: u32) -> usize uses [alloc] panics never
     let w = with s = n close core.mem.drop(s) {
         let mut b = t.nv()
         match b.push(1u8) {
@@ -127,7 +127,7 @@ fn t.w_ret(n: u32, log: &mut u32) -> u32 uses [] panics may
     }
 end t.w_ret
 
-fn t.w_sock(n: u32) -> u32 uses [io.net] panics may
+fn t.w_sock(n: u32) -> u32 uses [io.net] panics never
     match std.net.listen("127.0.0.1:0") {
         Ok(l) => {
             with s = l close match s.close() {
@@ -158,7 +158,7 @@ fn t.w_sock(n: u32) -> u32 uses [io.net] panics may
     }
 end t.w_sock
 
-fn t.w_str_borrow(n: u32) -> usize uses [alloc] panics may
+fn t.w_str_borrow(n: u32) -> usize uses [alloc] panics never
     let mut v = t.nv()
     match v.push(1u8) {
         Ok(_u) => {
@@ -208,14 +208,14 @@ fn t.w_try(n: u32, log: &mut u32) -> Result<u32, u32> uses [] panics may
     }
 end t.w_try
 
-fn t.w_try_in(n: u32) -> Result<u32, u32> uses [] panics may
+fn t.w_try_in(n: u32) -> Result<u32, u32> uses [] panics never
     if n > 3u32 {
         return Err(n)
     }
     Ok(n)
 end t.w_try_in
 
-fn t.w_val_own(n: u32) -> u32 uses [alloc] panics may
+fn t.w_val_own(n: u32) -> u32 uses [] panics may
     let mut v = t.nv()
     let r = with mut s = v close core.mem.drop(s) {
         n + 1u32

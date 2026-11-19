@@ -85,7 +85,7 @@ fn wiki.server.send(stream: &mut std.net.TcpStream, reply: &wiki.router.Reply, k
     Ok(())
 end wiki.server.send
 
-fn wiki.server.serve(address: &str, data_dir: &str) -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, time] panics never pub
+fn wiki.server.serve(address: &str, data_dir: &str) -> Result<(), wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never pub
     with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
         let mut page_store = store.PageStore.new(data_dir)?
         let mut csrf_tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)

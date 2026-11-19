@@ -2,7 +2,7 @@ fn t.forge(id: usize) -> std.task.Task<alloc.vec.Vec<u8, std.alloc.System>> uses
     std.task.Task { id: id }
 end t.forge
 
-fn t.main() -> () uses [alloc, io.console, suspend] panics may
+fn t.main() -> () uses [alloc, suspend] panics may
     std.task.block_on(fn() -> () capture [] {
         let b = std.task.spawn_local(
             fn() -> alloc.vec.Vec<u8, std.alloc.System> capture [] {

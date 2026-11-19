@@ -187,7 +187,7 @@ fn csvtool.agg.groupby(tbl: &csvtool.table.Table, key_col: usize, val_col: usize
     Ok(out)
 end csvtool.agg.groupby
 
-fn csvtool.agg.groups_new() -> alloc.vec.Vec<csvtool.agg.Group, std.alloc.System> uses [alloc] panics never
+fn csvtool.agg.groups_new() -> alloc.vec.Vec<csvtool.agg.Group, std.alloc.System> uses [] panics never
     alloc.vec.Vec.new(std.alloc.SYSTEM)
 end csvtool.agg.groups_new
 

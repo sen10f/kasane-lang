@@ -50,7 +50,7 @@ fn unsound_programs_are_rejected() {
     for p in names {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
         let src = fs::read_to_string(&p).unwrap();
-        let t = Tmp::new(&format!("unsound_{}", stem), &src);
+        let t = Tmp::new_strict(&format!("unsound_{}", stem), &src);
         // `.expect` の `target: X` は `ksn check --target X` で検査する (ポインタの幅などターゲットで変わる穴)。
         let target = expect_value(&p, "target");
         let mut args = vec!["check"];
@@ -167,7 +167,7 @@ end t.pick
 #[test]
 fn strict_types_accepts_inferable_programs() {
     let src = "\
-fn t.pick[T](flag: bool, a: T, b: T) -> T
+fn t.pick[T](flag: bool, a: T, b: T) -> T uses [] panics never
     if flag {
         return a
     }
@@ -427,7 +427,7 @@ fn ksnh_in_a_dependency_is_not_read() {
         format!("{}dep = {{ path = \"dep\" }}\n", TOML),
     )
     .unwrap();
-    fs::write(t.0.join("src/t.ksnl"), main_wrap("", "    core.mem.drop(dep.one())\n")).unwrap();
+    fs::write(t.0.join("src/t.ksnl"), main_wrap("", "    core.mem.drop(dep.one())\n").replace("uses [io.console] panics may", "uses [] panics never")).unwrap();
     run(&["update"], &t.0);
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
@@ -704,11 +704,11 @@ fn todo_is_rejected_in_panics_never_functions() {
 
 #[test]
 fn private_functions_may_omit_effects_and_they_are_inferred() {
-    let f = "fn t.a() -> () \n    std.io.print_line(\"x\")?\nend t.a\n\n";
+    let f = "fn t.a() -> () uses [io.console] panics never \n    std.io.print_line(\"x\")?\nend t.a\n\n";
     let _ = f;
     // 推論された効果は呼び出し元の検査に使われる。
-    let src = "fn t.helper() -> u8\n    1u8\nend t.helper\n\n\
-               fn t.loud() -> Result<(), std.io.Error>\n    std.io.print_line(\"hi\")\nend t.loud\n\n\
+    let src = "fn t.helper() -> u8 uses [] panics never\n    1u8\nend t.helper\n\n\
+               fn t.loud() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"hi\")\nend t.loud\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    core.mem.drop(t.helper())\n    t.loud()\nend t.main\n";
     let t = Tmp::new("infer_ok", src);
     let o = run(&["check", "--json"], &t.0);
@@ -719,7 +719,7 @@ fn private_functions_may_omit_effects_and_they_are_inferred() {
 #[test]
 fn inferred_effects_propagate_to_callers() {
     // loud は io.console を使うと推論される → uses [] の呼び出し元は E4001。
-    let src = "fn t.loud() -> Result<(), std.io.Error>\n    std.io.print_line(\"hi\")\nend t.loud\n\n\
+    let src = "fn t.loud() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"hi\")\nend t.loud\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    t.loud()\nend t.main\n";
     let t = Tmp::new("infer_prop", src);
     let o = run(&["check", "--json"], &t.0);
@@ -728,7 +728,7 @@ fn inferred_effects_propagate_to_callers() {
 
 #[test]
 fn inferred_panics_propagate_to_callers() {
-    let src = "fn t.boom() -> u8\n    core.panic.panic(\"x\")\nend t.boom\n\n\
+    let src = "fn t.boom() -> u8 uses [] panics may\n    core.panic.panic(\"x\")\nend t.boom\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.boom())\n    Ok(())\nend t.main\n";
     let t = Tmp::new("infer_panic", src);
     let o = run(&["check", "--json"], &t.0);
@@ -739,9 +739,27 @@ fn inferred_panics_propagate_to_callers() {
 fn pub_functions_must_declare_effects() {
     let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n\n\
                fn t.zed() -> u8 pub\n    1u8\nend t.zed\n";
-    let t = Tmp::new("infer_pub", src);
+    let t = Tmp::new_strict("infer_pub", src);
     let o = run(&["check", "--json"], &t.0);
     assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E4020"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn ksn_fix_rewrites_missing_and_wide_effect_headers() {
+    // D5・D13: 省略 (非 pub も) と広すぎる宣言は誤り (E4020 / E4025)。`ksn fix` が本体の効果に書き直す。
+    let src = "fn t.helper() -> u8\n    1u8\nend t.helper\n\n\
+               fn t.loud() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may\n    std.io.print_line(\"hi\")\nend t.loud\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.mem.drop(t.helper())\n    t.loud()\nend t.main\n";
+    let t = Tmp::new_strict("fix_effects", src);
+    let o = run(&["check", "--json"], &t.0);
+    let got = codes(&text(&o.stdout));
+    assert!(got.iter().any(|c| c == "E4020") && got.iter().any(|c| c == "E4025"), "{}", text(&o.stdout));
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("fn t.helper() -> u8 uses [] panics never\n"), "{}", fixed);
+    assert!(fixed.contains("fn t.loud() -> Result<(), std.io.Error> uses [io.console] panics never\n"), "{}", fixed);
+    assert!(fixed.contains("fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
 }
 
 // ---- 効果変数・panic 変数の実体化 (4.3 の単相化) と共変の解決 (5.1 の部分型) ----
@@ -821,7 +839,7 @@ fn inferred_caller_receives_the_instantiated_effects() {
     let src = "fn t.g[E: uses]() -> u8 uses [E] panics never pub\n    1u8\nend t.g\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
                core.mem.drop(t.mid())\n    Ok(())\nend t.main\n\n\
-               fn t.mid() -> u8\n    t.g::<[io.fs]>()\nend t.mid\n";
+               fn t.mid() -> u8 uses [io.fs] panics never\n    t.g::<[io.fs]>()\nend t.mid\n";
     let t = Tmp::new("eff_infer_bad", src);
     let o = run(&["check", "--json"], &t.0);
     let out = text(&o.stdout);
@@ -840,7 +858,7 @@ fn local_receiver_method_effects_are_checked() {
     // `s.m()` (`s` は局所変数) はパスとして構文解析されるが、型で解決先が一意に分かるので検査する。
     let src = "type t.S\n    n: u32\nend t.S\n\n\
                fn t.S.boom(self: &t.S) -> u32 uses [] panics may\n    core.panic.panic(\"x\")\nend t.S.boom\n\n\
-               fn t.S.loud(self: &t.S) -> u32 uses [io.console] panics never\n    1u32\nend t.S.loud\n\n\
+               fn t.S.loud(self: &t.S) -> u32 uses [io.console] panics never\n    core.mem.drop(std.io.print_line(\"x\"))\n    1u32\nend t.S.loud\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
                let s = t.S { n: 1u32 }\n    core.mem.drop(s.boom())\n    core.mem.drop(s.loud())\n    Ok(())\nend t.main\n";
     let t = Tmp::new("eff_local_bad", src);
@@ -908,7 +926,7 @@ fn method_on_unbounded_type_parameter_is_unknown_method_not_an_effect() {
 fn closure_argument_effects_are_inferred_at_fn_bounds() {
     let src = "fn t.gen[F: core.ops.Fn<(), u32, E, P>, E: uses, P: panics](f: F) -> u32 uses [E] panics P\n    f.call(())\nend t.gen\n\n\
                fn t.boom() -> u32 uses [] panics may\n    core.panic.panic(\"x\")\nend t.boom\n\n\
-               fn t.loud() -> u32 uses [io.console] panics never\n    1u32\nend t.loud\n\n\
+               fn t.loud() -> u32 uses [io.console] panics never\n    core.mem.drop(std.io.print_line(\"x\"))\n    1u32\nend t.loud\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
                core.mem.drop(t.gen(fn() -> u32 capture [] {\n        t.boom()\n    }))\n    \
                core.mem.drop(t.gen(fn() -> u32 capture [] {\n        t.loud()\n    }))\n    Ok(())\nend t.main\n";
@@ -968,7 +986,7 @@ fn const_param_call_site_arg_is_checked() {
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
                let b: t.Buf<u8, 16> = t.Buf { v: 1u8 }\n    \
                core.mem.drop(t.pick::<32>(b))\n    Ok(())\nend t.main\n\n\
-               fn t.pick[const N: usize](b: t.Buf<u8, N>) -> u8\n    b.v\nend t.pick\n";
+               fn t.pick[const N: usize](b: t.Buf<u8, N>) -> u8 uses [] panics never\n    b.v\nend t.pick\n";
     let t = Tmp::new("const_call_bad", bad);
     let o = run(&["check", "--json"], &t.0);
     assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E2023"), "{}", text(&o.stdout));
@@ -981,7 +999,7 @@ fn const_param_call_site_arg_is_checked() {
 #[test]
 fn explicit_type_args_are_respected_at_call_sites() {
     // 明示型引数 (`f::<T>`, 4.3) は引数の型の推論に反映される。
-    let ok = "fn t.id[T](x: T) -> T\n    x\nend t.id\n\n\
+    let ok = "fn t.id[T](x: T) -> T uses [] panics never\n    x\nend t.id\n\n\
               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
               let x = 5u8\n    let y: u8 = t.id::<u8>(x)\n    \
               core.mem.drop(y)\n    Ok(())\nend t.main\n";
@@ -1098,7 +1116,7 @@ fn match_arm_assignment_is_explained_and_fixed_as_a_block() {
 fn match_arm_correct_forms_pass_check() {
     // `=> {` を同じ行に書く形と、ブロックの中の代入は、どちらも診断 0 件で通る。`==` と `=>` の比較は代入ではない。
     let src = "fn t.a(x: Option<u8>) -> u8 uses [] panics never\n    let mut result = 0u8\n    match x {\n        Some(r) => {\n            result = r\n        }\n        None => {\n            result = 1u8\n        }\n    }\n    result\nend t.a\n\n\
-               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(Some(1u8)))\n    Ok(())\nend t.main\n";
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.a(Some(1u8)))\n    Ok(())\nend t.main\n";
     let t = Tmp::new("arm_correct", src);
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
@@ -1136,7 +1154,7 @@ fn type_used_as_value_suggests_the_constant() {
 #[test]
 fn junk_header_lines_are_never_silently_accepted() {
     // fmt が捨てる先頭行を、check が黙って通してはならない。
-    let src = "uses std.collections.HashMap\n\nfn t.main() -> Result<(), std.io.Error>\n    Ok(())\nend t.main\n";
+    let src = "uses std.collections.HashMap\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
     let t = Tmp::new_raw("junk_header", src);
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
@@ -1177,7 +1195,7 @@ fn method_argument_types_are_checked_for_primitives() {
 fn types_flow_through_calls_and_fields() {
     // v.pop() は Option<_>、その Option に is_some は存在する。items フィールド経由のメソッドも解決する。
     let src = "type t.S\n    items: alloc.vec.Vec<u32, std.alloc.System>\nend t.S\n\n\
-               fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may\n    let mut s = t.S { items: alloc.vec.Vec.new(std.alloc.SYSTEM) }\n    \
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let mut s = t.S { items: alloc.vec.Vec.new(std.alloc.SYSTEM) }\n    \
                core.mem.drop(s.items.pop().is_some())\n    core.mem.drop(s.items.len())\n    Ok(())\nend t.main\n";
     let t = Tmp::new("ty_flow", src);
     let out = text(&run(&["check", "--json"], &t.0).stdout);
@@ -1289,8 +1307,8 @@ fn a_literal_whose_type_is_never_decided_is_an_error() {
 
 #[test]
 fn context_decides_a_literal() {
-    let src = "type t.S\n    n: u16\nend t.S\n\nfn t.f(x: u8) -> u8\n    x + 1\nend t.f\n\n\
-               fn t.g() -> u64\n    7\nend t.g\n\n\
+    let src = "type t.S\n    n: u16\nend t.S\n\nfn t.f(x: u8) -> u8 uses [] panics may\n    x + 1\nend t.f\n\n\
+               fn t.g() -> u64 uses [] panics never\n    7\nend t.g\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    let s = t.S { n: 9 }\n    core.mem.drop(s)\n    \
                core.mem.drop(t.f(2))\n    core.mem.drop(t.g())\n    let xs = [1u8, 2u8]\n    core.mem.drop(xs[0])\n    Ok(())\nend t.main\n";
     let t = Tmp::new("lit_ctx", src);
@@ -1325,7 +1343,7 @@ fn returning_a_reference_derived_from_a_parameter_is_accepted() {
 #[test]
 fn let_annotation_and_return_value_mismatches_are_reported_once() {
     let src = "fn t.f() -> u8 uses [] panics never\n    5u32\nend t.f\n\n\
-               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    let a: u8 = 1u32\n    core.mem.drop(a)\n    core.mem.drop(t.f())\n    Ok(())\nend t.main\n";
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let a: u8 = 1u32\n    core.mem.drop(a)\n    core.mem.drop(t.f())\n    Ok(())\nend t.main\n";
     let t = Tmp::new("ann_mismatch", src);
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert_eq!(out.matches("type mismatch in let binding").count(), 1, "{}", out);
@@ -2982,17 +3000,17 @@ fn run_ref_return_case(name: &str, defs: &str, call: &str) {
 #[test]
 fn functions_returning_owned_or_local_references_run_in_the_native_build() {
     // ローカルの変数を経由する形
-    run_ref_return_case("ref_local", "fn t.word(text: &str) -> &str\n    let inner = text.trim()\n    inner\nend t.word\n", "    core.mem.drop(t.word(\"a\"))\n");
+    run_ref_return_case("ref_local", "fn t.word(text: &str) -> &str uses [] panics never\n    let inner = text.trim()\n    inner\nend t.word\n", "    core.mem.drop(t.word(\"a\"))\n");
     // 所有する型への参照
     run_ref_return_case(
         "ref_string",
-        "fn t.view(s: &alloc.string.String<std.alloc.System>) -> &alloc.string.String<std.alloc.System>\n    s\nend t.view\n",
+        "fn t.view(s: &alloc.string.String<std.alloc.System>) -> &alloc.string.String<std.alloc.System> uses [] panics never\n    s\nend t.view\n",
         "    let s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(t.view(&s))\n",
     );
     // 構造体への参照
-    run_ref_return_case("ref_struct", "type t.P\n    a: u8\nend t.P\n\nfn t.first(p: &t.P) -> &t.P\n    p\nend t.first\n", "    let p = t.P { a: 1u8 }\n    core.mem.drop(t.first(&p))\n");
+    run_ref_return_case("ref_struct", "type t.P\n    a: u8\nend t.P\n\nfn t.first(p: &t.P) -> &t.P uses [] panics never\n    p\nend t.first\n", "    let p = t.P { a: 1u8 }\n    core.mem.drop(t.first(&p))\n");
     // 可変参照
-    run_ref_return_case("ref_mut", "fn t.bump(x: &mut u32) -> &mut u32\n    x\nend t.bump\n", "    let mut x = 1u32\n    core.mem.drop(t.bump(&mut x))\n");
+    run_ref_return_case("ref_mut", "fn t.bump(x: &mut u32) -> &mut u32 uses [] panics never\n    x\nend t.bump\n", "    let mut x = 1u32\n    core.mem.drop(t.bump(&mut x))\n");
 }
 
 // ---- 既定の fail-closed: メソッドの存在と参照の段数 ----
@@ -3494,13 +3512,13 @@ fn e0010_still_fires_for_bad_names_in_tuple_lets_and_e0020_is_fatal() {
 #[test]
 fn e0020_order_violation_fails_check() {
     // 定義順・uses の並びの違反は `ksn fmt` が直す揺れで、書き方は 1 通りなので check の誤り (E0020、致命)。
-    let unordered = "fn t.b() -> u8 uses [] panics never\n    0u8\nend t.b\n\nfn t.a() -> u8 uses [] panics never\n    0u8\nend t.a\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.a(), 0u8)\n    core.check.eq(t.b(), 0u8)\n    Ok(())\nend t.main\n";
+    let unordered = "fn t.b() -> u8 uses [] panics never\n    0u8\nend t.b\n\nfn t.a() -> u8 uses [] panics never\n    0u8\nend t.a\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.check.eq(t.a(), 0u8)\n    core.check.eq(t.b(), 0u8)\n    Ok(())\nend t.main\n";
     let t = Tmp::new_raw("e0020_def_order", unordered);
     let o = run(&["check"], &t.0);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
     assert!(text(&o.stdout).contains("E0020"), "{}", text(&o.stdout));
 
-    let uses_order = "fn t.main() -> Result<(), std.io.Error> uses [io.fs, io.console] panics may\n    Ok(())\nend t.main\n";
+    let uses_order = "fn t.main() -> Result<(), std.io.Error> uses [io.fs, io.console] panics never\n    std.io.print_line(\"x\")?\n    core.mem.drop(std.fs.exists(\"x.txt\"))\n    Ok(())\nend t.main\n";
     let u = Tmp::new_raw("e0020_uses_order", uses_order);
     let o = run(&["check"], &u.0);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
@@ -3877,7 +3895,7 @@ fn inferred_caller_covers_local_method_and_closure_effects() {
     Ok(())
 end t.main
 
-fn t.mid(s: t.S) -> u8
+fn t.mid(s: t.S) -> u8 uses [io.console] panics never
     core.mem.drop(s.say())
     t.apply(
         fn(x: u8) -> u8 capture [] {
@@ -4065,7 +4083,7 @@ fn t.bnd_none[F: core.ops.Fn<(u8,), u8, [], never>](f: F, x: u8) -> u8 uses [] p
     f(x)
 end t.bnd_none
 
-fn t.inf_io(x: u8) -> u8
+fn t.inf_io(x: u8) -> u8 uses [io.console] panics never
     core.mem.drop(std.io.print_line("i"))
     x
 end t.inf_io
@@ -4121,7 +4139,7 @@ fn t.S.run[F: core.ops.Fn<(u8,), u8, [], never>](self: &t.S, f: F) -> u8 uses []
     f(self.n)
 end t.S.run
 
-fn t.bad_method(s: t.S) -> u8 uses [io] panics never
+fn t.bad_method(s: t.S) -> u8 uses [io.console] panics never
     s.run(
         fn(y: u8) -> u8 capture [] {
             core.mem.drop(std.io.print_line(\"m\"))
@@ -4221,8 +4239,9 @@ fn inferred_callee_inside_a_closure_binds_the_fn_bound_effect_as_an_upper_bound(
     let src = format!(
         "{}{}",
         INFERRED_PRELUDE,
-        "fn t.h(b: &t.B) -> u8
+        "fn t.h(b: &t.B) -> u8 uses [io.console] panics never
     core.mem.drop(b.m())
+    core.mem.drop(std.io.print_line(\"h\"))
     0
 end t.h
 
@@ -4251,7 +4270,7 @@ fn inferred_callee_of_a_local_receiver_stays_silent() {
     let src = format!(
         "{}{}",
         INFERRED_PRELUDE,
-        "fn t.B.k(self: &t.B) -> u8
+        "fn t.B.k(self: &t.B) -> u8 uses [] panics never
     self.m()
 end t.B.k
 
@@ -4668,7 +4687,7 @@ fn shadow_header_arg_without_import_is_clean() {
     let t = Tmp::new(
         "shadow_hdr_neg",
         "fn t.g(util: u8) -> u8 uses [] panics never\n    util\nend t.g\n\n\
-         fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(t.g(1u8))\n    Ok(())\nend t.main\n",
+         fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.g(1u8))\n    Ok(())\nend t.main\n",
     );
     let o = run(&["check", "--json"], &t.0);
     assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1021"), "{}", text(&o.stdout));
@@ -4850,7 +4869,7 @@ end t.loud_closure
 #[test]
 fn trait_call_effects_stay_silent_when_unknown() {
     // 陰性 (黙る): 効果変数の束縛が分からない境界、推論された関数。クロージャの本体の `dyn` 越しは、上の検査。
-    let body = "fn t.quiet_inferred(a: &dyn t.Act) -> u8
+    let body = "fn t.quiet_inferred(a: &dyn t.Act) -> u8 uses [io.console] panics never
     a.act()
 end t.quiet_inferred
 
@@ -5062,7 +5081,7 @@ fn unguided_syntax_error_keeps_e0002() {
 /// `derive [TryClone]` は全フィールドが `TryClone` のときだけ (E2036)。`T: TryClone` の境界を満たさない型は E2030。
 #[test]
 fn derive_try_clone_on_non_try_clone_field_is_e2036() {
-    let t = Tmp::new("derive_try_clone_bad", "type t.N pub\n    x: u32\nend t.N\n\ntype t.W derive [TryClone] pub\n    n: t.N\nend t.W\n\nfn t.dup[T: alloc.alloc.TryClone](v: &T) -> Result<T, alloc.alloc.AllocError> uses [alloc] panics never\n    v.try_clone()\nend t.dup\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let n = t.N { x: 1u32 }\n    match t.dup(&n) {\n        Ok(_c) => std.io.print_line(\"e ok\")\n        Err(_e) => std.io.print_line(\"err\")\n    }\n    Ok(())\nend t.main\n");
+    let t = Tmp::new("derive_try_clone_bad", "type t.N pub\n    x: u32\nend t.N\n\ntype t.W derive [TryClone] pub\n    n: t.N\nend t.W\n\nfn t.dup[T: alloc.alloc.TryClone](v: &T) -> Result<T, alloc.alloc.AllocError> uses [alloc] panics never\n    v.try_clone()\nend t.dup\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never\n    let n = t.N { x: 1u32 }\n    match t.dup(&n) {\n        Ok(_c) => std.io.print_line(\"e ok\")\n        Err(_e) => std.io.print_line(\"err\")\n    }\n    Ok(())\nend t.main\n");
     let o = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(o.contains("E2036"), "{}", o);
     assert!(o.contains("E2030"), "{}", o);
@@ -5103,7 +5122,7 @@ fn ambiguous_elided_fn_effects_must_be_written_out() {
 /// 型パラメータ (`FromJson`)。`get --derived` は展開した Kasane の文面を表示する。
 #[test]
 fn derive_json_on_unsupported_field_is_e2036() {
-    let src = "type t.N pub\n    x: u32\nend t.N\n\ntype t.A derive [ToJson, FromJson] pub\n    n: t.N\nend t.A\n\ntype t.B derive [ToJson] pub\n    f: f64\nend t.B\n\ntype t.C derive [ToJson] pub\n    p: (u8, u8)\nend t.C\n\ntype t.G[T] derive [FromJson] pub\n    v: T\nend t.G\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    Ok(())\nend t.main\n";
+    let src = "type t.N pub\n    x: u32\nend t.N\n\ntype t.A derive [ToJson, FromJson] pub\n    n: t.N\nend t.A\n\ntype t.B derive [ToJson] pub\n    f: f64\nend t.B\n\ntype t.C derive [ToJson] pub\n    p: (u8, u8)\nend t.C\n\ntype t.G[T] derive [FromJson] pub\n    v: T\nend t.G\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
     let t = Tmp::new("derive_json_bad", src);
     let o = text(&run(&["check", "--json"], &t.0).stdout);
     let n = o.matches("E2036").count();
@@ -5164,7 +5183,7 @@ fn stdlib_injected_type_error_is_reported() {
 /// 文字リテラル `'"'` の `"` を文字列の始まりと誤らない (誤ると後ろの変数の使用が消え、E1020 になる)。
 #[test]
 fn char_literal_double_quote_does_not_hide_later_uses() {
-    let src = "fn t.has_quote(text: &str) -> bool uses [] panics never\n    for c in text.chars() {\n        if c == '\"' {\n            return true\n        }\n    }\n    false\nend t.has_quote\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    Ok(())\nend t.main\n";
+    let src = "fn t.has_quote(text: &str) -> bool uses [] panics never\n    for c in text.chars() {\n        if c == '\"' {\n            return true\n        }\n    }\n    false\nend t.has_quote\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
     let t = Tmp::new("char_quote", src);
     let o = run(&["check", "--json"], &t.0);
     assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
@@ -5173,7 +5192,7 @@ fn char_literal_double_quote_does_not_hide_later_uses() {
 /// 未解決のパターン名 (`Nope.X(v)`) の診断は、そのパターンの行を指す。関数の先頭行 (本体の 0 行扱い) ではない。
 #[test]
 fn unresolved_pattern_reports_its_own_line() {
-    let src = "enum t.E\n    A\n    B(i32)\nend t.E\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    let m = match t.E.A {\n        Nope.X(v) => v\n        t.E.A => 0i32\n        t.E.B(q) => q\n    }\n    core.mem.drop(m)\n    Ok(())\nend t.main\n";
+    let src = "enum t.E\n    A\n    B(i32)\nend t.E\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let m = match t.E.A {\n        Nope.X(v) => v\n        t.E.A => 0i32\n        t.E.B(q) => q\n    }\n    core.mem.drop(m)\n    Ok(())\nend t.main\n";
     let want = src.lines().position(|l| l.contains("Nope.X")).unwrap() + 1;
     let t = Tmp::new("pattern_line", src);
     let o = run(&["check", "--json"], &t.0);

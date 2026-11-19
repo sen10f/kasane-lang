@@ -32,7 +32,7 @@ fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
     core.mem.drop(s)
 end t.consume
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let r = t.pick(&5u32)
     core.check.eq(*r, 5u32)
     Ok(())

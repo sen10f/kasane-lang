@@ -13,6 +13,6 @@ fn t.bad() -> u64 uses [] panics never
     }
 end t.bad
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

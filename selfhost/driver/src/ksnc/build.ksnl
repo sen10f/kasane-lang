@@ -8,7 +8,7 @@ fn ksnc.build.check(ksn: &str, dir: &str) -> Result<(), ksnc.Failure> uses [allo
     ksnc.tool.expect_ok("ksnc: ksn check が失敗した\n", st.code, &out, &err)
 end ksnc.build.check
 
-fn ksnc.build.check_show(ksn: &str, dir: &str) -> Result<bool, ksnc.Failure> uses [alloc, io.console, process] panics may pub
+fn ksnc.build.check_show(ksn: &str, dir: &str) -> Result<bool, ksnc.Failure> uses [alloc, io.console, process] panics never pub
     let mut cmd = std.process.Command.new(ksn)
     cmd.arg("check")
     cmd.current_dir(dir)
@@ -16,7 +16,7 @@ fn ksnc.build.check_show(ksn: &str, dir: &str) -> Result<bool, ksnc.Failure> use
     Ok(code == 0i32)
 end ksnc.build.check_show
 
-fn ksnc.build.fmt(ksn: &str, dir: &str, check: bool) -> Result<bool, ksnc.Failure> uses [alloc, io.console, process] panics may pub
+fn ksnc.build.fmt(ksn: &str, dir: &str, check: bool) -> Result<bool, ksnc.Failure> uses [alloc, io.console, process] panics never pub
     let mut cmd = std.process.Command.new(ksn)
     cmd.arg("fmt")
     if check {
@@ -27,7 +27,7 @@ fn ksnc.build.fmt(ksn: &str, dir: &str, check: bool) -> Result<bool, ksnc.Failur
     Ok(code == 0i32)
 end ksnc.build.fmt
 
-fn ksnc.build.make(ksn: &str, root: &str, dir: &str, release: bool, target: &str) -> Result<(), ksnc.Failure> uses [alloc, env, io.console, io.fs, process] panics never pub
+fn ksnc.build.make(ksn: &str, root: &str, dir: &str, release: bool, target: &str) -> Result<(), ksnc.Failure> uses [alloc, env, io.console, process] panics never pub
     let me = ksnc.tool.env_or("KSNC_SELF")
     let self_exe = if me == "" {
         std.path.join(root, "selfhost/driver/target/release/ksnc.native")?

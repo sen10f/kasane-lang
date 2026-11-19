@@ -2,7 +2,7 @@ fn t.gen[F: core.ops.Fn<(), u32, E, P>, E: uses, P: panics](f: F) -> u32 uses [E
     f.call(())
 end t.gen
 
-fn t.loud() -> u32
+fn t.loud() -> u32 uses [io.console] panics never
     core.mem.drop(std.io.print_line("x"))
     1u32
 end t.loud

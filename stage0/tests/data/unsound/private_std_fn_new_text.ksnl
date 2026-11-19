@@ -1,4 +1,4 @@
-fn t.main() -> () uses [alloc] panics never
+fn t.main() -> () uses [] panics never
     let s = std.json.new_text()
     core.mem.drop(s)
 end t.main

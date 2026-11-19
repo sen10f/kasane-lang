@@ -7,13 +7,13 @@ fn t.consume(s: alloc.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.consume
 
-fn t.f(x: &t.S) -> () uses [io.console] panics never
+fn t.f(x: &t.S) -> () uses [] panics never
     let t.S { name: n, other: o } = x
     t.consume(n)
     t.consume(o)
 end t.f
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = alloc.string.String.new(std.alloc.SYSTEM)
     let b = alloc.string.String.new(std.alloc.SYSTEM)
     let x = t.S { name: a, other: b }

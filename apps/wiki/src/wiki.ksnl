@@ -17,7 +17,7 @@ fn wiki.demo() -> Result<(), wiki.error.Error> uses [alloc, io.console, io.fs, i
     Ok(())
 end wiki.demo
 
-fn wiki.main() -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, thread, time] panics may
+fn wiki.main() -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, time] panics never
     if std.env.arg_count() == 0usize {
         return wiki.demo()
     }
@@ -51,7 +51,7 @@ fn wiki.remove_dir_all(path: &str) -> Result<(), wiki.error.Error> uses [alloc, 
     Ok(())
 end wiki.remove_dir_all
 
-fn wiki.serve_cli() -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, thread, time] panics may
+fn wiki.serve_cli() -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, time] panics never
     let address = match std.env.arg(0usize) {
         Some(a) => a
         None => return Err(wiki.error.Error.BadRequest)
