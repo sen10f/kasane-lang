@@ -7,7 +7,7 @@ type t.S
     n: usize
 end t.S
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let s = t.mk()
     let out = t.Out { inner: t.S { name: &s, n: 1usize } }
     let t.Out { inner: inner } = out
@@ -17,6 +17,6 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     Ok(())
 end t.main
 
-fn t.mk() -> alloc.string.String uses [alloc] panics never
+fn t.mk() -> alloc.string.String uses [] panics never
     alloc.string.String.new(std.alloc.SYSTEM)
 end t.mk

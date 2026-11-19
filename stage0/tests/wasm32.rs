@@ -168,7 +168,7 @@ fn unsupported_std_features_fail_with_a_reason() {
     assert!(both(&o).contains("E9040") && both(&o).contains("スレッド"), "{}", both(&o));
 
     // ファイル (std.fs)
-    let fs_src = "fn t.main() -> Result<(), std.io.Error> uses [io.fs, io.console] panics may\n    let e = std.fs.exists(\"x.txt\")\n    core.mem.drop(e)\n    Ok(())\nend t.main\n";
+    let fs_src = "fn t.main() -> Result<(), std.io.Error> uses [io.fs] panics never\n    let e = std.fs.exists(\"x.txt\")\n    core.mem.drop(e)\n    Ok(())\nend t.main\n";
     let f = Tmp::new("wasm_fs", fs_src);
     let o = run(&["build", "--target", TRIPLE], &f.0);
     assert_eq!(o.status.code(), Some(1), "{}", both(&o));
@@ -196,7 +196,7 @@ fn usize_wraps_at_the_target_width() {
         eprintln!("skipped: node / wasm-ld-20 / clang のどれかがない");
         return;
     }
-    let src = "fn t.show(v: u64) -> () uses [alloc, io.console] panics never\n    let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(s.push_u64(v))\n    core.mem.drop(std.io.print_line(s.as_str()))\nend t.show\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let z: usize = 0usize\n    let w: usize = z.wrapping_sub(1usize)\n    t.show(u64.from_usize(w))\n    Ok(())\nend t.main\n";
+    let src = "fn t.show(v: u64) -> () uses [alloc, io.console] panics never\n    let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(s.push_u64(v))\n    core.mem.drop(std.io.print_line(s.as_str()))\nend t.show\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never\n    let z: usize = 0usize\n    let w: usize = z.wrapping_sub(1usize)\n    t.show(u64.from_usize(w))\n    Ok(())\nend t.main\n";
     let t = Tmp::new("wasm_usize_wrap", src);
     let nat = run_native(&build_host(&t.0));
     let wasm = run_wasm(&build_wasm(&t.0));

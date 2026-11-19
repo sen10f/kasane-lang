@@ -58,18 +58,18 @@ end t.main
 /// `!` の関数が `!` の関数を呼ぶ連なり。終了コードは計算した値。
 #[test]
 fn a_never_returning_fn_can_call_another_never_returning_fn() {
-    let src = r#"fn t.bail(code: i32) -> ! uses [io.console, process] panics never
+    let src = r#"fn t.bail(code: i32) -> ! uses [process] panics never
     std.process.exit(code.wrapping_add(40i32))
 end t.bail
 
-fn t.check_all(n: u32) -> ! uses [io.console, process] panics never
+fn t.check_all(n: u32) -> ! uses [process] panics never
     if n > 3u32 {
         t.bail(2i32)
     }
     t.bail(1i32)
 end t.check_all
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console, process] panics may
+fn t.main() -> Result<(), std.io.Error> uses [io.console, process] panics never
     std.io.print_line("start")?
     t.check_all(9u32)
 end t.main
@@ -80,7 +80,7 @@ end t.main
 /// `std.process.exit(0)` は正常な終わりと同じ終了コードを返す。ループの後ろにあっても、前の出力は残る。
 #[test]
 fn process_exit_with_zero_after_a_loop_keeps_the_output() {
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console, process] panics may
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console, process] panics never
     let mut i = 0u32
     loop {
         i = i.wrapping_add(1u32)
@@ -128,7 +128,7 @@ fn core_mem_replace_moves_owned_strings_through_locals_params_and_fields() {
     n: u32
 end t.Rec
 
-fn t.put(s: &mut alloc.string.String<std.alloc.System>, v: alloc.string.String<std.alloc.System>) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+fn t.put(s: &mut alloc.string.String<std.alloc.System>, v: alloc.string.String<std.alloc.System>) -> alloc.string.String<std.alloc.System> uses [] panics never
     core.mem.replace(s, v)
 end t.put
 

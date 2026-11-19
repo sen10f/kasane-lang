@@ -750,7 +750,7 @@ fn cmd_new(name: &str) -> i32 {
     fs::write(
         Path::new(name).join("src").join(format!("{}.ksnl", name)),
         format!(
-            "fn {0}.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"Hello, Kasane!\")\nend {0}.main\n",
+            "fn {0}.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"Hello, Kasane!\")\nend {0}.main\n",
             name
         ),
     )
@@ -1398,7 +1398,12 @@ fn cmd_fix() -> i32 {
         }
         attach_fixes(&mut rep.items);
         let mut by_file: HashMap<String, Vec<crate::fixes::Fix>> = HashMap::new();
+        // 隠しの絞り込み (試験用): `KSN_FIX_ONLY=E4020,E4025` はそのコードの直しだけを当てる。
+        let only: Option<Vec<String>> = std::env::var("KSN_FIX_ONLY").ok().map(|v| v.split(',').map(|x| x.trim().to_string()).collect());
         for it in &rep.items {
+            if only.as_ref().map_or(false, |o| !o.contains(&it.code)) {
+                continue;
+            }
             for f in &it.fix {
                 by_file.entry(f.file.clone()).or_default().push(f.clone());
             }

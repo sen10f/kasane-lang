@@ -15,7 +15,7 @@ fn wiki.search.index_add_page(index: &mut alloc.vec.Vec<alloc.string.String<std.
     Ok(())
 end wiki.search.index_add_page
 
-fn wiki.search.index_new() -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [alloc] panics never pub
+fn wiki.search.index_new() -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [] panics never pub
     alloc.vec.Vec.new(std.alloc.SYSTEM)
 end wiki.search.index_new
 

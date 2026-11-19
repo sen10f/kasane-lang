@@ -104,7 +104,7 @@ fn effects.fns.name_of(fs: &effects.fns.Fns, ix: usize) -> &str uses [] panics n
     }
 end effects.fns.name_of
 
-fn effects.fns.new() -> Result<effects.fns.Fns, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn effects.fns.new() -> Result<effects.fns.Fns, alloc.alloc.AllocError> uses [] panics never pub
     let items = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let names = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let effs = alloc.vec.Vec.new(std.alloc.SYSTEM)

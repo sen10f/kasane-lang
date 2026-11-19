@@ -7,7 +7,7 @@ fn t.close(r: t.Res) -> u32 uses [] panics never
     id
 end t.close
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     core.mem.drop(t.try(t.open(1u32)))
     Ok(())
 end t.main

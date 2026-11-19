@@ -40,9 +40,23 @@ impl Tmp {
     /// 一時パッケージ `t`。`.ksnl` にコメントは置けない (E0059) ので、試験の入力に説明のコメントの行があれば外し (`strip_ksnh`)、
     /// `ksn fmt` の出力にそろえる (E0020)。コメントそのものを試験するときは `new_raw` (そのまま置く) か `new_ksnh` (`.ksnh` を正にする)。
     pub fn new(name: &str, src: &str) -> Tmp {
+        let t = Tmp::new_strict(name, src);
+        t.effects();
+        t
+    }
+
+    /// `new` から、`uses` / `panics` を本体の効果にそろえる `ksn fix` (E4020 / E4025 だけ) を除いたもの。
+    /// 試験の入力の `main_wrap` などの固定の見出しを、本体の効果と完全に一致させる (D5・D13) ための後始末を省く。
+    /// 効果の完全一致そのものを試すときはこちら (または `new_raw`)。
+    pub fn new_strict(name: &str, src: &str) -> Tmp {
         let t = Tmp::new_raw(name, &strip_ksnh(src));
         t.fmt();
         t
+    }
+
+    /// 効果の宣言 (`uses` / `panics`) を本体の効果にそろえる (`ksn fix` の E4020 / E4025 だけ)。
+    pub fn effects(&self) {
+        let _ = Command::new(exe()).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025").current_dir(&self.0).output();
     }
 
     /// 書き方は 1 通り (E0020) なので、試験の入力は `ksn fmt` の出力にそろえる。`fmt` を通さずに試すときは `Tmp::new_raw`。
@@ -1518,11 +1532,11 @@ pub const WITH_PROGRAM: &str = r#"type t.R
     id: u32
 end t.R
 
-fn t.R.get(self: &t.R) -> u32
+fn t.R.get(self: &t.R) -> u32 uses [] panics never
     self.id
 end t.R.get
 
-fn t.R.new(id: u32) -> t.R
+fn t.R.new(id: u32) -> t.R uses [io.console] panics never
     core.mem.drop(if id == 1u32 {
         std.io.print_line("open 1")
     } else {
@@ -1535,14 +1549,14 @@ fn t.R.new(id: u32) -> t.R
     t.R { id: id }
 end t.R.new
 
-fn t.R.open(id: u32) -> Result<t.R, u8>
+fn t.R.open(id: u32) -> Result<t.R, u8> uses [io.console] panics never
     if id == 0u32 {
         return Err(9u8)
     }
     Ok(t.R.new(id))
 end t.R.open
 
-fn t.R.shut(self: t.R) -> ()
+fn t.R.shut(self: t.R) -> () uses [io.console] panics never
     core.mem.drop(if self.id == 1u32 {
         std.io.print_line("shut 1")
     } else {
@@ -1555,7 +1569,7 @@ fn t.R.shut(self: t.R) -> ()
     core.mem.drop(self.id)
 end t.R.shut
 
-fn t.early_return(n: u32) -> u32
+fn t.early_return(n: u32) -> u32 uses [io.console] panics never
     with r = t.R.new(1u32) close r.shut() {
         if n == 0u32 {
             return 100u32
@@ -1564,14 +1578,14 @@ fn t.early_return(n: u32) -> u32
     }
 end t.early_return
 
-fn t.fail(n: u32) -> Result<u32, u8>
+fn t.fail(n: u32) -> Result<u32, u8> uses [] panics never
     if n == 0u32 {
         return Err(7u8)
     }
     Ok(n)
 end t.fail
 
-fn t.in_loops(n: u32) -> u32
+fn t.in_loops(n: u32) -> u32 uses [io.console] panics never
     with r = t.R.new(1u32) close r.shut() {
         for i in core.iter.range(0u32, 5u32) {
             let mut j = 0u32
@@ -1586,7 +1600,7 @@ fn t.in_loops(n: u32) -> u32
     }
 end t.in_loops
 
-fn t.loop_exits() -> u32
+fn t.loop_exits() -> u32 uses [io.console] panics never
     let mut total = 0u32
     for i in core.iter.range(0u32, 5u32) {
         with r = t.R.new(i.wrapping_add(1u32)) close r.shut() {
@@ -1615,7 +1629,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     Ok(())
 end t.main
 
-fn t.nested(n: u32) -> Result<u32, u8>
+fn t.nested(n: u32) -> Result<u32, u8> uses [io.console] panics never
     let v = with a = t.R.open(1u32)? close a.shut() {
         let w = with b = t.R.open(2u32)? close b.shut() {
             let c = t.fail(n)?
@@ -1626,7 +1640,7 @@ fn t.nested(n: u32) -> Result<u32, u8>
     Ok(v)
 end t.nested
 
-fn t.tail_unit(n: u32) -> Result<(), u8>
+fn t.tail_unit(n: u32) -> Result<(), u8> uses [io.console] panics never
     with r = t.R.open(n)? close r.shut() {
         core.mem.drop(r.get())
         Ok(())
@@ -1876,7 +1890,7 @@ pub const KIR_FNS: &str = "fn t.gcd(a: u64, b: u64) -> u64 uses [] panics may
     x
 end t.gcd
 
-fn t.classify(n: i32) -> i32 uses [] panics may
+fn t.classify(n: i32) -> i32 uses [] panics never
     let mut r = 0i32
     if n < 0i32 {
         r = -1i32
@@ -1911,7 +1925,7 @@ fn t.loopy(n: u32) -> u32 uses [] panics may
     acc
 end t.loopy
 
-fn t.andor(a: bool, b: bool, n: i64) -> bool uses [] panics may
+fn t.andor(a: bool, b: bool, n: i64) -> bool uses [] panics never
     let x = a && n > 0i64
     let y = b && n < -5i64
     x || y
@@ -2184,7 +2198,7 @@ fn t.grow(v: alloc.vec.Vec<u32, std.alloc.System>, k: u32) -> alloc.vec.Vec<u32,
     w
 end t.grow
 
-fn t.sum(v: &alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics may
+fn t.sum(v: &alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics never
     let mut total = 0u32
     for x in v {
         total = total.wrapping_add(*x)
@@ -2192,7 +2206,7 @@ fn t.sum(v: &alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics may
     total
 end t.sum
 
-fn t.arg_ret(n: u32) -> u32 uses [alloc] panics may
+fn t.arg_ret(n: u32) -> u32 uses [alloc] panics never
     let v = t.make(n)
     let w = t.grow(v, 7u32)
     let x = t.grow(w, 8u32)
@@ -2257,7 +2271,7 @@ fn t.opt_peek(n: u32, some: bool) -> usize uses [alloc] panics never
     }
 end t.opt_peek
 
-fn t.opt_str(some: bool) -> usize uses [alloc] panics never
+fn t.opt_str(some: bool) -> usize uses [] panics never
     let o: Option<alloc.string.String<std.alloc.System>> = if some {
         Some(alloc.string.String.new(std.alloc.SYSTEM))
     } else {
@@ -2413,7 +2427,7 @@ pub const KIR_CLOSURE_FNS: &str = "fn t.apply[F: core.ops.Fn<(u64,), u64, E, P>,
     acc
 end t.apply
 
-fn t.cap_ref(n: u64) -> u64 uses [] panics may
+fn t.cap_ref(n: u64) -> u64 uses [] panics never
     let k = 7u64
     t.apply(
         fn(x: u64) -> u64 capture [&k] {
@@ -2432,7 +2446,7 @@ fn t.cap_move(n: u64) -> u64 uses [] panics may
     f(1u64).wrapping_add(f(2u64)).wrapping_add(t.apply(f, 4u64))
 end t.cap_move
 
-fn t.cap_mut(n: u64) -> u64 uses [] panics may
+fn t.cap_mut(n: u64) -> u64 uses [] panics never
     let mut total = 0u64
     let f = fn(x: u64) -> u64 capture [&mut total] {
         *total = (*total).wrapping_add(x)
@@ -2444,7 +2458,7 @@ fn t.cap_mut(n: u64) -> u64 uses [] panics may
     r.wrapping_add(total)
 end t.cap_mut
 
-fn t.cap_two(n: u64) -> u64 uses [] panics may
+fn t.cap_two(n: u64) -> u64 uses [] panics never
     let a = 10u64
     let mut b = 5u64
     b = b.wrapping_add(n)
@@ -2456,7 +2470,7 @@ fn t.cap_two(n: u64) -> u64 uses [] panics may
     )
 end t.cap_two
 
-fn t.fold_basic(n: u32) -> u32 uses [] panics may
+fn t.fold_basic(n: u32) -> u32 uses [] panics never
     core.iter.fold(core.iter.range(0u32, n), 100u32, fn(acc: u32, x: u32) -> u32 capture [] {
         acc.wrapping_add(x)
     })

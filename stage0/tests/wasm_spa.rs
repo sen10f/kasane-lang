@@ -126,7 +126,7 @@ fn c_ffi_is_still_refused_on_wasm32() {
 /// `extern` の綴りは `link "env:<接頭辞><操作名>"`、安全な関数は `unsafe` の中で `raw_` を呼ぶ。
 #[test]
 fn bindgen_output_checks_formats_and_parses() {
-    let caller = "import bgen.dom\n\nfn bgen.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    let root = dom.body()\n    let li = dom.create(\"li\")\n    dom.set_text(li, \"hi\")\n    dom.append(root, li)\n    Ok(())\nend bgen.main\n";
+    let caller = "import bgen.dom\n\nfn bgen.main() -> Result<(), std.io.Error> uses [] panics never\n    let root = dom.body()\n    let li = dom.create(\"li\")\n    dom.set_text(li, \"hi\")\n    dom.append(root, li)\n    Ok(())\nend bgen.main\n";
     let t = pkg("bgen", &[("bgen.ksnl", caller)]);
     fs::write(t.0.join("dom.bindgen"), "# テスト\nmodule bgen.dom\nksnl src/bgen/dom.ksnl\njs web/dom.mjs\nop body\nop create\nop set_text\nop append\nop input_value\nop fetch\nop fetch_body\n").unwrap();
     let o = run(&["bindgen", "dom.bindgen"], &t.0);

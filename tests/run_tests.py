@@ -60,7 +60,7 @@ _ct = r.stdout + r.stderr
 _fails = '\n'.join(l for l in _ct.splitlines() if ' FAILED' in l or 'panicked at' in l or l.startswith('error: test failed'))[:3000]
 step('stage0: cargo test', r.returncode == 0, (_fails + '\n---\n' + _ct[-1500:]) if _fails else _ct[-1500:])
 
-HR = """fn hr.main() -> Result<(), std.io.Error> uses [io.console, thread, time] panics may
+HR = """fn hr.main() -> Result<(), std.io.Error> uses [io.console, thread, time] panics never
     let mut i = 0u8
     while i < 80u8 {
         let r = hr.msg()

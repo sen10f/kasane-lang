@@ -172,7 +172,7 @@ fn lower.tyk.agg_lines(env: &types.env.Env, c: &mut lower.cx.Cx) -> Result<alloc
     Ok(out)
 end lower.tyk.agg_lines
 
-fn lower.tyk.at(xs: &[usize], i: usize) -> usize uses [] panics may pub
+fn lower.tyk.at(xs: &[usize], i: usize) -> usize uses [] panics never pub
     match xs.get(i) {
         Some(x) => *x
         None => 0usize
@@ -214,7 +214,7 @@ fn lower.tyk.field_index(env: &types.env.Env, item: usize, name: &str) -> Result
     Ok(0usize)
 end lower.tyk.field_index
 
-fn lower.tyk.field_names(env: &types.env.Env, item: usize) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.tyk.field_names(env: &types.env.Env, item: usize) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -272,7 +272,7 @@ fn lower.tyk.fty(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src:
     lower.inst.subst(c, t0)
 end lower.tyk.fty
 
-fn lower.tyk.int_bytes(name: &str) -> usize uses [] panics may pub
+fn lower.tyk.int_bytes(name: &str) -> usize uses [] panics never pub
     if name == "i8" || name == "u8" {
         return 1usize
     }
@@ -288,7 +288,7 @@ fn lower.tyk.int_bytes(name: &str) -> usize uses [] panics may pub
     8usize
 end lower.tyk.int_bytes
 
-fn lower.tyk.is_fat_ty(c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
+fn lower.tyk.is_fat_ty(c: &lower.cx.Cx, t: usize) -> bool uses [] panics never pub
     let n = types.ty.node(&c.ar, types.ty.find(&c.ar, t))
     if n.k == types.ty.K.Str {
         return true
@@ -296,7 +296,7 @@ fn lower.tyk.is_fat_ty(c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics ma
     n.k == types.ty.K.Ref && types.ty.node(&c.ar, types.ty.find(&c.ar, n.a)).k == types.ty.K.Slice
 end lower.tyk.is_fat_ty
 
-fn lower.tyk.is_generic_adt(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> bool uses [alloc] panics may pub
+fn lower.tyk.is_generic_adt(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> bool uses [] panics may pub
     let n = types.ty.node(&c.ar, f)
     if n.k != types.ty.K.Adt || n.c == 0usize {
         return false
@@ -308,7 +308,7 @@ fn lower.tyk.is_generic_adt(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> b
     kind == parse.ast.Kind.TypeDef || kind == parse.ast.Kind.EnumDef
 end lower.tyk.is_generic_adt
 
-fn lower.tyk.is_opt_scalar(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
+fn lower.tyk.is_opt_scalar(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics never pub
     let n = types.ty.node(&c.ar, types.ty.find(&c.ar, t))
     if n.k != types.ty.K.Adt || n.c != 1usize || lower.opt.kind(env, n.a) != 1usize {
         return false
@@ -321,18 +321,18 @@ fn lower.tyk.is_opt_scalar(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bo
     k == types.ty.K.Int || k == types.ty.K.Bool
 end lower.tyk.is_opt_scalar
 
-fn lower.tyk.is_vec(env: &types.env.Env, item: usize) -> bool uses [alloc] panics may pub
+fn lower.tyk.is_vec(env: &types.env.Env, item: usize) -> bool uses [alloc] panics never pub
     let fq = lower.tyk.item_fqn(env, item)
     fq.as_str() == "alloc.vec.Vec" || fq.as_str() == "alloc.string.String"
 end lower.tyk.is_vec
 
-fn lower.tyk.is_vec_ty(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
+fn lower.tyk.is_vec_ty(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics never pub
     let f = types.ty.strip(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
     n.k == types.ty.K.Adt && lower.tyk.is_vec(env, n.a)
 end lower.tyk.is_vec_ty
 
-fn lower.tyk.item_fqn(env: &types.env.Env, item: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
+fn lower.tyk.item_fqn(env: &types.env.Env, item: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics never pub
     match env.tab.items.as_slice().get(item) {
         Some(it) => {
             match lower.cx.own(it.fqn.as_str()) {
@@ -358,7 +358,7 @@ fn lower.tyk.key_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, item: us
     Ok(item)
 end lower.tyk.key_of
 
-fn lower.tyk.kind_word(k: types.ty.K) -> &'static str uses [] panics may pub
+fn lower.tyk.kind_word(k: types.ty.K) -> &'static str uses [] panics never pub
     if (k == types.ty.K.Ref) {
         return "参照"
     }
@@ -508,11 +508,11 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
     Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vlens })
 end lower.tyk.layout
 
-fn lower.tyk.leave(c: &mut lower.cx.Cx, saved: alloc.vec.Vec<usize, std.alloc.System>) -> () uses [] panics may pub
+fn lower.tyk.leave(c: &mut lower.cx.Cx, saved: alloc.vec.Vec<usize, std.alloc.System>) -> () uses [] panics never pub
     c.v.subst = saved
 end lower.tyk.leave
 
-fn lower.tyk.nvariants(env: &types.env.Env, item: usize) -> usize uses [alloc] panics may pub
+fn lower.tyk.nvariants(env: &types.env.Env, item: usize) -> usize uses [] panics never pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
     let p = match types.env.unit(env, file) {
@@ -523,7 +523,7 @@ fn lower.tyk.nvariants(env: &types.env.Env, item: usize) -> usize uses [alloc] p
     resolve.ast.count(p, nd.d)
 end lower.tyk.nvariants
 
-fn lower.tyk.plain_enum(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
+fn lower.tyk.plain_enum(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [] panics never pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
     if n.k != types.ty.K.Adt || n.c != 0usize {
@@ -549,7 +549,7 @@ fn lower.tyk.plain_enum(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool 
     cnt > 0usize
 end lower.tyk.plain_enum
 
-fn lower.tyk.prim_size(t: usize) -> usize uses [] panics may pub
+fn lower.tyk.prim_size(t: usize) -> usize uses [] panics never pub
     let f = t
     if f == types.ty.BOOL {
         return 1usize
@@ -560,7 +560,7 @@ fn lower.tyk.prim_size(t: usize) -> usize uses [] panics may pub
     0usize
 end lower.tyk.prim_size
 
-fn lower.tyk.real_item(c: &lower.cx.Cx, item: usize) -> usize uses [alloc] panics may pub
+fn lower.tyk.real_item(c: &lower.cx.Cx, item: usize) -> usize uses [] panics may pub
     if (item >= lower.tyk.INS && item < lower.tyk.VEC) {
         let ty = lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.INS)
         let f = types.ty.find(&c.ar, ty)
@@ -569,7 +569,7 @@ fn lower.tyk.real_item(c: &lower.cx.Cx, item: usize) -> usize uses [alloc] panic
     item
 end lower.tyk.real_item
 
-fn lower.tyk.ref_agg(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
+fn lower.tyk.ref_agg(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics never pub
     let n = types.ty.node(&c.ar, types.ty.find(&c.ar, t))
     if n.k != types.ty.K.Ref {
         return false
@@ -582,7 +582,7 @@ fn lower.tyk.ref_agg(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool use
     kind == parse.ast.Kind.TypeDef || kind == parse.ast.Kind.EnumDef
 end lower.tyk.ref_agg
 
-fn lower.tyk.ref_scalar(c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
+fn lower.tyk.ref_scalar(c: &lower.cx.Cx, t: usize) -> bool uses [] panics never pub
     let n = types.ty.node(&c.ar, types.ty.find(&c.ar, t))
     if n.k != types.ty.K.Ref {
         return false
@@ -825,7 +825,7 @@ fn lower.tyk.up(x: usize, a: usize) -> usize uses [] panics may pub
     (x + a - 1usize) / a * a
 end lower.tyk.up
 
-fn lower.tyk.variant_index(env: &types.env.Env, item: usize, name: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.tyk.variant_index(env: &types.env.Env, item: usize, name: &str) -> Result<usize, resolve.Failure> uses [] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
     let p = match types.env.unit(env, file) {
@@ -870,7 +870,7 @@ fn lower.tyk.vec_item(env: &types.env.Env, c: &mut lower.cx.Cx, f: usize) -> Res
     Ok(lower.tyk.VECO + v)
 end lower.tyk.vec_item
 
-fn lower.tyk.why(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.tyk.why(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let n = types.ty.node(&c.ar, f)
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     if (n.k == types.ty.K.Adt) {

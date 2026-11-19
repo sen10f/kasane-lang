@@ -17,6 +17,6 @@ fn t.quiet() -> u32 uses [] panics never
     1u32
 end t.quiet
 
-fn t.set(slot: &mut fn() -> u32 uses [io.console] panics may) -> ()
+fn t.set(slot: &mut fn() -> u32 uses [io.console] panics may) -> () uses [] panics never
     *slot = t.loud
 end t.set

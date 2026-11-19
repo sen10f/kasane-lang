@@ -2,7 +2,7 @@ fn t.consume(s: alloc.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.consume
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     let s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str("hello"))
     t.consume(t.steal(&s))

@@ -14,7 +14,7 @@ fn t.apply_var[E: uses](p: fn() -> u32 uses [E] panics never) -> u32 uses [E] pa
     p()
 end t.apply_var
 
-fn t.inferred() -> u32
+fn t.inferred() -> u32 uses [io.console] panics never
     core.mem.drop(std.io.print_line("x"))
     1u32
 end t.inferred

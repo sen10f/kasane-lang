@@ -1,8 +1,8 @@
-fn t.consume(s: alloc.string.String) -> () uses [alloc] panics never
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.consume
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let s = alloc.string.String.new(std.alloc.SYSTEM)
     let o: Option<u8> = Some(1u8)
     match o {

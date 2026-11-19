@@ -3,7 +3,7 @@ fn t.f(x: &(alloc.string.String, usize)) -> usize uses [] panics never
     t.peek(n).wrapping_add(*k)
 end t.f
 
-fn t.main() -> () uses [alloc] panics never
+fn t.main() -> () uses [] panics never
     let x = (alloc.string.String.new(std.alloc.SYSTEM), 1usize)
     let r = t.f(&x)
     core.mem.drop(r.wrapping_add(0usize))

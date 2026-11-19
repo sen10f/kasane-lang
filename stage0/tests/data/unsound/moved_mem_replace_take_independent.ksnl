@@ -2,7 +2,7 @@ type t.H['a]
     r: &'a u64
 end t.H
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 

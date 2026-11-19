@@ -142,7 +142,7 @@ fn todo.store.Store.add_user(self: &mut todo.store.Store, username: &str, passwo
     }
 end todo.store.Store.add_user
 
-fn todo.store.Store.append_history(self: &mut todo.store.Store, action: &str, todo_id: i64, user_id: i64, ts: &str) -> Result<(), todo.error.Error> uses [alloc, io.fs, time] panics never pub
+fn todo.store.Store.append_history(self: &mut todo.store.Store, action: &str, todo_id: i64, user_id: i64, ts: &str) -> Result<(), todo.error.Error> uses [alloc, io.fs] panics never pub
     if self.users_path.is_empty() {
         return Ok(())
     }

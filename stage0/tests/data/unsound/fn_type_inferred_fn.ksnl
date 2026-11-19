@@ -10,7 +10,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-fn t.quiet_looking() -> u32
+fn t.quiet_looking() -> u32 uses [io.console] panics never
     core.mem.drop(std.io.print_line("x"))
     1u32
 end t.quiet_looking

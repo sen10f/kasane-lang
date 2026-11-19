@@ -1,4 +1,4 @@
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     let mut r = &t.mk()
     {
         let b = t.mk()

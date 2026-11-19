@@ -1,4 +1,4 @@
-fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [] panics never
     let opt = Some(alloc.string.String.new(std.alloc.SYSTEM))
     let r = if true {
         opt.as_ref()

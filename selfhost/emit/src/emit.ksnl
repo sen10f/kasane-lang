@@ -66,14 +66,14 @@ type emit.Tab pub
     vars: alloc.vec.Vec<emit.agg.Var, std.alloc.System> pub
 end emit.Tab
 
-fn emit.decl(g: &mut emit.G, def: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.decl(g: &mut emit.G, def: &str) -> () uses [alloc] panics may pub
     if !g.outs.intr.as_str().contains(def) {
         emit.util.push_str(&mut g.outs.intr, def)
         emit.util.push_str(&mut g.outs.intr, "\n")
     }
 end emit.decl
 
-fn emit.edge(g: &mut emit.G, to: usize, j: usize, v: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.edge(g: &mut emit.G, to: usize, j: usize, v: usize) -> () uses [alloc] panics may pub
     let fb = g.misc.curfromblk
     let nm = g.misc.curnum
     let e = emit.Edge { to: to, fromblk: fb, num: nm, j: j, v: v }
@@ -83,13 +83,13 @@ fn emit.edge(g: &mut emit.G, to: usize, j: usize, v: usize) -> () uses [alloc, i
     }
 end emit.edge
 
-fn emit.global(g: &mut emit.G, def: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.global(g: &mut emit.G, def: &str) -> () uses [alloc] panics may pub
     if !g.buf.globals.as_str().contains(def) {
         emit.util.push_str(&mut g.buf.globals, def)
     }
 end emit.global
 
-fn emit.label(g: &mut emit.G, num: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.label(g: &mut emit.G, num: usize) -> () uses [alloc] panics may pub
     emit.w(g, "L")
     emit.wn(g, num)
     emit.w(g, ":\n")
@@ -97,13 +97,13 @@ fn emit.label(g: &mut emit.G, num: usize) -> () uses [alloc, io.console, process
     g.misc.curnum = num
 end emit.label
 
-fn emit.line(g: &mut emit.G, s: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.line(g: &mut emit.G, s: &str) -> () uses [alloc] panics may pub
     emit.w(g, "  ")
     emit.w(g, s)
     emit.w(g, "\n")
 end emit.line
 
-fn emit.line_at['a](text: &'a str, starts: &alloc.vec.Vec<usize, std.alloc.System>, k: usize) -> &'a str uses [] panics may pub
+fn emit.line_at['a](text: &'a str, starts: &alloc.vec.Vec<usize, std.alloc.System>, k: usize) -> &'a str uses [] panics never pub
     let a = match starts.get(k) {
         Some(x) => *x
         None => text.len()
@@ -127,7 +127,7 @@ fn emit.line_at['a](text: &'a str, starts: &alloc.vec.Vec<usize, std.alloc.Syste
     }
 end emit.line_at
 
-fn emit.line_starts(text: &str) -> alloc.vec.Vec<usize, std.alloc.System> uses [alloc, io.console, process] panics may pub
+fn emit.line_starts(text: &str) -> alloc.vec.Vec<usize, std.alloc.System> uses [alloc] panics may pub
     let mut starts: alloc.vec.Vec<usize, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     emit.util.vec_push(&mut starts, 0usize)
     let b = text.as_bytes()
@@ -217,7 +217,7 @@ fn emit.module(g: &mut emit.G, text: &str, entry: &str) -> () uses [alloc, io.co
     emit.rt.assemble(g, entry, entry_params, entry_res, entry_ret)
 end emit.module
 
-fn emit.new_g() -> emit.G uses [alloc, io.console, process] panics may pub
+fn emit.new_g() -> emit.G uses [] panics never pub
     let tys = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let aggs = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let foffs = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -257,12 +257,12 @@ fn emit.new_g() -> emit.G uses [alloc, io.console, process] panics may pub
     emit.G { tab: tab, lay: lay, flow: flow, buf: buf, outs: outs, misc: misc, flags: flags }
 end emit.new_g
 
-fn emit.newlab(g: &mut emit.G) -> usize uses [] panics may pub
+fn emit.newlab(g: &mut emit.G) -> usize uses [] panics never pub
     g.misc.n = g.misc.n.wrapping_add(1usize)
     g.misc.n
 end emit.newlab
 
-fn emit.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics may pub
+fn emit.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics never pub
     let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
     with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
         core.mem.drop(std.fs.read_to_end(&mut file, &mut buf)?)
@@ -270,7 +270,7 @@ fn emit.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std
     Ok(buf)
 end emit.read_file
 
-fn emit.reset_fn(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
+fn emit.reset_fn(g: &mut emit.G) -> () uses [] panics never pub
     g.lay.vty = alloc.vec.Vec.new(std.alloc.SYSTEM)
     g.lay.bpar = alloc.vec.Vec.new(std.alloc.SYSTEM)
     g.lay.bpty = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -288,19 +288,19 @@ fn emit.reset_fn(g: &mut emit.G) -> () uses [alloc, io.console, process] panics 
     g.misc.curnum = 0usize
 end emit.reset_fn
 
-fn emit.tmp(g: &mut emit.G) -> usize uses [] panics may pub
+fn emit.tmp(g: &mut emit.G) -> usize uses [] panics never pub
     g.misc.n = g.misc.n.wrapping_add(1usize)
     1000000usize.wrapping_add(g.misc.n)
 end emit.tmp
 
-fn emit.w(g: &mut emit.G, s: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.w(g: &mut emit.G, s: &str) -> () uses [alloc] panics may pub
     match g.buf.cur.push_str(s) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.w
 
-fn emit.wfrom(g: &mut emit.G, fromblk: bool, num: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.wfrom(g: &mut emit.G, fromblk: bool, num: usize) -> () uses [alloc] panics may pub
     if fromblk {
         emit.w(g, "b")
     } else {
@@ -309,11 +309,11 @@ fn emit.wfrom(g: &mut emit.G, fromblk: bool, num: usize) -> () uses [alloc, io.c
     emit.wn(g, num)
 end emit.wfrom
 
-fn emit.wn(g: &mut emit.G, n: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.wn(g: &mut emit.G, n: usize) -> () uses [alloc] panics may pub
     emit.util.push_num(&mut g.buf.cur, n)
 end emit.wn
 
-fn emit.wv(g: &mut emit.G, v: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.wv(g: &mut emit.G, v: usize) -> () uses [alloc] panics may pub
     emit.w(g, "%v")
     emit.wn(g, v)
 end emit.wv

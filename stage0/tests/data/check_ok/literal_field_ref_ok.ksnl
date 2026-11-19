@@ -11,7 +11,7 @@ type t.W[T]
     v: T
 end t.W
 
-fn t.main() -> () uses [alloc] panics never
+fn t.main() -> () uses [] panics never
     let k = 5u64
     let r = &k
     let x = t.S { name: alloc.string.String.new(std.alloc.SYSTEM), n: *r }

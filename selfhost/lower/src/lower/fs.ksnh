@@ -12,7 +12,7 @@ fn lower.fs.close(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
 end lower.fs.close
 
 // 局所 k の後始末の式 (0 = 無し)。
-fn lower.fs.close_at(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
+fn lower.fs.close_at(c: &lower.cx.Cx, k: usize) -> usize uses [] panics never pub
     match c.v.sl.cl.as_slice().get(k) {
         Some(x) => *x
         None => 0usize

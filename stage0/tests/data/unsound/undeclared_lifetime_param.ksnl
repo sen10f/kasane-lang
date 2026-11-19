@@ -1,4 +1,4 @@
-fn t.leaked_lifetime(text: &'a str) -> &'a str
+fn t.leaked_lifetime(text: &'a str) -> &'a str uses [] panics never
     text
 end t.leaked_lifetime
 

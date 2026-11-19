@@ -1,4 +1,4 @@
-fn t.f['a]() -> Result<u32, &'a str> uses [alloc] panics never
+fn t.f['a]() -> Result<u32, &'a str> uses [] panics never
     let s = alloc.string.String.new(std.alloc.SYSTEM)
     let n = t.z(s.as_str())?
     Ok(n)

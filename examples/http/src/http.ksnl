@@ -12,7 +12,7 @@ type http.Request derive [Debug, Clone, Copy, PartialEq] pub
     path_start: usize
 end http.Request
 
-fn http.append_decimal(out: &mut alloc.string.String<std.alloc.System>, n: usize) -> Result<(), http.Error>
+fn http.append_decimal(out: &mut alloc.string.String<std.alloc.System>, n: usize) -> Result<(), http.Error> uses [alloc] panics may
     let mut unit = 1usize
     while n / unit >= 10usize {
         unit = unit * 10usize
@@ -27,12 +27,12 @@ fn http.append_decimal(out: &mut alloc.string.String<std.alloc.System>, n: usize
     Ok(())
 end http.append_decimal
 
-fn http.build_address(out: &mut alloc.string.String<std.alloc.System>, port: u16) -> Result<(), http.Error>
+fn http.build_address(out: &mut alloc.string.String<std.alloc.System>, port: u16) -> Result<(), http.Error> uses [alloc] panics may
     out.push_str("127.0.0.1:")?
     http.append_decimal(out, usize.from_u16(port))
 end http.build_address
 
-fn http.build_request(out: &mut alloc.string.String<std.alloc.System>, path: &str, host: &str) -> Result<(), http.Error>
+fn http.build_request(out: &mut alloc.string.String<std.alloc.System>, path: &str, host: &str) -> Result<(), http.Error> uses [alloc] panics never
     out.push_str("GET ")?
     out.push_str(path)?
     out.push_str(" HTTP/1.1\r\nHost: ")?
@@ -41,7 +41,7 @@ fn http.build_request(out: &mut alloc.string.String<std.alloc.System>, path: &st
     Ok(())
 end http.build_request
 
-fn http.build_response(out: &mut alloc.string.String<std.alloc.System>, status: &str, body: &str) -> Result<(), http.Error>
+fn http.build_response(out: &mut alloc.string.String<std.alloc.System>, status: &str, body: &str) -> Result<(), http.Error> uses [alloc] panics may
     out.push_str("HTTP/1.1 ")?
     out.push_str(status)?
     out.push_str("\r\nContent-Type: text/plain\r\nContent-Length: ")?
@@ -70,13 +70,13 @@ fn http.client_receive(stream: &mut std.net.TcpStream) -> Result<usize, http.Err
     Ok(length)
 end http.client_receive
 
-fn http.client_send(stream: &mut std.net.TcpStream, host: &str) -> Result<(), http.Error> uses [alloc, io.net] panics may
+fn http.client_send(stream: &mut std.net.TcpStream, host: &str) -> Result<(), http.Error> uses [alloc, io.net] panics never
     let mut request = alloc.string.String.new(std.alloc.SYSTEM)
     http.build_request(&mut request, "/hello", host)?
     http.write_all(stream, request.as_str().as_bytes())
 end http.client_send
 
-fn http.content_length(buf: &[u8], head_end: usize) -> Result<usize, http.Error>
+fn http.content_length(buf: &[u8], head_end: usize) -> Result<usize, http.Error> uses [] panics may
     let key = b"Content-Length: "
     let mut i = 0usize
     while i < head_end {
@@ -108,7 +108,7 @@ fn http.content_length(buf: &[u8], head_end: usize) -> Result<usize, http.Error>
     Err(http.Error.BadResponse)
 end http.content_length
 
-fn http.digit_text(d: usize) -> &'static str
+fn http.digit_text(d: usize) -> &'static str uses [] panics never
     match d {
         0usize => "0"
         1usize => "1"
@@ -133,7 +133,7 @@ fn http.exchange(listener: &std.net.TcpListener, address: &str) -> Result<usize,
     }
 end http.exchange
 
-fn http.find_end(buf: &[u8]) -> Option<usize>
+fn http.find_end(buf: &[u8]) -> Option<usize> uses [] panics never
     let len = buf.len()
     let mut i = 0usize
     while i.wrapping_add(4usize) <= len {
@@ -145,7 +145,7 @@ fn http.find_end(buf: &[u8]) -> Option<usize>
     None
 end http.find_end
 
-fn http.has_prefix(buf: &[u8], at: usize, lit: &[u8]) -> bool
+fn http.has_prefix(buf: &[u8], at: usize, lit: &[u8]) -> bool uses [] panics never
     let mut i = 0usize
     while i < lit.len() {
         if buf.get(at.wrapping_add(i)) != lit.get(i) {
@@ -176,7 +176,7 @@ fn http.main() -> Result<(), http.Error> uses [alloc, io.console, io.net] panics
     }
 end http.main
 
-fn http.parse_request_line(buf: &[u8]) -> Result<http.Request, http.Error>
+fn http.parse_request_line(buf: &[u8]) -> Result<http.Request, http.Error> uses [] panics never
     if !http.has_prefix(buf, 0usize, b"GET /") {
         return Err(http.Error.BadRequest)
     }
@@ -202,14 +202,14 @@ fn http.parse_request_line(buf: &[u8]) -> Result<http.Request, http.Error>
     Ok(http.Request { path_end: i, path_start: path_start })
 end http.parse_request_line
 
-fn http.read_body(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>, total: usize) -> Result<(), http.Error> uses [alloc, io.net] panics may
+fn http.read_body(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>, total: usize) -> Result<(), http.Error> uses [alloc, io.net] panics never
     while data.len() < total {
         http.read_chunk(stream, data)?
     }
     Ok(())
 end http.read_body
 
-fn http.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<(), http.Error> uses [alloc, io.net] panics may
+fn http.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<(), http.Error> uses [alloc, io.net] panics never
     let mut chunk = [0u8; 64]
     let n = stream.read(&mut chunk)?
     if n == 0usize {
@@ -224,7 +224,7 @@ fn http.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, 
     Ok(())
 end http.read_chunk
 
-fn http.read_head(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<usize, http.Error> uses [alloc, io.net] panics may
+fn http.read_head(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<usize, http.Error> uses [alloc, io.net] panics never
     loop {
         http.read_chunk(stream, data)?
         match http.find_end(data.as_slice()) {

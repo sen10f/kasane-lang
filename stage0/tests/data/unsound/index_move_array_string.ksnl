@@ -1,4 +1,4 @@
-fn t.main() -> () uses [alloc] panics may
+fn t.main() -> () uses [] panics may
     let a = [alloc.string.String.new(std.alloc.SYSTEM), alloc.string.String.new(std.alloc.SYSTEM)]
     let x = a[0usize]
     let y = a[0usize]

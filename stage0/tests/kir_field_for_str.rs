@@ -60,7 +60,7 @@ type t.Point derive [Copy, Clone]
     y: u32
 end t.Point
 
-fn t.check(name: &str, ok: bool) -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.check(name: &str, ok: bool) -> Result<(), std.io.Error> uses [io.console] panics never
     std.io.print_line(name)?
     if ok {
         std.io.print_line(\"ok\")?
@@ -222,7 +222,7 @@ fn t.total_len(b: &t.Bag)";
 
 /// 文字列 API の境界値。`rfind`、`split` / `chars` の `for` の形 (反復の列を `for` で数える)、既存の API の代表。
 /// 値の反復子 (`let mut it = s.split(p)`) は下ろさない (`kir_native.rs` の試験が、インタプリタだけと固定している)。
-const STR_SRC: &str = "fn t.check(name: &str, ok: bool) -> Result<(), std.io.Error> uses [io.console] panics may
+const STR_SRC: &str = "fn t.check(name: &str, ok: bool) -> Result<(), std.io.Error> uses [io.console] panics never
     std.io.print_line(name)?
     if ok {
         std.io.print_line(\"ok\")?
@@ -294,7 +294,7 @@ fn t.split_lens(s: &str, sep: &str) -> usize uses [] panics never
     n
 end t.split_lens
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     t.check(\"rfind empty pattern\", t.rf(\"abc\", \"\") == 3usize)?
     t.check(\"rfind last of several\", t.rf(\"abcabc\", \"bc\") == 4usize)?
     t.check(\"rfind overlapping\", t.rf(\"aaa\", \"aa\") == 1usize)?

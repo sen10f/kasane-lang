@@ -15,6 +15,6 @@ fn t.fst[A, B](p: (A, B)) -> A uses [] panics never
     a
 end t.fst
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

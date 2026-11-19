@@ -196,7 +196,7 @@ fn native_channel_clone_and_close_free_every_allocation_exactly_once() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-const THREAD_SRC: &str = r#"fn t.in_order() -> u64 uses [alloc, io.console, thread] panics may
+const THREAD_SRC: &str = r#"fn t.in_order() -> u64 uses [alloc, thread] panics may
     let a = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [] {
         10u64
     }) {
@@ -214,7 +214,7 @@ const THREAD_SRC: &str = r#"fn t.in_order() -> u64 uses [alloc, io.console, thre
     x.wrapping_mul(100u64).wrapping_add(y)
 end t.in_order
 
-fn t.reversed() -> u64 uses [alloc, io.console, thread] panics may
+fn t.reversed() -> u64 uses [alloc, thread] panics may
     let a = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [] {
         10u64
     }) {
@@ -239,7 +239,7 @@ fn t.reversed() -> u64 uses [alloc, io.console, thread] panics may
     x.wrapping_mul(10000u64).wrapping_add(y.wrapping_mul(100u64)).wrapping_add(z)
 end t.reversed
 
-fn t.say(n: u32) -> u32 uses [io.console] panics may
+fn t.say(n: u32) -> u32 uses [io.console] panics never
     core.mem.drop(std.io.print_line("thread"))
     n
 end t.say
@@ -356,7 +356,7 @@ const CHAN_AGG_SRC: &str = r#"type t.Job
     data: alloc.vec.Vec<u32, std.alloc.System>
 end t.Job
 
-fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
     std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
 end t.oom
 
@@ -535,7 +535,7 @@ end t.drop_strings_value
 
 const SYNC_SRC: &str = r#"static t.TOTAL: std.sync.Mutex<u64> = std.sync.Mutex.new(5u64) pub
 
-fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
     std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
 end t.oom
 
@@ -551,7 +551,7 @@ fn t.rng_values() -> u64 uses [] panics may
     a.wrapping_add(b)
 end t.rng_values
 
-fn t.rng_step(r: &mut std.rand.Rng) -> u64 uses [] panics may
+fn t.rng_step(r: &mut std.rand.Rng) -> u64 uses [] panics never
     r.next_u64()
 end t.rng_step
 

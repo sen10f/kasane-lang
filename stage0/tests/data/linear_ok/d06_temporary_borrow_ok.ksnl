@@ -1,4 +1,4 @@
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     let tmp = t.mk()
     let r = t.same(&tmp)
     let z = t.mk()

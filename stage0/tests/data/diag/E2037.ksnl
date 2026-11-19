@@ -1,4 +1,4 @@
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
     let x = 5u32
     let spawned = std.thread.spawn(
         std.alloc.SYSTEM,

@@ -22,6 +22,8 @@ pub fn check(prog: &Program, user: &[usize]) -> Vec<Diag> {
     let mut out = Vec::new();
     out.extend(crate::tast_rules::impl_sig::check(prog, user, &tast, &tk.side));
     out.extend(crate::tast_rules::ref_levels::check(prog, user, &tast, &tk));
+    // 規則 X (効果の完全一致、D5・D13)。
+    out.extend(crate::tast_rules::effects_exact::check(prog, user, &tast));
     // 規則 T (型の一致、S2C)。
     out.extend(crate::tast_rules::type_eq::check(prog, user, &tast, &tk));
     // 移動と線形 (S3B)。

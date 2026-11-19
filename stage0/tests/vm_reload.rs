@@ -12,7 +12,7 @@ fn exe() -> &'static str {
 }
 
 /// 約 4〜6 秒走るプログラム (VM の速さで、25 回 × 約 2 千万命令)。`hr.msg` を毎回呼んで版の切り替えを見る。
-const HR: &str = "fn hr.main() -> Result<(), std.io.Error> uses [io.console] panics may
+const HR: &str = "fn hr.main() -> Result<(), std.io.Error> uses [io.console] panics never
     let mut i = 0u8
     while i < 25u8 {
         let r = hr.msg()

@@ -74,7 +74,7 @@ type emit.Tab pub
 end emit.Tab
 
 // 宣言 `def` を `g.outs.intr` へ追加する (同じ宣言は一度だけ)。
-fn emit.decl(g: &mut emit.G, def: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.decl(g: &mut emit.G, def: &str) -> () uses [alloc] panics may pub
     if !g.outs.intr.as_str().contains(def) {
         emit.util.push_str(&mut g.outs.intr, def)
         emit.util.push_str(&mut g.outs.intr, "\n")
@@ -82,7 +82,7 @@ fn emit.decl(g: &mut emit.G, def: &str) -> () uses [alloc, io.console, process] 
 end emit.decl
 
 // 辺を記録する (今の出所から、ブロック `to` の引数 `j` へ値 `%v<v>`)。
-fn emit.edge(g: &mut emit.G, to: usize, j: usize, v: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.edge(g: &mut emit.G, to: usize, j: usize, v: usize) -> () uses [alloc] panics may pub
     let fb = g.misc.curfromblk
     let nm = g.misc.curnum
     let e = emit.Edge { to: to, fromblk: fb, num: nm, j: j, v: v }
@@ -93,14 +93,14 @@ fn emit.edge(g: &mut emit.G, to: usize, j: usize, v: usize) -> () uses [alloc, i
 end emit.edge
 
 // 大域の定義 `def` を `g.buf.globals` へ追加する (同じ定義は一度だけ)。
-fn emit.global(g: &mut emit.G, def: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.global(g: &mut emit.G, def: &str) -> () uses [alloc] panics may pub
     if !g.buf.globals.as_str().contains(def) {
         emit.util.push_str(&mut g.buf.globals, def)
     }
 end emit.global
 
 // ラベル `L<番号>:` を置き、以後の辺の出所にする。
-fn emit.label(g: &mut emit.G, num: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.label(g: &mut emit.G, num: usize) -> () uses [alloc] panics may pub
     emit.w(g, "L")
     emit.wn(g, num)
     emit.w(g, ":\n")
@@ -109,14 +109,14 @@ fn emit.label(g: &mut emit.G, num: usize) -> () uses [alloc, io.console, process
 end emit.label
 
 // 1 行を書く (字下げ 2 つ + 本文 + 改行)。
-fn emit.line(g: &mut emit.G, s: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.line(g: &mut emit.G, s: &str) -> () uses [alloc] panics may pub
     emit.w(g, "  ")
     emit.w(g, s)
     emit.w(g, "\n")
 end emit.line
 
 // 行 `k` の本文 (前後の空白を除く)。`starts` は各行の先頭のバイト位置。行は `text` の部分列として借りる。
-fn emit.line_at['a](text: &'a str, starts: &alloc.vec.Vec<usize, std.alloc.System>, k: usize) -> &'a str uses [] panics may pub
+fn emit.line_at['a](text: &'a str, starts: &alloc.vec.Vec<usize, std.alloc.System>, k: usize) -> &'a str uses [] panics never pub
     let a = match starts.get(k) {
         Some(x) => *x
         None => text.len()
@@ -141,7 +141,7 @@ fn emit.line_at['a](text: &'a str, starts: &alloc.vec.Vec<usize, std.alloc.Syste
 end emit.line_at
 
 // 各行の先頭のバイト位置。
-fn emit.line_starts(text: &str) -> alloc.vec.Vec<usize, std.alloc.System> uses [alloc, io.console, process] panics may pub
+fn emit.line_starts(text: &str) -> alloc.vec.Vec<usize, std.alloc.System> uses [alloc] panics may pub
     let mut starts: alloc.vec.Vec<usize, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     emit.util.vec_push(&mut starts, 0usize)
     let b = text.as_bytes()
@@ -232,7 +232,7 @@ fn emit.module(g: &mut emit.G, text: &str, entry: &str) -> () uses [alloc, io.co
     emit.rt.assemble(g, entry, entry_params, entry_res, entry_ret)
 end emit.module
 
-fn emit.new_g() -> emit.G uses [alloc, io.console, process] panics may pub
+fn emit.new_g() -> emit.G uses [] panics never pub
     let tys = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let aggs = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let foffs = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -273,13 +273,13 @@ fn emit.new_g() -> emit.G uses [alloc, io.console, process] panics may pub
 end emit.new_g
 
 // 新しいラベル (`L<番号>`) の番号を作る。
-fn emit.newlab(g: &mut emit.G) -> usize uses [] panics may pub
+fn emit.newlab(g: &mut emit.G) -> usize uses [] panics never pub
     g.misc.n = g.misc.n.wrapping_add(1usize)
     g.misc.n
 end emit.newlab
 
 // ファイルを全部読む (`parse` の `read_file` と同じ形)。
-fn emit.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics may pub
+fn emit.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics never pub
     let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
     with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
         core.mem.drop(std.fs.read_to_end(&mut file, &mut buf)?)
@@ -288,7 +288,7 @@ fn emit.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std
 end emit.read_file
 
 // 関数の作業場所を空にする (表は残す)。
-fn emit.reset_fn(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
+fn emit.reset_fn(g: &mut emit.G) -> () uses [] panics never pub
     g.lay.vty = alloc.vec.Vec.new(std.alloc.SYSTEM)
     g.lay.bpar = alloc.vec.Vec.new(std.alloc.SYSTEM)
     g.lay.bpty = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -307,13 +307,13 @@ fn emit.reset_fn(g: &mut emit.G) -> () uses [alloc, io.console, process] panics 
 end emit.reset_fn
 
 // 一時の値の番号を新しく作って返す。値の番号は KIR の値 (1000000 より小さい) と重ならない `1000000 + n` にし、`%v<番号>` と書く。
-fn emit.tmp(g: &mut emit.G) -> usize uses [] panics may pub
+fn emit.tmp(g: &mut emit.G) -> usize uses [] panics never pub
     g.misc.n = g.misc.n.wrapping_add(1usize)
     1000000usize.wrapping_add(g.misc.n)
 end emit.tmp
 
 // 文字列を現在の作業場所 (`g.buf.cur`) へ書く。
-fn emit.w(g: &mut emit.G, s: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.w(g: &mut emit.G, s: &str) -> () uses [alloc] panics may pub
     match g.buf.cur.push_str(s) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
@@ -321,7 +321,7 @@ fn emit.w(g: &mut emit.G, s: &str) -> () uses [alloc, io.console, process] panic
 end emit.w
 
 // 出所のラベルの文字列 (`b<番号>` または `L<番号>`) を書く。`%` は付けない。
-fn emit.wfrom(g: &mut emit.G, fromblk: bool, num: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.wfrom(g: &mut emit.G, fromblk: bool, num: usize) -> () uses [alloc] panics may pub
     if fromblk {
         emit.w(g, "b")
     } else {
@@ -331,12 +331,12 @@ fn emit.wfrom(g: &mut emit.G, fromblk: bool, num: usize) -> () uses [alloc, io.c
 end emit.wfrom
 
 // 十進の数を現在の作業場所へ書く。
-fn emit.wn(g: &mut emit.G, n: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.wn(g: &mut emit.G, n: usize) -> () uses [alloc] panics may pub
     emit.util.push_num(&mut g.buf.cur, n)
 end emit.wn
 
 // 値 `%v<番号>`。
-fn emit.wv(g: &mut emit.G, v: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.wv(g: &mut emit.G, v: usize) -> () uses [alloc] panics may pub
     emit.w(g, "%v")
     emit.wn(g, v)
 end emit.wv

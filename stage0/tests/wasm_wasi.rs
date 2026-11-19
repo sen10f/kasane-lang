@@ -130,7 +130,7 @@ fn unsupported_features_fail_with_a_reason_on_wasi() {
     assert!(both(&o).contains("E9040") && both(&o).contains("std.net"), "{}", both(&o));
 
     // 外部コマンド (std.process)
-    let proc_src = "fn t.main() -> Result<(), std.io.Error> uses [process] panics may\n    let c = std.process.Command.new(\"true\")\n    let child = c.spawn()?\n    core.mem.drop(child.wait()?)\n    Ok(())\nend t.main\n";
+    let proc_src = "fn t.main() -> Result<(), std.io.Error> uses [process] panics never\n    let c = std.process.Command.new(\"true\")\n    let child = c.spawn()?\n    core.mem.drop(child.wait()?)\n    Ok(())\nend t.main\n";
     let p = Tmp::new("wasi_process", proc_src);
     let o = run(&["build", "--target", TRIPLE], &p.0);
     assert_eq!(o.status.code(), Some(1), "{}", both(&o));
@@ -161,7 +161,7 @@ fn module_abi_is_wasi_preview1() {
         eprintln!("skipped: node / wasm-ld-20 / clang のどれかがない");
         return;
     }
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(std.io.print_line(\"hi\"))\n    Ok(())\nend t.main\n";
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    core.mem.drop(std.io.print_line(\"hi\"))\n    Ok(())\nend t.main\n";
     let t = Tmp::new("wasi_abi", src);
     let wasm = build_wasi(&t.0);
     let o = Command::new("node").arg(runner()).arg("--abi").arg(&wasm).output().expect("spawn node");
@@ -346,7 +346,7 @@ const FS_PROGRAM: &str = r#"fn t.kind_num(k: std.io.ErrorKind) -> i64 uses [] pa
     }
 end t.kind_num
 
-fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics may
+fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))
@@ -354,7 +354,7 @@ fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics may
     core.mem.drop(std.io.print_line(s.as_str()))
 end t.show
 
-fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panics may
+fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": kind "))
@@ -364,7 +364,7 @@ fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panic
     core.mem.drop(std.io.print_line(s.as_str()))
 end t.show_err
 
-fn t.flag(label: &str, b: bool) -> () uses [alloc, io.console] panics may
+fn t.flag(label: &str, b: bool) -> () uses [alloc, io.console] panics never
     if b {
         t.show(label, 1i64)
     } else {

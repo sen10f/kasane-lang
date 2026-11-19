@@ -259,7 +259,7 @@ fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     Ok(lower.cx.R { v: res, t: t })
 end lower.expr.block
 
-fn lower.expr.br_if(c: &mut lower.cx.Cx, cond: usize, tb: usize, fb: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.br_if(c: &mut lower.cx.Cx, cond: usize, tb: usize, fb: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let e = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_str("br_if ")?
@@ -271,7 +271,7 @@ fn lower.expr.br_if(c: &mut lower.cx.Cx, cond: usize, tb: usize, fb: usize) -> R
     lower.cx.finish(c, s)
 end lower.expr.br_if
 
-fn lower.expr.br_to(c: &mut lower.cx.Cx, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.br_to(c: &mut lower.cx.Cx, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let e = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let s = lower.cx.cat2("br ", lower.cx.target(b, &e)?.as_str())?
     lower.cx.finish(c, s)
@@ -485,7 +485,7 @@ fn lower.expr.chr_val(src: &[u8], a: usize, b: usize) -> (usize, bool) uses [] p
     (v, true)
 end lower.expr.chr_val
 
-fn lower.expr.coerce_shared(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, j: usize, v: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.coerce_shared(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, j: usize, v: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let vt = lower.cx.tyof(c, v)
     if !vt.as_str().starts_with("mutref<") {
         return Ok(v)
@@ -535,7 +535,7 @@ fn lower.expr.dotted['a](p: &parse.cur.P, src: &'a [u8], node: usize) -> (&'a st
     (resolve.ast.text(src, cur.a, tk.stop), true)
 end lower.expr.dotted
 
-fn lower.expr.dummy(c: &mut lower.cx.Cx, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.dummy(c: &mut lower.cx.Cx, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics never pub
     let v = lower.cx.newval(c, "unit")?
     Ok(lower.cx.R { v: v, t: t })
 end lower.expr.dummy
@@ -732,7 +732,7 @@ fn lower.expr.field(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     lower.opt.field(env, c, r.v, r.t, fname, t)
 end lower.expr.field
 
-fn lower.expr.field_src(v: usize, off: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.field_src(v: usize, off: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_str("field ")?
     s.push_str(lower.cx.vs(v)?.as_str())?
@@ -772,7 +772,7 @@ fn lower.expr.field_store(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cu
     lower.cx.def(c, "unit", so.as_str())
 end lower.expr.field_store
 
-fn lower.expr.from_src(nm: &str) -> &str uses [] panics may pub
+fn lower.expr.from_src(nm: &str) -> &str uses [] panics never pub
     match nm.strip_prefix("from_") {
         Some(s) => s
         None => ""
@@ -1017,15 +1017,15 @@ fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     Ok(lower.cx.R { v: rv, t: t })
 end lower.expr.ifx
 
-fn lower.expr.is_assign(p: &parse.cur.P, e: usize) -> bool uses [] panics may pub
+fn lower.expr.is_assign(p: &parse.cur.P, e: usize) -> bool uses [] panics never pub
     parse.ast.get(&p.ast, e).kind == parse.ast.Kind.Assign
 end lower.expr.is_assign
 
-fn lower.expr.is_iter_name(p: &parse.cur.P, src: &[u8], tok: usize) -> bool uses [] panics may pub
+fn lower.expr.is_iter_name(p: &parse.cur.P, src: &[u8], tok: usize) -> bool uses [] panics never pub
     resolve.ast.tok_text(p, src, tok) == "iter"
 end lower.expr.is_iter_name
 
-fn lower.expr.is_widen(nty: &str, nm: &str) -> bool uses [alloc] panics may pub
+fn lower.expr.is_widen(nty: &str, nm: &str) -> bool uses [] panics never pub
     if !nm.starts_with("from_") || nm == "from_str_radix" {
         return false
     }
@@ -1034,12 +1034,12 @@ fn lower.expr.is_widen(nty: &str, nm: &str) -> bool uses [alloc] panics may pub
     src_ok && (lower.chk.is_unsigned(nty) || lower.chk.is_signed(nty))
 end lower.expr.is_widen
 
-fn lower.expr.is_wrap_op(m: &str) -> bool uses [] panics may pub
+fn lower.expr.is_wrap_op(m: &str) -> bool uses [] panics never pub
     let a = m == "wrapping_add" || m == "wrapping_sub" || m == "wrapping_mul"
     a || m == "wrapping_shl" || m == "wrapping_shr"
 end lower.expr.is_wrap_op
 
-fn lower.expr.is_wrapping(m: &str) -> bool uses [] panics may pub
+fn lower.expr.is_wrapping(m: &str) -> bool uses [] panics never pub
     if lower.expr.is_wrap_op(m) {
         return true
     }
@@ -1049,7 +1049,7 @@ fn lower.expr.is_wrapping(m: &str) -> bool uses [] panics may pub
     a || b || d
 end lower.expr.is_wrapping
 
-fn lower.expr.jargs(c: &lower.cx.Cx, rty: &str, res: usize, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.jargs(c: &lower.cx.Cx, rty: &str, res: usize, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut a = alloc.vec.Vec.new(std.alloc.SYSTEM)
     if rty != "unit" {
         a.push(res)?
@@ -1061,7 +1061,7 @@ fn lower.expr.jargs(c: &lower.cx.Cx, rty: &str, res: usize, ks: &alloc.vec.Vec<u
     Ok(a)
 end lower.expr.jargs
 
-fn lower.expr.join_params(c: &mut lower.cx.Cx, rty: &str, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.join_params(c: &mut lower.cx.Cx, rty: &str, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
     if rty != "unit" {
         ps.push(lower.cx.newval(c, rty)?)?
@@ -1087,7 +1087,7 @@ fn lower.expr.jump(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     lower.expr.dummy(c, t)
 end lower.expr.jump
 
-fn lower.expr.last_seg(name: &str) -> &str uses [] panics may pub
+fn lower.expr.last_seg(name: &str) -> &str uses [] panics never pub
     let mut out = name
     for w in name.split(".") {
         out = w
@@ -1598,7 +1598,7 @@ fn lower.expr.mut_recv_root(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.
     Ok((root, true))
 end lower.expr.mut_recv_root
 
-fn lower.expr.no_body(env: &types.env.Env, item: usize) -> bool uses [alloc] panics may pub
+fn lower.expr.no_body(env: &types.env.Env, item: usize) -> bool uses [] panics never pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
     let p = match types.env.unit(env, file) {
@@ -1883,7 +1883,7 @@ fn lower.expr.seg_count(name: &str) -> usize uses [] panics may pub
     n
 end lower.expr.seg_count
 
-fn lower.expr.self_chain['a](p: &parse.cur.P, src: &'a [u8], recv: usize, meth_tok: usize) -> (&'a str, bool) uses [] panics may pub
+fn lower.expr.self_chain['a](p: &parse.cur.P, src: &'a [u8], recv: usize, meth_tok: usize) -> (&'a str, bool) uses [] panics never pub
     let mut cur = parse.ast.get(&p.ast, recv)
     if cur.kind != parse.ast.Kind.Dot {
         return ("", false)
@@ -1898,7 +1898,7 @@ fn lower.expr.self_chain['a](p: &parse.cur.P, src: &'a [u8], recv: usize, meth_t
     (resolve.ast.text(src, cur.a, tk.stop), true)
 end lower.expr.self_chain
 
-fn lower.expr.set_mut(c: &mut lower.cx.Cx, k: usize, m: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.set_mut(c: &mut lower.cx.Cx, k: usize, m: bool) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let mut tail = alloc.vec.Vec.new(std.alloc.SYSTEM)
     while c.v.mutf.len() > k {
         match c.v.mutf.pop() {
@@ -2051,16 +2051,16 @@ fn lower.expr.structlit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     Ok(lower.cx.R { v: v, t: t })
 end lower.expr.structlit
 
-fn lower.expr.sync(c: &mut lower.cx.Cx) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.sync(c: &mut lower.cx.Cx) -> Result<(), resolve.Failure> uses [] panics never pub
     core.mem.drop(c.v.vals.len())
     Ok(())
 end lower.expr.sync
 
-fn lower.expr.trunc(c: &mut lower.cx.Cx, mark: usize) -> () uses [alloc] panics may pub
+fn lower.expr.trunc(c: &mut lower.cx.Cx, mark: usize) -> () uses [] panics never pub
     lower.cx.trunc_to(c, mark)
 end lower.expr.trunc
 
-fn lower.expr.two(a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.two(a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
     vs.push(a)?
     vs.push(b)?
@@ -2238,7 +2238,7 @@ fn lower.expr.unesc(src: &[u8], a: usize, b: usize) -> Result<(alloc.string.Stri
     Ok((out, n, true))
 end lower.expr.unesc
 
-fn lower.expr.unit(c: &mut lower.cx.Cx) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.unit(c: &mut lower.cx.Cx) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     lower.cx.def(c, "unit", "const.unit ()")
 end lower.expr.unit
 

@@ -218,6 +218,28 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             }
             vec![]
         }
+        // 効果の完全一致 (D5・D13、tast_rules/effects_exact.rs): 宣言を、メッセージの末尾の ``write `uses [..] panics ..` `` に書き直す。
+        "E4025" | "E4020" => {
+            let Some(text) = get(line) else { return vec![] };
+            let Some(want) = msg.rsplit_once("write `").and_then(|(_, r)| r.strip_suffix('`')) else { return vec![] };
+            if code == "E4025" {
+                let re = Regex::new(r"uses \[[^\]]*\] panics [A-Za-z]+").unwrap();
+                let Some(m) = re.find(text) else { return vec![] };
+                return vec![span(file, line, text, m.start(), m.end(), want.to_string())];
+            }
+            // 省略: `stack` / `impls` / `pub` の前 (無ければ行末) に ` uses [..] panics ..` を足す。
+            let t = text.trim_end();
+            let mut at = t.len();
+            for pat in [" stack ", " impls "] {
+                if let Some(p) = t.find(pat) {
+                    at = at.min(p);
+                }
+            }
+            if at == t.len() && t.ends_with(" pub") {
+                at = t.len() - 4;
+            }
+            vec![span(file, line, text, at, at, format!(" {}", want))]
+        }
         _ => vec![],
     }
 }

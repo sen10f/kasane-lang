@@ -62,7 +62,7 @@ fn native_checked_trunc_and_const_receivers_match_interpreter() {
     Ok(())
 end t.main
 
-fn t.show_opt_i64(v: Option<i64>) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.show_opt_i64(v: Option<i64>) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     match v {
         Some(x) => {
             let mut s = alloc.string.String.new(std.alloc.SYSTEM)
@@ -74,7 +74,7 @@ fn t.show_opt_i64(v: Option<i64>) -> Result<(), std.io.Error> uses [alloc, io.co
     Ok(())
 end t.show_opt_i64
 
-fn t.show_opt_u64(v: Option<u64>) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.show_opt_u64(v: Option<u64>) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     match v {
         Some(x) => {
             let mut s = alloc.string.String.new(std.alloc.SYSTEM)
@@ -284,7 +284,7 @@ end t.main
 /// for a in v.as_slice().iter() on Vec<String>。
 #[test]
 fn native_for_over_as_slice_of_returned_vec_of_strings_matches_interpreter() {
-    let src = r#"fn t.names() -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [alloc] panics may
+    let src = r#"fn t.names() -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [alloc] panics never
     let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match alloc.string.String.from_str(std.alloc.SYSTEM, "abc") {
         Ok(s) => {
