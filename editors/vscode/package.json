@@ -55,6 +55,7 @@
   "scripts": {
     "compile": "tsc -p .",
     "check": "node scripts/grammar_check.mjs",
+    "package": "vsce package",
     "vscode:prepublish": "npm run compile"
   },
   "dependencies": {
@@ -63,6 +64,7 @@
   "devDependencies": {
     "@types/node": "^20.14.9",
     "@types/vscode": "^1.82.0",
+    "@vscode/vsce": "2.24.0",
     "typescript": "^5.5.4",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.1.0"

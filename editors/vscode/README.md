@@ -5,6 +5,7 @@ Kasane の構文強調と、`ksn lsp` による補完・診断・定義参照な
 ## 必要なもの
 
 - VS Code 1.82 以上
+- Node.js 20（確認環境: v20.18.1）
 - Kasane の `ksn` 実行ファイル（通常は `PATH` に置きます）
 
 ## インストール
@@ -13,9 +14,11 @@ Kasane の構文強調と、`ksn lsp` による補完・診断・定義参照な
 
 ```sh
 npm install
-npm run compile
-vsce package
+npx tsc -p .
+npx @vscode/vsce@2.24.0 package --allow-missing-repository
 ```
+
+`@vscode/vsce` の最新版は Node.js 20 で `ERR_REQUIRE_ESM` となるため、`2.24.0` を固定しています。`--no-dependencies` は指定しません。起動に必要な `vscode-languageclient` を VSIX に含めるためです。
 
 作成した `.vsix` は、VS Code の「拡張機能: VSIX からインストール...」（Install from VSIX）コマンドでインストールできます。
 
