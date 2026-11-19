@@ -303,6 +303,13 @@ fn check_lock(pkg: &Package, deps: &[Package], rep: &mut Report) {
     for (code, msg) in verify_lock(pkg, deps) {
         rep.add(&code, &msg, Some("kasane.lock"), 1, 1, true);
     }
+    // `kasane.toml` / `kasane.lock` も `.ksnl` と同じ字句と整形の規則に従う (設計_tomlとlockの書き方.md 7 章)。
+    for (label, kind) in [("kasane.toml", crate::tomlstrict::Kind::Manifest), ("kasane.lock", crate::tomlstrict::Kind::Lock)] {
+        let Some(t) = crate::project::read_text(&norm(&pkg.root.join(label))) else { continue };
+        for f in crate::tomlstrict::analyze(kind, &t).findings {
+            rep.add(f.code, &f.msg, Some(label), f.line, f.col, true);
+        }
+    }
 }
 
 /// 構文・正規形・意味の検査。構文エラーが無ければ Program を返す。
@@ -2734,6 +2741,25 @@ fn cmd_fmt(args: &[String]) -> i32 {
         if !ok {
             diff = true;
             println!("{}:{}: E0002: {}", rel(&s.path), ln, msg);
+        }
+    }
+    // `kasane.toml` / `kasane.lock` も整える (設計_tomlとlockの書き方.md 7 章)。直せない誤り (E0004 など) は
+    // `.ksnl` と同じく報告だけ。
+    for (label, kind) in [("kasane.toml", crate::tomlstrict::Kind::Manifest), ("kasane.lock", crate::tomlstrict::Kind::Lock)] {
+        let Some(t) = crate::project::read_text(&norm(&pkg.root.join(label))) else { continue };
+        let an = crate::tomlstrict::analyze(kind, &t);
+        for f in an.findings.iter().filter(|f| f.code != "E0020") {
+            diff = true;
+            println!("{}:{}:{}: {}: {}", label, f.line, f.col, f.code, f.msg);
+        }
+        if let Some(c) = an.canon {
+            if c != t {
+                changed = true;
+                println!("{} {}", if check { "would reformat" } else { "reformatted" }, label);
+                if !check {
+                    fs::write(pkg.root.join(label), &c).unwrap();
+                }
+            }
         }
     }
     if diff || (changed && check) { 1 } else { 0 }
