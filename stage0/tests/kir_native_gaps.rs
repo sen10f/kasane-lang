@@ -1,358 +1,249 @@
-//! 段階 1 の下ろしの穴 (`checked_*` / `saturating_*` / `trunc_to_*`、定数の受け手、`from_utf8` の配列、`Vec.with_capacity` / `sub`、
-//! 所有物の `Vec` の `for`) を埋めたことの確認。木走査 (`ksn run`) と LLVM (debug / release) の出力が一致することを
-//! `agree_with_interpreter` で確かめる。
+//! ネイティブに下ろせなかった 5 つの形 (kir/native-gaps): それぞれネイティブ (debug/release) が
+//! `ksn run` と同じ表示・終了コードを出すことを確かめる。退避 (`native backend skipped`) は許さない。
 
 mod common;
-use common::*;
 
-/// release のネイティブ生成が、バンドルへ退避せず LLVM で成功すること (E9040 にならない)。
-fn assert_native_release(name: &str, src: &str) {
-    let (_t, exe, out) = build_native_strict(&format!("{}_strict", name), src, true);
-    assert!(exe.is_some(), "release のネイティブ生成が失敗した: {}", out);
+use common::{build_native_strict, run, text, Tmp};
+
+/// `ksn run` の出力と、ネイティブ (debug/release) の実行ファイルの出力が一致することを確かめる。
+fn check_gap(name: &str, src: &str, want: &str) {
+    let t = Tmp::new(name, src);
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "run: {}{}", text(&interp.stderr), text(&interp.stdout));
+    assert_eq!(text(&interp.stdout), want, "run の表示が想定と違う");
+    for release in [false, true] {
+        let (bt, exe, out) = build_native_strict(&format!("{}_{}", name, release), src, release);
+        let p = exe.unwrap_or_else(|| panic!("ネイティブの実行ファイルが無い (release: {}): {}", release, out));
+        let o = std::process::Command::new(&p).current_dir(&bt.0).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "release {}: {}{}", release, text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout), want, "native (release: {}) と run の表示が違う", release);
+    }
 }
 
-/// the checked_* / saturating_* / wrapping_neg / trunc_to_* families, including path-constant receivers (core.num.i64.MIN.checked_div(-1)); boundaries: i64::MIN / -1, shift 64, NaN, inf, 2^63, 2^64。
+/// 1. `Vec<T>` の `{:?}` / derive [Debug] (要素が String・入れ子 Vec・構造体)。
 #[test]
-fn native_checked_trunc_and_const_receivers_match_interpreter() {
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    t.show_opt_i64(core.num.i64.MIN.checked_div(-1i64))?
-    t.show_opt_i64(core.num.i64.MIN.checked_rem(-1i64))?
-    t.show_opt_i64(core.num.i64.MAX.checked_div(-1i64))?
-    t.show_opt_i64(7i64.checked_div(0i64))?
-    t.show_opt_i64(core.num.i64.MIN.checked_abs())?
-    t.show_opt_i64((0i64 - 5i64).checked_abs())?
-    t.show_opt_u64(1u64.checked_shl(64u32))?
-    t.show_opt_u64(1u64.checked_shl(63u32))?
-    t.show_opt_u64(core.num.u64.MAX.checked_shr(64u32))?
-    t.show_opt_u64(core.num.u64.MAX.checked_shr(63u32))?
-    let a = 200u8
-    match a.checked_shl(8u32) {
-        Some(_) => std.io.print_line("u8 some")?
-        None => std.io.print_line("u8 none")?
+fn vec_debug_native() {
+    check_gap(
+        "ngaps_vec_debug",
+        r#"type t.Inner derive [Debug]
+    name: alloc.string.String<std.alloc.System>
+end t.Inner
+
+type t.Cfg derive [Debug]
+    title: alloc.string.String<std.alloc.System>
+    tags: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>
+    nums: alloc.vec.Vec<u64, std.alloc.System>
+    inner: t.Inner
+end t.Cfg
+
+fn t.mk(x: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    alloc.string.String.from_str(std.alloc.SYSTEM, x)
+end t.mk
+
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
+    let tt = t.mk("T")?
+    let a = t.mk("aa")?
+    let b = t.mk("b\"b")?
+    let tags0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tags = tags0
+    tags.push(a)?
+    tags.push(b)?
+    let mut nums = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    nums.push(7u64)?
+    nums.push(8u64)?
+    let mut inner_v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    inner_v.push(1u32)?
+    let mut nested = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    nested.push(inner_v)?
+    let n = t.mk("nn")?
+    let c = t.Cfg { title: tt, tags: tags, nums: nums, inner: t.Inner { name: n } }
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    alloc.fmt.debug(&mut s, &c)?
+    s.push_str("|")?
+    alloc.fmt.debug(&mut s, &nested)?
+    match std.io.print_line(s.as_str()) {
+        Ok(_x) => Ok(())
+        Err(_e) => core.panic.panic("io")
     }
-    match a.checked_shl(1u32) {
-        Some(v) => std.io.print_line(t.tag_u8(v))?
-        None => std.io.print_line("u8 none")?
-    }
-    let neg = 0i32 - 16i32
-    match neg.checked_shr(2u32) {
-        Some(v) => core.check.eq(v, 0i32 - 4i32)
-        None => std.io.print_line("i32 none")?
-    }
-    core.check.eq(core.num.i32.MAX.saturating_add(1i32), core.num.i32.MAX)
-    core.check.eq(core.num.i64.MIN.wrapping_neg(), core.num.i64.MIN)
-    core.check.eq(core.num.i16.MIN.saturating_sub(1i16), core.num.i16.MIN)
-    t.show_opt_i64(core.num.f64.INFINITY.trunc_to_i64())?
-    t.show_opt_i64(core.num.f64.NEG_INFINITY.trunc_to_i64())?
-    t.show_opt_i64(core.num.f64.NAN.trunc_to_i64())?
-    t.show_opt_i64(9223372036854775807.0f64.trunc_to_i64())?
-    t.show_opt_i64(9223372036854774784.0f64.trunc_to_i64())?
-    t.show_opt_i64((0.0f64 - 9223372036854775808.0f64).trunc_to_i64())?
-    t.show_opt_u64(18446744073709551615.0f64.trunc_to_u64())?
-    t.show_opt_u64(18446744073709549568.0f64.trunc_to_u64())?
-    t.show_opt_u64((0.0f64 - 0.5f64).trunc_to_u64())?
-    t.show_opt_u64((0.0f64 - 1.0f64).trunc_to_u64())?
-    core.check.eq(core.num.f64.NAN.trunc_to_u8(), None)
-    core.check.eq(core.num.f32.INFINITY.trunc_to_i32(), None)
-    core.check.eq(2147483520.0f32.trunc_to_i32(), Some(2147483520i32))
-    core.check.eq(2147483648.0f32.trunc_to_i32(), None)
-    core.check.eq(255.5f64.trunc_to_u8(), Some(255u8))
-    core.check.eq((0.0f64 - 127.9f64).trunc_to_i8(), Some(0i8 - 127i8))
-    core.check.eq((0.0f64 - 128.9f64).trunc_to_i8(), Some(core.num.i8.MIN))
-    Ok(())
 end t.main
-
-fn t.show_opt_i64(v: Option<i64>) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
-    match v {
-        Some(x) => {
-            let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-            core.mem.drop(alloc.fmt.write(&mut s, &x))
-            std.io.print_line(s.as_str())?
-        }
-        None => std.io.print_line("none")?
-    }
-    Ok(())
-end t.show_opt_i64
-
-fn t.show_opt_u64(v: Option<u64>) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
-    match v {
-        Some(x) => {
-            let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-            core.mem.drop(alloc.fmt.write(&mut s, &x))
-            std.io.print_line(s.as_str())?
-        }
-        None => std.io.print_line("none")?
-    }
-    Ok(())
-end t.show_opt_u64
-
-fn t.tag_u8(v: u8) -> &'static str uses [] panics never
-    match v {
-        144u8 => "u8 144"
-        _ => "u8 other"
-    }
-end t.tag_u8
-"#;
-    let out = agree_with_interpreter("native_checked_trunc_and_const_receivers", src);
-    assert_native_release("native_checked_trunc_and_const_receivers", src);
-    assert!(!out.is_empty(), "no output");
+"#,
+        "Cfg { title: \"T\", tags: [\"aa\", \"b\\\"b\"], nums: [7, 8], inner: Inner { name: \"nn\" } }|[[1]]\n",
+    );
 }
 
-/// core.str.from_utf8(&[..]) / (&local_array)。
+/// 2. derive [ToJson, FromJson] の構造体に `Vec<String>` と入れ子の構造体がある場合。
 #[test]
-fn native_from_utf8_of_array_literals_matches_interpreter() {
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
-    match core.str.from_utf8(&[0xffu8, 0xfeu8]) {
-        Ok(_) => std.io.print_line("ok")?
-        Err(_) => std.io.print_line("err")?
-    }
-    match core.str.from_utf8(&[0x68u8, 0x69u8]) {
-        Ok(s) => std.io.print_line(s)?
-        Err(_) => std.io.print_line("err")?
-    }
-    let a = [0x68u8, 0xc3u8]
-    match core.str.from_utf8(&a) {
-        Ok(s) => std.io.print_line(s)?
-        Err(_) => std.io.print_line("err2")?
-    }
-    Ok(())
-end t.main
-"#;
-    let out = agree_with_interpreter("native_from_utf8_of_array_literals_match", src);
-    assert_native_release("native_from_utf8_of_array_literals_match", src);
-    assert!(!out.is_empty(), "no output");
-}
+fn derive_json_vec_string_native() {
+    check_gap(
+        "ngaps_json",
+        r#"type t.Inner derive [Debug, ToJson, FromJson]
+    name: alloc.string.String<std.alloc.System>
+end t.Inner
 
-/// Vec.with_capacity(SYSTEM, usize::MAX) -> Err。
-#[test]
-fn native_vec_with_capacity_huge_is_err_like_interpreter() {
-    let src = r#"fn t.huge_vec() -> Result<alloc.vec.Vec<u8, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
-    alloc.vec.Vec.with_capacity(std.alloc.SYSTEM, core.num.usize.MAX)
-end t.huge_vec
+type t.Cfg derive [Debug, ToJson, FromJson]
+    title: alloc.string.String<std.alloc.System>
+    tags: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>
+    inner: t.Inner
+end t.Cfg
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
-    match t.huge_vec() {
-        Ok(v) => {
-            core.mem.drop(v)
-            std.io.print_line("ok")?
-        }
-        Err(_) => std.io.print_line("err")?
-    }
-    Ok(())
-end t.main
-"#;
-    let out = agree_with_interpreter("native_vec_with_capacity_huge_is_err_lik", src);
-    assert_native_release("native_vec_with_capacity_huge_is_err_lik", src);
-    assert!(!out.is_empty(), "no output");
-}
+fn t.mk(x: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    alloc.string.String.from_str(std.alloc.SYSTEM, x)
+end t.mk
 
-/// Vec.sub(0, 3) on len 2 -> None。
-#[test]
-fn native_vec_sub_out_of_range_and_reversed_match_interpreter() {
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+fn t.tags1(x: alloc.string.String<std.alloc.System>) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    core.mem.drop(match v.push(1u8) {
-        Ok(()) => {
-        }
-        Err(_) => {
-        }
-    })
-    core.mem.drop(match v.push(2u8) {
-        Ok(()) => {
-        }
-        Err(_) => {
-        }
-    })
-    match v.sub(0usize, 3usize) {
-        Some(_) => std.io.print_line("some")?
-        None => std.io.print_line("none")?
+    v.push(x)?
+    Ok(v)
+end t.tags1
+
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
+    let tt = t.mk("t")?
+    let x = t.mk("x")?
+    let n = t.mk("n")?
+    let tags = t.tags1(x)?
+    let c = t.Cfg { title: tt, tags: tags, inner: t.Inner { name: n } }
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    c.to_json(&mut out)?
+    let j = t.mk("{\"title\":\"t\",\"tags\":[\"x\"],\"inner\":{\"name\":\"n\"}}")?
+    let doc = match std.json.parse(j.as_str()) {
+        Ok(d) => d
+        Err(_e) => core.panic.panic("json")
     }
-    core.mem.drop(v)
-    Ok(())
+    let c2 = match t.Cfg.from_json(&doc, doc.root()) {
+        Ok(v) => v
+        Err(_e) => core.panic.panic("json")
+    }
+    let mut out2 = alloc.string.String.new(std.alloc.SYSTEM)
+    c2.to_json(&mut out2)?
+    match std.io.print_line(out.as_str()) {
+        Ok(_x) => match std.io.print_line(out2.as_str()) {
+            Ok(_y) => Ok(())
+            Err(_e) => core.panic.panic("io")
+        }
+        Err(_e) => core.panic.panic("io")
+    }
 end t.main
-"#;
-    let out = agree_with_interpreter("native_vec_sub_out_of_range_and_reversed", src);
-    assert_native_release("native_vec_sub_out_of_range_and_reversed", src);
-    assert!(!out.is_empty(), "no output");
+"#,
+        "{\"title\":\"t\",\"tags\":[\"x\"],\"inner\":{\"name\":\"n\"}}\n{\"title\":\"t\",\"tags\":[\"x\"],\"inner\":{\"name\":\"n\"}}\n",
+    );
 }
 
-/// Vec.sub(2, 1) -> None。
+/// 3. `Vec<T>.try_clone()` (スカラー要素と String 要素)。
 #[test]
-fn native_vec_sub_reversed_matches_interpreter() {
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+fn vec_try_clone_native() {
+    check_gap(
+        "ngaps_try_clone",
+        r#"fn t.mk(x: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    alloc.string.String.from_str(std.alloc.SYSTEM, x)
+end t.mk
+
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    core.mem.drop(match v.push(1u8) {
-        Ok(()) => {
-        }
-        Err(_) => {
-        }
-    })
-    core.mem.drop(match v.push(2u8) {
-        Ok(()) => {
-        }
-        Err(_) => {
-        }
-    })
-    match v.sub(2usize, 1usize) {
-        Some(_) => std.io.print_line("some")?
-        None => std.io.print_line("none")?
+    v.push(7u64)?
+    v.push(8u64)?
+    let c = match v.try_clone() {
+        Ok(x) => x
+        Err(_e) => core.panic.panic("clone")
     }
-    core.mem.drop(v)
-    Ok(())
+    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    vs.push(t.mk("aa")?)?
+    vs.push(t.mk("b\"b")?)?
+    let cs = match vs.try_clone() {
+        Ok(x) => x
+        Err(_e) => core.panic.panic("clone")
+    }
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    alloc.fmt.debug(&mut s, &c)?
+    s.push_str("|")?
+    alloc.fmt.debug(&mut s, &cs)?
+    match std.io.print_line(s.as_str()) {
+        Ok(_x) => Ok(())
+        Err(_e) => core.panic.panic("io")
+    }
 end t.main
-"#;
-    let out = agree_with_interpreter("native_vec_sub_reversed_matches_interpre", src);
-    assert_native_release("native_vec_sub_reversed_matches_interpre", src);
-    assert!(!out.is_empty(), "no output");
+"#,
+        "[7, 8]|[\"aa\", \"b\\\"b\"]\n",
+    );
 }
 
-/// for x in self.items.iter()。
+/// 4. 利用者が書いた `impl core.fmt.Debug` / `Display` (`push_debug` / `push_display` の受け皿)。
 #[test]
-fn native_for_over_field_vec_of_strings_matches_interpreter() {
-    let src = r#"type t.Env
-    items: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>
-end t.Env
+fn user_fmt_impl_native() {
+    check_gap(
+        "ngaps_user_fmt",
+        r#"type t.P
+    x: u64
+end t.P
 
-fn t.count(self: &t.Env) -> usize uses [] panics never
-    let mut n = 0usize
-    for x in self.items.iter() {
-        n = n.wrapping_add(x.len())
+impl core.fmt.Debug for t.P
+fn t.P.debug_fmt(self: &t.P, f: &mut core.fmt.Formatter) -> Result<(), core.fmt.Error> uses [] panics never impls core.fmt.Debug
+    if self.x == 42u64 {
+        f.write_str("P42")?
+    } else {
+        f.write_str("P?")?
     }
-    n
-end t.count
-
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match alloc.string.String.from_str(std.alloc.SYSTEM, "abc") {
-        Ok(s) => {
-            match items.push(s) {
-                Ok(()) => {
-                }
-                Err(_) => {
-                }
-            }
-        }
-        Err(_) => {
-        }
-    }
-    let env = t.Env { items: items }
-    core.check.eq(t.count(&env), 3usize)
-    std.io.print_line("d1 ok")?
     Ok(())
+end t.P.debug_fmt
+
+impl core.fmt.Display for t.P
+fn t.P.display_fmt(self: &t.P, f: &mut core.fmt.Formatter) -> Result<(), core.fmt.Error> uses [] panics never impls core.fmt.Display
+    f.write_str("disp")?
+    Ok(())
+end t.P.display_fmt
+
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
+    let p = t.P { x: 42u64 }
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    alloc.fmt.debug(&mut s, &p)?
+    s.push_str("|")?
+    s.push_display(&p)?
+    match std.io.print_line(s.as_str()) {
+        Ok(_x) => Ok(())
+        Err(_e) => core.panic.panic("io")
+    }
 end t.main
-"#;
-    let out = agree_with_interpreter("native_for_over_field_vec_of_strings_mat", src);
-    assert_native_release("native_for_over_field_vec_of_strings_mat", src);
-    assert!(!out.is_empty(), "no output");
+"#,
+        "P42|disp\n",
+    );
 }
 
-/// for s in v.iter() (v: &mut Vec<String>)。
+/// 5. `core.sync.AtomicBool` / `AtomicU64` / `AtomicUsize` (LLVM では実アトミック命令)。
 #[test]
-fn native_for_over_mut_param_vec_of_strings_matches_interpreter() {
-    let src = r#"fn t.fill(v: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> usize uses [] panics never
-    let mut n = 0usize
-    for s in v.iter() {
-        n = n.wrapping_add(s.len())
+fn atomics_native() {
+    check_gap(
+        "ngaps_atomics",
+        r#"fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
+    let a = core.sync.AtomicU64.new(7u64)
+    a.store(9u64, core.sync.Ordering.SeqCst)
+    let old = a.swap(11u64, core.sync.Ordering.SeqCst)
+    let got = a.load(core.sync.Ordering.SeqCst)
+    let sum = a.fetch_add(5u64, core.sync.Ordering.SeqCst)
+    let cas = match a.compare_exchange(16u64, 20u64, core.sync.Ordering.SeqCst) {
+        Ok(v) => v
+        Err(_e) => 999u64
     }
-    n
-end t.fill
-
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match alloc.string.String.from_str(std.alloc.SYSTEM, "abcd") {
-        Ok(s) => {
-            match items.push(s) {
-                Ok(()) => {
-                }
-                Err(_) => {
-                }
-            }
-        }
-        Err(_) => {
-        }
+    let b = core.sync.AtomicBool.new(true)
+    let bold = b.swap(false, core.sync.Ordering.SeqCst)
+    let n = core.sync.AtomicUsize.new(3usize)
+    let nold = n.fetch_add(1usize, core.sync.Ordering.SeqCst)
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    alloc.fmt.debug(&mut s, &got)?
+    s.push_str("/")?
+    alloc.fmt.debug(&mut s, &old)?
+    s.push_str("/")?
+    alloc.fmt.debug(&mut s, &sum)?
+    s.push_str("/")?
+    alloc.fmt.debug(&mut s, &cas)?
+    s.push_str("/")?
+    alloc.fmt.debug(&mut s, &bold)?
+    s.push_str("/")?
+    alloc.fmt.debug(&mut s, &nold)?
+    match std.io.print_line(s.as_str()) {
+        Ok(_x) => Ok(())
+        Err(_e) => core.panic.panic("io")
     }
-    core.check.eq(t.fill(&mut items), 4usize)
-    std.io.print_line("d2 ok")?
-    Ok(())
 end t.main
-"#;
-    let out = agree_with_interpreter("native_for_over_mut_param_vec_of_strings", src);
-    assert_native_release("native_for_over_mut_param_vec_of_strings", src);
-    assert!(!out.is_empty(), "no output");
-}
-
-/// for a in v.as_slice().iter() on Vec<String>。
-#[test]
-fn native_for_over_as_slice_of_returned_vec_of_strings_matches_interpreter() {
-    let src = r#"fn t.names() -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [alloc] panics never
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match alloc.string.String.from_str(std.alloc.SYSTEM, "abc") {
-        Ok(s) => {
-            match items.push(s) {
-                Ok(()) => {
-                }
-                Err(_) => {
-                }
-            }
-        }
-        Err(_) => {
-        }
-    }
-    items
-end t.names
-
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let v = t.names()
-    let mut n = 0usize
-    for a in v.as_slice().iter() {
-        n = n.wrapping_add(a.as_str().len())
-    }
-    core.check.eq(n, 3usize)
-    std.io.print_line("d7 ok")?
-    Ok(())
-end t.main
-"#;
-    let out = agree_with_interpreter("native_for_over_as_slice_of_returned_vec", src);
-    assert_native_release("native_for_over_as_slice_of_returned_vec", src);
-    assert!(!out.is_empty(), "no output");
-}
-
-/// `x.f.checked_*(..)` (フィールドの整数が受け手。`x` は `&構造体`): csvtool の `stats.sum.checked_div(stats.numeric)` の形。
-#[test]
-fn native_checked_ops_on_struct_field_receivers_match_interpreter() {
-    let src = r#"type t.Stats
-    sum: i64
-    n: i64
-end t.Stats
-
-fn t.avg(s: &t.Stats) -> i64 uses [] panics may
-    match s.sum.checked_div(s.n) {
-        Some(v) => v
-        None => 0i64 - 1i64
-    }
-end t.avg
-
-fn t.neg(s: &t.Stats) -> i64 uses [] panics may
-    match s.sum.checked_abs() {
-        Some(v) => v
-        None => 0i64 - 7i64
-    }
-end t.neg
-
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let a = t.Stats { sum: 10i64, n: 4i64 }
-    let b = t.Stats { sum: core.num.i64.MIN, n: 0i64 - 1i64 }
-    let c = t.Stats { sum: 5i64, n: 0i64 }
-    core.check.eq(t.avg(&a), 2i64)
-    core.check.eq(t.avg(&b), 0i64 - 1i64)
-    core.check.eq(t.avg(&c), 0i64 - 1i64)
-    core.check.eq(t.neg(&b), 0i64 - 7i64)
-    core.check.eq(t.neg(&a), 10i64)
-    std.io.print_line("fields ok")?
-    Ok(())
-end t.main
-"#;
-    let out = agree_with_interpreter("native_checked_fields", src);
-    assert_eq!(out, "fields ok\n");
-    assert_native_release("native_checked_fields", src);
+"#,
+        "11/9/11/16/true/3\n",
+    );
 }
