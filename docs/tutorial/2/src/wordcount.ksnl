@@ -1,0 +1,76 @@
+enum wordcount.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Io(std.io.Error)
+    Utf8(core.str.Utf8Error)
+end wordcount.Error
+
+fn wordcount.add_word(counts: &mut alloc.collections.HashMap<alloc.string.String<std.alloc.System>, usize, std.alloc.System>, word: &str) -> Result<(), wordcount.Error> uses [alloc] panics never
+    match counts.get_mut_str(word) {
+        Some(count) => {
+            *count = count.wrapping_add(1usize)
+            Ok(())
+        }
+        None => {
+            let key = alloc.string.String.from_str(std.alloc.SYSTEM, word)?
+            match counts.insert(key, 1usize) {
+                Ok(_old) => Ok(())
+                Err(error) => Err(wordcount.Error.Alloc(error))
+            }
+        }
+    }
+end wordcount.add_word
+
+fn wordcount.count_text(text: &str) -> Result<alloc.collections.HashMap<alloc.string.String<std.alloc.System>, usize, std.alloc.System>, wordcount.Error> uses [alloc] panics never
+    let mut counts = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut word = alloc.string.String.new(std.alloc.SYSTEM)
+    for c in text.chars() {
+        if c.is_ascii_whitespace() {
+            if !word.is_empty() {
+                wordcount.add_word(&mut counts, word.as_str())?
+                word.clear()
+            }
+        } else {
+            word.push(c)?
+        }
+    }
+    if !word.is_empty() {
+        wordcount.add_word(&mut counts, word.as_str())?
+    }
+    Ok(counts)
+end wordcount.count_text
+
+fn wordcount.main() -> Result<(), wordcount.Error> uses [alloc, io.console, io.fs] panics never
+    let text = wordcount.read_file("sample.txt")?
+    let counts = wordcount.count_text(text.as_str())?
+    wordcount.print_count(&counts, "Kasane")?
+    wordcount.print_count(&counts, "checks")?
+    wordcount.print_count(&counts, "Language")?
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str("unique words: ")?
+    line.push_u64(u64.from_usize(counts.len()))?
+    std.io.print_line(line.as_str())?
+    Ok(())
+end wordcount.main
+
+fn wordcount.print_count(counts: &alloc.collections.HashMap<alloc.string.String<std.alloc.System>, usize, std.alloc.System>, word: &str) -> Result<(), wordcount.Error> uses [alloc, io.console] panics never
+    let count = match counts.get_str(word) {
+        Some(value) => *value
+        None => 0usize
+    }
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str(word)?
+    line.push_str(": ")?
+    line.push_u64(u64.from_usize(count))?
+    std.io.print_line(line.as_str())?
+    Ok(())
+end wordcount.print_count
+
+fn wordcount.read_file(path: &str) -> Result<alloc.string.String<std.alloc.System>, wordcount.Error> uses [alloc, io.fs] panics never
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
+    }
+    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    text.push_str(core.str.from_utf8(data.as_slice())?)?
+    Ok(text)
+end wordcount.read_file
