@@ -23,7 +23,7 @@ fn probe.cnt(n: u32) -> u32 uses [] panics never
     i
 end probe.cnt
 
-fn probe.main() -> () uses [io.console] panics never
+fn probe.main() -> () uses [] panics never
     let p = probe.mk(probe.add(1i32, 2i32))
     let z = p.x
     core.mem.drop(z)
