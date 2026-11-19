@@ -1,0 +1,41 @@
+fn h.main() -> Result<(), std.io.Error> uses [env, io.console, process] panics may
+    let mode = match std.env.arg(0usize) {
+        Some(m) => m
+        None => "none"
+    }
+    if mode == "args" {
+        let mut i = 1usize
+        while i < std.env.arg_count() {
+            match std.env.arg(i) {
+                Some(a) => std.io.print_line(a)?
+                None => {
+                }
+            }
+            i = i + 1usize
+        }
+    } else if mode == "env" {
+        match std.env.var("KSN_A") {
+            Some(v) => std.io.print_line(v)?
+            None => std.io.print_line("none")?
+        }
+    } else if mode == "exit" {
+        std.process.exit(7i32)
+    } else if mode == "stdin" {
+        let mut inp = std.io.stdin()
+        let mut buf = [0u8; 4]
+        let mut total = 0usize
+        loop {
+            let k = inp.read(&mut buf)?
+            if k == 0usize {
+                break
+            }
+            total = total + k
+        }
+        if total == 11usize {
+            std.io.print_line("stdin 11")?
+        } else {
+            std.io.print_line("stdin other")?
+        }
+    }
+    Ok(())
+end h.main
