@@ -30,7 +30,12 @@ pub struct Scratch(pub PathBuf);
 impl Scratch {
     /// `std::env::temp_dir()/name` を作る。同じ名前が残っていれば先に消す (pid を含むので他の試験とは衝突しない)。
     pub fn at(name: String) -> Scratch {
-        let p = std::env::temp_dir().join(name);
+        // 呼び出しごとに別の場所にする (通し番号を付ける)。同じ実行ファイルの試験は並列に走るので、
+        // 補助関数 (例 `kir_lower3.rs` の `kir_bc`) が pid だけの名前を使うと、ほかの試験が使っている最中の
+        // 場所をこの関数の `remove` や `Drop` が消してしまう (2026-11-20、検証機で落ちた)。
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!("{}_s{}", name, n));
         let _ = fs::remove_dir_all(&p);
         let _ = fs::remove_file(&p);
         Scratch(p)
