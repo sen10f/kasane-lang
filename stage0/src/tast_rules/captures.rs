@@ -21,7 +21,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
         let Some(b) = tast.bodies.get(&di) else { continue };
         let mut w = W { p, di, out: &mut out, scopes: vec![b.params.iter().map(|q| q.name.clone()).collect()], frames: vec![] };
         w.expr(&b.body);
-        effects(p, di, &b.body, &mut out);
+        effects(p, di, &b.params, &b.body, &mut out);
     }
     out
 }
@@ -30,7 +30,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
 /// (1) 効果を宣言した関数型 `fn(..) uses [..] panics ..` の位置へ入る値 (変換の印 `FnTo`)
 /// (2) 呼び先の型パラメータの `Fn<.., E, P>` 境界が具体的な効果を持つとき、その型の実引数の閉包・関数。
 /// 効果変数を持つ側は、呼び出し元の宣言との比べ (呼び出し先の `uses [E]` の実体化) が見るのでここでは見ない。
-fn effects(p: &Program, di: DefId, body: &TExpr, out: &mut Vec<Diag>) {
+fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut Vec<Diag>) {
     use crate::check::{covers, is_effect_var};
     let d = &p.defs[di];
     let mut found: Vec<(&'static str, String, usize)> = vec![];
@@ -46,11 +46,58 @@ fn effects(p: &Program, di: DefId, body: &TExpr, out: &mut Vec<Diag>) {
         }
     });
     let own: Vec<String> = d.uses.clone();
+    // 局所の名前 → その束縛の型 (同じ名前を違う型で束縛していれば `None` = 決められない)。
+    let mut binds: std::collections::HashMap<String, Option<Ty>> = std::collections::HashMap::new();
+    fn note(q: &TPat, binds: &mut std::collections::HashMap<String, Option<Ty>>) {
+        if q.kind == "PBind" {
+            if let (Some(n), Some(t)) = (&q.name, q.info.as_ref().and_then(|i| i.bind.as_ref().map(|b| b.1.clone()))) {
+                match binds.get(n) {
+                    Some(Some(o)) if *o != t => {
+                        binds.insert(n.clone(), None);
+                    }
+                    Some(_) => {}
+                    None => {
+                        binds.insert(n.clone(), Some(t));
+                    }
+                }
+            }
+        }
+        for c in &q.children {
+            note(c, binds);
+        }
+    }
+    for q in params {
+        binds.insert(q.name.clone(), Some(q.ty.clone()));
+    }
+    super::impl_sig::walk(body, &mut |e| {
+        match &e.kind {
+            TKind::Block(ss) => {
+                for st in ss {
+                    if let TStmt::Let { pat, .. } = st {
+                        note(pat, &mut binds);
+                    }
+                }
+            }
+            TKind::Match { arms, .. } => arms.iter().for_each(|a| note(&a.pat, &mut binds)),
+            TKind::Closure { params, .. } => {
+                for b in params {
+                    binds.insert(b.name.clone(), None);
+                }
+            }
+            _ => {}
+        }
+        e.pats.iter().for_each(|q| note(q, &mut binds));
+    });
     super::impl_sig::walk(body, &mut |e| {
         // 局所の関数値・閉包の呼び出し `f()`: その効果は呼び出す側の宣言が覆う。
         if let TKind::Call { callee, .. } = &e.kind {
             if !in_closure.contains(&e.id) {
-                if let (Some(Place::Local(..)), TKind::Path(segs), Ty::Closure { eff: crate::types::Eff(Some(info)), .. }) = (&callee.place, &callee.kind, callee.ty.strip()) {
+                // 呼び先の経路 (`f`) には型が付かないので、同じ名前で束縛した型が 1 つに決まるときだけ、その型を見る。
+                let bound = match (&callee.kind, &callee.place) {
+                    (TKind::Path(segs), _) if segs.len() == 1 => binds.get(&segs[0]).and_then(|t| t.clone()),
+                    _ => None,
+                };
+                if let (TKind::Path(segs), Some(Ty::Closure { eff: crate::types::Eff(Some(info)), .. })) = (&callee.kind, bound.as_ref().map(|t| t.strip().clone())) {
                     for x in info.uses.iter().filter(|x| !is_effect_var(x) && !covers(&own, x)) {
                         found.push(("E4001", format!("{} uses effect `{}` not declared by the caller", segs.join("."), x), e.line));
                     }
