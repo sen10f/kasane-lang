@@ -2077,6 +2077,12 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
         let text = hdr_view(lw, h);
         return lw.string_from_fat(text, line);
     }
+    // `v.try_clone()` (`Vec<T>`): 新しいバッファに要素を 1 つずつ複製して `Ok(Vec)` を返す。
+    if m == "try_clone" && args.is_empty() {
+        if let Kind::Vec(Some(el)) = &kind {
+            return vec_try_clone(lw, e, line, h, *el);
+        }
+    }
     // `x.hash(&mut state)` (`&str` / `String`、仕様 4.2): バイト列を `Fnv64.write_bytes` へ渡す。受け手が `&&str` なら値を読む。
     if m == "hash" && args.len() == 1 && matches!(kind, Kind::Str | Kind::String) {
         let bytes = if kind == Kind::Str { load_fat_ref(lw, h) } else { hdr_view(lw, h) };
@@ -2163,6 +2169,84 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
         return Ok(Some(lw.emit(Ty::Usize, Op::Const(n as i128))));
     }
     method_on(lw, e, line, Some(s), kind, hdr, m, items(&f[1]))
+}
+
+/// `v.try_clone()` (`Vec<T>`) の下ろし: 新しいバッファを確保して要素を 1 つずつ複製し、`Ok(Vec)` を返す。
+/// 要素はスカラー (値のコピー) か `String` / `Vec<u8>` のヘッダ (バイト列の複製)。それ以外の集成体は対象外。
+fn vec_try_clone(lw: &mut Lw, e: &V, line: usize, h: VId, el: Ty) -> LR<Option<VId>> {
+    let Ok(rt @ Ty::Res(..)) = lw.ty_of(e) else { return Ok(None) };
+    let Some(sz) = elem_size(lw, el) else {
+        return lw.err(line, format!("try_clone の要素の型 {} は段階 1 の対象外", el.name()));
+    };
+    let by_val = matches!(lw.vty(h), Ty::Agg(_));
+    let hp = match lw.vty(h) {
+        Ty::Ref(_, Pointee::Agg(_)) => lw.emit(Ty::Ptr, Op::Bitcast { src: lw.vty(h), a: h }),
+        _ => h,
+    };
+    let src = if by_val { lw.emit(Ty::Ptr, Op::Field { a: h, off: 0 }) } else { lw.emit(Ty::Ptr, Op::MemLoad { p: hp, off: 0 }) };
+    let len = load_len(lw, h);
+    let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
+    let bytes = lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: len, b: k });
+    let dst = lw.emit(Ty::Ptr, Op::HeapAlloc(bytes));
+    let zero = lw.emit(Ty::Usize, Op::Const(0));
+    let one = lw.emit(Ty::Usize, Op::Const(1));
+    let (hd, hpi) = lw.new_block(&[Ty::Usize]);
+    let (body, _) = lw.new_block(&[]);
+    let (done, _) = lw.new_block(&[]);
+    lw.goto(hd, vec![zero]);
+    lw.cur = Some(hd);
+    let i = hpi[0];
+    let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: len });
+    lw.branch(c, (body, vec![]), (done, vec![]));
+    lw.cur = Some(body);
+    let off = lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: k });
+    let sa = lw.emit(Ty::Ptr, Op::PtrAdd { p: src, off });
+    let v = if matches!(el, Ty::Agg(_)) { box_load(lw, sa, el) } else { lw.emit(el, Op::MemLoad { p: sa, off: 0 }) };
+    let cv = clone_elem_val(lw, v, el, line)?;
+    let da = lw.emit(Ty::Ptr, Op::PtrAdd { p: dst, off });
+    lw.emit(Ty::Unit, Op::MemStore { ty: el, p: da, off: 0, v: cv });
+    let ni = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
+    lw.goto(hd, vec![ni]);
+    lw.cur = Some(done);
+    let vt = if by_val { lw.vty(h) } else { lw.coll.hdr_ty.get(&h).copied().unwrap_or_else(|| lw.aggs.borrow_mut().vec_hdr()) };
+    let nv = lw.emit(vt, Op::Make { variant: None, fields: vec![dst, len, len] });
+    Ok(Some(lw.emit(rt, Op::Ok(nv))))
+}
+
+/// 値 `v` (型 `t`) の複製。スカラーはそのまま、`String` / `Vec<u8>` のヘッダはバイト列を新しく確保して複製。
+/// 入れ子に所有物を持つヘッダや構造体は対象外 (浅いコピーになるため拒む)。
+fn clone_elem_val(lw: &mut Lw, v: VId, t: Ty, line: usize) -> LR<VId> {
+    if !matches!(t, Ty::Agg(_)) {
+        return Ok(v);
+    }
+    let ag = lw.aggs.borrow();
+    if !ag.is_vec(t) || ag.vec_elem(t).map(|e| ag.owns_heap(e)).unwrap_or(false) {
+        return lw.err(line, format!("try_clone の要素の型 {} は段階 1 の対象外 (入れ子の所有物か構造体)", t.name()));
+    }
+    drop(ag);
+    let fat = hdr_view(lw, v);
+    let ptr = lw.emit(Ty::Ptr, Op::Field { a: fat, off: 0 });
+    let len = lw.emit(Ty::Usize, Op::Field { a: fat, off: 8 });
+    let buf = lw.emit(Ty::Ptr, Op::HeapAlloc(len));
+    let zero = lw.emit(Ty::Usize, Op::Const(0));
+    let one = lw.emit(Ty::Usize, Op::Const(1));
+    let (hd, hpi) = lw.new_block(&[Ty::Usize]);
+    let (body, _) = lw.new_block(&[]);
+    let (done, _) = lw.new_block(&[]);
+    lw.goto(hd, vec![zero]);
+    lw.cur = Some(hd);
+    let i = hpi[0];
+    let dc = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: i, b: len });
+    lw.branch(dc, (done, vec![]), (body, vec![]));
+    lw.cur = Some(body);
+    let sp = lw.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: i });
+    let bc = lw.emit(Ty::U8, Op::MemLoad { p: sp, off: 0 });
+    let dp = lw.emit(Ty::Ptr, Op::PtrAdd { p: buf, off: i });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: dp, off: 0, v: bc });
+    let ni = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
+    lw.goto(hd, vec![ni]);
+    lw.cur = Some(done);
+    Ok(lw.emit(lw.vty(v), Op::Make { variant: None, fields: vec![buf, len, len] }))
 }
 
 pub(super) fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str, nargs: usize) -> LR<Option<VId>> {
