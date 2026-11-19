@@ -208,6 +208,20 @@ impl<'a> Lw<'a> {
                 }
                 let ai = match t {
                     Ty::Agg(ai) | Ty::Ref(_, Pointee::Agg(ai)) => ai,
+                    // `&String` / `&Vec<T>` の局所はヘッダのアドレス (ptr) で持つ。種類の表から元の型を戻す
+                    // (`x.to_json(out)` の `x: &String<System>` など、単相化の型引数の推論に使う)。
+                    Ty::Ptr => {
+                        let sys = || Src::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default());
+                        return match self.coll.kinds.get(&s) {
+                            Some(coll::Kind::String) => Some(Src::Ref(false, Box::new(Src::Named("alloc.string.String".into(), vec![sys()], crate::types::Rgs::default())), crate::types::Region::Unk)),
+                            Some(coll::Kind::Vec(Some(el))) => {
+                                let es = super::ext::elem_src(self, *el)?;
+                                Some(Src::Ref(false, Box::new(Src::Named("alloc.vec.Vec".into(), vec![es, sys()], crate::types::Rgs::default())), crate::types::Region::Unk))
+                            }
+                            Some(coll::Kind::Str) => Some(Src::Ref(false, Box::new(Src::Prim("str".into())), crate::types::Region::Unk)),
+                            _ => None,
+                        };
+                    }
                     _ => return None,
                 };
                 let (name, args) = self.aggs.borrow().generic_args.get(&ai).cloned()?;

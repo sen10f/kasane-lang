@@ -15,7 +15,7 @@ use crate::parser::V;
 use crate::types::{from_v, Ty as Src};
 
 /// KIR の要素型を型表の型へ戻す (整数・bool・浮動小数・利用者の構造体)。戻せなければ `None`。
-fn elem_src(lw: &Lw, t: Ty) -> Option<Src> {
+pub(super) fn elem_src(lw: &Lw, t: Ty) -> Option<Src> {
     match t {
         Ty::Agg(i) => {
             let aggs = lw.aggs.borrow();
