@@ -159,6 +159,8 @@ struct Var {
     decl: u32,
     /// 型の最上位が参照か。
     is_ref: bool,
+    /// 宣言したスコープの深さ。
+    depth: usize,
 }
 
 #[derive(Clone, Default)]
@@ -396,7 +398,7 @@ impl<'a> W<'a> {
     fn define(&mut self, name: &str, decl: u32, v: Val, t: &Ty) {
         let carries = self.carries(t) && !t.refs_all_static();
         let val = if carries { v } else { Val::default() };
-        self.env.vars.insert(name.to_string(), Var { val, carries, decl, is_ref: is_ref(t) });
+        self.env.vars.insert(name.to_string(), Var { val, carries, decl, is_ref: is_ref(t), depth: self.scopes.len() });
         if let Some(sc) = self.scopes.last_mut() {
             sc.push(name.to_string());
         }
@@ -585,9 +587,14 @@ impl<'a> W<'a> {
     }
 
     fn local_of(e: &TExpr) -> Option<(String, u32)> {
-        match &e.place {
-            Some(Place::Local(n, id)) => Some((n.clone(), *id)),
-            _ => None,
+        // `p.x.y` の経路形は欄の連なり: 根の局所を返す。
+        let mut pl = e.place.as_ref()?;
+        loop {
+            match pl {
+                Place::Local(n, id) => return Some((n.clone(), *id)),
+                Place::Field(b, _) => pl = b,
+                _ => return None,
+            }
         }
     }
 
@@ -941,6 +948,11 @@ impl<'a> W<'a> {
     fn end_scope(&mut self, mut tail: Val) -> Val {
         let declared = self.scopes.pop().unwrap_or_default();
         let dead: HashSet<(String, u32)> = declared.iter().filter_map(|n| self.env.vars.get(n).map(|v| (n.clone(), v.decl))).collect();
+        if std::env::var_os("KSN_DEBUG_LT").is_some() {
+            for (k, v) in &self.env.vars {
+                eprintln!("end_scope dead={:?} var {} carries={} val={:?}", dead, k, v.carries, v.val.loans());
+            }
+        }
         for n in &declared {
             self.env.vars.remove(n);
         }
@@ -997,6 +1009,11 @@ impl<'a> W<'a> {
         }
         let Some((n, _)) = root else { return };
         let Some(var) = self.env.vars.get(&n).cloned() else { return };
+        if let TKind::Path(segs) = &cur.kind {
+            if segs.len() > 1 && var.is_ref {
+                through_ref = true;
+            }
+        }
         let target_is_ref = var.is_ref;
         let whole = direct && matches!(&place.kind, TKind::Path(s) if s.len() == 1);
         if whole && !through_ref {
@@ -1008,7 +1025,7 @@ impl<'a> W<'a> {
         }
         // 参照を通る (`*r = ..`・`r.f = ..`)・欄への代入。
         if through_ref || target_is_ref {
-            self.store_through(&var.val, &v, line);
+            self.store_through(&var.val, &v, line, false);
         }
         if !through_ref {
             if let Some(x) = self.env.vars.get_mut(&n) {
@@ -1021,13 +1038,22 @@ impl<'a> W<'a> {
 
     /// 参照 (運ぶ借用 `refs`) の指す先へ `v` を入れる。指す先が局所ならその束縛に足す。引数の指す先 (呼び出し側の値) へ
     /// 局所の借用を入れたら E3030。
-    fn store_through(&mut self, refs: &Val, v: &Val, line: usize) {
+    fn store_through(&mut self, refs: &Val, v: &Val, line: usize, by_call: bool) {
         for (l, _) in &refs.loans() {
             match l {
                 Loan::Local(n, _) => {
+                    let hd = self.env.vars.get(n).map(|x| x.depth).unwrap_or(0);
                     if let Some(x) = self.env.vars.get_mut(n) {
                         if x.carries {
                             x.val.add(&v.flat().with_line(line));
+                        }
+                    }
+                    // 指す先 (`n`) より内側のスコープの局所を借りた値を入れる: 内側の局所が先に尽きる。
+                    for (k, _) in &v.loans() {
+                        if let (true, Loan::Local(kn, _)) = (by_call, k) {
+                            if self.env.vars.get(kn).map_or(false, |y| y.depth > hd) {
+                                self.diag("E3030", format!("returns a reference to the local variable `{}`, which does not live long enough", kn), line);
+                            }
                         }
                     }
                 }
@@ -1211,7 +1237,7 @@ impl<'a> W<'a> {
             }
             if !stored.is_empty() {
                 let target = avs[k].full.clone();
-                self.store_through(&target, &stored, line);
+                self.store_through(&target, &stored, line, true);
             }
         }
         out
