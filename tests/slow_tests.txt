@@ -1,0 +1,16 @@
+# 遅い試験のバイナリ (tests/par_test.py の --tier fast が除く)。1 行 1 名、# 以降はコメント。
+# 基準: 2026-11-19 の全件の記録 (/tmp/s3b_cargo.log の finished in) で 60 秒を超えたもの。
+# 外す・足すときは stage0/target/par_test_times.json の時間を見る。
+kir_lower3
+cross_target
+cache_incremental
+kir_native
+rephrase
+check_diag
+refactor
+check_borrow
+wasm_wasi
+kir_lower2
+packages
+wasm32
+kir_lower
