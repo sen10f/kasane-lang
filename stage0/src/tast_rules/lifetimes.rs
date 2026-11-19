@@ -46,6 +46,8 @@ enum Loan {
     Temp,
     /// 引数 (名前) から来た借用・型パラメータの値。
     Arg(String),
+    /// 参照の参照の引数 (`&'a &u32`) の、内側の参照 (層) が持つ借用。
+    ArgIn(String, u8),
 }
 
 /// 運ぶ借用 (借用 → その借用が入った行)。組は欄ごとに分ける。
@@ -145,7 +147,7 @@ impl Val {
     /// 場所の違う束縛 (パターン) へ入れたとき: 局所の借用は葉の行で報告する。
     fn unstamp_locals(mut self) -> Val {
         for ((l, _), x) in self.set.iter_mut() {
-            if !matches!(l, Loan::Arg(_)) {
+            if !matches!(l, Loan::Arg(_) | Loan::ArgIn(..)) {
                 *x = LEAF;
             }
         }
@@ -488,11 +490,20 @@ impl<'a> W<'a> {
 
     // -------------------------------------------------------- 実行
 
+    /// 引数の借用の値: 参照の参照は、内側の層ごとに `ArgIn` を持つ。
+    fn param_val(n: &str, t: &Ty) -> Val {
+        let mut v = Val::loan(Loan::Arg(n.to_string()), 0);
+        for lvl in 1..depth(t).min(200) {
+            v.set.insert((Loan::ArgIn(n.to_string(), lvl as u8), lvl as u8), 0);
+        }
+        v
+    }
+
     fn run(&mut self, b: &TBody) {
         let d = &self.p.defs[self.di];
         let params: Vec<(String, Ty)> = d.params.iter().map(|(n, t)| (n.clone(), from_v(t, &self.gn))).collect();
         for (n, t) in &params {
-            let v = if self.carries(t) && !t.refs_all_static() { Val::loan(Loan::Arg(n.clone()), 0) } else { Val::default() };
+            let v = if self.carries(t) && !t.refs_all_static() { Self::param_val(n, t) } else { Val::default() };
             self.define(n, 0, v, t);
         }
         let _ = b;
@@ -552,7 +563,7 @@ impl<'a> W<'a> {
             }
         }
         for (n, t) in &ps {
-            let v = if sub.carries(t) && !t.refs_all_static() { Val::loan(Loan::Arg(n.clone()), 0) } else { Val::default() };
+            let v = if sub.carries(t) && !t.refs_all_static() { Self::param_val(n, t) } else { Val::default() };
             sub.define(n, 0, v, t);
         }
         sub.ev(body);
@@ -619,7 +630,7 @@ impl<'a> W<'a> {
                     format!("returns a reference to the local variable `{}`, which does not live long enough", n)
                 }
                 Loan::Temp => "returns a reference to a temporary value, which does not live long enough".to_string(),
-                Loan::Arg(_) => continue,
+                Loan::Arg(_) | Loan::ArgIn(..) => continue,
             };
             let at = if !ret || *line == 0 || *line == LEAF { leaf.line } else { *line };
             self.diag("E3030", msg, at);
@@ -665,9 +676,28 @@ impl<'a> W<'a> {
         let mut placed: Vec<(Loan, usize, Vec<Region>)> = vec![];
         slot_loans(&v, &ret, &mut placed);
         for (l, line, allowed) in placed {
-            let Loan::Arg(q) = l else { continue };
+            let (q, inner) = match l {
+                Loan::Arg(q) => (q, None),
+                Loan::ArgIn(q, lvl) => (q, Some(lvl as usize)),
+                _ => continue,
+            };
             let Some(k) = ps0.iter().position(|(n, _)| *n == q) else { continue };
-            let have = real_regions(&ps[k]);
+            let have = match inner {
+                None => real_regions(&ps[k]),
+                Some(lvl) => {
+                    // 参照の連なりの `lvl` 番目の層の領域。
+                    let mut chain = vec![];
+                    let mut t = &ps[k];
+                    while let Ty::Ref(_, x, r) = t {
+                        chain.push(r.clone());
+                        t = x;
+                    }
+                    match chain.get(lvl) {
+                        Some(r) if !matches!(r, Region::Unk | Region::Static) => vec![r.clone()],
+                        _ => continue,
+                    }
+                }
+            };
             if have.is_empty() || ps[k].regions().iter().any(|r| matches!(r, Region::Static)) {
                 continue;
             }
@@ -679,11 +709,13 @@ impl<'a> W<'a> {
                 continue;
             }
             let ptext = format!("{}: {}", ps0[k].0, ps0[k].1.show_r().replace("'_ ", ""));
+            let what = if inner.is_some() && matches!(ps[k].outer_region(), Some(Region::Named(_))) { "the inner reference of" } else { "a borrow from" };
             let ret_named = rr.iter().any(|r| matches!(r, Region::Named(_)));
             let msg = if !named.is_empty() {
                 format!(
-                    "{}: the returned value carries a borrow from argument `{}` (`{}`), but the return type `{}` does not name its lifetime; `{}` is not declared to outlive it",
+                    "{}: the returned value carries {} argument `{}` (`{}`), but the return type `{}` does not name its lifetime; `{}` is not declared to outlive it",
                     fname,
+                    what,
                     q,
                     ptext,
                     rtext,
@@ -691,14 +723,14 @@ impl<'a> W<'a> {
                 )
             } else if ret_named {
                 format!(
-                    "{}: the returned value carries a borrow from argument `{}` (`{}`), whose lifetime is elided (a new region per call); the return type `{}` names a lifetime it does not outlive",
-                    fname, q, ptext, rtext
+                    "{}: the returned value carries {} argument `{}` (`{}`), whose lifetime is elided (a new region per call); the return type `{}` names a lifetime it does not outlive",
+                    fname, what, q, ptext, rtext
                 )
             } else {
                 let src = ps.iter().position(|t| real_regions(t).iter().any(|h| rr.iter().any(|r| same_r(h, r)))).unwrap_or(0);
                 format!(
-                    "{}: the returned value carries a borrow from argument `{}` (`{}`), but the elided return lifetime of `{}` comes from argument `{}` (spec 4.1)",
-                    fname, q, ptext, rtext, ps0[src].0
+                    "{}: the returned value carries {} argument `{}` (`{}`), but the elided return lifetime of `{}` comes from argument `{}` (spec 4.1)",
+                    fname, what, q, ptext, rtext, ps0[src].0
                 )
             };
             found.push((msg, line));
@@ -962,7 +994,7 @@ impl<'a> W<'a> {
                 let (code, msg) = match l {
                     Loan::Local(n, _) | Loan::Dead(n) => ("E3030", format!("returns a reference to the local variable `{}`, which does not live long enough", n)),
                     Loan::Temp => ("E3030", "returns a reference to a temporary value, which does not live long enough".to_string()),
-                    Loan::Arg(_) => continue,
+                    Loan::Arg(_) | Loan::ArgIn(..) => continue,
                 };
                 self.diag(code, msg, line);
             }
@@ -1080,7 +1112,7 @@ impl<'a> W<'a> {
             let msg = match l {
                 Loan::Local(n, _) | Loan::Dead(n) => format!("returns a reference to the local variable `{}`, which does not live long enough", n),
                 Loan::Temp => "returns a reference to a temporary value, which does not live long enough".to_string(),
-                Loan::Arg(_) => continue,
+                Loan::Arg(_) | Loan::ArgIn(..) => continue,
             };
             self.diag("E3030", msg, line);
         }
@@ -1212,6 +1244,10 @@ impl<'a> W<'a> {
                 through_ref = true;
             }
         }
+        // 参照を通す書き込みも、その参照の使用 (指す先が尽きていれば E3010)。
+        if through_ref {
+            self.use_var(&n, line);
+        }
         let target_is_ref = var.is_ref;
         let whole = direct && matches!(&place.kind, TKind::Path(s) if s.len() == 1);
         if whole && !through_ref {
@@ -1255,19 +1291,60 @@ impl<'a> W<'a> {
                         }
                     }
                 }
-                Loan::Arg(_) => {
+                Loan::Arg(pn) => {
                     for (k, _) in &v.loans() {
                         let msg = match k {
                             Loan::Local(n, _) | Loan::Dead(n) => format!("stores a reference to the local variable `{}` into a place that outlives it", n),
                             Loan::Temp => "stores a reference to a temporary value into a place that outlives it".to_string(),
-                            Loan::Arg(_) => continue,
+                            Loan::Arg(qn) => {
+                                self.unrelated_store(pn, qn, line);
+                                continue;
+                            }
+                            Loan::ArgIn(..) => continue,
                         };
                         self.diag("E3030", msg, line);
                     }
                 }
-                Loan::Temp | Loan::Dead(_) => {}
+                Loan::Temp | Loan::Dead(_) | Loan::ArgIn(..) => {}
             }
         }
+    }
+
+    /// 引数 `q` の借用を引数 `p` の指す先へ入れる: `p` の指す先の領域と `q` の領域に共有する名前 (省略でない) が無ければ E3010。
+    fn unrelated_store(&mut self, pn: &str, qn: &str, line: usize) {
+        if self.cl.is_some() || pn == qn {
+            return;
+        }
+        let d = &self.p.defs[self.di];
+        let ps0: Vec<(String, Ty)> = d.params.iter().map(|(n, t)| (n.clone(), from_v(t, &self.gn))).collect();
+        let (ps, _) = elide_sig(&ps0, &Ty::Unit);
+        let (Some(pi), Some(qi)) = (ps0.iter().position(|(n, _)| n == pn), ps0.iter().position(|(n, _)| n == qn)) else { return };
+        let Ty::Ref(true, inner, _) = &ps[pi] else { return };
+        let target = real_regions(inner);
+        let have = real_regions(&ps[qi]);
+        if target.is_empty() || have.is_empty() || ps[qi].regions().iter().any(|r| matches!(r, Region::Static)) {
+            return;
+        }
+        if have.iter().any(|h| target.iter().any(|t| same_r(h, t))) {
+            return;
+        }
+        // 宣言した包含関係 (`'a: 'b`) があれば関係がある。
+        let header = d.header.split(" uses ").next().unwrap_or("").to_string();
+        let named: Vec<String> = have.iter().filter_map(|h| if let Region::Named(n) = h { Some(n.clone()) } else { None }).collect();
+        if named.iter().any(|h| header.contains(&format!("'{}:", h)) || header.contains(&format!("'{} :", h))) {
+            return;
+        }
+        let msg = format!(
+            "{}: argument `{}`'s reference (`{}: {}`) is stored into argument `{}`'s pointee (`{}: {}`), but no shared named lifetime is declared, so the pointee's lifetime and the reference's lifetime are unrelated; declare `['a]` and use `&'a T` on both",
+            d.name,
+            qn,
+            qn,
+            ps0[qi].1.show_r().replace("'_ ", ""),
+            pn,
+            pn,
+            ps0[pi].1.show_r().replace("'_ ", "")
+        );
+        self.diag("E3010", msg, line);
     }
 
     // -------------------------------------------------------- 呼び出し
@@ -1426,10 +1503,17 @@ impl<'a> W<'a> {
             }
             out
         };
-        let mut out = flow(&ret);
+        fn nested(flow: &dyn Fn(&Ty) -> Val, t: &Ty) -> Val {
+            let mut v = flow(t);
+            let slots = slots_of(t);
+            if !slots.is_empty() {
+                v.parts = slots.iter().map(|x| nested(flow, x)).collect();
+            }
+            v
+        }
+        let mut out = nested(&flow, &ret);
         let slots = slots_of(&ret);
         if !slots.is_empty() {
-            out.parts = slots.iter().map(|t| flow(t)).collect();
         } else if let Ty::Param(rp) = &ret {
             // 総称の恒等関数 `fn id[T](x: T) -> T`: 唯一その型パラメータを取る引数の全体 (欄の構造ごと) が戻る。
             let hits: Vec<usize> = ps.iter().enumerate().filter(|(_, t)| matches!(t, Ty::Param(q) if q == rp)).map(|(k, _)| k).collect();

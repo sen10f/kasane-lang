@@ -478,7 +478,18 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                 }
                 (TKind::Call { args, .. }, Some(Callee::Def(ci))) | (TKind::MCall { args, .. }, Some(Callee::Def(ci))) => {
                     let c = &p.defs[*ci];
-                    if c.inferred || e.tf.is_some() {
+                    if c.inferred {
+                        return;
+                    }
+                    if !e.etargs.0.is_empty() {
+                        // 明示型引数 `f::<..>`: 効果・panic の実引数で宣言を実体化する (実体化できなければ宣言のまま)。
+                        let (u, pn) = match crate::check::inst_def_effects(c, &e.etargs.0) {
+                            Some((u, pn)) => (u, pn),
+                            None => (c.uses.iter().filter(|x| !is_effect_var(x)).cloned().collect(), c.panics.clone().filter(|x| !is_panic_var(x))),
+                        };
+                        if let Some((code, msg)) = violation(&ck.c, &c.name, &u, pn.as_deref()) {
+                            ck.found.push((code, msg, e.line));
+                        }
                         return;
                     }
                     let mut argt: Vec<Ty> = vec![];

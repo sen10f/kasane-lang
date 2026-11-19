@@ -26,7 +26,7 @@ fn run(name: &str, src: &str, checker: &str, codes: &[&str]) -> BTreeSet<(String
 }
 
 /// 新しい規則が (まだ) 出さない既知の差 (旧い検査の明示型引数 `f::<..>` の効果の実体化)。
-const KNOWN_GAPS: &[&str] = &["targs_expr_effect_counts"];
+const KNOWN_GAPS: &[&str] = &[];
 
 #[test]
 fn effect_rules_reject_every_unsound_effect_case() {
@@ -56,7 +56,7 @@ fn effect_rules_reject_every_unsound_effect_case() {
 fn temp_and_slot_borrows_match_old_checker() {
     for stem in [
         "temp_let_whole_ref", "temp_ref_vec_len", "temp_ref_str_len", "d06_temporary_borrow", "temp_as_str_bound",
-        "return_swap_fncall_direct", "return_swap_fncall_let", "return_swap_tuple_let2", "return_swap_opt_let2", "lifetime_slot_opt_swap",
+        "return_swap_fncall_direct", "return_swap_fncall_let", "return_swap_opt_fncall_direct", "elided_flow_deref_store", "header_elided_write_named", "elided_flow_return_deref", "elided_mixed_inner", "flow_guard_temp_get_mut", "return_swap_tuple_let2", "return_swap_opt_let2", "lifetime_slot_opt_swap",
     ] {
         let p = root().join(format!("stage0/tests/data/unsound/{}.ksnl", stem));
         let src = fs::read_to_string(&p).unwrap();
