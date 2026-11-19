@@ -161,8 +161,10 @@ fn windows_exe_is_a_pe_and_needs_no_winpthread_dll() {
 }
 
 #[test]
-fn large_struct_by_value_extern_is_refused_on_windows() {
-    // 値渡しの構造体の extern は KIR に下ろせない (全ターゲットで未対応)。Windows でも理由を出して失敗する (バンドルへ退避しない)。
+fn large_struct_by_value_extern_compiles_on_windows() {
+    // Win64 は 8 バイト超の構造体を隠しポインタ (引数は呼び出し側の複製・戻り値は sret) で渡す (N1w3)。
+    // 拒まずにビルドできる。msvcrt.dll に無い `big_id` を動的に引こうとして wine では 101 で落ちる
+    // (読み込みの経路は動く)。
     let src = "type t.Big layout c derive [Clone, Copy]
     a: i32
     b: i32
@@ -182,9 +184,18 @@ end t.main
     let t = Tmp::new("win_big_struct", src);
     fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let o = run(&["build", "--target", TRIPLE], &t.0);
+    let out = text(&o.stdout);
     let err = text(&o.stderr);
-    assert_eq!(o.status.code(), Some(1), "{}{}", text(&o.stdout), err);
-    assert!(err.contains("E9040") && err.contains("x86_64-windows-gnu") && err.contains("t.big_id"), "{}", err);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, err);
+    assert!(!err.contains("E9040"), "{}", err);
+    let exe = native_exe(&out, &t.0);
+    assert!(exe.to_string_lossy().ends_with("t.exe"), "{}", exe.display());
+    if !cross_ready() {
+        return;
+    }
+    let r = run_wine(&exe, &t.0);
+    assert_eq!(r.status.code(), Some(101));
+    assert!(text(&r.stderr).contains("big_id"), "{}", text(&r.stderr));
 }
 
 #[test]
