@@ -3789,12 +3789,18 @@ fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, t
     let res = (|| -> Result<(), String> {
         let o = src.with_extension("ll.o");
         cleanup.push(o.clone());
-        let mut a: Vec<String> = vec![opt.into(), "-Wno-override-module".into()];
-        a.extend(clang_target_args(target));
-        a.extend(["-pthread", "-c", "-x", "ir"].map(String::from));
-        a.push(src.display().to_string());
-        a.extend(["-o".to_string(), o.display().to_string()]);
-        compile(a, "IR")?;
+        // IR → 目的ファイルは組み込みの LLVM (L1、`embedded_obj`)。使えないとき (`KSN_CODEGEN=clang` など) だけ clang。
+        match embedded_obj(ll, opt, &o) {
+            Some(r) => r?,
+            None => {
+                let mut a: Vec<String> = vec![opt.into(), "-Wno-override-module".into()];
+                a.extend(clang_target_args(target));
+                a.extend(["-pthread", "-c", "-x", "ir"].map(String::from));
+                a.push(src.display().to_string());
+                a.extend(["-o".to_string(), o.display().to_string()]);
+                compile(a, "IR")?;
+            }
+        }
         objs.push(o);
         for i in (0..rt.len()).step_by(3) {
             let c = PathBuf::from(&rt[i + 2]);
