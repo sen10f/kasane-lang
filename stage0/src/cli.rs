@@ -1298,7 +1298,14 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
         }
         let tmp = dir.join(format!("{:016x}.{}.tmp", h, std::process::id()));
         let rt = runtime_c_args(&ll, &src);
-        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(&tmp).arg("-lm").arg("-pthread").output();
+        let obj = dir.join(format!("{:016x}.{}.o", h, std::process::id()));
+        let emb = embedded_obj(&ll, "-O1", &obj);
+        if let Some(Err(e)) = &emb {
+            eprintln!("ksn kir: --native: {}", e);
+            return 3;
+        }
+        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(if emb.is_some() { ["-x", "none"] } else { ["-x", "ir"] }).arg(if emb.is_some() { &obj } else { &src }).args(&rt).arg("-o").arg(&tmp).arg("-lm").arg("-pthread").output();
+        let _ = fs::remove_file(&obj);
         match o {
             Err(e) => {
                 eprintln!("ksn kir: --native には clang が必要です ({} を起動できない: {})", clang, e);
@@ -2695,7 +2702,17 @@ fn cmd_fmt(args: &[String]) -> i32 {
     let mut diff = false;
     let mut changed = false;
     for s in &pkg.sources {
-        let nt = if s.error.is_none() { format_source(&s.text, &s.path) } else { mechanical_collapse(&s.text) };
+        let nt = if s.error.is_none() {
+            format_source(&s.text, &s.path)
+        } else {
+            // 読めないファイルでも、行末の `;` を消して読めるようになるなら、普通に整形する (並べ替えも)。
+            let st = crate::fmt::strip_semicolons(&s.text);
+            if st != s.text && crate::program::load_file(&s.path, "", &st).is_ok() {
+                format_source(&st, &s.path)
+            } else {
+                mechanical_collapse(&st)
+            }
+        };
         let mut text = s.text.clone();
         // `.ksnh` の整形のあと、横の `.ksnl` を `strip` で作り直す (`--check` は食い違いも差分とする)。
         if s.path.ends_with(".ksnh") {
@@ -2725,21 +2742,35 @@ fn cmd_fmt(args: &[String]) -> i32 {
             diff = true;
             println!("{}:{}:{}: {}: {}", rel(&s.path), f.line, f.col, f.code, f.msg);
         }
-        if let Some(e) = s.error.as_ref().filter(|e| e.code == "E0007") {
-            diff = true;
-            println!("{}:{}:{}: {}: {}", rel(&s.path), e.line, e.col, e.code, e.msg);
-        }
+        // 構文・字句の誤りで読めないファイルは、`ksn check` と同じ診断 (行:列つき) を先に出す。
+        // 読めないので並べ替えなどの整形ができていない。それらの診断は出さない (まず構文の誤りを直す)。
+        // (整形の誤りが無く、案内付きの書き方でもない構文の誤りは、従来どおり fmt では黙る。`ksn check` が見る。)
         let relpath = lint_rel(s, &srcroot);
-        for (code, l, m) in Lint::new(&relpath, &text.replace("\r\n", "\n")).run() {
-            if code != "unused" {
+        let lints: Vec<_> = Lint::new(&relpath, &text.replace("\r\n", "\n")).run().into_iter().filter(|(c, _, _)| c != "unused").collect();
+        let (ok, msg, ln) = grammar.check(&text);
+        // 整形で書き換えたあとの文面の読めるかどうか (書き換えていなければ読み込み時の結果)。
+        let cur_err = if text == s.text { s.error.clone() } else { crate::program::load_file(&s.path, "", &text).err().map(|e| decode_err(&e)) };
+        let hits = if cur_err.is_some() { crate::rustisms::scan(&text) } else { vec![] };
+        let broken = cur_err.is_some() && (cur_err.as_ref().map_or(false, |e| e.code == "E0007") || !hits.is_empty() || !lints.is_empty() || !ok);
+        if broken {
+            let e = cur_err.as_ref().unwrap();
+            diff = true;
+            for h in &hits {
+                println!("{}:{}:{}: {}: {}", rel(&s.path), h.line, h.col, h.code, h.msg);
+            }
+            if !(e.code == "E0002" && hits.iter().any(|h| h.line == e.line)) {
+                println!("{}:{}:{}: {}: {}", rel(&s.path), e.line, e.col, e.code, e.msg);
+            }
+            println!("{}: note: the file cannot be parsed, so `ksn fmt` could not reorder or reformat it; fix the error(s) above first", rel(&s.path));
+        } else {
+            for (code, l, m) in lints {
                 diff = true;
                 println!("{}:{}: {}: {} (not auto-fixable)", rel(&s.path), l, lint_code(&code), m);
             }
-        }
-        let (ok, msg, ln) = grammar.check(&text);
-        if !ok {
-            diff = true;
-            println!("{}:{}: E0002: {}", rel(&s.path), ln, msg);
+            if !ok {
+                diff = true;
+                println!("{}:{}: E0002: {}", rel(&s.path), ln, msg);
+            }
         }
     }
     if diff || (changed && check) { 1 } else { 0 }
@@ -3643,7 +3674,10 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
     let c_args = |src: &Path, obj: &Path| -> Vec<String> {
         [vec![s("-O1"), triple.clone(), s("-ffreestanding"), s("-fno-builtin")], defs.clone(), vec![s(&inc_arg), s("-c"), s("-x"), s("c"), p(src), s("-o"), p(obj)]].concat()
     };
-    let r1 = run(&clang, [vec![s(opt), s("-Wno-override-module"), triple.clone(), s("-c"), s("-x"), s("ir"), p(&ir), s("-o"), p(&oir)]].concat(), "clang (IR → wasm32)");
+    let r1 = match embedded_obj(ll, opt, &oir) {
+        Some(r) => r,
+        None => run(&clang, [vec![s(opt), s("-Wno-override-module"), triple.clone(), s("-c"), s("-x"), s("ir"), p(&ir), s("-o"), p(&oir)]].concat(), "clang (IR → wasm32)"),
+    };
     let r2 = r1.and_then(|_| run(&clang, c_args(&rt, &ort), "clang (rt.c)"));
     let r3 = r2.and_then(|_| run(&clang, c_args(&krt, &okrt), "clang (kir_rt.c)"));
     let r3 = r3.and_then(|_| if wasi { run(&clang, c_args(&wasi_c, &owasi), "clang (wasi.c)") } else { Ok(()) });
@@ -3671,6 +3705,24 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
     r4
 }
 
+/// プロセス内の LLVM (`embedded-llvm`) で IR を目的ファイル `obj` にする。使えない (feature なし・`KSN_CODEGEN=clang`・
+/// `KSN_CLANG_ARGS` あり (sanitizer などは clang 側が要る)) ときは `None` で、呼び出し側が `clang -x ir` を使う。
+fn embedded_obj(ll: &str, opt: &str, obj: &Path) -> Option<Result<(), String>> {
+    #[cfg(feature = "embedded-llvm")]
+    {
+        if std::env::var("KSN_CODEGEN").map_or(false, |v| v == "clang") || !clang_extra_args().is_empty() {
+            return None;
+        }
+        let triple = ll.lines().find_map(|l| l.strip_prefix("target triple = \"")).and_then(|r| r.split('"').next()).unwrap_or("");
+        return Some(crate::embed_llvm::ir_to_object(ll, opt, triple, obj));
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (ll, opt, obj);
+        None
+    }
+}
+
 fn clang_extra_args() -> Vec<String> {
     std::env::var("KSN_CLANG_ARGS").map(|s| s.split_whitespace().map(|x| x.to_string()).collect()).unwrap_or_default()
 }
@@ -3688,12 +3740,19 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Tar
     }
     fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
     let rt = runtime_c_args(ll, &src);
+    let obj = exe.with_extension("ir.o.tmp");
+    let emb = embedded_obj(ll, opt, &obj);
+    if let Some(Err(e)) = emb {
+        let _ = fs::remove_file(&src);
+        let _ = fs::remove_file(&obj);
+        return Err(e);
+    }
     let o = std::process::Command::new(&clang)
         .args([opt, "-Wno-override-module"])
         .args(clang_target_args(target))
         .args(clang_extra_args())
-        .args(["-x", "ir"])
-        .arg(&src)
+        .args(if emb.is_some() { vec!["-x", "none"] } else { vec!["-x", "ir"] })
+        .arg(if emb.is_some() { &obj } else { &src })
         .args(&rt)
         .arg("-o")
         .arg(exe)
@@ -3701,6 +3760,7 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Tar
         .arg("-pthread")
         .output();
     let _ = fs::remove_file(&src);
+    let _ = fs::remove_file(&obj);
     // 一時的な C ファイルを削除する (引数は "-x c <path>" の繰り返し)。
     for i in (2..rt.len()).step_by(3) {
         let _ = fs::remove_file(&rt[i]);

@@ -32,7 +32,53 @@ fn part(h: &mut Sha256, name: &str, bytes: &[u8]) {
     h.update(bytes);
 }
 
+/// llvm-config の場所。`LLVM_CONFIG` > `KSN_LLVM_PREFIX/bin/llvm-config` (`scripts/build_llvm.sh` の自前の LLVM) > distro の LLVM 20。
+fn llvm_config_path() -> String {
+    println!("cargo:rerun-if-env-changed=LLVM_CONFIG");
+    println!("cargo:rerun-if-env-changed=KSN_LLVM_PREFIX");
+    if let Some(c) = std::env::var("LLVM_CONFIG").ok().filter(|s| !s.is_empty()) {
+        return c;
+    }
+    match std::env::var("KSN_LLVM_PREFIX").ok().filter(|s| !s.is_empty()) {
+        Some(p) => format!("{}/bin/llvm-config", p),
+        None => "/usr/lib/llvm-20/bin/llvm-config".to_string(),
+    }
+}
+
+/// `embedded-llvm`: LLVM 20 の静的ライブラリのうち X86 / AArch64 / WebAssembly だけをつなぐ (llvm-sys は `no-llvm-linking`)。
+fn link_llvm() {
+    let cfg = llvm_config_path();
+    let run = |a: &[&str]| -> String {
+        let o = Command::new(&cfg).args(a).output().unwrap_or_else(|e| panic!("llvm-config ({}) を起動できない: {}", cfg, e));
+        assert!(o.status.success(), "llvm-config {:?} が失敗した", a);
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+    println!("cargo:rerun-if-env-changed=LLVM_CONFIG");
+    println!("cargo:rustc-link-search=native={}", run(&["--libdir"]).trim());
+    for l in run(&["--link-static", "--libs", "x86", "aarch64", "webassembly", "passes", "irreader", "target"]).split_whitespace() {
+        println!("cargo:rustc-link-lib=static={}", l.trim_start_matches("-l"));
+    }
+    for l in run(&["--link-static", "--system-libs"]).split_whitespace() {
+        let n = l.trim_start_matches("-l");
+        match n {
+            // 静的に取り込む (配布する実行体が libz / libzstd に依存しない)。xml2 は Windows の manifest 用で要らない。
+            "z" | "zstd" => println!("cargo:rustc-link-lib=static={}", n),
+            "xml2" => {}
+            _ => println!("cargo:rustc-link-lib={}", n),
+        }
+    }
+    for d in ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64"] {
+        if Path::new(d).is_dir() {
+            println!("cargo:rustc-link-search=native={}", d);
+        }
+    }
+    println!("cargo:rustc-link-lib=static=stdc++");
+}
+
 fn main() {
+    if std::env::var_os("CARGO_FEATURE_EMBEDDED_LLVM").is_some() {
+        link_llvm();
+    }
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let grammar = manifest.join("..").join("spec").join("grammar.ebnf");
 
@@ -76,12 +122,10 @@ fn link_embedded_lld() {
         return;
     }
     println!("cargo:rerun-if-changed=src/native/lld_shim.cpp");
-    // `KSN_LLVM_PREFIX` があれば自前の LLVM (`scripts/build_llvm.sh`) を静的に使い、libstdc++ も静的にする。無ければ distro の LLVM 20。
-    println!("cargo:rerun-if-env-changed=KSN_LLVM_PREFIX");
-    let prefix = std::env::var("KSN_LLVM_PREFIX").ok().filter(|s| !s.is_empty());
-    let llvm_config = prefix.as_ref().map_or("llvm-config-20".to_string(), |p| format!("{}/bin/llvm-config", p));
+    // llvm-config は L1 の `link_llvm` と同じもの (`LLVM_CONFIG`、既定は /usr/lib/llvm-20/bin/llvm-config)。
+    let llvm_config = llvm_config_path();
     let cfg = |a: &[&str]| -> String {
-        let o = Command::new(&llvm_config).args(a).output().expect("llvm-config-20 が要る (llvm-20-dev)");
+        let o = Command::new(&llvm_config).args(a).output().expect("llvm-config が要る (llvm-20-dev)");
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
     let inc = cfg(&["--includedir"]);
@@ -108,17 +152,5 @@ fn link_embedded_lld() {
         // Polly は -dev に静的ライブラリが無い。lld は使わないので外す。
         println!("cargo:rustc-link-lib=static={}", l.trim_start_matches("-l"));
     }
-    for l in cfg(&["--link-static", "--system-libs"]).split_whitespace() {
-        println!("cargo:rustc-link-lib={}", l.trim_start_matches("-l"));
-    }
-    if prefix.is_some() {
-        let o = Command::new(std::env::var("CXX").unwrap_or_else(|_| "c++".into())).arg("-print-file-name=libstdc++.a").output().expect("c++ が要る");
-        let p = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
-        if let Some(d) = p.parent().filter(|_| p.is_absolute()) {
-            println!("cargo:rustc-link-search=native={}", d.display());
-        }
-        println!("cargo:rustc-link-lib=static=stdc++");
-    } else {
-        println!("cargo:rustc-link-lib=stdc++");
-    }
+    // システムのライブラリ (z・zstd・stdc++) は L1 の `link_llvm` が静的につなぐ (配布する実行体が依存しない)。ここでは足さない。
 }
