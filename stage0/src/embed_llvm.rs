@@ -51,6 +51,25 @@ pub fn ir_to_object(ll: &str, opt: &str, triple: &str, obj: &std::path::Path) ->
     }
 }
 
+/// ビットコード (build.rs が clang で作って埋め込んだ実行時の C) を目的ファイルにする。`triple` は対象の三つ組 (空なら今の機械)。
+pub fn bc_to_object(bc: &[u8], opt: &str, triple: &str, obj: &std::path::Path) -> Result<(), String> {
+    init();
+    unsafe {
+        let ctx = LLVMContextCreate();
+        let buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(bc.as_ptr() as *const c_char, bc.len(), c"rt.bc".as_ptr());
+        let mut module: LLVMModuleRef = std::ptr::null_mut();
+        let rc = llvm_sys::bit_reader::LLVMParseBitcodeInContext2(ctx, buf, &mut module);
+        LLVMDisposeMemoryBuffer(buf);
+        let r = if rc != 0 { Err("実行時のビットコードを読めない".to_string()) } else {
+            let r = emit_module(module, opt, triple, obj);
+            LLVMDisposeModule(module);
+            r
+        };
+        LLVMContextDispose(ctx);
+        r
+    }
+}
+
 unsafe fn ir_to_object_in(ctx: LLVMContextRef, ll: &str, opt: &str, triple: &str, obj: &std::path::Path) -> Result<(), String> {
     let buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(ll.as_ptr() as *const c_char, ll.len(), c"ksn.ll".as_ptr());
     let mut module: LLVMModuleRef = std::ptr::null_mut();
@@ -59,7 +78,13 @@ unsafe fn ir_to_object_in(ctx: LLVMContextRef, ll: &str, opt: &str, triple: &str
     if LLVMParseIRInContext(ctx, buf, &mut module, &mut err) != 0 {
         return Err(format!("LLVM IR を読めない: {}", take_msg(err)));
     }
-    let r = (|| {
+    let r = emit_module(module, opt, triple, obj);
+    LLVMDisposeModule(module);
+    r
+}
+
+unsafe fn emit_module(module: LLVMModuleRef, opt: &str, triple: &str, obj: &std::path::Path) -> Result<(), String> {
+    (|| {
         let triple_c = if triple.is_empty() {
             let t = LLVMGetDefaultTargetTriple();
             let s = CStr::from_ptr(t).to_owned();
@@ -115,7 +140,5 @@ unsafe fn ir_to_object_in(ctx: LLVMContextRef, ll: &str, opt: &str, triple: &str
         })();
         LLVMDisposeTargetMachine(tm);
         r
-    })();
-    LLVMDisposeModule(module);
-    r
+    })()
 }
