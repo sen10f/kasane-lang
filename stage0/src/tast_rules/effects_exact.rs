@@ -49,7 +49,7 @@ pub fn actual(p: &Program, d: &Def, body: &TExpr) -> Actual {
         TKind::Index { .. } => a.may = true,
         // `for x in it`: ユーザーの型の反復子は `next` の効果を持つ (暗黙の呼び出し)。型が決まらなければ決まらない。
         TKind::Other { name: "For", children } => match children.first().map(|c| c.ty.strip().clone()) {
-            Some(Ty::Named(n, _)) if p.types.contains_key(&n) && matches!(p.defs[p.types[&n]].kw.as_str(), "type" | "enum") => {
+            Some(Ty::Named(n, _, _)) if p.types.contains_key(&n) && matches!(p.defs[p.types[&n]].kw.as_str(), "type" | "enum") => {
                 let nx = format!("{}.next", n);
                 let mut found = false;
                 for c in p.defs.iter().filter(|c| c.kw == "fn" && c.has_impls && c.name == nx) {
