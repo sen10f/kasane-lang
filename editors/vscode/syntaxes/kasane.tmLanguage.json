@@ -1,0 +1,148 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Kasane",
+  "scopeName": "source.kasane",
+  "fileTypes": [
+    "ksnl",
+    "ksnh"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#characters"
+    },
+    {
+      "include": "#lifetimes"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#fqns"
+    },
+    {
+      "include": "#operators"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.documentation.kasane",
+          "match": "^\\s*///.*$"
+        },
+        {
+          "name": "comment.line.double-slash.kasane",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.byte.kasane",
+          "begin": "b\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "include": "#escapes"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.double.kasane",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "include": "#escapes"
+            }
+          ]
+        }
+      ]
+    },
+    "characters": {
+      "patterns": [
+        {
+          "name": "string.quoted.single.byte.kasane",
+          "match": "\\bb'(?:\\\\(?:[ntr0\\\\'\"]|x[0-9a-fA-F]{2}|u\\{[0-9a-fA-F]{1,6}\\})|[^'\\\\])'"
+        },
+        {
+          "name": "string.quoted.single.kasane",
+          "match": "'(?:\\\\(?:[ntr0\\\\'\"]|x[0-9a-fA-F]{2}|u\\{[0-9a-fA-F]{1,6}\\})|[^'\\\\])'"
+        }
+      ]
+    },
+    "escapes": {
+      "name": "constant.character.escape.kasane",
+      "match": "\\\\(?:[ntr0\\\\'\"]|x[0-9a-fA-F]{2}|u\\{[0-9a-fA-F]{1,6}\\})"
+    },
+    "lifetimes": {
+      "name": "storage.modifier.lifetime.kasane",
+      "match": "'(?:[A-Za-z_][A-Za-z0-9_]*|static)"
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.kasane",
+          "match": "\\b(?:\\d(?:_?\\d)*\\.\\d(?:_?\\d)*(?:[eE][+-]?\\d(?:_?\\d)*)?|\\d(?:_?\\d)*[eE][+-]?\\d(?:_?\\d)*)(?:f32|f64)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.kasane",
+          "match": "\\b(?:0x[0-9a-fA-F](?:_?[0-9a-fA-F])*|0b[01](?:_?[01])*|0o[0-7](?:_?[0-7])*|\\d(?:_?\\d)*)(?:i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize)?\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.kasane",
+          "match": "\\b(?:fn|type|enum|trait|impl|test|const|static|extern|import|end|uses|panics|never|may|stack|depth|impls|pub|let|mut|if|else|match|loop|while|for|in|break|continue|return)\\b"
+        },
+        {
+          "name": "keyword.operator.kasane",
+          "match": "\\b(?:unsafe|move|with|dyn|blanket|derive|linear|layout|requires|capture|link)\\b"
+        },
+        {
+          "name": "constant.language.kasane",
+          "match": "\\b(?:true|false|self|Self)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.kasane",
+          "match": "\\b(?:i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|bool|char|str)\\b"
+        }
+      ]
+    },
+    "fqns": {
+      "patterns": [
+        {
+          "name": "entity.name.type.kasane",
+          "match": "\\b[A-Z][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+\\b"
+        },
+        {
+          "name": "entity.name.namespace.kasane",
+          "match": "\\b[a-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+\\b"
+        }
+      ]
+    },
+    "operators": {
+      "name": "keyword.operator.kasane",
+      "match": "=>|->|==|!=|<=|>=|&&|\\|\\||[+\\-*/%&|^!~?:=.<>]"
+    }
+  }
+}
