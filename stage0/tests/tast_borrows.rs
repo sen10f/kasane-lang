@@ -96,7 +96,6 @@ const STEMS: &[&str] = &[
     "mem_replace_index_after_swap_keeps_borrow",
     "mem_replace_index_old_value_keeps_borrow",
     "mem_replace_index_other_elem_keeps_borrow",
-    "mem_replace_index_via_alias_keeps_borrow",
     "mem_replace_stores_borrow",
     "mem_replace_struct_borrow",
     "option_take_struct_literal_borrow",
@@ -192,4 +191,20 @@ fn borrow_rule_silent_on_correct_code() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// 安全だが、慎重さのために拒む形 (`unsound/` には置かない)。別名 `r` を通した `mem.replace` は、`a[1]` の借用 (`&mut z`) を
+/// 実際には外す (`z = 4u32` は実行時には安全) が、強い更新は定数の添字を直接書いた形だけに限るので、旧い検査も新しい検査も拒む。
+/// 言い換え (別名を畳んで `&mut a[1]` を直接書く) は強い更新が効いて通る。それが正しい (2026-11-19、S4A の統合で分け直した)。
+#[test]
+fn borrow_rule_conservative_on_alias_into_array_elem() {
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    let mut x = 1u32\n    let mut z = 3u32\n    let mut y = 2u32\n    let mut y2 = 5u32\n    let mut a = [&mut x, &mut z]\n    let r = &mut a[1]\n    core.mem.drop(core.mem.replace(r, &mut y2))\n    core.mem.drop(core.mem.replace(&mut a[0], &mut y))\n    z = 4u32\n    core.mem.drop(a)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("tast_bw_cons_alias", src);
+    let old = e3010(&text(&run_with_env(&["check", "--json"], &t.0, &[("KSN_CHECKER", "old")]).stdout), false);
+    let new = e3010(&text(&run_with_env(&["check", "--json"], &t.0, &[("KSN_CHECKER", "new")]).stdout), false);
+    assert!(old.contains(&10) && new.contains(&10), "old={:?} new={:?}", old, new);
+    let folded = src.replace("    let r = &mut a[1]\n    core.mem.drop(core.mem.replace(r, &mut y2))\n", "    core.mem.drop(core.mem.replace(&mut a[1], &mut y2))\n");
+    assert_ne!(folded, src);
+    let t = Tmp::new("tast_bw_cons_alias_folded", &folded);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "folded form must pass");
 }
