@@ -734,6 +734,15 @@ i64 ksn_rt_sys_net_recvfrom(i32 fd, u8 *buf, u64 n, u8 *from, u64 fcap, i32 *e) 
     return (i64)got;
 }
 
+#else
+/* Windows: ソケットの UDP・名前解決・タイムアウトなどは未実装 (ENOSYS)。TCP の accept / read / write / close は kir_rt.c の ksn_w_* が winsock へ橋渡しする。 */
+i64 ksn_rt_sys_net_timeout(i32 fd, i32 write_side, u64 ms, i32 *e) { (void)fd; (void)write_side; (void)ms; return fail(e, ENOSYS); }
+i64 ksn_rt_sys_net_shutdown(i32 fd, i32 how, i32 *e) { (void)fd; (void)how; return fail(e, ENOSYS); }
+i64 ksn_rt_sys_net_addr(i32 fd, i32 peer, u8 *out, u64 cap, i32 *e) { (void)fd; (void)peer; (void)out; (void)cap; return fail(e, ENOSYS); }
+i64 ksn_rt_sys_net_resolve(const u8 *host, u64 hn, i32 port, u8 *out, u64 cap, i32 *e) { (void)host; (void)hn; (void)port; (void)out; (void)cap; return fail(e, ENOSYS); }
+i64 ksn_rt_sys_net_udp_bind(const u8 *a, u64 n, i32 *e) { (void)a; (void)n; return fail(e, ENOSYS); }
+i64 ksn_rt_sys_net_sendto(i32 fd, const u8 *buf, u64 n, const u8 *a, u64 an, i32 *e) { (void)fd; (void)buf; (void)n; (void)a; (void)an; return fail(e, ENOSYS); }
+i64 ksn_rt_sys_net_recvfrom(i32 fd, u8 *buf, u64 n, u8 *from, u64 fcap, i32 *e) { (void)fd; (void)buf; (void)n; (void)from; (void)fcap; return fail(e, ENOSYS); }
 #endif
 
 /* ---- std.env / std.time ---- */
