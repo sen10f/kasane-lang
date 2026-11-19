@@ -1549,6 +1549,11 @@ fn cmd_run(args: &[String]) -> i32 {
         eprintln!("ksn: E9030: entry function {} not found", entry);
         return 1;
     };
+    // ホットリロードの準備完了信号：検査が終わり実行を開始する直前に stderr へ出す。
+    // テストはこの行を待ってからソースを書き換えるため、固定の壁時計待ちに依存しない。
+    if watch {
+        eprintln!("hot reload: watching");
+    }
     if use_vm {
         let mk: Option<Box<dyn FnOnce() -> crate::vm::reload::Reload + '_>> = if watch {
             let (l, entry) = (&l, entry.clone());
