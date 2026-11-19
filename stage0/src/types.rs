@@ -646,6 +646,9 @@ pub struct TypeCk<'a> {
     arg_static: Vec<bool>,
     /// `'static` の境界を持つ位置へ渡した値: (型, 出どころが `'static`, 行, 説明)。関数の終わりに型が決まってから見る。
     static_checks: Vec<(Ty, bool, usize, String)>,
+    /// `HashMap` の `get` / `get_mut` / `contains_key` / `remove` の呼び出し (受け手の型・メソッド名・行)。定義の終わりに、
+    /// キーが `String` と分かったものを E2054 にする (キーの型は後の `insert` で決まることがあるので、その場では見ない)。
+    oneway_sites: Vec<(Ty, String, usize)>,
     /// 値が `'static` と分かった `match` 式の ID (全腕の値が `static_expr`)。
     static_nodes: HashSet<u32>,
     /// 推論中のクロージャ本体の効果 (`closure_nodes` と同じ深さのスタック)。型で解決できた呼び出しの
@@ -716,7 +719,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], static_nodes: HashSet::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -843,6 +846,7 @@ impl<'a> TypeCk<'a> {
         self.closure_static.clear();
         self.spawn_closures.clear();
         self.static_checks.clear();
+        self.oneway_sites.clear();
         self.arg_static.clear();
         self.scopes = vec![HashMap::new()];
         let gn = d.gnames();
@@ -902,6 +906,7 @@ impl<'a> TypeCk<'a> {
         self.report_undetermined();
         self.check_spawn_captures();
         self.check_static_bounds();
+        self.check_oneway_string_keys();
         // 型変数は関数ごとの表なので、ここで解決してから外へ出す。
         for k in self.recv_start..self.recv_log.len() {
             let t = self.recv_log[k].recv.clone();
@@ -1058,6 +1063,27 @@ impl<'a> TypeCk<'a> {
                         line,
                     );
                 }
+            }
+        }
+    }
+
+    /// `String` キーの `HashMap` を `&K` (`&String`) で引く `get` / `get_mut` / `contains_key` / `remove` は E2054 (書き方は 1 通り:
+    /// `&str` で引く `get_str` / `get_mut_str` / `contains_key_str` / `remove_str` だけ)。キーの型が `alloc.string.String<..>` と
+    /// 定義の終わりまでに決まったものだけを見る (決まらないものは E2044 の領分)。
+    fn check_oneway_string_keys(&mut self) {
+        for (recv, name, line) in std::mem::take(&mut self.oneway_sites) {
+            let deep = self.deep(&recv);
+            let Ty::Named(n, a, _) = deep.strip().clone() else { continue };
+            if n != "alloc.collections.HashMap" {
+                continue;
+            }
+            let Some(k) = a.first().map(|x| self.deep(x)) else { continue };
+            if matches!(k.strip(), Ty::Named(kn, _, _) if kn == "alloc.string.String") {
+                self.diag(
+                    "E2054",
+                    format!("`{0}` on a `HashMap` with `String` keys: look it up by `&str` with `{0}_str` (the only form; `ksn fix` rewrites it)", name),
+                    line,
+                );
             }
         }
     }
@@ -2959,6 +2985,9 @@ impl<'a> TypeCk<'a> {
                     }
                 }
             }
+        }
+        if matches!(name, "get" | "get_mut" | "contains_key" | "remove") && args.len() == 1 {
+            self.oneway_sites.push((recv.clone(), name.to_string(), line));
         }
         let (owners, complete) = self.owners_for(recv);
         let mut cands: Vec<(usize, String)> = vec![];
