@@ -32,9 +32,22 @@ fn part(h: &mut Sha256, name: &str, bytes: &[u8]) {
     h.update(bytes);
 }
 
+/// llvm-config の場所。`LLVM_CONFIG` > `KSN_LLVM_PREFIX/bin/llvm-config` (`scripts/build_llvm.sh` の自前の LLVM) > distro の LLVM 20。
+fn llvm_config_path() -> String {
+    println!("cargo:rerun-if-env-changed=LLVM_CONFIG");
+    println!("cargo:rerun-if-env-changed=KSN_LLVM_PREFIX");
+    if let Some(c) = std::env::var("LLVM_CONFIG").ok().filter(|s| !s.is_empty()) {
+        return c;
+    }
+    match std::env::var("KSN_LLVM_PREFIX").ok().filter(|s| !s.is_empty()) {
+        Some(p) => format!("{}/bin/llvm-config", p),
+        None => "/usr/lib/llvm-20/bin/llvm-config".to_string(),
+    }
+}
+
 /// `embedded-llvm`: LLVM 20 の静的ライブラリのうち X86 / AArch64 / WebAssembly だけをつなぐ (llvm-sys は `no-llvm-linking`)。
 fn link_llvm() {
-    let cfg = std::env::var("LLVM_CONFIG").unwrap_or_else(|_| "/usr/lib/llvm-20/bin/llvm-config".to_string());
+    let cfg = llvm_config_path();
     let run = |a: &[&str]| -> String {
         let o = Command::new(&cfg).args(a).output().unwrap_or_else(|e| panic!("llvm-config ({}) を起動できない: {}", cfg, e));
         assert!(o.status.success(), "llvm-config {:?} が失敗した", a);
@@ -110,7 +123,7 @@ fn link_embedded_lld() {
     }
     println!("cargo:rerun-if-changed=src/native/lld_shim.cpp");
     // llvm-config は L1 の `link_llvm` と同じもの (`LLVM_CONFIG`、既定は /usr/lib/llvm-20/bin/llvm-config)。
-    let llvm_config = std::env::var("LLVM_CONFIG").unwrap_or_else(|_| "/usr/lib/llvm-20/bin/llvm-config".to_string());
+    let llvm_config = llvm_config_path();
     let cfg = |a: &[&str]| -> String {
         let o = Command::new(&llvm_config).args(a).output().expect("llvm-config が要る (llvm-20-dev)");
         String::from_utf8_lossy(&o.stdout).trim().to_string()
