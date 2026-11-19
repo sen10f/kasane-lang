@@ -237,6 +237,49 @@ fn is_name(s: &str) -> bool {
     matches!(cs.next(), Some(c) if c.is_ascii_lowercase()) && cs.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// `[native]` の C のライブラリの指定 (3.8)。`static` は静的アーカイブのパス、`dynamic` は `-l` のライブラリ名、
+/// `search` はリンク時の探索先のディレクトリ。相対パスはパッケージのルート (`kasane.toml` のある場所) から。
+/// 依存パッケージの `[native]` は読まず (リンクの追加は利用者の明示のままでいる)、`kasane.lock` に記録して比べる (8.1)。
+#[derive(Debug, Clone, Default)]
+pub struct NativeLibs {
+    pub archives: Vec<String>,
+    pub dynamic: Vec<String>,
+    pub search: Vec<String>,
+}
+
+/// `[native]` の三つの配列 (無ければ空)。
+pub fn native_libs(m: &toml::Value) -> NativeLibs {
+    let get = |k: &str| -> Vec<String> {
+        m.get("native")
+            .and_then(|n| n.get(k))
+            .and_then(|a| a.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    };
+    NativeLibs { archives: get("static"), dynamic: get("dynamic"), search: get("search") }
+}
+
+impl NativeLibs {
+    pub fn is_empty(&self) -> bool {
+        self.archives.is_empty() && self.dynamic.is_empty() && self.search.is_empty()
+    }
+
+    /// リンカに渡す引数 (`-L<探索先>`・アーカイブのパス・`-l<名前>`)。`root` はパッケージのルート (相対パスの起点)。
+    pub fn link_args(&self, root: &Path) -> Vec<String> {
+        let mut a: Vec<String> = vec![];
+        for d in &self.search {
+            a.push(format!("-L{}", root.join(d).display()));
+        }
+        for f in &self.archives {
+            a.push(root.join(f).display().to_string());
+        }
+        for n in &self.dynamic {
+            a.push(format!("-l{}", n));
+        }
+        a
+    }
+}
+
 pub fn validate_manifest(m: &toml::Value) -> Vec<(String, String)> {
     let mut errs: Vec<(String, String)> = vec![];
     let e = |c: &str, m: String| (c.to_string(), m);
@@ -352,9 +395,41 @@ pub fn validate_manifest(m: &toml::Value) -> Vec<(String, String)> {
             }
         }
     }
+    // [native] static / dynamic / search: C のライブラリを実行ファイルにリンクする (3.8)。
+    if let Some(n) = m.get("native") {
+        match n.as_table() {
+            None => errs.push(e("E9012", "[native] must be a table".into())),
+            Some(t) => {
+                for (k, v) in t {
+                    if !["static", "dynamic", "search"].contains(&k.as_str()) {
+                        errs.push(e("E9007", format!("unknown key native.{}", k)));
+                        continue;
+                    }
+                    let Some(arr) = v.as_array() else {
+                        errs.push(e("E9012", format!("native.{} must be an array of strings", k)));
+                        continue;
+                    };
+                    for it in arr {
+                        let Some(s) = it.as_str() else {
+                            errs.push(e("E9012", format!("native.{} must contain strings", k)));
+                            continue;
+                        };
+                        // リンカの引数になるので、空や `-` 始まり (オプションと誤解される) は受けない。
+                        if s.is_empty() || s.starts_with('-') {
+                            errs.push(e("E9012", format!("native.{}: `{}` is not a library name or path", k, s)));
+                        }
+                        // `dynamic` は `-l<名前>` の名前なので、`lib:名前` の形・パス区切り・拡張子は書けない。
+                        if k == "dynamic" && (s.contains(':') || s.contains('/') || s.contains('\\') || s.contains('.')) {
+                            errs.push(e("E9012", format!("native.dynamic: `{}` is a library name (no `:`, no path separator, no extension)", s)));
+                        }
+                    }
+                }
+            }
+        }
+    }
     if let Some(t) = m.as_table() {
         for k in t.keys() {
-            if k != "package" && k != "dependencies" && k != "unsafe" {
+            if k != "package" && k != "dependencies" && k != "unsafe" && k != "native" {
                 errs.push(e("E9007", format!("unknown table {}", k)));
             }
         }
@@ -744,8 +819,16 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
             if version == Some(2) {
                 match crate::lockapi::read_api(e) {
                     None => errs.push(bad(format!("git dependency {} has no recorded api; run `ksn lock --accept {}`", dp.name, dp.name))),
-                    Some((old, old_uns)) => {
-                        errs.extend(crate::lockapi::compare(&dp.name, &old, &old_uns, &crate::lockapi::api_of(dp), &crate::lockapi::unsafe_of(dp)));
+                    Some((old, old_uns, old_nat)) => {
+                        errs.extend(crate::lockapi::compare(
+                            &dp.name,
+                            &old,
+                            &old_uns,
+                            &crate::lockapi::api_of(dp),
+                            &crate::lockapi::unsafe_of(dp),
+                            &old_nat,
+                            &crate::lockapi::native_of(dp),
+                        ));
                     }
                 }
             }

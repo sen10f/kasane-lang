@@ -171,7 +171,7 @@ fn anchors_manifest(v: &Value, raw: &str) -> Anchors {
         }
         if t.starts_with('[') {
             let name = t.trim_matches(|c| c == '[' || c == ']').trim();
-            if matches!(name, "package" | "unsafe" | "dependencies") {
+            if matches!(name, "package" | "unsafe" | "native" | "dependencies") {
                 section = name;
                 flush(&mut a, &mut pending, name);
             }
@@ -181,6 +181,7 @@ fn anchors_manifest(v: &Value, raw: &str) -> Anchors {
             let known = match section {
                 "package" => matches!(k, "name" | "version" | "edition" | "entry"),
                 "unsafe" => k == "modules",
+                "native" => matches!(k, "static" | "dynamic" | "search"),
                 "dependencies" => deps.contains(k),
                 _ => false,
             };
@@ -212,6 +213,17 @@ fn emit_manifest(v: &Value, a: &Anchors) -> String {
         if let Some(m) = u.get("modules") {
             put(&mut lines, a, "unsafe.modules");
             lines.push(format!("modules = {}", emit_array(m)));
+        }
+    }
+    if let Some(n) = v.get("native") {
+        blank(&mut lines);
+        put(&mut lines, a, "native");
+        lines.push("[native]".into());
+        for k in ["static", "dynamic", "search"] {
+            if let Some(val) = n.get(k) {
+                put(&mut lines, a, &format!("native.{}", k));
+                lines.push(format!("{} = {}", k, emit_array(val)));
+            }
         }
     }
     if let Some(d) = v.get("dependencies").and_then(|x| x.as_table()) {
@@ -297,6 +309,7 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
     let mut dep_line: HashMap<String, usize> = HashMap::new();
     let mut hash_line: HashMap<String, usize> = HashMap::new();
     let mut uns_line: HashMap<String, usize> = HashMap::new();
+    let mut nat_line: HashMap<String, usize> = HashMap::new();
     let mut api_line: HashMap<String, usize> = HashMap::new();
     for (i, line) in raw.split('\n').enumerate() {
         let ln = i + 1;
@@ -370,7 +383,7 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
         }
         let n = name_of(idx.wrapping_sub(1));
         match k {
-            "name" | "source" | "hash" | "deps" | "unsafe_modules" => {
+            "name" | "source" | "hash" | "deps" | "unsafe_modules" | "native_libs" => {
                 if k == "deps" {
                     if let Some(p) = prev.as_mut() {
                         p.2 = true;
@@ -382,6 +395,9 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
                 }
                 if k == "unsafe_modules" {
                     uns_line.insert(n.clone(), ln);
+                }
+                if k == "native_libs" {
+                    nat_line.insert(n.clone(), ln);
                 }
                 flush(&mut a, &mut pending, &format!("package:{}.{}", n, k));
             }
@@ -429,16 +445,28 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
                 msg: format!("hash of {} is recorded but {} is not a git dependency", n, n),
             });
         }
-        // 版 2 の記録 (`unsafe_modules` / `[[package.api]]`) も git 依存だけ。
-        if (e.get("unsafe_modules").is_some() || e.get("api").is_some())
+        // 版 2 の記録 (`unsafe_modules` / `native_libs` / `[[package.api]]`) も git 依存だけ。
+        if (e.get("unsafe_modules").is_some() || e.get("api").is_some() || e.get("native_libs").is_some())
             && !e.get("source").and_then(|s| s.as_str()).unwrap_or("").starts_with("git+")
         {
             findings.push(Finding {
                 code: "E9021",
-                line: *api_line.get(n).or_else(|| uns_line.get(n)).unwrap_or(&1),
+                line: *api_line.get(n).or_else(|| uns_line.get(n)).or_else(|| nat_line.get(n)).unwrap_or(&1),
                 col: 1,
                 msg: format!("the api record of {} is present but {} is not a git dependency", n, n),
             });
+        }
+        // `native_libs` は文字列の配列 (L2 と同じ扱い)。
+        if let Some(arr) = e.get("native_libs").map(|x| x.as_array()) {
+            let bad = matches!(arr, None) || arr.is_some_and(|a| a.iter().any(|x| x.as_str().is_none()));
+            if bad {
+                findings.push(Finding {
+                    code: "E9021",
+                    line: *nat_line.get(n).unwrap_or(&1),
+                    col: 1,
+                    msg: format!("native_libs of {} must be an array of strings", n),
+                });
+            }
         }
     }
     flush(&mut a, &mut pending, "");
@@ -490,6 +518,13 @@ fn emit_lock(v: &Value, a: &Anchors) -> String {
                 put(&mut lines, a, &format!("{}.unsafe_modules", label));
                 let items: Vec<String> = u.as_array().map(|x| x.iter().map(|y| q(y.as_str().unwrap_or(""))).collect()).unwrap_or_default();
                 lines.push(format!("unsafe_modules = [{}]", items.join(", ")));
+            }
+            // `[native]` の C のライブラリ。`ksn update` がバイト順で書くので、正規形もその順にする。
+            if let Some(nl) = e.get("native_libs") {
+                put(&mut lines, a, &format!("{}.native_libs", label));
+                let mut items: Vec<String> = nl.as_array().map(|x| x.iter().map(|y| q(y.as_str().unwrap_or(""))).collect()).unwrap_or_default();
+                items.sort();
+                lines.push(format!("native_libs = [{}]", items.join(", ")));
             }
             if let Some(apis) = e.get("api").and_then(|x| x.as_array()) {
                 for (i, ap) in apis.iter().enumerate() {
@@ -557,6 +592,44 @@ mod tests {
         assert_eq!(again.canon.as_deref(), Some(canon.as_str()));
         // path 依存に記録があれば E9021 (整形しない)。
         let an = analyze(Kind::Lock, "version = 2\n\n[[package]]\nname = \"p\"\nsource = \"path+../p\"\ndeps = []\nunsafe_modules = []\n");
+        assert!(find(&an, "E9021") && an.canon.is_none(), "{:?}", an.findings);
+    }
+
+    /// `[native]` の正規形: 節の順は `package, unsafe, native, dependencies`、キーの順は `static, dynamic, search`。
+    #[test]
+    fn native_section_is_canonical() {
+        let toml = concat!(
+            "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n",
+            "[native]\nstatic = [\"libfoo.a\"]\ndynamic = [\"m\", \"SDL3\"]\nsearch = [\"vendor\"]\n\n[dependencies]\n"
+        );
+        let an = analyze(Kind::Manifest, toml);
+        assert!(an.findings.is_empty(), "{:?}", an.findings.iter().map(|f| (&f.code, &f.msg)).collect::<Vec<_>>());
+        assert_eq!(an.canon.as_deref(), Some(toml));
+        // 逆順・節の入れ替えは E0020 (整形する)。
+        for bad in [
+            "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[native]\nsearch = [\"v\"]\nstatic = [\"a.a\"]\ndynamic = [\"m\"]\n\n[dependencies]\n",
+            "[native]\nstatic = [\"libfoo.a\"]\ndynamic = [\"m\"]\n\n[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[dependencies]\n",
+        ] {
+            let an = analyze(Kind::Manifest, bad);
+            assert!(find(&an, "E0020"), "{}: {:?}", bad, an.findings.iter().map(|f| (&f.code, &f.msg)).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn native_libs_in_the_lock_are_canonical() {
+        // git 依存の `native_libs` は `unsafe_modules` のあと、`[[package.api]]` の前。並びはバイト順。
+        let lock = "version = 2\n\n[[package]]\nname = \"gl\"\nsource = \"git+https://x#abc\"\nhash = \"sha256:00\"\ndeps = []\nunsafe_modules = [\"gl.mem\"]\nnative_libs = [\"SDL3\", \"libz.a\"]\n";
+        let an = analyze(Kind::Lock, lock);
+        assert!(an.findings.is_empty(), "{:?}", an.findings.iter().map(|f| (&f.code, &f.msg)).collect::<Vec<_>>());
+        assert_eq!(an.canon.as_deref(), Some(lock));
+        // 逆順は E0020。
+        let an = analyze(
+            Kind::Lock,
+            "version = 2\n\n[[package]]\nname = \"gl\"\nsource = \"git+https://x#abc\"\nhash = \"sha256:00\"\ndeps = []\nnative_libs = [\"libz.a\", \"SDL3\"]\nunsafe_modules = [\"gl.mem\"]\n",
+        );
+        assert!(find(&an, "E0020"), "{:?}", an.findings);
+        // git 依存でなければ E9021。
+        let an = analyze(Kind::Lock, "version = 2\n\n[[package]]\nname = \"p\"\nsource = \"path+../p\"\ndeps = []\nnative_libs = [\"m\"]\n");
         assert!(find(&an, "E9021") && an.canon.is_none(), "{:?}", an.findings);
     }
 
