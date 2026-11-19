@@ -34,3 +34,5 @@
 
 - 各段で `ksn run` とネイティブの出力の一致 (既存の試験の方針)。N4 以降は描画の結果を画像で比べる (ヘッドレスの描画)。
 - Windows は wine、macOS は実機 (または利用者の CI)。
+
+- 2026-11-19 N0 (kir/n0-ffi-native): 構造体の値渡し・値返し (SysV / AAPCS64)・コールバック・配列・`core.fmt.Formatter` までネイティブにした。試験は `tests/ffi_native.rs`。
