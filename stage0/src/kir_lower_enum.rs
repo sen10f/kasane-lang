@@ -32,9 +32,9 @@ fn pat_src_binds(p: &V, src: &Src, out: &mut Vec<(String, Src)>) {
                 return;
             }
             let inner = match (segs[0].as_str(), src) {
-                ("Some", Src::Named(n, a)) if n == "Option" && a.len() == 1 => &a[0],
-                ("Ok", Src::Named(n, a)) if n == "Result" && a.len() == 2 => &a[0],
-                ("Err", Src::Named(n, a)) if n == "Result" && a.len() == 2 => &a[1],
+                ("Some", Src::Named(n, a, _)) if n == "Option" && a.len() == 1 => &a[0],
+                ("Ok", Src::Named(n, a, _)) if n == "Result" && a.len() == 2 => &a[0],
+                ("Err", Src::Named(n, a, _)) if n == "Result" && a.len() == 2 => &a[1],
                 _ => return,
             };
             pat_src_binds(&subs[0], inner, out);
@@ -56,8 +56,8 @@ fn pat_src_binds(p: &V, src: &Src, out: &mut Vec<(String, Src)>) {
 /// 型の写し: `Option<P>` と `Result<T, E>` (ペイロードはスカラーだけ)。親の `conv` の受け皿。
 pub(super) fn conv_builtin(t: &Src) -> Option<Ty> {
     match t {
-        Src::Named(n, a) if n == "Option" && a.len() == 1 => Pay::of(conv(&a[0])?).map(Ty::Opt),
-        Src::Named(n, a) if n == "Result" && a.len() == 2 => Some(Ty::Res(Pay::of(conv(&a[0])?)?, Pay::of(conv(&a[1])?)?)),
+        Src::Named(n, a, _) if n == "Option" && a.len() == 1 => Pay::of(conv(&a[0])?).map(Ty::Opt),
+        Src::Named(n, a, _) if n == "Result" && a.len() == 2 => Some(Ty::Res(Pay::of(conv(&a[0])?)?, Pay::of(conv(&a[1])?)?)),
         _ => None,
     }
 }
@@ -669,7 +669,7 @@ impl<'a> Lw<'a> {
         let none = self.emit(opt, Op::Const(0));
         self.goto(jb, vec![none]);
         self.cur = Some(jb);
-        self.coll.scrut_override = Some((jp[0], Src::Named("Option".into(), vec![Src::Ref(m, Box::new(x.clone()))])));
+        self.coll.scrut_override = Some((jp[0], Src::Named("Option".into(), vec![Src::Ref(m, Box::new(x.clone()), crate::types::Region::Unk)], crate::types::Rgs::default())));
         Ok(Some(self.match_(e)?))
     }
 
@@ -955,8 +955,8 @@ impl<'a> Lw<'a> {
     /// `Option<&T>` / `Result<&T, E>` の `T` (元の型とその下ろした型)。
     fn bref_elem(&mut self, t: Ty, line: usize) -> LR<(Src, Ty)> {
         let elem_src = match self.coll.scrut_src.clone() {
-            Some((st_ty, Src::Named(n, a))) if st_ty == t && (n == "Option" && a.len() == 1 || n == "Result" && a.len() == 2) => match &a[0] {
-                Src::Ref(_, i) => (**i).clone(),
+            Some((st_ty, Src::Named(n, a, _))) if st_ty == t && (n == "Option" && a.len() == 1 || n == "Result" && a.len() == 2) => match &a[0] {
+                Src::Ref(_, i, _) => (**i).clone(),
                 _ => return self.err(line, "Option<&T> の T が分からない"),
             },
             _ => return self.err(line, "Option<&T> の値の型が分からない (match の対象が必要)"),
@@ -985,7 +985,7 @@ impl<'a> Lw<'a> {
     fn bref_bind(&mut self, line: usize) -> LR<()> {
         // 番地の型 (`bref`) は可変性を持たないので、対象の型 (`Option<&mut T>` / `Result<&mut T, _>`) から決める。
         let mutable = match self.coll.scrut_src.as_ref().map(|(_, s)| s) {
-            Some(Src::Named(n, a)) if n == "Option" || n == "Result" => matches!(a.first(), Some(Src::Ref(true, _))),
+            Some(Src::Named(n, a, _)) if n == "Option" || n == "Result" => matches!(a.first(), Some(Src::Ref(true, _, _))),
             _ => false,
         };
         for (sub, pv, t) in std::mem::take(&mut self.coll.pending_bref) {
@@ -1108,11 +1108,11 @@ impl<'a> Lw<'a> {
         };
         // `?` の値の型 `Result<T, E1>` の E1 と、戻り値の型 `Result<U, E2>` の E2。
         let from = match self.src_ty(&nf(e)[0])? {
-            Src::Named(_, args) if args.len() == 2 => args[1].show(),
+            Src::Named(_, args, _) if args.len() == 2 => args[1].show(),
             _ => return unsupported(),
         };
         let to = match from_v(&self.def.ret, &HashSet::new()) {
-            Src::Named(_, args) if args.len() == 2 => args[1].show(),
+            Src::Named(_, args, _) if args.len() == 2 => args[1].show(),
             _ => return unsupported(),
         };
         let FromVariant::One(variant) = self.p.from_variant(&to, &from) else { return unsupported() };
@@ -1206,8 +1206,8 @@ impl<'a> Lw<'a> {
         }
         let src = self.src_ty(operand)?;
         let inner = match &src {
-            Src::Named(_, a) if !a.is_empty() => match &a[0] {
-                Src::Ref(false, i) => (**i).clone(),
+            Src::Named(_, a, _) if !a.is_empty() => match &a[0] {
+                Src::Ref(false, i, _) => (**i).clone(),
                 _ => return self.err(line, "Option<&T> / Result<&T, E> の T が分からない"),
             },
             _ => return self.err(line, "Option<&T> / Result<&T, E> の値の型が分からない"),

@@ -47,7 +47,7 @@ fn kind_of(t: &Ty) -> Option<&'static str> {
         Ty::Tuple(_) => Some("tuple"),
         Ty::Array(..) | Ty::Slice(_) => Some("seq"),
         Ty::Closure { .. } => Some("closure"),
-        Ty::Named(n, _) if n != "alloc.vec.Vec" && n != "alloc.string.String" => Some("named"),
+        Ty::Named(n, _, _) if n != "alloc.vec.Vec" && n != "alloc.string.String" => Some("named"),
         _ => None,
     }
 }
@@ -88,13 +88,13 @@ fn unify(want: &Ty, got: &Ty, inv: bool, nest: u32) -> Result<(), (Ty, Ty)> {
             }
         }
         (Ty::Ptr(..), Ty::Prim(_) | Ty::Named(..)) | (Ty::Prim(_) | Ty::Named(..), Ty::Ptr(..)) => err(),
-        (Ty::Ref(m, x), Ty::Ref(n, y)) => {
+        (Ty::Ref(m, x, _), Ty::Ref(n, y, _)) => {
             let (m, n) = (*m, *n);
             if (m && !n) || (inv && m != n) {
                 return err();
             }
             let inner_inv = inv || m;
-            if matches!((&**x, &**y), (Ty::Named(n, _), Ty::Prim(p)) | (Ty::Prim(p), Ty::Named(n, _)) if n == "alloc.string.String" && p == "str") {
+            if matches!((&**x, &**y), (Ty::Named(n, _, _), Ty::Prim(p)) | (Ty::Prim(p), Ty::Named(n, _, _)) if n == "alloc.string.String" && p == "str") {
                 return err();
             }
             if let (Ty::Slice(e), Ty::Array(f, _)) = (&**x, &**y) {
@@ -106,8 +106,8 @@ fn unify(want: &Ty, got: &Ty, inv: bool, nest: u32) -> Result<(), (Ty, Ty)> {
             unify(x, y, inner_inv, nest + 1)
         }
         (Ty::Ref(..), _) | (_, Ty::Ref(..)) if nest > 0 => err(),
-        (Ty::Ref(_, x), y) => unify(x, y, inv, nest),
-        (x, Ty::Ref(_, y)) => unify(x, y, inv, nest),
+        (Ty::Ref(_, x, _), y) => unify(x, y, inv, nest),
+        (x, Ty::Ref(_, y, _)) => unify(x, y, inv, nest),
         (Ty::Prim(p), Ty::Prim(q)) => {
             if p == q {
                 Ok(())
@@ -122,14 +122,14 @@ fn unify(want: &Ty, got: &Ty, inv: bool, nest: u32) -> Result<(), (Ty, Ty)> {
                 err()
             }
         }
-        (Ty::Dyn(p, _), Ty::Dyn(q, _)) => {
+        (Ty::Dyn(p, _, _), Ty::Dyn(q, _, _)) => {
             if p == q {
                 Ok(())
             } else {
                 err()
             }
         }
-        (Ty::Named(n, xs), Ty::Named(m, ys)) => {
+        (Ty::Named(n, xs, _), Ty::Named(m, ys, _)) => {
             if n != m {
                 return err();
             }
@@ -169,9 +169,9 @@ fn unify(want: &Ty, got: &Ty, inv: bool, nest: u32) -> Result<(), (Ty, Ty)> {
         (Ty::Slice(_), Ty::Array(..)) | (Ty::Array(..), Ty::Slice(_)) => err(),
         (Ty::Unit, Ty::Unit) => Ok(()),
         (Ty::Unit, Ty::Named(..) | Ty::Array(..) | Ty::Slice(_)) | (Ty::Named(..) | Ty::Array(..) | Ty::Slice(_), Ty::Unit) => err(),
-        (Ty::Named(n, _), Ty::Array(..) | Ty::Slice(_)) | (Ty::Array(..) | Ty::Slice(_), Ty::Named(n, _)) if n == "alloc.vec.Vec" => err(),
+        (Ty::Named(n, _, _), Ty::Array(..) | Ty::Slice(_)) | (Ty::Array(..) | Ty::Slice(_), Ty::Named(n, _, _)) if n == "alloc.vec.Vec" => err(),
         (x, y) if kind_of(x).is_some() && kind_of(y).is_some() && kind_of(x) != kind_of(y) => err(),
-        (Ty::Named(n, _), Ty::Prim(p)) | (Ty::Prim(p), Ty::Named(n, _)) if n == "alloc.string.String" && p == "str" => Ok(()),
+        (Ty::Named(n, _, _), Ty::Prim(p)) | (Ty::Prim(p), Ty::Named(n, _, _)) if n == "alloc.string.String" && p == "str" => Ok(()),
         (Ty::Dyn(..), _) | (_, Ty::Dyn(..)) => Ok(()),
         _ => err(),
     }
@@ -180,15 +180,15 @@ fn unify(want: &Ty, got: &Ty, inv: bool, nest: u32) -> Result<(), (Ty, Ty)> {
 /// 診断に出す (期待, 実際) の 2 つの型: 矛盾した箇所が基本型・名前の違う型ならそこだけ、他は全体 (旧い `ann_conflict` と同じ)。
 fn shown(want: &Ty, got: &Ty, err: &(Ty, Ty)) -> (String, String) {
     let (w, g) = (want.strip(), got.strip());
-    if let (Ty::Named(n, xs), Ty::Named(m, ys)) = (w, g) {
+    if let (Ty::Named(n, xs, _), Ty::Named(m, ys, _)) = (w, g) {
         if n == m && !xs.is_empty() && !ys.is_empty() {
             return (w.show(), g.show());
         }
     }
     match (&err.0, &err.1) {
         (Ty::Prim(a), Ty::Prim(b)) => (a.clone(), b.clone()),
-        (Ty::Named(a, _), Ty::Named(b, _)) if a != b => (a.clone(), b.clone()),
-        (Ty::Ref(true, _), Ty::Ref(false, _)) => (err.0.show(), err.1.show()),
+        (Ty::Named(a, _, _), Ty::Named(b, _, _)) if a != b => (a.clone(), b.clone()),
+        (Ty::Ref(true, _, _), Ty::Ref(false, _, _)) => (err.0.show(), err.1.show()),
         (Ty::Unit, x @ (Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_))) => ("()".into(), x.show()),
         (x @ (Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_)), Ty::Unit) => (x.show(), "()".into()),
         _ => (want.show(), got.show()),
@@ -198,8 +198,8 @@ fn shown(want: &Ty, got: &Ty, err: &(Ty, Ty)) -> (String, String) {
 fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
     match t {
         Ty::Param(p) => bind.get(p).cloned().unwrap_or(Ty::Unknown),
-        Ty::Named(n, a) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect()),
-        Ty::Ref(m, x) => Ty::Ref(*m, Box::new(subst(x, bind))),
+        Ty::Named(n, a, _) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect(), crate::types::Rgs::default()),
+        Ty::Ref(m, x, _) => Ty::Ref(*m, Box::new(subst(x, bind)), crate::types::Region::Unk),
         Ty::Ptr(m, x) => Ty::Ptr(*m, Box::new(subst(x, bind))),
         Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| subst(x, bind)).collect()),
         Ty::Array(x, n) => Ty::Array(Box::new(subst(x, bind)), *n),
@@ -472,7 +472,7 @@ impl<'a> W<'a> {
             return;
         }
         self.eq2020(what, a, b, line);
-        if let (Ty::Ref(m, _), Ty::Ref(n, _)) = (a, b) {
+        if let (Ty::Ref(m, _, _), Ty::Ref(n, _, _)) = (a, b) {
             if m != n {
                 self.diag(
                     "E2020",
@@ -510,20 +510,20 @@ impl<'a> W<'a> {
 
     /// `?`: エラー型は完全一致するか `derive [From]` の `enum` へ包める (`ErrInto` の印が付く)。
     fn try_err(&mut self, e: &TExpr, operand: &TExpr) {
-        let Ty::Named(gn, ga) = operand.ty.strip() else { return };
+        let Ty::Named(gn, ga, _) = operand.ty.strip() else { return };
         if gn != "Result" && gn != "Option" {
             return;
         }
         let Some(want) = self.rets.last().cloned() else { return };
         match want.strip() {
             Ty::Unknown | Ty::Param(_) | Ty::Var(_) | Ty::Never => {}
-            Ty::Named(wn, wa) if wn == gn => {
+            Ty::Named(wn, wa, _) if wn == gn => {
                 if gn == "Result" && wa.len() >= 2 && ga.len() >= 2 {
                     let (e_want, e_got) = (&wa[1], &ga[1]);
                     if e.conv.iter().any(|c| matches!(c, Coercion::ErrInto { .. })) {
                         return;
                     }
-                    let (Ty::Named(en, _), false) = (e_want.strip(), has_open(e_got.strip())) else {
+                    let (Ty::Named(en, _, _), false) = (e_want.strip(), has_open(e_got.strip())) else {
                         return self.try_unify(e, e_want, e_got);
                     };
                     let key = e_got.show();
@@ -543,7 +543,7 @@ impl<'a> W<'a> {
         if let Err(err) = unify(e_want, e_got, false, 0) {
             let (w, g) = match (&err.0, &err.1) {
                 (Ty::Prim(a), Ty::Prim(b)) if a != b => (a.clone(), b.clone()),
-                (Ty::Named(a, _), Ty::Named(b, _)) if a != b => (a.clone(), b.clone()),
+                (Ty::Named(a, _, _), Ty::Named(b, _, _)) if a != b => (a.clone(), b.clone()),
                 _ => (err.0.show(), err.1.show()),
             };
             self.diag(
@@ -603,7 +603,7 @@ impl<'a> W<'a> {
                 let gn = td.gnames();
                 let order: Vec<&String> = td.generics.iter().filter(|g| g.0 == "type").map(|g| &g.1).collect();
                 let bind: HashMap<String, Ty> = match &e.ty {
-                    Ty::Named(n, a) if *n == en && a.len() == order.len() => order.iter().map(|s| (*s).clone()).zip(a.iter().cloned()).collect(),
+                    Ty::Named(n, a, _) if *n == en && a.len() == order.len() => order.iter().map(|s| (*s).clone()).zip(a.iter().cloned()).collect(),
                     _ => HashMap::new(),
                 };
                 for (pt, a) in payload.iter().zip(args) {
@@ -643,7 +643,7 @@ impl<'a> W<'a> {
         let gn = td.gnames();
         let order: Vec<&String> = td.generics.iter().filter(|g| g.0 == "type").map(|g| &g.1).collect();
         let bind: HashMap<String, Ty> = match &e.ty {
-            Ty::Named(n, a) if *n == fq && a.len() == order.len() => order.iter().map(|s| (*s).clone()).zip(a.iter().cloned()).collect(),
+            Ty::Named(n, a, _) if *n == fq && a.len() == order.len() => order.iter().map(|s| (*s).clone()).zip(a.iter().cloned()).collect(),
             _ => HashMap::new(),
         };
         for (fname, v) in fields {
@@ -681,7 +681,7 @@ impl<'a> W<'a> {
                             let td = &self.p.defs[*i];
                             if td.kw == "type" {
                                 let bad = match base {
-                                    Ty::Named(n, _) => *n != td.name,
+                                    Ty::Named(n, _, _) => *n != td.name,
                                     Ty::Prim(_) | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_) | Ty::Unit => true,
                                     _ => false,
                                 };
@@ -731,7 +731,7 @@ impl<'a> W<'a> {
         };
         let Some(en) = en else { return true };
         let mismatch = match scrut.strip() {
-            Ty::Named(n, _) => *n != en,
+            Ty::Named(n, _, _) => *n != en,
             Ty::Prim(_) | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_) | Ty::Unit => true,
             _ => false,
         };
@@ -791,8 +791,8 @@ impl<'a> W<'a> {
 fn has_open(t: &Ty) -> bool {
     match t {
         Ty::Unknown | Ty::Var(_) => true,
-        Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(has_open),
-        Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => has_open(x),
+        Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(has_open),
+        Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => has_open(x),
         _ => false,
     }
 }
