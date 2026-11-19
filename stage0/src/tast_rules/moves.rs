@@ -673,7 +673,7 @@ impl<'a> W<'a> {
                 }
                 self.st = self.join(outs, e.line);
             }
-            TKind::Closure { params, captures, body } => self.closure(e, params, captures, body),
+            TKind::Closure { params, captures, body, .. } => self.closure(e, params, captures, body),
             TKind::Other { name, children } => self.other(e, name, children),
         }
     }
