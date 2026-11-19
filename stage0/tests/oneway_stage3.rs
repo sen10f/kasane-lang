@@ -118,6 +118,57 @@ fn d11_option_and_len_checks_are_rewritten() {
     roundtrip("d11_len_gt0", "    let s = \"x\"\n    core.mem.drop(s.len() > 0usize)\n", "    let s = \"x\"\n    core.mem.drop(!s.is_empty())\n");
 }
 
+// G56: 真偽と 0 の literal は左右どちらにあってもよく、`!=` も同じ正規形にする。
+#[test]
+fn d11_literal_on_either_side_and_ne() {
+    roundtrip("d11_true_eq_x", "    let a = true\n    core.mem.drop(true == a)\n", "    let a = true\n    core.mem.drop(a)\n");
+    roundtrip("d11_false_eq_x", "    let a = true\n    core.mem.drop(false == a)\n", "    let a = true\n    core.mem.drop(!a)\n");
+    roundtrip("d11_ne_false", "    let a = true\n    core.mem.drop(a != false)\n", "    let a = true\n    core.mem.drop(a)\n");
+    roundtrip("d11_true_ne_x", "    let a = true\n    core.mem.drop(true != a)\n", "    let a = true\n    core.mem.drop(!a)\n");
+    roundtrip("d11_false_ne_x", "    let a = true\n    core.mem.drop(false != a)\n", "    let a = true\n    core.mem.drop(a)\n");
+    roundtrip("d11_zero_eq_len", "    let s = \"x\"\n    core.mem.drop(0usize == s.len())\n", "    let s = \"x\"\n    core.mem.drop(s.is_empty())\n");
+    roundtrip("d11_len_ne_zero", "    let s = \"x\"\n    core.mem.drop(s.len() != 0usize)\n", "    let s = \"x\"\n    core.mem.drop(!s.is_empty())\n");
+    roundtrip("d11_zero_ne_len", "    let s = \"x\"\n    core.mem.drop(0usize != s.len())\n", "    let s = \"x\"\n    core.mem.drop(!s.is_empty())\n");
+    roundtrip("d11_zero_lt_len", "    let s = \"x\"\n    core.mem.drop(0usize < s.len())\n", "    let s = \"x\"\n    core.mem.drop(!s.is_empty())\n");
+    // 左が 1 トークンでない (`!true` は式全体の一部) ・ 比較の両辺に式があるものは書き換えない。
+    canonical("d11_literal_inside_expr_ok", "    let a = true\n    core.mem.drop(!true == a)\n    core.mem.drop(a == (true || false))\n");
+}
+
+/// 書き換えた形が意味を保つ: 両辺の literal の向き・`!=`・0 の向きを変えた形の出力が、正規形の期待どおりになる。
+#[test]
+fn d11_literal_forms_keep_meaning() {
+    // (条件, 期待する出力)。条件は fmt の前の非正規形そのまま。
+    let cases: [(&str, &str); 10] = [
+        ("true == a", "T"),
+        ("false == a", "F"),
+        ("a != true", "F"),
+        ("a != false", "T"),
+        ("true != b", "T"),
+        ("false != a", "T"),
+        ("0usize == e.len()", "T"),
+        ("e.len() != 0usize", "F"),
+        ("0usize != s.len()", "T"),
+        ("0usize < s.len()", "T"),
+    ];
+    let mut body = String::from("    let a = true\n    let b = false\n    let s = \"x\"\n    let e = \"\"\n");
+    for (cond, _) in cases.iter() {
+        body.push_str(&format!(
+            "    if {} {{\n        core.mem.drop(std.io.print_line(\"T\"))\n    }} else {{\n        core.mem.drop(std.io.print_line(\"F\"))\n    }}\n",
+            cond
+        ));
+    }
+    let t = Tmp::new_raw("d11_meaning", &main_wrap("", &body));
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
+    effects_fix(&t);
+    let c = run(&["check"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}", text(&c.stdout));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let got: Vec<String> = text(&o.stdout).lines().map(|l| l.trim().to_string()).collect();
+    let want: Vec<String> = cases.iter().map(|(_, w)| w.to_string()).collect();
+    assert_eq!(got, want);
+}
+
 #[test]
 fn d11_else_if_and_single_expression_arms() {
     roundtrip(
