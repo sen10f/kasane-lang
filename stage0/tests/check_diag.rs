@@ -4,6 +4,9 @@
 
 mod common;
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -258,7 +261,7 @@ fn examples_check_fmt_and_run() {
 
 #[test]
 fn new_creates_checkable_package() {
-    let base = std::env::temp_dir().join(format!("ksn_new_{}", std::process::id()));
+    let base = scratch::Scratch::at(format!("ksn_new_{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
     fs::create_dir_all(&base).unwrap();
     let o = run(&["new", "app"], &base);
@@ -5160,7 +5163,7 @@ fn copy_tree(src: &Path, dst: &Path) {
 /// 標準ライブラリの複製に型誤りを 1 つ入れると、`ksn check-stdlib` がそれを報告する (検査が本体に届いていること)。
 #[test]
 fn stdlib_injected_type_error_is_reported() {
-    let dir = std::env::temp_dir().join(format!("ksn_test_{}_stdlib_neg", std::process::id()));
+    let dir = scratch::Scratch::at(format!("ksn_test_{}_stdlib_neg", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     copy_tree(&root().join("spec").join("stdlib"), &dir.join("stdlib"));
     // `log` は `.ksnh` (コメント付き) と `.ksnl` の対。両方に同じ関数を足す。

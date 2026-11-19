@@ -11,6 +11,9 @@
 //! 木走査 (`ksn run`) と LLVM (debug / release) の一致は `agree_with_interpreter` で確かめる。
 
 mod common;
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use common::*;
 
 use std::fs;
@@ -21,7 +24,7 @@ fn asan_run(t: &Tmp, name: &str) -> Option<Output> {
     if !asan_available() {
         return None;
     }
-    let cache = std::env::temp_dir().join(format!("ksn_wiki_bugs_asan_cache_{}_{}", std::process::id(), name));
+    let cache = scratch::Scratch::at(format!("ksn_wiki_bugs_asan_cache_{}_{}", std::process::id(), name));
     let args = "-fsanitize=address -fno-omit-frame-pointer -g -O0";
     let b = Command::new(exe()).args(["build", "--release"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).env("KSN_CLANG_ARGS", args).output().unwrap();
     let _ = fs::remove_dir_all(&cache);

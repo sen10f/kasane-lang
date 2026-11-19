@@ -268,6 +268,32 @@ impl<'a> Lw<'a> {
         if nname(operand) == "Unary" && st(&nf(operand)[0]) == "*" && self.ty_of(e).is_ok_and(|t| t == self.fat_ty()) {
             return self.expr(&nf(operand)[1]);
         }
+        // `&x.buf` / `&mut x.buf` (`buf` は配列の欄): 欄の先頭の番地と長さ N から、求められた形 (スライスの値 `fat` か `&[T; N]` の `ptr`) を作る。
+        if matches!(nname(operand), "Path" | "Field") {
+            if let Some((super::coll::Seq::Ptr(pp, n), _)) = super::coll::array_field_place(self, operand, line)? {
+                let want = self.ty_of(e).ok();
+                if want == Some(self.fat_ty()) {
+                    let len = self.emit(Ty::Usize, Op::Const(n as i128));
+                    let fat = self.fat_ty();
+                    return Ok(Some(self.emit(fat, Op::Make { variant: None, fields: vec![pp, len] })));
+                }
+                if want == Some(Ty::Ptr) {
+                    return Ok(Some(pp));
+                }
+                // `&[T; N]` (配列の値は `fat` なので参照は `ref<fat>`): `fat` を枠の領域に置いてそのアドレスを参照にする。
+                if let Some(Ty::Ref(m, Pointee::Agg(fi))) = want {
+                    if Ty::Agg(fi) == self.fat_ty() {
+                        let len = self.emit(Ty::Usize, Op::Const(n as i128));
+                        let fat = self.fat_ty();
+                        let v = self.emit(fat, Op::Make { variant: None, fields: vec![pp, len] });
+                        let buf = self.emit(Ty::Ptr, Op::FrameBytes { size: 16 });
+                        let r = self.emit(Ty::Ref(true, Pointee::Agg(fi)), Op::Bitcast { src: Ty::Ptr, a: buf });
+                        self.emit(Ty::Unit, Op::Store { ptr: r, val: v });
+                        return Ok(Some(self.ref_value(r, Pointee::Agg(fi), !m)));
+                    }
+                }
+            }
+        }
         let Ty::Ref(m, p) = self.ty_of(e)? else {
             return self.err(line, format!("参照の型が参照でない ({} / {:?})", crate::kir::fmt_ty(self.ty_of(e).unwrap_or(Ty::Unit)), self.src_ty(e).ok().map(|t| t.show())));
         };

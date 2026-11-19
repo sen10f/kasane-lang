@@ -35,5 +35,9 @@
 - 各段で `ksn run` とネイティブの出力の一致 (既存の試験の方針)。N4 以降は描画の結果を画像で比べる (ヘッドレスの描画)。
 - Windows は wine、macOS は実機 (または利用者の CI)。
 
+- 2026-11-19 N0 (kir/n0-ffi-native): 構造体の値渡し・値返し (SysV / AAPCS64)・コールバック・配列・`core.fmt.Formatter` までネイティブにした。試験は `tests/ffi_native.rs`。
+
 
 > 2026-11-19 (N1w): Windows ターゲット `x86_64-windows-gnu` を追加した (組み込みの lld の MinGW 版でリンク、wine で `ksn run` と出力が一致)。詳細は `実装計画.md` の N1w の節。
+>
+> 2026-11-19 (試験先行): Win64 の構造体の値渡し (`stage0/tests/windows_ffi_struct.rs`) と C からの利用者のデータつきコールバック・捕まえたクロージャ (`stage0/tests/ffi_userdata.rs`・`stage0/tests/data/ffi_userdata/`) の試験を先に置いた。どちらも未実装なので `#[ignore]` (実装されたら外す)。

@@ -763,6 +763,10 @@ impl<'a> Lw<'a> {
             }
             self.bref_bind(line)?;
             if let Some(v) = self.expr(body)? {
+                let v = match res {
+                    Some(t) => self.deref_fat_to(v, t),
+                    None => v,
+                };
                 if let Some(t) = res {
                     if self.vty(v) != t {
                         return self.err(line, "match の腕の型が結果の型と違う");

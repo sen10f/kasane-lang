@@ -51,6 +51,15 @@ pub fn unsafe_of(dp: &Package) -> Vec<String> {
     v
 }
 
+/// 依存の `[native]` の C のライブラリ (足されたら止める)。`static` のパスと `dynamic` の名前を合わせて 1 つの記録にする。
+pub fn native_of(dp: &Package) -> Vec<String> {
+    let n = crate::project::native_libs(&dp.manifest);
+    let mut v: Vec<String> = n.archives.into_iter().chain(n.dynamic).collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
 /// ヘッダの `uses [..]` と `panics X` を取り出し、残りを返す: (効果を除いたヘッダ, uses, panics)。
 fn split_effects(sig: &str) -> Option<(String, Vec<String>, String)> {
     let first = sig.lines().next().unwrap_or("");
@@ -100,7 +109,15 @@ fn indent(s: &str, mark: &str) -> String {
 }
 
 /// ロックの記録 (`old`) と今 (`now`) を比べ、(コード, メッセージ) を並べて返す。
-pub fn compare(pkg: &str, old: &Api, old_unsafe: &[String], now: &Api, now_unsafe: &[String]) -> Vec<(String, String)> {
+pub fn compare(
+    pkg: &str,
+    old: &Api,
+    old_unsafe: &[String],
+    now: &Api,
+    now_unsafe: &[String],
+    old_native: &[String],
+    now_native: &[String],
+) -> Vec<(String, String)> {
     let mut out = vec![];
     let hint = format!("; review the change, then run `ksn lock --accept {}`", pkg);
     let o: BTreeMap<&str, &str> = old.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
@@ -110,6 +127,13 @@ pub fn compare(pkg: &str, old: &Api, old_unsafe: &[String], now: &Api, now_unsaf
     }
     for m in old_unsafe.iter().filter(|m| !now_unsafe.contains(m)) {
         out.push(("E9062".to_string(), format!("{}: unsafe module {} was removed from the dependency's [unsafe] modules{}", pkg, m, hint)));
+    }
+    // `[native]` の C のライブラリ: 足されたのは効果の広がりと同じ重さ (ホストに何が要るかが増える)。
+    for m in now_native.iter().filter(|m| !old_native.contains(m)) {
+        out.push(("E9060".to_string(), format!("{}: native library {} was added to the dependency's [native] table{}", pkg, m, hint)));
+    }
+    for m in old_native.iter().filter(|m| !now_native.contains(m)) {
+        out.push(("E9062".to_string(), format!("{}: native library {} was removed from the dependency's [native] table{}", pkg, m, hint)));
     }
     for (k, ov) in &o {
         match n.get(k) {
@@ -135,23 +159,27 @@ pub fn compare(pkg: &str, old: &Api, old_unsafe: &[String], now: &Api, now_unsaf
     out
 }
 
-/// ロックの `[[package]]` の `api` / `unsafe_modules` を読む。`api` の無い記録 (版 1 など) は `None`。
-pub fn read_api(e: &toml::Value) -> Option<(Api, Vec<String>)> {
+/// ロックの `[[package]]` の `api` / `unsafe_modules` / `native_libs` を読む。記録の無いもの (版 1 など) は `None`。
+pub fn read_api(e: &toml::Value) -> Option<(Api, Vec<String>, Vec<String>)> {
     let arr = e.get("api").and_then(|a| a.as_array());
     let uns: Vec<String> = e.get("unsafe_modules").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-    if arr.is_none() && e.get("unsafe_modules").is_none() {
+    let nat: Vec<String> = e.get("native_libs").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+    if arr.is_none() && e.get("unsafe_modules").is_none() && e.get("native_libs").is_none() {
         return None;
     }
     let api = arr
         .map(|a| a.iter().filter_map(|i| Some((i.get("fqn")?.as_str()?.to_string(), i.get("sig")?.as_str()?.to_string()))).collect())
         .unwrap_or_default();
-    Some((api, uns))
+    Some((api, uns, nat))
 }
 
-/// `[[package.api]]` と `unsafe_modules` の行。
-pub fn render_api(api: &Api, uns: &[String]) -> Vec<String> {
+/// `[[package.api]]`・`unsafe_modules`・`native_libs` の行。
+pub fn render_api(api: &Api, uns: &[String], nat: &[String]) -> Vec<String> {
     let q = |s: &str| toml::Value::String(s.to_string()).to_string();
     let mut l = vec![format!("unsafe_modules = [{}]", uns.iter().map(|x| q(x)).collect::<Vec<_>>().join(", "))];
+    if !nat.is_empty() {
+        l.push(format!("native_libs = [{}]", nat.iter().map(|x| q(x)).collect::<Vec<_>>().join(", ")));
+    }
     for (f, s) in api {
         l.push("[[package.api]]".into());
         l.push(format!("fqn = {}", q(f)));

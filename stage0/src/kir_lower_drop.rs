@@ -100,6 +100,7 @@ fn body(lw: &mut Lw, ty: Ty, pv: &[VId]) -> Ty {
             let kids = split_fields(lw, v, &fs, ty);
             advance(lw, cur, stack, skip, &kids, lp, pop);
         }
+        crate::kir::AggKind::Array(..) => {}
         crate::kir::AggKind::Enum(vs) => {
             let tag = lw.emit(Ty::I32, Op::Tag(v));
             for (k, var) in vs.iter().enumerate() {

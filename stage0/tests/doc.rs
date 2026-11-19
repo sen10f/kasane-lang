@@ -1,5 +1,8 @@
 //! `ksn doc` の統合テスト。一時パッケージにドキュメントを生成して内容・リンク・決定性を検査する。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,7 +36,7 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 

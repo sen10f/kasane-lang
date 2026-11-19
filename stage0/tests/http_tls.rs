@@ -4,6 +4,9 @@
 //! 出力が一致することを確かめる。
 
 mod common;
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use common::*;
 
 use std::fs;
@@ -248,7 +251,7 @@ fn https_app_keeps_one_connection_for_several_requests() {
     if !tls_tools() {
         return;
     }
-    let dir = std::env::temp_dir().join(format!("ksn_https_{}", std::process::id()));
+    let dir = scratch::Scratch::at(format!("ksn_https_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let (cert, key) = make_cert(&dir);
@@ -310,7 +313,7 @@ fn std_tls_client_interpreter_and_native_agree() {
     if !tls_tools() {
         return;
     }
-    let dir = std::env::temp_dir().join(format!("ksn_tlsc_{}", std::process::id()));
+    let dir = scratch::Scratch::at(format!("ksn_tlsc_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let (cert, key) = make_cert(&dir);
@@ -345,7 +348,7 @@ fn https_app_native_serves_the_same_replies() {
     if !tls_tools() {
         return;
     }
-    let dir = std::env::temp_dir().join(format!("ksn_https_n_{}", std::process::id()));
+    let dir = scratch::Scratch::at(format!("ksn_https_n_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     let pkg = dir.join("app");
     copy_app(&pkg);

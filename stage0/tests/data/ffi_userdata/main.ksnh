@@ -1,0 +1,34 @@
+// N3 (設計_ネイティブUI.md): 捕まえたクロージャを C のコールバックに渡す。
+// C の `acc_ticks` / `acc_twice` は `void (*cb)(void *user, int x)` と `void *user` を受ける。
+// 捕まえたクロージャを `f` に渡すと、その環境が user データとして C に渡る (踏み台は処理系が用意)。
+// C が値を返すまでの間、捕まえた変数はクロージャと C に貸したまま (受け取ったあとに読む)。
+type t.Acc
+    total: i32
+    count: i32
+end t.Acc
+
+extern t.acc_ticks(f: fn(*mut (), i32) -> () uses [] panics never, user: *mut (), lo: i32, hi: i32) -> () link "LIB:acc_ticks"
+
+extern t.acc_twice(f: fn(*mut (), i32) -> () uses [] panics never, user: *mut (), a: i32, b: i32) -> () link "LIB:acc_twice"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut acc = t.Acc { total: 0i32, count: 0i32 }
+    unsafe "ffi" "accumulate with a closure that captures acc" {
+        t.acc_ticks(fn(x: i32) -> () capture [&mut acc] {
+            acc.total = acc.total.wrapping_add(x)
+            acc.count = acc.count.wrapping_add(1i32)
+        }, 1i32, 10i32)
+    }
+    core.check.eq(acc.total, 55i32)
+    core.check.eq(acc.count, 10i32)
+    unsafe "ffi" "the same closure, two more calls" {
+        t.acc_twice(fn(x: i32) -> () capture [&mut acc] {
+            acc.total = acc.total.wrapping_add(x)
+            acc.count = acc.count.wrapping_add(1i32)
+        }, 5i32, 7i32)
+    }
+    core.check.eq(acc.total, 67i32)
+    core.check.eq(acc.count, 12i32)
+    core.mem.drop(std.io.print_line("userdata ok"))
+    Ok(())
+end t.main

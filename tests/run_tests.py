@@ -3,6 +3,7 @@
 
 Python 参照実装との比較テストは凍結済みで tests/legacy/ にある (拡張子統一前の仕様向け)。
 """
+import atexit
 import os
 import re
 import shutil
@@ -94,7 +95,9 @@ with tempfile.TemporaryDirectory() as td:
     r = subprocess.run([RSEXE, 'run', '--watch'], cwd=td, capture_output=True, text=True, encoding='utf-8')
     step('rust ksn: hot reload applies a body change while running',
          r.returncode == 0 and 'v1' in r.stdout and 'v2' in r.stdout and 'bodies updated' in r.stderr, r.stdout + r.stderr)
-cache2 = tempfile.mkdtemp()
+cache2 = tempfile.mkdtemp(prefix='ksn_runtests_cache_')
+# 後始末: 正常終了でも例外でも消す (KSN_KEEP_TMP=1 のときは残す)。
+atexit.register(lambda: None if os.environ.get('KSN_KEEP_TMP') == '1' else shutil.rmtree(cache2, ignore_errors=True))
 envc = dict(os.environ, KSN_CACHE_DIR=cache2)
 d = os.path.join(ROOT, 'examples', 'native')
 r = subprocess.run([RSEXE, 'build', '--release'], cwd=d, capture_output=True, text=True, encoding='utf-8', env=envc)
@@ -112,7 +115,6 @@ r = subprocess.run([RSEXE, 'test', '--both'], cwd=d, capture_output=True, text=T
 want_label = '(both: llvm)' if shutil.which('clang') else '(both: bundle'
 step('rust ksn: test --both (interpreter and native agree)', r.returncode == 0 and want_label in r.stdout and 'disagree' not in r.stdout, r.stdout + r.stderr)
 shutil.rmtree(os.path.join(d, 'target'), ignore_errors=True)
-shutil.rmtree(cache2, ignore_errors=True)
 
 # 10. ネイティブになった割合 (修正プラン 3-5)。下限 (tests/native_ratio_floor.json) を下回ったら落とす。
 r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'native_ratio.py')],
