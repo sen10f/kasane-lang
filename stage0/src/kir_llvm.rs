@@ -363,7 +363,7 @@ pub struct Target {
 /// 対応するターゲット。ほかの三つ組は `target_of` が `None` を返す (呼び出し側が理由を出す)。
 /// `wasm32-unknown-unknown` は、ブラウザが主目標なので WASI ではなく素の wasm (import は `env` の数個だけ、`WASM ABI` 参照)。
 /// `wasm32-wasi` は WASI preview 1 の import (`wasi_snapshot_preview1`) で、ファイル・引数と環境・実時刻・乱数を使える (`WASM ABI` の WASI の項)。
-pub const TARGETS: [Target; 4] = [
+pub const TARGETS: [Target; 5] = [
     Target {
         name: "x86_64-linux-gnu",
         triple: "x86_64-unknown-linux-gnu",
@@ -376,6 +376,13 @@ pub const TARGETS: [Target; 4] = [
         triple: "aarch64-unknown-linux-gnu",
         datalayout: "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
         sysroot: "/usr/aarch64-linux-gnu",
+        ptr_bits: 64,
+    },
+    Target {
+        name: "x86_64-windows-gnu",
+        triple: "x86_64-w64-windows-gnu",
+        datalayout: "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+        sysroot: "/usr/x86_64-w64-mingw32",
         ptr_bits: 64,
     },
     Target {
@@ -397,6 +404,25 @@ pub const TARGETS: [Target; 4] = [
 /// `wasm32` の対象か (素の wasm と WASI。ファイルは `.wasm`、実行は `tools/wasm/run.mjs` / `run_wasi.mjs` か JS の `WebAssembly` で行う)。
 pub fn is_wasm(t: Option<Target>) -> bool {
     t.is_some_and(|t| t.ptr_bits == 32 && t.triple.starts_with("wasm32"))
+}
+
+/// Windows (MinGW-w64) の対象か。実行ファイルは `.exe`、リンクは組み込みの lld の MinGW 版。
+pub fn is_windows(t: Option<Target>) -> bool {
+    t.is_some_and(|t| t.triple.contains("windows"))
+}
+
+/// Windows 用に、IR が直接呼ぶ POSIX の libc を `ksn_w_*` の薄い殻 (`kir_rt.c`) へ向ける。
+/// Win64 の `write` / `read` は `int` と `unsigned` で、ソケットは別の記述子、`dprintf` と `__errno_location` は無い。
+fn windows_shims(ll: &str) -> String {
+    // winpthreads: 再帰 mutex の種類は 2 (Linux は 1)、静的な初期化子は 0 ではなく -1 (`PTHREAD_MUTEX_INITIALIZER`)。
+    let mut s = ll.replace("@pthread_mutexattr_settype(ptr %attr, i32 1)", "@pthread_mutexattr_settype(ptr %attr, i32 2)");
+    for g in ["mu", "cv"] {
+        s = s.replace(&format!("@ksn.rt.{g} = internal global [64 x i8] zeroinitializer, align 16"), &format!("@ksn.rt.{g} = internal global i64 -1, align 16"));
+    }
+    for n in ["write", "read", "close", "accept", "getsockname", "socket", "dprintf", "__errno_location"] {
+        s = s.replace(&format!("@{}(", n), &format!("@ksn_w_{}(", n));
+    }
+    s
 }
 
 /// `wasm32-wasi` の対象か (WASI preview 1 の import を使う。`wasm32-unknown-unknown` は素の wasm のまま)。
@@ -517,7 +543,13 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     }
     let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. } | Op::FloatText { .. }))));
     let has_parse_int = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::ParseInt { .. }))));
-    let arch = if target.or_else(host_target).is_some_and(|t| t.name == "aarch64-linux-gnu") { crate::kir_cabi::Arch::Aarch64 } else { crate::kir_cabi::Arch::X86_64 };
+    let arch = if is_windows(target) {
+        crate::kir_cabi::Arch::Win64
+    } else if target.or_else(host_target).is_some_and(|t| t.name == "aarch64-linux-gnu") {
+        crate::kir_cabi::Arch::Aarch64
+    } else {
+        crate::kir_cabi::Arch::X86_64
+    };
     let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int, arch };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
@@ -742,6 +774,9 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
+    }
+    if is_windows(target) {
+        out = windows_shims(&out);
     }
     Ok(out)
 }
@@ -1009,7 +1044,7 @@ fn kasane_base_inst(key: &str) -> bool {
 
 /// IR が C の実行時補助を要するか。
 pub fn needs_runtime(ll: &str) -> bool {
-    ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int") || ll.contains("@ksn_rt_sys_") || ll.contains("@ksn_ext_resolve")
+    ll.contains("@ksn_w_") || ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int") || ll.contains("@ksn_rt_sys_") || ll.contains("@ksn_ext_resolve")
 }
 
 fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {

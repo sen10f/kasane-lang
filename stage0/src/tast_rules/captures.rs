@@ -98,8 +98,14 @@ fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut 
                     _ => None,
                 };
                 if let (TKind::Path(segs), Some(Ty::Closure { eff: crate::types::Eff(Some(info)), .. })) = (&callee.kind, bound.as_ref().map(|t| t.strip().clone())) {
-                    for x in info.uses.iter().filter(|x| !is_effect_var(x) && !covers(&own, x)) {
+                    let mut uses_bad = false;
+                    for x in info.uses.iter().filter(|x| if is_effect_var(x) { !own.contains(x) } else { !covers(&own, x) }) {
+                        uses_bad = true;
                         found.push(("E4001", format!("{} uses effect `{}` not declared by the caller", segs.join("."), x), e.line));
+                    }
+                    // 旧い検査は 1 つの呼び出しにつき最初の違反だけを報告する (uses が先)。
+                    if !uses_bad && info.may == Some(true) && d.panics.as_deref() == Some("never") {
+                        found.push(("E4002", format!("{} may panic but the caller declares `panics never`", segs.join(".")), e.line));
                     }
                 }
             }
@@ -141,6 +147,13 @@ fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut 
             }
             _ => return,
         };
+        // 受け手 (`s.m()` の `s`) も仮引数 0 番の実引数として数える。
+        let recv_ty: Option<Ty> = match &e.kind {
+            TKind::MCall { recv, .. } if off == 1 => Some(recv.ty.clone()),
+            TKind::Call { callee, .. } if off == 1 && matches!(&callee.kind, TKind::Path(s) if s.len() >= 2) => Some(callee.ty.clone()),
+            _ => None,
+        };
+        let all: Vec<(usize, Ty)> = recv_ty.into_iter().map(|t| (0usize, t)).chain(args.iter().enumerate().map(|(k, a)| (k + off, a.ty.clone()))).collect();
         let Some(Callee::Def(ci)) = &e.res else { return };
         let c = &p.defs[*ci];
         let gn = c.gnames();
@@ -174,10 +187,10 @@ fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut 
                 }
             }
         }
-        for (k, a) in args.iter().enumerate() {
-            let Some(prm) = c.params.get(k + off) else { break };
+        for (k, aty) in all.iter() {
+            let Some(prm) = c.params.get(*k) else { break };
             let mut slots = vec![];
-            param_slots(&crate::types::from_v(&prm.1, &gn), &a.ty, &mut slots);
+            param_slots(&crate::types::from_v(&prm.1, &gn), aty, &mut slots);
             for (name, at) in slots {
                 let Ty::Closure { eff: crate::types::Eff(Some(info)), .. } = &at else { continue };
                 for g in &c.generics {
@@ -221,7 +234,7 @@ fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut 
 }
 
 /// 仮引数の型 `pt` の中の型パラメータと、実引数の型 `a` の同じ位置の型の組 (参照は外して見る)。
-fn param_slots(pt: &crate::types::Ty, a: &crate::types::Ty, out: &mut Vec<(String, crate::types::Ty)>) {
+pub(super) fn param_slots(pt: &crate::types::Ty, a: &crate::types::Ty, out: &mut Vec<(String, crate::types::Ty)>) {
 
     let mut at = a.clone();
     while let Ty::Ref(_, x, _) = at {

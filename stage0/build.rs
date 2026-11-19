@@ -112,6 +112,14 @@ fn gen_assets(manifest: &Path, out: &Path) -> Vec<u8> {
             jobs.push((t, "sysrt", src.join("sysrt.c"), a));
         }
     }
+    // Windows (MinGW-w64): C の開発ファイルは mingw-w64 の sysroot (`KSN_WIN_SYSROOT`、既定 /usr/x86_64-w64-mingw32)。無ければ飛ばす (実行時に clang を使う)。
+    println!("cargo:rerun-if-env-changed=KSN_WIN_SYSROOT");
+    let wroot = std::env::var("KSN_WIN_SYSROOT").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/usr/x86_64-w64-mingw32".to_string());
+    if Path::new(&wroot).join("include").is_dir() {
+        let a: Vec<String> = vec!["--target=x86_64-w64-windows-gnu".into(), "-O2".into(), "-isystem".into(), format!("{}/include", wroot)];
+        jobs.push(("x86_64-windows-gnu", "kir_rt", src.join("kir_rt.c"), a.clone()));
+        jobs.push(("x86_64-windows-gnu", "sysrt", src.join("sysrt.c"), a));
+    }
     let wasm = |t: &str, extra: &[&str]| -> Vec<String> {
         let mut a: Vec<String> = vec![format!("--target={}", t), "-O1".into(), "-ffreestanding".into(), "-fno-builtin".into(), format!("-isystem{}", inc.display())];
         a.extend(extra.iter().map(|s| s.to_string()));
@@ -243,10 +251,10 @@ fn link_embedded_lld() {
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=ksn_lld_shim");
     println!("cargo:rustc-link-search=native={}", lib);
-    for l in ["lldELF", "lldWasm", "lldCommon"] {
+    for l in ["lldMinGW", "lldCOFF", "lldELF", "lldWasm", "lldCommon"] {
         println!("cargo:rustc-link-lib=static={}", l);
     }
-    for l in cfg(&["--link-static", "--libs", "lto", "object", "option", "debuginfodwarf", "all-targets"]).split_whitespace().filter(|l| !l.contains("Polly")) {
+    for l in cfg(&["--link-static", "--libs", "lto", "object", "option", "debuginfodwarf", "all-targets", "windowsdriver", "windowsmanifest", "libdriver", "dlltooldriver"]).split_whitespace().filter(|l| !l.contains("Polly")) {
         // Polly は -dev に静的ライブラリが無い。lld は使わないので外す。
         println!("cargo:rustc-link-lib=static={}", l.trim_start_matches("-l"));
     }

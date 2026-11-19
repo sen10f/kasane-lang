@@ -15,6 +15,8 @@ use crate::kir::{AggDef, AggKind, Ty};
 pub enum Arch {
     X86_64,
     Aarch64,
+    /// Windows x64: 1・2・4・8 バイトの構造体は整数 1 個、それ以外は呼び出し側の写しへのポインタ (戻り値は `sret`)。
+    Win64,
 }
 
 /// 葉の型の分類 (浮動小数か整数相当か) と大きさ。
@@ -86,6 +88,12 @@ fn classify(arch: Arch, aggs: &[AggDef], ai: u32, int_free: &mut u32, sse_free: 
     let mut lv = vec![];
     leaves(aggs, ai, 0, &mut lv)?;
     match arch {
+        Arch::Win64 => {
+            if matches!(size, 1 | 2 | 4 | 8) && def.size == size {
+                return Some(Abi::Regs(vec![Slot { ty: format!("i{}", size * 8), vbits: size * 8, off: 0, float: false }]));
+            }
+            Some(if ret { Abi::Mem { size, align: align.max(8) } } else { Abi::Ptr { size } })
+        }
         Arch::X86_64 => {
             if size > 16 {
                 return Some(Abi::Mem { size, align: align.max(8) });
@@ -172,7 +180,7 @@ pub fn sig(arch: Arch, aggs: &[AggDef], params: &[Ty], ret: Ty) -> Result<Sig, S
     if let Ty::Agg(ai) = ret {
         let (mut a, mut b) = (6, 8);
         let c = classify(arch, aggs, ai, &mut a, &mut b, true).ok_or_else(|| format!("構造体 {} は C の戻り値にできない", aggs[ai as usize].name))?;
-        if matches!(c, Abi::Mem { .. }) && arch == Arch::X86_64 {
+        if matches!(c, Abi::Mem { .. }) && arch != Arch::Aarch64 {
             int_free -= 1; // sret の隠し引数が rdi を使う。
         }
         r = Some(c);
