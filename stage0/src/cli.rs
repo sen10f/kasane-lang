@@ -2984,12 +2984,23 @@ fn cmd_vendor() -> i32 {
 }
 
 // ------------------------------------------------------------ build
+#[cfg(unix)]
+fn shared_link(m: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    m.nlink() > 1
+}
+#[cfg(not(unix))]
+fn shared_link(_m: &fs::Metadata) -> bool {
+    false
+}
+
 fn dir_size(p: &Path) -> u64 {
     let mut n = 0;
     if let Ok(rd) = fs::read_dir(p) {
         for e in rd.flatten() {
             let q = e.path();
-            n += if q.is_dir() { dir_size(&q) } else { e.metadata().map(|m| m.len()).unwrap_or(0) };
+            // ハードリンクで共有しているファイル (同梱の `ksn`) は、共有の 1 本が数えるので 0 とする。
+            n += if q.is_dir() { dir_size(&q) } else { e.metadata().map(|m| if shared_link(&m) { 0 } else { m.len() }).unwrap_or(0) };
         }
     }
     n
@@ -3087,7 +3098,7 @@ fn evict(cdir: &Path, keep: &str) {
     let Ok(rd) = fs::read_dir(cdir) else { return };
     let mut ents: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy() != keep && e.file_name().to_string_lossy() != "git" && e.file_name().to_string_lossy() != "check")
+        .filter(|e| e.file_name().to_string_lossy() != keep && e.file_name().to_string_lossy() != "git" && e.file_name().to_string_lossy() != "check" && !e.file_name().to_string_lossy().starts_with("ksn-") && !e.file_name().to_string_lossy().starts_with("stdlib-"))
         .map(|e| {
             let used = e.path().join(".used");
             let t = fs::metadata(&used).or_else(|_| e.metadata()).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
@@ -3285,7 +3296,16 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
         if let Ok(exe) = std::env::current_exe() {
-            link_or_copy(&exe, &tmp.join(exe_name()));
+            // `ksn` は 1 つの識別子につき 1 本だけキャッシュの直下 (`ksn-<識別子>`) に置き、各エントリはそのハードリンクにする。
+            let shared = cdir.join(format!("ksn-{}", env!("KSN_BUILD_ID")));
+            if !shared.exists() {
+                let t = cdir.join(format!("ksn-{}.{}.tmp", env!("KSN_BUILD_ID"), std::process::id()));
+                link_or_copy(&exe, &t);
+                if fs::rename(&t, &shared).is_err() {
+                    let _ = fs::remove_file(&t);
+                }
+            }
+            link_or_copy(if shared.exists() { &shared } else { &exe }, &tmp.join(exe_name()));
         }
         copy_tree(&stdlib_dir(), &tmp.join("stdlib"), &[]);
         let pk = tmp.join("pkg");
