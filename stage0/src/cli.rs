@@ -1278,7 +1278,6 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
             return 2;
         }
     };
-    let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
     let dir = root.join("target").join("kir-native");
     if let Err(e) = fs::create_dir_all(&dir) {
         eprintln!("ksn kir: --native: {} を作れない: {}", dir.display(), e);
@@ -1297,26 +1296,16 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
             return 2;
         }
         let tmp = dir.join(format!("{:016x}.{}.tmp", h, std::process::id()));
-        let rt = runtime_c_args(&ll, &src);
-        let obj = dir.join(format!("{:016x}.{}.o", h, std::process::id()));
-        let emb = embedded_obj(&ll, "-O1", &obj);
-        if let Some(Err(e)) = &emb {
-            eprintln!("ksn kir: --native: {}", e);
-            return 3;
-        }
-        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(if emb.is_some() { ["-x", "none"] } else { ["-x", "ir"] }).arg(if emb.is_some() { &obj } else { &src }).args(&rt).arg("-o").arg(&tmp).arg("-lm").arg("-pthread").output();
-        let _ = fs::remove_file(&obj);
-        match o {
-            Err(e) => {
-                eprintln!("ksn kir: --native には clang が必要です ({} を起動できない: {})", clang, e);
+        let r = clang_ll(&ll, &tmp, "-O1", None);
+        let _ = fs::remove_file(&src);
+        if let Err(e) = r {
+            let _ = fs::remove_file(&tmp);
+            if e.starts_with("clang を起動できない") {
+                eprintln!("ksn kir: --native には clang が必要です ({})", e);
                 return 2;
             }
-            Ok(o) if !o.status.success() => {
-                eprintln!("ksn kir: --native: clang が失敗した ({}): {}", src.display(), String::from_utf8_lossy(&o.stderr).trim());
-                let _ = fs::remove_file(&tmp);
-                return 3;
-            }
-            Ok(_) => {}
+            eprintln!("ksn kir: --native: {}", e);
+            return 3;
         }
         if let Err(e) = fs::rename(&tmp, &exe) {
             eprintln!("ksn kir: --native: {}", e);
@@ -2999,12 +2988,23 @@ fn cmd_vendor() -> i32 {
 }
 
 // ------------------------------------------------------------ build
+#[cfg(unix)]
+fn shared_link(m: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    m.nlink() > 1
+}
+#[cfg(not(unix))]
+fn shared_link(_m: &fs::Metadata) -> bool {
+    false
+}
+
 fn dir_size(p: &Path) -> u64 {
     let mut n = 0;
     if let Ok(rd) = fs::read_dir(p) {
         for e in rd.flatten() {
             let q = e.path();
-            n += if q.is_dir() { dir_size(&q) } else { e.metadata().map(|m| m.len()).unwrap_or(0) };
+            // ハードリンクで共有しているファイル (同梱の `ksn`) は、共有の 1 本が数えるので 0 とする。
+            n += if q.is_dir() { dir_size(&q) } else { e.metadata().map(|m| if shared_link(&m) { 0 } else { m.len() }).unwrap_or(0) };
         }
     }
     n
@@ -3067,8 +3067,17 @@ fn copy_entry(src: &Path, dst: &Path) {
         if s.is_dir() {
             copy_tree(&s, &d, &[]);
         } else {
-            let _ = fs::copy(&s, &d);
+            link_or_copy(&s, &d);
         }
+    }
+}
+
+/// ハードリンクで済ませ (同じファイルシステムなら)、できなければ複製する。バンドルの `ksn` (LLVM を埋め込んで 100 MB を超える) を、
+/// ビルドのたびに複製しないため。キャッシュのファイルは作った後に書き換えない (置き換えるときは新しい inode) ので共有しても安全。
+fn link_or_copy(src: &Path, dst: &Path) {
+    let _ = fs::remove_file(dst);
+    if fs::hard_link(src, dst).is_err() {
+        let _ = fs::copy(src, dst);
     }
 }
 
@@ -3093,7 +3102,7 @@ fn evict(cdir: &Path, keep: &str) {
     let Ok(rd) = fs::read_dir(cdir) else { return };
     let mut ents: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy() != keep && e.file_name().to_string_lossy() != "git" && e.file_name().to_string_lossy() != "check")
+        .filter(|e| e.file_name().to_string_lossy() != keep && e.file_name().to_string_lossy() != "git" && e.file_name().to_string_lossy() != "check" && !e.file_name().to_string_lossy().starts_with("ksn-") && !e.file_name().to_string_lossy().starts_with("stdlib-"))
         .map(|e| {
             let used = e.path().join(".used");
             let t = fs::metadata(&used).or_else(|_| e.metadata()).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
@@ -3291,7 +3300,16 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
         if let Ok(exe) = std::env::current_exe() {
-            let _ = fs::copy(exe, tmp.join(exe_name()));
+            // `ksn` は 1 つの識別子につき 1 本だけキャッシュの直下 (`ksn-<識別子>`) に置き、各エントリはそのハードリンクにする。
+            let shared = cdir.join(format!("ksn-{}", env!("KSN_BUILD_ID")));
+            if !shared.exists() {
+                let t = cdir.join(format!("ksn-{}.{}.tmp", env!("KSN_BUILD_ID"), std::process::id()));
+                link_or_copy(&exe, &t);
+                if fs::rename(&t, &shared).is_err() {
+                    let _ = fs::remove_file(&t);
+                }
+            }
+            link_or_copy(if shared.exists() { &shared } else { &exe }, &tmp.join(exe_name()));
         }
         copy_tree(&stdlib_dir(), &tmp.join("stdlib"), &[]);
         let pk = tmp.join("pkg");
@@ -3678,9 +3696,15 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
         Some(r) => r,
         None => run(&clang, [vec![s(opt), s("-Wno-override-module"), triple.clone(), s("-c"), s("-x"), s("ir"), p(&ir), s("-o"), p(&oir)]].concat(), "clang (IR → wasm32)"),
     };
-    let r2 = r1.and_then(|_| run(&clang, c_args(&rt, &ort), "clang (rt.c)"));
-    let r3 = r2.and_then(|_| run(&clang, c_args(&krt, &okrt), "clang (kir_rt.c)"));
-    let r3 = r3.and_then(|_| if wasi { run(&clang, c_args(&wasi_c, &owasi), "clang (wasi.c)") } else { Ok(()) });
+    let piece = |name: &str, src: &Path, obj: &Path, what: &str| -> Result<(), String> {
+        match target.and_then(|t| rt_object(t, name, "-O1", obj)) {
+            Some(r) => r,
+            None => run(&clang, c_args(src, obj), what),
+        }
+    };
+    let r2 = r1.and_then(|_| piece("rt", &rt, &ort, "clang (rt.c)"));
+    let r3 = r2.and_then(|_| piece("kir_rt", &krt, &okrt, "clang (kir_rt.c)"));
+    let r3 = r3.and_then(|_| if wasi { piece("wasi", &wasi_c, &owasi, "clang (wasi.c)") } else { Ok(()) });
     let r4 = r3.and_then(|_| {
         let mut args = vec![p(&oir), p(&ort), p(&okrt)];
         if wasi {
@@ -3719,6 +3743,24 @@ fn embedded_obj(ll: &str, opt: &str, obj: &Path) -> Option<Result<(), String>> {
     #[allow(unreachable_code)]
     {
         let _ = (ll, opt, obj);
+        None
+    }
+}
+
+/// 実行時の C の部品 (`kir_rt` / `sysrt` / wasm の `rt` `wasi`) を、埋め込みのビットコードから目的ファイル `obj` にする (L2、clang 不要)。
+/// 使えない (feature なし・`KSN_CODEGEN=clang`・`KSN_CLANG_ARGS` あり・その対象の分が埋め込まれていない) ときは `None` で、呼び出し側が clang で C をコンパイルする。
+fn rt_object(target: crate::kir_llvm::Target, piece: &str, opt: &str, obj: &Path) -> Option<Result<(), String>> {
+    #[cfg(feature = "embedded-llvm")]
+    {
+        if std::env::var("KSN_CODEGEN").map_or(false, |v| v == "clang") || !clang_extra_args().is_empty() {
+            return None;
+        }
+        let bc = crate::assets::rt_bc(target.name, piece)?;
+        return Some(crate::embed_llvm::bc_to_object(bc, opt, target.triple, obj));
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (target, piece, opt, obj);
         None
     }
 }
@@ -3789,18 +3831,31 @@ fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, t
     let res = (|| -> Result<(), String> {
         let o = src.with_extension("ll.o");
         cleanup.push(o.clone());
-        let mut a: Vec<String> = vec![opt.into(), "-Wno-override-module".into()];
-        a.extend(clang_target_args(target));
-        a.extend(["-pthread", "-c", "-x", "ir"].map(String::from));
-        a.push(src.display().to_string());
-        a.extend(["-o".to_string(), o.display().to_string()]);
-        compile(a, "IR")?;
+        let tg = target.or_else(crate::kir_llvm::host_target);
+        // IR → 目的ファイルは組み込みの LLVM (L1、`embedded_obj`)。使えないとき (`KSN_CODEGEN=clang` など) だけ clang。
+        match embedded_obj(ll, opt, &o) {
+            Some(r) => r?,
+            None => {
+                let mut a: Vec<String> = vec![opt.into(), "-Wno-override-module".into()];
+                a.extend(clang_target_args(target));
+                a.extend(["-pthread", "-c", "-x", "ir"].map(String::from));
+                a.push(src.display().to_string());
+                a.extend(["-o".to_string(), o.display().to_string()]);
+                compile(a, "IR")?;
+            }
+        }
         objs.push(o);
         for i in (0..rt.len()).step_by(3) {
             let c = PathBuf::from(&rt[i + 2]);
             cleanup.push(c.clone());
             let o = c.with_extension("o");
             cleanup.push(o.clone());
+            let piece = if c.to_string_lossy().ends_with(".sys.c") { "sysrt" } else { "kir_rt" };
+            if let Some(r) = tg.and_then(|t| rt_object(t, piece, opt, &o)) {
+                r?;
+                objs.push(o);
+                continue;
+            }
             let mut a: Vec<String> = vec![opt.into()];
             a.extend(clang_target_args(target));
             a.extend(["-pthread", "-c", "-x", "c"].map(String::from));

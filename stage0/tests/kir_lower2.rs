@@ -2441,6 +2441,7 @@ fn kir_native_without_clang_is_an_error_with_a_reason() {
         .args(["kir", "t.gcd", "--native", "4", "2"])
         .current_dir(&t.0)
         .env("KSN_CLANG", "/nonexistent/clang")
+        .env("KSN_CODEGEN", "clang")
         .output()
         .expect("spawn ksn");
     assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));

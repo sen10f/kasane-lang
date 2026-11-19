@@ -1,10 +1,9 @@
 # フル検証 (python3 tests/run_tests.py) を push と PR ごとに回す (修正プラン 6-1)。
 name: ci
 
+# 2026-11-19、利用者の指示で自動の起動 (push・PR) をやめた。非公開のリポジトリで Actions の課金が止まったため。
+# 統合の確かめは手元のフル検証で行う。まっさらな環境での確かめが要るときだけ、手で起動する (gh workflow run ci)。
 on:
-  push:
-    branches: [master, dev/plan]
-  pull_request:
   workflow_dispatch:
 
 concurrency:

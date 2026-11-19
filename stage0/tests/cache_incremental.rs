@@ -956,6 +956,7 @@ fn release_build_without_clang_fails_instead_of_bundling() {
             .current_dir(&t.0)
             .env("KSN_CACHE_DIR", &cache)
             .env("KSN_CLANG", "/nonexistent/ksn-test-no-clang")
+            .env("KSN_CODEGEN", "clang")
             .output()
             .unwrap()
     };
