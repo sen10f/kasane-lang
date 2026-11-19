@@ -794,3 +794,70 @@ fn method_call_hover_through_ksnh_sibling_keeps_doc_and_lines() {
     assert_eq!(d[0]["range"]["start"], json!({"line": 19, "character": 3}), "{}", d);
     c.shutdown();
 }
+
+/// `dyn` トレイトの受け手 (`Box<dyn T>` / `&dyn T`) のメソッド呼び出しは、同名のメソッドが
+/// 複数のトレイトにあっても、受け手のトレイトの宣言を解決先にする (G55 の残り)。
+/// 2 つのトレイト `t.A` / `t.B` が同じメソッド名 `m` を持ち、`Box<dyn t.A>` と `&dyn t.B`
+/// の受け手がそれぞれ自分のトレイトの宣言を解決する。
+const DYN_METHODS: &str = concat!(
+    "trait t.A pub\n",
+    "    fn m(self: &Self) -> u32 uses [] panics never\n",
+    "end t.A\n",
+    "\n",
+    "trait t.B pub\n",
+    "    fn m(self: &Self) -> u32 uses [] panics never\n",
+    "end t.B\n",
+    "\n",
+    "type t.X pub\n",
+    "    v: u32\n",
+    "end t.X\n",
+    "\n",
+    "type t.Y pub\n",
+    "    v: u32\n",
+    "end t.Y\n",
+    "\n",
+    "impl t.A for t.X\n",
+    "fn t.X.m(self: &t.X) -> u32 uses [] panics never impls t.A\n",
+    "    self.v\n",
+    "end t.X.m\n",
+    "\n",
+    "impl t.B for t.Y\n",
+    "fn t.Y.m(self: &t.Y) -> u32 uses [] panics never impls t.B\n",
+    "    self.v\n",
+    "end t.Y.m\n",
+    "\n",
+    "fn t.use_box(b: alloc.boxed.Box<dyn t.A + 'static, std.alloc.System>) -> u32 uses [alloc] panics never\n",
+    "    b.m()\n",
+    "end t.use_box\n",
+    "\n",
+    "fn t.use_ref(r: &dyn t.B + 'static) -> u32 uses [] panics never\n",
+    "    r.m()\n",
+    "end t.use_ref\n",
+    "\n",
+    "fn t.main() -> u32 uses [] panics never\n",
+    "    0u32\n",
+    "end t.main\n",
+);
+
+/// `Box<dyn t.A>` の `b.m()` は `t.A.m` の宣言を、`&dyn t.B` の `r.m()` は `t.B.m` の宣言を解決する。
+#[test]
+fn hover_definition_dyn_method_calls_resolve_to_trait() {
+    let t = Tmp::new("dyn_method_nav", DYN_METHODS);
+    let uri = t.uri("src/t.ksnl");
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    c.open(&uri, DYN_METHODS);
+    // `Box<dyn t.A>` の `b.m()` (行 27 = 0 始まり 27、m は文字 6)。
+    let md = hover_md(&mut c, &uri, 27, 6);
+    assert!(md.contains("fn m(self: &Self) -> u32 uses [] panics never"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 27, 6));
+    let loc = &d.as_array().unwrap()[0];
+    assert_eq!(loc["range"]["start"], json!({"line": 1, "character": 7}), "{}", d);
+    // `&dyn t.B` の `r.m()` (行 31 = 0 始まり 31、m は文字 6)。
+    let md = hover_md(&mut c, &uri, 31, 6);
+    assert!(md.contains("fn m(self: &Self) -> u32 uses [] panics never"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 31, 6));
+    let loc = &d.as_array().unwrap()[0];
+    assert_eq!(loc["range"]["start"], json!({"line": 5, "character": 7}), "{}", d);
+    c.shutdown();
+}

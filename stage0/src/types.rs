@@ -2961,8 +2961,16 @@ impl<'a> TypeCk<'a> {
             (Some(Some(old)), Some(f)) => old.extend(f),
             (Some(slot), _) => *slot = None,
         }
-        let callee = match dyn_tr.and_then(|tr| crate::check::resolve_trait_fqn(self.p, &tr)).and_then(|r| self.p.types.get(&r).copied()) {
-            Some(ti) => Callee::Dyn(ti),
+        let dyn_fqn = dyn_tr.and_then(|tr| crate::check::resolve_trait_fqn(self.p, &tr));
+        let callee = match dyn_fqn.as_ref().and_then(|r| self.p.types.get(r).copied()) {
+            Some(ti) => {
+                // `dyn Tr` 越しのメソッド: LSP がトレイトの宣言行を辿れるよう、トレイトメソッドの FQN を覚える
+                // (`call_sites` の `bound_sites` 経由で `locate` が位置から引く。境界の総称と同じ扱い)。
+                if let Some(fqn) = dyn_fqn.as_deref() {
+                    self.bound_sites.insert((self.cur, id), format!("{}.{}", fqn, name));
+                }
+                Callee::Dyn(ti)
+            }
             None => match self.call_res.get(&key) {
                 Some(Some(v)) if v.len() == 1 => Callee::Def(v[0]),
                 Some(Some(v)) if !v.is_empty() => Callee::Methods(v.clone()),
