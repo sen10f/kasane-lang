@@ -222,6 +222,12 @@ pub(crate) fn load_all(root: &Path) -> Result<Loaded, ProjectError> {
     crate::vm::tick("pre");
     let pkg = load_package(root)?;
     crate::vm::tick("load_pkg");
+    // `[native]` の C のライブラリを登録する (3.8)。インタプリタ (`extern` の `lib:` なしのシンボル) が
+    // `dynamic` の共有ライブラリを探すのに使う。探索先はリンクと同じくパッケージのルートから (依存の分は
+    // リンクもしない。project.rs)。
+    let mut nat = crate::project::native_libs(&pkg.manifest);
+    nat.search = nat.search.iter().map(|d| pkg.root.join(d).display().to_string()).collect();
+    crate::ffi::set_native_libs(&nat);
     let deps = load_deps(&pkg)?;
     crate::vm::tick("load_deps");
     let std = load_stdlib();
@@ -1303,7 +1309,7 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
             return 2;
         }
         let tmp = dir.join(format!("{:016x}.{}.tmp", h, std::process::id()));
-        let r = clang_ll(&ll, &tmp, "-O1", None);
+        let r = clang_ll(&ll, &tmp, "-O1", None, &[]);
         let _ = fs::remove_file(&src);
         if let Err(e) = r {
             let _ = fs::remove_file(&tmp);
@@ -1543,6 +1549,11 @@ fn cmd_run(args: &[String]) -> i32 {
         eprintln!("ksn: E9030: entry function {} not found", entry);
         return 1;
     };
+    // ホットリロードの準備完了信号：検査が終わり実行を開始する直前に stderr へ出す。
+    // テストはこの行を待ってからソースを書き換えるため、固定の壁時計待ちに依存しない。
+    if watch {
+        eprintln!("hot reload: watching");
+    }
     if use_vm {
         let mk: Option<Box<dyn FnOnce() -> crate::vm::reload::Reload + '_>> = if watch {
             let (l, entry) = (&l, entry.clone());
@@ -1776,6 +1787,8 @@ fn cmd_test(args: &[String]) -> i32 {
         prefix = Some(format!("{}.tests.doc_", l.pkg.name));
     }
     let prog = Rc::new(prog.unwrap());
+    // `--both` の LLVM 側の実行ファイルにも `[native]` の C のライブラリをリンクする (3.8)。
+    let nat_args = crate::project::native_libs(&l.pkg.manifest).link_args(&l.pkg.root);
     let mut tests: Vec<usize> = user
         .iter()
         .copied()
@@ -1829,7 +1842,7 @@ fn cmd_test(args: &[String]) -> i32 {
         let mut other = "";
         let mut label = String::new();
         if both {
-            match build_llvm_test(&root, &prog, &user, *ti) {
+            match build_llvm_test(&root, &prog, &user, *ti, &nat_args) {
                 Ok(exe) => {
                     results.push(run_native_test(&root, &exe));
                     other = "llvm";
@@ -2882,11 +2895,11 @@ fn write_lock_v2(
         lines.push(format!("deps = [{}]", dn.iter().map(|x| toml_str(x)).collect::<Vec<_>>().join(", ")));
         if dp.source.starts_with("git+") {
             let recorded = old.get(&dp.name).and_then(crate::lockapi::read_api);
-            let (api, uns) = match recorded {
+            let (api, uns, nat) = match recorded {
                 Some(r) if !accept.contains(&dp.name) => r,
-                _ => (crate::lockapi::api_of(dp), crate::lockapi::unsafe_of(dp)),
+                _ => (crate::lockapi::api_of(dp), crate::lockapi::unsafe_of(dp), crate::lockapi::native_of(dp)),
             };
-            lines.extend(crate::lockapi::render_api(&api, &uns));
+            lines.extend(crate::lockapi::render_api(&api, &uns, &nat));
         }
         lines.push(String::new());
     }
@@ -2943,10 +2956,10 @@ fn cmd_lock(args: &[String]) -> i32 {
     let targets: Vec<String> = if all || (diff && names.is_empty()) { deps.iter().filter(|d| d.source.starts_with("git+")).map(|d| d.name.clone()).collect() } else { names };
     let mut changed = false;
     for dp in deps.iter().filter(|d| targets.contains(&d.name)) {
-        let now = (crate::lockapi::api_of(dp), crate::lockapi::unsafe_of(dp));
+        let now = (crate::lockapi::api_of(dp), crate::lockapi::unsafe_of(dp), crate::lockapi::native_of(dp));
         match old.get(&dp.name).and_then(crate::lockapi::read_api) {
-            Some((o, ou)) => {
-                for (code, msg) in crate::lockapi::compare(&dp.name, &o, &ou, &now.0, &now.1) {
+            Some((o, ou, on)) => {
+                for (code, msg) in crate::lockapi::compare(&dp.name, &o, &ou, &now.0, &now.1, &on, &now.2) {
                     println!("{}: {}", code, msg);
                     changed = true;
                 }
@@ -3160,6 +3173,14 @@ fn build_key(l: &Loaded, release: bool, target: &str, backend: &str) -> String {
     let clang_args = clang_extra_args().join(" ");
     h.update(format!("{}|{}|{}|{}|{}|{}|{}|{}", VERSION, edition, if release { "release" } else { "debug" }, target, backend, clang, clang_version_line(&clang), clang_args).as_bytes());
     h.update(package_hash(&l.pkg.root).as_bytes());
+    // `[native]` の静的アーカイブは `kasane.toml` の字面だけでは足りない (アーカイブを組み直したら作り直す)。
+    for f in crate::project::native_libs(&l.pkg.manifest).archives {
+        h.update(f.as_bytes());
+        let m = fs::metadata(l.pkg.root.join(&f));
+        h.update(m.as_ref().map(|m| m.len()).unwrap_or_default().to_le_bytes());
+        let mt = m.as_ref().ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or_default();
+        h.update(mt.to_le_bytes());
+    }
     for dp in &l.deps {
         h.update(package_hash(&dp.root).as_bytes());
     }
@@ -3408,6 +3429,17 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
         let _ = fs::create_dir_all(&out);
     }
     let prog = prog.unwrap();
+    // `[native]` の C のライブラリ (3.8)。実行ファイルのリンクにだけ効く (wasm32 は C のライブラリを持てない)。
+    let nat = crate::project::native_libs(&l.pkg.manifest);
+    let nat_args = nat.link_args(&l.pkg.root);
+    if !nat.is_empty() && crate::kir_llvm::is_wasm(tgt) {
+        eprintln!("ksn: E9040: `[native]` libraries cannot be linked into a wasm32 target (remove `[native]` from kasane.toml or build for a native target)");
+        return 1;
+    }
+    if !nat.is_empty() && backend != "llvm" {
+        eprintln!("ksn: E9040: `[native]` libraries need `--backend llvm` (the C backend does not link C libraries)");
+        return 1;
+    }
     let entry = l.pkg.entry();
     let exe = out.join(if cfg!(windows) || crate::kir_llvm::is_windows(tgt) {
         format!("{}.exe", name)
@@ -3440,7 +3472,7 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
             if backend == "llvm" {
                 // 下ろせない・clang が無いなどなら、理由を出してインタプリタ同梱のバンドルだけにする。
                 let t_cc = std::time::Instant::now();
-                let r = build_llvm(&prog, &user, e, &exe, release, Tgt { ir: tgt, clang: if explicit { tgt } else { None } });
+                let r = build_llvm(&prog, &user, e, &exe, release, Tgt { ir: tgt, clang: if explicit { tgt } else { None } }, &nat_args);
                 if std::env::var_os("KSN_TIME").is_some() {
                     eprintln!("KSN_TIME compile_llvm_total={:.2} [ms]", t_cc.elapsed().as_secs_f64() * 1e3);
                 }
@@ -3490,9 +3522,9 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
 
 /// `ksn build --backend llvm`: 入口の関数から届く関数すべてを KIR に下ろし、LLVM IR を作って clang で実行ファイルにする (設計_KIR.md 12.3)。
 /// 下ろせない関数が 1 つでもあれば、理由を `Err` で返す (呼び出し側が既定の経路へ退避する)。
-fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: bool, tg: Tgt) -> Result<(), String> {
+fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: bool, tg: Tgt, nat: &[String]) -> Result<(), String> {
     let lo = crate::kir_lower::lower_program(prog, user, Some(entry));
-    match llvm_exe(lo, entry, exe, if release { "-O2" } else { "-O1" }, tg) {
+    match llvm_exe(lo, entry, exe, if release { "-O2" } else { "-O1" }, tg, nat) {
         Ok(()) => Ok(()),
         Err(BuildFail::Unsupported(unsupported)) => Err(format_reasons(prog, &unsupported, entry, if release { Some(20) } else { None })),
         Err(BuildFail::Tool(s)) => Err(s),
@@ -3509,14 +3541,14 @@ struct Tgt {
 
 /// `ksn test --both` の LLVM 側: テスト `ti` を入口にして KIR → LLVM → clang の実行ファイルを作る (`target/test-llvm/`)。
 /// 下ろせない・clang が無いなどで作れなければ理由を返す (呼び出し側がバンドルへ退避する)。
-fn build_llvm_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> Result<PathBuf, String> {
+fn build_llvm_test(root: &Path, prog: &Program, user: &[usize], ti: usize, nat: &[String]) -> Result<PathBuf, String> {
     let d = &prog.defs[ti];
     let lo = crate::kir_lower::lower_test(prog, user, ti);
     let dir = root.join("target").join("test-llvm");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let exe = dir.join(format!("{}_{}{}", ti, test_stem(&d.name), if cfg!(windows) { ".exe" } else { ".native" }));
     let _ = fs::remove_file(&exe);
-    match llvm_exe(lo, &d.name, &exe, "-O1", Tgt { ir: crate::kir_llvm::host_target(), clang: None }) {
+    match llvm_exe(lo, &d.name, &exe, "-O1", Tgt { ir: crate::kir_llvm::host_target(), clang: None }, nat) {
         Ok(()) => Ok(exe),
         Err(BuildFail::Unsupported(unsupported)) => Err(format_reasons(prog, &unsupported, &d.name, None)),
         Err(BuildFail::Tool(s)) => Err(s),
@@ -3538,7 +3570,7 @@ enum BuildFail {
 /// 下ろし済みの `lo` から、入口 `entry` の実行ファイル `exe` を作る。入口が下ろせれば `Ok(())` を返す。
 /// 入口が下ろせなければ、`lo.unsupported` にある下ろせない関数の理由を全件 `Err` で返す
 /// (呼び出し側でファイル・行を付けて出力する)。
-fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str, tg: Tgt) -> Result<(), BuildFail> {
+fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str, tg: Tgt, nat: &[String]) -> Result<(), BuildFail> {
     if lo.module.find(entry).is_none() {
         return Err(BuildFail::Unsupported(lo.unsupported.clone()));
     }
@@ -3559,7 +3591,7 @@ fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str, t
     let refs: Vec<&str> = roots.iter().map(|s| s.as_str()).collect();
     let m = lo.module.reachable_from(&refs);
     let ll = crate::kir_llvm::emit_program(&m, entry, tg.ir).map_err(|e| BuildFail::Tool(e))?;
-    clang_ll(&ll, exe, opt, tg.clang).map_err(|e| BuildFail::Tool(e))
+    clang_ll(&ll, exe, opt, tg.clang, nat).map_err(|e| BuildFail::Tool(e))
 }
 
 /// `lo.unsupported` の `(関数FQN, 理由)` を、プログラムの定義からファイル・行を付けて
@@ -3718,9 +3750,32 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
     let c_args = |src: &Path, obj: &Path| -> Vec<String> {
         [vec![s("-O1"), triple.clone(), s("-ffreestanding"), s("-fno-builtin")], defs.clone(), vec![s(&inc_arg), s("-c"), s("-x"), s("c"), p(src), s("-o"), p(obj)]].concat()
     };
-    let r1 = match embedded_obj(ll, opt, &oir) {
-        Some(r) => r,
-        None => run(&clang, [vec![s(opt), s("-Wno-override-module"), triple.clone(), s("-c"), s("-x"), s("ir"), p(&ir), s("-o"), p(&oir)]].concat(), "clang (IR → wasm32)"),
+    let t = target.or_else(crate::kir_llvm::host_target);
+    // ユーザ IR に実行時の C (rt.c / kir_rt.c、WASI なら wasi.c) のビットコードをリンクしてから最適化・目的ファイル化 (L2)。
+    // ビットコードは最適化なし (-O0) で埋め込まれており、ここでユーザと同じパイプラインを走らせ、クロスモジュールインライン展開を効かせる。
+    let mut rt_bcs: Vec<(&str, &[u8])> = vec![];
+    if let Some(tt) = t.as_ref() {
+        if let Some(bc) = crate::assets::rt_bc(tt.name, "rt") {
+            rt_bcs.push(("rt", bc));
+        }
+        if let Some(bc) = crate::assets::rt_bc(tt.name, "kir_rt") {
+            rt_bcs.push(("kir_rt", bc));
+        }
+        if wasi {
+            if let Some(bc) = crate::assets::rt_bc(tt.name, "wasi") {
+                rt_bcs.push(("wasi", bc));
+            }
+        }
+    }
+    let want = 2 + if wasi { 1 } else { 0 };
+    let linked = rt_bcs.len() == want;
+    let r1: Result<(), String> = if linked {
+        crate::embed_llvm::ir_to_object_with_rt(ll, &rt_bcs, opt, &t.as_ref().unwrap().triple, &oir)
+    } else {
+        match embedded_obj(ll, opt, &oir) {
+            Some(r) => r,
+            None => run(&clang, [vec![s(opt), s("-Wno-override-module"), triple.clone(), s("-c"), s("-x"), s("ir"), p(&ir), s("-o"), p(&oir)]].concat(), "clang (IR → wasm32)"),
+        }
     };
     let piece = |name: &str, src: &Path, obj: &Path, what: &str| -> Result<(), String> {
         match target.and_then(|t| rt_object(t, name, "-O1", obj)) {
@@ -3728,13 +3783,36 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
             None => run(&clang, c_args(src, obj), what),
         }
     };
-    let r2 = r1.and_then(|_| piece("rt", &rt, &ort, "clang (rt.c)"));
-    let r3 = r2.and_then(|_| piece("kir_rt", &krt, &okrt, "clang (kir_rt.c)"));
-    let r3 = r3.and_then(|_| if wasi { piece("wasi", &wasi_c, &owasi, "clang (wasi.c)") } else { Ok(()) });
+    let r2 = r1.and_then(|_| {
+        if linked {
+            Ok(())
+        } else {
+            piece("rt", &rt, &ort, "clang (rt.c)")
+        }
+    });
+    let r3 = r2.and_then(|_| {
+        if linked {
+            Ok(())
+        } else {
+            piece("kir_rt", &krt, &okrt, "clang (kir_rt.c)")
+        }
+    });
+    let r3 = r3.and_then(|_| {
+        if linked || !wasi {
+            Ok(())
+        } else {
+            piece("wasi", &wasi_c, &owasi, "clang (wasi.c)")
+        }
+    });
     let r4 = r3.and_then(|_| {
-        let mut args = vec![p(&oir), p(&ort), p(&okrt)];
-        if wasi {
-            args.push(p(&owasi));
+        let mut args = vec![p(&oir)];
+        // linked なら実行時の C は oir にリンク済みなので oir のみ
+        if !linked {
+            args.push(p(&ort));
+            args.push(p(&okrt));
+            if wasi {
+                args.push(p(&owasi));
+            }
         }
         // 影のスタック (線形メモリ上のスタック) も呼び出し深さの上限まで足りる大きさに (既定は 64 KiB)。
         args.extend([s("--no-entry"), s("--export=ksn_main"), s("-z"), s("stack-size=268435456")]);
@@ -3795,16 +3873,20 @@ fn clang_extra_args() -> Vec<String> {
     std::env::var("KSN_CLANG_ARGS").map(|s| s.split_whitespace().map(|x| x.to_string()).collect()).unwrap_or_default()
 }
 
-/// LLVM IR (`.ll` のテキスト) を clang で実行ファイル `exe` にする。
-fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Target>) -> Result<(), String> {
+/// LLVM IR (`.ll` のテキスト) を clang で実行ファイル `exe` にする。`nat` は `[native]` の追加のリンクの引数 (3.8)。
+fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Target>, nat: &[String]) -> Result<(), String> {
     if crate::kir_llvm::is_wasm(target) {
+        // wasm32 には C のライブラリをつなげない (リンクは wasm-ld で import の許される集合だけ)。
+        if !nat.is_empty() {
+            return Err("[native] libraries cannot be linked into a wasm32 target (remove `[native]` from kasane.toml or build for a native target)".into());
+        }
         return wasm_link(ll, exe, opt, target);
     }
     let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
     let src = exe.with_extension("ll.tmp");
     // 組み込みの lld: clang は目的ファイルまで (`-c`)、つなぐのは lld。`KSN_CLANG_ARGS` (sanitizer など) があるときは従来の経路。
     if crate::lld::enabled() && clang_extra_args().is_empty() {
-        return clang_ll_embedded(&clang, ll, &src, exe, opt, target);
+        return clang_ll_embedded(&clang, ll, &src, exe, opt, target, nat);
     }
     fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
     let rt = runtime_c_args(ll, &src);
@@ -3818,10 +3900,13 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Tar
     let o = std::process::Command::new(&clang)
         .args([opt, "-Wno-override-module"])
         .args(clang_target_args(target))
+        // `-L` は前に、アーカイブと `-l` は目的ファイルの後ろに (`ld` はアーカイブを参照する側より後ろでしか見ない)。
+        .args(nat.iter().filter(|a| a.starts_with("-L")))
         .args(clang_extra_args())
         .args(if emb.is_some() { vec!["-x", "none"] } else { vec!["-x", "ir"] })
         .arg(if emb.is_some() { &obj } else { &src })
         .args(&rt)
+        .args(nat.iter().filter(|a| !a.starts_with("-L")))
         .arg("-o")
         .arg(exe)
         .arg("-lm")
@@ -3841,7 +3926,7 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Tar
 }
 
 /// `clang_ll` の組み込みの lld 版。IR と実行時の C をそれぞれ `clang -c` で目的ファイルにし、lld でつなぐ。
-fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Target>) -> Result<(), String> {
+fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Target>, nat: &[String]) -> Result<(), String> {
     fs::write(src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
     let rt = runtime_c_args(ll, src);
     let mut cleanup: Vec<PathBuf> = vec![src.to_path_buf()];
@@ -3858,45 +3943,80 @@ fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, t
         let o = src.with_extension("ll.o");
         cleanup.push(o.clone());
         let tg = target.or_else(crate::kir_llvm::host_target);
-        // IR → 目的ファイルは組み込みの LLVM (L1、`embedded_obj`)。使えないとき (`KSN_CODEGEN=clang` など) だけ clang。
-        match embedded_obj(ll, opt, &o) {
-            Some(r) => r?,
-            None => {
-                let mut a: Vec<String> = vec![opt.into(), "-Wno-override-module".into()];
-                a.extend(clang_target_args(target));
-                a.extend(["-pthread", "-c", "-x", "ir"].map(String::from));
-                a.push(src.display().to_string());
-                a.extend(["-o".to_string(), o.display().to_string()]);
-                compile(a, "IR")?;
+        let need_kir_rt = crate::kir_llvm::needs_runtime(ll);
+        let need_sysrt = ll.contains("@ksn_rt_sys_");
+        // ユーザ IR に実行時の C のビットコードをリンクしてから最適化・目的ファイル化 (L2)。
+        // ビットコードは最適化なし (-O0) で埋め込まれており、ここでユーザと同じパイプライン
+        // (default<O1> デバッグ / リリースレベル) を走らせ、ランタイム関数をユーザ関数へ
+        // クロスモジュールインライン展開する。ビットコードが無いときは従来の分離オブジェクト経路に戻す。
+        let mut linked = false;
+        if (need_kir_rt || need_sysrt) && tg.is_some() {
+            let t = tg.as_ref().unwrap();
+            let mut rt_bcs: Vec<(&str, &[u8])> = vec![];
+            let mut ok = true;
+            if need_kir_rt {
+                if let Some(bc) = crate::assets::rt_bc(t.name, "kir_rt") {
+                    rt_bcs.push(("kir_rt", bc));
+                } else {
+                    ok = false;
+                }
+            }
+            if ok && need_sysrt {
+                if let Some(bc) = crate::assets::rt_bc(t.name, "sysrt") {
+                    rt_bcs.push(("sysrt", bc));
+                } else {
+                    ok = false;
+                }
+            }
+            if ok {
+                crate::embed_llvm::ir_to_object_with_rt(ll, &rt_bcs, opt, &t.triple, &o)?;
+                linked = true;
             }
         }
-        objs.push(o);
-        for i in (0..rt.len()).step_by(3) {
-            let c = PathBuf::from(&rt[i + 2]);
-            cleanup.push(c.clone());
-            let o = c.with_extension("o");
-            cleanup.push(o.clone());
-            let piece = if c.to_string_lossy().ends_with(".sys.c") { "sysrt" } else { "kir_rt" };
-            if let Some(r) = tg.and_then(|t| rt_object(t, piece, opt, &o)) {
-                r?;
-                objs.push(o);
-                continue;
+        if !linked {
+            // 従来: ユーザ IR と実行時の C を別々の目的ファイルにして lld でつなぐ。
+            match embedded_obj(ll, opt, &o) {
+                Some(r) => r?,
+                None => {
+                    let mut a: Vec<String> = vec![opt.into(), "-Wno-override-module".into()];
+                    a.extend(clang_target_args(target));
+                    a.extend(["-pthread", "-c", "-x", "ir"].map(String::from));
+                    a.push(src.display().to_string());
+                    a.extend(["-o".to_string(), o.display().to_string()]);
+                    compile(a, "IR")?;
+                }
             }
-            let mut a: Vec<String> = vec![opt.into()];
-            a.extend(clang_target_args(target));
-            a.extend(["-pthread", "-c", "-x", "c"].map(String::from));
-            a.push(c.display().to_string());
-            a.extend(["-o".to_string(), o.display().to_string()]);
-            compile(a, "実行時の C")?;
+            objs.push(o);
+            let rt = runtime_c_args(ll, src);
+            for i in (0..rt.len()).step_by(3) {
+                let c = PathBuf::from(&rt[i + 2]);
+                cleanup.push(c.clone());
+                let o = c.with_extension("o");
+                cleanup.push(o.clone());
+                let piece = if c.to_string_lossy().ends_with(".sys.c") { "sysrt" } else { "kir_rt" };
+                if let Some(r) = tg.and_then(|t| rt_object(t, piece, opt, &o)) {
+                    r?;
+                    objs.push(o);
+                    continue;
+                }
+                let mut a: Vec<String> = vec![opt.into()];
+                a.extend(clang_target_args(target));
+                a.extend(["-pthread", "-c", "-x", "c"].map(String::from));
+                a.push(c.display().to_string());
+                a.extend(["-o".to_string(), o.display().to_string()]);
+                compile(a, "実行時の C")?;
+                objs.push(o);
+            }
+        } else {
             objs.push(o);
         }
         let t = target.or_else(crate::kir_llvm::host_target).ok_or("このホストでは組み込みの lld を使えない (KSN_LINKER=external)")?;
         let root = std::env::var("KSN_SYSROOT").ok().filter(|s| !s.is_empty()).or_else(|| (!t.sysroot.is_empty()).then(|| t.sysroot.to_string()));
         if crate::kir_llvm::is_windows(Some(t)) {
-            let args = crate::lld::mingw_args(root.as_deref(), &objs, exe)?;
+            let args = crate::lld::mingw_args(root.as_deref(), &objs, exe, nat)?;
             return crate::lld::lld_link(crate::lld::Flavor::MinGw, &args);
         }
-        let args = crate::lld::elf_args(t.name, if target.is_some() { root.as_deref() } else { None }, &objs, exe)?;
+        let args = crate::lld::elf_args(t.name, if target.is_some() { root.as_deref() } else { None }, &objs, exe, nat)?;
         crate::lld::lld_link(crate::lld::Flavor::Elf, &args)
     })();
     for f in cleanup {
@@ -3993,7 +4113,15 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "todo" => cmd_todo(),
         "context" => cmd_context(&rest),
         "explain" => cmd_explain(&rest),
-        "bindgen" => crate::bindgen::cmd_bindgen(&rest),
+        "bindgen" => {
+            if rest.iter().any(|a| a == "--c") {
+                crate::bindgen_c::cmd_bindgen_c(&rest)
+            } else if rest.iter().any(|a| a == "--debug-kinds") {
+                crate::bindgen_c::cmd_bindgen_c_debug_kinds(&rest)
+            } else {
+                crate::bindgen::cmd_bindgen(&rest)
+            }
+        }
         "lsp" => crate::lsp::run(),
         "debug" => crate::debug::cmd_debug(&rest),
         "dap" => crate::debug::cmd_dap(),

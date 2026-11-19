@@ -3,6 +3,7 @@
 
 Python 参照実装との比較テストは凍結済みで tests/legacy/ にある (拡張子統一前の仕様向け)。
 """
+import atexit
 import os
 import re
 import shutil
@@ -87,14 +88,48 @@ with tempfile.TemporaryDirectory() as td:
     src = os.path.join(td, 'src', 'hr.ksnl')
     open(src, 'w', newline=NLC).write(HR)
 
-    def edit_rs():
-        time.sleep(1.2)
-        open(src, 'w', newline=NLC).write(HR.replace('v1', 'v2'))
-    threading.Thread(target=edit_rs).start()
-    r = subprocess.run([RSEXE, 'run', '--watch'], cwd=td, capture_output=True, text=True, encoding='utf-8')
+    proc = subprocess.Popen([RSEXE, 'run', '--watch'], cwd=td,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding='utf-8')
+    assert proc.stdout is not None and proc.stderr is not None
+    out_parts = []
+    err_parts = []
+
+    def drain(stream, parts):
+        for line in stream:
+            parts.append(line)
+
+    tout = threading.Thread(target=drain, args=(proc.stdout, out_parts))
+    terr = threading.Thread(target=drain, args=(proc.stderr, err_parts))
+    tout.start()
+    terr.start()
+    # ksn が "hot reload: watching" を stderr に出すまで待つ（検査後、実行直前）。
+    # この信号を待ってから書き換えれば、旧版（v1）が最初に実行され、ウォッチャの
+    # 最初の poll（200 ms 毎）より前に v1 が出る。固定の壁時計待ちに依存しない。
+    deadline = time.time() + 60.0
+    watching = False
+    while time.time() < deadline:
+        if any('hot reload: watching' in line for line in err_parts):
+            watching = True
+            break
+        time.sleep(0.02)
+    assert watching, 'hot reload: watching が stderr に現れなかった'
+    open(src, 'w', newline=NLC).write(HR.replace('v1', 'v2'))
+    try:
+        rc = proc.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        rc = -1
+    tout.join()
+    terr.join()
+    out = ''.join(out_parts)
+    err = ''.join(err_parts)
     step('rust ksn: hot reload applies a body change while running',
-         r.returncode == 0 and 'v1' in r.stdout and 'v2' in r.stdout and 'bodies updated' in r.stderr, r.stdout + r.stderr)
-cache2 = tempfile.mkdtemp()
+         rc == 0 and 'v1' in out and 'v2' in out and 'bodies updated' in err, out + err)
+cache2 = tempfile.mkdtemp(prefix='ksn_runtests_cache_')
+# 後始末: 正常終了でも例外でも消す (KSN_KEEP_TMP=1 のときは残す)。
+atexit.register(lambda: None if os.environ.get('KSN_KEEP_TMP') == '1' else shutil.rmtree(cache2, ignore_errors=True))
 envc = dict(os.environ, KSN_CACHE_DIR=cache2)
 d = os.path.join(ROOT, 'examples', 'native')
 r = subprocess.run([RSEXE, 'build', '--release'], cwd=d, capture_output=True, text=True, encoding='utf-8', env=envc)
@@ -112,7 +147,6 @@ r = subprocess.run([RSEXE, 'test', '--both'], cwd=d, capture_output=True, text=T
 want_label = '(both: llvm)' if shutil.which('clang') else '(both: bundle'
 step('rust ksn: test --both (interpreter and native agree)', r.returncode == 0 and want_label in r.stdout and 'disagree' not in r.stdout, r.stdout + r.stderr)
 shutil.rmtree(os.path.join(d, 'target'), ignore_errors=True)
-shutil.rmtree(cache2, ignore_errors=True)
 
 # 10. ネイティブになった割合 (修正プラン 3-5)。下限 (tests/native_ratio_floor.json) を下回ったら落とす。
 r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'native_ratio.py')],

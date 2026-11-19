@@ -2,6 +2,9 @@
 //! 深さ 100 万の連結リスト / 木をスタックを小さくしても破棄できること、診断 (E2051 / E2032 / E4013)、整形、`get --derived`。
 //! 補助 (`Tmp` ほか) は `cli.rs` と同じものを最小限だけ複製している。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -43,7 +46,7 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 
@@ -150,7 +153,7 @@ fn derive_drop_frees_a_million_deep_chain_and_tree_natively_with_a_small_stack()
         return;
     }
     let t = Tmp::new("native", &program(1_000_000, 12));
-    let cache = std::env::temp_dir().join(format!("ksn_cache_dd_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_dd_{}", std::process::id()));
     let o = Command::new(exe()).args(["build"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
     let _ = fs::remove_dir_all(&cache);
@@ -273,7 +276,7 @@ fn the_selfhost_boxtree_probe_builds_natively_with_derive_drop() {
     assert!(text(&o.stdout).trim().is_empty() && text(&o.stderr).trim().is_empty(), "{}{}", text(&o.stdout), text(&o.stderr));
     let o = run(&["fmt", "--check"], &d);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
-    let cache = std::env::temp_dir().join(format!("ksn_cache_dd_bt_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_dd_bt_{}", std::process::id()));
     let o = Command::new(exe()).args(["build"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
     let _ = fs::remove_dir_all(&cache);

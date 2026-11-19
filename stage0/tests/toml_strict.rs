@@ -10,6 +10,9 @@
 
 mod common;
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::Path;
 use common::*;
@@ -22,6 +25,7 @@ fn dep_rel() -> String {
 }
 
 fn with_dep(name: &str, toml: &str, lock: &str) -> (Tmp, std::path::PathBuf) {
+    // 依存は同じ実行ファイルの試験で共有するので、1 試験の解体で消さない (`Scratch` にしない)。小さい (数 KB) ので 1 実行に 1 つだけ残る。
     let libdir = std::env::temp_dir().join(format!("ksn_test_{}_lib", std::process::id()));
     // 依存の中身はどの試験でも同じ。同じ実行ファイルの試験は並列に走るので、消して作り直すと
     // ほかの試験の検査の途中で依存が消える (2026-11-20、速い検証機で落ちた)。最初の 1 回だけ作る。

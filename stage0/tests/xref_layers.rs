@@ -2,6 +2,9 @@
 //! `spec/tools/xref.py` の dep / ref の移植分。ユーザーパッケージが `src/core/` 配下に
 //! 層の名前空間のモジュールを置く形を含む (diag ケースは単一ファイルしか置けないため)。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -38,7 +41,7 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 

@@ -3,6 +3,9 @@
 //! 木走査で、素朴な配列のモデル (線形探索) と毎回比べる。`HashMap` は挿入順の反復も確かめる (仕様 8.3)。
 //! 組み込みの `Val::Map` は使わない (ここでは Kasane の本体そのものを動かす)。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -245,7 +248,7 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 

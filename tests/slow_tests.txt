@@ -12,3 +12,5 @@ kir_lower2
 packages
 wasm32
 kir_lower
+windows_target
+windows_ffi_struct

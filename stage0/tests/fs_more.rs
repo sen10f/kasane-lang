@@ -2,6 +2,9 @@
 //! 木走査 (`ksn run`) と、LLVM のネイティブ (`ksn build` の debug / release) の出力が一致することを確かめる。
 //! 実行は一時パッケージの中 (相対パス `d/...`) で行うので、ほかのテストと干渉しない。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -39,14 +42,14 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 
 /// `ksn build` (debug か release) でネイティブを作って走らせ、標準出力を返す。バンドルへの退避は失敗とみなす。
 fn native_output(name: &str, src: &str, release: bool) -> String {
     let t = Tmp::new(name, src);
-    let cache = std::env::temp_dir().join(format!("ksn_cache_fsmore_{}_{}", std::process::id(), name));
+    let cache = scratch::Scratch::at(format!("ksn_cache_fsmore_{}_{}", std::process::id(), name));
     let mut c = Command::new(exe());
     c.arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
     if release {

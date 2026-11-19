@@ -3,6 +3,9 @@
 
 #![cfg(unix)]
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -39,7 +42,7 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 

@@ -4,6 +4,9 @@
 //! 定義は `main` を先頭に、残りを名前順に並べる (`E0020` の順序検査を通すため。`uses` は名前順)。
 
 mod common;
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use common::*;
 
 use std::fs;
@@ -260,7 +263,7 @@ fn asan_run(t: &Tmp, name: &str) -> Option<Output> {
     if std::env::var("KSN_NO_ASAN").is_ok_and(|v| v == "1") {
         return None;
     }
-    let cache = std::env::temp_dir().join(format!("ksn_rand_asan_cache_{}_{}", std::process::id(), name));
+    let cache = scratch::Scratch::at(format!("ksn_rand_asan_cache_{}_{}", std::process::id(), name));
     let args = "-fsanitize=address -fno-omit-frame-pointer -g -O0";
     let b = Command::new(exe()).args(["build", "--release"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).env("KSN_CLANG_ARGS", args).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
