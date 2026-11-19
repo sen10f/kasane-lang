@@ -1145,16 +1145,17 @@ fn check_cache_matches_uncached_for_unsound_and_linear_ok() {
             .map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
         names.sort();
         assert!(!names.is_empty());
-        for (i, p) in names.into_iter().enumerate() {
+        let items: Vec<(usize, PathBuf)> = names.into_iter().enumerate().collect();
+        par_map(&items, |(i, p)| {
             let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-            let t = Tmp::new(&format!("cc_{}_{}", sub, stem), &fs::read_to_string(&p).unwrap());
+            let t = Tmp::new(&format!("cc_{}_{}", sub, stem), &fs::read_to_string(p).unwrap());
             if i % 3 == 0 || sub == "linear_ok" {
                 assert_cache_same(&format!("{}/{}", sub, stem), &t.0, &cache);
             } else {
                 // 時間の節約: 3 本に 2 本は、初回 (空のキャッシュ) だけを比べる。
                 assert_eq!(check_cached(&t.0, None), check_cached(&t.0, Some(&cache)), "{}/{}", sub, stem);
             }
-        }
+        });
     }
     let _ = fs::remove_dir_all(&cache);
 }

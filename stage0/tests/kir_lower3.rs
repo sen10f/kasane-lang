@@ -1044,7 +1044,8 @@ fn kir_map_values_match_tree_walker() {
         ("t.moved", "7", "u32", "63"),
         ("t.moved", "100", "u32", "2340"),
     ];
-    for (i, (f, arg, ty, want)) in cases.iter().enumerate() {
+    let items: Vec<(usize, &(&str, &str, &str, &str))> = cases.iter().enumerate().collect();
+    par_map(&items, |(i, (f, arg, ty, want))| {
         let call = format!("{}({}{})", f, arg, if *f == "t.len_after" { "u32" } else { ty_arg(f) });
         let t = kir_map_pkg(&format!("kir_map_values_{}", i), &format!("    core.check.eq({}, {}{})\n", call, want, ty));
         let o = run(&["run"], &t.0);
@@ -1052,7 +1053,7 @@ fn kir_map_values_match_tree_walker() {
         let k = kir_run(&["kir", f, "--run", arg], &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
-    }
+    });
 }
 
 #[test]
@@ -2743,10 +2744,14 @@ fn sorted_ksnl(sub: &str) -> Vec<PathBuf> {
 fn kir_borrowck_has_no_false_positives() {
     let mut fps = vec![];
     let (mut checked, mut unknown) = (0, 0);
-    for p in sorted_ksnl("linear_ok") {
+    let ok_files = sorted_ksnl("linear_ok");
+    let ok_res = par_map(&ok_files, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("kirbc_ok_{}", stem), &fs::read_to_string(&p).unwrap());
-        match kir_bc(&t.0) {
+        let t = Tmp::new(&format!("kirbc_ok_{}", stem), &fs::read_to_string(p).unwrap());
+        (stem, kir_bc(&t.0))
+    });
+    for (stem, r) in ok_res {
+        match r {
             Some(c) if !c.is_empty() => fps.push(format!("linear_ok/{}: {:?}", stem, c)),
             Some(_) => checked += 1,
             None => unknown += 1,
@@ -2796,15 +2801,18 @@ fn kir_borrowck_has_no_false_positives() {
 fn kir_borrowck_agreement_on_unsound_does_not_drop() {
     let (mut checked, mut agree, mut kir_reject, mut unknown) = (0, 0, 0, 0);
     let mut mism = vec![];
-    for p in sorted_ksnl("unsound") {
+    let files = sorted_ksnl("unsound");
+    let results = par_map(&files, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("kirbc_{}", stem), &fs::read_to_string(&p).unwrap());
-        match kir_bc(&t.0) {
+        let t = Tmp::new(&format!("kirbc_{}", stem), &fs::read_to_string(p).unwrap());
+        let r = kir_bc(&t.0).map(|c| (!c.is_empty(), ast_borrow_rejects(&t.0)));
+        (stem, r)
+    });
+    for (stem, r) in results {
+        match r {
             None => unknown += 1,
-            Some(c) => {
+            Some((kir, ast)) => {
                 checked += 1;
-                let kir = !c.is_empty();
-                let ast = ast_borrow_rejects(&t.0);
                 if kir {
                     kir_reject += 1;
                 }
@@ -2937,48 +2945,53 @@ fn kir_own_linearity_agreement_floor() {
     let t = Tmp::new("kirown_default", &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/unsound/move_in_loop.ksnl")).unwrap());
     assert!(!kir_bc(&t.0).unwrap_or_default().iter().any(|c| c == "E3002" || c == "E3003"));
     let (mut checked, mut agree, mut kir_reject) = (0, 0, 0);
-    for p in sorted_ksnl("unsound") {
+    let uns = sorted_ksnl("unsound");
+    let uns_res = par_map(&uns, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("kirown_{}", stem), &fs::read_to_string(&p).unwrap());
-        let Some(k) = own_codes(&t.0) else { continue };
+        let t = Tmp::new(&format!("kirown_{}", stem), &fs::read_to_string(p).unwrap());
+        own_codes(&t.0).map(|k| (lin(&k), codes(&text(&run(&["check", "--json"], &t.0).stdout)).iter().any(|c| c == "E3002" || c == "E3003")))
+    });
+    for r in uns_res.into_iter().flatten() {
+        let (k, ast) = r;
         checked += 1;
-        let ast = codes(&text(&run(&["check", "--json"], &t.0).stdout)).iter().any(|c| c == "E3002" || c == "E3003");
-        if lin(&k) {
+        if k {
             kir_reject += 1;
         }
-        if lin(&k) == ast {
+        if k == ast {
             agree += 1;
         }
     }
     // 正しいコードの誤検出は 0 件 (`linear_ok/`、参照解、`examples/` の全パッケージ)。
     let mut fps = vec![];
     let mut ok_checked = 0;
+    let mut jobs: Vec<(String, PathBuf, bool)> = vec![];
     for p in sorted_ksnl("linear_ok") {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("kirown_ok_{}", stem), &fs::read_to_string(&p).unwrap());
-        match own_codes(&t.0) {
-            Some(k) if lin(&k) => fps.push(format!("linear_ok/{}: {:?}", stem, k)),
-            Some(_) => ok_checked += 1,
-            None => {}
-        }
+        jobs.push((format!("linear_ok/{}", stem), p, true));
     }
     let mut refs: Vec<PathBuf> = fs::read_dir(root().join("bench").join("tasks")).unwrap().map(|e| e.unwrap().path().join("reference.ksnl")).filter(|p| p.exists()).collect();
     refs.sort();
     for p in refs {
         let name = p.parent().unwrap().file_name().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("kirown_ref_{}", name), &fs::read_to_string(&p).unwrap());
-        match own_codes(&t.0) {
-            Some(k) if lin(&k) => fps.push(format!("reference {}: {:?}", name, k)),
-            Some(_) => ok_checked += 1,
-            None => {}
-        }
+        jobs.push((format!("reference {}", name), p, true));
     }
     let mut ex: Vec<PathBuf> = fs::read_dir(root().join("examples")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.join("kasane.toml").exists()).collect();
     ex.sort();
     for d in ex {
         let name = d.file_name().unwrap().to_string_lossy().to_string();
-        match own_codes(&d) {
-            Some(k) if lin(&k) => fps.push(format!("examples/{}: {:?}", name, k)),
+        jobs.push((format!("examples/{}", name), d, false));
+    }
+    let job_res = par_map(&jobs, |(label, p, is_file)| {
+        if *is_file {
+            let t = Tmp::new(&format!("kirown_ok_{}", label.replace(['/', ' '], "_")), &fs::read_to_string(p).unwrap());
+            own_codes(&t.0)
+        } else {
+            own_codes(p)
+        }
+    });
+    for ((label, _, _), r) in jobs.iter().zip(job_res) {
+        match r {
+            Some(k) if lin(&k) => fps.push(format!("{}: {:?}", label, k)),
             Some(_) => ok_checked += 1,
             None => {}
         }
@@ -3002,25 +3015,28 @@ fn kir_only_rejects_floor() {
         let o = run_with_env(&["check", "--json"], dir, &[("KSN_BORROWCK", "kir-only"), ("KSN_CACHE_DIR", cache.to_str().unwrap())]);
         codes(&text(&o.stdout)).iter().any(|c| matches!(c.as_str(), "E3010" | "E3030" | "E3002" | "E3003"))
     }
-    let (mut expected, mut rejected) = (0, 0);
-    for p in sorted_ksnl("unsound") {
-        let src = fs::read_to_string(&p).unwrap();
-        let bl = expect_entries(&p).iter().any(|(k, v)| k == "expect" && ["E3010", "E3030", "E3002", "E3003"].iter().any(|c| v.contains(c)));
-        if !bl {
-            continue;
-        }
-        expected += 1;
+    let expected_files: Vec<PathBuf> = sorted_ksnl("unsound")
+        .into_iter()
+        .filter(|p| expect_entries(p).iter().any(|(k, v)| k == "expect" && ["E3010", "E3030", "E3002", "E3003"].iter().any(|c| v.contains(c))))
+        .collect();
+    let expected = expected_files.len();
+    let rejected = par_map(&expected_files, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("kironly_{}", stem), &src);
-        if only_rejects(&t.0) {
-            rejected += 1;
-        }
-    }
+        let t = Tmp::new(&format!("kironly_{}", stem), &fs::read_to_string(p).unwrap());
+        only_rejects(&t.0)
+    })
+    .into_iter()
+    .filter(|b| *b)
+    .count();
     let mut fps = vec![];
-    for p in sorted_ksnl("linear_ok") {
+    let ok_files = sorted_ksnl("linear_ok");
+    let ok_res = par_map(&ok_files, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("kironly_ok_{}", stem), &fs::read_to_string(&p).unwrap());
-        if only_rejects(&t.0) {
+        let t = Tmp::new(&format!("kironly_ok_{}", stem), &fs::read_to_string(p).unwrap());
+        (stem, only_rejects(&t.0))
+    });
+    for (stem, bad) in ok_res {
+        if bad {
             fps.push(format!("linear_ok/{}", stem));
         }
     }

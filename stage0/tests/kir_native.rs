@@ -2535,23 +2535,25 @@ fn linear_ok_programs_build_native_and_match_run() {
     let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(names.len() >= 100, "linear_ok cases missing");
-    let mut bad = vec![];
-    for p in names {
+    let bad: Vec<String> = par_map(&names, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("linear_native_{}", stem), &fs::read_to_string(&p).unwrap());
+        let t = Tmp::new(&format!("linear_native_{}", stem), &fs::read_to_string(p).unwrap());
         let b = run(&["build"], &t.0);
         let out = format!("{}{}", text(&b.stdout), text(&b.stderr));
         let exe = t.0.join("target").join("debug").join("t.native");
         if out.contains("native backend skipped") || !exe.exists() {
-            bad.push(format!("{}: バンドルへ退避: {}", stem, out.lines().find(|l| l.contains("skipped")).unwrap_or("")));
-            continue;
+            return Some(format!("{}: バンドルへ退避: {}", stem, out.lines().find(|l| l.contains("skipped")).unwrap_or("")));
         }
         let n = Command::new(&exe).current_dir(&t.0).output().unwrap();
         let r = run(&["run"], &t.0);
         if n.status.code() != r.status.code() || text(&n.stdout) != text(&r.stdout) || text(&n.stderr) != text(&r.stderr) {
-            bad.push(format!("{}: native と run が違う: {:?} {:?} / {:?} {:?}", stem, n.status.code(), text(&n.stdout), r.status.code(), text(&r.stdout)));
+            return Some(format!("{}: native と run が違う: {:?} {:?} / {:?} {:?}", stem, n.status.code(), text(&n.stdout), r.status.code(), text(&r.stdout)));
         }
-    }
+        None
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
