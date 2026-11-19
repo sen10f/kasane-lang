@@ -53,7 +53,7 @@ fn cstr(s: &str) -> Vec<u8> {
 }
 
 /// 共有ライブラリを開く (同じ名前は 1 度だけ)。失敗したら OS のメッセージ。
-fn open_lib(lib: &str) -> Result<*mut c_void, String> {
+pub(crate) fn open_lib(lib: &str) -> Result<*mut c_void, String> {
     thread_local! {
         static LIBS: std::cell::RefCell<std::collections::HashMap<String, usize>> = Default::default();
     }

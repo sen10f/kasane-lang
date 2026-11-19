@@ -7,7 +7,7 @@ use regex::Regex;
 
 const GRAMMAR: &str = include_str!("../../spec/grammar.ebnf");
 
-const RESERVED: &[&str] = &[
+pub(crate) const RESERVED: &[&str] = &[
     "fn", "type", "enum", "trait", "impl", "const", "static", "extern", "test", "end", "import", "let", "mut", "if",
     "else", "match", "loop", "while", "for", "in", "break", "continue", "return", "true", "false", "self", "Self",
     "pub", "uses", "panics", "unsafe", "move", "with",
