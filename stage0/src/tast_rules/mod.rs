@@ -12,3 +12,4 @@ pub mod effects_inst;
 pub mod effects_conv;
 pub mod discard;
 pub mod exhaustive;
+pub mod mutability;

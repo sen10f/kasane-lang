@@ -488,6 +488,10 @@ impl<'a> Builder<'a> {
                 if !matches!(f[2], V::Nil) {
                     pat.lit.push("ann".to_string());
                 }
+                // `let mut` の印 (パターンの全部の `PBind`)。
+                if matches!(f[1], V::B(true)) {
+                    mark_mut(&mut pat);
+                }
                 self.bind_pat(&pat);
                 TStmt::Let { pat, init }
             }
@@ -622,7 +626,10 @@ impl<'a> Builder<'a> {
             "With" => {
                 let init = self.expr(&f[2], false);
                 self.scopes.push(HashMap::new());
-                let pat = self.pat(&f[0]);
+                let mut pat = self.pat(&f[0]);
+                if matches!(f[1], V::B(true)) {
+                    mark_mut(&mut pat);
+                }
                 self.bind_pat(&pat);
                 let mut children = vec![init];
                 if matches!(f[3], V::Node(..)) {
@@ -686,6 +693,16 @@ impl<'a> Builder<'a> {
         })
         .unwrap_or_default());
         TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs, tf, etargs, pats }
+    }
+}
+
+/// `let mut` / `with mut` のパターンの `PBind` に印 `"mut"` を付ける。
+fn mark_mut(p: &mut TPat) {
+    if p.kind == "PBind" {
+        p.lit.push("mut".to_string());
+    }
+    for c in &mut p.children {
+        mark_mut(c);
     }
 }
 
