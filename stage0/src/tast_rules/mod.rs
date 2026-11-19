@@ -4,3 +4,4 @@ pub mod borrows;
 pub mod impl_sig;
 pub mod ref_levels;
 pub mod type_eq;
+pub mod moves;
