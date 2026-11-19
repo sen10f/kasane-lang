@@ -23,7 +23,7 @@ fn effects.fns.add(fs: &mut effects.fns.Fns, p: &parse.cur.P, src: &[u8], file: 
     let name = resolve.ast.text(src, n.a, n.b)
     let key = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
     let dm = &fs.map.m
-    let known = dm.contains_key(&key)
+    let known = dm.contains_key_str(key.as_str())
     if sig && known {
         return Ok(())
     }
@@ -80,7 +80,7 @@ end effects.fns.copy
 fn effects.fns.lookup(fs: &effects.fns.Fns, key: &str) -> Result<Option<usize>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let k = alloc.string.String.from_str(std.alloc.SYSTEM, key)?
     let dm = &fs.map.m
-    match dm.get(&k) {
+    match dm.get_str(k.as_str()) {
         Some(ix) => Ok(Some(*ix))
         None => Ok(None)
     }

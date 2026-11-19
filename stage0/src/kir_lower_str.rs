@@ -693,6 +693,12 @@ impl<'a> Lw<'a> {
             return self.err(line, "alloc.string.String.from_str の引数は 2 個のはず");
         }
         let Some(text) = self.expr(&args[1])? else { return Ok(None) };
+        self.string_from_fat(text, line)
+    }
+
+    /// `&str` の値 `text` (`fat` の {ptr, len}) のコピーをヒープに確保して `Ok(String)` を返す。
+    /// `from_str` と `String.try_clone` (自分の `as_str` のコピー) が共有する。
+    pub(super) fn string_from_fat(&mut self, text: VId, line: usize) -> LR<Option<VId>> {
         let fat = self.vty(text);
         let Ty::Agg(fat_idx) = fat else {
             return self.err(line, "alloc.string.String.from_str の第 2 引数が &str ではない");

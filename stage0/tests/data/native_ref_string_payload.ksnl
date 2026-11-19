@@ -1,0 +1,24 @@
+enum t.Cell pub
+    Empty
+    Entry(u32, alloc.string.String<std.alloc.System>)
+end t.Cell
+
+fn t.len(k: &alloc.string.String<std.alloc.System>) -> usize uses [] panics never
+    k.len()
+end t.len
+
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics never
+    let s = alloc.string.String.from_str(std.alloc.SYSTEM, "one")?
+    let c = t.Cell.Entry(1u32, s)
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_u64(u64.from_usize(t.probe(&c)))?
+    core.mem.drop(std.io.print_line(out.as_str()))
+    Ok(())
+end t.main
+
+fn t.probe(c: &t.Cell) -> usize uses [] panics never
+    match c {
+        t.Cell.Entry(_h, k) => t.len(k)
+        t.Cell.Empty => 0usize
+    }
+end t.probe
