@@ -37,3 +37,5 @@
 
 
 > 2026-11-19 (N1w): Windows ターゲット `x86_64-windows-gnu` を追加した (組み込みの lld の MinGW 版でリンク、wine で `ksn run` と出力が一致)。詳細は `実装計画.md` の N1w の節。
+>
+> 2026-11-19 (試験先行): Win64 の構造体の値渡し (`stage0/tests/windows_ffi_struct.rs`) と C からの利用者のデータつきコールバック・捕まえたクロージャ (`stage0/tests/ffi_userdata.rs`・`stage0/tests/data/ffi_userdata/`) の試験を先に置いた。どちらも未実装なので `#[ignore]` (実装されたら外す)。
