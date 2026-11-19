@@ -84,6 +84,23 @@ impl Val {
             p.kill(dead);
         }
     }
+    /// 一時値は文の終わりで尽きる: 束縛が持つ一時値の借用を `Dead("$temp")` にする (次の使用が E3010)。
+    fn kill_temps(&mut self) {
+        let old = std::mem::take(&mut self.set);
+        for ((l, k), x) in old {
+            let l = if l == Loan::Temp { Loan::Dead("$temp".to_string()) } else { l };
+            self.set.entry((l, k)).and_modify(|y| *y = (*y).min(x)).or_insert(x);
+        }
+        for p in &mut self.parts {
+            p.kill_temps();
+        }
+    }
+    fn drop_dead_temps(&mut self) {
+        self.set.retain(|(l, _), _| *l != Loan::Dead("$temp".to_string()));
+        for p in &mut self.parts {
+            p.drop_dead_temps();
+        }
+    }
     /// 層を問わない借用の一覧 (借用, 行)。
     fn loans(&self) -> Vec<(Loan, usize)> {
         let mut m: BTreeMap<Loan, usize> = BTreeMap::new();
@@ -988,6 +1005,30 @@ impl<'a> W<'a> {
                     }
                 }
                 self.loops.pop();
+                // `loop` は本体を 1 回は通る: 本体が再代入する束縛の、ループの前の一時値の借用 (文の終わりで尽きたもの) は
+                // 合流で戻さない (`let mut r = &mk()` の後の `loop { r = &a; break }`)。
+                let mut saved = saved;
+                if name == "Loop" {
+                    let mut assigned: HashSet<String> = HashSet::new();
+                    for c in children {
+                        super::impl_sig::walk(c, &mut |x| {
+                            if let TKind::Block(ss) = &x.kind {
+                                for st in ss {
+                                    if let TStmt::Assign { place, .. } = st {
+                                        if let Some((n, _)) = Self::local_of(place) {
+                                            assigned.insert(n);
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    for (n, var) in saved.vars.iter_mut() {
+                        if assigned.contains(n) {
+                            var.val.drop_dead_temps();
+                        }
+                    }
+                }
                 self.env.merge(&saved);
                 let _ = out;
                 Val::default()
@@ -1039,6 +1080,11 @@ impl<'a> W<'a> {
                 TStmt::Assign { place, value } => {
                     let v = self.ev(value);
                     self.assign(place, v, value.line);
+                }
+            }
+            if i + 1 != stmts.len() {
+                for var in self.env.vars.values_mut() {
+                    var.val.kill_temps();
                 }
             }
         }
