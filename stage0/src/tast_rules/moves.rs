@@ -175,7 +175,7 @@ impl<'a> W<'a> {
         match t {
             Ty::Unknown | Ty::Var(_) => true,
             Ty::Never | Ty::Unit | Ty::Prim(_) | Ty::Ptr(..) | Ty::Const(_) | Ty::Dyn(..) => true,
-            Ty::Ref(m, _) => !m,
+            Ty::Ref(m, _, _) => !m,
             Ty::Tuple(xs) => xs.iter().all(|x| self.copy(x)),
             Ty::Array(x, _) | Ty::Slice(x) => self.copy(x),
             Ty::Param(n) => self.gens.iter().find(|g| &g.0 == n).map_or(true, |g| g.1),
@@ -192,7 +192,7 @@ impl<'a> W<'a> {
                     None => true,
                 }
             }
-            Ty::Named(n, args) => {
+            Ty::Named(n, args, _) => {
                 if n == "Option" || n == "Result" {
                     return args.iter().all(|a| self.copy(a));
                 }
@@ -213,7 +213,7 @@ impl<'a> W<'a> {
                 Some(cs) => cs.iter().any(|c| c.kind == "move" && self.linear(&c.ty)),
                 None => false,
             },
-            Ty::Named(n, args) => {
+            Ty::Named(n, args, _) => {
                 if n == "std.sync.Sender" {
                     return false;
                 }
@@ -245,7 +245,7 @@ impl<'a> W<'a> {
             Ty::Tuple(xs) => xs.iter().any(|x| self.linear_peek(x)),
             Ty::Array(x, _) | Ty::Slice(x) => self.linear_peek(x),
             Ty::Param(n) => self.gens.iter().find(|g| &g.0 == n).map_or(false, |g| g.2),
-            Ty::Named(n, args) => {
+            Ty::Named(n, args, _) => {
                 if n == "std.sync.Sender" {
                     return false;
                 }
@@ -266,7 +266,7 @@ impl<'a> W<'a> {
 
     /// 構造体 (欄を持つ `type`) の欄の名前と型 (型引数を入れた)。列挙型・欄のない型は `None`。
     fn struct_fields(&self, t: &Ty) -> Option<Vec<(String, Ty)>> {
-        let Ty::Named(n, args) = t else { return None };
+        let Ty::Named(n, args, _) = t else { return None };
         let &i = self.p.types.get(n)?;
         let d = &self.p.defs[i];
         if d.kw != "type" || d.fields.is_empty() {
@@ -282,7 +282,7 @@ impl<'a> W<'a> {
     fn walk_fields(&self, mut t: Ty, path: &[String]) -> (Option<Ty>, bool) {
         let mut via = false;
         for f in path {
-            while let Ty::Ref(_, i) = t {
+            while let Ty::Ref(_, i, _) = t {
                 via = true;
                 t = *i;
             }
@@ -328,7 +328,7 @@ impl<'a> W<'a> {
             return true;
         }
         // `linear` と宣言された型は、全体を消費しなければ義務を果たさない (欄ごとの消費では足りない)。
-        if let Ty::Named(n, _) = ty {
+        if let Ty::Named(n, _, _) = ty {
             if self.p.types.get(n).map_or(false, |&i| self.p.defs[i].linear) {
                 return false;
             }
@@ -611,7 +611,7 @@ impl<'a> W<'a> {
                     self.recv(recv, c, d, e.line);
                 } else {
                     self.eval(recv, Cx::Value);
-                    if let Ty::Ref(_, inner) = &recv.ty {
+                    if let Ty::Ref(_, inner, _) = &recv.ty {
                         if !self.copy(&inner.clone()) {
                             let name = d.map(|d| d.name.rsplit('.').next().unwrap_or("").to_string()).unwrap_or_default();
                             self.diag(
@@ -775,7 +775,7 @@ impl<'a> W<'a> {
     /// `self` を値で受けるメソッドのレシーバ (場所)。参照のレシーバは先を自動で外すので、先が Copy なら借りるだけ、そうでなければ参照の先からの move。
     fn recv_by_value(&mut self, pr: &PR, rt: &Ty, name: &str, line: usize) {
         let (inner_copy, is_ref) = match rt {
-            Ty::Ref(_, i) => (self.copy(i), true),
+            Ty::Ref(_, i, _) => (self.copy(i), true),
             _ => (self.copy(rt), false),
         };
         let moved_out = !inner_copy && (is_ref || pr.via);
@@ -807,7 +807,7 @@ impl<'a> W<'a> {
                     }
                 }
                 None => {
-                    if d.is_none() && matches!(a.ty, Ty::Ref(true, _)) {
+                    if d.is_none() && matches!(a.ty, Ty::Ref(true, _, _)) {
                         Cx::Borrow
                     } else {
                         Cx::Value
@@ -1014,7 +1014,7 @@ impl<'a> W<'a> {
                 self.eval(it, Cx::Value);
                 let leaky = match &it.ty {
                     Ty::Array(x, _) => self.linear(&x.clone()),
-                    Ty::Named(n, a) if (n.ends_with("Vec") || n.ends_with("IntoIter")) && !a.is_empty() => self.linear(&a[0].clone()),
+                    Ty::Named(n, a, _) if (n.ends_with("Vec") || n.ends_with("IntoIter")) && !a.is_empty() => self.linear(&a[0].clone()),
                     _ => false,
                 };
                 self.run_loop(e, None, ch.get(1), e.pats.first(), leaky, !matches!(it.ty, Ty::Ref(..)), false);
@@ -1244,7 +1244,7 @@ impl<'a> W<'a> {
             if !matches!(x.kind, "PStruct" | "PVariant" | "PTuple") {
                 continue;
             }
-            let Some(Ty::Named(n, _)) = x.info.as_ref().map(|i| i.ty.clone()) else { continue };
+            let Some(Ty::Named(n, _, _)) = x.info.as_ref().map(|i| i.ty.clone()) else { continue };
             let Some(&i) = self.p.types.get(&n) else { continue };
             let drops = self.p.impls.contains(&("core.ops.Drop".to_string(), n.clone())) || self.p.defs[i].derive.iter().any(|d| d == "Drop");
             if drops && x.children.iter().any(binds) && reported.insert(n.clone()) {
@@ -1364,7 +1364,7 @@ impl<'a> W<'a> {
 
     fn ty_linear_args(&mut self, t: &Ty, line: usize) {
         match t {
-            Ty::Named(n, args) => {
+            Ty::Named(n, args, _) => {
                 if let Some(&i) = self.p.types.get(n) {
                     let d = &self.p.defs[i];
                     let params: Vec<(String, bool)> = d
@@ -1389,7 +1389,7 @@ impl<'a> W<'a> {
                     self.ty_linear_args(a, line);
                 }
             }
-            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.ty_linear_args(x, line),
+            Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.ty_linear_args(x, line),
             Ty::Tuple(xs) => {
                 for x in xs {
                     self.ty_linear_args(x, line);
@@ -1439,8 +1439,8 @@ fn fields_of(p: &Place) -> Vec<String> {
 fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
     match t {
         Ty::Param(p) => bind.get(p).cloned().unwrap_or(Ty::Unknown),
-        Ty::Named(n, a) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect()),
-        Ty::Ref(m, x) => Ty::Ref(*m, Box::new(subst(x, bind))),
+        Ty::Named(n, a, r) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect(), r.clone()),
+        Ty::Ref(m, x, r) => Ty::Ref(*m, Box::new(subst(x, bind)), r.clone()),
         Ty::Ptr(m, x) => Ty::Ptr(*m, Box::new(subst(x, bind))),
         Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| subst(x, bind)).collect()),
         Ty::Array(x, n) => Ty::Array(Box::new(subst(x, bind)), *n),
