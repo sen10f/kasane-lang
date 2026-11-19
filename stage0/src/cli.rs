@@ -2695,7 +2695,17 @@ fn cmd_fmt(args: &[String]) -> i32 {
     let mut diff = false;
     let mut changed = false;
     for s in &pkg.sources {
-        let nt = if s.error.is_none() { format_source(&s.text, &s.path) } else { mechanical_collapse(&s.text) };
+        let nt = if s.error.is_none() {
+            format_source(&s.text, &s.path)
+        } else {
+            // 読めないファイルでも、行末の `;` を消して読めるようになるなら、普通に整形する (並べ替えも)。
+            let st = crate::fmt::strip_semicolons(&s.text);
+            if st != s.text && crate::program::load_file(&s.path, "", &st).is_ok() {
+                format_source(&st, &s.path)
+            } else {
+                mechanical_collapse(&st)
+            }
+        };
         let mut text = s.text.clone();
         // `.ksnh` の整形のあと、横の `.ksnl` を `strip` で作り直す (`--check` は食い違いも差分とする)。
         if s.path.ends_with(".ksnh") {
@@ -2731,10 +2741,12 @@ fn cmd_fmt(args: &[String]) -> i32 {
         let relpath = lint_rel(s, &srcroot);
         let lints: Vec<_> = Lint::new(&relpath, &text.replace("\r\n", "\n")).run().into_iter().filter(|(c, _, _)| c != "unused").collect();
         let (ok, msg, ln) = grammar.check(&text);
-        let hits = if s.error.is_some() { crate::rustisms::scan(&s.text) } else { vec![] };
-        let broken = s.error.is_some() && (s.error.as_ref().map_or(false, |e| e.code == "E0007") || !hits.is_empty() || !lints.is_empty() || !ok);
+        // 整形で書き換えたあとの文面の読めるかどうか (書き換えていなければ読み込み時の結果)。
+        let cur_err = if text == s.text { s.error.clone() } else { crate::program::load_file(&s.path, "", &text).err().map(|e| decode_err(&e)) };
+        let hits = if cur_err.is_some() { crate::rustisms::scan(&text) } else { vec![] };
+        let broken = cur_err.is_some() && (cur_err.as_ref().map_or(false, |e| e.code == "E0007") || !hits.is_empty() || !lints.is_empty() || !ok);
         if broken {
-            let e = s.error.as_ref().unwrap();
+            let e = cur_err.as_ref().unwrap();
             diff = true;
             for h in &hits {
                 println!("{}:{}:{}: {}: {}", rel(&s.path), h.line, h.col, h.code, h.msg);
