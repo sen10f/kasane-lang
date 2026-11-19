@@ -1,0 +1,185 @@
+test bench.column_widths.test_no_rows
+    let rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let widths = bench.column_widths(&rows)?
+    core.check.eq(widths.len(), 0usize)
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.column_widths.test_no_rows
+
+test bench.column_widths.test_ragged_rows
+    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    rows.push(bench.mkrow(&["abc"])?)?
+    rows.push(bench.mkrow(&["a", "bb"])?)?
+    let widths = bench.column_widths(&rows)?
+    core.check.eq(widths.len(), 2usize)
+    match widths.get(0usize) {
+        Some(w) => core.check.eq(*w, 3usize)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match widths.get(1usize) {
+        Some(w) => core.check.eq(*w, 2usize)
+        None => core.check.eq(0usize, 1usize)
+    }
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.column_widths.test_ragged_rows
+
+test bench.column_widths.test_single_column
+    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    rows.push(bench.mkrow(&["hello"])?)?
+    let widths = bench.column_widths(&rows)?
+    core.check.eq(widths.len(), 1usize)
+    match widths.get(0usize) {
+        Some(w) => core.check.eq(*w, 5usize)
+        None => core.check.eq(0usize, 1usize)
+    }
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.column_widths.test_single_column
+
+test bench.column_widths.test_takes_max_per_column
+    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    rows.push(bench.mkrow(&["pen", "2"])?)?
+    rows.push(bench.mkrow(&["eraser", "12"])?)?
+    let widths = bench.column_widths(&rows)?
+    core.check.eq(widths.len(), 2usize)
+    match widths.get(0usize) {
+        Some(w) => core.check.eq(*w, 6usize)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match widths.get(1usize) {
+        Some(w) => core.check.eq(*w, 2usize)
+        None => core.check.eq(0usize, 1usize)
+    }
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.column_widths.test_takes_max_per_column
+
+test bench.mkrow.test_builds_row
+    let row = bench.mkrow(&["pen", "2"])?
+    core.check.eq(row.len(), 2usize)
+    match row.get(0usize) {
+        Some(c) => core.check.eq(c.as_str(), "pen")
+        None => core.check.eq(0usize, 1usize)
+    }
+    match row.get(1usize) {
+        Some(c) => core.check.eq(c.as_str(), "2")
+        None => core.check.eq(0usize, 1usize)
+    }
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.mkrow.test_builds_row
+
+test bench.mkrow.test_empty_row
+    let row = bench.mkrow(&[])?
+    core.check.eq(row.len(), 0usize)
+    let one = bench.mkrow(&["a"])?
+    core.check.eq(one.len(), 1usize)
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.mkrow.test_empty_row
+
+test bench.pad_right.test_no_pad_when_long
+    let got = bench.pad_right("pen", 2usize)?
+    core.check.eq(got.as_str(), "pen")
+    let exact = bench.pad_right("pen", 3usize)?
+    core.check.eq(exact.as_str(), "pen")
+    let zero = bench.pad_right("", 0usize)?
+    core.check.eq(zero.as_str(), "")
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.pad_right.test_no_pad_when_long
+
+test bench.pad_right.test_pads_to_width
+    let got = bench.pad_right("pen", 6usize)?
+    core.check.eq(got.as_str(), "pen   ")
+    let blank = bench.pad_right("", 3usize)?
+    core.check.eq(blank.as_str(), "   ")
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.pad_right.test_pads_to_width
+
+test bench.render_row.test_extra_cells_ignored
+    let cells = bench.mkrow(&["a", "b", "cccc"])?
+    let mut widths = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    widths.push(1usize)?
+    widths.push(1usize)?
+    let line = bench.render_row(&cells, &widths)?
+    core.check.eq(line.as_str(), "| a | b |")
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.render_row.test_extra_cells_ignored
+
+test bench.render_row.test_full_row
+    let cells = bench.mkrow(&["pen", "2"])?
+    let mut widths = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    widths.push(6usize)?
+    widths.push(3usize)?
+    let line = bench.render_row(&cells, &widths)?
+    core.check.eq(line.as_str(), "| pen    | 2   |")
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.render_row.test_full_row
+
+test bench.render_row.test_missing_cell_is_blank
+    let cells = bench.mkrow(&["pen"])?
+    let mut widths = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    widths.push(6usize)?
+    widths.push(3usize)?
+    let line = bench.render_row(&cells, &widths)?
+    core.check.eq(line.as_str(), "| pen    |     |")
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.render_row.test_missing_cell_is_blank
+
+test bench.separator.test_between_pluses
+    let mut widths = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    widths.push(6usize)?
+    widths.push(3usize)?
+    let line = bench.separator(&widths)?
+    core.check.eq(line.as_str(), "+--------+-----+")
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.separator.test_between_pluses
+
+test bench.separator.test_single_column
+    let mut widths = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    widths.push(1usize)?
+    let line = bench.separator(&widths)?
+    core.check.eq(line.as_str(), "+---+")
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let none = bench.separator(&empty)?
+    core.check.eq(none.as_str(), "+")
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.separator.test_single_column
+
+test bench.table.test_full_document
+    let headers = bench.mkrow(&["name", "qty"])?
+    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    rows.push(bench.mkrow(&["pen", "2"])?)?
+    rows.push(bench.mkrow(&["eraser", "12"])?)?
+    let doc = bench.table(&headers, &rows)?
+    core.check.eq(doc.as_str(), "| name   | qty |\n+--------+-----+\n| pen    | 2   |\n| eraser | 12  |")
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.table.test_full_document
+
+test bench.table.test_no_data_rows
+    let headers = bench.mkrow(&["a"])?
+    let rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let doc = bench.table(&headers, &rows)?
+    core.check.eq(doc.as_str(), "| a |\n+---+")
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.table.test_no_data_rows
+
+test bench.table.test_wider_data_than_header
+    let headers = bench.mkrow(&["x"])?
+    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    rows.push(bench.mkrow(&["hello"])?)?
+    let doc = bench.table(&headers, &rows)?
+    core.check.eq(doc.as_str(), "| x     |\n+-------+\n| hello |")
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.table.test_wider_data_than_header
