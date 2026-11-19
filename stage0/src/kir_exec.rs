@@ -828,10 +828,27 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     bm.write_bytes(get(&stack[top], dst), s.as_bytes())?;
                     s.len() as i128
                 }
-                Op::MemLoad { p, off } => bm.read(get(&stack[top], p) + *off as i128, inst.ty)?,
+                Op::MemLoad { p, off } => {
+                    let a = get(&stack[top], p) + *off as i128;
+                    match inst.ty {
+                        // 集成体は置き場に複製してその添字を返す (`Op::Load` と同じ)。
+                        Ty::Agg(ai) => {
+                            let blob = bm.read_bytes(a, m.aggs[ai as usize].size as usize)?;
+                            heap.push(blob);
+                            (heap.len() - 1) as i128
+                        }
+                        t => bm.read(a, t)?,
+                    }
+                }
                 Op::MemStore { ty, p, off, v } => {
                     let (a, x) = (get(&stack[top], p) + *off as i128, get(&stack[top], v));
-                    bm.write(a, *ty, x)?;
+                    match ty {
+                        Ty::Agg(_) => {
+                            let blob = heap[x as usize].clone();
+                            bm.write_bytes(a, &blob)?;
+                        }
+                        _ => bm.write(a, *ty, x)?,
+                    }
                     0
                 }
                 Op::HeapAlloc(n) => bm.alloc(get(&stack[top], n) as usize, false),

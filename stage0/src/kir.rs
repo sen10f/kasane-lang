@@ -2740,12 +2740,13 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                     }
                     Op::MemLoad { p, .. } => {
-                        if !memable(i.ty) || ty_of(*p)? != Ty::Ptr {
-                            return Err("load は ptr から整数・浮動小数・bool・ptr を読むはず".into());
+                        // 集成体の読み出し (`Vec<Struct>` の要素など) は認める。実行系はバイト列として扱う。
+                        if !(memable(i.ty) || matches!(i.ty, Ty::Agg(_))) || ty_of(*p)? != Ty::Ptr {
+                            return Err("load は ptr から整数・浮動小数・bool・ptr・集成体を読むはず".into());
                         }
                     }
                     Op::MemStore { ty, p, v, .. } => {
-                        if i.ty != Ty::Unit || !memable(*ty) || ty_of(*p)? != Ty::Ptr || ty_of(*v)? != *ty {
+                        if i.ty != Ty::Unit || !(memable(*ty) || matches!(*ty, Ty::Agg(_))) || ty_of(*p)? != Ty::Ptr || ty_of(*v)? != *ty {
                             return Err("store の型が合わない".into());
                         }
                     }
