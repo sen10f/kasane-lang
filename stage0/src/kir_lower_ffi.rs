@@ -79,6 +79,11 @@ fn ptr_call(lw: &mut Lw, e: &V, name: &str, targs: V) -> LR<Option<VId>> {
                 return lw.err(line, "core.ptr.read の引数はポインタのはず");
             }
             let ty = lw.ty_of(e)?;
+            if let Ty::Agg(ai) = ty {
+                // 集成体 (`layout c` の構造体など) は、番地を参照にして読む (配置は型表のとおり)。
+                let r = lw.emit(Ty::Ref(false, Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: p });
+                return Ok(Some(lw.emit(ty, Op::Load(r))));
+            }
             if !crate::kir::memable(ty) {
                 return lw.err(line, format!("core.ptr.read の型 {} は未対応", ty.name()));
             }
@@ -94,6 +99,10 @@ fn ptr_call(lw: &mut Lw, e: &V, name: &str, targs: V) -> LR<Option<VId>> {
             }
             let Some(v) = lw.expr(&args[1])? else { return Ok(None) };
             let ty = lw.vty(v);
+            if let Ty::Agg(ai) = ty {
+                let r = lw.emit(Ty::Ref(true, Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: p });
+                return Ok(Some(lw.emit(Ty::Unit, Op::Store { ptr: r, val: v })));
+            }
             if !crate::kir::memable(ty) {
                 return lw.err(line, format!("core.ptr.write の型 {} は未対応", ty.name()));
             }
@@ -111,7 +120,14 @@ fn ptr_call(lw: &mut Lw, e: &V, name: &str, targs: V) -> LR<Option<VId>> {
             if lw.vty(n) != Ty::Usize {
                 return lw.err(line, "core.ptr.add の第 2 引数は usize のはず");
             }
-            let elem = ptr_elem_ty(lw, &targs, line)?;
+            let elem = match ptr_elem_ty(lw, &targs, line) {
+                Ok(t) => t,
+                // 型実引数を書かない `core.ptr.add(p, n)` は、ポインタの型から要素の型を取る。
+                Err(e) => match lw.src_ty(&args[0]) {
+                    Ok(Src::Ptr(_, inner)) => lw.conv_t(&inner).ok_or(e)?,
+                    _ => return Err(e),
+                },
+            };
             let sz = kir::size_of(&lw.aggs.borrow().defs, elem) as u64;
             let szv = lw.emit(Ty::Usize, Op::Const(sz as i128));
             let off = lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: n, b: szv });
@@ -269,7 +285,15 @@ fn src_to_kir(lw: &Lw, t: &Src, line: usize) -> LR<Ty> {
                 .and_then(|t| kir::Pointee::of(t))
                 .map(|_| Ty::Ptr)
                 .ok_or_else(|| format!("ポインタ型 {} は未対応", show(t))),
+            Src::Named(..) | Src::Array(..) => match lw.conv_t(inner) {
+                Some(Ty::Agg(_)) => Ok(Ty::Ptr),
+                _ => lw.err(line, format!("ポインタ型 {} は未対応", show(t))),
+            },
             _ => lw.err(line, format!("ポインタ型 {} は未対応", show(t))),
+        },
+        Src::Named(..) => match lw.conv_t(t) {
+            Some(ty @ Ty::Agg(_)) => Ok(ty),
+            _ => lw.err(line, format!("型 {} は段階 1 の対象外", show(t))),
         },
         _ => lw.err(line, format!("型 {} は段階 1 の対象外", show(t))),
     }
@@ -333,6 +357,11 @@ fn src_to_kir_extern(aggs: &std::cell::RefCell<agg::AggTab>, p: &Program, file: 
                 }
             }
             _ => Err(format!("ポインタ型 {} は未対応", show(t))),
+        },
+        // `layout c` の構造体の値渡し・値返し (C ABI への変換は LLVM 側)。
+        Src::Named(..) => match aggs.borrow_mut().lower_ty(p, file, t) {
+            Ok(ty @ Ty::Agg(_)) => Ok(ty),
+            _ => Err(format!("extern の型 {} は未対応", show(t))),
         },
         _ => Err(format!("extern の型 {} は未対応", show(t))),
     }

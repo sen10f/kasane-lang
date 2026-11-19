@@ -594,6 +594,7 @@ impl<'a> Lw<'a> {
                 let all_scalar = match kind {
                     AggKind::Enum(vs) => vs.iter().all(|v| v.fields.iter().all(|f| f.ty.is_scalar())),
                     AggKind::Tuple(fs) => fs.iter().all(|f| f.ty.is_scalar()),
+                    AggKind::Array(t, _) => t.is_scalar(),
                     AggKind::Struct(_) => unreachable!(),
                 };
                 if all_scalar {
