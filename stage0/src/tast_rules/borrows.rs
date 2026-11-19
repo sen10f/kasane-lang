@@ -423,7 +423,9 @@ impl<'a> Walker<'a> {
     fn read_place(&mut self, e: &TExpr) -> Vec<Src> {
         match self.place(e) {
             Some((r, p)) => {
-                let kind = if not_copy(self.p, &e.ty) { Acc::Move } else { Acc::Read };
+                // 参照・添字の先からの取り出し (`*r`・`v[i]`) は移動ではない (移動と線形の規則が E3002 にする)。
+                let through = p.iter().any(|x| x == "*" || x == "[]");
+                let kind = if not_copy(self.p, &e.ty) && !through { Acc::Move } else { Acc::Read };
                 self.acc(&r, &p, kind, e.line);
                 self.keep(&e.ty, vec![Src::Var(r)])
             }
@@ -616,10 +618,15 @@ impl<'a> Walker<'a> {
                 self.cfg.edge(head, exit);
                 self.cfg.cur = body;
                 self.cfg.loops.push((head, exit));
-                // ループ変数は `For` の節点に束縛の情報が無い (子は反復子と本体だけ)。本体の中の名前は未束縛のまま。
+                // ループ変数は反復子の持つ貸し出しを持つ (毎回の反復で束縛し直す)。
+                self.scopes.push(HashMap::new());
+                for q in &e.pats {
+                    self.bind_pat(q, &srcs);
+                }
                 for x in ch.iter().skip(1) {
                     self.expr(x);
                 }
+                self.scopes.pop();
                 self.cfg.loops.pop();
                 let c = self.cfg.cur;
                 self.cfg.edge(c, head);
