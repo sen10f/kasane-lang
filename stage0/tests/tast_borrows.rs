@@ -93,6 +93,10 @@ const STEMS: &[&str] = &[
     "hunt_a31_extend_then_use",
     "infer_let_option_borrow_then_drop",
     "lifetime_ties_inputs_unit_ret",
+    "mem_replace_index_after_swap_keeps_borrow",
+    "mem_replace_index_old_value_keeps_borrow",
+    "mem_replace_index_other_elem_keeps_borrow",
+    "mem_replace_index_via_alias_keeps_borrow",
     "mem_replace_stores_borrow",
     "mem_replace_struct_borrow",
     "option_take_struct_literal_borrow",
@@ -170,11 +174,9 @@ fn borrow_rule_allows_copy_out_and_loop_reassign() {
     }
 }
 
-/// 正しいコード (`linear_ok/`・`check_ok/`) で規則 B が何も出さないこと。例外は台帳 (`tests/shadow_baseline.json`) に載せた
-/// 配列の要素の強い更新 (`mem.replace(&mut a[0], ..)` で古い借用が消える形。要素ごとの持ち主を持たない)。
+/// 正しいコード (`linear_ok/`・`check_ok/`) で規則 B が何も出さないこと (配列の定数添字の要素への `mem.replace` の強い更新を含む)。
 #[test]
 fn borrow_rule_silent_on_correct_code() {
-    const KNOWN: &[&str] = &["ok_mem_replace_index_ends_borrow", "ok_mem_replace_other_elem_ends_borrow"];
     let mut bad = vec![];
     for dir in ["linear_ok", "check_ok"] {
         let d = root().join("stage0/tests/data").join(dir);
@@ -182,9 +184,6 @@ fn borrow_rule_silent_on_correct_code() {
         files.sort();
         for f in files {
             let stem = f.file_stem().unwrap().to_string_lossy().to_string();
-            if KNOWN.contains(&stem.as_str()) {
-                continue;
-            }
             let src = fs::read_to_string(&f).unwrap();
             let got = new_checker(&format!("tast_bw_c_{}", stem), &src);
             if !got.is_empty() {
