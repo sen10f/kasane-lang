@@ -764,13 +764,52 @@ pub(crate) fn extract(header: &str, prefix: &str) -> Result<Model, String> {
     Ok(model)
 }
 
-/// 隠しの debug 引数: 見出しを libclang で解析して内部モデルを出す。
+// ---------------------------------------------------------------- 出力
+
+/// 内部モデルから Kasane のファイル (`.ksnh` の形) を作る。群ごとに名前順、定義の間は空行1つ。
+pub(crate) fn emit(m: &Model, prefix: &str, header: &str, link: Option<&str>) -> String {
+    let mut head = format!("// 生成: ksn bindgen --c {}。直接編集しない。module {}\n", header, prefix);
+    for n in &m.notes {
+        head.push_str(&format!("// 飛ばしたもの: {}\n", n));
+    }
+    let mut defs: Vec<String> = Vec::new();
+    let mut consts: Vec<&Const> = m.consts.iter().collect();
+    consts.sort_by(|a, b| a.name.cmp(&b.name));
+    for c in consts {
+        defs.push(format!("const {}: {} = {}{}", c.name, c.ty, c.val, c.ty));
+    }
+    let mut recs: Vec<&Rec> = m.recs.iter().collect();
+    recs.sort_by(|a, b| a.name.cmp(&b.name));
+    for r in recs {
+        let fields = r.fields.iter().map(|(n, t)| format!("    {}: {}", n, t)).collect::<Vec<_>>().join("\n");
+        defs.push(format!("type {}.{} layout c\n{}\nend {}.{}", prefix, r.name, fields, prefix, r.name));
+    }
+    let mut exts: Vec<&Ext> = m.exts.iter().collect();
+    exts.sort_by(|a, b| a.name.cmp(&b.name));
+    for e in exts {
+        let params = e.params.iter().map(|(n, t)| format!("{}: {}", n, t)).collect::<Vec<_>>().join(", ");
+        let linkstr = match link {
+            Some(l) => format!("{}:{}", l, e.c_name),
+            None => e.c_name.clone(),
+        };
+        defs.push(format!("extern {}.{}({}) -> {} link \"{}\"", prefix, e.name, params, e.ret, linkstr));
+    }
+    let mut out = head;
+    if !defs.is_empty() {
+        out.push_str(&defs.join("\n\n"));
+        out.push('\n');
+    }
+    out
+}
+
+/// 隠しの debug 引数: 見出しを libclang で解析して生成する Kasane のファイルを出す。
 pub(crate) fn cmd_bindgen_c_debug_kinds(rest: &[String]) -> i32 {
     let Some(header) = rest.iter().position(|a| a == "--c").and_then(|i| rest.get(i + 1)) else {
         eprintln!("usage: ksn bindgen --c <header.h> --debug-kinds");
         return 2;
     };
     let prefix = rest.iter().position(|a| a == "--prefix").and_then(|i| rest.get(i + 1)).cloned().unwrap_or_else(|| "x".into());
+    let link = rest.iter().position(|a| a == "--link").and_then(|i| rest.get(i + 1)).cloned();
     let m = match extract(header, &prefix) {
         Ok(m) => m,
         Err(e) => {
@@ -778,20 +817,6 @@ pub(crate) fn cmd_bindgen_c_debug_kinds(rest: &[String]) -> i32 {
             return 2;
         }
     };
-    for cn in &m.consts {
-        println!("const {}: {} = {}", cn.name, cn.ty, cn.val);
-    }
-    for r in &m.recs {
-        println!("type {}", r.name);
-        for (f, t) in &r.fields {
-            println!("    {}: {}", f, t);
-        }
-    }
-    for e in &m.exts {
-        println!("extern {}({}) -> {}", e.name, e.params.iter().map(|(n, t)| format!("{}: {}", n, t)).collect::<Vec<_>>().join(", "), e.ret);
-    }
-    for n in &m.notes {
-        println!("note: {}", n);
-    }
+    print!("{}", emit(&m, &prefix, header, link.as_deref()));
     0
 }
