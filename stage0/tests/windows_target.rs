@@ -85,7 +85,8 @@ fn copy_tree_skipping(src: &Path, dst: &Path, skip: &[&str]) {
 
 /// `examples/<name>` を一時ディレクトリへ複製する (`target/` は持ち込まない。ビルド成果物はテストの中で作る)。
 fn copy_example(name: &str) -> Tmp {
-    let d = std::env::temp_dir().join(format!("ksn_cross_{}_ex_{}", std::process::id(), name));
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let d = std::env::temp_dir().join(format!("ksn_win_{}_{}_ex_{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst), name));
     let _ = fs::remove_dir_all(&d);
     copy_tree_skipping(&root().join("examples").join(name), &d, &["target", ".git"]);
     Tmp(d)
