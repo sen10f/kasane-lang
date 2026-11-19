@@ -686,3 +686,111 @@ fn hover_definition_fqn_calls_across_modules_std_and_types() {
     assert_eq!(c.call("textDocument/hover", at(&uri, 2, 0)), Value::Null);
     c.shutdown();
 }
+
+/// 受け手の型で解決するメソッド呼び出し (G55)。同じ名前 `area` が 2 つの型 (`Sq` / `Ci`) にあり、
+/// 総称の受け手 (境界 `T: t.Area` の `v.area()`)、閉包の中の `q.area()`、標準のメソッド `v.push` も並べる。
+/// 指定の行・列は整形後の文書 (`ksn fmt` の出力) に合わせる。インデントは `concat!` で明示する (`\` の継続は空白を消すため)。
+const METHODS: &str = concat!(
+    "trait t.Area pub\n",
+    "    fn area(self: &Self) -> u32 uses [] panics never\n",
+    "end t.Area\n",
+    "\n",
+    "type t.Ci pub\n",
+    "    r: u32\n",
+    "end t.Ci\n",
+    "\n",
+    "type t.Sq pub\n",
+    "    side: u32\n",
+    "end t.Sq\n",
+    "\n",
+    "impl t.Area for t.Ci\n",
+    "fn t.Ci.area(self: &t.Ci) -> u32 uses [] panics never impls t.Area\n",
+    "    self.r\n",
+    "end t.Ci.area\n",
+    "\n",
+    "impl t.Area for t.Sq\n",
+    "fn t.Sq.area(self: &t.Sq) -> u32 uses [] panics never impls t.Area\n",
+    "    self.side\n",
+    "end t.Sq.area\n",
+    "\n",
+    "fn t.main() -> u32 uses [alloc] panics never\n",
+    "    let s = t.Sq { side: 2u32 }\n",
+    "    let c = t.Ci { r: 3u32 }\n",
+    "    let mut v: alloc.vec.Vec<u32> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n",
+    "    core.mem.drop(v.push(1u32))\n",
+    "    let f = fn(q: &t.Sq) -> u32 capture [] {\n",
+    "        q.area()\n",
+    "    }\n",
+    "    s.area().wrapping_add(c.area()).wrapping_add(t.total(&s)).wrapping_add(f(&s))\n",
+    "end t.main\n",
+    "\n",
+    "fn t.total[T: t.Area](v: &T) -> u32 uses [] panics never\n",
+    "    v.area()\n",
+    "end t.total\n",
+);
+
+/// hover の本文 (無ければ空)。
+fn hover_md(c: &mut Client, uri: &str, line: u32, ch: u32) -> String {
+    c.call("textDocument/hover", at(uri, line, ch))["contents"]["value"].as_str().unwrap_or("").to_string()
+}
+
+#[test]
+fn hover_definition_method_calls_resolve_by_receiver_type() {
+    let t = Tmp::new("method_nav", METHODS);
+    let uri = t.uri("src/t.ksnl");
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    c.open(&uri, METHODS);
+    // 同じ名前の 2 つのメソッド: `s.area()` は `Sq` の、`c.area()` は `Ci` の定義 (行 31 = 0 始まり 30)。
+    let md = hover_md(&mut c, &uri, 30, 7);
+    assert!(md.contains("fn t.Sq.area(self: &t.Sq) -> u32"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 30, 7));
+    assert_eq!(d[0]["range"]["start"], json!({"line": 18, "character": 3}), "{}", d);
+    let md = hover_md(&mut c, &uri, 30, 29);
+    assert!(md.contains("fn t.Ci.area(self: &t.Ci) -> u32"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 30, 29));
+    assert_eq!(d[0]["range"]["start"], json!({"line": 13, "character": 3}), "{}", d);
+    // 閉包の中の `q.area()` (`q: &t.Sq`)。
+    let md = hover_md(&mut c, &uri, 28, 11);
+    assert!(md.contains("fn t.Sq.area"), "{}", md);
+    // 総称の受け手 (境界 `T: t.Area`) の `v.area()`: 境界が宣言するメソッド (トレイトの宣言)。
+    let md = hover_md(&mut c, &uri, 34, 6);
+    assert!(md.contains("fn area(self: &Self) -> u32"), "{}", md);
+    // 標準のメソッド `v.push` (`alloc.vec.Vec` の定義)。
+    let md = hover_md(&mut c, &uri, 26, 21);
+    assert!(md.contains("push"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 26, 21));
+    assert!(d.as_array().map_or(false, |a| !a.is_empty()), "{}", d);
+    c.shutdown();
+}
+
+/// `.ksnh` の文書コメントと、メソッド呼び出しの位置 (G55)。`.ksnl` を開くと、位置は `.ksnh` の行に直して引く。
+#[test]
+fn method_call_hover_through_ksnh_sibling_keeps_doc_and_lines() {
+    let src = METHODS.replace("fn t.Sq.area", "/// 正方形の面積。\nfn t.Sq.area");
+    let t = Tmp::new("method_ksnh", &src);
+    let ksnl = fs::read_to_string(t.file("src/t.ksnl")).unwrap();
+    assert!(!ksnl.contains("///") && ksnl.contains("fn t.Sq.area"));
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    // `.ksnl` を開く: `s.area()` は ksnl の 31 行目 (0 始まり 30)。ksnh では 1 行多い。
+    let uri = t.uri("src/t.ksnl");
+    c.open(&uri, &ksnl);
+    let md = hover_md(&mut c, &uri, 30, 7);
+    assert!(md.contains("fn t.Sq.area(self: &t.Sq) -> u32") && md.contains("正方形の面積。"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 30, 7));
+    assert!(d[0]["uri"].as_str().unwrap().ends_with("src/t.ksnl"), "{}", d);
+    assert_eq!(d[0]["range"]["start"], json!({"line": 18, "character": 3}), "{}", d);
+    c.shutdown();
+    // `.ksnh` を開く: 同じ呼び出しは ksnh の 32 行目 (0 始まり 31)。定義は `.ksnh` の中。
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    let uri = t.uri("src/t.ksnh");
+    c.open(&uri, &src);
+    let md = hover_md(&mut c, &uri, 31, 7);
+    assert!(md.contains("fn t.Sq.area(self: &t.Sq) -> u32") && md.contains("正方形の面積。"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 31, 7));
+    assert!(d[0]["uri"].as_str().unwrap().ends_with("src/t.ksnh"), "{}", d);
+    assert_eq!(d[0]["range"]["start"], json!({"line": 19, "character": 3}), "{}", d);
+    c.shutdown();
+}
