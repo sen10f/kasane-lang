@@ -3383,7 +3383,7 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
     }
     let prog = prog.unwrap();
     let entry = l.pkg.entry();
-    let exe = out.join(if cfg!(windows) {
+    let exe = out.join(if cfg!(windows) || crate::kir_llvm::is_windows(tgt) {
         format!("{}.exe", name)
     } else if crate::kir_llvm::is_wasm(tgt) {
         format!("{}.wasm", name)
@@ -3866,6 +3866,10 @@ fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, t
         }
         let t = target.or_else(crate::kir_llvm::host_target).ok_or("このホストでは組み込みの lld を使えない (KSN_LINKER=external)")?;
         let root = std::env::var("KSN_SYSROOT").ok().filter(|s| !s.is_empty()).or_else(|| (!t.sysroot.is_empty()).then(|| t.sysroot.to_string()));
+        if crate::kir_llvm::is_windows(Some(t)) {
+            let args = crate::lld::mingw_args(root.as_deref(), &objs, exe)?;
+            return crate::lld::lld_link(crate::lld::Flavor::MinGw, &args);
+        }
         let args = crate::lld::elf_args(t.name, if target.is_some() { root.as_deref() } else { None }, &objs, exe)?;
         crate::lld::lld_link(crate::lld::Flavor::Elf, &args)
     })();

@@ -288,7 +288,107 @@ i64 ksn_rt_sys_var(const u8 *name, i64 nlen, i64 *len) {
     return (i64)(intptr_t)v;
 }
 
-#if !defined(__wasm__)
+#if defined(_WIN32)
+/* Windows (MinGW-w64、`x86_64-windows-gnu`): IR が直接呼ぶ POSIX の libc を、ここの殻 (`ksn_w_*`) へ向けてある (kir_llvm.rs `windows_shims`)。
+ * `write` / `read` は Win64 では `int` を返し長さは `unsigned` なので、`ssize_t` の戻りに直す。ソケットは別の記述子の空間なので、
+ * まずソケットとして試し、ソケットでなければ CRT の記述子として扱う。 */
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <io.h>
+#include <errno.h>
+#include <stdarg.h>
+#include <windows.h>
+
+static int ksn_w_wsa_ready;
+static void ksn_w_wsa(void) {
+    if (!ksn_w_wsa_ready) {
+        WSADATA d;
+        WSAStartup(MAKEWORD(2, 2), &d);
+        ksn_w_wsa_ready = 1;
+    }
+}
+static int ksn_w_is_sock(int fd) {
+    if (fd <= 2 || !ksn_w_wsa_ready) return 0;
+    int t = 0, n = sizeof t;
+    return getsockopt((SOCKET)fd, SOL_SOCKET, SO_TYPE, (char *)&t, &n) == 0;
+}
+static void ksn_w_sockerr(void) {
+    switch (WSAGetLastError()) {
+    case WSAECONNRESET: errno = 104; break;
+    case WSAECONNABORTED: errno = 103; break;
+    case WSAEWOULDBLOCK: case WSAETIMEDOUT: errno = 11; break;
+    case WSAECONNREFUSED: errno = 111; break;
+    case WSAEADDRINUSE: errno = 98; break;
+    case WSAEINTR: errno = 4; break;
+    case WSAENOTCONN: errno = 107; break;
+    default: errno = 5; break;
+    }
+}
+int *ksn_w___errno_location(void) { return _errno(); }
+long long ksn_w_write(int fd, const void *p, unsigned long long n) {
+    if (n > 0x40000000ULL) n = 0x40000000ULL;
+    if (ksn_w_is_sock(fd)) {
+        int r = send((SOCKET)fd, (const char *)p, (int)n, 0);
+        if (r < 0) ksn_w_sockerr();
+        return r;
+    }
+    return _write(fd, p, (unsigned)n);
+}
+long long ksn_w_read(int fd, void *p, unsigned long long n) {
+    if (n > 0x40000000ULL) n = 0x40000000ULL;
+    if (ksn_w_is_sock(fd)) {
+        int r = recv((SOCKET)fd, (char *)p, (int)n, 0);
+        if (r < 0) ksn_w_sockerr();
+        return r;
+    }
+    return _read(fd, p, (unsigned)n);
+}
+int ksn_w_close(int fd) {
+    if (ksn_w_is_sock(fd)) return closesocket((SOCKET)fd);
+    return _close(fd);
+}
+int ksn_w_socket(int a, int t, int pr) {
+    ksn_w_wsa();
+    SOCKET s = socket(a, t, pr);
+    if (s == INVALID_SOCKET) { ksn_w_sockerr(); return -1; }
+    return (int)s;
+}
+int ksn_w_accept(int fd, void *a, int *l) {
+    SOCKET s = accept((SOCKET)fd, (struct sockaddr *)a, l);
+    if (s == INVALID_SOCKET) { ksn_w_sockerr(); return -1; }
+    return (int)s;
+}
+int ksn_w_getsockname(int fd, void *a, int *l) { return getsockname((SOCKET)fd, (struct sockaddr *)a, l); }
+int ksn_w_dprintf(int fd, const char *fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    if (n < 0) return n;
+    if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
+    return (int)_write(fd, buf, (unsigned)n);
+}
+
+/* `extern` の動的ロード (`link "lib.dll:名前"`): `LoadLibraryA` / `GetProcAddress`。読めなければ panic と同じ文言で終了コード 101。 */
+void *ksn_ext_resolve(const char *lib, const char *sym, void **slot) {
+    if (*slot) return *slot;
+    HMODULE h = LoadLibraryA(lib);
+    if (!h) {
+        fprintf(stderr, "panic: cannot load the shared library `%s`: error %lu\n", lib, (unsigned long)GetLastError());
+        fflush(stderr);
+        exit(101);
+    }
+    void *p = (void *)GetProcAddress(h, sym);
+    if (!p) {
+        fprintf(stderr, "panic: symbol `%s` was not found in `%s`\n", sym, lib);
+        fflush(stderr);
+        exit(101);
+    }
+    *slot = p;
+    return p;
+}
+#elif !defined(__wasm__)
 #include <dlfcn.h>
 /* `extern` の動的ロード (`link "ライブラリ:名前"`、3.8): 初回の呼び出しで `dlopen` / `dlsym` して、
  * 関数ポインタを `slot` に覚える。読めなければ、インタプリタと同じ panic の文言で終了コード 101。 */

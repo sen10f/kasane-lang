@@ -361,7 +361,7 @@ pub struct Target {
 /// 対応するターゲット。ほかの三つ組は `target_of` が `None` を返す (呼び出し側が理由を出す)。
 /// `wasm32-unknown-unknown` は、ブラウザが主目標なので WASI ではなく素の wasm (import は `env` の数個だけ、`WASM ABI` 参照)。
 /// `wasm32-wasi` は WASI preview 1 の import (`wasi_snapshot_preview1`) で、ファイル・引数と環境・実時刻・乱数を使える (`WASM ABI` の WASI の項)。
-pub const TARGETS: [Target; 4] = [
+pub const TARGETS: [Target; 5] = [
     Target {
         name: "x86_64-linux-gnu",
         triple: "x86_64-unknown-linux-gnu",
@@ -374,6 +374,13 @@ pub const TARGETS: [Target; 4] = [
         triple: "aarch64-unknown-linux-gnu",
         datalayout: "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
         sysroot: "/usr/aarch64-linux-gnu",
+        ptr_bits: 64,
+    },
+    Target {
+        name: "x86_64-windows-gnu",
+        triple: "x86_64-w64-windows-gnu",
+        datalayout: "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+        sysroot: "/usr/x86_64-w64-mingw32",
         ptr_bits: 64,
     },
     Target {
@@ -395,6 +402,21 @@ pub const TARGETS: [Target; 4] = [
 /// `wasm32` の対象か (素の wasm と WASI。ファイルは `.wasm`、実行は `tools/wasm/run.mjs` / `run_wasi.mjs` か JS の `WebAssembly` で行う)。
 pub fn is_wasm(t: Option<Target>) -> bool {
     t.is_some_and(|t| t.ptr_bits == 32 && t.triple.starts_with("wasm32"))
+}
+
+/// Windows (MinGW-w64) の対象か。実行ファイルは `.exe`、リンクは組み込みの lld の MinGW 版。
+pub fn is_windows(t: Option<Target>) -> bool {
+    t.is_some_and(|t| t.triple.contains("windows"))
+}
+
+/// Windows 用に、IR が直接呼ぶ POSIX の libc を `ksn_w_*` の薄い殻 (`kir_rt.c`) へ向ける。
+/// Win64 の `write` / `read` は `int` と `unsigned` で、ソケットは別の記述子、`dprintf` と `__errno_location` は無い。
+fn windows_shims(ll: &str) -> String {
+    let mut s = ll.to_string();
+    for n in ["write", "read", "close", "accept", "getsockname", "socket", "dprintf", "__errno_location"] {
+        s = s.replace(&format!("@{}(", n), &format!("@ksn_w_{}(", n));
+    }
+    s
 }
 
 /// `wasm32-wasi` の対象か (WASI preview 1 の import を使う。`wasm32-unknown-unknown` は素の wasm のまま)。
@@ -464,6 +486,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         return Err(format!("KIR の検査に通らない ({}): {}", k, e));
     }
     if let Some(tg) = target.filter(|tg| tg.name != "x86_64-linux-gnu") {
+        // Win64 の構造体の値渡し (8 バイト以下は整数、それ以上は呼び出し側の複製へのポインタ) は別の規則で、まだ書いていない。
         // 構造体の値渡しの ABI (AAPCS64 の HFA・レジスタ分類など) は x86_64 だけ検証している。ほかは理由を出して退避させる。
         for f in m.funcs.iter().filter(|f| f.link.is_some()) {
             if f.params().iter().any(|(_, pt)| matches!(pt, Ty::Agg(_))) {
@@ -726,6 +749,9 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
+    }
+    if is_windows(target) {
+        out = windows_shims(&out);
     }
     Ok(out)
 }
@@ -993,7 +1019,7 @@ fn kasane_base_inst(key: &str) -> bool {
 
 /// IR が C の実行時補助を要するか。
 pub fn needs_runtime(ll: &str) -> bool {
-    ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int") || ll.contains("@ksn_rt_sys_") || ll.contains("@ksn_ext_resolve")
+    ll.contains("@ksn_w_") || ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int") || ll.contains("@ksn_rt_sys_") || ll.contains("@ksn_ext_resolve")
 }
 
 fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {

@@ -109,7 +109,7 @@ unsafe fn emit_module(module: LLVMModuleRef, opt: &str, triple: &str, obj: &std:
             "-Oz" => (LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault, "default<Oz>"),
             _ => (LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault, "default<O1>"),
         };
-        let reloc = if t.starts_with("wasm") { LLVMRelocMode::LLVMRelocDefault } else { LLVMRelocMode::LLVMRelocPIC };
+        let reloc = if t.starts_with("wasm") || t.contains("windows") { LLVMRelocMode::LLVMRelocDefault } else { LLVMRelocMode::LLVMRelocPIC };
         let tm = LLVMCreateTargetMachine(target, triple_c.as_ptr(), cpu.as_ptr(), c"".as_ptr(), level, reloc, LLVMCodeModel::LLVMCodeModelDefault);
         if tm.is_null() {
             return Err("LLVM の TargetMachine を作れない".to_string());
