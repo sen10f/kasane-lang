@@ -1,6 +1,6 @@
 static t.COUNTER: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
 
-fn t.adder(rounds: u32) -> std.thread.JoinHandle<(), std.alloc.System>
+fn t.adder(rounds: u32) -> std.thread.JoinHandle<(), std.alloc.System> uses [alloc, thread] panics may
     let spawned = std.thread.spawn(
         std.alloc.SYSTEM,
         fn() -> () capture [move rounds] {

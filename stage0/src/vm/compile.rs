@@ -61,7 +61,7 @@ enum CmpOpnd {
 
 /// KIR のモジュール全体をバイトコードにする。
 pub fn compile(m: &Module, lines: &HashMap<String, crate::kir_lower::FnLines>) -> Result<Prog, String> {
-    let mut prog = Prog { aggs: m.aggs.clone(), ..Default::default() };
+    let mut prog = Prog { aggs: m.aggs.clone(), depth: m.depth, ..Default::default() };
     let index: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
     for f in &m.funcs {
         let vf = if f.link.is_some() {

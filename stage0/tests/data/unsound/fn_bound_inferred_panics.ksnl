@@ -4,7 +4,7 @@ fn t.bad() -> u32 uses [] panics never
     })
 end t.bad
 
-fn t.boom() -> u32
+fn t.boom() -> u32 uses [] panics may
     core.panic.panic("p")
 end t.boom
 

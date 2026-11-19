@@ -47,7 +47,7 @@ fn todo_spa.model.item(after: &str) -> Result<Option<(alloc.string.String<std.al
     }
 end todo_spa.model.item
 
-fn todo_spa.model.item_rest['a](id_text: &str, raw: &str, tail: &'a str) -> Result<Option<(alloc.string.String<std.alloc.System>, &'a str)>, alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.model.item_rest['a](id_text: &str, raw: &str, tail: &'a str) -> Result<Option<(alloc.string.String<std.alloc.System>, &'a str)>, alloc.alloc.AllocError> uses [alloc] panics never
     match tail.split_once(",\"done\":") {
         None => Ok(None)
         Some((head, flag_on)) => {

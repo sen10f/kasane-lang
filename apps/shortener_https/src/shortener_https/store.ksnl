@@ -147,7 +147,7 @@ fn shortener_https.store.test_memory() -> shortener_https.store.Store uses [allo
     }
 end shortener_https.store.test_memory
 
-fn shortener_https.store.test_path(name: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+fn shortener_https.store.test_path(name: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics never
     let mut path = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(path.push_str("shortener-test-"))
     core.mem.drop(path.push_str(name))

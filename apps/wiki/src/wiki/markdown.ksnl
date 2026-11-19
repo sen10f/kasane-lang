@@ -41,7 +41,7 @@ fn wiki.markdown.flush_paragraph(out: &mut alloc.string.String<std.alloc.System>
 end wiki.markdown.flush_paragraph
 
 fn wiki.markdown.heading_level(line: &str) -> Option<u32> uses [] panics never
-    let mut level: u32 = 0u32
+    let mut level = 0u32
     let mut done = false
     for c in line.chars() {
         if !done {

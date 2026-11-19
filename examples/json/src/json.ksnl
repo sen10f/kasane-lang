@@ -52,14 +52,14 @@ fn json.array(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usiz
     Ok((at, close.wrapping_add(1usize)))
 end json.array
 
-fn json.compact(text: &str) -> Result<alloc.string.String<std.alloc.System>, json.Error>
+fn json.compact(text: &str) -> Result<alloc.string.String<std.alloc.System>, json.Error> uses [alloc] panics never
     let (doc, root) = json.parse(text)?
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     json.write(&doc, text.as_bytes(), root, &mut out)?
     Ok(out)
 end json.compact
 
-fn json.digits(src: &[u8], pos: usize) -> usize
+fn json.digits(src: &[u8], pos: usize) -> usize uses [] panics never
     let mut i = pos
     loop {
         match src.get(i) {
@@ -74,7 +74,7 @@ fn json.digits(src: &[u8], pos: usize) -> usize
     i
 end json.digits
 
-fn json.escape(src: &[u8], pos: usize) -> Result<usize, json.Error>
+fn json.escape(src: &[u8], pos: usize) -> Result<usize, json.Error> uses [] panics never
     match src.get(pos.wrapping_add(1usize)) {
         None => Err(json.Error.Eof)
         Some(b'u') => {
@@ -102,7 +102,7 @@ fn json.escape(src: &[u8], pos: usize) -> Result<usize, json.Error>
     }
 end json.escape
 
-fn json.flush(doc: &mut json.Doc, items: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), json.Error>
+fn json.flush(doc: &mut json.Doc, items: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), json.Error> uses [alloc] panics never
     let n = items.len()
     for k in core.iter.range(0usize, n) {
         match items.get(k) {
@@ -113,11 +113,11 @@ fn json.flush(doc: &mut json.Doc, items: &alloc.vec.Vec<usize, std.alloc.System>
     Ok(())
 end json.flush
 
-fn json.is_hex(c: u8) -> bool
+fn json.is_hex(c: u8) -> bool uses [] panics never
     c >= b'0' && c <= b'9' || c >= b'a' && c <= b'f' || c >= b'A' && c <= b'F'
 end json.is_hex
 
-fn json.literal(doc: &mut json.Doc, src: &[u8], pos: usize, word: &str, node: json.Node) -> Result<(usize, usize), json.Error>
+fn json.literal(doc: &mut json.Doc, src: &[u8], pos: usize, word: &str, node: json.Node) -> Result<(usize, usize), json.Error> uses [alloc] panics never
     let want = word.as_bytes()
     let stop = pos.wrapping_add(want.len())
     match src.sub(pos, stop) {
@@ -131,7 +131,7 @@ fn json.literal(doc: &mut json.Doc, src: &[u8], pos: usize, word: &str, node: js
     }
 end json.literal
 
-fn json.main() -> Result<(), json.Error>
+fn json.main() -> Result<(), json.Error> uses [alloc, io.console] panics never
     let text = "{ \"name\": \"kasane\", \"tags\": [\"a\", \"b\"], \"n\": -12.5e3, \"ok\": true, \"none\": null }"
     let out = json.compact(text)?
     match std.io.print_line(out.as_str()) {
@@ -140,7 +140,7 @@ fn json.main() -> Result<(), json.Error>
     }
 end json.main
 
-fn json.number(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error>
+fn json.number(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error> uses [alloc] panics never
     let mut i = pos
     if src.get(i) == Some(&b'-') {
         i = i.wrapping_add(1usize)
@@ -214,7 +214,7 @@ fn json.object(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usi
     Ok((at, close.wrapping_add(1usize)))
 end json.object
 
-fn json.parse(text: &str) -> Result<(json.Doc, usize), json.Error>
+fn json.parse(text: &str) -> Result<(json.Doc, usize), json.Error> uses [alloc] panics never
     let src = text.as_bytes()
     let links = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -227,18 +227,18 @@ fn json.parse(text: &str) -> Result<(json.Doc, usize), json.Error>
     Ok((doc, root))
 end json.parse
 
-fn json.push_link(doc: &mut json.Doc, slot: usize) -> Result<(), json.Error>
+fn json.push_link(doc: &mut json.Doc, slot: usize) -> Result<(), json.Error> uses [alloc] panics never
     doc.links.push(slot)?
     Ok(())
 end json.push_link
 
-fn json.push_node(doc: &mut json.Doc, node: json.Node) -> Result<usize, json.Error>
+fn json.push_node(doc: &mut json.Doc, node: json.Node) -> Result<usize, json.Error> uses [alloc] panics never
     let at = doc.nodes.len()
     doc.nodes.push(node)?
     Ok(at)
 end json.push_node
 
-fn json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], from: usize, to: usize) -> Result<(), json.Error>
+fn json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], from: usize, to: usize) -> Result<(), json.Error> uses [alloc] panics never
     match src.sub(from, to) {
         Some(bytes) => match core.str.from_utf8(bytes) {
             Ok(text) => json.put(out, text)
@@ -248,12 +248,12 @@ fn json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], 
     }
 end json.push_range
 
-fn json.put(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), json.Error>
+fn json.put(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), json.Error> uses [alloc] panics never
     out.push_str(text)?
     Ok(())
 end json.put
 
-fn json.skip_ws(src: &[u8], pos: usize) -> usize
+fn json.skip_ws(src: &[u8], pos: usize) -> usize uses [] panics never
     let mut i = pos
     loop {
         match src.get(i) {
@@ -268,7 +268,7 @@ fn json.skip_ws(src: &[u8], pos: usize) -> usize
     i
 end json.skip_ws
 
-fn json.string(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error>
+fn json.string(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error> uses [alloc] panics never
     let mut i = pos.wrapping_add(1usize)
     loop {
         match src.get(i) {
@@ -355,10 +355,10 @@ test json.compact.test_array
 end json.compact.test_array
 
 test json.compact.test_errors
-    core.check.eq(json.compact("[1,") is Err(_), true)
-    core.check.eq(json.compact("{\"a\" 1}") is Err(_), true)
-    core.check.eq(json.compact("[1] x") is Err(_), true)
-    core.check.eq(json.compact("01x") is Err(_), true)
+    core.check.eq(json.compact("[1,").is_err(), true)
+    core.check.eq(json.compact("{\"a\" 1}").is_err(), true)
+    core.check.eq(json.compact("[1] x").is_err(), true)
+    core.check.eq(json.compact("01x").is_err(), true)
 end json.compact.test_errors
 
 test json.compact.test_nested

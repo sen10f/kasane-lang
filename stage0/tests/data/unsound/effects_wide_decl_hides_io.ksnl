@@ -1,0 +1,7 @@
+fn t.f() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    Ok(())
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    t.f()
+end t.main

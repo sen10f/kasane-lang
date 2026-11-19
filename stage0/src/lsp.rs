@@ -325,6 +325,10 @@ struct Located {
     seg_start: usize,
     seg_end: usize,
     tok_start: usize,
+    /// `fqns[0]` がモジュールの名前 (定義ではない)。
+    module: bool,
+    /// モジュールの名前が経路の途中 (`app.util.f` の `util`)。改名・参照の対象にしない。
+    mid: bool,
 }
 
 fn param_uri(p: &Value) -> Result<String, (i64, String)> {
@@ -670,20 +674,36 @@ impl Server {
             if idx >= start && idx <= end {
                 let Some((l, _)) = self.ctx(&root) else { return Ok(None) };
                 if l.pkg.sources.iter().any(|s| s.module == name) {
-                    return Ok(Some(Located { root, fqns: vec![name.to_string()], line, seg_start: start, seg_end: end, tok_start: start }));
+                    return Ok(Some(Located { root, fqns: vec![name.to_string()], line, seg_start: start, seg_end: end, tok_start: start, module: true, mid: false }));
                 }
             }
         }
         let Some((segs, ss, se, ts, dot_before)) = token_at(ltxt, idx) else { return Ok(None) };
-        let Some((_, prog)) = self.ctx(&root) else { return Ok(None) };
+        // カーソルのセグメントの後ろにまだ `.` が続く (経路の途中)。
+        let mid = ltxt.chars().nth(se) == Some('.');
+        let Some((l, prog)) = self.ctx(&root) else { return Ok(None) };
+        let srcs = Self::sources(l);
         let mut fqns: Vec<String> = vec![];
+        // `a.b.f(..)` のように FQN で書いた名前: カーソルまでの経路 (`segs`) を名前解決で引く。
+        // 経路の全体 (最後のセグメント) なら関数・型・列挙子・組み込み。途中ならモジュール (下)。
         if let Some(r) = prog.resolve(&segs, &path) {
             if r.rest.is_empty() {
                 match r.target {
                     Target::Fn(i) | Target::Sig(i) | Target::Const(i) | Target::Type(i) => fqns.push(prog.defs[i].name.clone()),
                     Target::Variant(en, vn) => fqns.push(format!("{}.{}", en, vn)),
+                    // 組み込み (`core.mem.drop` など) は、宣言 (`.sig`) があるものだけ定義として返す。
+                    Target::Native(n) if cli::find_def(&srcs, &n).is_some() => fqns.push(n),
                     _ => {}
                 }
+            }
+        }
+        let mut module = false;
+        if fqns.is_empty() && (segs.len() > 1 || mid) {
+            // 経路の途中 (`app.util` の `util`)、または短縮形の先頭 (`import` 済みの `util.f`) のモジュール名。
+            let name = prog.expand(&segs, &path).join(".");
+            if srcs.iter().any(|s| s.module == name) {
+                module = true;
+                fqns.push(name);
             }
         }
         if fqns.is_empty() && (segs.len() > 1 || dot_before) {
@@ -701,7 +721,7 @@ impl Server {
         if fqns.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Located { root, fqns, line, seg_start: ss, seg_end: se, tok_start: ts }))
+        Ok(Some(Located { root, fqns, line, seg_start: ss, seg_end: se, tok_start: ts, module, mid: module && mid }))
     }
 
     fn sources<'a>(l: &'a Loaded) -> Vec<&'a Source> {
@@ -737,18 +757,23 @@ impl Server {
         if loc.fqns.len() != 1 {
             return Ok(Value::Null);
         }
-        let Some((l, _)) = self.ctx(&loc.root) else { return Ok(Value::Null) };
-        let srcs = Self::sources(l);
-        let (header, doc) = match cli::find_def(&srcs, &loc.fqns[0]) {
-            Some(Found::Def(d, s)) => (d.header.clone(), doc_comment(s, d)),
-            Some(Found::Line(s, ln)) => (s.lines[ln - 1].trim().to_string(), String::new()),
-            None => return Ok(Value::Null),
+        let md = if loc.module {
+            format!("モジュール `{}`", loc.fqns[0])
+        } else {
+            let Some((l, _)) = self.ctx(&loc.root) else { return Ok(Value::Null) };
+            let srcs = Self::sources(l);
+            let (header, doc) = match cli::find_def(&srcs, &loc.fqns[0]) {
+                Some(Found::Def(d, s)) => (d.header.clone(), doc_comment(s, d)),
+                Some(Found::Line(s, ln)) => (s.lines[ln - 1].trim().to_string(), String::new()),
+                None => return Ok(Value::Null),
+            };
+            let mut md = format!("```ksn\n{}\n```", header);
+            if !doc.is_empty() {
+                md.push_str("\n\n");
+                md.push_str(&doc);
+            }
+            md
         };
-        let mut md = format!("```ksn\n{}\n```", header);
-        if !doc.is_empty() {
-            md.push_str("\n\n");
-            md.push_str(&doc);
-        }
         let text = self.doc(&uri)?.text.clone();
         let lines = lines_of(&text);
         Ok(json!({"contents": {"kind": "markdown", "value": md}, "range": line_range(&lines, loc.line, loc.tok_start, loc.seg_end)}))
@@ -757,18 +782,24 @@ impl Server {
     fn definition(&mut self, p: &Value) -> Resp {
         let uri = param_uri(p)?;
         let Some(loc) = self.locate(&uri, p)? else { return Ok(Value::Null) };
-        let Some((l, _)) = self.ctx(&loc.root) else { return Ok(Value::Null) };
-        let srcs = Self::sources(l);
         let want_ksnl = self.docs.get(&uri).map_or(false, |d| d.path.ends_with(".ksnl"));
         let Some((l, _)) = self.ctx(&loc.root) else { return Ok(Value::Null) };
         let srcs = Self::sources(l);
         let mut out = vec![];
-        for f in &loc.fqns {
-            let last = f.rsplit('.').next().unwrap_or(f);
-            match cli::find_def(&srcs, f) {
-                Some(Found::Def(d, s)) => out.push(Self::def_location(s, d.line, &d.name, want_ksnl)),
-                Some(Found::Line(s, ln)) => out.push(Self::def_location(s, ln, last, want_ksnl)),
-                None => {}
+        if loc.module {
+            // モジュールの定義は、そのモジュールのソースの先頭。
+            if let Some(s) = srcs.iter().find(|s| s.module == loc.fqns[0]) {
+                let spath = if want_ksnl { to_ksnl(&s.path, 1).0 } else { s.path.clone() };
+                out.push(json!({"uri": path_to_uri(&spath), "range": range(0, 0, 0, 0)}));
+            }
+        } else {
+            for f in &loc.fqns {
+                let last = f.rsplit('.').next().unwrap_or(f);
+                match cli::find_def(&srcs, f) {
+                    Some(Found::Def(d, s)) => out.push(Self::def_location(s, d.line, &d.name, want_ksnl)),
+                    Some(Found::Line(s, ln)) => out.push(Self::def_location(s, ln, last, want_ksnl)),
+                    None => {}
+                }
             }
         }
         Ok(if out.is_empty() { Value::Null } else { Value::Array(out) })
@@ -778,7 +809,7 @@ impl Server {
         let uri = param_uri(p)?;
         let decl = p.pointer("/context/includeDeclaration").and_then(|b| b.as_bool()).unwrap_or(false);
         let Some(loc) = self.locate(&uri, p)? else { return Ok(Value::Null) };
-        if loc.fqns.len() != 1 {
+        if loc.fqns.len() != 1 || loc.mid {
             return Ok(Value::Null);
         }
         let target = loc.fqns[0].clone();
@@ -811,7 +842,7 @@ impl Server {
     fn rename_target(&mut self, uri: &str, p: &Value) -> Result<(Located, String), (i64, String)> {
         let no = || (REQUEST_FAILED, "ここは改名できません (パッケージ内の定義の名前にカーソルを置いてください)".to_string());
         let Some(loc) = self.locate(uri, p)? else { return Err(no()) };
-        if loc.fqns.len() != 1 {
+        if loc.fqns.len() != 1 || loc.mid {
             return Err(no());
         }
         let fqn = loc.fqns[0].clone();

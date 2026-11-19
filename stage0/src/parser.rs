@@ -1397,12 +1397,20 @@ impl Parser {
             let m = self.accept_kw("mut");
             let pat = self.pattern()?;
             let mut ty = V::Nil;
+            // 注釈に寿命 (`'a`・`'static`) があるか。型の木には残らない (`ref_rest` が読み捨てる) ので、5 つ目の欄に印を付ける (D17)。
+            let mut ann_life = false;
             if self.accept_op(":") {
+                let start = self.i;
                 ty = self.ty()?;
+                ann_life = self.t[start..self.i].iter().any(|t| t.kind == "life");
             }
             self.expect_op("=")?;
             let e = self.expr(false)?;
-            return Ok(ndl(ln, "Let", vec![pat, V::B(m), ty, e]));
+            let mut fs = vec![pat, V::B(m), ty, e];
+            if ann_life {
+                fs.push(V::B(true));
+            }
+            return Ok(ndl(ln, "Let", fs));
         }
         let e = self.expr(false)?;
         if self.is_op("=") {

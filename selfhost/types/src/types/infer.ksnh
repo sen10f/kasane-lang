@@ -508,7 +508,7 @@ fn types.infer.fresh_args(env: &types.env.Env, ar: &mut types.ty.Arena, item: us
 end types.infer.fresh_args
 
 // フィールド name を型の定義が持つか。
-fn types.infer.has_field(env: &types.env.Env, item: usize, fname: &str) -> bool uses [alloc] panics never pub
+fn types.infer.has_field(env: &types.env.Env, item: usize, fname: &str) -> bool uses [] panics never pub
     let node = types.infer.item_node(env, item)
     let file = types.infer.item_file(env, item)
     let p2 = match env.units.as_slice().get(file) {

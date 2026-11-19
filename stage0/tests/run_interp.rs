@@ -11,7 +11,7 @@ use common::*;
 
 #[test]
 fn run_err_exits_1_with_debug_output() {
-    let t = Tmp::new("err", "fn t.main() -> Result<(), u8> uses [] panics may\n    Err(7u8)\nend t.main\n");
+    let t = Tmp::new("err", "fn t.main() -> Result<(), u8> uses [] panics never\n    Err(7u8)\nend t.main\n");
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     assert!(text(&o.stderr).contains("Error: 7"));
@@ -27,7 +27,7 @@ fn run_panic_exits_101() {
 
 #[test]
 fn run_ok_exits_0_and_prints() {
-    let t = Tmp::new("ok", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(std.io.print_line(\"hi\"))\n    Ok(())\nend t.main\n");
+    let t = Tmp::new("ok", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    core.mem.drop(std.io.print_line(\"hi\"))\n    Ok(())\nend t.main\n");
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0));
     assert_eq!(text(&o.stdout).trim(), "hi");
@@ -262,7 +262,7 @@ fn std_net_connect_to_a_closed_port_is_an_error_value() {
 /// `Display` の char は文字そのもの。`print_line` と `to_string` の出力を確かめる。
 #[test]
 fn char_display_prints_the_character_itself() {
-    let body = "    let c: char = 'x'\n    let mut f = core.fmt.Formatter.new(8usize)\n    core.mem.drop(c.display_fmt(&mut f))\n    match core.str.from_utf8(f.written()) {\n        Ok(s) => std.io.print_line(s)?\n        Err(_e) => std.io.print_line(\"bad\")?\n    }\n    let n = 7u8\n    let mut f2 = core.fmt.Formatter.new(4usize)\n    core.mem.drop(n.display_fmt(&mut f2))\n    match core.str.from_utf8(f2.written()) {\n        Ok(s) => std.io.print_line(s)?\n        Err(_e) => std.io.print_line(\"bad\")?\n    }\n";
+    let body = "    let c = 'x'\n    let mut f = core.fmt.Formatter.new(8usize)\n    core.mem.drop(c.display_fmt(&mut f))\n    match core.str.from_utf8(f.written()) {\n        Ok(s) => std.io.print_line(s)?\n        Err(_e) => std.io.print_line(\"bad\")?\n    }\n    let n = 7u8\n    let mut f2 = core.fmt.Formatter.new(4usize)\n    core.mem.drop(n.display_fmt(&mut f2))\n    match core.str.from_utf8(f2.written()) {\n        Ok(s) => std.io.print_line(s)?\n        Err(_e) => std.io.print_line(\"bad\")?\n    }\n";
     let t = Tmp::new("char_display", &main_wrap("", body));
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
@@ -291,8 +291,8 @@ fn t.main() -> () uses [] panics may
     core.check.eq(x < y, false)
     core.check.eq(x > y, true)
     core.check.eq(x.partial_cmp(&y) == Some(core.cmp.Ordering.Greater), true)
-    let ox: Option<t.P> = Some(x)
-    let oy: Option<t.P> = Some(y)
+    let ox = Some(x)
+    let oy = Some(y)
     core.check.eq(ox.partial_cmp(&oy) == Some(core.cmp.Ordering.Greater), true)
 end t.main
 "#;
@@ -351,7 +351,7 @@ end t.main
 /// 整数・`bool` だけの構造体の `derive [ToJson]` は、ネイティブ (LLVM) まで下ろせて、`run` と出力が一致する。
 #[test]
 fn derive_to_json_of_a_scalar_struct_builds_native() {
-    let src = "type t.P derive [ToJson] pub\n    ok: bool\n    x: u32\n    y: i64\nend t.P\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let p = t.P { ok: true, x: 1u32, y: -2i64 }\n    match std.json.to_string(&p) {\n        Ok(s) => std.io.print_line(s.as_str())?\n        Err(_e) => std.io.print_line(\"err\")?\n    }\n    Ok(())\nend t.main\n";
+    let src = "type t.P derive [ToJson] pub\n    ok: bool\n    x: u32\n    y: i64\nend t.P\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never\n    let p = t.P { ok: true, x: 1u32, y: -2i64 }\n    match std.json.to_string(&p) {\n        Ok(s) => std.io.print_line(s.as_str())?\n        Err(_e) => std.io.print_line(\"err\")?\n    }\n    Ok(())\nend t.main\n";
     let t = Tmp::new("derive_json_native", src);
     let r = run(&["run"], &t.0);
     assert_eq!(text(&r.stdout), "{\"ok\":true,\"x\":1,\"y\":-2}\n", "{}", text(&r.stderr));

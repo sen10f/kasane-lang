@@ -19,7 +19,7 @@ const todo_spa.app.TAG_MUT: u32 = 2u32
 
 const todo_spa.app.TAG_REG: u32 = 3u32
 
-fn todo_spa.app.add_item() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.app.add_item() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let input = dom.by_id("todo-input")
     let mut buf = [0u8; 512]
     let n = dom.input_value(input, &mut buf)
@@ -66,7 +66,7 @@ fn todo_spa.app.decimal(id: u32) -> Result<alloc.string.String<std.alloc.System>
     Ok(s)
 end todo_spa.app.decimal
 
-fn todo_spa.app.delete_item(id: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.app.delete_item(id: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let want = todo_spa.app.decimal(id)?
     let mut path = alloc.string.String.new(std.alloc.SYSTEM)
     path.push_str("/todos/")?
@@ -91,7 +91,7 @@ fn todo_spa.app.find_done(cache: &str, want: &str) -> Option<bool> uses [] panic
 end todo_spa.app.find_done
 
 // ログイン: 成功すると、サーバの Set-Cookie の session を以後の要求が運ぶ (ブラウザは自動で付ける)。
-fn todo_spa.app.login() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.app.login() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     todo_spa.app.send("POST", "/login", todo_spa.app.ACCOUNT, todo_spa.app.TAG_LOGIN)
 end todo_spa.app.login
 
@@ -152,13 +152,13 @@ fn todo_spa.app.on_list_body() -> Result<(), alloc.alloc.AllocError> uses [alloc
 end todo_spa.app.on_list_body
 
 // `storage_get` の結果を文字列にする。無い・大きすぎるときは空。
-fn todo_spa.app.read_storage(key: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.app.read_storage(key: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
     let mut buf = [0u8; 16_384]
     let n = dom.storage_get(key, &mut buf)
     todo_spa.app.text_of(&buf, n)
 end todo_spa.app.read_storage
 
-fn todo_spa.app.refresh() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.app.refresh() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     todo_spa.app.send("GET", "/todos", "", todo_spa.app.TAG_LIST)
 end todo_spa.app.refresh
 
@@ -212,7 +212,7 @@ end todo_spa.app.render_item
 
 // サーバへ送る。`path` は `/todos` か `/todos/<id>`。完了は ksn_fetch_done で知らされる。
 // 接頭辞は localStorage の API_KEY (空なら同じ場所から)。
-fn todo_spa.app.send(method: &str, path: &str, body: &str, tag: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.app.send(method: &str, path: &str, body: &str, tag: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let base = todo_spa.app.read_storage(todo_spa.app.API_KEY)?
     let mut url = alloc.string.String.new(std.alloc.SYSTEM)
     url.push_str(base.as_str())?
@@ -238,7 +238,7 @@ fn todo_spa.app.status(message: &str) -> () uses [] panics never
     dom.set_text(dom.by_id("todo-status"), message)
 end todo_spa.app.status
 
-fn todo_spa.app.status_code(message: &str, code: i32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.app.status_code(message: &str, code: i32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let mut text = alloc.string.String.new(std.alloc.SYSTEM)
     text.push_str(message)?
     text.push_str(" (")?
@@ -249,7 +249,7 @@ fn todo_spa.app.status_code(message: &str, code: i32) -> Result<(), alloc.alloc.
 end todo_spa.app.status_code
 
 // バッファの先頭 `n` バイトを UTF-8 の文字列にする (負・範囲外・不正なら空)。
-fn todo_spa.app.text_of(buf: &[u8], n: i32) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.app.text_of(buf: &[u8], n: i32) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
     match usize.try_from_i32(n) {
         Err(e) => {
             core.mem.drop(e)
@@ -268,7 +268,7 @@ fn todo_spa.app.text_of(buf: &[u8], n: i32) -> Result<alloc.string.String<std.al
     }
 end todo_spa.app.text_of
 
-fn todo_spa.app.toggle_item(id: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.app.toggle_item(id: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let cache = todo_spa.app.read_storage(todo_spa.app.ITEMS_KEY)?
     let want = todo_spa.app.decimal(id)?
     match todo_spa.app.find_done(cache.as_str(), want.as_str()) {
@@ -289,7 +289,7 @@ fn todo_spa.app.toggle_item(id: u32) -> Result<(), alloc.alloc.AllocError> uses 
     }
 end todo_spa.app.toggle_item
 
-fn todo_spa.app.write_cache(lines: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.app.write_cache(lines: &str) -> Result<(), alloc.alloc.AllocError> uses [] panics never
     if lines.len() > 16_384usize {
         todo_spa.app.status("一覧が大きすぎる (16 KiB まで)")
     } else {

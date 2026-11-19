@@ -1,5 +1,5 @@
 fn t.f(c: bool) -> u32 uses [] panics never
-    let x: u32 = if c {
+    let x = if c {
         1u32
     } else {
         "x"

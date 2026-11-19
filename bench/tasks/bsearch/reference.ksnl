@@ -1,4 +1,4 @@
-fn bench.bsearch(xs: &[i32], target: i32) -> Option<usize>
+fn bench.bsearch(xs: &[i32], target: i32) -> Option<usize> uses [] panics may
     let mut lo = 0usize
     let mut hi = xs.len()
     while lo < hi {

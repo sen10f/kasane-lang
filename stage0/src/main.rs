@@ -33,6 +33,7 @@ mod spacing;
 mod bindgen;
 mod grammar;
 mod lint;
+mod lockapi;
 mod lsp;
 mod project;
 mod refactor;

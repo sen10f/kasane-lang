@@ -30,7 +30,7 @@ fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize
     Ok(lk)
 end lower.opt.bind
 
-fn lower.opt.binds_new() -> lower.opt.Binds uses [alloc] panics may pub
+fn lower.opt.binds_new() -> lower.opt.Binds uses [] panics never pub
     let names = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let vals = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let tys = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -150,7 +150,7 @@ fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     Ok(lower.cx.R { v: v, t: rty })
 end lower.opt.ctor
 
-fn lower.opt.deref_ty(c: &lower.cx.Cx, t: usize) -> (usize, bool, bool) uses [] panics may pub
+fn lower.opt.deref_ty(c: &lower.cx.Cx, t: usize) -> (usize, bool, bool) uses [] panics never pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
     if n.k == types.ty.K.Ref {
@@ -170,7 +170,7 @@ fn lower.opt.deref_val(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R) 
     Ok(lower.cx.R { v: v, t: inner })
 end lower.opt.deref_val
 
-fn lower.opt.faddr_src(v: usize, off: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.opt.faddr_src(v: usize, off: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_str("fieldaddr ")?
     s.push_str(lower.cx.vs(v)?.as_str())?
@@ -255,7 +255,7 @@ fn lower.opt.from_variant(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize,
     Ok(0usize)
 end lower.opt.from_variant
 
-fn lower.opt.kind(env: &types.env.Env, item: usize) -> usize uses [alloc] panics may pub
+fn lower.opt.kind(env: &types.env.Env, item: usize) -> usize uses [alloc] panics never pub
     let f = lower.tyk.item_fqn(env, item)
     if f.as_str() == "core.option.Option" {
         return 1usize
@@ -491,7 +491,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     Ok(lower.cx.R { v: rv, t: t })
 end lower.opt.optmatch
 
-fn lower.opt.owner_k(vname: &str) -> usize uses [] panics may pub
+fn lower.opt.owner_k(vname: &str) -> usize uses [] panics never pub
     if vname == "Some" {
         return 1usize
     }
@@ -529,7 +529,7 @@ fn lower.opt.recv_value(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R,
     lower.cx.def(c, rt.as_str(), sh.as_str())
 end lower.opt.recv_value
 
-fn lower.opt.refty(mutable: bool, t: &str) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.opt.refty(mutable: bool, t: &str) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let head = if mutable {
         "mutref<"
     } else {
@@ -607,7 +607,7 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     Ok(lower.cx.R { v: val, t: t })
 end lower.opt.tryx
 
-fn lower.opt.two_op(op: &str, a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.opt.two_op(op: &str, a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let t = lower.expr.two(a, b)?
     lower.cx.cat2(op, t.as_str())
 end lower.opt.two_op

@@ -1,4 +1,4 @@
 fn t.main() -> () uses [] panics never
-    let a: Option<u32> = Some(1u32, 2u32)
+    let a = Some(1u32, 2u32)
     core.mem.drop(a)
 end t.main

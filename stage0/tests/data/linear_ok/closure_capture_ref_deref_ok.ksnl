@@ -1,4 +1,4 @@
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let k = 7u64
     let mut m = 1u64
     let f = fn(x: u64) -> u64 capture [&k] {

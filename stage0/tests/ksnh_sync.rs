@@ -26,7 +26,7 @@ fn t.b() -> () uses [] panics never
     core.mem.drop(9u8)
 end t.b
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 ";
@@ -159,7 +159,7 @@ fn renamed_definition_moves_comments() {
 
 #[test]
 fn nested_blocks_keep_comments_when_the_header_changes() {
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never
     // setup
     let x = 1u32
     if x == 1u32 {

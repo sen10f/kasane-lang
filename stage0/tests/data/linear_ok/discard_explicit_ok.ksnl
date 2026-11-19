@@ -1,4 +1,4 @@
-fn t.f(v: &mut alloc.vec.Vec<u8, std.alloc.System>, o: Option<u32>) -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
+fn t.f(v: &mut alloc.vec.Vec<u8, std.alloc.System>, o: Option<u32>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     v.push(1u8)?
     core.mem.drop(v.pop())
     core.mem.drop(match o {

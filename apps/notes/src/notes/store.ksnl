@@ -120,7 +120,7 @@ fn notes.store.Store.path(self: &notes.store.Store) -> &str uses [] panics never
     self.dir.as_str()
 end notes.store.Store.path
 
-fn notes.store.Store.remove(self: &mut notes.store.Store, id: i64) -> Result<(), notes.error.Error> uses [alloc, io.fs] panics may pub
+fn notes.store.Store.remove(self: &mut notes.store.Store, id: i64) -> Result<(), notes.error.Error> uses [alloc, io.fs] panics never pub
     let index = notes.store.index_of(self, id)?
     core.mem.drop(self.notes.remove(index))
     let path = notes.store.note_path(self.dir.as_str(), id)?

@@ -2,7 +2,7 @@ fn t.id[T](x: T) -> T uses [] panics never
     x
 end t.id
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     core.mem.drop(t.id::<Foo>(1i32))
     Ok(())
 end t.main

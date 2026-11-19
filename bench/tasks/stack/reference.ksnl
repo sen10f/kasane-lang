@@ -2,20 +2,20 @@ type bench.Stack
     items: alloc.vec.Vec<u32, std.alloc.System>
 end bench.Stack
 
-fn bench.Stack.len(self: &bench.Stack) -> usize
+fn bench.Stack.len(self: &bench.Stack) -> usize uses [] panics never
     self.items.len()
 end bench.Stack.len
 
-fn bench.Stack.new() -> bench.Stack
+fn bench.Stack.new() -> bench.Stack uses [] panics never
     let items = alloc.vec.Vec.new(std.alloc.SYSTEM)
     bench.Stack { items: items }
 end bench.Stack.new
 
-fn bench.Stack.pop(self: &mut bench.Stack) -> Option<u32>
+fn bench.Stack.pop(self: &mut bench.Stack) -> Option<u32> uses [] panics never
     self.items.pop()
 end bench.Stack.pop
 
-fn bench.Stack.push(self: &mut bench.Stack, v: u32) -> bool
+fn bench.Stack.push(self: &mut bench.Stack, v: u32) -> bool uses [alloc] panics never
     match self.items.push(v) {
         Ok(_u) => true
         Err(_e) => false

@@ -85,7 +85,7 @@ fn resolve.table.mk(kind: parse.ast.Kind, file: usize, line: usize, public: bool
     resolve.table.Def { kind: kind, file: file, line: line, public: public, sig: sig }
 end resolve.table.mk
 
-fn resolve.table.new() -> Result<resolve.table.Table, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn resolve.table.new() -> Result<resolve.table.Table, alloc.alloc.AllocError> uses [] panics never pub
     let dm = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     let vm = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     let items = alloc.vec.Vec.new(std.alloc.SYSTEM)

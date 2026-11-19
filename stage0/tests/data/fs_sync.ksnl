@@ -3,7 +3,7 @@ fn t.finish(file: std.fs.File, count: &mut u32) -> () uses [io.fs] panics never
     *count = count.saturating_add(1u32)
 end t.finish
 
-fn t.main() -> Result<(), std.io.Error> uses [io.fs] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 

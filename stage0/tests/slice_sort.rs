@@ -30,6 +30,8 @@ impl Tmp {
         fs::write(d.join("src").join("t.ksnl"), src).unwrap();
         // 書き方は 1 通り (E0020): 試験の入力は `ksn fmt` の出力にそろえる。
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
+        // 効果の宣言は本体の効果と完全に一致させる (D5・D13): 固定の見出し (`main_wrap`) などを直す。
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025").current_dir(&d).output();
         Tmp(d)
     }
 }

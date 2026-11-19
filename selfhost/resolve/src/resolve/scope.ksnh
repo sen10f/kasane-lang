@@ -186,7 +186,7 @@ fn resolve.scope.member(t: &resolve.table.Table, st: &resolve.scope.St, name: &s
 end resolve.scope.member
 
 // 空の状態 (ファイル番号だけ入れる)。
-fn resolve.scope.mk(file: usize) -> Result<resolve.scope.St, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn resolve.scope.mk(file: usize) -> Result<resolve.scope.St, alloc.alloc.AllocError> uses [] panics never pub
     let a = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let b = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let c = alloc.vec.Vec.new(std.alloc.SYSTEM)

@@ -2,7 +2,7 @@ type t.Hidden
     n: i64
 end t.Hidden
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     std.io.print_line("x")
 end t.main
 

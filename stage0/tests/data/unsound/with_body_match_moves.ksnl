@@ -9,7 +9,7 @@ fn t.Res.shut(self: t.Res) -> () uses [] panics never
     core.mem.drop(data)
 end t.Res.shut
 
-fn t.bad() -> () uses [alloc] panics never
+fn t.bad() -> () uses [] panics never
     with r = t.Res { id: 1u32, data: alloc.vec.Vec.new(std.alloc.SYSTEM) } close r.shut() {
         match r {
             t.Res { id: id, data: data } => core.mem.drop(data)

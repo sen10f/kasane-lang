@@ -33,7 +33,7 @@ fn undef.k() -> i32 uses [] panics never
     a + b + c + d + g + h + i + m + q
 end undef.k
 
-fn undef.main() -> Result<(), std.io.Error> uses [io.console] panics never
+fn undef.main() -> Result<(), std.io.Error> uses [] panics never
     core.mem.drop(undef.k())
     Ok(())
 end undef.main

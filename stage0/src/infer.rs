@@ -36,7 +36,7 @@ pub fn run(p: &mut Program) {
     }
 }
 
-fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
+pub(crate) fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
     let d = &p.defs[di];
     let Some(body) = &d.body else { return (vec![], false) };
     let locals = local_names(d, body);
@@ -246,12 +246,15 @@ fn is_float_lit(e: &V) -> bool {
 pub fn annotate_int_lits(p: &mut Program, user: &[usize]) {
     use std::collections::HashMap;
     let mut tk = crate::types::TypeCk::new(p);
+    // D17 (E2053): 接尾辞を書き戻す前の木で冗長な注釈を測る (書き戻し後は `1` が `1u32` になって冗長に見える)。
+    tk.redundant_on = true;
     for &i in user {
         let d = &p.defs[i];
         if matches!(d.kw.as_str(), "fn" | "test") && d.body.is_some() {
             tk.check_def(i);
         }
     }
+    let src_diags: Vec<crate::check::Diag> = tk.diags.iter().filter(|d| d.code == "E2053").cloned().collect();
     let mut want: HashMap<&str, HashMap<u32, String>> = HashMap::new();
     for ((fqn, id), e) in &tk.tytab {
         if e.kind == "Lit" {
@@ -266,6 +269,7 @@ pub fn annotate_int_lits(p: &mut Program, user: &[usize]) {
         user.iter().filter_map(|&i| want.get(p.defs[i].name.as_str()).map(|m| (i, m.clone()))).collect();
     drop(want);
     drop(tk);
+    p.src_diags.extend(src_diags);
     let mut found: Vec<(usize, usize, String, String)> = vec![];
     for (i, m) in todo {
         if let Some(b) = p.defs[i].body.as_mut() {
@@ -274,7 +278,14 @@ pub fn annotate_int_lits(p: &mut Program, user: &[usize]) {
             found.extend(got.into_iter().map(|(pos, text, ty)| (i, pos, text, ty)));
         }
     }
-    p.nosuf_lits.extend(found);
+    // D12: 接尾辞のない整数リテラル (型が決まり、接尾辞を書き足した)。書き戻し後の木では接尾辞つきに見えるので、ここで E2028 にする。
+    for (i, pos, text, ty) in found {
+        let d = &p.defs[i];
+        let (line, col) = crate::parser::unpack_pos(pos);
+        let msg = format!("the integer literal `{}` has no suffix: append `{}` (write `{}{}`)", text, ty, text, ty);
+        let diag = crate::check::Diag { file: d.file.clone(), code: "E2028".into(), fqn: d.name.clone(), line, col, msg };
+        p.src_diags.push(diag);
+    }
 }
 
 fn fill(v: &mut V, m: &std::collections::HashMap<u32, String>, got: &mut Vec<(usize, String, String)>) {
@@ -475,7 +486,7 @@ fn scope_ends(
             if *kind == "Block" {
                 let stmts = items(&fs[0]);
                 for (k, s) in stmts.iter().enumerate() {
-                    if nname(s) == "Let" && nf(s).len() == 4 {
+                    if nname(s) == "Let" && nf(s).len() >= 4 {
                         let lf = nf(s);
                         if let Some(x) = simple(&lf[0]) {
                             let init_ty = tk.tytab.get(&(d.name.clone(), crate::parser::nid(&lf[3])));

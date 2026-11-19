@@ -37,7 +37,7 @@ fn fqn_call_shadowed_by_local_emits_hint() {
 #[test]
 fn fqn_call_normal_no_shadow() {
     // 衝突しない局所名: メソッド呼び出しは正常に通る。
-    let src = "fn t.main() -> u32 uses [] panics never\n    let v: u32 = 1u32\n    v.wrapping_add(2u32)\nend t.main\n";
+    let src = "fn t.main() -> u32 uses [] panics never\n    let v = 1u32\n    v.wrapping_add(2u32)\nend t.main\n";
     let (rc, _) = check_src("normal", src);
     assert_eq!(rc, Some(0));
 }

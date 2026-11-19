@@ -171,7 +171,7 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
 end lower.func.lower_item
 
 // 結果を記録する (成功なら本文、失敗なら理由)。順番は呼び出しの順。
-fn lower.func.record(c: &mut lower.cx.Cx, text: &str, why: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.func.record(c: &mut lower.cx.Cx, text: &str, why: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     if !why.is_empty() {
         c.g.oks.push(false)?
         c.g.tx.push(lower.cx.cat2(why, "")?)?

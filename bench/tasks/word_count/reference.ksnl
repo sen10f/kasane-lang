@@ -1,8 +1,8 @@
-fn bench.is_space(c: u8) -> bool
+fn bench.is_space(c: u8) -> bool uses [] panics never
     c == 32u8 || c == 10u8 || c == 9u8 || c == 13u8
 end bench.is_space
 
-fn bench.word_count(text: &str) -> u32
+fn bench.word_count(text: &str) -> u32 uses [] panics may
     let bytes = text.as_bytes()
     let mut count = 0u32
     let mut in_word = false

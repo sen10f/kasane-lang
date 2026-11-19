@@ -1,4 +1,4 @@
-fn bench.distinct_count(xs: &[u32]) -> usize
+fn bench.distinct_count(xs: &[u32]) -> usize uses [alloc] panics may
     let mut seen = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     let mut i = 0usize
     while i < xs.len() {

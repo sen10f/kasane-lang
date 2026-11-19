@@ -32,7 +32,7 @@ fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
     core.mem.drop(s)
 end t.consume
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
     match t.trim_it(&t.mk()) {
         Some(rest) => core.check.eq(rest.len(), 33usize)
         None => ()

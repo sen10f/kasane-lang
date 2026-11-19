@@ -63,7 +63,7 @@ fn lower.pat.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     Ok(())
 end lower.pat.bind
 
-fn lower.pat.bind_ty(c: &mut lower.cx.Cx, through: bool, mutable: bool, sub_t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.pat.bind_ty(c: &mut lower.cx.Cx, through: bool, mutable: bool, sub_t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     if !through {
         return Ok(sub_t)
     }

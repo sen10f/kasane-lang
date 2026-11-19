@@ -9,7 +9,7 @@ end lower.drop.arm_head
 // 所有物を持つ値 (構造体・列挙型・Option / Result の局所) の「移したかの印」と解放は、Rust 版
 // `kir_lower_coll.rs` の `Owned::Val` (印は `frame.bytes 1`) と `drop_value` の写し。
 // `br bN()` で終わる。
-fn lower.drop.br(c: &mut lower.cx.Cx, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.drop.br(c: &mut lower.cx.Cx, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     lower.expr.br_to(c, b)
 end lower.drop.br
 
@@ -73,7 +73,7 @@ fn lower.drop.exit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
 end lower.drop.exit
 
 // 局所 k の印 (枠の番地の VId + 1。無ければ 0)。
-fn lower.drop.flag_of(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
+fn lower.drop.flag_of(c: &lower.cx.Cx, k: usize) -> usize uses [] panics never pub
     match c.v.sl.flag.as_slice().get(k) {
         Some(x) => *x
         None => 0usize
@@ -81,7 +81,7 @@ fn lower.drop.flag_of(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
 end lower.drop.flag_of
 
 // 値 v の欄 (位置 j、`offs` はレイアウトの位置) を `field` で読む。
-fn lower.drop.fld(c: &mut lower.cx.Cx, v: usize, ty: &str, offs: &[usize], j: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.drop.fld(c: &mut lower.cx.Cx, v: usize, ty: &str, offs: &[usize], j: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let src = lower.expr.field_src(v, lower.tyk.at(offs, j))?
     lower.cx.def(c, ty, src.as_str())
 end lower.drop.fld
@@ -222,7 +222,7 @@ fn lower.drop.put(c: &mut lower.cx.Cx, k: usize, id: usize) -> Result<(), resolv
 end lower.drop.put
 
 // 印の枠 fl に真偽を書く (`const.bool` と `mem.store.bool`)。
-fn lower.drop.set(c: &mut lower.cx.Cx, fl: usize, on: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.drop.set(c: &mut lower.cx.Cx, fl: usize, on: bool) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let mut op = "const.bool false"
     if on {
         op = "const.bool true"

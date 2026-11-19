@@ -59,7 +59,7 @@ fn fill_secure_then_literal_arguments_are_intact() {
     Ok(())
 end t.main
 
-fn t.show(s: &str) -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.show(s: &str) -> Result<(), std.io.Error> uses [io.console] panics never
     std.io.print_line(s)?
     Ok(())
 end t.show
@@ -82,7 +82,7 @@ fn sort_on_empty_slices_does_not_crash() {
     let cases: &[(&str, &str)] = &[
         (
             "wiki_bug_sort_empty_vec",
-            "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+            "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.slice.sort(v.as_mut_slice())
     std.io.print_line(\"sorted\")?
@@ -92,7 +92,7 @@ end t.main
         ),
         (
             "wiki_bug_sort_empty_array",
-            "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+            "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     let mut a = [0u32; 0]
     core.slice.sort(&mut a)
     std.io.print_line(\"sorted\")?
@@ -119,7 +119,7 @@ end t.main
         ),
         (
             "wiki_bug_sort_empty_arg",
-            "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+            "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     t.srt(v.as_mut_slice())
     std.io.print_line(\"sorted\")?

@@ -1,5 +1,5 @@
 // 飛び先の引数: extra の後に今の可変の局所の値。
-fn lower.loops.args(c: &lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>, extra: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.loops.args(c: &lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>, extra: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for v in extra.as_slice().iter() {
         out.push(*v)?
@@ -11,14 +11,14 @@ fn lower.loops.args(c: &lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>
     Ok(out)
 end lower.loops.args
 
-fn lower.loops.bin(c: &mut lower.cx.Cx, ty: &str, op: &str, a: usize, b: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.loops.bin(c: &mut lower.cx.Cx, ty: &str, op: &str, a: usize, b: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let mut s = lower.cx.cat2(op, " ")?
     s.push_str(lower.expr.two(a, b)?.as_str())?
     lower.cx.def(c, ty, s.as_str())
 end lower.loops.bin
 
 // ブロックを作る (引数は lead の後に slots)。
-fn lower.loops.blk2(c: &mut lower.cx.Cx, ld: &alloc.vec.Vec<usize, std.alloc.System>, sv: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.loops.blk2(c: &mut lower.cx.Cx, ld: &alloc.vec.Vec<usize, std.alloc.System>, sv: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let mut all = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for v in ld.as_slice().iter() {
         all.push(*v)?
@@ -29,11 +29,11 @@ fn lower.loops.blk2(c: &mut lower.cx.Cx, ld: &alloc.vec.Vec<usize, std.alloc.Sys
     lower.cx.blk(c, &all)
 end lower.loops.blk2
 
-fn lower.loops.br(c: &mut lower.cx.Cx, b: usize, a: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.loops.br(c: &mut lower.cx.Cx, b: usize, a: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(b, a)?.as_str())?)
 end lower.loops.br
 
-fn lower.loops.brif(c: &mut lower.cx.Cx, cond: usize, b1: usize, a1: &alloc.vec.Vec<usize, std.alloc.System>, b2: usize, a2: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.loops.brif(c: &mut lower.cx.Cx, cond: usize, b1: usize, a1: &alloc.vec.Vec<usize, std.alloc.System>, b2: usize, a2: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let mut s = lower.cx.cat2("br_if ", lower.cx.vs(cond)?.as_str())?
     s.push_str(", ")?
     s.push_str(lower.cx.target(b1, a1)?.as_str())?
@@ -42,7 +42,7 @@ fn lower.loops.brif(c: &mut lower.cx.Cx, cond: usize, b1: usize, a1: &alloc.vec.
     lower.cx.finish(c, s)
 end lower.loops.brif
 
-fn lower.loops.fld(c: &mut lower.cx.Cx, ty: &str, v: usize, off: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.loops.fld(c: &mut lower.cx.Cx, ty: &str, v: usize, off: &str) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let mut s = lower.cx.cat2("field ", lower.cx.vs(v)?.as_str())?
     s.push_str(", ")?
     s.push_str(off)?
@@ -493,19 +493,19 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     Ok(lower.cx.R { v: u, t: t })
 end lower.loops.forx
 
-fn lower.loops.ld8(c: &mut lower.cx.Cx, a: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.loops.ld8(c: &mut lower.cx.Cx, a: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let s = lower.cx.cat2("mem.load.u8 ", lower.cx.vs(a)?.as_str())?
     lower.cx.def(c, "u8", lower.cx.cat2(s.as_str(), " +0")?.as_str())
 end lower.loops.ld8
 
 // `ty = make(%a, %b)`。
-fn lower.loops.make2(c: &mut lower.cx.Cx, ty: &str, a: usize, b: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.loops.make2(c: &mut lower.cx.Cx, ty: &str, a: usize, b: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let s = lower.cx.cat2("make(", lower.expr.two(a, b)?.as_str())?
     lower.cx.def(c, ty, lower.cx.cat2(s.as_str(), ")")?.as_str())
 end lower.loops.make2
 
 // 先頭 lead 個が usize の値と、可変の局所 ks の新しい値 (ブロックの引数)。
-fn lower.loops.mk(c: &mut lower.cx.Cx, lead: usize, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(alloc.vec.Vec<usize, std.alloc.System>, alloc.vec.Vec<usize, std.alloc.System>), resolve.Failure> uses [alloc] panics may pub
+fn lower.loops.mk(c: &mut lower.cx.Cx, lead: usize, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(alloc.vec.Vec<usize, std.alloc.System>, alloc.vec.Vec<usize, std.alloc.System>), resolve.Failure> uses [alloc] panics never pub
     let mut ld = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for _i in core.iter.range(0usize, lead) {
         ld.push(lower.cx.newval(c, "usize")?)?
@@ -515,19 +515,19 @@ fn lower.loops.mk(c: &mut lower.cx.Cx, lead: usize, ks: &alloc.vec.Vec<usize, st
 end lower.loops.mk
 
 // `rt = const.rt none`。
-fn lower.loops.none_of(c: &mut lower.cx.Cx, rt: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.loops.none_of(c: &mut lower.cx.Cx, rt: &str) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let s = lower.cx.cat2("const.", rt)?
     lower.cx.def(c, rt, lower.cx.cat2(s.as_str(), " none")?.as_str())
 end lower.loops.none_of
 
 // `ty = op %a` (op は "some " など)。
-fn lower.loops.un(c: &mut lower.cx.Cx, ty: &str, op: &str, a: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.loops.un(c: &mut lower.cx.Cx, ty: &str, op: &str, a: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let s = lower.cx.cat2(op, lower.cx.vs(a)?.as_str())?
     lower.cx.def(c, ty, s.as_str())
 end lower.loops.un
 
 // 先頭 n 個 (0〜3) の値の並び。
-fn lower.loops.vv(n: usize, a: usize, b: usize, d: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.loops.vv(n: usize, a: usize, b: usize, d: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     if n > 0usize {
         out.push(a)?

@@ -21,7 +21,7 @@ fn lower.own.declare(env: &types.env.Env, c: &mut lower.cx.Cx, k: usize, t: usiz
     Ok(())
 end lower.own.declare
 
-fn lower.own.derives(env: &types.env.Env, item: usize, want: &str) -> bool uses [] panics may pub
+fn lower.own.derives(env: &types.env.Env, item: usize, want: &str) -> bool uses [] panics never pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
     let p = match types.env.unit(env, file) {
@@ -51,7 +51,7 @@ fn lower.own.emit(c: &mut lower.cx.Cx, k: usize, kind: &str) -> Result<(), resol
     Ok(())
 end lower.own.emit
 
-fn lower.own.enter_ty(c: &mut lower.cx.Cx, f: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.own.enter_ty(c: &mut lower.cx.Cx, f: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let saved = lower.cx.copy_u(&c.v.subst)?
     let n = types.ty.node(&c.ar, f)
     let mut na = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -63,7 +63,7 @@ fn lower.own.enter_ty(c: &mut lower.cx.Cx, f: usize) -> Result<alloc.vec.Vec<usi
     Ok(saved)
 end lower.own.enter_ty
 
-fn lower.own.id(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
+fn lower.own.id(c: &lower.cx.Cx, k: usize) -> usize uses [] panics never pub
     match c.v.sl.own.as_slice().get(k) {
         Some(x) => *x
         None => 0usize
@@ -172,7 +172,7 @@ fn lower.own.is_linear(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, seen:
     Ok(found)
 end lower.own.is_linear
 
-fn lower.own.item_linear(env: &types.env.Env, item: usize) -> bool uses [] panics may pub
+fn lower.own.item_linear(env: &types.env.Env, item: usize) -> bool uses [] panics never pub
     let file = types.infer.item_file(env, item)
     let p = match types.env.unit(env, file) {
         Some(q) => q

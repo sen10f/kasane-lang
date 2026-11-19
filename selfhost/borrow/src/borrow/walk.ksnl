@@ -166,7 +166,7 @@ fn borrow.walk.check_pairs(cx: &mut borrow.cx.Cx, roots: &alloc.vec.Vec<usize, s
     Ok(())
 end borrow.walk.check_pairs
 
-fn borrow.walk.closure_mark(cx: &mut borrow.cx.Cx, from: usize, body: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn borrow.walk.closure_mark(cx: &mut borrow.cx.Cx, from: usize, body: usize) -> Result<(), alloc.alloc.AllocError> uses [] panics never pub
     let bn = parse.ast.get(&cx.p.ast, body)
     let mut to = cx.p.toks.len()
     if bn.kind == parse.ast.Kind.Block {

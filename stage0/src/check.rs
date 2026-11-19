@@ -917,10 +917,6 @@ impl<'a> Checker<'a> {
                 self.check_unsafe_surface(i);
             }
             let d = self.def(i);
-            // 効果の推論 (非 pub の関数のみ): pub / impls の関数は宣言が必要。
-            if d.kw == "fn" && d.inferred && (d.header.trim_end().ends_with(" pub") || d.header.contains(" impls ")) {
-                self.diag("E4020", format!("{}: pub / impls functions must declare `uses` and `panics`", d.name), i, 0);
-            }
             // 8.2: ユーザーは ksn_rt_ を link に使えない。
             if d.kw == "extern" && d.header.contains("link \"ksn_rt_") {
                 let own = d.name.starts_with("core.") || d.name.starts_with("alloc.") || d.name.starts_with("std.");
@@ -1350,6 +1346,7 @@ impl<'a> Checker<'a> {
     /// stack の上界の規則は設けない。
     fn check_impl_method_effects(&mut self, impl_of: &HashMap<(String, String), usize>) {
         let mut found: Vec<(usize, String)> = vec![];
+        let mut exact: Vec<(usize, String)> = vec![];
         for &i in &self.user {
             let d = self.def(i);
             if d.kw != "fn" || !d.has_impls || d.inferred {
@@ -1365,6 +1362,7 @@ impl<'a> Checker<'a> {
             let meth = d.name.rsplit('.').next().unwrap_or("");
             let targs = items(&self.def(ii).impl_targs).to_vec();
             let Some((tu, tp)) = trait_effect_bounds(td, meth, &targs) else { continue };
+            let (tu_all, tp_all) = (tu.clone(), tp.clone());
             let tname = format!("{}.{}", td.name, meth);
             if let Some(tu) = tu {
                 for e in &d.uses {
@@ -1388,9 +1386,17 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
+            if !found.iter().any(|(j, _)| *j == i) {
+                if let Some(m) = crate::tast_rules::effects_exact::impl_exact(d, &tu_all, &tp_all) {
+                    exact.push((i, m));
+                }
+            }
         }
         for (i, msg) in found {
             self.diag("E4021", msg, i, 0);
+        }
+        for (i, msg) in exact {
+            self.diag("E4025", msg, i, 0);
         }
     }
 
@@ -2805,7 +2811,9 @@ impl<'a> Checker<'a> {
                         return;
                     }
                     // 5.5: spawn に渡すクロージャは 'static。局所束縛への参照キャプチャは不可。
-                    if self.p.expand(&segs, &self.def(di).file).join(".") == "std.thread.spawn" {
+                    if self.p.expand(&segs, &self.def(di).file).join(".") == "std.thread.spawn"
+                        || self.p.expand(&segs, &self.def(di).file).join(".") == "std.thread.spawn_deep"
+                    {
                         if let Some(cl) = items(&f[1]).get(1) {
                             if nname(cl) == "Closure" {
                                 // 5.5: spawn の結果型 T も `Send` でなければならない。
@@ -3429,12 +3437,7 @@ impl<'a> Checker<'a> {
             }
         }
         self.diags.extend(tk.diags);
-        // D12: 接尾辞のない整数リテラル (型は推論で決まり、接尾辞を書き足した木になっている)。
-        for (di, pos, text, ty) in self.p.nosuf_lits.clone() {
-            if user.contains(&di) {
-                self.diag("E2028", format!("the integer literal `{}` has no suffix: append `{}` (write `{}{}`)", text, ty, text, ty), di, pos);
-            }
-        }
+        self.diags.extend(self.p.src_diags.iter().cloned());
         // 型で解決できた呼び出しの効果 (5.1 / 4.3): 局所変数レシーバの `s.m()` と、`Fn` 境界に渡した
         // クロージャから推論した効果変数・panic 変数。呼び出し元の宣言と比べ、全候補が違反するときだけ報告する。
         for ec in std::mem::take(&mut tk.eff_checks) {
@@ -3448,6 +3451,13 @@ impl<'a> Checker<'a> {
         self.closure_asts = tk.closure_asts;
         // 型で解決できた局所レシーバのメソッド呼び出し・`dyn` 越しの呼び出しの効果 (クロージャの効果は `eff_checks`)。
         self.check_resolved_methods(&tk.resolved_calls);
+        // 効果の完全一致 (D5・D13、TAST の規則 X): 新しい検査と同じ規則を呼ぶ。
+        {
+            let tast = crate::tast::build(self.p, &user, &tk.tytab, &tk.side, &self.let_tys);
+            for d in crate::tast_rules::effects_exact::check(self.p, &user, &tast) {
+                self.diags.push(d);
+            }
+        }
         // 従来の検査と新しい型推論が同じ誤りを同じ文面で報告したときは、1 件にまとめる。
         let mut seen = HashSet::new();
         self.diags.retain(|d| seen.insert((d.file.clone(), d.code.clone(), d.fqn.clone(), d.line, if d.code == "E2042" { String::new() } else { d.msg.clone() })));
@@ -7351,6 +7361,13 @@ impl<'a> Checker<'a> {
             if rec && never && d.stack.is_none() {
                 self.tdiag("E4010", format!("recursive `panics never` function {} requires `stack <bytes>`", n), 0);
             }
+            if let Some(m) = d.depth {
+                if self.p.entry.as_deref() != Some(n.as_str()) {
+                    self.tdiag("E4014", format!("`depth` is only allowed on the entry function ({})", n), 0);
+                } else if m == 0 || m > crate::kir_exec::MAX_DEPTH_LIMIT as u64 {
+                    self.tdiag("E4015", format!("`depth {}` is out of range (1..={})", m, crate::kir_exec::MAX_DEPTH_LIMIT), 0);
+                }
+            }
             if d.stack.is_some() && !(rec && never) {
                 self.tdiag("E4011", format!("`stack` is only allowed on recursive `panics never` functions ({})", n), 0);
             }
@@ -7420,7 +7437,7 @@ impl<'a> Checker<'a> {
     /// 型の注釈がない引数・局所変数は 1 語 (8) とみなす。本体の `let` は `walk` で拾うので、
     /// 入れ子のクロージャの中の `let` も数に入る (呼び出し元の関数のフレームとの二重計上は、
     /// 従来の保守的な近似の延長として許容する)。書かれた関数とクロージャ節で共通に使う。
-    fn frame_of(&self, anns: &[&V], body: &V) -> u64 {
+    fn frame_of(&self, anns: &[&V], body: &V, di: Option<usize>) -> u64 {
         let mut all = vec![];
         walk(body, &mut all);
         let mut bytes: u64 = 16 + 16;
@@ -7429,7 +7446,19 @@ impl<'a> Checker<'a> {
         }
         for l in all.iter().filter(|x| nname(x) == "Let") {
             let ann = &nf(l)[2];
-            bytes += if is_nil(ann) { 8 } else { round8(self.ty_size(ann, 0)) };
+            bytes += if !is_nil(ann) {
+                round8(self.ty_size(ann, 0))
+            } else {
+                // 注釈のない `let` は、推論した型 (`let_tys`) の大きさで数える (D17 で注釈を外しても見積りが変わらないように)。
+                // 型が決まらない・節の定義が分からないときは従来どおり 1 語。
+                let mut names = vec![];
+                crate::check::pat_bind_nodes(&nf(l)[0], &mut names);
+                let ty = di.and_then(|d| names.first().and_then(|(_, id)| self.let_tys.get(&(d, *id))));
+                match ty.and_then(crate::types::TypeCk::to_v) {
+                    Some(v) => round8(self.ty_size(&v, 0)),
+                    None => 8,
+                }
+            };
         }
         bytes
     }
@@ -7445,7 +7474,7 @@ impl<'a> Checker<'a> {
             Some(&i) => {
                 let d = self.def(i);
                 let params: Vec<&V> = d.params.iter().map(|p| &p.1).collect();
-                self.frame_of(&params, d.body.as_ref().unwrap())
+                self.frame_of(&params, d.body.as_ref().unwrap(), Some(i))
             }
             // `names` にあるのは書かれた関数だけ。それ以外の節はクロージャ節 (5.3) かもしれないので、
             // 対応表にあれば関数と同じ式で見積る。対応が取れない節 (クロージャ以外や、AST を
@@ -7454,7 +7483,9 @@ impl<'a> Checker<'a> {
                 Some(c) if nname(c) == "Closure" && nf(c).len() >= 4 => {
                     let f = nf(c);
                     let params: Vec<&V> = items(&f[0]).iter().filter_map(|p| items(p).get(1)).collect();
-                    self.frame_of(&params, &f[3])
+                    // 節名は `<囲む関数の FQN>#<連番>` (types.rs)。囲む関数の推論した `let` の型で数える。
+                    let encl = self.p.funcs.get(n.split('#').next().unwrap_or("")).copied();
+                    self.frame_of(&params, &f[3], encl)
                 }
                 _ => 32,
             },

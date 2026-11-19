@@ -115,7 +115,7 @@ fn lower.inst.is_generic(env: &types.env.Env, c: &lower.cx.Cx, item: usize) -> b
 end lower.inst.is_generic
 
 // 本体のない宣言 (`.sig` の fn) か。本体がないと検査の記録 (`ty_of`) がないので、型は注釈から読む。
-fn lower.inst.is_sig(env: &types.env.Env, item: usize) -> bool uses [] panics may pub
+fn lower.inst.is_sig(env: &types.env.Env, item: usize) -> bool uses [] panics never pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
     match types.env.unit(env, file) {

@@ -152,7 +152,7 @@ fn alloc.collections.HashMap.get[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.al
         Some(p) => match self.cells.get(p) {
             Some(cell) => match cell {
                 alloc.collections.HashCell.Entry(_h, _k, v) => {
-                    let vr: &V = v
+                    let vr = v
                     Some(vr)
                 }
                 alloc.collections.HashCell.Empty => None
@@ -390,8 +390,8 @@ fn alloc.collections.HashMapIter.next[K, V](self: &mut alloc.collections.HashMap
         match cells.get(p) {
             Some(cell) => match cell {
                 alloc.collections.HashCell.Entry(_h, k, v) => {
-                    let kr: &K = k
-                    let vr: &V = v
+                    let kr = k
+                    let vr = v
                     return Some((kr, vr))
                 }
                 alloc.collections.HashCell.Empty => {

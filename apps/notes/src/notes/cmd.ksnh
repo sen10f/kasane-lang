@@ -14,7 +14,7 @@ const notes.cmd.NOTES_DIR: &str = ".notes"
 
 // ---- add ----
 // notes add <title> <body> [tag...]
-fn notes.cmd.add(start: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs, time] panics may pub
+fn notes.cmd.add(start: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs, time] panics never pub
     let title = match std.env.arg(start) {
         Some(t) => t
         None => return Err(error.Error.Usage)
@@ -50,7 +50,7 @@ end notes.cmd.add
 
 // ---- edit ----
 // notes edit <id> <title> <body>
-fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs, time] panics may pub
+fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.fs] panics never pub
     let id_text = match std.env.arg(id_index) {
         Some(s) => s
         None => return Err(error.Error.Usage)
@@ -94,14 +94,14 @@ fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Res
 end notes.cmd.edit
 
 // メモの保存先ディレクトリを作成する。
-fn notes.cmd.ensure_dir() -> Result<(), notes.error.Error> uses [alloc, io.fs] panics never pub
+fn notes.cmd.ensure_dir() -> Result<(), notes.error.Error> uses [io.fs] panics never pub
     std.fs.create_dir_all(notes.cmd.NOTES_DIR)?
     Ok(())
 end notes.cmd.ensure_dir
 
 // ---- export ----
 // notes export <path> <format>  (format: json | md)
-fn notes.cmd.export(path_index: usize, format_index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics never pub
+fn notes.cmd.export(path_index: usize, format_index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.fs] panics never pub
     let path = match std.env.arg(path_index) {
         Some(p) => p
         None => return Err(error.Error.Usage)
@@ -251,7 +251,7 @@ end notes.cmd.print_row
 
 // ---- rm ----
 // notes rm <id>
-fn notes.cmd.rm(index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics may pub
+fn notes.cmd.rm(index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.fs] panics never pub
     let id_text = match std.env.arg(index) {
         Some(s) => s
         None => return Err(error.Error.Usage)
@@ -326,7 +326,7 @@ end notes.cmd.show
 
 // ---- tag ----
 // notes tag <id> <tag>
-fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics never pub
+fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.fs] panics never pub
     let id_text = match std.env.arg(id_index) {
         Some(s) => s
         None => return Err(error.Error.Usage)

@@ -69,7 +69,7 @@ fn threads.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] p
     std.io.print_line("threads ok")
 end threads.main
 
-fn threads.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+fn threads.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
     std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
 end threads.oom
 

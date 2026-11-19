@@ -203,7 +203,7 @@ pub enum TKind {
     If { cond: Box<TExpr>, then: Box<TExpr>, els: Option<Box<TExpr>> },
     Match { scrut: Box<TExpr>, arms: Vec<TArm> },
     /// 閉包: 引数の束縛・取り込み (`closure_caps`)・本体。
-    Closure { params: Vec<TBinding>, captures: Vec<Capture>, body: Box<TExpr> },
+    Closure { params: Vec<TBinding>, captures: Vec<Capture>, body: Box<TExpr>, written: Vec<(String, String)> },
     /// 構造体リテラル `T { f: e, .. }` (型の FQN の書いたまま, 欄名と値の式)。規則が欄の宣言の型と値の型を照らす。
     StructLit { name: String, fields: Vec<(String, TExpr)> },
     /// 上に無い形 (`For` `While` `Loop` `Return` `Try` `TupleE` `ArrayE` ...)。種別名と子の式。
@@ -581,7 +581,8 @@ impl<'a> Builder<'a> {
                     Some(Ty::Closure { id: Some(node), .. }) => self.side.closure_caps.get(node).cloned().unwrap_or_default(),
                     _ => vec![],
                 };
-                TKind::Closure { params, captures, body: Box::new(body) }
+                let written = lv(&f[2]).iter().filter_map(|c| match (lv(c).first(), lv(c).get(1)) { (Some(k), Some(n)) => Some((sv(k), sv(n))), _ => None }).collect();
+                TKind::Closure { params, captures, body: Box::new(body), written }
             }
             "For" => {
                 let it = self.expr(&f[1], false);

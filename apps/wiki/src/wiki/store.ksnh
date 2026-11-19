@@ -44,7 +44,7 @@ fn wiki.store.PageStore.load_latest(self: &mut wiki.store.PageStore, name: &str)
             Ok(v) => v
             Err(_e) => return None
         }
-        let mut max: u64 = 0u64
+        let mut max = 0u64
         let mut i = 0usize
         let n = versions.len()
         while i < n {
@@ -96,7 +96,7 @@ end wiki.store.PageStore.new
 
 fn wiki.store.PageStore.next_version(self: &mut wiki.store.PageStore, name: &str) -> Result<u64, wiki.error.Error> uses [alloc, io.fs] panics never pub
     let versions = self.page_versions(name)?
-    let mut max: u64 = 0u64
+    let mut max = 0u64
     let mut i = 0usize
     let n = versions.len()
     while i < n {

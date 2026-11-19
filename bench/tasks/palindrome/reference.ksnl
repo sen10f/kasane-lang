@@ -1,4 +1,4 @@
-fn bench.is_palindrome(text: &str) -> bool
+fn bench.is_palindrome(text: &str) -> bool uses [] panics may
     let bytes = text.as_bytes()
     let n = bytes.len()
     let mut i = 0usize

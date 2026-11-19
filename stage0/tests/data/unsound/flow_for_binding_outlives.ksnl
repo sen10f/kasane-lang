@@ -1,4 +1,4 @@
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let mut r = "x"
     let arr = [t.mk(), t.mk()]
     for s in arr {

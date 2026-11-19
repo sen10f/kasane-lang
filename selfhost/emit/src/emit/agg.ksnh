@@ -31,7 +31,7 @@ fn emit.agg.enum_variant(g: &mut emit.G, id: usize, k: usize, tok: &str) -> () u
 end emit.agg.enum_variant
 
 // 集成体 `agg` の変種 `variant` (構造体は 0) の `j` 番目のフィールドのオフセットと型。
-fn emit.agg.field(g: &emit.G, agg: usize, variant: usize, j: usize) -> (usize, usize) uses [io.console, process] panics may pub
+fn emit.agg.field(g: &emit.G, agg: usize, variant: usize, j: usize) -> (usize, usize) uses [] panics may pub
     let a = emit.agg.get(g, agg)
     if a.is_enum {
         let v = emit.agg.var(g, agg, variant)
@@ -57,7 +57,7 @@ fn emit.agg.field_w(g: &emit.G, t: usize) -> usize uses [io.console, process] pa
     emit.agg.size_of(g, t).wrapping_mul(8usize)
 end emit.agg.field_w
 
-fn emit.agg.get(g: &emit.G, id: usize) -> emit.agg.Agg uses [io.console, process] panics may pub
+fn emit.agg.get(g: &emit.G, id: usize) -> emit.agg.Agg uses [] panics may pub
     match g.tab.aggs.get(id) {
         Some(a) => *a
         None => core.panic.panic("internal: aggregate id out of range")
@@ -145,7 +145,7 @@ fn emit.agg.push_field(g: &mut emit.G, tok: &str, _variant: bool) -> () uses [al
     }
 end emit.agg.push_field
 
-fn emit.agg.push_var(g: &mut emit.G, agg: usize, variant: usize, start: usize, count: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.agg.push_var(g: &mut emit.G, agg: usize, variant: usize, start: usize, count: usize) -> () uses [alloc] panics may pub
     let v = emit.agg.Var { agg: agg, variant: variant, start: start, count: count }
     match g.tab.vars.push(v) {
         Ok(_u) => core.mem.drop(0u8)
@@ -154,7 +154,7 @@ fn emit.agg.push_var(g: &mut emit.G, agg: usize, variant: usize, start: usize, c
 end emit.agg.push_var
 
 // 集成体 `id` の大きさ (ビット)。`Rust` 版の `agg_bits` と同じく、大きさ 0 は 1 バイトとして扱う。
-fn emit.agg.size_bits(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
+fn emit.agg.size_bits(g: &emit.G, id: usize) -> usize uses [] panics may pub
     let a = emit.agg.get(g, id)
     let s = if a.size == 0usize {
         1usize
@@ -185,7 +185,7 @@ fn emit.agg.size_of(g: &emit.G, t: usize) -> usize uses [io.console, process] pa
 end emit.agg.size_of
 
 // 列挙型の変種の記録 (`variant` 番目)。
-fn emit.agg.var(g: &emit.G, agg: usize, variant: usize) -> emit.agg.Var uses [io.console, process] panics may pub
+fn emit.agg.var(g: &emit.G, agg: usize, variant: usize) -> emit.agg.Var uses [] panics may pub
     let mut i = 0usize
     while i < g.tab.vars.len() {
         let v = match g.tab.vars.get(i) {

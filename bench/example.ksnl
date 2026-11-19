@@ -20,7 +20,7 @@ fn bench.Stats.new() -> bench.Stats uses [] panics never pub
     bench.Stats { total: 0u32, count: 0u32 }
 end bench.Stats.new
 
-fn bench.first_big(xs: &[u32], limit: u32) -> Option<u32>
+fn bench.first_big(xs: &[u32], limit: u32) -> Option<u32> uses [] panics may
     let mut i = 0usize
     let mut found = None
     while i < xs.len() {
@@ -36,7 +36,7 @@ fn bench.first_big(xs: &[u32], limit: u32) -> Option<u32>
     found
 end bench.first_big
 
-fn bench.sum_even(n: u32) -> u32
+fn bench.sum_even(n: u32) -> u32 uses [] panics may
     let mut total = 0u32
     for i in core.iter.range(0u32, n) {
         if i % 2u32 == 0u32 {

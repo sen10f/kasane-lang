@@ -29,6 +29,8 @@ impl Tmp {
         fs::write(d.join("src").join("t.ksnl"), src).unwrap();
         // 書き方は 1 通り (E0020): 試験の入力は `ksn fmt` の出力にそろえる。
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
+        // 効果の宣言は本体の効果と完全に一致させる (D5・D13): 固定の見出し (`main_wrap`) などを直す。
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025").current_dir(&d).output();
         Tmp(d)
     }
     /// `selfhost/probes/<name>` を一時ディレクトリへ複製する (元は変えない)。
@@ -128,13 +130,13 @@ fn hashmap_with_string_keys() {
     let out = same(
         "hm_string",
         &prog(
-            r#"fn t.mk(text: &str) -> alloc.string.String uses [alloc] panics may
+            r#"fn t.mk(text: &str) -> alloc.string.String uses [alloc] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(text))
     s
 end t.mk
 
-fn t.early(flag: bool) -> usize uses [alloc] panics may
+fn t.early(flag: bool) -> usize uses [alloc] panics never
     let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     core.mem.drop(m.insert(t.mk("a"), 1u64))
     if flag {
@@ -192,7 +194,7 @@ end t.run
     assert!(out.contains("sum"), "{}", out);
 }
 
-const MK: &str = r#"fn t.mk(text: &str) -> alloc.string.String uses [alloc] panics may
+const MK: &str = r#"fn t.mk(text: &str) -> alloc.string.String uses [alloc] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(text))
     s
@@ -408,7 +410,7 @@ fn t.count() -> usize uses [] panics never
     n
 end t.count
 
-fn t.run() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.run() -> Result<(), std.io.Error> uses [io.console] panics may
     core.check.eq(t.is_op(b'+'), true)
     core.check.eq(t.is_op(b'a'), false)
     core.check.eq(t.count(), 8usize)

@@ -170,11 +170,11 @@ fn extern_and_ptr_functions_as_values_are_e5003_even_inside_unsafe() {
     let cases: &[(&str, &str)] = &[
         ("ug_a25_bind_then_call", r#"extern t.getpid() -> i32 link "getpid"
 
-fn t.dummy() -> i32 uses [] panics may
+fn t.dummy() -> i32 uses [] panics never
     0i32
 end t.dummy
 
-fn t.main() -> Result<(), std.io.Error> uses [] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let mut f = t.dummy
     unsafe "getpid" "bind" {
         f = t.getpid
@@ -185,11 +185,11 @@ end t.main
 "#),
         ("ug_a25_closure_bind", r#"extern t.getpid() -> i32 link "getpid"
 
-fn t.dummy() -> i32 uses [] panics may
+fn t.dummy() -> i32 uses [] panics never
     0i32
 end t.dummy
 
-fn t.main() -> Result<(), std.io.Error> uses [] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let mut f = t.dummy
     unsafe "getpid" "getpid を束縛" {
         f = t.getpid
@@ -204,11 +204,11 @@ end t.main
 "#),
         ("ug_a25_double_indirect", r#"extern t.getpid() -> i32 link "getpid"
 
-fn t.dummy() -> i32 uses [] panics may
+fn t.dummy() -> i32 uses [] panics never
     0i32
 end t.dummy
 
-fn t.first(f: fn() -> i32 uses [] panics may) -> fn() -> i32 uses [] panics may
+fn t.first(f: fn() -> i32 uses [] panics may) -> fn() -> i32 uses [] panics may uses [] panics never
     f
 end t.first
 
@@ -229,11 +229,11 @@ end t.second
 "#),
         ("ug_a25_env_bind", r#"extern t.dom_create(tag_ptr: *const u8, tag_len: usize) -> u32 link "env:ksn_dom_create"
 
-fn t.dummy() -> u32 uses [] panics may
+fn t.dummy() -> u32 uses [] panics never
     0u32
 end t.dummy
 
-fn t.main() -> Result<(), std.io.Error> uses [] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let mut f = t.dummy
     unsafe "env" "env 関数を束縛" {
         f = t.dom_create
@@ -245,11 +245,11 @@ end t.main
 "#),
         ("ug_a25_if_let", r#"extern t.getpid() -> i32 link "getpid"
 
-fn t.dummy() -> i32 uses [] panics may
+fn t.dummy() -> i32 uses [] panics never
     0i32
 end t.dummy
 
-fn t.main() -> Result<(), std.io.Error> uses [] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let mut f = t.dummy
     unsafe "getpid" "getpid を束縛" {
         f = t.getpid
@@ -271,7 +271,7 @@ fn t.Runner.run(self: &t.Runner) -> i32 uses [] panics may
     (self.f)()
 end t.Runner.run
 
-fn t.dummy() -> i32 uses [] panics may
+fn t.dummy() -> i32 uses [] panics never
     0i32
 end t.dummy
 
@@ -291,11 +291,11 @@ end t.Holder
 
 extern t.getpid() -> i32 link "getpid"
 
-fn t.dummy() -> i32 uses [] panics may
+fn t.dummy() -> i32 uses [] panics never
     0i32
 end t.dummy
 
-fn t.main() -> Result<(), std.io.Error> uses [] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let h = t.make_holder()
     let g = h.f
     let x = g()
@@ -303,7 +303,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics may
     Ok(())
 end t.main
 
-fn t.make_holder() -> t.Holder uses [] panics may
+fn t.make_holder() -> t.Holder uses [] panics never
     unsafe "getpid" "getpid を構造体に入れる" {
         t.Holder { f: t.getpid }
     }
@@ -311,7 +311,7 @@ end t.make_holder
 "#),
         ("ug_a25_runner", r#"extern t.getpid() -> i32 link "getpid"
 
-fn t.dummy() -> i32 uses [] panics may
+fn t.dummy() -> i32 uses [] panics never
     0i32
 end t.dummy
 
@@ -335,11 +335,11 @@ end t.Holder
 
 extern t.getpid() -> i32 link "getpid"
 
-fn t.dummy() -> i32 uses [] panics may
+fn t.dummy() -> i32 uses [] panics never
     0i32
 end t.dummy
 
-fn t.main() -> Result<(), std.io.Error> uses [] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let mut h = t.Holder { f: t.dummy }
     unsafe "getpid" "getpid をフィールドに代入" {
         h.f = t.getpid

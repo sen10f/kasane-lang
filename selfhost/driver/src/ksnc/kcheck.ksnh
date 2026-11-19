@@ -1,5 +1,5 @@
 // 借用の段 (borrow.main の本体)。`tout` は型の段の結果。
-fn ksnc.kcheck.borrow(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.console, io.fs] panics may
+fn ksnc.kcheck.borrow(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc] panics never
     let mut rep = resolve.report.new()?
     let mut tab = borrow.base.tab_new()
     let mut k = 0usize
@@ -48,7 +48,7 @@ fn ksnc.kcheck.borrow(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.F
 end ksnc.kcheck.borrow
 
 // 効果の段 (effects.main の (2)〜(5))。`tout` は型の段の結果。
-fn ksnc.kcheck.effects(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.console, io.fs] panics may
+fn ksnc.kcheck.effects(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc] panics never
     let mut acc = effects.walk.acc_new()?
     let mut t = resolve.table.new()?
     let mut fs = effects.fns.new()?
@@ -112,7 +112,7 @@ end ksnc.kcheck.effects
 // 名前解決は selfhost/resolve、型は selfhost/types、効果は selfhost/effects、借用は selfhost/borrow。
 // 各段の本文は、それぞれの main が表示するものと同じ (誤りの行と末尾の summary)。
 // ここでは表示せず、本文と誤りの数を返す。効果と借用は、それぞれの main の手順をここで組み直したもの。
-fn ksnc.kcheck.run(dir: &str, std_dir: &str) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
+fn ksnc.kcheck.run(dir: &str, std_dir: &str) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.fs] panics never pub
     let mut all = ksnc.front.text(dir, std_dir)?
     let tout = types.export.run(dir, std_dir)?
     all.text.push_str(tout.cx.rep.out.as_str())?

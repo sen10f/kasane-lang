@@ -6,7 +6,7 @@ fn t.H.set['a](self: &mut t.H<'a>, r: &'a mut u32) -> () uses [] panics never
     self.r = r
 end t.H.set
 
-fn t.bad() -> () uses [alloc] panics never
+fn t.bad() -> () uses [] panics never
     let pr = {
         let mut x = 7u32
         (&mut *&mut x, 1u8)
@@ -24,7 +24,7 @@ fn t.id(x: &mut u32) -> &mut u32 uses [] panics never
     x
 end t.id
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 

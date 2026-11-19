@@ -37,7 +37,7 @@ fn emit.func.assemble(g: &mut emit.G) -> () uses [alloc, io.console, process] pa
     emit.util.push_str(&mut g.outs.fns, text.as_str())
 end emit.func.assemble
 
-fn emit.func.block_copy(g: &emit.G, k: usize) -> alloc.string.String<std.alloc.System> uses [alloc, io.console, process] panics may pub
+fn emit.func.block_copy(g: &emit.G, k: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
     match g.flow.blocks.get(k) {
         Some(s) => emit.func.copy_str(s)
         None => alloc.string.String.new(std.alloc.SYSTEM)
@@ -86,13 +86,13 @@ fn emit.func.body_text(g: &mut emit.G, l: &str) -> () uses [alloc, io.console, p
     }
 end emit.func.body_text
 
-fn emit.func.copy_str(s: &alloc.string.String<std.alloc.System>) -> alloc.string.String<std.alloc.System> uses [alloc, io.console, process] panics may pub
+fn emit.func.copy_str(s: &alloc.string.String<std.alloc.System>) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
     let mut out = emit.util.new_str()
     emit.util.push_str(&mut out, s.as_str())
     out
 end emit.func.copy_str
 
-fn emit.func.edge_at(g: &emit.G, e: usize) -> emit.Edge uses [io.console, process] panics may pub
+fn emit.func.edge_at(g: &emit.G, e: usize) -> emit.Edge uses [] panics may pub
     match g.flow.edges.get(e) {
         Some(x) => *x
         None => core.panic.panic("internal: edge index")
@@ -111,7 +111,7 @@ fn emit.func.emit_fn(g: &mut emit.G, text: &str, starts: &alloc.vec.Vec<usize, s
     emit.func.assemble(g)
 end emit.func.emit_fn
 
-fn emit.func.flush_block(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.flush_block(g: &mut emit.G) -> () uses [alloc] panics may pub
     let done = emit.func.copy_str(&g.buf.cur)
     g.buf.cur = alloc.string.String.new(std.alloc.SYSTEM)
     match g.flow.blocks.push(done) {
@@ -120,15 +120,15 @@ fn emit.func.flush_block(g: &mut emit.G) -> () uses [alloc, io.console, process]
     }
 end emit.func.flush_block
 
-fn emit.func.header_index(l: &str) -> usize uses [] panics may pub
+fn emit.func.header_index(l: &str) -> usize uses [] panics never pub
     emit.util.dec(emit.util.after(l, 1usize))
 end emit.func.header_index
 
-fn emit.func.is_header(l: &str) -> bool uses [] panics may pub
+fn emit.func.is_header(l: &str) -> bool uses [] panics never pub
     l.starts_with("b") && l.ends_with(":") && l.contains("(")
 end emit.func.is_header
 
-fn emit.func.key_of(l: &str) -> &str uses [] panics may pub
+fn emit.func.key_of(l: &str) -> &str uses [] panics never pub
     match l.split_once("key=") {
         Some(q) => {
             let (_a, r) = q
@@ -183,7 +183,7 @@ fn emit.func.phis(g: &mut emit.G, k: usize) -> () uses [alloc, io.console, proce
     }
 end emit.func.phis
 
-fn emit.func.push_bool(v: &mut alloc.vec.Vec<bool, std.alloc.System>, x: bool) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.push_bool(v: &mut alloc.vec.Vec<bool, std.alloc.System>, x: bool) -> () uses [alloc] panics may pub
     match v.push(x) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
@@ -198,7 +198,7 @@ fn emit.func.push_param(g: &mut emit.G, item: &str) -> () uses [alloc, io.consol
     emit.func.push_usize(&mut g.lay.bpty, tid)
 end emit.func.push_param
 
-fn emit.func.push_succs(g: &mut emit.G, x: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.push_succs(g: &mut emit.G, x: usize) -> () uses [alloc] panics may pub
     let mut e = 0usize
     while e < g.flow.succ.len() {
         let from = *g.flow.succ.get(e).unwrap_or(&0usize)
@@ -210,14 +210,14 @@ fn emit.func.push_succs(g: &mut emit.G, x: usize) -> () uses [alloc, io.console,
     }
 end emit.func.push_succs
 
-fn emit.func.push_usize(v: &mut alloc.vec.Vec<usize, std.alloc.System>, x: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.push_usize(v: &mut alloc.vec.Vec<usize, std.alloc.System>, x: usize) -> () uses [alloc] panics may pub
     match v.push(x) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.func.push_usize
 
-fn emit.func.reach(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.reach(g: &mut emit.G) -> () uses [alloc] panics may pub
     let nb = g.misc.nblk
     let mut b = 0usize
     while b < nb {
@@ -237,14 +237,14 @@ fn emit.func.reach(g: &mut emit.G) -> () uses [alloc, io.console, process] panic
     }
 end emit.func.reach
 
-fn emit.func.reached(g: &emit.G, k: usize) -> bool uses [] panics may pub
+fn emit.func.reached(g: &emit.G, k: usize) -> bool uses [] panics never pub
     match g.lay.reach.get(k) {
         Some(x) => *x
         None => false
     }
 end emit.func.reached
 
-fn emit.func.ret_text(head: &str) -> &str uses [io.console, process] panics may pub
+fn emit.func.ret_text(head: &str) -> &str uses [] panics may pub
     match head.split_once("ret=") {
         Some(q) => {
             let (_a, r) = q
@@ -266,7 +266,7 @@ fn emit.func.scan(g: &mut emit.G, text: &str, starts: &alloc.vec.Vec<usize, std.
     g.misc.nblk = g.lay.bpst.len().wrapping_sub(1usize)
 end emit.func.scan
 
-fn emit.func.scan_br_if(g: &mut emit.G, l: &str, cur: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.scan_br_if(g: &mut emit.G, l: &str, cur: usize) -> () uses [alloc] panics may pub
     let r1 = emit.util.after_first(emit.util.after(l, 6usize), ", ")
     let ta = emit.util.nth(r1, "), ", 0usize)
     let tb = emit.util.nth(r1, "), ", 1usize)
@@ -321,7 +321,7 @@ fn emit.func.scan_params(g: &mut emit.G, l: &str) -> () uses [alloc, io.console,
     }
 end emit.func.scan_params
 
-fn emit.func.store_key(g: &mut emit.G, head: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.store_key(g: &mut emit.G, head: &str) -> () uses [alloc] panics may pub
     let key = emit.func.key_of(head)
     g.flags.fkey = alloc.string.String.new(std.alloc.SYSTEM)
     emit.util.push_str(&mut g.flags.fkey, key)
@@ -332,7 +332,7 @@ fn emit.func.store_ret(g: &mut emit.G, head: &str) -> () uses [alloc, io.console
     g.flags.ret = emit.ty.parse(g, t)
 end emit.func.store_ret
 
-fn emit.func.target(tok: &str) -> usize uses [] panics may pub
+fn emit.func.target(tok: &str) -> usize uses [] panics never pub
     emit.util.dec(emit.util.after(tok, 1usize))
 end emit.func.target
 

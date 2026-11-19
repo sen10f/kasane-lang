@@ -2,10 +2,10 @@ type t.P
     a: u64
 end t.P
 
-fn t.main() -> () uses [] panics may
+fn t.main() -> () uses [] panics never
     t.take(Some(1u64))
 end t.main
 
-fn t.take(p: t.P) -> () uses [] panics may
+fn t.take(p: t.P) -> () uses [] panics never
     core.mem.drop(p.a)
 end t.take

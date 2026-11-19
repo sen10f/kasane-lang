@@ -168,7 +168,7 @@ fn resolve.scope.member(t: &resolve.table.Table, st: &resolve.scope.St, name: &s
     Ok(resolve.scope.Res.Missing)
 end resolve.scope.member
 
-fn resolve.scope.mk(file: usize) -> Result<resolve.scope.St, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn resolve.scope.mk(file: usize) -> Result<resolve.scope.St, alloc.alloc.AllocError> uses [] panics never pub
     let a = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let b = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let c = alloc.vec.Vec.new(std.alloc.SYSTEM)

@@ -155,7 +155,7 @@ fn await_js_example_passes_check() {
 /// 木走査には JS の相手がいない: `await_js` は理由つきの panic (終了コード 101)。
 #[test]
 fn await_js_panics_in_the_tree_walker() {
-    let src = "fn t.wait() -> i32 uses [suspend] panics may
+    let src = "fn t.wait() -> i32 uses [suspend] panics never
     std.task.await_js(1u32)
 end t.wait
 

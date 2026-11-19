@@ -2,7 +2,7 @@ fn t.consume(s: alloc.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.consume
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     let o = Some(t.mk())
     let r = &o
     match r {

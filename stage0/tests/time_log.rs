@@ -36,7 +36,7 @@ fn strip_ts(line: &str) -> String {
 
 #[test]
 fn known_unix_seconds_print_rfc3339_in_run_and_native() {
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     t.show(0i64)?
     t.show(951782400i64)?
     t.show(4102444800i64)?
@@ -50,7 +50,7 @@ fn known_unix_seconds_print_rfc3339_in_run_and_native() {
     Ok(())
 end t.main
 
-fn t.show(secs: i64) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.show(secs: i64) -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let d = std.datetime.from_unix_seconds(secs)
     match d.to_rfc3339() {
         Ok(s) => {
@@ -208,7 +208,7 @@ end t.emit
 
 #[test]
 fn log_lines_have_one_json_object_per_line_on_stderr() {
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, time] panics may
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, time] panics never
     std.log.info(\"started\", &[(\"port\", \"8080\"), (\"mode\", \"dev\\\"x\")])?
     std.log.warn(\"odd\\nline\", &[(\"n\", \"1\")])?
     std.log.error(\"bad\", &[(\"k\", \"v\")])?
@@ -254,7 +254,7 @@ end t.main
 
 #[test]
 fn system_time_and_date_time_now_are_in_range() {
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console, time] panics may
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console, time] panics never
     let now = std.time.SystemTime.now()
     let s = now.unix_seconds()
     let ns = now.unix_nanos()
@@ -293,7 +293,7 @@ fn stderr_writes_are_allowed_under_io_console() {
 #[test]
 fn system_time_values_compare_in_clock_order() {
     // `SystemTime` は値で `Ord` を持つ。普通の走行では、後に読んだ時刻が前の時刻より小さくならない。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console, time] panics may
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console, time] panics never
     let a = std.time.SystemTime.now()
     let b = std.time.SystemTime.now()
     if a.unix_nanos() <= b.unix_nanos() {

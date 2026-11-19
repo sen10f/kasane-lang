@@ -5,7 +5,7 @@ fn lower.drop.arm_head(env: &types.env.Env, c: &mut lower.cx.Cx, own_scrut: bool
     Ok(())
 end lower.drop.arm_head
 
-fn lower.drop.br(c: &mut lower.cx.Cx, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.drop.br(c: &mut lower.cx.Cx, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     lower.expr.br_to(c, b)
 end lower.drop.br
 
@@ -66,14 +66,14 @@ fn lower.drop.exit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     Ok(())
 end lower.drop.exit
 
-fn lower.drop.flag_of(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
+fn lower.drop.flag_of(c: &lower.cx.Cx, k: usize) -> usize uses [] panics never pub
     match c.v.sl.flag.as_slice().get(k) {
         Some(x) => *x
         None => 0usize
     }
 end lower.drop.flag_of
 
-fn lower.drop.fld(c: &mut lower.cx.Cx, v: usize, ty: &str, offs: &[usize], j: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.drop.fld(c: &mut lower.cx.Cx, v: usize, ty: &str, offs: &[usize], j: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let src = lower.expr.field_src(v, lower.tyk.at(offs, j))?
     lower.cx.def(c, ty, src.as_str())
 end lower.drop.fld
@@ -207,7 +207,7 @@ fn lower.drop.put(c: &mut lower.cx.Cx, k: usize, id: usize) -> Result<(), resolv
     Ok(())
 end lower.drop.put
 
-fn lower.drop.set(c: &mut lower.cx.Cx, fl: usize, on: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.drop.set(c: &mut lower.cx.Cx, fl: usize, on: bool) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let mut op = "const.bool false"
     if on {
         op = "const.bool true"

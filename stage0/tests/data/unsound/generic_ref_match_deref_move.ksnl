@@ -1,5 +1,5 @@
 fn t.main() -> () uses [] panics never
-    let mut o: Option<u32> = Some(1u32)
+    let mut o = Some(1u32)
     core.mem.drop(t.take_opt(&mut o))
 end t.main
 

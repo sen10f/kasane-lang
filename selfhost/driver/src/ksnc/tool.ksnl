@@ -34,7 +34,7 @@ fn ksnc.tool.empty() -> &'static str uses [] panics never pub
     ""
 end ksnc.tool.empty
 
-fn ksnc.tool.entry(dir: &str) -> Result<alloc.string.String<std.alloc.System>, ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
+fn ksnc.tool.entry(dir: &str) -> Result<alloc.string.String<std.alloc.System>, ksnc.Failure> uses [alloc, io.console, io.fs] panics never pub
     let path = resolve.manifest.join(dir, "kasane.toml")?
     let bytes = resolve.load.read_bytes(path.as_str())?
     let text = match core.str.from_utf8(bytes.as_slice()) {
@@ -115,7 +115,7 @@ fn ksnc.tool.root(dir: &str) -> Result<alloc.string.String<std.alloc.System>, ks
     Err(ksnc.Failure.Tool)
 end ksnc.tool.root
 
-fn ksnc.tool.root_of(dir: &str) -> Result<alloc.string.String<std.alloc.System>, ksnc.Failure> uses [alloc, env, io.console, io.fs] panics may pub
+fn ksnc.tool.root_of(dir: &str) -> Result<alloc.string.String<std.alloc.System>, ksnc.Failure> uses [alloc, env, io.console, io.fs] panics never pub
     match std.env.var("KSNC_ROOT") {
         Some(r) => return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, r)?)
         None => core.mem.drop(0u8)
@@ -123,7 +123,7 @@ fn ksnc.tool.root_of(dir: &str) -> Result<alloc.string.String<std.alloc.System>,
     ksnc.tool.root(dir)
 end ksnc.tool.root_of
 
-fn ksnc.tool.run_show(cmd: std.process.Command, what: &str) -> Result<i32, ksnc.Failure> uses [alloc, io.console, process] panics may pub
+fn ksnc.tool.run_show(cmd: std.process.Command, what: &str) -> Result<i32, ksnc.Failure> uses [alloc, io.console, process] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut err = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let st = cmd.output(&mut out, &mut err)?
@@ -140,7 +140,7 @@ fn ksnc.tool.say_err(text: &str) -> Result<(), std.io.Error> uses [io.console] p
     Ok(())
 end ksnc.tool.say_err
 
-fn ksnc.tool.show(b: &alloc.vec.Vec<u8, std.alloc.System>) -> Result<(), ksnc.Failure> uses [io.console] panics may pub
+fn ksnc.tool.show(b: &alloc.vec.Vec<u8, std.alloc.System>) -> Result<(), ksnc.Failure> uses [io.console] panics never pub
     if b.is_empty() {
         return Ok(())
     }

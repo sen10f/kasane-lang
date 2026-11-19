@@ -3,7 +3,7 @@ fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
     core.mem.drop(s)
 end t.consume
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let o = Some(t.mk())
     core.mem.drop(t.q(&o))
     core.mem.drop(t.q(&o))

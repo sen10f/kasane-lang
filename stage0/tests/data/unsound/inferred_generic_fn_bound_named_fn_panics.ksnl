@@ -2,7 +2,7 @@ fn t.divides(x: u32) -> u32 uses [] panics may
     x / 0u32
 end t.divides
 
-fn t.g[F: core.ops.Fn<(u32,), u32>](f: F) -> u32
+fn t.g[F: core.ops.Fn<(u32,), u32>](f: F) -> u32 uses [] panics never
     f(1u32)
 end t.g
 

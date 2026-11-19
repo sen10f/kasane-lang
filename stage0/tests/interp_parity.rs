@@ -134,7 +134,7 @@ fn t.f4(p: &mut t.P) -> () uses [] panics never
     }
 end t.f4
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let a = alloc.string.String.new(std.alloc.SYSTEM)
     let mut p = t.P { x: &a, y: None }
     let s = match alloc.string.String.from_str(std.alloc.SYSTEM, "hello") {
@@ -162,7 +162,7 @@ fn dead_read_panics_h3() {
 #[test]
 fn dead_marks_do_not_touch_live_values() {
     // 正しいプログラム: drop したあとに同じ値を読まない。複製・別の String・Vec の drop は、他の値を巻き込まない。
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let a = match alloc.string.String.from_str(std.alloc.SYSTEM, "abc") {
         Ok(s) => s
         Err(_e) => return Ok(())

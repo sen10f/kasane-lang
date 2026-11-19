@@ -1,9 +1,9 @@
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let r = &t.make_vec().len()
     core.mem.drop(*r)
     Ok(())
 end t.main
 
-fn t.make_vec() -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics never
+fn t.make_vec() -> alloc.vec.Vec<u32, std.alloc.System> uses [] panics never
     alloc.vec.Vec.new(std.alloc.SYSTEM)
 end t.make_vec

@@ -118,11 +118,11 @@ fn linear_ok_matches_x86_64_native_on_aarch64() {
     let mut names: Vec<PathBuf> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(!names.is_empty(), "linear_ok cases missing");
-    for p in names {
+    par_map(&names, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("cross_lin_{}", stem), &fs::read_to_string(&p).unwrap());
+        let t = Tmp::new(&format!("cross_lin_{}", stem), &fs::read_to_string(p).unwrap());
         same_on_aarch64(&t.0, &format!("linear_ok/{}", stem));
-    }
+    });
 }
 
 // ---- 対象の指定と、対応しない組合せの理由つきのエラー (道具に依らない) ----
