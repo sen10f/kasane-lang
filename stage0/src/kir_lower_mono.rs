@@ -26,9 +26,9 @@ pub(super) fn subst_ty(t: &Src, bind: &HashMap<String, Src>) -> Src {
     let go = |x: &Src| subst_ty(x, bind);
     match t {
         Src::Param(n) => bind.get(n).cloned().unwrap_or_else(|| t.clone()),
-        Src::Ref(m, x) => Src::Ref(*m, Box::new(go(x))),
+        Src::Ref(m, x, _) => Src::Ref(*m, Box::new(go(x)), crate::types::Region::Unk),
         Src::Ptr(m, x) => Src::Ptr(*m, Box::new(go(x))),
-        Src::Named(n, a) => Src::Named(n.clone(), a.iter().map(go).collect()),
+        Src::Named(n, a, _) => Src::Named(n.clone(), a.iter().map(go).collect(), crate::types::Rgs::default()),
         Src::Tuple(xs) => Src::Tuple(xs.iter().map(go).collect()),
         Src::Array(x, n) => Src::Array(Box::new(go(x)), *n),
         Src::Slice(x) => Src::Slice(Box::new(go(x))),
@@ -41,8 +41,8 @@ pub(super) fn subst_ty(t: &Src, bind: &HashMap<String, Src>) -> Src {
 pub(super) fn concrete(t: &Src) -> bool {
     match t {
         Src::Unknown | Src::Var(_) | Src::Param(_) | Src::Never => false,
-        Src::Ref(_, x) | Src::Ptr(_, x) | Src::Array(x, _) | Src::Slice(x) => concrete(x),
-        Src::Named(_, a) | Src::Tuple(a) => a.iter().all(concrete),
+        Src::Ref(_, x, _) | Src::Ptr(_, x) | Src::Array(x, _) | Src::Slice(x) => concrete(x),
+        Src::Named(_, a, _) | Src::Tuple(a) => a.iter().all(concrete),
         _ => true,
     }
 }
@@ -55,13 +55,13 @@ pub(super) fn unify(pat: &Src, act: &Src, bind: &mut HashMap<String, Src>) {
                 bind.entry(n.clone()).or_insert_with(|| a.clone());
             }
         }
-        (Src::Ref(_, p), Src::Ref(_, a)) | (Src::Ptr(_, p), Src::Ptr(_, a)) | (Src::Array(p, _), Src::Array(a, _)) | (Src::Slice(p), Src::Slice(a)) => {
+        (Src::Ref(_, p, _), Src::Ref(_, a, _)) | (Src::Ptr(_, p), Src::Ptr(_, a)) | (Src::Array(p, _), Src::Array(a, _)) | (Src::Slice(p), Src::Slice(a)) => {
             unify(p, a, bind)
         }
         // `&[T]` の引数に配列・`Vec<T, A>` を渡す (参照外しの強制): 要素型を突き合わせる。
         (Src::Slice(p), Src::Array(a, _)) => unify(p, a, bind),
-        (Src::Slice(p), Src::Named(v, a)) if v == "alloc.vec.Vec" && !a.is_empty() => unify(p, &a[0], bind),
-        (Src::Named(n, ps), Src::Named(m, as_)) if n == m && ps.len() == as_.len() => {
+        (Src::Slice(p), Src::Named(v, a, _)) if v == "alloc.vec.Vec" && !a.is_empty() => unify(p, &a[0], bind),
+        (Src::Named(n, ps, _), Src::Named(m, as_, _)) if n == m && ps.len() == as_.len() => {
             for (p, a) in ps.iter().zip(as_) {
                 unify(p, a, bind)
             }
@@ -104,11 +104,11 @@ impl<'a> Lw<'a> {
         // メソッドの受け手の型 (`self: &Kvec<T, A>` に対する `Kvec<u32, System>`)。参照の段数は両側から剥がして突き合わせる。
         if let (Some(r), Some((_, pt))) = (recv, cd.params.first().filter(|_| skip == 1)) {
             let mut pat = from_v(pt, &tn);
-            while let Src::Ref(_, x) = pat {
+            while let Src::Ref(_, x, _) = pat {
                 pat = *x;
             }
             let mut act = r;
-            while let Src::Ref(_, x) = act {
+            while let Src::Ref(_, x, _) = act {
                 act = *x;
             }
             unify(&pat, &act, &mut bind);

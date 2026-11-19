@@ -20,7 +20,7 @@ fn elem_src(lw: &Lw, t: Ty) -> Option<Src> {
         Ty::Agg(i) => {
             let aggs = lw.aggs.borrow();
             if let Some((n, a)) = aggs.generic_args.get(&i) {
-                return Some(Src::Named(n.clone(), a.clone()));
+                return Some(Src::Named(n.clone(), a.clone(), crate::types::Rgs::default()));
             }
             // チャネルの端 `Sender<T>` / `Receiver<T>` (`chan_elem` に要素の型がある)。
             let chan = aggs.chan_kind(t).zip(aggs.chan_elem.get(&i).copied());
@@ -28,32 +28,32 @@ fn elem_src(lw: &Lw, t: Ty) -> Option<Src> {
                 drop(aggs);
                 let inner = elem_src(lw, el)?;
                 let n = if sender { "std.sync.Sender" } else { "std.sync.Receiver" };
-                return Some(Src::Named(n.into(), vec![inner]));
+                return Some(Src::Named(n.into(), vec![inner], crate::types::Rgs::default()));
             }
             // `Box<T>` (`box<..>`): 中身の型を戻せれば `Box<T, System>`。
             if let Some(el) = aggs.box_elem(t) {
                 drop(aggs);
                 let inner = elem_src(lw, el)?;
-                return Some(Src::Named("alloc.boxed.Box".into(), vec![inner, Src::Named("std.alloc.System".into(), vec![])]));
+                return Some(Src::Named("alloc.boxed.Box".into(), vec![inner, Src::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default())], crate::types::Rgs::default()));
             }
             let n = &aggs.defs[i as usize].name;
             // `Vec` / `String` のヘッダ (`vec`、要素が所有物なら `vec<#N>`): 配置と解放は同じなので、`String` / `Vec<要素>` に戻す。
             // `&str` と `&[T]` の値 (`fat`): 配置は同じなので `&str`。
             if n == "fat" {
-                return Some(Src::Ref(false, Box::new(Src::Prim("str".into()))));
+                return Some(Src::Ref(false, Box::new(Src::Prim("str".into())), crate::types::Region::Unk));
             }
             if n == "vec" {
-                return Some(Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![])]));
+                return Some(Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default())], crate::types::Rgs::default()));
             }
             if let Some(k) = n.strip_prefix("vec<#").and_then(|r| r.strip_suffix('>')).and_then(|r| r.parse::<u32>().ok()) {
                 drop(aggs);
                 let inner = elem_src(lw, Ty::Agg(k))?;
-                return Some(Src::Named("alloc.vec.Vec".into(), vec![inner, Src::Named("std.alloc.System".into(), vec![])]));
+                return Some(Src::Named("alloc.vec.Vec".into(), vec![inner, Src::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default())], crate::types::Rgs::default()));
             }
-            (n.contains('.') && !n.contains('<')).then(|| Src::Named(n.clone(), vec![]))
+            (n.contains('.') && !n.contains('<')).then(|| Src::Named(n.clone(), vec![], crate::types::Rgs::default()))
         }
         // 借用のヘッダのアドレス (`&String` / `&Vec<T>`): 8 バイトのポインタ。配置と扱いは同じなので `&String`。
-        Ty::Ptr => Some(Src::Ref(false, Box::new(Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![])])))),
+        Ty::Ptr => Some(Src::Ref(false, Box::new(Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default())], crate::types::Rgs::default())), crate::types::Region::Unk)),
         Ty::Unit => None,
         t if t.is_scalar() => Some(Src::Prim(t.name().to_string())),
         _ => None,
@@ -149,14 +149,14 @@ pub(super) fn string_call(lw: &mut Lw, e: &V, line: usize, h: VId, m: &str, args
         return None;
     }
     let di = find_def(lw, &format!("alloc.string.String.{}", m))?;
-    let recv = Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![])]);
+    let recv = Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default())], crate::types::Rgs::default());
     Some(kasane_call(lw, e, line, di, h, recv, args))
 }
 
 /// `String.push(c)` (`alloc/string.ksnl` の Kasane 版) を、評価済みの `char` の値 `c` で呼ぶ (`char` の `Display` の追記)。
 pub(super) fn string_push_char(lw: &mut Lw, e: &V, line: usize, h: VId, c: VId) -> Option<LR<Option<VId>>> {
     let di = find_def(lw, "alloc.string.String.push")?;
-    let recv = Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![])]);
+    let recv = Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default())], crate::types::Rgs::default());
     let tm = match lw.mono_targs(e, di, &[], 1, super::mono::targs_of(e), Some(recv)) {
         Ok(t) => t,
         Err(x) => return Some(Err(x)),
@@ -182,7 +182,7 @@ fn ext_lower(lw: &mut Lw, e: &V, line: usize, di: usize, on_vec: bool, elem: Ty,
         return lw.err(line, format!("メソッド {} の要素の型が型表に戻せない", cd.name));
     };
     let recv = if on_vec {
-        Src::Named("alloc.vec.Vec".into(), vec![es, Src::Named("std.alloc.System".into(), vec![])])
+        Src::Named("alloc.vec.Vec".into(), vec![es, Src::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default())], crate::types::Rgs::default())
     } else {
         Src::Slice(Box::new(es))
     };
@@ -196,7 +196,7 @@ pub(super) fn kasane_call(lw: &mut Lw, e: &V, line: usize, di: usize, self_v: VI
     let cd = &p.defs[di];
     // クロージャを引数に取る (`sort_by(fn ..)`): クロージャごとの単相インスタンス (`generic_call_with`)。
     if coll::has_closure_arg(lw, args) {
-        let rs = Src::Ref(true, Box::new(recv));
+        let rs = Src::Ref(true, Box::new(recv), crate::types::Region::Unk);
         return coll::generic_call_with(lw, e, di, Some((self_v, rs)), args);
     }
     let tm = lw.mono_targs(e, di, args, 1, super::mono::targs_of(e), Some(recv))?;

@@ -29,8 +29,10 @@ pub enum Ty {
     Never,
     Unit,
     Prim(String),
-    Named(String, Vec<Ty>),
-    Ref(bool, Box<Ty>),
+    /// 3 つ目は型実引数のライフタイム (`Foo<'a, T>` の `'a`。書いた順)。型の等しさには入れない。
+    Named(String, Vec<Ty>, Rgs),
+    /// 3 つ目は領域 (ライフタイム)。**型の等しさには入れない** (`Region` の `==` は常に真。厳密な比較は `Region::same`)。
+    Ref(bool, Box<Ty>, Region),
     /// 生ポインタ `*const T` (false) / `*mut T` (true) (3.8)。`&T` とは別の型で、暗黙には相互変換しない
     /// (`*mut` → `*const` の縮小だけ暗黙に許す。`*const` → `*mut` は `core.ptr.as_mut` のみ)。
     Ptr(bool, Box<Ty>),
@@ -52,7 +54,73 @@ pub enum Ty {
     /// トレイトオブジェクト `dyn Tr` (5.1)。`Tr` は書かれたトレイト名で、使用箇所で trait 定義の FQN に解決する。
     /// `dyn` は `&` / `&mut` の背後か `alloc.boxed.Box` の第1型引数にのみ現れる (`Ref` / `Box` の中身として持つ)。
     /// 2 つ目は `dyn Tr<E, P>` の型引数 (効果・panic の実引数を実体化するのに使う。型の同一性には入れない)。
-    Dyn(String, TArgs),
+    /// 3 つ目は `dyn Tr + 'a` の `'a` (なければ `Unk`)。型の等しさには入れない。
+    Dyn(String, TArgs, Region),
+}
+
+/// 参照の領域 (設計 9 章)。型の同一性には入れない (`==` は常に真)。厳密な比較は `Region::same`。
+#[derive(Clone, Debug)]
+pub enum Region {
+    /// 分からない・まだ付けていない。
+    Unk,
+    /// `'static`。
+    Static,
+    /// 関数の型パラメータの名前付きライフタイム (`'a` の `a`)。
+    Named(String),
+    /// 関数の中の局所の借用ごとの領域の変数 (借用の式の ID。`SideTabs::regions` の `borrows`)。
+    Var(u32),
+    /// 省略規則で決まる入力側の領域 (署名の入力で、省略した領域を左から数えた番号。`&self` は 0)。
+    Elided(u32),
+    /// 呼び出しごとに実体化した、呼び出し先の署名の領域 (呼び出し節点の ID, 署名の中の領域 `Named` / `Elided`)。
+    Inst(u32, Box<Region>),
+}
+
+/// 型実引数のライフタイムの並び。型の同一性には入れない (`==` は常に真)。
+#[derive(Clone, Debug, Default)]
+pub struct Rgs(pub Vec<Region>);
+
+impl PartialEq for Rgs {
+    fn eq(&self, _: &Rgs) -> bool {
+        true
+    }
+}
+
+impl PartialEq for Region {
+    fn eq(&self, _: &Region) -> bool {
+        true
+    }
+}
+
+impl Region {
+    /// 構文木のライフタイム (`'a` / `'static` / `'_`。なければ `Nil`) から。
+    pub fn from_life(v: &V) -> Region {
+        match v {
+            V::S(t) if t == "'static" => Region::Static,
+            V::S(t) if t == "'_" => Region::Unk,
+            V::S(t) if t.starts_with('\'') => Region::Named(t[1..].to_string()),
+            _ => Region::Unk,
+        }
+    }
+    /// 領域まで含めた厳密な等しさ。
+    pub fn same(&self, o: &Region) -> bool {
+        match (self, o) {
+            (Region::Unk, Region::Unk) | (Region::Static, Region::Static) => true,
+            (Region::Named(a), Region::Named(b)) => a == b,
+            (Region::Var(a), Region::Var(b)) | (Region::Elided(a), Region::Elided(b)) => a == b,
+            (Region::Inst(a, x), Region::Inst(b, y)) => a == b && x.same(y),
+            _ => false,
+        }
+    }
+    pub fn show(&self) -> String {
+        match self {
+            Region::Unk => "'_".into(),
+            Region::Static => "'static".into(),
+            Region::Named(n) => format!("'{}", n),
+            Region::Var(n) => format!("'?{}", n),
+            Region::Elided(n) => format!("'e{}", n),
+            Region::Inst(c, r) => format!("{}@{}", r.show(), c),
+        }
+    }
 }
 
 /// 関数型・関数値・クロージャの効果 (仕様 5.1 の `E0 ⊆ E` / `P0 ⊑ P` の検査用)。型の同一性には入れない。
@@ -96,9 +164,71 @@ pub enum Cap {
 }
 
 impl Ty {
+    /// 領域を写す (前順。`Ref` の領域・`Named` のライフタイム引数・`Dyn` の領域)。
+    pub fn map_regions(&self, f: &mut dyn FnMut(&Region) -> Region) -> Ty {
+        match self {
+            Ty::Ref(m, x, r) => {
+                let r2 = f(r);
+                Ty::Ref(*m, Box::new(x.map_regions(f)), r2)
+            }
+            Ty::Named(n, a, rs) => {
+                let rs2 = Rgs(rs.0.iter().map(|r| f(r)).collect());
+                Ty::Named(n.clone(), a.iter().map(|x| x.map_regions(f)).collect(), rs2)
+            }
+            Ty::Dyn(n, ta, r) => Ty::Dyn(n.clone(), ta.clone(), f(r)),
+            Ty::Ptr(m, x) => Ty::Ptr(*m, Box::new(x.map_regions(f))),
+            Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| x.map_regions(f)).collect()),
+            Ty::Array(x, n) => Ty::Array(Box::new(x.map_regions(f)), *n),
+            Ty::Slice(x) => Ty::Slice(Box::new(x.map_regions(f))),
+            Ty::Closure { args, ret, cap, id, eff } => Ty::Closure { args: args.iter().map(|x| x.map_regions(f)).collect(), ret: Box::new(ret.map_regions(f)), cap: cap.clone(), id: id.clone(), eff: eff.clone() },
+            other => other.clone(),
+        }
+    }
+    /// 型の中の領域を前順に並べる (`map_regions` と同じ順)。
+    pub fn regions(&self) -> Vec<Region> {
+        let mut out = vec![];
+        self.map_regions(&mut |r| {
+            out.push(r.clone());
+            r.clone()
+        });
+        out
+    }
+    /// 参照を 1 つ以上含み、領域がすべて `'static` か (`&'static str`・`Option<&'static T>` など)。
+    pub fn refs_all_static(&self) -> bool {
+        let rs = self.regions();
+        !rs.is_empty() && rs.iter().all(|r| matches!(r, Region::Static))
+    }
+    /// 一番外側の参照の領域 (`&T` / `&mut T` のとき)。
+    pub fn outer_region(&self) -> Option<&Region> {
+        match self {
+            Ty::Ref(_, _, r) => Some(r),
+            _ => None,
+        }
+    }
+    /// 型の一致 (`==`) に加えて、領域もすべて同じか。`==` は領域を見ない (設計 9 章)。
+    pub fn same_regions(&self, o: &Ty) -> bool {
+        self == o && { let (a, b) = (self.regions(), o.regions()); a.len() == b.len() && a.iter().zip(&b).all(|(x, y)| x.same(y)) }
+    }
+    /// 領域つきの表示 (`&'a T`。`show` は診断の文面なので領域を出さない)。
+    pub fn show_r(&self) -> String {
+        match self {
+            Ty::Ref(m, t, r) => format!("&{} {}{}", r.show(), if *m { "mut " } else { "" }, t.show_r()),
+            Ty::Named(n, a, rs) => {
+                let mut xs: Vec<String> = rs.0.iter().map(|r| r.show()).collect();
+                xs.extend(a.iter().map(|x| x.show_r()));
+                if xs.is_empty() { n.clone() } else { format!("{}<{}>", n, xs.join(", ")) }
+            }
+            Ty::Dyn(t, _, r) => format!("dyn {} + {}", t, r.show()),
+            Ty::Tuple(ts) => format!("({})", ts.iter().map(|x| x.show_r()).collect::<Vec<_>>().join(", ")),
+            Ty::Slice(t) => format!("[{}]", t.show_r()),
+            Ty::Array(t, _) => format!("[{}; _]", t.show_r()),
+            Ty::Ptr(m, t) => format!("{} {}", if *m { "*mut" } else { "*const" }, t.show_r()),
+            other => other.show(),
+        }
+    }
     pub(crate) fn strip(&self) -> &Ty {
         let mut t = self;
-        while let Ty::Ref(_, inner) = t {
+        while let Ty::Ref(_, inner, _) = t {
             t = inner;
         }
         t
@@ -109,14 +239,14 @@ impl Ty {
             Ty::Never => "!".into(),
             Ty::Unit => "()".into(),
             Ty::Prim(p) => p.clone(),
-            Ty::Named(n, a) => {
+            Ty::Named(n, a, _) => {
                 if a.is_empty() {
                     n.clone()
                 } else {
                     format!("{}<{}>", n, a.iter().map(|x| x.show()).collect::<Vec<_>>().join(", "))
                 }
             }
-            Ty::Ref(m, t) => format!("&{}{}", if *m { "mut " } else { "" }, t.show()),
+            Ty::Ref(m, t, _) => format!("&{}{}", if *m { "mut " } else { "" }, t.show()),
             Ty::Ptr(m, t) => format!("{} {}", if *m { "*mut" } else { "*const" }, t.show()),
             Ty::Tuple(ts) => format!("({})", ts.iter().map(|x| x.show()).collect::<Vec<_>>().join(", ")),
             Ty::Array(t, n) => match n { Some(n) => format!("[{}; {}]", t.show(), n), None => format!("[{}; _]", t.show()) },
@@ -126,14 +256,14 @@ impl Ty {
             Ty::Closure { args, ret, .. } => {
                 format!("fn({}) -> {}", args.iter().map(|x| x.show()).collect::<Vec<_>>().join(", "), ret.show())
             }
-            Ty::Dyn(t, _) => format!("dyn {}", t),
+            Ty::Dyn(t, _, _) => format!("dyn {}", t),
         }
     }
     pub(crate) fn has_param(&self) -> bool {
         match self {
             Ty::Param(_) => true,
-            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| x.has_param()),
-            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => x.has_param(),
+            Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(|x| x.has_param()),
+            Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => x.has_param(),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| x.has_param()) || ret.has_param(),
             _ => false,
         }
@@ -160,7 +290,7 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
         }
         "array" => Ty::Array(Box::new(from_v(tel(v, 1), params)), array_len(tel(v, 2))),
         "slice" => Ty::Slice(Box::new(from_v(tel(v, 1), params))),
-        "ref" => Ty::Ref(matches!(tel(v, 1), V::B(true)), Box::new(from_v(tel(v, 2), params))),
+        "ref" => Ty::Ref(matches!(tel(v, 1), V::B(true)), Box::new(from_v(tel(v, 2), params)), Region::from_life(tel(v, 3))),
         // 関数ポインタ型 `fn(A) -> R uses [..] panics ..`。効果は型の同一性に入れない (効果検査が見る)。
         "fn" => Ty::Closure {
             args: items(tel(v, 1)).iter().map(|x| from_v(x, params)).collect(),
@@ -190,10 +320,11 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
                 // 型実引数に書かれた効果・panic の実引数は、型の同一性に入れない (定数と同じ「どれでもよい」印)。
                 .map(|a| if matches!(tag(a).as_str(), "effects" | "panic") { Ty::Const("effect".into()) } else { const_targ(a).map_or_else(|| from_v(a, params), Ty::Const) })
                 .collect();
-            Ty::Named(name, args)
+            let lifes = items(tel(v, 2)).iter().filter(|a| matches!(a, V::L(_)) && tag(a) == "life").map(|a| Region::from_life(tel(a, 1))).collect();
+            Ty::Named(name, args, Rgs(lifes))
         }
         // `dyn Tr` (のトレイト名)。型引数・効果・ライフタイムは解決の対象にしない (近似)。
-        "dyn" => Ty::Dyn(st(tel(tel(v, 1), 0)), TArgs(items(tel(tel(v, 1), 1)).to_vec())),
+        "dyn" => Ty::Dyn(st(tel(tel(v, 1), 0)), TArgs(items(tel(tel(v, 1), 1)).to_vec()), Region::from_life(tel(v, 2))),
         _ => Ty::Unknown,
     }
 }
@@ -239,14 +370,48 @@ fn and_marker(a: Option<bool>, b: Option<bool>) -> Option<bool> {
 /// どのアロケータでも判定は変わらない)。それ以外の位置は決められないので `None` (fail-closed)。
 fn omitted_arg(g: &(String, String, V)) -> Option<Ty> {
     let allocator = items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]) == "alloc.alloc.Allocator"));
-    allocator.then(|| Ty::Named("std.alloc.System".into(), vec![]))
+    allocator.then(|| Ty::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default()))
+}
+
+/// 署名の省略規則 (E3021 と同じ): 入力の省略した領域に左から `Elided(0..)` を付け、戻り値の省略した領域は
+/// `&self` / `&mut self` があればその領域、なければ入力の領域がちょうど 1 つのときそれ、それ以外は `Unk` のまま。
+/// `params` は (名前, 型)。
+pub fn elide_sig(params: &[(String, Ty)], ret: &Ty) -> (Vec<Ty>, Ty) {
+    let mut n = 0u32;
+    let mut all: Vec<Region> = vec![];
+    let ps: Vec<Ty> = params
+        .iter()
+        .map(|(_, t)| {
+            t.map_regions(&mut |r| {
+                let r2 = if matches!(r, Region::Unk) {
+                    n += 1;
+                    Region::Elided(n - 1)
+                } else {
+                    r.clone()
+                };
+                all.push(r2.clone());
+                r2
+            })
+        })
+        .collect();
+    let self_r = match params.first() {
+        Some((nm, Ty::Ref(_, _, _))) if nm == "self" => ps[0].outer_region().cloned(),
+        _ => None,
+    };
+    let only = if all.len() == 1 { Some(all[0].clone()) } else { None };
+    let fill = self_r.or(only);
+    let r = match fill {
+        Some(f) => ret.map_regions(&mut |r| if matches!(r, Region::Unk) { f.clone() } else { r.clone() }),
+        None => ret.clone(),
+    };
+    (ps, r)
 }
 
 /// クロージャの取り込みの型 (5.5)。`&a` は `&T`、`&mut a` は `&mut T`、`move a` は `T`。
 fn capture_ty(kind: &str, t: Ty) -> Ty {
     match kind {
-        "&" => Ty::Ref(false, Box::new(t)),
-        "&mut" => Ty::Ref(true, Box::new(t)),
+        "&" => Ty::Ref(false, Box::new(t), crate::types::Region::Unk),
+        "&mut" => Ty::Ref(true, Box::new(t), crate::types::Region::Unk),
         _ => t,
     }
 }
@@ -255,8 +420,8 @@ fn capture_ty(kind: &str, t: Ty) -> Ty {
 fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
     match t {
         Ty::Param(p) => bind.get(p).cloned().unwrap_or(Ty::Unknown),
-        Ty::Named(n, a) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect()),
-        Ty::Ref(m, x) => Ty::Ref(*m, Box::new(subst(x, bind))),
+        Ty::Named(n, a, rs) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect(), rs.clone()),
+        Ty::Ref(m, x, rg) => Ty::Ref(*m, Box::new(subst(x, bind)), rg.clone()),
         Ty::Ptr(m, x) => Ty::Ptr(*m, Box::new(subst(x, bind))),
         Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| subst(x, bind)).collect()),
         Ty::Array(x, n) => Ty::Array(Box::new(subst(x, bind)), *n),
@@ -610,6 +775,47 @@ impl<'a> TypeCk<'a> {
         self.diags.push(Diag { file: d.file.clone(), code: code.into(), fqn: d.name.clone(), line, col, msg });
     }
 
+    /// 借用式 `&e` / `&mut e` の領域の変数を作り、側の表 (`regions.borrows`) に残す。
+    fn borrow_region(&mut self, e: &V) -> Region {
+        let id = crate::parser::nid(e);
+        let r = Region::Var(id);
+        self.side.regions.borrows.insert((self.cur, id), r.clone());
+        r
+    }
+
+    /// 呼び出し先の署名 (省略規則を当てた後) の領域を、この呼び出し (`call_id`) のものに実体化する (`Named` / `Elided` → `Inst`)。
+    fn inst_regions(call_id: u32, t: &Ty) -> Ty {
+        t.map_regions(&mut |r| match r {
+            Region::Named(_) | Region::Elided(_) => Region::Inst(call_id, Box::new(r.clone())),
+            other => other.clone(),
+        })
+    }
+
+    /// 実引数の型 `got` の領域が、仮引数の型 `want` (実体化済み) の領域より長く生きる、という関係を集める (解かない)。
+    fn note_region_cstr(&mut self, call_id: u32, want: &Ty, got: &Ty, why: &'static str) {
+        let (w, g) = (want.regions(), self.deep(got).regions());
+        // 形が同じ (領域の数が等しい) ときだけ前順に対応づける。違えば一番外側の参照だけ。
+        let pairs: Vec<(Region, Region)> = if w.len() == g.len() {
+            g.into_iter().zip(w).collect()
+        } else if let (Some(a), Some(b)) = (self.deep(got).outer_region(), want.outer_region()) {
+            vec![(a.clone(), b.clone())]
+        } else {
+            vec![]
+        };
+        for (long, short) in pairs {
+            if matches!(short, Region::Unk) || matches!(long, Region::Unk) || long.same(&short) {
+                continue;
+            }
+            self.side.regions.cstrs.push(crate::tast::RegionCstr { key: (self.cur, call_id), long, short, why });
+        }
+    }
+
+    /// 定義の署名の領域を、省略規則を当てた型で返す: (引数の型, 戻り値の型)。
+    fn sig_elided(d: &Def, gn: &HashSet<String>) -> (Vec<Ty>, Ty) {
+        let ps: Vec<(String, Ty)> = d.params.iter().map(|(n, t)| (n.clone(), from_v(t, gn))).collect();
+        elide_sig(&ps, &from_v(&d.ret, gn))
+    }
+
     pub fn check_def(&mut self, di: usize) {
         let d = &self.p.defs[di];
         // `const` / `static` は、初期化式の型を宣言の型と照らす (本体の代わりに初期化式を検査する)。
@@ -637,8 +843,12 @@ impl<'a> TypeCk<'a> {
         self.arg_static.clear();
         self.scopes = vec![HashMap::new()];
         let gn = d.gnames();
-        for (n, t) in &d.params {
-            let ty = from_v(t, &gn);
+        let (sig_ps, sig_ret) = Self::sig_elided(d, &gn);
+        {
+            let bounds: Vec<(String, Region)> = d.generics.iter().filter(|g| g.0 == "type").flat_map(|g| items(&g.2).iter().filter_map(|b| if let V::S(t) = b { t.starts_with('\'').then(|| (g.1.clone(), Region::from_life(b))) } else { None }).collect::<Vec<_>>()).collect();
+            self.side.regions.sigs.insert(di, crate::tast::SigRegions { params: d.params.iter().zip(&sig_ps).map(|((n, _), t)| (n.clone(), t.regions())).collect(), ret: sig_ret.regions(), bounds });
+        }
+        for ((n, _), ty) in d.params.iter().zip(sig_ps) {
             // 関数自身の型パラメータ (Ty::Param) は、単一化では「分からない型」と同じに働くが、
             // メソッド呼び出しでは境界のトレイトを引くために名前を残す。
             if matches!(ty, Ty::Prim(_)) {
@@ -653,7 +863,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         // `?` のエラー型の検査のため、この関数の戻り値型を覚える (クロージャはその注釈を重ねる)。
-        let ret = from_v(&d.ret, &gn);
+        let ret = sig_ret;
         self.rets.push(ret.clone());
         let value = self.infer(body);
         self.rets.pop();
@@ -667,6 +877,7 @@ impl<'a> TypeCk<'a> {
                 body.clone()
             };
             self.note_conv(&tail, &ret, &value);
+            self.note_region_cstr(crate::parser::nid(body), &ret, &value, "ret");
         }
         if let Err(err) = self.unify2(&ret, &value) {
             {
@@ -732,7 +943,7 @@ impl<'a> TypeCk<'a> {
         }
         // TAST (設計 8.4 担当 E): 閉包の取り込みを、型変数を解決して節名の鍵で側の表へ移す。
         for (node, caps) in std::mem::take(&mut self.closure_caps) {
-            let caps_t: Vec<crate::tast::Capture> = caps.iter().map(|(k, n, t)| crate::tast::Capture { kind: k.clone(), name: n.clone(), ty: self.deep(t) }).collect();
+            let caps_t: Vec<crate::tast::Capture> = caps.iter().map(|(k, n, t)| crate::tast::Capture { kind: k.clone(), name: n.clone(), ty: self.deep(t), region: if k == "move" { Region::Unk } else { Region::Var(self.closure_asts.get(&node).map_or(0, crate::parser::nid)) } }).collect();
             self.closure_caps.insert(node.clone(), caps);
             self.side.closure_caps.insert(node, caps_t);
         }
@@ -797,8 +1008,8 @@ impl<'a> TypeCk<'a> {
         match self.deep(t) {
             Ty::Unknown => true,
             Ty::Var(v) => self.kinds[v] == 0 || self.escaped.contains(&v),
-            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.undetermined(x)),
-            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.undetermined(&x),
+            Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(|x| self.undetermined(x)),
+            Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.undetermined(&x),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.undetermined(x)) || self.undetermined(&ret),
             _ => false,
         }
@@ -841,7 +1052,7 @@ impl<'a> TypeCk<'a> {
             Ty::Ref(..) => true,
             Ty::Tuple(xs) => xs.iter().any(|x| self.holds_ref(x, seen)),
             Ty::Array(x, _) | Ty::Slice(x) => self.holds_ref(&x, seen),
-            Ty::Named(n, args) => {
+            Ty::Named(n, args, _) => {
                 if args.iter().any(|x| self.holds_ref(x, seen)) {
                     return true;
                 }
@@ -889,7 +1100,7 @@ impl<'a> TypeCk<'a> {
         match self.deep(t) {
             Ty::Never | Ty::Unit | Ty::Prim(_) | Ty::Const(_) => Some(true),
             Ty::Ptr(..) => Some(false),
-            Ty::Ref(m, x) => self.auto_marker(&x, sync || !m, seen),
+            Ty::Ref(m, x, _) => self.auto_marker(&x, sync || !m, seen),
             Ty::Tuple(xs) => xs.iter().fold(Some(true), |r, x| and_marker(r, self.auto_marker(x, sync, seen))),
             Ty::Array(x, _) | Ty::Slice(x) => self.auto_marker(&x, sync, seen),
             Ty::Param(p) => {
@@ -898,14 +1109,14 @@ impl<'a> TypeCk<'a> {
                 });
                 if bounded { Some(true) } else { None }
             }
-            Ty::Dyn(tr, _) => self.dyn_auto(&tr, marker),
+            Ty::Dyn(tr, _, _) => self.dyn_auto(&tr, marker),
             // クロージャは、取り込んだ実際の型がすべて満たすとき (5.5)。節が分からない (関数ポインタ) なら取り込みはない。
             Ty::Closure { id: Some(node), .. } => {
                 let caps = self.closure_caps.get(&node).cloned().unwrap_or_default();
                 caps.into_iter().fold(Some(true), |r, (k, _, t)| and_marker(r, self.auto_marker(&capture_ty(&k, t), sync, seen)))
             }
             Ty::Closure { id: None, .. } => Some(true),
-            Ty::Named(n, args) => self.auto_named(&n, &args, sync, seen),
+            Ty::Named(n, args, _) => self.auto_named(&n, &args, sync, seen),
             Ty::Unknown | Ty::Var(_) => None,
         }
     }
@@ -1082,9 +1293,9 @@ impl<'a> TypeCk<'a> {
             Ty::Tuple(xs) => V::L(vec![s("tuple"), V::L(xs.iter().map(Self::to_v).collect::<Option<Vec<V>>>()?)]),
             Ty::Array(x, _) => V::L(vec![s("array"), Self::to_v(x)?]),
             Ty::Slice(x) => V::L(vec![s("slice"), Self::to_v(x)?]),
-            Ty::Ref(m, x) => V::L(vec![s("ref"), V::B(*m), Self::to_v(x).unwrap_or(V::Nil)]),
+            Ty::Ref(m, x, _) => V::L(vec![s("ref"), V::B(*m), Self::to_v(x).unwrap_or(V::Nil)]),
             Ty::Ptr(m, x) => V::L(vec![s("ptr"), V::B(*m), Self::to_v(x)?]),
-            Ty::Named(n, args) => V::L(vec![s("named"), s(n), V::L(args.iter().map(Self::to_v).collect::<Option<Vec<V>>>()?)]),
+            Ty::Named(n, args, _) => V::L(vec![s("named"), s(n), V::L(args.iter().map(Self::to_v).collect::<Option<Vec<V>>>()?)]),
             _ => return None,
         })
     }
@@ -1354,7 +1565,7 @@ impl<'a> TypeCk<'a> {
         }
         // 枝の参照の可変性は順序によらず一致させる (`&x` と `&mut y` の混在は、先の枝が期待になって
         // 順序で通ったり通らなかったりしていた。ネイティブの下ろしも枝の型の違いを拒む)。
-        if let (Ty::Ref(m, _), Ty::Ref(n, _)) = (self.resolve(a), self.resolve(b)) {
+        if let (Ty::Ref(m, _, _), Ty::Ref(n, _, _)) = (self.resolve(a), self.resolve(b)) {
             if m != n {
                 let (w, g) = (self.deep(a).show(), self.deep(b).show());
                 self.diag("E2020", format!("type mismatch in {}: the branches have different reference mutability: {} and {}; write `&*` / `&mut *` explicitly so both are the same", what, w, g), line);
@@ -1408,8 +1619,8 @@ impl<'a> TypeCk<'a> {
             Ty::Var(v) => {
                 self.escaped.insert(v);
             }
-            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().for_each(|x| self.escape(x)),
-            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.escape(&x),
+            Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().for_each(|x| self.escape(x)),
+            Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.escape(&x),
             Ty::Closure { args, ret, .. } => {
                 args.iter().for_each(|x| self.escape(x));
                 self.escape(&*ret);
@@ -1531,7 +1742,7 @@ impl<'a> TypeCk<'a> {
                         if segs.len() == 2 && segs[0] == name && non_copy {
                             if let Some(t) = self.lookup(name) {
                                 let tn = match self.deep(&t) {
-                                    Ty::Named(n, _) => Some(n),
+                                    Ty::Named(n, _, _) => Some(n),
                                     Ty::Prim(p) => Some(p),
                                     _ => None,
                                 };
@@ -1583,7 +1794,7 @@ impl<'a> TypeCk<'a> {
     fn ty_copy(&self, t: &Ty) -> Option<bool> {
         match t {
             Ty::Prim(_) | Ty::Unit | Ty::Never => Some(true),
-            Ty::Ref(m, _) => Some(!*m),
+            Ty::Ref(m, _, _) => Some(!*m),
             Ty::Array(x, _) => self.ty_copy(x),
             Ty::Tuple(xs) => {
                 let parts: Vec<Option<bool>> = xs.iter().map(|x| self.ty_copy(x)).collect();
@@ -1597,7 +1808,7 @@ impl<'a> TypeCk<'a> {
             }
             // `Copy` を実装しない型は、型引数があっても `Copy` でない。`Copy` を持つ型は、型引数つきなら
             // 条件つき (`T: Copy`) かもしれないので分からない。
-            Ty::Named(n, args) if self.p.types.contains_key(n) => {
+            Ty::Named(n, args, _) if self.p.types.contains_key(n) => {
                 if !self.implements(n, "core.ops.Copy") {
                     Some(false)
                 } else if args.is_empty() {
@@ -1617,7 +1828,7 @@ impl<'a> TypeCk<'a> {
         // 参照を分解して得た名前は、欄の型への参照になる (Rust の既定の束縛モード)。
         let exact_here = self.pat_exact && self.exactly_owned(&ty);
         let ty = match self.pat_mode {
-            Some(m) => Ty::Ref(m, Box::new(ty)),
+            Some(m) => Ty::Ref(m, Box::new(ty), crate::types::Region::Unk),
             None => ty,
         };
         if self.strict {
@@ -1644,7 +1855,7 @@ impl<'a> TypeCk<'a> {
     fn exactly_owned(&self, t: &Ty) -> bool {
         match self.resolve(t) {
             Ty::Prim(_) | Ty::Unit => true,
-            Ty::Named(_, a) => a.is_empty(),
+            Ty::Named(_, a, _) => a.is_empty(),
             Ty::Tuple(ts) => ts.iter().all(|x| self.exactly_owned(x)),
             _ => false,
         }
@@ -1739,7 +1950,7 @@ impl<'a> TypeCk<'a> {
         let mut cur = self.resolve(t);
         loop {
             match cur {
-                Ty::Ref(m, inner) => {
+                Ty::Ref(m, inner, _) => {
                     shared |= !m;
                     cur = self.resolve(&inner);
                 }
@@ -1752,8 +1963,8 @@ impl<'a> TypeCk<'a> {
     /// 中まで解決する。
     fn deep(&self, t: &Ty) -> Ty {
         match self.resolve(t) {
-            Ty::Named(n, a) => Ty::Named(n, a.iter().map(|x| self.deep(x)).collect()),
-            Ty::Ref(m, x) => Ty::Ref(m, Box::new(self.deep(&x))),
+            Ty::Named(n, a, rs) => Ty::Named(n, a.iter().map(|x| self.deep(x)).collect(), rs),
+            Ty::Ref(m, x, rg) => Ty::Ref(m, Box::new(self.deep(&x)), rg),
             Ty::Ptr(m, x) => Ty::Ptr(m, Box::new(self.deep(&x))),
             Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| self.deep(x)).collect()),
             Ty::Array(x, n) => Ty::Array(Box::new(self.deep(&x)), n),
@@ -1772,8 +1983,8 @@ impl<'a> TypeCk<'a> {
     fn occurs(&self, v: usize, t: &Ty) -> bool {
         match self.resolve(t) {
             Ty::Var(i) => i == v,
-            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.occurs(v, x)),
-            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.occurs(v, &x),
+            Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(|x| self.occurs(v, x)),
+            Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.occurs(v, &x),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.occurs(v, x)) || self.occurs(v, &*ret),
             _ => false,
         }
@@ -1787,7 +1998,7 @@ impl<'a> TypeCk<'a> {
             Ty::Tuple(_) => Some("tuple"),
             Ty::Array(..) | Ty::Slice(_) => Some("seq"),
             Ty::Closure { .. } => Some("closure"),
-            Ty::Named(n, _) if n != "alloc.vec.Vec" && n != "alloc.string.String" => Some("named"),
+            Ty::Named(n, _, _) if n != "alloc.vec.Vec" && n != "alloc.string.String" => Some("named"),
             _ => None,
         }
     }
@@ -1804,9 +2015,9 @@ impl<'a> TypeCk<'a> {
     fn sig_ty(&self, v: &V, gn: &HashSet<String>) -> Ty {
         fn lift(s: &TypeCk, t: Ty) -> Ty {
             match t {
-                Ty::Named(n, a) if a.is_empty() && !n.contains('.') && s.type_def(&n).is_none() && !matches!(n.as_str(), "Option" | "Result") => Ty::Param(n),
-                Ty::Named(n, a) => Ty::Named(n, a.into_iter().map(|x| lift(s, x)).collect()),
-                Ty::Ref(m, x) => Ty::Ref(m, Box::new(lift(s, *x))),
+                Ty::Named(n, a, _) if a.is_empty() && !n.contains('.') && s.type_def(&n).is_none() && !matches!(n.as_str(), "Option" | "Result") => Ty::Param(n),
+                Ty::Named(n, a, rs) => Ty::Named(n, a.into_iter().map(|x| lift(s, x)).collect(), rs),
+                Ty::Ref(m, x, rg) => Ty::Ref(m, Box::new(lift(s, *x)), rg),
                 Ty::Ptr(m, x) => Ty::Ptr(m, Box::new(lift(s, *x))),
                 Ty::Tuple(a) => Ty::Tuple(a.into_iter().map(|x| lift(s, x)).collect()),
                 Ty::Array(x, n) => Ty::Array(Box::new(lift(s, *x)), n),
@@ -1915,12 +2126,12 @@ impl<'a> TypeCk<'a> {
         let mut inv = false;
         loop {
             match (&want, &got) {
-                (Ty::Ref(true, w), Ty::Ref(true, g)) => {
+                (Ty::Ref(true, w, _), Ty::Ref(true, g, _)) => {
                     inv = true;
                     (want, got) = (self.resolve(w), self.resolve(g));
                 }
-                (Ty::Ref(_, w), _) => want = self.resolve(w),
-                (_, Ty::Ref(_, g)) => got = self.resolve(g),
+                (Ty::Ref(_, w, _), _) => want = self.resolve(w),
+                (_, Ty::Ref(_, g, _)) => got = self.resolve(g),
                 _ => break,
             }
         }
@@ -1945,7 +2156,7 @@ impl<'a> TypeCk<'a> {
                     self.check_fn_conv_dir_walk(g.clone(), w.clone());
                 }
             }
-            (Ty::Named(_, ws), Ty::Named(_, gs)) => {
+            (Ty::Named(_, ws, _), Ty::Named(_, gs, _)) => {
                 for (w, g) in ws.iter().zip(gs.iter()) {
                     self.check_fn_conv_dir_walk(w.clone(), g.clone());
                 }
@@ -1963,17 +2174,17 @@ impl<'a> TypeCk<'a> {
             }
             // `dyn Tr<..>` どうしは、トレイトの効果・panic の型引数が受け側に含まれているかを見る (5.1)。
             // 向きは関数型と同じ: 渡し側 (`got`) のメソッドの効果が受け側 (`want`) の中になければならない。
-            (Ty::Dyn(wt, wa), Ty::Dyn(gt, ga)) if wt == gt => {
+            (Ty::Dyn(wt, wa, _), Ty::Dyn(gt, ga, _)) if wt == gt => {
                 let (wa, ga) = (wa.clone(), ga.clone());
                 self.check_dyn_conv(wt, &wa, &ga);
             }
             // `&T` → `&dyn Tr<..>` / `Box<T>` → `Box<dyn Tr<..>>`: `T` の impl のトレイト引数を渡し側として比べる。
-            (Ty::Dyn(wt, wa), Ty::Named(n, _)) => {
+            (Ty::Dyn(wt, wa, _), Ty::Named(n, _, _)) => {
                 let (wt, wa, n) = (wt.clone(), wa.clone(), n.clone());
                 self.check_dyn_impl(&wt, &wa, &n);
             }
             // 型パラメータ `H` を `dyn Tr` へ渡せるのは、宣言された境界 (とそのスーパートレイト) に `Tr` があるときだけ。
-            (Ty::Dyn(wt, _), Ty::Param(pn)) => {
+            (Ty::Dyn(wt, _, _), Ty::Param(pn)) => {
                 if let Some(root) = crate::check::resolve_trait_fqn(self.p, wt) {
                     if param_bound_implies(self.p, self.def(), pn, &root) == Some(false) {
                         self.diag("E2046", format!("the type parameter `{}` does not implement the trait `{}`: add the bound `{}: {}`", pn, root, pn, root), self.cur_line);
@@ -2113,7 +2324,7 @@ impl<'a> TypeCk<'a> {
                     }
                     _ => {}
                 }
-                if let (Ty::Ref(_, inner), true) = (&t, self.kinds[*x] != 0) {
+                if let (Ty::Ref(_, inner, _), true) = (&t, self.kinds[*x] != 0) {
                     // 参照は透過的: リテラルの型は参照の中身に合わせる。
                     return self.unify_v(&Ty::Var(*x), inner, inv);
                 }
@@ -2143,7 +2354,7 @@ impl<'a> TypeCk<'a> {
             (Ty::Ptr(..), Ty::Prim(_) | Ty::Named(..)) | (Ty::Prim(_) | Ty::Named(..), Ty::Ptr(..)) => Err((a.clone(), b.clone())),
             // 両側が参照なら、指す先どうしを合わせる (`from_ref(&x)` の `&T` に `&i32` を渡して `T = &i32` にしない)。
             // 可変性は向きがある: 左 (期待) が `&mut` で右 (実際) が `&` は不一致 (`&mut` → `&` は許す)。
-            (Ty::Ref(m, x), Ty::Ref(n, y)) => {
+            (Ty::Ref(m, x, _), Ty::Ref(n, y, _)) => {
                 let (m, n) = (*m, *n);
                 let (x, y) = (self.resolve(x), self.resolve(y));
                 // 可変性は向きがある: 期待が `&mut`・実際が `&` は不一致、期待が `&`・実際が `&mut` は値の位置でだけ許す。
@@ -2154,7 +2365,7 @@ impl<'a> TypeCk<'a> {
                 // `&mut` の下は不変 (`&mut Option<&mut T>` を `&mut Option<&T>` にできない)。
                 let inner_inv = inv || m;
                 // `&str` と `&String` は別の型 (4.2: 暗黙の変換の表に無い)。
-                if matches!((&x, &y), (Ty::Named(n, _), Ty::Prim(p)) | (Ty::Prim(p), Ty::Named(n, _)) if n == "alloc.string.String" && p == "str") {
+                if matches!((&x, &y), (Ty::Named(n, _, _), Ty::Prim(p)) | (Ty::Prim(p), Ty::Named(n, _, _)) if n == "alloc.string.String" && p == "str") {
                     return Err((a.clone(), b.clone()));
                 }
                 // `&[T; N]` → `&[T]` は参照の直下の値の位置でだけ許す (逆向き・値渡しは許さない)。
@@ -2170,11 +2381,11 @@ impl<'a> TypeCk<'a> {
             // 参照は透過的。左右の順序 (期待, 実際) は診断の文面に使うので保つ。
             // 型の構造の中 (型引数・タプルの要素・参照の先など) では、参照の段数も型の一部。
             (Ty::Ref(..), _) | (_, Ty::Ref(..)) if self.nest > 0 && !matches!(a, Ty::Var(_) | Ty::Param(_)) && !matches!(b, Ty::Var(_) | Ty::Param(_)) => Err((a.clone(), b.clone())),
-            (Ty::Ref(_, x), y) => {
+            (Ty::Ref(_, x, _), y) => {
                 let (x, y) = (x.clone(), y.clone());
                 self.unify_v(&x, &y, inv)
             }
-            (x, Ty::Ref(_, y)) => {
+            (x, Ty::Ref(_, y, _)) => {
                 let (x, y) = (x.clone(), y.clone());
                 self.unify_v(&x, &y, inv)
             }
@@ -2185,10 +2396,10 @@ impl<'a> TypeCk<'a> {
             (Ty::Const(x), Ty::Const(y)) => {
                 if x == y { Ok(()) } else { Err((a.clone(), b.clone())) }
             }
-            (Ty::Dyn(p, _), Ty::Dyn(q, _)) => {
+            (Ty::Dyn(p, _, _), Ty::Dyn(q, _, _)) => {
                 if p == q { Ok(()) } else { Err((a.clone(), b.clone())) }
             }
-            (Ty::Named(n, xs), Ty::Named(m, ys)) => {
+            (Ty::Named(n, xs, _), Ty::Named(m, ys, _)) => {
                 if n != m {
                     return Err((a.clone(), b.clone()));
                 }
@@ -2248,7 +2459,7 @@ impl<'a> TypeCk<'a> {
                 Err((a.clone(), b.clone()))
             }
             // `Vec` は配列・スライスと別の型 (4.2: 暗黙の変換は `&[T; N]` → `&[T]` のみ)。
-            (Ty::Named(n, _), Ty::Array(_, _) | Ty::Slice(_)) | (Ty::Array(_, _) | Ty::Slice(_), Ty::Named(n, _)) if n == "alloc.vec.Vec" => {
+            (Ty::Named(n, _, _), Ty::Array(_, _) | Ty::Slice(_)) | (Ty::Array(_, _) | Ty::Slice(_), Ty::Named(n, _, _)) if n == "alloc.vec.Vec" => {
                 Err((a.clone(), b.clone()))
             }
             // 構造が確定していて種類が違う組 (`()` と `Result<..>`、整数とタプルなど) は矛盾 (fail-closed)。
@@ -2257,7 +2468,7 @@ impl<'a> TypeCk<'a> {
                 Err((a.clone(), b.clone()))
             }
             // 意図した近似 (明示): `String` は `str`、`dyn Tr` は `&T` の受け側 (境界は別の検査が見る)。
-            (Ty::Named(n, _), Ty::Prim(p)) | (Ty::Prim(p), Ty::Named(n, _)) if n == "alloc.string.String" && p == "str" => Ok(()),
+            (Ty::Named(n, _, _), Ty::Prim(p)) | (Ty::Prim(p), Ty::Named(n, _, _)) if n == "alloc.string.String" && p == "str" => Ok(()),
             (Ty::Dyn(..), _) | (_, Ty::Dyn(..)) => Ok(()),
             _ => Err((a.clone(), b.clone())),
         }
@@ -2285,8 +2496,8 @@ impl<'a> TypeCk<'a> {
                 map.insert(p.clone(), v.clone());
                 v
             }
-            Ty::Named(n, a) => Ty::Named(n.clone(), a.iter().map(|x| self.inst(x, map)).collect()),
-            Ty::Ref(m, x) => Ty::Ref(*m, Box::new(self.inst(x, map))),
+            Ty::Named(n, a, rs) => Ty::Named(n.clone(), a.iter().map(|x| self.inst(x, map)).collect(), rs.clone()),
+            Ty::Ref(m, x, rg) => Ty::Ref(*m, Box::new(self.inst(x, map)), rg.clone()),
             Ty::Ptr(m, x) => Ty::Ptr(*m, Box::new(self.inst(x, map))),
             Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| self.inst(x, map)).collect()),
             Ty::Array(x, n) => Ty::Array(Box::new(self.inst(x, map)), *n),
@@ -2336,7 +2547,7 @@ impl<'a> TypeCk<'a> {
         match (&e.0, &e.1) {
             (Ty::Prim(a), Ty::Prim(b)) => Some((a.clone(), b.clone())),
             (Ty::Const(a), Ty::Const(b)) => Some((a.clone(), b.clone())),
-            (Ty::Ref(true, _), Ty::Ref(false, _)) => Some((e.0.show(), e.1.show())),
+            (Ty::Ref(true, _, _), Ty::Ref(false, _, _)) => Some((e.0.show(), e.1.show())),
             _ => None,
         }
     }
@@ -2391,7 +2602,7 @@ impl<'a> TypeCk<'a> {
 
     fn field_ty(&self, recv: &Ty, name: &str) -> Ty {
         let r = self.deep(recv);
-        let Ty::Named(fqn, args) = r.strip() else { return Ty::Unknown };
+        let Ty::Named(fqn, args, _) = r.strip() else { return Ty::Unknown };
         let Some(td) = self.type_def(fqn) else { return Ty::Unknown };
         if td.kw != "type" {
             return Ty::Unknown;
@@ -2418,7 +2629,7 @@ impl<'a> TypeCk<'a> {
             Ty::Prim(p) if p == "char" => (vec!["core.char.char".into()], true),
             Ty::Prim(p) => (vec![format!("core.num.{}", p)], true),
             Ty::Slice(_) | Ty::Array(_, _) => (vec!["core.slice".into(), "core.array".into()], true),
-            Ty::Named(n, _) => match n.as_str() {
+            Ty::Named(n, _, _) => match n.as_str() {
                 "Option" => (vec!["core.option.Option".into()], true),
                 "Result" => (vec!["core.result.Result".into()], true),
                 "alloc.vec.Vec" => (vec!["alloc.vec.Vec".into(), "core.slice".into()], true),
@@ -2434,10 +2645,10 @@ impl<'a> TypeCk<'a> {
     fn view_for(&self, recv: &Ty, owner: &str) -> Ty {
         let r = self.deep(recv);
         match (r.strip(), owner) {
-            (Ty::Named(n, a), "core.slice") if n == "alloc.vec.Vec" => {
+            (Ty::Named(n, a, _), "core.slice") if n == "alloc.vec.Vec" => {
                 Ty::Slice(Box::new(a.first().cloned().unwrap_or(Ty::Unknown)))
             }
-            (Ty::Named(n, _), "core.str") if n == "alloc.string.String" => Ty::Prim("str".into()),
+            (Ty::Named(n, _, _), "core.str") if n == "alloc.string.String" => Ty::Prim("str".into()),
             _ => r,
         }
     }
@@ -2497,7 +2708,7 @@ impl<'a> TypeCk<'a> {
         fn peel(t: &Ty) -> (Vec<bool>, &Ty) {
             let mut v = vec![];
             let mut c = t;
-            while let Ty::Ref(m, i) = c {
+            while let Ty::Ref(m, i, _) = c {
                 v.push(*m);
                 c = i;
             }
@@ -2527,12 +2738,12 @@ impl<'a> TypeCk<'a> {
         // `Box<T>` の受け手は、`self` の型の頭に合うまで外す。
         let box_inner = |t: &Ty| -> Option<Ty> {
             match t {
-                Ty::Named(n, a) if n == "alloc.boxed.Box" => a.first().cloned(),
+                Ty::Named(n, a, _) if n == "alloc.boxed.Box" => a.first().cloned(),
                 _ => None,
             }
         };
         let same_head = |a: &Ty, b: &Ty| match (a, b) {
-            (Ty::Named(x, _), Ty::Named(y, _)) => x == y,
+            (Ty::Named(x, _, _), Ty::Named(y, _, _)) => x == y,
             _ => head(a) == head(b),
         };
         let mut cur = ri.clone();
@@ -2600,7 +2811,7 @@ impl<'a> TypeCk<'a> {
             let (w, g) = (self.deep(&want), self.deep(&got));
             let mut cs = vec![];
             match (&w, &g) {
-                (Ty::Ref(wm, wi), Ty::Ref(gm, gi)) => {
+                (Ty::Ref(wm, wi, _), Ty::Ref(gm, gi, _)) => {
                     if *gm && !*wm {
                         cs.push(Coercion::Reborrow { to_mut: false });
                     }
@@ -2611,7 +2822,7 @@ impl<'a> TypeCk<'a> {
                     }
                 }
                 (Ty::Closure { id: None, .. }, Ty::Closure { id: Some(_), .. }) => cs.push(Coercion::ClosureToFn),
-                (Ty::Named(wn, wa), Ty::Named(gn, ga)) if wn == "alloc.boxed.Box" && gn == wn => {
+                (Ty::Named(wn, wa, _), Ty::Named(gn, ga, _)) if wn == "alloc.boxed.Box" && gn == wn => {
                     if let (Some(Ty::Dyn(..)), Some(x)) = (wa.first(), ga.first()) {
                         if !matches!(x, Ty::Dyn(..) | Ty::Var(_) | Ty::Unknown | Ty::Param(_)) {
                             cs.push(Coercion::Unsize { from: g.clone(), to: w.clone() });
@@ -2650,9 +2861,9 @@ impl<'a> TypeCk<'a> {
         let dyn_tr = {
             let deep = self.deep(recv);
             match deep.strip().clone() {
-                Ty::Dyn(tr, _) => Some(tr),
-                Ty::Named(n, a) if n == "alloc.boxed.Box" && !matches!(name, "as_ref" | "as_mut" | "into_inner" | "drop") => match a.first().map(|x| self.deep(x)) {
-                    Some(Ty::Dyn(tr, _)) => Some(tr),
+                Ty::Dyn(tr, _, _) => Some(tr),
+                Ty::Named(n, a, _) if n == "alloc.boxed.Box" && !matches!(name, "as_ref" | "as_mut" | "into_inner" | "drop") => match a.first().map(|x| self.deep(x)) {
+                    Some(Ty::Dyn(tr, _, _)) => Some(tr),
                     _ => None,
                 },
                 _ => None,
@@ -2689,20 +2900,20 @@ impl<'a> TypeCk<'a> {
         // トレイトオブジェクト (5.1): `&dyn Tr` のメソッド呼び出しは、Tr とそのスーパートレイトの
         // シグネチャで検査する (Self は `dyn Tr` 自身)。
         let deep = self.deep(recv);
-        if let Ty::Dyn(tr, ta) = deep.strip().clone() {
+        if let Ty::Dyn(tr, ta, _) = deep.strip().clone() {
             return self.dyn_method(&tr, &ta, &deep, base, name, args, line);
         }
         // `Box<dyn Tr, A>` のレシーバは、`Tr` のメソッドを探す (自動参照外し。4.2 / 5.1)。`Box` 自身のメソッド
         // (`as_ref` / `as_mut` / `into_inner`) は、型の側の定義を使う。
-        if let Ty::Named(n, a) = deep.strip().clone() {
+        if let Ty::Named(n, a, _) = deep.strip().clone() {
             if n == "alloc.boxed.Box" && !matches!(name, "as_ref" | "as_mut" | "into_inner" | "drop") {
-                if let Some(Ty::Dyn(tr, ta)) = a.first().map(|x| self.deep(x)) {
-                    return self.dyn_method(&tr, &ta, &Ty::Dyn(tr.clone(), ta.clone()), base, name, args, line);
+                if let Some(Ty::Dyn(tr, ta, _)) = a.first().map(|x| self.deep(x)) {
+                    return self.dyn_method(&tr, &ta, &Ty::Dyn(tr.clone(), ta.clone(), crate::types::Region::Unk), base, name, args, line);
                 }
             }
         }
         // `Box<T>` (`T` は具体の型) のレシーバ: `Box` 自身のメソッドが無ければ、中身 `T` のメソッドを探す (自動参照外し、4.2)。
-        if let Ty::Named(n, a) = deep.strip().clone() {
+        if let Ty::Named(n, a, _) = deep.strip().clone() {
             if n == "alloc.boxed.Box" && !self.owners.get("alloc.boxed.Box").map_or(false, |m| m.contains_key(name)) {
                 if let Some(inner) = a.first().map(|x| self.deep(x)) {
                     if !matches!(inner.strip(), Ty::Var(_) | Ty::Unknown | Ty::Never) {
@@ -2850,20 +3061,26 @@ impl<'a> TypeCk<'a> {
         let gn = d.gnames();
         self.add_edge(d.name.clone());
         if let Some(b) = base {
-            if matches!(from_v(&d.params[0].1, &gn), Ty::Ref(true, _)) {
+            if matches!(from_v(&d.params[0].1, &gn), Ty::Ref(true, _, _)) {
                 self.need_mut(b, name, line);
             }
         }
         let mut map: HashMap<String, Ty> = HashMap::new();
         self.seed_targs(d, targs, &mut map, line);
         seed_effects(d, &mut map);
+        let (sig_ps, sig_ret) = Self::sig_elided(d, &gn);
         let self_ty = from_v(&d.params[0].1, &gn);
         let self_ty = self.inst(&self_ty, &mut map);
+        let self_inst = self.inst(&Self::inst_regions(call_id, &sig_ps[0]), &mut map);
+        if matches!(self.deep(recv), Ty::Ref(..)) {
+            self.note_region_cstr(call_id, &self_inst, recv, "recv");
+        }
         let view = self.view_for(recv, &owner);
         let _ = self.unify_recv(&self_ty, &view);
         for (k, a) in args.iter().enumerate() {
             let raw_pt = from_v(&d.params[k + 1].1, &gn);
-            let pt = self.inst(&raw_pt, &mut map);
+            let pt = self.inst(&Self::inst_regions(call_id, &sig_ps[k + 1]), &mut map);
+            self.note_region_cstr(call_id, &pt, a, "arg");
             if let Some((want, got)) = self.arg_ref_conflict(&raw_pt, a).or_else(|| self.param_arg_ref_conflict(&raw_pt, &pt, a)) {
                 self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, name, want, got, ref_hint(&want, &got, self.ty_copy_ref(&raw_pt))), line);
             }
@@ -2895,8 +3112,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         self.check_bounds(d, &map, line, false);
-        let ret = from_v(&d.ret, &gn);
-        let r = self.inst(&ret, &mut map);
+        let r = self.inst(&Self::inst_regions(call_id, &sig_ret), &mut map);
         self.note_type_args(call_id, d, &map);
         self.box_hooks(d, &map, line);
         r
@@ -2935,7 +3151,7 @@ impl<'a> TypeCk<'a> {
     /// 利用者の型・標準の型は `derive` に `Ord` があるときだけ持つ。
     fn ord_provides(&self, t: &Ty) -> bool {
         match t {
-            Ty::Named(n, _) => self.p.types.get(n).map_or(true, |&i| self.p.defs[i].derive.iter().any(|x| x == "Ord")),
+            Ty::Named(n, _, _) => self.p.types.get(n).map_or(true, |&i| self.p.defs[i].derive.iter().any(|x| x == "Ord")),
             _ => true,
         }
     }
@@ -2949,7 +3165,7 @@ impl<'a> TypeCk<'a> {
         fn depth(t: &Ty) -> usize {
             let mut n = 0;
             let mut t = t;
-            while let Ty::Ref(_, i) = t {
+            while let Ty::Ref(_, i, _) = t {
                 n += 1;
                 t = i;
             }
@@ -2992,7 +3208,7 @@ impl<'a> TypeCk<'a> {
         let Some(tr) = cmp_trait(name) else { return false };
         // 型パラメータのレシーバは境界からのメソッド探索 (`trait_bound_method`) と `check_cmp_bound` が見る。
         // `&T` は `T` によらず Copy + Clone (4.2) なので、共有参照の `clone` / `try_clone` は見ない。
-        if matches!(self.deep(recv), Ty::Ref(false, _)) && matches!(name, "clone" | "try_clone") {
+        if matches!(self.deep(recv), Ty::Ref(false, _, _)) && matches!(name, "clone" | "try_clone") {
             return false;
         }
         let whole = self.deep(recv).strip().clone();
@@ -3001,7 +3217,7 @@ impl<'a> TypeCk<'a> {
         }
         let Some(leaf) = self.unsatisfied(&whole, tr) else { return false };
         let ty = match &whole {
-            Ty::Named(n, _) if leaf == whole => n.clone(),
+            Ty::Named(n, _, _) if leaf == whole => n.clone(),
             _ => whole.show(),
         };
         let hint = if leaf == whole {
@@ -3147,7 +3363,7 @@ impl<'a> TypeCk<'a> {
             map.insert("Self".to_string(), deep.strip().clone());
             seed_effects(td, &mut map);
             if let Some(b) = base {
-                if matches!(from_v(&params[0].1, &gn), Ty::Ref(true, _)) {
+                if matches!(from_v(&params[0].1, &gn), Ty::Ref(true, _, _)) {
                     self.need_mut(b, name, line);
                 }
             }
@@ -3241,7 +3457,7 @@ impl<'a> TypeCk<'a> {
         let deep = self.deep(it);
         match deep.strip() {
             Ty::Array(x, _) | Ty::Slice(x) => return (**x).clone(),
-            Ty::Named(n, a) if n == "alloc.vec.Vec" => return a.first().cloned().unwrap_or(Ty::Unknown),
+            Ty::Named(n, a, _) if n == "alloc.vec.Vec" => return a.first().cloned().unwrap_or(Ty::Unknown),
             _ => {}
         }
         if let Ty::Param(pn) = deep.strip() {
@@ -3271,7 +3487,7 @@ impl<'a> TypeCk<'a> {
             let view = self.view_for(&deep, o);
             let _ = self.unify_recv(&self_ty, &view);
             let ret = self.inst(&from_v(&d.ret, &gn), &mut map);
-            if let Ty::Named(n, a) = self.deep(&ret) {
+            if let Ty::Named(n, a, _) = self.deep(&ret) {
                 if n == "Option" {
                     return a.first().cloned().unwrap_or(Ty::Unknown);
                 }
@@ -3285,12 +3501,12 @@ impl<'a> TypeCk<'a> {
     fn for_next_effects(&mut self, it: &Ty, line: usize) {
         let deep = self.deep(it);
         let mut base = deep.strip().clone();
-        while let Ty::Ref(_, x) = base {
+        while let Ty::Ref(_, x, _) = base {
             base = self.deep(&x).strip().clone();
         }
         match &base {
             Ty::Array(..) | Ty::Slice(_) => return,
-            Ty::Named(n, _) if n == "alloc.vec.Vec" => return,
+            Ty::Named(n, _, _) if n == "alloc.vec.Vec" => return,
             Ty::Param(pn) => {
                 let d = self.def();
                 let mut found = vec![];
@@ -3323,7 +3539,7 @@ impl<'a> TypeCk<'a> {
             }
             // 受け手 (`self: &mut S<F..>`) の型を渡す: `F` の `Fn` 境界の効果 (`Map` の `E` / `P`) を、型の実引数の
             // クロージャから束ねる (型の効果引数は `Ty` に残らないので、`F` から再構成する)。
-            let self_arg = Ty::Ref(true, Box::new(base.clone()));
+            let self_arg = Ty::Ref(true, Box::new(base.clone()), crate::types::Region::Unk);
             let (fu, fp, _, _) = self.callee_effects(c, 0, &[self_arg.clone()], &[]);
             // 型の効果引数 (`Enumerate<I, T, E, P>` の `E` / `P`) は型に残らないので、実体の分からない変数は
             // 明示の `it.next()` と同じく数えない (宣言の具体名と `may` / `never` だけ数える)。
@@ -3517,7 +3733,7 @@ impl<'a> TypeCk<'a> {
             map.insert("Self".to_string(), recv.clone());
             seed_effects(td, &mut map);
             if let Some(b) = base {
-                if matches!(from_v(&params[0].1, &gn), Ty::Ref(true, _)) {
+                if matches!(from_v(&params[0].1, &gn), Ty::Ref(true, _, _)) {
                     self.need_mut(b, name, line);
                 }
             }
@@ -3605,9 +3821,9 @@ impl<'a> TypeCk<'a> {
             Ty::Unknown | Ty::Var(_) | Ty::Never => false,
             // `&mut x` で参照の束縛そのものを借りる形は、参照の段数が決まらない束縛があるので見ない。
             Ty::Ref(..) if what == "borrow" && direct => false,
-            Ty::Ref(true, _) | Ty::Param(_) if !direct => false,
+            Ty::Ref(true, _, _) | Ty::Param(_) if !direct => false,
             // `&mut r.f` を `r: &T` で書く形は、下の「共有参照の欄」の検査が E3031 にする。
-            Ty::Ref(false, _) if what == "borrow" && !direct && matches!(nname(e), "Field" | "Path") => false,
+            Ty::Ref(false, _, _) if what == "borrow" && !direct && matches!(nname(e), "Field" | "Path") => false,
             _ => true,
         };
         if bad {
@@ -3623,12 +3839,12 @@ impl<'a> TypeCk<'a> {
     fn need_mut(&mut self, base: &str, method: &str, line: usize) {
         let Some(t) = self.lookup(base) else { return };
         match self.resolve(&t) {
-            Ty::Ref(false, _) => self.diag(
+            Ty::Ref(false, _, _) => self.diag(
                 "E3031",
                 format!("cannot call the `&mut self` method `{}` through the shared reference `{}`", method, base),
                 line,
             ),
-            Ty::Ref(true, _) | Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Never => {}
+            Ty::Ref(true, _, _) | Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Never => {}
             _ => {
                 if !self.mutable.contains(base) {
                     self.diag(
@@ -3651,7 +3867,7 @@ impl<'a> TypeCk<'a> {
             return;
         }
         let got: Vec<V> = match t {
-            Ty::Named(n, _) => match self.impl_targs_of(tr, n) {
+            Ty::Named(n, _, _) => match self.impl_targs_of(tr, n) {
                 Some(a) => a,
                 None => return,
             },
@@ -3767,7 +3983,7 @@ impl<'a> TypeCk<'a> {
     fn check_unsize(&mut self) {
         for (t, d, line) in std::mem::take(&mut self.unsize) {
             let (t, d) = (self.deep(&t), self.deep(&d));
-            let Ty::Dyn(tr, dargs) = &d else {
+            let Ty::Dyn(tr, dargs, _) = &d else {
                 if matches!(d, Ty::Named(..) | Ty::Prim(_) | Ty::Tuple(_)) {
                     self.diag("E2046", format!("`Box.into_dyn` must produce a `Box<dyn ..>`, found `{}`", d.show()), line);
                 }
@@ -3781,7 +3997,7 @@ impl<'a> TypeCk<'a> {
                 }
                 continue;
             }
-            let Ty::Named(n, _) = t.strip() else { continue };
+            let Ty::Named(n, _, _) = t.strip() else { continue };
             let Some(&i) = self.p.types.get(n) else { continue };
             let (tr, dargs, n2) = (tr.clone(), dargs.clone(), n.clone());
             self.cur_line = line;
@@ -3798,8 +4014,8 @@ impl<'a> TypeCk<'a> {
     fn has_var(&self, t: &Ty) -> bool {
         match self.deep(t) {
             Ty::Var(_) => true,
-            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.has_var(x)),
-            Ty::Ref(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.has_var(&x),
+            Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(|x| self.has_var(x)),
+            Ty::Ref(_, x, _) | Ty::Array(x, _) | Ty::Slice(x) => self.has_var(&x),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.has_var(x)) || self.has_var(&ret),
             _ => false,
         }
@@ -3818,7 +4034,7 @@ impl<'a> TypeCk<'a> {
             }
             let Some(recv) = map.get(&g.1).cloned() else { continue };
             let recv = self.deep(&recv);
-            let Ty::Named(rn, _) = recv.strip().clone() else { continue };
+            let Ty::Named(rn, _, _) = recv.strip().clone() else { continue };
             for b in items(&g.2) {
                 let V::L(bx) = b else { continue };
                 let tr = st(&bx[0]);
@@ -3870,7 +4086,7 @@ impl<'a> TypeCk<'a> {
     /// スライス・参照は中身に還元する。型パラメータ・未確定の型・手書きの `impl` は黙って通す。
     fn unsatisfied(&self, t: &Ty, tr: &str) -> Option<Ty> {
         match t {
-            Ty::Named(n, args) => {
+            Ty::Named(n, args, _) => {
                 let n = &match n.as_str() {
                     "Option" => "core.option.Option".to_string(),
                     "Result" => "core.result.Result".to_string(),
@@ -3885,7 +4101,7 @@ impl<'a> TypeCk<'a> {
                     // その impl の型パラメータの境界で決まる。境界の無い手書きの impl は満たす。
                     let imp = self.p.defs.iter().find(|d| d.kw == "impl" && d.impl_trait == tr && crate::check::impl_target(&d.impl_for) == *n);
                     let Some(imp) = imp else { return None };
-                    if let Ty::Named(_, iargs) = from_v(&imp.impl_for, &imp.gnames()) {
+                    if let Ty::Named(_, iargs, _) = from_v(&imp.impl_for, &imp.gnames()) {
                         if iargs.len() == args.len() {
                             for (ia, a) in iargs.iter().zip(args) {
                                 let Ty::Param(gp) = ia else { continue };
@@ -4029,8 +4245,8 @@ impl<'a> TypeCk<'a> {
                 "bool" => Ty::Prim("bool".into()),
                 "char" => Ty::Prim("char".into()),
                 "byte" => Ty::Prim("u8".into()),
-                "str" => Ty::Ref(false, Box::new(Ty::Prim("str".into()))),
-                "bstr" => Ty::Ref(false, Box::new(Ty::Slice(Box::new(Ty::Prim("u8".into()))))),
+                "str" => Ty::Ref(false, Box::new(Ty::Prim("str".into())), crate::types::Region::Unk),
+                "bstr" => Ty::Ref(false, Box::new(Ty::Slice(Box::new(Ty::Prim("u8".into())))), crate::types::Region::Unk),
                 "unit" => Ty::Unit,
                 _ => Ty::Unknown,
             },
@@ -4058,7 +4274,7 @@ impl<'a> TypeCk<'a> {
             "Try" => {
                 let t = self.infer(&f[0]);
                 let inner = match self.deep(&t).strip() {
-                    Ty::Named(n, a) if n == "Result" || n == "Option" => a.first().cloned().unwrap_or(Ty::Unknown),
+                    Ty::Named(n, a, _) if n == "Result" || n == "Option" => a.first().cloned().unwrap_or(Ty::Unknown),
                     _ => Ty::Unknown,
                 };
                 // 4.1: `?` はエラー型が完全一致するときだけ使える。
@@ -4081,7 +4297,7 @@ impl<'a> TypeCk<'a> {
                 }
                 match self.deep(&t).strip() {
                     Ty::Array(x, _) | Ty::Slice(x) => (**x).clone(),
-                    Ty::Named(n, a) if n == "alloc.vec.Vec" => a.first().cloned().unwrap_or(Ty::Unknown),
+                    Ty::Named(n, a, _) if n == "alloc.vec.Vec" => a.first().cloned().unwrap_or(Ty::Unknown),
                     _ => Ty::Unknown,
                 }
             }
@@ -4095,7 +4311,7 @@ impl<'a> TypeCk<'a> {
                 // 単項 `-` は符号付き整数・浮動小数だけ、`!` は `bool` と整数だけ (オペランドの型が決まっていて外れるものは型の誤り)。
                 if matches!(st(&f[0]).as_str(), "-" | "!") {
                     let d0 = self.deep(&t);
-                    if matches!(&d0, Ty::Ref(_, i) if matches!(&**i, Ty::Prim(p) if p != "str")) {
+                    if matches!(&d0, Ty::Ref(_, i, _) if matches!(&**i, Ty::Prim(p) if p != "str")) {
                         self.diag("E2024", format!("operand of unary `{}` is `{}`: a reference is not dereferenced implicitly: write `*c` (an operator does not dereference, 4.2)", st(&f[0]), d0.show()), nline(e));
                     }
                     let d = d0.strip().clone();
@@ -4117,7 +4333,10 @@ impl<'a> TypeCk<'a> {
                     }
                 }
                 match st(&f[0]).as_str() {
-                    "&" => Ty::Ref(false, Box::new(t)),
+                    "&" => {
+                        let rg = self.borrow_region(e);
+                        Ty::Ref(false, Box::new(t), rg)
+                    }
                     "&mut" => {
                         self.need_mut_place(&f[1], "borrow", nline(e));
                         // `&mut r.f` の根 `r` が共有参照なら、共有から可変を得ることになる (E3031。`&mut self` のメソッド呼び出しと同じ)。
@@ -4129,7 +4348,7 @@ impl<'a> TypeCk<'a> {
                         if proj {
                             if let Some(root) = self.base_local(&f[1]) {
                                 if let Some(rt) = self.lookup(&root) {
-                                    if matches!(self.resolve(&rt), Ty::Ref(false, _)) {
+                                    if matches!(self.resolve(&rt), Ty::Ref(false, _, _)) {
                                         self.diag(
                                             "E3031",
                                             format!("cannot borrow a field of `{}` as mutable through the shared reference", root),
@@ -4146,11 +4365,12 @@ impl<'a> TypeCk<'a> {
                                 self.set_static(&segs[0], false);
                             }
                         }
-                        Ty::Ref(true, Box::new(t))
+                        let rg = self.borrow_region(e);
+                        Ty::Ref(true, Box::new(t), rg)
                     }
                     // 参照は透過的なので、参照でない型の `*` も同じ型 (型が決まらないときは Unknown)。
                     "*" => match self.resolve(&t) {
-                        Ty::Ref(_, x) => *x,
+                        Ty::Ref(_, x, _) => *x,
                         Ty::Unknown => Ty::Unknown,
                         // 参照でも生ポインタでもない値の `*` は型の誤り (パターンで得た名前の段数が未確定のときは Unknown になるので、ここへは来ない)。
                         other @ (Ty::Prim(_) | Ty::Unit | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_)) => {
@@ -4226,7 +4446,7 @@ impl<'a> TypeCk<'a> {
                         let vt = self.infer(&items(x)[1]);
                         self.escape(&vt);
                     }
-                    return if self.p.types.contains_key(&fq) { Ty::Named(fq, vec![]) } else { Ty::Unknown };
+                    return if self.p.types.contains_key(&fq) { Ty::Named(fq, vec![], crate::types::Rgs::default()) } else { Ty::Unknown };
                 };
                 // ジェネリクスの型パラメータを新しい型変数にして、フィールドの宣言型と値の型を単一化する。
                 // 決まった型引数はリテラル式の型になり、以降のフィールド・メソッド検査に流れる。
@@ -4252,7 +4472,7 @@ impl<'a> TypeCk<'a> {
                             }
                         }
                     }
-                    let declared = self.field_ty(&Ty::Named(fq.clone(), args.clone()), &st(&items(x)[0]));
+                    let declared = self.field_ty(&Ty::Named(fq.clone(), args.clone(), crate::types::Rgs::default()), &st(&items(x)[0]));
                     self.note_conv(&items(x)[1], &declared, &vt);
                     // 欄の宣言の型と値の型で参照の段数は透過しない (呼び出しの引数と同じ規則、E2023)。
                     {
@@ -4279,7 +4499,7 @@ impl<'a> TypeCk<'a> {
                 }
                 // 型引数はここでは escape しない。あとから注釈や呼び出しで決まるかもしれない
                 // (決まらなかったリテラルは finish_literals が E2027 にする)。
-                Ty::Named(fq, args)
+                Ty::Named(fq, args, crate::types::Rgs::default())
             }
             "TupleE" => {
                 let ts: Vec<Ty> = items(&f[0]).iter().map(|x| self.infer(x)).collect();
@@ -4391,9 +4611,9 @@ impl<'a> TypeCk<'a> {
                 self.scopes.push(HashMap::new());
                 let mut elem = self.iter_elem(&it);
                 // 参照を回す (`for x in &v` / `&mut v` / スライスの参照) と、要素は `&要素` / `&mut 要素` (Rust と同じ)。
-                if let Ty::Ref(m, inner) = self.deep(&it) {
-                    if matches!(self.deep(&inner).strip(), Ty::Array(..) | Ty::Slice(_)) || matches!(self.deep(&inner).strip(), Ty::Named(n, _) if n == "alloc.vec.Vec") {
-                        elem = Ty::Ref(m, Box::new(elem));
+                if let Ty::Ref(m, inner, _) = self.deep(&it) {
+                    if matches!(self.deep(&inner).strip(), Ty::Array(..) | Ty::Slice(_)) || matches!(self.deep(&inner).strip(), Ty::Named(n, _, _) if n == "alloc.vec.Vec") {
+                        elem = Ty::Ref(m, Box::new(elem), crate::types::Region::Unk);
                     }
                 }
                 self.for_next_effects(&it, nline(e));
@@ -4445,7 +4665,7 @@ impl<'a> TypeCk<'a> {
                         continue;
                     }
                     // 仕様 4.3: `&a` / `&mut a` の取り込みは、Copy な型でも本体で `&T` / `&mut T` (値として使うには `*a`)。
-                    let r = Ty::Ref(k == "&mut", Box::new(t));
+                    let r = Ty::Ref(k == "&mut", Box::new(t), Region::Var(crate::parser::nid(e)));
                     cap_ref_new.push(n.clone());
                     if let Some(s) = self.scopes.last_mut() {
                         s.insert(n.clone(), r);
@@ -4706,7 +4926,7 @@ impl<'a> TypeCk<'a> {
                                     let id = crate::parser::nid(&nf(&f[0])[1]);
                                     let ot = self.expr_pending.get(&id).map(|x| x.2.clone());
                                     if let Some(ot) = ot {
-                                        if matches!(self.resolve(&ot), Ty::Ref(false, _)) {
+                                        if matches!(self.resolve(&ot), Ty::Ref(false, _, _)) {
                                             self.diag(
                                                 "E3031",
                                                 "cannot assign through a shared reference returned by an expression".to_string(),
@@ -4724,7 +4944,7 @@ impl<'a> TypeCk<'a> {
                             let direct = segs.len() == 1;
                             if self.lookup(n).is_some() && (via_deref || !direct) {
                                 if let Some(t) = self.lookup(n) {
-                                    if matches!(self.resolve(&t), Ty::Ref(false, _)) {
+                                    if matches!(self.resolve(&t), Ty::Ref(false, _, _)) {
                                         self.diag(
                                             "E3031",
                                             format!("cannot assign through the shared reference `{}`", n),
@@ -4800,7 +5020,7 @@ impl<'a> TypeCk<'a> {
             let full = self.deep(ty);
             if matches!(full, Ty::Ref(..)) {
                 let (mut all_mut, mut cur) = (true, &full);
-                while let Ty::Ref(m, inner) = cur {
+                while let Ty::Ref(m, inner, _) = cur {
                     all_mut &= *m;
                     cur = inner;
                 }
@@ -4821,7 +5041,7 @@ impl<'a> TypeCk<'a> {
                 None => crate::tast::BindMode::Move,
             };
             let bty = match self.pat_mode {
-                Some(m) => Ty::Ref(m, Box::new(ty.clone())),
+                Some(m) => Ty::Ref(m, Box::new(ty.clone()), crate::types::Region::Unk),
                 None => ty.clone(),
             };
             Some((name, bty, mode))
@@ -4864,7 +5084,7 @@ impl<'a> TypeCk<'a> {
             // `&p` パターン: 参照を一段外した型で中身を束縛する。
             "PRef" => {
                 let inner = match self.resolve(ty) {
-                    Ty::Ref(_, x) => *x,
+                    Ty::Ref(_, x, _) => *x,
                     other => other,
                 };
                 let saved = self.pat_mode.take();
@@ -4904,11 +5124,11 @@ impl<'a> TypeCk<'a> {
                         if td.kw == "type" {
                             let n = td.generics.iter().filter(|g| g.0 == "type").count();
                             let args: Vec<Ty> = (0..n).map(|_| self.fresh(0)).collect();
-                            let t = Ty::Named(td.name.clone(), args);
+                            let t = Ty::Named(td.name.clone(), args, crate::types::Rgs::default());
                             // 構造体のパターンの名前は、照合する値の型と同じでなければならない (値が具体的な型のときだけ)。
                             let scrut = self.deep(ty);
                             let bad = match scrut.strip() {
-                                Ty::Named(n, _) => *n != td.name,
+                                Ty::Named(n, _, _) => *n != td.name,
                                 Ty::Prim(_) | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_) | Ty::Unit => true,
                                 _ => false,
                             };
@@ -5024,16 +5244,16 @@ impl<'a> TypeCk<'a> {
         let name = segs.last().cloned().unwrap_or_default();
         let want = if segs.len() == 1 && matches!(name.as_str(), "Some" | "None") {
             let v = self.fresh(0);
-            Some(Ty::Named("Option".into(), vec![v]))
+            Some(Ty::Named("Option".into(), vec![v], crate::types::Rgs::default()))
         } else if segs.len() == 1 && matches!(name.as_str(), "Ok" | "Err") {
             let (a, b) = (self.fresh(0), self.fresh(0));
-            Some(Ty::Named("Result".into(), vec![a, b]))
+            Some(Ty::Named("Result".into(), vec![a, b], crate::types::Rgs::default()))
         } else if let Some(r) = self.p.resolve(segs, &self.def().file) {
             match r.target {
                 Target::Variant(en, _) if self.p.types.contains_key(&en) => {
                     let n = self.type_def(&en).map_or(0, |td| td.generics.iter().filter(|g| g.0 == "type").count());
                     let args: Vec<Ty> = (0..n).map(|_| self.fresh(0)).collect();
-                    Some(Ty::Named(en, args))
+                    Some(Ty::Named(en, args, crate::types::Rgs::default()))
                 }
                 _ => None,
             }
@@ -5043,10 +5263,10 @@ impl<'a> TypeCk<'a> {
         if let Some(w) = want {
             // 列挙子は、照合する値の列挙型に属さなければならない (`Result` の値を `Some(..)` で照合するのは誤り)。
             // 値の型が具体的に決まっているときだけ比べる (参照は外して見る)。
-            if let Ty::Named(en, _) = &w {
+            if let Ty::Named(en, _, _) = &w {
                 let scrut = self.deep(ty);
                 let mismatch = match scrut.strip() {
-                    Ty::Named(n, _) => n != en,
+                    Ty::Named(n, _, _) => n != en,
                     Ty::Prim(_) | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_) | Ty::Unit => true,
                     _ => false,
                 };
@@ -5081,7 +5301,7 @@ impl<'a> TypeCk<'a> {
         let name = segs.last().cloned().unwrap_or_default();
         let t = self.deep(ty);
         let args = match t.strip() {
-            Ty::Named(_, a) => a.clone(),
+            Ty::Named(_, a, _) => a.clone(),
             _ => vec![],
         };
         if segs.len() == 1 {
@@ -5131,7 +5351,7 @@ impl<'a> TypeCk<'a> {
                 Target::Variant(en, vn) => {
                     if en == "Option" && vn == "None" {
                         let v = self.fresh(0);
-                        Ty::Named("Option".into(), vec![v])
+                        Ty::Named("Option".into(), vec![v], crate::types::Rgs::default())
                     } else if self.p.types.contains_key(&en) {
                         self.variant_ctor(&en, &vn, &[], 0)
                     } else {
@@ -5173,7 +5393,7 @@ impl<'a> TypeCk<'a> {
     /// ペイロードの宣言型と実引数を単一化して決める。
     fn variant_ctor(&mut self, en: &str, vn: &str, argt: &[Ty], line: usize) -> Ty {
         let arg_ids = std::mem::take(&mut self.side.arg_ids);
-        let Some(td) = self.type_def(en) else { return Ty::Named(en.to_string(), vec![]) };
+        let Some(td) = self.type_def(en) else { return Ty::Named(en.to_string(), vec![], crate::types::Rgs::default()) };
         let gn = td.gnames();
         let order: Vec<&String> = td.generics.iter().filter(|g| g.0 == "type").map(|g| &g.1).collect();
         let targs: Vec<Ty> = order.iter().map(|_| self.fresh(0)).collect();
@@ -5207,7 +5427,7 @@ impl<'a> TypeCk<'a> {
                 self.check_fn_conv_dir(&declared, a);
             }
         }
-        Ty::Named(en.to_string(), targs)
+        Ty::Named(en.to_string(), targs, crate::types::Rgs::default())
     }
 
     fn call(&mut self, call_id: u32, callee: &V, args: &[V], line: usize, targs: &[V]) -> Ty {
@@ -5245,7 +5465,7 @@ impl<'a> TypeCk<'a> {
                     );
                 }
                 // 取り込んだ `&f` / `&mut f` の呼び出しは、参照を外して呼ぶ。
-                while let Ty::Ref(_, inner) = &t {
+                while let Ty::Ref(_, inner, _) = &t {
                     let inner = (**inner).clone();
                     t = inner;
                 }
@@ -5304,7 +5524,7 @@ impl<'a> TypeCk<'a> {
                     td.generics.iter().all(|g| g.0 != "type") && td.variants.iter().any(|v| &v.0 == vn && v.1.is_empty())
                 });
                 if unit_variant && self.p.types.contains_key(en) {
-                    let recv = Ty::Named(en.clone(), vec![]);
+                    let recv = Ty::Named(en.clone(), vec![], crate::types::Rgs::default());
                     let m = r.rest[0].clone();
                     return self.call_method(call_id, call_id, &recv, None, &m, &argt, line, targs, false);
                 }
@@ -5341,14 +5561,14 @@ impl<'a> TypeCk<'a> {
                 }
                 let a0 = argt.first().cloned().unwrap_or(Ty::Unknown);
                 match (en.as_str(), vn.as_str()) {
-                    ("Option", "Some") => Ty::Named("Option".into(), vec![a0]),
+                    ("Option", "Some") => Ty::Named("Option".into(), vec![a0], crate::types::Rgs::default()),
                     ("Result", "Ok") => {
                         let e = self.fresh(0);
-                        Ty::Named("Result".into(), vec![a0, e])
+                        Ty::Named("Result".into(), vec![a0, e], crate::types::Rgs::default())
                     }
                     ("Result", "Err") => {
                         let t = self.fresh(0);
-                        Ty::Named("Result".into(), vec![t, a0])
+                        Ty::Named("Result".into(), vec![t, a0], crate::types::Rgs::default())
                     }
                     _ if self.p.types.contains_key(&en) => self.variant_ctor(&en, &vn, &argt, line),
                     _ => Ty::Unknown,
@@ -5513,10 +5733,12 @@ impl<'a> TypeCk<'a> {
                 self.edges.entry(callee).or_default().insert(node.clone());
             }
         }
+        let (sig_ps, sig_ret) = Self::sig_elided(d, &gn);
         for (k, a) in argt.iter().enumerate() {
             let Some(p) = d.params.get(k) else { break };
             let raw = from_v(&p.1, &gn);
-            let pt = self.inst(&raw, &mut map);
+            let pt = self.inst(&Self::inst_regions(call_id, &sig_ps[k]), &mut map);
+            self.note_region_cstr(call_id, &pt, a, "arg");
             if let Some((want, got)) = self.arg_ref_conflict(&raw, a).or_else(|| self.param_arg_ref_conflict(&raw, &pt, a)) {
                 self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, d.name, want, got, ref_hint(&want, &got, self.ty_copy_ref(&raw))), line);
             }
@@ -5544,7 +5766,7 @@ impl<'a> TypeCk<'a> {
                 let pt = self.deep(&pt);
                 let av = self.deep(a);
                 let same_named = match (pt.strip(), av.strip()) {
-                    (Ty::Named(x, _), Ty::Named(y, _)) => x == y,
+                    (Ty::Named(x, _, _), Ty::Named(y, _, _)) => x == y,
                     _ => false,
                 };
                 let _ = (same_named, &sl);
@@ -5592,8 +5814,7 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
-        let ret = from_v(&d.ret, &gn);
-        let r = self.inst(&ret, &mut map);
+        let r = self.inst(&Self::inst_regions(call_id, &sig_ret), &mut map);
         // 引数にも戻り値にも現れず、明示の型引数もない型パラメータ (`core.mem.size_of()` の `T`) は、どこからも決まらない。
         for g in &d.generics {
             if g.0 == "type" && !map.contains_key(&g.1) {
@@ -5773,7 +5994,7 @@ impl<'a> TypeCk<'a> {
     /// 宣言の効果変数 (`uses` の大文字の名前) と panic 変数 (`P`) だけを束縛する。
     fn bind_fn_ptr_param(&self, d: &Def, pv: &V, a: &Ty, out: &mut EffBind) {
         let mut at = self.deep(a);
-        while let Ty::Ref(_, x) = at {
+        while let Ty::Ref(_, x, _) = at {
             at = self.deep(&x);
         }
         let Some((uses, may)) = self.arg_fn_effects(&at) else { return };
@@ -5802,7 +6023,7 @@ impl<'a> TypeCk<'a> {
             let Some(p) = d.params.get(k + off) else { break };
             // 参照は透過的: `&F` / `&mut F` も `F` と同じ境界を持ち、`&g` を渡しても `g` のクロージャを見る。
             let mut pt = from_v(&p.1, &gn);
-            while let Ty::Ref(_, x) = pt {
+            while let Ty::Ref(_, x, _) = pt {
                 pt = *x;
             }
             // 関数ポインタ型の引数 (`p: fn() uses [E] panics P`): 宣言の効果変数を、渡した値の効果で束縛する。
@@ -5852,16 +6073,16 @@ impl<'a> TypeCk<'a> {
 
     fn param_slots_walk(&self, pt: &Ty, a: &Ty, out: &mut Vec<(String, Ty)>) {
         let mut at = self.deep(a);
-        while let Ty::Ref(_, x) = at {
+        while let Ty::Ref(_, x, _) = at {
             at = self.deep(&x);
         }
         let mut pt = pt;
-        while let Ty::Ref(_, x) = pt {
+        while let Ty::Ref(_, x, _) = pt {
             pt = x;
         }
         match (pt, &at) {
             (Ty::Param(n), _) => out.push((n.clone(), at)),
-            (Ty::Named(n, pa), Ty::Named(m, aa)) if n == m && pa.len() == aa.len() => {
+            (Ty::Named(n, pa, _), Ty::Named(m, aa, _)) if n == m && pa.len() == aa.len() => {
                 for (x, y) in pa.iter().zip(aa) {
                     self.param_slots_walk(x, y, out);
                 }
@@ -5885,15 +6106,15 @@ impl<'a> TypeCk<'a> {
         for (k, a) in argt.iter().enumerate() {
             let Some(p) = d.params.get(k + off) else { break };
             let mut pt = from_v(&p.1, &gn);
-            while let Ty::Ref(_, x) = pt {
+            while let Ty::Ref(_, x, _) = pt {
                 pt = *x;
             }
             let Ty::Param(name) = pt else { continue };
             let mut at = self.deep(a);
-            while let Ty::Ref(_, x) = at {
+            while let Ty::Ref(_, x, _) = at {
                 at = self.deep(&x);
             }
-            let Ty::Named(tn, _) = &at else { continue };
+            let Ty::Named(tn, _, _) = &at else { continue };
             for g in d.generics.iter().filter(|g| g.0 == "type" && g.1 == name) {
                 for b in items(&g.2) {
                     let V::L(bx) = b else { continue };
@@ -5982,7 +6203,7 @@ impl<'a> TypeCk<'a> {
             let Some(p) = d.params.get(k + off) else { break };
             let origin = arg_stat.get(k).copied().unwrap_or(false);
             if refs.get(k + off).copied().unwrap_or(false) {
-                self.static_checks.push((Ty::Ref(false, Box::new(Ty::Unit)), origin, line, format!("the argument `{}` of `{}` (`&'static`)", p.0, d.name)));
+                self.static_checks.push((Ty::Ref(false, Box::new(Ty::Unit), crate::types::Region::Unk), origin, line, format!("the argument `{}` of `{}` (`&'static`)", p.0, d.name)));
             } else if mentions_param(&from_v(&p.1, &gn), &bounded) {
                 self.static_checks.push((a.clone(), origin, line, format!("the argument `{}` of `{}` (a `'static` bound)", p.0, d.name)));
             }
@@ -5996,7 +6217,7 @@ impl<'a> TypeCk<'a> {
             let Some(p) = d.params.get(k + off) else { break };
             // 参照は透過的: `&F` / `&mut F` も `F` と同じ境界を持ち、`&g` を渡しても `g` のクロージャを見る。
             let mut pt = from_v(&p.1, &gn);
-            while let Ty::Ref(_, x) = pt {
+            while let Ty::Ref(_, x, _) = pt {
                 pt = *x;
             }
             for (name, at) in self.param_slots(&from_v(&p.1, &gn), a) {
@@ -6272,13 +6493,13 @@ impl<'a> TypeCk<'a> {
     fn vec_seq_mismatch(&self, want: &Ty, got: &Ty) -> Option<(String, String)> {
         let strip = |t: &Ty| {
             let mut t = self.deep(t);
-            while let Ty::Ref(_, x) = t {
+            while let Ty::Ref(_, x, _) = t {
                 t = self.deep(&x);
             }
             t
         };
         let (w, g) = (strip(want), strip(got));
-        let is_vec = |t: &Ty| matches!(t, Ty::Named(n, _) if n == "alloc.vec.Vec");
+        let is_vec = |t: &Ty| matches!(t, Ty::Named(n, _, _) if n == "alloc.vec.Vec");
         let is_seq = |t: &Ty| matches!(t, Ty::Array(_, _) | Ty::Slice(_));
         if (is_vec(&w) && is_seq(&g)) || (is_seq(&w) && is_vec(&g)) {
             Some((w.show(), g.show()))
@@ -6291,7 +6512,7 @@ impl<'a> TypeCk<'a> {
     fn open(&self, t: &Ty) -> bool {
         match self.deep(t) {
             Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Ref(..) | Ty::Closure { .. } | Ty::Dyn(..) | Ty::Never => true,
-            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.open(x)),
+            Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(|x| self.open(x)),
             Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.open(&x),
             _ => false,
         }
@@ -6327,13 +6548,13 @@ impl<'a> TypeCk<'a> {
             return Some(p);
         }
         match (&e.0, &e.1) {
-            (Ty::Named(a, xs), Ty::Named(b, ys)) if a == b && a == "alloc.boxed.Box" && self.box_dyn_mismatch(xs, ys) => {
+            (Ty::Named(a, xs, _), Ty::Named(b, ys, _)) if a == b && a == "alloc.boxed.Box" && self.box_dyn_mismatch(xs, ys) => {
                 Some((e.0.show(), e.1.show()))
             }
             (Ty::Prim(a), Ty::Prim(b)) if a != b => Some((a.clone(), b.clone())),
-            (Ty::Named(a, _), Ty::Named(b, _)) if a != b => Some((a.clone(), b.clone())),
+            (Ty::Named(a, _, _), Ty::Named(b, _, _)) if a != b => Some((a.clone(), b.clone())),
             (Ty::Const(a), Ty::Const(b)) if a != b => Some((a.clone(), b.clone())),
-            (Ty::Ref(true, _), Ty::Ref(false, _)) => Some((e.0.show(), e.1.show())),
+            (Ty::Ref(true, _, _), Ty::Ref(false, _, _)) => Some((e.0.show(), e.1.show())),
             _ => None,
         }
     }
@@ -6345,7 +6566,7 @@ impl<'a> TypeCk<'a> {
     /// 型 `t` (参照は剥がす) が Copy か。決まらない型・型パラメータは true (従来の案内のまま)。
     pub(crate) fn ty_copy_ref(&self, t: &Ty) -> bool {
         let mut t = self.deep(t);
-        while let Ty::Ref(_, inner) = t {
+        while let Ty::Ref(_, inner, _) = t {
             t = *inner;
         }
         self.ty_copy_hint(&t)
@@ -6353,7 +6574,7 @@ impl<'a> TypeCk<'a> {
 
     fn ty_copy_hint(&self, t: &Ty) -> bool {
         match t {
-            Ty::Named(nm, args) if nm == "Option" || nm == "Result" => args.iter().all(|x| self.ty_copy_hint(x)),
+            Ty::Named(nm, args, _) if nm == "Option" || nm == "Result" => args.iter().all(|x| self.ty_copy_hint(x)),
             Ty::Tuple(xs) => xs.iter().all(|x| self.ty_copy_hint(x)),
             _ => self.ty_copy(t) != Some(false),
         }
@@ -6380,8 +6601,8 @@ impl<'a> TypeCk<'a> {
     /// 型定義が分からない名前 (標準ライブラリの不透明な型) は所有型とみなす。
     fn owned_ty(&self, t: &Ty) -> bool {
         match self.deep(t) {
-            Ty::Named(n, args) if n == "Option" || n == "Result" => args.iter().any(|a| self.owned_ty(a)),
-            Ty::Named(n, _) => self.type_def(&n).map_or(true, |d| !d.derive.iter().any(|x| x == "Copy")),
+            Ty::Named(n, args, _) if n == "Option" || n == "Result" => args.iter().any(|a| self.owned_ty(a)),
+            Ty::Named(n, _, _) => self.type_def(&n).map_or(true, |d| !d.derive.iter().any(|x| x == "Copy")),
             Ty::Tuple(xs) => xs.iter().any(|x| self.owned_ty(x)),
             Ty::Array(x, _) => self.owned_ty(&x),
             _ => false,
@@ -6393,11 +6614,11 @@ impl<'a> TypeCk<'a> {
     fn owned_ref_clash(&self, want: &Ty, got: &Ty) -> bool {
         let (w, g) = (self.deep(want), self.deep(got));
         match (&w, &g) {
-            (Ty::Ref(_, a), Ty::Ref(_, b)) => self.owned_ref_clash(a, b),
+            (Ty::Ref(_, a, _), Ty::Ref(_, b, _)) => self.owned_ref_clash(a, b),
             (x @ (Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_, _)), Ty::Ref(..)) => {
                 self.owned_ty(x) && !self.undetermined(x)
             }
-            (Ty::Named(n, xs), Ty::Named(m, ys)) if n == m && xs.len() == ys.len() => {
+            (Ty::Named(n, xs, _), Ty::Named(m, ys, _)) if n == m && xs.len() == ys.len() => {
                 xs.iter().zip(ys.iter()).any(|(x, y)| self.owned_ref_clash(x, y))
             }
             (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => xs.iter().zip(ys.iter()).any(|(x, y)| self.owned_ref_clash(x, y)),
@@ -6440,7 +6661,7 @@ impl<'a> TypeCk<'a> {
         // 参照の段数を揃えて比べる。
         loop {
             match (wi, gi) {
-                (Ty::Ref(_, a), Ty::Ref(_, b)) => {
+                (Ty::Ref(_, a, _), Ty::Ref(_, b, _)) => {
                     wi = a;
                     gi = b;
                 }
@@ -6483,10 +6704,10 @@ impl<'a> TypeCk<'a> {
         // 4.2: `&[T; N]` → `&[T]` は参照の直下だけ。`Option<&[T]>` の位置に `Option<&[T; N]>` は渡せない。
         // (宣言の型に型パラメータを含まない引数だけを見る。総称の引数どうしの合流 `core.check.eq` は見ない。)
         if !want.has_param() {
-            if let (Ty::Named(n, xs), Ty::Named(m, ys)) = (want, &g0) {
+            if let (Ty::Named(n, xs, _), Ty::Named(m, ys, _)) = (want, &g0) {
                 if n == m && matches!(n.as_str(), "Option" | "Result") {
                     for (x, y) in xs.iter().zip(ys) {
-                        if let (Ty::Ref(_, p), Ty::Ref(_, q)) = (x, &self.deep(y)) {
+                        if let (Ty::Ref(_, p, _), Ty::Ref(_, q, _)) = (x, &self.deep(y)) {
                             if matches!((&**p, self.deep(q)), (Ty::Slice(_), Ty::Array(..))) {
                                 return Some((want.show(), g0.show()));
                             }
@@ -6501,13 +6722,13 @@ impl<'a> TypeCk<'a> {
         let (mut wi, mut gi) = (want.clone(), g0.clone());
         loop {
             match (&wi, &gi) {
-                (Ty::Ref(_, a), Ty::Ref(_, b)) => {
+                (Ty::Ref(_, a, _), Ty::Ref(_, b, _)) => {
                     let (a, b) = ((**a).clone(), (**b).clone());
                     wi = a;
                     gi = b;
                 }
                 (w, Ty::Ref(..)) if plain(w) && !w.has_param() => return Some((want.show(), g0.show())),
-                (Ty::Ref(_, a), g) if plain(g) && !self.undetermined(g) && !matches!(**a, Ty::Param(_) | Ty::Unknown) && !self.undetermined(&g0) => {
+                (Ty::Ref(_, a, _), g) if plain(g) && !self.undetermined(g) && !matches!(**a, Ty::Param(_) | Ty::Unknown) && !self.undetermined(&g0) => {
                     return Some((want.show(), g0.show()));
                 }
                 _ => return None,
@@ -6528,7 +6749,7 @@ impl<'a> TypeCk<'a> {
         }
         let w = self.deep(want);
         let g = self.deep(got);
-        if let (Ty::Named(n, xs), Ty::Named(m, ys)) = (w.strip(), g.strip()) {
+        if let (Ty::Named(n, xs, _), Ty::Named(m, ys, _)) = (w.strip(), g.strip()) {
             if n == m && !xs.is_empty() && !ys.is_empty() && !xs.iter().any(|x| self.unresolved(x)) && !ys.iter().any(|x| self.unresolved(x)) {
                 let a = w.strip().clone();
                 let b = g.strip().clone();
@@ -6543,9 +6764,9 @@ impl<'a> TypeCk<'a> {
         }
         match (&err.0, &err.1) {
             (Ty::Prim(a), Ty::Prim(b)) => Some((a.clone(), b.clone())),
-            (Ty::Named(a, _), Ty::Named(b, _)) if a != b => Some((a.clone(), b.clone())),
+            (Ty::Named(a, _, _), Ty::Named(b, _, _)) if a != b => Some((a.clone(), b.clone())),
             // `()` と値の型の食い違い (`-> Result<..>` の関数が `()` で終わるなど)。
-            (Ty::Ref(true, _), Ty::Ref(false, _)) => Some((err.0.show(), err.1.show())),
+            (Ty::Ref(true, _, _), Ty::Ref(false, _, _)) => Some((err.0.show(), err.1.show())),
             (Ty::Unit, x @ (Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_))) => Some(("()".into(), x.show())),
             (x @ (Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_)), Ty::Unit) => Some((x.show(), "()".into())),
             _ => None,
@@ -6557,8 +6778,8 @@ impl<'a> TypeCk<'a> {
     fn unresolved(&self, t: &Ty) -> bool {
         match self.deep(t) {
             Ty::Var(_) => true,
-            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.unresolved(x)),
-            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.unresolved(&x),
+            Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(|x| self.unresolved(x)),
+            Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.unresolved(&x),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.unresolved(x)) || self.unresolved(&ret),
             _ => false,
         }
@@ -6570,7 +6791,7 @@ impl<'a> TypeCk<'a> {
     fn from_conversion(&mut self, want: &Ty, got: &Ty) -> Option<crate::program::FromVariant> {
         let want = self.deep(want);
         let got = self.deep(got);
-        let Ty::Named(wn, _) = want.strip() else { return None };
+        let Ty::Named(wn, _, _) = want.strip() else { return None };
         if self.unresolved(got.strip()) {
             return None;
         }
@@ -6588,7 +6809,7 @@ impl<'a> TypeCk<'a> {
     /// どちらかが分からないときは黙る (Cranelift バックエンドも同じ条件で拒否する)。
     fn check_try_err(&mut self, operand: &Ty, line: usize, id: u32) {
         let got = self.deep(operand);
-        let Ty::Named(gn, ga) = got.strip() else { return };
+        let Ty::Named(gn, ga, _) = got.strip() else { return };
         if gn != "Result" && gn != "Option" {
             return;
         }
@@ -6597,7 +6818,7 @@ impl<'a> TypeCk<'a> {
         let want = want.strip().clone();
         match want {
             Ty::Unknown | Ty::Param(_) | Ty::Var(_) | Ty::Never => {}
-            Ty::Named(wn, wa) if wn == *gn => {
+            Ty::Named(wn, wa, _) if wn == *gn => {
                 // 種類は一致。`Result` のエラー型が完全一致するかだけを見る。
                 if gn == "Result" && wa.len() >= 2 && ga.len() >= 2 {
                     let e_want = wa[1].clone();
@@ -6866,8 +7087,8 @@ fn static_ref_params(header: &str) -> Vec<bool> {
 fn mentions_param(t: &Ty, names: &HashSet<String>) -> bool {
     match t {
         Ty::Param(p) => names.contains(p),
-        Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| mentions_param(x, names)),
-        Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => mentions_param(x, names),
+        Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(|x| mentions_param(x, names)),
+        Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => mentions_param(x, names),
         Ty::Closure { args, ret, .. } => args.iter().any(|x| mentions_param(x, names)) || mentions_param(ret, names),
         _ => false,
     }

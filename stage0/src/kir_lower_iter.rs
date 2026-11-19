@@ -99,7 +99,7 @@ fn parse_pipe<'a>(lw: &Lw, it: &'a V, stages: &mut Vec<(Stage, &'a V)>) -> Optio
 
 /// `it` の型が、`&mut self` の `next` を持つ利用者の反復子なら、その定義の番号 (標準の反復子と `std.*` は除く)。
 fn user_next(lw: &Lw, it: &V) -> Option<usize> {
-    let Ok(super::Src::Named(base, _)) = lw.src_ty(it) else { return None };
+    let Ok(super::Src::Named(base, _, _)) = lw.src_ty(it) else { return None };
     if base == "Option" || base == "Result" || base.starts_with("core.") || base.starts_with("std.") || base.starts_with("alloc.") {
         return None;
     }
