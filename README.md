@@ -10,7 +10,7 @@ Kasane は、LLM が書き、機械が検証する契約重視の言語と、そ
 | --- | --- |
 | ホスト OS | Linux（x86_64） |
 | Rust | Cargo と Rust 2021 edition 対応ツールチェーン |
-| C・C++ ビルド道具 | `clang`、`c++`、`ar` |
+| C・C++ ビルド道具 | `clang`（または `gcc`）、`c++`、`ar` |
 | LLVM | 既定の組み込み LLVM ビルド用に LLVM 20 の開発ファイル、zlib、zstd の開発ファイル |
 | Python | 3.10 以上（仕様検証と統合試験用） |
 | Git | ソースの取得と、`git` 型の依存パッケージ用 |
@@ -33,7 +33,7 @@ cd kasane
 bash scripts/setup.sh
 ```
 
-`scripts/setup.sh` は必要な道具を確認し、`stage0/target/release/ksn` をビルドして、`examples/demo` の動作確認まで行います。ベンチ用の API キーを使う場合だけ、先に `.env.example` を `.env` へコピーして `NVIDIA_API_KEY` を設定してください。
+`scripts/setup.sh` は必要な道具を確認し、`stage0/target/release/ksn` をビルドして、`examples/demo` の動作確認まで行います。LLVM 20 の開発ファイルと zlib・zstd の開発ファイルも入っていないと、既定の組み込み LLVM 付きビルドは失敗します。ベンチ用の API キーを使う場合だけ、先に `.env.example` を `.env` へコピーして `NVIDIA_API_KEY` を設定してください。
 
 ## クイックスタート
 
