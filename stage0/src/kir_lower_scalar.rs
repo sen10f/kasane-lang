@@ -333,7 +333,7 @@ impl<'a> Lw<'a> {
         let (nl, _) = self.new_block(&[]);
         let (eb, _) = self.new_block(&[]);
         let (gb, _) = self.new_block(&[]);
-        let ord = match self.conv_t(&crate::types::Ty::Named("core.cmp.Ordering".into(), vec![])) {
+        let ord = match self.conv_t(&crate::types::Ty::Named("core.cmp.Ordering".into(), vec![], crate::types::Rgs::default())) {
             Some(o) => o,
             None => return self.err(line, "core.cmp.Ordering が下ろせない"),
         };
@@ -536,7 +536,7 @@ impl<'a> Lw<'a> {
                 }
                 let Some(a) = self.expr(&args[0])? else { return Ok(Some(None)) };
                 self.expect_ty(a, src, line)?;
-                let Some(err_ty) = self.conv_t(&Src::Named("core.num.TryFromIntError".into(), vec![])) else {
+                let Some(err_ty) = self.conv_t(&Src::Named("core.num.TryFromIntError".into(), vec![], crate::types::Rgs::default())) else {
                     return self.err(line, "TryFromIntError の型が読めない");
                 };
                 let Ty::Agg(_) = err_ty else {

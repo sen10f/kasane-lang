@@ -318,7 +318,7 @@ fn src_to_kir_extern(aggs: &std::cell::RefCell<agg::AggTab>, p: &Program, file: 
                 .and_then(|t| kir::Pointee::of(t))
                 .map(|_| Ty::Ptr)
                 .ok_or_else(|| format!("ポインタ型 {} は未対応", show(t))),
-            Src::Named(n, _) => {
+            Src::Named(n, _, _) => {
                 let segs: Vec<String> = n.split('.').map(String::from).collect();
                 match p.resolve(&segs, file).map(|r| r.target) {
                     Some(Tgt::Type(_)) => {

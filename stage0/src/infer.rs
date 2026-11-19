@@ -306,7 +306,7 @@ pub fn annotate_owned_drops(p: &mut Program, user: &[usize]) {
     }
     let owned = |t: &crate::types::Ty| -> bool {
         match t {
-            crate::types::Ty::Named(n, _) => {
+            crate::types::Ty::Named(n, _, _) => {
                 if matches!(n.as_str(), "alloc.string.String" | "alloc.vec.Vec" | "alloc.collections.HashMap") {
                     return true;
                 }
@@ -484,7 +484,7 @@ fn scope_ends(
                     let it_ty = tk.tytab.get(&(d.name.clone(), crate::parser::nid(&fs[1])));
                     let elem_owned = match it_ty {
                         Some(e) if nname(&fs[1]) == "Path" => match &e.ty {
-                            crate::types::Ty::Named(n, a) if n == "alloc.vec.Vec" => a.first().is_some_and(|t| owned(t)),
+                            crate::types::Ty::Named(n, a, _) if n == "alloc.vec.Vec" => a.first().is_some_and(|t| owned(t)),
                             crate::types::Ty::Array(t, _) => owned(t),
                             _ => false,
                         },
@@ -499,7 +499,7 @@ fn scope_ends(
             // 使わないなら、腕の終わりで死ぬ。
             if *kind == "Match" && fs.len() == 2 {
                 let sty = tk.tytab.get(&(d.name.clone(), crate::parser::nid(&fs[0]))).map(|e| e.ty.clone());
-                if let Some(crate::types::Ty::Named(en, targs)) = sty {
+                if let Some(crate::types::Ty::Named(en, targs, _)) = sty {
                     let mut per_arm: Vec<Vec<String>> = vec![];
                     let mut any = false;
                     for arm in items(&fs[1]) {

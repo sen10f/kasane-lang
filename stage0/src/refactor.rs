@@ -152,7 +152,7 @@ fn chains_in(line: &str, toks: &[Tok]) -> Vec<Chain> {
 
 fn ty_strip(t: &Ty) -> &Ty {
     let mut t = t;
-    while let Ty::Ref(_, inner) = t {
+    while let Ty::Ref(_, inner, _) = t {
         t = inner;
     }
     t
@@ -557,7 +557,7 @@ impl<'a> Engine<'a> {
         let Some(ty) = ty else { return unknown(self) };
         let t = ty_strip(ty);
         match t {
-            Ty::Named(n, _) => {
+            Ty::Named(n, _, _) => {
                 if op.owners.contains(n) {
                     Decision::Hit
                 } else {
@@ -580,7 +580,7 @@ impl<'a> Engine<'a> {
                 }
                 if self.bound_reaches(&text, &op.trait_fqn) { Decision::Hit } else { Decision::Skip }
             }
-            Ty::Dyn(tr, _) => {
+            Ty::Dyn(tr, _, _) => {
                 if op.kind != Kind::TraitMethod || field {
                     return Decision::Skip;
                 }
