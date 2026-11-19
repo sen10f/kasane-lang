@@ -1,6 +1,9 @@
 //! `ksn lsp` の統合テスト。実際に子プロセスを起動し、`Content-Length` 付きのメッセージをパイプで流して応答を確かめる。
 //! 応答待ちにはすべてタイムアウトがあり、サーバが固まってもテストは失敗で終わる。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -67,7 +70,7 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 
@@ -539,7 +542,7 @@ fn robust_against_malformed_input_and_broken_manifest() {
     let ds = c.diagnostics_until(&toml_uri, |d| !d.is_empty());
     assert_eq!(ds[0]["code"], "E9002");
     // kasane.toml が無い場所の文書: 警告の診断が出る。
-    let lone = std::env::temp_dir().join(format!("ksn_lsp_lone_{}", std::process::id()));
+    let lone = scratch::Scratch::at(format!("ksn_lsp_lone_{}", std::process::id()));
     fs::create_dir_all(&lone).unwrap();
     let lone = fs::canonicalize(lone).unwrap();
     fs::write(lone.join("a.ksnl"), "x\n").unwrap();

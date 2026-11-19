@@ -1,6 +1,9 @@
 //! `if let` と `is` (1 つの形だけを見る構文) の統合テスト。`match` の 1 腕 + 構文由来の「他の全部」の腕に
 //! 下ろされる。実行 (インタプリタ) とネイティブ (LLVM) の出力一致、線形値の漏れの検査、`ksn fmt` の往復を見る。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -38,7 +41,7 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 
@@ -66,7 +69,7 @@ fn if_let_and_is_run_and_build_to_the_same_output() {
     assert_eq!(text(&o.stdout).trim(), "iflet ok");
 
     let t = Tmp::new("prog_build", PROG);
-    let cache = std::env::temp_dir().join(format!("ksn_iflet_cache_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_iflet_cache_{}", std::process::id()));
     let b = Command::new(exe()).args(["build"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let out = text(&b.stdout) + &text(&b.stderr);
     let _ = fs::remove_dir_all(&cache);

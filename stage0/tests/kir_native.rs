@@ -4,6 +4,9 @@
 
 mod common;
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -727,7 +730,7 @@ fn native_box_dyn_frees_every_allocation_exactly_once() {
     }
     let cc = ["gcc", "cc", "clang"].iter().find(|c| Command::new(c).arg("--version").output().is_ok());
     let Some(cc) = cc else { return };
-    let dir = std::env::temp_dir().join(format!("ksn_malloc_count_{}", std::process::id()));
+    let dir = scratch::Scratch::at(format!("ksn_malloc_count_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let c_path = dir.join("malloc_count.c");
@@ -978,7 +981,7 @@ fn launcher_works_via_symlink() {
     );
     let launcher = t.0.join("target").join("debug").join("t");
     assert!(launcher.is_file());
-    let link = std::env::temp_dir().join(format!("ksn_link_{}", std::process::id()));
+    let link = scratch::Scratch::at(format!("ksn_link_{}", std::process::id()));
     let _ = fs::remove_file(&link);
     std::os::unix::fs::symlink(&launcher, &link).unwrap();
     let out = Command::new(&link).current_dir(&t.0).output().expect("spawn launcher via symlink");

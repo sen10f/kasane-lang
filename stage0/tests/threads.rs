@@ -4,6 +4,9 @@
 
 mod common;
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -19,7 +22,7 @@ fn threads_pkg(name: &str, tag: &str) -> Tmp {
 
 /// ビルドして (LLVM、下ろせなければ理由付きでバンドル) 実行ファイルを返す。
 fn threads_build(t: &Tmp, release: bool) -> PathBuf {
-    let cache = std::env::temp_dir().join(format!("ksn_cache_thr_{}_{}", std::process::id(), t.0.file_name().unwrap().to_string_lossy()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_thr_{}_{}", std::process::id(), t.0.file_name().unwrap().to_string_lossy()));
     let mut c = Command::new(exe());
     c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
     if release {
@@ -167,7 +170,7 @@ fn native_channel_clone_and_close_free_every_allocation_exactly_once() {
     }
     let cc = ["gcc", "cc", "clang"].iter().find(|c| Command::new(c).arg("--version").output().is_ok());
     let Some(cc) = cc else { return };
-    let dir = std::env::temp_dir().join(format!("ksn_malloc_count_thr_{}", std::process::id()));
+    let dir = scratch::Scratch::at(format!("ksn_malloc_count_thr_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let c_path = dir.join("malloc_count.c");
@@ -1006,7 +1009,8 @@ fn kir_native_threads_have_no_data_races_under_threadsanitizer() {
     for name in ["mutex_counter", "channel", "channel_clone"] {
         let t = threads_pkg(name, "tsan");
         let mut c = Command::new(exe());
-        c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", std::env::temp_dir().join(format!("ksn_cache_tsan_{}_{}", std::process::id(), name)));
+        let cache = scratch::Scratch::at(format!("ksn_cache_tsan_{}_{}", std::process::id(), name));
+        c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
         tsan(&mut c);
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
@@ -1125,7 +1129,7 @@ fn kir_native_pool_guards_and_deadlock_have_no_data_races_under_threadsanitizer(
     }
     for (name, want) in [("pool_shared", 0), ("guard_drop", 0), ("guard_temp", 0), ("guard_while", 0), ("deadlock_mutex", 101)] {
         let t = threads_pkg(name, "tsan2");
-        let cache = std::env::temp_dir().join(format!("ksn_cache_tsan2_{}_{}", std::process::id(), name));
+        let cache = scratch::Scratch::at(format!("ksn_cache_tsan2_{}_{}", std::process::id(), name));
         let mut c = Command::new(exe());
         c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).env("KSN_CLANG_ARGS", "-fsanitize=thread -g -O1");
         let o = c.output().unwrap();

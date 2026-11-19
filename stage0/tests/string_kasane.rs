@@ -2,6 +2,9 @@
 //! 木走査 (`ksn run`) とネイティブ (`ksn build`) の出力が同じで期待値に一致すること、
 //! ネイティブの KIR が組み込みではなく Kasane 版の単相インスタンス (`alloc.string.String.push_str<..>`) を呼ぶことを見る。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -74,7 +77,7 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 
@@ -90,7 +93,7 @@ fn string_kasane_push_family_matches_in_tree_and_native_paths() {
     let tree = run(&["run"], &t.0);
     assert_eq!(tree.status.code(), Some(0), "{}{}", text(&tree.stdout), text(&tree.stderr));
     assert_eq!(text(&tree.stdout), EXPECT, "木走査の出力が期待値と違う");
-    let cache = std::env::temp_dir().join(format!("ksn_string_kasane_cache_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_string_kasane_cache_{}", std::process::id()));
     let b = Command::new(exe()).args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     let out = text(&b.stdout) + &text(&b.stderr);
@@ -136,7 +139,7 @@ fn string_kasane_as_str_sees_later_writes_in_all_paths() {
     assert_eq!(text(&tree.stdout), EXPECT_I, "木走査: {}", text(&tree.stderr));
     let vm = run(&["run", "--engine=vm"], &t.0);
     assert_eq!(text(&vm.stdout), EXPECT_I, "VM: {}", text(&vm.stderr));
-    let cache = std::env::temp_dir().join(format!("ksn_string_kasane_icache_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_string_kasane_icache_{}", std::process::id()));
     let b = Command::new(exe()).args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     assert!(b.status.success(), "{}{}", text(&b.stdout), text(&b.stderr));

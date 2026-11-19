@@ -1,6 +1,9 @@
 //! `kasane.lock` 版 2: 依存の公開の署名と効果の記録 (E9060 広がり / E9061 署名の変化・消えた / E9062 狭まり・増えた)、
 //! `ksn lock --accept / --diff / --upgrade`。ネットワークには出ない (一時のローカルの git リポジトリ)。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -31,7 +34,7 @@ impl Work {
 }
 impl Drop for Work {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
+        scratch::remove(&self.dir);
     }
 }
 

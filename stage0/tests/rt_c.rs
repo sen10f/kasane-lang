@@ -1,5 +1,8 @@
 //! `sysrt.c` など C の実行時の部品を、小さい C の駆動で直接確かめる (review2 13)。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::process::Command;
 
 /// カーネルが送信元を書かない socket (unix の dgram) の `recvfrom` が、読んだ長さと空の送信元を返す
@@ -10,7 +13,7 @@ fn sysrt_recvfrom_without_a_source_address_returns_the_data_and_an_empty_from() 
         return;
     }
     let Some(cc) = ["gcc", "cc", "clang"].iter().find(|c| Command::new(c).arg("--version").output().is_ok()) else { return };
-    let dir = std::env::temp_dir().join(format!("ksn_test_rt_c_{}", std::process::id()));
+    let dir = scratch::Scratch::at(format!("ksn_test_rt_c_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let exe = dir.join("drv");
