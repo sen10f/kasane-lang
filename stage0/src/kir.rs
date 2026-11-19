@@ -1092,6 +1092,8 @@ pub struct AggDef {
 pub enum AggKind {
     Struct(Vec<Field>),
     Tuple(Vec<Field>),
+    /// 固定長配列 `[T; N]`: 要素 `T` を `N` 個、隙間なく並べたもの (要素は所有物を持たない)。大きさは `N * size(T)`。
+    Array(Ty, u32),
     /// 先頭 4 バイトがタグ (バリアントの添字を i32 で書く)。各バリアントのペイロードは、タグの後ろに重ねて置く。
     Enum(Vec<Variant>),
 }
@@ -1257,6 +1259,7 @@ pub fn prune_aggs(m: &mut Module) {
     while let Some(i) = todo.pop() {
         let fields: Vec<Ty> = match &m.aggs[i as usize].kind {
             AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().map(|f| f.ty).collect(),
+            AggKind::Array(t, _) => vec![*t],
             AggKind::Enum(vs) => vs.iter().flat_map(|v| v.fields.iter().map(|f| f.ty)).collect(),
         };
         for t in fields {
@@ -1279,6 +1282,7 @@ pub fn prune_aggs(m: &mut Module) {
         }
         match &mut d.kind {
             AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter_mut().for_each(|f| f.ty = remap(f.ty)),
+            AggKind::Array(t, _) => *t = remap(*t),
             AggKind::Enum(vs) => vs.iter_mut().for_each(|v| v.fields.iter_mut().for_each(|f| f.ty = remap(f.ty))),
         }
         m.aggs.push(d);
@@ -1347,6 +1351,7 @@ fn fmt_agg(i: usize, d: &AggDef) -> String {
     let (kind, body) = match &d.kind {
         AggKind::Struct(fs) => ("struct", fmt_fields(fs)),
         AggKind::Tuple(fs) => ("tuple", fmt_fields(fs)),
+        AggKind::Array(t, n) => ("array", format!("{}x{}", fmt_ty(*t), n)),
         AggKind::Enum(vs) => (
             "enum",
             vs.iter()
@@ -2330,6 +2335,10 @@ fn parse_agg_decl(line_no: usize, text: &str, k: usize) -> Result<AggDef, String
     let kind = match toks[1] {
         "struct" => AggKind::Struct(fields(body)?),
         "tuple" => AggKind::Tuple(fields(body)?),
+        "array" => {
+            let (t, n) = body.trim().rsplit_once('x').ok_or_else(|| perr(line_no, "配列の本体の形が不正 (<型>x<個数>)"))?;
+            AggKind::Array(parse_ty(t, line_no)?, n.parse::<u32>().map_err(|_| perr(line_no, "配列の個数が不正"))?)
+        }
         "enum" => {
             let mut vs = vec![];
             for t in body.split_whitespace() {
@@ -3311,6 +3320,7 @@ fn has_field(d: &AggDef, off: u32, t: Ty) -> bool {
     let hit = |fs: &[Field]| fs.iter().any(|f| f.off == off && f.ty == t);
     match &d.kind {
         AggKind::Struct(fs) | AggKind::Tuple(fs) => hit(fs),
+        AggKind::Array(..) => false,
         AggKind::Enum(vs) => vs.iter().any(|v| hit(&v.fields)),
     }
 }
@@ -3355,6 +3365,7 @@ pub fn verify_module(m: &Module) -> Vec<(String, String)> {
     for d in &m.aggs {
         let fs: Vec<Ty> = match &d.kind {
             AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().map(|f| f.ty).collect(),
+            AggKind::Array(t, _) => vec![*t],
             AggKind::Enum(vs) => vs.iter().flat_map(|v| v.fields.iter().map(|f| f.ty)).collect(),
         };
         if let Some(t) = fs.into_iter().find(|t| !agg_ok(*t)) {

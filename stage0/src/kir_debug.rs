@@ -1020,7 +1020,7 @@ impl<'a> Gen<'a> {
                 }
                 b.at(done);
             }
-            AggKind::Tuple(_) => return Err("タプルの Debug 表示は未対応".to_string()),
+            AggKind::Tuple(_) | AggKind::Array(..) => return Err("タプル・配列の Debug 表示は未対応".to_string()),
         }
         let f = b.finish(&k);
         self.add(f, callees);
@@ -1144,7 +1144,7 @@ impl<'a> Gen<'a> {
                 let t = b.c(Ty::Bool, 1);
                 b.term(Term::Ret(t));
             }
-            AggKind::Tuple(_) => return Err("タプルの比較は未対応".to_string()),
+            AggKind::Tuple(_) | AggKind::Array(..) => return Err("タプル・配列の比較は未対応".to_string()),
         }
         b.at(fail);
         let f = b.c(Ty::Bool, 0);

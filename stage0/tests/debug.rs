@@ -1,6 +1,9 @@
 //! `ksn debug` / `ksn test --debug` / `ksn dap` の統合テスト。実際に子プロセスを起動する。
 //! 待つ処理にはすべてタイムアウトがあり、デバッガが固まってもテストは失敗で終わる。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
@@ -82,7 +85,7 @@ impl Pkg {
 }
 impl Drop for Pkg {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 

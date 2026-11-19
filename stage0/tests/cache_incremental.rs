@@ -4,6 +4,9 @@
 
 mod common;
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -12,7 +15,7 @@ use common::*;
 #[test]
 fn build_produces_artifacts_and_is_cached() {
     let d = root().join("examples").join("native");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let b = |release: bool| {
         let mut c = Command::new(exe());
@@ -34,7 +37,7 @@ fn build_produces_artifacts_and_is_cached() {
 #[test]
 fn the_realtime_example_runs_natively_through_the_native_build() {
     let d = root().join("examples").join("realtime");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_rt_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_rt_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
@@ -59,7 +62,7 @@ fn the_realtime_example_runs_natively_through_the_native_build() {
 #[test]
 fn the_demo_example_runs_natively_through_the_native_build() {
     let d = root().join("examples").join("demo");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_demo_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_demo_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
@@ -76,7 +79,7 @@ fn the_demo_example_runs_natively_through_the_native_build() {
 #[test]
 fn the_json_example_runs_natively_through_the_native_build() {
     let d = root().join("examples").join("json");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_json_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_json_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
@@ -172,7 +175,7 @@ fn the_llvm_backend_compiles_map_get_mut_and_hashmap_iter() {
     let interp = run(&["run"], &t.0);
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
     for release in [false, true] {
-        let cache = std::env::temp_dir().join(format!("ksn_cache_mapmeth_{}_{}", std::process::id(), release));
+        let cache = scratch::Scratch::at(format!("ksn_cache_mapmeth_{}_{}", std::process::id(), release));
         let mut c = Command::new(exe());
         c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
         if release {
@@ -216,7 +219,7 @@ fn the_llvm_backend_compiles_mutex_lock_and_guard() {
     let interp = run(&["run"], &t.0);
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
     for release in [false, true] {
-        let cache = std::env::temp_dir().join(format!("ksn_cache_sync_{}_{}", std::process::id(), release));
+        let cache = scratch::Scratch::at(format!("ksn_cache_sync_{}_{}", std::process::id(), release));
         let mut c = Command::new(exe());
         c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
         if release {
@@ -237,7 +240,7 @@ fn the_llvm_backend_compiles_mutex_lock_and_guard() {
 #[test]
 fn the_features_example_runs_natively_through_the_native_build() {
     let d = root().join("examples").join("features");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_feat_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_feat_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
@@ -262,7 +265,7 @@ fn the_features_example_runs_natively_through_the_native_build() {
 #[test]
 fn the_threads_example_runs_natively_through_the_native_build() {
     let d = root().join("examples").join("threads");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_thr_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_thr_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
@@ -279,7 +282,7 @@ fn the_threads_example_runs_natively_through_the_native_build() {
 #[test]
 fn the_tour_example_runs_natively_through_the_native_build() {
     let d = root().join("examples").join("tour");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_tour_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_tour_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
@@ -307,7 +310,7 @@ fn ffi_extern_calls_and_raw_pointers_work_natively() {
     fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
-    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_{}_ffi", std::process::id()));
     let b = Command::new(exe())
         .args(["build", "--backend", "llvm"])
         .current_dir(&t.0)
@@ -326,7 +329,7 @@ fn ffi_extern_calls_and_raw_pointers_work_natively() {
 #[test]
 fn the_http_example_runs_natively_through_the_native_build() {
     let d = root().join("examples").join("http");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_http_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_http_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
@@ -355,7 +358,7 @@ fn the_shortener_example_builds_natively_without_skips_and_matches_the_interpret
         return;
     }
     let d = root().join("examples").join("shortener");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_short_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_short_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
@@ -376,7 +379,7 @@ fn the_plugins_example_builds_natively_without_skips_and_matches_the_interpreter
         return;
     }
     let d = root().join("examples").join("plugins");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_plugins_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_plugins_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
@@ -402,7 +405,7 @@ fn the_plugins_example_builds_natively_without_skips_and_matches_the_interpreter
 #[test]
 fn ffi_unit_tests_run_in_both_the_interpreter_and_the_native_bundle() {
     let t = ffi_pkg("ffi_unit", "unit.ksnl");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi_unit", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_{}_ffi_unit", std::process::id()));
     let o = Command::new(exe()).args(["test", "--both"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
@@ -414,7 +417,7 @@ fn ffi_unit_tests_run_in_both_the_interpreter_and_the_native_bundle() {
 fn the_ffi_example_checks_formats_tests_and_runs_the_same_in_both_backends() {
     // examples/ffi: libc の `qsort` (Kasane の比較関数) と libm の `cbrt` (動的ロード)。C の準備なしで動く。
     let d = root().join("examples").join("ffi");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi_example", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_{}_ffi_example", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     assert_eq!(run(&["check"], &d).status.code(), Some(0));
     assert_eq!(run(&["fmt", "--check"], &d).status.code(), Some(0));
@@ -457,7 +460,7 @@ fn the_ffi_shapes_example_builds_its_c_library_and_passes_in_both_backends() {
     copy_dir(&root().join("examples").join("ffi").join("shapes"), &d);
     let o = Command::new("sh").arg("build.sh").current_dir(&d).output().unwrap();
     assert!(o.status.success(), "{}", text(&o.stderr));
-    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_shapes", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_{}_shapes", std::process::id()));
     assert_eq!(run(&["check"], &d).status.code(), Some(0));
     assert_eq!(run(&["fmt", "--check"], &d).status.code(), Some(0));
     let t = Command::new(exe()).args(["test", "--both"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
@@ -558,7 +561,7 @@ fn the_hashmap_index_stays_consistent_across_growth_removal_and_reinsertion() {
     let interp = run(&["run"], &t.0);
     assert_eq!(interp.status.code(), Some(0), "{}{}", text(&interp.stdout), text(&interp.stderr));
     assert_eq!(text(&interp.stdout).trim(), "index ok");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_hmindex_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_hmindex_{}", std::process::id()));
     let o = Command::new(exe())
         .args(["build", "--backend", "llvm"])
         .current_dir(&t.0)
@@ -597,7 +600,7 @@ end t.main
 ";
     let t = Tmp::new("ffi_dup_symbol", src);
     fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
-    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi_dup", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_{}_ffi_dup", std::process::id()));
     let b = Command::new(exe())
         .args(["build", "--backend", "llvm"])
         .current_dir(&t.0)
@@ -630,7 +633,7 @@ fn bundle_launcher_is_executable_and_location_independent() {
 end t.main
 ";
     let t = Tmp::new("bundle_launcher", src);
-    let cache = std::env::temp_dir().join(format!("ksn_bundle_cache_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_bundle_cache_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let o = Command::new(exe())
         .args(["build", "--release", "--allow-bundle"])
@@ -696,7 +699,7 @@ fn concurrent_builds_with_the_same_key_both_succeed() {
     let a = Tmp::new("cache_race_a", CACHE_SRC);
     let b = Tmp::new("cache_race_b", CACHE_SRC);
     for round in 0..4 {
-        let cache = std::env::temp_dir().join(format!("ksn_cache_race_{}_{}", std::process::id(), round));
+        let cache = scratch::Scratch::at(format!("ksn_cache_race_{}_{}", std::process::id(), round));
         let _ = fs::remove_dir_all(&cache);
         let spawn = |dir: &Path| {
             Command::new(exe())
@@ -723,7 +726,7 @@ fn cache_hit_reuses_native_artifact_without_compiling() {
     // 1 回目は compile_llvm を通り、生成物がキャッシュに入る。2 回目は同じキーで
     // "cache hit" となり、compile_llvm (KSN_TIME の印) を通らずに生成物を複製する。
     let t = Tmp::new("cache_artifact", CACHE_SRC);
-    let cache = std::env::temp_dir().join(format!("ksn_cache_art_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_art_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let exe_file = if cfg!(windows) { "t.exe" } else { "t.native" };
     let exe_path = t.0.join("target").join("debug").join(exe_file);
@@ -757,9 +760,9 @@ fn build_key_changes_with_ksn_binary_profile_and_backend() {
     // キーは ksn 本体のバイト列・debug/release・バックエンドで分かれる。
     // ksn 本体の変化は、同じ実行ファイルの末尾にバイトを足した別物で代用する (Linux / Windows は末尾を無視して動く)。
     let t = Tmp::new("cache_key", CACHE_SRC);
-    let cache = std::env::temp_dir().join(format!("ksn_cache_key_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_key_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
-    let bin_dir = std::env::temp_dir().join(format!("ksn_cache_key_bin_{}", std::process::id()));
+    let bin_dir = scratch::Scratch::at(format!("ksn_cache_key_bin_{}", std::process::id()));
     let _ = fs::remove_dir_all(&bin_dir);
     fs::create_dir_all(&bin_dir).unwrap();
     let ksn_a = bin_dir.join(format!("ksn_a{}", std::env::consts::EXE_SUFFIX));
@@ -810,7 +813,7 @@ fn bundle_is_rebuilt_when_sources_change() {
     // `ksn test --both` のバンドルは、ソースが変われば作り直す。
     // 以前は target/debug に ksn があるだけで再利用され、追加したテストが "no such test" になった。
     let t = Tmp::new("bundle_fresh", CACHE_SRC);
-    let cache = std::env::temp_dir().join(format!("ksn_cache_bundle_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_bundle_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let test_both = |name: &str| {
         Command::new(exe())
@@ -840,7 +843,7 @@ fn fmath_functions_agree_across_backends_and_match_known_values() {
     // 数学関数 (`fmath`) は、インタプリタと LLVM で同じビット列を返し、既知の値に近い。
     // `tests/data/fmath_both.ksnl`: 既知値 (f32 は 2〜3 ulp 以内)、特殊値 (atan2 の ±∞ / NaN 組を含む)、9 関数の総和 (ビット列の突き合わせ)。
     let t = Tmp::new("fmath_both", include_str!("data/fmath_both.ksnl"));
-    let cache = std::env::temp_dir().join(format!("ksn_cache_fmath_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_fmath_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let o = Command::new(exe())
         .args(["test", "--both"])
@@ -872,7 +875,7 @@ fn ffi_struct_by_value_works_on_both_backends_with_libc() {
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
     let r = run(&["run"], &t.0);
     assert_eq!(text(&r.stdout), "libc struct ok\n", "{}", text(&r.stderr));
-    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi_struct", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_{}_ffi_struct", std::process::id()));
     let b = Command::new(exe())
         .args(["build", "--backend", "llvm"])
         .current_dir(&t.0)
@@ -917,7 +920,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 ";
     let t = Tmp::new("release_no_bundle", src);
-    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_release_no_bundle", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_{}_release_no_bundle", std::process::id()));
     let build = |extra: &[&str]| {
         let mut args = vec!["build"];
         args.extend_from_slice(extra);
@@ -947,7 +950,7 @@ end t.main
 #[test]
 fn release_build_without_clang_fails_instead_of_bundling() {
     let t = Tmp::new("release_no_clang", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"ok\")\nend t.main\n");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_release_no_clang", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_{}_release_no_clang", std::process::id()));
     let build = |extra: &[&str]| {
         let mut args = vec!["build"];
         args.extend_from_slice(extra);
@@ -1022,7 +1025,7 @@ fn llvm_builds_of_real_packages_match_run() {
     ] {
         let name = Path::new(pkg).file_name().unwrap().to_string_lossy().to_string();
         // 一時 dir の下に写す。path 依存 (`../kvlib`) のあるパッケージは、依存を兄弟の dir として写す。
-        let base = std::env::temp_dir().join(format!("ksn_llvm_pkg_{}_{}", std::process::id(), name));
+        let base = scratch::Scratch::at(format!("ksn_llvm_pkg_{}_{}", std::process::id(), name));
         let _ = fs::remove_dir_all(&base);
         let dir = base.join(&name);
         copy(&root().join(pkg), &dir);
@@ -1069,7 +1072,7 @@ fn kvapp_test_both_is_llvm_not_bundle() {
             }
         }
     }
-    let base = std::env::temp_dir().join(format!("ksn_kvapp_both_{}", std::process::id()));
+    let base = scratch::Scratch::at(format!("ksn_kvapp_both_{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
     let dir = base.join("kvapp");
     copy_all(&root().join("examples").join("kvapp"), &dir);
@@ -1561,7 +1564,7 @@ fn derive_try_clone_runs_and_builds_alike() {
     let interp = run(&["run"], &t.0);
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
     assert_eq!(text(&interp.stdout), "ok\ne ok\n");
-    let cache = std::env::temp_dir().join(format!("ksn_cache_tryclone_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_tryclone_{}", std::process::id()));
     let mut c = Command::new(exe());
     c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
     let o = c.output().unwrap();
@@ -1715,7 +1718,7 @@ fn lsp_incremental_matches_full_check() {
     for n in ["c", "d", "e"] {
         fs::write(src.join(format!("t/{}.ksnl", n)), mk_leaf(n, "x")).unwrap();
     }
-    let err = std::env::temp_dir().join(format!("ksn_lsp_inc_err_{}", std::process::id()));
+    let err = scratch::Scratch::at(format!("ksn_lsp_inc_err_{}", std::process::id()));
     let mut d = LspDrive::start(&t.0, &err);
     for f in ["src/t.ksnl", "src/t/b.ksnl", "src/t/c.ksnl", "src/t/d.ksnl", "src/t/e.ksnl"] {
         d.open(f);
@@ -1764,7 +1767,7 @@ fn derive_json_round_trips_and_builds_alike() {
     let tb = run(&["test", "--both"], &t.0);
     assert_eq!(tb.status.code(), Some(0), "{}{}", text(&tb.stdout), text(&tb.stderr));
     assert!(text(&tb.stdout).contains("2 passed; 0 failed"), "{}", text(&tb.stdout));
-    let cache = std::env::temp_dir().join(format!("ksn_cache_derive_json_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_derive_json_{}", std::process::id()));
     let mut c = Command::new(exe());
     c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
     let o = c.output().unwrap();
@@ -1781,7 +1784,7 @@ fn derive_json_round_trips_and_builds_alike() {
 fn build_key_changes_with_ksn_clang_args() {
     // `KSN_CLANG_ARGS` を変えるとキャッシュキーが変わり、前の成果物が `cache hit` で出ない。
     let t = Tmp::new("cache_key_clang_args", CACHE_SRC);
-    let cache = std::env::temp_dir().join(format!("ksn_cache_key_clang_args_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_cache_key_clang_args_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let hit = |o: &Output| text(&o.stdout).contains("cache hit");
     let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));

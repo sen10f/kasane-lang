@@ -534,7 +534,7 @@ fn desc_agg(heap: &mut Vec<Vec<u8>>, fd: i128) -> Result<i128, String> {
 pub(crate) fn field_ty_at(d: &AggDef, off: u32) -> Option<Ty> {
     match &d.kind {
         AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().find(|f: &&Field| f.off == off).map(|f| f.ty),
-        AggKind::Enum(_) => None,
+        AggKind::Enum(_) | AggKind::Array(..) => None,
     }
 }
 

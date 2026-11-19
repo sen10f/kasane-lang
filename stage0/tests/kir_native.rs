@@ -4,6 +4,9 @@
 
 mod common;
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -727,7 +730,7 @@ fn native_box_dyn_frees_every_allocation_exactly_once() {
     }
     let cc = ["gcc", "cc", "clang"].iter().find(|c| Command::new(c).arg("--version").output().is_ok());
     let Some(cc) = cc else { return };
-    let dir = std::env::temp_dir().join(format!("ksn_malloc_count_{}", std::process::id()));
+    let dir = scratch::Scratch::at(format!("ksn_malloc_count_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let c_path = dir.join("malloc_count.c");
@@ -868,14 +871,15 @@ fn ffi_a_missing_library_or_symbol_is_a_defined_panic_with_exit_code_101() {
 
 #[cfg(unix)]
 #[test]
-fn ffi_fixed_arrays_in_layout_c_structs_work_in_the_interpreter_and_skip_natively_with_a_reason() {
+fn ffi_fixed_arrays_in_layout_c_structs_work_in_the_interpreter_and_natively() {
     let t = ffi_pkg("ffi_arrays", "arrays.ksnl");
     let i = run(&["run"], &t.0);
     assert_eq!(i.status.code(), Some(0), "{}", text(&i.stderr));
     assert_eq!(text(&i.stdout), "arrays ok\n");
     let (out, n) = ffi_native(&t, "ffi_arrays");
-    assert!(n.is_none(), "native unexpectedly built: {}", out);
-    assert!(out.contains("native backend skipped") && out.contains("KIR に下ろせない") && out.contains("t.Arr3"), "{}", out);
+    let n = n.unwrap_or_else(|| panic!("native did not build: {}", out));
+    assert_eq!(n.status.code(), Some(0), "{}", text(&n.stderr));
+    assert_eq!(text(&n.stdout), "arrays ok\n");
 }
 
 #[cfg(unix)]
@@ -978,7 +982,7 @@ fn launcher_works_via_symlink() {
     );
     let launcher = t.0.join("target").join("debug").join("t");
     assert!(launcher.is_file());
-    let link = std::env::temp_dir().join(format!("ksn_link_{}", std::process::id()));
+    let link = scratch::Scratch::at(format!("ksn_link_{}", std::process::id()));
     let _ = fs::remove_file(&link);
     std::os::unix::fs::symlink(&launcher, &link).unwrap();
     let out = Command::new(&link).current_dir(&t.0).output().expect("spawn launcher via symlink");

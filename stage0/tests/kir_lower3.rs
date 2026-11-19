@@ -4,6 +4,9 @@
 
 mod common;
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -2723,7 +2726,7 @@ fn kir_copy_elem_fields_match_tree_walker() {
 /// `KSN_BORROWCK=kir ksn check` の結果: (KIR の検査の状態, KIR の診断の符号の列)。
 /// 状態は `Some(codes)` (検査した。codes は KIR が出した E3010 / E3030 の列) か `None` (KIR に下ろせず判断できない)。
 fn kir_bc(dir: &Path) -> Option<Vec<String>> {
-    let cache = std::env::temp_dir().join(format!("ksn_kirbc_cache_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_kirbc_cache_{}", std::process::id()));
     let o = run_with_env(&["check", "--json"], dir, &[("KSN_BORROWCK", "kir"), ("KSN_CACHE_DIR", cache.to_str().unwrap())]);
     let err = text(&o.stderr);
     err.lines().find_map(|l| l.strip_prefix("kir-borrowck: checked").map(|r| r.split_whitespace().flat_map(|w| w.split(',')).filter(|c| !c.is_empty()).map(String::from).collect()))
@@ -2936,7 +2939,7 @@ fn kir_borrowck_stage2_catches_scope_and_move_cases() {
 #[test]
 fn kir_own_linearity_agreement_floor() {
     fn own_codes(dir: &Path) -> Option<Vec<String>> {
-        let cache = std::env::temp_dir().join(format!("ksn_kirown_cache_{}", std::process::id()));
+        let cache = scratch::Scratch::at(format!("ksn_kirown_cache_{}", std::process::id()));
         let o = run_with_env(&["check", "--json"], dir, &[("KSN_BORROWCK", "kir,own"), ("KSN_CACHE_DIR", cache.to_str().unwrap())]);
         text(&o.stderr).lines().find_map(|l| l.strip_prefix("kir-borrowck: checked").map(|r| r.split_whitespace().flat_map(|w| w.split(',')).filter(|c| !c.is_empty()).map(String::from).collect()))
     }
@@ -3011,7 +3014,7 @@ fn kir_own_linearity_agreement_floor() {
 #[test]
 fn kir_only_rejects_floor() {
     fn only_rejects(dir: &Path) -> bool {
-        let cache = std::env::temp_dir().join(format!("ksn_kironly_cache_{}", std::process::id()));
+        let cache = scratch::Scratch::at(format!("ksn_kironly_cache_{}", std::process::id()));
         let o = run_with_env(&["check", "--json"], dir, &[("KSN_BORROWCK", "kir-only"), ("KSN_CACHE_DIR", cache.to_str().unwrap())]);
         codes(&text(&o.stdout)).iter().any(|c| matches!(c.as_str(), "E3010" | "E3030" | "E3002" | "E3003"))
     }
@@ -3091,7 +3094,7 @@ fn kir_borrowck_drop_owner_kills_field_borrows() {
 
 /// KIR の検査だけ (`KSN_BORROWCK=kir-only`) の結果: (`checked` か, 出た診断コード)。
 fn kir_only_outcome(dir: &Path) -> (bool, Vec<String>) {
-    let cache = std::env::temp_dir().join(format!("ksn_kironly_oc_cache_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_kironly_oc_cache_{}", std::process::id()));
     let o = run_with_env(&["check", "--json"], dir, &[("KSN_BORROWCK", "kir-only"), ("KSN_CACHE_DIR", cache.to_str().unwrap())]);
     let checked = text(&o.stderr).lines().any(|l| l.starts_with("kir-borrowck: checked"));
     (checked, codes(&text(&o.stdout)))

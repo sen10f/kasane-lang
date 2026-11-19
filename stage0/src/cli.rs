@@ -3745,9 +3745,32 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
     let c_args = |src: &Path, obj: &Path| -> Vec<String> {
         [vec![s("-O1"), triple.clone(), s("-ffreestanding"), s("-fno-builtin")], defs.clone(), vec![s(&inc_arg), s("-c"), s("-x"), s("c"), p(src), s("-o"), p(obj)]].concat()
     };
-    let r1 = match embedded_obj(ll, opt, &oir) {
-        Some(r) => r,
-        None => run(&clang, [vec![s(opt), s("-Wno-override-module"), triple.clone(), s("-c"), s("-x"), s("ir"), p(&ir), s("-o"), p(&oir)]].concat(), "clang (IR → wasm32)"),
+    let t = target.or_else(crate::kir_llvm::host_target);
+    // ユーザ IR に実行時の C (rt.c / kir_rt.c、WASI なら wasi.c) のビットコードをリンクしてから最適化・目的ファイル化 (L2)。
+    // ビットコードは最適化なし (-O0) で埋め込まれており、ここでユーザと同じパイプラインを走らせ、クロスモジュールインライン展開を効かせる。
+    let mut rt_bcs: Vec<(&str, &[u8])> = vec![];
+    if let Some(tt) = t.as_ref() {
+        if let Some(bc) = crate::assets::rt_bc(tt.name, "rt") {
+            rt_bcs.push(("rt", bc));
+        }
+        if let Some(bc) = crate::assets::rt_bc(tt.name, "kir_rt") {
+            rt_bcs.push(("kir_rt", bc));
+        }
+        if wasi {
+            if let Some(bc) = crate::assets::rt_bc(tt.name, "wasi") {
+                rt_bcs.push(("wasi", bc));
+            }
+        }
+    }
+    let want = 2 + if wasi { 1 } else { 0 };
+    let linked = rt_bcs.len() == want;
+    let r1: Result<(), String> = if linked {
+        crate::embed_llvm::ir_to_object_with_rt(ll, &rt_bcs, opt, &t.as_ref().unwrap().triple, &oir)
+    } else {
+        match embedded_obj(ll, opt, &oir) {
+            Some(r) => r,
+            None => run(&clang, [vec![s(opt), s("-Wno-override-module"), triple.clone(), s("-c"), s("-x"), s("ir"), p(&ir), s("-o"), p(&oir)]].concat(), "clang (IR → wasm32)"),
+        }
     };
     let piece = |name: &str, src: &Path, obj: &Path, what: &str| -> Result<(), String> {
         match target.and_then(|t| rt_object(t, name, "-O1", obj)) {
@@ -3755,13 +3778,36 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
             None => run(&clang, c_args(src, obj), what),
         }
     };
-    let r2 = r1.and_then(|_| piece("rt", &rt, &ort, "clang (rt.c)"));
-    let r3 = r2.and_then(|_| piece("kir_rt", &krt, &okrt, "clang (kir_rt.c)"));
-    let r3 = r3.and_then(|_| if wasi { piece("wasi", &wasi_c, &owasi, "clang (wasi.c)") } else { Ok(()) });
+    let r2 = r1.and_then(|_| {
+        if linked {
+            Ok(())
+        } else {
+            piece("rt", &rt, &ort, "clang (rt.c)")
+        }
+    });
+    let r3 = r2.and_then(|_| {
+        if linked {
+            Ok(())
+        } else {
+            piece("kir_rt", &krt, &okrt, "clang (kir_rt.c)")
+        }
+    });
+    let r3 = r3.and_then(|_| {
+        if linked || !wasi {
+            Ok(())
+        } else {
+            piece("wasi", &wasi_c, &owasi, "clang (wasi.c)")
+        }
+    });
     let r4 = r3.and_then(|_| {
-        let mut args = vec![p(&oir), p(&ort), p(&okrt)];
-        if wasi {
-            args.push(p(&owasi));
+        let mut args = vec![p(&oir)];
+        // linked なら実行時の C は oir にリンク済みなので oir のみ
+        if !linked {
+            args.push(p(&ort));
+            args.push(p(&okrt));
+            if wasi {
+                args.push(p(&owasi));
+            }
         }
         // 影のスタック (線形メモリ上のスタック) も呼び出し深さの上限まで足りる大きさに (既定は 64 KiB)。
         args.extend([s("--no-entry"), s("--export=ksn_main"), s("-z"), s("stack-size=268435456")]);
@@ -3892,36 +3938,71 @@ fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, t
         let o = src.with_extension("ll.o");
         cleanup.push(o.clone());
         let tg = target.or_else(crate::kir_llvm::host_target);
-        // IR → 目的ファイルは組み込みの LLVM (L1、`embedded_obj`)。使えないとき (`KSN_CODEGEN=clang` など) だけ clang。
-        match embedded_obj(ll, opt, &o) {
-            Some(r) => r?,
-            None => {
-                let mut a: Vec<String> = vec![opt.into(), "-Wno-override-module".into()];
-                a.extend(clang_target_args(target));
-                a.extend(["-pthread", "-c", "-x", "ir"].map(String::from));
-                a.push(src.display().to_string());
-                a.extend(["-o".to_string(), o.display().to_string()]);
-                compile(a, "IR")?;
+        let need_kir_rt = crate::kir_llvm::needs_runtime(ll);
+        let need_sysrt = ll.contains("@ksn_rt_sys_");
+        // ユーザ IR に実行時の C のビットコードをリンクしてから最適化・目的ファイル化 (L2)。
+        // ビットコードは最適化なし (-O0) で埋め込まれており、ここでユーザと同じパイプライン
+        // (default<O1> デバッグ / リリースレベル) を走らせ、ランタイム関数をユーザ関数へ
+        // クロスモジュールインライン展開する。ビットコードが無いときは従来の分離オブジェクト経路に戻す。
+        let mut linked = false;
+        if (need_kir_rt || need_sysrt) && tg.is_some() {
+            let t = tg.as_ref().unwrap();
+            let mut rt_bcs: Vec<(&str, &[u8])> = vec![];
+            let mut ok = true;
+            if need_kir_rt {
+                if let Some(bc) = crate::assets::rt_bc(t.name, "kir_rt") {
+                    rt_bcs.push(("kir_rt", bc));
+                } else {
+                    ok = false;
+                }
+            }
+            if ok && need_sysrt {
+                if let Some(bc) = crate::assets::rt_bc(t.name, "sysrt") {
+                    rt_bcs.push(("sysrt", bc));
+                } else {
+                    ok = false;
+                }
+            }
+            if ok {
+                crate::embed_llvm::ir_to_object_with_rt(ll, &rt_bcs, opt, &t.triple, &o)?;
+                linked = true;
             }
         }
-        objs.push(o);
-        for i in (0..rt.len()).step_by(3) {
-            let c = PathBuf::from(&rt[i + 2]);
-            cleanup.push(c.clone());
-            let o = c.with_extension("o");
-            cleanup.push(o.clone());
-            let piece = if c.to_string_lossy().ends_with(".sys.c") { "sysrt" } else { "kir_rt" };
-            if let Some(r) = tg.and_then(|t| rt_object(t, piece, opt, &o)) {
-                r?;
-                objs.push(o);
-                continue;
+        if !linked {
+            // 従来: ユーザ IR と実行時の C を別々の目的ファイルにして lld でつなぐ。
+            match embedded_obj(ll, opt, &o) {
+                Some(r) => r?,
+                None => {
+                    let mut a: Vec<String> = vec![opt.into(), "-Wno-override-module".into()];
+                    a.extend(clang_target_args(target));
+                    a.extend(["-pthread", "-c", "-x", "ir"].map(String::from));
+                    a.push(src.display().to_string());
+                    a.extend(["-o".to_string(), o.display().to_string()]);
+                    compile(a, "IR")?;
+                }
             }
-            let mut a: Vec<String> = vec![opt.into()];
-            a.extend(clang_target_args(target));
-            a.extend(["-pthread", "-c", "-x", "c"].map(String::from));
-            a.push(c.display().to_string());
-            a.extend(["-o".to_string(), o.display().to_string()]);
-            compile(a, "実行時の C")?;
+            objs.push(o);
+            let rt = runtime_c_args(ll, src);
+            for i in (0..rt.len()).step_by(3) {
+                let c = PathBuf::from(&rt[i + 2]);
+                cleanup.push(c.clone());
+                let o = c.with_extension("o");
+                cleanup.push(o.clone());
+                let piece = if c.to_string_lossy().ends_with(".sys.c") { "sysrt" } else { "kir_rt" };
+                if let Some(r) = tg.and_then(|t| rt_object(t, piece, opt, &o)) {
+                    r?;
+                    objs.push(o);
+                    continue;
+                }
+                let mut a: Vec<String> = vec![opt.into()];
+                a.extend(clang_target_args(target));
+                a.extend(["-pthread", "-c", "-x", "c"].map(String::from));
+                a.push(c.display().to_string());
+                a.extend(["-o".to_string(), o.display().to_string()]);
+                compile(a, "実行時の C")?;
+                objs.push(o);
+            }
+        } else {
             objs.push(o);
         }
         let t = target.or_else(crate::kir_llvm::host_target).ok_or("このホストでは組み込みの lld を使えない (KSN_LINKER=external)")?;
