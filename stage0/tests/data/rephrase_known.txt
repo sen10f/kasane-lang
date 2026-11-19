@@ -87,7 +87,6 @@ hole fold linear_generic_call_result_swallowed#0
 hole fold linear_leak_on_try#0
 hole fold linear_short_circuit_and_rhs_consume#0
 hole fold linear_short_circuit_or_rhs_consume#0
-hole fold mem_replace_index_via_alias_keeps_borrow#0
 hole fold return_bound_owner_c1#0
 hole fold return_bound_owner_c2#0
 hole fold return_bound_owner_c3#0

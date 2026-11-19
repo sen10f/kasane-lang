@@ -1,3 +1,5 @@
+#[path = "native/lld.rs"]
+mod lld;
 mod debug;
 mod derive_drop;
 mod derive_json;
@@ -23,6 +25,8 @@ mod kir;
 mod kir_borrowck;
 mod kir_exec;
 mod kir_llvm;
+#[cfg(feature = "embedded-llvm")]
+mod embed_llvm;
 mod kir_lower;
 mod kir_opt;
 mod kir_suspend;

@@ -333,3 +333,45 @@ fn fmt_twice_equals_fmt_once_on_messy_sources() {
     let twice = text(&fs::read(t.0.join("src/t.ksnl")).unwrap());
     assert_eq!(once, twice);
 }
+
+/// 構文の誤り (行末の `;`) と定義の順の乱れが重なるとき、`ksn fmt` は `;` を消し、定義も並べ替え、
+/// `ksn check` は 0 件になる。2 回目は何も変えない (G53)。
+#[test]
+fn fmt_removes_semicolon_and_sorts_definitions() {
+    let src = "fn t.b() -> u8 uses [] panics never\n    let x: u8 = 1u8;\n    x\nend t.b\n\n\
+               fn t.a() -> u8 uses [] panics never\n    2u8\nend t.a\n";
+    let t = Tmp::new_raw("fmt_semi_sort", src);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(1), "check still rejects `;` before fmt");
+    let o = run(&["fmt"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stdout));
+    let after = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    assert!(!after.contains(';'), "{after}");
+    assert!(after.find("fn t.a").unwrap() < after.find("fn t.b").unwrap(), "{after}");
+    let o = run(&["check"], &t.0);
+    assert!(!String::from_utf8_lossy(&o.stdout).contains("E00"), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
+    assert_eq!(fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap(), after);
+}
+
+/// `;` を消しても読めないファイルは、本当の原因を行:列つきで出し、「直せない」とは言わない。
+#[test]
+fn fmt_reports_syntax_error_first_not_unfixable_order() {
+    let src = "fn t.b() -> u8 uses [] panics never\n    let x: u8 = 1u8::foo\n    x\nend t.b\n\n\
+               fn t.a() -> u8 uses [] panics never\n    2u8\nend t.a\n";
+    let t = Tmp::new_raw("fmt_syntax_first", src);
+    let o = run(&["fmt"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("src/t.ksnl:2:") && out.contains("E004"), "{out}");
+    assert!(!out.contains("not auto-fixable") && !out.contains("canonical grammar"), "{out}");
+}
+
+/// 文法に合わないときの E0002 は、先頭 (1 行目) ではなく本当の行を指す。
+#[test]
+fn grammar_mismatch_points_at_real_line() {
+    let src = "fn t.main() -> u8 uses [] panics never\n    1u8\nend t.main\n\nfn t.f() -> u8 uses [] panics never\n    let = 3\nend t.f\n";
+    let t = Tmp::new_raw("gram_line", src);
+    let o = run(&["fmt"], &t.0);
+    let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+    assert!(out.contains("src/t.ksnl:6") || out.contains("src/t.ksnl:5"), "{out}");
+}

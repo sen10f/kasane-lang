@@ -111,7 +111,13 @@ def main():
 
     results = []
     with ThreadPoolExecutor(max_workers=jobs) as ex:
-        futs = [ex.submit(run_one, n, e, threads) for n, e in sorted(todo.items())]
+        # 前回の時間 (TIMES) の長い順に始める (長いものが最後に始まると、全体の壁の時間がそれで決まる)。初めてのものは先頭。
+        try:
+            prev = json.load(open(TIMES, encoding='utf-8'))
+        except (OSError, ValueError):
+            prev = {}
+        order = sorted(todo.items(), key=lambda kv: (-prev.get(kv[0], 1e9), kv[0]))
+        futs = [ex.submit(run_one, n, e, threads) for n, e in order]
         for f in futs:
             res = f.result()
             results.append(res)
@@ -121,8 +127,14 @@ def main():
                   + (f' (rc={res["rc"]})' if not res['ok'] and not res['failed'] else ''))
 
     os.makedirs(os.path.dirname(TIMES), exist_ok=True)
+    # 速い段だけを回したときも、遅い段の前回の時間は残す (次の full の並びに使う)。
+    try:
+        merged = json.load(open(TIMES, encoding='utf-8'))
+    except (OSError, ValueError):
+        merged = {}
+    merged.update({r['name']: round(r['secs'], 2) for r in results})
     with open(TIMES, 'w', encoding='utf-8') as fh:
-        json.dump({r['name']: round(r['secs'], 2) for r in results}, fh, ensure_ascii=False, indent=1)
+        json.dump(merged, fh, ensure_ascii=False, indent=1)
 
     wall = time.monotonic() - t_all
     tot = {k: sum(r[k] for r in results) for k in ('passed', 'failed', 'ignored')}
