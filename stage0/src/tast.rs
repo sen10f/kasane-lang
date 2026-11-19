@@ -147,6 +147,8 @@ pub struct TExpr {
     pub targs: Vec<Ty>,
     /// `Call` / `MCall` だけ: 書いた明示型引数 (`f::<..>`) の数 (ライフタイムを除く)。書いていなければ `None`。
     pub tf: Option<usize>,
+    /// `For` / `With` だけ: 束縛するパターン (`Other` の子には入らない)。
+    pub pats: Vec<TPat>,
 }
 
 /// 節点の形。式の形ごとの場合分けは、ここ (木を組む側) に 1 回だけ置く (設計 2.3 の末尾)。
@@ -204,6 +206,7 @@ pub struct TPat {
     /// `PVariant` / `PPath` / `PStruct` の経路 (書いたまま)。
     pub path: Vec<String>,
     /// `PLit` のリテラルの種類と接尾辞 (`["int", "u64"]`、接尾辞が無ければ種類だけ)。
+    /// `PStruct` だけは、`children` と同じ並びの欄の名前 (移動と線形の規則が欄の場所を引く)。
     pub lit: Vec<String>,
 }
 
@@ -397,6 +400,7 @@ impl<'a> Builder<'a> {
             }
             "PStruct" => {
                 path = lv(&f[0]).iter().map(sv).collect();
+                lit = lv(&f[1]).iter().filter(|x| lv(x).get(1).is_some()).map(|x| sv(&lv(x)[0])).collect();
                 children = lv(&f[1]).iter().filter_map(|x| lv(x).get(1)).map(|x| self.pat(x)).collect()
             }
             "PRef" => children = vec![self.pat(&f[0])],
@@ -419,7 +423,11 @@ impl<'a> Builder<'a> {
             "Let" => {
                 let f = fs(v);
                 let init = if matches!(f[3], V::Node(..)) { Some(self.expr(&f[3], false)) } else { None };
-                let pat = self.pat(&f[0]);
+                let mut pat = self.pat(&f[0]);
+                // 型の注釈を書いた `let` の印 (`&mut` の再借用か移動かを、移動の規則が分ける)。
+                if !matches!(f[2], V::Nil) {
+                    pat.lit.push("ann".to_string());
+                }
                 self.bind_pat(&pat);
                 TStmt::Let { pat, init }
             }
@@ -437,10 +445,11 @@ impl<'a> Builder<'a> {
     /// 式の節点を組む。`callee` は `Call` の第 1 子 (被覆の数え方だけが違う)。
     fn expr(&mut self, v: &V, callee: bool) -> TExpr {
         let V::Node(kind, f, ln, id) = v else {
-            return TExpr { id: 0, line: 0, kind: TKind::Other { name: "?", children: vec![] }, ty: Ty::Unknown, place: None, conv: vec![], res: None, targs: vec![], tf: None };
+            return TExpr { id: 0, line: 0, kind: TKind::Other { name: "?", children: vec![] }, ty: Ty::Unknown, place: None, conv: vec![], res: None, targs: vec![], tf: None, pats: vec![] };
         };
         let key = (self.di, *id);
         let mut place = None;
+        let mut pats = vec![];
         let tkind = match *kind {
             "Lit" => TKind::Lit(f.iter().map(sv).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(":")),
             "Path" => {
@@ -546,6 +555,7 @@ impl<'a> Builder<'a> {
                 self.bind_pat(&pat);
                 let body = self.expr(&f[2], false);
                 self.scopes.pop();
+                pats.push(pat);
                 TKind::Other { name: "For", children: vec![it, body] }
             }
             "With" => {
@@ -559,6 +569,7 @@ impl<'a> Builder<'a> {
                 }
                 children.push(self.expr(&f[4], false));
                 self.scopes.pop();
+                pats.push(pat);
                 TKind::Other { name: "With", children }
             }
             // 上に無い形 (`While` `Loop` `Return` `Try` `StructLit` `TupleE` `ArrayE` `ArrayRep` `Unsafe` `Break` `Continue` ...):
@@ -603,7 +614,7 @@ impl<'a> Builder<'a> {
             V::L(xs) => Some(xs.iter().filter(|a| !matches!(a, V::L(y) if matches!(y.first(), Some(V::S(s)) if s == "life"))).count()),
             _ => None,
         });
-        TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs, tf }
+        TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs, tf, pats }
     }
 }
 
