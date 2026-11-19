@@ -1,0 +1,11 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = 1u32
+    let mut z = 3u32
+    let mut y = 2u32
+    let mut a = [&mut x, &mut z]
+    core.mem.swap(&mut a[0], &mut a[1])
+    core.mem.drop(core.mem.replace(&mut a[0], &mut y))
+    x = 4u32
+    core.mem.drop(a)
+    Ok(())
+end t.main
