@@ -4,7 +4,7 @@ import todo.error
 // バイト列を 16 進数文字列に変換する。
 fn todo.auth.bytes_to_hex(bytes: &[u8]) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    let mut i: usize = 0usize
+    let mut i = 0usize
     while i < bytes.len() {
         match bytes.get(i) {
             Some(b) => {
@@ -30,8 +30,8 @@ end todo.auth.concat_strings
 
 // バイト列を単純なハッシュ関数 (FNV-1a 風) で u64 にハッシュする。
 fn todo.auth.hash_bytes(bytes: &[u8]) -> u64 uses [] panics never pub
-    let mut h: u64 = 0u64
-    let mut i: usize = 0usize
+    let mut h = 0u64
+    let mut i = 0usize
     while i < bytes.len() {
         match bytes.get(i) {
             Some(b) => {
@@ -91,7 +91,7 @@ end todo.auth.nibble_to_char
 // u64 を 16 文字の 16 進数文字列に変換する。
 fn todo.auth.u64_to_hex(n: u64) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    let mut i: u32 = 0u32
+    let mut i = 0u32
     while i < 16u32 {
         let shift = (15u32.wrapping_sub(i)).wrapping_mul(4u32)
         let nibble = (n.wrapping_shr(shift)) & 15u64

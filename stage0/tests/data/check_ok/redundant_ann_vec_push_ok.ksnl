@@ -1,0 +1,6 @@
+fn t.main() -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut buf: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    buf.push(1u32)?
+    let n = buf.len()
+    Ok(n)
+end t.main

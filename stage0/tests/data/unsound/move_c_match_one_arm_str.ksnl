@@ -4,7 +4,7 @@ end t.consume
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
     let s = alloc.string.String.new(std.alloc.SYSTEM)
-    let o: Option<u8> = Some(1u8)
+    let o = Some(1u8)
     match o {
         Some(_) => core.mem.drop(t.consume(s))
         None => core.mem.drop(0u8)

@@ -69,7 +69,7 @@ end t.main
 
 fn t.tick(i: i32, user: *mut t.Acc) -> () uses [] panics never
     unsafe "ffi" "accumulate through the user data" {
-        let cur: t.Acc = core.ptr.read(user)
+        let cur = core.ptr.read(user)
         let total = cur.total.wrapping_add(10i64)
         core.ptr.write(user, t.Acc { total: total, count: cur.count.wrapping_add(i) })
     }

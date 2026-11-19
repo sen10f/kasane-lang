@@ -196,7 +196,7 @@ fn usize_wraps_at_the_target_width() {
         eprintln!("skipped: node / wasm-ld-20 / clang のどれかがない");
         return;
     }
-    let src = "fn t.show(v: u64) -> () uses [alloc, io.console] panics never\n    let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(s.push_u64(v))\n    core.mem.drop(std.io.print_line(s.as_str()))\nend t.show\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let z: usize = 0usize\n    let w: usize = z.wrapping_sub(1usize)\n    t.show(u64.from_usize(w))\n    Ok(())\nend t.main\n";
+    let src = "fn t.show(v: u64) -> () uses [alloc, io.console] panics never\n    let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(s.push_u64(v))\n    core.mem.drop(std.io.print_line(s.as_str()))\nend t.show\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let z = 0usize\n    let w = z.wrapping_sub(1usize)\n    t.show(u64.from_usize(w))\n    Ok(())\nend t.main\n";
     let t = Tmp::new("wasm_usize_wrap", src);
     let nat = run_native(&build_host(&t.0));
     let wasm = run_wasm(&build_wasm(&t.0));
@@ -214,7 +214,7 @@ fn exit_codes_and_messages_match_native() {
         return;
     }
     // panic: 添字が範囲外 (usize の添字と長さの文言)
-    let idx = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(std.io.print_line(\"before\"))\n    let v: u8 = t.pick(5usize)\n    core.mem.drop(v)\n    Ok(())\nend t.main\n\nfn t.pick(i: usize) -> u8 uses [] panics may\n    let a: [u8; 2] = [1u8, 2u8]\n    a[i]\nend t.pick\n";
+    let idx = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(std.io.print_line(\"before\"))\n    let v = t.pick(5usize)\n    core.mem.drop(v)\n    Ok(())\nend t.main\n\nfn t.pick(i: usize) -> u8 uses [] panics may\n    let a = [1u8, 2u8]\n    a[i]\nend t.pick\n";
     // Err: 入口が Err を返す
     let err = "fn t.main() -> Result<(), u8> uses [io.console] panics never\n    core.mem.drop(std.io.print_line(\"before\"))\n    Err(7u8)\nend t.main\n";
     // スタック: 呼び出しの深さが上限 (100000) を超える
@@ -244,7 +244,7 @@ fn module_abi_has_only_the_documented_imports_and_exports() {
         return;
     }
     // 出力と panic の両方を持つプログラム: import は 2 つとも使われる。
-    let io_panic = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(std.io.print_line(\"before\"))\n    let v: u8 = t.pick(5usize)\n    core.mem.drop(v)\n    Ok(())\nend t.main\n\nfn t.pick(i: usize) -> u8 uses [] panics may\n    let a: [u8; 2] = [1u8, 2u8]\n    a[i]\nend t.pick\n";
+    let io_panic = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(std.io.print_line(\"before\"))\n    let v = t.pick(5usize)\n    core.mem.drop(v)\n    Ok(())\nend t.main\n\nfn t.pick(i: usize) -> u8 uses [] panics may\n    let a = [1u8, 2u8]\n    a[i]\nend t.pick\n";
     let t = Tmp::new("wasm_abi", io_panic);
     let wasm = build_wasm(&t.0);
     let o = Command::new("node").arg(runner()).arg("--abi").arg(&wasm).output().expect("spawn node");

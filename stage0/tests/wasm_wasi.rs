@@ -184,7 +184,7 @@ fn exit_codes_and_messages_match_native_on_wasi() {
         eprintln!("skipped: node / wasm-ld-20 / clang のどれかがない");
         return;
     }
-    let idx = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(std.io.print_line(\"before\"))\n    let v: u8 = t.pick(5usize)\n    core.mem.drop(v)\n    Ok(())\nend t.main\n\nfn t.pick(i: usize) -> u8 uses [] panics may\n    let a: [u8; 2] = [1u8, 2u8]\n    a[i]\nend t.pick\n";
+    let idx = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(std.io.print_line(\"before\"))\n    let v = t.pick(5usize)\n    core.mem.drop(v)\n    Ok(())\nend t.main\n\nfn t.pick(i: usize) -> u8 uses [] panics may\n    let a = [1u8, 2u8]\n    a[i]\nend t.pick\n";
     let err = "fn t.main() -> Result<(), u8> uses [io.console] panics never\n    core.mem.drop(std.io.print_line(\"before\"))\n    Err(7u8)\nend t.main\n";
     let deep = "fn t.down(n: u32) -> u32 uses [] panics never stack 4096\n    if n == 0 {\n        0\n    } else {\n        t.down(n.wrapping_sub(1u32)).wrapping_add(1u32)\n    }\nend t.down\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    core.mem.drop(std.io.print_line(\"start\"))\n    core.mem.drop(t.down(200000u32))\n    Ok(())\nend t.main\n";
     let cases = [

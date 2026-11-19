@@ -246,12 +246,15 @@ fn is_float_lit(e: &V) -> bool {
 pub fn annotate_int_lits(p: &mut Program, user: &[usize]) {
     use std::collections::HashMap;
     let mut tk = crate::types::TypeCk::new(p);
+    // D17 (E2053): 接尾辞を書き戻す前の木で冗長な注釈を測る (書き戻し後は `1` が `1u32` になって冗長に見える)。
+    tk.redundant_on = true;
     for &i in user {
         let d = &p.defs[i];
         if matches!(d.kw.as_str(), "fn" | "test") && d.body.is_some() {
             tk.check_def(i);
         }
     }
+    let src_diags: Vec<crate::check::Diag> = tk.diags.iter().filter(|d| d.code == "E2053").cloned().collect();
     let mut want: HashMap<&str, HashMap<u32, String>> = HashMap::new();
     for ((fqn, id), e) in &tk.tytab {
         if e.kind == "Lit" {
@@ -266,6 +269,7 @@ pub fn annotate_int_lits(p: &mut Program, user: &[usize]) {
         user.iter().filter_map(|&i| want.get(p.defs[i].name.as_str()).map(|m| (i, m.clone()))).collect();
     drop(want);
     drop(tk);
+    p.src_diags.extend(src_diags);
     for (i, m) in todo {
         if let Some(b) = p.defs[i].body.as_mut() {
             fill(b, &m);
@@ -468,7 +472,7 @@ fn scope_ends(
             if *kind == "Block" {
                 let stmts = items(&fs[0]);
                 for (k, s) in stmts.iter().enumerate() {
-                    if nname(s) == "Let" && nf(s).len() == 4 {
+                    if nname(s) == "Let" && nf(s).len() >= 4 {
                         let lf = nf(s);
                         if let Some(x) = simple(&lf[0]) {
                             let init_ty = tk.tytab.get(&(d.name.clone(), crate::parser::nid(&lf[3])));

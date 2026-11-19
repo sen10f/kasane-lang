@@ -694,6 +694,8 @@ pub struct Program {
     pub impls: HashSet<(String, String)>,
     /// `derive [From]` を宣言した `enum` の FQN (4.3 の `?` のエラー変換)。
     pub from_enums: HashSet<String>,
+    /// 書き戻し前の木で測った診断 (E2053 冗長な注釈)。型検査 (`check.rs`) がその結果に足す。
+    pub src_diags: Vec<crate::check::Diag>,
 }
 
 /// `?` のエラー変換 (4.1) で、`E1` を包むバリアントを引いた結果。

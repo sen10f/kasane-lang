@@ -118,19 +118,19 @@ fn with_test_runs_in_both_the_interpreter_and_native_with_ksn_test_both() {
 #[test]
 fn scalar_display_and_derived_methods_run_in_both() {
     let test = "test t.main.test_scalar_display
-    let n: i64 = -7i64
+    let n = -7i64
     let mut f = core.fmt.Formatter.new(32usize)
     core.mem.drop(n.display_fmt(&mut f))
     core.check.eq(core.str.from_utf8(f.written()), Ok(\"-7\"))
-    let big: u32 = 4294967295u32
+    let big = 4294967295u32
     let mut f2 = core.fmt.Formatter.new(16usize)
     core.mem.drop(big.display_fmt(&mut f2))
     core.check.eq(core.str.from_utf8(f2.written()), Ok(\"4294967295\"))
-    let c: char = 'x'
+    let c = 'x'
     let mut f3 = core.fmt.Formatter.new(8usize)
     core.mem.drop(c.display_fmt(&mut f3))
     core.check.eq(core.str.from_utf8(f3.written()), Ok(\"x\"))
-    let t: bool = true
+    let t = true
     let mut f4 = core.fmt.Formatter.new(8usize)
     core.mem.drop(t.display_fmt(&mut f4))
     core.check.eq(core.str.from_utf8(f4.written()), Ok(\"true\"))
@@ -153,7 +153,7 @@ end t.main.test_scalar_display
 #[test]
 fn str_slice_option_result_sig_methods_run_in_both() {
     let test = "test t.main.test_a_option_result_cmp
-    let o: Option<u8> = Some(1u8)
+    let o = Some(1u8)
     core.check.eq(o.eq(&Some(1u8)), true)
     core.check.eq(o.cmp(&None) == core.cmp.Ordering.Greater, true)
     let r: Result<u8, u8> = Ok(1u8)
@@ -215,8 +215,8 @@ fn derived_cmp_and_iter_count_boundaries_run_native() {
     // `v.iter()` の `next` / `count` の境界を、機械語とインタプリタで比べる。
     let test = r#"test t.main.test_e_option_boundaries
     let none: Option<i8> = None
-    let a: Option<i8> = Some(-1i8)
-    let b: Option<i8> = Some(1i8)
+    let a = Some(-1i8)
+    let b = Some(1i8)
     core.check.eq(none.cmp(&none) == core.cmp.Ordering.Equal, true)
     core.check.eq(none.cmp(&a) == core.cmp.Ordering.Less, true)
     core.check.eq(a.cmp(&none) == core.cmp.Ordering.Greater, true)
@@ -227,15 +227,15 @@ fn derived_cmp_and_iter_count_boundaries_run_native() {
     core.check.eq(none.eq(&a), false)
     core.check.eq(a != b, true)
     core.check.eq(a != a, false)
-    let big: Option<u8> = Some(255u8)
-    let small: Option<u8> = Some(1u8)
+    let big = Some(255u8)
+    let small = Some(1u8)
     core.check.eq(big.cmp(&small) == core.cmp.Ordering.Greater, true)
     let sa: Option<&str> = Some("ab")
     let sb: Option<&str> = Some("abc")
     core.check.eq(sa.cmp(&sb) == core.cmp.Ordering.Less, true)
     core.check.eq(sb.cmp(&sa) == core.cmp.Ordering.Greater, true)
     core.check.eq(sa.eq(&sb), false)
-    let pa: Option<core.cmp.Ordering> = sa.partial_cmp(&sb)
+    let pa = sa.partial_cmp(&sb)
     core.check.eq(pa.is_some(), true)
 end t.main.test_e_option_boundaries
 
@@ -352,7 +352,7 @@ end t.main.test_e_vec_arms
 
 test t.main.test_f_block_arm_moves_local
     let n = 1u8
-    let v: alloc.vec.Vec<u8, std.alloc.System> = match n {
+    let v = match n {
         0u8 => alloc.vec.Vec.new(std.alloc.SYSTEM)
         _ => {
             let mut w: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -456,11 +456,11 @@ fn ptr_add_const_and_cast_const_keep_const_and_run_in_both() {
 end t.main
 
 test t.main.test_add_const_cast_const
-    let mut m: i32 = 7i32
+    let mut m = 7i32
     let p: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.from_mut(&mut m)
     }
-    let x: i32 = 41i32
+    let x = 41i32
     let q: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.from_ref(&x)
     }
@@ -633,7 +633,7 @@ fn test_both_compares_failure_classes_when_both_backends_fail() {
 fn test_both_falls_back_to_the_bundle_when_llvm_cannot_build_128_bit_integers() {
     // 128 ビットの値・除算・剰余は KIR (LLVM) に下ろせないので、LLVM の理由を出してバンドルで比べる。
     let src = format!(
-        "{}\ntest t.main.test_wide\n    let x: i128 = 5i128\n    core.check.eq(x, 5i128)\nend t.main.test_wide\n\
+        "{}\ntest t.main.test_wide\n    let x = 5i128\n    core.check.eq(x, 5i128)\nend t.main.test_wide\n\
          test t.main.test_div\n    let m = core.num.i128.MIN\n    core.check.eq(m.checked_rem(-1i128), None)\nend t.main.test_div\n",
         BOTH_SRC
     );
@@ -747,17 +747,17 @@ fn t.main() -> () uses [] panics never
 end t.main
 
 test t.main.test_nested_enum_order
-    let b: Option<t.E> = Some(t.E.B)
-    let a: Option<t.E> = Some(t.E.A)
+    let b = Some(t.E.B)
+    let a = Some(t.E.A)
     core.check.eq(b.cmp(&a) == core.cmp.Ordering.Less, true)
     core.check.eq(a.cmp(&b) == core.cmp.Ordering.Greater, true)
 end t.main.test_nested_enum_order
 
 test t.main.test_nested_user_cmp
-    let a: Option<t.P> = Some(t.P { x: 1u8, y: 1u8 })
-    let b: Option<t.P> = Some(t.P { x: 2u8, y: 1u8 })
+    let a = Some(t.P { x: 1u8, y: 1u8 })
+    let b = Some(t.P { x: 2u8, y: 1u8 })
     core.check.eq(a.cmp(&b) == core.cmp.Ordering.Greater, true)
-    let c: Option<t.P> = Some(t.P { x: 1u8, y: 9u8 })
+    let c = Some(t.P { x: 1u8, y: 9u8 })
     core.check.eq(a == c, true)
     core.check.eq(a.eq(&c), true)
 end t.main.test_nested_user_cmp
@@ -780,31 +780,31 @@ fn clif_128_bit_integers_are_native_only_where_supported() {
 end t.main
 
 test t.main.test_a_div
-    let x: i128 = 100i128
+    let x = 100i128
     core.check.eq(x.checked_div(7i128), Some(14i128))
 end t.main.test_a_div
 
 test t.main.test_b_rem
-    let x: u128 = 100u128
+    let x = 100u128
     core.check.eq(x.checked_rem(7u128), Some(2u128))
 end t.main.test_b_rem
 
 test t.main.test_c_ops
-    let x: i128 = 100i128
-    let y: i128 = 7i128
+    let x = 100i128
+    let y = 7i128
     core.check.eq(x / y, 14i128)
     core.check.eq(x % y, 2i128)
 end t.main.test_c_ops
 
 test t.main.test_d_mul
-    let x: i128 = 100000000000i128
+    let x = 100000000000i128
     core.check.eq(x * x, 10000000000000000000000i128)
     core.check.eq(x.checked_mul(x), Some(10000000000000000000000i128))
     core.check.eq(x.wrapping_mul(3i128), 300000000000i128)
 end t.main.test_d_mul
 
 test t.main.test_e_cmp_shift
-    let x: u128 = core.num.u128.MAX
+    let x = core.num.u128.MAX
     core.check.eq(x > 5u128, true)
     core.check.eq(x.wrapping_add(1u128), 0u128)
     core.check.eq(core.num.i32.MIN < 0i32, true)
@@ -813,16 +813,16 @@ test t.main.test_e_cmp_shift
 end t.main.test_e_cmp_shift
 
 test t.main.test_f_neg_conv
-    let x: i128 = 5i128
+    let x = 5i128
     core.check.eq(-x, -5i128)
-    let y: i128 = i128.from_i64(-7i64)
+    let y = i128.from_i64(-7i64)
     core.check.eq(y, -7i128)
-    let z: u128 = u128.from_u64(18446744073709551615u64)
+    let z = u128.from_u64(18446744073709551615u64)
     core.check.eq(z.wrapping_add(1u128) > z, true)
 end t.main.test_f_neg_conv
 
 test t.main.test_g_try_conv
-    let big: u128 = core.num.u128.MAX
+    let big = core.num.u128.MAX
     core.check.eq(u8.try_from_u128(big).is_err(), true)
 end t.main.test_g_try_conv
 "#;

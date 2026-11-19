@@ -555,7 +555,7 @@ pub fn clif_vec_program(tail: &str) -> String {
         "    let v = t.fill(5u32)",
         "    core.check.eq(v.len(), 5usize)",
         "    core.check.eq(t.sum(&v), 30u32)",
-        "    let mut w: alloc.vec.Vec<u32, std.alloc.System> = t.fill(3u32)",
+        "    let mut w = t.fill(3u32)",
         "    match w.pop() {",
         "        Some(x) => core.check.eq(x, 4u32)",
         "        None => core.check.eq(1u8, 2u8)",
@@ -2258,7 +2258,7 @@ fn t.opt_peek(n: u32, some: bool) -> usize uses [alloc] panics never
 end t.opt_peek
 
 fn t.opt_str(some: bool) -> usize uses [alloc] panics never
-    let o: Option<alloc.string.String<std.alloc.System>> = if some {
+    let o = if some {
         Some(alloc.string.String.new(std.alloc.SYSTEM))
     } else {
         None
@@ -2847,7 +2847,7 @@ fn t.destruct_struct_both(n: u32) -> usize uses [alloc] panics never
 end t.destruct_struct_both
 
 fn t.match_partial(n: u32, some: bool) -> usize uses [alloc] panics never
-    let o: Option<t.Pair> = if some {
+    let o = if some {
         Some(t.pair(n))
     } else {
         None

@@ -1179,7 +1179,7 @@ fn run_unsafe_pkg(name: &str, src: &str) -> (Tmp, Output) {
 fn ptr_more_place_pointers_alias_their_places_and_null_is_detected() {
     // from_mut / from_ref は場所を指す。書き込みは場所に届き、from_ref は後の書き込みも見る。null_mut::<T>() は is_null で null と分かる。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 41i32
+    let mut x = 41i32
     let n: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.null_mut::<i32>()
     }
@@ -1229,7 +1229,7 @@ fn ptr_more_cast_of_place_pointer_reinterprets_the_pinned_bytes() {
     // `from_mut` の結果は C に見せる写し (ピン) を指すので、幅の違う型への `cast` は、そのバイト列の読み替えになる
     // (リトルエンディアン: i32 の 1 は先頭の u8 が 1)。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let mut x = 1i32
     unsafe "libc" "cast place" {
         let b: *mut u8 = core.ptr.cast::<i32, u8>(core.ptr.from_mut(&mut x))
         core.check.eq(core.ptr.read(b), 1u8)
@@ -1245,7 +1245,7 @@ end t.main
 fn ptr_more_cast_without_type_argument_panics() {
     // 戻り値の型注釈からは要素型を推論しない (インタプリタは型引数しか見ない)。誤った要素型で黙って読まないよう 101 で止まる。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let mut x = 1i32
     unsafe "libc" "cast without targs" {
         let b: *mut u8 = core.ptr.cast(core.ptr.from_mut(&mut x))
         core.check.eq(core.ptr.read(b), 1u8)
@@ -1272,7 +1272,7 @@ fn ptr_more_access_past_a_pinned_value_panics() {
     ];
     for (name, body) in cases {
         let src = format!(
-            "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    let mut x: i32 = 1i32\n    unsafe \"libc\" \"past end\" {{\n        {}\n    }}\n    core.mem.drop(std.io.print_line(\"after\"))\n    Ok(())\nend t.main\n",
+            "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    let mut x = 1i32\n    unsafe \"libc\" \"past end\" {{\n        {}\n    }}\n    core.mem.drop(std.io.print_line(\"after\"))\n    Ok(())\nend t.main\n",
             body
         );
         let (_t, r) = run_unsafe_pkg(name, &src);
@@ -1282,7 +1282,7 @@ fn ptr_more_access_past_a_pinned_value_panics() {
     }
     // 値の幅に収まる読み書き (`cast` で 1 バイトだけ読む) は今までどおり通る。
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let mut x = 1i32
     unsafe \"libc\" \"fits\" {
         let b: *mut u8 = core.ptr.cast::<i32, u8>(core.ptr.from_mut(&mut x))
         core.check.eq(core.ptr.read(b), 1u8)
@@ -1343,7 +1343,7 @@ fn ptr_more_place_pointer_is_passed_to_c_as_a_pinned_copy() {
     let src = r#"extern t.k_sum_i32(values: *const i32, n: usize) -> i32 link "k_sum_i32"
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 5i32
+    let mut x = 5i32
     unsafe "libc" "place to C" {
         core.check.eq(t.k_sum_i32(core.ptr.as_const(core.ptr.from_mut(&mut x)), 1usize), 5i32)
     }
@@ -1428,7 +1428,7 @@ end t.main
 fn ffi_from_ref_pointer_is_const_and_write_through_it_is_rejected() {
     // `from_ref` は `*const` を返し、`core.ptr.write` は `*mut` を取る。書き込みは検査の段階で止まり、実行に届かない。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let x: i32 = 41i32
+    let x = 41i32
     let q: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.from_ref(&x)
     }
@@ -1448,7 +1448,7 @@ end t.main
 fn ffi_as_mut_makes_a_from_ref_pointer_writable() {
     // `as_mut` を通したものは書ける。書き込みは元の場所 (`x`) に届く。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 41i32
+    let mut x = 41i32
     let q: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.from_ref(&x)
     }
@@ -1470,7 +1470,7 @@ end t.main
 fn ffi_as_const_pointer_is_read_only_and_from_mut_stays_writable() {
     // `as_const` で作った `*const` は読めるが、書き込みは `*mut` を要求する検査で止まる (下のテスト)。元の `from_mut` のポインタは従来どおり書けて読める。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let mut x = 1i32
     let p: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.from_mut(&mut x)
     }
@@ -1492,7 +1492,7 @@ end t.main
 fn ffi_write_through_as_const_pointer_is_rejected() {
     // `as_const` で作った `*const` への書き込みは、`*mut` を取る `core.ptr.write` の検査で E2023 になる。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let mut x = 1i32
     let p: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.from_mut(&mut x)
     }
@@ -1636,7 +1636,7 @@ fn raw_ptr_check(name: &str, src: &str) -> String {
 fn raw_ptr_annotations_accept_the_correct_forms_without_errors() {
     // 正しい書き方: from_mut / from_ref / null_mut / as_const / as_mut / cast、`*mut` → `*const` の暗黙の縮小、読み書き。
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let mut x = 1i32
     let p: *mut i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
         core.ptr.from_mut(&mut x)
     }
@@ -1783,7 +1783,7 @@ fn raw_ptr_mut_argument_to_const_parameter_is_accepted() {
 end t.look
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let mut x = 1i32
     let p: *mut i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
         core.ptr.from_mut(&mut x)
     }
@@ -2219,7 +2219,7 @@ fn f32_abs_keeps_signaling_nan_bits() {
 end t.absbits
 
 fn t.main() -> () uses [] panics may
-    let s: f32 = core.num.f32.from_bits(2139095041u32)
+    let s = core.num.f32.from_bits(2139095041u32)
     core.check.eq(s.abs().to_bits(), 2139095041u32)
     core.check.eq((-s).abs().to_bits(), 2139095041u32)
     core.check.eq(t.absbits(s), 2139095041u32)

@@ -1,6 +1,6 @@
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let v = 42i32
     let p = core.ptr.from_ref(&v)
-    let _x: i32 = core.ptr.read(p)
+    let _x = core.ptr.read(p)
     Ok(())
 end t.main
