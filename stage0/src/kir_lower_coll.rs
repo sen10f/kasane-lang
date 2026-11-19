@@ -670,6 +670,7 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
                         }
                     }
                 }
+                AggKind::Array(..) => {}
                 AggKind::Enum(vs) => {
                     let (join, _) = lw.new_block(&[]);
                     let tag = lw.emit(Ty::I32, Op::Tag(v));
@@ -2545,6 +2546,12 @@ fn vec_place(lw: &mut Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
             _ => {}
         }
     }
+    // 構造体の配列の欄 (`a.v[i]`、`self.buf[i]`): 欄の番地 (または値の写し) の先頭を指す `Seq::Ptr`。
+    if matches!(nname(e), "Field" | "Path") {
+        if let Some(r) = array_field_place(lw, e, line)? {
+            return Ok(r);
+        }
+    }
     // 構造体のフィールドの Vec (`self.handlers[i]`): フィールドのヘッダの番地を置き場にする (読みと要素の書き込みだけ。ヘッダは変えない)。
     if nname(e) == "Field" {
         if let Some((s, names)) = super::own::chain_of(lw, e) {
@@ -3667,4 +3674,51 @@ fn user_iter_loop(lw: &mut Lw, e: &V, pat: &V, it_e: &V, body: &V, di: usize, li
         lw.rebind_slot(*s, xp[k], slot_tys[k]);
     }
     Ok(Some(lw.unit()))
+}
+
+/// `x.f.g` (`g` が配列の集成体 `[T; N]` の欄) の置き場: (先頭の番地と長さ N、要素の型)。`x` は局所の構造体 (値か参照)。
+/// 値の構造体の欄は、配列の値を枠の領域に写してその先頭を指す (読むだけ)。配列の欄でなければ `None`。
+pub(crate) fn array_field_place(lw: &mut Lw, e: &V, line: usize) -> LR<Option<(Seq, Ty)>> {
+    let Some(segs) = super::agg::field_segs(e) else { return Ok(None) };
+    if segs.len() < 2 {
+        return Ok(None);
+    }
+    let Some(s) = lw.lookup(&segs[0]) else { return Ok(None) };
+    let base = lw.slots[s].0;
+    let is_arr = |lw: &Lw, t: Ty| -> Option<(Ty, u32)> {
+        let Ty::Agg(i) = t else { return None };
+        match lw.agg_def(i).kind {
+            crate::kir::AggKind::Array(t, n) => Some((t, n)),
+            _ => None,
+        }
+    };
+    let by_ref = matches!(lw.vty(base), Ty::Ref(_, Pointee::Agg(_))) || lw.is_mem_val(base);
+    if by_ref {
+        let mut c = base;
+        for name in &segs[1..] {
+            if !matches!(lw.vty(c), Ty::Ref(_, Pointee::Agg(_))) {
+                return Ok(None);
+            }
+            c = lw.field_addr(c, name, line)?;
+        }
+        let Ty::Ref(_, Pointee::Agg(k)) = lw.vty(c) else { return Ok(None) };
+        let Some((et, n)) = is_arr(lw, Ty::Agg(k)) else { return Ok(None) };
+        let p = lw.emit(Ty::Ptr, Op::Bitcast { src: lw.vty(c), a: c });
+        return Ok(Some((Seq::Ptr(p, n), et)));
+    }
+    let Ty::Agg(_) = lw.vty(base) else { return Ok(None) };
+    let mut v = base;
+    for name in &segs[1..] {
+        if !matches!(lw.vty(v), Ty::Agg(_)) {
+            return Ok(None);
+        }
+        v = lw.field_of(v, name, line)?;
+    }
+    let Some((et, n)) = is_arr(lw, lw.vty(v)) else { return Ok(None) };
+    let Ty::Agg(ai) = lw.vty(v) else { return Ok(None) };
+    let size = lw.agg_def(ai).size.max(1);
+    let buf = lw.emit(Ty::Ptr, Op::FrameBytes { size });
+    let r = lw.emit(Ty::Ref(true, Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: buf });
+    lw.emit(Ty::Unit, Op::Store { ptr: r, val: v });
+    Ok(Some((Seq::Ptr(buf, n), et)))
 }

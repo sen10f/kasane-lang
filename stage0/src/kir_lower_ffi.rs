@@ -120,7 +120,14 @@ fn ptr_call(lw: &mut Lw, e: &V, name: &str, targs: V) -> LR<Option<VId>> {
             if lw.vty(n) != Ty::Usize {
                 return lw.err(line, "core.ptr.add の第 2 引数は usize のはず");
             }
-            let elem = ptr_elem_ty(lw, &targs, line)?;
+            let elem = match ptr_elem_ty(lw, &targs, line) {
+                Ok(t) => t,
+                // 型実引数を書かない `core.ptr.add(p, n)` は、ポインタの型から要素の型を取る。
+                Err(e) => match lw.src_ty(&args[0]) {
+                    Ok(Src::Ptr(_, inner)) => lw.conv_t(&inner).ok_or(e)?,
+                    _ => return Err(e),
+                },
+            };
             let sz = kir::size_of(&lw.aggs.borrow().defs, elem) as u64;
             let szv = lw.emit(Ty::Usize, Op::Const(sz as i128));
             let off = lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: n, b: szv });

@@ -358,6 +358,7 @@ fn may_hold_d(aggs: &[crate::kir::AggDef], t: Ty, depth: u32) -> bool {
             let Some(d) = aggs.get(i as usize) else { return true };
             match &d.kind {
                 AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| may_hold_d(aggs, f.ty, depth + 1)),
+                AggKind::Array(t, _) => may_hold_d(aggs, *t, depth + 1),
                 AggKind::Enum(vs) => vs.iter().any(|v| v.fields.iter().any(|f| may_hold_d(aggs, f.ty, depth + 1))),
             }
         }

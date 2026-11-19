@@ -34,6 +34,13 @@ pub fn leaves(aggs: &[AggDef], ai: u32, base: u32, out: &mut Vec<(u32, Leaf, u32
             }
             Some(())
         }
+        AggKind::Array(t, n) => {
+            let es = crate::kir::size_of(aggs, *t);
+            for j in 0..*n {
+                leaf_ty(aggs, *t, base + j * es, out)?;
+            }
+            Some(())
+        }
         _ => None,
     }
 }

@@ -292,6 +292,21 @@ impl AggTab {
             }
             // `&str` とスライスの値は `fat` (`{ptr, len}`)。要素はスカラーのものだけ (`sig_ty` と同じ条件)。Option のペイロードにも置ける。
             Src::Ref(_, inner, _) if matches!(&**inner, Src::Prim(s) if s == "str") || matches!(&**inner, Src::Slice(e) if conv(&**e).is_some()) => Ok(self.fat()),
+            // 固定長配列 `[T; N]` (N は定数): 要素を隙間なく並べた集成体 (`layout c` の欄・`extern` の構造体の中身など)。
+            Src::Array(elem, Some(n)) => {
+                let et = self.lower_ty(p, file, elem)?;
+                if !(et.is_int() || et.is_float() || matches!(et, Ty::Bool | Ty::Ptr | Ty::Agg(_))) || self.owns_heap(et) {
+                    return Err(format!("{} は未対応 (配列の要素は所有物を持たない値だけ)", show(t)));
+                }
+                let n = u32::try_from(*n).map_err(|_| format!("{} は長すぎる", show(t)))?;
+                let name = format!("[{};{}]", self.name_of(et), n);
+                if let Some(&i) = self.by_name.get(&name) {
+                    return Ok(Ty::Agg(i));
+                }
+                let (es, ea) = (size_of(&self.defs, et), align_of(&self.defs, et));
+                let size = es.checked_mul(n).ok_or_else(|| format!("{} は大きすぎる", show(t)))?;
+                Ok(self.push(name, size, ea.max(1), AggKind::Array(et, n)))
+            }
             // 生ポインタ `*mut T` / `*const T` (指す先がスカラーのもの) は番地 (`ptr`)。extern の引数と同じ規則 (`kir_lower_ffi`)。
             Src::Ptr(_, inner) if matches!(&**inner, Src::Prim(s) if Ty::parse(s).and_then(crate::kir::Pointee::of).is_some()) => Ok(Ty::Ptr),
             // 集成体 (`layout c` の構造体など) を指す生ポインタも番地。指す先が型表に入れられるときだけ。
@@ -577,6 +592,7 @@ impl AggTab {
                 }
                 match &d.kind {
                     AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| self.owns_heap(f.ty)),
+                    AggKind::Array(t, _) => self.owns_heap(*t),
                     AggKind::Enum(vs) => vs.iter().any(|v| v.fields.iter().any(|f| self.owns_heap(f.ty))),
                 }
             }
@@ -788,6 +804,21 @@ impl<'a> Lw<'a> {
         }
     }
 
+    /// 配列式の値 (`{ptr, len}`) `v` を、配列の集成体 `want` の値にする (先頭から `want` の大きさだけ読む)。型が違う・配列でなければ `v` のまま。
+    pub(super) fn fat_to_array(&mut self, v: VId, want: Ty) -> VId {
+        let Ty::Agg(ai) = want else { return v };
+        if !matches!(self.agg_def(ai).kind, AggKind::Array(..)) || self.vty(v) == want {
+            return v;
+        }
+        let Ty::Agg(fi) = self.vty(v) else { return v };
+        if self.agg_def(fi).name != "fat" {
+            return v;
+        }
+        let base = self.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+        let r = self.emit(Ty::Ref(false, Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: base });
+        self.emit(want, Op::Load(r))
+    }
+
     /// 集成体の式の振り分け (`expr` から呼ぶ)。
     pub(super) fn agg_expr(&mut self, e: &V) -> LR<Option<VId>> {
         match nname(e) {
@@ -852,6 +883,8 @@ impl<'a> Lw<'a> {
                 return Ok(None);
             };
             super::coll::tmp_hold(self, v);
+            // 配列の欄: 配列式は `{ptr, len}` (fat) の値なので、中身を配列の集成体へ写す。
+            let v = self.fat_to_array(v, decl[k].ty);
             if self.vty(v) != decl[k].ty {
                 return self.err(line, format!("フィールド {} の型が違う", fname));
             }

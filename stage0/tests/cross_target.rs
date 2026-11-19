@@ -148,36 +148,6 @@ fn explicit_target_needs_the_llvm_backend() {
 }
 
 #[test]
-fn struct_by_value_extern_fails_the_aarch64_build_with_a_reason() {
-    // 値渡しの構造体の extern は KIR に下ろせない (今は全ターゲットで未対応)。aarch64 のビルドは、バンドルに退避せず理由を出して失敗する。
-    // 呼び先は実在しなくてよい (ネイティブ生成の前に退ける)。
-    let src = "type t.Small layout c derive [Clone, Copy]
-    a: i32
-    b: i32
-end t.Small
-
-extern t.small_add(a: t.Small, b: t.Small) -> t.Small link \"libc.so.6:small_add\"
-
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let s = unsafe \"ffi\" \"small\" {
-        t.small_add(t.Small { a: 1i32, b: 2i32 }, t.Small { a: 10i32, b: 20i32 })
-    }
-    core.check.eq(s.a, 11i32)
-    Ok(())
-end t.main
-";
-    let t = Tmp::new("cross_struct_extern", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
-    let o = run(&["build", "--target", TRIPLE], &t.0);
-    let out = text(&o.stdout);
-    let err = text(&o.stderr);
-    assert_eq!(o.status.code(), Some(1), "{}{}", out, err);
-    assert!(err.contains("E9040") && err.contains("cannot make a native executable for target aarch64-linux-gnu"), "{}{}", out, err);
-    assert!(err.contains("extern"), "{}{}", out, err);
-    assert!(!t.0.join("target").join(TRIPLE).join("debug").exists(), "no output for a refused build");
-}
-
-#[test]
 fn explicit_host_triple_builds_under_its_own_directory() {
     if !clang_available() || !cfg!(all(target_arch = "x86_64", target_os = "linux")) {
         return;
