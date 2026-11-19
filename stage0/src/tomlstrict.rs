@@ -67,8 +67,8 @@ pub fn analyze(kind: Kind, text: &str) -> Analyzed {
         Kind::Lock => {
             let before = findings.len();
             let a = anchors_lock(&v, text, &mut findings);
-            // 構造の誤り (L1〜L6) があるときは整形しない。version が 1 でないときも書き換えない。
-            let shape_ok = findings.len() == before && v.get("version").and_then(|x| x.as_integer()) == Some(1);
+            // 構造の誤り (L1〜L6) があるときは整形しない。版 1 と版 2 だけ正規形にする (fmt は版を上げない)。
+            let shape_ok = findings.len() == before && matches!(v.get("version").and_then(|x| x.as_integer()), Some(1) | Some(2));
             shape_ok.then(|| emit_lock(&v, &a))
         }
     };
@@ -291,9 +291,13 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
     let mut pending: Vec<String> = vec![];
     let mut idx = 0usize; // 現在の [[package]] の (生の文面での) 番号
     let mut in_pkg = false;
+    let mut in_api = false; // [[package.api]] (版 2) の中
+    let mut api_idx = 0usize; // 現在の [[package]] の中の api の項の番号
     let mut prev: Option<(String, usize, bool)> = None; // (名前, ヘッダの行, deps があったか)。L6 の検査用
     let mut dep_line: HashMap<String, usize> = HashMap::new();
     let mut hash_line: HashMap<String, usize> = HashMap::new();
+    let mut uns_line: HashMap<String, usize> = HashMap::new();
+    let mut api_line: HashMap<String, usize> = HashMap::new();
     for (i, line) in raw.split('\n').enumerate() {
         let ln = i + 1;
         let t = line.trim();
@@ -305,10 +309,25 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
             None => {}
         }
         if t.starts_with("[[") {
+            let inner = t.trim_matches(|c| c == '[' || c == ']').trim();
+            if inner == "package.api" {
+                // 版 2: 公開の署名の記録 1 つ。前のコメントはこの項の先頭に置く。
+                in_api = true;
+                let n = name_of(idx.wrapping_sub(1));
+                api_line.insert(n.clone(), ln);
+                flush(&mut a, &mut pending, &format!("package:{}.api.{}", n, api_idx));
+                api_idx += 1;
+                continue;
+            }
             if let Some((n, h, sd)) = prev.take() {
                 close_entry(findings, n, h, sd);
             }
-            in_pkg = true;
+            in_pkg = inner == "package";
+            in_api = false;
+            api_idx = 0;
+            if !in_pkg {
+                findings.push(Finding { code: "E9007", line: ln, col: 1, msg: format!("unknown table {} in kasane.lock", t) });
+            }
             let n = name_of(idx);
             idx += 1;
             flush(&mut a, &mut pending, &format!("package:{}", n));
@@ -320,6 +339,19 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
             continue;
         }
         let Some(k) = bare_key(t) else { continue };
+        let n = name_of(idx.wrapping_sub(1));
+        if in_api {
+            match k {
+                "fqn" | "sig" => flush(&mut a, &mut pending, &format!("package:{}.api.{}k", n, api_idx.wrapping_sub(1))),
+                _ => findings.push(Finding {
+                    code: "E9007",
+                    line: ln,
+                    col: 1,
+                    msg: format!("unknown key {} in [[package.api]] of kasane.lock", k),
+                }),
+            }
+            continue;
+        }
         if !in_pkg {
             if k == "version" {
                 flush(&mut a, &mut pending, "version");
@@ -338,7 +370,7 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
         }
         let n = name_of(idx.wrapping_sub(1));
         match k {
-            "name" | "source" | "hash" | "deps" => {
+            "name" | "source" | "hash" | "deps" | "unsafe_modules" => {
                 if k == "deps" {
                     if let Some(p) = prev.as_mut() {
                         p.2 = true;
@@ -347,6 +379,9 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
                 }
                 if k == "hash" {
                     hash_line.insert(n.clone(), ln);
+                }
+                if k == "unsafe_modules" {
+                    uns_line.insert(n.clone(), ln);
                 }
                 flush(&mut a, &mut pending, &format!("package:{}.{}", n, k));
             }
@@ -394,6 +429,17 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
                 msg: format!("hash of {} is recorded but {} is not a git dependency", n, n),
             });
         }
+        // 版 2 の記録 (`unsafe_modules` / `[[package.api]]`) も git 依存だけ。
+        if (e.get("unsafe_modules").is_some() || e.get("api").is_some())
+            && !e.get("source").and_then(|s| s.as_str()).unwrap_or("").starts_with("git+")
+        {
+            findings.push(Finding {
+                code: "E9021",
+                line: *api_line.get(n).or_else(|| uns_line.get(n)).unwrap_or(&1),
+                col: 1,
+                msg: format!("the api record of {} is present but {} is not a git dependency", n, n),
+            });
+        }
     }
     flush(&mut a, &mut pending, "");
     a
@@ -414,7 +460,8 @@ fn close_entry(findings: &mut Vec<Finding>, n: String, header_line: usize, saw_d
 fn emit_lock(v: &Value, a: &Anchors) -> String {
     let mut lines: Vec<String> = vec![];
     put(&mut lines, a, "version");
-    lines.push("version = 1".into());
+    let ver = v.get("version").and_then(|x| x.as_integer()).unwrap_or(1);
+    lines.push(format!("version = {}", ver));
     let mut entries: Vec<&Value> = v.get("package").and_then(|p| p.as_array()).map(|x| x.iter().collect()).unwrap_or_default();
     entries.sort_by_key(|e| e.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string());
     for e in entries {
@@ -425,8 +472,33 @@ fn emit_lock(v: &Value, a: &Anchors) -> String {
         for k in ["name", "source", "hash", "deps"] {
             if let Some(val) = e.get(k) {
                 put(&mut lines, a, &format!("{}.{}", label, k));
-                let s = if k == "deps" { emit_array(val) } else { emit_value(val) };
+                let s = if k == "deps" {
+                    // `ksn update` が依存の名前順で書くので、正規形もその順にする。
+                    let mut items: Vec<String> = val.as_array().map(|x| x.iter().map(emit_value).collect()).unwrap_or_default();
+                    items.sort();
+                    format!("[{}]", items.join(", "))
+                } else {
+                    emit_value(val)
+                };
                 lines.push(format!("{} = {}", k, s));
+            }
+        }
+        // 版 2 の記録。`ksn update` (render_api) と同じ形と直し方で書く (git 依存だけ)。
+        if e.get("source").and_then(|s| s.as_str()).unwrap_or("").starts_with("git+") {
+            let q = |s: &str| Value::String(s.to_string()).to_string();
+            if let Some(u) = e.get("unsafe_modules") {
+                put(&mut lines, a, &format!("{}.unsafe_modules", label));
+                let items: Vec<String> = u.as_array().map(|x| x.iter().map(|y| q(y.as_str().unwrap_or(""))).collect()).unwrap_or_default();
+                lines.push(format!("unsafe_modules = [{}]", items.join(", ")));
+            }
+            if let Some(apis) = e.get("api").and_then(|x| x.as_array()) {
+                for (i, ap) in apis.iter().enumerate() {
+                    put(&mut lines, a, &format!("{}.api.{}", label, i));
+                    lines.push("[[package.api]]".into());
+                    put(&mut lines, a, &format!("{}.api.{}k", label, i));
+                    lines.push(format!("fqn = {}", q(ap.get("fqn").and_then(|x| x.as_str()).unwrap_or(""))));
+                    lines.push(format!("sig = {}", q(ap.get("sig").and_then(|x| x.as_str()).unwrap_or(""))));
+                }
             }
         }
     }
@@ -459,6 +531,33 @@ mod tests {
         let an = analyze(Kind::Lock, lock);
         assert!(an.findings.is_empty(), "{:?}", an.findings.iter().map(|f| (&f.code, &f.msg)).collect::<Vec<_>>());
         assert_eq!(an.canon.as_deref(), Some(lock));
+    }
+
+    #[test]
+    fn version_2_lock_is_canonical_and_a_fixpoint() {
+        // path 依存の版 2 (`ksn update` が書く形)。
+        let lock = "version = 2\n\n[[package]]\nname = \"lib\"\nsource = \"path+../lib\"\ndeps = []\n";
+        let an = analyze(Kind::Lock, lock);
+        assert!(an.findings.is_empty(), "{:?}", an.findings.iter().map(|f| (&f.code, &f.msg)).collect::<Vec<_>>());
+        assert_eq!(an.canon.as_deref(), Some(lock));
+        // git 依存の版 2: `unsafe_modules` と `[[package.api]]` (記録された順のまま。sig は複数行になり得る)。
+        let git = concat!(
+            "version = 2\n\n[[package]]\nname = \"gl\"\nsource = \"git+https://x#abc\"\nhash = \"sha256:00\"\ndeps = []\n",
+            "unsafe_modules = [\"gl.mem\"]\n[[package.api]]\nfqn = \"gl.double\"\nsig = \"fn gl.double(x: u32) -> u32 uses [] panics never pub\"\n",
+            "[[package.api]]\nfqn = \"gl.ty\"\nsig = \"type gl.ty<u32> pub\\n    x\\nend gl.ty\"\n"
+        );
+        let an = analyze(Kind::Lock, git);
+        // 記録はそのまま (順も) 保たれ、2 回目で変わらない (q() の書き方との差は 1 回目の E0020 で直る)。
+        let canon = an.canon.expect("canon");
+        for c in ["unsafe_modules = [\"gl.mem\"]", "fqn = \"gl.double\"", "fqn = \"gl.ty\"", "gl.double(x: u32)", "end gl.ty"] {
+            assert!(canon.contains(c), "{} missing in {}", c, canon);
+        }
+        let again = analyze(Kind::Lock, &canon);
+        assert!(again.findings.is_empty(), "{:?}", again.findings.iter().map(|f| (&f.code, &f.msg)).collect::<Vec<_>>());
+        assert_eq!(again.canon.as_deref(), Some(canon.as_str()));
+        // path 依存に記録があれば E9021 (整形しない)。
+        let an = analyze(Kind::Lock, "version = 2\n\n[[package]]\nname = \"p\"\nsource = \"path+../p\"\ndeps = []\nunsafe_modules = []\n");
+        assert!(find(&an, "E9021") && an.canon.is_none(), "{:?}", an.findings);
     }
 
     #[test]

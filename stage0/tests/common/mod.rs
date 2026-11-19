@@ -1667,7 +1667,7 @@ pub fn ffi_data(name: &str) -> String {
 #[cfg(unix)]
 pub fn ffi_pkg(name: &str, data: &str) -> Tmp {
     let t = Tmp::new(name, "");
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let c = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/ffi/ffi_lib.c");
     let lib = t.0.join("libffitest.so");
     let o = cc(&["-shared", "-fPIC", "-o", lib.to_str().unwrap(), c.to_str().unwrap()], &t.0);

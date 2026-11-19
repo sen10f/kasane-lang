@@ -29,13 +29,13 @@ fn with_dep(name: &str, toml: &str, lock: &str) -> (Tmp, std::path::PathBuf) {
     fs::write(libdir.join("kasane.lock"), "version = 1\n").unwrap();
     fs::write(libdir.join("src").join("lib.ksnl"), "fn lib.hello() -> u32 pub\n    7\nend lib.hello\n").unwrap();
     let rel = format!("../{}", libdir.file_name().unwrap().to_string_lossy());
-    let t = Tmp::new_raw(name, "fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    let _x = lib.hello()\n    Ok(())\nend t.main\n");
+    let t = Tmp::new_raw(name, "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let _x = lib.hello()\n    Ok(())\nend t.main\n");
     fs::write(t.0.join("kasane.toml"), toml.replace("../lib", &rel)).unwrap();
     fs::write(t.0.join("kasane.lock"), lock.replace("../lib", &rel)).unwrap();
     (t, libdir)
 }
 const DEP_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n";
-const DEP_LOCK: &str = "version = 1\n\n[[package]]\nname = \"lib\"\nsource = \"path+../lib\"\ndeps = []\n";
+const DEP_LOCK: &str = "version = 2\n\n[[package]]\nname = \"lib\"\nsource = \"path+../lib\"\ndeps = []\n";
 
 fn check_codes(t: &Tmp) -> (i32, Vec<String>) {
     let o = run(&["check", "--json"], &t.0);
@@ -44,7 +44,7 @@ fn check_codes(t: &Tmp) -> (i32, Vec<String>) {
 
 #[test]
 fn entry_must_be_a_string() {
-    let t = Tmp::new_raw("entrytype", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"hi\")\nend t.main\n");
+    let t = Tmp::new_raw("entrytype", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"hi\")\nend t.main\n");
     fs::write(t.0.join("kasane.toml"), TOML.replace("entry = \"t.main\"", "entry = 123")).unwrap();
     let (rc, cs) = check_codes(&t);
     assert_eq!(rc, 1);
@@ -53,7 +53,7 @@ fn entry_must_be_a_string() {
 
 #[test]
 fn lock_unknown_keys_are_rejected() {
-    let t = Tmp::new_raw("lockkey1", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"hi\")\nend t.main\n");
+    let t = Tmp::new_raw("lockkey1", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"hi\")\nend t.main\n");
     // 最上位の知らないキー。
     fs::write(t.0.join("kasane.lock"), "version = 1\nextra = 2\n").unwrap();
     let (rc, cs) = check_codes(&t);
@@ -94,7 +94,7 @@ fn lock_hash_only_for_git_deps() {
 
 #[test]
 fn lexical_rules_match_ksnl() {
-    let t = Tmp::new_raw("lockbom", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"hi\")\nend t.main\n");
+    let t = Tmp::new_raw("lockbom", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"hi\")\nend t.main\n");
     // BOM (E0004)。
     let mut toml = String::from("\u{feff}");
     toml.push_str(TOML);
@@ -132,14 +132,14 @@ fn deviations_are_rejected_by_check() {
         TOML.trim_end_matches('\n').to_string(),
     ];
     for (i, toml) in tomls.iter().enumerate() {
-        let t = Tmp::new_raw(&format!("deviate{}", i), "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"hi\")\nend t.main\n");
+        let t = Tmp::new_raw(&format!("deviate{}", i), "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"hi\")\nend t.main\n");
         fs::write(t.0.join("kasane.toml"), toml).unwrap();
         let (rc, cs) = check_codes(&t);
         assert_eq!(rc, 1, "{}", toml);
         assert!(cs.iter().any(|c| c == "E0020"), "{}: {:?}", toml, cs);
     }
     // 点付きキー (全部が点付きなら意味は同じなので、E0020 で正規形に直させる)。
-    let t = Tmp::new_raw("deviatedot", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"hi\")\nend t.main\n");
+    let t = Tmp::new_raw("deviatedot", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"hi\")\nend t.main\n");
     fs::write(
         t.0.join("kasane.toml"),
         "package.name = \"t\"\npackage.version = \"0.1.0\"\npackage.edition = 1\npackage.entry = \"t.main\"\n",
@@ -181,7 +181,7 @@ fn fmt_normalizes_and_is_idempotent() {
 #[test]
 fn fmt_preserves_comments() {
     let toml = "# the package\n[package]\nname = \"t\" # main\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[dependencies]\n";
-    let t = Tmp::new_raw("fmtcomment", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"hi\")\nend t.main\n");
+    let t = Tmp::new_raw("fmtcomment", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"hi\")\nend t.main\n");
     fs::write(t.0.join("kasane.toml"), toml).unwrap();
     let o = run(&["fmt"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));

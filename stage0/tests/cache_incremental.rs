@@ -304,7 +304,7 @@ fn the_tour_example_runs_natively_through_the_native_build() {
 #[test]
 fn ffi_extern_calls_and_raw_pointers_work_natively() {
     let t = Tmp::new("ffi_native", FFI_SRC);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
     let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi", std::process::id()));
@@ -596,7 +596,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 ";
     let t = Tmp::new("ffi_dup_symbol", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi_dup", std::process::id()));
     let b = Command::new(exe())
         .args(["build", "--backend", "llvm"])
@@ -867,7 +867,7 @@ fn fmath_functions_agree_across_backends_and_match_known_values() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn ffi_struct_by_value_works_on_both_backends_with_libc() {
     let t = Tmp::new("ffi_struct_libc", FFI_LIBC_STRUCT_SRC);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let o = run(&["check"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
     let r = run(&["run"], &t.0);

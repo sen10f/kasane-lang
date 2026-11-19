@@ -62,7 +62,7 @@ fn run_wasm(path: &Path) -> Output {
 fn pkg(name: &str, files: &[(&str, &str)]) -> Tmp {
     let t = Tmp::new(name, "");
     let _ = fs::remove_dir_all(t.0.join("src"));
-    let toml = format!("[package]\nname = \"{0}\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"{0}.main\"\n\n[dependencies]\n\n[unsafe]\nmodules = [\"{0}\"]\n", name);
+    let toml = format!("[package]\nname = \"{0}\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"{0}.main\"\n\n[unsafe]\nmodules = [\"{0}\"]\n\n[dependencies]\n", name);
     fs::write(t.0.join("kasane.toml"), toml).unwrap();
     for (rel, body) in files {
         let p = t.0.join("src").join(rel);

@@ -167,7 +167,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 ";
     let t = Tmp::new("cross_struct_extern", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let o = run(&["build", "--target", TRIPLE], &t.0);
     let out = text(&o.stdout);
     let err = text(&o.stderr);
