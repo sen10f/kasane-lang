@@ -2,7 +2,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let mut x = 1u32
     let mut y = 2u32
     let mut a = [&mut x]
-    let old = core.mem.replace(&mut a[0], &mut y)
+    let old = core.mem.replace(&mut a[0usize], &mut y)
     x = 4u32
     core.mem.drop(old)
     core.mem.drop(a)

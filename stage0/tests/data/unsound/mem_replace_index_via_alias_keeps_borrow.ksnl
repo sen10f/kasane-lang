@@ -4,9 +4,9 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let mut y = 2u32
     let mut y2 = 5u32
     let mut a = [&mut x, &mut z]
-    let r = &mut a[1]
+    let r = &mut a[1usize]
     core.mem.drop(core.mem.replace(r, &mut y2))
-    core.mem.drop(core.mem.replace(&mut a[0], &mut y))
+    core.mem.drop(core.mem.replace(&mut a[0usize], &mut y))
     z = 4u32
     core.mem.drop(a)
     Ok(())
