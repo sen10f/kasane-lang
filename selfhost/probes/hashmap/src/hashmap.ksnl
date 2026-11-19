@@ -5,7 +5,7 @@ fn hashmap.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics ne
     core.mem.drop(m.insert(name, 1usize))
     let key = alloc.string.String.from_str(std.alloc.SYSTEM, "fn")
     match key {
-        Ok(k) => match m.get(&k) {
+        Ok(k) => match m.get_str(k.as_str()) {
             Some(v) => {
                 if *v == 1usize {
                     return std.io.print_line("found")

@@ -160,6 +160,21 @@ fn layout_enum(defs: &[AggDef], vs: &[(String, Vec<Ty>)]) -> (u32, u32, Vec<Vari
     (align_up(start + max_payload, max_align), max_align, variants)
 }
 
+/// `alloc.string.String<std.alloc.System>` の末尾の既定のアロケータ引数を外した型 (入れ子も)。
+fn canon_default_alloc(t: &Src) -> Src {
+    let go = |x: &Src| canon_default_alloc(x);
+    match t {
+        Src::Named(n, a, r) if n == "alloc.string.String" && a.len() == 1 && matches!(&a[0], Src::Named(s, _, _) if s == "std.alloc.System") => Src::Named(n.clone(), vec![], r.clone()),
+        Src::Named(n, a, r) => Src::Named(n.clone(), a.iter().map(go).collect(), r.clone()),
+        Src::Ref(m, x, r) => Src::Ref(*m, Box::new(go(x)), r.clone()),
+        Src::Ptr(m, x) => Src::Ptr(*m, Box::new(go(x))),
+        Src::Tuple(xs) => Src::Tuple(xs.iter().map(go).collect()),
+        Src::Array(x, n) => Src::Array(Box::new(go(x)), *n),
+        Src::Slice(x) => Src::Slice(Box::new(go(x))),
+        _ => t.clone(),
+    }
+}
+
 impl AggTab {
     /// `user` は利用者のパッケージの定義の添字 (`lower_user` の引数と同じ)。
     pub fn new(user: &[usize]) -> AggTab {
@@ -171,6 +186,9 @@ impl AggTab {
         if let Some(x) = conv(t) {
             return Ok(x);
         }
+        // `String` と `String<std.alloc.System>` は同じ型 (末尾のアロケータ引数は省ける。仕様 8.2)。集成体の名前を 1 つにそろえる。
+        let canon = canon_default_alloc(t);
+        let t = &canon;
         match t {
             // `Option<&T>` (T は所有物を持つ型): ペイロードは要素の番地を 1 つ持つ集成体 `bref` (設計_KIR.md 17.18)。
             Src::Named(name, args, _) if name == "Option" && args.len() == 1 && matches!(&args[0], Src::Ref(m, i, _) if self.bref_ref(p, file, *m, i)) => {

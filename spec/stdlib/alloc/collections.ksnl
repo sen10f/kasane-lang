@@ -107,6 +107,13 @@ fn alloc.collections.HashMap.contains_key[K: core.cmp.Eq + core.hash.Hash, V, A:
     }
 end alloc.collections.HashMap.contains_key
 
+fn alloc.collections.HashMap.contains_key_str[V, A: alloc.alloc.Allocator, B: alloc.alloc.Allocator](self: &alloc.collections.HashMap<alloc.string.String<B>, V, A>, key: &str) -> bool uses [] panics never pub
+    match self.find_str(key) {
+        Some(_p) => true
+        None => false
+    }
+end alloc.collections.HashMap.contains_key_str
+
 fn alloc.collections.HashMap.find[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>, key: &K) -> Option<usize> uses [] panics never
     let h = alloc.collections.hash_key(key)
     self.find_hashed(h, key)
@@ -147,6 +154,45 @@ fn alloc.collections.HashMap.find_hashed[K: core.cmp.Eq + core.hash.Hash, V, A: 
     None
 end alloc.collections.HashMap.find_hashed
 
+fn alloc.collections.HashMap.find_str[V, A: alloc.alloc.Allocator, B: alloc.alloc.Allocator](self: &alloc.collections.HashMap<alloc.string.String<B>, V, A>, key: &str) -> Option<usize> uses [] panics never
+    let h = alloc.collections.hash_str(key)
+    let slots = self.slots
+    if slots == 0usize {
+        return None
+    }
+    let mask = slots.wrapping_sub(1usize)
+    let mut i = h & mask
+    let mut n = 0usize
+    while n < slots {
+        match self.cells.get(i) {
+            Some(cell) => match cell {
+                alloc.collections.HashCell.Empty => return None
+                alloc.collections.HashCell.Index(p) => match self.cells.get(*p) {
+                    Some(found) => match found {
+                        alloc.collections.HashCell.Entry(eh, ek, _ev) => {
+                            let same = key.eq(ek.as_str())
+                            if *eh == h && same {
+                                return Some(*p)
+                            }
+                        }
+                        alloc.collections.HashCell.Empty => {
+                        }
+                        alloc.collections.HashCell.Index(_q) => {
+                        }
+                    }
+                    None => {
+                    }
+                }
+                alloc.collections.HashCell.Entry(_eh, _ek, _ev) => return None
+            }
+            None => return None
+        }
+        i = i.wrapping_add(1usize) & mask
+        n = n.wrapping_add(1usize)
+    }
+    None
+end alloc.collections.HashMap.find_str
+
 fn alloc.collections.HashMap.get[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>, key: &K) -> Option<&V> uses [] panics never pub
     match self.find(key) {
         Some(p) => match self.cells.get(p) {
@@ -180,6 +226,40 @@ fn alloc.collections.HashMap.get_mut[K: core.cmp.Eq + core.hash.Hash, V, A: allo
         None => None
     }
 end alloc.collections.HashMap.get_mut
+
+fn alloc.collections.HashMap.get_mut_str[V, A: alloc.alloc.Allocator, B: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<alloc.string.String<B>, V, A>, key: &str) -> Option<&mut V> uses [] panics never pub
+    match self.find_str(key) {
+        Some(p) => match self.cells.get_mut(p) {
+            Some(cell) => match cell {
+                alloc.collections.HashCell.Entry(_h, _k, v) => {
+                    let vr: &mut V = v
+                    Some(vr)
+                }
+                alloc.collections.HashCell.Empty => None
+                alloc.collections.HashCell.Index(_q) => None
+            }
+            None => None
+        }
+        None => None
+    }
+end alloc.collections.HashMap.get_mut_str
+
+fn alloc.collections.HashMap.get_str[V, A: alloc.alloc.Allocator, B: alloc.alloc.Allocator](self: &alloc.collections.HashMap<alloc.string.String<B>, V, A>, key: &str) -> Option<&V> uses [] panics never pub
+    match self.find_str(key) {
+        Some(p) => match self.cells.get(p) {
+            Some(cell) => match cell {
+                alloc.collections.HashCell.Entry(_h, _k, v) => {
+                    let vr = v
+                    Some(vr)
+                }
+                alloc.collections.HashCell.Empty => None
+                alloc.collections.HashCell.Index(_q) => None
+            }
+            None => None
+        }
+        None => None
+    }
+end alloc.collections.HashMap.get_str
 
 fn alloc.collections.HashMap.hash_at[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>, pos: usize) -> usize uses [] panics never
     match self.cells.get(pos) {
@@ -362,6 +442,23 @@ fn alloc.collections.HashMap.remove[K: core.cmp.Eq + core.hash.Hash, V, A: alloc
     }
 end alloc.collections.HashMap.remove
 
+fn alloc.collections.HashMap.remove_str[V, A: alloc.alloc.Allocator, B: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<alloc.string.String<B>, V, A>, key: &str) -> Option<V> uses [] panics never pub
+    match self.find_str(key) {
+        Some(p) => match self.cells.remove(p) {
+            Some(cell) => {
+                self.reindex()
+                match cell {
+                    alloc.collections.HashCell.Entry(_h, _k, v) => Some(v)
+                    alloc.collections.HashCell.Empty => None
+                    alloc.collections.HashCell.Index(_q) => None
+                }
+            }
+            None => None
+        }
+        None => None
+    }
+end alloc.collections.HashMap.remove_str
+
 fn alloc.collections.HashMap.reverse_range[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, lo: usize, hi: usize) -> () uses [] panics never
     let mut a = lo
     let mut b = hi
@@ -412,3 +509,12 @@ fn alloc.collections.hash_key[K: core.hash.Hash](key: &K) -> usize uses [] panic
         Err(_e) => 0usize
     }
 end alloc.collections.hash_key
+
+fn alloc.collections.hash_str(key: &str) -> usize uses [] panics never
+    let mut state = core.hash.Fnv64.new()
+    key.hash(&mut state)
+    match u32.try_from_u64(state.finish() & 4_294_967_295u64) {
+        Ok(lo) => usize.from_u32(lo)
+        Err(_e) => 0usize
+    }
+end alloc.collections.hash_str

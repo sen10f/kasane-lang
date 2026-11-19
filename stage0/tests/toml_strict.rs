@@ -23,11 +23,16 @@ fn dep_rel() -> String {
 
 fn with_dep(name: &str, toml: &str, lock: &str) -> (Tmp, std::path::PathBuf) {
     let libdir = std::env::temp_dir().join(format!("ksn_test_{}_lib", std::process::id()));
-    let _ = fs::remove_dir_all(&libdir);
-    fs::create_dir_all(libdir.join("src")).unwrap();
-    fs::write(libdir.join("kasane.toml"), "[package]\nname = \"lib\"\nversion = \"0.1.0\"\nedition = 1\n\n[dependencies]\n").unwrap();
-    fs::write(libdir.join("kasane.lock"), "version = 1\n").unwrap();
-    fs::write(libdir.join("src").join("lib.ksnl"), "fn lib.hello() -> u32 pub\n    7\nend lib.hello\n").unwrap();
+    // 依存の中身はどの試験でも同じ。同じ実行ファイルの試験は並列に走るので、消して作り直すと
+    // ほかの試験の検査の途中で依存が消える (2026-11-20、速い検証機で落ちた)。最初の 1 回だけ作る。
+    static MAKE_LIB: std::sync::Once = std::sync::Once::new();
+    MAKE_LIB.call_once(|| {
+        let _ = fs::remove_dir_all(&libdir);
+        fs::create_dir_all(libdir.join("src")).unwrap();
+        fs::write(libdir.join("kasane.toml"), "[package]\nname = \"lib\"\nversion = \"0.1.0\"\nedition = 1\n\n[dependencies]\n").unwrap();
+        fs::write(libdir.join("kasane.lock"), "version = 1\n").unwrap();
+        fs::write(libdir.join("src").join("lib.ksnl"), "fn lib.hello() -> u32 pub\n    7\nend lib.hello\n").unwrap();
+    });
     let rel = format!("../{}", libdir.file_name().unwrap().to_string_lossy());
     let t = Tmp::new_raw(name, "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let _x = lib.hello()\n    Ok(())\nend t.main\n");
     fs::write(t.0.join("kasane.toml"), toml.replace("../lib", &rel)).unwrap();

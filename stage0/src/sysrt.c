@@ -26,6 +26,9 @@
 #endif
 
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <io.h>
 #include <direct.h>
 #include <windows.h>
@@ -455,14 +458,45 @@ i64 ksn_rt_sys_read_to_end(i32 fd, u64 *vec, i32 *e) {
     return (i64)got;
 }
 
-/* ---------------------------------------------------------------- std.net (POSIX のみ) */
-#ifndef _WIN32
+/* ---------------------------------------------------------------- std.net (POSIX と Windows の winsock) */
+#ifdef _WIN32
+#define net_close closesocket
+#define SHUT_RD SD_RECEIVE
+#define SHUT_WR SD_SEND
+#define SHUT_RDWR SD_BOTH
+typedef int ksn_sl;
+/* winsock のエラーを errno の番号に写す (std.io.ErrorKind の対応 `kind_of` を共有する)。 */
+static int net_errno(void) {
+    switch (WSAGetLastError()) {
+    case WSAECONNRESET: return ECONNRESET;
+    case WSAECONNABORTED: return ECONNABORTED;
+    case WSAECONNREFUSED: return ECONNREFUSED;
+    case WSAEADDRINUSE: return EADDRINUSE;
+    case WSAENOTCONN: return ENOTCONN;
+    case WSAETIMEDOUT: case WSAEWOULDBLOCK: return ETIMEDOUT;
+    case WSAEINTR: return EINTR;
+    case WSAEINVAL: return EINVAL;
+    case WSAEACCES: return EACCES;
+    default: return EIO;
+    }
+}
+#else
+#define net_close close
+typedef socklen_t ksn_sl;
+static int net_errno(void) { return errno; }
+#endif
+
 
 static void init_net(void) {
     static int done;
     if (!done) {
+#ifdef _WIN32
+        WSADATA wd;
+        WSAStartup(MAKEWORD(2, 2), &wd);
+#else
         /* 閉じた相手への write で落ちず EPIPE を返す (Rust の標準ライブラリと同じ)。 */
         signal(SIGPIPE, SIG_IGN);
+#endif
         done = 1;
     }
 }
@@ -522,8 +556,12 @@ static int resolve(const u8 *a, u64 n, struct addrinfo **out, i32 *e) {
 }
 
 static void set_cloexec(int fd) {
+#ifdef _WIN32
+    (void)fd;
+#else
     int fl = fcntl(fd, F_GETFD);
     if (fl >= 0) fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
+#endif
 }
 
 i64 ksn_rt_sys_connect(const u8 *a, u64 n, i32 *e) {
@@ -533,11 +571,11 @@ i64 ksn_rt_sys_connect(const u8 *a, u64 n, i32 *e) {
     int last = 0;
     for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
         int s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (s < 0) { last = errno; continue; }
+        if (s < 0) { last = net_errno(); continue; }
         set_cloexec(s);
         if (connect(s, ai->ai_addr, ai->ai_addrlen) == 0) { freeaddrinfo(res); return s; }
-        last = errno;
-        close(s);
+        last = net_errno();
+        net_close(s);
     }
     freeaddrinfo(res);
     e[0] = K_OTHER;
@@ -552,13 +590,13 @@ i64 ksn_rt_sys_listen(const u8 *a, u64 n, i32 *e) {
     int last = 0;
     for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
         int s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (s < 0) { last = errno; continue; }
+        if (s < 0) { last = net_errno(); continue; }
         set_cloexec(s);
         int one = 1;
         setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
         if (bind(s, ai->ai_addr, ai->ai_addrlen) == 0 && listen(s, 128) == 0) { freeaddrinfo(res); return s; }
-        last = errno;
-        close(s);
+        last = net_errno();
+        net_close(s);
     }
     freeaddrinfo(res);
     e[0] = K_OTHER;
@@ -571,17 +609,17 @@ i64 ksn_rt_sys_accept(i32 lfd, i32 *e) {
     for (;;) {
         int s = accept(lfd, NULL, NULL);
         if (s >= 0) { set_cloexec(s); return s; }
-        if (errno == EINTR) continue;
+        if (net_errno() == EINTR) continue;
         e[0] = K_OTHER;
-        e[1] = (i32)errno;
+        e[1] = (i32)net_errno();
         return -1;
     }
 }
 
 i64 ksn_rt_sys_local_port(i32 fd, i32 *e) {
     struct sockaddr_storage ss;
-    socklen_t len = sizeof ss;
-    if (getsockname(fd, (struct sockaddr *)&ss, &len) != 0) { e[0] = K_OTHER; e[1] = (i32)errno; return -1; }
+    ksn_sl len = sizeof ss;
+    if (getsockname(fd, (struct sockaddr *)&ss, &len) != 0) { e[0] = K_OTHER; e[1] = (i32)net_errno(); return -1; }
     if (ss.ss_family == AF_INET) return ntohs(((struct sockaddr_in *)&ss)->sin_port);
     if (ss.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&ss)->sin6_port);
     return fail_net(e);
@@ -609,26 +647,31 @@ static int format_addr(const struct sockaddr *sa, char *txt, size_t cap) {
 
 /* 0 = 秒 (ms = 0 はタイムアウトなし)。SO_RCVTIMEO (読み) / SO_SNDTIMEO (書き)。 */
 i64 ksn_rt_sys_net_timeout(i32 fd, i32 write_side, u64 ms, i32 *e) {
+#ifdef _WIN32
+    DWORD tv = (DWORD)ms; /* winsock はミリ秒の DWORD */
+    if (setsockopt((SOCKET)fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, (const char *)&tv, sizeof tv) != 0)
+#else
     struct timeval tv;
     tv.tv_sec = (time_t)(ms / 1000);
     tv.tv_usec = (suseconds_t)((ms % 1000) * 1000);
-    if (setsockopt(fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, sizeof tv) != 0) return fail(e, errno);
+    if (setsockopt(fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, sizeof tv) != 0)
+#endif return fail(e, net_errno());
     return 0;
 }
 
 /* how: 0 = 読み、1 = 書き、2 = 両方。 */
 i64 ksn_rt_sys_net_shutdown(i32 fd, i32 how, i32 *e) {
     int h = how == 0 ? SHUT_RD : (how == 1 ? SHUT_WR : SHUT_RDWR);
-    if (shutdown(fd, h) != 0) return fail(e, errno);
+    if (shutdown(fd, h) != 0) return fail(e, net_errno());
     return 0;
 }
 
 /* 相手 (peer != 0) か自分のアドレスを "ip:port" で out へ書く。入りきらなければ InvalidInput。書いたバイト数。 */
 i64 ksn_rt_sys_net_addr(i32 fd, i32 peer, u8 *out, u64 cap, i32 *e) {
     struct sockaddr_storage ss;
-    socklen_t len = sizeof ss;
+    ksn_sl len = sizeof ss;
     int rc = peer ? getpeername(fd, (struct sockaddr *)&ss, &len) : getsockname(fd, (struct sockaddr *)&ss, &len);
-    if (rc != 0) return fail(e, errno);
+    if (rc != 0) return fail(e, net_errno());
     char txt[80];
     if (format_addr((struct sockaddr *)&ss, txt, sizeof txt) != 0) return fail_invalid(e);
     u64 n = strlen(txt);
@@ -679,11 +722,11 @@ i64 ksn_rt_sys_net_udp_bind(const u8 *a, u64 n, i32 *e) {
     int last = 0;
     for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
         int s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (s < 0) { last = errno; continue; }
+        if (s < 0) { last = net_errno(); continue; }
         set_cloexec(s);
         if (bind(s, ai->ai_addr, ai->ai_addrlen) == 0) { freeaddrinfo(res); return s; }
-        last = errno;
-        close(s);
+        last = net_errno();
+        net_close(s);
     }
     freeaddrinfo(res);
     e[0] = K_OTHER;
@@ -701,7 +744,7 @@ i64 ksn_rt_sys_net_sendto(i32 fd, const u8 *buf, u64 n, const u8 *a, u64 an, i32
     for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
         ssize_t k = sendto(fd, buf, n, 0, ai->ai_addr, ai->ai_addrlen);
         if (k >= 0) { r = (i64)k; break; }
-        last = errno;
+        last = net_errno();
     }
     freeaddrinfo(res);
     if (r < 0) return fail(e, last);
@@ -713,13 +756,13 @@ i64 ksn_rt_sys_net_recvfrom(i32 fd, u8 *buf, u64 n, u8 *from, u64 fcap, i32 *e) 
     init_net();
     struct sockaddr_storage ss;
     memset(&ss, 0, sizeof ss);
-    socklen_t sl = sizeof ss;
+    ksn_sl sl = sizeof ss;
     ssize_t got;
     for (;;) {
         got = recvfrom(fd, buf, n, 0, (struct sockaddr *)&ss, &sl);
         if (got >= 0) break;
-        if (errno == EINTR) continue;
-        return fail(e, errno);
+        if (net_errno() == EINTR) continue;
+        return fail(e, net_errno());
     }
     char txt[80];
     /* カーネルが送信元を書かなかった (接続済みの socket など。sl が family の分も無い) ときは、空の文字列を返す。読み捨てたデータを失わない。 */
@@ -734,7 +777,6 @@ i64 ksn_rt_sys_net_recvfrom(i32 fd, u8 *buf, u64 n, u8 *from, u64 fcap, i32 *e) 
     return (i64)got;
 }
 
-#endif
 
 /* ---- std.env / std.time ---- */
 #include <time.h>

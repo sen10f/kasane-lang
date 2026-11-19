@@ -121,7 +121,7 @@ end resolve.table.put_var
 // 既存の登録の状態: 0 = なし、1 = 宣言と実装の組 (sig の違い)、2 = 重複。
 fn resolve.table.state(t: &resolve.table.Table, m: &resolve.table.Map, key: &alloc.string.String<std.alloc.System>, sig: bool) -> usize uses [] panics never pub
     let mm = &m.m
-    match mm.get(key) {
+    match mm.get_str(key.as_str()) {
         Some(ix) => {
             let old = resolve.table.at(t, *ix)
             if old.sig != sig {
