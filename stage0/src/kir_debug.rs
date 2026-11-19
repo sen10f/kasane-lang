@@ -658,7 +658,7 @@ impl<'a> Gen<'a> {
             // `&[T]` / `&[T; N]` (T は 64 ビット以下の整数・bool・char): 長さと要素ごとの比較。
             (Src::Ref(_, inner, _), t) if t == fat && matches!(&**inner, Src::Slice(_) | Src::Array(_, _)) => {
                 let (Src::Slice(e) | Src::Array(e, _)) = &**inner else { unreachable!() };
-                match super::conv(e).filter(|x| (x.is_int() && x.bits() <= 64) || *x == Ty::Bool) {
+                match super::conv(e).filter(|x| (x.is_int() && x.bits() <= 64) || *x == Ty::Bool || x.is_float()) {
                     Some(et) => Ok(self.slice_eq_elem(fat, fat, &format!("slice.{}", et.name()), et)),
                     None => Err(format!("要素の型 {} の比較は未対応", show(e))),
                 }
@@ -670,7 +670,8 @@ impl<'a> Gen<'a> {
             (Src::Named(name, args, _), Ty::Agg(i)) if args.is_empty() => self.agg_eq(name, i, file),
             (Src::Tuple(es), Ty::Agg(i)) => self.tuple_eq(es, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, true),
-            (Src::Prim(_), t) if t.is_float() => Err(format!("型 {} の比較は未対応 (浮動小数は失敗の文言に値を出せない)", t.name())),
+            // 浮動小数は IEEE の == (`fcmp oeq`。NaN は不一致、-0.0 == 0.0。木走査の veq と同じ)。
+            (Src::Prim(_), t) if t.is_float() => Ok(self.scalar_eq(&t.name(), t, fat)),
             (Src::Ref(_, inner, _), t) => self.need_eq(inner, t, file),
             (other, t) => Err(format!("型 {} ({}) の比較は未対応", show(other), t.name())),
         }
