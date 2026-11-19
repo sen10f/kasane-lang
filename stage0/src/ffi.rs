@@ -102,7 +102,18 @@ pub fn lookup(lib: Option<&str>, symbol: &str) -> Result<*mut c_void, String> {
                 return Ok(p);
             }
         }
-        Err(format!("symbol `{}` was not found in the host C libraries", symbol))
+        // `[native] dynamic` のライブラリを開いて探す (3.8)。
+        for lib in native_candidates() {
+            let h = sys::LoadLibraryA(cstr(&lib).as_ptr());
+            if h.is_null() {
+                continue;
+            }
+            let p = sys::GetProcAddress(h, name.as_ptr());
+            if !p.is_null() {
+                return Ok(p);
+            }
+        }
+        Err(format!("symbol `{}` was not found in the host C libraries{}", symbol, native_hint()))
     }
     #[cfg(unix)]
     unsafe {
@@ -119,7 +130,16 @@ pub fn lookup(lib: Option<&str>, symbol: &str) -> Result<*mut c_void, String> {
                 return Ok(p);
             }
         }
-        Err(format!("symbol `{}` was not found in the host C libraries", symbol))
+        // `[native] dynamic` のライブラリを開いて探す (3.8)。
+        for lib in native_candidates() {
+            if let Ok(h) = open_lib(&lib) {
+                let p = sys::dlsym(h, name.as_ptr());
+                if !p.is_null() {
+                    return Ok(p);
+                }
+            }
+        }
+        Err(format!("symbol `{}` was not found in the host C libraries{}", symbol, native_hint()))
     }
 }
 
@@ -129,6 +149,64 @@ pub fn split_link(link: &str) -> (Option<&str>, &str) {
     match link.rsplit_once(':') {
         Some((lib, sym)) if !lib.is_empty() && !sym.is_empty() => (Some(lib), sym),
         _ => (None, link),
+    }
+}
+
+// ---------------------------------------------------------------- `[native]` (3.8)
+
+/// `kasane.toml` の `[native]`。インタプリタ (`ksn run`) は `extern` の `lib:` なしのシンボル (リンク時に
+/// 解決するもの) を `dynamic` のライブラリから探す。プロセスごとに 1 つで、ロードしたパッケージが設定する
+/// (あとの設定が前のものを置き換える)。`static` のアーカイブは実行ファイルへのリンク時にしか読み込めない。
+static NATIVE: std::sync::OnceLock<std::sync::Mutex<crate::project::NativeLibs>> = std::sync::OnceLock::new();
+
+/// `[native]` の C のライブラリを登録する (`ksn run` / `ksn test` の前にパッケージのロードが設定する)。
+pub fn set_native_libs(nat: &crate::project::NativeLibs) {
+    let m = NATIVE.get_or_init(|| std::sync::Mutex::new(crate::project::NativeLibs::default()));
+    if let Ok(mut g) = m.lock() {
+        *g = nat.clone();
+    }
+}
+
+fn native() -> crate::project::NativeLibs {
+    NATIVE.get_or_init(|| std::sync::Mutex::new(crate::project::NativeLibs::default()))
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
+/// OS ごとの共有ライブラリのファイル名 (`-lm` の `m` → `libm.so`)。
+fn soname(name: &str) -> String {
+    let (prefix, ext) = if cfg!(windows) {
+        (String::new(), "dll")
+    } else if cfg!(target_os = "macos") {
+        ("lib".to_string(), "dylib")
+    } else {
+        ("lib".to_string(), "so")
+    };
+    format!("{}{}.{}", prefix, name, ext)
+}
+
+/// `[native] dynamic` の名前から開く候補 (OS のローダーに探せるファイル名・`search` の探索先つき)。
+fn native_candidates() -> Vec<String> {
+    let n = native();
+    let mut out = vec![];
+    for name in &n.dynamic {
+        let so = soname(name);
+        out.push(so.clone());
+        for d in &n.search {
+            out.push(std::path::Path::new(d).join(&so).display().to_string());
+        }
+    }
+    out
+}
+
+/// 静的アーカイブだけが理由で見つからないときの助け (インタプリタはアーカイブを読み込めない)。
+fn native_hint() -> String {
+    let n = native();
+    if n.archives.is_empty() {
+        String::new()
+    } else {
+        format!(" (kasane.toml `[native] static` libraries need `ksn build`: the interpreter cannot load archives)")
     }
 }
 
