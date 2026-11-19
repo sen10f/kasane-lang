@@ -1252,7 +1252,7 @@ impl<'a> Lw<'a> {
                     return Ok(Some(self.int_hash(recv, st, line)?));
                 }
                 // `&str` の値 (fat、または `&&str` の番地) の `eq` / `hash`: 文字列の下ろし。
-                if matches!(meth.as_str(), "eq" | "hash" | "cmp" | "partial_cmp" | "try_clone") {
+                if matches!(meth.as_str(), "eq" | "hash" | "cmp" | "partial_cmp" | "try_clone" | "as_str") {
                     if let Some(k) = self.str_kind_of_path(s, &segs) {
                         let args = items(&f[1]).to_vec();
                         return coll::method_on(self, e, line, None, k, recv, &meth, &args);

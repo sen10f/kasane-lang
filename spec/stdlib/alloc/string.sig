@@ -27,3 +27,5 @@ impl[A: alloc.alloc.Allocator] core.cmp.PartialOrd<alloc.string.String<A>> for a
 fn alloc.string.String.partial_cmp[A: alloc.alloc.Allocator](self: &alloc.string.String<A>, other: &alloc.string.String<A>) -> Option<core.cmp.Ordering> uses [] panics never impls core.cmp.PartialOrd<alloc.string.String<A>>
 fn alloc.string.String.push_debug[A: alloc.alloc.Allocator, T: core.fmt.Debug](self: &mut alloc.string.String<A>, value: &T) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
 fn alloc.string.String.push_display[A: alloc.alloc.Allocator, T: core.fmt.Display](self: &mut alloc.string.String<A>, value: &T) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+impl[A: alloc.alloc.Allocator + core.ops.Clone] alloc.alloc.TryClone for alloc.string.String<A>
+fn alloc.string.String.try_clone[A: alloc.alloc.Allocator + core.ops.Clone](self: &alloc.string.String<A>) -> Result<alloc.string.String<A>, alloc.alloc.AllocError> uses [alloc] panics never impls alloc.alloc.TryClone pub

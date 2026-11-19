@@ -112,7 +112,7 @@ end resolve.table.put_var
 
 fn resolve.table.state(t: &resolve.table.Table, m: &resolve.table.Map, key: &alloc.string.String<std.alloc.System>, sig: bool) -> usize uses [] panics never pub
     let mm = &m.m
-    match mm.get(key) {
+    match mm.get_str(key.as_str()) {
         Some(ix) => {
             let old = resolve.table.at(t, *ix)
             if old.sig != sig {

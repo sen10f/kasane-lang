@@ -163,14 +163,14 @@ fn t.run() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     }
     core.check.eq(m.len(), 42usize)
     let probe = t.mk("fn")
-    core.check.eq(m.get(&probe), Some(&3u64))
-    core.check.eq(m.contains_key(&t.mk("type")), true)
-    core.check.eq(m.contains_key(&t.mk("nope")), false)
-    core.check.eq(m.remove(&t.mk("type")), Some(2u64))
-    core.check.eq(m.remove(&t.mk("type")), None)
+    core.check.eq(m.get_str(probe.as_str()), Some(&3u64))
+    core.check.eq(m.contains_key_str("type"), true)
+    core.check.eq(m.contains_key_str("nope"), false)
+    core.check.eq(m.remove_str("type"), Some(2u64))
+    core.check.eq(m.remove_str("type"), None)
     core.check.eq(m.len(), 41usize)
     let k7 = t.mk("key7")
-    match m.get(&k7) {
+    match m.get_str(k7.as_str()) {
         Some(v) => core.check.eq(*v, 49u64)
         None => core.check.eq(true, false)
     }
@@ -187,7 +187,7 @@ fn t.run() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     core.check.eq(m.len(), 0usize)
     core.mem.drop(m.insert(t.mk("again"), 1u64))
-    core.check.eq(m.get(&t.mk("again")), Some(&1u64))
+    core.check.eq(m.get_str("again"), Some(&1u64))
     core.mem.drop(std.io.print_line("sum"))
     Ok(())
 end t.run
