@@ -147,6 +147,13 @@ fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut 
             }
             _ => return,
         };
+        // 受け手 (`s.m()` の `s`) も仮引数 0 番の実引数として数える。
+        let recv_ty: Option<Ty> = match &e.kind {
+            TKind::MCall { recv, .. } if off == 1 => Some(recv.ty.clone()),
+            TKind::Call { callee, .. } if off == 1 && matches!(&callee.kind, TKind::Path(s) if s.len() >= 2) => Some(callee.ty.clone()),
+            _ => None,
+        };
+        let all: Vec<(usize, Ty)> = recv_ty.into_iter().map(|t| (0usize, t)).chain(args.iter().enumerate().map(|(k, a)| (k + off, a.ty.clone()))).collect();
         let Some(Callee::Def(ci)) = &e.res else { return };
         let c = &p.defs[*ci];
         let gn = c.gnames();
@@ -180,10 +187,10 @@ fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut 
                 }
             }
         }
-        for (k, a) in args.iter().enumerate() {
-            let Some(prm) = c.params.get(k + off) else { break };
+        for (k, aty) in all.iter() {
+            let Some(prm) = c.params.get(*k) else { break };
             let mut slots = vec![];
-            param_slots(&crate::types::from_v(&prm.1, &gn), &a.ty, &mut slots);
+            param_slots(&crate::types::from_v(&prm.1, &gn), aty, &mut slots);
             for (name, at) in slots {
                 let Ty::Closure { eff: crate::types::Eff(Some(info)), .. } = &at else { continue };
                 for g in &c.generics {
