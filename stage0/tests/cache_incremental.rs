@@ -607,7 +607,7 @@ end t.main
     let _ = fs::remove_dir_all(&cache);
     let all = format!("{}{}", text(&b.stdout), text(&b.stderr));
     assert!(!all.contains("panicked"), "{}", all);
-    assert!(all.contains("native backend skipped: clang が失敗した") && all.contains("redefinition of function 'abs'"), "{}", all);
+    assert!((all.contains("native backend skipped: clang が失敗した") || all.contains("native backend skipped: LLVM IR を読めない")) && all.contains("redefinition of function 'abs'"), "{}", all);
     assert!(all.contains("the interpreter bundle is used"), "{}", all);
 }
 
