@@ -627,6 +627,10 @@ impl<'a> Gen<'a> {
             (Src::Prim(_), t) if t.is_float() => Ok(self.scalar(&format!("{}.disp", t.name()), || float_fn(t, fat))),
             (_, t) if is_str(src, t, fat) => Ok(self.scalar("str", || str_fn(fat))),
             (Src::Named(name, _, _), t) if name == "alloc.string.String" && (matches!(t, Ty::Agg(_)) || (self.sink && t == Ty::Ptr)) => Ok(self.string_debug(t, fat)),
+            // `Vec<T>` (T は整数・bool・char): 先頭の {ptr, len} を `&[T]` の表示 (`[a, b]`) へ渡す。
+            (Src::Named(name, args, _), t) if name == "alloc.vec.Vec" && !args.is_empty() && (matches!(t, Ty::Agg(_)) || (self.sink && t == Ty::Ptr)) => {
+                self.vec_debug(&args[0], t, fat, file)
+            }
             (Src::Named(name, args, _), Ty::Agg(i)) if args.is_empty() => self.agg(name, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, false),
             (Src::Slice(e) | Src::Array(e, _), t) if t == fat => self.slice_debug(e, file),
@@ -746,6 +750,29 @@ impl<'a> Gen<'a> {
     }
 
     /// `&str` の等しさ: 長さが等しく、バイトがすべて一致する。
+    /// `Vec<T>` の表示: 値は {ptr, len, cap} の `vec` (局所はヘッダの参照 `ptr`)。先頭の {ptr, len} から `&[T]` を作って
+    /// `slice_debug` に渡す (木走査の `debug_str` と同じ `[a, b]`)。
+    fn vec_debug(&mut self, e: &Src, ty: Ty, fat: Ty, file: &str) -> Result<String, String> {
+        let name = format!("vec<{}>", show(e).replace(' ', ""));
+        let k = key(&name);
+        let sk = self.slice_debug(e, file)?;
+        if !self.done.insert(k.clone()) {
+            return Ok(k);
+        }
+        let mut b = Fb::new_d(&[ty], fat);
+        let (p, l) = if ty == Ty::Ptr {
+            (b.emit(Ty::Ptr, Op::MemLoad { p: b.v, off: 0 }), b.emit(Ty::Usize, Op::MemLoad { p: b.v, off: 8 }))
+        } else {
+            (b.emit(Ty::Ptr, Op::Field { a: b.v, off: 0 }), b.emit(Ty::Usize, Op::Field { a: b.v, off: 8 }))
+        };
+        let s = b.emit(fat, Op::Make { variant: None, fields: vec![p, l] });
+        let a = b.sargs(vec![s]);
+        b.emit(Ty::Unit, Op::Call { callee: sk.clone(), args: a });
+        let f = b.finish(&k);
+        self.add(f, BTreeSet::from([sk]));
+        Ok(k)
+    }
+
     /// `String` の表示: 値は {ptr, len, cap} の `vec`。先頭の {ptr, len} を `&str` の表示へ渡す (木走査の `StrBuf` の表示と同じ引用)。
     fn string_debug(&mut self, ty: Ty, fat: Ty) -> String {
         let k = key("string");

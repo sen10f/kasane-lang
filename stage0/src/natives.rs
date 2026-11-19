@@ -1723,6 +1723,14 @@ impl Interp {
             "is_empty" => Ok(Val::Bool(s.is_empty())),
             "chars" => Ok(Val::Iter(Rc::new(RefCell::new(IterV::Pre { items: s.chars().map(Val::Char).collect(), i: 0 })))),
             "as_bytes" => Ok(Val::Arr(new_list(s.bytes().map(|b| int(b as i128, "u8")).collect()))),
+            // `Hash` (仕様 4.2): バイト列を `Fnv64.write_bytes` へ渡す (ネイティブの `x.hash(&mut state)` と同じ)。`String` も同じ。
+            "hash" => {
+                let bytes: Vec<Val> = s.bytes().map(|b| int(b as i128, "u8")).collect();
+                if let (Some(&wi), Some(state)) = (self.p.funcs.get("core.hash.Fnv64.write_bytes"), a0.clone()) {
+                    self.call_def(wi, vec![state, Val::Arr(new_list(bytes))])?;
+                }
+                Ok(Val::Unit)
+            }
             "find" => {
                 let t = a0.as_ref().and_then(str_of).unwrap_or_default();
                 Ok(s.find(&t).map_or_else(none, |i| some(usz(i))))
@@ -1780,6 +1788,14 @@ impl Interp {
 
     fn map_method(&mut self, m: Rc<RefCell<MapV>>, name: &str, args: Vec<Val>) -> Res {
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
+        // `*_str` (キーが `String` の辞書を `&str` で引く) は、`hkey` が `String` と `&str` を同じに扱うので同じ実体。
+        let name = match name {
+            "get_str" => "get",
+            "get_mut_str" => "get_mut",
+            "contains_key_str" => "contains_key",
+            "remove_str" => "remove",
+            other => other,
+        };
         // 等価は `hkey` の一致で決める（従来の線形探索と同じ規則）。位置は索引 `idx` から引く。
         let find = |m: &Rc<RefCell<MapV>>, k: &Val| m.borrow().idx.get(&hkey(k)).copied();
         match name {
