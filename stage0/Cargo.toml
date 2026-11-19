@@ -19,7 +19,8 @@ unicode-general-category = "1.1.0"
 llvm-sys = { version = "201", optional = true, default-features = false, features = ["no-llvm-linking"] }
 
 [features]
-default = ["embedded-llvm"]
+# 既定は切 (2026-11-19): 束が ksn (131 MB) を写すため、試験で /tmp があふれた。L2 が束を直してから既定で入れる。
+default = []
 embedded-llvm = ["dep:llvm-sys"]
 
 [build-dependencies]

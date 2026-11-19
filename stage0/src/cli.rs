@@ -3808,6 +3808,7 @@ fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, t
         let o = src.with_extension("ll.o");
         cleanup.push(o.clone());
         let tg = target.or_else(crate::kir_llvm::host_target);
+        // IR → 目的ファイルは組み込みの LLVM (L1、`embedded_obj`)。使えないとき (`KSN_CODEGEN=clang` など) だけ clang。
         match embedded_obj(ll, opt, &o) {
             Some(r) => r?,
             None => {
