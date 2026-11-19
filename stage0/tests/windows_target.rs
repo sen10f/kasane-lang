@@ -123,7 +123,7 @@ fn examples_match_x86_64_native_on_windows() {
         return;
     }
     // `ffi` は libc.so.6 を引く例なので Windows では動かない。
-    for name in ["demo", "tour", "threads", "json", "native", "features"] {
+    for name in ["demo", "tour", "threads", "json", "native", "features", "http", "shortener"] {
         let t = copy_example(name);
         same_on_windows(&t.0, &format!("examples/{}", name));
     }

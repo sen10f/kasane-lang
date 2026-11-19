@@ -318,7 +318,7 @@ static void ksn_w_wsa(void) {
     }
 }
 static int ksn_w_is_sock(int fd) {
-    if (fd <= 2 || !ksn_w_wsa_ready) return 0;
+    if (fd <= 2) return 0;
     int t = 0, n = sizeof t;
     return getsockopt((SOCKET)fd, SOL_SOCKET, SO_TYPE, (char *)&t, &n) == 0;
 }
