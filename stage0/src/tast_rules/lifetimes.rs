@@ -206,6 +206,16 @@ struct W<'a> {
     diags: Vec<Diag>,
     seen: HashSet<(usize, String)>,
     gn: HashSet<String>,
+    /// 閉包の本体を擬似の関数として解くときの署名 (`None` は定義そのもの)。
+    cl: Option<ClSig>,
+}
+
+/// 閉包を擬似の関数として見たときの署名と、外側の局所 (本体の中の局所と区別する)。
+struct ClSig {
+    name: String,
+    params: Vec<(String, Ty)>,
+    ret: Ty,
+    outer: HashSet<(String, u32)>,
 }
 
 fn depth(t: &Ty) -> usize {
@@ -320,14 +330,18 @@ fn min_id(e: &TExpr) -> u32 {
 
 impl<'a> W<'a> {
     fn new(p: &'a Program, di: DefId, b: &TBody) -> W<'a> {
+        Self::for_body(p, di, &b.body, b.ret.clone())
+    }
+
+    fn for_body(p: &'a Program, di: DefId, body: &TExpr, ret: Ty) -> W<'a> {
         let mut uses: HashMap<String, Vec<ExprId>> = HashMap::new();
-        walk(&b.body, &mut |x| {
+        walk(body, &mut |x| {
             if let TKind::Path(s) = &x.kind {
                 uses.entry(s[0].clone()).or_default().push(x.id);
             }
         });
         let gn = p.defs[di].gnames();
-        W { p, di, env: Env::default(), scopes: vec![vec![]], vals: HashMap::new(), uses, loops: vec![], ret: b.ret.clone(), diags: vec![], seen: HashSet::new(), gn }
+        W { p, di, env: Env::default(), scopes: vec![vec![]], vals: HashMap::new(), uses, loops: vec![], ret, diags: vec![], seen: HashSet::new(), gn, cl: None }
     }
 
     fn diag(&mut self, code: &str, msg: String, line: usize) {
@@ -459,6 +473,74 @@ impl<'a> W<'a> {
         }
     }
 
+    /// 閉包の本体を擬似の関数として解く (E3020・戻り値の領域の取り違え・本体の局所の借用が外へ出る・本体の中の `'static`)。
+    /// 引数は借用の出どころ (`Arg`)、`move` の取り込みは外側の値が運ぶ借用をそのまま持つ。`&` / `&mut` の取り込みは
+    /// 見逃す側に倒す (外側の局所への借用で、閉包より長く生きる)。
+    fn closure_body(&mut self, e: &TExpr, params: &[TBinding], captures: &[Capture], body: &TExpr) {
+        let Ty::Closure { ret, .. } = e.ty.strip() else { return };
+        let ret: Ty = (**ret).clone();
+        let d = &self.p.defs[self.di];
+        let cname = format!("{}.<closure>", d.name);
+        let ps: Vec<(String, Ty)> = params.iter().map(|b| (b.name.clone(), b.ty.clone())).collect();
+        // 戻り値の参照は、引数の参照がちょうど 1 つのときだけ省略できる (関数の E3020 と同じ)。
+        let has_ref = |t: &Ty| {
+            let mut r = false;
+            t.map_regions(&mut |x| {
+                r = true;
+                x.clone()
+            });
+            r
+        };
+        let rrs = ret.regions();
+        if !rrs.is_empty() && rrs.iter().all(|r| matches!(r, Region::Unk)) && ps.iter().filter(|(_, t)| has_ref(t)).count() != 1 {
+            self.diag("E3020", format!("{}: lifetime of the returned reference cannot be elided; declare lifetimes", cname), e.line);
+        }
+        let mut sub = W::for_body(self.p, self.di, body, ret.clone());
+        let outer: HashSet<(String, u32)> = self.env.vars.iter().map(|(n, v)| (n.clone(), v.decl)).collect();
+        sub.cl = Some(ClSig { name: cname, params: ps.clone(), ret: ret.clone(), outer });
+        for c in captures {
+            if c.kind != "&" && c.kind != "&mut" {
+                if let Some(v) = self.env.vars.get(&c.name).cloned() {
+                    sub.env.vars.insert(c.name.clone(), Var { depth: 1, ..v });
+                    sub.scopes[0].push(c.name.clone());
+                }
+            }
+        }
+        for (n, t) in &ps {
+            let v = if sub.carries(t) && !t.refs_all_static() { Val::loan(Loan::Arg(n.clone()), 0) } else { Val::default() };
+            sub.define(n, 0, v, t);
+        }
+        sub.ev(body);
+        let mut leaves = vec![];
+        Self::leaves(body, &mut leaves);
+        let mut rets: Vec<&TExpr> = vec![];
+        walk(body, &mut |x| {
+            if let TKind::Other { name: "Return", children } = &x.kind {
+                rets.extend(children.iter());
+            }
+        });
+        for r in rets {
+            Self::leaves(r, &mut leaves);
+        }
+        if sub.carries(&ret) {
+            let pnames: HashSet<String> = ps.iter().map(|(n, _)| n.clone()).collect();
+            let outer = sub.cl.as_ref().map(|c| c.outer.clone()).unwrap_or_default();
+            for l in leaves {
+                // 本体の局所 (外側の局所ではないもの) への借用だけが、戻り値で外へ出る。
+                let inside = |loan: &Loan| match loan {
+                    Loan::Local(n, id) => (*id == 0 && pnames.contains(n)) || !outer.contains(&(n.clone(), *id)),
+                    Loan::Temp => true,
+                    _ => false,
+                };
+                sub.escape_leaf(l, &inside, true);
+                sub.ret_position(l);
+            }
+        }
+        for dg in std::mem::take(&mut sub.diags) {
+            self.diag(&dg.code, dg.msg, dg.line);
+        }
+    }
+
     /// 値を返す葉の式 (`if` / `match` の腕・ブロックの末尾をたどる)。
     fn leaves<'e>(e: &'e TExpr, out: &mut Vec<&'e TExpr>) {
         match &e.kind {
@@ -504,15 +586,35 @@ impl<'a> W<'a> {
         let Some(v) = self.vals.get(&leaf.id).cloned() else { return };
         let v = self.keep(v, &leaf.ty);
         let d = &self.p.defs[self.di];
-        let ps0: Vec<(String, Ty)> = d.params.iter().map(|(n, t)| (n.clone(), from_v(t, &self.gn))).collect();
-        let (ps, ret) = elide_sig(&ps0, &from_v(&d.ret, &self.gn));
+        // 閉包は、自分の引数だけで省略を解き、move で取り込んだ外側の引数 (名前付きの領域だけ) も出どころとして引ける。
+        let (ps0, ps, ret, fname, rtext): (Vec<(String, Ty)>, Vec<Ty>, Ty, String, String) = match &self.cl {
+            None => {
+                let ps0: Vec<(String, Ty)> = d.params.iter().map(|(n, t)| (n.clone(), from_v(t, &self.gn))).collect();
+                let (ps, ret) = elide_sig(&ps0, &from_v(&d.ret, &self.gn));
+                (ps0, ps, ret, d.name.clone(), from_v(&d.ret, &self.gn).show_r().replace("'_ ", ""))
+            }
+            Some(c) => {
+                let (ps, ret) = elide_sig(&c.params, &c.ret);
+                let mut ps0 = c.params.clone();
+                let mut ps = ps;
+                let outer0: Vec<(String, Ty)> = d.params.iter().filter(|(n, _)| !c.params.iter().any(|(m, _)| m == n)).map(|(n, t)| (n.clone(), from_v(t, &self.gn))).collect();
+                let (outer_ps, _) = elide_sig(&outer0, &Ty::Unit);
+                for ((n, t), q) in outer0.into_iter().zip(outer_ps) {
+                    // 省略された外側の領域は、閉包の署名の中では言えない。
+                    if q.regions().iter().any(|r| matches!(r, Region::Elided(_))) {
+                        continue;
+                    }
+                    ps0.push((n, t));
+                    ps.push(q);
+                }
+                (ps0, ps, ret, c.name.clone(), c.ret.show_r().replace("'_ ", ""))
+            }
+        };
         let rr = ret.regions();
         if rr.is_empty() || rr.iter().any(|r| matches!(r, Region::Unk)) {
             return;
         }
         let header = d.header.split(" uses ").next().unwrap_or("").to_string();
-        let fname = d.name.clone();
-        let rtext = from_v(&d.ret, &self.gn).show_r().replace("'_ ", "");
         let mut found: Vec<(String, usize)> = vec![];
         for (l, line) in v.loans() {
             let Loan::Arg(q) = l else { continue };
@@ -528,7 +630,7 @@ impl<'a> W<'a> {
             if named.iter().any(|h| header.contains(&format!("'{}:", h)) || header.contains(&format!("'{} :", h))) {
                 continue;
             }
-            let ptext = format!("{}: {}", ps0[k].0, from_v(&d.params[k].1, &self.gn).show_r().replace("'_ ", ""));
+            let ptext = format!("{}: {}", ps0[k].0, ps0[k].1.show_r().replace("'_ ", ""));
             let ret_named = rr.iter().any(|r| matches!(r, Region::Named(_)));
             let msg = if !named.is_empty() {
                 format!(
@@ -775,6 +877,9 @@ impl<'a> W<'a> {
                     }
                     out.add(&inner.flat());
                 }
+                if let TKind::Closure { params, body, .. } = &e.kind {
+                    self.closure_body(e, params, captures, body);
+                }
                 out
             }
             TKind::StructLit { name, fields } => {
@@ -863,6 +968,20 @@ impl<'a> W<'a> {
                 let saved = self.env.clone();
                 let mut out = Val::default();
                 for _ in 0..2 {
+                    if name == "For" && !e.pats.is_empty() && !children.is_empty() {
+                        // `for pat in it { .. }`: パターンの名前は、繰り返す値が運ぶ借用を持つ。
+                        let it = self.ev(&children[0]);
+                        self.scopes.push(vec![]);
+                        for q in &e.pats {
+                            self.bind_pat(q, it.flat(), true);
+                        }
+                        let mut last = Val::default();
+                        for c in &children[1..] {
+                            last = self.ev(c);
+                        }
+                        let _ = self.end_scope(last);
+                        continue;
+                    }
                     for c in children {
                         let v = self.ev(c);
                         out.add(&v);

@@ -52,6 +52,8 @@ pub enum Coercion {
     Unsize { from: Ty, to: Ty },
     /// クロージャ → 関数型 `fn(..)`。
     ClosureToFn,
+    /// 関数・クロージャの値が、効果を宣言した関数型 `fn(..) uses [..] panics ..` (これ) の位置へ入る。効果の検査 (E4001 / E4002) が使う。
+    FnTo(Ty),
     /// 受け手の自動参照外し (`&&T`・`&mut &T`・`Box<T>` の受け手を `n` 段外して `self` に合わせる)。
     AutoDeref { n: u8 },
     /// `?` のエラー型の変換: `derive [From]` の `enum` のバリアントで包む (`?` の節点に付く。元のエラー型, 戻り値のエラー型, バリアント名)。
