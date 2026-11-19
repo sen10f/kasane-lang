@@ -2,6 +2,9 @@
 //! 木走査 (`ksn run --engine=tree`)、VM 指定 (`--engine=vm`。KIR に下ろせないときは木走査へ退避する)、
 //! `ksn build` で作った実行体の出力が一致することを見る。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -34,7 +37,7 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 
@@ -52,7 +55,7 @@ fn run_all(name: &str, src: &str) -> String {
     let vm = run(&["run", "--engine=vm"], &t.0);
     assert_eq!(vm.status.code(), Some(0), "{}{}", text(&vm.stdout), text(&vm.stderr));
     assert_eq!(text(&tree.stdout), text(&vm.stdout));
-    let cache = std::env::temp_dir().join(format!("ksn_rawbuf_cache_{}_{}", std::process::id(), name));
+    let cache = scratch::Scratch::at(format!("ksn_rawbuf_cache_{}_{}", std::process::id(), name));
     let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     assert!(b.status.success(), "{}{}", text(&b.stdout), text(&b.stderr));
     let _ = fs::remove_dir_all(&cache);
@@ -76,7 +79,7 @@ fn run_native(name: &str, src: &str) -> String {
     assert_eq!(vm.status.code(), Some(0), "{}{}", text(&vm.stdout), text(&vm.stderr));
     assert_eq!(text(&tree.stdout), text(&vm.stdout), "VM の出力が木走査と違う");
     assert!(!text(&vm.stderr).contains("vm engine skipped"), "VM が KIR に下ろせず木走査へ退避した: {}", text(&vm.stderr));
-    let cache = std::env::temp_dir().join(format!("ksn_rawbuf_cache_{}_{}", std::process::id(), name));
+    let cache = scratch::Scratch::at(format!("ksn_rawbuf_cache_{}_{}", std::process::id(), name));
     let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     let log = format!("{}{}", text(&b.stdout), text(&b.stderr));
@@ -370,7 +373,7 @@ fn vec_methods_written_in_kasane_match_the_builtin_ones_natively() {
     let t = Tmp::new("vec_kasane", VEC_KASANE);
     let tree = run(&["run", "--engine=tree"], &t.0);
     assert_eq!(tree.status.code(), Some(0), "{}{}", text(&tree.stdout), text(&tree.stderr));
-    let cache = std::env::temp_dir().join(format!("ksn_rawbuf_cache_{}_vk", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_rawbuf_cache_{}_vk", std::process::id()));
     let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     let native = t.0.join("target/debug/t.native");

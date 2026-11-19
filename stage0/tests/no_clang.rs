@@ -7,6 +7,9 @@
 
 mod common;
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -43,7 +46,7 @@ fn exe_line(out: &str, dir: &Path) -> PathBuf {
 
 fn setup(name: &str) -> (Tmp, PathBuf, PathBuf) {
     let t = Tmp::new(name, PROG);
-    let base = std::env::temp_dir().join(format!("ksn_noclang_{}_{}", std::process::id(), name));
+    let base = scratch::Scratch::at(format!("ksn_noclang_{}_{}", std::process::id(), name));
     let _ = fs::remove_dir_all(&base);
     let (cache, empty) = (base.join("cache"), base.join("empty"));
     fs::create_dir_all(&cache).unwrap();

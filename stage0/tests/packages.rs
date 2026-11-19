@@ -2,6 +2,9 @@
 //! ネットワークには出ない。`git` 依存は、テストが一時ディレクトリに作るローカルのリポジトリ
 //! (`file://` の URL) に対して検証する。キャッシュ (`KSN_CACHE_DIR`) もテストごとの一時ディレクトリ。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,7 +41,7 @@ impl Work {
 }
 impl Drop for Work {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
+        scratch::remove(&self.dir);
     }
 }
 

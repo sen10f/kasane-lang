@@ -1,6 +1,9 @@
 //! `ksn refs` / `ksn rename` の統合テスト。改名の前後で `ksn check` / `ksn fmt --check` / `ksn test` が
 //! 変わらず通ること、`--dry-run` が何も書き換えないこと、衝突・曖昧なときは何も変えず失敗することを確かめる。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -141,7 +144,7 @@ impl Pkg {
 }
 impl Drop for Pkg {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 
@@ -533,7 +536,7 @@ fn shortener_end_to_end_sequence() {
 
 /// 移動すると別モジュールから非 `pub` の定義・フィールドを参照することになる 3 モジュールのパッケージ。
 fn vis_fixture(name: &str) -> Pkg {
-    let src = std::env::temp_dir().join(format!("ksn_refactor_vis_src_{}_{}", std::process::id(), name));
+    let src = scratch::Scratch::at(format!("ksn_refactor_vis_src_{}_{}", std::process::id(), name));
     let _ = fs::remove_dir_all(&src);
     fs::create_dir_all(src.join("src/v")).unwrap();
     fs::write(src.join("kasane.toml"), "[package]\nname = \"v\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"v.main\"\n\n[dependencies]\n").unwrap();

@@ -2,6 +2,9 @@
 //! 下りなかった形のネイティブ (KIR → LLVM) 生成。木走査 (`ksn run --engine=tree`) と `ksn build --release`
 //! (退避しない。下りなければ失敗する) の出力が一致することを見る。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -44,7 +47,7 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 
@@ -76,7 +79,7 @@ fn native_path(t: &Tmp) -> PathBuf {
 
 /// `ksn build --release` (退避なし) で実行体を作って走らせ、(終了コード, 標準出力) を返す。
 fn native(t: &Tmp, name: &str) -> (Option<i32>, String) {
-    let cache = std::env::temp_dir().join(format!("ksn_strkeys_cache_{}_{}", std::process::id(), name));
+    let cache = scratch::Scratch::at(format!("ksn_strkeys_cache_{}_{}", std::process::id(), name));
     let b = Command::new(exe()).args(["build", "--release"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     assert!(b.status.success(), "build: {}{}", text(&b.stdout), text(&b.stderr));
@@ -92,7 +95,7 @@ fn asan(t: &Tmp, name: &str, plain: &Output) {
     if std::env::var("KSN_NO_ASAN").is_ok_and(|v| v == "1") {
         return;
     }
-    let cache = std::env::temp_dir().join(format!("ksn_strkeys_asan_cache_{}_{}", std::process::id(), name));
+    let cache = scratch::Scratch::at(format!("ksn_strkeys_asan_cache_{}_{}", std::process::id(), name));
     let args = "-fsanitize=address -fno-omit-frame-pointer -g -O0";
     let b = Command::new(exe()).args(["build", "--release"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).env("KSN_CLANG_ARGS", args).output().unwrap();
     let _ = fs::remove_dir_all(&cache);

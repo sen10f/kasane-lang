@@ -3,6 +3,9 @@
 //! (`ksn build` の debug / release。`--release` でも退避を許さない) の出力が一致することを確かめる。
 
 mod common;
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use common::*;
 
 use std::fs;
@@ -12,7 +15,7 @@ const SRC: &str = include_str!("data/net_more.ksnl");
 /// `ksn build` でネイティブを作って走らせ、標準出力を返す。退避 (バンドル) は失敗とみなす (`--release` でも `--allow-bundle` を付けない)。
 fn native_output(name: &str, release: bool) -> String {
     let t = Tmp::new(name, SRC);
-    let cache = std::env::temp_dir().join(format!("ksn_cache_netmore_{}_{}", std::process::id(), name));
+    let cache = scratch::Scratch::at(format!("ksn_cache_netmore_{}_{}", std::process::id(), name));
     let mut c = std::process::Command::new(exe());
     c.arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
     if release {

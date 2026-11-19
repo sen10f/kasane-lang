@@ -4,6 +4,9 @@
 //! `for (k, v) in m.iter()` の挿入順、`get_mut` で書いた値が残ること。木走査 (`ksn run --engine=tree`) と
 //! `ksn build --release` (退避なし) の出力が一致することを見る。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -35,7 +38,7 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 
@@ -50,7 +53,7 @@ fn same(name: &str, src: &str) -> String {
     assert!(chk.status.success() && text(&chk.stdout).trim().is_empty(), "check: {}{}", text(&chk.stdout), text(&chk.stderr));
     let tree = run(&["run", "--engine=tree"], &t.0);
     assert_eq!(tree.status.code(), Some(0), "tree: {}{}", text(&tree.stdout), text(&tree.stderr));
-    let cache = std::env::temp_dir().join(format!("ksn_mapk2_cache_{}_{}", std::process::id(), name));
+    let cache = scratch::Scratch::at(format!("ksn_mapk2_cache_{}_{}", std::process::id(), name));
     let b = Command::new(exe()).args(["build", "--release"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     assert!(b.status.success(), "ネイティブにならない (退避なし): {}{}", text(&b.stdout), text(&b.stderr));

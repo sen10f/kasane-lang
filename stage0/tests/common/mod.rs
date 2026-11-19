@@ -6,6 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+pub mod scratch;
+pub use scratch::Scratch;
+
 pub const TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[dependencies]\n";
 
 pub fn exe() -> &'static str {
@@ -100,7 +103,7 @@ pub fn strip_ksnh(text: &str) -> String {
 
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 
@@ -306,7 +309,7 @@ pub fn build_native(name: &str, src: &str, release: bool) -> (Tmp, Option<PathBu
 
 pub fn build_native_strict(name: &str, src: &str, release: bool) -> (Tmp, Option<PathBuf>, String) {
     let t = Tmp::new(name, src);
-    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_{}", std::process::id(), name));
+    let cache = Scratch::at(format!("ksn_cache_{}_{}", std::process::id(), name));
     let mut c = Command::new(exe());
     c.args(["build"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
     if release {
@@ -316,7 +319,7 @@ pub fn build_native_strict(name: &str, src: &str, release: bool) -> (Tmp, Option
     let out = text(&o.stdout) + &text(&o.stderr);
     let kind = if release { "release" } else { "debug" };
     let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
-    let _ = fs::remove_dir_all(&cache);
+    drop(cache);
     let found = if p.exists() { Some(p) } else { None };
     (t, found, out)
 }

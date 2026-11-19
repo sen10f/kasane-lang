@@ -4,6 +4,9 @@
 
 #![allow(dead_code, unused_imports)]
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::process::{Command, Output};
 
@@ -26,7 +29,7 @@ fn emit_prog() -> String {
 #[test]
 fn emit_llvm_matches_native_output() {
     let t = Tmp::new("emit_llvm", &emit_prog());
-    let cache = std::env::temp_dir().join(format!("ksn_emit_llvm_{}", std::process::id()));
+    let cache = scratch::Scratch::at(format!("ksn_emit_llvm_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let stdlib = root().join("spec").join("stdlib");
 
