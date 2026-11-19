@@ -386,7 +386,7 @@ impl<'a> Walker<'a> {
                 self.cfg.cur = join;
                 self.keep(&e.ty, srcs)
             }
-            TKind::Closure { params, captures, body } => self.closure(e, params, captures, body),
+            TKind::Closure { params, captures, body, .. } => self.closure(e, params, captures, body),
             TKind::StructLit { fields, .. } => {
                 let es: Vec<&TExpr> = fields.iter().map(|(_, x)| x).collect();
                 let s = self.operands(&es);
