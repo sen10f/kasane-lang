@@ -1299,8 +1299,12 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
         let r = clang_ll(&ll, &tmp, "-O1", None);
         let _ = fs::remove_file(&src);
         if let Err(e) = r {
-            eprintln!("ksn kir: --native: {}", e);
             let _ = fs::remove_file(&tmp);
+            if e.starts_with("clang を起動できない") {
+                eprintln!("ksn kir: --native には clang が必要です ({})", e);
+                return 2;
+            }
+            eprintln!("ksn kir: --native: {}", e);
             return 3;
         }
         if let Err(e) = fs::rename(&tmp, &exe) {
