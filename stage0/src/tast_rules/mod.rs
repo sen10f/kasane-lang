@@ -13,3 +13,4 @@ pub mod effects_conv;
 pub mod discard;
 pub mod exhaustive;
 pub mod mutability;
+pub mod unsafe_calls;
