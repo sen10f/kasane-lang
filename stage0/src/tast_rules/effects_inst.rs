@@ -94,6 +94,42 @@ fn fn_bound<'a>(d: &'a Def, name: &str) -> Vec<&'a V> {
     out
 }
 
+fn bound_effects(d: &Def, name: &str) -> Option<(Vec<String>, Option<bool>)> {
+    for b in fn_bound(d, name) {
+        let targs = items(tel(b, 1));
+        let uses = match targs.get(2) {
+            Some(v) if tag(v) == "effects" => items(tel(v, 1)).iter().map(st).collect(),
+            Some(v) if tag(v) == "named" => {
+                let nm = st(tel(v, 1));
+                if d.generics.iter().any(|g| g.0 == "uses" && g.1 == nm) {
+                    vec![nm]
+                } else {
+                    continue;
+                }
+            }
+            _ => continue,
+        };
+        let may = match targs.get(3) {
+            Some(v) if tag(v) == "panic" => match st(tel(v, 1)).as_str() {
+                "never" => Some(false),
+                "may" => Some(true),
+                _ => None,
+            },
+            Some(v) if tag(v) == "named" => {
+                let nm = st(tel(v, 1));
+                if d.generics.iter().any(|g| g.0 == "panics" && g.1 == nm) {
+                    None
+                } else {
+                    continue;
+                }
+            }
+            _ => continue,
+        };
+        return Some((uses, may));
+    }
+    None
+}
+
 fn gen_var(d: &Def, v: Option<&V>, kind: &str) -> Option<String> {
     let v = v?;
     if tag(v) != "named" || !items(tel(v, 2)).is_empty() {
@@ -391,6 +427,35 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                 return;
             }
             match (&e.kind, &e.res) {
+                // `F: Fn<.., E, P>` の型パラメータの値の呼び出し `f(x)`: 境界が宣言する具体的な効果と `may`。
+                (TKind::Call { callee, .. }, Some(Callee::Local(f))) => {
+                    let Some(pt) = b.params.iter().find(|q| &q.name == f).map(|q| strip_refs(&q.ty)) else { return };
+                    let Ty::Param(pn) = pt else { return };
+                    if let Some((bu, bp)) = bound_effects(d, &pn) {
+                        let uses: Vec<String> = bu.into_iter().filter(|u| !d.generics.iter().any(|g| g.0 == "uses" && &g.1 == u)).collect();
+                        let panics = (bp == Some(true)).then(|| "may".to_string());
+                        ck.report(&format!("the `{}` bound of `{}`", f, pn), &uses, panics.as_deref(), e.line);
+                    }
+                    let _ = callee;
+                }
+                // `f.call(x)`: 境界の `Fn<.., E, P>` の効果の実引数 (変数のままのものは呼び出し元が同じ変数を持つか)。
+                (TKind::Call { callee, .. }, Some(Callee::Unknown)) if matches!(&callee.kind, TKind::Path(s) if s.len() == 2 && s[1].starts_with("call")) => {
+                    let TKind::Path(segs) = &callee.kind else { return };
+                    let Ty::Param(pn) = strip_refs(&callee.ty) else { return };
+                    for g in d.generics.iter().filter(|g| g.0 == "type" && g.1 == pn) {
+                        for bd in items(&g.2) {
+                            let V::L(bx) = bd else { continue };
+                            let tr = st(&bx[0]);
+                            if !tr.starts_with("core.ops.Fn") {
+                                continue;
+                            }
+                            let bt = items(tel(bd, 1));
+                            let uses = bt.get(2).and_then(targ_effs).unwrap_or_default();
+                            let panics = bt.get(3).and_then(targ_panic);
+                            ck.report(&format!("{}.{}", tr, segs[1]), &uses, panics.as_deref(), e.line);
+                        }
+                    }
+                }
                 (TKind::Other { name: "For", children }, _) => {
                     if let Some(it) = children.first() {
                         ck.for_next(&it.ty, e.line);
