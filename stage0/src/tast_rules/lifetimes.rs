@@ -1178,11 +1178,6 @@ impl<'a> W<'a> {
     fn end_scope(&mut self, mut tail: Val) -> Val {
         let declared = self.scopes.pop().unwrap_or_default();
         let dead: HashSet<(String, u32)> = declared.iter().filter_map(|n| self.env.vars.get(n).map(|v| (n.clone(), v.decl))).collect();
-        if std::env::var_os("KSN_DEBUG_LT").is_some() {
-            for (k, v) in &self.env.vars {
-                eprintln!("end_scope dead={:?} var {} carries={} val={:?}", dead, k, v.carries, v.val.loans());
-            }
-        }
         for n in &declared {
             self.env.vars.remove(n);
         }
@@ -1251,6 +1246,12 @@ impl<'a> W<'a> {
         let target_is_ref = var.is_ref;
         let whole = direct && matches!(&place.kind, TKind::Path(s) if s.len() == 1);
         if whole && !through_ref {
+            // 変数そのものへの代入も、それまでの値の使用 (尽きた借用を持てば E3010)。
+            self.use_var(&n, line);
+            // ループの中で一時値の借用を外側のスコープの束縛へ入れるのは、一時値が尽きた後も使われる (E3010 を代入の行で出す)。
+            if !self.loops.is_empty() && var.depth < self.scopes.len() && v.loans().iter().any(|(l, _)| *l == Loan::Temp) {
+                self.diag("E3010", format!("use of `{}` borrows `$temp` which does not live long enough", n), line);
+            }
             let nv = if var.carries { v } else { Val::default() };
             if let Some(x) = self.env.vars.get_mut(&n) {
                 x.val = nv.with_line(line);
@@ -1443,12 +1444,15 @@ impl<'a> W<'a> {
             return all(avs);
         }
         // 実引数が仮引数より参照の段数が多いときは、自動参照外しで外側の借用を落とす (`p.trim()` の `p: &&str`)。
+        // 仮引数が型パラメータを含むときは段数を合わせない (`&mut r` の `r: &str` を `&mut T` へ渡すとき `T = &str` で、外側の借用は落とさない)。
         let adj: Vec<Arg> = avs
             .iter()
             .zip(&ps)
             .map(|(a, pt)| {
                 let n = depth(&a.ty).saturating_sub(depth(pt));
-                if n == 0 || matches!(pt, Ty::Param(_) | Ty::Unknown) {
+                let mut mp = BTreeSet::new();
+                mentions_param(pt, &mut mp);
+                if n == 0 || !mp.is_empty() || matches!(pt, Ty::Param(_) | Ty::Unknown) {
                     return a.clone();
                 }
                 let same = a.full == a.inner;
@@ -1471,9 +1475,6 @@ impl<'a> W<'a> {
                 (matches!(pt.outer_region(), Some(Region::Static)), m.iter().any(|x| bounded.contains(x)))
             };
             if is_static_ref || is_bound {
-                if std::env::var_os("KSN_DEBUG_LT").is_some() {
-                    eprintln!("E2037 {} arg {} loans {:?} ty {:?}", d.name, k, a.full.loans(), avs[k].ty);
-                }
                 let what = if is_static_ref { "(`&'static`)" } else { "(a `'static` bound)" };
                 self.diag(
                     "E2037",
