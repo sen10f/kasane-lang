@@ -262,7 +262,7 @@ fn raw_fn(ty: Ty, fat: Ty, name: &str) -> Func {
 }
 
 /// `ksn.fmt.append(h, ptr, len)`: 文字列 `h` (`{ptr, len, cap}`) の末尾へ `len` バイトを書く (足りなければ広げる)。
-fn append_fn(fat: Ty) -> Func {
+pub(crate) fn append_fn(fat: Ty) -> Func {
     let mut b = Fb::new(&[Ty::Ptr, Ty::Ptr, Ty::Usize], fat);
     let (h, src, n) = (0 as VId, 1 as VId, 2 as VId);
     let len = b.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
