@@ -1,0 +1,164 @@
+fn bench.column_widths(rows: &alloc.vec.Vec<alloc.vec.Vec<alloc.string.String, std.alloc.System>, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut widths = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ncols = 0usize
+    let mut i = 0usize
+    while i < rows.len() {
+        match rows.get(i) {
+            Some(row) => {
+                if row.len() > ncols {
+                    ncols = row.len()
+                }
+                ()
+            }
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let mut j = 0usize
+    while j < ncols {
+        let mut w = 0usize
+        let mut r = 0usize
+        while r < rows.len() {
+            match rows.get(r) {
+                Some(row) => {
+                    match row.get(j) {
+                        Some(cell) => {
+                            if cell.len() > w {
+                                w = cell.len()
+                            }
+                            ()
+                        }
+                        None => ()
+                    }
+                    ()
+                }
+                None => break
+            }
+            r = r.wrapping_add(1usize)
+        }
+        widths.push(w)?
+        j = j.wrapping_add(1usize)
+    }
+    Ok(widths)
+end bench.column_widths
+
+fn bench.copy_row(row: &alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> Result<alloc.vec.Vec<alloc.string.String, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < row.len() {
+        match row.get(i) {
+            Some(c) => out.push(c.try_clone()?)?
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(out)
+end bench.copy_row
+
+fn bench.dashes(n: usize) -> Result<alloc.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < n {
+        s.push_str("-")?
+        i = i.wrapping_add(1usize)
+    }
+    Ok(s)
+end bench.dashes
+
+fn bench.mkrow(cells: &[&str]) -> Result<alloc.vec.Vec<alloc.string.String, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut row = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < cells.len() {
+        match cells.get(i) {
+            Some(c) => row.push(alloc.string.String.from_str(std.alloc.SYSTEM, *c)?)?
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(row)
+end bench.mkrow
+
+fn bench.pad_right(text: &str, width: usize) -> Result<alloc.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.push_str(text)?
+    while s.len() < width {
+        s.push_str(" ")?
+    }
+    Ok(s)
+end bench.pad_right
+
+fn bench.render_row(cells: &alloc.vec.Vec<alloc.string.String, std.alloc.System>, widths: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str("| ")?
+    let mut j = 0usize
+    while j < widths.len() {
+        if j > 0usize {
+            line.push_str(" | ")?
+        }
+        let w = match widths.get(j) {
+            Some(w) => *w
+            None => 0usize
+        }
+        let text = match cells.get(j) {
+            Some(c) => c.as_str()
+            None => ""
+        }
+        let padded = bench.pad_right(text, w)?
+        line.push_str(padded.as_str())?
+        j = j.wrapping_add(1usize)
+    }
+    line.push_str(" |")?
+    Ok(line)
+end bench.render_row
+
+fn bench.separator(widths: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str("+")?
+    let mut j = 0usize
+    while j < widths.len() {
+        let w = match widths.get(j) {
+            Some(w) => *w
+            None => 0usize
+        }
+        let d = bench.dashes(w.wrapping_add(2usize))?
+        line.push_str(d.as_str())?
+        line.push_str("+")?
+        j = j.wrapping_add(1usize)
+    }
+    Ok(line)
+end bench.separator
+
+fn bench.table(headers: &alloc.vec.Vec<alloc.string.String, std.alloc.System>, rows: &alloc.vec.Vec<alloc.vec.Vec<alloc.string.String, std.alloc.System>, std.alloc.System>) -> Result<alloc.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut all = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    all.push(bench.copy_row(headers)?)?
+    let mut i = 0usize
+    while i < rows.len() {
+        match rows.get(i) {
+            Some(row) => all.push(bench.copy_row(row)?)?
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let widths = bench.column_widths(&all)?
+    let header = bench.render_row(headers, &widths)?
+    let sep = bench.separator(&widths)?
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str(header.as_str())?
+    out.push_str("\n")?
+    out.push_str(sep.as_str())?
+    let mut k = 0usize
+    while k < rows.len() {
+        out.push_str("\n")?
+        match rows.get(k) {
+            Some(row) => {
+                let line = bench.render_row(row, &widths)?
+                out.push_str(line.as_str())?
+                ()
+            }
+            None => break
+        }
+        k = k.wrapping_add(1usize)
+    }
+    Ok(out)
+end bench.table
+

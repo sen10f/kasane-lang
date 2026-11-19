@@ -1,7 +1,7 @@
 static t.N: usize = 4294967296
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let x: usize = t.N
+    let x = t.N
     core.mem.drop(x)
     Ok(())
 end t.main

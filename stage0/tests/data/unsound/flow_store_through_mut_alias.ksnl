@@ -2,7 +2,7 @@ type t.H['a]
     r: &'a str
 end t.H
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let mut h = t.H { r: "x" }
     {
         let s = t.mk()

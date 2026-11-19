@@ -53,7 +53,7 @@ const CONTAINERS: &[&str] = &[
 const RC_STD: &[(&str, &str)] =
     &[("slice", "Iter"), ("str", "Chars"), ("str", "Split"), ("collections", "HashMapIter"), ("sync", "MutexGuard")];
 /// 値を保存・送る関数・メソッドの名前 (クロージャを渡すと E3060)。
-const STORE_FNS: &[&str] = &["push", "insert", "push_back", "push_front", "send", "try_send", "spawn", "spawn_local", "into_dyn", "set", "put"];
+const STORE_FNS: &[&str] = &["push", "insert", "push_back", "push_front", "send", "try_send", "spawn", "spawn_deep", "spawn_local", "into_dyn", "set", "put"];
 const STORE_NEW: &[&str] = &["Box", "Rc", "Arc", "Mutex", "RwLock", "Cell", "RefCell"];
 
 fn is_op(t: &Tok, s: &str) -> bool {
@@ -187,7 +187,7 @@ fn v_mentions(v: &V, names: &[String]) -> bool {
 /// 引数の型 `&T` のうち、参照の先が `str` / スライス / 配列でないもの (それらは `'static` でありうる)。
 fn strong_ref_v(v: &V) -> bool {
     let V::L(xs) = v else { return false };
-    if !matches!(xs.first(), Some(V::S(k)) if k == "ref") || xs.len() != 3 {
+    if !matches!(xs.first(), Some(V::S(k)) if k == "ref") || xs.len() < 3 {
         return false;
     }
     match &xs[2] {
@@ -462,7 +462,7 @@ impl<'a> Scan<'a> {
             .filter(|((d, l, nm), _)| *d == self.di && nm == v && crate::parser::unpack_pos(*l).0 < line)
             .max_by_key(|((_, l, _), _)| crate::parser::unpack_pos(*l).0);
         match last_let {
-            Some((_, ty)) => matches!(ty, Ty::Ref(_, inner) if !matches!(**inner, Ty::Prim(ref s) if s == "str") && !matches!(**inner, Ty::Slice(_) | Ty::Array(_, _))),
+            Some((_, ty)) => matches!(ty, Ty::Ref(_, inner, _) if !matches!(**inner, Ty::Prim(ref s) if s == "str") && !matches!(**inner, Ty::Slice(_) | Ty::Array(_, _))),
             None => params.iter().any(|(n, ty)| n == v && strong_ref_v(ty)),
         }
     }
@@ -514,9 +514,9 @@ pub fn inferred_container_ref(ty: &Ty, user_generic: &HashSet<String>) -> Option
     /// 戻り値の真偽: Some(weak)。weak = 参照の先が `str` / スライス / 配列だけ (リテラルなら `'static` でありうる)。
     fn has_ref(ty: &Ty) -> Option<bool> {
         match ty {
-            Ty::Ref(_, inner) => Some(matches!(**inner, Ty::Prim(ref s) if s == "str") || matches!(**inner, Ty::Slice(_) | Ty::Array(_, _))),
+            Ty::Ref(_, inner, _) => Some(matches!(**inner, Ty::Prim(ref s) if s == "str") || matches!(**inner, Ty::Slice(_) | Ty::Array(_, _))),
             Ty::Tuple(xs) => xs.iter().filter_map(has_ref).fold(None, |a, w| Some(a.unwrap_or(true) && w)),
-            Ty::Named(n, args) => {
+            Ty::Named(n, args, _) => {
                 let last = n.rsplit('.').next().unwrap_or("");
                 let segs: Vec<&str> = n.split('.').collect();
                 if segs.len() >= 2 && RC_STD.iter().any(|(m, k)| segs[segs.len() - 2] == *m && last == *k) {
@@ -529,7 +529,7 @@ pub fn inferred_container_ref(ty: &Ty, user_generic: &HashSet<String>) -> Option
         }
     }
     match ty {
-        Ty::Named(n, args) => {
+        Ty::Named(n, args, _) => {
             let last = n.rsplit('.').next().unwrap_or("");
             if CONTAINERS.contains(&last) || user_generic.contains(last) {
                 if let Some(w) = args.iter().filter_map(has_ref).fold(None, |a, w| Some(a.unwrap_or(true) && w)) {
@@ -540,7 +540,7 @@ pub fn inferred_container_ref(ty: &Ty, user_generic: &HashSet<String>) -> Option
             args.iter().find_map(|a| inferred_container_ref(a, user_generic))
         }
         Ty::Tuple(xs) => xs.iter().find_map(|a| inferred_container_ref(a, user_generic)),
-        Ty::Ref(_, x) | Ty::Array(x, _) | Ty::Slice(x) => inferred_container_ref(x, user_generic),
+        Ty::Ref(_, x, _) | Ty::Array(x, _) | Ty::Slice(x) => inferred_container_ref(x, user_generic),
         _ => None,
     }
 }

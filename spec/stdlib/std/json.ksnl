@@ -185,7 +185,7 @@ fn std.json.Value.index(self: &std.json.Value) -> usize uses [] panics never pub
     self.at
 end std.json.Value.index
 
-fn std.json.arr_at(doc: &std.json.Doc, at: usize) -> Option<(usize, usize)>
+fn std.json.arr_at(doc: &std.json.Doc, at: usize) -> Option<(usize, usize)> uses [] panics never
     match doc.nodes.as_slice().get(at) {
         Some(std.json.Node.Array(first, count)) => Some((*first, *count))
         Some(std.json.Node.Bool(_b)) => None
@@ -197,7 +197,7 @@ fn std.json.arr_at(doc: &std.json.Doc, at: usize) -> Option<(usize, usize)>
     }
 end std.json.arr_at
 
-fn std.json.bool_at(doc: &std.json.Doc, at: usize) -> Option<bool>
+fn std.json.bool_at(doc: &std.json.Doc, at: usize) -> Option<bool> uses [] panics never
     match doc.nodes.as_slice().get(at) {
         Some(std.json.Node.Bool(b)) => Some(*b)
         Some(std.json.Node.Array(_a, _b)) => None
@@ -209,7 +209,7 @@ fn std.json.bool_at(doc: &std.json.Doc, at: usize) -> Option<bool>
     }
 end std.json.bool_at
 
-fn std.json.char_of(code: u32) -> char
+fn std.json.char_of(code: u32) -> char uses [] panics never
     char.try_from_u32(code).unwrap_or('?')
 end std.json.char_of
 
@@ -380,7 +380,7 @@ fn std.json.decode_variant(doc: &std.json.Doc, v: std.json.Value) -> Result<(&st
     }
 end std.json.decode_variant
 
-fn std.json.digits(src: &[u8], pos: usize) -> usize
+fn std.json.digits(src: &[u8], pos: usize) -> usize uses [] panics never
     let mut i = pos
     loop {
         match src.get(i) {
@@ -397,7 +397,7 @@ fn std.json.digits(src: &[u8], pos: usize) -> usize
     i
 end std.json.digits
 
-fn std.json.flush(doc: &mut std.json.Doc, items: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), std.json.Error>
+fn std.json.flush(doc: &mut std.json.Doc, items: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), std.json.Error> uses [alloc] panics never
     let all = items.as_slice()
     for k in core.iter.range(0usize, all.len()) {
         match all.get(k) {
@@ -408,7 +408,7 @@ fn std.json.flush(doc: &mut std.json.Doc, items: &alloc.vec.Vec<usize, std.alloc
     Ok(())
 end std.json.flush
 
-fn std.json.hex4(src: &[u8], pos: usize) -> Result<u32, std.json.Error>
+fn std.json.hex4(src: &[u8], pos: usize) -> Result<u32, std.json.Error> uses [] panics never
     let mut value = 0u32
     for k in core.iter.range(0usize, 4usize) {
         match src.get(pos.wrapping_add(k)) {
@@ -426,7 +426,7 @@ fn std.json.hex4(src: &[u8], pos: usize) -> Result<u32, std.json.Error>
     Ok(value)
 end std.json.hex4
 
-fn std.json.hex_char(n: u32) -> char
+fn std.json.hex_char(n: u32) -> char uses [] panics never
     let mut code = n.wrapping_add(87u32)
     if n < 10u32 {
         code = n.wrapping_add(48u32)
@@ -434,7 +434,7 @@ fn std.json.hex_char(n: u32) -> char
     std.json.char_of(code)
 end std.json.hex_char
 
-fn std.json.hex_value(c: u8) -> Option<u32>
+fn std.json.hex_value(c: u8) -> Option<u32> uses [] panics never
     if c >= b'0' && c <= b'9' {
         return Some(u32.from_u8(c.wrapping_sub(b'0')))
     }
@@ -471,7 +471,7 @@ fn std.json.kind_at(doc: &std.json.Doc, v: std.json.Value) -> std.json.Kind uses
     }
 end std.json.kind_at
 
-fn std.json.link_at(doc: &std.json.Doc, slot: usize) -> Result<usize, std.json.Error>
+fn std.json.link_at(doc: &std.json.Doc, slot: usize) -> Result<usize, std.json.Error> uses [] panics never
     match doc.links.as_slice().get(slot) {
         Some(n) => Ok(*n)
         None => Err(std.json.Error.Eof)
@@ -494,7 +494,7 @@ fn std.json.new_text() -> alloc.string.String<std.alloc.System> uses [] panics n
     alloc.string.String.new(std.alloc.SYSTEM)
 end std.json.new_text
 
-fn std.json.num_at(doc: &std.json.Doc, at: usize) -> Option<&str>
+fn std.json.num_at(doc: &std.json.Doc, at: usize) -> Option<&str> uses [] panics never
     match doc.nodes.as_slice().get(at) {
         Some(std.json.Node.Number(s)) => Some(s.as_str())
         Some(std.json.Node.Array(_a, _b)) => None
@@ -506,14 +506,14 @@ fn std.json.num_at(doc: &std.json.Doc, at: usize) -> Option<&str>
     }
 end std.json.num_at
 
-fn std.json.number_text(doc: &std.json.Doc, v: std.json.Value) -> Result<&str, std.json.Error>
+fn std.json.number_text(doc: &std.json.Doc, v: std.json.Value) -> Result<&str, std.json.Error> uses [] panics never
     match std.json.num_at(doc, v.at) {
         Some(s) => Ok(s)
         None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))
     }
 end std.json.number_text
 
-fn std.json.obj_at(doc: &std.json.Doc, at: usize) -> Option<(usize, usize)>
+fn std.json.obj_at(doc: &std.json.Doc, at: usize) -> Option<(usize, usize)> uses [] panics never
     match doc.nodes.as_slice().get(at) {
         Some(std.json.Node.Object(first, pairs)) => Some((*first, *pairs))
         Some(std.json.Node.Array(_a, _b)) => None
@@ -567,7 +567,7 @@ fn std.json.parse_array(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: u
     Ok((at, close.wrapping_add(1usize)))
 end std.json.parse_array
 
-fn std.json.parse_escape(src: &[u8], pos: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<usize, std.json.Error>
+fn std.json.parse_escape(src: &[u8], pos: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<usize, std.json.Error> uses [alloc] panics never
     let next = pos.wrapping_add(2usize)
     match src.get(pos.wrapping_add(1usize)) {
         None => Err(std.json.Error.Eof)
@@ -608,7 +608,7 @@ fn std.json.parse_escape(src: &[u8], pos: usize, out: &mut alloc.string.String<s
     }
 end std.json.parse_escape
 
-fn std.json.parse_literal(doc: &mut std.json.Doc, src: &[u8], pos: usize, word: &str, node: std.json.Node) -> Result<(usize, usize), std.json.Error>
+fn std.json.parse_literal(doc: &mut std.json.Doc, src: &[u8], pos: usize, word: &str, node: std.json.Node) -> Result<(usize, usize), std.json.Error> uses [alloc] panics never
     let want = word.as_bytes()
     let stop = pos.wrapping_add(want.len())
     match src.sub(pos, stop) {
@@ -624,7 +624,7 @@ fn std.json.parse_literal(doc: &mut std.json.Doc, src: &[u8], pos: usize, word: 
     }
 end std.json.parse_literal
 
-fn std.json.parse_number(doc: &mut std.json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), std.json.Error>
+fn std.json.parse_number(doc: &mut std.json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), std.json.Error> uses [alloc] panics never
     let mut i = pos
     if src.get(i) == Some(&b'-') {
         i = i.wrapping_add(1usize)
@@ -704,7 +704,7 @@ fn std.json.parse_object(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: 
     Ok((at, close.wrapping_add(1usize)))
 end std.json.parse_object
 
-fn std.json.parse_string(src: &[u8], pos: usize) -> Result<(alloc.string.String<std.alloc.System>, usize), std.json.Error>
+fn std.json.parse_string(src: &[u8], pos: usize) -> Result<(alloc.string.String<std.alloc.System>, usize), std.json.Error> uses [alloc] panics never
     let mut out = std.json.new_text()
     let mut i = pos.wrapping_add(1usize)
     let mut run = i
@@ -729,7 +729,7 @@ fn std.json.parse_string(src: &[u8], pos: usize) -> Result<(alloc.string.String<
     Ok((out, i.wrapping_add(1usize)))
 end std.json.parse_string
 
-fn std.json.parse_unicode(src: &[u8], pos: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<usize, std.json.Error>
+fn std.json.parse_unicode(src: &[u8], pos: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<usize, std.json.Error> uses [alloc] panics never
     let first = std.json.hex4(src, pos.wrapping_add(2usize))?
     let mut code = first
     let mut next = pos.wrapping_add(6usize)
@@ -777,14 +777,14 @@ fn std.json.parse_value(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: u
     }
 end std.json.parse_value
 
-fn std.json.push_control(out: &mut alloc.string.String<std.alloc.System>, unit: u32) -> Result<(), alloc.alloc.AllocError>
+fn std.json.push_control(out: &mut alloc.string.String<std.alloc.System>, unit: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     out.push_str("\\u00")?
     out.push(std.json.hex_char(unit.wrapping_shr(4u32) & 15u32))?
     out.push(std.json.hex_char(unit & 15u32))?
     Ok(())
 end std.json.push_control
 
-fn std.json.push_node(doc: &mut std.json.Doc, node: std.json.Node) -> Result<usize, std.json.Error>
+fn std.json.push_node(doc: &mut std.json.Doc, node: std.json.Node) -> Result<usize, std.json.Error> uses [alloc] panics never
     let at = doc.nodes.len()
     doc.nodes.push(node)?
     Ok(at)
@@ -813,7 +813,7 @@ fn std.json.push_quoted(out: &mut alloc.string.String<std.alloc.System>, text: &
     Ok(())
 end std.json.push_quoted
 
-fn std.json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], from: usize, to: usize) -> Result<(), std.json.Error>
+fn std.json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], from: usize, to: usize) -> Result<(), std.json.Error> uses [alloc] panics never
     match src.sub(from, to) {
         Some(bytes) => {
             match core.str.from_utf8(bytes) {
@@ -828,7 +828,7 @@ fn std.json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u
     }
 end std.json.push_range
 
-fn std.json.skip_ws(src: &[u8], pos: usize) -> usize
+fn std.json.skip_ws(src: &[u8], pos: usize) -> usize uses [] panics never
     let mut i = pos
     loop {
         match src.get(i) {
@@ -845,14 +845,14 @@ fn std.json.skip_ws(src: &[u8], pos: usize) -> usize
     i
 end std.json.skip_ws
 
-fn std.json.str_at(doc: &std.json.Doc, at: usize) -> Result<&str, std.json.Error>
+fn std.json.str_at(doc: &std.json.Doc, at: usize) -> Result<&str, std.json.Error> uses [] panics never
     match std.json.text_at(doc, at) {
         Some(s) => Ok(s)
         None => Err(std.json.Error.TypeMismatch(std.json.Kind.Str))
     }
 end std.json.str_at
 
-fn std.json.text_at(doc: &std.json.Doc, at: usize) -> Option<&str>
+fn std.json.text_at(doc: &std.json.Doc, at: usize) -> Option<&str> uses [] panics never
     match doc.nodes.as_slice().get(at) {
         Some(std.json.Node.Str(s)) => Some(s.as_str())
         Some(std.json.Node.Array(_a, _b)) => None

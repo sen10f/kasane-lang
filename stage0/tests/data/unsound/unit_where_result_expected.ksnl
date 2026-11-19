@@ -1,12 +1,12 @@
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     t.unit(true)
 end t.main
 
-fn t.say() -> () uses [alloc, io.console] panics may
+fn t.say() -> () uses [io.console] panics never
     core.mem.drop(std.io.print_line("x"))
 end t.say
 
-fn t.unit(b: bool) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.unit(b: bool) -> Result<(), std.io.Error> uses [io.console] panics never
     if b {
         t.say()
     } else {

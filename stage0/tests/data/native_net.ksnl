@@ -1,11 +1,11 @@
-fn t.addr(port: u16) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+fn t.addr(port: u16) -> alloc.string.String<std.alloc.System> uses [alloc] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str("127.0.0.1:"))
     core.mem.drop(s.push_u64(u64.from_u16(port)))
     s
 end t.addr
 
-fn t.fail(code: i32) -> std.io.Error
+fn t.fail(code: i32) -> std.io.Error uses [] panics never
     std.io.Error { kind: std.io.ErrorKind.Other, code: code }
 end t.fail
 
@@ -130,7 +130,7 @@ fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] p
     Ok(())
 end t.round_trip
 
-fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics may
+fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))

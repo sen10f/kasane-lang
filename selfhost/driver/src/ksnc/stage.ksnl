@@ -114,7 +114,7 @@ fn ksnc.stage.num(n: usize) -> alloc.string.String<std.alloc.System> uses [alloc
     s
 end ksnc.stage.num
 
-fn ksnc.stage.text(s: &str) -> Result<(), ksnc.Failure> uses [io.console] panics may pub
+fn ksnc.stage.text(s: &str) -> Result<(), ksnc.Failure> uses [io.console] panics never pub
     let t = s.trim_end()
     if t != "" {
         std.io.print_line(t)?

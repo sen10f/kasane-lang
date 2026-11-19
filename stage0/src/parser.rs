@@ -21,7 +21,11 @@ impl V {
             V::S(s) | V::N(s) => s.clone(),
             V::B(b) => (if *b { "true" } else { "false" }).to_string(),
             V::Nil => "-".to_string(),
-            V::L(xs) => format!("[{}]", xs.iter().map(|x| x.dump()).collect::<Vec<_>>().join(" ")),
+            // `ref` 型の 4 つ目 (`&'a T` の `'a`、設計 9 章) は型の同一性に入れない: 比べる・名前に使う `dump` には出さない。
+            V::L(xs) => {
+                let xs = if xs.len() == 4 && matches!(&xs[0], V::S(k) if k == "ref") { &xs[..3] } else { &xs[..] };
+                format!("[{}]", xs.iter().map(|x| x.dump()).collect::<Vec<_>>().join(" "))
+            }
             V::Node(n, fs, _, _) => {
                 let mut s = format!("({}", n);
                 let fs = if *n == "Lit" && matches!(fs.first(), Some(V::S(k)) if k == "float") { &fs[..2] } else { &fs[..] };
@@ -506,7 +510,10 @@ impl Parser {
     }
 
     pub(crate) fn ref_rest(&mut self) -> R<V> {
+        // 領域 (`&'a T` の `'a`) は 4 つ目の要素に残す (なければ `Nil`)。型の見た目・等しさには入れない (設計 9 章)。
+        let mut life = V::Nil;
         if self.cur().kind == "life" {
+            life = V::S(self.cur().text.clone());
             self.i += 1;
         }
         let m = self.accept_kw("mut");
@@ -516,17 +523,17 @@ impl Parser {
             if self.accept_op(";") {
                 let n = self.const_expr()?;
                 self.expect_op("]")?;
-                return Ok(V::L(vec![s("ref"), V::B(m), V::L(vec![s("array"), t, n])]));
+                return Ok(V::L(vec![s("ref"), V::B(m), V::L(vec![s("array"), t, n]), life]));
             }
             self.expect_op("]")?;
-            return Ok(V::L(vec![s("ref"), V::B(m), V::L(vec![s("slice"), t])]));
+            return Ok(V::L(vec![s("ref"), V::B(m), V::L(vec![s("slice"), t]), life]));
         }
         if self.cur().kind == "prim" && self.cur().text == "str" {
             self.i += 1;
-            return Ok(V::L(vec![s("ref"), V::B(m), V::L(vec![s("prim"), s("str")])]));
+            return Ok(V::L(vec![s("ref"), V::B(m), V::L(vec![s("prim"), s("str")]), life]));
         }
         let t = self.ty()?;
-        Ok(V::L(vec![s("ref"), V::B(m), t]))
+        Ok(V::L(vec![s("ref"), V::B(m), t, life]))
     }
 
     pub(crate) fn params(&mut self) -> R<V> {
@@ -1027,12 +1034,20 @@ impl Parser {
             let m = self.accept_kw("mut");
             let pat = self.pattern()?;
             let mut ty = V::Nil;
+            // 注釈に寿命 (`'a`・`'static`) があるか。型の木には残らない (`ref_rest` が読み捨てる) ので、5 つ目の欄に印を付ける (D17)。
+            let mut ann_life = false;
             if self.accept_op(":") {
+                let start = self.i;
                 ty = self.ty()?;
+                ann_life = self.t[start..self.i].iter().any(|t| t.kind == "life");
             }
             self.expect_op("=")?;
             let e = self.expr(false)?;
-            return Ok(ndl(ln, "Let", vec![pat, V::B(m), ty, e]));
+            let mut fs = vec![pat, V::B(m), ty, e];
+            if ann_life {
+                fs.push(V::B(true));
+            }
+            return Ok(ndl(ln, "Let", fs));
         }
         let e = self.expr(false)?;
         if self.is_op("=") {

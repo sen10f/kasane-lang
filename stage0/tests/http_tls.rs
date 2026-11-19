@@ -160,6 +160,20 @@ impl Server {
         }
         self.lines.clone()
     }
+
+    /// `pred` を満たす行が `n` 行そろうまで (最大 10 秒) 待ってからログを返す。負荷が高いと、最後の要求のログの行が届く前に読んでしまうため。
+    fn logs_until(&mut self, n: usize, pred: impl Fn(&str) -> bool) -> Vec<String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let got = self.logs();
+            if got.iter().filter(|l| pred(l)).count() >= n || std::time::Instant::now() >= deadline {
+                return got;
+            }
+            if let Ok(l) = self.rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                self.lines.push(l);
+            }
+        }
+    }
 }
 
 impl Drop for Server {
@@ -280,7 +294,7 @@ fn https_app_keeps_one_connection_for_several_requests() {
     assert!(post.status.success(), "{}", text(&post.stderr));
     assert_eq!(text(&post.stdout), "{\"code\":\"1001\",\"url\":\"http://b.test/\"}");
     // ログは 1 行 1 件の JSON。要求ごとに `request` があり、接続を保った要求の `keep_alive` は "1"。
-    let logs = server.logs();
+    let logs = server.logs_until(5, |l| l.contains("\"msg\":\"request\""));
     let requests: Vec<&String> = logs.iter().filter(|l| l.contains("\"msg\":\"request\"")).collect();
     assert!(requests.len() >= 5, "要求のログが足りない: {:?}", logs);
     assert!(requests.iter().all(|l| l.starts_with('{') && l.contains("\"level\":\"info\"")), "{:?}", requests);

@@ -18,7 +18,7 @@ fn check(name: &str, src: &str) -> String {
 }
 
 const SHOW: &str = r#"
-fn t.line(s: &alloc.string.String<std.alloc.System>) -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.line(s: &alloc.string.String<std.alloc.System>) -> Result<(), std.io.Error> uses [io.console] panics never
     std.io.print_line(s.as_str())?
     Ok(())
 end t.line
@@ -97,7 +97,7 @@ fn native_range_local_fold_count_and_option_combinators() {
     let r2 = core.iter.range(0u8, n)
     n = 200u8
     let cnt = core.iter.count(r2)
-    let o: Option<i32> = Some(7i32)
+    let o = Some(7i32)
     let mo = core.option.Option.map(o, fn(x: i32) -> i32 capture [] {{
         x.wrapping_mul(2)
     }})
@@ -107,7 +107,7 @@ fn native_range_local_fold_count_and_option_combinators() {
         x.wrapping_mul(2)
     }})
     let m2 = core.option.Option.unwrap_or(mz, -1i32)
-    let big: Option<i32> = Some(2147483647i32)
+    let big = Some(2147483647i32)
     let ab = core.option.Option.and_then(big, fn(x: i32) -> Option<i32> capture [] {{
         if x > 5i32 {{
             return None
@@ -115,7 +115,7 @@ fn native_range_local_fold_count_and_option_combinators() {
         Some(x)
     }})
     let a1 = core.option.Option.unwrap_or(ab, -5i32)
-    let lt: Option<i32> = Some(3i32)
+    let lt = Some(3i32)
     let al = core.option.Option.and_then(lt, fn(x: i32) -> Option<i32> capture [] {{
         Some(x.wrapping_add(1i32))
     }})

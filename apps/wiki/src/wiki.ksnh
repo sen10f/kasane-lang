@@ -20,7 +20,7 @@ end wiki.demo
 
 // ウィキのエントリポイント。引数なしでデモ（自己接続テスト）を実行し、
 // 引数がある場合はアドレスとデータディレクトリを指定してサーバを起動する。
-fn wiki.main() -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, thread, time] panics may
+fn wiki.main() -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, time] panics never
     if std.env.arg_count() == 0usize {
         return wiki.demo()
     }
@@ -58,7 +58,7 @@ fn wiki.remove_dir_all(path: &str) -> Result<(), wiki.error.Error> uses [alloc, 
 end wiki.remove_dir_all
 
 // CLI: アドレスとデータディレクトリを受け取ってサーバを起動する。
-fn wiki.serve_cli() -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, thread, time] panics may
+fn wiki.serve_cli() -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, time] panics never
     let address = match std.env.arg(0usize) {
         Some(a) => a
         None => return Err(wiki.error.Error.BadRequest)

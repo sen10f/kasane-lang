@@ -1,0 +1,3 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never depth 10000001
+    Ok(())
+end t.main

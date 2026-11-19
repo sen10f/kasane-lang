@@ -1,0 +1,9 @@
+fn t.main() -> u32 uses [] panics never
+    let o: Option<u32> = None
+    let r: Result<u32, u8> = Ok(1u32)
+    let v = o.unwrap_or(2u32)
+    match r {
+        Ok(x) => x.wrapping_add(v)
+        Err(_) => v
+    }
+end t.main

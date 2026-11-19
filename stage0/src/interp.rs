@@ -50,6 +50,8 @@ fn stack_exhausted() -> bool {
 pub struct Interp {
     pub p: Rc<Program>,
     pub depth: usize,
+    /// 呼び出しの深さの上限 (今走っているスレッド / タスクの。主スレッドは入口の `depth M`)。
+    pub max_depth: usize,
     /// 評価した式の数 (定数の評価の上限のため。`step_limit` が `Some` のときだけ数える)
     pub steps: u64,
     /// 評価ステップの上限 (仕様 4.1)。`None` は上限なし (実行時)。
@@ -230,6 +232,7 @@ impl Interp {
         Interp {
             p,
             depth: 0,
+            max_depth: crate::kir_exec::MAX_DEPTH,
             steps: 0,
             step_limit: None,
             const_cache: HashMap::new(),
@@ -287,10 +290,16 @@ impl Interp {
         if tracing {
             self.dbg_thread_enter(self.threads.iter().position(|x| Rc::ptr_eq(x, t)).unwrap_or(0));
         }
+        // スレッドの深さは、そのスレッドの根から数える (上限はスレッドごと。呼んだ側の深さとは別)。
+        let (saved_depth, saved_max) = (self.depth, self.max_depth);
+        self.depth = 0;
+        self.max_depth = t.depth;
         let r = match body {
             Some(b) => self.call_value(&b, vec![]),
             None => Ok(Val::Unit),
         };
+        self.depth = saved_depth;
+        self.max_depth = saved_max;
         if tracing {
             self.dbg_thread_exit();
         }
@@ -455,7 +464,7 @@ impl Interp {
             self.dbg_guard_def(d)?;
         }
         self.depth += 1;
-        if self.depth > crate::kir_exec::MAX_DEPTH || stack_exhausted() {
+        if self.depth > self.max_depth || stack_exhausted() {
             eprintln!("stack overflow");
             return Err(Ctl::Exit(102));
         }
@@ -2015,7 +2024,38 @@ impl Interp {
     }
 
     // ------------------------------------------------------------ 実行
+    /// 木走査の呼び出し 1 回あたりの Rust のスタックの見積もり (主スレッド 4 GiB ÷ 既定の深さ 100000 ≒ 40 KiB)。
+    /// 入口の `depth M` が既定より大きいときの別スレッドのスタックの大きさ (`M × この値`) に使う。
+    const FRAME_BYTES: usize = 40 << 10;
+
     pub fn run_entry(&mut self, di: usize) -> i32 {
+        if let Some(m) = self.def(di).depth {
+            self.max_depth = (m as usize).clamp(1, crate::kir_exec::MAX_DEPTH_LIMIT);
+        }
+        if self.max_depth <= crate::kir_exec::MAX_DEPTH {
+            return self.run_entry_here(di);
+        }
+        // 既定より深い上限: 主スレッドのスタック (4 GiB) では足りないので、`M × 40 KiB` のスタックの別スレッドで走らせる
+        // (呼び元はここで join して待つので、`Interp` に触るのは常に 1 つのスレッドだけ)。
+        let size = self.max_depth.saturating_mul(Self::FRAME_BYTES);
+        let ptr = crate::task::SendPtr(self as *mut Interp);
+        let spawned = std::thread::Builder::new().stack_size(size).spawn(move || {
+            set_stack_floor(size);
+            let p = ptr;
+            // SAFETY: 呼び元のスレッドは join を待っていて、`Interp` に触らない。
+            let it: &mut Interp = unsafe { &mut *p.get() };
+            it.run_entry_here(di)
+        });
+        match spawned {
+            Ok(h) => h.join().unwrap_or(2),
+            Err(e) => {
+                eprintln!("ksn: cannot allocate a stack for `depth {}` ({})", self.max_depth, e);
+                2
+            }
+        }
+    }
+
+    fn run_entry_here(&mut self, di: usize) -> i32 {
         let r = self.call_def(di, vec![]);
         let code = match r {
             Err(Ctl::Panic(m)) => {

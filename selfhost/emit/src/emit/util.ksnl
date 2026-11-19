@@ -1,4 +1,4 @@
-fn emit.util.after(s: &str, n: usize) -> &str uses [] panics may pub
+fn emit.util.after(s: &str, n: usize) -> &str uses [] panics never pub
     match s.split_at(n) {
         Some(q) => {
             let (_h, r) = q
@@ -8,18 +8,18 @@ fn emit.util.after(s: &str, n: usize) -> &str uses [] panics may pub
     }
 end emit.util.after
 
-fn emit.util.after_first['a](s: &'a str, sep: &str) -> &'a str uses [] panics may pub
+fn emit.util.after_first['a](s: &'a str, sep: &str) -> &'a str uses [] panics never pub
     match s.find(sep) {
         Some(p) => emit.util.after(s, p.wrapping_add(sep.len()))
         None => s
     }
 end emit.util.after_first
 
-fn emit.util.arg_vid(s: &str, k: usize) -> usize uses [io.console, process] panics may pub
+fn emit.util.arg_vid(s: &str, k: usize) -> usize uses [] panics may pub
     emit.util.vid(emit.util.nth(s, ",", k))
 end emit.util.arg_vid
 
-fn emit.util.ascii_at(bytes: &[u8], i: usize) -> &str uses [io.console, process] panics may pub
+fn emit.util.ascii_at(bytes: &[u8], i: usize) -> &str uses [] panics may pub
     let tbl = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
     let c = match bytes.get(i) {
         Some(x) => *x
@@ -40,7 +40,7 @@ fn emit.util.ascii_at(bytes: &[u8], i: usize) -> &str uses [io.console, process]
     }
 end emit.util.ascii_at
 
-fn emit.util.c_escape(bytes: &[u8], out: &mut alloc.string.String<std.alloc.System>) -> () uses [alloc, io.console, process] panics may pub
+fn emit.util.c_escape(bytes: &[u8], out: &mut alloc.string.String<std.alloc.System>) -> () uses [alloc] panics may pub
     let mut i = 0usize
     while i < bytes.len() {
         let c = match bytes.get(i) {
@@ -56,7 +56,7 @@ fn emit.util.c_escape(bytes: &[u8], out: &mut alloc.string.String<std.alloc.Syst
     }
 end emit.util.c_escape
 
-fn emit.util.dec(s: &str) -> usize uses [] panics may pub
+fn emit.util.dec(s: &str) -> usize uses [] panics never pub
     let b = s.as_bytes()
     let mut v = 0usize
     let mut i = 0usize
@@ -76,7 +76,7 @@ fn emit.util.dec(s: &str) -> usize uses [] panics may pub
     v
 end emit.util.dec
 
-fn emit.util.digit(d: usize) -> &'static str uses [io.console, process] panics may pub
+fn emit.util.digit(d: usize) -> &'static str uses [] panics may pub
     let tbl = "0123456789"
     match tbl.split_at(d) {
         Some(q) => {
@@ -93,7 +93,7 @@ fn emit.util.digit(d: usize) -> &'static str uses [io.console, process] panics m
     }
 end emit.util.digit
 
-fn emit.util.digit_of(r: i128) -> usize uses [] panics may pub
+fn emit.util.digit_of(r: i128) -> usize uses [] panics never pub
     let mut k = 0usize
     while k < 9usize && r != i128.from_usize(k) {
         k = k.wrapping_add(1usize)
@@ -101,7 +101,7 @@ fn emit.util.digit_of(r: i128) -> usize uses [] panics may pub
     k
 end emit.util.digit_of
 
-fn emit.util.head(s: &str) -> &str uses [] panics may pub
+fn emit.util.head(s: &str) -> &str uses [] panics never pub
     let a = match s.find(" ") {
         Some(p) => p
         None => s.len()
@@ -124,7 +124,7 @@ fn emit.util.head(s: &str) -> &str uses [] panics may pub
     }
 end emit.util.head
 
-fn emit.util.hex_at(b: &[u8], i: usize) -> u8 uses [io.console, process] panics may pub
+fn emit.util.hex_at(b: &[u8], i: usize) -> u8 uses [] panics may pub
     let c = match b.get(i) {
         Some(x) => *x
         None => 0u8
@@ -140,7 +140,7 @@ fn emit.util.hex_at(b: &[u8], i: usize) -> u8 uses [io.console, process] panics 
     }
 end emit.util.hex_at
 
-fn emit.util.hexchar(d: u8) -> &'static str uses [io.console, process] panics may pub
+fn emit.util.hexchar(d: u8) -> &'static str uses [] panics may pub
     let tbl = "0123456789ABCDEF"
     match tbl.split_at(usize.from_u8(d)) {
         Some(q) => {
@@ -157,7 +157,7 @@ fn emit.util.hexchar(d: u8) -> &'static str uses [io.console, process] panics ma
     }
 end emit.util.hexchar
 
-fn emit.util.inner(s: &str) -> &str uses [] panics may pub
+fn emit.util.inner(s: &str) -> &str uses [] panics never pub
     let t = s.trim()
     let a = match t.strip_prefix("(") {
         Some(r) => r
@@ -169,7 +169,7 @@ fn emit.util.inner(s: &str) -> &str uses [] panics may pub
     }
 end emit.util.inner
 
-fn emit.util.lit_i128(s: &str) -> i128 uses [] panics may pub
+fn emit.util.lit_i128(s: &str) -> i128 uses [] panics never pub
     let (neg, body) = match s.strip_prefix("-") {
         Some(r) => (true, r)
         None => (false, s)
@@ -194,29 +194,29 @@ fn emit.util.lit_i128(s: &str) -> i128 uses [] panics may pub
     }
 end emit.util.lit_i128
 
-fn emit.util.new_str() -> alloc.string.String<std.alloc.System> uses [] panics may pub
+fn emit.util.new_str() -> alloc.string.String<std.alloc.System> uses [] panics never pub
     alloc.string.String.new(std.alloc.SYSTEM)
 end emit.util.new_str
 
-fn emit.util.nth['a](s: &'a str, sep: &str, k: usize) -> &'a str uses [] panics may pub
+fn emit.util.nth['a](s: &'a str, sep: &str, k: usize) -> &'a str uses [] panics never pub
     emit.util.piece_at(s, sep, k).trim()
 end emit.util.nth
 
-fn emit.util.off(tok: &str) -> usize uses [io.console, process] panics may pub
+fn emit.util.off(tok: &str) -> usize uses [] panics may pub
     match tok.strip_prefix("+") {
         Some(r) => emit.util.dec(r)
         None => core.panic.panic("internal: expected an offset")
     }
 end emit.util.off
 
-fn emit.util.open_pos(s: &str) -> usize uses [] panics may pub
+fn emit.util.open_pos(s: &str) -> usize uses [] panics never pub
     match s.find("(") {
         Some(p) => p
         None => s.len()
     }
 end emit.util.open_pos
 
-fn emit.util.part(s: &str, k: usize) -> &str uses [] panics may pub
+fn emit.util.part(s: &str, k: usize) -> &str uses [] panics never pub
     let mut i = 0usize
     let np_p_ie = emit.util.piece_count(s, ".")
     let mut kk_p_ie = 0usize
@@ -231,7 +231,7 @@ fn emit.util.part(s: &str, k: usize) -> &str uses [] panics may pub
     ""
 end emit.util.part
 
-fn emit.util.piece_at['a](s: &'a str, sep: &str, k: usize) -> &'a str uses [] panics may pub
+fn emit.util.piece_at['a](s: &'a str, sep: &str, k: usize) -> &'a str uses [] panics never pub
     let mut r = s
     let mut i = 0usize
     while i < k {
@@ -259,7 +259,7 @@ fn emit.util.piece_at['a](s: &'a str, sep: &str, k: usize) -> &'a str uses [] pa
     }
 end emit.util.piece_at
 
-fn emit.util.piece_count(s: &str, sep: &str) -> usize uses [] panics may pub
+fn emit.util.piece_count(s: &str, sep: &str) -> usize uses [] panics never pub
     let mut n = 1usize
     let mut r = s
     let mut going = true
@@ -277,20 +277,20 @@ fn emit.util.piece_count(s: &str, sep: &str) -> usize uses [] panics may pub
     n
 end emit.util.piece_count
 
-fn emit.util.push_byte(out: &mut alloc.vec.Vec<u8, std.alloc.System>, c: u8) -> () uses [alloc, io.console, process] panics may pub
+fn emit.util.push_byte(out: &mut alloc.vec.Vec<u8, std.alloc.System>, c: u8) -> () uses [alloc] panics may pub
     match out.push(c) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.util.push_byte
 
-fn emit.util.push_hex(out: &mut alloc.string.String<std.alloc.System>, c: u8) -> () uses [alloc, io.console, process] panics may pub
+fn emit.util.push_hex(out: &mut alloc.string.String<std.alloc.System>, c: u8) -> () uses [alloc] panics may pub
     emit.util.push_str(out, "\\")
     emit.util.push_str(out, emit.util.hexchar(c / 16u8))
     emit.util.push_str(out, emit.util.hexchar(c % 16u8))
 end emit.util.push_hex
 
-fn emit.util.push_i128(out: &mut alloc.string.String<std.alloc.System>, v: i128) -> () uses [alloc, io.console, process] panics may pub
+fn emit.util.push_i128(out: &mut alloc.string.String<std.alloc.System>, v: i128) -> () uses [alloc] panics may pub
     let mut x = v
     if x < 0i128 {
         emit.util.push_str(out, "-")
@@ -316,21 +316,21 @@ fn emit.util.push_i128(out: &mut alloc.string.String<std.alloc.System>, v: i128)
     }
 end emit.util.push_i128
 
-fn emit.util.push_num(out: &mut alloc.string.String<std.alloc.System>, n: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.util.push_num(out: &mut alloc.string.String<std.alloc.System>, n: usize) -> () uses [alloc] panics may pub
     match out.push_u64(u64.from_usize(n)) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.util.push_num
 
-fn emit.util.push_str(out: &mut alloc.string.String<std.alloc.System>, s: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.util.push_str(out: &mut alloc.string.String<std.alloc.System>, s: &str) -> () uses [alloc] panics may pub
     match out.push_str(s) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.util.push_str
 
-fn emit.util.set_bool(v: &mut alloc.vec.Vec<bool, std.alloc.System>, i: usize, x: bool) -> () uses [io.console, process] panics may pub
+fn emit.util.set_bool(v: &mut alloc.vec.Vec<bool, std.alloc.System>, i: usize, x: bool) -> () uses [] panics may pub
     match v.as_mut_slice().get_mut(i) {
         Some(p) => {
             *p = x
@@ -346,7 +346,7 @@ fn emit.util.strip_gt(s: &str) -> &str uses [] panics never pub
     }
 end emit.util.strip_gt
 
-fn emit.util.unquote(text: &str, out: &mut alloc.vec.Vec<u8, std.alloc.System>) -> usize uses [alloc, io.console, process] panics may pub
+fn emit.util.unquote(text: &str, out: &mut alloc.vec.Vec<u8, std.alloc.System>) -> usize uses [alloc] panics may pub
     let b = text.as_bytes()
     let mut i = 1usize
     let mut done = false
@@ -382,14 +382,14 @@ fn emit.util.unquote(text: &str, out: &mut alloc.vec.Vec<u8, std.alloc.System>) 
     i
 end emit.util.unquote
 
-fn emit.util.vec_push(v: &mut alloc.vec.Vec<usize, std.alloc.System>, x: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.util.vec_push(v: &mut alloc.vec.Vec<usize, std.alloc.System>, x: usize) -> () uses [alloc] panics may pub
     match v.push(x) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.util.vec_push
 
-fn emit.util.vec_set(v: &mut alloc.vec.Vec<usize, std.alloc.System>, i: usize, x: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.util.vec_set(v: &mut alloc.vec.Vec<usize, std.alloc.System>, i: usize, x: usize) -> () uses [alloc] panics may pub
     while v.len() <= i {
         match v.push(0usize) {
             Ok(_u) => core.mem.drop(0u8)
@@ -404,7 +404,7 @@ fn emit.util.vec_set(v: &mut alloc.vec.Vec<usize, std.alloc.System>, i: usize, x
     }
 end emit.util.vec_set
 
-fn emit.util.vid(tok: &str) -> usize uses [io.console, process] panics may pub
+fn emit.util.vid(tok: &str) -> usize uses [] panics may pub
     match tok.strip_prefix("%") {
         Some(r) => emit.util.dec(r)
         None => core.panic.panic("internal: expected a value operand")

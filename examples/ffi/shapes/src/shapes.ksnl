@@ -74,7 +74,7 @@ end shapes.rect
 
 fn shapes.vertex(x: f64, y: f64, user: *mut shapes.Acc) -> () uses [] panics never
     unsafe "callback" "accumulate through the user data pointer" {
-        let acc: shapes.Acc = core.ptr.read(user)
+        let acc = core.ptr.read(user)
         let sum = acc.sum + x + y
         core.ptr.write(user, shapes.Acc { count: acc.count.wrapping_add(1i32), sum: sum })
     }

@@ -9,6 +9,6 @@ fn t.bad() -> t.Holder uses [] panics never
     }
 end t.bad
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

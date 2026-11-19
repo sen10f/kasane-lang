@@ -120,7 +120,7 @@ fn user_modules_may_reference_all_layers() {
         "user_all_layers",
         &[(
             "t.ksnl",
-            "fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never\n    let v: alloc.vec.Vec<i32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v)\n    Ok(())\nend t.main\n\nfn t.mix(v: alloc.vec.Vec<i32, std.alloc.System>, e: core.cmp.Ordering) -> usize uses [alloc] panics never pub\n    core.mem.drop(e)\n    v.len()\nend t.mix\n",
+            "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let v: alloc.vec.Vec<i32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v)\n    Ok(())\nend t.main\n\nfn t.mix(v: alloc.vec.Vec<i32, std.alloc.System>, e: core.cmp.Ordering) -> usize uses [] panics never pub\n    core.mem.drop(e)\n    v.len()\nend t.mix\n",
         )],
     );
     let o = run(&["check"], &ok.0);

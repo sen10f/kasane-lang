@@ -26,7 +26,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'bench'))
-from tasks import TASKS  # noqa: E402
 
 EXE = os.environ.get('KSN_BENCH_EXE') or os.path.join(ROOT, 'stage0', 'target', 'release', 'ksn' + ('.exe' if os.name == 'nt' else ''))  # KSN_BENCH_EXE はテスト用の差し替え
 TOML = ('[package]\nname = "bench"\nversion = "0.1.0"\nedition = 1\n\n[dependencies]\n')
@@ -324,8 +323,15 @@ def main():
     ap.add_argument('--max-tokens', type=int, default=12000)
     ap.add_argument('--timeout', type=int, default=900)
     ap.add_argument('--tag', default='')
+    ap.add_argument('--large', action='store_true', help='bench/tasks_large の大規模課題を対象にする')
     a = ap.parse_args()
     sys.stdout.reconfigure(encoding='utf-8')
+
+    # 大規模課題か通常課題かで TASKS を切り替える
+    if a.large:
+        from tasks_large import TASKS_LARGE as TASKS  # noqa: E402
+    else:
+        from tasks import TASKS  # noqa: E402
 
     p = PROVIDERS[a.provider]
     a.base = (a.base or p['base']).rstrip('/')

@@ -2,7 +2,7 @@ fn t.apply[F: core.ops.Fn<(u32,), u32, [], never>](f: F) -> u32 uses [] panics n
     f(2u32)
 end t.apply
 
-fn t.divides(x: u32) -> u32
+fn t.divides(x: u32) -> u32 uses [] panics may
     x / 0u32
 end t.divides
 

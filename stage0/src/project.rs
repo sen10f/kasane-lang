@@ -680,8 +680,9 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
         Ok(v) => v,
         Err(e) => return vec![bad(format!("invalid kasane.lock ({})", e))],
     };
-    if v.get("version").and_then(|x| x.as_integer()) != Some(1) {
-        return vec![bad("lock version must be 1".into())];
+    let version = v.get("version").and_then(|x| x.as_integer());
+    if version != Some(1) && version != Some(2) {
+        return vec![bad("lock version must be 1 or 2".into())];
     }
     let entries: Vec<&toml::Value> = v.get("package").and_then(|p| p.as_array()).map(|a| a.iter().collect()).unwrap_or_default();
     let mut by_name: std::collections::BTreeMap<String, &toml::Value> = Default::default();
@@ -738,6 +739,15 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
                     )),
                     _ => {}
                 },
+            }
+            // 版 2: 公開の署名と効果の記録と比べる (`path` 依存は記録しない)。
+            if version == Some(2) {
+                match crate::lockapi::read_api(e) {
+                    None => errs.push(bad(format!("git dependency {} has no recorded api; run `ksn lock --accept {}`", dp.name, dp.name))),
+                    Some((old, old_uns)) => {
+                        errs.extend(crate::lockapi::compare(&dp.name, &old, &old_uns, &crate::lockapi::api_of(dp), &crate::lockapi::unsafe_of(dp)));
+                    }
+                }
             }
         }
     }

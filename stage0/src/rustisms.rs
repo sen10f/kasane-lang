@@ -190,7 +190,7 @@ pub fn scan(text: &str) -> Vec<Hit> {
                     code: "E0054",
                     line: ln,
                     col: 1,
-                    msg: "Kasane files contain only definitions (no `package` / `use` / `mod` lines); effects are part of each function header, after the return type: `fn bench.f(x: u32) -> u32 uses [] panics never`, or omitted on private functions (they are inferred)"
+                    msg: "Kasane files contain only definitions (no `package` / `use` / `mod` lines); effects are part of each function header, after the return type: `fn bench.f(x: u32) -> u32 uses [] panics never` (required on every function, and it must match the body exactly)"
                         .into(),
                 });
             }

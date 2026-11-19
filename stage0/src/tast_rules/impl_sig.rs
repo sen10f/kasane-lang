@@ -138,15 +138,15 @@ fn impl_lines(o: &mut Out, user: &[usize]) -> HashMap<(String, String), usize> {
 
 fn norm(t: Ty) -> Ty {
     match t {
-        Ty::Named(n, a) => {
+        Ty::Named(n, a, _) => {
             let n = match n.as_str() {
                 "Option" => "core.option.Option".to_string(),
                 "Result" => "core.result.Result".to_string(),
                 _ => n,
             };
-            Ty::Named(n, a.into_iter().map(norm).collect())
+            Ty::Named(n, a.into_iter().map(norm).collect(), crate::types::Rgs::default())
         }
-        Ty::Ref(m, x) => Ty::Ref(m, Box::new(norm(*x))),
+        Ty::Ref(m, x, _) => Ty::Ref(m, Box::new(norm(*x)), crate::types::Region::Unk),
         Ty::Ptr(m, x) => Ty::Ptr(m, Box::new(norm(*x))),
         Ty::Tuple(a) => Ty::Tuple(a.into_iter().map(norm).collect()),
         Ty::Array(x, n) => Ty::Array(Box::new(norm(*x)), n),
@@ -160,8 +160,8 @@ fn norm(t: Ty) -> Ty {
 fn sub(t: &Ty, m: &HashMap<String, Ty>) -> Ty {
     match t {
         Ty::Param(p) => m.get(p).cloned().unwrap_or_else(|| t.clone()),
-        Ty::Named(n, a) => Ty::Named(n.clone(), a.iter().map(|x| sub(x, m)).collect()),
-        Ty::Ref(k, x) => Ty::Ref(*k, Box::new(sub(x, m))),
+        Ty::Named(n, a, _) => Ty::Named(n.clone(), a.iter().map(|x| sub(x, m)).collect(), crate::types::Rgs::default()),
+        Ty::Ref(k, x, _) => Ty::Ref(*k, Box::new(sub(x, m)), crate::types::Region::Unk),
         Ty::Ptr(k, x) => Ty::Ptr(*k, Box::new(sub(x, m))),
         Ty::Tuple(a) => Ty::Tuple(a.iter().map(|x| sub(x, m)).collect()),
         Ty::Array(x, n) => Ty::Array(Box::new(sub(x, m)), *n),
@@ -497,7 +497,7 @@ fn life_ok(ic: &[Cls], tc: &[Cls], n_in: usize) -> bool {
 // ---------------------------------------------------------------- E4021: 効果
 
 /// トレイトのメソッドの宣言された効果を impl 行の実引数で実体化する (旧: `trait_effect_bounds`)。
-fn trait_effect_bounds(td: &Def, meth: &str, targs: &[V]) -> Option<(Option<Vec<String>>, Option<String>)> {
+pub(crate) fn trait_effect_bounds(td: &Def, meth: &str, targs: &[V]) -> Option<(Option<Vec<String>>, Option<String>)> {
     let (_, us, pv) = td.trait_effs.iter().find(|e| e.0 == meth)?;
     let mut bind_u: HashMap<String, Vec<String>> = HashMap::new();
     let mut bind_p: HashMap<String, String> = HashMap::new();
@@ -542,6 +542,7 @@ fn effects(o: &mut Out, i: usize, ii: usize, ti: usize) {
     let meth = d.name.rsplit('.').next().unwrap_or("");
     let targs = items(&p.defs[ii].impl_targs).to_vec();
     let Some((tu, tp)) = trait_effect_bounds(td, meth, &targs) else { return };
+    let (tu_all, tp_all) = (tu.clone(), tp.clone());
     let tname = format!("{}.{}", td.name, meth);
     if let Some(tu) = tu {
         for e in &d.uses {
@@ -556,11 +557,16 @@ fn effects(o: &mut Out, i: usize, ii: usize, ti: usize) {
             o.diag("E4021", format!("{} may panic but trait method {} declares `panics never`", d.name, tname), i, 0);
         }
     }
+    if !o.diags.iter().any(|x| x.code == "E4021" && x.fqn == d.name) {
+        if let Some(m) = super::effects_exact::impl_exact(d, &tu_all, &tp_all) {
+            o.diag("E4025", m, i, 0);
+        }
+    }
 }
 
 // ---------------------------------------------------------------- E2046: `&T` → `&dyn Tr` の実装の有無
 
-fn walk(e: &TExpr, f: &mut dyn FnMut(&TExpr)) {
+pub(crate) fn walk(e: &TExpr, f: &mut dyn FnMut(&TExpr)) {
     f(e);
     match &e.kind {
         TKind::Call { callee, args } => {
@@ -628,7 +634,7 @@ fn unsize(o: &mut Out, tast: &Tast, _side: &SideTabs) {
         walk(&b.body, &mut |e| {
             for c in &e.conv {
                 let Coercion::Unsize { from, to } = c else { continue };
-                let (Ty::Dyn(tr, _), Ty::Named(n, _)) = (to.strip(), from.strip()) else { continue };
+                let (Ty::Dyn(tr, _, _), Ty::Named(n, _, _)) = (to.strip(), from.strip()) else { continue };
                 let Some(root) = resolve_trait_fqn(p, tr) else { continue };
                 if !p.types.contains_key(n) {
                     continue;

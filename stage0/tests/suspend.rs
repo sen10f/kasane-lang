@@ -329,7 +329,7 @@ fn pure_fn_is_accepted_where_suspend_is_allowed() {
     x
 end t.pure
 
-fn t.main() -> () uses [suspend] panics may
+fn t.main() -> () uses [] panics may
     let v = t.pure(3u32)
     let w = std.task.block_on(fn() -> u32 capture [] {
         t.pure(v)
@@ -409,7 +409,7 @@ end t.main
 fn thread_join_with_live_borrow_is_not_a_suspension_point() {
     let codes = check_codes(
         "suspend_thread_join_ok",
-        "fn t.main() -> () uses [alloc, thread] panics may
+        "fn t.main() -> () uses [alloc, thread] panics never
     let x = 1u32
     let r = &x
     let h = std.thread.spawn(std.alloc.SYSTEM, fn() -> u32 capture [] {
@@ -494,7 +494,7 @@ fn t.plain(w: &dyn t.Waiter<[suspend], may>) -> u32 uses [] panics may
     w.wait_one()
 end t.plain
 
-fn t.main() -> () uses [io.console] panics may
+fn t.main() -> () uses [] panics may
     let p = t.Pause { n: 4u32 }
     core.check.eq(t.plain(&p), 4u32)
 end t.main
@@ -626,7 +626,7 @@ end t.main
 /// 枠に解放の要る値 (`Vec`) を中断をまたいで持つタスクの取り消しは E4022 (枠の値を後始末できない)。
 #[test]
 fn cancel_of_task_holding_vec_across_suspension_is_e4022() {
-    let src = r#"fn t.body() -> () uses [alloc, suspend] panics may
+    let src = r#"fn t.body() -> () uses [suspend] panics may
     let a = std.task.spawn_local(
         fn() -> u32 capture [] {
             let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -637,7 +637,7 @@ fn cancel_of_task_holding_vec_across_suspension_is_e4022() {
     a.cancel()
 end t.body
 
-fn t.main() -> () uses [alloc, suspend] panics may
+fn t.main() -> () uses [suspend] panics may
     std.task.block_on(fn() -> () capture [] {
         t.body()
     })
@@ -650,7 +650,7 @@ end t.main
 /// 閉包の中で中断しうるユーザの関数を呼ぶタスクは取り消せない (その関数の枠を検査できないので、保守側に倒す)。
 #[test]
 fn cancel_of_task_calling_user_suspending_fn_is_e4022() {
-    let src = r#"fn t.step() -> u32 uses [suspend] panics may
+    let src = r#"fn t.step() -> u32 uses [suspend] panics never
     std.task.yield_now()
     1u32
 end t.step
@@ -704,7 +704,7 @@ end t.main
 /// 取り消しは handle を消費する (`cancel(self)`)。二度取り消すと、移動済みの値の E3002。
 #[test]
 fn cancel_consumes_the_handle() {
-    let src = r#"fn t.body() -> () uses [suspend] panics may
+    let src = r#"fn t.body() -> () uses [] panics may
     let a = std.task.spawn_local(
         fn() -> u32 capture [] {
             3u32
@@ -714,7 +714,7 @@ fn cancel_consumes_the_handle() {
     a.cancel()
 end t.body
 
-fn t.main() -> () uses [suspend] panics may
+fn t.main() -> () uses [] panics may
     std.task.block_on(fn() -> () capture [] {
         t.body()
     })

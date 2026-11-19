@@ -1,4 +1,4 @@
-fn t.fetch(address: &str, ca: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.tls.Error> uses [alloc, io.fs, io.net] panics may
+fn t.fetch(address: &str, ca: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.tls.Error> uses [alloc, io.fs, io.net] panics never
     let conn = std.tls.connect_with(address, "localhost", ca)?
     let mut tls = conn
     let request = "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"

@@ -52,6 +52,8 @@ pub enum Coercion {
     Unsize { from: Ty, to: Ty },
     /// クロージャ → 関数型 `fn(..)`。
     ClosureToFn,
+    /// 関数・クロージャの値が、効果を宣言した関数型 `fn(..) uses [..] panics ..` (これ) の位置へ入る。効果の検査 (E4001 / E4002) が使う。
+    FnTo(Ty),
     /// 受け手の自動参照外し (`&&T`・`&mut &T`・`Box<T>` の受け手を `n` 段外して `self` に合わせる)。
     AutoDeref { n: u8 },
     /// `?` のエラー型の変換: `derive [From]` の `enum` のバリアントで包む (`?` の節点に付く。元のエラー型, 戻り値のエラー型, バリアント名)。
@@ -119,6 +121,39 @@ pub struct SideTabs {
     pub err_pending: Vec<(Key, Ty, Ty, String)>,
     /// 【担当 E】閉包の取り込み (節名 `FQN#連番` が鍵。`Ty::Closure { id }` で引く)。`check_def` の終わりに解決済みの型で入る。
     pub closure_caps: HashMap<String, Vec<Capture>>,
+    /// 【S3A】領域の表 (設計 9 章)。集めるだけで解かない。
+    pub regions: RegionTabs,
+}
+
+/// 領域の関係 `long: short` (`long` は `short` より長く生きる)。
+#[derive(Clone, Debug)]
+pub struct RegionCstr {
+    /// 関係を生んだ節点 (引数・呼び出し・戻り値の式)。
+    pub key: Key,
+    pub long: crate::types::Region,
+    pub short: crate::types::Region,
+    /// 由来: `arg` (実引数 ⊒ 仮引数) / `recv` (受け手 ⊒ `self`) / `ret` (本体の値 ⊒ 戻り値の型) / `bound` (宣言の境界)。
+    pub why: &'static str,
+}
+
+/// 関数の署名の領域 (省略規則を当てた後)。並びは型の前順 (外側の参照が先、`Named` のライフタイム引数・`dyn` の領域は自分の位置)。
+#[derive(Clone, Debug, Default)]
+pub struct SigRegions {
+    pub params: Vec<(String, Vec<crate::types::Region>)>,
+    pub ret: Vec<crate::types::Region>,
+    /// 宣言の境界 `T: 'a` (型パラメータ名, 領域)。
+    pub bounds: Vec<(String, crate::types::Region)>,
+}
+
+/// 領域の表。`TypeCk::side.regions`。
+#[derive(Clone, Debug, Default)]
+pub struct RegionTabs {
+    /// `&e` / `&mut e` の式ごとの領域 (`Region::Var(式 ID)`)。鍵は借用式の節点。
+    pub borrows: HashMap<Key, crate::types::Region>,
+    /// 定義ごとの署名の領域。
+    pub sigs: HashMap<DefId, SigRegions>,
+    /// 領域どうしの関係 (集めるだけ)。
+    pub cstrs: Vec<RegionCstr>,
 }
 
 /// 閉包の取り込み (`TypeCk::closure_caps` を式 ID の鍵に直した形。種別は `&` / `&mut` / `move`)。
@@ -127,6 +162,8 @@ pub struct Capture {
     pub kind: String,
     pub name: String,
     pub ty: Ty,
+    /// `&` / `&mut` の取り込みが借りる領域 (閉包の式 ID の `Region::Var`)。`move` は `Unk`。
+    pub region: crate::types::Region,
 }
 
 /// 型付きの節点が持つ共通の情報。
@@ -147,6 +184,8 @@ pub struct TExpr {
     pub targs: Vec<Ty>,
     /// `Call` / `MCall` だけ: 書いた明示型引数 (`f::<..>`) の数 (ライフタイムを除く)。書いていなければ `None`。
     pub tf: Option<usize>,
+    /// `For` / `With` だけ: 束縛するパターン (`Other` の子には入らない)。
+    pub pats: Vec<TPat>,
 }
 
 /// 節点の形。式の形ごとの場合分けは、ここ (木を組む側) に 1 回だけ置く (設計 2.3 の末尾)。
@@ -166,7 +205,7 @@ pub enum TKind {
     If { cond: Box<TExpr>, then: Box<TExpr>, els: Option<Box<TExpr>> },
     Match { scrut: Box<TExpr>, arms: Vec<TArm> },
     /// 閉包: 引数の束縛・取り込み (`closure_caps`)・本体。
-    Closure { params: Vec<TBinding>, captures: Vec<Capture>, body: Box<TExpr> },
+    Closure { params: Vec<TBinding>, captures: Vec<Capture>, body: Box<TExpr>, written: Vec<(String, String)> },
     /// 構造体リテラル `T { f: e, .. }` (型の FQN の書いたまま, 欄名と値の式)。規則が欄の宣言の型と値の型を照らす。
     StructLit { name: String, fields: Vec<(String, TExpr)> },
     /// 上に無い形 (`For` `While` `Loop` `Return` `Try` `TupleE` `ArrayE` ...)。種別名と子の式。
@@ -204,6 +243,7 @@ pub struct TPat {
     /// `PVariant` / `PPath` / `PStruct` の経路 (書いたまま)。
     pub path: Vec<String>,
     /// `PLit` のリテラルの種類と接尾辞 (`["int", "u64"]`、接尾辞が無ければ種類だけ)。
+    /// `PStruct` だけは、`children` と同じ並びの欄の名前 (移動と線形の規則が欄の場所を引く)。
     pub lit: Vec<String>,
 }
 
@@ -254,8 +294,8 @@ pub struct Stats {
 fn has_unknown(t: &Ty) -> bool {
     match t {
         Ty::Unknown | Ty::Var(_) => true,
-        Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(has_unknown),
-        Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => has_unknown(x),
+        Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(has_unknown),
+        Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => has_unknown(x),
         Ty::Closure { args, ret, .. } => args.iter().any(has_unknown) || has_unknown(ret),
         _ => false,
     }
@@ -397,6 +437,7 @@ impl<'a> Builder<'a> {
             }
             "PStruct" => {
                 path = lv(&f[0]).iter().map(sv).collect();
+                lit = lv(&f[1]).iter().filter(|x| lv(x).get(1).is_some()).map(|x| sv(&lv(x)[0])).collect();
                 children = lv(&f[1]).iter().filter_map(|x| lv(x).get(1)).map(|x| self.pat(x)).collect()
             }
             "PRef" => children = vec![self.pat(&f[0])],
@@ -419,7 +460,11 @@ impl<'a> Builder<'a> {
             "Let" => {
                 let f = fs(v);
                 let init = if matches!(f[3], V::Node(..)) { Some(self.expr(&f[3], false)) } else { None };
-                let pat = self.pat(&f[0]);
+                let mut pat = self.pat(&f[0]);
+                // 型の注釈を書いた `let` の印 (`&mut` の再借用か移動かを、移動の規則が分ける)。
+                if !matches!(f[2], V::Nil) {
+                    pat.lit.push("ann".to_string());
+                }
                 self.bind_pat(&pat);
                 TStmt::Let { pat, init }
             }
@@ -437,10 +482,11 @@ impl<'a> Builder<'a> {
     /// 式の節点を組む。`callee` は `Call` の第 1 子 (被覆の数え方だけが違う)。
     fn expr(&mut self, v: &V, callee: bool) -> TExpr {
         let V::Node(kind, f, ln, id) = v else {
-            return TExpr { id: 0, line: 0, kind: TKind::Other { name: "?", children: vec![] }, ty: Ty::Unknown, place: None, conv: vec![], res: None, targs: vec![], tf: None };
+            return TExpr { id: 0, line: 0, kind: TKind::Other { name: "?", children: vec![] }, ty: Ty::Unknown, place: None, conv: vec![], res: None, targs: vec![], tf: None, pats: vec![] };
         };
         let key = (self.di, *id);
         let mut place = None;
+        let mut pats = vec![];
         let tkind = match *kind {
             "Lit" => TKind::Lit(f.iter().map(sv).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(":")),
             "Path" => {
@@ -537,7 +583,8 @@ impl<'a> Builder<'a> {
                     Some(Ty::Closure { id: Some(node), .. }) => self.side.closure_caps.get(node).cloned().unwrap_or_default(),
                     _ => vec![],
                 };
-                TKind::Closure { params, captures, body: Box::new(body) }
+                let written = lv(&f[2]).iter().filter_map(|c| match (lv(c).first(), lv(c).get(1)) { (Some(k), Some(n)) => Some((sv(k), sv(n))), _ => None }).collect();
+                TKind::Closure { params, captures, body: Box::new(body), written }
             }
             "For" => {
                 let it = self.expr(&f[1], false);
@@ -546,6 +593,7 @@ impl<'a> Builder<'a> {
                 self.bind_pat(&pat);
                 let body = self.expr(&f[2], false);
                 self.scopes.pop();
+                pats.push(pat);
                 TKind::Other { name: "For", children: vec![it, body] }
             }
             "With" => {
@@ -559,6 +607,7 @@ impl<'a> Builder<'a> {
                 }
                 children.push(self.expr(&f[4], false));
                 self.scopes.pop();
+                pats.push(pat);
                 TKind::Other { name: "With", children }
             }
             // 上に無い形 (`While` `Loop` `Return` `Try` `StructLit` `TupleE` `ArrayE` `ArrayRep` `Unsafe` `Break` `Continue` ...):
@@ -603,7 +652,7 @@ impl<'a> Builder<'a> {
             V::L(xs) => Some(xs.iter().filter(|a| !matches!(a, V::L(y) if matches!(y.first(), Some(V::S(s)) if s == "life"))).count()),
             _ => None,
         });
-        TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs, tf }
+        TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs, tf, pats }
     }
 }
 
@@ -770,4 +819,35 @@ pub fn survey_resolved_fn(side: &SideTabs) -> String {
         "resolved_fn\ttotal={}\tDef={}\tMethods={}\tVariant={}\tLocal={}\tDyn={}\tUnknown={}\n",
         tot, n[0], n[1], n[2], n[3], n[4], n[5]
     )
+}
+
+/// `KSN_DUMP_SIDE=1` の領域の表 (1 行目が `# regions`)。借用・署名・関係を、定義名と式 ID の順に出す。
+pub fn dump_regions(p: &Program, side: &SideTabs) -> String {
+    let rs = &side.regions;
+    let show = |v: &[crate::types::Region]| v.iter().map(|r| r.show()).collect::<Vec<_>>().join(" ");
+    let mut rows: Vec<String> = vec![];
+    for (k, r) in &rs.borrows {
+        rows.push(format!("borrow\t{}\t{}\t{}", p.defs[k.0].name, k.1, r.show()));
+    }
+    for (di, s) in &rs.sigs {
+        let ps = s.params.iter().map(|(n, r)| format!("{}:[{}]", n, show(r))).collect::<Vec<_>>().join(" ");
+        let bs = s.bounds.iter().map(|(n, r)| format!("{}:{}", n, r.show())).collect::<Vec<_>>().join(" ");
+        rows.push(format!("sig\t{}\t0\tparams {} | ret [{}] | bounds {}", p.defs[*di].name, ps, show(&s.ret), bs));
+    }
+    // 束縛の型 (領域つき)。`static=true` は型の領域がすべて `'static` (G40 の `static_expr` を型で言い換えたもの)。
+    for (k, i) in &side.pat_tys {
+        if let Some((n, t, _)) = &i.bind {
+            rows.push(format!("bind\t{}\t{}\t{} : {} static={}", p.defs[k.0].name, k.1, n, t.show_r(), t.refs_all_static()));
+        }
+    }
+    for c in &rs.cstrs {
+        rows.push(format!("cstr\t{}\t{}\t{} : {} ({})", p.defs[c.key.0].name, c.key.1, c.long.show(), c.short.show(), c.why));
+    }
+    rows.sort();
+    let mut o = String::from("# regions\n");
+    for r in rows {
+        o.push_str(&r);
+        o.push('\n');
+    }
+    o
 }

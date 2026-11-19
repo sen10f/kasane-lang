@@ -171,7 +171,7 @@ pub(super) fn table_ty(lw: &Lw, e: &V) -> Option<Src> {
 
 fn strip_ref(t: &Src) -> &Src {
     let mut t = t;
-    while let Src::Ref(_, inner) = t {
+    while let Src::Ref(_, inner, _) = t {
         t = inner;
     }
     t
@@ -180,13 +180,13 @@ fn strip_ref(t: &Src) -> &Src {
 /// 式の値の段階 1 の型 (Vec / String は `ptr`、`&str` とスライスは `fat`、クロージャは `unit` の値)。対象外なら `None`。
 pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     // `&&str` (`&K` の K が `&str`) は、`&str` の値の番地 (参照の参照は段を外さない)。
-    if let Src::Ref(_, i) = t {
+    if let Src::Ref(_, i, _) = t {
         if matches!(&**i, Src::Ref(..)) {
             return None;
         }
     }
     // 値渡しの Vec / String は集成体 `vec` (所有の移動)、参照は借用なのでヘッダのアドレス。
-    if let Src::Named(n, args) = t {
+    if let Src::Named(n, args, _) = t {
         if is_vecn(n) {
             let elem = args.first().and_then(|a| lw.conv_t(a));
             return Some(lw.aggs.borrow_mut().vec_of(elem));
@@ -196,7 +196,7 @@ pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
         }
     }
     match strip_ref(t) {
-        Src::Named(n, _) if is_vecn(n) || n == STRING => Some(Ty::Ptr),
+        Src::Named(n, _, _) if is_vecn(n) || n == STRING => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).or_else(|| lw.conv_t(e)).and_then(|t| elem_size(lw, t)).is_some() => Some(lw.fat_ty()),
         Src::Closure { .. } => Some(Ty::Unit),
@@ -206,13 +206,13 @@ pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
 
 /// `Vec` / `String` の名前の型か。
 pub(crate) fn is_hdr_named(t: &Src) -> bool {
-    matches!(t, Src::Named(n, _) if is_vecn(n) || n == STRING)
+    matches!(t, Src::Named(n, _, _) if is_vecn(n) || n == STRING)
 }
 
 /// 関数の引数・戻り値の型。通常の型に加えて、Vec / String / `str` / スライスへの参照 (借用) を受ける。
 pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     // `&mut [T]` / `&[T]` (配列への参照) は、配列の値は `fat` だがパラメータとしては要素の先頭 `ptr` を受け取る。
-    if let Src::Ref(_, inner) = t {
+    if let Src::Ref(_, inner, _) = t {
         if matches!(&**inner, Src::Array(_, _)) {
             return Some(Ty::Ptr);
         }
@@ -226,12 +226,12 @@ pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
             return Some(Ty::Ptr);
         }
     }
-    let Src::Ref(mutbl, inner) = t else { return None };
+    let Src::Ref(mutbl, inner, _) = t else { return None };
     match &**inner {
-        Src::Named(n, _) if is_vecn(n) || n == STRING => Some(Ty::Ptr),
+        Src::Named(n, _, _) if is_vecn(n) || n == STRING => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).or_else(|| lw.conv_t(e)).and_then(|t| elem_size(lw, t)).is_some() => Some(lw.fat_ty()),
-        Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" || n == "std.net.UdpSocket" => {
+        Src::Named(n, _, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" || n == "std.net.UdpSocket" => {
             let ai = lw.aggs.borrow().agg_index(n).expect("std.net.Tcp* が型表にない");
             Some(Ty::Ref(*mutbl, Pointee::Agg(ai)))
         }
@@ -316,8 +316,8 @@ pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
 pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
     match strip_ref(t) {
         // 要素が所有物 (`Vec<String>`) のときは、要素の型 (集成体 `vec` など) を持つ
-        Src::Named(n, args) if is_vecn(n) => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a)).or_else(|| sig_ty(lw, a).filter(|t| *t == Ty::Ptr))))),
-        Src::Named(n, _) if n == STRING => Some(Kind::String),
+        Src::Named(n, args, _) if is_vecn(n) => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a)).or_else(|| sig_ty(lw, a).filter(|t| *t == Ty::Ptr))))),
+        Src::Named(n, _, _) if n == STRING => Some(Kind::String),
         Src::Prim(s) if s == "str" => Some(Kind::Str),
         // 要素が所有物 (`String` など、集成体) のときも要素の型を持つ。`as_slice()` の一時値
         // が続く `get` / `len` / 添字 / `iter` で要素型を引き継ぐため、`size_of` ではなく
@@ -1183,7 +1183,7 @@ pub(crate) fn pat_srcs(lw: &Lw, p: &V, src: &Src, out: &mut BTreeMap<String, Src
                 pat_srcs(lw, sp, x, out);
             }
         }
-        ("PStruct", Src::Named(n, _)) => {
+        ("PStruct", Src::Named(n, _, _)) => {
             let Some(def) = lw.p.defs.iter().find(|d| d.kw == "type" && d.name == *n) else { return };
             for it in items(&nf(p)[1]) {
                 if let V::L(xs) = it {
@@ -1193,7 +1193,7 @@ pub(crate) fn pat_srcs(lw: &Lw, p: &V, src: &Src, out: &mut BTreeMap<String, Src
                 }
             }
         }
-        ("PVariant", Src::Named(n, args)) => {
+        ("PVariant", Src::Named(n, args, _)) => {
             let segs = strs(&nf(p)[0]);
             let ps = items(&nf(p)[1]);
             let tys: Vec<Src> = match (n.as_str(), segs.as_slice()) {
@@ -1304,9 +1304,9 @@ fn null_value(lw: &mut Lw, old: VId, t: Ty, line: usize) -> LR<VId> {
 /// パターンの `Some(x)` / `Ok(x)` / `Err(x)` の部分パターンの型の手がかり (対象の型表の型から)。
 pub(crate) fn set_payload_hint(lw: &mut Lw, scrut_src: &Src, ctor: &str) {
     lw.coll.hint = match (scrut_src, ctor) {
-        (Src::Named(n, a), "Some") if n == "Option" => a.first().cloned(),
-        (Src::Named(n, a), "Ok") if n == "Result" => a.first().cloned(),
-        (Src::Named(n, a), "Err") if n == "Result" => a.get(1).cloned(),
+        (Src::Named(n, a, _), "Some") if n == "Option" => a.first().cloned(),
+        (Src::Named(n, a, _), "Ok") if n == "Result" => a.first().cloned(),
+        (Src::Named(n, a, _), "Err") if n == "Result" => a.get(1).cloned(),
         _ => None,
     };
 }
@@ -1385,7 +1385,7 @@ fn new_header(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let args = items(&f[1]);
     let system = args.len() == 1 && nname(&args[0]) == "Path" && {
         let sg = strs(&nf(&args[0])[0]);
-        sg == ["std", "alloc", "SYSTEM"] || (sg.len() == 1 && lw.lookup(&sg[0]).is_some() && matches!(lw.src_ty(&args[0]), Ok(Src::Named(n, _)) if n == "std.alloc.System"))
+        sg == ["std", "alloc", "SYSTEM"] || (sg.len() == 1 && lw.lookup(&sg[0]).is_some() && matches!(lw.src_ty(&args[0]), Ok(Src::Named(n, _, _)) if n == "std.alloc.System"))
     };
     if !system {
         return lw.err(line, "Vec / String の生成は std.alloc.SYSTEM だけ段階 1 の対象");
@@ -1440,10 +1440,10 @@ impl MutPlace {
 /// `core.mem.replace` / `swap` の引数 `e` (`&mut 先` の式や、`&mut` の型の変数) を、先の形に直す。
 fn mut_place(lw: &mut Lw, e: &V, line: usize) -> LR<Option<MutPlace>> {
     let inner = match lw.src_ty(e) {
-        Ok(Src::Ref(true, inner)) => inner,
+        Ok(Src::Ref(true, inner, _)) => inner,
         _ => return lw.err(line, "core.mem の引数は &mut の先 (名前・フィールド・参照) だけ段階 1 の対象"),
     };
-    if matches!(&*inner, Src::Named(n, _) if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
+    if matches!(&*inner, Src::Named(n, _, _) if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
         return lw.err(line, "core.mem の引数の HashMap は段階 1 の対象外 (ヘッダの種類を保てない)");
     }
     let Some(t) = lw.conv_t(&inner) else {
@@ -1616,7 +1616,7 @@ pub(crate) fn closure_params(cd: &crate::program::Def) -> HashSet<String> {
 /// `F` の位置の型パラメータが `Fn` の境界を持たないもの (`T`) は値の引数。
 fn cparam(pt: &V, pname: &str, tnames: &HashSet<String>, cps: &HashSet<String>) -> Option<String> {
     let mut t = from_v(pt, tnames);
-    while let Src::Ref(_, x) = t {
+    while let Src::Ref(_, x, _) = t {
         t = *x;
     }
     match t {
@@ -2534,7 +2534,7 @@ fn vec_place(lw: &mut Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
             }
             // 要素型が局所の初期化から決まらなかった Vec (別の関数の `push` で決まるもの) は、式の型表の型で決める。
             Some(Kind::Vec(None)) => {
-                if let Some(Src::Named(n, args)) = table_ty(lw, e).as_ref().map(strip_ref) {
+                if let Some(Src::Named(n, args, _)) = table_ty(lw, e).as_ref().map(strip_ref) {
                     if is_vecn(n) {
                         if let Some(elem) = args.first().and_then(|a| sig_ty(lw, a)).filter(|t| elem_size(lw, *t).is_some()) {
                             return Ok((Seq::Hdr(slot_ptr), elem));
@@ -2820,7 +2820,7 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         }
         if let Some((seq, elem)) = seq {
             // `for x in v` で `v` が参照 (`&Vec` のパラメータなど) なら、借用で回す
-            let by_mut = by_mut || (owns_heap(lw, elem) && matches!(lw.src_ty(it), Ok(Src::Ref(true, _))));
+            let by_mut = by_mut || (owns_heap(lw, elem) && matches!(lw.src_ty(it), Ok(Src::Ref(true, _, _))));
             let by_ref = by_ref || (owns_heap(lw, elem) && matches!(lw.src_ty(it), Ok(Src::Ref(..))));
             let take = owns_heap(lw, elem) && !by_ref;
             if take && (lw.coll.borrowed.contains(&s) || !matches!(seq, Seq::Hdr(_)) || !matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)))) {
@@ -2828,11 +2828,11 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             }
             let esrc = if owns_heap(lw, elem) {
                 match lw.src_ty(it) {
-                    Ok(Src::Named(n, a)) if is_vecn(&n) => a.into_iter().next(),
+                    Ok(Src::Named(n, a, _)) if is_vecn(&n) => a.into_iter().next(),
                     // `v.iter()` の型は `core.slice.Iter<T>`
-                    Ok(Src::Named(n, a)) if n == "core.slice.Iter" => a.into_iter().next(),
-                    Ok(Src::Ref(_, i)) => match *i {
-                        Src::Named(n, a) if is_vecn(&n) => a.into_iter().next(),
+                    Ok(Src::Named(n, a, _)) if n == "core.slice.Iter" => a.into_iter().next(),
+                    Ok(Src::Ref(_, i, _)) => match *i {
+                        Src::Named(n, a, _) if is_vecn(&n) => a.into_iter().next(),
                         // `v.as_slice()` の型は `&[T]`
                         Src::Slice(el) => Some(*el),
                         _ => None,
@@ -2870,7 +2870,7 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     }
     // `for x in f(..)` で、式の型が `&[T]` (スカラーの要素): 評価した `fat` の値の要素を回す。
     if !by_mut && nname(it) == "Call" {
-        if let Ok(Src::Ref(false, inner)) = lw.src_ty(it) {
+        if let Ok(Src::Ref(false, inner, _)) = lw.src_ty(it) {
             if let Src::Slice(el) = &*inner {
                 // 要素はスカラー、または所有物を持たない集成体 (`Copy` の構造体。`for n in p.ast.nodes.as_slice().iter()`)
                 let elem = conv(el).filter(|t| size_of(*t).is_some()).or_else(|| lw.conv_t(el).filter(|t| matches!(t, Ty::Agg(_)) && !owns_heap(lw, *t) && elem_size(lw, *t).is_some()));
@@ -2912,9 +2912,9 @@ fn field_vec_for(lw: &mut Lw, e: &V, it: &V, by_ref: bool, by_mut: bool, name: O
     let Some(src) = super::own::field_src(lw, vs, &segs[1..]) else { return Ok(None) };
     // 要素の型 (Vec の型引数の先頭)。参照越しの Vec も同じ。
     let vec_elem_src = match &src {
-        Src::Named(n, a) if is_vecn(n) => a.first().cloned(),
-        Src::Ref(_, i) => match &**i {
-            Src::Named(n, a) if is_vecn(n) => a.first().cloned(),
+        Src::Named(n, a, _) if is_vecn(n) => a.first().cloned(),
+        Src::Ref(_, i, _) => match &**i {
+            Src::Named(n, a, _) if is_vecn(n) => a.first().cloned(),
             _ => None,
         },
         _ => None,
@@ -3053,7 +3053,7 @@ pub(crate) fn iter_source(lw: &mut Lw, it: &V) -> LR<Option<(Seq, Ty)>> {
         return Ok(None);
     }
     // `&[T]` を返す式 (`v.as_slice()` など)。
-    if let Ok(Src::Ref(false, i)) = lw.src_ty(inner) {
+    if let Ok(Src::Ref(false, i, _)) = lw.src_ty(inner) {
         if let Src::Slice(el) = &*i {
             let elem = conv(el).filter(|t| size_of(*t).is_some()).or_else(|| lw.conv_t(el).filter(|t| matches!(t, Ty::Agg(_))));
             if let Some(elem) = elem.filter(|t| ok_elem(lw, *t)) {
@@ -3564,12 +3564,12 @@ fn load_fat_ref(lw: &mut Lw, v: VId) -> VId {
 pub(crate) fn str_kind_of(lw: &Lw, e: &V) -> Option<Kind> {
     let t = lw.src_ty(e).ok()?;
     let mut t = &t;
-    while let Src::Ref(_, i) = t {
+    while let Src::Ref(_, i, _) = t {
         t = i;
     }
     match t {
         Src::Prim(s) if s == "str" => Some(Kind::Str),
-        Src::Named(n, _) if n == STRING => Some(Kind::String),
+        Src::Named(n, _, _) if n == STRING => Some(Kind::String),
         _ => None,
     }
 }
@@ -3581,7 +3581,7 @@ fn user_iter_for(lw: &mut Lw, e: &V, pat: &V, it_e: &V, body: &V) -> Option<LR<O
     // 範囲・Vec・スライス・文字列などは従来の経路 (ここでは型だけ見る)。
     let it_src = lw.src_ty(it_e).ok()?;
     let base = match &it_src {
-        Src::Named(n, _) => n.clone(),
+        Src::Named(n, _, _) => n.clone(),
         _ => return None,
     };
     if is_hdr_named(&it_src) || base.starts_with("core.iter.") || base.starts_with("std.") && !base.contains("Iter") {

@@ -36,7 +36,7 @@ fn t.keeps(v: &mut alloc.vec.Vec<&'static str, std.alloc.System>, s: &'static st
     core.mem.drop(v.push(s))
 end t.keeps
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
     let mut v: alloc.vec.Vec<&'static str, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     t.keeps(&mut v, "abc")
     core.check.eq(v.len(), 1usize)

@@ -38,7 +38,7 @@ struct W<'a> {
 fn depth(t: &Ty) -> usize {
     let mut n = 0;
     let mut t = t;
-    while let Ty::Ref(_, i) = t {
+    while let Ty::Ref(_, i, _) = t {
         n += 1;
         t = i;
     }
@@ -53,8 +53,8 @@ fn plain(t: &Ty) -> bool {
 fn undet(t: &Ty) -> bool {
     match t {
         Ty::Unknown | Ty::Var(_) => true,
-        Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(undet),
-        Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => undet(x),
+        Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(undet),
+        Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => undet(x),
         Ty::Closure { args, ret, .. } => args.iter().any(undet) || undet(ret),
         _ => false,
     }
@@ -63,8 +63,8 @@ fn undet(t: &Ty) -> bool {
 fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
     match t {
         Ty::Param(p) => bind.get(p).cloned().unwrap_or(Ty::Unknown),
-        Ty::Named(n, a) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect()),
-        Ty::Ref(m, x) => Ty::Ref(*m, Box::new(subst(x, bind))),
+        Ty::Named(n, a, _) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect(), crate::types::Rgs::default()),
+        Ty::Ref(m, x, _) => Ty::Ref(*m, Box::new(subst(x, bind)), crate::types::Region::Unk),
         Ty::Ptr(m, x) => Ty::Ptr(*m, Box::new(subst(x, bind))),
         Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| subst(x, bind)).collect()),
         Ty::Array(x, n) => Ty::Array(Box::new(subst(x, bind)), *n),
@@ -84,10 +84,10 @@ impl<'a> W<'a> {
         }
         // 4.2: `&[T; N]` → `&[T]` は参照の直下だけ。`Option<&[T]>` の位置に `Option<&[T; N]>` は渡せない。
         if !want.has_param() {
-            if let (Ty::Named(n, xs), Ty::Named(m, ys)) = (want, got) {
+            if let (Ty::Named(n, xs, _), Ty::Named(m, ys, _)) = (want, got) {
                 if n == m && matches!(n.as_str(), "Option" | "Result") {
                     for (x, y) in xs.iter().zip(ys) {
-                        if let (Ty::Ref(_, p), Ty::Ref(_, q)) = (x, y) {
+                        if let (Ty::Ref(_, p, _), Ty::Ref(_, q, _)) = (x, y) {
                             if matches!((&**p, &**q), (Ty::Slice(_), Ty::Array(..))) {
                                 return Some((want.show(), got.show()));
                             }
@@ -99,12 +99,12 @@ impl<'a> W<'a> {
         let (mut wi, mut gi) = (want, got);
         loop {
             match (wi, gi) {
-                (Ty::Ref(_, a), Ty::Ref(_, b)) => {
+                (Ty::Ref(_, a, _), Ty::Ref(_, b, _)) => {
                     wi = a;
                     gi = b;
                 }
                 (w, Ty::Ref(..)) if plain(w) && !w.has_param() => return Some((want.show(), got.show())),
-                (Ty::Ref(_, a), g) if plain(g) && !undet(g) && !matches!(**a, Ty::Param(_) | Ty::Unknown) && !undet(got) => {
+                (Ty::Ref(_, a, _), g) if plain(g) && !undet(g) && !matches!(**a, Ty::Param(_) | Ty::Unknown) && !undet(got) => {
                     return Some((want.show(), got.show()));
                 }
                 _ => break,
@@ -119,8 +119,8 @@ impl<'a> W<'a> {
 
     fn owned(&self, t: &Ty) -> bool {
         match t {
-            Ty::Named(n, args) if n == "Option" || n == "Result" => args.iter().any(|a| self.owned(a)),
-            Ty::Named(n, _) => self.p.types.get(n).map_or(true, |&i| !self.p.defs[i].derive.iter().any(|x| x == "Copy")),
+            Ty::Named(n, args, _) if n == "Option" || n == "Result" => args.iter().any(|a| self.owned(a)),
+            Ty::Named(n, _, _) => self.p.types.get(n).map_or(true, |&i| !self.p.defs[i].derive.iter().any(|x| x == "Copy")),
             Ty::Tuple(xs) => xs.iter().any(|x| self.owned(x)),
             Ty::Array(x, _) => self.owned(x),
             _ => false,
@@ -129,9 +129,9 @@ impl<'a> W<'a> {
 
     fn owned_clash(&self, want: &Ty, got: &Ty) -> bool {
         match (want, got) {
-            (Ty::Ref(_, a), Ty::Ref(_, b)) => self.owned_clash(a, b),
+            (Ty::Ref(_, a, _), Ty::Ref(_, b, _)) => self.owned_clash(a, b),
             (x @ (Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_, _)), Ty::Ref(..)) => self.owned(x) && !undet(x),
-            (Ty::Named(n, xs), Ty::Named(m, ys)) if n == m && xs.len() == ys.len() => xs.iter().zip(ys.iter()).any(|(x, y)| self.owned_clash(x, y)),
+            (Ty::Named(n, xs, _), Ty::Named(m, ys, _)) if n == m && xs.len() == ys.len() => xs.iter().zip(ys.iter()).any(|(x, y)| self.owned_clash(x, y)),
             (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => xs.iter().zip(ys.iter()).any(|(x, y)| self.owned_clash(x, y)),
             _ => false,
         }
@@ -145,7 +145,7 @@ impl<'a> W<'a> {
         let (mut wi, mut gi) = (want, got);
         loop {
             match (wi, gi) {
-                (Ty::Ref(_, a), Ty::Ref(_, b)) => {
+                (Ty::Ref(_, a, _), Ty::Ref(_, b, _)) => {
                     wi = a;
                     gi = b;
                 }
@@ -281,7 +281,7 @@ impl<'a> W<'a> {
                 self.expr(rhs);
             }
             TKind::Unary { op, operand } => {
-                if matches!(op.as_str(), "-" | "!") && matches!(&operand.ty, Ty::Ref(_, i) if matches!(&**i, Ty::Prim(p) if p != "str")) {
+                if matches!(op.as_str(), "-" | "!") && matches!(&operand.ty, Ty::Ref(_, i, _) if matches!(&**i, Ty::Prim(p) if p != "str")) {
                     self.diag(
                         "E2024",
                         format!("operand of unary `{}` is `{}`: a reference is not dereferenced implicitly: write `*c` (an operator does not dereference, 4.2)", op, operand.ty.show()),
@@ -390,7 +390,7 @@ impl<'a> W<'a> {
                 let order: Vec<&String> = td.generics.iter().filter(|g| g.0 == "type").map(|g| &g.1).collect();
                 // 列挙子の型 (戻り値) の型引数から束縛を作る。
                 let bind: HashMap<String, Ty> = match &e.ty {
-                    Ty::Named(n, a) if *n == en && a.len() == order.len() => order.iter().map(|s| (*s).clone()).zip(a.iter().cloned()).collect(),
+                    Ty::Named(n, a, _) if *n == en && a.len() == order.len() => order.iter().map(|s| (*s).clone()).zip(a.iter().cloned()).collect(),
                     _ => HashMap::new(),
                 };
                 for (pt, a) in payload.iter().zip(args) {
@@ -430,7 +430,7 @@ impl<'a> W<'a> {
         let gn = td.gnames();
         let order: Vec<&String> = td.generics.iter().filter(|g| g.0 == "type").map(|g| &g.1).collect();
         let bind: HashMap<String, Ty> = match &e.ty {
-            Ty::Named(n, a) if *n == fq && a.len() == order.len() => order.iter().map(|s| (*s).clone()).zip(a.iter().cloned()).collect(),
+            Ty::Named(n, a, _) if *n == fq && a.len() == order.len() => order.iter().map(|s| (*s).clone()).zip(a.iter().cloned()).collect(),
             _ => HashMap::new(),
         };
         for (fname, v) in fields {

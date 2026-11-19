@@ -15,7 +15,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::kir::{size_of as ty_size, Cc, Func, Op, Pay, Pointee, Term, Ty, VId};
+use crate::kir::{size_of as ty_size, Aop, Cc, Mode, Func, Op, Pay, Pointee, Term, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
 
@@ -31,6 +31,8 @@ const CAPB: u32 = 64;
 const RESB: u32 = 64;
 /// 項目の先頭 (`state`、`tag`、予備) の大きさ。取り込み値の領域は `HDR`、結果の領域は `HDR + CAPB` から。
 const HDR: u32 = 24;
+/// 項目の `spawn_deep` の深さの置き場 (`depth + 1`、0 は既定)。`kir_llvm.rs` の `THREAD_DEPTH_OFF` と同じ。
+const DEPTH_OFF: u32 = 248;
 /// 項目の大きさ。
 const ESZ: u32 = HDR + CAPB + RESB;
 /// 表の大きさ (`count` の 8 バイトを含む)。
@@ -94,14 +96,16 @@ fn ref_at(lw: &mut Lw, p: VId, t: Ty) -> Option<VId> {
 
 /// `std.thread.spawn(allocator, closure)` の呼び出し。対象外なら `None` (親へ戻す)。
 pub(super) fn spawn_call(lw: &mut Lw, _e: &V, segs: &[String], args: &[V], line: usize) -> Option<LR<Option<VId>>> {
-    if segs != ["std", "thread", "spawn"] {
+    let deep = segs == ["std", "thread", "spawn_deep"];
+    if segs != ["std", "thread", "spawn"] && !deep {
         return None;
     }
     let mut args = args.iter();
     let Some(alloc_arg) = args.next() else { return None };
     let Some(closure_arg) = args.next() else { return None };
-    if args.next().is_some() {
-        return Some(lw.err(line, "std.thread.spawn の引数の個数が違う"));
+    let depth_arg = if deep { args.next() } else { None };
+    if args.next().is_some() || (deep && depth_arg.is_none()) {
+        return Some(lw.err(line, "std.thread.spawn / spawn_deep の引数の個数が違う"));
     }
     let ret = match lw.src_ty(closure_arg) {
         Ok(Src::Closure { ret, .. }) => match lw.conv_t(&ret) {
@@ -162,7 +166,7 @@ pub(super) fn spawn_call(lw: &mut Lw, _e: &V, segs: &[String], args: &[V], line:
     lw.coll.extra.push(site);
 
     let hty = lw.aggs.borrow_mut().join_handle(ret, alloc_ty);
-    let spawnerr_ty = match lw.conv_t(&Src::Named("std.thread.SpawnError".into(), vec![])) {
+    let spawnerr_ty = match lw.conv_t(&Src::Named("std.thread.SpawnError".into(), vec![], crate::types::Rgs::default())) {
         Some(t) => t,
         None => return Some(lw.err(line, "std.thread.SpawnError は段階 1 の対象外")),
     };
@@ -176,6 +180,17 @@ pub(super) fn spawn_call(lw: &mut Lw, _e: &V, segs: &[String], args: &[V], line:
         let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: ent, off });
         let r = ref_at(lw, addr, t).expect("上で確かめた");
         lw.emit(Ty::Unit, Op::Store { ptr: r, val: *v });
+    }
+    // `spawn_deep` の深さ (`+DEPTH_OFF` に `depth + 1` を置く。0 は既定。ネイティブの `ksn.rt.tdepth` が読む)。
+    if let Some(da) = depth_arg {
+        let dv = match lw.expr(da) {
+            Ok(Some(v)) => v,
+            Ok(None) => return Some(Ok(None)),
+            Err(e) => return Some(Err(e)),
+        };
+        let one = lw.emit(Ty::Usize, Op::Const(1));
+        let d1 = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: dv, b: one });
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: ent, off: DEPTH_OFF, v: d1 });
     }
     rt_call(lw, TSTART, vec![idx], Ty::Unit);
 

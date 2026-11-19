@@ -27,7 +27,7 @@ fn t.timer_start(ms: i32) -> u32 uses [] panics never
     }
 end t.timer_start
 
-fn t.wait_value(ms: i32) -> i32 uses [suspend] panics may
+fn t.wait_value(ms: i32) -> i32 uses [suspend] panics never
     let h = t.timer_start(ms)
     std.task.await_js(h)
 end t.wait_value

@@ -9,6 +9,6 @@ fn t.id(x: &u32) -> &u32 uses [] panics never
     x
 end t.id
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

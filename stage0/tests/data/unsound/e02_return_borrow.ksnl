@@ -6,7 +6,7 @@ fn t.consume(s: alloc.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.consume
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let s = alloc.string.String.new(std.alloc.SYSTEM)
     let h = t.wrap(&s)
     t.consume(s)
@@ -15,6 +15,6 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     Ok(())
 end t.main
 
-fn t.wrap(s: &alloc.string.String) -> t.H uses [alloc] panics never
+fn t.wrap(s: &alloc.string.String) -> t.H uses [] panics never
     t.H { r: s }
 end t.wrap

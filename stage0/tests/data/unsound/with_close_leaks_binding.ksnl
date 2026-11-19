@@ -3,19 +3,19 @@ type t.Res linear
     tag: u32
 end t.Res
 
-fn t.Res.get(self: &t.Res) -> u32
+fn t.Res.get(self: &t.Res) -> u32 uses [] panics never
     self.id
 end t.Res.get
 
-fn t.Res.name(self: &t.Res) -> &str
+fn t.Res.name(self: &t.Res) -> &str uses [] panics never
     "res"
 end t.Res.name
 
-fn t.Res.new(id: u32) -> t.Res
+fn t.Res.new(id: u32) -> t.Res uses [] panics never
     t.Res { id: id, tag: 0u32 }
 end t.Res.new
 
-fn t.Res.shut(self: t.Res) -> ()
+fn t.Res.shut(self: t.Res) -> () uses [] panics never
     let t.Res { id: id, tag: tag } = self
     core.mem.drop(id)
     core.mem.drop(tag)

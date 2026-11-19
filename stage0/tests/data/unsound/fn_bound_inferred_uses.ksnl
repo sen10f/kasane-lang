@@ -4,7 +4,7 @@ fn t.bad() -> u32 uses [] panics never
     })
 end t.bad
 
-fn t.loud() -> u32
+fn t.loud() -> u32 uses [io.console] panics never
     core.mem.drop(std.io.print_line("printed"))
     1u32
 end t.loud

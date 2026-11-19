@@ -1,5 +1,5 @@
 // `abort`: 文言を出さずに終了コード 101。
-fn emit.inst.abort(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.abort(g: &mut emit.G) -> () uses [alloc] panics may pub
     let p = emit.newlab(g)
     let k = emit.newlab(g)
     emit.w(g, "  br label %L")
@@ -10,7 +10,7 @@ fn emit.inst.abort(g: &mut emit.G) -> () uses [alloc, io.console, process] panic
     emit.label(g, k)
 end emit.inst.abort
 
-fn emit.inst.addr_at(g: &mut emit.G, p: usize, off: usize) -> usize uses [alloc, io.console, process] panics may pub
+fn emit.inst.addr_at(g: &mut emit.G, p: usize, off: usize) -> usize uses [alloc] panics may pub
     let t = emit.tmp(g)
     emit.inst.def_head(g, t)
     emit.w(g, "getelementptr i8, ptr ")
@@ -47,7 +47,7 @@ fn emit.inst.alloca(g: &mut emit.G, dst: usize, ty: usize) -> () uses [alloc, io
 end emit.inst.alloca
 
 // `bN(%a, %b)` の括弧の中身。
-fn emit.inst.arg_text(tok: &str) -> &str uses [] panics may pub
+fn emit.inst.arg_text(tok: &str) -> &str uses [] panics never pub
     let pos = match tok.find("(") {
         Some(p) => p
         None => tok.len()
@@ -178,12 +178,12 @@ fn emit.inst.arith(g: &mut emit.G, dst: usize, ty: usize, op: &str, mode: &str, 
     }
 end emit.inst.arith
 
-fn emit.inst.bare_ptr(g: &mut emit.G, dst: usize, p: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.bare_ptr(g: &mut emit.G, dst: usize, p: usize) -> () uses [alloc] panics may pub
     emit.inst.fieldaddr(g, dst, p, 0usize)
 end emit.inst.bare_ptr
 
 // 一時の値 `%v<t>` を、型 `t` で定義する (右辺は `text` を続けて書く)。
-fn emit.inst.begin_tmp(g: &mut emit.G, t: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.begin_tmp(g: &mut emit.G, t: usize) -> () uses [alloc] panics may pub
     emit.inst.def_head(g, t)
 end emit.inst.begin_tmp
 
@@ -372,14 +372,14 @@ fn emit.inst.decl_overflow(g: &mut emit.G, sg: &str, op: &str, ty: usize, w: usi
 end emit.inst.decl_overflow
 
 // `%v<dst> = ` の頭を書く。
-fn emit.inst.def_head(g: &mut emit.G, dst: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.def_head(g: &mut emit.G, dst: usize) -> () uses [alloc] panics may pub
     emit.w(g, "  ")
     emit.wv(g, dst)
     emit.w(g, " = ")
 end emit.inst.def_head
 
 // 対象 `to` のブロックの引数へ、今の出所から辺を足す。
-fn emit.inst.edges_of(g: &mut emit.G, to: usize, args: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.edges_of(g: &mut emit.G, to: usize, args: &str) -> () uses [alloc] panics may pub
     let mut j = 0usize
     let np_item_np = emit.util.piece_count(args, ", ")
     let mut kk_item_np = 0usize
@@ -467,13 +467,13 @@ fn emit.inst.env_arg(g: &mut emit.G, dst: usize, ty: usize, k: usize) -> () uses
 end emit.inst.env_arg
 
 // `env.arg_count` (usize): 実行時の `ksn_rt_sys_arg_count`。
-fn emit.inst.env_arg_count(g: &mut emit.G, dst: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.env_arg_count(g: &mut emit.G, dst: usize) -> () uses [alloc] panics may pub
     emit.inst.def_head(g, dst)
     emit.w(g, "call i64 @ksn_rt_sys_arg_count()\n")
 end emit.inst.env_arg_count
 
 // `eprint data`: stderr へ全部書く (`@ksn.eprint`)。
-fn emit.inst.eprint(g: &mut emit.G, data: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.eprint(g: &mut emit.G, data: usize) -> () uses [alloc] panics may pub
     g.flags.eprint_used = true
     let (pi, n) = emit.inst.fat_parts(g, data)
     let p = emit.tmp(g)
@@ -489,7 +489,7 @@ fn emit.inst.eprint(g: &mut emit.G, data: usize) -> () uses [alloc, io.console, 
 end emit.inst.eprint
 
 // 幅 `n` の集成体 `a` のバイト `off` から、幅 `w` の値を取り出す。
-fn emit.inst.extract(g: &mut emit.G, a: usize, n: usize, off: usize, w: usize) -> usize uses [alloc, io.console, process] panics may pub
+fn emit.inst.extract(g: &mut emit.G, a: usize, n: usize, off: usize, w: usize) -> usize uses [alloc] panics may pub
     let mut x = a
     if off > 0usize {
         let s = emit.tmp(g)
@@ -519,7 +519,7 @@ fn emit.inst.extract(g: &mut emit.G, a: usize, n: usize, off: usize, w: usize) -
 end emit.inst.extract
 
 // 値 `data` (`fat`、`&str` の i128) を (ポインタ、長さ) の i64 に分ける。
-fn emit.inst.fat_parts(g: &mut emit.G, data: usize) -> (usize, usize) uses [alloc, io.console, process] panics may pub
+fn emit.inst.fat_parts(g: &mut emit.G, data: usize) -> (usize, usize) uses [alloc] panics may pub
     let w = emit.inst.extract(g, data, 128usize, 0usize, 64usize)
     let l = emit.inst.extract(g, data, 128usize, 8usize, 64usize)
     (w, l)
@@ -536,7 +536,7 @@ fn emit.inst.field(g: &mut emit.G, dst: usize, ty: usize, args: &str) -> () uses
     emit.inst.from_bits(g, dst, ty, x, w)
 end emit.inst.field
 
-fn emit.inst.fieldaddr(g: &mut emit.G, dst: usize, a: usize, off: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.fieldaddr(g: &mut emit.G, dst: usize, a: usize, off: usize) -> () uses [alloc] panics may pub
     emit.inst.def_head(g, dst)
     emit.w(g, "getelementptr i8, ptr ")
     emit.wv(g, a)
@@ -546,7 +546,7 @@ fn emit.inst.fieldaddr(g: &mut emit.G, dst: usize, a: usize, off: usize) -> () u
 end emit.inst.fieldaddr
 
 // `frame.bytes N`: 先頭に置いて 0 で埋める。
-fn emit.inst.frame(g: &mut emit.G, dst: usize, size: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.frame(g: &mut emit.G, dst: usize, size: usize) -> () uses [alloc] panics may pub
     let mut h = emit.util.new_str()
     emit.util.push_str(&mut h, "  %v")
     emit.util.push_num(&mut h, dst)
@@ -673,7 +673,7 @@ fn emit.inst.fs(g: &mut emit.G, dst: usize, ty: usize, op: &str, args: &str) -> 
 end emit.inst.fs
 
 // `global.bytes NAME SIZE`
-fn emit.inst.global(g: &mut emit.G, dst: usize, _s1: &str, args: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.global(g: &mut emit.G, dst: usize, _s1: &str, args: &str) -> () uses [alloc] panics may pub
     let t = args.trim()
     let name = emit.util.nth(t, " ", 0usize)
     let size = emit.util.dec(emit.util.nth(t, " ", 1usize))
@@ -691,7 +691,7 @@ fn emit.inst.global(g: &mut emit.G, dst: usize, _s1: &str, args: &str) -> () use
 end emit.inst.global
 
 // `heap.alloc n` (`is_realloc` が偽) / `heap.realloc p, n`。空の確保は 1 バイトにする (Rust 版と同じ)。
-fn emit.inst.heap_alloc(g: &mut emit.G, dst: usize, n: usize, is_realloc: bool, p: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.heap_alloc(g: &mut emit.G, dst: usize, n: usize, is_realloc: bool, p: usize) -> () uses [alloc] panics may pub
     let z = emit.tmp(g)
     emit.inst.def_head(g, z)
     emit.w(g, "icmp eq i64 ")
@@ -716,7 +716,7 @@ fn emit.inst.heap_alloc(g: &mut emit.G, dst: usize, n: usize, is_realloc: bool, 
     emit.w(g, ")\n")
 end emit.inst.heap_alloc
 
-fn emit.inst.heap_free(g: &mut emit.G, p: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.heap_free(g: &mut emit.G, p: usize) -> () uses [alloc] panics may pub
     emit.w(g, "  call void @free(ptr ")
     emit.wv(g, p)
     emit.w(g, ")\n")
@@ -737,7 +737,7 @@ fn emit.inst.icmp(g: &mut emit.G, dst: usize, pred: &str, ty: usize, a: usize, b
 end emit.inst.icmp
 
 // `index.check i, len`: `i < len` でなければ `ksn.panic.index(len, i)`。
-fn emit.inst.index_check(g: &mut emit.G, i: usize, len: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.index_check(g: &mut emit.G, i: usize, len: usize) -> () uses [alloc] panics may pub
     let c = emit.tmp(g)
     emit.inst.def_head(g, c)
     emit.w(g, "icmp uge i64 ")
@@ -1119,7 +1119,7 @@ fn emit.inst.minmax(g: &mut emit.G, dst: usize, ty: usize, max: bool, args: &str
 end emit.inst.minmax
 
 // 関数ごとの名前 `<接頭辞><関数番号>.<値番号>` (大域の名前の一意化)。
-fn emit.inst.name_fv(g: &mut emit.G, prefix: &str, dst: usize) -> alloc.string.String<std.alloc.System> uses [alloc, io.console, process] panics may pub
+fn emit.inst.name_fv(g: &mut emit.G, prefix: &str, dst: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
     let mut s = emit.util.new_str()
     emit.util.push_str(&mut s, prefix)
     emit.util.push_num(&mut s, g.misc.fidx)
@@ -1150,7 +1150,7 @@ fn emit.inst.neg(g: &mut emit.G, dst: usize, ty: usize, _s1: &str, mode: &str, a
 end emit.inst.neg
 
 // `枠 + タグ`: 幅 `s + 1` の値 (タグは最上位ビット、`tag` が真なら 1)。
-fn emit.inst.pack_const(g: &mut emit.G, dst: usize, s: usize, tag: bool, pay: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.pack_const(g: &mut emit.G, dst: usize, s: usize, tag: bool, pay: usize) -> () uses [alloc] panics may pub
     let n = s.wrapping_add(1usize)
     let z = emit.tmp(g)
     emit.inst.def_head(g, z)
@@ -1194,7 +1194,7 @@ fn emit.inst.pack_const(g: &mut emit.G, dst: usize, s: usize, tag: bool, pay: us
 end emit.inst.pack_const
 
 // `Some(a)` などのタグ (`tag` の値) を、枠の上に 1 ビット置く (`write` の結果など、タグが値のとき)。
-fn emit.inst.pack_vid(g: &mut emit.G, dst: usize, s: usize, tagv: usize, pay: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.pack_vid(g: &mut emit.G, dst: usize, s: usize, tagv: usize, pay: usize) -> () uses [alloc] panics may pub
     let n = s.wrapping_add(1usize)
     let z = emit.tmp(g)
     emit.inst.def_head(g, z)
@@ -1232,7 +1232,7 @@ fn emit.inst.pack_vid(g: &mut emit.G, dst: usize, s: usize, tagv: usize, pay: us
 end emit.inst.pack_vid
 
 // `panic "文言" [%値]`: stderr に `panic: 文言[: 値]` と改行を出して終了コード 101 (Rust 版と同じ文言)。
-fn emit.inst.panic(g: &mut emit.G, dst: usize, rest: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.panic(g: &mut emit.G, dst: usize, rest: &str) -> () uses [alloc] panics may pub
     let q = emit.util.after(rest, 5usize).trim()
     let mut raw: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let stop = emit.util.unquote(q, &mut raw)
@@ -1368,7 +1368,7 @@ fn emit.inst.payload(g: &mut emit.G, dst: usize, ty: usize, a: usize) -> () uses
 end emit.inst.payload
 
 // 整数 `v` (幅 `w`) を、幅 `n` の整数のバイト `off` に置く (幅 `n` の一時の値)。
-fn emit.inst.place(g: &mut emit.G, v: usize, w: usize, n: usize, off: usize) -> usize uses [alloc, io.console, process] panics may pub
+fn emit.inst.place(g: &mut emit.G, v: usize, w: usize, n: usize, off: usize) -> usize uses [alloc] panics may pub
     let mut x = v
     if w < n {
         let z = emit.tmp(g)
@@ -1398,7 +1398,7 @@ fn emit.inst.place(g: &mut emit.G, v: usize, w: usize, n: usize, off: usize) -> 
 end emit.inst.place
 
 // `2^w` (i128、`w` は 127 まで。128 は折り返す)。
-fn emit.inst.pow2(w: usize) -> i128 uses [] panics may pub
+fn emit.inst.pow2(w: usize) -> i128 uses [] panics never pub
     let mut m = 1i128
     let mut k = 0usize
     while k < w {
@@ -1529,7 +1529,7 @@ fn emit.inst.shift(g: &mut emit.G, dst: usize, ty: usize, left: bool, args: &str
 end emit.inst.shift
 
 // `static.bytes <16 進>`: 読み取り専用のバイト列 (`ksn.s.<関数番号>.<値番号>`)。
-fn emit.inst.static_bytes(g: &mut emit.G, dst: usize, hex: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.static_bytes(g: &mut emit.G, dst: usize, hex: &str) -> () uses [alloc] panics may pub
     let mut bytes: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let hb = hex.as_bytes()
     let mut i = 0usize
@@ -1714,7 +1714,7 @@ fn emit.inst.to_bits(g: &mut emit.G, fty: usize, v: usize) -> usize uses [alloc,
 end emit.inst.to_bits
 
 // `trap`: `cond` が真なら文言 `ksn.panic.<name>` で止まり、以後は新しいラベルから続ける (Rust 版の `trap` と同じ)。
-fn emit.inst.trap(g: &mut emit.G, cond: usize, name: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.trap(g: &mut emit.G, cond: usize, name: &str) -> () uses [alloc] panics may pub
     let p = emit.newlab(g)
     let c = emit.newlab(g)
     emit.w(g, "  br i1 ")
@@ -1732,13 +1732,13 @@ fn emit.inst.trap(g: &mut emit.G, cond: usize, name: &str) -> () uses [alloc, io
 end emit.inst.trap
 
 // 単位型の値 (本体のない命令の結果) は `i8 0`。
-fn emit.inst.unit_def(g: &mut emit.G, dst: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.unit_def(g: &mut emit.G, dst: usize) -> () uses [alloc] panics may pub
     emit.inst.def_head(g, dst)
     emit.w(g, "add i8 0, 0\n")
 end emit.inst.unit_def
 
 // `utf8.valid %p, %n` (usize): 先頭から有効な UTF-8 の長さ (実行時の `ksn_utf8_valid`)。
-fn emit.inst.utf8_valid(g: &mut emit.G, dst: usize, p: usize, n: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.inst.utf8_valid(g: &mut emit.G, dst: usize, p: usize, n: usize) -> () uses [alloc] panics may pub
     emit.inst.def_head(g, dst)
     emit.w(g, "call i64 @ksn_utf8_valid(ptr ")
     emit.wv(g, p)
@@ -1747,7 +1747,7 @@ fn emit.inst.utf8_valid(g: &mut emit.G, dst: usize, p: usize, n: usize) -> () us
     emit.w(g, ")\n")
 end emit.inst.utf8_valid
 
-fn emit.inst.vt(g: &emit.G, v: usize) -> usize uses [] panics may pub
+fn emit.inst.vt(g: &emit.G, v: usize) -> usize uses [] panics never pub
     *g.lay.vty.get(v).unwrap_or(&0usize)
 end emit.inst.vt
 

@@ -1,5 +1,5 @@
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let x: u32 = 1u32
+    let x = 1u32
     match x {
         'a' => core.mem.drop(())
         _ => core.mem.drop(())

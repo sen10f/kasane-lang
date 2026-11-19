@@ -2,7 +2,7 @@ type t.Box[T] derive [Clone, Copy]
     x: T
 end t.Box
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let s = alloc.string.String.new(std.alloc.SYSTEM)
     let b = t.Box { x: s }
     let c = b

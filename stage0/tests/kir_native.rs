@@ -928,7 +928,7 @@ fn ffi_boundary_diagnostics_report_exactly_their_own_code() {
     assert_eq!(ffi_check_codes("ffi_e5004", &e, "t"), ["E5004"]);
     // E5005: 渡した関数が `panics may`
     let f = "extern t.each(f: fn(i32) -> i32 uses [] panics never) -> () link \"each\"\n\n\
-             fn t.twice(x: i32) -> i32 uses [] panics may\n    x\nend t.twice\n\n\
+             fn t.twice(x: i32) -> i32 uses [] panics may\n    x + 1i32\nend t.twice\n\n\
              fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    unsafe \"ffi\" \"callback\" {\n        t.each(t.twice)\n    }\n    Ok(())\nend t.main\n";
     assert_eq!(ffi_check_codes("ffi_e5005", f, "t"), ["E5005"]);
     // E5005: panic するクロージャ
@@ -968,7 +968,7 @@ fn ffi_unsafe_permission_errors_are_still_enforced_with_callbacks_and_structs() 
 fn launcher_works_via_symlink() {
     // 起動スクリプトがシンボリックリンク経由だと `cd: can't cd` に
     // なっていた (#C)。自分の実体をシンボリックリンクを辿って求める。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"ok\")\nend t.main\n";
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"ok\")\nend t.main\n";
     let t = Tmp::new("symlink_launcher", src);
     assert_eq!(
         run(&["build"], &t.0).status.code(),
@@ -1179,7 +1179,7 @@ fn run_unsafe_pkg(name: &str, src: &str) -> (Tmp, Output) {
 fn ptr_more_place_pointers_alias_their_places_and_null_is_detected() {
     // from_mut / from_ref は場所を指す。書き込みは場所に届き、from_ref は後の書き込みも見る。null_mut::<T>() は is_null で null と分かる。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 41i32
+    let mut x = 41i32
     let n: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.null_mut::<i32>()
     }
@@ -1212,7 +1212,7 @@ end t.main
 #[test]
 fn ptr_more_null_read_panics_with_null_dereference() {
     // 要素型が分かる null でも、読むと null 参照として 101 で止まる。
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [] panics may
     unsafe "libc" "read null" {
         core.check.eq(core.ptr.read(core.ptr.null_mut::<i32>()), 0i32)
     }
@@ -1228,8 +1228,8 @@ end t.main
 fn ptr_more_cast_of_place_pointer_reinterprets_the_pinned_bytes() {
     // `from_mut` の結果は C に見せる写し (ピン) を指すので、幅の違う型への `cast` は、そのバイト列の読み替えになる
     // (リトルエンディアン: i32 の 1 は先頭の u8 が 1)。
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = 1i32
     unsafe "libc" "cast place" {
         let b: *mut u8 = core.ptr.cast::<i32, u8>(core.ptr.from_mut(&mut x))
         core.check.eq(core.ptr.read(b), 1u8)
@@ -1244,8 +1244,8 @@ end t.main
 #[test]
 fn ptr_more_cast_without_type_argument_panics() {
     // 戻り値の型注釈からは要素型を推論しない (インタプリタは型引数しか見ない)。誤った要素型で黙って読まないよう 101 で止まる。
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = 1i32
     unsafe "libc" "cast without targs" {
         let b: *mut u8 = core.ptr.cast(core.ptr.from_mut(&mut x))
         core.check.eq(core.ptr.read(b), 1u8)
@@ -1272,7 +1272,7 @@ fn ptr_more_access_past_a_pinned_value_panics() {
     ];
     for (name, body) in cases {
         let src = format!(
-            "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    let mut x: i32 = 1i32\n    unsafe \"libc\" \"past end\" {{\n        {}\n    }}\n    core.mem.drop(std.io.print_line(\"after\"))\n    Ok(())\nend t.main\n",
+            "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    let mut x = 1i32\n    unsafe \"libc\" \"past end\" {{\n        {}\n    }}\n    core.mem.drop(std.io.print_line(\"after\"))\n    Ok(())\nend t.main\n",
             body
         );
         let (_t, r) = run_unsafe_pkg(name, &src);
@@ -1281,8 +1281,8 @@ fn ptr_more_access_past_a_pinned_value_panics() {
         assert!(!text(&r.stdout).contains("after"), "{}", name);
     }
     // 値の幅に収まる読み書き (`cast` で 1 バイトだけ読む) は今までどおり通る。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = 1i32
     unsafe \"libc\" \"fits\" {
         let b: *mut u8 = core.ptr.cast::<i32, u8>(core.ptr.from_mut(&mut x))
         core.check.eq(core.ptr.read(b), 1u8)
@@ -1343,7 +1343,7 @@ fn ptr_more_place_pointer_is_passed_to_c_as_a_pinned_copy() {
     let src = r#"extern t.k_sum_i32(values: *const i32, n: usize) -> i32 link "k_sum_i32"
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 5i32
+    let mut x = 5i32
     unsafe "libc" "place to C" {
         core.check.eq(t.k_sum_i32(core.ptr.as_const(core.ptr.from_mut(&mut x)), 1usize), 5i32)
     }
@@ -1427,8 +1427,8 @@ end t.main
 #[test]
 fn ffi_from_ref_pointer_is_const_and_write_through_it_is_rejected() {
     // `from_ref` は `*const` を返し、`core.ptr.write` は `*mut` を取る。書き込みは検査の段階で止まり、実行に届かない。
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let x: i32 = 41i32
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let x = 41i32
     let q: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.from_ref(&x)
     }
@@ -1447,8 +1447,8 @@ end t.main
 #[test]
 fn ffi_as_mut_makes_a_from_ref_pointer_writable() {
     // `as_mut` を通したものは書ける。書き込みは元の場所 (`x`) に届く。
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 41i32
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = 41i32
     let q: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.from_ref(&x)
     }
@@ -1469,8 +1469,8 @@ end t.main
 #[test]
 fn ffi_as_const_pointer_is_read_only_and_from_mut_stays_writable() {
     // `as_const` で作った `*const` は読めるが、書き込みは `*mut` を要求する検査で止まる (下のテスト)。元の `from_mut` のポインタは従来どおり書けて読める。
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = 1i32
     let p: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.from_mut(&mut x)
     }
@@ -1491,8 +1491,8 @@ end t.main
 #[test]
 fn ffi_write_through_as_const_pointer_is_rejected() {
     // `as_const` で作った `*const` への書き込みは、`*mut` を取る `core.ptr.write` の検査で E2023 になる。
-    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut x = 1i32
     let p: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.from_mut(&mut x)
     }
@@ -1635,8 +1635,8 @@ fn raw_ptr_check(name: &str, src: &str) -> String {
 #[test]
 fn raw_ptr_annotations_accept_the_correct_forms_without_errors() {
     // 正しい書き方: from_mut / from_ref / null_mut / as_const / as_mut / cast、`*mut` → `*const` の暗黙の縮小、読み書き。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = 1i32
     let p: *mut i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
         core.ptr.from_mut(&mut x)
     }
@@ -1674,7 +1674,7 @@ end t.main
 #[test]
 fn raw_ptr_let_annotation_rejects_a_plain_value() {
     // `let s: *mut i32 = 5i32`: 値をポインタの注釈へ入れると E2020。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let s: *mut i32 = 5i32
     unsafe \"ptr\" \"null check\" {
         core.check.eq(core.ptr.is_null(s), false)
@@ -1689,7 +1689,7 @@ end t.main
 #[test]
 fn raw_ptr_let_annotation_rejects_const_into_mut() {
     // `let r: *mut i32 = core.ptr.from_ref(&x)`: `from_ref` は `*const` を返すので、`*mut` の注釈は E2020。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let x: i32 = 1i32
     let r: *mut i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
         core.ptr.from_ref(&x)
@@ -1707,7 +1707,7 @@ end t.main
 #[test]
 fn raw_ptr_let_annotation_rejects_a_different_element_type() {
     // 要素型が確定して食い違う (`*const u8` と `*const i32`) のは E2020。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let x: i32 = 1i32
     let r: *const u8 = unsafe \"ptr\" \"make or convert a raw pointer\" {
         core.ptr.from_ref(&x)
@@ -1725,7 +1725,7 @@ end t.main
 #[test]
 fn raw_ptr_pointer_is_not_a_plain_integer_annotation() {
     // ポインタを整数の注釈へ入れるのは E2020 (`core.ptr.null_mut::<i32>()` を `i32` へ)。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let n: i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
         core.ptr.null_mut::<i32>()
     }
@@ -1740,7 +1740,7 @@ end t.main
 #[test]
 fn raw_ptr_unsuffixed_literal_is_not_a_pointer() {
     // 整数リテラルをポインタの注釈へ入れるのは E2020 (型は `{integer}`)。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let q: *mut i32 = 5
     unsafe \"ptr\" \"null check\" {
         core.check.eq(core.ptr.is_null(q), false)
@@ -1761,7 +1761,7 @@ fn raw_ptr_const_argument_to_mut_parameter_is_rejected() {
     }
 end t.take
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let x: i32 = 1i32
     unsafe \"ptr\" \"make or convert a raw pointer\" {
         t.take(core.ptr.from_ref(&x))
@@ -1782,8 +1782,8 @@ fn raw_ptr_mut_argument_to_const_parameter_is_accepted() {
     }
 end t.look
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut x: i32 = 1i32
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut x = 1i32
     let p: *mut i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
         core.ptr.from_mut(&mut x)
     }
@@ -1806,7 +1806,7 @@ fn raw_ptr_return_value_mismatch_is_rejected() {
     }
 end t.back
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let x: i32 = 1i32
     let r = t.back(&x)
     unsafe \"ptr\" \"null check\" {
@@ -1839,7 +1839,7 @@ end t.main
 #[test]
 fn raw_ptr_reference_to_pointer_annotation_stays_silent() {
     // 参照は透過的に扱う方針なので、`&x` を `*const` の注釈へ入れても黙る (取りこぼしを選ぶ)。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let x: i32 = 1i32
     let s: *const i32 = &x
     unsafe \"ptr\" \"null check\" {
@@ -1855,7 +1855,7 @@ end t.main
 #[test]
 fn ptr_add_rejects_const_argument_and_add_const_accepts_it() {
     // `add` は `*mut` を取るので `*const` (from_ref) を渡すと E2023。`add_const` なら同じ引数が通る。
-    let bad = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let bad = "fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let x: i32 = 1i32
     let q: *const i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
         core.ptr.from_ref(&x)
@@ -1872,7 +1872,7 @@ end t.main
     let out = raw_ptr_check("ptr_add_mut_rejects_const", bad);
     assert!(out.contains("E2023") && out.contains("expected `*mut i32`, found `*const i32`"), "{}", out);
 
-    let ok = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let ok = "fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let x: i32 = 1i32
     let q: *const i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
         core.ptr.from_ref(&x)
@@ -2219,7 +2219,7 @@ fn f32_abs_keeps_signaling_nan_bits() {
 end t.absbits
 
 fn t.main() -> () uses [] panics may
-    let s: f32 = core.num.f32.from_bits(2139095041u32)
+    let s = core.num.f32.from_bits(2139095041u32)
     core.check.eq(s.abs().to_bits(), 2139095041u32)
     core.check.eq((-s).abs().to_bits(), 2139095041u32)
     core.check.eq(t.absbits(s), 2139095041u32)
@@ -2471,7 +2471,7 @@ end t.main
     b: u8
 end t.P
 
-fn t.main() -> () uses [io.console] panics may
+fn t.main() -> () uses [] panics may
     let x = t.P { b: 1u8, a: 2u8 }
     core.check.eq(x, t.P { a: 9u8, b: 1u8 })
 end t.main
@@ -2535,23 +2535,25 @@ fn linear_ok_programs_build_native_and_match_run() {
     let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(names.len() >= 100, "linear_ok cases missing");
-    let mut bad = vec![];
-    for p in names {
+    let bad: Vec<String> = par_map(&names, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("linear_native_{}", stem), &fs::read_to_string(&p).unwrap());
+        let t = Tmp::new(&format!("linear_native_{}", stem), &fs::read_to_string(p).unwrap());
         let b = run(&["build"], &t.0);
         let out = format!("{}{}", text(&b.stdout), text(&b.stderr));
         let exe = t.0.join("target").join("debug").join("t.native");
         if out.contains("native backend skipped") || !exe.exists() {
-            bad.push(format!("{}: バンドルへ退避: {}", stem, out.lines().find(|l| l.contains("skipped")).unwrap_or("")));
-            continue;
+            return Some(format!("{}: バンドルへ退避: {}", stem, out.lines().find(|l| l.contains("skipped")).unwrap_or("")));
         }
         let n = Command::new(&exe).current_dir(&t.0).output().unwrap();
         let r = run(&["run"], &t.0);
         if n.status.code() != r.status.code() || text(&n.stdout) != text(&r.stdout) || text(&n.stderr) != text(&r.stderr) {
-            bad.push(format!("{}: native と run が違う: {:?} {:?} / {:?} {:?}", stem, n.status.code(), text(&n.stdout), r.status.code(), text(&r.stdout)));
+            return Some(format!("{}: native と run が違う: {:?} {:?} / {:?} {:?}", stem, n.status.code(), text(&n.stdout), r.status.code(), text(&r.stdout)));
         }
-    }
+        None
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 

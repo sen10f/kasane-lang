@@ -6,7 +6,7 @@ fn t.eat(s: t.S) -> u32 uses [] panics never
     s.v
 end t.eat
 
-fn t.main() -> Result<(), std.io.Error> uses [] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let mut i = 0u8
     while i < 2u8 {
         let s = t.S { v: 1u32 }

@@ -122,7 +122,7 @@ end ksnc.stage.num
 // `--stages` による段の選び方 (rust 既定・kasane・both)。verb ごとの入口。
 // both は Rust 版と Kasane 版を両方走らせて並べる。both の整形は書き換えない (--check として走らせる)。
 // 本文を標準出力へ流す (末尾の空白を除き、空なら何もしない)。
-fn ksnc.stage.text(s: &str) -> Result<(), ksnc.Failure> uses [io.console] panics may pub
+fn ksnc.stage.text(s: &str) -> Result<(), ksnc.Failure> uses [io.console] panics never pub
     let t = s.trim_end()
     if t != "" {
         std.io.print_line(t)?

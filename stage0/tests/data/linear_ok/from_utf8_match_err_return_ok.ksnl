@@ -3,7 +3,7 @@ enum t.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
     Io(std.io.Error)
 end t.Error
 
-fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics never
+fn t.main() -> Result<(), t.Error> uses [io.console] panics never
     let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match core.str.from_utf8(buf.as_slice()) {
         Ok(s) => {

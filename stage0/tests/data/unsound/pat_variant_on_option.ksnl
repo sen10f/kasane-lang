@@ -1,5 +1,5 @@
 fn t.main() -> () uses [] panics never
-    let o: Option<u8> = Some(1u8)
+    let o = Some(1u8)
     match o {
         Ok(x) => core.mem.drop(x)
         Err(_e) => core.mem.drop(())

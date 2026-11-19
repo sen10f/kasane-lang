@@ -24,8 +24,8 @@ use super::{coll, Lw, LR};
 /// 受け手の型の名前 (利用者の型の FQN)。`S` / `&S` / `&mut S` のとき `S`。
 fn recv_type_name(t: &Src) -> Option<String> {
     match t {
-        Src::Named(n, _) => Some(n.clone()),
-        Src::Ref(_, inner) => recv_type_name(inner),
+        Src::Named(n, _, _) => Some(n.clone()),
+        Src::Ref(_, inner, _) => recv_type_name(inner),
         _ => None,
     }
 }
@@ -33,13 +33,13 @@ fn recv_type_name(t: &Src) -> Option<String> {
 /// トレイト側に置いた impl のメソッド (3.2) を引く型の鍵 (参照は剥がす。名義型は FQN、基本型は型名)。
 fn trait_side_key(t: &Src) -> Option<String> {
     match t {
-        Src::Named(n, _) => Some(match n.as_str() {
+        Src::Named(n, _, _) => Some(match n.as_str() {
             "Option" => "core.option.Option".to_string(),
             "Result" => "core.result.Result".to_string(),
             n => n.to_string(),
         }),
         Src::Prim(p) => Some(p.clone()),
-        Src::Ref(_, inner) => trait_side_key(inner),
+        Src::Ref(_, inner, _) => trait_side_key(inner),
         _ => None,
     }
 }
@@ -90,7 +90,7 @@ impl<'a> Lw<'a> {
 
     /// メソッドの `self` が `&mut` か。
     pub(super) fn method_takes_mut(&self, di: usize) -> bool {
-        self.p.defs[di].params.first().map_or(false, |(_, t)| matches!(from_v(t, &HashSet::new()), Src::Ref(true, _)))
+        self.p.defs[di].params.first().map_or(false, |(_, t)| matches!(from_v(t, &HashSet::new()), Src::Ref(true, _, _)))
     }
 
     /// トレイト側に置いた impl のメソッド (3.2) の呼び出し `x.m(..)` (`Call` の経路形)。該当しなければ `None`。
@@ -211,7 +211,7 @@ impl<'a> Lw<'a> {
                     _ => return None,
                 };
                 let (name, args) = self.aggs.borrow().generic_args.get(&ai).cloned()?;
-                Some(Src::Named(name, args))
+                Some(Src::Named(name, args, crate::types::Rgs::default()))
             }
         }
     }
@@ -235,7 +235,7 @@ impl<'a> Lw<'a> {
         let sub = |t: Src| super::mono::subst_ty(&t, &tmap);
         let self_src = sub(from_v(&cd.params[0].1, &gn));
         let (by_ref, want_mut) = match &self_src {
-            Src::Ref(m, _) => (true, *m),
+            Src::Ref(m, _, _) => (true, *m),
             _ => (false, false),
         };
         let Some(self_ty) = coll::sig_ty(self, &self_src) else {

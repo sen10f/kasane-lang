@@ -510,11 +510,11 @@ fn str_fn(fat: Ty) -> Func {
 /// `&str` の KIR の型か (`fat` と、元の型 `&str`)。
 /// `&[u8]` (比較だけバイトの一致で下ろす。表示は未対応)。
 fn is_bytes(src: &Src, ty: Ty, fat: Ty) -> bool {
-    ty == fat && matches!(src, Src::Ref(_, inner) if matches!(&**inner, Src::Slice(e) if matches!(&**e, Src::Prim(s) if s == "u8")))
+    ty == fat && matches!(src, Src::Ref(_, inner, _) if matches!(&**inner, Src::Slice(e) if matches!(&**e, Src::Prim(s) if s == "u8")))
 }
 
 fn is_str(src: &Src, ty: Ty, fat: Ty) -> bool {
-    ty == fat && matches!(src, Src::Ref(_, inner) if matches!(&**inner, Src::Prim(s) if s == "str"))
+    ty == fat && matches!(src, Src::Ref(_, inner, _) if matches!(&**inner, Src::Prim(s) if s == "str"))
 }
 
 /// Option / Result の 2 つの枝 (タグが真の枝, タグが偽の枝)。各枝は (変種の名前, ペイロード (元の型, KIR の型))。
@@ -522,8 +522,8 @@ fn is_str(src: &Src, ty: Ty, fat: Ty) -> bool {
 type Arm = (&'static str, Option<(Src, Ty)>);
 fn two_arms(src: &Src, ty: Ty) -> Option<(Arm, Arm)> {
     match (src, ty) {
-        (Src::Named(n, a), Ty::Opt(p)) if n == "Option" && a.len() == 1 => Some((("Some", Some((a[0].clone(), p.ty()))), ("None", None))),
-        (Src::Named(n, a), Ty::Res(t0, e0)) if n == "Result" && a.len() == 2 => {
+        (Src::Named(n, a, _), Ty::Opt(p)) if n == "Option" && a.len() == 1 => Some((("Some", Some((a[0].clone(), p.ty()))), ("None", None))),
+        (Src::Named(n, a, _), Ty::Res(t0, e0)) if n == "Result" && a.len() == 2 => {
             Some((("Err", Some((a[1].clone(), e0.ty()))), ("Ok", Some((a[0].clone(), t0.ty())))))
         }
         _ => None,
@@ -565,10 +565,10 @@ impl<'a> Gen<'a> {
             // `f32` / `f64` の Display は Debug と同じ文字列 (`py_float` / `py_float32`)。
             (Src::Prim(_), t) if t.is_float() => Ok(self.scalar(&format!("{}.disp", t.name()), || float_fn(t, fat))),
             (_, t) if is_str(src, t, fat) => Ok(self.scalar("str.raw", || raw_fn(fat, fat, "str.raw"))),
-            (Src::Named(name, _), t) if name == "alloc.string.String" && (matches!(t, Ty::Agg(_)) || t == Ty::Ptr) => {
+            (Src::Named(name, _, _), t) if name == "alloc.string.String" && (matches!(t, Ty::Agg(_)) || t == Ty::Ptr) => {
                 Ok(self.scalar("string.raw", || raw_fn(t, fat, "string.raw")))
             }
-            (Src::Ref(_, inner), t) => self.need_display(inner, t, file),
+            (Src::Ref(_, inner, _), t) => self.need_display(inner, t, file),
             (other, t) => Err(format!("型 {} ({}) の Display の String への追記は未対応", show(other), t.name())),
         }
     }
@@ -626,12 +626,12 @@ impl<'a> Gen<'a> {
             // `f32` / `f64` の Debug は Display と同じ文字列。
             (Src::Prim(_), t) if t.is_float() => Ok(self.scalar(&format!("{}.disp", t.name()), || float_fn(t, fat))),
             (_, t) if is_str(src, t, fat) => Ok(self.scalar("str", || str_fn(fat))),
-            (Src::Named(name, _), t) if name == "alloc.string.String" && (matches!(t, Ty::Agg(_)) || (self.sink && t == Ty::Ptr)) => Ok(self.string_debug(t, fat)),
-            (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg(name, i, file),
+            (Src::Named(name, _, _), t) if name == "alloc.string.String" && (matches!(t, Ty::Agg(_)) || (self.sink && t == Ty::Ptr)) => Ok(self.string_debug(t, fat)),
+            (Src::Named(name, args, _), Ty::Agg(i)) if args.is_empty() => self.agg(name, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, false),
             (Src::Slice(e) | Src::Array(e, _), t) if t == fat => self.slice_debug(e, file),
             (Src::Tuple(es), Ty::Agg(i)) => self.tuple(es, i, file),
-            (Src::Ref(_, inner), t) => self.need(inner, t, file),
+            (Src::Ref(_, inner, _), t) => self.need(inner, t, file),
             (other, t) => Err(format!("型 {} ({}) の Debug 表示は未対応", show(other), t.name())),
         }
     }
@@ -652,7 +652,7 @@ impl<'a> Gen<'a> {
             }
             (_, t) if is_str(src, t, fat) || is_bytes(src, t, fat) => Ok(self.str_eq(fat, fat, "str")),
             // `&[T]` / `&[T; N]` (T は 64 ビット以下の整数・bool・char): 長さと要素ごとの比較。
-            (Src::Ref(_, inner), t) if t == fat && matches!(&**inner, Src::Slice(_) | Src::Array(_, _)) => {
+            (Src::Ref(_, inner, _), t) if t == fat && matches!(&**inner, Src::Slice(_) | Src::Array(_, _)) => {
                 let (Src::Slice(e) | Src::Array(e, _)) = &**inner else { unreachable!() };
                 match super::conv(e).filter(|x| (x.is_int() && x.bits() <= 64) || *x == Ty::Bool) {
                     Some(et) => Ok(self.slice_eq_elem(fat, fat, &format!("slice.{}", et.name()), et)),
@@ -660,14 +660,14 @@ impl<'a> Gen<'a> {
                 }
             }
             // `String` の等しさ: 値は {ptr, len, cap} の `vec`。先頭の {ptr, len} だけを `&str` と同じ規則で比べる (設計_KIR.md 23 章)。
-            (Src::Named(name, _), t) if name == "alloc.string.String" && matches!(t, Ty::Agg(_)) => Ok(self.str_eq(fat, t, "string")),
+            (Src::Named(name, _, _), t) if name == "alloc.string.String" && matches!(t, Ty::Agg(_)) => Ok(self.str_eq(fat, t, "string")),
             // 局所変数の `String` はヘッダの参照 (`ptr`) で渡る。
-            (Src::Named(name, _), Ty::Ptr) if name == "alloc.string.String" => Ok(self.str_eq(fat, Ty::Ptr, "string.ptr")),
-            (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg_eq(name, i, file),
+            (Src::Named(name, _, _), Ty::Ptr) if name == "alloc.string.String" => Ok(self.str_eq(fat, Ty::Ptr, "string.ptr")),
+            (Src::Named(name, args, _), Ty::Agg(i)) if args.is_empty() => self.agg_eq(name, i, file),
             (Src::Tuple(es), Ty::Agg(i)) => self.tuple_eq(es, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, true),
             (Src::Prim(_), t) if t.is_float() => Err(format!("型 {} の比較は未対応 (浮動小数は失敗の文言に値を出せない)", t.name())),
-            (Src::Ref(_, inner), t) => self.need_eq(inner, t, file),
+            (Src::Ref(_, inner, _), t) => self.need_eq(inner, t, file),
             (other, t) => Err(format!("型 {} ({}) の比較は未対応", show(other), t.name())),
         }
     }
@@ -676,7 +676,7 @@ impl<'a> Gen<'a> {
     /// 参照先を読んだ値 (`Option<&u8>` のペイロードや、`core.check.eq(&a, &b)` の両辺) に対して使う。
     fn scalar_ref_src(src: &Src, ty: Ty) -> (&Src, Ty) {
         match src {
-            Src::Ref(false, inner) if super::conv(inner) == Some(ty) => (inner, ty),
+            Src::Ref(false, inner, _) if super::conv(inner) == Some(ty) => (inner, ty),
             _ => (src, ty),
         }
     }

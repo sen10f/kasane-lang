@@ -1,11 +1,11 @@
-fn t.addr(port: u16) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+fn t.addr(port: u16) -> alloc.string.String<std.alloc.System> uses [alloc] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str("127.0.0.1:"))
     core.mem.drop(s.push_u64(u64.from_u16(port)))
     s
 end t.addr
 
-fn t.closed_port() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] panics may
+fn t.closed_port() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] panics never
     let listener = match std.net.listen("127.0.0.1:0") {
         Ok(l) => l
         Err(_e) => return Err(t.fail(1i32))
@@ -56,7 +56,7 @@ fn t.closed_port() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] 
     Ok(())
 end t.closed_port
 
-fn t.fail(code: i32) -> std.io.Error
+fn t.fail(code: i32) -> std.io.Error uses [] panics never
     std.io.Error { kind: std.io.ErrorKind.Other, code: code }
 end t.fail
 
@@ -73,7 +73,7 @@ fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
     }
 end t.ok_unit
 
-fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics may
+fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))

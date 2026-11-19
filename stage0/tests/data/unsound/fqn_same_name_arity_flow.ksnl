@@ -17,7 +17,7 @@ fn t.B.pick(self: &t.B) -> u32 uses [] panics never
     self.n
 end t.B.pick
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let a = t.A { n: 1u32 }
     let s = t.mk()
     let r = a.pick(s.as_str())

@@ -76,7 +76,7 @@ fn types.ty.args(ar: &mut types.ty.Arena, ids: &alloc.vec.Vec<usize, std.alloc.S
     Ok((first, ids.len()))
 end types.ty.args
 
-fn types.ty.bind(ar: &mut types.ty.Arena, v: usize, t: usize, litc: usize) -> Result<bool, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn types.ty.bind(ar: &mut types.ty.Arena, v: usize, t: usize, litc: usize) -> Result<bool, alloc.alloc.AllocError> uses [] panics never pub
     let mut n = types.ty.node(ar, v)
     if litc != 0usize {
         let tn = types.ty.node(ar, t)
@@ -104,7 +104,7 @@ fn types.ty.copy(n: &types.ty.Node) -> types.ty.Node uses [] panics never pub
     types.ty.Node { k: n.k, a: n.a, b: n.b, c: n.c, m: n.m }
 end types.ty.copy
 
-fn types.ty.default_lit(ar: &mut types.ty.Arena, v: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn types.ty.default_lit(ar: &mut types.ty.Arena, v: usize) -> Result<(), alloc.alloc.AllocError> uses [] panics never pub
     let r = types.ty.find(ar, v)
     let n = types.ty.node(ar, r)
     if (n.k == types.ty.K.Var && n.c == 1usize) {

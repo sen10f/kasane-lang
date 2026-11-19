@@ -9,7 +9,7 @@ type shortener_https.router.Reply pub
     status: u16 pub
 end shortener_https.router.Reply
 
-fn shortener_https.router.empty() -> alloc.string.String<std.alloc.System> uses [alloc] panics never pub
+fn shortener_https.router.empty() -> alloc.string.String<std.alloc.System> uses [] panics never pub
     alloc.string.String.new(std.alloc.SYSTEM)
 end shortener_https.router.empty
 

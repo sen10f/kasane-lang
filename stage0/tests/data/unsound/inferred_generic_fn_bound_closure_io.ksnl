@@ -1,4 +1,4 @@
-fn t.g[F: core.ops.Fn<(), ()>](f: F) -> ()
+fn t.g[F: core.ops.Fn<(), ()>](f: F) -> () uses [] panics never
     f()
 end t.g
 

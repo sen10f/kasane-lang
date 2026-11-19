@@ -1,4 +1,4 @@
-fn t.main() -> () uses [io.console, suspend] panics may
+fn t.main() -> () uses [suspend] panics never
     let mut x = 1u32
     let r = &mut x
     let f = fn() -> () capture [] {

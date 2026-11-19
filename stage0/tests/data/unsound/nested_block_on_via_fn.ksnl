@@ -4,7 +4,7 @@ fn t.inner() -> () uses [suspend] panics may
     })
 end t.inner
 
-fn t.main() -> () uses [io.console, suspend] panics may
+fn t.main() -> () uses [suspend] panics may
     std.task.block_on(fn() -> () capture [] {
         t.inner()
     })

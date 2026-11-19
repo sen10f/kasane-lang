@@ -6,7 +6,7 @@ fn t.look(s: &t.S) -> u32 uses [] panics never
     s.v
 end t.look
 
-fn t.main() -> Result<(), std.io.Error> uses [] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let s = t.S { v: 1u32 }
     let mut i = 0u8
     while i < 3u8 {

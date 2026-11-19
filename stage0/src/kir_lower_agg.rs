@@ -173,48 +173,48 @@ impl AggTab {
         }
         match t {
             // `Option<&T>` (T は所有物を持つ型): ペイロードは要素の番地を 1 つ持つ集成体 `bref` (設計_KIR.md 17.18)。
-            Src::Named(name, args) if name == "Option" && args.len() == 1 && matches!(&args[0], Src::Ref(m, i) if self.bref_ref(p, file, *m, i)) => {
+            Src::Named(name, args, _) if name == "Option" && args.len() == 1 && matches!(&args[0], Src::Ref(m, i, _) if self.bref_ref(p, file, *m, i)) => {
                 let b = self.bref();
                 Ok(Ty::Opt(Pay::of(b).expect("集成体はペイロードになる")))
             }
             // 組み込みの Option / Result。ペイロードは集成体・unit・入れ子も持てる (設計_KIR.md 11.5)。
-            Src::Named(name, args) if name == "Option" && args.len() == 1 => Ok(Ty::Opt(self.pay_of(p, file, &args[0])?)),
-            Src::Named(name, args) if name == "Result" && args.len() == 2 => {
+            Src::Named(name, args, _) if name == "Option" && args.len() == 1 => Ok(Ty::Opt(self.pay_of(p, file, &args[0])?)),
+            Src::Named(name, args, _) if name == "Result" && args.len() == 2 => {
                 let t0 = self.pay_of(p, file, &args[0])?;
                 let e0 = self.pay_of(p, file, &args[1])?;
                 Ok(Ty::Res(t0, e0))
             }
             // 値渡しの `Vec` / `String` は 24 バイトのヘッダ `vec` の値 (所有の移動。設計_KIR.md 13 章)。
             // 参照 (`&Vec` など) は下の腕に入れず、借用のヘッダのアドレス (`ptr`) として `sig_ty` が受ける。
-            Src::Named(name, args) if name == "alloc.vec.Vec" || name == "alloc.raw.Buf" => {
+            Src::Named(name, args, _) if name == "alloc.vec.Vec" || name == "alloc.raw.Buf" => {
                 let elem = args.first().and_then(|a| self.lower_ty(p, file, a).ok());
                 Ok(self.vec_of(elem))
             }
-            Src::Named(name, _) if name == "alloc.string.String" => Ok(self.vec_hdr()),
+            Src::Named(name, _, _) if name == "alloc.string.String" => Ok(self.vec_hdr()),
             // `core.str.Chars` (局所に持つ `s.chars()`) は、まだ読んでいない残りの `&str` (`fat`)。`next` が先頭の文字を読んで進める。
-            Src::Named(name, _) if name == "core.str.Chars" => Ok(self.fat()),
+            Src::Named(name, _, _) if name == "core.str.Chars" => Ok(self.fat()),
             // `core.str.Split` (局所に持つ `s.split(sep)`): 残りと区切りと終わりの印 (`split_it`)。`next` が進める。
-            Src::Named(name, _) if name == "core.str.Split" => Ok(self.split_it()),
-            Src::Named(name, _) if name == "alloc.alloc.AllocError" => Ok(self.alloc_err()),
-            Src::Named(name, _) if name == "alloc.vec.InsertError" => Ok(self.insert_err()),
+            Src::Named(name, _, _) if name == "core.str.Split" => Ok(self.split_it()),
+            Src::Named(name, _, _) if name == "alloc.alloc.AllocError" => Ok(self.alloc_err()),
+            Src::Named(name, _, _) if name == "alloc.vec.InsertError" => Ok(self.insert_err()),
             // `std.thread.JoinHandle<T, A>` = `{A, usize, *mut T}`。`T` はポインタの向こうにあるので配置には現れない。
-            Src::Named(name, args) if name == "std.thread.JoinHandle" && args.len() == 2 => {
+            Src::Named(name, args, _) if name == "std.thread.JoinHandle" && args.len() == 2 => {
                 let elem_ty = self.lower_ty(p, file, &args[0])?;
                 let alloc_ty = self.lower_ty(p, file, &args[1])?;
                 Ok(self.join_handle(elem_ty, alloc_ty))
             }
             // `std.task.Task<T>` = `{usize}` (実行器の表のタスクの番号)。`T` は名前に埋め込み、`join_task` で読む型として持つ (設計_KIR.md 26 章)。
-            Src::Named(name, args) if name == "std.task.Task" && args.len() == 1 => {
+            Src::Named(name, args, _) if name == "std.task.Task" && args.len() == 1 => {
                 let elem_ty = self.lower_ty(p, file, &args[0])?;
                 Ok(self.task_handle(elem_ty))
             }
             // `Box<T, System>` は 8 バイトの所有ポインタ (`box<..>`)、`Box<dyn Tr, System>` はデータと vtable の組 (`dynbox`)。設計_KIR.md 21 章。
-            Src::Named(name, args) if name == "alloc.boxed.Box" && args.len() == 2 => {
-                if !matches!(&args[1], Src::Named(a, _) if a == "std.alloc.System") {
+            Src::Named(name, args, _) if name == "alloc.boxed.Box" && args.len() == 2 => {
+                if !matches!(&args[1], Src::Named(a, _, _) if a == "std.alloc.System") {
                     return Err("Box のアロケータは std.alloc.System だけ対象".to_string());
                 }
                 match &args[0] {
-                    Src::Dyn(tr, _) => {
+                    Src::Dyn(tr, _, _) => {
                         let fq = trait_fqn(p, file, tr);
                         Ok(self.dynbox(&fq))
                     }
@@ -228,14 +228,14 @@ impl AggTab {
                 }
             }
             // チャネルの端 `Sender<T>` / `Receiver<T>` (`{ state: ptr }`) と `SendError<T>` (`{ value: T }`)。T は 8 バイト以下のスカラー。
-            Src::Named(name, args) if (name == "std.sync.Sender" || name == "std.sync.Receiver" || name == "std.sync.SendError") && args.len() == 1 => {
+            Src::Named(name, args, _) if (name == "std.sync.Sender" || name == "std.sync.Receiver" || name == "std.sync.SendError") && args.len() == 1 => {
                 let elem = self.lower_ty(p, file, &args[0])?;
                 if !(matches!(elem, Ty::Agg(_)) || (elem.is_scalar() && elem != Ty::Unit && !matches!(elem, Ty::I128 | Ty::U128))) {
                     return Err(format!("{}<{}> は段階 1 の対象外 (要素は 64 ビット以下のスカラーか集成体だけ)", name, show(&args[0])));
                 }
                 Ok(if name == "std.sync.SendError" { self.send_err(elem) } else { self.chan_end(name == "std.sync.Sender", elem) })
             }
-            Src::Named(name, args) => {
+            Src::Named(name, args, _) => {
                 let segs: Vec<String> = name.split('.').map(String::from).collect();
                 match p.resolve(&segs, file).map(|r| r.target) {
                     // ソケットの型 (`std.net.TcpListener` / `TcpStream`) は `&` の形でも現れるので、型表に入れる (設計_KIR.md 12 章)。
@@ -257,16 +257,16 @@ impl AggTab {
                 self.intern_tuple(elems)
             }
             // `&dyn Tr` / `&mut dyn Tr`: データの番地と vtable の番号の組 (`dynref<Tr>`。所有しない借用で、`Box<dyn>` と同じ呼び出しの補助関数を使う)。
-            Src::Ref(_, inner) if matches!(&**inner, Src::Dyn(..)) => {
-                let Src::Dyn(tr, _) = &**inner else { unreachable!() };
+            Src::Ref(_, inner, _) if matches!(&**inner, Src::Dyn(..)) => {
+                let Src::Dyn(tr, _, _) = &**inner else { unreachable!() };
                 let fq = trait_fqn(p, file, tr);
                 Ok(self.dynbox_named("dynref", &fq))
             }
             // 集成体への参照 `&S` / `&mut S` (スカラーへの参照は上の `conv` が済ませている)。
-            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String") => {
+            Src::Ref(_, inner, _) if matches!(&**inner, Src::Named(n, _, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String") => {
                 Err("Vec / String への参照はヘッダのアドレスで渡す".to_string())
             }
-            Src::Ref(m, inner) if matches!(&**inner, Src::Named(..) | Src::Tuple(_)) => match self.lower_ty(p, file, inner)? {
+            Src::Ref(m, inner, _) if matches!(&**inner, Src::Named(..) | Src::Tuple(_)) => match self.lower_ty(p, file, inner)? {
                 Ty::Agg(i) => Ok(Ty::Ref(*m, Pointee::Agg(i))),
                 // `&mut Option<Box<Node>>` (連結リスト・木の付け替え): `Option` の値をメモリに置いた先への参照。
                 t @ Ty::Opt(_) => Ok(Ty::Ref(*m, Pointee::of(t).expect("Option は参照の指す先になれる"))),
@@ -274,24 +274,24 @@ impl AggTab {
             },
             // `&[T; N]` / `&mut [T; N]`: 配列の値は `{ptr, len}` の `fat` なので、参照は `ref<fat>` / `mutref<fat>`。
             // 要素の先頭ポインタは `fat` の 0 番フィールド (呼び出し側の `coerce_args` で ptr に調整する)。
-            Src::Ref(m, inner) if matches!(&**inner, Src::Array(_, _)) => {
+            Src::Ref(m, inner, _) if matches!(&**inner, Src::Array(_, _)) => {
                 let Ty::Agg(fat_ai) = self.fat() else { unreachable!() };
                 Ok(Ty::Ref(*m, Pointee::Agg(fat_ai)))
             }
             // `&&str` (`&K` の K が `&str` の型) は、`&str` の値 (`fat`) の番地 (`ref<fat>`)。
-            Src::Ref(m, inner) if matches!(&**inner, Src::Ref(_, i) if matches!(&**i, Src::Prim(s) if s == "str")) => {
+            Src::Ref(m, inner, _) if matches!(&**inner, Src::Ref(_, i, _) if matches!(&**i, Src::Prim(s) if s == "str")) => {
                 let fat = self.fat();
                 let Ty::Agg(fi) = fat else { unreachable!() };
                 Ok(Ty::Ref(*m, Pointee::Agg(fi)))
             }
             // 集成体の要素のスライス `&[S]` (`HashMapIter` の欄など) も `fat` (`{ptr, len}`)。要素の型が下ろせるときだけ。
-            Src::Ref(_, inner) if matches!(&**inner, Src::Slice(e) if matches!(&**e, Src::Named(..))) => {
+            Src::Ref(_, inner, _) if matches!(&**inner, Src::Slice(e) if matches!(&**e, Src::Named(..))) => {
                 let Src::Slice(e) = &**inner else { unreachable!() };
                 self.lower_ty(p, file, e)?;
                 Ok(self.fat())
             }
             // `&str` とスライスの値は `fat` (`{ptr, len}`)。要素はスカラーのものだけ (`sig_ty` と同じ条件)。Option のペイロードにも置ける。
-            Src::Ref(_, inner) if matches!(&**inner, Src::Prim(s) if s == "str") || matches!(&**inner, Src::Slice(e) if conv(&**e).is_some()) => Ok(self.fat()),
+            Src::Ref(_, inner, _) if matches!(&**inner, Src::Prim(s) if s == "str") || matches!(&**inner, Src::Slice(e) if conv(&**e).is_some()) => Ok(self.fat()),
             // 生ポインタ `*mut T` / `*const T` (指す先がスカラーのもの) は番地 (`ptr`)。extern の引数と同じ規則 (`kir_lower_ffi`)。
             Src::Ptr(_, inner) if matches!(&**inner, Src::Prim(s) if Ty::parse(s).and_then(crate::kir::Pointee::of).is_some()) => Ok(Ty::Ptr),
             other => Err(format!("{} は未対応", show(other))),
@@ -591,21 +591,21 @@ impl AggTab {
     fn pay_of(&mut self, p: &Program, file: &str, t: &Src) -> Result<Pay, String> {
         // `Option<&[T; N]>` は `Option<&[T]>` と同じ値 (`fat`) で持つ。長さ N は型検査が両辺を揃えるので、値には要らない。
         // (`lower_ty` の `&[T; N]` は参照 `ref<fat>` で、Option のペイロードには置けないため。)
-        if let Src::Ref(_, inner) = t {
+        if let Src::Ref(_, inner, _) = t {
             if matches!(&**inner, Src::Array(e, _) if conv(e).is_some()) {
                 return Pay::of(self.fat()).ok_or_else(|| "&[T; N] の fat は Option のペイロードに使えない".to_string());
             }
         }
         // `&Vec` / `&String` / `&HashMap` は借用のヘッダのアドレス (`ptr`)。
-        if let Src::Ref(_, inner) = t {
-            if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String") {
+        if let Src::Ref(_, inner, _) = t {
+            if matches!(&**inner, Src::Named(n, _, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String") {
                 return Ok(Pay::Ptr);
             }
         }
         // `Option<&T>` / `Result<&T, E>` (T は所有物を持つ型): 番地 1 つの `bref` (設計_KIR.md 17.18)。Option と Result で同じ形にする。
-        if let Src::Ref(_, inner) = t {
+        if let Src::Ref(_, inner, _) = t {
             // 集成体への参照 (所有物を持つか否か) は番地 1 つの `bref`: 値の複製では `&mut` の書き込みが残らない。
-            if self.bref_ref(p, file, matches!(t, Src::Ref(true, _)), inner) {
+            if self.bref_ref(p, file, matches!(t, Src::Ref(true, _, _)), inner) {
                 let b = self.bref();
                 return Pay::of(b).ok_or_else(|| "bref は Option / Result のペイロードに使えない".to_string());
             }
@@ -616,14 +616,14 @@ impl AggTab {
 
     /// フィールド・要素の型。ユニット型は値を置けないので拒否する。
     fn field_ty(&mut self, p: &Program, file: &str, t: &Src) -> Result<Ty, String> {
-        if let Src::Named(n, _) = t {
+        if let Src::Named(n, _, _) = t {
             if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" {
                 return self.lower_ty(p, file, t);
             }
         }
         // `&Vec` / `&String` / `&HashMap` のフィールドは、借用のヘッダのアドレス (`ptr`)。
-        if let Src::Ref(_, inner) = t {
-            if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String") {
+        if let Src::Ref(_, inner, _) = t {
+            if matches!(&**inner, Src::Named(n, _, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String") {
                 return Ok(Ty::Ptr);
             }
         }
@@ -1007,7 +1007,7 @@ impl<'a> Lw<'a> {
     /// 列挙型のバリアントを作る (引数は宣言の順)。`args` が空なら、ペイロードのない変種。
     pub(super) fn variant_make(&mut self, en: &str, vn: &str, args: &[V], e: Option<&V>, line: usize) -> LR<Option<VId>> {
         // 型引数のある列挙型 (`HashCell<K, V>`) の変種は、型の名前だけでは決まらない: 式の型 (型検査が決めたもの) から取る。
-        let ty = match self.conv_t(&Src::Named(en.to_string(), vec![])) {
+        let ty = match self.conv_t(&Src::Named(en.to_string(), vec![], crate::types::Rgs::default())) {
             Some(t) => t,
             None => match e.and_then(|e| self.src_ty(e).ok()).and_then(|s| self.conv_t(&s)) {
                 Some(t) => t,

@@ -1,4 +1,4 @@
-fn lower.vec.arith(c: &mut lower.cx.Cx, op: &str, a: usize, b: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.arith(c: &mut lower.cx.Cx, op: &str, a: usize, b: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let s = lower.cx.cat2(op, ".usize.wrap ")?
     let s2 = lower.cx.cat2(s.as_str(), lower.expr.two(a, b)?.as_str())?
     lower.cx.def(c, "usize", s2.as_str())
@@ -53,13 +53,13 @@ fn lower.vec.call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usiz
     Ok(lower.cx.R { v: v, t: t })
 end lower.vec.call
 
-fn lower.vec.elem(c: &lower.cx.Cx, vt: usize) -> usize uses [] panics may pub
+fn lower.vec.elem(c: &lower.cx.Cx, vt: usize) -> usize uses [] panics never pub
     let f = types.ty.strip(&c.ar, vt)
     let n = types.ty.node(&c.ar, f)
     types.ty.arg(&c.ar, n.b, 0usize)
 end lower.vec.elem
 
-fn lower.vec.elem_addr(c: &mut lower.cx.Cx, p1: usize, idx: usize, szc: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.elem_addr(c: &mut lower.cx.Cx, p1: usize, idx: usize, szc: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let off = lower.vec.arith(c, "mul", idx, szc)?
     lower.vec.padd(c, p1, off)
 end lower.vec.elem_addr
@@ -94,7 +94,7 @@ fn lower.vec.exit_scope(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     Ok(())
 end lower.vec.exit_scope
 
-fn lower.vec.free_hdr(c: &mut lower.cx.Cx, slot: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.free_hdr(c: &mut lower.cx.Cx, slot: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let pv = lower.vec.load_ptr(c, slot)?
     core.mem.drop(lower.cx.def1(c, "unit", "heap.free ", pv)?)
     Ok(())
@@ -253,13 +253,13 @@ fn lower.vec.index_expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     lower.vec.index(env, c, recv, elem, idx.v, t)
 end lower.vec.index_expr
 
-fn lower.vec.is_hdr(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
+fn lower.vec.is_hdr(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics never pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
     n.k == types.ty.K.Adt && lower.tyk.is_vec(env, n.a)
 end lower.vec.is_hdr
 
-fn lower.vec.len(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, empty_q: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.len(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, empty_q: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics never pub
     let len0 = lower.vec.load_usize(c, recv, 8usize)?
     if !empty_q {
         return Ok(lower.cx.R { v: len0, t: t })
@@ -295,13 +295,13 @@ fn lower.vec.load_hdr(env: &types.env.Env, c: &mut lower.cx.Cx, slot: usize, t: 
     lower.cx.def(c, tt.as_str(), mk.as_str())
 end lower.vec.load_hdr
 
-fn lower.vec.load_ptr(c: &mut lower.cx.Cx, p: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.load_ptr(c: &mut lower.cx.Cx, p: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let s = lower.cx.cat2("mem.load.ptr ", lower.cx.vs(p)?.as_str())?
     let s2 = lower.cx.cat2(s.as_str(), " +0")?
     lower.cx.def(c, "ptr", s2.as_str())
 end lower.vec.load_ptr
 
-fn lower.vec.load_usize(c: &mut lower.cx.Cx, p: usize, off: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.load_usize(c: &mut lower.cx.Cx, p: usize, off: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let s = lower.cx.cat2("mem.load.usize ", lower.cx.vs(p)?.as_str())?
     let s2 = lower.cx.cat2(s.as_str(), " +")?
     let s3 = lower.cx.cat2(s2.as_str(), lower.cx.dec(off)?.as_str())?
@@ -352,7 +352,7 @@ fn lower.vec.owns_elems(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> R
     Ok(lower.tyk.vec_item(env, c, f)? != lower.tyk.VEC)
 end lower.vec.owns_elems
 
-fn lower.vec.padd(c: &mut lower.cx.Cx, p: usize, off: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.padd(c: &mut lower.cx.Cx, p: usize, off: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let s = lower.cx.cat2("ptr.add ", lower.expr.two(p, off)?.as_str())?
     lower.cx.def(c, "ptr", s.as_str())
 end lower.vec.padd
@@ -452,7 +452,7 @@ fn lower.vec.push(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: u
     Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
 end lower.vec.push
 
-fn lower.vec.store_at(c: &mut lower.cx.Cx, ty: &str, p: usize, off: usize, v: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.store_at(c: &mut lower.cx.Cx, ty: &str, p: usize, off: usize, v: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let mut s = lower.cx.cat2("mem.store.", ty)?
     s.push(' ')?
     s.push_str(lower.cx.vs(p)?.as_str())?
@@ -463,7 +463,7 @@ fn lower.vec.store_at(c: &mut lower.cx.Cx, ty: &str, p: usize, off: usize, v: us
     lower.cx.def(c, "unit", s.as_str())
 end lower.vec.store_at
 
-fn lower.vec.store_hdr(c: &mut lower.cx.Cx, slot: usize, v: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.store_hdr(c: &mut lower.cx.Cx, slot: usize, v: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let pv = lower.cx.def(c, "ptr", lower.expr.field_src(v, 0usize)?.as_str())?
     let lv = lower.cx.def(c, "usize", lower.expr.field_src(v, 8usize)?.as_str())?
     let cv = lower.cx.def(c, "usize", lower.expr.field_src(v, 16usize)?.as_str())?
@@ -473,7 +473,7 @@ fn lower.vec.store_hdr(c: &mut lower.cx.Cx, slot: usize, v: usize) -> Result<(),
     Ok(())
 end lower.vec.store_hdr
 
-fn lower.vec.usize_c(c: &mut lower.cx.Cx, n: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.usize_c(c: &mut lower.cx.Cx, n: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let s = lower.cx.cat2("const.usize ", lower.cx.dec(n)?.as_str())?
     lower.cx.def(c, "usize", s.as_str())
 end lower.vec.usize_c

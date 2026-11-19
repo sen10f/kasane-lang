@@ -13,4 +13,5 @@ impl[T: linear + core.marker.Send, A: alloc.alloc.Allocator + core.marker.Send] 
 fn std.thread.JoinHandle.join[T: linear, A: alloc.alloc.Allocator](self: std.thread.JoinHandle<T, A>) -> T uses [thread] panics never pub
 fn std.thread.sleep(milliseconds: u64) -> () uses [thread, time] panics never pub
 fn std.thread.spawn[A: alloc.alloc.Allocator + core.marker.Send + 'static, F: linear + core.marker.Send + core.ops.FnOnce<(), T, E, P> + 'static, T: linear + core.marker.Send + 'static, E: uses, P: panics](allocator: A, f: F) -> Result<std.thread.JoinHandle<T, A>, std.thread.SpawnError> uses [alloc, thread, E] panics P pub
+fn std.thread.spawn_deep[A: alloc.alloc.Allocator + core.marker.Send + 'static, F: linear + core.marker.Send + core.ops.FnOnce<(), T, E, P> + 'static, T: linear + core.marker.Send + 'static, E: uses, P: panics](allocator: A, f: F, depth: usize) -> Result<std.thread.JoinHandle<T, A>, std.thread.SpawnError> uses [alloc, thread, E] panics P pub
 fn std.thread.yield_now() -> () uses [thread] panics never pub
