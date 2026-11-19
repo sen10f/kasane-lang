@@ -1,5 +1,5 @@
 fn t.f(p: &[u8], c: bool) -> Option<&u8> uses [] panics never
-    let v: [u8; 2] = [1u8, 2u8]
+    let v = [1u8, 2u8]
     if c {
         let x = p.first()
         return x
