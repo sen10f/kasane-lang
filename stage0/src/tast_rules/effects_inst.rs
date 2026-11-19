@@ -413,8 +413,11 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                         return;
                     }
                     let mut argt: Vec<Ty> = vec![];
-                    if let TKind::MCall { recv, .. } = &e.kind {
-                        argt.push(recv.ty.clone());
+                    match &e.kind {
+                        TKind::MCall { recv, .. } => argt.push(recv.ty.clone()),
+                        // `o.map(f)` は呼び先の経路 `o.map` が受け手を運ぶ (型は受け手の型)。
+                        TKind::Call { callee, .. } if c.params.len() > args.len() && matches!(&callee.kind, TKind::Path(s) if s.len() >= 2) => argt.push(callee.ty.clone()),
+                        _ => {}
                     }
                     argt.extend(args.iter().map(|a| a.ty.clone()));
                     let off = 0;

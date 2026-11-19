@@ -98,10 +98,13 @@ fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut 
                     _ => None,
                 };
                 if let (TKind::Path(segs), Some(Ty::Closure { eff: crate::types::Eff(Some(info)), .. })) = (&callee.kind, bound.as_ref().map(|t| t.strip().clone())) {
+                    let mut uses_bad = false;
                     for x in info.uses.iter().filter(|x| !is_effect_var(x) && !covers(&own, x)) {
+                        uses_bad = true;
                         found.push(("E4001", format!("{} uses effect `{}` not declared by the caller", segs.join("."), x), e.line));
                     }
-                    if info.may == Some(true) && d.panics.as_deref() == Some("never") {
+                    // 旧い検査は 1 つの呼び出しにつき最初の違反だけを報告する (uses が先)。
+                    if !uses_bad && info.may == Some(true) && d.panics.as_deref() == Some("never") {
                         found.push(("E4002", format!("{} may panic but the caller declares `panics never`", segs.join(".")), e.line));
                     }
                 }
