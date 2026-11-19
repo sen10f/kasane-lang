@@ -431,35 +431,216 @@ fn fix_tails(defs: &[crate::program::Def], lines: &mut [String]) {
     }
 }
 
-/// 冗長な括弧 (D10) を外す。関数・テストの本体の中だけ。優先順位に要る括弧と、構造体リテラルを `if` などの頭に置くための括弧は残す。
-fn fix_parens(defs: &[crate::program::Def], lines: &mut [String]) {
-    let src = lines.join("\n") + "\n";
-    let Ok(all) = lexer::lex(&src) else { return };
-    let mut edits: Vec<(usize, usize)> = vec![];
-    for d in defs {
-        if !matches!(d.kw.as_str(), "fn" | "test") || d.body.is_none() || d.end_line <= d.line + 1 {
+/// 100 文字に収まる文の折り返し (引数・要素を 1 行 1 要素にした形、チェーンの `.` 行) を 1 行にする (D15 の S20)。
+/// ブロックを含む文 (行末が `{`、行頭が `}`) とコメント行を含む文は、そのまま。
+fn unwrap_short(lines: &mut Vec<String>) -> bool {
+    let cont_end = |l: &str| {
+        let t = l.trim_end();
+        !t.trim_start().starts_with("//") && (t.ends_with('(') || t.ends_with('[') || t.ends_with(','))
+    };
+    let mut out: Vec<String> = vec![];
+    let mut changed = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let l = &lines[i];
+        let indent = l.chars().take_while(|c| *c == ' ').count();
+        let next_dot = |k: usize| lines.get(k).map_or(false, |n| n.trim_start().starts_with('.') && !n.trim_start().starts_with(".."));
+        let starts_group = indent > 0 && !l.trim_start().starts_with("//") && (cont_end(l) || next_dot(i + 1));
+        if !starts_group {
+            out.push(l.clone());
+            i += 1;
             continue;
         }
-        let toks: Vec<Tok> = all.iter().filter(|t| t.line > d.line && t.line < d.end_line && t.kind != "eof").cloned().collect();
-        for (a, b) in crate::parser::redundant_parens(toks) {
-            edits.push((a.line, a.col));
-            edits.push((b.line, b.col));
+        // 継続している行を集める。
+        let mut j = i;
+        while j + 1 < lines.len() && (cont_end(&lines[j]) || next_dot(j + 1)) {
+            j += 1;
         }
-    }
-    edits.sort();
-    edits.dedup();
-    let mut touched: HashSet<usize> = HashSet::new();
-    for (l, c) in edits.into_iter().rev() {
-        let Some(line) = lines.get_mut(l - 1) else { continue };
-        let mut ch: Vec<char> = line.chars().collect();
-        if ch.get(c - 1).map_or(false, |x| *x == '(' || *x == ')') {
-            ch.remove(c - 1);
-            *line = ch.into_iter().collect();
-            touched.insert(l - 1);
+        let group = &lines[i..=j];
+        let blocky = group.iter().any(|g| {
+            let t = g.trim();
+            t.ends_with('{') || t.starts_with('}') || t.starts_with("//") || t.is_empty()
+        });
+        let mut joined = group[0].trim_end().to_string();
+        if !blocky {
+            for g in &group[1..] {
+                let n = g.trim();
+                let closing = n.starts_with(')') || n.starts_with(']');
+                if closing && joined.ends_with(',') {
+                    joined.pop();
+                }
+                let tight = joined.ends_with('(') || joined.ends_with('[') || n.starts_with('.') || closing;
+                if !tight {
+                    joined.push(' ');
+                }
+                joined.push_str(n);
+            }
         }
+        if !blocky && joined.chars().count() <= 100 && group.len() > 1 {
+            out.push(joined);
+            changed = true;
+        } else {
+            out.extend(group.iter().cloned());
+        }
+        i = j + 1;
     }
-    for k in touched {
-        lines[k] = crate::spacing::canon_line(&lines[k]);
+    *lines = out;
+    changed
+}
+
+/// 構文の揺れ (D8・D10・D11・D15) を直す。パーサが書き換えの候補 (`parser::rewrites`) を返すので、重ならないものを適用し、
+/// 候補が尽きるまで (新しい形が別の書き換えを生むので) 繰り返す。関数・テストの本体の中だけ。
+fn fix_syntax(path: &str, lines: &mut Vec<String>) {
+    use crate::parser::{Part, Rw};
+    for _ in 0..40 {
+        let mut progress = false;
+        {
+            let mut cand = lines.clone();
+            if unwrap_short(&mut cand) && load_file(path, "", &(cand.join("\n") + "\n")).is_ok() {
+                *lines = cand;
+                progress = true;
+            }
+        }
+        let joined = lines.join("\n") + "\n";
+        let Ok(defs) = load_file(path, "", &joined) else { return };
+        let Ok(all) = lexer::lex(&joined) else { return };
+        let chars: Vec<char> = joined.chars().collect();
+        let mut starts: Vec<usize> = vec![0];
+        for (i, c) in chars.iter().enumerate() {
+            if *c == '\n' {
+                starts.push(i + 1);
+            }
+        }
+        let mut edits: Vec<(usize, usize, String)> = vec![];
+        for d in &defs {
+            if !matches!(d.kw.as_str(), "fn" | "test") || d.body.is_none() || d.end_line <= d.line + 1 {
+                continue;
+            }
+            let toks: Vec<Tok> = all.iter().filter(|t| t.line > d.line && t.line < d.end_line && t.kind != "eof").cloned().collect();
+            let (t, rws) = crate::parser::rewrites(toks, &d.name);
+            let off = |k: usize| starts[t[k].line - 1] + t[k].col - 1;
+            let end = |k: usize| off(k) + t[k].text.chars().count();
+            let span = |a: usize, b: usize| -> String {
+                if a >= b {
+                    String::new()
+                } else {
+                    chars[off(a)..end(b - 1)].iter().collect()
+                }
+            };
+            for rw in rws {
+                let Rw { a, b, parts, del_line, inside } = rw;
+                let (s0, e0) = (off(a), end(b - 1));
+                let ln = t[a].line;
+                if del_line {
+                    let nxt = starts.get(ln).copied().unwrap_or(chars.len());
+                    edits.push((starts[ln - 1], nxt, String::new()));
+                    continue;
+                }
+                let mut text = String::new();
+                for p in &parts {
+                    match p {
+                        Part::Lit(x) => text.push_str(x),
+                        Part::Span(x, y) => text.push_str(&span(*x, *y)),
+                        Part::Dedent(x, y) => text.push_str(&span(*x, *y).replace("\n    ", "\n")),
+                    }
+                }
+                // 書き換える範囲の中のコメント行 (`.ksnh`) は、その文の行の直前に移す (`strip` が正規形を作れるように)。
+                let region: String = chars[s0..e0].iter().collect();
+                let mut moved: Vec<String> = vec![];
+                if region.contains('\n') {
+                    moved = region.lines().filter(|l| l.trim_start().starts_with("//")).map(|l| l.trim_start().to_string()).collect();
+                    text = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+                }
+                let mut ls = starts[ln - 1];
+                if !inside && !moved.is_empty() {
+                    // `match` の腕の間にコメントは置けないので、腕を含む文の行 (`=>` で終わる行・`}` で始まる行でない、字下げの浅い行) の直前へ。
+                    let line_of = |k: usize| -> (usize, String) {
+                        let b = starts[k];
+                        let e = starts.get(k + 1).map_or(chars.len(), |x| x - 1);
+                        let l: String = chars[b..e].iter().collect();
+                        (l.chars().take_while(|c| *c == ' ').count(), l)
+                    };
+                    let mut k = ln - 1;
+                    let mut ind = line_of(k).0;
+                    while k > 0 {
+                        k -= 1;
+                        let (i2, l) = line_of(k);
+                        if l.trim().is_empty() || i2 >= ind {
+                            continue;
+                        }
+                        ind = i2;
+                        let tr = l.trim_start();
+                        if l.contains("=>") || tr.starts_with('}') {
+                            continue;
+                        }
+                        ls = starts[k];
+                        break;
+                    }
+                }
+                let indent: String = chars[ls..].iter().take_while(|c| **c == ' ').collect();
+                let prefix: String = chars[ls..s0].iter().collect();
+                let mut full = String::new();
+                if inside {
+                    let (first, rest) = text.split_once('\n').unwrap_or((text.as_str(), ""));
+                    full.push_str(&prefix);
+                    full.push_str(first);
+                    for c in &moved {
+                        full.push_str(&format!("\n{}    {}", indent, c));
+                    }
+                    if !rest.is_empty() {
+                        full.push('\n');
+                        full.push_str(rest);
+                    }
+                } else {
+                    for c in &moved {
+                        full.push_str(&format!("{}{}\n", indent, c));
+                    }
+                    full.push_str(&prefix);
+                    full.push_str(&text);
+                }
+                // 行が 100 文字を超えるなら書き換えない (折り返しは `fmt` が決めない)。引用符のある行は対象外 (文法の例外)。
+                let tail: String = chars[e0..].iter().take_while(|c| **c != '\n').collect();
+                let too_long = |l: &str| l.chars().count() > 100 && !l.contains('"');
+                let res = format!("{}{}", full, tail);
+                if res.lines().any(|l| too_long(l)) && !chars[ls..e0].iter().collect::<String>().lines().any(|l| too_long(l)) {
+                    continue;
+                }
+                if moved.is_empty() {
+                    edits.push((s0, e0, text));
+                } else {
+                    edits.push((ls, e0, full));
+                }
+            }
+        }
+        if edits.is_empty() {
+            if progress {
+                continue;
+            }
+            return;
+        }
+        edits.sort_by(|x, y| x.0.cmp(&y.0).then(y.1.cmp(&x.1)));
+        let mut chosen: Vec<(usize, usize, String)> = vec![];
+        let mut last = 0usize;
+        for e in edits {
+            if chosen.is_empty() || e.0 >= last {
+                last = e.1;
+                chosen.push(e);
+            }
+        }
+        let mut out = chars.clone();
+        for (s0, e0, text) in chosen.into_iter().rev() {
+            out.splice(s0..e0, text.chars());
+        }
+        let new: String = out.into_iter().collect();
+        if new == joined {
+            return;
+        }
+        let canon_new: Vec<String> = new.trim_end_matches('\n').split('\n').map(|l| crate::spacing::canon_line(l)).collect();
+        // 書き換えた結果が解析できないなら、書き換えない (括弧の片方だけが外れるなどの取りこぼしを残さない)。
+        if load_file(path, "", &(canon_new.join("\n") + "\n")).is_err() {
+            return;
+        }
+        *lines = canon_new;
     }
 }
 
@@ -496,6 +677,9 @@ pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
             *l = fix_lists(&crate::spacing::canon_line(&crate::canon::numbers_line(l)));
         }
     }
+    if canon {
+        fix_syntax(path, &mut lines);
+    }
     let joined = lines.join("\n") + "\n";
     let defs = match load_file(path, "", &joined) {
         Ok(d) => d,
@@ -503,7 +687,6 @@ pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
     };
     if canon {
         fix_tails(&defs, &mut lines);
-        fix_parens(&defs, &mut lines);
     }
     // 3.3: 名前の参照形を正規形にする (ヘッダは FQN、本体は import 済みモジュールの短縮形)。
     let mut lines = lines;
