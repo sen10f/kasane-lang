@@ -2907,7 +2907,8 @@ pub fn ty_arg(f: &str) -> &'static str {
 /// Fable のレビュー (2026-11-13) で見つかった KIR / LLVM の不具合の回帰 (設計_KIR.md 17 章)。
 /// `(KIR の引数, 木走査で呼ぶ式, 期待する値のリテラル, 期待する表示)` の各ケースを、木走査・参照実行器・機械語 (と ASan) で比べる。
 pub fn kir_review_cases(tag: &str, fns: &str, f: &str, cases: &[(&[&str], &str, &str, &str)]) {
-    for (i, (args, call, lit, want)) in cases.iter().enumerate() {
+    let items: Vec<(usize, &(&[&str], &str, &str, &str))> = cases.iter().enumerate().collect();
+    par_map(&items, |(i, (args, call, lit, want))| {
         let main = format!(
             "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let r = {}\n    core.check.eq(r, {})\n    Ok(())\nend t.main\n",
             call, lit
@@ -2920,7 +2921,7 @@ pub fn kir_review_cases(tag: &str, fns: &str, f: &str, cases: &[(&[&str], &str, 
         let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
-    }
+    });
 }
 
 /// `Fn*` 境界の効果実引数の省略 (4.3): 省略した `E` / `P` は関数の暗黙の効果変数・panic 変数で、
@@ -3037,4 +3038,28 @@ pub fn expect_entries(ksnl: &Path) -> Vec<(String, String)> {
 /// `expect_entries` の最初の `key` の値。
 pub fn expect_value(ksnl: &Path, key: &str) -> Option<String> {
     expect_entries(ksnl).into_iter().find(|(k, _)| k == key).map(|(_, v)| v)
+}
+
+/// 入力を並列に処理し、結果を入力の順に返す (コーパスを 1 本ずつ回す試験を速くする。各項目の確かめ方は変えない)。
+/// 同時に動かす本数は `KSN_TEST_PAR` (既定 8)。
+#[allow(dead_code)]
+pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    let n: usize = std::env::var("KSN_TEST_PAR").ok().and_then(|v| v.parse().ok()).unwrap_or(8).max(1);
+    let next = AtomicUsize::new(0);
+    let out: Mutex<Vec<Option<R>>> = Mutex::new((0..items.len()).map(|_| None).collect());
+    std::thread::scope(|sc| {
+        for _ in 0..n.min(items.len().max(1)) {
+            sc.spawn(|| loop {
+                let k = next.fetch_add(1, Ordering::SeqCst);
+                if k >= items.len() {
+                    break;
+                }
+                let r = f(&items[k]);
+                out.lock().unwrap()[k] = Some(r);
+            });
+        }
+    });
+    out.into_inner().unwrap().into_iter().map(|r| r.expect("worker panicked")).collect()
 }
