@@ -52,10 +52,8 @@ fn shortener.http.find_head_end(buf: &[u8]) -> Option<usize> uses [] panics neve
         let stop = i.saturating_add(4usize)
         if stop <= len {
             match buf.sub(i, stop) {
-                Some(window) => {
-                    if window == b"\r\n\r\n" {
-                        return Some(stop)
-                    }
+                Some(window) => if window == b"\r\n\r\n" {
+                    return Some(stop)
                 }
                 None => return None
             }
@@ -67,10 +65,8 @@ end shortener.http.find_head_end
 fn shortener.http.header_value['a](head: &'a str, name: &str) -> Option<&'a str> uses [] panics never pub
     for line in head.split("\r\n") {
         match line.split_once(":") {
-            Some((key, value)) => {
-                if key.eq_ignore_ascii_case(name) {
-                    return Some(value.trim())
-                }
+            Some((key, value)) => if key.eq_ignore_ascii_case(name) {
+                return Some(value.trim())
             }
             None => core.mem.drop(0u8)
         }
@@ -82,10 +78,8 @@ fn shortener.http.headers_well_formed(lines: &str) -> bool uses [] panics never
     for line in lines.split("\r\n") {
         if !line.is_empty() {
             match line.split_once(":") {
-                Some((key, _value)) => {
-                    if key.is_empty() || key.contains(" ") || key.contains("\t") {
-                        return false
-                    }
+                Some((key, _value)) => if key.is_empty() || key.contains(" ") || key.contains("\t") {
+                    return false
                 }
                 None => return false
             }
@@ -325,7 +319,7 @@ end shortener.http.parse_head.test_accepts_requests
 
 test shortener.http.parse_head.test_rejects_malformed
     let bad = error.Error.BadRequest
-    core.check.eq(shortener.http.test_head("GET /x HTTP/2\r\n\r\n").is_err(), true)
+    core.check.eq(shortener.http.test_head("GET /x HTTP/2\r\n\r\n") is Err(_), true)
     core.check.eq(shortener.http.test_head_err("GET x HTTP/1.1\r\n\r\n"), Err(bad))
     core.check.eq(shortener.http.test_head_err("GET /x\r\n\r\n"), Err(bad))
     core.check.eq(shortener.http.test_head_err("GET\r\n\r\n"), Err(bad))
@@ -337,17 +331,17 @@ test shortener.http.parse_head.test_rejects_malformed
     core.check.eq(shortener.http.test_head_err(bad_length), Err(bad))
     let too_long = "GET /x HTTP/1.1\r\nContent-Length: 9999\r\n\r\n"
     core.check.eq(shortener.http.test_head_err(too_long), Err(error.Error.TooLarge))
-    core.check.eq(shortener.http.test_head("").is_err(), true)
-    core.check.eq(shortener.http.parse_head(b"GET /\xff HTTP/1.1\r\n\r\n").is_err(), true)
+    core.check.eq(shortener.http.test_head("") is Err(_), true)
+    core.check.eq(shortener.http.parse_head(b"GET /\xff HTTP/1.1\r\n\r\n") is Err(_), true)
 end shortener.http.parse_head.test_rejects_malformed
 
 test shortener.http.parse_reply.test_rejects_wrong_length
     let short = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nabc"
-    core.check.eq(shortener.http.parse_reply(short).is_err(), true)
+    core.check.eq(shortener.http.parse_reply(short) is Err(_), true)
     let long = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nabc"
-    core.check.eq(shortener.http.parse_reply(long).is_err(), true)
-    core.check.eq(shortener.http.parse_reply(b"HTTP/1.1 200 OK\r\n").is_err(), true)
-    core.check.eq(shortener.http.parse_reply(b"HTTP/1.1 abc OK\r\n\r\n").is_err(), true)
+    core.check.eq(shortener.http.parse_reply(long) is Err(_), true)
+    core.check.eq(shortener.http.parse_reply(b"HTTP/1.1 200 OK\r\n") is Err(_), true)
+    core.check.eq(shortener.http.parse_reply(b"HTTP/1.1 abc OK\r\n\r\n") is Err(_), true)
     let found = b"HTTP/1.1 302 Found\r\nLocation: http://a.test/\r\nContent-Length: 2\r\n\r\n{}"
     match shortener.http.parse_reply(found) {
         Ok(r) => {
@@ -363,15 +357,13 @@ test shortener.http.parse_reply.test_round_trip
     let body = alloc.string.String.new(std.alloc.SYSTEM)
     let response = shortener.http.json_response(404u16, body)
     match shortener.http.render_response(&response) {
-        Ok(text) => {
-            match shortener.http.parse_reply(text.as_str().as_bytes()) {
-                Ok(r) => {
-                    core.check.eq(r.status, 404u16)
-                    core.check.eq(r.body.as_str(), "")
-                    core.check.eq(r.location.as_str(), "")
-                }
-                Err(_e) => core.panic.panic("parse_reply")
+        Ok(text) => match shortener.http.parse_reply(text.as_str().as_bytes()) {
+            Ok(r) => {
+                core.check.eq(r.status, 404u16)
+                core.check.eq(r.body.as_str(), "")
+                core.check.eq(r.location.as_str(), "")
             }
+            Err(_e) => core.panic.panic("parse_reply")
         }
         Err(_e) => core.panic.panic("render")
     }
@@ -391,15 +383,13 @@ test shortener.http.render_response.test_headers_and_length
     let mut note = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(note.push_str("日本"))
     match shortener.http.redirect_response("http://a.test/x", note) {
-        Ok(r) => {
-            match shortener.http.render_response(&r) {
-                Ok(text) => {
-                    core.check.eq(text.contains("Location: http://a.test/x\r\n"), true)
-                    core.check.eq(text.contains("Content-Length: 6\r\n"), true)
-                    core.check.eq(text.starts_with("HTTP/1.1 302 Found\r\n"), true)
-                }
-                Err(_e) => core.panic.panic("render 302")
+        Ok(r) => match shortener.http.render_response(&r) {
+            Ok(text) => {
+                core.check.eq(text.contains("Location: http://a.test/x\r\n"), true)
+                core.check.eq(text.contains("Content-Length: 6\r\n"), true)
+                core.check.eq(text.starts_with("HTTP/1.1 302 Found\r\n"), true)
             }
+            Err(_e) => core.panic.panic("render 302")
         }
         Err(_e) => core.panic.panic("redirect")
     }

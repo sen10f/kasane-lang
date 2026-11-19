@@ -1,7 +1,7 @@
 fn t.main() -> () uses [] panics never
     let mut v = [1u8, 2u8, 3u8]
     let s = &mut v
-    let r = core.slice.get_mut(s, 0usize)
+    let r = s.get_mut(0usize)
     s.reverse()
     match r {
         Some(x) => core.mem.drop(*x)

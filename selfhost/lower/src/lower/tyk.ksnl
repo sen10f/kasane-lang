@@ -334,19 +334,11 @@ end lower.tyk.is_vec_ty
 
 fn lower.tyk.item_fqn(env: &types.env.Env, item: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
     match env.tab.items.as_slice().get(item) {
-        Some(it) => {
-            match lower.cx.own(it.fqn.as_str()) {
-                Ok(o) => {
-                    o
-                }
-                Err(_e) => {
-                    alloc.string.String.new(std.alloc.SYSTEM)
-                }
-            }
+        Some(it) => match lower.cx.own(it.fqn.as_str()) {
+            Ok(o) => o
+            Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
         }
-        None => {
-            alloc.string.String.new(std.alloc.SYSTEM)
-        }
+        None => alloc.string.String.new(std.alloc.SYSTEM)
     }
 end lower.tyk.item_fqn
 
@@ -865,7 +857,7 @@ fn lower.tyk.vec_item(env: &types.env.Env, c: &mut lower.cx.Cx, f: usize) -> Res
     }
     let mut v = 0usize
     for b in num.as_bytes().iter() {
-        v = v * 10usize + usize.from_u8((*b).wrapping_sub(48u8))
+        v = v * 10usize + usize.from_u8(b.wrapping_sub(48u8))
     }
     Ok(lower.tyk.VECO + v)
 end lower.tyk.vec_item

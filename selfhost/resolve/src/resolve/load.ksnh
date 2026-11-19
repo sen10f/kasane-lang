@@ -30,13 +30,11 @@ fn resolve.load.collect(dir: &str, pfx: &str, own: bool, out: &mut alloc.vec.Vec
                 let sub = resolve.load.module_of(pfx, name)?
                 resolve.load.collect(full.as_str(), sub.as_str(), own, out)?
             }
-            std.fs.FileKind.File => {
-                if name.ends_with(".ksnl") || name.ends_with(".sig") {
-                    let text = resolve.load.read_bytes(full.as_str())?
-                    let module = resolve.load.module_of(pfx, resolve.load.base(name))?
-                    let is_sig = name.ends_with(".sig")
-                    out.push(resolve.load.src(full, module, is_sig, own, text))?
-                }
+            std.fs.FileKind.File => if name.ends_with(".ksnl") || name.ends_with(".sig") {
+                let text = resolve.load.read_bytes(full.as_str())?
+                let module = resolve.load.module_of(pfx, resolve.load.base(name))?
+                let is_sig = name.ends_with(".sig")
+                out.push(resolve.load.src(full, module, is_sig, own, text))?
             }
             std.fs.FileKind.Other => core.mem.drop(0u8)
         }

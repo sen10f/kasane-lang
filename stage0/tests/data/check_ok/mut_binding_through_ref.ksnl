@@ -5,12 +5,12 @@ end t.P
 fn t.ok(r: &mut u32, p: &mut t.P, a: &mut [u32]) -> () uses [] panics may
     *r = 2u32
     p.n = 4u32
-    a[0] = 1u32
+    a[0usize] = 1u32
     let mut y = 1u32
     let q = &mut y
     *q = 5u32
     let z = &mut p.n
     *z = 1u32
-    let w = &mut a[0]
+    let w = &mut a[0usize]
     *w = 2u32
 end t.ok

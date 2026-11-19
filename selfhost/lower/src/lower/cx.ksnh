@@ -174,7 +174,7 @@ end lower.cx.emit
 
 // 未対応の形を 1 つだけ記録する (最初の理由)。下ろしは続けるが、関数は出力しない。
 fn lower.cx.fail(c: &mut lower.cx.Cx, why: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
-    if c.s.unsup.len() == 0usize {
+    if c.s.unsup.is_empty() {
         c.s.unsup.push_str(why)?
     }
     Ok(())
@@ -264,19 +264,13 @@ fn lower.cx.lt(a: &str, b: &str) -> bool uses [] panics may pub
     let mut i = 0usize
     loop {
         match ab.get(i) {
-            Some(x) => {
-                match bb.get(i) {
-                    Some(y) => {
-                        if *x != *y {
-                            return *x < *y
-                        }
-                    }
-                    None => return false
+            Some(x) => match bb.get(i) {
+                Some(y) => if *x != *y {
+                    return *x < *y
                 }
+                None => return false
             }
-            None => {
-                return i < bb.len()
-            }
+            None => return i < bb.len()
         }
         i = i.wrapping_add(1usize)
     }
@@ -288,10 +282,8 @@ fn lower.cx.mlist(c: &lower.cx.Cx, base: usize) -> Result<alloc.vec.Vec<usize, s
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for k in core.iter.range(0usize, base) {
         match c.v.mutf.as_slice().get(k) {
-            Some(m) => {
-                if *m {
-                    out.push(k)?
-                }
+            Some(m) => if *m {
+                out.push(k)?
             }
             None => core.mem.drop(0u8)
         }
@@ -359,7 +351,7 @@ fn lower.cx.new(ar: types.ty.Arena, tc: types.chk.Ctx) -> Result<lower.cx.Cx, re
     let sb = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let rt = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let tp = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let g = lower.cx.Glob { aggs: ag, nms: nm, tx: tx, oks: ok, itm: it, sbs: sb, rts: rt, tps: tp }
+    let g = lower.cx.Glob { itm: it, sbs: sb, rts: rt, aggs: ag, nms: nm, tx: tx, oks: ok, tps: tp }
     let v = lower.cx.vs_new()
     let lks = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let lp = lower.cx.Lp { head: 0usize, exit: 0usize, base: 0usize, brk: 0usize, ks: lks }
@@ -424,7 +416,7 @@ fn lower.cx.set_val(c: &mut lower.cx.Cx, k: usize, v: usize) -> Result<(), resol
     // tail は逆順 (最後の要素が先頭にある)。先頭 (= 元の k 番目) を捨てて v を置く。
     let _old = tail.pop()
     c.v.vals.push(v)?
-    while tail.len() > 0usize {
+    while !tail.is_empty() {
         match tail.pop() {
             Some(x) => c.v.vals.push(x)?
             None => core.mem.drop(0u8)
@@ -449,10 +441,8 @@ end lower.cx.sl_new
 fn lower.cx.subs_at(c: &lower.cx.Cx, k: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match c.g.sbs.as_slice().get(k) {
-        Some(v) => {
-            for x in v.as_slice().iter() {
-                out.push(*x)?
-            }
+        Some(v) => for x in v.as_slice().iter() {
+            out.push(*x)?
         }
         None => core.mem.drop(0u8)
     }
@@ -501,11 +491,9 @@ end lower.cx.trunc_to
 // 値の型の文字列 (範囲外は unit)。
 fn lower.cx.tyof(c: &lower.cx.Cx, v: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
     match c.v.vty.as_slice().get(v) {
-        Some(s) => {
-            match lower.cx.own(s.as_str()) {
-                Ok(o) => o
-                Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
-            }
+        Some(s) => match lower.cx.own(s.as_str()) {
+            Ok(o) => o
+            Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
         }
         None => alloc.string.String.new(std.alloc.SYSTEM)
     }

@@ -3,7 +3,7 @@ fn t.bad(v: &alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics may
 end t.bad
 
 fn t.first(v: &[u32; 3]) -> u32 uses [] panics may
-    v[0]
+    v[0usize]
 end t.first
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

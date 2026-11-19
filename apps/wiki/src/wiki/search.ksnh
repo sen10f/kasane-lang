@@ -2,7 +2,7 @@ import wiki.markdown
 
 fn wiki.search.index_add_page(index: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, name: &str, content: &str) -> Result<(), wiki.error.Error> uses [alloc] panics never pub
     for word in content.split(" ") {
-        if word.len() > 0usize {
+        if !word.is_empty() {
             let key = alloc.string.String.from_str(std.alloc.SYSTEM, word)?
             let nm = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
             let mut entry = alloc.string.String.new(std.alloc.SYSTEM)
@@ -22,7 +22,7 @@ end wiki.search.index_new
 fn wiki.search.index_search(index: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, query: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
     let mut results = wiki.search.index_new()
     for word in query.split(" ") {
-        if word.len() > 0usize {
+        if !word.is_empty() {
             let key = alloc.string.String.from_str(std.alloc.SYSTEM, word)?
             let mut i = 0usize
             let n = index.len()
@@ -35,11 +35,9 @@ fn wiki.search.index_search(index: &alloc.vec.Vec<alloc.string.String<std.alloc.
                         let mut has_space = false
                         while sp_idx < es_len {
                             match es.as_bytes().get(sp_idx) {
-                                Some(b) => {
-                                    if *b == b' ' {
-                                        has_space = true
-                                        break
-                                    }
+                                Some(b) => if *b == b' ' {
+                                    has_space = true
+                                    break
                                 }
                                 None => core.mem.drop(0u8)
                             }
@@ -57,10 +55,8 @@ fn wiki.search.index_search(index: &alloc.vec.Vec<alloc.string.String<std.alloc.
                                 let r = results.len()
                                 while k < r {
                                     match results.as_slice().get(k) {
-                                        Some(existing) => {
-                                            if existing.as_str() == page {
-                                                found = true
-                                            }
+                                        Some(existing) => if existing.as_str() == page {
+                                            found = true
                                         }
                                         None => core.mem.drop(0u8)
                                     }

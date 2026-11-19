@@ -53,28 +53,22 @@ fn resolve.manifest.read(dir: &str) -> Result<resolve.manifest.Pkg, resolve.Fail
             sec = 0usize
         } else if sec == 1usize {
             match line.split_once(" = ") {
-                Some((k, v)) => {
-                    if k == "name" {
-                        name.push_str(resolve.manifest.quoted(v))?
-                    }
+                Some((k, v)) => if k == "name" {
+                    name.push_str(resolve.manifest.quoted(v))?
                 }
                 None => core.mem.drop(0u8)
             }
         } else if sec == 2usize {
             match line.split_once(" = ") {
-                Some((k, v)) => {
-                    match v.split_once("path = ") {
-                        Some((_a, rest)) => {
-                            match rest.split_once("}") {
-                                Some((body, _b)) => {
-                                    let dpath = resolve.manifest.quoted(body.trim())
-                                    deps.push(resolve.manifest.dep(k, dpath)?)?
-                                }
-                                None => core.mem.drop(0u8)
-                            }
+                Some((k, v)) => match v.split_once("path = ") {
+                    Some((_a, rest)) => match rest.split_once("}") {
+                        Some((body, _b)) => {
+                            let dpath = resolve.manifest.quoted(body.trim())
+                            deps.push(resolve.manifest.dep(k, dpath)?)?
                         }
                         None => core.mem.drop(0u8)
                     }
+                    None => core.mem.drop(0u8)
                 }
                 None => core.mem.drop(0u8)
             }

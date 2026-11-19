@@ -46,18 +46,18 @@ end t.pair
 fn t.reborrow_sequential() -> () uses [] panics never
     let mut a = [1u32, 2u32, 3u32, 4u32]
     let s = &mut a
-    let left = core.slice.sub_mut(s, 0, 2usize)
+    let left = s.sub_mut(0usize, 2usize)
     core.mem.drop(left)
-    let right = core.slice.sub_mut(s, 1, 3usize)
+    let right = s.sub_mut(1usize, 3usize)
     core.mem.drop(right)
 end t.reborrow_sequential
 
 fn t.sequential_calls() -> () uses [] panics never
     let mut a = [3u32, 1u32, 2u32]
     let r = &mut a
-    core.slice.reverse(r)
-    core.slice.sort_unstable(r)
-    match core.slice.get_mut(r, 0usize) {
+    r.reverse()
+    r.sort()
+    match r.get_mut(0usize) {
         Some(elem) => core.mem.drop(*elem)
         None => core.mem.drop(0u32)
     }

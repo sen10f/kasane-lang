@@ -2003,7 +2003,7 @@ fn lower.expr.set_mut(c: &mut lower.cx.Cx, k: usize, m: bool) -> Result<(), reso
     }
     let _old = tail.pop()
     c.v.mutf.push(m)?
-    while tail.len() > 0usize {
+    while !tail.is_empty() {
         match tail.pop() {
             Some(x) => c.v.mutf.push(x)?
             None => core.mem.drop(0u8)

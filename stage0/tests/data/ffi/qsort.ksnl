@@ -24,12 +24,12 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     unsafe "sort" "qsort with a Kasane comparator" {
         t.qsort(p, 6usize, 4usize, t.ascending)
     }
-    core.check.eq(v[0], 1i32)
-    core.check.eq(v[1], 2i32)
-    core.check.eq(v[2], 3i32)
-    core.check.eq(v[3], 5i32)
-    core.check.eq(v[4], 7i32)
-    core.check.eq(v[5], 9i32)
+    core.check.eq(v[0usize], 1i32)
+    core.check.eq(v[1usize], 2i32)
+    core.check.eq(v[2usize], 3i32)
+    core.check.eq(v[3usize], 5i32)
+    core.check.eq(v[4usize], 7i32)
+    core.check.eq(v[5usize], 9i32)
     unsafe "sort" "qsort with a closure that has no captures (descending)" {
         t.qsort(p, 6usize, 4usize, fn(a: *const i32, b: *const i32) -> i32 capture [] {
             let x = core.ptr.read(a)
@@ -43,8 +43,8 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
             }
         })
     }
-    core.check.eq(v[0], 9i32)
-    core.check.eq(v[5], 1i32)
+    core.check.eq(v[0usize], 9i32)
+    core.check.eq(v[5usize], 1i32)
     core.mem.drop(std.io.print_line("qsort ok"))
     Ok(())
 end t.main

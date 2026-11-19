@@ -20,10 +20,10 @@ fn kvlib.parse.split_line(line: &str) -> Option<(&str, &str)> uses [] panics nev
 end kvlib.parse.split_line
 
 test kvlib.parse.split_line.test_skips_comments_and_garbage
-    core.check.eq(kvlib.parse.split_line("# note = 1").is_none(), true)
-    core.check.eq(kvlib.parse.split_line("").is_none(), true)
-    core.check.eq(kvlib.parse.split_line("no equals sign").is_none(), true)
-    core.check.eq(kvlib.parse.split_line("= value").is_none(), true)
+    core.check.eq(kvlib.parse.split_line("# note = 1") is None, true)
+    core.check.eq(kvlib.parse.split_line("") is None, true)
+    core.check.eq(kvlib.parse.split_line("no equals sign") is None, true)
+    core.check.eq(kvlib.parse.split_line("= value") is None, true)
 end kvlib.parse.split_line.test_skips_comments_and_garbage
 
 test kvlib.parse.split_line.test_trims_both_sides

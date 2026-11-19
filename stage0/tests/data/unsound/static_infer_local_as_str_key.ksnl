@@ -4,8 +4,6 @@ fn t.main() -> () uses [alloc, io.console] panics may
     match m.insert(s.as_str(), 1u32) {
         Ok(_r) => {
         }
-        Err(_e) => {
-            core.panic.panic("insert")
-        }
+        Err(_e) => core.panic.panic("insert")
     }
 end t.main

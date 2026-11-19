@@ -86,14 +86,12 @@ fn http.content_length(buf: &[u8], head_end: usize) -> Result<usize, http.Error>
             let mut seen = false
             loop {
                 match buf.get(j) {
-                    Some(c) => {
-                        if *c >= b'0' && *c <= b'9' {
-                            value = value * 10usize + usize.from_u8(c.wrapping_sub(b'0'))
-                            seen = true
-                            j = j.wrapping_add(1usize)
-                        } else {
-                            break
-                        }
+                    Some(c) => if *c >= b'0' && *c <= b'9' {
+                        value = value * 10usize + usize.from_u8(c.wrapping_sub(b'0'))
+                        seen = true
+                        j = j.wrapping_add(1usize)
+                    } else {
+                        break
                     }
                     None => break
                 }
@@ -242,12 +240,10 @@ fn http.server(stream: &mut std.net.TcpStream) -> Result<usize, http.Error> uses
     let found = bytes.sub(request.path_start, request.path_end)
     let mut reply = alloc.string.String.new(std.alloc.SYSTEM)
     match found {
-        Some(path) => {
-            if path == b"/hello" {
-                http.build_response(&mut reply, "200 OK", "Hello, Kasane!")?
-            } else {
-                http.build_response(&mut reply, "404 Not Found", "Not Found")?
-            }
+        Some(path) => if path == b"/hello" {
+            http.build_response(&mut reply, "200 OK", "Hello, Kasane!")?
+        } else {
+            http.build_response(&mut reply, "404 Not Found", "Not Found")?
         }
         None => return Err(http.Error.BadRequest)
     }

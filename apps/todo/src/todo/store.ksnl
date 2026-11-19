@@ -65,7 +65,7 @@ fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &s
 end todo.store.Store.add
 
 fn todo.store.Store.add_extra(self: &mut todo.store.Store, id: i64, updated_at: &str, tags: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, deadline: alloc.string.String<std.alloc.System>, owner_id: i64) -> Result<&todo.model.TodoExtra, todo.error.Error> uses [alloc, io.fs] panics never pub
-    let index = todo.store.Store.index_of(self, id)?
+    let index = self.index_of(id)?
     {
         let e = match self.extras.get_mut(index) {
             Some(e) => e
@@ -108,7 +108,7 @@ fn todo.store.Store.add_session(self: &mut todo.store.Store, token: &str, user_i
 end todo.store.Store.add_session
 
 fn todo.store.Store.add_user(self: &mut todo.store.Store, username: &str, password_hash: &str, salt: &str, created_at: &str) -> Result<&todo.model.User, todo.error.Error> uses [alloc, io.fs] panics never pub
-    if todo.store.Store.find_user_by_username(self, username).is_some() {
+    if self.find_user_by_username(username) is Some(_) {
         return Err(error.Error.BadRequest)
     }
     let id_base = match i64.try_from_usize(self.users.len()) {
@@ -173,13 +173,11 @@ fn todo.store.Store.delete_expired_sessions(self: &mut todo.store.Store, now: i6
     while i < self.sessions.len() {
         let all = self.sessions.as_slice()
         match all.get(i) {
-            Some(s) => {
-                if s.expires_at <= now {
-                    core.mem.drop(self.sessions.remove(i))
-                    removed = removed.saturating_add(1usize)
-                } else {
-                    i = i.wrapping_add(1usize)
-                }
+            Some(s) => if s.expires_at <= now {
+                core.mem.drop(self.sessions.remove(i))
+                removed = removed.saturating_add(1usize)
+            } else {
+                i = i.wrapping_add(1usize)
             }
             None => return Err(error.Error.Corrupt)
         }
@@ -194,10 +192,8 @@ fn todo.store.Store.find_session(self: &todo.store.Store, token: &str) -> Option
     let all = self.sessions.as_slice()
     for i in core.iter.range(0usize, all.len()) {
         match all.get(i) {
-            Some(s) => {
-                if s.token.as_str() == token {
-                    return Some(s)
-                }
+            Some(s) => if s.token.as_str() == token {
+                return Some(s)
             }
             None => return None
         }
@@ -209,10 +205,8 @@ fn todo.store.Store.find_user_by_id(self: &todo.store.Store, id: i64) -> Option<
     let all = self.users.as_slice()
     for i in core.iter.range(0usize, all.len()) {
         match all.get(i) {
-            Some(u) => {
-                if u.id == id {
-                    return Some(u)
-                }
+            Some(u) => if u.id == id {
+                return Some(u)
             }
             None => return None
         }
@@ -224,10 +218,8 @@ fn todo.store.Store.find_user_by_username(self: &todo.store.Store, username: &st
     let all = self.users.as_slice()
     for i in core.iter.range(0usize, all.len()) {
         match all.get(i) {
-            Some(u) => {
-                if u.username.as_str() == username {
-                    return Some(u)
-                }
+            Some(u) => if u.username.as_str() == username {
+                return Some(u)
             }
             None => return None
         }
@@ -239,10 +231,8 @@ fn todo.store.Store.get(self: &todo.store.Store, id: i64) -> Option<&todo.model.
     let all = self.todos.as_slice()
     for i in core.iter.range(0usize, all.len()) {
         match all.get(i) {
-            Some(t) => {
-                if t.id == id {
-                    return Some(t)
-                }
+            Some(t) => if t.id == id {
+                return Some(t)
             }
             None => return None
         }
@@ -251,7 +241,7 @@ fn todo.store.Store.get(self: &todo.store.Store, id: i64) -> Option<&todo.model.
 end todo.store.Store.get
 
 fn todo.store.Store.get_extra(self: &todo.store.Store, id: i64) -> Option<&todo.model.TodoExtra> uses [] panics never pub
-    let index = match todo.store.Store.index_of(self, id) {
+    let index = match self.index_of(id) {
         Ok(n) => n
         Err(_e) => return None
     }
@@ -279,10 +269,8 @@ fn todo.store.Store.index_of(self: &todo.store.Store, id: i64) -> Result<usize, 
     let all = self.todos.as_slice()
     for i in core.iter.range(0usize, all.len()) {
         match all.get(i) {
-            Some(t) => {
-                if t.id == id {
-                    return Ok(i)
-                }
+            Some(t) => if t.id == id {
+                return Ok(i)
             }
             None => return Err(error.Error.Corrupt)
         }
@@ -416,7 +404,7 @@ fn todo.store.Store.parse_users_into(self: &mut todo.store.Store, text: &str) ->
 end todo.store.Store.parse_users_into
 
 fn todo.store.Store.remove(self: &mut todo.store.Store, id: i64) -> Result<(), todo.error.Error> uses [alloc, io.fs] panics never pub
-    let index = todo.store.Store.index_of(self, id)?
+    let index = self.index_of(id)?
     core.mem.drop(self.todos.remove(index))
     core.mem.drop(self.extras.remove(index))
     self.save()
@@ -427,10 +415,8 @@ fn todo.store.Store.remove_session(self: &mut todo.store.Store, token: &str) -> 
     let mut found = None
     for i in core.iter.range(0usize, all.len()) {
         match all.get(i) {
-            Some(s) => {
-                if s.token.as_str() == token {
-                    found = Some(i)
-                }
+            Some(s) => if s.token.as_str() == token {
+                found = Some(i)
             }
             None => core.mem.drop(0u8)
         }
@@ -467,10 +453,8 @@ fn todo.store.Store.search(self: &todo.store.Store, q: &str, page: usize, page_s
     let all = self.todos.as_slice()
     for i in core.iter.range(0usize, all.len()) {
         match all.get(i) {
-            Some(t) => {
-                if t.title.as_str().contains(q) {
-                    total = total.saturating_add(1usize)
-                }
+            Some(t) => if t.title.as_str().contains(q) {
+                total = total.saturating_add(1usize)
             }
             None => return Err(alloc.alloc.AllocError { code: 0u32 })
         }
@@ -517,7 +501,7 @@ fn todo.store.Store.search(self: &todo.store.Store, q: &str, page: usize, page_s
 end todo.store.Store.search
 
 fn todo.store.Store.set_done(self: &mut todo.store.Store, id: i64, done: bool) -> Result<&todo.model.Todo, todo.error.Error> uses [alloc, io.fs] panics never pub
-    let index = todo.store.Store.index_of(self, id)?
+    let index = self.index_of(id)?
     {
         let t = match self.todos.get_mut(index) {
             Some(t) => t
@@ -562,7 +546,7 @@ fn todo.store.Store.stats(self: &todo.store.Store) -> Result<todo.store.Stats, t
 end todo.store.Store.stats
 
 fn todo.store.Store.toggle(self: &mut todo.store.Store, id: i64) -> Result<&todo.model.Todo, todo.error.Error> uses [alloc, io.fs] panics never pub
-    let index = todo.store.Store.index_of(self, id)?
+    let index = self.index_of(id)?
     {
         let t = match self.todos.get_mut(index) {
             Some(t) => t
@@ -583,7 +567,7 @@ fn todo.store.Store.toggle(self: &mut todo.store.Store, id: i64) -> Result<&todo
 end todo.store.Store.toggle
 
 fn todo.store.Store.update_extra(self: &mut todo.store.Store, id: i64, updated_at: &str, tags: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, deadline: alloc.string.String<std.alloc.System>, owner_id: i64) -> Result<&todo.model.TodoExtra, todo.error.Error> uses [alloc, io.fs] panics never pub
-    let index = todo.store.Store.index_of(self, id)?
+    let index = self.index_of(id)?
     {
         let e = match self.extras.get_mut(index) {
             Some(e) => e

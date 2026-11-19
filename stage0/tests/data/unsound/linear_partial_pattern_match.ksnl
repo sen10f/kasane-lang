@@ -15,9 +15,7 @@ end t.Res.shut
 fn t.bad() -> () uses [] panics never
     let p = t.mk()
     match p {
-        t.Pair { a: x } => {
-            core.mem.drop(x)
-        }
+        t.Pair { a: x } => core.mem.drop(x)
     }
 end t.bad
 

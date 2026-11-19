@@ -3,7 +3,7 @@ type t.Res linear
 end t.Res
 
 fn t.bad() -> u32 uses [] panics never
-    core.mem.drop(Some(t.open(1u32)).is_some())
+    core.mem.drop(Some(t.open(1u32)) is Some(_))
     0u32
 end t.bad
 

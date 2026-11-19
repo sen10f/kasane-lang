@@ -13,7 +13,7 @@ end wiki.router.Reply
 
 fn wiki.router.edit_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand, time] panics never
     let token = csrf.generate_token(csrf_tokens)?
-    let content = match store.PageStore.load_latest(page_store, name) {
+    let content = match page_store.load_latest(name) {
         Some(c) => c
         None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
     }
@@ -33,17 +33,17 @@ fn wiki.router.error_reply(status: u16, message: &str) -> Result<wiki.router.Rep
 end wiki.router.error_reply
 
 fn wiki.router.history_page(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
-    if !store.PageStore.page_exists(page_store, name) {
+    if !page_store.page_exists(name) {
         return wiki.router.error_reply(404u16, "not found")
     }
-    let versions = store.PageStore.page_versions(page_store, name)?
+    let versions = page_store.page_versions(name)?
     let body = html.history_view(name, versions.as_slice())?
     let location = wiki.router.empty()
     Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
 end wiki.router.history_page
 
 fn wiki.router.list_pages(page_store: &mut wiki.store.PageStore) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
-    let pages = store.PageStore.list_pages(page_store)?
+    let pages = page_store.list_pages()?
     let body = html.list_view(pages.as_slice())?
     let location = wiki.router.empty()
     Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
@@ -57,7 +57,7 @@ fn wiki.router.new_page(csrf_tokens: &mut alloc.vec.Vec<alloc.string.String<std.
 end wiki.router.new_page
 
 fn wiki.router.page_backlinks(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
-    if !store.PageStore.page_exists(page_store, name) {
+    if !page_store.page_exists(name) {
         return wiki.router.error_reply(404u16, "not found")
     }
     let backlinks = link.backlinks_for(page_store, name)?
@@ -67,10 +67,10 @@ fn wiki.router.page_backlinks(page_store: &mut wiki.store.PageStore, name: &str)
 end wiki.router.page_backlinks
 
 fn wiki.router.page_links(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
-    if !store.PageStore.page_exists(page_store, name) {
+    if !page_store.page_exists(name) {
         return wiki.router.error_reply(404u16, "not found")
     }
-    let content = match store.PageStore.load_latest(page_store, name) {
+    let content = match page_store.load_latest(name) {
         Some(c) => c
         None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
     }
@@ -82,14 +82,12 @@ end wiki.router.page_links
 
 fn wiki.router.page_name_from_path(path: &str, prefix: &str) -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics never
     match path.strip_prefix(prefix) {
-        Some(rest) => {
-            if rest.is_empty() || rest.contains("/") {
-                None
-            } else {
-                match alloc.string.String.from_str(std.alloc.SYSTEM, rest) {
-                    Ok(s) => Some(s)
-                    Err(_e) => None
-                }
+        Some(rest) => if rest.is_empty() || rest.contains("/") {
+            None
+        } else {
+            match alloc.string.String.from_str(std.alloc.SYSTEM, rest) {
+                Ok(s) => Some(s)
+                Err(_e) => None
             }
         }
         None => None
@@ -99,12 +97,10 @@ end wiki.router.page_name_from_path
 fn wiki.router.query_param(query: &str, key: &str) -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics never
     for pair in query.split("&") {
         match pair.split_once("=") {
-            Some((k, v)) => {
-                if k == key {
-                    match alloc.string.String.from_str(std.alloc.SYSTEM, v) {
-                        Ok(s) => return Some(s)
-                        Err(_e) => return None
-                    }
+            Some((k, v)) => if k == key {
+                match alloc.string.String.from_str(std.alloc.SYSTEM, v) {
+                    Ok(s) => return Some(s)
+                    Err(_e) => return None
                 }
             }
             None => core.mem.drop(0u8)
@@ -160,11 +156,9 @@ fn wiki.router.route(page_store: &mut wiki.store.PageStore, method: &str, path: 
             let mut done = false
             while slash_pos < rest_len && !done {
                 match rest_bytes.get(slash_pos) {
-                    Some(b) => {
-                        if *b == b'/' {
-                            found_slash = true
-                            done = true
-                        }
+                    Some(b) => if *b == b'/' {
+                        found_slash = true
+                        done = true
                     }
                     None => core.mem.drop(0u8)
                 }
@@ -241,8 +235,8 @@ fn wiki.router.save_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mu
         Some(c) => c
         None => return wiki.router.error_reply(400u16, "missing content")
     }
-    let version = store.PageStore.next_version(page_store, name)?
-    core.mem.drop(store.PageStore.save_version(page_store, name, content.as_str(), version)?)
+    let version = page_store.next_version(name)?
+    core.mem.drop(page_store.save_version(name, content.as_str(), version)?)
     let mut location = alloc.string.String.from_str(std.alloc.SYSTEM, "/page/")?
     location.push_str(name)?
     let mut reply_body = alloc.string.String.new(std.alloc.SYSTEM)
@@ -250,14 +244,14 @@ fn wiki.router.save_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mu
 end wiki.router.save_page
 
 fn wiki.router.search_pages(page_store: &mut wiki.store.PageStore, query: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
-    let pages = store.PageStore.list_pages(page_store)?
+    let pages = page_store.list_pages()?
     let mut index = search.index_new()
     let mut i = 0usize
     let n = pages.len()
     while i < n {
         match pages.as_slice().get(i) {
             Some(name) => {
-                let content = match store.PageStore.load_latest(page_store, name.as_str()) {
+                let content = match page_store.load_latest(name.as_str()) {
                     Some(c) => c
                     None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
                 }
@@ -274,23 +268,23 @@ fn wiki.router.search_pages(page_store: &mut wiki.store.PageStore, query: &str) 
 end wiki.router.search_pages
 
 fn wiki.router.show_page(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
-    if !store.PageStore.page_exists(page_store, name) {
+    if !page_store.page_exists(name) {
         return wiki.router.error_reply(404u16, "not found")
     }
-    let content = match store.PageStore.load_latest(page_store, name) {
+    let content = match page_store.load_latest(name) {
         Some(c) => c
         None => return wiki.router.error_reply(404u16, "not found")
     }
     let html_body = markdown.to_html(content.as_str())?
     let backlinks = link.backlinks_for(page_store, name)?
-    let versions = store.PageStore.page_versions(page_store, name)?
+    let versions = page_store.page_versions(name)?
     let body = html.page_view(name, html_body.as_str(), versions.as_slice(), backlinks.as_slice())?
     let location = wiki.router.empty()
     Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
 end wiki.router.show_page
 
 fn wiki.router.show_version(page_store: &mut wiki.store.PageStore, name: &str, version: usize) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
-    let content = match store.PageStore.load_version(page_store, name, version) {
+    let content = match page_store.load_version(name, version) {
         Some(c) => c
         None => return wiki.router.error_reply(404u16, "not found")
     }
@@ -326,7 +320,7 @@ end wiki.router.test_store
 test wiki.router.route.test_create_and_show
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    let saved = store.PageStore.save_version(&mut page_store, "Hello", "Hello world\n", 1u64)?
+    let saved = page_store.save_version("Hello", "Hello world\n", 1u64)?
     core.mem.drop(saved)
     let mut req_path = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(req_path.push('/')?)
@@ -350,7 +344,7 @@ end wiki.router.route.test_create_and_show
 test wiki.router.route.test_edit_page
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "EditMe", "original\n", 1u64)?)
+    core.mem.drop(page_store.save_version("EditMe", "original\n", 1u64)?)
     let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/edit/EditMe", "")
     core.check.eq(resp.status, 200u16)
     core.check.eq(resp.body.as_str().contains("original"), true)
@@ -366,7 +360,7 @@ end wiki.router.route.test_edit_page_missing
 test wiki.router.route.test_get_root_after_save
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "Hello", "Hello world\n", 1u64)?)
+    core.mem.drop(page_store.save_version("Hello", "Hello world\n", 1u64)?)
     let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/", "")
     core.check.eq(resp.status, 200u16)
     core.check.eq(resp.body.as_str().contains("/page/Hello"), true)
@@ -375,8 +369,8 @@ end wiki.router.route.test_get_root_after_save
 test wiki.router.route.test_history
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "Hi", "v1\n", 1u64)?)
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "Hi", "v2\n", 2u64)?)
+    core.mem.drop(page_store.save_version("Hi", "v1\n", 1u64)?)
+    core.mem.drop(page_store.save_version("Hi", "v2\n", 2u64)?)
     let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/history/Hi", "")
     core.check.eq(resp.status, 200u16)
 end wiki.router.route.test_history
@@ -384,8 +378,8 @@ end wiki.router.route.test_history
 test wiki.router.route.test_history_page
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "Hist", "v1\n", 1u64)?)
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "Hist", "v2\n", 2u64)?)
+    core.mem.drop(page_store.save_version("Hist", "v1\n", 1u64)?)
+    core.mem.drop(page_store.save_version("Hist", "v2\n", 2u64)?)
     let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/history/Hist", "")
     core.check.eq(resp.status, 200u16)
 end wiki.router.route.test_history_page
@@ -425,8 +419,8 @@ end wiki.router.route.test_not_found
 test wiki.router.route.test_page_backlinks
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "To", "target page\n", 1u64)?)
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "From", "see [[To]] here\n", 1u64)?)
+    core.mem.drop(page_store.save_version("To", "target page\n", 1u64)?)
+    core.mem.drop(page_store.save_version("From", "see [[To]] here\n", 1u64)?)
     let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/backlinks/To", "")
     core.check.eq(resp.status, 200u16)
     core.check.eq(resp.body.as_str().contains("/page/From"), true)
@@ -444,7 +438,7 @@ end wiki.router.route.test_page_backlinks_missing
 test wiki.router.route.test_page_links
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "From", "see [[To]] here\n", 1u64)?)
+    core.mem.drop(page_store.save_version("From", "see [[To]] here\n", 1u64)?)
     let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/links/From", "")
     core.check.eq(resp.status, 200u16)
     core.check.eq(resp.body.as_str().contains("/page/To"), true)
@@ -550,9 +544,9 @@ test wiki.router.route.test_search
     let mut csrf_tokens = wiki.router.test_csrf()
     let ps = &mut page_store
     let ct = &mut csrf_tokens
-    let saved_a = store.PageStore.save_version(ps, "Alpha", "alpha beta gamma\n", 1u64)?
+    let saved_a = ps.save_version("Alpha", "alpha beta gamma\n", 1u64)?
     core.mem.drop(saved_a)
-    let saved_b = store.PageStore.save_version(ps, "Beta", "beta delta\n", 1u64)?
+    let saved_b = ps.save_version("Beta", "beta delta\n", 1u64)?
     core.mem.drop(saved_b)
     let resp = wiki.router.test_route(ps, ct, "GET", "/search?q=beta", "")
     core.check.eq(resp.status, 200u16)
@@ -563,8 +557,8 @@ test wiki.router.route.test_show_version
     let mut csrf_tokens = wiki.router.test_csrf()
     let ps = &mut page_store
     let ct = &mut csrf_tokens
-    core.mem.drop(store.PageStore.save_version(ps, "Ver", "v1\n", 1u64)?)
-    core.mem.drop(store.PageStore.save_version(ps, "Ver", "v2\n", 2u64)?)
+    core.mem.drop(ps.save_version("Ver", "v1\n", 1u64)?)
+    core.mem.drop(ps.save_version("Ver", "v2\n", 2u64)?)
     let resp = wiki.router.test_route(ps, ct, "GET", "/history/Ver/2", "")
     core.check.eq(resp.status, 200u16)
 end wiki.router.route.test_show_version

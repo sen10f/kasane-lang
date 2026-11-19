@@ -578,9 +578,7 @@ fn fmt.main() -> Result<(), fmt.Failure> uses [alloc, env, io.console, io.fs] pa
     let mut k = 0usize
     while k < n {
         match std.env.arg(k) {
-            Some(path) => {
-                fmt.process(path)?
-            }
+            Some(path) => fmt.process(path)?
             None => return Ok(())
         }
         k = k.wrapping_add(1usize)
@@ -643,7 +641,7 @@ fn fmt.mechanical(src: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.all
         let result = alloc.string.String.from_str(std.alloc.SYSTEM, buf_str)?
         out.push(result)?
     }
-    while out.len() > 0usize {
+    while !out.is_empty() {
         let len = out.len()
         let is_empty = {
             let os = out.as_slice()

@@ -64,10 +64,7 @@ fn todo.pool.run(left: usize, listener: &std.net.TcpListener, count: usize, jobs
 end todo.pool.run
 
 fn todo.pool.serve(listener: &std.net.TcpListener, db: todo.store.Store, count: usize, workers: usize) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, rand, thread, time] panics may pub
-    let (give, take) = std.sync.channel::<store.Store, std.alloc.System>(
-        std.alloc.SYSTEM,
-        1usize,
-    )?
+    let (give, take) = std.sync.channel::<store.Store, std.alloc.System>(std.alloc.SYSTEM, 1usize)?
     core.mem.drop(give.send(db))
     let (jobs, queue) = std.sync.channel::<std.net.TcpStream, std.alloc.System>(
         std.alloc.SYSTEM,

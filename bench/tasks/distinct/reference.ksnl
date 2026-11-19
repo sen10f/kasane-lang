@@ -3,12 +3,10 @@ fn bench.distinct_count(xs: &[u32]) -> usize
     let mut i = 0usize
     while i < xs.len() {
         match xs.get(i) {
-            Some(v) => {
-                match seen.insert(*v, true) {
-                    Ok(_old) => {
-                    }
-                    Err(_e) => core.panic.panic("oom")
+            Some(v) => match seen.insert(*v, true) {
+                Ok(_old) => {
                 }
+                Err(_e) => core.panic.panic("oom")
             }
             None => break
         }

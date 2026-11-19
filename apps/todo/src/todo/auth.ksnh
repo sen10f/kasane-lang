@@ -8,7 +8,7 @@ fn todo.auth.bytes_to_hex(bytes: &[u8]) -> Result<alloc.string.String<std.alloc.
     while i < bytes.len() {
         match bytes.get(i) {
             Some(b) => {
-                let hi = todo.auth.nibble_to_char(u64.from_u8(*b).wrapping_shr(4) & 15u64)?
+                let hi = todo.auth.nibble_to_char(u64.from_u8(*b).wrapping_shr(4u32) & 15u64)?
                 let lo = todo.auth.nibble_to_char(u64.from_u8(*b) & 15u64)?
                 out.push(hi)?
                 out.push(lo)?

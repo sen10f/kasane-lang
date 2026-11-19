@@ -150,7 +150,7 @@ fn types.infer.call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types
         }
         let pre = resolve.scope.prefix(name)?
         let last = resolve.ast.last_part(name)
-        if pre.len() > 0usize && last != "" {
+        if !pre.is_empty() && last != "" {
             let rt = types.infer.path_text(env, ar, cx, pre.as_str())?
             if rt != types.ty.UNKNOWN {
                 return types.infer.method_call(env, ar, cx, p, src, rt, last, n.b, cline)
@@ -335,7 +335,7 @@ fn types.infer.expr_in(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut ty
             let t = types.infer.expr(env, ar, cx, p, src, ex2, types.ty.UNKNOWN)?
             ids.push(t)?
         }
-        if ids.len() == 0usize {
+        if ids.is_empty() {
             return Ok(types.ty.UNIT)
         }
         let (b, c) = types.ty.args(ar, &ids)?
@@ -592,7 +592,7 @@ fn types.infer.item_of(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut ty
         return Ok(types.ty.UNKNOWN)
     }
     let (params, ret) = types.infer.sig_of(env, ar, cx, fi.wrapping_sub(1usize))?
-    if params.len() > 0usize {
+    if !params.is_empty() {
         let s0 = types.infer.param_at(&params, 0usize)
         let self_t = types.ty.strip(ar, s0)
         core.mem.drop(types.ty.unify(ar, self_t, rs)?)
@@ -811,7 +811,7 @@ fn types.infer.method_call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mu
         return Ok(types.ty.UNKNOWN)
     }
     let (params, ret) = types.infer.sig_of(env, ar, cx, it.wrapping_sub(1usize))?
-    if params.len() > 0usize {
+    if !params.is_empty() {
         let s0 = types.infer.param_at(&params, 0usize)
         let self_t = types.ty.strip(ar, s0)
         core.mem.drop(types.ty.unify(ar, self_t, rs2)?)
@@ -823,10 +823,10 @@ end types.infer.method_call
 
 fn types.infer.method_key(env: &types.env.Env, ar: &types.ty.Arena, rs: usize, mname: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut pre = types.infer.prefix(ar, rs)?
-    if pre.len() == 0usize {
+    if pre.is_empty() {
         pre = types.infer.adt_prefix(env, ar, rs)?
     }
-    if pre.len() == 0usize {
+    if pre.is_empty() {
         return Ok(pre)
     }
     pre.push('.')?
@@ -851,10 +851,8 @@ fn types.infer.note_arm(p: &parse.cur.P, src: &[u8], pt: usize, seen: &mut alloc
     }
     for k in core.iter.range(0usize, seen.len()) {
         match seen.as_slice().get(k) {
-            Some(v) => {
-                if v.as_str() == name {
-                    return Ok(())
-                }
+            Some(v) => if v.as_str() == name {
+                return Ok(())
             }
             None => core.mem.drop(0u8)
         }

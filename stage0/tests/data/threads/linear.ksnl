@@ -9,11 +9,9 @@ fn t.bump(state_tx: std.sync.Sender<u64>, state_rx: std.sync.Receiver<u64>, roun
     let mut i = 0u32
     while i < rounds {
         core.mem.drop(match state_rx.recv() {
-            Ok(n) => {
-                match state_tx.send(n + 1u64) {
-                    Ok(_u) => 0u32
-                    Err(_e) => core.panic.panic("send failed")
-                }
+            Ok(n) => match state_tx.send(n + 1u64) {
+                Ok(_u) => 0u32
+                Err(_e) => core.panic.panic("send failed")
             }
             Err(_e) => core.panic.panic("state lost")
         })
@@ -164,10 +162,7 @@ fn t.session(listener: &std.net.TcpListener) -> Result<(), std.io.Error> uses [a
     })
     core.mem.drop(left_tx)
     core.check.eq(t.drain(left_rx), 1u32)
-    let made_state = std.sync.channel::<u64, std.alloc.System>(
-        std.alloc.SYSTEM,
-        1usize,
-    )
+    let made_state = std.sync.channel::<u64, std.alloc.System>(std.alloc.SYSTEM, 1usize)
     let (state_tx, state_rx) = made_state.map_err(t.oom)?
     let state_tx_a = state_tx.clone()
     let state_rx_a = state_rx.clone()

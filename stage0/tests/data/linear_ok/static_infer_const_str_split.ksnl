@@ -10,19 +10,13 @@ fn t.main() -> () uses [alloc, io.console] panics may
                 match m.insert(w, nn) {
                     Ok(_r) => {
                     }
-                    Err(_e) => {
-                        core.panic.panic("insert")
-                    }
+                    Err(_e) => core.panic.panic("insert")
                 }
             }
-            None => {
-                match m.insert(w, 1u32) {
-                    Ok(_r) => {
-                    }
-                    Err(_e) => {
-                        core.panic.panic("insert")
-                    }
+            None => match m.insert(w, 1u32) {
+                Ok(_r) => {
                 }
+                Err(_e) => core.panic.panic("insert")
             }
         }
     }
@@ -31,30 +25,22 @@ fn t.main() -> () uses [alloc, io.console] panics may
         match line.push_str(*w) {
             Ok(()) => {
             }
-            Err(_e) => {
-                core.panic.panic("push_str")
-            }
+            Err(_e) => core.panic.panic("push_str")
         }
         match line.push_str(" ") {
             Ok(()) => {
             }
-            Err(_e) => {
-                core.panic.panic("push_str")
-            }
+            Err(_e) => core.panic.panic("push_str")
         }
         match line.push_i64(i64.from_u32(*c)) {
             Ok(()) => {
             }
-            Err(_e) => {
-                core.panic.panic("push_i64")
-            }
+            Err(_e) => core.panic.panic("push_i64")
         }
         match std.io.print_line(line.as_str()) {
             Ok(()) => {
             }
-            Err(_e) => {
-                core.panic.panic("print_line")
-            }
+            Err(_e) => core.panic.panic("print_line")
         }
     }
 end t.main

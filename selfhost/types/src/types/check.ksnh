@@ -3,10 +3,8 @@ fn types.check.all(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.
     cx.rec = types.rec.new(env)?
     for k_s in core.iter.range(0usize, env.srcs.len()) {
         match env.srcs.as_slice().get(k_s) {
-            Some(s) => {
-                if s.own && !s.sig {
-                    types.check.unit(env, ar, cx, k_s, s)?
-                }
+            Some(s) => if s.own && !s.sig {
+                types.check.unit(env, ar, cx, k_s, s)?
             }
             None => core.mem.drop(0u8)
         }

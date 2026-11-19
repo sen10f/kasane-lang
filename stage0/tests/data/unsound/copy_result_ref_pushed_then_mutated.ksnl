@@ -5,12 +5,10 @@ fn t.b() -> usize uses [alloc] panics never
         Err(_e) => ()
     }
     let mut dst = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match src.get(0) {
-        Some(r) => {
-            match dst.push(r) {
-                Ok(_u) => ()
-                Err(_e) => ()
-            }
+    match src.get(0usize) {
+        Some(r) => match dst.push(r) {
+            Ok(_u) => ()
+            Err(_e) => ()
         }
         None => ()
     }

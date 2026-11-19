@@ -2,7 +2,7 @@ const t.A: u8 = t.f(1u8)
 
 const t.K: u32 = 4u32 / 2u32
 
-static t.S: u32 = [1u32, 2u32][1]
+static t.S: u32 = [1u32, 2u32][1usize]
 
 fn t.f(x: u8) -> u8 const uses [] panics may
     x + 1u8

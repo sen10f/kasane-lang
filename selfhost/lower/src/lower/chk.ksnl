@@ -264,7 +264,7 @@ fn lower.chk.p(o: &mut alloc.string.String<std.alloc.System>, s: &str) -> Result
 end lower.chk.p
 
 fn lower.chk.record(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
-    if subs.len() > 0usize {
+    if !subs.is_empty() {
         let mut eo = alloc.string.String.new(std.alloc.SYSTEM)
         lower.chk.text_enum_eq(env, c, &mut eo, key, lower.tyk.at(subs.as_slice(), 0usize))?
         return lower.func.record(c, eo.as_str(), "")

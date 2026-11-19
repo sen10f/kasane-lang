@@ -72,9 +72,7 @@ end todo_spa.app.delete_item
 fn todo_spa.app.find_done(cache: &str, want: &str) -> Option<bool> uses [] panics never
     for line in cache.split("\n") {
         match model.split_line(line) {
-            None => {
-                core.mem.drop(line)
-            }
+            None => core.mem.drop(line)
             Some((id, done, raw)) => {
                 core.mem.drop(raw)
                 if id == want {
@@ -160,12 +158,8 @@ fn todo_spa.app.render(lines: &str) -> Result<(), alloc.alloc.AllocError> uses [
     dom.clear(list)
     for line in lines.split("\n") {
         match model.split_line(line) {
-            None => {
-                core.mem.drop(line)
-            }
-            Some((id, done, raw)) => {
-                todo_spa.app.render_item(list, id, done == "1", raw)?
-            }
+            None => core.mem.drop(line)
+            Some((id, done, raw)) => todo_spa.app.render_item(list, id, done == "1", raw)?
         }
     }
     Ok(())

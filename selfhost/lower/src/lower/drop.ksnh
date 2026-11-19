@@ -212,7 +212,7 @@ fn lower.drop.put(c: &mut lower.cx.Cx, k: usize, id: usize) -> Result<(), resolv
     }
     core.mem.drop(c.v.sl.flag.pop())
     c.v.sl.flag.push(id)?
-    while tail.len() > 0usize {
+    while !tail.is_empty() {
         match tail.pop() {
             Some(x) => c.v.sl.flag.push(x)?
             None => core.mem.drop(0u8)

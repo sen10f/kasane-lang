@@ -7,20 +7,14 @@ end t.Error
 fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may
     let mut s = alloc.string.String.from_str(std.alloc.SYSTEM, "hello")?
     match core.str.from_utf8(s.as_bytes()) {
-        Ok(text) => {
-            core.check.eq(text, "hello")
-        }
-        Err(error) => {
-            return Err(t.Error.Utf8(error))
-        }
+        Ok(text) => core.check.eq(text, "hello")
+        Err(error) => return Err(t.Error.Utf8(error))
     }
     core.mem.drop(s.push_str(" world")?)
     match std.io.print_line("string from_utf8 nll ok") {
         Ok(_done) => {
         }
-        Err(error) => {
-            return Err(t.Error.Io(error))
-        }
+        Err(error) => return Err(t.Error.Io(error))
     }
     core.mem.drop(s)
     Ok(())

@@ -24,9 +24,7 @@ fn wiki.csrf.generate_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.a
                 hex.push(wiki.csrf.hex_digit(hi))?
                 hex.push(wiki.csrf.hex_digit(lo))?
             }
-            None => {
-                core.mem.drop(0u8)
-            }
+            None => core.mem.drop(0u8)
         }
         i = i.saturating_add(1usize)
     }
@@ -55,21 +53,13 @@ fn wiki.csrf.verify_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.all
     let n = tokens.len()
     while i < n {
         match tokens.as_slice().get(i) {
-            Some(s) => {
-                if s.as_str() == token {
-                    match tokens.remove(i) {
-                        Some(_v) => {
-                            return true
-                        }
-                        None => {
-                            core.mem.drop(0u8)
-                        }
-                    }
+            Some(s) => if s.as_str() == token {
+                match tokens.remove(i) {
+                    Some(_v) => return true
+                    None => core.mem.drop(0u8)
                 }
             }
-            None => {
-                core.mem.drop(0u8)
-            }
+            None => core.mem.drop(0u8)
         }
         i = i.saturating_add(1usize)
     }

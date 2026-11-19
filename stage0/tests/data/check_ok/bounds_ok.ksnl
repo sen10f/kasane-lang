@@ -24,5 +24,5 @@ end t.main
 
 fn t.wrap[H: t.Handler<[io.console], never> + 'static](handler: H) -> Result<t.Slot, alloc.alloc.AllocError> uses [alloc] panics never
     let b = boxed.Box.new(std.alloc.SYSTEM, handler)?
-    Ok(t.Slot { handler: boxed.Box.into_dyn(b) })
+    Ok(t.Slot { handler: b.into_dyn() })
 end t.wrap

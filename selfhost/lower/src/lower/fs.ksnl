@@ -111,7 +111,7 @@ fn lower.fs.set_close(c: &mut lower.cx.Cx, k: usize, node: usize) -> Result<(), 
     }
     core.mem.drop(c.v.sl.cl.pop())
     c.v.sl.cl.push(node)?
-    while tail.len() > 0usize {
+    while !tail.is_empty() {
         match tail.pop() {
             Some(x) => c.v.sl.cl.push(x)?
             None => core.mem.drop(0u8)

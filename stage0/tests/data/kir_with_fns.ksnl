@@ -40,12 +40,8 @@ fn t.run_try(n: u32) -> u32 uses [] panics may
     let mut log = 0u32
     let r = t.w_try(n, &mut log)
     match r {
-        Ok(x) => {
-            log * 1000u32 + x
-        }
-        Err(e) => {
-            log * 1000u32 + e + 500u32
-        }
+        Ok(x) => log * 1000u32 + x
+        Err(e) => log * 1000u32 + e + 500u32
     }
 end t.run_try
 
@@ -71,15 +67,11 @@ end t.w_body_owned
 
 fn t.w_close_match(n: u32, log: &mut u32) -> u32 uses [] panics may
     with s = n close match s {
-        0u32 => {
-            t.lg(log, 9u32)
-        }
-        _ => {
-            if s > 5u32 {
-                t.lg(log, 8u32)
-            } else {
-                t.lg(log, s)
-            }
+        0u32 => t.lg(log, 9u32)
+        _ => if s > 5u32 {
+            t.lg(log, 8u32)
+        } else {
+            t.lg(log, s)
         }
     } {
         if n == 3u32 {
@@ -129,32 +121,26 @@ end t.w_ret
 
 fn t.w_sock(n: u32) -> u32 uses [io.net] panics may
     match std.net.listen("127.0.0.1:0") {
-        Ok(l) => {
-            with s = l close match s.close() {
-                Ok(_) => {
-                }
-                Err(_) => {
-                }
-            } {
-                match s.local_port() {
-                    Ok(p) => {
-                        if p > 0u16 {
-                            if n > 0u32 {
-                                return 5u32
-                            }
-                            return 6u32
+        Ok(l) => with s = l close match s.close() {
+            Ok(_) => {
+            }
+            Err(_) => {
+            }
+        } {
+            match s.local_port() {
+                Ok(p) => {
+                    if p > 0u16 {
+                        if n > 0u32 {
+                            return 5u32
                         }
-                        return 1u32
+                        return 6u32
                     }
-                    Err(_) => {
-                        return 2u32
-                    }
+                    return 1u32
                 }
+                Err(_) => return 2u32
             }
         }
-        Err(_) => {
-            3u32
-        }
+        Err(_) => 3u32
     }
 end t.w_sock
 

@@ -6,16 +6,14 @@ end t.Error
 
 fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may
     let mut s = alloc.string.String.from_str(std.alloc.SYSTEM, "hello")?
-    let b = core.str.as_bytes(s.as_str())
-    core.check.eq(core.str.len(core.str.from_utf8(b)?), 5usize)
+    let b = s.as_str().as_bytes()
+    core.check.eq(core.str.from_utf8(b)?.len(), 5usize)
     core.mem.drop(s.push_str(" world")?)
     core.check.eq(s.as_str(), "hello world")
     match std.io.print_line("as_bytes mut ok") {
         Ok(_done) => {
         }
-        Err(error) => {
-            return Err(t.Error.Io(error))
-        }
+        Err(error) => return Err(t.Error.Io(error))
     }
     core.mem.drop(s)
     Ok(())

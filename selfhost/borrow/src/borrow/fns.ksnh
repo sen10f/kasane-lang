@@ -59,10 +59,8 @@ fn borrow.fns.check_fn(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, d: usize) -
     }
     if self_k != 0usize {
         cx.fnr.elide = self_k
-    } else {
-        if refs == 1usize {
-            cx.fnr.elide = sole
-        }
+    } else if refs == 1usize {
+        cx.fnr.elide = sole
     }
     core.mem.drop(borrow.walk.block(tab, cx, fnode.d, 1usize)?)
     for k in core.iter.range(0usize, cnt) {

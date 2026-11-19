@@ -42,7 +42,7 @@ fn notes.cmd.add(start: usize) -> Result<(), notes.error.Error> uses [alloc, env
     }
     let memo = note.Note.new(0i64, title, body, tags, created_at.as_str())?
     let mut db = notes.cmd.load_store()?
-    let id = store.Store.add(&mut db, memo)?
+    let id = db.add(memo)?
     let id_text = notes.cmd.fmt_i64(id, 0usize)?
     std.io.print_line(id_text.as_str())?
     Ok(())
@@ -68,7 +68,7 @@ fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Res
         None => return Err(error.Error.Usage)
     }
     let mut db = notes.cmd.load_store()?
-    match store.Store.get(&db, id) {
+    match db.get(id) {
         Some(memo) => {
             let mut new_tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
             let all = memo.tags.as_slice()
@@ -86,7 +86,7 @@ fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Res
             }
             let created_at = memo.created_at.as_str()
             let updated = note.Note.new(0i64, title, body, new_tags, created_at)?
-            store.Store.set(&mut db, id, updated)?
+            db.set(id, updated)?
         }
         None => return Err(error.Error.NotFound)
     }
@@ -112,12 +112,12 @@ fn notes.cmd.export(path_index: usize, format_index: usize) -> Result<(), notes.
     }
     let db = notes.cmd.load_store()?
     let mut i = 0usize
-    let n = store.Store.all_notes_len(&db)
+    let n = db.all_notes_len()
     if format == "json" {
         let mut out = alloc.string.String.new(std.alloc.SYSTEM)
         out.push_str("[")?
         while i < n {
-            match store.Store.get_at(&db, i) {
+            match db.get_at(i) {
                 Some(memo) => {
                     if i > 0usize {
                         out.push_str(",")?
@@ -134,7 +134,7 @@ fn notes.cmd.export(path_index: usize, format_index: usize) -> Result<(), notes.
     } else if format == "md" {
         let mut out = alloc.string.String.new(std.alloc.SYSTEM)
         while i < n {
-            match store.Store.get_at(&db, i) {
+            match db.get_at(i) {
                 Some(memo) => {
                     if i > 0usize {
                         out.push_str("\n\n")?
@@ -184,12 +184,10 @@ fn notes.cmd.list() -> Result<(), notes.error.Error> uses [alloc, io.console, io
     let db = notes.cmd.load_store()?
     notes.cmd.print_header()?
     let mut i = 0usize
-    let n = store.Store.all_notes_len(&db)
+    let n = db.all_notes_len()
     while i < n {
-        match store.Store.get_at(&db, i) {
-            Some(memo) => {
-                notes.cmd.print_row(memo)?
-            }
+        match db.get_at(i) {
+            Some(memo) => notes.cmd.print_row(memo)?
             None => core.mem.drop(0u8)
         }
         i = i.wrapping_add(1usize)
@@ -263,7 +261,7 @@ fn notes.cmd.rm(index: usize) -> Result<(), notes.error.Error> uses [alloc, env,
         Err(_e) => return Err(error.Error.Usage)
     }
     let mut db = notes.cmd.load_store()?
-    store.Store.remove(&mut db, id)?
+    db.remove(id)?
     Ok(())
 end notes.cmd.rm
 
@@ -275,19 +273,15 @@ fn notes.cmd.search(index: usize) -> Result<(), notes.error.Error> uses [alloc, 
         None => return Err(error.Error.Usage)
     }
     let db = notes.cmd.load_store()?
-    let found = store.Store.search_ids(&db, q)?
+    let found = db.search_ids(q)?
     notes.cmd.print_header()?
     let mut i = 0usize
     let n = found.len()
     while i < n {
         match found.get(i) {
-            Some(found_id) => {
-                match store.Store.get(&db, *found_id) {
-                    Some(memo) => {
-                        notes.cmd.print_row(memo)?
-                    }
-                    None => core.mem.drop(0u8)
-                }
+            Some(found_id) => match db.get(*found_id) {
+                Some(memo) => notes.cmd.print_row(memo)?
+                None => core.mem.drop(0u8)
             }
             None => core.mem.drop(0u8)
         }
@@ -308,7 +302,7 @@ fn notes.cmd.show(index: usize) -> Result<(), notes.error.Error> uses [alloc, en
         Err(_e) => return Err(error.Error.Usage)
     }
     let db = notes.cmd.load_store()?
-    match store.Store.get(&db, id) {
+    match db.get(id) {
         Some(memo) => {
             std.io.print_line("ID: ")?
             let id_str = notes.cmd.fmt_i64(memo.id, 0usize)?
@@ -346,7 +340,7 @@ fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Er
         None => return Err(error.Error.Usage)
     }
     let mut db = notes.cmd.load_store()?
-    match store.Store.get(&db, id) {
+    match db.get(id) {
         Some(memo) => {
             let mut new_tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
             let all = memo.tags.as_slice()
@@ -368,7 +362,7 @@ fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Er
             let body = memo.body.as_str()
             let created = memo.created_at.as_str()
             let updated = note.Note.new(0i64, title, body, new_tags, created)?
-            store.Store.set(&mut db, id, updated)?
+            db.set(id, updated)?
         }
         None => return Err(error.Error.NotFound)
     }

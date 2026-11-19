@@ -213,7 +213,7 @@ fn lower.own.set(c: &mut lower.cx.Cx, k: usize, id: usize) -> Result<(), resolve
     }
     core.mem.drop(c.v.sl.own.pop())
     c.v.sl.own.push(id)?
-    while tail.len() > 0usize {
+    while !tail.is_empty() {
         match tail.pop() {
             Some(x) => c.v.sl.own.push(x)?
             None => core.mem.drop(0u8)

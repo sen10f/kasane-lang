@@ -3,10 +3,10 @@ extern t.raw_timer_start(ms: i32) -> u32 link "env:ksn_timer_start"
 fn t.main() -> Result<(), std.io.Error> uses [io.console, suspend] panics may
     std.task.block_on(fn() -> () capture [] {
         t.say("waiting")
-        let later = t.timer_start(40)
+        let later = t.timer_start(40i32)
         core.mem.drop(later)
-        let a = t.wait_value(5)
-        if a == 7 {
+        let a = t.wait_value(5i32)
+        if a == 7i32 {
             t.say("got 7, now panic")
             core.panic.panic("boom")
         }

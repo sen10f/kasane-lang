@@ -34,7 +34,7 @@ end t.main
 fn t.make() -> alloc.boxed.Box<dyn t.Sub<[], never> + 'static, std.alloc.System> uses [alloc] panics may
     let x = t.X { v: 7u32 }
     match alloc.boxed.Box.new(std.alloc.SYSTEM, x) {
-        Ok(b) => alloc.boxed.Box.into_dyn(b)
+        Ok(b) => b.into_dyn()
         Err(e) => {
             core.mem.drop(e)
             core.panic.panic("oom")

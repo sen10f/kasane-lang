@@ -3,7 +3,7 @@ import kvlib.parse
 fn kvlib.lookup.count(text: &str) -> usize uses [] panics never pub
     let mut n = 0usize
     for line in text.split("\n") {
-        if parse.split_line(line).is_some() {
+        if parse.split_line(line) is Some(_) {
             n = n.wrapping_add(1usize)
         }
     }
@@ -13,10 +13,8 @@ end kvlib.lookup.count
 fn kvlib.lookup.find['a](text: &'a str, key: &str) -> Option<&'a str> uses [] panics never pub
     for line in text.split("\n") {
         match parse.split_line(line) {
-            Some((name, value)) => {
-                if name == key {
-                    return Some(value)
-                }
+            Some((name, value)) => if name == key {
+                return Some(value)
             }
             None => core.mem.drop(0u8)
         }

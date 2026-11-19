@@ -58,12 +58,10 @@ fn wiki.markdown.heading_level(line: &str) -> Option<u32> uses [] panics never
     }
     let idx = usize.from_u32(level)
     match line.split_at(idx) {
-        Some((_, rest)) => {
-            if rest.is_empty() || rest.starts_with(" ") || rest.starts_with("\t") {
-                Some(level)
-            } else {
-                None
-            }
+        Some((_, rest)) => if rest.is_empty() || rest.starts_with(" ") || rest.starts_with("\t") {
+            Some(level)
+        } else {
+            None
         }
         None => Some(level)
     }
@@ -247,9 +245,7 @@ fn wiki.markdown.inline(text: &str) -> Result<alloc.string.String<std.alloc.Syst
         // それ以外は 1 文字出力（ASCII 以外は UTF-8 バイト列そのままコピー）
         let cp = match char.try_from_u32(u32.from_u8(b)) {
             Some(ch) => ch
-            None => {
-                '?'
-            }
+            None => '?'
         }
         if cp == '&' {
             out.push_str("&amp;")?
@@ -356,34 +352,32 @@ fn wiki.markdown.to_html(text: &str) -> Result<alloc.string.String<std.alloc.Sys
                     h.push_str(">")?
                     out.push_str(h.as_str())?
                 }
-                None => {
-                    if line.starts_with("- ") {
-                        if !block.is_empty() {
-                            wiki.markdown.flush_paragraph(&mut out, &mut block)?
-                            block = alloc.string.String.new(std.alloc.SYSTEM)
-                        }
-                        if !in_list {
-                            out.push_str("<ul>")?
-                            in_list = true
-                        }
-                        let (_, item_text) = match line.split_at(2usize) {
-                            Some(pair) => pair
-                            None => ("", "")
-                        }
-                        let inline = wiki.markdown.inline(item_text)?
-                        out.push_str("<li>")?
-                        out.push_str(inline.as_str())?
-                        out.push_str("</li>")?
-                    } else {
-                        if in_list {
-                            out.push_str("</ul>")?
-                            in_list = false
-                        }
-                        if !block.is_empty() {
-                            block.push_str("\n")?
-                        }
-                        block.push_str(line)?
+                None => if line.starts_with("- ") {
+                    if !block.is_empty() {
+                        wiki.markdown.flush_paragraph(&mut out, &mut block)?
+                        block = alloc.string.String.new(std.alloc.SYSTEM)
                     }
+                    if !in_list {
+                        out.push_str("<ul>")?
+                        in_list = true
+                    }
+                    let (_, item_text) = match line.split_at(2usize) {
+                        Some(pair) => pair
+                        None => ("", "")
+                    }
+                    let inline = wiki.markdown.inline(item_text)?
+                    out.push_str("<li>")?
+                    out.push_str(inline.as_str())?
+                    out.push_str("</li>")?
+                } else {
+                    if in_list {
+                        out.push_str("</ul>")?
+                        in_list = false
+                    }
+                    if !block.is_empty() {
+                        block.push_str("\n")?
+                    }
+                    block.push_str(line)?
                 }
             }
         }

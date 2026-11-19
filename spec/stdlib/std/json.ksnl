@@ -363,7 +363,7 @@ fn std.json.decode_usize(doc: &std.json.Doc, v: std.json.Value) -> Result<usize,
 end std.json.decode_usize
 
 fn std.json.decode_variant(doc: &std.json.Doc, v: std.json.Value) -> Result<(&str, Option<std.json.Value>), std.json.Error> uses [] panics never pub
-    if std.json.text_at(doc, v.at).is_some() {
+    if std.json.text_at(doc, v.at) is Some(_) {
         let name = std.json.str_at(doc, v.at)?
         return Ok((name, None))
     }
@@ -384,12 +384,10 @@ fn std.json.digits(src: &[u8], pos: usize) -> usize
     let mut i = pos
     loop {
         match src.get(i) {
-            Some(c) => {
-                if *c >= b'0' && *c <= b'9' {
-                    i = i.wrapping_add(1usize)
-                } else {
-                    break
-                }
+            Some(c) => if *c >= b'0' && *c <= b'9' {
+                i = i.wrapping_add(1usize)
+            } else {
+                break
             }
             None => break
         }
@@ -412,13 +410,11 @@ fn std.json.hex4(src: &[u8], pos: usize) -> Result<u32, std.json.Error>
     let mut value = 0u32
     for k in core.iter.range(0usize, 4usize) {
         match src.get(pos.wrapping_add(k)) {
-            Some(c) => {
-                match std.json.hex_value(*c) {
-                    Some(d) => {
-                        value = value.wrapping_shl(4u32) | d
-                    }
-                    None => return Err(std.json.Error.BadEscape(pos))
+            Some(c) => match std.json.hex_value(*c) {
+                Some(d) => {
+                    value = value.wrapping_shl(4u32) | d
                 }
+                None => return Err(std.json.Error.BadEscape(pos))
             }
             None => return Err(std.json.Error.Eof)
         }
@@ -612,13 +608,11 @@ fn std.json.parse_literal(doc: &mut std.json.Doc, src: &[u8], pos: usize, word: 
     let want = word.as_bytes()
     let stop = pos.wrapping_add(want.len())
     match src.sub(pos, stop) {
-        Some(got) => {
-            if got == want {
-                let at = std.json.push_node(doc, node)?
-                Ok((at, stop))
-            } else {
-                Err(std.json.Error.Unexpected(pos))
-            }
+        Some(got) => if got == want {
+            let at = std.json.push_node(doc, node)?
+            Ok((at, stop))
+        } else {
+            Err(std.json.Error.Unexpected(pos))
         }
         None => Err(std.json.Error.Eof)
     }
@@ -815,14 +809,12 @@ end std.json.push_quoted
 
 fn std.json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], from: usize, to: usize) -> Result<(), std.json.Error>
     match src.sub(from, to) {
-        Some(bytes) => {
-            match core.str.from_utf8(bytes) {
-                Ok(text) => {
-                    out.push_str(text)?
-                    Ok(())
-                }
-                Err(_e) => Err(std.json.Error.Unexpected(from))
+        Some(bytes) => match core.str.from_utf8(bytes) {
+            Ok(text) => {
+                out.push_str(text)?
+                Ok(())
             }
+            Err(_e) => Err(std.json.Error.Unexpected(from))
         }
         None => Err(std.json.Error.Eof)
     }
@@ -832,12 +824,10 @@ fn std.json.skip_ws(src: &[u8], pos: usize) -> usize
     let mut i = pos
     loop {
         match src.get(i) {
-            Some(c) => {
-                if *c == b' ' || *c == b'\n' || *c == b'\t' || *c == b'\r' {
-                    i = i.wrapping_add(1usize)
-                } else {
-                    break
-                }
+            Some(c) => if *c == b' ' || *c == b'\n' || *c == b'\t' || *c == b'\r' {
+                i = i.wrapping_add(1usize)
+            } else {
+                break
             }
             None => break
         }
@@ -874,12 +864,10 @@ fn std.json.write(doc: &std.json.Doc, v: std.json.Value, out: &mut alloc.string.
     match doc.nodes.as_slice().get(v.at) {
         None => out.push_str("null")
         Some(std.json.Node.Null) => out.push_str("null")
-        Some(std.json.Node.Bool(b)) => {
-            if *b {
-                out.push_str("true")
-            } else {
-                out.push_str("false")
-            }
+        Some(std.json.Node.Bool(b)) => if *b {
+            out.push_str("true")
+        } else {
+            out.push_str("false")
         }
         Some(std.json.Node.Number(s)) => out.push_str(s.as_str())
         Some(std.json.Node.Str(s)) => std.json.push_quoted(out, s.as_str())

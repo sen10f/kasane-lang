@@ -29,7 +29,7 @@ fn ksnc.kir.lower(dir: &str, std_dir: &str, entry: &str) -> Result<ksnc.kir.Kir,
     out.push_str("kir 1\n\n")?
     let aggs = lower.tyk.agg_lines(&env, &mut c)?
     out.push_str(aggs.as_str())?
-    if c.g.aggs.len() > 0usize {
+    if !c.g.aggs.is_empty() {
         out.push('\n')?
     }
     let mut used = alloc.vec.Vec.new(std.alloc.SYSTEM)

@@ -1,6 +1,6 @@
 fn t.main() -> Result<(), std.http.Error> uses [alloc] panics never
     let mut d = std.http.Decoder.new(8192usize, 65_536usize)
-    std.http.Decoder.consume(&mut d, 0usize)?
+    d.consume(0usize)?
     core.mem.drop(d)
     Ok(())
 end t.main

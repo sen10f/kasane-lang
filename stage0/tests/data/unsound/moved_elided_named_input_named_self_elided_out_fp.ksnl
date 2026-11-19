@@ -9,6 +9,6 @@ end t.H.get
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = 1u32
     let h = t.H { r: &a }
-    core.mem.drop(*t.H.get(&h))
+    core.mem.drop(*h.get())
     Ok(())
 end t.main

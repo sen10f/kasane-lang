@@ -64,10 +64,7 @@ fn shortener.pool.run(left: usize, listener: &std.net.TcpListener, count: usize,
 end shortener.pool.run
 
 fn shortener.pool.serve(listener: &std.net.TcpListener, db: shortener.store.Store, count: usize, workers: usize) -> Result<usize, shortener.error.Error> uses [alloc, io.fs, io.net, thread] panics may pub
-    let (give, take) = std.sync.channel::<store.Store, std.alloc.System>(
-        std.alloc.SYSTEM,
-        1usize,
-    )?
+    let (give, take) = std.sync.channel::<store.Store, std.alloc.System>(std.alloc.SYSTEM, 1usize)?
     core.mem.drop(give.send(db))
     let (jobs, queue) = std.sync.channel::<std.net.TcpStream, std.alloc.System>(
         std.alloc.SYSTEM,

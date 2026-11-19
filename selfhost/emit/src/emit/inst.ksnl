@@ -152,12 +152,10 @@ fn emit.inst.arith(g: &mut emit.G, dst: usize, ty: usize, op: &str, mode: &str, 
                 } else {
                     "udiv"
                 }
+            } else if signed {
+                "srem"
             } else {
-                if signed {
-                    "srem"
-                } else {
-                    "urem"
-                }
+                "urem"
             }
             emit.inst.def_head(g, dst)
             emit.w(g, k)

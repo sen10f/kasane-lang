@@ -191,7 +191,7 @@ test shortener.store.Store.load.test_corrupt_file_is_an_error
         }
         Err(_e) => core.panic.panic("create")
     }
-    core.check.eq(shortener.store.Store.load(path.as_str()).is_err(), true)
+    core.check.eq(shortener.store.Store.load(path.as_str()) is Err(_), true)
     core.mem.drop(std.fs.remove_file(path.as_str()))
     core.check.eq(std.fs.exists(path.as_str()), false)
 end shortener.store.Store.load.test_corrupt_file_is_an_error
@@ -251,7 +251,7 @@ test shortener.store.Store.save.test_write_failure_is_reported_and_rolled_back
         match shortener.store.Store.new("/dev/full") {
             Ok(s) => {
                 let mut store = s
-                core.check.eq(store.add("http://a.test/").is_err(), true)
+                core.check.eq(store.add("http://a.test/") is Err(_), true)
                 core.check.eq(store.len(), 0usize)
             }
             Err(_e) => core.panic.panic("new failed")

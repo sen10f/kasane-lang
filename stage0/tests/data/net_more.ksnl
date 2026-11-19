@@ -8,9 +8,7 @@ end t.addr
 fn t.addresses(c: &std.net.TcpStream, s: &std.net.TcpStream, port: u16) -> () uses [alloc, io.console, io.net] panics may
     let expect = t.addr(port)
     match c.peer_addr() {
-        Ok(p) => {
-            t.show("client peer is listener", t.flag(p.as_str() == expect.as_str()))
-        }
+        Ok(p) => t.show("client peer is listener", t.flag(p.as_str() == expect.as_str()))
         Err(e) => t.show_err("client peer_addr", e)
     }
     match s.local_addr() {
@@ -18,11 +16,9 @@ fn t.addresses(c: &std.net.TcpStream, s: &std.net.TcpStream, port: u16) -> () us
         Err(e) => t.show_err("server local_addr", e)
     }
     match c.local_addr() {
-        Ok(a) => {
-            match s.peer_addr() {
-                Ok(p) => t.show("client local is server peer", t.flag(a.as_str() == p.as_str()))
-                Err(e) => t.show_err("server peer_addr", e)
-            }
+        Ok(a) => match s.peer_addr() {
+            Ok(p) => t.show("client local is server peer", t.flag(a.as_str() == p.as_str()))
+            Err(e) => t.show_err("server peer_addr", e)
         }
         Err(e) => t.show_err("client local_addr", e)
     }
@@ -33,17 +29,15 @@ fn t.by_name(listener: &std.net.TcpListener, port: u16) -> () uses [alloc, io.co
     core.mem.drop(name.push_str("localhost:"))
     core.mem.drop(name.push_u64(u64.from_u16(port)))
     match std.net.connect(name.as_str()) {
-        Ok(c) => {
-            match listener.accept() {
-                Ok(s) => {
-                    core.mem.drop(s.close())
-                    core.mem.drop(c.close())
-                    t.show("connect by name ok", 1i64)
-                }
-                Err(e) => {
-                    core.mem.drop(c.close())
-                    t.show_net_err("accept by name", e)
-                }
+        Ok(c) => match listener.accept() {
+            Ok(s) => {
+                core.mem.drop(s.close())
+                core.mem.drop(c.close())
+                t.show("connect by name ok", 1i64)
+            }
+            Err(e) => {
+                core.mem.drop(c.close())
+                t.show_net_err("accept by name", e)
             }
         }
         Err(e) => t.show_net_err("connect by name", e)
@@ -110,13 +104,11 @@ fn t.serve(listener: std.net.TcpListener) -> () uses [alloc, io.console, io.net]
     }
     let addr = t.addr(port)
     match std.net.connect(addr.as_str()) {
-        Ok(c) => {
-            match listener.accept() {
-                Ok(s) => t.exchange(c, s, port)
-                Err(e) => {
-                    core.mem.drop(c.close())
-                    t.show_net_err("accept", e)
-                }
+        Ok(c) => match listener.accept() {
+            Ok(s) => t.exchange(c, s, port)
+            Err(e) => {
+                core.mem.drop(c.close())
+                t.show_net_err("accept", e)
             }
         }
         Err(e) => t.show_net_err("connect", e)
@@ -237,13 +229,11 @@ end t.timeouts
 
 fn t.udp() -> () uses [alloc, io.console, io.net] panics may
     match std.net.UdpSocket.bind("127.0.0.1:0") {
-        Ok(a) => {
-            match std.net.UdpSocket.bind("127.0.0.1:0") {
-                Ok(b) => t.udp_pair(a, b)
-                Err(e) => {
-                    core.mem.drop(a.close())
-                    t.show_net_err("bind b", e)
-                }
+        Ok(a) => match std.net.UdpSocket.bind("127.0.0.1:0") {
+            Ok(b) => t.udp_pair(a, b)
+            Err(e) => {
+                core.mem.drop(a.close())
+                t.show_net_err("bind b", e)
             }
         }
         Err(e) => t.show_net_err("bind a", e)

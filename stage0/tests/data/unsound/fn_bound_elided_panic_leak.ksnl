@@ -1,5 +1,5 @@
 fn t.ap[F: core.ops.Fn<(usize,), u8>](f: F) -> u8 uses [] panics never
-    f.call((0,))
+    f.call((0usize,))
 end t.ap
 
 fn t.boom() -> u8 uses [] panics may

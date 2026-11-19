@@ -101,7 +101,7 @@ fn types.lower.ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.chk.C
     }
     if k == parse.ast.Kind.TTuple {
         let items = types.lower.targs(env, ar, cx, p, src, file, n.a)?
-        if items.len() == 0usize {
+        if items.is_empty() {
             return Ok(types.ty.UNIT)
         }
         let (b, c) = types.ty.args(ar, &items)?

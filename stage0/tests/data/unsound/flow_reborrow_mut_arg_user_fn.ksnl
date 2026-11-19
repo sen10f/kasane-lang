@@ -8,5 +8,5 @@ fn t.main() -> () uses [] panics never
 end t.main
 
 fn t.pick(x: &mut [u32]) -> Option<&mut u32> uses [] panics never
-    core.slice.get_mut(x, 0usize)
+    x.get_mut(0usize)
 end t.pick

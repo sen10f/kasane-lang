@@ -7,9 +7,7 @@ fn t.bump(arr: &mut [t.Node]) -> () uses [] panics never
         Some(nd) => {
             nd.v = nd.v.wrapping_add(1u32)
         }
-        None => {
-            core.mem.drop(0u8)
-        }
+        None => core.mem.drop(0u8)
     }
 end t.bump
 

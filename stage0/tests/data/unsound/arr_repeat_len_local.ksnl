@@ -1,5 +1,5 @@
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let n: usize = 3
+    let n: usize = 3usize
     let a = [1u32; n]
     core.mem.drop(a)
     Ok(())

@@ -3,7 +3,7 @@ import kvlib.lookup
 const kvapp.CONFIG: &str = "# kvapp settings\nname = kasane\nmode = fast\n" pub
 
 fn kvapp.has_name(config: &str) -> bool uses [] panics never pub
-    lookup.find(config, "name").is_some()
+    lookup.find(config, "name") is Some(_)
 end kvapp.has_name
 
 fn kvapp.main() -> Result<(), std.io.Error> uses [io.console] panics may

@@ -51,10 +51,8 @@ fn types.chk.find(cx: &types.chk.Ctx, name: &str, generic: bool) -> usize uses [
     let mut found = 0usize
     for k in core.iter.range(0usize, cx.sc.len()) {
         match cx.sc.as_slice().get(k) {
-            Some(e) => {
-                if e.generic == generic && e.name.as_str() == name {
-                    found = k.wrapping_add(1usize)
-                }
+            Some(e) => if e.generic == generic && e.name.as_str() == name {
+                found = k.wrapping_add(1usize)
             }
             None => core.mem.drop(0u8)
         }

@@ -63,12 +63,10 @@ fn json.digits(src: &[u8], pos: usize) -> usize
     let mut i = pos
     loop {
         match src.get(i) {
-            Some(c) => {
-                if *c >= b'0' && *c <= b'9' {
-                    i = i.wrapping_add(1usize)
-                } else {
-                    break
-                }
+            Some(c) => if *c >= b'0' && *c <= b'9' {
+                i = i.wrapping_add(1usize)
+            } else {
+                break
             }
             None => break
         }
@@ -87,10 +85,8 @@ fn json.escape(src: &[u8], pos: usize) -> Result<usize, json.Error>
                     break
                 }
                 match src.get(k) {
-                    Some(c) => {
-                        if !json.is_hex(*c) {
-                            return Err(json.Error.BadEscape(pos))
-                        }
+                    Some(c) => if !json.is_hex(*c) {
+                        return Err(json.Error.BadEscape(pos))
                     }
                     None => return Err(json.Error.Eof)
                 }
@@ -98,12 +94,10 @@ fn json.escape(src: &[u8], pos: usize) -> Result<usize, json.Error>
             }
             Ok(stop)
         }
-        Some(c) => {
-            if *c == b'"' || *c == b'\\' || *c == b'/' || *c == b'b' || *c == b'f' || *c == b'n' || *c == b'r' || *c == b't' {
-                Ok(pos.wrapping_add(2usize))
-            } else {
-                Err(json.Error.BadEscape(pos))
-            }
+        Some(c) => if *c == b'"' || *c == b'\\' || *c == b'/' || *c == b'b' || *c == b'f' || *c == b'n' || *c == b'r' || *c == b't' {
+            Ok(pos.wrapping_add(2usize))
+        } else {
+            Err(json.Error.BadEscape(pos))
         }
     }
 end json.escape
@@ -127,13 +121,11 @@ fn json.literal(doc: &mut json.Doc, src: &[u8], pos: usize, word: &str, node: js
     let want = word.as_bytes()
     let stop = pos.wrapping_add(want.len())
     match src.sub(pos, stop) {
-        Some(got) => {
-            if got == want {
-                let at = json.push_node(doc, node)?
-                Ok((at, stop))
-            } else {
-                Err(json.Error.Unexpected(pos))
-            }
+        Some(got) => if got == want {
+            let at = json.push_node(doc, node)?
+            Ok((at, stop))
+        } else {
+            Err(json.Error.Unexpected(pos))
         }
         None => Err(json.Error.Eof)
     }
@@ -248,11 +240,9 @@ end json.push_node
 
 fn json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], from: usize, to: usize) -> Result<(), json.Error>
     match src.sub(from, to) {
-        Some(bytes) => {
-            match core.str.from_utf8(bytes) {
-                Ok(text) => json.put(out, text)
-                Err(_e) => Err(json.Error.Unexpected(from))
-            }
+        Some(bytes) => match core.str.from_utf8(bytes) {
+            Ok(text) => json.put(out, text)
+            Err(_e) => Err(json.Error.Unexpected(from))
         }
         None => Err(json.Error.Eof)
     }
@@ -267,12 +257,10 @@ fn json.skip_ws(src: &[u8], pos: usize) -> usize
     let mut i = pos
     loop {
         match src.get(i) {
-            Some(c) => {
-                if *c == b' ' || *c == b'\n' || *c == b'\t' || *c == b'\r' {
-                    i = i.wrapping_add(1usize)
-                } else {
-                    break
-                }
+            Some(c) => if *c == b' ' || *c == b'\n' || *c == b'\t' || *c == b'\r' {
+                i = i.wrapping_add(1usize)
+            } else {
+                break
             }
             None => break
         }
@@ -367,10 +355,10 @@ test json.compact.test_array
 end json.compact.test_array
 
 test json.compact.test_errors
-    core.check.eq(json.compact("[1,").is_err(), true)
-    core.check.eq(json.compact("{\"a\" 1}").is_err(), true)
-    core.check.eq(json.compact("[1] x").is_err(), true)
-    core.check.eq(json.compact("01x").is_err(), true)
+    core.check.eq(json.compact("[1,") is Err(_), true)
+    core.check.eq(json.compact("{\"a\" 1}") is Err(_), true)
+    core.check.eq(json.compact("[1] x") is Err(_), true)
+    core.check.eq(json.compact("01x") is Err(_), true)
 end json.compact.test_errors
 
 test json.compact.test_nested

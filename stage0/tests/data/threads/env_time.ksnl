@@ -7,9 +7,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, env, io.console, thread, ti
     let mut i = 0usize
     while i < count {
         match std.env.arg(i) {
-            Some(a) => {
-                std.io.print_line(a)?
-            }
+            Some(a) => std.io.print_line(a)?
             None => core.panic.panic("missing argument")
         }
         i = i + 1usize
@@ -19,9 +17,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, env, io.console, thread, ti
         None => std.io.print_line("no more")?
     }
     match std.env.var("KSN_THREADS_TEST_VAR") {
-        Some(v) => {
-            std.io.print_line(v)?
-        }
+        Some(v) => std.io.print_line(v)?
         None => std.io.print_line("unset")?
     }
     match std.env.var("KSN_THREADS_TEST_MISSING") {
@@ -34,9 +30,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, env, io.console, thread, ti
     core.check.is_true(waited.as_nanos() >= 20_000_000u64)
     let second = std.time.Instant.now()
     match second.since(&first) {
-        Some(d) => {
-            core.check.is_true(d.as_nanos() >= 20_000_000u64)
-        }
+        Some(d) => core.check.is_true(d.as_nanos() >= 20_000_000u64)
         None => core.panic.panic("time went backwards")
     }
     match first.since(&second) {

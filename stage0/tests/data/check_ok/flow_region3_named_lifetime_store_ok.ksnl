@@ -9,8 +9,6 @@ fn t.store3['a](v: &'a mut [&'a u32], x: &'a u32) -> () uses [] panics never
         Some(p) => {
             *p = x
         }
-        None => {
-            core.mem.drop(0u8)
-        }
+        None => core.mem.drop(0u8)
     }
 end t.store3

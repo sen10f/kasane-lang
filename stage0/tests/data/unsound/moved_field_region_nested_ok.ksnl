@@ -25,7 +25,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = 1u32
     let b = 2u32
     let o = t.Outer { inner: t.Pair { fst: &a, snd: &b } }
-    core.mem.drop(*t.Outer.get_fst(&o, &o))
-    core.mem.drop(*t.Outer.get_snd(&o, &o))
+    core.mem.drop(*o.get_fst(&o))
+    core.mem.drop(*o.get_snd(&o))
     Ok(())
 end t.main

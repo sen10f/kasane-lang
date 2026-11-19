@@ -49,7 +49,7 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
     out.push_str("kir 1\n\n")?
     let aggs = lower.tyk.agg_lines(&env, &mut c)?
     out.push_str(aggs.as_str())?
-    if c.g.aggs.len() > 0usize {
+    if !c.g.aggs.is_empty() {
         out.push('\n')?
     }
     // 関数は名前の順 (選択で並べる)。

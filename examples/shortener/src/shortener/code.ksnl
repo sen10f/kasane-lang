@@ -21,11 +21,9 @@ fn shortener.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.System>
     loop {
         let d = rest.checked_rem(36u64)
         match d {
-            Some(v) => {
-                match u8.try_from_u64(v) {
-                    Ok(small) => digits.push(small)?
-                    Err(_e) => return Err(error.Error.Corrupt)
-                }
+            Some(v) => match u8.try_from_u64(v) {
+                Ok(small) => digits.push(small)?
+                Err(_e) => return Err(error.Error.Corrupt)
             }
             None => return Err(error.Error.Corrupt)
         }
@@ -117,7 +115,7 @@ test shortener.code.for_index.test_sequence
         Ok(s) => core.check.eq(s.as_str(), "1010")
         Err(_e) => core.panic.panic("index 36")
     }
-    core.check.eq(shortener.code.for_index(18_446_744_073_709_551_615u64).is_err(), true)
+    core.check.eq(shortener.code.for_index(18_446_744_073_709_551_615u64) is Err(_), true)
 end shortener.code.for_index.test_sequence
 
 test shortener.code.to_index.test_rejects_noncanonical
