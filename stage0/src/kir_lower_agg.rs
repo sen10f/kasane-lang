@@ -804,6 +804,18 @@ impl<'a> Lw<'a> {
         }
     }
 
+    /// `&[T; N]` の参照 (`ref<fat>`) `v` が、スライスの値 `fat` の位置に来たら (配列の参照からスライスへの型の調整)、値を読む。
+    pub(super) fn deref_fat_to(&mut self, v: VId, want: Ty) -> VId {
+        if want == self.fat_ty() {
+            if let Ty::Ref(_, Pointee::Agg(fi)) = self.vty(v) {
+                if Ty::Agg(fi) == want {
+                    return self.emit(want, Op::Load(v));
+                }
+            }
+        }
+        v
+    }
+
     /// 配列式の値 (`{ptr, len}`) `v` を、配列の集成体 `want` の値にする (先頭から `want` の大きさだけ読む)。型が違う・配列でなければ `v` のまま。
     pub(super) fn fat_to_array(&mut self, v: VId, want: Ty) -> VId {
         let Ty::Agg(ai) = want else { return v };
@@ -1636,6 +1648,10 @@ impl<'a> Lw<'a> {
                 }
             }
             if let Some(v) = self.expr(body)? {
+                let v = match res {
+                    Some(t) => self.deref_fat_to(v, t),
+                    None => v,
+                };
                 if let Some(t) = res {
                     if self.vty(v) != t && carry {
                         return self.err(line, "match の腕の型が結果の型と違う");

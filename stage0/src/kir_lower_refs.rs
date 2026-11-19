@@ -275,6 +275,18 @@ impl<'a> Lw<'a> {
                 if want == Some(Ty::Ptr) {
                     return Ok(Some(pp));
                 }
+                // `&[T; N]` (配列の値は `fat` なので参照は `ref<fat>`): `fat` を枠の領域に置いてそのアドレスを参照にする。
+                if let Some(Ty::Ref(m, Pointee::Agg(fi))) = want {
+                    if Ty::Agg(fi) == self.fat_ty() {
+                        let len = self.emit(Ty::Usize, Op::Const(n as i128));
+                        let fat = self.fat_ty();
+                        let v = self.emit(fat, Op::Make { variant: None, fields: vec![pp, len] });
+                        let buf = self.emit(Ty::Ptr, Op::FrameBytes { size: 16 });
+                        let r = self.emit(Ty::Ref(true, Pointee::Agg(fi)), Op::Bitcast { src: Ty::Ptr, a: buf });
+                        self.emit(Ty::Unit, Op::Store { ptr: r, val: v });
+                        return Ok(Some(self.ref_value(r, Pointee::Agg(fi), !m)));
+                    }
+                }
             }
         }
         let Ty::Ref(m, p) = self.ty_of(e)? else {
