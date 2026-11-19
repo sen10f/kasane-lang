@@ -223,8 +223,11 @@ pub(crate) fn load_all(root: &Path) -> Result<Loaded, ProjectError> {
     let pkg = load_package(root)?;
     crate::vm::tick("load_pkg");
     // `[native]` の C のライブラリを登録する (3.8)。インタプリタ (`extern` の `lib:` なしのシンボル) が
-    // `dynamic` の共有ライブラリを探すのに使う。依存パッケージの分はリンクもしない (project.rs)。
-    crate::ffi::set_native_libs(&crate::project::native_libs(&pkg.manifest));
+    // `dynamic` の共有ライブラリを探すのに使う。探索先はリンクと同じくパッケージのルートから (依存の分は
+    // リンクもしない。project.rs)。
+    let mut nat = crate::project::native_libs(&pkg.manifest);
+    nat.search = nat.search.iter().map(|d| pkg.root.join(d).display().to_string()).collect();
+    crate::ffi::set_native_libs(&nat);
     let deps = load_deps(&pkg)?;
     crate::vm::tick("load_deps");
     let std = load_stdlib();
@@ -3822,7 +3825,7 @@ fn clang_extra_args() -> Vec<String> {
 /// LLVM IR (`.ll` のテキスト) を clang で実行ファイル `exe` にする。`nat` は `[native]` の追加のリンクの引数 (3.8)。
 fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Target>, nat: &[String]) -> Result<(), String> {
     if crate::kir_llvm::is_wasm(target) {
-        // wasm32 には C のライブラリを links できない (リンクは wasm-ld で import の許される集合だけ)。
+        // wasm32 には C のライブラリをつなげない (リンクは wasm-ld で import の許される集合だけ)。
         if !nat.is_empty() {
             return Err("[native] libraries cannot be linked into a wasm32 target (remove `[native]` from kasane.toml or build for a native target)".into());
         }
