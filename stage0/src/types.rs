@@ -458,6 +458,17 @@ pub struct ResolvedCall {
     pub dyn_eff: Option<(String, Vec<String>, String)>,
 }
 
+/// メソッド呼び出し節点の位置の記録 (LSP の記号の特定用)。`call` は呼び出し節点の式 ID (`SideTabs::resolved_fn` の鍵の second 成分)。
+/// `pos` は名前の位置: `x.m(..)` (MCall) は名前トークンの位置で `seg` は `usize::MAX`、`x.m(..)` の経路形 (Call) は
+/// 経路の先頭の位置で `seg` は呼ぶ名前の添字 (経路の最後の成分)。
+#[derive(Clone, Debug)]
+pub struct CallSite {
+    pub writer: usize,
+    pub pos: usize,
+    pub seg: usize,
+    pub call: u32,
+}
+
 /// メソッド呼び出し `x.m(..)` / フィールド参照 `x.f` のレシーバの型の記録 (`ksn rename` / `ksn refs` 用)。
 /// `pos` は名前トークンの位置 (パーサが MCall / Field の末尾の子に持たせる)。型は関数の推論が終わった時点で解決した形。
 pub struct RecvSite {
@@ -594,6 +605,13 @@ pub struct TypeCk<'a> {
     pub resolved_calls: Vec<ResolvedCall>,
     /// メソッド呼び出し・フィールド参照のレシーバの型 (改名ツール用)。
     pub recv_log: Vec<RecvSite>,
+    /// メソッド呼び出し節点の位置 (LSP の記号の特定が、位置から `resolved_fn` を引くのに使う)。
+    pub call_sites: Vec<CallSite>,
+    /// 型パラメータの境界で解決したメソッド呼び出し (書き手, 呼び出しの式 ID) → `トレイトFQN.メソッド名`。
+    /// `call_res` / `resolved_fn` には載らない (候補は宣言だけで、定義を持たない)。LSP の定義・ホバーが使う。
+    pub bound_sites: HashMap<(usize, u32), String>,
+    /// `trait_bound_method` が見つけた境界のメソッドの名前 (`call_method` が式 ID と結び付けて取る)。
+    bound_hit: Option<String>,
     /// メソッド呼び出しごと (書き手の定義, 呼び出しノードの式 ID) の解決先。メソッド形は `MCall`、`x.m(..)` の経路形は `Call` のノード。`None` は決められない呼び出し
     /// (借用検査は安全側に倒す)。候補が複数なら引数の個数が合うものすべて。
     pub call_res: HashMap<(usize, u32), Option<Vec<usize>>>,
@@ -719,7 +737,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], resolved_calls: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -2916,7 +2934,11 @@ impl<'a> TypeCk<'a> {
     fn call_method(&mut self, id: u32, recv_id: u32, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
         let saved = self.last_fit.take();
         let arg_ids = std::mem::take(&mut self.side.arg_ids);
+        self.bound_hit = None;
         let t = self.call_method_in(id, recv, base, name, args, line, targs, local);
+        if let Some(f) = self.bound_hit.take() {
+            self.bound_sites.insert((self.cur, id), f);
+        }
         let fit = std::mem::replace(&mut self.last_fit, saved);
         self.note_method_conv(recv_id, recv, args, &arg_ids, fit.as_deref());
         let key = (self.cur, id);
@@ -3394,6 +3416,10 @@ impl<'a> TypeCk<'a> {
             }
             let Some(&ti) = self.p.types.get(&tr) else { continue };
             let td = &self.p.defs[ti];
+            let found = td.trait_sigs.iter().find(|s| s.0 == name).is_some();
+            if found {
+                self.bound_hit = Some(format!("{}.{}", tr, name));
+            }
             let Some((_, params, ret)) = td.trait_sigs.iter().find(|s| s.0 == name) else {
                 for (sup, sargs) in &td.requires {
                     let Some(fq) = crate::check::resolve_trait_fqn(self.p, sup) else { continue };
@@ -4331,6 +4357,11 @@ impl<'a> TypeCk<'a> {
                 self.side.arg_ids = items(&f[2]).iter().map(crate::parser::nid).collect();
                 let base = self.base_local(&f[0]);
                 self.arg_static = items(&f[2]).iter().map(|a| self.static_expr(a)).collect();
+                if let Some(V::N(p)) = f.get(4) {
+                    if let Ok(pos) = p.parse::<usize>() {
+                        self.call_sites.push(CallSite { writer: self.cur, pos, seg: usize::MAX, call: crate::parser::nid(e) });
+                    }
+                }
                 self.call_method(crate::parser::nid(e), crate::parser::nid(&f[0]), &recv, base.as_deref(), &st(&f[1]), &args, nline(e), items(&f[3]), false)
             }
             "Field" => {
@@ -5592,6 +5623,10 @@ impl<'a> TypeCk<'a> {
             let cid = crate::parser::nid(callee);
             if segs.len() == 2 && cid != 0 && !self.p.trait_side.is_empty() {
                 self.expr_pending.insert(cid, ("RecvPath".to_string(), nline(callee), t.clone()));
+            }
+            let pos = nline(callee);
+            if pos != 0 {
+                self.call_sites.push(CallSite { writer: self.cur, pos, seg: segs.len() - 1, call: call_id });
             }
             return self.call_method(call_id, call_id, &t, Some(&segs[0]), &segs[segs.len() - 1], &argt, line, targs, true);
         }
