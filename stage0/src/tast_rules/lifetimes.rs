@@ -1255,12 +1255,15 @@ impl<'a> W<'a> {
                         }
                     }
                 }
-                Loan::Arg(_) => {
+                Loan::Arg(pn) => {
                     for (k, _) in &v.loans() {
                         let msg = match k {
                             Loan::Local(n, _) | Loan::Dead(n) => format!("stores a reference to the local variable `{}` into a place that outlives it", n),
                             Loan::Temp => "stores a reference to a temporary value into a place that outlives it".to_string(),
-                            Loan::Arg(_) => continue,
+                            Loan::Arg(qn) => {
+                                self.unrelated_store(pn, qn, line);
+                                continue;
+                            }
                         };
                         self.diag("E3030", msg, line);
                     }
@@ -1268,6 +1271,43 @@ impl<'a> W<'a> {
                 Loan::Temp | Loan::Dead(_) => {}
             }
         }
+    }
+
+    /// 引数 `q` の借用を引数 `p` の指す先へ入れる: `p` の指す先の領域と `q` の領域に共有する名前 (省略でない) が無ければ E3010。
+    fn unrelated_store(&mut self, pn: &str, qn: &str, line: usize) {
+        if self.cl.is_some() || pn == qn {
+            return;
+        }
+        let d = &self.p.defs[self.di];
+        let ps0: Vec<(String, Ty)> = d.params.iter().map(|(n, t)| (n.clone(), from_v(t, &self.gn))).collect();
+        let (ps, _) = elide_sig(&ps0, &Ty::Unit);
+        let (Some(pi), Some(qi)) = (ps0.iter().position(|(n, _)| n == pn), ps0.iter().position(|(n, _)| n == qn)) else { return };
+        let Ty::Ref(true, inner, _) = &ps[pi] else { return };
+        let target = real_regions(inner);
+        let have = real_regions(&ps[qi]);
+        if target.is_empty() || have.is_empty() || ps[qi].regions().iter().any(|r| matches!(r, Region::Static)) {
+            return;
+        }
+        if have.iter().any(|h| target.iter().any(|t| same_r(h, t))) {
+            return;
+        }
+        // 宣言した包含関係 (`'a: 'b`) があれば関係がある。
+        let header = d.header.split(" uses ").next().unwrap_or("").to_string();
+        let named: Vec<String> = have.iter().filter_map(|h| if let Region::Named(n) = h { Some(n.clone()) } else { None }).collect();
+        if named.iter().any(|h| header.contains(&format!("'{}:", h)) || header.contains(&format!("'{} :", h))) {
+            return;
+        }
+        let msg = format!(
+            "{}: argument `{}`'s reference (`{}: {}`) is stored into argument `{}`'s pointee (`{}: {}`), but no shared named lifetime is declared, so the pointee's lifetime and the reference's lifetime are unrelated; declare `['a]` and use `&'a T` on both",
+            d.name,
+            qn,
+            qn,
+            ps0[qi].1.show_r().replace("'_ ", ""),
+            pn,
+            pn,
+            ps0[pi].1.show_r().replace("'_ ", "")
+        );
+        self.diag("E3010", msg, line);
     }
 
     // -------------------------------------------------------- 呼び出し
