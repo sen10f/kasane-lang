@@ -7,8 +7,13 @@ mod scratch;
 use std::fs;
 use std::panic;
 
+/// 3 本の試験は環境変数 `KSN_KEEP_TMP` (プロセス全体) を読み書きするので、互いに順に走らせる
+/// (並列に走ると、残す試験が立てた `KSN_KEEP_TMP=1` を消える試験が読んで落ちる。2026-11-20、検証機で落ちた)。
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn scratch_is_removed_when_the_test_passes() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let p;
     {
         let s = scratch::Scratch::at(format!("ksn_scratch_pass_{}", std::process::id()));
@@ -22,6 +27,7 @@ fn scratch_is_removed_when_the_test_passes() {
 
 #[test]
 fn scratch_is_kept_when_the_test_panics() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let name = format!("ksn_scratch_panic_{}", std::process::id());
     // 場所の名前は `Scratch::at` が呼び出しごとに決める (通し番号つき)。作った場所を外へ持ち出して確かめる。
     let seen = std::sync::Mutex::new(None);
@@ -39,6 +45,7 @@ fn scratch_is_kept_when_the_test_panics() {
 
 #[test]
 fn scratch_is_kept_with_ksn_keep_tmp() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // 同じ実行ファイルの他の試験は `KSN_KEEP_TMP` を見ない (この試験だけが設定して、すぐ戻す)。
     let name = format!("ksn_scratch_keep_{}", std::process::id());
     std::env::set_var("KSN_KEEP_TMP", "1");
