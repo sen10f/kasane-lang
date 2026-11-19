@@ -236,7 +236,7 @@ impl<'a> Lw<'a> {
         let Some(di) = super::ext::find_def(self, &format!("core.str.{}", m)) else {
             return self.err(line, format!("メソッド {} は段階 1 の対象外 (core.str.{} の Kasane 版がない)", m, m));
         };
-        let recv = Src::Ref(false, Box::new(Src::Prim("str".into())));
+        let recv = Src::Ref(false, Box::new(Src::Prim("str".into())), crate::types::Region::Unk);
         super::ext::kasane_call(self, e, line, di, h, recv, args)
     }
 
@@ -540,7 +540,7 @@ impl<'a> Lw<'a> {
     }
 
     pub(super) fn is_str_ref(&self, e: &V) -> bool {
-        matches!(self.src_ty(e), Ok(Src::Ref(_, i)) if matches!(&*i, Src::Prim(s) if s == "str"))
+        matches!(self.src_ty(e), Ok(Src::Ref(_, i, _)) if matches!(&*i, Src::Prim(s) if s == "str"))
     }
 
     /// `self.contains(pat)` (`&str`)。`find` の一致の有無 (`Option` の tag) で決める。
@@ -778,7 +778,7 @@ impl<'a> Lw<'a> {
         let Ty::Agg(fat_idx) = fat else {
             return self.err(line, "core.str.from_utf8 の引数が &[u8] ではない");
         };
-        let utf8_err = self.aggs.borrow_mut().lower_ty(self.p, &self.def.file, &Src::Named("core.str.Utf8Error".into(), vec![]))?;
+        let utf8_err = self.aggs.borrow_mut().lower_ty(self.p, &self.def.file, &Src::Named("core.str.Utf8Error".into(), vec![], crate::types::Rgs::default()))?;
         let Ty::Agg(err_idx) = utf8_err else {
             return self.err(line, "Utf8Error の型が集成体でない");
         };

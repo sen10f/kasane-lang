@@ -60,6 +60,10 @@ hole closure linear_generic_mem_drop#1
 hole closure linear_generic_struct_wildcard#1
 hole closure linear_param_dropped#0
 hole closure linear_receiver_dropped#0
+hole extract len_of_linear_array_then_consumed#0
+hole extract len_of_linear_array_then_consumed#1
+hole extract len_of_linear_array_then_consumed#2
+hole extract len_of_linear_array_then_consumed#3
 hole fold borrow_mut_immutable_generic_result#0
 hole fold dangling_static_field#0
 hole fold dangling_via_let_struct#0

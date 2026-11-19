@@ -405,3 +405,95 @@ fn g35_box_receiver_run_and_native_agree() {
     let o = std::process::Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
 }
+
+// ---- S3A: 型の領域 (設計 9 章)。表 `regions` は `borrow` / `sig` / `bind` / `cstr` の行 (列 1 が種類、列 2 が定義名、列 3 が式 ID)。
+
+const S3A_SRC: &str = "type t.X
+    v: u8
+end t.X
+
+fn t.X.g['a](self: &'a t.X, a: &u8) -> &'a u8 uses [] panics never
+    core.mem.drop(a)
+    &self.v
+end t.X.g
+
+fn t.X.h(self: &t.X, a: &u8) -> &u8 uses [] panics never
+    core.mem.drop(a)
+    &self.v
+end t.X.h
+
+fn t.one(x: &u8) -> &u8 uses [] panics never
+    x
+end t.one
+
+fn t.st() -> &'static str uses [] panics never
+    \"s\"
+end t.st
+
+fn t.main() -> () uses [] panics never
+    let a = 1u8
+    let r = t.one(&a)
+    let s = t.st()
+    core.mem.drop(r)
+    core.mem.drop(s)
+end t.main
+";
+
+const S3A_TWO: &str = "fn t.two(x: &u8, y: &u8) -> &u8 uses [] panics never
+    core.mem.drop(y)
+    x
+end t.two
+";
+
+fn s3a_sig(rows: &[String], def: &str) -> String {
+    rows.iter().find(|l| l.starts_with(&format!("sig\t{}\t", def))).cloned().unwrap_or_default()
+}
+
+#[test]
+fn s3a_signature_regions_follow_elision() {
+    let rows = dump("s3a_a", S3A_SRC, "sig");
+    // 名前付き + 省略: `a` の省略した領域は 0 番目、戻り値は `'a`。
+    assert!(s3a_sig(&rows, "t.X.g").contains("params self:['a] a:['e0] | ret ['a]"), "{:?}", rows);
+    // `&self` があれば戻り値の省略はその領域 (省略した領域の 0 番目は self)。
+    assert!(s3a_sig(&rows, "t.X.h").contains("params self:['e0] a:['e1] | ret ['e0]"), "{:?}", rows);
+    // 入力の領域が 1 つならそれ。2 つなら決まらない (E3021 の領分で、ここは `'_` のまま)。
+    assert!(s3a_sig(&rows, "t.one").contains("params x:['e0] | ret ['e0]"), "{:?}", rows);
+    let rows2 = dump("s3a_a2", S3A_TWO, "sig");
+    assert!(s3a_sig(&rows2, "t.two").contains("params x:['e0] y:['e1] | ret ['_]"), "{:?}", rows2);
+    assert!(s3a_sig(&rows, "t.st").contains("ret ['static]"), "{:?}", rows);
+}
+
+#[test]
+fn s3a_borrow_and_call_regions_are_collected() {
+    let t = Tmp::new("s3a_b", S3A_SRC);
+    let o = run_with_env(&["check"], &t.0, &[("KSN_DUMP_SIDE", "1")]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let err = text(&o.stderr);
+    let rows: Vec<&str> = err.lines().collect();
+    // `&a` は借用ごとの領域の変数。呼び出し `t.one(&a)` は「借用の領域 ⊒ 呼び出し先の `'e0` の実体」を残す。
+    let borrow = rows.iter().find(|l| l.starts_with("borrow\tt.main\t")).expect("borrow row");
+    let var = borrow.rsplit('\t').next().unwrap();
+    assert!(var.starts_with("'?"), "{}", borrow);
+    assert!(rows.iter().any(|l| l.starts_with("cstr\tt.main\t") && l.contains(&format!("{} : 'e0@", var)) && l.ends_with("(arg)")), "{:?}", rows);
+}
+
+#[test]
+fn s3a_static_decided_by_type() {
+    // G40 の `static_expr` は式の形で `'static` を追っていた。型に領域があれば、束縛の型だけで決まる。
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/check_ok/static_through_qmark_let_ok.ksnl")).unwrap();
+    let rows = dump("s3a_c", &src, "bind");
+    // `t.pick(0usize)?` で取り出した値: `Result<&'static str, _>` の `?` の結果は `&'static str`。
+    assert!(rows.iter().any(|l| l.starts_with("bind\tt.main\t") && l.contains("r : &'static str static=true")), "{:?}", rows);
+    // 対照: `&a` の借用や `&u8` を返す関数の結果は 'static ではない。
+    let rows = dump("s3a_d", S3A_SRC, "bind");
+    assert!(rows.iter().any(|l| l.contains("\tr : &") && l.ends_with("static=false")), "{:?}", rows);
+    assert!(rows.iter().any(|l| l.contains("\ts : &'static str static=true")), "{:?}", rows);
+}
+
+#[test]
+fn s3a_regions_do_not_change_type_equality() {
+    // 領域が違っても型は同じ: `&'static str` を `&str` の引数・`&'a` と `&` の入り交じりが従来どおり通る。
+    let t = Tmp::new("s3a_e", S3A_SRC);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+}

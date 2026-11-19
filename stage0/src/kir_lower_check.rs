@@ -61,7 +61,7 @@ impl<'a> Lw<'a> {
         // 参照越しのスカラー (&T / &mut T) は参照先を読んでスカラーどうしにする。
         // `&u8` だけでなく整数・bool・char・浮動小数への参照も同様。
         let (a, b, sa, ta) = if matches!(ta, Ty::Ref(_, p) if !matches!(p, Pointee::Agg(_))) {
-            if let Src::Ref(false, inner) = &sa {
+            if let Src::Ref(false, inner, _) = &sa {
                 let t = match ta { Ty::Ref(_, p) => p.ty(), _ => unreachable!() };
                 (self.emit(t, Op::Load(a)), self.emit(t, Op::Load(b)), (*inner).as_ref().clone(), t)
             } else {
@@ -205,7 +205,7 @@ impl<'a> Lw<'a> {
         let file = self.def.file.clone();
         // 参照越しのスカラーは参照先を読む (`core.check.eq` と同じ)。
         if matches!(ta, Ty::Ref(_, p) if !matches!(p, Pointee::Agg(_))) {
-            if let Src::Ref(false, inner) = &sa {
+            if let Src::Ref(false, inner, _) = &sa {
                 let t = match ta { Ty::Ref(_, p) => p.ty(), _ => unreachable!() };
                 a = self.emit(t, Op::Load(a));
                 sa = (**inner).clone();
@@ -216,7 +216,7 @@ impl<'a> Lw<'a> {
         if let Ty::Ref(_, Pointee::Agg(i)) = ta {
             ta = Ty::Agg(i);
             a = self.emit(ta, Op::Load(a));
-            if let Src::Ref(_, inner) = &sa {
+            if let Src::Ref(_, inner, _) = &sa {
                 sa = (**inner).clone();
             }
         }
@@ -253,7 +253,7 @@ impl<'a> Lw<'a> {
         let (hl, hr) = (self.slots[sl].0, self.slots[sr].0);
         let fat = self.aggs.borrow_mut().stderr_fat(self.p)?;
         let mut g = Gen::new(self.p, self.aggs);
-        let src = Src::Named("alloc.string.String".to_string(), vec![]);
+        let src = Src::Named("alloc.string.String".to_string(), vec![], crate::types::Rgs::default());
         let k = g.need_eq(&src, Ty::Ptr, &self.def.file.clone())?;
         let _ = fat;
         for (f, c) in std::mem::take(&mut g.out) {
@@ -276,9 +276,9 @@ impl<'a> Lw<'a> {
 fn norm_src(s: &crate::types::Ty) -> crate::types::Ty {
     use crate::types::Ty as S;
     match s {
-        S::Ref(_, inner) if matches!(&**inner, S::Prim(p) if p != "str") => norm_src(inner),
-        S::Ref(m, inner) => S::Ref(*m, Box::new(norm_src(inner))),
-        S::Named(n, a) => S::Named(n.clone(), a.iter().map(norm_src).collect()),
+        S::Ref(_, inner, _) if matches!(&**inner, S::Prim(p) if p != "str") => norm_src(inner),
+        S::Ref(m, inner, _) => S::Ref(*m, Box::new(norm_src(inner)), crate::types::Region::Unk),
+        S::Named(n, a, _) => S::Named(n.clone(), a.iter().map(norm_src).collect(), crate::types::Rgs::default()),
         o => o.clone(),
     }
 }
