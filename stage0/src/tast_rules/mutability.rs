@@ -140,7 +140,7 @@ impl<'a> W<'a> {
                         (Some((s.clone(), id)), true)
                     }
                     TKind::Unary { op, operand } => {
-                        if op == "*" && matches!(operand.ty.strip(), Ty::Ref(false, _, _)) {
+                        if op == "*" && matches!(&operand.ty, Ty::Ref(false, _, _)) {
                             self.found.push(("cannot assign through a shared reference returned by an expression".to_string(), place.line));
                         }
                         (None, false)
