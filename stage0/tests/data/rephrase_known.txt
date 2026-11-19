@@ -71,6 +71,7 @@ hole extract len_of_linear_array_then_consumed#2
 hole extract len_of_linear_array_then_consumed#3
 hole extract return_local_option_tuple_destructure#1
 hole extract return_local_tuple_destructure#1
+hole fold arr_repeat_len_local#0
 hole fold borrow_mut_immutable_generic_result#0
 hole fold dangling_static_field#0
 hole fold dangling_via_let_struct#0
@@ -86,6 +87,7 @@ hole fold linear_generic_call_result_swallowed#0
 hole fold linear_leak_on_try#0
 hole fold linear_short_circuit_and_rhs_consume#0
 hole fold linear_short_circuit_or_rhs_consume#0
+hole fold mem_replace_index_via_alias_keeps_borrow#0
 hole fold return_bound_owner_c1#0
 hole fold return_bound_owner_c2#0
 hole fold return_bound_owner_c3#0
