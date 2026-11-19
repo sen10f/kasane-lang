@@ -1244,6 +1244,10 @@ impl<'a> W<'a> {
                 through_ref = true;
             }
         }
+        // 参照を通す書き込みも、その参照の使用 (指す先が尽きていれば E3010)。
+        if through_ref {
+            self.use_var(&n, line);
+        }
         let target_is_ref = var.is_ref;
         let whole = direct && matches!(&place.kind, TKind::Path(s) if s.len() == 1);
         if whole && !through_ref {
@@ -1499,10 +1503,17 @@ impl<'a> W<'a> {
             }
             out
         };
-        let mut out = flow(&ret);
+        fn nested(flow: &dyn Fn(&Ty) -> Val, t: &Ty) -> Val {
+            let mut v = flow(t);
+            let slots = slots_of(t);
+            if !slots.is_empty() {
+                v.parts = slots.iter().map(|x| nested(flow, x)).collect();
+            }
+            v
+        }
+        let mut out = nested(&flow, &ret);
         let slots = slots_of(&ret);
         if !slots.is_empty() {
-            out.parts = slots.iter().map(|t| flow(t)).collect();
         } else if let Ty::Param(rp) = &ret {
             // 総称の恒等関数 `fn id[T](x: T) -> T`: 唯一その型パラメータを取る引数の全体 (欄の構造ごと) が戻る。
             let hits: Vec<usize> = ps.iter().enumerate().filter(|(_, t)| matches!(t, Ty::Param(q) if q == rp)).map(|(k, _)| k).collect();
