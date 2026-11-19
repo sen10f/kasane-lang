@@ -481,7 +481,7 @@ test t.main.test_add_const_cast_const
 end t.main.test_add_const_cast_const
 "#;
     let t = Tmp::new("ptr_add_const_both", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));

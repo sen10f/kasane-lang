@@ -56,7 +56,7 @@ end t.main
 fn system_alloc_realloc_dealloc_agree_between_interpreter_and_native() {
     let t = Tmp::new("g10_sysalloc", SRC);
     let toml = fs::read_to_string(t.0.join("kasane.toml")).unwrap();
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", toml)).unwrap();
+    fs::write(t.0.join("kasane.toml"), toml.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let r = run(&["run"], &t.0);
     assert_eq!(text(&r.stdout), "kept\n", "{}{}", text(&r.stdout), text(&r.stderr));
     assert_eq!(r.status.code(), Some(0));

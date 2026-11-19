@@ -5,11 +5,11 @@ edition = 1
 entry = "ksnc.main"
 
 [dependencies]
+borrow = { path = "../borrow" }
+effects = { path = "../effects" }
+emit = { path = "../emit" }
+fmt = { path = "../fmt" }
+lower = { path = "../lower" }
 parse = { path = "../parse" }
 resolve = { path = "../resolve" }
 types = { path = "../types" }
-effects = { path = "../effects" }
-borrow = { path = "../borrow" }
-fmt = { path = "../fmt" }
-lower = { path = "../lower" }
-emit = { path = "../emit" }
