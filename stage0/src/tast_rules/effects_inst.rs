@@ -63,6 +63,18 @@ fn strip_refs(t: &Ty) -> Ty {
     t
 }
 
+/// 参照と `Box` を外した先 (`&Box<dyn Tr>` の `dyn Tr`)。
+fn dyn_of(t: &Ty) -> Ty {
+    let mut t = strip_refs(t);
+    while let Ty::Named(n, a, _) = &t {
+        if n != "alloc.boxed.Box" || a.is_empty() {
+            break;
+        }
+        t = strip_refs(&a[0]);
+    }
+    t
+}
+
 fn fn_effects(at: &Ty) -> Option<(Vec<String>, Option<bool>)> {
     match at {
         Ty::Closure { eff: crate::types::Eff(Some(info)), .. } => Some((info.uses.clone(), info.may)),
@@ -389,21 +401,13 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                         TKind::Path(segs) => segs.last().cloned().unwrap_or_default(),
                         _ => String::new(),
                     };
-                    if let Ty::Dyn(tr, ta, _) = strip_refs(&callee.ty) {
+                    if let Ty::Dyn(tr, ta, _) = dyn_of(&callee.ty) {
                         ck.dyn_call(&tr, &ta.0, &name, e.line);
                     }
                     let _ = args;
                 }
                 (TKind::MCall { recv, name, .. }, Some(Callee::Dyn(_))) => {
-                    let mut t = strip_refs(&recv.ty);
-                    if let Ty::Named(n, a, _) = &t {
-                        if n == "alloc.boxed.Box" {
-                            if let Some(x) = a.first() {
-                                t = strip_refs(x);
-                            }
-                        }
-                    }
-                    if let Ty::Dyn(tr, ta, _) = t {
+                    if let Ty::Dyn(tr, ta, _) = dyn_of(&recv.ty) {
                         ck.dyn_call(&tr, &ta.0, name, e.line);
                     }
                 }

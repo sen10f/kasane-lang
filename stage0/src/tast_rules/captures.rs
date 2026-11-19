@@ -99,7 +99,7 @@ fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut 
                 };
                 if let (TKind::Path(segs), Some(Ty::Closure { eff: crate::types::Eff(Some(info)), .. })) = (&callee.kind, bound.as_ref().map(|t| t.strip().clone())) {
                     let mut uses_bad = false;
-                    for x in info.uses.iter().filter(|x| !is_effect_var(x) && !covers(&own, x)) {
+                    for x in info.uses.iter().filter(|x| if is_effect_var(x) { !own.contains(x) } else { !covers(&own, x) }) {
                         uses_bad = true;
                         found.push(("E4001", format!("{} uses effect `{}` not declared by the caller", segs.join("."), x), e.line));
                     }
