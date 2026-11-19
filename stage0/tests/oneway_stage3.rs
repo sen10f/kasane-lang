@@ -12,6 +12,11 @@ fn wrap(body: &str) -> String {
     format!("fn t.main() -> () uses [] panics may\n{}end t.main\n", body)
 }
 
+/// 効果の宣言は本体どおりに (D5・D13): 試験の本体は意味でなく書き方を見るので、見出しの `uses` / `panics` だけ直す。
+fn effects_fix(t: &Tmp) {
+    let _ = std::process::Command::new(exe()).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025").current_dir(&t.0).output();
+}
+
 fn main_src(t: &Tmp) -> String {
     text(&fs::read(t.0.join("src/t.ksnl")).unwrap())
 }
@@ -26,6 +31,7 @@ fn roundtrip(name: &str, bad: &str, want: &str) {
     assert_eq!(main_src(&t), wrap(want), "{}: fmt result", name);
     run(&["fmt"], &t.0);
     assert_eq!(main_src(&t), wrap(want), "{}: fmt must be idempotent", name);
+    effects_fix(&t);
     let c = run(&["check"], &t.0);
     assert_eq!(c.status.code(), Some(0), "{}: canonical form must pass check: {}", name, text(&c.stdout));
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{}", name);
@@ -34,6 +40,7 @@ fn roundtrip(name: &str, bad: &str, want: &str) {
 /// 正規形はそのまま check を通り、`fmt` も変えない。
 fn canonical(name: &str, body: &str) {
     let t = Tmp::new_raw(name, &wrap(body));
+    effects_fix(&t);
     let c = run(&["check"], &t.0);
     assert_eq!(c.status.code(), Some(0), "{}: {}", name, text(&c.stdout));
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{}", name);
@@ -151,6 +158,7 @@ fn d8_method_call_form() {
     assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
     let fixed = main_src(&t);
     assert!(fixed.contains("core.mem.drop(p.get())"), "{}", fixed);
+    effects_fix(&t);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
     // `u32.wrapping_add(a, b)` も同じ。
     let t = Tmp::new_raw("d8_prim", &wrap("    let a = 1u32\n    core.mem.drop(u32.wrapping_add(a, 2u32))\n"));
@@ -173,7 +181,10 @@ fn d12_integer_literals_need_a_suffix() {
     let o = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(o.contains("E2028"), "{}", o);
     run(&["fix"], &t.0);
-    assert!(main_src(&t).contains("let a: u32 = 1u32"), "{}", main_src(&t));
+    run(&["fix"], &t.0);
+    // 接尾辞を足すと注釈が冗長になる (E2053): `let a = 1u32` が唯一の形。
+    assert!(main_src(&t).contains("let a = 1u32"), "{}", main_src(&t));
+    effects_fix(&t);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
 }
 
@@ -188,6 +199,7 @@ fn d16_struct_literal_field_order() {
     assert!(o.contains("E2048"), "{}", o);
     run(&["fix"], &t.0);
     assert!(main_src(&t).contains("t.P { a: 1u32, b: 2u32 }"), "{}", main_src(&t));
+    effects_fix(&t);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
     // 初期化式に呼び出しがあれば、直さず誤りのまま。
     let src = format!("{}fn t.f() -> u32 uses [] panics never\n    1u32\nend t.f\n\nfn t.main() -> () uses [] panics may\n    let p = t.P {{ b: t.f(), a: 1u32 }}\n    core.mem.drop(p)\nend t.main\n", pre);
