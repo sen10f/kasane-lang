@@ -1,0 +1,136 @@
+test bench.Coin.test_values
+    core.check.eq(bench.Coin.Ten.value(), 10u32)
+    core.check.eq(bench.Coin.Fifty.value(), 50u32)
+    core.check.eq(bench.Coin.Hundred.value(), 100u32)
+end bench.Coin.test_values
+
+test bench.Machine.test_add_product_accumulates_qty_keeps_price
+    let mut m = bench.Machine.new()
+    m.add_product("cola", 120u32, 1u32)?
+    m.add_product("cola", 999u32, 2u32)?
+    core.mem.drop(m.insert_coin(bench.Coin.Ten))
+    core.check.eq(m.buy("cola"), Err(bench.VmError.Short(110u32)))
+    core.mem.drop(m.insert_coin(bench.Coin.Hundred))
+    core.mem.drop(m.insert_coin(bench.Coin.Ten))
+    core.check.eq(m.buy("cola"), Ok(0u32))
+    core.mem.drop(m.insert_coin(bench.Coin.Hundred))
+    core.mem.drop(m.insert_coin(bench.Coin.Ten))
+    core.mem.drop(m.insert_coin(bench.Coin.Ten))
+    core.check.eq(m.buy("cola"), Ok(0u32))
+    core.mem.drop(m.insert_coin(bench.Coin.Hundred))
+    core.mem.drop(m.insert_coin(bench.Coin.Ten))
+    core.mem.drop(m.insert_coin(bench.Coin.Ten))
+    core.check.eq(m.buy("cola"), Ok(0u32))
+    core.check.eq(m.buy("cola"), Err(bench.VmError.SoldOut))
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Machine.test_add_product_accumulates_qty_keeps_price
+
+test bench.Machine.test_buy_exact_change
+    let mut m = bench.Machine.new()
+    m.add_product("cola", 120u32, 2u32)?
+    core.mem.drop(m.insert_coin(bench.Coin.Hundred))
+    core.mem.drop(m.insert_coin(bench.Coin.Ten))
+    core.mem.drop(m.insert_coin(bench.Coin.Ten))
+    core.check.eq(m.buy("cola"), Ok(0u32))
+    core.check.eq(m.credit(), 0u32)
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Machine.test_buy_exact_change
+
+test bench.Machine.test_buy_no_product
+    let mut m = bench.Machine.new()
+    m.add_product("cola", 120u32, 3u32)?
+    core.check.eq(m.buy("water"), Err(bench.VmError.NoProduct))
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Machine.test_buy_no_product
+
+test bench.Machine.test_buy_returns_change_and_resets
+    let mut m = bench.Machine.new()
+    m.add_product("cola", 120u32, 2u32)?
+    core.mem.drop(m.insert_coin(bench.Coin.Hundred))
+    core.mem.drop(m.insert_coin(bench.Coin.Hundred))
+    core.check.eq(m.buy("cola"), Ok(80u32))
+    core.check.eq(m.credit(), 0u32)
+    core.check.eq(m.insert_coin(bench.Coin.Fifty), 50u32)
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Machine.test_buy_returns_change_and_resets
+
+test bench.Machine.test_buy_short_keeps_credit
+    let mut m = bench.Machine.new()
+    m.add_product("cola", 120u32, 3u32)?
+    core.mem.drop(m.insert_coin(bench.Coin.Ten))
+    core.check.eq(m.buy("cola"), Err(bench.VmError.Short(110u32)))
+    core.check.eq(m.credit(), 10u32)
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Machine.test_buy_short_keeps_credit
+
+test bench.Machine.test_buy_until_sold_out
+    let mut m = bench.Machine.new()
+    m.add_product("tea", 50u32, 2u32)?
+    core.mem.drop(m.insert_coin(bench.Coin.Hundred))
+    core.check.eq(m.buy("tea"), Ok(50u32))
+    core.mem.drop(m.insert_coin(bench.Coin.Hundred))
+    core.check.eq(m.buy("tea"), Ok(50u32))
+    core.mem.drop(m.insert_coin(bench.Coin.Hundred))
+    core.check.eq(m.buy("tea"), Err(bench.VmError.SoldOut))
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Machine.test_buy_until_sold_out
+
+test bench.Machine.test_cancel_refunds_and_resets
+    let mut m = bench.Machine.new()
+    core.check.eq(m.cancel(), 0u32)
+    core.mem.drop(m.insert_coin(bench.Coin.Ten))
+    core.mem.drop(m.insert_coin(bench.Coin.Fifty))
+    core.mem.drop(m.insert_coin(bench.Coin.Hundred))
+    core.check.eq(m.cancel(), 160u32)
+    core.check.eq(m.credit(), 0u32)
+    core.check.eq(m.insert_coin(bench.Coin.Ten), 10u32)
+end bench.Machine.test_cancel_refunds_and_resets
+
+test bench.Machine.test_credit_starts_at_zero
+    let m = bench.Machine.new()
+    core.check.eq(m.credit(), 0u32)
+end bench.Machine.test_credit_starts_at_zero
+
+test bench.Machine.test_insert_coin_accumulates
+    let mut m = bench.Machine.new()
+    core.check.eq(m.insert_coin(bench.Coin.Ten), 10u32)
+    core.check.eq(m.insert_coin(bench.Coin.Fifty), 60u32)
+    core.check.eq(m.insert_coin(bench.Coin.Hundred), 160u32)
+    core.check.eq(m.credit(), 160u32)
+end bench.Machine.test_insert_coin_accumulates
+
+test bench.Machine.test_insert_same_coin_twice
+    let mut m = bench.Machine.new()
+    core.check.eq(m.insert_coin(bench.Coin.Ten), 10u32)
+    core.check.eq(m.insert_coin(bench.Coin.Ten), 20u32)
+    core.check.eq(m.credit(), 20u32)
+end bench.Machine.test_insert_same_coin_twice
+
+test bench.Machine.test_sold_out_keeps_credit
+    let mut m = bench.Machine.new()
+    m.add_product("tea", 50u32, 0u32)?
+    core.mem.drop(m.insert_coin(bench.Coin.Hundred))
+    core.check.eq(m.buy("tea"), Err(bench.VmError.SoldOut))
+    core.check.eq(m.credit(), 100u32)
+    core.check.eq(m.cancel(), 100u32)
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Machine.test_sold_out_keeps_credit
+
+test bench.Machine.test_two_products
+    let mut m = bench.Machine.new()
+    m.add_product("cola", 120u32, 1u32)?
+    m.add_product("tea", 50u32, 1u32)?
+    core.mem.drop(m.insert_coin(bench.Coin.Hundred))
+    core.check.eq(m.buy("cola"), Err(bench.VmError.Short(20u32)))
+    core.check.eq(m.buy("tea"), Ok(50u32))
+    core.check.eq(m.buy("tea"), Err(bench.VmError.SoldOut))
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Machine.test_two_products

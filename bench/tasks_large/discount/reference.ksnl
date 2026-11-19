@@ -1,0 +1,151 @@
+type bench.AmountOff derive [Debug, Clone, Copy] pub
+    amount: u32
+end bench.AmountOff
+
+type bench.FreeOver derive [Debug, Clone, Copy] pub
+    threshold: u32
+end bench.FreeOver
+
+type bench.PercentOff derive [Debug, Clone, Copy] pub
+    percent: u32
+end bench.PercentOff
+
+type bench.Pricer pub
+    rules: alloc.vec.Vec<bench.Slot, std.alloc.System>
+end bench.Pricer
+
+trait bench.Rule[E: uses, P: panics] pub
+    fn apply(self: &Self, price: u32) -> u32 uses [E] panics P
+    fn kind(self: &Self) -> bench.RuleKind uses [] panics never
+end bench.Rule
+
+enum bench.RuleKind derive [Debug, Clone, Copy, PartialEq] pub
+    Percent
+    Amount
+    Free
+    Step
+end bench.RuleKind
+
+type bench.Slot
+    rule: alloc.boxed.Box<dyn bench.Rule<[], never> + 'static, std.alloc.System>
+end bench.Slot
+
+type bench.StepOff derive [Debug, Clone, Copy] pub
+    step: u32
+    off: u32
+end bench.StepOff
+
+impl bench.Rule<[], never> for bench.AmountOff
+fn bench.AmountOff.apply(self: &bench.AmountOff, price: u32) -> u32 uses [] panics never impls bench.Rule<[], never>
+    match price.checked_sub(self.amount) {
+        Some(v) => v
+        None => 0u32
+    }
+end bench.AmountOff.apply
+
+fn bench.AmountOff.kind(self: &bench.AmountOff) -> bench.RuleKind uses [] panics never impls bench.Rule<[], never>
+    bench.RuleKind.Amount
+end bench.AmountOff.kind
+
+impl bench.Rule<[], never> for bench.FreeOver
+fn bench.FreeOver.apply(self: &bench.FreeOver, price: u32) -> u32 uses [] panics never impls bench.Rule<[], never>
+    if price >= self.threshold {
+        0u32
+    } else {
+        price
+    }
+end bench.FreeOver.apply
+
+fn bench.FreeOver.kind(self: &bench.FreeOver) -> bench.RuleKind uses [] panics never impls bench.Rule<[], never>
+    bench.RuleKind.Free
+end bench.FreeOver.kind
+
+impl bench.Rule<[], never> for bench.PercentOff
+fn bench.PercentOff.apply(self: &bench.PercentOff, price: u32) -> u32 uses [] panics never impls bench.Rule<[], never>
+    let off = match price.checked_mul(self.percent) {
+        Some(full) => {
+            match full.checked_div(100u32) {
+                Some(v) => v
+                None => 0u32
+            }
+        }
+        None => 0u32
+    }
+    match price.checked_sub(off) {
+        Some(v) => v
+        None => 0u32
+    }
+end bench.PercentOff.apply
+
+fn bench.PercentOff.kind(self: &bench.PercentOff) -> bench.RuleKind uses [] panics never impls bench.Rule<[], never>
+    bench.RuleKind.Percent
+end bench.PercentOff.kind
+
+fn bench.Pricer.add[R: bench.Rule<[], never>](self: &mut bench.Pricer, r: R) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let b = alloc.boxed.Box.new(std.alloc.SYSTEM, r)?
+    let slot = bench.Slot { rule: alloc.boxed.Box.into_dyn(b) }
+    self.rules.push(slot)?
+    Ok(())
+end bench.Pricer.add
+
+fn bench.Pricer.clear(self: &mut bench.Pricer) -> () uses [] panics never
+    self.rules.truncate(0usize)
+end bench.Pricer.clear
+
+fn bench.Pricer.count(self: &bench.Pricer) -> usize uses [] panics never
+    self.rules.len()
+end bench.Pricer.count
+
+fn bench.Pricer.kinds(self: &bench.Pricer) -> Result<alloc.vec.Vec<bench.RuleKind, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < self.rules.len() {
+        match self.rules.get(i) {
+            Some(slot) => out.push(slot.rule.kind())?
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(out)
+end bench.Pricer.kinds
+
+fn bench.Pricer.new() -> bench.Pricer uses [] panics never
+    bench.Pricer { rules: alloc.vec.Vec.new(std.alloc.SYSTEM) }
+end bench.Pricer.new
+
+fn bench.Pricer.price(self: &bench.Pricer, base: u32) -> u32 uses [] panics never
+    let mut p = base
+    let mut i = 0usize
+    while i < self.rules.len() {
+        match self.rules.get(i) {
+            Some(slot) => {
+                p = slot.rule.apply(p)
+                ()
+            }
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    p
+end bench.Pricer.price
+
+impl bench.Rule<[], never> for bench.StepOff
+fn bench.StepOff.apply(self: &bench.StepOff, price: u32) -> u32 uses [] panics never impls bench.Rule<[], never>
+    let steps = match price.checked_div(self.step) {
+        Some(v) => v
+        None => 0u32
+    }
+    let off = match steps.checked_mul(self.off) {
+        Some(v) => v
+        None => 0u32
+    }
+    match price.checked_sub(off) {
+        Some(v) => v
+        None => 0u32
+    }
+end bench.StepOff.apply
+
+fn bench.StepOff.kind(self: &bench.StepOff) -> bench.RuleKind uses [] panics never impls bench.Rule<[], never>
+    bench.RuleKind.Step
+end bench.StepOff.kind
+

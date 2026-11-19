@@ -1,0 +1,148 @@
+test bench.AmountOff.test_basic
+    let r = bench.AmountOff { amount: 30u32 }
+    core.check.eq(r.apply(100u32), 70u32)
+    core.check.eq(r.apply(150u32), 120u32)
+    core.check.eq(r.kind(), bench.RuleKind.Amount)
+end bench.AmountOff.test_basic
+
+test bench.AmountOff.test_clamp_at_zero
+    let r = bench.AmountOff { amount: 100u32 }
+    core.check.eq(r.apply(70u32), 0u32)
+    core.check.eq(r.apply(100u32), 0u32)
+end bench.AmountOff.test_clamp_at_zero
+
+test bench.AmountOff.test_zero_amount
+    let r = bench.AmountOff { amount: 0u32 }
+    core.check.eq(r.apply(5u32), 5u32)
+    core.check.eq(r.apply(0u32), 0u32)
+end bench.AmountOff.test_zero_amount
+
+test bench.FreeOver.test_threshold
+    let r = bench.FreeOver { threshold: 1000u32 }
+    core.check.eq(r.apply(1000u32), 0u32)
+    core.check.eq(r.apply(999u32), 999u32)
+    core.check.eq(r.apply(1001u32), 0u32)
+    core.check.eq(r.kind(), bench.RuleKind.Free)
+end bench.FreeOver.test_threshold
+
+test bench.FreeOver.test_zero_threshold
+    let r = bench.FreeOver { threshold: 0u32 }
+    core.check.eq(r.apply(0u32), 0u32)
+    core.check.eq(r.apply(7u32), 0u32)
+end bench.FreeOver.test_zero_threshold
+
+test bench.PercentOff.test_basic
+    let r = bench.PercentOff { percent: 25u32 }
+    core.check.eq(r.apply(200u32), 150u32)
+    core.check.eq(r.apply(0u32), 0u32)
+    core.check.eq(r.kind(), bench.RuleKind.Percent)
+end bench.PercentOff.test_basic
+
+test bench.PercentOff.test_full_discount
+    let r = bench.PercentOff { percent: 100u32 }
+    core.check.eq(r.apply(500u32), 0u32)
+    let none = bench.PercentOff { percent: 0u32 }
+    core.check.eq(none.apply(123u32), 123u32)
+end bench.PercentOff.test_full_discount
+
+test bench.PercentOff.test_rounds_down
+    let r = bench.PercentOff { percent: 33u32 }
+    core.check.eq(r.apply(10u32), 7u32)
+    core.check.eq(r.apply(100u32), 67u32)
+    core.check.eq(r.apply(1u32), 1u32)
+end bench.PercentOff.test_rounds_down
+
+test bench.Pricer.test_clear_empties_table
+    let mut p = bench.Pricer.new()
+    p.add(bench.PercentOff { percent: 10u32 })?
+    p.add(bench.AmountOff { amount: 5u32 })?
+    core.check.eq(p.count(), 2usize)
+    p.clear()
+    core.check.eq(p.count(), 0usize)
+    core.check.eq(p.price(100u32), 100u32)
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Pricer.test_clear_empties_table
+
+test bench.Pricer.test_empty_keeps_price
+    let p = bench.Pricer.new()
+    core.check.eq(p.price(250u32), 250u32)
+    core.check.eq(p.count(), 0usize)
+end bench.Pricer.test_empty_keeps_price
+
+test bench.Pricer.test_kinds_in_table_order
+    let mut p = bench.Pricer.new()
+    p.add(bench.PercentOff { percent: 10u32 })?
+    p.add(bench.StepOff { step: 100u32, off: 5u32 })?
+    p.add(bench.FreeOver { threshold: 9u32 })?
+    p.add(bench.AmountOff { amount: 1u32 })?
+    let kinds = p.kinds()?
+    core.check.eq(kinds.len(), 4usize)
+    match kinds.get(0usize) {
+        Some(k) => core.check.eq(*k, bench.RuleKind.Percent)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match kinds.get(1usize) {
+        Some(k) => core.check.eq(*k, bench.RuleKind.Step)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match kinds.get(2usize) {
+        Some(k) => core.check.eq(*k, bench.RuleKind.Free)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match kinds.get(3usize) {
+        Some(k) => core.check.eq(*k, bench.RuleKind.Amount)
+        None => core.check.eq(0usize, 1usize)
+    }
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Pricer.test_kinds_in_table_order
+
+test bench.Pricer.test_order_matters
+    let mut first = bench.Pricer.new()
+    first.add(bench.FreeOver { threshold: 240u32 })?
+    first.add(bench.AmountOff { amount: 50u32 })?
+    core.check.eq(first.price(250u32), 0u32)
+    let mut second = bench.Pricer.new()
+    second.add(bench.AmountOff { amount: 50u32 })?
+    second.add(bench.FreeOver { threshold: 240u32 })?
+    core.check.eq(second.price(250u32), 200u32)
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Pricer.test_order_matters
+
+test bench.Pricer.test_rules_apply_in_order
+    let mut p = bench.Pricer.new()
+    p.add(bench.PercentOff { percent: 20u32 })?
+    p.add(bench.AmountOff { amount: 50u32 })?
+    p.add(bench.FreeOver { threshold: 500u32 })?
+    core.check.eq(p.count(), 3usize)
+    core.check.eq(p.price(600u32), 430u32)
+    core.check.eq(p.price(2000u32), 0u32)
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Pricer.test_rules_apply_in_order
+
+test bench.Pricer.test_single_rule
+    let mut p = bench.Pricer.new()
+    p.add(bench.PercentOff { percent: 50u32 })?
+    core.check.eq(p.price(9u32), 5u32)
+    core.check.eq(p.price(1u32), 1u32)
+    let fin: Result<(), alloc.alloc.AllocError> = Ok(())
+    fin
+end bench.Pricer.test_single_rule
+
+test bench.StepOff.test_basic
+    let r = bench.StepOff { step: 100u32, off: 10u32 }
+    core.check.eq(r.apply(450u32), 410u32)
+    core.check.eq(r.apply(100u32), 90u32)
+    core.check.eq(r.apply(99u32), 99u32)
+    core.check.eq(r.apply(0u32), 0u32)
+    core.check.eq(r.kind(), bench.RuleKind.Step)
+end bench.StepOff.test_basic
+
+test bench.StepOff.test_clamp_at_zero
+    let r = bench.StepOff { step: 1u32, off: 5u32 }
+    core.check.eq(r.apply(3u32), 0u32)
+    core.check.eq(r.apply(70u32), 0u32)
+end bench.StepOff.test_clamp_at_zero
