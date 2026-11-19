@@ -938,12 +938,20 @@ void *ksn_rt_sys_dlsym(const char *lib, const char *sym) {
     return p;
 }
 
-/* ---------------------------------------------------------------- std.process (POSIX のみ)
+/* ---------------------------------------------------------------- std.process (POSIX は posix_spawnp、Windows は CreateProcessW)
  * Command の設定は、この表のハンドル (i32) で持つ。spawn / output / cancel が消費して表から外す。
  * 起動は posix_spawnp (複数スレッドから呼んでも安全。パイプの親側の記述子は O_CLOEXEC)。
  * 命令の番号は kir.rs の `ProcFn::ALL` の並び。 */
-#ifndef _WIN32
+#ifdef _WIN32
+static SRWLOCK plock = SRWLOCK_INIT;
+#define PLOCK() AcquireSRWLockExclusive(&plock)
+#define PUNLOCK() ReleaseSRWLockExclusive(&plock)
+#else
 extern char **environ;
+static pthread_mutex_t plock = PTHREAD_MUTEX_INITIALIZER;
+#define PLOCK() pthread_mutex_lock(&plock)
+#define PUNLOCK() pthread_mutex_unlock(&plock)
+#endif
 
 enum { P_NEW = 0, P_ARG, P_ENV_REMOVE, P_DIR, P_ENV, P_ENV_CLEAR, P_IN_PIPED, P_IN_NULL, P_OUT_PIPED, P_OUT_NULL, P_ERR_PIPED, P_ERR_NULL, P_CANCEL };
 enum { IO_INHERIT = 0, IO_NULL, IO_PIPED };
@@ -961,8 +969,6 @@ typedef struct {
 
 static pcmd **ptab;
 static u64 pcap;
-static pthread_mutex_t plock = PTHREAD_MUTEX_INITIALIZER;
-
 static char *pdup(const u8 *p, u64 n, int *bad) {
     if (n > 0 && memchr(p, 0, n) != NULL) { *bad = 1; n = (u64)((const u8 *)memchr(p, 0, n) - p); }
     char *s = (char *)malloc(n + 1);
@@ -974,9 +980,9 @@ static char *pdup(const u8 *p, u64 n, int *bad) {
 
 static pcmd *pget(i32 id) {
     pcmd *c = NULL;
-    pthread_mutex_lock(&plock);
+    PLOCK();
     if (id >= 0 && (u64)id < pcap) c = ptab[id];
-    pthread_mutex_unlock(&plock);
+    PUNLOCK();
     return c;
 }
 
@@ -994,9 +1000,9 @@ static void pfree(pcmd *c) {
 /* 表から外して返す。 */
 static pcmd *ptake(i32 id) {
     pcmd *c = NULL;
-    pthread_mutex_lock(&plock);
+    PLOCK();
     if (id >= 0 && (u64)id < pcap) { c = ptab[id]; ptab[id] = NULL; }
-    pthread_mutex_unlock(&plock);
+    PUNLOCK();
     return c;
 }
 
@@ -1005,18 +1011,18 @@ i32 ksn_rt_sys_proc_new(const u8 *p, u64 n) {
     pcmd *c = (pcmd *)calloc(1, sizeof(pcmd));
     if (!c) return -1;
     c->prog = pdup(p, n, &c->bad);
-    pthread_mutex_lock(&plock);
+    PLOCK();
     u64 id = 0;
     while (id < pcap && ptab[id]) id++;
     if (id == pcap) {
         u64 nc = pcap ? pcap * 2 : 8;
         pcmd **nt = (pcmd **)realloc(ptab, nc * sizeof(pcmd *));
-        if (!nt) { pthread_mutex_unlock(&plock); pfree(c); return -1; }
+        if (!nt) { PUNLOCK(); pfree(c); return -1; }
         memset(nt + pcap, 0, (nc - pcap) * sizeof(pcmd *));
         ptab = nt; pcap = nc;
     }
     ptab[id] = c;
-    pthread_mutex_unlock(&plock);
+    PUNLOCK();
     return (i32)id;
 }
 
@@ -1066,6 +1072,7 @@ void ksn_rt_sys_proc_cmd(i32 id, i32 sel, const u8 *a, u64 an, const u8 *b, u64 
     }
 }
 
+#ifndef _WIN32
 /* 子の環境 (`KEY=VALUE` の NULL 終端配列)。`own` には新しく確保した文字列を足す。 */
 static char **build_env(pcmd *c, char ***own, u64 *nown) {
     u64 base = 0;
@@ -1234,9 +1241,253 @@ i64 ksn_rt_sys_proc_kill(i32 pid, i32 *e) {
     return 0;
 }
 #else
-i32 ksn_rt_sys_proc_new(const u8 *p, u64 n) { (void)p; (void)n; return -1; }
-void ksn_rt_sys_proc_cmd(i32 id, i32 sel, const u8 *a, u64 an, const u8 *b, u64 bn) { (void)id; (void)sel; (void)a; (void)an; (void)b; (void)bn; }
-i64 ksn_rt_sys_proc_spawn(i32 id, i32 capture, i32 *out, i32 *e) { (void)id; (void)capture; (void)out; return fail(e, ENOSYS); }
-i64 ksn_rt_sys_proc_wait(i32 pid, i32 *st2, i32 *e) { (void)pid; (void)st2; return fail(e, ENOSYS); }
-i64 ksn_rt_sys_proc_kill(i32 pid, i32 *e) { (void)pid; return fail(e, ENOSYS); }
+/* ---- Windows: CreateProcessW。文字列は UTF-8 → UTF-16。パイプ・一時ファイルのハンドルは CRT の記述子 (`_open_osfhandle`) にして返す
+ * (std.fs / ソケットの read・write・close と同じ経路で読み書きできる)。pid はプロセス ID で、ハンドルは表に持つ。 */
+#include <wchar.h>
+
+static wchar_t *wdup(const char *s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (n <= 0) return NULL;
+    wchar_t *w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
+    if (w) MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
+    return w;
+}
+
+/* 引数 1 つを MSVCRT の規則で引用符で囲んで `out` (wchar の可変長) へ足す。 */
+typedef struct { wchar_t *p; size_t n, cap; } wbuf;
+static int wput(wbuf *b, wchar_t c) {
+    if (b->n + 2 > b->cap) {
+        size_t nc = b->cap ? b->cap * 2 : 256;
+        wchar_t *np = (wchar_t *)realloc(b->p, nc * sizeof(wchar_t));
+        if (!np) return 0;
+        b->p = np; b->cap = nc;
+    }
+    b->p[b->n++] = c;
+    b->p[b->n] = 0;
+    return 1;
+}
+static int quote_arg(wbuf *b, const wchar_t *a) {
+    int need = a[0] == 0;
+    for (const wchar_t *q = a; *q; q++) if (*q == L' ' || *q == L'\t' || *q == L'\n' || *q == L'\v' || *q == L'"') { need = 1; break; }
+    if (!need) { for (; *a; a++) if (!wput(b, *a)) return 0; return 1; }
+    if (!wput(b, L'"')) return 0;
+    for (;; a++) {
+        size_t bs = 0;
+        while (*a == L'\\') { bs++; a++; }
+        if (*a == 0) {
+            for (size_t i = 0; i < bs * 2; i++) if (!wput(b, L'\\')) return 0;
+            break;
+        } else if (*a == L'"') {
+            for (size_t i = 0; i < bs * 2 + 1; i++) if (!wput(b, L'\\')) return 0;
+            if (!wput(b, L'"')) return 0;
+        } else {
+            for (size_t i = 0; i < bs; i++) if (!wput(b, L'\\')) return 0;
+            if (!wput(b, *a)) return 0;
+        }
+    }
+    return wput(b, L'"');
+}
+
+static int wenv_cmp(const void *x, const void *y) { return _wcsicmp(*(wchar_t *const *)x, *(wchar_t *const *)y); }
+
+/* 子の環境ブロック (UTF-16、`K=V\0...\0\0`)。親の環境 (clear でなければ) に c->env を当てる。名前は大文字小文字を区別しない。 */
+static wchar_t *build_wenv(pcmd *c) {
+    wchar_t **ent = NULL; u64 n = 0, cap = 0;
+    wchar_t *base = c->clear ? NULL : GetEnvironmentStringsW();
+    wchar_t **own = NULL; u64 nown = 0;
+    int ok = 1;
+#define ADD(ptr) do { if (n == cap) { cap = cap ? cap * 2 : 64; wchar_t **t = (wchar_t **)realloc(ent, cap * sizeof *t); if (!t) { ok = 0; break; } ent = t; } ent[n++] = (ptr); } while (0)
+    if (base) for (wchar_t *q = base; *q && ok; q += wcslen(q) + 1) ADD(q);
+    own = (wchar_t **)calloc(c->nenv + 1, sizeof *own);
+    if (!own) ok = 0;
+    for (u64 i = 0; i < c->nenv && ok; i++) {
+        penv *x = &c->env[i];
+        wchar_t *k = wdup(x->k);
+        if (!k) { ok = 0; break; }
+        size_t kl = wcslen(k);
+        for (u64 j = 0; j < n; ) {
+            if (_wcsnicmp(ent[j], k, kl) == 0 && ent[j][kl] == L'=') { memmove(ent + j, ent + j + 1, (n - j - 1) * sizeof *ent); n--; }
+            else j++;
+        }
+        if (x->set) {
+            wchar_t *v = wdup(x->v);
+            if (!v) { free(k); ok = 0; break; }
+            size_t vl = wcslen(v);
+            wchar_t *e = (wchar_t *)malloc((kl + vl + 2) * sizeof(wchar_t));
+            if (!e) { free(k); free(v); ok = 0; break; }
+            memcpy(e, k, kl * sizeof(wchar_t)); e[kl] = L'='; memcpy(e + kl + 1, v, (vl + 1) * sizeof(wchar_t));
+            free(v);
+            own[nown++] = e;
+            ADD(e);
+        }
+        free(k);
+    }
+    wchar_t *blk = NULL;
+    if (ok) {
+        qsort(ent, n, sizeof *ent, wenv_cmp);
+        size_t total = 1;
+        for (u64 i = 0; i < n; i++) total += wcslen(ent[i]) + 1;
+        blk = (wchar_t *)malloc((total + 1) * sizeof(wchar_t));
+        if (blk) {
+            size_t o = 0;
+            for (u64 i = 0; i < n; i++) { size_t l = wcslen(ent[i]) + 1; memcpy(blk + o, ent[i], l * sizeof(wchar_t)); o += l; }
+            if (o == 0) blk[o++] = 0;
+            blk[o] = 0;
+        }
+    }
+    for (u64 i = 0; i < nown; i++) free(own[i]);
+    free(own); free(ent);
+    if (base) FreeEnvironmentStringsW(base);
+    return blk;
+#undef ADD
+}
+
+/* pid → プロセスのハンドル */
+typedef struct { DWORD pid; HANDLE h; } wproc;
+static wproc *wprocs; static u64 nwprocs, capwprocs;
+
+static int werr_to_errno(DWORD g) {
+    switch (g) {
+    case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: return ENOENT;
+    case ERROR_ACCESS_DENIED: return EACCES;
+    case ERROR_NOT_ENOUGH_MEMORY: case ERROR_OUTOFMEMORY: return ENOMEM;
+    case ERROR_INVALID_PARAMETER: case ERROR_BAD_EXE_FORMAT: return EINVAL;
+    default: return EIO;
+    }
+}
+
+static HANDLE open_nul(int write) {
+    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+    return CreateFileW(L"NUL", write ? GENERIC_WRITE : GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+}
+
+/* output の受け皿: 閉じると消える一時ファイル (子へ継承できる)。 */
+static HANDLE anon_file(void) {
+    wchar_t dir[MAX_PATH + 1], name[MAX_PATH + 1];
+    if (!GetTempPathW(MAX_PATH, dir) || !GetTempFileNameW(dir, L"ksn", 0, name)) return INVALID_HANDLE_VALUE;
+    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+    return CreateFileW(name, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+}
+
+i64 ksn_rt_sys_proc_spawn(i32 id, i32 capture, i32 *out, i32 *e) {
+    pcmd *c = ptake(id);
+    if (!c) return fail(e, ENOMEM);
+    if (c->bad || !c->prog) { pfree(c); return fail_invalid(e); }
+    int io[3] = { c->io[0], c->io[1], c->io[2] };
+    if (capture) { io[0] = IO_NULL; io[1] = io[2] = IO_PIPED; }
+    HANDLE parent[3] = { NULL, NULL, NULL }, child[3] = { NULL, NULL, NULL };
+    int own_child[3] = { 0, 0, 0 };
+    int err = 0;
+    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+    for (int i = 0; i < 3 && !err; i++) {
+        if (io[i] == IO_NULL) {
+            child[i] = open_nul(i != 0);
+            if (child[i] == INVALID_HANDLE_VALUE) { err = werr_to_errno(GetLastError()); child[i] = NULL; }
+            own_child[i] = 1;
+        } else if (io[i] == IO_PIPED) {
+            if (capture) {
+                HANDLE f = anon_file();
+                if (f == INVALID_HANDLE_VALUE) { err = werr_to_errno(GetLastError()); break; }
+                parent[i] = f; child[i] = f;
+            } else {
+                HANDLE r, w;
+                if (!CreatePipe(&r, &w, &sa, 0)) { err = werr_to_errno(GetLastError()); break; }
+                parent[i] = i == 0 ? w : r;
+                child[i] = i == 0 ? r : w;
+                SetHandleInformation(parent[i], HANDLE_FLAG_INHERIT, 0);
+                own_child[i] = 1;
+            }
+        } else {
+            child[i] = GetStdHandle(i == 0 ? STD_INPUT_HANDLE : i == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
+            if (child[i] == INVALID_HANDLE_VALUE) child[i] = NULL;
+        }
+    }
+    wchar_t *wprog = NULL, *wdir = NULL, *wenv = NULL;
+    wbuf cl = { NULL, 0, 0 };
+    PROCESS_INFORMATION pi;
+    memset(&pi, 0, sizeof pi);
+    if (!err) {
+        wprog = wdup(c->prog);
+        if (!wprog || !quote_arg(&cl, wprog)) err = ENOMEM;
+        for (u64 i = 0; i < c->nargs && !err; i++) {
+            wchar_t *wa = wdup(c->args[i]);
+            if (!wa || !wput(&cl, L' ') || !quote_arg(&cl, wa)) err = ENOMEM;
+            free(wa);
+        }
+    }
+    if (!err && c->dir) { wdir = wdup(c->dir); if (!wdir) err = ENOMEM; }
+    if (!err) { wenv = build_wenv(c); if (!wenv) err = ENOMEM; }
+    if (!err) {
+        STARTUPINFOW si;
+        memset(&si, 0, sizeof si);
+        si.cb = sizeof si;
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = child[0]; si.hStdOutput = child[1]; si.hStdError = child[2];
+        if (!CreateProcessW(NULL, cl.p, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, wenv, wdir, &si, &pi)) err = werr_to_errno(GetLastError());
+    }
+    free(wprog); free(wdir); free(wenv); free(cl.p);
+    pfree(c);
+    for (int i = 0; i < 3; i++) if (own_child[i] && child[i]) CloseHandle(child[i]);
+    if (err) {
+        for (int i = 0; i < 3; i++) if (parent[i]) CloseHandle(parent[i]);
+        return fail(e, err);
+    }
+    CloseHandle(pi.hThread);
+    int fd[3] = { -1, -1, -1 };
+    for (int i = 0; i < 3; i++) if (parent[i]) fd[i] = _open_osfhandle((intptr_t)parent[i], _O_BINARY | (i == 0 ? _O_WRONLY : _O_RDONLY));
+    if (!capture) {
+        PLOCK();
+        if (nwprocs == capwprocs) { u64 nc = capwprocs ? capwprocs * 2 : 8; wproc *np = (wproc *)realloc(wprocs, nc * sizeof *np); if (np) { wprocs = np; capwprocs = nc; } }
+        if (nwprocs < capwprocs) { wprocs[nwprocs].pid = pi.dwProcessId; wprocs[nwprocs].h = pi.hProcess; nwprocs++; }
+        else CloseHandle(pi.hProcess);
+        PUNLOCK();
+        out[0] = (i32)pi.dwProcessId;
+        for (int i = 0; i < 3; i++) out[1 + i] = fd[i];
+        return 0;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    out[0] = (i32)code;
+    out[1] = 0;
+    if (fd[1] >= 0) _lseeki64(fd[1], 0, SEEK_SET);
+    if (fd[2] >= 0) _lseeki64(fd[2], 0, SEEK_SET);
+    out[2] = fd[1];
+    out[3] = fd[2];
+    return 0;
+}
+
+static HANDLE proc_handle(i32 pid, int remove) {
+    HANDLE h = NULL;
+    PLOCK();
+    for (u64 i = 0; i < nwprocs; i++) {
+        if (wprocs[i].pid == (DWORD)pid) {
+            h = wprocs[i].h;
+            if (remove) wprocs[i] = wprocs[--nwprocs];
+            break;
+        }
+    }
+    PUNLOCK();
+    return h;
+}
+
+i64 ksn_rt_sys_proc_wait(i32 pid, i32 *st2, i32 *e) {
+    HANDLE h = proc_handle(pid, 1);
+    if (!h) return fail(e, ECHILD);
+    WaitForSingleObject(h, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(h, &code);
+    CloseHandle(h);
+    st2[0] = (i32)code;
+    st2[1] = 0;
+    return 0;
+}
+
+i64 ksn_rt_sys_proc_kill(i32 pid, i32 *e) {
+    HANDLE h = proc_handle(pid, 0);
+    if (!h) return fail(e, ESRCH);
+    if (!TerminateProcess(h, 1)) return fail(e, werr_to_errno(GetLastError()));
+    return 0;
+}
 #endif

@@ -214,3 +214,146 @@ end t.main
     assert_eq!(text(&r.stdout), "abs ok\n", "{}", text(&r.stderr));
     assert_eq!(r.status.code(), Some(0));
 }
+
+/// std.process (CreateProcessW): Kasane で作った子の `.exe` (`tests/data/windows/child.ksnl`) と `cmd` を起動する。
+#[test]
+fn std_process_works_on_windows() {
+    if !cross_ready() {
+        return;
+    }
+    // 子: 引数を 1 行ずつ出す (`args`)・環境変数 KSN_A を出す (`env`)・終了コード 7 (`exit`)・標準入力の長さを数える (`stdin`)。
+    let cd = std::env::temp_dir().join(format!("ksn_win_child_{}", std::process::id()));
+    let _guard = Tmp(cd.clone());
+    let _ = fs::remove_dir_all(&cd);
+    fs::create_dir_all(cd.join("src")).unwrap();
+    fs::write(cd.join("kasane.toml"), TOML.replace("name = \"t\"", "name = \"h\"").replace("t.main", "h.main")).unwrap();
+    fs::write(cd.join("kasane.lock"), "version = 1\n").unwrap();
+    fs::write(cd.join("src").join("h.ksnl"), fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/windows/child.ksnl")).unwrap()).unwrap();
+    let o = run(&["build", "--target", TRIPLE], &cd);
+    assert_eq!(o.status.code(), Some(0), "child build\n{}{}", text(&o.stdout), text(&o.stderr));
+    let helper = native_exe(&text(&o.stdout), &cd);
+    let helper_str = format!("Z:{}", helper.to_string_lossy());
+
+    let src = r#"fn t.helper(mode: &str) -> std.process.Command uses [process] panics never
+    let mut c = std.process.Command.new("HELPER")
+    c.arg(mode)
+    c
+end t.helper
+
+fn t.inherit(c: std.process.Command) -> Result<i32, std.io.Error> uses [process] panics never
+    let child = c.spawn()?
+    let st = child.wait()?
+    Ok(st.code)
+end t.inherit
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, process] panics may
+    let mut a = t.helper("args")
+    a.arg("a b")
+    a.arg("c\"d")
+    a.arg("e\\")
+    a.arg("")
+    a.arg("x\\\\\"y")
+    a.arg("plain")
+    core.check.eq(t.inherit(a)?, 0i32)
+    let mut e1 = t.helper("env")
+    e1.env("KSN_A", "v1")
+    core.check.eq(t.inherit(e1)?, 0i32)
+    let mut e2 = t.helper("env")
+    e2.env("KSN_A", "v2")
+    e2.env_remove("KSN_A")
+    core.check.eq(t.inherit(e2)?, 0i32)
+    let mut e3 = t.helper("env")
+    e3.env("KSN_A", "v3")
+    e3.env_clear()
+    core.check.eq(t.inherit(e3)?, 0i32)
+    let x = t.helper("exit")
+    core.check.eq(t.inherit(x)?, 7i32)
+    let mut p = t.helper("stdin")
+    p.stdin_piped()
+    p.stdout_piped()
+    let mut child = p.spawn()?
+    let n = match child.write_stdin(b"hello, pipe") {
+        Ok(n) => n
+        Err(e) => {
+            core.mem.drop(child.wait())
+            return Err(e)
+        }
+    }
+    core.check.eq(n, 11usize)
+    match child.close_stdin() {
+        Ok(()) => {
+        }
+        Err(e) => {
+            core.mem.drop(child.wait())
+            return Err(e)
+        }
+    }
+    let mut total = 0usize
+    let mut buf = [0u8; 4]
+    loop {
+        match child.read_stdout(&mut buf) {
+            Ok(k) => {
+                if k == 0usize {
+                    break
+                }
+                total = total + k
+            }
+            Err(e) => {
+                core.mem.drop(child.wait())
+                return Err(e)
+            }
+        }
+    }
+    core.check.eq(total, 9usize)
+    let st = child.wait()?
+    core.check.eq(st.code, 0i32)
+    let mut c = std.process.Command.new("cmd")
+    c.arg("/c")
+    c.arg("echo")
+    c.arg("hi")
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut er = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let st2 = c.output(&mut out, &mut er)?
+    core.check.eq(st2.code, 0i32)
+    core.check.eq(out.len(), 4usize)
+    let mut d = std.process.Command.new("cmd")
+    d.arg("/c")
+    d.arg("cd")
+    d.current_dir("C:/windows")
+    let mut out2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut er2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let st3 = d.output(&mut out2, &mut er2)?
+    core.check.eq(st3.code, 0i32)
+    core.check.eq(out2.len(), 12usize)
+    let mut f = std.process.Command.new("cmd")
+    f.arg("/c")
+    f.arg("exit 3")
+    let mut out3 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut er3 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let st4 = f.output(&mut out3, &mut er3)?
+    core.check.eq(st4.code, 3i32)
+    let m = std.process.Command.new("C:/no/such/ksn-program.exe")
+    core.mem.drop(match m.spawn() {
+        Ok(ch) => {
+            core.mem.drop(ch.wait())
+            std.io.print_line("spawned")
+        }
+        Err(e) => {
+            core.check.eq(e.kind, std.io.ErrorKind.NotFound)
+            std.io.print_line("not found")
+        }
+    })
+    Ok(())
+end t.main
+"#
+    .replace("HELPER", &helper_str);
+    let t = Tmp::new("win_proc", &src);
+    fs::write(t.0.join("kasane.toml"), TOML).unwrap();
+    let o = run(&["build", "--target", TRIPLE], &t.0);
+    assert_eq!(o.status.code(), Some(0), "parent build\n{}{}", text(&o.stdout), text(&o.stderr));
+    let exe = native_exe(&text(&o.stdout), &t.0);
+    let r = run_wine(&exe, &t.0);
+    let want = "a b\nc\"d\ne\\\n\nx\\\\\"y\nplain\nv1\nnone\nnone\n".to_string() + "not found\n";
+    assert_eq!(text(&r.stdout), want, "stderr: {}", text(&r.stderr));
+    assert_eq!(r.status.code(), Some(0));
+}
