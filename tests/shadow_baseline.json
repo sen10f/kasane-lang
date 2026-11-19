@@ -4634,7 +4634,7 @@
 [
 "old_only",
 "stage0/tests/data/unsound/is_linear_payload_discarded.ksnl",
-11,
+12,
 "E3003"
 ],
 [

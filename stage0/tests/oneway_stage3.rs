@@ -104,14 +104,9 @@ fn d11_redundant_logic_is_rewritten() {
 
 #[test]
 fn d11_option_and_len_checks_are_rewritten() {
-    roundtrip("d11_is_some", "    let a = Some(1u32)\n    core.mem.drop(a.is_some())\n", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
-    roundtrip("d11_is_none", "    let a = Some(1u32)\n    core.mem.drop(a.is_none())\n", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
     roundtrip("d11_ne_none", "    let a = Some(1u32)\n    core.mem.drop(a != None)\n", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
-    roundtrip(
-        "d11_is_ok",
-        "    let a: Result<u32, u32> = Ok(1u32)\n    core.mem.drop(a.is_ok())\n",
-        "    let a: Result<u32, u32> = Ok(1u32)\n    core.mem.drop(a is Ok(_))\n",
-    );
+    // `is_some()` などは `is` に置き換えない (`is` は値を消費するので、線形の値を判定できなくなる)。
+    canonical("d11_is_some_stays", "    let a = Some(1u32)\n    core.mem.drop(a.is_some())\n");
     roundtrip("d11_len0", "    let s = \"x\"\n    core.mem.drop(s.len() == 0usize)\n", "    let s = \"x\"\n    core.mem.drop(s.is_empty())\n");
     roundtrip("d11_len_gt0", "    let s = \"x\"\n    core.mem.drop(s.len() > 0usize)\n", "    let s = \"x\"\n    core.mem.drop(!s.is_empty())\n");
 }

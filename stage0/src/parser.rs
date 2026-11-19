@@ -732,10 +732,7 @@ impl Parser {
             let f = ndl(c.pos(), "Lit", vec![s("bool"), V::B(false)]);
             let arms = vec![V::L(vec![pat, t]), V::L(vec![ndl(c.pos(), "PWild", vec![V::B(true)]), f])];
             self.lvl = 3;
-            // 判定だけなので、値は借りて見る (`&l`)。線形の値を消費しない (`o.is_none()` と同じ)。
-            let lp = anchor(c.pos(), &l);
-            let l = ndl(lp, "Unary", vec![s("&"), l]);
-            return Ok(ndl(lp, "Match", vec![l, V::L(arms)]));
+            return Ok(ndl(anchor(c.pos(), &l), "Match", vec![l, V::L(arms)]));
         }
         if c.kind == "op" && matches!(c.text.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=") {
             self.opnd(s0, 4, ns, "");
@@ -887,13 +884,9 @@ impl Parser {
         let empty = close == open + 1;
         if !has_targs {
             if empty {
-                let pat = match name {
-                    "is_some" => Some(" is Some(_))"),
-                    "is_none" => Some(" is None)"),
-                    "is_ok" => Some(" is Ok(_))"),
-                    "is_err" => Some(" is Err(_))"),
-                    _ => None,
-                };
+                // `is_some()` / `is_none()` / `is_ok()` / `is_err()` は、`is` に置き換えない: `is` は値を消費するので、
+                // 線形の値 (`Option<ハンドル>`) の判定ができなくなる。型が要るので、fmt では決められない。
+                let pat: Option<&str> = None;
                 if let Some(p) = pat.filter(|_| !self.fn_name.ends_with(&format!(".{}", name))) {
                     self.rw.push(Rw { a: s0, b: close + 1, parts: vec![Part::Lit("(".into()), Part::Span(s0, dot), Part::Lit(p.into())], del_line: false, inside: false });
                 }

@@ -1146,13 +1146,13 @@ fn junk_header_lines_are_never_silently_accepted() {
 
 #[test]
 fn method_missing_on_a_known_receiver_type_is_reported() {
-    // `unwrap_or_none` は Vec のメソッドにない。
+    // `is_ok` は Result のメソッドで、Vec にはない。
     let (got, out) = check_codes(
         "ty_missing",
-        &["let v = alloc.vec.Vec.new(std.alloc.SYSTEM)", "core.mem.drop(v.unwrap_or_none())"],
+        &["let v = alloc.vec.Vec.new(std.alloc.SYSTEM)", "core.mem.drop(v.is_ok())"],
     );
     assert!(got.iter().any(|c| c == "E1108"), "{}", out);
-    assert!(out.contains("has no method `unwrap_or_none`"), "{}", out);
+    assert!(out.contains("has no method `is_ok`"), "{}", out);
 }
 
 #[test]

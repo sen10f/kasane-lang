@@ -108,7 +108,8 @@ fn t.case(n: usize, shape: u32) -> Result<(), t.Error> uses [alloc, io.console] 
     let mut state = 12345u64.wrapping_add(u64.from_usize(n))
     let mut i = 0usize
     while i < n {
-        state = state.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64)
+        let mixed = state.wrapping_mul(6364136223846793005u64)
+        state = mixed.wrapping_add(1442695040888963407u64)
         let r = u32.try_from_u64(state.wrapping_shr(33u32) % 50u64).unwrap_or(0u32)
         let k = if shape == 0u32 {
             r

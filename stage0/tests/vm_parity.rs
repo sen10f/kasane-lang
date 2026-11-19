@@ -4,6 +4,9 @@
 //! - 他の examples は、退避しても出力が一致することだけを確かめる。
 //! - `tests/*.rs` (旧 `cli.rs`) の中の `fn t.main` を持つ完全なプログラム (`kir_*` 系の入力を含む) を取り出して、同じ比較をする。
 
+#[allow(dead_code, unused_imports)]
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -421,6 +424,8 @@ fn vm_run_matches_tree_walker_on_programs_from_cli_tests() {
         fs::write(d.join("src").join("t.ksnl"), text).unwrap();
         // 書き方は 1 通り (E0020): 試験の入力は `ksn fmt` の出力にそろえる。
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
+        // 型で決まる揺れ (接尾辞・メソッドの呼び方・欄の順) は診断の fix で直す (段 3)。
+        common::one_way_fix(&d);
         let (r, kind) = compare(&format!("{} #{}", name, i), &["run"], &d, false, 60);
         counts[kind as usize].fetch_add(1, Ordering::SeqCst);
         if kind == Kind::CheckFailed && std::env::var("VM_PARITY_SHOW").is_ok() {

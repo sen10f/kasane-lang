@@ -17,7 +17,7 @@ const HR: &str = "fn hr.main() -> Result<(), std.io.Error> uses [io.console] pan
     while i < 25u8 {
         let r = hr.msg()
         core.mem.drop(r)
-        let s = hr.spin(7000000u64)
+        let s = hr.spin(7_000_000u64)
         if s == 1u64 {
             return Ok(())
         }
@@ -124,7 +124,7 @@ fn vm_hot_reload_applies_an_added_function() {
 fn vm_hot_reload_asks_for_restart_on_a_header_change() {
     let d = package(HR);
     // 関数の削除・ヘッダの変更は再起動を促すだけで反映しない。
-    let edited = HR.replace("v1", "v2").replace("fn hr.spin(n: u64) -> u64", "fn hr.spin(n: u64, m: u64) -> u64").replace("hr.spin(7000000u64)", "hr.spin(7000000u64, 1u64)");
+    let edited = HR.replace("v1", "v2").replace("fn hr.spin(n: u64) -> u64", "fn hr.spin(n: u64, m: u64) -> u64").replace("hr.spin(7_000_000u64)", "hr.spin(7_000_000u64, 1u64)");
     let r = run_watch(&d, &edited, 1500);
     let _ = fs::remove_dir_all(&d);
     assert_eq!(r.code, Some(0), "{}{}", r.out, r.err);

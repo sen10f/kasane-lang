@@ -418,7 +418,8 @@ fn pick<T: Clone>(v: &[T], max: usize) -> Vec<T> {
 
 const ID_HELPER: &str = "\nfn t.rp_id[T](x: T) -> T uses [] panics never\n    x\nend t.rp_id\n";
 
-pub const TRANSFORMS: &[&str] = &["hoist", "block", "id", "closure", "extract", "fold", "iflet2match", "match2iflet", "fqn2meth", "meth2fqn"];
+// `fqn2meth` / `meth2fqn` (`T.m(&x)` と `x.m()` の言い換え) は、段 3 の D8 で経路形が E2029 になったので外した。
+pub const TRANSFORMS: &[&str] = &["hoist", "block", "id", "closure", "extract", "fold", "iflet2match", "match2iflet"];
 
 /// 番号を英字だけの名前にする (snake_case の検査が数字の前の下線を嫌う)。
 fn ab(n: usize) -> String {
@@ -499,7 +500,12 @@ fn extract_variant(lines: &[String], f: &Func) -> Option<String> {
     let args: Vec<String> = f.params.iter().map(|(n, _)| n.clone()).collect();
     let mut out: Vec<String> = lines[..f.s].to_vec();
     out.push(h.clone());
-    out.push(format!("    {}({})", hname, args.join(", ")));
+    // メソッド (第 1 引数が `self`) は `x.m(..)` の形で呼ぶ (経路の形は段 3 の D8 で E2029)。
+    if args.first().map_or(false, |a| a == "self") {
+        out.push(format!("    self.rp_{}({})", last, args[1..].join(", ")));
+    } else {
+        out.push(format!("    {}({})", hname, args.join(", ")));
+    }
     out.push(lines[f.e].clone());
     out.push(String::new());
     out.push(header);
@@ -950,7 +956,7 @@ fn rephrase_valid_stay_accepted() {
 /// 生成器の自己検査: 正しい小さなプログラムの言い換えが、受理されること。
 #[test]
 fn rephrase_generator_sanity() {
-    let src = "type t.S\n    n: u32\nend t.S\n\nfn t.S.get(self: &t.S, k: u32) -> u32 uses [] panics never\n    self.n.wrapping_add(k)\nend t.S.get\n\nfn t.use_it(s: &t.S, o: Option<u32>) -> u32 uses [] panics never\n    let a = t.S.get(s, 1u32)\n    let b = s.get(a)\n    if let Some(v) = o {\n        v.wrapping_add(b)\n    } else {\n        b\n    }\nend t.use_it\n\nfn t.main() -> () uses [] panics never\n    let s = t.S { n: 1u32 }\n    core.mem.drop(t.use_it(&s, Some(2u32)))\nend t.main\n";
+    let src = "type t.S\n    n: u32\nend t.S\n\nfn t.S.get(self: &t.S, k: u32) -> u32 uses [] panics never\n    self.n.wrapping_add(k)\nend t.S.get\n\nfn t.use_it(s: &t.S, o: Option<u32>) -> u32 uses [] panics never\n    let a = s.get(1u32)\n    let b = s.get(a)\n    if let Some(v) = o {\n        v.wrapping_add(b)\n    } else {\n        b\n    }\nend t.use_it\n\nfn t.main() -> () uses [] panics never\n    let s = t.S { n: 1u32 }\n    core.mem.drop(t.use_it(&s, Some(2u32)))\nend t.main\n";
     assert_eq!(check_src(src, None).0, 0);
     let mut applied = BTreeMap::new();
     for tf in TRANSFORMS {
@@ -961,7 +967,7 @@ fn rephrase_generator_sanity() {
             assert_eq!(rc, 0, "{} が壊した: {:?}\n{}", tf, got, v);
         }
     }
-    for tf in ["hoist", "block", "id", "extract", "fold", "iflet2match", "fqn2meth", "meth2fqn"] {
+    for tf in ["hoist", "block", "id", "extract", "fold", "iflet2match"] {
         assert!(applied[tf] > 0, "{} が当たらない: {:?}", tf, applied);
     }
 }
