@@ -38,6 +38,8 @@ enum Ev {
     Use(String),
     Bind { var: String, srcs: Vec<Src>, replace: bool },
     Acc { root: String, path: Path, kind: Acc, line: usize },
+    /// 配列の定数の添字の要素への強い更新 (`core.mem.replace(&mut a[0], ..)`): 要素が持っていた貸し出しが終わる。
+    Kill { var: String, ids: Vec<usize> },
 }
 
 struct Loan {
@@ -87,12 +89,15 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
     let mut out = vec![];
     for &di in user {
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut w = Walker { p, tk, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![] };
+        let mut w = Walker { p, tk, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
         for q in &b.params {
             w.scopes[0].insert(q.name.clone(), (0, q.ty.clone()));
         }
         w.expr(&b.body);
-        let cfg = std::mem::replace(&mut w.cfg, Cfg::new());
+        let mut cfg = std::mem::replace(&mut w.cfg, Cfg::new());
+        for evs in cfg.evs.iter_mut() {
+            evs.retain(|e| !matches!(e, Ev::Kill { var, .. } if w.slot_unsafe.contains(var)));
+        }
         w.analyze(cfg);
         let d = &p.defs[di];
         let mut seen = std::collections::BTreeSet::new();
@@ -194,6 +199,14 @@ struct Walker<'a> {
     cfg: Cfg,
     tmp: usize,
     diags: Vec<(usize, String)>,
+    /// 配列リテラルで作った変数 → 要素ごとの、その要素だけが持つ貸し出し (`[&mut x, &mut z]` なら `[[x], [z]]`)。
+    slots: HashMap<String, Vec<Vec<usize>>>,
+    /// 要素の持ち主が崩れ得る変数 (定数添字の `replace` 以外の可変借用・代入・流入があったもの)。`Kill` を捨てる。
+    slot_unsafe: BTreeSet<String>,
+    /// 直近に評価した配列リテラルの、要素ごとの貸し出し。
+    last_array: Option<Vec<Vec<usize>>>,
+    /// `replace` の第 1 引数の評価中だけ、この根への `&mut a[i]` を可変借用として数えない。
+    slot_ok: Option<String>,
 }
 
 impl<'a> Walker<'a> {
@@ -294,12 +307,16 @@ impl<'a> Walker<'a> {
     /// 場所から借りて、持たせる元 (貸し出し + 根が参照を通すなら根の持つ貸し出し) を返す。
     fn borrow(&mut self, root: &str, path: &[String], mutable: bool, line: usize) -> Vec<Src> {
         self.acc(root, path, if mutable { Acc::MutB } else { Acc::SharedB }, line);
+        if mutable && self.slot_ok.as_deref() != Some(root) {
+            self.slot_unsafe.insert(root.to_string());
+        }
         let id = self.cfg.loan(root.to_string(), path.to_vec(), mutable);
         // 借りた先が持つ貸し出し (`&r`・`&*r`・`w.get()` の `w`) も、借用が生きている間は運ばれる。
         vec![Src::Loan(id), Src::Var(root.to_string())]
     }
 
     fn bind(&mut self, var: String, srcs: Vec<Src>, replace: bool) {
+        self.slot_unsafe.insert(var.clone());
         self.cfg.emit(Ev::Bind { var, srcs, replace });
     }
 
@@ -462,11 +479,21 @@ impl<'a> Walker<'a> {
         for (i, s) in stmts.iter().enumerate() {
             match s {
                 TStmt::Let { pat, init } => {
+                    self.last_array = None;
                     let srcs = match init {
                         Some(x) => self.expr(x),
                         None => vec![],
                     };
+                    let arr = if matches!(init, Some(TExpr { kind: TKind::Other { name: "ArrayE", .. }, .. })) { self.last_array.take() } else { None };
+                    let before: BTreeSet<String> = self.slot_unsafe.clone();
                     self.bind_pat(pat, &srcs);
+                    if let (Some(a), true, Some(n)) = (arr, pat.kind == "PBind", &pat.name) {
+                        let k = key(n, pat.id);
+                        if !before.contains(&k) {
+                            self.slot_unsafe.remove(&k);
+                        }
+                        self.slots.insert(k, a);
+                    }
                 }
                 TStmt::Expr(x) => {
                     let s = self.expr(x);
@@ -664,6 +691,31 @@ impl<'a> Walker<'a> {
                 self.cfg.cur = n;
                 self.keep(&e.ty, s)
             }
+            "ArrayE" => {
+                // `operands` と同じ評価の順で、要素ごとの元を取る。要素が借用式 (`&x` / `&mut x`) そのものなら、その貸し出しは要素だけのもの。
+                let mut all = vec![];
+                let mut temps = vec![];
+                let mut per = vec![];
+                let n = ch.len();
+                for (i, x) in ch.iter().enumerate() {
+                    let s = self.expr(x);
+                    let direct = matches!(&x.kind, TKind::Unary { op, operand } if (op == "&" || op == "&mut") && self.pl(operand).is_some());
+                    per.push(if direct { s.iter().filter_map(|y| if let Src::Loan(i) = y { Some(*i) } else { None }).collect() } else { vec![] });
+                    if !s.is_empty() {
+                        all.extend(s.iter().cloned());
+                        if i + 1 < n {
+                            let t = self.fresh();
+                            self.bind(t.clone(), s, true);
+                            temps.push(t);
+                        }
+                    }
+                }
+                for t in temps {
+                    self.cfg.emit(Ev::Use(t));
+                }
+                self.last_array = Some(per);
+                self.keep(&e.ty, all)
+            }
             _ => {
                 let es: Vec<&TExpr> = ch.iter().collect();
                 let s = self.operands(&es);
@@ -756,10 +808,15 @@ impl<'a> Walker<'a> {
         let deferred: Vec<bool> = args.iter().map(|a| matches!(a.ty, Ty::Ref(true, ..)) && self.pl(a).is_some()).collect();
         let order: Vec<usize> = (0..args.len()).filter(|j| !deferred[*j]).chain((0..args.len()).filter(|j| deferred[*j])).collect();
         let mut got: Vec<Option<Vec<Src>>> = vec![None; args.len()];
+        let slot_target = if recv.is_none() && def.map_or(false, |i| self.p.defs[i].name == "core.mem.replace") { args.first().and_then(|a| self.const_slot(a)) } else { None };
         for (pos, &j) in order.iter().enumerate() {
             let a = &args[j];
             let pt = dparams.get(first_arg + j).cloned();
+            if j == 0 {
+                self.slot_ok = slot_target.as_ref().map(|t| t.0.clone());
+            }
             let s = self.arg(a, pt.as_ref());
+            self.slot_ok = None;
             if !s.is_empty() && pos + 1 < order.len() {
                 let t = self.fresh();
                 self.bind(t.clone(), s.clone(), true);
@@ -819,7 +876,20 @@ impl<'a> Walker<'a> {
                 }
             }
             if !inflow.is_empty() {
-                self.bind(t, inflow, false);
+                // 定数添字の `replace` が `a` へ足す流入は、要素の持ち主を崩さない (古い要素の貸し出しは `Kill` で外す)。
+                let keep_slots = j == 0 && slot_target.as_ref().map_or(false, |x| x.0 == t) && !self.slot_unsafe.contains(&t);
+                self.bind(t.clone(), inflow, false);
+                if keep_slots {
+                    self.slot_unsafe.remove(&t);
+                }
+            }
+        }
+        // 定数の添字の要素を `replace` で上書きすると、その要素が持っていた貸し出しは古い値 (戻り値) へ移って、`a` からは消える。
+        if let Some((root, idx)) = slot_target {
+            let ids = self.slots.get(&root).and_then(|v| v.get(idx)).cloned().unwrap_or_default();
+            if !ids.is_empty() {
+                res.extend(ids.iter().map(|i| Src::Loan(*i)));
+                self.cfg.emit(Ev::Kill { var: root, ids });
             }
         }
         if let Some(c) = local_callee {
@@ -934,6 +1004,28 @@ impl<'a> Walker<'a> {
 
     // -------------------------------------------------------- 解析
 
+    /// `&mut a[<定数>]` (`a` は局所の配列) なら (根, 添字)。
+    fn const_slot(&self, a: &TExpr) -> Option<(String, usize)> {
+        let TKind::Unary { op, operand } = &a.kind else { return None };
+        if op != "&mut" {
+            return None;
+        }
+        let TKind::Index { base, index } = &operand.kind else { return None };
+        let TKind::Lit(l) = &index.kind else { return None };
+        if !matches!(base.ty, Ty::Array(..)) {
+            return None;
+        }
+        let (root, path) = self.pl(base)?;
+        if !path.is_empty() {
+            return None;
+        }
+        let mut it = l.split(':');
+        if it.next() != Some("int") {
+            return None;
+        }
+        Some((root, it.next()?.parse().ok()?))
+    }
+
     fn analyze(&mut self, cfg: Cfg) {
         if std::env::var_os("KSN_DUMP_BORROWS").is_some() {
             for (i, e) in cfg.evs.iter().enumerate() {
@@ -950,6 +1042,13 @@ impl<'a> Walker<'a> {
         // 前向き: 変数ごとの貸し出しの集合。
         type St = HashMap<String, BTreeSet<usize>>;
         let step = |st: &mut St, ev: &Ev| {
+            if let Ev::Kill { var, ids } = ev {
+                if let Some(x) = st.get_mut(var) {
+                    for i in ids {
+                        x.remove(i);
+                    }
+                }
+            }
             if let Ev::Bind { var, srcs, replace } = ev {
                 let mut set = BTreeSet::new();
                 for s in srcs {
