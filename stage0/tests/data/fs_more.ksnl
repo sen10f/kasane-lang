@@ -9,7 +9,7 @@ fn t.big_listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] p
         t.ok_unit(f.close())
         i = i + 1usize
     }
-    let entries: alloc.vec.Vec<std.fs.DirEntry, std.alloc.System> = std.fs.read_dir("d/big")?
+    let entries = std.fs.read_dir("d/big")?
     t.show("big entries", t.num(entries.len()))
     match entries.get(0usize) {
         Some(en) => t.say("big first", en.name.as_str())
@@ -158,12 +158,12 @@ fn t.listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panic
     t.ok_unit(f.close())
     let mut g = t.ok_file(std.fs.create("d/abc"))
     t.ok_unit(g.close())
-    let entries: alloc.vec.Vec<std.fs.DirEntry, std.alloc.System> = std.fs.read_dir("d")?
+    let entries = std.fs.read_dir("d")?
     t.show("entries", t.num(entries.len()))
     t.show_entries("entry", &entries)
     t.fail_unit("read_dir missing", t.drop_res(std.fs.read_dir("d/nope")))
     t.fail_unit("read_dir of a file", t.drop_res(std.fs.read_dir("d/abc")))
-    let empty: alloc.vec.Vec<std.fs.DirEntry, std.alloc.System> = std.fs.read_dir("d/a/b/c")?
+    let empty = std.fs.read_dir("d/a/b/c")?
     t.show("empty dir entries", t.num(empty.len()))
     Ok(())
 end t.listing

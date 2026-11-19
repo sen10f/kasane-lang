@@ -44,8 +44,8 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let d: [Option<u32>; t.N] = [None; t.N]
     let e = [Some(1u32), None]
     let f: [u8; 2] = t.fill::<2>(9u8)
-    let pr: t.Pair<u32, u8> = t.Pair { a: 1u32, b: 2u8 }
-    let o: Option<u32> = Some(1u32)
+    let pr = t.Pair { a: 1u32, b: 2u8 }
+    let o = Some(1u32)
     t.sink(t.id::<u32>(1u32))
     t.sink(t.run::<u32, []>(2u32))
     let r: Result<u32, u8> = Ok(1u32)

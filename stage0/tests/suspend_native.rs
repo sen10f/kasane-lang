@@ -207,7 +207,7 @@ fn native_panic_in_task_exits_101() {
         "fn t.boom(z: u32) -> u32 uses [io.console, suspend] panics may
     t.say(\"before\")
     std.task.yield_now()
-    let v: u32 = 1u32 / z
+    let v = 1u32 / z
     v
 end t.boom
 

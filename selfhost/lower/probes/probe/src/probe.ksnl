@@ -13,7 +13,7 @@ fn probe.add(a: i32, b: i32) -> i32 uses [] panics never
 end probe.add
 
 fn probe.cnt(n: u32) -> u32 uses [] panics never
-    let mut i: u32 = 0u32
+    let mut i = 0u32
     while i < n {
         i = i.wrapping_add(1u32)
     }

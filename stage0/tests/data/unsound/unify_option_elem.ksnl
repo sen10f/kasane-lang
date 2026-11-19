@@ -1,5 +1,5 @@
 fn t.main() -> () uses [] panics never
-    let a: Option<u64> = Some(1u64)
+    let a = Some(1u64)
     let b: Option<alloc.string.String> = a
     core.mem.drop(b)
 end t.main

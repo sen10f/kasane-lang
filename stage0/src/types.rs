@@ -548,6 +548,9 @@ pub struct TypeCk<'a> {
     owners: HashMap<String, HashMap<String, Vec<usize>>>,
     trait_methods: HashSet<String>,
     pub diags: Vec<Diag>,
+    /// D17 (E2053 冗長な注釈) を出すか。整数リテラルの接尾辞を書き戻す前の木 (`infer::annotate_int_lits`) で測る。
+    /// 書き戻し後の木では `1` が `1u32` になり、注釈が冗長に見えてしまうため。
+    pub redundant_on: bool,
     // 現在の関数
     cur: usize,
     scopes: Vec<HashMap<String, Ty>>,
@@ -713,7 +716,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], static_nodes: HashSet::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], static_nodes: HashSet::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1011,6 +1014,30 @@ impl<'a> TypeCk<'a> {
             Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(|x| self.undetermined(x)),
             Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.undetermined(&x),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.undetermined(x)) || self.undetermined(&ret),
+            _ => false,
+        }
+    }
+
+    /// 型がまだ閉じていないか (未決の型変数・整数リテラルの型変数・`Unknown` を含む)。D17 の冗長な注釈の判定に使う。
+    /// `undetermined` と違い、整数リテラルの型変数 (`kind != 0`) も開いているとみなす (`1` は接尾辞が無いと決まらない)。
+    fn has_open(&self, t: &Ty) -> bool {
+        match self.deep(t) {
+            Ty::Unknown | Ty::Var(_) => true,
+            Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(|x| self.has_open(x)),
+            Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.has_open(&x),
+            Ty::Closure { args, ret, .. } => args.iter().any(|x| self.has_open(x)) || self.has_open(&ret),
+            _ => false,
+        }
+    }
+
+    /// 注釈の型が、型の木の外の情報 (借用の範囲・再借用・unsize・関数項目やクロージャの型への変換・生ポインタ) を
+    /// 運び得るか。そうした注釈は、外すと同じ型でも値の扱いが変わりうるので冗長と判定しない (D17)。
+    /// 参照 (`&T` / `&mut T`) は借用検査 (E3010 など) の範囲を注釈で決めるので、型が同じでも対象にしない。
+    fn coerces(&self, t: &Ty) -> bool {
+        match self.deep(t) {
+            Ty::Ref(..) | Ty::Ptr(_, _) | Ty::Dyn(..) | Ty::Closure { .. } => true,
+            Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(|x| self.coerces(x)),
+            Ty::Array(x, _) | Ty::Slice(x) => self.coerces(&x),
             _ => false,
         }
     }
@@ -4864,11 +4891,24 @@ impl<'a> TypeCk<'a> {
                 let init_static = self.static_expr(&f[3]);
                 let src = self.last_site;
                 let gn = self.def().gnames();
+                // D17: 注釈を外しても同じ型に決まるか。右辺だけで型が閉じているかを、単一化の前に見る
+                // (後の文で決まる `Vec.new()` などは閉じていない)。
+                let rhs_closed = !self.has_open(&rhs);
                 let ty = if !is_nil(&f[2]) {
                     let ann = from_v(&f[2], &gn);
                     self.note_conv(&f[3], &ann, &rhs);
                     let ann_d = self.deep(&ann);
                     self.note_region_cstr(crate::parser::nid(&f[3]), &ann_d, &rhs, "let");
+                    // 寿命の付いた注釈 (`&'a T`・`&'static T`) は、型の木に無い情報を運ぶので冗長ではない。
+                    let life = f.len() > 4;
+                    if self.redundant_on && rhs_closed && !life && !self.coerces(&ann) && self.deep(&ann) == self.deep(&rhs) {
+                        let shown = self.deep(&ann).show();
+                        self.diag(
+                            "E2053",
+                            format!("redundant type annotation `{}`: the initializer already has this type; remove the annotation", shown),
+                            nline(s),
+                        );
+                    }
                     if let Err(err) = self.unify2(&ann, &rhs) {
                         {
                             let (want, got) = self.ann_conflict(&ann, &rhs, &err).unwrap_or_else(|| Self::raw_pair(&err));

@@ -1,7 +1,7 @@
 const t.N: isize = -2147483649
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let x: isize = t.N
+    let x = t.N
     core.mem.drop(x)
     Ok(())
 end t.main

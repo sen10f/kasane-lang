@@ -617,7 +617,7 @@ fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     match t.build(100u32, 0i64) {
         Ok(root) => {
-            let mut cur: Option<alloc.boxed.Box<t.Node, std.alloc.System>> = Some(root)
+            let mut cur = Some(root)
             let mut count = 0u32
             loop {
                 match cur {

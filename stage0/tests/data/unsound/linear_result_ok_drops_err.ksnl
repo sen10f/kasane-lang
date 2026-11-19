@@ -3,7 +3,7 @@ type t.Res linear
 end t.Res
 
 fn t.bad(c: bool) -> Option<u32> uses [] panics never
-    let r: Result<u32, t.Res> = if c {
+    let r = if c {
         Ok(1u32)
     } else {
         Err(t.open())

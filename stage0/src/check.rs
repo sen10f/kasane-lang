@@ -3433,6 +3433,7 @@ impl<'a> Checker<'a> {
             }
         }
         self.diags.extend(tk.diags);
+        self.diags.extend(self.p.src_diags.iter().cloned());
         // 型で解決できた呼び出しの効果 (5.1 / 4.3): 局所変数レシーバの `s.m()` と、`Fn` 境界に渡した
         // クロージャから推論した効果変数・panic 変数。呼び出し元の宣言と比べ、全候補が違反するときだけ報告する。
         for ec in std::mem::take(&mut tk.eff_checks) {
@@ -7432,7 +7433,7 @@ impl<'a> Checker<'a> {
     /// 型の注釈がない引数・局所変数は 1 語 (8) とみなす。本体の `let` は `walk` で拾うので、
     /// 入れ子のクロージャの中の `let` も数に入る (呼び出し元の関数のフレームとの二重計上は、
     /// 従来の保守的な近似の延長として許容する)。書かれた関数とクロージャ節で共通に使う。
-    fn frame_of(&self, anns: &[&V], body: &V) -> u64 {
+    fn frame_of(&self, anns: &[&V], body: &V, di: Option<usize>) -> u64 {
         let mut all = vec![];
         walk(body, &mut all);
         let mut bytes: u64 = 16 + 16;
@@ -7441,7 +7442,19 @@ impl<'a> Checker<'a> {
         }
         for l in all.iter().filter(|x| nname(x) == "Let") {
             let ann = &nf(l)[2];
-            bytes += if is_nil(ann) { 8 } else { round8(self.ty_size(ann, 0)) };
+            bytes += if !is_nil(ann) {
+                round8(self.ty_size(ann, 0))
+            } else {
+                // 注釈のない `let` は、推論した型 (`let_tys`) の大きさで数える (D17 で注釈を外しても見積りが変わらないように)。
+                // 型が決まらない・節の定義が分からないときは従来どおり 1 語。
+                let mut names = vec![];
+                crate::check::pat_bind_nodes(&nf(l)[0], &mut names);
+                let ty = di.and_then(|d| names.first().and_then(|(_, id)| self.let_tys.get(&(d, *id))));
+                match ty.and_then(crate::types::TypeCk::to_v) {
+                    Some(v) => round8(self.ty_size(&v, 0)),
+                    None => 8,
+                }
+            };
         }
         bytes
     }
@@ -7457,7 +7470,7 @@ impl<'a> Checker<'a> {
             Some(&i) => {
                 let d = self.def(i);
                 let params: Vec<&V> = d.params.iter().map(|p| &p.1).collect();
-                self.frame_of(&params, d.body.as_ref().unwrap())
+                self.frame_of(&params, d.body.as_ref().unwrap(), Some(i))
             }
             // `names` にあるのは書かれた関数だけ。それ以外の節はクロージャ節 (5.3) かもしれないので、
             // 対応表にあれば関数と同じ式で見積る。対応が取れない節 (クロージャ以外や、AST を
@@ -7466,7 +7479,9 @@ impl<'a> Checker<'a> {
                 Some(c) if nname(c) == "Closure" && nf(c).len() >= 4 => {
                     let f = nf(c);
                     let params: Vec<&V> = items(&f[0]).iter().filter_map(|p| items(p).get(1)).collect();
-                    self.frame_of(&params, &f[3])
+                    // 節名は `<囲む関数の FQN>#<連番>` (types.rs)。囲む関数の推論した `let` の型で数える。
+                    let encl = self.p.funcs.get(n.split('#').next().unwrap_or("")).copied();
+                    self.frame_of(&params, &f[3], encl)
                 }
                 _ => 32,
             },

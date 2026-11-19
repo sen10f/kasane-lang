@@ -1105,8 +1105,8 @@ fn kir_review_field_move_in_one_branch_survives_the_join() {
     // (`assigned` が、フィールドからの移動で書き換わる局所を数えなかった)。`if` と `match`。(`while` の中の移動は E3002 で拒否される。)
     let fns = "type t.B\n    items: alloc.vec.Vec<u32, std.alloc.System>\n    n: u32\nend t.B\n\n\
 fn t.mk() -> t.B uses [alloc] panics never\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(7u32))\n    t.B { items: v, n: 1u32 }\nend t.mk\n\n\
-fn t.f(c: bool) -> usize uses [alloc] panics never\n    let b = t.mk()\n    let mut r: usize = 0usize\n    if c {\n        let w = b.items\n        r = w.len()\n    }\n    r\nend t.f\n\n\
-fn t.g(k: u32) -> usize uses [alloc] panics never\n    let b = t.mk()\n    let mut r: usize = 0usize\n    match k {\n        0u32 => {\n            let w = b.items\n            r = w.len()\n        }\n        _ => {\n            r = 5usize\n        }\n    }\n    r\nend t.g\n";
+fn t.f(c: bool) -> usize uses [alloc] panics never\n    let b = t.mk()\n    let mut r = 0usize\n    if c {\n        let w = b.items\n        r = w.len()\n    }\n    r\nend t.f\n\n\
+fn t.g(k: u32) -> usize uses [alloc] panics never\n    let b = t.mk()\n    let mut r = 0usize\n    match k {\n        0u32 => {\n            let w = b.items\n            r = w.len()\n        }\n        _ => {\n            r = 5usize\n        }\n    }\n    r\nend t.g\n";
     kir_review_cases("fm_if", fns, "t.f", &[(&["true"], "t.f(true)", "1usize", "1"), (&["false"], "t.f(false)", "0usize", "0")]);
     kir_review_cases("fm_match", fns, "t.g", &[(&["0"], "t.g(0u32)", "1usize", "1"), (&["3"], "t.g(3u32)", "5usize", "5")]);
 }
@@ -1975,7 +1975,7 @@ fn t.Acc.put[T](self: &mut t.Acc, v: T) -> T uses [] panics never
 end t.Acc.put
 
 fn t.ann[T](x: T) -> T uses [] panics never
-    let y: T = x
+    let y = x
     y
 end t.ann
 

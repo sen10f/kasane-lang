@@ -967,12 +967,12 @@ fn indirect_closure_bodies_count_toward_the_enclosing_function() {
 fn const_param_types_differ_by_value() {
     let ok = "type t.Buf[T, const N: usize]\n    v: T\nend t.Buf\n\n\
               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
-              let a: t.Buf<u8, 16> = t.mk16()\n    let b: t.Buf<u8, 16> = a\n    \
+              let a = t.mk16()\n    let b = a\n    \
               core.mem.drop(b)\n    Ok(())\nend t.main\n\n\
               fn t.mk16() -> t.Buf<u8, 16> uses [] panics never\n    t.Buf { v: 1u8 }\nend t.mk16\n";
     let t = Tmp::new("const_ok", ok);
     assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
-    let bad = ok.replace("let b: t.Buf<u8, 16> = a", "let b: t.Buf<u8, 32> = a");
+    let bad = ok.replace("let b = a", "let b: t.Buf<u8, 32> = a");
     let t = Tmp::new("const_bad", &bad);
     let o = run(&["check", "--json"], &t.0);
     let out = text(&o.stdout);
@@ -1001,7 +1001,7 @@ fn explicit_type_args_are_respected_at_call_sites() {
     // 明示型引数 (`f::<T>`, 4.3) は引数の型の推論に反映される。
     let ok = "fn t.id[T](x: T) -> T uses [] panics never\n    x\nend t.id\n\n\
               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
-              let x = 5u8\n    let y: u8 = t.id::<u8>(x)\n    \
+              let x = 5u8\n    let y = t.id::<u8>(x)\n    \
               core.mem.drop(y)\n    Ok(())\nend t.main\n";
     let t = Tmp::new("targ_ok", ok);
     assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
@@ -3118,9 +3118,12 @@ fn short_form_of_an_imported_type_in_a_header_is_an_error_and_fmt_makes_it_fqn()
 fn fqn_of_an_imported_module_in_a_body_is_an_error_and_fmt_shortens_it() {
     let src = SN_CANON.replace("lib.make()", "t.lib.make()");
     sn_roundtrip("sn_body_fqn", &src, SN_CANON);
-    // 型注釈・構造体リテラルの中でも短縮される。
-    let src = SN_CANON.replace("let item = lib.make()", "let item: t.lib.Item = t.lib.Item { n: 2u8 }");
-    let want = SN_CANON.replace("let item = lib.make()", "let item: lib.Item = lib.Item { n: 2u8 }");
+    // 型注釈の中でも短縮される。注釈は右辺だけでは型が決まらない形 (`Vec.new`) にして、冗長な注釈 (E2053) にしない。
+    let body_old = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let item = lib.make()\n    let n = t.get(&item)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
+    let body_new = "fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never\n    let items: alloc.vec.Vec<t.lib.Item, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let n = items.len()\n    core.mem.drop(items)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
+    assert!(SN_CANON.contains(body_old));
+    let src = SN_CANON.replace(body_old, body_new);
+    let want = SN_CANON.replace(body_old, &body_new.replace("t.lib.Item", "lib.Item"));
     sn_roundtrip("sn_body_fqn_ty", &src, &want);
 }
 
@@ -3616,7 +3619,7 @@ fn the_stack_estimate_sizes_the_lets_of_a_closure_frame() {
     // spin 96 (32 + 64) + gen 48 + クロージャ 96 + drop 32 = 272。32 固定だと 208 で宣言 240 に収まっていた。
     let closure = [
         "    t.gen(fn() -> () capture [] {",
-        "        let b: t.Big = t.Big { a: 0u128, b: 0u128, c: 0u128, d: 0u128 }",
+        "        let b = t.Big { a: 0u128, b: 0u128, c: 0u128, d: 0u128 }",
         "        core.mem.drop(b)",
     ];
     let (got, out) = closure_frame_codes("clo_let", &closure_frame_program("()", "f.call(())", &closure, 240));
@@ -4482,7 +4485,7 @@ end t.pick
 // ---------------------------------------------------------------- 式 ID と型表 (設計_KIR.md 段階 1)
 
 const ADD1: &str = "fn t.add1(a: u8) -> u8 uses [] panics never
-    let b: u8 = a
+    let b = a
     b.wrapping_add(1)
 end t.add1
 
@@ -4542,7 +4545,7 @@ fn type_table_records_each_expression_type() {
 fn expr_ids_are_local_to_their_function() {
     // `t.main` の本体を変えても、`t.add1` の式 ID と型は変わらない (ホットリロードで関数単位に振り直せる)。
     let a = Tmp::new("expr_ids_local_a", &main_wrap(ADD1, ""));
-    let b = Tmp::new("expr_ids_local_b", &main_wrap(ADD1, "    let _c: u8 = t.add1(2)\n    let _d: u8 = t.add1(3)\n"));
+    let b = Tmp::new("expr_ids_local_b", &main_wrap(ADD1, "    let _c = t.add1(2)\n    let _d = t.add1(3)\n"));
     let pick = |t: &Tmp| -> Vec<(u32, String, String)> {
         type_rows(&dump_types(&t.0)).into_iter().filter(|r| r.0 == "t.add1").map(|r| (r.1, r.2, r.3)).collect()
     };

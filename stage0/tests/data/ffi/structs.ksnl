@@ -155,7 +155,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     }
     unsafe "ffi" "read through pointer" {
         t.small_inc(heap)
-        let back: t.Small = core.ptr.read(heap)
+        let back = core.ptr.read(heap)
         core.check.eq(back.a, 8i32)
         core.check.eq(back.b, 18i32)
         t.small_free(heap)

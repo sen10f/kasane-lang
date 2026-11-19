@@ -8,7 +8,7 @@ end t.eat
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let s = t.S { v: 1u32 }
-    let o: Option<u8> = Some(1u8)
+    let o = Some(1u8)
     match o {
         Some(_) => core.mem.drop(t.eat(s))
         None => core.mem.drop(t.eat(s))

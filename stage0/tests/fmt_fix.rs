@@ -266,8 +266,8 @@ fn token_spacing_binary_prefix_generic_and_arrow() {
     let want = "fn t.f(x: &mut Vec<u32, std.alloc.System>, n: u32) -> Option<&u32> uses [] panics never\n    let k = !(n < 3u32)\n    let m = -1i32\n    let r = &*x\n    r.get(0usize)\nend t.f\n";
     let _ = want;
     // `-` と数字の間の空白 (仕様 3.7)、二項演算子の詰め、`->` と型引数の周りの空白、`&` と `mut` の間。
-    let src = wrap_body("    let a = - 1i32\n    let b = a+1i32\n    let c = a  -  b\n    let d: Option < i32 > = Some(c)\n    core.mem.drop(d)\n");
-    let want = wrap_body("    let a = -1i32\n    let b = a + 1i32\n    let c = a - b\n    let d: Option<i32> = Some(c)\n    core.mem.drop(d)\n");
+    let src = wrap_body("    let a = - 1i32\n    let b = a+1i32\n    let c = a  -  b\n    let d: Option < i32 > = None\n    core.mem.drop(c)\n    core.mem.drop(d)\n");
+    let want = wrap_body("    let a = -1i32\n    let b = a + 1i32\n    let c = a - b\n    let d: Option<i32> = None\n    core.mem.drop(c)\n    core.mem.drop(d)\n");
     fmt_roundtrip("sp_ops", &src, &want);
     let hdr = "fn t.f(x: &mut u32)->() uses [] panics never\n    *x = 1u32\nend t.f\n\nfn t.main() -> () uses [] panics never\n    let mut v = 0u32\n    t.f(& mut v)\nend t.main\n";
     let hwant = "fn t.f(x: &mut u32) -> () uses [] panics never\n    *x = 1u32\nend t.f\n\nfn t.main() -> () uses [] panics never\n    let mut v = 0u32\n    t.f(&mut v)\nend t.main\n";
