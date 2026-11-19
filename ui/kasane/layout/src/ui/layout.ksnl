@@ -1,0 +1,756 @@
+enum ui.layout.AlignItems derive [Debug, Clone, Copy, PartialEq] pub
+    Start
+    End
+    Center
+    Stretch
+end ui.layout.AlignItems
+
+enum ui.layout.FlexDirection derive [Debug, Clone, Copy, PartialEq] pub
+    Row
+    Column
+end ui.layout.FlexDirection
+
+enum ui.layout.JustifyContent derive [Debug, Clone, Copy, PartialEq] pub
+    Start
+    End
+    Center
+    SpaceBetween
+end ui.layout.JustifyContent
+
+type ui.layout.Node derive [Debug, Clone, Copy] pub
+    style: ui.layout.Style
+    rect: ui.layout.Rect
+end ui.layout.Node
+
+type ui.layout.Rect derive [Debug, Clone, Copy, PartialEq] pub
+    x: f32
+    y: f32
+    width: f32
+    height: f32
+end ui.layout.Rect
+
+type ui.layout.Size derive [Debug, Clone, Copy] pub
+    w: Option<f32>
+    h: Option<f32>
+    mnw: Option<f32>
+    mxw: Option<f32>
+    mnh: Option<f32>
+    mxh: Option<f32>
+end ui.layout.Size
+
+type ui.layout.Space derive [Debug, Clone, Copy] pub
+    pad: f32
+    mar: f32
+    gap: f32
+end ui.layout.Space
+
+type ui.layout.Style derive [Debug, Clone, Copy] pub
+    dir: ui.layout.FlexDirection
+    jus: ui.layout.JustifyContent
+    ali: ui.layout.AlignItems
+    gr: f32
+    sr: f32
+    size: ui.layout.Size
+    space: ui.layout.Space
+end ui.layout.Style
+
+type ui.layout.Tree pub
+    nodes: alloc.vec.Vec<ui.layout.Node, std.alloc.System>
+    kids: alloc.vec.Vec<alloc.vec.Vec<usize, std.alloc.System>, std.alloc.System>
+end ui.layout.Tree
+
+fn ui.layout.Size.default() -> ui.layout.Size uses [] panics never pub
+    ui.layout.Size { w: None, h: None, mnw: None, mxw: None, mnh: None, mxh: None }
+end ui.layout.Size.default
+
+fn ui.layout.Space.default() -> ui.layout.Space uses [] panics never pub
+    ui.layout.Space { pad: 0.0f32, mar: 0.0f32, gap: 0.0f32 }
+end ui.layout.Space.default
+
+fn ui.layout.Style.default() -> ui.layout.Style uses [] panics never pub
+    let dir = ui.layout.FlexDirection.Row
+    let jus = ui.layout.JustifyContent.Start
+    let ali = ui.layout.AlignItems.Start
+    let gr = 0.0f32
+    let sr = 0.0f32
+    let size = ui.layout.Size.default()
+    let space = ui.layout.Space.default()
+    ui.layout.Style { dir: dir, jus: jus, ali: ali, gr: gr, sr: sr, size: size, space: space }
+end ui.layout.Style.default
+
+fn ui.layout.Tree.child_at(self: &ui.layout.Tree, node: usize, i: usize) -> Option<usize> uses [] panics never
+    match self.kids.get(node) {
+        Some(kids) => match kids.get(i) {
+            Some(c) => Some(*c)
+            None => None
+        }
+        None => None
+    }
+end ui.layout.Tree.child_at
+
+fn ui.layout.Tree.child_count(self: &ui.layout.Tree, node: usize) -> usize uses [] panics never
+    match self.kids.get(node) {
+        Some(kids) => kids.len()
+        None => 0usize
+    }
+end ui.layout.Tree.child_count
+
+fn ui.layout.Tree.layout(self: &mut ui.layout.Tree, root: usize, avail_w: f32, avail_h: f32) -> () uses [] panics never pub
+    self.layout_at(root, 0.0f32, 0.0f32, avail_w, avail_h)
+end ui.layout.Tree.layout
+
+fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f32, aw: f32, ah: f32) -> () uses [] panics never stack 4096
+    match self.nodes.get_mut(node) {
+        Some(n) => {
+            n.rect = ui.layout.Rect { x: x, y: y, width: aw, height: ah }
+        }
+        None => return
+    }
+    let current = match self.node_at(node) {
+        Some(n) => n
+        None => return
+    }
+    let style = current.style
+    let pad = style.space.pad
+    let cw = aw - pad * 2.0f32
+    let ch = ah - pad * 2.0f32
+    let content_w = cw.max(0.0f32)
+    let content_h = ch.max(0.0f32)
+    let count = self.child_count(node)
+    if count == 0usize {
+        return
+    }
+    let is_row = match style.dir {
+        ui.layout.FlexDirection.Row => true
+        ui.layout.FlexDirection.Column => false
+    }
+    let content_main = match is_row {
+        true => content_w
+        false => content_h
+    }
+    let content_cross = match is_row {
+        true => content_h
+        false => content_w
+    }
+    let content_start_main = match is_row {
+        true => x
+        false => y
+    }
+    let content_start_cross = match is_row {
+        true => y
+        false => x
+    }
+
+    let mut basis_sum = 0.0f32
+    let mut grow_sum = 0.0f32
+    let mut shrink_sum = 0.0f32
+    let mut i = 0usize
+    while i < count {
+        let ci = match self.child_at(node, i) {
+            Some(c) => c
+            None => break
+        }
+        let cstyle = match self.node_at(ci) {
+            Some(n) => n.style
+            None => ui.layout.Style.default()
+        }
+        let fixed_main = match is_row {
+            true => cstyle.size.w
+            false => cstyle.size.h
+        }
+        let basis = match fixed_main {
+            Some(v) => v
+            None => 0.0f32
+        }
+        basis_sum = basis_sum + basis
+        grow_sum = grow_sum + cstyle.gr
+        shrink_sum = shrink_sum + cstyle.sr
+        i = i.wrapping_add(1usize)
+    }
+    let gap_count = core.num.f32.from_usize_nearest(count.wrapping_sub(1usize))
+    let gap_total = style.space.gap * gap_count
+    let free = content_main - basis_sum - gap_total
+
+    let gs = grow_sum
+    let ss = shrink_sum
+    let mut total = 0.0f32
+    i = 0usize
+    while i < count {
+        let ci = match self.child_at(node, i) {
+            Some(c) => c
+            None => break
+        }
+        let cstyle = match self.node_at(ci) {
+            Some(n) => n.style
+            None => ui.layout.Style.default()
+        }
+        let fixed_main = match is_row {
+            true => cstyle.size.w
+            false => cstyle.size.h
+        }
+        let basis = match fixed_main {
+            Some(v) => v
+            None => 0.0f32
+        }
+        let min_main = match is_row {
+            true => cstyle.size.mnw
+            false => cstyle.size.mnh
+        }
+        let max_main = match is_row {
+            true => cstyle.size.mxw
+            false => cstyle.size.mxh
+        }
+        let gr = cstyle.gr
+        let sr = cstyle.sr
+        let raw = ui.layout.main_size(basis, free, gs, gr, ss, sr)
+        let lo = min_main.unwrap_or(0.0f32)
+        let hi = max_main.unwrap_or(core.num.f32.INFINITY)
+        let size = raw.max(lo).min(hi)
+        total = total + size
+        i = i.wrapping_add(1usize)
+    }
+
+    let justify_raw = content_main - total - gap_total
+    let justify_free = justify_raw.max(0.0f32)
+    let (leading, between) = match style.jus {
+        ui.layout.JustifyContent.Start => (0.0f32, style.space.gap)
+        ui.layout.JustifyContent.End => (justify_free, style.space.gap)
+        ui.layout.JustifyContent.Center => (justify_free / 2.0f32, style.space.gap)
+        ui.layout.JustifyContent.SpaceBetween => {
+            let b = if count > 1usize {
+                justify_free / core.num.f32.from_usize_nearest(count.wrapping_sub(1usize))
+            } else {
+                0.0f32
+            }
+            (0.0f32, b)
+        }
+    }
+
+    let mut cursor = content_start_main + leading
+    i = 0usize
+    while i < count {
+        let ci = match self.child_at(node, i) {
+            Some(c) => c
+            None => break
+        }
+        let cstyle = match self.node_at(ci) {
+            Some(n) => n.style
+            None => ui.layout.Style.default()
+        }
+        let fixed_main = match is_row {
+            true => cstyle.size.w
+            false => cstyle.size.h
+        }
+        let basis = match fixed_main {
+            Some(v) => v
+            None => 0.0f32
+        }
+        let min_main = match is_row {
+            true => cstyle.size.mnw
+            false => cstyle.size.mnh
+        }
+        let max_main = match is_row {
+            true => cstyle.size.mxw
+            false => cstyle.size.mxh
+        }
+        let gr = cstyle.gr
+        let sr = cstyle.sr
+        let raw = ui.layout.main_size(basis, free, gs, gr, ss, sr)
+        let lo = min_main.unwrap_or(0.0f32)
+        let hi = max_main.unwrap_or(core.num.f32.INFINITY)
+        let size = raw.max(lo).min(hi)
+        let fixed_cross = match is_row {
+            true => cstyle.size.h
+            false => cstyle.size.w
+        }
+        let raw_cross = ui.layout.cross_size(fixed_cross, content_cross, style.ali)
+        let min_cross = match is_row {
+            true => cstyle.size.mnh
+            false => cstyle.size.mnw
+        }
+        let max_cross = match is_row {
+            true => cstyle.size.mxh
+            false => cstyle.size.mxw
+        }
+        let clo = min_cross.unwrap_or(0.0f32)
+        let chi = max_cross.unwrap_or(core.num.f32.INFINITY)
+        let cross_size = raw_cross.max(clo).min(chi)
+        let mar = cstyle.space.mar
+        let main_pos = cursor + mar
+        let off = ui.layout.cross_offset(cross_size, content_cross, style.ali)
+        let cross_pos = content_start_cross + off + mar
+        let (cx, cy, cw_child, ch_child) = match is_row {
+            true => (main_pos, cross_pos, size, cross_size)
+            false => (cross_pos, main_pos, cross_size, size)
+        }
+        self.layout_at(ci, cx, cy, cw_child, ch_child)
+        cursor = main_pos + size + mar + between
+        i = i.wrapping_add(1usize)
+    }
+end ui.layout.Tree.layout_at
+
+fn ui.layout.Tree.new() -> ui.layout.Tree uses [] panics never pub
+    let nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let t = ui.layout.Tree { nodes: nodes, kids: kids }
+    t
+end ui.layout.Tree.new
+
+fn ui.layout.Tree.node_at(self: &ui.layout.Tree, index: usize) -> Option<ui.layout.Node> uses [] panics never
+    match self.nodes.get(index) {
+        Some(n) => Some(*n)
+        None => None
+    }
+end ui.layout.Tree.node_at
+
+fn ui.layout.Tree.push_child(self: &mut ui.layout.Tree, parent: usize, child: usize) -> () uses [alloc] panics may pub
+    match self.kids.get_mut(parent) {
+        Some(kids) => match kids.push(child) {
+            Ok(_u) => ()
+            Err(_e) => core.panic.panic("ui.layout: out of memory")
+        }
+        None => core.panic.panic("ui.layout: unknown parent")
+    }
+end ui.layout.Tree.push_child
+
+fn ui.layout.Tree.push_node(self: &mut ui.layout.Tree, style: ui.layout.Style) -> usize uses [alloc] panics may pub
+    let index = self.nodes.len()
+    let rect = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 0.0f32, height: 0.0f32 }
+    let node = ui.layout.Node { style: style, rect: rect }
+    match self.nodes.push(node) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("ui.layout: out of memory")
+    }
+    let kids_vec = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match self.kids.push(kids_vec) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("ui.layout: out of memory")
+    }
+    index
+end ui.layout.Tree.push_node
+
+fn ui.layout.Tree.rect(self: &ui.layout.Tree, index: usize) -> ui.layout.Rect uses [] panics never pub
+    match self.nodes.get(index) {
+        Some(n) => n.rect
+        None => ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 0.0f32, height: 0.0f32 }
+    }
+end ui.layout.Tree.rect
+
+fn ui.layout.cross_offset(cross_size: f32, content_cross: f32, align: ui.layout.AlignItems) -> f32 uses [] panics never
+    match align {
+        ui.layout.AlignItems.Start => 0.0f32
+        ui.layout.AlignItems.End => content_cross - cross_size
+        ui.layout.AlignItems.Center => (content_cross - cross_size) / 2.0f32
+        ui.layout.AlignItems.Stretch => 0.0f32
+    }
+end ui.layout.cross_offset
+
+fn ui.layout.cross_size(fixed: Option<f32>, content_cross: f32, align: ui.layout.AlignItems) -> f32 uses [] panics never
+    match fixed {
+        Some(v) => v
+        None => match align {
+            ui.layout.AlignItems.Start => 0.0f32
+            ui.layout.AlignItems.End => 0.0f32
+            ui.layout.AlignItems.Center => 0.0f32
+            ui.layout.AlignItems.Stretch => content_cross
+        }
+    }
+end ui.layout.cross_size
+
+fn ui.layout.main_size(basis: f32, free: f32, grow_sum: f32, grow: f32, shrink_sum: f32, shrink: f32) -> f32 uses [] panics never
+    if free > 0.0f32 {
+        if grow_sum > 0.0f32 {
+            basis + free * grow / grow_sum
+        } else {
+            basis
+        }
+    } else if free < 0.0f32 {
+        if shrink_sum > 0.0f32 {
+            let overflow = 0.0f32 - free
+            let reduced = basis - overflow * shrink / shrink_sum
+            reduced.max(0.0f32)
+        } else {
+            basis
+        }
+    } else {
+        basis
+    }
+end ui.layout.main_size
+
+test ui.layout.Tree.test_column_align_end
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.dir = ui.layout.FlexDirection.Column
+    r.ali = ui.layout.AlignItems.End
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(100.0f32)
+    s0.size.h = Some(100.0f32)
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(100.0f32)
+    s1.size.h = Some(100.0f32)
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 300.0f32, 400.0f32)
+    let e0 = ui.layout.Rect { x: 200.0f32, y: 0.0f32, width: 100.0f32, height: 100.0f32 }
+    let e1 = ui.layout.Rect { x: 200.0f32, y: 100.0f32, width: 100.0f32, height: 100.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+end ui.layout.Tree.test_column_align_end
+
+test ui.layout.Tree.test_column_grow_stretch
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.dir = ui.layout.FlexDirection.Column
+    r.ali = ui.layout.AlignItems.Stretch
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.gr = 1.0f32
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.gr = 1.0f32
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 200.0f32, 400.0f32)
+    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 200.0f32, height: 200.0f32 }
+    let e1 = ui.layout.Rect { x: 0.0f32, y: 200.0f32, width: 200.0f32, height: 200.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+end ui.layout.Tree.test_column_grow_stretch
+
+test ui.layout.Tree.test_nesting
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.ali = ui.layout.AlignItems.Stretch
+    let root = tree.push_node(r)
+    let mut c0s = ui.layout.Style.default()
+    c0s.dir = ui.layout.FlexDirection.Column
+    c0s.ali = ui.layout.AlignItems.Stretch
+    c0s.size.w = Some(150.0f32)
+    let c0 = tree.push_node(c0s)
+    let mut c1s = ui.layout.Style.default()
+    c1s.size.w = Some(150.0f32)
+    let c1 = tree.push_node(c1s)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    let mut g0 = ui.layout.Style.default()
+    g0.size.h = Some(100.0f32)
+    let gc0 = tree.push_node(g0)
+    let mut g1 = ui.layout.Style.default()
+    g1.size.h = Some(100.0f32)
+    let gc1 = tree.push_node(g1)
+    tree.push_child(c0, gc0)
+    tree.push_child(c0, gc1)
+    tree.layout(root, 400.0f32, 300.0f32)
+    let er = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 400.0f32, height: 300.0f32 }
+    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 150.0f32, height: 300.0f32 }
+    let e1 = ui.layout.Rect { x: 150.0f32, y: 0.0f32, width: 150.0f32, height: 300.0f32 }
+    let eg0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 150.0f32, height: 100.0f32 }
+    let eg1 = ui.layout.Rect { x: 0.0f32, y: 100.0f32, width: 150.0f32, height: 100.0f32 }
+    core.check.eq(tree.rect(root), er)
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+    core.check.eq(tree.rect(gc0), eg0)
+    core.check.eq(tree.rect(gc1), eg1)
+end ui.layout.Tree.test_nesting
+
+test ui.layout.Tree.test_row_align_center
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.ali = ui.layout.AlignItems.Center
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(100.0f32)
+    s0.size.h = Some(50.0f32)
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(100.0f32)
+    s1.size.h = Some(50.0f32)
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 300.0f32, 200.0f32)
+    let e0 = ui.layout.Rect { x: 0.0f32, y: 75.0f32, width: 100.0f32, height: 50.0f32 }
+    let e1 = ui.layout.Rect { x: 100.0f32, y: 75.0f32, width: 100.0f32, height: 50.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+end ui.layout.Tree.test_row_align_center
+
+test ui.layout.Tree.test_row_align_end
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.ali = ui.layout.AlignItems.End
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(100.0f32)
+    s0.size.h = Some(50.0f32)
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(100.0f32)
+    s1.size.h = Some(50.0f32)
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 300.0f32, 200.0f32)
+    let e0 = ui.layout.Rect { x: 0.0f32, y: 150.0f32, width: 100.0f32, height: 50.0f32 }
+    let e1 = ui.layout.Rect { x: 100.0f32, y: 150.0f32, width: 100.0f32, height: 50.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+end ui.layout.Tree.test_row_align_end
+
+test ui.layout.Tree.test_row_align_stretch_fixed_wins
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.ali = ui.layout.AlignItems.Stretch
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(100.0f32)
+    s0.size.h = Some(50.0f32)
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(100.0f32)
+    s1.size.h = Some(50.0f32)
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 300.0f32, 200.0f32)
+    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 100.0f32, height: 50.0f32 }
+    let e1 = ui.layout.Rect { x: 100.0f32, y: 0.0f32, width: 100.0f32, height: 50.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+end ui.layout.Tree.test_row_align_stretch_fixed_wins
+
+test ui.layout.Tree.test_row_gap
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.ali = ui.layout.AlignItems.Stretch
+    r.space.gap = 20.0f32
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(100.0f32)
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(100.0f32)
+    let c1 = tree.push_node(s1)
+    let mut s2 = ui.layout.Style.default()
+    s2.size.w = Some(100.0f32)
+    let c2 = tree.push_node(s2)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.push_child(root, c2)
+    tree.layout(root, 500.0f32, 200.0f32)
+    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e1 = ui.layout.Rect { x: 120.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e2 = ui.layout.Rect { x: 240.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+    core.check.eq(tree.rect(c2), e2)
+end ui.layout.Tree.test_row_gap
+
+test ui.layout.Tree.test_row_grow_stretch
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.ali = ui.layout.AlignItems.Stretch
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.gr = 1.0f32
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.gr = 1.0f32
+    let c1 = tree.push_node(s1)
+    let mut s2 = ui.layout.Style.default()
+    s2.gr = 1.0f32
+    let c2 = tree.push_node(s2)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.push_child(root, c2)
+    tree.layout(root, 300.0f32, 200.0f32)
+    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e1 = ui.layout.Rect { x: 100.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e2 = ui.layout.Rect { x: 200.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+    core.check.eq(tree.rect(c2), e2)
+end ui.layout.Tree.test_row_grow_stretch
+
+test ui.layout.Tree.test_row_justify_center
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.jus = ui.layout.JustifyContent.Center
+    r.ali = ui.layout.AlignItems.Stretch
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(100.0f32)
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(100.0f32)
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 300.0f32, 200.0f32)
+    let e0 = ui.layout.Rect { x: 50.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e1 = ui.layout.Rect { x: 150.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+end ui.layout.Tree.test_row_justify_center
+
+test ui.layout.Tree.test_row_justify_end
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.jus = ui.layout.JustifyContent.End
+    r.ali = ui.layout.AlignItems.Stretch
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(100.0f32)
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(100.0f32)
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 300.0f32, 200.0f32)
+    let e0 = ui.layout.Rect { x: 100.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e1 = ui.layout.Rect { x: 200.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+end ui.layout.Tree.test_row_justify_end
+
+test ui.layout.Tree.test_row_justify_space_between
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.jus = ui.layout.JustifyContent.SpaceBetween
+    r.ali = ui.layout.AlignItems.Stretch
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(100.0f32)
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(100.0f32)
+    let c1 = tree.push_node(s1)
+    let mut s2 = ui.layout.Style.default()
+    s2.size.w = Some(100.0f32)
+    let c2 = tree.push_node(s2)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.push_child(root, c2)
+    tree.layout(root, 400.0f32, 200.0f32)
+    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e1 = ui.layout.Rect { x: 150.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e2 = ui.layout.Rect { x: 300.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+    core.check.eq(tree.rect(c2), e2)
+end ui.layout.Tree.test_row_justify_space_between
+
+test ui.layout.Tree.test_row_margin
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(100.0f32)
+    s0.size.h = Some(100.0f32)
+    s0.space.mar = 10.0f32
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(100.0f32)
+    s1.size.h = Some(100.0f32)
+    s1.space.mar = 10.0f32
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 400.0f32, 300.0f32)
+    let e0 = ui.layout.Rect { x: 10.0f32, y: 10.0f32, width: 100.0f32, height: 100.0f32 }
+    let e1 = ui.layout.Rect { x: 130.0f32, y: 10.0f32, width: 100.0f32, height: 100.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+end ui.layout.Tree.test_row_margin
+
+test ui.layout.Tree.test_row_max_width
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.ali = ui.layout.AlignItems.Stretch
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(200.0f32)
+    s0.size.mxw = Some(100.0f32)
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(200.0f32)
+    s1.size.mxw = Some(100.0f32)
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 300.0f32, 200.0f32)
+    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e1 = ui.layout.Rect { x: 100.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+end ui.layout.Tree.test_row_max_width
+
+test ui.layout.Tree.test_row_min_width
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.ali = ui.layout.AlignItems.Stretch
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(20.0f32)
+    s0.size.mnw = Some(60.0f32)
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(20.0f32)
+    s1.size.mnw = Some(60.0f32)
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 300.0f32, 200.0f32)
+    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 60.0f32, height: 200.0f32 }
+    let e1 = ui.layout.Rect { x: 60.0f32, y: 0.0f32, width: 60.0f32, height: 200.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+end ui.layout.Tree.test_row_min_width
+
+test ui.layout.Tree.test_row_pad_grow
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.ali = ui.layout.AlignItems.Stretch
+    r.space.pad = 20.0f32
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.gr = 1.0f32
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.gr = 1.0f32
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 400.0f32, 300.0f32)
+    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 180.0f32, height: 260.0f32 }
+    let e1 = ui.layout.Rect { x: 180.0f32, y: 0.0f32, width: 180.0f32, height: 260.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+end ui.layout.Tree.test_row_pad_grow
+
+test ui.layout.Tree.test_row_shrink
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.ali = ui.layout.AlignItems.Stretch
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(200.0f32)
+    s0.sr = 1.0f32
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(200.0f32)
+    s1.sr = 1.0f32
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 300.0f32, 200.0f32)
+    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 150.0f32, height: 200.0f32 }
+    let e1 = ui.layout.Rect { x: 150.0f32, y: 0.0f32, width: 150.0f32, height: 200.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+    core.check.eq(tree.rect(c1), e1)
+end ui.layout.Tree.test_row_shrink
