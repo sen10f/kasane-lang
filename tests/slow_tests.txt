@@ -6,9 +6,7 @@ cross_target
 cache_incremental
 kir_native
 rephrase
-check_diag
 refactor
-check_borrow
 wasm_wasi
 kir_lower2
 packages
