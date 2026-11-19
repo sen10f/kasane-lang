@@ -76,8 +76,12 @@ fn link_embedded_lld() {
         return;
     }
     println!("cargo:rerun-if-changed=src/native/lld_shim.cpp");
+    // `KSN_LLVM_PREFIX` があれば自前の LLVM (`scripts/build_llvm.sh`) を静的に使い、libstdc++ も静的にする。無ければ distro の LLVM 20。
+    println!("cargo:rerun-if-env-changed=KSN_LLVM_PREFIX");
+    let prefix = std::env::var("KSN_LLVM_PREFIX").ok().filter(|s| !s.is_empty());
+    let llvm_config = prefix.as_ref().map_or("llvm-config-20".to_string(), |p| format!("{}/bin/llvm-config", p));
     let cfg = |a: &[&str]| -> String {
-        let o = Command::new("llvm-config-20").args(a).output().expect("llvm-config-20 が要る (llvm-20-dev)");
+        let o = Command::new(&llvm_config).args(a).output().expect("llvm-config-20 が要る (llvm-20-dev)");
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
     let inc = cfg(&["--includedir"]);
@@ -107,5 +111,14 @@ fn link_embedded_lld() {
     for l in cfg(&["--link-static", "--system-libs"]).split_whitespace() {
         println!("cargo:rustc-link-lib={}", l.trim_start_matches("-l"));
     }
-    println!("cargo:rustc-link-lib=stdc++");
+    if prefix.is_some() {
+        let o = Command::new(std::env::var("CXX").unwrap_or_else(|_| "c++".into())).arg("-print-file-name=libstdc++.a").output().expect("c++ が要る");
+        let p = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
+        if let Some(d) = p.parent().filter(|_| p.is_absolute()) {
+            println!("cargo:rustc-link-search=native={}", d.display());
+        }
+        println!("cargo:rustc-link-lib=static=stdc++");
+    } else {
+        println!("cargo:rustc-link-lib=stdc++");
+    }
 }
