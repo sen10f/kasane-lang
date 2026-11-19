@@ -235,6 +235,34 @@ struct ClSig {
     outer: HashSet<(String, u32)>,
 }
 
+/// `v` が運ぶ借用と、それが入っている欄の型の領域 (欄に分けられない値は型全体の領域)。
+fn slot_loans(v: &Val, ty: &Ty, out: &mut Vec<(Loan, usize, Vec<Region>)>) {
+    let slots = slots_of(ty);
+    if !v.parts.is_empty() && v.parts.len() == slots.len() {
+        for (p, t) in v.parts.iter().zip(&slots) {
+            slot_loans(p, t, out);
+        }
+        return;
+    }
+    let allowed = ty.regions();
+    // 領域のない欄・決まらない領域の欄 (型の誤りで未決の型引数) は見ない。
+    if allowed.is_empty() || allowed.iter().any(|r| matches!(r, Region::Unk)) {
+        return;
+    }
+    for (l, line) in v.loans() {
+        out.push((l, line, allowed.clone()));
+    }
+}
+
+/// 値の欄 (`Val::parts` の並び): 組の各要素、`Option` / `Result` の型引数。
+fn slots_of(t: &Ty) -> Vec<Ty> {
+    match t {
+        Ty::Tuple(ts) => ts.clone(),
+        Ty::Named(n, a, _) if matches!(n.as_str(), "Option" | "Result") => a.clone(),
+        _ => vec![],
+    }
+}
+
 fn depth(t: &Ty) -> usize {
     let mut n = 0;
     let mut t = t;
@@ -633,14 +661,17 @@ impl<'a> W<'a> {
         }
         let header = d.header.split(" uses ").next().unwrap_or("").to_string();
         let mut found: Vec<(String, usize)> = vec![];
-        for (l, line) in v.loans() {
+        // 借用がどの欄に入っているか: 欄 (組・`Option` / `Result` の型引数) ごとに、その欄の型の領域に収まるか。
+        let mut placed: Vec<(Loan, usize, Vec<Region>)> = vec![];
+        slot_loans(&v, &ret, &mut placed);
+        for (l, line, allowed) in placed {
             let Loan::Arg(q) = l else { continue };
             let Some(k) = ps0.iter().position(|(n, _)| *n == q) else { continue };
             let have = real_regions(&ps[k]);
             if have.is_empty() || ps[k].regions().iter().any(|r| matches!(r, Region::Static)) {
                 continue;
             }
-            if have.iter().any(|h| rr.iter().any(|r| same_r(h, r))) {
+            if have.iter().any(|h| allowed.iter().any(|r| same_r(h, r))) {
                 continue;
             }
             let named: Vec<String> = have.iter().filter_map(|h| if let Region::Named(n) = h { Some(n.clone()) } else { None }).collect();
@@ -1065,6 +1096,8 @@ impl<'a> W<'a> {
                 TStmt::Let { pat, init } => {
                     let v = init.as_ref().map(|x| self.ev(x)).unwrap_or_default();
                     let v = match init {
+                        // 局所の読み出し (`let w = z`) は、`z` が借用を入れた行のまま。
+                        Some(x) if pat.kind == "PBind" && !v.parts.is_empty() && matches!(&x.kind, TKind::Path(_)) && Self::local_of(x).is_some() => v,
                         Some(x) if pat.kind == "PBind" => v.restamp(x.line),
                         Some(_) => v.with_line(LEAF),
                         None => v,
@@ -1301,11 +1334,24 @@ impl<'a> W<'a> {
         let all = |avs: &[Arg]| avs.iter().fold(Val::default(), |a, x| a.union(&x.full.flat()));
         let Some(di) = def else {
             return match &e.res {
-                Some(Callee::Variant(..)) => {
+                Some(Callee::Variant(en, vn)) => {
                     let mut v = Val::default();
                     let parts: Vec<Val> = avs.iter().map(|a| a.full.clone()).collect();
                     for p in &parts {
                         v.add(&p.flat());
+                    }
+                    // `Some(x)` / `Ok(x)` / `Err(x)`: 型引数の欄ごとに分ける (`Err` は 2 つ目)。
+                    let idx = match (en.as_str(), vn.as_str()) {
+                        ("Option", "Some") | ("Result", "Ok") => Some(0),
+                        ("Result", "Err") => Some(1),
+                        _ => None,
+                    };
+                    if let (Some(i), Ty::Named(_, a, _)) = (idx, &e.ty) {
+                        if avs.len() == 1 && i < a.len() {
+                            let mut ps = vec![Val::default(); a.len()];
+                            ps[i] = avs[0].full.clone();
+                            v.parts = ps;
+                        }
                     }
                     v
                 }
@@ -1359,22 +1405,36 @@ impl<'a> W<'a> {
                 );
             }
         }
-        // 戻り値へ流れる引数。
-        let rr = real_regions(&ret);
-        let ret_unk = ret.regions().iter().any(|r| matches!(r, Region::Unk));
-        let mut ret_params = BTreeSet::new();
-        mentions_param(&ret, &mut ret_params);
-        let mut out = Val::default();
-        for (k, pt) in ps.iter().enumerate() {
-            let outer_hit = pt.outer_region().map_or(false, |o| rr.iter().any(|r| same_r(o, r)));
-            let mut pp = BTreeSet::new();
-            mentions_param(pt, &mut pp);
-            let inner_hit = real_regions(pt).iter().any(|o| rr.iter().any(|r| same_r(o, r))) || pp.iter().any(|x| ret_params.contains(x));
-            if ret_unk || outer_hit {
-                out.add(&avs[k].full.flat());
-            } else if inner_hit {
-                // 仮引数が `&X` なら中身 (`X` の中の借用)、`T` そのものなら実引数の全体が流れる。
-                out.add(&if matches!(pt, Ty::Ref(..)) { avs[k].inner.flat() } else { avs[k].full.flat() });
+        // 戻り値へ流れる引数。`flow` は戻り値の型 (の部分) へ流れる引数の借用。組・`Option`・`Result` は欄ごとに分ける。
+        let flow = |ret: &Ty| -> Val {
+            let rr = real_regions(ret);
+            let ret_unk = ret.regions().iter().any(|r| matches!(r, Region::Unk));
+            let mut ret_params = BTreeSet::new();
+            mentions_param(ret, &mut ret_params);
+            let mut out = Val::default();
+            for (k, pt) in ps.iter().enumerate() {
+                let outer_hit = pt.outer_region().map_or(false, |o| rr.iter().any(|r| same_r(o, r)));
+                let mut pp = BTreeSet::new();
+                mentions_param(pt, &mut pp);
+                let inner_hit = real_regions(pt).iter().any(|o| rr.iter().any(|r| same_r(o, r))) || pp.iter().any(|x| ret_params.contains(x));
+                if ret_unk || outer_hit {
+                    out.add(&avs[k].full.flat());
+                } else if inner_hit {
+                    // 仮引数が `&X` なら中身 (`X` の中の借用)、`T` そのものなら実引数の全体が流れる。
+                    out.add(&if matches!(pt, Ty::Ref(..)) { avs[k].inner.flat() } else { avs[k].full.flat() });
+                }
+            }
+            out
+        };
+        let mut out = flow(&ret);
+        let slots = slots_of(&ret);
+        if !slots.is_empty() {
+            out.parts = slots.iter().map(|t| flow(t)).collect();
+        } else if let Ty::Param(rp) = &ret {
+            // 総称の恒等関数 `fn id[T](x: T) -> T`: 唯一その型パラメータを取る引数の全体 (欄の構造ごと) が戻る。
+            let hits: Vec<usize> = ps.iter().enumerate().filter(|(_, t)| matches!(t, Ty::Param(q) if q == rp)).map(|(k, _)| k).collect();
+            if hits.len() == 1 && ps.iter().all(|t| { let mut m = BTreeSet::new(); mentions_param(t, &mut m); !m.contains(rp) || matches!(t, Ty::Param(_)) }) {
+                out = avs[hits[0]].full.clone();
             }
         }
         // 引数の指す先への格納 (`&mut X` の X が、別の引数と領域・型パラメータを共有する)。
