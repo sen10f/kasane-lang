@@ -1770,6 +1770,7 @@ end t.main
                     let mine: Vec<Vec<u32>> = vs.iter().map(|v| v.fields.iter().map(|f| f.off).collect()).collect();
                     assert_eq!(mine, vars, "バリアントのオフセット: {}", d.name);
                 }
+                AggKind::Array(..) => {}
             }
         }
     }
