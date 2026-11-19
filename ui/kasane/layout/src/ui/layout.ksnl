@@ -133,12 +133,12 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
         false => content_w
     }
     let content_start_main = match is_row {
-        true => x
-        false => y
+        true => x + pad
+        false => y + pad
     }
     let content_start_cross = match is_row {
-        true => y
-        false => x
+        true => y + pad
+        false => x + pad
     }
 
     let mut basis_sum = 0.0f32
@@ -420,6 +420,23 @@ test ui.layout.Tree.test_column_grow_stretch
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_column_grow_stretch
+
+test ui.layout.Tree.test_column_pad_offset
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.dir = ui.layout.FlexDirection.Column
+    r.ali = ui.layout.AlignItems.Stretch
+    r.space.pad = 10.0f32
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(100.0f32)
+    s0.size.h = Some(50.0f32)
+    let c0 = tree.push_node(s0)
+    tree.push_child(root, c0)
+    tree.layout(root, 200.0f32, 300.0f32)
+    let e0 = ui.layout.Rect { x: 10.0f32, y: 10.0f32, width: 100.0f32, height: 50.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+end ui.layout.Tree.test_column_pad_offset
 
 test ui.layout.Tree.test_nesting
     let mut tree = ui.layout.Tree.new()
@@ -727,11 +744,27 @@ test ui.layout.Tree.test_row_pad_grow
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 400.0f32, 300.0f32)
-    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 180.0f32, height: 260.0f32 }
-    let e1 = ui.layout.Rect { x: 180.0f32, y: 0.0f32, width: 180.0f32, height: 260.0f32 }
+    let e0 = ui.layout.Rect { x: 20.0f32, y: 20.0f32, width: 180.0f32, height: 260.0f32 }
+    let e1 = ui.layout.Rect { x: 200.0f32, y: 20.0f32, width: 180.0f32, height: 260.0f32 }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_row_pad_grow
+
+test ui.layout.Tree.test_row_pad_offset
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.ali = ui.layout.AlignItems.Stretch
+    r.space.pad = 10.0f32
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(100.0f32)
+    s0.size.h = Some(50.0f32)
+    let c0 = tree.push_node(s0)
+    tree.push_child(root, c0)
+    tree.layout(root, 300.0f32, 200.0f32)
+    let e0 = ui.layout.Rect { x: 10.0f32, y: 10.0f32, width: 100.0f32, height: 50.0f32 }
+    core.check.eq(tree.rect(c0), e0)
+end ui.layout.Tree.test_row_pad_offset
 
 test ui.layout.Tree.test_row_shrink
     let mut tree = ui.layout.Tree.new()
