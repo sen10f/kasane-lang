@@ -24,6 +24,8 @@ pub fn check(prog: &Program, user: &[usize]) -> Vec<Diag> {
     out.extend(crate::tast_rules::ref_levels::check(prog, user, &tast, &tk));
     // 規則 T (型の一致、S2C)。
     out.extend(crate::tast_rules::type_eq::check(prog, user, &tast, &tk));
+    // 規則 B (借用の重なり、S3E)。
+    out.extend(crate::tast_rules::borrows::check(prog, user, &tast, &tk));
     // 同じ診断を 2 つの規則が出すことがある (参照の段数と型の一致): (ファイル, 行, コード, 文面) で重ねる。
     let mut seen = std::collections::BTreeSet::new();
     out.retain(|d| seen.insert((d.file.clone(), d.line, d.code.clone(), d.msg.clone())));
