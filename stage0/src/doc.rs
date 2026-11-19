@@ -317,6 +317,9 @@ fn contract_tags(d: &Def) -> String {
             if let Some(n) = d.stack {
                 o.push_str(&tag("stack", &format!("stack {}", n), "スタック上限"));
             }
+            if let Some(n) = d.depth {
+                o.push_str(&tag("stack", &format!("depth {}", n), "呼び出しの深さの上限 (入口)"));
+            }
         }
         "type" | "enum" => {
             if d.linear {

@@ -973,7 +973,7 @@ end t.main
 
     #[test]
     fn exec_text_parses_and_verifies() {
-        let m = Module { funcs: exec_funcs(&[]).expect("実行器が読める"), aggs: vec![] };
+        let m = Module { funcs: exec_funcs(&[]).expect("実行器が読める"), aggs: vec![], depth: 0 };
         let bad = kir::verify_module(&m);
         assert!(bad.is_empty(), "{:?}", bad);
     }
