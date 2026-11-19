@@ -159,10 +159,10 @@ fn conv(t: &Src) -> Option<Ty> {
         Src::Prim(s) if s == "char" => Some(Ty::U32),
         Src::Prim(s) => Ty::parse(s).filter(|t| *t != Ty::Unit),
         Src::Unit => Some(Ty::Unit),
-        Src::Ref(m, x) => refs::conv_ref(*m, x),
+        Src::Ref(m, x, _) => refs::conv_ref(*m, x),
         // `Option<&スカラー>` (`get` の結果) は値のペイロードで持つ (設計_KIR.md 10.10)。
-        Src::Named(n, a) if n == "Option" && a.len() == 1 && matches!(&a[0], Src::Ref(false, i) if matches!(&**i, Src::Prim(_))) => {
-            let Src::Ref(_, i) = &a[0] else { return None };
+        Src::Named(n, a, _) if n == "Option" && a.len() == 1 && matches!(&a[0], Src::Ref(false, i, _) if matches!(&**i, Src::Prim(_))) => {
+            let Src::Ref(_, i, _) = &a[0] else { return None };
             conv(i).and_then(kir::Pay::of).map(Ty::Opt)
         }
         _ => enum_lower::conv_builtin(t),
@@ -185,10 +185,10 @@ fn show(t: &Src) -> String {
         Src::Unknown => "未確定".into(),
         Src::Var(_) => "型変数".into(),
         Src::Param(p) => format!("型パラメータ {}", p),
-        Src::Named(n, a) if a.is_empty() => n.clone(),
-        Src::Named(n, a) => format!("{}<{}>", n, a.iter().map(show).collect::<Vec<_>>().join(", ")),
+        Src::Named(n, a, _) if a.is_empty() => n.clone(),
+        Src::Named(n, a, _) => format!("{}<{}>", n, a.iter().map(show).collect::<Vec<_>>().join(", ")),
         Src::Tuple(xs) => format!("({})", xs.iter().map(show).collect::<Vec<_>>().join(", ")),
-        Src::Ref(m, x) => format!("&{}{}", if *m { "mut " } else { "" }, show(x)),
+        Src::Ref(m, x, _) => format!("&{}{}", if *m { "mut " } else { "" }, show(x)),
         Src::Slice(x) => format!("[{}]", show(x)),
         other => format!("{:?}", other),
     }
@@ -395,8 +395,8 @@ impl<'a> Lw<'a> {
         // `match &e { Some(p) => .. }` (e は所有物を持たない Option / Result): 共有の借用で読むだけなので `match e` と同じ
         // (束縛した名前は値で持ち、`*p` は恒等になる)。
         if nname(&scrut) == "Unary" && st(&nf(&scrut)[0]) == "&" {
-            if let Src::Ref(false, inner) = &stt {
-                if matches!(&**inner, Src::Named(n, _) if n == "Option" || n == "Result") {
+            if let Src::Ref(false, inner, _) = &stt {
+                if matches!(&**inner, Src::Named(n, _, _) if n == "Option" || n == "Result") {
                     let operand = nf(&scrut)[1].clone();
                     if self.ty_of(&operand).map(|t| !coll::owns(self, t)).unwrap_or(false) && !matches!(self.src_ty(&operand), Ok(Src::Ref(..))) {
                         if let V::Node(n, fs, a, b) = e {
@@ -411,8 +411,8 @@ impl<'a> Lw<'a> {
         }
         // `match o { None => .., Some(b) => .. }` (`o: &Option<T>` / `&mut Option<T>`): 参照の先の `Option` を読んで、
         // ペイロードの番地を `bref` に包んだ `Option<&T>` として判定する (腕の名前は `&T` の借用で束縛される)。
-        if let Src::Ref(m, inner) = &stt {
-            if let Src::Named(n, a) = &**inner {
+        if let Src::Ref(m, inner, _) = &stt {
+            if let Src::Named(n, a, _) = &**inner {
                 if n == "Option" && a.len() == 1 {
                     if let Some(r) = self.match_ref_option(e, &scrut, *m, &a[0])? {
                         return Ok(r);
@@ -421,7 +421,7 @@ impl<'a> Lw<'a> {
             }
         }
         match stt {
-            Src::Named(n, _) if n == "Option" || n == "Result" => self.match_(e),
+            Src::Named(n, _, _) if n == "Option" || n == "Result" => self.match_(e),
             _ => self.match_e(e),
         }
     }
@@ -487,7 +487,7 @@ impl<'a> Lw<'a> {
             return Ok(x);
         }
         // `Some(c)` で束縛した変数の型表は `&スカラー` のまま。値で持つ局所変数は、スロットの型 (スカラー) を使う。
-        if let Src::Ref(false, inner) = &t {
+        if let Src::Ref(false, inner, _) = &t {
             if let (Some(x), Some(want)) = (coll::local_slot_ty(self, e), conv(inner)) {
                 if x == want {
                     return Ok(x);
@@ -697,7 +697,7 @@ impl<'a> Lw<'a> {
             // `&mut` の値渡しは再借用 (move ではない) として扱う。
             Src::Ref(..) => true,
             Src::Tuple(xs) => xs.iter().all(|x| self.src_is_copy(x)),
-            Src::Named(nm, args) => {
+            Src::Named(nm, args, _) => {
                 if nm == "Option" || nm == "Result" {
                     return args.iter().all(|a| self.src_is_copy(a));
                 }
@@ -713,7 +713,7 @@ impl<'a> Lw<'a> {
         match t {
             Src::Tuple(xs) => xs.iter().any(|x| self.src_is_linear(x, seen)),
             Src::Array(el, _) => self.src_is_linear(el, seen),
-            Src::Named(nm, args) => {
+            Src::Named(nm, args, _) => {
                 if nm == "std.sync.Sender" {
                     return false;
                 }
@@ -1084,12 +1084,12 @@ impl<'a> Lw<'a> {
             };
         }
         let mut t = own::field_src(self, s, &segs[1..segs.len() - 1])?;
-        while let Src::Ref(_, i) = t {
+        while let Src::Ref(_, i, _) = t {
             t = *i;
         }
         match t {
             Src::Prim(p) if p == "str" => Some(coll::Kind::Str),
-            Src::Named(n, _) if n == "alloc.string.String" => Some(coll::Kind::String),
+            Src::Named(n, _, _) if n == "alloc.string.String" => Some(coll::Kind::String),
             _ => None,
         }
     }
@@ -1499,9 +1499,9 @@ impl<'a> Lw<'a> {
         // `std.net.TcpListener` / `TcpStream` のメソッド (accept / read / write / flush / close)。
         if let Ok(rt) = self.src_ty(&nf(e)[0]) {
             let is_net = match &rt {
-                Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" || n == "std.net.UdpSocket" => true,
-                Src::Ref(_, inner) => {
-                    matches!(&**inner, Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" || n == "std.net.UdpSocket")
+                Src::Named(n, _, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" || n == "std.net.UdpSocket" => true,
+                Src::Ref(_, inner, _) => {
+                    matches!(&**inner, Src::Named(n, _, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" || n == "std.net.UdpSocket")
                 }
                 _ => false,
             };
@@ -1643,7 +1643,7 @@ impl<'a> Lw<'a> {
                 }
                 let Some(v) = self.expr(&f[3])? else { return Ok(St::Div) };
                 // `let h: &dyn Tr = &a`: 宣言の型が `&dyn` なら (番地, vtable の番号) の組にする。
-                let v = if matches!(from_v(&f[2], &Default::default()), Src::Ref(_, ref i) if matches!(**i, Src::Dyn(..))) {
+                let v = if matches!(from_v(&f[2], &Default::default()), Src::Ref(_, ref i, _) if matches!(**i, Src::Dyn(..))) {
                     match self.conv_t(&from_v(&f[2], &Default::default())) {
                         Some(tt) => dyn_lower::coerce_dynref(self, v, tt, line)?,
                         None => v,
@@ -2123,7 +2123,7 @@ fn debug_of_entry(p: &Program, aggs: &RefCell<agg::AggTab>, e: &str, ok: &mut Ve
     // 戻り値が `()` の入口 (テストの本体を含む) は、Debug 表示の関数を要らない。
     let Ty::Res(_, err) = ok[pos].0.ret else { return Ok(()) };
     let rt = from_v(&d.ret, &HashSet::new());
-    let Src::Named(n, args) = &rt else { return Err("入口の戻り値の型が読めない".to_string()) };
+    let Src::Named(n, args, _) = &rt else { return Err("入口の戻り値の型が読めない".to_string()) };
     if n != "Result" || args.len() != 2 {
         return Err("入口の戻り値の型が読めない".to_string());
     }

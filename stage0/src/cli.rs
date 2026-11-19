@@ -402,7 +402,7 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         if s.path.ends_with(".ksnh") {
             // `.ksnh` が正。`strip(.ksnh)` が横の `.ksnl` とバイト一致しなければ E9050。
             match &s.ksnl {
-                None => rep.add("E9050", "the .ksnl next to this .ksnh is missing; run `ksn strip`", Some(&fl), 1, 1, true),
+                None => rep.add("E9050", "the .ksnl next to this .ksnh is missing; run `ksn strip` (or `ksn sync` if the LLM changed the .ksnl)", Some(&fl), 1, 1, true),
                 Some(k) => {
                     // `strip` の出力は、`.ksnh` が正規形なら必ず `ksn fmt` の正規形になる (設計_ksnhとロック.md 1.2)。破れていれば E0020。
                     let stripped = crate::ksnh::strip(&s.text);
@@ -411,7 +411,7 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
                         rep.add("E0020", "the .ksnl made by stripping this .ksnh differs from its `ksn fmt` output; the comments are placed where stripping leaves a non-canonical file", Some(&fl), 1, 1, true);
                     }
                     if let Some(ln) = crate::ksnh::first_mismatch(&s.text, k) {
-                        rep.add("E9050", "the .ksnl does not match this .ksnh with its comments removed; run `ksn strip` (or `ksn fmt`)", Some(&fl), ln, 1, true);
+                        rep.add("E9050", "the .ksnl does not match this .ksnh with its comments removed; run `ksn strip` (or `ksn fmt`); if the LLM changed the .ksnl, run `ksn sync` to re-attach the comments", Some(&fl), ln, 1, true);
                     }
                 }
             }
@@ -2553,6 +2553,9 @@ fn cmd_strip(args: &[String]) -> i32 {
         let want = crate::ksnh::strip(&s.text);
         let out = format!("{}.ksnl", s.path.trim_end_matches(".ksnh"));
         if s.ksnl.as_deref() == Some(want.as_str()) {
+            if !check {
+                crate::ksnh_sync::save_base(&pkg.root, &s.module, &s.text);
+            }
             continue;
         }
         if check {
@@ -2560,10 +2563,114 @@ fn cmd_strip(args: &[String]) -> i32 {
             println!("{}: E9050: the .ksnl does not match (run `ksn strip`)", rel(&s.path));
         } else {
             fs::write(&out, &want).unwrap();
+            crate::ksnh_sync::save_base(&pkg.root, &s.module, &s.text);
             println!("stripped {}", rel(&out));
         }
     }
     if bad { 1 } else { 0 }
+}
+
+/// `ksn sync [モジュール] [--drop-lost | --keep-lost] [--take ksnh|ksnl]`: LLM が変えた `.ksnl` の上に `.ksnh` のコメントを付け直す。
+fn cmd_sync(args: &[String]) -> i32 {
+    let (mut drop_lost, mut keep_lost) = (false, false);
+    let mut take: Option<String> = None;
+    let mut module: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--drop-lost" => drop_lost = true,
+            "--keep-lost" => keep_lost = true,
+            "--take" => take = it.next().cloned(),
+            x if !x.starts_with("--") => module = Some(x.to_string()),
+            x => {
+                eprintln!("ksn: sync: unknown option {}", x);
+                return 2;
+            }
+        }
+    }
+    if drop_lost && keep_lost || take.as_deref().map_or(false, |t| t != "ksnh" && t != "ksnl") {
+        eprintln!("ksn: sync: use at most one of --drop-lost / --keep-lost, and --take ksnh|ksnl");
+        return 2;
+    }
+    let pkg = match find_root().and_then(|r| load_package(&r)) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let mut rc = 0;
+    let mut found = false;
+    for s in pkg.sources.iter().filter(|s| s.path.ends_with(".ksnh")) {
+        if let Some(m) = &module {
+            let stem = s.path.trim_end_matches(".ksnh");
+            if *m != s.module && !stem.ends_with(m.trim_end_matches(".ksnh").trim_end_matches(".ksnl")) {
+                continue;
+            }
+        }
+        found = true;
+        let Some(cur_l) = s.ksnl.as_deref() else {
+            println!("{}: the .ksnl is missing; run `ksn strip`", rel(&s.path));
+            rc = 1;
+            continue;
+        };
+        let base = crate::ksnh_sync::load_base(&pkg.root, &s.module, Path::new(&s.path));
+        match crate::ksnh_sync::merge(&s.text, cur_l, base.as_deref(), take.as_deref(), keep_lost) {
+            Ok(None) => {
+                crate::ksnh_sync::save_base(&pkg.root, &s.module, &s.text);
+                println!("up to date {}", rel(&s.path));
+            }
+            Err(crate::ksnh_sync::MergeErr::Conflict(v)) => {
+                for c in v {
+                    println!("{}: {}", rel(&s.path), c.trim_end());
+                }
+                rc = 1;
+            }
+            Err(crate::ksnh_sync::MergeErr::Internal(m)) => {
+                eprintln!("ksn: sync: {}: {}", rel(&s.path), m);
+                return 2;
+            }
+            Ok(Some(m)) => {
+                for n in &m.notes {
+                    println!("{}: {}", rel(&s.path), n);
+                }
+                let lp = crate::ksnh_sync::lost_path(&pkg.root, &s.module);
+                if !m.lost.is_empty() {
+                    let mut js = String::new();
+                    for l in &m.lost {
+                        println!("{}: lost comment: {} (.ksnh line {}): {} [{}]", rel(&s.path), l.fqn, l.line, l.text, l.reason);
+                        js.push_str(&format!(
+                            "{{\"module\": {}, \"fqn\": {}, \"line\": {}, \"text\": {}, \"reason\": {}}}\n",
+                            json_str(&s.module), json_str(&l.fqn), l.line, json_str(&l.text), json_str(l.reason)
+                        ));
+                    }
+                    if let Some(d) = lp.parent() {
+                        let _ = fs::create_dir_all(d);
+                    }
+                    let _ = fs::write(&lp, js);
+                    if !drop_lost && !keep_lost {
+                        println!("{}: not written (use --drop-lost to drop them, or --keep-lost to keep them as `// LOST` comments)", rel(&s.path));
+                        rc = 1;
+                        continue;
+                    }
+                } else {
+                    let _ = fs::remove_file(&lp);
+                }
+                let out = format!("{}.ksnl", s.path.trim_end_matches(".ksnh"));
+                if fs::write(&s.path, &m.ksnh).is_err() || fs::write(&out, &m.ksnl).is_err() {
+                    eprintln!("ksn: sync: cannot write {}", rel(&s.path));
+                    return 2;
+                }
+                crate::ksnh_sync::save_base(&pkg.root, &s.module, &m.ksnh);
+                println!("synced {}", rel(&s.path));
+            }
+        }
+    }
+    if !found {
+        eprintln!("ksn: sync: no .ksnh module{}", module.map(|m| format!(" matches {}", m)).unwrap_or_default());
+        return 1;
+    }
+    rc
 }
 
 fn cmd_fmt(args: &[String]) -> i32 {
@@ -2608,6 +2715,9 @@ fn cmd_fmt(args: &[String]) -> i32 {
                 fs::write(&s.path, &nt).unwrap();
                 text = nt;
             }
+        }
+        if s.path.ends_with(".ksnh") && !check {
+            crate::ksnh_sync::save_base(&pkg.root, &s.module, &text);
         }
         // 字句の規則 (lexrules.rs): 書けない文字・NFC でない文字は fmt では直せない (`ksn check` と同じ判定にする)。
         for f in crate::lexrules::scan(&text).iter() {
@@ -3571,6 +3681,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "rename" => cmd_rename(&rest),
         "fmt" => cmd_fmt(&rest),
         "strip" => cmd_strip(&rest),
+        "sync" => cmd_sync(&rest),
         "fix" => cmd_fix(),
         "todo" => cmd_todo(),
         "context" => cmd_context(&rest),

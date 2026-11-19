@@ -138,15 +138,15 @@ fn impl_lines(o: &mut Out, user: &[usize]) -> HashMap<(String, String), usize> {
 
 fn norm(t: Ty) -> Ty {
     match t {
-        Ty::Named(n, a) => {
+        Ty::Named(n, a, _) => {
             let n = match n.as_str() {
                 "Option" => "core.option.Option".to_string(),
                 "Result" => "core.result.Result".to_string(),
                 _ => n,
             };
-            Ty::Named(n, a.into_iter().map(norm).collect())
+            Ty::Named(n, a.into_iter().map(norm).collect(), crate::types::Rgs::default())
         }
-        Ty::Ref(m, x) => Ty::Ref(m, Box::new(norm(*x))),
+        Ty::Ref(m, x, _) => Ty::Ref(m, Box::new(norm(*x)), crate::types::Region::Unk),
         Ty::Ptr(m, x) => Ty::Ptr(m, Box::new(norm(*x))),
         Ty::Tuple(a) => Ty::Tuple(a.into_iter().map(norm).collect()),
         Ty::Array(x, n) => Ty::Array(Box::new(norm(*x)), n),
@@ -160,8 +160,8 @@ fn norm(t: Ty) -> Ty {
 fn sub(t: &Ty, m: &HashMap<String, Ty>) -> Ty {
     match t {
         Ty::Param(p) => m.get(p).cloned().unwrap_or_else(|| t.clone()),
-        Ty::Named(n, a) => Ty::Named(n.clone(), a.iter().map(|x| sub(x, m)).collect()),
-        Ty::Ref(k, x) => Ty::Ref(*k, Box::new(sub(x, m))),
+        Ty::Named(n, a, _) => Ty::Named(n.clone(), a.iter().map(|x| sub(x, m)).collect(), crate::types::Rgs::default()),
+        Ty::Ref(k, x, _) => Ty::Ref(*k, Box::new(sub(x, m)), crate::types::Region::Unk),
         Ty::Ptr(k, x) => Ty::Ptr(*k, Box::new(sub(x, m))),
         Ty::Tuple(a) => Ty::Tuple(a.iter().map(|x| sub(x, m)).collect()),
         Ty::Array(x, n) => Ty::Array(Box::new(sub(x, m)), *n),
@@ -634,7 +634,7 @@ fn unsize(o: &mut Out, tast: &Tast, _side: &SideTabs) {
         walk(&b.body, &mut |e| {
             for c in &e.conv {
                 let Coercion::Unsize { from, to } = c else { continue };
-                let (Ty::Dyn(tr, _), Ty::Named(n, _)) = (to.strip(), from.strip()) else { continue };
+                let (Ty::Dyn(tr, _, _), Ty::Named(n, _, _)) = (to.strip(), from.strip()) else { continue };
                 let Some(root) = resolve_trait_fqn(p, tr) else { continue };
                 if !p.types.contains_key(n) {
                     continue;

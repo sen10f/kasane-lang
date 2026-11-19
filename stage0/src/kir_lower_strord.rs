@@ -91,9 +91,9 @@ use crate::types::Ty as Src;
 /// 文字列の型 (`String` / `&String` / `&str`) か。
 fn stringish(s: &Src) -> bool {
     match s {
-        Src::Named(n, _) => n == "alloc.string.String",
+        Src::Named(n, _, _) => n == "alloc.string.String",
         Src::Prim(p) => p == "str",
-        Src::Ref(_, i) => stringish(i),
+        Src::Ref(_, i, _) => stringish(i),
         _ => false,
     }
 }
@@ -195,7 +195,7 @@ impl<'a> Lw<'a> {
         let ord = match rt {
             Ty::Opt(_) => {
                 let file = self.def.file.clone();
-                self.aggs.borrow_mut().lower_ty(self.p, &file, &Src::Named("core.cmp.Ordering".to_string(), vec![]))?
+                self.aggs.borrow_mut().lower_ty(self.p, &file, &Src::Named("core.cmp.Ordering".to_string(), vec![], crate::types::Rgs::default()))?
             }
             t => t,
         };
@@ -288,7 +288,7 @@ impl<'a> Lw<'a> {
         }
         // 宣言の型が `&str` の定数だけ (`static` の `Mutex` などは別の経路)
         let declared = crate::types::from_v(&self.p.defs[ci].ret, &std::collections::HashSet::new());
-        if !matches!(&declared, Src::Ref(_, i) if matches!(&**i, Src::Prim(p) if p == "str")) {
+        if !matches!(&declared, Src::Ref(_, i, _) if matches!(&**i, Src::Prim(p) if p == "str")) {
             return None;
         }
         let m = r.rest[0].clone();

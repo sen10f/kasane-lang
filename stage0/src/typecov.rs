@@ -156,8 +156,8 @@ fn scan(t: &Ty, fl: &mut Flags) {
         Ty::Unknown => fl.unknown = true,
         Ty::Var(_) => fl.var = true,
         Ty::Param(_) => fl.param = true,
-        Ty::Named(_, a) | Ty::Tuple(a) => a.iter().for_each(|x| scan(x, fl)),
-        Ty::Ref(_, x) | Ty::Array(x, _) | Ty::Slice(x) => scan(x, fl),
+        Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().for_each(|x| scan(x, fl)),
+        Ty::Ref(_, x, _) | Ty::Array(x, _) | Ty::Slice(x) => scan(x, fl),
         Ty::Closure { args, ret, .. } => {
             args.iter().for_each(|x| scan(x, fl));
             scan(ret, fl);

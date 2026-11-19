@@ -10,7 +10,7 @@ pub fn is_comment_line(l: &str) -> bool {
 }
 
 /// `.ksnh` の各行が `.ksnl` に残るか。`keep[i]` は i 行目 (0 始まり) を残すとき true。
-fn keep_mask(lines: &[&str]) -> Vec<bool> {
+pub fn keep_mask(lines: &[&str]) -> Vec<bool> {
     let mut keep: Vec<bool> = lines.iter().map(|l| !is_comment_line(l)).collect();
     // ファイル先頭のコメントの塊 + 直後の空行 1 つ。
     let head = lines.iter().take_while(|l| is_comment_line(l)).count();

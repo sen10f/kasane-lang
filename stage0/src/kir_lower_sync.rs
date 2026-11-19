@@ -66,7 +66,7 @@ fn splitmix(lw: &mut Lw, state: VId) -> (VId, VId) {
 
 /// `std.rand.Rng` の型 (型表)。
 pub(super) fn rng_ty(lw: &Lw) -> Option<Ty> {
-    lw.conv_t(&Src::Named(RNG.into(), vec![]))
+    lw.conv_t(&Src::Named(RNG.into(), vec![], crate::types::Rgs::default()))
 }
 
 /// パスの呼び出し (`std.rand.Rng.from_seed(..)`、`rng.next_u64()`、`NAME.lock()`)。対象外なら `None` (親へ戻す)。
@@ -168,7 +168,7 @@ fn next_u64(lw: &mut Lw, s: usize, args: &[V], line: usize) -> LR<Option<VId>> {
 fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
     let d = &lw.p.defs[di];
     let name = d.name.clone();
-    let Src::Named(tn, targs) = from_v(&d.ret, &std::collections::HashSet::new()) else {
+    let Src::Named(tn, targs, _) = from_v(&d.ret, &std::collections::HashSet::new()) else {
         return lw.err(line, format!("static {} の型が Mutex<T> でない", name));
     };
     if tn != "std.sync.Mutex" || targs.len() != 1 {

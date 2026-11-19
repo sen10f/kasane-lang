@@ -167,15 +167,15 @@ fn into_dyn(lw: &mut Lw, e: &V, args: &[V]) -> LR<Option<VId>> {
     }
     let dst = lw.src_ty(e)?;
     let src = lw.src_ty(&args[0])?;
-    let (Src::Named(_, da), Src::Named(_, sa)) = (&dst, &src) else {
+    let (Src::Named(_, da, _), Src::Named(_, sa, _)) = (&dst, &src) else {
         return lw.err(line, "Box.into_dyn の型が Box でない");
     };
-    let (Some(Src::Dyn(trw, _)), Some(conc)) = (da.first(), sa.first()) else {
+    let (Some(Src::Dyn(trw, _, _)), Some(conc)) = (da.first(), sa.first()) else {
         return lw.err(line, "Box.into_dyn の変換先が dyn でない");
     };
     let tr = trait_fqn(lw.p, &lw.def.file, trw);
     let concrete_name = match conc {
-        Src::Named(n, a) if a.is_empty() => n.clone(),
+        Src::Named(n, a, _) if a.is_empty() => n.clone(),
         Src::Prim(s) => s.clone(),
         other => return lw.err(line, format!("dyn にする型 {} は対象外 (型引数付きなど)", super::show(other))),
     };
@@ -369,7 +369,7 @@ pub(super) fn synth(p: &Program, tys: &BTreeMap<(String, u32), ExprTy>, aggs: &s
                         .defs
                         .iter()
                         .find(|d| d.name == mname && d.kw == "fn" && !d.params.is_empty())
-                        .map(|d| matches!(from_v(&d.params[0].1, &Default::default()), Src::Ref(true, _)))
+                        .map(|d| matches!(from_v(&d.params[0].1, &Default::default()), Src::Ref(true, _, _)))
                         .unwrap_or(true);
                     let kk = lw.emit(Ty::Usize, Op::Const(*k as i128));
                     let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: pv[1], b: kk });
