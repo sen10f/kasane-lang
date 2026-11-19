@@ -2725,19 +2725,30 @@ fn cmd_fmt(args: &[String]) -> i32 {
             diff = true;
             println!("{}:{}:{}: {}: {}", rel(&s.path), f.line, f.col, f.code, f.msg);
         }
-        if let Some(e) = s.error.as_ref().filter(|e| e.code == "E0007") {
+        // 構文・字句の誤りで読めないファイルは、`ksn check` と同じ診断 (行:列つき) を先に出す。
+        // 読めないので並べ替えなどの整形ができていない。それらの診断は出さない (まず構文の誤りを直す)。
+        let broken = s.error.is_some();
+        if let Some(e) = s.error.as_ref() {
             diff = true;
-            println!("{}:{}:{}: {}: {}", rel(&s.path), e.line, e.col, e.code, e.msg);
+            let mut guided: Vec<usize> = vec![];
+            for h in crate::rustisms::scan(&s.text) {
+                guided.push(h.line);
+                println!("{}:{}:{}: {}: {}", rel(&s.path), h.line, h.col, h.code, h.msg);
+            }
+            if !(e.code == "E0002" && guided.contains(&e.line)) {
+                println!("{}:{}:{}: {}: {}", rel(&s.path), e.line, e.col, e.code, e.msg);
+            }
+            println!("{}: note: the file cannot be parsed, so `ksn fmt` could not reorder or reformat it; fix the error(s) above first", rel(&s.path));
         }
         let relpath = lint_rel(s, &srcroot);
         for (code, l, m) in Lint::new(&relpath, &text.replace("\r\n", "\n")).run() {
-            if code != "unused" {
+            if code != "unused" && !broken {
                 diff = true;
                 println!("{}:{}: {}: {} (not auto-fixable)", rel(&s.path), l, lint_code(&code), m);
             }
         }
         let (ok, msg, ln) = grammar.check(&text);
-        if !ok {
+        if !ok && !broken {
             diff = true;
             println!("{}:{}: E0002: {}", rel(&s.path), ln, msg);
         }
