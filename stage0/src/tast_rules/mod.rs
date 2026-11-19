@@ -4,3 +4,4 @@ pub mod impl_sig;
 pub mod lifetimes;
 pub mod ref_levels;
 pub mod type_eq;
+pub mod moves;
