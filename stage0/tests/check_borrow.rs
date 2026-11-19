@@ -58,7 +58,7 @@ fn mut_method_on_an_immutable_local_is_rejected() {
 
 #[test]
 fn mut_method_on_a_mut_local_or_mut_ref_is_accepted() {
-    let f = "fn t.fill(v: &mut alloc.vec.Vec<u8, std.alloc.System>) -> () uses [alloc] panics may\n    core.mem.drop(v.push(1u8))\nend t.fill\n\n";
+    let f = "fn t.fill(v: &mut alloc.vec.Vec<u8, std.alloc.System>) -> () uses [alloc] panics never\n    core.mem.drop(v.push(1u8))\nend t.fill\n\n";
     let src = main_wrap(f, &body(&["let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)", "core.mem.drop(v.push(2u8))", "t.fill(&mut v)"]));
     let t = Tmp::new("bor_ok", &src);
     let out = text(&run(&["check", "--json"], &t.0).stdout);
@@ -67,7 +67,7 @@ fn mut_method_on_a_mut_local_or_mut_ref_is_accepted() {
 
 #[test]
 fn mut_method_through_a_shared_reference_is_rejected() {
-    let f = "fn t.fill(v: &alloc.vec.Vec<u8, std.alloc.System>) -> () uses [alloc] panics may\n    core.mem.drop(v.push(1u8))\nend t.fill\n\n";
+    let f = "fn t.fill(v: &alloc.vec.Vec<u8, std.alloc.System>) -> () uses [alloc] panics never\n    core.mem.drop(v.push(1u8))\nend t.fill\n\n";
     let t = Tmp::new("bor_shared", &main_wrap(f, ""));
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(codes(&out).iter().any(|c| c == "E3031"), "{}", out);

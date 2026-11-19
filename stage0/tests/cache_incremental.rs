@@ -946,7 +946,7 @@ end t.main
 /// 3-2: clang が無いときも、リリースは退避せず E9040 で止まる (デバッグは理由を出して退避する)。
 #[test]
 fn release_build_without_clang_fails_instead_of_bundling() {
-    let t = Tmp::new("release_no_clang", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"ok\")\nend t.main\n");
+    let t = Tmp::new("release_no_clang", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"ok\")\nend t.main\n");
     let cache = std::env::temp_dir().join(format!("ksn_cache_{}_release_no_clang", std::process::id()));
     let build = |extra: &[&str]| {
         let mut args = vec!["build"];

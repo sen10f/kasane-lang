@@ -1,4 +1,4 @@
-fn t.mk() -> alloc.string.String uses [alloc] panics never
+fn t.mk() -> alloc.string.String uses [] panics never
     alloc.string.String.new(std.alloc.SYSTEM)
 end t.mk
 

@@ -20,7 +20,7 @@ fn t.Sq.area(self: &t.Sq) -> i64 uses [] panics never impls t.Shape
     self.side
 end t.Sq.area
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     std.io.print_line("x")
 end t.main
 

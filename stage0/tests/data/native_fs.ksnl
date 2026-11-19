@@ -1,4 +1,4 @@
-fn t.flag(label: &str, b: bool) -> () uses [alloc, io.console] panics may
+fn t.flag(label: &str, b: bool) -> () uses [alloc, io.console] panics never
     if b {
         t.show(label, 1i64)
     } else {
@@ -140,7 +140,7 @@ fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] pa
     Ok(())
 end t.round_trip
 
-fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics may
+fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))
@@ -148,7 +148,7 @@ fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics may
     core.mem.drop(std.io.print_line(s.as_str()))
 end t.show
 
-fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panics may
+fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": kind "))

@@ -7,6 +7,6 @@ fn t.bad() -> usize uses [alloc] panics never
     m.len()
 end t.bad
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main

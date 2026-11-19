@@ -61,7 +61,7 @@ type lower.cx.Vs pub
     mutf: alloc.vec.Vec<bool, std.alloc.System> pub
 end lower.cx.Vs
 
-fn lower.cx.bind_vals(c: &mut lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>, vs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.bind_vals(c: &mut lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>, vs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let mut i = 0usize
     for k in ks.as_slice().iter() {
         match vs.as_slice().get(i) {
@@ -73,7 +73,7 @@ fn lower.cx.bind_vals(c: &mut lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.S
     Ok(())
 end lower.cx.bind_vals
 
-fn lower.cx.blk(c: &mut lower.cx.Cx, ps: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.blk(c: &mut lower.cx.Cx, ps: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let b = c.v.hdr.len()
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_str("  b")?
@@ -95,14 +95,14 @@ fn lower.cx.blk(c: &mut lower.cx.Cx, ps: &alloc.vec.Vec<usize, std.alloc.System>
     Ok(b)
 end lower.cx.blk
 
-fn lower.cx.cat2(a: &str, b: &str) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.cat2(a: &str, b: &str) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_str(a)?
     s.push_str(b)?
     Ok(s)
 end lower.cx.cat2
 
-fn lower.cx.copy_u(xs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.copy_u(xs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for x in xs.as_slice().iter() {
         out.push(*x)?
@@ -110,7 +110,7 @@ fn lower.cx.copy_u(xs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.
     Ok(out)
 end lower.cx.copy_u
 
-fn lower.cx.cur_vals(c: &lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.cur_vals(c: &lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for k in ks.as_slice().iter() {
         out.push(lower.cx.get_val(c, *k).wrapping_sub(1usize))?
@@ -118,13 +118,13 @@ fn lower.cx.cur_vals(c: &lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System
     Ok(out)
 end lower.cx.cur_vals
 
-fn lower.cx.dec(v: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.dec(v: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_u64(u64.from_usize(v))?
     Ok(s)
 end lower.cx.dec
 
-fn lower.cx.def(c: &mut lower.cx.Cx, ty: &str, op: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.def(c: &mut lower.cx.Cx, ty: &str, op: &str) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let v = lower.cx.newval(c, ty)?
     if !c.s.term {
         let mut s = lower.cx.vs(v)?
@@ -137,16 +137,16 @@ fn lower.cx.def(c: &mut lower.cx.Cx, ty: &str, op: &str) -> Result<usize, resolv
     Ok(v)
 end lower.cx.def
 
-fn lower.cx.def1(c: &mut lower.cx.Cx, ty: &str, pre: &str, v: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.def1(c: &mut lower.cx.Cx, ty: &str, pre: &str, v: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let s = lower.cx.cat2(pre, lower.cx.vs(v)?.as_str())?
     lower.cx.def(c, ty, s.as_str())
 end lower.cx.def1
 
-fn lower.cx.depth(c: &lower.cx.Cx) -> usize uses [] panics may pub
+fn lower.cx.depth(c: &lower.cx.Cx) -> usize uses [] panics never pub
     c.v.vals.len()
 end lower.cx.depth
 
-fn lower.cx.emit(c: &mut lower.cx.Cx, line: alloc.string.String<std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.emit(c: &mut lower.cx.Cx, line: alloc.string.String<std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     if !c.s.term {
         c.v.lines.push(line)?
         c.v.lblk.push(c.s.cur)?
@@ -154,7 +154,7 @@ fn lower.cx.emit(c: &mut lower.cx.Cx, line: alloc.string.String<std.alloc.System
     Ok(())
 end lower.cx.emit
 
-fn lower.cx.fail(c: &mut lower.cx.Cx, why: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.fail(c: &mut lower.cx.Cx, why: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     if c.s.unsup.len() == 0usize {
         c.s.unsup.push_str(why)?
     }
@@ -176,13 +176,13 @@ fn lower.cx.find(c: &lower.cx.Cx, name: &str) -> usize uses [] panics may pub
     0usize
 end lower.cx.find
 
-fn lower.cx.finish(c: &mut lower.cx.Cx, op: alloc.string.String<std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.finish(c: &mut lower.cx.Cx, op: alloc.string.String<std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     lower.cx.emit(c, op)?
     c.s.term = true
     Ok(())
 end lower.cx.finish
 
-fn lower.cx.fresh_vals(c: &mut lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.fresh_vals(c: &mut lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for k in ks.as_slice().iter() {
         let cur = lower.cx.get_val(c, *k).wrapping_sub(1usize)
@@ -192,14 +192,14 @@ fn lower.cx.fresh_vals(c: &mut lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.
     Ok(out)
 end lower.cx.fresh_vals
 
-fn lower.cx.get_val(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
+fn lower.cx.get_val(c: &lower.cx.Cx, k: usize) -> usize uses [] panics never pub
     match c.v.vals.as_slice().get(k) {
         Some(v) => *v
         None => 0usize
     }
 end lower.cx.get_val
 
-fn lower.cx.goto(c: &mut lower.cx.Cx, b: usize) -> () uses [] panics may pub
+fn lower.cx.goto(c: &mut lower.cx.Cx, b: usize) -> () uses [] panics never pub
     c.s.cur = b
     c.s.term = false
 end lower.cx.goto
@@ -219,18 +219,18 @@ fn lower.cx.is_bor(c: &lower.cx.Cx, name: &str) -> bool uses [] panics may pub
     false
 end lower.cx.is_bor
 
-fn lower.cx.is_slot(c: &lower.cx.Cx, k: usize) -> bool uses [] panics may pub
+fn lower.cx.is_slot(c: &lower.cx.Cx, k: usize) -> bool uses [] panics never pub
     match c.v.sl.slotf.as_slice().get(k) {
         Some(x) => *x
         None => false
     }
 end lower.cx.is_slot
 
-fn lower.cx.item_at(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
+fn lower.cx.item_at(c: &lower.cx.Cx, k: usize) -> usize uses [] panics never pub
     lower.tyk.at(c.g.itm.as_slice(), k)
 end lower.cx.item_at
 
-fn lower.cx.lt(a: &str, b: &str) -> bool uses [] panics may pub
+fn lower.cx.lt(a: &str, b: &str) -> bool uses [] panics never pub
     let ab = a.as_bytes()
     let bb = b.as_bytes()
     let mut i = 0usize
@@ -255,7 +255,7 @@ fn lower.cx.lt(a: &str, b: &str) -> bool uses [] panics may pub
     false
 end lower.cx.lt
 
-fn lower.cx.mlist(c: &lower.cx.Cx, base: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.mlist(c: &lower.cx.Cx, base: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for k in core.iter.range(0usize, base) {
         match c.v.mutf.as_slice().get(k) {
@@ -311,14 +311,14 @@ fn lower.cx.mlist_in(c: &lower.cx.Cx, base: usize, names: &alloc.vec.Vec<alloc.s
     Ok(out)
 end lower.cx.mlist_in
 
-fn lower.cx.name_of(c: &lower.cx.Cx, k: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.name_of(c: &lower.cx.Cx, k: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     match c.g.nms.as_slice().get(k) {
         Some(s) => lower.cx.own(s.as_str())
         None => Ok(alloc.string.String.new(std.alloc.SYSTEM))
     }
 end lower.cx.name_of
 
-fn lower.cx.new(ar: types.ty.Arena, tc: types.chk.Ctx) -> Result<lower.cx.Cx, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.new(ar: types.ty.Arena, tc: types.chk.Ctx) -> Result<lower.cx.Cx, resolve.Failure> uses [] panics never pub
     let ag = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let nm = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let tx = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -337,13 +337,13 @@ fn lower.cx.new(ar: types.ty.Arena, tc: types.chk.Ctx) -> Result<lower.cx.Cx, re
     Ok(lower.cx.Cx { ar: ar, tc: tc, g: g, v: v, lp: lp, s: s })
 end lower.cx.new
 
-fn lower.cx.newval(c: &mut lower.cx.Cx, ty: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.newval(c: &mut lower.cx.Cx, ty: &str) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let v = c.v.vty.len()
     c.v.vty.push(lower.cx.own(ty)?)?
     Ok(v)
 end lower.cx.newval
 
-fn lower.cx.own(s: &str) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.own(s: &str) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
     o.push_str(s)?
     Ok(o)
@@ -361,7 +361,7 @@ fn lower.cx.push_local(c: &mut lower.cx.Cx, name: &str, v: usize, m: bool, t: us
     Ok(c.v.vals.len() - 1usize)
 end lower.cx.push_local
 
-fn lower.cx.reset(c: &mut lower.cx.Cx) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.reset(c: &mut lower.cx.Cx) -> Result<(), resolve.Failure> uses [] panics never pub
     c.v = lower.cx.vs_new()
     c.s.unsup = alloc.string.String.new(std.alloc.SYSTEM)
     c.s.cur = 0usize
@@ -370,11 +370,11 @@ fn lower.cx.reset(c: &mut lower.cx.Cx) -> Result<(), resolve.Failure> uses [allo
     Ok(())
 end lower.cx.reset
 
-fn lower.cx.ret_at(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
+fn lower.cx.ret_at(c: &lower.cx.Cx, k: usize) -> usize uses [] panics never pub
     lower.tyk.at(c.g.rts.as_slice(), k)
 end lower.cx.ret_at
 
-fn lower.cx.set_val(c: &mut lower.cx.Cx, k: usize, v: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.set_val(c: &mut lower.cx.Cx, k: usize, v: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let mut tail = alloc.vec.Vec.new(std.alloc.SYSTEM)
     while c.v.vals.len() > k {
         match c.v.vals.pop() {
@@ -393,7 +393,7 @@ fn lower.cx.set_val(c: &mut lower.cx.Cx, k: usize, v: usize) -> Result<(), resol
     Ok(())
 end lower.cx.set_val
 
-fn lower.cx.sl_new() -> lower.cx.Sl uses [alloc] panics may pub
+fn lower.cx.sl_new() -> lower.cx.Sl uses [] panics never pub
     let nm = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let ty = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let sf = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -404,7 +404,7 @@ fn lower.cx.sl_new() -> lower.cx.Sl uses [alloc] panics may pub
     lower.cx.Sl { names: nm, tys: ty, slotf: sf, bor: br, own: ow, flag: fg, cl: cl }
 end lower.cx.sl_new
 
-fn lower.cx.subs_at(c: &lower.cx.Cx, k: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.subs_at(c: &lower.cx.Cx, k: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match c.g.sbs.as_slice().get(k) {
         Some(v) => {
@@ -417,7 +417,7 @@ fn lower.cx.subs_at(c: &lower.cx.Cx, k: usize) -> Result<alloc.vec.Vec<usize, st
     Ok(out)
 end lower.cx.subs_at
 
-fn lower.cx.target(b: usize, args: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.target(b: usize, args: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_str("b")?
     s.push_str(lower.cx.dec(b)?.as_str())?
@@ -427,7 +427,7 @@ fn lower.cx.target(b: usize, args: &alloc.vec.Vec<usize, std.alloc.System>) -> R
     Ok(s)
 end lower.cx.target
 
-fn lower.cx.trunc_to(c: &mut lower.cx.Cx, mark: usize) -> () uses [alloc] panics may pub
+fn lower.cx.trunc_to(c: &mut lower.cx.Cx, mark: usize) -> () uses [] panics never pub
     while c.v.sl.names.len() > mark {
         let _a = c.v.sl.names.pop()
     }
@@ -454,7 +454,7 @@ fn lower.cx.trunc_to(c: &mut lower.cx.Cx, mark: usize) -> () uses [alloc] panics
     }
 end lower.cx.trunc_to
 
-fn lower.cx.tyof(c: &lower.cx.Cx, v: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
+fn lower.cx.tyof(c: &lower.cx.Cx, v: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics never pub
     match c.v.vty.as_slice().get(v) {
         Some(s) => {
             match lower.cx.own(s.as_str()) {
@@ -466,14 +466,14 @@ fn lower.cx.tyof(c: &lower.cx.Cx, v: usize) -> alloc.string.String<std.alloc.Sys
     }
 end lower.cx.tyof
 
-fn lower.cx.tyof_t(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
+fn lower.cx.tyof_t(c: &lower.cx.Cx, k: usize) -> usize uses [] panics never pub
     match c.v.sl.tys.as_slice().get(k) {
         Some(t) => *t
         None => types.ty.UNKNOWN
     }
 end lower.cx.tyof_t
 
-fn lower.cx.vlist(vs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.vlist(vs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     let mut first = true
     for v in vs.as_slice().iter() {
@@ -486,14 +486,14 @@ fn lower.cx.vlist(vs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.s
     Ok(s)
 end lower.cx.vlist
 
-fn lower.cx.vs(v: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.cx.vs(v: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push('%')?
     s.push_u64(u64.from_usize(v))?
     Ok(s)
 end lower.cx.vs
 
-fn lower.cx.vs_new() -> lower.cx.Vs uses [alloc] panics may pub
+fn lower.cx.vs_new() -> lower.cx.Vs uses [] panics never pub
     let sl = lower.cx.sl_new()
     let sb = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let vt = alloc.vec.Vec.new(std.alloc.SYSTEM)

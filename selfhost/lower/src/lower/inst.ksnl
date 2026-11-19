@@ -109,7 +109,7 @@ fn lower.inst.is_generic(env: &types.env.Env, c: &lower.cx.Cx, item: usize) -> b
     }
 end lower.inst.is_generic
 
-fn lower.inst.is_sig(env: &types.env.Env, item: usize) -> bool uses [] panics may pub
+fn lower.inst.is_sig(env: &types.env.Env, item: usize) -> bool uses [] panics never pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
     match types.env.unit(env, file) {

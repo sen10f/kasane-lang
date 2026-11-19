@@ -38,7 +38,7 @@ fn types.rec.ck_of(rec: &types.rec.Rec, file: usize, node: usize) -> usize uses 
 end types.rec.ck_of
 
 // 記録のない表 (検査の前の初期値)。
-fn types.rec.empty() -> Result<types.rec.Rec, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn types.rec.empty() -> Result<types.rec.Rec, alloc.alloc.AllocError> uses [] panics never pub
     let base = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let ty = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let callee = alloc.vec.Vec.new(std.alloc.SYSTEM)

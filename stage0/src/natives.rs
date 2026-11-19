@@ -21,7 +21,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.string.String.from_str", "alloc.string.String.replace", "alloc.string.String.join",
     "alloc.collections.HashMap.new", "alloc.collections.BtreeMap.new",
     "alloc.collections.VecDeque.new",
-    "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.system_nanos", "std.time.Duration.from_millis", "std.thread.spawn",
+    "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.system_nanos", "std.time.Duration.from_millis", "std.thread.spawn", "std.thread.spawn_deep",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new", "core.sync.AtomicBool.new", "core.sync.AtomicU64.new", "core.sync.AtomicUsize.new",
     "std.task.block_on", "std.task.spawn_local", "std.task.yield_now", "std.task.await_js",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.rand.fill_secure", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
@@ -795,9 +795,14 @@ impl Interp {
                     f: RefCell::new(vec![("nanos".into(), int(ms * 1_000_000, "u64"))]),
                 })))
             }
-            "std.thread.spawn" => {
+            "std.thread.spawn" | "std.thread.spawn_deep" => {
                 let body = snapshot_closure(&dr(&args[1]));
-                let t = Rc::new(ThreadV { body: RefCell::new(Some(body)), result: RefCell::new(None), state: Cell::new(0) });
+                // `spawn_deep` の深さは 1..=MAX_DEPTH_LIMIT に丸める。`spawn` は既定 (`kir_exec::MAX_DEPTH`)。
+                let depth = match args.get(2).map(dr) {
+                    Some(Val::Int(n, _)) => (n.max(1) as usize).min(crate::kir_exec::MAX_DEPTH_LIMIT),
+                    _ => crate::kir_exec::MAX_DEPTH,
+                };
+                let t = Rc::new(ThreadV { body: RefCell::new(Some(body)), result: RefCell::new(None), state: Cell::new(0), depth });
                 self.threads.push(t.clone());
                 Ok(ok(Val::Join(t)))
             }

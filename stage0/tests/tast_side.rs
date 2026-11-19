@@ -81,7 +81,7 @@ fn dump_side(name: &str, src: &str) -> String {
 
 #[test]
 fn s1d_pat_tys_modes() {
-    let src = "fn t.main() -> i32\n    let p: (i32, i32) = (1, 2)\n    let (a, b) = &p\n    let mut q: (i32, i32) = (3, 4)\n    let (c, d) = &mut q\n    let (e, f) = p\n    0\nend t.main\n";
+    let src = "fn t.main() -> i32 uses [] panics never\n    let p: (i32, i32) = (1, 2)\n    let (a, b) = &p\n    let mut q: (i32, i32) = (3, 4)\n    let (c, d) = &mut q\n    let (e, f) = p\n    0\nend t.main\n";
     let out = dump_side("s1d_modes", src);
     assert!(out.lines().any(|l| l == "# pat_tys"), "{out}");
     assert!(out.contains("PBind a : &i32 Ref"), "{out}");
@@ -92,7 +92,7 @@ fn s1d_pat_tys_modes() {
 
 #[test]
 fn s1d_pat_tys_nested_shared_wins() {
-    let src = "fn t.main() -> i32\n    let mut o: Option<(i32, i32)> = Some((1, 2))\n    let r = &mut o\n    match &r {\n        Some((x, y)) => 0\n        None => 1\n    }\nend t.main\n";
+    let src = "fn t.main() -> i32 uses [] panics never\n    let mut o: Option<(i32, i32)> = Some((1, 2))\n    let r = &mut o\n    match &r {\n        Some((x, y)) => 0\n        None => 1\n    }\nend t.main\n";
     let out = dump_side("s1d_nested", src);
     assert!(out.contains("PBind x : &i32 Ref"), "{out}");
     assert!(out.contains("let_tys_mismatch=0"), "{out}");
@@ -128,7 +128,7 @@ fn t.go(p: &mut t.P, v: &[u32]) -> u32 uses [] panics may pub
     }
 end t.go
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 ";
@@ -249,7 +249,7 @@ fn t.call_dyn(s: &dyn t.Speak) -> i64 uses [] panics never
     s.say()
 end t.call_dyn
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = t.helper(1u32)
     let s = t.Shape.A(a)
     let f = fn(x: u32) -> u32 capture [] {

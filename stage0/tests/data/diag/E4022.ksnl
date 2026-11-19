@@ -13,7 +13,7 @@ fn t.main() -> () uses [suspend] panics may
     })
 end t.main
 
-fn t.wait_one() -> u32 uses [suspend] panics may
+fn t.wait_one() -> u32 uses [suspend] panics never
     std.task.yield_now()
     1u32
 end t.wait_one

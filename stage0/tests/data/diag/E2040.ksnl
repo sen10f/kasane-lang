@@ -2,7 +2,7 @@ type t.Raw pub
     p: *const u8
 end t.Raw
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
     let spawned = std.thread.spawn(
         std.alloc.SYSTEM,
         fn() -> t.Raw capture [] {

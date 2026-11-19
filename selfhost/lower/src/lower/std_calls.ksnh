@@ -1,5 +1,5 @@
 // 要素の型 et が、構造体・列挙型 (`Vec` / `String` でない) か。
-fn lower.std_calls.agg_elem(env: &types.env.Env, c: &lower.cx.Cx, et: usize) -> bool uses [alloc] panics may pub
+fn lower.std_calls.agg_elem(env: &types.env.Env, c: &lower.cx.Cx, et: usize) -> bool uses [alloc] panics never pub
     let n = types.ty.node(&c.ar, types.ty.find(&c.ar, et))
     if n.k != types.ty.K.Adt {
         return false
@@ -128,12 +128,12 @@ fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
 end lower.std_calls.call1
 
 // 自由関数の呼び出しを、この表で下ろせるか。
-fn lower.std_calls.has_fn(fqn: &str) -> bool uses [] panics may pub
+fn lower.std_calls.has_fn(fqn: &str) -> bool uses [] panics never pub
     fqn == "alloc.string.String.new" || fqn == "core.panic.panic"
 end lower.std_calls.has_fn
 
 // 引数が 1 つの組み込み (`call1`) か。
-fn lower.std_calls.has_fn1(fqn: &str) -> bool uses [] panics may pub
+fn lower.std_calls.has_fn1(fqn: &str) -> bool uses [] panics never pub
     let a = fqn == "std.env.arg" || fqn == "core.str.from_utf8" || fqn == "std.fs.open" || fqn == "std.fs.create"
     a || fqn == "core.char.char.try_from_u32"
 end lower.std_calls.has_fn1
@@ -149,7 +149,7 @@ fn lower.std_calls.has_method(fqn: &str) -> bool uses [] panics may pub
 end lower.std_calls.has_method
 
 // `mem.load.u8 %p +0`。
-fn lower.std_calls.ld8(c: &mut lower.cx.Cx, p: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.std_calls.ld8(c: &mut lower.cx.Cx, p: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let s = lower.cx.cat2("mem.load.u8 ", lower.cx.vs(p)?.as_str())?
     lower.cx.def(c, "u8", lower.cx.cat2(s.as_str(), " +0")?.as_str())
 end lower.std_calls.ld8
@@ -617,7 +617,7 @@ fn lower.std_calls.str_ends_with(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &
 end lower.std_calls.str_ends_with
 
 // `&str` どうしの `==` / `!=` (Rust 版 `str_eq`): 長さを比べ、1 バイトずつ比べるループをその場に出す。
-fn lower.std_calls.str_eq_inline(c: &mut lower.cx.Cx, l: lower.cx.R, r: lower.cx.R, ne: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.std_calls.str_eq_inline(c: &mut lower.cx.Cx, l: lower.cx.R, r: lower.cx.R, ne: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics never pub
     let pa = lower.loops.fld(c, "ptr", l.v, "+0")?
     let la = lower.loops.fld(c, "usize", l.v, "+8")?
     let pb = lower.loops.fld(c, "ptr", r.v, "+0")?

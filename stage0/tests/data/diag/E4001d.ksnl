@@ -2,7 +2,7 @@ trait t.Handler[E: uses, P: panics]
     fn handle(self: &Self) -> () uses [E] panics P
 end t.Handler
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     std.io.print_line("x")
 end t.main
 

@@ -116,7 +116,7 @@ fn kir_tuple_eq_matches_tree_walker() {
         assert_eq!(text(&k.stdout).trim(), "true", "kir value of {}", f);
     }
     // 失敗の文言: 木走査と KIR の標準エラーが一致する (タプルの表示)。
-    let fail = "fn t.fail() -> bool uses [io.console] panics may\n    core.check.eq((\"a\", \"b\"), (\"a\", \"c\"))\n    true\nend t.fail\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(t.fail())\n    Ok(())\nend t.main\n";
+    let fail = "fn t.fail() -> bool uses [] panics may\n    core.check.eq((\"a\", \"b\"), (\"a\", \"c\"))\n    true\nend t.fail\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.fail())\n    Ok(())\nend t.main\n";
     let tf = Tmp::new("kir_tuple_eq_fail", fail);
     let w = run(&["run"], &tf.0);
     let k = kir_run(&["kir", "t.fail", "--run"], &tf.0);
@@ -164,7 +164,7 @@ fn t.pts() -> i32 uses [] panics never
     sum
 end t.pts
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
     core.check.eq(t.shapes(), 30i32)
     core.check.eq(t.pts(), 7i32)
     Ok(())
@@ -179,7 +179,7 @@ end t.main
         assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
     }
     // 所有物の要素 (`String`) は理由付きで未対応。
-    let owned = "fn t.own() -> usize uses [alloc] panics may
+    let owned = "fn t.own() -> usize uses [] panics never
     let s = alloc.string.String.new(std.alloc.SYSTEM)
     let mut n = 0usize
     for x in [s] {
@@ -188,7 +188,7 @@ end t.main
     n
 end t.own
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
     core.check.eq(t.own(), 0usize)
     Ok(())
 end t.main
@@ -412,13 +412,13 @@ fn t.p5() -> bool uses [] panics never
     t.differs(1usize, 4usize)
 end t.p5
 
-fn t.show() -> () uses [io.console] panics may
+fn t.show() -> () uses [] panics may
     let arr = [1u8, 2u8, 3u8, 4u8, 5u8]
     let mid = arr.sub(1usize, 3usize)
     core.check.eq(mid, Some(&[9u8, 3u8]))
 end t.show
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
     core.check.eq(t.p1(), true)
     core.check.eq(t.p2(), false)
     core.check.eq(t.p3(), false)
@@ -453,31 +453,31 @@ fn kir_result_heap_owned_payloads_match_tree_walker() {
     // 段階 1: `Option<String>` / `Result<String, u8>` / `Result<Vec<u32>, u8>` を `Some`/`Ok`/`Err` で作り、
     // `match` でペイロードを取り出し、`?` で同じ E を伝え、スコープの終わりで解放する。
     // 観察値はスカラーに落とす (--run の入口は集成体を引数・戻り値に持てないため)。
-    let src = "fn t.mk_s() -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics may
+    let src = "fn t.mk_s() -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(\"banana\"))
     Some(s)
 end t.mk_s
 
-fn t.mk_n() -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics may
+fn t.mk_n() -> Option<alloc.string.String<std.alloc.System>> uses [] panics never
     None
 end t.mk_n
 
-fn t.opt_len() -> usize uses [alloc] panics may
+fn t.opt_len() -> usize uses [alloc] panics never
     match t.mk_s() {
         Some(x) => x.len()
         None => 99usize
     }
 end t.opt_len
 
-fn t.opt_none() -> usize uses [alloc] panics may
+fn t.opt_none() -> usize uses [] panics never
     match t.mk_n() {
         Some(_x) => 99usize
         None => 0usize
     }
 end t.opt_none
 
-fn t.mk_ok() -> Result<alloc.string.String<std.alloc.System>, u8> uses [alloc] panics may
+fn t.mk_ok() -> Result<alloc.string.String<std.alloc.System>, u8> uses [alloc] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(\"ok\"))
     Ok(s)
@@ -487,7 +487,7 @@ fn t.mk_err() -> Result<alloc.string.String<std.alloc.System>, u8> uses [] panic
     Err(3u8)
 end t.mk_err
 
-fn t.res_match_ok() -> usize uses [alloc] panics may
+fn t.res_match_ok() -> usize uses [alloc] panics never
     match t.mk_ok() {
         Ok(x) => x.len()
         Err(_e) => 99usize
@@ -501,43 +501,43 @@ fn t.res_match_err() -> usize uses [] panics never
     }
 end t.res_match_err
 
-fn t.q() -> Result<alloc.string.String<std.alloc.System>, u8> uses [alloc] panics may
+fn t.q() -> Result<alloc.string.String<std.alloc.System>, u8> uses [alloc] panics never
     Ok(t.mk_ok()?)
 end t.q
 
-fn t.q_len() -> usize uses [alloc] panics may
+fn t.q_len() -> usize uses [alloc] panics never
     match t.q() {
         Ok(x) => x.len()
         Err(_e) => 99usize
     }
 end t.q_len
 
-fn t.mk_v() -> Result<alloc.vec.Vec<u32, std.alloc.System>, u8> uses [alloc] panics may
+fn t.mk_v() -> Result<alloc.vec.Vec<u32, std.alloc.System>, u8> uses [alloc] panics never
     let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.mem.drop(v.push(1u32))
     core.mem.drop(v.push(2u32))
     Ok(v)
 end t.mk_v
 
-fn t.mk_ve() -> Result<alloc.vec.Vec<u32, std.alloc.System>, u8> uses [alloc] panics may
+fn t.mk_ve() -> Result<alloc.vec.Vec<u32, std.alloc.System>, u8> uses [] panics never
     Err(9u8)
 end t.mk_ve
 
-fn t.vlen() -> usize uses [alloc] panics may
+fn t.vlen() -> usize uses [alloc] panics never
     match t.mk_v() {
         Ok(v) => v.len()
         Err(_e) => 99usize
     }
 end t.vlen
 
-fn t.velen() -> usize uses [alloc] panics may
+fn t.velen() -> usize uses [] panics never
     match t.mk_ve() {
         Ok(_v) => 99usize
         Err(_e) => 0usize
     }
 end t.velen
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
     core.check.eq(t.opt_len(), 6usize)
     core.check.eq(t.opt_none(), 0usize)
     core.check.eq(t.res_match_ok(), 2usize)
@@ -577,7 +577,7 @@ fn kir_result_heap_user_error_match_tree_walker() {
     Msg(alloc.string.String<std.alloc.System>)
 end t.Err
 
-fn t.msg() -> Result<usize, t.Err> uses [alloc] panics may
+fn t.msg() -> Result<usize, t.Err> uses [alloc] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(\"message\"))
     Err(t.Err.Msg(s))
@@ -591,7 +591,7 @@ fn t.ok_v() -> Result<usize, t.Err> uses [] panics never
     Ok(42usize)
 end t.ok_v
 
-fn t.classify_msg() -> usize uses [alloc] panics may
+fn t.classify_msg() -> usize uses [alloc] panics never
     match t.msg() {
         Ok(n) => n
         Err(e) => match e {
@@ -620,7 +620,7 @@ fn t.ok_v_len() -> usize uses [] panics never
     }
 end t.ok_v_len
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
     core.check.eq(t.classify_msg(), 7usize)
     core.check.eq(t.classify_io(), 1usize)
     core.check.eq(t.ok_v_len(), 42usize)
@@ -723,7 +723,7 @@ fn t.first(pr: (i32, bool)) -> i32 uses [] panics never
     }
 end t.first
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
     core.check.eq(t.area(t.Sh.Circle(4i64)), 12i64)
     core.check.eq(t.area(t.Sh.Rect(3i64, 5i64)), 15i64)
     core.check.eq(t.area(t.Sh.Tag(true, 9i64)), 9i64)
@@ -1264,7 +1264,7 @@ end t.use_it
     // 範囲外の添字は wood-walker と同じく panic (101) となる。
     let msg = "index out of bounds: the len is 3 but the index is 5";
     let fns2 = "
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let _x = t.oob()
     Ok(())
 end t.main
@@ -1720,7 +1720,7 @@ end t.first
 // ---- KIR の段階 1 の拡張: Vec・String・&str・for・添字・クロージャ (kir/collections、設計_KIR.md 10.9) ----
 
 /// コレクション系の試験用の関数。値は木走査 (`ksn run`) と参照実行器 (`ksn kir --run`) で比べる。
-const KIR_COLL_FNS: &str = "fn t.vlen() -> usize uses [] panics may
+const KIR_COLL_FNS: &str = "fn t.vlen() -> usize uses [] panics never
     let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     v.len()
 end t.vlen
@@ -1760,7 +1760,7 @@ fn t.sum_skip(n: usize) -> usize uses [] panics may
     total
 end t.sum_skip
 
-fn t.first_at(n: usize) -> usize uses [] panics may
+fn t.first_at(n: usize) -> usize uses [] panics never
     let mut k = 0usize
     for i in core.iter.range(0usize, n) {
         let s = alloc.string.String.new(std.alloc.SYSTEM)
@@ -1772,7 +1772,7 @@ fn t.first_at(n: usize) -> usize uses [] panics may
     k
 end t.first_at
 
-fn t.brk(n: u32) -> u32 uses [] panics may
+fn t.brk(n: u32) -> u32 uses [] panics never
     let mut last = 0u32
     for i in core.iter.range(0u32, n) {
         last = i
@@ -1783,7 +1783,7 @@ fn t.brk(n: u32) -> u32 uses [] panics may
     last
 end t.brk
 
-fn t.empty_loop(n: u32) -> u32 uses [] panics may
+fn t.empty_loop(n: u32) -> u32 uses [] panics never
     let v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut total = n
     for x in v {
@@ -1795,7 +1795,7 @@ fn t.empty_loop(n: u32) -> u32 uses [] panics may
     total
 end t.empty_loop
 
-fn t.find(n: usize) -> usize uses [] panics may
+fn t.find(n: usize) -> usize uses [] panics never
     let mut i = 0usize
     while i < 10usize {
         for j in core.iter.range(0usize, 10usize) {
@@ -1849,7 +1849,7 @@ fn t.apply_n[F: core.ops.Fn<(u64,), u64, E, P>, E: uses, P: panics](f: F, n: u64
     acc
 end t.apply_n
 
-fn t.total(n: u64) -> u64 uses [] panics may
+fn t.total(n: u64) -> u64 uses [] panics never
     t.apply_n(
         fn(x: u64) -> u64 capture [] {
             x.wrapping_mul(3u64).wrapping_add(1u64)
@@ -2248,7 +2248,7 @@ fn t.vec_first(v: &alloc.vec.Vec<u8, std.alloc.System>) -> u8 uses [] panics may
     v[0usize]
 end t.vec_first
 
-fn t.vec_run() -> usize uses [] panics may
+fn t.vec_run() -> usize uses [] panics never
     let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     t.vec_len(&v)
 end t.vec_run
@@ -2639,7 +2639,7 @@ fn kir_own_reports_unsupported_moves_with_a_reason() {
     // (参照を通したフィールドの移動は `ksn check` が E3002 で拒否するので、ここには来ない。)
     let cases: &[(&str, &str, &str)] = &[
         (
-            "type t.B\n    items: alloc.vec.Vec<u8, std.alloc.System>\nend t.B\n\nfn t.mk() -> t.B uses [alloc] panics never\n    t.B { items: alloc.vec.Vec.new(std.alloc.SYSTEM) }\nend t.mk\n\nfn t.f() -> usize uses [alloc] panics never\n    let w = t.mk().items\n    w.len()\nend t.f\n",
+            "type t.B\n    items: alloc.vec.Vec<u8, std.alloc.System>\nend t.B\n\nfn t.mk() -> t.B uses [] panics never\n    t.B { items: alloc.vec.Vec.new(std.alloc.SYSTEM) }\nend t.mk\n\nfn t.f() -> usize uses [] panics never\n    let w = t.mk().items\n    w.len()\nend t.f\n",
             "t.f",
             "一時の値のフィールド",
         ),

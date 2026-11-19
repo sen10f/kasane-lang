@@ -30,7 +30,7 @@ fn ksn_fix_also_formats() {
 
 #[test]
 fn inferred_functions_pass_fmt_check() {
-    let src = "fn t.helper() -> u8
+    let src = "fn t.helper() -> u8 uses [] panics never
     1u8
 end t.helper
 
@@ -244,7 +244,7 @@ fn fmt_roundtrip(name: &str, src: &str, want: &str) {
 
 fn wrap_body(body: &str) -> String {
     format!(
-        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n{}    Ok(())\nend t.main\n",
+        "fn t.main() -> Result<(), std.io.Error> uses [] panics may\n{}    Ok(())\nend t.main\n",
         body
     )
 }
@@ -277,9 +277,10 @@ fn token_spacing_binary_prefix_generic_and_arrow() {
 #[test]
 fn list_order_in_headers_is_fixed_by_fmt_and_is_an_error_in_check() {
     // uses・capture の並び (D14): fmt が並べ替え、check は E0020。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.fs, io.console] panics may\n    Ok(())\nend t.main\n";
-    let want = "fn t.main() -> Result<(), std.io.Error> uses [io.console, io.fs] panics may\n    Ok(())\nend t.main\n";
-    fmt_roundtrip("order_uses", src, want);
+    let body = "    std.io.print_line(\"x\")?\n    core.mem.drop(std.fs.exists(\"x.txt\"))\n    Ok(())\nend t.main\n";
+    let src = format!("fn t.main() -> Result<(), std.io.Error> uses [io.fs, io.console] panics never\n{}", body);
+    let want = format!("fn t.main() -> Result<(), std.io.Error> uses [io.console, io.fs] panics never\n{}", body);
+    fmt_roundtrip("order_uses", &src, &want);
     let src = wrap_body("    let a = 1u32\n    let b = 2u32\n    let f = fn() -> u32 capture [&b, &a] {\n        *a + *b\n    }\n    core.check.eq(f(), 3u32)\n");
     let want = wrap_body("    let a = 1u32\n    let b = 2u32\n    let f = fn() -> u32 capture [&a, &b] {\n        *a + *b\n    }\n    core.check.eq(f(), 3u32)\n");
     fmt_roundtrip("order_capture", &src, &want);
@@ -306,8 +307,8 @@ fn a_tail_return_is_fixed_by_fmt_and_is_an_error_in_check() {
 #[test]
 fn while_true_is_fixed_to_loop_by_fmt_and_is_an_error_in_check() {
     // S16
-    let src = wrap_body("    let mut i = 0u32\n    while true {\n        i = i.wrapping_add(1u32)\n        if i == 3u32 {\n            break\n        }\n    }\n");
-    let want = wrap_body("    let mut i = 0u32\n    loop {\n        i = i.wrapping_add(1u32)\n        if i == 3u32 {\n            break\n        }\n    }\n");
+    let src = wrap_body("    let mut i = 0u32\n    while true {\n        i = i.wrapping_add(1u32)\n        if i == 3u32 {\n            break\n        }\n    }\n").replace("panics may", "panics never");
+    let want = wrap_body("    let mut i = 0u32\n    loop {\n        i = i.wrapping_add(1u32)\n        if i == 3u32 {\n            break\n        }\n    }\n").replace("panics may", "panics never");
     fmt_roundtrip("while_true", &src, &want);
 }
 

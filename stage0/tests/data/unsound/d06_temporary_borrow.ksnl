@@ -1,4 +1,4 @@
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     let r = t.same(&t.mk())
     let z = t.mk()
     core.mem.drop(t.peek(r))

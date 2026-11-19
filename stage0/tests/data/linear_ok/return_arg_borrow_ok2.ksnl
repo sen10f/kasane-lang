@@ -1,8 +1,8 @@
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-fn t.ok(x: &u32) -> Option<&u32> uses [io.console] panics never
+fn t.ok(x: &u32) -> Option<&u32> uses [] panics never
     let t = Some(x)
     t
 end t.ok

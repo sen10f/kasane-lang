@@ -1,4 +1,4 @@
-fn bench.sum_of_squares(n: u32) -> u32
+fn bench.sum_of_squares(n: u32) -> u32 uses [] panics may
     core.iter.fold(
         core.iter.range(0u32, n),
         0u32,

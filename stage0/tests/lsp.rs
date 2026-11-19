@@ -612,3 +612,75 @@ fn ksnh_formatting_and_save_rebuild_the_ksnl() {
     assert!(!ksnl.contains("///") && ksnl.contains("fn t.main"), "{}", ksnl);
     c.shutdown();
 }
+
+/// FQN で書いた呼び出し (import なし) の上の hover / definition (G50)。カーソルは各行の語の上。
+const FQN_MAIN: &str = "\
+fn t.main() -> u32 uses [] panics never pub
+    let r = t.util.inc(1u32)
+    core.mem.drop(r)
+    t.other.go(2u32)
+end t.main
+
+fn t.use_pair(p: t.other.Pair) -> u32 uses [] panics never pub
+    p.x
+end t.use_pair
+";
+
+const OTHER_MOD: &str = "\
+type t.other.Pair pub
+    x: u32
+end t.other.Pair
+
+fn t.other.go(a: u32) -> u32 uses [] panics never pub
+    a.wrapping_add(1u32)
+end t.other.go
+";
+
+#[test]
+fn hover_definition_fqn_calls_across_modules_std_and_types() {
+    let t = Tmp::new("fqn_nav", FQN_MAIN);
+    fs::create_dir_all(t.file("src/t")).unwrap();
+    fs::write(t.file("src/t/util.ksnl"), TWO_UTIL).unwrap();
+    fs::write(t.file("src/t/other.ksnl"), OTHER_MOD).unwrap();
+    let uri = t.uri("src/t.ksnl");
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    c.open(&uri, FQN_MAIN);
+    // 別のモジュールの関数 (`t.util.inc` の `inc` の上)。定義は `util.ksnl` の先頭行。
+    let md = c.call("textDocument/hover", at(&uri, 1, 19))["contents"]["value"].as_str().unwrap().to_string();
+    assert!(md.contains("fn t.util.inc(a: u32) -> u32"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 1, 19));
+    assert!(d[0]["uri"].as_str().unwrap().ends_with("src/t/util.ksnl"), "{}", d);
+    assert_eq!(d[0]["range"]["start"], json!({"line": 0, "character": 3}));
+    // 経路の途中のモジュール (`t.util` の `util` の上) はモジュール。
+    let md = c.call("textDocument/hover", at(&uri, 1, 14))["contents"]["value"].as_str().unwrap().to_string();
+    assert!(md.contains("モジュール `t.util`"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 1, 14));
+    assert!(d[0]["uri"].as_str().unwrap().ends_with("src/t/util.ksnl"), "{}", d);
+    // 経路の途中のモジュールは改名・参照の対象にしない (null)。
+    let r = c.call("textDocument/references", json!({"textDocument": tdoc(&uri), "position": {"line": 1, "character": 14}, "context": {"includeDeclaration": true}}));
+    assert_eq!(r, Value::Null);
+    // 標準ライブラリの関数 (`core.mem.drop` の `drop` の上): `.sig` の宣言。
+    let md = c.call("textDocument/hover", at(&uri, 2, 14))["contents"]["value"].as_str().unwrap().to_string();
+    assert!(md.contains("fn core.mem.drop[T](value: T) -> ()"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 2, 14));
+    assert!(d[0]["uri"].as_str().unwrap().ends_with("core/mem.sig"), "{}", d);
+    // 同じく、標準ライブラリのモジュール (`core.mem` の `mem` の上) はモジュール。
+    let md = c.call("textDocument/hover", at(&uri, 2, 9))["contents"]["value"].as_str().unwrap().to_string();
+    assert!(md.contains("モジュール `core.mem`"), "{}", md);
+    // 別のモジュールの関数 (`t.other.go` の `go` の上)、そのモジュール (`other` の上)。
+    let md = c.call("textDocument/hover", at(&uri, 3, 12))["contents"]["value"].as_str().unwrap().to_string();
+    assert!(md.contains("fn t.other.go(a: u32) -> u32"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 3, 12));
+    assert!(d[0]["uri"].as_str().unwrap().ends_with("src/t/other.ksnl"), "{}", d);
+    let md = c.call("textDocument/hover", at(&uri, 3, 6))["contents"]["value"].as_str().unwrap().to_string();
+    assert!(md.contains("モジュール `t.other`"), "{}", md);
+    // 別のモジュールの型 (`t.other.Pair` の `Pair` の上、行 6)。
+    let md = c.call("textDocument/hover", at(&uri, 6, 25))["contents"]["value"].as_str().unwrap().to_string();
+    assert!(md.contains("type t.other.Pair pub"), "{}", md);
+    let d = c.call("textDocument/definition", at(&uri, 6, 25));
+    assert!(d[0]["uri"].as_str().unwrap().ends_with("src/t/other.ksnl"), "{}", d);
+    // 何もない所 (行 2 の先頭の空白) は null。
+    assert_eq!(c.call("textDocument/hover", at(&uri, 2, 0)), Value::Null);
+    c.shutdown();
+}

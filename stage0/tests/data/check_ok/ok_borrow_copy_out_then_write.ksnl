@@ -1,0 +1,8 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut x = 1u32
+    let a = &x
+    let c = *a
+    x = 2u32
+    core.mem.drop(c.wrapping_add(x))
+    Ok(())
+end t.main

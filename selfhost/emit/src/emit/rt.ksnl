@@ -69,7 +69,7 @@ fn emit.rt.assemble(g: &mut emit.G, entry: &str, nparams: usize, res: bool, rty:
     }
 end emit.rt.assemble
 
-fn emit.rt.cstr(g: &mut emit.G, name: &str, text: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.rt.cstr(g: &mut emit.G, name: &str, text: &str) -> () uses [alloc] panics may pub
     let mut bytes: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let bb_b_ak = text.as_bytes()
     let mut kk_b_ak = 0usize
@@ -93,7 +93,7 @@ fn emit.rt.cstr(g: &mut emit.G, name: &str, text: &str) -> () uses [alloc, io.co
     emit.util.push_str(&mut g.outs.out, "\"\n")
 end emit.rt.cstr
 
-fn emit.rt.eprint_helper(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
+fn emit.rt.eprint_helper(g: &mut emit.G) -> () uses [alloc] panics may pub
     emit.util.push_str(&mut g.outs.out, "define private void @ksn.eprint(ptr %p, i64 %n) {\nentry:\n  br label %loop\n")
     emit.util.push_str(&mut g.outs.out, "loop:\n  %off = phi i64 [0, %entry], [%off2, %adv]\n  %left = sub i64 %n, %off\n")
     emit.util.push_str(&mut g.outs.out, "  %done = icmp eq i64 %left, 0\n  br i1 %done, label %ret, label %try\ntry:\n")
@@ -103,7 +103,7 @@ fn emit.rt.eprint_helper(g: &mut emit.G) -> () uses [alloc, io.console, process]
     emit.util.push_str(&mut g.outs.out, "  br label %loop\nret:\n  ret void\n}\n\n")
 end emit.rt.eprint_helper
 
-fn emit.rt.errno_row(k: usize) -> (u32, usize) uses [] panics may pub
+fn emit.rt.errno_row(k: usize) -> (u32, usize) uses [] panics never pub
     if k == 0usize {
         (1u32, 1usize)
     } else if k == 1usize {
@@ -125,7 +125,7 @@ fn emit.rt.errno_row(k: usize) -> (u32, usize) uses [] panics may pub
     }
 end emit.rt.errno_row
 
-fn emit.rt.panic_fn(g: &mut emit.G, name: &str, msg: &str) -> () uses [alloc, io.console, process] panics may pub
+fn emit.rt.panic_fn(g: &mut emit.G, name: &str, msg: &str) -> () uses [alloc] panics may pub
     let mut text = emit.util.new_str()
     emit.util.push_str(&mut text, "panic: ")
     emit.util.push_str(&mut text, msg)
@@ -142,7 +142,7 @@ fn emit.rt.panic_fn(g: &mut emit.G, name: &str, msg: &str) -> () uses [alloc, io
     emit.util.push_str(&mut g.outs.out, ")\n  call void @exit(i32 101)\n  unreachable\n}\n\n")
 end emit.rt.panic_fn
 
-fn emit.rt.write_helper(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
+fn emit.rt.write_helper(g: &mut emit.G) -> () uses [alloc] panics may pub
     emit.util.push_str(&mut g.outs.out, "define private i64 @ksn.write(i32 %fd, ptr %p, i64 %n) {\nentry:\n")
     emit.util.push_str(&mut g.outs.out, "  br label %loop\nloop:\n")
     emit.util.push_str(&mut g.outs.out, "  %off = phi i64 [0, %entry], [%off2, %adv], [%off, %fail]\n")

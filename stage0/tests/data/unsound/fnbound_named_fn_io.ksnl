@@ -3,6 +3,7 @@ fn t.apply[F: core.ops.Fn<(u32,), u32, [], never>](f: F) -> u32 uses [] panics n
 end t.apply
 
 fn t.chatty(x: u32) -> u32 uses [io.console] panics never
+    core.mem.drop(std.io.print_line("x"))
     x
 end t.chatty
 

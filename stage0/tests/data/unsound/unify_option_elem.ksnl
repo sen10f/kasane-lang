@@ -1,4 +1,4 @@
-fn t.main() -> () uses [alloc] panics may
+fn t.main() -> () uses [] panics never
     let a: Option<u64> = Some(1u64)
     let b: Option<alloc.string.String> = a
     core.mem.drop(b)

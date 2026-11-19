@@ -1,4 +1,4 @@
-fn t.bad() -> u32 uses [alloc] panics never
+fn t.bad() -> u32 uses [] panics never
     let mut x = 1u32
     let (_a, n) = t.pair(&x)
     let r = &x

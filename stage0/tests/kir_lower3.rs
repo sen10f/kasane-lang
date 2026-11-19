@@ -60,7 +60,7 @@ fn kir_eq_on_aggregates_reused_after_and_in_loop_match_tree_walker() {
     // 比較の後にも使う・ループの中で比べる。派生の比較は借用でなく値渡しだが、所有物を持たない (Copy でない) 型なので解放の問題は出ない。
     let src = "type t.P derive [Clone, PartialEq]\n    a: u8\n    b: i32\nend t.P\n\n\
 fn t.go(k: u8) -> u32 uses [] panics may\n    let a = t.P { a: 1u8, b: 2i32 }\n    let b = t.P { a: k, b: 2i32 }\n    let mut c = 0u32\n    let mut i = 0u32\n    while i < 3u32 {\n        if a == b {\n            c = c + 10u32\n        }\n        if a != b {\n            c = c + 1u32\n        }\n        i = i + 1u32\n    }\n    if a == b {\n        c = c + 100u32\n    }\n    c + u32.from_u8(a.a) + u32.from_u8(b.a)\nend t.go\n\n\
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.go(1u8), 132u32)\n    core.check.eq(t.go(4u8), 8u32)\n    Ok(())\nend t.main\n";
+fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.check.eq(t.go(1u8), 132u32)\n    core.check.eq(t.go(4u8), 8u32)\n    Ok(())\nend t.main\n";
     let t = Tmp::new("kir_eq_reuse", src);
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0), "tree-walker: {}{}", text(&o.stdout), text(&o.stderr));
@@ -76,8 +76,8 @@ fn kir_eq_on_aggregates_owning_heap_is_refused_with_a_reason() {
     // String を持つ型は derive できず (E2036)、手書きの eq は下ろせない。どちらにしても == / != は理由付きで拒否する (二重解放を作らない)。
     let src = "type t.P\n    name: alloc.string.String<std.alloc.System>\n    n: u32\nend t.P\n\nimpl core.cmp.PartialEq<t.P> for t.P\n\n\
 fn t.P.eq(self: &t.P, other: &t.P) -> bool uses [] panics never impls core.cmp.PartialEq<t.P>\n    self.n == other.n\nend t.P.eq\n\n\
-fn t.go() -> bool uses [alloc] panics never\n    let a = t.P { name: alloc.string.String.new(std.alloc.SYSTEM), n: 1u32 }\n    let b = t.P { name: alloc.string.String.new(std.alloc.SYSTEM), n: 1u32 }\n    let r = a == b\n    core.mem.drop(a)\n    core.mem.drop(b)\n    r\nend t.go\n\n\
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.go(), true)\n    Ok(())\nend t.main\n";
+fn t.go() -> bool uses [] panics never\n    let a = t.P { name: alloc.string.String.new(std.alloc.SYSTEM), n: 1u32 }\n    let b = t.P { name: alloc.string.String.new(std.alloc.SYSTEM), n: 1u32 }\n    let r = a == b\n    core.mem.drop(a)\n    core.mem.drop(b)\n    r\nend t.go\n\n\
+fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.check.eq(t.go(), true)\n    Ok(())\nend t.main\n";
     let t = Tmp::new("kir_eq_owning", src);
     let k = run(&["kir", "t.go", "--run"], &t.0);
     assert_eq!(k.status.code(), Some(1), "{}{}", text(&k.stdout), text(&k.stderr));
@@ -90,7 +90,7 @@ fn kir_get_on_vec_of_owning_elements_with_unsupported_pattern_is_refused_with_a_
     let src = "type t.Item\n    name: alloc.string.String<std.alloc.System>\n    v: u32\nend t.Item\n\n\
 fn t.make() -> alloc.vec.Vec<t.Item, std.alloc.System> uses [alloc] panics never\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(t.Item { name: s, v: 1u32 }))\n    v\nend t.make\n\n\
 fn t.pick(i: usize) -> u32 uses [alloc] panics never\n    let v = t.make()\n    let g = v.get(i)\n    match g {\n        None => 0u32\n        Some(t.Item { name: _, v: 1u32 }) => 1u32\n        Some(_) => 2u32\n    }\nend t.pick\n\n\
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.pick(0usize), 1u32)\n    Ok(())\nend t.main\n";
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may\n    core.check.eq(t.pick(0usize), 1u32)\n    Ok(())\nend t.main\n";
     let t = Tmp::new("kir_get_owning", src);
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
@@ -546,7 +546,7 @@ fn t.go(n: u16) -> u32 uses [alloc] panics never
     a.wrapping_add(b)
 end t.go
 
-fn t.main() -> () uses [alloc, io.console] panics may
+fn t.main() -> () uses [alloc] panics may
     core.check.eq(t.go(10u16), 1045u32)
 end t.main
 "#;
@@ -604,7 +604,7 @@ const DEREF_OPT_SRC: &str = r#"fn t.show(x: &u32) -> u32 uses [] panics never
     *x
 end t.show
 
-fn t.fill() -> Result<alloc.vec.Vec<u32>, alloc.alloc.AllocError> uses [alloc] panics may
+fn t.fill() -> Result<alloc.vec.Vec<u32>, alloc.alloc.AllocError> uses [alloc] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     v.push(3u32)?
     v.push(8u32)?
@@ -645,7 +645,7 @@ fn t.eqref(i: usize, x: u32) -> bool uses [alloc] panics may
     }
 end t.eqref
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
     core.check.eq(t.pick(1usize), 8u32)
     core.check.eq(t.pick(5usize), 9u32)
     core.check.eq(t.same(0usize, 3u32), true)
@@ -730,7 +730,7 @@ fn t.nested(n: u32) -> u32 uses [] panics never
     total
 end t.nested
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
     core.check.eq(t.sum(0u32, 4u32), 6u32)
     core.check.eq(t.sum(3u32, 3u32), 0u32)
     core.check.eq(t.sum_skip_break(0u32, 100u32, 2u32), 208u32)
@@ -1077,7 +1077,7 @@ fn kir_map_get_mut_in_a_match_lowers_and_writes_through() {
     }
 end t.bump
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
     core.check.eq(t.bump(3u32), 4u32)
     Ok(())
 end t.main
@@ -1104,9 +1104,9 @@ fn kir_review_field_move_in_one_branch_survives_the_join() {
     // 片方の分岐の中でフィールドを移すと、合流で移動が失われて二重解放になっていた
     // (`assigned` が、フィールドからの移動で書き換わる局所を数えなかった)。`if` と `match`。(`while` の中の移動は E3002 で拒否される。)
     let fns = "type t.B\n    items: alloc.vec.Vec<u32, std.alloc.System>\n    n: u32\nend t.B\n\n\
-fn t.mk() -> t.B uses [alloc] panics may\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(7u32))\n    t.B { items: v, n: 1u32 }\nend t.mk\n\n\
-fn t.f(c: bool) -> usize uses [alloc] panics may\n    let b = t.mk()\n    let mut r: usize = 0usize\n    if c {\n        let w = b.items\n        r = w.len()\n    }\n    r\nend t.f\n\n\
-fn t.g(k: u32) -> usize uses [alloc] panics may\n    let b = t.mk()\n    let mut r: usize = 0usize\n    match k {\n        0u32 => {\n            let w = b.items\n            r = w.len()\n        }\n        _ => {\n            r = 5usize\n        }\n    }\n    r\nend t.g\n";
+fn t.mk() -> t.B uses [alloc] panics never\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(7u32))\n    t.B { items: v, n: 1u32 }\nend t.mk\n\n\
+fn t.f(c: bool) -> usize uses [alloc] panics never\n    let b = t.mk()\n    let mut r: usize = 0usize\n    if c {\n        let w = b.items\n        r = w.len()\n    }\n    r\nend t.f\n\n\
+fn t.g(k: u32) -> usize uses [alloc] panics never\n    let b = t.mk()\n    let mut r: usize = 0usize\n    match k {\n        0u32 => {\n            let w = b.items\n            r = w.len()\n        }\n        _ => {\n            r = 5usize\n        }\n    }\n    r\nend t.g\n";
     kir_review_cases("fm_if", fns, "t.f", &[(&["true"], "t.f(true)", "1usize", "1"), (&["false"], "t.f(false)", "0usize", "0")]);
     kir_review_cases("fm_match", fns, "t.g", &[(&["0"], "t.g(0u32)", "1usize", "1"), (&["3"], "t.g(3u32)", "5usize", "5")]);
 }
@@ -1116,11 +1116,11 @@ fn kir_review_early_exit_frees_evaluated_owned_temporaries() {
     // `?` / `return` / `break` で抜けるとき、評価済みで未束縛の所有値 (引数・構造体のフィールド・タプルの要素) も解放する。
     let fns = "type t.P\n    a: alloc.vec.Vec<u32, std.alloc.System>\n    n: u32\nend t.P\n\n\
 fn t.g(c: bool) -> Option<u32> uses [] panics never\n    if c {\n        return Some(1u32)\n    }\n    None\nend t.g\n\n\
-fn t.mkv() -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics may\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(7u32))\n    v\nend t.mkv\n\n\
+fn t.mkv() -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics never\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(7u32))\n    v\nend t.mkv\n\n\
 fn t.h(v: alloc.vec.Vec<u32, std.alloc.System>, x: u32) -> usize uses [] panics never\n    core.mem.drop(x)\n    v.len()\nend t.h\n\n\
-fn t.f(c: bool) -> Option<usize> uses [alloc] panics may\n    Some(t.h(t.mkv(), t.g(c)?))\nend t.f\n\n\
-fn t.s(c: bool) -> Option<u32> uses [alloc] panics may\n    let p = t.P { a: t.mkv(), n: t.g(c)? }\n    Some(p.n)\nend t.s\n\n\
-fn t.tup(c: bool) -> Option<u32> uses [alloc] panics may\n    let (a, b) = (t.mkv(), t.g(c)?)\n    core.mem.drop(a)\n    Some(b)\nend t.tup\n\n\n\
+fn t.f(c: bool) -> Option<usize> uses [alloc] panics never\n    Some(t.h(t.mkv(), t.g(c)?))\nend t.f\n\n\
+fn t.s(c: bool) -> Option<u32> uses [alloc] panics never\n    let p = t.P { a: t.mkv(), n: t.g(c)? }\n    Some(p.n)\nend t.s\n\n\
+fn t.tup(c: bool) -> Option<u32> uses [alloc] panics never\n    let (a, b) = (t.mkv(), t.g(c)?)\n    core.mem.drop(a)\n    Some(b)\nend t.tup\n\n\n\
 fn t.ret(c: bool) -> usize uses [alloc] panics may\n    let n = t.h(t.mkv(), if c {\n        return 5usize\n    } else {\n        1u32\n    })\n    n + 10usize\nend t.ret\n\n\
 fn t.brk(k: u32) -> usize uses [alloc] panics may\n    let mut total = 0usize\n    let mut i = 0u32\n    while i < 4u32 {\n        let n = t.h(t.mkv(), if i == k {\n            break\n        } else {\n            1u32\n        })\n        total = total + n\n        i = i + 1u32\n    }\n    total\nend t.brk\n";
     kir_review_cases("early_arg", fns, "t.f", &[(&["true"], "t.f(true)", "Some(1usize)", "Some(1)"), (&["false"], "t.f(false)", "None", "None")]);
@@ -1244,11 +1244,11 @@ fn kir_review_rejects_borrow_shapes_that_read_freed_buffers() {
     // 二重解放・解放後の読みになるので、KIR の下ろしは理由を付けて拒む (設計_KIR.md 17.5 / 17.6)。
     let cases: &[(&str, &str)] = &[
         (
-            "type t.B\n    items: alloc.vec.Vec<u32, std.alloc.System>\n    n: u32\nend t.B\n\nfn t.f(r: &t.B) -> usize uses [alloc] panics may\n    let b = *r\n    b.items.len()\nend t.f\n",
+            "type t.B\n    items: alloc.vec.Vec<u32, std.alloc.System>\n    n: u32\nend t.B\n\nfn t.f(r: &t.B) -> usize uses [] panics never\n    let b = *r\n    b.items.len()\nend t.f\n",
             "借用の中身",
         ),
         (
-            "fn t.f(r: &alloc.vec.Vec<u32, std.alloc.System>) -> usize uses [alloc] panics may\n    let b = *r\n    b.len()\nend t.f\n",
+            "fn t.f(r: &alloc.vec.Vec<u32, std.alloc.System>) -> usize uses [] panics never\n    let b = *r\n    b.len()\nend t.f\n",
             "* の被演算子が参照でない",
         ),
         (
@@ -1256,7 +1256,7 @@ fn kir_review_rejects_borrow_shapes_that_read_freed_buffers() {
             "反復中の Vec を変更",
         ),
         (
-            "fn t.f() -> usize uses [alloc] panics may\n    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)\n    let mut k: alloc.string.String = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(k.push_str(\"abc\"))\n    core.mem.drop(m.insert(k.as_str(), 1u32))\n    core.mem.drop(k.push_str(\"defghijklmnopqrstuvwxyzabcdefghijklmnopq\"))\n    m.len()\nend t.f\n",
+            "fn t.f() -> usize uses [alloc] panics never\n    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)\n    let mut k: alloc.string.String = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(k.push_str(\"abc\"))\n    core.mem.drop(m.insert(k.as_str(), 1u32))\n    core.mem.drop(k.push_str(\"defghijklmnopqrstuvwxyzabcdefghijklmnopq\"))\n    m.len()\nend t.f\n",
             "元の String が関数の中で変更される",
         ),
     ];
@@ -1514,15 +1514,15 @@ fn kir_convert_error_via_from() {
 enum t.ErrIo derive [Debug, Clone, Copy, PartialEq, From] pub\n    Io(std.io.Error)\nend t.ErrIo\n\n\
 enum t.ErrStr derive [From] pub\n    S(alloc.string.String<std.alloc.System>)\nend t.ErrStr\n\n\
 fn t.dst_io(c: bool) -> Result<(), t.ErrIo> uses [] panics never\n    t.src_io(c)?\n    Ok(())\nend t.dst_io\n\n\
-fn t.dst_str(c: bool) -> Result<(), t.ErrStr> uses [alloc] panics never\n    t.src_str(c)?\n    Ok(())\nend t.dst_str\n\n\
+fn t.dst_str(c: bool) -> Result<(), t.ErrStr> uses [] panics never\n    t.src_str(c)?\n    Ok(())\nend t.dst_str\n\n\
 fn t.dst_u32(c: bool) -> Result<u32, t.Err32> uses [] panics never\n    let n = t.src_u32(c)?\n    Ok(n)\nend t.dst_u32\n\n\
 fn t.dst_u64(c: bool) -> Result<u64, t.Err32> uses [] panics never\n    t.src_unit(c)?\n    Ok(1007u64)\nend t.dst_u64\n\n\
 fn t.probe_io(c: bool) -> u32 uses [] panics never\n    match t.dst_io(c) {\n        Ok(()) => 1000u32\n        Err(t.ErrIo.Io(_)) => 42u32\n    }\nend t.probe_io\n\n\
-fn t.probe_str(c: bool) -> u32 uses [alloc] panics never\n    match t.dst_str(c) {\n        Ok(()) => 1000u32\n        Err(t.ErrStr.S(_)) => 42u32\n    }\nend t.probe_str\n\n\
+fn t.probe_str(c: bool) -> u32 uses [] panics never\n    match t.dst_str(c) {\n        Ok(()) => 1000u32\n        Err(t.ErrStr.S(_)) => 42u32\n    }\nend t.probe_str\n\n\
 fn t.probe_u32(c: bool) -> u32 uses [] panics never\n    match t.dst_u32(c) {\n        Ok(n) => n\n        Err(t.Err32.X(e)) => e\n    }\nend t.probe_u32\n\n\
 fn t.probe_u64(c: bool) -> u64 uses [] panics never\n    match t.dst_u64(c) {\n        Ok(n) => n\n        Err(t.Err32.X(_)) => 42u64\n    }\nend t.probe_u64\n\n\
 fn t.src_io(c: bool) -> Result<(), std.io.Error> uses [] panics never\n    if c {\n        return Ok(())\n    }\n    Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 })\nend t.src_io\n\n\
-fn t.src_str(c: bool) -> Result<(), alloc.string.String<std.alloc.System>> uses [alloc] panics never\n    if c {\n        return Ok(())\n    }\n    Err(alloc.string.String.new(std.alloc.SYSTEM))\nend t.src_str\n\n\
+fn t.src_str(c: bool) -> Result<(), alloc.string.String<std.alloc.System>> uses [] panics never\n    if c {\n        return Ok(())\n    }\n    Err(alloc.string.String.new(std.alloc.SYSTEM))\nend t.src_str\n\n\
 fn t.src_u32(c: bool) -> Result<u32, u32> uses [] panics never\n    if c {\n        return Ok(1007u32)\n    }\n    Err(42u32)\nend t.src_u32\n\n\
 fn t.src_unit(c: bool) -> Result<(), u32> uses [] panics never\n    if c {\n        return Ok(())\n    }\n    Err(42u32)\nend t.src_unit\n";
     kir_review_cases("conv_u32", fns, "t.probe_u32", &[
@@ -1549,7 +1549,7 @@ fn t.src_unit(c: bool) -> Result<(), u32> uses [] panics never\n    if c {\n    
 fn kir_float_display_matches_tree_walker_on_hard_values() {
     let src = "fn t.c64(b: u64) -> () uses [] panics may\n    core.check.eq(f64.from_bits(b), 2.5f64)\nend t.c64\n\n\
                fn t.c32(b: u32) -> () uses [] panics may\n    core.check.eq(f32.from_bits(b), 2.5f32)\nend t.c32\n\n\
-               fn t.main() -> () uses [] panics may\nend t.main\n";
+               fn t.main() -> () uses [] panics never\nend t.main\n";
     let t = Tmp::new("kir_float_hard", src);
     let v64: [f64; 12] = [1e100, f64::MAX, 5e-324, 2.2250738585072014e-308, 0.1 + 0.2, -0.0, 1e16, 1e-7, 2f64.powi(-25), 1658206780088562.25, f64::NAN, f64::NEG_INFINITY];
     for v in v64 {
@@ -1584,7 +1584,7 @@ fn kasane_lang_py_float(f: f64) -> String {
 /// `String.push_u64` の KIR の下ろし: 0 は "0" (最下位の桁は必ず書く)、u64 の最大値まで、2 回続けて書く。
 #[test]
 fn kir_push_u64_matches_tree_walker() {
-    let fns = "fn t.f(x: u64) -> usize uses [alloc] panics may\n    let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(s.push_str(\"a\"))\n    core.mem.drop(s.push_u64(x))\n    core.mem.drop(s.push_u64(x))\n    let mut h = 0usize\n    for c in s.as_str().chars() {\n        h = h.wrapping_mul(13usize)\n        if c == '0' {\n            h = h.wrapping_add(1usize)\n        }\n        if c == '9' {\n            h = h.wrapping_add(2usize)\n        }\n        if c == '1' {\n            h = h.wrapping_add(3usize)\n        }\n        if c == '5' {\n            h = h.wrapping_add(4usize)\n        }\n    }\n    h.wrapping_mul(100usize).wrapping_add(s.len())\nend t.f\n\n";
+    let fns = "fn t.f(x: u64) -> usize uses [alloc] panics never\n    let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(s.push_str(\"a\"))\n    core.mem.drop(s.push_u64(x))\n    core.mem.drop(s.push_u64(x))\n    let mut h = 0usize\n    for c in s.as_str().chars() {\n        h = h.wrapping_mul(13usize)\n        if c == '0' {\n            h = h.wrapping_add(1usize)\n        }\n        if c == '9' {\n            h = h.wrapping_add(2usize)\n        }\n        if c == '1' {\n            h = h.wrapping_add(3usize)\n        }\n        if c == '5' {\n            h = h.wrapping_add(4usize)\n        }\n    }\n    h.wrapping_mul(100usize).wrapping_add(s.len())\nend t.f\n\n";
     kir_review_cases("push_u64", fns, "t.f", &[
         (&["0"], "t.f(0u64)", "1403usize", "1403"),
         (&["10"], "t.f(10u64)", "680005usize", "680005"),
@@ -1610,7 +1610,7 @@ fn kir_push_u64_in_a_panics_never_function_matches_tree_walker() {
 /// 1〜4 バイト、途中で切れた列、過長な符号化、サロゲート、U+10FFFF 超。Ok は 1000、Err は `valid_up_to`。
 #[test]
 fn kir_from_utf8_matches_tree_walker() {
-    let fns = "fn t.c0() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"abc\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c0\n\nfn t.c1() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c1\n\nfn t.c2() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xc3\\xa9\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c2\n\nfn t.c3() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xe3\\x81\\x82\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c3\n\nfn t.c4() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xf0\\x9f\\x98\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c4\n\nfn t.c5() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xc3\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c5\n\nfn t.c6() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xe3\\x81\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c6\n\nfn t.c7() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xf0\\x9f\\x98\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c7\n\nfn t.c8() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xc0\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c8\n\nfn t.c9() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xe0\\x80\\xaf\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c9\n\nfn t.c10() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xed\\xa0\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c10\n\nfn t.c11() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xf4\\x90\\x80\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c11\n\nfn t.c12() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c12\n\nfn t.c13() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xff\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c13\n\nfn t.c14() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"a\\xe3\\x81\\x82b\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c14\n\nfn t.c15() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xef\\xbf\\xbf\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c15\n\nfn t.c16() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xf4\\x8f\\xbf\\xbf\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c16\n\nfn t.c17() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xc2\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c17\n\nfn t.c18() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"ab\\xc3\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c18\n";
+    let fns = "fn t.c0() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"abc\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c0\n\nfn t.c1() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c1\n\nfn t.c2() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xc3\\xa9\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c2\n\nfn t.c3() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xe3\\x81\\x82\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c3\n\nfn t.c4() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xf0\\x9f\\x98\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c4\n\nfn t.c5() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xc3\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c5\n\nfn t.c6() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xe3\\x81\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c6\n\nfn t.c7() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xf0\\x9f\\x98\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c7\n\nfn t.c8() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xc0\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c8\n\nfn t.c9() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xe0\\x80\\xaf\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c9\n\nfn t.c10() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xed\\xa0\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c10\n\nfn t.c11() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xf4\\x90\\x80\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c11\n\nfn t.c12() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c12\n\nfn t.c13() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xff\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c13\n\nfn t.c14() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"a\\xe3\\x81\\x82b\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c14\n\nfn t.c15() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xef\\xbf\\xbf\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c15\n\nfn t.c16() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xf4\\x8f\\xbf\\xbf\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c16\n\nfn t.c17() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"\\xc2\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c17\n\nfn t.c18() -> u64 uses [] panics never\n    match core.str.from_utf8(b\"ab\\xc3\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c18\n";
     let want = ["1000", "1000", "1000", "1000", "1000", "0", "0", "0", "0", "0", "0", "0", "0", "0", "1000", "1000", "1000", "1000", "2"];
     for (i, w) in want.iter().enumerate() {
         let f = format!("t.c{}", i);
@@ -2117,7 +2117,7 @@ fn t.box_mut_r(n: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panic
     Ok(*bx.as_ref())
 end t.box_mut_r
 
-fn t.box_mut(n: u32) -> u32 uses [alloc] panics may
+fn t.box_mut(n: u32) -> u32 uses [alloc] panics never
     match t.box_mut_r(n) {
         Ok(v) => v
         Err(_e) => 0u32
@@ -2135,7 +2135,7 @@ fn t.box_string_r(n: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc
     Ok(bx.as_ref().len())
 end t.box_string_r
 
-fn t.box_string(n: usize) -> usize uses [alloc] panics may
+fn t.box_string(n: usize) -> usize uses [alloc] panics never
     match t.box_string_r(n) {
         Ok(v) => v
         Err(_e) => 0usize
@@ -2166,7 +2166,7 @@ fn t.dyn_one_r(pick: bool) -> Result<u32, alloc.alloc.AllocError> uses [alloc] p
     Ok(total)
 end t.dyn_one_r
 
-fn t.dyn_one(pick: bool) -> u32 uses [alloc] panics may
+fn t.dyn_one(pick: bool) -> u32 uses [alloc] panics never
     match t.dyn_one_r(pick) {
         Ok(v) => v
         Err(_e) => 0u32
@@ -2217,7 +2217,7 @@ fn t.rect_str_r(w: u32, n: usize) -> Result<u32, alloc.alloc.AllocError> uses [a
     Ok(g.wrapping_add(s.h.area()))
 end t.rect_str_r
 
-fn t.rect_str(w: u32, n: usize) -> u32 uses [alloc] panics may
+fn t.rect_str(w: u32, n: usize) -> u32 uses [alloc] panics never
     match t.rect_str_r(w, n) {
         Ok(v) => v
         Err(_e) => 0u32
@@ -2240,7 +2240,7 @@ fn t.box_move_r(n: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] pani
     Ok(first.wrapping_add(*c.as_ref()))
 end t.box_move_r
 
-fn t.box_move(n: u32) -> u32 uses [alloc] panics may
+fn t.box_move(n: u32) -> u32 uses [alloc] panics never
     match t.box_move_r(n) {
         Ok(v) => v
         Err(_e) => 0u32
@@ -2253,7 +2253,7 @@ fn t.box_struct_r(s: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] pa
     Ok(sq.s)
 end t.box_struct_r
 
-fn t.box_struct(s: u32) -> u32 uses [alloc] panics may
+fn t.box_struct(s: u32) -> u32 uses [alloc] panics never
     match t.box_struct_r(s) {
         Ok(v) => v
         Err(_e) => 0u32
@@ -2267,7 +2267,7 @@ fn t.box_rect_r(w: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] pani
     Ok(b.as_ref().w)
 end t.box_rect_r
 
-fn t.box_rect(w: u32) -> u32 uses [alloc] panics may
+fn t.box_rect(w: u32) -> u32 uses [alloc] panics never
     match t.box_rect_r(w) {
         Ok(v) => v
         Err(_e) => 0u32
@@ -2462,7 +2462,7 @@ end t.check_url_at
 /// 木走査と `--run` / `--native` の値が一致する。各関数は `bool` を返し、木走査の `main` の検査が通る。
 #[test]
 fn kir_str_rest_matches_tree_walker() {
-    let helpers = r#"fn t.mk_s() -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may
+    let helpers = r#"fn t.mk_s() -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
     alloc.string.String.from_str(std.alloc.SYSTEM, "xy")
 end t.mk_s
 
@@ -2533,7 +2533,7 @@ fn kir_unwrap_err_enum_debug_matches_tree_walker() {
     Neg
 end t.Er
 
-fn t.pick(n: i32) -> Result<u32, t.Er> uses [] panics may
+fn t.pick(n: i32) -> Result<u32, t.Er> uses [] panics never
     if n > 0i32 {
         Ok(7u32)
     } else {

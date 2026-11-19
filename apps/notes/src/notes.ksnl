@@ -20,7 +20,7 @@ fn notes.args() -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, s
     Ok(out)
 end notes.args
 
-fn notes.main() -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs, time] panics may
+fn notes.main() -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs, time] panics never
     if std.env.arg_count() == 0usize {
         std.io.print_line(notes.USAGE)?
         return Ok(())

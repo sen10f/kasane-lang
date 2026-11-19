@@ -3,7 +3,7 @@ enum t.E
     B(i32)
 end t.E
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let e = t.E.Nope
     core.mem.drop(e)
     Ok(())

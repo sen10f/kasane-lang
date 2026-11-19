@@ -10,7 +10,7 @@ fn lower.str.as_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, t: usize
 end lower.str.as_str
 
 // ブロックの頭 `  bN(...):`。
-fn lower.str.bh(o: &mut alloc.string.String<std.alloc.System>, b: usize, ps: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.str.bh(o: &mut alloc.string.String<std.alloc.System>, b: usize, ps: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     o.push_str("  b")?
     o.push_str(lower.cx.dec(b)?.as_str())?
     o.push('(')?
@@ -137,7 +137,7 @@ fn lower.str.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, vs: &al
 end lower.str.method
 
 // `op %a, %b` / `op %a` の綴り。
-fn lower.str.op2(op: &str, a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.str.op2(op: &str, a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     s.push_str(op)?
     lower.str.pv(&mut s, a)?
@@ -417,7 +417,7 @@ fn lower.str.push_u64_text(o: &mut alloc.string.String<std.alloc.System>, fq: &s
 end lower.str.push_u64_text
 
 // 値の参照 `%k` を後ろへつなぐ。
-fn lower.str.pv(s: &mut alloc.string.String<std.alloc.System>, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.str.pv(s: &mut alloc.string.String<std.alloc.System>, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     s.push('%')?
     s.push_str(lower.cx.dec(k)?.as_str())?
     Ok(())

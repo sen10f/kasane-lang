@@ -6,7 +6,7 @@ fn t.deep(n: u64) -> u64 uses [] panics never stack 1000000
     }
 end t.deep
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     core.mem.drop(std.io.print_line("start"))
     core.mem.drop(t.deep(1000000000u64))
     core.mem.drop(std.io.print_line("unreachable"))

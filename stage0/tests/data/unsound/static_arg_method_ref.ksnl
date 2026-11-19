@@ -6,13 +6,13 @@ fn t.S.keep(self: &t.S, r: &'static str) -> u32 uses [] panics never
     self.n
 end t.S.keep
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let s = t.mk()
     let v = t.S { n: 1u32 }
     core.mem.drop(v.keep(s.as_str()))
     Ok(())
 end t.main
 
-fn t.mk() -> alloc.string.String uses [alloc] panics never
+fn t.mk() -> alloc.string.String uses [] panics never
     alloc.string.String.new(std.alloc.SYSTEM)
 end t.mk

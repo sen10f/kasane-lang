@@ -1,4 +1,4 @@
-fn t.f(v: &mut alloc.vec.Vec<u8, std.alloc.System>) -> () uses [alloc] panics may
+fn t.f(v: &mut alloc.vec.Vec<u8, std.alloc.System>) -> () uses [alloc] panics never
     v.push(1u8)
     ()
 end t.f

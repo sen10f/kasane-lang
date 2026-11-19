@@ -449,7 +449,7 @@ end t.main
 fn kir_fs_create_open_read_remove_match_tree_walker() {
     // `std.fs.create` / `open` / `close` / `sync` / `flush` / `remove_file` / `exists` を
     // 一時ディレクトリ上で使い、`ksn run` と `ksn kir --run` と `--native` の結果が一致すること。
-    let tmp = Tmp::new("kir_fs_tmp", "fn t.main() -> u32 uses [] panics may\n    0u32\nend t.main\n");
+    let tmp = Tmp::new("kir_fs_tmp", "fn t.main() -> u32 uses [] panics never\n    0u32\nend t.main\n");
     let path_str = tmp.0.join("fs_test.bin").to_string_lossy().replace('\\', "/");
     let src = format!(r#"
 fn t.main() -> u32 uses [io.fs] panics may
@@ -522,7 +522,7 @@ fn kir_fs_read_to_end_matches_tree_walker() {
     // 既存の要素 (3 バイト) の後ろへ足す。空・小さい・初期の伸び (4096) ちょうど・再確保が何度も起きる大きさで、
     // 木走査・`--run`・`--native` (ASan 込み) が同じ総数と同じバイト列 (重み付きの合計) を返すこと。
     // 読めない (ディレクトリ) ときは Err を返し、この呼び出しで足したバイトは残さないこと。
-    let tmp = Tmp::new("kir_read_to_end_tmp", "fn t.main() -> u32 uses [] panics may\n    0u32\nend t.main\n");
+    let tmp = Tmp::new("kir_read_to_end_tmp", "fn t.main() -> u32 uses [] panics never\n    0u32\nend t.main\n");
     for (label, n) in [("empty", 0usize), ("small", 5), ("chunk", 4096), ("grow", 10_000), ("big", 300_000)] {
         let file = tmp.0.join(format!("read_{label}.bin"));
         let bytes: Vec<u8> = (0..n).map(|i| ((i * 37 + 11) % 251) as u8).collect();
@@ -657,7 +657,7 @@ fn kir_lower_reports_unsupported_constructs_with_a_reason() {
     5usize
 end t.len_of
 
-fn t.main() -> Result<(), std.io.Error> uses [] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 ";
@@ -814,7 +814,7 @@ fn t.split_once_test() -> bool uses [] panics may
     r1 && r2 && r3 && r4 && r5
 end t.split_once_test
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
     core.check.eq(t.trim_test(), true)
     core.check.eq(t.split_once_test(), true)
     Ok(())
@@ -860,7 +860,7 @@ fn t.rest_test() -> bool uses [] panics never
     }
 end t.rest_test
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
     core.check.eq(t.pair_test(), true)
     core.check.eq(t.rest_test(), true)
     Ok(())
@@ -889,7 +889,7 @@ const PANIC_SRC: &str = r#"fn t.half(n: u32) -> Option<u32> uses [] panics may
     }
 end t.half
 
-fn t.pick(n: i32) -> Result<u32, i32> uses [] panics may
+fn t.pick(n: i32) -> Result<u32, i32> uses [] panics never
     if n > 0i32 {
         Ok(7u32)
     } else {
@@ -897,7 +897,7 @@ fn t.pick(n: i32) -> Result<u32, i32> uses [] panics may
     }
 end t.pick
 
-fn t.unit_err(n: i32) -> Result<u32, ()> uses [] panics may
+fn t.unit_err(n: i32) -> Result<u32, ()> uses [] panics never
     if n > 0i32 {
         Ok(7u32)
     } else {
@@ -1479,7 +1479,7 @@ const METHOD_VALUE_SRC: &str = r#"type t.B
     items: alloc.vec.Vec<u32, std.alloc.System>
 end t.B
 
-fn t.mk() -> t.B uses [alloc] panics may
+fn t.mk() -> t.B uses [alloc] panics never
     let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.mem.drop(v.push(7u32))
     t.B { items: v }
@@ -1493,18 +1493,18 @@ fn t.B.into(self: t.B) -> alloc.vec.Vec<u32, std.alloc.System> uses [] panics ne
     self.items
 end t.B.into
 
-fn t.m1() -> usize uses [alloc] panics may
+fn t.m1() -> usize uses [alloc] panics never
     let b = t.mk()
     b.total()
 end t.m1
 
-fn t.m4() -> usize uses [alloc] panics may
+fn t.m4() -> usize uses [alloc] panics never
     let b = t.mk()
     let v = b.into()
     v.len()
 end t.m4
 
-fn t.m5() -> usize uses [alloc] panics may
+fn t.m5() -> usize uses [alloc] panics never
     let b = t.mk()
     t.B.total(b)
 end t.m5"#;
@@ -1604,7 +1604,7 @@ fn t.go(n: usize) -> usize uses [alloc] panics never
     }
 end t.go
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
     core.check.eq(t.go(0usize), 23usize)
     Ok(())
 end t.main
@@ -1672,7 +1672,7 @@ fn kir_array_for_matches_tree_walker() {
 fn kir_array_of_aggregates_keeps_its_reason() {
     // 要素が所有物 (String) の配列は、移動と解放を扱わないので理由を付けて未対応にする
     // (所有物を持たない集成体の配列は、設計_KIR.md 17.21 で下ろした)。
-    let src = "fn t.g() -> usize uses [alloc] panics may pub
+    let src = "fn t.g() -> usize uses [] panics never pub
     let a = alloc.string.String.new(std.alloc.SYSTEM)
     let b = alloc.string.String.new(std.alloc.SYSTEM)
     let mut s = 0usize
@@ -1983,7 +1983,7 @@ fn t.code(a: i64, b: i64) -> i64 uses [] panics may
     }
 end t.code
 
-fn t.px(n: i64) -> i64 uses [] panics may
+fn t.px(n: i64) -> i64 uses [] panics never
     t.sum_opt(t.find(n))
 end t.px
 
@@ -2196,7 +2196,7 @@ fn t.p4() -> bool uses [] panics never
     t.bytes_has(\"hello\", 5usize, 5usize)
 end t.p4
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
     core.check.eq(t.p1(), true)
     core.check.eq(t.p2(), false)
     core.check.eq(t.p3(), false)
@@ -2290,33 +2290,33 @@ fn t.sub_last_yes() -> bool uses [] panics never
     }
 end t.sub_last_yes
 
-fn t.vec_empty() -> bool uses [alloc] panics may
+fn t.vec_empty() -> bool uses [] panics never
     let v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     t.vfirst_is(&v, 0u32)
 end t.vec_empty
 
-fn t.vec_first_yes() -> bool uses [alloc] panics may
+fn t.vec_first_yes() -> bool uses [alloc] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.mem.drop(v.push(5u32))
     core.mem.drop(v.push(6u32))
     t.vfirst_is(&v, 5u32)
 end t.vec_first_yes
 
-fn t.vec_last_yes() -> bool uses [alloc] panics may
+fn t.vec_last_yes() -> bool uses [alloc] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.mem.drop(v.push(5u32))
     core.mem.drop(v.push(6u32))
     t.vlast_is(&v, 6u32)
 end t.vec_last_yes
 
-fn t.vec_has_yes() -> bool uses [alloc] panics may
+fn t.vec_has_yes() -> bool uses [alloc] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.mem.drop(v.push(5u32))
     core.mem.drop(v.push(6u32))
     t.vhas(&v, 6u32)
 end t.vec_has_yes
 
-fn t.vec_has_no() -> bool uses [alloc] panics may
+fn t.vec_has_no() -> bool uses [alloc] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.mem.drop(v.push(5u32))
     core.mem.drop(v.push(6u32))

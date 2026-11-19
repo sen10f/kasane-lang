@@ -2,12 +2,12 @@ type wiki.csrf.CsrfManager pub
     tokens: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>
 end wiki.csrf.CsrfManager
 
-fn wiki.csrf.CsrfManager.new() -> Result<wiki.csrf.CsrfManager, wiki.error.Error> uses [alloc] panics never pub
+fn wiki.csrf.CsrfManager.new() -> Result<wiki.csrf.CsrfManager, wiki.error.Error> uses [] panics never pub
     let vec = alloc.vec.Vec.new(std.alloc.SYSTEM)
     Ok(wiki.csrf.CsrfManager { tokens: vec })
 end wiki.csrf.CsrfManager.new
 
-fn wiki.csrf.generate_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc, rand, time] panics never pub
+fn wiki.csrf.generate_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc, rand] panics never pub
     let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for _ in core.iter.range(0usize, 32usize) {
         buf.push(0u8)?
@@ -50,7 +50,7 @@ fn wiki.csrf.hex_digit(v: u8) -> char uses [] panics never pub
     }
 end wiki.csrf.hex_digit
 
-fn wiki.csrf.verify_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, token: &str) -> bool uses [alloc] panics never pub
+fn wiki.csrf.verify_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, token: &str) -> bool uses [] panics never pub
     let mut i = 0usize
     let n = tokens.len()
     while i < n {

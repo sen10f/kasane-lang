@@ -1,5 +1,5 @@
 fn t.boom(a: i32) -> i32 uses [] panics may
-    a
+    a + 1i32
 end t.boom
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

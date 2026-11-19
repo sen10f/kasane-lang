@@ -1,0 +1,2 @@
+expect: E3030
+note: 組を分解して返す形: 旧い検査 (borrowck.rs) は組の中の局所の借用を追わず通す (規則 L = tast_rules/lifetimes.rs は拒む)。

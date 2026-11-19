@@ -251,6 +251,7 @@ pub(crate) fn build_program_take(l: &mut Loaded) -> (Program, Vec<usize>) {
 
 fn build_program_with(l: &Loaded, taken: Option<&mut Vec<Vec<Def>>>) -> (Program, Vec<usize>) {
     let mut prog = empty_program();
+    prog.entry = l.pkg.entry();
     match taken {
         Some(t) => {
             for ds in t.iter_mut() {
@@ -749,7 +750,7 @@ fn cmd_new(name: &str) -> i32 {
     fs::write(
         Path::new(name).join("src").join(format!("{}.ksnl", name)),
         format!(
-            "fn {0}.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"Hello, Kasane!\")\nend {0}.main\n",
+            "fn {0}.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"Hello, Kasane!\")\nend {0}.main\n",
             name
         ),
     )
@@ -1397,7 +1398,12 @@ fn cmd_fix() -> i32 {
         }
         attach_fixes(&mut rep.items);
         let mut by_file: HashMap<String, Vec<crate::fixes::Fix>> = HashMap::new();
+        // 隠しの絞り込み (試験用): `KSN_FIX_ONLY=E4020,E4025` はそのコードの直しだけを当てる。
+        let only: Option<Vec<String>> = std::env::var("KSN_FIX_ONLY").ok().map(|v| v.split(',').map(|x| x.trim().to_string()).collect());
         for it in &rep.items {
+            if only.as_ref().map_or(false, |o| !o.contains(&it.code)) {
+                continue;
+            }
             for f in &it.fix {
                 by_file.entry(f.file.clone()).or_default().push(f.clone());
             }
@@ -2793,33 +2799,127 @@ fn cmd_update(args: &[String]) -> i32 {
             return fail(ProjectError { code: "E9017".into(), msg: format!("{} is not a dependency of {}", o, pkg.name) });
         }
     }
-    let mut lines = vec!["version = 1".to_string(), String::new()];
+    match write_lock_v2(&root, &deps, &old, only.as_deref(), &[]) {
+        Ok(()) => 0,
+        Err(e) => fail(e),
+    }
+}
+
+/// `kasane.lock` を版 2 で書く。`hash` は `fresh_hash` 以外 (`only` 指定で対象外) は既存を保つ。
+/// `api` / `unsafe_modules` は、既存の記録があれば書き換えない (承認の前に黙って新しくしない)。
+/// `accept` に挙げた依存と、記録の無い git 依存 (初めての記録・版 1 からの移行) は今の署名を書く。
+fn write_lock_v2(
+    root: &Path,
+    deps: &[Package],
+    old: &std::collections::HashMap<String, toml::Value>,
+    only: Option<&str>,
+    accept: &[String],
+) -> Result<(), ProjectError> {
+    let mut lines = vec!["version = 2".to_string(), String::new()];
     let mut sorted: Vec<&Package> = deps.iter().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
     for dp in sorted {
         lines.push("[[package]]".into());
         lines.push(format!("name = {}", toml_str(&dp.name)));
         lines.push(format!("source = {}", toml_str(&dp.source)));
-        if dp.source.starts_with("git+") {
-            let kept = only.as_ref().filter(|o| **o != dp.name).and_then(|_| old.get(&dp.name)).and_then(|e| e.get("hash")).and_then(|h| h.as_str()).map(String::from);
-            let hash = match kept {
-                Some(h) => h,
-                None => match try_package_hash(&dp.root) {
-                    Ok(h) => h,
-                    Err(e) => return fail(e),
-                },
-            };
-            lines.push(format!("hash = {}", toml_str(&hash)));
-        }
         let mut dn: Vec<String> =
             dp.manifest.get("dependencies").and_then(|d| d.as_table()).map(|t| t.keys().cloned().collect()).unwrap_or_default();
         dn.sort();
+        if dp.source.starts_with("git+") {
+            let kept = only.filter(|o| *o != dp.name).and_then(|_| old.get(&dp.name)).and_then(|e| e.get("hash")).and_then(|h| h.as_str()).map(String::from);
+            let hash = match kept {
+                Some(h) => h,
+                None => try_package_hash(&dp.root)?,
+            };
+            lines.push(format!("hash = {}", toml_str(&hash)));
+        }
         lines.push(format!("deps = [{}]", dn.iter().map(|x| toml_str(x)).collect::<Vec<_>>().join(", ")));
+        if dp.source.starts_with("git+") {
+            let recorded = old.get(&dp.name).and_then(crate::lockapi::read_api);
+            let (api, uns) = match recorded {
+                Some(r) if !accept.contains(&dp.name) => r,
+                _ => (crate::lockapi::api_of(dp), crate::lockapi::unsafe_of(dp)),
+            };
+            lines.extend(crate::lockapi::render_api(&api, &uns));
+        }
         lines.push(String::new());
     }
     let text = lines.join("\n").trim_end().to_string() + "\n";
-    fs::write(root.join("kasane.lock"), text).unwrap();
-    0
+    fs::write(root.join("kasane.lock"), text).map_err(|e| ProjectError { code: "E9019".into(), msg: format!("cannot write kasane.lock: {}", e) })
+}
+
+/// `ksn lock --accept <依存>... | --all | --diff | --upgrade`: 公開の署名と効果の記録 (版 2) を扱う。
+/// `--accept` は今の公開のヘッダを記録し直す (差分を出す)。`--diff` は書かずに差分だけ。
+/// `--upgrade` は版 1 のロックを 2 に上げる (記録の無い git 依存に今の署名を書く。既存の記録は保つ)。
+fn cmd_lock(args: &[String]) -> i32 {
+    let fail = |e: ProjectError| {
+        eprintln!("ksn: {}: {}", e.code, e.msg);
+        2
+    };
+    let (mut all, mut diff, mut upgrade) = (false, false, false);
+    let mut names: Vec<String> = vec![];
+    let mut accept_flag = false;
+    for a in args {
+        match a.as_str() {
+            "--accept" => accept_flag = true,
+            "--all" => all = true,
+            "--diff" => diff = true,
+            "--upgrade" => upgrade = true,
+            s if !s.starts_with("--") => names.push(s.to_string()),
+            _ => {
+                eprintln!("ksn: usage: ksn lock --accept <依存>... | --accept --all | --diff | --upgrade");
+                return 2;
+            }
+        }
+    }
+    if !((accept_flag && (all || !names.is_empty())) || diff || upgrade) {
+        eprintln!("ksn: usage: ksn lock --accept <依存>... | --accept --all | --diff | --upgrade");
+        return 2;
+    }
+    let (root, pkg) = match find_root().and_then(|r| load_package(&r).map(|p| (r, p))) {
+        Ok(x) => x,
+        Err(e) => return fail(e),
+    };
+    let deps = match load_deps(&pkg) {
+        Ok(d) => d,
+        Err(e) => return fail(e),
+    };
+    let old = old_lock(&root);
+    for n in &names {
+        match deps.iter().find(|d| d.name == *n) {
+            None => return fail(ProjectError { code: "E9017".into(), msg: format!("{} is not a dependency of {}", n, pkg.name) }),
+            Some(d) if !d.source.starts_with("git+") => {
+                return fail(ProjectError { code: "E9017".into(), msg: format!("{} is a path dependency; its api is not recorded", n) })
+            }
+            _ => {}
+        }
+    }
+    let targets: Vec<String> = if all || (diff && names.is_empty()) { deps.iter().filter(|d| d.source.starts_with("git+")).map(|d| d.name.clone()).collect() } else { names };
+    let mut changed = false;
+    for dp in deps.iter().filter(|d| targets.contains(&d.name)) {
+        let now = (crate::lockapi::api_of(dp), crate::lockapi::unsafe_of(dp));
+        match old.get(&dp.name).and_then(crate::lockapi::read_api) {
+            Some((o, ou)) => {
+                for (code, msg) in crate::lockapi::compare(&dp.name, &o, &ou, &now.0, &now.1) {
+                    println!("{}: {}", code, msg);
+                    changed = true;
+                }
+            }
+            None => {
+                println!("{}: no recorded api; will record {} definitions", dp.name, now.0.len());
+                changed = true;
+            }
+        }
+    }
+    if diff && !accept_flag && !upgrade {
+        return if changed { 1 } else { 0 };
+    }
+    let accept: Vec<String> = if upgrade && !accept_flag { vec![] } else { targets };
+    // `hash` は既存の記録を保つ (署名の承認で、複製の改ざんを黙って受け入れない)。
+    match write_lock_v2(&root, &deps, &old, Some("\u{0}"), &accept) {
+        Ok(()) => 0,
+        Err(e) => fail(e),
+    }
 }
 
 /// `ksn vendor`: git 依存 (推移的なものを含む) を取得元から取り直し、`vendor/<名前>/` に複製する。
@@ -2855,6 +2955,14 @@ fn cmd_vendor() -> i32 {
         let _ = fs::remove_dir_all(&dest);
         copy_distributed(&dp.root, &dest);
         let _ = fs::write(dest.join(".ksn-source"), format!("{}\n", dp.source));
+    }
+    // 初めての記録: 既存のロックに git 依存の記録が全部あるのに公開の署名が無い (版 1 から) ときだけ、今の署名を書く。
+    // すでに記録があるものは書き換えない (承認は `ksn lock --accept`)。
+    let gits: Vec<&Package> = deps.iter().filter(|d| d.source.starts_with("git+")).collect();
+    if !gits.is_empty() && gits.iter().all(|d| old.contains_key(&d.name)) && gits.iter().any(|d| old.get(&d.name).and_then(crate::lockapi::read_api).is_none()) {
+        if let Err(e) = write_lock_v2(&root, &deps, &old, Some("\u{0}"), &[]) {
+            return fail(e);
+        }
     }
     0
 }
@@ -3688,6 +3796,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "kir" => cmd_kir(&rest),
         "build" => cmd_build(&rest, None),
         "update" => cmd_update(&rest),
+        "lock" => cmd_lock(&rest),
         "vendor" => cmd_vendor(),
         "_exec" => cmd_exec(&rest),
         "--version" | "-V" => {
@@ -3696,7 +3805,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         }
         _ => {
             eprintln!(
-                "usage: ksn <new|check|fix|todo|context|fmt|run|test|debug|dap|build|get|sig|doc|index|refs|rename|explain|lsp|update|vendor> [args]"
+                "usage: ksn <new|check|fix|todo|context|fmt|run|test|debug|dap|build|get|sig|doc|index|refs|rename|explain|lsp|update|lock|vendor> [args]"
             );
             2
         }

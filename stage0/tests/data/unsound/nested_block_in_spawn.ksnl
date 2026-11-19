@@ -1,4 +1,4 @@
-fn t.main() -> () uses [io.console, suspend] panics may
+fn t.main() -> () uses [suspend] panics may
     std.task.block_on(fn() -> () capture [] {
         let a = std.task.spawn_local(fn() -> () capture [] {
             std.task.block_on(fn() -> () capture [] {

@@ -180,6 +180,8 @@ pub struct ThreadV {
     pub result: RefCell<Option<Val>>,
     /// 0 = 未実行、1 = 実行中、2 = 完了
     pub state: Cell<u8>,
+    /// このスレッドの呼び出しの深さの上限 (`spawn_deep` の引数。`spawn` は `kir_exec::MAX_DEPTH`)。
+    pub depth: usize,
 }
 
 /// 値が (入れ子を含めて) チャネルの端を持つか。持つ値は、変数から別へ渡すとき元の変数を空にする (移動の近似)。

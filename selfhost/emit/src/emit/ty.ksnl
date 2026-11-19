@@ -23,14 +23,14 @@ type emit.ty.Ty derive [Clone, Copy] pub
     b: usize pub
 end emit.ty.Ty
 
-fn emit.ty.get(g: &emit.G, id: usize) -> emit.ty.Ty uses [io.console, process] panics may pub
+fn emit.ty.get(g: &emit.G, id: usize) -> emit.ty.Ty uses [] panics may pub
     match g.tab.tys.get(id) {
         Some(t) => *t
         None => core.panic.panic("internal: type id out of range")
     }
 end emit.ty.get
 
-fn emit.ty.int_bits(g: &emit.G, id: usize) -> usize uses [io.console, process] panics may pub
+fn emit.ty.int_bits(g: &emit.G, id: usize) -> usize uses [] panics may pub
     let t = emit.ty.get(g, id)
     if t.kind == (emit.ty.K_INT) {
         usize.from_u32(t.bits)
@@ -39,7 +39,7 @@ fn emit.ty.int_bits(g: &emit.G, id: usize) -> usize uses [io.console, process] p
     }
 end emit.ty.int_bits
 
-fn emit.ty.is_signed(g: &emit.G, id: usize) -> bool uses [io.console, process] panics may pub
+fn emit.ty.is_signed(g: &emit.G, id: usize) -> bool uses [] panics may pub
     emit.ty.get(g, id).signed
 end emit.ty.is_signed
 
@@ -152,7 +152,7 @@ fn emit.ty.parse(g: &mut emit.G, s: &str) -> usize uses [alloc, io.console, proc
     core.panic.panic("unsupported type in KIR (floats and others are not in this emitter yet)")
 end emit.ty.parse
 
-fn emit.ty.push(g: &mut emit.G, kind: u32, bits: u32, signed: bool, mutbl: bool, a: usize, b: usize) -> usize uses [alloc, io.console, process] panics may pub
+fn emit.ty.push(g: &mut emit.G, kind: u32, bits: u32, signed: bool, mutbl: bool, a: usize, b: usize) -> usize uses [alloc] panics may pub
     let at = g.tab.tys.len()
     let t = emit.ty.Ty { kind: kind, bits: bits, signed: signed, mutbl: mutbl, a: a, b: b }
     match g.tab.tys.push(t) {
@@ -184,7 +184,7 @@ fn emit.ty.slot(g: &emit.G, id: usize) -> usize uses [io.console, process] panic
     m
 end emit.ty.slot
 
-fn emit.ty.split_top(s: &str) -> (&str, &str) uses [io.console, process] panics may pub
+fn emit.ty.split_top(s: &str) -> (&str, &str) uses [] panics may pub
     let b = s.as_bytes()
     let mut depth = 0u32
     let mut i = 0usize

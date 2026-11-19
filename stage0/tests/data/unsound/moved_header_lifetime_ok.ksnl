@@ -6,7 +6,7 @@ fn t.H.set['a](self: &mut t.H<'a>, r: &'a str) -> () uses [] panics never
     self.r = r
 end t.H.set
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     let s = alloc.string.String.new(std.alloc.SYSTEM)
     let mut h = t.H { r: "x" }
     h.set(t.same("a", "b"))
