@@ -88,13 +88,38 @@ with tempfile.TemporaryDirectory() as td:
     src = os.path.join(td, 'src', 'hr.ksnl')
     open(src, 'w', newline=NLC).write(HR)
 
-    def edit_rs():
-        time.sleep(1.2)
-        open(src, 'w', newline=NLC).write(HR.replace('v1', 'v2'))
-    threading.Thread(target=edit_rs).start()
-    r = subprocess.run([RSEXE, 'run', '--watch'], cwd=td, capture_output=True, text=True, encoding='utf-8')
+    proc = subprocess.Popen([RSEXE, 'run', '--watch'], cwd=td,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding='utf-8')
+    assert proc.stdout is not None and proc.stderr is not None
+    out_parts = []
+    err_parts = []
+
+    def drain(stream, parts):
+        for line in stream:
+            parts.append(line)
+
+    tout = threading.Thread(target=drain, args=(proc.stdout, out_parts))
+    terr = threading.Thread(target=drain, args=(proc.stderr, err_parts))
+    tout.start()
+    terr.start()
+    # 旧版（v1）が少なくとも 1 回出るまで走らせてから書き換える。
+    # 木走査・VM とも標準出力は終了時にまとめてフラッシュされるので、増分で v1 を観測できず、
+    # 猶予で旧版の実行を保証する。ウォッチャは 200 ms 毎に poll し、書き換え後すぐにリロードする。
+    time.sleep(1.0)
+    open(src, 'w', newline=NLC).write(HR.replace('v1', 'v2'))
+    try:
+        rc = proc.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        rc = -1
+    tout.join()
+    terr.join()
+    out = ''.join(out_parts)
+    err = ''.join(err_parts)
     step('rust ksn: hot reload applies a body change while running',
-         r.returncode == 0 and 'v1' in r.stdout and 'v2' in r.stdout and 'bodies updated' in r.stderr, r.stdout + r.stderr)
+         rc == 0 and 'v1' in out and 'v2' in out and 'bodies updated' in err, out + err)
 cache2 = tempfile.mkdtemp(prefix='ksn_runtests_cache_')
 # 後始末: 正常終了でも例外でも消す (KSN_KEEP_TMP=1 のときは残す)。
 atexit.register(lambda: None if os.environ.get('KSN_KEEP_TMP') == '1' else shutil.rmtree(cache2, ignore_errors=True))
