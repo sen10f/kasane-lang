@@ -128,6 +128,16 @@ fn place(idx: usize, blobs: &[Vec<u8>], base: usize, out: &mut Vec<Vec<u8>>) -> 
 /// `k.resolve.parse_file` 4.3〜4.7 KiB が最大) でも 5 KiB 未満。枠の上限を 8 KiB と見て 100000 × 8 KiB = 約 800 MiB を
 /// ネイティブのスレッドのスタック (`NATIVE_STACK_BYTES` = 1 GiB) に収める。
 pub const MAX_DEPTH: usize = 100_000;
+/// モジュールの深さの上限 (`Module::depth`。0 は既定の `MAX_DEPTH`)。
+pub fn depth_limit(module_depth: u64) -> usize {
+    if module_depth == 0 {
+        MAX_DEPTH
+    } else {
+        module_depth as usize
+    }
+}
+/// 入口の `depth M` に書ける最大値 (E4015)。
+pub const MAX_DEPTH_LIMIT: usize = 10_000_000;
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
@@ -723,6 +733,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
         let result = extern_call(&m.funcs[entry], args)?;
         return Ok(Outcome::Value(result));
     }
+    let max_depth = depth_limit(m.depth);
     let counts: Vec<usize> = m.funcs.iter().map(|f| f.value_count()).collect();
     // 関数ごとの値番号 → 型 (`store` が書く値の型を知るため)。
     let vtys: Vec<Vec<Ty>> = m
@@ -1434,7 +1445,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 Op::Payload(a) => pay_read(inst.ty, get(&stack[top], a) & PAY_MASK, &heap),
                 Op::Checked { op, a, b } => checked(*op, inst.ty, get(&stack[top], a), get(&stack[top], b)),
                 Op::Call { callee, args } => {
-                    if stack.len() >= MAX_DEPTH {
+                    if stack.len() >= max_depth {
                         return Ok(Outcome::StackOverflow);
                     }
                     let Some(&ci) = index.get(callee.as_str()) else {

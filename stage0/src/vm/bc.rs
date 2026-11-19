@@ -330,6 +330,8 @@ pub struct Prog {
     pub by_key: std::collections::HashMap<String, u32>,
     /// `global.bytes` の領域 (名前 → アドレス。プログラムごとに 1 つ、解放しない)。
     pub globals: std::collections::HashMap<String, usize>,
+    /// 呼び出しの深さの上限 (`Module::depth` から。0 は既定)。
+    pub depth: u64,
 }
 
 impl Prog {

@@ -227,6 +227,16 @@ fn fix_lists(line: &str) -> String {
         return line.to_string();
     }
     let mut l = line.to_string();
+    // ヘッダの `depth M stack N` は `stack N depth M` の並びにする (正規形は stack が先)。
+    if l.trim_start().starts_with("fn ") {
+        if let Some(p) = l.find(" depth ") {
+            let toks: Vec<&str> = l[p + 1..].split(' ').collect();
+            if toks.len() >= 4 && toks[2] == "stack" && toks[1].chars().all(|c| c.is_ascii_digit()) && !toks[3].is_empty() && toks[3].chars().all(|c| c.is_ascii_digit()) {
+                let rest = if toks.len() > 4 { format!(" {}", toks[4..].join(" ")) } else { String::new() };
+                l = format!("{} stack {} depth {}{}", &l[..p], toks[3], toks[1], rest);
+            }
+        }
+    }
     // uses: 具体の効果 (小文字始まり) をバイト順、効果変数 (大文字始まり) は元の順で後ろ。
     let mut from = 0;
     while let Some(p) = l[from..].find("uses [") {

@@ -1150,7 +1150,7 @@ impl<'a> Lw<'a> {
             return r;
         }
         // `std.thread.spawn(allocator, closure)`。
-        if segs == ["std", "thread", "spawn"] {
+        if segs == ["std", "thread", "spawn"] || segs == ["std", "thread", "spawn_deep"] {
             let Some(r) = thread_lower::spawn_call(self, e, &segs, args, line) else {
                 return self.err(line, "std.thread.spawn は段階 1 の対象外");
             };
@@ -2082,7 +2082,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
             }
         }
         if drop.is_empty() {
-            let mut m = Module { funcs: ok.iter().map(|(f, _)| f.clone()).collect(), aggs: aggs.borrow().defs.clone() };
+            let mut m = Module { funcs: ok.iter().map(|(f, _)| f.clone()).collect(), aggs: aggs.borrow().defs.clone(), depth: 0 };
             // 中断する関数と閉包の本体を、枠の形 (`.new` / `.poll`) にする (設計_KIR.md 26 章)。変換できなければ落とす。
             drop.extend(kir_suspend::transform(&mut m, &task_lower::task_keys()));
             for (key, msg) in kir::verify_module(&m) {
@@ -2098,7 +2098,8 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     let mut funcs = funcs;
     funcs.sort_by(|a, b| a.key.cmp(&b.key));
     bad.sort();
-    let mut module = Module { funcs, aggs: all_aggs };
+    let depth = entry.and_then(|e| p.funcs.get(e)).and_then(|&i| p.defs[i].depth).unwrap_or(0);
+    let mut module = Module { funcs, aggs: all_aggs, depth };
     kir::prune_aggs(&mut module);
     Lowered { module, unsupported: bad, lines: LINES.with(|l| std::mem::take(&mut *l.borrow_mut())) }
 }
