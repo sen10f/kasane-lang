@@ -1997,6 +1997,15 @@ fn place(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     if let Some(s) = local_slot(lw, e) {
         return Ok(Some(lw.slots[s].0));
     }
+    // 配列の欄 (`self.buf.sub_mut(..)`): 欄の先頭の番地と長さ N のスライスの値 (`fat`) を受け手にする。
+    if matches!(nname(e), "Path" | "Field") {
+        let line = nline(e);
+        if let Some((Seq::Ptr(pp, n), _)) = array_field_place(lw, e, line)? {
+            let len = lw.emit(Ty::Usize, Op::Const(n as i128));
+            let fat = lw.fat_ty();
+            return Ok(Some(lw.emit(fat, Op::Make { variant: None, fields: vec![pp, len] })));
+        }
+    }
     lw.expr(e)
 }
 
@@ -2124,6 +2133,9 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     }
     if m == "sub" || m == "sub_mut" {
         return slice_sub(lw, line, &kind, h, args);
+    }
+    if m == "copy_from" && matches!(kind, Kind::Slice(Some(_))) {
+        return slice_copy_from(lw, e, line, &kind, h, args);
     }
     if let Some(r) = super::ext::ext_call(lw, e, line, &kind, h, m, args, false) {
         return r;
@@ -3721,4 +3733,73 @@ pub(crate) fn array_field_place(lw: &mut Lw, e: &V, line: usize) -> LR<Option<(S
     let r = lw.emit(Ty::Ref(true, Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: buf });
     lw.emit(Ty::Unit, Op::Store { ptr: r, val: v });
     Ok(Some((Seq::Ptr(buf, n), et)))
+}
+
+/// `dst.copy_from(src)` (要素はスカラー): 長さが同じなら先頭から 1 要素ずつ写して `Ok(())`、違えば `Err(LengthError { expected: dst の長さ })`。
+/// 木走査 (`natives.rs` の `copy_from`) と同じ。結果は `Result<(), core.slice.LengthError>`。
+pub(super) fn slice_copy_from(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
+    let Kind::Slice(Some(elem)) = kind else {
+        return lw.err(line, "copy_from の対象は要素型の分かるスライスだけ段階 1 の対象");
+    };
+    let elem = *elem;
+    if args.len() != 1 {
+        return lw.err(line, "copy_from の引数は 1 つのはず");
+    }
+    let Some(sz) = elem_size(lw, elem) else {
+        return lw.err(line, format!("copy_from の要素の型 {} は段階 1 の対象外", elem.name()));
+    };
+    if owns_heap(lw, elem) {
+        return lw.err(line, "copy_from の要素は所有物を持たない型だけ");
+    }
+    let rt = lw.ty_of(e)?;
+    let Ty::Res(_, ep) = rt else {
+        return lw.err(line, "copy_from の結果の型が Result でない");
+    };
+    let Some(src) = lw.expr(&args[0])? else { return Ok(None) };
+    if lw.vty(src) != lw.fat_ty() {
+        return lw.err(line, "copy_from の引数はスライスだけ段階 1 の対象");
+    }
+    let (dlen, dbase) = Seq::Fat(h).len_and_base(lw, None);
+    let (slen, sbase) = Seq::Fat(src).len_and_base(lw, None);
+    let same = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: dlen, b: slen });
+    let (go, _) = lw.new_block(&[]);
+    let (bad, _) = lw.new_block(&[]);
+    let (join, jp) = lw.new_block(&[rt]);
+    lw.branch(same, (go, vec![]), (bad, vec![]));
+    // 長さが違う: Err(LengthError { expected: dst の長さ })
+    lw.cur = Some(bad);
+    let le = lw.emit(ep.ty(), Op::Make { variant: None, fields: vec![dlen] });
+    let errv = lw.emit(rt, Op::Err(le));
+    lw.goto(join, vec![errv]);
+    // 写すループ: i = 0 .. len
+    lw.cur = Some(go);
+    let zero = lw.emit(Ty::Usize, Op::Const(0));
+    let (hb, hp) = lw.new_block(&[Ty::Usize]);
+    lw.goto(hb, vec![zero]);
+    lw.cur = Some(hb);
+    let i = hp[0];
+    let more = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: dlen });
+    let (body, _) = lw.new_block(&[]);
+    let (done, _) = lw.new_block(&[]);
+    lw.branch(more, (body, vec![]), (done, vec![]));
+    lw.cur = Some(body);
+    let off = if sz == 1 {
+        i
+    } else {
+        let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
+        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: k })
+    };
+    let sa = lw.emit(Ty::Ptr, Op::PtrAdd { p: sbase, off });
+    let da = lw.emit(Ty::Ptr, Op::PtrAdd { p: dbase, off });
+    let x = load_elem(lw, sa, elem);
+    store_elem(lw, da, elem, x);
+    let one = lw.emit(Ty::Usize, Op::Const(1));
+    let next = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
+    lw.goto(hb, vec![next]);
+    lw.cur = Some(done);
+    let u = lw.unit();
+    let okv = lw.emit(rt, Op::Ok(u));
+    lw.goto(join, vec![okv]);
+    lw.cur = Some(join);
+    Ok(Some(jp[0]))
 }
