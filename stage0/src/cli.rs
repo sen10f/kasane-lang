@@ -23,6 +23,7 @@ const VERSION: &str = "0.1.0";
 fn lint_code(c: &str) -> &'static str {
     match c {
         "fqn" => "E1001",
+        "nfqn" => "E0062",
         "name" => "E0010",
         "order" | "fmtdiff" => "E0020",
         "attr" => "E0021",
@@ -447,6 +448,11 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         let mut guided: Vec<usize> = vec![];
         if s.error.is_some() || !gram.as_ref().map_or(false, |g| g.0) {
             for h in crate::rustisms::scan(&s.text) {
+                // E0062 (`fn` の名前がモジュールを含まない) は、構文エラーの無いファイルでは lint の E0062 が
+                // 実モジュール名つきで出すので、rustisms の側は構文エラーのファイルだけに限る (同じ行を二重に報じない)。
+                if h.code == "E0062" && s.error.is_none() {
+                    continue;
+                }
                 guided.push(h.line);
                 rep.add(h.code, &h.msg, Some(&fl), h.line, h.col, true);
             }

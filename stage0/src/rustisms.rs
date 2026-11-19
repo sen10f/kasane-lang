@@ -12,6 +12,16 @@ pub struct Hit {
     pub msg: String,
 }
 
+/// 定義の名前がモジュールのパスを含まないときの文面 (`module` が無いときは `<module>` を出す)。
+/// rustisms の E0062 と lint の E1001 の分流けの両方から使い、文面を 1 つにそろえる。
+pub fn name_needs_module_msg(kw: &str, module: Option<&str>, name: &str) -> String {
+    let m = module.unwrap_or("<module>");
+    format!(
+        "a `{}` is named by its full path, module first: write `{} {}.{}(..)` and close it with `end {}.{}` (e.g. `fn lib.util.apply(x: u32) -> u32` / `end lib.util.apply`). The same rule applies to `fn` / `type` / `enum` / `trait` / `test`",
+        kw, kw, m, name, m, name
+    )
+}
+
 /// 行から、リテラルとコメントを空白に置き換えたコード部分 (文字数は変えない) を返す。
 fn code_part(line: &str) -> Vec<char> {
     let chars: Vec<char> = line.chars().collect();
@@ -130,11 +140,20 @@ pub fn scan(text: &str) -> Vec<Hit> {
         // 波括弧の本体: `fn ... {` / `enum X {` / `type X (...)`  と、列 0 の `}`
         let first = t.trim_start().split_whitespace().next().unwrap_or("");
         if indent == 0 && matches!(first, "fn" | "enum" | "type" | "trait" | "impl") && t.ends_with('{') {
-            hits.push(Hit {
-                code: "E0043",
-                line: ln,
-                col: t.chars().count(),
-                msg: format!(
+            // `impl` は Kasane にもある (1 行の宣言だけで、本体はメソッドの `fn` 側) ので、波括弧の直し方を別に案内する。
+            let impl_msg = |tr: &str, ty: &str| {
+                format!(
+                    "Kasane has no `impl` block: `impl {} for {}` is a ONE-LINE declaration with no body (no `{{`). Write each method as `fn {}.<method>(self: ...) -> .. impls {}` and close it with `end {}.<method>`",
+                    tr, ty, ty, tr, ty
+                )
+            };
+            let msg = if first == "impl" {
+                let ws: Vec<&str> = t.trim_start().split_whitespace().collect();
+                let tr = ws.get(1).unwrap_or(&"Trait").split(['(', '[', '<']).next().unwrap_or("Trait");
+                let ty = ws.iter().position(|w| *w == "for").and_then(|i| ws.get(i + 1)).unwrap_or(&"Type").split(['(', '[', '<']).next().unwrap_or("Type");
+                impl_msg(tr, ty)
+            } else {
+                format!(
                     "Kasane definitions have no braces: write the header on one line, indent the body by 4 spaces, and close with `end <FQN>` (e.g. `end {}`). Blocks INSIDE the body (`if` / `else` / `while` / `for` / `loop` / `match`) still use `{{ ... }}`",
                     t.trim_start()
                         .split_whitespace()
@@ -143,7 +162,44 @@ pub fn scan(text: &str) -> Vec<Hit> {
                         .split(['(', '[', '<'])
                         .next()
                         .unwrap_or("app.name")
-                ),
+                )
+            };
+            hits.push(Hit {
+                code: "E0043",
+                line: ln,
+                col: t.chars().count(),
+                msg,
+            });
+        }
+        // `fn` の名前がモジュールのパスを含まない (Rust のフリーメソッド)。FQN の検査 (E1001) は通るので
+        // 別のコードで、書き方を 1 つに直す指示を出す (`fn` は行頭の語のときだけ見る)。
+        {
+            let head = t.trim_start();
+            if head.starts_with("fn") && head[2..].starts_with(char::is_whitespace) {
+                let rest = head[2..].trim_start();
+                // 名前は `[A-Za-z0-9_.]+` (パスの区切りも読む)。`.` が無ければモジュールを含まない。
+                let n = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect::<String>();
+                if !n.is_empty() && !n.contains('.') {
+                    let spaces = rest.chars().count() - rest.trim_start().chars().count();
+                    let col = head.chars().take_while(|c| c.is_whitespace()).count() + 2 + spaces + 1;
+                    hits.push(Hit {
+                        code: "E0062",
+                        line: ln,
+                        col,
+                        msg: name_needs_module_msg("fn", None, &n),
+                    });
+                }
+            }
+        }
+        // 構造体リテラル・構造体パターンのフィールドの省略形 (`bench.Point { x, y }`)。省略形はない。
+        // Rust と違って型情報が無いので、`{` の直前の語が大文字始まり (型名) の枠だけを見る
+        // (rustisms は構文エラーのファイルでだけ動くので、正しいコードを誤って止めることはない)。
+        for at in shorthand_fields(&cs) {
+            hits.push(Hit {
+                code: "E0061",
+                line: ln,
+                col: at + 1,
+                msg: "Kasane has no field shorthand: every field of a struct literal or a struct pattern is `name: value` (e.g. `bench.Point { x: x, y: y }`)".into(),
             });
         }
         // Rust のクロージャ `|x| ...`: Kasane は `fn(x: T) -> U capture [] { ... }`。
@@ -343,6 +399,63 @@ fn word_positions(cs: &[char]) -> Vec<(usize, String)> {
         }
     }
     out
+}
+
+/// 構造体リテラル・構造体パターンのフィールドの省略形 (`bench.Point { x, y }`) の名前の位置 (0 始まり) を返す。
+/// `{` の直前の語が大文字始まり (型名) のときだけ、その中を `,` で区切り、
+/// 識別子だけの要素 (`x` ・ `x, y` の `y`) を省略形と見る (`x: x` と書くのが Kasane の唯一の形)。
+fn shorthand_fields(cs: &[char]) -> Vec<usize> {
+    let mut out = vec![];
+    for i in 0..cs.len() {
+        if cs[i] != '{' {
+            continue;
+        }
+        let mut k = i;
+        while k > 0 && cs[k - 1] == ' ' {
+            k -= 1;
+        }
+        let mut w = k;
+        while w > 0 && (cs[w - 1].is_alphanumeric() || cs[w - 1] == '_') {
+            w -= 1;
+        }
+        if w == k || !cs[w].is_uppercase() {
+            continue;
+        }
+        // 対応する `}` までを、括弧の深さを見ながら `,` で区切る (入れ子の `{ a, b }` は外側では 1 要素)。
+        let mut depth = 0usize;
+        let mut start = i + 1;
+        let mut j = i + 1;
+        while j < cs.len() {
+            match cs[j] {
+                '{' | '[' | '(' => depth += 1,
+                ']' | ')' => depth = depth.saturating_sub(1),
+                '}' if depth == 0 => {
+                    push_shorthand(&cs[start..j], start, &mut out);
+                    break;
+                }
+                '}' => depth -= 1,
+                ',' if depth == 0 => {
+                    push_shorthand(&cs[start..j], start, &mut out);
+                    start = j + 1;
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+    }
+    out
+}
+
+/// 1 要素 (`cs[start..end]`、空白は除く) が識別子だけなら、その位置を拾う。
+fn push_shorthand(part: &[char], start: usize, out: &mut Vec<usize>) {
+    let lead = part.iter().take_while(|c| **c == ' ').count();
+    let tail = part.iter().rev().take_while(|c| **c == ' ').count();
+    let mid = part.len().saturating_sub(tail);
+    let el = if mid < lead { &part[0..0] } else { &part[lead..mid] };
+    // 識別子だけの要素 (`x`・`x, y` の `y`) を省略形と見る (`x: x` と書くのが Kasane の唯一の形)。
+    if !el.is_empty() && (el[0].is_alphabetic() || el[0] == '_') && el.iter().all(|c| c.is_alphanumeric() || *c == '_') {
+        out.push(start + lead);
+    }
 }
 
 /// `Path(ident: ...` を探し、`(` の位置を返す (関数呼び出しやヘッダの引数 `f(a: u8)` は除く)。

@@ -708,7 +708,8 @@ pub fn own_len_method(srcs: &[&str]) -> bool {
 fn is_own_len_def(line: &str) -> bool {
     let Some(rest) = line.strip_prefix("fn ") else { return false };
     let name = rest.split('(').next().unwrap_or("").trim_end();
-    let Some((last, _)) = name.rsplit_once('.') else { return false };
+    // 名前の最後の成分 (`t.Item.len` の `len`)。`.` が無いフリーの `fn len(` も独自定義と数える (抑制側に倒す)。
+    let Some(last) = name.rsplit('.').next() else { return false };
     if !matches!(last, "len" | "is_empty") {
         return false;
     }
