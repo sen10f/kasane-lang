@@ -1,0 +1,197 @@
+test bench.Inventory.test_add_and_count
+    let mut inv = bench.Inventory.new()
+    core.check.eq(inv.count(), 0usize)
+    inv.add("pen", 10u32, 100u32)?
+    core.check.eq(inv.count(), 1usize)
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_add_and_count
+
+test bench.Inventory.test_add_existing_keeps_price
+    let mut inv = bench.Inventory.new()
+    inv.add("pen", 10u32, 100u32)?
+    inv.add("pen", 5u32, 999u32)?
+    core.check.eq(inv.count(), 1usize)
+    match inv.take("pen", 15u32) {
+        Ok(item) => core.check.eq(item, bench.Item { qty: 0u32, price: 100u32 })
+        Err(_e) => core.check.eq(0usize, 1usize)
+    }
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_add_existing_keeps_price
+
+test bench.Inventory.test_find_below
+    let mut inv = bench.Inventory.new()
+    inv.add("pen", 5u32, 10u32)?
+    inv.add("book", 1u32, 20u32)?
+    inv.add("bag", 9u32, 30u32)?
+    let low = inv.find_below(5u32)?
+    core.check.eq(low.len(), 1usize)
+    match low.get(0usize) {
+        Some(n) => core.check.eq(n.as_str(), "book")
+        None => core.check.eq(0usize, 1usize)
+    }
+    let all = inv.find_below(10u32)?
+    core.check.eq(all.len(), 3usize)
+    let none = inv.find_below(0u32)?
+    core.check.eq(none.len(), 0usize)
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_find_below
+
+test bench.Inventory.test_is_empty
+    let mut inv = bench.Inventory.new()
+    core.check.eq(inv.is_empty(), true)
+    inv.add("pen", 1u32, 10u32)?
+    core.check.eq(inv.is_empty(), false)
+    core.mem.drop(inv.remove("pen")?)
+    core.check.eq(inv.is_empty(), true)
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_is_empty
+
+test bench.Inventory.test_names_after_remove
+    let mut inv = bench.Inventory.new()
+    inv.add("pen", 1u32, 10u32)?
+    inv.add("book", 2u32, 20u32)?
+    core.mem.drop(inv.remove("pen")?)
+    let names = inv.names()?
+    core.check.eq(names.len(), 1usize)
+    match names.get(0usize) {
+        Some(n) => core.check.eq(n.as_str(), "book")
+        None => core.check.eq(0usize, 1usize)
+    }
+    core.check.eq(inv.count(), 1usize)
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_names_after_remove
+
+test bench.Inventory.test_names_in_insertion_order
+    let mut inv = bench.Inventory.new()
+    inv.add("c", 1u32, 1u32)?
+    inv.add("a", 2u32, 2u32)?
+    inv.add("b", 3u32, 3u32)?
+    inv.add("a", 4u32, 4u32)?
+    let names = inv.names()?
+    core.check.eq(names.len(), 3usize)
+    match names.get(0usize) {
+        Some(n) => core.check.eq(n.as_str(), "c")
+        None => core.check.eq(0usize, 1usize)
+    }
+    match names.get(1usize) {
+        Some(n) => core.check.eq(n.as_str(), "a")
+        None => core.check.eq(0usize, 1usize)
+    }
+    match names.get(2usize) {
+        Some(n) => core.check.eq(n.as_str(), "b")
+        None => core.check.eq(0usize, 1usize)
+    }
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_names_in_insertion_order
+
+test bench.Inventory.test_remove_present_and_missing
+    let mut inv = bench.Inventory.new()
+    inv.add("pen", 3u32, 120u32)?
+    match inv.remove("pen") {
+        Ok(item) => core.check.eq(item, bench.Item { qty: 3u32, price: 120u32 })
+        Err(_e) => core.check.eq(0usize, 1usize)
+    }
+    core.check.eq(inv.count(), 0usize)
+    core.check.eq(inv.remove("pen"), Err(bench.InvError.NotFound))
+    core.check.eq(inv.remove("book"), Err(bench.InvError.NotFound))
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_remove_present_and_missing
+
+test bench.Inventory.test_restock
+    let mut inv = bench.Inventory.new()
+    core.check.eq(inv.restock("pen", 5u32), Err(bench.InvError.NotFound))
+    inv.add("pen", 3u32, 100u32)?
+    inv.restock("pen", 7u32)?
+    match inv.take("pen", 10u32) {
+        Ok(item) => core.check.eq(item, bench.Item { qty: 0u32, price: 100u32 })
+        Err(_e) => core.check.eq(0usize, 1usize)
+    }
+    inv.restock("pen", 1u32)?
+    match inv.take("pen", 1u32) {
+        Ok(item) => core.check.eq(item, bench.Item { qty: 0u32, price: 100u32 })
+        Err(_e) => core.check.eq(0usize, 1usize)
+    }
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_restock
+
+test bench.Inventory.test_restock_removed_fails
+    let mut inv = bench.Inventory.new()
+    inv.add("pen", 1u32, 10u32)?
+    core.mem.drop(inv.remove("pen")?)
+    core.check.eq(inv.restock("pen", 5u32), Err(bench.InvError.NotFound))
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_restock_removed_fails
+
+test bench.Inventory.test_take_missing
+    let mut inv = bench.Inventory.new()
+    core.check.eq(inv.take("pen", 1u32), Err(bench.InvError.NotFound))
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_take_missing
+
+test bench.Inventory.test_take_normal
+    let mut inv = bench.Inventory.new()
+    inv.add("pen", 10u32, 100u32)?
+    match inv.take("pen", 4u32) {
+        Ok(item) => core.check.eq(item, bench.Item { qty: 6u32, price: 100u32 })
+        Err(_e) => core.check.eq(0usize, 1usize)
+    }
+    match inv.take("pen", 6u32) {
+        Ok(item) => core.check.eq(item, bench.Item { qty: 0u32, price: 100u32 })
+        Err(_e) => core.check.eq(0usize, 1usize)
+    }
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_take_normal
+
+test bench.Inventory.test_take_too_many
+    let mut inv = bench.Inventory.new()
+    inv.add("pen", 10u32, 100u32)?
+    core.check.eq(inv.take("pen", 11u32), Err(bench.InvError.Insufficient(1u32)))
+    core.check.eq(inv.take("pen", 100u32), Err(bench.InvError.Insufficient(90u32)))
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_take_too_many
+
+test bench.Inventory.test_take_zero_from_empty_stock
+    let mut inv = bench.Inventory.new()
+    inv.add("pen", 0u32, 500u32)?
+    match inv.take("pen", 0u32) {
+        Ok(item) => core.check.eq(item, bench.Item { qty: 0u32, price: 500u32 })
+        Err(_e) => core.check.eq(0usize, 1usize)
+    }
+    core.check.eq(inv.take("pen", 1u32), Err(bench.InvError.Insufficient(1u32)))
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_take_zero_from_empty_stock
+
+test bench.Inventory.test_total_value
+    let mut inv = bench.Inventory.new()
+    core.check.eq(inv.total_value()?, 0u64)
+    inv.add("pen", 3u32, 200u32)?
+    inv.add("book", 2u32, 350u32)?
+    core.check.eq(inv.total_value()?, 1300u64)
+    core.mem.drop(inv.take("pen", 3u32)?)
+    core.check.eq(inv.total_value()?, 700u64)
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_total_value
+
+test bench.Inventory.test_total_value_skips_removed
+    let mut inv = bench.Inventory.new()
+    inv.add("pen", 3u32, 200u32)?
+    inv.add("book", 2u32, 350u32)?
+    core.mem.drop(inv.remove("pen")?)
+    core.check.eq(inv.total_value()?, 700u64)
+    let fin: Result<(), bench.InvError> = Ok(())
+    fin
+end bench.Inventory.test_total_value_skips_removed
