@@ -53,7 +53,10 @@ r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'test_harn
 step('bench/test_harness.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
 
 # 2. Rust 版の cargo test (試験のバイナリを並列に回す。ビルドは 0 で先に済ませる)
-r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'par_test.py'), '--tier', 'full'],
+# 段は既定で full。担当の統合の前の確かめ (kasane-verify/tools/fulltest.sh) は KSN_TEST_TIER=fast で速い段だけにし、
+# 遅い段のうち統合で落ちやすい言い換えの試験 (rephrase) は別に回す。
+_tier = os.environ.get('KSN_TEST_TIER', 'full')
+r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'par_test.py'), '--tier', _tier],
                    capture_output=True, text=True, encoding='utf-8', errors='replace')
 # 落ちたときは、失敗したテストの名前と panic の行を先に出す (末尾は警告で埋まることがある)。
 _ct = r.stdout + r.stderr
