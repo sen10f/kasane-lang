@@ -325,7 +325,7 @@ fn ty_to_v_generic(t: &crate::types::Ty) -> Option<V> {
         Ty::Param(n) => V::L(vec![s("named"), s(n), V::L(vec![])]),
         Ty::Tuple(xs) => V::L(vec![s("tuple"), V::L(xs.iter().map(ty_to_v_generic).collect::<Option<Vec<V>>>()?)]),
         Ty::Array(x, _) => V::L(vec![s("array"), ty_to_v_generic(x)?]),
-        Ty::Named(n, args) => V::L(vec![s("named"), s(n), V::L(args.iter().map(ty_to_v_generic).collect::<Option<Vec<V>>>()?)]),
+        Ty::Named(n, args, _) => V::L(vec![s("named"), s(n), V::L(args.iter().map(ty_to_v_generic).collect::<Option<Vec<V>>>()?)]),
         Ty::Ref(..) | Ty::Ptr(..) | Ty::Slice(_) => return None,
         other => crate::types::TypeCk::to_v(other)?,
     })
@@ -349,7 +349,7 @@ fn ty_to_v_loose(t: &crate::types::Ty) -> Option<V> {
         Ty::Param(n) => V::L(vec![s("named"), s(n), V::L(vec![])]),
         Ty::Tuple(xs) => V::L(vec![s("tuple"), V::L(xs.iter().map(ty_to_v_loose).collect::<Option<Vec<V>>>()?)]),
         Ty::Array(x, _) => V::L(vec![s("array"), ty_to_v_loose(x)?]),
-        Ty::Named(n, args) => V::L(vec![s("named"), s(n), V::L(args.iter().map(ty_to_v_loose).collect::<Option<Vec<V>>>()?)]),
+        Ty::Named(n, args, _) => V::L(vec![s("named"), s(n), V::L(args.iter().map(ty_to_v_loose).collect::<Option<Vec<V>>>()?)]),
         Ty::Ref(..) | Ty::Ptr(..) | Ty::Slice(_) => return None,
         other => crate::types::TypeCk::to_v(other)?,
     })
@@ -361,8 +361,8 @@ fn ty_fully_known(t: &crate::types::Ty) -> bool {
     match t {
         Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Closure { .. } => false,
         Ty::Never | Ty::Unit | Ty::Prim(_) | Ty::Const(_) | Ty::Dyn(..) => true,
-        Ty::Named(_, xs) | Ty::Tuple(xs) => xs.iter().all(ty_fully_known),
-        Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => ty_fully_known(x),
+        Ty::Named(_, xs, _) | Ty::Tuple(xs) => xs.iter().all(ty_fully_known),
+        Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => ty_fully_known(x),
     }
 }
 
@@ -709,7 +709,8 @@ fn subst_ty_params(t: &V, bind: &HashMap<String, V>) -> V {
         return V::L(vec![V::S("named".into()), V::S(nm), V::L(new_args)]);
     }
     match tag(t).as_str() {
-        "ref" | "ptr" => V::L(vec![tel(t, 0).clone(), tel(t, 1).clone(), subst_ty_params(tel(t, 2), bind)]),
+        "ref" => V::L(vec![tel(t, 0).clone(), tel(t, 1).clone(), subst_ty_params(tel(t, 2), bind), tel(t, 3).clone()]),
+        "ptr" => V::L(vec![tel(t, 0).clone(), tel(t, 1).clone(), subst_ty_params(tel(t, 2), bind)]),
         "slice" => V::L(vec![V::S("slice".into()), subst_ty_params(tel(t, 1), bind)]),
         "array" => V::L(vec![V::S("array".into()), subst_ty_params(tel(t, 1), bind), tel(t, 2).clone()]),
         "tuple" => V::L(vec![
@@ -1890,7 +1891,7 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let w = self.def(r.writer);
-            let crate::types::Ty::Named(n, _) = r.recv.strip() else { continue };
+            let crate::types::Ty::Named(n, _, _) = r.recv.strip() else { continue };
             // 標準ライブラリの型のメソッドは飛ばす (可視性は規範の `.sig` が決める)。フィールドは標準の型も検査する:
             // `alloc.raw.Buf` の `initialized` のような内部の欄を利用者が外から書けてはならない (E1122)。
             // 標準の型のメソッドは、非 `pub` なら層の外 (利用者のコード) から呼べない。
@@ -3321,12 +3322,12 @@ impl<'a> Checker<'a> {
             let Some(et) = tk.tytab.get(&(fqn.clone(), nid)) else { continue };
             // 基が参照 (`&[T]` / `&Vec<T>`) なら剥がして要素型を見る。
             let mut base = &et.ty;
-            while let crate::types::Ty::Ref(_, inner) = base {
+            while let crate::types::Ty::Ref(_, inner, _) = base {
                 base = inner.as_ref();
             }
             let el = match base {
                 crate::types::Ty::Array(el, _) | crate::types::Ty::Slice(el) => Some(el.as_ref()),
-                crate::types::Ty::Named(_, args) => args.first(),
+                crate::types::Ty::Named(_, args, _) => args.first(),
                 _ => None,
             };
             let Some(el) = el else { continue };
@@ -3390,6 +3391,10 @@ impl<'a> Checker<'a> {
         // 確認 (隠し機能): `KSN_DUMP_SIDE=1` のとき側の表を stderr に出す (各表の 1 行目は `side <表の名前>`)。
         if std::env::var_os("KSN_DUMP_SIDE").is_some() {
             eprint!("{}", crate::tast::dump_resolved_fn(self.p, &tk.side));
+        }
+        // 確認 (隠し機能): `KSN_DUMP_SIDE=1` のとき領域の表 (`# regions`。設計 9 章) を stderr に出す。
+        if std::env::var_os("KSN_DUMP_SIDE").is_some() {
+            eprint!("{}", crate::tast::dump_regions(self.p, &tk.side));
         }
         // 計測 (隠し機能): `KSN_TYPE_SURVEY=1` のとき TAST の事前調査の表を stderr に出す (survey.rs)。読むだけ。
         if std::env::var_os("KSN_TYPE_SURVEY").is_some() {
@@ -3742,9 +3747,9 @@ impl<'a> Checker<'a> {
         match t {
             crate::types::Ty::Unknown | crate::types::Ty::Var(_) | crate::types::Ty::Param(_) => true,
             crate::types::Ty::Never | crate::types::Ty::Unit | crate::types::Ty::Prim(_) => true,
-            crate::types::Ty::Ref(mut_, _) => !mut_,
+            crate::types::Ty::Ref(mut_, _, _) => !mut_,
             crate::types::Ty::Tuple(xs) => xs.iter().all(|x| self.is_copy_ty(x)),
-            crate::types::Ty::Named(nm, args) => {
+            crate::types::Ty::Named(nm, args, _) => {
                 if nm == "Option" || nm == "Result" {
                     return args.iter().all(|a| self.is_copy_ty(a));
                 }
@@ -5654,7 +5659,7 @@ impl<'a> Checker<'a> {
                 // `*r` を値として使う (move) のは、参照の先が Copy のときだけ (4.1)。
                 // `let z = s` で `s` が参照越しの `match` 束縛 (ref_binds) なら `*z` も同様に E3002 (f23)。
                 let operand = &f[1];
-                let deref_named = matches!(self.ety(operand), Some(crate::types::Ty::Named(n, _)) if n == "alloc.boxed.Box");
+                let deref_named = matches!(self.ety(operand), Some(crate::types::Ty::Named(n, _, _)) if n == "alloc.boxed.Box");
                 let deref_non_copy = (self.ety_is_ref(operand) || deref_named) && self.ety_non_copy(e)
                     || {
                         nname(operand) == "Path"
@@ -5896,7 +5901,7 @@ impl<'a> Checker<'a> {
             Ty::Param(p) => !self.generic_may_be_copy(p),
             Ty::Tuple(xs) => xs.iter().any(|x| self.ty_certainly_not_copy(x)),
             Ty::Array(el, _) => self.ty_certainly_not_copy(el),
-            Ty::Named(nm, args) if nm == "Option" || nm == "Result" => args.iter().any(|a| self.ty_certainly_not_copy(a)),
+            Ty::Named(nm, args, _) if nm == "Option" || nm == "Result" => args.iter().any(|a| self.ty_certainly_not_copy(a)),
             _ => !self.is_copy_ty(t),
         }
     }
@@ -6156,7 +6161,7 @@ impl<'a> Checker<'a> {
             "Unary" if st(&nf(recv)[0]) == "*" => {
                 let Some(rt) = self.ety(&nf(recv)[1]).cloned() else { return };
                 match rt {
-                    crate::types::Ty::Ref(_, inner) => (crate::types::TypeCk::to_v(&*inner).unwrap_or(V::Nil), true),
+                    crate::types::Ty::Ref(_, inner, _) => (crate::types::TypeCk::to_v(&*inner).unwrap_or(V::Nil), true),
                     _ => return,
                 }
             }
@@ -6171,7 +6176,7 @@ impl<'a> Checker<'a> {
             _ => {
                 let Some(rt) = self.ety(recv).cloned() else { return };
                 match rt {
-                    crate::types::Ty::Ref(_, inner) => (crate::types::TypeCk::to_v(&*inner).unwrap_or(V::Nil), true),
+                    crate::types::Ty::Ref(_, inner, _) => (crate::types::TypeCk::to_v(&*inner).unwrap_or(V::Nil), true),
                     _ => return,
                 }
             }
@@ -6313,7 +6318,7 @@ impl<'a> Checker<'a> {
                 self.tc_expr(&f[0], env, muts, false);
                 let sty0 = self.ty_of(&f[0], env);
                 let sref = self.ety_is_ref(&f[0]) || tag(&sty0) == "ref";
-                let smut = matches!(self.ety(&f[0]), Some(crate::types::Ty::Ref(true, _)))
+                let smut = matches!(self.ety(&f[0]), Some(crate::types::Ty::Ref(true, _, _)))
                     || (tag(&sty0) == "ref" && matches!(tel(&sty0, 1), V::B(true)));
                 // 腕が Copy でない値を束縛して取り出すなら、スクラティニーの場所は move される (4.1)。
                 // 参照の先・添字の先からは move できない (E3002)。スクラティニーが参照そのものなら、束縛は `&T`。
@@ -6467,7 +6472,7 @@ impl<'a> Checker<'a> {
                             // 参照 (`&Vec<T>` / `&[T]`) の反復の束縛は `&T`。所有値として消費させない。
                             let src_ref = self.ety_is_ref(&f[1]) || tag(&it_ty) == "ref";
                             if src_ref && !is_nil(&t) && tag(&t) != "ref" && !self.is_generic(&t, &self.names) && !self.is_copy(&t) {
-                                let smut = matches!(self.ety(&f[1]), Some(crate::types::Ty::Ref(true, _)))
+                                let smut = matches!(self.ety(&f[1]), Some(crate::types::Ty::Ref(true, _, _)))
                                     || (tag(&it_ty) == "ref" && matches!(tel(&it_ty, 1), V::B(true)));
                                 t = V::L(vec![V::S("ref".into()), V::B(smut), t]);
                                 self.ref_binds.insert(x.clone());

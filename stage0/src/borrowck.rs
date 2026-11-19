@@ -4027,7 +4027,7 @@ impl<'a> Checker<'a> {
             Ty::Prim(_) | Ty::Unit | Ty::Never | Ty::Dyn(..) => true,
             Ty::Tuple(xs) => xs.iter().all(|x| self.ty_borrow_free(x)),
             Ty::Array(x, _) | Ty::Slice(x) => self.ty_borrow_free(x),
-            Ty::Named(n, args) => {
+            Ty::Named(n, args, _) => {
                 if let Some(&i) = self.p.types.get(n) {
                     if self.def(i).generics.iter().any(|g| g.0 != "type") {
                         return false;

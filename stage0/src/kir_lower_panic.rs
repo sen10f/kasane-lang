@@ -47,8 +47,8 @@ impl<'a> Lw<'a> {
         }
         // `Result` の E の型 (Err の表示に使う)。`Option` なら None。
         let err_src = match self.src_ty(&nf(e)[0]) {
-            Ok(Src::Named(n, _)) if n == "Option" => None,
-            Ok(Src::Named(n, args)) if n == "Result" => args.get(1).cloned(),
+            Ok(Src::Named(n, _, _)) if n == "Option" => None,
+            Ok(Src::Named(n, args, _)) if n == "Result" => args.get(1).cloned(),
             _ => return None,
         };
         let f = nf(e);

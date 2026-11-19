@@ -446,10 +446,10 @@ pub(super) fn match_get_mut(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         }
         if let Ok(t) = lw.src_ty(&g[0]) {
             let base = match &t {
-                Src::Ref(_, i) => (**i).clone(),
+                Src::Ref(_, i, _) => (**i).clone(),
                 t => t.clone(),
             };
-            if matches!(&base, Src::Named(n, _) if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
+            if matches!(&base, Src::Named(n, _, _) if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
                 return None;
             }
         }
@@ -640,7 +640,7 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
             let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
             if let GetBind::Struct(pat) = &bind {
                 let src = match lw.src_ty(&nf(e)[0]) {
-                    Ok(Src::Named(n, a)) if n == "Option" => a.into_iter().next(),
+                    Ok(Src::Named(n, a, _)) if n == "Option" => a.into_iter().next(),
                     _ => None,
                 };
                 let Ty::Agg(ai) = elem else { return lw.err(line, "構造体のパターンの対象が集成体でない") };
@@ -650,7 +650,7 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
             if let GetBind::Name(name) = &bind {
                 if is_get {
                     let src = match lw.src_ty(&nf(e)[0]) {
-                        Ok(Src::Named(n, a)) if n == "Option" => a.into_iter().next(),
+                        Ok(Src::Named(n, a, _)) if n == "Option" => a.into_iter().next(),
                         _ => None,
                     };
                     bind_elem_ref(lw, line, name, addr, elem, src.as_ref(), false)?;
