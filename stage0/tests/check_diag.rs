@@ -442,10 +442,7 @@ fn unsafe_requires_listing_in_manifest() {
     let t = Tmp::new("unsafe_off", &src);
     let o = run(&["check", "--json"], &t.0);
     assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E5001"), "{}", text(&o.stdout));
-    fs::write(t.0.join("kasane.toml"), format!("{}
-[unsafe]
-modules = [\"t\"]
-", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let o = run(&["check", "--json"], &t.0);
     assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E5001"), "{}", text(&o.stdout));
 }
@@ -463,10 +460,7 @@ fn unsafe_module_listing_matches_prefix() {
 end t.sys.f
 ";
     fs::write(t.0.join("src/t/sys.ksnl"), body).unwrap();
-    fs::write(t.0.join("kasane.toml"), format!("{}
-[unsafe]
-modules = [\"t.sys\"]
-", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t.sys\"]\n\n[dependencies]", 1)).unwrap();
     let o = run(&["check", "--json"], &t.0);
     assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E5001"), "{}", text(&o.stdout));
 }
@@ -475,10 +469,7 @@ modules = [\"t.sys\"]
 fn unsafe_manifest_is_validated() {
     let t = Tmp::new("unsafe_bad", &main_wrap("", ""));
     for bad in ["modules = [\"other.mod\"]", "modules = \"t\"", "modules = [\"Bad Name\"]", "extra = 1"] {
-        fs::write(t.0.join("kasane.toml"), format!("{}
-[unsafe]
-{}
-", TOML, bad)).unwrap();
+        fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", &format!("[unsafe]\n{}\n\n[dependencies]", bad), 1)).unwrap();
         let o = run(&["check", "--json"], &t.0);
         assert_eq!(o.status.code(), Some(1), "{}: {}{}", bad, text(&o.stdout), text(&o.stderr));
     }
@@ -5236,7 +5227,7 @@ end t.main
 ";
     for (name, src, want_err) in [("ptr_inv_bad", bad, true), ("ptr_inv_ok", ok, false)] {
         let t = Tmp::new(name, src);
-        fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+        fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
         let o = run(&["check", "--json"], &t.0);
         let got = codes(&text(&o.stdout));
         assert_eq!(got.iter().any(|c| c == "E2023"), want_err, "{}: {}", name, text(&o.stdout));

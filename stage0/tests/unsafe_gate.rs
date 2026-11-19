@@ -12,7 +12,7 @@ use std::fs;
 fn pkg(name: &str, src: &str, modules: Option<&str>) -> Tmp {
     let t = Tmp::new(name, src);
     if let Some(m) = modules {
-        fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"{}\"]\n", TOML, m)).unwrap();
+        fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", &format!("[unsafe]\nmodules = [\"{}\"]\n\n[dependencies]", m), 1)).unwrap();
     }
     t
 }

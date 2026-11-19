@@ -534,7 +534,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 ";
     let t = Tmp::new("ffi_interp", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let o = run(&["run"], &t.0);
     assert_eq!(text(&o.stdout), "ok\n", "{}", text(&o.stderr));
 }
@@ -660,7 +660,7 @@ end t.main
 #[test]
 fn ffi_interpreter_float_calls_match_a_c_driver() {
     let t = Tmp::new("ffi_float", FFI_FLOAT_SRC);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let dir = &t.0;
     fs::write(dir.join("ffi.c"), FFI_FLOAT_C).unwrap();
     fs::write(dir.join("drive.c"), FFI_FLOAT_DRIVER_C).unwrap();
@@ -680,7 +680,7 @@ fn ffi_interpreter_float_calls_match_a_c_driver() {
 #[test]
 fn ffi_interpreter_extern_calls_and_raw_pointers_work() {
     let t = Tmp::new("ffi_interp_raw", FFI_SRC);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let o = run(&["run"], &t.0);
     assert_eq!(text(&o.stdout), "ffi ok\n", "{}", text(&o.stderr));
 }
@@ -711,7 +711,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 "#;
     let t = Tmp::new("ffi_math", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let o = run(&["run"], &t.0);
     assert_eq!(text(&o.stdout), "math ok\n", "{}", text(&o.stderr));
 }
@@ -912,7 +912,7 @@ fn ffi_a_real_null_dereference_still_crashes_natively_instead_of_reporting_a_sta
 fn ffi_check_codes(name: &str, src: &str, modules: &str) -> Vec<String> {
     let t = Tmp::new(name, src);
     if !modules.is_empty() {
-        fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"{}\"]\n", TOML, modules)).unwrap();
+        fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", &format!("[unsafe]\nmodules = [\"{}\"]\n\n[dependencies]", modules), 1)).unwrap();
     }
     let o = run(&["check", "--json"], &t.0);
     let mut c = codes(&text(&o.stdout));
@@ -1103,7 +1103,7 @@ end t.main
 #[cfg(target_os = "linux")]
 fn ffi_interpreter_passes_and_returns_floats_and_reads_writes_pointers() {
     let t = Tmp::new("ffi_float_m", FFI_FLOAT_SRC_M);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let so = build_c_helpers(&t.0, FFI_C_SRC);
     let o = run(&["check"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
@@ -1126,7 +1126,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 "#;
     let t = Tmp::new("ffi_float_bad", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let so = build_c_helpers(&t.0, FFI_C_SRC);
     let r = run_with_c_helpers(&t.0, &so);
     assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
@@ -1158,7 +1158,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 "#;
     let t = Tmp::new("ffi_i32_ptr", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let so = build_c_helpers(&t.0, FFI_C_SRC);
     let r = run_with_c_helpers(&t.0, &so);
     assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
@@ -1170,7 +1170,7 @@ end t.main
 /// `unsafe` を許す `t` で `src` を実行する (`ksn run`)。
 fn run_unsafe_pkg(name: &str, src: &str) -> (Tmp, Output) {
     let t = Tmp::new(name, src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let r = run(&["run"], &t.0);
     (t, r)
 }
@@ -1329,7 +1329,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 "#;
     let t = Tmp::new("ptr_more_c_cast", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let so = build_c_helpers(&t.0, FFI_C_SRC);
     let r = run_with_c_helpers(&t.0, &so);
     assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
@@ -1351,7 +1351,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 "#;
     let t = Tmp::new("ptr_more_place_to_c", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let so = build_c_helpers(&t.0, FFI_C_SRC);
     let r = run_with_c_helpers(&t.0, &so);
     assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
@@ -1417,7 +1417,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 "#;
     let t = Tmp::new("ffi_variadic", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let so = build_c_helpers(&t.0, FFI_VARIADIC_SRC);
     let r = run_with_c_helpers(&t.0, &so);
     assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
@@ -1525,7 +1525,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 "#;
     let t = Tmp::new("ffi_int_for_f32", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     // 型の検査が先に止める (E2023)。黙って変換しない。
     let r = run(&["check"], &t.0);
     assert_eq!(r.status.code(), Some(1), "{}{}", text(&r.stdout), text(&r.stderr));
@@ -1546,7 +1546,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 "#;
     let t = Tmp::new("ffi_int_for_f64", src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     // 型の検査が先に止める (E2023)。黙って変換しない。
     let r = run(&["check"], &t.0);
     assert_eq!(r.status.code(), Some(1), "{}{}", text(&r.stdout), text(&r.stderr));
@@ -1627,7 +1627,7 @@ end t.h
 /// `unsafe` を許したパッケージを `check --json` にかけ、出力文字列を返す (1 診断 1 行の JSON)。
 fn raw_ptr_check(name: &str, src: &str) -> String {
     let t = Tmp::new(name, src);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let o = run(&["check", "--json"], &t.0);
     text(&o.stdout)
 }
@@ -2042,7 +2042,7 @@ end t.main
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn ffi_interpreter_passes_and_returns_structs_by_value() {
     let t = Tmp::new("ffi_struct_interp", FFI_STRUCT_SRC);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let so = build_c_helpers(&t.0, FFI_STRUCT_C_SRC);
     let o = run(&["check"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
@@ -2056,7 +2056,7 @@ fn ffi_interpreter_passes_and_returns_structs_by_value() {
 fn ffi_struct_by_value_is_refused_outside_x86_64_linux() {
     // 構造体の値渡しは x86_64 SysV だけで扱う。ほかの環境では黙って壊れず、明示のエラーにする。
     let t = Tmp::new("ffi_struct_refused", FFI_LIBC_STRUCT_SRC);
-    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     let r = run(&["run"], &t.0);
     assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
     assert!(text(&r.stderr).contains("x86_64"), "{}", text(&r.stderr));
