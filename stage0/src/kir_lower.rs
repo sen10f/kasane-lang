@@ -2036,6 +2036,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     }
     // スレッドの補助の関数 (`ksn.thr.*`) は、全部の入口 (クロージャ) が揃ってから作る。
     thread_lower::finish(&mut ok);
+    sync_lower::finish(&mut ok);
     chan_lower::finish(&mut ok);
     // `std.task` の実行器 (使われたときだけ)。閉包の表は、この後の変換 (`kir_suspend::transform`) が `.poll` を作る。
     task_lower::finish(&mut ok);

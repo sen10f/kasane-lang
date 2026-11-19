@@ -168,7 +168,30 @@ fn block_body(msg: &str) -> String {
     )
 }
 
+/// `ksn.atm.<op>.<cell>` の実アトミック版 (常に seq_cst。木走査も順序を無視するので同じ結果)。
+fn atm_override(rest: &str) -> Option<String> {
+    let (op, sfx) = rest.split_once('.')?;
+    let (ity, al) = match sfx {
+        "u8" => ("i8", 1),
+        "u64" | "usize" => ("i64", 8),
+        _ => return None,
+    };
+    let name = fname(&format!("ksn.atm.{}", rest));
+    let def = |ret: &str, params: &str, body: &str| Some(format!("define internal {ret} {name}({params}) {{\nentry:\n{body}}}\n"));
+    match op {
+        "load" => def(ity, "ptr %a0", &format!("  %r = load atomic {ity}, ptr %a0 seq_cst, align {al}\n  ret {ity} %r\n")),
+        "store" => def("i8", &format!("ptr %a0, {ity} %a1"), &format!("  store atomic {ity} %a1, ptr %a0 seq_cst, align {al}\n  ret i8 0\n")),
+        "swap" => def(ity, &format!("ptr %a0, {ity} %a1"), &format!("  %r = atomicrmw xchg ptr %a0, {ity} %a1 seq_cst, align {al}\n  ret {ity} %r\n")),
+        "add" => def(ity, &format!("ptr %a0, {ity} %a1"), &format!("  %r = atomicrmw add ptr %a0, {ity} %a1 seq_cst, align {al}\n  ret {ity} %r\n")),
+        "cas" => def(ity, &format!("ptr %a0, {ity} %a1, {ity} %a2"), &format!("  %r = cmpxchg ptr %a0, {ity} %a1, {ity} %a2 seq_cst seq_cst, align {al}\n  %old = extractvalue {{ {ity}, i1 }} %r, 0\n  ret {ity} %old\n")),
+        _ => None,
+    }
+}
+
 fn thread_override(key: &str, m: &Module) -> Option<String> {
+    if let Some(rest) = key.strip_prefix("ksn.atm.") {
+        return atm_override(rest);
+    }
     let f = m.find(key)?;
     let name = fname(key);
     let def = |ret: &str, params: &str, body: &str| Some(format!("define internal {ret} {name}({params}) {{\nentry:\n{body}}}\n"));

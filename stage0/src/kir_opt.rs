@@ -355,7 +355,7 @@ fn inline_small(m: &Module) -> Result<Module, String> {
             .funcs
             .iter()
             // `extern` (link を持つ) は本体が仮の `unreachable` なので展開しない。
-            .filter(|f| f.link.is_none() && !f.key.starts_with("ksn.thr.") && !recursive.contains(f.key.as_str()) && inst_count(f) <= INLINE_INST_LIMIT)
+            .filter(|f| f.link.is_none() && !f.key.starts_with("ksn.thr.") && !f.key.starts_with("ksn.atm.") && !recursive.contains(f.key.as_str()) && inst_count(f) <= INLINE_INST_LIMIT)
             .map(|f| f.key.clone())
             .collect();
         let mut changed = true;
