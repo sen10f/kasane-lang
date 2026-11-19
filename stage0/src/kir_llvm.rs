@@ -288,6 +288,8 @@ struct Ctx {
     fmt_float: bool,
     /// `ParseInt` 命令を使う (`kir_rt.c` の `ksn_parse_int` を呼ぶ)。
     parse_int: bool,
+    /// C ABI の構造体の渡し方 (`kir_cabi`)。ターゲットの CPU で決まる。
+    arch: crate::kir_cabi::Arch,
 }
 
 impl Ctx {
@@ -458,21 +460,34 @@ pub fn emit_program(m: &Module, entry: &str, target: Option<Target>) -> R<String
     emit_with(m, entry, true, target)
 }
 
+/// `extern` 関数の宣言のパラメータと戻り値の型 (構造体は C の呼び出し規約の形、`kir_cabi`)。
+fn c_decl_sig(arch: crate::kir_cabi::Arch, aggs: &[AggDef], f: &Func) -> R<(Vec<String>, String)> {
+    let ptys: Vec<Ty> = f.params().iter().map(|(_, t)| *t).collect();
+    if !ptys.iter().any(|t| matches!(t, Ty::Agg(_))) && !matches!(f.ret, Ty::Agg(_)) {
+        return Ok((ptys.iter().map(|t| lty(aggs, *t)).collect(), lty(aggs, f.ret)));
+    }
+    let sg = crate::kir_cabi::sig(arch, aggs, &ptys, f.ret).map_err(|e| format!("extern {}: {}", f.key, e))?;
+    let mut ps = vec![];
+    let mut rt = lty(aggs, f.ret);
+    if let Some(ra) = &sg.ret {
+        rt = crate::kir_cabi::ret_ty(ra);
+        if let crate::kir_cabi::Abi::Mem { size, align } = ra {
+            ps.push(format!("ptr sret([{} x i8]) align {}", size, align));
+        }
+    }
+    for (t, a) in ptys.iter().zip(sg.args.iter()) {
+        match a {
+            Some(abi) => ps.extend(crate::kir_cabi::param_tys(abi)),
+            None => ps.push(lty(aggs, *t)),
+        }
+    }
+    Ok((ps, rt))
+}
+
 fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> R<String> {
     let errs = verify_module(m);
     if let Some((k, e)) = errs.first() {
         return Err(format!("KIR の検査に通らない ({}): {}", k, e));
-    }
-    if let Some(tg) = target.filter(|tg| tg.name != "x86_64-linux-gnu") {
-        // 構造体の値渡しの ABI (AAPCS64 の HFA・レジスタ分類など) は x86_64 だけ検証している。ほかは理由を出して退避させる。
-        for f in m.funcs.iter().filter(|f| f.link.is_some()) {
-            if f.params().iter().any(|(_, pt)| matches!(pt, Ty::Agg(_))) {
-                return Err(format!("extern {}: passing a struct by value is native-supported on x86_64 only (target {})", f.key, tg.name));
-            }
-            if matches!(f.ret, Ty::Agg(_)) {
-                return Err(format!("extern {}: returning a struct by value is native-supported on x86_64 only (target {})", f.key, tg.name));
-            }
-        }
     }
     let Some(ef) = m.find(entry) else {
         return Err(format!("関数 {} がない", entry));
@@ -501,7 +516,8 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     }
     let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. } | Op::FloatText { .. }))));
     let has_parse_int = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::ParseInt { .. }))));
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int };
+    let arch = if target.or_else(host_target).is_some_and(|t| t.name == "aarch64-linux-gnu") { crate::kir_cabi::Arch::Aarch64 } else { crate::kir_cabi::Arch::X86_64 };
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int, arch };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -529,8 +545,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             cx.decl("declare ptr @ksn_ext_resolve(ptr, ptr, ptr)".to_string());
             continue;
         }
-        let params: Vec<String> = f.params().iter().map(|(_, t)| lty(&m.aggs, *t)).collect();
-        let rt = lty(&m.aggs, f.ret);
+        let (params, rt) = c_decl_sig(cx.arch, &m.aggs, f)?;
         // wasm32 の `link "env:名前"` は JS の関数の import (`env.名前`)。属性で import の綴りを固定する (WASM ABI)。
         let imp = match f.link.as_deref().and_then(wasm_import_of) {
             Some(n) if crate::ptrwidth::bits() == 32 => format!(" \"wasm-import-module\"=\"env\" \"wasm-import-name\"=\"{}\"", n),
@@ -2131,6 +2146,9 @@ impl<'a> Fe<'a> {
             }
             Op::BitCount { k, src, a } => self.bitcount(i, *k, *src, *a),
             Op::Call { callee, args } => {
+                if self.extern_links.contains_key(callee) && (matches!(i.ty, Ty::Agg(_)) || args.iter().any(|v| matches!(self.ty(*v), Ty::Agg(_)))) {
+                    return self.c_call(&d, i, callee, args);
+                }
                 let rt = self.lt(i.ty);
                 let a: Vec<String> = args.iter().map(|v| format!("{} {}", lty(aggs, self.ty(*v)), self.r(*v))).collect();
                 if let Some(sym) = self.extern_links.get(callee) {
@@ -2154,6 +2172,11 @@ impl<'a> Fe<'a> {
                 let Some(f) = self.funcs.iter().find(|f| f.key == *callee) else {
                     return Err(format!("fnptr の呼び先 {} が見つからない", callee));
                 };
+                if f.params().iter().any(|(_, t)| matches!(t, Ty::Agg(_))) || matches!(f.ret, Ty::Agg(_)) {
+                    let th = self.c_thunk(f)?;
+                    self.line(format!("{} = getelementptr i8, ptr {}, i64 0", d, th));
+                    return Ok(());
+                }
                 let rt = self.lt(f.ret);
                 let params: Vec<String> = f.params().iter().map(|(_, t)| lty(self.aggs, *t)).collect();
                 let fnty = format!("{} ({})*", rt, params.join(", "));
@@ -2692,6 +2715,117 @@ impl<'a> Fe<'a> {
         // 参照の指す先の実際のアドレスは型の既定の整列 (`i192` なら 16) を満たすとは限らない (ヘッダは 8 の倍数、`malloc` の領域の途中など)。
         // 整列を仮定すると未定義動作になるので、常に `align 1` で読み書きする。
         self.mem_store_to(t, &pv, &vv, ", align 1")
+    }
+
+    /// 構造体を引数・戻り値に持つ関数を C から呼ぶための入口 (C の呼び出し規約 → 内部の形)。thunk の名前を返す。
+    fn c_thunk(&mut self, f: &Func) -> R<String> {
+        use crate::kir_cabi as cabi;
+        let aggs = self.aggs;
+        let ptys: Vec<Ty> = f.params().iter().map(|(_, t)| *t).collect();
+        let sg = cabi::sig(self.cx.arch, aggs, &ptys, f.ret).map_err(|e| format!("コールバック {}: {}", f.key, e))?;
+        let name = gname("cth.", &f.key);
+        let mut ps: Vec<String> = vec![];
+        let mut em = cabi::Em::new("t");
+        let rty = match &sg.ret {
+            Some(ra) => {
+                if let cabi::Abi::Mem { size, align } = ra {
+                    ps.push(format!("ptr sret([{} x i8]) align {} %sret", size, align));
+                }
+                cabi::ret_ty(ra)
+            }
+            None if f.ret == Ty::Unit => "void".to_string(),
+            None => lty(aggs, f.ret),
+        };
+        let mut iargs = vec![];
+        for (k, (t, a)) in ptys.iter().zip(sg.args.iter()).enumerate() {
+            let pn = format!("%p{}", k);
+            match (a, t) {
+                (Some(abi), Ty::Agg(ai)) => {
+                    ps.extend(cabi::param_decls(abi, &pn));
+                    let v = cabi::value_from_params(&mut em, abi, agg_bits(aggs, *ai), &pn);
+                    iargs.push(format!("{} {}", lty(aggs, *t), v));
+                }
+                _ => {
+                    ps.push(format!("{} {}", lty(aggs, *t), pn));
+                    iargs.push(format!("{} {}", lty(aggs, *t), pn));
+                }
+            }
+        }
+        let r = em.t(format!("call {} {}({})", lty(aggs, f.ret), fname(&f.key), iargs.join(", ")));
+        match (&sg.ret, f.ret) {
+            (Some(ra), Ty::Agg(ai)) => cabi::emit_ret(&mut em, ra, agg_bits(aggs, ai), &r),
+            _ if f.ret == Ty::Unit => em.line("ret void".into()),
+            _ => em.line(format!("ret {} {}", rty, r)),
+        }
+        let text = format!("define {} {}({}) {{\nentry:\n{}}}\n", rty, name, ps.join(", "), em.body);
+        self.cx.decl(text);
+        Ok(name)
+    }
+
+    /// 構造体を値で受け渡す `extern` の呼び出し (C の呼び出し規約、`kir_cabi`)。
+    fn c_call(&mut self, d: &str, i: &Inst, callee: &str, args: &[VId]) -> R<()> {
+        use crate::kir_cabi as cabi;
+        let aggs = self.aggs;
+        let ptys: Vec<Ty> = args.iter().map(|v| self.ty(*v)).collect();
+        let sg = cabi::sig(self.cx.arch, aggs, &ptys, i.ty).map_err(|e| format!("extern {}: {}", callee, e))?;
+        self.n += 1;
+        let mut em = cabi::Em::new(&format!("c{}_", self.n));
+        let mut cargs: Vec<String> = vec![];
+        let mut rbuf = None;
+        if let Some(ra) = &sg.ret {
+            if let Some((a, b)) = cabi::sret_arg(&mut em, ra) {
+                cargs.push(a);
+                rbuf = Some(b);
+            }
+        }
+        for ((v, t), a) in args.iter().zip(ptys.iter()).zip(sg.args.iter()) {
+            match (a, t) {
+                (Some(abi), Ty::Agg(ai)) => {
+                    let r = self.r(*v);
+                    cargs.extend(cabi::call_args(&mut em, abi, agg_bits(aggs, *ai), &r));
+                }
+                _ => cargs.push(format!("{} {}", lty(aggs, *t), self.r(*v))),
+            }
+        }
+        let rt = match &sg.ret { Some(ra) => cabi::ret_ty(ra), None => self.lt(i.ty) };
+        let sym = self.extern_links[callee].clone();
+        let target = if self.extern_dl.contains_key(callee) {
+            em.t(format!("call ptr @ksn_ext_resolve(ptr @ksn.ext.lib.{0}, ptr @ksn.ext.sym.{0}, ptr @ksn.ext.slot.{0})", sym))
+        } else {
+            format!("@{}", sym)
+        };
+        let save = if em.used_stack {
+            self.cx.decl("declare void @llvm.stackrestore.p0(ptr)".to_string());
+            Some(self.tmp())
+        } else {
+            None
+        };
+        if let Some(sv) = &save {
+            self.line(format!("{} = call ptr @llvm.stacksave.p0()", sv));
+        }
+        self.body.push_str(&em.body);
+        let mut em2 = cabi::Em::new(&format!("c{}r_", self.n));
+        match (&sg.ret, i.ty) {
+            (Some(ra), Ty::Agg(ai)) => {
+                let bits = agg_bits(aggs, ai);
+                if rt == "void" {
+                    self.line(format!("call void {}({})", target, cargs.join(", ")));
+                    let val = cabi::ret_value(&mut em2, ra, bits, "", rbuf.as_deref());
+                    self.body.push_str(&em2.body);
+                    self.line(format!("{} = add i{} {}, 0", d, bits, val));
+                } else {
+                    let r = self.t(format!("call {} {}({})", rt, target, cargs.join(", ")));
+                    let val = cabi::ret_value(&mut em2, ra, bits, &r, rbuf.as_deref());
+                    self.body.push_str(&em2.body);
+                    self.line(format!("{} = add i{} {}, 0", d, bits, val));
+                }
+            }
+            _ => self.line(format!("{} = call {} {}({})", d, rt, target, cargs.join(", "))),
+        }
+        if let Some(sv) = save {
+            self.line(format!("call void @llvm.stackrestore.p0(ptr {})", sv));
+        }
+        Ok(())
     }
 
     fn mem_store(&mut self, t: Ty, addr: &str, v: &str) -> R<()> {

@@ -25,6 +25,7 @@ mod kir;
 mod kir_borrowck;
 mod kir_exec;
 mod assets;
+mod kir_cabi;
 mod kir_llvm;
 #[cfg(feature = "embedded-llvm")]
 mod embed_llvm;
