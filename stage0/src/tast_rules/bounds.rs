@@ -137,6 +137,31 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                 }
             }
         });
+        // 比較演算子の被演算子が型パラメータのとき、境界が比較のトレイトを (スーパートレイトまで辿って) 含むこと。
+        super::impl_sig::walk(&b.body, &mut |e| {
+            let TKind::Binary { op, lhs, .. } = &e.kind else { return };
+            if !matches!(op.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=") {
+                return;
+            }
+            let Ty::Param(pn) = lhs.ty.strip().clone() else { return };
+            let Some(g) = d.generics.iter().find(|g| g.0 == "type" && g.1 == pn) else { return };
+            let mut todo: Vec<String> = items(&g.2).iter().filter_map(|b| if let V::L(bx) = b { Some(st(&bx[0])) } else { None }).collect();
+            let need = if op == "==" || op == "!=" { "core.cmp.PartialEq" } else { "core.cmp.PartialOrd" };
+            let mut seen = std::collections::HashSet::new();
+            while let Some(tr) = todo.pop() {
+                if !seen.insert(tr.clone()) {
+                    continue;
+                }
+                if tr == need {
+                    return;
+                }
+                match p.types.get(&tr) {
+                    Some(&ti) => todo.extend(p.defs[ti].requires.iter().map(|r| r.0.clone())),
+                    None => return,
+                }
+            }
+            found.push((format!("`{}` on values of type parameter `{}` requires the bound `{}: {}<{}>`", op, pn, pn, need, pn), e.line));
+        });
         found.sort();
         found.dedup();
         for (msg, line) in found {
