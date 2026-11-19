@@ -37,13 +37,13 @@
 ],
 [
 "new_only",
-"stage0/tests/data/unsound/linear_array_len_discard.ksnl",
+"stage0/tests/data/unsound/len_of_linear_array_then_consumed.ksnl",
 7,
 "E3006"
 ],
 [
 "new_only",
-"stage0/tests/data/unsound/linear_array_len_then_consumed.ksnl",
+"stage0/tests/data/unsound/linear_array_len_discard.ksnl",
 7,
 "E3006"
 ],

@@ -38,7 +38,7 @@ fn diagnostics_each_case_reports_its_code() {
 /// 失敗しなければならない。横の `<名前>.expect` に `expect: Exxxx` があるケースは、そのコードの診断で落ちることも確かめる
 /// (別の診断で落ちているだけのケースを許さない)。まだ検査できない穴は `KNOWN_HOLES` に名前を載せる (その間は「通ること」を
 /// 確かめるので、塞いだら一覧から外さないとテストが落ちる = 一覧は減る方向にしか変わらない)。
-const KNOWN_HOLES: &[&str] = &["impl_sig_method_generics_count", "impl_sig_method_generics_bound", "impl_sig_lifetime_ret", "linear_array_len_then_consumed"];
+const KNOWN_HOLES: &[&str] = &["impl_sig_method_generics_count", "impl_sig_method_generics_bound", "impl_sig_lifetime_ret", "len_of_linear_array_then_consumed"];
 
 #[test]
 fn unsound_programs_are_rejected() {

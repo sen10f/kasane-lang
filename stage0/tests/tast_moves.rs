@@ -15,6 +15,7 @@ const MINE: &[&str] = &["E3002", "E3003", "E3006", "E3040"];
 const NEW_EXTRA: &[(&str, &str, u64)] = &[
     ("fnonce_linear_fn_bound", "E3006", 12),
     ("linear_array_len_discard", "E3006", 7),
+    ("len_of_linear_array_then_consumed", "E3006", 7),
     ("linear_into_hashmap", "E3006", 6),
     ("linear_pushed_into_vec", "E3006", 3),
     ("linear_receiver_in_vec", "E3006", 6),
