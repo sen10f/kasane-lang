@@ -19,6 +19,8 @@ extern "C" {
 pub enum Flavor {
     Elf,
     Wasm,
+    /// COFF (MinGW-w64 の `x86_64-windows-gnu`)。
+    MinGw,
 }
 
 /// lld を同じプロセスで走らせる。`args` に `ld.lld` / `wasm-ld` の名前 (argv[0]) は含めない。失敗なら lld の標準エラーを返す。
@@ -28,14 +30,14 @@ pub fn lld_link(flavor: Flavor, args: &[String]) -> Result<(), String> {
     use std::ffi::CString;
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let name = if flavor == Flavor::Wasm { "wasm-ld" } else { "ld.lld" };
+    let name = match flavor { Flavor::Wasm => "wasm-ld", Flavor::MinGw => "ld.lld", Flavor::Elf => "ld.lld" };
     let mut cs = vec![CString::new(name).unwrap()];
     for a in args {
         cs.push(CString::new(a.as_str()).map_err(|_| format!("リンクの引数に NUL がある: {:?}", a))?);
     }
     let ptrs: Vec<*const std::os::raw::c_char> = cs.iter().map(|c| c.as_ptr()).collect();
     let (mut o, mut e) = (std::ptr::null_mut(), std::ptr::null_mut());
-    let rc = unsafe { ksn_lld_link(if flavor == Flavor::Wasm { 1 } else { 0 }, ptrs.len() as i32, ptrs.as_ptr(), &mut o, &mut e) };
+    let rc = unsafe { ksn_lld_link(match flavor { Flavor::Elf => 0, Flavor::Wasm => 1, Flavor::MinGw => 2 }, ptrs.len() as i32, ptrs.as_ptr(), &mut o, &mut e) };
     let take = |p: *mut std::os::raw::c_char| -> String {
         if p.is_null() {
             return String::new();
@@ -114,5 +116,51 @@ pub fn elf_args(name: &str, root: Option<&str>, objs: &[PathBuf], exe: &Path) ->
     }
     a.push(gcc.join("crtendS.o").display().to_string());
     a.push(crtn.display().to_string());
+    Ok(a)
+}
+
+/// Windows (MinGW-w64) の実行ファイルをつなぐ lld の引数。`root` は mingw-w64 の sysroot (crt・import ライブラリ。既定 /usr/x86_64-w64-mingw32)。
+/// libgcc 等は `/usr/lib/gcc/x86_64-w64-mingw32/<版>-posix` (winpthreads を使う posix の構成) から探す。無ければ入れるべき package を示して失敗する。
+pub fn mingw_args(root: Option<&str>, objs: &[PathBuf], exe: &Path) -> Result<Vec<String>, String> {
+    let r = PathBuf::from(root.unwrap_or("/usr/x86_64-w64-mingw32"));
+    let libdir = r.join("lib");
+    let hint = "mingw-w64 (gcc-mingw-w64-x86-64-posix と mingw-w64-x86-64-dev) を入れる";
+    let crt2 = libdir.join("crt2.o");
+    if !crt2.exists() {
+        return Err(format!("{} が見つからない: {}", crt2.display(), hint));
+    }
+    // `13-posix` のような名前のうち版が最も新しく crtbegin.o を持つもの。
+    let gccbase = Path::new("/usr/lib/gcc/x86_64-w64-mingw32");
+    let mut best: Option<(Vec<u32>, PathBuf)> = None;
+    for e in std::fs::read_dir(gccbase).ok().into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().to_string();
+        let Some(v) = n.strip_suffix("-posix") else { continue };
+        let ver: Option<Vec<u32>> = v.split('.').map(|x| x.parse().ok()).collect();
+        if let Some(ver) = ver.filter(|_| e.path().join("crtbegin.o").exists()) {
+            if best.as_ref().is_none_or(|(b, _)| ver > *b) {
+                best = Some((ver, e.path()));
+            }
+        }
+    }
+    let gcc = best.map(|(_, p)| p).ok_or_else(|| format!("{}/<版>-posix/crtbegin.o が見つからない: {}", gccbase.display(), hint))?;
+    let mut a: Vec<String> = ["-m", "i386pep", "--enable-auto-image-base"].iter().map(|s| s.to_string()).collect();
+    a.push("-o".into());
+    a.push(exe.display().to_string());
+    a.push(crt2.display().to_string());
+    a.push(gcc.join("crtbegin.o").display().to_string());
+    a.push(format!("-L{}", libdir.display()));
+    a.push(format!("-L{}", gcc.display()));
+    for o in objs {
+        a.push(o.display().to_string());
+    }
+    // winpthreads は静的に取り込む (実行ファイルが libwinpthread-1.dll に依存しない)。
+    let pth = libdir.join("libwinpthread.a");
+    if !pth.exists() {
+        return Err(format!("{} が見つからない: {}", pth.display(), hint));
+    }
+    for s in ["-lmingw32", "-lgcc", "-lgcc_eh", "@PTHREAD@", "-lmoldname", "-lmingwex", "-lmsvcrt", "-lws2_32", "-ladvapi32", "-lshell32", "-luser32", "-lkernel32", "-lmingw32", "-lgcc", "-lgcc_eh", "@PTHREAD@", "-lmoldname", "-lmingwex", "-lmsvcrt"] {
+        a.push(if s == "@PTHREAD@" { pth.display().to_string() } else { s.into() });
+    }
+    a.push(gcc.join("crtend.o").display().to_string());
     Ok(a)
 }
