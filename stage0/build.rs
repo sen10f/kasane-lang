@@ -66,4 +66,46 @@ fn main() {
 
     let id: String = h.finalize().iter().map(|b| format!("{:02x}", b)).collect();
     println!("cargo:rustc-env=KSN_BUILD_ID={}", id);
+    link_embedded_lld();
+}
+
+// ---- L3: 組み込みの lld (feature `embedded-llvm`) ----
+#[allow(dead_code)]
+fn link_embedded_lld() {
+    if std::env::var("CARGO_FEATURE_EMBEDDED_LLVM").is_err() {
+        return;
+    }
+    println!("cargo:rerun-if-changed=src/native/lld_shim.cpp");
+    let cfg = |a: &[&str]| -> String {
+        let o = Command::new("llvm-config-20").args(a).output().expect("llvm-config-20 が要る (llvm-20-dev)");
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    let inc = cfg(&["--includedir"]);
+    let lib = cfg(&["--libdir"]);
+    // `cc` crate は build.rs 側に feature を渡せないので使わず、c++ と ar を直接呼ぶ。
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let obj = out.join("lld_shim.o");
+    let st = Command::new(std::env::var("CXX").unwrap_or_else(|_| "c++".into()))
+        .args(["-std=c++17", "-fno-exceptions", "-fno-rtti", "-fPIC", "-O2", "-c", "src/native/lld_shim.cpp", "-I", &inc, "-o"])
+        .arg(&obj)
+        .status()
+        .expect("c++ が要る");
+    assert!(st.success(), "lld_shim.cpp のコンパイルに失敗");
+    let a = out.join("libksn_lld_shim.a");
+    let _ = fs::remove_file(&a);
+    assert!(Command::new("ar").arg("crs").arg(&a).arg(&obj).status().expect("ar が要る").success());
+    println!("cargo:rustc-link-search=native={}", out.display());
+    println!("cargo:rustc-link-lib=static=ksn_lld_shim");
+    println!("cargo:rustc-link-search=native={}", lib);
+    for l in ["lldELF", "lldWasm", "lldCommon"] {
+        println!("cargo:rustc-link-lib=static={}", l);
+    }
+    for l in cfg(&["--link-static", "--libs", "lto", "object", "option", "debuginfodwarf", "all-targets"]).split_whitespace().filter(|l| !l.contains("Polly")) {
+        // Polly は -dev に静的ライブラリが無い。lld は使わないので外す。
+        println!("cargo:rustc-link-lib=static={}", l.trim_start_matches("-l"));
+    }
+    for l in cfg(&["--link-static", "--system-libs"]).split_whitespace() {
+        println!("cargo:rustc-link-lib={}", l.trim_start_matches("-l"));
+    }
+    println!("cargo:rustc-link-lib=stdc++");
 }
