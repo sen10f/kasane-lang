@@ -1246,8 +1246,6 @@ impl<'a> W<'a> {
         let target_is_ref = var.is_ref;
         let whole = direct && matches!(&place.kind, TKind::Path(s) if s.len() == 1);
         if whole && !through_ref {
-            // 変数そのものへの代入も、それまでの値の使用 (尽きた借用を持てば E3010)。
-            self.use_var(&n, line);
             // ループの中で一時値の借用を外側のスコープの束縛へ入れるのは、一時値が尽きた後も使われる (E3010 を代入の行で出す)。
             if !self.loops.is_empty() && var.depth < self.scopes.len() && v.loans().iter().any(|(l, _)| *l == Loan::Temp) {
                 self.diag("E3010", format!("use of `{}` borrows `$temp` which does not live long enough", n), line);
