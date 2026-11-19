@@ -251,6 +251,7 @@ pub(crate) fn build_program_take(l: &mut Loaded) -> (Program, Vec<usize>) {
 
 fn build_program_with(l: &Loaded, taken: Option<&mut Vec<Vec<Def>>>) -> (Program, Vec<usize>) {
     let mut prog = empty_program();
+    prog.entry = l.pkg.entry();
     match taken {
         Some(t) => {
             for ds in t.iter_mut() {

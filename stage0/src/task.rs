@@ -30,7 +30,7 @@ pub const TASK_CANCELLED: &str = "std.task.Task.join_task: the task was cancelle
 
 /// タスクのスレッドのスタック量 (木走査の再帰の深さの上限 `kir_exec::MAX_DEPTH` を支える。`main` と同じ)。
 /// 仮想メモリの予約なので、使わない分は実メモリを取らない。
-const STACK_BYTES: usize = 1 << 30;
+const STACK_BYTES: usize = 64 << 20;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum St {
@@ -91,14 +91,14 @@ pub struct Tasks {
 }
 
 /// タスクのスレッドへ `Interp` の生ポインタを渡すための包み。合図の順序で一度に 1 つだけが使う。
-struct SendPtr(*mut Interp);
+pub(crate) struct SendPtr(pub(crate) *mut Interp);
 // SAFETY: 生ポインタの指す `Interp` へは、合図を持つスレッドだけがアクセスする (モジュールの説明)。
 // 合図の受け渡しは Mutex で行うので、アクセスどうしは happens-before で順序づけられる。
 unsafe impl Send for SendPtr {}
 
 impl SendPtr {
     /// 包みを丸ごと取り出す (クロージャが生ポインタの欄だけを捕まえないようにする)。
-    fn get(self) -> *mut Interp {
+    pub(crate) fn get(self) -> *mut Interp {
         self.0
     }
 }
@@ -175,16 +175,21 @@ impl Interp {
         let gen = self.tasks.generation;
         let ptr = SendPtr(self as *mut Interp);
         let s2 = sched.clone();
+        // タスクの深さの上限は、タスクを作ったスレッドの上限と同じ (ネイティブのタスクは作ったスレッドの上で走る)。
+        // スタックは既定の上限なら `STACK_BYTES`、それより深い上限なら `上限 × 10 KiB` を足す (残りの検査が尽きる前に止める)。
+        let md = self.max_depth;
+        let size = if md > crate::kir_exec::MAX_DEPTH { STACK_BYTES + md.saturating_mul(10 << 10) } else { STACK_BYTES };
         // スレッドを先に作る (失敗したらタスクを登録しない)。新しいスレッドは合図が来るまで何もしない。
         std::thread::Builder::new()
-            .stack_size(STACK_BYTES)
+            .stack_size(size)
             .spawn(move || {
-                crate::interp::set_stack_floor(STACK_BYTES);
+                crate::interp::set_stack_floor(size);
                 let p = ptr;
                 s2.wait_turn(id);
                 // SAFETY: 合図を受けたので、いまこのスレッドだけが `Interp` に触る (`SendPtr` の説明)。
                 let it: &mut Interp = unsafe { &mut *p.get() };
                 it.depth = 0;
+                it.max_depth = md;
                 it.tasks.cur = id;
                 let body = it.tasks.slots[id].body.take();
                 let r = match body {
@@ -291,6 +296,7 @@ impl Interp {
         self.tasks.cancel_by = me;
         let sched = self.tasks.sched.clone().expect("std.task: no executor");
         let depth = self.depth;
+        let max_depth = self.max_depth;
         // 待っている間に別のスレッドが `Interp` を書き換えるので、`task_switch` と同じく生ポインタで読み書きする。
         let p: *mut Interp = std::hint::black_box(self as *mut Interp);
         sched.m.lock().unwrap().cur = id;
@@ -299,6 +305,7 @@ impl Interp {
         // SAFETY: 合図が戻った時点で、このスレッドだけが `Interp` に触る (モジュールの説明)。
         let it = unsafe { &mut *p };
         it.depth = depth;
+        it.max_depth = max_depth;
         it.tasks.cur = me;
         Ok(())
     }
@@ -330,6 +337,7 @@ impl Interp {
         }
         // 合図を渡す前に、このスレッドのインタプリタの状態 (木走査の深さ) を控える。
         let depth = self.depth;
+        let max_depth = self.max_depth;
         // 待っている間に別のスレッドが `Interp` を書き換える。`self` はこの関数の `&mut` のままでは、
         // 最適化器が「待つ間は変わらない」と見て、戻したあとの書き込みを省くことがある (実際に深さが狂った)。
         // 生ポインタに逃がし、待ちの前後の読み書きはすべてそれを通して行う (待ちは不透明な呼び出し)。
@@ -342,6 +350,7 @@ impl Interp {
         let it = unsafe { &mut *p };
         // 合図が戻った。このタスクの状態を戻す。
         it.depth = depth;
+        it.max_depth = max_depth;
         it.tasks.cur = me;
         // 取り消されたタスクは、ここで止まる (中断点から戻らず、本体を抜ける)。
         if it.tasks.slots[me].cancelled {

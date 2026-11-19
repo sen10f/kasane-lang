@@ -228,5 +228,5 @@ fn check_escape(chars: &[char], j: usize, ln: usize, lit: crate::lexrules::Lit) 
 
 /// ヘッダ位置でのみ特別な意味を持つ語。識別子としても使える (文脈キーワード)。
 pub fn is_contextual(w: &str) -> bool {
-    matches!(w, "stack" | "impls" | "derive" | "linear" | "layout" | "requires" | "capture" | "link" | "close" | "is")
+    matches!(w, "stack" | "depth" | "impls" | "derive" | "linear" | "layout" | "requires" | "capture" | "link" | "close" | "is")
 }

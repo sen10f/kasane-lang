@@ -96,7 +96,9 @@ def main():
         print('ksn is not built:', EXE)
         return 2
     ts = targets(full)
-    with ThreadPoolExecutor(max_workers=min(16, os.cpu_count() or 4)) as ex:
+    # 並列の数は環境変数 KSN_SHADOW_JOBS で絞れる (既定は min(8, CPU の数))。
+    jobs = int(os.environ.get('KSN_SHADOW_JOBS') or min(8, os.cpu_count() or 4))
+    with ThreadPoolExecutor(max_workers=jobs) as ex:
         res = list(ex.map(run_one, ts))
     seen = set()
     per = {}
