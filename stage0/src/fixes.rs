@@ -108,6 +108,30 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             let Some(p) = text.find(bad) else { return vec![] };
             vec![span(file, line, text, p, p + bad.len(), good.to_string())]
         }
+        // 接尾辞のない整数リテラル (D12): 推論した型を接尾辞として足す。
+        "E2028" => {
+            let re = Regex::new(r"append `([a-z0-9]+)`").unwrap();
+            let Some(c) = re.captures(msg) else { return vec![] };
+            let Some(text) = get(line) else { return vec![] };
+            let cs: Vec<(usize, char)> = text.char_indices().collect();
+            let Some(&(b0, _)) = cs.get(col.wrapping_sub(1)) else { return vec![] };
+            let mut b1 = b0;
+            for &(b, ch) in &cs[col - 1..] {
+                if ch.is_ascii_alphanumeric() || ch == '_' || (b == b0 && ch == '-') {
+                    b1 = b + ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            if b1 == b0 {
+                return vec![];
+            }
+            vec![span(file, line, text, b1, b1, c[1].to_string())]
+        }
+        // 構造体リテラルの欄を宣言順に並べ替える (D16)。初期化式に副作用・panic がありうる (呼び出し・添字・`?`) ときは直さない。
+        "E2048" => struct_order_fix(file, msg, line, col, lines),
+        // 受け手のあるメソッドの経路形の呼び出し (D8): `T.m(&x, a)` を `x.m(a)` にする。
+        "E2029" => method_call_fix(file, line, col, lines),
         "E0049" => {
             let Some(text) = get(line) else { return vec![] };
             let bytes: Vec<(usize, char)> = text.char_indices().collect();
@@ -263,4 +287,197 @@ pub fn apply(text: &str, fixes: &[Fix]) -> (String, usize) {
     }
     out.push_str(&text[pos..]);
     (out, n)
+}
+
+/// `T.m(&x, a, b)` / `m.f(x)` (位置 `line`:`col` から始まる呼び出し) を `x.m(a, b)` にする修正 (D8)。受け手は先頭の `&` `&mut ` を外す。
+/// `*r` や演算子を含む受け手は括弧で包む (`(*r).m()` は `ksn fmt` が `r.m()` にする)。複数行の呼び出しも書き換える。
+fn method_call_fix(file: &str, line: usize, col: usize, lines: &[String]) -> Vec<Fix> {
+    let mut cs: Vec<(char, usize, usize)> = vec![];
+    for (k, l) in lines.iter().enumerate().skip(line.saturating_sub(1)) {
+        for (i, ch) in l.chars().enumerate() {
+            if k + 1 == line && i + 1 < col {
+                continue;
+            }
+            cs.push((ch, k + 1, i + 1));
+        }
+        cs.push(('\n', k + 1, l.chars().count() + 1));
+        if cs.len() > 6000 {
+            break;
+        }
+    }
+    let mut i = 0;
+    while i < cs.len() && (cs[i].0.is_ascii_alphanumeric() || cs[i].0 == '_' || cs[i].0 == '.') {
+        i += 1;
+    }
+    if i == 0 || i >= cs.len() || cs[i].0 != '(' {
+        return vec![];
+    }
+    let path: String = cs[..i].iter().map(|c| c.0).collect();
+    let Some(m) = path.rsplit('.').next().filter(|m| !m.is_empty() && path.contains('.')) else { return vec![] };
+    let open = i;
+    // 引数の区切り (深さ 1 のカンマ) と閉じ括弧を探す。文字列・文字リテラルの中は飛ばす。
+    let mut depth = 0i32;
+    let mut commas: Vec<usize> = vec![];
+    let mut close = None;
+    let mut j = open;
+    while j < cs.len() {
+        let ch = cs[j].0;
+        match ch {
+            '"' => {
+                j += 1;
+                while j < cs.len() && cs[j].0 != '"' {
+                    if cs[j].0 == '\\' {
+                        j += 1;
+                    }
+                    j += 1;
+                }
+            }
+            '\'' => {
+                if cs.get(j + 1).map_or(false, |c| c.0 == '\\') {
+                    j += 2;
+                    while j < cs.len() && cs[j].0 != '\'' {
+                        j += 1;
+                    }
+                } else if cs.get(j + 2).map_or(false, |c| c.0 == '\'') {
+                    j += 2;
+                }
+            }
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(j);
+                    break;
+                }
+            }
+            ',' if depth == 1 => commas.push(j),
+            _ => {}
+        }
+        j += 1;
+    }
+    let Some(close) = close else { return vec![] };
+    let txt = |a: usize, b: usize| -> String { cs[a..b].iter().map(|c| c.0).collect() };
+    let first_end = commas.first().copied().unwrap_or(close);
+    let a0 = txt(open + 1, first_end);
+    let a0 = a0.trim();
+    if a0.is_empty() {
+        return vec![];
+    }
+    let recv = a0.strip_prefix("&mut ").or_else(|| a0.strip_prefix('&')).unwrap_or(a0).trim_start().to_string();
+    let needs = {
+        let mut d = 0i32;
+        let mut in_str = false;
+        let mut flag = recv.starts_with(|c| matches!(c, '*' | '-' | '!' | '&'));
+        let rc: Vec<char> = recv.chars().collect();
+        let mut k = 0;
+        while k < rc.len() {
+            let c = rc[k];
+            if in_str {
+                if c == '\\' {
+                    k += 1;
+                } else if c == '"' {
+                    in_str = false;
+                }
+            } else if c == '"' {
+                in_str = true;
+            } else if matches!(c, '(' | '[' | '{') {
+                d += 1;
+            } else if matches!(c, ')' | ']' | '}') {
+                d -= 1;
+            } else if d == 0 && (matches!(c, '+' | '*' | '/' | '%' | '|' | '^' | '<' | '>' | '=') || (c == ' ' && rc.get(k + 1) == Some(&'i') && rc.get(k + 2) == Some(&'s'))) {
+                flag = true;
+            } else if d == 0 && matches!(c, '-' | '&' | '!') && k > 0 {
+                flag = true;
+            }
+            k += 1;
+        }
+        flag
+    };
+    let rest = if commas.is_empty() { String::new() } else { txt(commas[0] + 1, close).trim_start_matches(' ').to_string() };
+    let rest = rest.trim_end_matches(|c: char| c == ',').to_string();
+    let recv = if needs { format!("({})", recv) } else { recv };
+    let call = format!("{}.{}({})", recv, m, rest.trim_end());
+    let (el, ec) = (cs[close].1, cs[close].2 + 1);
+    vec![Fix { file: file.to_string(), line, col, end_line: el, end_col: ec, replace: call }]
+}
+
+/// `T { b: e2, a: e1 }` を宣言順 (メッセージの `: a, b` の並び) にする修正 (D16)。リテラルは 1 行 (折り返せない)。
+fn struct_order_fix(file: &str, msg: &str, line: usize, col: usize, lines: &[String]) -> Vec<Fix> {
+    let Some(order) = msg.rsplit_once(": ").map(|(_, o)| o.split(", ").map(String::from).collect::<Vec<String>>()) else { return vec![] };
+    let Some(text) = lines.get(line.wrapping_sub(1)) else { return vec![] };
+    let cs: Vec<char> = text.chars().collect();
+    let Some(open) = (col.saturating_sub(1)..cs.len()).find(|&i| cs[i] == '{') else { return vec![] };
+    // 欄 (深さ 1 のカンマ区切り) を集める。文字列・文字リテラルの中は飛ばす。
+    let mut depth = 0i32;
+    let mut items: Vec<(usize, usize)> = vec![];
+    let mut from = open + 1;
+    let mut close = None;
+    let mut j = open;
+    while j < cs.len() {
+        match cs[j] {
+            '"' => {
+                j += 1;
+                while j < cs.len() && cs[j] != '"' {
+                    if cs[j] == '\\' {
+                        j += 1;
+                    }
+                    j += 1;
+                }
+            }
+            '\'' => {
+                if cs.get(j + 1) == Some(&'\\') {
+                    j += 2;
+                    while j < cs.len() && cs[j] != '\'' {
+                        j += 1;
+                    }
+                } else if cs.get(j + 2) == Some(&'\'') {
+                    j += 2;
+                }
+            }
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    items.push((from, j));
+                    close = Some(j);
+                    break;
+                }
+            }
+            ',' if depth == 1 => {
+                items.push((from, j));
+                from = j + 1;
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    let Some(close) = close else { return vec![] };
+    let mut by_name: Vec<(String, String)> = vec![];
+    for (a, b) in items {
+        let seg: String = cs[a..b].iter().collect();
+        let seg = seg.trim().to_string();
+        if seg.is_empty() {
+            continue;
+        }
+        let Some((n, init)) = seg.split_once(':') else { return vec![] };
+        // 副作用・panic がありうる式 (呼び出し・添字・`?`・ブロック・クロージャ) があれば直さない。
+        let ic: Vec<char> = init.chars().collect();
+        for (k, c) in ic.iter().enumerate() {
+            let prev = if k > 0 { ic[k - 1] } else { ' ' };
+            if matches!(c, '(' | '[') && (prev.is_alphanumeric() || matches!(prev, '_' | ')' | ']' | '>')) || matches!(c, '?' | '{') {
+                return vec![];
+            }
+        }
+        by_name.push((n.trim().to_string(), init.trim().to_string()));
+    }
+    let mut out: Vec<String> = vec![];
+    for n in &order {
+        let Some((_, init)) = by_name.iter().find(|(x, _)| x == n) else { return vec![] };
+        out.push(format!("{}: {}", n, init));
+    }
+    if out.len() != by_name.len() {
+        return vec![];
+    }
+    let new = format!("{{ {} }}", out.join(", "));
+    vec![Fix { file: file.to_string(), line, col: open + 1, end_line: line, end_col: close + 2, replace: new }]
 }

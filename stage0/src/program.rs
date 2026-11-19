@@ -694,6 +694,9 @@ pub struct Program {
     pub impls: HashSet<(String, String)>,
     /// `derive [From]` を宣言した `enum` の FQN (4.3 の `?` のエラー変換)。
     pub from_enums: HashSet<String>,
+    /// 接尾辞のない整数リテラルのうち、型が決まって接尾辞を書き足したもの (`infer::annotate_int_lits` が記録する)。
+    /// (定義の添字, 位置, 元の字面, 推論した型)。接尾辞は必須 (D12) なので、検査が E2028 にする。
+    pub nosuf_lits: Vec<(usize, usize, String, String)>,
 }
 
 /// `?` のエラー変換 (4.1) で、`E1` を包むバリアントを引いた結果。

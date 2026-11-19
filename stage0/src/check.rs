@@ -2948,6 +2948,10 @@ impl<'a> Checker<'a> {
                                     self.diag("E2011", format!("missing field {} in {} literal", k, fq), di, nline(e));
                                 }
                             }
+                            // D16: 欄の順は宣言順 (書いた順に初期化式を評価するので、見た目と評価の順を一致させる)。
+                            if given.len() == known.len() && given.iter().all(|g| known.contains(g)) && given != known {
+                                self.diag("E2048", format!("the fields of the `{}` literal must be written in declaration order: {}", fq, known.join(", ")), di, nline(e));
+                            }
                         }
                     }
                 }
@@ -3420,6 +3424,12 @@ impl<'a> Checker<'a> {
             }
         }
         self.diags.extend(tk.diags);
+        // D12: 接尾辞のない整数リテラル (型は推論で決まり、接尾辞を書き足した木になっている)。
+        for (di, pos, text, ty) in self.p.nosuf_lits.clone() {
+            if user.contains(&di) {
+                self.diag("E2028", format!("the integer literal `{}` has no suffix: append `{}` (write `{}{}`)", text, ty, text, ty), di, pos);
+            }
+        }
         // 型で解決できた呼び出しの効果 (5.1 / 4.3): 局所変数レシーバの `s.m()` と、`Fn` 境界に渡した
         // クロージャから推論した効果変数・panic 変数。呼び出し元の宣言と比べ、全候補が違反するときだけ報告する。
         for ec in std::mem::take(&mut tk.eff_checks) {
