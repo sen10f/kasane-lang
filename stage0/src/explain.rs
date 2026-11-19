@@ -153,7 +153,7 @@ pub const EXPLAIN: &[(&str, &str)] = &[
     ("E9018", r#"`git` 依存の取得 (`git clone` / `checkout`) に失敗した、または `rev` が見つからない。"#),
     ("E9019", r#"`vendor/<名前>/` が `kasane.toml` と別の取得元から複製されたもの。`ksn vendor` で複製し直す。"#),
     ("E9022", r#"`git` 依存のハッシュが `kasane.lock` と一致しない。`vendor/` やキャッシュの内容が書き換えられている (`ksn vendor` で戻す。依存を正当に変えたなら `ksn update`)(8.1)。"#),
-    ("E9050", r#"`.ksnh` からコメントの行を外したもの (`ksn strip`) が、横の `.ksnl` とバイト一致しない (または `.ksnl` が無い)。`.ksnh` が正なので `ksn strip` (整形も要るなら `ksn fmt`) で `.ksnl` を作り直す。LLM が `.ksnl` を直したあとは、`.ksnh` に反映する(3.5)。"#),
+    ("E9050", r#"`.ksnh` からコメントの行を外したもの (`ksn strip`) が、横の `.ksnl` とバイト一致しない (または `.ksnl` が無い)。`.ksnh` が正なので `ksn strip` (整形も要るなら `ksn fmt`) で `.ksnl` を作り直す。LLM が `.ksnl` を直したあとは、`ksn sync` で `.ksnh` のコメントを新しい `.ksnl` の上に付け直す (失われたコメントは 1 件ずつ出る。`--drop-lost` / `--keep-lost`)。"#),
     ("E9020", r#"依存があるのに `kasane.lock` が無い(`ksn update`)。"#),
     ("E9021", r#"`kasane.toml` と `kasane.lock` の依存集合が食い違う(`ksn update`)。"#),
     ("E9012", r#"`[unsafe] modules` が不正(配列でない、モジュール名でない、自パッケージのモジュールでない)。"#),

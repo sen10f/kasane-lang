@@ -168,9 +168,13 @@ def run_ksn_retry(args, cwd, tries=3):
     return rc, out
 
 
-def evaluate(code, tests):
-    """コード + テストをパッケージにして check と test を実行する。(段階, 出力, コード一覧) を返す。
-    段階: pass / check / test / infra (ksn がシグナルで落ち続けた: モデルの失敗ではない)。"""
+def evaluate_full(code, tests):
+    """コード + テストをパッケージにして採点する。(段階, 出力, コード一覧, 正規形か) を返す。
+    段階: pass / check / test / infra (ksn がシグナルで落ち続けた: モデルの失敗ではない)。
+    正規形か: モデルのコードを `ksn fmt` に通す前後でファイルが変わらなければ True。fmt が構文の誤りで
+    失敗したときは False、infra のときは None。
+    書き方は 1 通り (E0020) だが、LLM の作業の流れでは道具が先に `ksn fmt` を通す (人がエディタで保存するときと同じ)。
+    だから採点は整形後の形で行い、整形の前後の差は記録だけする。"""
     with tempfile.TemporaryDirectory() as td:
         os.makedirs(os.path.join(td, 'src'))
         open(os.path.join(td, 'kasane.toml'), 'w', newline='\n').write(TOML)
@@ -179,30 +183,48 @@ def evaluate(code, tests):
         src = code.rstrip(nl) + nl
         path = os.path.join(td, 'src', 'bench.ksnl')
         open(path, 'w', newline='\n', encoding='utf-8').write(src)
-        # 書き方は 1 通り (E0020): まずモデルのコードだけを検査する (`ksn fmt` の出力と違えば check の誤り)。
+        # 1. モデルのコードを先に `ksn fmt` に通す。前後で変わったか = 最初から正規形だったか。
+        rc, out = run_ksn_retry(['fmt'], td)
+        if rc < 0:
+            return 'infra', f'ksn fmt がシグナル {-rc} で落ちた', [], None
+        if rc != 0:  # 構文の誤り。今と同じ形で check の段の失敗として返す。
+            return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out), False
+        after = open(path, encoding='utf-8').read()
+        canonical = after == src
+        src = after
+        # 2. 整形後のコードを検査する。
         rc, out = run_ksn_retry(['check'], td)
         if rc < 0:
-            return 'infra', f'ksn check がシグナル {-rc} で落ちた', []
+            return 'infra', f'ksn check がシグナル {-rc} で落ちた', [], None
         if rc != 0:
-            return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out)
+            return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out), canonical
         if tests:
-            # テストの追記は採点側の組み立てなので、並びは `ksn fmt` に任せる。
+            # 3. テストを追記し、並びは `ksn fmt` に任せてから検査する (テストは採点側の組み立て)。
             src += nl + tests.rstrip(nl) + nl
             open(path, 'w', newline='\n', encoding='utf-8').write(src)
             rc, out = run_ksn_retry(['fmt'], td)
             if rc < 0:
-                return 'infra', f'ksn fmt がシグナル {-rc} で落ちた', []
+                return 'infra', f'ksn fmt がシグナル {-rc} で落ちた', [], None
+            if rc != 0:
+                return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out), canonical
             rc, out = run_ksn_retry(['check'], td)
             if rc < 0:
-                return 'infra', f'ksn check がシグナル {-rc} で落ちた', []
+                return 'infra', f'ksn check がシグナル {-rc} で落ちた', [], None
             if rc != 0:
-                return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out)
+                return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out), canonical
+        # 4. テストを走らせる。
         rc, out = run_ksn_retry(['test'], td)
         if rc < 0:
-            return 'infra', f'ksn test がシグナル {-rc} で落ちた', []
+            return 'infra', f'ksn test がシグナル {-rc} で落ちた', [], None
         if rc != 0:
-            return 'test', out.strip(), []
-        return 'pass', '', []
+            return 'test', out.strip(), [], canonical
+        return 'pass', '', [], canonical
+
+
+def evaluate(code, tests):
+    """evaluate_full の段階・出力・コード一覧だけを返す (正規形の記録は要らない呼び出し側向け)。"""
+    stage, out, codes, _ = evaluate_full(code, tests)
+    return stage, out, codes
 
 
 def build_docs(mode):
@@ -229,11 +251,11 @@ def run_dir(a):
     return run_dir.path
 
 
-def dump_attempt(a, task_id, n, code, stage, out):
+def dump_attempt(a, task_id, n, code, stage, out, canonical=None):
     nl = chr(10)
     d = run_dir(a)
     open(os.path.join(d, f'{task_id}-{n}.ksnl'), 'w', encoding='utf-8', newline=nl).write(code)
-    note = f'// stage: {stage}{nl}' + ''.join(f'// {l}{nl}' for l in out.splitlines()[:20])
+    note = f'// stage: {stage}{nl}// canonical: {canonical}{nl}' + ''.join(f'// {l}{nl}' for l in out.splitlines()[:20])
     open(os.path.join(d, f'{task_id}-{n}.log'), 'w', encoding='utf-8', newline=nl).write(note)
 
 
@@ -264,12 +286,13 @@ def run_task(a, task, system, api_key, lock):
             msgs.append({'role': 'assistant', 'content': content or '(empty)'})
             msgs.append({'role': 'user', 'content': '```kasane コードブロックで src/bench.ksnl の完全な内容を返してください。'})
             continue
-        stage, out, codes = evaluate(code, task['tests'])
-        rec.update(stage=stage, codes=codes, detail=out[:600], code=code)
+        stage, out, codes, canonical = evaluate_full(code, task['tests'])
+        rec.update(stage=stage, codes=codes, canonical=canonical, detail=out[:600], code=code)
         attempts.append(rec)
-        dump_attempt(a, task['id'], k + 1, code, stage, out)
+        dump_attempt(a, task['id'], k + 1, code, stage, out, canonical)
+        form = {True: '正規形', False: '非正規形', None: '整形なし'}[canonical]
         say(f"[{task['id']}] attempt {k + 1}: {stage} {sorted(set(codes))} ({r['secs']:.0f}s, "
-            f"{usage.get('completion_tokens')} tok, retries {r['retries']})")
+            f"{usage.get('completion_tokens')} tok, retries {r['retries']}, {form})")
         if stage == 'pass':
             final = 'pass'
             break
@@ -332,6 +355,8 @@ def main():
         results = list(ex.map(lambda t: run_task(a, t, system, api_key, lock), tasks))
     valid = [r for r in results if r['final'] != 'invalid']
     atts = [x for r in results for x in r['attempts']]
+    # 1 回目の答案 (コードブロックのあるもの) のうち、`ksn fmt` を通す前から正規形だった数。
+    first = [r['attempts'][0] for r in results if r['attempts'] and isinstance(r['attempts'][0].get('canonical'), bool)]
     summary = {
         'model': a.model, 'provider': a.provider, 'base': a.base, 'api_key_env': a.api_key_env,
         'docs': a.docs, 'repairs': a.repairs, 'jobs': a.jobs, 'elapsed_s': round(time.time() - t0),
@@ -341,6 +366,8 @@ def main():
         'invalid_ids': [r['id'] for r in results if r['final'] == 'invalid'],
         'pass_at_1': sum(1 for r in valid if r['attempts'] and r['attempts'][0].get('stage') == 'pass'),
         'pass_at_n': sum(1 for r in valid if r['final'] == 'pass'),
+        'first_answers': len(first),
+        'first_canonical': sum(1 for x in first if x['canonical']),
         'requests': sum(1 for x in atts if x.get('stage') != 'api-error'),
         'retries': sum(x.get('retries') or 0 for x in atts),
         'prompt_tokens': sum(x.get('prompt_tokens') or 0 for x in atts),
@@ -353,6 +380,7 @@ def main():
     path = os.path.join(a.out_dir, name)
     json.dump(summary, open(path, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
     print(f"\npass@1 {summary['pass_at_1']}/{summary['valid_tasks']}  pass@{a.repairs + 1} {summary['pass_at_n']}/{summary['valid_tasks']}"
+          f"  1回目の答案が正規形 {summary['first_canonical']}/{summary['first_answers']}"
           f"  invalid {summary['invalid_tasks']}  retries {summary['retries']}  ({summary['elapsed_s']}s)  -> {path}")
     if summary['invalid_tasks']:
         print('INVALID RUN: インフラの失敗で結論が出なかった課題がある (モデルの失敗ではない): '
