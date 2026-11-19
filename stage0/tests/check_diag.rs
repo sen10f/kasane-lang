@@ -1016,7 +1016,8 @@ fn recursive_inferred_functions_reach_a_fixed_point() {
 #[test]
 fn rust_style_source_gets_all_hints_at_once() {
     let src = "fn t.main() -> Result<(), std.io.Error> {\n    let x: u32 = 1 as u32;\n    let y = t::f(x >> 1);\n    Ok(())\n}\n";
-    let t = Tmp::new("rustisms", src);
+    // `ksn fmt` は行末の `;` を消すので、`;` の入ったまま置く (`new_raw`)。
+    let t = Tmp::new_raw("rustisms", src);
     let o = run(&["check", "--json"], &t.0);
     let got = codes(&text(&o.stdout));
     for c in ["E0040", "E0041", "E0042", "E0043", "E0044"] {

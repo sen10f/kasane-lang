@@ -276,6 +276,8 @@ fn diagnostics_with_utf16_range_and_clearing_on_change() {
     // `;` は Rust 風の書き方 (E0040)。その手前に "あ😀" があるので、列の変換が効いていないと位置がずれる。
     let semi = SRC_GOOD.replace("    t.add(1u32, 2u32)\nend t.main", "    let n = \"あ😀\";\n    t.add(1u32, 2u32)\nend t.main");
     let t = Tmp::new("diag", &semi);
+    // `ksn fmt` は行末の `;` を消すので、`;` の入ったままの `.ksnh` を置き直す (診断はエディタの内容から出る)。
+    fs::write(t.file("src/t.ksnh"), &semi).unwrap();
     let uri = t.uri("src/t.ksnh");
     let mut c = Client::start();
     c.initialize(&t.0);

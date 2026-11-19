@@ -26,6 +26,24 @@ pub fn mechanical(text: &str) -> Vec<String> {
     out
 }
 
+/// 行末の `;` (E0040) を消す。見つけ方も消し方も `ksn fix` の E0040 と同じ (rustisms::scan と fixes::fixes_for)。
+/// 文字列の中や `[x; n]` の `;` は行末ではない (rustisms が見ない) ので触らない。
+pub fn strip_semicolons(text: &str) -> String {
+    let hits: Vec<_> = crate::rustisms::scan(text).into_iter().filter(|h| h.code == "E0040").collect();
+    if hits.is_empty() {
+        return text.to_string();
+    }
+    let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+    for h in hits {
+        for f in crate::fixes::fixes_for("E0040", &h.msg, "", h.line, h.col, &lines.clone()) {
+            let chars: Vec<char> = lines[f.line - 1].chars().collect();
+            let (a, b) = (f.col - 1, (f.end_col - 1).min(chars.len()));
+            lines[f.line - 1] = chars[..a].iter().chain(chars[b..].iter()).collect::<String>().trim_end().to_string();
+        }
+    }
+    lines.join("\n")
+}
+
 /// cli 側の簡易整形 (構文エラーのファイル用): 連続する空行も1行にまとめる。
 pub fn mechanical_collapse(text: &str) -> String {
     let lines = mechanical(text);
@@ -467,6 +485,13 @@ pub fn format_source(text: &str, path: &str) -> String {
 
 /// `canon` が偽なら、名前の参照形 (3.3) は書き換えず、定義の並びと空行だけを整える (`ksn rename` 用)。
 pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
+    let stripped;
+    let text = if canon && !path.ends_with(".sig") {
+        stripped = strip_semicolons(text);
+        stripped.as_str()
+    } else {
+        text
+    };
     let mut lines = mechanical(text);
     if canon {
         // 1 行の中のトークンの間隔 (spacing.rs の表)。

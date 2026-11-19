@@ -779,7 +779,51 @@ pub fn stdlib_dir() -> PathBuf {
             d = x.parent();
         }
     }
-    PathBuf::from("spec/stdlib")
+    let rel = PathBuf::from("spec/stdlib");
+    if rel.is_dir() {
+        return rel;
+    }
+    embedded_stdlib_dir().unwrap_or(rel)
+}
+
+/// 実行体に埋め込んだ標準ライブラリの宣言 (`assets::STDLIB`) を、キャッシュの場所 (`KSN_CACHE_DIR` > `~/.cache/ksn` > 一時) の
+/// `stdlib-<実行体の識別子>/` に展開してその場所を返す (1 度だけ。展開済みなら再利用する)。ディスクに `spec/stdlib` があるときは使われない。
+fn embedded_stdlib_dir() -> Option<PathBuf> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let base = std::env::var_os("KSN_CACHE_DIR")
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache").join("ksn")))
+            .unwrap_or_else(std::env::temp_dir);
+        let dir = base.join(format!("stdlib-{}", env!("KSN_BUILD_ID")));
+        if dir.join(".done").exists() {
+            return Some(dir);
+        }
+        let tmp = base.join(format!("stdlib-{}.{}.tmp", env!("KSN_BUILD_ID"), std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let mut b = crate::assets::STDLIB;
+        while b.len() >= 4 {
+            let n = u32::from_le_bytes(b[..4].try_into().ok()?) as usize;
+            let rel = std::str::from_utf8(b.get(4..4 + n)?).ok()?;
+            let m = u64::from_le_bytes(b.get(4 + n..12 + n)?.try_into().ok()?) as usize;
+            let data = b.get(12 + n..12 + n + m)?;
+            let p = tmp.join(rel);
+            fs::create_dir_all(p.parent()?).ok()?;
+            fs::write(&p, data).ok()?;
+            b = &b[12 + n + m..];
+        }
+        fs::write(tmp.join(".done"), "").ok()?;
+        if fs::rename(&tmp, &dir).is_err() {
+            // 別のプロセスが先に展開した。
+            let _ = fs::remove_dir_all(&tmp);
+            if !dir.join(".done").exists() {
+                return None;
+            }
+        }
+        Some(dir)
+    })
+    .clone()
 }
 
 /// 32 ビットのターゲット (wasm32) の `core/num.sig`: `usize` / `isize` の定数を 32 ビットの値にし、

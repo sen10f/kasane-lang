@@ -1,10 +1,9 @@
 # フル検証 (python3 tests/run_tests.py) を push と PR ごとに回す (修正プラン 6-1)。
 name: ci
 
+# 2026-11-19、利用者の指示で自動の起動 (push・PR) をやめた。非公開のリポジトリで Actions の課金が止まったため。
+# 統合の確かめは手元のフル検証で行う。まっさらな環境での確かめが要るときだけ、手で起動する (gh workflow run ci)。
 on:
-  push:
-    branches: [master, dev/plan]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -20,7 +19,11 @@ jobs:
       - name: 依存 (gcc / clang / python3 / curl)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc clang python3 curl
+          sudo apt-get install -y --no-install-recommends gcc clang python3 curl libzstd-dev zlib1g-dev lsb-release wget software-properties-common gnupg
+          # ubuntu-24.04 の標準は LLVM 18。embedded-llvm は LLVM 20 が要るので apt.llvm.org から入れる。
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash /tmp/llvm.sh 20
+          sudo apt-get install -y --no-install-recommends llvm-20-dev
           gcc --version | head -1
           clang --version | head -1
           python3 --version

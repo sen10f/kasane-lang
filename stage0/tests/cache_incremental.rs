@@ -607,7 +607,7 @@ end t.main
     let _ = fs::remove_dir_all(&cache);
     let all = format!("{}{}", text(&b.stdout), text(&b.stderr));
     assert!(!all.contains("panicked"), "{}", all);
-    assert!(all.contains("native backend skipped: clang が失敗した") && all.contains("redefinition of function 'abs'"), "{}", all);
+    assert!((all.contains("native backend skipped: clang が失敗した") || all.contains("native backend skipped: LLVM IR を読めない")) && all.contains("redefinition of function 'abs'"), "{}", all);
     assert!(all.contains("the interpreter bundle is used"), "{}", all);
 }
 
@@ -956,6 +956,7 @@ fn release_build_without_clang_fails_instead_of_bundling() {
             .current_dir(&t.0)
             .env("KSN_CACHE_DIR", &cache)
             .env("KSN_CLANG", "/nonexistent/ksn-test-no-clang")
+            .env("KSN_CODEGEN", "clang")
             .output()
             .unwrap()
     };

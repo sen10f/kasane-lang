@@ -1979,3 +1979,9 @@ selfhost の試作 (`selfhost/README.md` 9.4 の 3・4) で、構造体のフィ
 - `std.json.to_string<T>` (`derive [ToJson]`): 構造体のフィールドが `String` / `Vec` のとき、受け手の型を構造体の定義から引く (`recv_src`) ことと、`String` / `Vec` のフィールドの `&self` をヘッダのアドレスで渡すこと (`recv_path`) で下りる。
 
 残した形: `Option<i128>` / `Option<u128>` と `i128` / `u128` の `Display` / `checked_*` / `u64.try_from_u128` (6 本)。`Option` のペイロードの枠は 64 ビットまでで、128 ビットを入れるには `Pay` と 4 つの下ろし先 (LLVM・`kir_exec`・`vm`・KIR の文面) の枠の大きさの変更と、64 ビットへ狭める命令 (今の `Conv` は広げる向きだけ) の追加が要る。`Display` だけなら `FloatText` と同じ形の命令 1 つで足りる。
+
+### 12.7 プロセス内の LLVM (`embedded-llvm`、native/l1-embed-llvm)
+
+- Cargo の feature `embedded-llvm` (既定で有効) で、LLVM IR のテキストから目的ファイルまでを `ksn` の中で行う (`stage0/src/embed_llvm.rs`): `LLVMParseIRInContext` → `LLVMRunPasses` (`default<O1>` など、clang の `-O` と同じ) → `LLVMTargetMachineEmitToFile`。対象は X86 / AArch64 / WebAssembly だけを初期化し、CPU は clang と同じ (`x86-64` / `generic`)、再配置は wasm 以外 PIC。
+- `llvm-sys` は `no-llvm-linking` で使い、`build.rs` が `llvm-config` (既定 `/usr/lib/llvm-20/bin/llvm-config`、`LLVM_CONFIG` で変更) の 3 対象分の静的ライブラリ・zlib・zstd を静的に、libstdc++ も静的につなぐ (`ldd` に libLLVM は出ない)。
+- 実行時の C (`rt.c` / `kir_rt.c`) のコンパイルとリンクは外部の clang のまま (L2 / L3 で埋め込む)。`KSN_CODEGEN=clang` か `KSN_CLANG_ARGS` があるときは従来の `clang -x ir`。

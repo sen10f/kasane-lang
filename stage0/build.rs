@@ -32,7 +32,149 @@ fn part(h: &mut Sha256, name: &str, bytes: &[u8]) {
     h.update(bytes);
 }
 
+/// llvm-config の場所。`LLVM_CONFIG` > `KSN_LLVM_PREFIX/bin/llvm-config` (`scripts/build_llvm.sh` の自前の LLVM) > distro の LLVM 20。
+fn llvm_config_path() -> String {
+    println!("cargo:rerun-if-env-changed=LLVM_CONFIG");
+    println!("cargo:rerun-if-env-changed=KSN_LLVM_PREFIX");
+    if let Some(c) = std::env::var("LLVM_CONFIG").ok().filter(|s| !s.is_empty()) {
+        return c;
+    }
+    match std::env::var("KSN_LLVM_PREFIX").ok().filter(|s| !s.is_empty()) {
+        Some(p) => format!("{}/bin/llvm-config", p),
+        None => "/usr/lib/llvm-20/bin/llvm-config".to_string(),
+    }
+}
+
+/// `embedded-llvm`: LLVM 20 の静的ライブラリのうち X86 / AArch64 / WebAssembly だけをつなぐ (llvm-sys は `no-llvm-linking`)。
+fn link_llvm() {
+    let cfg = llvm_config_path();
+    let run = |a: &[&str]| -> String {
+        let o = Command::new(&cfg).args(a).output().unwrap_or_else(|e| panic!("llvm-config ({}) を起動できない: {}", cfg, e));
+        assert!(o.status.success(), "llvm-config {:?} が失敗した", a);
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+    println!("cargo:rerun-if-env-changed=LLVM_CONFIG");
+    println!("cargo:rustc-link-search=native={}", run(&["--libdir"]).trim());
+    for l in run(&["--link-static", "--libs", "x86", "aarch64", "webassembly", "passes", "irreader", "target"]).split_whitespace() {
+        println!("cargo:rustc-link-lib=static={}", l.trim_start_matches("-l"));
+    }
+    for l in run(&["--link-static", "--system-libs"]).split_whitespace() {
+        let n = l.trim_start_matches("-l");
+        match n {
+            // 静的に取り込む (配布する実行体が libz / libzstd に依存しない)。xml2 は Windows の manifest 用で要らない。
+            "z" | "zstd" => println!("cargo:rustc-link-lib=static={}", n),
+            "xml2" => {}
+            _ => println!("cargo:rustc-link-lib={}", n),
+        }
+    }
+    for d in ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64"] {
+        if Path::new(d).is_dir() {
+            println!("cargo:rustc-link-search=native={}", d);
+        }
+    }
+    println!("cargo:rustc-link-lib=static=stdc++");
+}
+
+// ---- L2: 実行時の C のビットコードと標準ライブラリの宣言を実行体に埋め込む ----
+
+/// `OUT_DIR/assets.rs` を作る。`rt_bc(対象, 部品)` (実行時の C のビットコード、対象の sysroot が無ければ `None`) と `STDLIB`
+/// (`spec/stdlib` の全ファイルを `[パスの長さ u32][パス][内容の長さ u64][内容]` で並べたもの)。
+/// ビットコードはビルドする機械の clang で作る (`KSN_BUILD_CLANG`、既定 `clang`)。無ければ全部飛ばし、実行時は従来どおり clang を使う。
+/// 返すのは識別子 (`KSN_BUILD_ID`) に混ぜる中身。
+fn gen_assets(manifest: &Path, out: &Path) -> Vec<u8> {
+    println!("cargo:rerun-if-env-changed=KSN_BUILD_CLANG");
+    println!("cargo:rerun-if-changed=../spec/stdlib");
+    let clang = std::env::var("KSN_BUILD_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let mut mixed: Vec<u8> = vec![];
+    let mut rs = String::from("pub fn rt_bc(target: &str, piece: &str) -> Option<&'static [u8]> {\n    match (target, piece) {\n");
+    let src = manifest.join("src");
+    let inc = src.join("wasm").join("include");
+    let host_x86 = std::env::consts::ARCH == "x86_64";
+    let host_a64 = std::env::consts::ARCH == "aarch64";
+    let aroot = std::env::var("KSN_SYSROOT").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/usr/aarch64-linux-gnu".to_string());
+    // (対象, 部品, ソース, 追加の引数)
+    let mut jobs: Vec<(&str, &str, PathBuf, Vec<String>)> = vec![];
+    let elf = |t: &str, host: bool, root: Option<&str>| -> Option<Vec<String>> {
+        let mut a: Vec<String> = vec![format!("--target={}", t), "-O2".into(), "-fPIC".into(), "-pthread".into()];
+        if !host {
+            let r = root?;
+            if !Path::new(r).join("include").is_dir() {
+                return None;
+            }
+            a.push("-isystem".into());
+            a.push(format!("{}/include", r));
+        }
+        Some(a)
+    };
+    for (t, host, root) in [("x86_64-linux-gnu", host_x86, None), ("aarch64-linux-gnu", host_a64, Some(aroot.as_str()))] {
+        if let Some(a) = elf(t, host, root) {
+            jobs.push((t, "kir_rt", src.join("kir_rt.c"), a.clone()));
+            jobs.push((t, "sysrt", src.join("sysrt.c"), a));
+        }
+    }
+    let wasm = |t: &str, extra: &[&str]| -> Vec<String> {
+        let mut a: Vec<String> = vec![format!("--target={}", t), "-O1".into(), "-ffreestanding".into(), "-fno-builtin".into(), format!("-isystem{}", inc.display())];
+        a.extend(extra.iter().map(|s| s.to_string()));
+        a
+    };
+    jobs.push(("wasm32-unknown-unknown", "rt", src.join("wasm").join("rt.c"), wasm("wasm32-unknown-unknown", &[])));
+    jobs.push(("wasm32-unknown-unknown", "kir_rt", src.join("kir_rt.c"), wasm("wasm32-unknown-unknown", &[])));
+    jobs.push(("wasm32-wasi", "rt", src.join("wasm").join("rt.c"), wasm("wasm32-unknown-wasi", &["-DKSN_WASI=1"])));
+    jobs.push(("wasm32-wasi", "kir_rt", src.join("kir_rt.c"), wasm("wasm32-unknown-wasi", &["-DKSN_WASI=1"])));
+    jobs.push(("wasm32-wasi", "wasi", src.join("wasm").join("wasi.c"), wasm("wasm32-unknown-wasi", &["-DKSN_WASI=1"])));
+    let mut seen = vec![];
+    for (t, piece, c, args) in jobs {
+        let bc = out.join(format!("rt_{}_{}.bc", t, piece));
+        let _ = fs::remove_file(&bc);
+        let ok = Command::new(&clang).args(&args).args(["-c", "-emit-llvm", "-x", "c"]).arg(&c).arg("-o").arg(&bc).output().map(|o| {
+            if !o.status.success() {
+                println!("cargo:warning=実行時の C ({}/{}) をビットコードにできない: {}", t, piece, String::from_utf8_lossy(&o.stderr).lines().next().unwrap_or(""));
+            }
+            o.status.success()
+        }).unwrap_or(false);
+        if ok {
+            rs.push_str(&format!("        ({:?}, {:?}) => Some(include_bytes!({:?})),\n", t, piece, bc.display().to_string()));
+            part_raw(&mut mixed, &format!("{}/{}", t, piece), &fs::read(&bc).unwrap_or_default());
+            seen.push(t);
+        }
+    }
+    rs.push_str("        _ => None,\n    }\n}\n\n");
+    // 標準ライブラリ
+    let mut files = vec![];
+    walk(&manifest.join("..").join("spec").join("stdlib"), &mut files);
+    files.sort();
+    let root = manifest.join("..").join("spec").join("stdlib");
+    let mut blob: Vec<u8> = vec![];
+    for f in files {
+        if f.components().any(|c| c.as_os_str() == "__pycache__") {
+            continue;
+        }
+        let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+        let data = fs::read(&f).unwrap_or_default();
+        blob.extend((rel.len() as u32).to_le_bytes());
+        blob.extend(rel.as_bytes());
+        blob.extend((data.len() as u64).to_le_bytes());
+        blob.extend(data);
+    }
+    let bin = out.join("stdlib.bin");
+    fs::write(&bin, &blob).expect("stdlib.bin を書けない");
+    rs.push_str(&format!("pub static STDLIB: &[u8] = include_bytes!({:?});\n", bin.display().to_string()));
+    fs::write(out.join("assets.rs"), rs).expect("assets.rs を書けない");
+    mixed.extend(&blob);
+    mixed
+}
+
+fn part_raw(v: &mut Vec<u8>, name: &str, bytes: &[u8]) {
+    v.extend((name.len() as u64).to_le_bytes());
+    v.extend(name.as_bytes());
+    v.extend((bytes.len() as u64).to_le_bytes());
+    v.extend(bytes);
+}
+
 fn main() {
+    if std::env::var_os("CARGO_FEATURE_EMBEDDED_LLVM").is_some() {
+        link_llvm();
+    }
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let grammar = manifest.join("..").join("spec").join("grammar.ebnf");
 
@@ -64,6 +206,49 @@ fn main() {
         part(&mut h, &name, &fs::read(f).unwrap_or_default());
     }
 
+    let assets = gen_assets(&manifest, &PathBuf::from(env("OUT_DIR")));
+    part(&mut h, "assets", &assets);
     let id: String = h.finalize().iter().map(|b| format!("{:02x}", b)).collect();
     println!("cargo:rustc-env=KSN_BUILD_ID={}", id);
+    link_embedded_lld();
+}
+
+// ---- L3: 組み込みの lld (feature `embedded-llvm`) ----
+#[allow(dead_code)]
+fn link_embedded_lld() {
+    if std::env::var("CARGO_FEATURE_EMBEDDED_LLVM").is_err() {
+        return;
+    }
+    println!("cargo:rerun-if-changed=src/native/lld_shim.cpp");
+    // llvm-config は L1 の `link_llvm` と同じもの (`LLVM_CONFIG`、既定は /usr/lib/llvm-20/bin/llvm-config)。
+    let llvm_config = llvm_config_path();
+    let cfg = |a: &[&str]| -> String {
+        let o = Command::new(&llvm_config).args(a).output().expect("llvm-config が要る (llvm-20-dev)");
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    let inc = cfg(&["--includedir"]);
+    let lib = cfg(&["--libdir"]);
+    // `cc` crate は build.rs 側に feature を渡せないので使わず、c++ と ar を直接呼ぶ。
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let obj = out.join("lld_shim.o");
+    let st = Command::new(std::env::var("CXX").unwrap_or_else(|_| "c++".into()))
+        .args(["-std=c++17", "-fno-exceptions", "-fno-rtti", "-fPIC", "-O2", "-c", "src/native/lld_shim.cpp", "-I", &inc, "-o"])
+        .arg(&obj)
+        .status()
+        .expect("c++ が要る");
+    assert!(st.success(), "lld_shim.cpp のコンパイルに失敗");
+    let a = out.join("libksn_lld_shim.a");
+    let _ = fs::remove_file(&a);
+    assert!(Command::new("ar").arg("crs").arg(&a).arg(&obj).status().expect("ar が要る").success());
+    println!("cargo:rustc-link-search=native={}", out.display());
+    println!("cargo:rustc-link-lib=static=ksn_lld_shim");
+    println!("cargo:rustc-link-search=native={}", lib);
+    for l in ["lldELF", "lldWasm", "lldCommon"] {
+        println!("cargo:rustc-link-lib=static={}", l);
+    }
+    for l in cfg(&["--link-static", "--libs", "lto", "object", "option", "debuginfodwarf", "all-targets"]).split_whitespace().filter(|l| !l.contains("Polly")) {
+        // Polly は -dev に静的ライブラリが無い。lld は使わないので外す。
+        println!("cargo:rustc-link-lib=static={}", l.trim_start_matches("-l"));
+    }
+    // システムのライブラリ (z・zstd・stdc++) は L1 の `link_llvm` が静的につなぐ (配布する実行体が依存しない)。ここでは足さない。
 }
