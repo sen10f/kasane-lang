@@ -1,0 +1,211 @@
+type bench.Cursor
+    pos: usize
+end bench.Cursor
+
+enum bench.EvError derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Syntax
+    DivZero
+end bench.EvError
+
+enum bench.Tok derive [Debug, Clone, Copy, PartialEq] pub
+    Num(i64)
+    Plus
+    Minus
+    Star
+    Slash
+    LParen
+    RParen
+end bench.Tok
+
+fn bench.add_op(t: bench.Tok) -> Option<u8> uses [] panics never
+    match t {
+        bench.Tok.Num(_n) => None
+        bench.Tok.Plus => Some(0u8)
+        bench.Tok.Minus => Some(1u8)
+        bench.Tok.Star => None
+        bench.Tok.Slash => None
+        bench.Tok.LParen => None
+        bench.Tok.RParen => None
+    }
+end bench.add_op
+
+fn bench.eval(text: &str) -> Result<i64, bench.EvError> uses [alloc] panics never
+    let toks = bench.tokenize(text)?
+    let mut cur = bench.Cursor { pos: 0usize }
+    let v = bench.parse_expr(&toks, &mut cur)?
+    if cur.pos != toks.len() {
+        return Err(bench.EvError.Syntax)
+    }
+    Ok(v)
+end bench.eval
+
+fn bench.mul_op(t: bench.Tok) -> Option<u8> uses [] panics never
+    match t {
+        bench.Tok.Num(_n) => None
+        bench.Tok.Plus => None
+        bench.Tok.Minus => None
+        bench.Tok.Star => Some(0u8)
+        bench.Tok.Slash => Some(1u8)
+        bench.Tok.LParen => None
+        bench.Tok.RParen => None
+    }
+end bench.mul_op
+
+fn bench.parse_expr(toks: &alloc.vec.Vec<bench.Tok, std.alloc.System>, cur: &mut bench.Cursor) -> Result<i64, bench.EvError> uses [] panics never stack 8192
+    let mut acc = bench.parse_term(toks, cur)?
+    loop {
+        let op = match bench.peek(toks, cur) {
+            Some(t) => bench.add_op(t)
+            None => None
+        }
+        match op {
+            Some(code) => {
+                core.mem.drop(bench.take(toks, cur))
+                let rhs = bench.parse_term(toks, cur)?
+                if code == 0u8 {
+                    acc = acc.wrapping_add(rhs)
+                } else {
+                    acc = acc.wrapping_sub(rhs)
+                }
+            }
+            None => break
+        }
+    }
+    Ok(acc)
+end bench.parse_expr
+
+fn bench.parse_factor(toks: &alloc.vec.Vec<bench.Tok, std.alloc.System>, cur: &mut bench.Cursor) -> Result<i64, bench.EvError> uses [] panics never stack 8192
+    let t = match bench.take(toks, cur) {
+        Some(t) => t
+        None => return Err(bench.EvError.Syntax)
+    }
+    if let bench.Tok.Num(n) = t {
+        return Ok(n)
+    }
+    if let bench.Tok.LParen = t {
+        let v = bench.parse_expr(toks, cur)?
+        let close = match bench.take(toks, cur) {
+            Some(x) => x
+            None => return Err(bench.EvError.Syntax)
+        }
+        if let bench.Tok.RParen = close {
+            Ok(v)
+        } else {
+            Err(bench.EvError.Syntax)
+        }
+    } else {
+        Err(bench.EvError.Syntax)
+    }
+end bench.parse_factor
+
+fn bench.parse_term(toks: &alloc.vec.Vec<bench.Tok, std.alloc.System>, cur: &mut bench.Cursor) -> Result<i64, bench.EvError> uses [] panics never stack 8192
+    let mut acc = bench.parse_factor(toks, cur)?
+    loop {
+        let op = match bench.peek(toks, cur) {
+            Some(t) => bench.mul_op(t)
+            None => None
+        }
+        match op {
+            Some(code) => {
+                core.mem.drop(bench.take(toks, cur))
+                let rhs = bench.parse_factor(toks, cur)?
+                if code == 0u8 {
+                    acc = acc.wrapping_mul(rhs)
+                } else {
+                    match acc.checked_div(rhs) {
+                        Some(v) => {
+                            acc = v
+                            ()
+                        }
+                        None => return Err(bench.EvError.DivZero)
+                    }
+                }
+            }
+            None => break
+        }
+    }
+    Ok(acc)
+end bench.parse_term
+
+fn bench.peek(toks: &alloc.vec.Vec<bench.Tok, std.alloc.System>, cur: &bench.Cursor) -> Option<bench.Tok> uses [] panics never
+    match toks.get(cur.pos) {
+        Some(t) => Some(*t)
+        None => None
+    }
+end bench.peek
+
+fn bench.take(toks: &alloc.vec.Vec<bench.Tok, std.alloc.System>, cur: &mut bench.Cursor) -> Option<bench.Tok> uses [] panics never
+    let t = match toks.get(cur.pos) {
+        Some(t) => *t
+        None => return None
+    }
+    cur.pos = cur.pos.wrapping_add(1usize)
+    Some(t)
+end bench.take
+
+fn bench.tokenize(text: &str) -> Result<alloc.vec.Vec<bench.Tok, std.alloc.System>, bench.EvError> uses [alloc] panics never
+    let mut toks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let bytes = text.as_bytes()
+    let mut i = 0usize
+    while i < bytes.len() {
+        let c = match bytes.get(i) {
+            Some(c) => *c
+            None => break
+        }
+        if c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8 {
+            i = i.wrapping_add(1usize)
+        } else {
+            if c >= 48u8 && c <= 57u8 {
+                let mut n = 0u32
+                let mut bad = false
+                while i < bytes.len() {
+                    let d = match bytes.get(i) {
+                        Some(d) => *d
+                        None => break
+                    }
+                    if d < 48u8 || d > 57u8 {
+                        break
+                    }
+                    match n.checked_mul(10u32) {
+                        Some(t) => {
+                            match t.checked_add(u32.from_u8(d.wrapping_sub(48u8))) {
+                                Some(v) => {
+                                    n = v
+                                    ()
+                                }
+                                None => {
+                                    bad = true
+                                    ()
+                                }
+                            }
+                            ()
+                        }
+                        None => {
+                            bad = true
+                            ()
+                        }
+                    }
+                    i = i.wrapping_add(1usize)
+                }
+                if bad {
+                    return Err(bench.EvError.Syntax)
+                }
+                toks.push(bench.Tok.Num(i64.from_u32(n)))?
+            } else {
+                match c {
+                    43u8 => toks.push(bench.Tok.Plus)?
+                    45u8 => toks.push(bench.Tok.Minus)?
+                    42u8 => toks.push(bench.Tok.Star)?
+                    47u8 => toks.push(bench.Tok.Slash)?
+                    40u8 => toks.push(bench.Tok.LParen)?
+                    41u8 => toks.push(bench.Tok.RParen)?
+                    _ => return Err(bench.EvError.Syntax)
+                }
+                i = i.wrapping_add(1usize)
+            }
+        }
+    }
+    Ok(toks)
+end bench.tokenize
+

@@ -32,6 +32,7 @@ python bench/run_bench.py --provider nim
 | `--retry-base SEC` | バックオフの基準秒 (既定 2) |
 | `--out-dir DIR` | 結果の出力先 (既定 `bench/results`) |
 | `--docs`, `--repairs`, `--tasks`, `--max-tokens`, `--timeout`, `--tag` | 従来どおり |
+| `--large` | `bench/tasks_large` の大規模課題を対象にする。`verify_reference.py` / `run_bench.py` で指定。既定は `bench/tasks` |
 
 ## API キーの扱い
 
@@ -42,6 +43,10 @@ python bench/run_bench.py --provider nim
 ## リトライ
 
 HTTP 429・500・502・503・504、接続エラー、タイムアウト、壊れた応答をリトライする。待ち時間は `--retry-base * 2^n` (上限 60 秒) に 0.5〜1.0 倍のジッタを掛けたもの。`Retry-After` ヘッダ (秒数または HTTP 日付) があればそれを優先する (上限 120 秒)。それ以外の 4xx (401 など) はリトライしない。1 リクエストの試行は最大 `--max-attempts` 回で、尽きたら API エラーとして扱う。
+
+## `--large`: 大規模課題を対象にする
+
+`--large` を指定すると、通常の `bench/tasks/*` の代わりに `bench/tasks_large/*` (レベル `large` の 5 課題: discount, expr, inventory, table, vending) を対象にする。`python3 -I bench/verify_reference.py --large` で全件 pass を確かめ、`python bench/run_bench.py --large` でベンチを実行する。既定動作は変更しない。
 
 ## 整形の扱い
 

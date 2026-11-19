@@ -3098,7 +3098,8 @@ fn sn_roundtrip(name: &str, src: &str, want: &str) {
     let again = run(&["fmt"], &t.0);
     assert_eq!(sn_main(&t), want, "{}: fmt must be idempotent", name);
     assert!(!text(&again.stdout).contains("reformatted"), "{}", text(&again.stdout));
-    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}: canonical form must pass check", name);
+    let fin = run(&["check"], &t.0);
+    assert_eq!(fin.status.code(), Some(0), "{}: canonical form must pass check: {}{}", name, text(&fin.stdout), text(&fin.stderr));
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{}", name);
 }
 
@@ -3121,7 +3122,7 @@ fn fqn_of_an_imported_module_in_a_body_is_an_error_and_fmt_shortens_it() {
     sn_roundtrip("sn_body_fqn", &src, SN_CANON);
     // 型注釈の中でも短縮される。注釈は右辺だけでは型が決まらない形 (`Vec.new`) にして、冗長な注釈 (E2053) にしない。
     let body_old = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let item = lib.make()\n    let n = t.get(&item)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
-    let body_new = "fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never\n    let items: alloc.vec.Vec<t.lib.Item, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let n = items.len()\n    core.mem.drop(items)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
+    let body_new = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let items: alloc.vec.Vec<t.lib.Item, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let n = items.len()\n    core.mem.drop(items)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
     assert!(SN_CANON.contains(body_old));
     let src = SN_CANON.replace(body_old, body_new);
     let want = SN_CANON.replace(body_old, &body_new.replace("t.lib.Item", "lib.Item"));

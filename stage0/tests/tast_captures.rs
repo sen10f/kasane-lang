@@ -112,3 +112,168 @@ fn correct_captures_are_accepted() {
         assert!(got.is_empty(), "{}: 正しいコードが拒まれた: {:?}", name, got);
     }
 }
+
+// ---- 閉包の寿命 (規則 L の閉包の本体)・Fn 境界と関数型の効果 (S3C2) ----
+
+fn code_lines(json: &str, codes: &[&str]) -> BTreeSet<(String, u64)> {
+    let mut out = BTreeSet::new();
+    for l in json.lines() {
+        let code = l.split("\"code\": \"").nth(1).and_then(|s| s.split('"').next()).unwrap_or("");
+        if !codes.contains(&code) {
+            continue;
+        }
+        let line = l.split("\"line\": ").nth(1).and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next()).and_then(|s| s.parse().ok()).unwrap_or(0);
+        out.insert((code.to_string(), line));
+    }
+    out
+}
+
+fn new_codes(name: &str, src: &str, codes: &[&str]) -> BTreeSet<(String, u64)> {
+    let t = Tmp::new(name, src);
+    code_lines(&text(&run_with_env(&["check", "--json"], &t.0, &[("KSN_CHECKER", "new")]).stdout), codes)
+}
+
+/// 旧い検査が出す (コード, 行) を、新しい規則がすべて出すこと。
+fn assert_new_covers_old(stems: &[&str], codes: &[&str]) {
+    let mut bad = vec![];
+    for stem in stems {
+        let p = root().join("stage0/tests/data/unsound").join(format!("{}.ksnl", stem));
+        let src = fs::read_to_string(&p).unwrap();
+        let t = Tmp::new(&format!("tast_cap2_{}", stem), &src);
+        let old = code_lines(&text(&run_with_env(&["check", "--json"], &t.0, &[("KSN_CHECKER", "old")]).stdout), codes);
+        let new = code_lines(&text(&run_with_env(&["check", "--json"], &t.0, &[("KSN_CHECKER", "new")]).stdout), codes);
+        assert!(!old.is_empty(), "{}: 旧い検査が対象のコードを出さない", stem);
+        let missing: Vec<_> = old.difference(&new).collect();
+        if !missing.is_empty() {
+            bad.push(format!("{}: only-old={:?}", stem, missing));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+#[test]
+fn closure_lifetime_rules_match_old_checker_on_unsound() {
+    assert_new_covers_old(
+        &["closure_returns_capture", "hunt_a26_13_closure_elided_as_static", "hunt_a26_14_closure_two_elided", "flow_for_binding_outlives", "elided_flow_return_for_binder"],
+        &["E3020", "E3010", "E3030"],
+    );
+}
+
+#[test]
+fn closure_effect_rules_match_old_checker_on_unsound() {
+    assert_new_covers_old(
+        &[
+            "fn_type_closure_arg",
+            "fn_bound_inferred_uses",
+            "fn_bound_inferred_panics",
+            "fn_conv_arg_decl",
+            "fn_type_let_uses",
+            "fn_type_return",
+            "fn_type_struct_field",
+            "fnbound_named_fn_io",
+            "effect_in_method_closure",
+            "closure_inferred_callee_fn_bound",
+        ],
+        &["E4001", "E4002"],
+    );
+}
+
+const LIFE_MAIN: &str = "fn t.main() -> () uses [] panics never\n    t.run(1u32)\nend t.main\n\n";
+
+#[test]
+fn closure_return_elision_is_rejected_in_many_spellings() {
+    let cases: &[(&str, &str)] = &[
+        ("no_ref_param", "    let f = fn() -> &u32 capture [&x] {\n        &x\n    }\n    core.mem.drop(*f())\n"),
+        ("let_then_call", "    let f = fn() -> &u32 capture [&x] {\n        let r = &x\n        r\n    }\n    core.mem.drop(*f())\n"),
+        ("two_ref_params", "    let f = fn(a: &u32, b: &u32) -> &u32 capture [] {\n        a\n    }\n    core.mem.drop(*f(&x, &x))\n"),
+        ("in_block", "    let g = {\n        fn() -> &u32 capture [&x] {\n            &x\n        }\n    }\n    core.mem.drop(*g())\n"),
+    ];
+    for (name, body) in cases {
+        let src = format!("{}fn t.run(x: u32) -> () uses [] panics never\n{}end t.run\n", LIFE_MAIN, body);
+        let got = new_codes(&format!("tast_cap2_el_{}", name), &src, &["E3020"]);
+        assert!(!got.is_empty(), "{}: E3020 が出ない", name);
+    }
+    // 引数の参照がちょうど 1 つ・領域を書いた形は通る。
+    let ok: &[(&str, &str)] = &[
+        ("one_ref_param", "    let f = fn(a: &u32) -> &u32 capture [] {\n        a\n    }\n    core.mem.drop(*f(&x))\n"),
+        ("named", "    let f = fn(a: &u32) -> &'static u32 capture [] {\n        &7u32\n    }\n    core.mem.drop(*f(&x))\n"),
+    ];
+    for (name, body) in ok {
+        let src = format!("{}fn t.run(x: u32) -> () uses [] panics never\n{}end t.run\n", LIFE_MAIN, body);
+        let got = new_codes(&format!("tast_cap2_elok_{}", name), &src, &["E3020", "E3010", "E3030"]);
+        assert!(got.is_empty(), "{}: 正しいコードが拒まれた: {:?}", name, got);
+    }
+}
+
+#[test]
+fn closure_body_local_borrow_escape_is_rejected() {
+    let src = format!("{}fn t.run(x: u32) -> () uses [] panics never\n    let f = fn(a: u32) -> &u32 capture [] {{\n        &a\n    }}\n    core.mem.drop(*f(x))\nend t.run\n", LIFE_MAIN);
+    let got = new_codes("tast_cap2_local_escape", &src, &["E3030", "E3020"]);
+    assert!(got.iter().any(|(c, _)| c == "E3030" || c == "E3020"), "閉包の本体の局所の借用が出ていく形が拒まれない: {:?}", got);
+}
+
+#[test]
+fn for_pattern_binds_the_borrow_of_the_iterated_value() {
+    // `for x in v.iter()` の `x` は `v` の借用を運ぶ: 外側の束縛へ入れて `v` より長く使えば拒まれる。
+    let bad = format!(
+        "{}fn t.run(n: u32) -> () uses [] panics never\n    let mut keep = &n\n    {{\n        let v = [1u32, 2u32]\n        for x in v.iter() {{\n            keep = x\n        }}\n    }}\n    core.mem.drop(*keep)\nend t.run\n",
+        LIFE_MAIN
+    );
+    let got = new_codes("tast_cap2_for_bad", &bad, &["E3010", "E3030"]);
+    assert!(!got.is_empty(), "for の束縛が借用を運ばない: {:?}", got);
+    let ok = format!(
+        "{}fn t.run(n: u32) -> () uses [] panics never\n    let v = [1u32, 2u32]\n    let mut keep = &n\n    for x in v.iter() {{\n        keep = x\n    }}\n    core.mem.drop(*keep)\nend t.run\n",
+        LIFE_MAIN
+    );
+    let got = new_codes("tast_cap2_for_ok", &ok, &["E3010", "E3030"]);
+    assert!(got.is_empty(), "正しい for が拒まれた: {:?}", got);
+}
+
+const EFF_HEAD: &str = "fn t.main() -> () uses [] panics never\n    t.run()\nend t.main\n\nfn t.loud() -> u32 uses [io.console] panics never\n    core.mem.drop(std.io.print_line(\"x\"))\n    1u32\nend t.loud\n\nfn t.quiet() -> u32 uses [] panics never\n    1u32\nend t.quiet\n\nfn t.strict[F: core.ops.Fn<(), u32, [], never>](f: F) -> u32 uses [] panics never\n    f.call(())\nend t.strict\n\nfn t.apply(p: fn() -> u32 uses [] panics never) -> u32 uses [] panics never\n    p()\nend t.apply\n\n";
+
+#[test]
+fn closure_effect_over_the_bound_is_rejected_in_many_spellings() {
+    let cases: &[(&str, &str)] = &[
+        ("bound_direct", "    core.mem.drop(t.strict(fn() -> u32 capture [] {\n        t.loud()\n    }))\n"),
+        ("bound_via_let", "    let f = fn() -> u32 capture [] {\n        t.loud()\n    }\n    core.mem.drop(t.strict(f))\n"),
+        ("bound_named_fn", "    core.mem.drop(t.strict(t.loud))\n"),
+        ("bound_in_block", "    let g = {\n        fn() -> u32 capture [] {\n            t.loud()\n        }\n    }\n    core.mem.drop(t.strict(g))\n"),
+        ("fn_type_arg", "    core.mem.drop(t.apply(fn() -> u32 capture [] {\n        t.loud()\n    }))\n"),
+        ("fn_type_let", "    let p: fn() -> u32 uses [] panics never = t.loud\n    core.mem.drop(p())\n"),
+        ("fn_type_via_let_closure", "    let f = fn() -> u32 capture [] {\n        t.loud()\n    }\n    core.mem.drop(t.apply(f))\n"),
+    ];
+    for (name, body) in cases {
+        let src = format!("{}fn t.run() -> () uses [] panics never\n{}end t.run\n", EFF_HEAD, body);
+        let got = new_codes(&format!("tast_cap2_eff_{}", name), &src, &["E4001"]);
+        assert!(!got.is_empty(), "{}: E4001 が出ない", name);
+    }
+}
+
+#[test]
+fn closure_effect_within_the_bound_is_accepted() {
+    let cases: &[(&str, &str)] = &[
+        ("quiet_closure", "    core.mem.drop(t.strict(fn() -> u32 capture [] {\n        t.quiet()\n    }))\n"),
+        ("quiet_named", "    core.mem.drop(t.strict(t.quiet))\n"),
+        ("quiet_fn_type", "    core.mem.drop(t.apply(t.quiet))\n"),
+        ("quiet_let_type", "    let p: fn() -> u32 uses [] panics never = t.quiet\n    core.mem.drop(p())\n"),
+    ];
+    for (name, body) in cases {
+        let src = format!("{}fn t.run() -> () uses [] panics never\n{}end t.run\n", EFF_HEAD, body);
+        let got = new_codes(&format!("tast_cap2_effok_{}", name), &src, &["E4001", "E4002"]);
+        assert!(got.is_empty(), "{}: 正しいコードが拒まれた: {:?}", name, got);
+    }
+    // 呼び出す側が効果を宣言していれば、境界が許す範囲で通る。
+    let src = format!(
+        "{}fn t.wide[F: core.ops.Fn<(), u32, [io.console], never>](f: F) -> u32 uses [io.console] panics never\n    f.call(())\nend t.wide\n\nfn t.run() -> () uses [io.console] panics never\n    core.mem.drop(t.wide(t.loud))\n    let g = fn() -> u32 capture [] {{\n        t.loud()\n    }}\n    core.mem.drop(g())\nend t.run\n",
+        EFF_HEAD.replace("t.run()", "t.run()")
+    );
+    let got = new_codes("tast_cap2_eff_declared", &src, &["E4001", "E4002"]);
+    assert!(got.is_empty(), "効果を宣言した呼び出しが拒まれた: {:?}", got);
+}
+
+#[test]
+fn local_closure_call_effect_must_be_declared_by_the_caller() {
+    let src = format!("{}fn t.run() -> () uses [] panics never\n    let f = fn() -> u32 capture [] {{\n        t.loud()\n    }}\n    core.mem.drop(f())\nend t.run\n", EFF_HEAD);
+    let got = new_codes("tast_cap2_call_closure", &src, &["E4001"]);
+    assert!(!got.is_empty(), "閉包の呼び出しの効果が宣言を超えても拒まれない");
+}

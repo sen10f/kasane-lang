@@ -2863,6 +2863,11 @@ impl<'a> TypeCk<'a> {
                 }
                 _ => {}
             }
+            if let (Ty::Closure { eff: Eff(Some(we)), .. }, Ty::Closure { eff: Eff(Some(_)), .. }) = (&w, &g) {
+                if we.decl {
+                    cs.push(Coercion::FnTo(w.clone()));
+                }
+            }
             self.put_conv(&fqn, key, cs);
         }
     }

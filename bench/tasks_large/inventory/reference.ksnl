@@ -1,0 +1,162 @@
+enum bench.InvError derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    NotFound
+    Insufficient(u32)
+end bench.InvError
+
+type bench.Inventory pub
+    stock: alloc.collections.HashMap<alloc.string.String, bench.Item, std.alloc.System>
+    order: alloc.vec.Vec<alloc.string.String, std.alloc.System>
+end bench.Inventory
+
+type bench.Item derive [Debug, Clone, Copy, PartialEq] pub
+    qty: u32
+    price: u32
+end bench.Item
+
+fn bench.Inventory.add(self: &mut bench.Inventory, name: &str, qty: u32, price: u32) -> Result<(), bench.InvError> uses [alloc] panics never
+    let probe = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    match self.stock.get(&probe) {
+        Some(old) => {
+            let item = *old
+            let key = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+            let added = bench.Item { qty: item.qty.wrapping_add(qty), price: item.price }
+            core.mem.drop(self.stock.insert(key, added)?)
+            ()
+        }
+        None => {
+            let key = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+            core.mem.drop(self.stock.insert(key, bench.Item { qty: qty, price: price })?)
+            self.order.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
+            ()
+        }
+    }
+    Ok(())
+end bench.Inventory.add
+
+fn bench.Inventory.count(self: &bench.Inventory) -> usize uses [] panics never
+    self.stock.len()
+end bench.Inventory.count
+
+fn bench.Inventory.find_below(self: &bench.Inventory, min_qty: u32) -> Result<alloc.vec.Vec<alloc.string.String, std.alloc.System>, bench.InvError> uses [alloc] panics never
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < self.order.len() {
+        match self.order.get(i) {
+            Some(n) => {
+                let key = alloc.string.String.from_str(std.alloc.SYSTEM, n.as_str())?
+                match self.stock.get(&key) {
+                    Some(v) => {
+                        if v.qty < min_qty {
+                            out.push(n.try_clone()?)?
+                        }
+                        ()
+                    }
+                    None => ()
+                }
+                ()
+            }
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(out)
+end bench.Inventory.find_below
+
+fn bench.Inventory.is_empty(self: &bench.Inventory) -> bool uses [] panics never
+    self.stock.is_empty()
+end bench.Inventory.is_empty
+
+fn bench.Inventory.names(self: &bench.Inventory) -> Result<alloc.vec.Vec<alloc.string.String, std.alloc.System>, bench.InvError> uses [alloc] panics never
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < self.order.len() {
+        match self.order.get(i) {
+            Some(n) => out.push(n.try_clone()?)?
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(out)
+end bench.Inventory.names
+
+fn bench.Inventory.new() -> bench.Inventory uses [] panics never
+    let stock = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let order = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    bench.Inventory { stock: stock, order: order }
+end bench.Inventory.new
+
+fn bench.Inventory.remove(self: &mut bench.Inventory, name: &str) -> Result<bench.Item, bench.InvError> uses [alloc] panics never
+    let probe = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let item = match self.stock.remove(&probe) {
+        Some(v) => v
+        None => return Err(bench.InvError.NotFound)
+    }
+    let mut j = 0usize
+    while j < self.order.len() {
+        match self.order.get(j) {
+            Some(n) => {
+                if *n == probe {
+                    core.mem.drop(self.order.remove(j))
+                    break
+                }
+                ()
+            }
+            None => break
+        }
+        j = j.wrapping_add(1usize)
+    }
+    Ok(item)
+end bench.Inventory.remove
+
+fn bench.Inventory.restock(self: &mut bench.Inventory, name: &str, n: u32) -> Result<(), bench.InvError> uses [alloc] panics never
+    let probe = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let item = match self.stock.get(&probe) {
+        Some(v) => *v
+        None => return Err(bench.InvError.NotFound)
+    }
+    let key = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let filled = bench.Item { qty: item.qty.wrapping_add(n), price: item.price }
+    core.mem.drop(self.stock.insert(key, filled)?)
+    Ok(())
+end bench.Inventory.restock
+
+fn bench.Inventory.take(self: &mut bench.Inventory, name: &str, n: u32) -> Result<bench.Item, bench.InvError> uses [alloc] panics never
+    let probe = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let item = match self.stock.get(&probe) {
+        Some(v) => *v
+        None => return Err(bench.InvError.NotFound)
+    }
+    if n > item.qty {
+        return Err(bench.InvError.Insufficient(n.wrapping_sub(item.qty)))
+    }
+    let left = bench.Item { qty: item.qty.wrapping_sub(n), price: item.price }
+    let key = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    core.mem.drop(self.stock.insert(key, left)?)
+    Ok(left)
+end bench.Inventory.take
+
+fn bench.Inventory.total_value(self: &bench.Inventory) -> Result<u64, bench.InvError> uses [alloc] panics never
+    let mut total = 0u64
+    let mut i = 0usize
+    while i < self.order.len() {
+        match self.order.get(i) {
+            Some(n) => {
+                let key = alloc.string.String.from_str(std.alloc.SYSTEM, n.as_str())?
+                match self.stock.get(&key) {
+                    Some(v) => {
+                        let add = u64.from_u32(v.qty).wrapping_mul(u64.from_u32(v.price))
+                        total = total.wrapping_add(add)
+                        ()
+                    }
+                    None => ()
+                }
+                ()
+            }
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(total)
+end bench.Inventory.total_value
+

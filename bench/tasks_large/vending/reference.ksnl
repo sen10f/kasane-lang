@@ -1,0 +1,145 @@
+enum bench.Coin derive [Debug, Clone, Copy, PartialEq] pub
+    Ten
+    Fifty
+    Hundred
+end bench.Coin
+
+type bench.Machine pub
+    mode: bench.Mode
+    shelf: alloc.vec.Vec<bench.Product, std.alloc.System>
+end bench.Machine
+
+enum bench.Mode derive [Debug, Clone, Copy, PartialEq] pub
+    Idle
+    Paid(u32)
+end bench.Mode
+
+type bench.Product
+    name: alloc.string.String
+    price: u32
+    qty: u32
+end bench.Product
+
+enum bench.VmError derive [Debug, Clone, Copy, PartialEq] pub
+    NoProduct
+    SoldOut
+    Short(u32)
+end bench.VmError
+
+fn bench.Coin.value(self: &bench.Coin) -> u32 uses [] panics never
+    match self {
+        bench.Coin.Ten => 10u32
+        bench.Coin.Fifty => 50u32
+        bench.Coin.Hundred => 100u32
+    }
+end bench.Coin.value
+
+fn bench.Machine.add_product(self: &mut bench.Machine, name: &str, price: u32, qty: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let probe = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let mut idx: Option<usize> = None
+    let mut i = 0usize
+    while i < self.shelf.len() {
+        match self.shelf.get(i) {
+            Some(p) => {
+                if p.name == probe {
+                    idx = Some(i)
+                }
+                ()
+            }
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    match idx {
+        Some(k) => {
+            match self.shelf.get_mut(k) {
+                Some(p) => {
+                    p.qty = p.qty.wrapping_add(qty)
+                    ()
+                }
+                None => ()
+            }
+            ()
+        }
+        None => {
+            let n = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+            let p = bench.Product { name: n, price: price, qty: qty }
+            self.shelf.push(p)?
+            ()
+        }
+    }
+    Ok(())
+end bench.Machine.add_product
+
+fn bench.Machine.buy(self: &mut bench.Machine, name: &str) -> Result<u32, bench.VmError> uses [] panics never
+    let mut found: Option<usize> = None
+    let mut i = 0usize
+    while i < self.shelf.len() {
+        match self.shelf.get(i) {
+            Some(p) => {
+                if p.name.as_str() == name {
+                    found = Some(i)
+                }
+                ()
+            }
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let idx = match found {
+        Some(k) => k
+        None => return Err(bench.VmError.NoProduct)
+    }
+    let price = match self.shelf.get(idx) {
+        Some(p) => p.price
+        None => return Err(bench.VmError.NoProduct)
+    }
+    let qty = match self.shelf.get(idx) {
+        Some(p) => p.qty
+        None => return Err(bench.VmError.NoProduct)
+    }
+    if qty == 0u32 {
+        return Err(bench.VmError.SoldOut)
+    }
+    let credit = bench.Machine.credit(self)
+    if credit < price {
+        return Err(bench.VmError.Short(price.wrapping_sub(credit)))
+    }
+    match self.shelf.get_mut(idx) {
+        Some(p) => {
+            p.qty = p.qty.wrapping_sub(1u32)
+            ()
+        }
+        None => return Err(bench.VmError.NoProduct)
+    }
+    self.mode = bench.Mode.Idle
+    Ok(credit.wrapping_sub(price))
+end bench.Machine.buy
+
+fn bench.Machine.cancel(self: &mut bench.Machine) -> u32 uses [] panics never
+    let refunded = bench.Machine.credit(self)
+    self.mode = bench.Mode.Idle
+    refunded
+end bench.Machine.cancel
+
+fn bench.Machine.credit(self: &bench.Machine) -> u32 uses [] panics never
+    match self.mode {
+        bench.Mode.Idle => 0u32
+        bench.Mode.Paid(amount) => amount
+    }
+end bench.Machine.credit
+
+fn bench.Machine.insert_coin(self: &mut bench.Machine, c: bench.Coin) -> u32 uses [] panics never
+    let v = c.value()
+    let total = match self.mode {
+        bench.Mode.Idle => v
+        bench.Mode.Paid(amount) => amount.wrapping_add(v)
+    }
+    self.mode = bench.Mode.Paid(total)
+    total
+end bench.Machine.insert_coin
+
+fn bench.Machine.new() -> bench.Machine uses [] panics never
+    bench.Machine { mode: bench.Mode.Idle, shelf: alloc.vec.Vec.new(std.alloc.SYSTEM) }
+end bench.Machine.new
+
