@@ -1758,6 +1758,7 @@ end t.main
                 // `std.json.decode_variant` の `(&str, Option<Value>)`: `Value` は添字だけ (8 バイト) なので `Option<Value>` は 16 バイト。
                 n if n.starts_with("(fat,Option<agg") => (32, 8, vec![0, 16], vec![]),
                 n if n.starts_with("(fat,Option<") => (40, 8, vec![0, 16], vec![]),
+                n if n.starts_with('[') => (d.size, d.align, vec![], vec![]),
                 other => panic!("期待値のない型: {}", other),
             };
             assert_eq!((d.size, d.align), (size, align), "大きさ・整列: {}", d.name);

@@ -464,11 +464,12 @@ pub fn emit_program(m: &Module, entry: &str, target: Option<Target>) -> R<String
 fn c_decl_sig(arch: crate::kir_cabi::Arch, aggs: &[AggDef], f: &Func) -> R<(Vec<String>, String)> {
     let ptys: Vec<Ty> = f.params().iter().map(|(_, t)| *t).collect();
     if !ptys.iter().any(|t| matches!(t, Ty::Agg(_))) && !matches!(f.ret, Ty::Agg(_)) {
-        return Ok((ptys.iter().map(|t| lty(aggs, *t)).collect(), lty(aggs, f.ret)));
+        let rt = if f.ret == Ty::Unit { "void".to_string() } else { lty(aggs, f.ret) };
+        return Ok((ptys.iter().map(|t| lty(aggs, *t)).collect(), rt));
     }
     let sg = crate::kir_cabi::sig(arch, aggs, &ptys, f.ret).map_err(|e| format!("extern {}: {}", f.key, e))?;
     let mut ps = vec![];
-    let mut rt = lty(aggs, f.ret);
+    let mut rt = if f.ret == Ty::Unit { "void".to_string() } else { lty(aggs, f.ret) };
     if let Some(ra) = &sg.ret {
         rt = crate::kir_cabi::ret_ty(ra);
         if let crate::kir_cabi::Abi::Mem { size, align } = ra {
@@ -2152,15 +2153,23 @@ impl<'a> Fe<'a> {
                 let rt = self.lt(i.ty);
                 let a: Vec<String> = args.iter().map(|v| format!("{} {}", lty(aggs, self.ty(*v)), self.r(*v))).collect();
                 if let Some(sym) = self.extern_links.get(callee) {
-                    if self.extern_dl.contains_key(callee) {
+                    // C の関数の戻り値が `()` のときは `void` で呼ぶ (宣言も `void`。実行時の補助の宣言と食い違わない)。
+                    let unit = i.ty == Ty::Unit;
+                    let target = if self.extern_dl.contains_key(callee) {
                         let fp = self.tmp();
                         self.line(format!(
                             "{} = call ptr @ksn_ext_resolve(ptr @ksn.ext.lib.{}, ptr @ksn.ext.sym.{}, ptr @ksn.ext.slot.{})",
                             fp, sym, sym, sym
                         ));
-                        self.line(format!("{} = call {} {}({})", d, rt, fp, a.join(", ")));
+                        fp
                     } else {
-                        self.line(format!("{} = call {} @{}({})", d, rt, sym, a.join(", ")));
+                        format!("@{}", sym)
+                    };
+                    if unit {
+                        self.line(format!("call void {}({})", target, a.join(", ")));
+                        self.line(format!("{} = add i8 0, 0", d));
+                    } else {
+                        self.line(format!("{} = call {} {}({})", d, rt, target, a.join(", ")));
                     }
                 } else {
                     self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
@@ -2819,6 +2828,10 @@ impl<'a> Fe<'a> {
                     self.body.push_str(&em2.body);
                     self.line(format!("{} = add i{} {}, 0", d, bits, val));
                 }
+            }
+            _ if i.ty == Ty::Unit => {
+                self.line(format!("call void {}({})", target, cargs.join(", ")));
+                self.line(format!("{} = add i8 0, 0", d));
             }
             _ => self.line(format!("{} = call {} {}({})", d, rt, target, cargs.join(", "))),
         }
