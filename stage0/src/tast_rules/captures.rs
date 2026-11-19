@@ -101,6 +101,9 @@ fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut 
                     for x in info.uses.iter().filter(|x| !is_effect_var(x) && !covers(&own, x)) {
                         found.push(("E4001", format!("{} uses effect `{}` not declared by the caller", segs.join("."), x), e.line));
                     }
+                    if info.may == Some(true) && d.panics.as_deref() == Some("never") {
+                        found.push(("E4002", format!("{} may panic but the caller declares `panics never`", segs.join(".")), e.line));
+                    }
                 }
             }
         }
@@ -221,7 +224,7 @@ fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut 
 }
 
 /// 仮引数の型 `pt` の中の型パラメータと、実引数の型 `a` の同じ位置の型の組 (参照は外して見る)。
-fn param_slots(pt: &crate::types::Ty, a: &crate::types::Ty, out: &mut Vec<(String, crate::types::Ty)>) {
+pub(super) fn param_slots(pt: &crate::types::Ty, a: &crate::types::Ty, out: &mut Vec<(String, crate::types::Ty)>) {
 
     let mut at = a.clone();
     while let Ty::Ref(_, x, _) = at {
