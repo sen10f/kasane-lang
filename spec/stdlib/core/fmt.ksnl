@@ -45,7 +45,7 @@ fn core.fmt.Formatter.push_bytes(self: &mut core.fmt.Formatter, bytes: &[u8]) ->
 end core.fmt.Formatter.push_bytes
 
 fn core.fmt.Formatter.write_str(self: &mut core.fmt.Formatter, s: &str) -> Result<(), core.fmt.Error> uses [] panics never pub
-    core.fmt.Formatter.push_bytes(self, s.as_bytes())
+    self.push_bytes(s.as_bytes())
 end core.fmt.Formatter.write_str
 
 fn core.fmt.Formatter.written(self: &core.fmt.Formatter) -> &[u8] uses [] panics never pub

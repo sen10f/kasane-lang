@@ -15,7 +15,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
         Some(x) => t.consume(x)
         None => core.mem.drop(0u8)
     }
-    core.mem.drop(r.is_some())
+    core.mem.drop(r is Some(_))
     Ok(())
 end t.main
 

@@ -4,39 +4,29 @@ fn t.main() -> () uses [alloc, io.console] panics never
     let mut pages = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     let top1 = alloc.string.String.from_str(std.alloc.SYSTEM, "top page")
     match top1 {
-        Ok(s1) => {
-            core.mem.drop(pages.insert("top", s1))
-        }
+        Ok(s1) => core.mem.drop(pages.insert("top", s1))
         Err(_e) => {
         }
     }
     let top2 = alloc.string.String.from_str(std.alloc.SYSTEM, "updated top")
     match top2 {
-        Ok(s2) => {
-            match pages.insert("top", s2) {
-                Ok(_old) => {
-                }
-                Err(_e) => {
-                }
+        Ok(s2) => match pages.insert("top", s2) {
+            Ok(_old) => {
+            }
+            Err(_e) => {
             }
         }
         Err(_e) => {
         }
     }
     match pages.get(&"top") {
-        Some(content) => {
-            core.mem.drop(std.io.print_line(content.as_str()))
-        }
-        None => {
-            core.mem.drop(std.io.print_line(t.PAGE_NOT_FOUND))
-        }
+        Some(content) => core.mem.drop(std.io.print_line(content.as_str()))
+        None => core.mem.drop(std.io.print_line(t.PAGE_NOT_FOUND))
     }
     match pages.get(&"missing") {
         Some(_content) => {
         }
-        None => {
-            core.mem.drop(std.io.print_line(t.PAGE_NOT_FOUND))
-        }
+        None => core.mem.drop(std.io.print_line(t.PAGE_NOT_FOUND))
     }
     for (name, _content) in pages.iter() {
         core.mem.drop(std.io.print_line(*name))

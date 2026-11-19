@@ -1,6 +1,6 @@
 extern t.run_once(f: fn() -> () uses [] panics never) -> () link "LIB:run_once"
 
-fn t.deep(n: u64) -> u64 uses [] panics never stack 1000000
+fn t.deep(n: u64) -> u64 uses [] panics never stack 1_000_000
     if n == 0u64 {
         0u64
     } else {
@@ -18,5 +18,5 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 
 fn t.recurse() -> () uses [] panics never
-    core.mem.drop(t.deep(1000000000u64))
+    core.mem.drop(t.deep(1_000_000_000u64))
 end t.recurse

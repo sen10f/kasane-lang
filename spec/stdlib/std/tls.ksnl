@@ -1,4 +1,4 @@
-const std.tls.MAX_CHUNK: usize = 16384usize
+const std.tls.MAX_CHUNK: usize = 16_384usize
 
 const std.tls.PEM_FILE: i32 = 1i32
 
@@ -203,11 +203,11 @@ end std.tls.c_string
 
 fn std.tls.chunk_len(n: usize) -> i32 uses [] panics never
     if n > std.tls.MAX_CHUNK {
-        return 16384i32
+        return 16_384i32
     }
     match i32.try_from_usize(n) {
         Ok(v) => v
-        Err(_e) => 16384i32
+        Err(_e) => 16_384i32
     }
 end std.tls.chunk_len
 

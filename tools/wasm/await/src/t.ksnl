@@ -1,12 +1,12 @@
 extern t.raw_timer_start(ms: i32) -> u32 link "env:ksn_timer_start"
 
 fn t.buffered() -> () uses [io.console, suspend] panics may
-    let slow = t.timer_start(30)
-    let fast = t.timer_start(0)
+    let slow = t.timer_start(30i32)
+    let fast = t.timer_start(0i32)
     let a = std.task.await_js(slow)
     t.say("slow done")
     let b = std.task.await_js(fast)
-    if a + b == 14 {
+    if a + b == 14i32 {
         t.say("buffered ok")
     }
 end t.buffered
@@ -14,10 +14,10 @@ end t.buffered
 fn t.main() -> Result<(), std.io.Error> uses [io.console, suspend] panics may
     std.task.block_on(fn() -> () capture [] {
         t.say("waiting")
-        let a = t.wait_value(10)
+        let a = t.wait_value(10i32)
         t.say("first")
-        let b = t.wait_value(20)
-        if a + b == 14 {
+        let b = t.wait_value(20i32)
+        if a + b == 14i32 {
             t.say("both 7")
         }
         t.buffered()

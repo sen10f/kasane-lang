@@ -27,7 +27,7 @@ fn parse.lex.is_digit(c: u8) -> bool uses [] panics never
 end parse.lex.is_digit
 
 fn parse.lex.is_hex(c: u8) -> bool uses [] panics never
-    (c >= b'0' && c <= b'9') || (c >= b'a' && c <= b'f') || (c >= b'A' && c <= b'F')
+    c >= b'0' && c <= b'9' || c >= b'a' && c <= b'f' || c >= b'A' && c <= b'F'
 end parse.lex.is_hex
 
 fn parse.lex.is_lifetime_char(c: u8) -> bool uses [] panics never
@@ -98,7 +98,7 @@ fn parse.lex.line(toks: &mut alloc.vec.Vec<parse.tok.Tok, std.alloc.System>, src
         }
         let nx = parse.lex.at(src, i.wrapping_add(1usize))
         let is_b = c == b'b' && (nx == b'"' || nx == b'\'')
-        if c == b'"' || (is_b && nx == b'"') {
+        if c == b'"' || is_b && nx == b'"' {
             let open = if is_b {
                 i.wrapping_add(1usize)
             } else {
@@ -113,7 +113,7 @@ fn parse.lex.line(toks: &mut alloc.vec.Vec<parse.tok.Tok, std.alloc.System>, src
             i = fin
             continue
         }
-        if c == b'\'' || (is_b && nx == b'\'') {
+        if c == b'\'' || is_b && nx == b'\'' {
             let (kind, fin) = parse.lex.quote(src, i, le, line, is_b)?
             parse.lex.emit(toks, kind, 0u32, i, fin, line)?
             i = fin
@@ -230,10 +230,8 @@ fn parse.lex.number(src: &[u8], i: usize, le: usize, neg: bool) -> (usize, bool)
         let sb = s.as_bytes()
         let e = j.wrapping_add(sb.len())
         match src.sub(j, e) {
-            Some(got) => {
-                if got == sb && !parse.lex.is_word(parse.lex.at(src, e)) {
-                    return (e, is_float || sb.get(0usize) == Some(&b'f'))
-                }
+            Some(got) => if got == sb && !parse.lex.is_word(parse.lex.at(src, e)) {
+                return (e, is_float || sb.get(0usize) == Some(&b'f'))
             }
             None => core.mem.drop(0u8)
         }
@@ -326,7 +324,7 @@ fn parse.lex.skip_digits(src: &[u8], from: usize, le: usize, hex: bool) -> usize
     let mut j = from
     while j < le {
         let c = parse.lex.at(src, j)
-        let ok = c == b'_' || (hex && parse.lex.is_hex(c)) || (!hex && parse.lex.is_digit(c))
+        let ok = c == b'_' || hex && parse.lex.is_hex(c) || !hex && parse.lex.is_digit(c)
         if !ok {
             break
         }

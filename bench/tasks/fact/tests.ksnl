@@ -1,6 +1,6 @@
 test bench.fact_checked.test_basic
     core.check.eq(bench.fact_checked(0u64), Some(1u64))
     core.check.eq(bench.fact_checked(5u64), Some(120u64))
-    core.check.eq(bench.fact_checked(20u64), Some(2432902008176640000u64))
+    core.check.eq(bench.fact_checked(20u64), Some(2_432_902_008_176_640_000u64))
     core.check.eq(bench.fact_checked(21u64), None)
 end bench.fact_checked.test_basic

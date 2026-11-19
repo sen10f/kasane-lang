@@ -17,6 +17,6 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = 1u32
     let b = 2u32
     let e = t.E.B(Some(&b))
-    core.mem.drop(*t.E.get_b_as_a(&e, &e, &a))
+    core.mem.drop(*e.get_b_as_a(&e, &a))
     Ok(())
 end t.main

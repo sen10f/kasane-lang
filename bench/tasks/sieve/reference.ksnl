@@ -60,19 +60,17 @@ fn bench.sieve(n: usize) -> alloc.vec.Vec<bool, std.alloc.System> uses [alloc] p
     let mut p = 2usize
     while p.wrapping_mul(p) < n {
         match is_prime.get(p) {
-            Some(v) => {
-                if *v {
-                    let mut mult = p.wrapping_mul(p)
-                    while mult < n {
-                        match is_prime.get_mut(mult) {
-                            Some(m) => {
-                                *m = false
-                                ()
-                            }
-                            None => ()
+            Some(v) => if *v {
+                let mut mult = p.wrapping_mul(p)
+                while mult < n {
+                    match is_prime.get_mut(mult) {
+                        Some(m) => {
+                            *m = false
+                            ()
                         }
-                        mult = mult.wrapping_add(p)
+                        None => ()
                     }
+                    mult = mult.wrapping_add(p)
                 }
             }
             None => break

@@ -1,6 +1,6 @@
 import demo.shape
 
-const demo.LIMIT: usize = 5
+const demo.LIMIT: usize = 5usize
 
 type demo.Counter derive [Debug, Clone] pub
     count: u32

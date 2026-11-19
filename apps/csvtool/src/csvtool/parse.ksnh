@@ -26,7 +26,7 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
             } else if c == delim {
                 core.mem.drop(row.push(alloc.string.String.new(std.alloc.SYSTEM))?)
             } else if c == '\n' {
-                if row.len() > 0usize {
+                if !row.is_empty() {
                     core.mem.drop(row.push(field)?)
                     field = alloc.string.String.new(std.alloc.SYSTEM)
                     core.mem.drop(rows.push(table.Row { fields: row })?)
@@ -56,29 +56,27 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
             } else {
                 core.mem.drop(field.push(c)?)
             }
+        } else if c == '"' {
+            // 引用の直後に他の文字が来たときは、いったん閉じて普通のフィールドとして続ける
+            core.mem.drop(field.push(c)?)
+            state = csvtool.parse.ST_QUOTED
+        } else if c == delim {
+            core.mem.drop(row.push(field)?)
+            field = alloc.string.String.new(std.alloc.SYSTEM)
+            state = csvtool.parse.ST_FIELD
+        } else if c == '\n' {
+            core.mem.drop(row.push(field)?)
+            field = alloc.string.String.new(std.alloc.SYSTEM)
+            state = csvtool.parse.ST_FIELD
+            core.mem.drop(rows.push(table.Row { fields: row })?)
+            row = alloc.vec.Vec.new(std.alloc.SYSTEM)
         } else {
-            if c == '"' {
-                core.mem.drop(field.push(c)?)
-                state = csvtool.parse.ST_QUOTED
-            } else if c == delim {
-                core.mem.drop(row.push(field)?)
-                field = alloc.string.String.new(std.alloc.SYSTEM)
-                state = csvtool.parse.ST_FIELD
-            } else if c == '\n' {
-                core.mem.drop(row.push(field)?)
-                field = alloc.string.String.new(std.alloc.SYSTEM)
-                state = csvtool.parse.ST_FIELD
-                core.mem.drop(rows.push(table.Row { fields: row })?)
-                row = alloc.vec.Vec.new(std.alloc.SYSTEM)
-            } else {
-                // 引用の直後に他の文字が来たときは、いったん閉じて普通のフィールドとして続ける
-                core.mem.drop(field.push('"')?)
-                core.mem.drop(field.push(c)?)
-                state = csvtool.parse.ST_TEXT
-            }
+            core.mem.drop(field.push('"')?)
+            core.mem.drop(field.push(c)?)
+            state = csvtool.parse.ST_TEXT
         }
     }
-    if field.len() > 0usize || row.len() > 0usize || state != csvtool.parse.ST_FIELD {
+    if !field.is_empty() || !row.is_empty() || state != csvtool.parse.ST_FIELD {
         core.mem.drop(row.push(field)?)
         core.mem.drop(rows.push(table.Row { fields: row })?)
     } else {
@@ -86,7 +84,7 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
         core.mem.drop(row)
     }
     let mut header = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    if rows.len() > 0usize {
+    if !rows.is_empty() {
         match rows.remove(0usize) {
             Some(first) => {
                 header = first.fields

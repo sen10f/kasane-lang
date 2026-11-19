@@ -4,17 +4,15 @@ fn more_str.is_palindrome(s: &str) -> bool uses [] panics never pub
     let mut hi = bytes.len()
     while lo < hi {
         match bytes.get(lo) {
-            Some(a) => {
-                match bytes.get(hi.wrapping_sub(1usize)) {
-                    Some(b) => {
-                        if *a != *b {
-                            return false
-                        }
-                        lo = lo.wrapping_add(1usize)
-                        hi = hi.wrapping_sub(1usize)
+            Some(a) => match bytes.get(hi.wrapping_sub(1usize)) {
+                Some(b) => {
+                    if *a != *b {
+                        return false
                     }
-                    None => break
+                    lo = lo.wrapping_add(1usize)
+                    hi = hi.wrapping_sub(1usize)
                 }
+                None => break
             }
             None => break
         }

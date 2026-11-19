@@ -1,4 +1,4 @@
-static t.N: isize = 2147483648
+static t.N: isize = 2_147_483_648isize
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let x = t.N

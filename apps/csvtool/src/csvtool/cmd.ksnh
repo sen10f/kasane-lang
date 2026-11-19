@@ -35,7 +35,10 @@ fn csvtool.cmd.Widths.grow(self: &mut csvtool.cmd.Widths, g: &csvtool.agg.Group)
 end csvtool.cmd.Widths.grow
 
 fn csvtool.cmd.Widths.new(title: &str) -> csvtool.cmd.Widths uses [] panics never pub
-    csvtool.cmd.Widths { key: title.len(), count: 5, numeric: 7, sum: 3, min: 3, max: 3, avg: 3 }
+    let c = 5usize
+    let n = 7usize
+    let w = 3usize
+    csvtool.cmd.Widths { key: title.len(), count: c, numeric: n, sum: w, min: w, max: w, avg: w }
 end csvtool.cmd.Widths.new
 
 // 1 行を出力用に組み立てる (区切り文字と引用符が必要な文字を含むフィールドは "..." で囲む)。
@@ -206,9 +209,7 @@ fn csvtool.cmd.print_stats(list: &alloc.vec.Vec<csvtool.agg.Group, std.alloc.Sys
     let n = list.len()
     while i < n {
         match list.as_slice().get(i) {
-            Some(g) => {
-                csvtool.cmd.Widths.grow(&mut w, g)?
-            }
+            Some(g) => w.grow(g)?
             None => core.mem.drop(0u8)
         }
         i = i.wrapping_add(1usize)
@@ -272,19 +273,15 @@ fn csvtool.cmd.resolve_cols(tbl: &csvtool.table.Table, start: usize) -> Result<a
     let n = std.env.arg_count()
     while i < n {
         match csvtool.cmd.arg_at(i) {
-            Ok(spec) => {
-                match tbl.col_index(spec) {
-                    Some(c) => {
-                        core.mem.drop(cols.push(c)?)
-                    }
-                    None => return Err(error.bad_column())
-                }
+            Ok(spec) => match tbl.col_index(spec) {
+                Some(c) => core.mem.drop(cols.push(c)?)
+                None => return Err(error.bad_column())
             }
             Err(_e) => core.mem.drop(0u8)
         }
         i = i.wrapping_add(1usize)
     }
-    if cols.len() == 0usize {
+    if cols.is_empty() {
         let w = tbl.width()
         let mut c = 0usize
         while c < w {
@@ -312,9 +309,7 @@ fn csvtool.cmd.select(start: usize) -> Result<(), csvtool.error.Error> uses [all
                     core.mem.drop(header_line.push(tbl.delim)?)
                 }
                 match tbl.header_name(*col) {
-                    Some(name) => {
-                        csvtool.cmd.append_field(&mut header_line, name, tbl.delim)?
-                    }
+                    Some(name) => csvtool.cmd.append_field(&mut header_line, name, tbl.delim)?
                     None => core.mem.drop(0u8)
                 }
             }

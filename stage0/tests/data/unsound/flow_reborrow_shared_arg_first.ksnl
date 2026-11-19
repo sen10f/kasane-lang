@@ -1,8 +1,8 @@
 fn t.main() -> () uses [] panics never
     let mut a = [1u32, 2u32, 3u32]
     let r = &mut a
-    let first = core.slice.first(r)
-    core.mem.drop(core.slice.reverse(r))
+    let first = r.first()
+    core.mem.drop(r.reverse())
     match first {
         Some(f) => core.mem.drop(*f)
         None => core.mem.drop(0u32)

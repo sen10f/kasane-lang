@@ -13,7 +13,7 @@ fn core.hash.Fnv64.finish(self: &core.hash.Fnv64) -> u64 uses [] panics never im
 end core.hash.Fnv64.finish
 
 fn core.hash.Fnv64.new() -> core.hash.Fnv64 const uses [] panics never pub
-    core.hash.Fnv64 { state: 14695981039346656037u64 }
+    core.hash.Fnv64 { state: 14_695_981_039_346_656_037u64 }
 end core.hash.Fnv64.new
 
 fn core.hash.Fnv64.write_bytes(self: &mut core.hash.Fnv64, bytes: &[u8]) -> () uses [] panics never impls core.hash.Hasher
@@ -21,7 +21,7 @@ fn core.hash.Fnv64.write_bytes(self: &mut core.hash.Fnv64, bytes: &[u8]) -> () u
     while i < bytes.len() {
         match bytes.get(i) {
             Some(b) => {
-                self.state = (self.state ^ u64.from_u8(*b)).wrapping_mul(1099511628211u64)
+                self.state = (self.state ^ u64.from_u8(*b)).wrapping_mul(1_099_511_628_211u64)
             }
             None => {
             }
@@ -35,7 +35,7 @@ fn core.hash.fnv_int(state: &mut core.hash.Fnv64, x: u64, width: usize) -> () us
     let mut i = 0usize
     while i < width {
         let byte = v & 255u64
-        state.state = (state.state ^ byte).wrapping_mul(1099511628211u64)
+        state.state = (state.state ^ byte).wrapping_mul(1_099_511_628_211u64)
         v = v.wrapping_shr(8u32)
         i = i.wrapping_add(1usize)
     }

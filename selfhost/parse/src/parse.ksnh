@@ -105,12 +105,10 @@ fn parse.main() -> Result<(), parse.Failure> uses [alloc, env, io.console, io.fs
     let mut kinds = false
     for k in core.iter.range(0usize, n) {
         match std.env.arg(k) {
-            Some(path) => {
-                if path == "--kinds" {
-                    kinds = true
-                } else {
-                    parse.process(path, kinds)?
-                }
+            Some(path) => if path == "--kinds" {
+                kinds = true
+            } else {
+                parse.process(path, kinds)?
             }
             None => return Ok(())
         }
@@ -160,13 +158,11 @@ fn parse.push_kinds(p: &parse.cur.P, out: &mut alloc.string.String<std.alloc.Sys
     let mut k = 0usize
     for w in names.split(" ") {
         match counts.get(k) {
-            Some(c) => {
-                if *c > 0usize {
-                    out.push(' ')?
-                    out.push_str(w)?
-                    out.push('=')?
-                    out.push_u64(u64.from_usize(*c))?
-                }
+            Some(c) => if *c > 0usize {
+                out.push(' ')?
+                out.push_str(w)?
+                out.push('=')?
+                out.push_u64(u64.from_usize(*c))?
             }
             None => core.mem.drop(0u8)
         }
@@ -177,11 +173,9 @@ end parse.push_kinds
 
 fn parse.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], a: usize, b: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     match src.sub(a, b) {
-        Some(bytes) => {
-            match core.str.from_utf8(bytes) {
-                Ok(text) => out.push_str(text)
-                Err(_e) => out.push_str("?")
-            }
+        Some(bytes) => match core.str.from_utf8(bytes) {
+            Ok(text) => out.push_str(text)
+            Err(_e) => out.push_str("?")
         }
         None => out.push_str("?")
     }
@@ -221,9 +215,7 @@ end parse.summary
 test parse.analyze.test_defs
     let src = "import a.b\n\nfn a.f(x: i32) -> i32 uses [] panics never\n    x\nend a.f\n"
     match parse.analyze(src.as_bytes(), "t", false, false) {
-        Ok(parse.Outcome.Done(text)) => {
-            core.check.eq(text.as_str().starts_with("== t\nimport a.b 1\nfn a.f 3\nnodes "), true)
-        }
+        Ok(parse.Outcome.Done(text)) => core.check.eq(text.as_str().starts_with("== t\nimport a.b 1\nfn a.f 3\nnodes "), true)
         Ok(parse.Outcome.Syntax(_a, _b, _c, _d)) => core.check.eq(1u8, 2u8)
         Err(_e) => core.check.eq(1u8, 2u8)
     }

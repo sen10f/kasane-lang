@@ -7,9 +7,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, env, io.console, thread, ti
     let mut i = 0usize
     while i < count {
         match std.env.arg(i) {
-            Some(a) => {
-                std.io.print_line(a)?
-            }
+            Some(a) => std.io.print_line(a)?
             None => core.panic.panic("missing argument")
         }
         i = i + 1usize
@@ -19,9 +17,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, env, io.console, thread, ti
         None => std.io.print_line("no more")?
     }
     match std.env.var("KSN_THREADS_TEST_VAR") {
-        Some(v) => {
-            std.io.print_line(v)?
-        }
+        Some(v) => std.io.print_line(v)?
         None => std.io.print_line("unset")?
     }
     match std.env.var("KSN_THREADS_TEST_MISSING") {
@@ -31,19 +27,17 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, env, io.console, thread, ti
     let first = std.time.Instant.now()
     std.thread.sleep(20u64)
     let waited = first.elapsed()
-    core.check.is_true(waited.as_nanos() >= 20000000u64)
+    core.check.is_true(waited.as_nanos() >= 20_000_000u64)
     let second = std.time.Instant.now()
     match second.since(&first) {
-        Some(d) => {
-            core.check.is_true(d.as_nanos() >= 20000000u64)
-        }
+        Some(d) => core.check.is_true(d.as_nanos() >= 20_000_000u64)
         None => core.panic.panic("time went backwards")
     }
     match first.since(&second) {
         Some(_d) => core.panic.panic("an earlier instant must not be after a later one")
         None => std.io.print_line("time ok")?
     }
-    core.check.eq(std.time.Duration.from_millis(3u64).as_nanos(), 3000000u64)
+    core.check.eq(std.time.Duration.from_millis(3u64).as_nanos(), 3_000_000u64)
     Ok(())
 end t.main
 

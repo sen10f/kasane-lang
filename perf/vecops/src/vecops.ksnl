@@ -1,8 +1,8 @@
-const vecops.EXPECT_AFTER: u64 = 944997750000u64
+const vecops.EXPECT_AFTER: u64 = 944_997_750_000u64
 
-const vecops.EXPECT_BEFORE: u64 = 314999250000u64
+const vecops.EXPECT_BEFORE: u64 = 314_999_250_000u64
 
-const vecops.N: usize = 300000usize
+const vecops.N: usize = 300_000usize
 
 fn vecops.main() -> Result<(), std.io.Error> uses [alloc] panics may
     match vecops.run(vecops.N) {

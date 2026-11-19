@@ -1545,10 +1545,15 @@ impl<'a> TypeCk<'a> {
     fn finish_literals(&mut self) {
         let lits = std::mem::take(&mut self.lits);
         for (kind, text, ty, line) in lits {
+            let nosuf = kind == "int?";
+            let kind = if nosuf { "int" } else { kind };
             match self.deep(&ty) {
                 Ty::Prim(p) if kind == "int" && INTS.contains(&p.as_str()) => {
                     if let Some(msg) = int_literal_problem(&text, &p) {
                         self.diag("E2026", msg, line);
+                    }
+                    if nosuf {
+                        self.diag("E2028", format!("the integer literal `{}` has no suffix: append `{}` (write `{}{}`)", text, p, text, p), line);
                     }
                 }
                 Ty::Var(v) => {
@@ -4263,7 +4268,8 @@ impl<'a> TypeCk<'a> {
                         V::S(s) => Ty::Prim(s.clone()),
                         _ => self.fresh(1),
                     };
-                    self.lits.push(("int", st(&f[1]), t.clone(), nline(e)));
+                    // 接尾辞のない整数 (D12: 型が見た目で分かるよう、接尾辞を必須にする) は "int?" で印を付ける。
+                    self.lits.push((if matches!(&f[2], V::S(_)) { "int" } else { "int?" }, st(&f[1]), t.clone(), nline(e)));
                     t
                 }
                 "float" => {
@@ -5627,6 +5633,7 @@ impl<'a> TypeCk<'a> {
             }
             Target::Native(ref fq) | Target::Value(ref fq) if self.p.sigs.contains_key(fq) => {
                 let i = self.p.sigs[fq];
+                self.method_form_check(i, &segs, line);
                 self.arg_static = arg_stat;
                 self.call_def(call_id, i, &argt, line, &sl, targs)
             }
@@ -5658,6 +5665,7 @@ impl<'a> TypeCk<'a> {
                 Ty::Unknown
             }
             Target::Fn(i) | Target::Sig(i) => {
+                self.method_form_check(i, &segs, line);
                 self.arg_static = arg_stat;
                 self.call_def(call_id, i, &argt, line, &sl, targs)
             }
@@ -5665,6 +5673,21 @@ impl<'a> TypeCk<'a> {
                 argt.iter().for_each(|a| self.escape(a));
                 Ty::Unknown
             }
+        }
+    }
+
+    /// 受け手のあるメソッド (第 1 引数が `self`) を `T.m(&x, ..)` / `m.f(x, ..)` の経路の形で呼ぶのは誤り (D8: `x.m(..)` だけ)。
+    fn method_form_check(&mut self, i: usize, segs: &[String], line: usize) {
+        let d = &self.p.defs[i];
+        // 受け手の型から探せる所有者 (型・基本型・`core.slice` など) の関数だけ。モジュールの関数 (`m.f(self, ..)`) は `x.f()` と書けない。
+        let owner = d.name.rsplit_once('.').map(|(o, _)| o).unwrap_or("");
+        let reachable = self.p.types.contains_key(owner)
+            || owner.starts_with("core.num.")
+            || matches!(owner, "core.str" | "core.slice" | "core.array" | "core.bool.bool" | "core.char.char" | "core.option.Option" | "core.result.Result" | "alloc.vec.Vec" | "alloc.string.String" | "alloc.boxed.Box");
+        // `Box.into_dyn(b)` は期待する型から変換先 (`dyn Tr`) が決まる変換で、メソッドの形では KIR に下ろせない (段 3 では対象外)。
+        if d.is_method() && reachable && d.name != "alloc.boxed.Box.into_dyn" {
+            let m = segs.last().cloned().unwrap_or_default();
+            self.diag("E2029", format!("`{}` takes `self` as its first argument: call it as a method, `x.{}(..)`", segs.join("."), m), line);
         }
     }
 

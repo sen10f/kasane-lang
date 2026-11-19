@@ -51,7 +51,7 @@ end emit.agg.field
 // フィールドの幅 (ビット) = `size_of * 8`。単位型のフィールドは置けない。
 fn emit.agg.field_w(g: &emit.G, t: usize) -> usize uses [io.console, process] panics may pub
     let k = emit.ty.get(g, t)
-    if k.kind == (emit.ty.K_UNIT) {
+    if k.kind == emit.ty.K_UNIT {
         core.panic.panic("unit-typed field is not supported")
     }
     emit.agg.size_of(g, t).wrapping_mul(8usize)
@@ -167,15 +167,15 @@ end emit.agg.size_bits
 // 型 `t` の大きさ (バイト) (Rust 版の `kir::size_of` と同じ)。
 fn emit.agg.size_of(g: &emit.G, t: usize) -> usize uses [io.console, process] panics may pub
     let k = emit.ty.get(g, t)
-    if k.kind == (emit.ty.K_UNIT) {
+    if k.kind == emit.ty.K_UNIT {
         0usize
-    } else if k.kind == (emit.ty.K_BOOL) {
+    } else if k.kind == emit.ty.K_BOOL {
         1usize
-    } else if k.kind == (emit.ty.K_INT) {
+    } else if k.kind == emit.ty.K_INT {
         usize.from_u32(k.bits) / 8usize
-    } else if k.kind == (emit.ty.K_PTR) || k.kind == (emit.ty.K_REF) {
+    } else if k.kind == emit.ty.K_PTR || k.kind == emit.ty.K_REF {
         8usize
-    } else if k.kind == (emit.ty.K_AGG) {
+    } else if k.kind == emit.ty.K_AGG {
         emit.agg.get(g, k.a).size
     } else {
         let bits = 1usize.wrapping_add(emit.ty.slot(g, t))

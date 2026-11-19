@@ -5,7 +5,7 @@ end bench.ParseError
 
 fn bench.digit_sum(text: &str) -> Result<u32, bench.ParseError> uses [] panics may
     let bytes = text.as_bytes()
-    if bytes.len() == 0usize {
+    if bytes.is_empty() {
         return Err(bench.ParseError.Empty)
     }
     let mut total = 0u32

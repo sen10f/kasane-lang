@@ -1,6 +1,6 @@
 fn t.finish(file: std.fs.File, count: &mut u32) -> () uses [io.fs] panics never
     core.mem.drop(file.close())
-    *count = (*count).saturating_add(1u32)
+    *count = count.saturating_add(1u32)
 end t.finish
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
@@ -36,9 +36,9 @@ end t.save.test_sync_succeeds_on_a_regular_file
 test t.save.test_write_error_propagates_and_cleanup_runs
     if std.fs.exists("/dev/full") {
         let mut count = 0u32
-        core.check.eq(t.save("/dev/full", b"hello", &mut count).is_err(), true)
+        core.check.eq(t.save("/dev/full", b"hello", &mut count) is Err(_), true)
         core.check.eq(count, 1u32)
-        core.check.eq(t.sync_only("/dev/full", &mut count).is_err(), true)
+        core.check.eq(t.sync_only("/dev/full", &mut count) is Err(_), true)
         core.check.eq(count, 2u32)
     }
 end t.save.test_write_error_propagates_and_cleanup_runs

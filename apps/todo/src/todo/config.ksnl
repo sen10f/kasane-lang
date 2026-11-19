@@ -144,12 +144,12 @@ end todo.config.read_u64_field.test_missing_and_present
 
 test todo.config.validate.test_rejects_empty
     let config = todo.config.default()?
-    core.check.eq(todo.config.validate(&config).is_ok(), true)
+    core.check.eq(todo.config.validate(&config) is Ok(_), true)
     let ea = string.String.from_str(std.alloc.SYSTEM, "")?
     let eb = string.String.from_str(std.alloc.SYSTEM, "x")?
     let eh = string.String.from_str(std.alloc.SYSTEM, "x")?
     let t = 3600u64
     let m = 2048usize
     let bad = todo.config.Config { addr: ea, db: eb, hist: eh, ttl: t, max: m }
-    core.check.eq(todo.config.validate(&bad).is_err(), true)
+    core.check.eq(todo.config.validate(&bad) is Err(_), true)
 end todo.config.validate.test_rejects_empty

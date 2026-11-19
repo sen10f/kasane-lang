@@ -9,13 +9,11 @@ fn effects.tyinfo.fill(acc: &mut effects.walk.Acc, tout: &types.export.Out, fs: 
             let it = types.rec.callee_of(&tout.cx.rec, file, k)
             if it != 0usize {
                 match tout.env.tab.items.as_slice().get(it.wrapping_sub(1usize)) {
-                    Some(item) => {
-                        match effects.fns.lookup(fs, item.fqn.as_str())? {
-                            Some(ix) => {
-                                v = ix.wrapping_add(1usize)
-                            }
-                            None => core.mem.drop(0u8)
+                    Some(item) => match effects.fns.lookup(fs, item.fqn.as_str())? {
+                        Some(ix) => {
+                            v = ix.wrapping_add(1usize)
                         }
+                        None => core.mem.drop(0u8)
                     }
                     None => core.mem.drop(0u8)
                 }

@@ -35,7 +35,7 @@ fn t.ok() -> u32 uses [] panics never
         Some(q) => *q
         None => 0u32
     }
-    (*h.r).wrapping_add(*r).wrapping_add(*a).wrapping_add(from_opt)
+    h.r.wrapping_add(*r).wrapping_add(*a).wrapping_add(from_opt)
 end t.ok
 
 fn t.ok_str() -> usize uses [alloc] panics never

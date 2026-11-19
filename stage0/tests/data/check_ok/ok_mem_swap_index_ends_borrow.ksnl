@@ -3,7 +3,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let mut y = 2u32
     let mut r = &mut y
     let mut a = [&mut x]
-    core.mem.swap(&mut a[0], &mut r)
+    core.mem.swap(&mut a[0usize], &mut r)
     *r = 5u32
     core.mem.drop(a)
     Ok(())

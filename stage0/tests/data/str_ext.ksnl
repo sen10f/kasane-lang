@@ -39,7 +39,7 @@ fn t.last_piece_is(text: &str, sep: &str, want: &str) -> bool uses [] panics nev
 end t.last_piece_is
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    core.check.eq(t.run().is_ok(), true)
+    core.check.eq(t.run() is Ok(_), true)
     core.mem.drop(std.io.print_line("str ext ok"))
     Ok(())
 end t.main
@@ -120,19 +120,19 @@ fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
     core.check.eq(t.first_piece_is(",b", ",", ""), true)
     core.check.eq(i32.parse("-42"), Ok(-42i32))
     core.check.eq(u8.parse("255"), Ok(255u8))
-    core.check.eq(u8.parse("256").is_err(), true)
-    core.check.eq(u64.parse("18446744073709551615"), Ok(18446744073709551615u64))
-    core.check.eq(i64.parse("-9223372036854775808"), Ok(-9223372036854775808i64))
-    core.check.eq(i32.parse("").is_err(), true)
-    core.check.eq(i32.parse("12a").is_err(), true)
+    core.check.eq(u8.parse("256") is Err(_), true)
+    core.check.eq(u64.parse("18446744073709551615"), Ok(18_446_744_073_709_551_615u64))
+    core.check.eq(i64.parse("-9223372036854775808"), Ok(-9_223_372_036_854_775_808i64))
+    core.check.eq(i32.parse("") is Err(_), true)
+    core.check.eq(i32.parse("12a") is Err(_), true)
     core.check.eq(usize.parse("0"), Ok(0usize))
     core.check.eq(t.fmt_u(0u64)?.as_str(), "0")
-    core.check.eq(t.fmt_u(1234567890u64)?.as_str(), "1234567890")
-    core.check.eq(t.fmt_u(18446744073709551615u64)?.as_str(), "18446744073709551615")
+    core.check.eq(t.fmt_u(1_234_567_890u64)?.as_str(), "1234567890")
+    core.check.eq(t.fmt_u(18_446_744_073_709_551_615u64)?.as_str(), "18446744073709551615")
     core.check.eq(t.fmt_i(0i64)?.as_str(), "0")
     core.check.eq(t.fmt_i(-1i64)?.as_str(), "-1")
-    core.check.eq(t.fmt_i(9223372036854775807i64)?.as_str(), "9223372036854775807")
-    core.check.eq(t.fmt_i(-9223372036854775808i64)?.as_str(), "-9223372036854775808")
+    core.check.eq(t.fmt_i(9_223_372_036_854_775_807i64)?.as_str(), "9223372036854775807")
+    core.check.eq(t.fmt_i(-9_223_372_036_854_775_808i64)?.as_str(), "-9223372036854775808")
     let mut line = alloc.string.String.new(std.alloc.SYSTEM)
     line.push_str("n=")?
     line.push_i64(i64.from_i32(-17i32))?
@@ -143,10 +143,10 @@ fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
     core.check.eq(line.contains("-17"), true)
     core.check.eq(line.trim(), "n=-17 6")
     let mut b = alloc.string.String.new(std.alloc.SYSTEM)
-    core.check.eq(b.push_bytes("héy".as_bytes()).is_ok(), true)
-    core.check.eq(b.push_bytes("".as_bytes()).is_ok(), true)
+    core.check.eq(b.push_bytes("héy".as_bytes()) is Ok(_), true)
+    core.check.eq(b.push_bytes("".as_bytes()) is Ok(_), true)
     let bad = [255u8, 66u8]
-    core.check.eq(b.push_bytes(&bad).is_err(), true)
+    core.check.eq(b.push_bytes(&bad) is Err(_), true)
     core.check.eq(b.as_str(), "héy")
     core.check.eq(alloc.string.String.replace(std.alloc.SYSTEM, "a-b-c", "-", "+")?.as_str(), "a+b+c")
     core.check.eq(alloc.string.String.replace(std.alloc.SYSTEM, "a-b-c", "-", "")?.as_str(), "abc")

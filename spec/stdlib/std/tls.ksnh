@@ -8,7 +8,7 @@
 // `TlsStream` と `TlsAcceptor` は線形: `close` で消費する。
 // `TlsStream` は `std.io.Read` / `std.io.Write` を実装する。
 // 1 回の読み書きは `MAX_CHUNK` バイトまで (`i32` の長さに収めるため)。
-const std.tls.MAX_CHUNK: usize = 16384usize
+const std.tls.MAX_CHUNK: usize = 16_384usize
 
 const std.tls.PEM_FILE: i32 = 1i32
 
@@ -222,11 +222,11 @@ end std.tls.c_string
 // 1 回の読み書きの長さ (`i32`)。`MAX_CHUNK` で打ち切る。
 fn std.tls.chunk_len(n: usize) -> i32 uses [] panics never
     if n > std.tls.MAX_CHUNK {
-        return 16384i32
+        return 16_384i32
     }
     match i32.try_from_usize(n) {
         Ok(v) => v
-        Err(_e) => 16384i32
+        Err(_e) => 16_384i32
     }
 end std.tls.chunk_len
 

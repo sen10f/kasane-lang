@@ -3,10 +3,10 @@ extern t.raw_timer_start(ms: i32) -> u32 link "env:ksn_timer_start"
 fn t.main() -> Result<(), std.io.Error> uses [io.console, suspend] panics may
     std.task.block_on(fn() -> () capture [] {
         t.say("waiting")
-        let a = t.wait_value(10)
+        let a = t.wait_value(10i32)
         t.say("first")
-        let b = t.wait_value(20)
-        if a + b == 14 {
+        let b = t.wait_value(20i32)
+        if a + b == 14i32 {
             t.say("both 7")
         }
     })

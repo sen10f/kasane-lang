@@ -87,12 +87,10 @@ fn resolve.report.line_from(src: &[u8], start: usize) -> &str uses [] panics nev
     for k in core.iter.range(start, src.len()) {
         if !stop {
             match src.get(k) {
-                Some(c) => {
-                    if *c == 10u8 {
-                        stop = true
-                    } else {
-                        last = k.wrapping_add(1usize)
-                    }
+                Some(c) => if *c == 10u8 {
+                    stop = true
+                } else {
+                    last = k.wrapping_add(1usize)
                 }
                 None => {
                     stop = true

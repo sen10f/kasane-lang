@@ -62,6 +62,7 @@ impl Tmp {
     /// 書き方は 1 通り (E0020) なので、試験の入力は `ksn fmt` の出力にそろえる。`fmt` を通さずに試すときは `Tmp::new_raw`。
     pub fn fmt(&self) {
         let _ = run(&["fmt"], &self.0);
+        one_way_fix(&self.0);
     }
 
     /// `ksn fmt` を通さない版 (E0020 などの整形の誤りそのものを試すとき)。
@@ -3052,6 +3053,57 @@ pub fn expect_entries(ksnl: &Path) -> Vec<(String, String)> {
 /// `expect_entries` の最初の `key` の値。
 pub fn expect_value(ksnl: &Path, key: &str) -> Option<String> {
     expect_entries(ksnl).into_iter().find(|(k, _)| k == key).map(|(_, v)| v)
+}
+
+/// 書き方は 1 通り (段 3): 型で決まる揺れ (整数リテラルの接尾辞 E2028・メソッドの呼び方 E2029・構造体リテラルの欄の順 E2048) は
+/// `ksn fmt` では直らないので、診断の `fix` だけを当てて (意味の誤りの診断には触れない)、もう一度整形する。試験の入力を正規形にそろえる。
+/// これらの揺れそのものを試験するときは `Tmp::new_raw` を使う。
+pub fn one_way_fix(dir: &Path) {
+    for _ in 0..4 {
+        let o = run(&["check", "--json"], dir);
+        let out = text(&o.stdout);
+        let mut edits: std::collections::BTreeMap<String, Vec<(usize, usize, usize, usize, String)>> = Default::default();
+        for l in out.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(l.trim()) else { continue };
+            if !matches!(v["code"].as_str(), Some("E2028" | "E2029" | "E2048")) {
+                continue;
+            }
+            for f in v["fix"].as_array().into_iter().flatten() {
+                let n = |k: &str| f[k].as_u64().unwrap_or(0) as usize;
+                edits.entry(f["file"].as_str().unwrap_or("").to_string()).or_default().push((n("line"), n("col"), n("end_line"), n("end_col"), f["replace"].as_str().unwrap_or("").to_string()));
+            }
+        }
+        if edits.is_empty() {
+            return;
+        }
+        for (file, mut es) in edits {
+            let path = dir.join(&file);
+            let Ok(src) = fs::read_to_string(&path) else { continue };
+            let lines: Vec<&str> = src.split('\n').collect();
+            let mut starts = vec![0usize];
+            for l in &lines {
+                starts.push(starts.last().unwrap() + l.chars().count() + 1);
+            }
+            let chars: Vec<char> = src.chars().collect();
+            es.sort();
+            es.dedup();
+            let mut chosen: Vec<(usize, usize, String)> = vec![];
+            let mut last = 0usize;
+            for (l, c, el, ec, r) in es {
+                let (s0, e0) = (starts[l - 1] + c - 1, starts[el - 1] + ec - 1);
+                if chosen.is_empty() || s0 >= last {
+                    last = e0;
+                    chosen.push((s0, e0, r));
+                }
+            }
+            let mut out_chars = chars;
+            for (s0, e0, r) in chosen.into_iter().rev() {
+                out_chars.splice(s0..e0, r.chars());
+            }
+            fs::write(&path, out_chars.into_iter().collect::<String>()).unwrap();
+        }
+        let _ = run(&["fmt"], dir);
+    }
 }
 
 /// 入力を並列に処理し、結果を入力の順に返す (コーパスを 1 本ずつ回す試験を速くする。各項目の確かめ方は変えない)。

@@ -1,12 +1,8 @@
 fn t.f(o: Option<u32>) -> u8 uses [] panics never
     loop {
         match o {
-            Some(v) => {
-                return v
-            }
-            None => {
-                return 0u8
-            }
+            Some(v) => return v
+            None => return 0u8
         }
     }
 end t.f

@@ -15,14 +15,12 @@ fn core.str.rfind(self: &str, pattern: &str) -> Option<usize> uses [] panics nev
         while k < m {
             let mut eq = false
             match hay.get(i.wrapping_add(k)) {
-                Some(x) => {
-                    match pat.get(k) {
-                        Some(y) => {
-                            eq = *x == *y
-                        }
-                        None => {
-                            eq = false
-                        }
+                Some(x) => match pat.get(k) {
+                    Some(y) => {
+                        eq = *x == *y
+                    }
+                    None => {
+                        eq = false
                     }
                 }
                 None => {
@@ -39,12 +37,10 @@ fn core.str.rfind(self: &str, pattern: &str) -> Option<usize> uses [] panics nev
         if same {
             res = Some(i)
             go = false
+        } else if i == 0usize {
+            go = false
         } else {
-            if i == 0usize {
-                go = false
-            } else {
-                i = i.wrapping_sub(1usize)
-            }
+            i = i.wrapping_sub(1usize)
         }
     }
     res

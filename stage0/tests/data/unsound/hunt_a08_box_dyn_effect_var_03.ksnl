@@ -19,7 +19,7 @@ end t.Boxed.m
 fn t.main() -> Result<(), t.MyError> uses [alloc] panics never
     let b = t.Boxed { x: 1u32 }
     let bx = alloc.boxed.Box.new(std.alloc.SYSTEM, b)?
-    let d = alloc.boxed.Box.into_dyn(bx)
+    let d = bx.into_dyn()
     core.mem.drop(t.take(d))
     Ok(())
 end t.main

@@ -1,7 +1,7 @@
 fn t.bad() -> u32 uses [] panics may
     let a = [1u32, 2u32]
-    a[0] = 3u32
-    a[1]
+    a[0usize] = 3u32
+    a[1usize]
 end t.bad
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

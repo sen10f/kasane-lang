@@ -251,13 +251,13 @@ fn wrap_body(body: &str) -> String {
 
 #[test]
 fn token_spacing_is_one_way_extra_and_missing_spaces_are_errors() {
-    let want = wrap_body("    let v = core.num.u32.wrapping_add(1u32, 2u32)\n    core.check.eq(v, 3u32)\n");
+    let want = wrap_body("    let v = core.num.u32.from_u8(1u8)\n    core.check.eq(v, 1u32)\n");
     // 二重の空白・呼び出しの括弧の前の空白・`,` の後ろの詰め・括弧の内側の空白。
-    let a = wrap_body("    let v = core.num.u32.wrapping_add (1u32,   2u32)\n    core.check.eq(v, 3u32)\n");
+    let a = wrap_body("    let v = core.num.u32.from_u8 (  1u8)\n    core.check.eq(v, 1u32)\n");
     fmt_roundtrip("sp_call", &a, &want);
-    let b = wrap_body("    let v = core . num . u32 . wrapping_add( 1u32 ,2u32 )\n    core.check.eq(v, 3u32)\n");
+    let b = wrap_body("    let v = core . num . u32 . from_u8( 1u8 )\n    core.check.eq(v ,1u32 )\n");
     fmt_roundtrip("sp_dots", &b, &want);
-    let c = wrap_body("    let v=core.num.u32.wrapping_add(1u32, 2u32)\n    core.check.eq(v,3u32)\n");
+    let c = wrap_body("    let v=core.num.u32.from_u8(1u8)\n    core.check.eq(v,1u32)\n");
     fmt_roundtrip("sp_eq", &c, &want);
 }
 

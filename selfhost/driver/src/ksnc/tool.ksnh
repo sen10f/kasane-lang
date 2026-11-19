@@ -57,11 +57,9 @@ fn ksnc.tool.entry(dir: &str) -> Result<alloc.string.String<std.alloc.System>, k
             sec = 0usize
         } else if sec == 1usize {
             match line.split_once(" = ") {
-                Some((k, v)) => {
-                    if k == "entry" {
-                        let q = resolve.manifest.quoted(v)
-                        return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, q)?)
-                    }
+                Some((k, v)) => if k == "entry" {
+                    let q = resolve.manifest.quoted(v)
+                    return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, q)?)
                 }
                 None => core.mem.drop(0u8)
             }
@@ -159,7 +157,7 @@ end ksnc.tool.say_err
 
 // バイト列を、末尾の改行を除いて標準出力へ流す (空なら何もしない)。
 fn ksnc.tool.show(b: &alloc.vec.Vec<u8, std.alloc.System>) -> Result<(), ksnc.Failure> uses [io.console] panics never pub
-    if b.len() == 0usize {
+    if b.is_empty() {
         return Ok(())
     }
     let text = match core.str.from_utf8(b.as_slice()) {

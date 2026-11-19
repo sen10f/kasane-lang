@@ -78,9 +78,7 @@ end todo_spa.app.delete_item
 fn todo_spa.app.find_done(cache: &str, want: &str) -> Option<bool> uses [] panics never
     for line in cache.split("\n") {
         match model.split_line(line) {
-            None => {
-                core.mem.drop(line)
-            }
+            None => core.mem.drop(line)
             Some((id, done, raw)) => {
                 core.mem.drop(raw)
                 if id == want {
@@ -139,9 +137,9 @@ end todo_spa.app.on_fetch
 
 // 一覧の取得が成功したとき: 本体を読んで localStorage に写し、表示する。
 fn todo_spa.app.on_list_body() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
-    let mut buf = [0u8; 16384]
+    let mut buf = [0u8; 16_384]
     let n = dom.fetch_body(&mut buf)
-    if n < 0i32 || n > 16384i32 {
+    if n < 0i32 || n > 16_384i32 {
         todo_spa.app.status("一覧が大きすぎる (16 KiB まで)")
         return Ok(())
     }
@@ -155,7 +153,7 @@ end todo_spa.app.on_list_body
 
 // `storage_get` の結果を文字列にする。無い・大きすぎるときは空。
 fn todo_spa.app.read_storage(key: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
-    let mut buf = [0u8; 16384]
+    let mut buf = [0u8; 16_384]
     let n = dom.storage_get(key, &mut buf)
     todo_spa.app.text_of(&buf, n)
 end todo_spa.app.read_storage
@@ -169,12 +167,8 @@ fn todo_spa.app.render(lines: &str) -> Result<(), alloc.alloc.AllocError> uses [
     dom.clear(list)
     for line in lines.split("\n") {
         match model.split_line(line) {
-            None => {
-                core.mem.drop(line)
-            }
-            Some((id, done, raw)) => {
-                todo_spa.app.render_item(list, id, done == "1", raw)?
-            }
+            None => core.mem.drop(line)
+            Some((id, done, raw)) => todo_spa.app.render_item(list, id, done == "1", raw)?
         }
     }
     Ok(())
@@ -296,7 +290,7 @@ fn todo_spa.app.toggle_item(id: u32) -> Result<(), alloc.alloc.AllocError> uses 
 end todo_spa.app.toggle_item
 
 fn todo_spa.app.write_cache(lines: &str) -> Result<(), alloc.alloc.AllocError> uses [] panics never
-    if lines.len() > 16384usize {
+    if lines.len() > 16_384usize {
         todo_spa.app.status("一覧が大きすぎる (16 KiB まで)")
     } else {
         dom.storage_set(todo_spa.app.ITEMS_KEY, lines)

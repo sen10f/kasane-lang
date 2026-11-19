@@ -1,7 +1,7 @@
 import wiki.router
 import wiki.store
 
-const wiki.server.MAX_BODY: usize = 65536usize
+const wiki.server.MAX_BODY: usize = 65_536usize
 
 const wiki.server.MAX_HEAD: usize = 8192usize
 
@@ -108,10 +108,10 @@ fn wiki.server.serve_all(stream: &mut std.net.TcpStream, page_store: &mut wiki.s
         let mut chunk = [0u8; 1024]
         let n = stream.read(&mut chunk)?
         if n > 0usize {
-            std.http.Decoder.feed_part(decoder, &chunk, n)?
+            decoder.feed_part(&chunk, n)?
         }
         loop {
-            match std.http.Decoder.next(decoder) {
+            match decoder.next() {
                 Ok(Some(request)) => {
                     served = served.saturating_add(1usize)
                     more = wiki.server.answer(stream, page_store, csrf_tokens, &request)?
@@ -119,9 +119,7 @@ fn wiki.server.serve_all(stream: &mut std.net.TcpStream, page_store: &mut wiki.s
                         break
                     }
                 }
-                Ok(None) => {
-                    break
-                }
+                Ok(None) => break
                 Err(failure) => {
                     wiki.server.refuse(stream, failure)?
                     more = false
@@ -148,7 +146,7 @@ fn wiki.server.serve_listener(listener: &std.net.TcpListener, page_store: &mut w
 end wiki.server.serve_listener
 
 test wiki.server.MAX_BODY.test_value
-    core.check.eq(65536usize, 65536usize)
+    core.check.eq(65_536usize, 65_536usize)
 end wiki.server.MAX_BODY.test_value
 
 test wiki.server.MAX_HEAD.test_value

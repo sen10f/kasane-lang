@@ -43,6 +43,12 @@
 ],
 [
 "new_only",
+"stage0/tests/data/unsound/field_region_nested_set.ksnl",
+20,
+"E3010"
+],
+[
+"new_only",
 "stage0/tests/data/unsound/fnonce_linear_fn_bound.ksnl",
 12,
 "E3006"

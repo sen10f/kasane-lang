@@ -1,5 +1,0 @@
-fn t.main() -> u32 uses [] panics never
-    let n: u32 = 1
-    let k = 2u32
-    n.wrapping_add(k)
-end t.main

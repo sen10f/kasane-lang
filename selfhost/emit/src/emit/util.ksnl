@@ -239,21 +239,17 @@ fn emit.util.piece_at['a](s: &'a str, sep: &str, k: usize) -> &'a str uses [] pa
             Some(p) => {
                 r = emit.util.after(r, p.wrapping_add(sep.len()))
             }
-            None => {
-                return ""
-            }
+            None => return ""
         }
         i = i.wrapping_add(1usize)
     }
     match r.find(sep) {
-        Some(p) => {
-            match r.split_at(p) {
-                Some(q) => {
-                    let (h, _t) = q
-                    h
-                }
-                None => r
+        Some(p) => match r.split_at(p) {
+            Some(q) => {
+                let (h, _t) = q
+                h
             }
+            None => r
         }
         None => r
     }

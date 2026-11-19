@@ -1,6 +1,6 @@
-const structs.EXPECT_ACC: i64 = 255318i64
+const structs.EXPECT_ACC: i64 = 255_318i64
 
-const structs.N: u64 = 200000u64
+const structs.N: u64 = 200_000u64
 
 type structs.Body pub
     x: i64

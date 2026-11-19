@@ -42,7 +42,7 @@ fn parse.cur.dot_continues(p: &parse.cur.P) -> bool uses [] panics never pub
         return false
     }
     let t = parse.cur.peek(p, 1usize)
-    parse.tok.is_plain_name(t) || (t.kind == parse.tok.Kind.Kw && t.code == parse.tok.KW_BLANKET)
+    parse.tok.is_plain_name(t) || t.kind == parse.tok.Kind.Kw && t.code == parse.tok.KW_BLANKET
 end parse.cur.dot_continues
 
 // 入れ子の深さを 1 つ進める。上限を超えたらエラー。

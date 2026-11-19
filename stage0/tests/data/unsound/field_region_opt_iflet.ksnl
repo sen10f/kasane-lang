@@ -15,6 +15,6 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = 1u32
     let b = 2u32
     let p = t.Hold { fst: &a, opt: Some(&b) }
-    core.mem.drop(*t.Hold.opt_via_iflet_as_fst(&p, &p, &a))
+    core.mem.drop(*p.opt_via_iflet_as_fst(&p, &a))
     Ok(())
 end t.main

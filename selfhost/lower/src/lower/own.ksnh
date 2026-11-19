@@ -3,7 +3,7 @@ fn lower.own.arm_consume(c: &mut lower.cx.Cx, sloc: usize, slin: bool, noncopy: 
     if sloc != 0usize && noncopy {
         lower.drop.moved(c, sloc - 1usize)?
     }
-    if sloc != 0usize && (noncopy || (slin && !wild)) {
+    if sloc != 0usize && (noncopy || slin && !wild) {
         lower.own.emit(c, sloc - 1usize, "own.consume ")?
     }
     Ok(())
@@ -223,7 +223,7 @@ fn lower.own.set(c: &mut lower.cx.Cx, k: usize, id: usize) -> Result<(), resolve
     }
     core.mem.drop(c.v.sl.own.pop())
     c.v.sl.own.push(id)?
-    while tail.len() > 0usize {
+    while !tail.is_empty() {
         match tail.pop() {
             Some(x) => c.v.sl.own.push(x)?
             None => core.mem.drop(0u8)

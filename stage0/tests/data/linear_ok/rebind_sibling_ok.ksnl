@@ -1,5 +1,5 @@
 fn t.f(p: &[u8], c: bool) -> Option<&u8> uses [] panics never
-    let v: [u8; 2] = [1, 2]
+    let v = [1u8, 2u8]
     if c {
         let x = v.first()
         core.mem.drop(x)

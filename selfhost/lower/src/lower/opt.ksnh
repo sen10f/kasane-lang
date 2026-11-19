@@ -67,7 +67,7 @@ fn lower.opt.const_value(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
         return Ok(lower.cx.R { v: 0usize, t: t })
     }
     let init = parse.ast.get(&p2.ast, cn.d)
-    if (init.kind != parse.ast.Kind.Lit || init.a != 1usize) {
+    if init.kind != parse.ast.Kind.Lit || init.a != 1usize {
         // それ以外の定数: 初期化式を、定数の書かれたファイルの中で下ろす (型・名前はそのファイルで読む)。
         let saved = c.s.file
         c.s.file = file
@@ -145,7 +145,7 @@ fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         rty = types.ty.adt(&mut c.ar, owner, &ids)?
     }
     let tt = lower.tyk.text(env, c, rty)?
-    let head = if (vname == "Some" || vname == "Ok") {
+    let head = if vname == "Some" || vname == "Ok" {
         if vname == "Some" {
             "some "
         } else {
@@ -163,7 +163,7 @@ end lower.opt.ctor
 fn lower.opt.deref_ty(c: &lower.cx.Cx, t: usize) -> (usize, bool, bool) uses [] panics never pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
-    if (n.k == types.ty.K.Ref) {
+    if n.k == types.ty.K.Ref {
         return (n.a, true, n.m)
     }
     (t, false, false)
@@ -368,7 +368,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
             lower.cx.goto(c, nb)
             lower.drop.arm_head(env, c, own_scrut, false, sv, sc.t)?
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, &saved, jb, mark)?
-        } else if (pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath) {
+        } else if pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath {
             let name = resolve.ast.text(src, pat.a, pat.b)
             let last = lower.expr.last_seg(name)
             let positive = last == "Some" || last == "Err"
@@ -579,7 +579,7 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     let x = lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
     let xf = types.ty.find(&c.ar, x.t)
     let xn = types.ty.node(&c.ar, xf)
-    let k = if (xn.k == types.ty.K.Adt) {
+    let k = if xn.k == types.ty.K.Adt {
         lower.opt.kind(env, xn.a)
     } else {
         0usize

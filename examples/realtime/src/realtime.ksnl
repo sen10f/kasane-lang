@@ -26,9 +26,7 @@ fn realtime.Ring.new(cap: usize) -> realtime.Ring uses [alloc] panics never pub
         match items.push(0u32) {
             Ok(_u) => {
             }
-            Err(_e) => {
-                break
-            }
+            Err(_e) => break
         }
         i = i.wrapping_add(1usize)
     }
@@ -61,9 +59,7 @@ fn realtime.Ring.push(self: &mut realtime.Ring, v: u32) -> bool uses [] panics n
         Some(cell) => {
             *cell = v
         }
-        None => {
-            return false
-        }
+        None => return false
     }
     self.len = self.len.wrapping_add(1usize)
     true

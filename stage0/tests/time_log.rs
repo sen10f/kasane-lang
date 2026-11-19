@@ -260,7 +260,8 @@ fn system_time_and_date_time_now_are_in_range() {
     let ns = now.unix_nanos()
     let in_range = s > 1767225600i64 && s < 4102444800i64
     let next = s.wrapping_add(1i64)
-    let consistent = ns >= s.wrapping_mul(1000000000i64) && ns < next.wrapping_mul(1000000000i64)
+    let scale = 1000000000i64
+    let consistent = ns >= s.wrapping_mul(scale) && ns < next.wrapping_mul(scale)
     let d = std.datetime.DateTime.now()
     let year_ok = d.year >= 2026i64 && d.year < 2300i64
     if in_range && consistent && year_ok {

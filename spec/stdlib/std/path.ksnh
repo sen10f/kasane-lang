@@ -1,14 +1,12 @@
 fn std.path.extension(path: &str) -> Option<&str> uses [] panics never pub
     let name = std.path.file_name(path)?
     match std.path.last_byte(name, b'.') {
-        Some(at) => {
-            if at == 0usize {
-                None
-            } else {
-                match name.split_at(at.wrapping_add(1usize)) {
-                    Some((_head, tail)) => Some(tail)
-                    None => None
-                }
+        Some(at) => if at == 0usize {
+            None
+        } else {
+            match name.split_at(at.wrapping_add(1usize)) {
+                Some((_head, tail)) => Some(tail)
+                None => None
             }
         }
         None => None
@@ -21,11 +19,9 @@ fn std.path.file_name(path: &str) -> Option<&str> uses [] panics never pub
         return None
     }
     let name = match std.path.last_byte(trimmed, b'/') {
-        Some(at) => {
-            match trimmed.split_at(at.wrapping_add(1usize)) {
-                Some((_head, tail)) => tail
-                None => trimmed
-            }
+        Some(at) => match trimmed.split_at(at.wrapping_add(1usize)) {
+            Some((_head, tail)) => tail
+            None => trimmed
         }
         None => trimmed
     }
@@ -39,14 +35,12 @@ end std.path.file_name
 fn std.path.file_stem(path: &str) -> Option<&str> uses [] panics never pub
     let name = std.path.file_name(path)?
     match std.path.last_byte(name, b'.') {
-        Some(at) => {
-            if at == 0usize {
-                Some(name)
-            } else {
-                match name.split_at(at) {
-                    Some((head, _tail)) => Some(head)
-                    None => None
-                }
+        Some(at) => if at == 0usize {
+            Some(name)
+        } else {
+            match name.split_at(at) {
+                Some((head, _tail)) => Some(head)
+                None => None
             }
         }
         None => Some(name)
@@ -89,18 +83,16 @@ fn std.path.parent(path: &str) -> Option<&str> uses [] panics never pub
         return None
     }
     match std.path.last_byte(trimmed, b'/') {
-        Some(at) => {
-            match trimmed.split_at(at) {
-                Some((head, _tail)) => {
-                    let up = std.path.trim_slashes(head)
-                    if up.is_empty() {
-                        Some("/")
-                    } else {
-                        Some(up)
-                    }
+        Some(at) => match trimmed.split_at(at) {
+            Some((head, _tail)) => {
+                let up = std.path.trim_slashes(head)
+                if up.is_empty() {
+                    Some("/")
+                } else {
+                    Some(up)
                 }
-                None => None
             }
+            None => None
         }
         None => Some("")
     }
@@ -115,12 +107,10 @@ fn std.path.trim_slashes(path: &str) -> &str uses [] panics never
             break
         }
         match path.split_at(keep.wrapping_sub(1usize)) {
-            Some((_, last)) => {
-                if last == "/" {
-                    keep = keep.wrapping_sub(1usize)
-                } else {
-                    break
-                }
+            Some((_, last)) => if last == "/" {
+                keep = keep.wrapping_sub(1usize)
+            } else {
+                break
             }
             None => break
         }

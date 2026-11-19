@@ -3,35 +3,31 @@ import wiki.store
 
 fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, wiki.error.Error> uses [alloc, io.fs] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let pages = store.PageStore.list_pages(page_store)?
+    let pages = page_store.list_pages()?
     let mut i = 0usize
     let n = pages.len()
     while i < n {
         match pages.as_slice().get(i) {
-            Some(page_name) => {
-                if page_name.as_str() != name {
-                    let pn = page_name.as_str()
-                    let content = match store.PageStore.load_latest(page_store, pn) {
-                        Some(c) => c
-                        None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
-                    }
-                    let links = wiki.link.extract_wiki_links(content.as_str())?
-                    let mut j = 0usize
-                    let m = links.len()
-                    while j < m {
-                        match links.as_slice().get(j) {
-                            Some(link) => {
-                                if link.as_str() == name {
-                                    let mut cloned = alloc.string.String.new(std.alloc.SYSTEM)
-                                    cloned.push_str(page_name.as_str())?
-                                    core.mem.drop(out.push(cloned)?)
-                                    break
-                                }
-                            }
-                            None => core.mem.drop(0u8)
+            Some(page_name) => if page_name.as_str() != name {
+                let pn = page_name.as_str()
+                let content = match page_store.load_latest(pn) {
+                    Some(c) => c
+                    None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
+                }
+                let links = wiki.link.extract_wiki_links(content.as_str())?
+                let mut j = 0usize
+                let m = links.len()
+                while j < m {
+                    match links.as_slice().get(j) {
+                        Some(link) => if link.as_str() == name {
+                            let mut cloned = alloc.string.String.new(std.alloc.SYSTEM)
+                            cloned.push_str(page_name.as_str())?
+                            core.mem.drop(out.push(cloned)?)
+                            break
                         }
-                        j = j.saturating_add(1usize)
+                        None => core.mem.drop(0u8)
                     }
+                    j = j.saturating_add(1usize)
                 }
             }
             None => core.mem.drop(0u8)
@@ -157,9 +153,9 @@ end wiki.link.extract_wiki_links
 test wiki.link.backlinks_for.test_cases
     core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-backlinks"))
     let mut page_store = store.PageStore.new("/tmp/wiki-test-backlinks")?
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "A", "content [[B]] here\n", 1u64)?)
+    core.mem.drop(page_store.save_version("A", "content [[B]] here\n", 1u64)?)
     let b_page = "content [[A]] and [[C]]\n"
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "B", b_page, 1u64)?)
+    core.mem.drop(page_store.save_version("B", b_page, 1u64)?)
     let links = wiki.link.backlinks_for(&mut page_store, "A")?
     core.check.eq(links.len(), 1usize)
     match links.as_slice().get(0usize) {
@@ -171,8 +167,8 @@ end wiki.link.backlinks_for.test_cases
 test wiki.link.backlinks_for.test_multiple_backlinks
     core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-backlinks-multi"))
     let mut page_store = store.PageStore.new("/tmp/wiki-test-backlinks-multi")?
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "C", "link to [[A]] and [[B]]\n", 1u64)?)
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "D", "also [[A]]\n", 1u64)?)
+    core.mem.drop(page_store.save_version("C", "link to [[A]] and [[B]]\n", 1u64)?)
+    core.mem.drop(page_store.save_version("D", "also [[A]]\n", 1u64)?)
     let links = wiki.link.backlinks_for(&mut page_store, "A")?
     core.check.eq(links.len(), 2usize)
 end wiki.link.backlinks_for.test_multiple_backlinks
@@ -180,8 +176,8 @@ end wiki.link.backlinks_for.test_multiple_backlinks
 test wiki.link.backlinks_for.test_no_backlinks
     core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-backlinks-none"))
     let mut page_store = store.PageStore.new("/tmp/wiki-test-backlinks-none")?
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "A", "no links here\n", 1u64)?)
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "B", "nothing\n", 1u64)?)
+    core.mem.drop(page_store.save_version("A", "no links here\n", 1u64)?)
+    core.mem.drop(page_store.save_version("B", "nothing\n", 1u64)?)
     let links = wiki.link.backlinks_for(&mut page_store, "A")?
     core.check.eq(links.len(), 0usize)
 end wiki.link.backlinks_for.test_no_backlinks
@@ -189,7 +185,7 @@ end wiki.link.backlinks_for.test_no_backlinks
 test wiki.link.backlinks_for.test_self_link_excluded
     core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-backlinks-self"))
     let mut page_store = store.PageStore.new("/tmp/wiki-test-backlinks-self")?
-    core.mem.drop(store.PageStore.save_version(&mut page_store, "A", "link to [[A]] myself\n", 1u64)?)
+    core.mem.drop(page_store.save_version("A", "link to [[A]] myself\n", 1u64)?)
     let links = wiki.link.backlinks_for(&mut page_store, "A")?
     core.check.eq(links.len(), 0usize)
 end wiki.link.backlinks_for.test_self_link_excluded

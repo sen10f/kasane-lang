@@ -122,7 +122,7 @@ fn lower.inst.is_sig(env: &types.env.Env, item: usize) -> bool uses [] panics ne
 end lower.inst.is_sig
 
 fn lower.inst.key(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
-    if subs.len() == 0usize {
+    if subs.is_empty() {
         return lower.cx.own(fqn)
     }
     let mut s = lower.cx.cat2(fqn, "<")?
@@ -228,12 +228,12 @@ fn lower.inst.names_of(c: &lower.cx.Cx, cp: &parse.cur.P, src: &[u8], tn: usize,
     let tnode = parse.ast.get(&cp.ast, tn)
     let df = types.ty.find(&c.ar, d)
     let dn = types.ty.node(&c.ar, df)
-    if (tnode.kind == parse.ast.Kind.TNamed && dn.k == types.ty.K.Param) {
+    if tnode.kind == parse.ast.Kind.TNamed && dn.k == types.ty.K.Param {
         out.push(lower.cx.own(resolve.ast.text(src, tnode.a, tnode.b))?)?
         nos.push(dn.a)?
         return Ok(())
     }
-    if (tnode.kind == parse.ast.Kind.TRef && dn.k == types.ty.K.Ref) {
+    if tnode.kind == parse.ast.Kind.TRef && dn.k == types.ty.K.Ref {
         return lower.inst.names_of(c, cp, src, tnode.a, dn.a, out, nos)
     }
     Ok(())
@@ -272,7 +272,7 @@ fn lower.inst.sig_ty(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, j: u
     let mut i = 0usize
     while i < tps.len() {
         let tk = lower.tyk.at(tps.as_slice(), i)
-        let no = 1000000usize + item.wrapping_mul(64usize) + i
+        let no = 1_000_000usize + item.wrapping_mul(64usize) + i
         let pt = types.ty.param(&mut c.ar, no)?
         types.chk.push(&mut c.tc, resolve.ast.tok_text(cp, src, tk), pt, true)?
         i = i + 1usize

@@ -1,4 +1,4 @@
-const t.N: usize = 3
+const t.N: usize = 3usize
 
 type t.P derive [Clone, Copy] pub
     n: u32

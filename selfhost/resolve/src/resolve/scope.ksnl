@@ -23,10 +23,8 @@ end resolve.scope.St
 fn resolve.scope.St.has_generic(self: &resolve.scope.St, name: &str) -> bool uses [] panics never pub
     for k in core.iter.range(0usize, self.gens.len()) {
         match self.gens.as_slice().get(k) {
-            Some(g) => {
-                if g.as_str() == name {
-                    return true
-                }
+            Some(g) => if g.as_str() == name {
+                return true
             }
             None => core.mem.drop(0u8)
         }
@@ -37,10 +35,8 @@ end resolve.scope.St.has_generic
 fn resolve.scope.St.has_local(self: &resolve.scope.St, name: &str) -> bool uses [] panics never pub
     for k in core.iter.range(self.base, self.locals.len()) {
         match self.locals.as_slice().get(k) {
-            Some(l) => {
-                if l.as_str() == name {
-                    return true
-                }
+            Some(l) => if l.as_str() == name {
+                return true
             }
             None => core.mem.drop(0u8)
         }
@@ -51,10 +47,8 @@ end resolve.scope.St.has_local
 fn resolve.scope.St.import_index(self: &resolve.scope.St, name: &str) -> usize uses [] panics never pub
     for j in core.iter.range(0usize, self.tails.len()) {
         match self.tails.as_slice().get(j) {
-            Some(t) => {
-                if t.as_str() == name {
-                    return j.wrapping_add(1usize)
-                }
+            Some(t) => if t.as_str() == name {
+                return j.wrapping_add(1usize)
             }
             None => core.mem.drop(0u8)
         }
@@ -158,7 +152,7 @@ end resolve.scope.lookup_key
 
 fn resolve.scope.member(t: &resolve.table.Table, st: &resolve.scope.St, name: &str) -> Result<resolve.scope.Res, alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
     let pre = resolve.scope.prefix(name)?
-    if pre.len() == 0usize {
+    if pre.is_empty() {
         return Ok(resolve.scope.Res.Missing)
     }
     let pr = resolve.scope.find(t, st, pre.as_str())?
@@ -202,7 +196,7 @@ fn resolve.scope.prefix(name: &str) -> Result<alloc.string.String<std.alloc.Syst
     let mut has = false
     for c in name.split(".") {
         if has {
-            if out.len() > 0usize {
+            if !out.is_empty() {
                 out.push('.')?
             }
             out.push_str(prev)?

@@ -31,7 +31,7 @@ fn types.lower.targs(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.ch
         let skip1 = kk == parse.ast.Kind.TArgLife || kk == parse.ast.Kind.TArgEffects
         if skip1 || kk == parse.ast.Kind.TArgPanic {
             core.mem.drop(0u8)
-        } else if (kk == parse.ast.Kind.TArgConst) {
+        } else if kk == parse.ast.Kind.TArgConst {
             out.push(types.ty.UNKNOWN)?
         } else {
             let v = types.lower.ty(env, ar, cx, p, src, file, it)?
@@ -64,11 +64,11 @@ fn types.lower.ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.chk.C
     }
     let n = parse.ast.get(&p.ast, t)
     let k = n.kind
-    if (k == parse.ast.Kind.TPrim) {
+    if k == parse.ast.Kind.TPrim {
         let name = resolve.ast.tok_text(p, src, n.tok)
         return Ok(types.lower.prim(name))
     }
-    if (k == parse.ast.Kind.TNamed) {
+    if k == parse.ast.Kind.TNamed {
         let name = resolve.ast.text(src, n.a, n.b)
         let g = types.chk.find(cx, name, true)
         if g != 0usize {
@@ -90,40 +90,40 @@ fn types.lower.ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.chk.C
         let args = types.lower.targs(env, ar, cx, p, src, file, n.c)?
         return types.ty.adt(ar, item, &args)
     }
-    if (k == parse.ast.Kind.TRef) {
+    if k == parse.ast.Kind.TRef {
         let inner = types.lower.ty(env, ar, cx, p, src, file, n.a)?
-        if (types.ty.node(ar, inner).k == types.ty.K.Str) {
+        if types.ty.node(ar, inner).k == types.ty.K.Str {
             return Ok(types.ty.STR)
         }
         return types.ty.push(ar, types.ty.mk(types.ty.K.Ref, inner, 0usize, 0usize, n.b != 0usize))
     }
-    if (k == parse.ast.Kind.TSlice || k == parse.ast.Kind.TArray) {
+    if k == parse.ast.Kind.TSlice || k == parse.ast.Kind.TArray {
         let el = types.lower.ty(env, ar, cx, p, src, file, n.a)?
         let mut kk = types.ty.K.Array
-        if (k == parse.ast.Kind.TSlice) {
+        if k == parse.ast.Kind.TSlice {
             kk = types.ty.K.Slice
         }
         return types.ty.push(ar, types.ty.mk(kk, el, 0usize, 0usize, false))
     }
-    if (k == parse.ast.Kind.TTuple) {
+    if k == parse.ast.Kind.TTuple {
         let items = types.lower.targs(env, ar, cx, p, src, file, n.a)?
-        if items.len() == 0usize {
+        if items.is_empty() {
             return Ok(types.ty.UNIT)
         }
         let (b, c) = types.ty.args(ar, &items)?
         return types.ty.push(ar, types.ty.mk(types.ty.K.Tuple, 0usize, b, c, false))
     }
-    if (k == parse.ast.Kind.TNever) {
+    if k == parse.ast.Kind.TNever {
         return Ok(types.ty.NEVER)
     }
-    if (k == parse.ast.Kind.TFn) {
+    if k == parse.ast.Kind.TFn {
         // fn(A, B) -> R: 引数の列 (型ノードの List) と戻り値。
         let ps = types.lower.targs(env, ar, cx, p, src, file, n.a)?
         let ret = types.lower.ty(env, ar, cx, p, src, file, n.b)?
         let (b, c) = types.ty.args(ar, &ps)?
         return types.ty.push(ar, types.ty.mk(types.ty.K.Fnty, ret, b, c, false))
     }
-    if (k == parse.ast.Kind.TPtr || k == parse.ast.Kind.TDyn) {
+    if k == parse.ast.Kind.TPtr || k == parse.ast.Kind.TDyn {
         return types.ty.push(ar, types.ty.mk(types.ty.K.Opaque, 0usize, 0usize, 0usize, false))
     }
     Ok(types.ty.UNKNOWN)

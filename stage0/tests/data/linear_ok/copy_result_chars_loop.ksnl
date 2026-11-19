@@ -3,15 +3,11 @@ fn t.a(s: &str) -> usize uses [alloc] panics never
     let mut it = s.chars()
     loop {
         match it.next() {
-            Some(c) => {
-                match v.push(c) {
-                    Ok(_u) => ()
-                    Err(_e) => ()
-                }
+            Some(c) => match v.push(c) {
+                Ok(_u) => ()
+                Err(_e) => ()
             }
-            None => {
-                break
-            }
+            None => break
         }
     }
     let n = v.len()

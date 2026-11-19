@@ -7,7 +7,7 @@ type t.X
 end t.X
 
 fn t.X.handle(self: &t.X) -> u64 uses [] panics never
-    4294967301u64
+    4_294_967_301u64
 end t.X.handle
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics may

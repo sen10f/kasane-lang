@@ -38,7 +38,7 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
             lower.chk.record(&env, &mut c, key.as_str(), &subs)?
         } else if it == 0usize {
             lower.func.record(&mut c, "", "定義がない")?
-        } else if (types.infer.item_kind(&env, it - 1usize) != parse.ast.Kind.FnDef) {
+        } else if types.infer.item_kind(&env, it - 1usize) != parse.ast.Kind.FnDef {
             lower.func.record(&mut c, "", "関数でない")?
         } else {
             lower.func.lower_item(&env, &mut c, it - 1usize, key.as_str(), &subs, ret)?
@@ -49,7 +49,7 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
     out.push_str("kir 1\n\n")?
     let aggs = lower.tyk.agg_lines(&env, &mut c)?
     out.push_str(aggs.as_str())?
-    if c.g.aggs.len() > 0usize {
+    if !c.g.aggs.is_empty() {
         out.push('\n')?
     }
     // 関数は名前の順 (選択で並べる)。

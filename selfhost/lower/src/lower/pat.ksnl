@@ -13,7 +13,7 @@ fn lower.pat.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         let (inner, through, mutable) = lower.opt.deref_ty(c, t)
         let rs = types.ty.strip(&c.ar, inner)
         let rn = types.ty.node(&c.ar, rs)
-        if (rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef) {
+        if rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef {
             lower.cx.fail(c, "let の構造体の分解 (構造体以外は未対応)")?
             return Ok(())
         }

@@ -63,18 +63,18 @@ end std.datetime.DateTime.to_rfc3339
 // UNIX 秒 (ナノ秒は切り捨て)。
 fn std.datetime.DateTime.unix_seconds(self: &std.datetime.DateTime) -> i64 uses [] panics never pub
     let days = std.datetime.days_from_civil(self.year, self.month, self.day)
-    let secs = days.wrapping_mul(86400i64).wrapping_add(self.hour.wrapping_mul(3600i64))
+    let secs = days.wrapping_mul(86_400i64).wrapping_add(self.hour.wrapping_mul(3600i64))
     secs.wrapping_add(self.minute.wrapping_mul(60i64)).wrapping_add(self.second)
 end std.datetime.DateTime.unix_seconds
 
 // 紀元からの日数 `days` の日付 (年・月・日)。時刻の欄は 0 にした `DateTime` で返す。
 fn std.datetime.date_of_days(days: i64) -> std.datetime.DateTime uses [] panics never pub
-    let z = days.wrapping_add(719468i64)
-    let era = std.time.div_floor(z, 146097i64)
-    let doe = z.wrapping_sub(era.wrapping_mul(146097i64))
+    let z = days.wrapping_add(719_468i64)
+    let era = std.time.div_floor(z, 146_097i64)
+    let doe = z.wrapping_sub(era.wrapping_mul(146_097i64))
     let c1 = std.time.div_floor(doe, 1460i64)
-    let c2 = std.time.div_floor(doe, 36524i64)
-    let c3 = std.time.div_floor(doe, 146096i64)
+    let c2 = std.time.div_floor(doe, 36_524i64)
+    let c3 = std.time.div_floor(doe, 146_096i64)
     let yoe_num = doe.wrapping_sub(c1).wrapping_add(c2).wrapping_sub(c3)
     let yoe = std.time.div_floor(yoe_num, 365i64)
     let c4 = yoe.wrapping_mul(365i64).wrapping_add(std.time.div_floor(yoe, 4i64))
@@ -114,7 +114,7 @@ fn std.datetime.days_from_civil(year: i64, month: i64, day: i64) -> i64 uses [] 
     let doy = c1.wrapping_add(day).wrapping_sub(1i64)
     let c2 = yoe.wrapping_mul(365i64).wrapping_add(std.time.div_floor(yoe, 4i64))
     let doe = c2.wrapping_sub(std.time.div_floor(yoe, 100i64)).wrapping_add(doy)
-    era.wrapping_mul(146097i64).wrapping_add(doe).wrapping_sub(719468i64)
+    era.wrapping_mul(146_097i64).wrapping_add(doe).wrapping_sub(719_468i64)
 end std.datetime.days_from_civil
 
 // 月の日数。`month` が 1〜12 の外なら 0。
@@ -137,12 +137,10 @@ end std.datetime.days_in_month
 // 数字 1 文字 (`b[at]` が `0`〜`9`) の値。
 fn std.datetime.digit_at(b: &[u8], at: usize) -> Option<i64> uses [] panics never
     match b.get(at) {
-        Some(c) => {
-            if *c >= b'0' && *c <= b'9' {
-                Some(i64.from_u8(c.wrapping_sub(b'0')))
-            } else {
-                None
-            }
+        Some(c) => if *c >= b'0' && *c <= b'9' {
+            Some(i64.from_u8(c.wrapping_sub(b'0')))
+        } else {
+            None
         }
         None => None
     }
@@ -151,12 +149,10 @@ end std.datetime.digit_at
 // `at` の 1 バイトが `want` か `alt` であることを確かめる。
 fn std.datetime.expect_byte(b: &[u8], at: usize, want: u8, alt: u8) -> Result<(), std.datetime.Error> uses [] panics never
     match b.get(at) {
-        Some(c) => {
-            if *c == want || *c == alt {
-                Ok(())
-            } else {
-                Err(std.datetime.Error.Unexpected(at))
-            }
+        Some(c) => if *c == want || *c == alt {
+            Ok(())
+        } else {
+            Err(std.datetime.Error.Unexpected(at))
         }
         None => Err(std.datetime.Error.Eof(at))
     }
@@ -169,15 +165,15 @@ end std.datetime.from_system_time
 
 // UNIX ナノ秒 (負もよい。`i64` の範囲で約 ±292 年) から UTC の日時。
 fn std.datetime.from_unix_nanos(nanos: i64) -> std.datetime.DateTime uses [] panics never pub
-    let base = std.datetime.from_unix_seconds(std.time.div_floor(nanos, 1000000000i64))
-    let ns = std.time.rem_floor(nanos, 1000000000i64)
+    let base = std.datetime.from_unix_seconds(std.time.div_floor(nanos, 1_000_000_000i64))
+    let ns = std.time.rem_floor(nanos, 1_000_000_000i64)
     std.datetime.with_time(base, base.hour, base.minute, base.second, ns)
 end std.datetime.from_unix_nanos
 
 // UNIX 秒 (1970-01-01T00:00:00Z からの秒、負もよい) から UTC の日時 (ナノ秒は 0)。
 fn std.datetime.from_unix_seconds(seconds: i64) -> std.datetime.DateTime uses [] panics never pub
-    let days = std.time.div_floor(seconds, 86400i64)
-    let sod = std.time.rem_floor(seconds, 86400i64)
+    let days = std.time.div_floor(seconds, 86_400i64)
+    let sod = std.time.rem_floor(seconds, 86_400i64)
     let date = std.datetime.date_of_days(days)
     let hour = std.time.div_floor(sod, 3600i64)
     let minute = std.time.div_floor(std.time.rem_floor(sod, 3600i64), 60i64)
@@ -263,24 +259,22 @@ fn std.datetime.parse_rfc3339(text: &str) -> Result<std.datetime.DateTime, std.d
     }
     let mut offset = 0i64
     match b.get(at) {
-        Some(c) => {
-            if *c == b'Z' || *c == b'z' {
-                at = at.wrapping_add(1usize)
-            } else if *c == b'+' || *c == b'-' {
-                let oh = std.datetime.read_fixed(b, at.wrapping_add(1usize), 2usize)?
-                std.datetime.expect_byte(b, at.wrapping_add(3usize), b':', b':')?
-                let om = std.datetime.read_fixed(b, at.wrapping_add(4usize), 2usize)?
-                if oh > 23i64 || om > 59i64 {
-                    return Err(std.datetime.Error.OutOfRange(at.wrapping_add(1usize)))
-                }
-                offset = oh.wrapping_mul(60i64).wrapping_add(om)
-                if *c == b'-' {
-                    offset = offset.wrapping_neg()
-                }
-                at = at.wrapping_add(6usize)
-            } else {
-                return Err(std.datetime.Error.Unexpected(at))
+        Some(c) => if *c == b'Z' || *c == b'z' {
+            at = at.wrapping_add(1usize)
+        } else if *c == b'+' || *c == b'-' {
+            let oh = std.datetime.read_fixed(b, at.wrapping_add(1usize), 2usize)?
+            std.datetime.expect_byte(b, at.wrapping_add(3usize), b':', b':')?
+            let om = std.datetime.read_fixed(b, at.wrapping_add(4usize), 2usize)?
+            if oh > 23i64 || om > 59i64 {
+                return Err(std.datetime.Error.OutOfRange(at.wrapping_add(1usize)))
             }
+            offset = oh.wrapping_mul(60i64).wrapping_add(om)
+            if *c == b'-' {
+                offset = offset.wrapping_neg()
+            }
+            at = at.wrapping_add(6usize)
+        } else {
+            return Err(std.datetime.Error.Unexpected(at))
         }
         None => return Err(std.datetime.Error.Eof(at))
     }
@@ -288,7 +282,7 @@ fn std.datetime.parse_rfc3339(text: &str) -> Result<std.datetime.DateTime, std.d
         return Err(std.datetime.Error.Trailing(at))
     }
     let local = std.datetime.make(year, month, day, hour, minute, second, 0i64)
-    let secs = std.datetime.DateTime.unix_seconds(&local).wrapping_sub(offset.wrapping_mul(60i64))
+    let secs = local.unix_seconds().wrapping_sub(offset.wrapping_mul(60i64))
     let utc = std.datetime.from_unix_seconds(secs)
     Ok(std.datetime.with_time(utc, utc.hour, utc.minute, utc.second, nanos))
 end std.datetime.parse_rfc3339

@@ -270,26 +270,40 @@ pub fn annotate_int_lits(p: &mut Program, user: &[usize]) {
     drop(want);
     drop(tk);
     p.src_diags.extend(src_diags);
+    let mut found: Vec<(usize, usize, String, String)> = vec![];
     for (i, m) in todo {
         if let Some(b) = p.defs[i].body.as_mut() {
-            fill(b, &m);
+            let mut got: Vec<(usize, String, String)> = vec![];
+            fill(b, &m, &mut got);
+            found.extend(got.into_iter().map(|(pos, text, ty)| (i, pos, text, ty)));
         }
+    }
+    // D12: 接尾辞のない整数リテラル (型が決まり、接尾辞を書き足した)。書き戻し後の木では接尾辞つきに見えるので、ここで E2028 にする。
+    for (i, pos, text, ty) in found {
+        let d = &p.defs[i];
+        let (line, col) = crate::parser::unpack_pos(pos);
+        let msg = format!("the integer literal `{}` has no suffix: append `{}` (write `{}{}`)", text, ty, text, ty);
+        let diag = crate::check::Diag { file: d.file.clone(), code: "E2028".into(), fqn: d.name.clone(), line, col, msg };
+        p.src_diags.push(diag);
     }
 }
 
-fn fill(v: &mut V, m: &std::collections::HashMap<u32, String>) {
+fn fill(v: &mut V, m: &std::collections::HashMap<u32, String>, got: &mut Vec<(usize, String, String)>) {
     match v {
-        V::Node(kind, fs, _, id) => {
+        V::Node(kind, fs, pos, id) => {
             if *kind == "Lit" && fs.len() > 2 && matches!(&fs[0], V::S(k) if k == "int") && matches!(fs[2], V::Nil) {
                 if let Some(t) = m.get(id) {
+                    if let V::S(text) | V::N(text) = &fs[1] {
+                        got.push((*pos, text.clone(), t.clone()));
+                    }
                     fs[2] = V::S(t.clone());
                 }
             }
             for c in fs.iter_mut() {
-                fill(c, m);
+                fill(c, m, got);
             }
         }
-        V::L(xs) => xs.iter_mut().for_each(|c| fill(c, m)),
+        V::L(xs) => xs.iter_mut().for_each(|c| fill(c, m, got)),
         _ => {}
     }
 }

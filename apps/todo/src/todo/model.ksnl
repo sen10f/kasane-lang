@@ -40,7 +40,7 @@ type todo.model.User derive [Debug, PartialEq, Eq] pub
 end todo.model.User
 
 fn todo.model.decode_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.Todo, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
-    let root = std.json.decode_payload(std.json.Doc.value_at(doc, at))?
+    let root = std.json.decode_payload(doc.value_at(at))?
     let len = std.json.decode_len(doc, root)?
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for i in core.iter.range(0usize, len) {
@@ -51,7 +51,7 @@ fn todo.model.decode_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Ve
 end todo.model.decode_array
 
 fn todo.model.decode_extra_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.TodoExtra, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
-    let root = std.json.decode_payload(std.json.Doc.value_at(doc, at))?
+    let root = std.json.decode_payload(doc.value_at(at))?
     let len = std.json.decode_len(doc, root)?
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for i in core.iter.range(0usize, len) {
@@ -62,7 +62,7 @@ fn todo.model.decode_extra_array(doc: &std.json.Doc, at: usize) -> Result<alloc.
 end todo.model.decode_extra_array
 
 fn todo.model.decode_session_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.Session, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
-    let root = std.json.decode_payload(std.json.Doc.value_at(doc, at))?
+    let root = std.json.decode_payload(doc.value_at(at))?
     let len = std.json.decode_len(doc, root)?
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for i in core.iter.range(0usize, len) {
@@ -87,7 +87,7 @@ fn todo.model.decode_string_array(doc: &std.json.Doc, value: std.json.Value) -> 
 end todo.model.decode_string_array
 
 fn todo.model.decode_user_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.User, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
-    let root = std.json.decode_payload(std.json.Doc.value_at(doc, at))?
+    let root = std.json.decode_payload(doc.value_at(at))?
     let len = std.json.decode_len(doc, root)?
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for i in core.iter.range(0usize, len) {
@@ -362,9 +362,7 @@ fn todo.model.write_tags(out: &mut alloc.string.String<std.alloc.System>, tags: 
             out.push(',')?
         }
         match all.get(i) {
-            Some(t) => {
-                todo.model.push_quoted(out, t.as_str())?
-            }
+            Some(t) => todo.model.push_quoted(out, t.as_str())?
             None => return Err(alloc.alloc.AllocError { code: 0u32 })
         }
     }

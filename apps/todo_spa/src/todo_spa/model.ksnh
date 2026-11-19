@@ -50,9 +50,7 @@ end todo_spa.model.from_server
 fn todo_spa.model.item(after: &str) -> Result<Option<(alloc.string.String<std.alloc.System>, &str)>, alloc.alloc.AllocError> uses [alloc] panics may
     match after.split_once(",\"title\":\"") {
         None => Ok(None)
-        Some((id_text, title_on)) => {
-            todo_spa.model.item_title(id_text, title_on)
-        }
+        Some((id_text, title_on)) => todo_spa.model.item_title(id_text, title_on)
     }
 end todo_spa.model.item
 
@@ -124,9 +122,7 @@ end todo_spa.model.quote_end
 fn todo_spa.model.split_line(line: &str) -> Option<(&str, &str, &str)> uses [] panics never pub
     match line.split_once("\t") {
         None => None
-        Some((id, rest)) => {
-            todo_spa.model.split_rest(id, rest)
-        }
+        Some((id, rest)) => todo_spa.model.split_rest(id, rest)
     }
 end todo_spa.model.split_line
 

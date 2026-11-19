@@ -6,18 +6,14 @@ end t.Error
 
 fn t.main() -> Result<(), t.Error> uses [alloc, io.console, io.fs] panics may
     with mut f = std.fs.create("/tmp/opencode/ksn_a111_fs3.dat")? close core.mem.drop(f.close()) {
-        core.mem.drop(f.write(core.str.as_bytes("hello"))?)
+        core.mem.drop(f.write("hello".as_bytes())?)
     }
     let mut buf: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     with mut f = std.fs.open("/tmp/opencode/ksn_a111_fs3.dat")? close core.mem.drop(f.close()) {
         core.mem.drop(std.fs.read_to_end(&mut f, &mut buf)?)
         match core.str.from_utf8(buf.as_slice()) {
-            Ok(s) => {
-                core.check.eq(s, "hello")
-            }
-            Err(e) => {
-                return Err(t.Error.Utf8(e))
-            }
+            Ok(s) => core.check.eq(s, "hello")
+            Err(e) => return Err(t.Error.Utf8(e))
         }
     }
     core.mem.drop(buf.push(33u8)?)
@@ -25,9 +21,7 @@ fn t.main() -> Result<(), t.Error> uses [alloc, io.console, io.fs] panics may
     match std.io.print_line("fs read utf8 with ok") {
         Ok(_done) => {
         }
-        Err(error) => {
-            return Err(t.Error.Io(error))
-        }
+        Err(error) => return Err(t.Error.Io(error))
     }
     core.mem.drop(buf)
     Ok(())

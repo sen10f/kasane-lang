@@ -309,7 +309,7 @@ end emit.reset_fn
 // 一時の値の番号を新しく作って返す。値の番号は KIR の値 (1000000 より小さい) と重ならない `1000000 + n` にし、`%v<番号>` と書く。
 fn emit.tmp(g: &mut emit.G) -> usize uses [] panics never pub
     g.misc.n = g.misc.n.wrapping_add(1usize)
-    1000000usize.wrapping_add(g.misc.n)
+    1_000_000usize.wrapping_add(g.misc.n)
 end emit.tmp
 
 // 文字列を現在の作業場所 (`g.buf.cur`) へ書く。

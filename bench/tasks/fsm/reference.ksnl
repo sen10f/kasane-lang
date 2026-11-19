@@ -31,19 +31,15 @@ end bench.run_fsm
 
 fn bench.step(s: bench.State, input: u8) -> bench.State uses [] panics never pub
     match s {
-        bench.State.A => {
-            if input == 65u8 {
-                bench.State.B
-            } else {
-                bench.State.A
-            }
+        bench.State.A => if input == 65u8 {
+            bench.State.B
+        } else {
+            bench.State.A
         }
-        bench.State.B => {
-            if input == 66u8 {
-                bench.State.C
-            } else {
-                bench.State.A
-            }
+        bench.State.B => if input == 66u8 {
+            bench.State.C
+        } else {
+            bench.State.A
         }
         bench.State.C => bench.State.C
     }

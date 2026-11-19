@@ -2,10 +2,8 @@ fn borrow.esc.check_root(cx: &mut borrow.cx.Cx, k: usize, tok: usize) -> Result<
     let l = borrow.cx.loc(cx, k)
     if l.cl == borrow.base.COPY || l.cl == borrow.base.MOVE || l.cl == borrow.base.LIN {
         borrow.cx.diag(cx, "E3030", tok, "局所の借用を戻り値として外へ出す")?
-    } else {
-        if l.cl == borrow.base.UNK {
-            borrow.cx.undec(cx)
-        }
+    } else if l.cl == borrow.base.UNK {
+        borrow.cx.undec(cx)
     }
     Ok(())
 end borrow.esc.check_root

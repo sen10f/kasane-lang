@@ -1,6 +1,6 @@
-const strcat.EXPECT_LEN: usize = 400000usize
+const strcat.EXPECT_LEN: usize = 400_000usize
 
-const strcat.N: usize = 200000usize
+const strcat.N: usize = 200_000usize
 
 fn strcat.build(n: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)

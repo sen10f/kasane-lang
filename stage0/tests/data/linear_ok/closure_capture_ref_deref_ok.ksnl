@@ -5,7 +5,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
         x.wrapping_mul(*k)
     }
     let g = fn() -> () capture [&mut m] {
-        *m = (*m).wrapping_add(1u64)
+        *m = m.wrapping_add(1u64)
     }
     g()
     core.mem.drop(f(2u64))

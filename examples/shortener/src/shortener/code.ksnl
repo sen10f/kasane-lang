@@ -2,7 +2,7 @@ import shortener.error
 
 const shortener.code.BASE: u32 = 36u32
 
-const shortener.code.OFFSET: u64 = 46656u64
+const shortener.code.OFFSET: u64 = 46_656u64
 
 fn shortener.code.digit_char(d: u8) -> char uses [] panics never pub
     let mut base = b'0'
@@ -21,11 +21,9 @@ fn shortener.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.System>
     loop {
         let d = rest.checked_rem(36u64)
         match d {
-            Some(v) => {
-                match u8.try_from_u64(v) {
-                    Ok(small) => digits.push(small)?
-                    Err(_e) => return Err(error.Error.Corrupt)
-                }
+            Some(v) => match u8.try_from_u64(v) {
+                Ok(small) => digits.push(small)?
+                Err(_e) => return Err(error.Error.Corrupt)
             }
             None => return Err(error.Error.Corrupt)
         }
@@ -67,7 +65,7 @@ fn shortener.code.is_canonical(text: &str) -> bool uses [] panics never
         return false
     }
     for c in text.chars() {
-        let ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z')
+        let ok = c >= '0' && c <= '9' || c >= 'a' && c <= 'z'
         if !ok {
             return false
         }
@@ -98,7 +96,7 @@ test shortener.code.encode.test_base36
         Ok(s) => core.check.eq(s.as_str(), "10")
         Err(_e) => core.panic.panic("encode 36")
     }
-    match shortener.code.encode(18446744073709551615u64) {
+    match shortener.code.encode(18_446_744_073_709_551_615u64) {
         Ok(s) => core.check.eq(s.as_str(), "3w5e11264sgsf")
         Err(_e) => core.panic.panic("encode max")
     }
@@ -117,7 +115,7 @@ test shortener.code.for_index.test_sequence
         Ok(s) => core.check.eq(s.as_str(), "1010")
         Err(_e) => core.panic.panic("index 36")
     }
-    core.check.eq(shortener.code.for_index(18446744073709551615u64).is_err(), true)
+    core.check.eq(shortener.code.for_index(18_446_744_073_709_551_615u64) is Err(_), true)
 end shortener.code.for_index.test_sequence
 
 test shortener.code.to_index.test_rejects_noncanonical
@@ -127,7 +125,7 @@ test shortener.code.to_index.test_rejects_noncanonical
     core.check.eq(shortener.code.to_index("01000"), None)
     core.check.eq(shortener.code.to_index("10A0"), None)
     core.check.eq(shortener.code.to_index("+1000"), None)
-    core.check.eq(shortener.code.to_index("stats"), Some(48349648u64))
+    core.check.eq(shortener.code.to_index("stats"), Some(48_349_648u64))
     core.check.eq(shortener.code.to_index("zzzzzzzzzzzzz"), None)
     core.check.eq(shortener.code.to_index("3w5e11264sgsg"), None)
 end shortener.code.to_index.test_rejects_noncanonical

@@ -59,9 +59,7 @@ fn csvtool.agg.column_stats(tbl: &csvtool.table.Table, col: usize) -> Result<csv
     let n = tbl.height()
     while r < n {
         match tbl.cell(r, col) {
-            Some(text) => {
-                csvtool.agg.Stats.add(&mut st, text)
-            }
+            Some(text) => st.add(text)
             None => core.mem.drop(0u8)
         }
         r = r.wrapping_add(1usize)
@@ -110,36 +108,30 @@ fn csvtool.agg.fmt_scaled(value: i64) -> Result<alloc.string.String<std.alloc.Sy
                 None => core.mem.drop(0u8)
             }
             match m.checked_rem(100i64) {
-                Some(rem) => {
-                    if rem != 0i64 {
-                        out.push_str(".")?
-                        match rem.checked_rem(10i64) {
-                            Some(r10) => {
-                                if r10 == 0i64 {
-                                    match rem.checked_div(10i64) {
-                                        Some(h) => {
-                                            let base = alloc.fmt.Spec.new()
-                                            let spec = base.with_width(1usize).with_fill('0')
-                                            alloc.fmt.write_i64(&mut out, h, &spec)?
-                                        }
-                                        None => core.mem.drop(0u8)
-                                    }
-                                } else {
+                Some(rem) => if rem != 0i64 {
+                    out.push_str(".")?
+                    match rem.checked_rem(10i64) {
+                        Some(r10) => if r10 == 0i64 {
+                            match rem.checked_div(10i64) {
+                                Some(h) => {
                                     let base = alloc.fmt.Spec.new()
-                                    let spec = base.with_width(2usize).with_fill('0')
-                                    alloc.fmt.write_i64(&mut out, rem, &spec)?
+                                    let spec = base.with_width(1usize).with_fill('0')
+                                    alloc.fmt.write_i64(&mut out, h, &spec)?
                                 }
+                                None => core.mem.drop(0u8)
                             }
-                            None => core.mem.drop(0u8)
+                        } else {
+                            let base = alloc.fmt.Spec.new()
+                            let spec = base.with_width(2usize).with_fill('0')
+                            alloc.fmt.write_i64(&mut out, rem, &spec)?
                         }
+                        None => core.mem.drop(0u8)
                     }
                 }
                 None => core.mem.drop(0u8)
             }
         }
-        None => {
-            out.push_str("ovf")?
-        }
+        None => out.push_str("ovf")?
     }
     Ok(out)
 end csvtool.agg.fmt_scaled
@@ -158,10 +150,8 @@ fn csvtool.agg.groupby(tbl: &csvtool.table.Table, key_col: usize, val_col: usize
                 let mut gi = 0usize
                 while gi < gl {
                     match gs.get(gi) {
-                        Some(g) => {
-                            if g.key.as_str() == k {
-                                idx = gi
-                            }
+                        Some(g) => if g.key.as_str() == k {
+                            idx = gi
                         }
                         None => core.mem.drop(0u8)
                     }
@@ -174,13 +164,11 @@ fn csvtool.agg.groupby(tbl: &csvtool.table.Table, key_col: usize, val_col: usize
                 if idx == gl {
                     let key = alloc.string.String.from_str(std.alloc.SYSTEM, k)?
                     let mut st = csvtool.agg.Stats.new()
-                    csvtool.agg.Stats.add(&mut st, v)
+                    st.add(v)
                     core.mem.drop(groups.push(csvtool.agg.Group { key: key, stats: st })?)
                 } else {
                     match groups.as_mut_slice().get_mut(idx) {
-                        Some(g) => {
-                            csvtool.agg.Stats.add(&mut g.stats, v)
-                        }
+                        Some(g) => g.stats.add(v)
                         None => core.mem.drop(0u8)
                     }
                 }
@@ -216,13 +204,11 @@ fn csvtool.agg.parse_num(text: &str) -> Option<i64> uses [] panics never pub
             neg = true
             body = rest
         }
-        None => {
-            match t.strip_prefix("+") {
-                Some(rest) => {
-                    body = rest
-                }
-                None => core.mem.drop(0u8)
+        None => match t.strip_prefix("+") {
+            Some(rest) => {
+                body = rest
             }
+            None => core.mem.drop(0u8)
         }
     }
     if body.is_empty() {
@@ -234,22 +220,18 @@ fn csvtool.agg.parse_num(text: &str) -> Option<i64> uses [] panics never pub
     loop {
         match it.next() {
             Some('.') => break
-            Some(c) => {
-                match csvtool.agg.digit(c) {
-                    Some(d) => {
-                        match int_part.checked_mul(10i64) {
-                            Some(m) => match m.checked_add(d) {
-                                Some(v) => {
-                                    int_part = v
-                                    int_len = int_len.wrapping_add(1usize)
-                                }
-                                None => return None
-                            }
-                            None => return None
+            Some(c) => match csvtool.agg.digit(c) {
+                Some(d) => match int_part.checked_mul(10i64) {
+                    Some(m) => match m.checked_add(d) {
+                        Some(v) => {
+                            int_part = v
+                            int_len = int_len.wrapping_add(1usize)
                         }
+                        None => return None
                     }
                     None => return None
                 }
+                None => return None
             }
             None => break
         }
@@ -257,18 +239,14 @@ fn csvtool.agg.parse_num(text: &str) -> Option<i64> uses [] panics never pub
     let mut frac = 0i64
     let mut frac_len = 0usize
     loop {
+        // 小数第 3 位以降は切り捨て
         match it.next() {
-            Some(c) => {
-                match csvtool.agg.digit(c) {
-                    Some(d) => {
-                        if frac_len < 2usize {
-                            frac = frac.wrapping_mul(10i64).wrapping_add(d)
-                            frac_len = frac_len.wrapping_add(1usize)
-                        }
-                        // 小数第 3 位以降は切り捨て
-                    }
-                    None => return None
+            Some(c) => match csvtool.agg.digit(c) {
+                Some(d) => if frac_len < 2usize {
+                    frac = frac.wrapping_mul(10i64).wrapping_add(d)
+                    frac_len = frac_len.wrapping_add(1usize)
                 }
+                None => return None
             }
             None => break
         }
@@ -295,10 +273,10 @@ end csvtool.agg.parse_num
 
 test csvtool.agg.Stats.add.test_stats
     let mut st = csvtool.agg.Stats.new()
-    csvtool.agg.Stats.add(&mut st, "3")
-    csvtool.agg.Stats.add(&mut st, "-1.5")
-    csvtool.agg.Stats.add(&mut st, "abc")
-    csvtool.agg.Stats.add(&mut st, " 2.25 ")
+    st.add("3")
+    st.add("-1.5")
+    st.add("abc")
+    st.add(" 2.25 ")
     core.check.eq(st.rows, 4i64)
     core.check.eq(st.numeric, 3i64)
     core.check.eq(st.min, -150i64)

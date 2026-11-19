@@ -1,8 +1,8 @@
 fn t.main() -> () uses [] panics never
     let mut a = [1u32, 2u32, 3u32, 4u32]
     let s = &mut a
-    let left = core.slice.sub_mut(s, 0, 2usize)
-    let right = core.slice.sub_mut(s, 1, 3usize)
+    let left = s.sub_mut(0usize, 2usize)
+    let right = s.sub_mut(1usize, 3usize)
     core.mem.drop(left)
     core.mem.drop(right)
 end t.main

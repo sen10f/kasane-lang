@@ -57,9 +57,7 @@ fn shortener_https.serve_listener(listener: &std.net.TcpListener, acceptor: &std
             Ok(tls) => {
                 served = served.saturating_add(serve.connection(tls, &mut db)?)
             }
-            Err(_e) => {
-                core.mem.drop(std.log.warn("handshake failed", &[("peer", "client")]))
-            }
+            Err(_e) => core.mem.drop(std.log.warn("handshake failed", &[("peer", "client")]))
         }
     }
     Ok(served)

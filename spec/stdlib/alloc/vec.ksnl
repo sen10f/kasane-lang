@@ -3,31 +3,21 @@ fn alloc.vec.Vec.append[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T,
     match self.reserve(other.len()) {
         Ok(_done) => {
         }
-        Err(error) => {
-            return Err(error)
-        }
+        Err(error) => return Err(error)
     }
     loop {
         match other.pop() {
-            Some(x) => {
-                match self.push(x) {
-                    Ok(_done) => {
-                    }
-                    Err(error) => {
-                        return Err(error)
-                    }
+            Some(x) => match self.push(x) {
+                Ok(_done) => {
                 }
+                Err(error) => return Err(error)
             }
-            None => {
-                break
-            }
+            None => break
         }
     }
     let after = self.len()
     match self.as_mut_slice().sub_mut(before, after) {
-        Some(tail) => {
-            tail.reverse()
-        }
+        Some(tail) => tail.reverse()
         None => {
         }
     }
@@ -54,10 +44,8 @@ fn alloc.vec.Vec.contains[T: core.cmp.PartialEq<T>, A: alloc.alloc.Allocator](se
     let mut i = 0usize
     while i < self.len() {
         match self.as_slice().get(i) {
-            Some(x) => {
-                if x.eq(value) {
-                    return true
-                }
+            Some(x) => if x.eq(value) {
+                return true
             }
             None => {
             }
@@ -76,27 +64,17 @@ fn alloc.vec.Vec.dedup[T: core.cmp.PartialEq<T>, A: alloc.alloc.Allocator](self:
     let mut i = 1usize
     while i < n {
         let same = match self.as_slice().get(i) {
-            Some(x) => {
-                match self.as_slice().get(keep.wrapping_sub(1usize)) {
-                    Some(y) => {
-                        x.eq(y)
-                    }
-                    None => {
-                        false
-                    }
-                }
+            Some(x) => match self.as_slice().get(keep.wrapping_sub(1usize)) {
+                Some(y) => x.eq(y)
+                None => false
             }
-            None => {
-                true
-            }
+            None => true
         }
         if !same {
             match self.as_mut_slice().swap(keep, i) {
                 Ok(_done) => {
                 }
-                Err(_error) => {
-                    return
-                }
+                Err(_error) => return
             }
             keep = keep.wrapping_add(1usize)
         }
@@ -109,28 +87,18 @@ fn alloc.vec.Vec.extend_from_slice[T: alloc.alloc.TryClone, A: alloc.alloc.Alloc
     match self.reserve(source.len()) {
         Ok(_done) => {
         }
-        Err(error) => {
-            return Err(error)
-        }
+        Err(error) => return Err(error)
     }
     let mut i = 0usize
     while i < source.len() {
         match source.get(i) {
-            Some(x) => {
-                match x.try_clone() {
-                    Ok(c) => {
-                        match self.push(c) {
-                            Ok(_done) => {
-                            }
-                            Err(error) => {
-                                return Err(error)
-                            }
-                        }
+            Some(x) => match x.try_clone() {
+                Ok(c) => match self.push(c) {
+                    Ok(_done) => {
                     }
-                    Err(error) => {
-                        return Err(error)
-                    }
+                    Err(error) => return Err(error)
                 }
+                Err(error) => return Err(error)
             }
             None => {
             }
@@ -145,21 +113,15 @@ fn alloc.vec.Vec.insert[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T,
         return Err(alloc.vec.InsertError.OutOfBounds)
     }
     match self.buf.insert_within_cap(index, value) {
-        Ok(_done) => {
-            Ok(())
-        }
+        Ok(_done) => Ok(())
         Err(back) => {
             match self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize)) {
                 Ok(_grown) => {
                 }
-                Err(error) => {
-                    return Err(alloc.vec.InsertError.Alloc(error))
-                }
+                Err(error) => return Err(alloc.vec.InsertError.Alloc(error))
             }
             match self.buf.insert_within_cap(index, back) {
-                Ok(_done) => {
-                    Ok(())
-                }
+                Ok(_done) => Ok(())
                 Err(_lost) => {
                     Err(alloc.vec.InsertError.Alloc(alloc.alloc.AllocError { code: 1u32 }))
                 }
@@ -182,24 +144,16 @@ end alloc.vec.Vec.pop
 
 fn alloc.vec.Vec.push[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>, value: T) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     match self.buf.push_within_cap(value) {
-        Ok(_done) => {
-            Ok(())
-        }
+        Ok(_done) => Ok(())
         Err(back) => {
             match self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize)) {
                 Ok(_grown) => {
                 }
-                Err(error) => {
-                    return Err(error)
-                }
+                Err(error) => return Err(error)
             }
             match self.buf.push_within_cap(back) {
-                Ok(_done) => {
-                    Ok(())
-                }
-                Err(_lost) => {
-                    Err(alloc.alloc.AllocError { code: 1u32 })
-                }
+                Ok(_done) => Ok(())
+                Err(_lost) => Err(alloc.alloc.AllocError { code: 1u32 })
             }
         }
     }
@@ -222,9 +176,7 @@ fn alloc.vec.Vec.reserve[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T
         match self.buf.grow(target) {
             Ok(_grown) => {
             }
-            Err(error) => {
-                return Err(error)
-            }
+            Err(error) => return Err(error)
         }
     }
     Ok(())

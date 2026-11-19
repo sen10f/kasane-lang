@@ -26,7 +26,7 @@ fn notes.main() -> Result<(), notes.error.Error> uses [alloc, env, io.console, i
         return Ok(())
     }
     let args = notes.args()?
-    let sub = match args.get(0) {
+    let sub = match args.get(0usize) {
         Some(s) => s.as_str()
         None => return Err(error.Error.Usage)
     }

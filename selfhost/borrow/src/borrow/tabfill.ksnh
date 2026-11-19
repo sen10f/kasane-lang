@@ -37,10 +37,8 @@ fn borrow.tabfill.types(tab: &mut borrow.base.Tab, p: &parse.cur.P, src: &[u8]) 
             let mut cls = borrow.base.MOVE
             if lin {
                 cls = borrow.base.LIN
-            } else {
-                if borrow.tabfill.derives(p, src, n.e, "Copy") {
-                    cls = borrow.base.COPY
-                }
+            } else if borrow.tabfill.derives(p, src, n.e, "Copy") {
+                cls = borrow.base.COPY
             }
             borrow.base.put_ty(tab, name, cls)?
         }

@@ -2957,6 +2957,10 @@ impl<'a> Checker<'a> {
                                     self.diag("E2011", format!("missing field {} in {} literal", k, fq), di, nline(e));
                                 }
                             }
+                            // D16: 欄の順は宣言順 (書いた順に初期化式を評価するので、見た目と評価の順を一致させる)。
+                            if given.len() == known.len() && given.iter().all(|g| known.contains(g)) && given != known {
+                                self.diag("E2048", format!("the fields of the `{}` literal must be written in declaration order: {}", fq, known.join(", ")), di, nline(e));
+                            }
                         }
                     }
                 }

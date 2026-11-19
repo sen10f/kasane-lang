@@ -35,7 +35,7 @@ end notes.note.Note.new.test_new
 test notes.note.Note.with_updated.test_with_updated
     let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut n = notes.note.Note.new(2i64, "タイトル", "本文", tags, "2026-11-15T00:00:00Z")?
-    notes.note.Note.with_updated(&mut n, "2026-11-16T00:00:00Z")?
+    n.with_updated("2026-11-16T00:00:00Z")?
     core.check.eq(n.updated_at.as_str(), "2026-11-16T00:00:00Z")
     core.check.eq(n.created_at.as_str(), "2026-11-15T00:00:00Z")
 end notes.note.Note.with_updated.test_with_updated

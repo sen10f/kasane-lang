@@ -1095,7 +1095,8 @@ fn match_arm_brace_on_next_line_is_explained_and_fixed() {
     let o = run(&["fix"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
     let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
-    assert!(fixed.contains("        Some(v) => {\n            v\n        }\n"), "{}", fixed);
+    // 腕の 1 つの式だけの `{ }` は裸の式に整形される (段 3 の D15)。
+    assert!(fixed.contains("        Some(v) => v\n"), "{}", fixed);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
 }
 
@@ -1164,13 +1165,13 @@ fn junk_header_lines_are_never_silently_accepted() {
 
 #[test]
 fn method_missing_on_a_known_receiver_type_is_reported() {
-    // `is_some` は Option のメソッドで、Vec にはない。
+    // `is_ok` は Result のメソッドで、Vec にはない。
     let (got, out) = check_codes(
         "ty_missing",
-        &["let v = alloc.vec.Vec.new(std.alloc.SYSTEM)", "core.mem.drop(v.is_some())"],
+        &["let v = alloc.vec.Vec.new(std.alloc.SYSTEM)", "core.mem.drop(v.is_ok())"],
     );
     assert!(got.iter().any(|c| c == "E1108"), "{}", out);
-    assert!(out.contains("has no method `is_some`"), "{}", out);
+    assert!(out.contains("has no method `is_ok`"), "{}", out);
 }
 
 #[test]
@@ -3422,7 +3423,7 @@ fn with_is_a_reserved_word_but_close_is_not() {
 
 #[test]
 fn with_header_may_wrap_at_call_arguments_and_the_format_is_stable() {
-    let src = "type t.R\n    id: u32\nend t.R\n\nfn t.R.open(a: u32, b: u32) -> Result<t.R, u8> uses [] panics never\n    Ok(t.R { id: a.wrapping_add(b) })\nend t.R.open\n\nfn t.R.shut(self: t.R, n: u32) -> () uses [] panics never\n    core.mem.drop(self.id.wrapping_add(n))\nend t.R.shut\n\nfn t.main() -> Result<(), u8> uses [] panics never\n    let v = with r = t.R.open(\n        1u32,\n        2u32,\n    )? close t.R.shut(\n        r,\n        3u32,\n    ) {\n        4u32\n    }\n    core.mem.drop(v)\n    Ok(())\nend t.main\n";
+    let src = "type t.R\n    id: u32\nend t.R\n\nfn t.R.open(a: u32, b: u32) -> Result<t.R, u8> uses [] panics never\n    Ok(t.R { id: a.wrapping_add(b) })\nend t.R.open\n\nfn t.R.shut(r: t.R, n: u32) -> () uses [] panics never\n    core.mem.drop(r.id.wrapping_add(n))\nend t.R.shut\n\nfn t.main() -> Result<(), u8> uses [] panics never\n    let v = with r = t.R.open(\n        1u32,\n        2u32,\n    )? close t.R.shut(\n        r,\n        3u32,\n    ) {\n        4u32\n    }\n    core.mem.drop(v)\n    Ok(())\nend t.main\n";
     let t = Tmp::new("with_wrap", src);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));

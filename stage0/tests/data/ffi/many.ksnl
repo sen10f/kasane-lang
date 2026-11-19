@@ -43,7 +43,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let sb = unsafe "ffi" "memory struct after many ints" {
         t.spill_big(1i64, 2i64, 3i64, 4i64, 5i64, 6i64, t.Big { a: 7i64, b: 8i64, c: 9i64 }, 10i64)
     }
-    core.check.eq(sb, 11008i64)
+    core.check.eq(sb, 11_008i64)
     let mut acc = t.Acc { total: 0i64, count: 0i32 }
     let user = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.from_mut(&mut acc)

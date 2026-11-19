@@ -7,22 +7,18 @@ fn std.time.SystemTime.unix_nanos(self: &std.time.SystemTime) -> i64 uses [] pan
 end std.time.SystemTime.unix_nanos
 
 fn std.time.SystemTime.unix_seconds(self: &std.time.SystemTime) -> i64 uses [] panics never pub
-    std.time.div_floor(self.nanos, 1000000000i64)
+    std.time.div_floor(self.nanos, 1_000_000_000i64)
 end std.time.SystemTime.unix_seconds
 
 fn std.time.div_floor(a: i64, b: i64) -> i64 uses [] panics never pub
     match a.checked_div(b) {
-        Some(q) => {
-            match a.checked_rem(b) {
-                Some(r) => {
-                    if r != 0i64 && ((r < 0i64) != (b < 0i64)) {
-                        q.wrapping_sub(1i64)
-                    } else {
-                        q
-                    }
-                }
-                None => 0i64
+        Some(q) => match a.checked_rem(b) {
+            Some(r) => if r != 0i64 && (r < 0i64) != (b < 0i64) {
+                q.wrapping_sub(1i64)
+            } else {
+                q
             }
+            None => 0i64
         }
         None => 0i64
     }

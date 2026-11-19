@@ -43,13 +43,11 @@ fn bench.rle(text: &str) -> alloc.vec.Vec<bench.Run, std.alloc.System> uses [all
                 let mut j = i.wrapping_add(1usize)
                 while j < n {
                     match bytes.get(j) {
-                        Some(d) => {
-                            if *d == *c {
-                                count = count.wrapping_add(1u32)
-                                j = j.wrapping_add(1usize)
-                            } else {
-                                break
-                            }
+                        Some(d) => if *d == *c {
+                            count = count.wrapping_add(1u32)
+                            j = j.wrapping_add(1usize)
+                        } else {
+                            break
                         }
                         None => break
                     }

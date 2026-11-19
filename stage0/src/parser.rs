@@ -120,6 +120,79 @@ pub struct Parser {
     pub(crate) i: usize,
     /// `if` / `while` / `match` の頭の式の中の `is` パターン: `{` は本体の始まりで、構造体パターンではない。
     pat_ns: bool,
+    /// 直前に解析した式の「最上位の形」の強さ (0 = 式の位置にしか置けない `return` や `if` など、1 = `||`、2 = `&&`、3 = 比較・`is`、
+    /// 4..8 = `|` `^` `&` `+ -` `* / %`、9 = 前置、10 = 後置・一次式)。冗長な括弧の判定 (D10) 用。
+    lvl: u8,
+    /// 括弧の群 (開きのトークン位置 → (閉じの位置, 中の式の強さ, 中の最上位に `{` があるか))。タプル・ユニットは含めない。
+    pmap: std::collections::HashMap<usize, PInfo>,
+    /// 冗長と判った括弧の群 (開きの位置, 閉じの位置)。
+    pub(crate) red: Vec<(usize, usize)>,
+    /// 書き換え (D8・D11・D15)。
+    pub(crate) rw: Vec<Rw>,
+    last_unary: Option<UnInfo>,
+    last_cmp: Option<(usize, usize, usize)>,
+    last_mcall: Option<McInfo>,
+    last_block: Option<BlInfo>,
+    /// 解析している関数の名前 (自分自身を呼ぶ形への書き換えをしないため)。
+    fn_name: String,
+}
+
+/// 書き換えの部品。`Span` と `Dedent` は元のトークン列の区間 `[a, b)` の字面を写す (`Dedent` は 2 行目以降を 4 桁浅くする)。
+#[derive(Clone, Debug)]
+pub enum Part {
+    Lit(String),
+    Span(usize, usize),
+    Dedent(usize, usize),
+}
+
+/// トークン `[a, b)` の字面を `parts` に置き換える。`del_line` なら、その文の行を丸ごと消す。
+#[derive(Clone, Debug)]
+pub struct Rw {
+    pub a: usize,
+    pub b: usize,
+    pub parts: Vec<Part>,
+    pub del_line: bool,
+    /// 範囲の中のコメント行の移し先: 偽なら文の行の直前、真なら書き換えた文の 1 行目 (`else if ..`) の直後 (本体の字下げ)。
+    pub inside: bool,
+}
+
+#[derive(Clone)]
+struct UnInfo {
+    start: usize,
+    end: usize,
+    op: String,
+    operand_start: usize,
+    operand_lvl: u8,
+}
+
+#[derive(Clone)]
+struct McInfo {
+    start: usize,
+    end: usize,
+    dot: usize,
+    name: String,
+    open: usize,
+    close: usize,
+}
+
+#[derive(Clone)]
+struct BlInfo {
+    open: usize,
+    close: usize,
+    nstmts: usize,
+    expr_stmt: bool,
+    if_stmt: bool,
+    unit_stmt: bool,
+}
+
+/// 括弧の群の情報。
+#[derive(Clone)]
+struct PInfo {
+    close: usize,
+    lvl: u8,
+    brace: bool,
+    un: Option<UnInfo>,
+    cmp: Option<usize>,
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -209,7 +282,7 @@ pub(crate) fn split_number(text: &str, is_float: bool) -> R<(String, Option<Stri
 
 impl Parser {
     pub fn new(t: Vec<Tok>) -> Parser {
-        Parser { t, i: 0, pat_ns: false }
+        Parser { t, i: 0, pat_ns: false, lvl: 10, pmap: Default::default(), red: vec![], rw: vec![], last_unary: None, last_cmp: None, last_mcall: None, last_block: None, fn_name: String::new() }
     }
 
     pub(crate) fn cur(&self) -> &Tok {
@@ -559,16 +632,42 @@ impl Parser {
     }
 
     // ---- 式
+    /// `s` から始まる直前の式が、括弧 1 つだけで、その強さが `need` 以上なら冗長な括弧として記録する。
+    fn opnd(&mut self, s: usize, need: u8, ns: bool, prefix: &str) {
+        let Some(&PInfo { close, lvl: lv, brace, .. }) = self.pmap.get(&s) else { return };
+        if close + 1 != self.i || lv < need || (ns && brace) {
+            return;
+        }
+        let inner = &self.t[s + 1];
+        // `-(1i32)` を `-1i32` (負の数のリテラル) にしない・`&(&x)` を `&&x` (別のトークン) にしない。
+        if prefix == "-" && matches!(inner.kind, "int" | "float") {
+            return;
+        }
+        if prefix == "&" && inner.text.starts_with('&') {
+            return;
+        }
+        self.red.push((s, close));
+    }
+
     pub fn expr(&mut self, ns: bool) -> R<V> {
+        let s = self.i;
+        let r = self.expr_inner(ns)?;
+        self.opnd(s, 0, ns, "");
+        Ok(r)
+    }
+
+    fn expr_inner(&mut self, ns: bool) -> R<V> {
         let c = self.cur().clone();
         if c.kind == "kw" {
             match c.text.as_str() {
                 "break" => {
                     self.i += 1;
+                    self.lvl = 0;
                     return Ok(ndl(c.pos(), "Break", vec![]));
                 }
                 "continue" => {
                     self.i += 1;
+                    self.lvl = 0;
                     return Ok(ndl(c.pos(), "Continue", vec![]));
                 }
                 "return" => {
@@ -577,6 +676,7 @@ impl Parser {
                     if self.cur().kind != "nl" && self.cur().kind != "eof" && !self.is_op("}") {
                         e = Some(self.expr(ns)?);
                     }
+                    self.lvl = 0;
                     return Ok(ndl(c.pos(), "Return", vec![opt(e)]));
                 }
                 _ => {}
@@ -586,31 +686,44 @@ impl Parser {
     }
 
     pub(crate) fn or_expr(&mut self, ns: bool) -> R<V> {
+        let s0 = self.i;
         let mut l = self.and_expr(ns)?;
         while self.is_op("||") {
             let ln = self.cur().pos();
+            self.opnd(s0, 1, ns, "");
             self.i += 1;
+            let s1 = self.i;
             let r = self.and_expr(ns)?;
+            self.opnd(s1, 2, ns, "");
             l = ndl(anchor(ln, &l), "Bin", vec![s("||"), l, r]);
+            self.lvl = 1;
         }
         Ok(l)
     }
 
     pub(crate) fn and_expr(&mut self, ns: bool) -> R<V> {
+        let s0 = self.i;
         let mut l = self.cmp_expr(ns)?;
         while self.is_op("&&") {
             let ln = self.cur().pos();
+            self.opnd(s0, 2, ns, "");
             self.i += 1;
+            let s1 = self.i;
             let r = self.cmp_expr(ns)?;
+            self.opnd(s1, 3, ns, "");
             l = ndl(anchor(ln, &l), "Bin", vec![s("&&"), l, r]);
+            self.lvl = 2;
         }
         Ok(l)
     }
 
     pub(crate) fn cmp_expr(&mut self, ns: bool) -> R<V> {
+        let s0 = self.i;
         let l = self.bin_level(0, ns)?;
         let c = self.cur().clone();
+        let left_mc = self.last_mcall.clone().filter(|m| m.start == s0 && m.end == self.i);
         if self.is_kw("is") {
+            self.opnd(s0, 4, ns, "");
             // `式 is パターン` = `match 式 { パターン => true, <他> => false }` (名前を束縛しないパターンのみ)。
             self.i += 1;
             let saved = std::mem::replace(&mut self.pat_ns, ns);
@@ -625,14 +738,61 @@ impl Parser {
             let t = ndl(c.pos(), "Lit", vec![s("bool"), V::B(true)]);
             let f = ndl(c.pos(), "Lit", vec![s("bool"), V::B(false)]);
             let arms = vec![V::L(vec![pat, t]), V::L(vec![ndl(c.pos(), "PWild", vec![V::B(true)]), f])];
+            self.lvl = 3;
             return Ok(ndl(anchor(c.pos(), &l), "Match", vec![l, V::L(arms)]));
         }
         if c.kind == "op" && matches!(c.text.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=") {
+            self.opnd(s0, 4, ns, "");
+            let op_idx = self.i;
             self.i += 1;
+            let s1 = self.i;
             let r = self.bin_level(0, ns)?;
+            self.opnd(s1, 4, ns, "");
+            self.cmp_rewrites(s0, op_idx, s1, left_mc);
+            self.last_cmp = Some((s0, self.i, op_idx));
+            self.lvl = 3;
             return Ok(ndl(anchor(c.pos(), &l), "Bin", vec![V::S(c.text), l, r]));
         }
         Ok(l)
+    }
+
+    /// 比較の書き換え: `a == None` → `a is None`、`a == true` → `a`、`x.len() == 0` → `x.is_empty()` (D11)。
+    fn cmp_rewrites(&mut self, s0: usize, op: usize, s1: usize, left_mc: Option<McInfo>) {
+        if self.i != s1 + 1 {
+            return;
+        }
+        let ot = self.t[op].text.clone();
+        let r = self.t[s1].clone();
+        let end = self.i;
+        if matches!(ot.as_str(), "==" | "!=") {
+            if r.kind == "upper" && r.text == "None" {
+                let tail = if ot == "==" { " is None" } else { " is Some(_)" };
+                self.rw.push(Rw { a: s0, b: end, parts: vec![Part::Span(s0, op), Part::Lit(tail.into())], del_line: false, inside: false });
+                return;
+            }
+            if r.kind == "kw" && matches!(r.text.as_str(), "true" | "false") {
+                let keep = (ot == "==") == (r.text == "true");
+                let parts = if keep { vec![Part::Span(s0, op)] } else { vec![Part::Lit("!(".into()), Part::Span(s0, op), Part::Lit(")".into())] };
+                self.rw.push(Rw { a: s0, b: end, parts, del_line: false, inside: false });
+                return;
+            }
+        }
+        if let Some(m) = left_mc {
+            let zero = r.kind == "int" && {
+                let t = r.text.trim_end_matches(|c: char| c.is_ascii_alphabetic() && c != 'x');
+                let t = ["usize", "u128", "u64", "u32", "u16", "u8"].iter().find_map(|sfx| r.text.strip_suffix(sfx)).unwrap_or(t);
+                t == "0"
+            };
+            if zero && m.name == "len" && !self.fn_name.ends_with(".is_empty") && m.close == m.open + 1 && matches!(ot.as_str(), "==" | "!=" | ">") {
+                let mut parts = vec![];
+                if ot != "==" {
+                    parts.push(Part::Lit("!".into()));
+                }
+                parts.push(Part::Span(s0, m.dot));
+                parts.push(Part::Lit(".is_empty()".into()));
+                self.rw.push(Rw { a: s0, b: end, parts, del_line: false, inside: false });
+            }
+        }
     }
 
     pub(crate) fn bin_level(&mut self, lv: usize, ns: bool) -> R<V> {
@@ -640,13 +800,18 @@ impl Parser {
         if lv == LEVELS.len() {
             return self.unary(ns);
         }
+        let s0 = self.i;
         let mut l = self.bin_level(lv + 1, ns)?;
         while self.cur().kind == "op" && LEVELS[lv].contains(&self.cur().text.as_str()) {
             let op = self.cur().text.clone();
             let ln = self.cur().pos();
+            self.opnd(s0, 4 + lv as u8, ns, "");
             self.i += 1;
+            let s1 = self.i;
             let r = self.bin_level(lv + 1, ns)?;
+            self.opnd(s1, 5 + lv as u8, ns, "");
             l = ndl(anchor(ln, &l), "Bin", vec![V::S(op), l, r]);
+            self.lvl = 4 + lv as u8;
         }
         Ok(l)
     }
@@ -655,21 +820,106 @@ impl Parser {
         let c = self.cur().clone();
         if c.kind == "op" {
             if matches!(c.text.as_str(), "-" | "!" | "*") {
+                let s_op = self.i;
                 self.i += 1;
+                let s1 = self.i;
                 let e = self.unary(ns)?;
+                self.opnd(s1, 9, ns, &c.text);
+                let ol = self.lvl;
+                if c.text == "!" {
+                    self.not_rewrites(s_op, s1);
+                }
+                self.lvl = 9;
+                self.last_unary = Some(UnInfo { start: s_op, end: self.i, op: c.text.clone(), operand_start: s1, operand_lvl: ol });
                 return Ok(ndl(c.pos(), "Unary", vec![V::S(c.text), e]));
             }
             if c.text == "&" {
                 self.i += 1;
                 if self.accept_kw("mut") {
+                    let s1 = self.i;
                     let e = self.unary(ns)?;
+                    self.opnd(s1, 9, ns, "&mut");
+                    let ol = self.lvl;
+                    self.lvl = 9;
+                    self.last_unary = Some(UnInfo { start: s1 - 2, end: self.i, op: "&mut".into(), operand_start: s1, operand_lvl: ol });
                     return Ok(ndl(c.pos(), "Unary", vec![s("&mut"), e]));
                 }
+                let s_op = self.i - 1;
+                let s1 = self.i;
                 let e = self.unary(ns)?;
+                self.opnd(s1, 9, ns, "&");
+                let ol = self.lvl;
+                self.lvl = 9;
+                self.last_unary = Some(UnInfo { start: s_op, end: self.i, op: "&".into(), operand_start: s1, operand_lvl: ol });
                 return Ok(ndl(c.pos(), "Unary", vec![s("&"), e]));
             }
         }
         self.postfix(ns)
+    }
+
+    /// `!!x` / `!(!x)` → `x`、`!(a == b)` → `a != b` (D11)。`s_op` は外側の `!`、`s1` はその operand の始まり。
+    fn not_rewrites(&mut self, s_op: usize, s1: usize) {
+        let end = self.i;
+        let direct = self.last_unary.clone().filter(|u| u.start == s1 && u.end == end && u.op == "!");
+        let pinfo = self.pmap.get(&s1).filter(|p| p.close + 1 == end).cloned();
+        let paren_un = pinfo.as_ref().and_then(|p| p.un.clone()).filter(|u| u.op == "!");
+        if let Some(u) = direct.or(paren_un) {
+            self.rw.push(Rw { a: s_op, b: end, parts: vec![Part::Span(u.operand_start, u.end)], del_line: false, inside: false });
+            return;
+        }
+        if let Some(p) = pinfo {
+            if let Some(op) = p.cmp {
+                let flip = match self.t[op].text.as_str() {
+                    "==" => " != ",
+                    "!=" => " == ",
+                    _ => return,
+                };
+                self.rw.push(Rw {
+                    a: s_op,
+                    b: end,
+                    parts: vec![Part::Lit("(".into()), Part::Span(s1 + 1, op), Part::Lit(flip.into()), Part::Span(op + 1, p.close), Part::Lit(")".into())],
+                    del_line: false,
+                    inside: false,
+                });
+            }
+        }
+    }
+
+    /// メソッド呼び出しの書き換え: `a.is_some()` → `a is Some(_)`、`a.eq(&b)` → `a == b`、`(*r).m()` → `r.m()` (D8・D11)。
+    fn note_mcall(&mut self, s0: usize, dot: usize, name: &str, open: usize, close: usize, has_targs: bool) {
+        let info = McInfo { start: s0, end: close + 1, dot, name: name.to_string(), open, close };
+        let empty = close == open + 1;
+        if !has_targs {
+            if empty {
+                // `is_some()` / `is_none()` / `is_ok()` / `is_err()` は、`is` に置き換えない: `is` は値を消費するので、
+                // 線形の値 (`Option<ハンドル>`) の判定ができなくなる。型が要るので、fmt では決められない。
+                let pat: Option<&str> = None;
+                if let Some(p) = pat.filter(|_| !self.fn_name.ends_with(&format!(".{}", name))) {
+                    self.rw.push(Rw { a: s0, b: close + 1, parts: vec![Part::Lit("(".into()), Part::Span(s0, dot), Part::Lit(p.into())], del_line: false, inside: false });
+                }
+            } else if matches!(name, "eq" | "ne") && !self.fn_name.ends_with(&format!(".{}", name)) {
+                if let Some(u) = self.last_unary.clone().filter(|u| u.start == open + 1 && u.end == close && u.op == "&") {
+                    let op = if name == "eq" { " == " } else { " != " };
+                    self.rw.push(Rw {
+                        a: s0,
+                        b: close + 1,
+                        parts: vec![Part::Lit("(".into()), Part::Span(s0, dot), Part::Lit(op.into()), Part::Span(u.operand_start, close), Part::Lit(")".into())],
+                        del_line: false,
+                    inside: false,
+                    });
+                }
+            }
+        }
+        // 受け手の `(*r)` / `(&p)` / `(&mut p)` (自動参照・参照外しがあるので括弧も `*` `&` も要らない)。
+        if let Some(p) = self.pmap.get(&s0).filter(|p| p.close + 1 == dot).cloned() {
+            // `(*r)` は常に、`(&p)` `(&mut p)` は借りる相手が単純な場所 (名前と `.` だけ) のときだけ (一時値の借用は意味が変わる)。
+            let place = |u: &UnInfo, t: &[Tok], close: usize| t[u.operand_start..close].iter().all(|k| matches!(k.kind, "ident" | "upper") || k.text == "." || k.text == "self");
+            let ok = p.un.clone().filter(|u| u.operand_lvl >= 10 && (u.op == "*" || (matches!(u.op.as_str(), "&" | "&mut") && place(u, &self.t, p.close))));
+            if let Some(u) = ok {
+                self.rw.push(Rw { a: s0, b: dot, parts: vec![Part::Span(u.operand_start, p.close)], del_line: false, inside: false });
+            }
+        }
+        self.last_mcall = Some(info);
     }
 
     pub(crate) fn call_args(&mut self) -> R<V> {
@@ -691,14 +941,24 @@ impl Parser {
     }
 
     pub(crate) fn postfix(&mut self, ns: bool) -> R<V> {
+        let s0 = self.i;
         let mut e = self.primary(ns)?;
+        let mut first = true;
         loop {
             let c = self.cur().clone();
             if c.kind != "op" {
                 break;
             }
+            if first && matches!(c.text.as_str(), "." | "[" | "?") {
+                self.opnd(s0, 10, ns, "");
+            }
+            if matches!(c.text.as_str(), "." | "(" | "[" | "?") {
+                first = false;
+                self.lvl = 10;
+            }
             match c.text.as_str() {
                 "." => {
+                    let dot = self.i;
                     self.i += 1;
                     let name_pos = self.cur().pos();
                     let nm = self.name_tok()?;
@@ -708,14 +968,26 @@ impl Parser {
                         targs = V::L(self.targs()?);
                     }
                     if self.is_op("(") {
+                        let open = self.i;
                         let args = self.call_args()?;
+                        self.note_mcall(s0, dot, &nm, open, self.i - 1, !matches!(targs, V::Nil));
                         e = ndl(anchor(c.pos(), &e), "MCall", vec![e, V::S(nm), args, targs, V::N(name_pos.to_string())]);
                     } else {
                         e = ndl(anchor(c.pos(), &e), "Field", vec![e, V::S(nm), V::N(name_pos.to_string())]);
                     }
                 }
                 "(" => {
+                    let open = self.i;
                     let args = self.call_args()?;
+                    // `a.m(..)` の `a.m` は 1 つの経路 (`Path`) として解析される。最後の成分をメソッド名として書き換えの候補にする。
+                    if let V::Node("Path", pf, _, _) = &e {
+                        if let Some(V::L(segs)) = pf.first() {
+                            if segs.len() >= 2 && matches!(pf.get(1), Some(V::Nil) | None) && open >= 2 && self.t[open - 2].kind == "op" && self.t[open - 2].text == "." {
+                                let nm = self.t[open - 1].text.clone();
+                                self.note_mcall(s0, open - 2, &nm, open, self.i - 1, false);
+                            }
+                        }
+                    }
                     e = ndl(anchor(c.pos(), &e), "Call", vec![e, args, V::Nil]);
                 }
                 "[" => {
@@ -769,6 +1041,19 @@ impl Parser {
 
     pub(crate) fn primary(&mut self, ns: bool) -> R<V> {
         let c = self.cur().clone();
+        let r = self.primary_inner(ns)?;
+        let block = (c.kind == "kw" && matches!(c.text.as_str(), "if" | "match" | "loop" | "while" | "for" | "unsafe" | "with" | "fn"))
+            || (c.kind == "op" && c.text == "{");
+        if block {
+            self.lvl = 0;
+        } else {
+            self.lvl = 10;
+        }
+        Ok(r)
+    }
+
+    fn primary_inner(&mut self, ns: bool) -> R<V> {
+        let c = self.cur().clone();
         match c.kind {
             "int" | "float" | "str" | "char" | "bstr" | "byte" => return self.lit_tok(&c),
             "kw" => match c.text.as_str() {
@@ -814,12 +1099,32 @@ impl Parser {
             },
             "op" => match c.text.as_str() {
                 "(" => {
+                    let open = self.i;
                     self.i += 1;
                     if self.accept_op(")") {
+                        self.lvl = 10;
                         return Ok(ndl(c.pos(), "Lit", vec![s("unit")]));
                     }
                     let first = self.expr(false)?;
+                    let ilvl = self.lvl;
                     if self.accept_op(")") {
+                        let close = self.i - 1;
+                        let mut depth = 0i32;
+                        let mut brace = false;
+                        for t in &self.t[open + 1..close] {
+                            if t.kind == "op" {
+                                match t.text.as_str() {
+                                    "(" | "[" => depth += 1,
+                                    ")" | "]" => depth -= 1,
+                                    "{" if depth == 0 => brace = true,
+                                    _ => {}
+                                }
+                            }
+                        }
+                        let un = self.last_unary.clone().filter(|u| u.start == open + 1 && u.end == close);
+                        let cmp = self.last_cmp.filter(|c| c.0 == open + 1 && c.1 == close).map(|c| c.2);
+                        self.pmap.insert(open, PInfo { close, lvl: ilvl, brace, un, cmp });
+                        self.lvl = 10;
                         return Ok(first);
                     }
                     let mut items = vec![first];
@@ -978,7 +1283,7 @@ impl Parser {
             let scrut = self.expr(true)?;
             let then = self.block()?;
             let els = if self.accept_kw("else") {
-                if self.is_kw("if") { self.if_expr()? } else { self.block()? }
+                if self.is_kw("if") { self.if_expr()? } else { self.else_block()? }
             } else {
                 ndl(ln, "Block", vec![V::L(vec![])])
             };
@@ -989,9 +1294,20 @@ impl Parser {
         let then = self.block()?;
         let mut els = V::Nil;
         if self.accept_kw("else") {
-            els = if self.is_kw("if") { self.if_expr()? } else { self.block()? };
+            els = if self.is_kw("if") { self.if_expr()? } else { self.else_block()? };
         }
         Ok(ndl(ln, "If", vec![cond, then, els]))
+    }
+
+    /// `else` の後のブロック。`else { if .. }` は `else if ..` にする (S15)。
+    fn else_block(&mut self) -> R<V> {
+        let b = self.block()?;
+        if let Some(bi) = self.last_block.clone() {
+            if bi.nstmts == 1 && bi.if_stmt {
+                self.inline_block(&bi, true);
+            }
+        }
+        Ok(b)
     }
 
     pub(crate) fn match_expr(&mut self) -> R<V> {
@@ -1004,7 +1320,17 @@ impl Parser {
         while !self.is_op("}") {
             let pat = self.pattern()?;
             self.expect_op("=>")?;
+            let sb = self.i;
             let body = self.expr(false)?;
+            if let Some(b) = self.last_block.clone() {
+                if b.open == sb && b.close + 1 == self.i && b.nstmts == 1 && b.expr_stmt && !b.unit_stmt {
+                    self.inline_block(&b, false);
+                }
+                if b.open == sb && b.close + 1 == self.i && b.unit_stmt {
+                    // `=> {` の中の `()` だけ: 腕の本体を `()` にする。
+                    self.rw.push(Rw { a: b.open, b: b.close + 1, parts: vec![Part::Lit("()".into())], del_line: false, inside: false });
+                }
+            }
             arms.push(V::L(vec![pat, body]));
             self.expect_nl()?;
         }
@@ -1012,18 +1338,55 @@ impl Parser {
         Ok(ndl(ln, "Match", vec![scrut, V::L(arms)]))
     }
 
+    /// 式文の `()` (D15): 文が 2 つ以上あるブロックでは、その行を消す。
+    fn unit_stmts(&mut self, units: &[(usize, usize)], n: usize) {
+        if n < 2 {
+            return;
+        }
+        for &(k, si) in units {
+            // 最後の `()` は、前の文の値を捨てる (E2042) 役を担うので消さない (消すとブロックの値が変わる)。
+            if k + 1 == n {
+                continue;
+            }
+            self.rw.push(Rw { a: si, b: si + 2, parts: vec![], del_line: true, inside: false });
+        }
+    }
+
+    /// 1 つの文だけのブロック `{ 文 }` (`{` の後と `}` の前で改行) の `{` から `}` までを、文だけに置き換える (D15 の S21・D11 の S15)。
+    fn inline_block(&mut self, b: &BlInfo, inside: bool) {
+        let (o, c) = (b.open, b.close);
+        if c < o + 4 || self.t[o + 1].kind != "nl" || self.t[c - 1].kind != "nl" {
+            return;
+        }
+        self.rw.push(Rw { a: o, b: c + 1, parts: vec![Part::Dedent(o + 2, c - 1)], del_line: false, inside });
+    }
+
     pub fn block(&mut self) -> R<V> {
         let ln = self.cur().pos();
+        let open = self.i;
         self.expect_op("{")?;
         self.skip_nl();
         let mut stmts = Vec::new();
+        let mut units: Vec<(usize, usize)> = vec![];
         while !self.is_op("}") {
-            stmts.push(self.stmt()?);
+            let si = self.i;
+            let st = self.stmt()?;
+            if self.i == si + 2 && matches!(&st, V::Node("ExprStmt", c, _, _) if matches!(c.first(), Some(V::Node("Lit", l, _, _)) if matches!(l.first(), Some(V::S(k)) if k == "unit"))) {
+                units.push((stmts.len(), si));
+            }
+            stmts.push(st);
             if !self.is_op("}") {
                 self.expect_nl()?;
             }
         }
+        let close = self.i;
         self.expect_op("}")?;
+        self.unit_stmts(&units, stmts.len());
+        let first = stmts.first();
+        let expr_stmt = matches!(first, Some(V::Node("ExprStmt", _, _, _)));
+        let if_stmt = matches!(first, Some(V::Node("ExprStmt", c, _, _)) if matches!(c.first(), Some(V::Node("If" | "Match", _, _, _))))
+            && self.t.get(open + 2).map_or(false, |t| t.kind == "kw" && t.text == "if");
+        self.last_block = Some(BlInfo { open, close, nstmts: stmts.len(), expr_stmt, if_stmt, unit_stmt: units.len() == 1 && stmts.len() == 1 });
         Ok(ndl(ln, "Block", vec![V::L(stmts)]))
     }
 
@@ -1151,4 +1514,62 @@ pub fn parse_body(mut toks: Vec<Tok>, base: usize) -> R<V> {
     let mut body = nd("Block", vec![V::L(stmts)]);
     number_nodes(&mut body, &mut 0);
     Ok(body)
+}
+
+/// 本体のトークン列 (`nl` を含む。`eof` は無くてよい) の中の、冗長な括弧の群 `(開き, 閉じ)` (D10)。解析に失敗したら空。
+pub fn redundant_parens(mut toks: Vec<Tok>) -> Vec<(Tok, Tok)> {
+    let (line, col) = toks.last().map_or((1, 1), |t| (t.line, t.col + 1));
+    toks.push(Tok { kind: "eof", text: String::new(), line, col });
+    let mut p = Parser::new(toks);
+    p.skip_nl();
+    while !p.at_eof() {
+        if p.stmt().is_err() || p.expect_nl().is_err() {
+            return vec![];
+        }
+    }
+    let mut r = p.red.clone();
+    r.sort();
+    r.dedup();
+    r.into_iter().map(|(a, b)| (p.t[a].clone(), p.t[b].clone())).collect()
+}
+
+/// 本体のトークン列 (`nl` を含む) の書き換え (D8・D10・D11・D15)。返すのはトークン列と、トークン区間の書き換え。
+/// 冗長な括弧は、`(` と `)` それぞれを「何も無い部品」に置き換える書き換えとして含める。解析に失敗したら空。
+pub fn rewrites(mut toks: Vec<Tok>, fn_name: &str) -> (Vec<Tok>, Vec<Rw>) {
+    let (line, col) = toks.last().map_or((1, 1), |t| (t.line, t.col + 1));
+    toks.push(Tok { kind: "eof", text: String::new(), line, col });
+    let mut p = Parser::new(toks);
+    p.fn_name = fn_name.to_string();
+    p.skip_nl();
+    let mut units: Vec<(usize, usize)> = vec![];
+    let mut n = 0;
+    while !p.at_eof() {
+        let si = p.i;
+        let st = match p.stmt() {
+            Ok(s) => s,
+            Err(_) => return (vec![], vec![]),
+        };
+        if p.i == si + 2 && matches!(&st, V::Node("ExprStmt", c, _, _) if matches!(c.first(), Some(V::Node("Lit", l, _, _)) if matches!(l.first(), Some(V::S(k)) if k == "unit"))) {
+            units.push((n, si));
+        }
+        n += 1;
+        if p.expect_nl().is_err() {
+            return (vec![], vec![]);
+        }
+    }
+    p.unit_stmts(&units, n);
+    for k in 0..p.t.len() {
+        if p.t[k].kind == "ident" && p.t[k].text.starts_with("sort_unstable") {
+            let new = p.t[k].text.replacen("sort_unstable", "sort", 1);
+            p.rw.push(Rw { a: k, b: k + 1, parts: vec![Part::Lit(new)], del_line: false, inside: false });
+        }
+    }
+    let mut red = p.red.clone();
+    red.sort();
+    red.dedup();
+    for (a, b) in red {
+        p.rw.push(Rw { a, b: a + 1, parts: vec![], del_line: false, inside: false });
+        p.rw.push(Rw { a: b, b: b + 1, parts: vec![], del_line: false, inside: false });
+    }
+    (p.t, p.rw)
 }

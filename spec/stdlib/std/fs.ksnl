@@ -79,14 +79,12 @@ fn std.fs.read_dir(path: &str) -> Result<alloc.vec.Vec<std.fs.DirEntry, std.allo
     let mut i = 0usize
     while i < total {
         let kind = match bytes.get(i) {
-            Some(b) => {
-                if *b == 0u8 {
-                    std.fs.FileKind.File
-                } else if *b == 1u8 {
-                    std.fs.FileKind.Dir
-                } else {
-                    std.fs.FileKind.Other
-                }
+            Some(b) => if *b == 0u8 {
+                std.fs.FileKind.File
+            } else if *b == 1u8 {
+                std.fs.FileKind.Dir
+            } else {
+                std.fs.FileKind.Other
             }
             None => std.fs.FileKind.Other
         }

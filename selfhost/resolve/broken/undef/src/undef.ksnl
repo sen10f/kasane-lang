@@ -4,7 +4,7 @@ type undef.T
     n: i32 pub
 end undef.T
 
-fn undef.h(x: Bar) -> i32 uses [] panics never
+fn undef.h(_x: Bar) -> i32 uses [] panics never
     0i32
 end undef.h
 
@@ -13,8 +13,8 @@ fn undef.k() -> i32 uses [] panics never
     let b = zz
     let c = other.nothere()
     let d = other.g()
-    let e = other.E.Nope
-    let f = Nope { a: 1i32 }
+    let _e = other.E.Nope
+    let _f = Nope { a: 1i32 }
     let g = other.f()
     let h = {
         let inner = 1i32
@@ -22,7 +22,7 @@ fn undef.k() -> i32 uses [] panics never
     }
     let i = inner
     let q: Foo = 1i32
-    let j = fn(x: i32) -> i32 capture [&zz] {
+    let _j = fn(x: i32) -> i32 capture [&zz] {
         x
     }
     let m = match other.E.A {
@@ -33,7 +33,7 @@ fn undef.k() -> i32 uses [] panics never
     a + b + c + d + g + h + i + m + q
 end undef.k
 
-fn undef.main() -> Result<(), std.io.Error> uses [io.console] panics never
+fn undef.main() -> Result<(), std.io.Error> uses [] panics never
     core.mem.drop(undef.k())
     Ok(())
 end undef.main

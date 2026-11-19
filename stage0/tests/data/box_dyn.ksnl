@@ -58,7 +58,7 @@ end t.Rect.tag
 
 fn t.Reg.add[S: t.Shape](self: &mut t.Reg, s: S) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let b = boxed.Box.new(std.alloc.SYSTEM, s)?
-    self.items.push(boxed.Box.into_dyn(b))?
+    self.items.push(b.into_dyn())?
     Ok(())
 end t.Reg.add
 
@@ -114,7 +114,7 @@ fn t.churn(count: u32) -> Result<i64, alloc.alloc.AllocError> uses [alloc] panic
     while i < count {
         let name = alloc.string.String.from_str(std.alloc.SYSTEM, "hello box")?
         let b = boxed.Box.new(std.alloc.SYSTEM, t.Named { name: name, n: 3i64 })?
-        let d: boxed.Box<dyn t.Shape + 'static, std.alloc.System> = boxed.Box.into_dyn(b)
+        let d: boxed.Box<dyn t.Shape + 'static, std.alloc.System> = b.into_dyn()
         acc = acc.wrapping_add(d.area())
         i = i.wrapping_add(1u32)
     }

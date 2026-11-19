@@ -225,7 +225,7 @@ fn emit.func.reach(g: &mut emit.G) -> () uses [alloc] panics may pub
         b = b.wrapping_add(1usize)
     }
     emit.func.push_usize(&mut g.flow.stk, 0usize)
-    while g.flow.stk.len() > 0usize {
+    while !g.flow.stk.is_empty() {
         let x = match g.flow.stk.pop() {
             Some(v) => v
             None => 0usize

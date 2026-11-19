@@ -33,12 +33,10 @@ fn lower.func.body_text(c: &lower.cx.Cx) -> Result<alloc.string.String<std.alloc
             }
             if mine {
                 match c.v.lines.as_slice().get(i) {
-                    Some(l) => {
-                        if !(l.as_str().ends_with(" = alloca") || l.as_str().ends_with(" = frame.bytes 24") || l.as_str().ends_with(" = frame.bytes 1")) {
-                            out.push_str("    ")?
-                            out.push_str(l.as_str())?
-                            out.push('\n')?
-                        }
+                    Some(l) => if !(l.as_str().ends_with(" = alloca") || l.as_str().ends_with(" = frame.bytes 24") || l.as_str().ends_with(" = frame.bytes 1")) {
+                        out.push_str("    ")?
+                        out.push_str(l.as_str())?
+                        out.push('\n')?
                     }
                     None => core.mem.drop(0u8)
                 }
@@ -165,7 +163,7 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     out.push_str("end ")?
     out.push_str(fqn)?
     out.push('\n')?
-    if c.s.unsup.len() > 0usize {
+    if !c.s.unsup.is_empty() {
         let why = lower.cx.cat2(c.s.unsup.as_str(), "")?
         return lower.func.record(c, "", why.as_str())
     }
@@ -174,7 +172,7 @@ end lower.func.lower_item
 
 // 結果を記録する (成功なら本文、失敗なら理由)。順番は呼び出しの順。
 fn lower.func.record(c: &mut lower.cx.Cx, text: &str, why: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
-    if why.len() > 0usize {
+    if !why.is_empty() {
         c.g.oks.push(false)?
         c.g.tx.push(lower.cx.cat2(why, "")?)?
         return Ok(())

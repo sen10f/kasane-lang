@@ -7,12 +7,10 @@ fn more_coll.count_bytes(text: &str) -> alloc.collections.HashMap<u8, u32, std.a
             Some(c) => {
                 match m.insert(*c, 1u32) {
                     Ok(None) => ()
-                    Ok(Some(old)) => {
-                        match m.insert(*c, old.wrapping_add(1u32)) {
-                            Ok(None) => ()
-                            Ok(Some(_old2)) => ()
-                            Err(_e) => ()
-                        }
+                    Ok(Some(old)) => match m.insert(*c, old.wrapping_add(1u32)) {
+                        Ok(None) => ()
+                        Ok(Some(_old2)) => ()
+                        Err(_e) => ()
                     }
                     Err(_e) => ()
                 }

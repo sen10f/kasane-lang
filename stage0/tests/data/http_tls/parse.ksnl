@@ -41,12 +41,12 @@ fn t.main() -> Result<(), std.http.Error> uses [alloc, io.console] panics never
     if let Some(r2) = d.next()? {
         t.show("pipe2", &r2)?
     }
-    if d.next()?.is_none() {
+    if d.next()? is None {
         std.io.print_line("pipe3 none")?
     }
     let mut split = std.http.Decoder.new(8192usize, 1024usize)
     split.feed(b"POST /c HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWi")?
-    if split.next()?.is_none() {
+    if split.next()? is None {
         std.io.print_line("split1 none")?
     }
     split.feed(b"ki\r\n0\r\n\r\n")?
@@ -65,9 +65,7 @@ fn t.one(tag: &str, bytes: &[u8], max_head: usize, max_body: usize) -> Result<()
             std.io.print_line(tag)?
             Ok(())
         }
-        Err(e) => {
-            t.err(tag, e)
-        }
+        Err(e) => t.err(tag, e)
     }
 end t.one
 

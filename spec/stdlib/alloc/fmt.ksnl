@@ -107,7 +107,7 @@ end alloc.fmt.write
 
 fn alloc.fmt.write_i64[A: alloc.alloc.Allocator](b: &mut alloc.string.String<A>, value: i64, spec: &alloc.fmt.Spec) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     if value < 0i64 {
-        let mut mag = 9223372036854775808u64
+        let mut mag = 9_223_372_036_854_775_808u64
         if value != core.num.i64.MIN {
             mag = u64.try_from_i64(value.wrapping_neg()).unwrap_or(0u64)
         }

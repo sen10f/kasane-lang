@@ -1,7 +1,7 @@
 import todo.error
 import todo.http
 
-const todo.wire.MAX_REPLY: usize = 65536usize
+const todo.wire.MAX_REPLY: usize = 65_536usize
 
 fn todo.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<usize, todo.error.Error> uses [alloc, io.net] panics never pub
     let mut chunk = [0u8; 512]

@@ -1,4 +1,4 @@
-const fib.EXPECT: u64 = 196418u64
+const fib.EXPECT: u64 = 196_418u64
 
 const fib.N: u64 = 27u64
 

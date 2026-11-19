@@ -83,10 +83,8 @@ end std.http.Decoder.next
 fn std.http.Request.header(self: &std.http.Request, name: &str) -> Option<&str> uses [] panics never pub
     for k in core.iter.range(0usize, self.headers.len()) {
         match self.headers.as_slice().get(k) {
-            Some(h) => {
-                if h.name.as_str().eq_ignore_ascii_case(name) {
-                    return Some(h.value.as_str())
-                }
+            Some(h) => if h.name.as_str().eq_ignore_ascii_case(name) {
+                return Some(h.value.as_str())
             }
             None => core.mem.drop(0u8)
         }

@@ -90,9 +90,11 @@ fn rand_entropy_and_fill_secure_differ_between_calls() {
     let r2 = std.rand.fill_secure(&mut b)
     core.check.eq(r1.is_ok(), true)
     core.check.eq(r2.is_ok(), true)
-    let same = a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3]
-    let also = a[4] == b[4] && a[5] == b[5] && a[6] == b[6] && a[7] == b[7]
-    core.check.eq(same && also, false)
+    let same = a[0] == b[0] && a[1] == b[1]
+    let same2 = a[2] == b[2] && a[3] == b[3]
+    let also = a[4] == b[4] && a[5] == b[5]
+    let also2 = a[6] == b[6] && a[7] == b[7]
+    core.check.eq(same && same2 && also && also2, false)
     let mut x = std.rand.Rng.from_entropy()
     let mut y = std.rand.Rng.from_entropy()
     let u = x.next_u64()

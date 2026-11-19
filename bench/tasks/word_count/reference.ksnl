@@ -9,15 +9,13 @@ fn bench.word_count(text: &str) -> u32 uses [] panics may
     let mut i = 0usize
     while i < bytes.len() {
         match bytes.get(i) {
-            Some(c) => {
-                if bench.is_space(*c) {
-                    in_word = false
-                } else {
-                    if !in_word {
-                        count = count + 1u32
-                    }
-                    in_word = true
+            Some(c) => if bench.is_space(*c) {
+                in_word = false
+            } else {
+                if !in_word {
+                    count = count + 1u32
                 }
+                in_word = true
             }
             None => break
         }

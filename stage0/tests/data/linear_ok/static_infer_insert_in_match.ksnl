@@ -4,9 +4,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     match m.insert("k", s) {
         Ok(_old) => {
         }
-        Err(_e) => {
-            core.panic.panic("insert")
-        }
+        Err(_e) => core.panic.panic("insert")
     }
     core.check.eq(m.len(), 1usize)
     core.mem.drop(std.io.print_line("ok"))

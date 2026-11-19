@@ -212,11 +212,9 @@ end parse.def.record
 
 fn parse.def.same(src: &[u8], a: usize, b: usize, c: usize, d: usize) -> bool uses [] panics never
     match src.sub(a, b) {
-        Some(x) => {
-            match src.sub(c, d) {
-                Some(y) => x == y
-                None => false
-            }
+        Some(x) => match src.sub(c, d) {
+            Some(y) => x == y
+            None => false
         }
         None => false
     }

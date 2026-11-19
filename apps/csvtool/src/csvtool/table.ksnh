@@ -70,10 +70,8 @@ fn csvtool.table.name_index(self: &csvtool.table.Table, spec: &str) -> Option<us
     let n = h.len()
     while i < n {
         match h.get(i) {
-            Some(name) => {
-                if name.as_str() == spec {
-                    return Some(i)
-                }
+            Some(name) => if name.as_str() == spec {
+                return Some(i)
             }
             None => core.mem.drop(0u8)
         }
