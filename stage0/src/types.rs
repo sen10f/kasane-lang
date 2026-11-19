@@ -4729,6 +4729,8 @@ impl<'a> TypeCk<'a> {
                     // `rets` は関数・クロージャの入れ子に合わせて積まれている。
                     if let Some(ret) = self.rets.last().cloned() {
                         self.note_conv(&f[0], &ret, &v);
+                        let ret_d = self.deep(&ret);
+                        self.note_region_cstr(crate::parser::nid(&f[0]), &ret_d, &v, "ret");
                         if let Err(err) = self.unify2(&ret, &v) {
                             {
                                 let (want, got) = self.ann_conflict(&ret, &v, &err).unwrap_or_else(|| Self::raw_pair(&err));
@@ -4865,6 +4867,8 @@ impl<'a> TypeCk<'a> {
                 let ty = if !is_nil(&f[2]) {
                     let ann = from_v(&f[2], &gn);
                     self.note_conv(&f[3], &ann, &rhs);
+                    let ann_d = self.deep(&ann);
+                    self.note_region_cstr(crate::parser::nid(&f[3]), &ann_d, &rhs, "let");
                     if let Err(err) = self.unify2(&ann, &rhs) {
                         {
                             let (want, got) = self.ann_conflict(&ann, &rhs, &err).unwrap_or_else(|| Self::raw_pair(&err));
@@ -4910,6 +4914,8 @@ impl<'a> TypeCk<'a> {
                 let target = self.infer(&f[0]);
                 let value = self.infer(&f[1]);
                 self.note_conv(&f[1], &target, &value);
+                let target_d = self.deep(&target);
+                self.note_region_cstr(crate::parser::nid(&f[1]), &target_d, &value, "assign");
                 // 名前・フィールドへの代入は別の箇所が E3001 にする。添字の代入 `a[i] = ..` だけここで見る。
                 match nname(&f[0]) {
                     "Index" => self.need_mut_place(&f[0], "assign to", nline(&f[0])),

@@ -28,6 +28,8 @@ pub fn check(prog: &Program, user: &[usize]) -> Vec<Diag> {
     out.extend(crate::tast_rules::type_eq::check(prog, user, &tast, &tk));
     // 規則 B (借用の重なり、S3E)。
     out.extend(crate::tast_rules::borrows::check(prog, user, &tast, &tk));
+    // 規則 L (借用の寿命と出どころ、S3D)。
+    out.extend(crate::tast_rules::lifetimes::check(prog, user, &tast, &tk));
     // 移動と線形 (S3B)。
     out.extend(crate::tast_rules::moves::check(prog, user, &tast, &tk));
     // 同じ診断を 2 つの規則が出すことがある (参照の段数と型の一致): (ファイル, 行, コード, 文面) で重ねる。
