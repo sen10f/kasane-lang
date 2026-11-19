@@ -252,6 +252,19 @@ impl<'a> Ck<'a> {
         self.push(out, line);
     }
 
+    /// `Box.into_dyn` の変換: 元の型の `impl Tr<..>` の効果を、変換先の `dyn Tr<..>` の実引数と比べる (型の実体は `[T, D, A]`)。
+    fn into_dyn(&mut self, targs: &[Ty], line: usize) {
+        if let (Some(t), Some(dd)) = (targs.first(), targs.get(1)) {
+            if let (Ty::Named(n, _, _), Ty::Dyn(tr, da, _)) = (t.strip(), dd.strip()) {
+                if let Some(root) = crate::check::resolve_trait_fqn(self.p, tr) {
+                    if let Some(got) = self.impl_targs_of(&root, n) {
+                        self.dyn_conv(tr, &da.0, &got, line);
+                    }
+                }
+            }
+        }
+    }
+
     fn call(&mut self, c: &Def, off_recv: Option<&Ty>, args: &[TExpr], targs: &[Ty], line: usize) {
         let gn = c.gnames();
         let mut argt: Vec<Ty> = vec![];
@@ -338,6 +351,10 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                         ck.walk(&b.ret, &c.ty, 0);
                     }
                 }
+                TKind::Call { callee, .. } if matches!(&callee.kind, TKind::Path(s) if s.last().map_or(false, |x| x == "into_dyn") && s.len() == 2) && !matches!(e.res, Some(Callee::Def(_))) => {
+                    ck.into_dyn(&e.targs, e.line);
+                }
+                TKind::MCall { name, .. } if name == "into_dyn" && !matches!(e.res, Some(Callee::Def(_))) => ck.into_dyn(&e.targs, e.line),
                 TKind::Call { args, .. } | TKind::MCall { args, .. } => {
                     let Some(Callee::Def(ci)) = &e.res else { return };
                     let c = &p.defs[*ci];
