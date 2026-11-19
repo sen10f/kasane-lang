@@ -19,5 +19,8 @@ unicode-general-category = "1.1.0"
 [build-dependencies]
 sha2 = "0.10"
 
+[features]
+embedded-llvm = []
+
 [profile.release]
 opt-level = 2

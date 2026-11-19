@@ -3658,7 +3658,11 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
             args.push(s("--export=_start"));
         }
         args.extend([s("--gc-sections"), format!("--allow-undefined-file={}", p(&allow)), s("-o"), p(exe)]);
-        run(&ld, args, "wasm-ld")
+        if crate::lld::enabled() {
+            crate::lld::lld_link(crate::lld::Flavor::Wasm, &args)
+        } else {
+            run(&ld, args, "wasm-ld")
+        }
     });
     let _ = fs::remove_dir_all(&dir);
     if r4.is_err() {
@@ -3678,6 +3682,10 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Tar
     }
     let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
     let src = exe.with_extension("ll.tmp");
+    // 組み込みの lld: clang は目的ファイルまで (`-c`)、つなぐのは lld。`KSN_CLANG_ARGS` (sanitizer など) があるときは従来の経路。
+    if crate::lld::enabled() && clang_extra_args().is_empty() {
+        return clang_ll_embedded(&clang, ll, &src, exe, opt, target);
+    }
     fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
     let rt = runtime_c_args(ll, &src);
     let o = std::process::Command::new(&clang)
@@ -3702,6 +3710,57 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Tar
         Ok(o) if !o.status.success() => Err(format!("clang が失敗した: {}", String::from_utf8_lossy(&o.stderr).trim())),
         Ok(_) => Ok(()),
     }
+}
+
+/// `clang_ll` の組み込みの lld 版。IR と実行時の C をそれぞれ `clang -c` で目的ファイルにし、lld でつなぐ。
+fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Target>) -> Result<(), String> {
+    fs::write(src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
+    let rt = runtime_c_args(ll, src);
+    let mut cleanup: Vec<PathBuf> = vec![src.to_path_buf()];
+    let mut objs: Vec<PathBuf> = vec![];
+    let compile = |args: Vec<String>, what: &str| -> Result<(), String> {
+        let o = std::process::Command::new(clang).args(&args).output().map_err(|e| format!("clang を起動できない ({}: {})", clang, e))?;
+        if o.status.success() {
+            Ok(())
+        } else {
+            Err(format!("clang ({}) が失敗した: {}", what, String::from_utf8_lossy(&o.stderr).trim()))
+        }
+    };
+    let res = (|| -> Result<(), String> {
+        let o = src.with_extension("ll.o");
+        cleanup.push(o.clone());
+        let mut a: Vec<String> = vec![opt.into(), "-Wno-override-module".into()];
+        a.extend(clang_target_args(target));
+        a.extend(["-pthread", "-c", "-x", "ir"].map(String::from));
+        a.push(src.display().to_string());
+        a.extend(["-o".to_string(), o.display().to_string()]);
+        compile(a, "IR")?;
+        objs.push(o);
+        for i in (0..rt.len()).step_by(3) {
+            let c = PathBuf::from(&rt[i + 2]);
+            cleanup.push(c.clone());
+            let o = c.with_extension("o");
+            cleanup.push(o.clone());
+            let mut a: Vec<String> = vec![opt.into()];
+            a.extend(clang_target_args(target));
+            a.extend(["-pthread", "-c", "-x", "c"].map(String::from));
+            a.push(c.display().to_string());
+            a.extend(["-o".to_string(), o.display().to_string()]);
+            compile(a, "実行時の C")?;
+            objs.push(o);
+        }
+        let t = target.or_else(crate::kir_llvm::host_target).ok_or("このホストでは組み込みの lld を使えない (KSN_LINKER=external)")?;
+        let root = std::env::var("KSN_SYSROOT").ok().filter(|s| !s.is_empty()).or_else(|| (!t.sysroot.is_empty()).then(|| t.sysroot.to_string()));
+        let args = crate::lld::elf_args(t.name, if target.is_some() { root.as_deref() } else { None }, &objs, exe)?;
+        crate::lld::lld_link(crate::lld::Flavor::Elf, &args)
+    })();
+    for f in cleanup {
+        let _ = fs::remove_file(f);
+    }
+    if res.is_err() {
+        let _ = fs::remove_file(exe);
+    }
+    res
 }
 
 /// ビルド成果物の実行入口 (内部コマンド)。
