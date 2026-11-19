@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use crate::check::Diag;
 use crate::program::Program;
 use crate::tast::*;
+use crate::types::Ty;
 
 pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
     let mut out = vec![];
@@ -31,12 +32,31 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
 /// 効果変数を持つ側は、呼び出し元の宣言との比べ (呼び出し先の `uses [E]` の実体化) が見るのでここでは見ない。
 fn effects(p: &Program, di: DefId, body: &TExpr, out: &mut Vec<Diag>) {
     use crate::check::{covers, is_effect_var};
-    use crate::types::Ty;
     let d = &p.defs[di];
     let mut found: Vec<(&'static str, String, usize)> = vec![];
     // 呼び出しの引数へ入る値は呼び出しの行、それ以外 (`let` の注釈・戻り値・欄) は旧い検査と同じく定義の行で報告する。
     let mut arg_line: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    // 閉包の本体の中の節点 (その呼び出しの効果は、閉包の効果として数える)。
+    let mut in_closure: std::collections::HashSet<u32> = std::collections::HashSet::new();
     super::impl_sig::walk(body, &mut |e| {
+        if let TKind::Closure { body, .. } = &e.kind {
+            super::impl_sig::walk(body, &mut |x| {
+                in_closure.insert(x.id);
+            });
+        }
+    });
+    let own: Vec<String> = d.uses.clone();
+    super::impl_sig::walk(body, &mut |e| {
+        // 局所の関数値・閉包の呼び出し `f()`: その効果は呼び出す側の宣言が覆う。
+        if let TKind::Call { callee, .. } = &e.kind {
+            if !in_closure.contains(&e.id) {
+                if let (Some(Place::Local(..)), TKind::Path(segs), Ty::Closure { eff: crate::types::Eff(Some(info)), .. }) = (&callee.place, &callee.kind, callee.ty.strip()) {
+                    for x in info.uses.iter().filter(|x| !is_effect_var(x) && !covers(&own, x)) {
+                        found.push(("E4001", format!("{} uses effect `{}` not declared by the caller", segs.join("."), x), e.line));
+                    }
+                }
+            }
+        }
         if let TKind::Call { args, .. } | TKind::MCall { args, .. } = &e.kind {
             for a in args {
                 arg_line.insert(a.id, e.line);
@@ -77,6 +97,36 @@ fn effects(p: &Program, di: DefId, body: &TExpr, out: &mut Vec<Diag>) {
         let Some(Callee::Def(ci)) = &e.res else { return };
         let c = &p.defs[*ci];
         let gn = c.gnames();
+        // 呼び先の `uses [E]` の効果変数 `E` は、`Fn<.., E, P>` 境界の型パラメータへ渡した閉包・関数の効果で決まる。
+        if !in_closure.contains(&e.id) && c.uses.iter().any(|x| is_effect_var(x)) {
+            for (k, a) in args.iter().enumerate() {
+                let Some(prm) = c.params.get(k + off) else { break };
+                let mut slots = vec![];
+                param_slots(&crate::types::from_v(&prm.1, &gn), &a.ty, &mut slots);
+                for (name, at) in slots {
+                    let Ty::Closure { eff: crate::types::Eff(Some(info)), .. } = &at else { continue };
+                    for g in &c.generics {
+                        if g.0 != "type" || g.1 != name {
+                            continue;
+                        }
+                        for b in crate::check::items(&g.2) {
+                            if !matches!(b, crate::parser::V::L(bx) if crate::check::st(&bx[0]).starts_with("core.ops.Fn")) {
+                                continue;
+                            }
+                            let bt = crate::check::items(crate::check::tel(b, 1));
+                            let Some(v) = bt.get(2).filter(|v| crate::check::tag(v) == "named") else { continue };
+                            let var = crate::check::st(crate::check::tel(v, 1));
+                            if !c.uses.contains(&var) {
+                                continue;
+                            }
+                            for x in info.uses.iter().filter(|x| !is_effect_var(x) && !covers(&own, x)) {
+                                found.push(("E4001", format!("{} uses effect `{}` not declared by the caller", c.name, x), e.line));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for (k, a) in args.iter().enumerate() {
             let Some(prm) = c.params.get(k + off) else { break };
             let mut slots = vec![];
@@ -125,7 +175,7 @@ fn effects(p: &Program, di: DefId, body: &TExpr, out: &mut Vec<Diag>) {
 
 /// 仮引数の型 `pt` の中の型パラメータと、実引数の型 `a` の同じ位置の型の組 (参照は外して見る)。
 fn param_slots(pt: &crate::types::Ty, a: &crate::types::Ty, out: &mut Vec<(String, crate::types::Ty)>) {
-    use crate::types::Ty;
+
     let mut at = a.clone();
     while let Ty::Ref(_, x, _) = at {
         at = *x;
