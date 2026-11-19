@@ -64,6 +64,8 @@ def build(job):
         cls, why = classify(r.returncode, r.stdout, r.stderr, cwd)
     except subprocess.TimeoutExpired:
         cls, why = 'error', f'{TIMEOUT} 秒を超えた'
+    # 判定が済んだら、パッケージごとのキャッシュ (実行体の写しで 1 本 約 130 MB) をすぐ消す (全部を残すと /tmp が数十 GB 埋まる)。
+    shutil.rmtree(env['KSN_CACHE_DIR'], ignore_errors=True)
     return group, name, cls, why
 
 
