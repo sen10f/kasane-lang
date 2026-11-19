@@ -2695,7 +2695,17 @@ fn cmd_fmt(args: &[String]) -> i32 {
     let mut diff = false;
     let mut changed = false;
     for s in &pkg.sources {
-        let nt = if s.error.is_none() { format_source(&s.text, &s.path) } else { mechanical_collapse(&s.text) };
+        let nt = if s.error.is_none() {
+            format_source(&s.text, &s.path)
+        } else {
+            // 読めないファイルでも、行末の `;` を消して読めるようになるなら、普通に整形する (並べ替えも)。
+            let st = crate::fmt::strip_semicolons(&s.text);
+            if st != s.text && crate::program::load_file(&s.path, "", &st).is_ok() {
+                format_source(&st, &s.path)
+            } else {
+                mechanical_collapse(&st)
+            }
+        };
         let mut text = s.text.clone();
         // `.ksnh` の整形のあと、横の `.ksnl` を `strip` で作り直す (`--check` は食い違いも差分とする)。
         if s.path.ends_with(".ksnh") {
@@ -2725,21 +2735,35 @@ fn cmd_fmt(args: &[String]) -> i32 {
             diff = true;
             println!("{}:{}:{}: {}: {}", rel(&s.path), f.line, f.col, f.code, f.msg);
         }
-        if let Some(e) = s.error.as_ref().filter(|e| e.code == "E0007") {
-            diff = true;
-            println!("{}:{}:{}: {}: {}", rel(&s.path), e.line, e.col, e.code, e.msg);
-        }
+        // 構文・字句の誤りで読めないファイルは、`ksn check` と同じ診断 (行:列つき) を先に出す。
+        // 読めないので並べ替えなどの整形ができていない。それらの診断は出さない (まず構文の誤りを直す)。
+        // (整形の誤りが無く、案内付きの書き方でもない構文の誤りは、従来どおり fmt では黙る。`ksn check` が見る。)
         let relpath = lint_rel(s, &srcroot);
-        for (code, l, m) in Lint::new(&relpath, &text.replace("\r\n", "\n")).run() {
-            if code != "unused" {
+        let lints: Vec<_> = Lint::new(&relpath, &text.replace("\r\n", "\n")).run().into_iter().filter(|(c, _, _)| c != "unused").collect();
+        let (ok, msg, ln) = grammar.check(&text);
+        // 整形で書き換えたあとの文面の読めるかどうか (書き換えていなければ読み込み時の結果)。
+        let cur_err = if text == s.text { s.error.clone() } else { crate::program::load_file(&s.path, "", &text).err().map(|e| decode_err(&e)) };
+        let hits = if cur_err.is_some() { crate::rustisms::scan(&text) } else { vec![] };
+        let broken = cur_err.is_some() && (cur_err.as_ref().map_or(false, |e| e.code == "E0007") || !hits.is_empty() || !lints.is_empty() || !ok);
+        if broken {
+            let e = cur_err.as_ref().unwrap();
+            diff = true;
+            for h in &hits {
+                println!("{}:{}:{}: {}: {}", rel(&s.path), h.line, h.col, h.code, h.msg);
+            }
+            if !(e.code == "E0002" && hits.iter().any(|h| h.line == e.line)) {
+                println!("{}:{}:{}: {}: {}", rel(&s.path), e.line, e.col, e.code, e.msg);
+            }
+            println!("{}: note: the file cannot be parsed, so `ksn fmt` could not reorder or reformat it; fix the error(s) above first", rel(&s.path));
+        } else {
+            for (code, l, m) in lints {
                 diff = true;
                 println!("{}:{}: {}: {} (not auto-fixable)", rel(&s.path), l, lint_code(&code), m);
             }
-        }
-        let (ok, msg, ln) = grammar.check(&text);
-        if !ok {
-            diff = true;
-            println!("{}:{}: E0002: {}", rel(&s.path), ln, msg);
+            if !ok {
+                diff = true;
+                println!("{}:{}: E0002: {}", rel(&s.path), ln, msg);
+            }
         }
     }
     if diff || (changed && check) { 1 } else { 0 }

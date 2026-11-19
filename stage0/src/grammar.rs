@@ -203,6 +203,7 @@ struct Tok {
     kind: String,
     text: String,
     sp: bool,
+    line: usize,
 }
 
 struct Lexer {
@@ -283,9 +284,9 @@ impl Lexer {
                 } else {
                     "word"
                 };
-                toks.push(Tok { kind: k.into(), text: t, sp });
+                toks.push(Tok { kind: k.into(), text: t, sp, line: 0 });
             } else {
-                toks.push(Tok { kind: kind.to_string(), text: t, sp });
+                toks.push(Tok { kind: kind.to_string(), text: t, sp, line: 0 });
             }
             sp = false;
         }
@@ -351,6 +352,11 @@ fn precheck(text: &str) -> Result<(), Pre> {
     Ok(())
 }
 
+/// 字句エラーの文言 `line N: ...` の行番号 (無ければ 1)。
+fn err_line(e: &str) -> usize {
+    e.strip_prefix("line ").and_then(|r| r.split(':').next()).and_then(|n| n.parse().ok()).unwrap_or(1)
+}
+
 fn lex_file(lx: &Lexer, text: &str, sig: bool) -> Result<Vec<Tok>, String> {
     precheck(text).map_err(|e| e.0)?;
     let all: Vec<&str> = text.split('\n').collect();
@@ -368,8 +374,10 @@ fn lex_lines(lx: &Lexer, lines: &[&str], sig: bool, after_dot: bool) -> Result<V
     let mut prev_comment = false;
     // ファイル先頭が `///` だけの塊のままか (その直後の空行 1 つはモジュールの説明の区切り、3.2)。
     let mut head_doc = true;
-    let mk = |k: &str, t: &str| Tok { kind: k.into(), text: t.into(), sp: false };
+    let cur = std::cell::Cell::new(0usize);
+    let mk = |k: &str, t: &str| Tok { kind: k.into(), text: t.into(), sp: false, line: cur.get() };
     for (idx, (n, l, s)) in info.iter().enumerate() {
+        cur.set(*n);
         if s.is_empty() {
             if prev_comment {
                 if head_doc {
@@ -417,7 +425,10 @@ fn lex_lines(lx: &Lexer, lines: &[&str], sig: bool, after_dot: bool) -> Result<V
             || s.ends_with('[')
             || s.ends_with(',')
             || nxt.map_or(after_dot, |x| x.2.starts_with('.') && !x.2.starts_with(".."));
-        out.extend(code);
+        out.extend(code.into_iter().map(|mut t| {
+            t.line = *n;
+            t
+        }));
         out.push(mk(if inhibit { "LF" } else { "NL" }, ""));
         if head == "end" {
             inside = false;
@@ -650,7 +661,8 @@ impl Grammar {
     /// 診断のメッセージと位置は常に `check` が決める。
     pub fn check_memo(&self, text: &str, memo: &mut GramMemo) -> (bool, String, usize) {
         if let Err(e) = precheck(text) {
-            return (false, e.0, 1);
+            let ln = err_line(&e.0);
+            return (false, e.0, ln);
         }
         if self.defs_match(text, memo) {
             return (true, String::new(), 0);
@@ -777,7 +789,10 @@ impl Grammar {
         let c = self.core();
         let toks = match lex_file(&c.lx, text, false) {
             Ok(t) => t,
-            Err(e) => return (false, e, 1),
+            Err(e) => {
+                let ln = err_line(&e);
+                return (false, e, ln);
+            }
         };
         self.check_toks(&toks)
     }
@@ -809,7 +824,7 @@ impl Grammar {
             return (true, String::new(), 0);
         };
         let shown = if t.text.is_empty() { t.kind.clone() } else { t.text.clone() };
-        (false, format!("does not match the canonical grammar near {}", py_repr(&shown)), 1)
+        (false, format!("does not match the canonical grammar near {}", py_repr(&shown)), t.line.max(1))
     }
 }
 
