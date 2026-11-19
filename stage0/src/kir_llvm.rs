@@ -492,7 +492,16 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     if let Some(tg) = target.filter(|tg| tg.name != "x86_64-linux-gnu") {
         // Win64 の構造体の値渡し (8 バイト以下は整数、それ以上は呼び出し側の複製へのポインタ) は別の規則で、まだ書いていない。
         // 構造体の値渡しの ABI (AAPCS64 の HFA・レジスタ分類など) は x86_64 だけ検証している。ほかは理由を出して退避させる。
+        // Win64 は、大きさが 1・2・4・8 バイトの構造体だけ整数 1 個として渡る (iN のまま呼べる)。それより大きいものは呼び出し側の複製へのポインタ・sret になるので未対応。
+        let win = is_windows(Some(tg));
         for f in m.funcs.iter().filter(|f| f.link.is_some()) {
+            if win {
+                let small = |t: &Ty| match t { Ty::Agg(i) => matches!(agg_bits(&m.aggs, *i), 8 | 16 | 32 | 64), _ => true };
+                if f.params().iter().all(|(_, pt)| small(pt)) && small(&f.ret) {
+                    continue;
+                }
+                return Err(format!("extern {}: passing or returning a struct larger than 8 bytes by value is not supported on {} (Win64 passes it by reference)", f.key, tg.name));
+            }
             if f.params().iter().any(|(_, pt)| matches!(pt, Ty::Agg(_))) {
                 return Err(format!("extern {}: passing a struct by value is native-supported on x86_64 only (target {})", f.key, tg.name));
             }

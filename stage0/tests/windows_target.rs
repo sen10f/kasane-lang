@@ -159,3 +159,58 @@ fn windows_exe_is_a_pe_and_needs_no_winpthread_dll() {
     assert_eq!(&b[..2], b"MZ");
     assert!(!String::from_utf8_lossy(&b).to_lowercase().contains("libwinpthread-1.dll"), "winpthreads must be linked statically");
 }
+
+#[test]
+fn large_struct_by_value_extern_is_refused_on_windows() {
+    // 値渡しの構造体の extern は KIR に下ろせない (全ターゲットで未対応)。Windows でも理由を出して失敗する (バンドルへ退避しない)。
+    let src = "type t.Big layout c derive [Clone, Copy]
+    a: i32
+    b: i32
+    c: i32
+end t.Big
+
+extern t.big_id(a: t.Big) -> t.Big link \"msvcrt.dll:big_id\"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let s = unsafe \"ffi\" \"big\" {
+        t.big_id(t.Big { a: 1i32, b: 2i32, c: 3i32 })
+    }
+    core.check.eq(s.a, 1i32)
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("win_big_struct", src);
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
+    let o = run(&["build", "--target", TRIPLE], &t.0);
+    let err = text(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{}{}", text(&o.stdout), err);
+    assert!(err.contains("E9040") && err.contains("x86_64-windows-gnu") && err.contains("t.big_id"), "{}", err);
+}
+
+#[test]
+fn dynamic_load_of_a_dll_symbol_works_on_windows() {
+    if !cross_ready() {
+        return;
+    }
+    // `link "lib.dll:名前"` は LoadLibraryA / GetProcAddress で引く。msvcrt の `abs` を呼ぶ。
+    let src = "extern t.c_abs(x: i32) -> i32 link \"msvcrt.dll:abs\"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let v = unsafe \"ffi\" \"abs\" {
+        t.c_abs(-7i32)
+    }
+    core.check.eq(v, 7i32)
+    std.io.print_line(\"abs ok\")?
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("win_dll_abs", src);
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
+    let o = run(&["build", "--target", TRIPLE], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    let exe = native_exe(&out, &t.0);
+    let r = run_wine(&exe, &t.0);
+    assert_eq!(text(&r.stdout), "abs ok\n", "{}", text(&r.stderr));
+    assert_eq!(r.status.code(), Some(0));
+}
