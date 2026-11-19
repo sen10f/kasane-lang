@@ -247,3 +247,54 @@ end t.main
         "11/9/11/16/true/3\n",
     );
 }
+
+/// 6. `core.check.eq` で浮動小数 (f32/f64) を含む構造体 — 失敗の文言 (最短往復形・nan/inf/-0.0) も一致。
+#[test]
+fn float_check_eq_native() {
+    // 失敗する検査: 文言の一致 (stderr) と終了コードも見るため run とネイティブの両方を走らせて比べる。
+    let src = r#"type t.Vec2 derive [PartialEq, Debug]
+    x: f64
+    y: f64
+end t.Vec2
+
+fn t.main() -> () uses [] panics may
+    let nan = 0.0f64 / 0.0f64
+    let inf = 1.0f64 / 0.0f64
+    let a = t.Vec2 { x: nan, y: inf }
+    let b = t.Vec2 { x: -0.0f64, y: 1e-300f64 }
+    core.check.eq(a, b)
+end t.main
+"#;
+    let t = Tmp::new("ngaps_float_eq", src);
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(101), "run: {}{}", text(&interp.stderr), text(&interp.stdout));
+    let want = text(&interp.stderr);
+    assert!(want.contains("nan") && want.contains("inf") && want.contains("-0.0"), "文言: {}", want);
+    for release in [false, true] {
+        let (bt, exe, out) = build_native_strict(&format!("ngaps_float_eq_{}", release), src, release);
+        let p = exe.unwrap_or_else(|| panic!("ネイティブの実行ファイルが無い (release: {}): {}", release, out));
+        let o = std::process::Command::new(&p).current_dir(&bt.0).output().unwrap();
+        assert_eq!(o.status.code(), Some(101), "release {}: {}{}", release, text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stderr), want, "native (release: {}) と run の失敗文言が違う", release);
+    }
+    // 等しいとみなされる組 (-0.0 == 0.0、NaN は不一致) の通過側。
+    check_gap(
+        "ngaps_float_eq_ok",
+        r#"type t.Vec2 derive [PartialEq, Debug]
+    x: f32
+    y: f32
+end t.Vec2
+
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
+    let a = t.Vec2 { x: -0.0f32, y: 2.5f32 }
+    let b = t.Vec2 { x: 0.0f32, y: 2.5f32 }
+    core.check.eq(a, b)
+    match std.io.print_line("ok") {
+        Ok(_x) => Ok(())
+        Err(_e) => core.panic.panic("io")
+    }
+end t.main
+"#,
+        "ok\n",
+    );
+}
