@@ -166,6 +166,16 @@ pub struct Capture {
     pub region: crate::types::Region,
 }
 
+/// 明示型引数の木 (`V` は `PartialEq` を持たないので、常に等しい扱いの入れ物に包む)。
+#[derive(Clone, Debug, Default)]
+pub struct ETargs(pub Vec<V>);
+
+impl PartialEq for ETargs {
+    fn eq(&self, _: &ETargs) -> bool {
+        true
+    }
+}
+
 /// 型付きの節点が持つ共通の情報。
 #[derive(Clone, Debug, PartialEq)]
 pub struct TExpr {
@@ -184,6 +194,8 @@ pub struct TExpr {
     pub targs: Vec<Ty>,
     /// `Call` / `MCall` だけ: 書いた明示型引数 (`f::<..>`) の数 (ライフタイムを除く)。書いていなければ `None`。
     pub tf: Option<usize>,
+    /// `Call` / `MCall` だけ: 書いた明示型引数の木 (型・定数・効果・panic・ライフタイムの実引数。効果の実体化が使う)。
+    pub etargs: ETargs,
     /// `For` / `With` だけ: 束縛するパターン (`Other` の子には入らない)。
     pub pats: Vec<TPat>,
 }
@@ -482,7 +494,7 @@ impl<'a> Builder<'a> {
     /// 式の節点を組む。`callee` は `Call` の第 1 子 (被覆の数え方だけが違う)。
     fn expr(&mut self, v: &V, callee: bool) -> TExpr {
         let V::Node(kind, f, ln, id) = v else {
-            return TExpr { id: 0, line: 0, kind: TKind::Other { name: "?", children: vec![] }, ty: Ty::Unknown, place: None, conv: vec![], res: None, targs: vec![], tf: None, pats: vec![] };
+            return TExpr { id: 0, line: 0, kind: TKind::Other { name: "?", children: vec![] }, ty: Ty::Unknown, place: None, conv: vec![], res: None, targs: vec![], tf: None, etargs: ETargs::default(), pats: vec![] };
         };
         let key = (self.di, *id);
         let mut place = None;
@@ -652,7 +664,17 @@ impl<'a> Builder<'a> {
             V::L(xs) => Some(xs.iter().filter(|a| !matches!(a, V::L(y) if matches!(y.first(), Some(V::S(s)) if s == "life"))).count()),
             _ => None,
         });
-        TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs, tf, pats }
+        let etargs = ETargs(match *kind {
+            "Call" => f.get(2),
+            "MCall" => f.get(3),
+            _ => None,
+        }
+        .map(|t| match t {
+            V::L(xs) => xs.clone(),
+            _ => vec![],
+        })
+        .unwrap_or_default());
+        TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs, tf, etargs, pats }
     }
 }
 
