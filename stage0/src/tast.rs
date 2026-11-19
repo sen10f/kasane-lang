@@ -446,6 +446,17 @@ impl<'a> Builder<'a> {
                 if let Some(V::S(x)) = sfx {
                     lit.push(x.clone());
                 }
+                // リテラルの値 (網羅性が同じリテラルかを見る): 書いたままの木の文字列。
+                path = vec![format!("{:?}", lf)];
+                if let Some(V::B(b)) = lf.get(1) {
+                    path.push(b.to_string());
+                }
+            }
+            // `if let` / `is` が作る「他の全部」の腕 (`PWild [true]`)。
+            "PWild" => {
+                if !f.is_empty() {
+                    lit.push("other".to_string());
+                }
             }
             "PStruct" => {
                 path = lv(&f[0]).iter().map(sv).collect();
