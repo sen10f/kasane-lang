@@ -3100,16 +3100,13 @@ fn short_form_of_an_imported_type_in_a_header_is_an_error_and_fmt_makes_it_fqn()
 fn fqn_of_an_imported_module_in_a_body_is_an_error_and_fmt_shortens_it() {
     let src = SN_CANON.replace("lib.make()", "t.lib.make()");
     sn_roundtrip("sn_body_fqn", &src, SN_CANON);
-    // 型注釈・構造体リテラルの中でも短縮される。
-    let src = SN_CANON.replace("let item = lib.make()", "let item: t.lib.Item = t.lib.Item { n: 2u8 }");
-    let want = SN_CANON.replace("let item = lib.make()", "let item: lib.Item = lib.Item { n: 2u8 }");
-    // 右辺で型が閉じた注釈は冗長 (E2053、D17)。ここでは fmt が注釈の FQN を短くすることだけを確かめ、
-    // 残る診断は冗長な注釈の 1 件だけであることを見る (sn_roundtrip は canonical が check を通ることを要求する)。
-    let t = sn_pkg("sn_body_fqn_ty", &src);
-    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
-    assert_eq!(sn_main(&t), want, "sn_body_fqn_ty: fmt result");
-    let c = run(&["check", "--json"], &t.0);
-    assert_eq!(codes(&text(&c.stdout)), vec!["E2053".to_string()], "{}", text(&c.stdout));
+    // 型注釈の中でも短縮される。注釈は右辺だけでは型が決まらない形 (`Vec.new`) にして、冗長な注釈 (E2053) にしない。
+    let body_old = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let item = lib.make()\n    let n = t.get(&item)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
+    let body_new = "fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never\n    let items: alloc.vec.Vec<t.lib.Item, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let n = items.len()\n    core.mem.drop(items)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
+    assert!(SN_CANON.contains(body_old));
+    let src = SN_CANON.replace(body_old, body_new);
+    let want = SN_CANON.replace(body_old, &body_new.replace("t.lib.Item", "lib.Item"));
+    sn_roundtrip("sn_body_fqn_ty", &src, &want);
 }
 
 #[test]
