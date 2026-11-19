@@ -1496,7 +1496,7 @@ fn kir_opt_does_not_inline_extern() {
     let t = Tmp::new("kir_opt_extern", src);
     fs::write(
         t.0.join("kasane.toml"),
-        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[dependencies]\n\n[unsafe]\nmodules = [\"t\"]\n",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[unsafe]\nmodules = [\"t\"]\n\n[dependencies]\n",
     )
     .unwrap();
     let k = kir_run(&["kir", "t.abs_extern", "--opt", "--run", "-7"], &t.0);

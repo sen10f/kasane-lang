@@ -407,7 +407,7 @@ fn https_app_native_serves_the_same_replies() {
 #[test]
 fn ffi_dynamic_load_failure_is_a_panic_101() {
     let src = "extern t.nope(x: i32) -> i32 link \"libksn-no-such.so.9:nope\"\n\nfn t.main() -> () uses [] panics may\n    let v = unsafe \"t\" \"the library does not exist\" {\n        t.nope(1i32)\n    }\n    core.mem.drop(v)\nend t.main\n";
-    let unsafe_toml = format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML);
+    let unsafe_toml = TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1);
     let check = |dir: &Path| {
         fs::write(dir.join("kasane.toml"), &unsafe_toml).unwrap();
     };

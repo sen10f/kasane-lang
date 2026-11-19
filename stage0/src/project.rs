@@ -261,6 +261,12 @@ pub fn validate_manifest(m: &toml::Value) -> Vec<(String, String)> {
     if !pk.get("edition").map_or(false, |v| v.is_integer()) {
         errs.push(e("E9006", "package.edition must be an integer".into()));
     }
+    // T17: entry が文字列でないと黙ってライブラリ扱いになるので誤りにする (設計_tomlとlockの書き方.md 7 章)。
+    if let Some(ev) = pk.get("entry") {
+        if ev.as_str().is_none() {
+            errs.push(e("E9007", "package.entry must be a string".into()));
+        }
+    }
     for k in pk.keys() {
         if !["name", "version", "edition", "entry"].contains(&k.as_str()) {
             errs.push(e("E9007", format!("unknown key package.{}", k)));

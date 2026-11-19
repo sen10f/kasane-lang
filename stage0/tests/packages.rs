@@ -328,7 +328,7 @@ fn app_with_deps(name: &str) -> (Work, PathBuf, String, String, PathBuf) {
     );
     make_pkg(&w.path("pl"), "pl", false, "", &[("src/pl.ksnl", PL_SRC)]);
     let app = w.path("app");
-    let deps = format!("pl = {{ path = \"../pl\" }}\ngl = {{ git = \"{}\", rev = \"{}\" }}\n", url, rev);
+    let deps = format!("gl = {{ git = \"{}\", rev = \"{}\" }}\npl = {{ path = \"../pl\" }}\n", url, rev);
     make_pkg(&app, "app", true, &deps, &[("src/app.ksnl", APP_SRC)]);
     let o = w.ksn(&["update"], &app);
     assert_eq!(o.status.code(), Some(0), "update: {}", all(&o));

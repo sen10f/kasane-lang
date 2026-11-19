@@ -11,6 +11,7 @@ use unicode_general_category::{get_general_category, GeneralCategory as G};
 use unicode_normalization::{is_nfc, UnicodeNormalization};
 
 /// 見つかった字句の違反。
+#[derive(Debug)]
 pub struct Finding {
     pub code: &'static str,
     pub line: usize,
@@ -38,7 +39,8 @@ pub fn forbidden(c: char) -> bool {
 }
 
 /// リテラルの中で `\u{..}` で書く文字か (そのまま書けない文字。ただし名前のある 4 つは名前で書く)。
-fn needs_u_escape(c: char) -> bool {
+/// `kasane.toml` / `kasane.lock` の文字列の正規形でも同じ規則を使う (tomlstrict.rs)。
+pub fn needs_u_escape(c: char) -> bool {
     !matches!(c, '\n' | '\t' | '\r' | '\0') && (forbidden(c) || c == '\x0b' || c == '\x0c')
 }
 

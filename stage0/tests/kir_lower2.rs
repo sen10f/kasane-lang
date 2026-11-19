@@ -1362,7 +1362,7 @@ end t.main
     // `unsafe` / `extern` は `[unsafe] modules` が必要。
     fs::write(
         t.0.join("kasane.toml"),
-        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[dependencies]\n\n[unsafe]\nmodules = [\"t\"]\n",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[unsafe]\nmodules = [\"t\"]\n\n[dependencies]\n",
     )
     .unwrap();
     // 木走査 (`ksn run`) の main 検査が通ること。

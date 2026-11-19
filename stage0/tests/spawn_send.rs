@@ -13,7 +13,7 @@ fn check_with_raw_ptrs_allowed(name: &str, src: &str) -> (Option<i32>, Vec<Strin
     let d = std::env::temp_dir().join(format!("ksn_spawn_send_{}_{}", std::process::id(), name));
     let _ = fs::remove_dir_all(&d);
     fs::create_dir_all(d.join("src")).unwrap();
-    fs::write(d.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    fs::write(d.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
     fs::write(d.join("kasane.lock"), "version = 1\n").unwrap();
     fs::write(d.join("src").join("t.ksnl"), src).unwrap();
     // 書き方は 1 通り (E0020): 試験の入力は `ksn fmt` の出力にそろえる。
