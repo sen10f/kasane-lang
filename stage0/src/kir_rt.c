@@ -301,6 +301,13 @@ i64 ksn_rt_sys_var(const u8 *name, i64 nlen, i64 *len) {
 
 /* 標準出力・ファイルは既定でバイナリ (Linux と同じバイト列。`\n` を `\r\n` にしない)。mingw の crt が起動時に読む。 */
 int _CRT_fmode = 0x8000; /* _O_BINARY */
+#include <fcntl.h>
+__attribute__((constructor)) static void ksn_w_binary(void) {
+    _setmode(0, _O_BINARY);
+    _setmode(1, _O_BINARY);
+    _setmode(2, _O_BINARY);
+    _fmode = _O_BINARY;
+}
 
 static int ksn_w_wsa_ready;
 static void ksn_w_wsa(void) {

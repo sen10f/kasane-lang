@@ -412,7 +412,11 @@ pub fn is_windows(t: Option<Target>) -> bool {
 /// Windows 用に、IR が直接呼ぶ POSIX の libc を `ksn_w_*` の薄い殻 (`kir_rt.c`) へ向ける。
 /// Win64 の `write` / `read` は `int` と `unsigned` で、ソケットは別の記述子、`dprintf` と `__errno_location` は無い。
 fn windows_shims(ll: &str) -> String {
-    let mut s = ll.to_string();
+    // winpthreads: 再帰 mutex の種類は 2 (Linux は 1)、静的な初期化子は 0 ではなく -1 (`PTHREAD_MUTEX_INITIALIZER`)。
+    let mut s = ll.replace("@pthread_mutexattr_settype(ptr %attr, i32 1)", "@pthread_mutexattr_settype(ptr %attr, i32 2)");
+    for g in ["mu", "cv"] {
+        s = s.replace(&format!("@ksn.rt.{g} = internal global [64 x i8] zeroinitializer, align 16"), &format!("@ksn.rt.{g} = internal global i64 -1, align 16"));
+    }
     for n in ["write", "read", "close", "accept", "getsockname", "socket", "dprintf", "__errno_location"] {
         s = s.replace(&format!("@{}(", n), &format!("@ksn_w_{}(", n));
     }
