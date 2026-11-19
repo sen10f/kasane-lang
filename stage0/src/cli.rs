@@ -3994,7 +3994,9 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "context" => cmd_context(&rest),
         "explain" => cmd_explain(&rest),
         "bindgen" => {
-            if rest.iter().any(|a| a == "--debug-kinds") {
+            if rest.iter().any(|a| a == "--c") {
+                crate::bindgen_c::cmd_bindgen_c(&rest)
+            } else if rest.iter().any(|a| a == "--debug-kinds") {
                 crate::bindgen_c::cmd_bindgen_c_debug_kinds(&rest)
             } else {
                 crate::bindgen::cmd_bindgen(&rest)

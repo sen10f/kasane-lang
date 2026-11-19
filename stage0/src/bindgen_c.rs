@@ -802,6 +802,106 @@ pub(crate) fn emit(m: &Model, prefix: &str, header: &str, link: Option<&str>) ->
     out
 }
 
+/// `ksn bindgen --c <header.h> [--prefix NAME] [--link LIB] -o <out.ksnh>`。
+/// 成功 0、引数の誤り・libclang がない・解析の失敗・書けないは 2。
+pub(crate) fn cmd_bindgen_c(rest: &[String]) -> i32 {
+    if rest.iter().any(|a| a == "--debug-kinds") {
+        return cmd_bindgen_c_debug_kinds(rest);
+    }
+    let mut header: Option<String> = None;
+    let mut prefix: Option<String> = None;
+    let mut link: Option<String> = None;
+    let mut out: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        let a = rest[i].as_str();
+        let val = |i: &mut usize| -> Option<String> {
+            *i += 1;
+            rest.get(*i).cloned().filter(|s| !s.is_empty() && !s.starts_with('-'))
+        };
+        match a {
+            "--c" => header = val(&mut i).or_else(|| { eprintln!("ksn bindgen --c: --c に見出しのパスがない"); None }),
+            "--prefix" => prefix = val(&mut i),
+            "--link" => link = val(&mut i),
+            "-o" => out = val(&mut i),
+            other => {
+                eprintln!("ksn bindgen --c: 未知の引数 `{}`", other);
+                eprintln!("usage: ksn bindgen --c <header.h> [--prefix NAME] [--link LIB] -o <out.ksnh>");
+                return 2;
+            }
+        }
+        i += 1;
+    }
+    let Some(header) = header else {
+        eprintln!("ksn bindgen --c: --c <header.h> が要る");
+        eprintln!("usage: ksn bindgen --c <header.h> [--prefix NAME] [--link LIB] -o <out.ksnh>");
+        return 2;
+    };
+    let Some(out) = out else {
+        eprintln!("ksn bindgen --c: -o <out.ksnh> が要る");
+        return 2;
+    };
+    if !(out.ends_with(".ksnh") || out.ends_with(".ksnl")) {
+        eprintln!("ksn bindgen --c: -o の出力は .ksnh か .ksnl で終わるパスにする: {}", out);
+        return 2;
+    }
+    // prefix の既定は見出しのファイル名 (拡張子を除く)
+    let prefix = match prefix {
+        Some(p) => p,
+        None => {
+            let stem = std::path::Path::new(&header).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            to_snake(&stem)
+        }
+    };
+    if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') || !prefix.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false) || crate::grammar::RESERVED.contains(&prefix.as_str()) {
+        eprintln!("ksn bindgen --c: --prefix は snake_case の ASCII 識別子 (予約語以外) でなければならない: {}", prefix);
+        return 2;
+    }
+    if let Some(l) = &link {
+        if l.contains('"') || l.contains('\n') {
+            eprintln!("ksn bindgen --c: --link に \" と改行は書けない: {}", l);
+            return 2;
+        }
+    }
+    let (ksnh_path, ksnl_path) = if out.ends_with(".ksnh") {
+        (out.clone(), out.trim_end_matches("ksnh").to_string() + "ksnl")
+        } else {
+            (out.trim_end_matches("ksnl").to_string() + "ksnh", out.clone())
+        };
+    if std::path::Path::new(&out).file_stem().map(|s| s.to_string_lossy().into_owned()) != Some(prefix.clone()) {
+        eprintln!("ksn bindgen --c: 注意: 出力ファイルの stem が module 名と違う ({} ≠ {})。src/ 以下の対応するパスに置くこと", out, prefix);
+    }
+    let m = match extract(&header, &prefix) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("ksn bindgen --c: {}", e);
+            return 2;
+        }
+    };
+    // 出力は ksn fmt の形そのもの (生成後に社内の整形器に通す)
+    let raw = emit(&m, &prefix, &header, link.as_deref());
+    let ksnh = crate::fmt::format_source(&raw, &ksnh_path);
+    let ksnl = crate::fmt::format_source(&crate::ksnh::strip(&ksnh), &ksnl_path);
+    for (p, text) in [(&ksnh_path, &ksnh), (&ksnl_path, &ksnl)] {
+        if let Some(dir) = std::path::Path::new(p).parent().filter(|x| !x.as_os_str().is_empty()) {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                eprintln!("ksn bindgen --c: {} を作れない: {}", dir.display(), e);
+                return 2;
+            }
+        }
+        if let Err(e) = std::fs::write(p, text) {
+            eprintln!("ksn bindgen --c: {} を書けない: {}", p, e);
+            return 2;
+        }
+        println!("wrote {}", p);
+    }
+    for n in &m.notes {
+        println!("note: {}", n);
+    }
+    println!("module {}: const {} 個、type {} 個、extern {} 個", prefix, m.consts.len(), m.recs.len(), m.exts.len());
+    0
+}
+
 /// 隠しの debug 引数: 見出しを libclang で解析して生成する Kasane のファイルを出す。
 pub(crate) fn cmd_bindgen_c_debug_kinds(rest: &[String]) -> i32 {
     let Some(header) = rest.iter().position(|a| a == "--c").and_then(|i| rest.get(i + 1)) else {
