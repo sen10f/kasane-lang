@@ -32,7 +32,7 @@ sig_fn        = lead , fn_head , NL ;
 
 (* ---------- 定義 ---------- *)
 fn_head       = "fn" , fqn , [ generics ] , "(" , [ params ] , ")" , "->" , type ,
-                [ "const" ] , [ uses_attr , panics_attr ] , [ stack_attr ] , [ impls_attr ] , [ "pub" ] ;
+                [ "const" ] , [ uses_attr , panics_attr ] , [ stack_attr ] , [ depth_attr ] , [ impls_attr ] , [ "pub" ] ;
 fn_def        = lead , fn_head , NL , body , "end" , fqn , NL ;
 type_def      = lead , "type" , fqn , [ generics ] ,
                 [ "layout" , "c" ] , [ derive_attr ] , [ "linear" ] , [ "pub" ] , NL ,
@@ -63,6 +63,7 @@ effect_name   = "io" | "io.fs" | "io.net" | "io.console" | "time" | "rand"
 effect_var    = upper_ident ;                       (* E: uses で宣言した変数 *)
 panics_attr   = "panics" , ( "never" | "may" | upper_ident ) ;
 stack_attr    = "stack" , int_dec ;
+depth_attr    = "depth" , int_dec ;               (* 入口 (kasane.toml の entry) だけ。呼び出しの深さの上限 (5.3) *)
 impls_attr    = "impls" , trait_ref ;
 requires_attr = "requires" , trait_ref , { "," , trait_ref } ;
 derive_attr   = "derive" , "[" , derive_name , { "," , derive_name } , "]" ;

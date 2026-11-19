@@ -16,7 +16,6 @@ use crate::kir_exec::{self, Outcome};
 use crate::kir_scalar;
 
 /// 呼び出し深さの上限 (`kir_exec::MAX_DEPTH` と同じ)。
-const MAX_DEPTH: usize = crate::kir_exec::MAX_DEPTH;
 
 extern "C" {
     fn malloc(n: usize) -> *mut std::ffi::c_void;
@@ -80,7 +79,6 @@ struct Frame {
 }
 
 pub struct Vm<'a> {
-    #[allow(dead_code)]
     prog: &'a Prog,
     regs: Vec<u64>,
     frames: Vec<Frame>,
@@ -650,7 +648,7 @@ impl<'a> Vm<'a> {
                     }
                 }
                 Ins::Call { f: ci, d, argp, argn } => {
-                    if self.frames.len() + 1 >= MAX_DEPTH {
+                    if self.frames.len() + 1 >= crate::kir_exec::depth_limit(self.prog.depth) {
                         self.flush();
                         return Ok(Outcome::StackOverflow);
                     }

@@ -28,6 +28,8 @@ pub struct Def {
     pub inferred: bool,
     pub panics: Option<String>,
     pub stack: Option<u64>,
+    /// 入口の `depth M` (呼び出しの深さの上限。5.3)。
+    pub depth: Option<u64>,
     pub derive: Vec<String>,
     pub linear: bool,
     /// `type` の `layout c` (C 互換の配置。3.8)
@@ -262,9 +264,17 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 } else {
                     d.inferred = true;
                 }
-                if p.accept_kw("stack") {
-                    d.stack = text(&V::N(crate::parser::split_number(&p.cur().text, false)?.0)).parse().ok();
-                    p.i += 1;
+                // `stack N` と `depth M` は正規形では `stack` が先。逆順も読み、並べ替えは `ksn fmt` が直す。
+                loop {
+                    if d.stack.is_none() && p.accept_kw("stack") {
+                        d.stack = text(&V::N(crate::parser::split_number(&p.cur().text, false)?.0)).parse().ok();
+                        p.i += 1;
+                    } else if d.depth.is_none() && p.accept_kw("depth") {
+                        d.depth = text(&V::N(crate::parser::split_number(&p.cur().text, false)?.0)).parse().ok();
+                        p.i += 1;
+                    } else {
+                        break;
+                    }
                 }
                 if p.accept_kw("impls") {
                     let tr = p.trait_ref()?;
@@ -694,6 +704,8 @@ pub struct Program {
     pub impls: HashSet<(String, String)>,
     /// `derive [From]` を宣言した `enum` の FQN (4.3 の `?` のエラー変換)。
     pub from_enums: HashSet<String>,
+    /// パッケージの入口 (`kasane.toml` の `entry`。ライブラリは `None`)。`depth M` を書ける関数 (E4014)。
+    pub entry: Option<String>,
 }
 
 /// `?` のエラー変換 (4.1) で、`E1` を包むバリアントを引いた結果。

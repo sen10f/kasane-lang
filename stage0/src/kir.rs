@@ -1116,6 +1116,8 @@ pub struct Module {
     pub funcs: Vec<Func>,
     /// 集成体の型表 (`Ty::Agg` の添字)。定義は構成要素より前に並ぶ。
     pub aggs: Vec<AggDef>,
+    /// 入口の主スレッドの呼び出しの深さの上限 (入口の `depth M`)。0 は既定 (`kir_exec::MAX_DEPTH`)。
+    pub depth: u64,
 }
 
 impl Module {
@@ -1152,6 +1154,7 @@ impl Module {
         let mut m = Module {
             funcs: self.funcs.iter().filter(|f| seen.contains(&f.key)).cloned().collect(),
             aggs: self.aggs.clone(),
+            depth: self.depth,
         };
         prune_aggs(&mut m);
         m
@@ -1549,6 +1552,9 @@ pub fn print_func(f: &Func) -> String {
 /// モジュール全体を出す。先頭に版の行、関数ごとに空行を挟む。
 pub fn print_module(m: &Module) -> String {
     let mut s = format!("{}\n", VERSION_LINE);
+    if m.depth != 0 {
+        s.push_str(&format!("depth {}\n", m.depth));
+    }
     if !m.aggs.is_empty() {
         s.push('\n');
         for (i, d) in m.aggs.iter().enumerate() {
@@ -2173,6 +2179,13 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
         Some((n, l)) => return Err(perr(n, format!("版が {} ではない (読めるのは {})", l, VERSION_LINE))),
         None => return Err("kir: 空の入力".to_string()),
     }
+    let mut depth = 0u64;
+    if let Some(&(n, l)) = it.peek() {
+        if let Some(v) = l.strip_prefix("depth ") {
+            depth = v.trim().parse::<u64>().map_err(|_| perr(n, "depth の値が不正"))?;
+            it.next();
+        }
+    }
     // 集成体の型表 (版の行の直後に `agg#<添字>` の行が並ぶ)。
     let mut aggs: Vec<AggDef> = vec![];
     while let Some(&(n, l)) = it.peek() {
@@ -2286,7 +2299,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
             blocks,
         });
     }
-    Ok(Module { funcs, aggs })
+    Ok(Module { funcs, aggs, depth })
 }
 
 /// `agg#<k> <kind> <名前> size=<n> align=<n> {<本体>}` を読む (`k` は期待する添字)。
@@ -3408,7 +3421,7 @@ mod tests {
                 term: Term::Ret(2),
             }],
         };
-        let m = Module { funcs: vec![f], aggs: vec![] };
+        let m = Module { funcs: vec![f], aggs: vec![], depth: 0 };
         let text = print_module(&m);
         assert!(text.contains("panic \"a\\\"b\\\\c\\nd 100%\" %0"), "{}", text);
         let back = parse_module(&text).expect("parse");
@@ -3592,7 +3605,7 @@ end t.p
                 term: Term::Ret(5),
             }],
         };
-        Module { funcs: vec![f], aggs: vec![p, s] }
+        Module { funcs: vec![f], aggs: vec![p, s], depth: 0 }
     }
 
     #[test]
@@ -3737,7 +3750,7 @@ end t.c
                 },
             ],
         };
-        Module { funcs: vec![f], aggs: vec![] }
+        Module { funcs: vec![f], aggs: vec![], depth: 0 }
     }
 
     #[test]

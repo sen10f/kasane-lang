@@ -101,16 +101,24 @@ fn fn_header(p: &mut Parser) -> R<String> {
         (V::L(vec![]), "inferred".to_string())
     };
     let mut stack = V::Nil;
-    if p.accept_kw("stack") {
-        stack = V::N(split_number(&p.cur().text, false)?.0);
-        p.i += 1;
+    let mut depth = V::Nil;
+    loop {
+        if matches!(stack, V::Nil) && p.accept_kw("stack") {
+            stack = V::N(split_number(&p.cur().text, false)?.0);
+            p.i += 1;
+        } else if matches!(depth, V::Nil) && p.accept_kw("depth") {
+            depth = V::N(split_number(&p.cur().text, false)?.0);
+            p.i += 1;
+        } else {
+            break;
+        }
     }
     let mut impls = V::Nil;
     if p.accept_kw("impls") {
         impls = p.trait_ref()?;
     }
     let pubf = p.accept_kw("pub");
-    Ok(nd("fn", vec![V::S(name), g, params, ret, V::B(cst), uses, V::S(pn), stack, impls, V::B(pubf)]).dump())
+    Ok(nd("fn", vec![V::S(name), g, params, ret, V::B(cst), uses, V::S(pn), stack, impls, V::B(pubf), depth]).dump())
 }
 
 fn type_enum_header(p: &mut Parser, kw: &'static str, body: &[&str]) -> R<String> {
