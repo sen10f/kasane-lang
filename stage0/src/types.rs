@@ -1023,8 +1023,8 @@ impl<'a> TypeCk<'a> {
     fn has_open(&self, t: &Ty) -> bool {
         match self.deep(t) {
             Ty::Unknown | Ty::Var(_) => true,
-            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.has_open(x)),
-            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.has_open(&x),
+            Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(|x| self.has_open(x)),
+            Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.has_open(&x),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.has_open(x)) || self.has_open(&ret),
             _ => false,
         }
@@ -1036,7 +1036,7 @@ impl<'a> TypeCk<'a> {
     fn coerces(&self, t: &Ty) -> bool {
         match self.deep(t) {
             Ty::Ref(..) | Ty::Ptr(_, _) | Ty::Dyn(..) | Ty::Closure { .. } => true,
-            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.coerces(x)),
+            Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(|x| self.coerces(x)),
             Ty::Array(x, _) | Ty::Slice(x) => self.coerces(&x),
             _ => false,
         }
