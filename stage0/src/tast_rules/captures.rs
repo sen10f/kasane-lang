@@ -20,8 +20,127 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
         let Some(b) = tast.bodies.get(&di) else { continue };
         let mut w = W { p, di, out: &mut out, scopes: vec![b.params.iter().map(|q| q.name.clone()).collect()], frames: vec![] };
         w.expr(&b.body);
+        effects(p, di, &b.body, &mut out);
     }
     out
+}
+
+/// 関数・クロージャの値の効果が、渡す先の宣言を超えるときの E4001 / E4002 (仕様 4.3・5.1)。見るのは TAST の型の効果だけ:
+/// (1) 効果を宣言した関数型 `fn(..) uses [..] panics ..` の位置へ入る値 (変換の印 `FnTo`)
+/// (2) 呼び先の型パラメータの `Fn<.., E, P>` 境界が具体的な効果を持つとき、その型の実引数の閉包・関数。
+/// 効果変数を持つ側は、呼び出し元の宣言との比べ (呼び出し先の `uses [E]` の実体化) が見るのでここでは見ない。
+fn effects(p: &Program, di: DefId, body: &TExpr, out: &mut Vec<Diag>) {
+    use crate::check::{covers, is_effect_var};
+    use crate::types::Ty;
+    let d = &p.defs[di];
+    let mut found: Vec<(&'static str, String, usize)> = vec![];
+    // 呼び出しの引数へ入る値は呼び出しの行、それ以外 (`let` の注釈・戻り値・欄) は旧い検査と同じく定義の行で報告する。
+    let mut arg_line: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    super::impl_sig::walk(body, &mut |e| {
+        if let TKind::Call { args, .. } | TKind::MCall { args, .. } = &e.kind {
+            for a in args {
+                arg_line.insert(a.id, e.line);
+            }
+        }
+        if let TKind::StructLit { fields, .. } = &e.kind {
+            for (_, a) in fields {
+                arg_line.insert(a.id, e.line);
+            }
+        }
+        let at = arg_line.get(&e.id).copied().unwrap_or(0);
+        for c in &e.conv {
+            let Coercion::FnTo(Ty::Closure { eff: crate::types::Eff(Some(want)), .. }) = c else { continue };
+            let Ty::Closure { eff: crate::types::Eff(Some(got)), .. } = e.ty.strip() else { continue };
+            if want.uses.iter().any(|x| is_effect_var(x)) || want.may.is_none() {
+                continue;
+            }
+            for x in &got.uses {
+                if is_effect_var(x) {
+                    let who = if got.name.is_empty() { "the passed function type" } else { &got.name };
+                    found.push(("E4001", format!("{} uses effect variable `{}` but the function type declares `uses [{}]`", who, x, want.uses.join(", ")), at));
+                } else if !covers(&want.uses, x) {
+                    found.push(("E4001", format!("{} uses effect `{}` but the function type declares `uses [{}]`", got.name, x, want.uses.join(", ")), at));
+                }
+            }
+            if want.may == Some(false) && got.may != Some(false) {
+                let who = if got.name.is_empty() { "the passed function type" } else { &got.name };
+                found.push(("E4002", format!("{} may panic but the function type declares `panics never`", who), at));
+            }
+        }
+        let (args, off) = match (&e.kind, &e.res) {
+            (TKind::Call { args, .. }, Some(Callee::Def(ci))) | (TKind::MCall { args, .. }, Some(Callee::Def(ci))) => {
+                let n = p.defs[*ci].params.len();
+                (args, if n > args.len() { n - args.len() } else { 0 })
+            }
+            _ => return,
+        };
+        let Some(Callee::Def(ci)) = &e.res else { return };
+        let c = &p.defs[*ci];
+        let gn = c.gnames();
+        for (k, a) in args.iter().enumerate() {
+            let Some(prm) = c.params.get(k + off) else { break };
+            let mut slots = vec![];
+            param_slots(&crate::types::from_v(&prm.1, &gn), &a.ty, &mut slots);
+            for (name, at) in slots {
+                let Ty::Closure { eff: crate::types::Eff(Some(info)), .. } = &at else { continue };
+                for g in &c.generics {
+                    if g.0 != "type" || g.1 != name {
+                        continue;
+                    }
+                    for b in crate::check::items(&g.2) {
+                        if !matches!(b, crate::parser::V::L(bx) if crate::check::st(&bx[0]).starts_with("core.ops.Fn")) {
+                            continue;
+                        }
+                        let bt = crate::check::items(crate::check::tel(b, 1));
+                        if let Some(v) = bt.get(2).filter(|v| crate::check::tag(v) == "effects") {
+                            let bl: Vec<String> = crate::check::items(crate::check::tel(v, 1)).iter().map(crate::check::st).collect();
+                            if bl.iter().all(|x| x.chars().next().map_or(false, |ch| ch.is_lowercase())) {
+                                for x in info.uses.iter().filter(|x| is_effect_var(x) || !covers(&bl, x)) {
+                                    found.push((
+                                        "E4001",
+                                        format!("closure passed to `{}` uses effect `{}` outside the `Fn` bound's effects [{}]", c.name, x, bl.join(", ")),
+                                        e.line,
+                                    ));
+                                }
+                            }
+                        }
+                        if let Some(v) = bt.get(3).filter(|v| crate::check::tag(v) == "panic") {
+                            if crate::check::st(crate::check::tel(v, 1)) == "never" && info.may.unwrap_or(false) {
+                                found.push(("E4002", format!("closure passed to `{}` may panic but the `Fn` bound declares `panics never`", c.name), e.line));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    for (code, msg, line) in found {
+        let line = if line != 0 { line } else { crate::parser::unpack_pos(d.line).0 };
+        let dg = Diag { file: d.file.clone(), code: code.into(), fqn: d.name.clone(), line, col: 0, msg };
+        if !out.iter().any(|o| o.file == dg.file && o.line == dg.line && o.code == dg.code && o.msg == dg.msg) {
+            out.push(dg);
+        }
+    }
+}
+
+/// 仮引数の型 `pt` の中の型パラメータと、実引数の型 `a` の同じ位置の型の組 (参照は外して見る)。
+fn param_slots(pt: &crate::types::Ty, a: &crate::types::Ty, out: &mut Vec<(String, crate::types::Ty)>) {
+    use crate::types::Ty;
+    let mut at = a.clone();
+    while let Ty::Ref(_, x, _) = at {
+        at = *x;
+    }
+    let mut pt = pt;
+    while let Ty::Ref(_, x, _) = pt {
+        pt = x;
+    }
+    match (pt, &at) {
+        (Ty::Param(n), _) => out.push((n.clone(), at)),
+        (Ty::Named(n, pa, _), Ty::Named(m, aa, _)) if n == m && pa.len() == aa.len() => pa.iter().zip(aa).for_each(|(x, y)| param_slots(x, y, out)),
+        (Ty::Tuple(pa), Ty::Tuple(aa)) if pa.len() == aa.len() => pa.iter().zip(aa).for_each(|(x, y)| param_slots(x, y, out)),
+        (Ty::Array(x, _), Ty::Array(y, _)) | (Ty::Slice(x), Ty::Slice(y)) => param_slots(x, y, out),
+        _ => {}
+    }
 }
 
 struct W<'a> {
