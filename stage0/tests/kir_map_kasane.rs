@@ -82,7 +82,7 @@ end t.Store.new
 
 fn t.Store.bump(self: &mut t.Store, key: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let k = alloc.string.String.from_str(std.alloc.SYSTEM, key)?
-    match self.map.get_mut(&k) {
+    match self.map.get_mut_str(k.as_str()) {
         Some(item) => {
             item.count = item.count.wrapping_add(1u32)
         }
@@ -104,7 +104,7 @@ end t.Store.bump
 fn t.Store.count(self: &t.Store, key: &str) -> u32 uses [alloc] panics never pub
     match alloc.string.String.from_str(std.alloc.SYSTEM, key) {
         Ok(kk) => {
-            match self.map.get(&kk) {
+            match self.map.get_str(kk.as_str()) {
                 Some(item) => {
                     item.count
                 }

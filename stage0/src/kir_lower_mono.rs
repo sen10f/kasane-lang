@@ -61,6 +61,18 @@ pub(super) fn unify(pat: &Src, act: &Src, bind: &mut HashMap<String, Src>) {
         // `&[T]` の引数に配列・`Vec<T, A>` を渡す (参照外しの強制): 要素型を突き合わせる。
         (Src::Slice(p), Src::Array(a, _)) => unify(p, a, bind),
         (Src::Slice(p), Src::Named(v, a, _)) if v == "alloc.vec.Vec" && !a.is_empty() => unify(p, &a[0], bind),
+        // 末尾のアロケータ引数を省いた型 (`alloc.string.String` = `String<std.alloc.System>`、仕様 8.2): 省かれた側の型パラメータは
+        // 既定の `System` に束ねる (`HashMap<String<B>, V, A>` の `B`)。
+        (Src::Named(n, ps, _), Src::Named(m, as_, _)) if n == m && as_.len() < ps.len() && !as_.is_empty() || (n == m && as_.is_empty() && !ps.is_empty() && n == "alloc.string.String") => {
+            for (p, a) in ps.iter().zip(as_) {
+                unify(p, a, bind)
+            }
+            for p in &ps[as_.len()..] {
+                if let Src::Param(pn) = p {
+                    bind.entry(pn.clone()).or_insert_with(|| Src::Named("std.alloc.System".to_string(), vec![], Default::default()));
+                }
+            }
+        }
         (Src::Named(n, ps, _), Src::Named(m, as_, _)) if n == m && ps.len() == as_.len() => {
             for (p, a) in ps.iter().zip(as_) {
                 unify(p, a, bind)
