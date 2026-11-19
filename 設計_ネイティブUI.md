@@ -19,7 +19,7 @@
 | N0 | ネイティブの FFI を完成: `layout c` の構造体の値渡し・ポインタ渡し・戻り値、固定長の配列、構造体へのポインタ、`aarch64` の AAPCS64 の値渡し。`examples/ffi/shapes` と `core.fmt.Formatter` がネイティブになる | なし |
 | N1w | Windows 対象 `x86_64-windows-gnu` (mingw-w64 の import ライブラリ、lld の COFF、`sysrt.c` の Windows の枝)。試験は wine | なし (N0 と並行) |
 | N1m | macOS 対象 `aarch64-apple-darwin` / `x86_64-apple-darwin` (lld の Mach-O、SDK の `.tbd`)。試験は Mac の実機 (利用者が貸す。i9 の検証機と同じく ssh で入る) | 利用者の Mac |
-| N2 | `ksn bindgen --c <header.h>`: libclang (bindgen のときだけ dlopen) で C の見出しから `extern`・`layout c`・定数を生成 | N0 |
+| N2 | `ksn bindgen --c <header.h>`: libclang (bindgen のときだけ dlopen) で C の見出しから `extern`・`layout c`・定数を生成。実装済み (native/n2-bindgen、2026-11-19。`stage0/src/bindgen_c.rs`・試験 `stage0/tests/bindgen_c.rs`) | N0 |
 | N3 | 利用者のデータを添えたコールバック (閉包 → 踏み台 + `void*`)、`Rc` 相当の共有の取っ手 (またはアリーナの標準ライブラリ)、C のライブラリの静的なつなぎ (`kasane.toml` の `[native]`) | N0 |
 | N4 | 試作: SDL3 (窓・入力、3 つの OS) + wgpu-native (GPU、Vulkan / Metal / D3D12) + FreeType / HarfBuzz (文字) で、四角と文字とボタンを描く。インタプリタへの退避が 0 であることを確かめる | N0・N2・N3 |
 | N5 | UI の枠組み (`kasane-ui`): 取っ手と状態、配置の計算 (flexbox を Kasane で)、描画のリスト、文字の入力、IME | N4 |

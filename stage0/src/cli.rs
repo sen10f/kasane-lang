@@ -4108,7 +4108,15 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "todo" => cmd_todo(),
         "context" => cmd_context(&rest),
         "explain" => cmd_explain(&rest),
-        "bindgen" => crate::bindgen::cmd_bindgen(&rest),
+        "bindgen" => {
+            if rest.iter().any(|a| a == "--c") {
+                crate::bindgen_c::cmd_bindgen_c(&rest)
+            } else if rest.iter().any(|a| a == "--debug-kinds") {
+                crate::bindgen_c::cmd_bindgen_c_debug_kinds(&rest)
+            } else {
+                crate::bindgen::cmd_bindgen(&rest)
+            }
+        }
         "lsp" => crate::lsp::run(),
         "debug" => crate::debug::cmd_debug(&rest),
         "dap" => crate::debug::cmd_dap(),
