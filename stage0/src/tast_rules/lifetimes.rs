@@ -33,10 +33,15 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, _tk: &TypeCk) -> Vec<Diag
 
 // ------------------------------------------------------------ 借用の集合
 
+/// 行の印: 葉の式の行で報告する (明示の `&`・パターン・分解の束縛)。
+const LEAF: usize = usize::MAX;
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Loan {
     /// 局所の束縛 (名前, `PBind` の ID。引数は 0) への借用。
     Local(String, u32),
+    /// 持ち主のスコープが尽きた局所への借用 (`Local` が尽きたもの)。
+    Dead(String),
     /// 一時値への借用。
     Temp,
     /// 引数 (名前) から来た借用・型パラメータの値。
@@ -64,6 +69,20 @@ impl Val {
     /// 参照を `n` 段外す (`*e`・自動参照外し): 外側の層を落とし、内側を繰り上げる。
     fn down(&self, n: usize) -> Val {
         Val { set: self.set.iter().filter(|((_, k), _)| *k as usize >= n).map(|((l, k), x)| ((l.clone(), k - n as u8), *x)).collect(), parts: vec![] }
+    }
+    /// 持ち主が尽きた局所の借用を `Dead` にする。
+    fn kill(&mut self, dead: &HashSet<(String, u32)>) {
+        let old = std::mem::take(&mut self.set);
+        for ((l, k), x) in old {
+            let l = match l {
+                Loan::Local(n, id) if dead.contains(&(n.clone(), id)) => Loan::Dead(n),
+                o => o,
+            };
+            self.set.entry((l, k)).and_modify(|y| *y = (*y).min(x)).or_insert(x);
+        }
+        for p in &mut self.parts {
+            p.kill(dead);
+        }
     }
     /// 層を問わない借用の一覧 (借用, 行)。
     fn loans(&self) -> Vec<(Loan, usize)> {
@@ -94,6 +113,30 @@ impl Val {
         self.add(o);
         self
     }
+    /// `let` に束縛したときの行の付け直し: 引数の借用は `let` の行、局所の借用は (明示の `&` で 0 でなければ) `let` の行。
+    fn restamp(mut self, line: usize) -> Val {
+        for ((l, _), x) in self.set.iter_mut() {
+            if *x != LEAF {
+                *x = line;
+            }
+        }
+        for p in &mut self.parts {
+            *p = std::mem::take(p).restamp(line);
+        }
+        self
+    }
+    /// 場所の違う束縛 (パターン) へ入れたとき: 局所の借用は葉の行で報告する。
+    fn unstamp_locals(mut self) -> Val {
+        for ((l, _), x) in self.set.iter_mut() {
+            if !matches!(l, Loan::Arg(_)) {
+                *x = LEAF;
+            }
+        }
+        for p in &mut self.parts {
+            *p = std::mem::take(p).unstamp_locals();
+        }
+        self
+    }
     fn with_line(mut self, line: usize) -> Val {
         for l in self.set.values_mut() {
             *l = line;
@@ -116,8 +159,6 @@ struct Var {
     decl: u32,
     /// 型の最上位が参照か。
     is_ref: bool,
-    /// 指す先が尽きた借用 (尽きた局所の名前)。次に使うと E3010。
-    dead: BTreeSet<String>,
 }
 
 #[derive(Clone, Default)]
@@ -129,10 +170,7 @@ impl Env {
     fn merge(&mut self, o: &Env) {
         for (k, v) in &o.vars {
             match self.vars.get_mut(k) {
-                Some(m) => {
-                    m.val.add(&v.val);
-                    m.dead.extend(v.dead.iter().cloned());
-                }
+                Some(m) => m.val.add(&v.val),
                 None => {
                     self.vars.insert(k.clone(), v.clone());
                 }
@@ -311,7 +349,7 @@ impl<'a> W<'a> {
             Ty::Dyn(_, _, r) => !matches!(r, Region::Unk | Region::Static),
             Ty::Closure { id, .. } => id.is_some(),
             // 定義の欄の中の型パラメータは、実引数の側で見ている。
-            Ty::Param(_) => seen.is_empty(),
+            Ty::Param(p) => seen.is_empty() && !self.static_param(p),
             Ty::Tuple(xs) => xs.iter().any(|x| self.carries_in(x, seen)),
             Ty::Array(x, _) | Ty::Slice(x) => self.carries_in(x, seen),
             Ty::Named(n, args, rgs) => {
@@ -340,6 +378,11 @@ impl<'a> W<'a> {
         }
     }
 
+    /// 今の定義が `T: 'static` と宣言した型パラメータ。
+    fn static_param(&self, p: &str) -> bool {
+        self.p.defs[self.di].generics.iter().any(|g| g.0 == "type" && g.1 == p && static_bound(&g.2))
+    }
+
     fn keep(&self, v: Val, t: &Ty) -> Val {
         if self.carries(t) && !t.refs_all_static() {
             v
@@ -353,13 +396,14 @@ impl<'a> W<'a> {
     fn define(&mut self, name: &str, decl: u32, v: Val, t: &Ty) {
         let carries = self.carries(t) && !t.refs_all_static();
         let val = if carries { v } else { Val::default() };
-        self.env.vars.insert(name.to_string(), Var { val, carries, decl, is_ref: is_ref(t), dead: BTreeSet::new() });
+        self.env.vars.insert(name.to_string(), Var { val, carries, decl, is_ref: is_ref(t) });
         if let Some(sc) = self.scopes.last_mut() {
             sc.push(name.to_string());
         }
     }
 
-    fn bind_pat(&mut self, pat: &TPat, v: Val) {
+    fn bind_pat(&mut self, pat: &TPat, v: Val, reline: bool) {
+        let v = if reline { v.unstamp_locals() } else { v };
         match pat.kind {
             "PBind" => {
                 let t = pat.info.as_ref().and_then(|i| i.bind.as_ref().map(|b| b.1.clone())).unwrap_or(Ty::Unknown);
@@ -370,12 +414,12 @@ impl<'a> W<'a> {
             "PTuple" => {
                 for (i, c) in pat.children.iter().enumerate() {
                     let cv = if v.parts.len() == pat.children.len() { v.parts[i].clone() } else { v.flat() };
-                    self.bind_pat(c, cv);
+                    self.bind_pat(c, cv, false);
                 }
             }
             _ => {
                 for c in &pat.children {
-                    self.bind_pat(c, v.flat());
+                    self.bind_pat(c, v.flat(), false);
                 }
             }
         }
@@ -407,7 +451,8 @@ impl<'a> W<'a> {
         }
         if self.carries(&b.ret) {
             for l in leaves {
-                self.escape_leaf(l, &|_| true, true);
+                self.escape_leaf(l, &|loan| !matches!(loan, Loan::Dead(_)), true);
+                self.ret_position(l);
             }
         }
     }
@@ -436,18 +481,78 @@ impl<'a> W<'a> {
     fn escape_leaf(&mut self, leaf: &TExpr, dead: &dyn Fn(&Loan) -> bool, ret: bool) {
         let Some(v) = self.vals.get(&leaf.id).cloned() else { return };
         let v = self.keep(v, &leaf.ty);
-        for (l, _) in &v.loans() {
+        for (l, line) in &v.loans() {
             if !dead(l) {
                 continue;
             }
             let msg = match l {
-                Loan::Local(n, _) => {
+                Loan::Local(n, _) | Loan::Dead(n) => {
                     format!("returns a reference to the local variable `{}`, which does not live long enough", n)
                 }
                 Loan::Temp => "returns a reference to a temporary value, which does not live long enough".to_string(),
                 Loan::Arg(_) => continue,
             };
-            self.diag("E3030", msg, leaf.line);
+            let at = if !ret || *line == 0 || *line == LEAF { leaf.line } else { *line };
+            self.diag("E3030", msg, at);
+        }
+    }
+
+    /// 戻り値の位置 (G14): 葉が運ぶ引数の借用が、戻り値の型の領域・宣言した包含関係のどれにも収まらなければ E3010。
+    fn ret_position(&mut self, leaf: &TExpr) {
+        let Some(v) = self.vals.get(&leaf.id).cloned() else { return };
+        let v = self.keep(v, &leaf.ty);
+        let d = &self.p.defs[self.di];
+        let ps0: Vec<(String, Ty)> = d.params.iter().map(|(n, t)| (n.clone(), from_v(t, &self.gn))).collect();
+        let (ps, ret) = elide_sig(&ps0, &from_v(&d.ret, &self.gn));
+        let rr = ret.regions();
+        if rr.is_empty() || rr.iter().any(|r| matches!(r, Region::Unk)) {
+            return;
+        }
+        let header = d.header.split(" uses ").next().unwrap_or("").to_string();
+        let fname = d.name.clone();
+        let rtext = from_v(&d.ret, &self.gn).show_r().replace("'_ ", "");
+        let mut found: Vec<(String, usize)> = vec![];
+        for (l, line) in v.loans() {
+            let Loan::Arg(q) = l else { continue };
+            let Some(k) = ps0.iter().position(|(n, _)| *n == q) else { continue };
+            let have = real_regions(&ps[k]);
+            if have.is_empty() || ps[k].regions().iter().any(|r| matches!(r, Region::Static)) {
+                continue;
+            }
+            if have.iter().any(|h| rr.iter().any(|r| same_r(h, r))) {
+                continue;
+            }
+            let named: Vec<String> = have.iter().filter_map(|h| if let Region::Named(n) = h { Some(n.clone()) } else { None }).collect();
+            if named.iter().any(|h| header.contains(&format!("'{}:", h)) || header.contains(&format!("'{} :", h))) {
+                continue;
+            }
+            let ptext = format!("{}: {}", ps0[k].0, from_v(&d.params[k].1, &self.gn).show_r().replace("'_ ", ""));
+            let ret_named = rr.iter().any(|r| matches!(r, Region::Named(_)));
+            let msg = if !named.is_empty() {
+                format!(
+                    "{}: the returned value carries a borrow from argument `{}` (`{}`), but the return type `{}` does not name its lifetime; `{}` is not declared to outlive it",
+                    fname,
+                    q,
+                    ptext,
+                    rtext,
+                    named.iter().map(|h| format!("'{}", h)).collect::<Vec<_>>().join(", ")
+                )
+            } else if ret_named {
+                format!(
+                    "{}: the returned value carries a borrow from argument `{}` (`{}`), whose lifetime is elided (a new region per call); the return type `{}` names a lifetime it does not outlive",
+                    fname, q, ptext, rtext
+                )
+            } else {
+                let src = ps.iter().position(|t| real_regions(t).iter().any(|h| rr.iter().any(|r| same_r(h, r)))).unwrap_or(0);
+                format!(
+                    "{}: the returned value carries a borrow from argument `{}` (`{}`), but the elided return lifetime of `{}` comes from argument `{}` (spec 4.1)",
+                    fname, q, ptext, rtext, ps0[src].0
+                )
+            };
+            found.push((msg, line));
+        }
+        for (m, line) in found {
+            self.diag("E3010", m, if line == 0 || line == LEAF { leaf.line } else { line });
         }
     }
 
@@ -487,7 +592,8 @@ impl<'a> W<'a> {
     }
 
     /// `&e` の借用が運ぶもの。
-    fn borrow_of(&mut self, e: &TExpr) -> Val {
+    fn borrow_of(&mut self, e: &TExpr, explicit: bool) -> Val {
+        let ln = if explicit { LEAF } else { e.line };
         let v = match &e.kind {
             TKind::Path(segs) => match Self::local_of(e) {
                 Some((n, id)) => {
@@ -500,7 +606,7 @@ impl<'a> W<'a> {
                     if segs.len() > 1 && is_r {
                         val.flat()
                     } else {
-                        let mut r = Val::loan(Loan::Local(n, id), e.line);
+                        let mut r = Val::loan(Loan::Local(n, id), ln);
                         if carries {
                             r.add(&val.flat().up());
                         }
@@ -513,7 +619,7 @@ impl<'a> W<'a> {
                 if is_ref(&base.ty) {
                     self.ev(base).flat()
                 } else {
-                    self.borrow_of(base)
+                    self.borrow_of(base, explicit)
                 }
             }
             TKind::Index { base, index } => {
@@ -521,14 +627,14 @@ impl<'a> W<'a> {
                 if is_ref(&base.ty) {
                     self.ev(base).flat()
                 } else {
-                    self.borrow_of(base)
+                    self.borrow_of(base, explicit)
                 }
             }
             TKind::Unary { op, operand } if op == "*" => {
                 if is_ref(&operand.ty) {
                     self.ev(operand).flat()
                 } else {
-                    self.borrow_of(operand)
+                    self.borrow_of(operand, explicit)
                 }
             }
             _ => {
@@ -536,16 +642,16 @@ impl<'a> W<'a> {
                 if Self::is_const(e) {
                     v
                 } else {
-                    v.union(&Val::loan(Loan::Temp, e.line))
+                    v.union(&Val::loan(Loan::Temp, ln))
                 }
             }
         };
-        v
+        if explicit { v.with_line(LEAF) } else { v }
     }
 
     fn arg_of(&mut self, a: &TExpr, auto_ref: bool) -> Arg {
         if auto_ref {
-            let full = self.borrow_of(a);
+            let full = self.borrow_of(a, false);
             let inner = self.ev(a);
             // 受け手の中身 (参照そのものの借用を除く)。
             return Arg { ty: Ty::Ref(false, Box::new(a.ty.clone()), Region::Unk), full, inner };
@@ -596,7 +702,7 @@ impl<'a> W<'a> {
             }
             TKind::Unary { op, operand } => {
                 if op == "&" || op == "&mut" {
-                    let v = self.borrow_of(operand);
+                    let v = self.borrow_of(operand, true);
                     let _ = self.ev(operand);
                     v
                 } else if op == "*" {
@@ -635,13 +741,14 @@ impl<'a> W<'a> {
                 for a in arms {
                     self.env = saved.clone();
                     self.scopes.push(vec![]);
-                    self.bind_pat(&a.pat, s.clone());
+                    self.bind_pat(&a.pat, s.clone(), true);
                     if let Some(g) = &a.guard {
                         self.ev(g);
                     }
                     let v = self.ev(&a.body);
+                    self.escape_scope(&a.body);
+                    let v = self.end_scope(v);
                     out.add(&v);
-                    self.end_scope();
                     match &mut merged {
                         Some(m) => m.merge(&self.env),
                         None => merged = Some(self.env.clone()),
@@ -657,7 +764,7 @@ impl<'a> W<'a> {
                     let id = var.as_ref().map_or(0, |x| x.decl);
                     let inner = var.map(|x| x.val).unwrap_or_default();
                     if c.kind == "&" || c.kind == "&mut" {
-                        out.add(&Val::loan(Loan::Local(c.name.clone(), id), e.line));
+                        out.add(&Val::loan(Loan::Local(c.name.clone(), id), LEAF));
                     }
                     out.add(&inner.flat());
                 }
@@ -693,7 +800,7 @@ impl<'a> W<'a> {
         if ft.regions().iter().any(|r| matches!(r, Region::Static)) {
             for (l, _) in &v.loans() {
                 let (code, msg) = match l {
-                    Loan::Local(n, _) => ("E3030", format!("returns a reference to the local variable `{}`, which does not live long enough", n)),
+                    Loan::Local(n, _) | Loan::Dead(n) => ("E3030", format!("returns a reference to the local variable `{}`, which does not live long enough", n)),
                     Loan::Temp => ("E3030", "returns a reference to a temporary value, which does not live long enough".to_string()),
                     Loan::Arg(_) => continue,
                 };
@@ -773,7 +880,7 @@ impl<'a> W<'a> {
     fn escape_val(&mut self, v: &Val, line: usize) {
         for (l, _) in &v.loans() {
             let msg = match l {
-                Loan::Local(n, _) => format!("returns a reference to the local variable `{}`, which does not live long enough", n),
+                Loan::Local(n, _) | Loan::Dead(n) => format!("returns a reference to the local variable `{}`, which does not live long enough", n),
                 Loan::Temp => "returns a reference to a temporary value, which does not live long enough".to_string(),
                 Loan::Arg(_) => continue,
             };
@@ -790,7 +897,12 @@ impl<'a> W<'a> {
             match s {
                 TStmt::Let { pat, init } => {
                     let v = init.as_ref().map(|x| self.ev(x)).unwrap_or_default();
-                    self.bind_pat(pat, v);
+                    let v = match init {
+                        Some(x) if pat.kind == "PBind" => v.restamp(x.line),
+                        Some(_) => v.with_line(LEAF),
+                        None => v,
+                    };
+                    self.bind_pat(pat, v, false);
                 }
                 TStmt::Expr(x) => {
                     let v = self.ev(x);
@@ -808,41 +920,41 @@ impl<'a> W<'a> {
         let declared: Vec<String> = self.scopes.last().cloned().unwrap_or_default();
         let dead: HashSet<(String, u32)> = declared.iter().filter_map(|n| self.env.vars.get(n).map(|v| (n.clone(), v.decl))).collect();
         if let (true, Some(TStmt::Expr(x))) = (self.scopes.len() > 2, stmts.last()) {
-            let mut leaves = vec![];
-            Self::leaves(x, &mut leaves);
-            for l in leaves {
-                self.escape_leaf(l, &|loan| matches!(loan, Loan::Local(n, id) if dead.contains(&(n.clone(), *id))), false);
-            }
+            let _ = dead;
+            self.escape_scope(x);
         }
-        self.end_scope();
-        tail
+        self.end_scope(tail)
     }
 
-    /// スコープを閉じる: 宣言した局所が尽きる。外側の束縛が持つその借用は「尽きた」印を付け、次の使用を E3010 にする。
-    fn end_scope(&mut self) {
+    /// 今のスコープの局所の借用を、値の位置の葉が運んで外へ出す (E3030)。
+    fn escape_scope(&mut self, value: &TExpr) {
+        let declared: Vec<String> = self.scopes.last().cloned().unwrap_or_default();
+        let dead: HashSet<(String, u32)> = declared.iter().filter_map(|n| self.env.vars.get(n).map(|v| (n.clone(), v.decl))).collect();
+        let mut leaves = vec![];
+        Self::leaves(value, &mut leaves);
+        for l in leaves {
+            self.escape_leaf(l, &|loan| matches!(loan, Loan::Local(n, id) if dead.contains(&(n.clone(), *id))), false);
+        }
+    }
+
+    /// スコープを閉じる: 宣言した局所が尽きる。外側の束縛・値が持つその借用は `Dead` になる (次の使用が E3010)。
+    fn end_scope(&mut self, mut tail: Val) -> Val {
         let declared = self.scopes.pop().unwrap_or_default();
         let dead: HashSet<(String, u32)> = declared.iter().filter_map(|n| self.env.vars.get(n).map(|v| (n.clone(), v.decl))).collect();
-        for (holder, var) in self.env.vars.iter_mut() {
-            if declared.contains(holder) || !var.carries {
-                continue;
-            }
-            for (l, _) in var.val.loans() {
-                if let Loan::Local(n, id) = l {
-                    if dead.contains(&(n.clone(), id)) {
-                        var.dead.insert(n);
-                    }
-                }
-            }
-        }
         for n in &declared {
             self.env.vars.remove(n);
         }
+        for var in self.env.vars.values_mut() {
+            var.val.kill(&dead);
+        }
+        tail.kill(&dead);
+        tail
     }
 
     /// 局所の束縛の使用。指す先が尽きた借用を持っていれば E3010。
     fn use_var(&mut self, name: &str, line: usize) {
         let Some(v) = self.env.vars.get(name) else { return };
-        let dead: Vec<String> = v.dead.iter().cloned().collect();
+        let dead: Vec<String> = v.val.loans().into_iter().filter_map(|(l, _)| if let Loan::Dead(n) = l { Some(n) } else { None }).collect();
         for n in dead {
             self.diag("E3010", format!("use of `{}` borrows `{}` which does not live long enough", name, n), line);
         }
@@ -891,7 +1003,6 @@ impl<'a> W<'a> {
             let nv = if var.carries { v } else { Val::default() };
             if let Some(x) = self.env.vars.get_mut(&n) {
                 x.val = nv.with_line(line);
-                x.dead.clear();
             }
             return;
         }
@@ -923,14 +1034,14 @@ impl<'a> W<'a> {
                 Loan::Arg(_) => {
                     for (k, _) in &v.loans() {
                         let msg = match k {
-                            Loan::Local(n, _) => format!("stores a reference to the local variable `{}` into a place that outlives it", n),
+                            Loan::Local(n, _) | Loan::Dead(n) => format!("stores a reference to the local variable `{}` into a place that outlives it", n),
                             Loan::Temp => "stores a reference to a temporary value into a place that outlives it".to_string(),
                             Loan::Arg(_) => continue,
                         };
                         self.diag("E3030", msg, line);
                     }
                 }
-                Loan::Temp => {}
+                Loan::Temp | Loan::Dead(_) => {}
             }
         }
     }
