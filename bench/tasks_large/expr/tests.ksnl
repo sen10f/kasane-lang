@@ -1,0 +1,108 @@
+test bench.eval.test_add_sub
+    core.check.eq(bench.eval("1+2"), Ok(3i64))
+    core.check.eq(bench.eval("10-4"), Ok(6i64))
+    core.check.eq(bench.eval("1+2+3"), Ok(6i64))
+    core.check.eq(bench.eval("10-3-2"), Ok(5i64))
+end bench.eval.test_add_sub
+
+test bench.eval.test_div_by_zero
+    core.check.eq(bench.eval("4/0"), Err(bench.EvError.DivZero))
+    core.check.eq(bench.eval("1/(2-2)"), Err(bench.EvError.DivZero))
+end bench.eval.test_div_by_zero
+
+test bench.eval.test_mul_div
+    core.check.eq(bench.eval("2*3"), Ok(6i64))
+    core.check.eq(bench.eval("7/2"), Ok(3i64))
+    core.check.eq(bench.eval("100/10/5"), Ok(2i64))
+end bench.eval.test_mul_div
+
+test bench.eval.test_number
+    core.check.eq(bench.eval("42"), Ok(42i64))
+    core.check.eq(bench.eval("0"), Ok(0i64))
+    core.check.eq(bench.eval("007"), Ok(7i64))
+end bench.eval.test_number
+
+test bench.eval.test_number_overflow
+    core.check.eq(bench.eval("4294967295"), Ok(4294967295i64))
+    core.check.eq(bench.eval("4294967296"), Err(bench.EvError.Syntax))
+    core.check.eq(bench.eval("99999999999999999999"), Err(bench.EvError.Syntax))
+end bench.eval.test_number_overflow
+
+test bench.eval.test_parens
+    core.check.eq(bench.eval("(2+3)*4"), Ok(20i64))
+    core.check.eq(bench.eval("2*(3+4)"), Ok(14i64))
+    core.check.eq(bench.eval("((1+2))"), Ok(3i64))
+    core.check.eq(bench.eval("((2+3)*(1+2))"), Ok(15i64))
+end bench.eval.test_parens
+
+test bench.eval.test_precedence
+    core.check.eq(bench.eval("2+3*4"), Ok(14i64))
+    core.check.eq(bench.eval("2*3+4"), Ok(10i64))
+    core.check.eq(bench.eval("20-2*3"), Ok(14i64))
+    core.check.eq(bench.eval("2+3*4-6/2"), Ok(11i64))
+end bench.eval.test_precedence
+
+test bench.eval.test_syntax_bad_char
+    core.check.eq(bench.eval("1+2a"), Err(bench.EvError.Syntax))
+    core.check.eq(bench.eval("x"), Err(bench.EvError.Syntax))
+    core.check.eq(bench.eval("1.5+2"), Err(bench.EvError.Syntax))
+end bench.eval.test_syntax_bad_char
+
+test bench.eval.test_syntax_leading
+    core.check.eq(bench.eval("*3"), Err(bench.EvError.Syntax))
+    core.check.eq(bench.eval(""), Err(bench.EvError.Syntax))
+    core.check.eq(bench.eval("   "), Err(bench.EvError.Syntax))
+    core.check.eq(bench.eval(")"), Err(bench.EvError.Syntax))
+    core.check.eq(bench.eval("1+"), Err(bench.EvError.Syntax))
+end bench.eval.test_syntax_leading
+
+test bench.eval.test_syntax_trailing
+    core.check.eq(bench.eval("2+"), Err(bench.EvError.Syntax))
+    core.check.eq(bench.eval("1 2"), Err(bench.EvError.Syntax))
+    core.check.eq(bench.eval("(1+2"), Err(bench.EvError.Syntax))
+    core.check.eq(bench.eval("1+2)"), Err(bench.EvError.Syntax))
+    core.check.eq(bench.eval("(1+2))"), Err(bench.EvError.Syntax))
+end bench.eval.test_syntax_trailing
+
+test bench.eval.test_whitespace
+    core.check.eq(bench.eval(" 1 + 2 "), Ok(3i64))
+    core.check.eq(bench.eval("\t2\n*3"), Ok(6i64))
+    core.check.eq(bench.eval("( 1 + 2 ) * 3"), Ok(9i64))
+end bench.eval.test_whitespace
+
+test bench.eval.test_wrap_around
+    core.check.eq(bench.eval("4294967295*4294967295"), Ok(-8589934591i64))
+end bench.eval.test_wrap_around
+
+test bench.tokenize.test_empty_and_error
+    let empty = bench.tokenize("")?
+    core.check.eq(empty.len(), 0usize)
+    let blank = bench.tokenize("  \t ")?
+    core.check.eq(blank.len(), 0usize)
+    match bench.tokenize("1&2") {
+        Err(bench.EvError.Syntax) => ()
+        Err(_other) => core.check.eq(0usize, 1usize)
+        Ok(_toks) => core.check.eq(0usize, 1usize)
+    }
+    let fin: Result<(), bench.EvError> = Ok(())
+    fin
+end bench.tokenize.test_empty_and_error
+
+test bench.tokenize.test_tokens
+    let toks = bench.tokenize("1+23")?
+    core.check.eq(toks.len(), 3usize)
+    match toks.get(0usize) {
+        Some(t) => core.check.eq(*t, bench.Tok.Num(1i64))
+        None => core.check.eq(0usize, 1usize)
+    }
+    match toks.get(1usize) {
+        Some(t) => core.check.eq(*t, bench.Tok.Plus)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match toks.get(2usize) {
+        Some(t) => core.check.eq(*t, bench.Tok.Num(23i64))
+        None => core.check.eq(0usize, 1usize)
+    }
+    let fin: Result<(), bench.EvError> = Ok(())
+    fin
+end bench.tokenize.test_tokens

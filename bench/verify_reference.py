@@ -5,6 +5,8 @@
 ksn test を行い pass を期待する。回帰用だけの参照解は、run_bench.py の evaluate と
 同じ形の一時パッケージで ksn check が診断 0 件 (と ksn fmt --check が通る) を確かめる。
 どれか 1 本でも落ちたら終了コード 1。
+
+--large オプションで bench/tasks_large/* を対象にする。
 """
 import os
 import sys
@@ -13,7 +15,6 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'bench'))
 import run_bench as rb  # noqa: E402
-from tasks import TASKS, REFERENCE_ONLY  # noqa: E402
 
 
 def check_reference_only(code):
@@ -38,15 +39,21 @@ def check_reference_only(code):
         return True, 'ok'
 
 
-def main():
-    want = set(sys.argv[1].split(',')) if len(sys.argv) > 1 else None
+def run_verification(use_large, want):
+    if use_large:
+        from tasks_large import TASKS_LARGE as TASKS, REFERENCE_ONLY_LARGE as REFERENCE_ONLY  # noqa: E402
+        base_dir = os.path.join(ROOT, 'bench', 'tasks_large')
+    else:
+        from tasks import TASKS, REFERENCE_ONLY  # noqa: E402
+        base_dir = os.path.join(ROOT, 'bench', 'tasks')
+
     bad = 0
     total = 0
     # 課題がある参照解: テスト採点
     for t in TASKS:
         if want and t['id'] not in want:
             continue
-        ref_path = os.path.join(ROOT, 'bench', 'tasks', t['id'], 'reference.ksnl')
+        ref_path = os.path.join(base_dir, t['id'], 'reference.ksnl')
         if not os.path.exists(ref_path):
             continue
         total += 1
@@ -60,7 +67,7 @@ def main():
     for tid in REFERENCE_ONLY:
         if want and tid not in want:
             continue
-        ref_path = os.path.join(ROOT, 'bench', 'tasks', tid, 'reference.ksnl')
+        ref_path = os.path.join(base_dir, tid, 'reference.ksnl')
         if not os.path.exists(ref_path):
             continue
         total += 1
@@ -72,6 +79,16 @@ def main():
             print('   ' + msg.replace('\n', '\n   '))
     print(f'total {total}, bad {bad}')
     sys.exit(1 if bad else 0)
+
+
+def main():
+    args = sys.argv[1:]
+    use_large = False
+    if '--large' in args:
+        use_large = True
+        args.remove('--large')
+    want = set(args[0].split(',')) if args else None
+    run_verification(use_large, want)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,8 @@
+{
+  "id": "discount",
+  "title": "割引価格計算システム",
+  "spec": "商品価格に適用する割引ルールのシステムを実装する。4種類の割引ルール: (1) 定額値引き AmountOff: 金額を引く、0未満は0でクランプ。(2) 閾値以上で無料 FreeOver: 価格が閾値以上なら0、そうでなければ元の価格。(3) パーセント値引き PercentOff: 価格×パーセント÷100（切り捨て）を引く、0未満は0でクランプ。(4) ステップ値引き StepOff: 価格÷ステップ（整数除算）×値引き額を引く、0未満は0でクランプ。\n\nPricer はルールのリストを保持し、順番に適用して最終価格を返す。add でルール追加、clear で全削除、count で個数、kinds でルール種別の配列、price で基準価格から最終価格を計算。全メソッドは alloc を使用し、AllocError を返す可能性がある。",
+  "decl": "type bench.AmountOff: amount: u32\ntype bench.FreeOver: threshold: u32\ntype bench.PercentOff: percent: u32\ntype bench.StepOff: step: u32, off: u32\nenum bench.RuleKind: Percent, Amount, Free, Step\ntype bench.Slot: rule: alloc.boxed.Box<dyn bench.Rule<[], never> + 'static, std.alloc.System>\ntrait bench.Rule[E: uses, P: panics]: fn apply(self: &Self, price: u32) -> u32 uses [E] panics P; fn kind(self: &Self) -> bench.RuleKind uses [] panics never\ntype bench.Pricer: rules: alloc.vec.Vec<bench.Slot, std.alloc.System>\nfn bench.Pricer.new() -> bench.Pricer\nfn bench.Pricer.add[R: bench.Rule<[], never>](self: &mut bench.Pricer, r: R) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never\nfn bench.Pricer.clear(self: &mut bench.Pricer) -> () uses [] panics never\nfn bench.Pricer.count(self: &bench.Pricer) -> usize uses [] panics never\nfn bench.Pricer.kinds(self: &bench.Pricer) -> Result<alloc.vec.Vec<bench.RuleKind, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never\nfn bench.Pricer.price(self: &bench.Pricer, base: u32) -> u32 uses [] panics never\nimpl bench.Rule<[], never> for bench.AmountOff\nimpl bench.Rule<[], never> for bench.FreeOver\nimpl bench.Rule<[], never> for bench.PercentOff\nimpl bench.Rule<[], never> for bench.StepOff",
+  "level": "large",
+  "order": 100
+}
