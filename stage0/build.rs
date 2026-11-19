@@ -95,7 +95,7 @@ fn gen_assets(manifest: &Path, out: &Path) -> Vec<u8> {
     // (対象, 部品, ソース, 追加の引数)
     let mut jobs: Vec<(&str, &str, PathBuf, Vec<String>)> = vec![];
     let elf = |t: &str, host: bool, root: Option<&str>| -> Option<Vec<String>> {
-        let mut a: Vec<String> = vec![format!("--target={}", t), "-O2".into(), "-fPIC".into(), "-pthread".into()];
+        let mut a: Vec<String> = vec![format!("--target={}", t), "-O0".into(), "-fPIC".into(), "-pthread".into()];
         if !host {
             let r = root?;
             if !Path::new(r).join("include").is_dir() {
@@ -116,12 +116,12 @@ fn gen_assets(manifest: &Path, out: &Path) -> Vec<u8> {
     println!("cargo:rerun-if-env-changed=KSN_WIN_SYSROOT");
     let wroot = std::env::var("KSN_WIN_SYSROOT").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/usr/x86_64-w64-mingw32".to_string());
     if Path::new(&wroot).join("include").is_dir() {
-        let a: Vec<String> = vec!["--target=x86_64-w64-windows-gnu".into(), "-O2".into(), "-isystem".into(), format!("{}/include", wroot)];
+        let a: Vec<String> = vec!["--target=x86_64-w64-windows-gnu".into(), "-O0".into(), "-isystem".into(), format!("{}/include", wroot)];
         jobs.push(("x86_64-windows-gnu", "kir_rt", src.join("kir_rt.c"), a.clone()));
         jobs.push(("x86_64-windows-gnu", "sysrt", src.join("sysrt.c"), a));
     }
     let wasm = |t: &str, extra: &[&str]| -> Vec<String> {
-        let mut a: Vec<String> = vec![format!("--target={}", t), "-O1".into(), "-ffreestanding".into(), "-fno-builtin".into(), format!("-isystem{}", inc.display())];
+        let mut a: Vec<String> = vec![format!("--target={}", t), "-O0".into(), "-ffreestanding".into(), "-fno-builtin".into(), format!("-isystem{}", inc.display())];
         a.extend(extra.iter().map(|s| s.to_string()));
         a
     };

@@ -3,6 +3,7 @@
 use llvm_sys::core::*;
 use llvm_sys::error::LLVMGetErrorMessage;
 use llvm_sys::ir_reader::LLVMParseIRInContext;
+use llvm_sys::linker::LLVMLinkModules2;
 use llvm_sys::prelude::*;
 use llvm_sys::target::*;
 use llvm_sys::target_machine::*;
@@ -46,6 +47,52 @@ pub fn ir_to_object(ll: &str, opt: &str, triple: &str, obj: &std::path::Path) ->
     unsafe {
         let ctx = LLVMContextCreate();
         let r = ir_to_object_in(ctx, ll, opt, triple, obj);
+        LLVMContextDispose(ctx);
+        r
+    }
+}
+
+/// ユーザの IR (`ll`) に実行時の C のビットコード (`rt`：(部品名, ビットコード) の列) を
+/// `LLVMLinkModules2` で組み込んでから `opt` のパスパイプラインを走らせ、目的ファイル `obj` に出す。
+/// ビットコードは最適化なし (`-O0`) で埋め込まれているので、ここでユーザと同じ最適化レベル (`default<O1>` デバッグ / リリースレベル) に最適化され、
+/// ランタイム関数をユーザ関数へクロスモジュールインライン展開できる。
+pub fn ir_to_object_with_rt(
+    ll: &str,
+    rt: &[(&str, &[u8])],
+    opt: &str,
+    triple: &str,
+    obj: &std::path::Path,
+) -> Result<(), String> {
+    init();
+    unsafe {
+        let ctx = LLVMContextCreate();
+        let buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(ll.as_ptr() as *const c_char, ll.len(), c"ksn.ll".as_ptr());
+        let mut module: LLVMModuleRef = std::ptr::null_mut();
+        let mut err: *mut c_char = std::ptr::null_mut();
+        if LLVMParseIRInContext(ctx, buf, &mut module, &mut err) != 0 {
+            return Err(format!("LLVM IR を読めない: {}", take_msg(err)));
+        }
+        for (name, bc) in rt {
+            let rbuf = LLVMCreateMemoryBufferWithMemoryRangeCopy(
+                bc.as_ptr() as *const c_char,
+                bc.len(),
+                CString::new(*name).unwrap().as_ptr(),
+            );
+            let mut rmodule: LLVMModuleRef = std::ptr::null_mut();
+            let rc = llvm_sys::bit_reader::LLVMParseBitcodeInContext2(ctx, rbuf, &mut rmodule);
+            LLVMDisposeMemoryBuffer(rbuf);
+            if rc != 0 {
+                LLVMDisposeModule(module);
+                LLVMContextDispose(ctx);
+                return Err(format!("実行時のビットコード {name} を読めない"));
+            }
+            if LLVMLinkModules2(module, rmodule) != 0 {
+                LLVMDisposeModule(module);
+                LLVMContextDispose(ctx);
+                return Err(format!("実行時のビットコード {name} をリンクできない"));
+            }
+        }
+        let r = emit_module(module, opt, triple, obj);
         LLVMContextDispose(ctx);
         r
     }
