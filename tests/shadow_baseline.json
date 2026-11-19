@@ -1412,7 +1412,7 @@
 [
 "old_only",
 "stage0/tests/data/unsound/copy_result_ref_pushed_then_mutated.ksnl",
-17,
+15,
 "E3010"
 ],
 [
@@ -4634,7 +4634,7 @@
 [
 "old_only",
 "stage0/tests/data/unsound/is_linear_payload_discarded.ksnl",
-12,
+11,
 "E3003"
 ],
 [
