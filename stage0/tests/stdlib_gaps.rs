@@ -38,3 +38,11 @@ fn try_clone_is_independent_and_vec_of_strings_debug() {
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
     assert_eq!(text(&o.stdout), "[\"abc\", \"ab\"]\n");
 }
+
+/// 列挙型のペイロードの `String` を `match` の参照で束縛し、`&String` の引数として関数へ渡す形。
+/// 以前のネイティブは、ヘッダのアドレスではなく中身のバッファへの ptr を渡して壊れた (`coerce_args`)。
+#[test]
+fn native_ref_to_string_payload_passed_as_arg() {
+    let out = agree_with_interpreter("ref_string_payload", include_str!("data/native_ref_string_payload.ksnl"));
+    assert_eq!(out, "3\n");
+}

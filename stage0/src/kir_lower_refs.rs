@@ -205,6 +205,11 @@ impl<'a> Lw<'a> {
                 }
                 // `&[T; N]` / `&mut [T; N]` のローカル (ref<fat> / mutref<fat>) を、要素の先頭 ptr に調整する。
                 Ty::Ptr => match self.vty(v) {
+                    // `Vec` / `String` のヘッダへの参照 (列挙型のペイロードを `match` で束縛した `&String` など): ヘッダのアドレスそのもの
+                    // (読んで先頭を取ると、中身のバッファへの ptr を渡してしまう)。
+                    Ty::Ref(_, Pointee::Agg(agg_ai)) if super::agg::is_vec_name(&self.agg_def(agg_ai).name) => {
+                        self.emit(Ty::Ptr, Op::Bitcast { src: self.vty(v), a: v })
+                    }
                     Ty::Ref(_, Pointee::Agg(agg_ai)) => {
                         let fat_val = self.emit(Ty::Agg(agg_ai), Op::Load(v));
                         self.emit(Ty::Ptr, Op::Field { a: fat_val, off: 0 })
