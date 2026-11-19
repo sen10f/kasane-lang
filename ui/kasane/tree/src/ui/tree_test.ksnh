@@ -1,0 +1,342 @@
+type ui.tree_test.Counter derive [Debug, Clone, Copy] pub
+    n: u32
+end ui.tree_test.Counter
+
+type ui.tree_test.LeafView derive [Debug, Clone, Copy] pub
+    w: f32
+    h: f32
+end ui.tree_test.LeafView
+
+type ui.tree_test.Suite derive [Debug, Clone, Copy] pub
+    seed: usize pub
+end ui.tree_test.Suite
+
+type ui.tree_test.ViewBox pub
+    v: alloc.boxed.Box<dyn ui.tree.View<[alloc], may> + 'static, std.alloc.System> pub
+end ui.tree_test.ViewBox
+
+impl ui.state.ViewState for ui.tree_test.Counter
+fn ui.tree_test.Counter.tick(self: &mut ui.tree_test.Counter) -> () uses [] panics never impls ui.state.ViewState
+    let n = self.n
+    self.n = n.wrapping_add(1u32)
+end ui.tree_test.Counter.tick
+
+impl ui.tree.View<[alloc], may> for ui.tree_test.LeafView
+fn ui.tree_test.LeafView.render(self: &ui.tree_test.LeafView, sink: &mut alloc.vec.Vec<ui.tree.Element, std.alloc.System>) -> usize uses [alloc] panics may impls ui.tree.View<[alloc], may>
+    let index = sink.len()
+    let el = ui.tree_test.el(ui.tree.ViewKind.Leaf, None, ui.tree_test.empty_kids())
+    match sink.push(el) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("ui.tree.test: oom")
+    }
+    index
+end ui.tree_test.LeafView.render
+
+fn ui.tree_test.el(kind: ui.tree.ViewKind, key: Option<u64>, children: alloc.vec.Vec<usize, std.alloc.System>) -> ui.tree.Element uses [] panics never
+    ui.tree.Element { kind: kind, style: ui.layout.Style.default(), key: key, children: children }
+end ui.tree_test.el
+
+fn ui.tree_test.empty_kids() -> alloc.vec.Vec<usize, std.alloc.System> uses [] panics never
+    alloc.vec.Vec.new(std.alloc.SYSTEM)
+end ui.tree_test.empty_kids
+
+fn ui.tree_test.new_sink() -> alloc.vec.Vec<ui.tree.Element, std.alloc.System> uses [] panics never
+    alloc.vec.Vec.new(std.alloc.SYSTEM)
+end ui.tree_test.new_sink
+
+fn ui.tree_test.push_block(t: &mut ui.tree.Tree) -> usize uses [alloc] panics never
+    match t.push_node(ui.tree.ViewKind.Block, ui.layout.Style.default(), None) {
+        Ok(i) => i
+        Err(_e) => 0usize
+    }
+end ui.tree_test.push_block
+
+fn ui.tree_test.push_block_el(v: &mut alloc.vec.Vec<ui.tree.Element, std.alloc.System>, children: alloc.vec.Vec<usize, std.alloc.System>) -> () uses [alloc] panics never
+    ui.tree_test.push_el(v, ui.tree_test.el(ui.tree.ViewKind.Block, None, children))
+end ui.tree_test.push_block_el
+
+fn ui.tree_test.push_el(v: &mut alloc.vec.Vec<ui.tree.Element, std.alloc.System>, e: ui.tree.Element) -> () uses [alloc] panics never
+    match v.push(e) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+end ui.tree_test.push_el
+
+fn ui.tree_test.push_kid(kids: &mut alloc.vec.Vec<usize, std.alloc.System>, i: usize) -> () uses [alloc] panics never
+    match kids.push(i) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+end ui.tree_test.push_kid
+
+fn ui.tree_test.push_leaf(t: &mut ui.tree.Tree) -> usize uses [alloc] panics never
+    match t.push_node(ui.tree.ViewKind.Leaf, ui.layout.Style.default(), None) {
+        Ok(i) => i
+        Err(_e) => 0usize
+    }
+end ui.tree_test.push_leaf
+
+fn ui.tree_test.push_leaf_el(v: &mut alloc.vec.Vec<ui.tree.Element, std.alloc.System>, key: Option<u64>) -> () uses [alloc] panics never
+    ui.tree_test.push_el(v, ui.tree_test.el(ui.tree.ViewKind.Leaf, key, ui.tree_test.empty_kids()))
+end ui.tree_test.push_leaf_el
+
+test ui.tree_test.Suite.test_commit_build
+    let mut t = ui.tree.Tree.new()
+    let root = ui.tree_test.push_block(&mut t)
+    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut root_children = ui.tree_test.empty_kids()
+    ui.tree_test.push_kid(&mut root_children, 1usize)
+    ui.tree_test.push_kid(&mut root_children, 2usize)
+    ui.tree_test.push_block_el(&mut elements, root_children)
+    ui.tree_test.push_leaf_el(&mut elements, Some(1u64))
+    ui.tree_test.push_leaf_el(&mut elements, Some(2u64))
+    match t.commit(root, &elements, 0usize) {
+        Ok(()) => ()
+        Err(_e) => ()
+    }
+    core.check.eq(t.child_count(root), 2usize)
+    match t.node_at(1usize) {
+        Some(n) => core.check.eq(n.key, Some(1u64))
+        None => core.check.is_true(false)
+    }
+    match t.node_at(2usize) {
+        Some(n) => core.check.eq(n.key, Some(2u64))
+        None => core.check.is_true(false)
+    }
+end ui.tree_test.Suite.test_commit_build
+
+test ui.tree_test.Suite.test_commit_insert
+    let mut t = ui.tree.Tree.new()
+    let root = ui.tree_test.push_block(&mut t)
+    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut root_children = ui.tree_test.empty_kids()
+    ui.tree_test.push_kid(&mut root_children, 1usize)
+    ui.tree_test.push_block_el(&mut elements, root_children)
+    ui.tree_test.push_leaf_el(&mut elements, Some(1u64))
+    match t.commit(root, &elements, 0usize) {
+        Ok(()) => ()
+        Err(_e) => ()
+    }
+    core.check.eq(t.child_count(root), 1usize)
+    let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut root_children2 = ui.tree_test.empty_kids()
+    ui.tree_test.push_kid(&mut root_children2, 1usize)
+    ui.tree_test.push_kid(&mut root_children2, 2usize)
+    ui.tree_test.push_block_el(&mut elements2, root_children2)
+    ui.tree_test.push_leaf_el(&mut elements2, Some(1u64))
+    ui.tree_test.push_leaf_el(&mut elements2, Some(2u64))
+    match t.commit(root, &elements2, 0usize) {
+        Ok(()) => ()
+        Err(_e) => ()
+    }
+    core.check.eq(t.child_count(root), 2usize)
+    match t.node_at(2usize) {
+        Some(n) => core.check.eq(n.key, Some(2u64))
+        None => core.check.is_true(false)
+    }
+end ui.tree_test.Suite.test_commit_insert
+
+test ui.tree_test.Suite.test_commit_remove
+    let mut t = ui.tree.Tree.new()
+    let root = ui.tree_test.push_block(&mut t)
+    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut root_children = ui.tree_test.empty_kids()
+    ui.tree_test.push_kid(&mut root_children, 1usize)
+    ui.tree_test.push_kid(&mut root_children, 2usize)
+    ui.tree_test.push_block_el(&mut elements, root_children)
+    ui.tree_test.push_leaf_el(&mut elements, Some(1u64))
+    ui.tree_test.push_leaf_el(&mut elements, Some(2u64))
+    match t.commit(root, &elements, 0usize) {
+        Ok(()) => ()
+        Err(_e) => ()
+    }
+    core.check.eq(t.child_count(root), 2usize)
+    let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut root_children2 = ui.tree_test.empty_kids()
+    ui.tree_test.push_kid(&mut root_children2, 1usize)
+    ui.tree_test.push_block_el(&mut elements2, root_children2)
+    ui.tree_test.push_leaf_el(&mut elements2, Some(1u64))
+    match t.commit(root, &elements2, 0usize) {
+        Ok(()) => ()
+        Err(_e) => ()
+    }
+    core.check.eq(t.child_count(root), 1usize)
+end ui.tree_test.Suite.test_commit_remove
+
+test ui.tree_test.Suite.test_composite_render
+    let leaf = ui.tree_test.LeafView { w: 1.0f32, h: 2.0f32 }
+    let mut sink = ui.tree_test.new_sink()
+    let child_index = leaf.render(&mut sink)
+    let mut sink2 = ui.tree_test.new_sink()
+    let child_el = ui.tree_test.el(ui.tree.ViewKind.Leaf, None, ui.tree_test.empty_kids())
+    match sink2.push(child_el) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let mut block_children = ui.tree_test.empty_kids()
+    ui.tree_test.push_kid(&mut block_children, child_index)
+    let block_el = ui.tree_test.el(ui.tree.ViewKind.Block, None, block_children)
+    match sink2.push(block_el) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    core.check.eq(sink2.len(), 2usize)
+end ui.tree_test.Suite.test_composite_render
+
+test ui.tree_test.Suite.test_keyed_reorder
+    let mut t = ui.tree.Tree.new()
+    let root = ui.tree_test.push_block(&mut t)
+    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut root_children = ui.tree_test.empty_kids()
+    ui.tree_test.push_kid(&mut root_children, 1usize)
+    ui.tree_test.push_kid(&mut root_children, 2usize)
+    ui.tree_test.push_block_el(&mut elements, root_children)
+    ui.tree_test.push_leaf_el(&mut elements, Some(1u64))
+    ui.tree_test.push_leaf_el(&mut elements, Some(2u64))
+    match t.commit(root, &elements, 0usize) {
+        Ok(()) => ()
+        Err(_e) => ()
+    }
+    core.check.eq(t.child_count(root), 2usize)
+    let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut root_children2 = ui.tree_test.empty_kids()
+    ui.tree_test.push_kid(&mut root_children2, 2usize)
+    ui.tree_test.push_kid(&mut root_children2, 1usize)
+    ui.tree_test.push_block_el(&mut elements2, root_children2)
+    ui.tree_test.push_leaf_el(&mut elements2, Some(1u64))
+    ui.tree_test.push_leaf_el(&mut elements2, Some(2u64))
+    match t.commit(root, &elements2, 0usize) {
+        Ok(()) => ()
+        Err(_e) => ()
+    }
+    core.check.eq(t.child_count(root), 2usize)
+    match t.node_at(1usize) {
+        Some(n) => core.check.eq(n.key, Some(1u64))
+        None => core.check.is_true(false)
+    }
+    match t.node_at(2usize) {
+        Some(n) => core.check.eq(n.key, Some(2u64))
+        None => core.check.is_true(false)
+    }
+    match t.node_at(3usize) {
+        Some(_n) => core.check.is_true(false)
+        None => core.check.is_true(true)
+    }
+end ui.tree_test.Suite.test_keyed_reorder
+
+test ui.tree_test.Suite.test_new
+    let t = ui.tree.Tree.new()
+    core.check.eq(t.child_count(0usize), 0usize)
+end ui.tree_test.Suite.test_new
+
+test ui.tree_test.Suite.test_push_child
+    let mut t = ui.tree.Tree.new()
+    let parent = ui.tree_test.push_block(&mut t)
+    let child = ui.tree_test.push_leaf(&mut t)
+    core.check.is_true(t.push_child(parent, child))
+    core.check.eq(t.child_count(parent), 1usize)
+    match t.node_at(child) {
+        Some(_n) => core.check.is_true(true)
+        None => core.check.is_true(false)
+    }
+end ui.tree_test.Suite.test_push_child
+
+test ui.tree_test.Suite.test_push_node_indices
+    let mut t = ui.tree.Tree.new()
+    core.check.eq(ui.tree_test.push_block(&mut t), 0usize)
+    core.check.eq(ui.tree_test.push_block(&mut t), 1usize)
+    core.check.eq(ui.tree_test.push_leaf(&mut t), 2usize)
+    core.check.eq(t.child_count(0usize), 0usize)
+    core.check.eq(t.child_count(1usize), 0usize)
+    core.check.eq(t.child_count(2usize), 0usize)
+end ui.tree_test.Suite.test_push_node_indices
+
+test ui.tree_test.Suite.test_state_insert
+    let mut t = ui.tree.Tree.new()
+    let c = ui.tree_test.Counter { n: 0u32 }
+    match alloc.boxed.Box.new(std.alloc.SYSTEM, c) {
+        Ok(b) => {
+            let entry = ui.tree.StateEntry { value: alloc.boxed.Box.into_dyn(b) }
+            match t.state_ref().insert(entry) {
+                Ok(h) => core.check.eq(h.index, 0usize)
+                Err(_e) => core.check.is_true(false)
+            }
+            core.check.eq(t.state_ref().len(), 1usize)
+        }
+        Err(_e) => core.check.is_true(false)
+    }
+end ui.tree_test.Suite.test_state_insert
+
+test ui.tree_test.Suite.test_state_insert_two
+    let mut t = ui.tree.Tree.new()
+    match alloc.boxed.Box.new(std.alloc.SYSTEM, ui.tree_test.Counter { n: 0u32 }) {
+        Ok(b) => {
+            match t.state_ref().insert(ui.tree.StateEntry { value: alloc.boxed.Box.into_dyn(b) }) {
+                Ok(h0) => core.check.eq(h0.index, 0usize)
+                Err(_e) => core.check.is_true(false)
+            }
+        }
+        Err(_e) => core.check.is_true(false)
+    }
+    match alloc.boxed.Box.new(std.alloc.SYSTEM, ui.tree_test.Counter { n: 0u32 }) {
+        Ok(b) => {
+            match t.state_ref().insert(ui.tree.StateEntry { value: alloc.boxed.Box.into_dyn(b) }) {
+                Ok(h1) => core.check.eq(h1.index, 1usize)
+                Err(_e) => core.check.is_true(false)
+            }
+            core.check.eq(t.state_ref().len(), 2usize)
+        }
+        Err(_e) => core.check.is_true(false)
+    }
+end ui.tree_test.Suite.test_state_insert_two
+
+test ui.tree_test.Suite.test_state_remove
+    let mut t = ui.tree.Tree.new()
+    match alloc.boxed.Box.new(std.alloc.SYSTEM, ui.tree_test.Counter { n: 0u32 }) {
+        Ok(b) => {
+            match t.state_ref().insert(ui.tree.StateEntry { value: alloc.boxed.Box.into_dyn(b) }) {
+                Ok(h) => {
+                    core.check.eq(t.state_ref().len(), 1usize)
+                    let removed: Option<ui.tree.StateEntry> = t.state_ref().remove(h)
+                    match removed {
+                        Some(_entry) => core.check.is_true(true)
+                        None => core.check.is_true(false)
+                    }
+                    core.check.eq(t.state_ref().len(), 1usize)
+                }
+                Err(_e) => core.check.is_true(false)
+            }
+        }
+        Err(_e) => core.check.is_true(false)
+    }
+end ui.tree_test.Suite.test_state_remove
+
+test ui.tree_test.Suite.test_state_tick
+    let mut t = ui.tree.Tree.new()
+    match alloc.boxed.Box.new(std.alloc.SYSTEM, ui.tree_test.Counter { n: 5u32 }) {
+        Ok(b) => {
+            match t.state_ref().insert(ui.tree.StateEntry { value: alloc.boxed.Box.into_dyn(b) }) {
+                Ok(h) => {
+                    t.state_tick(h)
+                    core.check.eq(t.state_ref().len(), 1usize)
+                }
+                Err(_e) => core.check.is_true(false)
+            }
+        }
+        Err(_e) => core.check.is_true(false)
+    }
+end ui.tree_test.Suite.test_state_tick
+
+test ui.tree_test.Suite.test_view_box_dyn
+    let view = ui.tree_test.LeafView { w: 5.0f32, h: 7.0f32 }
+    match alloc.boxed.Box.new(std.alloc.SYSTEM, view) {
+        Ok(b) => {
+            let boxed = ui.tree_test.ViewBox { v: alloc.boxed.Box.into_dyn(b) }
+            let mut sink = ui.tree_test.new_sink()
+            let index = boxed.v.render(&mut sink)
+            core.check.eq(index, 0usize)
+            core.check.eq(sink.len(), 1usize)
+        }
+        Err(_e) => core.check.is_true(false)
+    }
+end ui.tree_test.Suite.test_view_box_dyn
