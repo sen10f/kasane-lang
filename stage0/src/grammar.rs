@@ -661,7 +661,8 @@ impl Grammar {
     /// 診断のメッセージと位置は常に `check` が決める。
     pub fn check_memo(&self, text: &str, memo: &mut GramMemo) -> (bool, String, usize) {
         if let Err(e) = precheck(text) {
-            return (false, e.0, 1);
+            let ln = err_line(&e.0);
+            return (false, e.0, ln);
         }
         if self.defs_match(text, memo) {
             return (true, String::new(), 0);

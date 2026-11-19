@@ -2727,30 +2727,31 @@ fn cmd_fmt(args: &[String]) -> i32 {
         }
         // 構文・字句の誤りで読めないファイルは、`ksn check` と同じ診断 (行:列つき) を先に出す。
         // 読めないので並べ替えなどの整形ができていない。それらの診断は出さない (まず構文の誤りを直す)。
-        let broken = s.error.is_some();
-        if let Some(e) = s.error.as_ref() {
+        // (整形の誤りが無く、案内付きの書き方でもない構文の誤りは、従来どおり fmt では黙る。`ksn check` が見る。)
+        let relpath = lint_rel(s, &srcroot);
+        let lints: Vec<_> = Lint::new(&relpath, &text.replace("\r\n", "\n")).run().into_iter().filter(|(c, _, _)| c != "unused").collect();
+        let (ok, msg, ln) = grammar.check(&text);
+        let hits = if s.error.is_some() { crate::rustisms::scan(&s.text) } else { vec![] };
+        let broken = s.error.is_some() && (s.error.as_ref().map_or(false, |e| e.code == "E0007") || !hits.is_empty() || !lints.is_empty() || !ok);
+        if broken {
+            let e = s.error.as_ref().unwrap();
             diff = true;
-            let mut guided: Vec<usize> = vec![];
-            for h in crate::rustisms::scan(&s.text) {
-                guided.push(h.line);
+            for h in &hits {
                 println!("{}:{}:{}: {}: {}", rel(&s.path), h.line, h.col, h.code, h.msg);
             }
-            if !(e.code == "E0002" && guided.contains(&e.line)) {
+            if !(e.code == "E0002" && hits.iter().any(|h| h.line == e.line)) {
                 println!("{}:{}:{}: {}: {}", rel(&s.path), e.line, e.col, e.code, e.msg);
             }
             println!("{}: note: the file cannot be parsed, so `ksn fmt` could not reorder or reformat it; fix the error(s) above first", rel(&s.path));
-        }
-        let relpath = lint_rel(s, &srcroot);
-        for (code, l, m) in Lint::new(&relpath, &text.replace("\r\n", "\n")).run() {
-            if code != "unused" && !broken {
+        } else {
+            for (code, l, m) in lints {
                 diff = true;
                 println!("{}:{}: {}: {} (not auto-fixable)", rel(&s.path), l, lint_code(&code), m);
             }
-        }
-        let (ok, msg, ln) = grammar.check(&text);
-        if !ok && !broken {
-            diff = true;
-            println!("{}:{}: E0002: {}", rel(&s.path), ln, msg);
+            if !ok {
+                diff = true;
+                println!("{}:{}: E0002: {}", rel(&s.path), ln, msg);
+            }
         }
     }
     if diff || (changed && check) { 1 } else { 0 }
