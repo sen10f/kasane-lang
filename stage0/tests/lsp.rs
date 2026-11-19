@@ -542,9 +542,10 @@ fn robust_against_malformed_input_and_broken_manifest() {
     let ds = c.diagnostics_until(&toml_uri, |d| !d.is_empty());
     assert_eq!(ds[0]["code"], "E9002");
     // kasane.toml が無い場所の文書: 警告の診断が出る。
-    let lone = scratch::Scratch::at(format!("ksn_lsp_lone_{}", std::process::id()));
-    fs::create_dir_all(&lone).unwrap();
-    let lone = fs::canonicalize(lone).unwrap();
+    // `lone_dir` は解体まで生かす (`canonicalize` に値で渡すと、その場で消える)。
+    let lone_dir = scratch::Scratch::at(format!("ksn_lsp_lone_{}", std::process::id()));
+    fs::create_dir_all(&lone_dir).unwrap();
+    let lone = fs::canonicalize(&lone_dir).unwrap();
     fs::write(lone.join("a.ksnl"), "x\n").unwrap();
     let lone_uri = format!("file://{}", lone.join("a.ksnl").display());
     c.open(&lone_uri, "x\n");
