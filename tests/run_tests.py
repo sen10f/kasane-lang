@@ -103,10 +103,17 @@ with tempfile.TemporaryDirectory() as td:
     terr = threading.Thread(target=drain, args=(proc.stderr, err_parts))
     tout.start()
     terr.start()
-    # 旧版（v1）が少なくとも 1 回出るまで走らせてから書き換える。
-    # 木走査・VM とも標準出力は終了時にまとめてフラッシュされるので、増分で v1 を観測できず、
-    # 猶予で旧版の実行を保証する。ウォッチャは 200 ms 毎に poll し、書き換え後すぐにリロードする。
-    time.sleep(1.0)
+    # ksn が "hot reload: watching" を stderr に出すまで待つ（検査後、実行直前）。
+    # この信号を待ってから書き換えれば、旧版（v1）が最初に実行され、ウォッチャの
+    # 最初の poll（200 ms 毎）より前に v1 が出る。固定の壁時計待ちに依存しない。
+    deadline = time.time() + 60.0
+    watching = False
+    while time.time() < deadline:
+        if any('hot reload: watching' in line for line in err_parts):
+            watching = True
+            break
+        time.sleep(0.02)
+    assert watching, 'hot reload: watching が stderr に現れなかった'
     open(src, 'w', newline=NLC).write(HR.replace('v1', 'v2'))
     try:
         rc = proc.wait(timeout=60)

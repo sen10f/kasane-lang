@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn exe() -> &'static str {
     env!("CARGO_BIN_EXE_ksn")
@@ -62,11 +62,13 @@ struct Out {
     err: String,
 }
 
-// `ksn run --watch --engine=vm` を走らせ、旧版（v1）が走った後でソースを `edited` に書き換える。
-// VM の標準出力は `print_line` でもバッファされ、プロセス終了時にまとめてフラッシュされるので
-// 増分で `v1` を観測できない。スピンループで旧版が走り続けるので、猶予を置いた後に書き換えれば
-// 旧版が少なくとも 1 回 v1 を出すことを保証する。書き換え後はウォッチャ（200 ms 毎に poll）が
-// 検出してリロードし、新版（v2）が走る。子プロセスは 60 回反復して自然に終了するので、終了を待つ。
+// `ksn run --watch --engine=vm` を走らせ、`ksn` が "hot reload: watching" を stderr に出すのを
+// 待ってからソースを `edited` に書き換える。この信号は検査後に実行直前に出されるので、
+// 書き換え時に旧版（v1）がまだ走っておらず、最初の hr.msg()（v1）がウォッチャの最初の
+// poll（200 ms 毎）より前に必ず実行される。VM の標準出力はバッファされ、終了時にまとめて
+// フラッシュされるので v1 を増分観測できず、この readiness 信号に依存する。
+// 書き換え後はウォッチャが検出してリロードし、新版（v2）が走る。子プロセスは 60 回反復して
+// 自然に終了するので、終了を待つ。
 fn run_watch(d: &Path, edited: &str) -> Out {
     let cache = d.join(".cache");
     let mut child = Command::new(exe())
@@ -85,7 +87,7 @@ fn run_watch(d: &Path, edited: &str) -> Out {
     let out_c = out.clone();
     let err_c = err.clone();
     let stdout = child.stdout.take().expect("stdout");
-    let mut stderr = child.stderr.take().expect("stderr");
+    let stderr = child.stderr.take().expect("stderr");
     let t_out = std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
@@ -99,13 +101,30 @@ fn run_watch(d: &Path, edited: &str) -> Out {
         }
     });
     let t_err = std::thread::spawn(move || {
-        let mut s = String::new();
-        stderr.read_to_string(&mut s).unwrap();
-        *err_c.lock().unwrap() = s;
+        let mut reader = BufReader::new(stderr);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => { err_c.lock().unwrap().push_str(&line); }
+                Err(_) => break,
+            }
+        }
     });
-    // 旧版（v1）が少なくとも 1 回出るまで走らせる（VM の出力は終了時にまとめて出るため、
-    // 増分観測はできず、猶予で旧版の実行を保証する。スピン（7_000_000 回）1 反復は約 200 ms）。
-    std::thread::sleep(Duration::from_millis(1_000));
+    // ksn が "hot reload: watching" を出すまで待つ（検査後、実行直前。旧版がまだ走っていない）。
+    let start = Instant::now();
+    loop {
+        if err.lock().unwrap().contains("hot reload: watching") {
+            break;
+        }
+        if start.elapsed() >= Duration::from_secs(60) {
+            panic!("timed out waiting for hot reload to start watching");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // ソースを書き換える。ウォッチャの最初の poll（200 ms 毎）より前に旧版の hr.msg() が
+    // 少なくとも 1 回 v1 を出すので、v1 >= 1 が保証される。
     fs::write(&src, &edited).expect("write edited source");
     // リロード後に新版が走り、60 回反復して終了するのを待つ（正常なら ~10 s で自然終了）。
     let status = child.wait().expect("wait");
