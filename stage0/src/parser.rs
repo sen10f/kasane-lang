@@ -61,6 +61,15 @@ pub(crate) fn unpack_pos(p: usize) -> (usize, usize) {
     }
 }
 /// 中置・後置ノードの位置。左項が同じ行で始まるなら、その開始位置 (項の先頭) を使う。
+/// 整数の literal が 0 か (`0`・`0usize`・`0u32` など。接尾辞は符号なしの整数型だけ)。
+fn zero_lit(t: &Tok) -> bool {
+    if t.kind != "int" {
+        return false;
+    }
+    let body = ["usize", "u128", "u64", "u32", "u16", "u8"].iter().find_map(|sfx| t.text.strip_suffix(sfx)).unwrap_or(&t.text);
+    body == "0"
+}
+
 fn anchor(p: usize, left: &V) -> usize {
     let lp = match left {
         V::Node(_, _, l, _) => *l,
@@ -748,7 +757,8 @@ impl Parser {
             let s1 = self.i;
             let r = self.bin_level(0, ns)?;
             self.opnd(s1, 4, ns, "");
-            self.cmp_rewrites(s0, op_idx, s1, left_mc);
+            let right_mc = self.last_mcall.clone().filter(|m| m.start == s1 && m.end == self.i);
+            self.cmp_rewrites(s0, op_idx, s1, left_mc, right_mc);
             self.last_cmp = Some((s0, self.i, op_idx));
             self.lvl = 3;
             return Ok(ndl(anchor(c.pos(), &l), "Bin", vec![V::S(c.text), l, r]));
@@ -756,39 +766,61 @@ impl Parser {
         Ok(l)
     }
 
-    /// 比較の書き換え: `a == None` → `a is None`、`a == true` → `a`、`x.len() == 0` → `x.is_empty()` (D11)。
-    fn cmp_rewrites(&mut self, s0: usize, op: usize, s1: usize, left_mc: Option<McInfo>) {
-        if self.i != s1 + 1 {
-            return;
-        }
-        let ot = self.t[op].text.clone();
-        let r = self.t[s1].clone();
+    /// 比較の書き換え (D11)。literal は左右どちらにあってもよい (`true == x` = `x == true`、`0usize == v.len()` = `v.len() == 0usize`)。
+    /// `a == None` → `a is None`、`a == true` / `true == a` → `a`、`a != true` / `a == false` → `!a` (`!` は括弧ごと),
+    /// `x.len() == 0` / `0 == x.len()` → `x.is_empty()`、`!=` と `>` と (左が 0 の) `<` は `!x.is_empty()`。
+    fn cmp_rewrites(&mut self, s0: usize, op: usize, s1: usize, left_mc: Option<McInfo>, right_mc: Option<McInfo>) {
         let end = self.i;
+        let ot = self.t[op].text.clone();
+        let l = self.t[s0].clone();
+        let r = self.t[s1].clone();
+        // 両側とも 1 トークン (literal) か。`rone` は右が 1 トークン、`lone` は左が 1 トークン。
+        let rone = end == s1 + 1;
+        let lone = op == s0 + 1;
         if matches!(ot.as_str(), "==" | "!=") {
-            if r.kind == "upper" && r.text == "None" {
+            if rone && r.kind == "upper" && r.text == "None" {
                 let tail = if ot == "==" { " is None" } else { " is Some(_)" };
                 self.rw.push(Rw { a: s0, b: end, parts: vec![Part::Span(s0, op), Part::Lit(tail.into())], del_line: false, inside: false });
                 return;
             }
-            if r.kind == "kw" && matches!(r.text.as_str(), "true" | "false") {
-                let keep = (ot == "==") == (r.text == "true");
-                let parts = if keep { vec![Part::Span(s0, op)] } else { vec![Part::Lit("!(".into()), Part::Span(s0, op), Part::Lit(")".into())] };
+            // 真偽の literal: 片側だけが `true` / `false` のとき、もう片側を残す。
+            let bool_lit = |t: &Tok| t.kind == "kw" && matches!(t.text.as_str(), "true" | "false");
+            let (lit, keep_span) = if rone && bool_lit(&r) {
+                (r.text.clone(), (s0, op))
+            } else if lone && bool_lit(&l) {
+                (l.text.clone(), (s1, end))
+            } else {
+                (String::new(), (0, 0))
+            };
+            if !lit.is_empty() {
+                let keep = (ot == "==") == (lit == "true");
+                let span = Part::Span(keep_span.0, keep_span.1);
+                let parts = if keep { vec![span] } else { vec![Part::Lit("!(".into()), span, Part::Lit(")".into())] };
                 self.rw.push(Rw { a: s0, b: end, parts, del_line: false, inside: false });
                 return;
             }
         }
-        if let Some(m) = left_mc {
-            let zero = r.kind == "int" && {
-                let t = r.text.trim_end_matches(|c: char| c.is_ascii_alphabetic() && c != 'x');
-                let t = ["usize", "u128", "u64", "u32", "u16", "u8"].iter().find_map(|sfx| r.text.strip_suffix(sfx)).unwrap_or(t);
-                t == "0"
-            };
-            if zero && m.name == "len" && !self.fn_name.ends_with(".is_empty") && m.close == m.open + 1 && matches!(ot.as_str(), "==" | "!=" | ">") {
+        // `x.len() OP 0`: 右の literal が 0。
+        if let Some(m) = left_mc.filter(|m| rone && zero_lit(&r) && m.name == "len" && m.close == m.open + 1 && matches!(ot.as_str(), "==" | "!=" | ">")) {
+            if !self.fn_name.ends_with(".is_empty") {
                 let mut parts = vec![];
                 if ot != "==" {
                     parts.push(Part::Lit("!".into()));
                 }
                 parts.push(Part::Span(s0, m.dot));
+                parts.push(Part::Lit(".is_empty()".into()));
+                self.rw.push(Rw { a: s0, b: end, parts, del_line: false, inside: false });
+            }
+            return;
+        }
+        // `0 OP x.len()`: 左の literal が 0 (`0 < x.len()` は `x.len() > 0` と同じ)。
+        if let Some(m) = right_mc.filter(|m| lone && zero_lit(&l) && m.name == "len" && m.close == m.open + 1 && matches!(ot.as_str(), "==" | "!=" | "<")) {
+            if !self.fn_name.ends_with(".is_empty") {
+                let mut parts = vec![];
+                if ot != "==" {
+                    parts.push(Part::Lit("!".into()));
+                }
+                parts.push(Part::Span(s1, m.dot));
                 parts.push(Part::Lit(".is_empty()".into()));
                 self.rw.push(Rw { a: s0, b: end, parts, del_line: false, inside: false });
             }

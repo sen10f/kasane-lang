@@ -304,6 +304,9 @@ struct RootState {
     dirty: bool,
     /// 診断を出した URI (次回、無くなったものを空で消す)。
     published: HashSet<String>,
+    /// メソッド呼び出しの名前の位置 (ファイル, `CallSite::pos`, `CallSite::seg`) → 解決先の FQN。型推論の結果から、
+    /// 検査の結果が変わるたびに作り直す (`call_sites`)。
+    sites: Option<HashMap<(String, usize, usize), Vec<String>>>,
 }
 
 struct Server {
@@ -389,6 +392,16 @@ fn kind_ok(kw: &str) -> bool {
     matches!(kw, "fn" | "type" | "enum" | "trait" | "test" | "const" | "static" | "extern")
 }
 
+/// `.ksnl` の行 (0 始まり。`ltxt` はその行の文字) → 横の `.ksnh` の行 (0 始まり)。`ksnh::line_map` の逆で、
+/// 対応が複数あるときは行の文字が同じものを取る (消えた行は次に残る行と同じ番号になるため)。
+fn ksnh_line_for(ksnh: &str, ksnl_line0: usize, ltxt: &str) -> usize {
+    let text = crate::project::read_text(ksnh).unwrap_or_default();
+    let map = crate::ksnh::line_map(&text);
+    let cands: Vec<usize> = map.iter().enumerate().filter(|(_, &n)| n == ksnl_line0 + 1).map(|(k, _)| k).collect();
+    let same = cands.iter().find(|&&k| text.split('\n').nth(k) == Some(ltxt));
+    same.or(cands.first()).copied().unwrap_or(ksnl_line0)
+}
+
 /// 文書の上書き。`.ksnh` のときは、横の `.ksnl` を `strip` したものも上書きする (編集中に E9050 を出さない。
 /// ディスクの `.ksnl` は保存 (didSave) で書く)。
 fn set_overlay(path: &str, text: Option<String>) {
@@ -413,6 +426,22 @@ fn to_ksnl(path: &str, line1: usize) -> (String, usize) {
         }
         None => (path.to_string(), line1),
     }
+}
+
+/// 定義の位置 (`find_def`)。無ければ、トレイトのメソッド `Tr.m` (宣言は本体を持たず、トレイトの定義の中の `fn m(` の行)。
+fn find_fn<'a>(srcs: &[&'a Source], fqn: &str) -> Option<Found<'a>> {
+    if let Some(f) = cli::find_def(srcs, fqn) {
+        return Some(f);
+    }
+    let (tr, m) = fqn.rsplit_once('.')?;
+    let key = format!("fn {}(", m);
+    for &s in srcs {
+        let Some(td) = s.defs.iter().find(|d| d.kw == "trait" && d.name == tr) else { continue };
+        let end = td.end_line.min(s.lines.len());
+        let hit = (td.line..=end).find(|&ln| s.lines.get(ln - 1).is_some_and(|l| l.trim_start().starts_with(&key)));
+        return hit.map(|ln| Found::Line(s, ln));
+    }
+    None
 }
 
 fn doc_comment(s: &Source, d: &Def) -> String {
@@ -458,6 +487,7 @@ impl Server {
         let st = self.roots.entry(root.to_path_buf()).or_default();
         st.dirty = false;
         st.analyzed = true;
+        st.sites = None;
         match res {
             Ok(Analysis { items, loaded }) => {
                 st.items = items;
@@ -655,6 +685,51 @@ impl Server {
         Some((st.loaded.as_ref()?, st.prog.as_ref()?))
     }
 
+    /// パッケージのメソッド呼び出しの位置 → 解決先の FQN (型推論を 1 回回す。結果は検査ごとに 1 度だけ作る)。
+    /// 解決先は `TypeCk::side.resolved_fn` (`Callee::Def` / `Methods`) で、受け手の型が決まらない呼び出しは載らない。
+    fn call_sites(&mut self, root: &Path) -> Option<&HashMap<(String, usize, usize), Vec<String>>> {
+        Self::enter(root);
+        let st = self.roots.get_mut(root)?;
+        if st.sites.is_none() {
+            let l = st.loaded.as_ref()?;
+            if st.prog.is_none() {
+                st.prog = Some(cli::build_program(l).0);
+            }
+            let prog = st.prog.as_ref()?;
+            let user: Vec<usize> = (0..prog.defs.len()).filter(|&i| l.pkg.sources.iter().any(|s| s.path == prog.defs[i].file)).collect();
+            let out = catch_unwind(AssertUnwindSafe(|| {
+                let mut tk = crate::types::TypeCk::new(prog);
+                for &i in &user {
+                    let d = &prog.defs[i];
+                    if (d.kw == "fn" && d.body.is_some()) || d.kw == "test" {
+                        tk.check_def(i);
+                    }
+                }
+                let mut m: HashMap<(String, usize, usize), Vec<String>> = HashMap::new();
+                for s in &tk.call_sites {
+                    let key = (s.writer, s.call);
+                    let names: Vec<String> = match tk.side.resolved_fn.get(&key) {
+                        Some(crate::tast::Callee::Def(i)) => vec![prog.defs[*i].name.clone()],
+                        Some(crate::tast::Callee::Methods(v)) => v.iter().map(|&i| prog.defs[i].name.clone()).collect(),
+                        // 型パラメータの境界で解決したメソッド (`トレイト.メソッド`。定義はトレイトの宣言の中にある)。
+                        _ => match tk.bound_sites.get(&key) {
+                            Some(f) => vec![f.clone()],
+                            None => continue,
+                        },
+                    };
+                    m.insert((prog.defs[s.writer].file.clone(), s.pos, s.seg), names);
+                }
+                m
+            }))
+            .unwrap_or_else(|_| {
+                log("internal error while resolving method calls");
+                HashMap::new()
+            });
+            st.sites = Some(out);
+        }
+        st.sites.as_ref()
+    }
+
     // ---------------------------------------------------- 記号の特定
     fn locate(&mut self, uri: &str, p: &Value) -> Result<Option<Located>, (i64, String)> {
         let (line, ch) = param_pos(p)?;
@@ -662,6 +737,7 @@ impl Server {
         let d = self.doc(uri)?;
         let (path, text) = (d.path.clone(), d.text.clone());
         // `.ksnl` を開いているときも、読み込んだソースは `.ksnh` なので、名前解決は `.ksnh` のパスで行う。
+        let doc_path = path.clone();
         let path = ksnh_sibling(&path).unwrap_or(path);
         let lines = lines_of(&text);
         let Some(ltxt) = lines.get(line) else { return Ok(None) };
@@ -681,6 +757,15 @@ impl Server {
         let Some((segs, ss, se, ts, dot_before)) = token_at(ltxt, idx) else { return Ok(None) };
         // カーソルのセグメントの後ろにまだ `.` が続く (経路の途中)。
         let mid = ltxt.chars().nth(se) == Some('.');
+        // 型で解決したメソッド呼び出しの名前の上: 受け手の型が決まっていれば、候補は解決先の定義だけになる。
+        // 位置は読み込んだソース (`.ksnh`) の行で引く。`.ksnl` を開いているときは行を直す。
+        let kline = if path != doc_path { ksnh_line_for(&path, line, ltxt) } else { line };
+        let site = [(ss + 1, usize::MAX), (ts + 1, segs.len() - 1)].into_iter().find_map(|(c, seg)| {
+            self.call_sites(&root)?.get(&(path.clone(), crate::parser::pack_pos(kline + 1, c), seg)).cloned()
+        });
+        if let Some(fqns) = site.filter(|v| !v.is_empty()) {
+            return Ok(Some(Located { root, fqns, line, seg_start: ss, seg_end: se, tok_start: ts, module: false, mid: false }));
+        }
         let Some((l, prog)) = self.ctx(&root) else { return Ok(None) };
         let srcs = Self::sources(l);
         let mut fqns: Vec<String> = vec![];
@@ -762,7 +847,7 @@ impl Server {
         } else {
             let Some((l, _)) = self.ctx(&loc.root) else { return Ok(Value::Null) };
             let srcs = Self::sources(l);
-            let (header, doc) = match cli::find_def(&srcs, &loc.fqns[0]) {
+            let (header, doc) = match find_fn(&srcs, &loc.fqns[0]) {
                 Some(Found::Def(d, s)) => (d.header.clone(), doc_comment(s, d)),
                 Some(Found::Line(s, ln)) => (s.lines[ln - 1].trim().to_string(), String::new()),
                 None => return Ok(Value::Null),
@@ -795,7 +880,7 @@ impl Server {
         } else {
             for f in &loc.fqns {
                 let last = f.rsplit('.').next().unwrap_or(f);
-                match cli::find_def(&srcs, f) {
+                match find_fn(&srcs, f) {
                     Some(Found::Def(d, s)) => out.push(Self::def_location(s, d.line, &d.name, want_ksnl)),
                     Some(Found::Line(s, ln)) => out.push(Self::def_location(s, ln, last, want_ksnl)),
                     None => {}
