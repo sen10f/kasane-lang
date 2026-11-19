@@ -1160,7 +1160,7 @@ impl<'a> W<'a> {
             .zip(&ps)
             .map(|(a, pt)| {
                 let n = depth(&a.ty).saturating_sub(depth(pt));
-                if n == 0 {
+                if n == 0 || matches!(pt, Ty::Param(_) | Ty::Unknown) {
                     return a.clone();
                 }
                 let same = a.full == a.inner;
@@ -1208,7 +1208,8 @@ impl<'a> W<'a> {
             if ret_unk || outer_hit {
                 out.add(&avs[k].full.flat());
             } else if inner_hit {
-                out.add(&avs[k].inner.flat());
+                // 仮引数が `&X` なら中身 (`X` の中の借用)、`T` そのものなら実引数の全体が流れる。
+                out.add(&if matches!(pt, Ty::Ref(..)) { avs[k].inner.flat() } else { avs[k].full.flat() });
             }
         }
         // 引数の指す先への格納 (`&mut X` の X が、別の引数と領域・型パラメータを共有する)。
@@ -1221,6 +1222,7 @@ impl<'a> W<'a> {
                 continue;
             }
             let mut stored = Val::default();
+            let mut via_region = false;
             for (j, pj) in ps.iter().enumerate() {
                 if j == k {
                     continue;
@@ -1228,16 +1230,18 @@ impl<'a> W<'a> {
                 let mut jp = BTreeSet::new();
                 mentions_param(pj, &mut jp);
                 let outer_hit = pj.outer_region().map_or(false, |o| xr.iter().any(|r| same_r(o, r)));
-                let inner_hit = real_regions(pj).iter().any(|o| xr.iter().any(|r| same_r(o, r))) || jp.iter().any(|t| xp.contains(t));
+                let region_hit = real_regions(pj).iter().any(|o| xr.iter().any(|r| same_r(o, r)));
+                let inner_hit = region_hit || jp.iter().any(|t| xp.contains(t));
+                via_region |= region_hit;
                 if outer_hit {
                     stored.add(&avs[j].full.flat());
                 } else if inner_hit {
-                    stored.add(&avs[j].inner.flat());
+                    stored.add(&if matches!(pj, Ty::Ref(..)) { avs[j].inner.flat() } else { avs[j].full.flat() });
                 }
             }
             if !stored.is_empty() {
                 let target = avs[k].full.clone();
-                self.store_through(&target, &stored, line, true);
+                self.store_through(&target, &stored, line, via_region);
             }
         }
         out
