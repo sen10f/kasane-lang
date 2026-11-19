@@ -52,9 +52,9 @@ r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'test_harn
                    capture_output=True, text=True, encoding='utf-8', errors='replace')
 step('bench/test_harness.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
 
-# 2. Rust 版の cargo test (ビルドは 0 で先に済ませる)
-r = subprocess.run(['cargo', 'test', '--release'], cwd=os.path.join(ROOT, 'stage0'), capture_output=True, text=True,
-                   encoding='utf-8', errors='replace')
+# 2. Rust 版の cargo test (試験のバイナリを並列に回す。ビルドは 0 で先に済ませる)
+r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'par_test.py'), '--tier', 'full'],
+                   capture_output=True, text=True, encoding='utf-8', errors='replace')
 # 落ちたときは、失敗したテストの名前と panic の行を先に出す (末尾は警告で埋まることがある)。
 _ct = r.stdout + r.stderr
 _fails = '\n'.join(l for l in _ct.splitlines() if ' FAILED' in l or 'panicked at' in l or l.startswith('error: test failed'))[:3000]
