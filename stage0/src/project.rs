@@ -387,7 +387,7 @@ pub fn validate_manifest(m: &toml::Value) -> Vec<(String, String)> {
                         let comps: Vec<&str> = mn.split('.').collect();
                         if !comps.iter().all(|c| is_name(c)) {
                             errs.push(e("E9012", format!("unsafe.modules: invalid module name '{}'", mn)));
-                        } else if name.map_or(true, |n| comps[0] != n) {
+                        } else if comps.len() > 1 && name.map_or(true, |n| comps[0] != n) {
                             errs.push(e("E9012", format!("unsafe.modules: '{}' is not a module of this package", mn)));
                         }
                     }

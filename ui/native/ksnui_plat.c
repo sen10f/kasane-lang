@@ -39,44 +39,44 @@ size_t ksnui_poll_events(void* win, ksnui_Event* out, size_t cap,
     while (n < cap && SDL_PollEvent(&ev)) {
         ksnui_Event* e = &out[n];
         memset(e, 0, sizeof(*e));
-        switch (ev.type) {
+        switch (ev.event_type) {
         case SDL_EVENT_QUIT:
-            e->type = KSNUI_EVENT_QUIT;
+            e->event_type = KSNUI_EVENT_QUIT;
             break;
         case SDL_EVENT_KEY_DOWN:
-            e->type = KSNUI_EVENT_KEY_DOWN;
+            e->event_type = KSNUI_EVENT_KEY_DOWN;
             e->key = (int32_t)ev.key.key;
             e->mods = (int32_t)ev.key.mod;
             break;
         case SDL_EVENT_KEY_UP:
-            e->type = KSNUI_EVENT_KEY_UP;
+            e->event_type = KSNUI_EVENT_KEY_UP;
             e->key = (int32_t)ev.key.key;
             e->mods = (int32_t)ev.key.mod;
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            e->type = KSNUI_EVENT_POINTER_DOWN;
+            e->event_type = KSNUI_EVENT_POINTER_DOWN;
             e->x = ev.button.x;
             e->y = ev.button.y;
             e->key = (int32_t)ev.button.button;
             break;
         case SDL_EVENT_MOUSE_BUTTON_UP:
-            e->type = KSNUI_EVENT_POINTER_UP;
+            e->event_type = KSNUI_EVENT_POINTER_UP;
             e->x = ev.button.x;
             e->y = ev.button.y;
             e->key = (int32_t)ev.button.button;
             break;
         case SDL_EVENT_MOUSE_MOTION:
-            e->type = KSNUI_EVENT_POINTER_MOVE;
+            e->event_type = KSNUI_EVENT_POINTER_MOVE;
             e->x = ev.motion.x;
             e->y = ev.motion.y;
             break;
         case SDL_EVENT_MOUSE_WHEEL:
-            e->type = KSNUI_EVENT_WHEEL;
+            e->event_type = KSNUI_EVENT_WHEEL;
             e->wheel_x = ev.wheel.x;
             e->wheel_y = ev.wheel.y;
             break;
         case SDL_EVENT_WINDOW_RESIZED:
-            e->type = KSNUI_EVENT_RESIZE;
+            e->event_type = KSNUI_EVENT_RESIZE;
             e->w = ev.window.data1;
             e->h = ev.window.data2;
             break;
@@ -84,7 +84,7 @@ size_t ksnui_poll_events(void* win, ksnui_Event* out, size_t cap,
             size_t len = strlen(ev.text.text);
             if (pool_off + len + 1 <= text_pool_cap) {
                 memcpy(text_pool + pool_off, ev.text.text, len + 1);
-                e->type = KSNUI_EVENT_TEXT_INPUT;
+                e->event_type = KSNUI_EVENT_TEXT_INPUT;
                 e->text_off = (uint32_t)pool_off;
                 e->text_len = (uint32_t)len;
                 pool_off += len + 1;
@@ -96,7 +96,7 @@ size_t ksnui_poll_events(void* win, ksnui_Event* out, size_t cap,
             size_t len = strlen(ed->text);
             if (pool_off + len + 1 <= text_pool_cap) {
                 memcpy(text_pool + pool_off, ed->text, len + 1);
-                e->type = KSNUI_EVENT_IME_COMPOSITION;
+                e->event_type = KSNUI_EVENT_IME_COMPOSITION;
                 e->text_off = (uint32_t)pool_off;
                 e->text_len = (uint32_t)len;
                 e->cursor = (int32_t)ed->start;
@@ -107,8 +107,8 @@ size_t ksnui_poll_events(void* win, ksnui_Event* out, size_t cap,
         default:
             break;
         }
-        if (e->type != 0 || ev.type == SDL_EVENT_TEXT_INPUT ||
-            ev.type == SDL_EVENT_TEXT_EDITING) {
+        if (e->event_type != 0 || ev.event_type == SDL_EVENT_TEXT_INPUT ||
+            ev.event_type == SDL_EVENT_TEXT_EDITING) {
             n++;
         }
     }

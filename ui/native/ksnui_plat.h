@@ -31,7 +31,7 @@ enum ksnui_EventType {
 
 // 飲み込み (polling) で取る事象 1 件。SDL の事象を写しただけの平坦な構造体。
 typedef struct ksnui_Event {
-    int32_t type;      // enum ksnui_EventType
+    int32_t event_type; // enum ksnui_EventType
     int32_t key;       // KEY_DOWN / KEY_UP のとき SDL_Keycode、他は 0
     int32_t mods;      // 修飾キー (SDL_Keymod の下位 16 bit)
     float x;           // POINTER_* のときの位置 (論理 px)

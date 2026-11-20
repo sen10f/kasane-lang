@@ -1,0 +1,92 @@
+// ksn bindgen --c の生成物 (module ksnui_plat)。直接編集しない
+// 飛ばしたもの: #define KSNUI_PLAT_H は飛ばした: 整数定数でない ()
+const ksnui_plat.KSNUI_EVENT_IME_COMMIT: u32 = 12u32 pub
+
+const ksnui_plat.KSNUI_EVENT_IME_COMPOSITION: u32 = 11u32 pub
+
+const ksnui_plat.KSNUI_EVENT_IME_END: u32 = 13u32 pub
+
+const ksnui_plat.KSNUI_EVENT_IME_START: u32 = 10u32 pub
+
+const ksnui_plat.KSNUI_EVENT_KEY_DOWN: u32 = 2u32 pub
+
+const ksnui_plat.KSNUI_EVENT_KEY_UP: u32 = 3u32 pub
+
+const ksnui_plat.KSNUI_EVENT_NONE: u32 = 0u32 pub
+
+const ksnui_plat.KSNUI_EVENT_POINTER_DOWN: u32 = 4u32 pub
+
+const ksnui_plat.KSNUI_EVENT_POINTER_MOVE: u32 = 6u32 pub
+
+const ksnui_plat.KSNUI_EVENT_POINTER_UP: u32 = 5u32 pub
+
+const ksnui_plat.KSNUI_EVENT_QUIT: u32 = 1u32 pub
+
+const ksnui_plat.KSNUI_EVENT_RESIZE: u32 = 8u32 pub
+
+const ksnui_plat.KSNUI_EVENT_TEXT_INPUT: u32 = 9u32 pub
+
+const ksnui_plat.KSNUI_EVENT_WHEEL: u32 = 7u32 pub
+
+type ksnui_plat.KsnuiEvent layout c derive [Clone, Copy] pub
+    event_type: i32
+    key: i32
+    mods: i32
+    x: f32
+    y: f32
+    wheel_x: f32
+    wheel_y: f32
+    w: i32
+    h: i32
+    cursor: i32
+    text_off: u32
+    text_len: u32
+end ksnui_plat.KsnuiEvent
+
+extern ksnui_plat.raw_ksnui_display_scale(win: *mut u8) -> f32 link "ksnui_display_scale"
+
+extern ksnui_plat.raw_ksnui_poll_events(win: *mut u8, out: *mut ksnui_plat.KsnuiEvent, cap: u64, text_pool: *mut i8, text_pool_cap: u64) -> u64 link "ksnui_poll_events"
+
+extern ksnui_plat.raw_ksnui_text_input_start(win: *mut u8, x: i32, y: i32, w: i32, h: i32) -> () link "ksnui_text_input_start"
+
+extern ksnui_plat.raw_ksnui_text_input_stop(win: *mut u8) -> () link "ksnui_text_input_stop"
+
+extern ksnui_plat.raw_ksnui_window_create(title: *const i8, w: i32, h: i32) -> *mut u8 link "ksnui_window_create"
+
+extern ksnui_plat.raw_ksnui_window_destroy(win: *mut u8) -> () link "ksnui_window_destroy"
+
+fn ksnui_plat.ksnui_display_scale(win: *mut u8) -> f32 uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_display_scale を呼ぶ" {
+        ksnui_plat.raw_ksnui_display_scale(win)
+    }
+end ksnui_plat.ksnui_display_scale
+
+fn ksnui_plat.ksnui_poll_events(win: *mut u8, out: *mut ksnui_plat.KsnuiEvent, cap: u64, text_pool: *mut i8, text_pool_cap: u64) -> u64 uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_poll_events を呼ぶ" {
+        ksnui_plat.raw_ksnui_poll_events(win, out, cap, text_pool, text_pool_cap)
+    }
+end ksnui_plat.ksnui_poll_events
+
+fn ksnui_plat.ksnui_text_input_start(win: *mut u8, x: i32, y: i32, w: i32, h: i32) -> () uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_text_input_start を呼ぶ" {
+        ksnui_plat.raw_ksnui_text_input_start(win, x, y, w, h)
+    }
+end ksnui_plat.ksnui_text_input_start
+
+fn ksnui_plat.ksnui_text_input_stop(win: *mut u8) -> () uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_text_input_stop を呼ぶ" {
+        ksnui_plat.raw_ksnui_text_input_stop(win)
+    }
+end ksnui_plat.ksnui_text_input_stop
+
+fn ksnui_plat.ksnui_window_create(title: *const i8, w: i32, h: i32) -> *mut u8 uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_window_create を呼ぶ" {
+        ksnui_plat.raw_ksnui_window_create(title, w, h)
+    }
+end ksnui_plat.ksnui_window_create
+
+fn ksnui_plat.ksnui_window_destroy(win: *mut u8) -> () uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_window_destroy を呼ぶ" {
+        ksnui_plat.raw_ksnui_window_destroy(win)
+    }
+end ksnui_plat.ksnui_window_destroy

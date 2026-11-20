@@ -1,0 +1,15 @@
+[package]
+name = "smoke"
+version = "0.1.0"
+edition = 1
+entry = "smoke.main"
+
+[unsafe]
+modules = ["smoke"]
+
+[native]
+static = ["../../native/libksnui.a"]
+dynamic = ["ksnui", "wgpu_native", "vulkan", "dl", "m", "pthread"]
+search = ["../../native", "../../native/third_party/lib"]
+
+[dependencies]

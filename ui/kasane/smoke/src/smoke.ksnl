@@ -1,0 +1,128 @@
+type smoke.KsnuiRect layout c derive [Clone, Copy] pub
+    x: f32
+    y: f32
+    w: f32
+    h: f32
+    r: f32
+    cr: f32
+    cg: f32
+    cb: f32
+    ca: f32
+end smoke.KsnuiRect
+
+extern smoke.raw_ksnui_gpu_begin(dev: *mut u8, r: f32, g: f32, b: f32, a: f32) -> i32 link "ksnui_gpu_begin"
+
+extern smoke.raw_ksnui_gpu_create(window: *mut u8, w: i32, h: i32) -> *mut u8 link "ksnui_gpu_create"
+
+extern smoke.raw_ksnui_gpu_destroy(dev: *mut u8) -> () link "ksnui_gpu_destroy"
+
+extern smoke.raw_ksnui_gpu_draw_rects(dev: *mut u8, rects: *const smoke.KsnuiRect, n: u64) -> () link "ksnui_gpu_draw_rects"
+
+extern smoke.raw_ksnui_gpu_end(dev: *mut u8) -> () link "ksnui_gpu_end"
+
+extern smoke.raw_ksnui_gpu_readback(dev: *mut u8, out: *mut u8, cap: u64) -> u64 link "ksnui_gpu_readback"
+
+extern smoke.raw_ksnui_png_write(path: *const u8, w: i32, h: i32, rgba: *const u8) -> i32 link "ksnui_png_write"
+
+fn smoke.ksnui_gpu_begin(dev: *mut u8) -> i32 uses [] panics may pub
+    unsafe "bindgen" "begin frame" {
+        smoke.raw_ksnui_gpu_begin(dev, 0.1f32, 0.1f32, 0.1f32, 1.0f32)
+    }
+end smoke.ksnui_gpu_begin
+
+fn smoke.ksnui_gpu_create(w: i32, h: i32) -> *mut u8 uses [] panics may pub
+    unsafe "bindgen" "create headless GPU device" {
+        smoke.raw_ksnui_gpu_create(core.ptr.null_mut(), w, h)
+    }
+end smoke.ksnui_gpu_create
+
+fn smoke.ksnui_gpu_destroy(dev: *mut u8) -> () uses [] panics may pub
+    unsafe "bindgen" "destroy device" {
+        smoke.raw_ksnui_gpu_destroy(dev)
+    }
+end smoke.ksnui_gpu_destroy
+
+fn smoke.ksnui_gpu_draw_rects(dev: *mut u8, rects: *const smoke.KsnuiRect, n: u64) -> () uses [] panics may pub
+    unsafe "bindgen" "draw rects" {
+        smoke.raw_ksnui_gpu_draw_rects(dev, rects, n)
+    }
+end smoke.ksnui_gpu_draw_rects
+
+fn smoke.ksnui_gpu_end(dev: *mut u8) -> () uses [] panics may pub
+    unsafe "bindgen" "end frame" {
+        smoke.raw_ksnui_gpu_end(dev)
+    }
+end smoke.ksnui_gpu_end
+
+fn smoke.ksnui_gpu_readback(dev: *mut u8, out: *mut u8, cap: u64) -> u64 uses [] panics may pub
+    unsafe "bindgen" "readback pixels" {
+        smoke.raw_ksnui_gpu_readback(dev, out, cap)
+    }
+end smoke.ksnui_gpu_readback
+
+fn smoke.ksnui_png_write(path: *const u8, w: i32, h: i32, rgba: *const u8) -> i32 uses [] panics may pub
+    unsafe "bindgen" "write PNG" {
+        smoke.raw_ksnui_png_write(path, w, h, rgba)
+    }
+end smoke.ksnui_png_write
+
+fn smoke.main() -> () uses [io.console] panics may
+    let w = 160i32
+    let h = 120i32
+
+    let dev = smoke.ksnui_gpu_create(w, h)
+    let is_null = unsafe "ptr" "check null device" {
+        core.ptr.is_null(dev)
+    }
+    if is_null {
+        core.mem.drop(std.io.print_line("FAIL: gpu_create"))
+        return
+    }
+
+    core.mem.drop(smoke.ksnui_gpu_begin(dev))
+
+    let mx = 20.0f32
+    let my = 30.0f32
+    let mw = 60.0f32
+    let mh = 40.0f32
+    let mr = 8.0f32
+    let r = smoke.mk_rect(mx, my, mw, mh, mr, 0.2f32, 0.6f32, 0.9f32, 1.0f32)
+    let mut rects = [r]
+    let rect_p = unsafe "ptr" "rect pointer" {
+        core.ptr.from_ref(&rects)
+    }
+    smoke.ksnui_gpu_draw_rects(dev, rect_p, 1u64)
+
+    smoke.ksnui_gpu_end(dev)
+
+    let mut rgba = [0u8; 76_800]
+    let rgba_p = unsafe "ptr" "rgba pointer" {
+        core.ptr.from_mut(&mut rgba)
+    }
+    let got = smoke.ksnui_gpu_readback(dev, rgba_p, 76_800u64)
+    if got != 76_800u64 {
+        core.mem.drop(std.io.print_line("FAIL: readback"))
+        return
+    }
+
+    let mut ck = 0u32
+    let mut k = 0usize
+    while k < 76_800usize {
+        ck = ck.wrapping_mul(31u32).wrapping_add(u32.from_u8(rgba[k]))
+        k = k + 1usize
+    }
+    core.check.eq(ck, 622_328_800u32)
+
+    let png_path = "/tmp/opencode/smoke_test_kasane.png"
+    let png_p = unsafe "ptr" "png path pointer" {
+        core.ptr.from_ref(png_path.as_bytes())
+    }
+    core.mem.drop(smoke.ksnui_png_write(png_p, 160i32, 120i32, rgba_p))
+
+    smoke.ksnui_gpu_destroy(dev)
+    core.mem.drop(std.io.print_line("ALL OK"))
+end smoke.main
+
+fn smoke.mk_rect(x: f32, y: f32, w: f32, h: f32, r: f32, a: f32, b: f32, c: f32, d: f32) -> smoke.KsnuiRect uses [] panics never pub
+    smoke.KsnuiRect { x: x, y: y, w: w, h: h, r: r, cr: a, cg: b, cb: c, ca: d }
+end smoke.mk_rect
