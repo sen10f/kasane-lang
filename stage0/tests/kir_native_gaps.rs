@@ -298,3 +298,100 @@ end t.main
         "ok\n",
     );
 }
+
+/// 7. `Vec<Option<T>>` (Arena のスロット) と、`&Option<T>` の `*p`・`&self` 越しの `&mut` 受け手。
+#[test]
+fn vec_option_and_ref_recv_native() {
+    check_gap(
+        "ngaps_vec_opt",
+        r#"type t.Arena
+    slots: alloc.vec.Vec<Option<u64>, std.alloc.System>
+end t.Arena
+
+fn t.Arena.new() -> t.Arena uses [] panics never
+    t.Arena { slots: alloc.vec.Vec.new(std.alloc.SYSTEM) }
+end t.Arena.new
+
+fn t.Arena.insert(self: &mut t.Arena, v: u64) -> usize uses [alloc] panics never
+    let i = self.slots.len()
+    match self.slots.push(Some(v)) {
+        Ok(_u) => i
+        Err(_e) => i
+    }
+end t.Arena.insert
+
+fn t.Arena.len(self: &t.Arena) -> usize uses [] panics never
+    self.slots.len()
+end t.Arena.len
+
+fn t.Arena.get_ref(self: &t.Arena) -> &t.Arena uses [] panics never
+    self
+end t.Arena.get_ref
+
+fn t.first(v: &alloc.vec.Vec<Option<u64>, std.alloc.System>) -> Option<u64> uses [] panics never
+    match v.as_slice().get(0usize) {
+        Some(p) => *p
+        None => None
+    }
+end t.first
+
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
+    let mut a = t.Arena.new()
+    let n = a.get_ref().insert(1u64)
+    core.mem.drop(n)
+    core.check.eq(a.len(), 1usize)
+    match t.first(&a.slots) {
+        Some(x) => core.check.eq(x, 1u64)
+        None => core.check.is_true(false)
+    }
+    match std.io.print_line("ok") {
+        Ok(_x) => core.mem.drop(a)
+        Err(_e) => core.panic.panic("io")
+    }
+    Ok(())
+end t.main
+"#,
+        "ok\n",
+    );
+}
+
+/// 8. `ksn test --both` で依存パッケージの型を使う試験もネイティブに下りる (user_nat)。
+#[test]
+fn dep_package_types_in_test_native() {
+    let t = Tmp::new("ngaps_dep", "");
+    let root = t.0.clone();
+    std::fs::create_dir_all(root.join("dep/src")).unwrap();
+    std::fs::create_dir_all(root.join("app/src")).unwrap();
+    std::fs::write(
+        root.join("dep/kasane.toml"),
+        "[package]\nname = \"ngaps_dep\"\nversion = \"0.1.0\"\nedition = 1\n\n[dependencies]\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("dep/kasane.lock"), "version = 1\n").unwrap();
+    std::fs::write(
+        root.join("dep/src/tdep.ksnl"),
+        "type tdep.Style pub\n    gr: f32 pub\nend tdep.Style\n\nfn tdep.Style.default() -> tdep.Style uses [] panics never pub\n    tdep.Style { gr: 1.0f32 }\nend tdep.Style.default\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app/kasane.toml"),
+        "[package]\nname = \"ngaps_app\"\nversion = \"0.1.0\"\nedition = 1\n\n[dependencies]\nngaps_dep = { path = \"../dep\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app/kasane.lock"),
+        "version = 1\n\n[[package]]\nname = \"ngaps_dep\"\nsource = \"path+../dep\"\ndeps = []\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app/src/t.ksnl"),
+        "type t.Suite pub\n    dummy: u32 pub\nend t.Suite\n\ntest t.Suite.test_style\n    let st = tdep.Style.default()\n    core.check.eq(st.gr, 1.0f32)\n    match std.io.print_line(\"ok\") {\n        Ok(_x) => ()\n        Err(_e) => core.check.is_true(false)\n    }\nend t.Suite.test_style\n",
+    )
+    .unwrap();
+    let app = root.join("app");
+    let _ = run(&["fmt"], &app);
+    let o = run(&["test", "--both"], &app);
+    let out = text(&o.stdout) + &text(&o.stderr);
+    assert!(out.contains("1 passed; 0 failed"), "test の結果: {}", out);
+    assert!(out.contains("bundle fallback 0"), "バンドル退避が残っている: {}", out);
+}
