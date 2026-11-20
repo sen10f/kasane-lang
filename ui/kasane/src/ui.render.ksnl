@@ -1,0 +1,676 @@
+type ui.render.Clip derive [Clone, Copy] pub
+    x: f32
+    y: f32
+    w: f32
+    h: f32
+end ui.render.Clip
+
+type ui.render.GlyphRun derive [Clone, Copy] pub
+    atlas: u32
+    x: f32
+    y: f32
+    w: f32
+    h: f32
+    u0: f32
+    v0: f32
+    u1: f32
+    v1: f32
+    color: ui.render.Rgba
+end ui.render.GlyphRun
+
+type ui.render.GpuCtx linear pub
+    dev: *mut u8 pub
+    width: i32 pub
+    height: i32 pub
+end ui.render.GpuCtx
+
+enum ui.render.GpuError derive [Debug, Clone, Copy, PartialEq, Eq] pub
+    CreateFailed
+end ui.render.GpuError
+
+type ui.render.ImageItem derive [Clone, Copy] pub
+    texture: u32
+    x: f32
+    y: f32
+    w: f32
+    h: f32
+    u0: f32
+    v0: f32
+    u1: f32
+    v1: f32
+    color: ui.render.Rgba
+end ui.render.ImageItem
+
+enum ui.render.Item derive [Clone, Copy] pub
+    Rect(ui.render.RectItem)
+    Shadow(ui.render.Shadow)
+    GlyphRun(ui.render.GlyphRun)
+    Image(ui.render.ImageItem)
+    ClipPush(ui.render.Clip)
+    ClipPop
+end ui.render.Item
+
+type ui.render.RectItem derive [Clone, Copy] pub
+    x: f32
+    y: f32
+    w: f32
+    h: f32
+    style: ui.render.RectStyle
+end ui.render.RectItem
+
+type ui.render.RectStyle derive [Clone, Copy] pub
+    fill: ui.render.Rgba
+    border: ui.render.Rgba
+    border_w: f32
+    radius: f32
+end ui.render.RectStyle
+
+type ui.render.Rgba derive [Clone, Copy] pub
+    cr: f32
+    cg: f32
+    cb: f32
+    ca: f32
+end ui.render.Rgba
+
+type ui.render.Shadow derive [Clone, Copy] pub
+    x: f32
+    y: f32
+    w: f32
+    h: f32
+    radius: f32
+    color: ui.render.Rgba
+    dx: f32
+    dy: f32
+end ui.render.Shadow
+
+fn ui.render.GpuCtx.begin(self: &mut ui.render.GpuCtx, r: f32, g: f32, b: f32, a: f32) -> i32 uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_gpu_begin を呼ぶ" {
+        ui.gpu.ksnui_gpu_begin(self.dev, r, g, b, a)
+    }
+end ui.render.GpuCtx.begin
+
+fn ui.render.GpuCtx.close(self: ui.render.GpuCtx) -> () uses [] panics may pub
+    let ui.render.GpuCtx { dev: d, width: _w, height: _h } = self
+    unsafe "bindgen" "C の関数 ksnui_gpu_destroy を呼ぶ" {
+        ui.gpu.ksnui_gpu_destroy(d)
+    }
+end ui.render.GpuCtx.close
+
+fn ui.render.GpuCtx.create(w: i32, h: i32) -> Result<ui.render.GpuCtx, ui.render.GpuError> uses [] panics may pub
+    let dev = unsafe "ptr" "null ウィンドウ ポインタ" {
+        core.ptr.null_mut()
+    }
+    let d = ui.gpu.ksnui_gpu_create(dev, w, h)
+    let is_null = unsafe "ptr" "デバイスが null か確認" {
+        core.ptr.is_null(d)
+    }
+    if is_null {
+        Err(ui.render.GpuError.CreateFailed)
+    } else {
+        Ok(ui.render.GpuCtx { dev: d, width: w, height: h })
+    }
+end ui.render.GpuCtx.create
+
+fn ui.render.GpuCtx.draw_glyphs(self: &mut ui.render.GpuCtx, glyphs: &[ui.gpu.KsnuiGlyphQuad]) -> () uses [] panics may pub
+    let ptr = unsafe "ptr" "グリフ クワッド バッファへのポインタ" {
+        core.ptr.from_ref(glyphs)
+    }
+    ui.gpu.ksnui_gpu_draw_glyphs(self.dev, ptr, u64.from_usize(glyphs.len()))
+end ui.render.GpuCtx.draw_glyphs
+
+fn ui.render.GpuCtx.draw_rects(self: &mut ui.render.GpuCtx, rects: &[ui.gpu.KsnuiRect]) -> () uses [] panics may pub
+    let ptr = unsafe "ptr" "矩形バッファへのポインタ" {
+        core.ptr.from_ref(rects)
+    }
+    ui.gpu.ksnui_gpu_draw_rects(self.dev, ptr, u64.from_usize(rects.len()))
+end ui.render.GpuCtx.draw_rects
+
+fn ui.render.GpuCtx.finish(self: &mut ui.render.GpuCtx) -> () uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_gpu_end を呼ぶ" {
+        ui.gpu.ksnui_gpu_end(self.dev)
+    }
+end ui.render.GpuCtx.finish
+
+fn ui.render.GpuCtx.png_write(self: &mut ui.render.GpuCtx, path: &str, w: i32, h: i32, rgba: &[u8]) -> i32 uses [] panics may pub
+    let ptr = unsafe "ptr" "RGBA バッファへのポインタ" {
+        core.ptr.from_ref(rgba)
+    }
+    let path_p = unsafe "ptr" "パスのバイト列へのポインタ" {
+        core.ptr.from_ref(path.as_bytes())
+    }
+    ui.gpu.ksnui_png_write(path_p, w, h, ptr)
+end ui.render.GpuCtx.png_write
+
+fn ui.render.GpuCtx.readback(self: &mut ui.render.GpuCtx, out: &mut [u8]) -> u64 uses [] panics may pub
+    let ptr = unsafe "ptr" "読み出しバッファへのポインタ" {
+        core.ptr.from_mut(out)
+    }
+    ui.gpu.ksnui_gpu_readback(self.dev, ptr, u64.from_usize(out.len()))
+end ui.render.GpuCtx.readback
+
+fn ui.render.batch(list: &[ui.render.Item], rects: &mut [ui.gpu.KsnuiRect], glyphs: &mut [ui.gpu.KsnuiGlyphQuad]) -> (usize, usize) uses [] panics never pub
+    let nr = ui.render.batch_rects(list, rects)
+    let ng = ui.render.batch_glyphs(list, glyphs)
+    (nr, ng)
+end ui.render.batch
+
+fn ui.render.batch_glyphs(list: &[ui.render.Item], out: &mut [ui.gpu.KsnuiGlyphQuad]) -> usize uses [] panics never pub
+    let mut wi = 0usize
+    let mut i = 0usize
+    while i < list.len() {
+        match list.get(i) {
+            Some(item) => match item {
+                ui.render.Item.GlyphRun(g) => {
+                    wi = ui.render.emit_glyph(*g, out, wi)
+                }
+                ui.render.Item.Image(im) => {
+                    wi = ui.render.emit_image(*im, out, wi)
+                }
+                ui.render.Item.Rect(_) => {
+                }
+                ui.render.Item.Shadow(_) => {
+                }
+                ui.render.Item.ClipPush(_) => {
+                }
+                ui.render.Item.ClipPop => {
+                }
+            }
+            None => return wi
+        }
+        i = i.wrapping_add(1usize)
+    }
+    wi
+end ui.render.batch_glyphs
+
+fn ui.render.batch_rects(list: &[ui.render.Item], out: &mut [ui.gpu.KsnuiRect]) -> usize uses [] panics never pub
+    let empty = ui.render.Clip { x: 0.0f32, y: 0.0f32, w: 0.0f32, h: 0.0f32 }
+    let mut stack = [empty; 8]
+    let mut stack_len = 0usize
+    let slots = stack.as_mut_slice()
+    let mut wi = 0usize
+    let mut i = 0usize
+    while i < list.len() {
+        match list.get(i) {
+            Some(item) => match item {
+                ui.render.Item.Rect(rect) => {
+                    let c = ui.render.current_clip(slots, stack_len)
+                    wi = ui.render.emit_rect(rect, c, out, wi)
+                }
+                ui.render.Item.Shadow(s) => {
+                    let c = ui.render.current_clip(slots, stack_len)
+                    wi = ui.render.emit_shadow(*s, c, out, wi)
+                }
+                ui.render.Item.ClipPush(c) => match slots.get_mut(stack_len) {
+                    Some(slot) => {
+                        *slot = *c
+                        stack_len = stack_len.wrapping_add(1usize)
+                    }
+                    None => {
+                    }
+                }
+                ui.render.Item.ClipPop => if stack_len > 0usize {
+                    stack_len = stack_len.wrapping_sub(1usize)
+                }
+                ui.render.Item.GlyphRun(_) => {
+                }
+                ui.render.Item.Image(_) => {
+                }
+            }
+            None => return wi
+        }
+        i = i.wrapping_add(1usize)
+    }
+    wi
+end ui.render.batch_rects
+
+fn ui.render.current_clip(stack: &[ui.render.Clip], stack_len: usize) -> Option<ui.render.Clip> uses [] panics never pub
+    if stack_len == 0usize {
+        None
+    } else {
+        match stack.get(stack_len.wrapping_sub(1usize)) {
+            Some(c) => Some(*c)
+            None => None
+        }
+    }
+end ui.render.current_clip
+
+fn ui.render.emit_glyph(g: ui.render.GlyphRun, out: &mut [ui.gpu.KsnuiGlyphQuad], wi: usize) -> usize uses [] panics never pub
+    if wi >= out.len() {
+        return wi
+    }
+    let slot = match out.get_mut(wi) {
+        Some(s) => s
+        None => return wi
+    }
+    slot.x = g.x
+    slot.y = g.y
+    slot.w = g.w
+    slot.h = g.h
+    slot.u0 = g.u0
+    slot.v0 = g.v0
+    slot.u1 = g.u1
+    slot.v1 = g.v1
+    slot.cr = g.color.cr
+    slot.cg = g.color.cg
+    slot.cb = g.color.cb
+    slot.ca = g.color.ca
+    wi.wrapping_add(1usize)
+end ui.render.emit_glyph
+
+fn ui.render.emit_image(im: ui.render.ImageItem, out: &mut [ui.gpu.KsnuiGlyphQuad], wi: usize) -> usize uses [] panics never pub
+    if wi >= out.len() {
+        return wi
+    }
+    let slot = match out.get_mut(wi) {
+        Some(s) => s
+        None => return wi
+    }
+    slot.x = im.x
+    slot.y = im.y
+    slot.w = im.w
+    slot.h = im.h
+    slot.u0 = im.u0
+    slot.v0 = im.v0
+    slot.u1 = im.u1
+    slot.v1 = im.v1
+    slot.cr = im.color.cr
+    slot.cg = im.color.cg
+    slot.cb = im.color.cb
+    slot.ca = im.color.ca
+    wi.wrapping_add(1usize)
+end ui.render.emit_image
+
+fn ui.render.emit_rect(rect: &ui.render.RectItem, clip: Option<ui.render.Clip>, out: &mut [ui.gpu.KsnuiRect], wi: usize) -> usize uses [] panics never pub
+    let target = match clip {
+        Some(c) => ui.render.intersect(rect, &c)
+        None => Some(*rect)
+    }
+    let r = match target {
+        Some(r) => r
+        None => return wi
+    }
+    if wi >= out.len() {
+        return wi
+    }
+    let slot = match out.get_mut(wi) {
+        Some(s) => s
+        None => return wi
+    }
+    slot.x = r.x
+    slot.y = r.y
+    slot.w = r.w
+    slot.h = r.h
+    slot.r = r.style.radius
+    slot.cr = r.style.fill.cr
+    slot.cg = r.style.fill.cg
+    slot.cb = r.style.fill.cb
+    slot.ca = r.style.fill.ca
+    wi.wrapping_add(1usize)
+end ui.render.emit_rect
+
+fn ui.render.emit_shadow(s: ui.render.Shadow, clip: Option<ui.render.Clip>, out: &mut [ui.gpu.KsnuiRect], wi: usize) -> usize uses [] panics never pub
+    let border = ui.render.rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)
+    let c = s.color
+    let bw = 0.0f32
+    let ra = s.radius
+    let style = ui.render.RectStyle { fill: c, border: border, border_w: bw, radius: ra }
+    let r = ui.render.RectItem { x: s.x + s.dx, y: s.y + s.dy, w: s.w, h: s.h, style: style }
+    ui.render.emit_rect(&r, clip, out, wi)
+end ui.render.emit_shadow
+
+fn ui.render.intersect(rect: &ui.render.RectItem, clip: &ui.render.Clip) -> Option<ui.render.RectItem> uses [] panics never pub
+    let x0 = if rect.x > clip.x {
+        rect.x
+    } else {
+        clip.x
+    }
+    let y0 = if rect.y > clip.y {
+        rect.y
+    } else {
+        clip.y
+    }
+    let x1 = if rect.x + rect.w < clip.x + clip.w {
+        rect.x + rect.w
+    } else {
+        clip.x + clip.w
+    }
+    let y1 = if rect.y + rect.h < clip.y + clip.h {
+        rect.y + rect.h
+    } else {
+        clip.y + clip.h
+    }
+    if x1 > x0 && y1 > y0 {
+        Some(ui.render.RectItem { x: x0, y: y0, w: x1 - x0, h: y1 - y0, style: rect.style })
+    } else {
+        None
+    }
+end ui.render.intersect
+
+fn ui.render.mk_clip(x: f32, y: f32, w: f32, h: f32) -> ui.render.Clip uses [] panics never pub
+    ui.render.Clip { x: x, y: y, w: w, h: h }
+end ui.render.mk_clip
+
+fn ui.render.mk_rect(x: f32, y: f32, w: f32, h: f32, r: f32, fill: ui.render.Rgba) -> ui.render.RectItem uses [] panics never pub
+    let border = ui.render.rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)
+    let style = ui.render.RectStyle { fill: fill, border: border, border_w: 0.0f32, radius: r }
+    ui.render.RectItem { x: x, y: y, w: w, h: h, style: style }
+end ui.render.mk_rect
+
+fn ui.render.mk_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, color: ui.render.Rgba, dx: f32, dy: f32) -> ui.render.Shadow uses [] panics never pub
+    ui.render.Shadow { x: x, y: y, w: w, h: h, radius: radius, color: color, dx: dx, dy: dy }
+end ui.render.mk_shadow
+
+fn ui.render.render_checksum(ctx: &mut ui.render.GpuCtx, list: &[ui.render.Item]) -> u64 uses [] panics may pub
+    let z = 0.0f32
+    let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+    let mut rects = [q; 64usize]
+    core.mem.drop(ui.render.batch_rects(list, rects.as_mut_slice()))
+    core.mem.drop(ctx.begin(0.1f32, 0.1f32, 0.1f32, 1.0f32))
+    ctx.draw_rects(rects.as_slice())
+    ctx.finish()
+    let mut rgba = [0u8; 65_536]
+    let got = ctx.readback(&mut rgba)
+    let mut ck = 0u64
+    let mut i = 0usize
+    let limit = usize.from_u64(got)
+    while i < limit {
+        ck = ck.wrapping_mul(31u64).wrapping_add(u64.from_u8(rgba[i]))
+        i = i + 1usize
+    }
+    ck
+end ui.render.render_checksum
+
+fn ui.render.rgba(cr: f32, cg: f32, cb: f32, ca: f32) -> ui.render.Rgba uses [] panics never pub
+    ui.render.Rgba { cr: cr, cg: cg, cb: cb, ca: ca }
+end ui.render.rgba
+
+fn ui.render.scene_borders(list: &mut alloc.vec.Vec<ui.render.Item, std.alloc.System>) -> () uses [alloc] panics never pub
+    let c0 = ui.render.rgba(0.1f32, 0.5f32, 0.8f32, 1.0f32)
+    let r0 = ui.render.mk_rect(20.0f32, 20.0f32, 80.0f32, 60.0f32, 12.0f32, c0)
+    match list.push(ui.render.Item.Rect(r0)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+end ui.render.scene_borders
+
+fn ui.render.scene_clip(list: &mut alloc.vec.Vec<ui.render.Item, std.alloc.System>) -> () uses [alloc] panics never pub
+    let clip0 = ui.render.mk_clip(30.0f32, 30.0f32, 40.0f32, 40.0f32)
+    match list.push(ui.render.Item.ClipPush(clip0)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    let c0 = ui.render.rgba(0.4f32, 0.4f32, 0.4f32, 1.0f32)
+    let r0 = ui.render.mk_rect(10.0f32, 10.0f32, 100.0f32, 100.0f32, 2.0f32, c0)
+    match list.push(ui.render.Item.Rect(r0)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match list.push(ui.render.Item.ClipPop) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+end ui.render.scene_clip
+
+fn ui.render.scene_rects(list: &mut alloc.vec.Vec<ui.render.Item, std.alloc.System>) -> () uses [alloc] panics never pub
+    let c0 = ui.render.rgba(0.2f32, 0.6f32, 0.9f32, 1.0f32)
+    let r0 = ui.render.mk_rect(10.0f32, 10.0f32, 50.0f32, 40.0f32, 4.0f32, c0)
+    match list.push(ui.render.Item.Rect(r0)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    let c1 = ui.render.rgba(0.9f32, 0.2f32, 0.4f32, 1.0f32)
+    let r1 = ui.render.mk_rect(70.0f32, 20.0f32, 60.0f32, 30.0f32, 6.0f32, c1)
+    match list.push(ui.render.Item.Rect(r1)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+end ui.render.scene_rects
+
+fn ui.render.scene_shadow(list: &mut alloc.vec.Vec<ui.render.Item, std.alloc.System>) -> () uses [alloc] panics never pub
+    let c0 = ui.render.rgba(0.0f32, 0.0f32, 0.0f32, 0.4f32)
+    let s0 = ui.render.mk_shadow(40.0f32, 40.0f32, 60.0f32, 50.0f32, 6.0f32, c0, 4.0f32, 4.0f32)
+    match list.push(ui.render.Item.Shadow(s0)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    let c1 = ui.render.rgba(0.2f32, 0.7f32, 0.3f32, 1.0f32)
+    let r1 = ui.render.mk_rect(40.0f32, 40.0f32, 60.0f32, 50.0f32, 6.0f32, c1)
+    match list.push(ui.render.Item.Rect(r1)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+end ui.render.scene_shadow
+
+test ui.render.GpuCtx.test_batch_clip
+    let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let clip0 = ui.render.mk_clip(30.0f32, 30.0f32, 40.0f32, 40.0f32)
+    match list.push(ui.render.Item.ClipPush(clip0)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let c0 = ui.render.rgba(0.4f32, 0.4f32, 0.4f32, 1.0f32)
+    let r0 = ui.render.mk_rect(10.0f32, 10.0f32, 100.0f32, 100.0f32, 2.0f32, c0)
+    match list.push(ui.render.Item.Rect(r0)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match list.push(ui.render.Item.ClipPop) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let c1 = ui.render.rgba(1.0f32, 0.0f32, 0.0f32, 1.0f32)
+    let r1 = ui.render.mk_rect(50.0f32, 50.0f32, 10.0f32, 10.0f32, 0.0f32, c1)
+    match list.push(ui.render.Item.Rect(r1)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut k = 0usize
+    let z = 0.0f32
+    let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+    while k < 16usize {
+        match out.push(q) {
+            Ok(_u) => ()
+            Err(_e) => core.panic.panic("oom")
+        }
+        k = k.wrapping_add(1usize)
+    }
+    let n = ui.render.batch_rects(list.as_slice(), out.as_mut_slice())
+    core.check.eq(n, 2usize)
+    match out.as_slice().get(0usize) {
+        Some(r) => {
+            core.check.eq(r.x, 30.0f32)
+            core.check.eq(r.y, 30.0f32)
+            core.check.eq(r.w, 40.0f32)
+            core.check.eq(r.h, 40.0f32)
+        }
+        None => core.panic.panic("empty")
+    }
+    match out.as_slice().get(1usize) {
+        Some(r) => core.check.eq(r.x, 50.0f32)
+        None => core.panic.panic("empty")
+    }
+end ui.render.GpuCtx.test_batch_clip
+
+test ui.render.GpuCtx.test_batch_cull
+    let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match list.push(ui.render.Item.ClipPush(ui.render.mk_clip(0.0f32, 0.0f32, 10.0f32, 10.0f32))) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let c0 = ui.render.rgba(1.0f32, 0.0f32, 0.0f32, 1.0f32)
+    let r0 = ui.render.mk_rect(100.0f32, 100.0f32, 10.0f32, 10.0f32, 0.0f32, c0)
+    match list.push(ui.render.Item.Rect(r0)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match list.push(ui.render.Item.ClipPop) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut k = 0usize
+    let z = 0.0f32
+    let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+    while k < 1usize {
+        match out.push(q) {
+            Ok(_u) => ()
+            Err(_e) => core.panic.panic("oom")
+        }
+        k = k.wrapping_add(1usize)
+    }
+    let n = ui.render.batch_rects(list.as_slice(), out.as_mut_slice())
+    core.check.eq(n, 0usize)
+end ui.render.GpuCtx.test_batch_cull
+
+test ui.render.GpuCtx.test_batch_order
+    let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let c0 = ui.render.rgba(1.0f32, 0.0f32, 0.0f32, 1.0f32)
+    let r0 = ui.render.mk_rect(0.0f32, 0.0f32, 10.0f32, 10.0f32, 0.0f32, c0)
+    match list.push(ui.render.Item.Rect(r0)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let c1 = ui.render.rgba(0.0f32, 1.0f32, 0.0f32, 1.0f32)
+    let r1 = ui.render.mk_rect(20.0f32, 0.0f32, 10.0f32, 10.0f32, 0.0f32, c1)
+    match list.push(ui.render.Item.Rect(r1)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let c2 = ui.render.rgba(0.0f32, 0.0f32, 1.0f32, 1.0f32)
+    let r2 = ui.render.mk_rect(40.0f32, 0.0f32, 10.0f32, 10.0f32, 0.0f32, c2)
+    match list.push(ui.render.Item.Rect(r2)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut k = 0usize
+    let z = 0.0f32
+    let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+    while k < 16usize {
+        match out.push(q) {
+            Ok(_u) => ()
+            Err(_e) => core.panic.panic("oom")
+        }
+        k = k.wrapping_add(1usize)
+    }
+    let n = ui.render.batch_rects(list.as_slice(), out.as_mut_slice())
+    core.check.eq(n, 3usize)
+    match out.as_slice().get(0usize) {
+        Some(r) => core.check.eq(r.x, 0.0f32)
+        None => core.panic.panic("empty")
+    }
+    match out.as_slice().get(1usize) {
+        Some(r) => core.check.eq(r.x, 20.0f32)
+        None => core.panic.panic("empty")
+    }
+    match out.as_slice().get(2usize) {
+        Some(r) => core.check.eq(r.x, 40.0f32)
+        None => core.panic.panic("empty")
+    }
+end ui.render.GpuCtx.test_batch_order
+
+test ui.render.GpuCtx.test_batch_shadow
+    let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let c0 = ui.render.rgba(0.0f32, 0.0f32, 0.0f32, 0.4f32)
+    let s0 = ui.render.mk_shadow(40.0f32, 40.0f32, 60.0f32, 50.0f32, 6.0f32, c0, 4.0f32, 4.0f32)
+    match list.push(ui.render.Item.Shadow(s0)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let c1 = ui.render.rgba(0.2f32, 0.7f32, 0.3f32, 1.0f32)
+    let r1 = ui.render.mk_rect(40.0f32, 40.0f32, 60.0f32, 50.0f32, 6.0f32, c1)
+    match list.push(ui.render.Item.Rect(r1)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut k = 0usize
+    let z = 0.0f32
+    let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+    while k < 16usize {
+        match out.push(q) {
+            Ok(_u) => ()
+            Err(_e) => core.panic.panic("oom")
+        }
+        k = k.wrapping_add(1usize)
+    }
+    let n = ui.render.batch_rects(list.as_slice(), out.as_mut_slice())
+    core.check.eq(n, 2usize)
+end ui.render.GpuCtx.test_batch_shadow
+
+test ui.render.GpuCtx.test_render_borders
+    let lib_skip_msg = "SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"
+    if !ui.platform_test.libksnui_available() {
+        core.mem.drop(std.io.print_line(lib_skip_msg))
+    } else {
+        let gpu_skip_msg = "SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"
+        match ui.render.GpuCtx.create(160i32, 100i32) {
+            Ok(ctx) => with mut c = ctx close c.close() {
+                let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                ui.render.scene_borders(&mut list)
+                let ck = ui.render.render_checksum(&mut c, list.as_slice())
+                let is_zero = ck == 0u64
+                core.check.eq(is_zero, false)
+            }
+            Err(_e) => core.mem.drop(std.io.print_line(gpu_skip_msg))
+        }
+    }
+end ui.render.GpuCtx.test_render_borders
+
+test ui.render.GpuCtx.test_render_clip
+    let lib_skip_msg = "SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"
+    if !ui.platform_test.libksnui_available() {
+        core.mem.drop(std.io.print_line(lib_skip_msg))
+    } else {
+        let gpu_skip_msg = "SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"
+        match ui.render.GpuCtx.create(160i32, 100i32) {
+            Ok(ctx) => with mut c = ctx close c.close() {
+                let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                ui.render.scene_clip(&mut list)
+                let ck = ui.render.render_checksum(&mut c, list.as_slice())
+                let is_zero = ck == 0u64
+                core.check.eq(is_zero, false)
+            }
+            Err(_e) => core.mem.drop(std.io.print_line(gpu_skip_msg))
+        }
+    }
+end ui.render.GpuCtx.test_render_clip
+
+test ui.render.GpuCtx.test_render_rects
+    let lib_skip_msg = "SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"
+    if !ui.platform_test.libksnui_available() {
+        core.mem.drop(std.io.print_line(lib_skip_msg))
+    } else {
+        let gpu_skip_msg = "SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"
+        match ui.render.GpuCtx.create(160i32, 100i32) {
+            Ok(ctx) => with mut c = ctx close c.close() {
+                let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                ui.render.scene_rects(&mut list)
+                let ck = ui.render.render_checksum(&mut c, list.as_slice())
+                let is_zero = ck == 0u64
+                core.check.eq(is_zero, false)
+            }
+            Err(_e) => core.mem.drop(std.io.print_line(gpu_skip_msg))
+        }
+    }
+end ui.render.GpuCtx.test_render_rects
+
+test ui.render.GpuCtx.test_render_shadow
+    let lib_skip_msg = "SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"
+    if !ui.platform_test.libksnui_available() {
+        core.mem.drop(std.io.print_line(lib_skip_msg))
+    } else {
+        let gpu_skip_msg = "SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"
+        match ui.render.GpuCtx.create(160i32, 100i32) {
+            Ok(ctx) => with mut c = ctx close c.close() {
+                let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                ui.render.scene_shadow(&mut list)
+                let ck = ui.render.render_checksum(&mut c, list.as_slice())
+                let is_zero = ck == 0u64
+                core.check.eq(is_zero, false)
+            }
+            Err(_e) => core.mem.drop(std.io.print_line(gpu_skip_msg))
+        }
+    }
+end ui.render.GpuCtx.test_render_shadow
