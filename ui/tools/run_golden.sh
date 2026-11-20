@@ -22,7 +22,7 @@ THIRD_PARTY="$NATIVE/third_party"
 GOLDEN_DIR="$ROOT/ui/golden/linux-llvmpipe"
 PKG="$ROOT/ui/kasane/golden"
 TMP="${GOLDEN_TMP:-$(mktemp -d)}"
-SCENES="rect round_border clip text alpha"
+SCENES="rect round_border clip text alpha demo"
 NATIVE_BIN="$PKG/target/release/golden.native"
 
 trap 'rm -rf "$TMP"' EXIT
@@ -54,11 +54,21 @@ for scene in $SCENES; do
     # --- (1) ksn run (インタプリタ) ---
     actual="$TMP/run-$scene.png"
     log="$TMP/run-$scene.log"
-    if ! (cd "$PKG" && "$KSNS" run golden.main "$scene" "$actual" >"$log" 2>&1); then
-        echo "FAIL: ksn run の $scene が終了エラー (log: $log)" >&2
-        cat "$log" >&2
-        fail=1
-        continue
+    if [ "$scene" = "demo" ]; then
+        # demo は --headless-frames / --output フラグを受け取る (golden.main と引数形式が異なる)。
+        if ! (cd "$ROOT/examples/ui_demo" && "$KSNS" run demo.main --headless-frames 6 --output "$actual" >"$log" 2>&1); then
+            echo "FAIL: ksn run の demo が終了エラー (log: $log)" >&2
+            cat "$log" >&2
+            fail=1
+            continue
+        fi
+    else
+        if ! (cd "$PKG" && "$KSNS" run golden.main "$scene" "$actual" >"$log" 2>&1); then
+            echo "FAIL: ksn run の $scene が終了エラー (log: $log)" >&2
+            cat "$log" >&2
+            fail=1
+            continue
+        fi
     fi
     if ! python3 "$ROOT/ui/tools/golden.py" "$actual" "$expected" "$TMP/diff-run-$scene.png" >>"$log" 2>&1; then
         echo "FAIL: ksn run の $scene が金色画像と一致しない (diff: $TMP/diff-run-$scene.png)" >&2

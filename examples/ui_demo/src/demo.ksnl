@@ -1,0 +1,444 @@
+import ui.event
+import ui.gpu
+import ui.layout
+import ui.render
+
+const demo.BUTTON_H: f32 = 36.0f32
+
+const demo.BUTTON_W: f32 = 120.0f32
+
+const demo.BUTTON_X: f32 = 452.0f32
+
+const demo.COUNTER_Y: f32 = 420.0f32
+
+const demo.H: i32 = 600i32
+
+const demo.INPUT_H: f32 = 36.0f32
+
+const demo.INPUT_W: f32 = 420.0f32
+
+const demo.INPUT_X: f32 = 12.0f32
+
+const demo.INPUT_Y: f32 = 52.0f32
+
+const demo.LIST_H: f32 = 300.0f32
+
+const demo.LIST_W: f32 = 700.0f32
+
+const demo.LIST_X: f32 = 12.0f32
+
+const demo.LIST_Y: f32 = 104.0f32
+
+const demo.PAD: f32 = 12.0f32
+
+const demo.ROW_H: f32 = 24.0f32
+
+const demo.TITLE_H: f32 = 40.0f32
+
+const demo.W: i32 = 800i32
+
+type demo.App pub
+    text: alloc.vec.Vec<u8, std.alloc.System>
+    counter: u32
+    items: alloc.vec.Vec<alloc.vec.Vec<u8, std.alloc.System>, std.alloc.System>
+    scroll: f32
+    focus_input: bool
+end demo.App
+
+fn demo.App.new() -> demo.App uses [] panics never pub
+    let text = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    demo.App { text: text, counter: 0u32, items: items, scroll: 0.0f32, focus_input: false }
+end demo.App.new
+
+fn demo.bytes(s: &str) -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let b = s.as_bytes()
+    let mut i = 0usize
+    while i < b.len() {
+        let v = match b.get(i) {
+            Some(v) => *v
+            None => 0u8
+        }
+        match out.push(v) {
+            Ok(_u) => ()
+            Err(_e) => ()
+        }
+        i = i.wrapping_add(1usize)
+    }
+    out
+end demo.bytes
+
+fn demo.clone_bytes(bytes: &alloc.vec.Vec<u8, std.alloc.System>) -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let bs = bytes.as_slice()
+    let mut k = 0usize
+    while k < bs.len() {
+        let v = match bs.get(k) {
+            Some(v) => *v
+            None => 0u8
+        }
+        match out.push(v) {
+            Ok(_u) => ()
+            Err(_e) => ()
+        }
+        k = k.wrapping_add(1usize)
+    }
+    out
+end demo.clone_bytes
+
+fn demo.main() -> Result<(), std.io.Error> uses [alloc, env, io.console] panics may
+    let mut frames = 10usize
+    let mut out_path = "/tmp/opencode/ui_demo_demo.png"
+    let empty_str = ""
+    let zero_str = "0"
+    let mut i = 1usize
+    while i < std.env.arg_count() {
+        let a = match std.env.arg(i) {
+            Some(s) => s
+            None => empty_str
+        }
+        if a == "--headless-frames" {
+            i = i.wrapping_add(1usize)
+            let n = match std.env.arg(i) {
+                Some(s) => s
+                None => zero_str
+            }
+            frames = demo.parse_usize(n)
+        } else if a == "--output" {
+            i = i.wrapping_add(1usize)
+            let p = match std.env.arg(i) {
+                Some(s) => s
+                None => out_path
+            }
+            out_path = p
+        }
+        i = i.wrapping_add(1usize)
+    }
+    if frames == 0usize {
+        let usage = "usage: ksn run demo.main --headless-frames N [--output PATH]"
+        core.mem.drop(std.io.print_line(usage))
+        return Ok(())
+    }
+    let gpu_ctx = render.GpuCtx.create(demo.W, demo.H)
+    let dev = match gpu_ctx {
+        Ok(c) => c
+        Err(_e) => {
+            core.mem.drop(std.io.print_line("FAIL: gpu_create"))
+            return Ok(())
+        }
+    }
+    with mut c = dev close c.close() {
+        let mut app = demo.App.new()
+        let mut ctx = event.Ctx.new()
+        let script = demo.script()
+        let mut f = 0usize
+        while f < frames {
+            let limit = if f < script.len() {
+                f.wrapping_add(1usize)
+            } else {
+                script.len()
+            }
+            let mut k = 0usize
+            while k < limit {
+                let ev = match script.get(k) {
+                    Some(e) => e
+                    None => break
+                }
+                let _action = demo.update(&mut app, &mut ctx, ev)
+                k = k.wrapping_add(1usize)
+            }
+            let frame_path = if f.wrapping_add(1usize) == frames {
+                out_path
+            } else {
+                "/tmp/opencode/ui_demo_tmp.png"
+            }
+            demo.render_frame(&app, &mut c, frame_path)
+            f = f.wrapping_add(1usize)
+        }
+        core.mem.drop(std.io.print_line("demo: headless frames done"))
+    }
+    Ok(())
+end demo.main
+
+fn demo.parse_usize(s: &str) -> usize uses [] panics never pub
+    let b = s.as_bytes()
+    let mut n = 0usize
+    let mut i = 0usize
+    while i < b.len() {
+        let v = match b.get(i) {
+            Some(v) => *v
+            None => 0u8
+        }
+        if v >= 48u8 && v <= 57u8 {
+            n = n.wrapping_mul(10usize).wrapping_add(usize.from_u8(v).wrapping_sub(48usize))
+        }
+        i = i.wrapping_add(1usize)
+    }
+    n
+end demo.parse_usize
+
+fn demo.push_rect(list: &mut alloc.vec.Vec<ui.render.Item, std.alloc.System>, r: ui.render.RectItem) -> () uses [alloc] panics may pub
+    match list.push(render.Item.Rect(r)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+end demo.push_rect
+
+fn demo.push_text(app: &mut demo.App, bytes: &alloc.vec.Vec<u8, std.alloc.System>) -> () uses [alloc] panics never pub
+    let bs = bytes.as_slice()
+    let mut k = 0usize
+    while k < bs.len() {
+        let v = match bs.get(k) {
+            Some(v) => *v
+            None => 0u8
+        }
+        match app.text.push(v) {
+            Ok(_u) => ()
+            Err(_e) => ()
+        }
+        k = k.wrapping_add(1usize)
+    }
+end demo.push_text
+
+fn demo.render_frame(app: &demo.App, gpu_ctx: &mut ui.render.GpuCtx, path: &str) -> () uses [alloc] panics may pub
+    let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let panel = render.rgba(0.95f32, 0.95f32, 0.95f32, 1.0f32)
+    let white = render.rgba(1.0f32, 1.0f32, 1.0f32, 1.0f32)
+    let input_bg = render.rgba(1.0f32, 1.0f32, 1.0f32, 1.0f32)
+    let button_bg = render.rgba(0.2f32, 0.6f32, 0.9f32, 1.0f32)
+    let row_bg = render.rgba(1.0f32, 1.0f32, 1.0f32, 1.0f32)
+    let row_alt = render.rgba(0.98f32, 0.98f32, 0.98f32, 1.0f32)
+
+    let w = f32.from_i32_nearest(demo.W)
+    let h = f32.from_i32_nearest(demo.H)
+    demo.push_rect(&mut list, render.mk_rect(0.0f32, 0.0f32, w, h, 0.0f32, panel))
+    demo.push_rect(&mut list, render.mk_rect(0.0f32, 0.0f32, w, demo.TITLE_H, 0.0f32, white))
+    let irx = demo.INPUT_X
+    let iry = demo.INPUT_Y
+    let irw = demo.INPUT_W
+    let irh = demo.INPUT_H
+    demo.push_rect(&mut list, render.mk_rect(irx, iry, irw, irh, 4.0f32, input_bg))
+    let brx = demo.BUTTON_X
+    let bry = demo.INPUT_Y
+    let brw = demo.BUTTON_W
+    let brh = demo.BUTTON_H
+    demo.push_rect(&mut list, render.mk_rect(brx, bry, brw, brh, 4.0f32, button_bg))
+    let clip = render.mk_clip(demo.LIST_X, demo.LIST_Y, demo.LIST_W, demo.LIST_H)
+    match list.push(render.Item.ClipPush(clip)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let rc = app.items.len()
+    let (first, last) = demo.visible_range(rc, app.scroll)
+    let mut row = first
+    let lrx = demo.LIST_X
+    let lrw = demo.LIST_W
+    while row < last {
+        let ry = demo.LIST_Y + core.num.f32.from_usize_nearest(row) * demo.ROW_H - app.scroll
+        let rcolor = if row % 2usize == 0usize {
+            row_bg
+        } else {
+            row_alt
+        }
+        demo.push_rect(&mut list, render.mk_rect(lrx, ry, lrw, demo.ROW_H, 0.0f32, rcolor))
+        row = row.wrapping_add(1usize)
+    }
+    match list.push(render.Item.ClipPop) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let crx = demo.INPUT_X
+    let cry = demo.COUNTER_Y
+    demo.push_rect(&mut list, render.mk_rect(crx, cry, 200.0f32, 24.0f32, 0.0f32, white))
+
+    let rq = demo.zero_rect()
+    let mut rects = [rq; 256]
+    let mut glyphs: [gpu.KsnuiGlyphQuad; 0] = []
+    let (nr, _ng) = render.batch(list.as_slice(), rects.as_mut_slice(), glyphs.as_mut_slice())
+    let _nr = nr
+    let rect_slice = rects.as_slice()
+    core.mem.drop(gpu_ctx.begin(0.1f32, 0.1f32, 0.1f32, 1.0f32))
+    gpu_ctx.draw_rects(rect_slice)
+    gpu_ctx.finish()
+    let mut rgba = [0u8; 1_920_000]
+    let _got = gpu_ctx.readback(&mut rgba)
+    core.mem.drop(gpu_ctx.png_write(path, demo.W, demo.H, &rgba))
+end demo.render_frame
+
+fn demo.script() -> alloc.vec.Vec<ui.event.Event, std.alloc.System> uses [alloc] panics never pub
+    let mut evs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match evs.push(event.Event.IMEUpdate(demo.bytes("こ"))) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match evs.push(event.Event.IMECommit(demo.bytes("こんにちは"))) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match evs.push(event.Event.TextInput(demo.bytes(" テスト"))) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match evs.push(event.Event.PointerDown(500.0f32, 58.0f32, 1u8)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match evs.push(event.Event.PointerUp(500.0f32, 58.0f32, 1u8)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match evs.push(event.Event.Wheel(0.0f32, 0.0f32, 0.0f32, 1.0f32)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match evs.push(event.Event.TextInput(demo.bytes(" 追加"))) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match evs.push(event.Event.PointerDown(500.0f32, 58.0f32, 1u8)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match evs.push(event.Event.PointerUp(500.0f32, 58.0f32, 1u8)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    evs
+end demo.script
+
+fn demo.update(app: &mut demo.App, _ctx: &mut ui.event.Ctx, ev: &ui.event.Event) -> ui.event.Action uses [alloc] panics never pub
+    let ix = demo.INPUT_X
+    let iy = demo.INPUT_Y
+    let iw = demo.INPUT_W
+    let ih = demo.INPUT_H
+    let input_rect = layout.Rect { x: ix, y: iy, width: iw, height: ih }
+    let bx = demo.BUTTON_X
+    let by = demo.INPUT_Y
+    let bw = demo.BUTTON_W
+    let bh = demo.BUTTON_H
+    let button_rect = layout.Rect { x: bx, y: by, width: bw, height: bh }
+    match ev {
+        event.Event.IMECommit(bytes) => {
+            demo.push_text(app, bytes)
+            event.Action.Redraw
+        }
+        event.Event.TextInput(bytes) => {
+            if app.focus_input {
+                demo.push_text(app, bytes)
+            }
+            event.Action.Redraw
+        }
+        event.Event.PointerDown(px, py, _) => if event.rect_contains(button_rect, *px, *py) {
+            match app.items.push(demo.clone_bytes(&app.text)) {
+                Ok(_u) => ()
+                Err(_e) => ()
+            }
+            app.counter = app.counter.wrapping_add(1u32)
+            let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            app.text = empty
+            event.Action.Redraw
+        } else if event.rect_contains(input_rect, *px, *py) {
+            app.focus_input = true
+            event.Action.Redraw
+        } else {
+            app.focus_input = false
+            event.Action.NoOp
+        }
+        event.Event.PointerUp(_, _, _) => event.Action.NoOp
+        event.Event.Wheel(_, dy, _, _) => {
+            let mut scroll = app.scroll + *dy * demo.ROW_H
+            let items_f = core.num.f32.from_usize_nearest(app.items.len())
+            let max_scroll = (items_f * demo.ROW_H - demo.LIST_H).max(0.0f32)
+            if scroll < 0.0f32 {
+                scroll = 0.0f32
+            }
+            if scroll > max_scroll {
+                scroll = max_scroll
+            }
+            app.scroll = scroll
+            event.Action.Redraw
+        }
+        event.Event.FocusGained => {
+            app.focus_input = true
+            event.Action.Redraw
+        }
+        event.Event.FocusLost => {
+            app.focus_input = false
+            event.Action.Redraw
+        }
+        event.Event.IMEStart => event.Action.Redraw
+        event.Event.IMEUpdate(_) => event.Action.Redraw
+        event.Event.KeyDown(_, _) => event.Action.NoOp
+        event.Event.KeyUp(_, _) => event.Action.NoOp
+        event.Event.PointerMove(_, _) => event.Action.NoOp
+        event.Event.Resize(_, _) => event.Action.NoOp
+        event.Event.DPIChange(_) => event.Action.NoOp
+        event.Event.Quit => event.Action.NoOp
+    }
+end demo.update
+
+fn demo.visible_range(rc: usize, scroll: f32) -> (usize, usize) uses [] panics never pub
+    if rc == 0usize {
+        (0usize, 0usize)
+    } else {
+        let f = (scroll / demo.ROW_H).trunc_to_usize().unwrap_or(0usize)
+        let first = if f > rc {
+            rc
+        } else {
+            f
+        }
+        let lf = (scroll + demo.LIST_H) / demo.ROW_H
+        let l0 = lf.trunc_to_usize().unwrap_or(0usize).wrapping_add(1usize)
+        let last = if l0 > rc {
+            rc
+        } else {
+            l0
+        }
+        (first, last)
+    }
+end demo.visible_range
+
+fn demo.zero_rect() -> ui.gpu.KsnuiRect uses [] panics never pub
+    let z = 0.0f32
+    gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+end demo.zero_rect
+
+test demo.App.test_button_click_increments_counter_and_appends
+    let mut app = demo.App.new()
+    app.focus_input = true
+    let mut ctx = event.Ctx.new()
+    core.mem.drop(demo.update(&mut app, &mut ctx, &event.Event.TextInput(demo.bytes("item1"))))
+    let ev = event.Event.PointerDown(500.0f32, 58.0f32, 1u8)
+    let action = demo.update(&mut app, &mut ctx, &ev)
+    core.check.eq(action, event.Action.Redraw)
+    core.check.eq(app.counter, 1u32)
+    core.check.eq(app.items.len(), 1usize)
+    core.check.eq(app.text.len(), 0usize)
+end demo.App.test_button_click_increments_counter_and_appends
+
+test demo.App.test_ime_commit_appends_text
+    let mut app = demo.App.new()
+    let mut ctx = event.Ctx.new()
+    let ev = event.Event.IMECommit(demo.bytes("こんにちは"))
+    let action = demo.update(&mut app, &mut ctx, &ev)
+    core.check.eq(action, event.Action.Redraw)
+    core.check.eq(app.text.len(), 15usize)
+end demo.App.test_ime_commit_appends_text
+
+test demo.App.test_text_input_when_focused
+    let mut app = demo.App.new()
+    app.focus_input = true
+    let mut ctx = event.Ctx.new()
+    let ev = event.Event.TextInput(demo.bytes("abc"))
+    let _action = demo.update(&mut app, &mut ctx, &ev)
+    core.check.eq(app.text.len(), 3usize)
+end demo.App.test_text_input_when_focused
+
+test demo.App.test_wheel_scroll_clamps
+    let mut app = demo.App.new()
+    let mut ctx = event.Ctx.new()
+    let ev = event.Event.Wheel(0.0f32, 0.0f32, 0.0f32, 5.0f32)
+    core.mem.drop(demo.update(&mut app, &mut ctx, &ev))
+    core.check.eq(app.scroll, 0.0f32)
+end demo.App.test_wheel_scroll_clamps

@@ -1,0 +1,21 @@
+version = 2
+
+[[package]]
+name = "ui"
+source = "path+../../ui/kasane"
+deps = ["ui_event"]
+
+[[package]]
+name = "ui_event"
+source = "path+../../ui/kasane/event"
+deps = ["ui_tree"]
+
+[[package]]
+name = "ui_layout"
+source = "path+../../ui/kasane/layout"
+deps = []
+
+[[package]]
+name = "ui_tree"
+source = "path+../../ui/kasane/tree"
+deps = ["ui_layout"]

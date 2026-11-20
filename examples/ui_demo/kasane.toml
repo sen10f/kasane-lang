@@ -1,0 +1,16 @@
+[package]
+name = "demo"
+version = "0.1.0"
+edition = 1
+entry = "demo.main"
+
+[unsafe]
+modules = ["demo"]
+
+[native]
+static = ["../../ui/native/libksnui.a"]
+dynamic = ["wgpu_native", "vulkan", "dl", "m", "pthread", "ksnui", "SDL3", "freetype", "harfbuzz"]
+search = ["../../ui/native", "../../ui/native/third_party/lib"]
+
+[dependencies]
+ui = { path = "../../ui/kasane" }
