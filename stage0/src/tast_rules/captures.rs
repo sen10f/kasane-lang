@@ -33,9 +33,14 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
 fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut Vec<Diag>) {
     use crate::check::{covers, is_effect_var};
     let d = &p.defs[di];
+    // test の本体の効果は検査しない (旧い検査の `cur_uses` が無い)。
+    if d.kw == "test" {
+        return;
+    }
     let mut found: Vec<(&'static str, String, usize)> = vec![];
     // 呼び出しの引数へ入る値は呼び出しの行、それ以外 (`let` の注釈・戻り値・欄) は旧い検査と同じく定義の行で報告する。
     let mut arg_line: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let mut extern_args: std::collections::HashSet<u32> = std::collections::HashSet::new();
     // 閉包の本体の中の節点 (その呼び出しの効果は、閉包の効果として数える)。
     let mut in_closure: std::collections::HashSet<u32> = std::collections::HashSet::new();
     super::impl_sig::walk(body, &mut |e| {
@@ -114,6 +119,12 @@ fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut 
             for a in args {
                 arg_line.insert(a.id, e.line);
             }
+            // `extern` へ渡すコールバックの効果は E5005 が見る (同じ違反を E4001 / E4002 で重ねない)。
+            if matches!(&e.res, Some(Callee::Def(ci)) if p.defs[*ci].kw == "extern") {
+                for a in args {
+                    extern_args.insert(a.id);
+                }
+            }
         }
         if let TKind::StructLit { fields, .. } = &e.kind {
             for (_, a) in fields {
@@ -121,7 +132,7 @@ fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut 
             }
         }
         let at = arg_line.get(&e.id).copied().unwrap_or(0);
-        for c in &e.conv {
+        for c in e.conv.iter().filter(|_| !extern_args.contains(&e.id)) {
             let Coercion::FnTo(Ty::Closure { eff: crate::types::Eff(Some(want)), .. }) = c else { continue };
             let Ty::Closure { eff: crate::types::Eff(Some(got)), .. } = e.ty.strip() else { continue };
             if want.uses.iter().any(|x| is_effect_var(x)) || want.may.is_none() {

@@ -230,6 +230,8 @@ struct W<'a> {
     gn: HashSet<String>,
     /// 閉包の本体を擬似の関数として解くときの署名 (`None` は定義そのもの)。
     cl: Option<ClSig>,
+    /// `match` の腕の束縛 (走査の対象の一時値はこの `match` の間は生きるので、腕の中の文の終わりで尽きさせない)。
+    arm_vars: Vec<String>,
 }
 
 /// 閉包を擬似の関数として見たときの署名と、外側の局所 (本体の中の局所と区別する)。
@@ -391,7 +393,7 @@ impl<'a> W<'a> {
             }
         });
         let gn = p.defs[di].gnames();
-        W { p, di, env: Env::default(), scopes: vec![vec![]], vals: HashMap::new(), uses, loops: vec![], ret, diags: vec![], seen: HashSet::new(), gn, cl: None }
+        W { p, di, env: Env::default(), scopes: vec![vec![]], vals: HashMap::new(), uses, loops: vec![], ret, diags: vec![], seen: HashSet::new(), gn, cl: None, arm_vars: vec![] }
     }
 
     fn diag(&mut self, code: &str, msg: String, line: usize) {
@@ -469,18 +471,27 @@ impl<'a> W<'a> {
     }
 
     fn bind_pat(&mut self, pat: &TPat, v: Val, reline: bool) {
+        self.bind_pat_ty(pat, v, reline, None);
+    }
+
+    /// `ty` は被束縛値の型 (パターンの束縛に型の情報が無いとき、タプルの要素の型をここから取る)。
+    fn bind_pat_ty(&mut self, pat: &TPat, v: Val, reline: bool, ty: Option<&Ty>) {
         let v = if reline { v.unstamp_locals() } else { v };
         match pat.kind {
             "PBind" => {
-                let t = pat.info.as_ref().and_then(|i| i.bind.as_ref().map(|b| b.1.clone())).unwrap_or(Ty::Unknown);
+                let t = pat.info.as_ref().and_then(|i| i.bind.as_ref().map(|b| b.1.clone())).or_else(|| ty.filter(|t| !matches!(t, Ty::Unknown | Ty::Var(_))).cloned()).unwrap_or(Ty::Unknown);
                 if let Some(n) = &pat.name {
                     self.define(n, pat.id, v, &t);
                 }
             }
             "PTuple" => {
+                let tys: Option<Vec<Ty>> = match ty.map(|t| t.strip()) {
+                    Some(Ty::Tuple(xs)) if xs.len() == pat.children.len() => Some(xs.clone()),
+                    _ => None,
+                };
                 for (i, c) in pat.children.iter().enumerate() {
                     let cv = if v.parts.len() == pat.children.len() { v.parts[i].clone() } else { v.flat() };
-                    self.bind_pat(c, cv, false);
+                    self.bind_pat_ty(c, cv, false, tys.as_ref().map(|x| &x[i]));
                 }
             }
             _ => {
@@ -934,10 +945,14 @@ impl<'a> W<'a> {
                     self.env = saved.clone();
                     self.scopes.push(vec![]);
                     self.bind_pat(&a.pat, s.clone(), true);
+                    let mark = self.arm_vars.len();
+                    let bound = self.scopes.last().cloned().unwrap_or_default();
+                    self.arm_vars.extend(bound);
                     if let Some(g) = &a.guard {
                         self.ev(g);
                     }
                     let v = self.ev(&a.body);
+                    self.arm_vars.truncate(mark);
                     self.escape_scope(&a.body);
                     let v = self.end_scope(v);
                     out.add(&v);
@@ -1179,7 +1194,8 @@ impl<'a> W<'a> {
                         Some(_) => v.with_line(LEAF),
                         None => v,
                     };
-                    self.bind_pat(pat, v, false);
+                    let ity = init.as_ref().map(|x| x.ty.clone());
+                    self.bind_pat_ty(pat, v, false, ity.as_ref());
                 }
                 TStmt::Expr(x) => {
                     let v = self.ev(x);
@@ -1193,8 +1209,11 @@ impl<'a> W<'a> {
                 }
             }
             if i + 1 != stmts.len() {
-                for var in self.env.vars.values_mut() {
-                    var.val.kill_temps();
+                let keep = &self.arm_vars;
+                for (n, var) in self.env.vars.iter_mut() {
+                    if !keep.contains(n) {
+                        var.val.kill_temps();
+                    }
                 }
             }
         }
@@ -1408,15 +1427,25 @@ impl<'a> W<'a> {
         };
         let Some(g) = d.generics.iter().find(|g| g.0 == "type" && g.1 == pn) else { return None };
         let dt = recv_ty.strip().clone();
-        for b in items(&g.2) {
-            let V::L(bx) = b else { continue };
-            let Some(tr) = resolve_trait_fqn(self.p, &st(&bx[0])) else { continue };
+        // 境界のトレイトとそのスーパートレイト (`Copy` の `Clone` など) を幅優先で探す。
+        let mut queue: Vec<String> = items(&g.2).iter().filter_map(|b| if let V::L(bx) = b { resolve_trait_fqn(self.p, &st(&bx[0])) } else { None }).collect();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut qi = 0;
+        while qi < queue.len() {
+            let tr = queue[qi].clone();
+            qi += 1;
+            if !seen.insert(tr.clone()) {
+                continue;
+            }
             let Some(&ti) = self.p.types.get(&tr) else { continue };
             let td = &self.p.defs[ti];
             if td.kw != "trait" {
                 continue;
             }
-            let Some((_, ps_v, ret_v)) = td.trait_sigs.iter().find(|s| s.0 == meth) else { continue };
+            let Some((_, ps_v, ret_v)) = td.trait_sigs.iter().find(|s| s.0 == meth) else {
+                queue.extend(td.requires.iter().filter_map(|r| resolve_trait_fqn(self.p, &r.0)));
+                continue;
+            };
             let mut gn = td.gnames();
             gn.insert("Self".to_string());
             let mut bind: HashMap<String, Ty> = HashMap::new();

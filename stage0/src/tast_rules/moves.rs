@@ -99,6 +99,14 @@ struct W<'a> {
     gens: Vec<(String, bool, bool, bool)>,
 }
 
+/// 整数リテラルの添字 (`ls[0usize]`)。
+fn const_index(e: &TExpr) -> Option<usize> {
+    match &e.kind {
+        TKind::Lit(s) => s.strip_prefix("int:")?.split(':').next()?.parse().ok(),
+        _ => None,
+    }
+}
+
 fn is_cmp(op: &str) -> bool {
     matches!(op, "==" | "!=" | "<" | "<=" | ">" | ">=")
 }
@@ -338,6 +346,21 @@ impl<'a> W<'a> {
                 return false;
             }
         }
+        if let Ty::Array(x, n) = ty {
+            let Some(n) = *n else { return false };
+            if n > 4096 {
+                return false;
+            }
+            let x = (**x).clone();
+            for i in 0..n as usize {
+                let mut pp = path.to_vec();
+                pp.push(format!("[{}]", i));
+                if !self.covered(root, &pp, &x) {
+                    return false;
+                }
+            }
+            return true;
+        }
         match self.struct_fields(ty) {
             Some(fs) => {
                 // 線形なのが欄の型ではなく型引数 (`Receiver<Res>`) なら、全体を消費しなければ果たさない。
@@ -355,6 +378,22 @@ impl<'a> W<'a> {
             }
             None => false,
         }
+    }
+
+    /// 配列の束縛で、最初に消費されていない要素の名前 (`ls[1]`)。要素単位に分けられないときは束縛の名前。
+    fn uncovered_elem(&mut self, root: &Root, name: &str, ty: &Ty) -> String {
+        if let Ty::Array(x, Some(n)) = ty {
+            let any = self.st.must.keys().any(|(r, k)| r == root && !k.is_empty());
+            if any && *n <= 4096 {
+                let x = (**x).clone();
+                for i in 0..*n as usize {
+                    if !self.covered(root, &[format!("[{}]", i)], &x) {
+                        return format!("{}[{}]", name, i);
+                    }
+                }
+            }
+        }
+        name.to_string()
     }
 
     fn declare(&mut self, name: &str, id: PatId, ty: &Ty, line: usize, owes: bool) {
@@ -388,7 +427,8 @@ impl<'a> W<'a> {
         }
         for x in gone {
             if !self.covered(&x.root, &[], &x.ty) {
-                self.diag("E3003", format!("linear value `{}` is never consumed", x.name), x.line);
+                let nm = self.uncovered_elem(&x.root, &x.name, &x.ty);
+                self.diag("E3003", format!("linear value `{}` is never consumed", nm), x.line);
             }
         }
     }
@@ -476,13 +516,43 @@ impl<'a> W<'a> {
                 }
                 PR { root: None, path: vec![], via: false, text: segs.join(".") }
             }
+            TKind::Field { base, name } if !self.is_place(base) && !matches!(base.ty, Ty::Ref(..)) && matches!(base.kind, TKind::Call { .. } | TKind::MCall { .. } | TKind::StructLit { .. }) => {
+                // 一時値の欄: 欄を取り出すと残りの欄だけが残る。残りに線形な欄があれば漏れる (宣言が `linear` の型は欄だけでは消費できない)。
+                self.eval(base, Cx::Value);
+                let bt = base.ty.clone();
+                if self.linear(&bt) {
+                    let declared = matches!(&bt, Ty::Named(n, _, _) if self.p.types.get(n).map_or(false, |&i| self.p.defs[i].linear));
+                    let others = self.struct_fields(&bt).map_or(false, |fs| fs.iter().any(|(n, t)| n != name && self.linear(&t.clone())));
+                    if declared {
+                        self.diag("E3003", "a linear temporary is borrowed or read through a field and is never consumed (bind it, or consume it)".into(), e.line);
+                    } else if others {
+                        self.diag("E3003", format!("a linear temporary's field `{}` is consumed but the temporary is not fully consumed (other linear fields are leaked)", name), e.line);
+                    }
+                }
+                PR { root: None, path: vec![], via: false, text: format!("(call result).{}", name) }
+            }
             TKind::Field { base, name } => {
                 let mut r = self.place_of(base);
+                // 一時値から取り出した欄の欄 (`(t.Box { .. }).r.id`): 取り出した欄が線形なら、読むだけでは消費されない。
+                if r.root.is_none() && !self.is_place(base) && matches!(base.kind, TKind::Field { .. }) && !matches!(base.ty, Ty::Ref(..)) {
+                    let bt = base.ty.clone();
+                    if self.linear(&bt) {
+                        self.diag("E3003", "a linear temporary is borrowed or read through a field and is never consumed (bind it, or consume it)".into(), e.line);
+                    }
+                }
                 if matches!(base.ty, Ty::Ref(..)) {
                     r.via = true;
                 }
                 r.path.push(name.clone());
                 r.text = format!("{}.{}", r.text, name);
+                r
+            }
+            TKind::Index { base, index } if const_index(index).is_some() && matches!(&base.ty, Ty::Array(x, _) if self.linear(&(**x).clone())) => {
+                // 配列の定数添字の要素は 1 つずつ move できる (線形な配列は要素ごとに消費する、4.4)。
+                let mut r = self.place_of(base);
+                let k = const_index(index).unwrap_or(0);
+                r.path.push(format!("[{}]", k));
+                r.text = format!("{}[{}]", r.text, k);
                 r
             }
             TKind::Index { base, index } => {
@@ -1016,7 +1086,9 @@ impl<'a> W<'a> {
             "While" => self.run_loop(e, ch.first(), ch.get(1), None, false, false, false),
             "For" => {
                 let it = &ch[0];
-                self.eval(it, Cx::Value);
+                // 所有する `Vec` と配列だけが move。それ以外の反復子 (利用者の `Iterator`) は `for` がその場で進める (旧と同じ、仕様が未規定の所)。
+                let owned = matches!(&it.ty, Ty::Array(..)) || matches!(&it.ty, Ty::Named(n, a, _) if n == "alloc.vec.Vec" && !a.is_empty());
+                self.eval(it, if owned { Cx::Value } else { Cx::Borrow });
                 let leaky = match &it.ty {
                     Ty::Array(x, _) => self.linear(&x.clone()),
                     Ty::Named(n, a, _) if (n.ends_with("Vec") || n.ends_with("IntoIter")) && !a.is_empty() => self.linear(&a[0].clone()),

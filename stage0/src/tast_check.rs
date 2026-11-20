@@ -68,8 +68,9 @@ pub fn mode() -> Mode {
     match std::env::var("KSN_CHECKER").as_deref() {
         Ok("new") => Mode::New,
         Ok("shadow") => Mode::Shadow,
-        Ok("s4") => Mode::S4,
-        _ => Mode::Old,
+        Ok("old") => Mode::Old,
+        // 既定は s4 (2026-11-20 に old から切り替え。old / new / shadow は 1 リリースだけ残す)。
+        _ => Mode::S4,
     }
 }
 

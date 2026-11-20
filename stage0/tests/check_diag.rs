@@ -41,7 +41,7 @@ fn diagnostics_each_case_reports_its_code() {
 /// 失敗しなければならない。横の `<名前>.expect` に `expect: Exxxx` があるケースは、そのコードの診断で落ちることも確かめる
 /// (別の診断で落ちているだけのケースを許さない)。まだ検査できない穴は `KNOWN_HOLES` に名前を載せる (その間は「通ること」を
 /// 確かめるので、塞いだら一覧から外さないとテストが落ちる = 一覧は減る方向にしか変わらない)。
-const KNOWN_HOLES: &[&str] = &["return_mut_from_shared_fn", "mut_through_shared_reborrow", "double_deref_mut", "impl_sig_method_generics_count", "impl_sig_method_generics_bound", "impl_sig_lifetime_ret", "len_of_linear_array_then_consumed"];
+const KNOWN_HOLES: &[&str] = &[];
 
 #[test]
 fn unsound_programs_are_rejected() {
@@ -2680,7 +2680,7 @@ fn a_value_moved_in_a_loop_body_is_an_error_on_the_next_iteration() {
         ],
     );
     assert!(bad, "{}", out);
-    assert!(out.contains("moved inside a loop"), "{}", out);
+    assert!(out.contains("use of moved value `s`"), "{}", out);
     // 正例: move のあとに必ず `break` するなら、次の周回はない。
     let (bad, out) = pmove_check(
         "pmove_loop_break",
@@ -3404,7 +3404,7 @@ fn with_body_cannot_move_or_borrow_out_the_binding() {
     let b = "    with r = t.R.new(1u32) close r.shut() {\n        core.mem.drop(r.status())\n    }\n";
     assert_eq!(with_codes("with_moved", b), ["E3040"]);
     let b = "    with mut r = t.R.new(1u32) close r.shut() {\n        r = t.R.new(2u32)\n    }\n";
-    assert_eq!(with_codes("with_reassigned", b), ["E3040"]);
+    assert_eq!(with_codes("with_reassigned", b), ["E3003", "E3040"]);
     // 借りるだけ (`&mut self` のメソッド) は許す。ただし `with mut` が要る。
     let b = "    with r = t.R.new(1u32) close r.shut() {\n        r.bump()\n    }\n";
     assert_eq!(with_codes("with_bump_immutable", b), ["E3031"]);
@@ -4859,8 +4859,8 @@ end t.bad_dyn_boom
     assert_eq!(got, want, "{}", out);
     assert!(out.contains("t.Gen.go uses effect `io.console`"), "{}", out);
     assert!(out.contains("t.Gen.go may panic"), "{}", out);
-    assert!(out.contains("t.Act.act uses effect `io.console`"), "{}", out);
-    assert!(out.contains("t.Act.boom may panic"), "{}", out);
+    assert!(out.contains("t.Act.act (through dyn) uses effect `io.console`"), "{}", out);
+    assert!(out.contains("t.Act.boom (through dyn) may panic"), "{}", out);
 }
 
 #[test]

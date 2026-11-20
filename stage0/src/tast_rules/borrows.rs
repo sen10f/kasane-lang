@@ -140,7 +140,9 @@ fn holds_val(p: &Program, t: &Ty) -> bool {
 fn holds2(p: &Program, t: &Ty, static_is_no_borrow: bool) -> bool {
     match t {
         Ty::Ref(..) => !(static_is_no_borrow && matches!(t, Ty::Ref(_, _, r) if matches!(r, crate::types::Region::Static))),
-        Ty::Dyn(..) | Ty::Closure { .. } => true,
+        Ty::Dyn(..) => true,
+        // 型注釈から組んだ関数型 (`id` なし。`core.ffi.trampoline` の戻りの関数ポインタなど) は何も取り込めない。
+        Ty::Closure { id, .. } => id.is_some(),
         Ty::Named(n, a, rg) => {
             !rg.0.is_empty() || a.iter().any(|x| holds2(p, x, static_is_no_borrow)) || p.types.get(n).map_or(false, |&i| !p.defs[i].field_lifetimes.iter().all(|(_, l)| l.iter().all(|x| x == "static")))
         }

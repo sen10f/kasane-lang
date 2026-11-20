@@ -236,7 +236,8 @@ fn nll_rejects_a_mutation_while_a_borrow_is_stored_in_a_struct_field() {
         &["let mut x = 1u8", "let s = t.S { f: &x, b: 2u8 }", "x = 2u8", "core.check.eq(s.b, 2u8)"],
     );
     assert!(bad, "{}", out);
-    assert!(out.contains("cannot mutate `x` while it is borrowed by `s.f`"), "{}", out);
+    // s4 は欄の名前を付けず、借用を持つ束縛 (`s`) の名前で報告する。
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `s"), "{}", out);
 }
 
 #[test]
@@ -696,20 +697,12 @@ fn nll_store_keeps_every_borrow_pushed_into_one_container() {
 
 #[test]
 fn nll_mem_replace_with_a_dead_holder_is_accepted() {
-    nll_clean(
-        "nll_mem_replace_ok",
-        "type t.H\n    r: &'static u8\nend t.H\n\n",
-        &[
-            "let a = 1u8",
-            "let mut x = 2u8",
-            "let mut h = t.H { r: &a }",
-            "let old = core.mem.replace(&mut h.r, &x)",
-            "core.check.eq(*h.r, 2u8)",
-            "core.check.eq(*old, 1u8)",
-            "x = 3u8",
-            "core.check.eq(x, 3u8)",
-        ],
-    );
+    // 旧は `&'static` 欄に局所 `a` の借用を入れる `t.H { r: &a }` を通していたが、これは穴 (`'static` 欄への局所の借用)。
+    // s4 は E3030 で拒む (2026-11-20 の切り替え)。
+    let src = main_wrap("type t.H\n    r: &'static u8\nend t.H\n\n", &body(&["let a = 1u8", "let h = t.H { r: &a }", "core.mem.drop(h)"]));
+    let t = Tmp::new("nll_mem_replace_static", &src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E3030"), "{}", out);
 }
 
 #[test]
@@ -1032,15 +1025,20 @@ fn nll_accepts_an_array_literal_overwritten_before_the_conflict() {
             "let y = 2u8",
             "let mut a = [&x, &y]",
             "a = [&y, &y]",
-            "let mut c = [&x]",
-            "c[0] = &y",
             "x = 5u8",
             "core.check.eq(*a[0], 2u8)",
-            "core.check.eq(*c[0], 2u8)",
             "core.check.eq(x, 5u8)",
         ],
     );
     assert!(!bad, "{}", out);
+    // 要素への代入 `c[0] = &y` は弱い更新 (s4 は要素ごとに借用を追わない): 元の借用は残り、保守的に E3010。
+    // 2026-11-20 の s4 切り替えで旧の精度から後退した (穴ではなく拒みすぎ)。
+    let (bad, out) = has_e3010(
+        "nll_store_array_elem_conservative",
+        "",
+        &["let mut x = 1u8", "let y = 2u8", "let mut c = [&x]", "c[0] = &y", "x = 5u8", "core.check.eq(*c[0], 2u8)", "core.check.eq(x, 5u8)"],
+    );
+    assert!(bad, "{}", out);
 }
 
 // ---- 一時値の解放の残り: Field・タプルの型解決と E2042 / E3003 (4.4・4.6) ----
