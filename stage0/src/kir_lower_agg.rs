@@ -1359,6 +1359,15 @@ impl<'a> Lw<'a> {
                         let c = self.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty, a: val, b: k });
                         self.test(c, fl);
                     }
+                    "float" if ty.is_float() => {
+                        let Some(fl) = fail else {
+                            return self.err(line, "let の束縛は反駁可能でない");
+                        };
+                        let x = st(lf.last().unwrap()).replace('_', "").parse::<f64>().map_err(|_| format!("行 {}: 浮動小数パターンが扱えない", line))?;
+                        let k = self.emit(ty, Op::Const(crate::kir_scalar::from_f64(ty, x)));
+                        let c = self.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty, a: val, b: k });
+                        self.test(c, fl);
+                    }
                     // 文字リテラル (`'é'`): `char` は u32 のコード。
                     "char" => {
                         let Some(fl) = fail else {
@@ -1510,6 +1519,13 @@ impl<'a> Lw<'a> {
                     let fv = self.emit(fd.ty, Op::Field { a: val, off: fd.off });
                     out.extend(self.pat(sp, fv, fd.ty, fail)?);
                 }
+            }
+            "PPath" if ty.is_int() => {
+                let Some(fl) = fail else {
+                    return self.err(line, "let の束縛は反駁可能でない");
+                };
+                let c = self.pat_test(p, val, ty)?;
+                self.test(c, fl);
             }
             "PPath" => {
                 let segs = strs(&nf(p)[0]);

@@ -395,3 +395,63 @@ fn dep_package_types_in_test_native() {
     assert!(out.contains("1 passed; 0 failed"), "test の結果: {}", out);
     assert!(out.contains("bundle fallback 0"), "バンドル退避が残っている: {}", out);
 }
+
+/// 9. `layout c` 構造体の配列 (`[x; N]`)・`core.mem.size_of`・定数パターン・浮動小数リテラルのパターン。
+#[test]
+fn layout_c_array_sizeof_const_pattern_native() {
+    check_gap(
+        "ngaps_layout_c",
+        r#"type t.Ev layout c derive [Clone, Copy]
+    kind: i32
+    x: f32
+    n: u64
+end t.Ev
+
+const t.K_A: i32 = 1i32
+const t.K_B: i32 = 2i32
+
+fn t.name(e: &t.Ev) -> u64 uses [] panics never
+    match e.kind {
+        t.K_A => 10u64
+        t.K_B => 20u64
+        _ => 0u64
+    }
+end t.name
+
+fn t.fl(x: f32) -> u64 uses [] panics never
+    match x {
+        1.5f32 => 1u64
+        0.0f32 => 2u64
+        _ => 3u64
+    }
+end t.fl
+
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
+    let zero = t.Ev { kind: 0i32, x: 0.0f32, n: 0u64 }
+    let mut arr = [zero; 4]
+    arr[1] = t.Ev { kind: 1i32, x: 1.5f32, n: 5u64 }
+    arr[2] = t.Ev { kind: 2i32, x: 0.0f32, n: 6u64 }
+    let mut total = 0u64
+    let mut i = 0usize
+    while i < 4usize {
+        let g = arr[i]
+        total = total + t.name(&g) + g.n + t.fl(g.x)
+        i = i.wrapping_add(1usize)
+    }
+    let mut sz = 0u64
+    if core.mem.size_of::<t.Ev>() >= 8usize {
+        sz = 1u64
+    }
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    alloc.fmt.debug(&mut s, &total)?
+    s.push_str("|")?
+    alloc.fmt.debug(&mut s, &sz)?
+    match std.io.print_line(s.as_str()) {
+        Ok(_x) => Ok(())
+        Err(_e) => core.panic.panic("io")
+    }
+end t.main
+"#,
+        "48|1\n",
+    );
+}

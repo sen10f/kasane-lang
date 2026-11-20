@@ -869,6 +869,11 @@ impl<'a> Lw<'a> {
                         let k = self.emit(Ty::U32, Op::Const(x));
                         Ok(self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U32, a: v, b: k }))
                     }
+                    "float" if t.is_float() => {
+                        let x = st(lf.last().unwrap()).replace('_', "").parse::<f64>().map_err(|_| format!("行 {}: 浮動小数パターンが扱えない", line))?;
+                        let k = self.emit(t, Op::Const(crate::kir_scalar::from_f64(t, x)));
+                        Ok(self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: t, a: v, b: k }))
+                    }
                     "bool" if t == Ty::Bool => {
                         let k = self.emit(Ty::Bool, Op::Const(matches!(lf[1], V::B(true)) as i128));
                         Ok(self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Bool, a: v, b: k }))
@@ -886,6 +891,21 @@ impl<'a> Lw<'a> {
                     ([n], Ty::Opt(_)) if n == "None" => {
                         let tag = self.emit(Ty::Bool, Op::Tag(v));
                         Ok(self.emit(Ty::Bool, Op::Not(tag)))
+                    }
+                    _ if t.is_int() => {
+                        let Some(Tgt::Const(ci)) = self.p.resolve(&segs, &self.def.file).filter(|r| r.rest.is_empty()).map(|r| r.target) else {
+                            return self.err(line, format!("パターン {} は型 {} に対して段階 1 の対象外", segs.join("."), t.name()));
+                        };
+                        let init = self.p.defs[ci].init.clone();
+                        let lit = match init.as_ref() {
+                            Some(i) if nname(i) == "Lit" && st(&nf(i)[0]) == "int" => parse_int(&nf(i)[1]),
+                            _ => None,
+                        };
+                        let Some(x) = lit.filter(|x| t.in_range(*x)) else {
+                            return self.err(line, format!("定数パターン {} は整数リテラルで初期化された定数だけ段階 1 の対象", segs.join(".")));
+                        };
+                        let k = self.emit(t, Op::Const(x));
+                        Ok(self.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty: t, a: v, b: k }))
                     }
                     _ => self.err(line, format!("パターン {} は型 {} に対して段階 1 の対象外", segs.join("."), t.name())),
                 }
