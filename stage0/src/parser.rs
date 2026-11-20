@@ -144,6 +144,9 @@ pub struct Parser {
     last_block: Option<BlInfo>,
     /// 解析している関数の名前 (自分自身を呼ぶ形への書き換えをしないため)。
     fn_name: String,
+    /// プログラムが `len` / `is_empty` を自分の型に定義している (D11 の `len()` の書き換えをしない)。
+    /// 型は字句の段階では分からないので、`fmt` の呼び出し側 (パッケージの全ソース) が決める。
+    own_len: bool,
 }
 
 /// 書き換えの部品。`Span` と `Dedent` は元のトークン列の区間 `[a, b)` の字面を写す (`Dedent` は 2 行目以降を 4 桁浅くする)。
@@ -291,7 +294,7 @@ pub(crate) fn split_number(text: &str, is_float: bool) -> R<(String, Option<Stri
 
 impl Parser {
     pub fn new(t: Vec<Tok>) -> Parser {
-        Parser { t, i: 0, pat_ns: false, lvl: 10, pmap: Default::default(), red: vec![], rw: vec![], last_unary: None, last_cmp: None, last_mcall: None, last_block: None, fn_name: String::new() }
+        Parser { t, i: 0, pat_ns: false, lvl: 10, pmap: Default::default(), red: vec![], rw: vec![], last_unary: None, last_cmp: None, last_mcall: None, last_block: None, fn_name: String::new(), own_len: false }
     }
 
     pub(crate) fn cur(&self) -> &Tok {
@@ -769,6 +772,13 @@ impl Parser {
     /// 比較の書き換え (D11)。literal は左右どちらにあってもよい (`true == x` = `x == true`、`0usize == v.len()` = `v.len() == 0usize`)。
     /// `a == None` → `a is None`、`a == true` / `true == a` → `a`、`a != true` / `a == false` → `!a` (`!` は括弧ごと),
     /// `x.len() == 0` / `0 == x.len()` → `x.is_empty()`、`!=` と `>` と (左が 0 の) `<` は `!x.is_empty()`。
+    /// 比較の書き換え (D11)。literal は左右どちらにあってもよい (`true == x` = `x == true`、`0usize == v.len()` = `v.len() == 0usize`)。
+    /// `a == None` / `None == a` → `a.is_none()`、`a != None` / `None != a` → `a.is_some()` (Option の判定の正規形)、
+    /// `a == true` / `true == a` → `a`、`a != true` / `a == false` → `!a` (`!` は括弧ごと)、
+    /// `x.len() == 0` / `0 == x.len()` → `x.is_empty()`、`!=` と `>` と (左が 0 の) `<` は `!x.is_empty()`。
+    /// `None` と `len()` の正規形は std のメソッド (`is_none` / `is_some` / `is_empty`)。`own_len` (プログラムが
+    /// `len` / `is_empty` を自分の型に定義している) のときは `len()` の比較を書き換えない (利用者の `len` と
+    /// `is_empty` が別の意味かもしれず、型は字句の段階では分からないため)。
     fn cmp_rewrites(&mut self, s0: usize, op: usize, s1: usize, left_mc: Option<McInfo>, right_mc: Option<McInfo>) {
         let end = self.i;
         let ot = self.t[op].text.clone();
@@ -778,9 +788,25 @@ impl Parser {
         let rone = end == s1 + 1;
         let lone = op == s0 + 1;
         if matches!(ot.as_str(), "==" | "!=") {
-            if rone && r.kind == "upper" && r.text == "None" {
-                let tail = if ot == "==" { " is None" } else { " is Some(_)" };
-                self.rw.push(Rw { a: s0, b: end, parts: vec![Part::Span(s0, op), Part::Lit(tail.into())], del_line: false, inside: false });
+            // `None` との比較 (Option の判定)。残す側はもう片方の式。
+            let none_keep = if rone && r.kind == "upper" && r.text == "None" {
+                Some((s0, op))
+            } else if lone && l.kind == "upper" && l.text == "None" {
+                Some((s1, end))
+            } else {
+                None
+            };
+            if let Some(keep) = none_keep {
+                if !self.fn_name.ends_with(".is_none") && !self.fn_name.ends_with(".is_some") {
+                    let m = if ot == "==" { "is_none" } else { "is_some" };
+                    self.rw.push(Rw {
+                        a: s0,
+                        b: end,
+                        parts: vec![Part::Span(keep.0, keep.1), Part::Lit(format!(".{}()", m))],
+                        del_line: false,
+                        inside: false,
+                    });
+                }
                 return;
             }
             // 真偽の literal: 片側だけが `true` / `false` のとき、もう片側を残す。
@@ -799,6 +825,11 @@ impl Parser {
                 self.rw.push(Rw { a: s0, b: end, parts, del_line: false, inside: false });
                 return;
             }
+        }
+        // プログラムが `len` / `is_empty` を自分の型に定義しているときは、`len()` の比較を書き換えない
+        // (利用者の `len` と `is_empty` が別の意味かもしれない。`x.is_empty()` が解決できないなら誤りになるが、意味は変わらない)。
+        if self.own_len {
+            return;
         }
         // `x.len() OP 0`: 右の literal が 0。
         if let Some(m) = left_mc.filter(|m| rone && zero_lit(&r) && m.name == "len" && m.close == m.open + 1 && matches!(ot.as_str(), "==" | "!=" | ">")) {
@@ -1567,11 +1598,14 @@ pub fn redundant_parens(mut toks: Vec<Tok>) -> Vec<(Tok, Tok)> {
 
 /// 本体のトークン列 (`nl` を含む) の書き換え (D8・D10・D11・D15)。返すのはトークン列と、トークン区間の書き換え。
 /// 冗長な括弧は、`(` と `)` それぞれを「何も無い部品」に置き換える書き換えとして含める。解析に失敗したら空。
-pub fn rewrites(mut toks: Vec<Tok>, fn_name: &str) -> (Vec<Tok>, Vec<Rw>) {
+/// `own_len` はプログラムが `len` / `is_empty` を自分の型に定義しているか (D11 の `len()` の書き換えをしないため。
+/// 型は字句の段階では分からないので `fmt` の呼び出し側が決める)。
+pub fn rewrites(mut toks: Vec<Tok>, fn_name: &str, own_len: bool) -> (Vec<Tok>, Vec<Rw>) {
     let (line, col) = toks.last().map_or((1, 1), |t| (t.line, t.col + 1));
     toks.push(Tok { kind: "eof", text: String::new(), line, col });
     let mut p = Parser::new(toks);
     p.fn_name = fn_name.to_string();
+    p.own_len = own_len;
     p.skip_nl();
     let mut units: Vec<(usize, usize)> = vec![];
     let mut n = 0;

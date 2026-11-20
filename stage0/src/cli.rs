@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::check::Checker;
 use crate::explain::EXPLAIN;
-use crate::fmt::{format_source, mechanical_collapse};
+use crate::fmt::{format_source_prog, mechanical_collapse};
 use crate::grammar::{py_repr, Grammar};
 use crate::interp::Interp;
 use crate::lint::Lint;
@@ -23,6 +23,7 @@ const VERSION: &str = "0.1.0";
 fn lint_code(c: &str) -> &'static str {
     match c {
         "fqn" => "E1001",
+        "nfqn" => "E0062",
         "name" => "E0010",
         "order" | "fmtdiff" => "E0020",
         "attr" => "E0021",
@@ -411,6 +412,9 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
     let srcroot = if l.pkg.source == STDLIB_SOURCE { norm(&l.pkg.root) } else { norm(&l.pkg.root.join("src")) };
     crate::vm::tick("grammar_new");
     let use_cache = crate::check_cache::enabled();
+    // パッケージが `len` / `is_empty` を独自に定義しているか (D11)。定義しているプログラムでは `x.len() == 0` の
+    // 書き換えをしないので、その framework のファイルキーにもこの数を拾わせる (check_cache.rs::file_key)。
+    let own_len = crate::fmt::own_len_method(&l.pkg.sources.iter().map(|s| s.text.as_str()).collect::<Vec<_>>());
     for s in &l.pkg.sources {
         let fl = rel(&s.path);
         if s.path.ends_with(".ksnh") {
@@ -421,7 +425,9 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
                     // `strip` の出力は、`.ksnh` が正規形なら必ず `ksn fmt` の正規形になる (設計_ksnhとロック.md 1.2)。破れていれば E0020。
                     let stripped = crate::ksnh::strip(&s.text);
                     let kp = format!("{}.ksnl", s.path.trim_end_matches(".ksnh"));
-                    if crate::fmt::format_source(&s.text, &s.path) == s.text && crate::fmt::format_source(&stripped, &kp) != stripped {
+                    if crate::fmt::format_source_prog(&s.text, &s.path, own_len) == s.text
+                        && crate::fmt::format_source_prog(&stripped, &kp, own_len) != stripped
+                    {
                         rep.add("E0020", "the .ksnl made by stripping this .ksnh differs from its `ksn fmt` output; the comments are placed where stripping leaves a non-canonical file", Some(&fl), 1, 1, true);
                     }
                     if let Some(ln) = crate::ksnh::first_mismatch(&s.text, k) {
@@ -448,6 +454,11 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         let mut guided: Vec<usize> = vec![];
         if s.error.is_some() || !gram.as_ref().map_or(false, |g| g.0) {
             for h in crate::rustisms::scan(&s.text) {
+                // E0062 (`fn` の名前がモジュールを含まない) は、構文エラーの無いファイルでは lint の E0062 が
+                // 実モジュール名つきで出すので、rustisms の側は構文エラーのファイルだけに限る (同じ行を二重に報じない)。
+                if h.code == "E0062" && s.error.is_none() {
+                    continue;
+                }
                 guided.push(h.line);
                 rep.add(h.code, &h.msg, Some(&fl), h.line, h.col, true);
             }
@@ -485,7 +496,7 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         }
         let lt = s.text.replace("\r\n", "\n");
         // ファイル全体の結果は、文面と相対パスが前回と同じなら再利用する (check_cache::FileMemo::file_old)。
-        let fkey = if use_cache { Some(crate::check_cache::file_key(&relpath, &s.text)) } else { None };
+        let fkey = if use_cache { Some(crate::check_cache::file_key(&relpath, &s.text, own_len)) } else { None };
         let reused = match (&fkey, &memo.file_old) {
             (Some(k), Some((ok, fc))) if k == ok => Some(fc.clone()),
             _ => None,
@@ -508,7 +519,7 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
                         Lint::new(&relpath, text).run()
                     }
                 };
-                let formatted = crate::fmt::format_source(&s.text, &s.path);
+                let formatted = crate::fmt::format_source_prog(&s.text, &s.path, own_len);
                 // `///` の行を落とす整形 (付く定義のない説明など) は、正規形とみなさない (E0002 のまま)。
                 let docs = |t: &str| t.lines().filter(|l| l.starts_with("///")).count();
                 let skip = formatted != s.text
@@ -2707,17 +2718,19 @@ fn cmd_fmt(args: &[String]) -> i32 {
         }
     };
     let srcroot = norm(&pkg.root.join("src"));
+    // D11: `len` / `is_empty` の独自定義があるプログラムでは `x.len() == 0` を書き換えない (fmt.rs::own_len_method)。
+    let own_len = crate::fmt::own_len_method(&pkg.sources.iter().map(|s| s.text.as_str()).collect::<Vec<_>>());
     let grammar = Grammar::new();
     let mut diff = false;
     let mut changed = false;
     for s in &pkg.sources {
         let nt = if s.error.is_none() {
-            format_source(&s.text, &s.path)
+            format_source_prog(&s.text, &s.path, own_len)
         } else {
             // 読めないファイルでも、行末の `;` を消して読めるようになるなら、普通に整形する (並べ替えも)。
             let st = crate::fmt::strip_semicolons(&s.text);
             if st != s.text && crate::program::load_file(&s.path, "", &st).is_ok() {
-                format_source(&st, &s.path)
+                format_source_prog(&st, &s.path, own_len)
             } else {
                 mechanical_collapse(&st)
             }

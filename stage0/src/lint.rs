@@ -619,6 +619,11 @@ impl Lint {
                 return;
             }
             if !name.starts_with(&pref) {
+                // モジュールのパスを含まない名前 (Rust のフリーメソッド) は、書き方を案内する E0062 で受ける。
+                if !name.contains('.') {
+                    self.err("nfqn", n, crate::rustisms::name_needs_module_msg(kw, Some(&self.module), name));
+                    return;
+                }
                 self.err("fqn", n, format!("{} does not start with module {}.", name, self.module));
                 return;
             }
