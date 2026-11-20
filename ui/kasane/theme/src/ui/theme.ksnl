@@ -1,0 +1,551 @@
+type ui.theme.Color derive [Debug, Clone, Copy, PartialEq] pub
+    r: f32 pub
+    g: f32 pub
+    b: f32 pub
+    a: f32 pub
+end ui.theme.Color
+
+type ui.theme.Colors derive [Debug, Clone, Copy] pub
+    bg: ui.theme.Color pub
+    surf: ui.theme.Color pub
+    on_bg: ui.theme.Color pub
+    on_surf: ui.theme.Color pub
+    prim: ui.theme.Color pub
+    on_prim: ui.theme.Color pub
+    outl: ui.theme.Color pub
+end ui.theme.Colors
+
+type ui.theme.Font derive [Debug, Clone, Copy] pub
+    caption: f32 pub
+    body: f32 pub
+    heading: f32 pub
+end ui.theme.Font
+
+type ui.theme.Space derive [Debug, Clone, Copy] pub
+    spacing: f32 pub
+    radius_small: f32 pub
+    radius_medium: f32 pub
+    radius_large: f32 pub
+end ui.theme.Space
+
+type ui.theme.StateOverrides derive [Debug, Clone, Copy] pub
+    hovered: ui.theme.StylePatch pub
+    pressed: ui.theme.StylePatch pub
+    focused: ui.theme.StylePatch pub
+    disabled: ui.theme.StylePatch pub
+end ui.theme.StateOverrides
+
+type ui.theme.Style derive [Debug, Clone, Copy, PartialEq] pub
+    background: ui.theme.Color pub
+    border: ui.theme.Color pub
+    border_w: f32 pub
+    radius: f32 pub
+    text: ui.theme.Color pub
+end ui.theme.Style
+
+type ui.theme.StylePatch derive [Debug, Clone, Copy] pub
+    background: Option<ui.theme.Color> pub
+    border: Option<ui.theme.Color> pub
+    border_w: Option<f32> pub
+    radius: Option<f32> pub
+    text: Option<ui.theme.Color> pub
+end ui.theme.StylePatch
+
+type ui.theme.Theme derive [Debug, Clone, Copy] pub
+    space: ui.theme.Space pub
+    font: ui.theme.Font pub
+    color: ui.theme.Colors pub
+end ui.theme.Theme
+
+enum ui.theme.WidgetState derive [Debug, Clone, Copy, PartialEq, Eq] pub
+    Base
+    Hovered
+    Pressed
+    Focused
+    Disabled
+end ui.theme.WidgetState
+
+fn ui.theme.Color.blend(self: ui.theme.Color, over: ui.theme.Color) -> ui.theme.Color uses [] panics never pub
+    let oa = over.a
+    let sa = self.a
+    let out_a = oa + sa * (1.0f32 - oa)
+    let inv_oa = 1.0f32 - oa
+    let r = if out_a > 0.0f32 {
+        (over.r * oa + self.r * sa * inv_oa) / out_a
+    } else {
+        0.0f32
+    }
+    let g = if out_a > 0.0f32 {
+        (over.g * oa + self.g * sa * inv_oa) / out_a
+    } else {
+        0.0f32
+    }
+    let b = if out_a > 0.0f32 {
+        (over.b * oa + self.b * sa * inv_oa) / out_a
+    } else {
+        0.0f32
+    }
+    ui.theme.Color { r: r, g: g, b: b, a: out_a }
+end ui.theme.Color.blend
+
+fn ui.theme.Color.linear(r: f32, g: f32, b: f32, a: f32) -> ui.theme.Color uses [] panics never pub
+    ui.theme.Color { r: r, g: g, b: b, a: a }
+end ui.theme.Color.linear
+
+fn ui.theme.Color.premul(self: ui.theme.Color) -> ui.theme.Color uses [] panics never pub
+    ui.theme.Color { r: self.r * self.a, g: self.g * self.a, b: self.b * self.a, a: self.a }
+end ui.theme.Color.premul
+
+fn ui.theme.Color.relative_luminance(self: ui.theme.Color) -> f32 uses [] panics never pub
+    0.2126f32 * self.r + 0.7152f32 * self.g + 0.0722f32 * self.b
+end ui.theme.Color.relative_luminance
+
+fn ui.theme.Color.srgb(r: f32, g: f32, b: f32, a: f32) -> ui.theme.Color uses [] panics never pub
+    let rr = ui.theme.srgb_to_linear(r)
+    let gg = ui.theme.srgb_to_linear(g)
+    let bb = ui.theme.srgb_to_linear(b)
+    ui.theme.Color { r: rr, g: gg, b: bb, a: a }
+end ui.theme.Color.srgb
+
+fn ui.theme.Color.to_srgb(self: ui.theme.Color) -> (f32, f32, f32, f32) uses [] panics never pub
+    let rr = ui.theme.linear_to_srgb(self.r)
+    let gg = ui.theme.linear_to_srgb(self.g)
+    let bb = ui.theme.linear_to_srgb(self.b)
+    (rr, gg, bb, self.a)
+end ui.theme.Color.to_srgb
+
+fn ui.theme.Color.unpremul(self: ui.theme.Color) -> ui.theme.Color uses [] panics never pub
+    if self.a > 0.0f32 {
+        ui.theme.Color { r: self.r / self.a, g: self.g / self.a, b: self.b / self.a, a: self.a }
+    } else {
+        ui.theme.Color { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }
+    }
+end ui.theme.Color.unpremul
+
+fn ui.theme.button_base(theme: ui.theme.Theme) -> ui.theme.Style uses [] panics never pub
+    let bgc = theme.color.prim
+    let brd = theme.color.outl
+    let r = theme.space.radius_medium
+    let t = theme.color.on_prim
+    ui.theme.Style { background: bgc, border: brd, border_w: 1.0f32, radius: r, text: t }
+end ui.theme.button_base
+
+fn ui.theme.colors_dark() -> ui.theme.Colors uses [] panics never pub
+    let b = ui.theme.Color.srgb(0.071f32, 0.071f32, 0.071f32, 1.0f32)
+    let u = ui.theme.Color.srgb(0.118f32, 0.118f32, 0.118f32, 1.0f32)
+    let ob = ui.theme.Color.srgb(1.0f32, 1.0f32, 1.0f32, 1.0f32)
+    let os = ui.theme.Color.srgb(1.0f32, 1.0f32, 1.0f32, 1.0f32)
+    let p = ui.theme.Color.srgb(0.733f32, 0.525f32, 0.984f32, 1.0f32)
+    let op = ui.theme.Color.srgb(0.0f32, 0.0f32, 0.0f32, 1.0f32)
+    let ol = ui.theme.Color.srgb(0.216f32, 0.278f32, 0.314f32, 1.0f32)
+    ui.theme.Colors { bg: b, surf: u, on_bg: ob, on_surf: os, prim: p, on_prim: op, outl: ol }
+end ui.theme.colors_dark
+
+fn ui.theme.colors_light() -> ui.theme.Colors uses [] panics never pub
+    let b = ui.theme.Color.srgb(1.0f32, 1.0f32, 1.0f32, 1.0f32)
+    let u = ui.theme.Color.srgb(0.961f32, 0.961f32, 0.961f32, 1.0f32)
+    let ob = ui.theme.Color.srgb(0.0f32, 0.0f32, 0.0f32, 1.0f32)
+    let os = ui.theme.Color.srgb(0.0f32, 0.0f32, 0.0f32, 1.0f32)
+    let p = ui.theme.Color.srgb(0.384f32, 0.0f32, 0.933f32, 1.0f32)
+    let op = ui.theme.Color.srgb(1.0f32, 1.0f32, 1.0f32, 1.0f32)
+    let ol = ui.theme.Color.srgb(0.741f32, 0.741f32, 0.741f32, 1.0f32)
+    ui.theme.Colors { bg: b, surf: u, on_bg: ob, on_surf: os, prim: p, on_prim: op, outl: ol }
+end ui.theme.colors_light
+
+fn ui.theme.contrast_ratio(a: ui.theme.Color, b: ui.theme.Color) -> f32 uses [] panics never pub
+    let la = a.relative_luminance()
+    let lb = b.relative_luminance()
+    let bright = if la > lb {
+        la
+    } else {
+        lb
+    }
+    let dark = if la > lb {
+        lb
+    } else {
+        la
+    }
+    (bright + 0.05f32) / (dark + 0.05f32)
+end ui.theme.contrast_ratio
+
+fn ui.theme.linear_to_srgb(c: f32) -> f32 uses [] panics never
+    if c <= 0.0031308f32 {
+        c * 12.92f32
+    } else {
+        1.055f32 * ui.theme.powf(c, 1.0f32 / 2.4f32) - 0.055f32
+    }
+end ui.theme.linear_to_srgb
+
+fn ui.theme.powf(x: f32, y: f32) -> f32 uses [] panics never
+    if x <= 0.0f32 {
+        0.0f32
+    } else {
+        (y * x.ln()).exp()
+    }
+end ui.theme.powf
+
+fn ui.theme.refine(base: ui.theme.Style, patch: ui.theme.StylePatch) -> ui.theme.Style uses [] panics never pub
+    let bg = match patch.background {
+        Some(v) => v
+        None => base.background
+    }
+    let br = match patch.border {
+        Some(v) => v
+        None => base.border
+    }
+    let bw = match patch.border_w {
+        Some(v) => v
+        None => base.border_w
+    }
+    let ra = match patch.radius {
+        Some(v) => v
+        None => base.radius
+    }
+    let t = match patch.text {
+        Some(v) => v
+        None => base.text
+    }
+    ui.theme.Style { background: bg, border: br, border_w: bw, radius: ra, text: t }
+end ui.theme.refine
+
+fn ui.theme.resolve(base: ui.theme.Style, variant: Option<ui.theme.StylePatch>, overrides: ui.theme.StateOverrides, state: ui.theme.WidgetState) -> ui.theme.Style uses [] panics never pub
+    let s = match variant {
+        Some(p) => ui.theme.refine(base, p)
+        None => base
+    }
+    match state {
+        ui.theme.WidgetState.Base => s
+        ui.theme.WidgetState.Hovered => ui.theme.refine(s, overrides.hovered)
+        ui.theme.WidgetState.Pressed => ui.theme.refine(s, overrides.pressed)
+        ui.theme.WidgetState.Focused => ui.theme.refine(s, overrides.focused)
+        ui.theme.WidgetState.Disabled => ui.theme.refine(s, overrides.disabled)
+    }
+end ui.theme.resolve
+
+fn ui.theme.srgb_to_linear(c: f32) -> f32 uses [] panics never
+    if c <= 0.04045f32 {
+        c / 12.92f32
+    } else {
+        let x = (c + 0.055f32) / 1.055f32
+        ui.theme.powf(x, 2.4f32)
+    }
+end ui.theme.srgb_to_linear
+
+fn ui.theme.theme_dark() -> ui.theme.Theme uses [] panics never pub
+    let s = 8.0f32
+    let rs = 4.0f32
+    let rm = 8.0f32
+    let rl = 16.0f32
+    let sp = ui.theme.Space { spacing: s, radius_small: rs, radius_medium: rm, radius_large: rl }
+    let fo = ui.theme.Font { caption: 12.0f32, body: 14.0f32, heading: 20.0f32 }
+    let c = ui.theme.colors_dark()
+    ui.theme.Theme { space: sp, font: fo, color: c }
+end ui.theme.theme_dark
+
+fn ui.theme.theme_light() -> ui.theme.Theme uses [] panics never pub
+    let s = 8.0f32
+    let rs = 4.0f32
+    let rm = 8.0f32
+    let rl = 16.0f32
+    let sp = ui.theme.Space { spacing: s, radius_small: rs, radius_medium: rm, radius_large: rl }
+    let fo = ui.theme.Font { caption: 12.0f32, body: 14.0f32, heading: 20.0f32 }
+    let c = ui.theme.colors_light()
+    ui.theme.Theme { space: sp, font: fo, color: c }
+end ui.theme.theme_light
+
+test ui.theme.Color.test_blend_half_white_over_black
+    let under = ui.theme.Color.linear(0.0f32, 0.0f32, 0.0f32, 1.0f32)
+    let over = ui.theme.Color.linear(1.0f32, 1.0f32, 1.0f32, 0.5f32)
+    let out = under.blend(over)
+    core.check.eq(out.r, 0.5f32)
+    core.check.eq(out.g, 0.5f32)
+    core.check.eq(out.b, 0.5f32)
+    core.check.eq(out.a, 1.0f32)
+end ui.theme.Color.test_blend_half_white_over_black
+
+test ui.theme.Color.test_blend_opaque_over
+    let under = ui.theme.Color.linear(1.0f32, 0.0f32, 0.0f32, 1.0f32)
+    let over = ui.theme.Color.linear(0.0f32, 1.0f32, 0.0f32, 1.0f32)
+    let out = under.blend(over)
+    core.check.eq(out.r, over.r)
+    core.check.eq(out.g, over.g)
+    core.check.eq(out.b, over.b)
+    core.check.eq(out.a, over.a)
+end ui.theme.Color.test_blend_opaque_over
+
+test ui.theme.Color.test_blend_transparent_over
+    let under = ui.theme.Color.linear(1.0f32, 0.0f32, 0.0f32, 1.0f32)
+    let over = ui.theme.Color.linear(0.0f32, 0.0f32, 0.0f32, 0.0f32)
+    let out = under.blend(over)
+    core.check.eq(out.r, under.r)
+    core.check.eq(out.g, under.g)
+    core.check.eq(out.b, under.b)
+    core.check.eq(out.a, under.a)
+end ui.theme.Color.test_blend_transparent_over
+
+test ui.theme.Color.test_contrast_ordering
+    let white = ui.theme.Color.linear(1.0f32, 1.0f32, 1.0f32, 1.0f32)
+    let black = ui.theme.Color.linear(0.0f32, 0.0f32, 0.0f32, 1.0f32)
+    let gray = ui.theme.Color.linear(0.5f32, 0.5f32, 0.5f32, 1.0f32)
+    core.check.is_true(ui.theme.contrast_ratio(white, black) > ui.theme.contrast_ratio(white, gray))
+    core.check.is_true(ui.theme.contrast_ratio(white, gray) > 1.0f32)
+end ui.theme.Color.test_contrast_ordering
+
+test ui.theme.Color.test_contrast_same_is_one
+    let c = ui.theme.Color.linear(0.3f32, 0.6f32, 0.9f32, 1.0f32)
+    core.check.eq(ui.theme.contrast_ratio(c, c), 1.0f32)
+end ui.theme.Color.test_contrast_same_is_one
+
+test ui.theme.Color.test_contrast_white_black_is_21
+    let white = ui.theme.Color.linear(1.0f32, 1.0f32, 1.0f32, 1.0f32)
+    let black = ui.theme.Color.linear(0.0f32, 0.0f32, 0.0f32, 1.0f32)
+    let ratio = ui.theme.contrast_ratio(white, black)
+    core.check.is_true(ratio > 20.9f32)
+    core.check.is_true(ratio <= 21.0f32)
+end ui.theme.Color.test_contrast_white_black_is_21
+
+test ui.theme.Color.test_linear_fields
+    let c = ui.theme.Color.linear(0.1f32, 0.2f32, 0.3f32, 0.5f32)
+    core.check.eq(c.r, 0.1f32)
+    core.check.eq(c.g, 0.2f32)
+    core.check.eq(c.b, 0.3f32)
+    core.check.eq(c.a, 0.5f32)
+end ui.theme.Color.test_linear_fields
+
+test ui.theme.Color.test_linear_to_srgb_black
+    let c = ui.theme.Color.linear(0.0f32, 0.0f32, 0.0f32, 1.0f32)
+    let (rr, gg, bb, aa) = c.to_srgb()
+    core.check.eq(rr, 0.0f32)
+    core.check.eq(gg, 0.0f32)
+    core.check.eq(bb, 0.0f32)
+    core.check.eq(aa, 1.0f32)
+end ui.theme.Color.test_linear_to_srgb_black
+
+test ui.theme.Color.test_linear_to_srgb_white
+    let c = ui.theme.Color.linear(1.0f32, 1.0f32, 1.0f32, 1.0f32)
+    let (rr, gg, bb, aa) = c.to_srgb()
+    core.check.is_true(rr > 0.99f32)
+    core.check.is_true(gg > 0.99f32)
+    core.check.is_true(bb > 0.99f32)
+    core.check.eq(aa, 1.0f32)
+end ui.theme.Color.test_linear_to_srgb_white
+
+test ui.theme.Color.test_premul_transparent_zero
+    let c = ui.theme.Color.linear(0.3f32, 0.6f32, 0.9f32, 0.0f32)
+    let p = c.premul()
+    core.check.eq(p.r, 0.0f32)
+    core.check.eq(p.g, 0.0f32)
+    core.check.eq(p.b, 0.0f32)
+    core.check.eq(p.a, 0.0f32)
+end ui.theme.Color.test_premul_transparent_zero
+
+test ui.theme.Color.test_premul_unpremul_opaque
+    let c = ui.theme.Color.linear(0.3f32, 0.6f32, 0.9f32, 1.0f32)
+    let round = c.premul().unpremul()
+    core.check.eq(round.r, c.r)
+    core.check.eq(round.g, c.g)
+    core.check.eq(round.b, c.b)
+end ui.theme.Color.test_premul_unpremul_opaque
+
+test ui.theme.Color.test_relative_luminance_black
+    let c = ui.theme.Color.linear(0.0f32, 0.0f32, 0.0f32, 1.0f32)
+    core.check.eq(c.relative_luminance(), 0.0f32)
+end ui.theme.Color.test_relative_luminance_black
+
+test ui.theme.Color.test_relative_luminance_white
+    let c = ui.theme.Color.linear(1.0f32, 1.0f32, 1.0f32, 1.0f32)
+    core.check.eq(c.relative_luminance(), 1.0f32)
+end ui.theme.Color.test_relative_luminance_white
+
+test ui.theme.Color.test_srgb_black
+    let c = ui.theme.Color.srgb(0.0f32, 0.0f32, 0.0f32, 1.0f32)
+    core.check.eq(c.r, 0.0f32)
+    core.check.eq(c.g, 0.0f32)
+    core.check.eq(c.b, 0.0f32)
+    core.check.eq(c.a, 1.0f32)
+end ui.theme.Color.test_srgb_black
+
+test ui.theme.Color.test_srgb_white
+    let c = ui.theme.Color.srgb(1.0f32, 1.0f32, 1.0f32, 1.0f32)
+    core.check.eq(c.r, 1.0f32)
+    core.check.eq(c.g, 1.0f32)
+    core.check.eq(c.b, 1.0f32)
+end ui.theme.Color.test_srgb_white
+
+test ui.theme.Style.test_button_base_uses_theme_tokens
+    let light = ui.theme.theme_light()
+    let s = ui.theme.button_base(light)
+    core.check.eq(s.background, light.color.prim)
+    core.check.eq(s.text, light.color.on_prim)
+    core.check.eq(s.border, light.color.outl)
+    core.check.eq(s.border_w, 1.0f32)
+    core.check.eq(s.radius, light.space.radius_medium)
+end ui.theme.Style.test_button_base_uses_theme_tokens
+
+test ui.theme.Style.test_refine_none_keeps_base
+    let b = ui.theme.Color.linear(0.1f32, 0.2f32, 0.3f32, 1.0f32)
+    let r = ui.theme.Color.linear(0.4f32, 0.5f32, 0.6f32, 1.0f32)
+    let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
+    let bw = 2.0f32
+    let ra = 4.0f32
+    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let x = None
+    let y = None
+    let patch = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
+    let out = ui.theme.refine(base, patch)
+    core.check.eq(out.background, base.background)
+    core.check.eq(out.border, base.border)
+    core.check.eq(out.border_w, base.border_w)
+    core.check.eq(out.radius, base.radius)
+    core.check.eq(out.text, base.text)
+end ui.theme.Style.test_refine_none_keeps_base
+
+test ui.theme.Style.test_refine_some
+    let b = ui.theme.Color.linear(0.1f32, 0.2f32, 0.3f32, 1.0f32)
+    let r = ui.theme.Color.linear(0.4f32, 0.5f32, 0.6f32, 1.0f32)
+    let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
+    let bw = 2.0f32
+    let ra = 4.0f32
+    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let pb = Some(ui.theme.Color.linear(0.7f32, 0.8f32, 0.9f32, 1.0f32))
+    let x = None
+    let y = None
+    let patch = ui.theme.StylePatch { background: pb, border: x, border_w: y, radius: y, text: x }
+    let out = ui.theme.refine(base, patch)
+    core.check.eq(out.background.r, 0.7f32)
+    core.check.eq(out.border.r, base.border.r)
+    core.check.eq(out.border_w, base.border_w)
+    core.check.eq(out.radius, base.radius)
+    core.check.eq(out.text.r, base.text.r)
+end ui.theme.Style.test_refine_some
+
+test ui.theme.Style.test_resolve_applies_disabled
+    let b = ui.theme.Color.linear(0.1f32, 0.2f32, 0.3f32, 1.0f32)
+    let r = ui.theme.Color.linear(0.4f32, 0.5f32, 0.6f32, 1.0f32)
+    let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
+    let bw = 2.0f32
+    let ra = 4.0f32
+    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let x = None
+    let y = None
+    let dbg = Some(ui.theme.Color.linear(0.5f32, 0.5f32, 0.5f32, 1.0f32))
+    let d = ui.theme.StylePatch { background: dbg, border: x, border_w: y, radius: y, text: x }
+    let p0 = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
+    let overrides = ui.theme.StateOverrides { hovered: p0, pressed: p0, focused: p0, disabled: d }
+    let out = ui.theme.resolve(base, None, overrides, ui.theme.WidgetState.Disabled)
+    core.check.eq(out.background.r, 0.5f32)
+    core.check.eq(out.border.r, base.border.r)
+end ui.theme.Style.test_resolve_applies_disabled
+
+test ui.theme.Style.test_resolve_applies_focused
+    let b = ui.theme.Color.linear(0.1f32, 0.2f32, 0.3f32, 1.0f32)
+    let r = ui.theme.Color.linear(0.4f32, 0.5f32, 0.6f32, 1.0f32)
+    let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
+    let bw = 2.0f32
+    let ra = 4.0f32
+    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let x = None
+    let y = None
+    let bw3 = Some(3.0f32)
+    let f = ui.theme.StylePatch { background: x, border: x, border_w: bw3, radius: y, text: x }
+    let p0 = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
+    let overrides = ui.theme.StateOverrides { hovered: p0, pressed: p0, focused: f, disabled: p0 }
+    let out = ui.theme.resolve(base, None, overrides, ui.theme.WidgetState.Focused)
+    core.check.eq(out.border_w, 3.0f32)
+    core.check.eq(out.background.r, base.background.r)
+end ui.theme.Style.test_resolve_applies_focused
+
+test ui.theme.Style.test_resolve_applies_hovered
+    let b = ui.theme.Color.linear(0.1f32, 0.2f32, 0.3f32, 1.0f32)
+    let r = ui.theme.Color.linear(0.4f32, 0.5f32, 0.6f32, 1.0f32)
+    let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
+    let bw = 2.0f32
+    let ra = 4.0f32
+    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let hbg = Some(ui.theme.Color.linear(0.8f32, 0.8f32, 0.8f32, 1.0f32))
+    let x = None
+    let y = None
+    let h = ui.theme.StylePatch { background: hbg, border: x, border_w: y, radius: y, text: x }
+    let p0 = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
+    let overrides = ui.theme.StateOverrides { hovered: h, pressed: p0, focused: p0, disabled: p0 }
+    let out = ui.theme.resolve(base, None, overrides, ui.theme.WidgetState.Hovered)
+    core.check.eq(out.background.r, 0.8f32)
+    core.check.eq(out.border.r, base.border.r)
+end ui.theme.Style.test_resolve_applies_hovered
+
+test ui.theme.Style.test_resolve_applies_pressed
+    let b = ui.theme.Color.linear(0.1f32, 0.2f32, 0.3f32, 1.0f32)
+    let r = ui.theme.Color.linear(0.4f32, 0.5f32, 0.6f32, 1.0f32)
+    let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
+    let bw = 2.0f32
+    let ra = 4.0f32
+    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let pbg = Some(ui.theme.Color.linear(0.2f32, 0.2f32, 0.2f32, 1.0f32))
+    let x = None
+    let y = None
+    let p = ui.theme.StylePatch { background: pbg, border: x, border_w: y, radius: y, text: x }
+    let p0 = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
+    let overrides = ui.theme.StateOverrides { hovered: p0, pressed: p, focused: p0, disabled: p0 }
+    let out = ui.theme.resolve(base, None, overrides, ui.theme.WidgetState.Pressed)
+    core.check.eq(out.background.r, 0.2f32)
+    core.check.eq(out.border.r, base.border.r)
+end ui.theme.Style.test_resolve_applies_pressed
+
+test ui.theme.Style.test_resolve_applies_variant
+    let b = ui.theme.Color.linear(0.1f32, 0.2f32, 0.3f32, 1.0f32)
+    let r = ui.theme.Color.linear(0.4f32, 0.5f32, 0.6f32, 1.0f32)
+    let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
+    let bw = 2.0f32
+    let ra = 4.0f32
+    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let vbg = Some(ui.theme.Color.linear(0.5f32, 0.5f32, 0.5f32, 1.0f32))
+    let x = None
+    let y = None
+    let v = ui.theme.StylePatch { background: vbg, border: x, border_w: y, radius: y, text: x }
+    let p0 = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
+    let overrides = ui.theme.StateOverrides { hovered: p0, pressed: p0, focused: p0, disabled: p0 }
+    let out = ui.theme.resolve(base, Some(v), overrides, ui.theme.WidgetState.Base)
+    core.check.eq(out.background.r, 0.5f32)
+    core.check.eq(out.border.r, base.border.r)
+end ui.theme.Style.test_resolve_applies_variant
+
+test ui.theme.Style.test_resolve_base_only
+    let b = ui.theme.Color.linear(0.1f32, 0.2f32, 0.3f32, 1.0f32)
+    let r = ui.theme.Color.linear(0.4f32, 0.5f32, 0.6f32, 1.0f32)
+    let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
+    let bw = 2.0f32
+    let ra = 4.0f32
+    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let x = None
+    let y = None
+    let p0 = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
+    let overrides = ui.theme.StateOverrides { hovered: p0, pressed: p0, focused: p0, disabled: p0 }
+    let out = ui.theme.resolve(base, None, overrides, ui.theme.WidgetState.Base)
+    core.check.eq(out, base)
+end ui.theme.Style.test_resolve_base_only
+
+test ui.theme.Theme.test_light_and_dark_differ
+    let light = ui.theme.theme_light()
+    let dark = ui.theme.theme_dark()
+    core.check.is_true(light.color.bg.r != dark.color.bg.r)
+    core.check.is_true(light.color.prim.r != dark.color.prim.r)
+end ui.theme.Theme.test_light_and_dark_differ
+
+test ui.theme.Theme.test_theme_dark_colors
+    let t = ui.theme.theme_dark()
+    core.check.is_true(t.color.bg.r < 0.2f32)
+    core.check.is_true(t.color.on_bg.r > 0.8f32)
+    core.check.eq(t.font.heading, 20.0f32)
+end ui.theme.Theme.test_theme_dark_colors
+
+test ui.theme.Theme.test_theme_light_colors
+    let t = ui.theme.theme_light()
+    let (rr, gg, bb, aa) = t.color.bg.to_srgb()
+    core.check.is_true(rr > 0.99f32)
+    core.check.is_true(gg > 0.99f32)
+    core.check.is_true(bb > 0.99f32)
+    core.check.eq(aa, 1.0f32)
+    core.check.eq(t.space.spacing, 8.0f32)
+    core.check.eq(t.space.radius_medium, 8.0f32)
+    core.check.eq(t.font.body, 14.0f32)
+end ui.theme.Theme.test_theme_light_colors
