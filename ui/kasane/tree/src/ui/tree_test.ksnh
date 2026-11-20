@@ -80,6 +80,59 @@ fn ui.tree_test.push_leaf_el(v: &mut alloc.vec.Vec<ui.tree.Element, std.alloc.Sy
     ui.tree_test.push_el(v, ui.tree_test.el(ui.tree.ViewKind.Leaf, key, ui.tree_test.empty_kids()))
 end ui.tree_test.push_leaf_el
 
+test ui.tree_test.Suite.test_child_at
+    let mut t = ui.tree.Tree.new()
+    let root = ui.tree_test.push_block(&mut t)
+    let a = ui.tree_test.push_leaf(&mut t)
+    let b = ui.tree_test.push_leaf(&mut t)
+    core.check.is_true(t.push_child(root, a))
+    core.check.is_true(t.push_child(root, b))
+    match t.child_at(root, 0usize) {
+        Some(v) => core.check.eq(v, a)
+        None => core.check.is_true(false)
+    }
+    match t.child_at(root, 1usize) {
+        Some(v) => core.check.eq(v, b)
+        None => core.check.is_true(false)
+    }
+    match t.child_at(root, 2usize) {
+        Some(_v) => core.check.is_true(false)
+        None => ()
+    }
+    match t.child_at(a, 0usize) {
+        Some(_v) => core.check.is_true(false)
+        None => ()
+    }
+end ui.tree_test.Suite.test_child_at
+
+test ui.tree_test.Suite.test_child_at_node_without_children
+    let mut t = ui.tree.Tree.new()
+    let root = ui.tree_test.push_block(&mut t)
+    let leaf = ui.tree_test.push_leaf(&mut t)
+    core.check.is_true(t.push_child(root, leaf))
+    match t.child_at(leaf, 0usize) {
+        Some(_v) => core.check.is_true(false)
+        None => ()
+    }
+end ui.tree_test.Suite.test_child_at_node_without_children
+
+test ui.tree_test.Suite.test_child_at_out_of_range
+    let mut t = ui.tree.Tree.new()
+    let root = ui.tree_test.push_block(&mut t)
+    match t.child_at(root, 0usize) {
+        Some(_v) => core.check.is_true(false)
+        None => ()
+    }
+end ui.tree_test.Suite.test_child_at_out_of_range
+
+test ui.tree_test.Suite.test_child_at_unknown_node
+    let mut t = ui.tree.Tree.new()
+    match t.child_at(99usize, 0usize) {
+        Some(_v) => core.check.is_true(false)
+        None => ()
+    }
+end ui.tree_test.Suite.test_child_at_unknown_node
+
 test ui.tree_test.Suite.test_commit_build
     let mut t = ui.tree.Tree.new()
     let root = ui.tree_test.push_block(&mut t)
@@ -91,7 +144,7 @@ test ui.tree_test.Suite.test_commit_build
     ui.tree_test.push_leaf_el(&mut elements, Some(1u64))
     ui.tree_test.push_leaf_el(&mut elements, Some(2u64))
     match t.commit(root, &elements, 0usize) {
-        Ok(()) => ()
+        Ok(_) => ()
         Err(_e) => ()
     }
     core.check.eq(t.child_count(root), 2usize)
@@ -114,7 +167,7 @@ test ui.tree_test.Suite.test_commit_insert
     ui.tree_test.push_block_el(&mut elements, root_children)
     ui.tree_test.push_leaf_el(&mut elements, Some(1u64))
     match t.commit(root, &elements, 0usize) {
-        Ok(()) => ()
+        Ok(_) => ()
         Err(_e) => ()
     }
     core.check.eq(t.child_count(root), 1usize)
@@ -126,7 +179,7 @@ test ui.tree_test.Suite.test_commit_insert
     ui.tree_test.push_leaf_el(&mut elements2, Some(1u64))
     ui.tree_test.push_leaf_el(&mut elements2, Some(2u64))
     match t.commit(root, &elements2, 0usize) {
-        Ok(()) => ()
+        Ok(_) => ()
         Err(_e) => ()
     }
     core.check.eq(t.child_count(root), 2usize)
@@ -147,7 +200,7 @@ test ui.tree_test.Suite.test_commit_remove
     ui.tree_test.push_leaf_el(&mut elements, Some(1u64))
     ui.tree_test.push_leaf_el(&mut elements, Some(2u64))
     match t.commit(root, &elements, 0usize) {
-        Ok(()) => ()
+        Ok(_) => ()
         Err(_e) => ()
     }
     core.check.eq(t.child_count(root), 2usize)
@@ -157,11 +210,22 @@ test ui.tree_test.Suite.test_commit_remove
     ui.tree_test.push_block_el(&mut elements2, root_children2)
     ui.tree_test.push_leaf_el(&mut elements2, Some(1u64))
     match t.commit(root, &elements2, 0usize) {
-        Ok(()) => ()
+        Ok(_) => ()
         Err(_e) => ()
     }
     core.check.eq(t.child_count(root), 1usize)
 end ui.tree_test.Suite.test_commit_remove
+
+test ui.tree_test.Suite.test_commit_returns_index
+    let mut t = ui.tree.Tree.new()
+    let root = ui.tree_test.push_block(&mut t)
+    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    ui.tree_test.push_block_el(&mut elements, ui.tree_test.empty_kids())
+    match t.commit(root, &elements, 0usize) {
+        Ok(i) => core.check.eq(i, root)
+        Err(_e) => core.check.is_true(false)
+    }
+end ui.tree_test.Suite.test_commit_returns_index
 
 test ui.tree_test.Suite.test_composite_render
     let leaf = ui.tree_test.LeafView { w: 1.0f32, h: 2.0f32 }
@@ -183,6 +247,39 @@ test ui.tree_test.Suite.test_composite_render
     core.check.eq(sink2.len(), 2usize)
 end ui.tree_test.Suite.test_composite_render
 
+test ui.tree_test.Suite.test_find_key
+    let mut t = ui.tree.Tree.new()
+    let root = ui.tree_test.push_block(&mut t)
+    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut root_children = ui.tree_test.empty_kids()
+    ui.tree_test.push_kid(&mut root_children, 1usize)
+    ui.tree_test.push_kid(&mut root_children, 2usize)
+    ui.tree_test.push_block_el(&mut elements, root_children)
+    ui.tree_test.push_leaf_el(&mut elements, Some(7u64))
+    ui.tree_test.push_leaf_el(&mut elements, Some(8u64))
+    match t.commit(root, &elements, 0usize) {
+        Ok(_i) => ()
+        Err(_e) => core.check.is_true(false)
+    }
+    match t.find_key(7u64) {
+        Some(v) => core.check.eq(v, 1usize)
+        None => core.check.is_true(false)
+    }
+    match t.find_key(8u64) {
+        Some(v) => core.check.eq(v, 2usize)
+        None => core.check.is_true(false)
+    }
+end ui.tree_test.Suite.test_find_key
+
+test ui.tree_test.Suite.test_find_key_missing
+    let mut t = ui.tree.Tree.new()
+    let _root = ui.tree_test.push_block(&mut t)
+    match t.find_key(1u64) {
+        Some(_v) => core.check.is_true(false)
+        None => ()
+    }
+end ui.tree_test.Suite.test_find_key_missing
+
 test ui.tree_test.Suite.test_keyed_reorder
     let mut t = ui.tree.Tree.new()
     let root = ui.tree_test.push_block(&mut t)
@@ -194,7 +291,7 @@ test ui.tree_test.Suite.test_keyed_reorder
     ui.tree_test.push_leaf_el(&mut elements, Some(1u64))
     ui.tree_test.push_leaf_el(&mut elements, Some(2u64))
     match t.commit(root, &elements, 0usize) {
-        Ok(()) => ()
+        Ok(_) => ()
         Err(_e) => ()
     }
     core.check.eq(t.child_count(root), 2usize)
@@ -206,7 +303,7 @@ test ui.tree_test.Suite.test_keyed_reorder
     ui.tree_test.push_leaf_el(&mut elements2, Some(1u64))
     ui.tree_test.push_leaf_el(&mut elements2, Some(2u64))
     match t.commit(root, &elements2, 0usize) {
-        Ok(()) => ()
+        Ok(_) => ()
         Err(_e) => ()
     }
     core.check.eq(t.child_count(root), 2usize)
@@ -228,6 +325,51 @@ test ui.tree_test.Suite.test_new
     let t = ui.tree.Tree.new()
     core.check.eq(t.child_count(0usize), 0usize)
 end ui.tree_test.Suite.test_new
+
+test ui.tree_test.Suite.test_parent_of
+    let mut t = ui.tree.Tree.new()
+    let root = ui.tree_test.push_block(&mut t)
+    let a = ui.tree_test.push_leaf(&mut t)
+    core.check.is_true(t.push_child(root, a))
+    match t.parent_of(a) {
+        Some(v) => core.check.eq(v, root)
+        None => core.check.is_true(false)
+    }
+end ui.tree_test.Suite.test_parent_of
+
+test ui.tree_test.Suite.test_parent_of_deep
+    let mut t = ui.tree.Tree.new()
+    let root = ui.tree_test.push_block(&mut t)
+    let child = ui.tree_test.push_block(&mut t)
+    let grand = ui.tree_test.push_leaf(&mut t)
+    core.check.is_true(t.push_child(root, child))
+    core.check.is_true(t.push_child(child, grand))
+    match t.parent_of(grand) {
+        Some(v) => core.check.eq(v, child)
+        None => core.check.is_true(false)
+    }
+    match t.parent_of(child) {
+        Some(v) => core.check.eq(v, root)
+        None => core.check.is_true(false)
+    }
+end ui.tree_test.Suite.test_parent_of_deep
+
+test ui.tree_test.Suite.test_parent_of_root_none
+    let mut t = ui.tree.Tree.new()
+    let root = ui.tree_test.push_block(&mut t)
+    match t.parent_of(root) {
+        Some(_v) => core.check.is_true(false)
+        None => ()
+    }
+end ui.tree_test.Suite.test_parent_of_root_none
+
+test ui.tree_test.Suite.test_parent_of_unknown_node
+    let mut t = ui.tree.Tree.new()
+    match t.parent_of(99usize) {
+        Some(_v) => core.check.is_true(false)
+        None => ()
+    }
+end ui.tree_test.Suite.test_parent_of_unknown_node
 
 test ui.tree_test.Suite.test_push_child
     let mut t = ui.tree.Tree.new()

@@ -25,7 +25,7 @@ ui.tree
 ├─ Tree                     nodes, kids, state: Arena<StateEntry>
 ├─ View                     render(sink) -> usize   (トレイト)
 ├─ ViewKind                 Text | Block | Leaf
-└─ commit / new / push_node / push_child / child_count / node_at / state_ref / state_tick
+└─ commit / new / push_node / push_child / child_count / child_at / parent_of / find_key / node_at / state_ref / state_tick
 
 ui.state
 ├─ Arena[T]                 slots: Vec<Option<T>>  (プレースホルダ・アリーナ)
@@ -45,10 +45,13 @@ ui.state
 - `fn ui.tree.Tree.push_node(self: &mut ui.tree.Tree, kind: ui.tree.ViewKind, style: ui.layout.Style, key: Option<u64>) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub` — ノードを追加し、そのインデックスを返す
 - `fn ui.tree.Tree.push_child(self: &mut ui.tree.Tree, parent: usize, child: usize) -> bool uses [alloc] panics never pub` — `child` を `parent` の子として登録する（親が不明または確保失敗なら `false`）
 - `fn ui.tree.Tree.child_count(self: &ui.tree.Tree, node: usize) -> usize uses [] panics never pub` — 子の数
+- `fn ui.tree.Tree.child_at(self: &ui.tree.Tree, node: usize, i: usize) -> Option<usize> uses [] panics never pub` — `node` の `i` 番目の子のインデックス（範囲外または子なしなら `None`）
+- `fn ui.tree.Tree.parent_of(self: &ui.tree.Tree, node: usize) -> Option<usize> uses [] panics never pub` — `node` の親のインデックス（根または不明なら `None`）
+- `fn ui.tree.Tree.find_key(self: &ui.tree.Tree, key: u64) -> Option<usize> uses [] panics never pub` — `key` を持つノードを木全体から探す（見つからなければ `None`）
 - `fn ui.tree.Tree.node_at(self: &ui.tree.Tree, index: usize) -> Option<&ui.tree.Node> uses [] panics never pub` — ノードを取得
 - `fn ui.tree.Tree.state_ref(self: &ui.tree.Tree) -> &ui.state.Arena<ui.tree.StateEntry, std.alloc.System> uses [] panics never pub` — 状態アリーナへの参照
 - `fn ui.tree.Tree.state_tick(self: &mut ui.tree.Tree, h: ui.state.Handle) -> () uses [] panics never pub` — ハンドル指定の状態を `tick` する
-- `fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.vec.Vec<ui.tree.Element, std.alloc.System>, root_elem: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub` — `root` を根に `elements` の差分を木に反映する
+- `fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.vec.Vec<ui.tree.Element, std.alloc.System>, root_elem: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub` — `root` を根に `elements` の差分を木に反映し、コミット対象のノード（`root`）のインデックスを返す
 
 ### `ui.tree.View`
 
@@ -113,11 +116,13 @@ tree.state_tick(h)
 
 ## テスト
 
-`src/ui/tree_test.ksnl` に 13 件の `test` を同梱し、`ksn test --both` でインタープリタとネイティブバンドルの両方で一致を確認しています。
+`src/ui/tree_test.ksnl` に 23 件の `test` を同梱し、`ksn test --both` でインタープリタとネイティブバンドルの両方で一致を確認しています。
 
 カバー項目:
 - 木の構築: `test_new`, `test_push_node_indices`, `test_push_child`, `test_commit_build`
-- 差分更新: 挿入 `test_commit_insert`、削除 `test_commit_remove`、キー付き再順序 `test_keyed_reorder`
+- 差分更新: 挿入 `test_commit_insert`、削除 `test_commit_remove`、キー付き再順序 `test_keyed_reorder`、戻り値 `test_commit_returns_index`
+- 子の走査: `test_child_at`, `test_child_at_out_of_range`, `test_child_at_node_without_children`, `test_child_at_unknown_node`, `test_parent_of`, `test_parent_of_deep`, `test_parent_of_root_none`, `test_parent_of_unknown_node`
+- キー検索: `test_find_key`, `test_find_key_missing`
 - 状態: ハンドル経由の更新 `test_state_insert` / `test_state_insert_two` / `test_state_remove` / `test_state_tick`
 - ビュー合成: `Box<dyn ui.tree.View>` 経由 `test_view_box_dyn`, `test_composite_render`
 
