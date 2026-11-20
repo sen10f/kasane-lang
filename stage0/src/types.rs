@@ -275,6 +275,7 @@ const FLOATS: &[&str] = &["f32", "f64"];
 
 /// 型の構文木 (V) を `Ty` にする。`params` に含まれる名前は型パラメータ。
 pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
+    crate::s5_meter::count_active("from_v");
     if is_nil(v) {
         return Ty::Unknown;
     }

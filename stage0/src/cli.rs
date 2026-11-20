@@ -1155,6 +1155,29 @@ fn cmd_check_stdlib(json: bool) -> i32 {
 /// `ksn kir <FQN> [--run|--native <引数>... | --llvm]` (隠し機能、設計_KIR.md 段階 1 と 4)。
 /// 関数の KIR を出す。`--run` を付けると、出した KIR を読み直して参照実行器で走らせる (木走査の `ksn run` と結果を比べるため)。
 /// `--llvm` は LLVM IR (`.ll`) を出し、`--native` は clang で実行ファイルを作って走らせる (表示と終了コードは `--run` と同じ)。
+/// 隠しの `ksn s5-meter` (S5-0 / S6-0 の計器。設計_S5S6_型付きIRの一本化.md)。カレントのパッケージを下ろし、
+/// 報告 (JSON 行: 箇所の回数・TAST との食い違い・下ろせなかった関数) を stdout へ出す。動作は変えない。
+fn cmd_s5_meter(_rest: &[String]) -> i32 {
+    crate::s5_meter::force();
+    let mut rep = Report::new(false);
+    let (prog, user) = match find_root().and_then(|r| full_check(&r, &mut rep, false)) {
+        Ok((_, Some(prog), user)) if !rep.fatal() => (prog, user),
+        Ok(_) => {
+            // 診断は stdout の JSON 行を汚さないよう出さない (理由は msg に 1 件だけ)。
+            let first = rep.items.first().map(|i| format!("{}: {}", i.code, i.message)).unwrap_or_default();
+            println!("{}", serde_json::json!({ "kind": "error", "msg": "検査が通らない", "first": first }));
+            return 1;
+        }
+        Err(e) => {
+            println!("{}", serde_json::json!({ "kind": "error", "code": e.code, "msg": e.msg }));
+            return 2;
+        }
+    };
+    let _ = crate::kir_lower::lower_user(&prog, &user);
+    print!("{}", crate::s5_meter::take_report());
+    0
+}
+
 fn cmd_kir(rest: &[String]) -> i32 {
     let Some(fqn) = rest.first() else {
         eprintln!("usage: ksn kir <FQN> [--opt] [--run|--native <args>... | --llvm]");
@@ -4593,6 +4616,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "debug" => crate::debug::cmd_debug(&rest),
         "dap" => crate::debug::cmd_dap(),
         "kir" => cmd_kir(&rest),
+        "s5-meter" => cmd_s5_meter(&rest),
         "build" => cmd_build(&rest, None),
         "update" => cmd_update(&rest),
         "lock" => cmd_lock(&rest),

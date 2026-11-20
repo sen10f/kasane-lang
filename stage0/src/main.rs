@@ -60,6 +60,7 @@ mod refs_check;
 mod rustisms;
 mod stdcache;
 mod survey;
+mod s5_meter;
 mod semver;
 mod deps_resolve;
 mod tomlstrict;

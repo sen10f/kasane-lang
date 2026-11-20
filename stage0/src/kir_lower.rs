@@ -137,11 +137,18 @@ thread_local! {
 /// 型表を作る。`test_def` (テストを入口にするとき) は、テストの本体も検査する。
 fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> BTreeMap<(String, u32), ExprTy> {
     let mut tk = TypeCk::new(p);
+    let mut checked: Vec<usize> = vec![];
     for &i in user {
         let d = &p.defs[i];
         if (d.kw == "fn" && d.body.is_some()) || test_def == Some(i) {
             tk.check_def(i);
+            checked.push(i);
         }
+    }
+    // S5-0 の計器が有効なときだけ、同じ表から TAST を組んで突き合わせの相手にする (動作は変えない)。
+    if crate::s5_meter::on() {
+        let t = crate::tast::build(p, &checked, &tk.tytab, &tk.side, &tk.let_tys);
+        crate::s5_meter::set_tast(p, &t);
     }
     tk.tytab
 }
@@ -469,7 +476,18 @@ impl<'a> Lw<'a> {
         let line = nline(e);
         let id = nid(e);
         match self.tys.get(&(self.def.name.clone(), id)) {
-            Some(x) if id != 0 => Ok(if self.subst.is_empty() { x.ty.clone() } else { mono::subst_ty(&x.ty, &self.subst) }),
+            Some(x) if id != 0 => {
+                // S5-0 の計器: 型表から読んだ型を、TAST の同じ式の型と比べる (単相化の代入の後は比べない)。
+                if crate::s5_meter::on() {
+                    if self.subst.is_empty() {
+                        let t = crate::s5_meter::tast_ty(&self.def.name, id).map(|t| (format!("{:?}", t), t == Src::Unknown));
+                        crate::s5_meter::compare("src_ty", &self.def.name, id, line, &format!("{:?}", x.ty), t);
+                    } else {
+                        crate::s5_meter::count("src_ty.generic");
+                    }
+                }
+                Ok(if self.subst.is_empty() { x.ty.clone() } else { mono::subst_ty(&x.ty, &self.subst) })
+            }
             _ => self.err(line, format!("式 {} の型が決まらない (型表にない)", nname(e))),
         }
     }
@@ -480,7 +498,21 @@ impl<'a> Lw<'a> {
         let t = match self.src_ty(e) {
             Ok(t) if t != Src::Unknown => t,
             r => match coll::local_slot_ty(self, e) {
-                Some(x) => return Ok(x),
+                Some(x) => {
+                    // S5-0 の計器: 型表に無い局所の型をスロットから補った所。補った型を TAST の型 (変換後) と比べる。
+                    if crate::s5_meter::on() && self.subst.is_empty() {
+                        let id = nid(e);
+                        let t = crate::s5_meter::tast_ty(&self.def.name, id).map(|t| {
+                            let shown = match conv(&t) {
+                                Some(k) => format!("{:?}", k),
+                                None => "対象外".to_string(),
+                            };
+                            (shown, t == Src::Unknown)
+                        });
+                        crate::s5_meter::compare("ty_of.slot", &self.def.name, id, nline(e), &format!("{:?}", x), t);
+                    }
+                    return Ok(x);
+                }
                 None => r?,
             },
         };
@@ -2028,6 +2060,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     }
     let mut ok: Vec<(Func, BTreeSet<String>)> = vec![];
     let mut bad: Vec<(String, String)> = vec![];
+    crate::s5_meter::set_active(true);
     for &i in user {
         let d = &p.defs[i];
         if !is_candidate(d) && test_def != Some(i) {
@@ -2038,6 +2071,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
             Err(why) => bad.push((d.name.clone(), why)),
         }
     }
+    crate::s5_meter::set_active(false);
     // スレッドの補助の関数 (`ksn.thr.*`) は、全部の入口 (クロージャ) が揃ってから作る。
     thread_lower::finish(&mut ok);
     sync_lower::finish(&mut ok);
@@ -2103,6 +2137,38 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     let mut funcs = funcs;
     funcs.sort_by(|a, b| a.key.cmp(&b.key));
     bad.sort();
+    // S6-0 の計器: 対象の関数ごとに、下ろせたかと下ろせなかった理由を数える (動作は変えない)。
+    if crate::s5_meter::on() {
+        let keys: HashSet<&str> = funcs.iter().map(|f| f.key.as_str()).collect();
+        let (mut total, mut low) = (0usize, 0usize);
+        for &i in user {
+            let d = &p.defs[i];
+            if !(d.kw == "fn" && d.body.is_some()) && test_def != Some(i) {
+                continue;
+            }
+            // 標準ライブラリ (`spec/stdlib`) の関数は、被覆の数には入れず、理由だけ `origin: std` で出す。
+            let std = d.file.contains("/stdlib/");
+            if !std {
+                total += 1;
+            }
+            if keys.contains(d.name.as_str()) {
+                if !std {
+                    low += 1;
+                }
+                continue;
+            }
+            let why = match bad.iter().find(|(k, _)| *k == d.name) {
+                Some((_, w)) => w.clone(),
+                None if !is_candidate(d) && test_def != Some(i) => "総称の関数 (単相化していない・対象外)".to_string(),
+                None => "下ろしの理由が無い".to_string(),
+            };
+            crate::s5_meter::unsupported(&d.name, &d.file, &why, std);
+        }
+        crate::s5_meter::coverage(low, total);
+        if std::env::var_os("KSN_S5_METER").is_some_and(|v| !v.is_empty() && v != "0") {
+            eprint!("{}", crate::s5_meter::take_report());
+        }
+    }
     let depth = entry.and_then(|e| p.funcs.get(e)).and_then(|&i| p.defs[i].depth).unwrap_or(0);
     let mut module = Module { funcs, aggs: all_aggs, depth };
     kir::prune_aggs(&mut module);
