@@ -7359,7 +7359,7 @@ impl<'a> Checker<'a> {
             };
             self.d = i;
             if rec && never && d.stack.is_none() {
-                self.tdiag("E4010", format!("recursive `panics never` function {} requires `stack <bytes>`", n), 0);
+                self.tdiag("E4010", format!("recursive `panics never` function {} requires `stack <bytes>`: add `stack N` right after `panics never` in the header (e.g. `fn app.fact(n: u64) -> Option<u64> uses [] panics never stack 4096`)", n), 0);
             }
             if let Some(m) = d.depth {
                 if self.p.entry.as_deref() != Some(n.as_str()) {

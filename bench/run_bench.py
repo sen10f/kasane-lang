@@ -170,7 +170,7 @@ def run_ksn_retry(args, cwd, tries=3):
 def evaluate_full(code, tests):
     """コード + テストをパッケージにして採点する。(段階, 出力, コード一覧, 正規形か) を返す。
     段階: pass / check / test / infra (ksn がシグナルで落ち続けた: モデルの失敗ではない)。
-    正規形か: モデルのコードを `ksn fmt` に通す前後でファイルが変わらなければ True。fmt が構文の誤りで
+    正規形か: モデルのコードを `ksn fmt` と `ksn fix` に通す前後でファイルが変わらなければ True。fmt が構文の誤りで
     失敗したときは False、infra のときは None。
     書き方は 1 通り (E0020) だが、LLM の作業の流れでは道具が先に `ksn fmt` を通す (人がエディタで保存するときと同じ)。
     だから採点は整形後の形で行い、整形の前後の差は記録だけする。"""
@@ -188,10 +188,22 @@ def evaluate_full(code, tests):
             return 'infra', f'ksn fmt がシグナル {-rc} で落ちた', [], None
         if rc != 0:  # 構文の誤り。今と同じ形で check の段の失敗として返す。
             return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out), False
+        # 1b. 続けて `ksn fix` (機械的に直せる診断: 効果の宣言の書き足し・冗長な注釈・get から get_str など) を当て、
+        #     もう一度 `ksn fmt`。LLM の作業の流れでは道具が fmt と fix を先に当てる (利用者の決定 2026-11-20、
+        #     Kasane の考え方そのもの)。fix が直せないもの (rc != 0) は次の check がそのまま知らせる。
+        rc, out = run_ksn_retry(['fix'], td)
+        if rc < 0:
+            return 'infra', f'ksn fix がシグナル {-rc} で落ちた', [], None
+        rc, out = run_ksn_retry(['fmt'], td)
+        if rc < 0:
+            return 'infra', f'ksn fmt がシグナル {-rc} で落ちた', [], None
+        if rc != 0:
+            return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out), False
         after = open(path, encoding='utf-8').read()
+        # 正規形か = fmt と fix を当てる前後でファイルが変わらなかったか (道具の前の、モデルの答案そのものの質)。
         canonical = after == src
         src = after
-        # 2. 整形後のコードを検査する。
+        # 2. 整形・直しの後のコードを検査する。
         rc, out = run_ksn_retry(['check'], td)
         if rc < 0:
             return 'infra', f'ksn check がシグナル {-rc} で落ちた', [], None

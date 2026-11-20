@@ -213,7 +213,8 @@ print(f'     apps の ksn check / fmt --check: {len(app_pkgs)} パッケージ, 
 t0 = time.monotonic()
 ui_pkgs = []
 for dp, dns, fns in os.walk(os.path.join(ROOT, 'ui')):
-    dns[:] = sorted(dns)
+    # ビルドの成果 (target/ の中のパッケージの写し) と、取ってきた C の部品は対象外。
+    dns[:] = sorted(d for d in dns if d not in ('target', 'third_party'))
     if 'kasane.toml' in fns:
         ui_pkgs.append(os.path.relpath(dp, ROOT).replace(os.sep, '/'))
 ui_pkgs.sort()
