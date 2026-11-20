@@ -38,7 +38,7 @@ cd "$ROOT"
 if [ -n "$TARGET" ]; then
   PREFIX="$HOME/llvm-ksn/$TARGET"
   case "$TARGET" in
-    *-windows-gnu) EXE=".exe"; ARCHIVE="zip" ;;
+    *-windows-gnu) EXE=".exe"; ARCHIVE="tar.gz" ;;
     *) EXE=""; ARCHIVE="tar.gz" ;;
   esac
 else
@@ -128,7 +128,7 @@ if [ "$ARCHIVE" = "zip" ]; then
   (cd "$stage" && zip -q -r "$ROOT/dist/$base.zip" ksn.exe LICENSE-MIT LICENSE-APACHE README.md INSTALL.txt)
   archive="$ROOT/dist/$base.zip"
 else
-  tar -czf "$ROOT/dist/$base.tar.gz" -C "$stage" ksn LICENSE-MIT LICENSE-APACHE README.md INSTALL.txt
+  tar -czf "$ROOT/dist/$base.tar.gz" -C "$stage" "ksn$EXE" LICENSE-MIT LICENSE-APACHE README.md INSTALL.txt
   archive="$ROOT/dist/$base.tar.gz"
 fi
 rm -rf "$stage"
