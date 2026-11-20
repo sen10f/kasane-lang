@@ -15,6 +15,7 @@ use crate::interp::Interp;
 use crate::lint::Lint;
 use crate::natives::NATIVE_NAMES;
 use crate::program::{Def, Program};
+use crate::git_tags::SemVer;
 use crate::project::*;
 use crate::value::Ctl;
 
@@ -3082,6 +3083,210 @@ fn cmd_registry(rest: &[String]) -> i32 {
     }
 }
 
+/// `ksn publish --registry <url-or-path>`: パッケージを最小レジストリに出版する (R3b)。
+/// `ksn check` / `ksn fmt --check` / 試験、version の新規・昇順、git の clean かつ `v<version>` タグ、
+/// 分配ハッシュを確かめ、索引に 1 版を追加して 1 コミットする。
+/// URL レジストリでは push しない（shortcut：push すべきコミットを出力して止める）。
+fn cmd_publish(rest: &[String]) -> i32 {
+    let mut registry = None;
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i] == "--registry" {
+            registry = rest.get(i + 1).cloned();
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    let registry = match registry {
+        Some(r) => r,
+        None => {
+            eprintln!("usage: ksn publish --registry <url-or-path>");
+            return 2;
+        }
+    };
+    if cmd_check(false) != 0 {
+        return 1;
+    }
+    if cmd_fmt(&["--check".to_string()]) != 0 {
+        return 1;
+    }
+    if cmd_test(&[]) != 0 {
+        return 1;
+    }
+    let root = match find_root() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let root_s = root.to_string_lossy().to_string();
+    let m = match read_manifest(&root) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let pkg = m.get("package");
+    let name = pkg.and_then(|p| p.get("name")).and_then(|n| n.as_str()).unwrap_or("");
+    let version = pkg.and_then(|p| p.get("version")).and_then(|v| v.as_str()).unwrap_or("");
+    if name.is_empty() || version.is_empty() {
+        eprintln!("ksn: E9005: package.name and package.version are required");
+        return 1;
+    }
+    // git working tree が clean であること
+    match git_run(&["-C", &root_s, "status", "--porcelain"]) {
+        Ok(s) if s.is_empty() => {}
+        Ok(_) => {
+            eprintln!("ksn: git working tree is not clean; commit or discard changes before publishing");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("ksn: cannot run git: {e}");
+            return 1;
+        }
+    }
+    // HEAD が v<version> タグを指し、そのコミットが HEAD と一致すること
+    let head = match git_run(&["-C", &root_s, "rev-parse", "HEAD"]) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("ksn: cannot read HEAD: {e}");
+            return 1;
+        }
+    };
+    let tag = format!("v{version}");
+    let tag_commit = match git_run(&["-C", &root_s, "rev-list", "-n1", &tag]) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("ksn: tag {tag} is not on HEAD ({e})");
+            return 1;
+        }
+    };
+    if tag_commit != head {
+        eprintln!("ksn: tag {tag} does not point to HEAD");
+        return 1;
+    }
+    // version は新規かつ既存より大きいこと（yanked 版も既存として扱う）
+    let existing = match crate::registry::index_all_entries(&registry, name) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("ksn: registry index: {} {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let new_ver = match SemVer::parse(version) {
+        Some(v) => v,
+        None => {
+            eprintln!("ksn: E9005: package.version is not MAJOR.MINOR.PATCH");
+            return 1;
+        }
+    };
+    for e in &existing {
+        if let Some(ev) = SemVer::parse(&e.version) {
+            if new_ver <= ev {
+                eprintln!("ksn: version {version} is not greater than existing {}; refusing", e.version);
+                return 1;
+            }
+        }
+    }
+    let hash = match crate::project::try_package_hash(&root) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let repository = match git_run(&["-C", &root_s, "remote", "get-url", "origin"]) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("ksn: no `origin` remote (a source repository is required): {e}");
+            return 1;
+        }
+    };
+    let owner = repository.clone();
+    let entry = crate::registry::IndexEntry {
+        version: version.to_string(),
+        tag,
+        repository,
+        commit: head,
+        hash,
+        owner,
+        yanked: false,
+    };
+    match crate::registry::publish_entry(&registry, name, &entry) {
+        Ok(commit) => {
+            if registry.starts_with("https://") || registry.starts_with("ssh://") {
+                println!("push this commit to the registry: {commit}");
+                println!("then push the source tag: git push origin v{version}");
+            } else {
+                println!("published {name} {version} (index commit {commit})");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("ksn: registry index: {} {}", e.code, e.msg);
+            1
+        }
+    }
+}
+
+/// `ksn yank [--undo] --registry <url-or-path> <name> <version>`: 版の yanked フラグを切り替える (R3b)。
+fn cmd_yank(rest: &[String]) -> i32 {
+    let mut undo = false;
+    let mut registry = None;
+    let mut positional: Vec<&str> = vec![];
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--undo" => {
+                undo = true;
+                i += 1;
+            }
+            "--registry" => {
+                registry = rest.get(i + 1).cloned();
+                i += 2;
+            }
+            a => {
+                positional.push(a);
+                i += 1;
+            }
+        }
+    }
+    let registry = match registry {
+        Some(r) => r,
+        None => {
+            eprintln!("usage: ksn yank [--undo] --registry <url-or-path> <name> <version>");
+            return 2;
+        }
+    };
+    if positional.len() != 2 {
+        eprintln!("usage: ksn yank [--undo] --registry <url-or-path> <name> <version>");
+        return 2;
+    }
+    let name = positional[0];
+    let version = positional[1];
+    let yanked = !undo;
+    match crate::registry::yank_entry(&registry, name, version, yanked) {
+        Ok(commit) => {
+            if registry.starts_with("https://") || registry.starts_with("ssh://") {
+                println!("push this commit to the registry: {commit}");
+            } else {
+                println!(
+                    "{} {name} {version} (index commit {commit})",
+                    if yanked { "yanked" } else { "unyanked" }
+                );
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("ksn: registry index: {} {}", e.code, e.msg);
+            1
+        }
+    }
+}
+
 /// `ksn git tags <url>`: `git ls-remote --tags <url>` から `vMAJOR.MINOR.PATCH` タグだけを列挙し、
 /// `版 コミット` の形で版順に出力する (R1b。解決・lock への接続はまだ行わない)。
 fn cmd_git(rest: &[String]) -> i32 {
@@ -4238,6 +4443,8 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "vendor" => cmd_vendor(),
         "git" => cmd_git(&rest),
         "registry" => cmd_registry(&rest),
+        "publish" => cmd_publish(&rest),
+        "yank" => cmd_yank(&rest),
         "_exec" => cmd_exec(&rest),
         "--version" | "-V" => {
             println!("ksn {}", VERSION);
@@ -4245,7 +4452,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         }
         _ => {
             eprintln!(
-                "usage: ksn <new|check|fix|todo|context|fmt|run|test|debug|dap|build|get|sig|doc|index|refs|rename|explain|lsp|update|lock|vendor> [args]"
+                "usage: ksn <new|check|fix|todo|context|fmt|run|test|debug|dap|build|get|sig|doc|index|refs|rename|explain|lsp|update|lock|vendor|publish|yank|git|registry> [args]"
             );
             2
         }
