@@ -376,10 +376,49 @@ fn link_embedded_lld() {
             println!("cargo:rustc-link-lib=static={}", l.trim_start_matches("-l"));
         }
     } else {
-        // llvm-config なし: lib の lld / LLVM 静的ライブラリをすべてリンク。循環参照は --start-group で解決。
-        println!("cargo:rustc-link-arg=-Wl,--start-group");
-        link_glob_static(&lib, &["liblld", "libLLVM"]);
-        println!("cargo:rustc-link-arg=-Wl,--end-group");
+        // llvm-config なし: lib の lld / LLVM 静的ライブラリをすべてリンク。
+        // cargo は cargo:rustc-link-arg と cargo:rustc-link-lib の出力順を入れ替えるため
+        // --start-group/--end-group が機能しない。代わりに全オブジェクトを 1 つの
+        // アーカイブにまとめてリンクする (単一アーカイブなら循環参照の順序問題が起きない)。
+        let all_dir = out.join("lld_all_objects");
+        let _ = fs::remove_dir_all(&all_dir);
+        fs::create_dir_all(&all_dir).unwrap();
+        let mut objs: Vec<PathBuf> = Vec::new();
+        if let Ok(rd) = fs::read_dir(&lib) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_file() {
+                    if let Some(n) = p.file_name().and_then(|s| s.to_str()) {
+                        if (n.starts_with("liblld") || n.starts_with("libLLVM")) && n.ends_with(".a") {
+                            let sub = all_dir.join(n.trim_end_matches(".a"));
+                            let _ = fs::create_dir_all(&sub);
+                            assert!(
+                                Command::new("ar").arg("x").arg(&p).current_dir(&sub).status().expect("ar が要る").success(),
+                                "{} の展開に失敗",
+                                p.display()
+                            );
+                            if let Ok(ord) = fs::read_dir(&sub) {
+                                for oe in ord.flatten() {
+                                    let op = oe.path();
+                                    if op.extension().and_then(|s| s.to_str()) == Some("o") {
+                                        objs.push(op);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(!objs.is_empty(), "liblld*.a / libLLVM*.a が {} に見つからない", lib);
+        let a = out.join("libksn_lld_all.a");
+        let _ = fs::remove_file(&a);
+        assert!(
+            Command::new("ar").arg("crs").arg(&a).args(&objs).status().expect("ar が要る").success(),
+            "{} の作成に失敗",
+            a.display()
+        );
+        println!("cargo:rustc-link-lib=static=ksn_lld_all");
     }
     // システムのライブラリ (z・zstd・stdc++) は L1 の `link_llvm` が静的につなぐ (配布する実行体が依存しない)。ここでは足さない。
 }
