@@ -4,6 +4,7 @@ changed block closure_in_vec_used_later#1
 changed block fnonce_linear_fn_bound#0
 changed block hunt_a17_reserved_false_bind#0
 changed block hunt_a17_reserved_false_bind#1
+changed block n3a_trampoline_outside_unsafe#0
 changed closure fnonce_linear_fn_bound#0
 changed extract fnonce_linear_fn_bound#0
 changed extract fnonce_linear_fn_bound#1
@@ -11,6 +12,7 @@ changed extract fnonce_linear_fn_bound#2
 changed extract fnonce_linear_fn_bound#3
 changed extract fnonce_linear_fn_bound#4
 changed extract hunt_a17_reserved_false_bind#0
+changed extract n3a_trampoline_outside_unsafe#0
 changed fold flow_ref_field_borrow_inherits_loan#0
 changed fold hunt_a05_andmut_via_shared_ref_01#0
 changed fold hunt_a05_fnmut_call_through_shared_ref_01#0
@@ -34,6 +36,7 @@ changed hoist hunt_a17_reserved_false_bind#0
 changed hoist hunt_a17_reserved_false_bind#1
 changed hoist mem_replace_stores_borrow#0
 changed hoist mem_swap_moves_borrow#1
+changed hoist n3a_trampoline_outside_unsafe#0
 changed id closure_in_hashmap_used_later#1
 changed id closure_in_vec_used_later#1
 changed id const_init_explicit_panic#0
@@ -44,6 +47,7 @@ changed id fnonce_linear_fn_bound#0
 changed id hunt_a13_assign_through_shared_ref_04#0
 changed id hunt_a17_reserved_false_bind#0
 changed id hunt_a17_reserved_false_bind#1
+changed id n3a_trampoline_outside_unsafe#0
 hole block flow_call_same_mut_ref_twice#2
 hole block flow_mem_swap_same_ref_twice#2
 hole block flow_reborrow_mut_arg_user_fn#1
@@ -62,8 +66,15 @@ hole fold linear_short_circuit_and_rhs_consume#0
 hole fold linear_short_circuit_or_rhs_consume#0
 hole fold ref_of_ref_deref#1
 hole fold return_local_match_bind_dangling_via_let_struct_var#0
+hole fold return_local_nested_tuple_destructure#0
 hole fold return_local_option_tuple_destructure#0
 hole fold return_local_tuple_destructure#0
+hole fold return_local_tuple_literal_destructure#0
+hole fold return_local_tuple_match_3elem_some#0
+hole fold return_local_tuple_match_some_arm#0
+hole fold return_local_tuple_tuple_let_ok#0
+hole fold return_local_tuple_tuple_let_some_bind#0
+hole fold return_local_tuple_via_wrap_fn#0
 hole fold temp_ref_str_len#0
 hole fold temp_ref_vec_len#0
 hole hoist flow_swap_generic_relay#3
