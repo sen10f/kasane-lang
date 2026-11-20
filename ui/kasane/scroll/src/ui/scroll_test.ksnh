@@ -1,0 +1,385 @@
+// ui.scroll の単体試験。インタプリタとバンドルの両方で同一結果を期待。
+type ui.scroll_test.Target pub
+    _dummy: bool
+end ui.scroll_test.Target
+
+fn ui.scroll_test.ctx_both() -> ui.scroll.Ctx uses [] panics never pub
+    // ビューポート 400x300, コンテンツ 1000x800 → 最大スクロール (600, 500)
+    ui.scroll.Ctx.new(400.0f32, 300.0f32, 1000.0f32, 800.0f32, ui.scroll.Axis.Both)
+end ui.scroll_test.ctx_both
+
+fn ui.scroll_test.ctx_horizontal() -> ui.scroll.Ctx uses [] panics never pub
+    ui.scroll.Ctx.new(400.0f32, 300.0f32, 1000.0f32, 800.0f32, ui.scroll.Axis.Horizontal)
+end ui.scroll_test.ctx_horizontal
+
+fn ui.scroll_test.ctx_vertical() -> ui.scroll.Ctx uses [] panics never pub
+    ui.scroll.Ctx.new(400.0f32, 300.0f32, 1000.0f32, 800.0f32, ui.scroll.Axis.Vertical)
+end ui.scroll_test.ctx_vertical
+
+test ui.scroll_test.Target.test_axis_both_applies_both
+    let mut ctx = ui.scroll_test.ctx_both()
+    let changed = ctx.scroll_by(100.0f32, 200.0f32)
+    let (ox, oy) = ctx.offset()
+    core.check.eq(changed, true)
+    core.check.eq(ox, 100.0f32)
+    core.check.eq(oy, 200.0f32)
+end ui.scroll_test.Target.test_axis_both_applies_both
+
+test ui.scroll_test.Target.test_axis_horizontal_ignores_dy
+    let mut ctx = ui.scroll_test.ctx_horizontal()
+    let changed = ctx.scroll_by(0.0f32, 500.0f32)
+    let (_ox, oy) = ctx.offset()
+    core.check.eq(changed, false)
+    core.check.eq(oy, 0.0f32)
+end ui.scroll_test.Target.test_axis_horizontal_ignores_dy
+
+test ui.scroll_test.Target.test_axis_vertical_ignores_dx
+    let mut ctx = ui.scroll_test.ctx_vertical()
+    let changed = ctx.scroll_by(500.0f32, 0.0f32)
+    let (ox, _oy) = ctx.offset()
+    core.check.eq(changed, false)
+    core.check.eq(ox, 0.0f32)
+end ui.scroll_test.Target.test_axis_vertical_ignores_dx
+
+test ui.scroll_test.Target.test_chain_inner_consumes_all
+    let (inner, outer) = ui.scroll.chain(200.0f32, 100.0f32, 500.0f32, 0.0f32, 300.0f32)
+    core.check.eq(inner, 300.0f32)
+    core.check.eq(outer, 0.0f32)
+end ui.scroll_test.Target.test_chain_inner_consumes_all
+
+test ui.scroll_test.Target.test_chain_inner_edge_passes_to_outer
+    let (inner, outer) = ui.scroll.chain(100.0f32, 500.0f32, 500.0f32, 0.0f32, 300.0f32)
+    core.check.eq(inner, 500.0f32)
+    core.check.eq(outer, 100.0f32)
+end ui.scroll_test.Target.test_chain_inner_edge_passes_to_outer
+
+test ui.scroll_test.Target.test_chain_negative_direction
+    let (inner, outer) = ui.scroll.chain(-200.0f32, 0.0f32, 500.0f32, 100.0f32, 300.0f32)
+    core.check.eq(inner, 0.0f32)
+    core.check.eq(outer, 0.0f32)
+end ui.scroll_test.Target.test_chain_negative_direction
+
+test ui.scroll_test.Target.test_chain_outer_edge_clamped
+    let (inner, outer) = ui.scroll.chain(1000.0f32, 500.0f32, 500.0f32, 250.0f32, 300.0f32)
+    core.check.eq(inner, 500.0f32)
+    core.check.eq(outer, 300.0f32)
+end ui.scroll_test.Target.test_chain_outer_edge_clamped
+
+test ui.scroll_test.Target.test_chain_x_mirror
+    let (inner, outer) = ui.scroll.chain_x(100.0f32, 500.0f32, 500.0f32, 0.0f32, 300.0f32)
+    core.check.eq(inner, 500.0f32)
+    core.check.eq(outer, 100.0f32)
+end ui.scroll_test.Target.test_chain_x_mirror
+
+test ui.scroll_test.Target.test_clamp_large_offset
+    let mut s = ui.scroll.Ctx.new(400.0f32, 300.0f32, 1000.0f32, 800.0f32, ui.scroll.Axis.Both)
+    s.cw = 1000.0f32
+    s.ch = 800.0f32
+    s.ox = 2000.0f32
+    s.oy = 2000.0f32
+    s.clamp()
+    let (ox, oy) = s.offset()
+    core.check.eq(ox, 600.0f32)
+    core.check.eq(oy, 500.0f32)
+end ui.scroll_test.Target.test_clamp_large_offset
+
+test ui.scroll_test.Target.test_clamp_negative_offset
+    let mut s = ui.scroll.Ctx.new(400.0f32, 300.0f32, 1000.0f32, 800.0f32, ui.scroll.Axis.Both)
+    s.cw = 1000.0f32
+    s.ch = 800.0f32
+    s.ox = -100.0f32
+    s.oy = -50.0f32
+    s.clamp()
+    let (ox, oy) = s.offset()
+    core.check.eq(ox, 0.0f32)
+    core.check.eq(oy, 0.0f32)
+end ui.scroll_test.Target.test_clamp_negative_offset
+
+test ui.scroll_test.Target.test_kinetic_clamped_at_edge_stays
+    let mut s = ui.scroll.Ctx.new(400.0f32, 300.0f32, 1000.0f32, 800.0f32, ui.scroll.Axis.Both)
+    s.ox = 600.0f32
+    s.oy = 500.0f32
+    let mut vx = 0.0f32
+    let mut vy = 1200.0f32
+    let mut i = 0usize
+    while i < 200usize {
+        i = i.wrapping_add(1usize)
+        let (moved, nvx, nvy) = s.tick(vx, vy)
+        vx = nvx
+        vy = nvy
+        if !moved {
+            break
+        }
+    }
+    let (_ox, oy) = s.offset()
+    core.check.eq(vy, 0.0f32)
+    core.check.eq(oy, 500.0f32)
+end ui.scroll_test.Target.test_kinetic_clamped_at_edge_stays
+
+test ui.scroll_test.Target.test_kinetic_decays_and_stops
+    let mut ctx = ui.scroll_test.ctx_horizontal()
+    let mut vx = 1200.0f32
+    let mut vy = 0.0f32
+    let mut prev = 0.0f32
+    let mut moved = 0usize
+    let mut i = 0usize
+    while i < 200usize {
+        i = i.wrapping_add(1usize)
+        let (ox, _oy) = ctx.offset()
+        if ox > prev {
+            moved = moved.wrapping_add(1usize)
+        }
+        prev = ox
+        let (m, nvx, nvy) = ctx.tick(vx, vy)
+        vx = nvx
+        vy = nvy
+        if !m {
+            break
+        }
+    }
+    let (ox, _oy) = ctx.offset()
+    core.check.eq(vx, 0.0f32)
+    core.check.eq(moved, i.wrapping_sub(1usize))
+    core.check.eq(i, 74usize)
+    core.check.eq(ox > 179.0f32, true)
+    core.check.eq(ox < 181.0f32, true)
+end ui.scroll_test.Target.test_kinetic_decays_and_stops
+
+test ui.scroll_test.Target.test_kinetic_small_stops_quickly
+    let mut ctx = ui.scroll_test.ctx_horizontal()
+    let mut vx = 1.0f32
+    let mut vy = 0.0f32
+    let mut i = 0usize
+    while i < 20usize {
+        i = i.wrapping_add(1usize)
+        let (m, nvx, nvy) = ctx.tick(vx, vy)
+        vx = nvx
+        vy = nvy
+        if !m {
+            break
+        }
+    }
+    core.check.eq(vx, 0.0f32)
+    core.check.eq(i, 7usize)
+end ui.scroll_test.Target.test_kinetic_small_stops_quickly
+
+test ui.scroll_test.Target.test_kinetic_vertical_axis_ignores_x
+    let mut ctx = ui.scroll_test.ctx_vertical()
+    let mut vx = 1000.0f32
+    let mut vy = 0.0f32
+    let mut i = 0usize
+    while i < 200usize {
+        i = i.wrapping_add(1usize)
+        let (m, nvx, nvy) = ctx.tick(vx, vy)
+        vx = nvx
+        vy = nvy
+        if !m {
+            break
+        }
+    }
+    let (ox, _oy) = ctx.offset()
+    core.check.eq(ox, 0.0f32)
+    core.check.eq(vx, 0.0f32)
+end ui.scroll_test.Target.test_kinetic_vertical_axis_ignores_x
+
+test ui.scroll_test.Target.test_max_scroll_amount
+    core.check.eq(ui.scroll.max_scroll_amount(1000.0f32, 400.0f32), 600.0f32)
+    core.check.eq(ui.scroll.max_scroll_amount(200.0f32, 400.0f32), 0.0f32)
+end ui.scroll_test.Target.test_max_scroll_amount
+
+test ui.scroll_test.Target.test_max_scroll_method
+    let ctx = ui.scroll_test.ctx_both()
+    let (mx, my) = ctx.max_scroll()
+    core.check.eq(mx, 600.0f32)
+    core.check.eq(my, 500.0f32)
+end ui.scroll_test.Target.test_max_scroll_method
+
+test ui.scroll_test.Target.test_new_content_fits_viewport
+    let ctx = ui.scroll.Ctx.new(1000.0f32, 800.0f32, 400.0f32, 300.0f32, ui.scroll.Axis.Both)
+    let (ox, oy) = ctx.offset()
+    let (mx, my) = ctx.max_scroll()
+    core.check.eq(ox, 0.0f32)
+    core.check.eq(oy, 0.0f32)
+    core.check.eq(mx, 0.0f32)
+    core.check.eq(my, 0.0f32)
+end ui.scroll_test.Target.test_new_content_fits_viewport
+
+test ui.scroll_test.Target.test_new_offset_is_zero
+    let ctx = ui.scroll_test.ctx_both()
+    let (ox, oy) = ctx.offset()
+    core.check.eq(ox, 0.0f32)
+    core.check.eq(oy, 0.0f32)
+end ui.scroll_test.Target.test_new_offset_is_zero
+
+test ui.scroll_test.Target.test_on_wheel_ignored_non_wheel
+    let mut ctx = ui.scroll_test.ctx_both()
+    let ev = ui.event.Event.PointerMove(10.0f32, 10.0f32)
+    let changed = ctx.on_wheel(&ev)
+    core.check.eq(changed, false)
+end ui.scroll_test.Target.test_on_wheel_ignored_non_wheel
+
+test ui.scroll_test.Target.test_on_wheel_scrolls
+    let mut ctx = ui.scroll_test.ctx_both()
+    core.mem.drop(ctx.scroll_by(0.0f32, 200.0f32))
+    let ev = ui.event.Event.Wheel(0.0f32, 0.0f32, 0.0f32, -300.0f32)
+    let changed = ctx.on_wheel(&ev)
+    let (_ox, oy) = ctx.offset()
+    core.check.eq(changed, true)
+    core.check.eq(oy, 0.0f32)
+end ui.scroll_test.Target.test_on_wheel_scrolls
+
+test ui.scroll_test.Target.test_on_wheel_vertical_ignores_dx
+    let mut ctx = ui.scroll_test.ctx_vertical()
+    let ev = ui.event.Event.Wheel(0.0f32, 0.0f32, 500.0f32, 0.0f32)
+    let changed = ctx.on_wheel(&ev)
+    let (ox, _oy) = ctx.offset()
+    core.check.eq(changed, false)
+    core.check.eq(ox, 0.0f32)
+end ui.scroll_test.Target.test_on_wheel_vertical_ignores_dx
+
+test ui.scroll_test.Target.test_scroll_by_clamps_at_max
+    let mut s = ui.scroll.Ctx.new(400.0f32, 300.0f32, 1000.0f32, 800.0f32, ui.scroll.Axis.Both)
+    s.ox = 600.0f32
+    s.oy = 500.0f32
+    let changed = s.scroll_by(0.0f32, 900.0f32)
+    let (_ox, oy) = s.offset()
+    core.check.eq(changed, false)
+    core.check.eq(oy, 500.0f32)
+end ui.scroll_test.Target.test_scroll_by_clamps_at_max
+
+test ui.scroll_test.Target.test_scroll_by_clamps_at_zero
+    let mut ctx = ui.scroll_test.ctx_both()
+    let changed = ctx.scroll_by(0.0f32, -300.0f32)
+    let (_ox, oy) = ctx.offset()
+    core.check.eq(changed, false)
+    core.check.eq(oy, 0.0f32)
+end ui.scroll_test.Target.test_scroll_by_clamps_at_zero
+
+test ui.scroll_test.Target.test_scroll_by_moves
+    let mut ctx = ui.scroll_test.ctx_both()
+    let changed = ctx.scroll_by(0.0f32, 300.0f32)
+    let (ox, oy) = ctx.offset()
+    core.check.eq(changed, true)
+    core.check.eq(ox, 0.0f32)
+    core.check.eq(oy, 300.0f32)
+end ui.scroll_test.Target.test_scroll_by_moves
+
+test ui.scroll_test.Target.test_scroll_by_up_from_middle
+    let mut ctx = ui.scroll_test.ctx_both()
+    core.mem.drop(ctx.scroll_by(0.0f32, 300.0f32))
+    let changed = ctx.scroll_by(0.0f32, -150.0f32)
+    let (_ox, oy) = ctx.offset()
+    core.check.eq(changed, true)
+    core.check.eq(oy, 150.0f32)
+end ui.scroll_test.Target.test_scroll_by_up_from_middle
+
+test ui.scroll_test.Target.test_scroll_into_view_above
+    let mut ctx = ui.scroll_test.ctx_both()
+    core.mem.drop(ctx.scroll_by(0.0f32, 100.0f32))
+    let changed = ctx.scroll_into_view(0.0f32, 50.0f32, 100.0f32, 40.0f32)
+    let (_ox, oy) = ctx.offset()
+    core.check.eq(changed, true)
+    core.check.eq(oy, 50.0f32)
+end ui.scroll_test.Target.test_scroll_into_view_above
+
+test ui.scroll_test.Target.test_scroll_into_view_below
+    let mut ctx = ui.scroll_test.ctx_both()
+    let changed = ctx.scroll_into_view(0.0f32, 280.0f32, 100.0f32, 60.0f32)
+    let (_ox, oy) = ctx.offset()
+    core.check.eq(changed, true)
+    core.check.eq(oy, 40.0f32)
+end ui.scroll_test.Target.test_scroll_into_view_below
+
+test ui.scroll_test.Target.test_scroll_into_view_clamps_to_max
+    let mut ctx = ui.scroll_test.ctx_both()
+    let changed = ctx.scroll_into_view(0.0f32, 850.0f32, 100.0f32, 200.0f32)
+    let (_ox, oy) = ctx.offset()
+    core.check.eq(changed, true)
+    core.check.eq(oy, 500.0f32)
+end ui.scroll_test.Target.test_scroll_into_view_clamps_to_max
+
+test ui.scroll_test.Target.test_scroll_into_view_horizontal
+    let mut ctx = ui.scroll_test.ctx_both()
+    let changed = ctx.scroll_into_view(250.0f32, 0.0f32, 200.0f32, 50.0f32)
+    let (ox, _oy) = ctx.offset()
+    core.check.eq(changed, true)
+    core.check.eq(ox, 50.0f32)
+end ui.scroll_test.Target.test_scroll_into_view_horizontal
+
+test ui.scroll_test.Target.test_scroll_into_view_vertical_ignores_x
+    let mut ctx = ui.scroll_test.ctx_vertical()
+    let changed = ctx.scroll_into_view(9000.0f32, 0.0f32, 100.0f32, 100.0f32)
+    let (ox, _oy) = ctx.offset()
+    core.check.eq(changed, false)
+    core.check.eq(ox, 0.0f32)
+end ui.scroll_test.Target.test_scroll_into_view_vertical_ignores_x
+
+test ui.scroll_test.Target.test_scroll_into_view_visible_no_change
+    let mut ctx = ui.scroll_test.ctx_both()
+    let changed = ctx.scroll_into_view(0.0f32, 100.0f32, 100.0f32, 100.0f32)
+    let (_ox, oy) = ctx.offset()
+    core.check.eq(changed, false)
+    core.check.eq(oy, 0.0f32)
+end ui.scroll_test.Target.test_scroll_into_view_visible_no_change
+
+test ui.scroll_test.Target.test_scroll_lines
+    let mut ctx = ui.scroll_test.ctx_both()
+    let changed = ctx.scroll_lines(0.0f32, 3.0f32, 24.0f32)
+    let (_ox, oy) = ctx.offset()
+    core.check.eq(changed, true)
+    core.check.eq(oy, 72.0f32)
+end ui.scroll_test.Target.test_scroll_lines
+
+test ui.scroll_test.Target.test_scroll_lines_clamps_at_max
+    let mut s = ui.scroll.Ctx.new(400.0f32, 300.0f32, 1000.0f32, 800.0f32, ui.scroll.Axis.Both)
+    s.oy = 500.0f32
+    let changed = s.scroll_lines(0.0f32, 100.0f32, 24.0f32)
+    let (_ox, oy) = s.offset()
+    core.check.eq(changed, false)
+    core.check.eq(oy, 500.0f32)
+end ui.scroll_test.Target.test_scroll_lines_clamps_at_max
+
+test ui.scroll_test.Target.test_set_offset_clamps_and_reports
+    let mut ctx = ui.scroll_test.ctx_both()
+    let changed = ctx.set_offset(1000.0f32, 1000.0f32)
+    let (ox, oy) = ctx.offset()
+    core.check.eq(changed, true)
+    core.check.eq(ox, 600.0f32)
+    core.check.eq(oy, 500.0f32)
+    let changed2 = ctx.set_offset(600.0f32, 500.0f32)
+    core.check.eq(changed2, false)
+end ui.scroll_test.Target.test_set_offset_clamps_and_reports
+
+test ui.scroll_test.Target.test_thumb_at_bottom
+    let (pos, len) = ui.scroll.thumb_geometry(1000.0f32, 400.0f32, 600.0f32)
+    core.check.eq(pos, 240.0f32)
+    core.check.eq(len, 160.0f32)
+end ui.scroll_test.Target.test_thumb_at_bottom
+
+test ui.scroll_test.Target.test_thumb_at_top
+    let (pos, len) = ui.scroll.thumb_geometry(1000.0f32, 400.0f32, 0.0f32)
+    core.check.eq(pos, 0.0f32)
+    core.check.eq(len, 160.0f32)
+end ui.scroll_test.Target.test_thumb_at_top
+
+test ui.scroll_test.Target.test_thumb_full_when_fit
+    let (pos, len) = ui.scroll.thumb_geometry(200.0f32, 400.0f32, 0.0f32)
+    core.check.eq(pos, 0.0f32)
+    core.check.eq(len, 400.0f32)
+end ui.scroll_test.Target.test_thumb_full_when_fit
+
+test ui.scroll_test.Target.test_thumb_middle
+    let (pos, len) = ui.scroll.thumb_geometry(1000.0f32, 400.0f32, 300.0f32)
+    core.check.eq(pos, 120.0f32)
+    core.check.eq(len, 160.0f32)
+end ui.scroll_test.Target.test_thumb_middle
+
+test ui.scroll_test.Target.test_thumb_to_offset_inverts
+    let off = ui.scroll.thumb_to_offset(120.0f32, 1000.0f32, 400.0f32)
+    core.check.eq(off, 300.0f32)
+end ui.scroll_test.Target.test_thumb_to_offset_inverts
+
+test ui.scroll_test.Target.test_thumb_to_offset_when_fit
+    let off = ui.scroll.thumb_to_offset(100.0f32, 200.0f32, 400.0f32)
+    core.check.eq(off, 0.0f32)
+end ui.scroll_test.Target.test_thumb_to_offset_when_fit
