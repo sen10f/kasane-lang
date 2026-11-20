@@ -1,0 +1,426 @@
+type ui.app.App pub
+    model: ()
+    pending: alloc.vec.Vec<u64, std.alloc.System>
+    kind: alloc.vec.Vec<ui.tree.ViewKind, std.alloc.System>
+    key: alloc.vec.Vec<Option<u64>, std.alloc.System>
+    rect: alloc.vec.Vec<ui.app.Rect, std.alloc.System>
+    kids: alloc.vec.Vec<alloc.vec.Vec<usize, std.alloc.System>, std.alloc.System>
+    dirty: ui.app.Rect
+    frame: u64
+end ui.app.App
+
+type ui.app.Frame pub
+    patch: ui.app.Patch pub
+    dirty: ui.app.Rect pub
+    redrew: bool pub
+end ui.app.Frame
+
+type ui.app.Patch pub
+    added: alloc.vec.Vec<usize, std.alloc.System> pub
+    removed: alloc.vec.Vec<usize, std.alloc.System> pub
+    changed: alloc.vec.Vec<usize, std.alloc.System> pub
+    moved: alloc.vec.Vec<(usize, usize), std.alloc.System> pub
+end ui.app.Patch
+
+type ui.app.Rect derive [Debug, Clone, Copy, PartialEq] pub
+    x: f32 pub
+    y: f32 pub
+    width: f32 pub
+    height: f32 pub
+end ui.app.Rect
+
+fn ui.app.App.apply(self: &mut ui.app.App, new_model: (), elements: &alloc.vec.Vec<ui.tree.Element, std.alloc.System>, root_elem: usize) -> Result<ui.app.Frame, alloc.alloc.AllocError> uses [alloc] panics never pub
+    self.model = new_model
+    let mut patch = ui.app.Patch.new()
+    let root_el = match elements.as_slice().get(root_elem) {
+        Some(e) => e
+        None => return Ok(ui.app.Frame { patch: patch, dirty: self.dirty, redrew: false })
+    }
+    match self.kind.as_mut_slice().get_mut(0usize) {
+        Some(slot) => {
+            *slot = root_el.kind
+        }
+        None => ()
+    }
+    match self.key.as_mut_slice().get_mut(0usize) {
+        Some(slot) => {
+            *slot = root_el.key
+        }
+        None => ()
+    }
+    match self.diff_children(0usize, &root_el.children, elements, &mut patch) {
+        Ok(_u) => ()
+        Err(e) => return Err(e)
+    }
+    let mut dirty = ui.app.Rect.empty()
+    let mut add_i = 0usize
+    while add_i < patch.added.len() {
+        let n = match patch.added.as_slice().get(add_i) {
+            Some(v) => *v
+            None => break
+        }
+        dirty = dirty.union(&self.node_rect_at(n))
+        add_i = add_i.wrapping_add(1usize)
+    }
+    let mut ch_i = 0usize
+    while ch_i < patch.changed.len() {
+        let n = match patch.changed.as_slice().get(ch_i) {
+            Some(v) => *v
+            None => break
+        }
+        dirty = dirty.union(&self.node_rect_at(n))
+        ch_i = ch_i.wrapping_add(1usize)
+    }
+    let mut mv_i = 0usize
+    while mv_i < patch.moved.len() {
+        let n = match patch.moved.as_slice().get(mv_i) {
+            Some(v) => *v
+            None => break
+        }
+        let (node, _pos) = n
+        dirty = dirty.union(&self.node_rect_at(node))
+        mv_i = mv_i.wrapping_add(1usize)
+    }
+    let mut rm_i = 0usize
+    while rm_i < patch.removed.len() {
+        let n = match patch.removed.as_slice().get(rm_i) {
+            Some(v) => *v
+            None => break
+        }
+        dirty = dirty.union(&self.node_rect_at(n))
+        rm_i = rm_i.wrapping_add(1usize)
+    }
+    self.dirty = dirty
+    self.frame = self.frame.wrapping_add(1u64)
+    let d = dirty
+    Ok(ui.app.Frame { patch: patch, dirty: d, redrew: true })
+end ui.app.App.apply
+
+fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: &alloc.vec.Vec<usize, std.alloc.System>, elements: &alloc.vec.Vec<ui.tree.Element, std.alloc.System>, patch: &mut ui.app.Patch) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
+    let existing = {
+        let mut tmp = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        match self.kids.get(parent) {
+            Some(kids) => {
+                let mut ei = 0usize
+                while ei < kids.len() {
+                    let v = match kids.as_slice().get(ei) {
+                        Some(v) => *v
+                        None => break
+                    }
+                    match tmp.push(v) {
+                        Ok(_u) => ()
+                        Err(e) => return Err(e)
+                    }
+                    ei = ei.wrapping_add(1usize)
+                }
+            }
+            None => ()
+        }
+        tmp
+    }
+    let existing_count = existing.len()
+    let new_count = new_children.len()
+    let mut used = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ti = 0usize
+    while ti < existing_count {
+        match used.push(false) {
+            Ok(_u) => ()
+            Err(e) => return Err(e)
+        }
+        ti = ti.wrapping_add(1usize)
+    }
+    let mut new_kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ci = 0usize
+    while ci < new_count {
+        let child_index = match new_children.as_slice().get(ci) {
+            Some(v) => *v
+            None => break
+        }
+        let child_el = match elements.as_slice().get(child_index) {
+            Some(v) => v
+            None => break
+        }
+        let key = child_el.key
+        let mut found: Option<usize> = None
+        let mut found_pos = 0usize
+        let mut ti2 = 0usize
+        while ti2 < existing_count {
+            let u = match used.as_slice().get(ti2) {
+                Some(v) => *v
+                None => false
+            }
+            if !u {
+                let ekid = match existing.as_slice().get(ti2) {
+                    Some(v) => *v
+                    None => break
+                }
+                let ekey = match self.key.as_slice().get(ekid) {
+                    Some(v) => *v
+                    None => None
+                }
+                if ekey == key {
+                    found = Some(ekid)
+                    found_pos = ti2
+                    match used.as_mut_slice().get_mut(ti2) {
+                        Some(f) => {
+                            *f = true
+                        }
+                        None => ()
+                    }
+                    break
+                }
+            }
+            ti2 = ti2.wrapping_add(1usize)
+        }
+        match found {
+            Some(reused) => {
+                let old_kind = match self.kind.as_slice().get(reused) {
+                    Some(v) => *v
+                    None => break
+                }
+                let old_key = match self.key.as_slice().get(reused) {
+                    Some(v) => *v
+                    None => break
+                }
+                if !ui.app.same_kind(old_kind, child_el.kind) || old_key != child_el.key {
+                    match patch.changed.push(reused) {
+                        Ok(_u) => ()
+                        Err(e) => return Err(e)
+                    }
+                }
+                if found_pos != ci {
+                    match patch.moved.push((reused, ci)) {
+                        Ok(_u) => ()
+                        Err(e) => return Err(e)
+                    }
+                }
+                match self.diff_children(reused, &child_el.children, elements, patch) {
+                    Ok(_u) => ()
+                    Err(e) => return Err(e)
+                }
+                match new_kids.push(reused) {
+                    Ok(_u) => ()
+                    Err(e) => return Err(e)
+                }
+            }
+            None => {
+                let new_node = self.kind.len()
+                match self.kind.push(child_el.kind) {
+                    Ok(_u) => ()
+                    Err(e) => return Err(e)
+                }
+                match self.key.push(key) {
+                    Ok(_u) => ()
+                    Err(e) => return Err(e)
+                }
+                match self.rect.push(ui.app.Rect.empty()) {
+                    Ok(_u) => ()
+                    Err(e) => return Err(e)
+                }
+                let empty_kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                match self.kids.push(empty_kids) {
+                    Ok(_u) => ()
+                    Err(e) => return Err(e)
+                }
+                match patch.added.push(new_node) {
+                    Ok(_u) => ()
+                    Err(e) => return Err(e)
+                }
+                match self.diff_children(new_node, &child_el.children, elements, patch) {
+                    Ok(_u) => ()
+                    Err(e) => return Err(e)
+                }
+                match new_kids.push(new_node) {
+                    Ok(_u) => ()
+                    Err(e) => return Err(e)
+                }
+            }
+        }
+        ci = ci.wrapping_add(1usize)
+    }
+    match self.kids.get_mut(parent) {
+        Some(kids) => {
+            kids.clear()
+            let mut ni = 0usize
+            while ni < new_kids.len() {
+                let v = match new_kids.as_slice().get(ni) {
+                    Some(v) => *v
+                    None => break
+                }
+                match kids.push(v) {
+                    Ok(_u) => ()
+                    Err(e) => return Err(e)
+                }
+                ni = ni.wrapping_add(1usize)
+            }
+        }
+        None => ()
+    }
+    ti = 0usize
+    while ti < existing_count {
+        let u = match used.as_slice().get(ti) {
+            Some(v) => *v
+            None => false
+        }
+        if !u {
+            let ekid = match existing.as_slice().get(ti) {
+                Some(v) => *v
+                None => break
+            }
+            match patch.removed.push(ekid) {
+                Ok(_u) => ()
+                Err(e) => return Err(e)
+            }
+        }
+        ti = ti.wrapping_add(1usize)
+    }
+    Ok(())
+end ui.app.App.diff_children
+
+fn ui.app.App.enqueue(self: &mut ui.app.App, msg: u64) -> () uses [alloc] panics never pub
+    match self.pending.push(msg) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+end ui.app.App.enqueue
+
+fn ui.app.App.new(model: ()) -> ui.app.App uses [alloc] panics never pub
+    let mut pending = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut kind = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut key = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rect = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match kind.push(ui.tree.ViewKind.Block) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match key.push(None) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match rect.push(ui.app.Rect.empty()) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match kids.push(alloc.vec.Vec.new(std.alloc.SYSTEM)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    let m = model
+    let p = pending
+    let k = kind
+    let k2 = key
+    let r = rect
+    let d = kids
+    let e = ui.app.Rect.empty()
+    let f = 0u64
+    ui.app.App { model: m, pending: p, kind: k, key: k2, rect: r, kids: d, dirty: e, frame: f }
+end ui.app.App.new
+
+fn ui.app.App.node_rect_at(self: &ui.app.App, node: usize) -> ui.app.Rect uses [] panics never pub
+    match self.rect.get(node) {
+        Some(r) => *r
+        None => ui.app.Rect.empty()
+    }
+end ui.app.App.node_rect_at
+
+fn ui.app.App.pending_len(self: &ui.app.App) -> usize uses [] panics never pub
+    self.pending.len()
+end ui.app.App.pending_len
+
+fn ui.app.App.set_node_rect(self: &mut ui.app.App, node: usize, rect: ui.app.Rect) -> () uses [alloc] panics never pub
+    match self.rect.get(node) {
+        Some(_r) => match self.rect.as_mut_slice().get_mut(node) {
+            Some(slot) => {
+                *slot = rect
+            }
+            None => ()
+        }
+        None => {
+            let mut i = self.rect.len()
+            while i <= node {
+                match self.rect.push(ui.app.Rect.empty()) {
+                    Ok(_u) => ()
+                    Err(_e) => return
+                }
+                i = i.wrapping_add(1usize)
+            }
+            match self.rect.as_mut_slice().get_mut(node) {
+                Some(slot) => {
+                    *slot = rect
+                }
+                None => ()
+            }
+        }
+    }
+end ui.app.App.set_node_rect
+
+fn ui.app.Patch.is_empty(self: &ui.app.Patch) -> bool uses [] panics never pub
+    let ok = self.added.len() == 0usize && self.removed.len() == 0usize
+    let ok2 = self.changed.len() == 0usize && self.moved.len() == 0usize
+    ok && ok2
+end ui.app.Patch.is_empty
+
+fn ui.app.Patch.new() -> ui.app.Patch uses [] panics never pub
+    let added = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let removed = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let changed = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let moved = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    ui.app.Patch { added: added, removed: removed, changed: changed, moved: moved }
+end ui.app.Patch.new
+
+fn ui.app.Rect.empty() -> ui.app.Rect uses [] panics never pub
+    ui.app.Rect { x: 0.0f32, y: 0.0f32, width: 0.0f32, height: 0.0f32 }
+end ui.app.Rect.empty
+
+fn ui.app.Rect.is_empty(self: &ui.app.Rect) -> bool uses [] panics never pub
+    self.width == 0.0f32 && self.height == 0.0f32
+end ui.app.Rect.is_empty
+
+fn ui.app.Rect.union(self: &ui.app.Rect, other: &ui.app.Rect) -> ui.app.Rect uses [] panics never pub
+    let nx = if other.x < self.x {
+        other.x
+    } else {
+        self.x
+    }
+    let ny = if other.y < self.y {
+        other.y
+    } else {
+        self.y
+    }
+    let sx2 = self.x + self.width
+    let ox2 = other.x + other.width
+    let nx2 = if sx2 > ox2 {
+        sx2
+    } else {
+        ox2
+    }
+    let sy2 = self.y + self.height
+    let oy2 = other.y + other.height
+    let ny2 = if sy2 > oy2 {
+        sy2
+    } else {
+        oy2
+    }
+    ui.app.Rect { x: nx, y: ny, width: nx2 - nx, height: ny2 - ny }
+end ui.app.Rect.union
+
+fn ui.app.same_kind(a: ui.tree.ViewKind, b: ui.tree.ViewKind) -> bool uses [] panics never pub
+    match a {
+        ui.tree.ViewKind.Text => match b {
+            ui.tree.ViewKind.Text => true
+            ui.tree.ViewKind.Block => false
+            ui.tree.ViewKind.Leaf => false
+        }
+        ui.tree.ViewKind.Block => match b {
+            ui.tree.ViewKind.Text => false
+            ui.tree.ViewKind.Block => true
+            ui.tree.ViewKind.Leaf => false
+        }
+        ui.tree.ViewKind.Leaf => match b {
+            ui.tree.ViewKind.Text => false
+            ui.tree.ViewKind.Block => false
+            ui.tree.ViewKind.Leaf => true
+        }
+    }
+end ui.app.same_kind

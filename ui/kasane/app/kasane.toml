@@ -1,0 +1,7 @@
+[package]
+name = "ui_app"
+version = "0.1.0"
+edition = 1
+
+[dependencies]
+ui_tree = { path = "../tree" }
