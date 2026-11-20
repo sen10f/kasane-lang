@@ -9,5 +9,5 @@ modules = ["ui.gpu", "ui.plat", "ui.text"]
 
 [native]
 static = ["../native/libksnui.a"]
-dynamic = ["wgpu_native", "vulkan", "dl", "m", "pthread"]
+dynamic = ["wgpu_native", "vulkan", "dl", "m", "pthread", "freetype", "harfbuzz", "ksnui"]
 search = ["../native", "../native/third_party/lib"]

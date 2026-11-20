@@ -1,32 +1,236 @@
+type ui.text.AtlasCell derive [Debug, Clone, Copy, PartialEq] pub
+    ok: bool pub
+    rect: ui.text.AtlasRect pub
+end ui.text.AtlasCell
+
+type ui.text.AtlasRect derive [Debug, Clone, Copy, PartialEq] pub
+    x: i32 pub
+    y: i32 pub
+    w: i32 pub
+    h: i32 pub
+end ui.text.AtlasRect
+
+enum ui.text.BreakClass derive [Debug, Clone, Copy, PartialEq] pub
+    Normal
+    Space
+    Kinsoku
+    ClusterCont
+end ui.text.BreakClass
+
 type ui.text.KsnuiShapedGlyph layout c derive [Clone, Copy] pub
-    glyph_id: u32
-    cluster: u32
-    x_advance: f32
-    y_advance: f32
-    x_offset: f32
-    y_offset: f32
+    glyph_id: u32 pub
+    cluster: u32 pub
+    x_advance: f32 pub
+    y_advance: f32 pub
+    x_offset: f32 pub
+    y_offset: f32 pub
 end ui.text.KsnuiShapedGlyph
 
-extern ui.text.raw_ksnui_text_line_height(font_path: *const i8, size_px: f32) -> f32 link "ksnui_text_line_height"
+type ui.text.Line derive [Debug, Clone, Copy, PartialEq] pub
+    start: usize pub
+    to: usize pub
+    width: f32 pub
+end ui.text.Line
 
-extern ui.text.raw_ksnui_text_raster(path: *const i8, size: f32, glyph_id: u32, w: *mut i32, h: *mut i32, left: *mut i32, top: *mut i32, buf: *mut u8, cap: u64) -> i32 link "ksnui_text_raster"
+extern ui.text.raw_ksnui_text_line_height(font_path: *const i8, size_px: f32, face: u32) -> f32 link "ksnui_text_line_height"
 
-extern ui.text.raw_ksnui_text_shape(font_path: *const i8, size_px: f32, utf8: *const i8, out: *mut ui.text.KsnuiShapedGlyph, cap: u64) -> u64 link "ksnui_text_shape"
+extern ui.text.raw_ksnui_text_raster(path: *const i8, size: f32, face: u32, glyph_id: u32, w: *mut i32, h: *mut i32, left: *mut i32, top: *mut i32, buf: *mut u8, cap: u64) -> i32 link "ksnui_text_raster"
 
-fn ui.text.ksnui_text_line_height(font_path: *const i8, size_px: f32) -> f32 uses [] panics may pub
+extern ui.text.raw_ksnui_text_shape(font_path: *const i8, size_px: f32, face: u32, utf8: *const i8, out: *mut ui.text.KsnuiShapedGlyph, cap: u64) -> u64 link "ksnui_text_shape"
+
+fn ui.text.break_lines(advances: &[f32], classes: &[ui.text.BreakClass], width: f32, out: &mut [ui.text.Line]) -> usize uses [] panics never pub
+    let n = advances.len()
+    let mut count = 0usize
+    if n == 0usize {
+        return 0usize
+    }
+    let mut line_start = 0usize
+    let mut cur_w = match advances.get(0usize) {
+        Some(a) => *a
+        None => 0.0f32
+    }
+    let mut i = 1usize
+    while i < n {
+        let breakable = match classes.get(i) {
+            Some(c) => match *c {
+                ui.text.BreakClass.Normal => true
+                ui.text.BreakClass.Space => true
+                ui.text.BreakClass.Kinsoku => false
+                ui.text.BreakClass.ClusterCont => false
+            }
+            None => true
+        }
+        let ai = match advances.get(i) {
+            Some(a) => *a
+            None => 0.0f32
+        }
+        if breakable && cur_w + ai > width {
+            match out.get_mut(count) {
+                Some(slot) => {
+                    *slot = ui.text.Line { start: line_start, to: i, width: cur_w }
+                }
+                None => return count
+            }
+            count = count.wrapping_add(1usize)
+            line_start = i
+            cur_w = ai
+        } else {
+            cur_w = cur_w + ai
+        }
+        i = i.wrapping_add(1usize)
+    }
+    match out.get_mut(count) {
+        Some(slot) => {
+            *slot = ui.text.Line { start: line_start, to: n, width: cur_w }
+        }
+        None => return count
+    }
+    count.wrapping_add(1usize)
+end ui.text.break_lines
+
+fn ui.text.ksnui_text_line_height(font_path: *const i8, size_px: f32, face: u32) -> f32 uses [] panics may pub
     unsafe "bindgen" "C の関数 ksnui_text_line_height を呼ぶ" {
-        ui.text.raw_ksnui_text_line_height(font_path, size_px)
+        ui.text.raw_ksnui_text_line_height(font_path, size_px, face)
     }
 end ui.text.ksnui_text_line_height
 
-fn ui.text.ksnui_text_raster(path: *const i8, size: f32, glyph_id: u32, w: *mut i32, h: *mut i32, left: *mut i32, top: *mut i32, buf: *mut u8, cap: u64) -> i32 uses [] panics may pub
+fn ui.text.ksnui_text_raster(path: *const i8, size: f32, face: u32, glyph_id: u32, w: *mut i32, h: *mut i32, left: *mut i32, top: *mut i32, buf: *mut u8, cap: u64) -> i32 uses [] panics may pub
     unsafe "bindgen" "C の関数 ksnui_text_raster を呼ぶ" {
-        ui.text.raw_ksnui_text_raster(path, size, glyph_id, w, h, left, top, buf, cap)
+        ui.text.raw_ksnui_text_raster(path, size, face, glyph_id, w, h, left, top, buf, cap)
     }
 end ui.text.ksnui_text_raster
 
-fn ui.text.ksnui_text_shape(font_path: *const i8, size_px: f32, utf8: *const i8, out: *mut ui.text.KsnuiShapedGlyph, cap: u64) -> u64 uses [] panics may pub
+fn ui.text.ksnui_text_shape(font_path: *const i8, size_px: f32, face: u32, utf8: *const i8, out: *mut ui.text.KsnuiShapedGlyph, cap: u64) -> u64 uses [] panics may pub
     unsafe "bindgen" "C の関数 ksnui_text_shape を呼ぶ" {
-        ui.text.raw_ksnui_text_shape(font_path, size_px, utf8, out, cap)
+        ui.text.raw_ksnui_text_shape(font_path, size_px, face, utf8, out, cap)
     }
 end ui.text.ksnui_text_shape
+
+fn ui.text.line_height(font_path: &str, face: u32, size_px: f32) -> f32 uses [] panics may pub
+    let font_p = unsafe "ptr" "フォントパスを C 文字列ポインタに" {
+        core.ptr.cast_const(core.ptr.from_ref(font_path.as_bytes()))
+    }
+    ui.text.ksnui_text_line_height(font_p, size_px, face)
+end ui.text.line_height
+
+fn ui.text.measure(font_path: &str, face: u32, size_px: f32, text: &str) -> (f32, f32) uses [alloc] panics may pub
+    let zero = ui.text.zero_glyph()
+    let mut glyphs = [zero; 256]
+    let n = usize.from_u64(ui.text.shape_text(font_path, face, size_px, text, &mut glyphs))
+    let mut total = 0.0f32
+    let mut i = 0usize
+    while i < n {
+        let g = glyphs[i]
+        total = total + g.x_advance
+        i = i.wrapping_add(1usize)
+    }
+    let h = ui.text.line_height(font_path, face, size_px)
+    (total, h)
+end ui.text.measure
+
+fn ui.text.measure_wrapped(advances: &[f32], classes: &[ui.text.BreakClass], line_height: f32, width: f32, out: &mut [ui.text.Line]) -> (f32, f32) uses [] panics never pub
+    let lines = ui.text.break_lines(advances, classes, width, out)
+    let mut w = 0.0f32
+    let mut i = 0usize
+    while i < lines {
+        let l = match out.get(i) {
+            Some(v) => *v
+            None => ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }
+        }
+        if l.width > w {
+            w = l.width
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let h = f32.from_usize_nearest(lines) * line_height
+    (w, h)
+end ui.text.measure_wrapped
+
+fn ui.text.pack_atlas(ws: &[i32], hs: &[i32], atlas_w: i32, atlas_h: i32, pad: i32, out: &mut [ui.text.AtlasCell]) -> bool uses [] panics never pub
+    let n = ws.len()
+    let mut x = pad
+    let mut y = pad
+    let mut row_h = 0i32
+    let mut ok = true
+    let mut i = 0usize
+    while i < n {
+        let w = match ws.get(i) {
+            Some(v) => *v
+            None => 0i32
+        }
+        let h = match hs.get(i) {
+            Some(v) => *v
+            None => 0i32
+        }
+        if x != pad && x.wrapping_add(w).wrapping_add(pad) > atlas_w {
+            x = pad
+            y = y.wrapping_add(row_h).wrapping_add(pad)
+            row_h = 0i32
+        }
+        if y.wrapping_add(h).wrapping_add(pad) > atlas_h {
+            ok = false
+            while i < n {
+                match out.get_mut(i) {
+                    Some(slot) => {
+                        let r = ui.text.AtlasRect { x: 0i32, y: 0i32, w: 0i32, h: 0i32 }
+                        *slot = ui.text.AtlasCell { ok: false, rect: r }
+                    }
+                    None => {
+                    }
+                }
+                i = i.wrapping_add(1usize)
+            }
+            return false
+        }
+        match out.get_mut(i) {
+            Some(slot) => {
+                let r = ui.text.AtlasRect { x: x, y: y, w: w, h: h }
+                *slot = ui.text.AtlasCell { ok: true, rect: r }
+            }
+            None => {
+                ok = false
+                break
+            }
+        }
+        x = x.wrapping_add(w).wrapping_add(pad)
+        if h > row_h {
+            row_h = h
+        }
+        i = i.wrapping_add(1usize)
+    }
+    ok
+end ui.text.pack_atlas
+
+fn ui.text.shape_text(font_path: &str, face: u32, size_px: f32, text: &str, out: &mut [ui.text.KsnuiShapedGlyph]) -> u64 uses [alloc] panics may pub
+    if out.is_empty() {
+        return 0u64
+    }
+    let font_p = unsafe "ptr" "フォントパスを C 文字列ポインタに" {
+        core.ptr.cast_const(core.ptr.from_ref(font_path.as_bytes()))
+    }
+    let text_p = unsafe "ptr" "テキストを C 文字列ポインタに" {
+        core.ptr.cast_const(core.ptr.from_ref(text.as_bytes()))
+    }
+    let first = match out.get_mut(0usize) {
+        Some(r) => r
+        None => return 0u64
+    }
+    let out_p = unsafe "ptr" "グリフ出力先ポインタ" {
+        core.ptr.from_mut(first)
+    }
+    let cap = u64.from_usize(out.len())
+    let n = unsafe "ptr" "C の関数 ksnui_text_shape を呼ぶ" {
+        ui.text.raw_ksnui_text_shape(font_p, size_px, face, text_p, out_p, cap)
+    }
+    n
+end ui.text.shape_text
+
+fn ui.text.zero_glyph() -> ui.text.KsnuiShapedGlyph uses [] panics never pub
+    let mut raw = [0u8; 24]
+    let p = unsafe "ptr" "ゼロバッファを構造体ポインタにキャスト" {
+        core.ptr.cast::<u8, ui.text.KsnuiShapedGlyph>(core.ptr.from_mut(&mut raw))
+    }
+    unsafe "ptr" "ゼロバッファを構造体として読み出す" {
+        core.ptr.read(p)
+    }
+end ui.text.zero_glyph
