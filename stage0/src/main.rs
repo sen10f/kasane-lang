@@ -60,6 +60,7 @@ mod rustisms;
 mod stdcache;
 mod survey;
 mod semver;
+mod deps_resolve;
 mod tomlstrict;
 mod tast;
 mod tast_check;

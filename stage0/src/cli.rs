@@ -2874,7 +2874,15 @@ fn cmd_update(args: &[String]) -> i32 {
     // 版 3 は git 依存に `version` が必要。path だけなら版 2 のまま。
     let lock_version = if deps.iter().any(|d| d.source.starts_with("git+")) { 3 } else { 2 };
     match write_lock_v2(&root, &deps, &old, only.as_deref(), &[], lock_version) {
-        Ok(()) => 0,
+        Ok(()) => {
+            // 版の変化を出す (`名前 旧版 -> 新版`)。新しく入った依存は旧版を「(なし)」とする。
+            for d in deps.iter().filter(|d| d.source.starts_with("git+")) {
+                let new = d.manifest.get("package").and_then(|p| p.get("version")).and_then(|v| v.as_str()).unwrap_or("?");
+                let prev = old.get(&d.name).and_then(|e| e.get("version")).and_then(|v| v.as_str()).unwrap_or("(なし)");
+                println!("ksn update: {} {} -> {}", d.name, prev, new);
+            }
+            0
+        }
         Err(e) => fail(e),
     }
 }
