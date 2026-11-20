@@ -1092,14 +1092,16 @@ impl<'a> TypeCk<'a> {
         for (recv, name, line) in std::mem::take(&mut self.oneway_sites) {
             let deep = self.deep(&recv);
             let Ty::Named(n, a, _) = deep.strip().clone() else { continue };
-            if n != "alloc.collections.HashMap" {
+            // `HashSet` は `contains` / `remove` だけ (`insert` は値を入れるだけ)。
+            let set = n == "alloc.collections.HashSet";
+            if !(n == "alloc.collections.HashMap" || (set && matches!(name.as_str(), "contains" | "remove"))) {
                 continue;
             }
             let Some(k) = a.first().map(|x| self.deep(x)) else { continue };
             if matches!(k.strip(), Ty::Named(kn, _, _) if kn == "alloc.string.String") {
                 self.diag(
                     "E2054",
-                    format!("`{0}` on a `HashMap` with `String` keys: look it up by `&str` with `{0}_str` (the only form; `ksn fix` rewrites it)", name),
+                    format!("`{0}` on a `{1}` with `String` keys: look it up by `&str` with `{0}_str` (the only form; `ksn fix` rewrites it)", name, if set { "HashSet" } else { "HashMap" }),
                     line,
                 );
             }
@@ -3016,7 +3018,7 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
-        if matches!(name, "get" | "get_mut" | "contains_key" | "remove") && args.len() == 1 {
+        if matches!(name, "get" | "get_mut" | "contains_key" | "contains" | "remove") && args.len() == 1 {
             self.oneway_sites.push((recv.clone(), name.to_string(), line));
         }
         let (owners, complete) = self.owners_for(recv);
