@@ -3894,3 +3894,77 @@ pub(super) fn slice_copy_from(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: V
     lw.cur = Some(join);
     Ok(Some(jp[0]))
 }
+
+/// `core.ffi.trampoline(&mut cb)` (N3a): C のコールバックに `user` データを添える踏み台。
+/// 捕まえたクロージャ `cb` の取り込みを、タプルの環境 (スタックの枠) に写してその番地を `user` にし、
+/// C から呼べる入口 `(user: ptr, 引数..) -> 戻り値` を別の関数として作る (環境を読み戻して本体を呼ぶ)。
+/// 結果は組 `(入口の関数ポインタ, user)`。環境の寿命は呼び出した関数の間 (C が持ち帰らない約束)。
+pub(crate) fn trampoline(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
+    let line = nline(e);
+    let args = items(&nf(e)[1]);
+    let inner = match args {
+        [a] if nname(a) == "Unary" && matches!(st(&nf(a)[0]).as_str(), "&" | "&mut") => &nf(a)[1],
+        _ => return lw.err(line, "core.ffi.trampoline は `&mut クロージャの変数` 1 つを取る"),
+    };
+    let Some(s) = local_slot(lw, inner) else {
+        return lw.err(line, "core.ffi.trampoline の引数はクロージャの局所変数のはず");
+    };
+    let Some(Kind::Closure { key, args: ats, ret, caps, cap_tys }) = lw.coll.kinds.get(&s).cloned() else {
+        return lw.err(line, "core.ffi.trampoline の引数はクロージャの局所変数のはず");
+    };
+    if caps.is_empty() {
+        return lw.err(line, "core.ffi.trampoline は取り込みを持つクロージャだけ (取り込みなしは関数をそのまま渡す)");
+    }
+    let env_ty = lw.aggs.borrow_mut().intern_tuple(cap_tys.clone()).map_err(|m| format!("{}: {}", line, m))?;
+    let Ty::Agg(ai) = env_ty else { return lw.err(line, "環境の型が集成体でない") };
+    let decl = match lw.agg_def(ai).kind {
+        AggKind::Tuple(d) => d,
+        _ => return lw.err(line, "環境の型がタプルでない"),
+    };
+    // 入口 `key$tramp`。
+    let tkey = format!("{}$tramp", key);
+    if !lw.coll.extra.iter().any(|(f, _)| f.key == tkey) {
+        let mut child = Lw::new(lw.p, lw.tys, lw.aggs, lw.def);
+        child.subst = lw.subst.clone();
+        child.mono_done = lw.mono_done.clone();
+        child.ret = ret;
+        let mut ptys = vec![Ty::Ptr];
+        ptys.extend(ats.iter().copied());
+        let (_, pv) = child.new_block(&ptys);
+        child.cur = Some(0);
+        let r = child.emit(Ty::Ref(true, Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: pv[0] });
+        let env = child.emit(env_ty, Op::Load(r));
+        let mut cargs: Vec<VId> = decl.iter().map(|fd| child.emit(fd.ty, Op::Field { a: env, off: fd.off })).collect();
+        cargs.extend(pv[1..].iter().copied());
+        child.callees.insert(key.clone());
+        let v = child.emit(ret, Op::Call { callee: key.clone(), args: cargs });
+        child.terminate(Term::Ret(v));
+        child.flush_allocas();
+        let mut blocks: Vec<Block> = child
+            .blocks
+            .into_iter()
+            .map(|b| Block { params: b.params, insts: b.insts, term: b.term.unwrap_or(Term::Unreachable) })
+            .collect();
+        finish(&mut blocks, std::mem::take(&mut child.coll.allocas));
+        let func = Func {
+            fqn: tkey.clone(),
+            key: tkey.clone(),
+            uses: lw.def.uses.clone(),
+            may_panic: lw.def.panics.as_deref() != Some("never"),
+            stack: None,
+            ret,
+            link: None,
+            blocks,
+        };
+        lw.coll.extra.push((func, child.callees));
+    }
+    lw.callees.insert(tkey.clone());
+    // 呼び出し側: 環境を枠に写して番地を取る。
+    let slot = lw.alloca(Pointee::Agg(ai));
+    let envv = lw.emit(env_ty, Op::Make { variant: None, fields: caps });
+    lw.emit(Ty::Unit, Op::Store { ptr: slot, val: envv });
+    let user = lw.emit(Ty::Ptr, Op::Bitcast { src: lw.vty(slot), a: slot });
+    let fp = lw.emit(Ty::Ptr, Op::FnPtr { callee: tkey });
+    let pair = lw.aggs.borrow_mut().intern_tuple(vec![Ty::Ptr, Ty::Ptr]).map_err(|m| format!("{}: {}", line, m))?;
+    Ok(Some(lw.emit(pair, Op::Make { variant: None, fields: vec![fp, user] })))
+}

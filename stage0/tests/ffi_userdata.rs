@@ -34,7 +34,7 @@ fn userdata_pkg() -> Tmp {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "捕まえたクロージャを C のコールバックに渡せない (E5005)。N3 の実掛の試験"]
+
 fn c_calls_a_kasane_closure_that_captures_with_user_data() {
     let t = userdata_pkg();
     let c = run(&["check"], &t.0);

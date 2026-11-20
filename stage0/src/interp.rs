@@ -1719,6 +1719,15 @@ impl Interp {
                 if d.name.starts_with("core.ptr.") {
                     return self.ptr_native(&d.name, args);
                 }
+                if d.name == "core.ffi.trampoline" {
+                    // (踏み台の関数値, user) の組。user は C が受け渡すだけの不透明なアドレス (クロージャの値の場所)。
+                    let c = args.first().map(dr).unwrap_or(Val::Unit);
+                    let user = match &c {
+                        Val::Closure(rc) => Rc::as_ptr(rc) as usize as i128,
+                        _ => 0,
+                    };
+                    return Ok(Val::Tuple(Rc::new(vec![Val::Tuple(Rc::new(vec![c])), self.ptr_value(user, "u8")])));
+                }
                 if d.name == "alloc.raw.Buf.with_capacity" || d.name == "alloc.raw.Buf.new" {
                     return self.call_native(&d.name, args);
                 }

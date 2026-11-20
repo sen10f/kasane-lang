@@ -339,6 +339,19 @@ fn seed_effects(d: &Def, map: &mut HashMap<String, Ty>) {
     }
 }
 
+/// パラメータの宣言 `F` / `&mut F` / `&F` から、Fn 境界の実体化に使う型パラメータの名前。
+/// 参照は 1 段だけ透ける (貸すだけで移さない呼び出し、`core.ffi.trampoline(&mut cb)`)。
+fn fn_param_name(t: &Ty) -> Option<String> {
+    match t {
+        Ty::Param(n) => Some(n.clone()),
+        Ty::Ref(_, p, _) => match &**p {
+            Ty::Param(n) => Some(n.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// `impl` の対象型 (`impl_for`) の先頭の型名。名前付きの型 (`named`) だけ返す。
 fn impl_head(v: &V) -> Option<String> {
     match v {
@@ -2576,6 +2589,14 @@ impl<'a> TypeCk<'a> {
             Ty::Ref(m, x, rg) => Ty::Ref(*m, Box::new(self.inst(x, map)), rg.clone()),
             Ty::Ptr(m, x) => Ty::Ptr(*m, Box::new(self.inst(x, map))),
             Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| self.inst(x, map)).collect()),
+            // 関数型 `fn(A) -> R` の中にも型パラメータが現れる (`core.ffi.trampoline` の戻り値)。
+            Ty::Closure { args, ret, cap, id, eff } => Ty::Closure {
+                args: args.iter().map(|x| self.inst(x, map)).collect(),
+                ret: Box::new(self.inst(ret, map)),
+                cap: cap.clone(),
+                id: id.clone(),
+                eff: eff.clone(),
+            },
             Ty::Array(x, n) => Ty::Array(Box::new(self.inst(x, map)), *n),
             Ty::Slice(x) => Ty::Slice(Box::new(self.inst(x, map))),
             other => other.clone(),
@@ -5852,13 +5873,15 @@ impl<'a> TypeCk<'a> {
         let mut closures: HashMap<usize, Ty> = HashMap::new();
         for (k, a) in argt.iter().enumerate() {
             let Some(p) = d.params.get(k) else { break };
-            if let Ty::Param(name) = from_v(&p.1, &gn) {
-                let bounds = self.fn_bound(d, &name);
-                if !bounds.is_empty() {
-                    fn_args.push((k, name));
-                    if let t @ Ty::Closure { .. } = self.resolve(a) {
-                        closures.insert(k, t);
-                    }
+            // `F` だけでなく `&mut F` / `&F` の形のパラメータも Fn 境界の実体化に使う
+            // (`core.ffi.trampoline(&mut cb)`。貸すだけで移さない)。
+            let Some(name) = fn_param_name(&from_v(&p.1, &gn)) else { continue };
+            let bounds = self.fn_bound(d, &name);
+            if !bounds.is_empty() {
+                fn_args.push((k, name));
+                let cl = self.resolve(a);
+                if matches!(cl.strip(), Ty::Closure { .. }) {
+                    closures.insert(k, cl.strip().clone());
                 }
             }
         }
@@ -5881,6 +5904,21 @@ impl<'a> TypeCk<'a> {
             }
         }
         let (sig_ps, sig_ret) = Self::sig_elided(d, &gn);
+        // Fn 境界の単一化: 境界の `Args` タプルと戻り値型を、クロージャの型と比べる。引数の照合より先に
+        // 済ませる (`core.ffi.trampoline(&mut cb)` の `A` / `R` は、外の `extern` の関数型の引数との
+        // 照合で決まる。照合は型パラメータを剛な型として扱うので、引数より先に決める必要がある)。
+        // 参照越しの `&mut F` / `&F` (踏み台) だけをここで決める。値の `F` (`core.iter.filter` など) は
+        // 下の `resolve_impl_bounds` の後に回す (境界の要素型を先に決めないと、クロージャの引数型との
+        // 食い違いの E2023 が出なくなる)。
+        let mut cap_bad = false;
+        let by_ref = |k: usize| d.params.get(k).is_some_and(|p| matches!(from_v(&p.1, &gn), Ty::Ref(..)));
+        for (k, name) in &fn_args {
+            if !by_ref(*k) {
+                continue;
+            }
+            let Some(cl) = closures.get(k).cloned() else { continue };
+            self.unify_fn_bound(d, *k, name, &cl, &mut map, line, &mut cap_bad);
+        }
         for (k, a) in argt.iter().enumerate() {
             let Some(p) = d.params.get(k) else { break };
             let raw = from_v(&p.1, &gn);
@@ -5944,9 +5982,11 @@ impl<'a> TypeCk<'a> {
         // 境界の型引数 (`I: Iterator<T, ..>` の `T`) を、受け取った引数の型の impl から決める。
         // Fn 境界より先にやり、クロージャの引数型との食い違いは Fn 境界の検査 (E2023) が報告する。
         self.resolve_impl_bounds(d, &mut map);
-        // Fn 境界の単一化: 境界の `Args` タプルと戻り値型を、クロージャの型と比べる。
-        let mut cap_bad = false;
+        // Fn 境界の単一化: 境界の `Args` タプルと戻り値型を、クロージャの型と比べる (値の `F`)。
         for (k, name) in &fn_args {
+            if by_ref(*k) {
+                continue;
+            }
             let Some(cl) = closures.get(k).cloned() else { continue };
             self.unify_fn_bound(d, *k, name, &cl, &mut map, line, &mut cap_bad);
         }

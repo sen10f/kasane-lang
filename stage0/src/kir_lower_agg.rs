@@ -325,6 +325,8 @@ impl AggTab {
                 let size = es.checked_mul(n).ok_or_else(|| format!("{} は大きすぎる", show(t)))?;
                 Ok(self.push(name, size, ea.max(1), AggKind::Array(et, n)))
             }
+            // `*mut ()` (C の `void *user`) と、`core.ffi.trampoline` が返す関数ポインタ `fn(..)` は番地。
+            Src::Ptr(_, inner) if matches!(&**inner, Src::Unit) => Ok(Ty::Ptr),
             // 生ポインタ `*mut T` / `*const T` (指す先がスカラーのもの) は番地 (`ptr`)。extern の引数と同じ規則 (`kir_lower_ffi`)。
             Src::Ptr(_, inner) if matches!(&**inner, Src::Prim(s) if Ty::parse(s).and_then(crate::kir::Pointee::of).is_some()) => Ok(Ty::Ptr),
             // 集成体 (`layout c` の構造体など) を指す生ポインタも番地。指す先が型表に入れられるときだけ。
@@ -665,6 +667,10 @@ impl AggTab {
             if matches!(&**inner, Src::Named(n, _, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String") {
                 return Ok(Ty::Ptr);
             }
+        }
+        // `core.ffi.trampoline` が返す組の関数ポインタ `fn(..)` は番地。
+        if matches!(t, Src::Closure { cap: crate::types::Cap::Fn, id: None, .. }) {
+            return Ok(Ty::Ptr);
         }
         match self.lower_ty(p, file, t)? {
             Ty::Unit => Err("ユニット型のフィールドは段階 1 の対象外".to_string()),

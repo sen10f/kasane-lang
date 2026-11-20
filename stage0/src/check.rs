@@ -60,6 +60,11 @@ pub(crate) fn nname(v: &V) -> &str {
         _ => "",
     }
 }
+/// 生ポインタを扱うため `unsafe` モジュールの者しか呼べない関数 (`extern` の外部関数・`core.ptr`・
+/// 踏み台の `core.ffi.trampoline`)。E5003 / E5001 で使う。
+pub(crate) fn is_unsafe_only(d: &Def) -> bool {
+    d.kw == "extern" || d.name.starts_with("core.ptr.") || d.name == "core.ffi.trampoline"
+}
 pub(crate) fn nf(v: &V) -> &[V] {
     match v {
         V::Node(_, f, _, _) => f,
@@ -4524,14 +4529,16 @@ impl<'a> Checker<'a> {
     }
 
     /// 3.8: C に渡す関数型の引数 (関数・クロージャ) は `uses [] panics never` を満たすこと (E5005)。
-    /// 関数への道は宣言 (推論した効果を含む) を、クロージャ式は本体の効果を見る。キャプチャを持つクロージャも不可 (E5005)。
+    /// 関数への道は宣言 (推論した効果を含む) を、クロージャ式は本体の効果を見る。捕まえた変数を
+    /// C の `user` データで渡す `core.ffi.trampoline(&mut cb)` も、同じ効果の制約に従う
+    /// (捕まえた変数自体は禁じない。寿命は呼び出し側の unsafe の責任)。
     fn check_callback_args(&mut self, di: usize) {
         let d = self.def(di);
         let Some(body) = &d.body else { return };
         let mut nodes: Vec<&V> = vec![];
         walk(body, &mut nodes);
         let mut found: Vec<(usize, String)> = vec![];
-        for n in nodes {
+        for n in &nodes {
             if nname(n) != "Call" || nname(&nf(n)[0]) != "Path" {
                 continue;
             }
@@ -4539,6 +4546,10 @@ impl<'a> Checker<'a> {
             let Some(r) = self.p.resolve(&segs, &d.file) else { continue };
             let Target::Sig(i) = r.target else { continue };
             let ext = &self.p.defs[i];
+            if r.rest.is_empty() && ext.name == "core.ffi.trampoline" {
+                found.extend(self.check_trampoline(d, body, &nodes, n));
+                continue;
+            }
             if !r.rest.is_empty() || ext.kw != "extern" {
                 continue;
             }
@@ -4577,6 +4588,44 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `core.ffi.trampoline(&mut cb)` の踏み台に渡すクロージャの効果を確かめる (3.8, E5005)。
+    /// 捕まえた変数は C の `user` データで渡るので禁止しない (寿命は unsafe の呼び出し側の責任)。
+    fn check_trampoline(&self, d: &Def, body: &V, nodes: &[&V], call: &V) -> Vec<(usize, String)> {
+        let mut found = vec![];
+        for a in items(&nf(call)[1]) {
+            // 踏み台は貸すだけ (`&mut cb`)。他の形は黙る。
+            if nname(a) != "Unary" || !matches!(st(&nf(a)[0]).as_str(), "&" | "&mut") {
+                continue;
+            }
+            let inner = &nf(a)[1];
+            if nname(inner) != "Path" {
+                continue;
+            }
+            let segs = strs(&nf(inner)[0]);
+            let [name] = segs.as_slice() else { continue };
+            let Some(l) = nodes.iter().find(|x| {
+                nname(x) == "Let" && {
+                    let mut b = vec![];
+                    pat_binds(&nf(x)[0], &mut b);
+                    b.iter().any(|y| y == name)
+                }
+            }) else {
+                continue;
+            };
+            // `Let` は [pat, mut, 型注釈, 初期化子]。型注釈がなくても場所は変わらない。
+            let init = &nf(l)[3];
+            if nname(init) != "Closure" {
+                continue;
+            }
+            let locals = crate::infer::local_names(d, body);
+            let (uses, may) = crate::infer::body_effects(self.p, &d.file, &locals, &nf(init)[3], true);
+            if !uses.is_empty() || may {
+                found.push((nline(inner), "the closure passed to C through `core.ffi.trampoline` must be `uses [] panics never`".into()));
+            }
+        }
+        found
+    }
+
     /// `extern` の関数と `core.ptr` の関数 (生ポインタの生成・変換・読み書き) は `unsafe` ブロックの中でしか呼べない (3.8, E5003)。
     /// 呼び出しの関数位置 (`t.getpid()`) にしか書けず、値としての参照 (`let f = t.getpid`、
     /// フィールドへの代入、引数、戻り値、クロージャの捕捉) は `unsafe` の中でも外でも E5003
@@ -4603,7 +4652,7 @@ impl<'a> Checker<'a> {
                                 if let Some(r) = ck.p.resolve(&segs, file) {
                                     if let Target::Sig(i) = r.target {
                                         let t = &ck.p.defs[i];
-                                        if r.rest.is_empty() && (t.kw == "extern" || t.name.starts_with("core.ptr.")) {
+                                        if r.rest.is_empty() && is_unsafe_only(t) {
                                             out.push((nline(v), t.name.clone(), false));
                                         }
                                     }
@@ -4635,7 +4684,7 @@ impl<'a> Checker<'a> {
                         if let Some(r) = ck.p.resolve(&segs, file) {
                             if let Target::Sig(i) = r.target {
                                 let t = &ck.p.defs[i];
-                                if r.rest.is_empty() && (t.kw == "extern" || t.name.starts_with("core.ptr.")) {
+                                if r.rest.is_empty() && is_unsafe_only(t) {
                                     out.push((nline(v), t.name.clone(), true));
                                 }
                             }
@@ -4711,7 +4760,7 @@ impl<'a> Checker<'a> {
                         _ => continue,
                     };
                     let Some(t) = self.p.defs.get(target) else { continue };
-                    if t.name.starts_with("core.ptr.") || sig_has_ptr(t) {
+                    if is_unsafe_only(t) || sig_has_ptr(t) {
                         found.push((nline(n), format!("`{}` uses raw pointers and is only allowed in modules listed in [unsafe] modules", t.name)));
                     }
                 }

@@ -39,6 +39,9 @@ pub(super) fn ffi_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             Ok(Some(lw.emit(Ty::Usize, Op::Const(sz))))
         })());
     }
+    if segs.join(".") == "core.ffi.trampoline" {
+        return Some(super::coll::trampoline(lw, e));
+    }
     // `extern` 宣言の呼び出し。
     let line = nline(e);
     let resolved = lw.p.resolve(&segs, &lw.def.file);
@@ -270,6 +273,13 @@ fn extern_call(lw: &mut Lw, e: &V, d: &Def, line: usize) -> LR<Option<VId>> {
 /// 取り込みの無い `fn` のみを受け付ける (クロージャの取り込みは C には渡せない)。
 /// 引数・戻り値の型の一致は checker が既に保証している。
 fn fn_ptr_arg(lw: &mut Lw, a: &V, line: usize) -> LR<Option<VId>> {
+    // `core.ffi.trampoline` が返した関数ポインタを入れた局所変数 (`ptr`)。
+    if crate::check::nname(a) == "Path" {
+        let segs = strs(&crate::check::nf(a)[0]);
+        if segs.len() == 1 && lw.lookup(&segs[0]).is_some() {
+            return lw.expr(a);
+        }
+    }
     if crate::check::nname(a) != "Path" {
         return lw.err(line, "extern の関数ポインタ引数には関数名を指定してください");
     }
@@ -302,6 +312,8 @@ fn src_to_kir(lw: &Lw, t: &Src, line: usize) -> LR<Ty> {
         // `fn(...)` (取り込みの無い関数ポインタ) は C に生ポインタ (`ptr`) として渡せる。
         Src::Closure { cap: Cap::Fn, id: None, .. } => Ok(Ty::Ptr),
         Src::Ptr(_, inner) => match &**inner {
+            // `*mut ()` (C の `void *user`) は不透明な番地。
+            Src::Unit => Ok(Ty::Ptr),
             Src::Prim(s) => Ty::parse(s)
                 .and_then(|t| kir::Pointee::of(t))
                 .map(|_| Ty::Ptr)
@@ -359,6 +371,7 @@ fn src_to_kir_extern(aggs: &std::cell::RefCell<agg::AggTab>, p: &Program, file: 
         // `fn(...)` (取り込みの無い関数ポインタ) は C に生ポインタ (`ptr`) として渡せる。
         Src::Closure { cap: Cap::Fn, id: None, .. } => Ok(Ty::Ptr),
         Src::Ptr(_, inner) => match &**inner {
+            Src::Unit => Ok(Ty::Ptr),
             Src::Prim(s) => Ty::parse(s)
                 .and_then(|t| kir::Pointee::of(t))
                 .map(|_| Ty::Ptr)

@@ -13,19 +13,20 @@ extern t.acc_twice(f: fn(*mut (), i32) -> () uses [] panics never, user: *mut ()
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let mut acc = t.Acc { total: 0i32, count: 0i32 }
-    unsafe "ffi" "accumulate with a closure that captures acc" {
-        t.acc_ticks(fn(x: i32) -> () capture [&mut acc] {
-            acc.total = acc.total.wrapping_add(x)
-            acc.count = acc.count.wrapping_add(1i32)
-        }, 1i32, 10i32)
+    let mut cb = fn(x: i32) -> () capture [&mut acc] {
+        acc.total = acc.total.wrapping_add(x)
+        acc.count = acc.count.wrapping_add(1i32)
+    }
+    let (f, user) = unsafe "ffi" "trampoline for the closure" {
+        core.ffi.trampoline(&mut cb)
+    }
+    unsafe "ffi" "accumulate through the C callback" {
+        t.acc_ticks(f, user, 1i32, 10i32)
     }
     core.check.eq(acc.total, 55i32)
     core.check.eq(acc.count, 10i32)
-    unsafe "ffi" "the same closure, two more calls" {
-        t.acc_twice(fn(x: i32) -> () capture [&mut acc] {
-            acc.total = acc.total.wrapping_add(x)
-            acc.count = acc.count.wrapping_add(1i32)
-        }, 5i32, 7i32)
+    unsafe "ffi" "two more calls" {
+        t.acc_twice(f, user, 5i32, 7i32)
     }
     core.check.eq(acc.total, 67i32)
     core.check.eq(acc.count, 12i32)
