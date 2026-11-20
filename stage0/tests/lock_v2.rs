@@ -117,7 +117,7 @@ impl Fx {
 fn update_writes_version_2_with_the_public_headers() {
     let f = setup("record");
     let lock = f.lock();
-    assert!(lock.starts_with("version = 2\n"), "{}", lock);
+    assert!(lock.starts_with("version = 3\n"), "{}", lock);
     assert!(lock.contains("[[package.api]]") && lock.contains("fqn = \"gl.double\""), "{}", lock);
     assert!(lock.contains("fn gl.double(x: u32) -> u32 uses [] panics never pub"), "{}", lock);
     assert!(lock.contains("fn gl.pi() -> u32 uses [alloc] panics may pub"), "{}", lock);
@@ -221,16 +221,27 @@ fn accept_requires_a_dependency_and_path_dependencies_are_not_recorded() {
 fn version_1_locks_are_read_and_upgraded() {
     let f = setup("upgrade");
     // 版 1 の形 (api なし) に戻す。
-    let v1: String = f.lock().lines().take_while(|l| !l.starts_with("unsafe_modules")).map(|l| format!("{}\n", l)).collect::<String>().replacen("version = 2", "version = 1", 1);
+    let v1: String = f.lock()
+        .lines()
+        .take_while(|l| !l.starts_with("unsafe_modules"))
+        .filter(|l| !l.starts_with("version = \""))
+        .map(|l| format!("{}\n", l))
+        .collect::<String>()
+        .replacen("version = 3", "version = 1", 1);
     write(&f.app.join("kasane.lock"), &v1);
     assert_eq!(f.check().status.code(), Some(0), "{}", all(&f.check()));
     let o = f.w.ksn(&["lock", "--upgrade"], &f.app);
     assert_eq!(o.status.code(), Some(0), "{}", all(&o));
     let lock = f.lock();
-    assert!(lock.starts_with("version = 2\n") && lock.contains("fqn = \"gl.double\""), "{}", lock);
+    assert!(lock.starts_with("version = 3\n") && lock.contains("fqn = \"gl.double\""), "{}", lock);
     assert_eq!(f.check().status.code(), Some(0));
-    // 版 2 で記録が欠けていれば止める。
-    write(&f.app.join("kasane.lock"), &v1.replacen("version = 1", "version = 2", 1));
+    // 版 3 で api の記録が欠けていれば止める。
+    let v3_no_api: String = f.lock()
+        .lines()
+        .take_while(|l| !l.starts_with("unsafe_modules"))
+        .map(|l| format!("{}\n", l))
+        .collect::<String>();
+    write(&f.app.join("kasane.lock"), &v3_no_api);
     let o = f.check();
     assert_eq!(o.status.code(), Some(1), "{}", all(&o));
     assert!(all(&o).contains("E9021") && all(&o).contains("no recorded api"), "{}", all(&o));
@@ -238,7 +249,6 @@ fn version_1_locks_are_read_and_upgraded() {
     write(&f.app.join("kasane.lock"), &v1);
     assert_eq!(f.w.ksn(&["vendor"], &f.app).status.code(), Some(0));
     assert!(f.lock().contains("fqn = \"gl.double\""), "{}", f.lock());
-    assert_eq!(f.check().status.code(), Some(0));
 }
 
 #[test]

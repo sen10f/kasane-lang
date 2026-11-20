@@ -804,13 +804,14 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
         return errs;
     }
     let bad = |m: String| ("E9021".to_string(), format!("kasane.toml and kasane.lock disagree: {}; run `ksn update`", m));
-    let v: toml::Value = match fs::read_to_string(&lock).unwrap_or_default().parse() {
+    let lock_text = fs::read_to_string(&lock).unwrap_or_default();
+    let v: toml::Value = match lock_text.parse() {
         Ok(v) => v,
         Err(e) => return vec![bad(format!("invalid kasane.lock ({})", e))],
     };
     let version = v.get("version").and_then(|x| x.as_integer());
-    if version != Some(1) && version != Some(2) {
-        return vec![bad("lock version must be 1 or 2".into())];
+    if version != Some(1) && version != Some(2) && version != Some(3) {
+        return vec![bad("lock version must be 1, 2 or 3".into())];
     }
     let entries: Vec<&toml::Value> = v.get("package").and_then(|p| p.as_array()).map(|a| a.iter().collect()).unwrap_or_default();
     let mut by_name: std::collections::BTreeMap<String, &toml::Value> = Default::default();
@@ -868,8 +869,24 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
                     _ => {}
                 },
             }
-            // 版 2: 公開の署名と効果の記録と比べる (`path` 依存は記録しない)。
-            if version == Some(2) {
+            // 版 3: `version` は manifest の `package.version` と一致する必要がある。
+            if version == Some(3) {
+                let lock_ver = e.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                let actual_ver = dp
+                    .manifest
+                    .get("package")
+                    .and_then(|p| p.get("version"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if lock_ver != actual_ver {
+                    errs.push(bad(format!(
+                        "version of {} is {} in kasane.toml but {} in the lock",
+                        dp.name, actual_ver, lock_ver
+                    )));
+                }
+            }
+            // 版 2・3: 公開の署名と効果の記録と比べる (`path` 依存は記録しない)。
+            if version == Some(2) || version == Some(3) {
                 match crate::lockapi::read_api(e) {
                     None => errs.push(bad(format!("git dependency {} has no recorded api; run `ksn lock --accept {}`", dp.name, dp.name))),
                     Some((old, old_uns, old_nat)) => {

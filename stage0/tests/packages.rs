@@ -343,7 +343,7 @@ fn path_and_git_dependencies_work_end_to_end() {
     let (w, app, url, rev, gl_repo) = app_with_deps("e2e");
     // kasane.lock: source と hash
     let lock: toml::Value = fs::read_to_string(app.join("kasane.lock")).unwrap().parse().unwrap();
-    assert_eq!(lock["version"].as_integer(), Some(2));
+    assert_eq!(lock["version"].as_integer(), Some(3));
     let pk = lock["package"].as_array().unwrap();
     let find = |n: &str| pk.iter().find(|p| p["name"].as_str() == Some(n)).unwrap();
     assert_eq!(find("pl")["source"].as_str(), Some("path+../pl"));
@@ -398,7 +398,7 @@ fn update_is_stable_and_check_fails_without_a_matching_lock() {
     mutate("path+../pl", "path+../elsewhere");
     mutate("deps = []", "deps = [\"zz\"]");
     mutate("name = \"pl\"", "name = \"pq\"");
-    mutate("version = 2", "version = 3");
+    mutate("version = 3", "version = 4");
     // 元に戻せば通る。
     fs::write(app.join("kasane.lock"), &first).unwrap();
     assert_eq!(w.ksn(&["check"], &app).status.code(), Some(0));
