@@ -508,6 +508,9 @@ pub fn host_target() -> Option<Target> {
         "x86_64-linux-gnu"
     } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
         "aarch64-linux-gnu"
+    } else if cfg!(all(target_arch = "x86_64", target_os = "windows")) {
+        // Windows 製の ksn.exe は既定で Windows 向け実行ファイルを作る。
+        "x86_64-windows-gnu"
     } else {
         return None;
     };

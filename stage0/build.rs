@@ -161,31 +161,20 @@ fn link_llvm() {
             println!("cargo:rustc-link-lib=static=ksn_llvm_stubs");
             // クロスビルドでは llvm-config が無いので、LLVM が必要とするシステムライブラリ
             // を明示的にリンクする。
-            let is_windows = std::env::var("CC")
-                .ok()
-                .map(|c| c.contains("mingw32"))
-                .unwrap_or(false);
-            if is_windows {
-                // Windows (MinGW) 用システムライブラリ。
-                // cargo:rustc-link-lib だとリンカ引数がオブジェクトファイル
-                // より前に配置され、Windows API シンボル (FOLDERID_* 等) の
-                // 未解決参照が解決されない。cargo:rustc-link-arg でオブジェクト
-                // ファイルの後に配置して、未定義シンボルを解決できるようにする。
-                println!("cargo:rustc-link-arg=-ladvapi32");
-                println!("cargo:rustc-link-arg=-lshell32");
-                println!("cargo:rustc-link-arg=-lole32");
-                println!("cargo:rustc-link-arg=-luuid");
-            } else {
-                // Linux クロス: pthread / stdc++
-                println!("cargo:rustc-link-lib=dylib=pthread");
-                println!("cargo:rustc-link-lib=dylib=stdc++");
-            }
+            // Linux クロス: pthread / stdc++
+            println!("cargo:rustc-link-lib=dylib=pthread");
+            println!("cargo:rustc-link-lib=dylib=stdc++");
         }
     }
     for d in ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64"] {
         if Path::new(d).is_dir() {
             println!("cargo:rustc-link-search=native={}", d);
         }
+    }
+    // Windows (MinGW) クロス: libstdc++.a は gcc のランタイムライブラリディレクトリにある。
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    if let Some(d) = mingw_stdlib_dir(&cc) {
+        println!("cargo:rustc-link-search=native={}", d);
     }
     println!("cargo:rustc-link-lib=static=stdc++");
 }
@@ -210,6 +199,22 @@ fn link_glob_static(libdir: &str, prefixes: &[&str]) {
     for name in names {
         println!("cargo:rustc-link-lib=static={}", name);
     }
+}
+
+/// MinGW クロスビルドでは `libstdc++.a`（と `libgcc.a`）は C コンパイラのランタイム
+/// ライブラリディレクトリ (`<cc> -print-libgcc-file-name` のディレクトリ) にあり、
+/// `/usr/lib/gcc/x86_64-w64-mingw32/*` のどのマルチリブがデフォルトか環境による。
+/// `static=stdc++` を出力する直前にこのディレクトリをリンク検索パスに入れる。
+fn mingw_stdlib_dir(cc: &str) -> Option<String> {
+    if !cc.contains("mingw32") {
+        return None;
+    }
+    let out = Command::new(cc)
+        .arg("-print-libgcc-file-name")
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Path::new(&s).parent().map(|d| d.to_string_lossy().to_string())
 }
 
 // ---- L2: 実行時の C のビットコードと標準ライブラリの宣言を実行体に埋め込む ----
@@ -384,43 +389,9 @@ fn link_embedded_lld() {
     if std::env::var("CARGO_FEATURE_EMBEDDED_LLVM").is_err() {
         return;
     }
-    // Windows クロスビルドでは組み込み ldd をスキップする。
-    // liblld*.a が Windows LLVM インストールに含まれないため、組み込み ldd はリンクできない。
-    // 代わりに KSN_LINKER=external で外部の MinGW リンカを使う (release.sh で設定)。
-    let is_windows_cross = std::env::var("CC")
-        .ok()
-        .map(|c| c.contains("mingw32"))
-        .unwrap_or(false);
-    if is_windows_cross {
-        // Windows クロスビルドでは組み込み ldd をスキップする。
-        // liblld*.a が Windows LLVM インストールに含まれないため。
-        // ただし ksn_lld_link (FFI エントリポイント) と Windows API の
-        // GUID 定数 (CLSID_FileOperation 等) のスタブはリンクに必要。
-        let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
-        println!("cargo:rerun-if-changed=src/native/ksn_windows_stubs.c");
-        let obj = out.join("ksn_windows_stubs.o");
-        let st = Command::new(&cc)
-            .args(["-c", "src/native/ksn_windows_stubs.c", "-o"])
-            .arg(&obj)
-            .status()
-            .expect("cc が要る");
-        assert!(st.success(), "ksn_windows_stubs.c のコンパイルに失敗");
-        let a = out.join("libksn_windows_stubs.a");
-        let _ = fs::remove_file(&a);
-        assert!(
-            Command::new("ar")
-                .arg("crs")
-                .arg(&a)
-                .arg(&obj)
-                .status()
-                .expect("ar が要る")
-                .success()
-        );
-        println!("cargo:rustc-link-search=native={}", out.display());
-        println!("cargo:rustc-link-lib=static=ksn_windows_stubs");
-        return;
-    }
+    // 組み込み lld (COFF / ELF / wasm ドライバ) はホスト・クロスどちらのプラットフォームでも
+    // リンクする。Windows クロスでも KSN_LLVM_PREFIX の liblld*.a を使う (scripts/build_llvm.sh で
+    // lld 静的ライブラリごとインストールされる)。
     println!("cargo:rerun-if-changed=src/native/lld_shim.cpp");
     // llvm-config は L1 の `link_llvm` と同じもの (`LLVM_CONFIG`、既定は /usr/lib/llvm-20/bin/llvm-config)。
     // llvm-config が無いクロスビルドでは KSN_LLVM_PREFIX をそのまま使う。
@@ -444,7 +415,14 @@ fn link_embedded_lld() {
     // `cc` crate は build.rs 側に feature を渡せないので使わず、c++ と ar を直接呼ぶ。
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let obj = out.join("lld_shim.o");
-    let st = Command::new(std::env::var("CXX").unwrap_or_else(|_| "c++".into()))
+    // Windows クロスビルドでは CXX も mingw の g++ を使う (既定の c++ はホスト用で PE にリンクできない)。
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let default_cxx = if cc.contains("mingw32") {
+        cc.replace("gcc", "g++")
+    } else {
+        "c++".to_string()
+    };
+    let st = Command::new(std::env::var("CXX").unwrap_or(default_cxx))
         .args(["-std=c++17", "-fno-exceptions", "-fno-rtti", "-fPIC", "-O2", "-c", "src/native/lld_shim.cpp", "-I", &inc, "-o"])
         .arg(&obj)
         .status()
@@ -512,18 +490,23 @@ fn link_embedded_lld() {
             a.display()
         );
         println!("cargo:rustc-link-lib=static=ksn_lld_all");
-        // クロスビルドでは llvm-config が無いので、lld が必要とするシステムライブラリ
-        // を明示的にリンクする。
+        // MinGW 静的リンクでは libstdc++ は lld/LLVM のオブジェクト
+        // (std::thread 等の参照) より後ろに並べる必要がある
+        // (link_llvm で前に出した分だけではリンク順序が足りない)。
         let is_windows = std::env::var("CC")
             .ok()
             .map(|c| c.contains("mingw32"))
             .unwrap_or(false);
         if is_windows {
-            println!("cargo:rustc-link-lib=dylib=advapi32");
-            println!("cargo:rustc-link-lib=dylib=shell32");
-            println!("cargo:rustc-link-lib=dylib=ole32");
-            println!("cargo:rustc-link-lib=dylib=uuid");
-        } else {
+            let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+            if let Some(d) = mingw_stdlib_dir(&cc) {
+                println!("cargo:rustc-link-search=native={}", d);
+            }
+            println!("cargo:rustc-link-lib=static=stdc++");
+        }
+        // クロスビルドでは llvm-config が無いので、lld が必要とするシステムライブラリ
+        // を明示的にリンクする。(オブジェクトより後ろに出す)
+        if !is_windows {
             println!("cargo:rustc-link-lib=dylib=pthread");
             println!("cargo:rustc-link-lib=dylib=stdc++");
         }
@@ -531,7 +514,43 @@ fn link_embedded_lld() {
     // Mach-O ドライバ (macOS リンク用)。`--libs` の component `machodriver` を入れると
     // リンク順序が変わって既存のドライバが未解決になるので、ライブラリを直接パス指定する。
     // `ksn_lld_shim` より後ろに並ぶので、`lld_shim.o` からの `lld::macho::link` 参照が解決する。
+    // Windows 向け LLVM に Mach-O ターゲットは無いので、lib があるときだけリンクする。
     println!("cargo:rustc-link-search=native={}", lib);
-    println!("cargo:rustc-link-lib=static=lldMachO");
+    if Path::new(&format!("{}/liblldMachO.a", lib)).is_file() {
+        println!("cargo:rustc-link-lib=static=lldMachO");
+    }
+    // Windows (MinGW) 用のシステムライブラリ。`-llldMachO` より**後ろ**に出す:
+    // lld / LLVM のオブジェクトが `llvm::sys::path`（`FOLDERID_*` / `CLSID_FileOperation` 等）
+    // を参照する場合、それらの参照は `-llldMachO` のスキャン後になって初めて解決対象となり、
+    // uuid / ole32 等は最も後ろに置かないと未解決になる。
+    let is_windows_tail = std::env::var("CC")
+        .ok()
+        .map(|c| c.contains("mingw32"))
+        .unwrap_or(false);
+    if is_windows_tail {
+        println!("cargo:rustc-link-lib=dylib=advapi32");
+        println!("cargo:rustc-link-lib=dylib=shell32");
+        println!("cargo:rustc-link-lib=dylib=ole32");
+        println!("cargo:rustc-link-lib=dylib=uuid");
+    }
+    // `-luuid` だけでは、libksn_llvm_all.a (Path.cpp.obj 等) からの
+    // `CLSID_FileOperation` / `FOLDERID_*` 参照が `-luuid` のスキャン後に初めて
+    // 解決対象になると未解決のままになる。`rustc-link-arg` は `-o` 実行体より後ろに
+    // 出力されるため、位置引数の `libuuid.a` をここに渡すと、その時点で未解決の
+    // シンボルを確実に解決できる（`-l` より後ろに固定できるため順序に依存しない）。
+    let uuid_a = std::env::var("CC")
+        .ok()
+        .and_then(|cc| {
+            Command::new(&cc)
+                .arg("-print-file-name=libuuid.a")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+        })
+        .filter(|s| !s.is_empty() && Path::new(s).is_file());
+    if let Some(uuid_a) = uuid_a {
+        println!("cargo:rustc-link-arg={}", uuid_a);
+    }
     // システムのライブラリ (z・zstd・stdc++) は L1 の `link_llvm` が静的につなぐ (配布する実行体が依存しない)。ここでは足さない。
 }

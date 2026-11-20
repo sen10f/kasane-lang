@@ -78,7 +78,7 @@ case "$TARGET" in
   x86_64-windows-gnu|x86_64-pc-windows-gnu)
     CC="${CROSS_CC:-x86_64-w64-mingw32-gcc}"
     CXX="${CROSS_CXX:-x86_64-w64-mingw32-g++}"
-    LLVM_TARGETS="X86"
+    LLVM_TARGETS="X86;AArch64;WebAssembly"
     CMAKE_SYSTEM_NAME="Windows"
     CMAKE_SYSTEM_PROCESSOR="x86_64"
     ;;
@@ -134,10 +134,13 @@ fi
 
 cmake "${CMAKE_ARGS[@]}"
 
-nice -n 10 ninja -C "$BUILD" -j "$JOBS" install-llvm-libraries install-llvm-headers install-lld install-lld-cmake-exports \
+# LLVM + lld すべてをビルドし、静的ライブラリとヘッダをプレフィックスにコピーする。
+# (クロスビルド向けの install-lld-* ターゲットは存在しないため直接コピー。)
+nice -n 10 ninja -C "$BUILD" -j "$JOBS" \
   2>&1 | tail -n 5 || true
-# ldd 静的ライブラリ/ヘッダも必要 (install-lld はツールのみ)。ビルドディレクトリからコピー。
-find "$BUILD" -name "liblld*.a" -exec cp {} "$PREFIX/lib/" \; 2>/dev/null || true
-cp -r "$SRC/lld/include/lld" "$PREFIX/include/" 2>/dev/null || true
+mkdir -p "$PREFIX/lib" "$PREFIX/include"
+find "$BUILD/lib" -maxdepth 1 -name "libLLVM*.a" -exec cp {} "$PREFIX/lib/" \;
+find "$BUILD/lib" -maxdepth 1 -name "liblld*.a" -exec cp {} "$PREFIX/lib/" \;
+cp -r "$SRC/llvm/include/llvm" "$SRC/lld/include/lld" "$PREFIX/include/" 2>/dev/null || true
 rm -rf "$BUILD" "$TOOLCHAIN"
 echo "done: KSN_LLVM_PREFIX=$PREFIX"
