@@ -2680,7 +2680,7 @@ fn a_value_moved_in_a_loop_body_is_an_error_on_the_next_iteration() {
         ],
     );
     assert!(bad, "{}", out);
-    assert!(out.contains("moved inside a loop"), "{}", out);
+    assert!(out.contains("use of moved value `s`"), "{}", out);
     // 正例: move のあとに必ず `break` するなら、次の周回はない。
     let (bad, out) = pmove_check(
         "pmove_loop_break",

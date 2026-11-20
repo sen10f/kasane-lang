@@ -476,6 +476,21 @@ impl<'a> W<'a> {
                 }
                 PR { root: None, path: vec![], via: false, text: segs.join(".") }
             }
+            TKind::Field { base, name } if !self.is_place(base) && !matches!(base.ty, Ty::Ref(..)) && matches!(base.kind, TKind::Call { .. } | TKind::MCall { .. } | TKind::StructLit { .. }) => {
+                // 一時値の欄: 欄を取り出すと残りの欄だけが残る。残りに線形な欄があれば漏れる (宣言が `linear` の型は欄だけでは消費できない)。
+                self.eval(base, Cx::Value);
+                let bt = base.ty.clone();
+                if self.linear(&bt) {
+                    let declared = matches!(&bt, Ty::Named(n, _, _) if self.p.types.get(n).map_or(false, |&i| self.p.defs[i].linear));
+                    let others = self.struct_fields(&bt).map_or(false, |fs| fs.iter().any(|(n, t)| n != name && self.linear(&t.clone())));
+                    if declared {
+                        self.diag("E3003", "a linear temporary is borrowed or read through a field and is never consumed (bind it, or consume it)".into(), e.line);
+                    } else if others {
+                        self.diag("E3003", format!("a linear temporary's field `{}` is consumed but the temporary is not fully consumed (other linear fields are leaked)", name), e.line);
+                    }
+                }
+                PR { root: None, path: vec![], via: false, text: format!("(call result).{}", name) }
+            }
             TKind::Field { base, name } => {
                 let mut r = self.place_of(base);
                 if matches!(base.ty, Ty::Ref(..)) {
@@ -1016,7 +1031,9 @@ impl<'a> W<'a> {
             "While" => self.run_loop(e, ch.first(), ch.get(1), None, false, false, false),
             "For" => {
                 let it = &ch[0];
-                self.eval(it, Cx::Value);
+                // 所有する `Vec` と配列だけが move。それ以外の反復子 (利用者の `Iterator`) は `for` がその場で進める (旧と同じ、仕様が未規定の所)。
+                let owned = matches!(&it.ty, Ty::Array(..)) || matches!(&it.ty, Ty::Named(n, a, _) if n == "alloc.vec.Vec" && !a.is_empty());
+                self.eval(it, if owned { Cx::Value } else { Cx::Borrow });
                 let leaky = match &it.ty {
                     Ty::Array(x, _) => self.linear(&x.clone()),
                     Ty::Named(n, a, _) if (n.ends_with("Vec") || n.ends_with("IntoIter")) && !a.is_empty() => self.linear(&a[0].clone()),
