@@ -1,5 +1,5 @@
 //! プロセス内の LLVM (`embedded-llvm`、設計_KIR.md 12.6): LLVM IR のテキストを最適化して目的ファイルにする。
-//! 外部の `clang -x ir` の代わり。X86 / AArch64 / WebAssembly だけを初期化する。
+//! 外部の `clang -x ir` の代わり。X86 / AArch64 / WebAssembly を初期化する。
 use llvm_sys::core::*;
 use llvm_sys::error::LLVMGetErrorMessage;
 use llvm_sys::ir_reader::LLVMParseIRInContext;
@@ -20,20 +20,14 @@ fn init() {
         LLVMInitializeX86Target();
         LLVMInitializeX86TargetMC();
         LLVMInitializeX86AsmPrinter();
-        // Windows クロス LLVM は X86 ターゲットのみをビルドするため、
-        // AArch64 / WebAssembly の初期化関数は存在しない。Windows では
-        // スキップし、ホスト/クロス Linux ではすべて初期化する。
-        #[cfg(not(target_os = "windows"))]
-        {
-            LLVMInitializeAArch64TargetInfo();
-            LLVMInitializeAArch64Target();
-            LLVMInitializeAArch64TargetMC();
-            LLVMInitializeAArch64AsmPrinter();
-            LLVMInitializeWebAssemblyTargetInfo();
-            LLVMInitializeWebAssemblyTarget();
-            LLVMInitializeWebAssemblyTargetMC();
-            LLVMInitializeWebAssemblyAsmPrinter();
-        }
+        LLVMInitializeAArch64TargetInfo();
+        LLVMInitializeAArch64Target();
+        LLVMInitializeAArch64TargetMC();
+        LLVMInitializeAArch64AsmPrinter();
+        LLVMInitializeWebAssemblyTargetInfo();
+        LLVMInitializeWebAssemblyTarget();
+        LLVMInitializeWebAssemblyTargetMC();
+        LLVMInitializeWebAssemblyAsmPrinter();
     });
 }
 

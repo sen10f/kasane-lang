@@ -3867,7 +3867,10 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
         return 1;
     }
     let entry = l.pkg.entry();
-    let exe = out.join(if cfg!(windows) || crate::kir_llvm::is_windows(tgt) {
+    // 出力の拡張子は「今 ksn が動いている機械」(cfg!(windows)) ではなく「ビルド対象の三つ組」で決める。
+    // Windows 用の ksn.exe を wine などで別プラットフォーム上で動かすと cfg!(windows) は true のままになり、
+    // wasm 対象でも `.exe` がつく。`is_windows(tgt)` は `None` を安全に扱う（false を返す）。
+    let exe = out.join(if crate::kir_llvm::is_windows(tgt) {
         format!("{}.exe", name)
     } else if crate::kir_llvm::is_wasm(tgt) {
         format!("{}.wasm", name)
