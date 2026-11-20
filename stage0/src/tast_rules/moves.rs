@@ -61,6 +61,8 @@ struct LoopCtx {
     /// 所有する線形な要素の列を回している (早い抜けで残りの要素が漏れる)。
     leaky: bool,
     line: usize,
+    /// 入口には無く、次の周回から流れ込んだ move (前の周回で move された値の使用の hint に使う)。
+    from_back: Vec<PKey>,
 }
 
 /// 場所の式を平らにした結果。
@@ -308,6 +310,16 @@ impl<'a> W<'a> {
     }
 
     // ------------------------------------------------------------ 状態
+
+    /// move 済みの値の使用に付ける hint: その move が囲むループの前の周回で起きた (次の周回へ流れ込んだ) なら。
+    fn loop_hint(&self, root: &Root, mk: &[String]) -> &'static str {
+        let key: PKey = (root.clone(), mk.to_vec());
+        if self.loops.iter().any(|l| l.from_back.contains(&key)) {
+            "; moved inside a loop, so the move happened in an earlier iteration"
+        } else {
+            ""
+        }
+    }
 
     fn overlap(&self, root: &Root, path: &[String]) -> Option<(Vec<String>, usize)> {
         for ((r, k), l) in self.st.moved.range((root.clone(), vec![])..) {
@@ -603,12 +615,13 @@ impl<'a> W<'a> {
             let ml = crate::parser::unpack_pos(ml).0;
             let key = key_text(&root.0, &pr.path);
             let mt = key_text(&root.0, &mk);
+            let hint = self.loop_hint(&root.clone(), &mk);
             let msg = if mk == pr.path {
-                format!("use of moved value `{}` (moved at line {})", key, ml)
+                format!("use of moved value `{}` (moved at line {}){}", key, ml, hint)
             } else if mk.len() < pr.path.len() {
-                format!("use of moved value `{}` (moved `{}` at line {})", key, mt, ml)
+                format!("use of moved value `{}` (moved `{}` at line {}){}", key, mt, ml, hint)
             } else {
-                format!("use of partially moved value `{}` (moved `{}` at line {})", key, mt, ml)
+                format!("use of partially moved value `{}` (moved `{}` at line {}){}", key, mt, ml, hint)
             };
             self.diag("E3002", msg, line);
             return;
@@ -791,10 +804,11 @@ impl<'a> W<'a> {
         let Some(root) = pr.root.clone() else { return };
         if pr.via {
             // 参照・添字の先への代入は、その場所の読み (move 済みの参照の使用) と、線形な古い値の上書き。
-            if let Some((_, ml)) = self.overlap(&root, &[]) {
+            if let Some((mk, ml)) = self.overlap(&root, &[]) {
                 let ml = crate::parser::unpack_pos(ml).0;
                 let key = key_text(&root.0, &[]);
-                self.diag("E3002", format!("use of moved value `{}` (moved at line {})", key, ml), line);
+                let hint = self.loop_hint(&root, &mk);
+                self.diag("E3002", format!("use of moved value `{}` (moved at line {}){}", key, ml, hint), line);
             }
             if self.linear(&lt) {
                 self.diag("E3003", "a linear value behind a reference is overwritten by the assignment without being consumed".into(), line);
@@ -1139,7 +1153,8 @@ impl<'a> W<'a> {
         for pass in 0..2 {
             // 2 回目: 1 回目の終わりの状態が入口に加わる (繰り返しでの move を拾う)。
             self.st = in_state.clone();
-            self.loops.push(LoopCtx { lin_base: self.lin.len(), breaks: vec![], conts: vec![], leaky, line: e.line });
+            let from_back: Vec<PKey> = in_state.moved.keys().filter(|k| !entry.moved.contains_key(*k)).cloned().collect();
+            self.loops.push(LoopCtx { lin_base: self.lin.len(), breaks: vec![], conts: vec![], leaky, line: e.line, from_back });
             if let Some(c) = cond {
                 self.eval(c, Cx::Value);
             }
@@ -1222,10 +1237,11 @@ impl<'a> W<'a> {
                 if let Some((mk, ml)) = self.overlap(root, &pr.path) {
                     let ml = crate::parser::unpack_pos(ml).0;
                     let key = key_text(&root.0, &pr.path);
+                    let hint = self.loop_hint(root, &mk);
                     let msg = if mk == pr.path {
-                        format!("use of moved value `{}` (moved at line {})", key, ml)
+                        format!("use of moved value `{}` (moved at line {}){}", key, ml, hint)
                     } else {
-                        format!("use of moved value `{}` (moved `{}` at line {})", key, key_text(&root.0, &mk), ml)
+                        format!("use of moved value `{}` (moved `{}` at line {}){}", key, key_text(&root.0, &mk), ml, hint)
                     };
                     self.diag("E3002", msg, scrut.line);
                     ok = false;

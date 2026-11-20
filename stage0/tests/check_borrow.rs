@@ -1031,14 +1031,13 @@ fn nll_accepts_an_array_literal_overwritten_before_the_conflict() {
         ],
     );
     assert!(!bad, "{}", out);
-    // 要素への代入 `c[0] = &y` は弱い更新 (s4 は要素ごとに借用を追わない): 元の借用は残り、保守的に E3010。
-    // 2026-11-20 の s4 切り替えで旧の精度から後退した (穴ではなく拒みすぎ)。
+    // 定数の添字の要素への代入 `c[0] = &y` は、その要素の貸し出しだけを入れ替える (強い更新): 元の `&x` は消えて通る。
     let (bad, out) = has_e3010(
         "nll_store_array_elem_conservative",
         "",
         &["let mut x = 1u8", "let y = 2u8", "let mut c = [&x]", "c[0] = &y", "x = 5u8", "core.check.eq(*c[0], 2u8)", "core.check.eq(x, 5u8)"],
     );
-    assert!(bad, "{}", out);
+    assert!(!bad, "{}", out);
 }
 
 // ---- 一時値の解放の残り: Field・タプルの型解決と E2042 / E3003 (4.4・4.6) ----

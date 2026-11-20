@@ -594,6 +594,23 @@ impl<'a> Walker<'a> {
         let Some((r, p)) = (if whole { self.pl(place) } else { self.place(place) }) else { return };
         self.acc(&r, &p, Acc::Write, place.line);
         let srcs = self.keep(&place.ty, srcs);
+        // 定数の添字の要素への代入 (`a[0] = ..`・`a` は配列リテラルで作った局所で、要素の持ち主が崩れていない): その要素の貸し出しだけを入れ替える (強い更新)。
+        if let (1, Some(idx)) = (p.len(), self.elem_slot(place, &r)) {
+            let old = self.slots.get(&r).and_then(|v| v.get(idx)).cloned().unwrap_or_default();
+            if !old.is_empty() {
+                self.cfg.emit(Ev::Kill { var: r.clone(), ids: old });
+            }
+            let new_ids: Vec<usize> = srcs.iter().filter_map(|s| if let Src::Loan(i) = s { Some(*i) } else { None }).collect();
+            if !srcs.is_empty() {
+                // `bind` を通さない: 要素の持ち主の追跡 (`slots`) を崩さない。
+                self.cfg.emit(Ev::Bind { var: r.clone(), srcs, replace: false });
+            }
+            if let Some(v) = self.slots.get_mut(&r) {
+                v[idx] = new_ids;
+            }
+            return;
+        }
+        // 添字が定数でない・追跡できない配列への代入は弱い更新 (どの要素か分からないので、元の貸し出しは残す)。
         if p.is_empty() {
             self.bind(r, srcs, true);
         } else if !srcs.is_empty() {
@@ -1107,6 +1124,21 @@ impl<'a> Walker<'a> {
     }
 
     // -------------------------------------------------------- 解析
+
+    /// `a[<定数>]` への代入先なら、その要素の番号 (`a` は追跡中の配列リテラルの局所で、持ち主がまだ崩れていないとき)。
+    fn elem_slot(&self, place: &TExpr, root: &str) -> Option<usize> {
+        let TKind::Index { base, index } = &place.kind else { return None };
+        if !matches!(base.ty, Ty::Array(..)) || self.slot_unsafe.contains(root) {
+            return None;
+        }
+        let TKind::Lit(l) = &index.kind else { return None };
+        let mut it = l.split(':');
+        if it.next() != Some("int") {
+            return None;
+        }
+        let i: usize = it.next()?.parse().ok()?;
+        (i < self.slots.get(root)?.len()).then_some(i)
+    }
 
     /// `&mut a[<定数>]` (`a` は局所の配列) なら (根, 添字)。
     fn const_slot(&self, a: &TExpr) -> Option<(String, usize)> {
