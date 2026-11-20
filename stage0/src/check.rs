@@ -4612,8 +4612,9 @@ impl<'a> Checker<'a> {
             }) else {
                 continue;
             };
-            let init = &nf(l)[1];
-            if nname(init) != "Closure" || nf(init).len() < 4 {
+            // `Let` は [pat, mut, 型注釈, 初期化子]。型注釈がなくても場所は変わらない。
+            let init = &nf(l)[3];
+            if nname(init) != "Closure" {
                 continue;
             }
             let locals = crate::infer::local_names(d, body);
@@ -4759,7 +4760,7 @@ impl<'a> Checker<'a> {
                         _ => continue,
                     };
                     let Some(t) = self.p.defs.get(target) else { continue };
-                    if t.name.starts_with("core.ptr.") || t.name == "core.ffi.trampoline" || sig_has_ptr(t) {
+                    if is_unsafe_only(t) || sig_has_ptr(t) {
                         found.push((nline(n), format!("`{}` uses raw pointers and is only allowed in modules listed in [unsafe] modules", t.name)));
                     }
                 }

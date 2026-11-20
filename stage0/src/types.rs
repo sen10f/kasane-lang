@@ -5907,8 +5907,15 @@ impl<'a> TypeCk<'a> {
         // Fn 境界の単一化: 境界の `Args` タプルと戻り値型を、クロージャの型と比べる。引数の照合より先に
         // 済ませる (`core.ffi.trampoline(&mut cb)` の `A` / `R` は、外の `extern` の関数型の引数との
         // 照合で決まる。照合は型パラメータを剛な型として扱うので、引数より先に決める必要がある)。
+        // 参照越しの `&mut F` / `&F` (踏み台) だけをここで決める。値の `F` (`core.iter.filter` など) は
+        // 下の `resolve_impl_bounds` の後に回す (境界の要素型を先に決めないと、クロージャの引数型との
+        // 食い違いの E2023 が出なくなる)。
         let mut cap_bad = false;
+        let by_ref = |k: usize| d.params.get(k).is_some_and(|p| matches!(from_v(&p.1, &gn), Ty::Ref(..)));
         for (k, name) in &fn_args {
+            if !by_ref(*k) {
+                continue;
+            }
             let Some(cl) = closures.get(k).cloned() else { continue };
             self.unify_fn_bound(d, *k, name, &cl, &mut map, line, &mut cap_bad);
         }
@@ -5975,6 +5982,14 @@ impl<'a> TypeCk<'a> {
         // 境界の型引数 (`I: Iterator<T, ..>` の `T`) を、受け取った引数の型の impl から決める。
         // Fn 境界より先にやり、クロージャの引数型との食い違いは Fn 境界の検査 (E2023) が報告する。
         self.resolve_impl_bounds(d, &mut map);
+        // Fn 境界の単一化: 境界の `Args` タプルと戻り値型を、クロージャの型と比べる (値の `F`)。
+        for (k, name) in &fn_args {
+            if by_ref(*k) {
+                continue;
+            }
+            let Some(cl) = closures.get(k).cloned() else { continue };
+            self.unify_fn_bound(d, *k, name, &cl, &mut map, line, &mut cap_bad);
+        }
         self.check_bounds(d, &map, line, true);
         // 決まらなかった型パラメータは escape する (分からない型と同じ扱い)。ただし数値リテラル由来の
         // 型変数 (kind != 0) は escape しない。`t.id(5)` の `5` は、後から決まればそれに従い、最後まで

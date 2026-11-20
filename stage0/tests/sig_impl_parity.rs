@@ -102,7 +102,10 @@ fn missing(methods: bool) -> Vec<String> {
     let has = |w: &str| src.contains(&format!("\"{}\"", w));
     let mut out = Vec::new();
     for s in sigs(&root) {
-        if s.ext || s.method != methods || bodies.contains(&s.name) || names.contains(&s.name) || s.name.starts_with("core.ptr.") {
+        if s.ext || s.method != methods || bodies.contains(&s.name) || names.contains(&s.name) || s.name.starts_with("core.ptr.")
+            // `core.ffi.trampoline` も `core.ptr.*` と同じく interp.rs の呼び出しの所で直接扱う。
+            || s.name == "core.ffi.trampoline"
+        {
             continue;
         }
         let parts: Vec<&str> = s.name.split('.').collect();
