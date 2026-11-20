@@ -76,7 +76,7 @@ fn link_llvm() {
         if Path::new(&libdir).is_dir() {
             println!("cargo:rustc-link-search=native={}", libdir);
             println!("cargo:rustc-link-arg=-Wl,--start-group");
-            link_glob_static(libdir, &["libLLVM"]);
+            link_glob_static(&libdir, &["libLLVM"]);
             println!("cargo:rustc-link-arg=-Wl,--end-group");
         }
     }
