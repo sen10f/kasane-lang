@@ -52,6 +52,11 @@ if [ ! -d "$PREFIX" ]; then
   exit 1
 fi
 export KSN_LLVM_PREFIX="$PREFIX"
+  # クロスビルドではターゲットの C ランタイム (Scrt1.o 等) がホストの標準パスに無い。
+  # KSN_SYSROOT で ksn に sysroot を教える (aarch64: /usr/aarch64-linux-gnu)。
+  case "$TARGET" in
+    aarch64-unknown-linux-gnu) export KSN_SYSROOT=/usr/aarch64-linux-gnu ;;
+  esac
 
 rm -rf "$ROOT/dist"
 mkdir -p "$ROOT/dist"
