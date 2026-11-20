@@ -45,3 +45,37 @@ end t.main
         "ok\n",
     );
 }
+
+/// 8-2. `[e; N]` の局所の `as_mut_slice()` を `&mut [T]` の引数に渡し、要素を書き換えて読む。
+#[test]
+fn array_rep_as_mut_slice_native() {
+    check_gap(
+        "ngaps8_array_rep_as_mut_slice",
+        r#"fn t.sum(s: &mut [u32]) -> u32 uses [] panics may
+    let mut total = 0u32
+    let mut i = 0usize
+    while i < s.len() {
+        total = total + s[i]
+        i = i + 1usize
+    }
+    total
+end t.sum
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut a = [0u32; 8]
+    let v = a.as_mut_slice()
+    v[1usize] = 5u32
+    let n = t.sum(a.as_mut_slice())
+    if n == 5u32 {
+        match std.io.print_line("ok") {
+            Ok(_x) => Ok(())
+            Err(_e) => core.panic.panic("io")
+        }
+    } else {
+        core.panic.panic("sum")
+    }
+end t.main
+"#,
+        "ok\n",
+    );
+}
