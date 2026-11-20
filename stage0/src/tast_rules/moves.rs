@@ -540,7 +540,7 @@ impl<'a> W<'a> {
                 r.text = format!("{}.{}", r.text, name);
                 r
             }
-            TKind::Index { base, index } if matches!(base.ty, Ty::Array(..)) && const_index(index).is_some() => {
+            TKind::Index { base, index } if const_index(index).is_some() && matches!(&base.ty, Ty::Array(x, _) if self.linear(&(**x).clone())) => {
                 // 配列の定数添字の要素は 1 つずつ move できる (線形な配列は要素ごとに消費する、4.4)。
                 let mut r = self.place_of(base);
                 let k = const_index(index).unwrap_or(0);
