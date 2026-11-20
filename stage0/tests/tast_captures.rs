@@ -265,7 +265,7 @@ fn closure_effect_within_the_bound_is_accepted() {
     // 呼び出す側が効果を宣言していれば、境界が許す範囲で通る。
     let src = format!(
         "{}fn t.wide[F: core.ops.Fn<(), u32, [io.console], never>](f: F) -> u32 uses [io.console] panics never\n    f.call(())\nend t.wide\n\nfn t.run() -> () uses [io.console] panics never\n    core.mem.drop(t.wide(t.loud))\n    let g = fn() -> u32 capture [] {{\n        t.loud()\n    }}\n    core.mem.drop(g())\nend t.run\n",
-        EFF_HEAD.replace("t.run()", "t.run()")
+        EFF_HEAD.replacen("fn t.main() -> () uses []", "fn t.main() -> () uses [io.console]", 1)
     );
     let got = new_codes("tast_cap2_eff_declared", &src, &["E4001", "E4002"]);
     assert!(got.is_empty(), "効果を宣言した呼び出しが拒まれた: {:?}", got);
