@@ -478,6 +478,11 @@ pub(super) fn match_get_mut(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         }
         _ => return None,
     };
+    // 受け手が要素型の分かる Vec・スライス・Buf のときだけここで下ろす。ユーザー定義の `get` / `get_mut`
+    // (受け手が自分の型のメソッド) は対象外で、呼び出しの一般形に戻す。
+    if recv_elem(lw, &recv).is_none() {
+        return None;
+    }
     // `get` は、要素が所有物のときだけここで下ろす (要素の借用を束縛する)。スカラーなどは従来の値の `Option` のまま。
     let is_get = match nname(scrut) {
         "MCall" => st(&nf(scrut)[1]) == "get",

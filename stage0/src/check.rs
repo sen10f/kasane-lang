@@ -3730,6 +3730,11 @@ impl<'a> Checker<'a> {
                 if items(tel(t, 2)).is_empty() && self.names.contains(&nm) {
                     return self.generic_may_be_copy(&nm);
                 }
+                // 手書きの `impl core.ops.Copy` は型引数に依らず Copy (4.2 の並び順の節。
+                // `is_copy_v` と同じ扱いにし、`Handle<T>` のような型引数を欄に持たない取っ手を Copy にできる)。
+                if has_manual_copy(self.p, &nm) {
+                    return true;
+                }
                 // 派生の `Copy` は型引数が `Copy` のときだけ (`impl[T: Copy] Copy for Box<T>`)。
                 self.p.types.get(&nm).map_or(false, |&i| self.def(i).derive.iter().any(|x| x == "Copy"))
                     && items(tel(t, 2)).iter().all(|a| self.is_copy(a))
@@ -3771,6 +3776,10 @@ impl<'a> Checker<'a> {
             crate::types::Ty::Named(nm, args, _) => {
                 if nm == "Option" || nm == "Result" {
                     return args.iter().all(|a| self.is_copy_ty(a));
+                }
+                // 手書きの `impl core.ops.Copy` は型引数に依らず Copy (`is_copy_v` と同じ)。
+                if has_manual_copy(self.p, nm) {
+                    return true;
                 }
                 // 派生の `Copy` は型引数が `Copy` のときだけ (`impl[T: Copy] Copy for Box<T>`)。
                 self.p
@@ -7639,6 +7648,17 @@ pub(crate) fn impl_target(v: &V) -> String {
         "ref" | "ptr" => impl_target(tel(v, 2)),
         _ => st(tel(v, 1)),
     }
+}
+
+/// 型 `nm` に手書きの `impl core.ops.Copy` があるか (4.2 の並び順の節にある手動 impl)。
+/// 型引数に依らない (無境界の型パラメータだけの) impl だけを Copy と見なす (`is_copy_v` と同じ)。
+pub(crate) fn has_manual_copy(p: &crate::program::Program, nm: &str) -> bool {
+    p.defs.iter().any(|d| {
+        d.kw == "impl"
+            && d.impl_trait == "core.ops.Copy"
+            && impl_target(&d.impl_for) == nm
+            && d.generics.iter().all(|g| g.0 != "type" || items(&g.2).is_empty())
+    })
 }
 
 /// 基本型の所有者 FQN (impl のメソッドを置く場所。3.2 の孤児規則)。

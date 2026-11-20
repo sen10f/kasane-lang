@@ -390,7 +390,10 @@ impl Interp {
     }
 
     pub fn is_copy(&self, tyfqn: &str) -> bool {
-        self.p.types.get(tyfqn).map_or(false, |&i| self.p.defs[i].derive.iter().any(|x| x == "Copy"))
+        if self.p.types.get(tyfqn).map_or(false, |&i| self.p.defs[i].derive.iter().any(|x| x == "Copy")) {
+            return true;
+        }
+        crate::check::has_manual_copy(&self.p, tyfqn)
     }
 
     pub fn cp(&self, v: Val) -> Val {

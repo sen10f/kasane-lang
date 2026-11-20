@@ -39,7 +39,7 @@ pub const STD_TYPES: [&str; 52] = ["alloc.alloc.Layout", "core.fmt.Error", "core
 
 /// Kasane で書いた標準ライブラリの総称型 (`spec/stdlib/alloc/collections.ksnl`)。利用者の型と同じ集成体として下ろす。
 pub fn is_kasane_std_generic(name: &str) -> bool {
-    matches!(name, "alloc.collections.HashMap" | "alloc.collections.BtreeMap" | "alloc.collections.HashCell" | "alloc.collections.MapEntry" | "alloc.collections.HashMapIter")
+    matches!(name, "alloc.collections.HashMap" | "alloc.collections.BtreeMap" | "alloc.collections.HashCell" | "alloc.collections.MapEntry" | "alloc.collections.HashMapIter" | "alloc.arena.Arena" | "alloc.arena.Handle" | "alloc.arena.Slot")
 }
 
 /// ソケットの型 (`std.net.TcpListener` / `TcpStream`)。型表には `lower_defs` が常に入れる。`&` の形の型も、同じ集成体として下ろす。
