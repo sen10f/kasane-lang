@@ -134,8 +134,10 @@ fi
 
 cmake "${CMAKE_ARGS[@]}"
 
-nice -n 10 ninja -C "$BUILD" -j "$JOBS" install-llvm-libraries install-llvm-headers install-lld-libraries install-lld-headers install-lld install-lld-cmake-exports \
+nice -n 10 ninja -C "$BUILD" -j "$JOBS" install-llvm-libraries install-llvm-headers install-lld install-lld-cmake-exports \
   2>&1 | tail -n 5 || true
-# lld 静的ライブラリ/ヘッダも入れる (クロスビルドでも組み込み lld の ksn_lld_link をリンクするため)。
+# ldd 静的ライブラリ/ヘッダも必要 (install-lld はツールのみ)。ビルドディレクトリからコピー。
+find "$BUILD" -name "liblld*.a" -exec cp {} "$PREFIX/lib/" \; 2>/dev/null || true
+cp -r "$BUILD/include/lld" "$PREFIX/include/" 2>/dev/null || true
 rm -rf "$BUILD" "$TOOLCHAIN"
 echo "done: KSN_LLVM_PREFIX=$PREFIX"
