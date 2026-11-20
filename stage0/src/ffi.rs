@@ -711,8 +711,59 @@ fn call_basic(p: *mut c_void, args: &[ArgV], ret: &RetTy) -> Result<RetV, String
 /// コールバックの入口の表の大きさ。Kasane の関数 (またはクロージャ式) ごとに 1 つ使う。
 pub const CALLBACK_SLOTS: usize = 64;
 
-/// 入口から呼ばれるハンドラ: (スロット, GP レジスタ 6 本, XMM レジスタ 8 本の下位 64 ビット) → (RAX, XMM0)。
-pub type CallbackHandler = fn(usize, &[u64; 6], &[u64; 8]) -> (u64, u64);
+/// 入口から呼ばれるハンドラ: (スロット, GP レジスタ 6 本, XMM レジスタ 8 本の下位 64 ビット, 戻り値の書き出し先) -> ()。
+/// ハンドラは `out` の `rax`/`rdx`/`x0`/`x1` に、この入口の戻り値のレジスタクラス (`RetAbi`) に従って
+/// C が読むレジスタの中身を書き込む。メモリ返し (`sret`) の構造体は、第 1 GP 引数 (`gp[0]`) が示す先に
+/// ハンドラ自身がバイト列を書き込み、`out` は書き換えない。
+pub struct RetRegs {
+    pub rax: u64,
+    pub rdx: u64,
+    pub x0: u64,
+    pub x1: u64,
+}
+
+impl Default for RetRegs {
+    fn default() -> Self {
+        RetRegs { rax: 0, rdx: 0, x0: 0, x1: 0 }
+    }
+}
+
+/// コールバックの戻り値のレジスタクラス (x86_64 System V)。
+pub enum RetAbi {
+    /// `()`、またはメモリ返し (`sret`：呼び出し側が第 1 引数で渡すポインタに書き込む)。
+    Void,
+    /// 1 つの整数八バイト: RAX。
+    Int,
+    /// 2 つの整数八バイト: RAX, RDX。
+    Int2,
+    /// 1 つの浮動小数点八バイト: XMM0。
+    F64,
+    /// 2 つの浮動小数点八バイト: XMM0, XMM1。
+    F64_2,
+    /// 整数八バイト + 浮動小数点八バイト: RAX, XMM0。
+    IntF64,
+    /// 浮動小数点八バイト + 整数八バイト: XMM0, RAX。
+    F64Int,
+}
+
+/// 構造体の戻り値の `CTy` から `RetAbi` を決める (`classify` の分類をそのまま使う)。
+pub fn ret_abi(t: &CTy) -> RetAbi {
+    match classify(t) {
+        Pass::Memory => RetAbi::Void,
+        Pass::Regs(cls) => match cls.as_slice() {
+            [false] => RetAbi::Int,
+            [true] => RetAbi::F64,
+            [false, false] => RetAbi::Int2,
+            [true, true] => RetAbi::F64_2,
+            [false, true] => RetAbi::IntF64,
+            [true, false] => RetAbi::F64Int,
+            _ => RetAbi::Void, // ありえない: 16 バイト以下なら 2 つの八バイトまで
+        },
+    }
+}
+
+/// 入口から呼ばれるハンドラ: (スロット, GP レジスタ 6 本, XMM レジスタ 8 本の下位 64 ビット, 戻り値の書き出し先)。
+pub type CallbackHandler = fn(usize, &[u64; 6], &[u64; 8], &mut RetRegs);
 
 /// 入口の番号の振り分け: `0..VM_SLOT_BASE` は木走査 (`ffi_interp`)、`VM_SLOT_BASE..` はバイトコード VM (`vm/run.rs`)。
 /// 同じプロセスで両方が動いても (`ksn test --engine=both`)、ハンドラが混ざらない。
@@ -729,28 +780,166 @@ pub fn set_callback_handler(h: CallbackHandler) {
     let _ = HANDLER.set(h);
 }
 
-#[repr(C)]
-pub struct RetPair(u64, f64);
-
-#[allow(clippy::too_many_arguments)]
-extern "C" fn tramp<const N: usize>(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, f0: f64, f1: f64, f2: f64, f3: f64, f4: f64, f5: f64, f6: f64, f7: f64) -> RetPair {
-    let gp = [a0, a1, a2, a3, a4, a5];
-    let sse = [f0.to_bits(), f1.to_bits(), f2.to_bits(), f3.to_bits(), f4.to_bits(), f5.to_bits(), f6.to_bits(), f7.to_bits()];
-    let h = if N >= VM_SLOT_BASE { VM_HANDLER.get() } else { HANDLER.get() };
-    let (a, b) = (h.expect("callback handler"))(N, &gp, &sse);
-    RetPair(a, f64::from_bits(b))
+fn handler_for(n: usize) -> CallbackHandler {
+    let h = if n >= VM_SLOT_BASE { VM_HANDLER.get() } else { HANDLER.get() };
+    *h.expect("callback handler")
 }
 
-macro_rules! pool {
-    ($($n:literal)*) => { [$(tramp::<$n> as *const () as usize),*] };
+/// スロット `N` の入口 (C から見た関数ポインタ)。`ret` に応じて 7 つの戻り値のレジスタクラスを使い分ける。
+/// `N` は入口番号 (スロット)。レジスタを読んでハンドラへ渡し、ハンドラが書き込んだ `out` から戻り値を作る。
+macro_rules! tramp {
+    ($name:ident, $ret:ty, $retbody:expr) => {
+        #[allow(clippy::too_many_arguments)]
+        extern "C" fn $name<const N: usize>(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, f0: f64, f1: f64, f2: f64, f3: f64, f4: f64, f5: f64, f6: f64, f7: f64) -> $ret {
+            let gp = [a0, a1, a2, a3, a4, a5];
+            let sse = [f0.to_bits(), f1.to_bits(), f2.to_bits(), f3.to_bits(), f4.to_bits(), f5.to_bits(), f6.to_bits(), f7.to_bits()];
+            let mut out = RetRegs::default();
+            (handler_for(N))(N, &gp, &sse, &mut out);
+            $retbody
+        }
+    };
 }
 
-/// スロット `i` の入口 (C から見た関数ポインタ)。x86_64 Linux のみ。
-pub fn trampoline(i: usize) -> Option<usize> {
+/// 入口 `N` のトランポリン関数本体を `$name` で定義する。`$retbody` はマクロ展開内で `out` を参照するため、
+/// 呼び出し側から渡すのではなく、ここで `match` で戻り値の構築を行う (`expr` フラグメントは衛生的なスコープの都合で
+/// マクロ内で束縛した `out` を見渡せない)。
+macro_rules! tramp_def {
+    (void => $name:ident) => {
+        tramp!($name, (), {});
+    };
+    (int => $name:ident) => {
+        #[allow(clippy::too_many_arguments)]
+        extern "C" fn $name<const N: usize>(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, f0: f64, f1: f64, f2: f64, f3: f64, f4: f64, f5: f64, f6: f64, f7: f64) -> u64 {
+            let gp = [a0, a1, a2, a3, a4, a5];
+            let sse = [f0.to_bits(), f1.to_bits(), f2.to_bits(), f3.to_bits(), f4.to_bits(), f5.to_bits(), f6.to_bits(), f7.to_bits()];
+            let mut out = RetRegs::default();
+            (handler_for(N))(N, &gp, &sse, &mut out);
+            out.rax
+        }
+    };
+    (int2 => $name:ident) => {
+        #[allow(clippy::too_many_arguments)]
+        extern "C" fn $name<const N: usize>(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, f0: f64, f1: f64, f2: f64, f3: f64, f4: f64, f5: f64, f6: f64, f7: f64) -> (u64, u64) {
+            let gp = [a0, a1, a2, a3, a4, a5];
+            let sse = [f0.to_bits(), f1.to_bits(), f2.to_bits(), f3.to_bits(), f4.to_bits(), f5.to_bits(), f6.to_bits(), f7.to_bits()];
+            let mut out = RetRegs::default();
+            (handler_for(N))(N, &gp, &sse, &mut out);
+            (out.rax, out.rdx)
+        }
+    };
+    (f64 => $name:ident) => {
+        #[allow(clippy::too_many_arguments)]
+        extern "C" fn $name<const N: usize>(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, f0: f64, f1: f64, f2: f64, f3: f64, f4: f64, f5: f64, f6: f64, f7: f64) -> f64 {
+            let gp = [a0, a1, a2, a3, a4, a5];
+            let sse = [f0.to_bits(), f1.to_bits(), f2.to_bits(), f3.to_bits(), f4.to_bits(), f5.to_bits(), f6.to_bits(), f7.to_bits()];
+            let mut out = RetRegs::default();
+            (handler_for(N))(N, &gp, &sse, &mut out);
+            f64::from_bits(out.x0)
+        }
+    };
+    (f64_2 => $name:ident) => {
+        #[allow(clippy::too_many_arguments)]
+        extern "C" fn $name<const N: usize>(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, f0: f64, f1: f64, f2: f64, f3: f64, f4: f64, f5: f64, f6: f64, f7: f64) -> (f64, f64) {
+            let gp = [a0, a1, a2, a3, a4, a5];
+            let sse = [f0.to_bits(), f1.to_bits(), f2.to_bits(), f3.to_bits(), f4.to_bits(), f5.to_bits(), f6.to_bits(), f7.to_bits()];
+            let mut out = RetRegs::default();
+            (handler_for(N))(N, &gp, &sse, &mut out);
+            (f64::from_bits(out.x0), f64::from_bits(out.x1))
+        }
+    };
+    (int_f64 => $name:ident) => {
+        #[allow(clippy::too_many_arguments)]
+        extern "C" fn $name<const N: usize>(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, f0: f64, f1: f64, f2: f64, f3: f64, f4: f64, f5: f64, f6: f64, f7: f64) -> (u64, f64) {
+            let gp = [a0, a1, a2, a3, a4, a5];
+            let sse = [f0.to_bits(), f1.to_bits(), f2.to_bits(), f3.to_bits(), f4.to_bits(), f5.to_bits(), f6.to_bits(), f7.to_bits()];
+            let mut out = RetRegs::default();
+            (handler_for(N))(N, &gp, &sse, &mut out);
+            (out.rax, f64::from_bits(out.x0))
+        }
+    };
+    (f64_int => $name:ident) => {
+        #[allow(clippy::too_many_arguments)]
+        extern "C" fn $name<const N: usize>(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, f0: f64, f1: f64, f2: f64, f3: f64, f4: f64, f5: f64, f6: f64, f7: f64) -> (f64, u64) {
+            let gp = [a0, a1, a2, a3, a4, a5];
+            let sse = [f0.to_bits(), f1.to_bits(), f2.to_bits(), f3.to_bits(), f4.to_bits(), f5.to_bits(), f6.to_bits(), f7.to_bits()];
+            let mut out = RetRegs::default();
+            (handler_for(N))(N, &gp, &sse, &mut out);
+            (f64::from_bits(out.x0), out.rax)
+        }
+    };
+}
+
+tramp_def!(void => tramp_void);
+tramp_def!(int => tramp_int);
+tramp_def!(int2 => tramp_int2);
+tramp_def!(f64 => tramp_f64);
+tramp_def!(f64_2 => tramp_f64_2);
+tramp_def!(int_f64 => tramp_int_f64);
+tramp_def!(f64_int => tramp_f64_int);
+
+/// スロット `i` の入口のアドレス。`ret` はそのコールバックの戻り値のクラスに合わせる。
+/// C はこのポインタをコールバックの関数型の呼び出し規約で呼ぶので、戻り値のレジスタが一致していなければならない。
+/// 入口のアドレスは実行時に構築する (`fn` から `usize` へのキャストは const eval では不可)。
+static POOLS: std::sync::OnceLock<[[usize; CALLBACK_SLOTS]; 7]> = std::sync::OnceLock::new();
+
+macro_rules! pool_arr {
+    ($tramp:ident) => {[
+        $tramp::<0>  as *const () as usize,  $tramp::<1>  as *const () as usize,
+        $tramp::<2>  as *const () as usize,  $tramp::<3>  as *const () as usize,
+        $tramp::<4>  as *const () as usize,  $tramp::<5>  as *const () as usize,
+        $tramp::<6>  as *const () as usize,  $tramp::<7>  as *const () as usize,
+        $tramp::<8>  as *const () as usize,  $tramp::<9>  as *const () as usize,
+        $tramp::<10> as *const () as usize,  $tramp::<11> as *const () as usize,
+        $tramp::<12> as *const () as usize,  $tramp::<13> as *const () as usize,
+        $tramp::<14> as *const () as usize,  $tramp::<15> as *const () as usize,
+        $tramp::<16> as *const () as usize,  $tramp::<17> as *const () as usize,
+        $tramp::<18> as *const () as usize,  $tramp::<19> as *const () as usize,
+        $tramp::<20> as *const () as usize,  $tramp::<21> as *const () as usize,
+        $tramp::<22> as *const () as usize,  $tramp::<23> as *const () as usize,
+        $tramp::<24> as *const () as usize,  $tramp::<25> as *const () as usize,
+        $tramp::<26> as *const () as usize,  $tramp::<27> as *const () as usize,
+        $tramp::<28> as *const () as usize,  $tramp::<29> as *const () as usize,
+        $tramp::<30> as *const () as usize,  $tramp::<31> as *const () as usize,
+        $tramp::<32> as *const () as usize,  $tramp::<33> as *const () as usize,
+        $tramp::<34> as *const () as usize,  $tramp::<35> as *const () as usize,
+        $tramp::<36> as *const () as usize,  $tramp::<37> as *const () as usize,
+        $tramp::<38> as *const () as usize,  $tramp::<39> as *const () as usize,
+        $tramp::<40> as *const () as usize,  $tramp::<41> as *const () as usize,
+        $tramp::<42> as *const () as usize,  $tramp::<43> as *const () as usize,
+        $tramp::<44> as *const () as usize,  $tramp::<45> as *const () as usize,
+        $tramp::<46> as *const () as usize,  $tramp::<47> as *const () as usize,
+        $tramp::<48> as *const () as usize,  $tramp::<49> as *const () as usize,
+        $tramp::<50> as *const () as usize,  $tramp::<51> as *const () as usize,
+        $tramp::<52> as *const () as usize,  $tramp::<53> as *const () as usize,
+        $tramp::<54> as *const () as usize,  $tramp::<55> as *const () as usize,
+        $tramp::<56> as *const () as usize,  $tramp::<57> as *const () as usize,
+        $tramp::<58> as *const () as usize,  $tramp::<59> as *const () as usize,
+        $tramp::<60> as *const () as usize,  $tramp::<61> as *const () as usize,
+        $tramp::<62> as *const () as usize,  $tramp::<63> as *const () as usize,
+    ]};
+}
+
+pub fn trampoline(i: usize, ret: RetAbi) -> Option<usize> {
     if !GENERIC || i >= CALLBACK_SLOTS {
         return None;
     }
-    let t: [usize; CALLBACK_SLOTS] = pool!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
-        32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63);
-    Some(t[i])
+    let pools = POOLS.get_or_init(|| [
+        pool_arr!(tramp_void),
+        pool_arr!(tramp_int),
+        pool_arr!(tramp_int2),
+        pool_arr!(tramp_f64),
+        pool_arr!(tramp_f64_2),
+        pool_arr!(tramp_int_f64),
+        pool_arr!(tramp_f64_int),
+    ]);
+    let p = match ret {
+        RetAbi::Void => &pools[0],
+        RetAbi::Int => &pools[1],
+        RetAbi::Int2 => &pools[2],
+        RetAbi::F64 => &pools[3],
+        RetAbi::F64_2 => &pools[4],
+        RetAbi::IntF64 => &pools[5],
+        RetAbi::F64Int => &pools[6],
+    };
+    Some(p[i])
 }

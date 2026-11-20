@@ -25,7 +25,7 @@ enum PinTarget {
     One(Rc<dyn Place>),
 }
 
-/// コールバックの引数・戻り値の種類。
+/// コールバックの引数・戻り値の種類。`Agg` は `layout c` の構造体を値で渡す/返す。
 #[derive(Clone)]
 enum CbTy {
     Int(&'static str),
@@ -33,6 +33,7 @@ enum CbTy {
     F32,
     F64,
     Unit,
+    Agg(CTy),
 }
 
 pub struct CbSlot {
@@ -623,32 +624,51 @@ impl Interp {
             }
             _ => return Err("a function type argument must be a function or a closure without captures".into()),
         };
+        // 戻り値のクラスを先に決める (キャッシュヒット時も trampoline に rabi を渡す必要がある)。
+        let ret = self.cb_ty(tel(t, 2), file)?;
+        let rabi = match &ret {
+            CbTy::Unit => ffi::RetAbi::Void,
+            CbTy::Int(_) | CbTy::Ptr => ffi::RetAbi::Int,
+            CbTy::F32 | CbTy::F64 => ffi::RetAbi::F64,
+            CbTy::Agg(cty) => ffi::ret_abi(cty),
+        };
         if let Some(i) = self.cbs.iter().position(|s| s.key == key) {
-            return ffi::trampoline(i).ok_or_else(|| callback_unsupported());
+            return ffi::trampoline(i, rabi).ok_or_else(|| callback_unsupported());
         }
         let mut params = vec![];
-        let (mut ng, mut nf_) = (0, 0);
+        let (mut ng, mut nf) = (0, 0);
         for pt in crate::check::items(tel(t, 1)) {
             let k = self.cb_ty(pt, file)?;
-            match k {
-                CbTy::F32 | CbTy::F64 => nf_ += 1,
+            match &k {
+                CbTy::F32 | CbTy::F64 => nf += 1,
+                CbTy::Agg(cty) => match ffi::classify(cty) {
+                    ffi::Pass::Regs(cls) => {
+                        ng += cls.iter().filter(|c| !**c).count();
+                        nf += cls.iter().filter(|c| **c).count();
+                    }
+                    ffi::Pass::Memory => ng += 1,
+                },
                 _ => ng += 1,
             }
             params.push((k, pt.clone()));
         }
-        if ng > 6 || nf_ > 8 {
+        // メモリ返し (`sret`) の構造体は、第 1 整数レジスタを戻り先のポインタに使う。
+        let sret = matches!(&ret, CbTy::Agg(cty) if ffi::classify(cty) == ffi::Pass::Memory);
+        if sret {
+            ng += 1;
+        }
+        if ng > 6 || nf > 8 {
             return Err("a callback takes at most 6 integer/pointer and 8 floating-point parameters in the interpreter".into());
         }
-        let ret = self.cb_ty(tel(t, 2), file)?;
         if self.cbs.len() >= ffi::VM_SLOT_BASE {
             return Err(format!("too many distinct callbacks ({} at most in the interpreter)", ffi::VM_SLOT_BASE));
         }
         ffi::set_callback_handler(cb_handler);
         self.cbs.push(CbSlot { key, f, params, ret });
-        ffi::trampoline(self.cbs.len() - 1).ok_or_else(|| callback_unsupported())
+        ffi::trampoline(self.cbs.len() - 1, rabi).ok_or_else(|| callback_unsupported())
     }
 
-    fn cb_ty(&self, t: &V, _file: &str) -> Result<CbTy, String> {
+    fn cb_ty(&self, t: &V, file: &str) -> Result<CbTy, String> {
         use crate::check::{tag, tel};
         Ok(match tag(t).as_str() {
             "tuple" => CbTy::Unit,
@@ -661,17 +681,23 @@ impl Interp {
                     _ => CbTy::Int(scalar_name(&p).ok_or("a callback parameter type is not a C scalar")?),
                 }
             }
-            _ => return Err("a callback takes and returns only integers, floats, bool, char, pointers and `()` (structs by value are not supported)".into()),
+            "named" => match self.cty_of(t, file)? {
+                CTy::Struct(s) => CbTy::Agg(CTy::Struct(Rc::clone(&s))),
+                _ => return Err("a callback takes and returns only integers, floats, bool, char, pointers, `()` and `layout c` structs by value".into()),
+            },
+            _ => return Err("a callback takes and returns only integers, floats, bool, char, pointers, `()` and `layout c` structs by value".into()),
         })
     }
 
     /// 入口から呼ばれる: レジスタの中身を Kasane の値にして関数を呼び、戻り値をレジスタの中身にする。
-    fn run_callback(&mut self, slot: usize, gp: &[u64; 6], sse: &[u64; 8]) -> (u64, u64) {
+    fn run_callback(&mut self, slot: usize, gp: &[u64; 6], sse: &[u64; 8], out: &mut ffi::RetRegs) {
         let (f, params, ret) = {
             let s = &self.cbs[slot];
             (s.f.clone(), s.params.clone(), s.ret.clone())
         };
-        let (mut gi, mut si) = (0, 0);
+        // メモリ返し (`sret`) なら第 1 GP 引数は戻り先のポインタで、実引数はそれから始まる。
+        let sret = matches!(&ret, CbTy::Agg(t) if ffi::classify(t) == ffi::Pass::Memory);
+        let (mut gi, mut si) = (if sret { 1 } else { 0 }, 0);
         let mut args = vec![];
         for (k, _) in &params {
             args.push(match k {
@@ -704,20 +730,87 @@ impl Interp {
                     }
                 }
                 CbTy::Unit => Val::Unit,
+                CbTy::Agg(cty) => match ffi::classify(cty) {
+                    ffi::Pass::Regs(cls) => {
+                        let mut buf = vec![0u8; cty.size() as usize];
+                        let (mut gj, mut sj) = (gi, si);
+                        for (j, &is_sse) in cls.iter().enumerate() {
+                            let v = if is_sse { sse[sj] } else { gp[gj] };
+                            if is_sse { sj += 1 } else { gj += 1 };
+                            let lo = j * 8;
+                            let hi = (lo + 8).min(buf.len());
+                            buf[lo..hi].copy_from_slice(&v.to_le_bytes()[..hi - lo]);
+                        }
+                        gi = gj;
+                        si = sj;
+                        self.val_from_mem(cty, &buf)
+                    }
+                    ffi::Pass::Memory => {
+                        let p = gp[gi];
+                        gi += 1;
+                        let b = unsafe { std::slice::from_raw_parts(p as *const u8, cty.size() as usize) };
+                        self.val_from_mem(cty, b)
+                    }
+                },
             });
         }
         // コールバックの中の C を呼ぶ処理は、C のメモリが正 (ピンの同期をしない) のまま、深さを保つ。
         let r = self.call_value(&f, args);
         match r {
-            Ok(v) => match (ret, dr(&v)) {
-                (CbTy::Unit, _) => (0, 0),
-                (CbTy::F32, Val::F32(x)) => (0, x.to_bits() as u64),
-                (CbTy::F64, Val::Float(x)) => (0, x.to_bits()),
-                (_, Val::Int(x, _)) => (x as i64 as u64, 0),
-                (_, Val::Bool(b)) => (b as u64, 0),
-                (_, Val::Char(c)) => (c as u64, 0),
-                _ => (0, 0),
-            },
+            Ok(v) => {
+                let dv = dr(&v);
+                match (ret, dv) {
+                    (CbTy::Unit, _) => {}
+                    (CbTy::F32, Val::F32(x)) => out.x0 = x.to_bits() as u64,
+                    (CbTy::F64, Val::Float(x)) => out.x0 = x.to_bits(),
+                    (CbTy::Int(_) | CbTy::Ptr, Val::Int(x, _)) => out.rax = x as i64 as u64,
+                    (CbTy::Int(_), Val::Bool(b)) => out.rax = b as u64,
+                    (CbTy::Int(_), Val::Char(c)) => out.rax = c as u64,
+                    (CbTy::Agg(cty), Val::Struct(..)) => {
+                        let mut buf = vec![0u8; cty.size() as usize];
+                        if let Err(e) = self.val_to_mem(&v, &cty, &mut buf) {
+                            self.die(101, Some(e));
+                        }
+                        match ffi::classify(&cty) {
+                            ffi::Pass::Memory => {
+                                unsafe {
+                                    std::ptr::copy_nonoverlapping(
+                                        buf.as_ptr(),
+                                        gp[0] as *mut u8,
+                                        cty.size() as usize,
+                                    )
+                                };
+                            }
+                            ffi::Pass::Regs(cls) => {
+                                let (mut gj, mut sj) = (0, 0);
+                                for (j, &is_sse) in cls.iter().enumerate() {
+                                    let mut x = [0u8; 8];
+                                    let lo = j * 8;
+                                    let hi = (lo + 8).min(buf.len());
+                                    x[..hi - lo].copy_from_slice(&buf[lo..hi]);
+                                    let vv = u64::from_le_bytes(x);
+                                    if is_sse {
+                                        if sj == 0 {
+                                            out.x0 = vv;
+                                        } else {
+                                            out.x1 = vv;
+                                        }
+                                        sj += 1;
+                                    } else {
+                                        if gj == 0 {
+                                            out.rax = vv;
+                                        } else {
+                                            out.rdx = vv;
+                                        }
+                                        gj += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
             // コールバックは `panics never` なので panic しない。スタックの深さの超過 (5.2) など、C のフレームを越えて
             // 巻き戻せない異常は、その場でプロセスを止める (panic は終了コード 101、スタックオーバーフローは 102)。
             Err(Ctl::Exit(c)) => self.die(c, None),
@@ -740,7 +833,7 @@ fn callback_unsupported() -> String {
 }
 
 /// 入口 (`ffi::tramp`) から呼ばれるハンドラ。
-fn cb_handler(slot: usize, gp: &[u64; 6], sse: &[u64; 8]) -> (u64, u64) {
+fn cb_handler(slot: usize, gp: &[u64; 6], sse: &[u64; 8], out: &mut ffi::RetRegs) {
     let p = CUR.with(|c| c.get());
     if p.is_null() {
         eprintln!("panic: a C callback was called outside of an extern call");
@@ -748,8 +841,5 @@ fn cb_handler(slot: usize, gp: &[u64; 6], sse: &[u64; 8]) -> (u64, u64) {
     }
     // 呼び出し元の `extern_call` は、C から戻るまで `self` に触らない。
     let it = unsafe { &mut *p };
-    it.run_callback(slot, gp, sse)
+    it.run_callback(slot, gp, sse, out)
 }
-
-#[allow(dead_code)]
-fn _unused(_: Pass) {}

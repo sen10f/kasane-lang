@@ -256,7 +256,20 @@ fn emit_array(v: &Value) -> String {
 fn emit_inline_table(v: &Value) -> String {
     match v.as_table() {
         Some(t) => {
-            let items: Vec<String> = t.iter().map(|(k, val)| format!("{} = {}", k, emit_value(val))).collect();
+            let items: Vec<String> = t
+                .iter()
+                .map(|(k, val)| {
+                    let value = if k == "version" {
+                        val.as_str()
+                            .and_then(|s| crate::semver::parse_range(s).ok())
+                            .map(|r| canon_str(&r.to_string()))
+                            .unwrap_or_else(|| emit_value(val))
+                    } else {
+                        emit_value(val)
+                    };
+                    format!("{} = {}", k, value)
+                })
+                .collect();
             format!("{{ {} }}", items.join(", "))
         }
         None => emit_value(v),

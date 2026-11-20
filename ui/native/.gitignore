@@ -1,0 +1,4 @@
+third_party/
+*.o
+libksnui.a
+libksnui.so
