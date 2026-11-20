@@ -30,7 +30,13 @@ thread_local! {
 }
 
 /// `ffi::tramp` の VM 用ハンドラ。
-fn vm_cb_handler(slot: usize, gp: &[u64; 6], sse: &[u64; 8], out: &mut crate::ffi::RetRegs) {
+fn vm_cb_handler(
+    slot: usize,
+    gp: &[u64; 6],
+    sse: &[u64; 8],
+    _stack: *const u64,
+    out: &mut crate::ffi::RetRegs,
+) {
     let p = CUR_VM.with(|c| c.get());
     if p.is_null() {
         eprintln!("panic: a C callback was called outside of an extern call");
@@ -38,7 +44,7 @@ fn vm_cb_handler(slot: usize, gp: &[u64; 6], sse: &[u64; 8], out: &mut crate::ff
     }
     // SAFETY: 呼び出し元の `CallExt` は、C から戻るまで `self` に触らない。
     let vm = unsafe { &mut *p };
-    vm.run_callback(slot - crate::ffi::VM_SLOT_BASE, gp, sse, out)
+    vm.run_callback(slot - crate::ffi::VM_SLOT_BASE, gp, sse, _stack, out)
 }
 
 const PROF: bool = option_env!("KSN_VM_PROF").is_some();
@@ -255,7 +261,14 @@ impl<'a> Vm<'a> {
     }
 
     /// C から呼ばれた入口 (スロット `slot`) の処理: レジスタの中身を引数にして VM の関数を走らせ、戻り値をレジスタの中身にする。
-    fn run_callback(&mut self, slot: usize, gp: &[u64; 6], sse: &[u64; 8], out: &mut crate::ffi::RetRegs) {
+    fn run_callback(
+        &mut self,
+        slot: usize,
+        gp: &[u64; 6],
+        sse: &[u64; 8],
+        _stack: *const u64,
+        out: &mut crate::ffi::RetRegs,
+    ) {
         let (vi, ci) = self.cbs[slot];
         let prog: &Prog = unsafe { &*self.vers[vi as usize] };
         let cf = &prog.funcs[ci as usize];

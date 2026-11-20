@@ -22,6 +22,117 @@ pub fn name_needs_module_msg(kw: &str, module: Option<&str>, name: &str) -> Stri
     )
 }
 
+/// E0055 (100 文字を超える行) の文面。構造体リテラルを 1 行に置いた行には、その直し方を 1 文足す
+/// (構造体リテラルは折り返せないので、字段の値を `let` で先に束縛する)。文法の事前検査
+/// (`grammar.rs` の `precheck`) とここで 1 つにそろえる。
+pub fn long_line_msg(line: &str) -> String {
+    let mut m = "this line is longer than 100 characters: shorten it (drop a redundant type annotation, or bind a sub-expression with `let`)".to_string();
+    if has_struct_literal(&line.chars().collect::<Vec<char>>()) {
+        m.push_str("; struct literals are one line: bind field values with `let` first");
+    }
+    m
+}
+
+/// 行の中に `Name { field: value, .. }` の形の構造体リテラルがあるか (字だけの簡易判定)。
+/// `{` の直前の名前が大文字で始まり、対応する `}` までの同深さに `:` があれば構造体リテラルとする。
+/// ブロック (`if cond {`・`else {`・`=> {`) は直前が小文字の語・記号なので、ここでは構造体リテラルと見ない。
+fn has_struct_literal(cs: &[char]) -> bool {
+    for (i, c) in cs.iter().enumerate() {
+        if *c != '{' {
+            continue;
+        }
+        let mut j = i;
+        while j > 0 && (cs[j - 1] == ' ') {
+            j -= 1;
+        }
+        let mut k = j;
+        while k > 0 && (cs[k - 1].is_alphanumeric() || cs[k - 1] == '_') {
+            k -= 1;
+        }
+        if k >= j || !cs[k].is_ascii_uppercase() {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut colon = false;
+        for d in cs.iter().skip(i) {
+            match d {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                ':' if depth == 1 => colon = true,
+                _ => {}
+            }
+        }
+        if colon {
+            return true;
+        }
+    }
+    false
+}
+
+/// match の腕の末尾の `,` (E0049) を行をまたぐ括弧の深さで追う (`scan` が 1 行ずつ渡す)。
+/// リテラルとコメントは空白に置き換えたコード部分 (`code_part`) だけを見る。
+#[derive(Default)]
+struct Arms {
+    /// 開いている波括弧の数。
+    brace: usize,
+    /// 開いている丸括弧・角括弧の数 (腕の末尾ではない `,` を除く)。
+    bracket: usize,
+    /// match の `{` を開いた時点の波括弧の数 (腕の深さ)。入れ子の match も持ちうる。
+    arm: Vec<usize>,
+    /// `match` を見かけて `{` を待っているか (式が次の行に続くこともある)。
+    pending: bool,
+}
+
+impl Arms {
+    /// 1 行を読み、腕の末尾の `,` の位置 (コード部分の 0 始まりの字) を返す。
+    fn line(&mut self, cs: &[char]) -> Vec<usize> {
+        let mut out = vec![];
+        for (i, c) in cs.iter().enumerate() {
+            match c {
+                '{' => {
+                    self.brace += 1;
+                    if self.pending {
+                        self.arm.push(self.brace);
+                        self.pending = false;
+                    }
+                }
+                '}' => {
+                    if self.arm.last() == Some(&self.brace) {
+                        self.arm.pop();
+                    }
+                    self.brace = self.brace.saturating_sub(1);
+                }
+                '(' | '[' => self.bracket += 1,
+                ')' | ']' => self.bracket = self.bracket.saturating_sub(1),
+                ',' if self.bracket == 0 && self.arm.last() == Some(&self.brace) => out.push(i),
+                _ => {}
+            }
+            if has_match_word(cs, i) {
+                self.pending = true;
+            }
+        }
+        out
+    }
+}
+
+/// `cs[i..]` が 1 語の `match` で始まるか (`.` や識別子の直後にあるものは除く)。
+fn has_match_word(cs: &[char], i: usize) -> bool {
+    let word: [char; 5] = ['m', 'a', 't', 'c', 'h'];
+    if !cs[i..].starts_with(&word) {
+        return false;
+    }
+    let prev = if i == 0 { ' ' } else { cs[i - 1] };
+    if prev == '.' || prev.is_alphanumeric() || prev == '_' {
+        return false;
+    }
+    cs.get(i + 5).map_or(true, |n| !(n.is_alphanumeric() || *n == '_'))
+}
+
 /// 行から、リテラルとコメントを空白に置き換えたコード部分 (文字数は変えない) を返す。
 fn code_part(line: &str) -> Vec<char> {
     let chars: Vec<char> = line.chars().collect();
@@ -68,6 +179,8 @@ fn code_part(line: &str) -> Vec<char> {
 pub fn scan(text: &str) -> Vec<Hit> {
     let mut hits = vec![];
     let lines: Vec<&str> = text.split('\n').collect();
+    // match の腕の末尾の `,` (E0049) を行をまたぐ括弧の深さで追う。
+    let mut arms = Arms::default();
     for (idx, line) in lines.iter().enumerate() {
         let ln = idx + 1;
         let code = code_part(line);
@@ -75,6 +188,17 @@ pub fn scan(text: &str) -> Vec<Hit> {
         let t = s.trim_end();
         if t.trim().is_empty() {
             continue;
+        }
+        // match の腕の末尾の `,`: 腕の行 (`=>` がある行) のものと、腕の本体が複数行 (ブロック・
+        // 呼び出しの引数) のときの末尾の `,`。`match` の波括弧の 1 つ内側で、括弧の外側にある
+        // 行末の `,` だけを腕の末尾と見る (引数リスト・配列・構造体リテラル・タプルの中は除く)。
+        for i in arms.line(&code) {
+            hits.push(Hit {
+                code: "E0049",
+                line: ln,
+                col: i + 1,
+                msg: "Kasane match arms are separated by newlines: remove the trailing `,`".into(),
+            });
         }
         let indent = s.len() - s.trim_start().len();
         // 行末の `;`
@@ -257,8 +381,8 @@ pub fn scan(text: &str) -> Vec<Hit> {
                 code: "E0055",
                 line: ln,
                 col: 101,
-                msg: "this line is longer than 100 characters: shorten it (drop a redundant type annotation, or bind a sub-expression with `let`)"
-                    .into(),
+                msg: long_line_msg(t)
+                .into(),
             });
         }
         // 標準ライブラリの型名を裸で書いている (`Vec` `HashMap` `String` `BTreeMap` `VecDeque` `Box`)。
@@ -322,15 +446,6 @@ pub fn scan(text: &str) -> Vec<Hit> {
                 col: b + 1,
                 msg: "Kasane struct literals use braces: `bench.Counter { count: 0u32 }` (fields as `name: value`), not parentheses"
                     .into(),
-            });
-        }
-        // match のアームは行で区切る: 末尾の `,` は不要
-        if t.contains("=>") && t.ends_with(',') {
-            hits.push(Hit {
-                code: "E0049",
-                line: ln,
-                col: t.chars().count(),
-                msg: "Kasane match arms are separated by newlines: remove the trailing `,`".into(),
             });
         }
         // match の腕: `=>` の後で改行しない。本体は `=>` と同じ行から始める (ブロックなら `=> {` と書く)。

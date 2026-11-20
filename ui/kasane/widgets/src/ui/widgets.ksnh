@@ -1,0 +1,565 @@
+// ui.widgets — Z9 見た目の部品。GPU や FFI に触れず、ui.layout のノードだけを
+// 組み立て、ui.event.Event に反応する。ボタン・テキスト入力・リスト。
+type ui.widgets.Button derive [Debug, Clone, Copy, PartialEq] pub
+    hovered: bool pub
+    pressed: bool pub
+    focused: bool pub
+    clicked: bool pub
+end ui.widgets.Button
+
+type ui.widgets.List derive [Debug] pub
+    rc: usize pub
+    ih: f32 pub
+    sy: f32 pub
+    vh: f32 pub
+    keys: alloc.vec.Vec<u64, std.alloc.System> pub
+    sel: Option<usize> pub
+end ui.widgets.List
+
+type ui.widgets.TextInput derive [Debug] pub
+    text: alloc.vec.Vec<u8, std.alloc.System> pub
+    caret: usize pub
+    ss: usize pub
+    se: usize pub
+    comp: alloc.vec.Vec<u8, std.alloc.System> pub
+    focused: bool pub
+end ui.widgets.TextInput
+
+fn ui.widgets.Button.new() -> ui.widgets.Button uses [] panics never pub
+    ui.widgets.Button { hovered: false, pressed: false, focused: false, clicked: false }
+end ui.widgets.Button.new
+
+fn ui.widgets.Button.on_event(self: &mut ui.widgets.Button, event: &ui.event.Event, rect: ui.layout.Rect, _ctx: &mut ui.event.Ctx) -> ui.event.Action uses [] panics never pub
+    match event {
+        ui.event.Event.PointerMove(x, y) => {
+            let hovered = ui.event.rect_contains(rect, *x, *y)
+            if hovered != self.hovered {
+                self.hovered = hovered
+                ui.event.Action.Redraw
+            } else {
+                ui.event.Action.NoOp
+            }
+        }
+        ui.event.Event.PointerDown(x, y, _) => if ui.event.rect_contains(rect, *x, *y) {
+            self.pressed = true
+            ui.event.Action.Redraw
+        } else {
+            ui.event.Action.NoOp
+        }
+        ui.event.Event.PointerUp(x, y, _) => if self.pressed {
+            self.pressed = false
+            if ui.event.rect_contains(rect, *x, *y) {
+                self.clicked = true
+            }
+            ui.event.Action.Redraw
+        } else {
+            ui.event.Action.NoOp
+        }
+        ui.event.Event.KeyDown(key, _) => if self.focused && (*key == 13u32 || *key == 32u32) {
+            self.clicked = true
+            ui.event.Action.Redraw
+        } else {
+            ui.event.Action.NoOp
+        }
+        ui.event.Event.Wheel(_, _, _, _) => ui.event.Action.NoOp
+        ui.event.Event.KeyUp(_, _) => ui.event.Action.NoOp
+        ui.event.Event.TextInput(_) => ui.event.Action.NoOp
+        ui.event.Event.IMEStart => ui.event.Action.NoOp
+        ui.event.Event.IMEUpdate(_) => ui.event.Action.NoOp
+        ui.event.Event.IMECommit(_) => ui.event.Action.NoOp
+        ui.event.Event.FocusGained => {
+            self.focused = true
+            ui.event.Action.Redraw
+        }
+        ui.event.Event.FocusLost => {
+            self.focused = false
+            ui.event.Action.Redraw
+        }
+        ui.event.Event.Resize(_, _) => ui.event.Action.NoOp
+        ui.event.Event.DPIChange(_) => ui.event.Action.NoOp
+        ui.event.Event.Quit => ui.event.Action.NoOp
+    }
+end ui.widgets.Button.on_event
+
+fn ui.widgets.List.key(self: &ui.widgets.List, index: usize) -> Option<u64> uses [] panics never pub
+    match self.keys.get(index) {
+        Some(v) => Some(*v)
+        None => None
+    }
+end ui.widgets.List.key
+
+fn ui.widgets.List.max_scroll(self: &ui.widgets.List) -> f32 uses [] panics never pub
+    let total = core.num.f32.from_usize_nearest(self.rc) * self.ih
+    (total - self.vh).max(0.0f32)
+end ui.widgets.List.max_scroll
+
+fn ui.widgets.List.new() -> ui.widgets.List uses [] panics never pub
+    let keys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    ui.widgets.List { rc: 0usize, ih: 24.0f32, sy: 0.0f32, vh: 0.0f32, keys: keys, sel: None }
+end ui.widgets.List.new
+
+fn ui.widgets.List.on_event(self: &mut ui.widgets.List, event: &ui.event.Event, _ctx: &mut ui.event.Ctx) -> ui.event.Action uses [] panics never pub
+    match event {
+        ui.event.Event.Wheel(_, dy, _, _) => {
+            let mut scroll = self.sy + *dy
+            let max_scroll = self.max_scroll()
+            if scroll < 0.0f32 {
+                scroll = 0.0f32
+            }
+            if scroll > max_scroll {
+                scroll = max_scroll
+            }
+            if scroll != self.sy {
+                self.sy = scroll
+                ui.event.Action.Redraw
+            } else {
+                ui.event.Action.NoOp
+            }
+        }
+        ui.event.Event.PointerDown(_x, y, _) => {
+            if self.ih > 0.0f32 {
+                let row = (*y + self.sy) / self.ih
+                let r = match row.trunc_to_usize() {
+                    Some(v) => v
+                    None => 0usize
+                }
+                let index = if r < self.rc {
+                    r
+                } else {
+                    self.rc.wrapping_sub(1usize)
+                }
+                self.sel = if self.rc == 0usize {
+                    None
+                } else {
+                    Some(index)
+                }
+            }
+            ui.event.Action.Redraw
+        }
+        ui.event.Event.KeyDown(key, _) => {
+            let mut changed = false
+            if *key == 38u32 {
+                match self.sel {
+                    Some(s) => if s > 0usize {
+                        self.sel = Some(s.wrapping_sub(1usize))
+                        changed = true
+                    }
+                    None => if self.rc > 0usize {
+                        self.sel = Some(0usize)
+                        changed = true
+                    }
+                }
+            } else if *key == 40u32 {
+                match self.sel {
+                    Some(s) => {
+                        let n = s.wrapping_add(1usize)
+                        if n < self.rc {
+                            self.sel = Some(n)
+                            changed = true
+                        }
+                    }
+                    None => if self.rc > 0usize {
+                        self.sel = Some(0usize)
+                        changed = true
+                    }
+                }
+            } else if *key == 36u32 {
+                self.sy = 0.0f32
+                changed = true
+            } else if *key == 35u32 {
+                self.sy = self.max_scroll()
+                changed = true
+            }
+            if changed {
+                ui.event.Action.Redraw
+            } else {
+                ui.event.Action.NoOp
+            }
+        }
+        ui.event.Event.PointerMove(_, _) => ui.event.Action.NoOp
+        ui.event.Event.PointerUp(_, _, _) => ui.event.Action.NoOp
+        ui.event.Event.KeyUp(_, _) => ui.event.Action.NoOp
+        ui.event.Event.TextInput(_) => ui.event.Action.NoOp
+        ui.event.Event.IMEStart => ui.event.Action.NoOp
+        ui.event.Event.IMEUpdate(_) => ui.event.Action.NoOp
+        ui.event.Event.IMECommit(_) => ui.event.Action.NoOp
+        ui.event.Event.FocusGained => ui.event.Action.NoOp
+        ui.event.Event.FocusLost => ui.event.Action.NoOp
+        ui.event.Event.Resize(_, _) => ui.event.Action.NoOp
+        ui.event.Event.DPIChange(_) => ui.event.Action.NoOp
+        ui.event.Event.Quit => ui.event.Action.NoOp
+    }
+end ui.widgets.List.on_event
+
+fn ui.widgets.List.row_rect(self: &ui.widgets.List, index: usize, width: f32) -> ui.layout.Rect uses [] panics never pub
+    let y = self.row_y(index)
+    ui.layout.Rect { x: 0.0f32, y: y, width: width, height: self.ih }
+end ui.widgets.List.row_rect
+
+fn ui.widgets.List.row_y(self: &ui.widgets.List, index: usize) -> f32 uses [] panics never pub
+    core.num.f32.from_usize_nearest(index) * self.ih - self.sy
+end ui.widgets.List.row_y
+
+fn ui.widgets.List.scroll_to(self: &mut ui.widgets.List, index: usize) -> () uses [] panics never pub
+    if index >= self.rc {
+        return
+    }
+    let y = core.num.f32.from_usize_nearest(index) * self.ih
+    let mut scroll = self.sy
+    if y < scroll {
+        scroll = y
+    }
+    let bottom = y + self.ih
+    if bottom > scroll + self.vh {
+        scroll = bottom - self.vh
+    }
+    let max_scroll = self.max_scroll()
+    if scroll < 0.0f32 {
+        scroll = 0.0f32
+    }
+    if scroll > max_scroll {
+        scroll = max_scroll
+    }
+    self.sy = scroll
+end ui.widgets.List.scroll_to
+
+fn ui.widgets.List.visible_range(self: &ui.widgets.List) -> (usize, usize) uses [] panics never pub
+    if self.rc == 0usize || self.ih <= 0.0f32 {
+        return (0usize, 0usize)
+    }
+    let first_f = self.sy / self.ih
+    let first0 = match first_f.trunc_to_usize() {
+        Some(v) => v
+        None => 0usize
+    }
+    let first = if first0 > self.rc {
+        self.rc
+    } else {
+        first0
+    }
+    let last_f = (self.sy + self.vh) / self.ih
+    let last0 = match last_f.trunc_to_usize() {
+        Some(v) => v.wrapping_add(1usize)
+        None => self.rc
+    }
+    let last1 = if last0 > self.rc {
+        self.rc
+    } else {
+        last0
+    }
+    let last = if last1 < first {
+        first
+    } else {
+        last1
+    }
+    (first, last)
+end ui.widgets.List.visible_range
+
+fn ui.widgets.TextInput.caret_offset(self: &ui.widgets.TextInput) -> usize uses [] panics never pub
+    self.caret.wrapping_add(self.comp.len())
+end ui.widgets.TextInput.caret_offset
+
+fn ui.widgets.TextInput.delete_backspace(self: &mut ui.widgets.TextInput) -> () uses [] panics never pub
+    let (lo, hi) = self.sel_range()
+    if lo != hi {
+        let mut removed = 0usize
+        while removed < hi.wrapping_sub(lo) {
+            match self.text.remove(lo) {
+                Some(_u) => ()
+                None => break
+            }
+            removed = removed.wrapping_add(1usize)
+        }
+        self.caret = lo
+        self.ss = lo
+        self.se = lo
+    } else if self.caret > 0usize {
+        let text = self.text.as_slice()
+        let prev = ui.widgets.utf8_prev_boundary(text, self.caret)
+        let count = self.caret.wrapping_sub(prev)
+        let mut removed = 0usize
+        while removed < count {
+            match self.text.remove(prev) {
+                Some(_u) => ()
+                None => break
+            }
+            removed = removed.wrapping_add(1usize)
+        }
+        self.caret = prev
+        self.ss = prev
+        self.se = prev
+    }
+end ui.widgets.TextInput.delete_backspace
+
+fn ui.widgets.TextInput.delete_forward(self: &mut ui.widgets.TextInput) -> () uses [] panics never pub
+    let (lo, hi) = self.sel_range()
+    if lo != hi {
+        let mut removed = 0usize
+        while removed < hi.wrapping_sub(lo) {
+            match self.text.remove(lo) {
+                Some(_u) => ()
+                None => break
+            }
+            removed = removed.wrapping_add(1usize)
+        }
+        self.caret = lo
+        self.ss = lo
+        self.se = lo
+    } else {
+        let n = self.text.len()
+        if self.caret < n {
+            let text = self.text.as_slice()
+            let next = ui.widgets.utf8_next_boundary(text, self.caret)
+            let count = next.wrapping_sub(self.caret)
+            let mut removed = 0usize
+            while removed < count {
+                match self.text.remove(self.caret) {
+                    Some(_u) => ()
+                    None => break
+                }
+                removed = removed.wrapping_add(1usize)
+            }
+        }
+    }
+end ui.widgets.TextInput.delete_forward
+
+fn ui.widgets.TextInput.display(self: &ui.widgets.TextInput) -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let text = self.text.as_slice()
+    let mut i = 0usize
+    while i < self.caret {
+        match text.get(i) {
+            Some(v) => match out.push(*v) {
+                Ok(_u) => ()
+                Err(_e) => ()
+            }
+            None => ()
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let comp = self.comp.as_slice()
+    let mut j = 0usize
+    while j < comp.len() {
+        match comp.get(j) {
+            Some(v) => match out.push(*v) {
+                Ok(_u) => ()
+                Err(_e) => ()
+            }
+            None => ()
+        }
+        j = j.wrapping_add(1usize)
+    }
+    let mut rest = self.caret
+    let n = text.len()
+    while rest < n {
+        match text.get(rest) {
+            Some(v) => match out.push(*v) {
+                Ok(_u) => ()
+                Err(_e) => ()
+            }
+            None => ()
+        }
+        rest = rest.wrapping_add(1usize)
+    }
+    out
+end ui.widgets.TextInput.display
+
+fn ui.widgets.TextInput.move_left(self: &mut ui.widgets.TextInput) -> () uses [] panics never pub
+    let (lo, hi) = self.sel_range()
+    self.caret = if lo != hi {
+        lo
+    } else {
+        let text = self.text.as_slice()
+        ui.widgets.utf8_prev_boundary(text, self.caret)
+    }
+    self.ss = self.caret
+    self.se = self.caret
+end ui.widgets.TextInput.move_left
+
+fn ui.widgets.TextInput.move_right(self: &mut ui.widgets.TextInput) -> () uses [] panics never pub
+    let (lo, hi) = self.sel_range()
+    self.caret = if lo != hi {
+        hi
+    } else {
+        let text = self.text.as_slice()
+        ui.widgets.utf8_next_boundary(text, self.caret)
+    }
+    self.ss = self.caret
+    self.se = self.caret
+end ui.widgets.TextInput.move_right
+
+fn ui.widgets.TextInput.new() -> ui.widgets.TextInput uses [] panics never pub
+    let t = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let c = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    ui.widgets.TextInput { text: t, caret: 0usize, ss: 0usize, se: 0usize, comp: c, focused: false }
+end ui.widgets.TextInput.new
+
+fn ui.widgets.TextInput.on_event(self: &mut ui.widgets.TextInput, event: &ui.event.Event, _ctx: &mut ui.event.Ctx) -> ui.event.Action uses [alloc] panics never pub
+    match event {
+        ui.event.Event.FocusGained => {
+            self.focused = true
+            ui.event.Action.Redraw
+        }
+        ui.event.Event.FocusLost => {
+            self.focused = false
+            self.comp.clear()
+            ui.event.Action.Redraw
+        }
+        ui.event.Event.TextInput(bytes) => {
+            if self.focused {
+                self.replace_sel(bytes.as_slice())
+            }
+            ui.event.Action.Redraw
+        }
+        ui.event.Event.IMEStart => {
+            self.comp.clear()
+            ui.event.Action.Redraw
+        }
+        ui.event.Event.IMEUpdate(comp) => {
+            self.comp.clear()
+            let c = comp.as_slice()
+            let mut k = 0usize
+            while k < c.len() {
+                match c.get(k) {
+                    Some(v) => match self.comp.push(*v) {
+                        Ok(_u) => ()
+                        Err(_e) => ()
+                    }
+                    None => ()
+                }
+                k = k.wrapping_add(1usize)
+            }
+            ui.event.Action.Redraw
+        }
+        ui.event.Event.IMECommit(comp) => {
+            if self.focused {
+                self.replace_sel(comp.as_slice())
+            }
+            self.comp.clear()
+            ui.event.Action.Redraw
+        }
+        ui.event.Event.KeyDown(key, _) => {
+            let action = if *key == 8u32 {
+                self.delete_backspace()
+                ui.event.Action.Redraw
+            } else if *key == 46u32 {
+                self.delete_forward()
+                ui.event.Action.Redraw
+            } else if *key == 37u32 {
+                self.move_left()
+                ui.event.Action.Redraw
+            } else if *key == 39u32 {
+                self.move_right()
+                ui.event.Action.Redraw
+            } else if *key == 36u32 {
+                self.caret = 0usize
+                self.ss = 0usize
+                self.se = 0usize
+                ui.event.Action.Redraw
+            } else if *key == 35u32 {
+                let n = self.text.len()
+                self.caret = n
+                self.ss = n
+                self.se = n
+                ui.event.Action.Redraw
+            } else {
+                ui.event.Action.NoOp
+            }
+            action
+        }
+        ui.event.Event.PointerMove(_, _) => ui.event.Action.NoOp
+        ui.event.Event.PointerDown(_, _, _) => ui.event.Action.NoOp
+        ui.event.Event.PointerUp(_, _, _) => ui.event.Action.NoOp
+        ui.event.Event.Wheel(_, _, _, _) => ui.event.Action.NoOp
+        ui.event.Event.KeyUp(_, _) => ui.event.Action.NoOp
+        ui.event.Event.Resize(_, _) => ui.event.Action.NoOp
+        ui.event.Event.DPIChange(_) => ui.event.Action.NoOp
+        ui.event.Event.Quit => ui.event.Action.NoOp
+    }
+end ui.widgets.TextInput.on_event
+
+fn ui.widgets.TextInput.replace_sel(self: &mut ui.widgets.TextInput, bytes: &[u8]) -> () uses [alloc] panics never pub
+    let (lo, hi) = self.sel_range()
+    let mut removed = 0usize
+    while removed < hi.wrapping_sub(lo) {
+        match self.text.remove(lo) {
+            Some(_u) => ()
+            None => break
+        }
+        removed = removed.wrapping_add(1usize)
+    }
+    let mut k = 0usize
+    while k < bytes.len() {
+        let b = match bytes.get(k) {
+            Some(v) => *v
+            None => 0u8
+        }
+        match self.text.insert(lo.wrapping_add(k), b) {
+            Ok(_u) => ()
+            Err(_e) => ()
+        }
+        k = k.wrapping_add(1usize)
+    }
+    self.caret = lo.wrapping_add(bytes.len())
+    self.ss = self.caret
+    self.se = self.caret
+end ui.widgets.TextInput.replace_sel
+
+fn ui.widgets.TextInput.sel_range(self: &ui.widgets.TextInput) -> (usize, usize) uses [] panics never pub
+    let lo = if self.ss <= self.se {
+        self.ss
+    } else {
+        self.se
+    }
+    let hi = if self.ss <= self.se {
+        self.se
+    } else {
+        self.ss
+    }
+    (lo, hi)
+end ui.widgets.TextInput.sel_range
+
+fn ui.widgets.utf8_lead_len(b: u8) -> usize uses [] panics never pub
+    if b < 128u8 {
+        1usize
+    } else if b < 192u8 {
+        2usize
+    } else if b < 224u8 {
+        3usize
+    } else if b < 240u8 {
+        4usize
+    } else {
+        0usize
+    }
+end ui.widgets.utf8_lead_len
+
+fn ui.widgets.utf8_next_boundary(bytes: &[u8], idx: usize) -> usize uses [] panics never pub
+    let n = bytes.len()
+    let mut i = idx.wrapping_add(1usize)
+    while i < n {
+        let b = match bytes.get(i) {
+            Some(v) => *v
+            None => 0u8
+        }
+        if b < 128u8 || b > 191u8 {
+            return i
+        }
+        i = i.wrapping_add(1usize)
+    }
+    n
+end ui.widgets.utf8_next_boundary
+
+fn ui.widgets.utf8_prev_boundary(bytes: &[u8], idx: usize) -> usize uses [] panics never pub
+    let mut i = idx
+    while i > 0usize {
+        i = i.wrapping_sub(1usize)
+        let b = match bytes.get(i) {
+            Some(v) => *v
+            None => 0u8
+        }
+        if b < 128u8 || b > 191u8 {
+            return i
+        }
+    }
+    0usize
+end ui.widgets.utf8_prev_boundary

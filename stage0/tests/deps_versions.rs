@@ -140,11 +140,13 @@ fn fmt_normalizes_dependency_ranges() {
 
 #[test]
 fn version_resolution_is_explicitly_not_implemented() {
+    // R2c で git の版の解決が入った: ロックに commit が無ければ `ksn update` を促す (E9010)。
     assert_diagnostic(
         "1.2.3",
         "dep = { git = \"https://example.org/x.git\", version = \"=1.2.3\" }\n",
-        "E9040",
+        "E9010",
     );
+    // レジストリの解決はまだ無い (R3)。
     assert_diagnostic(
         "1.2.3",
         "dep = { registry = \"https://example.org/registry.git\", version = \"=1.2.3\" }\n",

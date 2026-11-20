@@ -646,7 +646,8 @@ impl Interp {
                         ng += cls.iter().filter(|c| !**c).count();
                         nf += cls.iter().filter(|c| **c).count();
                     }
-                    ffi::Pass::Memory => ng += 1,
+                    // メモリクラスの構造体はスタック経由で渡され、レジスタは消費しない。
+                    ffi::Pass::Memory => {}
                 },
                 _ => ng += 1,
             }
@@ -690,7 +691,14 @@ impl Interp {
     }
 
     /// 入口から呼ばれる: レジスタの中身を Kasane の値にして関数を呼び、戻り値をレジスタの中身にする。
-    fn run_callback(&mut self, slot: usize, gp: &[u64; 6], sse: &[u64; 8], out: &mut ffi::RetRegs) {
+    fn run_callback(
+        &mut self,
+        slot: usize,
+        gp: &[u64; 6],
+        sse: &[u64; 8],
+        stack: *const u64,
+        out: &mut ffi::RetRegs,
+    ) {
         let (f, params, ret) = {
             let s = &self.cbs[slot];
             (s.f.clone(), s.params.clone(), s.ret.clone())
@@ -698,6 +706,7 @@ impl Interp {
         // メモリ返し (`sret`) なら第 1 GP 引数は戻り先のポインタで、実引数はそれから始まる。
         let sret = matches!(&ret, CbTy::Agg(t) if ffi::classify(t) == ffi::Pass::Memory);
         let (mut gi, mut si) = (if sret { 1 } else { 0 }, 0);
+        let mut stack_off = 0usize;
         let mut args = vec![];
         for (k, _) in &params {
             args.push(match k {
@@ -746,9 +755,13 @@ impl Interp {
                         self.val_from_mem(cty, &buf)
                     }
                     ffi::Pass::Memory => {
-                        let p = gp[gi];
-                        gi += 1;
-                        let b = unsafe { std::slice::from_raw_parts(p as *const u8, cty.size() as usize) };
+                        // メモリクラスの構造体はスタック (戻り番地のすぐ後、8 バイトずつ) に渡され、
+                        // レジスタは消費しない。それ以前のスタック渡しの構造体の分だけオフセットを進める。
+                        let n = (cty.size() as usize).div_ceil(8);
+                        let b = unsafe {
+                            std::slice::from_raw_parts(stack.add(stack_off) as *const u8, cty.size() as usize)
+                        };
+                        stack_off += n;
                         self.val_from_mem(cty, b)
                     }
                 },
@@ -833,7 +846,7 @@ fn callback_unsupported() -> String {
 }
 
 /// 入口 (`ffi::tramp`) から呼ばれるハンドラ。
-fn cb_handler(slot: usize, gp: &[u64; 6], sse: &[u64; 8], out: &mut ffi::RetRegs) {
+fn cb_handler(slot: usize, gp: &[u64; 6], sse: &[u64; 8], stack: *const u64, out: &mut ffi::RetRegs) {
     let p = CUR.with(|c| c.get());
     if p.is_null() {
         eprintln!("panic: a C callback was called outside of an extern call");
@@ -841,5 +854,5 @@ fn cb_handler(slot: usize, gp: &[u64; 6], sse: &[u64; 8], out: &mut ffi::RetRegs
     }
     // 呼び出し元の `extern_call` は、C から戻るまで `self` に触らない。
     let it = unsafe { &mut *p };
-    it.run_callback(slot, gp, sse, out)
+    it.run_callback(slot, gp, sse, stack, out)
 }

@@ -1,0 +1,15 @@
+[package]
+name = "golden"
+version = "0.1.0"
+edition = 1
+entry = "golden.main"
+
+[unsafe]
+modules = ["golden"]
+
+[native]
+static = ["../../native/libksnui.a"]
+dynamic = ["wgpu_native", "vulkan", "dl", "m", "pthread", "ksnui", "freetype", "harfbuzz"]
+search = ["../../native", "../../native/third_party/lib"]
+
+[dependencies]
