@@ -96,9 +96,9 @@ fn ksn_git_tags(url: &str) -> (i32, String, String) {
 #[test]
 fn semver_tags_are_listed_sorted() {
     let (repo, commit) = make_repo();
-    tag(repo, "v2.0.0", &commit, false);
-    tag(repo, "v1.0.0", &commit, false);
-    tag(repo, "v1.1.0", &commit, true); // annotated: peel の先も同じコミット
+    tag(&repo, "v2.0.0", &commit, false);
+    tag(&repo, "v1.0.0", &commit, false);
+    tag(&repo, "v1.1.0", &commit, true); // annotated: peel の先も同じコミット
     let (code, out, err) = ksn_git_tags(repo.to_str().unwrap());
     assert_eq!(code, 0, "stderr: {err}");
     assert_eq!(
@@ -111,7 +111,7 @@ fn semver_tags_are_listed_sorted() {
 #[test]
 fn annotated_tag_peels_to_the_tagged_commit() {
     let (repo, commit) = make_repo();
-    tag(repo, "v1.0.0", &commit, true);
+    tag(&repo, "v1.0.0", &commit, true);
     let (code, out, _) = ksn_git_tags(repo.to_str().unwrap());
     assert_eq!(code, 0);
     assert_eq!(out, format!("1.0.0 {commit}\n"));
@@ -120,13 +120,13 @@ fn annotated_tag_peels_to_the_tagged_commit() {
 #[test]
 fn non_semver_tags_are_ignored() {
     let (repo, commit) = make_repo();
-    tag(repo, "v1.0.0", &commit, false);
-    tag(repo, "v1.2", &commit, false);
-    tag(repo, "release-1", &commit, false);
-    tag(repo, "v01.2.3", &commit, false); // 先頭 0: 版ではない
-    tag(repo, "1.2.3", &commit, false); // `v` なし: 版ではない
-    tag(repo, "v1.2.3.4", &commit, false);
-    tag(repo, "v1.2.3-rc1", &commit, false);
+    tag(&repo, "v1.0.0", &commit, false);
+    tag(&repo, "v1.2", &commit, false);
+    tag(&repo, "release-1", &commit, false);
+    tag(&repo, "v01.2.3", &commit, false); // 先頭 0: 版ではない
+    tag(&repo, "1.2.3", &commit, false); // `v` なし: 版ではない
+    tag(&repo, "v1.2.3.4", &commit, false);
+    tag(&repo, "v1.2.3-rc1", &commit, false);
     let (code, out, _) = ksn_git_tags(repo.to_str().unwrap());
     assert_eq!(code, 0);
     assert_eq!(out, format!("1.0.0 {commit}\n"));

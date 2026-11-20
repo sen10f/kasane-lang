@@ -3039,6 +3039,35 @@ fn cmd_vendor() -> i32 {
     0
 }
 
+/// `ksn git tags <url>`: `git ls-remote --tags <url>` から `vMAJOR.MINOR.PATCH` タグだけを列挙し、
+/// `版 コミット` の形で版順に出力する (R1b。解決・lock への接続はまだ行わない)。
+fn cmd_git(rest: &[String]) -> i32 {
+    match rest.first() {
+        Some(t) if t == "tags" => match rest.get(1) {
+            Some(url) => match crate::git_tags::list_git_tags(url) {
+                Ok(tags) => {
+                    for (version, commit) in &tags {
+                        println!("{} {}", version, commit);
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("ksn git tags: {}", e.msg);
+                    1
+                }
+            },
+            None => {
+                eprintln!("usage: ksn git tags <url>");
+                2
+            }
+        },
+        _ => {
+            eprintln!("usage: ksn git tags <url>");
+            2
+        }
+    }
+}
+
 // ------------------------------------------------------------ build
 #[cfg(unix)]
 fn shared_link(m: &fs::Metadata) -> bool {
