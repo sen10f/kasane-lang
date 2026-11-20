@@ -577,14 +577,14 @@ pub fn git_cache_path(url: &str, rev: &str) -> PathBuf {
     cache_dir().join("git").join(&hex[..32])
 }
 
-fn git_cmd() -> std::process::Command {
+pub(crate) fn git_cmd() -> std::process::Command {
     let mut c = std::process::Command::new("git");
     // 認証を尋ねて止まらない。外部コマンドを起動する転送 (`ext::`) は許さない。
     c.env("GIT_TERMINAL_PROMPT", "0").env("GIT_ALLOW_PROTOCOL", "file:https:http:ssh:git").stdin(std::process::Stdio::null());
     c
 }
 
-fn git_run(args: &[&str]) -> Result<String, String> {
+pub(crate) fn git_run(args: &[&str]) -> Result<String, String> {
     match git_cmd().args(args).output() {
         Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).trim().to_string()),
         Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
