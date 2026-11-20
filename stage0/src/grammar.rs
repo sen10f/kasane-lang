@@ -894,7 +894,7 @@ mod memo_tests {
             }
             for text in variants {
                 let want = g.check(&text);
-                if want.0 {
+                if want.ok {
                     oks += 1;
                 } else {
                     errs += 1;
