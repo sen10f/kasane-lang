@@ -339,7 +339,7 @@ fn structs_of_many_shapes_cross_the_c_boundary_natively_on_x86_64() {
     let t = abi_pkg("ffi_abi_x86", cc_cmd);
     let c = run(&["check"], &t.0);
     assert_eq!(c.status.code(), Some(0), "{}{}", text(&c.stdout), text(&c.stderr));
-    // (インタプリタは構造体を引数・戻り値に持つコールバックを持たないので、`ksn run` との比較はしない。C の関数の呼び出しは examples/ffi/shapes などが比べる。)
+    // インタプリタも構造体を引数・戻り値に持つコールバックをサポートしたので、`ksn run` との比較は下の試験で行う。
     // ネイティブ (LLVM)。退避は許さない。
     let b = run(&["build", "--backend", "llvm"], &t.0);
     let out = text(&b.stdout) + &text(&b.stderr);
@@ -365,6 +365,84 @@ fn structs_of_many_shapes_cross_the_c_boundary_natively_on_aarch64() {
     let r = Command::new("qemu-aarch64").arg("-L").arg(sysroot()).arg(&exe).current_dir(&t.0).output().expect("run under qemu-aarch64");
     assert_eq!(r.status.code(), Some(0), "aarch64: {}{}", text(&r.stdout), text(&r.stderr));
     assert_eq!(text(&r.stdout), "abi ok\n");
+}
+
+#[test]
+fn callback_with_struct_by_value_matches_native_on_x86_64() {
+    // コールバックが `layout c` の構造体を値で取る/返すケース。インタプリタ (`ksn run`) とネイティブ (LLVM) の出力が一致することを確かめる。
+    // 非 x86_64 ホストではインタプリタのコールバックは使えないのでスキップする。
+    if !cfg!(all(target_arch = "x86_64", target_os = "linux")) || !(have("cc") || have("gcc") || have("clang")) {
+        return;
+    }
+    let cc_cmd = if have("cc") { "cc" } else if have("gcc") { "gcc" } else { "clang" };
+    let t = Tmp::new("ffi_cb_struct", "");
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let c = t.0.join("cb.c");
+    fs::write(
+        &c,
+        "typedef struct { int x; int y; } Pair;\ntypedef void (*pair_cb)(Pair p, void *user);\nvoid run_cb(Pair p, pair_cb f, void *user) { f(p, user); }\n",
+    )
+    .unwrap();
+    let lib = t.0.join("libcb.so");
+    let o = Command::new(cc_cmd)
+        .args(["-shared", "-fPIC", "-O1", "-o", lib.to_str().unwrap(), c.to_str().unwrap()])
+        .output()
+        .expect("spawn cc");
+    assert!(o.status.success(), "{}: {}", cc_cmd, text(&o.stderr));
+    let libpath = lib.to_str().unwrap();
+    let ksn = r#"type t.Pair layout c derive [Clone, Copy]
+    x: i32
+    y: i32
+end t.Pair
+
+extern t.run_cb(p: t.Pair, f: fn(t.Pair, *mut t.Pair) -> () uses [] panics never, u: *mut t.Pair) -> () link "LIBPATH:run_cb"
+
+fn t.collect(p: t.Pair, u: *mut t.Pair) -> () uses [] panics never
+    unsafe "callback" "accumulate through the user pointer" {
+        let acc = core.ptr.read(u)
+        let dx = acc.x.wrapping_add(1i32)
+        let dy = acc.y.wrapping_add(p.x.wrapping_add(p.y))
+        let nw = t.Pair { x: dx, y: dy }
+        core.ptr.write(u, nw)
+    }
+end t.collect
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut acc = t.Pair { x: 0i32, y: 0i32 }
+    let ap = unsafe "ffi" "pointer to accumulator" {
+        core.ptr.from_mut(&mut acc)
+    }
+    let p = t.Pair { x: 7i32, y: 8i32 }
+    unsafe "ffi" "callback with a struct argument" {
+        t.run_cb(p, t.collect, ap)
+    }
+    core.check.eq(acc.x, 1i32)
+    core.check.eq(acc.y, 15i32)
+    std.io.print_line("cb ok")?
+    Ok(())
+end t.main
+"#.replace("LIBPATH", libpath);
+    fs::write(t.0.join("src").join("t.ksnl"), ksn).unwrap();
+    t.fmt();
+
+    // `ksn check`: 構造体を値渡しするコールバックが型検査を通ること。
+    let ck = run(&["check"], &t.0);
+    assert_eq!(ck.status.code(), Some(0), "check: {}{}", text(&ck.stdout), text(&ck.stderr));
+
+    // `ksn run` (インタプリタ): 構造体を値渡しするコールバックが動くこと。
+    let ir = run(&["run"], &t.0);
+    assert_eq!(ir.status.code(), Some(0), "run: {}{}", text(&ir.stdout), text(&ir.stderr));
+    assert_eq!(text(&ir.stdout), "cb ok\n");
+
+    // ネイティブ (LLVM): 同じ出力になること。退避は許さない。
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    let out = text(&b.stdout) + &text(&b.stderr);
+    assert_eq!(b.status.code(), Some(0), "build: {}", out);
+    assert!(!out.contains("backend skipped"), "fell back to bundle:\n{}", out);
+    let exe = native_exe(&text(&b.stdout), &t.0);
+    let n = Command::new(&exe).current_dir(&t.0).output().expect("run native");
+    assert_eq!(n.status.code(), Some(0), "native: {}{}", text(&n.stdout), text(&n.stderr));
+    assert_eq!(text(&n.stdout), "cb ok\n");
 }
 
 #[test]
