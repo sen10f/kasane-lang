@@ -345,6 +345,16 @@ fn link_embedded_lld() {
     if std::env::var("CARGO_FEATURE_EMBEDDED_LLVM").is_err() {
         return;
     }
+    // Windows クロスビルドでは組み込み ldd をスキップする。
+    // liblld*.a が Windows LLVM インストールに含まれないため、組み込み ldd はリンクできない。
+    // 代わりに KSN_LINKER=external で外部の MinGW リンカを使う (release.sh で設定)。
+    let is_windows_cross = std::env::var("CC")
+        .ok()
+        .map(|c| c.contains("mingw32"))
+        .unwrap_or(false);
+    if is_windows_cross {
+        return;
+    }
     println!("cargo:rerun-if-changed=src/native/lld_shim.cpp");
     // llvm-config は L1 の `link_llvm` と同じもの (`LLVM_CONFIG`、既定は /usr/lib/llvm-20/bin/llvm-config)。
     // llvm-config が無いクロスビルドでは KSN_LLVM_PREFIX をそのまま使う。

@@ -201,7 +201,7 @@ case "$TARGET" in
     (cd "$smoke" && wine "$KSN_SMOKE" new hello)
     cd "$smoke/hello"
     out_run="$(wine "$KSN_SMOKE" run)"
-    wine "$KSN_SMOKE" build --release
+    KSN_LINKER=external wine "$KSN_SMOKE" build --release
     echo "release: Windows スモークテスト OK (wine ksn.exe --version / ksn.exe run)"
     ;;
   *)
