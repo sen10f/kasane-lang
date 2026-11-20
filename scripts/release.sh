@@ -89,12 +89,14 @@ fi
 
 if [ "$EXE" = ".exe" ]; then
   x86_64-w64-mingw32-strip --strip-all "$KSN" || strip --strip-all "$KSN"
-else
+elif [ -z "$TARGET" ]; then
+  # ホストビルドのみ strip。クロスビルドはリンカフラグ (--strip-all) で既に strip 済み。
   strip --strip-all "$KSN"
 fi
 
 # 実行時の共有ライブラリは libc / libm / libgcc_s / ld-linux のみ (LLVM は静的リンク)。Linux のみ検査。
-if [ "$EXE" != ".exe" ]; then
+# クロスビルドではホストの ldd はターゲット実行体を検査できないためスキップ。
+if [ "$EXE" != ".exe" ] && [ -z "$TARGET" ]; then
   bad="$(ldd "$KSN" | grep -vE 'linux-vdso\.so\.1|libm\.so|libc\.so|libgcc_s|ld-linux' || true)"
   if [ -n "$bad" ]; then
     echo "release: ksn に許可されていない共有ライブラリがあります:" >&2
