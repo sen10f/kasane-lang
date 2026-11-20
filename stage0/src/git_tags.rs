@@ -53,9 +53,9 @@ impl fmt::Display for SemVer {
 }
 
 /// `git ls-remote --tags <url>` の出力から、列挙されたタグを `(版, コミット)` で返す。
-//! annotated tag は `refs/tags/<名前>^{}` の行でコミットへ peel する。軽量タグは
-//! `refs/tags/<名前>` の行のハッシュがそのままコミット。同じ版のコミットが 2 つ異なれば
-//! 重複としてエラーにする。出力は版順にソート済み。
+// annotated tag は `refs/tags/<名前>^{}` の行でコミットへ peel する。軽量タグは
+// `refs/tags/<名前>` の行のハッシュがそのままコミット。同じ版のコミットが 2 つ異なれば
+// 重複としてエラーにする。出力は版順にソート済み。
 pub(crate) fn parse_ls_remote_output(
     output: &str,
 ) -> Result<Vec<(SemVer, String)>, GitTagsError> {
@@ -89,7 +89,7 @@ pub(crate) fn parse_ls_remote_output(
             Some(c) => c.clone(),
             None => direct.get(&name).cloned().unwrap(), // names の和集合なので direct に必ずある
         };
-        match tags.entry(version) {
+        match tags.entry(version.clone()) {
             std::collections::btree_map::Entry::Occupied(mut e) => {
                 if e.get() != &commit {
                     return Err(GitTagsError {
@@ -118,6 +118,7 @@ pub(crate) fn list_git_tags(url: &str) -> Result<Vec<(SemVer, String)>, GitTagsE
     parse_ls_remote_output(&output)
 }
 
+#[derive(Debug)]
 pub(crate) struct GitTagsError {
     pub(crate) msg: String,
 }
