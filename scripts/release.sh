@@ -139,6 +139,30 @@ clang_dir="$(dirname "$(command -v clang 2>/dev/null || true)")"
 PATH_smoke="$(echo "$PATH" | tr ':' '\n' | grep -vxF "$clang_dir" | paste -sd: -)"
 export PATH="$PATH_smoke"
 
+# クロスビルドの Linux 実行体はホストで直接 exec できない (binfmt_misc に qemu-aarch64 の登録がない)。
+# Windows は wine、クロス Linux は qemu-aarch64 -L でラップする。
+QEMU=""
+case "$TARGET" in
+  *-linux-gnu)
+    case "$TARGET" in
+      x86_64-unknown-linux-gnu|x86_64-linux-gnu|"$HOSTTYPE-unknown-linux-gnu"|"$(uname -m)-unknown-linux-gnu") ;; # ホストネイティブ
+      *)
+        if command -v qemu-aarch64 >/dev/null 2>&1 && [ -d /usr/aarch64-linux-gnu ]; then
+          QEMU="qemu-aarch64 -L /usr/aarch64-linux-gnu"
+        fi
+        ;;
+    esac
+    ;;
+esac
+
+run_ksn() { # run_ksn <args...>  (実行体をラップして実行、出力を stdout に)
+  if [ -n "$QEMU" ]; then
+    $QEMU "$KSN_SMOKE" "$@"
+  else
+    "$KSN_SMOKE" "$@"
+  fi
+}
+
 case "$TARGET" in
   *-windows-gnu)
     # wine で実行 (smoke はこの x86_64 Linux マシン上で)。
@@ -155,15 +179,20 @@ case "$TARGET" in
     echo "release: Windows スモークテスト OK (wine ksn.exe --version / ksn.exe run)"
     ;;
   *)
-    ver="$("$KSN_SMOKE" --version)"
+    ver="$(run_ksn --version)"
     [ "$ver" = "ksn 0.1.0" ] || { echo "release: smoke: --version が想定外: $ver" >&2; exit 1; }
-    (cd "$smoke" && "$KSN_SMOKE" new hello)
+    (cd "$smoke" && run_ksn new hello)
     cd "$smoke/hello"
-    out_run="$("$KSN_SMOKE" run)"
-    "$KSN_SMOKE" build --release
-    out_native="$(./target/release/hello.native)"
-    [ "$out_run" = "Hello, Kasane!" ] || { echo "release: smoke: ksn run の出力が想定外: $out_run" >&2; exit 1; }
-    [ "$out_native" = "Hello, Kasane!" ] || { echo "release: smoke: hello.native の出力が想定外: $out_native" >&2; exit 1; }
-    echo "release: スモークテスト OK (ksn --version / ksn run / ksn build --release / ./target/release/hello.native)"
+    out_run="$(run_ksn run)"
+    run_ksn build --release
+    if [ -z "$QEMU" ]; then
+      out_native="$(./target/release/hello.native)"
+      [ "$out_run" = "Hello, Kasane!" ] || { echo "release: smoke: ksn run の出力が想定外: $out_run" >&2; exit 1; }
+      [ "$out_native" = "Hello, Kasane!" ] || { echo "release: smoke: hello.native の出力が想定外: $out_native" >&2; exit 1; }
+      echo "release: スモークテスト OK (ksn --version / ksn run / ksn build --release / ./target/release/hello.native)"
+    else
+      [ "$out_run" = "Hello, Kasane!" ] || { echo "release: smoke: ksn run の出力が想定外: $out_run" >&2; exit 1; }
+      echo "release: スモークテスト OK (qemu-aarch64 ksn --version / ksn new / ksn run / ksn build --release)"
+    fi
     ;;
 esac
