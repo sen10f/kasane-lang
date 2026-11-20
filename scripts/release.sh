@@ -176,7 +176,14 @@ esac
 
 run_ksn() { # run_ksn <args...>  (実行体をラップして実行、出力を stdout に)
   if [ -n "$QEMU" ]; then
-    $QEMU "$KSN_SMOKE" "$@"
+    # ホストコンパイルの ksn は cfg! で host_target を x86_64-linux-gnu に固定するため、
+    # qemu 下では --target を明示しないと aarch64-linux-gnu にならない。
+    local qa=()
+    case " $* " in
+      *" --target "*) ;;
+      *) qa+=(--target aarch64-linux-gnu) ;;
+    esac
+    $QEMU "$KSN_SMOKE" "${qa[@]}" "$@"
   else
     "$KSN_SMOKE" "$@"
   fi
