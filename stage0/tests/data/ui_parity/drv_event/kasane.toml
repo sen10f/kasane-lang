@@ -1,0 +1,8 @@
+[package]
+name = "drv_event"
+version = "0.1.0"
+edition = 1
+entry = "drv.main"
+
+[dependencies]
+ui_event = { path = "../../../../../ui/kasane/event" }

@@ -1,0 +1,94 @@
+fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut tree = ui.layout.Tree.new()
+    let mut r = ui.layout.Style.default()
+    r.dir = ui.layout.FlexDirection.Row
+    r.jus = ui.layout.JustifyContent.SpaceBetween
+    r.ali = ui.layout.AlignItems.Stretch
+    r.space.gap = 20.0f32
+    let root = tree.push_node(r)
+    let mut s0 = ui.layout.Style.default()
+    s0.size.w = Some(100.0f32)
+    let c0 = tree.push_node(s0)
+    let mut s1 = ui.layout.Style.default()
+    s1.size.w = Some(100.0f32)
+    s1.gr = 1.0f32
+    let c1 = tree.push_node(s1)
+    tree.push_child(root, c0)
+    tree.push_child(root, c1)
+    tree.layout(root, 500.0f32, 200.0f32)
+    let r0 = tree.rect(c0)
+    let r1 = tree.rect(c1)
+    {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(match s.push_display(&r0.x) {
+            Ok(_u) => 0u8
+            Err(_e) => 1u8
+        })
+        std.io.print_line("rect c0 x")?
+        std.io.print_line(s.as_str())?
+    }
+    {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(match s.push_display(&r0.y) {
+            Ok(_u) => 0u8
+            Err(_e) => 1u8
+        })
+        std.io.print_line("rect c0 y")?
+        std.io.print_line(s.as_str())?
+    }
+    {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(match s.push_display(&r0.width) {
+            Ok(_u) => 0u8
+            Err(_e) => 1u8
+        })
+        std.io.print_line("rect c0 width")?
+        std.io.print_line(s.as_str())?
+    }
+    {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(match s.push_display(&r0.height) {
+            Ok(_u) => 0u8
+            Err(_e) => 1u8
+        })
+        std.io.print_line("rect c0 height")?
+        std.io.print_line(s.as_str())?
+    }
+    {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(match s.push_display(&r1.x) {
+            Ok(_u) => 0u8
+            Err(_e) => 1u8
+        })
+        std.io.print_line("rect c1 x")?
+        std.io.print_line(s.as_str())?
+    }
+    {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(match s.push_display(&r1.y) {
+            Ok(_u) => 0u8
+            Err(_e) => 1u8
+        })
+        std.io.print_line("rect c1 y")?
+        std.io.print_line(s.as_str())?
+    }
+    {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(match s.push_display(&r1.width) {
+            Ok(_u) => 0u8
+            Err(_e) => 1u8
+        })
+        std.io.print_line("rect c1 width")?
+        std.io.print_line(s.as_str())?
+    }
+    {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(match s.push_display(&r1.height) {
+            Ok(_u) => 0u8
+            Err(_e) => 1u8
+        })
+        std.io.print_line("rect c1 height")?
+        std.io.print_line(s.as_str())?
+    }
+    Ok(())
+end drv.main
