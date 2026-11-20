@@ -1053,7 +1053,8 @@ fn parenthesized_type_and_enum_bodies_are_explained() {
 fn match_arm_trailing_comma_is_fixed_by_ksn_fix() {
     let src = "fn t.a(x: u8) -> u8\n    match x {\n        0u8 => 1u8,\n        _ => 2u8,\n    }\nend t.a\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(1u8))\n    Ok(())\nend t.main\n";
-    let t = Tmp::new("arm_comma", src);
+    // `ksn fmt` が腕の末尾の `,` を消すので、E0049 そのものは整形していないファイルで試す (`new_raw`)。
+    let t = Tmp::new_raw("arm_comma", src);
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(codes(&out).iter().any(|g| g == "E0049"), "{}", out);
     // 直せる診断は文面の末尾に `ksn fix` の旨が付く (code は変わらない)。
@@ -5053,7 +5054,8 @@ fn t.over(k: u32) -> u64 uses [] panics never\n    let s = if k == 0u32 {\n     
 // ---- 診断の重複: 案内付きの行の一般的な E0002 は出さない ----
 
 fn guided_syntax_case(name: &str, src: &str) -> Vec<String> {
-    let t = Tmp::new(name, src);
+    // `ksn fmt` が直す書き方 (腕の末尾の `,` など) は整形せずにそのまま試す (`new_raw`)。
+    let t = Tmp::new_raw(name, src);
     codes(&text(&run(&["check", "--json"], &t.0).stdout))
 }
 

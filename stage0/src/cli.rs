@@ -2714,14 +2714,20 @@ struct FmtDiag {
     err: Option<crate::project::PErr>,
     /// 構文の誤りの文件面から拾った Rust 風の書き方 (行:列つき)。
     hits: Vec<crate::rustisms::Hit>,
-    /// 整形では直せないものが残っているか (事前検査の失敗・構文の誤り)。
-    unfixable: bool,
+    /// 事前検査 (100 文字を超える行など) が通ったか。
+    precheck_ok: bool,
 }
 
 impl FmtDiag {
-    /// 有効なファイルになっているか (= 書いてよいか)。すべて 0 件のときだけ真。
-    fn broken(&self) -> bool {
-        !self.lex.is_empty() || !self.lint.is_empty() || !self.gram.ok || self.err.is_some()
+    /// 整形では直せないものが残っているか (= 書かずに診断するか)。fmt が直せないものだけを見る:
+    /// 事前検査の失敗 (100 文字を超える行・行末の空白・CR・TAB) と、読み込みの誤りのうち Rust 風の
+    /// 書き方 (rustisms)・直せない整形の誤り (lint)・E0007 を伴うもの。文法への不一致だけ (コメントの
+    /// 位置など、文法がまだ受け付けない形) は、従来どおり書いてから位置を報告する。
+    fn unfixable(&self) -> bool {
+        !self.lex.is_empty()
+            || !self.lint.is_empty()
+            || !self.precheck_ok
+            || self.err.as_ref().map_or(false, |e| e.code == "E0007" || !self.hits.is_empty())
     }
 }
 
@@ -2735,14 +2741,7 @@ fn fmt_diag(s: &crate::project::Source, text: &str, relpath: &str, grammar: &Gra
         crate::program::load_file(&s.path, "", text).err().map(|e| decode_err(&e))
     };
     let hits = if err.is_some() { crate::rustisms::scan(text) } else { vec![] };
-    FmtDiag {
-        lex: crate::lexrules::scan(text),
-        lint: lints,
-        unfixable: !grammar.precheck_ok(text) || err.is_some(),
-        gram,
-        err,
-        hits,
-    }
+    FmtDiag { lex: crate::lexrules::scan(text), lint: lints, precheck_ok: grammar.precheck_ok(text), gram, err, hits }
 }
 
 fn cmd_fmt(args: &[String]) -> i32 {
@@ -2787,7 +2786,7 @@ fn cmd_fmt(args: &[String]) -> i32 {
         // 文法への一致だけの不一致は、並べ替えでコメントが動くファイル (import の前に `//` を置くなど、
         // 文法がまだ受け付けない形) でも書けるように、従来どおり書いてから候補の位置で報告する。
         let want = fmt_diag(s, &nt, &relpath, &grammar);
-        if !want.unfixable {
+        if !want.unfixable() {
             let mut text = s.text.clone();
             // `.ksnh` の整形のあと、横の `.ksnl` を `strip` で作り直す (`--check` は食い違いも差分とする)。
             if s.path.ends_with(".ksnh") {
@@ -2832,7 +2831,7 @@ fn cmd_fmt(args: &[String]) -> i32 {
         // 出す (黙って終わらない)。shortcut: 候補だけの診断は書かれなかった候補の行を指す。
         diff = true;
         let orig = fmt_diag(s, &s.text, &relpath, &grammar);
-        let d = if orig.unfixable { &orig } else { &want };
+        let d = if orig.unfixable() { &orig } else { &want };
         for f in d.lex.iter() {
             println!("{}:{}:{}: {}: {}", rel(&s.path), f.line, f.col, f.code, f.msg);
         }
