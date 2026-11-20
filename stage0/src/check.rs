@@ -579,7 +579,6 @@ pub struct Checker<'a> {
     pub p: &'a Program,
     pub user: Vec<usize>,
     pub diags: Vec<Diag>,
-    cur_uses: Option<Vec<String>>,
     cur_panics: String,
     /// 閉包の本体を見ている間の、`capture` に列挙されていない外側の局所の名前 (入れ子は一番内側が末尾)。
     closure_blocked: Vec<HashSet<String>>,
@@ -765,7 +764,6 @@ impl<'a> Checker<'a> {
             p,
             user,
             diags: vec![],
-            cur_uses: None,
             cur_panics: "may".into(),
             closure_blocked: Vec::new(),
             in_const_fn: false,
@@ -870,7 +868,6 @@ impl<'a> Checker<'a> {
                 "const" | "static" => {
                     self.check_header_types(i, &[d.ret.clone()]);
                     if let Some(init) = &d.init {
-                        self.cur_uses = self.cur_uses.take();
                         self.visit(init, &mut HashSet::new(), i, true);
                         self.check_const_range(init, &d.ret, i);
                     }
@@ -2617,7 +2614,6 @@ impl<'a> Checker<'a> {
         // 関数ヘッダの引数名も、`import` の末尾名と同名ならシャドーイング (E1021)。本体の束縛と同じ扱い。
         let params: Vec<String> = d.params.iter().map(|p| p.0.clone()).collect();
         self.shadow_check(&params, &HashSet::new(), di, 0);
-        self.cur_uses = if test { None } else { Some(d.uses.clone()) };
         self.cur_panics = if test { "may".into() } else { d.panics.clone().unwrap_or("may".into()) };
         self.in_const_fn = !test && d.is_const;
         self.unsafe_ok = self.module_may_use_unsafe(&d.module);
@@ -2808,16 +2804,6 @@ impl<'a> Checker<'a> {
                             let fqn = segs.join(".");
                             let shadow = self.p.resolve(&segs, &self.def(di).file).map(|_| fqn.as_str());
                             self.check_method_exists(&name, di, nline(fnn), shadow);
-                        } else if !free && self.cur_uses.is_some() {
-                            // 関数ポインタ型の引数の呼び出し: 型が宣言する効果を呼び出し側が覆うこと (5.1)。
-                            if let Some((uses, pn)) = crate::infer::fn_param_effects(self.def(di), &segs[0]) {
-                                let concrete: Vec<String> =
-                                    uses.into_iter().filter(|u| u.chars().next().map_or(false, |c| c.is_lowercase())).collect();
-                                let what = format!("the function pointer `{}`", segs[0]);
-                                if let Some((c, m)) = self.violation_effs(&what, &concrete, Some(pn.as_str())) {
-                                    self.diag(&c, m, di, nline(e));
-                                }
-                            }
                         }
                         return;
                     }
@@ -2871,7 +2857,6 @@ impl<'a> Checker<'a> {
                                     self.never_inst.insert(callee.name.clone());
                                 }
                             }
-                            self.effects(callee, di, nline(e), free, items(&f[2]));
                         } else if matches!(r.target, Target::Native(_)) && r.rest.is_empty() {
                             let fq = self.p.expand(&segs, "").join(".");
                             if let Some(&si) = self.p.sigs.get(&fq) {
@@ -2880,7 +2865,6 @@ impl<'a> Checker<'a> {
                                 if want != n {
                                     self.diag("E2001", format!("{} takes {} argument(s) but {} given", self.def(si).name, want, n), di, nline(e));
                                 }
-                                self.effects(self.def(si), di, nline(e), free, items(&f[2]));
                             }
                         }
                     }
@@ -2922,10 +2906,6 @@ impl<'a> Checker<'a> {
                         di,
                         nline(e),
                     );
-                }
-                if !cands.is_empty() {
-                    // 4.3: メソッド呼び出しの明示型引数 (`x.m::<..>`) があれば効果変数を実体化する。
-                    self.effects_all(&cands, di, nline(e), free, items(&f[3]));
                 }
             }
             "Index" => {
@@ -3181,121 +3161,6 @@ impl<'a> Checker<'a> {
         best.map(|(_, n)| n)
     }
 
-    /// 明示型引数がない呼び出しの、宣言のままの検査。効果変数・panic 変数は呼び出し元の束縛
-    /// (`Fn` 境界のクロージャ・`Iterator` の impl・関数項目) で決まるので、ここでは見ない (型の検査が見る)。
-    /// 束縛が分からない変数は、型の検査 (`callee_effects` の未束縛) が呼び出し元と比べる。
-    fn violation(&self, callee: &Def) -> Option<(String, String)> {
-        let uses: Vec<String> = callee.uses.iter().filter(|e| !is_effect_var(e)).cloned().collect();
-        let panics = callee.panics.as_deref().filter(|p| !is_panic_var(p));
-        self.violation_effs(&callee.name, &uses, panics)
-    }
-
-    /// 呼び出し側の `uses` / `panics` が、callee の効果 (5.1 の階層の部分型) を覆うか。
-    fn violation_effs(&self, name: &str, uses: &[String], panics: Option<&str>) -> Option<(String, String)> {
-        let cu = self.cur_uses.as_ref()?;
-        for eff in uses {
-            // 効果変数 (大文字) は、呼び出し先の実体化が分からないまま残ったもの。呼び出し元が同じ変数を
-            // `uses` に持つときだけ覆う (`covers` は具体名だけを見る)。それ以外は fail-closed で E4001。
-            let covered = if is_effect_var(eff) { cu.iter().any(|c| c == eff) } else { covers(cu, eff) };
-            if !covered {
-                return Some(("E4001".into(), format!("{} uses effect `{}` not declared by the caller", name, eff)));
-            }
-        }
-        match panics {
-            // 残った panic 変数 `P` は、呼び出し元が同じ `P: panics` を持つときだけ許す。
-            Some(p) if is_panic_var(p) && self.cur_panics != p => Some((
-                "E4002".into(),
-                format!("{} may panic (panic variable `{}`) but the caller does not declare `panics {}`", name, p, p),
-            )),
-            Some("may") if self.cur_panics == "never" => Some((
-                "E4002".into(),
-                format!("{} may panic but the caller declares `panics never`", name),
-            )),
-            _ => None,
-        }
-    }
-
-    /// 呼び出しの明示型引数 (`f::<..>`) で効果変数・panic 変数を実体化してから検査する (4.3)。
-    /// 呼び出しごとに独立なので、1 つ目の実体化が 2 つ目に漏れることはない。
-    /// 実体化できない (実引数がない・名前が並ばない) ときは、実体化せずに宣言のまま検査する
-    /// (効果変数は `covers` が黙って通す = 誤検出を出さない)。
-    fn violation_targs(&self, callee: &Def, targs: &[V]) -> Option<(String, String)> {
-        match inst_def_effects(callee, targs) {
-            Some((uses, panics)) => self.violation_effs(&callee.name, &uses, panics.as_deref()),
-            None => self.violation(callee),
-        }
-    }
-
-    fn effects(&mut self, callee: &Def, di: usize, line: usize, free: bool, targs: &[V]) {
-        if free || self.cur_uses.is_none() {
-            return;
-        }
-        if let Some((c, m)) = self.violation_targs(callee, targs) {
-            self.diag(&c, m, di, line);
-        }
-    }
-
-    fn effects_all(&mut self, cands: &[&Def], di: usize, line: usize, free: bool, targs: &[V]) {
-        if free || self.cur_uses.is_none() {
-            return;
-        }
-        let bad: Vec<Option<(String, String)>> = cands.iter().map(|c| self.violation_targs(c, targs)).collect();
-        if bad.iter().all(|b| b.is_some()) {
-            let (c, m) = bad[0].clone().unwrap();
-            self.diag(&c, m, di, line);
-        }
-    }
-
-    /// ① 型で一意に解決できたメソッド呼び出し (`s.m(..)`) の効果を、書き手 (呼び出しを含む関数) の
-    /// 宣言と比べる。書き手が `test` のときは検査しない (既存の `effects` と同じ条件)。
-    /// クロージャの中の呼び出しは ② が本体ごと見るので、ここでは扱わない。
-    /// `MCall` 形の粗い近似 (`effects_all`) が同じ呼び出し箇所を既に報告していれば重複させない。
-    fn check_resolved_methods(&mut self, calls: &[crate::types::ResolvedCall]) {
-        for c in calls {
-            if c.scope.is_some() {
-                continue;
-            }
-            let w = self.def(c.writer);
-            // 効果を推論する関数 (宣言のない `inferred`) が書き手でも解決先でも、宣言の効果ではないので検査しない (黙る)。
-            if w.kw != "fn" || w.inferred || self.def(c.callee).inferred {
-                continue;
-            }
-            let (uses, panics) = (w.uses.clone(), w.panics.clone().unwrap_or_else(|| "may".into()));
-            // 呼び出し箇所の書き手の効果で検査する (検査のあと、元の状態に戻す)。
-            let saved_u = self.cur_uses.replace(uses);
-            let saved_p = std::mem::replace(&mut self.cur_panics, panics);
-            let viol = match &c.dyn_eff {
-                Some((name, u, pn)) => self.violation_effs(name, u, Some(pn.as_str())),
-                None => self.violation_targs(self.def(c.callee), &c.targs),
-            };
-            self.cur_uses = saved_u;
-            self.cur_panics = saved_p;
-            let Some((code, msg)) = viol else { continue };
-            let w = self.def(c.writer);
-            let dup = self.diags.iter().any(|x| x.code == code && x.file == w.file && x.fqn == w.name && x.line == crate::parser::unpack_pos(c.line).0);
-            if !dup {
-                self.diag(&code, msg, c.writer, c.line);
-            }
-        }
-    }
-
-    /// 型推論が残した効果検査の義務 (`types::EffCheck`) を、呼び出し元の `uses` / `panics` で検査する。
-    /// 従来の `effects` と同じ文面なので、同じ違反を両方が見つけたときは重複除去で 1 件になる。
-    fn effects_checked(&mut self, ec: &crate::types::EffCheck) {
-        let d = self.def(ec.di);
-        if d.kw != "fn" {
-            return;
-        }
-        self.cur_uses = Some(d.uses.clone());
-        self.cur_panics = d.panics.clone().unwrap_or("may".into());
-        let bad: Vec<Option<(String, String)>> =
-            ec.cands.iter().map(|(n, u, p)| self.violation_effs(n, u, p.as_deref())).collect();
-        if !bad.is_empty() && bad.iter().all(|b| b.is_some()) {
-            let (c, m) = bad[0].clone().unwrap();
-            self.diag(&c, m, ec.di, ec.line);
-        }
-    }
-
     // ================================================================ TypeCk
     fn typeck(&mut self) {
         let user = self.user.clone();
@@ -3449,19 +3314,12 @@ impl<'a> Checker<'a> {
         }
         self.diags.extend(tk.diags);
         self.diags.extend(self.p.src_diags.iter().cloned());
-        // 型で解決できた呼び出しの効果 (5.1 / 4.3): 局所変数レシーバの `s.m()` と、`Fn` 境界に渡した
-        // クロージャから推論した効果変数・panic 変数。呼び出し元の宣言と比べ、全候補が違反するときだけ報告する。
-        for ec in std::mem::take(&mut tk.eff_checks) {
-            self.effects_checked(&ec);
-        }
         // 型で解決できた呼び出し (メソッドを含む) の辺を、再帰・スタックの検査に加える。
         for (from, tos) in tk.edges {
             self.graph.entry(from).or_default().extend(tos);
         }
         // クロージャ節のフレーム見積り (E4012) のため、節名 → クロージャ AST の対応を引き継ぐ。
         self.closure_asts = tk.closure_asts;
-        // 型で解決できた局所レシーバのメソッド呼び出し・`dyn` 越しの呼び出しの効果 (クロージャの効果は `eff_checks`)。
-        self.check_resolved_methods(&tk.resolved_calls);
         // 効果の完全一致 (D5・D13、TAST の規則 X): 新しい検査と同じ規則を呼ぶ。
         {
             let tast = crate::tast::build(self.p, &user, &tk.tytab, &tk.side, &self.let_tys);
