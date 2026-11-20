@@ -1,0 +1,15 @@
+extern t.run(f: fn(*mut (), i64) -> () uses [] panics never, user: *mut (), n: i64) -> () link "run"
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut n = 0i32
+    let mut cb = fn(x: i32) -> () capture [&mut n] {
+        n = n.wrapping_add(x)
+    }
+    let (f, user) = unsafe "ffi" "trampoline" {
+        core.ffi.trampoline(&mut cb)
+    }
+    unsafe "ffi" "call" {
+        t.run(f, user, 1i64)
+    }
+    Ok(())
+end t.main

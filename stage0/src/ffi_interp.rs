@@ -40,6 +40,8 @@ pub struct CbSlot {
     f: Val,
     params: Vec<(CbTy, V)>,
     ret: CbTy,
+    /// `core.ffi.trampoline` の踏み台: C の第 1 引数 (`user`) は読み捨て、残りをクロージャへ渡す。
+    skip_user: bool,
 }
 
 thread_local! {
@@ -613,10 +615,15 @@ impl Interp {
             Val::Ref(_) => dr(f),
             other => other.clone(),
         };
+        // `core.ffi.trampoline(&mut cb)` の踏み台 (クロージャを 1 つ包んだ組)。捕まえた変数を持てる。
+        let (f, skip_user) = match &f {
+            Val::Tuple(t) if t.len() == 1 && matches!(t[0], Val::Closure(_)) => (t[0].clone(), true),
+            _ => (f, false),
+        };
         let key = match &f {
             Val::Func(i) => *i,
             Val::Closure(c) => {
-                if !c.caps.is_empty() {
+                if !skip_user && !c.caps.is_empty() {
                     return Err("a closure passed to C cannot capture variables (write `capture []`)".into());
                 }
                 Rc::as_ptr(c) as usize
@@ -628,8 +635,12 @@ impl Interp {
         }
         let mut params = vec![];
         let (mut ng, mut nf_) = (0, 0);
-        for pt in crate::check::items(tel(t, 1)) {
+        for (pi, pt) in crate::check::items(tel(t, 1)).iter().enumerate() {
             let k = self.cb_ty(pt, file)?;
+            if skip_user && pi == 0 {
+                ng += 1;
+                continue;
+            }
             match k {
                 CbTy::F32 | CbTy::F64 => nf_ += 1,
                 _ => ng += 1,
@@ -644,7 +655,7 @@ impl Interp {
             return Err(format!("too many distinct callbacks ({} at most in the interpreter)", ffi::VM_SLOT_BASE));
         }
         ffi::set_callback_handler(cb_handler);
-        self.cbs.push(CbSlot { key, f, params, ret });
+        self.cbs.push(CbSlot { key, f, params, ret, skip_user });
         ffi::trampoline(self.cbs.len() - 1).ok_or_else(|| callback_unsupported())
     }
 
@@ -667,11 +678,11 @@ impl Interp {
 
     /// 入口から呼ばれる: レジスタの中身を Kasane の値にして関数を呼び、戻り値をレジスタの中身にする。
     fn run_callback(&mut self, slot: usize, gp: &[u64; 6], sse: &[u64; 8]) -> (u64, u64) {
-        let (f, params, ret) = {
+        let (f, params, ret, skip_user) = {
             let s = &self.cbs[slot];
-            (s.f.clone(), s.params.clone(), s.ret.clone())
+            (s.f.clone(), s.params.clone(), s.ret.clone(), s.skip_user)
         };
-        let (mut gi, mut si) = (0, 0);
+        let (mut gi, mut si) = (usize::from(skip_user), 0);
         let mut args = vec![];
         for (k, _) in &params {
             args.push(match k {

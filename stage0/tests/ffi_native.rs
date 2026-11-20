@@ -376,3 +376,35 @@ fn c_sizes_match_the_kasane_layout() {
     assert!(c.contains("typedef struct {") && c.contains("make_a4"));
     assert!(gen_ksn(&ts, "x").contains("v: [u8; 9]"));
 }
+
+/// N3a: `core.ffi.trampoline` で、捕まえたクロージャを `(fn_ptr, void *user)` の C のコールバックに渡す。
+/// C が 1..=10 と 5, 7 でコールバックし、クロージャが Kasane の構造体の計数を増やす。
+/// `ksn run` とネイティブ (debug / release) の出力が一致する。
+#[cfg(unix)]
+#[test]
+fn a_trampoline_carries_user_data_to_a_c_callback_natively() {
+    let t = Tmp::new("n3a_trampoline", "");
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
+    let c = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("data").join("ffi_userdata").join("acc.c");
+    let lib = t.0.join("libaccuser.so");
+    let o = cc(&["-shared", "-fPIC", "-O1", "-o", lib.to_str().unwrap(), c.to_str().unwrap()], &t.0);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    let src = include_str!("data/ffi_userdata/main.ksnl").replace("LIB:", &format!("{}:", lib.to_str().unwrap()));
+    fs::write(t.0.join("src").join("t.ksnl"), src).unwrap();
+    let i = run(&["run"], &t.0);
+    assert_eq!(i.status.code(), Some(0), "{}{}", text(&i.stdout), text(&i.stderr));
+    assert_eq!(text(&i.stdout), "userdata ok\n");
+    for rel in [false, true] {
+        let mut a = vec!["build", "--backend", "llvm"];
+        if rel {
+            a.push("--release");
+        }
+        let b = run(&a, &t.0);
+        let out = text(&b.stdout) + &text(&b.stderr);
+        assert_eq!(b.status.code(), Some(0), "{}", out);
+        let exe = native_exe(&out, &t.0);
+        let r = Command::new(&exe).current_dir(&t.0).output().unwrap();
+        assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+        assert_eq!(text(&r.stdout), "userdata ok\n", "native (release={})", rel);
+    }
+}
