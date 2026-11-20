@@ -83,6 +83,9 @@ def collect(work):
             f.write('version = 1' + NLC)
         shutil.copyfile(p, os.path.join(d, 'src', 't.ksnl'))
         jobs.append(('linear_ok', os.path.basename(p), d))
+    # 依存の `path` は相対パス (`../../ui/kasane` など) なので、examples と同じ位置関係で ui/ も写す (examples/ui_demo・tutorial_ui が要る)。
+    if os.path.isdir(os.path.join(ROOT, 'ui')):
+        shutil.copytree(os.path.join(ROOT, 'ui'), os.path.join(work, 'ui'), ignore=shutil.ignore_patterns('target', '__pycache__'))
     # examples / perf: 木ごと写す (examples/kvapp は ../kvlib に依存する)。target/ は写さない。
     for group in ('examples', 'perf'):
         dst = os.path.join(work, group)
