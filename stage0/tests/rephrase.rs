@@ -496,7 +496,11 @@ fn extract_variant(lines: &[String], f: &Func) -> Option<String> {
     }
     let (prefix, last) = f.name.rsplit_once('.')?;
     let hname = format!("{}.rp_{}", prefix, last);
-    let header = h.replacen(&format!("fn {}", f.name), &format!("fn {}", hname), 1);
+    let mut header = h.replacen(&format!("fn {}", f.name), &format!("fn {}", hname), 1);
+    // `impls Tr` はトレイトの実装の印なので、抽出した補助メソッドには付けない (2 つ付くと E1112)。
+    if let Some(i) = header.find(" impls ") {
+        header.truncate(i);
+    }
     let args: Vec<String> = f.params.iter().map(|(n, _)| n.clone()).collect();
     let mut out: Vec<String> = lines[..f.s].to_vec();
     out.push(h.clone());

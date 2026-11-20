@@ -3,8 +3,6 @@ changed block closure_in_hashmap_used_later#1
 changed block closure_in_vec_used_later#1
 changed block escape_put_as_str#0
 changed extract impl_sig_lifetime_ret#0
-changed extract impl_sig_method_generics_bound#0
-changed extract impl_sig_method_generics_count#0
 changed extract return_local_option_tuple_destructure#0
 changed extract return_local_tuple_destructure#0
 changed fold flow_ref_field_borrow_inherits_loan#0
@@ -65,6 +63,8 @@ hole closure linear_generic_mem_drop#1
 hole closure linear_generic_struct_wildcard#1
 hole closure linear_param_dropped#0
 hole closure linear_receiver_dropped#0
+hole extract impl_sig_method_generics_bound#0
+hole extract impl_sig_method_generics_count#0
 hole extract len_of_linear_array_then_consumed#0
 hole extract len_of_linear_array_then_consumed#1
 hole extract len_of_linear_array_then_consumed#2
