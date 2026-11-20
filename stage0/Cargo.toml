@@ -19,6 +19,9 @@ unicode-general-category = "1.1.0"
 
 llvm-sys = { version = "201", optional = true, default-features = false, features = ["no-llvm-linking"] }
 
+[dev-dependencies]
+sha2 = "0.10"
+
 [features]
 default = ["embedded-llvm"]
 embedded-llvm = ["dep:llvm-sys"]

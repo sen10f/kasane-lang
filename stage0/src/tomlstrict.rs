@@ -396,7 +396,7 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
         }
         let n = name_of(idx.wrapping_sub(1));
         match k {
-            "name" | "source" | "registry" | "version" | "hash" | "deps" | "unsafe_modules" | "native_libs" => {
+            "name" | "source" | "registry" | "repository" | "version" | "hash" | "deps" | "unsafe_modules" | "native_libs" => {
                 if k == "deps" {
                     if let Some(p) = prev.as_mut() {
                         p.2 = true;
@@ -450,12 +450,13 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
                 }
             }
         }
-        if e.get("hash").is_some() && !e.get("source").and_then(|s| s.as_str()).unwrap_or("").starts_with("git+") {
+        let src = e.get("source").and_then(|s| s.as_str()).unwrap_or("");
+        if e.get("hash").is_some() && !src.starts_with("git+") && !src.starts_with("registry+") {
             findings.push(Finding {
                 code: "E9021",
                 line: *hash_line.get(n).unwrap_or(&1),
                 col: 1,
-                msg: format!("hash of {} is recorded but {} is not a git dependency", n, n),
+                msg: format!("hash of {} is recorded but {} is not a git or registry dependency", n, n),
             });
         }
         // 版 2 の記録 (`unsafe_modules` / `native_libs` / `[[package.api]]`) も git 依存だけ。
@@ -513,14 +514,15 @@ fn emit_lock(v: &Value, a: &Anchors) -> String {
         let source = e.get("source").and_then(|s| s.as_str()).unwrap_or("");
         let is_git = source.starts_with("git+");
         let is_registry = source.starts_with("registry+");
-        // 版 3 は `version` (git/registry 依存は必須) と `registry` (registry 依存) を記録する。
-        // 順序は name, source, [registry], [version], [hash], deps, [unsafe_modules], [native_libs], [[package.api]]。
+        // 版 3 は `version` (git/registry 依存は必須) と `registry`/`repository` (registry 依存) を記録する。
+        // 順序は name, source, [registry], [repository], [version], [hash], deps, [unsafe_modules], [native_libs], [[package.api]]。
         let mut keys: Vec<&str> = vec!["name", "source"];
         if ver == 3 {
             if is_registry { keys.push("registry"); }
+            if is_registry { keys.push("repository"); }
             keys.push("version");
         }
-        if is_git { keys.push("hash"); }
+        if is_git || is_registry { keys.push("hash"); }
         keys.push("deps");
         for k in keys {
             if let Some(val) = e.get(k) {

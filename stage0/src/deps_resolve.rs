@@ -12,27 +12,34 @@ use crate::project::{load_package_src, locate_dep, GitMode, Package, ProjectErro
 use crate::semver::{Range, Version};
 
 /// 依存 1 つの解決結果。`commit` は取得するコミット、`version` は選んだタグの版。
+/// レジストリ依存のとき `repository` は取得元のリポジトリ URL、`hash` は索引の分配 hash。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pick {
     pub url: String,
     pub commit: String,
     pub version: Version,
+    pub repository: Option<String>,
+    pub hash: Option<String>,
 }
 
 pub type Picks = BTreeMap<String, Pick>;
 
-/// 親 (`requirer`) が書いた版の範囲。
+/// 親 (`requirer`) が書いた版の範囲。`registry` はレジストリ依存のときその索引 URL。
 struct Req {
     requirer: String,
     range: String,
     url: String,
+    registry: Option<String>,
 }
 
-/// ロック (版 3) に記録された git 依存。`version` は版 2 には無い。
+/// ロック (版 3) に記録された依存。`version` は版 2 には無い。
+/// `repository`/`hash` はレジストリ依存だけ記録される。
 struct Locked {
     url: String,
     commit: String,
     version: Option<Version>,
+    repository: Option<String>,
+    hash: Option<String>,
 }
 
 fn err(code: &str, msg: String) -> ProjectError {
@@ -46,12 +53,15 @@ fn read_lock(root: &Path) -> HashMap<String, Locked> {
     let Some(pk) = v.get("package").and_then(|p| p.as_array()) else { return out };
     for e in pk {
         let (Some(name), Some(src)) = (e.get("name").and_then(|n| n.as_str()), e.get("source").and_then(|s| s.as_str())) else { continue };
-        let Some((url, commit)) = src.strip_prefix("git+").and_then(|s| s.rsplit_once('#')) else { continue };
+        let Some((url, commit)) = src.strip_prefix("git+").and_then(|s| s.rsplit_once('#'))
+            .or_else(|| src.strip_prefix("registry+").and_then(|s| s.rsplit_once('#'))) else { continue };
         if commit.is_empty() {
             continue;
         }
         let version = e.get("version").and_then(|x| x.as_str()).and_then(|x| Version::parse(x).ok());
-        out.insert(name.to_string(), Locked { url: url.to_string(), commit: commit.to_string(), version });
+        let repository = e.get("repository").and_then(|x| x.as_str()).map(String::from);
+        let hash = e.get("hash").and_then(|x| x.as_str()).map(String::from);
+        out.insert(name.to_string(), Locked { url: url.to_string(), commit: commit.to_string(), version, repository, hash });
     }
     out
 }
@@ -79,7 +89,17 @@ fn walk(
             dv.get("git").and_then(|g| g.as_str()),
             dv.get("rev"),
         ) {
-            reqs.entry(dn.clone()).or_default().push(Req { requirer: pkg.name.clone(), range: range.to_string(), url: url.to_string() });
+            reqs.entry(dn.clone()).or_default().push(Req { requirer: pkg.name.clone(), range: range.to_string(), url: url.to_string(), registry: None });
+            if !picks.contains_key(dn) {
+                continue;
+            }
+        }
+        if let (Some(range), Some(index_url), None) = (
+            dv.get("version").and_then(|v| v.as_str()),
+            dv.get("registry").and_then(|r| r.as_str()),
+            dv.get("rev"),
+        ) {
+            reqs.entry(dn.clone()).or_default().push(Req { requirer: pkg.name.clone(), range: range.to_string(), url: index_url.to_string(), registry: Some(index_url.to_string()) });
             if !picks.contains_key(dn) {
                 continue;
             }
@@ -107,7 +127,7 @@ pub fn resolve_picks(root: &Package, mode: &dyn Fn(&str) -> GitMode) -> Result<P
             continue;
         }
         if let Some(v) = l.version {
-            picks.insert(n.clone(), Pick { url: l.url.clone(), commit: l.commit.clone(), version: v });
+            picks.insert(n.clone(), Pick { url: l.url.clone(), commit: l.commit.clone(), version: v, repository: l.repository.clone(), hash: l.hash.clone() });
         }
     }
     let mut fresh_done: HashSet<String> = HashSet::new();
@@ -155,18 +175,47 @@ pub fn resolve_picks(root: &Package, mode: &dyn Fn(&str) -> GitMode) -> Result<P
                     ));
                 }
             }
-            let tags = crate::git_tags::list_git_tags(url).map_err(|e| err("E9010", e.msg))?;
-            let best = tags
-                .iter()
-                .filter(|(v, _)| {
-                    let vv = Version::new(v.major, v.minor, v.patch);
-                    rs.iter().all(|r| satisfies(&vv, &r.range))
-                })
-                .max_by_key(|(v, _)| (v.major, v.minor, v.patch));
-            let Some((v, c)) = best else {
-                return Err(err("E9010", format!("dependency {}: no tag of {} satisfies {}", name, url, describe)));
-            };
-            picks.insert(name.clone(), Pick { url: url.clone(), commit: c.clone(), version: Version::new(v.major, v.minor, v.patch) });
+            let is_registry = rs[0].registry.is_some();
+            if is_registry {
+                let index_url = url;
+                let offline = m == GitMode::Offline;
+                let pinned = locked.get(name).and_then(|l| l.version.as_ref().map(|v| v.to_string()));
+                let pinned = pinned.as_deref();
+                let entries = crate::registry::index_versions(index_url, name, offline, pinned)
+                    .map_err(|e| err("E9010", e.msg))?;
+                let mut best: Option<(Version, &crate::registry::IndexEntry)> = None;
+                for e in &entries {
+                    let Ok(v) = Version::parse(&e.version) else { continue };
+                    if !rs.iter().all(|r| satisfies(&v, &r.range)) { continue; }
+                    best = match best {
+                        None => Some((v, e)),
+                        Some((bv, _)) => if v > bv { Some((v, e)) } else { best },
+                    };
+                }
+                let Some((v, e)) = best else {
+                    return Err(err("E9010", format!("dependency {}: no version of {} in registry {} satisfies {}", name, name, index_url, describe)));
+                };
+                picks.insert(name.clone(), Pick {
+                    url: index_url.clone(),
+                    commit: e.commit.clone(),
+                    version: v,
+                    repository: Some(e.repository.clone()),
+                    hash: Some(e.hash.clone()),
+                });
+            } else {
+                let tags = crate::git_tags::list_git_tags(url).map_err(|e| err("E9010", e.msg))?;
+                let best = tags
+                    .iter()
+                    .filter(|(v, _)| {
+                        let vv = Version::new(v.major, v.minor, v.patch);
+                        rs.iter().all(|r| satisfies(&vv, &r.range))
+                    })
+                    .max_by_key(|(v, _)| (v.major, v.minor, v.patch));
+                let Some((v, c)) = best else {
+                    return Err(err("E9010", format!("dependency {}: no tag of {} satisfies {}", name, url, describe)));
+                };
+                picks.insert(name.clone(), Pick { url: url.clone(), commit: c.clone(), version: Version::new(v.major, v.minor, v.patch), repository: None, hash: None });
+            }
             if m == GitMode::Fresh {
                 fresh_done.insert(name.clone());
             }
