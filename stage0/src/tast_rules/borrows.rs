@@ -116,13 +116,25 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
 
 /// 値が借用を運び得る型か (領域を持つ参照・ライフタイム引数・`dyn`・閉包・欄に参照を持つ利用者の型)。
 fn holds(p: &Program, t: &Ty) -> bool {
+    holds2(p, t, false)
+}
+
+/// 式の値・呼び出しの戻り値が借用を運び得るか。`&'static` はどの局部も借りないので運ばない
+/// (`Arena::insert` の `Handle<&'static str>` が `Arena` の借り出しを運ぶと見なさない)。
+/// 欄や場所の側は宣言が `&'static` でも実際の借用を持ち得るので `holds` の方を呼ぶ。
+fn holds_val(p: &Program, t: &Ty) -> bool {
+    holds2(p, t, true)
+}
+
+fn holds2(p: &Program, t: &Ty, static_is_no_borrow: bool) -> bool {
     match t {
-        Ty::Ref(..) | Ty::Dyn(..) | Ty::Closure { .. } => true,
+        Ty::Ref(..) => !(static_is_no_borrow && matches!(t, Ty::Ref(_, _, r) if matches!(r, crate::types::Region::Static))),
+        Ty::Dyn(..) | Ty::Closure { .. } => true,
         Ty::Named(n, a, rg) => {
-            !rg.0.is_empty() || a.iter().any(|x| holds(p, x)) || p.types.get(n).map_or(false, |&i| !p.defs[i].field_lifetimes.iter().all(|(_, l)| l.iter().all(|x| x == "static")))
+            !rg.0.is_empty() || a.iter().any(|x| holds2(p, x, static_is_no_borrow)) || p.types.get(n).map_or(false, |&i| !p.defs[i].field_lifetimes.iter().all(|(_, l)| l.iter().all(|x| x == "static")))
         }
-        Ty::Tuple(a) => a.iter().any(|x| holds(p, x)),
-        Ty::Array(x, _) | Ty::Slice(x) => holds(p, x),
+        Ty::Tuple(a) => a.iter().any(|x| holds2(p, x, static_is_no_borrow)),
+        Ty::Array(x, _) | Ty::Slice(x) => holds2(p, x, static_is_no_borrow),
         _ => false,
     }
 }
@@ -447,7 +459,7 @@ impl<'a> Walker<'a> {
 
     /// 型が借用を運ばないなら元を捨てる (`Copy` の値を借用から取り出した形は重ならない)。
     fn keep(&self, ty: &Ty, srcs: Vec<Src>) -> Vec<Src> {
-        if holds(self.p, ty) {
+        if holds_val(self.p, ty) {
             srcs
         } else {
             vec![]
