@@ -1,0 +1,279 @@
+/// `ui.focus` の単体試験。インタプリタとネイティブバンドルの両方で一致を確かめる。
+/// タブ移動、グループ内の矢印キー、モーダルのトラップ、ノード削除時の復帰、
+/// キーチョンド送達をカバーする。
+type ui.focus_test.Target pub
+    _dummy: bool
+end ui.focus_test.Target
+
+/// 水平方向のグループで左右矢印キーは前後へ移動する（折り返さない）。
+test ui.focus_test.Target.test_arrow_horizontal
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.focus_node(10usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Right))
+    core.check.eq(m.get_focus(), Some(20usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Right))
+    core.check.eq(m.get_focus(), Some(30usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Right))
+    core.check.eq(m.get_focus(), Some(30usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Left))
+    core.check.eq(m.get_focus(), Some(20usize))
+end ui.focus_test.Target.test_arrow_horizontal
+
+/// 矢印キーの先頭で左（戻る）は折り返さずそのまま。
+test ui.focus_test.Target.test_arrow_left_at_first_stays
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.focus_node(10usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Left))
+    core.check.eq(m.get_focus(), Some(10usize))
+end ui.focus_test.Target.test_arrow_left_at_first_stays
+
+/// 矢印キーで焦点が無いときは何も変えない。
+test ui.focus_test.Target.test_arrow_no_focus
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Right))
+    core.check.eq(m.get_focus(), None)
+end ui.focus_test.Target.test_arrow_no_focus
+
+/// 垂直方向のグループで上下矢印キーは前後へ移動する。水平キーは無視される。
+test ui.focus_test.Target.test_arrow_vertical
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Down, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.focus_node(10usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Down))
+    core.check.eq(m.get_focus(), Some(20usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Left))
+    core.check.eq(m.get_focus(), Some(20usize))
+end ui.focus_test.Target.test_arrow_vertical
+
+/// 空のマネージャで Tab は何もせず、焦点は None のまま。
+test ui.focus_test.Target.test_empty_no_focus
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), None)
+    core.mem.drop(m.focus_previous())
+    core.check.eq(m.get_focus(), None)
+end ui.focus_test.Target.test_empty_no_focus
+
+/// 登録されていないノードへ focus_node は失敗し、焦点は変えない。
+test ui.focus_test.Target.test_focus_node_unregistered
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    let r = m.focus_node(99usize)
+    core.check.eq(r, false)
+    core.check.eq(m.get_focus(), None)
+end ui.focus_test.Target.test_focus_node_unregistered
+
+/// モーダルスコープは Tab サイクルを閉じ域に閉じ込める。
+test ui.focus_test.Target.test_modal_trap
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_new(2usize, Some(1usize), ui.focus.Dir.Left, true))
+    core.mem.drop(m.scope_add_node(2usize, 20usize))
+    core.mem.drop(m.scope_add_node(2usize, 30usize))
+    core.mem.drop(m.focus_node(20usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(30usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(20usize))
+    // 親スコープの 10usize には出ない
+end ui.focus_test.Target.test_modal_trap
+
+/// ノードを削除したら次の兄弟へ復帰する。
+test ui.focus_test.Target.test_remove_focus_next_sibling
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.focus_node(20usize))
+    let f = m.focus_after_remove(20usize)
+    core.check.eq(f, Some(30usize))
+end ui.focus_test.Target.test_remove_focus_next_sibling
+
+/// 唯一のノードを削除したら blur する（None）。
+test ui.focus_test.Target.test_remove_focus_only_node
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.focus_node(10usize))
+    let f = m.focus_after_remove(10usize)
+    core.check.eq(f, None)
+end ui.focus_test.Target.test_remove_focus_only_node
+
+/// 末尾のノードを削除したら前の兄弟へ復帰する。
+test ui.focus_test.Target.test_remove_focus_prev_sibling
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.focus_node(30usize))
+    let f = m.focus_after_remove(30usize)
+    core.check.eq(f, Some(20usize))
+end ui.focus_test.Target.test_remove_focus_prev_sibling
+
+/// 焦点でないノードを削除しても焦点は変わらない。
+test ui.focus_test.Target.test_remove_unfocused
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.focus_node(10usize))
+    let f = m.focus_after_remove(20usize)
+    core.check.eq(f, Some(10usize))
+end ui.focus_test.Target.test_remove_unfocused
+
+/// 祖先スコープに登録されたショートカットも届く。
+test ui.focus_test.Target.test_shortcut_ancestor
+    let mut m = ui.focus.FocusManager.new()
+    let mut km = ui.focus.Keymap.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_new(2usize, Some(1usize), ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(2usize, 20usize))
+    core.mem.drop(m.focus_node(20usize))
+    let mods = ui.focus.Modifiers { shift: false, ctrl: true, alt: false }
+    core.mem.drop(km.register(1usize, 83u32, mods, 100u32))
+    let a = km.dispatch(&m, 83u32, mods)
+    core.check.eq(a, Some(100u32))
+end ui.focus_test.Target.test_shortcut_ancestor
+
+/// キーチョンド送達：焦点スコープで一致する最も具体的なアクションが勝つ。
+test ui.focus_test.Target.test_shortcut_dispatch
+    let mut m = ui.focus.FocusManager.new()
+    let mut km = ui.focus.Keymap.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_new(2usize, Some(1usize), ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(2usize, 20usize))
+    core.mem.drop(m.focus_node(20usize))
+    // スコープ1に C+S を登録
+    let mods = ui.focus.Modifiers { shift: false, ctrl: true, alt: false }
+    core.mem.drop(km.register(1usize, 83u32, mods, 100u32))
+    // スコープ2（より深い）に S を登録
+    let mods2 = ui.focus.Modifiers { shift: false, ctrl: false, alt: false }
+    core.mem.drop(km.register(2usize, 83u32, mods2, 200u32))
+    let a = km.dispatch(&m, 83u32, mods2)
+    core.check.eq(a, Some(200u32))
+end ui.focus_test.Target.test_shortcut_dispatch
+
+/// 焦点が無いとき dispatch は None。
+test ui.focus_test.Target.test_shortcut_no_focus
+    let mut m = ui.focus.FocusManager.new()
+    let mut km = ui.focus.Keymap.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    let mods = ui.focus.Modifiers { shift: false, ctrl: true, alt: false }
+    core.mem.drop(km.register(1usize, 83u32, mods, 100u32))
+    let a = km.dispatch(&m, 83u32, mods)
+    core.check.eq(a, None)
+end ui.focus_test.Target.test_shortcut_no_focus
+
+/// 一致するショートカットが無ければ None。
+test ui.focus_test.Target.test_shortcut_none
+    let mut m = ui.focus.FocusManager.new()
+    let mut km = ui.focus.Keymap.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.focus_node(10usize))
+    let mods = ui.focus.Modifiers { shift: false, ctrl: false, alt: false }
+    let a = km.dispatch(&m, 99u32, mods)
+    core.check.eq(a, None)
+end ui.focus_test.Target.test_shortcut_none
+
+/// 同じスコープに同じキー・修飾キーを 2 件登録すると先に登録したものが勝つ。
+test ui.focus_test.Target.test_shortcut_same_scope_first_wins
+    let mut m = ui.focus.FocusManager.new()
+    let mut km = ui.focus.Keymap.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.focus_node(10usize))
+    let mods = ui.focus.Modifiers { shift: false, ctrl: true, alt: false }
+    core.mem.drop(km.register(1usize, 83u32, mods, 100u32))
+    core.mem.drop(km.register(1usize, 83u32, mods, 200u32))
+    let a = km.dispatch(&m, 83u32, mods)
+    core.check.eq(a, Some(100u32))
+end ui.focus_test.Target.test_shortcut_same_scope_first_wins
+
+/// tab_index がすべて負だと Tab サイクルは空で、focus_next は何も変えない。
+test ui.focus_test.Target.test_tab_all_negative
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_set_tab_index(1usize, 10usize, -1i32))
+    core.mem.drop(m.scope_set_tab_index(1usize, 20usize, -2i32))
+    core.mem.drop(m.focus_node(10usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(10usize))
+end ui.focus_test.Target.test_tab_all_negative
+
+/// tab_index 昇順にソートされ、同値は文書順、負は除外される。
+test ui.focus_test.Target.test_tab_index_sort
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.scope_add_node(1usize, 40usize))
+    core.mem.drop(m.scope_set_tab_index(1usize, 20usize, 5i32))
+    core.mem.drop(m.scope_set_tab_index(1usize, 30usize, 1i32))
+    core.mem.drop(m.scope_set_tab_index(1usize, 40usize, -1i32))
+    // tab_index 昇順: 10(idx0), 30(idx1), 20(idx5)。40(負)は除外。
+    core.mem.drop(m.focus_node(30usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(20usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(10usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(30usize))
+end ui.focus_test.Target.test_tab_index_sort
+
+/// ルートスコープに 3 ノード登録し、Tab で文書順に巡り、末尾で先頭に戻る（wrap）。
+test ui.focus_test.Target.test_tab_order_document_order
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.focus_node(10usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(20usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(30usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(10usize))
+end ui.focus_test.Target.test_tab_order_document_order
+
+/// Shift+Tab は逆順に巡り、先頭で末尾に戻る（wrap）。
+test ui.focus_test.Target.test_tab_shift_tab_wrap
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.focus_node(10usize))
+    core.mem.drop(m.focus_previous())
+    core.check.eq(m.get_focus(), Some(30usize))
+    core.mem.drop(m.focus_previous())
+    core.check.eq(m.get_focus(), Some(20usize))
+    core.mem.drop(m.focus_previous())
+    core.check.eq(m.get_focus(), Some(10usize))
+    core.mem.drop(m.focus_previous())
+    core.check.eq(m.get_focus(), Some(30usize))
+end ui.focus_test.Target.test_tab_shift_tab_wrap

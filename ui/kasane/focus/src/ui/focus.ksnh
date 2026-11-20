@@ -1,0 +1,723 @@
+/// `ui.focus` — フォーカススコープツリーとキーボードナビゲーション。
+///
+/// GPU・FFI・可変のグローバル状態を持たず、純粋なデータと関数だけで構成する。
+/// 利用者は `FocusManager` にスコープとノードを登録し、Tab／Shift+Tab による移動、
+/// グループ内の矢印キー移動、モーダルスコープでのフォーカストラップ、ノード削除
+/// 時のフォーカス復帰、キーチョンドからアクションへの送達を呼び出す。
+///
+/// スコープは親ポインタで木を成し、最も内側のモーダルスコープが Tab 移動を閉じ
+/// 域に閉じ込める。ショートカットは焦点ノードのスコープから祖先へ向かって探索
+/// され、最も具体的（深いスコープ）に登録されたものが勝つ。
+///
+/// 問い合わせは `uses [] panics never`、ヒープ確保を伴う操作だけ
+/// `uses [alloc] panics never` とする。
+
+/// `Dir` が属する軸（水平グループか垂直グループか）。
+enum ui.focus.Axis derive [Debug, Clone, Copy, PartialEq] pub
+    Horizontal
+    Vertical
+end ui.focus.Axis
+
+/// 矢印キーの方向。
+enum ui.focus.Dir derive [Debug, Clone, Copy, PartialEq] pub
+    Left
+    Right
+    Up
+    Down
+end ui.focus.Dir
+
+/// フォーカスの状態全体：登録済みスコープの列と現在の焦点ノード。
+type ui.focus.FocusManager derive [Debug] pub
+    scopes: alloc.vec.Vec<ui.focus.Scope, std.alloc.System> pub
+    focus: Option<usize> pub
+end ui.focus.FocusManager
+
+/// ショートカットの登録先。
+type ui.focus.Keymap derive [Debug] pub
+    entries: alloc.vec.Vec<ui.focus.Shortcut, std.alloc.System> pub
+end ui.focus.Keymap
+
+/// キーボード修飾キーの状態。欄は公開して利用者が直接構築できる。
+type ui.focus.Modifiers derive [Debug, Clone, Copy, PartialEq] pub
+    shift: bool pub
+    ctrl: bool pub
+    alt: bool pub
+end ui.focus.Modifiers
+
+/// 1 つのフォーカススコープ。
+///
+/// - `id` — 利用者が割り当てるスコープ番号。
+/// - `parent` — 親スコープ（None ならルート）。
+/// - `nodes` — このスコープに属するノードの文書順の列。
+/// - `tab_index` — `nodes` と同長。各ノードの明示的 tab_index（無記入なら 0）。
+///   負の値は Tab サイクルから外れる。
+/// - `dir` — グループの並び方向。矢印キーはこの軸に沿ってだけ移動する。
+/// - `modal` — 真なら Tab サイクルをこのスコープに閉じ込める（フォーカストラップ）。
+type ui.focus.Scope derive [Debug] pub
+    id: usize pub
+    parent: Option<usize> pub
+    nodes: alloc.vec.Vec<usize, std.alloc.System> pub
+    tab_index: alloc.vec.Vec<i32, std.alloc.System> pub
+    dir: ui.focus.Dir pub
+    modal: bool pub
+end ui.focus.Scope
+
+/// キーボードショートカット：スコープ・キーコード・修飾キーからアクション番号へ。
+type ui.focus.Shortcut derive [Debug, Clone, Copy, PartialEq] pub
+    scope: usize pub
+    key: u32 pub
+    modifiers: ui.focus.Modifiers pub
+    action: u32 pub
+end ui.focus.Shortcut
+
+/// `Dir` の軸を返す。
+fn ui.focus.Dir.axis(self: ui.focus.Dir) -> ui.focus.Axis uses [] panics never pub
+    match self {
+        ui.focus.Dir.Left => ui.focus.Axis.Horizontal
+        ui.focus.Dir.Right => ui.focus.Axis.Horizontal
+        ui.focus.Dir.Up => ui.focus.Axis.Vertical
+        ui.focus.Dir.Down => ui.focus.Axis.Vertical
+    }
+end ui.focus.Dir.axis
+
+/// 焦点が当たっているノードを削除してフォーカスを復帰させる。
+///
+/// `removed` を所属スコープから外す。焦点ノードなら「次の兄弟 → 前の兄弟 → なし（blur）」
+/// の順に復帰させる。焦点でないノードなら焦点は変えず、ノードだけを外す。
+/// 新しい焦点ノード（焦点が消えたら None）を返す。
+fn ui.focus.FocusManager.focus_after_remove(self: &mut ui.focus.FocusManager, removed: usize) -> Option<usize> uses [] panics never pub
+    let mut scope_i: Option<usize> = None
+    let mut node_pos: Option<usize> = None
+    let mut i = 0usize
+    let len = self.scopes.len()
+    while i < len {
+        let s = match self.scopes.get(i) {
+            Some(v) => v
+            None => break
+        }
+        let mut j = 0usize
+        let n = s.nodes.len()
+        while j < n {
+            let v = match s.nodes.get(j) {
+                Some(vv) => *vv
+                None => break
+            }
+            if v == removed {
+                scope_i = Some(i)
+                node_pos = Some(j)
+                i = len
+                break
+            }
+            j = j.wrapping_add(1usize)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let scope_idx = match scope_i {
+        Some(v) => v
+        None => return self.focus
+    }
+    let node_idx = match node_pos {
+        Some(v) => v
+        None => return self.focus
+    }
+    let was_focused = self.focus == Some(removed)
+    let new_focus = if was_focused {
+        let mut nf: Option<usize> = None
+        {
+            let scope = match self.scopes.as_mut_slice().get_mut(scope_idx) {
+                Some(v) => v
+                None => return None
+            }
+            match scope.nodes.remove(node_idx) {
+                Some(_u) => ()
+                None => ()
+            }
+            match scope.tab_index.remove(node_idx) {
+                Some(_u) => ()
+                None => ()
+            }
+            let n2 = scope.nodes.len()
+            nf = if node_idx < n2 {
+                match scope.nodes.get(node_idx) {
+                    Some(v) => Some(*v)
+                    None => None
+                }
+            } else if node_idx > 0usize {
+                match scope.nodes.get(node_idx.wrapping_sub(1usize)) {
+                    Some(v) => Some(*v)
+                    None => None
+                }
+            } else {
+                None
+            }
+        }
+        nf
+    } else {
+        None
+    }
+    if !was_focused {
+        return self.focus
+    }
+    self.focus = new_focus
+    new_focus
+end ui.focus.FocusManager.focus_after_remove
+
+/// 矢印キーによる移動。現在のスコープの並び方向に沿うキーだけが次の／前のノードへ
+/// 移動し、軸に直交する方向や端では何も変えない（折り返さない）。
+fn ui.focus.FocusManager.focus_move(self: &mut ui.focus.FocusManager, dir: ui.focus.Dir) -> bool uses [alloc] panics never pub
+    let focus = match self.focus {
+        Some(f) => f
+        None => return false
+    }
+    let scope_id = match self.scope_of(focus) {
+        Some(s) => s
+        None => return false
+    }
+    let s = match self.scope_ref(scope_id) {
+        Some(v) => v
+        None => return false
+    }
+    if s.dir.axis() != dir.axis() {
+        return false
+    }
+    let order = self.tab_order(scope_id)
+    let len = order.len()
+    if len == 0usize {
+        return false
+    }
+    let mut pos = 0usize
+    let mut found = false
+    let mut i = 0usize
+    while i < len {
+        let v = match order.get(i) {
+            Some(v) => *v
+            None => break
+        }
+        if v == focus {
+            pos = i
+            found = true
+            break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    if !found {
+        return false
+    }
+    let mut next = pos
+    let backward = dir == ui.focus.Dir.Left || dir == ui.focus.Dir.Up
+    if backward {
+        if pos == 0usize {
+            return false
+        }
+        next = pos.wrapping_sub(1usize)
+    } else {
+        let np = pos.wrapping_add(1usize)
+        if np >= len {
+            return false
+        }
+        next = np
+    }
+    let node = match order.get(next) {
+        Some(v) => *v
+        None => return false
+    }
+    self.focus = Some(node)
+    true
+end ui.focus.FocusManager.focus_move
+
+/// 現在のスコープ内で Tab を一度押したのと同じ：次の Tab 順序のノードへ移り、末尾で先頭に戻る。
+/// 焦点が最も内側のモーダルスコープの中にあるときは、そのスコープを出ない。
+fn ui.focus.FocusManager.focus_next(self: &mut ui.focus.FocusManager) -> bool uses [alloc] panics never pub
+    let focus = match self.focus {
+        Some(f) => f
+        None => return false
+    }
+    let scope_id = match self.scope_of(focus) {
+        Some(s) => s
+        None => return false
+    }
+    let trap = self.trap_scope(scope_id)
+    let order = self.tab_order(trap)
+    let len = order.len()
+    if len == 0usize {
+        return false
+    }
+    let mut pos = 0usize
+    let mut found = false
+    let mut i = 0usize
+    while i < len {
+        let v = match order.get(i) {
+            Some(v) => *v
+            None => break
+        }
+        if v == focus {
+            pos = i
+            found = true
+            break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let next = if found {
+        match pos.wrapping_add(1usize).checked_rem(len) {
+            Some(v) => v
+            None => 0usize
+        }
+    } else {
+        0usize
+    }
+    let node = match order.get(next) {
+        Some(v) => *v
+        None => return false
+    }
+    self.focus = Some(node)
+    true
+end ui.focus.FocusManager.focus_next
+
+/// 焦点をノードに移す。ノードが登録済みのスコープに属する場合のみ成功する。
+fn ui.focus.FocusManager.focus_node(self: &mut ui.focus.FocusManager, node: usize) -> bool uses [] panics never pub
+    match self.scope_of(node) {
+        Some(_) => {
+            self.focus = Some(node)
+            true
+        }
+        None => false
+    }
+end ui.focus.FocusManager.focus_node
+
+/// 現在のスコープ内で Shift+Tab を一度押したのと同じ：前の Tab 順序のノードへ移り、先頭で末尾に戻る。
+fn ui.focus.FocusManager.focus_previous(self: &mut ui.focus.FocusManager) -> bool uses [alloc] panics never pub
+    let focus = match self.focus {
+        Some(f) => f
+        None => return false
+    }
+    let scope_id = match self.scope_of(focus) {
+        Some(s) => s
+        None => return false
+    }
+    let trap = self.trap_scope(scope_id)
+    let order = self.tab_order(trap)
+    let len = order.len()
+    if len == 0usize {
+        return false
+    }
+    let mut pos = 0usize
+    let mut found = false
+    let mut i = 0usize
+    while i < len {
+        let v = match order.get(i) {
+            Some(v) => *v
+            None => break
+        }
+        if v == focus {
+            pos = i
+            found = true
+            break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let next = if found {
+        if pos == 0usize {
+            len.wrapping_sub(1usize)
+        } else {
+            pos.wrapping_sub(1usize)
+        }
+    } else {
+        len.wrapping_sub(1usize)
+    }
+    let node = match order.get(next) {
+        Some(v) => *v
+        None => return false
+    }
+    self.focus = Some(node)
+    true
+end ui.focus.FocusManager.focus_previous
+
+/// 現在の焦点ノード。
+fn ui.focus.FocusManager.get_focus(self: &ui.focus.FocusManager) -> Option<usize> uses [] panics never pub
+    self.focus
+end ui.focus.FocusManager.get_focus
+
+fn ui.focus.FocusManager.new() -> ui.focus.FocusManager uses [] panics never pub
+    let scopes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    ui.focus.FocusManager { scopes: scopes, focus: None }
+end ui.focus.FocusManager.new
+
+/// スコープ `scope_id` へノードを文書順に追加する。スコープが無ければ偽。
+fn ui.focus.FocusManager.scope_add_node(self: &mut ui.focus.FocusManager, scope_id: usize, node: usize) -> bool uses [alloc] panics never pub
+    let mut i = 0usize
+    let len = self.scopes.len()
+    while i < len {
+        let sid = match self.scopes.get(i) {
+            Some(v) => v.id
+            None => break
+        }
+        if sid == scope_id {
+            let mut s = match self.scopes.remove(i) {
+                Some(v) => v
+                None => return false
+            }
+            s.add_node(node)
+            match self.scopes.insert(i, s) {
+                Ok(_u) => ()
+                Err(_e) => ()
+            }
+            return true
+        }
+        i = i.wrapping_add(1usize)
+    }
+    false
+end ui.focus.FocusManager.scope_add_node
+
+/// 焦点ノードのスコープからルートへ向かうスコープ id の列（先頭が焦点のスコープ）。
+fn ui.focus.FocusManager.scope_chain(self: &ui.focus.FocusManager) -> alloc.vec.Vec<usize, std.alloc.System> uses [alloc] panics never pub
+    let mut chain = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let focus = match self.focus {
+        Some(f) => f
+        None => return chain
+    }
+    let mut current = match self.scope_of(focus) {
+        Some(s) => s
+        None => return chain
+    }
+    loop {
+        match chain.push(current) {
+            Ok(_u) => ()
+            Err(_e) => ()
+        }
+        let s = match self.scope_ref(current) {
+            Some(v) => v
+            None => break
+        }
+        match s.parent {
+            Some(p) => {
+                current = p
+            }
+            None => break
+        }
+    }
+    chain
+end ui.focus.FocusManager.scope_chain
+
+/// 新しいスコープを登録する。
+fn ui.focus.FocusManager.scope_new(self: &mut ui.focus.FocusManager, id: usize, parent: Option<usize>, dir: ui.focus.Dir, modal: bool) -> () uses [alloc] panics never pub
+    let s = ui.focus.Scope.new(id, parent, dir, modal)
+    match self.scopes.push(s) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+end ui.focus.FocusManager.scope_new
+
+/// スコープ内のノード `node` の文書順位。
+fn ui.focus.FocusManager.scope_node_position(self: &ui.focus.FocusManager, scope_id: usize, node: usize) -> Option<usize> uses [] panics never pub
+    let s = match self.scope_ref(scope_id) {
+        Some(v) => v
+        None => return None
+    }
+    let mut i = 0usize
+    let n = s.nodes.len()
+    while i < n {
+        let v = match s.nodes.get(i) {
+            Some(vv) => *vv
+            None => break
+        }
+        if v == node {
+            return Some(i)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    None
+end ui.focus.FocusManager.scope_node_position
+
+/// ノードを含むスコープの id を返す。
+fn ui.focus.FocusManager.scope_of(self: &ui.focus.FocusManager, node: usize) -> Option<usize> uses [] panics never pub
+    let mut i = 0usize
+    let len = self.scopes.len()
+    while i < len {
+        let s = match self.scopes.get(i) {
+            Some(v) => v
+            None => break
+        }
+        if s.nodes.contains(&node) {
+            return Some(s.id)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    None
+end ui.focus.FocusManager.scope_of
+
+/// スコープ `scope_id` への不可変参照。
+fn ui.focus.FocusManager.scope_ref(self: &ui.focus.FocusManager, scope_id: usize) -> Option<&ui.focus.Scope> uses [] panics never pub
+    let mut i = 0usize
+    let len = self.scopes.len()
+    while i < len {
+        let s = match self.scopes.get(i) {
+            Some(v) => v
+            None => break
+        }
+        if s.id == scope_id {
+            return Some(s)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    None
+end ui.focus.FocusManager.scope_ref
+
+/// スコープ `scope_id` の並び方向を設定する。
+fn ui.focus.FocusManager.scope_set_dir(self: &mut ui.focus.FocusManager, scope_id: usize, dir: ui.focus.Dir) -> bool uses [alloc] panics never pub
+    let mut i = 0usize
+    let len = self.scopes.len()
+    while i < len {
+        let sid = match self.scopes.get(i) {
+            Some(v) => v.id
+            None => break
+        }
+        if sid == scope_id {
+            let mut s = match self.scopes.remove(i) {
+                Some(v) => v
+                None => return false
+            }
+            s.set_dir(dir)
+            match self.scopes.insert(i, s) {
+                Ok(_u) => ()
+                Err(_e) => ()
+            }
+            return true
+        }
+        i = i.wrapping_add(1usize)
+    }
+    false
+end ui.focus.FocusManager.scope_set_dir
+
+/// スコープ `scope_id` のモーダルフラグを設定する。
+fn ui.focus.FocusManager.scope_set_modal(self: &mut ui.focus.FocusManager, scope_id: usize, modal: bool) -> bool uses [alloc] panics never pub
+    let mut i = 0usize
+    let len = self.scopes.len()
+    while i < len {
+        let sid = match self.scopes.get(i) {
+            Some(v) => v.id
+            None => break
+        }
+        if sid == scope_id {
+            let mut s = match self.scopes.remove(i) {
+                Some(v) => v
+                None => return false
+            }
+            s.set_modal(modal)
+            match self.scopes.insert(i, s) {
+                Ok(_u) => ()
+                Err(_e) => ()
+            }
+            return true
+        }
+        i = i.wrapping_add(1usize)
+    }
+    false
+end ui.focus.FocusManager.scope_set_modal
+
+/// ノード `node` の tab_index を設定する。スコープかノードが無ければ偽。
+fn ui.focus.FocusManager.scope_set_tab_index(self: &mut ui.focus.FocusManager, scope_id: usize, node: usize, index: i32) -> bool uses [alloc] panics never pub
+    let mut i = 0usize
+    let len = self.scopes.len()
+    while i < len {
+        let sid = match self.scopes.get(i) {
+            Some(v) => v.id
+            None => break
+        }
+        if sid == scope_id {
+            let mut s = match self.scopes.remove(i) {
+                Some(v) => v
+                None => return false
+            }
+            let r = s.set_tab_index(node, index)
+            match self.scopes.insert(i, s) {
+                Ok(_u) => ()
+                Err(_e) => ()
+            }
+            return r
+        }
+        i = i.wrapping_add(1usize)
+    }
+    false
+end ui.focus.FocusManager.scope_set_tab_index
+
+/// スコープ `scope_id` の Tab 順序：tab_index 昇順、同値は文書順、負は除外。
+fn ui.focus.FocusManager.tab_order(self: &ui.focus.FocusManager, scope_id: usize) -> alloc.vec.Vec<usize, std.alloc.System> uses [alloc] panics never pub
+    let s = match self.scope_ref(scope_id) {
+        Some(v) => v
+        None => return alloc.vec.Vec.new(std.alloc.SYSTEM)
+    }
+    let n = s.nodes.len()
+    let mut order = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < n {
+        let ti = match s.tab_index.get(i) {
+            Some(v) => *v
+            None => 0i32
+        }
+        if ti >= 0i32 {
+            let mut insert_at = order.len()
+            let mut j = 0usize
+            while j < insert_at {
+                let pj = match order.get(j) {
+                    Some(v) => *v
+                    None => break
+                }
+                let ptj = match s.tab_index.get(pj) {
+                    Some(v) => *v
+                    None => 0i32
+                }
+                if ptj > ti {
+                    insert_at = j
+                    break
+                }
+                j = j.wrapping_add(1usize)
+            }
+            match order.insert(insert_at, i) {
+                Ok(_u) => ()
+                Err(_e) => ()
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let mut result = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut k = 0usize
+    let kl = order.len()
+    while k < kl {
+        let p = match order.get(k) {
+            Some(v) => *v
+            None => break
+        }
+        let node = match s.nodes.get(p) {
+            Some(v) => *v
+            None => 0usize
+        }
+        match result.push(node) {
+            Ok(_u) => ()
+            Err(_e) => ()
+        }
+        k = k.wrapping_add(1usize)
+    }
+    result
+end ui.focus.FocusManager.tab_order
+
+/// 焦点の閉じ込め境界：`scope_id` から親へ向かい、最初に見つかったモーダルスコープを返す。
+/// モーダルが無ければ `scope_id` 自体。
+fn ui.focus.FocusManager.trap_scope(self: &ui.focus.FocusManager, scope_id: usize) -> usize uses [] panics never pub
+    let mut current = scope_id
+    loop {
+        let s = match self.scope_ref(current) {
+            Some(v) => v
+            None => return current
+        }
+        if s.modal {
+            return current
+        }
+        match s.parent {
+            Some(p) => {
+                current = p
+            }
+            None => return current
+        }
+    }
+end ui.focus.FocusManager.trap_scope
+
+/// `key` と修飾キーの組を、焦点ノードのスコープから祖先へ向かって探す。
+/// 最も具体的（深い）スコープに登録されたものが勝ち、同スコープ内では先に登録されたものが勝つ。
+fn ui.focus.Keymap.dispatch(self: &ui.focus.Keymap, manager: &ui.focus.FocusManager, key: u32, modifiers: ui.focus.Modifiers) -> Option<u32> uses [alloc] panics never pub
+    let chain = manager.scope_chain()
+    let mut ci = 0usize
+    let clen = chain.len()
+    while ci < clen {
+        let scope_id = match chain.get(ci) {
+            Some(v) => *v
+            None => break
+        }
+        let mut ei = 0usize
+        let elen = self.entries.len()
+        while ei < elen {
+            let e = match self.entries.get(ei) {
+                Some(v) => v
+                None => break
+            }
+            if e.scope == scope_id && e.key == key && e.modifiers == modifiers {
+                return Some(e.action)
+            }
+            ei = ei.wrapping_add(1usize)
+        }
+        ci = ci.wrapping_add(1usize)
+    }
+    None
+end ui.focus.Keymap.dispatch
+
+fn ui.focus.Keymap.new() -> ui.focus.Keymap uses [] panics never pub
+    let entries = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    ui.focus.Keymap { entries: entries }
+end ui.focus.Keymap.new
+
+/// ショートカットを登録する。
+fn ui.focus.Keymap.register(self: &mut ui.focus.Keymap, scope: usize, key: u32, modifiers: ui.focus.Modifiers, action: u32) -> () uses [alloc] panics never pub
+    let sh = ui.focus.Shortcut { scope: scope, key: key, modifiers: modifiers, action: action }
+    match self.entries.push(sh) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+end ui.focus.Keymap.register
+
+/// `ui.focus.Modifiers` の既定値（全修飾キー off）。
+fn ui.focus.Modifiers.default() -> ui.focus.Modifiers uses [] panics never pub
+    ui.focus.Modifiers { shift: false, ctrl: false, alt: false }
+end ui.focus.Modifiers.default
+
+/// ノードを文書順に追加する。tab_index は既定の 0。
+fn ui.focus.Scope.add_node(self: &mut ui.focus.Scope, node: usize) -> () uses [alloc] panics never pub
+    match self.nodes.push(node) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match self.tab_index.push(0i32) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+end ui.focus.Scope.add_node
+
+/// `ui.focus.Scope` の構築子。空のスコープを作る。
+fn ui.focus.Scope.new(id: usize, parent: Option<usize>, dir: ui.focus.Dir, modal: bool) -> ui.focus.Scope uses [] panics never pub
+    let nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let t = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    ui.focus.Scope { id: id, parent: parent, nodes: nodes, tab_index: t, dir: dir, modal: modal }
+end ui.focus.Scope.new
+
+/// スコープの並び方向を設定する。
+fn ui.focus.Scope.set_dir(self: &mut ui.focus.Scope, dir: ui.focus.Dir) -> () uses [] panics never pub
+    self.dir = dir
+end ui.focus.Scope.set_dir
+
+/// スコープのモーダルフラグを設定する。
+fn ui.focus.Scope.set_modal(self: &mut ui.focus.Scope, modal: bool) -> () uses [] panics never pub
+    self.modal = modal
+end ui.focus.Scope.set_modal
+
+/// ノードの tab_index を設定する。`node` がこのスコープに無ければ偽。
+fn ui.focus.Scope.set_tab_index(self: &mut ui.focus.Scope, node: usize, index: i32) -> bool uses [alloc] panics never pub
+    let mut i = 0usize
+    let len = self.nodes.len()
+    while i < len {
+        let n = match self.nodes.get(i) {
+            Some(v) => *v
+            None => break
+        }
+        if n == node {
+            match self.tab_index.remove(i) {
+                Some(_u) => ()
+                None => ()
+            }
+            match self.tab_index.insert(i, index) {
+                Ok(_u) => ()
+                Err(_e) => ()
+            }
+            return true
+        }
+        i = i.wrapping_add(1usize)
+    }
+    false
+end ui.focus.Scope.set_tab_index

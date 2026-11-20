@@ -1,0 +1,252 @@
+type ui.focus_test.Target pub
+    _dummy: bool
+end ui.focus_test.Target
+
+test ui.focus_test.Target.test_arrow_horizontal
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.focus_node(10usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Right))
+    core.check.eq(m.get_focus(), Some(20usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Right))
+    core.check.eq(m.get_focus(), Some(30usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Right))
+    core.check.eq(m.get_focus(), Some(30usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Left))
+    core.check.eq(m.get_focus(), Some(20usize))
+end ui.focus_test.Target.test_arrow_horizontal
+
+test ui.focus_test.Target.test_arrow_left_at_first_stays
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.focus_node(10usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Left))
+    core.check.eq(m.get_focus(), Some(10usize))
+end ui.focus_test.Target.test_arrow_left_at_first_stays
+
+test ui.focus_test.Target.test_arrow_no_focus
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Right))
+    core.check.eq(m.get_focus(), None)
+end ui.focus_test.Target.test_arrow_no_focus
+
+test ui.focus_test.Target.test_arrow_vertical
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Down, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.focus_node(10usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Down))
+    core.check.eq(m.get_focus(), Some(20usize))
+    core.mem.drop(m.focus_move(ui.focus.Dir.Left))
+    core.check.eq(m.get_focus(), Some(20usize))
+end ui.focus_test.Target.test_arrow_vertical
+
+test ui.focus_test.Target.test_empty_no_focus
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), None)
+    core.mem.drop(m.focus_previous())
+    core.check.eq(m.get_focus(), None)
+end ui.focus_test.Target.test_empty_no_focus
+
+test ui.focus_test.Target.test_focus_node_unregistered
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    let r = m.focus_node(99usize)
+    core.check.eq(r, false)
+    core.check.eq(m.get_focus(), None)
+end ui.focus_test.Target.test_focus_node_unregistered
+
+test ui.focus_test.Target.test_modal_trap
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_new(2usize, Some(1usize), ui.focus.Dir.Left, true))
+    core.mem.drop(m.scope_add_node(2usize, 20usize))
+    core.mem.drop(m.scope_add_node(2usize, 30usize))
+    core.mem.drop(m.focus_node(20usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(30usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(20usize))
+end ui.focus_test.Target.test_modal_trap
+
+test ui.focus_test.Target.test_remove_focus_next_sibling
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.focus_node(20usize))
+    let f = m.focus_after_remove(20usize)
+    core.check.eq(f, Some(30usize))
+end ui.focus_test.Target.test_remove_focus_next_sibling
+
+test ui.focus_test.Target.test_remove_focus_only_node
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.focus_node(10usize))
+    let f = m.focus_after_remove(10usize)
+    core.check.eq(f, None)
+end ui.focus_test.Target.test_remove_focus_only_node
+
+test ui.focus_test.Target.test_remove_focus_prev_sibling
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.focus_node(30usize))
+    let f = m.focus_after_remove(30usize)
+    core.check.eq(f, Some(20usize))
+end ui.focus_test.Target.test_remove_focus_prev_sibling
+
+test ui.focus_test.Target.test_remove_unfocused
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.focus_node(10usize))
+    let f = m.focus_after_remove(20usize)
+    core.check.eq(f, Some(10usize))
+end ui.focus_test.Target.test_remove_unfocused
+
+test ui.focus_test.Target.test_shortcut_ancestor
+    let mut m = ui.focus.FocusManager.new()
+    let mut km = ui.focus.Keymap.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_new(2usize, Some(1usize), ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(2usize, 20usize))
+    core.mem.drop(m.focus_node(20usize))
+    let mods = ui.focus.Modifiers { shift: false, ctrl: true, alt: false }
+    core.mem.drop(km.register(1usize, 83u32, mods, 100u32))
+    let a = km.dispatch(&m, 83u32, mods)
+    core.check.eq(a, Some(100u32))
+end ui.focus_test.Target.test_shortcut_ancestor
+
+test ui.focus_test.Target.test_shortcut_dispatch
+    let mut m = ui.focus.FocusManager.new()
+    let mut km = ui.focus.Keymap.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_new(2usize, Some(1usize), ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(2usize, 20usize))
+    core.mem.drop(m.focus_node(20usize))
+    let mods = ui.focus.Modifiers { shift: false, ctrl: true, alt: false }
+    core.mem.drop(km.register(1usize, 83u32, mods, 100u32))
+    let mods2 = ui.focus.Modifiers { shift: false, ctrl: false, alt: false }
+    core.mem.drop(km.register(2usize, 83u32, mods2, 200u32))
+    let a = km.dispatch(&m, 83u32, mods2)
+    core.check.eq(a, Some(200u32))
+end ui.focus_test.Target.test_shortcut_dispatch
+
+test ui.focus_test.Target.test_shortcut_no_focus
+    let mut m = ui.focus.FocusManager.new()
+    let mut km = ui.focus.Keymap.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    let mods = ui.focus.Modifiers { shift: false, ctrl: true, alt: false }
+    core.mem.drop(km.register(1usize, 83u32, mods, 100u32))
+    let a = km.dispatch(&m, 83u32, mods)
+    core.check.eq(a, None)
+end ui.focus_test.Target.test_shortcut_no_focus
+
+test ui.focus_test.Target.test_shortcut_none
+    let mut m = ui.focus.FocusManager.new()
+    let mut km = ui.focus.Keymap.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.focus_node(10usize))
+    let mods = ui.focus.Modifiers { shift: false, ctrl: false, alt: false }
+    let a = km.dispatch(&m, 99u32, mods)
+    core.check.eq(a, None)
+end ui.focus_test.Target.test_shortcut_none
+
+test ui.focus_test.Target.test_shortcut_same_scope_first_wins
+    let mut m = ui.focus.FocusManager.new()
+    let mut km = ui.focus.Keymap.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.focus_node(10usize))
+    let mods = ui.focus.Modifiers { shift: false, ctrl: true, alt: false }
+    core.mem.drop(km.register(1usize, 83u32, mods, 100u32))
+    core.mem.drop(km.register(1usize, 83u32, mods, 200u32))
+    let a = km.dispatch(&m, 83u32, mods)
+    core.check.eq(a, Some(100u32))
+end ui.focus_test.Target.test_shortcut_same_scope_first_wins
+
+test ui.focus_test.Target.test_tab_all_negative
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_set_tab_index(1usize, 10usize, -1i32))
+    core.mem.drop(m.scope_set_tab_index(1usize, 20usize, -2i32))
+    core.mem.drop(m.focus_node(10usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(10usize))
+end ui.focus_test.Target.test_tab_all_negative
+
+test ui.focus_test.Target.test_tab_index_sort
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.scope_add_node(1usize, 40usize))
+    core.mem.drop(m.scope_set_tab_index(1usize, 20usize, 5i32))
+    core.mem.drop(m.scope_set_tab_index(1usize, 30usize, 1i32))
+    core.mem.drop(m.scope_set_tab_index(1usize, 40usize, -1i32))
+    core.mem.drop(m.focus_node(30usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(20usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(10usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(30usize))
+end ui.focus_test.Target.test_tab_index_sort
+
+test ui.focus_test.Target.test_tab_order_document_order
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.focus_node(10usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(20usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(30usize))
+    core.mem.drop(m.focus_next())
+    core.check.eq(m.get_focus(), Some(10usize))
+end ui.focus_test.Target.test_tab_order_document_order
+
+test ui.focus_test.Target.test_tab_shift_tab_wrap
+    let mut m = ui.focus.FocusManager.new()
+    core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
+    core.mem.drop(m.scope_add_node(1usize, 10usize))
+    core.mem.drop(m.scope_add_node(1usize, 20usize))
+    core.mem.drop(m.scope_add_node(1usize, 30usize))
+    core.mem.drop(m.focus_node(10usize))
+    core.mem.drop(m.focus_previous())
+    core.check.eq(m.get_focus(), Some(30usize))
+    core.mem.drop(m.focus_previous())
+    core.check.eq(m.get_focus(), Some(20usize))
+    core.mem.drop(m.focus_previous())
+    core.check.eq(m.get_focus(), Some(10usize))
+    core.mem.drop(m.focus_previous())
+    core.check.eq(m.get_focus(), Some(30usize))
+end ui.focus_test.Target.test_tab_shift_tab_wrap
