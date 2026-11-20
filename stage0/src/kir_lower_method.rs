@@ -370,6 +370,15 @@ impl<'a> Lw<'a> {
             let Some(p) = Pointee::of(stt) else {
                 return self.err(line, format!("受け手 {} の型は段階 1 の対象外", segs[0]));
             };
+            // 所有物の印を持つ局所は、渡した `&` から返ってきた参照越しに書き込まれることがある
+            // (`t.state_ref().insert(..)` など)。永続のスタックスロットに昇格し、後続の読みがその書き込みを見るようにする。
+            if super::coll::val_slot_of(self, s) {
+                let ptr = self.alloca(p);
+                self.emit(Ty::Unit, Op::Store { ptr, val: sv });
+                self.mark_mem(ptr);
+                self.slots[s] = (ptr, stt);
+                return Ok(Some((self.ref_value(ptr, p, !want_mut), None, false)));
+            }
             let ptr = self.alloca(p);
             self.emit(Ty::Unit, Op::Store { ptr, val: sv });
             let rv = self.ref_value(ptr, p, !want_mut);
