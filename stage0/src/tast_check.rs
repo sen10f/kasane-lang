@@ -125,10 +125,11 @@ pub fn select(prog: &Program, user: &[usize], old: Vec<Diag>) -> Vec<Diag> {
         Mode::Old => {
             // 効果の診断 (E4001/E4002) は旧の検査を持たず、TAST の効果の規則 (effects_*) だけが出す
             // (設計_S4の旧い検査の取り外し.md 3 段目 1。旧の効果検査は check.rs から消した)。
-            // 他の旧の診断はそのまま出す。KSN_DUMP_TAST は木を出す確認用。
+            // impl の署名 (E1122) も旧の検査を持たず、TAST の impl_sig 規則が出す (設計_S4の旧い検査の取り外し.md 3 段目 2)。
+            // 他の旧の診断はそのまま出す (check.rs のフィールド可視性の E1122 を含む)。KSN_DUMP_TAST は木を出す確認用。
             let new = check(prog, user);
             let kept: Vec<Diag> = old.into_iter().filter(|d| !is_effect_code(&d.code)).collect();
-            let eff: Vec<Diag> = new.into_iter().filter(|d| is_effect_code(&d.code)).collect();
+            let eff: Vec<Diag> = new.into_iter().filter(|d| is_effect_code(&d.code) || d.code == "E1122").collect();
             dedup([kept, eff].concat())
         }
         Mode::New => check(prog, user),

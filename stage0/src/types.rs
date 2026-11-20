@@ -456,22 +456,6 @@ const DERIVED: &[&str] = &[
     "try_clone",
 ];
 
-/// 型で一意に解決できたメソッド呼び出しの記録 (効果検査 ① 用)。
-/// 解決が不確かなもの (複数候補・型不明) は記録しない (check 側は黙る)。
-pub struct ResolvedCall {
-    /// 呼び出しを含む定義の添字 (書き手)。
-    pub writer: usize,
-    /// その呼び出しが属するクロージャ節 (`None` = 定義の本体そのもの)。
-    pub scope: Option<String>,
-    /// 解決先の定義の添字 (メソッドの `Def`。native sig も含む)。
-    pub callee: usize,
-    pub line: usize,
-    /// メソッド呼び出しの明示型引数 (`x.m::<..>`)。
-    pub targs: Vec<V>,
-    /// `dyn Tr<E, P>` 越しの呼び出しのとき: (表示名, 実体化した `uses`, 実体化した `panics`)。`callee` はトレイトの定義。
-    pub dyn_eff: Option<(String, Vec<String>, String)>,
-}
-
 /// メソッド呼び出し節点の位置の記録 (LSP の記号の特定用)。`call` は呼び出し節点の式 ID (`SideTabs::resolved_fn` の鍵の second 成分)。
 /// `pos` は名前の位置: `x.m(..)` (MCall) は名前トークンの位置で `seg` は `usize::MAX`、`x.m(..)` の経路形 (Call) は
 /// 経路の先頭の位置で `seg` は呼ぶ名前の添字 (経路の最後の成分)。
@@ -540,15 +524,6 @@ pub(crate) fn param_bound_implies(p: &Program, d: &Def, pn: &str, tr: &str) -> O
     Some(false)
 }
 
-/// 型で解決できた呼び出しの効果検査の義務 (5.1 / 4.3)。check.rs が、呼び出し元 `di` の
-/// `uses` / `panics` と比べる。`cands` は (呼び出し先の名前, 検査する uses, 検査する panics) の列で、
-/// すべての候補が違反するときだけ報告する (候補が複数あるときは保守側に黙る)。
-pub struct EffCheck {
-    pub di: usize,
-    pub line: usize,
-    pub cands: Vec<(String, Vec<String>, Option<String>)>,
-}
-
 /// 効果変数・panic 変数の束縛 (クロージャの本体から推論した効果、4.3)。
 #[derive(Default)]
 struct EffBind {
@@ -615,8 +590,6 @@ pub struct TypeCk<'a> {
     /// クロージャ節 (5.3 の `関数名#番号`) → そのクロージャの AST ノード。
     /// スタック上界の見積り (E4012) が、節の引数と本体の `let` からフレームを計算するために使う。
     pub closure_asts: std::collections::BTreeMap<String, V>,
-    /// 型で一意に解決できたメソッド呼び出し (効果検査 ①)。
-    pub resolved_calls: Vec<ResolvedCall>,
     /// メソッド呼び出し・フィールド参照のレシーバの型 (改名ツール用)。
     pub recv_log: Vec<RecvSite>,
     /// メソッド呼び出し節点の位置 (LSP の記号の特定が、位置から `resolved_fn` を引くのに使う)。
@@ -656,7 +629,6 @@ pub struct TypeCk<'a> {
     pat_line: usize,
     /// いま推論している式の行 (関数型への変換の効果検査の報告位置)。
     cur_line: usize,
-    eff_seen: HashSet<(String, String, usize)>,
     /// extern の引数の変換は E5005 が見るので、関数型の効果検査を止める。
     conv_quiet: bool,
     /// 入れ子のループごとの「`break` があったか」。
@@ -690,8 +662,6 @@ pub struct TypeCk<'a> {
     eff_acc: Vec<(BTreeSet<String>, bool, bool)>,
     /// クロージャの節 → 本体から推論した効果 (uses, panics may か, 確実でないか)。
     closure_effs: HashMap<String, (BTreeSet<String>, bool, bool)>,
-    /// 型で解決できた呼び出しの効果検査の義務 (check.rs が検査する)。
-    pub eff_checks: Vec<EffCheck>,
     /// 型推論の被覆率の計測 (`KSN_TYPE_COVERAGE=1` のときだけ `Some`。typecov.rs)。
     pub cov: Option<crate::typecov::Cov>,
     /// 型表の未解決分: 式 ID → (種別, 行, 型)。いま推論中の関数の分で、`check_def` の終わりに解決して `tytab` へ移す。
@@ -751,7 +721,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], resolved_calls: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -2137,78 +2107,14 @@ impl<'a> TypeCk<'a> {
     }
 
     /// 関数・クロージャを関数型 `fn(..) uses [E] panics P` に合わせる所 (仕様 5.1) の効果の検査。
-    /// `want` (受け側: 注釈) の効果に `got` (渡し側: 実際の効果) の効果が含まれていなければ E4001 / E4002。
-    /// 効果変数・panic 変数の側は黙る。単一化は対称なので向きの分からない組はここでは見ない
-    /// (向きが分かる場所は `check_fn_conv_dir` で見る)。
-    fn check_fn_conv(&mut self, ea: &Eff, eb: &Eff) {
-        if self.conv_quiet {
-            return;
-        }
-        let (Some(x), Some(y)) = (&ea.0, &eb.0) else { return };
-        let (want, got) = match (x.decl, y.decl) {
-            (true, false) => (x, y),
-            (false, true) => (y, x),
-            _ => return,
-        };
-        self.check_fn_eff(want, got, self.cur_line);
-    }
-
-    /// `want` (受け側の宣言) の効果に `got` (渡し側の宣言) の効果が含まれていなければ E4001 / E4002 を報告する。
-    /// 向きは呼び出し側が決める (let の注釈・引数・戻り値・構造体の欄)。宣言 × 実際と宣言 × 宣言の両方を見る。
-    /// 受け側に効果変数・panic 変数があると何が求められているか分からないので黙る (呼ぶ側で実体化を検査するため)。
-    /// 渡し側に効果変数・panic 変数があり、受け側が具体的なら、その変数がその場で同じ変数に
-    /// 実体化されるとは限らないので fail-closed で報告する。
-    fn check_fn_eff(&mut self, want: &EffInfo, got: &EffInfo, line: usize) {
-        if want.uses.iter().any(|e| e.chars().next().map_or(false, |c| c.is_uppercase()))
-            || want.may == None
-        {
-            return;
-        }
-        let mut out: Vec<(&str, String)> = vec![];
-        for e in &got.uses {
-            match e.chars().next() {
-                Some(c) if c.is_lowercase() => {
-                    if !crate::check::covers(&want.uses, e) {
-                        out.push((
-                            "E4001",
-                            format!("{} uses effect `{}` but the function type declares `uses [{}]`", got.name, e, want.uses.join(", ")),
-                        ));
-                    }
-                }
-                Some(c) if c.is_uppercase() => {
-                    // 渡し側に効果変数があり、受け側は具体的: どの効果に束縛されるか分からないので fail-closed。
-                    out.push((
-                        "E4001",
-                        format!(
-                            "{} uses effect variable `{}` but the function type declares `uses [{}]`",
-                            if got.name.is_empty() { "the passed function type" } else { &got.name },
-                            e,
-                            want.uses.join(", ")
-                        ),
-                    ));
-                }
-                _ => {}
-            }
-        }
-        if want.may == Some(false) && got.may != Some(false) {
-            let g = if got.name.is_empty() { "the passed function type" } else { &got.name };
-            out.push(("E4002", format!("{} may panic but the function type declares `panics never`", g)));
-        }
-        for (c, m) in out {
-            if self.eff_seen.insert((c.to_string(), m.clone(), line)) {
-                self.diag(c, m, line);
-            }
-        }
-    }
-
     /// 方向が分かる場所 (let の注釈・引数・戻り値・構造体の欄) で、渡し側の関数型の宣言の効果が
-    /// 受け側の宣言に含まれていなければ E4001 / E4002 を報告する。単一化は対称なので向きを
+    /// (効果の比べは TAST の効果の規則が行う)。単一化は対称なので向きを
     /// `want`/`got` で外から渡す。入れ子 (Option<fn(..)> など) も辿る。
     fn check_fn_conv_dir(&mut self, want: &Ty, got: &Ty) {
         self.check_fn_conv_dir_walk(self.resolve(want), self.resolve(got));
     }
 
-    /// `want`/`got` を辿り、関数型同士が対になる所だけ `check_fn_eff` する。
+    /// `want`/`got` を辿り、関数型同士が対になる所を辿るための形 (効果の比べは持たない)。
     /// 構造が揃わない組は黙る (型不一致は単一化側が見る)。
     fn check_fn_conv_dir_walk(&mut self, mut want: Ty, mut got: Ty) {
         want = self.resolve(&want);
@@ -2237,10 +2143,7 @@ impl<'a> TypeCk<'a> {
 
     fn check_fn_conv_dir_walk_one(&mut self, want: Ty, got: Ty) {
         match (&want, &got) {
-            (Ty::Closure { eff: ew, args: wa, ret: wr, .. }, Ty::Closure { eff: eg, args: ga, ret: gr, .. }) => {
-                if let (Some(ew), Some(eg)) = (&ew.0, &eg.0) {
-                    self.check_fn_eff(ew, eg, self.cur_line);
-                }
+            (Ty::Closure { args: wa, ret: wr, .. }, Ty::Closure { args: ga, ret: gr, .. }) => {
                 // 戻り値は共変: 同じ向きで再帰する。
                 self.check_fn_conv_dir_walk(wr.as_ref().clone(), gr.as_ref().clone());
                 // 引数は反変: 向きを逆にして再帰する。
@@ -2264,16 +2167,10 @@ impl<'a> TypeCk<'a> {
             (Ty::Ptr(_, w), Ty::Ptr(_, g)) => {
                 self.check_fn_conv_dir_walk((**w).clone(), (**g).clone());
             }
-            // `dyn Tr<..>` どうしは、トレイトの効果・panic の型引数が受け側に含まれているかを見る (5.1)。
-            // 向きは関数型と同じ: 渡し側 (`got`) のメソッドの効果が受け側 (`want`) の中になければならない。
-            (Ty::Dyn(wt, wa, _), Ty::Dyn(gt, ga, _)) if wt == gt => {
-                let (wa, ga) = (wa.clone(), ga.clone());
-                self.check_dyn_conv(wt, &wa, &ga);
-            }
-            // `&T` → `&dyn Tr<..>` / `Box<T>` → `Box<dyn Tr<..>>`: `T` の impl のトレイト引数を渡し側として比べる。
-            (Ty::Dyn(wt, wa, _), Ty::Named(n, _, _)) => {
-                let (wt, wa, n) = (wt.clone(), wa.clone(), n.clone());
-                self.check_dyn_impl(&wt, &wa, &n);
+            // `&T` → `&dyn Tr<..>` / `Box<T>` → `Box<dyn Tr<..>>`: `T` に `Tr` の実装が無いと E2046。
+            (Ty::Dyn(wt, _, _), Ty::Named(n, _, _)) => {
+                let (wt, n) = (wt.clone(), n.clone());
+                self.check_dyn_impl(&wt, &n);
             }
             // 型パラメータ `H` を `dyn Tr` へ渡せるのは、宣言された境界 (とそのスーパートレイト) に `Tr` があるときだけ。
             (Ty::Dyn(wt, _, _), Ty::Param(pn)) => {
@@ -2287,48 +2184,12 @@ impl<'a> TypeCk<'a> {
         }
     }
 
-    /// `dyn Tr<want..>` の受け側へ型 `ty` の値を渡す: `ty` の `impl Tr<got..>` の実引数を渡し側として比べる。
-    fn check_dyn_impl(&mut self, tr: &str, want: &TArgs, ty: &str) {
+    /// `dyn Tr` の受け側へ型 `ty` の値を渡す: `ty` に `Tr` の実装が無ければ E2046 (トレイトの型引数の比べは持たない)。
+    fn check_dyn_impl(&mut self, tr: &str, ty: &str) {
         let Some(root) = crate::check::resolve_trait_fqn(self.p, tr) else { return };
-        let Some(got) = self.impl_targs_of(&root, ty) else {
+        if self.impl_targs_of(&root, ty).is_none() && self.p.types.contains_key(ty) {
             // 実装の宣言が無い型は `dyn Tr` にできない (同名の固有メソッドでは代用しない)。
-            if self.p.types.contains_key(ty) {
-                self.diag("E2046", format!("`{}` does not implement the trait `{}`", ty, root), self.cur_line);
-            }
-            return;
-        };
-        self.check_dyn_conv(tr, want, &TArgs(got));
-    }
-
-    /// `dyn Tr<want..>` の受け側へ `dyn Tr<got..>` の値を渡す (向きは `check_fn_conv_dir`)。トレイトの
-    /// 効果変数・panic 変数の実引数を、関数型の効果と同じ規則で比べる (`check_fn_eff`)。
-    fn check_dyn_conv(&mut self, tr: &str, want: &TArgs, got: &TArgs) {
-        let Some(root) = crate::check::resolve_trait_fqn(self.p, tr) else { return };
-        let Some(&ti) = self.p.types.get(&root) else { return };
-        let gens = self.p.defs[ti].generics.clone();
-        for (k, g) in gens.iter().enumerate() {
-            let (Some(w), Some(x)) = (want.0.get(k), got.0.get(k)) else { continue };
-            match g.0.as_str() {
-                "uses" => {
-                    let (Some(wu), Some(gu)) = (crate::check::targ_effs(w), crate::check::targ_effs(x)) else { continue };
-                    // 効果だけを比べる (panic は両側 `may` にして、`check_fn_eff` の panic 側の検査を外す)。
-                    let want = EffInfo { decl: true, uses: wu, may: Some(true), name: String::new() };
-                    let got = EffInfo { decl: true, uses: gu, may: Some(true), name: String::new() };
-                    self.check_fn_eff(&want, &got, self.cur_line);
-                }
-                "panics" => {
-                    let (Some(wp), Some(gp)) = (crate::check::targ_panic(w), crate::check::targ_panic(x)) else { continue };
-                    let to_may = |p: &str| match p {
-                        "never" => Some(false),
-                        "may" => Some(true),
-                        _ => None,
-                    };
-                    let want = EffInfo { decl: true, uses: vec![], may: to_may(&wp), name: String::new() };
-                    let got = EffInfo { decl: true, uses: vec![], may: to_may(&gp), name: String::new() };
-                    self.check_fn_eff(&want, &got, self.cur_line);
-                }
-                _ => {}
-            }
+            self.diag("E2046", format!("`{}` does not implement the trait `{}`", ty, root), self.cur_line);
         }
     }
 
@@ -2517,11 +2378,10 @@ impl<'a> TypeCk<'a> {
                 }
                 Ok(())
             }
-            (Ty::Closure { args: xs, ret: rx, eff: ea, .. }, Ty::Closure { args: ys, ret: ry, eff: eb, .. }) => {
+            (Ty::Closure { args: xs, ret: rx, .. }, Ty::Closure { args: ys, ret: ry, .. }) => {
                 if xs.len() != ys.len() {
                     return Err((a.clone(), b.clone()));
                 }
-                self.check_fn_conv(ea, eb);
                 // 2 つの実際のクロージャを単一化する (合流・代入): 実際の効果を和にして残す。
                 let merged = self.merge_closure_eff(&a, &b);
                 let (xs, ys, rx, ry) = (xs.clone(), ys.clone(), (**rx).clone(), (**ry).clone());
@@ -3148,9 +3008,6 @@ impl<'a> TypeCk<'a> {
             self.note_static_args(d, 1, args, &arg_stat, line);
         }
         let with_self: Vec<Ty> = std::iter::once(recv.clone()).chain(args.iter().cloned()).collect();
-        if let [(di, _)] = fit.as_slice() {
-            self.check_closure_bounds(&self.p.defs[*di], 0, &with_self, line);
-        }
         let effs: Vec<(String, Vec<String>, Option<String>, Vec<String>, Option<String>)> = fit
             .iter()
             .map(|(i, _)| {
@@ -3165,18 +3022,6 @@ impl<'a> TypeCk<'a> {
             self.last_fit = Some(fit.iter().map(|(i, _)| *i).collect());
         }
         let (di, owner) = fit[0].clone();
-        // 効果検査 (check.rs) のため、型で一意に解決できたメソッド呼び出しを記録する。
-        // メソッド表が完全で、引数の個数が合う候補がちょうど 1 つのときだけ (不確かなときは黙る)。
-        if fit.len() == 1 && complete {
-            self.resolved_calls.push(ResolvedCall {
-                writer: self.cur,
-                scope: self.closure_nodes.last().cloned(),
-                callee: di,
-                line,
-                targs: targs.to_vec(),
-                dyn_eff: None,
-            });
-        }
         let d = &self.p.defs[di];
         let gn = d.gnames();
         self.add_edge(d.name.clone());
@@ -3827,14 +3672,6 @@ impl<'a> TypeCk<'a> {
                         acc.2 = true;
                     }
                 }
-                self.resolved_calls.push(ResolvedCall {
-                    writer: self.cur,
-                    scope: self.closure_nodes.last().cloned(),
-                    callee: ti,
-                    line,
-                    targs: vec![],
-                    dyn_eff: Some((format!("{}.{} (through dyn)", cur, name), u2, p2)),
-                });
             }
             if params.len() != args.len() + 1 {
                 self.diag(
@@ -3981,58 +3818,6 @@ impl<'a> TypeCk<'a> {
         }
     }
 
-    /// 境界 `T: Tr<.., [E..], P>` の効果・panic の実引数を、`T` に当たる型の `impl Tr<..>` (型パラメータなら
-    /// 呼び出し元の同じトレイトの境界) の実引数と比べる。impl の効果が境界の効果に含まれなければ E4001、
-    /// 境界が `never` で impl が `may` なら E4002。どちらかが効果変数なら実体が決まらないので黙る。
-    fn check_bound_effect_args(&mut self, tr: &str, want: &[V], t: &Ty, line: usize) {
-        let Some(&ti) = self.p.types.get(tr) else { return };
-        let td = &self.p.defs[ti];
-        if td.kw != "trait" || !td.generics.iter().any(|g| g.0 == "uses" || g.0 == "panics") {
-            return;
-        }
-        let got: Vec<V> = match t {
-            Ty::Named(n, _, _) => match self.impl_targs_of(tr, n) {
-                Some(a) => a,
-                None => return,
-            },
-            Ty::Param(pn) => {
-                let found = self.def().generics.iter().filter(|g| g.0 == "type" && &g.1 == pn).flat_map(|g| items(&g.2).to_vec()).find_map(|b| match &b {
-                    V::L(bx) if st(&bx[0]) == tr => Some(items(tel(&b, 1)).to_vec()),
-                    _ => None,
-                });
-                match found {
-                    Some(a) => a,
-                    None => return,
-                }
-            }
-            _ => return,
-        };
-        let mut out: Vec<(&'static str, String)> = vec![];
-        for (k, g) in td.generics.iter().enumerate() {
-            match g.0.as_str() {
-                "uses" => {
-                    let (Some(w), Some(h)) = (want.get(k).and_then(crate::check::targ_effs), got.get(k).and_then(crate::check::targ_effs)) else { continue };
-                    if w.iter().chain(h.iter()).any(|e| crate::check::is_effect_var(e)) {
-                        continue;
-                    }
-                    for e in h.iter().filter(|e| !crate::check::covers(&w, e)) {
-                        out.push(("E4001", format!("the impl of `{}` for `{}` uses effect `{}` but the bound declares `uses [{}]`", tr, t.show(), e, w.join(", "))));
-                    }
-                }
-                "panics" => {
-                    let (Some(w), Some(h)) = (want.get(k).and_then(crate::check::targ_panic), got.get(k).and_then(crate::check::targ_panic)) else { continue };
-                    if w == "never" && h == "may" {
-                        out.push(("E4002", format!("the impl of `{}` for `{}` may panic but the bound declares `panics never`", tr, t.show())));
-                    }
-                }
-                _ => {}
-            }
-        }
-        for (c, m) in out {
-            self.diag(c, m, line);
-        }
-    }
-
     /// 型パラメータの境界 (`T: core.cmp.Ord` など) を、解決された型が満たすか。
     fn check_bounds(&mut self, d: &Def, map: &HashMap<String, Ty>, line: usize, direct_only_skip: bool) {
         let _ = direct_only_skip;
@@ -4049,7 +3834,6 @@ impl<'a> TypeCk<'a> {
                 if tr == "core.marker.Send" || tr == "core.marker.Sync" || tr.starts_with("core.ops.Fn") {
                     continue;
                 }
-                self.check_bound_effect_args(&tr, items(tel(b, 1)), t, line);
                 let known = self.p.types.get(&tr).map_or(false, |&i| self.p.defs[i].kw == "trait")
                     || crate::check::DERIVE_TRAITS.iter().any(|(_, v)| *v == tr);
                 if !known {
@@ -4107,7 +3891,7 @@ impl<'a> TypeCk<'a> {
     fn check_unsize(&mut self) {
         for (t, d, line) in std::mem::take(&mut self.unsize) {
             let (t, d) = (self.deep(&t), self.deep(&d));
-            let Ty::Dyn(tr, dargs, _) = &d else {
+            let Ty::Dyn(tr, _, _) = &d else {
                 if matches!(d, Ty::Named(..) | Ty::Prim(_) | Ty::Tuple(_)) {
                     self.diag("E2046", format!("`Box.into_dyn` must produce a `Box<dyn ..>`, found `{}`", d.show()), line);
                 }
@@ -4123,9 +3907,9 @@ impl<'a> TypeCk<'a> {
             }
             let Ty::Named(n, _, _) = t.strip() else { continue };
             let Some(&i) = self.p.types.get(n) else { continue };
-            let (tr, dargs, n2) = (tr.clone(), dargs.clone(), n.clone());
+            let (tr, n2) = (tr.clone(), n.clone());
             self.cur_line = line;
-            self.check_dyn_impl(&tr, &dargs, &n2);
+            self.check_dyn_impl(&tr, &n2);
             let def = &self.p.defs[i];
             let has_ref = def.fields.iter().any(|f| v_has_ref(&f.1)) || def.variants.iter().any(|v| v.1.iter().any(v_has_ref));
             if has_ref {
@@ -4979,7 +4763,6 @@ impl<'a> TypeCk<'a> {
         if nname(last) != "ExprStmt" {
             return;
         }
-        let tail = &nf(last)[0];
         self.discard_value(t, nline(last), "the end of this loop body");
     }
 
@@ -5809,7 +5592,6 @@ impl<'a> TypeCk<'a> {
             }
         }
         self.add_edge(d.name.clone());
-        self.check_closure_bounds(d, 0, argt, line);
         // 効果 (4.3 / 5.1): 宣言どおりの効果は従来の検査 (check.rs の visit) が見るので、ここでは
         // `Fn` 境界に渡したクロージャから推論した部分だけを検査の義務にする。クロージャの中では
         // 実体化した効果全体をそのクロージャの効果に足す。
@@ -5944,7 +5726,6 @@ impl<'a> TypeCk<'a> {
                 // `F: Fn<.., E, P>` 型の値を、`Fn<.., [], never>` のように具体的な効果を持つ
                 // パラメータに渡す。受け側の境界が具体的で渡し側に効果変数・panic 変数があり、
                 // 実体化が分からないなら fail-closed で E4001 / E4002 にする。
-                self.check_fn_param_bound_effects(d, &raw, &self.resolve(a), line);
             }
             if let Err(e) = ur {
                 // 型パラメータを含まない引数の型は従来の検査 (E2020) が見る。ここでは重複を避ける。
@@ -6140,31 +5921,6 @@ impl<'a> TypeCk<'a> {
             return Some((uses, may));
         }
         None
-    }
-
-    /// 型パラメータの `Fn` 境界を受け取るパラメータに型パラメータの値を渡す場所で効果を検査する。
-    /// 受け側の境界が具体的で渡し側に効果変数・panic 変数があり、実体化が分からないなら
-    /// fail-closed で E4001 / E4002 を報告する。
-    fn check_fn_param_bound_effects(&mut self, callee: &Def, raw: &Ty, got: &Ty, line: usize) {
-        for (wname, gt) in self.param_slots(raw, got) {
-            let Some((wu, wp)) = self.fn_bound_effects(callee, &wname) else { continue };
-            let Ty::Param(gname) = &gt else { continue };
-            let d = self.def();
-            let Some((gu, gp)) = self.fn_bound_effects(d, gname) else { continue };
-            let want = EffInfo {
-                decl: true,
-                uses: wu,
-                may: wp,
-                name: format!("parameter `{}` of `{}`", wname, callee.name),
-            };
-            let got = EffInfo {
-                decl: false,
-                uses: gu,
-                may: gp,
-                name: format!("type parameter `{}` of `{}`", gname, d.name),
-            };
-            self.check_fn_eff(&want, &got, line);
-        }
     }
 
     /// 関数の値 (クロージャの節・関数項目・関数ポインタ値) の効果 (`uses`, `may`)。分からないものは None。
@@ -6400,70 +6156,6 @@ impl<'a> TypeCk<'a> {
         }
     }
 
-    fn check_closure_bounds(&mut self, d: &Def, off: usize, argt: &[Ty], line: usize) {
-        let gn = d.gnames();
-        let mut out: Vec<(&'static str, String)> = vec![];
-        for (k, a) in argt.iter().enumerate() {
-            let Some(p) = d.params.get(k + off) else { break };
-            // 参照は透過的: `&F` / `&mut F` も `F` と同じ境界を持ち、`&g` を渡しても `g` のクロージャを見る。
-            let mut pt = from_v(&p.1, &gn);
-            while let Ty::Ref(_, x, _) = pt {
-                pt = *x;
-            }
-            for (name, at) in self.param_slots(&from_v(&p.1, &gn), a) {
-            let bounds = self.fn_bound(d, &name);
-            if bounds.is_empty() {
-                continue;
-            }
-            // 名前付きの関数・メソッド (`id` なし) は、宣言の `uses` / `panics` を閉包の推論結果と同じに扱う。
-            let (uses, may, unsure) = match &at {
-                Ty::Closure { id: Some(node), .. } => match self.closure_effs.get(node) {
-                    Some((u, m, un)) => (u.clone(), *m, *un),
-                    None => continue,
-                },
-                Ty::Closure { id: None, eff: Eff(Some(info)), .. } => (info.uses.iter().cloned().collect(), info.may.unwrap_or(false), false),
-                _ => continue,
-            };
-            let (uses, may) = (&uses, &may);
-            // 境界の具体名との比べは、確実な効果だけで行う (推論された関数・`dyn` 越しの上限は、
-            // 囲む関数の宣言との比べ (`closure_effect_bind` / `closure_call_effects`) が見る)。
-            // 確実でない効果 (推論された関数・`dyn` 越しの上限) も上限として比べる (fail-closed)。
-            let _ = unsure;
-            for b in &bounds {
-                let bt = items(tel(b, 1));
-                if let Some(v) = bt.get(2).filter(|v| tag(v) == "effects") {
-                    let bl: Vec<String> = items(tel(v, 1)).iter().map(st).collect();
-                    // 効果変数 (大文字) を含む境界は、ここでは検査しない。
-                    if bl.iter().all(|e| e.chars().next().map_or(false, |c| c.is_lowercase())) {
-                        for e in uses.iter().filter(|e| crate::check::is_effect_var(e) || !crate::check::covers(&bl, e)) {
-                            out.push((
-                                "E4001",
-                                format!(
-                                    "closure passed to `{}` uses effect `{}` outside the `Fn` bound's effects [{}]",
-                                    d.name,
-                                    e,
-                                    bl.join(", ")
-                                ),
-                            ));
-                        }
-                    }
-                }
-                if let Some(v) = bt.get(3).filter(|v| tag(v) == "panic") {
-                    if st(tel(v, 1)) == "never" && *may {
-                        out.push((
-                            "E4002",
-                            format!("closure passed to `{}` may panic but the `Fn` bound declares `panics never`", d.name),
-                        ));
-                    }
-                }
-            }
-            }
-        }
-        for (c, m) in out {
-            self.diag(c, m, line);
-        }
-    }
-
     /// 呼び出し先 `d` の効果を実体化する。明示型引数があればそれで (check.rs と同じ `inst_def_effects`)、
     /// なければクロージャから推論した束縛で置き換える。
     /// 戻り値は (実体化した uses, 実体化した panics, 束縛から来た uses, 束縛から来た panic が may か)。
@@ -6545,22 +6237,7 @@ impl<'a> TypeCk<'a> {
                 }
                 acc.2 |= unsure;
             }
-            return;
         }
-        if self.def().kw == "test" {
-            return;
-        }
-        // 推論された関数 (infer.rs) の効果は上からの近似 (名前の全候補の和を含みうる) なので、
-        // 宣言された効果と同じ確かさでは検査しない (黙る)。
-        if cands.iter().any(|c| self.inferred_def(&c.0)) {
-            return;
-        }
-        let checks: Vec<(String, Vec<String>, Option<String>)> =
-            cands.into_iter().map(|(n, _, _, u, p)| (n, u, p)).collect();
-        if checks.iter().all(|c| c.1.is_empty() && c.2.as_deref() != Some("may") && !c.2.as_deref().map_or(false, crate::check::is_panic_var)) {
-            return;
-        }
-        self.eff_checks.push(EffCheck { di: self.cur, line, cands: checks });
     }
 
     /// クロージャの型での直接呼び出し (`f(x)`)。引数の個数 (E2022) と型 (E2023) を検査し、
