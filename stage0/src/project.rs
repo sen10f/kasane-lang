@@ -209,8 +209,10 @@ pub struct Package {
     pub root: PathBuf,
     pub manifest: toml::Value,
     pub sources: Vec<Source>,
-    /// 依存として読んだときの取得元 (`git+<URL>#<rev>` / `path+<ルートからの相対パス>`)。ルートは空。
+    /// 依存として読んだときの取得元 (`git+<URL>#<rev>` / `path+<ルートからの相対パス>` / `registry+<index>#<commit>`)。ルートは空。
     pub source: String,
+    /// レジストリ依存のときその取得元リポジトリ URL (`repository` 欄)。ロック v3 に記録する。
+    pub repository: Option<String>,
 }
 
 impl Package {
@@ -553,7 +555,7 @@ fn load_package_src_opt(root: &Path, use_ksnh: bool) -> Result<Package, ProjectE
     }
     let name = m["package"]["name"].as_str().unwrap().to_string();
     let sources = load_dir_sources(&root.join("src"), use_ksnh);
-    Ok(Package { name, root, manifest: m, sources, source: String::new() })
+    Ok(Package { name, root, manifest: m, sources, source: String::new(), repository: None })
 }
 
 // ------------------------------------------------------------ 依存の解決 (8.1)
@@ -575,6 +577,16 @@ pub fn git_cache_path(url: &str, rev: &str) -> PathBuf {
     h.update(rev.as_bytes());
     let hex: String = h.finalize().iter().map(|b| format!("{:02x}", b)).collect();
     cache_dir().join("git").join(&hex[..32])
+}
+
+/// 取得済みのレジストリ依存の取得元リポジトリの置き場 (`<キャッシュ>/registry-pkg/<URL と commit のハッシュ>`)。内容は `commit` で決まる。
+pub fn registry_pkg_cache_path(repository: &str, commit: &str) -> PathBuf {
+    let mut h = Sha256::new();
+    h.update(repository.as_bytes());
+    h.update([0u8]);
+    h.update(commit.as_bytes());
+    let hex: String = h.finalize().iter().map(|b| format!("{:02x}", b)).collect();
+    cache_dir().join("registry-pkg").join(&hex[..32])
 }
 
 pub(crate) fn git_cmd() -> std::process::Command {
@@ -623,6 +635,25 @@ pub fn git_materialize(url: &str, rev: &str, dest: &Path) -> Result<(), ProjectE
     Ok(())
 }
 
+/// レジストリから取り出した依存の `hash`（索引の分配 hash）を、`kasane.toml` と `src/*.ksnl` から
+/// 算出した実際のパッケージハッシュと照合する。不一致なら E9022。
+fn verify_registry_hash(_root: &Package, dn: &str, cache: &Path, hash: Option<&str>) -> Result<(), ProjectError> {
+    let Some(hash) = hash else { return Ok(()); };
+    match try_package_hash(cache) {
+        Err(e) => Err(e),
+        Ok(actual) if actual != hash => perr(
+            "E9022",
+            format!(
+                "hash mismatch for {}: registry says {} but the fetched source has {}; the index or source was modified",
+                dn,
+                hash,
+                actual
+            ),
+        ),
+        Ok(_) => Ok(()),
+    }
+}
+
 /// git 依存をどう取得するか。
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum GitMode {
@@ -651,7 +682,42 @@ pub fn load_deps_with(pkg: &Package, mode: &dyn Fn(&str) -> GitMode) -> Result<V
 
 /// 依存 `dn` の (取得元文字列, 置き場所)。
 pub(crate) fn locate_dep(root: &Package, pkg: &Package, dn: &str, dv: &toml::Value, mode: &dyn Fn(&str) -> GitMode, picks: &crate::deps_resolve::Picks) -> Result<(String, PathBuf), ProjectError> {
+    if let Some(index_url) = dv.get("registry").and_then(|r| r.as_str()) {
+        // レジストリ依存: 解決済みの版 (deps_resolve::resolve_picks) を取得元リポジトリの commit から取り出す。
+        let m = mode(dn);
+        let Some(p) = picks.get(dn) else {
+            return perr("E9010", format!("registry dependency {} has no resolved version (run `ksn update`)", dn));
+        };
+        let repository = p.repository.as_deref().unwrap_or("");
+        let source = format!("registry+{}#{}", index_url, p.commit);
+        let cache = registry_pkg_cache_path(repository, &p.commit);
+        match m {
+            GitMode::Fresh | GitMode::Pinned => {
+                git_materialize(repository, &p.commit, &cache)?;
+                return verify_registry_hash(root, dn, &cache, p.hash.as_deref()).map(|()| (source, cache));
+            }
+            _ => {}
+        }
+        let vend = root.root.join("vendor").join(dn);
+        if vend.is_dir() {
+            if let Ok(mark) = fs::read_to_string(vend.join(".ksn-source")) {
+                if mark.trim() != source {
+                    return perr("E9019", format!("vendor/{} was vendored from {} but kasane.toml says {}; run `ksn vendor`", dn, mark.trim(), source));
+                }
+            }
+            return Ok((source, vend));
+        }
+        if cache.is_dir() {
+            return Ok((source, cache));
+        }
+        if m == GitMode::IfMissing {
+            git_materialize(repository, &p.commit, &cache)?;
+            return verify_registry_hash(root, dn, &cache, p.hash.as_deref()).map(|()| (source, cache));
+        }
+        return perr("E9010", format!("registry dependency {} is not vendored or cached (run `ksn vendor` or `ksn update`)", dn));
+    }
     if dv.get("registry").is_some() {
+        // `rev` 付きなど、上の `registry` 分岐で取りきれない形は未対応。
         return perr("E9040", format!("dependency {}: registry version resolution is not implemented yet", dn));
     }
     if let Some(p) = dv.get("path").and_then(|p| p.as_str()) {
@@ -729,6 +795,9 @@ fn resolve_rec(
             return perr("E9011", format!("dependency {}: package name is {}", dn, dp.name));
         }
         dp.source = source.clone();
+        if source.starts_with("registry+") {
+            dp.repository = picks.get(dn).and_then(|p| p.repository.clone());
+        }
         seen.push((dn.clone(), source));
         let mut sub = vec![];
         resolve_rec(root, &dp, mode, picks, seen, &mut sub)?;
@@ -910,6 +979,38 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
                             &crate::lockapi::native_of(dp),
                         ));
                     }
+                }
+            }
+        }
+        if dp.source.starts_with("registry+") {
+            match try_package_hash(&dp.root) {
+                Err(e) => errs.push((e.code, e.msg)),
+                Ok(actual) => match e.get("hash").and_then(|h| h.as_str()) {
+                    None => errs.push(bad(format!("registry dependency {} has no hash", dp.name))),
+                    Some(h) if h != actual => errs.push((
+                        "E9022".into(),
+                        format!(
+                            "hash mismatch for {}: kasane.lock says {} but the fetched source has {}; run `ksn update` to restore it",
+                            dp.name, h, actual
+                        ),
+                    )),
+                    _ => {}
+                },
+            }
+            // 版 3: `version` は manifest の `package.version` と一致する必要がある。
+            if version == Some(3) {
+                let lock_ver = e.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                let actual_ver = dp
+                    .manifest
+                    .get("package")
+                    .and_then(|p| p.get("version"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if lock_ver != actual_ver {
+                    errs.push(bad(format!(
+                        "version of {} is {} in kasane.toml but {} in the lock",
+                        dp.name, actual_ver, lock_ver
+                    )));
                 }
             }
         }

@@ -146,10 +146,10 @@ fn version_resolution_is_explicitly_not_implemented() {
         "dep = { git = \"https://example.org/x.git\", version = \"=1.2.3\" }\n",
         "E9010",
     );
-    // レジストリの解決はまだ無い (R3)。
+    // レジストリの解決は実装済み (R3c): オフラインで索引がキャッシュされていなければ E9010 (`ksn update` を促す)。
     assert_diagnostic(
         "1.2.3",
         "dep = { registry = \"https://example.org/registry.git\", version = \"=1.2.3\" }\n",
-        "E9040",
+        "E9010",
     );
 }

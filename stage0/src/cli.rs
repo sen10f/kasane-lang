@@ -978,7 +978,7 @@ fn analyze_slice(mut l: Loaded, plan: SlicePlan, prev_items: &[Item]) -> Analysi
     let mut slots: Vec<Option<Source>> = std::mem::take(&mut l.pkg.sources).into_iter().map(Some).collect();
     let slice_sources: Vec<Source> = plan.keep.iter().map(|&i| slots[i].take().unwrap()).collect();
     let slice = Loaded {
-        pkg: Package { name: l.pkg.name.clone(), root: l.pkg.root.clone(), manifest: l.pkg.manifest.clone(), sources: slice_sources, source: l.pkg.source.clone() },
+        pkg: Package { name: l.pkg.name.clone(), root: l.pkg.root.clone(), manifest: l.pkg.manifest.clone(), sources: slice_sources, source: l.pkg.source.clone(), repository: l.pkg.repository.clone() },
         deps: std::mem::take(&mut l.deps),
         std: std::mem::take(&mut l.std),
     };
@@ -1135,6 +1135,7 @@ fn stdlib_loaded() -> Loaded {
             manifest: toml::Value::Table(Default::default()),
             sources: bodies,
             source: STDLIB_SOURCE.to_string(),
+            repository: None,
         },
         deps: vec![],
         std: sigs,
@@ -2955,11 +2956,11 @@ fn cmd_update(args: &[String]) -> i32 {
         }
     }
     // 版 3 は git 依存に `version` が必要。path だけなら版 2 のまま。
-    let lock_version = if deps.iter().any(|d| d.source.starts_with("git+")) { 3 } else { 2 };
+    let lock_version = if deps.iter().any(|d| d.source.starts_with("git+") || d.source.starts_with("registry+")) { 3 } else { 2 };
     match write_lock_v2(&root, &deps, &old, only.as_deref(), &[], lock_version) {
         Ok(()) => {
             // 版の変化を出す (`名前 旧版 -> 新版`)。新しく入った依存は旧版を「(なし)」とする。
-            for d in deps.iter().filter(|d| d.source.starts_with("git+")) {
+            for d in deps.iter().filter(|d| d.source.starts_with("git+") || d.source.starts_with("registry+")) {
                 let new = d.manifest.get("package").and_then(|p| p.get("version")).and_then(|v| v.as_str()).unwrap_or("?");
                 let prev = old.get(&d.name).and_then(|e| e.get("version")).and_then(|v| v.as_str()).unwrap_or("(なし)");
                 println!("ksn update: {} {} -> {}", d.name, prev, new);
@@ -2992,9 +2993,16 @@ fn write_lock_v2(
         let mut dn: Vec<String> =
             dp.manifest.get("dependencies").and_then(|d| d.as_table()).map(|t| t.keys().cloned().collect()).unwrap_or_default();
         dn.sort();
-        if dp.source.starts_with("git+") {
-            // 版 3: `version` は `hash` の前に書く (emit_lock と同じキー順)。
+        if dp.source.starts_with("git+") || dp.source.starts_with("registry+") {
+            // 版 3: `version` は `hash` の前に書く (emit_lock と同じキー順)。レジストリ依存は `source` の直後に `registry` を書く。
             if lock_version == 3 {
+                if dp.source.starts_with("registry+") {
+                    let index = dp.source.strip_prefix("registry+").and_then(|s| s.rsplit_once('#')).map(|(i, _)| i).unwrap_or("");
+                    lines.push(format!("registry = {}", toml_str(index)));
+                    if let Some(repository) = &dp.repository {
+                        lines.push(format!("repository = {}", toml_str(repository)));
+                    }
+                }
                 let ver = dp.manifest.get("package").and_then(|p| p.get("version")).and_then(|v| v.as_str()).unwrap_or("");
                 lines.push(format!("version = {}", toml_str(ver)));
             }
@@ -3088,7 +3096,7 @@ fn cmd_lock(args: &[String]) -> i32 {
     }
     let accept: Vec<String> = if upgrade && !accept_flag { vec![] } else { targets };
     // `hash` は既存の記録を保つ (署名の承認で、複製の改ざんを黙って受け入れない)。
-    let lock_version = if deps.iter().any(|d| d.source.starts_with("git+")) { 3 } else { 2 };
+    let lock_version = if deps.iter().any(|d| d.source.starts_with("git+") || d.source.starts_with("registry+")) { 3 } else { 2 };
     match write_lock_v2(&root, &deps, &old, Some("\u{0}"), &accept, lock_version) {
         Ok(()) => 0,
         Err(e) => fail(e),
@@ -3134,7 +3142,7 @@ fn cmd_vendor() -> i32 {
     // すでに記録があるものは書き換えない (承認は `ksn lock --accept`)。
     let gits: Vec<&Package> = deps.iter().filter(|d| d.source.starts_with("git+")).collect();
     if !gits.is_empty() && gits.iter().all(|d| old.contains_key(&d.name)) && gits.iter().any(|d| old.get(&d.name).and_then(crate::lockapi::read_api).is_none()) {
-        let lock_version = if deps.iter().any(|d| d.source.starts_with("git+")) { 3 } else { 2 };
+        let lock_version = if deps.iter().any(|d| d.source.starts_with("git+") || d.source.starts_with("registry+")) { 3 } else { 2 };
         if let Err(e) = write_lock_v2(&root, &deps, &old, Some("\u{0}"), &[], lock_version) {
             return fail(e);
         }
