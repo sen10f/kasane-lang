@@ -2,6 +2,12 @@ type alloc.collections.BtreeMap[K: core.cmp.Ord, V, A: alloc.alloc.Allocator] pu
     entries: alloc.raw.Buf<alloc.collections.MapEntry<K, V>, A>
 end alloc.collections.BtreeMap
 
+type alloc.collections.BtreeMapIter['a, K, V] pub
+    entries: &'a [alloc.collections.MapEntry<K, V>]
+    position: usize
+    stop: usize
+end alloc.collections.BtreeMapIter
+
 enum alloc.collections.HashCell[K, V] pub
     Empty
     Index(usize)
@@ -17,6 +23,15 @@ type alloc.collections.HashMapIter['a, K, V] pub
     cells: &'a [alloc.collections.HashCell<K, V>]
     position: usize
 end alloc.collections.HashMapIter
+
+type alloc.collections.HashSet[T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator] pub
+    map: alloc.collections.HashMap<T, bool, A>
+    count: usize
+end alloc.collections.HashSet
+
+type alloc.collections.HashSetIter['a, T] pub
+    inner: alloc.collections.HashMapIter<'a, T, bool>
+end alloc.collections.HashSetIter
 
 type alloc.collections.MapEntry[K, V] pub
     key: K
@@ -38,8 +53,21 @@ impl[K: core.cmp.Ord + core.marker.Sync, V: core.marker.Sync, A: alloc.alloc.All
 impl[T: core.marker.Send, A: alloc.alloc.Allocator + core.marker.Send] core.marker.Send for alloc.collections.VecDeque<T, A>
 impl[T: core.marker.Sync, A: alloc.alloc.Allocator + core.marker.Sync] core.marker.Sync for alloc.collections.VecDeque<T, A>
 
+fn alloc.collections.BtreeMap.first['a, K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &'a alloc.collections.BtreeMap<K, V, A>) -> Option<(&'a K, &'a V)> uses [] panics never pub
+fn alloc.collections.BtreeMap.iter['a, K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &'a alloc.collections.BtreeMap<K, V, A>) -> alloc.collections.BtreeMapIter<'a, K, V> uses [] panics never pub
+fn alloc.collections.BtreeMap.last['a, K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &'a alloc.collections.BtreeMap<K, V, A>) -> Option<(&'a K, &'a V)> uses [] panics never pub
 fn alloc.collections.BtreeMap.new[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.BtreeMap<K, V, A> uses [] panics never pub
+fn alloc.collections.BtreeMap.range['a, K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &'a alloc.collections.BtreeMap<K, V, A>, lo: &K, hi: &K) -> alloc.collections.BtreeMapIter<'a, K, V> uses [] panics never pub
 fn alloc.collections.HashMap.new[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.HashMap<K, V, A> uses [] panics never pub
+fn alloc.collections.HashSet.contains[T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator](self: &alloc.collections.HashSet<T, A>, value: &T) -> bool uses [] panics never pub
+fn alloc.collections.HashSet.contains_str[A: alloc.alloc.Allocator, B: alloc.alloc.Allocator](self: &alloc.collections.HashSet<alloc.string.String<B>, A>, value: &str) -> bool uses [] panics never pub
+fn alloc.collections.HashSet.insert[T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashSet<T, A>, value: T) -> Result<bool, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn alloc.collections.HashSet.is_empty[T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator](self: &alloc.collections.HashSet<T, A>) -> bool uses [] panics never pub
+fn alloc.collections.HashSet.iter['a, T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator](self: &'a alloc.collections.HashSet<T, A>) -> alloc.collections.HashSetIter<'a, T> uses [] panics never pub
+fn alloc.collections.HashSet.len[T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator](self: &alloc.collections.HashSet<T, A>) -> usize uses [] panics never pub
+fn alloc.collections.HashSet.new[T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.HashSet<T, A> uses [] panics never pub
+fn alloc.collections.HashSet.remove[T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashSet<T, A>, value: &T) -> bool uses [] panics never pub
+fn alloc.collections.HashSet.remove_str[A: alloc.alloc.Allocator, B: alloc.alloc.Allocator](self: &mut alloc.collections.HashSet<alloc.string.String<B>, A>, value: &str) -> bool uses [] panics never pub
 fn alloc.collections.VecDeque.is_empty[T, A: alloc.alloc.Allocator](self: &alloc.collections.VecDeque<T, A>) -> bool uses [] panics never pub
 fn alloc.collections.VecDeque.len[T, A: alloc.alloc.Allocator](self: &alloc.collections.VecDeque<T, A>) -> usize uses [] panics never pub
 fn alloc.collections.VecDeque.new[T, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.VecDeque<T, A> uses [] panics never pub

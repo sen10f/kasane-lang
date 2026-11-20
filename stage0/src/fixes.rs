@@ -225,7 +225,7 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
         }
         "E2054" => {
             // `m.get(&s)` → `m.get_str(s.as_str())`。その行に `.NAME(` が 1 回だけで、引数が `&名前の鎖` か名前の鎖 (`&String` の値) のとき。
-            let re = Regex::new(r"`([a-z_]+)` on a `HashMap`").unwrap();
+            let re = Regex::new(r"`([a-z_]+)` on a `Hash(?:Map|Set)`").unwrap();
             let Some(c) = re.captures(msg) else { return vec![] };
             let name = &c[1];
             let Some(text) = get(line) else { return vec![] };
