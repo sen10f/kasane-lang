@@ -47,7 +47,7 @@ pub struct Hit {
 /// 標準の容れ物・共有・送受信の型 (型名の末尾)。型引数に参照を運ぶ型を入れられない。
 const CONTAINERS: &[&str] = &[
     "Vec", "HashMap", "BtreeMap", "VecDeque", "MapEntry", "Box", "Buf", "Rc", "Arc", "Mutex", "RwLock", "Sender", "Receiver",
-    "SendError", "JoinHandle", "Task", "Cell", "RefCell",
+    "SendError", "JoinHandle", "Task", "Cell", "RefCell", "Arena", "Handle",
 ];
 /// 参照を運ぶ標準の型 (末尾 2 つの名前で照合する)。
 const RC_STD: &[(&str, &str)] =
@@ -764,6 +764,7 @@ fn static_stores_only(p: &Program, toks: &[Tok], name: &str, container: &str, re
                 (_, "push" | "push_back" | "push_front") => Some(ref_args.iter().filter(|&&k| k == 0).map(|_| 0).collect()),
                 ("HashMap" | "BtreeMap", "insert") => Some(ref_args.iter().filter(|&&k| k < 2).cloned().collect()),
                 ("Vec" | "VecDeque", "insert") => Some(ref_args.iter().filter(|&&k| k == 0).map(|_| 1).collect()),
+                ("Arena", "insert") => Some(ref_args.iter().filter(|&&k| k == 0).map(|_| 0).collect()),
                 _ => None,
             };
             if let Some(positions) = positions {

@@ -1,0 +1,13 @@
+enum t.E derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+end t.E
+
+fn t.main() -> Result<(), t.E> uses [alloc] panics never
+    let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)
+    let mut b = alloc.arena.Arena.new(std.alloc.SYSTEM)
+    let h = a.insert(1u32)?
+    let s = b.insert(alloc.string.String.from_str(std.alloc.SYSTEM, "x")?)?
+    core.mem.drop(b.get(h))
+    core.mem.drop(a.get(s))
+    Ok(())
+end t.main

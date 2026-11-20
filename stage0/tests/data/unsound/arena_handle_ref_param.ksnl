@@ -1,0 +1,7 @@
+fn t.keep(h: alloc.arena.Handle<&u32>) -> bool uses [] panics never
+    h == h
+end t.keep
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
