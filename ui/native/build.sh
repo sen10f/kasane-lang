@@ -39,8 +39,8 @@ fi
 
 # --- libksnui のビルド -------------------------------------------------------
 echo "building libksnui ..." >&2
-CFLAGS="-std=c11 -O2 -fPIC -Wall -Wextra -I\"$THIRD_PARTY/include\" $(pkg-config --cflags sdl3 freetype2 harfbuzz)"
-LIBS="$(pkg-config --libs sdl3 freetype2 harfbuzz) -L\"$THIRD_PARTY/lib\" -lwgpu_native -lvulkan -ldl -lm -lpthread"
+CFLAGS="-std=c11 -O2 -fPIC -Wall -Wextra -I$THIRD_PARTY/include $(pkg-config --cflags sdl3 freetype2 harfbuzz)"
+LIBS="$(pkg-config --libs sdl3 freetype2 harfbuzz) -L$THIRD_PARTY/lib -lwgpu_native -lvulkan -ldl -lm -lpthread"
 
 for c in "$ROOT"/ksnui_*.c; do
     [ -f "$c" ] || { echo "no ksnui_*.c found in $ROOT" >&2; exit 1; }
@@ -50,6 +50,6 @@ for c in "$ROOT"/ksnui_*.c; do
 done
 
 cc -shared -o "$ROOT/libksnui.so" "$THIRD_PARTY"/ksnui_*.o $LIBS
-cc -static-libgcc -o "$ROOT/libksnui.a" "$THIRD_PARTY"/ksnui_*.o $LIBS
+ar rcs "$ROOT/libksnui.a" "$THIRD_PARTY"/ksnui_*.o
 
 echo "done: $ROOT/libksnui.a $ROOT/libksnui.so" >&2
