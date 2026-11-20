@@ -454,3 +454,91 @@ fn c_sizes_match_the_kasane_layout() {
     assert!(c.contains("typedef struct {") && c.contains("make_a4"));
     assert!(gen_ksn(&ts, "x").contains("v: [u8; 9]"));
 }
+
+/// `core.ptr.from_mut(&mut buf)` / `core.ptr.from_ref(&buf)` で `buf: [u8; N]` (配列) を C に渡すと、
+/// 配列への参照は fat ポインタ (`{ptr, len}`) として格納される。ネイティブコード生成は fat ポインタを
+/// ロードして ptr フィールド (データポインタ) を取らなければならず、そのままのアドレスをビットキャスト
+/// すると C が呼び出し側のスタック上の一時領域を書き壊してクラッシュする (インタプリタは正しい)。
+/// 回帰試験。インタプリタ (`ksn run`) とネイティブ (デバッグ・リリース) の出力を比べる。
+#[test]
+fn ptr_from_mut_from_ref_array_reaches_caller_buffer_natively() {
+    if !cfg!(all(target_arch = "x86_64", target_os = "linux"))
+        || !(have("cc") || have("gcc") || have("clang"))
+    {
+        return;
+    }
+    let cc_cmd = if have("cc") { "cc" } else if have("gcc") { "gcc" } else { "clang" };
+    let t = Tmp::new("ffi_ptr_array", "");
+    fs::write(
+        t.0.join("kasane.toml"),
+        TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1),
+    )
+    .unwrap();
+    let c = r#"
+#include <stdint.h>
+void c_write(uint8_t *p, int n) { for (int i = 0; i < n; i++) p[i] = (uint8_t)(i + 1); }
+uint8_t c_read(const uint8_t *p, int n) { return p[n - 1]; }
+"#;
+    fs::write(t.0.join("ptr.c"), c).unwrap();
+    let lib = t.0.join("libptr.so");
+    let o = Command::new(cc_cmd)
+        .args([
+            "-shared",
+            "-fPIC",
+            "-O1",
+            "-o",
+            lib.to_str().unwrap(),
+            t.0.join("ptr.c").to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn cc");
+    assert!(o.status.success(), "cc: {}", text(&o.stderr));
+    let src = format!(
+        r#"extern t.c_read(p: *const u8, n: i32) -> u8 link "{}:c_read"
+extern t.c_write(p: *mut u8, n: i32) -> () link "{}:c_write"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut buf = [0u8; 16]
+    unsafe "ffi" "write" {{
+        t.c_write(core.ptr.from_mut(&mut buf), 16i32)
+    }}
+    core.check.eq(buf[0usize], 1u8)
+    core.check.eq(buf[15usize], 16u8)
+    let b = unsafe "ffi" "read" {{
+        t.c_read(core.ptr.from_ref(&buf), 16i32)
+    }}
+    core.check.eq(b, 16u8)
+    core.mem.drop(std.io.print_line("ptr ok"))
+    Ok(())
+end t.main
+"#,
+        lib.to_str().unwrap(),
+        lib.to_str().unwrap()
+    );
+    fs::write(t.0.join("src").join("t.ksnl"), src).unwrap();
+    t.fmt();
+    let c = run(&["check"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}{}", text(&c.stdout), text(&c.stderr));
+    // インタプリタ (`ksn run`) は正しいはず。
+    let want = "ptr ok\n";
+    let i = run(&["run"], &t.0);
+    assert_eq!(i.status.code(), Some(0), "interpreter: {}{}", text(&i.stdout), text(&i.stderr));
+    assert_eq!(text(&i.stdout), want, "interpreter: {}", text(&i.stderr));
+    // ネイティブ (デバッグ・リリース) もインタプリタと同じ出力。バンドル退避ではなく本当のネイティブを走らせる。
+    for release in [false, true] {
+        let kind = if release { "release" } else { "debug" };
+        let mut cmd = Command::new(exe());
+        cmd.args(["build", "--backend", "llvm"]).current_dir(&t.0);
+        if release {
+            cmd.arg("--release");
+        }
+        let b = cmd.output().expect("spawn ksn");
+        let out = text(&b.stdout) + &text(&b.stderr);
+        assert_eq!(b.status.code(), Some(0), "build {}: {}", kind, out);
+        assert!(!out.contains("backend skipped"), "fell back to the interpreter bundle {}:\n{}", kind, out);
+        let exe = native_exe(&text(&b.stdout), &t.0);
+        let n = Command::new(exe).current_dir(&t.0).output().expect("run native");
+        assert_eq!(n.status.code(), Some(0), "native {}: {}{}", kind, text(&n.stdout), text(&n.stderr));
+        assert_eq!(text(&n.stdout), want, "native {}: {}", kind, text(&n.stderr));
+    }
+}
