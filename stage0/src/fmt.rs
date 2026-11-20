@@ -518,7 +518,7 @@ fn unwrap_short(lines: &mut Vec<String>) -> bool {
 
 /// 構文の揺れ (D8・D10・D11・D15) を直す。パーサが書き換えの候補 (`parser::rewrites`) を返すので、重ならないものを適用し、
 /// 候補が尽きるまで (新しい形が別の書き換えを生むので) 繰り返す。関数・テストの本体の中だけ。
-fn fix_syntax(path: &str, lines: &mut Vec<String>) {
+fn fix_syntax(path: &str, own_len: bool, lines: &mut Vec<String>) {
     use crate::parser::{Part, Rw};
     for _ in 0..40 {
         let mut progress = false;
@@ -545,7 +545,7 @@ fn fix_syntax(path: &str, lines: &mut Vec<String>) {
                 continue;
             }
             let toks: Vec<Tok> = all.iter().filter(|t| t.line > d.line && t.line < d.end_line && t.kind != "eof").cloned().collect();
-            let (t, rws) = crate::parser::rewrites(toks, &d.name);
+            let (t, rws) = crate::parser::rewrites(toks, &d.name, own_len);
             let off = |k: usize| starts[t[k].line - 1] + t[k].col - 1;
             let end = |k: usize| off(k) + t[k].text.chars().count();
             let span = |a: usize, b: usize| -> String {
@@ -693,11 +693,36 @@ struct It {
 }
 
 pub fn format_source(text: &str, path: &str) -> String {
-    format_source_with(text, path, true)
+    format_source_with(text, path, true, false)
+}
+
+/// プログラム (パッケージの全ソース) が `len` / `is_empty` を std でない独自のメソッドとして定義しているか。
+/// 定義しているときは、D11 の `x.len() == 0` → `x.is_empty()` の書き換えをしない (利用者の `len` と `is_empty` が
+/// 別の意味かもしれず、受け手の型は字詞の段階では分からないため)。std の FQN (`core.` / `alloc.` / `std.`) は除く。
+pub fn own_len_method(srcs: &[&str]) -> bool {
+    srcs.iter().any(|t| t.lines().any(|l| is_own_len_def(l.trim_start())))
+}
+
+/// 行が `fn <FQN>.len(` / `fn <FQN>.is_empty(` の定義ヘッダで、FQN が std のものではないか。
+/// 文字列・コメントが行をまたぐことはないので、行頭が `fn ` なら定義ヘッダ (字句の解析は要らない)。
+fn is_own_len_def(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("fn ") else { return false };
+    let name = rest.split('(').next().unwrap_or("").trim_end();
+    // 名前の最後の成分 (`t.Item.len` の `len`)。`.` が無いフリーの `fn len(` も独自定義と数える (抑制側に倒す)。
+    let Some(last) = name.rsplit('.').next() else { return false };
+    if !matches!(last, "len" | "is_empty") {
+        return false;
+    }
+    !matches!(name.split('.').next().unwrap_or(""), "core" | "alloc" | "std")
+}
+
+/// プログラムの `len` / `is_empty` の独自定義 (`own_len_method`) を知って整形する (`ksn fmt` / `ksn check`・LSP 用)。
+pub fn format_source_prog(text: &str, path: &str, own_len: bool) -> String {
+    format_source_with(text, path, true, own_len)
 }
 
 /// `canon` が偽なら、名前の参照形 (3.3) は書き換えず、定義の並びと空行だけを整える (`ksn rename` 用)。
-pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
+pub fn format_source_with(text: &str, path: &str, canon: bool, own_len: bool) -> String {
     let stripped;
     let text = if canon && !path.ends_with(".sig") {
         stripped = strip_semicolons(text);
@@ -713,7 +738,7 @@ pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
         }
     }
     if canon {
-        fix_syntax(path, &mut lines);
+        fix_syntax(path, own_len, &mut lines);
     }
     let joined = lines.join("\n") + "\n";
     let defs = match load_file(path, "", &joined) {

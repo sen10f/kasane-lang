@@ -111,9 +111,14 @@ fn d11_redundant_logic_is_rewritten() {
 
 #[test]
 fn d11_option_and_len_checks_are_rewritten() {
-    roundtrip("d11_ne_none", "    let a = Some(1u32)\n    core.mem.drop(a != None)\n", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
-    // `is_some()` などは `is` に置き換えない (`is` は値を消費するので、線形の値を判定できなくなる)。
-    canonical("d11_is_some_stays", "    let a = Some(1u32)\n    core.mem.drop(a.is_some())\n");
+    // `None` との比較の正規形は `is_none()` / `is_some()` (借用するので、線形の値でも判定できる)。
+    roundtrip("d11_eq_none", "    let a = Some(1u32)\n    core.mem.drop(a == None)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_none())\n");
+    roundtrip("d11_ne_none", "    let a = Some(1u32)\n    core.mem.drop(a != None)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_some())\n");
+    roundtrip("d11_none_eq", "    let a = Some(1u32)\n    core.mem.drop(None == a)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_none())\n");
+    roundtrip("d11_none_ne", "    let a = Some(1u32)\n    core.mem.drop(None != a)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_some())\n");
+    // `is` の形 (`a is None` / `a is Some(_)`) は従来どおり正規形。
+    canonical("d11_is_none_stays", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
+    canonical("d11_is_some_stays", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
     roundtrip("d11_len0", "    let s = \"x\"\n    core.mem.drop(s.len() == 0usize)\n", "    let s = \"x\"\n    core.mem.drop(s.is_empty())\n");
     roundtrip("d11_len_gt0", "    let s = \"x\"\n    core.mem.drop(s.len() > 0usize)\n", "    let s = \"x\"\n    core.mem.drop(!s.is_empty())\n");
 }
@@ -237,6 +242,121 @@ fn d12_integer_literals_need_a_suffix() {
     assert!(main_src(&t).contains("let a = 1u32"), "{}", main_src(&t));
     effects_fix(&t);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
+}
+
+// ---- D11 (G56): 独自の `len` / `is_empty` があるプログラムでは `len()` の比較を書き換えない ----
+
+#[test]
+fn d11_own_len_method_suppresses_the_rewrite() {
+    let pre = "type t.Item\n    n: usize\nend t.Item\n\nfn t.Item.is_empty(self: &t.Item) -> bool uses [] panics never\n    self.n == 0usize\nend t.Item.is_empty\n\n\
+               fn t.Item.len(self: &t.Item) -> usize uses [] panics never\n    self.n\nend t.Item.len\n\n";
+    let mk = |body: &str| format!("{}fn t.main() -> () uses [] panics may\n{}end t.main\n", pre, body);
+    let t = Tmp::new_raw(
+        "d11_own_len",
+        &mk("    let it = t.Item { n: 0usize }\n    core.check.eq(it.len() == 0usize, true)\n    core.check.eq(it.is_empty(), true)\n    core.mem.drop(it)\n"),
+    );
+    // 独自の `len` があるので `fmt` は `is_empty()` に書き換えない (型を見ないので、プログラム全体で抑制する)。
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
+    assert_eq!(
+        main_src(&t),
+        mk("    let it = t.Item { n: 0usize }\n    core.check.eq(it.len() == 0usize, true)\n    core.check.eq(it.is_empty(), true)\n    core.mem.drop(it)\n"),
+        "{}",
+        main_src(&t)
+    );
+    effects_fix(&t);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
+}
+
+/// `None` との比較の 4 つの形を書き換えた結果が、`is_none()` / `is_some()` と同じ意味になる (`run` の出力)。
+#[test]
+fn d11_none_comparison_forms_keep_meaning() {
+    let cases: [(&str, &str); 4] = [
+        ("a != None && b == None", "T"),
+        ("a == None && b != None", "F"),
+        ("None != a && None == b", "T"),
+        ("None == a || b != None", "F"),
+    ];
+    let mut body = String::from("    let a = Some(1u32)\n    let b: Option<u32> = None\n");
+    for (cond, _) in cases.iter() {
+        body.push_str(&format!(
+            "    if {} {{\n        core.mem.drop(std.io.print_line(\"T\"))\n    }} else {{\n        core.mem.drop(std.io.print_line(\"F\"))\n    }}\n",
+            cond
+        ));
+    }
+    let t = Tmp::new_raw("d11_none_meaning", &main_wrap("", &body));
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
+    effects_fix(&t);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let got: Vec<String> = text(&o.stdout).lines().map(|l| l.trim().to_string()).collect();
+    let want: Vec<String> = cases.iter().map(|(_, w)| w.to_string()).collect();
+    assert_eq!(got, want, "{}", main_src(&t));
+}
+
+// ---- Rust 風の構文 (LLM がよく書く形) の診断: E0061・E0062・`impl` の E0043 ----
+
+#[test]
+fn struct_field_shorthand_is_reported_and_fixed() {
+    let src = concat!(
+        "type t.Item\n",
+        "    qty: u32\n",
+        "    price: u32\n",
+        "end t.Item\n\n",
+        "fn t.main() -> () uses [] panics never\n",
+        "    let qty = 2u32\n",
+        "    let price = 3u32\n",
+        "    let it = t.Item { qty, price }\n",
+        "    core.mem.drop(it)\n",
+        "end t.main\n",
+    );
+    let t = Tmp::new_raw("rs_shorthand", src);
+    let got = text(&run(&["check", "--json"], &t.0).stdout);
+    assert_eq!(got.matches("\"E0061\"").count(), 2, "{}", got);
+    assert!(got.contains("(`ksn fix` で直せる)"), "{}", got);
+    run(&["fix"], &t.0);
+    assert!(main_src(&t).contains("let it = t.Item { qty: qty, price: price }"), "{}", main_src(&t));
+    effects_fix(&t);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
+}
+
+#[test]
+fn fn_without_module_path_is_reported() {
+    // 構文として読めるファイルは lint の E0062 (実モジュール名つき) で受ける。
+    let t = Tmp::new_raw("rs_fqn", "fn apply(n: u32) -> u32 uses [] panics never\n    n\nend apply\n");
+    let got = text(&run(&["check", "--json"], &t.0).stdout);
+    assert_eq!(got.matches("\"E0062\"").count(), 1, "{}", got);
+    assert!(got.contains("fn t.apply"), "{}", got);
+    // 構文エラーのファイルでは rustisms の E0062 も出る (解析できないので lint は拾えない)。
+    let t = Tmp::new_raw(
+        "rs_fqn_broken",
+        "fn apply(n: u32) -> u32 uses [] panics never {\n    n\n}\n",
+    );
+    let got = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(got.contains("\"E0062\""), "{}", got);
+    assert!(got.contains("\"E0043\""), "{}", got);
+}
+
+#[test]
+fn impl_block_gets_its_own_guidance() {
+    let src = concat!(
+        "type t.Item\n",
+        "    n: u32\n",
+        "end t.Item\n\n",
+        "trait t.Double\n",
+        "    fn t.dbl(self: &t.Item) -> u32\n",
+        "end t.Double\n\n",
+        "impl t.Double for t.Item {\n",
+        "    fn dbl(self: &t.Item) -> u32 {\n",
+        "        self.n * 2u32\n",
+        "    }\n",
+        "}\n",
+    );
+    let t = Tmp::new_raw("rs_impl", src);
+    let got = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(got.contains("Kasane has no `impl` block"), "{}", got);
+    assert!(got.contains("`impl t.Double for t.Item` is a ONE-LINE declaration"), "{}", got);
+    assert!(got.contains("fn t.Item.<method>(self: ...) -> .. impls t.Double"), "{}", got);
 }
 
 // ---- D16: 構造体リテラルの欄の順 ----

@@ -1,0 +1,11 @@
+type t.Item
+    qty: u32
+    price: u32
+end t.Item
+
+fn t.main() -> () uses [] panics never
+    let qty = 2u32
+    let price = 3u32
+    let it = t.Item { qty, price }
+    core.mem.drop(it)
+end t.main

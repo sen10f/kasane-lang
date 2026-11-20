@@ -4,6 +4,7 @@
   "description": "Kasane 言語の構文強調と ksn 言語サーバ",
   "version": "0.1.0",
   "publisher": "sen10f",
+  "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/sen10f/kasane.git"

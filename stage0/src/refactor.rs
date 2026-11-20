@@ -1295,7 +1295,7 @@ impl<'a> Engine<'a> {
             }
             let joined = lines.join("\n");
             let joined = if joined.ends_with('\n') { joined } else { format!("{}\n", joined) };
-            let formatted = crate::fmt::format_source_with(&joined, &dest, false);
+            let formatted = crate::fmt::format_source_with(&joined, &dest, false, false);
             if formatted == s.text && dest == s.path {
                 continue;
             }
