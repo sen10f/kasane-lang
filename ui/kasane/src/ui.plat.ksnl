@@ -27,18 +27,18 @@ const ui.plat.KSNUI_EVENT_TEXT_INPUT: u32 = 9u32 pub
 const ui.plat.KSNUI_EVENT_WHEEL: u32 = 7u32 pub
 
 type ui.plat.KsnuiEvent layout c derive [Clone, Copy] pub
-    event_type: i32
-    key: i32
-    mods: i32
-    x: f32
-    y: f32
-    wheel_x: f32
-    wheel_y: f32
-    w: i32
-    h: i32
-    cursor: i32
-    text_off: u32
-    text_len: u32
+    event_type: i32 pub
+    key: i32 pub
+    mods: i32 pub
+    x: f32 pub
+    y: f32 pub
+    wheel_x: f32 pub
+    wheel_y: f32 pub
+    w: i32 pub
+    h: i32 pub
+    cursor: i32 pub
+    text_off: u32 pub
+    text_len: u32 pub
 end ui.plat.KsnuiEvent
 
 extern ui.plat.raw_ksnui_display_scale(win: *mut u8) -> f32 link "ksnui_display_scale"
