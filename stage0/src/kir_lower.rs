@@ -140,7 +140,8 @@ fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> BTreeMap<
     let mut checked: Vec<usize> = vec![];
     for &i in user {
         let d = &p.defs[i];
-        if (d.kw == "fn" && d.body.is_some()) || test_def == Some(i) {
+        // 定数の初期化式も検査する (下ろしが定数の式を使う場所で下ろすため、式の型が要る)。
+        if (d.kw == "fn" && d.body.is_some()) || (d.kw == "const" && d.init.is_some()) || test_def == Some(i) {
             tk.check_def(i);
             checked.push(i);
         }
@@ -274,6 +275,8 @@ struct Lw<'a> {
     aggs: &'a RefCell<agg::AggTab>,
     /// 単相インスタンスの型パラメータ名 → 具体的な型 (空なら単相の関数)。設計_KIR.md 20 章。
     subst: HashMap<String, Src>,
+    /// 定数の式を下ろしているときの型表の名前 (定数の FQN)。通常の関数では `None` (`def.name` を使う)。
+    const_scope: Option<String>,
     /// 単相インスタンスの鍵 (`fqn<型引数,..>`)。単相の関数は `None` (鍵は FQN)。
     inst_key: Option<String>,
     /// 下ろし済み (下ろし中) の型引数付きインスタンスの鍵 (入れ子のインスタンスと共有する)。
@@ -306,6 +309,7 @@ impl<'a> Lw<'a> {
             def,
             aggs,
             subst: HashMap::new(),
+            const_scope: None,
             inst_key: None,
             mono_done: Default::default(),
             blocks: vec![],
@@ -475,7 +479,8 @@ impl<'a> Lw<'a> {
     fn src_ty(&self, e: &V) -> LR<Src> {
         let line = nline(e);
         let id = nid(e);
-        match self.tys.get(&(self.def.name.clone(), id)) {
+        let scope = self.const_scope.clone().unwrap_or_else(|| self.def.name.clone());
+        match self.tys.get(&(scope, id)) {
             Some(x) if id != 0 => {
                 // S5-0 の計器: 型表から読んだ型を、TAST の同じ式の型と比べる (単相化の代入の後は比べない)。
                 if crate::s5_meter::on() {
@@ -920,7 +925,7 @@ impl<'a> Lw<'a> {
                 coll::str_lit(self, init)
             }
             // 整数リテラルのフィールドだけの構造体リテラルの定数 (`std.alloc.SYSTEM = std.alloc.System { id: 0u8 }`)。
-            Some(init) if nname(init) == "StructLit" => {
+            Some(init) if nname(init) == "StructLit" && items(&nf(init)[1]).iter().all(|it| matches!(it, V::L(xs) if nname(&xs[1]) == "Lit" && st(&nf(&xs[1])[0]) == "int")) => {
                 let Ty::Agg(ai) = ty else { return self.err(nline(e), format!("定数 {} の型が構造体でない", c.name)) };
                 let crate::kir::AggKind::Struct(decl) = self.agg_def(ai).kind else { return self.err(nline(e), format!("定数 {} の型が構造体でない", c.name)) };
                 let mut vals: Vec<Option<VId>> = vec![None; decl.len()];
@@ -944,7 +949,23 @@ impl<'a> Lw<'a> {
                 };
                 Ok(self.emit(ty, Op::Make { variant: None, fields }))
             }
-            _ => self.err(nline(e), format!("定数 {} は段階 1 の対象外", c.name)),
+            // 浮動小数のリテラルの定数 (`const demo.H: f32 = 36.0f32`): 型は宣言の型 (式の型は型表に無い)。
+            Some(init) if ty.is_float() && nname(init) == "Lit" && st(&nf(init)[0]) == "float" => {
+                let x = st(&nf(init)[2]).parse::<f64>().unwrap_or(0.0);
+                Ok(self.emit(ty, Op::Const(crate::kir_scalar::from_f64(ty, x))))
+            }
+            // それ以外 (配列・タプル・非整数の欄の構造体など): 定数の式を使う場所で下ろす。
+            // 定数はコンパイル時の値なので、式を複製しても意味は変わらない (`const` は値の置き換え)。
+            Some(init) => {
+                let saved = self.const_scope.replace(c.name.clone());
+                let r = self.expr(&init.clone());
+                self.const_scope = saved;
+                match r? {
+                    Some(v) => Ok(v),
+                    None => self.err(nline(e), format!("定数 {} の式が値を作らない", c.name)),
+                }
+            }
+            None => self.err(nline(e), format!("定数 {} は段階 1 の対象外", c.name)),
         }
     }
 
