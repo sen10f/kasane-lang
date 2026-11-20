@@ -597,3 +597,129 @@ tutorial_ui ok
 - GPU 描画やウィンドウバックエンドはこの3パッケージには含まれていません。`ui/` の `native/` ディレクトリや GPU 関連は別のロードマップ項目です。
 - 各パッケージの設計・API 全容は `ui/kasane/layout/README.md`、`ui/kasane/tree/README.md`、`ui/kasane/event/README.md` を参照してください。
 
+
+
+## 8. `Rc` / `Arc` を使わずにデータを共有する（`alloc.arena` と `Handle<T>`）
+
+Kasane には `Rc` / `Arc` はありません。複数の場所から同じ値を共有したいときは `alloc.arena.Arena<T, A>` に入れ、取っ手 `Handle<T>`（添字と世代だけを持つ `Copy` の値で、`Arena` の側しか作れない）を渡します。要素は 1 本のバッファのスロットに置かれ、`grow` でも添字は動かないので、値を借りている間も取っ手は有効です。
+
+`insert` で取っ手を作り、`get` / `get_mut` で借り、`remove` で捨てます。`remove` した取っ手は「弱い参照」と同じで `get` は `None` を返します。スロットが再利用されると世代が 1 つ上がるので、古い取っ手も当たらず、後の `insert` で作った取っ手と区別されます。
+
+```kasane
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)
+    core.check.is_true(a.is_empty())
+    core.check.eq(a.len(), 0usize)
+    let h0 = a.insert(1u32)?
+    let h1 = a.insert(2u32)?
+    core.check.eq(a.len(), 2usize)
+    core.check.is_true(a.contains(h0))
+    core.check.eq(a.get(h0), Some(&1u32))
+    let copied = h0
+    core.check.eq(a.get(copied), Some(&1u32))
+    core.check.is_true(h0 == copied)
+    match a.get_mut(h1) {
+        Some(v) => core.mem.drop(core.mem.replace(v, 20u32))
+        None => core.panic.panic("no h1")
+    }
+    core.check.eq(a.get(h1), Some(&20u32))
+    core.check.eq(a.remove(h1), Some(20u32))
+    core.check.is_true(a.get(h1).is_none())
+    core.check.is_true(!a.contains(h1))
+    core.check.eq(a.len(), 1usize)
+    let h2 = a.insert(3u32)?
+    core.check.is_true(h2 != h1)
+    core.check.eq(a.get(h2), Some(&3u32))
+    core.mem.drop(std.io.print_line("arena ok"))?
+    Ok(())
+end t.main
+```
+
+`h1` を `remove` した後、同じスロットに `3u32` が入り、`h2 != h1`（世代が違う）。`a.get(h1)` は `None` で、古い取っ手は使い回しのスロットに当たらない。取っ手は `Copy` なので `Vec` に入れて回すこともでき、`T: linear` や参照を運ぶ型は `Arena` に入れられない。取っ手は（添字, 世代）だけを持つので、別の `Arena` の同じ（添字, 世代）の取っ手とは当たってしまう（型の違う取っ手は E2023）。
+
+## 9. 集合と範囲走査（`HashSet` と `BtreeMap.range`）
+
+`HashSet<T>` は `new`・`insert`・`remove`・`contains`・`len`・`is_empty`・`iter` を持ち、要素が `String` のときは `contains_str` / `remove_str` のように `&str` を渡す（`&String` で引くと E2054）。`BtreeMap<K, V>` は `iter` で鍵の順に走査し、`range(&lo, &hi)` で半開区間 `[lo, hi)` を、`first` / `last` で両端を取ります。
+
+```kasane
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut s = alloc.collections.HashSet.new(std.alloc.SYSTEM)
+    core.check.eq(s.is_empty(), true)
+    core.check.eq(s.insert(7u32), Ok(true))
+    core.check.eq(s.insert(7u32), Ok(false))
+    core.check.eq(s.len(), 2usize)
+    core.check.eq(s.contains(&7u32), true)
+    core.check.eq(s.remove(&7u32), true)
+    core.check.eq(s.remove(&7u32), false)
+    core.mem.drop(std.io.print_line("hashset ok"))?
+    Ok(())
+end t.main
+```
+
+```kasane
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut b = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)
+    core.mem.drop(b.insert(1u32, 10u32))
+    core.mem.drop(b.insert(2u32, 20u32))
+    core.mem.drop(b.insert(3u32, 30u32))
+    core.mem.drop(b.insert(5u32, 50u32))
+    let mut sum = 0u32
+    for (_k, v) in b.range(&2u32, &5u32) {
+        sum = sum.wrapping_add(*v)
+    }
+    core.check.eq(sum, 50u32)
+    match b.first() {
+        Some((k, v)) => {
+            core.check.eq(*k, 1u32)
+            core.check.eq(*v, 10u32)
+        }
+        None => core.panic.panic("no first")
+    }
+    core.mem.drop(std.io.print_line("btree ok"))?
+    Ok(())
+end t.main
+```
+
+## 10. C のコールバックにユーザーデータを渡す（`core.ffi.trampoline`）
+
+C の API が `void (*cb)(void *user, int x)` のように `void *user` を受け渡す形なら、`extern` の両側で同じ生ポインタ型（`*mut t.Acc` など）を宣言し、Kasane 側は `core.ptr.from_mut(&mut acc)` でユーザデータへのポインタを渡します。キャプチャを持つクロージャを C の関数ポインタとして渡すには `core.ffi.trampoline(&mut cb)` を使い、戻り値の `(fn(*mut (), A) -> R, *mut ())` を C のコールバックと `user` に渡します（`spec/stdlib/core/ffi.sig`）。
+
+```kasane
+type t.Acc
+    total: i32
+    count: i32
+end t.Acc
+
+extern t.acc_ticks(f: fn(*mut (), i32) -> () uses [] panics never, user: *mut (), lo: i32, hi: i32) -> () link "LIB:acc_ticks"
+
+extern t.acc_twice(f: fn(*mut (), i32) -> () uses [] panics never, user: *mut (), a: i32, b: i32) -> () link "LIB:acc_twice"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut acc = t.Acc { total: 0i32, count: 0i32 }
+    let mut cb = fn(x: i32) -> () capture [&mut acc] {
+        acc.total = acc.total.wrapping_add(x)
+        acc.count = acc.count.wrapping_add(1i32)
+    }
+    let (f, user) = unsafe "ffi" "trampoline for the closure" {
+        core.ffi.trampoline(&mut cb)
+    }
+    unsafe "ffi" "accumulate through the C callback" {
+        t.acc_ticks(f, user, 1i32, 10i32)
+    }
+    core.check.eq(acc.total, 55i32)
+    core.check.eq(acc.count, 10i32)
+    unsafe "ffi" "two more calls" {
+        t.acc_twice(f, user, 5i32, 7i32)
+    }
+    core.check.eq(acc.total, 67i32)
+    core.check.eq(acc.count, 12i32)
+    core.mem.drop(std.io.print_line("userdata ok"))?
+    Ok(())
+end t.main
+```
+
+リンクは `kasane.toml` の `[unsafe] modules = ["t"]`（8.1）と `link "LIB:acc_ticks"`（実行時の `dlopen`）が必要で、C 側は `acc_ticks` / `acc_twice`（利用者のデータは `user` を通じて受け渡すだけ）を共有ライブラリにする。
+
+2 つの制限：
+1. `extern` のコールバックの実引数にネイティブで渡せるのはプレーンな `fn`（名前付き関数、あるいは `capture []` のクロージャ）だけで、クロージャ値そのものを C の関数ポインタとして渡すことはできない（E5005）。キャプチャを持つクロージャを C に渡すには `core.ffi.trampoline` で関数ポインタと `*mut ()` のユーザデータペアを作る。
+2. C が受け取った `user` ポインタを、`extern` の呼び出しから戻った後も保持・参照してはいけない（寿命は C への呼び出しの間のみ。必要ならヒープに逃がす）。
