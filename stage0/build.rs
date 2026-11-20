@@ -372,6 +372,33 @@ fn link_embedded_lld() {
         .map(|c| c.contains("mingw32"))
         .unwrap_or(false);
     if is_windows_cross {
+        // Windows クロスビルドでは組み込み ldd をスキップする。
+        // liblld*.a が Windows LLVM インストールに含まれないため。
+        // ただし ksn_lld_link (FFI エントリポイント) と Windows API の
+        // GUID 定数 (CLSID_FileOperation 等) のスタブはリンクに必要。
+        let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+        println!("cargo:rerun-if-changed=src/native/ksn_windows_stubs.c");
+        let obj = out.join("ksn_windows_stubs.o");
+        let st = Command::new(&cc)
+            .args(["-c", "src/native/ksn_windows_stubs.c", "-o"])
+            .arg(&obj)
+            .status()
+            .expect("cc が要る");
+        assert!(st.success(), "ksn_windows_stubs.c のコンパイルに失敗");
+        let a = out.join("libksn_windows_stubs.a");
+        let _ = fs::remove_file(&a);
+        assert!(
+            Command::new("ar")
+                .arg("crs")
+                .arg(&a)
+                .arg(&obj)
+                .status()
+                .expect("ar が要る")
+                .success()
+        );
+        println!("cargo:rustc-link-search=native={}", out.display());
+        println!("cargo:rustc-link-lib=static=ksn_windows_stubs");
         return;
     }
     println!("cargo:rerun-if-changed=src/native/lld_shim.cpp");
