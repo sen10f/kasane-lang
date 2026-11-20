@@ -636,40 +636,21 @@ pub enum GitMode {
     Pinned,
 }
 
-/// ロック (版 2 / 版 3) に記録された git 依存のコミット。`url` が一致するものだけ返す。
-/// shortcut: 版 3 (R1c) は `commit` 欄を読むように、ここを差し替える (版 2 は `source` の `#` の後ろ)。
-pub fn locked_git_commit(root: &Path, dn: &str, url: &str) -> Option<String> {
-    let v: toml::Value = fs::read_to_string(root.join("kasane.lock")).ok()?.parse().ok()?;
-    let e = v.get("package")?.as_array()?.iter().find(|p| p.get("name").and_then(|n| n.as_str()) == Some(dn))?;
-    let (u, c) = e.get("source")?.as_str()?.strip_prefix("git+")?.rsplit_once('#')?;
-    if u == url && !c.is_empty() { Some(c.to_string()) } else { None }
-}
-
-/// 版の依存 (`git` + `version`) を範囲に合う最大の `vMAJOR.MINOR.PATCH` タグのコミットに解決する (R2c)。
-fn resolve_version_commit(url: &str, dn: &str, range: &str) -> Result<String, ProjectError> {
-    let r = crate::semver::Range::parse(range).map_err(|m| ProjectError { code: "E9008".into(), msg: format!("dependency {}: {}", dn, m) })?;
-    let tags = crate::git_tags::list_git_tags(url).map_err(|e| ProjectError { code: "E9010".into(), msg: e.msg })?;
-    tags.iter()
-        .filter(|(v, _)| r.matches(&crate::semver::Version::new(v.major, v.minor, v.patch)))
-        .max_by_key(|(v, _)| (v.major, v.minor, v.patch))
-        .map(|(_, c)| c.clone())
-        .ok_or_else(|| ProjectError { code: "E9010".into(), msg: format!("dependency {}: no tag of {} satisfies version \"{}\"", dn, url, range) })
-}
-
 pub fn load_deps(pkg: &Package) -> Result<Vec<Package>, ProjectError> {
     load_deps_with(pkg, &|_| GitMode::Offline)
 }
 
 /// 推移的な依存をすべて読む (ルート自身は含まない)。`mode` は依存名ごとの git の取得方法。
 pub fn load_deps_with(pkg: &Package, mode: &dyn Fn(&str) -> GitMode) -> Result<Vec<Package>, ProjectError> {
+    let picks = crate::deps_resolve::resolve_picks(pkg, mode)?;
     let mut seen: Vec<(String, String)> = vec![];
     let mut out = vec![];
-    resolve_rec(pkg, pkg, mode, &mut seen, &mut out)?;
+    resolve_rec(pkg, pkg, mode, &picks, &mut seen, &mut out)?;
     Ok(out)
 }
 
 /// 依存 `dn` の (取得元文字列, 置き場所)。
-fn locate_dep(root: &Package, pkg: &Package, dn: &str, dv: &toml::Value, mode: &dyn Fn(&str) -> GitMode) -> Result<(String, PathBuf), ProjectError> {
+pub(crate) fn locate_dep(root: &Package, pkg: &Package, dn: &str, dv: &toml::Value, mode: &dyn Fn(&str) -> GitMode, picks: &crate::deps_resolve::Picks) -> Result<(String, PathBuf), ProjectError> {
     if dv.get("registry").is_some() {
         return perr("E9040", format!("dependency {}: registry version resolution is not implemented yet", dn));
     }
@@ -687,17 +668,12 @@ fn locate_dep(root: &Package, pkg: &Package, dn: &str, dv: &toml::Value, mode: &
     }
     let url = dv.get("git").and_then(|g| g.as_str()).unwrap_or("");
     let m = mode(dn);
-    // コミットを決める。rev はそのまま。版は: update (Fresh) で範囲から選び直し、
-    // vendor (Pinned) と照合系 (Offline / IfMissing) はロックの記録を使う (記録が無いときだけ選ぶ)。
+    // コミットを決める。rev はそのまま。版は依存グラフの解決 (`deps_resolve::resolve_picks`) の結果を使う。
     let rev: String = match (dv.get("rev").and_then(|g| g.as_str()), dv.get("version").and_then(|g| g.as_str())) {
         (Some(r), _) => r.to_string(),
-        (None, Some(range)) => match m {
-            GitMode::Fresh => resolve_version_commit(url, dn, range)?,
-            _ => match locked_git_commit(&root.root, dn, url) {
-                Some(c) => c,
-                None if m == GitMode::IfMissing || m == GitMode::Pinned => resolve_version_commit(url, dn, range)?,
-                None => return perr("E9010", format!("git dependency {} has no locked commit for version \"{}\" (run `ksn update`)", dn, range)),
-            },
+        (None, Some(range)) => match picks.get(dn) {
+            Some(p) => p.commit.clone(),
+            None => return perr("E9010", format!("git dependency {} has no resolved version \"{}\" (run `ksn update`)", dn, range)),
         },
         _ => String::new(),
     };
@@ -731,6 +707,7 @@ fn resolve_rec(
     root: &Package,
     pkg: &Package,
     mode: &dyn Fn(&str) -> GitMode,
+    picks: &crate::deps_resolve::Picks,
     seen: &mut Vec<(String, String)>,
     out: &mut Vec<Package>,
 ) -> Result<(), ProjectError> {
@@ -739,7 +716,7 @@ fn resolve_rec(
         if *dn == root.name {
             return perr("E9015", format!("dependency cycle: {} depends back on the root package {}", pkg.name, root.name));
         }
-        let (source, loc) = locate_dep(root, pkg, dn, dv, mode)?;
+        let (source, loc) = locate_dep(root, pkg, dn, dv, mode, picks)?;
         if let Some((_, prev)) = seen.iter().find(|(n, _)| n == dn) {
             // 菱形依存: 同じ取得元なら1つとして扱い、違う取得元はエラー (8.1。版の自動調停はしない)。
             if *prev != source {
@@ -754,7 +731,7 @@ fn resolve_rec(
         dp.source = source.clone();
         seen.push((dn.clone(), source));
         let mut sub = vec![];
-        resolve_rec(root, &dp, mode, seen, &mut sub)?;
+        resolve_rec(root, &dp, mode, picks, seen, &mut sub)?;
         out.push(dp);
         out.extend(sub);
     }

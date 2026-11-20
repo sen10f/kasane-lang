@@ -76,7 +76,8 @@ fn make_pkg(root: &Path, name: &str, entry: bool, deps: &str, files: &[(&str, &s
 /// `gl` の版の履歴: v1.0.0 → v1.1.0。`gl` は `(url, 各版のコミット)` を返す。
 fn gl_repo(w: &Work) -> (PathBuf, String, String, String) {
     let repo = w.path("gl_repo");
-    write(&repo.join("kasane.toml"), &manifest("gl", false, ""));
+    // 版 (`package.version`) はタグと一致させる (publish の規則)。
+    write(&repo.join("kasane.toml"), &manifest("gl", false, "").replace("0.1.0", "1.0.0"));
     write(&repo.join("src/gl.ksnl"), GL_V1);
     git(&repo, &["init", "--quiet"]);
     git(&repo, &["add", "-A"]);
@@ -84,6 +85,7 @@ fn gl_repo(w: &Work) -> (PathBuf, String, String, String) {
     git(&repo, &["tag", "v1.0.0"]);
     let c1 = git(&repo, &["rev-parse", "HEAD"]);
     write(&repo.join("src/gl.ksnl"), GL_V11);
+    write(&repo.join("kasane.toml"), &manifest("gl", false, "").replace("0.1.0", "1.1.0"));
     git(&repo, &["commit", "--quiet", "-am", "v1.1.0"]);
     git(&repo, &["tag", "v1.1.0"]);
     let c2 = git(&repo, &["rev-parse", "HEAD"]);
@@ -148,6 +150,7 @@ fn lock_pins_the_commit_when_a_newer_tag_appears_and_update_moves_it() {
     assert_eq!(locked, format!("git+{}#{}", url, c2));
     // 新しい版 v1.2.0 を出す。build は lock のコミットのままで、ネットワークを見ない。
     write(&repo.join("src/gl.ksnl"), GL_V12);
+    write(&repo.join("kasane.toml"), &manifest("gl", false, "").replace("0.1.0", "1.2.0"));
     git(&repo, &["commit", "--quiet", "-am", "v1.2.0"]);
     git(&repo, &["tag", "v1.2.0"]);
     let c3 = git(&repo, &["rev-parse", "HEAD"]);
@@ -166,6 +169,7 @@ fn vendor_keeps_the_locked_commit_and_builds_without_the_repository() {
     assert_eq!(w.ksn(&["update"], &app).status.code(), Some(0));
     // 版の範囲が変わっても (タグが増えても) vendor は lock のコミットを取る。
     write(&repo.join("src/gl.ksnl"), GL_V12);
+    write(&repo.join("kasane.toml"), &manifest("gl", false, "").replace("0.1.0", "1.2.0"));
     git(&repo, &["commit", "--quiet", "-am", "v1.2.0"]);
     git(&repo, &["tag", "v1.2.0"]);
     let o = w.ksn(&["vendor"], &app);
