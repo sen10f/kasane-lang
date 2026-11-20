@@ -60,14 +60,41 @@ pub enum Mode {
     Old,
     New,
     Shadow,
+    /// S4 が既定になるときの形: 新しい規則 + 残す旧パス (設計_S4の切り替え.md 1.1・1.2)。
+    S4,
 }
 
 pub fn mode() -> Mode {
     match std::env::var("KSN_CHECKER").as_deref() {
         Ok("new") => Mode::New,
         Ok("shadow") => Mode::Shadow,
+        Ok("s4") => Mode::S4,
         _ => Mode::Old,
     }
+}
+
+/// S4 で TAST の規則が置き換える旧の「式の形を見る検査」の診断コード (設計_S4の切り替え.md 1.1)。
+/// 旧のうちこれらだけを落とし、それ以外 (字句 E3060・名前解決・推論・署名の字句・E5001 など 1.2) は
+/// そのまま旧の診断を使う。E2023 / E20xx / E3020・E3043 のような共有コードはコードでは区別できないので
+/// フィルタに入れず、borrowck の呼び出し側 (check.rs) を止めるなど場で分ける。
+const S4_REPLACED: &[&str] = &[
+    "E3010", "E3030", "E3050", // borrowck.rs
+    "E3002", "E3003", "E3006", "E3040", // tc_fn 系の移動・線形
+    "E4001", "E4002",           // 効果の実体化・階層
+    // E1122 はフィルタしない (フィールドの可視性 check.rs:1923 も同じコード)。impl の署名のほうは
+    // check_impl_method_sigs の呼び出しを s4 で止める (check.rs)。
+    "E2042",                    // 捨てた値
+    "E2021", "E2052",           // 網羅性
+    "E3031",                    // 可変性
+    "E5003",                    // unsafe 呼び出し
+    "E2030",                    // 境界
+];
+
+/// (ファイル, 行, コード, 文面) で重ねる。
+fn dedup(mut out: Vec<Diag>) -> Vec<Diag> {
+    let mut seen = std::collections::BTreeSet::new();
+    out.retain(|d| seen.insert((d.file.clone(), d.line, d.code.clone(), d.msg.clone())));
+    out
 }
 
 fn js(s: &str) -> String {
@@ -97,6 +124,11 @@ pub fn select(prog: &Program, user: &[usize], old: Vec<Diag>) -> Vec<Diag> {
             old
         }
         Mode::New => check(prog, user),
+        Mode::S4 => {
+            // 新しい規則 + 残す旧パス。置き換えた旧パス (S4_REPLACED) の診断だけ旧から外す。
+            let kept: Vec<Diag> = old.into_iter().filter(|d| !S4_REPLACED.contains(&d.code.as_str())).collect();
+            dedup([kept, check(prog, user)].concat())
+        }
         Mode::Shadow => {
             let new = check(prog, user);
             let key = |d: &Diag| (d.file.clone(), d.line, d.code.clone());

@@ -11,7 +11,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use crate::check::Diag;
+use crate::check::{items, resolve_trait_fqn, st, Diag};
+use crate::parser::V;
 use crate::program::{Def, Program};
 use crate::tast::*;
 use crate::types::{elide_sig, from_v, subst, Region, Ty, TypeCk};
@@ -1098,6 +1099,48 @@ impl<'a> W<'a> {
                 let _ = out;
                 Val::default()
             }
+            "With" => {
+                // `with r = init close close_expr { body }`: children = [init, (close?), body]。
+                // `close` は束縛 `r` を消費するので、本体の値や外側の変数が `r` の借用を持ったまま
+                // 抜けるのは E3043 (4.4)。
+                let iv = self.ev(&children[0]);
+                self.scopes.push(vec![]);
+                for q in &e.pats {
+                    self.bind_pat(q, iv.flat(), true);
+                }
+                let wnames: HashSet<String> = e.pats.iter().filter_map(|q| q.name.clone()).collect();
+                let body = &children[children.len() - 1];
+                let bv = self.ev(body);
+                if children.len() == 3 {
+                    for (l, _) in bv.loans() {
+                        if let Loan::Local(n, _) | Loan::Dead(n) = l {
+                            if wnames.contains(n.as_str()) {
+                                self.diag("E3043", format!("the `with` body value borrows from `{}`, which the `close` expression consumes (4.4)", n), e.line);
+                            }
+                        }
+                    }
+                    // 外側の生きている変数 (閉包の取り込み先など) が `r` の借用を持つ場合も同じ。
+                    let declared: HashSet<String> = self.scopes.last().cloned().unwrap_or_default().into_iter().collect();
+                    let mut held: Vec<(String, String)> = vec![];
+                    for (n, var) in &self.env.vars {
+                        if declared.contains(n) {
+                            continue;
+                        }
+                        for (l, _) in var.val.loans() {
+                            if let Loan::Local(rn, _) | Loan::Dead(rn) = l {
+                                if wnames.contains(rn.as_str()) {
+                                    held.push((rn.clone(), n.clone()));
+                                }
+                            }
+                        }
+                    }
+                    for (rn, n) in held {
+                        self.diag("E3043", format!("the `with` body value or an outer variable borrows from `{}`, which the `close` expression consumes (4.4); it is held by `{}`", rn, n), e.line);
+                    }
+                    let _ = self.ev(&children[1]);
+                }
+                self.end_scope(bv)
+            }
             _ => {
                 let vs = self.ev_all(children);
                 let mut out = Val::default();
@@ -1351,6 +1394,39 @@ impl<'a> W<'a> {
     // -------------------------------------------------------- 呼び出し
 
     /// `dyn Tr` 越しのメソッド呼び出しの署名を、トレイトの宣言から実体化する (`Self` は受け手の `dyn` 型、トレイトの型パラメータは `dyn` の実引数へ)。
+    /// 受け手の型の境界のトレイトが持つメソッドの署名 (`Self` を受け手の指す先の型へ置き換える)。
+    /// `Callee::Unknown` の経路形 `x.m()` (`x: &T`, `T: Tr`) はここで宣言の署名どおりに読む。
+    fn bound_sig(&self, recv_ty: &Ty, meth: &str) -> Option<(Vec<(String, Ty)>, Ty, DefId)> {
+        let d = &self.p.defs[self.di];
+        let mut cur = recv_ty;
+        let pn = loop {
+            match cur {
+                Ty::Ref(_, inner, _) => cur = inner,
+                Ty::Param(p) => break p.clone(),
+                _ => return None,
+            }
+        };
+        let Some(g) = d.generics.iter().find(|g| g.0 == "type" && g.1 == pn) else { return None };
+        let dt = recv_ty.strip().clone();
+        for b in items(&g.2) {
+            let V::L(bx) = b else { continue };
+            let Some(tr) = resolve_trait_fqn(self.p, &st(&bx[0])) else { continue };
+            let Some(&ti) = self.p.types.get(&tr) else { continue };
+            let td = &self.p.defs[ti];
+            if td.kw != "trait" {
+                continue;
+            }
+            let Some((_, ps_v, ret_v)) = td.trait_sigs.iter().find(|s| s.0 == meth) else { continue };
+            let mut gn = td.gnames();
+            gn.insert("Self".to_string());
+            let mut bind: HashMap<String, Ty> = HashMap::new();
+            bind.insert("Self".into(), dt.clone());
+            let ps0: Vec<(String, Ty)> = ps_v.iter().map(|(n, v)| (n.clone(), subst(&from_v(v, &gn), &bind))).collect();
+            return Some((ps0, subst(&from_v(ret_v, &gn), &bind), ti));
+        }
+        None
+    }
+
     fn dyn_sig(&self, ti: DefId, meth: &str, recv_ty: &Ty) -> Option<(Vec<(String, Ty)>, Ty)> {
         let td = &self.p.defs[ti];
         if td.kw != "trait" {
@@ -1436,15 +1512,33 @@ impl<'a> W<'a> {
                                 dyn_call = Some((ps0, ret, *ti));
                             }
                         }
-                        // 解決できない呼び出しは安全側に読む: 全引数 (受け手を含む) の借用が戻り値へ流れる。
+                        // 未解決でも、受け手の型の境界のトレイトがメソッドを宣言していればその署名で読む
+                        // (なければ安全側: 全引数 (受け手を含む) の借用が戻り値へ流れる)。
                         Some(Callee::Unknown) | None => {
                             self.use_var(&rn, e.line);
-                            let mut full = Val::loan(Loan::Local(rn.clone(), var.decl), e.line);
-                            if var.carries {
-                                full.add(&var.val.clone().flat());
+                            if let Some((ps0, ret, ti)) = self.bound_sig(&var.ty, segs.last().unwrap()) {
+                                let self_ref = matches!(ps0.first().map(|p| &p.1), Some(Ty::Ref(..)));
+                                let inner = var.val.clone();
+                                let full = if self_ref && !var.is_ref {
+                                    let mut r = Val::loan(Loan::Local(rn.clone(), var.decl), e.line);
+                                    if var.carries {
+                                        r.add(&inner.flat());
+                                    }
+                                    r
+                                } else {
+                                    inner.clone()
+                                };
+                                let ty = if self_ref && !var.is_ref { Ty::Ref(false, Box::new(Ty::Unknown), Region::Unk) } else { Ty::Unknown };
+                                recv_arg = Some(Arg { ty, full, inner });
+                                dyn_call = Some((ps0, ret, ti));
+                            } else {
+                                let mut full = Val::loan(Loan::Local(rn.clone(), var.decl), e.line);
+                                if var.carries {
+                                    full.add(&var.val.clone().flat());
+                                }
+                                let inner = var.val.clone();
+                                recv_arg = Some(Arg { ty: Ty::Unknown, full, inner });
                             }
-                            let inner = var.val.clone();
-                            recv_arg = Some(Arg { ty: Ty::Unknown, full, inner });
                         }
                         _ => {}
                     }
@@ -1499,6 +1593,29 @@ impl<'a> W<'a> {
                     let parts: Vec<Val> = avs.iter().map(|a| a.full.clone()).collect();
                     for p in &parts {
                         v.add(&p.flat());
+                    }
+                    // `'static` の欄を持つ列挙子の構築に借用を入れるのは誤り (引数の `'static` 参照はそもそも
+                    // 借用を持たないので、ここで借用を持つのは非 'static な出どころ)。旧の borrowck と同じ E3010。
+                    if let Some(&ti) = self.p.types.get(en) {
+                        let td = &self.p.defs[ti];
+                        if let Some((_, fvs)) = td.variants.iter().find(|x| x.0 == *vn) {
+                            let gn = td.gnames();
+                            for (k, fv) in fvs.iter().enumerate() {
+                                let ft = from_v(fv, &gn);
+                                if !ft.regions().iter().any(|r| matches!(r, Region::Static)) {
+                                    continue;
+                                }
+                                if let Some(a) = avs.get(k) {
+                                    if !a.full.loans().is_empty() {
+                                        self.diag(
+                                            "E3010",
+                                            format!("the value for `{}.{}` must be 'static, but it carries a borrow", en, vn),
+                                            line,
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                     // `Some(x)` / `Ok(x)` / `Err(x)`: 型引数の欄ごとに分ける (`Err` は 2 つ目)。
                     let idx = match (en.as_str(), vn.as_str()) {
@@ -1583,7 +1700,10 @@ impl<'a> W<'a> {
                 let outer_hit = pt.outer_region().map_or(false, |o| rr.iter().any(|r| same_r(o, r)));
                 let mut pp = BTreeSet::new();
                 mentions_param(pt, &mut pp);
-                let inner_hit = real_regions(pt).iter().any(|o| rr.iter().any(|r| same_r(o, r))) || pp.iter().any(|x| ret_params.contains(x));
+                // 型パラメータの一致だけの流れは、仮引数が参照でないときだけ (恒等 `fn id[T](x: T) -> T`)。
+                // `&T` から `T` へは流れない: 裸の型パラメータの戻り値は領域を持たず、中身の借用を運ばない
+                // (旧の borrowck と同じ)。これで `x.try_clone()` の結果が `x` の借用を持つと誤認しない。
+                let inner_hit = real_regions(pt).iter().any(|o| rr.iter().any(|r| same_r(o, r))) || (!matches!(pt, Ty::Ref(..)) && pp.iter().any(|x| ret_params.contains(x)));
                 if ret_unk || outer_hit {
                     out.add(&avs[k].full.flat());
                 } else if inner_hit {
@@ -1618,6 +1738,16 @@ impl<'a> W<'a> {
             let mut xp = BTreeSet::new();
             mentions_param(x, &mut xp);
             if xr.is_empty() && xp.is_empty() {
+                continue;
+            }
+            // 実引数の `&mut` の指す先の型が領域を運ばない (例: `Vec<u8>`) なら、そこへ借用は格納されない
+            // (型が借用を持てないので落ちる)。そのまま store_through に渡すと E3030 の誤検出になる。
+            // (`&mut r` の `r: &str` は指す先が `&str` なので運ぶ。1 段だけはぐ)
+            let pointee = match &avs[k].ty {
+                Ty::Ref(_, inner, _) => &**inner,
+                t => t,
+            };
+            if !self.carries(pointee) {
                 continue;
             }
             let mut stored = Val::default();

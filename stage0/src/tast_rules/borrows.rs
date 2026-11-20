@@ -42,6 +42,9 @@ enum Ev {
     Kill { var: String, ids: Vec<usize> },
     /// `Sender.send(v)`: `v` の持つ貸し出しは、同じチャネルの他の持ち主 (主に `Receiver`) へも流れる。
     ChanSend { from: String, srcs: Vec<Src> },
+    /// 中断点 (`uses [suspend]` の呼び出し・クロージャや `Fn` 境界越しの呼び出しを含む、5.6)。
+    /// ここで生きている借用は中断をまたぐので E3050。
+    Suspend { line: usize },
 }
 
 struct Loan {
@@ -89,9 +92,12 @@ impl Cfg {
 
 pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag> {
     let mut out = vec![];
+    // susp_lines は (定義, Pack した位置) なので行だけにほどく。
+    let susp: std::collections::HashSet<(usize, usize)> =
+        tk.susp_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
     for &di in user {
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut w = Walker { p, tk, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
+        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
         for q in &b.params {
             w.scopes[0].insert(q.name.clone(), (0, q.ty.clone()));
         }
@@ -106,6 +112,11 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
         for (line, msg) in w.diags {
             if seen.insert((line, msg.clone())) {
                 out.push(Diag { file: d.file.clone(), code: "E3010".into(), fqn: d.name.clone(), line, col: 0, msg });
+            }
+        }
+        for (line, msg) in w.susp_diags {
+            if seen.insert((line, msg.clone())) {
+                out.push(Diag { file: d.file.clone(), code: "E3050".into(), fqn: d.name.clone(), line, col: 0, msg });
             }
         }
     }
@@ -232,12 +243,16 @@ fn show_place(root: &str, path: &[String]) -> String {
 struct Walker<'a> {
     p: &'a Program,
     tk: &'a TypeCk<'a>,
+    /// 型検査が中断点と決めた呼び出し (定義, 行)。(クロージャ・`Fn` 境界越しの呼び出しを含む)
+    susp: &'a std::collections::HashSet<(usize, usize)>,
     di: DefId,
     /// 名前 → (束縛の ID, 型)。
     scopes: Vec<HashMap<String, (u32, Ty)>>,
     cfg: Cfg,
     tmp: usize,
     diags: Vec<(usize, String)>,
+    /// 中断点をまたぐ借用 (E3050)。コードが違うので分けて出す。
+    susp_diags: Vec<(usize, String)>,
     /// 配列リテラルで作った変数 → 要素ごとの、その要素だけが持つ貸し出し (`[&mut x, &mut z]` なら `[[x], [z]]`)。
     slots: HashMap<String, Vec<Vec<usize>>>,
     /// 要素の持ち主が崩れ得る変数 (定数添字の `replace` 以外の可変借用・代入・流入があったもの)。`Kill` を捨てる。
@@ -969,6 +984,13 @@ impl<'a> Walker<'a> {
                 self.cfg.emit(Ev::ChanSend { from, srcs });
             }
         }
+        // 中断点なら印を立てる: 直接の `uses [suspend]` の呼び先に加え、型検査が効果の実体化から
+        // 中断点と決めた呼び出し (クロージャ・`Fn` 境界越し) も含む (types.rs の susp_lines)。
+        let may_suspend = self.susp.contains(&(self.di, e.line))
+            || cands.iter().any(|&i| self.p.defs[i].uses.iter().any(|u| u == "suspend"));
+        if may_suspend {
+            self.cfg.emit(Ev::Suspend { line: e.line });
+        }
         let mut res = self.keep(&e.ty, res);
         // `std.sync.channel(..)` の結果はチャネル自体への擬似の貸し出しを持つ (送信が受信側へ借用を流す印)。
         if def_name == "std.sync.channel" {
@@ -1271,6 +1293,29 @@ impl<'a> Walker<'a> {
                 }
             }
             for (k, ev) in evs.iter().enumerate() {
+                if let Ev::Suspend { line } = ev {
+                    // 中断点で生きている (この後使われる) 持ち主の貸し出しは E3050 (5.6)。
+                    let mut holders: Vec<(&String, &BTreeSet<usize>)> = st.iter().collect();
+                    holders.sort();
+                    for (h, ids) in holders {
+                        if !live_after[k].contains(h) {
+                            continue;
+                        }
+                        for &id in ids {
+                            let l = &cfg.loans[id];
+                            let who = if h.starts_with("$iter") {
+                                "the loop iterator".to_string()
+                            } else if h.starts_with("$cap") {
+                                "the shared capture of the closure".to_string()
+                            } else if h.starts_with("$e") {
+                                "an earlier operand of the same expression".to_string()
+                            } else {
+                                format!("`{}`", show_var(h))
+                            };
+                            self.susp_diags.push((*line, format!("cannot hold a borrow of `{}` across a suspension point: {} is used after the call that may suspend", show_var(&l.root), who)));
+                        }
+                    }
+                }
                 if let Ev::Acc { root, path, kind, line } = ev {
                     let mut holders: Vec<(&String, &BTreeSet<usize>)> = st.iter().collect();
                     holders.sort();
