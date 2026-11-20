@@ -144,6 +144,11 @@ fn link_llvm() {
                 stubs_a.display()
             );
             println!("cargo:rustc-link-lib=static=ksn_llvm_stubs");
+            // クロスビルドでは llvm-config が無いので、LLVM が必要とするシステムライブラリ
+            // (pthread: std::thread/condition_variable, stdc++: std::__throw_* 等) を
+            // 明示的にリンクする。
+            println!("cargo:rustc-link-lib=dylib=pthread");
+            println!("cargo:rustc-link-lib=dylib=stdc++");
         }
     }
     for d in ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64"] {
@@ -419,6 +424,11 @@ fn link_embedded_lld() {
             a.display()
         );
         println!("cargo:rustc-link-lib=static=ksn_lld_all");
+        // クロスビルドでは llvm-config が無いので、lld が必要とするシステムライブラリ
+        // (pthread: std::thread/condition_variable, stdc++: std::__throw_*, __cxa_thread_atexit 等)
+        // を明示的にリンクする。
+        println!("cargo:rustc-link-lib=dylib=pthread");
+        println!("cargo:rustc-link-lib=dylib=stdc++");
     }
     // システムのライブラリ (z・zstd・stdc++) は L1 の `link_llvm` が静的につなぐ (配布する実行体が依存しない)。ここでは足さない。
 }
