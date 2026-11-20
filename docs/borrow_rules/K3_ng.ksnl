@@ -1,0 +1,6 @@
+fn t.main() -> () uses [] panics never
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s)
+    let n = s.len()
+    core.mem.drop(n)
+end t.main

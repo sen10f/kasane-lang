@@ -1,0 +1,15 @@
+fn t.a_two(a: &mut u32, b: &mut u32) -> () uses [] panics never
+    *a = 1u32
+    *b = 2u32
+end t.a_two
+
+fn t.good() -> u32 uses [] panics never
+    let mut x = 1u32
+    let mut y = 2u32
+    t.a_two(&mut x, &mut y)
+    x.wrapping_add(y)
+end t.good
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.good())
+end t.main

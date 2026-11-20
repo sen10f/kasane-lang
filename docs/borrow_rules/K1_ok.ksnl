@@ -1,0 +1,7 @@
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.pair(7u32))
+end t.main
+
+fn t.pair[T: core.ops.Copy](x: T) -> (T, T) uses [] panics never
+    (x, x)
+end t.pair

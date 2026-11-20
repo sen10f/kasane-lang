@@ -1,0 +1,14 @@
+type t.S
+    v: alloc.string.String
+end t.S
+
+fn t.main() -> () uses [] panics never
+    let s = t.S { v: t.mk() }
+    match &s {
+        t.S { v: v } => core.mem.drop(*v)
+    }
+end t.main
+
+fn t.mk() -> alloc.string.String uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk

@@ -1,0 +1,39 @@
+type t.Pt
+    x: u32
+    y: u32
+end t.Pt
+
+fn t.bump(v: &mut u32) -> () uses [] panics never
+    *v = v.wrapping_add(1u32)
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut o = Some(1u32)
+    match &o {
+        Some(p) => core.mem.drop(t.rd(p).wrapping_add(*p))
+        None => core.mem.drop(0u32)
+    }
+    match &mut o {
+        Some(p) => {
+            t.bump(p)
+            *p = p.wrapping_add(1u32)
+        }
+        None => core.mem.drop(())
+    }
+    let pair = (1u32, 2u32)
+    let (a, b) = &pair
+    core.mem.drop(a.wrapping_add(*b))
+    let pt = t.Pt { x: 1u32, y: 2u32 }
+    let t.Pt { x: px, y: py } = &pt
+    core.mem.drop(px.wrapping_add(*py))
+    let nested = Some((1u32, 2u32))
+    if let Some((c, d)) = &nested {
+        core.mem.drop(c.wrapping_add(*d))
+    }
+    core.check.eq(pt.x, 1u32)
+    Ok(())
+end t.main
+
+fn t.rd(v: &u32) -> u32 uses [] panics never
+    *v
+end t.rd

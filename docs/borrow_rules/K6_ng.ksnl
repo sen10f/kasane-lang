@@ -1,0 +1,24 @@
+fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line(s.as_str()))
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let s = t.mk()
+    let r = &s
+    t.consume(s)
+    let n = t.peek(r)
+    core.check.eq(n, 33usize)
+    core.mem.drop(std.io.print_line(r.as_str()))
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello, this is a long heap string"))
+    s
+end t.mk
+
+fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+    s.len()
+end t.peek

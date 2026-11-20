@@ -1,0 +1,13 @@
+type t.S
+    v: u32
+end t.S
+
+fn t.S.get(self: &t.S) -> &u32 uses [] panics never
+    &self.v
+end t.S.get
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let s = t.S { v: 1u32 }
+    core.mem.drop(*s.get())
+    Ok(())
+end t.main
