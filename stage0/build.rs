@@ -98,7 +98,7 @@ fn link_llvm() {
                                 if let Ok(ord) = fs::read_dir(&sub) {
                                     for oe in ord.flatten() {
                                         let op = oe.path();
-                                        if op.extension().and_then(|s| s.to_str()) == Some("o") {
+                                        if op.extension().and_then(|s| s.to_str()) == Some("o") || op.extension().and_then(|s| s.to_str()) == Some("obj") {
                                             objs.push(op);
                                         }
                                     }
@@ -405,7 +405,7 @@ fn link_embedded_lld() {
                             if let Ok(ord) = fs::read_dir(&sub) {
                                 for oe in ord.flatten() {
                                     let op = oe.path();
-                                    if op.extension().and_then(|s| s.to_str()) == Some("o") {
+                                    if op.extension().and_then(|s| s.to_str()) == Some("o") || op.extension().and_then(|s| s.to_str()) == Some("obj") {
                                         objs.push(op);
                                     }
                                 }
