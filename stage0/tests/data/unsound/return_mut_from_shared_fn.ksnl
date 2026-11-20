@@ -1,0 +1,7 @@
+fn t.bad(x: &u32) -> &mut u32 uses [] panics never
+    &mut *x
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
