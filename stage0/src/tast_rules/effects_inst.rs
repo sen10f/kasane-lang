@@ -501,7 +501,14 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     }
                     argt.extend(args.iter().map(|a| a.ty.clone()));
                     let off = 0;
-                    let (u, pn) = ck.derived(c, off, &argt);
+                    let (mut u, mut pn) = ck.derived(c, off, &argt);
+                    // 宣言のままの具体的な効果・panic (S4 で旧の `violation` に代わる)。
+                    let mut conc: Vec<String> = c.uses.iter().filter(|x| !is_effect_var(x)).cloned().collect();
+                    conc.extend(u);
+                    u = conc;
+                    if pn.is_none() {
+                        pn = c.panics.clone().filter(|x| !is_panic_var(x));
+                    }
                     ck.report(&c.name.clone(), &u, pn.as_deref(), e.line);
                     // `I: Iterator<..>` 境界の引数は、呼び出し先が中で `next` を呼びうる。
                     let gn = c.gnames();
