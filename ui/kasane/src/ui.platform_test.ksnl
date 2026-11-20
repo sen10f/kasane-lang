@@ -1,0 +1,236 @@
+type ui.platform_test.Target pub
+    _dummy: bool
+end ui.platform_test.Target
+
+fn ui.platform_test.zero_ev() -> ui.plat.KsnuiEvent uses [] panics never pub
+    let ev = unsafe "ptr" "ゼロ埋めの事象を読む" {
+        let mut buf = [0u8; 48]
+        let ev_ptr = core.ptr.cast::<u8, ui.plat.KsnuiEvent>(core.ptr.from_mut(&mut buf))
+        core.ptr.read(core.ptr.as_const(ev_ptr))
+    }
+    ev
+end ui.platform_test.zero_ev
+
+test ui.platform_test.Target.test_modifiers_from
+    let none = ui.platform.modifiers_from(0i32)
+    core.check.eq(none.shift, false)
+    core.check.eq(none.ctrl, false)
+    core.check.eq(none.alt, false)
+    let shift = ui.platform.modifiers_from(ui.platform.KMOD_SHIFT)
+    core.check.eq(shift.shift, true)
+    core.check.eq(shift.ctrl, false)
+    core.check.eq(shift.alt, false)
+    let ctrl = ui.platform.modifiers_from(ui.platform.KMOD_CTRL)
+    core.check.eq(ctrl.shift, false)
+    core.check.eq(ctrl.ctrl, true)
+    core.check.eq(ctrl.alt, false)
+    let alt = ui.platform.modifiers_from(ui.platform.KMOD_ALT)
+    core.check.eq(alt.shift, false)
+    core.check.eq(alt.ctrl, false)
+    core.check.eq(alt.alt, true)
+    let mods_all = ui.platform.KMOD_SHIFT | ui.platform.KMOD_CTRL | ui.platform.KMOD_ALT
+    let all = ui.platform.modifiers_from(mods_all)
+    core.check.eq(all.shift, true)
+    core.check.eq(all.ctrl, true)
+    core.check.eq(all.alt, true)
+end ui.platform_test.Target.test_modifiers_from
+
+test ui.platform_test.Target.test_text_of
+    let mut pool = [0u8; 8]
+    pool[0usize] = 104u8
+    pool[1usize] = 101u8
+    pool[2usize] = 108u8
+    pool[3usize] = 108u8
+    pool[4usize] = 111u8
+    let out = ui.platform.text_of(&pool, 0u32, 5u32)
+    core.check.eq(out.len(), 5usize)
+    let b0 = match out.get(0usize) {
+        Some(b) => *b
+        None => 0u8
+    }
+    core.check.eq(b0, 104u8)
+    let b4 = match out.get(4usize) {
+        Some(b) => *b
+        None => 0u8
+    }
+    core.check.eq(b4, 111u8)
+end ui.platform_test.Target.test_text_of
+
+test ui.platform_test.Target.test_text_of_short_pool
+    let pool = [0u8; 2]
+    let out = ui.platform.text_of(&pool, 10u32, 5u32)
+    core.check.eq(out.len(), 0usize)
+end ui.platform_test.Target.test_text_of_short_pool
+
+test ui.platform_test.Target.test_translate_ime_commit
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_IME_COMMIT
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.IMECommit(_)))
+end ui.platform_test.Target.test_translate_ime_commit
+
+test ui.platform_test.Target.test_translate_ime_composition
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_IME_COMPOSITION
+    ev.text_off = 0u32
+    ev.text_len = 2u32
+    let mut pool = [0u8; 4]
+    pool[0usize] = 99u8
+    pool[1usize] = 111u8
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.IMEUpdate(_)))
+end ui.platform_test.Target.test_translate_ime_composition
+
+test ui.platform_test.Target.test_translate_ime_start
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_IME_START
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.IMEStart))
+end ui.platform_test.Target.test_translate_ime_start
+
+test ui.platform_test.Target.test_translate_key_down_all_mods
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_KEY_DOWN
+    ev.key = 65i32
+    ev.mods = ui.platform.KMOD_SHIFT | ui.platform.KMOD_CTRL | ui.platform.KMOD_ALT
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.KeyDown(65u32, _)))
+end ui.platform_test.Target.test_translate_key_down_all_mods
+
+test ui.platform_test.Target.test_translate_key_down_alt
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_KEY_DOWN
+    ev.key = 65i32
+    ev.mods = ui.platform.KMOD_ALT
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.KeyDown(65u32, _)))
+end ui.platform_test.Target.test_translate_key_down_alt
+
+test ui.platform_test.Target.test_translate_key_down_plain
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_KEY_DOWN
+    ev.key = 65i32
+    ev.mods = 0i32
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.KeyDown(65u32, _)))
+end ui.platform_test.Target.test_translate_key_down_plain
+
+test ui.platform_test.Target.test_translate_key_down_shift_ctrl
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_KEY_DOWN
+    ev.key = 65i32
+    ev.mods = ui.platform.KMOD_SHIFT | ui.platform.KMOD_CTRL
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.KeyDown(65u32, _)))
+end ui.platform_test.Target.test_translate_key_down_shift_ctrl
+
+test ui.platform_test.Target.test_translate_key_up
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_KEY_UP
+    ev.key = 90i32
+    ev.mods = ui.platform.KMOD_SHIFT
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.KeyUp(90u32, _)))
+end ui.platform_test.Target.test_translate_key_up
+
+test ui.platform_test.Target.test_translate_pointer_down
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_POINTER_DOWN
+    ev.x = 10.0f32
+    ev.y = 20.0f32
+    ev.key = 1i32
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.PointerDown(10.0f32, 20.0f32, 1u8)))
+end ui.platform_test.Target.test_translate_pointer_down
+
+test ui.platform_test.Target.test_translate_pointer_move
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_POINTER_MOVE
+    ev.x = 5.0f32
+    ev.y = 7.0f32
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.PointerMove(5.0f32, 7.0f32)))
+end ui.platform_test.Target.test_translate_pointer_move
+
+test ui.platform_test.Target.test_translate_pointer_up
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_POINTER_UP
+    ev.x = 10.0f32
+    ev.y = 20.0f32
+    ev.key = 1i32
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.PointerUp(10.0f32, 20.0f32, 1u8)))
+end ui.platform_test.Target.test_translate_pointer_up
+
+test ui.platform_test.Target.test_translate_quit
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_QUIT
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.Quit))
+end ui.platform_test.Target.test_translate_quit
+
+test ui.platform_test.Target.test_translate_resize
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_RESIZE
+    ev.w = 200i32
+    ev.h = 100i32
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.Resize(200.0f32, 100.0f32)))
+end ui.platform_test.Target.test_translate_resize
+
+test ui.platform_test.Target.test_translate_text_input
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_TEXT_INPUT
+    ev.text_off = 0u32
+    ev.text_len = 5u32
+    let mut pool = [0u8; 8]
+    pool[0usize] = 104u8
+    pool[1usize] = 101u8
+    pool[2usize] = 108u8
+    pool[3usize] = 108u8
+    pool[4usize] = 111u8
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.TextInput(_)))
+end ui.platform_test.Target.test_translate_text_input
+
+test ui.platform_test.Target.test_translate_unknown_none
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = 99i32
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is None)
+end ui.platform_test.Target.test_translate_unknown_none
+
+test ui.platform_test.Target.test_translate_wheel
+    let mut ev = ui.platform_test.zero_ev()
+    ev.event_type = ui.platform.EV_WHEEL
+    ev.x = 1.0f32
+    ev.y = 2.0f32
+    ev.wheel_x = 0.5f32
+    ev.wheel_y = 2.5f32
+    let pool = [0u8; 4]
+    let got = ui.platform.translate_event(&ev, &pool)
+    core.check.is_true(got is Some(ui.event.Event.Wheel(1.0f32, 2.0f32, 0.5f32, 2.5f32)))
+end ui.platform_test.Target.test_translate_wheel
+
+test ui.platform_test.Target.test_window_open_close_headless
+    let win = ui.platform.window_create("ksn ui.platform 煙テスト", 160i32, 120i32)
+    if ui.platform.window_is_null(&win) {
+        core.mem.drop(std.io.print_line("SKIP: SDL の窓を開けませんでした（ディスプレイまたはドライバがありません）"))
+    } else {
+        core.check.eq(ui.platform.window_is_null(&win), false)
+    }
+    ui.platform.window_close(win)
+end ui.platform_test.Target.test_window_open_close_headless
