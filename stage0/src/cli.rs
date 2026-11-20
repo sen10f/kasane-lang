@@ -1787,6 +1787,11 @@ fn cmd_test(args: &[String]) -> i32 {
         prefix = Some(format!("{}.tests.doc_", l.pkg.name));
     }
     let prog = Rc::new(prog.unwrap());
+    // `--both` のネイティブ側は依存パッケージの型・関数も下ろす (`build` と同じ。`user` だけだと依存の型が
+    // 「段階 1 の対象外」になってバンドルへ退避する)。
+    let dep_files: std::collections::HashSet<&str> = l.deps.iter().flat_map(|dp| dp.sources.iter().map(|s| s.path.as_str())).collect();
+    let mut user_nat: Vec<usize> = user.iter().copied().collect();
+    user_nat.extend((0..prog.defs.len()).filter(|&i| dep_files.contains(prog.defs[i].file.as_str())));
     // `--both` の LLVM 側の実行ファイルにも `[native]` の C のライブラリをリンクする (3.8)。
     let nat_args = crate::project::native_libs(&l.pkg.manifest).link_args(&l.pkg.root);
     let mut tests: Vec<usize> = user
@@ -1842,7 +1847,7 @@ fn cmd_test(args: &[String]) -> i32 {
         let mut other = "";
         let mut label = String::new();
         if both {
-            match build_llvm_test(&root, &prog, &user, *ti, &nat_args) {
+            match build_llvm_test(&root, &prog, &user_nat, *ti, &nat_args) {
                 Ok(exe) => {
                     results.push(run_native_test(&root, &exe));
                     other = "llvm";
