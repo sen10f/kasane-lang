@@ -134,7 +134,7 @@ fi
 
 cmake "${CMAKE_ARGS[@]}"
 
-nice -n 10 ninja -C "$BUILD" -j "$JOBS" install-llvm-libraries install-llvm-headers install-lld install-lld-cmake-exports \
+nice -n 10 ninja -C "$BUILD" -j "$JOBS" install-llvm-libraries install-llvm-headers install-lld-libraries install-lld install-lld-cmake-exports \
   2>&1 | tail -n 5 || true
 # ldd 静的ライブラリ/ヘッダも必要 (install-lld はツールのみ)。ビルドディレクトリからコピー。
 find "$BUILD" -name "liblld*.a" -exec cp {} "$PREFIX/lib/" \; 2>/dev/null || true
