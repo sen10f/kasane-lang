@@ -64,8 +64,8 @@ if [ -n "$TARGET" ]; then
   # ターゲット固有の修正フラグ (--fix-cortex-a53-843419 等) がホストの ld.lld で拒否される。
   # クロス用 gcc をリンカに明示する (build スクリプトはホスト向けなので target 限定の --config を使う)。
   case "$TARGET" in
-    aarch64-unknown-linux-gnu) BUILD_CONFIG='--config target.aarch64-unknown-linux-gnu.linker=aarch64-linux-gnu-gcc' ;;
-    x86_64-pc-windows-gnu)     BUILD_CONFIG='--config target.x86_64-pc-windows-gnu.linker=x86_64-w64-mingw32-gcc' ;;
+    aarch64-unknown-linux-gnu) BUILD_CONFIG='--config target.aarch64-unknown-linux-gnu.linker="aarch64-linux-gnu-gcc"' ;;
+    x86_64-pc-windows-gnu)     BUILD_CONFIG='--config target.x86_64-pc-windows-gnu.linker="x86_64-w64-mingw32-gcc"' ;;
   esac
   echo "release: クロスリリースビルド ターゲット=$TARGET (KSN_LLVM_PREFIX=$KSN_LLVM_PREFIX, CARGO_TARGET_DIR=$ROOT/dist/build)"
 else
