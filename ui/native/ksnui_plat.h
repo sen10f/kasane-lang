@@ -4,6 +4,7 @@
 #ifndef KSNUI_PLAT_H
 #define KSNUI_PLAT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -61,8 +62,22 @@ void ksnui_text_input_start(void* win, int32_t x, int32_t y, int32_t w, int32_t 
 // IME の変換をやめる。
 void ksnui_text_input_stop(void* win);
 
-// 表示の縮尺 (SDL_GetDisplayContentScale)。論理 px への換算に使う。
+// 表示の縮尺 (SDL_GetWindowDisplayScale)。論理 px への換算に使う。
 float ksnui_display_scale(void* win);
+
+// クリップボード。text は UTF-8。得られた長さを返す (終端の '\0' は含まず)。
+size_t ksnui_clipboard_get(void* win, char* buf, size_t cap);
+bool ksnui_clipboard_set(void* win, const char* text);
+
+// カーソルの形状。shape は SDL_SystemCursor の値。
+bool ksnui_cursor_set(void* win, int32_t shape);
+
+// クリップボード。text は UTF-8。得られた長さを返す (終端の '\0' は含まず)。
+size_t ksnui_clipboard_get(void* win, char* buf, size_t cap);
+bool ksnui_clipboard_set(void* win, const char* text);
+
+// カーソルの形状。shape は SDL_SystemCursor の値。
+bool ksnui_cursor_set(void* win, int32_t shape);
 
 #ifdef __cplusplus
 }
