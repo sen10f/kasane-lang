@@ -2038,20 +2038,30 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
         .and_then(|e| p.funcs.get(e).copied())
         .or_else(|| user.first().copied())
         .and_then(|i| Some(p.defs[i].module.clone()));
-    if let Some(m) = cur_module {
+    if let Some(m) = cur_module.as_ref() {
         for (i, d) in p.defs.iter().enumerate() {
             if d.kw == "fn"
                 && d.body.is_some()
-                && d.module != m
+                && d.module != *m
                 && !user_vec.contains(&i)
             {
                 user_vec.push(i);
             }
         }
     }
+    // 依存パッケージの型 (構造体・列挙型) も、利用者の型と同じ集成体として型表に入れる。入れないと、依存先の型を
+    // 引数・戻り値に持つ関数が下ろせない (`selfhost/parse` の `parse.cur.P` など)。関数の一覧には入れない。
+    let mut agg_user: Vec<usize> = user_vec.clone();
+    if let Some(m) = cur_module.as_ref() {
+        for (i, d) in p.defs.iter().enumerate() {
+            if (d.kw == "type" || d.kw == "enum") && d.module != *m && !agg_user.contains(&i) {
+                agg_user.push(i);
+            }
+        }
+    }
     let user = &user_vec;
     let tys = type_table(p, user, test_def);
-    let aggs = RefCell::new(agg::AggTab::new(user));
+    let aggs = RefCell::new(agg::AggTab::new(&agg_user));
     // `std.net.listen`/`connect`/`accept` が返すソケット集成体と、その失敗の `std.net.Error` を、誰も参照しなくても型表に入れる。
     for name in ["std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "std.net.Shutdown", "std.net.Error"] {
         if let Some(di) = p.defs.iter().position(|d| d.name == name) {

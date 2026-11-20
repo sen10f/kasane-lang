@@ -277,6 +277,10 @@ impl AggTab {
                     Some(Tgt::Sig(di)) if p.defs[di].kw == "type" && STD_TYPES.contains(&p.defs[di].name.as_str()) => self.intern_def(p, di),
                     Some(Tgt::Type(di)) if self.user.contains(&di) || STD_TYPES.contains(&p.defs[di].name.as_str()) || is_net_socket(&p.defs[di].name) => self.intern_def(p, di),
                     // 上の一覧にない標準ライブラリの型は、KIR の型表に入れない (値は組み込みの実装が作るので、下ろせない)。
+                    // 依存パッケージ・利用者の型は上で型表に入るので、ここに来るのは型表に入れられない型 (トレイトなど)。
+                    Some(Tgt::Type(di)) if !p.defs[di].file.contains("/stdlib/") => {
+                        Err(format!("{} は段階 1 の対象外 (この型は KIR の型表に入らない: 構造体・列挙型でない、または型引数付き)", name))
+                    }
                     _ => Err(format!("{} は未対応 (標準ライブラリの型は KIR に組み込みがない)", name)),
                 }
             }
