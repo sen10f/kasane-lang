@@ -404,6 +404,8 @@ pub(super) fn load_len(lw: &mut Lw, hdr: VId) -> VId {
 pub(super) fn elem_size(lw: &Lw, t: Ty) -> Option<u32> {
     match t {
         Ty::Agg(i) => Some(lw.aggs.borrow().defs[i as usize].size),
+        // `Option<T>` / `Result<T, E>` の要素 (`Vec<Option<T>>` など): 幅は型表の集成体の幅から決める。
+        Ty::Opt(_) | Ty::Res(..) => Some(crate::kir::size_of(&lw.aggs.borrow().defs, t)),
         t => size_of(t),
     }
 }

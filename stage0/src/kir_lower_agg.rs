@@ -1624,7 +1624,8 @@ impl<'a> Lw<'a> {
         let sty = self.vty(sv);
         let res: Option<Ty> = match self.src_ty(e)? {
             Src::Never => None,
-            t => Some(self.conv_t(&t).ok_or_else(|| format!("行 {}: match の型 {} は段階 1 の対象外", line, show(&t)))?),
+            // `&Vec` / `&String` の値はヘッダのアドレス (`ptr`) で持つので `value_ty` を先に見る。
+            t => Some(super::coll::value_ty(self, &t).or_else(|| self.conv_t(&t)).ok_or_else(|| format!("行 {}: match の型 {} は段階 1 の対象外", line, show(&t)))?),
         };
         let carry = matches!(res, Some(t) if t != Ty::Unit);
         let arms: Vec<(&V, &V)> = items(&f[1])

@@ -187,6 +187,8 @@ struct ByteMem {
     init: Vec<bool>,
     /// 先頭アドレス → 領域。
     blocks: BTreeMap<i128, Blk>,
+    /// `Option` / `Result` の枠の幅 (`size_of`) を決めるための集成体表。
+    aggs: Vec<crate::kir::AggDef>,
 }
 
 struct Blk {
@@ -198,7 +200,7 @@ struct Blk {
 
 impl ByteMem {
     fn new() -> ByteMem {
-        ByteMem { mem: vec![], init: vec![], blocks: BTreeMap::new() }
+        ByteMem { mem: vec![], init: vec![], blocks: BTreeMap::new(), aggs: vec![] }
     }
 
     /// 新しい領域 (`malloc` と同じく未初期化。読むまでに書かれていなければ内部エラー)。
@@ -233,7 +235,7 @@ impl ByteMem {
     }
 
     fn read(&self, addr: i128, ty: Ty) -> Result<i128, String> {
-        let n = width(ty);
+        let n = width(&self.aggs, ty);
         let at = self.locate(addr, n)?;
         if self.init[at..at + n].iter().any(|b| !b) {
             return Err(format!("未初期化の領域を読んだ {:#x} ({} バイト)", addr, n));
@@ -244,12 +246,14 @@ impl ByteMem {
         Ok(match ty {
             Ty::Bool => (u != 0) as i128,
             Ty::Ptr => u,
+            // `Option` / `Result` はタグのビットが 64 ビット目以降にもありうるので `wrap` しない。
+            Ty::Opt(_) | Ty::Res(..) => u,
             _ => ty.wrap(u),
         })
     }
 
     fn write(&mut self, addr: i128, ty: Ty, v: i128) -> Result<(), String> {
-        let n = width(ty);
+        let n = width(&self.aggs, ty);
         let at = self.locate(addr, n)?;
         let bytes = (v as u128).to_le_bytes();
         self.mem[at..at + n].copy_from_slice(&bytes[..n]);
@@ -364,10 +368,12 @@ impl ByteMem {
 }
 
 /// バイト記憶の 1 語の幅 (バイト)。`unit` は持たない (verify が拒む)。
-fn width(ty: Ty) -> usize {
+fn width(aggs: &[crate::kir::AggDef], ty: Ty) -> usize {
     match ty {
         Ty::Bool => 1,
         Ty::Ptr => 8,
+        // `Option` / `Result` は枠の幅 (`size_of`: 8 の倍数に広げたもの)。タグのビットを含む。
+        Ty::Opt(_) | Ty::Res(..) => crate::kir::size_of(aggs, ty) as usize,
         t => (t.bits() / 8) as usize,
     }
 }
@@ -769,6 +775,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     };
     // バイト記憶 (`ptr` の領域)。静的な領域 (`static.bytes`) は、命令の位置ごとに 1 回だけ確保する。
     let mut bm = ByteMem::new();
+    bm.aggs = m.aggs.clone();
     let mut statics: HashMap<(usize, usize, usize), i128> = HashMap::new();
     let mut globals: HashMap<String, i128> = HashMap::new();
     // ソケット表 (記述子 -> ホストのソケット)。リスナとストリームは同じ番号空間を使う。

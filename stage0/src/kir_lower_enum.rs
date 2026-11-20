@@ -678,7 +678,8 @@ impl<'a> Lw<'a> {
         let line = nline(e);
         let res: Option<Ty> = match self.src_ty(e)? {
             Src::Never => None,
-            t => Some(self.conv_t(&t).ok_or_else(|| format!("行 {}: match の型 {} は段階 1 の対象外", line, show(&t)))?),
+            // `&Vec` / `&String` の値はヘッダのアドレス (`ptr`) で持つので `value_ty` を先に見る。
+            t => Some(super::coll::value_ty(self, &t).or_else(|| self.conv_t(&t)).ok_or_else(|| format!("行 {}: match の型 {} は段階 1 の対象外", line, show(&t)))?),
         };
         // 所有の印を持つ局所の対象は、読む (`use`) だけ。移すのは、非 Copy の束縛をする腕の入口 (下の `consume`)。
         let scrut_local = super::path1(&f[0]).and_then(|n| self.lookup(&n).map(|s| (n, s)));

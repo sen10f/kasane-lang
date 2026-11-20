@@ -2543,7 +2543,9 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                     Op::Bitcast { src, a } => {
                         // 参照 (集成体への) と ptr の相互変換: 構造体のフィールドの Vec / String のヘッダを借用のヘッダとして扱う (設計_KIR.md 13.7)。
                         let ok = matches!((src, i.ty), (Ty::F64, Ty::U64) | (Ty::U64, Ty::F64) | (Ty::F32, Ty::U32) | (Ty::U32, Ty::F32))
-                            || matches!((src, i.ty), (Ty::Ref(..), Ty::Ptr) | (Ty::Ptr, Ty::Ref(..)));
+                            || matches!((src, i.ty), (Ty::Ref(..), Ty::Ptr) | (Ty::Ptr, Ty::Ref(..)))
+                            // 参照どうしは同じ指す先なら機械語では同じ (アドレス) なので読み替えを許す (`&T` → `&mut T` の受け手など)。
+                            || matches!((src, i.ty), (Ty::Ref(_, p), Ty::Ref(_, q)) if *p == q);
                         if !ok || ty_of(*a)? != *src {
                             return Err(format!("{} から {} へのビット再解釈は使えない", src.name(), i.ty.name()));
                         }
@@ -2740,13 +2742,13 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                     }
                     Op::MemLoad { p, .. } => {
-                        // 集成体の読み出し (`Vec<Struct>` の要素など) は認める。実行系はバイト列として扱う。
-                        if !(memable(i.ty) || matches!(i.ty, Ty::Agg(_))) || ty_of(*p)? != Ty::Ptr {
+                        // 集成体の読み出し (`Vec<Struct>` の要素など) と `Option` / `Result` の枠 (`Vec<Option<T>>` の要素など) は認める。
+                        if !(memable(i.ty) || matches!(i.ty, Ty::Agg(_) | Ty::Opt(_) | Ty::Res(..))) || ty_of(*p)? != Ty::Ptr {
                             return Err("load は ptr から整数・浮動小数・bool・ptr・集成体を読むはず".into());
                         }
                     }
                     Op::MemStore { ty, p, v, .. } => {
-                        if i.ty != Ty::Unit || !(memable(*ty) || matches!(*ty, Ty::Agg(_))) || ty_of(*p)? != Ty::Ptr || ty_of(*v)? != *ty {
+                        if i.ty != Ty::Unit || !(memable(*ty) || matches!(*ty, Ty::Agg(_) | Ty::Opt(_) | Ty::Res(..))) || ty_of(*p)? != Ty::Ptr || ty_of(*v)? != *ty {
                             return Err("store の型が合わない".into());
                         }
                     }

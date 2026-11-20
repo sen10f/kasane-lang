@@ -54,6 +54,9 @@ pub(super) fn elem_src(lw: &Lw, t: Ty) -> Option<Src> {
         }
         // 借用のヘッダのアドレス (`&String` / `&Vec<T>`): 8 バイトのポインタ。配置と扱いは同じなので `&String`。
         Ty::Ptr => Some(Src::Ref(false, Box::new(Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default())], crate::types::Rgs::default())), crate::types::Region::Unk)),
+        // `Option<T>` / `Result<T, E>` の要素 (`Vec<Option<T>>` など): ペイロードの型を戻す。
+        Ty::Opt(p) => elem_src(lw, p.ty()).map(|e| Src::Named("Option".into(), vec![e], crate::types::Rgs::default())),
+        Ty::Res(a, e) => Some(Src::Named("Result".into(), vec![elem_src(lw, a.ty())?, elem_src(lw, e.ty())?], crate::types::Rgs::default())),
         Ty::Unit => None,
         t if t.is_scalar() => Some(Src::Prim(t.name().to_string())),
         _ => None,

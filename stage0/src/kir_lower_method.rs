@@ -445,6 +445,16 @@ impl<'a> Lw<'a> {
             };
             return Ok(Some((v, None, need_hold)));
         }
+        // 呼び出し結果が参照の値ならそのまま受け手にする (`t.state_ref().insert(..)` など。検査器が許した参照越しの受け手と同じく、アドレスをそのまま渡す)。
+        if by_ref && matches!(self.vty(v), Ty::Ref(_, _)) {
+            let rv = self.coerce(v, self_ty);
+            // 共有参照を `&mut` の受け手にする形は、同じ指す先への参照として読み替える。
+            let rv = match (self.vty(rv), self_ty) {
+                (Ty::Ref(_, p), Ty::Ref(_, q)) if self.vty(rv) != self_ty && p == q => self.emit(self_ty, Op::Bitcast { src: self.vty(rv), a: rv }),
+                _ => rv,
+            };
+            return Ok(Some((rv, None, false)));
+        }
         if want_mut {
             return self.err(line, "&mut の受け手は名前・フィールド・*参照 だけ段階 1 の対象");
         }
