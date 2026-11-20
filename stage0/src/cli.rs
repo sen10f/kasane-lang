@@ -3488,9 +3488,15 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         };
         let opt = if release { "-O2" } else { "-O1" };
         let triple = ll.lines().find_map(|l| l.strip_prefix("target triple = \"")).and_then(|r| r.split('"').next()).unwrap_or("");
+        #[cfg(feature = "embedded-llvm")]
         let res = if crate::lld::enabled() {
             crate::embed_llvm::ir_to_object(&ll, opt, &triple, emit_path)
         } else {
+            Err("組み込みの LLVM が無い (`embedded-llvm` feature が必要)".into())
+        };
+        #[cfg(not(feature = "embedded-llvm"))]
+        let res: Result<(), String> = {
+            let _ = (opt, &triple);
             Err("組み込みの LLVM が無い (`embedded-llvm` feature が必要)".into())
         };
         match res {
