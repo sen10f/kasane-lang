@@ -167,7 +167,7 @@ pub(super) fn table_ty(lw: &Lw, e: &V) -> Option<Src> {
     if id == 0 {
         return None;
     }
-    lw.tys.get(&(lw.def.name.clone(), id)).map(|x| if lw.subst.is_empty() { x.ty.clone() } else { super::mono::subst_ty(&x.ty, &lw.subst) })
+    lw.tys.get(&(lw.def.name.clone(), id)).map(|x| if lw.subst.is_empty() { x } else { super::mono::subst_ty(&x, &lw.subst) })
 }
 
 fn strip_ref(t: &Src) -> &Src {

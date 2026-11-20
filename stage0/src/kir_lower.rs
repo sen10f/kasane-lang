@@ -133,9 +133,33 @@ thread_local! {
     static LINES: RefCell<HashMap<String, FnLines>> = RefCell::new(HashMap::new());
 }
 
-/// 型表を作る。ユーザの関数だけを検査し、(FQN, 式 ID) → 型 を返す。
-/// 型表を作る。`test_def` (テストを入口にするとき) は、テストの本体も検査する。
-fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> BTreeMap<(String, u32), ExprTy> {
+/// 下ろしが読む式の型の表 (S5-1)。入口は TAST (`TExpr::ty`) で、`tytab` は TAST に無い式のときだけの退避
+/// (退避は計器の `tyidx.fallback` に数える)。
+pub(super) struct TyIdx {
+    tast: HashMap<(String, u32), Src>,
+    tab: BTreeMap<(String, u32), ExprTy>,
+}
+
+impl TyIdx {
+    pub(super) fn get(&self, key: &(String, u32)) -> Option<Src> {
+        // `KSN_S5_TYIDX_TAB=1` は旧い経路 (`tytab` だけ) へ強制する。KIR ダンプの前後比較 (`tests/kir_dump_diff.py`) の基準用。
+        static TAB_ONLY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let tab_only = *TAB_ONLY.get_or_init(|| std::env::var_os("KSN_S5_TYIDX_TAB").is_some_and(|v| !v.is_empty() && v != "0"));
+        if let Some(t) = self.tast.get(key).filter(|_| !tab_only) {
+            crate::s5_meter::count_active("tyidx.tast");
+            return Some(t.clone());
+        }
+        let r = self.tab.get(key).map(|x| x.ty.clone());
+        if r.is_some() {
+            crate::s5_meter::count_active("tyidx.fallback");
+        }
+        r
+    }
+}
+
+/// 型表を作る。ユーザの関数だけを検査して TAST を組み、(FQN, 式 ID) → 型 を TAST から引ける表にする。
+/// `test_def` (テストを入口にするとき) は、テストの本体も検査する。
+fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> TyIdx {
     let mut tk = TypeCk::new(p);
     let mut checked: Vec<usize> = vec![];
     for &i in user {
@@ -146,12 +170,20 @@ fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> BTreeMap<
             checked.push(i);
         }
     }
-    // S5-0 の計器が有効なときだけ、同じ表から TAST を組んで突き合わせの相手にする (動作は変えない)。
+    let t = crate::tast::build(p, &checked, &tk.tytab, &tk.side, &tk.let_tys);
     if crate::s5_meter::on() {
-        let t = crate::tast::build(p, &checked, &tk.tytab, &tk.side, &tk.let_tys);
         crate::s5_meter::set_tast(p, &t);
     }
-    tk.tytab
+    let mut tast: HashMap<(String, u32), Src> = HashMap::new();
+    for (di, body) in &t.bodies {
+        let name = &p.defs[*di].name;
+        crate::tast_rules::impl_sig::walk(&body.body, &mut |e| {
+            if e.id != 0 && e.ty != Src::Unknown {
+                tast.entry((name.clone(), e.id)).or_insert_with(|| e.ty.clone());
+            }
+        });
+    }
+    TyIdx { tast, tab: tk.tytab }
 }
 
 fn is_candidate(d: &Def) -> bool {
@@ -269,7 +301,7 @@ struct LoopCx {
 
 struct Lw<'a> {
     p: &'a Program,
-    tys: &'a BTreeMap<(String, u32), ExprTy>,
+    tys: &'a TyIdx,
     def: &'a Def,
     /// 集成体の型表 (全関数で共有。`lower_user` が作る)。
     aggs: &'a RefCell<agg::AggTab>,
@@ -302,7 +334,7 @@ struct Lw<'a> {
 }
 
 impl<'a> Lw<'a> {
-    fn new(p: &'a Program, tys: &'a BTreeMap<(String, u32), ExprTy>, aggs: &'a RefCell<agg::AggTab>, def: &'a Def) -> Lw<'a> {
+    fn new(p: &'a Program, tys: &'a TyIdx, aggs: &'a RefCell<agg::AggTab>, def: &'a Def) -> Lw<'a> {
         Lw {
             p,
             tys,
@@ -486,12 +518,12 @@ impl<'a> Lw<'a> {
                 if crate::s5_meter::on() {
                     if self.subst.is_empty() {
                         let t = crate::s5_meter::tast_ty(&self.def.name, id).map(|t| (format!("{:?}", t), t == Src::Unknown));
-                        crate::s5_meter::compare("src_ty", &self.def.name, id, line, &format!("{:?}", x.ty), t);
+                        crate::s5_meter::compare("src_ty", &self.def.name, id, line, &format!("{:?}", x), t);
                     } else {
                         crate::s5_meter::count("src_ty.generic");
                     }
                 }
-                Ok(if self.subst.is_empty() { x.ty.clone() } else { mono::subst_ty(&x.ty, &self.subst) })
+                Ok(if self.subst.is_empty() { x.clone() } else { mono::subst_ty(&x, &self.subst) })
             }
             _ => self.err(line, format!("式 {} の型が決まらない (型表にない)", nname(e))),
         }
