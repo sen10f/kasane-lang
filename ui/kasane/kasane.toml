@@ -1,0 +1,16 @@
+[package]
+name = "ui"
+version = "0.1.0"
+edition = 1
+entry = "ui.main"
+
+[unsafe]
+modules = ["ui.gpu", "ui.plat", "ui.platform", "ui.platform_test", "ui.render", "ui.text"]
+
+[native]
+static = ["../native/libksnui.a"]
+dynamic = ["wgpu_native", "vulkan", "dl", "m", "pthread", "ksnui", "SDL3", "freetype", "harfbuzz"]
+search = ["../native", "../native/third_party/lib"]
+
+[dependencies]
+ui_event = { path = "event" }
