@@ -289,6 +289,23 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
         super::impl_sig::walk(&b.body, &mut |e| match &e.kind {
             TKind::Unary { op, operand } if op == "&mut" => {
                 w.need_mut_place(operand, "borrow", e.line);
+                {
+                    // `&mut` を、共有参照 `&T` の逆参照を通る場所に作らない (`&mut *r`・`&mut **rr`・`&mut (*r).f`)。
+                    let mut cur: &TExpr = operand;
+                    loop {
+                        match &cur.kind {
+                            TKind::Field { base, .. } | TKind::Index { base, .. } => cur = base,
+                            TKind::Unary { op, operand: inner } if op == "*" => {
+                                if matches!(&inner.ty, Ty::Ref(false, _, _)) {
+                                    w.found.push(("cannot borrow as mutable through a shared reference".to_string(), e.line));
+                                    break;
+                                }
+                                cur = inner;
+                            }
+                            _ => break,
+                        }
+                    }
+                }
                 let proj = match &operand.kind {
                     TKind::Field { .. } => true,
                     TKind::Path(s) => s.len() >= 2,
