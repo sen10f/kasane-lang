@@ -57,13 +57,21 @@ rm -rf "$ROOT/dist"
 mkdir -p "$ROOT/dist"
 
 TARGET_FLAG=""
+BUILD_CONFIG=""
 if [ -n "$TARGET" ]; then
   TARGET_FLAG="--target=$TARGET"
+  # rustc の既定のクロスリンカはホストの cc + 同梱の gcc-ld + host の ld.lld を使い、
+  # ターゲット固有の修正フラグ (--fix-cortex-a53-843419 等) がホストの ld.lld で拒否される。
+  # クロス用 gcc をリンカに明示する (build スクリプトはホスト向けなので target 限定の --config を使う)。
+  case "$TARGET" in
+    aarch64-unknown-linux-gnu) BUILD_CONFIG='--config target.aarch64-unknown-linux-gnu.linker=aarch64-linux-gnu-gcc' ;;
+    x86_64-pc-windows-gnu)     BUILD_CONFIG='--config target.x86_64-pc-windows-gnu.linker=x86_64-w64-mingw32-gcc' ;;
+  esac
   echo "release: クロスリリースビルド ターゲット=$TARGET (KSN_LLVM_PREFIX=$KSN_LLVM_PREFIX, CARGO_TARGET_DIR=$ROOT/dist/build)"
 else
   echo "release: ksn をリリースビルドする (KSN_LLVM_PREFIX=$KSN_LLVM_PREFIX, CARGO_TARGET_DIR=$ROOT/dist/build)"
 fi
-(cd stage0 && CARGO_TARGET_DIR="$ROOT/dist/build" cargo build --release $TARGET_FLAG)
+(cd stage0 && CARGO_TARGET_DIR="$ROOT/dist/build" cargo build --release $BUILD_CONFIG $TARGET_FLAG)
 
 if [ -n "$TARGET" ]; then
   case "$TARGET" in
