@@ -52,7 +52,7 @@ def decode_png(path):
     if comp != 0 or filt != 0:
         raise PngError(f"{path}: 圧縮/フィルタ方式の組み合わせが非対応 ({comp}, {filt})")
     raw = zlib.decompress(bytes(idat))
-    return _unfilter(raw, w, h, color_type), w, h
+    return _unfilter(raw, w, h, color_type)
 
 
 def _unfilter(raw, w, h, color_type):
