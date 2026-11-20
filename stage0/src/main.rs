@@ -58,6 +58,7 @@ mod refs_check;
 mod rustisms;
 mod stdcache;
 mod survey;
+mod semver;
 mod tomlstrict;
 mod tast;
 mod tast_check;
