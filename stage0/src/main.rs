@@ -20,6 +20,7 @@ mod cnative;
 mod explain;
 mod fixes;
 mod git_tags;
+mod registry;
 mod infer;
 mod fmath;
 mod kir;
