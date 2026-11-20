@@ -1,6 +1,7 @@
 // ksnui_plat.c: libksnui の窓・入力 (SDL3) 実装。ksnui_plat.h の平坦な API を実現する。
 #include "ksnui_plat.h"
 #include <SDL3/SDL.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -133,4 +134,32 @@ float ksnui_display_scale(void* win) {
     float scale = SDL_GetWindowDisplayScale((SDL_Window*)win);
     if (scale > 0.0f) return scale;
     return 1.0f;
+}
+
+size_t ksnui_clipboard_get(void* win, char* buf, size_t cap) {
+    (void)win;
+    if (cap == 0) return 0;
+    char* text = SDL_GetClipboardText();
+    if (!text) {
+        buf[0] = '\0';
+        return 0;
+    }
+    size_t len = strlen(text);
+    if (len > cap - 1) len = cap - 1;
+    memcpy(buf, text, len);
+    buf[len] = '\0';
+    SDL_free(text);
+    return len;
+}
+
+bool ksnui_clipboard_set(void* win, const char* text) {
+    (void)win;
+    return SDL_SetClipboardText(text);
+}
+
+bool ksnui_cursor_set(void* win, int32_t shape) {
+    (void)win;
+    SDL_Cursor* cur = SDL_CreateSystemCursor((SDL_SystemCursor)shape);
+    if (!cur) return false;
+    return SDL_SetCursor(cur);
 }

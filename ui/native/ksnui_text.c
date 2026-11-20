@@ -8,10 +8,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* フォントのキャッシュ：同じ (path, size) なら FT_Face を使い回す。 */
+/* フォントのキャッシュ：同じ (path, size, face_index) なら FT_Face を使い回す。 */
 typedef struct FontEntry {
     char* path;
     float size;
+    uint32_t face_index;
     FT_Face face;
     hb_font_t* hb_font;
     struct FontEntry* next;
@@ -19,10 +20,10 @@ typedef struct FontEntry {
 
 static FontEntry* font_list = NULL;
 
-static FontEntry* find_font(const char* font_path, float size_px) {
+static FontEntry* find_font(const char* font_path, float size_px, uint32_t face_index) {
     FontEntry* f = font_list;
     while (f) {
-        if (strcmp(f->path, font_path) == 0 && f->size == size_px) return f;
+        if (strcmp(f->path, font_path) == 0 && f->size == size_px && f->face_index == face_index) return f;
         f = f->next;
     }
     return NULL;
@@ -41,8 +42,8 @@ static void ensure_ft(void) {
     }
 }
 
-static FontEntry* load_font(const char* font_path, float size_px) {
-    FontEntry* f = find_font(font_path, size_px);
+static FontEntry* load_font(const char* font_path, float size_px, uint32_t face_index) {
+    FontEntry* f = find_font(font_path, size_px, face_index);
     if (f) return f;
     ensure_ft();
     if (ft_ready <= 0) return NULL;
@@ -50,8 +51,9 @@ static FontEntry* load_font(const char* font_path, float size_px) {
     if (!f) return NULL;
     f->path = strdup(font_path);
     f->size = size_px;
+    f->face_index = face_index;
     if (!f->path) { free(f); return NULL; }
-    if (FT_New_Face(ft_lib, font_path, 0, &f->face) != 0) {
+    if (FT_New_Face(ft_lib, font_path, (FT_Int)face_index, &f->face) != 0) {
         free(f->path); free(f); return NULL;
     }
     FT_Set_Char_Size(f->face, 0, (FT_F26Dot6)(size_px * 64.0f), 0, 0);
@@ -65,9 +67,9 @@ static FontEntry* load_font(const char* font_path, float size_px) {
     return f;
 }
 
-size_t ksnui_text_shape(const char* font_path, float size_px,
+size_t ksnui_text_shape(const char* font_path, float size_px, uint32_t face_index,
                         const char* utf8, ksnui_ShapedGlyph* out, size_t cap) {
-    FontEntry* f = load_font(font_path, size_px);
+    FontEntry* f = load_font(font_path, size_px, face_index);
     if (!f || !utf8 || !out || cap == 0) return 0;
     hb_buffer_t* buf = hb_buffer_create();
     hb_buffer_add_utf8(buf, utf8, -1, 0, -1);
@@ -90,11 +92,11 @@ size_t ksnui_text_shape(const char* font_path, float size_px,
     return n;
 }
 
-int32_t ksnui_text_raster(const char* font_path, float size_px, uint32_t glyph_id,
+int32_t ksnui_text_raster(const char* font_path, float size_px, uint32_t face_index, uint32_t glyph_id,
                           int32_t* out_w, int32_t* out_h,
                           int32_t* out_left, int32_t* out_top,
                           uint8_t* bitmap, size_t cap) {
-    FontEntry* f = load_font(font_path, size_px);
+    FontEntry* f = load_font(font_path, size_px, face_index);
     if (!f || !out_w || !out_h || !out_left || !out_top || !bitmap) return 1;
     if (FT_Load_Glyph(f->face, glyph_id, FT_LOAD_RENDER) != 0) return 1;
     FT_Bitmap* bm = &f->face->glyph->bitmap;
@@ -112,8 +114,8 @@ int32_t ksnui_text_raster(const char* font_path, float size_px, uint32_t glyph_i
     return 0;
 }
 
-float ksnui_text_line_height(const char* font_path, float size_px) {
-    FontEntry* f = load_font(font_path, size_px);
+float ksnui_text_line_height(const char* font_path, float size_px, uint32_t face_index) {
+    FontEntry* f = load_font(font_path, size_px, face_index);
     if (!f) return size_px;
     return (float)f->face->height / 64.0f;
 }
