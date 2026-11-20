@@ -138,6 +138,8 @@ thread_local! {
 pub(super) struct TyIdx {
     tast: HashMap<(String, u32), Src>,
     tab: BTreeMap<(String, u32), ExprTy>,
+    /// 束縛の解決先の表 (設計 3.1、S5-2): (関数の FQN, パターン ID) → (束縛の型, 束縛モード)。TAST の `PatInfo::bind` から作る。
+    pub(super) binds: HashMap<(String, u32), (Src, crate::tast::BindMode)>,
 }
 
 impl TyIdx {
@@ -183,7 +185,15 @@ fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> TyIdx {
             }
         });
     }
-    TyIdx { tast, tab: tk.tytab }
+    let mut binds = HashMap::new();
+    for ((di, id), info) in &tk.side.pat_tys {
+        if let Some((_, ty, m)) = &info.bind {
+            if *ty != Src::Unknown {
+                binds.insert((p.defs[*di].name.clone(), *id), (ty.clone(), *m));
+            }
+        }
+    }
+    TyIdx { tast, tab: tk.tytab, binds }
 }
 
 fn is_candidate(d: &Def) -> bool {
@@ -536,6 +546,7 @@ impl<'a> Lw<'a> {
             Ok(t) if t != Src::Unknown => t,
             r => match coll::local_slot_ty(self, e) {
                 Some(x) => {
+                    crate::s5_meter::count_active("ty_of.slot_fallback");
                     // S5-0 の計器: 型表に無い局所の型をスロットから補った所。補った型を TAST の型 (変換後) と比べる。
                     if crate::s5_meter::on() && self.subst.is_empty() {
                         let id = nid(e);
@@ -560,6 +571,7 @@ impl<'a> Lw<'a> {
         if let Src::Ref(false, inner, _) = &t {
             if let (Some(x), Some(want)) = (coll::local_slot_ty(self, e), conv(inner)) {
                 if x == want {
+                    crate::s5_meter::count_active("ty_of.ref_scalar");
                     return Ok(x);
                 }
             }

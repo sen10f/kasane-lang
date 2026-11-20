@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""S5-1: KIR のダンプが「TAST 経由」と「旧い経路 (tytab 直引き)」で同じかを、全パッケージで比べる。
+"""S5-1/S5-2: KIR のダンプが「TAST 経由」と「旧い経路 (tytab 直引き)」で同じかを、全パッケージで比べる。
 
 使い方: python3 -I tests/kir_dump_diff.py [--ksn PATH]
 各パッケージで `KSN_DUMP_KIR=1 ksn check` の stderr (KIR と未対応の一覧) を、
-`KSN_S5_TYIDX_TAB=1` (旧経路) と未設定 (TAST 経路) の 2 回取り、差があれば表示して終了コード 1。
+`KSN_S5_TYIDX_TAB=1` と `KSN_S5_PAT_OLD=1` (旧経路) と未設定 (TAST 経路) の 2 回取り、差があれば表示して終了コード 1。
 対象: examples/*, apps/*, ui/kasane/*, selfhost/*, perf/ の kasane.toml を持つ所。
 """
 import argparse, difflib, os, subprocess, sys
@@ -25,9 +25,10 @@ def packages():
 
 def dump(ksn, pkg, tab):
     env = dict(os.environ, KSN_DUMP_KIR="1")
-    env.pop("KSN_S5_TYIDX_TAB", None)
-    if tab:
-        env["KSN_S5_TYIDX_TAB"] = "1"
+    for k in ("KSN_S5_TYIDX_TAB", "KSN_S5_PAT_OLD"):
+        env.pop(k, None)
+        if tab:
+            env[k] = "1"
     r = subprocess.run([ksn, "check"], cwd=pkg, env=env, capture_output=True, text=True, timeout=600)
     return r.stderr
 

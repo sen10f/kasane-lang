@@ -1179,6 +1179,57 @@ pub(crate) fn drop_unbound(lw: &mut Lw, p: &V, v: VId, t: Ty) -> LR<()> {
 
 /// パターン `p` の束縛名ごとの型表の型 (`src` は対象の型)。Vec / String の種類を局所変数に結び付けるための手がかり。分からない部分は載せない。
 pub(crate) fn pat_srcs(lw: &Lw, p: &V, src: &Src, out: &mut BTreeMap<String, Src>) {
+    // `KSN_S5_PAT_OLD=1` は旧い経路 (型を宣言から辿る) へ強制する。KIR ダンプの前後比較 (`tests/kir_dump_diff.py`) の基準用。
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // 単相化した本体 (`subst` が空でない) の TAST の型は実体の型で、旧い経路は宣言の型パラメータのまま。出力を変えないため旧い経路へ退避する (計器 `pat.generic`)。
+    let generic = !lw.subst.is_empty();
+    if generic {
+        crate::s5_meter::count_active("pat.generic");
+    }
+    if generic || *OLD.get_or_init(|| std::env::var_os("KSN_S5_PAT_OLD").is_some_and(|v| !v.is_empty() && v != "0")) {
+        return pat_srcs_old(lw, p, src, out);
+    }
+    if std::env::var_os("KSN_S5_PAT_DBG").is_some() {
+        let mut a = BTreeMap::new();
+        let mut b = BTreeMap::new();
+        pat_srcs_old(lw, p, src, &mut a);
+        pat_srcs_tast(lw, p, &mut b);
+        if a != b {
+            eprintln!("PATDIFF {} line {}: old={:?} new={:?}", lw.def.name, nline(p), a, b);
+        }
+    }
+    pat_srcs_tast(lw, p, out);
+}
+
+/// 束縛名ごとの型を TAST の束縛表 (`PatInfo::bind`、値で束縛したものだけ) から引く (S5-2)。参照越しの束縛は拾わない (旧い経路と同じ)。
+fn pat_srcs_tast(lw: &Lw, p: &V, out: &mut BTreeMap<String, Src>) {
+    match nname(p) {
+        "PBind" => {
+            let scope = lw.const_scope.clone().unwrap_or_else(|| lw.def.name.clone());
+            let id = nid(p);
+            match lw.tys.binds.get(&(scope, id)) {
+                Some((t, crate::tast::BindMode::Move)) if id != 0 => {
+                    crate::s5_meter::count_active("pat.tast");
+                    let t = t.clone();
+                    out.insert(st(&nf(p)[0]), t);
+                }
+                _ => crate::s5_meter::count_active("pat.miss"),
+            }
+        }
+        "PTuple" => items(&nf(p)[0]).iter().for_each(|sp| pat_srcs_tast(lw, sp, out)),
+        "PStruct" => {
+            for it in items(&nf(p)[1]) {
+                if let V::L(xs) = it {
+                    pat_srcs_tast(lw, &xs[1], out);
+                }
+            }
+        }
+        "PVariant" => items(&nf(p)[1]).iter().for_each(|sp| pat_srcs_tast(lw, sp, out)),
+        _ => {}
+    }
+}
+
+fn pat_srcs_old(lw: &Lw, p: &V, src: &Src, out: &mut BTreeMap<String, Src>) {
     let gn = HashSet::new();
     match (nname(p), src) {
         ("PBind", _) => {
@@ -1186,7 +1237,7 @@ pub(crate) fn pat_srcs(lw: &Lw, p: &V, src: &Src, out: &mut BTreeMap<String, Src
         }
         ("PTuple", Src::Tuple(xs)) => {
             for (sp, x) in items(&nf(p)[0]).iter().zip(xs) {
-                pat_srcs(lw, sp, x, out);
+                pat_srcs_old(lw, sp, x, out);
             }
         }
         ("PStruct", Src::Named(n, _, _)) => {
@@ -1194,7 +1245,7 @@ pub(crate) fn pat_srcs(lw: &Lw, p: &V, src: &Src, out: &mut BTreeMap<String, Src
             for it in items(&nf(p)[1]) {
                 if let V::L(xs) = it {
                     if let Some(fd) = def.fields.iter().find(|f| f.0 == st(&xs[0])) {
-                        pat_srcs(lw, &xs[1], &from_v(&fd.1, &gn), out);
+                        pat_srcs_old(lw, &xs[1], &from_v(&fd.1, &gn), out);
                     }
                 }
             }
@@ -1214,7 +1265,7 @@ pub(crate) fn pat_srcs(lw: &Lw, p: &V, src: &Src, out: &mut BTreeMap<String, Src
                 }
             };
             for (sp, x) in ps.iter().zip(&tys) {
-                pat_srcs(lw, sp, x, out);
+                pat_srcs_old(lw, sp, x, out);
             }
         }
         _ => {}
