@@ -138,6 +138,6 @@ nice -n 10 ninja -C "$BUILD" -j "$JOBS" install-llvm-libraries install-llvm-head
   2>&1 | tail -n 5 || true
 # ldd 静的ライブラリ/ヘッダも必要 (install-lld はツールのみ)。ビルドディレクトリからコピー。
 find "$BUILD" -name "liblld*.a" -exec cp {} "$PREFIX/lib/" \; 2>/dev/null || true
-cp -r "$BUILD/tools/lld/include/lld" "$PREFIX/include/" 2>/dev/null || true
+cp -r "$SRC/lld/include/lld" "$PREFIX/include/" 2>/dev/null || true
 rm -rf "$BUILD" "$TOOLCHAIN"
 echo "done: KSN_LLVM_PREFIX=$PREFIX"
