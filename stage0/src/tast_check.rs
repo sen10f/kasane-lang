@@ -91,6 +91,11 @@ const S4_REPLACED: &[&str] = &[
     "E2030",                    // 境界
 ];
 
+/// 効果の診断コード。Old では旧の検査を持たず、TAST の効果の規則だけが出す。
+fn is_effect_code(code: &str) -> bool {
+    matches!(code, "E4001" | "E4002")
+}
+
 /// (ファイル, 行, コード, 文面) で重ねる。
 fn dedup(mut out: Vec<Diag>) -> Vec<Diag> {
     let mut seen = std::collections::BTreeSet::new();
@@ -118,11 +123,13 @@ fn js(s: &str) -> String {
 pub fn select(prog: &Program, user: &[usize], old: Vec<Diag>) -> Vec<Diag> {
     match mode() {
         Mode::Old => {
-            // 確認用: 木を出すだけ (診断は旧いまま)。
-            if std::env::var_os("KSN_DUMP_TAST").is_some() {
-                let _ = check(prog, user);
-            }
-            old
+            // 効果の診断 (E4001/E4002) は旧の検査を持たず、TAST の効果の規則 (effects_*) だけが出す
+            // (設計_S4の旧い検査の取り外し.md 3 段目 1。旧の効果検査は check.rs から消した)。
+            // 他の旧の診断はそのまま出す。KSN_DUMP_TAST は木を出す確認用。
+            let new = check(prog, user);
+            let kept: Vec<Diag> = old.into_iter().filter(|d| !is_effect_code(&d.code)).collect();
+            let eff: Vec<Diag> = new.into_iter().filter(|d| is_effect_code(&d.code)).collect();
+            dedup([kept, eff].concat())
         }
         Mode::New => check(prog, user),
         Mode::S4 => {
