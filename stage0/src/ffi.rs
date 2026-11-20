@@ -829,6 +829,7 @@ mod x64_trampoline {
                     "    mov r10d, ", stringify!($n), "\n",
                     "    lea rax, [rip + ksn_tramp_", $ret, "_shared]\n",
                     "    jmp rax\n",
+                    "    nop\n",
                 )),*
             )
         };
