@@ -23,10 +23,10 @@ type ui.layout.Node derive [Debug, Clone, Copy] pub
 end ui.layout.Node
 
 type ui.layout.Rect derive [Debug, Clone, Copy, PartialEq] pub
-    x: f32
-    y: f32
-    width: f32
-    height: f32
+    x: f32 pub
+    y: f32 pub
+    width: f32 pub
+    height: f32 pub
 end ui.layout.Rect
 
 type ui.layout.Size derive [Debug, Clone, Copy] pub
@@ -78,7 +78,7 @@ fn ui.layout.Style.default() -> ui.layout.Style uses [] panics never pub
     ui.layout.Style { dir: dir, jus: jus, ali: ali, gr: gr, sr: sr, size: size, space: space }
 end ui.layout.Style.default
 
-fn ui.layout.Tree.child_at(self: &ui.layout.Tree, node: usize, i: usize) -> Option<usize> uses [] panics never
+fn ui.layout.Tree.child_at(self: &ui.layout.Tree, node: usize, i: usize) -> Option<usize> uses [] panics never pub
     match self.kids.get(node) {
         Some(kids) => match kids.get(i) {
             Some(c) => Some(*c)
@@ -88,7 +88,7 @@ fn ui.layout.Tree.child_at(self: &ui.layout.Tree, node: usize, i: usize) -> Opti
     }
 end ui.layout.Tree.child_at
 
-fn ui.layout.Tree.child_count(self: &ui.layout.Tree, node: usize) -> usize uses [] panics never
+fn ui.layout.Tree.child_count(self: &ui.layout.Tree, node: usize) -> usize uses [] panics never pub
     match self.kids.get(node) {
         Some(kids) => kids.len()
         None => 0usize
@@ -99,7 +99,7 @@ fn ui.layout.Tree.layout(self: &mut ui.layout.Tree, root: usize, avail_w: f32, a
     self.layout_at(root, 0.0f32, 0.0f32, avail_w, avail_h)
 end ui.layout.Tree.layout
 
-fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f32, aw: f32, ah: f32) -> () uses [] panics never stack 4096
+fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f32, aw: f32, ah: f32) -> () uses [] panics never stack 4096 pub
     match self.nodes.get_mut(node) {
         Some(n) => {
             n.rect = ui.layout.Rect { x: x, y: y, width: aw, height: ah }

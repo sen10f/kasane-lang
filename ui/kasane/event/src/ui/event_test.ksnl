@@ -1,0 +1,216 @@
+type ui.event_test.Target pub
+    _dummy: bool
+end ui.event_test.Target
+
+test ui.event_test.Target.test_capture_drag
+    let mut tree = ui.layout.Tree.new()
+    let root = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    let utree = ui.tree.Tree.new()
+    let mut ctx = ui.event.Ctx.new()
+    let mut events = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match events.push(ui.event.Event.PointerDown(50.0f32, 50.0f32, 1u8)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match events.push(ui.event.Event.PointerMove(50.0f32, 50.0f32)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match events.push(ui.event.Event.PointerUp(50.0f32, 50.0f32, 1u8)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    ui.event.replay(&mut ctx, &events, &tree, &utree, root, 0.0f32, 0.0f32)
+    core.check.eq(ctx.get_capture(), None)
+end ui.event_test.Target.test_capture_drag
+
+test ui.event_test.Target.test_capture_routes_pointer_move
+    let mut tree = ui.layout.Tree.new()
+    let root = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    let utree = ui.tree.Tree.new()
+    let mut ctx = ui.event.Ctx.new()
+    ctx.set_capture(root)
+    let ev = ui.event.Event.PointerMove(200.0f32, 200.0f32)
+    let routed = ui.event.route(&ctx, &tree, &utree, root, &ev, 200.0f32, 200.0f32)
+    core.check.eq(routed, Some(root))
+end ui.event_test.Target.test_capture_routes_pointer_move
+
+test ui.event_test.Target.test_focus_next_order
+    let mut ctx = ui.event.Ctx.new()
+    ctx.tab_push(3usize)
+    ctx.tab_push(1usize)
+    ctx.tab_push(2usize)
+    ctx.focus_next()
+    core.check.eq(ctx.get_focus(), Some(3usize))
+    ctx.focus_next()
+    core.check.eq(ctx.get_focus(), Some(1usize))
+    ctx.focus_next()
+    core.check.eq(ctx.get_focus(), Some(2usize))
+end ui.event_test.Target.test_focus_next_order
+
+test ui.event_test.Target.test_focus_next_wrap
+    let mut ctx = ui.event.Ctx.new()
+    ctx.tab_push(10usize)
+    ctx.tab_push(20usize)
+    ctx.focus_next()
+    core.check.eq(ctx.get_focus(), Some(10usize))
+    ctx.focus_next()
+    core.check.eq(ctx.get_focus(), Some(20usize))
+    ctx.focus_next()
+    core.check.eq(ctx.get_focus(), Some(10usize))
+end ui.event_test.Target.test_focus_next_wrap
+
+test ui.event_test.Target.test_focus_previous_wrap
+    let mut ctx = ui.event.Ctx.new()
+    ctx.tab_push(10usize)
+    ctx.tab_push(20usize)
+    ctx.tab_push(30usize)
+    ctx.focus_previous()
+    core.check.eq(ctx.get_focus(), Some(30usize))
+    ctx.focus_previous()
+    core.check.eq(ctx.get_focus(), Some(20usize))
+    ctx.focus_previous()
+    core.check.eq(ctx.get_focus(), Some(10usize))
+    ctx.focus_previous()
+    core.check.eq(ctx.get_focus(), Some(30usize))
+end ui.event_test.Target.test_focus_previous_wrap
+
+test ui.event_test.Target.test_hit_test_leaf
+    let mut tree = ui.layout.Tree.new()
+    let root = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    let hit = ui.event.hit_test(&tree, root, 50.0f32, 50.0f32)
+    core.check.eq(hit, Some(root))
+    let miss = ui.event.hit_test(&tree, root, 200.0f32, 200.0f32)
+    core.check.eq(miss, None)
+end ui.event_test.Target.test_hit_test_leaf
+
+test ui.event_test.Target.test_hit_test_nested
+    let mut tree = ui.layout.Tree.new()
+    let root = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(root, 0.0f32, 0.0f32, 200.0f32, 200.0f32)
+    let mid = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(mid, 0.0f32, 0.0f32, 200.0f32, 200.0f32)
+    tree.push_child(root, mid)
+    let leaf = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(leaf, 50.0f32, 50.0f32, 100.0f32, 100.0f32)
+    tree.push_child(mid, leaf)
+    let hit = ui.event.hit_test(&tree, root, 60.0f32, 60.0f32)
+    core.check.eq(hit, Some(leaf))
+end ui.event_test.Target.test_hit_test_nested
+
+test ui.event_test.Target.test_hit_test_outside_root
+    let mut tree = ui.layout.Tree.new()
+    let root = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    let miss_left = ui.event.hit_test(&tree, root, -1.0f32, 50.0f32)
+    core.check.eq(miss_left, None)
+    let miss_bottom = ui.event.hit_test(&tree, root, 50.0f32, 200.0f32)
+    core.check.eq(miss_bottom, None)
+end ui.event_test.Target.test_hit_test_outside_root
+
+test ui.event_test.Target.test_hit_test_parent_child
+    let mut tree = ui.layout.Tree.new()
+    let root = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    let child = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(child, 10.0f32, 10.0f32, 50.0f32, 50.0f32)
+    tree.push_child(root, child)
+    let hit_child = ui.event.hit_test(&tree, root, 20.0f32, 20.0f32)
+    core.check.eq(hit_child, Some(child))
+    let hit_root_only = ui.event.hit_test(&tree, root, 60.0f32, 60.0f32)
+    core.check.eq(hit_root_only, Some(root))
+end ui.event_test.Target.test_hit_test_parent_child
+
+test ui.event_test.Target.test_hit_test_topmost
+    let mut tree = ui.layout.Tree.new()
+    let root = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    let first = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(first, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    tree.push_child(root, first)
+    let second = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(second, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    tree.push_child(root, second)
+    let hit = ui.event.hit_test(&tree, root, 50.0f32, 50.0f32)
+    core.check.eq(hit, Some(second))
+end ui.event_test.Target.test_hit_test_topmost
+
+test ui.event_test.Target.test_replay_determinism
+    let mut tree = ui.layout.Tree.new()
+    let root = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    let utree = ui.tree.Tree.new()
+    let mut events = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match events.push(ui.event.Event.PointerDown(50.0f32, 50.0f32, 1u8)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match events.push(ui.event.Event.KeyDown(9u32, ui.event.Modifiers.default())) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match events.push(ui.event.Event.PointerUp(50.0f32, 50.0f32, 1u8)) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    let mut ctx1 = ui.event.Ctx.new()
+    ui.event.replay(&mut ctx1, &events, &tree, &utree, root, 0.0f32, 0.0f32)
+    let focus1 = ctx1.get_focus()
+    let capture1 = ctx1.get_capture()
+    let mut ctx2 = ui.event.Ctx.new()
+    ui.event.replay(&mut ctx2, &events, &tree, &utree, root, 0.0f32, 0.0f32)
+    let focus2 = ctx2.get_focus()
+    let capture2 = ctx2.get_capture()
+    core.check.eq(focus1, focus2)
+    core.check.eq(capture1, capture2)
+end ui.event_test.Target.test_replay_determinism
+
+test ui.event_test.Target.test_route_focus_gained_no_focus
+    let mut tree = ui.layout.Tree.new()
+    let root = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    let utree = ui.tree.Tree.new()
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.FocusGained
+    let routed = ui.event.route(&ctx, &tree, &utree, root, &ev, 50.0f32, 50.0f32)
+    core.check.eq(routed, Some(root))
+end ui.event_test.Target.test_route_focus_gained_no_focus
+
+test ui.event_test.Target.test_route_ime_commit_routes_to_focus
+    let mut tree = ui.layout.Tree.new()
+    let root = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    let utree = ui.tree.Tree.new()
+    let mut ctx = ui.event.Ctx.new()
+    ctx.set_focus(root)
+    let ev = ui.event.Event.IMECommit(alloc.vec.Vec.new(std.alloc.SYSTEM))
+    let routed = ui.event.route(&ctx, &tree, &utree, root, &ev, 0.0f32, 0.0f32)
+    core.check.eq(routed, Some(root))
+end ui.event_test.Target.test_route_ime_commit_routes_to_focus
+
+test ui.event_test.Target.test_route_key_down_with_modifiers
+    let mut tree = ui.layout.Tree.new()
+    let root = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    let utree = ui.tree.Tree.new()
+    let mut ctx = ui.event.Ctx.new()
+    ctx.set_focus(root)
+    let modifiers = ui.event.Modifiers { shift: true, ctrl: false, alt: false }
+    let ev = ui.event.Event.KeyDown(65u32, modifiers)
+    let routed = ui.event.route(&ctx, &tree, &utree, root, &ev, 0.0f32, 0.0f32)
+    core.check.eq(routed, Some(root))
+end ui.event_test.Target.test_route_key_down_with_modifiers
+
+test ui.event_test.Target.test_route_quit_returns_none
+    let mut tree = ui.layout.Tree.new()
+    let root = tree.push_node(ui.layout.Style.default())
+    tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
+    let utree = ui.tree.Tree.new()
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.Quit
+    let routed = ui.event.route(&ctx, &tree, &utree, root, &ev, 0.0f32, 0.0f32)
+    core.check.eq(routed, None)
+end ui.event_test.Target.test_route_quit_returns_none
