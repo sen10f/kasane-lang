@@ -361,6 +361,11 @@ impl<'a> Ck<'a> {
 
     /// `dyn Tr<..>` 越しのメソッド `name`: トレイトの宣言を `dyn` の実引数で実体化する。
     fn dyn_call(&mut self, tr: &str, dargs: &[V], name: &str, line: usize) {
+        self.trait_call(tr, dargs, name, line, " (through dyn)");
+    }
+
+    /// トレイトのメソッド `name` の宣言の効果を実引数 `dargs` で実体化して呼び出し元と比べる (`dyn` 越しと境界越し)。
+    fn trait_call(&mut self, tr: &str, dargs: &[V], name: &str, line: usize, suffix: &str) {
         let Some(root) = crate::check::resolve_trait_fqn(self.p, tr) else { return };
         let mut seen: HashSet<String> = HashSet::new();
         let mut queue: Vec<(String, Vec<V>)> = vec![(root, dargs.to_vec())];
@@ -395,13 +400,28 @@ impl<'a> Ck<'a> {
             }
             if let Some((_, u, pn)) = td.trait_effs.iter().find(|e| e.0 == name) {
                 let (u2, p2) = crate::check::inst_effects(&td.generics, &cur_targs, u, pn);
-                let nm = format!("{}.{} (through dyn)", cur, name);
+                let nm = format!("{}.{}{}", cur, name, suffix);
                 if let Some((code, msg)) = violation(&self.c, &nm, &u2, Some(p2.as_str())) {
                     self.found.push((code, msg, line));
                 }
             }
             return;
         }
+    }
+}
+
+/// 型パラメータの受け手のメソッド呼び出し (`a.go()` は `MCall`、または経路 `a.go` の `Call` で `a` の型が `Param`) の (型パラメータ名, メソッド名)。
+fn bound_recv(e: &TExpr) -> Option<(String, String)> {
+    match &e.kind {
+        TKind::MCall { recv, name, .. } => match strip_refs(&recv.ty) {
+            Ty::Param(pn) => Some((pn, name.clone())),
+            _ => None,
+        },
+        TKind::Call { callee, .. } => match (&callee.kind, strip_refs(&callee.ty)) {
+            (TKind::Path(s), Ty::Param(pn)) if s.len() == 2 => Some((pn, s[1].clone())),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -470,6 +490,24 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                         ck.dyn_call(&tr, &ta.0, &name, e.line);
                     }
                     let _ = args;
+                }
+                // 型パラメータの受け手のメソッド `a.go()`: 境界のトレイトの宣言の効果 (境界の実引数で実体化)。
+                (TKind::MCall { .. } | TKind::Call { .. }, Some(Callee::Unknown)) if bound_recv(e).is_some() => {
+                    let Some((pn, name)) = bound_recv(e) else { return };
+                    let name = &name;
+                    let mut bounds: Vec<(String, Vec<V>)> = vec![];
+                    for g in d.generics.iter().filter(|g| g.0 == "type" && g.1 == pn) {
+                        for b in items(&g.2) {
+                            let V::L(bx) = b else { continue };
+                            bounds.push((st(&bx[0]), items(tel(b, 1)).to_vec()));
+                        }
+                    }
+                    for (tr, ta) in bounds {
+                        if tr.starts_with("core.ops.Fn") {
+                            continue;
+                        }
+                        ck.trait_call(&tr, &ta, name, e.line, "");
+                    }
                 }
                 (TKind::MCall { recv, name, .. }, Some(Callee::Dyn(_))) => {
                     if let Ty::Dyn(tr, ta, _) = dyn_of(&recv.ty) {

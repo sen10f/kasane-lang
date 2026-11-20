@@ -86,7 +86,22 @@ impl<'a> B<'a> {
             for b in items(&g.2) {
                 let V::L(bx) = b else { continue };
                 let tr = st(&bx[0]);
-                if tr == "core.marker.Send" || tr == "core.marker.Sync" || tr.starts_with("core.ops.Fn") {
+                if tr.starts_with("core.ops.Fn") {
+                    // 取り込みの能力: `Fn` は共有参照だけ、`FnMut` は値での取り込み以外まで、`FnOnce` は無条件。
+                    if let Ty::Closure { cap, .. } = t {
+                        let ok = match tr.as_str() {
+                            "core.ops.Fn" => *cap == crate::types::Cap::Fn,
+                            "core.ops.FnMut" => *cap != crate::types::Cap::FnOnce,
+                            _ => true,
+                        };
+                        if !ok {
+                            out.push((format!("the trait bound `{}: {}` of {} is not satisfied by {}", g.1, tr, callee.name, t.show()), line));
+                            return;
+                        }
+                    }
+                    continue;
+                }
+                if tr == "core.marker.Send" || tr == "core.marker.Sync" {
                     continue;
                 }
                 let known = self.p.types.get(&tr).map_or(false, |&i| self.p.defs[i].kw == "trait") || DERIVE_TRAITS.iter().any(|(_, v)| *v == tr);

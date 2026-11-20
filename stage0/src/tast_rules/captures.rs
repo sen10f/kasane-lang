@@ -33,6 +33,10 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
 fn effects(p: &Program, di: DefId, params: &[TBinding], body: &TExpr, out: &mut Vec<Diag>) {
     use crate::check::{covers, is_effect_var};
     let d = &p.defs[di];
+    // test の本体の効果は検査しない (旧い検査の `cur_uses` が無い)。
+    if d.kw == "test" {
+        return;
+    }
     let mut found: Vec<(&'static str, String, usize)> = vec![];
     // 呼び出しの引数へ入る値は呼び出しの行、それ以外 (`let` の注釈・戻り値・欄) は旧い検査と同じく定義の行で報告する。
     let mut arg_line: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
