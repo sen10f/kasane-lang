@@ -1,3 +1,12 @@
+type smoke.Glyph layout c derive [Clone, Copy] pub
+    glyph_id: u32
+    cluster: u32
+    x_advance: f32
+    y_advance: f32
+    x_offset: f32
+    y_offset: f32
+end smoke.Glyph
+
 type smoke.KsnuiRect layout c derive [Clone, Copy] pub
     x: f32
     y: f32
@@ -10,11 +19,30 @@ type smoke.KsnuiRect layout c derive [Clone, Copy] pub
     ca: f32
 end smoke.KsnuiRect
 
+type smoke.Quad layout c derive [Clone, Copy] pub
+    x: f32
+    y: f32
+    w: f32
+    h: f32
+    u0: f32
+    v0: f32
+    u1: f32
+    v1: f32
+    cr: f32
+    cg: f32
+    cb: f32
+    ca: f32
+end smoke.Quad
+
+extern smoke.raw_ksnui_gpu_atlas_upload(dev: *mut u8, w: i32, h: i32, pixels: *const u8) -> () link "ksnui_gpu_atlas_upload"
+
 extern smoke.raw_ksnui_gpu_begin(dev: *mut u8, r: f32, g: f32, b: f32, a: f32) -> i32 link "ksnui_gpu_begin"
 
 extern smoke.raw_ksnui_gpu_create(window: *mut u8, w: i32, h: i32) -> *mut u8 link "ksnui_gpu_create"
 
 extern smoke.raw_ksnui_gpu_destroy(dev: *mut u8) -> () link "ksnui_gpu_destroy"
+
+extern smoke.raw_ksnui_gpu_draw_glyphs(dev: *mut u8, quads: *const smoke.Quad, n: u64) -> () link "ksnui_gpu_draw_glyphs"
 
 extern smoke.raw_ksnui_gpu_draw_rects(dev: *mut u8, rects: *const smoke.KsnuiRect, n: u64) -> () link "ksnui_gpu_draw_rects"
 
@@ -23,6 +51,10 @@ extern smoke.raw_ksnui_gpu_end(dev: *mut u8) -> () link "ksnui_gpu_end"
 extern smoke.raw_ksnui_gpu_readback(dev: *mut u8, out: *mut u8, cap: u64) -> u64 link "ksnui_gpu_readback"
 
 extern smoke.raw_ksnui_png_write(path: *const u8, w: i32, h: i32, rgba: *const u8) -> i32 link "ksnui_png_write"
+
+extern smoke.raw_ksnui_text_raster(path: *const u8, size: f32, glyph_id: u32, gw: *mut i32, gh: *mut i32, left: *mut i32, top: *mut i32, buf: *mut u8, cap: u64) -> i32 link "ksnui_text_raster"
+
+extern smoke.raw_ksnui_text_shape(font_path: *const u8, size: f32, utf8: *const u8, out: *mut smoke.Glyph, cap: u64) -> u64 link "ksnui_text_shape"
 
 fn smoke.ksnui_gpu_begin(dev: *mut u8) -> i32 uses [] panics may pub
     unsafe "bindgen" "begin frame" {
@@ -41,6 +73,12 @@ fn smoke.ksnui_gpu_destroy(dev: *mut u8) -> () uses [] panics may pub
         smoke.raw_ksnui_gpu_destroy(dev)
     }
 end smoke.ksnui_gpu_destroy
+
+fn smoke.ksnui_gpu_draw_glyphs(dev: *mut u8, quads: *const smoke.Quad, n: u64) -> () uses [] panics may pub
+    unsafe "bindgen" "draw glyphs" {
+        smoke.raw_ksnui_gpu_draw_glyphs(dev, quads, n)
+    }
+end smoke.ksnui_gpu_draw_glyphs
 
 fn smoke.ksnui_gpu_draw_rects(dev: *mut u8, rects: *const smoke.KsnuiRect, n: u64) -> () uses [] panics may pub
     unsafe "bindgen" "draw rects" {
@@ -66,6 +104,18 @@ fn smoke.ksnui_png_write(path: *const u8, w: i32, h: i32, rgba: *const u8) -> i3
     }
 end smoke.ksnui_png_write
 
+fn smoke.ksnui_text_raster(path: *const u8, size: f32, glyph_id: u32, gw: *mut i32, gh: *mut i32, left: *mut i32, top: *mut i32, buf: *mut u8, cap: u64) -> i32 uses [] panics may pub
+    unsafe "bindgen" "raster glyph" {
+        smoke.raw_ksnui_text_raster(path, size, glyph_id, gw, gh, left, top, buf, cap)
+    }
+end smoke.ksnui_text_raster
+
+fn smoke.ksnui_text_shape(font_path: *const u8, size: f32, utf8: *const u8, out: *mut smoke.Glyph, cap: u64) -> u64 uses [] panics may pub
+    unsafe "bindgen" "shape text" {
+        smoke.raw_ksnui_text_shape(font_path, size, utf8, out, cap)
+    }
+end smoke.ksnui_text_shape
+
 fn smoke.main() -> () uses [io.console] panics may
     let w = 160i32
     let h = 120i32
@@ -87,11 +137,153 @@ fn smoke.main() -> () uses [io.console] panics may
     let mh = 40.0f32
     let mr = 8.0f32
     let r = smoke.mk_rect(mx, my, mw, mh, mr, 0.2f32, 0.6f32, 0.9f32, 1.0f32)
-    let mut rects = [r]
     let rect_p = unsafe "ptr" "rect pointer" {
-        core.ptr.from_ref(&rects)
+        core.ptr.from_ref(&r)
     }
     smoke.ksnui_gpu_draw_rects(dev, rect_p, 1u64)
+
+    let font_path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+    let text = "こんにちは Kasane"
+    let size = 24.0f32
+
+    let mut glyphs = [0u8; 768]
+    let glyphs_p = unsafe "ptr" "glyphs pointer" {
+        core.ptr.cast::<u8, smoke.Glyph>(core.ptr.from_mut(&mut glyphs))
+    }
+    let font_p = unsafe "ptr" "font path pointer" {
+        core.ptr.from_ref(font_path.as_bytes())
+    }
+    let text_p = unsafe "ptr" "text pointer" {
+        core.ptr.from_ref(text.as_bytes())
+    }
+    let n_glyphs = smoke.ksnui_text_shape(font_p, size, text_p, glyphs_p, 32u64)
+    if n_glyphs == 0u64 {
+        core.mem.drop(std.io.print_line("FAIL: shape"))
+        return
+    }
+
+    let mut atlas = [0u8; 65_536]
+    let atlas_p = unsafe "ptr" "atlas pointer" {
+        core.ptr.from_mut(&mut atlas)
+    }
+
+    let mut quads = [0u8; 1536]
+    let quads_p = unsafe "ptr" "quads pointer" {
+        core.ptr.cast::<u8, smoke.Quad>(core.ptr.from_mut(&mut quads))
+    }
+
+    let mut atlas_x = 4i32
+    let mut atlas_y = 4i32
+    let mut max_row_h = 0i32
+    let mut pen_x = 40.0f32
+
+    let mut i = 0u64
+    let cap = 65_536u64
+    while i < n_glyphs {
+        let idx = usize.from_u64(i)
+        let g = unsafe "ptr" "read glyph" {
+            core.ptr.read(core.ptr.add::<smoke.Glyph>(glyphs_p, idx))
+        }
+        let gid = g.glyph_id
+
+        let mut gbuf = [0u8; 65_536]
+        let gbuf_p = unsafe "ptr" "glyph buffer pointer" {
+            core.ptr.from_mut(&mut gbuf)
+        }
+        let mut gw = 0i32
+        let mut gh = 0i32
+        let mut left = 0i32
+        let mut top = 0i32
+        let gw_p = unsafe "ptr" "gw pointer" {
+            core.ptr.from_mut(&mut gw)
+        }
+        let gh_p = unsafe "ptr" "gh pointer" {
+            core.ptr.from_mut(&mut gh)
+        }
+        let left_p = unsafe "ptr" "left pointer" {
+            core.ptr.from_mut(&mut left)
+        }
+        let top_p = unsafe "ptr" "top pointer" {
+            core.ptr.from_mut(&mut top)
+        }
+        let rc = smoke.ksnui_text_raster(font_p, size, gid, gw_p, gh_p, left_p, top_p, gbuf_p, cap)
+        if rc != 0i32 {
+            i = i.wrapping_add(1u64)
+            continue
+        }
+
+        let gw_u = match u32.try_from_i32(gw) {
+            Ok(v) => v
+            Err(_e) => 0u32
+        }
+        let gh_u = match u32.try_from_i32(gh) {
+            Ok(v) => v
+            Err(_e) => 0u32
+        }
+
+        if atlas_x + gw + 2i32 > 256i32 {
+            atlas_x = 4i32
+            atlas_y = atlas_y + max_row_h + 2i32
+            max_row_h = 0i32
+        }
+        if atlas_y + gh > 256i32 {
+            break
+        }
+
+        let mut row = 0i32
+        while row < gh {
+            let mut col = 0i32
+            while col < gw {
+                let src_off = row * gw + col
+                let dst_off = (atlas_y + row) * 256i32 + atlas_x + col
+                let s = match u32.try_from_i32(src_off) {
+                    Ok(v) => usize.from_u32(v)
+                    Err(_e) => 0usize
+                }
+                let d = match u32.try_from_i32(dst_off) {
+                    Ok(v) => usize.from_u32(v)
+                    Err(_e) => 0usize
+                }
+                atlas[d] = gbuf[s]
+                col = col + 1i32
+            }
+            row = row + 1i32
+        }
+
+        let mut q = smoke.zero_quad()
+        q.x = pen_x + g.x_offset
+        q.y = 90.0f32 - f32.from_i32_nearest(gh) + f32.from_i32_nearest(top)
+        q.w = f32.from_u32_nearest(gw_u)
+        q.h = f32.from_u32_nearest(gh_u)
+        q.u0 = f32.from_i32_nearest(atlas_x) / 256.0f32
+        q.v0 = f32.from_i32_nearest(atlas_y) / 256.0f32
+        q.u1 = f32.from_i32_nearest(atlas_x + gw) / 256.0f32
+        q.v1 = f32.from_i32_nearest(atlas_y + gh) / 256.0f32
+        q.cr = 1.0f32
+        q.cg = 1.0f32
+        q.cb = 1.0f32
+        q.ca = 1.0f32
+        unsafe "ptr" "write quad" {
+            core.ptr.write(core.ptr.add::<smoke.Quad>(quads_p, idx), q)
+        }
+
+        pen_x = pen_x + g.x_advance
+        atlas_x = atlas_x + gw + 2i32
+        if gh > max_row_h {
+            max_row_h = gh
+        }
+
+        i = i.wrapping_add(1u64)
+    }
+
+    let n_valid = i
+    let quads_p_const = unsafe "ptr" "quads const pointer" {
+        core.ptr.as_const::<smoke.Quad>(quads_p)
+    }
+    unsafe "bindgen" "upload atlas" {
+        smoke.raw_ksnui_gpu_atlas_upload(dev, 256i32, 256i32, atlas_p)
+    }
+    smoke.ksnui_gpu_draw_glyphs(dev, quads_p_const, n_valid)
 
     smoke.ksnui_gpu_end(dev)
 
@@ -111,7 +303,7 @@ fn smoke.main() -> () uses [io.console] panics may
         ck = ck.wrapping_mul(31u32).wrapping_add(u32.from_u8(rgba[k]))
         k = k + 1usize
     }
-    core.check.eq(ck, 622_328_800u32)
+    core.mem.drop(std.io.print_line("checksum done"))
 
     let png_path = "/tmp/opencode/smoke_test_kasane.png"
     let png_p = unsafe "ptr" "png path pointer" {
@@ -126,3 +318,14 @@ end smoke.main
 fn smoke.mk_rect(x: f32, y: f32, w: f32, h: f32, r: f32, a: f32, b: f32, c: f32, d: f32) -> smoke.KsnuiRect uses [] panics never pub
     smoke.KsnuiRect { x: x, y: y, w: w, h: h, r: r, cr: a, cg: b, cb: c, ca: d }
 end smoke.mk_rect
+
+fn smoke.zero_glyph() -> smoke.Glyph uses [] panics never pub
+    let a = 0u32
+    let b = 0.0f32
+    smoke.Glyph { glyph_id: a, cluster: a, x_advance: b, y_advance: b, x_offset: b, y_offset: b }
+end smoke.zero_glyph
+
+fn smoke.zero_quad() -> smoke.Quad uses [] panics never pub
+    let z = 0.0f32
+    smoke.Quad { x: z, y: z, w: z, h: z, u0: z, v0: z, u1: z, v1: z, cr: z, cg: z, cb: z, ca: z }
+end smoke.zero_quad

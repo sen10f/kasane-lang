@@ -789,12 +789,12 @@ void ksnui_gpu_draw_glyphs(void* dev, const ksnui_GlyphQuad* quads, size_t n) {
         to_ndc(g_gpu.width, g_gpu.height, q->x, q->y, q->w, q->h, &x0, &y0);
         float nx = (2.0f * q->w / (float)g_gpu.width);
         float ny = (2.0f * q->h / (float)g_gpu.height);
-        /* TriangleStrip: 左上, 左下, 右上, 右下。UV は atlas (Y 下方向)。 */
+        /* TriangleStrip: 左上, 左下, 右上, 右下。UV は atlas (Y 下方向)。u1/v1 は四角共通。 */
         float vs[4][10] = {
-            { x0,     y0,     q->u0, q->v0, q->cr, q->cg, q->cb, q->ca, 0, 0 },
-            { x0,     y0 - ny, q->u0, q->v1, q->cr, q->cg, q->cb, q->ca, 0, 0 },
-            { x0 + nx, y0,     q->u1, q->v0, q->cr, q->cg, q->cb, q->ca, 0, 0 },
-            { x0 + nx, y0 - ny, q->u1, q->v1, q->cr, q->cg, q->cb, q->ca, 0, 0 },
+            { x0,     y0,     q->u0, q->v0, q->u1, q->v1, q->cr, q->cg, q->cb, q->ca },
+            { x0,     y0 - ny, q->u0, q->v1, q->u1, q->v1, q->cr, q->cg, q->cb, q->ca },
+            { x0 + nx, y0,     q->u1, q->v0, q->u1, q->v1, q->cr, q->cg, q->cb, q->ca },
+            { x0 + nx, y0 - ny, q->u1, q->v1, q->u1, q->v1, q->cr, q->cg, q->cb, q->ca },
         };
         for (int k = 0; k < 4; k++)
             for (int j = 0; j < 10; j++)

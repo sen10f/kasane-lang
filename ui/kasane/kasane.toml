@@ -5,7 +5,7 @@ edition = 1
 entry = "ui.main"
 
 [unsafe]
-modules = ["ksnui_plat", "ksnui_gpu", "ksnui_text"]
+modules = ["ui.gpu", "ui.plat", "ui.text"]
 
 [native]
 static = ["../native/libksnui.a"]

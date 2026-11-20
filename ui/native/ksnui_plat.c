@@ -39,7 +39,7 @@ size_t ksnui_poll_events(void* win, ksnui_Event* out, size_t cap,
     while (n < cap && SDL_PollEvent(&ev)) {
         ksnui_Event* e = &out[n];
         memset(e, 0, sizeof(*e));
-        switch (ev.event_type) {
+        switch (ev.type) {
         case SDL_EVENT_QUIT:
             e->event_type = KSNUI_EVENT_QUIT;
             break;
@@ -107,8 +107,8 @@ size_t ksnui_poll_events(void* win, ksnui_Event* out, size_t cap,
         default:
             break;
         }
-        if (e->event_type != 0 || ev.event_type == SDL_EVENT_TEXT_INPUT ||
-            ev.event_type == SDL_EVENT_TEXT_EDITING) {
+        if (e->event_type != 0 || ev.type == SDL_EVENT_TEXT_INPUT ||
+            ev.type == SDL_EVENT_TEXT_EDITING) {
             n++;
         }
     }

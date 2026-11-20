@@ -1,0 +1,32 @@
+type ui.text.KsnuiShapedGlyph layout c derive [Clone, Copy] pub
+    glyph_id: u32
+    cluster: u32
+    x_advance: f32
+    y_advance: f32
+    x_offset: f32
+    y_offset: f32
+end ui.text.KsnuiShapedGlyph
+
+extern ui.text.raw_ksnui_text_line_height(font_path: *const i8, size_px: f32) -> f32 link "ksnui_text_line_height"
+
+extern ui.text.raw_ksnui_text_raster(path: *const i8, size: f32, glyph_id: u32, w: *mut i32, h: *mut i32, left: *mut i32, top: *mut i32, buf: *mut u8, cap: u64) -> i32 link "ksnui_text_raster"
+
+extern ui.text.raw_ksnui_text_shape(font_path: *const i8, size_px: f32, utf8: *const i8, out: *mut ui.text.KsnuiShapedGlyph, cap: u64) -> u64 link "ksnui_text_shape"
+
+fn ui.text.ksnui_text_line_height(font_path: *const i8, size_px: f32) -> f32 uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_text_line_height を呼ぶ" {
+        ui.text.raw_ksnui_text_line_height(font_path, size_px)
+    }
+end ui.text.ksnui_text_line_height
+
+fn ui.text.ksnui_text_raster(path: *const i8, size: f32, glyph_id: u32, w: *mut i32, h: *mut i32, left: *mut i32, top: *mut i32, buf: *mut u8, cap: u64) -> i32 uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_text_raster を呼ぶ" {
+        ui.text.raw_ksnui_text_raster(path, size, glyph_id, w, h, left, top, buf, cap)
+    }
+end ui.text.ksnui_text_raster
+
+fn ui.text.ksnui_text_shape(font_path: *const i8, size_px: f32, utf8: *const i8, out: *mut ui.text.KsnuiShapedGlyph, cap: u64) -> u64 uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_text_shape を呼ぶ" {
+        ui.text.raw_ksnui_text_shape(font_path, size_px, utf8, out, cap)
+    }
+end ui.text.ksnui_text_shape

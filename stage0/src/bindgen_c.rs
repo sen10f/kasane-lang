@@ -861,8 +861,8 @@ pub(crate) fn cmd_bindgen_c(rest: &[String]) -> i32 {
             to_snake(&stem)
         }
     };
-    if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') || !prefix.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false) || crate::grammar::RESERVED.contains(&prefix.as_str()) {
-        eprintln!("ksn bindgen --c: --prefix は snake_case の ASCII 識別子 (予約語以外) でなければならない: {}", prefix);
+    if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.') || !prefix.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false) || crate::grammar::RESERVED.contains(&prefix.as_str()) {
+        eprintln!("ksn bindgen --c: --prefix は `a.b_c` の形のモジュール名 (小文字・数字・_・.、予約語以外) でなければならない: {}", prefix);
         return 2;
     }
     if let Some(l) = &link {

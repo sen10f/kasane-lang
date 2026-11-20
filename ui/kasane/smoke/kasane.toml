@@ -9,7 +9,7 @@ modules = ["smoke"]
 
 [native]
 static = ["../../native/libksnui.a"]
-dynamic = ["ksnui", "wgpu_native", "vulkan", "dl", "m", "pthread"]
+dynamic = ["wgpu_native", "vulkan", "dl", "m", "pthread", "freetype", "harfbuzz", "ksnui"]
 search = ["../../native", "../../native/third_party/lib"]
 
 [dependencies]
