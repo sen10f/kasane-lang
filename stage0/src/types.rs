@@ -417,7 +417,7 @@ fn capture_ty(kind: &str, t: Ty) -> Ty {
 }
 
 /// 型パラメータを束縛で置き換える。束縛のないものは `Unknown`。
-fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
+pub(crate) fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
     match t {
         Ty::Param(p) => bind.get(p).cloned().unwrap_or(Ty::Unknown),
         Ty::Named(n, a, rs) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect(), rs.clone()),

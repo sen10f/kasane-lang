@@ -37,6 +37,7 @@ mod fmt;
 mod canon;
 mod spacing;
 mod bindgen;
+mod bindgen_c;
 mod grammar;
 mod lint;
 mod lockapi;

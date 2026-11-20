@@ -1014,10 +1014,19 @@ impl Server {
             return Ok(json!([]));
         }
         let root = find_root(&path);
-        let srcdir = root.map(|r| norm(&r.join("src"))).unwrap_or_default();
+        let srcdir = root.as_ref().map(|r| norm(&r.join("src"))).unwrap_or_default();
         let parsed = Source::from_text(&path, &srcdir, text.clone());
+        // `len` / `is_empty` の独自定義はパッケージ全体で調べる (D11)。読めるときは依存も含めた全ソース、
+        // 読めないときは開いているファイルだけ (値が真になりすぎる側で、安全側に倒れる)。
+        let own_len = match &root {
+            Some(r) => match crate::project::load_package(r) {
+                Ok(l) => crate::fmt::own_len_method(&l.sources.iter().map(|s| s.text.as_str()).collect::<Vec<_>>()),
+                Err(_) => crate::fmt::own_len_method(&[text.as_str()]),
+            },
+            None => crate::fmt::own_len_method(&[text.as_str()]),
+        };
         let nt = if parsed.error.is_none() {
-            catch_unwind(AssertUnwindSafe(|| crate::fmt::format_source(&text, &path))).map_err(|_| (INTERNAL_ERROR, "formatter failed".to_string()))?
+            catch_unwind(AssertUnwindSafe(|| crate::fmt::format_source_prog(&text, &path, own_len))).map_err(|_| (INTERNAL_ERROR, "formatter failed".to_string()))?
         } else {
             crate::fmt::mechanical_collapse(&text)
         };

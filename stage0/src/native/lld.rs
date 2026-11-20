@@ -80,7 +80,8 @@ fn newest_gcc_dir(base: &Path, file: &str) -> Option<PathBuf> {
 
 /// ELF の実行ファイルをつなぐ lld の引数。`objs` は目的ファイル、`name` は `x86_64-linux-gnu` / `aarch64-linux-gnu`、`root` はクロスのときの sysroot。
 /// PIE と動的リンクの glibc (実行時の `dlopen` を保つ)。crt・libgcc が見つからなければ、入れるべき package を示して失敗する。
-pub fn elf_args(name: &str, root: Option<&str>, objs: &[PathBuf], exe: &Path) -> Result<Vec<String>, String> {
+/// `nat` は `[native]` の追加のリンクの引数 (`-L`・静的アーカイブ・`-l`、3.8)。目的ファイルの後ろに置く (アーカイブは参照する側より後ろが必要)。
+pub fn elf_args(name: &str, root: Option<&str>, objs: &[PathBuf], exe: &Path, nat: &[String]) -> Result<Vec<String>, String> {
     let (emul, dynld, deb, gccbase, host) = match name {
         "x86_64-linux-gnu" => ("elf_x86_64", "/lib64/ld-linux-x86-64.so.2", "x86_64-linux-gnu", "/usr/lib/gcc/x86_64-linux-gnu", root.is_none()),
         "aarch64-linux-gnu" => ("aarch64linux", "/lib/ld-linux-aarch64.so.1", "aarch64-linux-gnu", if root.is_none() { "/usr/lib/gcc/aarch64-linux-gnu" } else { "/usr/lib/gcc-cross/aarch64-linux-gnu" }, root.is_none()),
@@ -111,6 +112,7 @@ pub fn elf_args(name: &str, root: Option<&str>, objs: &[PathBuf], exe: &Path) ->
     for o in objs {
         a.push(o.display().to_string());
     }
+    a.extend(nat.iter().cloned());
     for s in ["-lm", "-lgcc", "--as-needed", "-lgcc_s", "--no-as-needed", "-lpthread", "-lc", "-lgcc", "--as-needed", "-lgcc_s", "--no-as-needed"] {
         a.push(s.into());
     }
@@ -121,7 +123,7 @@ pub fn elf_args(name: &str, root: Option<&str>, objs: &[PathBuf], exe: &Path) ->
 
 /// Windows (MinGW-w64) の実行ファイルをつなぐ lld の引数。`root` は mingw-w64 の sysroot (crt・import ライブラリ。既定 /usr/x86_64-w64-mingw32)。
 /// libgcc 等は `/usr/lib/gcc/x86_64-w64-mingw32/<版>-posix` (winpthreads を使う posix の構成) から探す。無ければ入れるべき package を示して失敗する。
-pub fn mingw_args(root: Option<&str>, objs: &[PathBuf], exe: &Path) -> Result<Vec<String>, String> {
+pub fn mingw_args(root: Option<&str>, objs: &[PathBuf], exe: &Path, nat: &[String]) -> Result<Vec<String>, String> {
     let r = PathBuf::from(root.unwrap_or("/usr/x86_64-w64-mingw32"));
     let libdir = r.join("lib");
     let hint = "mingw-w64 (gcc-mingw-w64-x86-64-posix と mingw-w64-x86-64-dev) を入れる";
@@ -153,6 +155,7 @@ pub fn mingw_args(root: Option<&str>, objs: &[PathBuf], exe: &Path) -> Result<Ve
     for o in objs {
         a.push(o.display().to_string());
     }
+    a.extend(nat.iter().cloned());
     // winpthreads は静的に取り込む (実行ファイルが libwinpthread-1.dll に依存しない)。
     let pth = libdir.join("libwinpthread.a");
     if !pth.exists() {

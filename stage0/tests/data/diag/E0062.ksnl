@@ -1,0 +1,3 @@
+fn apply(n: u32) -> u32 uses [] panics never
+    n
+end apply

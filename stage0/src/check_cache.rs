@@ -58,12 +58,14 @@ pub struct FileMemo {
     pub file_new: Option<(String, FileCheck)>,
 }
 
-/// ファイル全体の結果のキー。文面と lint 用の相対パスで決まる (実行体の識別子はスロットのキーが担う)。
-pub fn file_key(rel: &str, text: &str) -> String {
+/// ファイル全体の結果のキー。文面・lint 用の相対パス・プログラムが `len` / `is_empty` を独自に定義するか (`own_len`) で決まる
+/// (実行体の識別子はスロットのキーが担う)。`own_len` はファイルをまたいで D11 の書き換えを止めるので、キーにも要る。
+pub fn file_key(rel: &str, text: &str, own_len: bool) -> String {
     let mut h = Sha256::new();
     h.update((rel.len() as u64).to_le_bytes());
     h.update(rel.as_bytes());
     h.update(text.as_bytes());
+    h.update([u8::from(own_len)]);
     hex(&h.finalize())
 }
 

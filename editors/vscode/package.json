@@ -1,0 +1,73 @@
+{
+  "name": "kasane-vscode",
+  "displayName": "Kasane",
+  "description": "Kasane 言語の構文強調と ksn 言語サーバ",
+  "version": "0.1.0",
+  "publisher": "sen10f",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sen10f/kasane.git"
+  },
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:kasane"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "kasane",
+        "aliases": [
+          "Kasane",
+          "kasane"
+        ],
+        "extensions": [
+          ".ksnl",
+          ".ksnh"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "kasane",
+        "scopeName": "source.kasane",
+        "path": "./syntaxes/kasane.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Kasane",
+      "properties": {
+        "kasane.ksnPath": {
+          "type": "string",
+          "default": "ksn",
+          "scope": "machine-overridable",
+          "description": "ksn 実行ファイルのパス"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "check": "node scripts/grammar_check.mjs",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@types/vscode": "^1.82.0",
+    "@vscode/vsce": "2.24.0",
+    "typescript": "^5.5.4",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.1.0"
+  }
+}

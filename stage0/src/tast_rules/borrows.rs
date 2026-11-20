@@ -40,6 +40,8 @@ enum Ev {
     Acc { root: String, path: Path, kind: Acc, line: usize },
     /// 配列の定数の添字の要素への強い更新 (`core.mem.replace(&mut a[0], ..)`): 要素が持っていた貸し出しが終わる。
     Kill { var: String, ids: Vec<usize> },
+    /// `Sender.send(v)`: `v` の持つ貸し出しは、同じチャネルの他の持ち主 (主に `Receiver`) へも流れる。
+    ChanSend { from: String, srcs: Vec<Src> },
 }
 
 struct Loan {
@@ -123,6 +125,31 @@ fn holds(p: &Program, t: &Ty) -> bool {
         Ty::Array(x, _) | Ty::Slice(x) => holds(p, x),
         _ => false,
     }
+}
+
+/// 型の中に参照があるか。
+fn has_ref(t: &Ty) -> bool {
+    match t {
+        Ty::Ref(..) => true,
+        Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().any(has_ref),
+        Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => has_ref(x),
+        Ty::Closure { args, ret, .. } => args.iter().any(has_ref) || has_ref(ret),
+        _ => false,
+    }
+}
+
+/// 参照の欄を持つ利用者の型も値は借用を運び得る (`t.H { r: &x }` は `x` の借用を持つ)。
+fn holds_field(p: &Program, t: &Ty) -> bool {
+    if holds(p, t) {
+        return true;
+    }
+    if let Ty::Named(n, _, _) = t {
+        if let Some(&i) = p.types.get(n) {
+            let gn = p.defs[i].gnames();
+            return p.defs[i].fields.iter().any(|f| has_ref(&from_v(&f.1, &gn)));
+        }
+    }
+    false
 }
 
 /// 値として使うと移動する型 (確実にそうと分かるものだけ。分からない型は移動にしない)。
@@ -407,7 +434,12 @@ impl<'a> Walker<'a> {
             TKind::StructLit { fields, .. } => {
                 let es: Vec<&TExpr> = fields.iter().map(|(_, x)| x).collect();
                 let s = self.operands(&es);
-                self.keep(&e.ty, s)
+                // 参照の欄がある構造体は、欄の宣言が `'static` でも実際に入った借用を持つ。
+                if holds_field(self.p, &e.ty) {
+                    s
+                } else {
+                    self.keep(&e.ty, s)
+                }
             }
             TKind::Other { name, children } => self.other(e, name, children),
         }
@@ -514,7 +546,7 @@ impl<'a> Walker<'a> {
                 let ty = info.bind.as_ref().map(|b| b.1.clone()).unwrap_or_else(|| info.ty.clone());
                 self.scopes.last_mut().unwrap().insert(n.clone(), (q.id, ty.clone()));
                 let k = key(n, q.id);
-                let s = if holds(self.p, &ty) { srcs.to_vec() } else { vec![] };
+                let s = if holds_field(self.p, &ty) { srcs.to_vec() } else { vec![] };
                 self.bind(k, s, true);
             } else if let Some(n) = &q.name {
                 self.scopes.last_mut().unwrap().insert(n.clone(), (q.id, Ty::Unknown));
@@ -787,6 +819,8 @@ impl<'a> Walker<'a> {
         let mut idx = 0usize;
         // 受け手の可変借用は 2 段階借用 (`db.add(user.id)`、`v.push(v.len())`): 引数の評価が終わってから借りる。
         let has_recv = recv_place.is_some();
+        let recv_root = recv_place.as_ref().and_then(|(pl, _, _)| pl.as_ref().map(|(r, _)| r.clone()));
+        let def_name = def.map(|i| self.p.defs[i].name.clone()).unwrap_or_default();
         let _ = &local_callee;
         let mut late_recv = None;
         if let Some((pl, ty, ex)) = recv_place.take() {
@@ -829,6 +863,27 @@ impl<'a> Walker<'a> {
             tys.push(a.ty.clone());
             idx += 1;
         }
+        // 同じ呼び出しの中で、先の引数が `&mut` の変数そのものを使い、後の引数がそれを可変に再借用するのは競合。
+        for j in first_arg..srcs_per.len() {
+            let mut mroots: Vec<String> = vec![];
+            for s in &srcs_per[j] {
+                if let Src::Loan(i) = s {
+                    let l = &self.cfg.loans[*i];
+                    if l.mutable && l.path.first().map_or(false, |x| x == "*") {
+                        mroots.push(l.root.clone());
+                    }
+                }
+            }
+            for r in mroots {
+                let hit = (first_arg..j).any(|k| {
+                    srcs_per[k].iter().any(|x| matches!(x, Src::Var(v) if *v == r))
+                        && args.get(k - first_arg).map_or(true, |a| self.pl(a).map_or(true, |(_, p)| p.is_empty()))
+                });
+                if hit {
+                    self.diags.push((e.line, format!("cannot use `{}` while it is mutably borrowed by an earlier operand of the same expression", show_var(&r))));
+                }
+            }
+        }
         if let Some((pl, ty, decl, ex)) = late_recv {
             srcs_per[0] = self.receiver(pl, &ty, autoref, decl.as_ref(), ex, e.line);
         }
@@ -850,7 +905,7 @@ impl<'a> Walker<'a> {
                 t if j == 0 && has_recv && autoref == Some(true) => t.clone(),
                 _ => continue,
             };
-            if !holds(self.p, &inner) {
+            if !holds_field(self.p, &inner) {
                 continue;
             }
             let target = srcs_per[j].iter().find_map(|s| match s {
@@ -865,7 +920,7 @@ impl<'a> Walker<'a> {
                 }
                 // 相手も `&mut` の入れ物 (`mem.swap(&mut a, &mut b)`) なら、流れるのは相手が持つ中身の貸し出し。
                 match &tys[k] {
-                    Ty::Ref(true, inner, _) if holds(self.p, inner) => {
+                    Ty::Ref(true, inner, _) if holds_field(self.p, inner) => {
                         for x in s {
                             if let Src::Loan(i) = x {
                                 inflow.push(Src::Var(self.cfg.loans[*i].root.clone()));
@@ -895,7 +950,20 @@ impl<'a> Walker<'a> {
         if let Some(c) = local_callee {
             res.push(Src::Var(c));
         }
-        self.keep(&e.ty, res)
+        // `Sender.send(v)`: 送った値の貸し出しを、同じチャネルを持つ他の変数 (`rx`) の側へも流す。
+        if def_name == "std.sync.Sender.send" {
+            if let Some(from) = recv_root {
+                let srcs = srcs_per.get(first_arg).cloned().unwrap_or_default();
+                self.cfg.emit(Ev::ChanSend { from, srcs });
+            }
+        }
+        let mut res = self.keep(&e.ty, res);
+        // `std.sync.channel(..)` の結果はチャネル自体への擬似の貸し出しを持つ (送信が受信側へ借用を流す印)。
+        if def_name == "std.sync.channel" {
+            let id = self.cfg.loan(format!("$chan{}", e.id), vec![], false);
+            res.push(Src::Loan(id));
+        }
+        res
     }
 
     fn flows(&self, def: Option<DefId>, srcs: &[Vec<Src>], tys: &[Ty], ret: &Ty, first_arg: usize) -> Vec<bool> {
@@ -1046,6 +1114,39 @@ impl<'a> Walker<'a> {
                 if let Some(x) = st.get_mut(var) {
                     for i in ids {
                         x.remove(i);
+                    }
+                }
+            }
+            if let Ev::ChanSend { from, srcs } = ev {
+                // 送り手の持つチャネルの貸し出しを持つ他の変数へ、送った値の貸し出しを足す。
+                let chans: Vec<usize> = st
+                    .get(from)
+                    .map(|s| s.iter().copied().filter(|i| cfg.loans[*i].root.starts_with("$chan")).collect())
+                    .unwrap_or_default();
+                if !chans.is_empty() {
+                    let mut add: BTreeSet<usize> = BTreeSet::new();
+                    for s in srcs {
+                        match s {
+                            Src::Loan(i) => {
+                                add.insert(*i);
+                            }
+                            Src::Var(v) => {
+                                if let Some(x) = st.get(v) {
+                                    add.extend(x.iter().copied());
+                                }
+                            }
+                        }
+                    }
+                    if !add.is_empty() {
+                        let from = from.clone();
+                        for (v, set) in st.iter_mut() {
+                            if *v == from {
+                                continue;
+                            }
+                            if chans.iter().any(|c| set.contains(c)) {
+                                set.extend(add.iter().copied());
+                            }
+                        }
                     }
                 }
             }

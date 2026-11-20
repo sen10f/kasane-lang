@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::check::Diag;
 use crate::program::{Def, Program};
 use crate::tast::*;
-use crate::types::{elide_sig, from_v, Region, Ty, TypeCk};
+use crate::types::{elide_sig, from_v, subst, Region, Ty, TypeCk};
 
 pub fn check(p: &Program, user: &[usize], tast: &Tast, _tk: &TypeCk) -> Vec<Diag> {
     let mut out = vec![];
@@ -180,6 +180,8 @@ struct Var {
     is_ref: bool,
     /// 宣言したスコープの深さ。
     depth: usize,
+    /// 束縛の型。
+    ty: Ty,
 }
 
 #[derive(Clone, Default)]
@@ -459,7 +461,7 @@ impl<'a> W<'a> {
     fn define(&mut self, name: &str, decl: u32, v: Val, t: &Ty) {
         let carries = self.carries(t) && !t.refs_all_static();
         let val = if carries { v } else { Val::default() };
-        self.env.vars.insert(name.to_string(), Var { val, carries, decl, is_ref: is_ref(t), depth: self.scopes.len() });
+        self.env.vars.insert(name.to_string(), Var { val, carries, decl, is_ref: is_ref(t), depth: self.scopes.len(), ty: t.clone() });
         if let Some(sc) = self.scopes.last_mut() {
             sc.push(name.to_string());
         }
@@ -908,7 +910,7 @@ impl<'a> W<'a> {
                 Val::default()
             }
             TKind::Call { callee, args } => self.call(e, callee, args),
-            TKind::MCall { recv, name: _, args } => self.mcall(e, recv, args),
+            TKind::MCall { recv, name, args } => self.mcall(e, recv, name, args),
             TKind::Block(stmts) => self.block(e, stmts),
             TKind::If { cond, then, els } => {
                 self.ev(cond);
@@ -1178,11 +1180,6 @@ impl<'a> W<'a> {
     fn end_scope(&mut self, mut tail: Val) -> Val {
         let declared = self.scopes.pop().unwrap_or_default();
         let dead: HashSet<(String, u32)> = declared.iter().filter_map(|n| self.env.vars.get(n).map(|v| (n.clone(), v.decl))).collect();
-        if std::env::var_os("KSN_DEBUG_LT").is_some() {
-            for (k, v) in &self.env.vars {
-                eprintln!("end_scope dead={:?} var {} carries={} val={:?}", dead, k, v.carries, v.val.loans());
-            }
-        }
         for n in &declared {
             self.env.vars.remove(n);
         }
@@ -1251,6 +1248,10 @@ impl<'a> W<'a> {
         let target_is_ref = var.is_ref;
         let whole = direct && matches!(&place.kind, TKind::Path(s) if s.len() == 1);
         if whole && !through_ref {
+            // ループの中で一時値の借用を外側のスコープの束縛へ入れるのは、一時値が尽きた後も使われる (E3010 を代入の行で出す)。
+            if !self.loops.is_empty() && var.depth < self.scopes.len() && v.loans().iter().any(|(l, _)| *l == Loan::Temp) {
+                self.diag("E3010", format!("use of `{}` borrows `$temp` which does not live long enough", n), line);
+            }
             let nv = if var.carries { v } else { Val::default() };
             if let Some(x) = self.env.vars.get_mut(&n) {
                 x.val = nv.with_line(line);
@@ -1349,9 +1350,38 @@ impl<'a> W<'a> {
 
     // -------------------------------------------------------- 呼び出し
 
+    /// `dyn Tr` 越しのメソッド呼び出しの署名を、トレイトの宣言から実体化する (`Self` は受け手の `dyn` 型、トレイトの型パラメータは `dyn` の実引数へ)。
+    fn dyn_sig(&self, ti: DefId, meth: &str, recv_ty: &Ty) -> Option<(Vec<(String, Ty)>, Ty)> {
+        let td = &self.p.defs[ti];
+        if td.kw != "trait" {
+            return None;
+        }
+        let (_, ps_v, ret_v) = td.trait_sigs.iter().find(|s| s.0 == meth)?;
+        let mut gn = td.gnames();
+        gn.insert("Self".to_string());
+        // 受け手の `dyn` 型 (参照と `Box` を外した先)。
+        let mut dt = recv_ty.strip().clone();
+        while let Ty::Named(n, a, _) = &dt {
+            if n != "alloc.boxed.Box" || a.is_empty() {
+                break;
+            }
+            dt = a[0].strip().clone();
+        }
+        let mut bind: HashMap<String, Ty> = HashMap::new();
+        bind.insert("Self".into(), dt.clone());
+        if let Ty::Dyn(_, ta, _) = &dt {
+            for (g, a) in td.generics.iter().filter(|g| g.0 == "type").zip(&ta.0) {
+                bind.insert(g.1.clone(), from_v(a, &gn));
+            }
+        }
+        let ps0: Vec<(String, Ty)> = ps_v.iter().map(|(n, v)| (n.clone(), subst(&from_v(v, &gn), &bind))).collect();
+        Some((ps0, subst(&from_v(ret_v, &gn), &bind)))
+    }
+
     fn call(&mut self, e: &TExpr, callee: &TExpr, args: &[TExpr]) -> Val {
         // 呼び先が局所の経路 (`x.m(..)` の経路形) なら、受け手は先頭の局所。
         let mut recv_arg: Option<Arg> = None;
+        let mut dyn_call: Option<(Vec<(String, Ty)>, Ty, DefId)> = None;
         let def = match &e.res {
             Some(Callee::Def(di)) => Some(*di),
             _ => None,
@@ -1380,6 +1410,47 @@ impl<'a> W<'a> {
                 recv_arg = Some(Arg { ty, full, inner });
             }
         }
+        // `dyn` 越し・解決できない経路形の呼び出し (`d.as_ref()`・`q.tag()`) も受け手を引数にする。
+        if recv_arg.is_none() {
+            if let TKind::Path(segs) = &callee.kind {
+                if segs.len() >= 2 && self.env.vars.contains_key(&segs[0]) {
+                    let rn = segs[0].clone();
+                    let var = self.env.vars.get(&rn).cloned().unwrap();
+                    match &e.res {
+                        Some(Callee::Dyn(ti)) => {
+                            if let Some((ps0, ret)) = self.dyn_sig(*ti, segs.last().unwrap(), &var.ty) {
+                                self.use_var(&rn, e.line);
+                                let self_ref = matches!(ps0.first().map(|p| &p.1), Some(Ty::Ref(..)));
+                                let inner = var.val.clone();
+                                let full = if self_ref && !var.is_ref {
+                                    let mut r = Val::loan(Loan::Local(rn.clone(), var.decl), e.line);
+                                    if var.carries {
+                                        r.add(&inner.flat());
+                                    }
+                                    r
+                                } else {
+                                    inner.clone()
+                                };
+                                let ty = if self_ref && !var.is_ref { Ty::Ref(false, Box::new(Ty::Unknown), Region::Unk) } else { Ty::Unknown };
+                                recv_arg = Some(Arg { ty, full, inner });
+                                dyn_call = Some((ps0, ret, *ti));
+                            }
+                        }
+                        // 解決できない呼び出しは安全側に読む: 全引数 (受け手を含む) の借用が戻り値へ流れる。
+                        Some(Callee::Unknown) | None => {
+                            self.use_var(&rn, e.line);
+                            let mut full = Val::loan(Loan::Local(rn.clone(), var.decl), e.line);
+                            if var.carries {
+                                full.add(&var.val.clone().flat());
+                            }
+                            let inner = var.val.clone();
+                            recv_arg = Some(Arg { ty: Ty::Unknown, full, inner });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         let mut avs: Vec<Arg> = vec![];
         if let Some(r) = recv_arg {
             avs.push(r);
@@ -1391,10 +1462,14 @@ impl<'a> W<'a> {
             self.ev(callee);
         }
         let line = e.line;
+        if let Some((ps0, ret, ti)) = dyn_call {
+            let td = &self.p.defs[ti];
+            return self.apply_sig(&td.name, &td.generics, &ps0, &ret, &avs, line);
+        }
         self.apply(e, def, &avs, line)
     }
 
-    fn mcall(&mut self, e: &TExpr, recv: &TExpr, args: &[TExpr]) -> Val {
+    fn mcall(&mut self, e: &TExpr, recv: &TExpr, name: &str, args: &[TExpr]) -> Val {
         let def = match &e.res {
             Some(Callee::Def(di)) => Some(*di),
             _ => None,
@@ -1403,6 +1478,14 @@ impl<'a> W<'a> {
         let mut avs = vec![self.arg_of(recv, auto)];
         for a in args {
             avs.push(self.arg_of(a, false));
+        }
+        if def.is_none() {
+            if let Some(Callee::Dyn(ti)) = &e.res {
+                if let Some((ps0, ret)) = self.dyn_sig(*ti, name, &recv.ty) {
+                    let td = &self.p.defs[*ti];
+                    return self.apply_sig(&td.name, &td.generics, &ps0, &ret, &avs, e.line);
+                }
+            }
         }
         self.apply(e, def, &avs, e.line)
     }
@@ -1438,17 +1521,27 @@ impl<'a> W<'a> {
         let d = &self.p.defs[di];
         let gn = d.gnames();
         let ps0: Vec<(String, Ty)> = d.params.iter().map(|(n, t)| (n.clone(), from_v(t, &gn))).collect();
-        let (ps, ret) = elide_sig(&ps0, &from_v(&d.ret, &gn));
+        let ret0 = from_v(&d.ret, &gn);
+        self.apply_sig(&d.name, &d.generics, &ps0, &ret0, avs, line)
+    }
+
+    /// 署名 (`ps0`・`ret0` は `from_v` 済み) に実引数を当てはめる。`dyn` 越しの呼び出しはトレイトの署名を実体化してここへ渡す。
+    fn apply_sig(&mut self, name: &str, generics: &[(String, String, crate::parser::V)], ps0: &[(String, Ty)], ret0: &Ty, avs: &[Arg], line: usize) -> Val {
+        let all = |avs: &[Arg]| avs.iter().fold(Val::default(), |a, x| a.union(&x.full.flat()));
+        let (ps, ret) = elide_sig(ps0, ret0);
         if ps.len() != avs.len() {
             return all(avs);
         }
         // 実引数が仮引数より参照の段数が多いときは、自動参照外しで外側の借用を落とす (`p.trim()` の `p: &&str`)。
+        // 仮引数が型パラメータを含むときは段数を合わせない (`&mut r` の `r: &str` を `&mut T` へ渡すとき `T = &str` で、外側の借用は落とさない)。
         let adj: Vec<Arg> = avs
             .iter()
             .zip(&ps)
             .map(|(a, pt)| {
                 let n = depth(&a.ty).saturating_sub(depth(pt));
-                if n == 0 || matches!(pt, Ty::Param(_) | Ty::Unknown) {
+                let mut mp = BTreeSet::new();
+                mentions_param(pt, &mut mp);
+                if n == 0 || !mp.is_empty() || matches!(pt, Ty::Param(_) | Ty::Unknown) {
                     return a.clone();
                 }
                 let same = a.full == a.inner;
@@ -1459,7 +1552,7 @@ impl<'a> W<'a> {
             .collect();
         let avs = &adj[..];
         // 'static の位置。
-        let bounded: BTreeSet<String> = d.generics.iter().filter(|g| g.0 == "type" && static_bound(&g.2)).map(|g| g.1.clone()).collect();
+        let bounded: BTreeSet<String> = generics.iter().filter(|g| g.0 == "type" && static_bound(&g.2)).map(|g| g.1.clone()).collect();
         for (k, pt) in ps.iter().enumerate() {
             let a = &avs[k];
             if a.full.is_empty() {
@@ -1471,13 +1564,10 @@ impl<'a> W<'a> {
                 (matches!(pt.outer_region(), Some(Region::Static)), m.iter().any(|x| bounded.contains(x)))
             };
             if is_static_ref || is_bound {
-                if std::env::var_os("KSN_DEBUG_LT").is_some() {
-                    eprintln!("E2037 {} arg {} loans {:?} ty {:?}", d.name, k, a.full.loans(), avs[k].ty);
-                }
                 let what = if is_static_ref { "(`&'static`)" } else { "(a `'static` bound)" };
                 self.diag(
                     "E2037",
-                    format!("the argument `{}` of `{}` {} must be 'static, but the value may hold a borrow of a local (5.5)", d.params[k].0, d.name, what),
+                    format!("the argument `{}` of `{}` {} must be 'static, but the value may hold a borrow of a local (5.5)", ps0[k].0, name, what),
                     line,
                 );
             }

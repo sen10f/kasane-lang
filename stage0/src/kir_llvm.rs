@@ -516,16 +516,9 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     if let Some((k, e)) = errs.first() {
         return Err(format!("KIR の検査に通らない ({}): {}", k, e));
     }
-    if let Some(tg) = target.filter(|tg| is_windows(Some(*tg))) {
-        // Win64 は、大きさが 1・2・4・8 バイトの構造体だけ整数 1 個として渡る。それより大きいもの (呼び出し側の複製へのポインタ・sret) は、実機 (wine) での確かめがないので未対応。
-        for f in m.funcs.iter().filter(|f| f.link.is_some()) {
-            let small = |t: &Ty| match t { Ty::Agg(i) => matches!(agg_bits(&m.aggs, *i), 8 | 16 | 32 | 64), _ => true };
-            if f.params().iter().all(|(_, pt)| small(pt)) && small(&f.ret) {
-                continue;
-            }
-            return Err(format!("extern {}: passing or returning a struct larger than 8 bytes by value is not supported on {} (Win64 passes it by reference)", f.key, tg.name));
-        }
-    }
+    // Win64: 大きさが 1・2・4・8 バイトの構造体は整数 1 個として渡る。それより大きいものは呼び出し側の
+    // 複製へのポインタ (引数)・sret (戻り値)。`kir_cabi` が分類するので、ここで拒むことはしない
+    // (2026-11-20 の N1w3: wine で `tests/windows_ffi_struct.rs` が通ることを確かめた)。
     let Some(ef) = m.find(entry) else {
         return Err(format!("関数 {} がない", entry));
     };
