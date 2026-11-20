@@ -3750,7 +3750,8 @@ fn user_iter_loop(lw: &mut Lw, e: &V, pat: &V, it_e: &V, body: &V, di: usize, li
     let pv = lw.emit(pay.ty(), Op::Payload(o));
     let binds = lw.pat(pat, pv, pay.ty(), None)?;
     for (n, v, t) in binds {
-        // 借用のヘッダ (`&String` の欄は `ptr`): 借用の `String` として束縛する (メソッドの下ろしが種類を見る)。
+        // `Option<&String>` / `Option<&Vec>` の要素は `bref = { ptr }` 集成体として下ろされる。
+        // 番地 (ptr 欄) を取り出して `Ty::Ptr` として束縛し、メソッドの下ろしが受け手の種類を見られるよう種別を結び付ける。
         if t == Ty::Ptr {
             lw.bind(&n, v, Ty::Ptr);
             if let Some(sl) = lw.lookup(&n) {
@@ -3758,6 +3759,17 @@ fn user_iter_loop(lw: &mut Lw, e: &V, pat: &V, it_e: &V, body: &V, di: usize, li
                 lw.coll.borrowed.insert(sl);
             }
             continue;
+        }
+        if let Ty::Agg(ai) = t {
+            if lw.aggs.borrow().defs[ai as usize].name == "bref" {
+                let ptr = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+                lw.bind(&n, ptr, Ty::Ptr);
+                if let Some(sl) = lw.lookup(&n) {
+                    lw.coll.kinds.insert(sl, Kind::String);
+                    lw.coll.borrowed.insert(sl);
+                }
+                continue;
+            }
         }
         bind_owned(lw, &n, v, t);
     }
