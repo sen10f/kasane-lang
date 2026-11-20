@@ -118,6 +118,32 @@ fn link_llvm() {
             );
             println!("cargo:rustc-link-search=native={}", out.display());
             println!("cargo:rustc-link-lib=static=ksn_llvm_all");
+            // クロス LLVM (AArch64 のみ) には X86 / WebAssembly のターゲット初期化シンボルが無い。
+            // llvm_stubs.c の弱いスタブをリンクし、embed_llvm::init() の未定義シンボルを埋める
+            // (ホストのフル LLVM では強いシンボルが勝ち、クロスではスタブが使われる)。
+            println!("cargo:rerun-if-changed=src/native/llvm_stubs.c");
+            let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+            let stubs_obj = out.join("llvm_stubs.o");
+            let st = Command::new(&cc)
+                .args(["-c", "src/native/llvm_stubs.c", "-o"])
+                .arg(&stubs_obj)
+                .status()
+                .expect("cc が要る");
+            assert!(st.success(), "llvm_stubs.c のコンパイルに失敗");
+            let stubs_a = out.join("libksn_llvm_stubs.a");
+            let _ = fs::remove_file(&stubs_a);
+            assert!(
+                Command::new("ar")
+                    .arg("crs")
+                    .arg(&stubs_a)
+                    .arg(&stubs_obj)
+                    .status()
+                    .expect("ar が要る")
+                    .success(),
+                "{} の作成に失敗",
+                stubs_a.display()
+            );
+            println!("cargo:rustc-link-lib=static=ksn_llvm_stubs");
         }
     }
     for d in ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64"] {

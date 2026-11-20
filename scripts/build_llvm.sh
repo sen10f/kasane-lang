@@ -134,8 +134,8 @@ fi
 
 cmake "${CMAKE_ARGS[@]}"
 
-nice -n 10 ninja -C "$BUILD" -j "$JOBS" install-llvm-libraries install-llvm-headers install-lld install-lld-cmake-exports \
+nice -n 10 ninja -C "$BUILD" -j "$JOBS" install-llvm-libraries install-llvm-headers install-lld-libraries install-lld-headers install-lld install-lld-cmake-exports \
   2>&1 | tail -n 5 || true
-# lld はターゲットごとに (ELF / COFF / Wasm) 必要に応じて。
+# lld 静的ライブラリ/ヘッダも入れる (クロスビルドでも組み込み lld の ksn_lld_link をリンクするため)。
 rm -rf "$BUILD" "$TOOLCHAIN"
 echo "done: KSN_LLVM_PREFIX=$PREFIX"
