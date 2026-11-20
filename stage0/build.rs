@@ -71,13 +71,53 @@ fn link_llvm() {
             }
         }
     } else {
-        // llvm-config なし: KSN_LLVM_PREFIX/lib の静的ライブラリをすべてリンク (循環参照は --start-group で解決)。
+        // llvm-config なし: KSN_LLVM_PREFIX/lib の libLLVM*.a をすべてリンク。
+        // rustc は cargo:rustc-link-arg と cargo:rustc-link-lib の出力順を入れ替えるため
+        // --start-group/--end-group が機能しない。代わりに全オブジェクトを 1 つの
+        // アーカイブにまとめてリンクする (単一アーカイブなら循環参照の順序問題が起きない)。
         let libdir = prefix.map_or_else(String::new, |p| format!("{}/lib", p));
         if Path::new(&libdir).is_dir() {
-            println!("cargo:rustc-link-search=native={}", libdir);
-            println!("cargo:rustc-link-arg=-Wl,--start-group");
-            link_glob_static(&libdir, &["libLLVM"]);
-            println!("cargo:rustc-link-arg=-Wl,--end-group");
+            let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+            let all_dir = out.join("llvm_all_objects");
+            let _ = fs::remove_dir_all(&all_dir);
+            fs::create_dir_all(&all_dir).unwrap();
+            let mut objs: Vec<PathBuf> = Vec::new();
+            if let Ok(rd) = fs::read_dir(&libdir) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_file() {
+                        if let Some(n) = p.file_name().and_then(|s| s.to_str()) {
+                            if n.starts_with("libLLVM") && n.ends_with(".a") {
+                                let sub = all_dir.join(n.trim_end_matches(".a"));
+                                let _ = fs::create_dir_all(&sub);
+                                assert!(
+                                    Command::new("ar").arg("x").arg(&p).current_dir(&sub).status().expect("ar が要る").success(),
+                                    "{} の展開に失敗",
+                                    p.display()
+                                );
+                                if let Ok(ord) = fs::read_dir(&sub) {
+                                    for oe in ord.flatten() {
+                                        let op = oe.path();
+                                        if op.extension().and_then(|s| s.to_str()) == Some("o") {
+                                            objs.push(op);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(!objs.is_empty(), "libLLVM*.a が {} に見つからない", libdir);
+            let a = out.join("libksn_llvm_all.a");
+            let _ = fs::remove_file(&a);
+            assert!(
+                Command::new("ar").arg("crs").arg(&a).args(&objs).status().expect("ar が要る").success(),
+                "{} の作成に失敗",
+                a.display()
+            );
+            println!("cargo:rustc-link-search=native={}", out.display());
+            println!("cargo:rustc-link-lib=static=ksn_llvm_all");
         }
     }
     for d in ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64"] {
