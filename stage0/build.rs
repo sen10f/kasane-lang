@@ -109,6 +109,21 @@ fn link_llvm() {
                 }
             }
             assert!(!objs.is_empty(), "libLLVM*.a が {} に見つからない", libdir);
+            // llvm_target_refs.c のオブジェクトを libksn_llvm_all.a に組み込み、
+            // すべての LLVMInitialize* シンボルをリンク時に未定義にする。
+            // これにより libksn_llvm_stubs.a の弱いスタブが正しく解決される
+            // (アーカイブ処理順序による未解決を防ぐ)。
+            println!("cargo:rerun-if-changed=src/native/llvm_target_refs.c");
+            let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+            let refs_obj = out.join("llvm_target_refs.o");
+            let st = Command::new(&cc)
+                .args(["-c", "src/native/llvm_target_refs.c", "-o"])
+                .arg(&refs_obj)
+                .status()
+                .expect("cc が要る");
+            assert!(st.success(), "llvm_target_refs.c のコンパイルに失敗");
+            objs.push(refs_obj);
+
             let a = out.join("libksn_llvm_all.a");
             let _ = fs::remove_file(&a);
             assert!(
