@@ -583,6 +583,8 @@ pub struct Checker<'a> {
     pub unsafe_modules: Vec<String>,
     /// `tests/` 配下 (統合テスト、3.2) のファイルパス。ここに属する定義には別の規則を当てる。
     pub integration_files: HashSet<String>,
+    /// `KSN_CHECKER=s4`: TAST に置き換わる形を見る借用検査 (borrowck) を走らせない (tast_check.rs が診断を選ぶ)。
+    pub s4: bool,
     unsafe_ok: bool,
     // typeck の状態
     d: usize,
@@ -764,6 +766,7 @@ impl<'a> Checker<'a> {
             in_const_fn: false,
             unsafe_modules: vec![],
             integration_files: HashSet::new(),
+            s4: false,
             unsafe_ok: false,
             d: 0,
             names: HashSet::new(),
@@ -4409,7 +4412,10 @@ impl<'a> Checker<'a> {
         self.check_extern_calls(di);
         self.check_callback_args(di);
         // NLL の借用検査 (制御フローと、借用を持つ変数の生存に基づく)
-        self.borrowck(di);
+        // S4 では形を見る借用検査は TAST (tast_rules/borrows.rs など) が担う (設計_S4の切り替え.md 1.1)。
+        if !self.s4 {
+            self.borrowck(di);
+        }
         env = self.final_env.clone();
         let stmts = items(&nf(body)[0]);
         if let Some(last) = stmts.last() {
