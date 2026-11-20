@@ -1651,12 +1651,6 @@
 ],
 [
 "old_only",
-"stage0/tests/data/unsound/fnonce_linear_fn_bound.ksnl",
-12,
-"E2030"
-],
-[
-"old_only",
 "stage0/tests/data/unsound/fqn_same_name_pop_flow.ksnl",
 10,
 "E3060"
