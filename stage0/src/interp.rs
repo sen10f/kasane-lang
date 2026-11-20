@@ -586,7 +586,7 @@ impl Interp {
                 Ok(self.coerce(r, &c.ret))
             }
             Val::Func(i) => self.call_def(*i, args),
-            Val::Native(n) => self.call_native(&n.clone(), args),
+            Val::Native(n) => self.call_native(&n.clone(), args, &[]),
             Val::Ctor(c) => {
                 let (en, vn) = (&c.0, &c.1);
                 self.mk_variant(en, vn, args)
@@ -1582,6 +1582,12 @@ impl Interp {
                     }
                 }
             }
+            if matches!(&r.target, Target::Native(n) if n == "core.mem.size_of") {
+                // `core.mem.size_of::<T>()`: 型実引数を `call_native` に渡し、ネイティブと同じ大きさを返す。
+                let targs_v = f.get(2).cloned().unwrap_or(crate::parser::V::Nil);
+                let targs = items(&targs_v);
+                return self.call_native("core.mem.size_of", args, targs);
+            }
             return self.call_resolved(&r, args);
         }
         let callee = self.eval(fnn, sc)?;
@@ -1696,7 +1702,7 @@ impl Interp {
     fn call_resolved(&mut self, r: &Resolved, args: Vec<Val>) -> Res {
         match &r.target {
             Target::Fn(i) => self.call_def(*i, args),
-            Target::Native(n) => self.call_native(&n.clone(), args),
+            Target::Native(n) => self.call_native(&n.clone(), args, &[]),
             Target::Variant(en, vn) => self.mk_variant(en, vn, args),
             Target::Type(i) => panic(format!("cannot call type {}", self.p.defs[*i].name)),
             Target::Sig(i) => {
@@ -1705,7 +1711,7 @@ impl Interp {
                 if parts.len() >= 4 && parts[0] == "core" && matches!(parts[1], "num" | "bool" | "char") && PRIMS.contains(&parts[2]) {
                     if crate::natives::known_num(parts[3]) {
                         let n = format!("{}.{}", parts[2], parts[3]);
-                        return self.call_native(&n, args);
+                        return self.call_native(&n, args, &[]);
                     }
                 }
                 if d.is_method() {
@@ -1720,7 +1726,7 @@ impl Interp {
                     return self.ptr_native(&d.name, args);
                 }
                 if d.name == "alloc.raw.Buf.with_capacity" || d.name == "alloc.raw.Buf.new" {
-                    return self.call_native(&d.name, args);
+                    return self.call_native(&d.name, args, &[]);
                 }
                 panic(format!("function {} has no implementation in this interpreter", d.name))
             }

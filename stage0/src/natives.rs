@@ -4,13 +4,17 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use crate::check::{items, st};
+use crate::check::{items, st, tag, tel};
 use crate::fmath;
 use crate::parser::V;
+use crate::program::Program;
+use crate::ptrwidth;
 use crate::interp::Interp;
 use crate::interp::{DEADLOCK_JOIN, DEADLOCK_RECV};
 use crate::value::*;
 use crate::value::Scope;
+
+use crate::ffi::{self, CTy};
 
 pub const NATIVE_NAMES: &[&str] = &[
     "core.mem.drop", "core.mem.swap", "core.mem.replace", "core.mem.size_of", "core.panic.panic",
@@ -603,7 +607,7 @@ impl Interp {
         Ok(Rc::new(CellPlace(RefCell::new(v.clone()))))
     }
 
-    pub fn call_native(&mut self, name: &str, args: Vec<Val>) -> Res {
+    pub fn call_native(&mut self, name: &str, args: Vec<Val>, targs: &[V]) -> Res {
         if self.dbg_guard {
             self.dbg_guard_native(name)?;
         }
@@ -626,7 +630,11 @@ impl Interp {
                 }
                 panic("replace needs a reference")
             }
-            "core.mem.size_of" => Ok(usz(8)),
+            "core.mem.size_of" => {
+                // `core.mem.size_of::<T>()`: 型実引数 `T` の大きさ。ネイティブ生成の `kir::size_of` と同じ値を返す。
+                let t = targs.first().cloned().unwrap_or(V::Nil);
+                Ok(usz(size_of_ty(&self.p, &t) as usize))
+            }
             "core.panic.panic" => panic(self.display_str(&a0)?),
             "core.panic.todo" => panic("not yet implemented"),
             "core.panic.unreachable" => panic("unreachable"),
@@ -2134,5 +2142,158 @@ impl Interp {
             }
             _ => panic(format!("no method {} on File", name)),
         }
+    }
+}
+
+/// 型 V の大きさ (バイト)。ネイティブ生成の `kir::size_of` と同じ値を返す。
+/// プリミティブ・ポインタ・参照・usize/isize・`()`・配列・タプル・`layout c` 構造体に対応。
+fn size_of_ty(p: &Program, t: &V) -> u32 {
+    match tag(t).as_str() {
+        "prim" => prim_size(st(tel(t, 1)).as_str()),
+        "ptr" | "ref" => ptrwidth::bits() / 8,
+        "unit" => 0,
+        "array" => {
+            let elem = size_of_ty(p, tel(t, 1));
+            let n = match tel(t, 2) { V::N(n) => n.parse::<u32>().unwrap_or(0), _ => 0 };
+            elem * n
+        }
+        "tuple" => {
+            let fs: Vec<V> = items(tel(t, 1)).to_vec();
+            if fs.is_empty() {
+                // `()` (ユニット型): ネイティブの `kir::size_of` は `Ty::Unit => 0`。
+                return 0;
+            }
+            let mut off = 0u32;
+            let mut al = 1u32;
+            for f in &fs {
+                let sz = size_of_ty(p, f);
+                let a = align_of_ty(p, f);
+                off = off.div_ceil(a) * a;
+                off += sz;
+                al = al.max(a);
+            }
+            off.div_ceil(al).max(1) * al
+        }
+        "named" => {
+            let fqn = resolve_fqn(p, &st(tel(t, 1)));
+            let Some(&di) = p.types.get(&fqn) else { return 0 };
+            let d = &p.defs[di];
+            if d.layout_c {
+                let mut fields = vec![];
+                for (fn_, ft, _) in &d.fields {
+                    fields.push((fn_.clone(), cty_of_ty(p, ft)));
+                }
+                ffi::make_struct(&st(tel(t, 1)), fields).map(|s| s.size).unwrap_or(0)
+            } else {
+                let fs: Vec<&V> = d.fields.iter().map(|(_, ft, _)| ft).collect();
+                let mut off = 0u32;
+                let mut al = 1u32;
+                for f in &fs {
+                    let sz = size_of_ty(p, f);
+                    let a = align_of_ty(p, f);
+                    off = off.div_ceil(a) * a;
+                    off += sz;
+                    al = al.max(a);
+                }
+                off.div_ceil(al).max(1) * al
+            }
+        }
+        _ => 0,
+    }
+}
+
+fn prim_size(n: &str) -> u32 {
+    match n {
+        "i8" | "u8" | "bool" => 1,
+        "i16" | "u16" => 2,
+        "i32" | "u32" | "f32" | "char" => 4,
+        "i64" | "u64" | "f64" => 8,
+        "isize" | "usize" => ptrwidth::bits() / 8,
+        "i128" | "u128" => 16,
+        _ => 0,
+    }
+}
+
+/// 型 V の整列 (バイト)。
+fn align_of_ty(p: &Program, t: &V) -> u32 {
+    match tag(t).as_str() {
+        "unit" => 1,
+        "prim" => match st(tel(t, 1)).as_str() {
+            "i8" | "u8" | "bool" => 1,
+            "i16" | "u16" => 2,
+            "i32" | "u32" | "f32" | "char" => 4,
+            "i64" | "u64" | "f64" | "isize" | "usize" | "i128" | "u128" => 8,
+            _ => 1,
+        },
+        "ptr" | "ref" => ptrwidth::bits() / 8,
+        "array" => align_of_ty(p, tel(t, 1)),
+        "tuple" | "named" => {
+            let fs: Vec<V> = match tag(t).as_str() {
+                "tuple" => items(tel(t, 1)).to_vec(),
+                "named" => match p.types.get(&resolve_fqn(p, &st(tel(t, 1)))) {
+                    Some(&di) => p.defs[di].fields.iter().map(|(_, ft, _)| ft).cloned().collect(),
+                    None => vec![],
+                },
+                _ => vec![],
+            };
+            let mut a = 1u32;
+            for f in &fs {
+                a = a.max(align_of_ty(p, f));
+            }
+            a
+        }
+        _ => 1,
+    }
+}
+
+/// 型 V (`named` の短い名前も含む) を、`Program::types` のキー (FQN) に解決する。
+fn resolve_fqn(p: &Program, name: &str) -> String {
+    if p.types.contains_key(name) {
+        return name.to_string();
+    }
+    let tail = format!(".{}", name);
+    let mut hit = p.types.keys().filter(|k| k.ends_with(&tail));
+    match (hit.next(), hit.next()) {
+        (Some(k), None) => k.clone(),
+        _ => name.to_string(),
+    }
+}
+
+/// 型 V を C の配置 (`CTy`) にする。`layout c` の構造体は `make_struct` で配置を求める。
+fn cty_of_ty(p: &Program, t: &V) -> CTy {
+    match tag(t).as_str() {
+        "prim" => {
+            let n = st(tel(t, 1));
+            CTy::Scalar(match n.as_str() {
+                "i8" => "i8", "u8" => "u8", "bool" => "bool", "i16" => "i16", "u16" => "u16",
+                "i32" => "i32", "u32" => "u32", "f32" => "f32", "char" => "char",
+                "i64" => "i64", "u64" => "u64", "f64" => "f64",
+                "isize" => "isize", "usize" => "usize",
+                _ => "i32",
+            })
+        }
+        "ptr" | "ref" => CTy::Scalar("ptr"),
+        "array" => {
+            let e = cty_of_ty(p, tel(t, 1));
+            let n = match tel(t, 2) { V::N(n) => n.parse::<u32>().unwrap_or(1), _ => 1 };
+            CTy::Array(Rc::new(e), n)
+        }
+        "named" => {
+            let fqn = resolve_fqn(p, &st(tel(t, 1)));
+            let Some(&di) = p.types.get(&fqn) else { return CTy::Scalar("i32"); };
+            let d = &p.defs[di];
+            if d.layout_c {
+                let mut fields = vec![];
+                for (fn_, ft, _) in &d.fields {
+                    fields.push((fn_.clone(), cty_of_ty(p, ft)));
+                }
+                return match ffi::make_struct(&st(tel(t, 1)), fields) {
+                    Ok(s) => CTy::Struct(Rc::new(s)),
+                    Err(_) => CTy::Scalar("i32"),
+                };
+            }
+            CTy::Scalar("i32")
+        }
+        _ => CTy::Scalar("i32"),
     }
 }
