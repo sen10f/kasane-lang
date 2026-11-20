@@ -2,6 +2,12 @@ type alloc.collections.BtreeMap[K: core.cmp.Ord, V, A: alloc.alloc.Allocator] pu
     entries: alloc.raw.Buf<alloc.collections.MapEntry<K, V>, A>
 end alloc.collections.BtreeMap
 
+type alloc.collections.BtreeMapIter['a, K, V] pub
+    entries: &'a [alloc.collections.MapEntry<K, V>]
+    position: usize
+    stop: usize
+end alloc.collections.BtreeMapIter
+
 enum alloc.collections.HashCell[K, V] pub
     Empty
     Index(usize)
@@ -17,6 +23,15 @@ type alloc.collections.HashMapIter['a, K, V] pub
     cells: &'a [alloc.collections.HashCell<K, V>]
     position: usize
 end alloc.collections.HashMapIter
+
+type alloc.collections.HashSet[T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator] pub
+    map: alloc.collections.HashMap<T, bool, A>
+    count: usize
+end alloc.collections.HashSet
+
+type alloc.collections.HashSetIter['a, T] pub
+    inner: alloc.collections.HashMapIter<'a, T, bool>
+end alloc.collections.HashSetIter
 
 type alloc.collections.MapEntry[K, V] pub
     key: K

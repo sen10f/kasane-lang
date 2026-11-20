@@ -46,12 +46,12 @@ pub struct Hit {
 
 /// 標準の容れ物・共有・送受信の型 (型名の末尾)。型引数に参照を運ぶ型を入れられない。
 const CONTAINERS: &[&str] = &[
-    "Vec", "HashMap", "BtreeMap", "VecDeque", "MapEntry", "Box", "Buf", "Rc", "Arc", "Mutex", "RwLock", "Sender", "Receiver",
+    "Vec", "HashMap", "BtreeMap", "HashSet", "VecDeque", "MapEntry", "Box", "Buf", "Rc", "Arc", "Mutex", "RwLock", "Sender", "Receiver",
     "SendError", "JoinHandle", "Task", "Cell", "RefCell", "Arena", "Handle",
 ];
 /// 参照を運ぶ標準の型 (末尾 2 つの名前で照合する)。
 const RC_STD: &[(&str, &str)] =
-    &[("slice", "Iter"), ("str", "Chars"), ("str", "Split"), ("collections", "HashMapIter"), ("sync", "MutexGuard")];
+    &[("slice", "Iter"), ("str", "Chars"), ("str", "Split"), ("collections", "HashMapIter"), ("collections", "BtreeMapIter"), ("collections", "HashSetIter"), ("sync", "MutexGuard")];
 /// 値を保存・送る関数・メソッドの名前 (クロージャを渡すと E3060)。
 const STORE_FNS: &[&str] = &["push", "insert", "push_back", "push_front", "send", "try_send", "spawn", "spawn_deep", "spawn_local", "into_dyn", "set", "put"];
 const STORE_NEW: &[&str] = &["Box", "Rc", "Arc", "Mutex", "RwLock", "Cell", "RefCell"];

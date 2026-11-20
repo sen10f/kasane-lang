@@ -1839,21 +1839,43 @@ impl Interp {
             "len" => Ok(usz(m.borrow().d.len())),
             "is_empty" => Ok(Val::Bool(m.borrow().d.is_empty())),
             "iter" => {
-                let mut items: Vec<(Val, Val)> = m.borrow().d.clone();
-                if m.borrow().kind == "BtreeMap" {
-                    items.sort_by(|x, y| {
-                        let c = vcmp(&x.0, &y.0, &|_, _| (0, 0)).unwrap_or(0);
-                        c.cmp(&0)
-                    });
-                }
+                let items = map_sorted_items(&m);
                 Ok(Val::Iter(Rc::new(RefCell::new(IterV::Pre {
                     items: items.into_iter().map(|(k, v)| Val::Tuple(Rc::new(vec![k, v]))).collect(),
                     i: 0,
                 }))))
             }
+            // `BtreeMap.first` / `last`: 鍵の順の最初・最後の組 (`(&K, &V)`)。空なら `None`。
+            "first" | "last" => {
+                let items = map_sorted_items(&m);
+                let pick = if name == "first" { items.first() } else { items.last() };
+                Ok(pick.map_or_else(none, |(k, v)| some(Val::Tuple(Rc::new(vec![k.clone(), v.clone()])))))
+            }
+            // `BtreeMap.range(lo, hi)`: 鍵が `lo` 以上 `hi` 未満の組を鍵の順に返す (半開区間)。
+            "range" => {
+                let hi = args.get(1).cloned().unwrap_or(Val::Unit);
+                let items: Vec<Val> = map_sorted_items(&m)
+                    .into_iter()
+                    .filter(|(k, _)| vcmp(k, &a0, &|_, _| (0, 0)).unwrap_or(0) >= 0 && vcmp(k, &hi, &|_, _| (0, 0)).unwrap_or(0) < 0)
+                    .map(|(k, v)| Val::Tuple(Rc::new(vec![k, v])))
+                    .collect();
+                Ok(Val::Iter(Rc::new(RefCell::new(IterV::Pre { items, i: 0 }))))
+            }
             _ => panic(format!("no method {} on map", name)),
         }
     }
+}
+
+/// 辞書の組を反復順に並べて返す。`HashMap` は挿入順、`BtreeMap` は鍵の順。
+fn map_sorted_items(m: &Rc<RefCell<MapV>>) -> Vec<(Val, Val)> {
+    let mut items: Vec<(Val, Val)> = m.borrow().d.clone();
+    if m.borrow().kind == "BtreeMap" {
+        items.sort_by(|x, y| {
+            let c = vcmp(&x.0, &y.0, &|_, _| (0, 0)).unwrap_or(0);
+            c.cmp(&0)
+        });
+    }
+    items
 }
 
 /// `Hash` の組み込み実装 (仕様 4.2) が `Fnv64` へ渡すバイト列: 整数は型幅のリトルエンディアン、bool は 1 バイト、char は 4 バイト。
