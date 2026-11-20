@@ -21,6 +21,8 @@ pub enum Flavor {
     Wasm,
     /// COFF (MinGW-w64 の `x86_64-windows-gnu`)。
     MinGw,
+    /// Mach-O (macOS の `aarch64-apple-darwin` / `x86_64-apple-darwin`、`ld64.lld`)。
+    MachO,
 }
 
 /// lld を同じプロセスで走らせる。`args` に `ld.lld` / `wasm-ld` の名前 (argv[0]) は含めない。失敗なら lld の標準エラーを返す。
@@ -30,14 +32,19 @@ pub fn lld_link(flavor: Flavor, args: &[String]) -> Result<(), String> {
     use std::ffi::CString;
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let name = match flavor { Flavor::Wasm => "wasm-ld", Flavor::MinGw => "ld.lld", Flavor::Elf => "ld.lld" };
+    let name = match flavor {
+        Flavor::Wasm => "wasm-ld",
+        Flavor::MinGw => "ld.lld",
+        Flavor::Elf => "ld.lld",
+        Flavor::MachO => "ld64.lld",
+    };
     let mut cs = vec![CString::new(name).unwrap()];
     for a in args {
         cs.push(CString::new(a.as_str()).map_err(|_| format!("リンクの引数に NUL がある: {:?}", a))?);
     }
     let ptrs: Vec<*const std::os::raw::c_char> = cs.iter().map(|c| c.as_ptr()).collect();
     let (mut o, mut e) = (std::ptr::null_mut(), std::ptr::null_mut());
-    let rc = unsafe { ksn_lld_link(match flavor { Flavor::Elf => 0, Flavor::Wasm => 1, Flavor::MinGw => 2 }, ptrs.len() as i32, ptrs.as_ptr(), &mut o, &mut e) };
+    let rc = unsafe { ksn_lld_link(match flavor { Flavor::Elf => 0, Flavor::Wasm => 1, Flavor::MinGw => 2, Flavor::MachO => 3 }, ptrs.len() as i32, ptrs.as_ptr(), &mut o, &mut e) };
     let take = |p: *mut std::os::raw::c_char| -> String {
         if p.is_null() {
             return String::new();
@@ -165,5 +172,55 @@ pub fn mingw_args(root: Option<&str>, objs: &[PathBuf], exe: &Path, nat: &[Strin
         a.push(if s == "@PTHREAD@" { pth.display().to_string() } else { s.into() });
     }
     a.push(gcc.join("crtend.o").display().to_string());
+    Ok(a)
+}
+
+/// macOS (Mach-O) の実行ファイルをつなぐ ld64.lld の引数。`root` は macOS SDK のパス (`KSN_SYSROOT`。
+/// SDK が無ければ失敗し、`KSN_SYSROOT` を名指しして設定を促す。`.tbd` スタブで libSystem を参照する。
+pub fn darwin_args(name: &str, root: Option<&str>, objs: &[PathBuf], exe: &Path, nat: &[String]) -> Result<Vec<String>, String> {
+    let (arch, sdk) = match name {
+        "aarch64-apple-darwin" => ("arm64", root.ok_or("KSN_SYSROOT が空")?),
+        "x86_64-apple-darwin" => ("x86_64", root.ok_or("KSN_SYSROOT が空")?),
+        _ => return Err(format!("組み込みの lld は {} を知らない", name)),
+    };
+    let sdk_path = PathBuf::from(sdk);
+    let lib_dir = sdk_path.join("usr").join("lib");
+    if !lib_dir.is_dir() {
+        return Err(format!(
+            "macOS SDK の usr/lib が見つからない ({}): KSN_SYSROOT に macOS SDK を指定する",
+            sdk_path.display()
+        ));
+    }
+    for f in ["crt1.o", "crti.o", "crtn.o"] {
+        let p = lib_dir.join(f);
+        if !p.exists() {
+            return Err(format!(
+                "{} が見つからない ({}): macOS SDK (KSN_SYSROOT) に含まれているか確認する",
+                p.display(),
+                sdk_path.display()
+            ));
+        }
+    }
+    let mut a: Vec<String> = vec![
+        "-arch".into(),
+        arch.into(),
+        "-platform_version".into(),
+        "macos".into(),
+        "14.0".into(),
+        "14.0".into(),
+        "-syslibroot".into(),
+        sdk.into(),
+    ];
+    a.push("-o".into());
+    a.push(exe.display().to_string());
+    a.push(lib_dir.join("crt1.o").display().to_string());
+    a.push(lib_dir.join("crti.o").display().to_string());
+    a.push(format!("-L{}", lib_dir.display()));
+    for o in objs {
+        a.push(o.display().to_string());
+    }
+    a.extend(nat.iter().cloned());
+    a.push("-lSystem".into());
+    a.push(lib_dir.join("crtn.o").display().to_string());
     Ok(a)
 }

@@ -120,6 +120,26 @@ fn gen_assets(manifest: &Path, out: &Path) -> Vec<u8> {
         jobs.push(("x86_64-windows-gnu", "kir_rt", src.join("kir_rt.c"), a.clone()));
         jobs.push(("x86_64-windows-gnu", "sysrt", src.join("sysrt.c"), a));
     }
+    // macOS (Mach-O): C の開発ファイルは macOS SDK (`KSN_SYSROOT`。既定の sysroot は無い)。SDK が無ければ飛ばす。
+    println!("cargo:rerun-if-env-changed=KSN_SYSROOT");
+    let mroot = std::env::var("KSN_SYSROOT").ok().filter(|s| !s.is_empty()).unwrap_or_default();
+    if !mroot.is_empty() && Path::new(&mroot).join("include").is_dir() {
+        let darwin = |t: &str| -> Vec<String> {
+            vec![
+                format!("--target={}", t),
+                "-O0".into(),
+                "-ffreestanding".into(),
+                "-fno-builtin".into(),
+                "-isystem".into(),
+                format!("{}/include", mroot),
+            ]
+        };
+        for t in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
+            let a = darwin(t);
+            jobs.push((t, "kir_rt", src.join("kir_rt.c"), a.clone()));
+            jobs.push((t, "sysrt", src.join("sysrt.c"), a));
+        }
+    }
     let wasm = |t: &str, extra: &[&str]| -> Vec<String> {
         let mut a: Vec<String> = vec![format!("--target={}", t), "-O0".into(), "-ffreestanding".into(), "-fno-builtin".into(), format!("-isystem{}", inc.display())];
         a.extend(extra.iter().map(|s| s.to_string()));
@@ -258,5 +278,10 @@ fn link_embedded_lld() {
         // Polly は -dev に静的ライブラリが無い。lld は使わないので外す。
         println!("cargo:rustc-link-lib=static={}", l.trim_start_matches("-l"));
     }
+    // Mach-O ドライバ (macOS リンク用)。`--libs` の component `machodriver` を入れると
+    // リンク順序が変わって既存のドライバが未解決になるので、ライブラリを直接パス指定する。
+    // `ksn_lld_shim` より後ろに並ぶので、`lld_shim.o` からの `lld::macho::link` 参照が解決する。
+    println!("cargo:rustc-link-search=native={}", lib);
+    println!("cargo:rustc-link-lib=static=lldMachO");
     // システムのライブラリ (z・zstd・stdc++) は L1 の `link_llvm` が静的につなぐ (配布する実行体が依存しない)。ここでは足さない。
 }

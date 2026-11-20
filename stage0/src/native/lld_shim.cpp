@@ -15,6 +15,7 @@ llvm::PassPluginLibraryInfo getPollyPluginInfo() { return {LLVM_PLUGIN_API_VERSI
 LLD_HAS_DRIVER(elf)
 LLD_HAS_DRIVER(wasm)
 LLD_HAS_DRIVER(mingw)
+LLD_HAS_DRIVER(macho)
 
 static char *dup(const std::string &s) {
   char *p = (char *)malloc(s.size() + 1);
@@ -28,6 +29,7 @@ extern "C" int ksn_lld_link(int flavor, int argc, const char **argv, char **out,
   std::vector<const char *> args(argv, argv + argc);
   lld::DriverDef drv = flavor == 1   ? lld::DriverDef{lld::Wasm, &lld::wasm::link}
                      : flavor == 2 ? lld::DriverDef{lld::MinGW, &lld::mingw::link}
+                     : flavor == 3 ? lld::DriverDef{lld::Darwin, &lld::macho::link}
                                    : lld::DriverDef{lld::Gnu, &lld::elf::link};
   // 同じプロセスで何度も呼ぶので、状態の後始末をさせる (`exitEarly` = false)。
   lld::Result r = lld::lldMain(args, os, es, {drv});

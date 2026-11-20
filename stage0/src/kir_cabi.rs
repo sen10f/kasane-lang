@@ -17,6 +17,8 @@ pub enum Arch {
     Aarch64,
     /// Windows x64: 1・2・4・8 バイトの構造体は整数 1 個、それ以外は呼び出し側の写しへのポインタ (戻り値は `sret`)。
     Win64,
+    /// Apple AArch64 (arm64 macOS): 構造体の値渡しは AAPCS64 と同じ。可変引数はスタックに置く。
+    Aarch64Apple,
 }
 
 /// 葉の型の分類 (浮動小数か整数相当か) と大きさ。
@@ -142,7 +144,7 @@ fn classify(arch: Arch, aggs: &[AggDef], ai: u32, int_free: &mut u32, sse_free: 
             }
             Some(Abi::Regs(slots))
         }
-        Arch::Aarch64 => {
+        Arch::Aarch64 | Arch::Aarch64Apple => {
             // HFA: 同じ大きさの浮動小数だけ 1〜4 個。
             if !lv.is_empty() && lv.len() <= 4 && lv.iter().all(|(_, k, s)| *k == Leaf::Float && *s == lv[0].2) && size == lv.len() as u32 * lv[0].2 {
                 let (ty, vb) = if lv[0].2 == 8 { ("double", 64) } else { ("float", 32) };
