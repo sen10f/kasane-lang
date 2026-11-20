@@ -1808,3 +1808,53 @@ fn build_key_changes_with_ksn_clang_args() {
 
     let _ = fs::remove_dir_all(&cache);
 }
+
+/// 別の識別子の `ksn-<識別子>` (同梱の `ksn` の共有実体) を置く。`links` が真なら、エントリのハードリンクを 1 本つける。
+fn fake_shared_ksn(cache: &Path, id: &str, age_secs: u64, links: bool) -> PathBuf {
+    let f = cache.join(format!("ksn-{}", id));
+    fs::write(&f, b"ksn").unwrap();
+    if links {
+        let entry = cache.join(format!("fakeentry-{}", id));
+        fs::create_dir_all(&entry).unwrap();
+        fs::hard_link(&f, entry.join("ksn")).unwrap();
+    }
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + age_secs);
+    fs::File::open(&f).unwrap().set_modified(t).unwrap();
+    f
+}
+
+#[test]
+fn shared_ksn_of_other_builds_without_entries_is_removed_on_build() {
+    // エントリに繋がれていない (リンク数 1) ほかの識別子の `ksn-<識別子>` は、ビルドの起動時に消える。
+    let t = Tmp::new("cache_prune_orphan", CACHE_SRC);
+    let cache = scratch::Scratch::at(format!("ksn_cache_orphan_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    fs::create_dir_all(&cache).unwrap();
+    let orphans: Vec<PathBuf> = (0..4).map(|k| fake_shared_ksn(&cache, &format!("orphan{}", k), k, false)).collect();
+    let o = build_with_cache(exe(), &t.0, &cache, &[], &[]);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    for f in &orphans {
+        assert!(!f.exists(), "繋がれていない古い ksn が残った: {}", f.display());
+    }
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn shared_ksn_of_other_builds_is_bounded_to_the_newest_three() {
+    // エントリが繋いでいる古い識別子の共有実体は、新しい順に 3 本まで残す。エントリのハードリンクは消えない。
+    let t = Tmp::new("cache_prune_bounded", CACHE_SRC);
+    let cache = scratch::Scratch::at(format!("ksn_cache_bounded_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    fs::create_dir_all(&cache).unwrap();
+    // 新しさは age = 5 - k (k が小さいほど新しい)。
+    let shared: Vec<PathBuf> = (0..6).map(|k| fake_shared_ksn(&cache, &format!("old{}", k), 5 - k, true)).collect();
+    let o = build_with_cache(exe(), &t.0, &cache, &[], &[]);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    let kept = shared.iter().filter(|f| f.exists()).count();
+    assert_eq!(kept, 3, "古い識別子の ksn は新しい順に 3 本だけ残る");
+    assert!(shared[0].exists() && shared[1].exists() && shared[2].exists(), "新しい 3 本が残る");
+    for k in 0..6 {
+        assert!(cache.join(format!("fakeentry-old{}", k)).join("ksn").exists(), "エントリのハードリンクは消えない (k={})", k);
+    }
+    let _ = fs::remove_dir_all(&cache);
+}
