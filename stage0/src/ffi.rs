@@ -515,6 +515,167 @@ mod x64 {
     }
 }
 
+/// Microsoft x64 (Win64) の呼び出し規約。整数/ポインタ引数は RCX/RDX/R8/R9、浮動小数は XMM0-3、
+/// 32 バイトのシャドウスペース、構造体は 8 バイト以下なら整数レジスタ 1 つ、超えれば呼び出し側の
+/// 複製へのポインタで渡す。戻り値は RAX/XMM0、8 バイト超の構造体は sret (RCX に隠しポインタ)。
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+mod x64_win {
+    use super::*;
+
+    /// Microsoft x64 呼び出し規約の枠。
+    /// [+0] fnptr、[+8..40) gp (RCX,RDX,R8,R9)、[+40..72) sse (XMM0-3)、
+    /// [+72] stack ptr、[+80] nstack、[+88..120) ret (RAX,RDX,XMM0,XMM1)
+    #[repr(C)]
+    pub struct Frame {
+        pub fnptr: u64,
+        pub gp: [u64; 4],
+        pub sse: [u64; 4],
+        pub stack: *const u64,
+        pub nstack: u64,
+        pub ret: [u64; 4],
+    }
+
+    std::arch::global_asm!(
+        ".text",
+        ".globl ksn_ffi_call_raw_win",
+        "ksn_ffi_call_raw_win:",
+        "push rbp",
+        "mov rbp, rsp",
+        "push rbx",
+        "push r12",
+        "mov rbx, rdi",
+        "mov rax, [rbx + 80]",
+        "lea rcx, [rax*8 + 32]",
+        "and rcx, -16",
+        "sub rsp, rcx",
+        "mov rsi, [rbx + 72]",
+        "lea rdi, [rsp + 32]",
+        "mov rcx, rax",
+        "cld",
+        "rep movsq",
+        "movq xmm0, [rbx + 40]",
+        "movq xmm1, [rbx + 48]",
+        "movq xmm2, [rbx + 56]",
+        "movq xmm3, [rbx + 64]",
+        "mov rcx, [rbx + 8]",
+        "mov rdx, [rbx + 16]",
+        "mov r8,  [rbx + 24]",
+        "mov r9,  [rbx + 32]",
+        "mov r11, [rbx]",
+        "xor eax, eax",
+        "call r11",
+        "mov [rbx + 88], rax",
+        "mov [rbx + 96], rdx",
+        "movq [rbx + 104], xmm0",
+        "movq [rbx + 112], xmm1",
+        "lea rsp, [rbp - 16]",
+        "pop r12",
+        "pop rbx",
+        "pop rbp",
+        "ret",
+    );
+
+    extern "C" {
+        fn ksn_ffi_call_raw_win(f: *mut Frame);
+    }
+
+    fn bytes_at(b: &[u8], i: usize) -> u64 {
+        let mut x = [0u8; 8];
+        let end = (i * 8 + 8).min(b.len());
+        x[..end - i * 8].copy_from_slice(&b[i * 8..end]);
+        u64::from_le_bytes(x)
+    }
+
+    pub unsafe fn call(p: *mut c_void, args: &[ArgV], ret: &RetTy) -> Result<RetV, String> {
+        let mut gp: Vec<u64> = vec![];
+        let mut sse: Vec<u64> = vec![];
+        let mut stack: Vec<u64> = vec![];
+        let mut sret_buf: Vec<u64> = vec![];
+        let mut sret_copies: Vec<Vec<u8>> = vec![];
+
+        // 構造体の戻り値が 8 バイト超なら、呼び出し側確保の領域への隠しポインタを RCX (gp[0]) に渡す
+        if let RetTy::Agg(t) = ret {
+            if t.size() > 8 {
+                let sz = (t.size() as usize).div_ceil(8) * 8;
+                sret_buf = vec![0u64; sz / 8];
+                gp.push(sret_buf.as_mut_ptr() as u64);
+            }
+        }
+
+        for a in args {
+            match a {
+                ArgV::Int(v) => {
+                    if gp.len() < 4 { gp.push(*v) } else { stack.push(*v) }
+                }
+                ArgV::F32(f) => {
+                    let v = f.to_bits() as u64;
+                    if sse.len() < 4 { sse.push(v) } else { stack.push(v) }
+                }
+                ArgV::F64(f) => {
+                    let v = f.to_bits();
+                    if sse.len() < 4 { sse.push(v) } else { stack.push(v) }
+                }
+                ArgV::Agg(b, t) => {
+                    if t.size() <= 8 {
+                        // 8 バイト以下の構造体は整数レジスタ 1 つで渡す
+                        if gp.len() < 4 {
+                            gp.push(bytes_at(b, 0));
+                        } else {
+                            stack.push(bytes_at(b, 0));
+                        }
+                    } else {
+                        // 8 バイト超の構造体は呼び出し側の複製へのポインタで渡す
+                        let mut copy = b.clone();
+                        let ptr = copy.as_mut_ptr() as u64;
+                        sret_copies.push(copy);
+                        if gp.len() < 4 {
+                            gp.push(ptr);
+                        } else {
+                            stack.push(ptr);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut frame = Frame {
+            fnptr: p as u64,
+            gp: [0; 4],
+            sse: [0; 4],
+            stack: stack.as_ptr(),
+            nstack: stack.len() as u64,
+            ret: [0; 4],
+        };
+        frame.gp[..gp.len()].copy_from_slice(&gp);
+        frame.sse[..sse.len()].copy_from_slice(&sse);
+        ksn_ffi_call_raw_win(&mut frame);
+
+        let [rax, _rdx, x0, _x1] = frame.ret;
+        Ok(match ret {
+            RetTy::Void => RetV::None,
+            RetTy::Int => RetV::Int(rax),
+            RetTy::F32 => RetV::F32(f32::from_bits(x0 as u32)),
+            RetTy::F64 => RetV::F64(f64::from_bits(x0)),
+            RetTy::Agg(t) => {
+                if t.size() > 8 {
+                    // sret 領域から読む
+                    let size = t.size() as usize;
+                    let mut out = vec![0u8; size];
+                    let src = std::slice::from_raw_parts(sret_buf.as_ptr() as *const u8, size);
+                    out.copy_from_slice(src);
+                    RetV::Agg(out)
+                } else {
+                    // RAX から読む
+                    let size = t.size() as usize;
+                    let mut out = vec![0u8; size];
+                    out.copy_from_slice(&rax.to_le_bytes()[..size]);
+                    RetV::Agg(out)
+                }
+            }
+        })
+    }
+}
+
 /// AArch64 Linux の呼び出し (AAPCS64)。整数・ポインタ・浮動小数の引数と戻り値を扱う。
 /// 構造体の値渡し・値返しは、この経路では未対応 (ネイティブ生成と同じく x86_64 だけで検証している) なので、名前つきのエラーにする。
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
@@ -633,7 +794,10 @@ pub fn call_generic(p: *mut c_void, args: &[ArgV], ret: &RetTy) -> Result<RetV, 
     return unsafe { x64::call(p, args, ret) };
     #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
     return unsafe { a64::call(p, args, ret) };
+    #[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+    return unsafe { x64_win::call(p, args, ret) };
     #[cfg(not(all(any(target_arch = "x86_64", target_arch = "aarch64"), target_os = "linux")))]
+    #[cfg(not(all(target_arch = "x86_64", target_os = "windows")))]
     call_basic(p, args, ret)
 }
 
@@ -1122,6 +1286,101 @@ mod x64_trampoline {
     }
 }
 
+/// Microsoft x64 (Win64) コールバックトランポリン。
+/// SysV と異なり、整数レジスタ 4 つ (RCX/RDX/R8/R9) と XMM レジスタ 4 つ (XMM0-3)、
+/// 32 バイトのシャドウスペースを使う。戻り値クラスごとに共有ルーチンを分けず、
+/// 1 つの共有ルーチンで `out` (RetRegs) の rax/rdx/x0/x1 をすべてレジスタに書き戻すので、
+/// C 側が使うレジスタだけを読む。全スタブ固定 16 バイト。
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+mod x64_win_trampoline {
+    use core::arch::global_asm;
+    use super::{handler_for, RetRegs};
+
+    /// トランポリンの共有ディスパッチャ。`global_asm!` のトランポリンから呼ばれる。
+    /// 引数は SysV と同じ署名 (slot, gp, sse, stack, out)。Windows では 5 番目の `out` はスタック経由。
+    #[no_mangle]
+    pub extern "C" fn ksn_tramp_dispatch(
+        slot: usize,
+        gp: *const u64,
+        sse: *const u64,
+        stack: *const u64,
+        out: *mut RetRegs,
+    ) {
+        let h = handler_for(slot);
+        // SAFETY: トランポリンが `gp`/`sse` は 6/8 個 (Windows は先頭 4 つが有効)、`out` は書き込み可能、
+        // `stack` はハンドラが必要な分だけ確保された領域を示す。
+        unsafe {
+            h(slot, &*(gp as *const [u64; 6]), &*(sse as *const [u64; 8]), stack, &mut *out);
+        }
+    }
+
+    /// スロット `N` の入口スタブ。`mov r10d, N; lea rax, [rip + 共有ルーチン]; jmp rax`。
+    /// 全スタブ固定 16 バイトなので、入口 `i` のアドレスは `スロット0 のアドレス + i * 16` で求められる。
+    macro_rules! stub {
+        ($($n:literal),*) => {
+            concat!(
+                $(concat!(
+                    "ksn_tramp_win_", stringify!($n), ":\n",
+                    "    mov r10d, ", stringify!($n), "\n",
+                    "    lea rax, [rip + ksn_tramp_win_shared]\n",
+                    "    jmp rax\n",
+                    "    nop\n",
+                )),*
+            )
+        };
+    }
+
+    /// マクロ `M` に `M!(0, 1, ..., 63)` を展開する。
+    macro_rules! for_each_slot {
+        ($macro:ident) => {
+            $macro!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63)
+        };
+    }
+
+    /// 枠: [rsp+0..32) = シャドウスペース、[rsp+32..40) = 5 番目のスタック引数 (out ポインタ)、
+    /// [rsp+40..72) = out (RetRegs: rax/rdx/x0/x1)、[rsp+72..104) = gp (RCX,RDX,R8,R9)、
+    /// [rsp+104..136) = sse (XMM0-3)、[rsp+136..144) = スタック領域の先頭、[rsp+144..152) = パディング。
+    /// 入口時の `rsp` は 16 バイト境界から 8 バイトずれているので、152 (≡8 mod 16) 減らすと
+    /// `call` 直前に 16 バイト境界になる。
+    global_asm!(
+        ".align 16\n",
+        ".globl ksn_tramp_win_shared\n",
+        "ksn_tramp_win_shared:\n",
+        "    mov r11, rsp\n",
+        "    sub rsp, 152\n",
+        "    mov [rsp + 72], rcx\n",
+        "    mov [rsp + 80], rdx\n",
+        "    mov [rsp + 88], r8\n",
+        "    mov [rsp + 96], r9\n",
+        "    movq [rsp + 104], xmm0\n",
+        "    movq [rsp + 112], xmm1\n",
+        "    movq [rsp + 120], xmm2\n",
+        "    movq [rsp + 132], xmm3\n",
+        "    lea rax, [r11 + 8]\n",
+        "    mov [rsp + 136], rax\n",
+        "    mov rcx, r10\n",
+        "    lea rdx, [rsp + 72]\n",
+        "    lea r8, [rsp + 104]\n",
+        "    mov r9, [rsp + 136]\n",
+        "    lea rax, [rsp + 40]\n",
+        "    mov [rsp + 32], rax\n",
+        "    call ksn_tramp_dispatch\n",
+        "    mov rax, [rsp + 40]\n",
+        "    mov rdx, [rsp + 48]\n",
+        "    movq xmm0, [rsp + 56]\n",
+        "    movq xmm1, [rsp + 64]\n",
+        "    add rsp, 152\n",
+        "    ret\n",
+        ".globl ksn_tramp_win_0\n",
+        for_each_slot!(stub),
+    );
+
+    /// スロット 0 の入口アドレス。`trampoline()` から `base + i * 16` のアドレスを取得する。
+    extern "C" {
+        pub(crate) static ksn_tramp_win_0: usize;
+    }
+}
+
 /// コールバックトランポリンの入口アドレスの表。
 /// スロット `i` の入口は、`戻り値クラスのスロット 0 アドレス + i * 16`（全スタブ固定 16 バイト）。
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
@@ -1142,7 +1401,18 @@ pub fn trampoline(i: usize, ret: RetAbi) -> Option<usize> {
     Some(base as *const usize as usize + i * 16)
 }
 
-#[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+pub fn trampoline(i: usize, _ret: RetAbi) -> Option<usize> {
+    if i >= CALLBACK_SLOTS {
+        return None;
+    }
+    let base = unsafe { &x64_win_trampoline::ksn_tramp_win_0 };
+    // 各スタブは固定 16 バイト。スロット i の入口 = スロット 0 のアドレス + i * 16。
+    Some(base as *const usize as usize + i * 16)
+}
+
+#[cfg(not(all(any(target_arch = "x86_64", target_arch = "aarch64"), target_os = "linux")))]
+#[cfg(not(all(target_arch = "x86_64", target_os = "windows")))]
 pub fn trampoline(_i: usize, _ret: RetAbi) -> Option<usize> {
     None
 }

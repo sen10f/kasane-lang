@@ -50,20 +50,48 @@ fn child_val(pid: i128, fds: [i128; 3]) -> Val {
     }))
 }
 
+fn signal_of(st: &std::process::ExitStatus) -> i128 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        st.signal().unwrap_or(0) as i128
+    }
+    #[cfg(windows)]
+    {
+        let _ = st;
+        0
+    }
+}
+
 fn status_val(st: std::process::ExitStatus) -> Val {
-    use std::os::unix::process::ExitStatusExt;
-    let (code, sig) = match (st.code(), st.signal()) {
-        (Some(c), _) => (c, 0),
-        (None, s) => (-1, s.unwrap_or(0)),
-    };
+    let code = st.code().unwrap_or(-1) as i128;
+    let sig = signal_of(&st);
     Val::Struct(Rc::new(StructV {
         ty: "std.process.ExitStatus".into(),
-        f: RefCell::new(vec![("code".into(), int(code as i128, "i32")), ("signal".into(), int(sig as i128, "i32"))]),
+        f: RefCell::new(vec![("code".into(), int(code, "i32")), ("signal".into(), int(sig, "i32"))]),
     }))
 }
 
 fn invalid() -> Val {
     err(io_error(&std::io::Error::from(std::io::ErrorKind::InvalidInput)))
+}
+
+/// 子プロセスの stdio 端子 (`ChildStdin`/`ChildStdout`/`ChildStderr`) を
+/// `std::fs::File` に所有権ごと変換する。Unix は `OwnedFd`、Windows は
+/// `OwnedHandle` を使う。
+macro_rules! child_io_to_file {
+    ($p:expr) => {{
+        #[cfg(unix)]
+        {
+            use std::os::fd::OwnedFd;
+            std::fs::File::from(OwnedFd::from($p))
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::{FromRawHandle, IntoRawHandle, OwnedHandle};
+            unsafe { std::fs::File::from(OwnedHandle::from_raw_handle($p.into_raw_handle())) }
+        }
+    }};
 }
 
 fn field_int(s: &StructV, name: &str) -> i128 {
@@ -159,13 +187,13 @@ impl Interp {
                             let pid = ch.id() as i128;
                             let mut fds = [-1i128; 3];
                             if let Some(p) = ch.stdin.take() {
-                                fds[0] = self.add_file(std::fs::File::from(std::os::fd::OwnedFd::from(p)));
+                                fds[0] = self.add_file(child_io_to_file!(p));
                             }
                             if let Some(p) = ch.stdout.take() {
-                                fds[1] = self.add_file(std::fs::File::from(std::os::fd::OwnedFd::from(p)));
+                                fds[1] = self.add_file(child_io_to_file!(p));
                             }
                             if let Some(p) = ch.stderr.take() {
-                                fds[2] = self.add_file(std::fs::File::from(std::os::fd::OwnedFd::from(p)));
+                                fds[2] = self.add_file(child_io_to_file!(p));
                             }
                             self.procs.children.insert(pid, ch);
                             ok(child_val(pid, fds))
