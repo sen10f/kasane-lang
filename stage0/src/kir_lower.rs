@@ -2178,7 +2178,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
                 continue;
             }
             // 標準ライブラリ (`spec/stdlib`) の関数は、被覆の数には入れず、理由だけ `origin: std` で出す。
-            let std = d.file.contains("/stdlib/");
+            let std = crate::project::is_stdlib_file(&d.file);
             if !std {
                 total += 1;
             }

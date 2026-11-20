@@ -917,6 +917,21 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
     errs
 }
 
+/// `file` が標準ライブラリのファイルか。ディスクの `spec/stdlib` だけでなく、実行体に埋め込んだ標準ライブラリを
+/// 展開した場所 (`stdlib-<識別子>/`) も含める (2026-11-20: 道に `/stdlib/` を含むかで見ていたため、展開した場所の
+/// 標準ライブラリを利用者のコードと取り違えていた)。
+pub fn is_stdlib_file(file: &str) -> bool {
+    static ROOT: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    let root = ROOT.get_or_init(|| std::fs::canonicalize(stdlib_dir()).ok());
+    let f = Path::new(file);
+    if let Some(r) = root {
+        if f.starts_with(r) || std::fs::canonicalize(f).is_ok_and(|c| c.starts_with(r)) {
+            return true;
+        }
+    }
+    file.contains("/stdlib/")
+}
+
 pub fn stdlib_dir() -> PathBuf {
     if let Ok(d) = std::env::var("KSN_STDLIB") {
         return PathBuf::from(d);
