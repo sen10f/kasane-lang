@@ -291,6 +291,123 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             vec![]
         }
         // 効果の完全一致 (D5・D13、tast_rules/effects_exact.rs): 宣言を、メッセージの末尾の ``write `uses [..] panics ..` `` に書き直す。
+        // `impls` メソッドのヘッダから `pub` を外す (`pub` はキーワード列の最後、可視性はトレイトと型に従う)。
+        "E1123" => {
+            let Some(text) = get(line) else { return vec![] };
+            let t = text.trim_end();
+            let Some(p) = t.rfind(" pub") else { return vec![] };
+            let after = &t[p + 4..];
+            if !after.chars().all(char::is_whitespace) {
+                return vec![];
+            }
+            let b0 = char_idx(text, p);
+            let b1 = text.chars().count();
+            if b1 <= b0 {
+                return vec![];
+            }
+            vec![span(file, line, text, b0, b1, String::new())]
+        }
+        // `mut` でない変数への代入を `let mut` に直す (代入行の名前から `let` 宣言を遡る)。
+        // 共有参照越しの代入 (`write through &mut`) は `mut` では直らないので直さない。
+        "E3001" => {
+            if !msg.contains("is not declared `mut`") {
+                return vec![];
+            }
+            let Some(text) = get(line) else { return vec![] };
+            let bytes: Vec<(usize, char)> = text.char_indices().collect();
+            let Some(&(b0, _)) = bytes.get(col.wrapping_sub(1)) else { return vec![] };
+            let mut e = b0;
+            while bytes.get(e).map_or(false, |&(_, ch)| ch.is_alphanumeric() || ch == '_') {
+                e += 1;
+            }
+            if e == b0 {
+                return vec![];
+            }
+            let name = &text[b0..e];
+            // 直上から同じ名前の `let <name>` / `let mut <name>` を探す (関数境界で止める)。
+            let mut found: Option<(usize, bool)> = None;
+            let mut n = line.wrapping_sub(1);
+            while n > 0 {
+                let Some(t) = get(n) else { break };
+                let trimmed = t.trim_start();
+                if trimmed.starts_with("fn ") || trimmed.starts_with("end ") {
+                    break;
+                }
+                if trimmed.starts_with("let mut ") || trimmed.starts_with("let ") {
+                    let after_let = &trimmed[if trimmed.starts_with("let mut ") { 8 } else { 4 }..];
+                    let after_let = after_let.trim_start();
+                    if after_let.starts_with(name) {
+                        let next = after_let[name.len()..].chars().next();
+                        if next.map_or(true, |c| !(c.is_alphanumeric() || c == '_')) {
+                            found = Some((n, trimmed.starts_with("let mut ")));
+                            break;
+                        }
+                    }
+                }
+                n -= 1;
+            }
+            let Some((decl_line, already_mut)) = found else { return vec![] };
+            if already_mut {
+                return vec![];
+            }
+            let dt = get(decl_line).unwrap();
+            let indent = dt.len() - dt.trim_start().len();
+            let after_indent = &dt[indent..];
+            let pref = if after_indent.starts_with("let mut ") { "let mut " } else { "let " };
+            let p = indent + pref.len();
+            let b = char_idx(dt, p);
+            vec![span(file, decl_line, dt, b, b, "mut ".to_string())]
+        }
+        // ヘッダから ` stack N` を外す (再帰しない `panics never` 関数には不要)。
+        "E4011" => {
+            let Some(text) = get(line) else { return vec![] };
+            let re = Regex::new(r" stack [0-9]+").unwrap();
+            let Some(m) = re.find(text) else { return vec![] };
+            let mut end_byte = m.end();
+            if end_byte < text.len() && text.as_bytes()[end_byte] == b' ' {
+                end_byte += 1;
+            }
+            let b0 = char_idx(text, m.start());
+            let b1 = char_idx(text, end_byte);
+            if b1 <= b0 {
+                return vec![];
+            }
+            vec![span(file, line, text, b0, b1, String::new())]
+        }
+        // 構造体リテラルの丸括弧を波括弧に直す: `T(a: 1)` → `T { a: 1 }`。
+        "E0048" => {
+            let Some(text) = get(line) else { return vec![] };
+            let bytes: Vec<(usize, char)> = text.char_indices().collect();
+            let Some(&(b0, ch0)) = bytes.get(col.wrapping_sub(1)) else { return vec![] };
+            if ch0 != '(' {
+                return vec![];
+            }
+            let mut depth = 0i32;
+            let mut close: Option<usize> = None;
+            let mut j = b0;
+            while j < text.len() {
+                match text.as_bytes()[j] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(j);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            let Some(close) = close else { return vec![] };
+            let inner = &text[b0 + 1..close];
+            if inner.contains(['(', ')', '{', '}']) {
+                return vec![];
+            }
+            let b0c = char_idx(text, b0);
+            let b1c = char_idx(text, close + 1);
+            vec![span(file, line, text, b0c, b1c, format!(" {{ {} }}", inner.trim()))]
+        }
         "E4025" | "E4020" => {
             let Some(text) = get(line) else { return vec![] };
             let Some(want) = msg.rsplit_once("write `").and_then(|(_, r)| r.strip_suffix('`')) else { return vec![] };

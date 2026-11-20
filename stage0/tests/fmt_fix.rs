@@ -69,6 +69,81 @@ fn ksn_fix_adds_deref_to_a_reference_operand_of_an_operator() {
     assert!(fixed.contains("*c >= b'0' && n == *c && *c < 58u8"), "{}", fixed);
 }
 
+/// `impls` メソッドの `pub` を外す (E1123)。可視性はトレイトと型に従うので `pub` は不要。
+#[test]
+fn ksn_fix_removes_pub_from_impls_method() {
+    let src = "trait t.Shape pub\n    fn area(self: &Self) -> i64 uses [] panics never\nend t.Shape\n\n\
+               type t.Sq pub\n    side: i64\nend t.Sq\n\n\
+               impl t.Shape for t.Sq\nfn t.Sq.area(self: &t.Sq) -> i64 uses [] panics never impls t.Shape pub\n    self.side\nend t.Sq.area\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"x\")\nend t.main\n";
+    let t = Tmp::new_raw("fix_e1123", src);
+    let c = run(&["check", "--json"], &t.0);
+    let cout = text(&c.stdout);
+    assert!(codes(&cout).iter().any(|c| c == "E1123"), "{}", cout);
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(!fixed.contains("impls t.Shape pub"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    // 冪等: 2 回目は何も直さない。
+    let again = run(&["fix"], &t.0);
+    assert!(!text(&again.stdout).contains("applied 1 fix(es)"), "{}", text(&again.stdout));
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+/// `mut` でない変数への代入を `let mut` に直す (E3001)。
+#[test]
+fn ksn_fix_adds_mut_to_assigned_variable() {
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let x = 1u8\n    x = 2u8\n    core.mem.drop(x)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fix_e3001", src);
+    let c = run(&["check", "--json"], &t.0);
+    let cout = text(&c.stdout);
+    assert!(codes(&cout).iter().any(|c| c == "E3001"), "{}", cout);
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("    let mut x = 1u8\n"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    let again = run(&["fix"], &t.0);
+    assert!(!text(&again.stdout).contains("applied 1 fix(es)"), "{}", text(&again.stdout));
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+/// 再帰しない `panics never` 関数から `stack N` を外す (E4011)。
+#[test]
+fn ksn_fix_removes_stack_from_non_recursive_function() {
+    let src = "fn t.f(n: u8) -> u8 uses [] panics never stack 64\n    n\nend t.f\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.f(1u8))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fix_e4011", src);
+    let c = run(&["check", "--json"], &t.0);
+    let cout = text(&c.stdout);
+    assert!(codes(&cout).iter().any(|c| c == "E4011"), "{}", cout);
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(!fixed.contains("stack 64"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    let again = run(&["fix"], &t.0);
+    assert!(!text(&again.stdout).contains("applied 1 fix(es)"), "{}", text(&again.stdout));
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+/// 構造体リテラルの丸括弧を波括弧に直す (E0048): `T(a: 1)` → `T { a: 1 }`。
+#[test]
+fn ksn_fix_converts_paren_struct_literal_to_braces() {
+    let src = "type t.P\n    x: u32\nend t.P\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let p = t.P(x: 1u32)\n    core.mem.drop(p)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fix_e0048", src);
+    let c = run(&["check", "--json"], &t.0);
+    let cout = text(&c.stdout);
+    assert!(codes(&cout).iter().any(|c| c == "E0048"), "{}", cout);
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("t.P { x: 1u32 }"), "{}", fixed);
+    assert!(!fixed.contains("t.P(x: 1u32)"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    let again = run(&["fix"], &t.0);
+    assert!(!text(&again.stdout).contains("applied 1 fix(es)"), "{}", text(&again.stdout));
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
 /// Formatter の境界: i64.MIN / u64.MAX / 0 / マルチバイトの char / バッファがちょうど・不足 / debug の char。
 #[test]
 fn formatter_edge_cases_run_natively() {
