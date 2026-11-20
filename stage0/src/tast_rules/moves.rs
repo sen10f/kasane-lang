@@ -533,6 +533,13 @@ impl<'a> W<'a> {
             }
             TKind::Field { base, name } => {
                 let mut r = self.place_of(base);
+                // 一時値から取り出した欄の欄 (`(t.Box { .. }).r.id`): 取り出した欄が線形なら、読むだけでは消費されない。
+                if r.root.is_none() && !self.is_place(base) && matches!(base.kind, TKind::Field { .. }) && !matches!(base.ty, Ty::Ref(..)) {
+                    let bt = base.ty.clone();
+                    if self.linear(&bt) {
+                        self.diag("E3003", "a linear temporary is borrowed or read through a field and is never consumed (bind it, or consume it)".into(), e.line);
+                    }
+                }
                 if matches!(base.ty, Ty::Ref(..)) {
                     r.via = true;
                 }

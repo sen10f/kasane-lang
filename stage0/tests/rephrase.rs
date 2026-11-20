@@ -4,8 +4,7 @@
 //! 元と同じ診断コードで拒まれることを期待する。通ってしまう言い換え (= 検査の抜け) と、別のコードに変わる言い換えは
 //! 台帳 `data/rephrase_known.txt` に載せる。台帳に無いものが出たら失敗し、台帳にあって出なくなったもの (塞いだ) も失敗する
 //! (`KNOWN_HOLES` と同じ作法)。`data/linear_ok/` (正しいコード) に同じ変換を当てて拒まれるもの (誤検出) は
-//! `data/rephrase_known_fp.txt` に載せる。S4 モード (`KSN_CHECKER=s4`) 専用の台帳は `data/rephrase_known_s4.txt`
-//! (`rephrase_s4_known_holes`)。台帳を作り直すには `REPHRASE_UPDATE=1 cargo test --release --test rephrase`。
+//! `data/rephrase_known_fp.txt` に載せる。台帳はどちらも既定の検査器 (s4、2026-11-20 に old から切り替え) の結果。台帳を作り直すには `REPHRASE_UPDATE=1 cargo test --release --test rephrase`。
 //! 1 ケース 1 変換あたりの言い換えの数は `REPHRASE_MAX_SITES` (既定 6) で抑える。
 //!
 //! 変換は行と字下げに基づく簡易なもの (文法を完全には読まない)。文法上できない入力は飛ばして数える。
@@ -969,14 +968,6 @@ fn rephrase_unsound_stay_rejected() {
 fn rephrase_valid_stay_accepted() {
     let rep = run_dir(&data("linear_ok"), false);
     compare("linear_ok", &rep, &data("rephrase_known_fp.txt"), "# 正しいコードの言い換えが拒まれる誤検出 (fp) の台帳。REPHRASE_UPDATE=1 で再生成。\n");
-}
-
-/// S4 モード (`KSN_CHECKER=s4` = 新しい規則 + 残す旧パス) で `unsound/` の言い換えが通ってしまわないこと。
-/// 台帳 `rephrase_known_s4.txt` がこのモード専用 (旧の台帳とは別)。外側の環境に関係なく s4 で検査する。
-#[test]
-fn rephrase_s4_known_holes() {
-    let rep = run_dir_mode(&data("unsound"), true, Some("s4"));
-    compare("s4", &rep, &data("rephrase_known_s4.txt"), "# s4 (KSN_CHECKER=s4) で通ってしまう言い換え (hole) / 診断コードが変わる (changed) 台帳。REPHRASE_UPDATE=1 で再生成。\n");
 }
 
 /// 生成器の自己検査: 正しい小さなプログラムの言い換えが、受理されること。
