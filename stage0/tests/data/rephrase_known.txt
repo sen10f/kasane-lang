@@ -5,8 +5,6 @@ changed block escape_put_as_str#0
 changed extract impl_sig_lifetime_ret#0
 changed extract impl_sig_method_generics_bound#0
 changed extract impl_sig_method_generics_count#0
-changed extract return_local_option_tuple_destructure#0
-changed extract return_local_tuple_destructure#0
 changed fold flow_ref_field_borrow_inherits_loan#0
 changed fold hunt_a05_andmut_via_shared_ref_01#0
 changed fold hunt_a05_fnmut_call_through_shared_ref_01#0
@@ -51,7 +49,6 @@ hole block linear_destructure_let_twice_closed#1
 hole block linear_destructure_let_wild_fields#1
 hole block move_deref_destructure#0
 hole block return_generic_id_let_slot#0
-hole block return_local_option_tuple_destructure#0
 hole block return_local_option_tuple_destructure#1
 hole block return_local_tuple_destructure#0
 hole block return_swap_opt_let2#0
@@ -69,8 +66,6 @@ hole extract len_of_linear_array_then_consumed#0
 hole extract len_of_linear_array_then_consumed#1
 hole extract len_of_linear_array_then_consumed#2
 hole extract len_of_linear_array_then_consumed#3
-hole extract return_local_option_tuple_destructure#1
-hole extract return_local_tuple_destructure#1
 hole fold arr_repeat_len_local#0
 hole fold borrow_mut_immutable_generic_result#0
 hole fold dangling_static_field#0
@@ -92,10 +87,15 @@ hole fold return_bound_owner_c2#0
 hole fold return_bound_owner_c3#0
 hole fold return_bound_owner_c6#0
 hole fold return_local_match_bind_dangling_via_let_struct_var#0
+hole fold return_local_nested_tuple_destructure#0
 hole fold return_local_option_tuple_destructure#0
-hole fold return_local_option_tuple_destructure#1
 hole fold return_local_tuple_destructure#0
-hole fold return_local_tuple_destructure#1
+hole fold return_local_tuple_literal_destructure#0
+hole fold return_local_tuple_match_3elem_some#0
+hole fold return_local_tuple_match_some_arm#0
+hole fold return_local_tuple_tuple_let_ok#0
+hole fold return_local_tuple_tuple_let_some_bind#0
+hole fold return_local_tuple_via_wrap_fn#0
 hole fold temp_ref_str_len#0
 hole fold temp_ref_vec_len#0
 hole hoist flow_ref_arg_and_borrow_of_field#3
@@ -114,9 +114,6 @@ hole hoist linear_closure_dropped#2
 hole hoist mem_swap_moves_borrow#0
 hole hoist mem_swap_moves_borrow#1
 hole hoist return_generic_id_let_slot#0
-hole hoist return_local_option_tuple_destructure#0
-hole hoist return_local_option_tuple_destructure#1
-hole hoist return_local_tuple_destructure#0
 hole id drop_destructure_derive#0
 hole id drop_destructure_manual#0
 hole id drop_destructure_nested_tuple#0
@@ -133,7 +130,6 @@ hole id impl_sig_method_generics_count#0
 hole id mem_replace_stores_borrow#0
 hole id mem_swap_moves_borrow#0
 hole id mem_swap_moves_borrow#1
-hole id return_local_option_tuple_destructure#0
 hole id return_local_option_tuple_destructure#1
 hole id return_local_tuple_destructure#0
 hole id return_swap_opt_let2#1

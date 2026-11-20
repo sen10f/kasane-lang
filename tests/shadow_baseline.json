@@ -151,6 +151,12 @@
 ],
 [
 "new_only",
+"stage0/tests/data/unsound/return_local_tuple_tuple_let_some_bind.ksnl",
+5,
+"E3030"
+],
+[
+"new_only",
 "stage0/tests/data/unsound/return_paren_reborrow_struct.ksnl",
 7,
 "E3030"
@@ -2674,6 +2680,12 @@
 "stage0/tests/data/unsound/result_asref_temp_ref_return.ksnl",
 2,
 "E2044"
+],
+[
+"old_only",
+"stage0/tests/data/unsound/return_local_tuple_tuple_let_some_bind.ksnl",
+4,
+"E3030"
 ],
 [
 "old_only",
