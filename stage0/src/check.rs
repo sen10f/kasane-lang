@@ -727,37 +727,6 @@ fn subst_ty_params(t: &V, bind: &HashMap<String, V>) -> V {
     }
 }
 
-/// トレイトの宣言の型で、`Self` を `selfty` に、引数なしの型パラメータ名を `bind` の実引数に置き換える。
-fn subst_self_params(t: &V, selfty: &V, bind: &HashMap<String, V>) -> V {
-    match t {
-        V::L(xs) => {
-            if xs.first().map_or(false, |x| matches!(x, V::S(s) if s == "self")) {
-                return selfty.clone();
-            }
-            if xs.len() == 3 && matches!(&xs[0], V::S(s) if s == "named") {
-                // プレリュード名 (`Option` / `Result`) は FQN と同じ型 (E1110 の正規形は裸)。
-                let nm = st(&xs[1]);
-                let full = match nm.as_str() {
-                    "Option" => "core.option.Option",
-                    "Result" => "core.result.Result",
-                    _ => "",
-                };
-                if !full.is_empty() {
-                    let args: Vec<V> = items(&xs[2]).iter().map(|x| subst_self_params(x, selfty, bind)).collect();
-                    return V::L(vec![xs[0].clone(), V::S(full.into()), V::L(args)]);
-                }
-            }
-            if xs.len() == 3 && matches!(&xs[0], V::S(s) if s == "named") && items(&xs[2]).is_empty() {
-                if let Some(a) = bind.get(&st(&xs[1])) {
-                    return a.clone();
-                }
-            }
-            V::L(xs.iter().map(|x| subst_self_params(x, selfty, bind)).collect())
-        }
-        other => other.clone(),
-    }
-}
-
 impl<'a> Checker<'a> {
     pub fn new(p: &'a Program, user: Vec<usize>) -> Self {
         Checker {
@@ -1263,86 +1232,7 @@ impl<'a> Checker<'a> {
             }
         }
         self.check_impl_method_effects(&impl_of);
-        // S4 では impl の署名の検査は TAST (tast_rules/impl_sig.rs) が担う (設計_S4の切り替え.md 1.1)。
-        if !self.s4 {
-            self.check_impl_method_sigs(&impl_of);
-        }
-    }
-
-    /// 3.2 / 4.3: impl のメソッドの署名 (引数の数・各引数の型・受け手の形・戻り値の型) は、トレイトの宣言の
-    /// `Self` を impl の対象型に、トレイトの型パラメータを impl 行の実引数に置き換えたものと一致する (E1122)。
-    /// メソッド自身の型パラメータ・効果変数を持つメソッドは、型の突き合わせの対象を引数の数と受け手だけにする
-    /// (トレイト側の型パラメータ名を `Def` が持たないので黙る)。ライフタイムは型の `V` に残らないので見ない。
-    /// `uses` / `panics` は `check_impl_method_effects` (E4021) が見る。
-    fn check_impl_method_sigs(&mut self, impl_of: &HashMap<(String, String), usize>) {
-        let mut found: Vec<(usize, String)> = vec![];
-        for &i in &self.user {
-            let d = self.def(i);
-            if d.kw != "fn" || !d.has_impls {
-                continue;
-            }
-            let owner = d.name.rsplit_once('.').map(|(o, _)| o.to_string()).unwrap_or_default();
-            let Some(&ii) = impl_of.get(&(d.impls_trait.clone(), owner)) else { continue };
-            let Some(&ti) = self.p.types.get(&d.impls_trait) else { continue };
-            let td = self.def(ti);
-            if td.kw != "trait" {
-                continue;
-            }
-            let meth = d.name.rsplit('.').next().unwrap_or("");
-            let Some((_, tps, tret)) = td.trait_sigs.iter().find(|s| s.0 == meth) else { continue };
-            let idef = self.def(ii);
-            let targs = items(&idef.impl_targs).to_vec();
-            let mut bind: HashMap<String, V> = HashMap::new();
-            for (k, g) in td.generics.iter().enumerate() {
-                if g.0 == "type" {
-                    if let Some(a) = targs.get(k) {
-                        bind.insert(g.1.clone(), a.clone());
-                    }
-                }
-            }
-            let sub = |t: &V| subst_self_params(t, &idef.impl_for, &bind).dump();
-            let sub_impl = |t: &V| subst_self_params(t, &idef.impl_for, &HashMap::new()).dump();
-            let tname = format!("{}.{}", td.name, meth);
-            let generic = td.generic_methods.iter().any(|m| m == meth) || d.generics.iter().any(|g| g.0 != "life");
-            let mut msg: Option<String> = None;
-            if tps.len() != d.params.len() {
-                msg = Some(format!(
-                    "{} takes {} parameter(s) but trait method {} declares {}",
-                    d.name,
-                    d.params.len(),
-                    tname,
-                    tps.len()
-                ));
-            } else {
-                let tr_recv = tps.first().map_or(false, |p| p.0 == "self");
-                let im_recv = d.params.first().map_or(false, |p| p.0 == "self");
-                if tr_recv != im_recv {
-                    msg = Some(format!("{} and trait method {} disagree on whether there is a `self` receiver", d.name, tname));
-                }
-                for (k, (tp, ip)) in tps.iter().zip(d.params.iter()).enumerate() {
-                    if msg.is_some() || (generic && k > 0) {
-                        break;
-                    }
-                    let (want, have) = (sub(&tp.1), sub_impl(&ip.1));
-                    if want != have {
-                        msg = Some(if k == 0 && tr_recv {
-                            format!("{}: receiver type does not match trait method {} (receiver form `self` differs from the declaration)", d.name, tname)
-                        } else {
-                            format!("{}: parameter `{}` type does not match trait method {}", d.name, ip.0, tname)
-                        });
-                    }
-                }
-                if msg.is_none() && !generic && sub(tret) != sub_impl(&d.ret) {
-                    msg = Some(format!("{}: return type does not match trait method {}", d.name, tname));
-                }
-            }
-            if let Some(m) = msg {
-                found.push((i, m));
-            }
-        }
-        for (i, m) in found {
-            self.diag("E1122", m, i, 0);
-        }
+        // impl の署名 (E1122) は TAST の tast_rules/impl_sig.rs が担う (旧い check_impl_method_sigs は取り外し済み)。
     }
 
     /// 4.3 / 5.1: impl のメソッドの効果はトレイト宣言の効果を超えない (E4021)。
