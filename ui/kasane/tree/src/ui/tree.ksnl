@@ -32,6 +32,17 @@ enum ui.tree.ViewKind derive [Debug, Clone, Copy] pub
     Leaf
 end ui.tree.ViewKind
 
+fn ui.tree.Tree.child_at(self: &ui.tree.Tree, node: usize, i: usize) -> Option<usize> uses [] panics never pub
+    let kids = match self.kids.get(node) {
+        Some(k) => k
+        None => return None
+    }
+    match kids.as_slice().get(i) {
+        Some(v) => Some(*v)
+        None => None
+    }
+end ui.tree.Tree.child_at
+
 fn ui.tree.Tree.child_count(self: &ui.tree.Tree, node: usize) -> usize uses [] panics never pub
     match self.kids.get(node) {
         Some(kids) => kids.len()
@@ -39,10 +50,10 @@ fn ui.tree.Tree.child_count(self: &ui.tree.Tree, node: usize) -> usize uses [] p
     }
 end ui.tree.Tree.child_count
 
-fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.vec.Vec<ui.tree.Element, std.alloc.System>, root_elem: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
+fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.vec.Vec<ui.tree.Element, std.alloc.System>, root_elem: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
     let element = match elements.as_slice().get(root_elem) {
         Some(e) => e
-        None => return Ok(())
+        None => return Ok(root)
     }
     match self.nodes.get_mut(root) {
         Some(node) => {
@@ -50,11 +61,11 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.ve
             node.style = element.style
             node.key = element.key
         }
-        None => return Ok(())
+        None => return Ok(root)
     }
     let existing = match self.kids.get(root) {
         Some(kids) => kids
-        None => return Ok(())
+        None => return Ok(root)
     }
     let existing_count = existing.len()
     let mut existing_indices = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -139,14 +150,20 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.ve
                     Some(reused) => reused
                     None => {
                         let new_node = self.push_node(kind, style, key)?
-                        self.commit(new_node, elements, child_index)?
+                        match self.commit(new_node, elements, child_index) {
+                            Ok(_u) => ()
+                            Err(e) => return Err(e)
+                        }
                         new_node
                     }
                 }
             }
             None => {
                 let new_node = self.push_node(kind, style, key)?
-                self.commit(new_node, elements, child_index)?
+                match self.commit(new_node, elements, child_index) {
+                    Ok(_u) => ()
+                    Err(e) => return Err(e)
+                }
                 new_node
             }
         }
@@ -174,8 +191,23 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.ve
         }
         None => ()
     }
-    Ok(())
+    Ok(root)
 end ui.tree.Tree.commit
+
+fn ui.tree.Tree.find_key(self: &ui.tree.Tree, key: u64) -> Option<usize> uses [] panics never pub
+    let mut i = 0usize
+    while i < self.nodes.len() {
+        let n = match self.nodes.get(i) {
+            Some(v) => v
+            None => break
+        }
+        if n.key == Some(key) {
+            return Some(i)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    None
+end ui.tree.Tree.find_key
 
 fn ui.tree.Tree.new() -> ui.tree.Tree uses [] panics never pub
     let nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -187,6 +219,29 @@ end ui.tree.Tree.new
 fn ui.tree.Tree.node_at(self: &ui.tree.Tree, index: usize) -> Option<&ui.tree.Node> uses [] panics never pub
     self.nodes.get(index)
 end ui.tree.Tree.node_at
+
+fn ui.tree.Tree.parent_of(self: &ui.tree.Tree, node: usize) -> Option<usize> uses [] panics never pub
+    let mut p = 0usize
+    while p < self.nodes.len() {
+        let kids = match self.kids.get(p) {
+            Some(k) => k
+            None => break
+        }
+        let mut i = 0usize
+        while i < kids.len() {
+            let kid = match kids.as_slice().get(i) {
+                Some(v) => *v
+                None => break
+            }
+            if kid == node {
+                return Some(p)
+            }
+            i = i.wrapping_add(1usize)
+        }
+        p = p.wrapping_add(1usize)
+    }
+    None
+end ui.tree.Tree.parent_of
 
 fn ui.tree.Tree.push_child(self: &mut ui.tree.Tree, parent: usize, child: usize) -> bool uses [alloc] panics never pub
     match self.kids.get_mut(parent) {
