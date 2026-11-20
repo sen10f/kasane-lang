@@ -25,7 +25,7 @@ def packages():
 
 def dump(ksn, pkg, tab):
     env = dict(os.environ, KSN_DUMP_KIR="1")
-    for k in ("KSN_S5_TYIDX_TAB", "KSN_S5_PAT_OLD"):
+    for k in ("KSN_S5_TYIDX_TAB", "KSN_S5_PAT_OLD", "KSN_S5_KIND_OLD"):
         env.pop(k, None)
         if tab:
             env[k] = "1"

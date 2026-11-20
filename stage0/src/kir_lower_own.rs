@@ -92,7 +92,7 @@ pub(super) fn vec_field_root(lw: &Lw, segs: &[String]) -> Option<String> {
         return None;
     }
     let src = field_src(lw, s, &segs[1..])?;
-    coll::kind_of_src(lw, &src).filter(|k| matches!(k, Kind::Vec(_) | Kind::String))?;
+    coll::kind_of(lw, &src).filter(|k| matches!(k, Kind::Vec(_) | Kind::String))?;
     Some(segs[0].clone())
 }
 
@@ -171,7 +171,7 @@ pub(super) fn field_call(lw: &mut Lw, e: &V, s: usize, names: &[String], m: &str
         return Some(coll::method_on(lw, e, nline(e), Some(s), Kind::Vec(Some(Ty::U8)), h, m, args));
     }
     let src = field_src(lw, s, names)?;
-    let kind = coll::kind_of_src(lw, &src).filter(|k| matches!(k, Kind::Vec(_) | Kind::String))?;
+    let kind = coll::kind_of(lw, &src).filter(|k| matches!(k, Kind::Vec(_) | Kind::String))?;
     // `&Vec` などのフィールドは借用: ヘッダのアドレスではない
     if matches!(src, Src::Ref(..)) {
         return None;
@@ -467,7 +467,7 @@ pub(super) fn match_get_mut(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             let k = if names.is_empty() {
                 lw.coll.kinds.get(&s).cloned()
             } else {
-                field_src(lw, s, &names).and_then(|src| coll::kind_of_src(lw, &src))
+                field_src(lw, s, &names).and_then(|src| coll::kind_of(lw, &src))
             };
             if !matches!(k, Some(Kind::Vec(_)) | Some(Kind::Slice(_))) {
                 return None;
@@ -604,7 +604,7 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
         }
     } else {
         let Some(src) = field_src(lw, s, &names) else { return lw.err(line, "get_mut の対象のフィールドの型が分からない") };
-        let Some(Kind::Vec(Some(t))) = coll::kind_of_src(lw, &src) else {
+        let Some(Kind::Vec(Some(t))) = coll::kind_of(lw, &src) else {
             return lw.err(line, "get_mut の対象は要素型の分かる Vec だけ段階 1 の対象");
         };
         let pl = place(lw, s, &names, line)?;
@@ -673,7 +673,7 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
                 } else if let Ty::Agg(ai) = elem {
                     if super::agg::is_vec_name(&lw.agg_def(ai).name) {
                         // `get_mut` で束縛した `&mut Vec<T>` もヘッダのアドレス (`ptr`) で持ち、種類を結び付ける。
-                        let kind = src.as_ref().and_then(|t| coll::kind_of_src(lw, t)).or_else(|| lw.aggs.borrow().vec_elem(elem).map(|e| Kind::Vec(Some(e))));
+                        let kind = coll::elem_kind(lw, src.as_ref(), elem);
                         lw.bind(name, addr, Ty::Ptr);
                         let s = lw.lookup(name).expect("束縛した名前");
                         lw.coll.kinds.insert(s, kind.unwrap_or(Kind::Vec(None)));
@@ -724,7 +724,7 @@ fn recv_elem(lw: &Lw, recv: &(usize, Vec<String>)) -> Option<Ty> {
     let k = if names.is_empty() {
         lw.coll.kinds.get(s).cloned()
     } else {
-        coll::kind_of_src(lw, &field_src(lw, *s, names)?)
+        coll::kind_of(lw, &field_src(lw, *s, names)?)
     };
     match k {
         Some(Kind::Vec(Some(t))) | Some(Kind::Slice(Some(t))) => Some(t),
@@ -739,7 +739,7 @@ pub(super) fn bind_elem_ref(lw: &mut Lw, line: usize, name: &str, addr: VId, ele
         return lw.err(line, "要素の借用は集成体だけ段階 1 の対象");
     };
     if super::agg::is_vec_name(&lw.agg_def(ai).name) {
-        let kind = src.and_then(|t| coll::kind_of_src(lw, t)).or_else(|| lw.aggs.borrow().vec_elem(elem).map(|e| Kind::Vec(Some(e))));
+        let kind = coll::elem_kind(lw, src, elem);
         let Some(kind) = kind else {
             return lw.err(line, "要素の借用の種類 (Vec / String) が分からない");
         };
