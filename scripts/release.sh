@@ -77,7 +77,7 @@ export PATH="$PATH_smoke"
 ver="$("$KSN_SMOKE" --version)"
 [ "$ver" = "ksn 0.1.0" ] || { echo "release: smoke: --version が想定外: $ver" >&2; exit 1; }
 
-("$KSN_SMOKE" new hello)
+(cd "$smoke" && "$KSN_SMOKE" new hello)
 cd "$smoke/hello"
 out_run="$("$KSN_SMOKE" run)"
 "$KSN_SMOKE" build --release
