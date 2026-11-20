@@ -1,0 +1,10 @@
+[package]
+name = "tutorial_bindgen"
+version = "0.1.0"
+edition = 1
+entry = "tutorial_bindgen.main"
+
+[unsafe]
+modules = ["tutorial_bindgen"]
+
+[dependencies]

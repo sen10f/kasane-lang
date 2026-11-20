@@ -1,0 +1,49 @@
+// ksn bindgen --c の生成物 (module tutorial_bindgen)。直接編集しない
+// 飛ばしたもの: #define DEMO_H は飛ばした: 整数定数でない ()
+const tutorial_bindgen.BLUE: u32 = 2u32 pub
+
+const tutorial_bindgen.GREEN: u32 = 1u32 pub
+
+const tutorial_bindgen.MAX_POINTS: i32 = 100i32 pub
+
+const tutorial_bindgen.RED: u32 = 0u32 pub
+
+type tutorial_bindgen.Point layout c derive [Clone, Copy] pub
+    x: f64
+    y: f64
+end tutorial_bindgen.Point
+
+extern tutorial_bindgen.raw_area(p: tutorial_bindgen.Point) -> f64 link "./libdemo.so:area"
+
+extern tutorial_bindgen.raw_for_each(p: tutorial_bindgen.Point, cb: fn(f64, f64, *mut u8) -> () uses [] panics never, user: *mut u8) -> () link "./libdemo.so:for_each"
+
+extern tutorial_bindgen.raw_make_point(x: f64, y: f64) -> tutorial_bindgen.Point link "./libdemo.so:make_point"
+
+fn tutorial_bindgen.area(p: tutorial_bindgen.Point) -> f64 uses [] panics may pub
+    unsafe "bindgen" "C の関数 area を呼ぶ" {
+        tutorial_bindgen.raw_area(p)
+    }
+end tutorial_bindgen.area
+
+fn tutorial_bindgen.for_each(p: tutorial_bindgen.Point, cb: fn(f64, f64, *mut u8) -> () uses [] panics never, user: *mut u8) -> () uses [] panics may pub
+    unsafe "bindgen" "C の関数 for_each を呼ぶ" {
+        tutorial_bindgen.raw_for_each(p, cb, user)
+    }
+end tutorial_bindgen.for_each
+
+fn tutorial_bindgen.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let p = tutorial_bindgen.make_point(3.0f64, 4.0f64)
+    core.check.is_true(tutorial_bindgen.area(p) == 12.0f64)
+    core.check.eq(tutorial_bindgen.MAX_POINTS, 100i32)
+    core.check.is_true(tutorial_bindgen.RED == 0u32)
+    core.check.is_true(tutorial_bindgen.GREEN == 1u32)
+    core.check.is_true(tutorial_bindgen.BLUE == 2u32)
+    std.io.print_line("tutorial_bindgen ok")?
+    Ok(())
+end tutorial_bindgen.main
+
+fn tutorial_bindgen.make_point(x: f64, y: f64) -> tutorial_bindgen.Point uses [] panics may pub
+    unsafe "bindgen" "C の関数 make_point を呼ぶ" {
+        tutorial_bindgen.raw_make_point(x, y)
+    }
+end tutorial_bindgen.make_point

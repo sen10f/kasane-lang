@@ -1,0 +1,10 @@
+[package]
+name = "tutorial_ffi"
+version = "0.1.0"
+edition = 1
+entry = "tutorial_ffi.main"
+
+[unsafe]
+modules = ["tutorial_ffi"]
+
+[dependencies]
