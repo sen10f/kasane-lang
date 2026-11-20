@@ -81,7 +81,8 @@ const S4_REPLACED: &[&str] = &[
     "E3010", "E3030", "E3050", // borrowck.rs
     "E3002", "E3003", "E3006", "E3040", // tc_fn 系の移動・線形
     "E4001", "E4002",           // 効果の実体化・階層
-    "E1122",                    // check_impl_method_sigs
+    // E1122 はフィルタしない (フィールドの可視性 check.rs:1923 も同じコード)。impl の署名のほうは
+    // check_impl_method_sigs の呼び出しを s4 で止める (check.rs)。
     "E2042",                    // 捨てた値
     "E2021", "E2052",           // 網羅性
     "E3031",                    // 可変性

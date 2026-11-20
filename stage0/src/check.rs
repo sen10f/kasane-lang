@@ -1261,7 +1261,10 @@ impl<'a> Checker<'a> {
             }
         }
         self.check_impl_method_effects(&impl_of);
-        self.check_impl_method_sigs(&impl_of);
+        // S4 では impl の署名の検査は TAST (tast_rules/impl_sig.rs) が担う (設計_S4の切り替え.md 1.1)。
+        if !self.s4 {
+            self.check_impl_method_sigs(&impl_of);
+        }
     }
 
     /// 3.2 / 4.3: impl のメソッドの署名 (引数の数・各引数の型・受け手の形・戻り値の型) は、トレイトの宣言の

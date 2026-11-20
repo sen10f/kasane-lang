@@ -7,8 +7,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::check::Diag;
-use crate::program::Program;
+use crate::check::{items, resolve_trait_fqn, st, Diag};
+use crate::parser::V;
+use crate::program::{Def, Program};
 use crate::tast::*;
 use crate::types::{from_v, Cap, Ty};
 
@@ -109,6 +110,39 @@ impl<'a> W<'a> {
                 }
             }
         }
+    }
+
+    /// 受け手の型 (参照ははぐ) の型パラメータの境界のトレイトに `&mut self` を取る `name` メソッドがあるか。
+    /// 呼び先が未解決 (`Callee::Unknown`) の経路形 `x.m()` で、旧検査の E3031 と同じものを見る。
+    fn bound_mut_method(&self, d: &Def, recv: &Ty, name: &str) -> bool {
+        let mut cur = recv;
+        let pn = loop {
+            match cur {
+                Ty::Ref(_, inner, _) => cur = inner,
+                Ty::Param(p) => break p.clone(),
+                _ => return false,
+            }
+        };
+        let Some(g) = d.generics.iter().find(|g| g.0 == "type" && g.1 == pn) else { return false };
+        for b in items(&g.2) {
+            let V::L(bx) = b else { continue };
+            let Some(tr) = resolve_trait_fqn(self.p, &st(&bx[0])) else { continue };
+            let Some(&ti) = self.p.types.get(&tr) else { continue };
+            let td = &self.p.defs[ti];
+            if td.kw != "trait" {
+                continue;
+            }
+            // トレイトの署名 (`&mut Self` は V::L [ref, B(true), ..]) を見る。
+            let Some((_, ps, _)) = td.trait_sigs.iter().find(|s| s.0 == name) else { continue };
+            if let Some((_, pv)) = ps.first() {
+                if let V::L(xs) = pv {
+                    if xs.len() >= 2 && matches!(&xs[0], V::S(k) if k == "ref") && matches!(&xs[1], V::B(true)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn shared_then_fnmut(t: &Ty) -> bool {
@@ -285,6 +319,17 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     let c = &p.defs[*ci];
                     if matches!(c.params.first().map(|q| from_v(&q.1, &c.gnames())), Some(Ty::Ref(true, _, _))) {
                         w.need_mut(&segs[0], None, &segs[segs.len() - 1], e.line);
+                    }
+                }
+                // 呼び先が未解決の経路形 `x.m()`: 受け手が共有参照で、境界に `&mut self` の同名メソッドがあれば同じ E3031。
+                (Some(Callee::Unknown), TKind::Path(segs)) if segs.len() >= 2 => {
+                    if let Some((root, id)) = W::root(callee) {
+                        if let Some(t) = w.ty_of_local(&root, id) {
+                            let m = &segs[segs.len() - 1];
+                            if matches!(t, Ty::Ref(false, _, _)) && w.bound_mut_method(d, &t, m) {
+                                w.found.push((format!("cannot call the `&mut self` method `{}` through the shared reference `{}`", m, root), e.line));
+                            }
+                        }
                     }
                 }
                 _ => {}
