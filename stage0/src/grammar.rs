@@ -322,43 +322,56 @@ fn check_digit_groups(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 事前検査の失敗 (行:列と診断のコードつき)。100 文字を超える行は E0055 (rustisms と同じ文面)、
+/// それ以外は E0002。
 #[derive(Debug)]
-struct Pre(String);
+struct Pre {
+    code: &'static str,
+    line: usize,
+    col: usize,
+    msg: String,
+}
+
+/// 文法の検査の結果 (`Grammar::check` / `check_memo`)。診断のコードと行:列を持つので、
+/// 呼ぶ側 (check・fmt・LSP) が E0002 に固定せずに済む。
+#[derive(Debug, Clone, PartialEq)]
+pub struct GramRes {
+    pub ok: bool,
+    pub code: &'static str,
+    pub line: usize,
+    pub col: usize,
+    pub msg: String,
+}
 
 fn precheck(text: &str) -> Result<(), Pre> {
     if text.starts_with('\u{feff}') {
-        return Err(Pre("BOM".into()));
+        return Err(Pre { code: "E0002", line: 1, col: 1, msg: "BOM".into() });
     }
     if text.contains('\r') {
-        return Err(Pre("CR (LF only)".into()));
+        return Err(Pre { code: "E0002", line: 1, col: 1, msg: "CR (LF only)".into() });
     }
     if text.contains('\t') {
-        return Err(Pre("TAB".into()));
+        return Err(Pre { code: "E0002", line: 1, col: 1, msg: "TAB".into() });
     }
     if text.is_empty() || !text.ends_with('\n') || text.ends_with("\n\n") {
-        return Err(Pre("file must end with exactly one LF".into()));
+        return Err(Pre { code: "E0002", line: 1, col: 1, msg: "file must end with exactly one LF".into() });
     }
     let lines: Vec<&str> = text.split('\n').collect();
     for (n, l) in lines[..lines.len() - 1].iter().enumerate() {
         let n = n + 1;
         if *l != l.trim_end_matches(' ') {
-            return Err(Pre(format!("line {}: trailing space", n)));
+            return Err(Pre { code: "E0002", line: n, col: 1, msg: format!("line {}: trailing space", n) });
         }
         let first = l.trim_start_matches(' ').split(|c| c == ' ' || c == '(' || c == '[').next().unwrap_or("");
         if l.chars().count() > 100 && !HEADER_KW.contains(&first) && !l.contains('"') {
-            return Err(Pre(format!("line {}: longer than 100 chars", n)));
+            return Err(Pre { code: "E0055", line: n, col: 101, msg: crate::rustisms::long_line_msg(l) });
         }
     }
     Ok(())
 }
 
-/// 字句エラーの文言 `line N: ...` の行番号 (無ければ 1)。
-fn err_line(e: &str) -> usize {
-    e.strip_prefix("line ").and_then(|r| r.split(':').next()).and_then(|n| n.parse().ok()).unwrap_or(1)
-}
-
-fn lex_file(lx: &Lexer, text: &str, sig: bool) -> Result<Vec<Tok>, String> {
-    precheck(text).map_err(|e| e.0)?;
+fn lex_file(lx: &Lexer, text: &str, sig: bool) -> Result<Vec<Tok>, Pre> {
+    precheck(text)?;
     let all: Vec<&str> = text.split('\n').collect();
     lex_lines(lx, &all[..all.len() - 1], sig, false)
 }
@@ -367,7 +380,7 @@ fn lex_file(lx: &Lexer, text: &str, sig: bool) -> Result<Vec<Tok>, String> {
 /// `after_dot` は、最後の行の次に「`.` で始まる行」が続くとみなす (定義 1 つだけを字句解析するとき用)。
 /// 各行のトークンは、その行・`inside` の状態・直前がコメントか・次の「コメントでも空でもない行」が `.` で
 /// 始まるか、だけで決まる。
-fn lex_lines(lx: &Lexer, lines: &[&str], sig: bool, after_dot: bool) -> Result<Vec<Tok>, String> {
+fn lex_lines(lx: &Lexer, lines: &[&str], sig: bool, after_dot: bool) -> Result<Vec<Tok>, Pre> {
     let info: Vec<(usize, &str, &str)> = lines.iter().enumerate().map(|(i, l)| (i + 1, *l, l.trim())).collect();
     let mut out: Vec<Tok> = vec![];
     let mut inside = false;
@@ -388,7 +401,7 @@ fn lex_lines(lx: &Lexer, lines: &[&str], sig: bool, after_dot: bool) -> Result<V
                     prev_comment = false;
                     continue;
                 }
-                return Err(format!("line {}: blank line after comment", n));
+                return Err(Pre { code: "E0002", line: *n, col: 1, msg: format!("line {}: blank line after comment", n) });
             }
             head_doc = false;
             if inside {
@@ -419,7 +432,7 @@ fn lex_lines(lx: &Lexer, lines: &[&str], sig: bool, after_dot: bool) -> Result<V
             continue;
         }
         prev_comment = false;
-        let code = lx.lex_code(s).map_err(|e| format!("line {}: {}", n, e))?;
+        let code = lx.lex_code(s).map_err(|e| Pre { code: "E0002", line: *n, col: 1, msg: format!("line {}: {}", n, e) })?;
         let nxt = info[idx + 1..].iter().find(|x| !x.2.is_empty() && !x.2.starts_with("//"));
         let inhibit = s.ends_with('(')
             || s.ends_with('[')
@@ -618,6 +631,12 @@ pub struct GramMemo {
     pub new: HashSet<String>,
 }
 
+impl GramRes {
+    fn ok() -> GramRes {
+        GramRes { ok: true, code: "E0002", line: 0, col: 0, msg: String::new() }
+    }
+}
+
 impl Grammar {
     pub fn new() -> Grammar {
         Grammar { core: std::sync::OnceLock::new() }
@@ -659,13 +678,12 @@ impl Grammar {
     /// 定義の行をキーにすれば字句解析ごと省ける。少しでも合わないもの (不一致・分けられない行・コメントだけの末尾・
     /// 並びの違反・字句エラー) は、ここでは何も言わずファイル全体の `check` に任せる。
     /// 診断のメッセージと位置は常に `check` が決める。
-    pub fn check_memo(&self, text: &str, memo: &mut GramMemo) -> (bool, String, usize) {
+    pub fn check_memo(&self, text: &str, memo: &mut GramMemo) -> GramRes {
         if let Err(e) = precheck(text) {
-            let ln = err_line(&e.0);
-            return (false, e.0, ln);
+            return GramRes { ok: false, code: e.code, line: e.line, col: e.col, msg: e.msg };
         }
         if self.defs_match(text, memo) {
-            return (true, String::new(), 0);
+            return GramRes::ok();
         }
         self.check(text)
     }
@@ -784,20 +802,24 @@ impl Grammar {
         ends.contains(&toks.len())
     }
 
-    /// (一致したか, メッセージ, 行)。Python 版 cli.grammar_check と同じ形。
-    pub fn check(&self, text: &str) -> (bool, String, usize) {
+    /// 事前検査 (BOM・CR・TAB・行末の空白・100 文字を超える行・末尾の LF) だけで読めるか。
+    /// `ksn fmt` が「書かずに元のファイルの位置で診断する」かの判定に使う (文法への一致とは別に、
+    /// 整形では直せないもの)。`check` と同じ事前検査を 1 か所で見る。
+    pub fn precheck_ok(&self, text: &str) -> bool {
+        precheck(text).is_ok()
+    }
+
+    /// (一致したか, メッセージ, 行, 診断のコード)。Python 版 cli.grammar_check と同じ形。
+    pub fn check(&self, text: &str) -> GramRes {
         let c = self.core();
         let toks = match lex_file(&c.lx, text, false) {
             Ok(t) => t,
-            Err(e) => {
-                let ln = err_line(&e);
-                return (false, e, ln);
-            }
+            Err(e) => return GramRes { ok: false, code: e.code, line: e.line, col: e.col, msg: e.msg },
         };
         self.check_toks(&toks)
     }
 
-    fn check_toks(&self, toks: &[Tok]) -> (bool, String, usize) {
+    fn check_toks(&self, toks: &[Tok]) -> GramRes {
         let c = self.core();
         let mut m = Matcher {
             rules: &c.rules,
@@ -810,7 +832,7 @@ impl Grammar {
         };
         let ends = m.rule(c.file_id, 0);
         if ends.contains(&toks.len()) {
-            return (true, String::new(), 0);
+            return GramRes::ok();
         }
         let mut best = 0;
         for set in m.memo.values() {
@@ -821,10 +843,10 @@ impl Grammar {
         // 空のトークン列 (定義の無いファイル) は一致とする (定義ごとの `check_memo` と同じ答え。
         // 空のファイルの形は E0001 などの字面の検査が見る)。
         let Some(t) = toks.get(best.min(toks.len().saturating_sub(1))) else {
-            return (true, String::new(), 0);
+            return GramRes::ok();
         };
         let shown = if t.text.is_empty() { t.kind.clone() } else { t.text.clone() };
-        (false, format!("does not match the canonical grammar near {}", py_repr(&shown)), t.line.max(1))
+        GramRes { ok: false, code: "E0002", line: t.line.max(1), col: 1, msg: format!("does not match the canonical grammar near {}", py_repr(&shown)) }
     }
 }
 
