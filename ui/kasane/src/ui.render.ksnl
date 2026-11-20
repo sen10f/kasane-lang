@@ -18,17 +18,14 @@ type ui.render.GlyphRun derive [Clone, Copy] pub
     color: ui.render.Rgba
 end ui.render.GlyphRun
 
-type ui.render.GpuCtx pub
-    dev: *mut u8
-    width: i32
-    height: i32
-    closed: bool
-    live: alloc.vec.Vec<bool, std.alloc.System>
+type ui.render.GpuCtx linear pub
+    dev: *mut u8 pub
+    width: i32 pub
+    height: i32 pub
 end ui.render.GpuCtx
 
 enum ui.render.GpuError derive [Debug, Clone, Copy, PartialEq, Eq] pub
     CreateFailed
-    DeviceLost
 end ui.render.GpuError
 
 type ui.render.ImageItem derive [Clone, Copy] pub
@@ -93,52 +90,31 @@ fn ui.render.GpuCtx.begin(self: &mut ui.render.GpuCtx, r: f32, g: f32, b: f32, a
 end ui.render.GpuCtx.begin
 
 fn ui.render.GpuCtx.close(self: ui.render.GpuCtx) -> () uses [] panics may pub
-    if !self.closed {
-        unsafe "bindgen" "C の関数 ksnui_gpu_destroy を呼ぶ" {
-            ui.gpu.ksnui_gpu_destroy(self.dev)
-        }
+    let ui.render.GpuCtx { dev: d, width: _w, height: _h } = self
+    unsafe "bindgen" "C の関数 ksnui_gpu_destroy を呼ぶ" {
+        ui.gpu.ksnui_gpu_destroy(d)
     }
 end ui.render.GpuCtx.close
 
-fn ui.render.GpuCtx.close_resource(self: &mut ui.render.GpuCtx, id: u32) -> () uses [] panics never pub
-    let index = usize.from_u32(id)
-    match self.live.as_mut_slice().get_mut(index) {
-        Some(slot) => {
-            *slot = false
-        }
-        None => {
-        }
-    }
-end ui.render.GpuCtx.close_resource
-
-fn ui.render.GpuCtx.create(w: i32, h: i32) -> Result<ui.render.GpuCtx, ui.render.GpuError> uses [alloc] panics may pub
-    let dev = ui.gpu.ksnui_gpu_create(unsafe "ptr" "null ウィンドウ ポインタ" {
+fn ui.render.GpuCtx.create(w: i32, h: i32) -> Result<ui.render.GpuCtx, ui.render.GpuError> uses [] panics may pub
+    let dev = unsafe "ptr" "null ウィンドウ ポインタ" {
         core.ptr.null_mut()
-    }, w, h)
+    }
+    let d = ui.gpu.ksnui_gpu_create(dev, w, h)
     let is_null = unsafe "ptr" "デバイスが null か確認" {
-        core.ptr.is_null(dev)
+        core.ptr.is_null(d)
     }
     if is_null {
-        return Err(ui.render.GpuError.CreateFailed)
+        Err(ui.render.GpuError.CreateFailed)
+    } else {
+        Ok(ui.render.GpuCtx { dev: d, width: w, height: h })
     }
-    let mut live = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match live.push(true) {
-        Ok(_u) => {
-        }
-        Err(_e) => {
-            unsafe "bindgen" "C の関数 ksnui_gpu_destroy を呼ぶ" {
-                ui.gpu.ksnui_gpu_destroy(dev)
-            }
-            return Err(ui.render.GpuError.DeviceLost)
-        }
-    }
-    Ok(ui.render.GpuCtx { dev: dev, width: w, height: h, closed: false, live: live })
 end ui.render.GpuCtx.create
 
 fn ui.render.GpuCtx.draw_glyphs(self: &mut ui.render.GpuCtx, glyphs: &[ui.gpu.KsnuiGlyphQuad]) -> () uses [] panics may pub
     match glyphs.get(0usize) {
         Some(first) => {
-            let ptr = unsafe "ptr" "最初のクワッドへのポインタ" {
+            let ptr = unsafe "ptr" "最初のグリフ クワッドへのポインタ" {
                 core.ptr.from_ref(first)
             }
             ui.gpu.ksnui_gpu_draw_glyphs(self.dev, ptr, u64.from_usize(glyphs.len()))
@@ -167,11 +143,11 @@ fn ui.render.GpuCtx.finish(self: &mut ui.render.GpuCtx) -> () uses [] panics may
     }
 end ui.render.GpuCtx.finish
 
-fn ui.render.GpuCtx.png_write(self: &mut ui.render.GpuCtx, path: &str, w: i32, h: i32, rgba: &mut [u8]) -> i32 uses [] panics may pub
-    match rgba.get_mut(0usize) {
+fn ui.render.GpuCtx.png_write(self: &mut ui.render.GpuCtx, path: &str, w: i32, h: i32, rgba: &[u8]) -> i32 uses [] panics may pub
+    match rgba.get(0usize) {
         Some(first) => {
             let ptr = unsafe "ptr" "RGBA バッファの先頭へのポインタ" {
-                core.ptr.from_mut(first)
+                core.ptr.from_ref(first)
             }
             let path_p = unsafe "ptr" "パスのバイト列へのポインタ" {
                 core.ptr.from_ref(path.as_bytes())
@@ -193,20 +169,6 @@ fn ui.render.GpuCtx.readback(self: &mut ui.render.GpuCtx, out: &mut [u8]) -> u64
         None => 0u64
     }
 end ui.render.GpuCtx.readback
-
-fn ui.render.GpuCtx.register(self: &mut ui.render.GpuCtx) -> u32 uses [alloc] panics never pub
-    match self.live.push(true) {
-        Ok(_u) => {
-            let n = self.live.len().wrapping_sub(1usize)
-            let n64 = u64.from_usize(n)
-            match u32.try_from_u64(n64) {
-                Ok(v) => v
-                Err(_e) => 0u32
-            }
-        }
-        Err(_e) => 0u32
-    }
-end ui.render.GpuCtx.register
 
 fn ui.render.batch(list: &[ui.render.Item], rects: &mut [ui.gpu.KsnuiRect], glyphs: &mut [ui.gpu.KsnuiGlyphQuad]) -> (usize, usize) uses [] panics never pub
     let nr = ui.render.batch_rects(list, rects)
@@ -419,6 +381,26 @@ end ui.render.mk_rect
 fn ui.render.mk_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, color: ui.render.Rgba, dx: f32, dy: f32) -> ui.render.Shadow uses [] panics never pub
     ui.render.Shadow { x: x, y: y, w: w, h: h, radius: radius, color: color, dx: dx, dy: dy }
 end ui.render.mk_shadow
+
+fn ui.render.render_checksum(ctx: &mut ui.render.GpuCtx, list: &[ui.render.Item]) -> u64 uses [] panics may pub
+    let z = 0.0f32
+    let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+    let mut rects = [q; 64usize]
+    core.mem.drop(ui.render.batch_rects(list, rects.as_mut_slice()))
+    core.mem.drop(ctx.begin(0.1f32, 0.1f32, 0.1f32, 1.0f32))
+    ctx.draw_rects(rects.as_slice())
+    ctx.finish()
+    let mut rgba = [0u8; 65_536]
+    let got = ctx.readback(&mut rgba)
+    let mut ck = 0u64
+    let mut i = 0usize
+    let limit = usize.from_u64(got)
+    while i < limit {
+        ck = ck.wrapping_mul(31u64).wrapping_add(u64.from_u8(rgba[i]))
+        i = i + 1usize
+    }
+    ck
+end ui.render.render_checksum
 
 fn ui.render.rgba(cr: f32, cg: f32, cb: f32, ca: f32) -> ui.render.Rgba uses [] panics never pub
     ui.render.Rgba { cr: cr, cg: cg, cb: cb, ca: ca }
@@ -638,3 +620,55 @@ test ui.render.GpuCtx.test_batch_shadow
     let n = ui.render.batch_rects(list.as_slice(), out.as_mut_slice())
     core.check.eq(n, 2usize)
 end ui.render.GpuCtx.test_batch_shadow
+
+test ui.render.GpuCtx.test_render_borders
+    match ui.render.GpuCtx.create(160i32, 100i32) {
+        Ok(ctx) => with mut c = ctx close c.close() {
+            let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            ui.render.scene_borders(&mut list)
+            let ck = ui.render.render_checksum(&mut c, list.as_slice())
+            let is_zero = ck == 0u64
+            core.check.eq(is_zero, false)
+        }
+        Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
+    }
+end ui.render.GpuCtx.test_render_borders
+
+test ui.render.GpuCtx.test_render_clip
+    match ui.render.GpuCtx.create(160i32, 100i32) {
+        Ok(ctx) => with mut c = ctx close c.close() {
+            let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            ui.render.scene_clip(&mut list)
+            let ck = ui.render.render_checksum(&mut c, list.as_slice())
+            let is_zero = ck == 0u64
+            core.check.eq(is_zero, false)
+        }
+        Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
+    }
+end ui.render.GpuCtx.test_render_clip
+
+test ui.render.GpuCtx.test_render_rects
+    match ui.render.GpuCtx.create(160i32, 100i32) {
+        Ok(ctx) => with mut c = ctx close c.close() {
+            let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            ui.render.scene_rects(&mut list)
+            let ck = ui.render.render_checksum(&mut c, list.as_slice())
+            let is_zero = ck == 0u64
+            core.check.eq(is_zero, false)
+        }
+        Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
+    }
+end ui.render.GpuCtx.test_render_rects
+
+test ui.render.GpuCtx.test_render_shadow
+    match ui.render.GpuCtx.create(160i32, 100i32) {
+        Ok(ctx) => with mut c = ctx close c.close() {
+            let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            ui.render.scene_shadow(&mut list)
+            let ck = ui.render.render_checksum(&mut c, list.as_slice())
+            let is_zero = ck == 0u64
+            core.check.eq(is_zero, false)
+        }
+        Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
+    }
+end ui.render.GpuCtx.test_render_shadow
