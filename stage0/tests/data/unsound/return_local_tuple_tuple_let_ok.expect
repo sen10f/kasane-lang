@@ -1,0 +1,2 @@
+expect: E3030
+note: 組の分解 (let・match の腕) を通した局所の借用の返却。
