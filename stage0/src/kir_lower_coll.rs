@@ -162,6 +162,7 @@ fn key_eff(key: &str) -> Option<(Vec<String>, bool)> {
 
 /// 型表の式の型 (式 ID が 0 なら無い)。
 pub(super) fn table_ty(lw: &Lw, e: &V) -> Option<Src> {
+    crate::s5_meter::count_active("kind.table_ty");
     let id = nid(e);
     if id == 0 {
         return None;
@@ -314,6 +315,7 @@ pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
 }
 
 pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
+    crate::s5_meter::count_active("kind.of_src");
     match strip_ref(t) {
         // 要素が所有物 (`Vec<String>`) のときは、要素の型 (集成体 `vec` など) を持つ
         Src::Named(n, args, _) if is_vecn(n) => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a)).or_else(|| sig_ty(lw, a).filter(|t| *t == Ty::Ptr))))),
@@ -370,6 +372,7 @@ pub(crate) fn arr_len_of(lw: &Lw, s: usize) -> Option<u32> {
 
 /// 受け手の種類。局所変数はスロットの種類、それ以外は型表の型から決める。
 fn kind_of_expr(lw: &Lw, e: &V) -> Option<Kind> {
+    crate::s5_meter::count_active("kind.of_expr");
     if let Some(s) = local_slot(lw, e) {
         if let Some(k) = lw.coll.kinds.get(&s).cloned() {
             return Some(k);

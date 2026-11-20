@@ -653,7 +653,7 @@ fn kir_lower_prints_a_module_that_reads_back() {
 #[test]
 fn kir_lower_reports_unsupported_constructs_with_a_reason() {
     // 段階 1 の対象外 (標準の型 `std.io.Error` への参照の引数) は、理由を付けて拒否する。対象の関数は出さない。
-    let src = "fn t.len_of(_s: &std.time.Instant) -> usize uses [] panics never
+    let src = "fn t.len_of(_s: &std.thread.JoinHandle<u8>) -> usize uses [] panics never
     5usize
 end t.len_of
 
@@ -1865,7 +1865,7 @@ fn kir_optres_prints_tagged_types_and_reads_back() {
 #[test]
 fn kir_optres_rejects_checked_neg_and_std_payloads_with_a_reason() {
     // 128 ビットの `checked_neg` (Option のペイロードが 128 ビット) は段階 1 の対象外。(`checked_neg` の 64 ビット以下は `kir_native_gaps2.rs`)。`Option` の中のタプルは集成体として持てる (11.5) が、
-    // Kasane の定義を持たない扱いの標準ライブラリの型 (`std.time.Instant`。`std.io.Error` は 12.1 で型表に入った) をペイロードに持つ `Result` は未対応で、理由に型名を出す。
+    // Kasane の定義を持たない扱いの標準ライブラリの型 (`std.thread.JoinHandle<u8>`。`std.io.Error` は 12.1 で型表に入った) をペイロードに持つ `Result` は未対応で、理由に型名を出す。
     let src = "fn t.neg(x: i128) -> Option<i128> uses [] panics never
     x.checked_neg()
 end t.neg
@@ -1874,7 +1874,7 @@ fn t.pr(x: u8) -> Option<(u8, u8)> uses [] panics never
     Some((x, x))
 end t.pr
 
-fn t.io(x: u8) -> Result<u8, std.time.Instant> uses [] panics never
+fn t.io(x: u8) -> Result<u8, std.thread.JoinHandle<u8>> uses [] panics never
     Ok(x)
 end t.io
 ";
@@ -1888,7 +1888,7 @@ end t.io
     let o = run(&["kir", "t.io"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     let err = text(&o.stderr);
-    assert!(err.contains("t.io は未対応") && err.contains("std.time.Instant は未対応"), "{}", err);
+    assert!(err.contains("t.io は未対応") && err.contains("std.thread.JoinHandle は段階 1 の対象外"), "{}", err);
 }
 
 #[test]
@@ -2152,7 +2152,7 @@ fn t.ok_unit() -> Result<(), t.P> uses [] panics never
     Ok(())
 end t.ok_unit
 
-fn t.bad() -> Option<std.time.Instant> uses [] panics never
+fn t.bad() -> Option<std.thread.JoinHandle<u8>> uses [] panics never
     None
 end t.bad
 ";
@@ -2162,7 +2162,7 @@ end t.bad
     assert!(text(&o.stdout).contains("ret=Result<unit,agg#0>"), "{}", text(&o.stdout));
     let o = run(&["kir", "t.bad"], &t.0);
     assert_eq!(o.status.code(), Some(1));
-    assert!(text(&o.stderr).contains("std.time.Instant は未対応"), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("std.thread.JoinHandle は段階 1 の対象外"), "{}", text(&o.stderr));
 }
 
 #[test]

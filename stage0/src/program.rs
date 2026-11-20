@@ -811,6 +811,7 @@ impl Program {
     }
 
     pub fn resolve(&self, segs: &[String], file: &str) -> Option<Resolved> {
+        crate::s5_meter::count_active("resolve");
         if segs.len() == 1 {
             let pre = match segs[0].as_str() {
                 "Some" => Some(("Option", "Some")),
