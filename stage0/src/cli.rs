@@ -3118,6 +3118,37 @@ fn cmd_vendor() -> i32 {
     0
 }
 
+/// `ksn registry index <registry> <name> [--offline]`: 索引の版を `版 コミット 取得元 yanked` の形で版順に出す (R3a)。
+/// yanked は除外する (解決の候補と同じ規則)。build には接続しない。
+fn cmd_registry(rest: &[String]) -> i32 {
+    match rest.first().map(String::as_str) {
+        Some("index") => {
+            let offline = rest.iter().any(|a| a == "--offline");
+            let args: Vec<&String> = rest[1..].iter().filter(|a| a.as_str() != "--offline").collect();
+            if args.len() != 2 {
+                eprintln!("usage: ksn registry index <registry> <name> [--offline]");
+                return 2;
+            }
+            match crate::registry::index_versions(args[0], args[1], offline, None) {
+                Ok(list) => {
+                    for e in &list {
+                        println!("{} {} {}", e.version, e.commit, e.repository);
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("ksn registry index: {} {}", e.code, e.msg);
+                    1
+                }
+            }
+        }
+        _ => {
+            eprintln!("usage: ksn registry index <registry> <name> [--offline]");
+            2
+        }
+    }
+}
+
 /// `ksn git tags <url>`: `git ls-remote --tags <url>` から `vMAJOR.MINOR.PATCH` タグだけを列挙し、
 /// `版 コミット` の形で版順に出力する (R1b。解決・lock への接続はまだ行わない)。
 fn cmd_git(rest: &[String]) -> i32 {
@@ -4273,6 +4304,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "lock" => cmd_lock(&rest),
         "vendor" => cmd_vendor(),
         "git" => cmd_git(&rest),
+        "registry" => cmd_registry(&rest),
         "_exec" => cmd_exec(&rest),
         "--version" | "-V" => {
             println!("ksn {}", VERSION);
