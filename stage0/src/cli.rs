@@ -4143,6 +4143,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "update" => cmd_update(&rest),
         "lock" => cmd_lock(&rest),
         "vendor" => cmd_vendor(),
+        "git" => cmd_git(&rest),
         "_exec" => cmd_exec(&rest),
         "--version" | "-V" => {
             println!("ksn {}", VERSION);

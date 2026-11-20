@@ -19,6 +19,7 @@ mod ffi;
 mod cnative;
 mod explain;
 mod fixes;
+mod git_tags;
 mod infer;
 mod fmath;
 mod kir;
