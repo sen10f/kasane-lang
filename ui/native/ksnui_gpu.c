@@ -238,7 +238,9 @@ int32_t ksnui_png_write(const char* path, int32_t w, int32_t h, const uint8_t* r
             memcpy(idat + idat_len, (p), (n)); idat_len += (n);                \
         } while (0)
 
-        uint32_t adler = 1;
+        /* Adler-32: 2 つのレジスタ (s1, s2)。1 つだけでは zlib のデータ検査に通らない。 */
+        uint32_t adler1 = 1;
+        uint32_t adler2 = 0;
         uint8_t zlib_header[2] = {0x78, 0x01};
         IDAT_APPEND(zlib_header, 2);
 
@@ -251,12 +253,15 @@ int32_t ksnui_png_write(const char* path, int32_t w, int32_t h, const uint8_t* r
             size_t blen = deflate_stored_block(block, final ? 1 : 0,
                                                filtered + off, chunk);
             IDAT_APPEND(block, blen);
-            for (size_t i = 0; i < chunk; i++) adler = (adler + filtered[off + i]) % 65521u;
+            for (size_t i = 0; i < chunk; i++) {
+                adler1 = (adler1 + filtered[off + i]) % 65521u;
+                adler2 = (adler2 + adler1) % 65521u;
+            }
             off += chunk;
         }
         if (idat_ok) {
             uint8_t adler_buf[4];
-            put_be32(adler_buf, adler);
+            put_be32(adler_buf, (adler2 << 16) | adler1);
             IDAT_APPEND(adler_buf, 4);
         }
         #undef IDAT_APPEND
