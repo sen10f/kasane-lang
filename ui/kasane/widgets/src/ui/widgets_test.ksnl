@@ -1,0 +1,453 @@
+type ui.widgets_test.Target pub
+    _dummy: bool
+end ui.widgets_test.Target
+
+fn ui.widgets_test.ascii_bytes() -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
+    let mut bytes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match bytes.push(0x61u8) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match bytes.push(0x62u8) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match bytes.push(0x63u8) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    bytes
+end ui.widgets_test.ascii_bytes
+
+fn ui.widgets_test.japanese_a_bytes() -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
+    let mut bytes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match bytes.push(0xe3u8) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match bytes.push(0x81u8) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match bytes.push(0x82u8) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    bytes
+end ui.widgets_test.japanese_a_bytes
+
+fn ui.widgets_test.mods() -> ui.event.Modifiers uses [] panics never pub
+    ui.event.Modifiers { shift: false, ctrl: false, alt: false }
+end ui.widgets_test.mods
+
+fn ui.widgets_test.rect() -> ui.layout.Rect uses [] panics never pub
+    ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 100.0f32, height: 40.0f32 }
+end ui.widgets_test.rect
+
+test ui.widgets_test.Target.test_button_click
+    let mut b = ui.widgets.Button.new()
+    let rect = ui.widgets_test.rect()
+    let mut ctx = ui.event.Ctx.new()
+    let down = ui.event.Event.PointerDown(50.0f32, 20.0f32, 1u8)
+    core.mem.drop(b.on_event(&down, rect, &mut ctx))
+    let up = ui.event.Event.PointerUp(50.0f32, 20.0f32, 1u8)
+    let action = b.on_event(&up, rect, &mut ctx)
+    core.check.eq(b.pressed, false)
+    core.check.eq(b.clicked, true)
+    core.check.eq(action, ui.event.Action.Redraw)
+end ui.widgets_test.Target.test_button_click
+
+test ui.widgets_test.Target.test_button_focus_gained
+    let mut b = ui.widgets.Button.new()
+    let rect = ui.widgets_test.rect()
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.FocusGained
+    let action = b.on_event(&ev, rect, &mut ctx)
+    core.check.eq(b.focused, true)
+    core.check.eq(action, ui.event.Action.Redraw)
+end ui.widgets_test.Target.test_button_focus_gained
+
+test ui.widgets_test.Target.test_button_focus_lost
+    let mut b = ui.widgets.Button.new()
+    let rect = ui.widgets_test.rect()
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.FocusLost
+    let action = b.on_event(&ev, rect, &mut ctx)
+    core.check.eq(b.focused, false)
+    core.check.eq(action, ui.event.Action.Redraw)
+end ui.widgets_test.Target.test_button_focus_lost
+
+test ui.widgets_test.Target.test_button_hover_inside
+    let mut b = ui.widgets.Button.new()
+    let rect = ui.widgets_test.rect()
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.PointerMove(50.0f32, 20.0f32)
+    let action = b.on_event(&ev, rect, &mut ctx)
+    core.check.eq(b.hovered, true)
+    core.check.eq(action, ui.event.Action.Redraw)
+end ui.widgets_test.Target.test_button_hover_inside
+
+test ui.widgets_test.Target.test_button_hover_outside
+    let mut b = ui.widgets.Button.new()
+    let rect = ui.widgets_test.rect()
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.PointerMove(200.0f32, 20.0f32)
+    let action = b.on_event(&ev, rect, &mut ctx)
+    core.check.eq(b.hovered, false)
+    core.check.eq(action, ui.event.Action.NoOp)
+end ui.widgets_test.Target.test_button_hover_outside
+
+test ui.widgets_test.Target.test_button_key_enter_focused
+    let mut b = ui.widgets.Button.new()
+    let rect = ui.widgets_test.rect()
+    let mut ctx = ui.event.Ctx.new()
+    let focus = ui.event.Event.FocusGained
+    core.mem.drop(b.on_event(&focus, rect, &mut ctx))
+    let ev = ui.event.Event.KeyDown(13u32, ui.widgets_test.mods())
+    let action = b.on_event(&ev, rect, &mut ctx)
+    core.check.eq(b.clicked, true)
+    core.check.eq(action, ui.event.Action.Redraw)
+end ui.widgets_test.Target.test_button_key_enter_focused
+
+test ui.widgets_test.Target.test_button_key_enter_unfocused
+    let mut b = ui.widgets.Button.new()
+    let rect = ui.widgets_test.rect()
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.KeyDown(13u32, ui.widgets_test.mods())
+    let action = b.on_event(&ev, rect, &mut ctx)
+    core.check.eq(b.clicked, false)
+    core.check.eq(action, ui.event.Action.NoOp)
+end ui.widgets_test.Target.test_button_key_enter_unfocused
+
+test ui.widgets_test.Target.test_button_key_space_focused
+    let mut b = ui.widgets.Button.new()
+    let rect = ui.widgets_test.rect()
+    let mut ctx = ui.event.Ctx.new()
+    let focus = ui.event.Event.FocusGained
+    core.mem.drop(b.on_event(&focus, rect, &mut ctx))
+    let ev = ui.event.Event.KeyDown(32u32, ui.widgets_test.mods())
+    let action = b.on_event(&ev, rect, &mut ctx)
+    core.check.eq(b.clicked, true)
+    core.check.eq(action, ui.event.Action.Redraw)
+end ui.widgets_test.Target.test_button_key_space_focused
+
+test ui.widgets_test.Target.test_button_new
+    let b = ui.widgets.Button.new()
+    core.check.eq(b.hovered, false)
+    core.check.eq(b.pressed, false)
+    core.check.eq(b.focused, false)
+    core.check.eq(b.clicked, false)
+end ui.widgets_test.Target.test_button_new
+
+test ui.widgets_test.Target.test_button_no_click_without_press
+    let mut b = ui.widgets.Button.new()
+    let rect = ui.widgets_test.rect()
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.PointerUp(50.0f32, 20.0f32, 1u8)
+    let action = b.on_event(&ev, rect, &mut ctx)
+    core.check.eq(b.clicked, false)
+    core.check.eq(action, ui.event.Action.NoOp)
+end ui.widgets_test.Target.test_button_no_click_without_press
+
+test ui.widgets_test.Target.test_button_press_inside
+    let mut b = ui.widgets.Button.new()
+    let rect = ui.widgets_test.rect()
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.PointerDown(50.0f32, 20.0f32, 1u8)
+    let action = b.on_event(&ev, rect, &mut ctx)
+    core.check.eq(b.pressed, true)
+    core.check.eq(action, ui.event.Action.Redraw)
+end ui.widgets_test.Target.test_button_press_inside
+
+test ui.widgets_test.Target.test_button_press_outside
+    let mut b = ui.widgets.Button.new()
+    let rect = ui.widgets_test.rect()
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.PointerDown(200.0f32, 20.0f32, 1u8)
+    let action = b.on_event(&ev, rect, &mut ctx)
+    core.check.eq(b.pressed, false)
+    core.check.eq(action, ui.event.Action.NoOp)
+end ui.widgets_test.Target.test_button_press_outside
+
+test ui.widgets_test.Target.test_list_key_at
+    let mut list = ui.widgets.List.new()
+    list.rc = 2usize
+    match list.keys.push(100u64) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    match list.keys.push(200u64) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    core.check.eq(list.key(0usize), Some(100u64))
+    core.check.eq(list.key(1usize), Some(200u64))
+    core.check.eq(list.key(2usize), None)
+end ui.widgets_test.Target.test_list_key_at
+
+test ui.widgets_test.Target.test_list_key_home_end
+    let mut list = ui.widgets.List.new()
+    list.rc = 10usize
+    list.ih = 24.0f32
+    list.vh = 100.0f32
+    list.sy = 100.0f32
+    let mut ctx = ui.event.Ctx.new()
+    let home = ui.event.Event.KeyDown(36u32, ui.widgets_test.mods())
+    core.mem.drop(list.on_event(&home, &mut ctx))
+    core.check.eq(list.sy, 0.0f32)
+    let end_ev = ui.event.Event.KeyDown(35u32, ui.widgets_test.mods())
+    core.mem.drop(list.on_event(&end_ev, &mut ctx))
+    core.check.eq(list.sy, 140.0f32)
+end ui.widgets_test.Target.test_list_key_home_end
+
+test ui.widgets_test.Target.test_list_key_up_down
+    let mut list = ui.widgets.List.new()
+    list.rc = 5usize
+    let mut ctx = ui.event.Ctx.new()
+    let down = ui.event.Event.KeyDown(40u32, ui.widgets_test.mods())
+    core.mem.drop(list.on_event(&down, &mut ctx))
+    core.check.eq(list.sel, Some(0usize))
+    core.mem.drop(list.on_event(&down, &mut ctx))
+    core.check.eq(list.sel, Some(1usize))
+    let up = ui.event.Event.KeyDown(38u32, ui.widgets_test.mods())
+    core.mem.drop(list.on_event(&up, &mut ctx))
+    core.check.eq(list.sel, Some(0usize))
+    core.mem.drop(list.on_event(&up, &mut ctx))
+    core.check.eq(list.sel, Some(0usize))
+end ui.widgets_test.Target.test_list_key_up_down
+
+test ui.widgets_test.Target.test_list_max_scroll
+    let mut list = ui.widgets.List.new()
+    list.rc = 10usize
+    list.ih = 24.0f32
+    list.vh = 100.0f32
+    core.check.eq(list.max_scroll(), 140.0f32)
+end ui.widgets_test.Target.test_list_max_scroll
+
+test ui.widgets_test.Target.test_list_new
+    let list = ui.widgets.List.new()
+    core.check.eq(list.rc, 0usize)
+    core.check.eq(list.ih, 24.0f32)
+    core.check.eq(list.sy, 0.0f32)
+    core.check.eq(list.vh, 0.0f32)
+    core.check.eq(list.sel, None)
+end ui.widgets_test.Target.test_list_new
+
+test ui.widgets_test.Target.test_list_pointer_down_selects_row
+    let mut list = ui.widgets.List.new()
+    list.rc = 10usize
+    list.ih = 24.0f32
+    list.sy = 0.0f32
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.PointerDown(10.0f32, 30.0f32, 1u8)
+    let action = list.on_event(&ev, &mut ctx)
+    core.check.eq(list.sel, Some(1usize))
+    core.check.eq(action, ui.event.Action.Redraw)
+end ui.widgets_test.Target.test_list_pointer_down_selects_row
+
+test ui.widgets_test.Target.test_list_row_y_rect
+    let mut list = ui.widgets.List.new()
+    list.ih = 24.0f32
+    list.sy = 24.0f32
+    core.check.eq(list.row_y(1usize), 0.0f32)
+    let r = list.row_rect(2usize, 200.0f32)
+    core.check.eq(r.x, 0.0f32)
+    core.check.eq(r.y, 24.0f32)
+    core.check.eq(r.width, 200.0f32)
+    core.check.eq(r.height, 24.0f32)
+end ui.widgets_test.Target.test_list_row_y_rect
+
+test ui.widgets_test.Target.test_list_scroll_to
+    let mut list = ui.widgets.List.new()
+    list.rc = 10usize
+    list.ih = 24.0f32
+    list.vh = 100.0f32
+    list.scroll_to(9usize)
+    core.check.eq(list.sy, 140.0f32)
+end ui.widgets_test.Target.test_list_scroll_to
+
+test ui.widgets_test.Target.test_list_visible_range
+    let mut list = ui.widgets.List.new()
+    list.rc = 10usize
+    list.ih = 24.0f32
+    list.vh = 100.0f32
+    list.sy = 50.0f32
+    let (first, last) = list.visible_range()
+    core.check.eq(first, 2usize)
+    core.check.eq(last, 7usize)
+end ui.widgets_test.Target.test_list_visible_range
+
+test ui.widgets_test.Target.test_list_visible_range_empty
+    let list = ui.widgets.List.new()
+    let (first, last) = list.visible_range()
+    core.check.eq(first, 0usize)
+    core.check.eq(last, 0usize)
+end ui.widgets_test.Target.test_list_visible_range_empty
+
+test ui.widgets_test.Target.test_list_wheel_clamps
+    let mut list = ui.widgets.List.new()
+    list.rc = 10usize
+    list.ih = 24.0f32
+    list.vh = 100.0f32
+    list.sy = 140.0f32
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.Wheel(0.0f32, -200.0f32, 0.0f32, 0.0f32)
+    core.mem.drop(list.on_event(&ev, &mut ctx))
+    core.check.eq(list.sy, 0.0f32)
+    let ev2 = ui.event.Event.Wheel(0.0f32, 500.0f32, 0.0f32, 0.0f32)
+    core.mem.drop(list.on_event(&ev2, &mut ctx))
+    core.check.eq(list.sy, 140.0f32)
+end ui.widgets_test.Target.test_list_wheel_clamps
+
+test ui.widgets_test.Target.test_text_backspace
+    let mut ti = ui.widgets.TextInput.new()
+    let mut ctx = ui.event.Ctx.new()
+    let focus = ui.event.Event.FocusGained
+    core.mem.drop(ti.on_event(&focus, &mut ctx))
+    let ev = ui.event.Event.TextInput(ui.widgets_test.ascii_bytes())
+    core.mem.drop(ti.on_event(&ev, &mut ctx))
+    core.check.eq(ti.caret, 3usize)
+    let back = ui.event.Event.KeyDown(8u32, ui.widgets_test.mods())
+    core.mem.drop(ti.on_event(&back, &mut ctx))
+    core.check.eq(ti.text.len(), 2usize)
+    core.check.eq(ti.caret, 2usize)
+end ui.widgets_test.Target.test_text_backspace
+
+test ui.widgets_test.Target.test_text_delete_forward
+    let mut ti = ui.widgets.TextInput.new()
+    let mut ctx = ui.event.Ctx.new()
+    let focus = ui.event.Event.FocusGained
+    core.mem.drop(ti.on_event(&focus, &mut ctx))
+    let ev = ui.event.Event.TextInput(ui.widgets_test.ascii_bytes())
+    core.mem.drop(ti.on_event(&ev, &mut ctx))
+    ti.caret = 0usize
+    ti.ss = 0usize
+    ti.se = 0usize
+    let dele = ui.event.Event.KeyDown(46u32, ui.widgets_test.mods())
+    core.mem.drop(ti.on_event(&dele, &mut ctx))
+    core.check.eq(ti.text.len(), 2usize)
+    core.check.eq(ti.caret, 0usize)
+end ui.widgets_test.Target.test_text_delete_forward
+
+test ui.widgets_test.Target.test_text_home_end
+    let mut ti = ui.widgets.TextInput.new()
+    let mut ctx = ui.event.Ctx.new()
+    let focus = ui.event.Event.FocusGained
+    core.mem.drop(ti.on_event(&focus, &mut ctx))
+    let ev = ui.event.Event.TextInput(ui.widgets_test.ascii_bytes())
+    core.mem.drop(ti.on_event(&ev, &mut ctx))
+    let home = ui.event.Event.KeyDown(36u32, ui.widgets_test.mods())
+    core.mem.drop(ti.on_event(&home, &mut ctx))
+    core.check.eq(ti.caret, 0usize)
+    let end_ev = ui.event.Event.KeyDown(35u32, ui.widgets_test.mods())
+    core.mem.drop(ti.on_event(&end_ev, &mut ctx))
+    core.check.eq(ti.caret, 3usize)
+end ui.widgets_test.Target.test_text_home_end
+
+test ui.widgets_test.Target.test_text_ime_commit
+    let mut ti = ui.widgets.TextInput.new()
+    let mut ctx = ui.event.Ctx.new()
+    let focus = ui.event.Event.FocusGained
+    core.mem.drop(ti.on_event(&focus, &mut ctx))
+    let ev = ui.event.Event.IMEUpdate(ui.widgets_test.japanese_a_bytes())
+    core.mem.drop(ti.on_event(&ev, &mut ctx))
+    core.check.eq(ti.comp.len(), 3usize)
+    let commit = ui.event.Event.IMECommit(ui.widgets_test.japanese_a_bytes())
+    core.mem.drop(ti.on_event(&commit, &mut ctx))
+    core.check.eq(ti.text.len(), 3usize)
+    core.check.eq(ti.caret, 3usize)
+    core.check.eq(ti.comp.len(), 0usize)
+end ui.widgets_test.Target.test_text_ime_commit
+
+test ui.widgets_test.Target.test_text_ime_focus_lost_clears
+    let mut ti = ui.widgets.TextInput.new()
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.IMEUpdate(ui.widgets_test.japanese_a_bytes())
+    core.mem.drop(ti.on_event(&ev, &mut ctx))
+    core.check.eq(ti.comp.len(), 3usize)
+    let lost = ui.event.Event.FocusLost
+    core.mem.drop(ti.on_event(&lost, &mut ctx))
+    core.check.eq(ti.focused, false)
+    core.check.eq(ti.comp.len(), 0usize)
+end ui.widgets_test.Target.test_text_ime_focus_lost_clears
+
+test ui.widgets_test.Target.test_text_insert_ascii
+    let mut ti = ui.widgets.TextInput.new()
+    let mut ctx = ui.event.Ctx.new()
+    let focus = ui.event.Event.FocusGained
+    core.mem.drop(ti.on_event(&focus, &mut ctx))
+    let ev = ui.event.Event.TextInput(ui.widgets_test.ascii_bytes())
+    let action = ti.on_event(&ev, &mut ctx)
+    core.check.eq(ti.text.len(), 3usize)
+    core.check.eq(ti.caret, 3usize)
+    core.check.eq(action, ui.event.Action.Redraw)
+end ui.widgets_test.Target.test_text_insert_ascii
+
+test ui.widgets_test.Target.test_text_insert_japanese
+    let mut ti = ui.widgets.TextInput.new()
+    let mut ctx = ui.event.Ctx.new()
+    let focus = ui.event.Event.FocusGained
+    core.mem.drop(ti.on_event(&focus, &mut ctx))
+    let ev = ui.event.Event.TextInput(ui.widgets_test.japanese_a_bytes())
+    core.mem.drop(ti.on_event(&ev, &mut ctx))
+    core.check.eq(ti.text.len(), 3usize)
+    core.check.eq(ti.caret, 3usize)
+end ui.widgets_test.Target.test_text_insert_japanese
+
+test ui.widgets_test.Target.test_text_move_left_right
+    let mut ti = ui.widgets.TextInput.new()
+    let mut ctx = ui.event.Ctx.new()
+    let focus = ui.event.Event.FocusGained
+    core.mem.drop(ti.on_event(&focus, &mut ctx))
+    let ev = ui.event.Event.TextInput(ui.widgets_test.ascii_bytes())
+    core.mem.drop(ti.on_event(&ev, &mut ctx))
+    core.check.eq(ti.caret, 3usize)
+    let left = ui.event.Event.KeyDown(37u32, ui.widgets_test.mods())
+    core.mem.drop(ti.on_event(&left, &mut ctx))
+    core.check.eq(ti.caret, 2usize)
+    let right = ui.event.Event.KeyDown(39u32, ui.widgets_test.mods())
+    core.mem.drop(ti.on_event(&right, &mut ctx))
+    core.check.eq(ti.caret, 3usize)
+end ui.widgets_test.Target.test_text_move_left_right
+
+test ui.widgets_test.Target.test_text_new
+    let ti = ui.widgets.TextInput.new()
+    core.check.eq(ti.text.len(), 0usize)
+    core.check.eq(ti.caret, 0usize)
+    core.check.eq(ti.ss, 0usize)
+    core.check.eq(ti.se, 0usize)
+    core.check.eq(ti.comp.len(), 0usize)
+    core.check.eq(ti.focused, false)
+end ui.widgets_test.Target.test_text_new
+
+test ui.widgets_test.Target.test_text_replace_selection
+    let mut ti = ui.widgets.TextInput.new()
+    let mut ctx = ui.event.Ctx.new()
+    let focus = ui.event.Event.FocusGained
+    core.mem.drop(ti.on_event(&focus, &mut ctx))
+    let ev = ui.event.Event.TextInput(ui.widgets_test.ascii_bytes())
+    core.mem.drop(ti.on_event(&ev, &mut ctx))
+    ti.ss = 1usize
+    ti.se = 3usize
+    let mut bytes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match bytes.push(0x58u8) {
+        Ok(_u) => ()
+        Err(_e) => ()
+    }
+    let ev2 = ui.event.Event.TextInput(bytes)
+    let action = ti.on_event(&ev2, &mut ctx)
+    core.check.eq(ti.text.len(), 2usize)
+    core.check.eq(ti.caret, 2usize)
+    core.check.eq(ti.ss, 2usize)
+    core.check.eq(ti.se, 2usize)
+    core.check.eq(action, ui.event.Action.Redraw)
+end ui.widgets_test.Target.test_text_replace_selection
+
+test ui.widgets_test.Target.test_text_unfocused_insert_ignored
+    let mut ti = ui.widgets.TextInput.new()
+    let mut ctx = ui.event.Ctx.new()
+    let ev = ui.event.Event.TextInput(ui.widgets_test.ascii_bytes())
+    core.mem.drop(ti.on_event(&ev, &mut ctx))
+    core.check.eq(ti.text.len(), 0usize)
+    core.check.eq(ti.caret, 0usize)
+end ui.widgets_test.Target.test_text_unfocused_insert_ignored
