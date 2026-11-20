@@ -1,0 +1,13 @@
+fn t.log() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line("x")
+end t.log
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    t.log()?
+    core.mem.drop(t.sum(1u8, 2u8))
+    Ok(())
+end t.main
+
+fn t.sum(a: u8, b: u8) -> u8 uses [] panics may
+    a + b
+end t.sum

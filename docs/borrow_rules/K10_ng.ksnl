@@ -1,0 +1,23 @@
+fn t.go[F: core.marker.Send + core.ops.FnOnce<(), usize, E, P> + 'static, E: uses, P: panics](f: F) -> Result<std.thread.JoinHandle<usize, std.alloc.System>, std.thread.SpawnError> uses [alloc, thread, E] panics P
+    std.thread.spawn(std.alloc.SYSTEM, f)
+end t.go
+
+fn t.main() -> () uses [alloc, thread] panics never
+    match t.start() {
+        Ok(h) => core.mem.drop(h.join())
+        Err(_e) => core.mem.drop(0u8)
+    }
+end t.main
+
+fn t.mk() -> alloc.string.String uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
+
+fn t.start() -> Result<std.thread.JoinHandle<usize, std.alloc.System>, std.thread.SpawnError> uses [alloc, thread] panics never
+    let s = t.mk()
+    t.go(
+        fn() -> usize capture [&s] {
+            s.len()
+        },
+    )
+end t.start

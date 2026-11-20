@@ -1,0 +1,20 @@
+type t.Parser
+    pos: usize
+end t.Parser
+
+fn t.main() -> () uses [] panics never
+    let src = [72u8, 105u8]
+    let mut p = t.Parser { pos: 0usize }
+    let b = t.next(&mut p, &src)
+    core.mem.drop(b)
+end t.main
+
+fn t.next(p: &mut t.Parser, src: &[u8]) -> Option<u8> uses [] panics never
+    match src.get(p.pos) {
+        Some(b) => {
+            p.pos = p.pos.wrapping_add(1usize)
+            Some(*b)
+        }
+        None => None
+    }
+end t.next

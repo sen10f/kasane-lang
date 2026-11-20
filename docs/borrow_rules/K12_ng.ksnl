@@ -1,0 +1,10 @@
+fn t.main() -> () uses [] panics never
+    let f = fn() -> () capture [] {
+        t.say()
+    }
+    f()
+end t.main
+
+fn t.say() -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line("hi"))
+end t.say

@@ -1,0 +1,6 @@
+type t.L derive [Copy] linear pub
+    v: u32
+end t.L
+
+fn t.main() -> () uses [] panics never
+end t.main

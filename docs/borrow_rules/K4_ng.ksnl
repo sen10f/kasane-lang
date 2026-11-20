@@ -1,0 +1,6 @@
+type t.H['a]
+    r: &'a alloc.string.String
+end t.H
+
+fn t.main() -> () uses [] panics never
+end t.main
