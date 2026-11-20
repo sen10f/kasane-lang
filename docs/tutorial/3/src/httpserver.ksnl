@@ -1,0 +1,50 @@
+enum httpserver.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Http(std.http.Error)
+    Io(std.io.Error)
+    Net(std.net.Error)
+end httpserver.Error
+
+fn httpserver.address(port: u16) -> Result<alloc.string.String<std.alloc.System>, httpserver.Error> uses [alloc] panics never
+    let mut address = alloc.string.String.new(std.alloc.SYSTEM)
+    address.push_str("127.0.0.1:")?
+    address.push_u64(u64.from_u16(port))?
+    Ok(address)
+end httpserver.address
+
+fn httpserver.exchange(listener: &std.net.TcpListener) -> Result<(), httpserver.Error> uses [alloc, io.console, io.net] panics never
+    let port = listener.local_port()?
+    let address = httpserver.address(port)?
+    with mut client = std.net.connect(address.as_str())? close core.mem.drop(client.close()) {
+        with mut server = listener.accept()? close core.mem.drop(server.close()) {
+            let request_bytes = "GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            std.http.write_all(&mut client, request_bytes.as_bytes())?
+            let mut decoder = std.http.Decoder.new(8192usize, 65_536usize)
+            match std.http.read_request(&mut server, &mut decoder)? {
+                Some(request) => {
+                    std.io.print_line(request.method.as_str())?
+                    std.io.print_line(request.path.as_str())?
+                    httpserver.send_response(&mut server, &request)?
+                }
+                None => return Err(httpserver.Error.Http(std.http.Error.Truncated))
+            }
+        }
+    }
+    Ok(())
+end httpserver.exchange
+
+fn httpserver.main() -> Result<(), httpserver.Error> uses [alloc, io.console, io.net] panics never
+    with listener = std.net.listen("127.0.0.1:0")? close core.mem.drop(listener.close()) {
+        httpserver.exchange(&listener)?
+    }
+    std.io.print_line("200 OK")?
+    Ok(())
+end httpserver.main
+
+fn httpserver.send_response(stream: &mut std.net.TcpStream, request: &std.http.Request) -> Result<(), httpserver.Error> uses [alloc, io.net] panics never
+    let body = "Hello, Kasane!\n"
+    let head = "Content-Type: text/plain; charset=utf-8\r\n"
+    let bytes = std.http.render(200u16, head, body.as_bytes(), request.keep_alive())?
+    std.http.write_all(stream, bytes.as_slice())?
+    Ok(())
+end httpserver.send_response

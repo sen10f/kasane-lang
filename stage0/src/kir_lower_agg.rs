@@ -35,7 +35,7 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 
 /// Kasane の定義 (`spec/stdlib` の `type` / `enum`) を持ち、利用者の型と同じ集成体として型表に入れる標準ライブラリの型 (設計_KIR.md 12.1)。
 /// 利用者のエラー型 (`shortener.error.Error` / `http.Error` など) がペイロードや変種に持つ標準型もここに入れる (段階 2)。
-pub const STD_TYPES: [&str; 50] = ["alloc.alloc.Layout", "std.io.Stdin", "std.io.Stdout", "std.io.Stderr", "core.fmt.Formatter", "core.hash.Fnv64", "std.http.Decoder", "std.http.Error", "std.http.Framing", "std.http.Head", "std.http.Header", "std.http.Request", "std.tls.TlsAcceptor", "std.tls.Error", "std.tls.TlsStream", "std.process.Command", "std.process.Child", "std.process.ExitStatus", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec", "std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "core.cmp.Ordering", "std.time.SystemTime", "std.datetime.DateTime", "std.datetime.Error", "std.log.Level", "std.net.Shutdown", "std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "core.slice.IndexError", "std.json.Doc", "std.json.Error", "std.json.Kind", "std.json.Node", "std.json.Value"];
+pub const STD_TYPES: [&str; 52] = ["alloc.alloc.Layout", "core.fmt.Error", "core.slice.LengthError", "std.io.Stdin", "std.io.Stdout", "std.io.Stderr", "core.fmt.Formatter", "core.hash.Fnv64", "std.http.Decoder", "std.http.Error", "std.http.Framing", "std.http.Head", "std.http.Header", "std.http.Request", "std.tls.TlsAcceptor", "std.tls.Error", "std.tls.TlsStream", "std.process.Command", "std.process.Child", "std.process.ExitStatus", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec", "std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "core.cmp.Ordering", "std.time.SystemTime", "std.datetime.DateTime", "std.datetime.Error", "std.log.Level", "std.net.Shutdown", "std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "core.slice.IndexError", "std.json.Doc", "std.json.Error", "std.json.Kind", "std.json.Node", "std.json.Value"];
 
 /// Kasane で書いた標準ライブラリの総称型 (`spec/stdlib/alloc/collections.ksnl`)。利用者の型と同じ集成体として下ろす。
 pub fn is_kasane_std_generic(name: &str) -> bool {
@@ -310,8 +310,28 @@ impl AggTab {
             }
             // `&str` とスライスの値は `fat` (`{ptr, len}`)。要素はスカラーのものだけ (`sig_ty` と同じ条件)。Option のペイロードにも置ける。
             Src::Ref(_, inner, _) if matches!(&**inner, Src::Prim(s) if s == "str") || matches!(&**inner, Src::Slice(e) if conv(&**e).is_some()) => Ok(self.fat()),
+            // 固定長配列 `[T; N]` (N は定数): 要素を隙間なく並べた集成体 (`layout c` の欄・`extern` の構造体の中身など)。
+            Src::Array(elem, Some(n)) => {
+                let et = self.lower_ty(p, file, elem)?;
+                if !(et.is_int() || et.is_float() || matches!(et, Ty::Bool | Ty::Ptr | Ty::Agg(_))) || self.owns_heap(et) {
+                    return Err(format!("{} は未対応 (配列の要素は所有物を持たない値だけ)", show(t)));
+                }
+                let n = u32::try_from(*n).map_err(|_| format!("{} は長すぎる", show(t)))?;
+                let name = format!("[{};{}]", self.name_of(et), n);
+                if let Some(&i) = self.by_name.get(&name) {
+                    return Ok(Ty::Agg(i));
+                }
+                let (es, ea) = (size_of(&self.defs, et), align_of(&self.defs, et));
+                let size = es.checked_mul(n).ok_or_else(|| format!("{} は大きすぎる", show(t)))?;
+                Ok(self.push(name, size, ea.max(1), AggKind::Array(et, n)))
+            }
             // 生ポインタ `*mut T` / `*const T` (指す先がスカラーのもの) は番地 (`ptr`)。extern の引数と同じ規則 (`kir_lower_ffi`)。
             Src::Ptr(_, inner) if matches!(&**inner, Src::Prim(s) if Ty::parse(s).and_then(crate::kir::Pointee::of).is_some()) => Ok(Ty::Ptr),
+            // 集成体 (`layout c` の構造体など) を指す生ポインタも番地。指す先が型表に入れられるときだけ。
+            Src::Ptr(_, inner) if matches!(&**inner, Src::Named(..)) => match self.lower_ty(p, file, inner)? {
+                Ty::Agg(_) => Ok(Ty::Ptr),
+                _ => Err(format!("{} は未対応", show(t))),
+            },
             other => Err(format!("{} は未対応", show(other))),
         }
     }
@@ -590,6 +610,7 @@ impl AggTab {
                 }
                 match &d.kind {
                     AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| self.owns_heap(f.ty)),
+                    AggKind::Array(t, _) => self.owns_heap(*t),
                     AggKind::Enum(vs) => vs.iter().any(|v| v.fields.iter().any(|f| self.owns_heap(f.ty))),
                 }
             }
@@ -801,6 +822,33 @@ impl<'a> Lw<'a> {
         }
     }
 
+    /// `&[T; N]` の参照 (`ref<fat>`) `v` が、スライスの値 `fat` の位置に来たら (配列の参照からスライスへの型の調整)、値を読む。
+    pub(super) fn deref_fat_to(&mut self, v: VId, want: Ty) -> VId {
+        if want == self.fat_ty() {
+            if let Ty::Ref(_, Pointee::Agg(fi)) = self.vty(v) {
+                if Ty::Agg(fi) == want {
+                    return self.emit(want, Op::Load(v));
+                }
+            }
+        }
+        v
+    }
+
+    /// 配列式の値 (`{ptr, len}`) `v` を、配列の集成体 `want` の値にする (先頭から `want` の大きさだけ読む)。型が違う・配列でなければ `v` のまま。
+    pub(super) fn fat_to_array(&mut self, v: VId, want: Ty) -> VId {
+        let Ty::Agg(ai) = want else { return v };
+        if !matches!(self.agg_def(ai).kind, AggKind::Array(..)) || self.vty(v) == want {
+            return v;
+        }
+        let Ty::Agg(fi) = self.vty(v) else { return v };
+        if self.agg_def(fi).name != "fat" {
+            return v;
+        }
+        let base = self.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+        let r = self.emit(Ty::Ref(false, Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: base });
+        self.emit(want, Op::Load(r))
+    }
+
     /// 集成体の式の振り分け (`expr` から呼ぶ)。
     pub(super) fn agg_expr(&mut self, e: &V) -> LR<Option<VId>> {
         match nname(e) {
@@ -865,6 +913,8 @@ impl<'a> Lw<'a> {
                 return Ok(None);
             };
             super::coll::tmp_hold(self, v);
+            // 配列の欄: 配列式は `{ptr, len}` (fat) の値なので、中身を配列の集成体へ写す。
+            let v = self.fat_to_array(v, decl[k].ty);
             if self.vty(v) != decl[k].ty {
                 return self.err(line, format!("フィールド {} の型が違う", fname));
             }
@@ -1616,6 +1666,10 @@ impl<'a> Lw<'a> {
                 }
             }
             if let Some(v) = self.expr(body)? {
+                let v = match res {
+                    Some(t) => self.deref_fat_to(v, t),
+                    None => v,
+                };
                 if let Some(t) = res {
                     if self.vty(v) != t && carry {
                         return self.err(line, "match の腕の型が結果の型と違う");
@@ -1722,6 +1776,7 @@ end t.main
                 // `std.json.decode_variant` の `(&str, Option<Value>)`: `Value` は添字だけ (8 バイト) なので `Option<Value>` は 16 バイト。
                 n if n.starts_with("(fat,Option<agg") => (32, 8, vec![0, 16], vec![]),
                 n if n.starts_with("(fat,Option<") => (40, 8, vec![0, 16], vec![]),
+                n if n.starts_with('[') => (d.size, d.align, vec![], vec![]),
                 other => panic!("期待値のない型: {}", other),
             };
             assert_eq!((d.size, d.align), (size, align), "大きさ・整列: {}", d.name);
@@ -1734,6 +1789,7 @@ end t.main
                     let mine: Vec<Vec<u32>> = vs.iter().map(|v| v.fields.iter().map(|f| f.off).collect()).collect();
                     assert_eq!(mine, vars, "バリアントのオフセット: {}", d.name);
                 }
+                AggKind::Array(..) => {}
             }
         }
     }

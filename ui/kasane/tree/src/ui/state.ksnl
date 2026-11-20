@@ -1,0 +1,77 @@
+type ui.state.Arena[T, A: alloc.alloc.Allocator] pub
+    slots: alloc.vec.Vec<Option<T>, A>
+end ui.state.Arena
+
+type ui.state.Handle derive [Debug, Clone, Copy] pub
+    index: usize pub
+end ui.state.Handle
+
+enum ui.state.State derive [Debug, Clone, Copy, PartialEq] pub
+    Count(u32)
+    Focused(bool)
+end ui.state.State
+
+trait ui.state.ViewState pub
+    fn tick(self: &mut Self) -> () uses [] panics never
+end ui.state.ViewState
+
+fn ui.state.Arena.contains[T, A: alloc.alloc.Allocator](self: &ui.state.Arena<T, A>, h: ui.state.Handle) -> bool uses [] panics never pub
+    match self.slots.get(h.index) {
+        Some(v) => match v {
+            Some(_x) => true
+            None => false
+        }
+        None => false
+    }
+end ui.state.Arena.contains
+
+fn ui.state.Arena.get[T, A: alloc.alloc.Allocator](self: &ui.state.Arena<T, A>, h: ui.state.Handle) -> Option<&T> uses [] panics never pub
+    match self.slots.get(h.index) {
+        Some(v) => match v {
+            Some(x) => Some(x)
+            None => None
+        }
+        None => None
+    }
+end ui.state.Arena.get
+
+fn ui.state.Arena.get_mut[T, A: alloc.alloc.Allocator](self: &mut ui.state.Arena<T, A>, h: ui.state.Handle) -> Option<&mut T> uses [] panics never pub
+    match self.slots.get_mut(h.index) {
+        Some(v) => match v {
+            Some(x) => Some(x)
+            None => None
+        }
+        None => None
+    }
+end ui.state.Arena.get_mut
+
+fn ui.state.Arena.insert[T, A: alloc.alloc.Allocator](self: &mut ui.state.Arena<T, A>, value: T) -> Result<ui.state.Handle, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let index = self.slots.len()
+    match self.slots.push(Some(value)) {
+        Ok(_u) => Ok(ui.state.Handle { index: index })
+        Err(e) => Err(e)
+    }
+end ui.state.Arena.insert
+
+fn ui.state.Arena.is_empty[T, A: alloc.alloc.Allocator](self: &ui.state.Arena<T, A>) -> bool uses [] panics never pub
+    self.slots.len() == 0usize
+end ui.state.Arena.is_empty
+
+fn ui.state.Arena.len[T, A: alloc.alloc.Allocator](self: &ui.state.Arena<T, A>) -> usize uses [] panics never pub
+    self.slots.len()
+end ui.state.Arena.len
+
+fn ui.state.Arena.new[T, A: alloc.alloc.Allocator](allocator: A) -> ui.state.Arena<T, A> uses [] panics never pub
+    let slots = alloc.vec.Vec.new(allocator)
+    ui.state.Arena { slots: slots }
+end ui.state.Arena.new
+
+fn ui.state.Arena.remove[T, A: alloc.alloc.Allocator](self: &mut ui.state.Arena<T, A>, h: ui.state.Handle) -> Option<T> uses [] panics never pub
+    match self.slots.get_mut(h.index) {
+        Some(slot) => match core.mem.replace(slot, None) {
+            Some(v) => Some(v)
+            None => None
+        }
+        None => None
+    }
+end ui.state.Arena.remove

@@ -25,6 +25,7 @@ mod kir;
 mod kir_borrowck;
 mod kir_exec;
 mod assets;
+mod kir_cabi;
 mod kir_llvm;
 #[cfg(feature = "embedded-llvm")]
 mod embed_llvm;
@@ -36,6 +37,7 @@ mod fmt;
 mod canon;
 mod spacing;
 mod bindgen;
+mod bindgen_c;
 mod grammar;
 mod lint;
 mod lockapi;

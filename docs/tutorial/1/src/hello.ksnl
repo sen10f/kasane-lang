@@ -1,0 +1,4 @@
+fn hello.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line("こんにちは、Kasane!")?
+    Ok(())
+end hello.main

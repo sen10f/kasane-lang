@@ -7,6 +7,9 @@
 #[allow(dead_code, unused_imports)]
 mod common;
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -196,7 +199,7 @@ fn test_engine_both_compares_tree_walker_and_vm() {
 #[test]
 fn std_net_runs_in_the_vm_and_matches_tree_walker() {
     // `std.net` の命令 (listen / connect / accept / read / write / close / local_port) は VM で実際に走る (退避しない)。
-    let dir = std::env::temp_dir().join(format!("ksn_vm_net_{}", std::process::id()));
+    let dir = scratch::Scratch::at(format!("ksn_vm_net_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("src")).unwrap();
     fs::write(dir.join("kasane.toml"), "[package]\nname = \"vmnet\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[dependencies]\n").unwrap();

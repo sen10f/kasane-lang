@@ -38,6 +38,16 @@ pub fn check(prog: &Program, user: &[usize]) -> Vec<Diag> {
     out.extend(crate::tast_rules::effects_inst::check(prog, user, &tast));
     // 関数型・`dyn` の効果の食い違い (規則 F)。
     out.extend(crate::tast_rules::effects_conv::check(prog, user, &tast));
+    // 捨てた値 (規則 D)。
+    out.extend(crate::tast_rules::discard::check(prog, user, &tast));
+    // `match` の網羅性 (規則 M)。
+    out.extend(crate::tast_rules::exhaustive::check(prog, user, &tast));
+    // 可変にできない場所 (規則 W)。
+    out.extend(crate::tast_rules::mutability::check(prog, user, &tast));
+    // `extern` / `core.ptr` の呼び出し (規則 U)。
+    out.extend(crate::tast_rules::unsafe_calls::check(prog, user, &tast));
+    // 型パラメータの境界の充足 (規則 I の拡張)。
+    out.extend(crate::tast_rules::bounds::check(prog, user, &tast));
     // 同じ診断を 2 つの規則が出すことがある (参照の段数と型の一致): (ファイル, 行, コード, 文面) で重ねる。
     let mut seen = std::collections::BTreeSet::new();
     out.retain(|d| seen.insert((d.file.clone(), d.line, d.code.clone(), d.msg.clone())));

@@ -58,35 +58,38 @@ def run_one(item):
     tmp = None
     args = ['check', '--json']
     cwd = path
-    if os.path.isfile(path):
-        tmp = tempfile.mkdtemp(prefix='shadow_diff_')
-        os.makedirs(os.path.join(tmp, 'src'))
-        open(os.path.join(tmp, 'kasane.toml'), 'w').write(TOML)
-        open(os.path.join(tmp, 'kasane.lock'), 'w').write('version = 1\n')
-        shutil.copy(path, os.path.join(tmp, 'src', 't.ksnl'))
-        cwd = tmp
-        # 印 (`target: X`) は横の `<名前>.expect` にある (`.ksnl` にコメントは置けない)。
-        exp = os.path.splitext(path)[0] + '.expect'
-        if os.path.exists(exp):
-            for l in open(exp, encoding='utf-8'):
-                if l.startswith('target:'):
-                    args += ['--target', l.split(':', 1)[1].strip()]
-    env = dict(os.environ, KSN_CHECKER='shadow')
-    r = subprocess.run([EXE] + args, cwd=cwd, env=env, capture_output=True, text=True, encoding='utf-8', errors='replace')
-    found = set()
-    for l in r.stderr.splitlines():
-        if not l.startswith('{"shadow"'):
-            continue
-        j = json.loads(l)
-        f = j['file']
-        if tmp and f.startswith(tmp):
-            f = label
-        elif f.startswith(ROOT + '/'):
-            f = rel(f)
-        found.add((j['shadow'], f, j['line'], j['code']))
-    if tmp:
-        shutil.rmtree(tmp, ignore_errors=True)
-    return label, found
+    try:
+        if os.path.isfile(path):
+            tmp = tempfile.mkdtemp(prefix='shadow_diff_')
+            os.makedirs(os.path.join(tmp, 'src'))
+            open(os.path.join(tmp, 'kasane.toml'), 'w').write(TOML)
+            open(os.path.join(tmp, 'kasane.lock'), 'w').write('version = 1\n')
+            shutil.copy(path, os.path.join(tmp, 'src', 't.ksnl'))
+            cwd = tmp
+            # 印 (`target: X`) は横の `<名前>.expect` にある (`.ksnl` にコメントは置けない)。
+            exp = os.path.splitext(path)[0] + '.expect'
+            if os.path.exists(exp):
+                for l in open(exp, encoding='utf-8'):
+                    if l.startswith('target:'):
+                        args += ['--target', l.split(':', 1)[1].strip()]
+        env = dict(os.environ, KSN_CHECKER='shadow')
+        r = subprocess.run([EXE] + args, cwd=cwd, env=env, capture_output=True, text=True, encoding='utf-8', errors='replace')
+        found = set()
+        for l in r.stderr.splitlines():
+            if not l.startswith('{"shadow"'):
+                continue
+            j = json.loads(l)
+            f = j['file']
+            if tmp and f.startswith(tmp):
+                f = label
+            elif f.startswith(ROOT + '/'):
+                f = rel(f)
+            found.add((j['shadow'], f, j['line'], j['code']))
+        return label, found
+    finally:
+        # 失敗 (例外) のときも消す。KSN_KEEP_TMP=1 のときは残す。
+        if tmp and os.environ.get('KSN_KEEP_TMP') != '1':
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 def main():

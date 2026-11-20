@@ -446,6 +446,17 @@ impl<'a> Builder<'a> {
                 if let Some(V::S(x)) = sfx {
                     lit.push(x.clone());
                 }
+                // リテラルの値 (網羅性が同じリテラルかを見る): 書いたままの木の文字列。
+                path = vec![format!("{:?}", lf)];
+                if let Some(V::B(b)) = lf.get(1) {
+                    path.push(b.to_string());
+                }
+            }
+            // `if let` / `is` が作る「他の全部」の腕 (`PWild [true]`)。
+            "PWild" => {
+                if !f.is_empty() {
+                    lit.push("other".to_string());
+                }
             }
             "PStruct" => {
                 path = lv(&f[0]).iter().map(sv).collect();
@@ -476,6 +487,10 @@ impl<'a> Builder<'a> {
                 // 型の注釈を書いた `let` の印 (`&mut` の再借用か移動かを、移動の規則が分ける)。
                 if !matches!(f[2], V::Nil) {
                     pat.lit.push("ann".to_string());
+                }
+                // `let mut` の印 (パターンの全部の `PBind`)。
+                if matches!(f[1], V::B(true)) {
+                    mark_mut(&mut pat);
                 }
                 self.bind_pat(&pat);
                 TStmt::Let { pat, init }
@@ -611,7 +626,10 @@ impl<'a> Builder<'a> {
             "With" => {
                 let init = self.expr(&f[2], false);
                 self.scopes.push(HashMap::new());
-                let pat = self.pat(&f[0]);
+                let mut pat = self.pat(&f[0]);
+                if matches!(f[1], V::B(true)) {
+                    mark_mut(&mut pat);
+                }
                 self.bind_pat(&pat);
                 let mut children = vec![init];
                 if matches!(f[3], V::Node(..)) {
@@ -675,6 +693,16 @@ impl<'a> Builder<'a> {
         })
         .unwrap_or_default());
         TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs, tf, etargs, pats }
+    }
+}
+
+/// `let mut` / `with mut` のパターンの `PBind` に印 `"mut"` を付ける。
+fn mark_mut(p: &mut TPat) {
+    if p.kind == "PBind" {
+        p.lit.push("mut".to_string());
+    }
+    for c in &mut p.children {
+        mark_mut(c);
     }
 }
 

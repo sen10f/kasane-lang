@@ -5,6 +5,9 @@
 //! 要素の型 `T` を取る総称関数は KIR (ネイティブ) の単相化が未対応 (型引数はクロージャだけ) なので、
 //! `build` はインタプリタ同梱の実行体へ退避する。退避は許すが、出力が一致することは確かめる。
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -37,7 +40,7 @@ impl Tmp {
 }
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scratch::remove(&self.0);
     }
 }
 
@@ -55,7 +58,7 @@ fn run_all(name: &str, src: &str) -> String {
     let vm = run(&["run", "--engine=vm"], &t.0);
     assert_eq!(vm.status.code(), Some(0), "{}{}", text(&vm.stdout), text(&vm.stderr));
     assert_eq!(text(&tree.stdout), text(&vm.stdout));
-    let cache = std::env::temp_dir().join(format!("ksn_slsort_cache_{}_{}", std::process::id(), name));
+    let cache = scratch::Scratch::at(format!("ksn_slsort_cache_{}_{}", std::process::id(), name));
     let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     assert!(b.status.success(), "{}{}", text(&b.stdout), text(&b.stderr));
     let _ = fs::remove_dir_all(&cache);
@@ -272,7 +275,7 @@ fn build_native_and_compare(name: &str, src: &str) {
     let t = Tmp::new(name, src);
     let tree = run(&["run", "--engine=tree"], &t.0);
     assert_eq!(tree.status.code(), Some(0), "{}{}", text(&tree.stdout), text(&tree.stderr));
-    let cache = std::env::temp_dir().join(format!("ksn_slsort_ncache_{}_{}", std::process::id(), name));
+    let cache = scratch::Scratch::at(format!("ksn_slsort_ncache_{}_{}", std::process::id(), name));
     let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     let log = format!("{}{}", text(&b.stdout), text(&b.stderr));

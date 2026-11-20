@@ -10,6 +10,9 @@
 
 mod common;
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -38,9 +41,9 @@ fn example() -> PathBuf {
 }
 
 /// 任意の wasm 例パッケージを一時ディレクトリにコピーする。
-fn copy_example_dir(src_name: &str, dst_name: &str) -> PathBuf {
+fn copy_example_dir(src_name: &str, dst_name: &str) -> scratch::Scratch {
     let src = root().join("tools").join("wasm").join(src_name);
-    let dst = std::env::temp_dir().join(format!("ksn_test_{}_{}", std::process::id(), dst_name));
+    let dst = scratch::Scratch::at(format!("ksn_test_{}_{}", std::process::id(), dst_name));
     let _ = fs::remove_dir_all(&dst);
     fn copy(from: &Path, to: &Path) {
         fs::create_dir_all(to).unwrap();
@@ -63,8 +66,8 @@ fn copy_example_dir(src_name: &str, dst_name: &str) -> PathBuf {
 }
 
 /// 例を一時ディレクトリにコピーする (`target/` は持っていかない)。
-fn copy_example(name: &str) -> PathBuf {
-    let dst = std::env::temp_dir().join(format!("ksn_test_{}_{}", std::process::id(), name));
+fn copy_example(name: &str) -> scratch::Scratch {
+    let dst = scratch::Scratch::at(format!("ksn_test_{}_{}", std::process::id(), name));
     let _ = fs::remove_dir_all(&dst);
     fn copy(from: &Path, to: &Path) {
         fs::create_dir_all(to).unwrap();
