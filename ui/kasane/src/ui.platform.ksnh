@@ -1,0 +1,268 @@
+// ui.platform: ui.plat (SDL3 の生 FFI) の上にある Kasane 層。
+// 線型の窓ハンドル Window、生 SDL3 事象を ui.event.Event へ変換する純粋関数、
+// クリップボード・カーソル・IME テキスト入力のラッパを持つ。
+const ui.platform.EV_IME_COMMIT: i32 = 12i32 pub
+
+// IME の変換が確定した事象。
+const ui.platform.EV_IME_COMPOSITION: i32 = 11i32 pub
+
+// IME の変換が終わった事象。
+const ui.platform.EV_IME_END: i32 = 13i32 pub
+
+// IME の変換が始まった事象。
+const ui.platform.EV_IME_START: i32 = 10i32 pub
+
+// キーを押した事象。
+const ui.platform.EV_KEY_DOWN: i32 = 2i32 pub
+
+// キーを離した事象。
+const ui.platform.EV_KEY_UP: i32 = 3i32 pub
+
+// ポインターボタンを押した事象。
+const ui.platform.EV_POINTER_DOWN: i32 = 4i32 pub
+
+// ポインタが動いた事象。
+const ui.platform.EV_POINTER_MOVE: i32 = 6i32 pub
+
+// ポインターボタンを離した事象。
+const ui.platform.EV_POINTER_UP: i32 = 5i32 pub
+
+// 窓を閉じる事象。
+const ui.platform.EV_QUIT: i32 = 1i32 pub
+
+// 窓の大きさが変わった事象。
+const ui.platform.EV_RESIZE: i32 = 8i32 pub
+
+// テキストが入力された事象。
+const ui.platform.EV_TEXT_INPUT: i32 = 9i32 pub
+
+// ホイールを回した事象。
+const ui.platform.EV_WHEEL: i32 = 7i32 pub
+
+// SDL_Keymod の Alt ビット（ui.plat.KsnuiEvent.mods に入る）。
+const ui.platform.KMOD_ALT: i32 = 768i32 pub
+
+// SDL_Keymod の Ctrl ビット（ui.plat.KsnuiEvent.mods に入る）。
+const ui.platform.KMOD_CTRL: i32 = 192i32 pub
+
+// SDL_Keymod の Shift ビット（ui.plat.KsnuiEvent.mods に入る）。
+const ui.platform.KMOD_SHIFT: i32 = 3i32 pub
+
+// 窓の生ハンドル。close で 1 度だけ解放する。
+type ui.platform.Window linear pub
+    ptr: *mut u8
+end ui.platform.Window
+
+// クリップボードのテキストを読む生 FFI。
+extern ui.platform.raw_ksnui_clipboard_get(win: *mut u8, buf: *mut u8, cap: u64) -> u64 link "ksnui_clipboard_get"
+
+// クリップボードにテキストを書く生 FFI。
+extern ui.platform.raw_ksnui_clipboard_set(win: *mut u8, text: *const u8) -> bool link "ksnui_clipboard_set"
+
+// カーソルの形状を変える生 FFI。
+extern ui.platform.raw_ksnui_cursor_set(win: *mut u8, shape: i32) -> bool link "ksnui_cursor_set"
+
+// SDL の事象を poll する生 FFI。
+extern ui.platform.raw_ksnui_poll_events(win: *mut u8, out: *mut ui.plat.KsnuiEvent, cap: u64, text_pool: *mut u8, text_pool_cap: u64) -> u64 link "ksnui_poll_events"
+
+// IME の変換を開始する生 FFI。
+extern ui.platform.raw_ksnui_text_input_start(win: *mut u8, x: i32, y: i32, w: i32, h: i32) -> () link "ksnui_text_input_start"
+
+// IME の変換をやめる生 FFI。
+extern ui.platform.raw_ksnui_text_input_stop(win: *mut u8) -> () link "ksnui_text_input_stop"
+
+// 窓を作る生 FFI。
+extern ui.platform.raw_ksnui_window_create(title: *const u8, w: i32, h: i32) -> *mut u8 link "ksnui_window_create"
+
+// クリップボードのテキストを取る（UTF-8）。見つからなければ空の Vec。
+fn ui.platform.clipboard_get(win: &ui.platform.Window) -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics may pub
+    unsafe "bindgen" "クリップボードのテキストを読む" {
+        let mut buf = [0u8; 4096]
+        let p = core.ptr.from_mut(&mut buf)
+        let n = ui.platform.raw_ksnui_clipboard_get(win.ptr, p, 4096u64)
+        let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut i = 0u64
+        let len = n
+        while i < len {
+            let b = buf[usize.from_u64(i)]
+            match out.push(b) {
+                Ok(_u) => ()
+                Err(_e) => ()
+            }
+            i = i.wrapping_add(1u64)
+        }
+        out
+    }
+end ui.platform.clipboard_get
+
+// クリップボードにテキストを設定する（null 終端の UTF-8）。
+fn ui.platform.clipboard_set(win: &ui.platform.Window, text: &[u8]) -> bool uses [] panics may pub
+    unsafe "bindgen" "クリップボードにテキストを書く" {
+        let p = core.ptr.from_ref(text)
+        ui.platform.raw_ksnui_clipboard_set(win.ptr, p)
+    }
+end ui.platform.clipboard_set
+
+// カーソルの形状を設定する。shape は SDL_SystemCursor の値（0 = デフォルト, 1 = テキスト/IME ビーム, …）。
+fn ui.platform.cursor_set(win: &ui.platform.Window, shape: i32) -> bool uses [] panics may pub
+    unsafe "bindgen" "カーソルの形状を変える" {
+        ui.platform.raw_ksnui_cursor_set(win.ptr, shape)
+    }
+end ui.platform.cursor_set
+
+// 修飾キー（Shift/Ctrl/Alt）を読み出す。純粋関数なので表示を必要としない。
+fn ui.platform.modifiers_from(mods: i32) -> ui.event.Modifiers uses [] panics never pub
+    let s = mods & ui.platform.KMOD_SHIFT != 0i32
+    let c = mods & ui.platform.KMOD_CTRL != 0i32
+    let a = mods & ui.platform.KMOD_ALT != 0i32
+    ui.event.Modifiers { shift: s, ctrl: c, alt: a }
+end ui.platform.modifiers_from
+
+// 窓から滞っている事象を全部取り出し、ui.event.Event のリストに変換する。
+fn ui.platform.poll_events(win: &ui.platform.Window) -> alloc.vec.Vec<ui.event.Event, std.alloc.System> uses [alloc] panics may pub
+    unsafe "bindgen" "SDL の事象を poll して ui.event.Event に変換する" {
+        let mut ev_buf = [0u8; 4096]
+        let mut text_pool = [0u8; 4096]
+        let ev_ptr = core.ptr.cast::<u8, ui.plat.KsnuiEvent>(core.ptr.from_mut(&mut ev_buf))
+        let pool_ptr = core.ptr.cast::<u8, i8>(core.ptr.from_mut(&mut text_pool))
+        let ev_sz = core.mem.size_of::<ui.plat.KsnuiEvent>()
+        let cap = u64.from_usize(4096usize / ev_sz)
+        let n = ui.plat.ksnui_poll_events(win.ptr, ev_ptr, cap, pool_ptr, 4096u64)
+        let mut events = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut i = 0u64
+        while i < n {
+            let idx = usize.from_u64(i)
+            let ev_ptr_added = core.ptr.add::<ui.plat.KsnuiEvent>(ev_ptr, idx)
+            let ev = core.ptr.read(core.ptr.as_const(ev_ptr_added))
+            match ui.platform.translate_event(&ev, &text_pool) {
+                Some(e) => match events.push(e) {
+                    Ok(_u) => ()
+                    Err(_e) => ()
+                }
+                None => ()
+            }
+            i = i.wrapping_add(1u64)
+        }
+        events
+    }
+end ui.platform.poll_events
+
+// IME の変換領域を指定して変換を開始する（論理 px）。
+fn ui.platform.text_input_start(win: &ui.platform.Window, x: i32, y: i32, w: i32, h: i32) -> () uses [] panics may pub
+    unsafe "bindgen" "IME の変換領域を指定して変換を開始する" {
+        ui.plat.ksnui_text_input_start(win.ptr, x, y, w, h)
+    }
+end ui.platform.text_input_start
+
+// IME の変換をやめる。
+fn ui.platform.text_input_stop(win: &ui.platform.Window) -> () uses [] panics may pub
+    unsafe "bindgen" "IME の変換をやめる" {
+        ui.plat.ksnui_text_input_stop(win.ptr)
+    }
+end ui.platform.text_input_stop
+
+// text_pool の [off, off+len) バイトを Vec<u8> に写す。純粋関数。
+fn ui.platform.text_of(pool: &[u8], off: u32, len: u32) -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = usize.from_u32(off)
+    let upto = i.wrapping_add(usize.from_u32(len))
+    while i < upto {
+        let b = match pool.get(i) {
+            Some(b) => *b
+            None => break
+        }
+        match out.push(b) {
+            Ok(_u) => ()
+            Err(_e) => ()
+        }
+        i = i.wrapping_add(1usize)
+    }
+    out
+end ui.platform.text_of
+
+// ui.plat.KsnuiEvent（＋ text_pool）を ui.event.Event に変換する。事象がないときは None。
+fn ui.platform.translate_event(ev: &ui.plat.KsnuiEvent, pool: &[u8]) -> Option<ui.event.Event> uses [alloc] panics never pub
+    match ev.event_type {
+        ui.platform.EV_QUIT => Some(ui.event.Event.Quit)
+        ui.platform.EV_KEY_DOWN => {
+            let key = match u32.try_from_i32(ev.key) {
+                Ok(k) => k
+                Err(_e) => 0u32
+            }
+            Some(ui.event.Event.KeyDown(key, ui.platform.modifiers_from(ev.mods)))
+        }
+        ui.platform.EV_KEY_UP => {
+            let key = match u32.try_from_i32(ev.key) {
+                Ok(k) => k
+                Err(_e) => 0u32
+            }
+            Some(ui.event.Event.KeyUp(key, ui.platform.modifiers_from(ev.mods)))
+        }
+        ui.platform.EV_POINTER_DOWN => {
+            let button = match u8.try_from_i32(ev.key) {
+                Ok(b) => b
+                Err(_e) => 0u8
+            }
+            Some(ui.event.Event.PointerDown(ev.x, ev.y, button))
+        }
+        ui.platform.EV_POINTER_UP => {
+            let button = match u8.try_from_i32(ev.key) {
+                Ok(b) => b
+                Err(_e) => 0u8
+            }
+            Some(ui.event.Event.PointerUp(ev.x, ev.y, button))
+        }
+        ui.platform.EV_POINTER_MOVE => Some(ui.event.Event.PointerMove(ev.x, ev.y))
+        ui.platform.EV_WHEEL => Some(ui.event.Event.Wheel(ev.x, ev.y, ev.wheel_x, ev.wheel_y))
+        ui.platform.EV_RESIZE => {
+            let w = f32.from_i32_nearest(ev.w)
+            let h = f32.from_i32_nearest(ev.h)
+            Some(ui.event.Event.Resize(w, h))
+        }
+        ui.platform.EV_TEXT_INPUT => {
+            let text = ui.platform.text_of(pool, ev.text_off, ev.text_len)
+            Some(ui.event.Event.TextInput(text))
+        }
+        ui.platform.EV_IME_START => Some(ui.event.Event.IMEStart)
+        ui.platform.EV_IME_COMPOSITION => {
+            let text = ui.platform.text_of(pool, ev.text_off, ev.text_len)
+            Some(ui.event.Event.IMEUpdate(text))
+        }
+        ui.platform.EV_IME_COMMIT => {
+            let text = ui.platform.text_of(pool, ev.text_off, ev.text_len)
+            Some(ui.event.Event.IMECommit(text))
+        }
+        _ => None
+    }
+end ui.platform.translate_event
+
+// 窓を閉じる。線型ハンドルをここで 1 度だけ消費する。
+fn ui.platform.window_close(self: ui.platform.Window) -> () uses [] panics may pub
+    let ui.platform.Window { ptr: p } = self
+    unsafe "bindgen" "SDL の窓を閉じる（ptr が null なら何もしない）" {
+        ui.plat.ksnui_window_destroy(p)
+    }
+end ui.platform.window_close
+
+// 窓を開く。タイトル・大きさは論理 px。作れなかったときも hndl は返す（ptr は null）。
+fn ui.platform.window_create(title: &str, w: i32, h: i32) -> ui.platform.Window uses [] panics may pub
+    unsafe "bindgen" "SDL の窓を作る（title は null 終端の UTF-8）" {
+        let p = core.ptr.from_ref(title.as_bytes())
+        let win = ui.platform.raw_ksnui_window_create(p, w, h)
+        ui.platform.Window { ptr: win }
+    }
+end ui.platform.window_create
+
+// 表示の縮尺（論理 px への換算に使う）。
+fn ui.platform.window_display_scale(win: &ui.platform.Window) -> f32 uses [] panics may pub
+    unsafe "bindgen" "SDL_GetWindowDisplayScale を読む" {
+        ui.plat.ksnui_display_scale(win.ptr)
+    }
+end ui.platform.window_display_scale
+
+// ウィンドウハンドルが null かどうかを調べる。
+fn ui.platform.window_is_null(win: &ui.platform.Window) -> bool uses [] panics never pub
+    unsafe "ptr" "ウィンドウハンドルが null かどうかを調べる" {
+        core.ptr.is_null(win.ptr)
+    }
+end ui.platform.window_is_null

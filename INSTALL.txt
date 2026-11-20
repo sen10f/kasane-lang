@@ -1,0 +1,26 @@
+Kasane (ksn) 実行体の導入
+=========================
+
+このアーカイブは x86_64 Linux ホスト専用です。
+
+- このマシン上で ksn 自体を動かすのは x86_64 Linux のみです（aarch64 / Windows ホストは未対応）。
+- Windows へのターゲット（クロスコンパイル）は mingw-w64 でサポートされています（ksn 自体の Windows ホスト版ではありません）。
+
+導入
+----
+
+1. 適当なディレクトリで展開する:
+
+     tar -xzf ksn-バージョン-x86_64-linux-gnu.tar.gz
+
+2. `ksn` を PATH の通った場所に置く（例）:
+
+     install -m 0755 ksn "$HOME/.local/bin/"
+
+3. 動作確認:
+
+     ksn --version
+     ksn new hello && cd hello && ksn run
+
+詳しくは README.md の「導入」をご覧ください。
+ライセンス: MIT または Apache-2.0（LICENSE-MIT / LICENSE-APACHE）。

@@ -12,6 +12,8 @@ pub(crate) mod lc {
     pub type CXIndex = *mut c_void;
     pub type CXTranslationUnit = *mut c_void;
     pub type CXClientData = *mut c_void;
+    pub type CXDiagnostic = *mut c_void;
+    pub type CXFile = *mut c_void;
 
     #[derive(Clone, Copy)]
     #[repr(C)]
@@ -138,6 +140,16 @@ pub(crate) mod lc {
         pub dispose_tokens: unsafe extern "C" fn(CXTranslationUnit, *mut CXToken, c_uint),
         pub get_cstring: unsafe extern "C" fn(CXString) -> *const c_char,
         pub dispose_string: unsafe extern "C" fn(CXString),
+        pub num_diagnostics: unsafe extern "C" fn(CXTranslationUnit) -> c_uint,
+        pub get_diagnostic: unsafe extern "C" fn(CXTranslationUnit, c_uint) -> CXDiagnostic,
+        pub diag_severity: unsafe extern "C" fn(CXDiagnostic) -> c_int,
+        pub diag_spelling: unsafe extern "C" fn(CXDiagnostic) -> CXString,
+        pub diag_location: unsafe extern "C" fn(CXDiagnostic) -> CXSourceLocation,
+        pub file_location: unsafe extern "C" fn(CXSourceLocation, *mut CXFile, *mut c_uint, *mut c_uint, *mut c_uint),
+        pub file_name: unsafe extern "C" fn(CXFile) -> CXString,
+        pub dispose_diag: unsafe extern "C" fn(CXDiagnostic),
+        /// clang の resource dir (stddef.h などがある所)。`KSN_CLANG_RESOURCE_DIR` か libclang の場所から推す。
+        pub resource_dir: Option<String>,
     }
 
     /// libclang を探して開き、関数ポインタを集める。見つからなければ理由つきの誤り。
@@ -169,8 +181,92 @@ pub(crate) mod lc {
         ))
     }
 
+    /// 開いたライブラリの実パスを返す (dladdr)。分からなければ None。
+    #[cfg(unix)]
+    fn loaded_path(p: *const c_void) -> Option<String> {
+        #[repr(C)]
+        struct DlInfo {
+            dli_fname: *const c_char,
+            dli_fbase: *mut c_void,
+            dli_sname: *const c_char,
+            dli_saddr: *mut c_void,
+        }
+        extern "C" {
+            fn dladdr(addr: *const c_void, info: *mut DlInfo) -> c_int;
+        }
+        let mut info = DlInfo { dli_fname: std::ptr::null(), dli_fbase: std::ptr::null_mut(), dli_sname: std::ptr::null(), dli_saddr: std::ptr::null_mut() };
+        if unsafe { dladdr(p, &mut info) } == 0 || info.dli_fname.is_null() {
+            return None;
+        }
+        Some(unsafe { CStr::from_ptr(info.dli_fname) }.to_string_lossy().into_owned())
+    }
+
+    #[cfg(not(unix))]
+    fn loaded_path(_p: *const c_void) -> Option<String> {
+        None
+    }
+
+    /// `d` の下の最大の数値名のサブディレクトリ (resource dir の版を探す用)。
+    fn max_numeric_subdir(d: &std::path::Path) -> Option<String> {
+        let mut best: Option<u32> = None;
+        for e in std::fs::read_dir(d).ok()?.flatten() {
+            if let Some(n) = e.file_name().to_string_lossy().parse::<u32>().ok() {
+                if best.map_or(true, |b| n > b) {
+                    best = Some(n);
+                }
+            }
+        }
+        best.map(|n| d.join(n.to_string()).to_string_lossy().into_owned())
+    }
+
+    /// clang の resource dir (stddef.h・stdarg.h などがある所) を探す。
+    /// `KSN_CLANG_RESOURCE_DIR` があればそれ、なければ libclang の場所から `<libdir>/clang/<major>` を推す。
+    fn clang_resource_dir(lib_path: Option<&str>) -> Option<String> {
+        if let Ok(d) = std::env::var("KSN_CLANG_RESOURCE_DIR") {
+            if !d.is_empty() {
+                return Some(d);
+            }
+        }
+        let lib = std::path::Path::new(lib_path?);
+        let libdir = lib.parent()?.to_path_buf();
+        let fname = lib.file_name()?.to_string_lossy().into_owned();
+        let major = fname.split(|c: char| !c.is_ascii_digit()).find(|s| !s.is_empty())?.to_string();
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        for d in [libdir.clone(), std::fs::canonicalize(lib).ok()?.parent()?.to_path_buf()] {
+            dirs.push(d.join("clang").join(&major));
+            dirs.push(d.join(format!("../llvm-{}", major)).join("lib").join("clang").join(&major));
+        }
+        dirs.push(format!("/usr/lib/llvm-{}/lib/clang/{}", major, major).into());
+        dirs.push(format!("/usr/lib/clang/{}", major).into());
+        if let Some(d) = dirs.iter().find(|d| d.is_dir()) {
+            return Some(d.to_string_lossy().into_owned());
+        }
+        // 版が lib 名から取れないときは近くの clang/ の最大版を使う
+        max_numeric_subdir(&libdir.join("clang")).or_else(|| max_numeric_subdir(std::path::Path::new("/usr/lib/clang")))
+    }
+
+    /// 通例のシステム include dir (あるものだけ)。
+    fn system_include_dirs() -> Vec<String> {
+        if !cfg!(unix) {
+            return Vec::new();
+        }
+        let multi = if cfg!(target_arch = "x86_64") {
+            "x86_64-linux-gnu"
+        } else if cfg!(target_arch = "aarch64") {
+            "aarch64-linux-gnu"
+        } else {
+            return Vec::new();
+        };
+        ["/usr/local/include", &format!("/usr/include/{}", multi), "/usr/include"]
+            .iter()
+            .filter(|d| std::path::Path::new(d).is_dir())
+            .map(|d| d.to_string())
+            .collect()
+    }
+
     impl Clang {
         fn load_from(lib: &str) -> Result<Clang, String> {
+            let lib_path = crate::ffi::lookup(Some(lib), "clang_createIndex").ok().and_then(|p| loaded_path(p));
             macro_rules! sym {
                 ($name:literal, $ty:ty) => {
                     match crate::ffi::lookup(Some(lib), $name) {
@@ -217,6 +313,15 @@ pub(crate) mod lc {
                 dispose_tokens: sym!("clang_disposeTokens", unsafe extern "C" fn(CXTranslationUnit, *mut CXToken, c_uint)),
                 get_cstring: sym!("clang_getCString", unsafe extern "C" fn(CXString) -> *const c_char),
                 dispose_string: sym!("clang_disposeString", unsafe extern "C" fn(CXString)),
+                num_diagnostics: sym!("clang_getNumDiagnostics", unsafe extern "C" fn(CXTranslationUnit) -> c_uint),
+                get_diagnostic: sym!("clang_getDiagnostic", unsafe extern "C" fn(CXTranslationUnit, c_uint) -> CXDiagnostic),
+                diag_severity: sym!("clang_getDiagnosticSeverity", unsafe extern "C" fn(CXDiagnostic) -> c_int),
+                diag_spelling: sym!("clang_getDiagnosticSpelling", unsafe extern "C" fn(CXDiagnostic) -> CXString),
+                diag_location: sym!("clang_getDiagnosticLocation", unsafe extern "C" fn(CXDiagnostic) -> CXSourceLocation),
+                file_location: sym!("clang_getFileLocation", unsafe extern "C" fn(CXSourceLocation, *mut CXFile, *mut c_uint, *mut c_uint, *mut c_uint)),
+                file_name: sym!("clang_getFileName", unsafe extern "C" fn(CXFile) -> CXString),
+                dispose_diag: sym!("clang_disposeDiagnostic", unsafe extern "C" fn(CXDiagnostic)),
+                resource_dir: clang_resource_dir(lib_path.as_deref()),
             })
         }
 
@@ -236,11 +341,20 @@ pub(crate) mod lc {
                 return Err("clang_createIndex に失敗した".into());
             }
             let dir = std::path::Path::new(header).parent().map(|p| p.to_path_buf()).unwrap_or_default();
-            let args: Vec<String> = ["ksn-bindgen", "-x", "c"]
-                .iter()
-                .map(|s| s.to_string())
-                .chain(std::iter::once(format!("-I{}", dir.display())))
-                .collect();
+            let mut args: Vec<String> = vec!["ksn-bindgen".into(), "-x".into(), "c".into()];
+            // 見出しのディレクトリ (相対パスで直下のときは空なので付けない。`-I` だけだと次の引数を食う)
+            if !dir.as_os_str().is_empty() {
+                args.push(format!("-I{}", dir.display()));
+            }
+            // 素のシェルからだと resource dir (stddef.h など) とシステム include が自前で見つからないので明示する
+            if let Some(rd) = &self.resource_dir {
+                args.push("-resource-dir".into());
+                args.push(rd.clone());
+            }
+            for d in system_include_dirs() {
+                args.push("-isystem".into());
+                args.push(d);
+            }
             let c_args: Vec<Vec<u8>> = args.iter().map(|a| a.bytes().chain(std::iter::once(0)).collect()).collect();
             let c_ptrs: Vec<*const c_char> = c_args.iter().map(|a| a.as_ptr() as *const c_char).collect();
             let src = std::ffi::CString::new(header).map_err(|_| "見出しのパスに NUL がある".to_string())?;
@@ -251,7 +365,27 @@ pub(crate) mod lc {
             };
             unsafe { (self.dispose_index)(index) };
             if rc != 0 || tu.is_null() {
-                return Err(format!("C の見出しを解析できなかった: {} (rc={})", header, rc));
+                let mut msg = format!("C の見出しを解析できなかった: {} (rc={})", header, rc);
+                if !tu.is_null() {
+                    let n = unsafe { (self.num_diagnostics)(tu) };
+                    for i in 0..n {
+                        let d = unsafe { (self.get_diagnostic)(tu, i) };
+                        if d.is_null() {
+                            continue;
+                        }
+                        if unsafe { (self.diag_severity)(d) } >= 2 {
+                            let mut file: CXFile = std::ptr::null_mut();
+                            let mut line: c_uint = 0;
+                            let mut col: c_uint = 0;
+                            let mut off: c_uint = 0;
+                            unsafe { (self.file_location)((self.diag_location)(d), &mut file, &mut line, &mut col, &mut off) };
+                            let f = if file.is_null() { String::new() } else { self.cstring(unsafe { (self.file_name)(file) }) };
+                            msg.push_str(&format!("\n  {}:{}: {}", f, line, self.cstring(unsafe { (self.diag_spelling)(d) })));
+                        }
+                        unsafe { (self.dispose_diag)(d) };
+                    }
+                }
+                return Err(msg);
             }
             Ok(tu)
         }
@@ -861,8 +995,16 @@ pub(crate) fn cmd_bindgen_c(rest: &[String]) -> i32 {
             to_snake(&stem)
         }
     };
-    if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') || !prefix.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false) || crate::grammar::RESERVED.contains(&prefix.as_str()) {
-        eprintln!("ksn bindgen --c: --prefix は snake_case の ASCII 識別子 (予約語以外) でなければならない: {}", prefix);
+    // module 名なので `.` 区切りを許す (各区間は snake_case の ASCII 識別子)
+    let valid_prefix = !prefix.is_empty()
+        && prefix.split('.').all(|seg| {
+            !seg.is_empty()
+                && seg.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                && seg.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false)
+                && !crate::grammar::RESERVED.contains(&seg)
+        });
+    if !valid_prefix {
+        eprintln!("ksn bindgen --c: --prefix は module 名 (snake_case の ASCII 識別子の `.` 区切り、予約語以外) でなければならない: {}", prefix);
         return 2;
     }
     if let Some(l) = &link {
@@ -876,8 +1018,17 @@ pub(crate) fn cmd_bindgen_c(rest: &[String]) -> i32 {
         } else {
             (out.trim_end_matches("ksnl").to_string() + "ksnh", out.clone())
         };
-    if std::path::Path::new(&out).file_stem().map(|s| s.to_string_lossy().into_owned()) != Some(prefix.clone()) {
-        eprintln!("ksn bindgen --c: 注意: 出力ファイルの stem が module 名と違う ({} ≠ {})。src/ 以下の対応するパスに置くこと", out, prefix);
+    // module `a.b.c` の正しい置き場は `src/a/b/c.ksnh`。パスの末尾が module 名の区切りと一致するかで見る
+    let mod_comps: Vec<&std::ffi::OsStr> = prefix.split('.').map(std::ffi::OsStr::new).collect();
+    let out_stem = std::path::Path::new(&out).with_extension("");
+    let out_comps: Vec<&std::ffi::OsStr> = out_stem.iter().collect();
+    if out_comps.len() < mod_comps.len() || out_comps[out_comps.len() - mod_comps.len()..] != mod_comps[..] {
+        eprintln!(
+            "ksn bindgen --c: 注意: 出力ファイルのパスが module 名と違う ({} は module {} なら src/{}.ksnh)。src/ 以下の対応するパスに置くこと",
+            out,
+            prefix,
+            prefix.replace('.', "/")
+        );
     }
     let m = match extract(&header, &prefix) {
         Ok(m) => m,

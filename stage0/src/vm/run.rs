@@ -30,7 +30,7 @@ thread_local! {
 }
 
 /// `ffi::tramp` の VM 用ハンドラ。
-fn vm_cb_handler(slot: usize, gp: &[u64; 6], sse: &[u64; 8]) -> (u64, u64) {
+fn vm_cb_handler(slot: usize, gp: &[u64; 6], sse: &[u64; 8], out: &mut crate::ffi::RetRegs) {
     let p = CUR_VM.with(|c| c.get());
     if p.is_null() {
         eprintln!("panic: a C callback was called outside of an extern call");
@@ -38,7 +38,7 @@ fn vm_cb_handler(slot: usize, gp: &[u64; 6], sse: &[u64; 8]) -> (u64, u64) {
     }
     // SAFETY: 呼び出し元の `CallExt` は、C から戻るまで `self` に触らない。
     let vm = unsafe { &mut *p };
-    vm.run_callback(slot - crate::ffi::VM_SLOT_BASE, gp, sse)
+    vm.run_callback(slot - crate::ffi::VM_SLOT_BASE, gp, sse, out)
 }
 
 const PROF: bool = option_env!("KSN_VM_PROF").is_some();
@@ -255,7 +255,7 @@ impl<'a> Vm<'a> {
     }
 
     /// C から呼ばれた入口 (スロット `slot`) の処理: レジスタの中身を引数にして VM の関数を走らせ、戻り値をレジスタの中身にする。
-    fn run_callback(&mut self, slot: usize, gp: &[u64; 6], sse: &[u64; 8]) -> (u64, u64) {
+    fn run_callback(&mut self, slot: usize, gp: &[u64; 6], sse: &[u64; 8], out: &mut crate::ffi::RetRegs) {
         let (vi, ci) = self.cbs[slot];
         let prog: &Prog = unsafe { &*self.vers[vi as usize] };
         let cf = &prog.funcs[ci as usize];
@@ -282,8 +282,8 @@ impl<'a> Vm<'a> {
             Ok(Outcome::Value(_)) => {
                 let v = self.result.first().copied().unwrap_or(0);
                 match ret {
-                    Ty::F32 | Ty::F64 => (0, v),
-                    _ => (v, 0),
+                    Ty::F32 | Ty::F64 => out.x0 = v,
+                    _ => out.rax = v,
                 }
             }
             // コールバックは `panics never`。C のフレームを越えて巻き戻せない異常は、その場でプロセスを止める。
@@ -746,10 +746,19 @@ impl<'a> Vm<'a> {
                 }
                 Ins::FnPtr { d, f: ci } => {
                     let key = (vi, *ci);
+                    let cf = &prog.funcs[*ci as usize];
+                    // 構造体の値渡し・値返しは、レジスタをまたぐため VM (レジスタ 1 個 = 1 引数) では扱えない。
+                    if cf.ptys.iter().any(|t| matches!(t, Ty::Agg(_))) || matches!(cf.ret, Ty::Agg(_)) {
+                        return Err("コールバックで構造体を値渡し・値返しするには木走査エンジンを使う (`ksn run`、または `--engine=tree`)".to_string());
+                    }
+                    let rabi = match cf.ret {
+                        Ty::F32 | Ty::F64 => crate::ffi::RetAbi::F64,
+                        Ty::Unit => crate::ffi::RetAbi::Void,
+                        _ => crate::ffi::RetAbi::Int,
+                    };
                     let slot = match self.cbs.iter().position(|c| *c == key) {
                         Some(i) => i,
                         None => {
-                            let cf = &prog.funcs[*ci as usize];
                             let ng = cf.ptys.iter().filter(|t| !matches!(t, Ty::F32 | Ty::F64)).count();
                             let nf = cf.ptys.len() - ng;
                             if ng > 6 || nf > 8 {
@@ -763,7 +772,7 @@ impl<'a> Vm<'a> {
                         }
                     };
                     crate::ffi::set_vm_callback_handler(vm_cb_handler);
-                    let Some(a) = crate::ffi::trampoline(crate::ffi::VM_SLOT_BASE + slot) else {
+                    let Some(a) = crate::ffi::trampoline(crate::ffi::VM_SLOT_BASE + slot, rabi) else {
                         return Err("コールバック (C に渡す関数) は x86_64 Linux だけで使える".to_string());
                     };
                     w!(*d, a as u64);

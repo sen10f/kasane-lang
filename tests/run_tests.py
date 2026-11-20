@@ -32,6 +32,12 @@ def step(name, ok, detail=''):
 r = subprocess.run(['cargo', 'build', '--release'], cwd=os.path.join(ROOT, 'stage0'), capture_output=True, text=True,
                    encoding='utf-8', errors='replace')
 step('stage0: cargo build', r.returncode == 0, r.stderr[-500:])
+# 0a. 組み込みの LLVM を外したビルド (`--no-default-features`) も通ること。担当の作業中のビルドで使い、
+#     2026-11-20 に実行時の C の最適化の変更で壊れていた。`cargo check` なので target を別にして速く済ませる。
+r = subprocess.run(['cargo', 'check', '--release', '--no-default-features', '--bins'], cwd=os.path.join(ROOT, 'stage0'),
+                   capture_output=True, text=True, encoding='utf-8', errors='replace',
+                   env=dict(os.environ, CARGO_TARGET_DIR=os.path.join(ROOT, 'stage0', 'target', 'nodef')))
+step('stage0: cargo check --no-default-features', r.returncode == 0, r.stderr[-800:])
 
 # 1. 仕様の機械検証
 r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'spec', 'tools', 'check_all.py')],
@@ -213,7 +219,8 @@ print(f'     apps の ksn check / fmt --check: {len(app_pkgs)} パッケージ, 
 t0 = time.monotonic()
 ui_pkgs = []
 for dp, dns, fns in os.walk(os.path.join(ROOT, 'ui')):
-    dns[:] = sorted(dns)
+    # ビルドの成果 (target/ の中のパッケージの写し) と、取ってきた C の部品は対象外。
+    dns[:] = sorted(d for d in dns if d not in ('target', 'third_party'))
     if 'kasane.toml' in fns:
         ui_pkgs.append(os.path.relpath(dp, ROOT).replace(os.sep, '/'))
 ui_pkgs.sort()
