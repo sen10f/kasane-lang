@@ -1,0 +1,235 @@
+enum ui.scroll.Axis derive [Debug, Clone, Copy, PartialEq] pub
+    Vertical
+    Horizontal
+    Both
+end ui.scroll.Axis
+
+type ui.scroll.Ctx derive [Debug, Clone, Copy] pub
+    axis: ui.scroll.Axis pub
+    vw: f32 pub
+    vh: f32 pub
+    cw: f32 pub
+    ch: f32 pub
+    ox: f32 pub
+    oy: f32 pub
+end ui.scroll.Ctx
+
+fn ui.scroll.Ctx.clamp(self: &mut ui.scroll.Ctx) -> () uses [] panics never pub
+    let (mx, my) = self.max_scroll()
+    self.ox = self.ox.max(0.0f32).min(mx)
+    self.oy = self.oy.max(0.0f32).min(my)
+end ui.scroll.Ctx.clamp
+
+fn ui.scroll.Ctx.content(self: &ui.scroll.Ctx) -> (f32, f32) uses [] panics never pub
+    (self.cw, self.ch)
+end ui.scroll.Ctx.content
+
+fn ui.scroll.Ctx.max_scroll(self: &ui.scroll.Ctx) -> (f32, f32) uses [] panics never pub
+    ((self.cw - self.vw).max(0.0f32), (self.ch - self.vh).max(0.0f32))
+end ui.scroll.Ctx.max_scroll
+
+fn ui.scroll.Ctx.new(vw: f32, vh: f32, cw: f32, ch: f32, axis: ui.scroll.Axis) -> ui.scroll.Ctx uses [] panics never pub
+    let z = 0.0f32
+    let mut s = ui.scroll.Ctx { axis: axis, vw: vw, vh: vh, cw: cw, ch: ch, ox: z, oy: z }
+    s.clamp()
+    s
+end ui.scroll.Ctx.new
+
+fn ui.scroll.Ctx.offset(self: &ui.scroll.Ctx) -> (f32, f32) uses [] panics never pub
+    (self.ox, self.oy)
+end ui.scroll.Ctx.offset
+
+fn ui.scroll.Ctx.on_wheel(self: &mut ui.scroll.Ctx, event: &ui.event.Event) -> bool uses [] panics never pub
+    if let ui.event.Event.Wheel(_x, _y, dx, dy) = event {
+        self.scroll_by(*dx, *dy)
+    } else {
+        false
+    }
+end ui.scroll.Ctx.on_wheel
+
+fn ui.scroll.Ctx.scroll_by(self: &mut ui.scroll.Ctx, dx: f32, dy: f32) -> bool uses [] panics never pub
+    let nx = match self.axis {
+        ui.scroll.Axis.Vertical => self.ox
+        ui.scroll.Axis.Horizontal => self.ox + dx
+        ui.scroll.Axis.Both => self.ox + dx
+    }
+    let ny = match self.axis {
+        ui.scroll.Axis.Vertical => self.oy + dy
+        ui.scroll.Axis.Horizontal => self.oy
+        ui.scroll.Axis.Both => self.oy + dy
+    }
+    self.set_offset(nx, ny)
+end ui.scroll.Ctx.scroll_by
+
+fn ui.scroll.Ctx.scroll_into_view(self: &mut ui.scroll.Ctx, rx: f32, ry: f32, rw: f32, rh: f32) -> bool uses [] panics never pub
+    let (mx, my) = self.max_scroll()
+    let mut ox = self.ox
+    let mut oy = self.oy
+    let y_ok = match self.axis {
+        ui.scroll.Axis.Vertical => true
+        ui.scroll.Axis.Both => true
+        ui.scroll.Axis.Horizontal => false
+    }
+    let x_ok = match self.axis {
+        ui.scroll.Axis.Horizontal => true
+        ui.scroll.Axis.Both => true
+        ui.scroll.Axis.Vertical => false
+    }
+    if y_ok {
+        if ry < oy {
+            oy = ry
+        } else if ry + rh > oy + self.vh {
+            oy = ry + rh - self.vh
+        }
+    }
+    if x_ok {
+        if rx < ox {
+            ox = rx
+        } else if rx + rw > ox + self.vw {
+            ox = rx + rw - self.vw
+        }
+    }
+    ox = ox.max(0.0f32).min(mx)
+    oy = oy.max(0.0f32).min(my)
+    let changed = ox != self.ox || oy != self.oy
+    self.ox = ox
+    self.oy = oy
+    changed
+end ui.scroll.Ctx.scroll_into_view
+
+fn ui.scroll.Ctx.scroll_lines(self: &mut ui.scroll.Ctx, dx_lines: f32, dy_lines: f32, line_h: f32) -> bool uses [] panics never pub
+    self.scroll_by(dx_lines * line_h, dy_lines * line_h)
+end ui.scroll.Ctx.scroll_lines
+
+fn ui.scroll.Ctx.set_offset(self: &mut ui.scroll.Ctx, x: f32, y: f32) -> bool uses [] panics never pub
+    let ox0 = self.ox
+    let oy0 = self.oy
+    self.ox = match self.axis {
+        ui.scroll.Axis.Vertical => self.ox
+        ui.scroll.Axis.Horizontal => x
+        ui.scroll.Axis.Both => x
+    }
+    self.oy = match self.axis {
+        ui.scroll.Axis.Vertical => y
+        ui.scroll.Axis.Horizontal => self.oy
+        ui.scroll.Axis.Both => y
+    }
+    self.clamp()
+    self.ox != ox0 || self.oy != oy0
+end ui.scroll.Ctx.set_offset
+
+fn ui.scroll.Ctx.tick(self: &mut ui.scroll.Ctx, vx: f32, vy: f32) -> (bool, f32, f32) uses [] panics never pub
+    let dt = 1.0f32 / 60.0f32
+    let decay = 0.9f32
+    let floor = 0.5f32
+    let mut moving = false
+    let vx2 = vx * decay
+    let vy2 = vy * decay
+    let mut nvx = vx
+    let mut nvy = vy
+    let y_ok = match self.axis {
+        ui.scroll.Axis.Vertical => true
+        ui.scroll.Axis.Both => true
+        ui.scroll.Axis.Horizontal => false
+    }
+    let x_ok = match self.axis {
+        ui.scroll.Axis.Horizontal => true
+        ui.scroll.Axis.Both => true
+        ui.scroll.Axis.Vertical => false
+    }
+    if y_ok {
+        if vy2 > floor || vy2 < 0.0f32 - floor {
+            moving = true
+            self.oy = self.oy + vy2 * dt
+            nvy = vy2
+        } else {
+            nvy = 0.0f32
+        }
+    } else {
+        nvy = 0.0f32
+    }
+    if x_ok {
+        if vx2 > floor || vx2 < 0.0f32 - floor {
+            moving = true
+            self.ox = self.ox + vx2 * dt
+            nvx = vx2
+        } else {
+            nvx = 0.0f32
+        }
+    } else {
+        nvx = 0.0f32
+    }
+    self.clamp()
+    (moving, nvx, nvy)
+end ui.scroll.Ctx.tick
+
+fn ui.scroll.Ctx.viewport(self: &ui.scroll.Ctx) -> (f32, f32) uses [] panics never pub
+    (self.vw, self.vh)
+end ui.scroll.Ctx.viewport
+
+fn ui.scroll.chain(dy: f32, inner_off: f32, inner_max: f32, outer_off: f32, outer_max: f32) -> (f32, f32) uses [] panics never pub
+    let mut inner = inner_off + dy
+    if inner < 0.0f32 {
+        inner = 0.0f32
+    }
+    if inner > inner_max {
+        inner = inner_max
+    }
+    let consumed = inner - inner_off
+    let mut left = dy - consumed
+    let mut outer = outer_off + left
+    if outer < 0.0f32 {
+        outer = 0.0f32
+    }
+    if outer > outer_max {
+        outer = outer_max
+    }
+    (inner, outer)
+end ui.scroll.chain
+
+fn ui.scroll.chain_x(dx: f32, inner_off: f32, inner_max: f32, outer_off: f32, outer_max: f32) -> (f32, f32) uses [] panics never pub
+    ui.scroll.chain(dx, inner_off, inner_max, outer_off, outer_max)
+end ui.scroll.chain_x
+
+fn ui.scroll.max_scroll_amount(content: f32, viewport: f32) -> f32 uses [] panics never pub
+    (content - viewport).max(0.0f32)
+end ui.scroll.max_scroll_amount
+
+fn ui.scroll.scroll_into_view_pure(offset: f32, start: f32, finish: f32, viewport: f32, limit: f32) -> f32 uses [] panics never pub
+    let mut o = offset
+    if start < o {
+        o = start
+    } else if finish > o + viewport {
+        o = finish - viewport
+    }
+    o.max(0.0f32).min(limit)
+end ui.scroll.scroll_into_view_pure
+
+fn ui.scroll.thumb_geometry(content: f32, viewport: f32, offset: f32) -> (f32, f32) uses [] panics never pub
+    let max_scroll = (content - viewport).max(0.0f32)
+    if max_scroll <= 0.0f32 {
+        return (0.0f32, viewport)
+    }
+    let mut len = viewport / content * viewport
+    if len > viewport {
+        len = viewport
+    }
+    let pos = offset / max_scroll * (viewport - len)
+    (pos, len)
+end ui.scroll.thumb_geometry
+
+fn ui.scroll.thumb_to_offset(pos: f32, content: f32, viewport: f32) -> f32 uses [] panics never pub
+    let max_scroll = (content - viewport).max(0.0f32)
+    if max_scroll <= 0.0f32 {
+        return 0.0f32
+    }
+    let mut len = viewport / content * viewport
+    if len > viewport {
+        len = viewport
+    }
+    let track = viewport - len
+    if track <= 0.0f32 {
+        return 0.0f32
+    }
+    pos / track * max_scroll
+end ui.scroll.thumb_to_offset
