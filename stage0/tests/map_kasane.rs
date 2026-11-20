@@ -41,6 +41,12 @@ fn scratch_source() -> String {
     // 規範の FQN を `scr.` に写す (利用者のパッケージの中で同じ型・同じ関数になる)。
     // 参照は二級の値 (E3060): 利用者のパッケージは参照を運ぶ型 (`HashMapIter['a, K, V]`) を宣言できないので、
     // 反復子 (`HashMap.iter` と `HashMapIter` の `Iterator` 実装) は写さない。反復の順序は標準ライブラリ本体の試験が見る。
+    // `BtreeMap` / `HashSet` の反復子も参照を運ぶ型 (`BtreeMapIter['a, K, V]` / `HashSetIter['a, T]`) なので写さない。
+    let ksnl = drop_from(&ksnl, "fn alloc.collections.BtreeMap.iter[", "end alloc.collections.BtreeMap.iter");
+    let ksnl = drop_from(&ksnl, "fn alloc.collections.BtreeMap.range[", "end alloc.collections.BtreeMap.range");
+    let ksnl = drop_from(&ksnl, "impl['a, K, V] core.iter.Iterator<(&'a K, &'a V), [], never> for alloc.collections.BtreeMapIter", "end alloc.collections.BtreeMapIter.next");
+    // `HashSet` (`HashMap` の上の薄い包み) はこの試験の対象外なので、本体ごと写さない。
+    let ksnl = drop_from(&ksnl, "fn alloc.collections.HashSet.contains[", "end alloc.collections.HashSetIter.next");
     let ksnl = drop_from(&ksnl, "fn alloc.collections.HashMap.iter[", "end alloc.collections.HashMap.iter");
     let ksnl = drop_from(&ksnl, "impl['a, K, V] core.iter.Iterator<(&'a K, &'a V)", "end alloc.collections.HashMapIter.next");
     let main = drop_from(MAIN, "    // 反復は挿入順", "    core.check.eq(j, keys.len())\n");
