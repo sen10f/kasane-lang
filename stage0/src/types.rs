@@ -417,7 +417,7 @@ fn capture_ty(kind: &str, t: Ty) -> Ty {
 }
 
 /// 型パラメータを束縛で置き換える。束縛のないものは `Unknown`。
-fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
+pub(crate) fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
     match t {
         Ty::Param(p) => bind.get(p).cloned().unwrap_or(Ty::Unknown),
         Ty::Named(n, a, rs) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect(), rs.clone()),
@@ -4506,7 +4506,8 @@ impl<'a> TypeCk<'a> {
                 if let Err(err) = self.unify2(&a, &b) {
                     {
                         let (l, r) = self.prim_conflict(&err).unwrap_or_else(|| Self::raw_pair(&err));
-                        self.diag("E2024", format!("operands of `{}` have different types: `{}` and `{}`", op, l, r), nline(e));
+                        let hint = conv_hint(&l, &r);
+                        self.diag("E2024", format!("operands of `{}` have different types: `{}` and `{}`{}", op, l, r, hint), nline(e));
                     }
                 }
                 // 算術 `+ - * / %` は整数・浮動小数だけ (`true + false`、`'a' * 2` は型の誤り)。

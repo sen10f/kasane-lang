@@ -1,0 +1,3 @@
+Kasane is a small systems language.
+Kasane checks effects and borrows.
+Language design matters.

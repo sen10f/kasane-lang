@@ -91,8 +91,31 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             let start: usize = text.char_indices().nth(col - 1).map_or(text.len(), |(b, _)| b);
             vec![span(file, line, text, start, text.len(), rep)]
         }
-        // Rust 風の書き方 (rustisms.rs): `;` を消す、`::` を `.` にする、複合代入を展開する。
-        "E0040" | "E0041" => {
+        // Rust 風の書き方 (rustisms.rs): フィールドの省略形を `x: x` にする (E0061)、
+        // `;` を消す (E0040)、`::` を `.` にする (E0041)。
+        "E0061" => {
+    let Some(text) = get(line) else { return vec![] };
+    let bytes: Vec<(usize, char)> = text.char_indices().collect();
+    let Some(&(b0, ch0)) = bytes.get(col.wrapping_sub(1)) else { return vec![] };
+    if !(ch0.is_alphabetic() || ch0 == '_') {
+        return vec![];
+    }
+    let mut e = col - 1;
+    while bytes.get(e).map_or(false, |&(_, ch)| ch.is_alphanumeric() || ch == '_') {
+        e += 1;
+    }
+    let b1 = bytes.get(e).map_or(text.len(), |&(b, _)| b);
+    if b1 <= b0 {
+        return vec![];
+    }
+    let name = &text[b0..b1];
+    // 直後が `:` ならもう略形ではない (`x: x` は書けない)。
+    if text[b1..].starts_with(':') || text[..b0].trim_end().ends_with('.') {
+        return vec![];
+    }
+    vec![span(file, line, text, b0, b1, format!("{}: {}", name, name))]
+}
+"E0040" | "E0041" => {
             let Some(text) = get(line) else { return vec![] };
             let (len, rep) = if code == "E0040" { (1, "") } else { (2, ".") };
             let bytes: Vec<(usize, char)> = text.char_indices().collect();

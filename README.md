@@ -1,42 +1,104 @@
 # Kasane (`ksn`)
 
-`Kasane 簡易仕様書.md` (v0.10) に基づく処理系。実装は Rust 製 (`stage0/`)。拡張子は `.ksnl`。
+Kasane は、人にも LLM にも間違えにくい、厳格なシステム言語とその処理系です。効果 (`uses` / `panics`) の追跡、線形型、二級の参照、書き方を 1 通りに固めた文法、依存の効果や公開の見出しが広がったら止まるロックで、間違ったコードと危ない依存を検査の段階で止めます。書き方が 1 通りで、診断が直し方まで示し、`ksn fix` / `ksn fmt` が機械的に直すので、LLM が書いて機械が検証する使い方にも向いています。処理系は Rust 製で、LLVM と lld を組み込んだ単体の `ksn` が Linux (x86_64・aarch64)・Windows・WASM のネイティブを作ります。ソースの拡張子は `.ksnl`、人がコメントを書く形式は `.ksnh` です。最初のベータ版は `0.1.0-beta.1` として配布予定です。
 
-関連文書: `実装計画.md` (仕様との対応表・仕様の修正案・ロードマップ・引き継ぎ)、`設計プラン.md` (フルスタック化のロードマップ)、`チートシート.md` (LLM に渡す書き方の要約)、`bench/README.md` (LLM ベンチ)、`bench/http/README.md` (HTTP サーバの性能比較)。
+## 必要な環境
 
-## セットアップ
+ベータ版をソースからビルドして使う場合、次の環境が必要です。
 
+| 項目 | 内容 |
+| --- | --- |
+| ホスト OS | Linux（x86_64） |
+| Rust | Cargo と Rust 2021 edition 対応ツールチェーン |
+| C・C++ ビルド道具 | `clang`（または `gcc`）、`c++`、`ar` |
+| LLVM | 既定の組み込み LLVM ビルド用に LLVM 20 の開発ファイル、zlib、zstd の開発ファイル |
+| Python | 3.10 以上（仕様検証と統合試験用） |
+| Git | ソースの取得と、`git` 型の依存パッケージ用 |
+
+macOS でのホスト実行は未対応です。Windows バイナリは Linux からクロスコンパイルできますが、Windows 上のホスト開発環境も未対応です。詳細は [既知の制限](docs/known-limitations.md) を参照してください。
+
+## 導入
+
+### ビルド済みバイナリ
+
+配布用のビルド済みバイナリは準備中です。
+
+`Prebuilt binary: TBD`
+
+### ソースからビルド
+
+```bash
+git clone https://github.com/sen10f/kasane.git
+cd kasane
+bash scripts/setup.sh
 ```
-cp .env.example .env          # 必要な環境変数を埋める (.env はコミットされない)
-bash scripts/setup.sh         # 依存の確認と ksn のビルド、examples/demo の動作確認
-bash scripts/setup.sh --test  # さらにフル検証 (python tests/run_tests.py)
-bash scripts/setup.sh --bench # さらに NVIDIA NIM ベンチの準備確認 (API キーの有無だけを見る)
+
+`scripts/setup.sh` は必要な道具を確認し、`stage0/target/release/ksn` をビルドして、`examples/demo` の動作確認まで行います。LLVM 20 の開発ファイルと zlib・zstd の開発ファイルも入っていないと、既定の組み込み LLVM 付きビルドは失敗します。ベンチ用の API キーを使う場合だけ、先に `.env.example` を `.env` へコピーして `NVIDIA_API_KEY` を設定してください。
+
+## クイックスタート
+
+ビルドした `ksn` を PATH へ追加します。すべての `ksn` コマンドは、`kasane.toml` があるパッケージ直下で実行します。
+
+```bash
+export PATH="$PWD/stage0/target/release:$PATH"
+cd docs/tutorial/1
+ksn --version
+ksn fmt
+ksn check
+ksn run
 ```
 
-必要なもの: Rust (cargo)、gcc か clang (ネイティブ生成のリンクと C ランタイムのコンパイル)、Python 3.10 以上、git。Go は任意 (`bench/http` の比較用)。
+`ksn fmt` はソースを Kasane の正規形へ整え、`ksn check` は診断を検査します。診断がなければ `ksn check` は何も表示しません。最後の `ksn run` は次の出力を表示します。
 
-クラウドの開発環境（Claude Code のクラウド）では、環境設定の「セットアップスクリプト」に `scripts/cloud-setup.sh` の中身を貼り（または `bash scripts/cloud-setup.sh` を指定し）、「環境変数」に `.env.cloud.example` の内容を貼って `NVIDIA_API_KEY` の値を入れる。ネットワークは crates.io・rustup（Rust が無い環境のみ）・`integrate.api.nvidia.com`（ベンチのみ）への外向きの通信が要る。ビルド後の `ksn` は `stage0/target/release/ksn`、`ksn.sh` / `ksn.cmd` はそれを起動する。
+```text
+こんにちは、Kasane!
+```
 
-## コマンド
+3つの実行例と詳しい説明は [チュートリアル](docs/tutorial.md) にあります。
+
+## 主なコマンド
 
 | コマンド | 内容 |
 | --- | --- |
-| `new` `get` `sig` `context` `todo` `explain` `update` `vendor` | 雛形・定義の取得・説明・依存 |
-| `check [--json]` | 構文・正規形・名前解決・型 (fail-closed: 決まらなければ E2044)・可視性・所有権と借用 (NLL)・線形型 (全経路の消費)・効果と panic・`stack`・パッケージ検証 |
-| `fix` / `fmt [--check]` | 修正案の適用 / 正規形への整形 |
-| `refs` / `rename [--dry-run]` | 参照の一覧 / 名前の変更と定義・モジュールの移動 (書き込む前に `check` する) |
-| `run [--watch]` / `test [--both]` | インタプリタで実行 / テスト (`--both` はネイティブとの一致も確認。`tests/` の統合テストを含む) |
-| `build [--release] [--backend llvm\|c]` | ネイティブ実行ファイル (既定は LLVM: KIR から LLVM IR を作り clang でビルド。下ろせない・clang が無いときは理由を出してバンドルだけにする。`c` は整数・制御フローだけの簡易な経路。Cranelift の `clif` は削除済み) と可搬バンドル。キャッシュつき |
-| `doc [--std] [--private]` | 静的 HTML の API 文書 |
-| `lsp` / `dap` | Language Server / Debug Adapter |
-| `debug [--json]` / `test --debug <FQN>` | インタプリタ上のデバッガ |
+| `new` / `check` / `fix` | パッケージの作成、型・借用・効果などの検査、自動修正 |
+| `fmt` / `fmt --check` | 正規形への整形、整形済みかの検査 |
+| `run` / `test` / `test --both` | インタプリタでの実行、テスト、LLVM との結果比較 |
+| `build` | LLVM によるネイティブ実行ファイルと可搬バンドルの作成 |
+| `debug` / `dap` | インタプリタ上のデバッガ、Debug Adapter Protocol サーバ |
+| `lsp` | Language Server Protocol サーバ |
+| `doc` / `index` / `context` / `explain` | API 文書、索引、定義の文脈、診断の説明 |
+| `refs` / `rename` | 参照の列挙、定義と参照の改名 |
+| `get` / `sig` / `update` / `vendor` / `lock` | 依存パッケージとロックファイルの管理 |
 
-## 制限 (仕様との差)
+## エディタ対応
 
-`実装計画.md` の 2 章 (実装状況) と 7 章 (リスク) を参照。主なもの: 型付き IR は未完成 (ブランチ `ir/tir` に途中経過)、クロスコンパイルなし、LLVM は KIR 経由 (`ksn kir --llvm` / `--native`、`設計_KIR.md`) で途中、WASM なし、セルフホストなし。
+Kasane 専用のエディタ拡張はまだ提供していません。代わりに、処理系に組み込まれた LSP と DAP を、LSP 対応クライアントまたは DAP 対応クライアントから利用できます。
 
-## テスト
+- `ksn lsp` は標準入出力で LSP を話します。診断、ホバー、定義、参照、リネーム、整形、シンボル、クイックフィックスに対応します。
+- `ksn dap` は標準入出力で DAP を話します。インタプリタ上のソースレベルデバッグとして、ブレークポイント、ステップ実行、呼び出し履歴、局所変数に対応します。ネイティブ機械語の DWARF デバッグではありません。
 
+エディタ側の具体的な接続手順は、利用するクライアントの文档に従ってください。
+
+## 文書
+
+- [チュートリアル](docs/tutorial.md)
+- [既知の制限](docs/known-limitations.md)
+- [変更履歴](CHANGELOG.md)
+- [言語仕様](<Kasane 簡易仕様書.md>)
+- [実装計画](実装計画.md)
+- [設計プラン](設計プラン.md)
+- [チートシート](チートシート.md)
+
+## 開発時の検証
+
+```bash
+python3 tests/run_tests.py
 ```
-python tests/run_tests.py   # spec 検証 + 参照解 + ベンチのハーネス + cargo test + ビルド/ホットリロード/キャッシュ
-```
+
+このコマンドは、仕様の機械検証、参照解、Rust のテスト、ビルド、ホットリロード、キャッシュの動作をまとめて検証します。
+
+## ライセンス
+
+MIT License ([LICENSE-MIT](LICENSE-MIT)) と Apache License 2.0 ([LICENSE-APACHE](LICENSE-APACHE)) の併用です。使う人がどちらかを選べます。
+
+とくに断りが無い限り、このリポジトリへの寄稿は、同じく MIT と Apache-2.0 の併用で提供されたものとみなします。
