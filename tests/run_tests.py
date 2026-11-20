@@ -209,6 +209,22 @@ for name in app_pkgs:
         step(f'apps: ksn {" ".join(args)} apps/{name}', r.returncode == 0, (r.stdout + r.stderr)[-800:])
 print(f'     apps の ksn check / fmt --check: {len(app_pkgs)} パッケージ, {time.monotonic() - t0:.1f} 秒')
 
+# 12. ui/kasane/ の全パッケージ (ui_layout / ui_tree など) で診断 0 件・整形済み・テスト一致
+t0 = time.monotonic()
+ui_pkgs = []
+for dp, dns, fns in os.walk(os.path.join(ROOT, 'ui')):
+    dns[:] = sorted(dns)
+    if 'kasane.toml' in fns:
+        ui_pkgs.append(os.path.relpath(dp, ROOT).replace(os.sep, '/'))
+ui_pkgs.sort()
+for rel in ui_pkgs:
+    cwd = os.path.join(ROOT, rel)
+    for args in (['check'], ['fmt', '--check'], ['test', '--both']):
+        r = subprocess.run([RSEXE] + args, cwd=cwd, capture_output=True, text=True,
+                           encoding='utf-8', errors='replace')
+        step(f'ui: ksn {" ".join(args)} {rel}', r.returncode == 0, (r.stdout + r.stderr)[-800:])
+print(f'     ui の ksn check / fmt --check / test --both: {len(ui_pkgs)} パッケージ, {time.monotonic() - t0:.1f} 秒')
+
 print()
 print('ALL TESTS PASSED' if not failures else f'{len(failures)} FAILED: {failures}')
 sys.exit(1 if failures else 0)
