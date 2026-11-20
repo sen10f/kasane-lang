@@ -25,6 +25,8 @@ use crate::program::{Def, Program, Target};
 use crate::project::{norm, overlay_set, Source};
 use crate::types::{self, Ty};
 
+mod feat;
+
 type Resp = Result<Value, (i64, String)>;
 
 /// 型から、メソッドを探す所有者のキー (型の FQN)。`types.rs` の `TypeCk::owners_for` と同じ対応。
@@ -783,7 +785,7 @@ impl Server {
             for ((di, line, name), t) in &tk.let_tys_line {
                 let d = &prog.defs[*di];
                 let e = locals.entry((d.file.clone(), d.name.clone(), name.clone())).or_default();
-                e.push((*line, ty_owner(t)));
+                e.push((crate::parser::unpack_pos(*line).0, ty_owner(t)));
             }
             for v in locals.values_mut() {
                 v.sort();
@@ -1227,6 +1229,8 @@ impl Server {
                 "documentSymbolProvider": true,
                 "workspaceSymbolProvider": true,
                 "codeActionProvider": {"codeActionKinds": ["quickfix"]},
+                "semanticTokensProvider": {"legend": {"tokenTypes": feat::TOKEN_TYPES, "tokenModifiers": feat::TOKEN_MODS}, "full": true},
+                "completionProvider": {"triggerCharacters": [".", "["]},
             },
             "serverInfo": {"name": "ksn", "version": env!("CARGO_PKG_VERSION")},
         }))
@@ -1250,6 +1254,8 @@ impl Server {
             "textDocument/documentSymbol" => self.document_symbol(p),
             "workspace/symbol" => self.workspace_symbol(p),
             "textDocument/codeAction" => self.code_action(p),
+            "textDocument/semanticTokens/full" => self.semantic_tokens(p),
+            "textDocument/completion" => self.completion(p),
             _ => Err((METHOD_NOT_FOUND, format!("method not found: {}", method))),
         }
     }
