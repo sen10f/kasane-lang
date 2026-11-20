@@ -622,53 +622,69 @@ test ui.render.GpuCtx.test_batch_shadow
 end ui.render.GpuCtx.test_batch_shadow
 
 test ui.render.GpuCtx.test_render_borders
-    match ui.render.GpuCtx.create(160i32, 100i32) {
-        Ok(ctx) => with mut c = ctx close c.close() {
-            let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
-            ui.render.scene_borders(&mut list)
-            let ck = ui.render.render_checksum(&mut c, list.as_slice())
-            let is_zero = ck == 0u64
-            core.check.eq(is_zero, false)
+    if !ui.platform_test.libksnui_available() {
+        core.mem.drop(std.io.print_line("SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"))
+    } else {
+        match ui.render.GpuCtx.create(160i32, 100i32) {
+            Ok(ctx) => with mut c = ctx close c.close() {
+                let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                ui.render.scene_borders(&mut list)
+                let ck = ui.render.render_checksum(&mut c, list.as_slice())
+                let is_zero = ck == 0u64
+                core.check.eq(is_zero, false)
+            }
+            Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
         }
-        Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
     }
 end ui.render.GpuCtx.test_render_borders
 
 test ui.render.GpuCtx.test_render_clip
-    match ui.render.GpuCtx.create(160i32, 100i32) {
-        Ok(ctx) => with mut c = ctx close c.close() {
-            let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
-            ui.render.scene_clip(&mut list)
-            let ck = ui.render.render_checksum(&mut c, list.as_slice())
-            let is_zero = ck == 0u64
-            core.check.eq(is_zero, false)
+    if !ui.platform_test.libksnui_available() {
+        core.mem.drop(std.io.print_line("SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"))
+    } else {
+        match ui.render.GpuCtx.create(160i32, 100i32) {
+            Ok(ctx) => with mut c = ctx close c.close() {
+                let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                ui.render.scene_clip(&mut list)
+                let ck = ui.render.render_checksum(&mut c, list.as_slice())
+                let is_zero = ck == 0u64
+                core.check.eq(is_zero, false)
+            }
+            Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
         }
-        Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
     }
 end ui.render.GpuCtx.test_render_clip
 
 test ui.render.GpuCtx.test_render_rects
-    match ui.render.GpuCtx.create(160i32, 100i32) {
-        Ok(ctx) => with mut c = ctx close c.close() {
-            let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
-            ui.render.scene_rects(&mut list)
-            let ck = ui.render.render_checksum(&mut c, list.as_slice())
-            let is_zero = ck == 0u64
-            core.check.eq(is_zero, false)
+    if !ui.platform_test.libksnui_available() {
+        core.mem.drop(std.io.print_line("SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"))
+    } else {
+        match ui.render.GpuCtx.create(160i32, 100i32) {
+            Ok(ctx) => with mut c = ctx close c.close() {
+                let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                ui.render.scene_rects(&mut list)
+                let ck = ui.render.render_checksum(&mut c, list.as_slice())
+                let is_zero = ck == 0u64
+                core.check.eq(is_zero, false)
+            }
+            Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
         }
-        Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
     }
 end ui.render.GpuCtx.test_render_rects
 
 test ui.render.GpuCtx.test_render_shadow
-    match ui.render.GpuCtx.create(160i32, 100i32) {
-        Ok(ctx) => with mut c = ctx close c.close() {
-            let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
-            ui.render.scene_shadow(&mut list)
-            let ck = ui.render.render_checksum(&mut c, list.as_slice())
-            let is_zero = ck == 0u64
-            core.check.eq(is_zero, false)
+    if !ui.platform_test.libksnui_available() {
+        core.mem.drop(std.io.print_line("SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"))
+    } else {
+        match ui.render.GpuCtx.create(160i32, 100i32) {
+            Ok(ctx) => with mut c = ctx close c.close() {
+                let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                ui.render.scene_shadow(&mut list)
+                let ck = ui.render.render_checksum(&mut c, list.as_slice())
+                let is_zero = ck == 0u64
+                core.check.eq(is_zero, false)
+            }
+            Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
         }
-        Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
     }
 end ui.render.GpuCtx.test_render_shadow
