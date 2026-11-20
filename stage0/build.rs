@@ -166,11 +166,15 @@ fn link_llvm() {
                 .map(|c| c.contains("mingw32"))
                 .unwrap_or(false);
             if is_windows {
-                // Windows (MinGW) 用システムライブラリ
-                println!("cargo:rustc-link-lib=dylib=advapi32");
-                println!("cargo:rustc-link-lib=dylib=shell32");
-                println!("cargo:rustc-link-lib=dylib=ole32");
-                println!("cargo:rustc-link-lib=dylib=uuid");
+                // Windows (MinGW) 用システムライブラリ。
+                // cargo:rustc-link-lib だとリンカ引数がオブジェクトファイル
+                // より前に配置され、Windows API シンボル (FOLDERID_* 等) の
+                // 未解決参照が解決されない。cargo:rustc-link-arg でオブジェクト
+                // ファイルの後に配置して、未定義シンボルを解決できるようにする。
+                println!("cargo:rustc-link-arg=-ladvapi32");
+                println!("cargo:rustc-link-arg=-lshell32");
+                println!("cargo:rustc-link-arg=-lole32");
+                println!("cargo:rustc-link-arg=-luuid");
             } else {
                 // Linux クロス: pthread / stdc++
                 println!("cargo:rustc-link-lib=dylib=pthread");

@@ -20,14 +20,20 @@ fn init() {
         LLVMInitializeX86Target();
         LLVMInitializeX86TargetMC();
         LLVMInitializeX86AsmPrinter();
-        LLVMInitializeAArch64TargetInfo();
-        LLVMInitializeAArch64Target();
-        LLVMInitializeAArch64TargetMC();
-        LLVMInitializeAArch64AsmPrinter();
-        LLVMInitializeWebAssemblyTargetInfo();
-        LLVMInitializeWebAssemblyTarget();
-        LLVMInitializeWebAssemblyTargetMC();
-        LLVMInitializeWebAssemblyAsmPrinter();
+        // Windows クロス LLVM は X86 ターゲットのみをビルドするため、
+        // AArch64 / WebAssembly の初期化関数は存在しない。Windows では
+        // スキップし、ホスト/クロス Linux ではすべて初期化する。
+        #[cfg(not(target_os = "windows"))]
+        {
+            LLVMInitializeAArch64TargetInfo();
+            LLVMInitializeAArch64Target();
+            LLVMInitializeAArch64TargetMC();
+            LLVMInitializeAArch64AsmPrinter();
+            LLVMInitializeWebAssemblyTargetInfo();
+            LLVMInitializeWebAssemblyTarget();
+            LLVMInitializeWebAssemblyTargetMC();
+            LLVMInitializeWebAssemblyAsmPrinter();
+        }
     });
 }
 
