@@ -865,3 +865,129 @@ fn hover_definition_dyn_method_calls_resolve_to_trait() {
     assert_eq!(loc["range"]["start"], json!({"line": 5, "character": 7}), "{}", d);
     c.shutdown();
 }
+
+const SRC_SEM: &str = "\
+fn t.add(a: u32, b: u32) -> u32 uses [] panics never pub
+    a.wrapping_add(b)
+end t.add
+
+fn t.main() -> u32 uses [io.console] panics never pub
+    let x: u32 = t.add(1u32, 2u32)
+    x.wrapping_add(3u32)
+end t.main
+";
+
+/// 意味トークンの data を (行, 桁, 長さ, 種類名, 修飾) に戻す。
+fn decode_tokens(res: &Value) -> Vec<(u32, u32, u32, String, u32)> {
+    let legend = ["namespace", "type", "enum", "enumMember", "interface", "function", "method", "parameter", "variable", "property", "keyword", "macro", "number", "typeParameter"];
+    let d: Vec<u64> = res["data"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    let (mut l, mut c) = (0u32, 0u32);
+    d.chunks(5)
+        .map(|k| {
+            l += k[0] as u32;
+            c = if k[0] == 0 { c + k[1] as u32 } else { k[1] as u32 };
+            (l, c, k[2] as u32, legend[k[3] as usize].to_string(), k[4] as u32)
+        })
+        .collect()
+}
+
+fn has_tok(toks: &[(u32, u32, u32, String, u32)], l: u32, c: u32, len: u32, ty: &str) -> bool {
+    toks.iter().any(|t| t.0 == l && t.1 == c && t.2 == len && t.3 == ty)
+}
+
+#[test]
+fn semantic_tokens_and_legend() {
+    let t = Tmp::new("sem", SRC_SEM);
+    let uri = t.uri("src/t.ksnl");
+    let mut c = Client::start();
+    let init = c.initialize(&t.0);
+    let legend = &init["capabilities"]["semanticTokensProvider"]["legend"]["tokenTypes"];
+    assert_eq!(legend[5], "function");
+    c.open(&uri, SRC_SEM);
+    let r = c.call("textDocument/semanticTokens/full", json!({"textDocument": tdoc(&uri)}));
+    let toks = decode_tokens(&r);
+    // fn t.add: モジュール t は namespace、add は宣言の function。
+    assert!(has_tok(&toks, 0, 0, 2, "keyword"), "{:?}", toks);
+    assert!(has_tok(&toks, 0, 3, 1, "namespace"), "{:?}", toks);
+    assert!(toks.iter().any(|x| x.0 == 0 && x.1 == 5 && x.3 == "function" && x.4 & 1 == 1), "{:?}", toks);
+    // 引数 a の型 u32 は type、`a.wrapping_add(b)` の a は parameter・wrapping_add は method・b は parameter。
+    assert!(has_tok(&toks, 1, 4, 1, "parameter"), "{:?}", toks);
+    assert!(has_tok(&toks, 1, 6, 12, "method"), "{:?}", toks);
+    assert!(has_tok(&toks, 1, 19, 1, "parameter"), "{:?}", toks);
+    // uses [io.console]: 効果。
+    assert!(has_tok(&toks, 4, 49 - 11, 2, "macro") || toks.iter().any(|x| x.0 == 4 && x.3 == "macro"), "{:?}", toks);
+    // 局所 x、整数の接尾辞。
+    assert!(has_tok(&toks, 6, 4, 1, "variable"), "{:?}", toks);
+    assert!(toks.iter().any(|x| x.0 == 5 && x.3 == "number" && x.2 == 1), "{:?}", toks);
+    assert!(toks.iter().any(|x| x.0 == 5 && x.3 == "type" && x.2 == 3), "{:?}", toks);
+    assert!(toks.iter().any(|x| x.0 == 5 && x.3 == "function"), "{:?}", toks);
+    c.shutdown();
+}
+
+#[test]
+fn semantic_tokens_on_ksnh() {
+    let src = "// 説明\n".to_string() + SRC_SEM;
+    let t = Tmp::new("semh", &src);
+    let uri = t.uri("src/t.ksnh");
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    c.open(&uri, &src);
+    let r = c.call("textDocument/semanticTokens/full", json!({"textDocument": tdoc(&uri)}));
+    let toks = decode_tokens(&r);
+    // コメント行の分だけ 1 行ずれる。
+    assert!(has_tok(&toks, 2, 6, 12, "method"), "{:?}", toks);
+    assert!(has_tok(&toks, 7, 4, 1, "variable"), "{:?}", toks);
+    c.shutdown();
+}
+
+fn labels(r: &Value) -> Vec<String> {
+    r.as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn completion_receiver_effects_and_locals() {
+    let t = Tmp::new("comp", SRC_SEM);
+    let uri = t.uri("src/t.ksnl");
+    let mut c = Client::start();
+    let init = c.initialize(&t.0);
+    assert!(init["capabilities"]["completionProvider"].is_object());
+    c.open(&uri, SRC_SEM);
+    // `a.` (引数 u32) の後ろ。
+    let r = c.call("textDocument/completion", at(&uri, 1, 6));
+    let ls = labels(&r);
+    assert!(ls.contains(&"wrapping_add".to_string()), "{:?}", ls);
+    let mut sorted = ls.clone();
+    sorted.sort();
+    assert_eq!(ls, sorted);
+    let wa = r.as_array().unwrap().iter().find(|i| i["label"] == "wrapping_add").unwrap();
+    assert_eq!(wa["kind"], 2);
+    assert!(wa["detail"].as_str().unwrap().contains("wrapping_add"), "{}", wa);
+    // 局所 `x.` (let の型は u32)。
+    let r = c.call("textDocument/completion", at(&uri, 6, 6));
+    assert!(labels(&r).contains(&"wrapping_add".to_string()));
+    // `uses [` の中: 効果名。
+    let r = c.call("textDocument/completion", at(&uri, 4, 31));
+    let ls = labels(&r);
+    assert!(ls.contains(&"io.console".to_string()) && ls.contains(&"alloc".to_string()), "{:?}", ls);
+    // 識別子: 引数と局所。
+    let r = c.call("textDocument/completion", at(&uri, 6, 4));
+    let ls = labels(&r);
+    assert!(ls.contains(&"x".to_string()), "{:?}", ls);
+    // モジュールの中身: `t.` で add と main。
+    let r = c.call("textDocument/completion", at(&uri, 5, 19));
+    assert_eq!(labels(&r), vec!["add", "main"]);
+    c.shutdown();
+}
+
+#[test]
+fn completion_on_ksnh_maps_lines() {
+    let src = "// 説明\n".to_string() + SRC_SEM;
+    let t = Tmp::new("comph", &src);
+    let uri = t.uri("src/t.ksnh");
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    c.open(&uri, &src);
+    let r = c.call("textDocument/completion", at(&uri, 7, 6));
+    assert!(labels(&r).contains(&"wrapping_add".to_string()), "{:?}", r);
+    c.shutdown();
+}
