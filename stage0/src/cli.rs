@@ -2871,23 +2871,27 @@ fn cmd_update(args: &[String]) -> i32 {
             return fail(ProjectError { code: "E9017".into(), msg: format!("{} is not a dependency of {}", o, pkg.name) });
         }
     }
-    match write_lock_v2(&root, &deps, &old, only.as_deref(), &[]) {
+    // 版 3 は git 依存に `version` が必要。path だけなら版 2 のまま。
+    let lock_version = if deps.iter().any(|d| d.source.starts_with("git+")) { 3 } else { 2 };
+    match write_lock_v2(&root, &deps, &old, only.as_deref(), &[], lock_version) {
         Ok(()) => 0,
         Err(e) => fail(e),
     }
 }
 
-/// `kasane.lock` を版 2 で書く。`hash` は `fresh_hash` 以外 (`only` 指定で対象外) は既存を保つ。
+/// `kasane.lock` を `lock_version` (2 または 3) で書く。`hash` は `fresh_hash` 以外 (`only` 指定で対象外) は既存を保つ。
 /// `api` / `unsafe_modules` は、既存の記録があれば書き換えない (承認の前に黙って新しくしない)。
 /// `accept` に挙げた依存と、記録の無い git 依存 (初めての記録・版 1 からの移行) は今の署名を書く。
+/// 版 3 では git 依存に `version` (manifest の `package.version`) を記録する。
 fn write_lock_v2(
     root: &Path,
     deps: &[Package],
     old: &std::collections::HashMap<String, toml::Value>,
     only: Option<&str>,
     accept: &[String],
+    lock_version: i64,
 ) -> Result<(), ProjectError> {
-    let mut lines = vec!["version = 2".to_string(), String::new()];
+    let mut lines = vec![format!("version = {}", lock_version), String::new()];
     let mut sorted: Vec<&Package> = deps.iter().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
     for dp in sorted {
@@ -2898,6 +2902,11 @@ fn write_lock_v2(
             dp.manifest.get("dependencies").and_then(|d| d.as_table()).map(|t| t.keys().cloned().collect()).unwrap_or_default();
         dn.sort();
         if dp.source.starts_with("git+") {
+            // 版 3: `version` は `hash` の前に書く (emit_lock と同じキー順)。
+            if lock_version == 3 {
+                let ver = dp.manifest.get("package").and_then(|p| p.get("version")).and_then(|v| v.as_str()).unwrap_or("");
+                lines.push(format!("version = {}", toml_str(ver)));
+            }
             let kept = only.filter(|o| *o != dp.name).and_then(|_| old.get(&dp.name)).and_then(|e| e.get("hash")).and_then(|h| h.as_str()).map(String::from);
             let hash = match kept {
                 Some(h) => h,
@@ -2920,9 +2929,9 @@ fn write_lock_v2(
     fs::write(root.join("kasane.lock"), text).map_err(|e| ProjectError { code: "E9019".into(), msg: format!("cannot write kasane.lock: {}", e) })
 }
 
-/// `ksn lock --accept <依存>... | --all | --diff | --upgrade`: 公開の署名と効果の記録 (版 2) を扱う。
+/// `ksn lock --accept <依存>... | --all | --diff | --upgrade`: 公開の署名と効果の記録 (版 2/3) を扱う。
 /// `--accept` は今の公開のヘッダを記録し直す (差分を出す)。`--diff` は書かずに差分だけ。
-/// `--upgrade` は版 1 のロックを 2 に上げる (記録の無い git 依存に今の署名を書く。既存の記録は保つ)。
+/// `--upgrade` は版 1/2 のロックを 3 に上げる (記録の無い git 依存に今の署名を書く。既存の記録は保つ)。
 fn cmd_lock(args: &[String]) -> i32 {
     let fail = |e: ProjectError| {
         eprintln!("ksn: {}: {}", e.code, e.msg);
@@ -2988,7 +2997,8 @@ fn cmd_lock(args: &[String]) -> i32 {
     }
     let accept: Vec<String> = if upgrade && !accept_flag { vec![] } else { targets };
     // `hash` は既存の記録を保つ (署名の承認で、複製の改ざんを黙って受け入れない)。
-    match write_lock_v2(&root, &deps, &old, Some("\u{0}"), &accept) {
+    let lock_version = if deps.iter().any(|d| d.source.starts_with("git+")) { 3 } else { 2 };
+    match write_lock_v2(&root, &deps, &old, Some("\u{0}"), &accept, lock_version) {
         Ok(()) => 0,
         Err(e) => fail(e),
     }
@@ -3005,7 +3015,8 @@ fn cmd_vendor() -> i32 {
         Ok(x) => x,
         Err(e) => return fail(e),
     };
-    let deps = match load_deps_with(&pkg, &|_| GitMode::Fresh) {
+    // ロックに記録したコミットを取り直す (版の依存も範囲から選び直さない)。
+    let deps = match load_deps_with(&pkg, &|_| GitMode::Pinned) {
         Ok(d) => d,
         Err(e) => return fail(e),
     };
@@ -3032,11 +3043,41 @@ fn cmd_vendor() -> i32 {
     // すでに記録があるものは書き換えない (承認は `ksn lock --accept`)。
     let gits: Vec<&Package> = deps.iter().filter(|d| d.source.starts_with("git+")).collect();
     if !gits.is_empty() && gits.iter().all(|d| old.contains_key(&d.name)) && gits.iter().any(|d| old.get(&d.name).and_then(crate::lockapi::read_api).is_none()) {
-        if let Err(e) = write_lock_v2(&root, &deps, &old, Some("\u{0}"), &[]) {
+        let lock_version = if deps.iter().any(|d| d.source.starts_with("git+")) { 3 } else { 2 };
+        if let Err(e) = write_lock_v2(&root, &deps, &old, Some("\u{0}"), &[], lock_version) {
             return fail(e);
         }
     }
     0
+}
+
+/// `ksn git tags <url>`: `git ls-remote --tags <url>` から `vMAJOR.MINOR.PATCH` タグだけを列挙し、
+/// `版 コミット` の形で版順に出力する (R1b。解決・lock への接続はまだ行わない)。
+fn cmd_git(rest: &[String]) -> i32 {
+    match rest.first() {
+        Some(t) if t == "tags" => match rest.get(1) {
+            Some(url) => match crate::git_tags::list_git_tags(url) {
+                Ok(tags) => {
+                    for (version, commit) in &tags {
+                        println!("{} {}", version, commit);
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("ksn git tags: {}", e.msg);
+                    1
+                }
+            },
+            None => {
+                eprintln!("usage: ksn git tags <url>");
+                2
+            }
+        },
+        _ => {
+            eprintln!("usage: ksn git tags <url>");
+            2
+        }
+    }
 }
 
 // ------------------------------------------------------------ build
@@ -3782,8 +3823,10 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
     }
     let want = 2 + if wasi { 1 } else { 0 };
     let linked = rt_bcs.len() == want;
-    let r1: Result<(), String> = if linked {
-        crate::embed_llvm::ir_to_object_with_rt(ll, &rt_bcs, opt, &t.as_ref().unwrap().triple, &oir)
+    let with_rt = if linked { embedded_obj_with_rt(ll, &rt_bcs, opt, &t.as_ref().unwrap().triple, &oir) } else { None };
+    let linked = with_rt.is_some();
+    let r1: Result<(), String> = if let Some(r) = with_rt {
+        r
     } else {
         match embedded_obj(ll, opt, &oir) {
             Some(r) => r,
@@ -3848,6 +3891,23 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
 
 /// プロセス内の LLVM (`embedded-llvm`) で IR を目的ファイル `obj` にする。使えない (feature なし・`KSN_CODEGEN=clang`・
 /// `KSN_CLANG_ARGS` あり (sanitizer などは clang 側が要る)) ときは `None` で、呼び出し側が `clang -x ir` を使う。
+/// 実行時の C のビットコードを利用者の IR につないでから目的ファイルにする (組み込みの LLVM のときだけ)。
+/// 組み込みの LLVM を外したビルド (`--no-default-features`) では `None` を返し、呼び出し側は従来の経路を使う。
+fn embedded_obj_with_rt(ll: &str, rt_bcs: &[(&str, &[u8])], opt: &str, triple: &str, obj: &Path) -> Option<Result<(), String>> {
+    #[cfg(feature = "embedded-llvm")]
+    {
+        if std::env::var("KSN_CODEGEN").map_or(false, |v| v == "clang") || !clang_extra_args().is_empty() {
+            return None;
+        }
+        return Some(crate::embed_llvm::ir_to_object_with_rt(ll, rt_bcs, opt, triple, obj));
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (ll, rt_bcs, opt, triple, obj);
+        None
+    }
+}
+
 fn embedded_obj(ll: &str, opt: &str, obj: &Path) -> Option<Result<(), String>> {
     #[cfg(feature = "embedded-llvm")]
     {
@@ -3982,8 +4042,10 @@ fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, t
                 }
             }
             if ok {
-                crate::embed_llvm::ir_to_object_with_rt(ll, &rt_bcs, opt, &t.triple, &o)?;
-                linked = true;
+                if let Some(r) = embedded_obj_with_rt(ll, &rt_bcs, opt, &t.triple, &o) {
+                    r?;
+                    linked = true;
+                }
             }
         }
         if !linked {
@@ -4143,6 +4205,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "update" => cmd_update(&rest),
         "lock" => cmd_lock(&rest),
         "vendor" => cmd_vendor(),
+        "git" => cmd_git(&rest),
         "_exec" => cmd_exec(&rest),
         "--version" | "-V" => {
             println!("ksn {}", VERSION);

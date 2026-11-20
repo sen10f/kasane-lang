@@ -339,7 +339,7 @@ fn structs_of_many_shapes_cross_the_c_boundary_natively_on_x86_64() {
     let t = abi_pkg("ffi_abi_x86", cc_cmd);
     let c = run(&["check"], &t.0);
     assert_eq!(c.status.code(), Some(0), "{}{}", text(&c.stdout), text(&c.stderr));
-    // (インタプリタは構造体を引数・戻り値に持つコールバックを持たないので、`ksn run` との比較はしない。C の関数の呼び出しは examples/ffi/shapes などが比べる。)
+    // インタプリタも構造体を引数・戻り値に持つコールバックをサポートしたので、`ksn run` との比較は下の試験で行う。
     // ネイティブ (LLVM)。退避は許さない。
     let b = run(&["build", "--backend", "llvm"], &t.0);
     let out = text(&b.stdout) + &text(&b.stderr);
@@ -365,6 +365,377 @@ fn structs_of_many_shapes_cross_the_c_boundary_natively_on_aarch64() {
     let r = Command::new("qemu-aarch64").arg("-L").arg(sysroot()).arg(&exe).current_dir(&t.0).output().expect("run under qemu-aarch64");
     assert_eq!(r.status.code(), Some(0), "aarch64: {}{}", text(&r.stdout), text(&r.stderr));
     assert_eq!(text(&r.stdout), "abi ok\n");
+}
+
+#[test]
+fn callback_with_struct_by_value_matches_native_on_x86_64() {
+    // コールバックが `layout c` の構造体を値で取る/返すケース。インタプリタ (`ksn run`) とネイティブ (LLVM) の出力が一致することを確かめる。
+    // 非 x86_64 ホストではインタプリタのコールバックは使えないのでスキップする。
+    if !cfg!(all(target_arch = "x86_64", target_os = "linux")) || !(have("cc") || have("gcc") || have("clang")) {
+        return;
+    }
+    let cc_cmd = if have("cc") { "cc" } else if have("gcc") { "gcc" } else { "clang" };
+    let t = Tmp::new("ffi_cb_struct", "");
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let c = t.0.join("cb.c");
+    fs::write(
+        &c,
+        "typedef struct { int x; int y; } Pair;\ntypedef void (*pair_cb)(Pair p, void *user);\nvoid run_cb(Pair p, pair_cb f, void *user) { f(p, user); }\n",
+    )
+    .unwrap();
+    let lib = t.0.join("libcb.so");
+    let o = Command::new(cc_cmd)
+        .args(["-shared", "-fPIC", "-O1", "-o", lib.to_str().unwrap(), c.to_str().unwrap()])
+        .output()
+        .expect("spawn cc");
+    assert!(o.status.success(), "{}: {}", cc_cmd, text(&o.stderr));
+    let libpath = lib.to_str().unwrap();
+    let ksn = r#"type t.Pair layout c derive [Clone, Copy]
+    x: i32
+    y: i32
+end t.Pair
+
+extern t.run_cb(p: t.Pair, f: fn(t.Pair, *mut t.Pair) -> () uses [] panics never, u: *mut t.Pair) -> () link "LIBPATH:run_cb"
+
+fn t.collect(p: t.Pair, u: *mut t.Pair) -> () uses [] panics never
+    unsafe "callback" "accumulate through the user pointer" {
+        let acc = core.ptr.read(u)
+        let dx = acc.x.wrapping_add(1i32)
+        let dy = acc.y.wrapping_add(p.x.wrapping_add(p.y))
+        let nw = t.Pair { x: dx, y: dy }
+        core.ptr.write(u, nw)
+    }
+end t.collect
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut acc = t.Pair { x: 0i32, y: 0i32 }
+    let ap = unsafe "ffi" "pointer to accumulator" {
+        core.ptr.from_mut(&mut acc)
+    }
+    let p = t.Pair { x: 7i32, y: 8i32 }
+    unsafe "ffi" "callback with a struct argument" {
+        t.run_cb(p, t.collect, ap)
+    }
+    core.check.eq(acc.x, 1i32)
+    core.check.eq(acc.y, 15i32)
+    std.io.print_line("cb ok")?
+    Ok(())
+end t.main
+"#.replace("LIBPATH", libpath);
+    fs::write(t.0.join("src").join("t.ksnl"), ksn).unwrap();
+    t.fmt();
+
+    // `ksn check`: 構造体を値渡しするコールバックが型検査を通ること。
+    let ck = run(&["check"], &t.0);
+    assert_eq!(ck.status.code(), Some(0), "check: {}{}", text(&ck.stdout), text(&ck.stderr));
+
+    // `ksn run` (インタプリタ): 構造体を値渡しするコールバックが動くこと。
+    let ir = run(&["run"], &t.0);
+    assert_eq!(ir.status.code(), Some(0), "run: {}{}", text(&ir.stdout), text(&ir.stderr));
+    assert_eq!(text(&ir.stdout), "cb ok\n");
+
+    // ネイティブ (LLVM): 同じ出力になること。退避は許さない。
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    let out = text(&b.stdout) + &text(&b.stderr);
+    assert_eq!(b.status.code(), Some(0), "build: {}", out);
+    assert!(!out.contains("backend skipped"), "fell back to bundle:\n{}", out);
+    let exe = native_exe(&text(&b.stdout), &t.0);
+    let n = Command::new(&exe).current_dir(&t.0).output().expect("run native");
+    assert_eq!(n.status.code(), Some(0), "native: {}{}", text(&n.stdout), text(&n.stderr));
+    assert_eq!(text(&n.stdout), "cb ok\n");
+}
+
+#[test]
+fn callback_24_byte_struct_matches_native_on_x86_64() {
+    // メモリクラスの構造体 (24 バイト > 16 バイト) をコールバックの値引数で受け取り、
+    // インタプリタがスタック経由で正しく読み、ネイティブと一致する出力を出すこと。
+    if !cfg!(all(target_arch = "x86_64", target_os = "linux")) || !(have("cc") || have("gcc") || have("clang")) {
+        return;
+    }
+    let cc_cmd = if have("cc") { "cc" } else if have("gcc") { "gcc" } else { "clang" };
+    let t = Tmp::new("ffi_cb24", "");
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let c = t.0.join("cb24.c");
+    fs::write(
+        &c,
+        "#include <stdint.h>\ntypedef struct { int64_t x; int64_t y; int64_t z; } S24;\ntypedef void (*cb24)(S24 p, void *user);\nvoid run_cb24(S24 p, cb24 f, void *user) { f(p, user); }\n",
+    )
+    .unwrap();
+    let lib = t.0.join("libcb24.so");
+    let o = Command::new(cc_cmd)
+        .args(["-shared", "-fPIC", "-O1", "-o", lib.to_str().unwrap(), c.to_str().unwrap()])
+        .output()
+        .expect("spawn cc");
+    assert!(o.status.success(), "{}: {}", cc_cmd, text(&o.stderr));
+    let libpath = lib.to_str().unwrap();
+    let ksn = r#"type t.S24 layout c derive [Clone, Copy]
+    x: i64
+    y: i64
+    z: i64
+end t.S24
+
+extern t.run_cb24(p: t.S24, f: fn(t.S24, *mut t.S24) -> () uses [] panics never, u: *mut t.S24) -> () link "LIBPATH:run_cb24"
+
+fn t.cb24(p: t.S24, u: *mut t.S24) -> () uses [] panics never
+    unsafe "callback" "24 byte struct" {
+        let dx = p.x.wrapping_add(1i64)
+        let dy = p.y.wrapping_add(2i64)
+        let dz = p.z.wrapping_add(3i64)
+        core.ptr.write(u, t.S24 { x: dx, y: dy, z: dz })
+    }
+end t.cb24
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut a24 = t.S24 { x: 0i64, y: 0i64, z: 0i64 }
+    let ap = unsafe "ffi" "ptr" {
+        core.ptr.from_mut(&mut a24)
+    }
+    let s24 = t.S24 { x: 1i64, y: 2i64, z: 3i64 }
+    unsafe "ffi" "cb24" {
+        t.run_cb24(s24, t.cb24, ap)
+    }
+    core.check.eq(a24.x, 2i64)
+    core.check.eq(a24.y, 4i64)
+    core.check.eq(a24.z, 6i64)
+    std.io.print_line("cb24 ok")?
+    Ok(())
+end t.main
+"#.replace("LIBPATH", libpath);
+    fs::write(t.0.join("src").join("t.ksnl"), ksn).unwrap();
+    t.fmt();
+    let ck = run(&["check"], &t.0);
+    assert_eq!(ck.status.code(), Some(0), "check: {}{}", text(&ck.stdout), text(&ck.stderr));
+    let ir = run(&["run"], &t.0);
+    assert_eq!(ir.status.code(), Some(0), "run: {}{}", text(&ir.stdout), text(&ir.stderr));
+    assert_eq!(text(&ir.stdout), "cb24 ok\n");
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    let out = text(&b.stdout) + &text(&b.stderr);
+    assert_eq!(b.status.code(), Some(0), "build: {}", out);
+    assert!(!out.contains("backend skipped"), "fell back to bundle:\n{}", out);
+    let exe = native_exe(&text(&b.stdout), &t.0);
+    let n = Command::new(&exe).current_dir(&t.0).output().expect("run native");
+    assert_eq!(n.status.code(), Some(0), "native: {}{}", text(&n.stdout), text(&n.stderr));
+    assert_eq!(text(&n.stdout), "cb24 ok\n");
+}
+
+#[test]
+fn callback_32_byte_struct_matches_native_on_x86_64() {
+    // メモリクラスの構造体 (32 バイト) をコールバックの値引数で受け取り、スタック経由で正しく読めること。
+    // 配列の添字アクセスは `panics never` 本体で `E4003` になるため、5 つの個別の `i64` 欄で書く。
+    if !cfg!(all(target_arch = "x86_64", target_os = "linux")) || !(have("cc") || have("gcc") || have("clang")) {
+        return;
+    }
+    let cc_cmd = if have("cc") { "cc" } else if have("gcc") { "gcc" } else { "clang" };
+    let t = Tmp::new("ffi_cb32", "");
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let c = t.0.join("cb32.c");
+    fs::write(
+        &c,
+        "#include <stdint.h>\ntypedef struct { int64_t a; int64_t b; int64_t c; int64_t d; int64_t e; } S32;\ntypedef void (*cb32)(S32 p, void *user);\nvoid run_cb32(S32 p, cb32 f, void *user) { f(p, user); }\n",
+    )
+    .unwrap();
+    let lib = t.0.join("libcb32.so");
+    let o = Command::new(cc_cmd)
+        .args(["-shared", "-fPIC", "-O1", "-o", lib.to_str().unwrap(), c.to_str().unwrap()])
+        .output()
+        .expect("spawn cc");
+    assert!(o.status.success(), "{}: {}", cc_cmd, text(&o.stderr));
+    let libpath = lib.to_str().unwrap();
+    let ksn = r#"type t.S32 layout c derive [Clone, Copy]
+    a: i64
+    b: i64
+    c: i64
+    d: i64
+    e: i64
+end t.S32
+
+extern t.run_cb32(p: t.S32, f: fn(t.S32, *mut t.S32) -> () uses [] panics never, u: *mut t.S32) -> () link "LIBPATH:run_cb32"
+
+fn t.cb32(p: t.S32, u: *mut t.S32) -> () uses [] panics never
+    unsafe "callback" "32 byte struct" {
+        let na = p.a.wrapping_add(1i64)
+        let nb = p.b.wrapping_add(2i64)
+        let nc = p.c.wrapping_add(3i64)
+        let nd = p.d.wrapping_add(4i64)
+        let ne = p.e.wrapping_add(5i64)
+        core.ptr.write(u, t.S32 { a: na, b: nb, c: nc, d: nd, e: ne })
+    }
+end t.cb32
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut a32 = t.S32 { a: 0i64, b: 0i64, c: 0i64, d: 0i64, e: 0i64 }
+    let ap = unsafe "ffi" "ptr" {
+        core.ptr.from_mut(&mut a32)
+    }
+    let s32 = t.S32 { a: 1i64, b: 2i64, c: 3i64, d: 4i64, e: 5i64 }
+    unsafe "ffi" "cb32" {
+        t.run_cb32(s32, t.cb32, ap)
+    }
+    core.check.eq(a32.a, 2i64)
+    core.check.eq(a32.b, 4i64)
+    core.check.eq(a32.c, 6i64)
+    core.check.eq(a32.d, 8i64)
+    core.check.eq(a32.e, 10i64)
+    std.io.print_line("cb32 ok")?
+    Ok(())
+end t.main
+"#.replace("LIBPATH", libpath);
+    fs::write(t.0.join("src").join("t.ksnl"), ksn).unwrap();
+    t.fmt();
+    let ck = run(&["check"], &t.0);
+    assert_eq!(ck.status.code(), Some(0), "check: {}{}", text(&ck.stdout), text(&ck.stderr));
+    let ir = run(&["run"], &t.0);
+    assert_eq!(ir.status.code(), Some(0), "run: {}{}", text(&ir.stdout), text(&ir.stderr));
+    assert_eq!(text(&ir.stdout), "cb32 ok\n");
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    let out = text(&b.stdout) + &text(&b.stderr);
+    assert_eq!(b.status.code(), Some(0), "build: {}", out);
+    assert!(!out.contains("backend skipped"), "fell back to bundle:\n{}", out);
+    let exe = native_exe(&text(&b.stdout), &t.0);
+    let n = Command::new(&exe).current_dir(&t.0).output().expect("run native");
+    assert_eq!(n.status.code(), Some(0), "native: {}{}", text(&n.stdout), text(&n.stderr));
+    assert_eq!(text(&n.stdout), "cb32 ok\n");
+}
+
+#[test]
+fn callback_memory_struct_then_register_args_matches_native_on_x86_64() {
+    // メモリクラスの構造体 (24 バイト) の後に整数/ポインタのレジスタ引数が続くコールバック。
+    // 構造体はスタック (レジスタを消費しない) で、その後の引数は GP レジスタの先頭から割り当てられる。
+    if !cfg!(all(target_arch = "x86_64", target_os = "linux")) || !(have("cc") || have("gcc") || have("clang")) {
+        return;
+    }
+    let cc_cmd = if have("cc") { "cc" } else if have("gcc") { "gcc" } else { "clang" };
+    let t = Tmp::new("ffi_cb24i", "");
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let c = t.0.join("cb24i.c");
+    fs::write(
+        &c,
+        "#include <stdint.h>\ntypedef struct { int64_t x; int64_t y; int64_t z; } S24;\ntypedef void (*cb24i)(S24 p, int64_t extra, void *user);\nvoid run_cb24i(S24 p, int64_t extra, cb24i f, void *user) { f(p, extra, user); }\n",
+    )
+    .unwrap();
+    let lib = t.0.join("libcb24i.so");
+    let o = Command::new(cc_cmd)
+        .args(["-shared", "-fPIC", "-O1", "-o", lib.to_str().unwrap(), c.to_str().unwrap()])
+        .output()
+        .expect("spawn cc");
+    assert!(o.status.success(), "{}: {}", cc_cmd, text(&o.stderr));
+    let libpath = lib.to_str().unwrap();
+    let ksn = r#"type t.S24 layout c derive [Clone, Copy]
+    x: i64
+    y: i64
+    z: i64
+end t.S24
+
+extern t.run_cb24i(p: t.S24, extra: i64, f: fn(t.S24, i64, *mut t.S24) -> () uses [] panics never, u: *mut t.S24) -> () link "LIBPATH:run_cb24i"
+
+fn t.cb24i(p: t.S24, extra: i64, u: *mut t.S24) -> () uses [] panics never
+    unsafe "callback" "memory struct then register args" {
+        let acc = core.ptr.read(u)
+        let nx = acc.x.wrapping_add(p.x).wrapping_add(extra)
+        core.ptr.write(u, t.S24 { x: nx, y: acc.y, z: acc.z })
+    }
+end t.cb24i
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut a24 = t.S24 { x: 0i64, y: 0i64, z: 0i64 }
+    let ap = unsafe "ffi" "ptr" {
+        core.ptr.from_mut(&mut a24)
+    }
+    let s24 = t.S24 { x: 1i64, y: 2i64, z: 3i64 }
+    unsafe "ffi" "cb24i" {
+        t.run_cb24i(s24, 100i64, t.cb24i, ap)
+    }
+    core.check.eq(a24.x, 101i64)
+    core.check.eq(a24.y, 0i64)
+    core.check.eq(a24.z, 0i64)
+    std.io.print_line("cb24i ok")?
+    Ok(())
+end t.main
+"#.replace("LIBPATH", libpath);
+    fs::write(t.0.join("src").join("t.ksnl"), ksn).unwrap();
+    t.fmt();
+    let ck = run(&["check"], &t.0);
+    assert_eq!(ck.status.code(), Some(0), "check: {}{}", text(&ck.stdout), text(&ck.stderr));
+    let ir = run(&["run"], &t.0);
+    assert_eq!(ir.status.code(), Some(0), "run: {}{}", text(&ir.stdout), text(&ir.stderr));
+    assert_eq!(text(&ir.stdout), "cb24i ok\n");
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    let out = text(&b.stdout) + &text(&b.stderr);
+    assert_eq!(b.status.code(), Some(0), "build: {}", out);
+    assert!(!out.contains("backend skipped"), "fell back to bundle:\n{}", out);
+    let exe = native_exe(&text(&b.stdout), &t.0);
+    let n = Command::new(&exe).current_dir(&t.0).output().expect("run native");
+    assert_eq!(n.status.code(), Some(0), "native: {}{}", text(&n.stdout), text(&n.stderr));
+    assert_eq!(text(&n.stdout), "cb24i ok\n");
+}
+
+#[test]
+fn callback_return_24_byte_struct_matches_native_on_x86_64() {
+    // コールバックがメモリクラスの構造体 (24 バイト) を値で返す (`sret` 経由) ケース。
+    if !cfg!(all(target_arch = "x86_64", target_os = "linux")) || !(have("cc") || have("gcc") || have("clang")) {
+        return;
+    }
+    let cc_cmd = if have("cc") { "cc" } else if have("gcc") { "gcc" } else { "clang" };
+    let t = Tmp::new("ffi_cb24ret", "");
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let c = t.0.join("cb24ret.c");
+    fs::write(
+        &c,
+        "#include <stdint.h>\ntypedef struct { int64_t x; int64_t y; int64_t z; } S24;\ntypedef S24 (*cb24ret)(S24 p);\nvoid run_cb24ret(S24 p, cb24ret f, void *user) { *(S24 *)user = f(p); }\n",
+    )
+    .unwrap();
+    let lib = t.0.join("libcb24ret.so");
+    let o = Command::new(cc_cmd)
+        .args(["-shared", "-fPIC", "-O1", "-o", lib.to_str().unwrap(), c.to_str().unwrap()])
+        .output()
+        .expect("spawn cc");
+    assert!(o.status.success(), "{}: {}", cc_cmd, text(&o.stderr));
+    let libpath = lib.to_str().unwrap();
+    let ksn = r#"type t.S24 layout c derive [Clone, Copy]
+    x: i64
+    y: i64
+    z: i64
+end t.S24
+
+extern t.run_cb24ret(p: t.S24, f: fn(t.S24) -> t.S24 uses [] panics never, u: *mut t.S24) -> () link "LIBPATH:run_cb24ret"
+
+fn t.cb24ret(p: t.S24) -> t.S24 uses [] panics never
+    unsafe "callback" "return 24 byte struct" {
+        t.S24 { x: p.x.wrapping_add(1i64), y: p.y.wrapping_add(2i64), z: p.z.wrapping_add(3i64) }
+    }
+end t.cb24ret
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut a24 = t.S24 { x: 0i64, y: 0i64, z: 0i64 }
+    let ap = unsafe "ffi" "ptr" {
+        core.ptr.from_mut(&mut a24)
+    }
+    let s24 = t.S24 { x: 1i64, y: 2i64, z: 3i64 }
+    unsafe "ffi" "cb24ret" {
+        t.run_cb24ret(s24, t.cb24ret, ap)
+    }
+    core.check.eq(a24.x, 2i64)
+    core.check.eq(a24.y, 4i64)
+    core.check.eq(a24.z, 6i64)
+    std.io.print_line("cb24ret ok")?
+    Ok(())
+end t.main
+"#.replace("LIBPATH", libpath);
+    fs::write(t.0.join("src").join("t.ksnl"), ksn).unwrap();
+    t.fmt();
+    let ck = run(&["check"], &t.0);
+    assert_eq!(ck.status.code(), Some(0), "check: {}{}", text(&ck.stdout), text(&ck.stderr));
+    let ir = run(&["run"], &t.0);
+    assert_eq!(ir.status.code(), Some(0), "run: {}{}", text(&ir.stdout), text(&ir.stderr));
+    assert_eq!(text(&ir.stdout), "cb24ret ok\n");
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    let out = text(&b.stdout) + &text(&b.stderr);
+    assert_eq!(b.status.code(), Some(0), "build: {}", out);
+    assert!(!out.contains("backend skipped"), "fell back to bundle:\n{}", out);
+    let exe = native_exe(&text(&b.stdout), &t.0);
+    let n = Command::new(&exe).current_dir(&t.0).output().expect("run native");
+    assert_eq!(n.status.code(), Some(0), "native: {}{}", text(&n.stdout), text(&n.stderr));
+    assert_eq!(text(&n.stdout), "cb24ret ok\n");
 }
 
 #[test]
@@ -406,5 +777,91 @@ fn a_trampoline_carries_user_data_to_a_c_callback_natively() {
         let r = Command::new(&exe).current_dir(&t.0).output().unwrap();
         assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
         assert_eq!(text(&r.stdout), "userdata ok\n", "native (release={})", rel);
+
+/// `core.ptr.from_mut(&mut buf)` / `core.ptr.from_ref(&buf)` で `buf: [u8; N]` (配列) を C に渡すと、
+/// 配列への参照は fat ポインタ (`{ptr, len}`) として格納される。ネイティブコード生成は fat ポインタを
+/// ロードして ptr フィールド (データポインタ) を取らなければならず、そのままのアドレスをビットキャスト
+/// すると C が呼び出し側のスタック上の一時領域を書き壊してクラッシュする (インタプリタは正しい)。
+/// 回帰試験。インタプリタ (`ksn run`) とネイティブ (デバッグ・リリース) の出力を比べる。
+#[test]
+fn ptr_from_mut_from_ref_array_reaches_caller_buffer_natively() {
+    if !cfg!(all(target_arch = "x86_64", target_os = "linux"))
+        || !(have("cc") || have("gcc") || have("clang"))
+    {
+        return;
+    }
+    let cc_cmd = if have("cc") { "cc" } else if have("gcc") { "gcc" } else { "clang" };
+    let t = Tmp::new("ffi_ptr_array", "");
+    fs::write(
+        t.0.join("kasane.toml"),
+        TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1),
+    )
+    .unwrap();
+    let c = r#"
+#include <stdint.h>
+void c_write(uint8_t *p, int n) { for (int i = 0; i < n; i++) p[i] = (uint8_t)(i + 1); }
+uint8_t c_read(const uint8_t *p, int n) { return p[n - 1]; }
+"#;
+    fs::write(t.0.join("ptr.c"), c).unwrap();
+    let lib = t.0.join("libptr.so");
+    let o = Command::new(cc_cmd)
+        .args([
+            "-shared",
+            "-fPIC",
+            "-O1",
+            "-o",
+            lib.to_str().unwrap(),
+            t.0.join("ptr.c").to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn cc");
+    assert!(o.status.success(), "cc: {}", text(&o.stderr));
+    let src = format!(
+        r#"extern t.c_read(p: *const u8, n: i32) -> u8 link "{}:c_read"
+extern t.c_write(p: *mut u8, n: i32) -> () link "{}:c_write"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut buf = [0u8; 16]
+    unsafe "ffi" "write" {{
+        t.c_write(core.ptr.from_mut(&mut buf), 16i32)
+    }}
+    core.check.eq(buf[0usize], 1u8)
+    core.check.eq(buf[15usize], 16u8)
+    let b = unsafe "ffi" "read" {{
+        t.c_read(core.ptr.from_ref(&buf), 16i32)
+    }}
+    core.check.eq(b, 16u8)
+    core.mem.drop(std.io.print_line("ptr ok"))
+    Ok(())
+end t.main
+"#,
+        lib.to_str().unwrap(),
+        lib.to_str().unwrap()
+    );
+    fs::write(t.0.join("src").join("t.ksnl"), src).unwrap();
+    t.fmt();
+    let c = run(&["check"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}{}", text(&c.stdout), text(&c.stderr));
+    // インタプリタ (`ksn run`) は正しいはず。
+    let want = "ptr ok\n";
+    let i = run(&["run"], &t.0);
+    assert_eq!(i.status.code(), Some(0), "interpreter: {}{}", text(&i.stdout), text(&i.stderr));
+    assert_eq!(text(&i.stdout), want, "interpreter: {}", text(&i.stderr));
+    // ネイティブ (デバッグ・リリース) もインタプリタと同じ出力。バンドル退避ではなく本当のネイティブを走らせる。
+    for release in [false, true] {
+        let kind = if release { "release" } else { "debug" };
+        let mut cmd = Command::new(exe());
+        cmd.args(["build", "--backend", "llvm"]).current_dir(&t.0);
+        if release {
+            cmd.arg("--release");
+        }
+        let b = cmd.output().expect("spawn ksn");
+        let out = text(&b.stdout) + &text(&b.stderr);
+        assert_eq!(b.status.code(), Some(0), "build {}: {}", kind, out);
+        assert!(!out.contains("backend skipped"), "fell back to the interpreter bundle {}:\n{}", kind, out);
+        let exe = native_exe(&text(&b.stdout), &t.0);
+        let n = Command::new(exe).current_dir(&t.0).output().expect("run native");
+        assert_eq!(n.status.code(), Some(0), "native {}: {}{}", kind, text(&n.stdout), text(&n.stderr));
+        assert_eq!(text(&n.stdout), want, "native {}: {}", kind, text(&n.stderr));
     }
 }

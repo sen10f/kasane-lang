@@ -67,8 +67,8 @@ pub fn analyze(kind: Kind, text: &str) -> Analyzed {
         Kind::Lock => {
             let before = findings.len();
             let a = anchors_lock(&v, text, &mut findings);
-            // 構造の誤り (L1〜L6) があるときは整形しない。版 1 と版 2 だけ正規形にする (fmt は版を上げない)。
-            let shape_ok = findings.len() == before && matches!(v.get("version").and_then(|x| x.as_integer()), Some(1) | Some(2));
+            // 構造の誤り (L1〜L6) があるときは整形しない。版 1・2・3 だけ正規形にする (fmt は版を上げない)。
+            let shape_ok = findings.len() == before && matches!(v.get("version").and_then(|x| x.as_integer()), Some(1) | Some(2) | Some(3));
             shape_ok.then(|| emit_lock(&v, &a))
         }
     };
@@ -256,7 +256,20 @@ fn emit_array(v: &Value) -> String {
 fn emit_inline_table(v: &Value) -> String {
     match v.as_table() {
         Some(t) => {
-            let items: Vec<String> = t.iter().map(|(k, val)| format!("{} = {}", k, emit_value(val))).collect();
+            let items: Vec<String> = t
+                .iter()
+                .map(|(k, val)| {
+                    let value = if k == "version" {
+                        val.as_str()
+                            .and_then(|s| crate::semver::parse_range(s).ok())
+                            .map(|r| canon_str(&r.to_string()))
+                            .unwrap_or_else(|| emit_value(val))
+                    } else {
+                        emit_value(val)
+                    };
+                    format!("{} = {}", k, value)
+                })
+                .collect();
             format!("{{ {} }}", items.join(", "))
         }
         None => emit_value(v),
@@ -383,7 +396,7 @@ fn anchors_lock(v: &Value, raw: &str, findings: &mut Vec<Finding>) -> Anchors {
         }
         let n = name_of(idx.wrapping_sub(1));
         match k {
-            "name" | "source" | "hash" | "deps" | "unsafe_modules" | "native_libs" => {
+            "name" | "source" | "registry" | "version" | "hash" | "deps" | "unsafe_modules" | "native_libs" => {
                 if k == "deps" {
                     if let Some(p) = prev.as_mut() {
                         p.2 = true;
@@ -497,7 +510,19 @@ fn emit_lock(v: &Value, a: &Anchors) -> String {
         blank(&mut lines);
         put(&mut lines, a, &label);
         lines.push("[[package]]".into());
-        for k in ["name", "source", "hash", "deps"] {
+        let source = e.get("source").and_then(|s| s.as_str()).unwrap_or("");
+        let is_git = source.starts_with("git+");
+        let is_registry = source.starts_with("registry+");
+        // 版 3 は `version` (git/registry 依存は必須) と `registry` (registry 依存) を記録する。
+        // 順序は name, source, [registry], [version], [hash], deps, [unsafe_modules], [native_libs], [[package.api]]。
+        let mut keys: Vec<&str> = vec!["name", "source"];
+        if ver == 3 {
+            if is_registry { keys.push("registry"); }
+            keys.push("version");
+        }
+        if is_git { keys.push("hash"); }
+        keys.push("deps");
+        for k in keys {
             if let Some(val) = e.get(k) {
                 put(&mut lines, a, &format!("{}.{}", label, k));
                 let s = if k == "deps" {

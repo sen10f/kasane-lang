@@ -143,8 +143,17 @@ fn ptr_call(lw: &mut Lw, e: &V, name: &str, targs: V) -> LR<Option<VId>> {
             let Some(r) = lw.expr(&args[0])? else { return Ok(None) };
             let rt = lw.vty(r);
             // `&mut T` / `&T` (スカラー・集成体への参照): ref → ptr のビットキャスト。
+            // ただし、配列への参照は fat ポインタとして格納され、そのアドレスが ref になる
+            // ため、中身をロードして ptr フィールドを取る必要がある。
             if let Some(p) = pointee_of(rt) {
                 let m = matches!(rt, Ty::Ref(true, _));
+                if let Pointee::Agg(ai) = p {
+                    let aggs = &lw.aggs.borrow().defs;
+                    if aggs[ai as usize].name == "fat" {
+                        let loaded = lw.emit(Ty::Agg(ai), Op::Load(r));
+                        return Ok(Some(lw.emit(Ty::Ptr, Op::Field { a: loaded, off: 0 })));
+                    }
+                }
                 return Ok(Some(lw.emit(Ty::Ptr, Op::Bitcast { src: Ty::Ref(m, p), a: r })));
             }
             // `{ptr, len}` の fat ポインタ (スライス参照): 先頭の ptr フィールドを取る。

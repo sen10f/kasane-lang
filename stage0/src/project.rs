@@ -237,6 +237,27 @@ fn is_name(s: &str) -> bool {
     matches!(cs.next(), Some(c) if c.is_ascii_lowercase()) && cs.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// `git` 依存の URL。HTTPS・SSH・file と、ローカルパスを許す (8.1)。
+fn valid_git_url(s: &str) -> bool {
+    if s.is_empty() || s.starts_with('-') {
+        return false;
+    }
+    match s.split_once("://") {
+        Some((scheme, rest)) => matches!(scheme, "https" | "ssh" | "file") && !rest.is_empty(),
+        None => true,
+    }
+}
+
+/// レジストリの URL は HTTPS か SSH だけ (8.1)。
+fn valid_registry_url(s: &str) -> bool {
+    ["https://", "ssh://"].iter().any(|prefix| s.starts_with(prefix) && s.len() > prefix.len())
+}
+
+/// Git の commit ID は小文字 40 桁の 16 進 (8.1)。
+fn valid_rev(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
 /// `[native]` の C のライブラリの指定 (3.8)。`static` は静的アーカイブのパス、`dynamic` は `-l` のライブラリ名、
 /// `search` はリンク時の探索先のディレクトリ。相対パスはパッケージのルート (`kasane.toml` のある場所) から。
 /// 依存パッケージの `[native]` は読まず (リンクの追加は利用者の明示のままでいる)、`kasane.lock` に記録して比べる (8.1)。
@@ -294,12 +315,9 @@ pub fn validate_manifest(m: &toml::Value) -> Vec<(String, String)> {
         }
         _ => errs.push(e("E9003", "package.name must match [a-z][a-z0-9_]*".into())),
     }
-    let ver_ok = pk.get("version").and_then(|v| v.as_str()).map_or(false, |v| {
-        let p: Vec<&str> = v.split('.').collect();
-        p.len() == 3 && p.iter().all(|x| !x.is_empty() && x.chars().all(|c| c.is_ascii_digit()))
-    });
+    let ver_ok = pk.get("version").and_then(|v| v.as_str()).map_or(false, |v| crate::semver::parse_version(v).is_ok());
     if !ver_ok {
-        errs.push(e("E9005", "package.version must be MAJOR.MINOR.PATCH".into()));
+        errs.push(e("E9005", "package.version must be MAJOR.MINOR.PATCH without leading zeros, pre-release, or build metadata".into()));
     }
     if !pk.get("edition").map_or(false, |v| v.is_integer()) {
         errs.push(e("E9006", "package.edition must be an integer".into()));
@@ -315,7 +333,12 @@ pub fn validate_manifest(m: &toml::Value) -> Vec<(String, String)> {
             errs.push(e("E9007", format!("unknown key package.{}", k)));
         }
     }
-    if let Some(deps) = m.get("dependencies").and_then(|d| d.as_table()) {
+    if let Some(deps_value) = m.get("dependencies") {
+        if deps_value.as_table().is_none() {
+            errs.push(e("E9008", "dependencies must be a table".into()));
+        }
+        let deps = deps_value.as_table().unwrap_or(&empty);
+        let range_ok = |v: &toml::Value| v.as_str().map_or(false, |s| crate::semver::parse_range(s).is_ok());
         for (dn, dv) in deps {
             if BUNDLED.contains(&dn.as_str()) {
                 errs.push(e("E9004", format!("dependency name '{}' is reserved", dn)));
@@ -326,42 +349,66 @@ pub fn validate_manifest(m: &toml::Value) -> Vec<(String, String)> {
             if name == Some(dn.as_str()) {
                 errs.push(e("E9011", format!("package {} depends on itself", dn)));
             }
-            match dv.as_table() {
-                Some(t) if t.contains_key("path") != t.contains_key("git") => {
-                    if let Some(p) = t.get("path") {
-                        if p.as_str().map_or(true, |x| x.is_empty()) {
-                            errs.push(e("E9008", format!("dependency {}: path must be a non-empty string", dn)));
-                        }
+            let Some(t) = dv.as_table() else {
+                errs.push(e("E9008", format!("dependency {}: must be a table", dn)));
+                continue;
+            };
+            for k in t.keys() {
+                match k.as_str() {
+                    "path" | "git" | "registry" | "rev" | "version" => {}
+                    "tag" => errs.push(e("E9008", format!("dependency {}: tag is not supported; use version", dn))),
+                    _ => errs.push(e("E9007", format!("unknown key dependencies.{}.{}", dn, k))),
+                }
+            }
+            let source_count = [t.contains_key("path"), t.contains_key("git"), t.contains_key("registry")].into_iter().filter(|x| *x).count();
+            if source_count != 1 {
+                errs.push(e("E9008", format!("dependency {}: exactly one of path, git, or registry is required", dn)));
+                continue;
+            }
+            if t.contains_key("path") {
+                if t.get("path").and_then(|p| p.as_str()).map_or(true, |p| p.is_empty()) {
+                    errs.push(e("E9008", format!("dependency {}: path must be a non-empty string", dn)));
+                }
+                if t.contains_key("rev") {
+                    errs.push(e("E9008", format!("dependency {}: path dependencies take no rev", dn)));
+                }
+                if t.contains_key("version") {
+                    errs.push(e("E9008", format!("dependency {}: path dependencies take no version", dn)));
+                }
+            } else if t.contains_key("git") {
+                if t.get("git").and_then(|g| g.as_str()).map_or(true, |u| !valid_git_url(u)) {
+                    errs.push(e("E9008", format!("dependency {}: git must be an HTTPS, SSH, file, or local-path URL", dn)));
+                }
+                match (t.get("rev"), t.get("version")) {
+                    (Some(_), Some(_)) | (None, None) => {
+                        errs.push(e("E9008", format!("dependency {}: git requires exactly one of rev or version", dn)));
                     }
-                    if t.contains_key("git") {
-                        // URL は `git clone` の引数になるので、空やオプション風 (`-` 始まり) は受けない。
-                        if t.get("git").and_then(|g| g.as_str()).map_or(true, |u| u.is_empty() || u.starts_with('-')) {
-                            errs.push(e("E9008", format!("dependency {}: git must be a URL string", dn)));
-                        }
-                        let rev_ok = t.get("rev").and_then(|r| r.as_str()).map_or(false, |r| {
-                            r.len() == 40 && r.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-                        });
-                        if !rev_ok {
-                            errs.push(e("E9008", format!("dependency {}: git requires a 40-hex rev", dn)));
-                        }
-                    } else if t.contains_key("rev") {
-                        errs.push(e("E9007", format!("unknown key dependencies.{}.rev (path dependencies take no rev)", dn)));
-                    }
-                    for k in t.keys() {
-                        if !["path", "git", "rev"].contains(&k.as_str()) {
-                            errs.push(e("E9007", format!("unknown key dependencies.{}.{}", dn, k)));
-                        }
+                    _ => {}
+                }
+                if let Some(rev) = t.get("rev") {
+                    if rev.as_str().map_or(true, |r| !valid_rev(r)) {
+                        errs.push(e("E9008", format!("dependency {}: git rev must be 40 lowercase hexadecimal digits", dn)));
                     }
                 }
-                Some(t) => {
-                    errs.push(e("E9008", format!("dependency {}: exactly one of path / git required", dn)));
-                    for k in t.keys() {
-                        if !["path", "git", "rev"].contains(&k.as_str()) {
-                            errs.push(e("E9007", format!("unknown key dependencies.{}.{}", dn, k)));
-                        }
+                if let Some(version) = t.get("version") {
+                    if !range_ok(version) {
+                        errs.push(e("E9008", format!("dependency {}: version must be a valid range", dn)));
                     }
                 }
-                None => errs.push(e("E9008", format!("dependency {}: exactly one of path / git required", dn))),
+            } else {
+                if t.get("registry").and_then(|r| r.as_str()).map_or(true, |u| !valid_registry_url(u)) {
+                    errs.push(e("E9008", format!("dependency {}: registry must be an HTTPS or SSH URL", dn)));
+                }
+                if let Some(version) = t.get("version") {
+                    if !range_ok(version) {
+                        errs.push(e("E9008", format!("dependency {}: version must be a valid range", dn)));
+                    }
+                } else {
+                    errs.push(e("E9008", format!("dependency {}: registry requires version", dn)));
+                }
+                if t.contains_key("rev") {
+                    errs.push(e("E9008", format!("dependency {}: registry dependencies take no rev", dn)));
+                }
             }
         }
     }
@@ -530,14 +577,14 @@ pub fn git_cache_path(url: &str, rev: &str) -> PathBuf {
     cache_dir().join("git").join(&hex[..32])
 }
 
-fn git_cmd() -> std::process::Command {
+pub(crate) fn git_cmd() -> std::process::Command {
     let mut c = std::process::Command::new("git");
     // 認証を尋ねて止まらない。外部コマンドを起動する転送 (`ext::`) は許さない。
     c.env("GIT_TERMINAL_PROMPT", "0").env("GIT_ALLOW_PROTOCOL", "file:https:http:ssh:git").stdin(std::process::Stdio::null());
     c
 }
 
-fn git_run(args: &[&str]) -> Result<String, String> {
+pub(crate) fn git_run(args: &[&str]) -> Result<String, String> {
     match git_cmd().args(args).output() {
         Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).trim().to_string()),
         Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
@@ -583,8 +630,30 @@ pub enum GitMode {
     Offline,
     /// 無いときだけ取得する。
     IfMissing,
-    /// 必ず取得し直す (`update` / `vendor`。取得元が正で、古いキャッシュを信用しない)。
+    /// 必ず取得し直す (`update`。取得元が正で、古いキャッシュを信用しない)。版の依存は範囲から選び直す。
     Fresh,
+    /// 必ず取得し直すが、版の依存はロックに記録したコミットを使う (`vendor`。ロックが正)。
+    Pinned,
+}
+
+/// ロック (版 2 / 版 3) に記録された git 依存のコミット。`url` が一致するものだけ返す。
+/// shortcut: 版 3 (R1c) は `commit` 欄を読むように、ここを差し替える (版 2 は `source` の `#` の後ろ)。
+pub fn locked_git_commit(root: &Path, dn: &str, url: &str) -> Option<String> {
+    let v: toml::Value = fs::read_to_string(root.join("kasane.lock")).ok()?.parse().ok()?;
+    let e = v.get("package")?.as_array()?.iter().find(|p| p.get("name").and_then(|n| n.as_str()) == Some(dn))?;
+    let (u, c) = e.get("source")?.as_str()?.strip_prefix("git+")?.rsplit_once('#')?;
+    if u == url && !c.is_empty() { Some(c.to_string()) } else { None }
+}
+
+/// 版の依存 (`git` + `version`) を範囲に合う最大の `vMAJOR.MINOR.PATCH` タグのコミットに解決する (R2c)。
+fn resolve_version_commit(url: &str, dn: &str, range: &str) -> Result<String, ProjectError> {
+    let r = crate::semver::Range::parse(range).map_err(|m| ProjectError { code: "E9008".into(), msg: format!("dependency {}: {}", dn, m) })?;
+    let tags = crate::git_tags::list_git_tags(url).map_err(|e| ProjectError { code: "E9010".into(), msg: e.msg })?;
+    tags.iter()
+        .filter(|(v, _)| r.matches(&crate::semver::Version::new(v.major, v.minor, v.patch)))
+        .max_by_key(|(v, _)| (v.major, v.minor, v.patch))
+        .map(|(_, c)| c.clone())
+        .ok_or_else(|| ProjectError { code: "E9010".into(), msg: format!("dependency {}: no tag of {} satisfies version \"{}\"", dn, url, range) })
 }
 
 pub fn load_deps(pkg: &Package) -> Result<Vec<Package>, ProjectError> {
@@ -601,6 +670,9 @@ pub fn load_deps_with(pkg: &Package, mode: &dyn Fn(&str) -> GitMode) -> Result<V
 
 /// 依存 `dn` の (取得元文字列, 置き場所)。
 fn locate_dep(root: &Package, pkg: &Package, dn: &str, dv: &toml::Value, mode: &dyn Fn(&str) -> GitMode) -> Result<(String, PathBuf), ProjectError> {
+    if dv.get("registry").is_some() {
+        return perr("E9040", format!("dependency {}: registry version resolution is not implemented yet", dn));
+    }
     if let Some(p) = dv.get("path").and_then(|p| p.as_str()) {
         // 8.1: git 依存先は git 依存だけを持てる。
         if pkg.source.starts_with("git+") {
@@ -614,11 +686,25 @@ fn locate_dep(root: &Package, pkg: &Package, dn: &str, dv: &toml::Value, mode: &
         return Ok((source, loc));
     }
     let url = dv.get("git").and_then(|g| g.as_str()).unwrap_or("");
-    let rev = dv.get("rev").and_then(|g| g.as_str()).unwrap_or("");
+    let m = mode(dn);
+    // コミットを決める。rev はそのまま。版は: update (Fresh) で範囲から選び直し、
+    // vendor (Pinned) と照合系 (Offline / IfMissing) はロックの記録を使う (記録が無いときだけ選ぶ)。
+    let rev: String = match (dv.get("rev").and_then(|g| g.as_str()), dv.get("version").and_then(|g| g.as_str())) {
+        (Some(r), _) => r.to_string(),
+        (None, Some(range)) => match m {
+            GitMode::Fresh => resolve_version_commit(url, dn, range)?,
+            _ => match locked_git_commit(&root.root, dn, url) {
+                Some(c) => c,
+                None if m == GitMode::IfMissing || m == GitMode::Pinned => resolve_version_commit(url, dn, range)?,
+                None => return perr("E9010", format!("git dependency {} has no locked commit for version \"{}\" (run `ksn update`)", dn, range)),
+            },
+        },
+        _ => String::new(),
+    };
+    let rev = rev.as_str();
     let source = format!("git+{}#{}", url, rev);
     let cache = git_cache_path(url, rev);
-    let m = mode(dn);
-    if m == GitMode::Fresh {
+    if m == GitMode::Fresh || m == GitMode::Pinned {
         git_materialize(url, rev, &cache)?;
         return Ok((source, cache));
     }
@@ -751,13 +837,14 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
         return errs;
     }
     let bad = |m: String| ("E9021".to_string(), format!("kasane.toml and kasane.lock disagree: {}; run `ksn update`", m));
-    let v: toml::Value = match fs::read_to_string(&lock).unwrap_or_default().parse() {
+    let lock_text = fs::read_to_string(&lock).unwrap_or_default();
+    let v: toml::Value = match lock_text.parse() {
         Ok(v) => v,
         Err(e) => return vec![bad(format!("invalid kasane.lock ({})", e))],
     };
     let version = v.get("version").and_then(|x| x.as_integer());
-    if version != Some(1) && version != Some(2) {
-        return vec![bad("lock version must be 1 or 2".into())];
+    if version != Some(1) && version != Some(2) && version != Some(3) {
+        return vec![bad("lock version must be 1, 2 or 3".into())];
     }
     let entries: Vec<&toml::Value> = v.get("package").and_then(|p| p.as_array()).map(|a| a.iter().collect()).unwrap_or_default();
     let mut by_name: std::collections::BTreeMap<String, &toml::Value> = Default::default();
@@ -815,8 +902,24 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
                     _ => {}
                 },
             }
-            // 版 2: 公開の署名と効果の記録と比べる (`path` 依存は記録しない)。
-            if version == Some(2) {
+            // 版 3: `version` は manifest の `package.version` と一致する必要がある。
+            if version == Some(3) {
+                let lock_ver = e.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                let actual_ver = dp
+                    .manifest
+                    .get("package")
+                    .and_then(|p| p.get("version"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if lock_ver != actual_ver {
+                    errs.push(bad(format!(
+                        "version of {} is {} in kasane.toml but {} in the lock",
+                        dp.name, actual_ver, lock_ver
+                    )));
+                }
+            }
+            // 版 2・3: 公開の署名と効果の記録と比べる (`path` 依存は記録しない)。
+            if version == Some(2) || version == Some(3) {
                 match crate::lockapi::read_api(e) {
                     None => errs.push(bad(format!("git dependency {} has no recorded api; run `ksn lock --accept {}`", dp.name, dp.name))),
                     Some((old, old_uns, old_nat)) => {

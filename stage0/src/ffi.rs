@@ -711,8 +711,61 @@ fn call_basic(p: *mut c_void, args: &[ArgV], ret: &RetTy) -> Result<RetV, String
 /// コールバックの入口の表の大きさ。Kasane の関数 (またはクロージャ式) ごとに 1 つ使う。
 pub const CALLBACK_SLOTS: usize = 64;
 
-/// 入口から呼ばれるハンドラ: (スロット, GP レジスタ 6 本, XMM レジスタ 8 本の下位 64 ビット) → (RAX, XMM0)。
-pub type CallbackHandler = fn(usize, &[u64; 6], &[u64; 8]) -> (u64, u64);
+/// 入口から呼ばれるハンドラ: (スロット, GP レジスタ 6 本, XMM レジスタ 8 本の下位 64 ビット, 戻り値の書き出し先) -> ()。
+/// ハンドラは `out` の `rax`/`rdx`/`x0`/`x1` に、この入口の戻り値のレジスタクラス (`RetAbi`) に従って
+/// C が読むレジスタの中身を書き込む。メモリ返し (`sret`) の構造体は、第 1 GP 引数 (`gp[0]`) が示す先に
+/// ハンドラ自身がバイト列を書き込み、`out` は書き換えない。
+pub struct RetRegs {
+    pub rax: u64,
+    pub rdx: u64,
+    pub x0: u64,
+    pub x1: u64,
+}
+
+impl Default for RetRegs {
+    fn default() -> Self {
+        RetRegs { rax: 0, rdx: 0, x0: 0, x1: 0 }
+    }
+}
+
+/// コールバックの戻り値のレジスタクラス (x86_64 System V)。
+pub enum RetAbi {
+    /// `()`、またはメモリ返し (`sret`：呼び出し側が第 1 引数で渡すポインタに書き込む)。
+    Void,
+    /// 1 つの整数八バイト: RAX。
+    Int,
+    /// 2 つの整数八バイト: RAX, RDX。
+    Int2,
+    /// 1 つの浮動小数点八バイト: XMM0。
+    F64,
+    /// 2 つの浮動小数点八バイト: XMM0, XMM1。
+    F64_2,
+    /// 整数八バイト + 浮動小数点八バイト: RAX, XMM0。
+    IntF64,
+    /// 浮動小数点八バイト + 整数八バイト: XMM0, RAX。
+    F64Int,
+}
+
+/// 構造体の戻り値の `CTy` から `RetAbi` を決める (`classify` の分類をそのまま使う)。
+pub fn ret_abi(t: &CTy) -> RetAbi {
+    match classify(t) {
+        Pass::Memory => RetAbi::Void,
+        Pass::Regs(cls) => match cls.as_slice() {
+            [false] => RetAbi::Int,
+            [true] => RetAbi::F64,
+            [false, false] => RetAbi::Int2,
+            [true, true] => RetAbi::F64_2,
+            [false, true] => RetAbi::IntF64,
+            [true, false] => RetAbi::F64Int,
+            _ => RetAbi::Void, // ありえない: 16 バイト以下なら 2 つの八バイトまで
+        },
+    }
+}
+
+/// 入口から呼ばれるハンドラ: (スロット, GP レジスタ 6 本, XMM レジスタ 8 本の下位 64 ビット,
+/// 呼び出し元のスタック上の実引数領域の先頭 (戻り番地のすぐ後、8 バイトずつ、`Pass::Memory`
+/// の構造体だけが宣言の順に並ぶ。レジスタクラスの引数はここには現れない), 戻り値の書き出し先)。
+pub type CallbackHandler = fn(usize, &[u64; 6], &[u64; 8], *const u64, &mut RetRegs);
 
 /// 入口の番号の振り分け: `0..VM_SLOT_BASE` は木走査 (`ffi_interp`)、`VM_SLOT_BASE..` はバイトコード VM (`vm/run.rs`)。
 /// 同じプロセスで両方が動いても (`ksn test --engine=both`)、ハンドラが混ざらない。
@@ -729,28 +782,367 @@ pub fn set_callback_handler(h: CallbackHandler) {
     let _ = HANDLER.set(h);
 }
 
-#[repr(C)]
-pub struct RetPair(u64, f64);
-
-#[allow(clippy::too_many_arguments)]
-extern "C" fn tramp<const N: usize>(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, f0: f64, f1: f64, f2: f64, f3: f64, f4: f64, f5: f64, f6: f64, f7: f64) -> RetPair {
-    let gp = [a0, a1, a2, a3, a4, a5];
-    let sse = [f0.to_bits(), f1.to_bits(), f2.to_bits(), f3.to_bits(), f4.to_bits(), f5.to_bits(), f6.to_bits(), f7.to_bits()];
-    let h = if N >= VM_SLOT_BASE { VM_HANDLER.get() } else { HANDLER.get() };
-    let (a, b) = (h.expect("callback handler"))(N, &gp, &sse);
-    RetPair(a, f64::from_bits(b))
+fn handler_for(n: usize) -> CallbackHandler {
+    let h = if n >= VM_SLOT_BASE { VM_HANDLER.get() } else { HANDLER.get() };
+    *h.expect("callback handler")
 }
 
-macro_rules! pool {
-    ($($n:literal)*) => { [$(tramp::<$n> as *const () as usize),*] };
+/// スロット `N` の入口 (C から見た関数ポインタ)。`ret` に応じて 7 つの戻り値のレジスタクラスを使い分ける。
+/// `N` は入口番号 (スロット)。レジスタを読んでハンドラへ渡し、ハンドラが書き込んだ `out` から戻り値を作る。
+///
+/// メモリクラスの構造体 (`size > 16`) は System V AMD64 でスタック (戻り番地のすぐ後、8 バイトずつ) に渡され、
+/// レジスタは消費しない。`extern "C" fn` のトランポリンでは入口時の `rsp` が prologue 後でずれるため、
+/// トランポリンは `global_asm!` で書き、入口時の `rsp` をそのままスタック引数の基点にする。
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+mod x64_trampoline {
+    use core::arch::global_asm;
+    use super::{handler_for, RetRegs};
+
+    /// トランポリンの共有ディスパッチャ。`global_asm!` のトランポリンから呼ばれる。
+    /// レジスタ実引数をメモリ上の配列に退避し、コールバックのハンドラを呼んで戻り値を `out` に書き込む。
+    /// `stack` は呼び出し元のスタック上の実引数領域の先頭 (戻り番地のすぐ後)。
+    #[no_mangle]
+    pub extern "C" fn ksn_tramp_dispatch(
+        slot: usize,
+        gp: *const u64,
+        sse: *const u64,
+        stack: *const u64,
+        out: *mut RetRegs,
+    ) {
+        let h = handler_for(slot);
+        // SAFETY: トランポリンが `gp`/`sse` は 6/8 個、`out` は書き込み可能、`stack` は
+        // ハンドラが必要な分だけ確保された領域を示す。
+        unsafe {
+            h(slot, &*(gp as *const [u64; 6]), &*(sse as *const [u64; 8]), stack, &mut *out);
+        }
+    }
+
+    /// スロット `N` の入口スタブ。
+    /// `mov r10d, N; lea rax, [rip + 共有ルーチン]; jmp *rax`。全スロットで固定 16 バイトなので、
+    /// 入口 `i` のアドレスは `スロット0 のアドレス + i * 16` で求められる（`.quad` アドレス表は
+    /// PIE リンク時にローカルシンボルへの絶対リロケーションとなりリンクエラーになるため使わない）。
+    macro_rules! stub {
+        ($ret:literal, $($n:literal),*) => {
+            concat!(
+                $(concat!(
+                    "ksn_tramp_", $ret, "_", stringify!($n), ":\n",
+                    "    mov r10d, ", stringify!($n), "\n",
+                    "    lea rax, [rip + ksn_tramp_", $ret, "_shared]\n",
+                    "    jmp rax\n",
+                    "    nop\n",
+                )),*
+            )
+        };
+    }
+
+    /// マクロ `M` に `M!("void", 0, 1, ..., 63)` を展開する。
+    macro_rules! for_each_slot {
+        ($macro:ident, $ret:literal) => {
+            $macro!($ret, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63)
+        };
+    }
+
+    /// 戻り値クラスごとの共有ルーチン＋入口アドレスの表を、`global_asm!` で 1 つずつ定義する。
+    /// 枠: [rsp+0..48) = gp[0..5]、[rsp+48..112) = sse[0..7]、[rsp+112..120) = スタック領域の先頭、
+    /// [rsp+120..152) = `out` (rax/rdx/x0/x1)。入口時の `rsp` は 16 バイト境界から 8 バイトずれているので、
+    /// 152 バイト減らすと `call` 直前に 16 バイト境界になる。
+    /// 最後の命令列（`$retbody`）はハンドラの戻り値を `out` ([rsp+120..152)) からレジスタへ戻す。
+    global_asm!(
+        ".align 16\n",
+        ".globl ksn_tramp_void_shared\n",
+        ".type ksn_tramp_void_shared, @function\n",
+        "ksn_tramp_void_shared:\n",
+        "    mov r11, rsp\n",
+        "    sub rsp, 152\n",
+        "    mov [rsp + 0], rdi\n",
+        "    mov [rsp + 8], rsi\n",
+        "    mov [rsp + 16], rdx\n",
+        "    mov [rsp + 24], rcx\n",
+        "    mov [rsp + 32], r8\n",
+        "    mov [rsp + 40], r9\n",
+        "    movq [rsp + 48], xmm0\n",
+        "    movq [rsp + 56], xmm1\n",
+        "    movq [rsp + 64], xmm2\n",
+        "    movq [rsp + 72], xmm3\n",
+        "    movq [rsp + 80], xmm4\n",
+        "    movq [rsp + 88], xmm5\n",
+        "    movq [rsp + 96], xmm6\n",
+        "    movq [rsp + 104], xmm7\n",
+        "    lea rax, [r11 + 8]\n",
+        "    mov [rsp + 112], rax\n",
+        "    mov rdi, r10\n",
+        "    lea rsi, [rsp + 0]\n",
+        "    lea rdx, [rsp + 48]\n",
+        "    mov rcx, [rsp + 112]\n",
+        "    lea r8, [rsp + 120]\n",
+        "    call ksn_tramp_dispatch\n",
+        "    add rsp, 152\n",
+        "    ret\n",
+        ".size ksn_tramp_void_shared, .-ksn_tramp_void_shared\n",
+        ".globl ksn_tramp_void_0\n",
+        for_each_slot!(stub, "void"),
+    );
+
+    global_asm!(
+        ".align 16\n",
+        ".globl ksn_tramp_int_shared\n",
+        ".type ksn_tramp_int_shared, @function\n",
+        "ksn_tramp_int_shared:\n",
+        "    mov r11, rsp\n",
+        "    sub rsp, 152\n",
+        "    mov [rsp + 0], rdi\n",
+        "    mov [rsp + 8], rsi\n",
+        "    mov [rsp + 16], rdx\n",
+        "    mov [rsp + 24], rcx\n",
+        "    mov [rsp + 32], r8\n",
+        "    mov [rsp + 40], r9\n",
+        "    movq [rsp + 48], xmm0\n",
+        "    movq [rsp + 56], xmm1\n",
+        "    movq [rsp + 64], xmm2\n",
+        "    movq [rsp + 72], xmm3\n",
+        "    movq [rsp + 80], xmm4\n",
+        "    movq [rsp + 88], xmm5\n",
+        "    movq [rsp + 96], xmm6\n",
+        "    movq [rsp + 104], xmm7\n",
+        "    lea rax, [r11 + 8]\n",
+        "    mov [rsp + 112], rax\n",
+        "    mov rdi, r10\n",
+        "    lea rsi, [rsp + 0]\n",
+        "    lea rdx, [rsp + 48]\n",
+        "    mov rcx, [rsp + 112]\n",
+        "    lea r8, [rsp + 120]\n",
+        "    call ksn_tramp_dispatch\n",
+        "    mov rax, [rsp + 120]\n",
+        "    add rsp, 152\n",
+        "    ret\n",
+        ".size ksn_tramp_int_shared, .-ksn_tramp_int_shared\n",
+        ".globl ksn_tramp_int_0\n",
+        for_each_slot!(stub, "int"),
+    );
+
+    global_asm!(
+        ".align 16\n",
+        ".globl ksn_tramp_int2_shared\n",
+        ".type ksn_tramp_int2_shared, @function\n",
+        "ksn_tramp_int2_shared:\n",
+        "    mov r11, rsp\n",
+        "    sub rsp, 152\n",
+        "    mov [rsp + 0], rdi\n",
+        "    mov [rsp + 8], rsi\n",
+        "    mov [rsp + 16], rdx\n",
+        "    mov [rsp + 24], rcx\n",
+        "    mov [rsp + 32], r8\n",
+        "    mov [rsp + 40], r9\n",
+        "    movq [rsp + 48], xmm0\n",
+        "    movq [rsp + 56], xmm1\n",
+        "    movq [rsp + 64], xmm2\n",
+        "    movq [rsp + 72], xmm3\n",
+        "    movq [rsp + 80], xmm4\n",
+        "    movq [rsp + 88], xmm5\n",
+        "    movq [rsp + 96], xmm6\n",
+        "    movq [rsp + 104], xmm7\n",
+        "    lea rax, [r11 + 8]\n",
+        "    mov [rsp + 112], rax\n",
+        "    mov rdi, r10\n",
+        "    lea rsi, [rsp + 0]\n",
+        "    lea rdx, [rsp + 48]\n",
+        "    mov rcx, [rsp + 112]\n",
+        "    lea r8, [rsp + 120]\n",
+        "    call ksn_tramp_dispatch\n",
+        "    mov rax, [rsp + 120]\n",
+        "    mov rdx, [rsp + 128]\n",
+        "    add rsp, 152\n",
+        "    ret\n",
+        ".size ksn_tramp_int2_shared, .-ksn_tramp_int2_shared\n",
+        ".globl ksn_tramp_int2_0\n",
+        for_each_slot!(stub, "int2"),
+    );
+
+    global_asm!(
+        ".align 16\n",
+        ".globl ksn_tramp_f64_shared\n",
+        ".type ksn_tramp_f64_shared, @function\n",
+        "ksn_tramp_f64_shared:\n",
+        "    mov r11, rsp\n",
+        "    sub rsp, 152\n",
+        "    mov [rsp + 0], rdi\n",
+        "    mov [rsp + 8], rsi\n",
+        "    mov [rsp + 16], rdx\n",
+        "    mov [rsp + 24], rcx\n",
+        "    mov [rsp + 32], r8\n",
+        "    mov [rsp + 40], r9\n",
+        "    movq [rsp + 48], xmm0\n",
+        "    movq [rsp + 56], xmm1\n",
+        "    movq [rsp + 64], xmm2\n",
+        "    movq [rsp + 72], xmm3\n",
+        "    movq [rsp + 80], xmm4\n",
+        "    movq [rsp + 88], xmm5\n",
+        "    movq [rsp + 96], xmm6\n",
+        "    movq [rsp + 104], xmm7\n",
+        "    lea rax, [r11 + 8]\n",
+        "    mov [rsp + 112], rax\n",
+        "    mov rdi, r10\n",
+        "    lea rsi, [rsp + 0]\n",
+        "    lea rdx, [rsp + 48]\n",
+        "    mov rcx, [rsp + 112]\n",
+        "    lea r8, [rsp + 120]\n",
+        "    call ksn_tramp_dispatch\n",
+        "    movq xmm0, [rsp + 136]\n",
+        "    add rsp, 152\n",
+        "    ret\n",
+        ".size ksn_tramp_f64_shared, .-ksn_tramp_f64_shared\n",
+        ".globl ksn_tramp_f64_0\n",
+        for_each_slot!(stub, "f64"),
+    );
+
+    global_asm!(
+        ".align 16\n",
+        ".globl ksn_tramp_f64_2_shared\n",
+        ".type ksn_tramp_f64_2_shared, @function\n",
+        "ksn_tramp_f64_2_shared:\n",
+        "    mov r11, rsp\n",
+        "    sub rsp, 152\n",
+        "    mov [rsp + 0], rdi\n",
+        "    mov [rsp + 8], rsi\n",
+        "    mov [rsp + 16], rdx\n",
+        "    mov [rsp + 24], rcx\n",
+        "    mov [rsp + 32], r8\n",
+        "    mov [rsp + 40], r9\n",
+        "    movq [rsp + 48], xmm0\n",
+        "    movq [rsp + 56], xmm1\n",
+        "    movq [rsp + 64], xmm2\n",
+        "    movq [rsp + 72], xmm3\n",
+        "    movq [rsp + 80], xmm4\n",
+        "    movq [rsp + 88], xmm5\n",
+        "    movq [rsp + 96], xmm6\n",
+        "    movq [rsp + 104], xmm7\n",
+        "    lea rax, [r11 + 8]\n",
+        "    mov [rsp + 112], rax\n",
+        "    mov rdi, r10\n",
+        "    lea rsi, [rsp + 0]\n",
+        "    lea rdx, [rsp + 48]\n",
+        "    mov rcx, [rsp + 112]\n",
+        "    lea r8, [rsp + 120]\n",
+        "    call ksn_tramp_dispatch\n",
+        "    movq xmm0, [rsp + 136]\n",
+        "    movq xmm1, [rsp + 144]\n",
+        "    add rsp, 152\n",
+        "    ret\n",
+        ".size ksn_tramp_f64_2_shared, .-ksn_tramp_f64_2_shared\n",
+        ".globl ksn_tramp_f64_2_0\n",
+        for_each_slot!(stub, "f64_2"),
+    );
+
+    global_asm!(
+        ".align 16\n",
+        ".globl ksn_tramp_int_f64_shared\n",
+        ".type ksn_tramp_int_f64_shared, @function\n",
+        "ksn_tramp_int_f64_shared:\n",
+        "    mov r11, rsp\n",
+        "    sub rsp, 152\n",
+        "    mov [rsp + 0], rdi\n",
+        "    mov [rsp + 8], rsi\n",
+        "    mov [rsp + 16], rdx\n",
+        "    mov [rsp + 24], rcx\n",
+        "    mov [rsp + 32], r8\n",
+        "    mov [rsp + 40], r9\n",
+        "    movq [rsp + 48], xmm0\n",
+        "    movq [rsp + 56], xmm1\n",
+        "    movq [rsp + 64], xmm2\n",
+        "    movq [rsp + 72], xmm3\n",
+        "    movq [rsp + 80], xmm4\n",
+        "    movq [rsp + 88], xmm5\n",
+        "    movq [rsp + 96], xmm6\n",
+        "    movq [rsp + 104], xmm7\n",
+        "    lea rax, [r11 + 8]\n",
+        "    mov [rsp + 112], rax\n",
+        "    mov rdi, r10\n",
+        "    lea rsi, [rsp + 0]\n",
+        "    lea rdx, [rsp + 48]\n",
+        "    mov rcx, [rsp + 112]\n",
+        "    lea r8, [rsp + 120]\n",
+        "    call ksn_tramp_dispatch\n",
+        "    mov rax, [rsp + 120]\n",
+        "    movq xmm0, [rsp + 136]\n",
+        "    add rsp, 152\n",
+        "    ret\n",
+        ".size ksn_tramp_int_f64_shared, .-ksn_tramp_int_f64_shared\n",
+        ".globl ksn_tramp_int_f64_0\n",
+        for_each_slot!(stub, "int_f64"),
+    );
+
+    global_asm!(
+        ".align 16\n",
+        ".globl ksn_tramp_f64_int_shared\n",
+        ".type ksn_tramp_f64_int_shared, @function\n",
+        "ksn_tramp_f64_int_shared:\n",
+        "    mov r11, rsp\n",
+        "    sub rsp, 152\n",
+        "    mov [rsp + 0], rdi\n",
+        "    mov [rsp + 8], rsi\n",
+        "    mov [rsp + 16], rdx\n",
+        "    mov [rsp + 24], rcx\n",
+        "    mov [rsp + 32], r8\n",
+        "    mov [rsp + 40], r9\n",
+        "    movq [rsp + 48], xmm0\n",
+        "    movq [rsp + 56], xmm1\n",
+        "    movq [rsp + 64], xmm2\n",
+        "    movq [rsp + 72], xmm3\n",
+        "    movq [rsp + 80], xmm4\n",
+        "    movq [rsp + 88], xmm5\n",
+        "    movq [rsp + 96], xmm6\n",
+        "    movq [rsp + 104], xmm7\n",
+        "    lea rax, [r11 + 8]\n",
+        "    mov [rsp + 112], rax\n",
+        "    mov rdi, r10\n",
+        "    lea rsi, [rsp + 0]\n",
+        "    lea rdx, [rsp + 48]\n",
+        "    mov rcx, [rsp + 112]\n",
+        "    lea r8, [rsp + 120]\n",
+        "    call ksn_tramp_dispatch\n",
+        "    movq xmm0, [rsp + 136]\n",
+        "    mov rax, [rsp + 120]\n",
+        "    add rsp, 152\n",
+        "    ret\n",
+        ".size ksn_tramp_f64_int_shared, .-ksn_tramp_f64_int_shared\n",
+        ".globl ksn_tramp_f64_int_0\n",
+        for_each_slot!(stub, "f64_int"),
+    );
+
+    /// 各戻り値クラスのスロット 0 の入口アドレス。`global_asm!` のラベルはシンボル（Rust の値ではない）なので、
+    /// `extern "C"` の `static` として宣言し、`trampoline()` から `base + i * 16` のアドレスを取得する。
+    extern "C" {
+        pub(crate) static ksn_tramp_void_0: usize;
+        pub(crate) static ksn_tramp_int_0: usize;
+        pub(crate) static ksn_tramp_int2_0: usize;
+        pub(crate) static ksn_tramp_f64_0: usize;
+        pub(crate) static ksn_tramp_f64_2_0: usize;
+        pub(crate) static ksn_tramp_int_f64_0: usize;
+        pub(crate) static ksn_tramp_f64_int_0: usize;
+    }
 }
 
-/// スロット `i` の入口 (C から見た関数ポインタ)。x86_64 Linux のみ。
-pub fn trampoline(i: usize) -> Option<usize> {
-    if !GENERIC || i >= CALLBACK_SLOTS {
+/// コールバックトランポリンの入口アドレスの表。
+/// スロット `i` の入口は、`戻り値クラスのスロット 0 アドレス + i * 16`（全スタブ固定 16 バイト）。
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+pub fn trampoline(i: usize, ret: RetAbi) -> Option<usize> {
+    if i >= CALLBACK_SLOTS {
         return None;
     }
-    let t: [usize; CALLBACK_SLOTS] = pool!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
-        32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63);
-    Some(t[i])
+    let base = match ret {
+        RetAbi::Void => unsafe { &x64_trampoline::ksn_tramp_void_0 },
+        RetAbi::Int => unsafe { &x64_trampoline::ksn_tramp_int_0 },
+        RetAbi::Int2 => unsafe { &x64_trampoline::ksn_tramp_int2_0 },
+        RetAbi::F64 => unsafe { &x64_trampoline::ksn_tramp_f64_0 },
+        RetAbi::F64_2 => unsafe { &x64_trampoline::ksn_tramp_f64_2_0 },
+        RetAbi::IntF64 => unsafe { &x64_trampoline::ksn_tramp_int_f64_0 },
+        RetAbi::F64Int => unsafe { &x64_trampoline::ksn_tramp_f64_int_0 },
+    };
+    // 各スタブは固定 16 バイト。スロット i の入口 = スロット 0 のアドレス + i * 16。
+    Some(base as *const usize as usize + i * 16)
+}
+
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
+pub fn trampoline(_i: usize, _ret: RetAbi) -> Option<usize> {
+    None
 }
