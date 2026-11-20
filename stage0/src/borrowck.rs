@@ -3126,7 +3126,9 @@ impl<'a> Low<'a> {
                     // 引数から来る借用だけを引き継ぐ (局所の借用は E3030 の根拠にしない)。
                     let mut sub = vec![];
                     self.origins(init, d, inits, depth + 1, &mut sub);
-                    out.extend(sub.into_iter().filter(|o| matches!(o, Origin::Param(_))));
+                    // 組・`Some(..)`・構造体を作った値 (またはそれを持つ局所) の分解は、中身の借用そのもの (局所の借用も運ぶ)。
+                    let aggregate = self.is_built_value(init, inits, 0);
+                    out.extend(sub.into_iter().filter(|o| aggregate || matches!(o, Origin::Param(_))));
                     self.assigned_origins(v, d, inits, depth, out);
                 }
             }
@@ -3339,6 +3341,25 @@ impl<'a> Low<'a> {
 
     /// 分解・腕のパターンで取り出した名前 `v` の出どころ。取り出し元が引数の場所 (`*self`・`self.opt`) なら、
     /// パターンが指す欄の宣言の領域だけを運ぶ。決まらなければ None (従来の判定)。
+    /// 式が包んだ値 (組・`Some(x)`・構造体) を直接作る、またはそれを初期値に持つ局所か。
+    fn is_built_value(&self, e: &V, inits: &Inits, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        if self.wrapped_parts(e).is_some() {
+            return true;
+        }
+        if nname(e) == "Path" {
+            let segs = strs(&nf(e)[0]);
+            if segs.len() == 1 {
+                if let Some(init) = inits.plain(&segs[0]) {
+                    return self.is_built_value(init, inits, depth + 1);
+                }
+            }
+        }
+        false
+    }
+
     fn bound_origin(&self, d: &Def, inits: &Inits, v: &str) -> Option<Origin> {
         let b = inits.visible(v)?;
         let (pat, init) = (b.pat?, b.init?);
