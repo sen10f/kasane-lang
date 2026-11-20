@@ -1099,6 +1099,48 @@ impl<'a> W<'a> {
                 let _ = out;
                 Val::default()
             }
+            "With" => {
+                // `with r = init close close_expr { body }`: children = [init, (close?), body]。
+                // `close` は束縛 `r` を消費するので、本体の値や外側の変数が `r` の借用を持ったまま
+                // 抜けるのは E3043 (4.4)。
+                let iv = self.ev(&children[0]);
+                self.scopes.push(vec![]);
+                for q in &e.pats {
+                    self.bind_pat(q, iv.flat(), true);
+                }
+                let wnames: HashSet<String> = e.pats.iter().filter_map(|q| q.name.clone()).collect();
+                let body = &children[children.len() - 1];
+                let bv = self.ev(body);
+                if children.len() == 3 {
+                    for (l, _) in bv.loans() {
+                        if let Loan::Local(n, _) | Loan::Dead(n) = l {
+                            if wnames.contains(n.as_str()) {
+                                self.diag("E3043", format!("the `with` body value borrows from `{}`, which the `close` expression consumes (4.4)", n), e.line);
+                            }
+                        }
+                    }
+                    // 外側の生きている変数 (閉包の取り込み先など) が `r` の借用を持つ場合も同じ。
+                    let declared: HashSet<String> = self.scopes.last().cloned().unwrap_or_default().into_iter().collect();
+                    let mut held: Vec<(String, String)> = vec![];
+                    for (n, var) in &self.env.vars {
+                        if declared.contains(n) {
+                            continue;
+                        }
+                        for (l, _) in var.val.loans() {
+                            if let Loan::Local(rn, _) | Loan::Dead(rn) = l {
+                                if wnames.contains(rn.as_str()) {
+                                    held.push((rn.clone(), n.clone()));
+                                }
+                            }
+                        }
+                    }
+                    for (rn, n) in held {
+                        self.diag("E3043", format!("the `with` body value or an outer variable borrows from `{}`, which the `close` expression consumes (4.4); it is held by `{}`", rn, n), e.line);
+                    }
+                    let _ = self.ev(&children[1]);
+                }
+                self.end_scope(bv)
+            }
             _ => {
                 let vs = self.ev_all(children);
                 let mut out = Val::default();
@@ -1698,9 +1740,14 @@ impl<'a> W<'a> {
             if xr.is_empty() && xp.is_empty() {
                 continue;
             }
-            // 受け手の指す先の実体の型が領域を運ばない (例: `Vec<u8>`) なら、そこへ借用は格納されない
+            // 実引数の `&mut` の指す先の型が領域を運ばない (例: `Vec<u8>`) なら、そこへ借用は格納されない
             // (型が借用を持てないので落ちる)。そのまま store_through に渡すと E3030 の誤検出になる。
-            if !self.carries(avs[k].ty.strip()) {
+            // (`&mut r` の `r: &str` は指す先が `&str` なので運ぶ。1 段だけはぐ)
+            let pointee = match &avs[k].ty {
+                Ty::Ref(_, inner, _) => &**inner,
+                t => t,
+            };
+            if !self.carries(pointee) {
                 continue;
             }
             let mut stored = Val::default();
