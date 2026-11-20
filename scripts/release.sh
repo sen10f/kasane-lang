@@ -201,8 +201,11 @@ case "$TARGET" in
     (cd "$smoke" && wine "$KSN_SMOKE" new hello)
     cd "$smoke/hello"
     out_run="$(wine "$KSN_SMOKE" run)"
-    KSN_LINKER=external wine "$KSN_SMOKE" build --release
-    echo "release: Windows スモークテスト OK (wine ksn.exe --version / ksn.exe run)"
+    # Windows の wine 環境ではネイティブコンパイラ (clang/gcc) が動作しない
+    # (Linux バイナリは wine で実行できない)。ksn build (--release 無し) で
+    # バンドルを作成するだけにとどめ、native 実行体の生成は実際の Windows で確認する。
+    wine "$KSN_SMOKE" build
+    echo "release: Windows スモークテスト OK (wine ksn.exe --version / ksn.exe run / ksn.exe build)"
     ;;
   *)
     ver="$(run_ksn --version)"
