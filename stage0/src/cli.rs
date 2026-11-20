@@ -3005,7 +3005,8 @@ fn cmd_vendor() -> i32 {
         Ok(x) => x,
         Err(e) => return fail(e),
     };
-    let deps = match load_deps_with(&pkg, &|_| GitMode::Fresh) {
+    // ロックに記録したコミットを取り直す (版の依存も範囲から選び直さない)。
+    let deps = match load_deps_with(&pkg, &|_| GitMode::Pinned) {
         Ok(d) => d,
         Err(e) => return fail(e),
     };
