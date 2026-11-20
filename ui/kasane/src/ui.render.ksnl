@@ -112,29 +112,17 @@ fn ui.render.GpuCtx.create(w: i32, h: i32) -> Result<ui.render.GpuCtx, ui.render
 end ui.render.GpuCtx.create
 
 fn ui.render.GpuCtx.draw_glyphs(self: &mut ui.render.GpuCtx, glyphs: &[ui.gpu.KsnuiGlyphQuad]) -> () uses [] panics may pub
-    match glyphs.get(0usize) {
-        Some(first) => {
-            let ptr = unsafe "ptr" "最初のグリフ クワッドへのポインタ" {
-                core.ptr.from_ref(first)
-            }
-            ui.gpu.ksnui_gpu_draw_glyphs(self.dev, ptr, u64.from_usize(glyphs.len()))
-        }
-        None => {
-        }
+    let ptr = unsafe "ptr" "グリフ クワッド バッファへのポインタ" {
+        core.ptr.from_ref(glyphs)
     }
+    ui.gpu.ksnui_gpu_draw_glyphs(self.dev, ptr, u64.from_usize(glyphs.len()))
 end ui.render.GpuCtx.draw_glyphs
 
 fn ui.render.GpuCtx.draw_rects(self: &mut ui.render.GpuCtx, rects: &[ui.gpu.KsnuiRect]) -> () uses [] panics may pub
-    match rects.get(0usize) {
-        Some(first) => {
-            let ptr = unsafe "ptr" "最初の矩形へのポインタ" {
-                core.ptr.from_ref(first)
-            }
-            ui.gpu.ksnui_gpu_draw_rects(self.dev, ptr, u64.from_usize(rects.len()))
-        }
-        None => {
-        }
+    let ptr = unsafe "ptr" "矩形バッファへのポインタ" {
+        core.ptr.from_ref(rects)
     }
+    ui.gpu.ksnui_gpu_draw_rects(self.dev, ptr, u64.from_usize(rects.len()))
 end ui.render.GpuCtx.draw_rects
 
 fn ui.render.GpuCtx.finish(self: &mut ui.render.GpuCtx) -> () uses [] panics may pub
@@ -144,30 +132,20 @@ fn ui.render.GpuCtx.finish(self: &mut ui.render.GpuCtx) -> () uses [] panics may
 end ui.render.GpuCtx.finish
 
 fn ui.render.GpuCtx.png_write(self: &mut ui.render.GpuCtx, path: &str, w: i32, h: i32, rgba: &[u8]) -> i32 uses [] panics may pub
-    match rgba.get(0usize) {
-        Some(first) => {
-            let ptr = unsafe "ptr" "RGBA バッファの先頭へのポインタ" {
-                core.ptr.from_ref(first)
-            }
-            let path_p = unsafe "ptr" "パスのバイト列へのポインタ" {
-                core.ptr.from_ref(path.as_bytes())
-            }
-            ui.gpu.ksnui_png_write(path_p, w, h, ptr)
-        }
-        None => 1i32
+    let ptr = unsafe "ptr" "RGBA バッファへのポインタ" {
+        core.ptr.from_ref(rgba)
     }
+    let path_p = unsafe "ptr" "パスのバイト列へのポインタ" {
+        core.ptr.from_ref(path.as_bytes())
+    }
+    ui.gpu.ksnui_png_write(path_p, w, h, ptr)
 end ui.render.GpuCtx.png_write
 
 fn ui.render.GpuCtx.readback(self: &mut ui.render.GpuCtx, out: &mut [u8]) -> u64 uses [] panics may pub
-    match out.get_mut(0usize) {
-        Some(first) => {
-            let ptr = unsafe "ptr" "読み出しバッファの先頭へのポインタ" {
-                core.ptr.from_mut(first)
-            }
-            ui.gpu.ksnui_gpu_readback(self.dev, ptr, u64.from_usize(out.len()))
-        }
-        None => 0u64
+    let ptr = unsafe "ptr" "読み出しバッファへのポインタ" {
+        core.ptr.from_mut(out)
     }
+    ui.gpu.ksnui_gpu_readback(self.dev, ptr, u64.from_usize(out.len()))
 end ui.render.GpuCtx.readback
 
 fn ui.render.batch(list: &[ui.render.Item], rects: &mut [ui.gpu.KsnuiRect], glyphs: &mut [ui.gpu.KsnuiGlyphQuad]) -> (usize, usize) uses [] panics never pub
@@ -622,9 +600,11 @@ test ui.render.GpuCtx.test_batch_shadow
 end ui.render.GpuCtx.test_batch_shadow
 
 test ui.render.GpuCtx.test_render_borders
+    let lib_skip_msg = "SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"
     if !ui.platform_test.libksnui_available() {
-        core.mem.drop(std.io.print_line("SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"))
+        core.mem.drop(std.io.print_line(lib_skip_msg))
     } else {
+        let gpu_skip_msg = "SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"
         match ui.render.GpuCtx.create(160i32, 100i32) {
             Ok(ctx) => with mut c = ctx close c.close() {
                 let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -633,15 +613,17 @@ test ui.render.GpuCtx.test_render_borders
                 let is_zero = ck == 0u64
                 core.check.eq(is_zero, false)
             }
-            Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
+            Err(_e) => core.mem.drop(std.io.print_line(gpu_skip_msg))
         }
     }
 end ui.render.GpuCtx.test_render_borders
 
 test ui.render.GpuCtx.test_render_clip
+    let lib_skip_msg = "SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"
     if !ui.platform_test.libksnui_available() {
-        core.mem.drop(std.io.print_line("SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"))
+        core.mem.drop(std.io.print_line(lib_skip_msg))
     } else {
+        let gpu_skip_msg = "SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"
         match ui.render.GpuCtx.create(160i32, 100i32) {
             Ok(ctx) => with mut c = ctx close c.close() {
                 let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -650,15 +632,17 @@ test ui.render.GpuCtx.test_render_clip
                 let is_zero = ck == 0u64
                 core.check.eq(is_zero, false)
             }
-            Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
+            Err(_e) => core.mem.drop(std.io.print_line(gpu_skip_msg))
         }
     }
 end ui.render.GpuCtx.test_render_clip
 
 test ui.render.GpuCtx.test_render_rects
+    let lib_skip_msg = "SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"
     if !ui.platform_test.libksnui_available() {
-        core.mem.drop(std.io.print_line("SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"))
+        core.mem.drop(std.io.print_line(lib_skip_msg))
     } else {
+        let gpu_skip_msg = "SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"
         match ui.render.GpuCtx.create(160i32, 100i32) {
             Ok(ctx) => with mut c = ctx close c.close() {
                 let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -667,15 +651,17 @@ test ui.render.GpuCtx.test_render_rects
                 let is_zero = ck == 0u64
                 core.check.eq(is_zero, false)
             }
-            Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
+            Err(_e) => core.mem.drop(std.io.print_line(gpu_skip_msg))
         }
     }
 end ui.render.GpuCtx.test_render_rects
 
 test ui.render.GpuCtx.test_render_shadow
+    let lib_skip_msg = "SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"
     if !ui.platform_test.libksnui_available() {
-        core.mem.drop(std.io.print_line("SKIP: libksnui がビルドされていません（ui/native/libksnui.so または .a が見つかりません）"))
+        core.mem.drop(std.io.print_line(lib_skip_msg))
     } else {
+        let gpu_skip_msg = "SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"
         match ui.render.GpuCtx.create(160i32, 100i32) {
             Ok(ctx) => with mut c = ctx close c.close() {
                 let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -684,7 +670,7 @@ test ui.render.GpuCtx.test_render_shadow
                 let is_zero = ck == 0u64
                 core.check.eq(is_zero, false)
             }
-            Err(_e) => core.mem.drop(std.io.print_line("SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"))
+            Err(_e) => core.mem.drop(std.io.print_line(gpu_skip_msg))
         }
     }
 end ui.render.GpuCtx.test_render_shadow
