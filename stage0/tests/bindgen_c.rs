@@ -174,6 +174,58 @@ fn bindgen_c_rejects_bad_arguments() {
     let _ = fs::remove_dir_all(&d);
 }
 
+const ENV_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main.main\"\n\n[unsafe]\nmodules = [\"t.c\", \"t.main\"]\n\n[dependencies]\n";
+
+const ENV_MAIN: &str = r#"fn t.main.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.c.MINI_LIMIT, 42i32)
+    let r = unsafe "ffi" "bindgen の生成物を呼ぶ" {
+        t.c.mini_add(1i32, 2i32)
+    }
+    core.check.eq(r, 3i32)
+    core.mem.drop(std.io.print_line("bindgen env ok"))
+    Ok(())
+end t.main.main
+"#;
+
+/// 素のシェル相当の環境 (`env_clear` して PATH と HOME だけ) でも、<stdint.h>/<stddef.h> を含む
+/// 見出しが解析できて、生成物が `ksn check` を通ること (resource dir とシステム include を明示する話)。
+/// 出力先 `src/t/c.ksnh` は module `t.c` の正しい置き場なので警告が出ないことも見る。
+#[cfg(unix)]
+#[test]
+fn bindgen_c_standalone_minimal_env() {
+    if !libclang_available() {
+        return;
+    }
+    let t = Tmp::new_raw("bindgen_c_env", "");
+    let _ = fs::remove_file(t.0.join("src").join("t.ksnl"));
+    fs::write(t.0.join("kasane.toml"), ENV_TOML).unwrap();
+    fs::create_dir_all(t.0.join("src").join("t")).unwrap();
+    fs::write(t.0.join("src").join("t").join("main.ksnl"), ENV_MAIN).unwrap();
+    let f = run(&["fmt"], &t.0);
+    assert_eq!(f.status.code(), Some(0), "fmt: {}{}", text(&f.stdout), text(&f.stderr));
+    let h = t.0.join("h.h");
+    fs::write(
+        &h,
+        "#include <stdint.h>\n#include <stddef.h>\n\ntypedef struct { int32_t x; size_t n; } MiniPoint;\n#define MINI_LIMIT 42\nint32_t mini_add(int32_t a, int32_t b);\n",
+    )
+    .unwrap();
+    let mut cmd = Command::new(exe());
+    cmd.args(["bindgen", "--c", h.to_str().unwrap(), "--prefix", "t.c", "-o", "src/t/c.ksnh"])
+        .current_dir(&t.0)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default());
+    let o = cmd.output().unwrap();
+    let err = text(&o.stderr);
+    assert_eq!(o.status.code(), Some(0), "bindgen (環境最小): {}{}", text(&o.stdout), err);
+    assert!(!err.contains("module 名と違う"), "誤った警告が出た: {}", err);
+    let ksnl = fs::read_to_string(t.0.join("src").join("t").join("c.ksnl")).unwrap();
+    assert!(ksnl.contains("type t.c.MiniPoint layout c"), "{}", ksnl);
+    assert!(ksnl.contains("const t.c.MINI_LIMIT: i32 = 42i32 pub"), "{}", ksnl);
+    let c = run(&["check"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "check: {}{}", text(&c.stdout), text(&c.stderr));
+}
+
 /// テスト側から `ksnh::strip` と同じ変換 (コメント行を消す) をする。
 fn crate_ksnh_strip(ksnh: &str) -> String {
     let lines: Vec<&str> = ksnh.split('\n').collect();

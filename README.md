@@ -1,6 +1,6 @@
 # Kasane (`ksn`)
 
-Kasane は、LLM が書き、機械が検証する契約重視の言語と、その処理系です。処理系は Rust 製で、ソースの拡張子は `.ksnl`、人がコメントを書く形式は `.ksnh` です。最初のベータ版は `0.1.0-beta.1` として配布予定です。
+Kasane は、人にも LLM にも間違えにくい、厳格なシステム言語とその処理系です。効果 (`uses` / `panics`) の追跡、線形型、二級の参照、書き方を 1 通りに固めた文法、依存の効果や公開の見出しが広がったら止まるロックで、間違ったコードと危ない依存を検査の段階で止めます。書き方が 1 通りで、診断が直し方まで示し、`ksn fix` / `ksn fmt` が機械的に直すので、LLM が書いて機械が検証する使い方にも向いています。処理系は Rust 製で、LLVM と lld を組み込んだ単体の `ksn` が Linux (x86_64・aarch64)・Windows・WASM のネイティブを作ります。ソースの拡張子は `.ksnl`、人がコメントを書く形式は `.ksnh` です。最初のベータ版は `0.1.0-beta.1` として配布予定です。
 
 ## 必要な環境
 
@@ -99,4 +99,6 @@ python3 tests/run_tests.py
 
 ## ライセンス
 
-`LICENSE: TBD`
+MIT License ([LICENSE-MIT](LICENSE-MIT)) と Apache License 2.0 ([LICENSE-APACHE](LICENSE-APACHE)) の併用です。使う人がどちらかを選べます。
+
+とくに断りが無い限り、このリポジトリへの寄稿は、同じく MIT と Apache-2.0 の併用で提供されたものとみなします。

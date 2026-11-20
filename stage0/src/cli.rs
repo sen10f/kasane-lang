@@ -3092,6 +3092,35 @@ fn cmd_vendor() -> i32 {
     0
 }
 
+/// `ksn git tags <url>`: `git ls-remote --tags <url>` から `vMAJOR.MINOR.PATCH` タグだけを列挙し、
+/// `版 コミット` の形で版順に出力する (R1b。解決・lock への接続はまだ行わない)。
+fn cmd_git(rest: &[String]) -> i32 {
+    match rest.first() {
+        Some(t) if t == "tags" => match rest.get(1) {
+            Some(url) => match crate::git_tags::list_git_tags(url) {
+                Ok(tags) => {
+                    for (version, commit) in &tags {
+                        println!("{} {}", version, commit);
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("ksn git tags: {}", e.msg);
+                    1
+                }
+            },
+            None => {
+                eprintln!("usage: ksn git tags <url>");
+                2
+            }
+        },
+        _ => {
+            eprintln!("usage: ksn git tags <url>");
+            2
+        }
+    }
+}
+
 // ------------------------------------------------------------ build
 #[cfg(unix)]
 fn shared_link(m: &fs::Metadata) -> bool {
@@ -3835,8 +3864,10 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
     }
     let want = 2 + if wasi { 1 } else { 0 };
     let linked = rt_bcs.len() == want;
-    let r1: Result<(), String> = if linked {
-        crate::embed_llvm::ir_to_object_with_rt(ll, &rt_bcs, opt, &t.as_ref().unwrap().triple, &oir)
+    let with_rt = if linked { embedded_obj_with_rt(ll, &rt_bcs, opt, &t.as_ref().unwrap().triple, &oir) } else { None };
+    let linked = with_rt.is_some();
+    let r1: Result<(), String> = if let Some(r) = with_rt {
+        r
     } else {
         match embedded_obj(ll, opt, &oir) {
             Some(r) => r,
@@ -3901,6 +3932,23 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Ta
 
 /// プロセス内の LLVM (`embedded-llvm`) で IR を目的ファイル `obj` にする。使えない (feature なし・`KSN_CODEGEN=clang`・
 /// `KSN_CLANG_ARGS` あり (sanitizer などは clang 側が要る)) ときは `None` で、呼び出し側が `clang -x ir` を使う。
+/// 実行時の C のビットコードを利用者の IR につないでから目的ファイルにする (組み込みの LLVM のときだけ)。
+/// 組み込みの LLVM を外したビルド (`--no-default-features`) では `None` を返し、呼び出し側は従来の経路を使う。
+fn embedded_obj_with_rt(ll: &str, rt_bcs: &[(&str, &[u8])], opt: &str, triple: &str, obj: &Path) -> Option<Result<(), String>> {
+    #[cfg(feature = "embedded-llvm")]
+    {
+        if std::env::var("KSN_CODEGEN").map_or(false, |v| v == "clang") || !clang_extra_args().is_empty() {
+            return None;
+        }
+        return Some(crate::embed_llvm::ir_to_object_with_rt(ll, rt_bcs, opt, triple, obj));
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (ll, rt_bcs, opt, triple, obj);
+        None
+    }
+}
+
 fn embedded_obj(ll: &str, opt: &str, obj: &Path) -> Option<Result<(), String>> {
     #[cfg(feature = "embedded-llvm")]
     {
@@ -4035,8 +4083,10 @@ fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, t
                 }
             }
             if ok {
-                crate::embed_llvm::ir_to_object_with_rt(ll, &rt_bcs, opt, &t.triple, &o)?;
-                linked = true;
+                if let Some(r) = embedded_obj_with_rt(ll, &rt_bcs, opt, &t.triple, &o) {
+                    r?;
+                    linked = true;
+                }
             }
         }
         if !linked {
@@ -4196,6 +4246,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "update" => cmd_update(&rest),
         "lock" => cmd_lock(&rest),
         "vendor" => cmd_vendor(),
+        "git" => cmd_git(&rest),
         "_exec" => cmd_exec(&rest),
         "--version" | "-V" => {
             println!("ksn {}", VERSION);

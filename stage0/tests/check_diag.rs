@@ -344,6 +344,37 @@ fn gap_recursive_type_needs_drop() {
 }
 
 #[test]
+fn e2024_message_names_canonical_conversion() {
+    // usize + u32: E2024 は panics may でも型の食い違いで出る。換え先 (conv_hint) が文に入っていること。
+    let src = main_wrap("", "    let total = 0usize\n    let x = 1u32\n    core.mem.drop(total + x)\n");
+    let t = Tmp::new("e2024_conv", &src);
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{out}");
+    assert!(
+        out.contains("operands of `+` have different types: `usize` and `u32`")
+            && out.contains("write `core.num.usize.from_u32(x)`"),
+        "unexpected diagnostic: {out}"
+    );
+}
+
+#[test]
+fn e4010_message_names_stack_example() {
+    // 再帰する panics never 関数に stack が無い: 診断に stack N の書き方例が入ること。
+    let fact = "fn t.fact(n: u64) -> Option<u64> uses [] panics never\n    if n == 0u64 {\n        return Some(1u64)\n    }\n    match t.fact(n.wrapping_sub(1u64)) {\n        Some(r) => r.checked_mul(n)\n        None => None\n    }\nend t.fact\n\n";
+    let src = fact.to_owned() + &main_wrap("", "    core.mem.drop(t.fact(5u64))\n");
+    let t = Tmp::new("e4010_stack", &src);
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{out}");
+    assert!(
+        out.contains("recursive `panics never` function t.fact requires `stack <bytes>`")
+            && out.contains("stack 4096"),
+        "unexpected diagnostic: {out}"
+    );
+}
+
+#[test]
 fn duplicate_import_tails_are_rejected() {
     let t = Tmp::new("impdup", &main_wrap("", ""));
     fs::create_dir_all(t.0.join("src/t/other")).unwrap();

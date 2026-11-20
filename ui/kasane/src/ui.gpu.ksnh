@@ -1,0 +1,108 @@
+// ksn bindgen --c の生成物 (module ui.gpu)。直接編集しない
+// 飛ばしたもの: #define KSNUI_GPU_H は飛ばした: 整数定数でない ()
+type ui.gpu.KsnuiGlyphQuad layout c derive [Clone, Copy] pub
+    x: f32 pub
+    y: f32 pub
+    w: f32 pub
+    h: f32 pub
+    u0: f32 pub
+    v0: f32 pub
+    u1: f32 pub
+    v1: f32 pub
+    cr: f32 pub
+    cg: f32 pub
+    cb: f32 pub
+    ca: f32 pub
+end ui.gpu.KsnuiGlyphQuad
+
+type ui.gpu.KsnuiRect layout c derive [Clone, Copy] pub
+    x: f32 pub
+    y: f32 pub
+    w: f32 pub
+    h: f32 pub
+    r: f32 pub
+    cr: f32 pub
+    cg: f32 pub
+    cb: f32 pub
+    ca: f32 pub
+end ui.gpu.KsnuiRect
+
+extern ui.gpu.raw_ksnui_gpu_atlas_upload(dev: *mut u8, w: i32, h: i32, pixels: *const u8) -> () link "ksnui_gpu_atlas_upload"
+
+extern ui.gpu.raw_ksnui_gpu_begin(dev: *mut u8, r: f32, g: f32, b: f32, a: f32) -> i32 link "ksnui_gpu_begin"
+
+extern ui.gpu.raw_ksnui_gpu_create(window: *mut u8, w: i32, h: i32) -> *mut u8 link "ksnui_gpu_create"
+
+extern ui.gpu.raw_ksnui_gpu_destroy(dev: *mut u8) -> () link "ksnui_gpu_destroy"
+
+extern ui.gpu.raw_ksnui_gpu_draw_glyphs(dev: *mut u8, quads: *const ui.gpu.KsnuiGlyphQuad, n: u64) -> () link "ksnui_gpu_draw_glyphs"
+
+extern ui.gpu.raw_ksnui_gpu_draw_rects(dev: *mut u8, rects: *const ui.gpu.KsnuiRect, n: u64) -> () link "ksnui_gpu_draw_rects"
+
+extern ui.gpu.raw_ksnui_gpu_end(dev: *mut u8) -> () link "ksnui_gpu_end"
+
+extern ui.gpu.raw_ksnui_gpu_readback(dev: *mut u8, out: *mut u8, cap: u64) -> u64 link "ksnui_gpu_readback"
+
+extern ui.gpu.raw_ksnui_gpu_resize(dev: *mut u8, w: i32, h: i32) -> i32 link "ksnui_gpu_resize"
+
+extern ui.gpu.raw_ksnui_png_write(path: *const u8, w: i32, h: i32, rgba: *const u8) -> i32 link "ksnui_png_write"
+
+fn ui.gpu.ksnui_gpu_atlas_upload(dev: *mut u8, w: i32, h: i32, pixels: *const u8) -> () uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_gpu_atlas_upload を呼ぶ" {
+        ui.gpu.raw_ksnui_gpu_atlas_upload(dev, w, h, pixels)
+    }
+end ui.gpu.ksnui_gpu_atlas_upload
+
+fn ui.gpu.ksnui_gpu_begin(dev: *mut u8, r: f32, g: f32, b: f32, a: f32) -> i32 uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_gpu_begin を呼ぶ" {
+        ui.gpu.raw_ksnui_gpu_begin(dev, r, g, b, a)
+    }
+end ui.gpu.ksnui_gpu_begin
+
+fn ui.gpu.ksnui_gpu_create(window: *mut u8, w: i32, h: i32) -> *mut u8 uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_gpu_create を呼ぶ" {
+        ui.gpu.raw_ksnui_gpu_create(window, w, h)
+    }
+end ui.gpu.ksnui_gpu_create
+
+fn ui.gpu.ksnui_gpu_destroy(dev: *mut u8) -> () uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_gpu_destroy を呼ぶ" {
+        ui.gpu.raw_ksnui_gpu_destroy(dev)
+    }
+end ui.gpu.ksnui_gpu_destroy
+
+fn ui.gpu.ksnui_gpu_draw_glyphs(dev: *mut u8, quads: *const ui.gpu.KsnuiGlyphQuad, n: u64) -> () uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_gpu_draw_glyphs を呼ぶ" {
+        ui.gpu.raw_ksnui_gpu_draw_glyphs(dev, quads, n)
+    }
+end ui.gpu.ksnui_gpu_draw_glyphs
+
+fn ui.gpu.ksnui_gpu_draw_rects(dev: *mut u8, rects: *const ui.gpu.KsnuiRect, n: u64) -> () uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_gpu_draw_rects を呼ぶ" {
+        ui.gpu.raw_ksnui_gpu_draw_rects(dev, rects, n)
+    }
+end ui.gpu.ksnui_gpu_draw_rects
+
+fn ui.gpu.ksnui_gpu_end(dev: *mut u8) -> () uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_gpu_end を呼ぶ" {
+        ui.gpu.raw_ksnui_gpu_end(dev)
+    }
+end ui.gpu.ksnui_gpu_end
+
+fn ui.gpu.ksnui_gpu_readback(dev: *mut u8, out: *mut u8, cap: u64) -> u64 uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_gpu_readback を呼ぶ" {
+        ui.gpu.raw_ksnui_gpu_readback(dev, out, cap)
+    }
+end ui.gpu.ksnui_gpu_readback
+
+fn ui.gpu.ksnui_gpu_resize(dev: *mut u8, w: i32, h: i32) -> i32 uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_gpu_resize を呼ぶ" {
+        ui.gpu.raw_ksnui_gpu_resize(dev, w, h)
+    }
+end ui.gpu.ksnui_gpu_resize
+
+fn ui.gpu.ksnui_png_write(path: *const u8, w: i32, h: i32, rgba: *const u8) -> i32 uses [] panics may pub
+    unsafe "bindgen" "C の関数 ksnui_png_write を呼ぶ" {
+        ui.gpu.raw_ksnui_png_write(path, w, h, rgba)
+    }
+end ui.gpu.ksnui_png_write
