@@ -2902,17 +2902,17 @@ fn write_lock_v2(
             dp.manifest.get("dependencies").and_then(|d| d.as_table()).map(|t| t.keys().cloned().collect()).unwrap_or_default();
         dn.sort();
         if dp.source.starts_with("git+") {
+            // 版 3: `version` は `hash` の前に書く (emit_lock と同じキー順)。
+            if lock_version == 3 {
+                let ver = dp.manifest.get("package").and_then(|p| p.get("version")).and_then(|v| v.as_str()).unwrap_or("");
+                lines.push(format!("version = {}", toml_str(ver)));
+            }
             let kept = only.filter(|o| *o != dp.name).and_then(|_| old.get(&dp.name)).and_then(|e| e.get("hash")).and_then(|h| h.as_str()).map(String::from);
             let hash = match kept {
                 Some(h) => h,
                 None => try_package_hash(&dp.root)?,
             };
             lines.push(format!("hash = {}", toml_str(&hash)));
-            // 版 3: git 依存は `version` (選んだ package の kasane.toml の package.version) を記録する。
-            if lock_version == 3 {
-                let ver = dp.manifest.get("package").and_then(|p| p.get("version")).and_then(|v| v.as_str()).unwrap_or("");
-                lines.push(format!("version = {}", toml_str(ver)));
-            }
         }
         lines.push(format!("deps = [{}]", dn.iter().map(|x| toml_str(x)).collect::<Vec<_>>().join(", ")));
         if dp.source.starts_with("git+") {

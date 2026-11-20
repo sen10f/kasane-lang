@@ -751,7 +751,8 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
         return errs;
     }
     let bad = |m: String| ("E9021".to_string(), format!("kasane.toml and kasane.lock disagree: {}; run `ksn update`", m));
-    let v: toml::Value = match fs::read_to_string(&lock).unwrap_or_default().parse() {
+    let lock_text = fs::read_to_string(&lock).unwrap_or_default();
+    let v: toml::Value = match lock_text.parse() {
         Ok(v) => v,
         Err(e) => return vec![bad(format!("invalid kasane.lock ({})", e))],
     };
