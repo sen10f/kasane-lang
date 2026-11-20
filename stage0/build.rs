@@ -46,25 +46,140 @@ fn llvm_config_path() -> String {
 }
 
 /// `embedded-llvm`: LLVM 20 の静的ライブラリのうち X86 / AArch64 / WebAssembly だけをつなぐ (llvm-sys は `no-llvm-linking`)。
+/// `llvm-config` が無いクロスビルドでは `KSN_LLVM_PREFIX/lib` の `libLLVM*.a` をすべて静的リンクする。
 fn link_llvm() {
     let cfg = llvm_config_path();
-    let run = |a: &[&str]| -> String {
-        let o = Command::new(&cfg).args(a).output().unwrap_or_else(|e| panic!("llvm-config ({}) を起動できない: {}", cfg, e));
-        assert!(o.status.success(), "llvm-config {:?} が失敗した", a);
-        String::from_utf8_lossy(&o.stdout).to_string()
-    };
-    println!("cargo:rerun-if-env-changed=LLVM_CONFIG");
-    println!("cargo:rustc-link-search=native={}", run(&["--libdir"]).trim());
-    for l in run(&["--link-static", "--libs", "x86", "aarch64", "webassembly", "passes", "irreader", "target"]).split_whitespace() {
-        println!("cargo:rustc-link-lib=static={}", l.trim_start_matches("-l"));
-    }
-    for l in run(&["--link-static", "--system-libs"]).split_whitespace() {
-        let n = l.trim_start_matches("-l");
-        match n {
+    let prefix = std::env::var("KSN_LLVM_PREFIX").ok().filter(|s| !s.is_empty());
+    if Path::new(&cfg).is_file() {
+        let run = |a: &[&str]| -> String {
+            let o = Command::new(&cfg).args(a).output().unwrap_or_else(|e| panic!("llvm-config ({}) を起動できない: {}", cfg, e));
+            assert!(o.status.success(), "llvm-config {:?} が失敗した", a);
+            String::from_utf8_lossy(&o.stdout).to_string()
+        };
+        println!("cargo:rerun-if-env-changed=LLVM_CONFIG");
+        println!("cargo:rustc-link-search=native={}", run(&["--libdir"]).trim());
+        for l in run(&["--link-static", "--libs", "x86", "aarch64", "webassembly", "passes", "irreader", "target"]).split_whitespace() {
+            println!("cargo:rustc-link-lib=static={}", l.trim_start_matches("-l"));
+        }
+        for l in run(&["--link-static", "--system-libs"]).split_whitespace() {
+            let n = l.trim_start_matches("-l");
             // 静的に取り込む (配布する実行体が libz / libzstd に依存しない)。xml2 は Windows の manifest 用で要らない。
-            "z" | "zstd" => println!("cargo:rustc-link-lib=static={}", n),
-            "xml2" => {}
-            _ => println!("cargo:rustc-link-lib={}", n),
+            match n {
+                "z" | "zstd" => println!("cargo:rustc-link-lib=static={}", n),
+                "xml2" => {}
+                _ => println!("cargo:rustc-link-lib={}", n),
+            }
+        }
+    } else {
+        // llvm-config なし: KSN_LLVM_PREFIX/lib の libLLVM*.a をすべてリンク。
+        // rustc は cargo:rustc-link-arg と cargo:rustc-link-lib の出力順を入れ替えるため
+        // --start-group/--end-group が機能しない。代わりに全オブジェクトを 1 つの
+        // アーカイブにまとめてリンクする (単一アーカイブなら循環参照の順序問題が起きない)。
+        let libdir = prefix.map_or_else(String::new, |p| format!("{}/lib", p));
+        if Path::new(&libdir).is_dir() {
+            let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+            let all_dir = out.join("llvm_all_objects");
+            let _ = fs::remove_dir_all(&all_dir);
+            fs::create_dir_all(&all_dir).unwrap();
+            let mut objs: Vec<PathBuf> = Vec::new();
+            if let Ok(rd) = fs::read_dir(&libdir) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_file() {
+                        if let Some(n) = p.file_name().and_then(|s| s.to_str()) {
+                            if n.starts_with("libLLVM") && n.ends_with(".a") {
+                                let sub = all_dir.join(n.trim_end_matches(".a"));
+                                let _ = fs::create_dir_all(&sub);
+                                assert!(
+                                    Command::new("ar").arg("x").arg(&p).current_dir(&sub).status().expect("ar が要る").success(),
+                                    "{} の展開に失敗",
+                                    p.display()
+                                );
+                                if let Ok(ord) = fs::read_dir(&sub) {
+                                    for oe in ord.flatten() {
+                                        let op = oe.path();
+                                        if op.extension().and_then(|s| s.to_str()) == Some("o") || op.extension().and_then(|s| s.to_str()) == Some("obj") {
+                                            objs.push(op);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(!objs.is_empty(), "libLLVM*.a が {} に見つからない", libdir);
+            // llvm_target_refs.c のオブジェクトを libksn_llvm_all.a に組み込み、
+            // すべての LLVMInitialize* シンボルをリンク時に未定義にする。
+            // これにより libksn_llvm_stubs.a の弱いスタブが正しく解決される
+            // (アーカイブ処理順序による未解決を防ぐ)。
+            println!("cargo:rerun-if-changed=src/native/llvm_target_refs.c");
+            let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+            let refs_obj = out.join("llvm_target_refs.o");
+            let st = Command::new(&cc)
+                .args(["-c", "src/native/llvm_target_refs.c", "-o"])
+                .arg(&refs_obj)
+                .status()
+                .expect("cc が要る");
+            assert!(st.success(), "llvm_target_refs.c のコンパイルに失敗");
+            objs.push(refs_obj);
+
+            let a = out.join("libksn_llvm_all.a");
+            let _ = fs::remove_file(&a);
+            assert!(
+                Command::new("ar").arg("crs").arg(&a).args(&objs).status().expect("ar が要る").success(),
+                "{} の作成に失敗",
+                a.display()
+            );
+            println!("cargo:rustc-link-search=native={}", out.display());
+            println!("cargo:rustc-link-lib=static=ksn_llvm_all");
+            // クロス LLVM (AArch64 のみ) には X86 / WebAssembly のターゲット初期化シンボルが無い。
+            // llvm_stubs.c の弱いスタブをリンクし、embed_llvm::init() の未定義シンボルを埋める
+            // (ホストのフル LLVM では強いシンボルが勝ち、クロスではスタブが使われる)。
+            println!("cargo:rerun-if-changed=src/native/llvm_stubs.c");
+            let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+            let stubs_obj = out.join("llvm_stubs.o");
+            let st = Command::new(&cc)
+                .args(["-c", "src/native/llvm_stubs.c", "-o"])
+                .arg(&stubs_obj)
+                .status()
+                .expect("cc が要る");
+            assert!(st.success(), "llvm_stubs.c のコンパイルに失敗");
+            let stubs_a = out.join("libksn_llvm_stubs.a");
+            let _ = fs::remove_file(&stubs_a);
+            assert!(
+                Command::new("ar")
+                    .arg("crs")
+                    .arg(&stubs_a)
+                    .arg(&stubs_obj)
+                    .status()
+                    .expect("ar が要る")
+                    .success(),
+                "{} の作成に失敗",
+                stubs_a.display()
+            );
+            println!("cargo:rustc-link-lib=static=ksn_llvm_stubs");
+            // クロスビルドでは llvm-config が無いので、LLVM が必要とするシステムライブラリ
+            // を明示的にリンクする。
+            let is_windows = std::env::var("CC")
+                .ok()
+                .map(|c| c.contains("mingw32"))
+                .unwrap_or(false);
+            if is_windows {
+                // Windows (MinGW) 用システムライブラリ。
+                // cargo:rustc-link-lib だとリンカ引数がオブジェクトファイル
+                // より前に配置され、Windows API シンボル (FOLDERID_* 等) の
+                // 未解決参照が解決されない。cargo:rustc-link-arg でオブジェクト
+                // ファイルの後に配置して、未定義シンボルを解決できるようにする。
+                println!("cargo:rustc-link-arg=-ladvapi32");
+                println!("cargo:rustc-link-arg=-lshell32");
+                println!("cargo:rustc-link-arg=-lole32");
+                println!("cargo:rustc-link-arg=-luuid");
+            } else {
+                // Linux クロス: pthread / stdc++
+                println!("cargo:rustc-link-lib=dylib=pthread");
+                println!("cargo:rustc-link-lib=dylib=stdc++");
+            }
         }
     }
     for d in ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64"] {
@@ -73,6 +188,28 @@ fn link_llvm() {
         }
     }
     println!("cargo:rustc-link-lib=static=stdc++");
+}
+
+/// `libdir` 内の `prefix` で始まる `.a` 静的ライブラリをすべてリンクする。
+fn link_glob_static(libdir: &str, prefixes: &[&str]) {
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(rd) = fs::read_dir(libdir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_file() {
+                if let Some(n) = p.file_name().and_then(|n| n.to_str()) {
+                    if n.ends_with(".a") && prefixes.iter().any(|pre| n.starts_with(pre)) {
+                        names.push(n.strip_prefix("lib").unwrap().strip_suffix(".a").unwrap().to_string());
+                    }
+                }
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    for name in names {
+        println!("cargo:rustc-link-lib=static={}", name);
+    }
 }
 
 // ---- L2: 実行時の C のビットコードと標準ライブラリの宣言を実行体に埋め込む ----
@@ -247,15 +384,63 @@ fn link_embedded_lld() {
     if std::env::var("CARGO_FEATURE_EMBEDDED_LLVM").is_err() {
         return;
     }
+    // Windows クロスビルドでは組み込み ldd をスキップする。
+    // liblld*.a が Windows LLVM インストールに含まれないため、組み込み ldd はリンクできない。
+    // 代わりに KSN_LINKER=external で外部の MinGW リンカを使う (release.sh で設定)。
+    let is_windows_cross = std::env::var("CC")
+        .ok()
+        .map(|c| c.contains("mingw32"))
+        .unwrap_or(false);
+    if is_windows_cross {
+        // Windows クロスビルドでは組み込み ldd をスキップする。
+        // liblld*.a が Windows LLVM インストールに含まれないため。
+        // ただし ksn_lld_link (FFI エントリポイント) と Windows API の
+        // GUID 定数 (CLSID_FileOperation 等) のスタブはリンクに必要。
+        let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+        println!("cargo:rerun-if-changed=src/native/ksn_windows_stubs.c");
+        let obj = out.join("ksn_windows_stubs.o");
+        let st = Command::new(&cc)
+            .args(["-c", "src/native/ksn_windows_stubs.c", "-o"])
+            .arg(&obj)
+            .status()
+            .expect("cc が要る");
+        assert!(st.success(), "ksn_windows_stubs.c のコンパイルに失敗");
+        let a = out.join("libksn_windows_stubs.a");
+        let _ = fs::remove_file(&a);
+        assert!(
+            Command::new("ar")
+                .arg("crs")
+                .arg(&a)
+                .arg(&obj)
+                .status()
+                .expect("ar が要る")
+                .success()
+        );
+        println!("cargo:rustc-link-search=native={}", out.display());
+        println!("cargo:rustc-link-lib=static=ksn_windows_stubs");
+        return;
+    }
     println!("cargo:rerun-if-changed=src/native/lld_shim.cpp");
     // llvm-config は L1 の `link_llvm` と同じもの (`LLVM_CONFIG`、既定は /usr/lib/llvm-20/bin/llvm-config)。
+    // llvm-config が無いクロスビルドでは KSN_LLVM_PREFIX をそのまま使う。
     let llvm_config = llvm_config_path();
-    let cfg = |a: &[&str]| -> String {
-        let o = Command::new(&llvm_config).args(a).output().expect("llvm-config が要る (llvm-20-dev)");
-        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    let prefix = std::env::var("KSN_LLVM_PREFIX").ok().filter(|s| !s.is_empty());
+    let (inc, lib) = if Path::new(&llvm_config).is_file() {
+        let cfg = |a: &[&str]| -> String {
+            let o = Command::new(&llvm_config).args(a).output().expect("llvm-config が要る (llvm-20-dev)");
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        (cfg(&["--includedir"]), cfg(&["--libdir"]))
+    } else {
+        let p = prefix.as_deref().unwrap_or("");
+        (format!("{}/include", p), format!("{}/lib", p))
     };
-    let inc = cfg(&["--includedir"]);
-    let lib = cfg(&["--libdir"]);
+    // lld のヘッダが無いクロスインストールでは組み込み lld はスキップする
+    // (インタプリタ / C バックエンドの smoke テストには lld は不要)。
+    if !Path::new(&format!("{}/lld/Common/Driver.h", inc)).is_file() {
+        return;
+    }
     // `cc` crate は build.rs 側に feature を渡せないので使わず、c++ と ar を直接呼ぶ。
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let obj = out.join("lld_shim.o");
@@ -271,12 +456,77 @@ fn link_embedded_lld() {
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=ksn_lld_shim");
     println!("cargo:rustc-link-search=native={}", lib);
-    for l in ["lldMinGW", "lldCOFF", "lldELF", "lldWasm", "lldCommon"] {
-        println!("cargo:rustc-link-lib=static={}", l);
-    }
-    for l in cfg(&["--link-static", "--libs", "lto", "object", "option", "debuginfodwarf", "all-targets", "windowsdriver", "windowsmanifest", "libdriver", "dlltooldriver"]).split_whitespace().filter(|l| !l.contains("Polly")) {
-        // Polly は -dev に静的ライブラリが無い。lld は使わないので外す。
-        println!("cargo:rustc-link-lib=static={}", l.trim_start_matches("-l"));
+    if Path::new(&llvm_config).is_file() {
+        let cfg = |a: &[&str]| -> String {
+            let o = Command::new(&llvm_config).args(a).output().expect("llvm-config が要る (llvm-20-dev)");
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        for l in ["lldMinGW", "lldCOFF", "lldELF", "lldWasm", "lldCommon"] {
+            println!("cargo:rustc-link-lib=static={}", l);
+        }
+        for l in cfg(&["--link-static", "--libs", "lto", "object", "option", "debuginfodwarf", "all-targets", "windowsdriver", "windowsmanifest", "libdriver", "dlltooldriver"]).split_whitespace().filter(|l| !l.contains("Polly")) {
+            // Polly は -dev に静的ライブラリが無い。lld は使わないので外す。
+            println!("cargo:rustc-link-lib=static={}", l.trim_start_matches("-l"));
+        }
+    } else {
+        // llvm-config なし: lib の lld / LLVM 静的ライブラリをすべてリンク。
+        // cargo は cargo:rustc-link-arg と cargo:rustc-link-lib の出力順を入れ替えるため
+        // --start-group/--end-group が機能しない。代わりに全オブジェクトを 1 つの
+        // アーカイブにまとめてリンクする (単一アーカイブなら循環参照の順序問題が起きない)。
+        let all_dir = out.join("lld_all_objects");
+        let _ = fs::remove_dir_all(&all_dir);
+        fs::create_dir_all(&all_dir).unwrap();
+        let mut objs: Vec<PathBuf> = Vec::new();
+        if let Ok(rd) = fs::read_dir(&lib) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_file() {
+                    if let Some(n) = p.file_name().and_then(|s| s.to_str()) {
+                        if (n.starts_with("liblld") || n.starts_with("libLLVM")) && n.ends_with(".a") {
+                            let sub = all_dir.join(n.trim_end_matches(".a"));
+                            let _ = fs::create_dir_all(&sub);
+                            assert!(
+                                Command::new("ar").arg("x").arg(&p).current_dir(&sub).status().expect("ar が要る").success(),
+                                "{} の展開に失敗",
+                                p.display()
+                            );
+                            if let Ok(ord) = fs::read_dir(&sub) {
+                                for oe in ord.flatten() {
+                                    let op = oe.path();
+                                    if op.extension().and_then(|s| s.to_str()) == Some("o") || op.extension().and_then(|s| s.to_str()) == Some("obj") {
+                                        objs.push(op);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(!objs.is_empty(), "liblld*.a / libLLVM*.a が {} に見つからない", lib);
+        let a = out.join("libksn_lld_all.a");
+        let _ = fs::remove_file(&a);
+        assert!(
+            Command::new("ar").arg("crs").arg(&a).args(&objs).status().expect("ar が要る").success(),
+            "{} の作成に失敗",
+            a.display()
+        );
+        println!("cargo:rustc-link-lib=static=ksn_lld_all");
+        // クロスビルドでは llvm-config が無いので、lld が必要とするシステムライブラリ
+        // を明示的にリンクする。
+        let is_windows = std::env::var("CC")
+            .ok()
+            .map(|c| c.contains("mingw32"))
+            .unwrap_or(false);
+        if is_windows {
+            println!("cargo:rustc-link-lib=dylib=advapi32");
+            println!("cargo:rustc-link-lib=dylib=shell32");
+            println!("cargo:rustc-link-lib=dylib=ole32");
+            println!("cargo:rustc-link-lib=dylib=uuid");
+        } else {
+            println!("cargo:rustc-link-lib=dylib=pthread");
+            println!("cargo:rustc-link-lib=dylib=stdc++");
+        }
     }
     // Mach-O ドライバ (macOS リンク用)。`--libs` の component `machodriver` を入れると
     // リンク順序が変わって既存のドライバが未解決になるので、ライブラリを直接パス指定する。
