@@ -277,6 +277,11 @@ fn link_embedded_lld() {
         let p = prefix.as_deref().unwrap_or("");
         (format!("{}/include", p), format!("{}/lib", p))
     };
+    // lld のヘッダが無いクロスインストールでは組み込み lld はスキップする
+    // (インタプリタ / C バックエンドの smoke テストには lld は不要)。
+    if !Path::new(&format!("{}/lld/Common/Driver.h", inc)).is_file() {
+        return;
+    }
     // `cc` crate は build.rs 側に feature を渡せないので使わず、c++ と ar を直接呼ぶ。
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let obj = out.join("lld_shim.o");
