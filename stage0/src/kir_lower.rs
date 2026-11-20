@@ -440,8 +440,9 @@ impl<'a> Lw<'a> {
         self.aggs.borrow_mut().fat()
     }
 
-    fn vals_of(&self, slots: &[usize]) -> Vec<VId> {
-        slots.iter().map(|s| self.slots[*s].0).collect()
+    fn vals_of(&mut self, slots: &[usize]) -> Vec<VId> {
+        // スタックスロットに昇格した局所は、合流の引数もそこから読む (書き込みが見えるように)。
+        slots.iter().map(|s| self.read_slot(*s)).collect()
     }
 
     /// 木の中で代入される (現在の有効範囲で見える) スロットを、出現順に集める。
@@ -1735,7 +1736,7 @@ impl<'a> Lw<'a> {
         self.branch(c, (tb, vec![]), (fb, vec![]));
 
         // 枝の終わりから合流へ渡す引数: (結果の値、代入された変数の現在値)
-        let join_args = |lw: &Self, v: Option<VId>| -> Vec<VId> {
+        let join_args = |lw: &mut Self, v: Option<VId>| -> Vec<VId> {
             let mut a: Vec<VId> = if carry { v.into_iter().collect() } else { vec![] };
             a.extend(lw.vals_of(&slots));
             a
@@ -2036,6 +2037,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     }
     // スレッドの補助の関数 (`ksn.thr.*`) は、全部の入口 (クロージャ) が揃ってから作る。
     thread_lower::finish(&mut ok);
+    sync_lower::finish(&mut ok);
     chan_lower::finish(&mut ok);
     // `std.task` の実行器 (使われたときだけ)。閉包の表は、この後の変換 (`kir_suspend::transform`) が `.poll` を作る。
     task_lower::finish(&mut ok);

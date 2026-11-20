@@ -35,7 +35,7 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 
 /// Kasane の定義 (`spec/stdlib` の `type` / `enum`) を持ち、利用者の型と同じ集成体として型表に入れる標準ライブラリの型 (設計_KIR.md 12.1)。
 /// 利用者のエラー型 (`shortener.error.Error` / `http.Error` など) がペイロードや変種に持つ標準型もここに入れる (段階 2)。
-pub const STD_TYPES: [&str; 52] = ["alloc.alloc.Layout", "core.fmt.Error", "core.slice.LengthError", "std.io.Stdin", "std.io.Stdout", "std.io.Stderr", "core.fmt.Formatter", "core.hash.Fnv64", "std.http.Decoder", "std.http.Error", "std.http.Framing", "std.http.Head", "std.http.Header", "std.http.Request", "std.tls.TlsAcceptor", "std.tls.Error", "std.tls.TlsStream", "std.process.Command", "std.process.Child", "std.process.ExitStatus", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec", "std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "core.cmp.Ordering", "std.time.SystemTime", "std.datetime.DateTime", "std.datetime.Error", "std.log.Level", "std.net.Shutdown", "std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "core.slice.IndexError", "std.json.Doc", "std.json.Error", "std.json.Kind", "std.json.Node", "std.json.Value"];
+pub const STD_TYPES: [&str; 56] = ["alloc.alloc.Layout", "core.fmt.Error", "core.slice.LengthError", "std.io.Stdin", "std.io.Stdout", "std.io.Stderr", "core.fmt.Formatter", "core.hash.Fnv64", "std.http.Decoder", "std.http.Error", "std.http.Framing", "std.http.Head", "std.http.Header", "std.http.Request", "std.tls.TlsAcceptor", "std.tls.Error", "std.tls.TlsStream", "std.process.Command", "std.process.Child", "std.process.ExitStatus", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec", "std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "core.cmp.Ordering", "std.time.SystemTime", "std.datetime.DateTime", "std.datetime.Error", "std.log.Level", "std.net.Shutdown", "std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "core.slice.IndexError", "std.json.Doc", "std.json.Error", "std.json.Kind", "std.json.Node", "std.json.Value", "core.sync.AtomicBool", "core.sync.AtomicU64", "core.sync.AtomicUsize", "core.sync.Ordering"];
 
 /// Kasane で書いた標準ライブラリの総称型 (`spec/stdlib/alloc/collections.ksnl`)。利用者の型と同じ集成体として下ろす。
 pub fn is_kasane_std_generic(name: &str) -> bool {
@@ -1359,6 +1359,15 @@ impl<'a> Lw<'a> {
                         let c = self.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty, a: val, b: k });
                         self.test(c, fl);
                     }
+                    "float" if ty.is_float() => {
+                        let Some(fl) = fail else {
+                            return self.err(line, "let の束縛は反駁可能でない");
+                        };
+                        let x = st(lf.last().unwrap()).replace('_', "").parse::<f64>().map_err(|_| format!("行 {}: 浮動小数パターンが扱えない", line))?;
+                        let k = self.emit(ty, Op::Const(crate::kir_scalar::from_f64(ty, x)));
+                        let c = self.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty, a: val, b: k });
+                        self.test(c, fl);
+                    }
                     // 文字リテラル (`'é'`): `char` は u32 のコード。
                     "char" => {
                         let Some(fl) = fail else {
@@ -1511,6 +1520,13 @@ impl<'a> Lw<'a> {
                     out.extend(self.pat(sp, fv, fd.ty, fail)?);
                 }
             }
+            "PPath" if ty.is_int() => {
+                let Some(fl) = fail else {
+                    return self.err(line, "let の束縛は反駁可能でない");
+                };
+                let c = self.pat_test(p, val, ty)?;
+                self.test(c, fl);
+            }
             "PPath" => {
                 let segs = strs(&nf(p)[0]);
                 self.variant_test(&segs, val, ty, fail, line)?;
@@ -1624,7 +1640,8 @@ impl<'a> Lw<'a> {
         let sty = self.vty(sv);
         let res: Option<Ty> = match self.src_ty(e)? {
             Src::Never => None,
-            t => Some(self.conv_t(&t).ok_or_else(|| format!("行 {}: match の型 {} は段階 1 の対象外", line, show(&t)))?),
+            // `&Vec` / `&String` の値はヘッダのアドレス (`ptr`) で持つので `value_ty` を先に見る。
+            t => Some(super::coll::value_ty(self, &t).or_else(|| self.conv_t(&t)).ok_or_else(|| format!("行 {}: match の型 {} は段階 1 の対象外", line, show(&t)))?),
         };
         let carry = matches!(res, Some(t) if t != Ty::Unit);
         let arms: Vec<(&V, &V)> = items(&f[1])

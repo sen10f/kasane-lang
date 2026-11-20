@@ -1559,6 +1559,32 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
     }
     // 要求ごとに、命令の直後に生きている値を求める。
     let is_borrow = |v: VId| matches!(an.parent.get(&v), Some(_));
+    // 値の「親」(単一オペランドの構築命令) — free されるポインタの先祖に所有者 agg がいるかの判定に使う。
+    let fparent: Vec<Option<VId>> = {
+        let mut m = vec![None; f.value_count()];
+        for b in &f.blocks {
+            for i in &b.insts {
+                let a = match &i.op {
+                    Op::Field { a, .. } | Op::Payload(a) | Op::Some(a) | Op::Ok(a) | Op::Err(a) => Some(*a),
+                    _ => None,
+                };
+                if let Some(a) = a {
+                    m[i.dst as usize] = Some(a);
+                }
+            }
+        }
+        m
+    };
+    let ancestors = |mut v: VId| -> HashSet<VId> {
+        let mut s = HashSet::new();
+        while let Some(p) = fparent[v as usize] {
+            if !s.insert(p) {
+                break;
+            }
+            v = p;
+        }
+        s
+    };
     let chain = |v: VId| -> Vec<VId> {
         let mut c = vec![v];
         let mut x = v;
@@ -1620,7 +1646,12 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                 let _ = (rb, ri);
                 match req {
                     Req::Inval { loans, skip, holders, why } => {
-                        let bad = live.iter().any(|w| !skip.contains(w) && an.org[*w as usize].iter().any(|l| loans.contains(l)));
+                        // free されるバッファが生きている値 (またはその包み) の欄から来ているなら、それは所有者の破棄であって借用ではない。
+                        let own = if let Op::HeapFree(p) | Op::HeapRealloc { p, .. } = &i.op { ancestors(*p) } else { HashSet::new() };
+                        let bad = live.iter().any(|w| {
+                            !skip.contains(w) && !own.contains(w) && !ancestors(*w).iter().any(|a| own.contains(a))
+                                && an.org[*w as usize].iter().any(|l| loans.contains(l))
+                        });
                         let mut bad_holder = false;
                         for h in holders {
                             if let Some(us) = mem_uses.get(h) {

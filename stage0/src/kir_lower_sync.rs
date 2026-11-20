@@ -9,11 +9,13 @@
 //!   (各スレッドは最後まで走る) なのでロック・アンロックは出さない。
 
 use crate::check::{items, nf, nlineno as nline, nname, strs};
-use crate::kir::{Aop, BoolOp, Mode, Op, Pointee, Ty, VId};
+use crate::kir::{Aop, BoolOp, Cc, Func, Mode, Op, Pointee, Term, Ty, VId};
+use std::collections::BTreeSet;
 use crate::parser::V;
 use crate::program::Target as Tgt;
 use crate::types::{from_v, Ty as Src};
 
+use super::fb::Fb;
 use super::thread_lower::{rt_call, LOCK, MINIT, MLOCK, UNLOCK};
 use super::{Lw, LR};
 
@@ -84,6 +86,11 @@ pub(super) fn sync_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     if segs.join(".") == "std.rand.Rng.from_entropy" {
         return Some(from_entropy(lw, &args, line));
     }
+    // `core.sync.AtomicX.new(v)` / `core.sync.AtomicX.m(&a, ..)`。
+    if segs.len() == 4 && segs[0] == "core" && segs[1] == "sync" && is_atomic_name(&segs[2]) {
+        let tname = format!("core.sync.{}", segs[2]);
+        return Some(atomic_path_call(lw, e, &tname, &segs[3], &args, line));
+    }
     if segs.len() >= 2 {
         let meth = segs[segs.len() - 1].as_str();
         if let (Some(s), 2) = (lw.lookup(&segs[0]), segs.len()) {
@@ -99,6 +106,10 @@ pub(super) fn sync_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             if meth == "next_u64" && is_rng(lw, t) {
                 return Some(next_u64(lw, s, &args, line));
             }
+            // `a.load(..)` など (`a` は Atomic の局所・`&Atomic` の引数)。順序の引数は木走査と同じく無視する。
+            if let Some(r) = atomic_local_call(lw, e, s, meth, &args, line) {
+                return Some(r);
+            }
         }
         if meth == "lock" && args.is_empty() {
             let owner = &segs[..segs.len() - 1];
@@ -110,6 +121,176 @@ pub(super) fn sync_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         }
     }
     None
+}
+
+/// `core.sync.Atomic*` の型名か。
+fn is_atomic_name(n: &str) -> bool {
+    matches!(n, "core.sync.AtomicBool" | "core.sync.AtomicU64" | "core.sync.AtomicUsize" | "AtomicBool" | "AtomicU64" | "AtomicUsize")
+}
+
+/// 型名から (セルの型, ヘルパ名の接尾辞)。`AtomicBool` のセルは u8、`AtomicU64` / `AtomicUsize` は 64 ビット。
+fn atomic_kind(name: &str) -> Option<(Ty, &'static str)> {
+    match name.strip_prefix("core.sync.").unwrap_or(name) {
+        "AtomicBool" => Some((Ty::U8, "u8")),
+        "AtomicU64" => Some((Ty::U64, "u64")),
+        "AtomicUsize" => Some((Ty::Usize, "usize")),
+        _ => None,
+    }
+}
+
+/// 値 `v` (Atomic の集成体の値またはその参照) が指すセルのアドレス。
+fn atomic_addr_of(lw: &mut Lw, v: VId) -> Option<VId> {
+    match lw.vty(v) {
+        Ty::Ref(_, Pointee::Agg(_)) => Some(lw.emit(Ty::Ptr, Op::Bitcast { src: lw.vty(v), a: v })),
+        Ty::Agg(ai) => {
+            let sz = lw.aggs.borrow().defs[ai as usize].size;
+            let p = super::coll::emit_alloca(lw, sz);
+            lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Agg(ai), p, off: 0, v });
+            Some(p)
+        }
+        _ => None,
+    }
+}
+
+/// Atomic の型名を返す (値・参照どちらでも)。
+fn atomic_name_of(lw: &Lw, t: Ty) -> Option<String> {
+    let ai = match t {
+        Ty::Agg(ai) | Ty::Ref(_, Pointee::Agg(ai)) => ai,
+        _ => return None,
+    };
+    let n = lw.aggs.borrow().defs[ai as usize].name.clone();
+    is_atomic_name(&n).then_some(n)
+}
+
+/// 引数の値をセルの型へ (bool は u8 に変換)。
+fn atomic_cell_arg(lw: &mut Lw, cell: Ty, a: &V, line: usize) -> LR<Option<VId>> {
+    let Some(v) = lw.expr(a)? else { return Ok(None) };
+    if lw.vty(v) == cell {
+        return Ok(Some(v));
+    }
+    if cell == Ty::U8 && lw.vty(v) == Ty::Bool {
+        // bool -> u8 は分岐で (conv は bool からの変換を認めない)。
+        let (t, _) = lw.new_block(&[]);
+        let (f, _) = lw.new_block(&[]);
+        let (d, dp) = lw.new_block(&[Ty::U8]);
+        lw.branch(v, (t, vec![]), (f, vec![]));
+        lw.cur = Some(t);
+        let one = lw.emit(Ty::U8, Op::Const(1));
+        lw.goto(d, vec![one]);
+        lw.cur = Some(f);
+        let zero = lw.emit(Ty::U8, Op::Const(0));
+        lw.goto(d, vec![zero]);
+        lw.cur = Some(d);
+        return Ok(Some(dp[0]));
+    }
+    lw.err(line, "Atomic のメソッドの引数の型が合わない")
+}
+
+/// セルの値をメソッドの戻り値の型へ (u8 セルは bool に)。
+fn atomic_out(lw: &mut Lw, cell: Ty, v: VId) -> VId {
+    if cell == Ty::U8 {
+        let z = lw.emit(Ty::U8, Op::Const(0));
+        lw.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Ne, ty: Ty::U8, a: v, b: z })
+    } else {
+        v
+    }
+}
+
+/// `ksn.atm.<op>.<cell>` の呼び出し (LLVM では実アトミックに差し替える。kir_exec では素の読み書きで木走査と同じ)。
+fn atm(lw: &mut Lw, op: &str, cell: Ty, sfx: &str, args: Vec<VId>, ret: Ty) -> VId {
+    rt_call(lw, &format!("ksn.atm.{}.{}", op, sfx), args, ret)
+}
+
+/// `a.m(args..)` (a は Atomic の局所または `&Atomic` の引数) の下ろし。
+fn atomic_local_call(lw: &mut Lw, e: &V, s: usize, meth: &str, args: &[V], line: usize) -> Option<LR<Option<VId>>> {
+    let (sv, st) = lw.slots[s];
+    let Some(name) = atomic_name_of(lw, st) else { return None };
+    let Some((cell, sfx)) = atomic_kind(&name) else { return None };
+    let addr = if matches!(st, Ty::Ref(_, Pointee::Agg(_))) {
+        lw.emit(Ty::Ptr, Op::Bitcast { src: st, a: sv })
+    } else if lw.is_mem_val(sv) {
+        lw.emit(Ty::Ptr, Op::Bitcast { src: lw.vty(sv), a: sv })
+    } else {
+        // SSA のスロットはここで一度スタックスロットに移す (以後の呼び出しも同じアドレスを指すように)。
+        let Ty::Agg(ai) = st else { return None };
+        let p = lw.alloca(Pointee::Agg(ai));
+        lw.mark_mem(p);
+        let v = lw.read_slot(s);
+        let pp = lw.emit(Ty::Ptr, Op::Bitcast { src: Ty::Ref(true, Pointee::Agg(ai)), a: p });
+        lw.emit(Ty::Unit, Op::MemStore { ty: st, p: pp, off: 0, v });
+        lw.slots[s] = (p, st);
+        pp
+    };
+    Some(atomic_method(lw, e, &addr, cell, sfx, meth, args, line))
+}
+
+/// `core.sync.AtomicX.m(..)` のパス呼び出し (`new` は values のみ、他は第 1 引数が受け手)。
+fn atomic_path_call(lw: &mut Lw, e: &V, tname: &str, meth: &str, args: &[V], line: usize) -> LR<Option<VId>> {
+    let Some((cell, sfx)) = atomic_kind(tname) else { return lw.err(line, "Atomic でない型") };
+    if meth == "new" {
+        if args.len() != 1 {
+            return lw.err(line, "Atomic の new の引数は 1 個のはず");
+        }
+        let Some(v) = atomic_cell_arg(lw, cell, &args[0], line)? else { return Ok(None) };
+        let ty = lw.conv_t(&Src::Named(tname.to_string(), vec![], crate::types::Rgs::default()));
+        let Some(ty) = ty else { return lw.err(line, "Atomic の型が型表に入らない") };
+        return Ok(Some(lw.emit(ty, Op::Make { variant: None, fields: vec![v] })));
+    }
+    if args.is_empty() {
+        return lw.err(line, "Atomic のメソッドの第 1 引数 (受け手) がない");
+    }
+    let Some(a0) = lw.expr(&args[0])? else { return Ok(None) };
+    let Some(addr) = atomic_addr_of(lw, a0) else { return lw.err(line, "Atomic の受け手が値か参照でない") };
+    atomic_method(lw, e, &addr, cell, sfx, meth, &args[1..], line)
+}
+
+/// Atomic のメソッドの下ろし。`addr` はセルのアドレス。順序の引数は無視する (木走査と同じ)。
+fn atomic_method(lw: &mut Lw, e: &V, addr: &VId, cell: Ty, sfx: &str, meth: &str, args: &[V], line: usize) -> LR<Option<VId>> {
+    let a = *addr;
+    match meth {
+        "load" if args.len() == 1 => {
+            let old = atm(lw, "load", cell, sfx, vec![a], cell);
+            Ok(Some(atomic_out(lw, cell, old)))
+        }
+        "store" if args.len() == 2 => {
+            let Some(v) = atomic_cell_arg(lw, cell, &args[0], line)? else { return Ok(None) };
+            atm(lw, "store", cell, sfx, vec![a, v], Ty::Unit);
+            Ok(Some(lw.unit()))
+        }
+        "swap" if args.len() == 2 => {
+            let Some(v) = atomic_cell_arg(lw, cell, &args[0], line)? else { return Ok(None) };
+            let old = atm(lw, "swap", cell, sfx, vec![a, v], cell);
+            Ok(Some(atomic_out(lw, cell, old)))
+        }
+        "fetch_add" if args.len() == 2 && cell != Ty::U8 => {
+            let Some(v) = atomic_cell_arg(lw, cell, &args[0], line)? else { return Ok(None) };
+            let old = atm(lw, "add", cell, sfx, vec![a, v], cell);
+            Ok(Some(old))
+        }
+        "compare_exchange" if args.len() == 3 => {
+            let Some(exp) = atomic_cell_arg(lw, cell, &args[0], line)? else { return Ok(None) };
+            let Some(des) = atomic_cell_arg(lw, cell, &args[1], line)? else { return Ok(None) };
+            let old = atm(lw, "cas", cell, sfx, vec![a, exp, des], cell);
+            let rt = lw.ty_of(e)?;
+            let Ty::Res(pok, _) = rt else { return lw.err(line, "compare_exchange の戻り値の型が Result でない") };
+            let out_ty = pok.ty();
+            let old_out = if out_ty == Ty::Bool { atomic_out(lw, cell, old) } else { old };
+            let eq = lw.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty: cell, a: old, b: exp });
+            let (okt, _) = lw.new_block(&[]);
+            let (errt, _) = lw.new_block(&[]);
+            let (done, dp) = lw.new_block(&[rt]);
+            lw.branch(eq, (okt, vec![]), (errt, vec![]));
+            lw.cur = Some(okt);
+            let okv = lw.emit(rt, Op::Ok(old_out));
+            lw.goto(done, vec![okv]);
+            lw.cur = Some(errt);
+            let errv = lw.emit(rt, Op::Err(old_out));
+            lw.goto(done, vec![errv]);
+            lw.cur = Some(done);
+            Ok(Some(dp[0]))
+        }
+        _ => lw.err(line, format!("Atomic のメソッド {} は段階 1 の対象外", meth)),
+    }
 }
 
 fn from_seed(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
@@ -226,4 +407,74 @@ fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
     let r = lw.emit(Ty::Ref(true, p), Op::Bitcast { src: Ty::Ptr, a: vp });
     super::coll::register_unlock(lw, mp, r);
     Ok(Some(r))
+}
+
+/// 全関数を下ろした後に、呼ばれた `ksn.atm.*` の補助関数を作って足す。
+/// kir_exec では素の読み書き (木走査の atomic と同じく順序は無視)、LLVM では `thread_override` が実アトミックに差し替える。
+pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
+    let mut names: Vec<String> = ok.iter().flat_map(|(_, cs)| cs.iter().cloned()).filter(|c| c.starts_with("ksn.atm.")).collect();
+    names.sort();
+    names.dedup();
+    for name in names {
+        if let Some(f) = atm_fn(&name) {
+            ok.push((f, BTreeSet::new()));
+        }
+    }
+}
+
+/// `ksn.atm.<op>.<cell>` の KIR の本体 (協調実行では素の読み書きでよい)。
+fn atm_fn(name: &str) -> Option<Func> {
+    let rest = name.strip_prefix("ksn.atm.")?;
+    let (op, sfx) = rest.split_once('.')?;
+    let cell = match sfx {
+        "u8" => Ty::U8,
+        "u64" => Ty::U64,
+        "usize" => Ty::Usize,
+        _ => return None,
+    };
+    match op {
+        "load" => {
+            let mut b = Fb::new(&[Ty::Ptr]);
+            let v = b.load(cell, 0, 0);
+            b.term(Term::Ret(v));
+            Some(b.build(name, &[], cell))
+        }
+        "store" => {
+            let mut b = Fb::new(&[Ty::Ptr, cell]);
+            b.store(cell, 0, 0, 1);
+            let u = b.emit(Ty::Unit, Op::Const(0));
+            b.term(Term::Ret(u));
+            Some(b.build(name, &[], Ty::Unit))
+        }
+        "swap" => {
+            let mut b = Fb::new(&[Ty::Ptr, cell]);
+            let old = b.load(cell, 0, 0);
+            b.store(cell, 0, 0, 1);
+            b.term(Term::Ret(old));
+            Some(b.build(name, &[], cell))
+        }
+        "add" => {
+            let mut b = Fb::new(&[Ty::Ptr, cell]);
+            let old = b.load(cell, 0, 0);
+            let nv = b.emit(cell, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: old, b: 1 });
+            b.store(cell, 0, 0, nv);
+            b.term(Term::Ret(old));
+            Some(b.build(name, &[], cell))
+        }
+        "cas" => {
+            let mut b = Fb::new(&[Ty::Ptr, cell, cell]);
+            let old = b.load(cell, 0, 0);
+            let eq = b.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: cell, a: old, b: 1 });
+            let (yes, _) = b.block(&[]);
+            let (no, _) = b.block(&[]);
+            b.br_if(eq, yes, no);
+            b.at(yes);
+            b.store(cell, 0, 0, 2);
+            b.goto(no, vec![]);
+            b.at(no);
+            b.term(Term::Ret(old));
+            Some(b.build(name, &[], cell))
+        }
+        _ => None,
+    }
 }

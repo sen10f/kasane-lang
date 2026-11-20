@@ -118,6 +118,11 @@ impl<'a> Lw<'a> {
         self.rf.is_mem(v)
     }
 
+    /// 値番号 `v` をスタックスロットとして印す (`alloca` の結果をスロットに束ねるとき)。
+    pub(super) fn mark_mem(&mut self, v: VId) {
+        self.rf.mem.insert(v);
+    }
+
     /// 入口ブロックに `alloca` を置く。結果は `mutref<p>`。
     pub(super) fn alloca(&mut self, p: Pointee) -> VId {
         let ty = Ty::Ref(true, p);

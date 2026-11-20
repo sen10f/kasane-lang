@@ -27,6 +27,18 @@ pub(super) fn ffi_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     if segs.len() >= 3 && segs[0] == "core" && segs[1] == "ptr" {
         return Some(ptr_call(lw, e, &segs[2], f.get(2).cloned().unwrap_or(crate::parser::V::Nil)));
     }
+    if segs.len() == 3 && segs[0] == "core" && segs[1] == "mem" && segs[2] == "size_of" {
+        let line = nline(e);
+        let targs = f.get(2).cloned().unwrap_or(crate::parser::V::Nil);
+        return Some((|| {
+            if !items(&f[1]).is_empty() {
+                return lw.err(line, "core.mem.size_of は引数を取らない");
+            }
+            let elem = ptr_elem_ty(lw, &targs, line)?;
+            let sz = kir::size_of(&lw.aggs.borrow().defs, elem) as i128;
+            Ok(Some(lw.emit(Ty::Usize, Op::Const(sz))))
+        })());
+    }
     // `extern` 宣言の呼び出し。
     let line = nline(e);
     let resolved = lw.p.resolve(&segs, &lw.def.file);
