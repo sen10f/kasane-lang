@@ -20,10 +20,47 @@ use std::sync::mpsc;
 use serde_json::{json, Value};
 
 use crate::cli::{self, Analysis, Found, Loaded};
+use crate::lexer::{self, Tok};
 use crate::program::{Def, Program, Target};
 use crate::project::{norm, overlay_set, Source};
+use crate::types::{self, Ty};
 
 type Resp = Result<Value, (i64, String)>;
+
+/// 型から、メソッドを探す所有者のキー (型の FQN)。`types.rs` の `TypeCk::owners_for` と同じ対応。
+/// shortcut: 型実引数・`dyn`・クロージャは対象外 (補完に出てこない)。
+fn ty_owner(t: &Ty) -> Option<String> {
+    match t {
+        Ty::Prim(p) => Some(prim_owner(p)?),
+        Ty::Slice(_) | Ty::Array(_, _) => Some("core.slice".into()),
+        Ty::Named(n, _, _) => Some(n.clone()),
+        Ty::Ref(_, i, _) | Ty::Ptr(_, i) => ty_owner(i),
+        _ => None,
+    }
+}
+
+/// 基本型の名前 → メソッドを探す所有者のキー (規範のシグネチャの前置き)。
+fn prim_owner(p: &str) -> Option<String> {
+    if !lexer::PRIMS.contains(&p) {
+        return None;
+    }
+    Some(match p {
+        "str" => "core.str".into(),
+        "bool" => "core.bool.bool".into(),
+        "char" => "core.char.char".into(),
+        _ => format!("core.num.{}", p),
+    })
+}
+
+/// 所有者のキー → 補完の本文に出す型の表示名。
+fn short_ty(k: &str) -> &str {
+    match k {
+        "core.bool.bool" => "bool",
+        "core.char.char" => "char",
+        "core.str" => "str",
+        _ => k.strip_prefix("core.num.").unwrap_or(k),
+    }
+}
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -290,6 +327,14 @@ fn log_message(kind: u8, msg: &str) {
 }
 
 // ------------------------------------------------------------ サーバの状態
+/// 型推論が 1 回回った結果 (LSP の記号の特定・補完が引く表)。
+struct Tabs {
+    /// メソッド呼び出しの名前の位置 (ファイル, `CallSite::pos`, `CallSite::seg`) → 解決先の FQN。`locate` が使う。
+    sites: HashMap<(String, usize, usize), Vec<String>>,
+    /// (ファイル, 関数の FQN, 局所の名前) → (let の行, メソッドの所有者のキー)。補完が受け手の型を拾うのに使う。
+    locals: HashMap<(String, String, String), Vec<(usize, Option<String>)>>,
+}
+
 struct Doc {
     path: String,
     text: String,
@@ -303,10 +348,10 @@ struct RootState {
     analyzed: bool,
     dirty: bool,
     /// 診断を出した URI (次回、無くなったものを空で消す)。
+    /// 診断を出した URI (次回、無くなったものを空で消す)。
     published: HashSet<String>,
-    /// メソッド呼び出しの名前の位置 (ファイル, `CallSite::pos`, `CallSite::seg`) → 解決先の FQN。型推論の結果から、
-    /// 検査の結果が変わるたびに作り直す (`call_sites`)。
-    sites: Option<HashMap<(String, usize, usize), Vec<String>>>,
+    /// 型推論が 1 回回った結果 (検査の結果が変わるたびに作り直す。`ensure_tabs`)。
+    tabs: Option<Tabs>,
 }
 
 struct Server {
@@ -487,7 +532,7 @@ impl Server {
         let st = self.roots.entry(root.to_path_buf()).or_default();
         st.dirty = false;
         st.analyzed = true;
-        st.sites = None;
+        st.tabs = None;
         match res {
             Ok(Analysis { items, loaded }) => {
                 st.items = items;
@@ -675,59 +720,86 @@ impl Server {
         Ok(Some(root))
     }
 
-    fn ctx(&mut self, root: &Path) -> Option<(&Loaded, &Program)> {
+    /// 読み込みとプログラムの構築だけする。返り値を借りないので、後で別の `&mut self` が呼べる。
+    fn ensure_ctx(&mut self, root: &Path) {
         Self::enter(root);
-        let st = self.roots.get_mut(root)?;
-        let l = st.loaded.as_ref()?;
-        if st.prog.is_none() {
-            st.prog = Some(cli::build_program(l).0);
+        if let Some(st) = self.roots.get_mut(root) {
+            if st.prog.is_none() {
+                if let Some(l) = st.loaded.as_ref() {
+                    st.prog = Some(cli::build_program(l).0);
+                }
+            }
         }
+    }
+
+    fn ctx_ro(&self, root: &Path) -> Option<(&Loaded, &Program)> {
+        let st = self.roots.get(root)?;
         Some((st.loaded.as_ref()?, st.prog.as_ref()?))
     }
 
-    /// パッケージのメソッド呼び出しの位置 → 解決先の FQN (型推論を 1 回回す。結果は検査ごとに 1 度だけ作る)。
+    fn ctx(&mut self, root: &Path) -> Option<(&Loaded, &Program)> {
+        self.ensure_ctx(root);
+        self.ctx_ro(root)
+    }
+
+    /// 型推論を 1 回回し、メソッド呼び出しの解決先と呼び出し元の局所の型を表にする。
     /// 解決先は `TypeCk::side.resolved_fn` (`Callee::Def` / `Methods`) で、受け手の型が決まらない呼び出しは載らない。
-    fn call_sites(&mut self, root: &Path) -> Option<&HashMap<(String, usize, usize), Vec<String>>> {
+    /// 局所の型は `let` の行と名前で引く表 (`TypeCk::let_tys_line`) から写す (補完が受け手の型を拾う)。
+    fn ensure_tabs(&mut self, root: &Path) {
         Self::enter(root);
-        let st = self.roots.get_mut(root)?;
-        if st.sites.is_none() {
-            let l = st.loaded.as_ref()?;
-            if st.prog.is_none() {
-                st.prog = Some(cli::build_program(l).0);
-            }
-            let prog = st.prog.as_ref()?;
-            let user: Vec<usize> = (0..prog.defs.len()).filter(|&i| l.pkg.sources.iter().any(|s| s.path == prog.defs[i].file)).collect();
-            let out = catch_unwind(AssertUnwindSafe(|| {
-                let mut tk = crate::types::TypeCk::new(prog);
-                for &i in &user {
-                    let d = &prog.defs[i];
-                    if (d.kw == "fn" && d.body.is_some()) || d.kw == "test" {
-                        tk.check_def(i);
-                    }
-                }
-                let mut m: HashMap<(String, usize, usize), Vec<String>> = HashMap::new();
-                for s in &tk.call_sites {
-                    let key = (s.writer, s.call);
-                    let names: Vec<String> = match tk.side.resolved_fn.get(&key) {
-                        Some(crate::tast::Callee::Def(i)) => vec![prog.defs[*i].name.clone()],
-                        Some(crate::tast::Callee::Methods(v)) => v.iter().map(|&i| prog.defs[i].name.clone()).collect(),
-                        // 型パラメータの境界で解決したメソッド (`トレイト.メソッド`。定義はトレイトの宣言の中にある)。
-                        _ => match tk.bound_sites.get(&key) {
-                            Some(f) => vec![f.clone()],
-                            None => continue,
-                        },
-                    };
-                    m.insert((prog.defs[s.writer].file.clone(), s.pos, s.seg), names);
-                }
-                m
-            }))
-            .unwrap_or_else(|_| {
-                log("internal error while resolving method calls");
-                HashMap::new()
-            });
-            st.sites = Some(out);
+        let Some(st) = self.roots.get_mut(root) else { return };
+        if st.tabs.is_some() {
+            return;
         }
-        st.sites.as_ref()
+        let Some(l) = st.loaded.as_ref() else { return };
+        if st.prog.is_none() {
+            st.prog = Some(cli::build_program(l).0);
+        }
+        let Some(prog) = st.prog.as_ref() else { return };
+        let user: Vec<usize> = (0..prog.defs.len()).filter(|&i| l.pkg.sources.iter().any(|s| s.path == prog.defs[i].file)).collect();
+        let out = catch_unwind(AssertUnwindSafe(|| {
+            let mut tk = crate::types::TypeCk::new(prog);
+            for &i in &user {
+                let d = &prog.defs[i];
+                if (d.kw == "fn" && d.body.is_some()) || d.kw == "test" {
+                    tk.check_def(i);
+                }
+            }
+            let mut sites: HashMap<(String, usize, usize), Vec<String>> = HashMap::new();
+            for s in &tk.call_sites {
+                let key = (s.writer, s.call);
+                let names: Vec<String> = match tk.side.resolved_fn.get(&key) {
+                    Some(crate::tast::Callee::Def(i)) => vec![prog.defs[*i].name.clone()],
+                    Some(crate::tast::Callee::Methods(v)) => v.iter().map(|&i| prog.defs[i].name.clone()).collect(),
+                    // 型パラメータの境界で解決したメソッド (`トレイト.メソッド`。定義はトレイトの宣言の中にある)。
+                    _ => match tk.bound_sites.get(&key) {
+                        Some(f) => vec![f.clone()],
+                        None => continue,
+                    },
+                };
+                sites.insert((prog.defs[s.writer].file.clone(), s.pos, s.seg), names);
+            }
+            let mut locals: HashMap<(String, String, String), Vec<(usize, Option<String>)>> = HashMap::new();
+            for ((di, line, name), t) in &tk.let_tys_line {
+                let d = &prog.defs[*di];
+                let e = locals.entry((d.file.clone(), d.name.clone(), name.clone())).or_default();
+                e.push((*line, ty_owner(t)));
+            }
+            for v in locals.values_mut() {
+                v.sort();
+            }
+            Tabs { sites, locals }
+        }))
+        .unwrap_or_else(|_| {
+            log("internal error while resolving method calls");
+            Tabs { sites: HashMap::new(), locals: HashMap::new() }
+        });
+        st.tabs = Some(out);
+    }
+
+    fn call_sites(&mut self, root: &Path) -> Option<&HashMap<(String, usize, usize), Vec<String>>> {
+        self.ensure_tabs(root);
+        self.roots.get(root)?.tabs.as_ref().map(|t| &t.sites)
     }
 
     // ---------------------------------------------------- 記号の特定
