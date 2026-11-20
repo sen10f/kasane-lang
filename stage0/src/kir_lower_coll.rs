@@ -257,7 +257,7 @@ pub(crate) fn bind_param_kind(lw: &mut Lw, name: &str, t: &Src) {
     if !matches!(t, Src::Ref(..)) {
         return;
     }
-    if let (Some(s), Some(k)) = (lw.lookup(name), kind_of_src(lw, t)) {
+    if let (Some(s), Some(k)) = (lw.lookup(name), kind_of(lw, t)) {
         lw.coll.kinds.insert(s, k);
         lw.coll.borrowed.insert(s);
     }
@@ -314,7 +314,14 @@ pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
     lw.err(line, "Vec / String の借用は局所変数だけ段階 1 の対象")
 }
 
-pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
+/// `KSN_S5_KIND_OLD=1` は旧い経路 (KIR の型からの逆引きと、種類の推測) へ強制する。KIR ダンプの前後比較 (`tests/kir_dump_diff.py`) の基準用。
+pub(crate) fn kind_old() -> bool {
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OLD.get_or_init(|| std::env::var_os("KSN_S5_KIND_OLD").is_some_and(|v| !v.is_empty() && v != "0"))
+}
+
+/// 型 → `Kind` の唯一の導出 (S5-3)。`Kind` を作る・作り直す所は、すべて型表 (TAST) の型を渡してここで決める。
+pub(super) fn kind_of(lw: &Lw, t: &Src) -> Option<Kind> {
     crate::s5_meter::count_active("kind.of_src");
     match strip_ref(t) {
         // 要素が所有物 (`Vec<String>`) のときは、要素の型 (集成体 `vec` など) を持つ
@@ -370,6 +377,35 @@ pub(crate) fn arr_len_of(lw: &Lw, s: usize) -> Option<u32> {
     lw.coll.arr_len.get(&s).copied()
 }
 
+/// 要素の借用 (`Vec<Vec<T>>` の添字・`get`) の種類。型表の型から `kind_of` で決める。
+/// 型が無いときの逆引き (KIR の要素の集成体 → `Kind::Vec`) は旧い経路 (`KSN_S5_KIND_OLD=1`) だけで、新しい経路では計器 `kind.miss` に数える。
+pub(crate) fn elem_kind(lw: &Lw, src: Option<&Src>, elem: Ty) -> Option<Kind> {
+    if let Some(k) = src.and_then(|t| kind_of(lw, t)) {
+        return Some(k);
+    }
+    if kind_old() {
+        return lw.aggs.borrow().vec_elem(elem).map(|e| Kind::Vec(Some(e)));
+    }
+    crate::s5_meter::count_active("kind.miss");
+    None
+}
+
+/// パターンで束縛した名前 `name` の種類。束縛の型 (TAST の `PatInfo::bind`、`&String` など) から `kind_of` で決める。
+/// 型が引けないときの `String` の推測は旧い経路 (`KSN_S5_KIND_OLD=1`) と同じで、新しい経路では計器 `kind.guess` に数える。
+fn bound_kind(lw: &Lw, pat: &V, name: &str) -> Kind {
+    if !kind_old() && nname(pat) == "PBind" && st(&nf(pat)[0]) == name {
+        let scope = lw.const_scope.clone().unwrap_or_else(|| lw.def.name.clone());
+        if let Some((t, _)) = lw.tys.binds.get(&(scope, nid(pat))) {
+            let t = if lw.subst.is_empty() { t.clone() } else { super::mono::subst_ty(t, &lw.subst) };
+            if let Some(k) = kind_of(lw, &t) {
+                return k;
+            }
+        }
+    }
+    crate::s5_meter::count_active("kind.guess");
+    Kind::String
+}
+
 /// 受け手の種類。局所変数はスロットの種類、それ以外は型表の型から決める。
 fn kind_of_expr(lw: &Lw, e: &V) -> Option<Kind> {
     crate::s5_meter::count_active("kind.of_expr");
@@ -387,7 +423,7 @@ fn kind_of_expr(lw: &Lw, e: &V) -> Option<Kind> {
             _ => {}
         }
     }
-    table_ty(lw, e).and_then(|t| kind_of_src(lw, &t))
+    table_ty(lw, e).and_then(|t| kind_of(lw, &t))
 }
 
 pub(crate) fn emit_alloca(lw: &mut Lw, size: u32) -> VId {
@@ -909,7 +945,7 @@ pub(crate) fn bind_owned(lw: &mut Lw, name: &str, v: VId, t: Ty) {
         let s = lw.lookup(name).expect("直前に束縛した名前");
         // 種類 (Vec の要素型 / String) は、パターンの型の手がかりか、無ければ Vec の要素型不明として持つ。
         let k = match lw.coll.hint.take() {
-            Some(h) => kind_of_src(lw, &h),
+            Some(h) => kind_of(lw, &h),
             None => None,
         };
         lw.coll.kinds.insert(s, k.unwrap_or(Kind::Vec(None)));
@@ -1410,7 +1446,7 @@ pub(crate) fn after_let(lw: &mut Lw, name: &str, init: &V) -> LR<()> {
         return Ok(());
     }
     if let Some(t) = table_ty(lw, init) {
-        if let Some(k) = kind_of_src(lw, &t) {
+        if let Some(k) = kind_of(lw, &t) {
             lw.coll.kinds.insert(slot, k);
             if matches!(t, Src::Ref(..)) {
                 lw.coll.borrowed.insert(slot);
@@ -2719,7 +2755,7 @@ fn vec_place(lw: &mut Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
         if let Some((s, names)) = super::own::chain_of(lw, e) {
             if let Some(src) = super::own::field_src(lw, s, &names) {
                 if !matches!(src, Src::Ref(..)) {
-                    if let Some(Kind::Vec(Some(elem))) = kind_of_src(lw, &src) {
+                    if let Some(Kind::Vec(Some(elem))) = kind_of(lw, &src) {
                         let pl = super::own::place(lw, s, &names, line)?;
                         return Ok((Seq::Hdr(pl.hdr), elem));
                     }
@@ -2790,7 +2826,7 @@ pub(crate) fn elem_prep_m(lw: &mut Lw, e: &V, m: bool) -> LR<()> {
     let addr = elem_addr(lw, seq, i, elem)?;
     let Ty::Agg(ai) = elem else { return lw.err(line, "要素の借用は集成体だけ段階 1 の対象") };
     let slot = if lw.aggs.borrow().is_vec(elem) {
-        let kind = table_ty(lw, cur).and_then(|t| kind_of_src(lw, &t)).or_else(|| lw.aggs.borrow().vec_elem(elem).map(|e| Kind::Vec(Some(e))));
+        let kind = elem_kind(lw, table_ty(lw, cur).as_ref(), elem);
         let Some(kind) = kind else { return lw.err(line, "添字の要素の種類 (Vec / String) が分からない") };
         let s = lw.new_slot(addr, Ty::Ptr);
         lw.coll.kinds.insert(s, kind);
@@ -3814,7 +3850,7 @@ fn user_iter_loop(lw: &mut Lw, e: &V, pat: &V, it_e: &V, body: &V, di: usize, li
         if t == Ty::Ptr {
             lw.bind(&n, v, Ty::Ptr);
             if let Some(sl) = lw.lookup(&n) {
-                lw.coll.kinds.insert(sl, Kind::String);
+                lw.coll.kinds.insert(sl, bound_kind(lw, pat, &n));
                 lw.coll.borrowed.insert(sl);
             }
             continue;
@@ -3824,7 +3860,7 @@ fn user_iter_loop(lw: &mut Lw, e: &V, pat: &V, it_e: &V, body: &V, di: usize, li
                 let ptr = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
                 lw.bind(&n, ptr, Ty::Ptr);
                 if let Some(sl) = lw.lookup(&n) {
-                    lw.coll.kinds.insert(sl, Kind::String);
+                    lw.coll.kinds.insert(sl, bound_kind(lw, pat, &n));
                     lw.coll.borrowed.insert(sl);
                 }
                 continue;

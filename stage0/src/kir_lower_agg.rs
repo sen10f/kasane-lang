@@ -1202,7 +1202,7 @@ impl<'a> Lw<'a> {
             self.bind(&n, bv, bt);
             let Some(src) = srcs.get(&n).cloned() else { continue };
             let Some(slot) = self.lookup(&n) else { continue };
-            if let Some(k) = super::coll::kind_of_src(self, &src) {
+            if let Some(k) = super::coll::kind_of(self, &src) {
                 self.coll.kinds.insert(slot, k);
                 if matches!(src, crate::types::Ty::Ref(..)) {
                     self.coll.borrowed.insert(slot);
@@ -1445,6 +1445,7 @@ impl<'a> Lw<'a> {
                     if let Ty::Agg(fi) = fd.ty {
                         if is_vec_name(&self.agg_def(fi).name) {
                             let hp = self.emit(Ty::Ptr, Op::Bitcast { src: Ty::Ref(m, fp), a: addr });
+                            crate::s5_meter::count_active("kind.rev");
                             let kind = match self.aggs.borrow().vec_elem(fd.ty) {
                                 Some(e) => super::coll::Kind::Vec(Some(e)),
                                 None => super::coll::Kind::String,

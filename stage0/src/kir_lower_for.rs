@@ -171,7 +171,7 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
         coll::bind_owned(lw, n, piece, fat);
         // 束縛した `x` は `&str` (fat) としてメソッド (`is_empty` など) から参照できるように種類を登録する。
         if let Some(s) = lw.lookup(n) {
-            lw.coll.kinds.insert(s, coll::Kind::Str);
+            lw.coll.kinds.insert(s, coll::kind_of(lw, &crate::types::Ty::Prim("str".to_string())).expect("str の種類"));
         }
     }
     // `continue` は後続 (aft) へ、`break` は抜けへ。aft は区切りの位置 (bend) を受け取る。
