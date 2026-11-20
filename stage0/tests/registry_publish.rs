@@ -42,7 +42,19 @@ fn git(repo: &Path, args: &[&str]) {
 
 fn ksn(args: &[&str], cwd: &Path, cache: &Path) -> Output {
     let cache_s = cache.to_string_lossy().to_string();
-    run_with_env(args, cwd, &[("KSN_CACHE_DIR", cache_s.as_str())])
+    // `ksn publish` / `yank` は索引の git に commit する。git の利用者名が設定されていない機械
+    // (検証の機械など) でも通るよう、名前とメールを環境で渡す。
+    run_with_env(
+        args,
+        cwd,
+        &[
+            ("KSN_CACHE_DIR", cache_s.as_str()),
+            ("GIT_AUTHOR_NAME", "test"),
+            ("GIT_AUTHOR_EMAIL", "test@example.org"),
+            ("GIT_COMMITTER_NAME", "test"),
+            ("GIT_COMMITTER_EMAIL", "test@example.org"),
+        ],
+    )
 }
 
 /// `ksn registry index <reg> <name>` の stdout を行ごとに返す（registry.rs の読み経路を通す）。
