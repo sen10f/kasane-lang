@@ -72,8 +72,8 @@ fn link_llvm() {
         }
     } else {
         // llvm-config なし: KSN_LLVM_PREFIX/lib の静的ライブラリをすべてリンク (循環参照は --start-group で解決)。
-        let libdir = prefix.as_deref().map_or("", |p| &format!("{}/lib", p));
-        if Path::new(libdir).is_dir() {
+        let libdir = prefix.map_or_else(String::new, |p| format!("{}/lib", p));
+        if Path::new(&libdir).is_dir() {
             println!("cargo:rustc-link-search=native={}", libdir);
             println!("cargo:rustc-link-arg=-Wl,--start-group");
             link_glob_static(libdir, &["libLLVM"]);
