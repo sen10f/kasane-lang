@@ -79,6 +79,20 @@ fn alloc_next_fd(next: &mut i128) -> i128 {
     fd
 }
 
+/// ディレクトリのエントリのファイル名をバイト列にする。Unix は生バイト、
+/// Windows は UTF-8 のみ扱え、非 UTF-8 なら呼び出し側で `InvalidInput` にするため `None` を返す。
+fn dir_entry_name(ent: &std::fs::DirEntry) -> Option<Vec<u8>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        Some(ent.file_name().as_bytes().to_vec())
+    }
+    #[cfg(windows)]
+    {
+        ent.file_name().to_str().map(|s| s.as_bytes().to_vec())
+    }
+}
+
 /// 呼び出し先が作った置き場の項目 (添字 `base` 以上) を、呼び出し元に残す形へ写す。`base` より前は呼び出し元のものなので、そのまま使う。
 /// `blobs` は添字 `base` から始まる項目、`out` は戻った後の置き場に積む項目。戻り値は新しい添字。
 pub(crate) fn relocate(t: Ty, v: i128, blobs: &[Vec<u8>], base: usize, out: &mut Vec<Vec<u8>>) -> i128 {
@@ -1158,8 +1172,10 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                                 let mut ents: Vec<(Vec<u8>, u8)> = Vec::new();
                                 for ent in rd {
                                     let ent = ent?;
-                                    use std::os::unix::ffi::OsStrExt;
-                                    let name = ent.file_name().as_bytes().to_vec();
+                                    let name = match dir_entry_name(&ent) {
+                                        Some(n) => n,
+                                        None => return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                                    };
                                     let kd = match std::fs::metadata(ent.path()) {
                                         Ok(md) if md.is_file() => 0u8,
                                         Ok(md) if md.is_dir() => 1u8,

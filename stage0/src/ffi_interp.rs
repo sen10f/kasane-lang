@@ -630,7 +630,24 @@ impl Interp {
             CbTy::Unit => ffi::RetAbi::Void,
             CbTy::Int(_) | CbTy::Ptr => ffi::RetAbi::Int,
             CbTy::F32 | CbTy::F64 => ffi::RetAbi::F64,
-            CbTy::Agg(cty) => ffi::ret_abi(cty),
+            CbTy::Agg(cty) => {
+                // Windows x64: 8 バイト以下の構造体は RAX (整数レジスタ) で返す、
+                // 8 バイト超は sret (RCX に隠しポインタ)。SysV の classify に基づく
+                // ret_abi は Windows では浮動小数フィールドを含む構造体を XMM0 に
+                // しようとするが、Win64 では整数レジスタになるので、ここで上書きする。
+                #[cfg(windows)]
+                {
+                    if cty.size() <= 8 {
+                        ffi::RetAbi::Int
+                    } else {
+                        ffi::RetAbi::Void
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    ffi::ret_abi(cty)
+                }
+            }
         };
         if let Some(i) = self.cbs.iter().position(|s| s.key == key) {
             return ffi::trampoline(i, rabi).ok_or_else(|| callback_unsupported());
@@ -784,8 +801,16 @@ impl Interp {
                         if let Err(e) = self.val_to_mem(&v, &cty, &mut buf) {
                             self.die(101, Some(e));
                         }
-                        match ffi::classify(&cty) {
-                            ffi::Pass::Memory => {
+                        #[cfg(windows)]
+                        {
+                            if cty.size() <= 8 {
+                                // Windows x64: 8 バイト以下の構造体は RAX (整数レジスタ) で返す
+                                let mut arr = [0u8; 8];
+                                let n = buf.len().min(8);
+                                arr[..n].copy_from_slice(&buf[..n]);
+                                out.rax = u64::from_le_bytes(arr);
+                            } else {
+                                // 8 バイト超は sret ポインタ (gp[0] = RCX) に書き込む
                                 unsafe {
                                     std::ptr::copy_nonoverlapping(
                                         buf.as_ptr(),
@@ -794,28 +819,42 @@ impl Interp {
                                     )
                                 };
                             }
-                            ffi::Pass::Regs(cls) => {
-                                let (mut gj, mut sj) = (0, 0);
-                                for (j, &is_sse) in cls.iter().enumerate() {
-                                    let mut x = [0u8; 8];
-                                    let lo = j * 8;
-                                    let hi = (lo + 8).min(buf.len());
-                                    x[..hi - lo].copy_from_slice(&buf[lo..hi]);
-                                    let vv = u64::from_le_bytes(x);
-                                    if is_sse {
-                                        if sj == 0 {
-                                            out.x0 = vv;
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            match ffi::classify(&cty) {
+                                ffi::Pass::Memory => {
+                                    unsafe {
+                                        std::ptr::copy_nonoverlapping(
+                                            buf.as_ptr(),
+                                            gp[0] as *mut u8,
+                                            cty.size() as usize,
+                                        )
+                                    };
+                                }
+                                ffi::Pass::Regs(cls) => {
+                                    let (mut gj, mut sj) = (0, 0);
+                                    for (j, &is_sse) in cls.iter().enumerate() {
+                                        let mut x = [0u8; 8];
+                                        let lo = j * 8;
+                                        let hi = (lo + 8).min(buf.len());
+                                        x[..hi - lo].copy_from_slice(&buf[lo..hi]);
+                                        let vv = u64::from_le_bytes(x);
+                                        if is_sse {
+                                            if sj == 0 {
+                                                out.x0 = vv;
+                                            } else {
+                                                out.x1 = vv;
+                                            }
+                                            sj += 1;
                                         } else {
-                                            out.x1 = vv;
+                                            if gj == 0 {
+                                                out.rax = vv;
+                                            } else {
+                                                out.rdx = vv;
+                                            }
+                                            gj += 1;
                                         }
-                                        sj += 1;
-                                    } else {
-                                        if gj == 0 {
-                                            out.rax = vv;
-                                        } else {
-                                            out.rdx = vv;
-                                        }
-                                        gj += 1;
                                     }
                                 }
                             }
