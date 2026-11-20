@@ -30,28 +30,28 @@ type ui.layout.Rect derive [Debug, Clone, Copy, PartialEq] pub
 end ui.layout.Rect
 
 type ui.layout.Size derive [Debug, Clone, Copy] pub
-    w: Option<f32>
-    h: Option<f32>
-    mnw: Option<f32>
-    mxw: Option<f32>
-    mnh: Option<f32>
-    mxh: Option<f32>
+    w: Option<f32> pub
+    h: Option<f32> pub
+    mnw: Option<f32> pub
+    mxw: Option<f32> pub
+    mnh: Option<f32> pub
+    mxh: Option<f32> pub
 end ui.layout.Size
 
 type ui.layout.Space derive [Debug, Clone, Copy] pub
-    pad: f32
-    mar: f32
-    gap: f32
+    pad: f32 pub
+    mar: f32 pub
+    gap: f32 pub
 end ui.layout.Space
 
 type ui.layout.Style derive [Debug, Clone, Copy] pub
-    dir: ui.layout.FlexDirection
-    jus: ui.layout.JustifyContent
-    ali: ui.layout.AlignItems
-    gr: f32
-    sr: f32
-    size: ui.layout.Size
-    space: ui.layout.Space
+    dir: ui.layout.FlexDirection pub
+    jus: ui.layout.JustifyContent pub
+    ali: ui.layout.AlignItems pub
+    gr: f32 pub
+    sr: f32 pub
+    size: ui.layout.Size pub
+    space: ui.layout.Space pub
 end ui.layout.Style
 
 type ui.layout.Tree pub

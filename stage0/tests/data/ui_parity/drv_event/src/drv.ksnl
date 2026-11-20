@@ -1,0 +1,48 @@
+fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut layout = ui.layout.Tree.new()
+    let ls = ui.layout.Style.default()
+    let root = layout.push_node(ls)
+    let mut tree = ui.tree.Tree.new()
+    let ts = ui.layout.Style.default()
+    let troot = match tree.push_node(ui.tree.ViewKind.Block, ts, None) {
+        Ok(n) => n
+        Err(_e) => 0usize
+    }
+    let mut ctx = ui.event.Ctx.new()
+    let hit = ui.event.hit_test(&layout, root, 10.0f32, 10.0f32)
+    let hit_some = match hit {
+        Some(_n) => true
+        None => false
+    }
+    let ev = ui.event.Event.PointerDown(10.0f32, 10.0f32, 1u8)
+    let routed = ui.event.route(&mut ctx, &layout, &tree, troot, &ev, 10.0f32, 10.0f32)
+    {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(match s.push_display(&hit_some) {
+            Ok(_u) => 0u8
+            Err(_e) => 1u8
+        })
+        std.io.print_line("hit_some")?
+        std.io.print_line(s.as_str())?
+    }
+    match routed {
+        Some(n) => {
+            std.io.print_line("routed_some")?
+            std.io.print_line("true")?
+            {
+                let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+                core.mem.drop(match s.push_display(&n) {
+                    Ok(_u) => 0u8
+                    Err(_e) => 1u8
+                })
+                std.io.print_line("routed_index")?
+                std.io.print_line(s.as_str())?
+            }
+        }
+        None => {
+            std.io.print_line("routed_some")?
+            std.io.print_line("false")?
+        }
+    }
+    Ok(())
+end drv.main

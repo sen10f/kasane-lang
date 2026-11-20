@@ -1,0 +1,8 @@
+[package]
+name = "drv_layout"
+version = "0.1.0"
+edition = 1
+entry = "drv.main"
+
+[dependencies]
+ui_layout = { path = "../../../../../ui/kasane/layout" }

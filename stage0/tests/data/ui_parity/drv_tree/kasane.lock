@@ -1,0 +1,11 @@
+version = 1
+
+[[package]]
+name = "ui_layout"
+source = "path+../../../../../ui/kasane/layout"
+deps = []
+
+[[package]]
+name = "ui_tree"
+source = "path+../../../../../ui/kasane/tree"
+deps = ["ui_layout"]
