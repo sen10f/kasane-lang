@@ -452,7 +452,7 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         // 構文エラーのとき、Rust 風の書き方をまとめて直し方つきで報告する。
         // 案内付きの行の一般的な E0002 (`expected ...`) は、同じ原因を別の言い方で重ねるだけなので出さない。
         let mut guided: Vec<usize> = vec![];
-        if s.error.is_some() || !gram.as_ref().map_or(false, |g| g.0) {
+        if s.error.is_some() || !gram.as_ref().map_or(false, |g| g.ok) {
             for h in crate::rustisms::scan(&s.text) {
                 // E0062 (`fn` の名前がモジュールを含まない) は、構文エラーの無いファイルでは lint の E0062 が
                 // 実モジュール名つきで出すので、rustisms の側は構文エラーのファイルだけに限る (同じ行を二重に報じない)。
@@ -526,7 +526,7 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
                     && docs(&formatted) == docs(&s.text)
                     && !s.text.contains('\t')
                     && run_lint(&formatted, &mut memo).is_empty()
-                    && (if use_cache { grammar.check_memo(&formatted, &mut memo.gram) } else { grammar.check(&formatted) }).0;
+                    && (if use_cache { grammar.check_memo(&formatted, &mut memo.gram) } else { grammar.check(&formatted) }).ok;
                 let mut lint = if skip { vec![] } else { run_lint(&lt, &mut memo) };
                 // 書き方は 1 通り (設計_書き方は1通り.md の D1): `ksn fmt` の出力と違うファイルは誤り (E0020、致命)。
                 // `ksn fmt` が直せる揺れ (間隔・並び・空行・名前の参照形・末尾の `return` など) をこの 1 つの規則で拾う。
@@ -554,9 +554,9 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         if fc.skip {
             continue;
         }
-        let (ok, msg, ln) = gram;
-        if !ok && !guided.contains(&ln) {
-            rep.add("E0002", &msg, Some(&fl), ln, 0, true);
+        let g = gram;
+        if !g.ok && !guided.contains(&g.line) {
+            rep.add(g.code, &g.msg, Some(&fl), g.line, g.col, true);
         }
     }
     if use_cache {
@@ -2706,6 +2706,49 @@ fn cmd_sync(args: &[String]) -> i32 {
     rc
 }
 
+/// `ksn fmt` が 1 ファイルについて「書くか、どこを指すか」を決めるときの診断 (G58)。
+/// 候補 (整形後の文字列) と元のファイルの両方に同じものをかけ、行:列は渡した文字列の位置になる。
+struct FmtDiag {
+    /// 字句の規則 (lexrules.rs): 書けない文字・NFC でない文字 (fmt では直せない)。
+    lex: Vec<crate::lexrules::Finding>,
+    /// fmt が直せない整形の誤り (定義の順・離れたコメントなど)。
+    lint: Vec<(String, usize, String)>,
+    /// 文法 (正規形・事前検査。100 文字を超える行は E0055)。
+    gram: crate::grammar::GramRes,
+    /// 読み込み (構文) の誤り。
+    err: Option<crate::project::PErr>,
+    /// 構文の誤りの文件面から拾った Rust 風の書き方 (行:列つき)。
+    hits: Vec<crate::rustisms::Hit>,
+    /// 事前検査 (100 文字を超える行など) が通ったか。
+    precheck_ok: bool,
+}
+
+impl FmtDiag {
+    /// 整形では直せないものが残っているか (= 書かずに診断するか)。fmt が直せないものだけを見る:
+    /// 事前検査の失敗 (100 文字を超える行・行末の空白・CR・TAB) と、読み込みの誤りのうち Rust 風の
+    /// 書き方 (rustisms)・直せない整形の誤り (lint)・E0007 を伴うもの。文法への不一致だけ (コメントの
+    /// 位置など、文法がまだ受け付けない形) は、従来どおり書いてから位置を報告する。
+    fn unfixable(&self) -> bool {
+        !self.lex.is_empty()
+            || !self.lint.is_empty()
+            || !self.precheck_ok
+            || self.err.as_ref().map_or(false, |e| e.code == "E0007" || !self.hits.is_empty())
+    }
+}
+
+fn fmt_diag(s: &crate::project::Source, text: &str, relpath: &str, grammar: &Grammar) -> FmtDiag {
+    let lints: Vec<_> = Lint::new(relpath, &text.replace("\r\n", "\n")).run().into_iter().filter(|(c, _, _)| c != "unused").collect();
+    let gram = grammar.check(text);
+    // 元のファイルと同じ文字列なら、読み込み時の誤りをそのまま使う (読む手間を省く)。
+    let err = if text == s.text {
+        s.error.clone()
+    } else {
+        crate::program::load_file(&s.path, "", text).err().map(|e| decode_err(&e))
+    };
+    let hits = if err.is_some() { crate::rustisms::scan(text) } else { vec![] };
+    FmtDiag { lex: crate::lexrules::scan(text), lint: lints, precheck_ok: grammar.precheck_ok(text), gram, err, hits }
+}
+
 fn cmd_fmt(args: &[String]) -> i32 {
     let check = args.iter().any(|a| a == "--check");
     let root = match find_root() {
@@ -2732,73 +2775,83 @@ fn cmd_fmt(args: &[String]) -> i32 {
         let nt = if s.error.is_none() {
             format_source_prog(&s.text, &s.path, own_len)
         } else {
-            // 読めないファイルでも、行末の `;` を消して読めるようになるなら、普通に整形する (並べ替えも)。
-            let st = crate::fmt::strip_semicolons(&s.text);
+            // 読めないファイルでも、行末の `;` と match の腕の末尾の `,` を消して読めるようになるなら、普通に整形する (並べ替えも)。
+            let st = crate::fmt::strip_line_marks(&s.text, &["E0040", "E0049"]);
             if st != s.text && crate::program::load_file(&s.path, "", &st).is_ok() {
                 format_source_prog(&st, &s.path, own_len)
             } else {
                 mechanical_collapse(&st)
             }
         };
-        let mut text = s.text.clone();
-        // `.ksnh` の整形のあと、横の `.ksnl` を `strip` で作り直す (`--check` は食い違いも差分とする)。
-        if s.path.ends_with(".ksnh") {
-            let want = crate::ksnh::strip(&nt);
-            if s.ksnl.as_deref() != Some(want.as_str()) {
-                changed = true;
-                let out = format!("{}.ksnl", s.path.trim_end_matches(".ksnh"));
-                println!("{} {}", if check { "would reformat" } else { "reformatted" }, rel(&out));
-                if !check {
-                    fs::write(&out, &want).unwrap();
+        let relpath = lint_rel(s, &srcroot);
+        // 候補 (整形後の文字列) を、何も書かないうちに診断する (G58)。fmt が直せないもの (100 文字を
+        // 超える行・行末の空白・構文の誤り) が残るときは、半分だけ整形されたファイルをディスクに残さず、
+        // 元のファイルの行:列で診断する。利用者は元のファイルの行を直そうとするので、整形後の行を指す
+        // と外し、何度でも失敗する (vending の 4 回)。
+        // 文法への一致だけの不一致は、並べ替えでコメントが動くファイル (import の前に `//` を置くなど、
+        // 文法がまだ受け付けない形) でも書けるように、従来どおり書いてから候補の位置で報告する。
+        let want = fmt_diag(s, &nt, &relpath, &grammar);
+        if !want.unfixable() {
+            let mut text = s.text.clone();
+            // `.ksnh` の整形のあと、横の `.ksnl` を `strip` で作り直す (`--check` は食い違いも差分とする)。
+            if s.path.ends_with(".ksnh") {
+                let w = crate::ksnh::strip(&nt);
+                if s.ksnl.as_deref() != Some(w.as_str()) {
+                    changed = true;
+                    let out = format!("{}.ksnl", s.path.trim_end_matches(".ksnh"));
+                    println!("{} {}", if check { "would reformat" } else { "reformatted" }, rel(&out));
+                    if !check {
+                        fs::write(&out, &w).unwrap();
+                    }
                 }
             }
-        }
-        if nt != s.text {
-            changed = true;
-            println!("{} {}", if check { "would reformat" } else { "reformatted" }, rel(&s.path));
-            if !check {
-                fs::write(&s.path, &nt).unwrap();
-                text = nt;
+            if nt != s.text {
+                changed = true;
+                println!("{} {}", if check { "would reformat" } else { "reformatted" }, rel(&s.path));
+                if !check {
+                    fs::write(&s.path, &nt).unwrap();
+                    text = nt;
+                }
             }
+            if s.path.ends_with(".ksnh") && !check {
+                crate::ksnh_sync::save_base(&pkg.root, &s.module, &text);
+            }
+            // 字句の規則 (lexrules.rs): 書けない文字・NFC でない文字は fmt では直せない。
+            for f in want.lex.iter() {
+                diff = true;
+                println!("{}:{}:{}: {}: {}", rel(&s.path), f.line, f.col, f.code, f.msg);
+            }
+            for (code, l, m) in want.lint.iter() {
+                diff = true;
+                println!("{}:{}: {}: {} (not auto-fixable)", rel(&s.path), l, lint_code(code), m);
+            }
+            if !want.gram.ok {
+                diff = true;
+                println!("{}:{}:{}: {}: {}", rel(&s.path), want.gram.line, want.gram.col, want.gram.code, want.gram.msg);
+            }
+            continue;
         }
-        if s.path.ends_with(".ksnh") && !check {
-            crate::ksnh_sync::save_base(&pkg.root, &s.module, &text);
-        }
-        // 字句の規則 (lexrules.rs): 書けない文字・NFC でない文字は fmt では直せない (`ksn check` と同じ判定にする)。
-        for f in crate::lexrules::scan(&text).iter() {
-            diff = true;
+        // 書かない。診断は元のファイルの行:列で出す (直せないものが元のファイルにもある)。
+        // 元のファイルに無く、整形で初めて出るもの (正規形の間隔で 101 文字目に行くなど) は、候補の位置を
+        // 出す (黙って終わらない)。shortcut: 候補だけの診断は書かれなかった候補の行を指す。
+        diff = true;
+        let orig = fmt_diag(s, &s.text, &relpath, &grammar);
+        let d = if orig.unfixable() { &orig } else { &want };
+        for f in d.lex.iter() {
             println!("{}:{}:{}: {}: {}", rel(&s.path), f.line, f.col, f.code, f.msg);
         }
-        // 構文・字句の誤りで読めないファイルは、`ksn check` と同じ診断 (行:列つき) を先に出す。
-        // 読めないので並べ替えなどの整形ができていない。それらの診断は出さない (まず構文の誤りを直す)。
-        // (整形の誤りが無く、案内付きの書き方でもない構文の誤りは、従来どおり fmt では黙る。`ksn check` が見る。)
-        let relpath = lint_rel(s, &srcroot);
-        let lints: Vec<_> = Lint::new(&relpath, &text.replace("\r\n", "\n")).run().into_iter().filter(|(c, _, _)| c != "unused").collect();
-        let (ok, msg, ln) = grammar.check(&text);
-        // 整形で書き換えたあとの文面の読めるかどうか (書き換えていなければ読み込み時の結果)。
-        let cur_err = if text == s.text { s.error.clone() } else { crate::program::load_file(&s.path, "", &text).err().map(|e| decode_err(&e)) };
-        let hits = if cur_err.is_some() { crate::rustisms::scan(&text) } else { vec![] };
-        let broken = cur_err.is_some() && (cur_err.as_ref().map_or(false, |e| e.code == "E0007") || !hits.is_empty() || !lints.is_empty() || !ok);
-        if broken {
-            let e = cur_err.as_ref().unwrap();
-            diff = true;
-            for h in &hits {
-                println!("{}:{}:{}: {}: {}", rel(&s.path), h.line, h.col, h.code, h.msg);
-            }
-            if !(e.code == "E0002" && hits.iter().any(|h| h.line == e.line)) {
+        for h in d.hits.iter() {
+            println!("{}:{}:{}: {}: {}", rel(&s.path), h.line, h.col, h.code, h.msg);
+        }
+        if !d.gram.ok && !d.hits.iter().any(|h| h.line == d.gram.line) {
+            println!("{}:{}:{}: {}: {}", rel(&s.path), d.gram.line, d.gram.col, d.gram.code, d.gram.msg);
+        }
+        if let Some(e) = &d.err {
+            if !(e.code == "E0002" && d.hits.iter().any(|h| h.line == e.line)) {
                 println!("{}:{}:{}: {}: {}", rel(&s.path), e.line, e.col, e.code, e.msg);
             }
-            println!("{}: note: the file cannot be parsed, so `ksn fmt` could not reorder or reformat it; fix the error(s) above first", rel(&s.path));
-        } else {
-            for (code, l, m) in lints {
-                diff = true;
-                println!("{}:{}: {}: {} (not auto-fixable)", rel(&s.path), l, lint_code(&code), m);
-            }
-            if !ok {
-                diff = true;
-                println!("{}:{}: E0002: {}", rel(&s.path), ln, msg);
-            }
         }
+        println!("{}: note: the file cannot be formatted to a valid file, so `ksn fmt` left it unchanged; fix the error(s) above in this file and run `ksn fmt` again", rel(&s.path));
     }
     // `kasane.toml` / `kasane.lock` も整える (設計_tomlとlockの書き方.md 7 章)。直せない誤り (E0004 など) は
     // `.ksnl` と同じく報告だけ。
@@ -2876,23 +2929,35 @@ fn cmd_update(args: &[String]) -> i32 {
             return fail(ProjectError { code: "E9017".into(), msg: format!("{} is not a dependency of {}", o, pkg.name) });
         }
     }
-    match write_lock_v2(&root, &deps, &old, only.as_deref(), &[]) {
-        Ok(()) => 0,
+    // 版 3 は git 依存に `version` が必要。path だけなら版 2 のまま。
+    let lock_version = if deps.iter().any(|d| d.source.starts_with("git+")) { 3 } else { 2 };
+    match write_lock_v2(&root, &deps, &old, only.as_deref(), &[], lock_version) {
+        Ok(()) => {
+            // 版の変化を出す (`名前 旧版 -> 新版`)。新しく入った依存は旧版を「(なし)」とする。
+            for d in deps.iter().filter(|d| d.source.starts_with("git+")) {
+                let new = d.manifest.get("package").and_then(|p| p.get("version")).and_then(|v| v.as_str()).unwrap_or("?");
+                let prev = old.get(&d.name).and_then(|e| e.get("version")).and_then(|v| v.as_str()).unwrap_or("(なし)");
+                println!("ksn update: {} {} -> {}", d.name, prev, new);
+            }
+            0
+        }
         Err(e) => fail(e),
     }
 }
 
-/// `kasane.lock` を版 2 で書く。`hash` は `fresh_hash` 以外 (`only` 指定で対象外) は既存を保つ。
+/// `kasane.lock` を `lock_version` (2 または 3) で書く。`hash` は `fresh_hash` 以外 (`only` 指定で対象外) は既存を保つ。
 /// `api` / `unsafe_modules` は、既存の記録があれば書き換えない (承認の前に黙って新しくしない)。
 /// `accept` に挙げた依存と、記録の無い git 依存 (初めての記録・版 1 からの移行) は今の署名を書く。
+/// 版 3 では git 依存に `version` (manifest の `package.version`) を記録する。
 fn write_lock_v2(
     root: &Path,
     deps: &[Package],
     old: &std::collections::HashMap<String, toml::Value>,
     only: Option<&str>,
     accept: &[String],
+    lock_version: i64,
 ) -> Result<(), ProjectError> {
-    let mut lines = vec!["version = 2".to_string(), String::new()];
+    let mut lines = vec![format!("version = {}", lock_version), String::new()];
     let mut sorted: Vec<&Package> = deps.iter().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
     for dp in sorted {
@@ -2903,6 +2968,11 @@ fn write_lock_v2(
             dp.manifest.get("dependencies").and_then(|d| d.as_table()).map(|t| t.keys().cloned().collect()).unwrap_or_default();
         dn.sort();
         if dp.source.starts_with("git+") {
+            // 版 3: `version` は `hash` の前に書く (emit_lock と同じキー順)。
+            if lock_version == 3 {
+                let ver = dp.manifest.get("package").and_then(|p| p.get("version")).and_then(|v| v.as_str()).unwrap_or("");
+                lines.push(format!("version = {}", toml_str(ver)));
+            }
             let kept = only.filter(|o| *o != dp.name).and_then(|_| old.get(&dp.name)).and_then(|e| e.get("hash")).and_then(|h| h.as_str()).map(String::from);
             let hash = match kept {
                 Some(h) => h,
@@ -2925,9 +2995,9 @@ fn write_lock_v2(
     fs::write(root.join("kasane.lock"), text).map_err(|e| ProjectError { code: "E9019".into(), msg: format!("cannot write kasane.lock: {}", e) })
 }
 
-/// `ksn lock --accept <依存>... | --all | --diff | --upgrade`: 公開の署名と効果の記録 (版 2) を扱う。
+/// `ksn lock --accept <依存>... | --all | --diff | --upgrade`: 公開の署名と効果の記録 (版 2/3) を扱う。
 /// `--accept` は今の公開のヘッダを記録し直す (差分を出す)。`--diff` は書かずに差分だけ。
-/// `--upgrade` は版 1 のロックを 2 に上げる (記録の無い git 依存に今の署名を書く。既存の記録は保つ)。
+/// `--upgrade` は版 1/2 のロックを 3 に上げる (記録の無い git 依存に今の署名を書く。既存の記録は保つ)。
 fn cmd_lock(args: &[String]) -> i32 {
     let fail = |e: ProjectError| {
         eprintln!("ksn: {}: {}", e.code, e.msg);
@@ -2993,7 +3063,8 @@ fn cmd_lock(args: &[String]) -> i32 {
     }
     let accept: Vec<String> = if upgrade && !accept_flag { vec![] } else { targets };
     // `hash` は既存の記録を保つ (署名の承認で、複製の改ざんを黙って受け入れない)。
-    match write_lock_v2(&root, &deps, &old, Some("\u{0}"), &accept) {
+    let lock_version = if deps.iter().any(|d| d.source.starts_with("git+")) { 3 } else { 2 };
+    match write_lock_v2(&root, &deps, &old, Some("\u{0}"), &accept, lock_version) {
         Ok(()) => 0,
         Err(e) => fail(e),
     }
@@ -3010,7 +3081,8 @@ fn cmd_vendor() -> i32 {
         Ok(x) => x,
         Err(e) => return fail(e),
     };
-    let deps = match load_deps_with(&pkg, &|_| GitMode::Fresh) {
+    // ロックに記録したコミットを取り直す (版の依存も範囲から選び直さない)。
+    let deps = match load_deps_with(&pkg, &|_| GitMode::Pinned) {
         Ok(d) => d,
         Err(e) => return fail(e),
     };
@@ -3037,7 +3109,8 @@ fn cmd_vendor() -> i32 {
     // すでに記録があるものは書き換えない (承認は `ksn lock --accept`)。
     let gits: Vec<&Package> = deps.iter().filter(|d| d.source.starts_with("git+")).collect();
     if !gits.is_empty() && gits.iter().all(|d| old.contains_key(&d.name)) && gits.iter().any(|d| old.get(&d.name).and_then(crate::lockapi::read_api).is_none()) {
-        if let Err(e) = write_lock_v2(&root, &deps, &old, Some("\u{0}"), &[]) {
+        let lock_version = if deps.iter().any(|d| d.source.starts_with("git+")) { 3 } else { 2 };
+        if let Err(e) = write_lock_v2(&root, &deps, &old, Some("\u{0}"), &[], lock_version) {
             return fail(e);
         }
     }

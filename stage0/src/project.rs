@@ -630,8 +630,10 @@ pub enum GitMode {
     Offline,
     /// 無いときだけ取得する。
     IfMissing,
-    /// 必ず取得し直す (`update` / `vendor`。取得元が正で、古いキャッシュを信用しない)。
+    /// 必ず取得し直す (`update`。取得元が正で、古いキャッシュを信用しない)。版の依存は範囲から選び直す。
     Fresh,
+    /// 必ず取得し直すが、版の依存はロックに記録したコミットを使う (`vendor`。ロックが正)。
+    Pinned,
 }
 
 pub fn load_deps(pkg: &Package) -> Result<Vec<Package>, ProjectError> {
@@ -640,19 +642,17 @@ pub fn load_deps(pkg: &Package) -> Result<Vec<Package>, ProjectError> {
 
 /// 推移的な依存をすべて読む (ルート自身は含まない)。`mode` は依存名ごとの git の取得方法。
 pub fn load_deps_with(pkg: &Package, mode: &dyn Fn(&str) -> GitMode) -> Result<Vec<Package>, ProjectError> {
+    let picks = crate::deps_resolve::resolve_picks(pkg, mode)?;
     let mut seen: Vec<(String, String)> = vec![];
     let mut out = vec![];
-    resolve_rec(pkg, pkg, mode, &mut seen, &mut out)?;
+    resolve_rec(pkg, pkg, mode, &picks, &mut seen, &mut out)?;
     Ok(out)
 }
 
 /// 依存 `dn` の (取得元文字列, 置き場所)。
-fn locate_dep(root: &Package, pkg: &Package, dn: &str, dv: &toml::Value, mode: &dyn Fn(&str) -> GitMode) -> Result<(String, PathBuf), ProjectError> {
+pub(crate) fn locate_dep(root: &Package, pkg: &Package, dn: &str, dv: &toml::Value, mode: &dyn Fn(&str) -> GitMode, picks: &crate::deps_resolve::Picks) -> Result<(String, PathBuf), ProjectError> {
     if dv.get("registry").is_some() {
         return perr("E9040", format!("dependency {}: registry version resolution is not implemented yet", dn));
-    }
-    if dv.get("git").is_some() && dv.get("version").is_some() {
-        return perr("E9040", format!("dependency {}: git version resolution is not implemented yet", dn));
     }
     if let Some(p) = dv.get("path").and_then(|p| p.as_str()) {
         // 8.1: git 依存先は git 依存だけを持てる。
@@ -667,11 +667,20 @@ fn locate_dep(root: &Package, pkg: &Package, dn: &str, dv: &toml::Value, mode: &
         return Ok((source, loc));
     }
     let url = dv.get("git").and_then(|g| g.as_str()).unwrap_or("");
-    let rev = dv.get("rev").and_then(|g| g.as_str()).unwrap_or("");
+    let m = mode(dn);
+    // コミットを決める。rev はそのまま。版は依存グラフの解決 (`deps_resolve::resolve_picks`) の結果を使う。
+    let rev: String = match (dv.get("rev").and_then(|g| g.as_str()), dv.get("version").and_then(|g| g.as_str())) {
+        (Some(r), _) => r.to_string(),
+        (None, Some(range)) => match picks.get(dn) {
+            Some(p) => p.commit.clone(),
+            None => return perr("E9010", format!("git dependency {} has no resolved version \"{}\" (run `ksn update`)", dn, range)),
+        },
+        _ => String::new(),
+    };
+    let rev = rev.as_str();
     let source = format!("git+{}#{}", url, rev);
     let cache = git_cache_path(url, rev);
-    let m = mode(dn);
-    if m == GitMode::Fresh {
+    if m == GitMode::Fresh || m == GitMode::Pinned {
         git_materialize(url, rev, &cache)?;
         return Ok((source, cache));
     }
@@ -698,6 +707,7 @@ fn resolve_rec(
     root: &Package,
     pkg: &Package,
     mode: &dyn Fn(&str) -> GitMode,
+    picks: &crate::deps_resolve::Picks,
     seen: &mut Vec<(String, String)>,
     out: &mut Vec<Package>,
 ) -> Result<(), ProjectError> {
@@ -706,7 +716,7 @@ fn resolve_rec(
         if *dn == root.name {
             return perr("E9015", format!("dependency cycle: {} depends back on the root package {}", pkg.name, root.name));
         }
-        let (source, loc) = locate_dep(root, pkg, dn, dv, mode)?;
+        let (source, loc) = locate_dep(root, pkg, dn, dv, mode, picks)?;
         if let Some((_, prev)) = seen.iter().find(|(n, _)| n == dn) {
             // 菱形依存: 同じ取得元なら1つとして扱い、違う取得元はエラー (8.1。版の自動調停はしない)。
             if *prev != source {
@@ -721,7 +731,7 @@ fn resolve_rec(
         dp.source = source.clone();
         seen.push((dn.clone(), source));
         let mut sub = vec![];
-        resolve_rec(root, &dp, mode, seen, &mut sub)?;
+        resolve_rec(root, &dp, mode, picks, seen, &mut sub)?;
         out.push(dp);
         out.extend(sub);
     }
@@ -804,13 +814,14 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
         return errs;
     }
     let bad = |m: String| ("E9021".to_string(), format!("kasane.toml and kasane.lock disagree: {}; run `ksn update`", m));
-    let v: toml::Value = match fs::read_to_string(&lock).unwrap_or_default().parse() {
+    let lock_text = fs::read_to_string(&lock).unwrap_or_default();
+    let v: toml::Value = match lock_text.parse() {
         Ok(v) => v,
         Err(e) => return vec![bad(format!("invalid kasane.lock ({})", e))],
     };
     let version = v.get("version").and_then(|x| x.as_integer());
-    if version != Some(1) && version != Some(2) {
-        return vec![bad("lock version must be 1 or 2".into())];
+    if version != Some(1) && version != Some(2) && version != Some(3) {
+        return vec![bad("lock version must be 1, 2 or 3".into())];
     }
     let entries: Vec<&toml::Value> = v.get("package").and_then(|p| p.as_array()).map(|a| a.iter().collect()).unwrap_or_default();
     let mut by_name: std::collections::BTreeMap<String, &toml::Value> = Default::default();
@@ -868,8 +879,24 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
                     _ => {}
                 },
             }
-            // 版 2: 公開の署名と効果の記録と比べる (`path` 依存は記録しない)。
-            if version == Some(2) {
+            // 版 3: `version` は manifest の `package.version` と一致する必要がある。
+            if version == Some(3) {
+                let lock_ver = e.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                let actual_ver = dp
+                    .manifest
+                    .get("package")
+                    .and_then(|p| p.get("version"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if lock_ver != actual_ver {
+                    errs.push(bad(format!(
+                        "version of {} is {} in kasane.toml but {} in the lock",
+                        dp.name, actual_ver, lock_ver
+                    )));
+                }
+            }
+            // 版 2・3: 公開の署名と効果の記録と比べる (`path` 依存は記録しない)。
+            if version == Some(2) || version == Some(3) {
                 match crate::lockapi::read_api(e) {
                     None => errs.push(bad(format!("git dependency {} has no recorded api; run `ksn lock --accept {}`", dp.name, dp.name))),
                     Some((old, old_uns, old_nat)) => {

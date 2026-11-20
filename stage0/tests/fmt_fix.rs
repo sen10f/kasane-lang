@@ -375,3 +375,79 @@ fn grammar_mismatch_points_at_real_line() {
     let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
     assert!(out.contains("src/t.ksnl:6") || out.contains("src/t.ksnl:5"), "{out}");
 }
+
+// ---- 100 文字を超える行 (E0055) と、fmt が直せないときの位置 (G58) ----
+
+/// 105 文字の構造体リテラルの行 (8 行目)。E0055 が行:列つきで、構造体リテラルの直し方を添えて出る。
+const LONG_STRUCT: &str = "type t.Point derive [Clone, Copy] pub\n    aaaaaaaaaaaaaaaaaaaa: u32\n    bbbbbbbbbbbbbbbbbbbb: u32\n    cccccccccccccccccccc: u32\nend t.Point\n\n\
+                           fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let p = t.Point { aaaaaaaaaaaaaaaaaaaa: 1u32, bbbbbbbbbbbbbbbbbbbb: 2u32, cccccccccccccccccccc: 3u32 }\n    core.mem.drop(p)\n    Ok(())\nend t.main\n";
+
+/// 100 文字を超える行は E0055 (行:列つき、構造体リテラルの直し方つき) で、元のファイルの位置を指す。
+#[test]
+fn long_struct_literal_line_is_e0055_at_the_original_position() {
+    let t = Tmp::new_raw("long_struct", LONG_STRUCT);
+    let o = run(&["fmt"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    let out = text(&o.stdout);
+    assert!(out.contains("src/t.ksnl:8:101: E0055"), "{out}");
+    assert!(out.contains("struct literals are one line: bind field values with `let` first"), "{out}");
+    // 半分だけ書き換えたファイルを残さない (次の診断が元のファイルの行を指す)。
+    assert_eq!(fs::read_to_string(t.0.join("src/t.ksnl")).unwrap(), LONG_STRUCT);
+    assert!(!out.contains("reformatted"), "{out}");
+    // check も行:列つきの E0055 を出す (E0002 ではない)。
+    let c = run(&["check", "--json"], &t.0);
+    let cout = text(&c.stdout);
+    assert!(codes(&cout).iter().any(|c| c == "E0055"), "{cout}");
+    assert!(cout.contains("\"line\": 8"), "{cout}");
+    assert!(cout.contains("\"col\": 101"), "{cout}");
+    assert!(!codes(&cout).iter().any(|c| c == "E0002"), "{cout}");
+}
+
+/// fmt が直せないもの (100 文字を超える行) が残るとき、ファイルは書き換えず、診断は元のファイルの
+/// 行:列を指す。`t.zz` (長い行) を `t.aa` より後に置くと、整形すると `t.aa` が先頭に来て行が動る。
+#[test]
+fn fmt_does_not_rewrite_and_points_at_the_original_line_when_a_long_line_remains() {
+    let src = "fn t.zz() -> t.Point uses [] panics never\n    t.Point { aaaaaaaaaaaaaaaaaaaaaaaa: 1u32, bbbbbbbbbbbbbbbbbbbbbbbb: 2u32, cccccccccccccccccccccccc: 3u32 }\nend t.zz\n\n\
+               type t.Point derive [Clone, Copy] pub\n    aaaaaaaaaaaaaaaaaaaaaaaa: u32\n    bbbbbbbbbbbbbbbbbbbbbbbb: u32\n    cccccccccccccccccccccccc: u32\nend t.Point\n\n\
+               fn t.aa() -> u8 uses [] panics never\n    1u8\nend t.aa\n";
+    let t = Tmp::new_raw("long_reorder", src);
+    let o = run(&["fmt"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    let out = text(&o.stdout);
+    assert!(out.contains("src/t.ksnl:2:101: E0055"), "{out}");
+    // 並べ替えたあとの行 (6 行目) ではなく、元の 2 行目を指す。ファイルも元のまま。
+    assert!(!out.contains("src/t.ksnl:6:"), "{out}");
+    assert!(!out.contains("reformatted"), "{out}");
+    assert_eq!(fs::read_to_string(t.0.join("src/t.ksnl")).unwrap(), src);
+}
+
+/// match の腕の末尾の `,` は `ksn fmt` が消す (G53 の `;` と同じ)。腕の本体の中の呼び出し・
+/// 構造体リテラル・配列・タプルの `,` は消さない。チェックは 0 件になり、もう 1 回かけても変わらない。
+#[test]
+fn fmt_removes_only_the_trailing_commas_of_match_arms() {
+    let src = "type t.Point derive [Clone, Copy] pub\n    x: u32\n    y: u32\nend t.Point\n\n\
+               type t.S\n    items: alloc.vec.Vec<u32, std.alloc.System>\nend t.S\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let mut a = 1u32\n    let mut b = 2u32\n    let s = t.S { items: alloc.vec.Vec.new(std.alloc.SYSTEM) }\n    let r: Result<(), std.io.Error> = match 1u32 {\n        1u32 => {\n            let v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n            let p = t.Point { x: 1u32, y: 2u32 }\n            let l = [1u32, 2u32]\n            let n = 1u32.wrapping_add(2u32)\n            core.mem.swap(&mut a, &mut b)\n            core.mem.drop(p)\n            core.mem.drop(l)\n            core.mem.drop(v)\n            core.mem.drop(n)\n            Ok(())\n        },\n        _ => Ok(()),\n    }\n    core.mem.drop(r)\n    core.mem.drop(s)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("arm_comma", src);
+    // まだ整形できていないファイルは check が拒む (書き方の揺れ)。
+    let c = run(&["check"], &t.0);
+    assert_eq!(c.status.code(), Some(1));
+    let cout = text(&c.stdout);
+    assert!(cout.contains("E0049") || cout.contains("E0002"), "{cout}");
+    let o = run(&["fmt"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stdout));
+    let after = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(!after.contains("},"), "{after}");
+    assert!(!after.contains("Ok(()),"), "{after}");
+    assert_eq!(after.matches(',').count(), src.matches(',').count() - 2, "{after}");
+    // 残った `,` は腕の本体の中のものだけ。
+    for keep in ["t.Point { x: 1u32, y: 2u32 }", "[1u32, 2u32]", "core.mem.swap(&mut a, &mut b)", "derive [Clone, Copy] pub"] {
+        assert!(after.contains(keep), "{after}: {keep}");
+    }
+    // 直した結果は check を通り、もう 1 回かけても変わらない。
+    let c = run(&["check"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}", text(&c.stdout));
+    let again = run(&["fmt"], &t.0);
+    assert!(!text(&again.stdout).contains("reformatted"), "{}", text(&again.stdout));
+    assert_eq!(fs::read_to_string(t.0.join("src/t.ksnl")).unwrap(), after);
+}

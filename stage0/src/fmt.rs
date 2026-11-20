@@ -26,19 +26,24 @@ pub fn mechanical(text: &str) -> Vec<String> {
     out
 }
 
-/// 行末の `;` (E0040) を消す。見つけ方も消し方も `ksn fix` の E0040 と同じ (rustisms::scan と fixes::fixes_for)。
-/// 文字列の中や `[x; n]` の `;` は行末ではない (rustisms が見ない) ので触らない。
-pub fn strip_semicolons(text: &str) -> String {
-    let hits: Vec<_> = crate::rustisms::scan(text).into_iter().filter(|h| h.code == "E0040").collect();
-    if hits.is_empty() {
-        return text.to_string();
-    }
+/// 行末にだけ付く印 (`;` と match の腕の末尾の `,`) を消してから整形する (`ksn fmt` の先頭。
+/// 設計_書き方は1通り.md 12 章)。`check` は従来どおり E0040 / E0049 (書き方の揺れなので E0020) で拒む。
+/// 見つけ方も消し方も `ksn fix` の同じコードの修正と同じ (rustisms::scan と fixes::fixes_for)。
+/// `;` は文字列の中・`[x; n]` のものは行末ではない、`,` は `=>` の無い行 (呼び出しの引数・
+/// 構造体リテラル・タプル・配列・複数行の引数リスト) は腕の末尾ではない (rustisms が見ない) ので触らない。
+pub fn strip_line_marks(text: &str, codes: &[&str]) -> String {
     let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
-    for h in hits {
-        for f in crate::fixes::fixes_for("E0040", &h.msg, "", h.line, h.col, &lines.clone()) {
-            let chars: Vec<char> = lines[f.line - 1].chars().collect();
-            let (a, b) = (f.col - 1, (f.end_col - 1).min(chars.len()));
-            lines[f.line - 1] = chars[..a].iter().chain(chars[b..].iter()).collect::<String>().trim_end().to_string();
+    for code in codes {
+        let hits: Vec<_> = crate::rustisms::scan(&lines.join("\n")).into_iter().filter(|h| h.code == *code).collect();
+        if hits.is_empty() {
+            continue;
+        }
+        for h in hits {
+            for f in crate::fixes::fixes_for(h.code, &h.msg, "", h.line, h.col, &lines.clone()) {
+                let chars: Vec<char> = lines[f.line - 1].chars().collect();
+                let (a, b) = (f.col - 1, (f.end_col - 1).min(chars.len()));
+                lines[f.line - 1] = chars[..a].iter().chain(chars[b..].iter()).collect::<String>().trim_end().to_string();
+            }
         }
     }
     lines.join("\n")
@@ -725,7 +730,7 @@ pub fn format_source_prog(text: &str, path: &str, own_len: bool) -> String {
 pub fn format_source_with(text: &str, path: &str, canon: bool, own_len: bool) -> String {
     let stripped;
     let text = if canon && !path.ends_with(".sig") {
-        stripped = strip_semicolons(text);
+        stripped = strip_line_marks(text, &["E0040", "E0049"]);
         stripped.as_str()
     } else {
         text
