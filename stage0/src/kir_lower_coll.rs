@@ -1189,15 +1189,6 @@ pub(crate) fn pat_srcs(lw: &Lw, p: &V, src: &Src, out: &mut BTreeMap<String, Src
     if generic || *OLD.get_or_init(|| std::env::var_os("KSN_S5_PAT_OLD").is_some_and(|v| !v.is_empty() && v != "0")) {
         return pat_srcs_old(lw, p, src, out);
     }
-    if std::env::var_os("KSN_S5_PAT_DBG").is_some() {
-        let mut a = BTreeMap::new();
-        let mut b = BTreeMap::new();
-        pat_srcs_old(lw, p, src, &mut a);
-        pat_srcs_tast(lw, p, &mut b);
-        if a != b {
-            eprintln!("PATDIFF {} line {}: old={:?} new={:?}", lw.def.name, nline(p), a, b);
-        }
-    }
     pat_srcs_tast(lw, p, out);
 }
 
