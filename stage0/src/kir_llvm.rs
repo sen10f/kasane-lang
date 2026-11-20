@@ -363,7 +363,7 @@ pub struct Target {
 /// 対応するターゲット。ほかの三つ組は `target_of` が `None` を返す (呼び出し側が理由を出す)。
 /// `wasm32-unknown-unknown` は、ブラウザが主目標なので WASI ではなく素の wasm (import は `env` の数個だけ、`WASM ABI` 参照)。
 /// `wasm32-wasi` は WASI preview 1 の import (`wasi_snapshot_preview1`) で、ファイル・引数と環境・実時刻・乱数を使える (`WASM ABI` の WASI の項)。
-pub const TARGETS: [Target; 5] = [
+pub const TARGETS: [Target; 7] = [
     Target {
         name: "x86_64-linux-gnu",
         triple: "x86_64-unknown-linux-gnu",
@@ -399,6 +399,20 @@ pub const TARGETS: [Target; 5] = [
         sysroot: "",
         ptr_bits: 32,
     },
+    Target {
+        name: "aarch64-apple-darwin",
+        triple: "aarch64-apple-darwin",
+        datalayout: "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
+        sysroot: "",
+        ptr_bits: 64,
+    },
+    Target {
+        name: "x86_64-apple-darwin",
+        triple: "x86_64-apple-darwin",
+        datalayout: "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+        sysroot: "",
+        ptr_bits: 64,
+    },
 ];
 
 /// `wasm32` の対象か (素の wasm と WASI。ファイルは `.wasm`、実行は `tools/wasm/run.mjs` / `run_wasi.mjs` か JS の `WebAssembly` で行う)。
@@ -409,6 +423,11 @@ pub fn is_wasm(t: Option<Target>) -> bool {
 /// Windows (MinGW-w64) の対象か。実行ファイルは `.exe`、リンクは組み込みの lld の MinGW 版。
 pub fn is_windows(t: Option<Target>) -> bool {
     t.is_some_and(|t| t.triple.contains("windows"))
+}
+
+/// macOS の対象か。実行ファイルは Mach-O、`ld64.lld` でつなぐ。
+pub fn is_macos(t: Option<Target>) -> bool {
+    t.is_some_and(|t| t.triple.contains("darwin"))
 }
 
 /// Windows 用に、IR が直接呼ぶ POSIX の libc を `ksn_w_*` の薄い殻 (`kir_rt.c`) へ向ける。
@@ -548,6 +567,9 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     let has_parse_int = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::ParseInt { .. }))));
     let arch = if is_windows(target) {
         crate::kir_cabi::Arch::Win64
+    } else if target.map_or(false, |t| is_macos(Some(t)) && t.triple.starts_with("aarch64")) {
+        // Apple arm64: 構造体の値渡しは AAPCS64 と同じ。可変引数はスタックに置く。
+        crate::kir_cabi::Arch::Aarch64Apple
     } else if target.or_else(host_target).is_some_and(|t| t.name == "aarch64-linux-gnu") {
         crate::kir_cabi::Arch::Aarch64
     } else {

@@ -3347,6 +3347,21 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         },
         None => None,
     };
+    // `--emit obj <ファイル>`: ネイティブを作らず、リンクせずに目的ファイル (`.o`) だけを書き出す。
+    // macOS 向けは Mach-O (`cf fa ed fe`)、Linux 向けは ELF。
+    let emit_obj = match args.iter().position(|a| a == "--emit") {
+        Some(i) => match args.get(i + 1) {
+            Some(v) if v == "obj" => match args.get(i + 2) {
+                Some(f) => Some(PathBuf::from(f)),
+                None => {
+                    eprintln!("ksn: E9040: `--emit obj <ファイル>`: 出力ファイルを指定してください");
+                    return 1;
+                }
+            },
+            _ => None,
+        },
+        None => None,
+    };
     if backend == "clif" {
         eprintln!("ksn: E9040: `--backend clif` was removed: the Cranelift backend is gone and native generation goes through LLVM (KIR). Use `--backend llvm` (the default), or `--backend c`");
         return 1;
@@ -3440,6 +3455,54 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         }
         println!("wrote {}", emit_path.display());
         return 0;
+    }
+    // `--emit obj <ファイル>`: リンクせずに目的ファイル (`.o`) だけを書き出して終了する。
+    if let Some(emit_path) = &emit_obj {
+        let entry = match l.pkg.entry() {
+            Some(e) => e,
+            None => {
+                eprintln!("ksn: E9040: `--emit obj` needs an entry point (`entry` in kasane.toml)");
+                return 1;
+            }
+        };
+        let p = prog.as_ref().expect("entry is set");
+        let test_files: std::collections::HashSet<&str> =
+            l.pkg.sources.iter().filter(|s| s.is_test).map(|s| s.path.as_str()).collect();
+        let mut user_ll: Vec<usize> = user.iter().copied().filter(|&i| !test_files.contains(p.defs[i].file.as_str())).collect();
+        let dep_files: std::collections::HashSet<&str> =
+            l.deps.iter().flat_map(|dp| dp.sources.iter().map(|s| s.path.as_str())).collect();
+        user_ll.extend((0..p.defs.len()).filter(|&i| dep_files.contains(p.defs[i].file.as_str())));
+        let lo = crate::kir_lower::lower_program(p, &user_ll, Some(&entry));
+        if lo.module.find(&entry).is_none() {
+            eprintln!("ksn: E9040: `--emit obj`: entry `{}` cannot be lowered to LLVM IR", entry);
+            return 1;
+        }
+        let roots: Vec<&str> = vec![&entry, crate::kir_lower::debug::ENTRY_DEBUG];
+        let m = lo.module.reachable_from(&roots);
+        let ll = match crate::kir_llvm::emit_program(&m, &entry, tgt) {
+            Ok(ll) => ll,
+            Err(e) => {
+                eprintln!("ksn: E9040: `--emit obj`: {}", e);
+                return 1;
+            }
+        };
+        let opt = if release { "-O2" } else { "-O1" };
+        let triple = ll.lines().find_map(|l| l.strip_prefix("target triple = \"")).and_then(|r| r.split('"').next()).unwrap_or("");
+        let res = if crate::lld::enabled() {
+            crate::embed_llvm::ir_to_object(&ll, opt, &triple, emit_path)
+        } else {
+            Err("組み込みの LLVM が無い (`embedded-llvm` feature が必要)".into())
+        };
+        match res {
+            Ok(()) => {
+                println!("wrote {}", emit_path.display());
+                return 0;
+            }
+            Err(e) => {
+                eprintln!("ksn: E9040: `--emit obj`: {}", e);
+                return 1;
+            }
+        }
     }
     let kind = if release { "release" } else { "debug" };
     let key = build_key(&l, release, &target, &backend);
@@ -4069,6 +4132,15 @@ fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, t
         let o = src.with_extension("ll.o");
         cleanup.push(o.clone());
         let tg = target.or_else(crate::kir_llvm::host_target);
+        // macOS 向けのリンクは macOS SDK (KSN_SYSROOT) が要る。無ければ早々に失敗する。
+        if let Some(t) = tg {
+            if crate::kir_llvm::is_macos(Some(t)) && std::env::var("KSN_SYSROOT").ok().filter(|s| !s.is_empty()).is_none() {
+                return Err(format!(
+                    "{} 向けのリンクには macOS SDK が要る: KSN_SYSROOT に SDK のパスを設定する (例: export KSN_SYSROOT=/path/to/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk)",
+                    t.name
+                ));
+            }
+        }
         let need_kir_rt = crate::kir_llvm::needs_runtime(ll);
         let need_sysrt = ll.contains("@ksn_rt_sys_");
         // ユーザ IR に実行時の C のビットコードをリンクしてから最適化・目的ファイル化 (L2)。
@@ -4143,6 +4215,17 @@ fn clang_ll_embedded(clang: &str, ll: &str, src: &Path, exe: &Path, opt: &str, t
         if crate::kir_llvm::is_windows(Some(t)) {
             let args = crate::lld::mingw_args(root.as_deref(), &objs, exe, nat)?;
             return crate::lld::lld_link(crate::lld::Flavor::MinGw, &args);
+        }
+        if crate::kir_llvm::is_macos(Some(t)) {
+            // macOS は macOS SDK (KSN_SYSROOT) が要る。無ければ KSN_SYSROOT を名指しして失敗する。
+            let Some(r) = root.as_deref() else {
+                return Err(format!(
+                    "{} 向けのリンクには macOS SDK が要る: KSN_SYSROOT に SDK のパスを設定する (例: export KSN_SYSROOT=/path/to/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk)",
+                    t.name
+                ));
+            };
+            let args = crate::lld::darwin_args(t.name, Some(r), &objs, exe, nat)?;
+            return crate::lld::lld_link(crate::lld::Flavor::MachO, &args);
         }
         let args = crate::lld::elf_args(t.name, if target.is_some() { root.as_deref() } else { None }, &objs, exe, nat)?;
         crate::lld::lld_link(crate::lld::Flavor::Elf, &args)

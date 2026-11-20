@@ -24,6 +24,9 @@
 #if defined(__linux__)
 #include <sys/random.h> /* getrandom(2) */
 #endif
+#if defined(__APPLE__)
+#include <mach/mach_time.h> /* mach_absolute_time */
+#endif
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -832,6 +835,11 @@ i64 ksn_rt_sys_wall_ns(void) {
     GetSystemTimeAsFileTime(&ft);
     u64 t = ((u64)ft.dwHighDateTime << 32) | (u64)ft.dwLowDateTime; /* 1601 年からの 100 ns */
     return (i64)((t - 116444736000000000ULL) * 100ULL);
+#elif defined(__APPLE__)
+    /* macOS は CLOCK_REALTIME が古い版で無いことがあるので gettimeofday を使う。 */
+    struct timeval tv;
+    if (gettimeofday(&tv, NULL) != 0) return 0;
+    return (i64)tv.tv_sec * 1000000000LL + (i64)tv.tv_usec * 1000LL;
 #else
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return 0;
@@ -846,6 +854,13 @@ u64 ksn_rt_sys_now_ns(void) {
     QueryPerformanceFrequency(&f);
     QueryPerformanceCounter(&c);
     return (u64)((c.QuadPart / f.QuadPart) * 1000000000ULL + (c.QuadPart % f.QuadPart) * 1000000000ULL / f.QuadPart);
+#elif defined(__APPLE__)
+    /* macOS で単調時計。mach_timebase_info は初回だけ呼ぶ。 */
+    static mach_timebase_info_data_t tb;
+    if (tb.denom == 0) {
+        mach_timebase_info(&tb);
+    }
+    return (u64)mach_absolute_time() * (u64)tb.numer / (u64)tb.denom;
 #else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
