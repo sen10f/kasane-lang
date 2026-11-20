@@ -717,7 +717,11 @@ impl<'a> Lw<'a> {
                     return self.err(line, "整数リテラルの型が整数ではない");
                 }
                 let v = parse_int(&f[1]).ok_or_else(|| format!("行 {}: 整数リテラルが扱えない", line))?;
-                if !ty.in_range(v) {
+                // `u128` の 2^127 以上は `parse_int` が 2 の補数のビット列 (負の i128) で返す。符号の無い `u128` の値として正しいので、
+                // 負の値の `u128` リテラル (`-` 付き) だけを範囲外にする。
+                let neg_text = matches!(&f[1], V::N(s) | V::S(s) if s.starts_with('-'));
+                let u128_bits = matches!(ty, Ty::U128) && !neg_text;
+                if !ty.in_range(v) && !u128_bits {
                     return self.err(line, format!("整数リテラルが {} の範囲にない", ty.name()));
                 }
                 Ok(self.emit(ty, Op::Const(v)))
