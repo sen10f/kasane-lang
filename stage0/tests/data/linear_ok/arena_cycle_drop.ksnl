@@ -1,0 +1,45 @@
+enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Io(std.io.Error)
+end t.Error
+
+type t.Node pub
+    name: u32
+    kids: alloc.vec.Vec<alloc.arena.Handle<t.Node>, std.alloc.System>
+end t.Node
+
+impl core.ops.Drop for t.Node
+fn t.Node.drop(self: &mut t.Node) -> () uses [] panics never impls core.ops.Drop
+    ()
+end t.Node.drop
+
+fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may
+    let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)
+    let n0 = a.insert(t.Node { name: 0u32, kids: alloc.vec.Vec.new(std.alloc.SYSTEM) })?
+    let n1 = a.insert(t.Node { name: 1u32, kids: alloc.vec.Vec.new(std.alloc.SYSTEM) })?
+    let n2 = a.insert(t.Node { name: 2u32, kids: alloc.vec.Vec.new(std.alloc.SYSTEM) })?
+    core.check.eq(a.len(), 3usize)
+    match a.get_mut(n0) {
+        Some(v) => core.mem.drop(v.kids.push(n1))
+        None => core.panic.panic("no n0")
+    }
+    match a.get_mut(n1) {
+        Some(v) => core.mem.drop(v.kids.push(n0))
+        None => core.panic.panic("no n1")
+    }
+    match a.get_mut(n2) {
+        Some(v) => core.mem.drop(v.kids.push(n2))
+        None => core.panic.panic("no n2")
+    }
+    core.check.eq(a.len(), 3usize)
+    match a.get(n2) {
+        Some(v) => core.check.eq(v.kids.len(), 1usize)
+        None => core.panic.panic("no n2")
+    }
+    core.mem.drop(a.remove(n0))
+    core.check.eq(a.len(), 2usize)
+    core.check.is_true(a.get(n0).is_none())
+    core.mem.drop(a)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main

@@ -702,6 +702,9 @@ impl<'a> Lw<'a> {
                 if nm == "Option" || nm == "Result" {
                     return args.iter().all(|a| self.src_is_copy(a));
                 }
+                if crate::check::has_manual_copy(self.p, nm) {
+                    return true;
+                }
                 self.p.types.get(nm).map_or(false, |&i| self.p.defs[i].derive.iter().any(|x| x == "Copy"))
             }
             Src::Array(el, _) | Src::Slice(el) => self.src_is_copy(el),

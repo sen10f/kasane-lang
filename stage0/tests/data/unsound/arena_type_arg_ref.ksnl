@@ -1,0 +1,7 @@
+fn t.keep(a: alloc.arena.Arena<&u32, std.alloc.System>) -> usize uses [] panics never
+    a.len()
+end t.keep
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -1,0 +1,127 @@
+fn alloc.arena.Arena.contains[T, A: alloc.alloc.Allocator](self: &alloc.arena.Arena<T, A>, h: alloc.arena.Handle<T>) -> bool uses [] panics never pub
+    self.get(h).is_some()
+end alloc.arena.Arena.contains
+
+fn alloc.arena.Arena.get[T, A: alloc.alloc.Allocator](self: &alloc.arena.Arena<T, A>, h: alloc.arena.Handle<T>) -> Option<&T> uses [] panics never pub
+    match self.slots.get(h.index) {
+        Some(slot) => match slot {
+            alloc.arena.Slot.Taken(g, value) => if *g == h.generation {
+                Some(value)
+            } else {
+                None
+            }
+            alloc.arena.Slot.Free(_g, _n) => None
+        }
+        None => None
+    }
+end alloc.arena.Arena.get
+
+fn alloc.arena.Arena.get_mut[T, A: alloc.alloc.Allocator](self: &mut alloc.arena.Arena<T, A>, h: alloc.arena.Handle<T>) -> Option<&mut T> uses [] panics never pub
+    match self.slots.get_mut(h.index) {
+        Some(slot) => match slot {
+            alloc.arena.Slot.Taken(g, value) => if *g == h.generation {
+                let vr: &mut T = value
+                Some(vr)
+            } else {
+                None
+            }
+            alloc.arena.Slot.Free(_g, _n) => None
+        }
+        None => None
+    }
+end alloc.arena.Arena.get_mut
+
+fn alloc.arena.Arena.insert[T, A: alloc.alloc.Allocator](self: &mut alloc.arena.Arena<T, A>, value: T) -> Result<alloc.arena.Handle<T>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    if self.free != core.num.usize.MAX {
+        let index = self.free
+        let mut generation = 0u32
+        let mut free_head = core.num.usize.MAX
+        match self.slots.get(index) {
+            Some(slot) => match slot {
+                alloc.arena.Slot.Free(g, next) => {
+                    generation = *g
+                    free_head = *next
+                }
+                alloc.arena.Slot.Taken(_g, _value) => {
+                    return Err(alloc.alloc.AllocError { code: 1u32 })
+                }
+            }
+            None => return Err(alloc.alloc.AllocError { code: 1u32 })
+        }
+        self.free = free_head
+        self.live = self.live.wrapping_add(1usize)
+        match self.slots.get_mut(index) {
+            Some(slot) => {
+                let fresh = alloc.arena.Slot.Taken(generation, value)
+                *slot = fresh
+                Ok(alloc.arena.Handle { index: index, generation: generation })
+            }
+            None => Err(alloc.alloc.AllocError { code: 1u32 })
+        }
+    } else {
+        if self.slots.len() >= self.slots.cap() {
+            let want = self.slots.cap().wrapping_mul(2usize).wrapping_add(4usize)
+            match self.slots.grow(want) {
+                Ok(_grown) => {
+                }
+                Err(error) => return Err(error)
+            }
+        }
+        match self.slots.push_within_cap(alloc.arena.Slot.Taken(0u32, value)) {
+            Ok(_done) => {
+                let index = self.slots.len().wrapping_sub(1usize)
+                self.live = self.live.wrapping_add(1usize)
+                Ok(alloc.arena.Handle { index: index, generation: 0u32 })
+            }
+            Err(_back) => Err(alloc.alloc.AllocError { code: 1u32 })
+        }
+    }
+end alloc.arena.Arena.insert
+
+fn alloc.arena.Arena.is_empty[T, A: alloc.alloc.Allocator](self: &alloc.arena.Arena<T, A>) -> bool uses [] panics never pub
+    self.live == 0usize
+end alloc.arena.Arena.is_empty
+
+fn alloc.arena.Arena.len[T, A: alloc.alloc.Allocator](self: &alloc.arena.Arena<T, A>) -> usize uses [] panics never pub
+    self.live
+end alloc.arena.Arena.len
+
+fn alloc.arena.Arena.new[T, A: alloc.alloc.Allocator](allocator: A) -> alloc.arena.Arena<T, A> uses [] panics never pub
+    let slots = alloc.raw.Buf.new(allocator)
+    alloc.arena.Arena { slots: slots, free: core.num.usize.MAX, live: 0usize }
+end alloc.arena.Arena.new
+
+fn alloc.arena.Arena.remove[T, A: alloc.alloc.Allocator](self: &mut alloc.arena.Arena<T, A>, h: alloc.arena.Handle<T>) -> Option<T> uses [] panics never pub
+    let free_head = self.free
+    let mut generation = 0u32
+    match self.slots.get(h.index) {
+        Some(slot) => match slot {
+            alloc.arena.Slot.Taken(g, _v2) => {
+                generation = *g
+            }
+            alloc.arena.Slot.Free(_g, _n) => return None
+        }
+        None => return None
+    }
+    if generation != h.generation {
+        return None
+    }
+    let bumped = generation.wrapping_add(1u32)
+    self.free = h.index
+    self.live = self.live.wrapping_sub(1usize)
+    match self.slots.get_mut(h.index) {
+        Some(slot) => {
+            let past = core.mem.replace(slot, alloc.arena.Slot.Free(bumped, free_head))
+            match past {
+                alloc.arena.Slot.Taken(_g, value) => Some(value)
+                alloc.arena.Slot.Free(_g, _n) => None
+            }
+        }
+        None => None
+    }
+end alloc.arena.Arena.remove
+
+impl[T] core.ops.Clone for alloc.arena.Handle<T>
+fn alloc.arena.Handle.clone[T](self: &alloc.arena.Handle<T>) -> alloc.arena.Handle<T> uses [] panics never impls core.ops.Clone
+    alloc.arena.Handle { index: (*self).index, generation: (*self).generation }
+end alloc.arena.Handle.clone

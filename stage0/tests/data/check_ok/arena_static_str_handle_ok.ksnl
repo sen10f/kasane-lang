@@ -1,0 +1,17 @@
+const t.GREET: &'static str = "hi"
+
+enum t.E derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Io(std.io.Error)
+end t.E
+
+fn t.main() -> Result<(), t.E> uses [alloc, io.console] panics may
+    let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)
+    let h: alloc.arena.Handle<&'static str> = a.insert(t.GREET)?
+    match a.get(h) {
+        Some(s) => core.check.eq(*s, "hi")
+        None => core.panic.panic("no h")
+    }
+    std.io.print_line("ok")?
+    Ok(())
+end t.main

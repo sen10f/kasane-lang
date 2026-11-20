@@ -1,0 +1,13 @@
+enum t.E derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+end t.E
+
+type t.L linear pub
+    v: u32
+end t.L
+
+fn t.main() -> Result<(), t.E> uses [alloc] panics never
+    let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)
+    core.mem.drop(a.insert(t.L { v: 1u32 }))
+    Ok(())
+end t.main

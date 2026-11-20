@@ -667,7 +667,17 @@ impl<'a> Gen<'a> {
             (Src::Named(name, _, _), t) if name == "alloc.string.String" && matches!(t, Ty::Agg(_)) => Ok(self.str_eq(fat, t, "string")),
             // 局所変数の `String` はヘッダの参照 (`ptr`) で渡る。
             (Src::Named(name, _, _), Ty::Ptr) if name == "alloc.string.String" => Ok(self.str_eq(fat, Ty::Ptr, "string.ptr")),
-            (Src::Named(name, args, _), Ty::Agg(i)) if args.is_empty() => self.agg_eq(name, i, file),
+            (Src::Named(name, args, _), Ty::Agg(i)) => {
+                // 型引数付きの集成体 (`alloc.arena.Handle<T>` など) は具体化した名前を鍵にする (欄は総称のままなので、欄がスカラー以外なら下で理由付きで落ちる)。
+                if !args.is_empty() {
+                    let inst = self.aggs.borrow().generic_args.get(&i).filter(|(fq, _)| fq == name).map(|(fq, as_)| {
+                        format!("{}<{}>", fq, as_.iter().map(show).collect::<Vec<_>>().join(","))
+                    });
+                    let Some(inst) = inst else { return Err(format!("型 {} ({}) の比較は未対応", show(src), ty.name())) };
+                    return self.agg_eq(name, &inst, i, file);
+                }
+                self.agg_eq(name, name, i, file)
+            }
             (Src::Tuple(es), Ty::Agg(i)) => self.tuple_eq(es, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, true),
             // 浮動小数は IEEE の == (`fcmp oeq`。NaN は不一致、-0.0 == 0.0。木走査の veq と同じ)。
@@ -1094,8 +1104,8 @@ impl<'a> Gen<'a> {
     }
 
     /// 構造体・列挙型の等しさ。手書きの `eq` を持つ型は未対応 (呼ぶ関数の下ろしが要る)。
-    fn agg_eq(&mut self, name: &str, i: u32, file: &str) -> Result<String, String> {
-        let k = eq_key(name);
+    fn agg_eq(&mut self, name: &str, key: &str, i: u32, file: &str) -> Result<String, String> {
+        let k = eq_key(key);
         if !self.done.insert(k.clone()) {
             return Ok(k);
         }

@@ -1,0 +1,38 @@
+enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Io(std.io.Error)
+end t.Error
+
+fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may
+    let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)
+    core.check.is_true(a.is_empty())
+    core.check.eq(a.len(), 0usize)
+    let h0 = a.insert(1u32)?
+    let h1 = a.insert(2u32)?
+    core.check.eq(a.len(), 2usize)
+    core.check.is_true(a.contains(h0))
+    core.check.eq(a.get(h0), Some(&1u32))
+    let copied = h0
+    core.check.eq(a.get(copied), Some(&1u32))
+    core.check.is_true(h0 == copied)
+    match a.get_mut(h1) {
+        Some(v) => core.mem.drop(core.mem.replace(v, 20u32))
+        None => core.panic.panic("no h1")
+    }
+    core.check.eq(a.get(h1), Some(&20u32))
+    core.check.eq(a.remove(h1), Some(20u32))
+    core.check.is_true(a.get(h1).is_none())
+    core.check.is_true(!a.contains(h1))
+    core.check.eq(a.len(), 1usize)
+    let h2 = a.insert(3u32)?
+    core.check.is_true(h2 != h1)
+    core.check.eq(a.get(h2), Some(&3u32))
+    let mut hs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    hs.push(h0)?
+    hs.push(h2)?
+    core.check.eq(hs.len(), 2usize)
+    core.check.eq(a.get(hs[0usize]), Some(&1u32))
+    core.check.eq(a.len(), 2usize)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main

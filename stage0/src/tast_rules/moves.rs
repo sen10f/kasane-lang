@@ -196,6 +196,11 @@ impl<'a> W<'a> {
                 if n == "Option" || n == "Result" {
                     return args.iter().all(|a| self.copy(a));
                 }
+                // 手書きの `impl core.ops.Copy` は型引数に依らず Copy (`is_copy_v` と同じ。
+                // `Handle<T>` のような型引数を欄に持たない取っ手を Copy にできる)。
+                if crate::check::has_manual_copy(self.p, n) {
+                    return true;
+                }
                 let Some(&i) = self.p.types.get(n) else { return true };
                 let d = &self.p.defs[i];
                 let derived = d.derive.iter().any(|x| x == "Copy") || self.p.impls.contains(&("core.ops.Copy".to_string(), n.clone()));

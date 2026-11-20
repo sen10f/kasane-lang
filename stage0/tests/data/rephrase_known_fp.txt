@@ -53,7 +53,6 @@ fp closure with_body_ref_let#0
 fp closure with_nested_borrow_only#0
 fp extract effect_var_forwarded_ok#0
 fp extract elided_ok_write_named#1
-fp extract mut_to_dyn_shared_implicit#0
 fp extract static_field_read_ok#0
 fp fold borrow_scalar_results_ok#0
 fp fold flow_default_ok#2

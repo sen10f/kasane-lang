@@ -1,0 +1,10 @@
+enum t.E derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+end t.E
+
+fn t.main() -> Result<(), t.E> uses [alloc] panics never
+    let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)
+    let x = 1u32
+    core.mem.drop(a.insert(&x))
+    Ok(())
+end t.main

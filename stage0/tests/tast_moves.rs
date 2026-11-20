@@ -13,6 +13,7 @@ const MINE: &[&str] = &["E3002", "E3003", "E3006", "E3040"];
 /// 新しい規則が旧い検査より多く出してよい (旧い検査が先に別の誤りで止まる、または旧い検査が型引数の位置でしか見ない) 診断。
 /// どれも旧い検査も拒む入力。
 const NEW_EXTRA: &[(&str, &str, u64)] = &[
+    ("arena_linear_value", "E3006", 10),
     ("fnonce_linear_fn_bound", "E3006", 12),
     ("linear_array_len_discard", "E3006", 7),
     ("len_of_linear_array_then_consumed", "E3006", 7),

@@ -1,0 +1,2 @@
+expect: E2023
+note: 型の違う Arena の取っ手は型検査で拒む (Handle<T> の T が違えば別の型)

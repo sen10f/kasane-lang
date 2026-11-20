@@ -359,3 +359,75 @@ fn derive_to_json_of_a_scalar_struct_builds_native() {
         same_output(&r, &n);
     }
 }
+
+/// `alloc.arena.Arena` の世代付きの取っ手 (設計_共有の取っ手.md、D1-S1): `remove` 済みの取っ手は弱くなり
+/// `get` が `None`、空きスロットを再利用しても世代が 1 つ上がるので古い取っ手は当たらない。`remove` は
+/// 外した値を返す。別の arena の同じ型の取っ手が当たることは防げない (添字と世代だけを持つので)。
+/// 型の違う取っ手は型検査 (E2023) で拒む。
+#[test]
+fn arena_stale_handles_return_none() {
+    let src = "enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub\n    Alloc(alloc.alloc.AllocError)\n    Io(std.io.Error)\nend t.Error\n\n\
+fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may\n    \
+let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)\n    \
+let h0 = a.insert(1u32)?\n    \
+let h1 = a.insert(2u32)?\n    \
+core.check.eq(a.len(), 2usize)\n    \
+core.check.eq(a.get(h0), Some(&1u32))\n    \
+core.check.eq(a.remove(h1), Some(2u32))\n    \
+core.check.is_true(a.get(h1).is_none())\n    \
+core.check.is_true(!a.contains(h1))\n    \
+let h2 = a.insert(3u32)?\n    \
+core.check.eq(a.len(), 2usize)\n    \
+core.check.eq(a.get(h2), Some(&3u32))\n    \
+core.check.is_true(h2 != h1)\n    \
+core.check.is_true(a.remove(h1).is_none())\n    \
+core.check.is_true(a.remove(h2).is_some())\n    \
+let h3 = a.insert(4u32)?\n    \
+core.check.eq(a.len(), 2usize)\n    \
+core.check.is_true(a.get(h3).is_some())\n    \
+core.check.is_true(a.get(h2).is_none())\n    \
+std.io.print_line(\"arena handle ok\")?\n    \
+Ok(())\nend t.main\n";
+    let t = Tmp::new("arena_handle", src);
+    let r = run(&["run"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), "arena handle ok\n", "{}", text(&r.stdout));
+}
+
+/// `Arena<String>` と `core.ops.Drop` を手書きした要素の破棄 (設計_共有の取っ手.md、D1-S1): `remove` で外した
+/// 値はその場で、arena を落とすときは残った値が落ちる。`Drop` の本体は効果の規則 (uses [] panics never) で
+/// 表示できないので、二重解放・過剰解放で落ちないこと (終了コード 0 と表示) で確かめる。
+#[test]
+fn arena_drops_owned_values_without_crashing() {
+    let src = "enum t.Error derive [Debug, Clone, Copy, PartialEq, From] pub\n    Alloc(alloc.alloc.AllocError)\n    Io(std.io.Error)\nend t.Error\n\n\
+type t.Watch derive [Debug, Clone, Copy] pub\n    n: u32\nend t.Watch\n\n\
+impl core.ops.Drop for t.Watch\nfn t.Watch.drop(self: &mut t.Watch) -> () uses [] panics never impls core.ops.Drop\n    ()\nend t.Watch.drop\n\n\
+fn t.rounds(n: usize) -> Result<(), t.Error> uses [alloc] panics may\n    \
+let mut r = 0usize\n    \
+while r < n {\n        \
+let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)\n        \
+let s0 = a.insert(alloc.string.String.from_str(std.alloc.SYSTEM, \"keep\")?)?\n        \
+let s1 = a.insert(alloc.string.String.from_str(std.alloc.SYSTEM, \"drop\")?)?\n        \
+let mut w = alloc.arena.Arena.new(std.alloc.SYSTEM)\n        \
+let _w0 = w.insert(t.Watch { n: 0u32 })?\n        \
+let w1 = w.insert(t.Watch { n: 1u32 })?\n        \
+let w2 = w.insert(t.Watch { n: 2u32 })?\n        \
+core.check.eq(w.len(), 3usize)\n        \
+core.check.is_true(w.remove(w1).is_some())\n        \
+core.check.is_true(w.remove(w2).is_some())\n        \
+core.check.is_true(w.get(w1).is_none())\n        \
+core.check.eq(w.len(), 1usize)\n        \
+core.check.is_true(a.remove(s0).is_some())\n        \
+core.check.is_true(a.get(s1).is_some())\n        \
+r = r.wrapping_add(1usize)\n    \
+}\n    \
+Ok(())\nend t.rounds\n\n\
+fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may\n    \
+t.rounds(20usize)?\n    \
+std.io.print_line(\"arena drop ok\")?\n    \
+Ok(())\nend t.main\n";
+    let t = Tmp::new("arena_drop", src);
+    let r = run(&["run"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), "arena drop ok\n", "{}", text(&r.stdout));
+}
