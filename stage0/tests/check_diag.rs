@@ -4859,8 +4859,8 @@ end t.bad_dyn_boom
     assert_eq!(got, want, "{}", out);
     assert!(out.contains("t.Gen.go uses effect `io.console`"), "{}", out);
     assert!(out.contains("t.Gen.go may panic"), "{}", out);
-    assert!(out.contains("t.Act.act uses effect `io.console`"), "{}", out);
-    assert!(out.contains("t.Act.boom may panic"), "{}", out);
+    assert!(out.contains("t.Act.act (through dyn) uses effect `io.console`"), "{}", out);
+    assert!(out.contains("t.Act.boom (through dyn) may panic"), "{}", out);
 }
 
 #[test]
