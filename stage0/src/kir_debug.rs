@@ -12,7 +12,7 @@
 //! - 整数は 10 進 (除算と剰余のループ。新しい命令は使わない)、`bool` は `true` / `false`、`char` は `'x'`、`&str` は `"…"`
 //!   (`\` `"` 改行だけを `\\` `\"` `\n` にする。木走査の `py_quote`)。
 //! - 型は元の定義 (`Def`) の型で分類する (KIR の型は `char` と `u32`、`&str` と `&[T]` を区別しないため)。
-//!   `derive [Debug]` を持たない型・利用者の `debug_fmt` がある型・タプル・浮動小数・128 ビット整数・Vec / String は、理由付きで未対応。
+//!   `derive [Debug]` を持たない型・利用者の `debug_fmt` がある型・タプル・128 ビット整数は、理由付きで未対応 (`Vec<T>` / `String` は要素の表示に従う)。
 //! - `char` の表示は Rust の `{:?}` と同じ (`\n` `\r` `\t` `\0` `\'` `\\` と、制御文字の `\u{..}`)。ASCII 以外は、
 //!   常に表示できる文字として UTF-8 のまま出す (表示できない Unicode の `\u{..}` 化はしない)。
 //!
@@ -262,7 +262,7 @@ fn raw_fn(ty: Ty, fat: Ty, name: &str) -> Func {
 }
 
 /// `ksn.fmt.append(h, ptr, len)`: 文字列 `h` (`{ptr, len, cap}`) の末尾へ `len` バイトを書く (足りなければ広げる)。
-fn append_fn(fat: Ty) -> Func {
+pub(crate) fn append_fn(fat: Ty) -> Func {
     let mut b = Fb::new(&[Ty::Ptr, Ty::Ptr, Ty::Usize], fat);
     let (h, src, n) = (0 as VId, 1 as VId, 2 as VId);
     let len = b.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
@@ -627,7 +627,7 @@ impl<'a> Gen<'a> {
             (Src::Prim(_), t) if t.is_float() => Ok(self.scalar(&format!("{}.disp", t.name()), || float_fn(t, fat))),
             (_, t) if is_str(src, t, fat) => Ok(self.scalar("str", || str_fn(fat))),
             (Src::Named(name, _, _), t) if name == "alloc.string.String" && (matches!(t, Ty::Agg(_)) || (self.sink && t == Ty::Ptr)) => Ok(self.string_debug(t, fat)),
-            // `Vec<T>` (T は整数・bool・char): 先頭の {ptr, len} を `&[T]` の表示 (`[a, b]`) へ渡す。
+            // `Vec<T>` (T は `need` が表示できる型なら何でも): 先頭の {ptr, len} を `&[T]` の表示 (`[a, b]`) へ渡す。
             (Src::Named(name, args, _), t) if name == "alloc.vec.Vec" && !args.is_empty() && (matches!(t, Ty::Agg(_)) || (self.sink && t == Ty::Ptr)) => {
                 self.vec_debug(&args[0], t, fat, file)
             }
@@ -658,7 +658,7 @@ impl<'a> Gen<'a> {
             // `&[T]` / `&[T; N]` (T は 64 ビット以下の整数・bool・char): 長さと要素ごとの比較。
             (Src::Ref(_, inner, _), t) if t == fat && matches!(&**inner, Src::Slice(_) | Src::Array(_, _)) => {
                 let (Src::Slice(e) | Src::Array(e, _)) = &**inner else { unreachable!() };
-                match super::conv(e).filter(|x| (x.is_int() && x.bits() <= 64) || *x == Ty::Bool) {
+                match super::conv(e).filter(|x| (x.is_int() && x.bits() <= 64) || *x == Ty::Bool || x.is_float()) {
                     Some(et) => Ok(self.slice_eq_elem(fat, fat, &format!("slice.{}", et.name()), et)),
                     None => Err(format!("要素の型 {} の比較は未対応", show(e))),
                 }
@@ -670,7 +670,8 @@ impl<'a> Gen<'a> {
             (Src::Named(name, args, _), Ty::Agg(i)) if args.is_empty() => self.agg_eq(name, i, file),
             (Src::Tuple(es), Ty::Agg(i)) => self.tuple_eq(es, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, true),
-            (Src::Prim(_), t) if t.is_float() => Err(format!("型 {} の比較は未対応 (浮動小数は失敗の文言に値を出せない)", t.name())),
+            // 浮動小数は IEEE の == (`fcmp oeq`。NaN は不一致、-0.0 == 0.0。木走査の veq と同じ)。
+            (Src::Prim(_), t) if t.is_float() => Ok(self.scalar_eq(&t.name(), t, fat)),
             (Src::Ref(_, inner, _), t) => self.need_eq(inner, t, file),
             (other, t) => Err(format!("型 {} ({}) の比較は未対応", show(other), t.name())),
         }
@@ -698,12 +699,16 @@ impl<'a> Gen<'a> {
     }
 
     /// `&[T]` / `&[T; N]` の表示 (`[a, b, c]`。木走査の `debug_str` と同じ)。値は `fat` (`{ptr, len}`)。
-    /// 要素はスカラー (整数・bool・char) だけ。要素の表示の関数を要素ごとに呼ぶ (区切りは `, `)。
+    /// 要素は `need` が表示できる型なら何でもよい (`String`・構造体・入れ子の `Vec` など。スカラーだけでなく)。
+    /// 要素の表示の関数を要素ごとに呼ぶ (区切りは `, `)。
     fn slice_debug(&mut self, e: &Src, file: &str) -> Result<String, String> {
         let fat = self.fat()?;
-        let et = super::conv(e)
-            .filter(|t| (t.is_int() && t.bits() <= 64) || matches!(t, Ty::Bool | Ty::U32))
-            .ok_or_else(|| format!("要素の型 {} の Debug 表示は未対応", show(e)))?;
+        // 要素の KIR の型は型表に入れる側で決める (`String` など所有物を持つ要素も含む)。
+        let et = self
+            .aggs
+            .borrow_mut()
+            .lower_ty(self.p, file, e)
+            .map_err(|w| format!("要素の型 {} の Debug 表示は未対応 ({})", show(e), w))?;
         let size = crate::kir::size_of(&self.aggs.borrow().defs, et);
         let name = format!("slice<{}>", show(e).replace(' ', ""));
         let k = key(&name);
@@ -751,7 +756,7 @@ impl<'a> Gen<'a> {
 
     /// `&str` の等しさ: 長さが等しく、バイトがすべて一致する。
     /// `Vec<T>` の表示: 値は {ptr, len, cap} の `vec` (局所はヘッダの参照 `ptr`)。先頭の {ptr, len} から `&[T]` を作って
-    /// `slice_debug` に渡す (木走査の `debug_str` と同じ `[a, b]`)。
+    /// `slice_debug` に渡す (木走査の `debug_str` と同じ `[a, b]`。要素が `String` なら `"aa"`、入れ子の `Vec` も recursing)。
     fn vec_debug(&mut self, e: &Src, ty: Ty, fat: Ty, file: &str) -> Result<String, String> {
         let name = format!("vec<{}>", show(e).replace(' ', ""));
         let k = key(&name);

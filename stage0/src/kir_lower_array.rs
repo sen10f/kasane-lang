@@ -87,8 +87,8 @@ impl<'a> Lw<'a> {
         };
         let Some(x) = self.expr(&f[0])? else { return Ok(None) };
         let et = self.vty(x);
-        if !(et.is_int() || et.is_float() || matches!(et, Ty::Bool | Ty::Ptr)) {
-            return self.err(line, "配列の要素の型は段階 1 の対象外 (要素は整数・浮動小数・bool・ptr だけ)");
+        if !elem_ok(self, et) {
+            return self.err(line, "配列の要素の型は段階 1 の対象外 (要素は整数・浮動小数・bool・ptr、所有物を持たない集成体だけ)");
         }
         let Some(size) = elem_size(self, et) else {
             return self.err(line, "配列の要素の大きさが決まらない (段階 1 の対象外)");
@@ -117,7 +117,7 @@ impl<'a> Lw<'a> {
             self.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: hp[0], b: k })
         };
         let p = self.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
-        self.emit(Ty::Unit, Op::MemStore { ty: et, p, off: 0, v: x });
+        super::coll::store_elem(self, p, et, x);
         let one = self.emit(Ty::Usize, Op::Const(1));
         let next = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: hp[0], b: one });
         self.goto(hb, vec![next]);

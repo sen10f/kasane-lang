@@ -234,7 +234,13 @@ impl<'a> Lw<'a> {
         let made = if debug { g.need(&sa, ta, &file) } else { g.need_display(&sa, ta, &file) };
         let k = match made {
             Ok(k) => k,
-            Err(w) => return self.err(line, format!("push_{} を下ろせない: {}", if debug { "debug" } else { "display" }, w)),
+            Err(w) => {
+                // 型が利用者の `debug_fmt` / `display_fmt` を持てば、そこへ `Formatter` ごと渡す (木走査と同じ)。
+                if let Some(r) = self.user_fmt_sink(e, h, a, ta, &sa, debug) {
+                    return r;
+                }
+                return self.err(line, format!("push_{} を下ろせない: {}", if debug { "debug" } else { "display" }, w));
+            }
         };
         for (f, c) in std::mem::take(&mut g.out) {
             self.coll.extra.push((f, c));
@@ -243,6 +249,71 @@ impl<'a> Lw<'a> {
         self.emit(Ty::Unit, Op::Call { callee: k, args: vec![a, h] });
         let u = self.unit();
         Ok(Some(self.emit(rt, Op::Ok(u))))
+    }
+
+    /// `push_debug` / `push_display` で、値の型 `sa` が利用者の `debug_fmt` / `display_fmt` を持つ場合の下ろし。
+    /// `core.fmt.Formatter` を作って利用者の関数へ `(&値, &mut Formatter)` で渡し、`written()` のバイト列を
+    /// `String` の末尾へ追記する。関数の戻り値の `Result` は捨てる (木走査の `debug_str` と同じ)。
+    fn user_fmt_sink(&mut self, e: &V, h: VId, a: VId, ta: Ty, sa: &Src, debug: bool) -> Option<LR<Option<VId>>> {
+        let Src::Named(name, _, _) = sa else { return None };
+        let m = if debug { "debug_fmt" } else { "display_fmt" };
+        let fname = format!("{}.{}", name, m);
+        let di = *self.p.funcs.get(&fname)?;
+        let cd = &self.p.defs[di];
+        if cd.body.is_none() {
+            return None;
+        }
+        let rt = self.ty_of(e).ok()?;
+        if !matches!(rt, Ty::Res(Pay::Unit, _)) {
+            return None;
+        }
+        let Ty::Agg(ai) = ta else { return None };
+        let ret = super::coll::sig_ty(self, &crate::types::from_v(&cd.ret, &std::collections::HashSet::new()))?;
+        // `self` の値を置く確保を作り `&T` にする。
+        let asz = self.aggs.borrow().defs[ai as usize].size;
+        let an = self.emit(Ty::Usize, Op::Const(asz as i128));
+        let ap = self.emit(Ty::Ptr, Op::HeapAlloc(an));
+        self.emit(Ty::Unit, Op::MemStore { ty: ta, p: ap, off: 0, v: a });
+        let aref = self.emit(Ty::Ref(false, Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: ap });
+        // `Formatter` を生成して確保する (`&mut` と `&` は同じアドレスから)。
+        let fi = self.aggs.borrow().agg_index("core.fmt.Formatter")?;
+        let fty = Ty::Agg(fi);
+        let fsz = self.aggs.borrow().defs[fi as usize].size;
+        let cap = self.emit(Ty::Usize, Op::Const(256));
+        let newc = "core.fmt.Formatter.new".to_string();
+        self.callees.insert(newc.clone());
+        let fv = self.emit(fty, Op::Call { callee: newc, args: vec![cap] });
+        let fnn = self.emit(Ty::Usize, Op::Const(fsz as i128));
+        let fp = self.emit(Ty::Ptr, Op::HeapAlloc(fnn));
+        self.emit(Ty::Unit, Op::MemStore { ty: fty, p: fp, off: 0, v: fv });
+        let fmut = self.emit(Ty::Ref(true, Pointee::Agg(fi)), Op::Bitcast { src: Ty::Ptr, a: fp });
+        let fsh = self.emit(Ty::Ref(false, Pointee::Agg(fi)), Op::Bitcast { src: Ty::Ptr, a: fp });
+        self.callees.insert(fname.clone());
+        let r = self.emit(ret, Op::Call { callee: fname, args: vec![aref, fmut] });
+        super::coll::drop_value(self, r, ret);
+        // 書いたバイト列 `written()` を `String` の末尾へ (`ksn.fmt.append`)。
+        let wc = "core.fmt.Formatter.written".to_string();
+        self.callees.insert(wc.clone());
+        let fat = self.fat_ty();
+        let bytes = self.emit(fat, Op::Call { callee: wc, args: vec![fsh] });
+        let hp = match self.vty(h) {
+            Ty::Ref(_, Pointee::Agg(_)) => self.emit(Ty::Ptr, Op::Bitcast { src: self.vty(h), a: h }),
+            Ty::Agg(hi) => {
+                let hn = self.emit(Ty::Usize, Op::Const(self.aggs.borrow().defs[hi as usize].size as i128));
+                let hpv = self.emit(Ty::Ptr, Op::HeapAlloc(hn));
+                self.emit(Ty::Unit, Op::MemStore { ty: Ty::Agg(hi), p: hpv, off: 0, v: h });
+                hpv
+            }
+            _ => h,
+        };
+        let bp = self.emit(Ty::Ptr, Op::Field { a: bytes, off: 0 });
+        let bl = self.emit(Ty::Usize, Op::Field { a: bytes, off: 8 });
+        let app = super::debug::APPEND.to_string();
+        self.callees.insert(app.clone());
+        self.coll.extra.push((super::debug::append_fn(fat), std::collections::BTreeSet::new()));
+        self.emit(Ty::Unit, Op::Call { callee: app, args: vec![hp, bp, bl] });
+        let u = self.unit();
+        Some(Ok(Some(self.emit(rt, Op::Ok(u)))))
     }
 
     /// 局所変数どうしの `String == String` / `!=`: ヘッダの参照を `<String>.$eq` に渡す (読むだけで移さない)。

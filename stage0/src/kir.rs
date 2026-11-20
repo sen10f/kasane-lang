@@ -2543,7 +2543,9 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                     Op::Bitcast { src, a } => {
                         // 参照 (集成体への) と ptr の相互変換: 構造体のフィールドの Vec / String のヘッダを借用のヘッダとして扱う (設計_KIR.md 13.7)。
                         let ok = matches!((src, i.ty), (Ty::F64, Ty::U64) | (Ty::U64, Ty::F64) | (Ty::F32, Ty::U32) | (Ty::U32, Ty::F32))
-                            || matches!((src, i.ty), (Ty::Ref(..), Ty::Ptr) | (Ty::Ptr, Ty::Ref(..)));
+                            || matches!((src, i.ty), (Ty::Ref(..), Ty::Ptr) | (Ty::Ptr, Ty::Ref(..)))
+                            // 参照どうしは同じ指す先なら機械語では同じ (アドレス) なので読み替えを許す (`&T` → `&mut T` の受け手など)。
+                            || matches!((src, i.ty), (Ty::Ref(_, p), Ty::Ref(_, q)) if *p == q);
                         if !ok || ty_of(*a)? != *src {
                             return Err(format!("{} から {} へのビット再解釈は使えない", src.name(), i.ty.name()));
                         }
@@ -2740,12 +2742,13 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                     }
                     Op::MemLoad { p, .. } => {
-                        if !memable(i.ty) || ty_of(*p)? != Ty::Ptr {
-                            return Err("load は ptr から整数・浮動小数・bool・ptr を読むはず".into());
+                        // 集成体の読み出し (`Vec<Struct>` の要素など) と `Option` / `Result` の枠 (`Vec<Option<T>>` の要素など) は認める。
+                        if !(memable(i.ty) || matches!(i.ty, Ty::Agg(_) | Ty::Opt(_) | Ty::Res(..))) || ty_of(*p)? != Ty::Ptr {
+                            return Err("load は ptr から整数・浮動小数・bool・ptr・集成体を読むはず".into());
                         }
                     }
                     Op::MemStore { ty, p, v, .. } => {
-                        if i.ty != Ty::Unit || !memable(*ty) || ty_of(*p)? != Ty::Ptr || ty_of(*v)? != *ty {
+                        if i.ty != Ty::Unit || !(memable(*ty) || matches!(*ty, Ty::Agg(_) | Ty::Opt(_) | Ty::Res(..))) || ty_of(*p)? != Ty::Ptr || ty_of(*v)? != *ty {
                             return Err("store の型が合わない".into());
                         }
                     }
@@ -3151,14 +3154,14 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                         // スレッドの補助の関数 (`ksn.thr.*`、設計_KIR.md 22 章) は、spawn した側のクロージャの効果を呼ぶので、
                         // 効果と panic の包含は spawn 側 (クロージャの下ろし) で確かめ済みとして、ここでは見ない。
-                        let thr = callee.starts_with("ksn.thr.") || callee.starts_with("ksn.chan.");
+                        let thr = callee.starts_with("ksn.thr.") || callee.starts_with("ksn.chan.") || callee.starts_with("ksn.atm.");
                         // 中断の枠の関数 (`ksn.task.*`、`F.new` / `F.poll`) も、呼び出し元の宣言で効果を検査済みとして見ない (設計_KIR.md 26 章)。
                         let thr = thr || crate::kir_suspend::exempt_uses(callee);
-                        if g.may_panic && !f.may_panic && !thr && !f.key.starts_with("ksn.thr.") {
+                        if g.may_panic && !f.may_panic && !thr && !f.key.starts_with("ksn.thr.") && !f.key.starts_with("ksn.atm.") {
                             return Err(format!("panics never の関数が panics may の {} を呼ぶ", callee));
                         }
                         if let Some(u) = g.uses.iter().find(|u| !fu.contains(u.as_str())) {
-                            if !thr && !f.key.starts_with("ksn.thr.") && !crate::kir_suspend::exempt_uses(&f.key) {
+                            if !thr && !f.key.starts_with("ksn.thr.") && !f.key.starts_with("ksn.atm.") && !crate::kir_suspend::exempt_uses(&f.key) {
                                 return Err(format!("{} の uses {} が呼び出し元にない", callee, u));
                             }
                         }

@@ -208,6 +208,20 @@ impl<'a> Lw<'a> {
                 }
                 let ai = match t {
                     Ty::Agg(ai) | Ty::Ref(_, Pointee::Agg(ai)) => ai,
+                    // `&String` / `&Vec<T>` の局所はヘッダのアドレス (ptr) で持つ。種類の表から元の型を戻す
+                    // (`x.to_json(out)` の `x: &String<System>` など、単相化の型引数の推論に使う)。
+                    Ty::Ptr => {
+                        let sys = || Src::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default());
+                        return match self.coll.kinds.get(&s) {
+                            Some(coll::Kind::String) => Some(Src::Ref(false, Box::new(Src::Named("alloc.string.String".into(), vec![sys()], crate::types::Rgs::default())), crate::types::Region::Unk)),
+                            Some(coll::Kind::Vec(Some(el))) => {
+                                let es = super::ext::elem_src(self, *el)?;
+                                Some(Src::Ref(false, Box::new(Src::Named("alloc.vec.Vec".into(), vec![es, sys()], crate::types::Rgs::default())), crate::types::Region::Unk))
+                            }
+                            Some(coll::Kind::Str) => Some(Src::Ref(false, Box::new(Src::Prim("str".into())), crate::types::Region::Unk)),
+                            _ => None,
+                        };
+                    }
                     _ => return None,
                 };
                 let (name, args) = self.aggs.borrow().generic_args.get(&ai).cloned()?;
@@ -356,6 +370,15 @@ impl<'a> Lw<'a> {
             let Some(p) = Pointee::of(stt) else {
                 return self.err(line, format!("受け手 {} の型は段階 1 の対象外", segs[0]));
             };
+            // 所有物の印を持つ局所は、渡した `&` から返ってきた参照越しに書き込まれることがある
+            // (`t.state_ref().insert(..)` など)。永続のスタックスロットに昇格し、後続の読みがその書き込みを見るようにする。
+            if super::coll::val_slot_of(self, s) {
+                let ptr = self.alloca(p);
+                self.emit(Ty::Unit, Op::Store { ptr, val: sv });
+                self.mark_mem(ptr);
+                self.slots[s] = (ptr, stt);
+                return Ok(Some((self.ref_value(ptr, p, !want_mut), None, false)));
+            }
             let ptr = self.alloca(p);
             self.emit(Ty::Unit, Op::Store { ptr, val: sv });
             let rv = self.ref_value(ptr, p, !want_mut);
@@ -430,6 +453,16 @@ impl<'a> Lw<'a> {
                 _ => true,
             };
             return Ok(Some((v, None, need_hold)));
+        }
+        // 呼び出し結果が参照の値ならそのまま受け手にする (`t.state_ref().insert(..)` など。検査器が許した参照越しの受け手と同じく、アドレスをそのまま渡す)。
+        if by_ref && matches!(self.vty(v), Ty::Ref(_, _)) {
+            let rv = self.coerce(v, self_ty);
+            // 共有参照を `&mut` の受け手にする形は、同じ指す先への参照として読み替える。
+            let rv = match (self.vty(rv), self_ty) {
+                (Ty::Ref(_, p), Ty::Ref(_, q)) if self.vty(rv) != self_ty && p == q => self.emit(self_ty, Op::Bitcast { src: self.vty(rv), a: rv }),
+                _ => rv,
+            };
+            return Ok(Some((rv, None, false)));
         }
         if want_mut {
             return self.err(line, "&mut の受け手は名前・フィールド・*参照 だけ段階 1 の対象");

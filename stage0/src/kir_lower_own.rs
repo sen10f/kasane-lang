@@ -462,7 +462,17 @@ pub(super) fn match_get_mut(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             if !matches!(st(&g[1]).as_str(), "get_mut" | "get") || a.len() != 1 {
                 return None;
             }
-            (chain_of(lw, &g[0])?, &a[0])
+            let (s, names) = chain_of(lw, &g[0])?;
+            // 受け手が Vec / スライスでない (`self.state.get_mut(..)` のような独自のメソッド) なら特別扱いしない。
+            let k = if names.is_empty() {
+                lw.coll.kinds.get(&s).cloned()
+            } else {
+                field_src(lw, s, &names).and_then(|src| coll::kind_of_src(lw, &src))
+            };
+            if !matches!(k, Some(Kind::Vec(_)) | Some(Kind::Slice(_))) {
+                return None;
+            }
+            ((s, names), &a[0])
         }
         "Call" => {
             let g = nf(scrut);
@@ -607,7 +617,8 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
     };
     let res: Option<Ty> = match lw.src_ty(e)? {
         Src::Never => None,
-        t => Some(lw.conv_t(&t).ok_or_else(|| format!("行 {}: match の型 {:?} は段階 1 の対象外", line, t))?),
+        // `&Vec` / `&String` の値はヘッダのアドレス (`ptr`) で持つので `value_ty` を先に見る。
+        t => Some(super::coll::value_ty(lw, &t).or_else(|| lw.conv_t(&t)).ok_or_else(|| format!("行 {}: match の型 {:?} は段階 1 の対象外", line, t))?),
     };
     let carry = matches!(res, Some(t) if t != Ty::Unit);
     let bodies: Vec<&V> = arms.iter().map(|(_, b)| *b).collect();
@@ -648,12 +659,25 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
                 bind_struct_pat(lw, line, pat, r, src.as_ref())?;
             }
             if let GetBind::Name(name) = &bind {
+                let src = match lw.src_ty(&nf(e)[0]) {
+                    Ok(Src::Named(n, a, _)) if n == "Option" => a.into_iter().next(),
+                    _ => None,
+                };
                 if is_get {
-                    let src = match lw.src_ty(&nf(e)[0]) {
-                        Ok(Src::Named(n, a, _)) if n == "Option" => a.into_iter().next(),
-                        _ => None,
-                    };
                     bind_elem_ref(lw, line, name, addr, elem, src.as_ref(), false)?;
+                } else if let Ty::Agg(ai) = elem {
+                    if super::agg::is_vec_name(&lw.agg_def(ai).name) {
+                        // `get_mut` で束縛した `&mut Vec<T>` もヘッダのアドレス (`ptr`) で持ち、種類を結び付ける。
+                        let kind = src.as_ref().and_then(|t| coll::kind_of_src(lw, t)).or_else(|| lw.aggs.borrow().vec_elem(elem).map(|e| Kind::Vec(Some(e))));
+                        lw.bind(name, addr, Ty::Ptr);
+                        let s = lw.lookup(name).expect("束縛した名前");
+                        lw.coll.kinds.insert(s, kind.unwrap_or(Kind::Vec(None)));
+                        lw.coll.borrowed.insert(s);
+                    } else {
+                        let rt = Ty::Ref(true, p);
+                        let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
+                        lw.bind(name, r, rt);
+                    }
                 } else {
                     let rt = Ty::Ref(true, p);
                     let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });

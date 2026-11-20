@@ -1096,7 +1096,8 @@ end t.main
 /// KIR の未対応の理由は、ソースの行番号を出す (`nline` は行と列を詰めた値なので、KIR は行だけを取り出す)。
 #[test]
 fn kir_unsupported_reasons_show_the_source_line() {
-    let src = "fn t.f(n: u64) -> u64 uses [] panics never\n    let a = 1u32\n    core.mem.drop(a)\n    let c = core.sync.AtomicU64.new(n)\n    c.load(core.sync.Ordering.SeqCst)\nend t.f\n\nfn t.main() -> () uses [] panics never\nend t.main\n";
+    // Atomic は下ろせるようになった (gap 5) ので、まだ下ろせない形として配列の `check.eq` を使う。
+    let src = "fn t.f(n: u64) -> u64 uses [] panics may\n    let a = 1u32\n    core.mem.drop(a)\n    core.check.eq([1u64, 2u64], [1u64, n])\n    n\nend t.f\n\nfn t.main() -> () uses [] panics may\n    core.mem.drop(t.f(3u64))\nend t.main\n";
     let t = Tmp::new("kir_reason_line", src);
     let o = run(&["kir", "t.f"], &t.0);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stderr));
