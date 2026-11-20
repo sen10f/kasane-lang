@@ -471,18 +471,27 @@ impl<'a> W<'a> {
     }
 
     fn bind_pat(&mut self, pat: &TPat, v: Val, reline: bool) {
+        self.bind_pat_ty(pat, v, reline, None);
+    }
+
+    /// `ty` は被束縛値の型 (パターンの束縛に型の情報が無いとき、タプルの要素の型をここから取る)。
+    fn bind_pat_ty(&mut self, pat: &TPat, v: Val, reline: bool, ty: Option<&Ty>) {
         let v = if reline { v.unstamp_locals() } else { v };
         match pat.kind {
             "PBind" => {
-                let t = pat.info.as_ref().and_then(|i| i.bind.as_ref().map(|b| b.1.clone())).unwrap_or(Ty::Unknown);
+                let t = pat.info.as_ref().and_then(|i| i.bind.as_ref().map(|b| b.1.clone())).or_else(|| ty.filter(|t| !matches!(t, Ty::Unknown | Ty::Var(_))).cloned()).unwrap_or(Ty::Unknown);
                 if let Some(n) = &pat.name {
                     self.define(n, pat.id, v, &t);
                 }
             }
             "PTuple" => {
+                let tys: Option<Vec<Ty>> = match ty.map(|t| t.strip()) {
+                    Some(Ty::Tuple(xs)) if xs.len() == pat.children.len() => Some(xs.clone()),
+                    _ => None,
+                };
                 for (i, c) in pat.children.iter().enumerate() {
                     let cv = if v.parts.len() == pat.children.len() { v.parts[i].clone() } else { v.flat() };
-                    self.bind_pat(c, cv, false);
+                    self.bind_pat_ty(c, cv, false, tys.as_ref().map(|x| &x[i]));
                 }
             }
             _ => {
@@ -1185,7 +1194,8 @@ impl<'a> W<'a> {
                         Some(_) => v.with_line(LEAF),
                         None => v,
                     };
-                    self.bind_pat(pat, v, false);
+                    let ity = init.as_ref().map(|x| x.ty.clone());
+                    self.bind_pat_ty(pat, v, false, ity.as_ref());
                 }
                 TStmt::Expr(x) => {
                     let v = self.ev(x);
