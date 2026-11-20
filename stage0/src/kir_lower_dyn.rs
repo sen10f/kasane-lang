@@ -15,10 +15,10 @@ use crate::check::{items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{size_of, Block, Cc, Func, Op, Pointee, Term, Ty, VId};
 use crate::parser::V;
 use crate::program::{Def, Program, Target as Tgt};
-use crate::types::{from_v, ExprTy, Ty as Src};
+use crate::types::{from_v, Ty as Src};
 
 use super::agg::{trait_fqn, AggTab, VtEntry};
-use super::{coll, Lw, LR};
+use super::{coll, Lw, TyIdx, LR};
 
 /// 呼び先の標準ライブラリの関数の名前 (`import` した別名の形 `boxed.Box.new` も FQN にする)。
 fn canon(lw: &Lw, segs: &[String]) -> Option<String> {
@@ -317,7 +317,7 @@ fn method(lw: &mut Lw, e: &V, recv: VId, m: &str, args: &[V]) -> LR<Option<VId>>
 /// 補助関数を 1 つ組み立てる (`Lw` の部品を借りて、手でブロックを置く)。
 pub(super) fn build<'a>(
     p: &'a Program,
-    tys: &'a BTreeMap<(String, u32), ExprTy>,
+    tys: &'a TyIdx,
     aggs: &'a std::cell::RefCell<AggTab>,
     def: &'a Def,
     params: &[Ty],
@@ -345,7 +345,7 @@ pub(super) fn build<'a>(
 
 /// 登録された `dyn` の呼び出しと解放の補助関数を `ok` に足す。呼び先が下ろせなかった補助関数は、
 /// 既存の「呼び先が未対応」の規則で呼び出し元ごと外れる。
-pub(super) fn synth(p: &Program, tys: &BTreeMap<(String, u32), ExprTy>, aggs: &std::cell::RefCell<AggTab>, def: &Def, ok: &mut Vec<(Func, BTreeSet<String>)>) {
+pub(super) fn synth(p: &Program, tys: &TyIdx, aggs: &std::cell::RefCell<AggTab>, def: &Def, ok: &mut Vec<(Func, BTreeSet<String>)>) {
     let reg = aggs.borrow().dynr.clone();
     // 呼び出しの補助関数 `dyn.call.<Tr>.<m>(data, vt, args..)`
     for ((tr, m), (pts, ret)) in &reg.calls {

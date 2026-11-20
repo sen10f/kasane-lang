@@ -17,11 +17,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::kir::{Aop, Cc, Func, Mode, Op, Term, Ty, VId};
 use crate::program::{Def, Program};
-use crate::types::ExprTy;
 
 use super::agg::AggTab;
 use super::dyn_lower::build;
-use super::{coll, Lw};
+use super::{coll, Lw, TyIdx};
 
 /// 値 `v` の型 `t` の欄の並びのうち、`Box<self_ty>` の欄 (子) を除いた所有物を解放し、子の番地を返す。
 fn split_fields(lw: &mut Lw, v: VId, fields: &[crate::kir::Field], self_ty: Ty) -> Vec<VId> {
@@ -152,7 +151,7 @@ fn body(lw: &mut Lw, ty: Ty, pv: &[VId]) -> Ty {
 
 /// 呼ばれた `derive [Drop]` の型の解放の補助関数を `ok` に足す。補助関数の中の `drop_value` が別の型の補助関数を要ることがあるので、
 /// 要る型がなくなるまで繰り返す。
-pub(super) fn synth(p: &Program, tys: &BTreeMap<(String, u32), ExprTy>, aggs: &std::cell::RefCell<AggTab>, def: &Def, ok: &mut Vec<(Func, BTreeSet<String>)>) {
+pub(super) fn synth(p: &Program, tys: &TyIdx, aggs: &std::cell::RefCell<AggTab>, def: &Def, ok: &mut Vec<(Func, BTreeSet<String>)>) {
     let mut done: BTreeSet<u32> = BTreeSet::new();
     loop {
         let todo: Vec<u32> = aggs.borrow().drop_need.iter().copied().filter(|i| !done.contains(i)).collect();
