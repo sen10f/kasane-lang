@@ -2111,9 +2111,10 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     task_lower::finish(&mut ok);
     // `extern` 宣言を KIR の関数宣言 (本体なし) にする。リンク名は `Func.link` に持つ。
     // 同梱の `std` の extern (`std.tls` の OpenSSL の関数) も、呼ぶ側の関数の呼び先として下ろす (`user` に入らないため)。
+    // 依存パッケージの `extern` (`ui.gpu.raw_ksnui_*`) も、呼ぶ側の呼び先になるので下ろす。
     let mut externs: Vec<usize> = user.to_vec();
     for (i, d) in p.defs.iter().enumerate() {
-        if d.kw == "extern" && d.name.starts_with("std.") && !externs.contains(&i) {
+        if d.kw == "extern" && !externs.contains(&i) {
             externs.push(i);
         }
     }
@@ -2179,6 +2180,24 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
             }
             // 標準ライブラリ (`spec/stdlib`) の関数は、被覆の数には入れず、理由だけ `origin: std` で出す。
             let std = crate::project::is_stdlib_file(&d.file);
+            // 総称の関数は、定義そのものではなく、呼び出しごとの単相インスタンス (`名前<型>`) を数える (下ろしは呼び出し元が単相化する)。
+            if !is_candidate(d) && test_def != Some(i) {
+                let pre = format!("{}<", d.name);
+                for k in keys.iter().filter(|k| k.starts_with(&pre)) {
+                    if !std {
+                        total += 1;
+                        low += 1;
+                    }
+                    let _ = k;
+                }
+                for (k, w) in bad.iter().filter(|(k, _)| k.starts_with(&pre)) {
+                    if !std {
+                        total += 1;
+                    }
+                    crate::s5_meter::unsupported(k, &d.file, w, std);
+                }
+                continue;
+            }
             if !std {
                 total += 1;
             }
@@ -2190,7 +2209,6 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
             }
             let why = match bad.iter().find(|(k, _)| *k == d.name) {
                 Some((_, w)) => w.clone(),
-                None if !is_candidate(d) && test_def != Some(i) => "総称の関数 (単相化していない・対象外)".to_string(),
                 None => "下ろしの理由が無い".to_string(),
             };
             crate::s5_meter::unsupported(&d.name, &d.file, &why, std);

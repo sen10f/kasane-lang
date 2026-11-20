@@ -1329,10 +1329,22 @@ pub(crate) fn check_assign(lw: &Lw, s: usize, line: usize) -> LR<()> {
 pub(crate) fn after_let(lw: &mut Lw, name: &str, init: &V) -> LR<()> {
     let Some(slot) = lw.lookup(name) else { return Ok(()) };
     // `let a = [e1, ..]`: 値は `{ptr, len}` (スライス)。要素型は先頭の要素の型
+    // `let a = [e; N]`: 値は `{ptr, len}` (スライスと同じ)。要素型は `e` の型。
+    if nname(init) == "ArrayRep" {
+        let elem = lw.ty_of(&nf(init)[0])?;
+        lw.coll.kinds.insert(slot, Kind::Slice(Some(elem)));
+        return Ok(());
+    }
     if nname(init) == "ArrayE" {
-        if let Some(first) = items(&nf(init)[0]).first() {
-            let elem = lw.ty_of(first)?;
-            lw.coll.kinds.insert(slot, Kind::Slice(Some(elem)));
+        // 空の `[]` (長さ 0): 要素は読まれない。型注釈の要素の型は使わず、種類だけ持つ (`as_mut_slice` などは値を返すだけ)。
+        match items(&nf(init)[0]).first() {
+            Some(first) => {
+                let elem = lw.ty_of(first)?;
+                lw.coll.kinds.insert(slot, Kind::Slice(Some(elem)));
+            }
+            None => {
+                lw.coll.kinds.insert(slot, Kind::Slice(None));
+            }
         }
         return Ok(());
     }
@@ -2281,6 +2293,8 @@ pub(super) fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str,
         // `String` のメソッドだけが書く (非公開のフィールド、8.3)。`Buf<u8>.as_str` は検査つき (`alloc/raw.sig`)。
         "as_str" if kind == Kind::String => Ok(Some(hdr_view(lw, h))),
         "as_slice" | "as_mut_slice" if matches!(kind, Kind::Vec(_)) => Ok(Some(hdr_view(lw, h))),
+        // 配列の局所 (`{ptr, len}` の値) の `as_slice()` / `as_mut_slice()` は同じ値。
+        "as_slice" | "as_mut_slice" if matches!(kind, Kind::Slice(_)) => Ok(Some(h)),
         // `&str.as_str()` はそのまま。
         "as_str" if kind == Kind::Str => Ok(Some(h)),
         other => lw.err(line, format!("メソッド {} は段階 1 の対象外", other)),
