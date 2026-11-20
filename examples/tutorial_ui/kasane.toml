@@ -1,0 +1,10 @@
+[package]
+name = "tutorial_ui"
+version = "0.1.0"
+edition = 1
+entry = "tutorial_ui.main"
+
+[dependencies]
+ui_event = { path = "../../ui/kasane/event" }
+ui_layout = { path = "../../ui/kasane/layout" }
+ui_tree = { path = "../../ui/kasane/tree" }

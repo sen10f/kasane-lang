@@ -307,3 +307,293 @@ Kasane に `t.0` のような位置によるフィールド参照はありませ
 ### `ksn fmt` と `ksn check` を 함께使う
 
 `ksn fmt` は書き方の揺れを直し、`ksn check` は意味の誤りを検査します。`ksn fmt --check` は、正規形でなければ E0020 を出します。新しく書いたコードは、まず `ksn fmt`、次に `ksn check`、最後に `ksn run` の順で確認してください。
+
+## 4. C の関数を呼ぶ（`extern` + `link`、`layout c` 構造体、コールバック）
+
+Kasane から C の共有ライブラリを呼ぶには、`extern` 定義に `link "<パス>:<シンボル>"` を書き、`unsafe` ブロックの中で呼びます。構造体は `layout c` で C と同じメモリ配置を宣言し、関数ポインタを引数に取る C の関数に Kasane の関数をコールバックとして渡せます。
+
+実パッケージは `examples/tutorial_ffi/` にあります。
+
+### パッケージ
+
+```text
+examples/tutorial_ffi/
+├── kasane.lock        (version = 1)
+├── kasane.toml        ([unsafe] modules = ["tutorial_ffi"])
+├── build.sh           (cc -shared -fPIC -o libffi.so c/ffi.c)
+├── c/
+│   └── ffi.c          (rect_area, rect_from, rect_grow, rect_each_vertex)
+└── src/
+    ├── tutorial_ffi.ksnh  (コメント付き。正のソース)
+    └── tutorial_ffi.ksnl  (`ksn strip` で生成。コメント無しの正規形)
+```
+
+`kasane.toml` の `[unsafe] modules` にモジュール名を列挙します（`extern` / `unsafe` / `core.ptr` を使うモジュールはここで許可する必要があります）。
+
+### ソース（主要部）
+
+C 側（`c/ffi.c`）は `Rect` / `Point` 構造体を値で渡したり値で返したり、コールバックを呼んだりします。
+
+```c
+typedef struct { double x; double y; } Point;
+typedef struct { Point min; Point max; } Rect;
+double rect_area(Rect r) { return (r.max.x - r.min.x) * (r.max.y - r.min.y); }
+Rect rect_from(Point a, Point b) { Rect r = { a, b }; return r; }
+void rect_grow(Rect *r, double d) { ... }
+typedef void (*vertex_fn)(double x, double y, void *user);
+void rect_each_vertex(Rect r, vertex_fn f, void *user) { ... }
+```
+
+`build.sh` で `libffi.so` を作ります（`ksn run` / `ksn test` はこのディレクトリを作業ディレクトリにして動くので、`link "./libffi.so:..."` は相対パスで辿れます）。
+
+Kasane 側は `layout c` の構造体を定義し、`extern` でリンクします。
+
+```kasane
+type tutorial_ffi.Rect layout c derive [Clone, Copy]
+    min: tutorial_ffi.Point
+    max: tutorial_ffi.Point
+end tutorial_ffi.Rect
+
+extern tutorial_ffi.rect_area(r: tutorial_ffi.Rect) -> f64 link "./libffi.so:rect_area"
+extern tutorial_ffi.rect_grow(r: *mut tutorial_ffi.Rect, d: f64) -> () link "./libffi.so:rect_grow"
+extern tutorial_ffi.rect_each_vertex(r: tutorial_ffi.Rect, f: fn(f64, f64, *mut tutorial_ffi.Acc) -> () uses [] panics never, user: *mut tutorial_ffi.Acc) -> () link "./libffi.so:rect_each_vertex"
+```
+
+`core.ptr.from_mut` でローカルの構造体への生ポインタを取り、`core.ptr.read` / `core.ptr.write` でコールバック側のユーザーデータを読み書きします。すべて `unsafe "ffi" "..."` ブロックの中に閉じ込めます。
+
+### 実行
+
+```bash
+cd examples/tutorial_ffi
+sh build.sh
+ksn strip
+ksn fmt
+ksn fmt --check
+ksn check
+ksn test --both
+```
+
+出力（`ksn test --both`）は次のとおりです。
+
+```text
+test tutorial_ffi.area.test_area ... ok (both: llvm)
+test tutorial_ffi.vertex_stats.test_vertices ... ok (both: llvm)
+
+2 passed; 0 failed
+```
+
+`ksn run` も `tutorial_ffi ok` と出力して終了コード 0 になります（`libffi.so` がカレントディレクトリにあることが前提です）。
+
+### 補足
+
+- `.ksnl` にはコメントを書けない（E0059）。コメントは `.ksnh` に書き、`ksn strip` で `.ksnl` を生成します（両方コミットします）。
+- `link "./libffi.so:..."` のように `./` を付けると、インタプリタがカレントディレクトリの共有ライブラリを `dlopen` できます。`link "libffi.so:..."` のような裸のファイル名は解決できないことがあります。
+
+## 5. `ksn bindgen --c` で C の見出しからバインディングを生成
+
+`ksn bindgen --c <見出し.h>` は libclang（`dlopen` で実行時にだけ開く；本体にはリンクしない）で C の見出しを解析し、Kasane の `extern` 宣言と `pub fn` ラッパーを生成します。生成物は `ksn fmt` の正規形そのもので、`.ksnh` と `.ksnl` の両方を書き出します。
+
+実パッケージは `examples/tutorial_bindgen/` にあります。
+
+### パッケージ
+
+```text
+examples/tutorial_bindgen/
+├── kasane.lock   (version = 1)
+├── kasane.toml   ([unsafe] modules = ["tutorial_bindgen"])
+├── build.sh      (cc -shared -fPIC -o libdemo.so c/demo.c)
+├── c/
+│   ├── demo.h    (Color 列挙, Point 構造体, MAX_POINTS 定数, area/make_point/for_each)
+│   └── demo.c
+└── src/
+    └── tutorial_bindgen.ksnl  (bindgen の生成物 + main)
+```
+
+### 生成
+
+```bash
+cd examples/tutorial_bindgen
+sh build.sh
+ksn bindgen --c c/demo.h --prefix tutorial_bindgen --link libdemo.so -o src/tutorial_bindgen.ksnh
+```
+
+生成例（`src/tutorial_bindgen.ksnh` の一部）：
+
+```kasane
+const tutorial_bindgen.RED: u32 = 0u32 pub
+const tutorial_bindgen.MAX_POINTS: i32 = 100i32 pub
+
+type tutorial_bindgen.Point layout c derive [Clone, Copy] pub
+    x: f64
+    y: f64
+end tutorial_bindgen.Point
+
+extern tutorial_bindgen.raw_area(p: tutorial_bindgen.Point) -> f64 link "./libdemo.so:area"
+extern tutorial_bindgen.raw_make_point(x: f64, y: f64) -> tutorial_bindgen.Point link "./libdemo.so:make_point"
+
+fn tutorial_bindgen.area(p: tutorial_bindgen.Point) -> f64 uses [] panics may pub
+    unsafe "bindgen" "C の関数 area を呼ぶ" {
+        tutorial_bindgen.raw_area(p)
+    }
+end tutorial_bindgen.area
+```
+
+`extern` はモジュール内部からしか見えないため `raw_` 接頭辞をつけ、`pub fn` ラッパー（`unsafe "bindgen" "..."` で包む）で外部から呼べるようにします。`#define` の整数定数は最小の整数型の `const` に、列挙体は各要素を `const` に、構造体は `layout c` に、関数ポインタは `fn(..) -> ..` になります。ビットフィールド・`union`・可変長引数・`static`/`inline` 関数などは飛ばされ、理由が冒頭コメントに残されます。
+
+生成後に `main` を同じモジュールに追記し、`[unsafe] modules` にパッケージ名（= prefix）を入れます。
+
+### 実行
+
+```bash
+cd examples/tutorial_bindgen
+ksn fmt --check
+ksn check
+ksn test --both
+ksn run
+```
+
+出力：
+
+```text
+tutorial_bindgen ok
+```
+
+### 補足
+
+- 出力パスはモジュール名に対応する `src/<モジュール>.ksnh` に置く（違えば注意メッセージが出る）。
+- 生成物は `ksn fmt` の形なので、`ksn fmt --check` はそのまま通ります。`--link` でリンクするライブラリ名を指定し、`build.sh` でその共有ライブラリを用意します（`ksn run` / `ksn test` で `dlopen` するためカレントディレクトリに置く）。
+- `ksn bindgen` は C++ の見出し、`long double` / `_Complex`、入れ子の無名 struct/union は未対応です（実装計画.md の 2.10dj 節 "残り" 参照）。
+
+## 6. クロスビルド（`x86_64-windows-gnu` / `aarch64-linux-gnu` / `wasm32-wasi`）
+
+`ksn build --target <三つ組>` でホストと異なるターゲット向けのネイティブ実行ファイルを作れます。出力は `target/<三つ組>/<debug|release>/` に、バンドルは作りません。
+
+実パッケージは `examples/tutorial_cross/` にあります（単純な「tutorial_cross ok」を出力するプログラム）。
+
+### 対応するターゲット
+
+`x86_64-linux-gnu`・`aarch64-linux-gnu`・`x86_64-windows-gnu`・`wasm32-unknown-unknown`・`wasm32-wasi`（省略は今の機械）。
+
+### 実行と結果
+
+```bash
+cd examples/tutorial_cross
+ksn fmt --check
+ksn check
+ksn build --target x86_64-windows-gnu
+ksn build --target aarch64-linux-gnu
+ksn build --target wasm32-wasi
+```
+
+各ターゲットの出力例：
+
+```text
+native executable: target/x86_64-windows-gnu/debug/tutorial_cross.exe
+built target/x86_64-windows-gnu/debug (debug, target x86_64-windows-gnu; cross-compiled, not run here)
+native executable: target/aarch64-linux-gnu/debug/tutorial_cross.native
+built target/aarch64-linux-gnu/debug (debug, target aarch64-linux-gnu; cross-compiled, not run here)
+native executable: target/wasm32-wasi/debug/tutorial_cross.wasm
+built target/wasm32-wasi/debug (debug, target wasm32-wasi; cross-compiled, not run here)
+```
+
+### 実行に必要なもの（この機で確かめた範囲）
+
+- `aarch64-linux-gnu`: `/usr/aarch64-linux-gnu` の sysroot と `qemu-aarch64` があれば実行できます。
+
+  ```bash
+  qemu-aarch64 -L /usr/aarch64-linux-gnu target/aarch64-linux-gnu/debug/tutorial_cross.native
+  # 出力: tutorial_cross ok（終了コード 0）
+  ```
+
+- `x86_64-windows-gnu`: 組み込みの lld (MinGW) と `/usr/x86_64-w64-mingw32` の sysroot で `.exe`（PE32+）をビルドできます。実行には `wine64` が必要ですが、この機には `wine64` が入っていないためビルドのみ確かめています（実行未確認）。
+
+- `wasm32-wasi`: `.wasm` をビルドできます。WASI ランタイム（`wasmtime` など）がこの機に入っていないため、ビルドのみ確かめています（実行未確認）。
+
+### 補足
+
+- `aarch64-linux-gnu` は C の開発ファイル（`/usr/aarch64-linux-gnu`）を使い、`KSN_SYSROOT` で上書きできます。
+- `x86_64-windows-gnu` は `gcc-mingw-w64-x86-64-posix` と `mingw-w64-x86-64-dev` が必要です（ここでは導入済み）。
+- `wasm32` と `--backend c` は C のライブラリを持てないので、`[native]` を指定すると E9040 になります。
+- `ffi` の例（`libc.so.6` を引く）は Windows では動きません（実装計画.md の 2.10dg 節 "未対応" 参照）。
+
+## 7. UI パッケージの第一歩（layout + tree + event、GPU は使わない）
+
+`ui/` 以下に Kasane 製の UI パッケージがあります。この節では `ui.layout`（レイアウト）・`ui.tree`（要素木・差分更新）・`ui.event`（イベント送達・ヒットテスト）の3つだけを触り、GPU 描画は扱いません。詳細は各パッケージの `ui/kasane/<名前>/README.md` を参照してください。
+
+実パッケージは `examples/tutorial_ui/` にあります（`ui/` の3パッケージを `path` 依存として使います）。
+
+### パッケージ
+
+```text
+examples/tutorial_ui/
+├── kasane.lock   (version = 1、path 依存を [[package]] で記録)
+├── kasane.toml   ([dependencies] に ui_layout / ui_tree / ui_event)
+└── src/
+    └── tutorial_ui.ksnl
+```
+
+`kasane.toml` は `ui/kasane/` への相対パスで依存を指定します：
+
+```toml
+[dependencies]
+ui_layout = { path = "../../ui/kasane/layout" }
+ui_tree   = { path = "../../ui/kasane/tree" }
+ui_event  = { path = "../../ui/kasane/event" }
+```
+
+`ksn update` で `kasane.lock` に `[[package]]` エントリを書き込みます（`version = 1` のまま、`source = "path+..."` 形式）。
+
+### ソース（主要部）
+
+```kasane
+fn tutorial_ui.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut tree = ui.layout.Tree.new()
+    let root_style = ui.layout.Style.default()
+    let root = tree.push_node(root_style)
+    let child_style = ui.layout.Style.default()
+    let c = tree.push_node(child_style)
+    tree.push_child(root, c)
+    tree.layout(root, 300.0f32, 200.0f32)
+    let rect = tree.rect(c)
+    core.mem.drop(rect)
+
+    let mut utree = ui.tree.Tree.new()
+    let root2 = utree.push_node(ui.tree.ViewKind.Block, ui.layout.Style.default(), None).unwrap()
+    let child2 = utree.push_node(ui.tree.ViewKind.Block, ui.layout.Style.default(), None).unwrap()
+    core.mem.drop(utree.push_child(root2, child2))
+    core.check.eq(utree.child_count(root2), 1usize)
+
+    let target = ui.event.hit_test(&tree, root, 150.0f32, 150.0f32)
+    core.mem.drop(target)
+
+    std.io.print_line("tutorial_ui ok")?
+    Ok(())
+end tutorial_ui.main
+```
+
+`ui.layout.Style` / `Size` の欄はモジュール非公開なので、外部からは `Style.default()` などの既定値を使い、`push_node` / `push_child` / `layout` / `rect` で木を組んで矩形を読みます。`ui.tree.Tree` は `push_node` / `push_child` / `child_count` で要素木を構築し、`ui.event.hit_test` でレイアウト矩形上のヒットテストを行います。
+
+### 実行
+
+```bash
+cd examples/tutorial_ui
+ksn fmt --check
+ksn check
+ksn test --both
+ksn run
+```
+
+出力：
+
+```text
+tutorial_ui ok
+```
+
+`ksn test --both` は `ui.layout` / `ui.tree` / `ui.event` 各パッケージの内部テスト（それぞれ 16/13/15 件）も 0 件の失敗で通ります。
+
+### 補足
+
+- 3パッケージとも `ksn test --both` でインタープリタとネイティブバンドルの両方で一致を確認しています（浮動小数点比較や `dyn.call` など、KIR に下ろせない一部はインタプリタ・バンドル実行にフォールバックします）。
+- GPU 描画やウィンドウバックエンドはこの3パッケージには含まれていません。`ui/` の `native/` ディレクトリや GPU 関連は別のロードマップ項目です。
+- 各パッケージの設計・API 全容は `ui/kasane/layout/README.md`、`ui/kasane/tree/README.md`、`ui/kasane/event/README.md` を参照してください。
+

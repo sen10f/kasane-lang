@@ -1,0 +1,89 @@
+type tutorial_ffi.Acc layout c derive [Clone, Copy]
+    count: i32
+    sum: f64
+end tutorial_ffi.Acc
+
+type tutorial_ffi.Point layout c derive [Clone, Copy]
+    x: f64
+    y: f64
+end tutorial_ffi.Point
+
+type tutorial_ffi.Rect layout c derive [Clone, Copy]
+    min: tutorial_ffi.Point
+    max: tutorial_ffi.Point
+end tutorial_ffi.Rect
+
+extern tutorial_ffi.rect_area(r: tutorial_ffi.Rect) -> f64 link "./libffi.so:rect_area"
+
+extern tutorial_ffi.rect_each_vertex(r: tutorial_ffi.Rect, f: fn(f64, f64, *mut tutorial_ffi.Acc) -> () uses [] panics never, user: *mut tutorial_ffi.Acc) -> () link "./libffi.so:rect_each_vertex"
+
+extern tutorial_ffi.rect_from(a: tutorial_ffi.Point, b: tutorial_ffi.Point) -> tutorial_ffi.Rect link "./libffi.so:rect_from"
+
+extern tutorial_ffi.rect_grow(r: *mut tutorial_ffi.Rect, d: f64) -> () link "./libffi.so:rect_grow"
+
+fn tutorial_ffi.area(r: tutorial_ffi.Rect) -> f64 uses [] panics never
+    unsafe "ffi" "struct by value" {
+        tutorial_ffi.rect_area(r)
+    }
+end tutorial_ffi.area
+
+fn tutorial_ffi.grown(r: tutorial_ffi.Rect, d: f64) -> tutorial_ffi.Rect uses [] panics never
+    let mut copy = r
+    let p = unsafe "ffi" "take a raw pointer to a local struct" {
+        core.ptr.from_mut(&mut copy)
+    }
+    unsafe "ffi" "struct by pointer" {
+        tutorial_ffi.rect_grow(p, d)
+    }
+    copy
+end tutorial_ffi.grown
+
+fn tutorial_ffi.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let r = tutorial_ffi.rect(0.0f64, 0.0f64, 3.0f64, 2.0f64)
+    core.check.is_true(tutorial_ffi.area(r) == 6.0f64)
+    core.check.is_true(tutorial_ffi.area(tutorial_ffi.grown(r, 1.0f64)) == 20.0f64)
+    let stats = tutorial_ffi.vertex_stats(r)
+    core.check.eq(stats.count, 4i32)
+    core.check.is_true(stats.sum == 10.0f64)
+    std.io.print_line("tutorial_ffi ok")?
+    Ok(())
+end tutorial_ffi.main
+
+fn tutorial_ffi.rect(x0: f64, y0: f64, x1: f64, y1: f64) -> tutorial_ffi.Rect uses [] panics never
+    let a = tutorial_ffi.Point { x: x0, y: y0 }
+    let b = tutorial_ffi.Point { x: x1, y: y1 }
+    unsafe "ffi" "structs by value" {
+        tutorial_ffi.rect_from(a, b)
+    }
+end tutorial_ffi.rect
+
+fn tutorial_ffi.vertex(x: f64, y: f64, user: *mut tutorial_ffi.Acc) -> () uses [] panics never
+    unsafe "callback" "accumulate through the user data pointer" {
+        let acc = core.ptr.read(user)
+        let sum = acc.sum + x + y
+        core.ptr.write(user, tutorial_ffi.Acc { count: acc.count.wrapping_add(1i32), sum: sum })
+    }
+end tutorial_ffi.vertex
+
+fn tutorial_ffi.vertex_stats(r: tutorial_ffi.Rect) -> tutorial_ffi.Acc uses [] panics never
+    let mut acc = tutorial_ffi.Acc { count: 0i32, sum: 0.0f64 }
+    let p = unsafe "ffi" "take a raw pointer to a local accumulator" {
+        core.ptr.from_mut(&mut acc)
+    }
+    unsafe "ffi" "callback with user data" {
+        tutorial_ffi.rect_each_vertex(r, tutorial_ffi.vertex, p)
+    }
+    acc
+end tutorial_ffi.vertex_stats
+
+test tutorial_ffi.area.test_area
+    let r = tutorial_ffi.rect(1.0f64, 1.0f64, 4.0f64, 5.0f64)
+    core.check.is_true(tutorial_ffi.area(r) == 12.0f64)
+end tutorial_ffi.area.test_area
+
+test tutorial_ffi.vertex_stats.test_vertices
+    let r = tutorial_ffi.rect(0.0f64, 0.0f64, 1.0f64, 1.0f64)
+    let s = tutorial_ffi.vertex_stats(r)
+    core.check.eq(s.count, 4i32)
+    core.check.is_true(s.sum == 4.0f64)
+end tutorial_ffi.vertex_stats.test_vertices

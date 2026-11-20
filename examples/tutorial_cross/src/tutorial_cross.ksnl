@@ -1,0 +1,4 @@
+fn tutorial_cross.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line("tutorial_cross ok")?
+    Ok(())
+end tutorial_cross.main

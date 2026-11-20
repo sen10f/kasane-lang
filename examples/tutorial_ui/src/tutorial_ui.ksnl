@@ -1,0 +1,23 @@
+fn tutorial_ui.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut tree = ui.layout.Tree.new()
+    let root_style = ui.layout.Style.default()
+    let root = tree.push_node(root_style)
+    let child_style = ui.layout.Style.default()
+    let c = tree.push_node(child_style)
+    tree.push_child(root, c)
+    tree.layout(root, 300.0f32, 200.0f32)
+    let rect = tree.rect(c)
+    core.mem.drop(rect)
+
+    let mut utree = ui.tree.Tree.new()
+    let root2 = utree.push_node(ui.tree.ViewKind.Block, ui.layout.Style.default(), None).unwrap()
+    let child2 = utree.push_node(ui.tree.ViewKind.Block, ui.layout.Style.default(), None).unwrap()
+    core.mem.drop(utree.push_child(root2, child2))
+    core.check.eq(utree.child_count(root2), 1usize)
+
+    let target = ui.event.hit_test(&tree, root, 150.0f32, 150.0f32)
+    core.mem.drop(target)
+
+    std.io.print_line("tutorial_ui ok")?
+    Ok(())
+end tutorial_ui.main
