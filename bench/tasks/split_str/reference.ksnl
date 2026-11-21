@@ -19,8 +19,8 @@ fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     Ok(())
 end bench.main
 
-fn bench.split_str(text: &str, sep: &str) -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn bench.split_str(text: &str, sep: &str) -> std.vec.Vec<std.string.String> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     let mut rest = text
     let sep_len = sep.len()
     loop {

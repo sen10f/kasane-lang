@@ -1,5 +1,5 @@
 type std.http.Decoder pub
-    buf: alloc.vec.Vec<u8, std.alloc.System>
+    buf: std.vec.Vec<u8>
     max_body: usize
     max_head: usize
 end std.http.Decoder
@@ -21,23 +21,23 @@ end std.http.Framing
 
 type std.http.Head
     framing: std.http.Framing
-    headers: alloc.vec.Vec<std.http.Header, std.alloc.System>
+    headers: std.vec.Vec<std.http.Header>
     http11: bool
-    method: alloc.string.String<std.alloc.System>
-    path: alloc.string.String<std.alloc.System>
+    method: std.string.String
+    path: std.string.String
 end std.http.Head
 
 type std.http.Header pub
-    name: alloc.string.String<std.alloc.System> pub
-    value: alloc.string.String<std.alloc.System> pub
+    name: std.string.String pub
+    value: std.string.String pub
 end std.http.Header
 
 type std.http.Request pub
-    body: alloc.vec.Vec<u8, std.alloc.System> pub
-    headers: alloc.vec.Vec<std.http.Header, std.alloc.System> pub
+    body: std.vec.Vec<u8> pub
+    headers: std.vec.Vec<std.http.Header> pub
     http11: bool pub
-    method: alloc.string.String<std.alloc.System> pub
-    path: alloc.string.String<std.alloc.System> pub
+    method: std.string.String pub
+    path: std.string.String pub
 end std.http.Request
 
 fn std.http.Decoder.consume(self: &mut std.http.Decoder, used: usize) -> Result<(), std.http.Error> uses [alloc] panics never
@@ -65,7 +65,7 @@ fn std.http.Decoder.is_empty(self: &std.http.Decoder) -> bool uses [] panics nev
 end std.http.Decoder.is_empty
 
 fn std.http.Decoder.new(max_head: usize, max_body: usize) -> std.http.Decoder uses [] panics never pub
-    let buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let buf = std.vec.Vec.new()
     std.http.Decoder { buf: buf, max_body: max_body, max_head: max_head }
 end std.http.Decoder.new
 
@@ -107,7 +107,7 @@ fn std.http.Request.keep_alive(self: &std.http.Request) -> bool uses [] panics n
     }
 end std.http.Request.keep_alive
 
-fn std.http.assemble(head: std.http.Head, body: alloc.vec.Vec<u8, std.alloc.System>) -> std.http.Request uses [] panics never
+fn std.http.assemble(head: std.http.Head, body: std.vec.Vec<u8>) -> std.http.Request uses [] panics never
     let headers = head.headers
     let http11 = head.http11
     let method = head.method
@@ -151,8 +151,8 @@ fn std.http.chunk_size(data: &[u8], from: usize, to: usize, max_body: usize) -> 
     Ok(n)
 end std.http.chunk_size
 
-fn std.http.copy_tail(data: &[u8], used: usize) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.http.Error> uses [alloc] panics never
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn std.http.copy_tail(data: &[u8], used: usize) -> Result<std.vec.Vec<u8>, std.http.Error> uses [alloc] panics never
+    let mut out = std.vec.Vec.new()
     match data.sub(used, data.len()) {
         Some(part) => out.extend_from_slice(part)?
         None => return Err(std.http.Error.BadRequest)
@@ -164,7 +164,7 @@ fn std.http.crlf_at(data: &[u8], i: usize) -> bool uses [] panics never
     std.http.byte_at(data, i) == b'\r' && std.http.byte_at(data, i.saturating_add(1usize)) == b'\n'
 end std.http.crlf_at
 
-fn std.http.decode_chunked(data: &[u8], max_body: usize, body: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<Option<usize>, std.http.Error> uses [alloc] panics never
+fn std.http.decode_chunked(data: &[u8], max_body: usize, body: &mut std.vec.Vec<u8>) -> Result<Option<usize>, std.http.Error> uses [alloc] panics never
     let mut pos = 0usize
     loop {
         let line_end = match std.http.find_crlf(data, pos) {
@@ -271,7 +271,7 @@ fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, st
     if !std.http.is_method(method_text) || !path_text.starts_with("/") {
         return Err(std.http.Error.BadRequest)
     }
-    let mut headers = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut headers = std.vec.Vec.new()
     let mut length = 0usize
     let mut has_length = false
     let mut has_encoding = false
@@ -370,9 +370,9 @@ fn std.http.reason(status: u16) -> &'static str uses [] panics never pub
     }
 end std.http.reason
 
-fn std.http.render(status: u16, head: &str, body: &[u8], keep_alive: bool) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.http.Error> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+fn std.http.render(status: u16, head: &str, body: &[u8], keep_alive: bool) -> Result<std.vec.Vec<u8>, std.http.Error> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
+    let mut line = std.string.String.new()
     line.push_str("HTTP/1.1 ")?
     line.push_u64(u64.from_u16(status))?
     line.push_str(" ")?
@@ -380,7 +380,7 @@ fn std.http.render(status: u16, head: &str, body: &[u8], keep_alive: bool) -> Re
     line.push_str("\r\n")?
     out.extend_from_slice(line.as_str().as_bytes())?
     out.extend_from_slice(head.as_bytes())?
-    let mut length = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut length = std.string.String.new()
     length.push_u64(u64.from_usize(body.len()))?
     out.extend_from_slice(b"Content-Length: ")?
     out.extend_from_slice(length.as_str().as_bytes())?
@@ -431,7 +431,7 @@ fn std.http.take_request(data: &[u8], max_head: usize, max_body: usize) -> Resul
             Some(r) => r
             None => return Err(std.http.Error.BadRequest)
         }
-        let mut chunks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut chunks = std.vec.Vec.new()
         return match std.http.decode_chunked(rest, max_body, &mut chunks)? {
             Some(used) => {
                 let request = std.http.assemble(head, chunks)
@@ -448,7 +448,7 @@ fn std.http.take_request(data: &[u8], max_head: usize, max_body: usize) -> Resul
         Some(p) => p
         None => return Err(std.http.Error.BadRequest)
     }
-    let mut plain = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut plain = std.vec.Vec.new()
     plain.extend_from_slice(part)?
     Ok(Some((std.http.assemble(head, plain), total)))
 end std.http.take_request

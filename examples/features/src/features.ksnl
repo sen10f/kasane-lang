@@ -116,7 +116,7 @@ fn features.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics m
     let taken = opt.take()
     core.check.eq(taken, Some(5u8))
     core.check.eq(opt, None)
-    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut m = std.collections.HashMap.new()
     match m.insert("a", 1u8) {
         Ok(_old) => ()
         Err(_e) => ()

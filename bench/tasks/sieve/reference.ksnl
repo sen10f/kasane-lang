@@ -29,8 +29,8 @@ fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     Ok(())
 end bench.main
 
-fn bench.sieve(n: usize) -> alloc.vec.Vec<bool, std.alloc.System> uses [alloc] panics never pub
-    let mut is_prime = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn bench.sieve(n: usize) -> std.vec.Vec<bool> uses [alloc] panics never pub
+    let mut is_prime = std.vec.Vec.new()
     let mut i = 0usize
     while i < n {
         match is_prime.push(true) {

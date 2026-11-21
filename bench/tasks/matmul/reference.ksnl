@@ -1,11 +1,11 @@
 type bench.Matrix pub
     rows: usize
     cols: usize
-    data: alloc.vec.Vec<i32, std.alloc.System>
+    data: std.vec.Vec<i32>
 end bench.Matrix
 
 fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut da = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut da = std.vec.Vec.new()
     match da.push(1i32) {
         Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
@@ -23,7 +23,7 @@ fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
         Err(_e) => core.panic.panic("oom")
     }
     let a = bench.Matrix { rows: 2usize, cols: 2usize, data: da }
-    let mut db = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut db = std.vec.Vec.new()
     match db.push(5i32) {
         Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
@@ -63,7 +63,7 @@ fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
 end bench.main
 
 fn bench.mat_mul(a: &bench.Matrix, b: &bench.Matrix) -> bench.Matrix uses [alloc] panics never pub
-    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut data = std.vec.Vec.new()
     let mut i = 0usize
     while i < a.rows {
         let mut j = 0usize

@@ -1,6 +1,6 @@
 type json.Doc pub
-    links: alloc.vec.Vec<usize, std.alloc.System>
-    nodes: alloc.vec.Vec<json.Node, std.alloc.System>
+    links: std.vec.Vec<usize>
+    nodes: std.vec.Vec<json.Node>
 end json.Doc
 
 enum json.Error derive [Debug, Clone, PartialEq, From] pub
@@ -22,7 +22,7 @@ enum json.Node derive [Debug, Clone, Copy, PartialEq] pub
 end json.Node
 
 fn json.array(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error> uses [alloc] panics never stack 4096
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     let mut i = json.skip_ws(src, pos.wrapping_add(1usize))
     if src.get(i) == Some(&b']') {
         let at = json.push_node(doc, json.Node.Array(doc.links.len(), 0usize))?
@@ -52,9 +52,9 @@ fn json.array(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usiz
     Ok((at, close.wrapping_add(1usize)))
 end json.array
 
-fn json.compact(text: &str) -> Result<alloc.string.String<std.alloc.System>, json.Error> uses [alloc] panics never
+fn json.compact(text: &str) -> Result<std.string.String, json.Error> uses [alloc] panics never
     let (doc, root) = json.parse(text)?
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     json.write(&doc, text.as_bytes(), root, &mut out)?
     Ok(out)
 end json.compact
@@ -102,7 +102,7 @@ fn json.escape(src: &[u8], pos: usize) -> Result<usize, json.Error> uses [] pani
     }
 end json.escape
 
-fn json.flush(doc: &mut json.Doc, items: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), json.Error> uses [alloc] panics never
+fn json.flush(doc: &mut json.Doc, items: &std.vec.Vec<usize>) -> Result<(), json.Error> uses [alloc] panics never
     let n = items.len()
     for k in core.iter.range(0usize, n) {
         match items.get(k) {
@@ -175,7 +175,7 @@ fn json.number(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usi
 end json.number
 
 fn json.object(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error> uses [alloc] panics never stack 4096
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     let mut i = json.skip_ws(src, pos.wrapping_add(1usize))
     if src.get(i) == Some(&b'}') {
         let at = json.push_node(doc, json.Node.Object(doc.links.len(), 0usize))?
@@ -216,8 +216,8 @@ end json.object
 
 fn json.parse(text: &str) -> Result<(json.Doc, usize), json.Error> uses [alloc] panics never
     let src = text.as_bytes()
-    let links = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let links = std.vec.Vec.new()
+    let nodes = std.vec.Vec.new()
     let mut doc = json.Doc { links: links, nodes: nodes }
     let (root, after) = json.value(&mut doc, src, json.skip_ws(src, 0usize))?
     let tail = json.skip_ws(src, after)
@@ -238,7 +238,7 @@ fn json.push_node(doc: &mut json.Doc, node: json.Node) -> Result<usize, json.Err
     Ok(at)
 end json.push_node
 
-fn json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], from: usize, to: usize) -> Result<(), json.Error> uses [alloc] panics never
+fn json.push_range(out: &mut std.string.String, src: &[u8], from: usize, to: usize) -> Result<(), json.Error> uses [alloc] panics never
     match src.sub(from, to) {
         Some(bytes) => match core.str.from_utf8(bytes) {
             Ok(text) => json.put(out, text)
@@ -248,7 +248,7 @@ fn json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], 
     }
 end json.push_range
 
-fn json.put(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), json.Error> uses [alloc] panics never
+fn json.put(out: &mut std.string.String, text: &str) -> Result<(), json.Error> uses [alloc] panics never
     out.push_str(text)?
     Ok(())
 end json.put
@@ -302,7 +302,7 @@ fn json.value(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usiz
     }
 end json.value
 
-fn json.write(doc: &json.Doc, src: &[u8], node: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), json.Error> uses [alloc] panics never stack 4096
+fn json.write(doc: &json.Doc, src: &[u8], node: usize, out: &mut std.string.String) -> Result<(), json.Error> uses [alloc] panics never stack 4096
     match doc.nodes.get(node) {
         None => Err(json.Error.Eof)
         Some(json.Node.Null) => json.put(out, "null")
@@ -343,7 +343,7 @@ fn json.write(doc: &json.Doc, src: &[u8], node: usize, out: &mut alloc.string.St
     }
 end json.write
 
-fn json.write_link(doc: &json.Doc, src: &[u8], slot: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), json.Error> uses [alloc] panics never stack 4096
+fn json.write_link(doc: &json.Doc, src: &[u8], slot: usize, out: &mut std.string.String) -> Result<(), json.Error> uses [alloc] panics never stack 4096
     match doc.links.get(slot) {
         Some(node) => json.write(doc, src, *node, out)
         None => Err(json.Error.Eof)

@@ -11,7 +11,7 @@ type bench.PercentOff derive [Debug, Clone, Copy] pub
 end bench.PercentOff
 
 type bench.Pricer pub
-    rules: alloc.vec.Vec<bench.Slot, std.alloc.System>
+    rules: std.vec.Vec<bench.Slot>
 end bench.Pricer
 
 trait bench.Rule[E: uses, P: panics] pub
@@ -63,11 +63,9 @@ end bench.FreeOver.kind
 impl bench.Rule<[], never> for bench.PercentOff
 fn bench.PercentOff.apply(self: &bench.PercentOff, price: u32) -> u32 uses [] panics never impls bench.Rule<[], never>
     let off = match price.checked_mul(self.percent) {
-        Some(full) => {
-            match full.checked_div(100u32) {
-                Some(v) => v
-                None => 0u32
-            }
+        Some(full) => match full.checked_div(100u32) {
+            Some(v) => v
+            None => 0u32
         }
         None => 0u32
     }
@@ -96,8 +94,8 @@ fn bench.Pricer.count(self: &bench.Pricer) -> usize uses [] panics never
     self.rules.len()
 end bench.Pricer.count
 
-fn bench.Pricer.kinds(self: &bench.Pricer) -> Result<alloc.vec.Vec<bench.RuleKind, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn bench.Pricer.kinds(self: &bench.Pricer) -> Result<std.vec.Vec<bench.RuleKind>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut out = std.vec.Vec.new()
     let mut i = 0usize
     while i < self.rules.len() {
         match self.rules.get(i) {
@@ -110,7 +108,7 @@ fn bench.Pricer.kinds(self: &bench.Pricer) -> Result<alloc.vec.Vec<bench.RuleKin
 end bench.Pricer.kinds
 
 fn bench.Pricer.new() -> bench.Pricer uses [] panics never
-    bench.Pricer { rules: alloc.vec.Vec.new(std.alloc.SYSTEM) }
+    bench.Pricer { rules: std.vec.Vec.new() }
 end bench.Pricer.new
 
 fn bench.Pricer.price(self: &bench.Pricer, base: u32) -> u32 uses [] panics never
@@ -148,4 +146,3 @@ end bench.StepOff.apply
 fn bench.StepOff.kind(self: &bench.StepOff) -> bench.RuleKind uses [] panics never impls bench.Rule<[], never>
     bench.RuleKind.Step
 end bench.StepOff.kind
-

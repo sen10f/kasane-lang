@@ -1,5 +1,5 @@
 type std.fs.DirEntry pub
-    name: alloc.string.String<std.alloc.System> pub
+    name: std.string.String pub
     kind: std.fs.FileKind pub
 end std.fs.DirEntry
 
@@ -70,12 +70,12 @@ fn std.fs.oom() -> std.io.Error uses [] panics never
     std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
 end std.fs.oom
 
-fn std.fs.read_dir(path: &str) -> Result<alloc.vec.Vec<std.fs.DirEntry, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics never pub
-    let mut raw: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn std.fs.read_dir(path: &str) -> Result<std.vec.Vec<std.fs.DirEntry>, std.io.Error> uses [alloc, io.fs] panics never pub
+    let mut raw: std.vec.Vec<u8> = std.vec.Vec.new()
     core.mem.drop(std.fs.read_dir_raw(path, &mut raw)?)
     let bytes = raw.as_slice()
     let total = bytes.len()
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     let mut i = 0usize
     while i < total {
         let kind = match bytes.get(i) {
@@ -100,7 +100,7 @@ fn std.fs.read_dir(path: &str) -> Result<alloc.vec.Vec<std.fs.DirEntry, std.allo
             Some(s) => s
             None => return Err(std.fs.oom())
         }
-        let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut name = std.string.String.new()
         match name.push_bytes(name_bytes) {
             Ok(_u) => {
             }
@@ -117,7 +117,7 @@ fn std.fs.read_dir(path: &str) -> Result<alloc.vec.Vec<std.fs.DirEntry, std.allo
 end std.fs.read_dir
 
 fn std.fs.write_atomic(path: &str, bytes: &[u8]) -> Result<(), std.io.Error> uses [alloc, io.fs] panics never pub
-    let mut tmp = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut tmp = std.string.String.new()
     match tmp.push_str(path) {
         Ok(_u) => {
         }

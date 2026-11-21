@@ -1,5 +1,5 @@
-fn more_coll.count_bytes(text: &str) -> alloc.collections.HashMap<u8, u32, std.alloc.System> uses [alloc] panics never pub
-    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+fn more_coll.count_bytes(text: &str) -> std.collections.HashMap<u8, u32> uses [alloc] panics never pub
+    let mut m = std.collections.HashMap.new()
     let bytes = text.as_bytes()
     let mut i = 0usize
     while i < bytes.len() {
@@ -23,7 +23,7 @@ fn more_coll.count_bytes(text: &str) -> alloc.collections.HashMap<u8, u32, std.a
 end more_coll.count_bytes
 
 fn more_coll.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     match v.push(3u32) {
         Ok(_) => ()
         Err(_e) => core.panic.panic("oom")

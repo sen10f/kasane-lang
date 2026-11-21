@@ -1,6 +1,6 @@
 enum boxtree.Expr pub
     Num(i64)
-    Neg(alloc.boxed.Box<boxtree.Expr, std.alloc.System>)
+    Neg(std.boxed.Box<boxtree.Expr>)
 end boxtree.Expr
 
 fn boxtree.main() -> Result<(), std.io.Error> uses [io.console] panics never

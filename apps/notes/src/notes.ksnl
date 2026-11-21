@@ -3,8 +3,8 @@ import notes.error
 
 const notes.USAGE: &str = "usage: notes <add|list|show|edit|rm|tag|search|export> ..."
 
-fn notes.args() -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, notes.error.Error> uses [alloc, env] panics never
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn notes.args() -> Result<std.vec.Vec<std.string.String>, notes.error.Error> uses [alloc, env] panics never
+    let mut out = std.vec.Vec.new()
     let mut i = 0usize
     let n = std.env.arg_count()
     while i < n {

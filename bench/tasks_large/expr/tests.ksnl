@@ -23,7 +23,7 @@ test bench.eval.test_number
 end bench.eval.test_number
 
 test bench.eval.test_number_overflow
-    core.check.eq(bench.eval("4294967295"), Ok(4294967295i64))
+    core.check.eq(bench.eval("4294967295"), Ok(4_294_967_295i64))
     core.check.eq(bench.eval("4294967296"), Err(bench.EvError.Syntax))
     core.check.eq(bench.eval("99999999999999999999"), Err(bench.EvError.Syntax))
 end bench.eval.test_number_overflow
@@ -71,7 +71,7 @@ test bench.eval.test_whitespace
 end bench.eval.test_whitespace
 
 test bench.eval.test_wrap_around
-    core.check.eq(bench.eval("4294967295*4294967295"), Ok(-8589934591i64))
+    core.check.eq(bench.eval("4294967295*4294967295"), Ok(-8_589_934_591i64))
 end bench.eval.test_wrap_around
 
 test bench.tokenize.test_empty_and_error

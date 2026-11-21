@@ -2,7 +2,7 @@ type ui.tree.Element pub
     kind: ui.tree.ViewKind pub
     style: ui.layout.Style pub
     key: Option<u64> pub
-    children: alloc.vec.Vec<usize, std.alloc.System> pub
+    children: std.vec.Vec<usize> pub
 end ui.tree.Element
 
 type ui.tree.Node pub
@@ -13,17 +13,17 @@ type ui.tree.Node pub
 end ui.tree.Node
 
 type ui.tree.StateEntry pub
-    value: alloc.boxed.Box<dyn ui.state.ViewState + 'static, std.alloc.System> pub
+    value: std.boxed.Box<dyn ui.state.ViewState + 'static> pub
 end ui.tree.StateEntry
 
 type ui.tree.Tree pub
-    nodes: alloc.vec.Vec<ui.tree.Node, std.alloc.System>
-    kids: alloc.vec.Vec<alloc.vec.Vec<usize, std.alloc.System>, std.alloc.System>
+    nodes: std.vec.Vec<ui.tree.Node>
+    kids: std.vec.Vec<std.vec.Vec<usize>>
     state: ui.state.Arena<ui.tree.StateEntry, std.alloc.System>
 end ui.tree.Tree
 
 trait ui.tree.View[E: uses, P: panics] pub
-    fn render(self: &Self, sink: &mut alloc.vec.Vec<ui.tree.Element, std.alloc.System>) -> usize uses [E] panics P
+    fn render(self: &Self, sink: &mut std.vec.Vec<ui.tree.Element>) -> usize uses [E] panics P
 end ui.tree.View
 
 enum ui.tree.ViewKind derive [Debug, Clone, Copy] pub
@@ -50,7 +50,7 @@ fn ui.tree.Tree.child_count(self: &ui.tree.Tree, node: usize) -> usize uses [] p
     }
 end ui.tree.Tree.child_count
 
-fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.vec.Vec<ui.tree.Element, std.alloc.System>, root_elem: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
+fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &std.vec.Vec<ui.tree.Element>, root_elem: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
     let element = match elements.as_slice().get(root_elem) {
         Some(e) => e
         None => return Ok(root)
@@ -68,8 +68,8 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.ve
         None => return Ok(root)
     }
     let existing_count = existing.len()
-    let mut existing_indices = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut existing_keys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut existing_indices = std.vec.Vec.new()
+    let mut existing_keys = std.vec.Vec.new()
     let mut ei = 0usize
     while ei < existing_count {
         let kid_index = match existing.as_slice().get(ei) {
@@ -90,7 +90,7 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.ve
         }
         ei = ei.wrapping_add(1usize)
     }
-    let mut used = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut used = std.vec.Vec.new()
     ei = 0usize
     while ei < existing_count {
         match used.push(false) {
@@ -99,7 +99,7 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.ve
         }
         ei = ei.wrapping_add(1usize)
     }
-    let mut new_kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut new_kids = std.vec.Vec.new()
     let elem_children = &element.children
     let children_len = elem_children.len()
     let mut ci = 0usize
@@ -210,8 +210,8 @@ fn ui.tree.Tree.find_key(self: &ui.tree.Tree, key: u64) -> Option<usize> uses []
 end ui.tree.Tree.find_key
 
 fn ui.tree.Tree.new() -> ui.tree.Tree uses [] panics never pub
-    let nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let nodes = std.vec.Vec.new()
+    let kids = std.vec.Vec.new()
     let state = ui.state.Arena.new(std.alloc.SYSTEM)
     ui.tree.Tree { nodes: nodes, kids: kids, state: state }
 end ui.tree.Tree.new
@@ -260,7 +260,7 @@ fn ui.tree.Tree.push_node(self: &mut ui.tree.Tree, kind: ui.tree.ViewKind, style
         Ok(_u) => ()
         Err(e) => return Err(e)
     }
-    let kids_vec = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let kids_vec = std.vec.Vec.new()
     match self.kids.push(kids_vec) {
         Ok(_u) => ()
         Err(e) => return Err(e)

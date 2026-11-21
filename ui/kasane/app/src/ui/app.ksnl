@@ -1,10 +1,10 @@
 type ui.app.App pub
     model: ()
-    pending: alloc.vec.Vec<u64, std.alloc.System>
-    kind: alloc.vec.Vec<ui.tree.ViewKind, std.alloc.System>
-    key: alloc.vec.Vec<Option<u64>, std.alloc.System>
-    rect: alloc.vec.Vec<ui.app.Rect, std.alloc.System>
-    kids: alloc.vec.Vec<alloc.vec.Vec<usize, std.alloc.System>, std.alloc.System>
+    pending: std.vec.Vec<u64>
+    kind: std.vec.Vec<ui.tree.ViewKind>
+    key: std.vec.Vec<Option<u64>>
+    rect: std.vec.Vec<ui.app.Rect>
+    kids: std.vec.Vec<std.vec.Vec<usize>>
     dirty: ui.app.Rect
     frame: u64
 end ui.app.App
@@ -16,9 +16,9 @@ type ui.app.Frame pub
 end ui.app.Frame
 
 type ui.app.Patch pub
-    added: alloc.vec.Vec<usize, std.alloc.System> pub
-    removed: alloc.vec.Vec<usize, std.alloc.System> pub
-    changed: alloc.vec.Vec<usize, std.alloc.System> pub
+    added: std.vec.Vec<usize> pub
+    removed: std.vec.Vec<usize> pub
+    changed: std.vec.Vec<usize> pub
     moved: alloc.vec.Vec<(usize, usize), std.alloc.System> pub
 end ui.app.Patch
 
@@ -29,7 +29,7 @@ type ui.app.Rect derive [Debug, Clone, Copy, PartialEq] pub
     height: f32 pub
 end ui.app.Rect
 
-fn ui.app.App.apply(self: &mut ui.app.App, new_model: (), elements: &alloc.vec.Vec<ui.tree.Element, std.alloc.System>, root_elem: usize) -> Result<ui.app.Frame, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn ui.app.App.apply(self: &mut ui.app.App, new_model: (), elements: &std.vec.Vec<ui.tree.Element>, root_elem: usize) -> Result<ui.app.Frame, alloc.alloc.AllocError> uses [alloc] panics never pub
     self.model = new_model
     let mut patch = ui.app.Patch.new()
     let root_el = match elements.as_slice().get(root_elem) {
@@ -96,9 +96,9 @@ fn ui.app.App.apply(self: &mut ui.app.App, new_model: (), elements: &alloc.vec.V
     Ok(ui.app.Frame { patch: patch, dirty: d, redrew: true })
 end ui.app.App.apply
 
-fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: &alloc.vec.Vec<usize, std.alloc.System>, elements: &alloc.vec.Vec<ui.tree.Element, std.alloc.System>, patch: &mut ui.app.Patch) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
+fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: &std.vec.Vec<usize>, elements: &std.vec.Vec<ui.tree.Element>, patch: &mut ui.app.Patch) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
     let existing = {
-        let mut tmp = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut tmp = std.vec.Vec.new()
         match self.kids.get(parent) {
             Some(kids) => {
                 let mut ei = 0usize
@@ -120,7 +120,7 @@ fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: 
     }
     let existing_count = existing.len()
     let new_count = new_children.len()
-    let mut used = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut used = std.vec.Vec.new()
     let mut ti = 0usize
     while ti < existing_count {
         match used.push(false) {
@@ -129,7 +129,7 @@ fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: 
         }
         ti = ti.wrapping_add(1usize)
     }
-    let mut new_kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut new_kids = std.vec.Vec.new()
     let mut ci = 0usize
     while ci < new_count {
         let child_index = match new_children.as_slice().get(ci) {
@@ -217,7 +217,7 @@ fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: 
                     Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
-                let empty_kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                let empty_kids = std.vec.Vec.new()
                 match self.kids.push(empty_kids) {
                     Ok(_u) => ()
                     Err(e) => return Err(e)
@@ -285,11 +285,11 @@ fn ui.app.App.enqueue(self: &mut ui.app.App, msg: u64) -> () uses [alloc] panics
 end ui.app.App.enqueue
 
 fn ui.app.App.new(model: ()) -> ui.app.App uses [alloc] panics never pub
-    let mut pending = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut kind = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut key = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut rect = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut pending = std.vec.Vec.new()
+    let mut kind = std.vec.Vec.new()
+    let mut key = std.vec.Vec.new()
+    let mut rect = std.vec.Vec.new()
+    let mut kids = std.vec.Vec.new()
     match kind.push(ui.tree.ViewKind.Block) {
         Ok(_u) => ()
         Err(_e) => ()
@@ -302,7 +302,7 @@ fn ui.app.App.new(model: ()) -> ui.app.App uses [alloc] panics never pub
         Ok(_u) => ()
         Err(_e) => ()
     }
-    match kids.push(alloc.vec.Vec.new(std.alloc.SYSTEM)) {
+    match kids.push(std.vec.Vec.new()) {
         Ok(_u) => ()
         Err(_e) => ()
     }
@@ -362,10 +362,10 @@ fn ui.app.Patch.is_empty(self: &ui.app.Patch) -> bool uses [] panics never pub
 end ui.app.Patch.is_empty
 
 fn ui.app.Patch.new() -> ui.app.Patch uses [] panics never pub
-    let added = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let removed = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let changed = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let moved = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let added = std.vec.Vec.new()
+    let removed = std.vec.Vec.new()
+    let changed = std.vec.Vec.new()
+    let moved = std.vec.Vec.new()
     ui.app.Patch { added: added, removed: removed, changed: changed, moved: moved }
 end ui.app.Patch.new
 

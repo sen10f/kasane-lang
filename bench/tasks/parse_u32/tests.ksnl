@@ -1,11 +1,11 @@
-test bench.parse_u32.test_ok
-    core.check.eq(bench.parse_u32("123"), Some(123u32))
-    core.check.eq(bench.parse_u32("0"), Some(0u32))
-    core.check.eq(bench.parse_u32("4294967295"), Some(4294967295u32))
-end bench.parse_u32.test_ok
-
 test bench.parse_u32.test_bad
     core.check.eq(bench.parse_u32(""), None)
     core.check.eq(bench.parse_u32("12a"), None)
     core.check.eq(bench.parse_u32("4294967296"), None)
 end bench.parse_u32.test_bad
+
+test bench.parse_u32.test_ok
+    core.check.eq(bench.parse_u32("123"), Some(123u32))
+    core.check.eq(bench.parse_u32("0"), Some(0u32))
+    core.check.eq(bench.parse_u32("4294967295"), Some(4_294_967_295u32))
+end bench.parse_u32.test_ok

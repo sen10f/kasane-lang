@@ -51,8 +51,8 @@ fn std.path.is_absolute(path: &str) -> bool uses [] panics never pub
     path.starts_with("/")
 end std.path.is_absolute
 
-fn std.path.join(base: &str, part: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn std.path.join(base: &str, part: &str) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     if part.starts_with("/") || base.is_empty() {
         out.push_str(part)?
         return Ok(out)

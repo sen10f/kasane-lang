@@ -191,11 +191,11 @@ fn std.tls.byte_ptr(value: &[u8]) -> *const u8 uses [] panics never
     }
 end std.tls.byte_ptr
 
-fn std.tls.c_string(text: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.tls.Error> uses [alloc] panics never
+fn std.tls.c_string(text: &str) -> Result<std.vec.Vec<u8>, std.tls.Error> uses [alloc] panics never
     if text.contains("\0") {
         return Err(std.tls.Error.Name)
     }
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     out.extend_from_slice(text.as_bytes())?
     out.push(0u8)?
     Ok(out)

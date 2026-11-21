@@ -17,7 +17,7 @@ fn todo.main() -> Result<(), todo.error.Error> uses [alloc, env, io.console, io.
 end todo.main
 
 fn todo.report(n: usize) -> Result<(), todo.error.Error> uses [alloc, io.console] panics never pub
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut line = std.string.String.new()
     line.push_str("served ")?
     line.push_u64(u64.from_usize(n))?
     std.io.print_line(line.as_str())?

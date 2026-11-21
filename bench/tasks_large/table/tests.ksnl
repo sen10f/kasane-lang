@@ -1,5 +1,5 @@
 test bench.column_widths.test_no_rows
-    let rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let rows = std.vec.Vec.new()
     let widths = bench.column_widths(&rows)?
     core.check.eq(widths.len(), 0usize)
     let fin: Result<(), alloc.alloc.AllocError> = Ok(())
@@ -7,7 +7,7 @@ test bench.column_widths.test_no_rows
 end bench.column_widths.test_no_rows
 
 test bench.column_widths.test_ragged_rows
-    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rows = std.vec.Vec.new()
     rows.push(bench.mkrow(&["abc"])?)?
     rows.push(bench.mkrow(&["a", "bb"])?)?
     let widths = bench.column_widths(&rows)?
@@ -25,7 +25,7 @@ test bench.column_widths.test_ragged_rows
 end bench.column_widths.test_ragged_rows
 
 test bench.column_widths.test_single_column
-    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rows = std.vec.Vec.new()
     rows.push(bench.mkrow(&["hello"])?)?
     let widths = bench.column_widths(&rows)?
     core.check.eq(widths.len(), 1usize)
@@ -38,7 +38,7 @@ test bench.column_widths.test_single_column
 end bench.column_widths.test_single_column
 
 test bench.column_widths.test_takes_max_per_column
-    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rows = std.vec.Vec.new()
     rows.push(bench.mkrow(&["pen", "2"])?)?
     rows.push(bench.mkrow(&["eraser", "12"])?)?
     let widths = bench.column_widths(&rows)?
@@ -101,7 +101,7 @@ end bench.pad_right.test_pads_to_width
 
 test bench.render_row.test_extra_cells_ignored
     let cells = bench.mkrow(&["a", "b", "cccc"])?
-    let mut widths = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut widths = std.vec.Vec.new()
     widths.push(1usize)?
     widths.push(1usize)?
     let line = bench.render_row(&cells, &widths)?
@@ -112,7 +112,7 @@ end bench.render_row.test_extra_cells_ignored
 
 test bench.render_row.test_full_row
     let cells = bench.mkrow(&["pen", "2"])?
-    let mut widths = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut widths = std.vec.Vec.new()
     widths.push(6usize)?
     widths.push(3usize)?
     let line = bench.render_row(&cells, &widths)?
@@ -123,7 +123,7 @@ end bench.render_row.test_full_row
 
 test bench.render_row.test_missing_cell_is_blank
     let cells = bench.mkrow(&["pen"])?
-    let mut widths = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut widths = std.vec.Vec.new()
     widths.push(6usize)?
     widths.push(3usize)?
     let line = bench.render_row(&cells, &widths)?
@@ -133,7 +133,7 @@ test bench.render_row.test_missing_cell_is_blank
 end bench.render_row.test_missing_cell_is_blank
 
 test bench.separator.test_between_pluses
-    let mut widths = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut widths = std.vec.Vec.new()
     widths.push(6usize)?
     widths.push(3usize)?
     let line = bench.separator(&widths)?
@@ -143,11 +143,11 @@ test bench.separator.test_between_pluses
 end bench.separator.test_between_pluses
 
 test bench.separator.test_single_column
-    let mut widths = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut widths = std.vec.Vec.new()
     widths.push(1usize)?
     let line = bench.separator(&widths)?
     core.check.eq(line.as_str(), "+---+")
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let none = bench.separator(&empty)?
     core.check.eq(none.as_str(), "+")
     let fin: Result<(), alloc.alloc.AllocError> = Ok(())
@@ -156,7 +156,7 @@ end bench.separator.test_single_column
 
 test bench.table.test_full_document
     let headers = bench.mkrow(&["name", "qty"])?
-    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rows = std.vec.Vec.new()
     rows.push(bench.mkrow(&["pen", "2"])?)?
     rows.push(bench.mkrow(&["eraser", "12"])?)?
     let doc = bench.table(&headers, &rows)?
@@ -167,7 +167,7 @@ end bench.table.test_full_document
 
 test bench.table.test_no_data_rows
     let headers = bench.mkrow(&["a"])?
-    let rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let rows = std.vec.Vec.new()
     let doc = bench.table(&headers, &rows)?
     core.check.eq(doc.as_str(), "| a |\n+---+")
     let fin: Result<(), alloc.alloc.AllocError> = Ok(())
@@ -176,7 +176,7 @@ end bench.table.test_no_data_rows
 
 test bench.table.test_wider_data_than_header
     let headers = bench.mkrow(&["x"])?
-    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rows = std.vec.Vec.new()
     rows.push(bench.mkrow(&["hello"])?)?
     let doc = bench.table(&headers, &rows)?
     core.check.eq(doc.as_str(), "| x     |\n+-------+\n| hello |")

@@ -22,7 +22,7 @@ fn ui.tree_test.Counter.tick(self: &mut ui.tree_test.Counter) -> () uses [] pani
 end ui.tree_test.Counter.tick
 
 impl ui.tree.View<[alloc], may> for ui.tree_test.LeafView
-fn ui.tree_test.LeafView.render(self: &ui.tree_test.LeafView, sink: &mut alloc.vec.Vec<ui.tree.Element, std.alloc.System>) -> usize uses [alloc] panics may impls ui.tree.View<[alloc], may>
+fn ui.tree_test.LeafView.render(self: &ui.tree_test.LeafView, sink: &mut std.vec.Vec<ui.tree.Element>) -> usize uses [alloc] panics may impls ui.tree.View<[alloc], may>
     let index = sink.len()
     let el = ui.tree_test.el(ui.tree.ViewKind.Leaf, None, ui.tree_test.empty_kids())
     match sink.push(el) {
@@ -32,16 +32,16 @@ fn ui.tree_test.LeafView.render(self: &ui.tree_test.LeafView, sink: &mut alloc.v
     index
 end ui.tree_test.LeafView.render
 
-fn ui.tree_test.el(kind: ui.tree.ViewKind, key: Option<u64>, children: alloc.vec.Vec<usize, std.alloc.System>) -> ui.tree.Element uses [] panics never
+fn ui.tree_test.el(kind: ui.tree.ViewKind, key: Option<u64>, children: std.vec.Vec<usize>) -> ui.tree.Element uses [] panics never
     ui.tree.Element { kind: kind, style: ui.layout.Style.default(), key: key, children: children }
 end ui.tree_test.el
 
-fn ui.tree_test.empty_kids() -> alloc.vec.Vec<usize, std.alloc.System> uses [] panics never
-    alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn ui.tree_test.empty_kids() -> std.vec.Vec<usize> uses [] panics never
+    std.vec.Vec.new()
 end ui.tree_test.empty_kids
 
-fn ui.tree_test.new_sink() -> alloc.vec.Vec<ui.tree.Element, std.alloc.System> uses [] panics never
-    alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn ui.tree_test.new_sink() -> std.vec.Vec<ui.tree.Element> uses [] panics never
+    std.vec.Vec.new()
 end ui.tree_test.new_sink
 
 fn ui.tree_test.push_block(t: &mut ui.tree.Tree) -> usize uses [alloc] panics never
@@ -51,18 +51,18 @@ fn ui.tree_test.push_block(t: &mut ui.tree.Tree) -> usize uses [alloc] panics ne
     }
 end ui.tree_test.push_block
 
-fn ui.tree_test.push_block_el(v: &mut alloc.vec.Vec<ui.tree.Element, std.alloc.System>, children: alloc.vec.Vec<usize, std.alloc.System>) -> () uses [alloc] panics never
+fn ui.tree_test.push_block_el(v: &mut std.vec.Vec<ui.tree.Element>, children: std.vec.Vec<usize>) -> () uses [alloc] panics never
     ui.tree_test.push_el(v, ui.tree_test.el(ui.tree.ViewKind.Block, None, children))
 end ui.tree_test.push_block_el
 
-fn ui.tree_test.push_el(v: &mut alloc.vec.Vec<ui.tree.Element, std.alloc.System>, e: ui.tree.Element) -> () uses [alloc] panics never
+fn ui.tree_test.push_el(v: &mut std.vec.Vec<ui.tree.Element>, e: ui.tree.Element) -> () uses [alloc] panics never
     match v.push(e) {
         Ok(_u) => ()
         Err(_e) => ()
     }
 end ui.tree_test.push_el
 
-fn ui.tree_test.push_kid(kids: &mut alloc.vec.Vec<usize, std.alloc.System>, i: usize) -> () uses [alloc] panics never
+fn ui.tree_test.push_kid(kids: &mut std.vec.Vec<usize>, i: usize) -> () uses [alloc] panics never
     match kids.push(i) {
         Ok(_u) => ()
         Err(_e) => ()
@@ -76,7 +76,7 @@ fn ui.tree_test.push_leaf(t: &mut ui.tree.Tree) -> usize uses [alloc] panics nev
     }
 end ui.tree_test.push_leaf
 
-fn ui.tree_test.push_leaf_el(v: &mut alloc.vec.Vec<ui.tree.Element, std.alloc.System>, key: Option<u64>) -> () uses [alloc] panics never
+fn ui.tree_test.push_leaf_el(v: &mut std.vec.Vec<ui.tree.Element>, key: Option<u64>) -> () uses [alloc] panics never
     ui.tree_test.push_el(v, ui.tree_test.el(ui.tree.ViewKind.Leaf, key, ui.tree_test.empty_kids()))
 end ui.tree_test.push_leaf_el
 
@@ -136,7 +136,7 @@ end ui.tree_test.Suite.test_child_at_unknown_node
 test ui.tree_test.Suite.test_commit_build
     let mut t = ui.tree.Tree.new()
     let root = ui.tree_test.push_block(&mut t)
-    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut elements = std.vec.Vec.new()
     let mut root_children = ui.tree_test.empty_kids()
     ui.tree_test.push_kid(&mut root_children, 1usize)
     ui.tree_test.push_kid(&mut root_children, 2usize)
@@ -161,7 +161,7 @@ end ui.tree_test.Suite.test_commit_build
 test ui.tree_test.Suite.test_commit_insert
     let mut t = ui.tree.Tree.new()
     let root = ui.tree_test.push_block(&mut t)
-    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut elements = std.vec.Vec.new()
     let mut root_children = ui.tree_test.empty_kids()
     ui.tree_test.push_kid(&mut root_children, 1usize)
     ui.tree_test.push_block_el(&mut elements, root_children)
@@ -171,7 +171,7 @@ test ui.tree_test.Suite.test_commit_insert
         Err(_e) => ()
     }
     core.check.eq(t.child_count(root), 1usize)
-    let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut elements2 = std.vec.Vec.new()
     let mut root_children2 = ui.tree_test.empty_kids()
     ui.tree_test.push_kid(&mut root_children2, 1usize)
     ui.tree_test.push_kid(&mut root_children2, 2usize)
@@ -192,7 +192,7 @@ end ui.tree_test.Suite.test_commit_insert
 test ui.tree_test.Suite.test_commit_remove
     let mut t = ui.tree.Tree.new()
     let root = ui.tree_test.push_block(&mut t)
-    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut elements = std.vec.Vec.new()
     let mut root_children = ui.tree_test.empty_kids()
     ui.tree_test.push_kid(&mut root_children, 1usize)
     ui.tree_test.push_kid(&mut root_children, 2usize)
@@ -204,7 +204,7 @@ test ui.tree_test.Suite.test_commit_remove
         Err(_e) => ()
     }
     core.check.eq(t.child_count(root), 2usize)
-    let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut elements2 = std.vec.Vec.new()
     let mut root_children2 = ui.tree_test.empty_kids()
     ui.tree_test.push_kid(&mut root_children2, 1usize)
     ui.tree_test.push_block_el(&mut elements2, root_children2)
@@ -219,7 +219,7 @@ end ui.tree_test.Suite.test_commit_remove
 test ui.tree_test.Suite.test_commit_returns_index
     let mut t = ui.tree.Tree.new()
     let root = ui.tree_test.push_block(&mut t)
-    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut elements = std.vec.Vec.new()
     ui.tree_test.push_block_el(&mut elements, ui.tree_test.empty_kids())
     match t.commit(root, &elements, 0usize) {
         Ok(i) => core.check.eq(i, root)
@@ -250,7 +250,7 @@ end ui.tree_test.Suite.test_composite_render
 test ui.tree_test.Suite.test_find_key
     let mut t = ui.tree.Tree.new()
     let root = ui.tree_test.push_block(&mut t)
-    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut elements = std.vec.Vec.new()
     let mut root_children = ui.tree_test.empty_kids()
     ui.tree_test.push_kid(&mut root_children, 1usize)
     ui.tree_test.push_kid(&mut root_children, 2usize)
@@ -283,7 +283,7 @@ end ui.tree_test.Suite.test_find_key_missing
 test ui.tree_test.Suite.test_keyed_reorder
     let mut t = ui.tree.Tree.new()
     let root = ui.tree_test.push_block(&mut t)
-    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut elements = std.vec.Vec.new()
     let mut root_children = ui.tree_test.empty_kids()
     ui.tree_test.push_kid(&mut root_children, 1usize)
     ui.tree_test.push_kid(&mut root_children, 2usize)
@@ -295,7 +295,7 @@ test ui.tree_test.Suite.test_keyed_reorder
         Err(_e) => ()
     }
     core.check.eq(t.child_count(root), 2usize)
-    let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut elements2 = std.vec.Vec.new()
     let mut root_children2 = ui.tree_test.empty_kids()
     ui.tree_test.push_kid(&mut root_children2, 2usize)
     ui.tree_test.push_kid(&mut root_children2, 1usize)

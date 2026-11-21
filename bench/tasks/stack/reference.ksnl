@@ -1,5 +1,5 @@
 type bench.Stack
-    items: alloc.vec.Vec<u32, std.alloc.System>
+    items: std.vec.Vec<u32>
 end bench.Stack
 
 fn bench.Stack.len(self: &bench.Stack) -> usize uses [] panics never
@@ -7,7 +7,7 @@ fn bench.Stack.len(self: &bench.Stack) -> usize uses [] panics never
 end bench.Stack.len
 
 fn bench.Stack.new() -> bench.Stack uses [] panics never
-    let items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let items = std.vec.Vec.new()
     bench.Stack { items: items }
 end bench.Stack.new
 

@@ -55,8 +55,8 @@ type ui.layout.Style derive [Debug, Clone, Copy] pub
 end ui.layout.Style
 
 type ui.layout.Tree pub
-    nodes: alloc.vec.Vec<ui.layout.Node, std.alloc.System>
-    kids: alloc.vec.Vec<alloc.vec.Vec<usize, std.alloc.System>, std.alloc.System>
+    nodes: std.vec.Vec<ui.layout.Node>
+    kids: std.vec.Vec<std.vec.Vec<usize>>
 end ui.layout.Tree
 
 fn ui.layout.Size.default() -> ui.layout.Size uses [] panics never pub
@@ -290,8 +290,8 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
 end ui.layout.Tree.layout_at
 
 fn ui.layout.Tree.new() -> ui.layout.Tree uses [] panics never pub
-    let nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let nodes = std.vec.Vec.new()
+    let kids = std.vec.Vec.new()
     let t = ui.layout.Tree { nodes: nodes, kids: kids }
     t
 end ui.layout.Tree.new
@@ -321,7 +321,7 @@ fn ui.layout.Tree.push_node(self: &mut ui.layout.Tree, style: ui.layout.Style) -
         Ok(_u) => ()
         Err(_e) => core.panic.panic("ui.layout: out of memory")
     }
-    let kids_vec = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let kids_vec = std.vec.Vec.new()
     match self.kids.push(kids_vec) {
         Ok(_u) => ()
         Err(_e) => core.panic.panic("ui.layout: out of memory")

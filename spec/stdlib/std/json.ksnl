@@ -1,6 +1,6 @@
 type std.json.Doc pub
-    links: alloc.vec.Vec<usize, std.alloc.System>
-    nodes: alloc.vec.Vec<std.json.Node, std.alloc.System>
+    links: std.vec.Vec<usize>
+    nodes: std.vec.Vec<std.json.Node>
     top: usize
 end std.json.Doc
 
@@ -35,20 +35,18 @@ enum std.json.Node pub
     Array(usize, usize)
     Bool(bool)
     Null
-    Number(alloc.string.String<std.alloc.System>)
+    Number(std.string.String)
     Object(usize, usize)
-    Str(alloc.string.String<std.alloc.System>)
+    Str(std.string.String)
 end std.json.Node
 
 trait std.json.ToJson pub
-    fn to_json(self: &Self, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    fn to_json(self: &Self, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
 end std.json.ToJson
 
 type std.json.Value derive [Clone, Copy] pub
     at: usize
 end std.json.Value
-
-impl std.json.FromJson for alloc.string.String<std.alloc.System>
 
 impl std.json.FromJson for bool
 
@@ -62,6 +60,8 @@ impl std.json.FromJson for i8
 
 impl std.json.FromJson for isize
 
+impl std.json.FromJson for std.string.String
+
 impl std.json.FromJson for u16
 
 impl std.json.FromJson for u32
@@ -72,9 +72,9 @@ impl std.json.FromJson for u8
 
 impl std.json.FromJson for usize
 
-impl[T: std.json.FromJson] std.json.FromJson for alloc.vec.Vec<T, std.alloc.System>
-
 impl[T: std.json.FromJson] std.json.FromJson for core.option.Option<T>
+
+impl[T: std.json.FromJson] std.json.FromJson for std.vec.Vec<T>
 
 fn std.json.Doc.root(self: &std.json.Doc) -> std.json.Value uses [] panics never pub
     std.json.Value { at: self.top }
@@ -89,12 +89,12 @@ fn std.json.Doc.value_at(self: &std.json.Doc, at: usize) -> Option<std.json.Valu
 end std.json.Doc.value_at
 
 impl[A: alloc.alloc.Allocator] std.json.ToJson for alloc.string.String<A>
-fn std.json.ToJson.alloc.string.String.to_json[A: alloc.alloc.Allocator](self: &alloc.string.String<A>, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.alloc.string.String.to_json[A: alloc.alloc.Allocator](self: &alloc.string.String<A>, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     std.json.push_quoted(out, self.as_str())
 end std.json.ToJson.alloc.string.String.to_json
 
 impl[T: std.json.ToJson, A: alloc.alloc.Allocator] std.json.ToJson for alloc.vec.Vec<T, A>
-fn std.json.ToJson.alloc.vec.Vec.to_json[T: std.json.ToJson, A: alloc.alloc.Allocator](self: &alloc.vec.Vec<T, A>, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.alloc.vec.Vec.to_json[T: std.json.ToJson, A: alloc.alloc.Allocator](self: &alloc.vec.Vec<T, A>, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     let all = self.as_slice()
     out.push('[')?
     for k in core.iter.range(0usize, all.len()) {
@@ -110,7 +110,7 @@ fn std.json.ToJson.alloc.vec.Vec.to_json[T: std.json.ToJson, A: alloc.alloc.Allo
 end std.json.ToJson.alloc.vec.Vec.to_json
 
 impl std.json.ToJson for bool
-fn std.json.ToJson.bool.to_json(self: &bool, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.bool.to_json(self: &bool, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     if *self {
         out.push_str("true")
     } else {
@@ -119,7 +119,7 @@ fn std.json.ToJson.bool.to_json(self: &bool, out: &mut alloc.string.String<std.a
 end std.json.ToJson.bool.to_json
 
 impl[T: std.json.ToJson] std.json.ToJson for core.option.Option<T>
-fn std.json.ToJson.core.option.Option.to_json[T: std.json.ToJson](self: &Option<T>, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.core.option.Option.to_json[T: std.json.ToJson](self: &Option<T>, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     match self {
         Some(x) => x.to_json(out)
         None => out.push_str("null")
@@ -127,57 +127,57 @@ fn std.json.ToJson.core.option.Option.to_json[T: std.json.ToJson](self: &Option<
 end std.json.ToJson.core.option.Option.to_json
 
 impl std.json.ToJson for i16
-fn std.json.ToJson.i16.to_json(self: &i16, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.i16.to_json(self: &i16, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     out.push_i64(i64.from_i16(*self))
 end std.json.ToJson.i16.to_json
 
 impl std.json.ToJson for i32
-fn std.json.ToJson.i32.to_json(self: &i32, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.i32.to_json(self: &i32, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     out.push_i64(i64.from_i32(*self))
 end std.json.ToJson.i32.to_json
 
 impl std.json.ToJson for i64
-fn std.json.ToJson.i64.to_json(self: &i64, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.i64.to_json(self: &i64, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     out.push_i64(*self)
 end std.json.ToJson.i64.to_json
 
 impl std.json.ToJson for i8
-fn std.json.ToJson.i8.to_json(self: &i8, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.i8.to_json(self: &i8, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     out.push_i64(i64.from_i8(*self))
 end std.json.ToJson.i8.to_json
 
 impl std.json.ToJson for isize
-fn std.json.ToJson.isize.to_json(self: &isize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.isize.to_json(self: &isize, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     out.push_i64(i64.from_isize(*self))
 end std.json.ToJson.isize.to_json
 
 impl std.json.ToJson for std.json.Doc
-fn std.json.ToJson.std.json.Doc.to_json(self: &std.json.Doc, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.std.json.Doc.to_json(self: &std.json.Doc, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     std.json.write(self, self.root(), out)
 end std.json.ToJson.std.json.Doc.to_json
 
 impl std.json.ToJson for u16
-fn std.json.ToJson.u16.to_json(self: &u16, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.u16.to_json(self: &u16, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     out.push_u64(u64.from_u16(*self))
 end std.json.ToJson.u16.to_json
 
 impl std.json.ToJson for u32
-fn std.json.ToJson.u32.to_json(self: &u32, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.u32.to_json(self: &u32, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     out.push_u64(u64.from_u32(*self))
 end std.json.ToJson.u32.to_json
 
 impl std.json.ToJson for u64
-fn std.json.ToJson.u64.to_json(self: &u64, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.u64.to_json(self: &u64, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     out.push_u64(*self)
 end std.json.ToJson.u64.to_json
 
 impl std.json.ToJson for u8
-fn std.json.ToJson.u8.to_json(self: &u8, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.u8.to_json(self: &u8, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     out.push_u64(u64.from_u8(*self))
 end std.json.ToJson.u8.to_json
 
 impl std.json.ToJson for usize
-fn std.json.ToJson.usize.to_json(self: &usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+fn std.json.ToJson.usize.to_json(self: &usize, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     out.push_u64(u64.from_usize(*self))
 end std.json.ToJson.usize.to_json
 
@@ -304,7 +304,7 @@ fn std.json.decode_payload(payload: Option<std.json.Value>) -> Result<std.json.V
     }
 end std.json.decode_payload
 
-fn std.json.decode_string(doc: &std.json.Doc, v: std.json.Value) -> Result<alloc.string.String<std.alloc.System>, std.json.Error> uses [alloc] panics never pub
+fn std.json.decode_string(doc: &std.json.Doc, v: std.json.Value) -> Result<std.string.String, std.json.Error> uses [alloc] panics never pub
     match std.json.text_at(doc, v.at) {
         Some(s) => {
             let copy = alloc.string.String.from_str(std.alloc.SYSTEM, s)?
@@ -395,7 +395,7 @@ fn std.json.digits(src: &[u8], pos: usize) -> usize uses [] panics never
     i
 end std.json.digits
 
-fn std.json.flush(doc: &mut std.json.Doc, items: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), std.json.Error> uses [alloc] panics never
+fn std.json.flush(doc: &mut std.json.Doc, items: &std.vec.Vec<usize>) -> Result<(), std.json.Error> uses [alloc] panics never
     let all = items.as_slice()
     for k in core.iter.range(0usize, all.len()) {
         match all.get(k) {
@@ -478,16 +478,16 @@ fn std.json.new_doc() -> std.json.Doc uses [] panics never
     std.json.Doc { links: std.json.new_links(), nodes: std.json.new_nodes(), top: 0usize }
 end std.json.new_doc
 
-fn std.json.new_links() -> alloc.vec.Vec<usize, std.alloc.System> uses [] panics never
-    alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn std.json.new_links() -> std.vec.Vec<usize> uses [] panics never
+    std.vec.Vec.new()
 end std.json.new_links
 
-fn std.json.new_nodes() -> alloc.vec.Vec<std.json.Node, std.alloc.System> uses [] panics never
-    alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn std.json.new_nodes() -> std.vec.Vec<std.json.Node> uses [] panics never
+    std.vec.Vec.new()
 end std.json.new_nodes
 
-fn std.json.new_text() -> alloc.string.String<std.alloc.System> uses [] panics never
-    alloc.string.String.new(std.alloc.SYSTEM)
+fn std.json.new_text() -> std.string.String uses [] panics never
+    std.string.String.new()
 end std.json.new_text
 
 fn std.json.num_at(doc: &std.json.Doc, at: usize) -> Option<&str> uses [] panics never
@@ -563,7 +563,7 @@ fn std.json.parse_array(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: u
     Ok((at, close.wrapping_add(1usize)))
 end std.json.parse_array
 
-fn std.json.parse_escape(src: &[u8], pos: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<usize, std.json.Error> uses [alloc] panics never
+fn std.json.parse_escape(src: &[u8], pos: usize, out: &mut std.string.String) -> Result<usize, std.json.Error> uses [alloc] panics never
     let next = pos.wrapping_add(2usize)
     match src.get(pos.wrapping_add(1usize)) {
         None => Err(std.json.Error.Eof)
@@ -698,7 +698,7 @@ fn std.json.parse_object(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: 
     Ok((at, close.wrapping_add(1usize)))
 end std.json.parse_object
 
-fn std.json.parse_string(src: &[u8], pos: usize) -> Result<(alloc.string.String<std.alloc.System>, usize), std.json.Error> uses [alloc] panics never
+fn std.json.parse_string(src: &[u8], pos: usize) -> Result<(std.string.String, usize), std.json.Error> uses [alloc] panics never
     let mut out = std.json.new_text()
     let mut i = pos.wrapping_add(1usize)
     let mut run = i
@@ -723,7 +723,7 @@ fn std.json.parse_string(src: &[u8], pos: usize) -> Result<(alloc.string.String<
     Ok((out, i.wrapping_add(1usize)))
 end std.json.parse_string
 
-fn std.json.parse_unicode(src: &[u8], pos: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<usize, std.json.Error> uses [alloc] panics never
+fn std.json.parse_unicode(src: &[u8], pos: usize, out: &mut std.string.String) -> Result<usize, std.json.Error> uses [alloc] panics never
     let first = std.json.hex4(src, pos.wrapping_add(2usize))?
     let mut code = first
     let mut next = pos.wrapping_add(6usize)
@@ -771,7 +771,7 @@ fn std.json.parse_value(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: u
     }
 end std.json.parse_value
 
-fn std.json.push_control(out: &mut alloc.string.String<std.alloc.System>, unit: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+fn std.json.push_control(out: &mut std.string.String, unit: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     out.push_str("\\u00")?
     out.push(std.json.hex_char(unit.wrapping_shr(4u32) & 15u32))?
     out.push(std.json.hex_char(unit & 15u32))?
@@ -784,7 +784,7 @@ fn std.json.push_node(doc: &mut std.json.Doc, node: std.json.Node) -> Result<usi
     Ok(at)
 end std.json.push_node
 
-fn std.json.push_quoted(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn std.json.push_quoted(out: &mut std.string.String, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     out.push('"')?
     for c in text.chars() {
         if c == '"' {
@@ -807,7 +807,7 @@ fn std.json.push_quoted(out: &mut alloc.string.String<std.alloc.System>, text: &
     Ok(())
 end std.json.push_quoted
 
-fn std.json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], from: usize, to: usize) -> Result<(), std.json.Error> uses [alloc] panics never
+fn std.json.push_range(out: &mut std.string.String, src: &[u8], from: usize, to: usize) -> Result<(), std.json.Error> uses [alloc] panics never
     match src.sub(from, to) {
         Some(bytes) => match core.str.from_utf8(bytes) {
             Ok(text) => {
@@ -854,13 +854,13 @@ fn std.json.text_at(doc: &std.json.Doc, at: usize) -> Option<&str> uses [] panic
     }
 end std.json.text_at
 
-fn std.json.to_string[T: std.json.ToJson](value: &T) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn std.json.to_string[T: std.json.ToJson](value: &T) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = std.json.new_text()
     value.to_json(&mut out)?
     Ok(out)
 end std.json.to_string
 
-fn std.json.write(doc: &std.json.Doc, v: std.json.Value, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
+fn std.json.write(doc: &std.json.Doc, v: std.json.Value, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
     match doc.nodes.as_slice().get(v.at) {
         None => out.push_str("null")
         Some(std.json.Node.Null) => out.push_str("null")
@@ -897,7 +897,7 @@ fn std.json.write(doc: &std.json.Doc, v: std.json.Value, out: &mut alloc.string.
     }
 end std.json.write
 
-fn std.json.write_link(doc: &std.json.Doc, slot: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096
+fn std.json.write_link(doc: &std.json.Doc, slot: usize, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096
     match doc.links.as_slice().get(slot) {
         Some(n) => std.json.write(doc, std.json.Value { at: *n }, out)
         None => Ok(())
