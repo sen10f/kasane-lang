@@ -992,16 +992,8 @@ impl<'a> Checker<'a> {
             // 4.3 (3.2): 孤児規則 — `impl Tr for T` は、Tr と T のどちらかがこのパッケージ内で
             // 定義されたもののときだけ置ける。impl の置き場所自体が不正なときは、ここで報告して
             // メソッドの過不足 (E1112) は見ない (メソッドを置ける場所がそもそも無いので E1112 では直せない)。
-            if self.orphan_violation(d, &tb, &tgt) {
-                self.diag(
-                    "E2043",
-                    format!(
-                        "impl {} for {} violates the orphan rule: neither the trait nor the type is defined in this package (3.2)",
-                        tb, tgt
-                    ),
-                    i,
-                    0,
-                );
+            if let Some(why) = self.orphan_violation(d, &tb, &tgt) {
+                self.diag("E2043", format!("impl {} for {} violates the orphan rule: {} (3.2)", tb, tgt, why), i, 0);
                 continue;
             }
             let owner = prim_owner(&tgt);
@@ -1132,33 +1124,8 @@ impl<'a> Checker<'a> {
     /// 4.3 (3.2): 孤児規則。`impl Tr for T` は、Tr と T のどちらか一方がこのパッケージ内で
     /// 定義されたもののときだけ許される。対象が型パラメータ (blanket impl) のとき、名前が
     /// 未解決のとき、名義型・基本型以外の対象 (参照・スライス・タプル・fn 型) のときは黙る (誤検出厳禁)。
-    fn orphan_violation(&self, d: &Def, tb: &str, tgt: &str) -> bool {
-        let Some(&ti) = self.p.types.get(tb) else { return false };
-        let td = self.def(ti);
-        if td.kw != "trait" {
-            return false; // トレイトでない名前はここでは扱わない。
-        }
-        if self.user.contains(&ti) {
-            return false; // このパッケージのトレイトなら常に許す。
-        }
-        // 対象が型パラメータ (blanket impl) なら黙る。
-        if d.gnames().contains(tgt) {
-            return false;
-        }
-        // 対象の形: 名義型と基本型だけが impl の対象。それ以外の形は黙る。
-        match tag(&d.impl_for).as_str() {
-            "prim" => return true, // 基本型はユーザーパッケージでは定義できない
-            "named" => {}
-            _ => return false,
-        }
-        match self.p.types.get(tgt) {
-            // このパッケージの名義型なら許す。
-            Some(&j) if self.user.contains(&j) && matches!(self.def(j).kw.as_str(), "type" | "enum") => false,
-            // 部外の型 (標準ライブラリ・依存パッケージ)。トレイトも部外なので違反。
-            Some(_) => true,
-            // 未解決の名前。
-            None => false,
-        }
+    fn orphan_violation(&self, d: &Def, tb: &str, tgt: &str) -> Option<String> {
+        orphan_violation(self.p, &self.user, d, tb, tgt)
     }
 
     /// 4.3: `derive` は生成するトレイトの `requires` が揃うときだけ可能 (E2035)。
@@ -5977,6 +5944,38 @@ pub(crate) fn has_manual_copy(p: &crate::program::Program, nm: &str) -> bool {
             && impl_target(&d.impl_for) == nm
             && d.generics.iter().all(|g| g.0 != "type" || items(&g.2).is_empty())
     })
+}
+
+/// 3.2 の置き場所の規則 (旧い検査と TAST 規則の両方が使う)。`impl Tr for T` の置き場所は 1 つに決まる:
+/// T がこのパッケージの名義型なら T のモジュール、そうでなくて Tr がこのパッケージのトレイトなら Tr のモジュール。
+/// どちらも部外なら置けない。違反のとき、理由 (E2043 の説明の後ろ) を返す。
+/// 判定しないもの (`None`): Tr がトレイトでない・未解決の名前・型パラメータ (blanket impl)・名義型と基本型以外の対象。
+pub(crate) fn orphan_violation(p: &Program, user: &[usize], d: &Def, tb: &str, tgt: &str) -> Option<String> {
+    let &ti = p.types.get(tb)?;
+    if p.defs[ti].kw != "trait" || d.gnames().contains(tgt) {
+        return None;
+    }
+    // 対象の (このパッケージの名義型か, 所属モジュール) を決める。
+    let (tgt_home, tgt_user) = match tag(&d.impl_for).as_str() {
+        "prim" => (None, false), // 基本型はユーザーパッケージでは定義できない (所属は標準ライブラリ)
+        "named" => match p.types.get(tgt) {
+            Some(&j) if user.contains(&j) && matches!(p.defs[j].kw.as_str(), "type" | "enum") => {
+                (Some(p.defs[j].module.clone()), true)
+            }
+            Some(&j) => (Some(p.defs[j].module.clone()), false),
+            None => return None, // 未解決の名前
+        },
+        _ => return None,
+    };
+    let want = match (tgt_user, tgt_home) {
+        (true, Some(m)) => m,
+        _ if user.contains(&ti) => p.defs[ti].module.clone(),
+        _ => return Some("neither the trait nor the type is defined in this package".to_string()),
+    };
+    if d.module == want {
+        return None;
+    }
+    Some(format!("it is placed in module {}, but it must be in module {}", d.module, want))
 }
 
 /// 基本型の所有者 FQN (impl のメソッドを置く場所。3.2 の孤児規則)。
