@@ -209,6 +209,7 @@ pub(crate) fn find_ptr_ty(v: &V, line: usize) -> Option<usize> {
 /// 利用者のパッケージは `core` / `alloc` / `std` の名前を持てない (読み込みの E1001、S2・S3)。
 pub(crate) fn module_allows_unsafe(unsafe_modules: &[(String, String)], module: &str, file: &str) -> bool {
     let top = module.split('.').next().unwrap_or("");
+    // 暗黙の許可は標準ライブラリのソースだけ。利用者のパッケージは `core` / `alloc` / `std` の名前を持てない (読み込みの段で E1001)。
     if matches!(top, "core" | "alloc" | "std") {
         return true;
     }
