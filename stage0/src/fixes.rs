@@ -333,6 +333,7 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             }
             vec![span(file, line, text, indent, text.len(), format!("core.mem.drop({})", expr))]
         }
+        "E2055" | "E2057" | "E2058" | "E2059" | "E2060" | "E2061" => oneway_fix(code, msg, file, line, lines),
         "E2042" => {
             let Some(text) = get(line) else { return vec![] };
             let indent = text.len() - text.trim_start().len();
@@ -876,4 +877,154 @@ fn struct_order_fix(file: &str, msg: &str, line: usize, col: usize, lines: &[Str
     }
     let new = format!("{{ {} }}", out.join(", "));
     vec![Fix { file: file.to_string(), line, col: open + 1, end_line: line, end_col: close + 2, replace: new }]
+}
+
+/// 書き方は 1 通りの規則 (規則 O、`tast_rules/oneway.rs`) の直し。行の中で一意に決まる形だけ直す (それ以外は直さず診断だけ残す)。
+fn oneway_fix(code: &str, msg: &str, file: &str, line: usize, lines: &[String]) -> Vec<Fix> {
+    let Some(text) = lines.get(line.wrapping_sub(1)).map(|s| s.as_str()) else { return vec![] };
+    let ident_before = |at: usize| -> usize {
+        let head = &text[..at];
+        head.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_').map(char::len_utf8).sum()
+    };
+    match code {
+        "E2057" => {
+            let call = "core.panic.todo()";
+            if text.matches(call).count() != 1 {
+                return vec![];
+            }
+            let at = text.find(call).unwrap();
+            vec![span(file, line, text, at, at + call.len(), "core.panic.panic(\"todo\")".into())]
+        }
+        "E2058" => {
+            let Some(old) = ["sort_unstable_by", "sort_unstable"].into_iter().find(|n| msg.contains(&format!("`{n}`"))) else { return vec![] };
+            let pat = format!("{old}(");
+            if text.matches(&pat).count() != 1 {
+                return vec![];
+            }
+            let at = text.find(&pat).unwrap();
+            if text[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_') {
+                return vec![];
+            }
+            let new = old.replacen("sort_unstable", "sort", 1);
+            vec![span(file, line, text, at, at + old.len(), new)]
+        }
+        "E2059" => {
+            let call = "core.check.is_true(";
+            if text.matches(call).count() != 1 {
+                return vec![];
+            }
+            let start = text.find(call).unwrap();
+            let open = start + call.len();
+            let mut depth = 1usize;
+            let mut close = None;
+            let mut eqs = vec![];
+            for (i, c) in text[open..].char_indices() {
+                match c {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(open + i);
+                            break;
+                        }
+                    }
+                    '"' => return vec![],
+                    _ => {}
+                }
+            }
+            let Some(close) = close else { return vec![] };
+            // 括弧の中の `==` は深さ 1 の 1 か所だけ。
+            let inner = &text[open..close];
+            let mut d = 0i32;
+            let b = inner.as_bytes();
+            let mut i = 0;
+            while i < b.len() {
+                match b[i] {
+                    b'(' | b'[' | b'{' => d += 1,
+                    b')' | b']' | b'}' => d -= 1,
+                    b'=' if d == 0 && i + 1 < b.len() && b[i + 1] == b'=' => {
+                        eqs.push(i);
+                        i += 1;
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            if eqs.len() != 1 {
+                return vec![];
+            }
+            let (a, c) = (inner[..eqs[0]].trim(), inner[eqs[0] + 2..].trim());
+            if a.is_empty() || c.is_empty() {
+                return vec![];
+            }
+            vec![span(file, line, text, start, close + 1, format!("core.check.eq({a}, {c})"))]
+        }
+        "E2060" => {
+            for pat in [".trim_start().trim_end()", ".trim_end().trim_start()"] {
+                if text.matches(pat).count() == 1 {
+                    let at = text.find(pat).unwrap();
+                    return vec![span(file, line, text, at, at + pat.len(), ".trim()".into())];
+                }
+            }
+            vec![]
+        }
+        "E2061" => {
+            let head = ".push_display(&\"";
+            if text.matches(head).count() != 1 {
+                return vec![];
+            }
+            let at = text.find(head).unwrap();
+            let lit_from = at + head.len();
+            let Some(rel) = text[lit_from..].find('"') else { return vec![] };
+            let lit_end = lit_from + rel; // 閉じの `"` の位置
+            if !text[lit_end + 1..].starts_with(')') || text[lit_from..lit_end].contains('\\') {
+                return vec![];
+            }
+            let body = &text[lit_from..lit_end];
+            vec![span(file, line, text, at, lit_end + 2, format!(".push_str(\"{body}\")"))]
+        }
+        "E2055" => {
+            // `recv.is_some()` 等の形 (受け手は単純な名前だけ)。
+            let method = [("is_some", "Some(_)"), ("is_none", "None"), ("is_ok", "Ok(_)"), ("is_err", "Err(_)")]
+                .into_iter()
+                .find(|(m, _)| msg.contains(&format!("`.{m}()`")));
+            if let Some((m, pat)) = method {
+                let call = format!(".{m}()");
+                if text.matches(&call).count() != 1 {
+                    return vec![];
+                }
+                let at = text.find(&call).unwrap();
+                let n = ident_before(at);
+                if n == 0 || text[..at - n].ends_with(|c: char| c == '.' || c == '_' || c.is_alphanumeric()) {
+                    return vec![];
+                }
+                let start = at - n;
+                let after = text[at + call.len()..].trim_start();
+                if !(after.is_empty() || after.starts_with([')', '{', ',', ';', '&', '|'])) {
+                    return vec![];
+                }
+                let recv = &text[start..at];
+                let neg = text[..start].ends_with('!');
+                let rep = if neg { format!("({recv} is {pat})") } else { format!("{recv} is {pat}") };
+                return vec![span(file, line, text, start, at + call.len(), rep)];
+            }
+            // `x == None` / `x != None` (左の受け手は単純な名前)。
+            for (op, neg) in [(" == None", false), (" != None", true)] {
+                if text.matches(op).count() != 1 {
+                    continue;
+                }
+                let at = text.find(op).unwrap();
+                let n = ident_before(at);
+                if n == 0 || text[..at - n].ends_with(|c: char| c == '.' || c == '_' || c.is_alphanumeric()) || text[..at - n].ends_with('!') {
+                    return vec![];
+                }
+                let start = at - n;
+                let recv = &text[start..at];
+                let rep = if neg { format!("!({recv} is None)") } else { format!("{recv} is None") };
+                return vec![span(file, line, text, start, at + op.len(), rep)];
+            }
+            vec![]
+        }
+        _ => vec![],
+    }
 }

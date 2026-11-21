@@ -1,0 +1,7 @@
+fn t.a() -> () uses [] panics may
+    core.panic.todo()
+end t.a
+
+fn t.main() -> () uses [] panics never
+    ()
+end t.main

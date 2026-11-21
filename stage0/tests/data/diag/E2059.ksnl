@@ -1,0 +1,7 @@
+fn t.a(v: u32) -> () uses [] panics may
+    core.check.is_true(v == 1u32)
+end t.a
+
+fn t.main() -> () uses [] panics never
+    ()
+end t.main

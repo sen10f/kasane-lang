@@ -622,3 +622,60 @@ fn ksn_fix_e2044_skips_non_concrete_inferred_type() {
     let c = run(&["check", "--json"], &t.0);
     assert!(codes(&text(&c.stdout)).iter().any(|c| c == "E2044"), "{}", text(&c.stdout));
 }
+
+/// 規則 O (書き方は 1 通り、2026-11-21): 診断 → `ksn fix` → `check` が通る → 2 回目の `fix` は何も変えない。
+fn oneway_round_trip(name: &str, src: &str, code: &str, want: &str) {
+    let t = Tmp::new_raw(name, src);
+    let before = run(&["check", "--json"], &t.0);
+    assert_eq!(before.status.code(), Some(1), "{}", text(&before.stdout));
+    assert!(codes(&text(&before.stdout)).iter().any(|c| c == code), "{}", text(&before.stdout));
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    assert!(fixed.contains(want), "{fixed}");
+    let c = run(&["check", "--json"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}", text(&c.stdout));
+    run(&["fix"], &t.0);
+    assert_eq!(fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap(), fixed);
+}
+
+#[test]
+fn oneway_option_is_some_becomes_is_pattern() {
+    let src = "fn t.a(o: Option<u32>, q: Option<u32>) -> bool uses [] panics never\n    let b = q\n    !o.is_none() && b.is_some()\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_is_some", src, "E2055", "!(o is None) && b is Some(_)");
+}
+
+#[test]
+fn oneway_result_is_err_becomes_is_pattern() {
+    let src = "fn t.a(r: Result<u32, u32>) -> bool uses [] panics never\n    r.is_err()\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_is_err", src, "E2055", "r is Err(_)");
+}
+
+#[test]
+fn oneway_todo_becomes_panic_with_message() {
+    let src = "fn t.a() -> () uses [] panics may\n    core.panic.todo()\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_todo", src, "E2057", "core.panic.panic(\"todo\")");
+}
+
+#[test]
+fn oneway_sort_unstable_becomes_sort() {
+    let src = "fn t.a(v: &mut [u32]) -> () uses [] panics never\n    v.sort_unstable()\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_sort", src, "E2058", "v.sort()");
+}
+
+#[test]
+fn oneway_is_true_eq_becomes_check_eq() {
+    let src = "fn t.a(v: u32) -> () uses [] panics may\n    core.check.is_true(v == 1u32)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_is_true", src, "E2059", "core.check.eq(v, 1u32)");
+}
+
+#[test]
+fn oneway_trim_pair_becomes_trim() {
+    let src = "fn t.a(s: &str) -> &str uses [] panics never\n    s.trim_start().trim_end()\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_trim", src, "E2060", "s.trim()");
+}
+
+#[test]
+fn oneway_push_display_literal_becomes_push_str() {
+    let src = "fn t.a() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never\n    let mut s = alloc.string.String.from_str(std.alloc.SYSTEM, \"a\")?\n    s.push_display(&\"lit\")?\n    core.mem.drop(s)\n    Ok(())\nend t.a\n\nfn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never\n    t.a()?\n    Ok(())\nend t.main\n";
+    oneway_round_trip("oneway_push_display", src, "E2061", "s.push_str(\"lit\")?");
+}

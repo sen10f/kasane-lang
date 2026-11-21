@@ -1549,6 +1549,12 @@
 ],
 [
 "new_only",
+"stage0/tests/data/unsound/iter_panic_fold_map.ksnl",
+6,
+"E2057"
+],
+[
+"new_only",
 "stage0/tests/data/unsound/keep_lifetime_mismatch.ksnl",
 2,
 "E3010"

@@ -48,6 +48,8 @@ pub fn check(prog: &Program, user: &[usize]) -> Vec<Diag> {
     out.extend(crate::tast_rules::unsafe_calls::check(prog, user, &tast));
     // 型パラメータの境界の充足 (規則 I の拡張)。
     out.extend(crate::tast_rules::bounds::check(prog, user, &tast));
+    // 書き方は 1 通り (規則 O、設計_書き方は1通り.md 12 章)。
+    out.extend(crate::tast_rules::oneway::check(prog, user, &tast));
     // 同じ診断を 2 つの規則が出すことがある (参照の段数と型の一致): (ファイル, 行, コード, 文面) で重ねる。
     let mut seen = std::collections::BTreeSet::new();
     out.retain(|d| seen.insert((d.file.clone(), d.line, d.code.clone(), d.msg.clone())));
