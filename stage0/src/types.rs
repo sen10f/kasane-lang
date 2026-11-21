@@ -491,6 +491,44 @@ fn cmp_trait(name: &str) -> Option<&'static str> {
     }
 }
 
+/// `Copy` / `Clone` の境界・`.clone()` の充足 (4.2): `&mut T` と、それを含む型 (`Option<&mut T>`・タプル・配列) は Copy でも Clone でもない。
+/// 閉包は取り込みがすべて Copy / Clone のときだけ (`&x` は常に可、`&mut x` は不可、`move` は中身で決める。`FnOnce` は不可)。
+/// `caps` は閉包の式 ID から取り込みの (種別, 型) の列。`leaf` は構造で決まらない型 (基本型・名前つきの型・型パラメータ) の判定。
+pub(crate) fn marker_unsat(t: &Ty, caps: &dyn Fn(&str) -> Option<Vec<(String, Ty)>>, leaf: &dyn Fn(&Ty) -> Option<Ty>) -> Option<Ty> {
+    match t {
+        Ty::Ref(m, _, _) => m.then(|| t.clone()),
+        Ty::Tuple(xs) => xs.iter().find_map(|x| marker_unsat(x, caps, leaf)),
+        Ty::Array(x, _) | Ty::Slice(x) => marker_unsat(x, caps, leaf),
+        Ty::Closure { cap, id, .. } => {
+            if *cap == Cap::FnOnce {
+                return Some(t.clone());
+            }
+            let cs = id.as_ref().and_then(|n| caps(n))?;
+            for (k, ct) in &cs {
+                match k.as_str() {
+                    "&mut" => return Some(t.clone()),
+                    "move" => {
+                        if marker_unsat(ct, caps, leaf).is_some() {
+                            return Some(t.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        Ty::Named(n, args, _) => {
+            if !matches!(n.as_str(), "Option" | "Result" | "core.option.Option" | "core.result.Result") {
+                if let Some(l) = leaf(t) {
+                    return Some(l);
+                }
+            }
+            args.iter().find_map(|a| marker_unsat(a, caps, leaf))
+        }
+        _ => leaf(t),
+    }
+}
+
 /// 定義 `d` の型パラメータ `pn` が境界として `tr` を持つか (スーパートレイト `requires` を推移的に辿る。
 /// `TryClone` は `Clone` から成り立つ)。`pn` が `d` の型パラメータでなければ None (分からない: 黙る)。
 /// 境界に解決できないトレイト名があれば黙って Some(true) (そちらは別の診断が出る)。
@@ -3157,7 +3195,13 @@ impl<'a> TypeCk<'a> {
         if matches!(whole, Ty::Param(_)) {
             return false;
         }
-        let Some(leaf) = self.unsatisfied(&whole, tr) else { return false };
+        let found = if matches!(tr, "core.ops.Clone" | "alloc.alloc.TryClone") {
+            let caps = |n: &str| self.closure_caps.get(n).map(|c| c.iter().map(|(k, _, t)| (k.clone(), self.deep(t))).collect());
+            marker_unsat(&whole, &caps, &|x: &Ty| self.unsatisfied(x.strip(), tr))
+        } else {
+            self.unsatisfied(&whole, tr)
+        };
+        let Some(leaf) = found else { return false };
         let ty = match &whole {
             Ty::Named(n, _, _) if leaf == whole => n.clone(),
             _ => whole.show(),

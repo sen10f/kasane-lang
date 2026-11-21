@@ -1,0 +1,21 @@
+enum t.E derive [Clone, Copy]
+    Num(u64, u64)
+    Text(&'static str)
+end t.E
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    let mut e = t.E.Text("hello")
+    let (a, b) = t.pair(&mut e)
+    match a {
+        t.E.Text(s) => {
+            *b = t.E.Num(1_094_795_585u64, 4096u64)
+            std.io.print_line(*s)?
+        }
+        t.E.Num(_x, _y) => ()
+    }
+    Ok(())
+end t.main
+
+fn t.pair[T: core.ops.Copy](x: T) -> (T, T) uses [] panics never
+    (x, x)
+end t.pair

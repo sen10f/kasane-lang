@@ -1,0 +1,26 @@
+type t.P derive [Clone, Copy]
+    x: u32
+    y: u32
+end t.P
+
+fn t.pair[T: core.ops.Copy](x: T) -> (T, T) uses [] panics never
+    (x, x)
+end t.pair
+
+fn t.main() -> bool uses [] panics never
+    let p = t.P { x: 1u32, y: 2u32 }
+    let o = Some(&p)
+    let c = o.clone()
+    let (a, b) = t.pair(&p)
+    let n = 3u32
+    let f = fn() -> u32 capture [&n] {
+        *n
+    }
+    let (g, h) = t.pair(f)
+    let (q, r) = t.pair(p)
+    let v = match c {
+        Some(w) => w.x
+        None => 0u32
+    }
+    g() == h() && q.x == r.x && a.y == b.y && v == 1u32
+end t.main
