@@ -598,32 +598,33 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
     };
     let checked: Vec<usize> = dep_idx.iter().chain(user.iter()).copied().collect();
     crate::vm::tick("build_prog");
+    // `[unsafe] modules` はパッケージごと: (パッケージの `src/`・`tests/`, モジュール)。許可はそのパッケージのファイルの定義にだけ効く。
+    let ck_unsafe: Vec<(String, String)> = std::iter::once(&l.pkg)
+        .chain(l.deps.iter())
+        .flat_map(|p| {
+            let root = norm(&p.root);
+            let ms = crate::project::unsafe_modules(&p.manifest);
+            ["src", "tests"].into_iter().flat_map(move |sub| {
+                let dir = format!("{}/{}/", root, sub);
+                ms.clone().into_iter().map(move |m| (dir.clone(), m))
+            })
+        })
+        .collect();
     let mut diags = {
         let mut ck = Checker::new(&prog, checked.clone());
-        // `[unsafe] modules` はパッケージごと。各パッケージは自分の名前の下のモジュールだけを列挙できる (他の名前は無視)。
-        ck.unsafe_modules = std::iter::once(&l.pkg)
-            .chain(l.deps.iter())
-            .flat_map(|p| {
-                let root = norm(&p.root);
-                let ms = crate::project::unsafe_modules(&p.manifest);
-                ["src", "tests"].into_iter().flat_map(move |sub| {
-                    let dir = format!("{}/{}/", root, sub);
-                    ms.clone().into_iter().map(move |m| (dir.clone(), m))
-                })
-            })
-            .collect();
+        ck.unsafe_modules = ck_unsafe.clone();
         ck.integration_files = l.pkg.sources.iter().filter(|s| s.is_test).map(|s| s.path.clone()).collect();
         ck.run();
         crate::vm::tick("checker");
         ck.diags
     };
     // 新しい検査 (TAST、tast_check.rs) の差し込み口: 検査器は 1 つ (`KSN_CHECKER=old|new|shadow` は非推奨で無視)。
-    let mut diags = crate::tast_check::select(&prog, &checked, diags);
+    let mut diags = crate::tast_check::select(&prog, &checked, &ck_unsafe, diags);
     // 他の診断が無いときだけ、`const` / `static` の初期化式を評価して、評価中の panic を E4024 にする (4.1)。
     let (prog, const_diags) = if diags.is_empty() { eval_const_inits(prog, &user) } else { (prog, vec![]) };
     diags.extend(const_diags);
-    // 隠しの切り替え (試験用): 借用・線形の診断 (E30xx) を外して実行する。検査器の穴を実行時の検査 (解放済みの値の読み) で確かめる。
-    let diags: Vec<_> = if std::env::var_os("KSN_SKIP_BORROW_DIAGS").is_some() {
+    // 隠しの切り替え (試験用。配布の release ビルドでは効かない: debug か feature `test-hooks` のときだけ): 借用・線形の診断 (E30xx) を外して実行する。検査器の穴を実行時の検査 (解放済みの値の読み) で確かめる。
+    let diags: Vec<_> = if cfg!(any(debug_assertions, feature = "test-hooks")) && std::env::var_os("KSN_SKIP_BORROW_DIAGS").is_some() {
         diags.into_iter().filter(|d| !d.code.starts_with("E30")).collect()
     } else {
         diags

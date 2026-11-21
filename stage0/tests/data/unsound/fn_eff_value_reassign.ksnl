@@ -1,0 +1,13 @@
+fn t.main() -> () uses [] panics never
+    let mut g = t.quiet
+    g = t.say
+    g()
+end t.main
+
+fn t.quiet() -> () uses [] panics never
+end t.quiet
+
+fn t.say() -> () uses [io.console] panics may
+    core.mem.drop(std.io.print_line("side effect from pure main"))
+    core.panic.panic("and a panic")
+end t.say

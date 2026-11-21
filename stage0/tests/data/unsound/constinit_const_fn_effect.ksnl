@@ -1,0 +1,9 @@
+static t.X: bool = t.g()
+
+fn t.g() -> bool const uses [io.fs] panics never
+    std.fs.create_dir("/tmp/ksn_constinit_const_fn_effect").is_ok()
+end t.g
+
+fn t.main() -> bool uses [] panics never
+    t.X
+end t.main
