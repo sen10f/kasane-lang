@@ -623,6 +623,21 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             let name = &c[1];
             add_mut_to_let(file, line, name, lines)
         }
+        // 型が決まらない `let` 束縛に、推論された具体型の注釈を足す (E2044)。
+        // 束縛が単純な名前で、推論型に穴がないときだけ機械的に直す。
+        "E2044" => {
+            let re = Regex::new(r"inferred so far: `([^`]+)`").unwrap();
+            let Some(c) = re.captures(msg) else { return vec![] };
+            let ty = &c[1];
+            if !is_concrete_type(ty) {
+                return vec![];
+            }
+            let Some(text) = get(line) else { return vec![] };
+            let re = Regex::new(r"^\s*let (?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap();
+            let Some(m) = re.captures(text) else { return vec![] };
+            let name_end = m.get(1).unwrap().end();
+            vec![span(file, line, text, name_end, name_end, format!(": {}", ty))]
+        }
         _ => vec![],
     }
 }
