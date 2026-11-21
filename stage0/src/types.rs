@@ -205,10 +205,6 @@ impl Ty {
             _ => None,
         }
     }
-    /// 型の一致 (`==`) に加えて、領域もすべて同じか。`==` は領域を見ない (設計 9 章)。
-    pub fn same_regions(&self, o: &Ty) -> bool {
-        self == o && { let (a, b) = (self.regions(), o.regions()); a.len() == b.len() && a.iter().zip(&b).all(|(x, y)| x.same(y)) }
-    }
     /// 領域つきの表示 (`&'a T`。`show` は診断の文面なので領域を出さない)。
     pub fn show_r(&self) -> String {
         match self {
@@ -1923,20 +1919,6 @@ impl<'a> TypeCk<'a> {
         }
     }
 
-    /// 式の型が、参照の段数まで確かか (リテラル・関数の呼び出し・構造体リテラル・確かな局所変数)。
-    fn exact_source(&self, e: &V) -> bool {
-        match nname(e) {
-            "Lit" | "Call" | "StructLit" => true,
-            // `&e` / `&mut e` / `*e` は、`e` の型が確かなら確か (参照の段数は演算子が決める)。
-            "Unary" => matches!(st(&nf(e)[0]).as_str(), "&" | "&mut" | "*") && self.exact_source(&nf(e)[1]),
-            "Path" => {
-                let segs = strs(&nf(e)[0]);
-                segs.len() == 1 && self.scopes.iter().rev().find(|s| s.contains_key(&segs[0])).map_or(false, |s| s.contains_key(&exact_mark(&segs[0])))
-            }
-            _ => false,
-        }
-    }
-
     fn set_static(&mut self, name: &str, on: bool) {
         if let Some(s) = self.scopes.iter_mut().rev().find(|s| s.contains_key(name)) {
             if on {
@@ -3043,12 +3025,8 @@ impl<'a> TypeCk<'a> {
         let view = self.view_for(recv, &owner);
         let _ = self.unify_recv(&self_ty, &view);
         for (k, a) in args.iter().enumerate() {
-            let raw_pt = from_v(&d.params[k + 1].1, &gn);
             let pt = self.inst(&Self::inst_regions(call_id, &sig_ps[k + 1]), &mut map);
             self.note_region_cstr(call_id, &pt, a, "arg");
-            if let Some((want, got)) = self.arg_ref_conflict(&raw_pt, a).or_else(|| self.param_arg_ref_conflict(&raw_pt, &pt, a)) {
-                self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, name, want, got, ref_hint(&want, &got, self.ty_copy_ref(&raw_pt))), line);
-            }
             if let Err(e) = self.unify2(&pt, a) {
                 if fit.len() == 1 {
                     {
@@ -4339,16 +4317,6 @@ impl<'a> TypeCk<'a> {
                     }
                     let declared = self.field_ty(&Ty::Named(fq.clone(), args.clone(), crate::types::Rgs::default()), &st(&items(x)[0]));
                     self.note_conv(&items(x)[1], &declared, &vt);
-                    // 欄の宣言の型と値の型で参照の段数は透過しない (呼び出しの引数と同じ規則、E2023)。
-                    {
-                        let fname = st(&items(x)[0]);
-                        if let Some((_, fv)) = decl_fields.iter().find(|(n, _)| *n == fname) {
-                            let raw = from_v(fv, &gn);
-                            if let Some((want, got)) = self.arg_ref_conflict(&raw, &vt).or_else(|| self.param_arg_ref_conflict(&raw, &declared, &vt)) {
-                                self.diag("E2023", format!("field `{}` of `{}`: expected `{}`, found `{}`", fname, fq, want, got), nline(e));
-                            }
-                        }
-                    }
                     if let Err(err) = self.unify2(&declared, &vt) {
                         {
                             let (want, got) = self.type_conflict(&err).or_else(|| self.vec_seq_mismatch(&declared, &vt)).unwrap_or_else(|| Self::raw_pair(&err));
@@ -5268,10 +5236,6 @@ impl<'a> TypeCk<'a> {
                 if arg_ids.len() == argt.len() {
                     self.side.conv_pending.push(((self.cur, arg_ids[k]), declared.clone(), a.clone()));
                 }
-                // 欄と同じく、ペイロードの宣言の型と値の型で参照の段数は透過しない (E2023)。
-                if let Some((want, got)) = self.arg_ref_conflict(&raw, a).or_else(|| self.param_arg_ref_conflict(&raw, &declared, a)) {
-                    self.diag("E2023", format!("payload of `{}`: expected `{}`, found `{}`", vn, want, got), line);
-                }
                 // 列挙子のペイロードの食い違いは、関数の戻り値と同じく E2020 にする (黙ると `E.A(5u8)` を通してしまう)。
                 if let Err(err) = self.unify2(&declared, a) {
                     {
@@ -5632,13 +5596,9 @@ impl<'a> TypeCk<'a> {
             self.unify_fn_bound(d, *k, name, &cl, &mut map, line, &mut cap_bad);
         }
         for (k, a) in argt.iter().enumerate() {
-            let Some(p) = d.params.get(k) else { break };
-            let raw = from_v(&p.1, &gn);
+            if d.params.get(k).is_none() { break; }
             let pt = self.inst(&Self::inst_regions(call_id, &sig_ps[k]), &mut map);
             self.note_region_cstr(call_id, &pt, a, "arg");
-            if let Some((want, got)) = self.arg_ref_conflict(&raw, a).or_else(|| self.param_arg_ref_conflict(&raw, &pt, a)) {
-                self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, d.name, want, got, ref_hint(&want, &got, self.ty_copy_ref(&raw))), line);
-            }
             if arg_ids.len() == argt.len() {
                 self.side.conv_pending.push(((self.cur, arg_ids[k]), pt.clone(), a.clone()));
             }
@@ -6459,71 +6419,6 @@ impl<'a> TypeCk<'a> {
                     gi = b;
                 }
                 (x, Ty::Ref(..)) if value_like(x) => return Some((w.show(), g.show())),
-                _ => return None,
-            }
-        }
-    }
-
-    /// 呼び出しの引数の参照の段数 (4.2: 引数には暗黙の自動参照も自動参照外しもない)。
-    /// `want` は宣言の引数型 (型パラメータを含んでよい)、`got` は実引数の型。参照の段を左右そろえて
-    /// 外し、片方だけが参照のまま値に当たったら食い違い。許すのは両側が参照 (`&mut T` → `&T`、
-    /// `&[T; N]` → `&[T]`、`&T` → `&dyn Tr` を含む) の組だけ。決まっていない・型パラメータ・クロージャ・`dyn`・
-    /// `!` が絡むときは黙る。
-    /// 引数の宣言の型が型パラメータそのもの (`value: T`) で、`T` が参照でない型に決まっているのに参照を渡す
-    /// (`Sender<String>.send(&s)`): 最上位でも参照の段数は透過しない (E2023)。
-    fn param_arg_ref_conflict(&self, raw: &Ty, pt: &Ty, got: &Ty) -> Option<(String, String)> {
-        if !matches!(raw, Ty::Param(_)) {
-            return None;
-        }
-        let g = self.deep(got);
-        if !matches!(g, Ty::Ref(..)) {
-            return None;
-        }
-        let w = self.deep(pt);
-        if matches!(w, Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_) | Ty::Array(..)) && !self.undetermined(&w) {
-            return Some((w.show(), g.show()));
-        }
-        None
-    }
-
-    fn arg_ref_conflict(&self, want: &Ty, got: &Ty) -> Option<(String, String)> {
-        let g0 = self.deep(got);
-        // 4.2: クロージャ → `fn(..)` はキャプチャなしのものだけ (環境を持てない)。
-        if let (Ty::Closure { id: None, .. }, Ty::Closure { id: Some(node), .. }) = (want, &g0) {
-            if self.closure_caps.get(node).map_or(false, |c| !c.is_empty()) {
-                return Some((want.show(), "a closure with captures".to_string()));
-            }
-        }
-        // 4.2: `&[T; N]` → `&[T]` は参照の直下だけ。`Option<&[T]>` の位置に `Option<&[T; N]>` は渡せない。
-        // (宣言の型に型パラメータを含まない引数だけを見る。総称の引数どうしの合流 `core.check.eq` は見ない。)
-        if !want.has_param() {
-            if let (Ty::Named(n, xs, _), Ty::Named(m, ys, _)) = (want, &g0) {
-                if n == m && matches!(n.as_str(), "Option" | "Result") {
-                    for (x, y) in xs.iter().zip(ys) {
-                        if let (Ty::Ref(_, p, _), Ty::Ref(_, q, _)) = (x, &self.deep(y)) {
-                            if matches!((&**p, self.deep(q)), (Ty::Slice(_), Ty::Array(..))) {
-                                return Some((want.show(), g0.show()));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        fn plain(t: &Ty) -> bool {
-            matches!(t, Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_, _) | Ty::Unit)
-        }
-        let (mut wi, mut gi) = (want.clone(), g0.clone());
-        loop {
-            match (&wi, &gi) {
-                (Ty::Ref(_, a, _), Ty::Ref(_, b, _)) => {
-                    let (a, b) = ((**a).clone(), (**b).clone());
-                    wi = a;
-                    gi = b;
-                }
-                (w, Ty::Ref(..)) if plain(w) && !w.has_param() => return Some((want.show(), g0.show())),
-                (Ty::Ref(_, a, _), g) if plain(g) && !self.undetermined(g) && !matches!(**a, Ty::Param(_) | Ty::Unknown) && !self.undetermined(&g0) => {
-                    return Some((want.show(), g0.show()));
-                }
                 _ => return None,
             }
         }
