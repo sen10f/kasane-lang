@@ -1,4 +1,4 @@
-//! 供給網の穴 (S1-S4。S1c の依存の `.ksnh` は、既存の決定 (`ksnh_in_a_dependency_is_not_read`) に従い対象外): 依存パッケージの本体も根と同じ検査を受ける、`core` / `alloc` / `std` の名前は標準ライブラリだけのもの、
+//! 供給網の穴 (S1-S4): 依存パッケージの本体も根と同じ検査を受ける、`core` / `alloc` / `std` の名前は標準ライブラリだけのもの、
 //! git・レジストリの依存があるとき lock を版 1 へ落とせない。二つのパッケージの置き場を一時の場所に作って確かめる。
 
 #[path = "common/scratch.rs"]
@@ -113,6 +113,27 @@ fn s1_dependency_cannot_grant_unsafe_to_the_roots_modules() {
     assert_ne!(rc, 0, "{}", out);
     // 読み込みの段の検証 (E9012: 自分のパッケージのモジュールでないもの) が先に止める。
     assert!(out.contains("E9012") || has(&out, "E5001"), "{}", out);
+}
+
+/// S1c: 依存の `.ksnh` が `.ksnl` と (コメントを除いて) 食い違えば E9050。一致していれば通る。
+#[test]
+fn s1c_dependency_ksnh_mismatch_is_e9050() {
+    let w = Work::new("s1c");
+    two(
+        &w,
+        "fn a.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(dep.greeting())\nend a.main\n",
+        "fn dep.greeting() -> &'static str uses [] panics never pub\n    \"DIFFERENT: the .ksnl that actually runs\"\nend dep.greeting\n",
+    );
+    w.put("dep/src/dep.ksnh", "// returns the greeting text\nfn dep.greeting() -> &'static str uses [] panics never pub\n    \"hello from the reviewed .ksnh\"\nend dep.greeting\n");
+    let (out, rc) = w.check("a");
+    assert_ne!(rc, 0, "{}", out);
+    assert!(has(&out, "E9050") && out.contains("dependency `dep`"), "{}", out);
+    for cmd in ["run", "build", "test"] {
+        assert!(!w.ksn(&[cmd], "a").status.success(), "ksn {} must fail", cmd);
+    }
+    w.put("dep/src/dep.ksnh", "// returns the greeting text\nfn dep.greeting() -> &'static str uses [] panics never pub\n    \"DIFFERENT: the .ksnl that actually runs\"\nend dep.greeting\n");
+    let (out, rc) = w.check("a");
+    assert_eq!(rc, 0, "{}", out);
 }
 
 /// S2: 依存が `std.io.print_line` を定義できない。
