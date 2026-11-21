@@ -364,7 +364,7 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
     while i < n_glyphs {
         let idx = usize.from_u64(i)
         let g = unsafe "ptr" "read glyph" {
-            core.ptr.read(core.ptr.add::<golden.Glyph>(glyphs_p, idx))
+            core.ptr.read(core.ptr.add(glyphs_p, idx))
         }
         let gid = g.glyph_id
 
@@ -446,7 +446,7 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
         q.cb = 1.0f32
         q.ca = 1.0f32
         unsafe "ptr" "write quad" {
-            core.ptr.write(core.ptr.add::<golden.KsnuiGlyphQuad>(quads_p, idx), q)
+            core.ptr.write(core.ptr.add(quads_p, idx), q)
         }
 
         pen_x = pen_x + g.x_advance
@@ -460,7 +460,7 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
 
     let n_valid = i
     let quads_p_const = unsafe "ptr" "quads const pointer" {
-        core.ptr.as_const::<golden.KsnuiGlyphQuad>(quads_p)
+        core.ptr.as_const(quads_p)
     }
     golden.gpu_atlas_upload(dev, atlas_p)
     golden.gpu_draw_glyphs(dev, quads_p_const, n_valid)

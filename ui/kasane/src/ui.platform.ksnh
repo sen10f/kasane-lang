@@ -132,7 +132,7 @@ fn ui.platform.poll_events(win: &ui.platform.Window) -> alloc.vec.Vec<ui.event.E
         let mut i = 0u64
         while i < n {
             let idx = usize.from_u64(i)
-            let ev_ptr_added = core.ptr.add::<ui.plat.KsnuiEvent>(ev_ptr, idx)
+            let ev_ptr_added = core.ptr.add(ev_ptr, idx)
             let ev = core.ptr.read(core.ptr.as_const(ev_ptr_added))
             match ui.platform.translate_event(&ev, &text_pool) {
                 Some(e) => match events.push(e) {
