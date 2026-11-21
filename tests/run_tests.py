@@ -49,11 +49,6 @@ r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'verify_re
                    capture_output=True, text=True, encoding='utf-8', errors='replace')
 step('bench/verify_reference.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
 
-# 3a. 旧い検査と新しい検査 (tast_check.rs) の差が台帳 (tests/shadow_baseline.json) の範囲内か (全対象で約 15 秒)
-r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'shadow_diff.py'), '--full'],
-                   capture_output=True, text=True, encoding='utf-8', errors='replace')
-step('tests/shadow_diff.py (KSN_CHECKER=shadow)', r.returncode == 0, (r.stdout + r.stderr)[-800:])
-
 # 3b. LLM ベンチのハーネス (モック API でリトライ・採点・invalid 判定を検査。外部には接続しない)
 r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'test_harness.py')],
                    capture_output=True, text=True, encoding='utf-8', errors='replace')

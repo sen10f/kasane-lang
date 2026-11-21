@@ -464,19 +464,10 @@ pub struct Checker<'a> {
     pub unsafe_modules: Vec<String>,
     /// `tests/` 配下 (統合テスト、3.2) のファイルパス。ここに属する定義には別の規則を当てる。
     pub integration_files: HashSet<String>,
-    /// `KSN_CHECKER=s4`: TAST に置き換わる形を見る借用検査 (borrowck) を走らせない (tast_check.rs が診断を選ぶ)。
-    pub s4: bool,
     unsafe_ok: bool,
     // typeck の状態
     d: usize,
     names: HashSet<String>,
-    /// move 済みの場所 (根の変数 + フィールド道をドットでつないだ鍵。`s`・`s.f`・`s.a.b`) → move した行。
-    /// 鍵どうしは互いに重ならない (一方が他方の接頭辞なら記録しない)。E3002 (4.1・4.4)。
-    moved: BTreeMap<String, usize>,
-    /// 関数の本体で move した場所 (式の位置, 場所の鍵)。借用検査が、借用中の move を E3010 にするのに使う。
-    move_sites: HashSet<(usize, String)>,
-    /// 囲むループごとの (`break` 時点の move, `continue` 時点の move)。
-    loop_exits: Vec<(BTreeMap<String, usize>, BTreeMap<String, usize>)>,
     /// 現在の関数の型パラメータのうち `linear` と宣言されたもの。その型 `T` の値は線形として扱う (4.4)。
     lin_gnames: HashSet<String>,
     /// 型推論 (types.rs) が決めた `let` の束縛の型。自前の `ty_of` で決まらない束縛に使う。
@@ -535,11 +526,6 @@ fn place_key(root: &str, path: &[String]) -> String {
     s
 }
 
-/// 2 つの場所の鍵が重なる (一方が他方の接頭辞) か。borrowck.rs の overlaps と同じ判定 (4.1)。
-fn place_overlaps(a: &str, b: &str) -> bool {
-    a == b || a.starts_with(&format!("{b}.")) || b.starts_with(&format!("{a}."))
-}
-
 /// 型の中の型パラメータ (引数なしの named で束縛にある名前) を使用側の型引数で置き換える。
 fn subst_ty_params(t: &V, bind: &HashMap<String, V>) -> V {
     if tag(t) == "named" {
@@ -577,13 +563,9 @@ impl<'a> Checker<'a> {
             in_const_fn: false,
             unsafe_modules: vec![],
             integration_files: HashSet::new(),
-            s4: false,
             unsafe_ok: false,
             d: 0,
             names: HashSet::new(),
-            moved: BTreeMap::new(),
-            move_sites: HashSet::new(),
-            loop_exits: vec![],
             lin_gnames: HashSet::new(),
             let_tys: HashMap::new(),
             let_tys_line: HashMap::new(),
@@ -3794,8 +3776,6 @@ impl<'a> Checker<'a> {
         self.names = d.gnames();
         let mut env: Env = d.params.iter().cloned().collect();
         self.graph.entry(d.name.clone()).or_default();
-        self.moved.clear();
-        self.move_sites.clear();
         self.fnonce_locals.clear();
         self.noncopy_closures.clear();
         self.ref_binds.clear();
@@ -3836,9 +3816,6 @@ impl<'a> Checker<'a> {
         self.check_callback_args(di);
         // NLL の借用検査 (制御フローと、借用を持つ変数の生存に基づく)
         // S4 では形を見る借用検査は TAST (tast_rules/borrows.rs など) が担う (設計_S4の切り替え.md 1.1)。
-        if !self.s4 {
-            self.borrowck(di);
-        }
         env = self.final_env.clone();
         let stmts = items(&nf(body)[0]);
         if let Some(last) = stmts.last() {
@@ -4213,12 +4190,9 @@ impl<'a> Checker<'a> {
             "Let" => {
                 let spawn_began = self.spawn_begin(&f[3], env);
                 // 名前だけの束縛 (`let y = x`) は右辺を値として移す。分解 (`let T { f: _ } = x`) は `match` と同じく、
-                // 束縛が Copy でないときだけ move する (下の `let_destructure_consume`)。
+                // 束縛が Copy でないときだけ move する 。
                 let destructure = nname(&f[0]) != "PBind";
                 self.tc_expr(&f[3], env, muts, !destructure);
-                if is_nil(&f[2]) && nname(&f[0]) == "PBind" {
-                    self.move_mut_ref(&f[3], env, nline(s));
-                }
                 let spawn_safe = if spawn_began {
                     let unsafe_ = self.spawn_scan.pop().unwrap_or(true);
                     if unsafe_ {
@@ -4229,9 +4203,6 @@ impl<'a> Checker<'a> {
                     None
                 };
                 let got = self.ty_of(&f[3], env);
-                if destructure {
-                    self.let_destructure_consume(&f[3], &f[0], &got, env, nline(s));
-                }
                 if !is_nil(&f[2]) {
                     self.mismatch(&f[2], &got, nline(s), "let binding");
                 }
@@ -4310,7 +4281,6 @@ impl<'a> Checker<'a> {
                             }
                         }
                     }
-                    self.revive_place(std::slice::from_ref(&n));
                     let once = matches!(
                         self.let_tys.get(&(self.d, pat_bind_id(&f[0], &n))),
                         Some(crate::types::Ty::Closure { cap: crate::types::Cap::FnOnce, .. })
@@ -4347,7 +4317,6 @@ impl<'a> Checker<'a> {
                 if nname(tg) == "Unary" && st(&nf(tg)[0]) == "*" && nname(&nf(tg)[1]) == "Path" {
                     let segs = strs(&nf(&nf(tg)[1])[0]);
                     if env.contains_key(&segs[0]) {
-                        self.use_place(&segs[0], &segs[1..], env, nline(s), false);
                     }
                 }
                 if nname(tg) == "Path" {
@@ -4389,7 +4358,6 @@ impl<'a> Checker<'a> {
                             );
                         }
                         // 代入で、その場所とその下の move 済みの部分は復活する (4.1)。
-                        self.revive_place(&segs);
                         if segs.len() == 1 {
                             let got = self.ty_of(&f[1], env);
                             self.mismatch(&rt, &got, nline(s), "assignment");
@@ -4406,92 +4374,6 @@ impl<'a> Checker<'a> {
             }
             _ => self.tc_expr(&f[0], env, muts, tail),
         }
-    }
-
-    /// 場所 (根の変数 + フィールド道) の使用を検査する (4.1。部分 move を含む)。
-    /// move 済みの場所と重なる (一方が他方の接頭辞) ときは E3002。
-    /// 重ならなければ、consume のときに型を解決して move を記録する (Copy は move にならない)。
-    fn use_place(&mut self, root: &str, path: &[String], env: &Env, line: usize, consume: bool) {
-        if self.moved_overlap(root, path).is_some() {
-            return;
-        }
-        if consume {
-            if !path.is_empty() && self.move_out_of_ref(root, path, env) {
-                return;
-            }
-            if path.is_empty() && self.noncopy_closures.contains(root) {
-                self.moved.insert(root.to_string(), line);
-            }
-            self.record_move(root, path, env, line);
-        }
-    }
-
-    /// `&mut T` の局所 (引数・束縛) の、値としての move を記録する。`&mut` は Copy でなく、暗黙の再借用 (`&mut` の仮引数への
-    /// 受け渡し) が起きない位置 (型注釈のない `let y = x`・列挙子の引数・型パラメータそのものを受ける引数) で move になる。
-    /// 以後の `x` の使用は E3002。
-    fn move_mut_ref(&mut self, a: &V, env: &Env, line: usize) {
-        let mut leaves = vec![];
-        value_leaves(a, &mut leaves);
-        for l in leaves {
-            if nname(l) != "Path" {
-                continue;
-            }
-            let segs = strs(&nf(l)[0]);
-            if segs.len() == 1 {
-                self.move_mut_name(&segs[0], env, line);
-            }
-        }
-    }
-
-    fn move_mut_name(&mut self, name: &str, env: &Env, line: usize) {
-        let Some(t) = env.get(name) else { return };
-        let is_mut = (!is_nil(t) && tag(t) == "ref" && matches!(tel(t, 1), V::B(true))) || self.mut_ref_lets.contains(name);
-        if !is_mut || self.moved_overlap(name, &[]).is_some() {
-            return;
-        }
-        self.moved.insert(name.to_string(), line);
-        self.move_sites.insert((line, name.to_string()));
-    }
-
-    /// 参照 (`&T` / `&mut T`) の先のフィールドを、Copy でない型のまま値として使った (move した) なら E3002 (4.1)。
-    /// 根の型が参照で、道の型を最後まで解決でき、Copy でないときだけ報告する (型が分からなければ黙る)。
-    fn move_out_of_ref(&self, root: &str, path: &[String], env: &Env) -> bool {
-        let Some(t) = env.get(root) else { return false };
-        if is_nil(t) || tag(t) != "ref" {
-            return false;
-        }
-        let mut cur = tel(t, 2).clone();
-        for seg in path {
-            if is_nil(&cur) || tag(&cur) == "ref" {
-                return false;
-            }
-            match self.field_ty(&cur, seg) {
-                Some(n) => cur = n,
-                None => return false,
-            }
-        }
-        if is_nil(&cur) || self.is_generic(&cur, &self.names) || self.is_copy(&cur) {
-            return false;
-        }
-        true
-    }
-
-    /// 使用した場所と重なる move 済みの場所を探す。moved の鍵は互いに重ならないので、
-    /// 見つかれば高々 1 つ (鍵の順で最初のもの。並び順は安定)。
-    fn moved_overlap(&self, root: &str, path: &[String]) -> Option<(String, usize)> {
-        let key = place_key(root, path);
-        self.moved.iter().find(|(k, _)| place_overlaps(k, &key)).map(|(k, &ml)| (k.clone(), ml))
-    }
-
-    /// 消費 (consume) の対象の場所を move 済みとして記録する。道の型を解決できて
-    /// Copy でなく参照越しでないときだけ記録する (型が分からない所では黙る = 記録しない)。
-    fn record_move(&mut self, root: &str, path: &[String], env: &Env, line: usize) {
-        let Some(ty) = self.place_ty(root, path, env) else { return };
-        if self.is_copy(&ty) {
-            return;
-        }
-        self.moved.insert(place_key(root, path), line);
-        self.move_sites.insert((line, place_key(root, path)));
     }
 
     /// 場所 (根の変数 + フィールド道) の型を env の根の型から解決する。
@@ -4650,42 +4532,17 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// 代入・再束縛の対象の場所とその下の move 済みの記録を消す (再代入で復活、4.1)。
-    /// `s = ..` は `s`・`s.f`・`s.f.g` を、`s.f = ..` は `s.f`・`s.f.g` を消す (兄弟は残す)。
-    fn revive_place(&mut self, segs: &[String]) {
-        let key = place_key(&segs[0], &segs[1..]);
-        let dead: Vec<String> = self
-            .moved
-            .keys()
-            .filter(|k| **k == key || k.starts_with(&format!("{key}.")))
-            .cloned()
-            .collect();
-        for k in dead {
-            self.moved.remove(&k);
-        }
-    }
-
     fn tc_expr(&mut self, e: &V, env: &Env, muts: &BTreeSet<String>, consume: bool) {
         let f = nf(e);
         match nname(e) {
             "Path" => {
-                let segs = strs(&f[0]);
-                if env.contains_key(&segs[0]) {
-                    self.use_place(&segs[0], &segs[1..], env, nline(e), consume);
-                }
             }
             "Block" => {
                 self.tc_stmts(e, env, muts, consume);
             }
             "If" | "Match" | "Loop" | "While" | "For" => self.branchy(e, env, muts, consume),
             "With" => self.tc_with(e, env, muts, consume),
-            "Break" | "Continue" => {
-                // ループを抜ける / 次の周回へ入る時点の move を、囲むループに渡す。
-                let cur = self.moved.clone();
-                if let Some((breaks, continues)) = self.loop_exits.last_mut() {
-                    Self::union_moves(if nname(e) == "Break" { breaks } else { continues }, &cur);
-                }
-            }
+            "Break" | "Continue" => {}
             "Closure" => {
                 let mut sub = env.clone();
                 // `&a` / `&mut a` で取り込んだ名前は、本体では `&T` / `&mut T` (move は `T` のまま)。
@@ -4705,24 +4562,9 @@ impl<'a> Checker<'a> {
                     let (pn, pt) = (st(&items(p)[0]), items(p)[1].clone());
                     sub.insert(pn.clone(), pt.clone());
                 }
-                let saved = self.moved.clone();
-                for p in items(&f[0]) {
-                    self.revive_place(&[st(&items(p)[0])]);
-                }
                 let fe = self.final_env.clone();
                 self.tc_block(&f[3], &sub, muts);
                 self.final_env = fe;
-                self.moved = saved;
-                // 取り込みは作った時点で行われる: `move x` は x を move し (Copy は除く)、`&x` / `&mut x` は使うだけ。
-                for c in items(&f[2]) {
-                    let name = st(tel(c, 1));
-                    if env.contains_key(&name) {
-                        self.use_place(&name, &[], env, nline(e), st(tel(c, 0)) == "move");
-                        if st(tel(c, 0)) == "move" {
-                            self.move_mut_name(&name, env, nline(e));
-                        }
-                    }
-                }
             }
             "Try" => {
                 self.tc_expr(&f[0], env, muts, true);
@@ -4775,23 +4617,6 @@ impl<'a> Checker<'a> {
                                 }
                             }
                         }
-                    } else {
-                        if segs.len() == 1 {
-                        }
-                        // 呼び出し先が局所変数のとき。`v.push(x)` のようなメソッド呼び出し
-                        // (segs の最後はメソッド名) は、レシーバの場所を使うだけで move はしない (4.2)。
-                        // ただし `self` を値で受けるメソッド (`self: T`) はレシーバを消費する (4.4)。
-                        // レシーバの型とメソッドが一意に分かるときだけ消費として扱う。
-                        let recv: &[String] = if segs.len() >= 2 { &segs[1..segs.len() - 1] } else { &[] };
-                        let by_value = segs.len() >= 2 && self.method_takes_self_by_value(&segs[0], recv, &segs[segs.len() - 1], env);
-                        self.use_place(&segs[0], recv, env, nline(e), by_value);
-                        // `FnOnce` のクロージャを呼ぶと、そのクロージャ自身が move される (2 回目の呼び出しは E3002)。
-                        let call_once = segs.len() == 2 && segs[1] == "call_once";
-                        if (segs.len() == 1 || call_once) && self.fnonce_locals.contains(&segs[0]) && self.moved_overlap(&segs[0], &[]).is_none() {
-                            self.moved.insert(segs[0].clone(), nline(e));
-                        }
-                        if segs.len() >= 2 {
-                        }
                     }
                 } else {
                     self.tc_expr(fnn, env, muts, false);
@@ -4804,14 +4629,12 @@ impl<'a> Checker<'a> {
                 for (i, a) in items(&f[1]).iter().enumerate() {
                     self.tc_expr(a, env, muts, true);
                     if is_variant {
-                        self.move_mut_ref(a, env, nline(a));
                     }
                     if let Some(c) = callee {
                         if i < c.params.len() {
                             let pt = &c.params[i].1;
                             // 型パラメータそのものを受ける仮引数 (`fn id[T](x: T)`) へ `&mut` の局所を渡すと move (再借用にならない)。
                             if tag(pt) == "named" && items(tel(pt, 2)).is_empty() && c.gnames().contains(&st(tel(pt, 1))) {
-                                self.move_mut_ref(a, env, nline(a));
                             }
                             if !self.is_generic(pt, &c.gnames()) {
                                 let got = self.ty_of(a, env);
@@ -4847,7 +4670,6 @@ impl<'a> Checker<'a> {
                 // (型が解決できない場所や Copy の型では黙る)。
                 if let Some((root, path)) = self.mcall_recv_place(&f[0]) {
                     if self.method_takes_self_by_value(&root, &path, &st(&f[1]), env) {
-                        self.use_place(&root, &path, env, nline(&f[0]), true);
                     }
                 }
                 for a in items(&f[2]) {
@@ -4863,10 +4685,7 @@ impl<'a> Checker<'a> {
             }
             // `self.f` (`self` は `Path` の 1 要素で、`x.f` のように 1 つのパスにまとまらない) と、
             // 根が局所変数の `(x).f` は、場所 (根 + フィールド道) として使う。
-            "Field" if self.field_place(e).is_some_and(|(r, _)| env.contains_key(&r)) => {
-                let (root, path) = self.field_place(e).unwrap_or_default();
-                self.use_place(&root, &path, env, nline(e), consume);
-            }
+            "Field" if self.field_place(e).is_some_and(|(r, _)| env.contains_key(&r)) => {}
             "Unary" if st(&f[0]) == "-" => {
                 if self.is_int_ty(&self.ty_of(&f[1], env)) {
                     self.int_op_may_panic("unary `-`", nline(e));
@@ -4896,13 +4715,11 @@ impl<'a> Checker<'a> {
                 if self.ety_non_copy(&f[0]) {
                 }
                 self.tc_expr(&f[0], env, muts, true);
-                self.move_mut_ref(&f[0], env, nline(&f[0]));
             }
             "TupleE" | "ArrayE" => {
                 for x in items(&f[0]) {
                     self.tc_expr(x, env, muts, true);
                     // タプル・配列の要素は値の位置 (再借用されない): `&mut` の局所は move。
-                    self.move_mut_ref(x, env, nline(x));
                 }
             }
             "Return" => {
@@ -4984,19 +4801,6 @@ impl<'a> Checker<'a> {
         Some((segs[0].clone(), path))
     }
 
-    /// `Field` の鎖の根が、参照を返す式 (`*r`、参照を返す呼び出し) か。そこからフィールドを move することはできない。
-    fn field_behind_ref(&self, e: &V) -> bool {
-        let mut b = e;
-        while nname(b) == "Field" {
-            b = &nf(b)[0];
-        }
-        match nname(b) {
-            "Unary" => st(&nf(b)[0]) == "*" && self.ety_is_ref(&nf(b)[1]),
-            "Call" | "MCall" => self.ety_is_ref(b),
-            _ => false,
-        }
-    }
-
     /// `let f = <rhs>` の右辺が、Copy でないクロージャの値か。クロージャ式で、`move` で Copy でない値 (や Copy でない
     /// クロージャ) を取り込む・`&mut` で取り込むとき。別の Copy でないクロージャの名前 (`let g = f`) もそう。型が決まらない取り込みは黙る。
     fn closure_value_non_copy(&self, rhs: &V, env: &Env) -> bool {
@@ -5040,92 +4844,6 @@ impl<'a> Checker<'a> {
                 (n, t)
             })
             .collect()
-    }
-
-    /// スクラティニー `e` が、move できない場所か: `*r`・参照越しのフィールド・添字の先・参照を返す式のフィールド。
-    fn scrut_behind_ref(&self, e: &V, env: &Env) -> bool {
-        match nname(e) {
-            "Unary" => st(&nf(e)[0]) == "*" && self.ety_is_ref(&nf(e)[1]),
-            "Index" => true,
-            "Field" => {
-                let mut b = e;
-                while nname(b) == "Field" {
-                    b = &nf(b)[0];
-                }
-                nname(b) == "Index" || self.field_behind_ref(e) || self.field_place(e).is_some_and(|(r, p)| self.path_through_ref(&r, &p, env))
-            }
-            "Path" => {
-                let segs = strs(&nf(e)[0]);
-                segs.len() >= 2 && self.path_through_ref(&segs[0], &segs[1..], env)
-            }
-            _ => false,
-        }
-    }
-
-    /// 場所 `root.path` の道の途中に参照があるか (根が参照のときを含む)。型が分からなければ false。
-    fn path_through_ref(&self, root: &str, path: &[String], env: &Env) -> bool {
-        let Some(t) = env.get(root) else { return false };
-        let mut cur = t.clone();
-        let mut through = false;
-        for seg in path {
-            if is_nil(&cur) {
-                return false;
-            }
-            if tag(&cur) == "ref" {
-                through = true;
-                cur = self.strip(&cur).clone();
-            }
-            match self.field_ty(&cur, seg) {
-                Some(n) => cur = n,
-                None => return false,
-            }
-        }
-        through
-    }
-
-    /// 分解のパターン `pat` (`match` の腕・`let` の左辺) が、スクラティニー (型 `sty`) の値を move するか。
-    /// 束縛 (`_` を除く) に Copy でない値が 1 つでもあれば move する (4.1)。`match`・`let`・`if let` で同じ規則。
-    fn pat_moves_scrut(&self, pat: &V, sty: &V) -> bool {
-        // 線形な値を値のまま分解したら、パターンに依らず消費 (= move) する (仕様 4.4)。覗くだけなら `&r` を分解する。
-        if nname(pat) != "PWild" && !is_nil(sty) && tag(sty) != "ref" && !self.is_generic(sty, &self.names) && self.is_linear(sty) {
-            return true;
-        }
-        self.arm_bindings(pat, sty)
-            .iter()
-            .any(|(n, t)| n != "_" && !is_nil(t) && !self.is_generic(t, &self.names) && !self.is_copy(t))
-    }
-
-    /// 分解でスクラティニー `e` を move する。参照の先・添字の先からは move できない (E3002、`hint` で書き換えを示す)。
-    /// 局所の場所 (変数・フィールドの道) なら、その場所の全体 (道の先頭から) を move とみなす。
-    fn scrut_move(&mut self, e: &V, env: &Env, line: usize) {
-        if self.scrut_behind_ref(e, env) {
-            return;
-        }
-        if let Some((root, path)) = self.scrut_place(e, env) {
-            self.record_move(&root, &path, env, line);
-        }
-    }
-
-    /// `let P = e` の分解 (`P` が名前だけでない): `match` と同じく、スクラティニーの線形な値は分解で消費され、
-    /// Copy でない束縛があれば move する。右辺は `tc_expr` で消費せずにここで決める。
-    fn let_destructure_consume(&mut self, scrut: &V, pat: &V, sty: &V, env: &Env, line: usize) {
-        let sref = self.ety_is_ref(scrut) || tag(sty) == "ref";
-        if !sref && self.pat_moves_scrut(pat, sty) {
-            self.scrut_move(scrut, env, line);
-        }
-    }
-
-    /// スクラティニー `e` が局所の場所 (変数・フィールドの道) ならその (根, 道)。
-    fn scrut_place(&self, e: &V, env: &Env) -> Option<(String, Vec<String>)> {
-        let (root, path) = match nname(e) {
-            "Path" => {
-                let segs = strs(&nf(e)[0]);
-                (segs[0].clone(), segs[1..].to_vec())
-            }
-            "Field" => self.field_place(e)?,
-            _ => return None,
-        };
-        env.contains_key(&root).then_some((root, path))
     }
 
     /// 場所 `root.path` の型のメソッド `name` が、`self` を値で受けるか。
@@ -5249,34 +4967,6 @@ impl<'a> Checker<'a> {
         self.p.funcs.get(&fq).or_else(|| self.p.sigs.get(&fq)).map(|&i| self.def(i))
     }
 
-    /// 式を評価し終えたあとに、後続の文へ制御が進まないか (`return` / `break` / `continue` / panic)。
-    /// 分からない形は `false` (進むとみなす = move を合流に残す側)。
-    fn diverges(&self, e: &V) -> bool {
-        let f = nf(e);
-        match nname(e) {
-            "Return" | "Break" | "Continue" => true,
-            "ExprStmt" => self.diverges(&f[0]),
-            "Block" => items(&f[0]).iter().any(|s| self.diverges(s)),
-            "If" => !is_nil(&f[2]) && self.diverges(&f[1]) && self.diverges(&f[2]),
-            "Match" => {
-                let arms = items(&f[1]);
-                !arms.is_empty() && arms.iter().all(|a| self.diverges(&items(a)[1]))
-            }
-            "Call" if nname(&f[0]) == "Path" => {
-                let fq = self.p.expand(&strs(&nf(&f[0])[0]), &self.def(self.d).file).join(".");
-                fq == "core.panic.panic" || fq == "core.panic.todo"
-            }
-            _ => false,
-        }
-    }
-
-    /// move の集合の和 (同じ場所は先に記録した行を残す)。
-    fn union_moves(into: &mut BTreeMap<String, usize>, from: &BTreeMap<String, usize>) {
-        for (k, v) in from {
-            into.entry(k.clone()).or_insert(*v);
-        }
-    }
-
     /// 分岐とループでの move の合流 (4.1)。どれかの枝で move された場所は、合流後は move 済みとして
     /// 扱う (後続へ進まない枝は除く)。ループの外で宣言した値を本体で move し、そのまま次の周回に
     /// 入る経路があれば E3002 (2 周目で move 済みの値を使うことになる)。
@@ -5285,27 +4975,10 @@ impl<'a> Checker<'a> {
         match nname(e) {
             "If" => {
                 self.tc_expr(&f[0], env, muts, false);
-                let base = self.moved.clone();
                 self.tc_expr(&f[1], env, muts, consume);
-                let a = self.moved.clone();
-                let a_div = self.diverges(&f[1]);
-                self.moved = base.clone();
-                let mut b_div = false;
                 if !is_nil(&f[2]) {
                     self.tc_expr(&f[2], env, muts, consume);
-                    b_div = self.diverges(&f[2]);
                 }
-                let b = self.moved.clone();
-                let mut m = base;
-                if !a_div {
-                    Self::union_moves(&mut m, &a);
-                }
-                if !b_div {
-                    Self::union_moves(&mut m, &b);
-                }
-                // 枝の中で宣言した束縛は、合流後には見えない (同じ名前の別の束縛と混同しない)。
-                m.retain(|k, _| env.contains_key(k.split('.').next().unwrap_or(k)));
-                self.moved = m;
             }
             "Match" => {
                 self.tc_expr(&f[0], env, muts, false);
@@ -5313,15 +4986,6 @@ impl<'a> Checker<'a> {
                 let sref = self.ety_is_ref(&f[0]) || tag(&sty0) == "ref";
                 let smut = matches!(self.ety(&f[0]), Some(crate::types::Ty::Ref(true, _, _)))
                     || (tag(&sty0) == "ref" && matches!(tel(&sty0, 1), V::B(true)));
-                // 腕が Copy でない値を束縛して取り出すなら、スクラティニーの場所は move される (4.1)。
-                // 参照の先・添字の先からは move できない (E3002)。スクラティニーが参照そのものなら、束縛は `&T`。
-                let moving = !sref && items(&f[1]).iter().any(|a| self.pat_moves_scrut(&items(a)[0], &sty0));
-                if moving {
-                    self.scrut_move(&f[0], env, nline(e));
-                }
-                let base = self.moved.clone();
-                // 腕の終わりの move の和。各腕は `base` から始まるので、全腕が同じ場所を復活させれば (`rx = back`) 復活が残る。
-                let mut merged: Option<BTreeMap<String, usize>> = None;
                 // スクラティニーの型が分かれば、腕の束縛に型を流す (線形値の未消費 E3003 のため)。
                 let sty = self.ty_of(&f[0], env);
                 // 構造体 (`type`) の `{..}` パターンは必ず一致する。`if let` が作る「他の全部」の腕には到達しない。
@@ -5330,7 +4994,6 @@ impl<'a> Checker<'a> {
                     if first_irrefutable && nname(&items(arm)[0]) == "PWild" && !nf(&items(arm)[0]).is_empty() {
                         continue;
                     }
-                    self.moved = base.clone();
                     let mut inner = env.clone();
                     let mut b = vec![];
                     pat_binds(&items(arm)[0], &mut b);
@@ -5381,41 +5044,23 @@ impl<'a> Checker<'a> {
                             self.ref_binds.remove(&n);
                         }
                         // 腕の束縛は新しい値。以前の同名の束縛の move 記録を引き継がない。
-                        self.revive_place(std::slice::from_ref(&n));
                         inner.insert(n, t);
                     }
                     self.tc_expr(&items(arm)[1], &inner, muts, consume);
-                    let div = self.diverges(&items(arm)[1]);
-                    if !div {
-                        let end = self.moved.clone();
-                        Self::union_moves(merged.get_or_insert_with(BTreeMap::new), &end);
-                    }
                 }
-                let mut merged = merged.unwrap_or(base);
-                // 腕の束縛は、合流後には見えない。
-                merged.retain(|k, _| env.contains_key(k.split('.').next().unwrap_or(k)));
-                self.moved = merged;
             }
             n => {
                 let mut inner = env.clone();
                 // `for` の束縛とその型。線形な要素は、ループの本体の中で消費の義務を負う (4.4)。
                 let mut loop_tys: Vec<(String, V)> = vec![];
                 // `while` の条件は毎周評価される: 条件の中の move も 2 周目の検査に入れるため、条件より前の状態を基にする。
-                let mut pre_cond: Option<BTreeMap<String, usize>> = None;
-                // 条件を評価した直後の move (本体へ入る前)。条件が偽でループを出る経路は、これを持つ。
-                let mut after_cond: Option<BTreeMap<String, usize>> = None;
                 let body = match n {
                     "For" => {
                         // 所有する `Vec` や配列を `for x in v` で回すと、`v` は move 済みになる (Rust と同じ、4.1)。
                         // `v.iter()` や `&v` は借用で、消費にならない。それ以外の反復子 (利用者の `Iterator`) は
                         // 従来どおり、`for` が `it` をその場で進める (仕様が未規定の所)。
                         let it_ty = self.lin_ty(&f[1], env);
-                        let owned = tag(&it_ty) == "array" || (tag(&it_ty) == "named" && st(tel(&it_ty, 1)) == "alloc.vec.Vec");
-                        let before = self.moved.clone();
                         self.tc_expr(&f[1], env, muts, true);
-                        if !owned {
-                            self.moved = before;
-                        }
                         // 要素の型: 所有する反復子の要素なら、線形な要素の束縛は義務を負う (`for _r in a` は E3003)。
                         // `break`/`return` で抜けると残りの要素が漏れる (4.4)。
                         let el = self.elem_ty(&it_ty);
@@ -5448,38 +5093,13 @@ impl<'a> Checker<'a> {
                         &f[2]
                     }
                     "While" => {
-                        pre_cond = Some(self.moved.clone());
                         // 条件の中の消費 (`while t.eat(s) { .. }`) は move になる。
                         self.tc_expr(&f[0], env, muts, true);
-                        after_cond = Some(self.moved.clone());
                         &f[1]
                     }
                     _ => &f[0],
                 };
-                let base = pre_cond.unwrap_or_else(|| self.moved.clone());
-                self.loop_exits.push((BTreeMap::new(), BTreeMap::new()));
                 self.tc_expr(body, &inner, muts, false);
-                let (breaks, continues) = self.loop_exits.pop().unwrap_or_default();
-                let end = self.moved.clone();
-                // 次の周回へ入る経路: 本体の末尾 (後続へ進むとき) と `continue`。
-                let mut back = continues;
-                if !self.diverges(body) {
-                    Self::union_moves(&mut back, &end);
-                }
-                // ループを抜ける経路: `break`、および条件・反復子による終了 (`loop` にはない)。
-                let mut out = base;
-                Self::union_moves(&mut out, &breaks);
-                if n != "Loop" {
-                    Self::union_moves(&mut out, &back);
-                }
-                // `while` は、条件を評価した直後 (本体へ入る前) の move の状態でも出る。本体で再代入しても、
-                // 条件で move した値は、条件が偽になって出た経路では復活していない。
-                if let Some(ac) = &after_cond {
-                    Self::union_moves(&mut out, ac);
-                }
-                // 本体の中で宣言した束縛は、ループの外では見えない。
-                out.retain(|k, _| env.contains_key(k.split('.').next().unwrap_or(k)));
-                self.moved = out;
             }
         }
     }
