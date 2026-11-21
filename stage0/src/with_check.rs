@@ -56,18 +56,15 @@ impl<'a> Checker<'a> {
         } else {
             inner_muts.remove(&name);
         }
-        self.revive_place(std::slice::from_ref(&name));
         self.tc_expr(&f[4], &inner, &inner_muts, consume);
         // 型が分かり、Copy でも参照でもない束縛だけを検査する。
         let checkable = !is_nil(&ty) && tag(&ty) != "ref" && !self.is_copy(&ty);
         // E3043 (本体の値・外の変数への代入が束縛の借用を運ぶ) は、借用検査 (borrowck.rs の `With`) が見る。
         // 本体での move 記録は、後始末の検査に持ち越さない (後始末は本体とは別の経路)。
-        self.revive_place(std::slice::from_ref(&name));
         self.tc_expr(&f[3], &inner, &inner_muts, false);
         if checkable && self.consuming_use(&f[3], &name, &inner, true, true).is_none() {
             self.tdiag("E3041", format!("the `close` expression of `with` must consume `{}` (4.4)", name), nline(&f[3]));
         }
-        self.revive_place(std::slice::from_ref(&name));
     }
 
     /// 式 `e` の中に、束縛 `name` を値として消費する使い方があれば、その位置。
