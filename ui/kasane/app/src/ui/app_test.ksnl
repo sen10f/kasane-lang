@@ -247,7 +247,7 @@ end ui.app_test.Suite.test_apply_no_changes
 
 test ui.app_test.Suite.test_apply_out_of_bounds_root
     let mut app = ui.app.App.new(())
-    let mut elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let elements = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match app.apply((), &elements, 0usize) {
         Ok(f) => {
             core.check.is_true(f.patch.is_empty())

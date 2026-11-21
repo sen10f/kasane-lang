@@ -239,7 +239,7 @@ fn wiki.router.save_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mu
     core.mem.drop(page_store.save_version(name, content.as_str(), version)?)
     let mut location = alloc.string.String.from_str(std.alloc.SYSTEM, "/page/")?
     location.push_str(name)?
-    let mut reply_body = alloc.string.String.new(std.alloc.SYSTEM)
+    let reply_body = alloc.string.String.new(std.alloc.SYSTEM)
     Ok(wiki.router.Reply { body: reply_body, location: location, status: 303u16 })
 end wiki.router.save_page
 
@@ -500,7 +500,7 @@ end wiki.router.route.test_save_page
 test wiki.router.route.test_save_page_invalid_csrf
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    let mut body = alloc.string.String.from_str(std.alloc.SYSTEM, "csrf=invalid&content=hello")?
+    let body = alloc.string.String.from_str(std.alloc.SYSTEM, "csrf=invalid&content=hello")?
     let ps = &mut page_store
     let ct = &mut csrf_tokens
     let b = body.as_str()
@@ -511,7 +511,7 @@ end wiki.router.route.test_save_page_invalid_csrf
 test wiki.router.route.test_save_page_missing_csrf
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    let mut body = alloc.string.String.from_str(std.alloc.SYSTEM, "content=hello")?
+    let body = alloc.string.String.from_str(std.alloc.SYSTEM, "content=hello")?
     let ps = &mut page_store
     let ct = &mut csrf_tokens
     let b = body.as_str()

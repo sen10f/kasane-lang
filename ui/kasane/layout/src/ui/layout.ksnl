@@ -679,7 +679,7 @@ end ui.layout.Tree.test_row_justify_space_between
 
 test ui.layout.Tree.test_row_margin
     let mut tree = ui.layout.Tree.new()
-    let mut r = ui.layout.Style.default()
+    let r = ui.layout.Style.default()
     let root = tree.push_node(r)
     let mut s0 = ui.layout.Style.default()
     s0.size.w = Some(100.0f32)

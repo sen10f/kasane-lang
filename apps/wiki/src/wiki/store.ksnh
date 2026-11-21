@@ -221,7 +221,7 @@ end wiki.store.PageStore.write_atomic_str
 test wiki.store.PageStore.current_path.test_format
     let path = "/tmp/wiki-test-store-current"
     core.mem.drop(wiki.remove_dir_all(path))
-    let mut page_store = match wiki.store.PageStore.new(path) {
+    let page_store = match wiki.store.PageStore.new(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("new failed")
     }
@@ -327,7 +327,7 @@ end wiki.store.PageStore.page_exists.test_cases
 test wiki.store.PageStore.page_path.test_format
     let path = "/tmp/wiki-test-store-pagepath"
     core.mem.drop(wiki.remove_dir_all(path))
-    let mut page_store = match wiki.store.PageStore.new(path) {
+    let page_store = match wiki.store.PageStore.new(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("new failed")
     }

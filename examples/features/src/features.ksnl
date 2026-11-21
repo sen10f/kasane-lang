@@ -88,7 +88,7 @@ fn features.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics m
     core.check.eq(features.collatz(27u64), 111u32)
     let sq = features.Square { side: 7i64 }
     core.check.eq(sq.area(), 49i64)
-    let mut it = features.Upto { cur: 0u32, stop: 4u32 }
+    let it = features.Upto { cur: 0u32, stop: 4u32 }
     let mut acc = 0u32
     for n in it {
         acc = acc.wrapping_add(n)

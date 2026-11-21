@@ -266,7 +266,7 @@ fn ui.app.App.enqueue(self: &mut ui.app.App, msg: u64) -> () uses [alloc] panics
 end ui.app.App.enqueue
 
 fn ui.app.App.new(model: ()) -> ui.app.App uses [alloc] panics never pub
-    let mut pending = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let pending = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut kind = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut key = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut rect = alloc.vec.Vec.new(std.alloc.SYSTEM)

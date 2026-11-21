@@ -166,7 +166,7 @@ end ui.focus_test.Target.test_shortcut_no_focus
 
 test ui.focus_test.Target.test_shortcut_none
     let mut m = ui.focus.FocusManager.new()
-    let mut km = ui.focus.Keymap.new()
+    let km = ui.focus.Keymap.new()
     core.mem.drop(m.scope_new(1usize, None, ui.focus.Dir.Left, false))
     core.mem.drop(m.scope_add_node(1usize, 10usize))
     core.mem.drop(m.focus_node(10usize))

@@ -131,6 +131,13 @@ fn lit_text(e: &TExpr) -> Option<&str> {
     }
 }
 
+fn is_max_path(e: &TExpr, t: &Ty) -> bool {
+    match (&e.kind, t.strip()) {
+        (TKind::Path(p), Ty::Prim(n)) => p.len() == 4 && p[0] == "core" && p[1] == "num" && &p[2] == n && p[3] == "MAX" && matches!(n.as_str(), "u8" | "u16" | "u32" | "u64" | "u128"),
+        _ => false,
+    }
+}
+
 fn all_ones(t: &Ty, v: u128) -> bool {
     match t.strip() {
         Ty::Prim(n) => match n.as_str() {
@@ -158,7 +165,7 @@ fn identity(e: &TExpr) -> Option<String> {
         let zero = |x: &TExpr| int_lit(x) == Some(0);
         match op.as_str() {
             "|" | "^" if zero(rhs) || zero(lhs) => return Some(format!("[bit0] `x {op} 0` changes nothing: write `x`")),
-            "&" if int_lit(rhs).map_or(false, |v| all_ones(&lhs.ty, v)) || int_lit(lhs).map_or(false, |v| all_ones(&rhs.ty, v)) => {
+            "&" if int_lit(rhs).map_or(false, |v| all_ones(&lhs.ty, v)) || int_lit(lhs).map_or(false, |v| all_ones(&rhs.ty, v)) || is_max_path(rhs, &lhs.ty) || is_max_path(lhs, &rhs.ty) => {
                 return Some("[ones] `x & <all ones>` changes nothing: write `x`".into())
             }
             "==" | "!=" => {
@@ -274,8 +281,55 @@ fn stmt_mentions(s: &TStmt, name: &str) -> bool {
     }
 }
 
+/// `name` を書き換える (または書き換えうる) 使い方があるか。保守的: 代入・`&mut`・メソッドの受け手 (`x.m()`)・関数値の呼び出し・
+/// 閉包の中の言及は、どれも「書き換えうる」。
+fn may_mutate(p: &Program, e: &TExpr, name: &str) -> bool {
+    let mut hit = false;
+    super::impl_sig::walk(e, &mut |x| match &x.kind {
+        TKind::Block(ss) => {
+            for st in ss {
+                if let TStmt::Assign { place, .. } = st {
+                    if root_name(place) == Some(name) {
+                        hit = true;
+                    }
+                }
+            }
+        }
+        TKind::Unary { op, operand } if op == "&mut" && root_name(operand) == Some(name) => hit = true,
+        TKind::MCall { recv, .. } if root_name(recv) == Some(name) && takes_mut_self(p, x) => hit = true,
+        TKind::Call { callee, .. } => {
+            if let TKind::Path(pth) = &callee.kind {
+                if pth.first().map(String::as_str) == Some(name) && (pth.len() != 2 || takes_mut_self(p, x)) {
+                    hit = true;
+                }
+            }
+        }
+        TKind::Closure { .. } if mentions_var(x, name) => hit = true,
+        TKind::Other { name: "With", .. } | TKind::Other { name: "For", .. } if false => {}
+        _ => {}
+    });
+    hit
+}
+
+/// メソッド呼び出し `e` の解決先が `self` を `&mut` で受けるか (解決できなければ受けるとみなす)。
+fn takes_mut_self(p: &Program, e: &TExpr) -> bool {
+    let Some(Callee::Def(d)) = &e.res else { return true };
+    match p.defs[*d].params.first() {
+        Some((n, t)) if n == "self" => t.dump().starts_with("[ref true"),
+        _ => true,
+    }
+}
+
+fn stmt_may_mutate(p: &Program, s: &TStmt, name: &str) -> bool {
+    match s {
+        TStmt::Let { init, .. } => init.as_ref().map_or(false, |x| may_mutate(p, x, name)),
+        TStmt::Expr(x) => may_mutate(p, x, name),
+        TStmt::Assign { place, value } => root_name(place) == Some(name) || may_mutate(p, place, name) || may_mutate(p, value, name),
+    }
+}
+
 /// 複数行の書き換えが要る形 (E2068 bool の `match`・E2069 1 腕の `match`・E2070 数え上げの `while`・E2071 `== Some(リテラル)`)。
-fn shapes(_p: &Program, e: &TExpr, found: &mut Vec<(usize, &'static str, String)>) {
+fn shapes(p: &Program, e: &TExpr, found: &mut Vec<(usize, &'static str, String)>) {
     match &e.kind {
         TKind::Match { scrut, arms } if arms.len() == 2 => {
             if matches!(scrut.ty.strip(), Ty::Prim(n) if n == "bool") && arms.iter().all(|a| a.pat.kind == "PLit" && a.guard.is_none()) {
@@ -299,7 +353,40 @@ fn shapes(_p: &Program, e: &TExpr, found: &mut Vec<(usize, &'static str, String)
                 }
             }
         }
+        TKind::Closure { params, captures, body, written } if captures.is_empty() && written.is_empty() && !params.is_empty() => {
+            let call = match &body.kind {
+                TKind::Block(ss) if ss.len() == 1 => match &ss[0] {
+                    TStmt::Expr(x) => Some(x),
+                    _ => None,
+                },
+                TKind::Call { .. } => Some(body.as_ref()),
+                _ => None,
+            };
+            if let Some(c) = call {
+                if let (TKind::Call { callee, args }, Some(Callee::Def(d))) = (&c.kind, &c.res) {
+                    let def = &p.defs[*d];
+                    let TKind::Path(cp) = &callee.kind else { return };
+                    let in_order = args.len() == params.len() && args.iter().zip(params.iter()).all(|(a, q)| path_is(a, &[q.name.as_str()]));
+                    let same_sig = def.params.len() == params.len() && def.params.iter().zip(params.iter()).all(|((_, pv), q)| crate::types::from_v(pv, &Default::default()).show() == q.ty.show());
+                    if def.kw == "fn" && def.generics.is_empty() && !def.is_method() && in_order && same_sig && !params.iter().any(|q| cp.first() == Some(&q.name)) && cp.join(".") == def.name {
+                        found.push((e.line, "E2073", format!("this closure only calls `{}` with its own parameters: write the function `{}` itself", def.name, def.name)));
+                    }
+                }
+            }
+        }
         TKind::Block(ss) => {
+            // E2072: 書き換えない `let mut x` は `let x`。
+            for (j, st) in ss.iter().enumerate() {
+                if let TStmt::Let { pat, init: Some(_) } = st {
+                    if pat.kind == "PBind" && pat.lit.iter().any(|l| l == "mut") {
+                        if let Some(n) = pat.name.as_deref() {
+                            if !n.starts_with('_') && ss[j + 1..].iter().any(|s| stmt_mentions(s, n)) && !ss[j + 1..].iter().any(|s| stmt_may_mutate(p, s, n)) {
+                                found.push((pat.line, "E2072", format!("`let mut {n}` is never mutated: write `let {n}`")));
+                            }
+                        }
+                    }
+                }
+            }
             for k in 1..ss.len() {
                 let TStmt::Expr(w) = &ss[k] else { continue };
                 let TKind::Other { name: "While", children } = &w.kind else { continue };
@@ -423,6 +510,16 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     {
                         if ok {
                             found.push((e.line, "E2067", "the type argument `::<..>` is decided by the arguments: remove it".into()));
+                        }
+                    }
+                }
+                // `alloc.fmt.write(&mut s, &"lit")` は `s.push_str("lit")`。
+                if let Some(Callee::Def(d)) = &e.res {
+                    if p.defs[*d].name == "alloc.fmt.write" && args.len() == 2 {
+                        if let TKind::Unary { op, operand } = &args[1].kind {
+                            if op == "&" && matches!(operand.kind, TKind::Lit(_)) && matches!(operand.ty.strip(), Ty::Prim(n) if n == "str") {
+                                found.push((e.line, "E2061", "`alloc.fmt.write(&mut s, &\"..\")` of a string literal is `s.push_str(\"..\")`".into()));
+                            }
                         }
                     }
                 }

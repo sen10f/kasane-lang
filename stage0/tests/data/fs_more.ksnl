@@ -5,7 +5,7 @@ fn t.big_listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] p
         let mut name = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(name.push_str("d/big/file_with_a_longer_name_"))
         core.mem.drop(name.push_i64(t.num(i)))
-        let mut f = t.ok_file(std.fs.create(name.as_str()))
+        let f = t.ok_file(std.fs.create(name.as_str()))
         t.ok_unit(f.close())
         i = i + 1usize
     }
@@ -48,7 +48,7 @@ fn t.dirs() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics m
     t.ok_unit(std.fs.create_dir_all("d/a/b/c"))
     t.ok_unit(std.fs.create_dir_all("d/a//b/c/"))
     t.flag("deep dir exists", std.fs.exists("d/a/b/c"))
-    let mut f = t.ok_file(std.fs.create("d/plain"))
+    let f = t.ok_file(std.fs.create("d/plain"))
     t.ok_unit(f.close())
     t.fail_unit("create_dir_all through a file", std.fs.create_dir_all("d/plain/sub"))
     t.fail_unit("create_dir_all over a file", std.fs.create_dir_all("d/plain"))
@@ -150,9 +150,9 @@ fn t.kind_of(k: std.fs.FileKind) -> i64 uses [] panics never
 end t.kind_of
 
 fn t.listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
-    let mut f = t.ok_file(std.fs.create("d/Zed"))
+    let f = t.ok_file(std.fs.create("d/Zed"))
     t.ok_unit(f.close())
-    let mut g = t.ok_file(std.fs.create("d/abc"))
+    let g = t.ok_file(std.fs.create("d/abc"))
     t.ok_unit(g.close())
     let entries = std.fs.read_dir("d")?
     t.show("entries", t.num(entries.len()))

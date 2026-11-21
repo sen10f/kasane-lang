@@ -365,10 +365,10 @@ fn list_order_in_headers_is_fixed_by_fmt_and_is_an_error_in_check() {
 fn a_tail_return_is_fixed_by_fmt_and_is_an_error_in_check() {
     // S7: 関数本体の末尾の `return x` は式 `x` に、`if` / `else` の枝と `match` の腕も同じ。値のない `return` は `()`。
     let src = "fn t.pick(n: u32) -> u32 uses [] panics never\n    if n < 2u32 {\n        return n\n    } else {\n        return n.wrapping_add(1u32)\n    }\nend t.pick\n\n\
-               fn t.nop(o: Option<u32>) -> () uses [] panics never\n    match o {\n        Some(_) => return\n        None => ()\n    }\nend t.nop\n\n\
-               fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\n    t.nop(None)\n    return\nend t.main\n";
-    let want = "fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\n    t.nop(None)\n    ()\nend t.main\n\n\
-                fn t.nop(o: Option<u32>) -> () uses [] panics never\n    match o {\n        Some(_) => ()\n        None => ()\n    }\nend t.nop\n\n\
+               fn t.nop(o: Result<u32, u32>) -> () uses [] panics never\n    match o {\n        Ok(_) => return\n        Err(_) => ()\n    }\nend t.nop\n\n\
+               fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\n    t.nop(Ok(1u32))\n    return\nend t.main\n";
+    let want = "fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\n    t.nop(Ok(1u32))\n    ()\nend t.main\n\n\
+                fn t.nop(o: Result<u32, u32>) -> () uses [] panics never\n    match o {\n        Ok(_) => ()\n        Err(_) => ()\n    }\nend t.nop\n\n\
                 fn t.pick(n: u32) -> u32 uses [] panics never\n    if n < 2u32 {\n        n\n    } else {\n        n.wrapping_add(1u32)\n    }\nend t.pick\n";
     fmt_roundtrip("tail_return", src, want);
     // 途中の `return` (末尾でない) と、`else` の無い `if` の中の `return` は残る。
@@ -793,4 +793,28 @@ fn oneway_counting_while_that_uses_the_counter_afterwards_is_kept() {
     let src = "fn t.a(y: u32) -> u32 uses [] panics never\n    let mut i = 0u32\n    while i < y {\n        core.mem.drop(i)\n        i = i.wrapping_add(1u32)\n    }\n    i\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
     let t = Tmp::new_raw("oneway_while_keep", src);
     assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn oneway_unmutated_let_mut_becomes_let() {
+    let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    let mut z = x\n    let mut w = x\n    w = w.wrapping_add(1u32)\n    z.wrapping_add(w)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_let_mut", src, "E2072", "let z = x\n    let mut w = x");
+}
+
+#[test]
+fn oneway_trivial_closure_becomes_the_function_value() {
+    let src = "fn t.add(a: u32, b: u32) -> u32 uses [] panics never\n    a.wrapping_add(b)\nend t.add\n\nfn t.a(x: u32) -> u32 uses [] panics never\n    let f = fn(p: u32, q: u32) -> u32 capture [] {\n        t.add(p, q)\n    }\n    f(x, x)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_closure", src, "E2073", "let f = t.add\n");
+}
+
+#[test]
+fn oneway_fmt_write_literal_becomes_push_str() {
+    let src = "fn t.a() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never\n    let mut s = alloc.string.String.from_str(std.alloc.SYSTEM, \"a\")?\n    alloc.fmt.write(&mut s, &\"lit\")?\n    core.mem.drop(s)\n    Ok(())\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_fmt_write", src, "E2061", "s.push_str(\"lit\")?");
+}
+
+#[test]
+fn oneway_and_with_max_constant_is_removed() {
+    let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    let y = x & core.num.u32.MAX\n    y\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_max", src, "E2062", "let y = x\n");
 }

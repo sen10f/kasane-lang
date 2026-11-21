@@ -426,7 +426,7 @@ end notes.store.Store.search_ids.test_search_and_tags
 test notes.store.Store.set.test_set_and_remove
     notes.store.test_reset_dir()?
     let mut store = notes.store.Store.load(notes.store.TEST_DIR)?
-    let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let memo = note.Note.new(0i64, "元", "本文", tags, "2026-11-15T09:00:00Z")?
     let id = store.add(memo)?
     let mut tags2 = alloc.vec.Vec.new(std.alloc.SYSTEM)

@@ -122,7 +122,7 @@ test ui.tree_test.Suite.test_child_at_out_of_range
 end ui.tree_test.Suite.test_child_at_out_of_range
 
 test ui.tree_test.Suite.test_child_at_unknown_node
-    let mut t = ui.tree.Tree.new()
+    let t = ui.tree.Tree.new()
     if let Some(_v) = t.child_at(99usize, 0usize) {
         core.check.is_true(false)
     }
@@ -357,7 +357,7 @@ test ui.tree_test.Suite.test_parent_of_root_none
 end ui.tree_test.Suite.test_parent_of_root_none
 
 test ui.tree_test.Suite.test_parent_of_unknown_node
-    let mut t = ui.tree.Tree.new()
+    let t = ui.tree.Tree.new()
     if let Some(_v) = t.parent_of(99usize) {
         core.check.is_true(false)
     }
@@ -386,7 +386,7 @@ test ui.tree_test.Suite.test_push_node_indices
 end ui.tree_test.Suite.test_push_node_indices
 
 test ui.tree_test.Suite.test_state_insert
-    let mut t = ui.tree.Tree.new()
+    let t = ui.tree.Tree.new()
     let c = ui.tree_test.Counter { n: 0u32 }
     match alloc.boxed.Box.new(std.alloc.SYSTEM, c) {
         Ok(b) => {
@@ -402,7 +402,7 @@ test ui.tree_test.Suite.test_state_insert
 end ui.tree_test.Suite.test_state_insert
 
 test ui.tree_test.Suite.test_state_insert_two
-    let mut t = ui.tree.Tree.new()
+    let t = ui.tree.Tree.new()
     match alloc.boxed.Box.new(std.alloc.SYSTEM, ui.tree_test.Counter { n: 0u32 }) {
         Ok(b) => {
             match t.state_ref().insert(ui.tree.StateEntry { value: alloc.boxed.Box.into_dyn(b) }) {
@@ -425,7 +425,7 @@ test ui.tree_test.Suite.test_state_insert_two
 end ui.tree_test.Suite.test_state_insert_two
 
 test ui.tree_test.Suite.test_state_remove
-    let mut t = ui.tree.Tree.new()
+    let t = ui.tree.Tree.new()
     match alloc.boxed.Box.new(std.alloc.SYSTEM, ui.tree_test.Counter { n: 0u32 }) {
         Ok(b) => {
             match t.state_ref().insert(ui.tree.StateEntry { value: alloc.boxed.Box.into_dyn(b) }) {

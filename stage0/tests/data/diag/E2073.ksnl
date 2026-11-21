@@ -1,0 +1,14 @@
+fn t.add(a: u32, b: u32) -> u32 uses [] panics never
+    a.wrapping_add(b)
+end t.add
+
+fn t.a(x: u32) -> u32 uses [] panics never
+    let f = fn(p: u32, q: u32) -> u32 capture [] {
+        t.add(p, q)
+    }
+    f(x, x)
+end t.a
+
+fn t.main() -> () uses [] panics never
+    ()
+end t.main

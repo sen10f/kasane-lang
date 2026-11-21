@@ -14,9 +14,7 @@ fn t.noisy() -> u8 uses [] panics may
 end t.noisy
 
 fn t.pure_caller() -> u8 uses [] panics never
-    let f = fn(x: u8) -> u8 capture [] {
-        t.quiet(x)
-    }
+    let f = t.quiet
     f(1u8)
 end t.pure_caller
 

@@ -3059,7 +3059,7 @@ pub fn expect_value(ksnl: &Path, key: &str) -> Option<String> {
 }
 
 /// 書き方は 1 通り (段 3): 型で決まる揺れ (整数リテラルの接尾辞 E2028・メソッドの呼び方 E2029・構造体リテラルの欄の順 E2048) は
-/// `ksn fmt` では直らないので、診断の `fix` だけを当てて (意味の誤りの診断には触れない)、もう一度整形する。試験の入力を正規形にそろえる。
+/// `ksn fmt` では直らないので (2026-11-21 に型で決まる正規形 E2055・E2057〜E2073 も足した)、診断の `fix` だけを当てて (意味の誤りの診断には触れない)、もう一度整形する。試験の入力を正規形にそろえる。
 /// これらの揺れそのものを試験するときは `Tmp::new_raw` を使う。
 pub fn one_way_fix(dir: &Path) {
     for _ in 0..4 {
@@ -3068,7 +3068,7 @@ pub fn one_way_fix(dir: &Path) {
         let mut edits: std::collections::BTreeMap<String, Vec<(usize, usize, usize, usize, String)>> = Default::default();
         for l in out.lines() {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(l.trim()) else { continue };
-            if !matches!(v["code"].as_str(), Some("E2028" | "E2029" | "E2048")) {
+            if !matches!(v["code"].as_str(), Some("E2028" | "E2029" | "E2048" | "E2055" | "E2057" | "E2058" | "E2059" | "E2060" | "E2061" | "E2062" | "E2063" | "E2064" | "E2065" | "E2066" | "E2067" | "E2068" | "E2069" | "E2070" | "E2071" | "E2072" | "E2073")) {
                 continue;
             }
             for f in v["fix"].as_array().into_iter().flatten() {

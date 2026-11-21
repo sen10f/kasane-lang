@@ -333,7 +333,7 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             }
             vec![span(file, line, text, indent, text.len(), format!("core.mem.drop({})", expr))]
         }
-        "E2055" | "E2057" | "E2058" | "E2059" | "E2060" | "E2061" | "E2062" | "E2063" | "E2064" | "E2065" | "E2066" | "E2067" | "E2068" | "E2069" | "E2070" | "E2071" => oneway_fix(code, msg, file, line, lines),
+        "E2055" | "E2057" | "E2058" | "E2059" | "E2060" | "E2061" | "E2062" | "E2063" | "E2064" | "E2065" | "E2066" | "E2067" | "E2068" | "E2069" | "E2070" | "E2071" | "E2072" | "E2073" => oneway_fix(code, msg, file, line, lines),
         "E2042" => {
             let Some(text) = get(line) else { return vec![] };
             let indent = text.len() - text.trim_start().len();
@@ -968,6 +968,23 @@ fn oneway_fix(code: &str, msg: &str, file: &str, line: usize, lines: &[String]) 
             }
             vec![]
         }
+        "E2061" if msg.contains("alloc.fmt.write") => {
+            let head = "alloc.fmt.write(&mut ";
+            if text.matches(head).count() != 1 {
+                return vec![];
+            }
+            let at = text.find(head).unwrap();
+            let rest = &text[at + head.len()..];
+            let Some(c) = rest.find(", &\"") else { return vec![] };
+            let name = &rest[..c];
+            let lit_from = c + 4;
+            let Some(rel) = rest[lit_from..].find('"') else { return vec![] };
+            let lit = &rest[lit_from..lit_from + rel];
+            if name.is_empty() || name.contains(['(', ')', ',', ' ']) || lit.contains('\\') || !rest[lit_from + rel + 1..].starts_with(')') {
+                return vec![];
+            }
+            vec![span(file, line, text, at, at + head.len() + lit_from + rel + 2, format!("{name}.push_str(\"{lit}\")"))]
+        }
         "E2061" => {
             let head = ".push_display(&\"";
             if text.matches(head).count() != 1 {
@@ -1064,6 +1081,16 @@ fn oneway_fix(code: &str, msg: &str, file: &str, line: usize, lines: &[String]) 
             vec![]
         }
         "E2062" if msg.starts_with('[') => identity_fix(file, line, msg, text),
+        "E2072" => {
+            let Some(name) = msg.strip_prefix("`let mut ").and_then(|r| r.split('`').next()) else { return vec![] };
+            let pat = format!("let mut {name}");
+            let Some(at) = text.find(&pat) else { return vec![] };
+            if text.matches(&pat).count() != 1 || text[at + pat.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_') || !text[..at].trim().is_empty() {
+                return vec![];
+            }
+            vec![span(file, line, text, at + 4, at + 8, String::new())]
+        }
+        "E2073" => closure_fix(file, line, lines),
         "E2068" | "E2069" => match_fix(code, file, line, lines),
         "E2070" => while_fix(file, line, msg, lines),
         "E2071" => some_lit_fix(file, line, msg, text),
@@ -1254,9 +1281,9 @@ fn identity_fix(file: &str, line: usize, msg: &str, text: &str) -> Vec<Fix> {
                 }
                 let at = text.find(&pat).unwrap();
                 let (n, rest) = (simple_back(text, at), &text[at + pat.len()..]);
-                let rl = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').map(char::len_utf8).sum::<usize>();
+                let rl = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').map(char::len_utf8).sum::<usize>();
                 let lit = &rest[..rl];
-                let ok_lit = |l: &str| lit_ok(l) && (tag == "ones" || l.starts_with('0') && l.trim_start_matches('0').chars().next().map_or(true, |ch| ch.is_alphabetic()));
+                let ok_lit = |l: &str| (lit_ok(l) || (tag == "ones" && l.starts_with("core.num.") && l.ends_with(".MAX"))) && (tag == "ones" || l.starts_with('0') && l.trim_start_matches('0').chars().next().map_or(true, |ch| ch.is_alphabetic()));
                 // 右がリテラル: `x | 0u32` の ` | 0u32` を消す。左がリテラル: `0u32 | x` の `0u32 | ` を消す。
                 if n > 0 && ok_lit(lit) && !text[at - n..at].chars().next().unwrap().is_ascii_digit() {
                     return vec![span(file, line, text, at, at + pat.len() + rl, String::new())];
@@ -1458,4 +1485,28 @@ fn while_fix(file: &str, line: usize, msg: &str, lines: &[String]) -> Vec<Fix> {
         Fix { file: file.to_string(), line: let_line, col: 1, end_line: let_line + 1, end_col: 1, replace: String::new() },
         Fix { file: file.to_string(), line, col: 1, end_line: end, end_col: endl.chars().count() + 1, replace: rep },
     ]
+}
+
+
+/// 引数を同じ順で関数に渡すだけの閉包 (`fn(a: T) -> R capture [] {` + 本体 1 行 + `}`) を、その関数の名前にする。
+fn closure_fix(file: &str, line: usize, lines: &[String]) -> Vec<Fix> {
+    let Some(first) = lines.get(line.wrapping_sub(1)) else { return vec![] };
+    if first.matches("fn(").count() != 1 || !first.ends_with(" {") || !first.contains(" capture [] {") {
+        return vec![];
+    }
+    let indent: String = first.chars().take_while(|c| *c == ' ').collect();
+    let (Some(body), Some(close)) = (lines.get(line), lines.get(line + 1)) else { return vec![] };
+    let b = body.trim();
+    if *body != format!("{indent}    {b}") || !close.starts_with(&format!("{indent}}}")) {
+        return vec![];
+    }
+    let Some(open) = b.find('(') else { return vec![] };
+    let Some(args) = b[open + 1..].strip_suffix(')') else { return vec![] };
+    let callee = &b[..open];
+    // 引数は名前だけ (入れ子の呼びを含まない)。閉包の引数の名前と同じ順であることは型の側で確かめてある。
+    if callee.is_empty() || args.contains(['(', ')']) || callee.contains(' ') {
+        return vec![];
+    }
+    let at = first.find("fn(").unwrap();
+    vec![Fix { file: file.to_string(), line, col: char_idx(first, at) + 1, end_line: line + 2, end_col: indent.chars().count() + 2, replace: callee.to_string() }]
 }
