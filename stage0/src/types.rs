@@ -429,19 +429,20 @@ pub(crate) fn alloc_std_alias(alloc: &str) -> Option<&str> {
 }
 
 /// `alloc.x.Y<実引数>` がデフォルト確保器 (`std.alloc.System`) を短縮して書ける形なら、
-/// `std.x.Y<非アロケータ実引数>` の表示を返す。アロケータ引数が省略済みか、明示的に `System` なら短縮する。
+/// `std.x.Y<非アロケータ実引数>` の表示を返す。アロケータが明示的に `System` なら短縮する。
+/// アロケータを省略した `alloc.x.Y<T>` は型引数が足りず検査エラーなので、
+/// 短縮しない（診断に短い形を出すと有効に見えてしまうため）。
 pub(crate) fn alloc_short_name(n: &str, args: &[Ty]) -> Option<String> {
     let Some((std, alloc, total)) = ALLOC_ALIASES.iter().find(|(_, a, _)| *a == n).copied() else { return None };
     let last_is_system = args.last().map_or(false, |t| matches!(t, Ty::Named(s, _, _) if s == "std.alloc.System"));
-    // アロケータが省略されている (総数 - 1 個だけ書かれている) か、明示的に System なら短縮する。
-    if args.len() == total.saturating_sub(1) || (args.len() == total && last_is_system) {
-        let non_alloc: Vec<String> = args.iter().take(total.saturating_sub(1)).map(|t| t.show()).collect();
-        if non_alloc.is_empty() {
-            return Some(std.to_string());
-        }
-        return Some(format!("{}<{}>", std, non_alloc.join(", ")));
+    if !(args.len() == total && last_is_system) {
+        return None;
     }
-    None
+    let non_alloc: Vec<String> = args.iter().take(total.saturating_sub(1)).map(|t| t.show()).collect();
+    if non_alloc.is_empty() {
+        return Some(std.to_string());
+    }
+    Some(format!("{}<{}>", std, non_alloc.join(", ")))
 }
 
 /// `alloc.x.Y.new[T, A: Allocator](allocator: A)` のように、アロケータを受け取るコンストラクタで、

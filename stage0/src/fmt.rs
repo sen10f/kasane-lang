@@ -414,15 +414,13 @@ fn parse_group_args(chars: &[char], start: usize) -> Option<(Vec<String>, usize)
 /// `std.x.Y<非アロケータ実引数>` を返す。アロケータ引数が省略済みか、明示的に `System` なら短縮する。
 fn short_type_args(std: &str, total: usize, args: &[String]) -> Option<String> {
     let last_is_system = args.last().map_or(false, |a| a.trim() == "std.alloc.System");
-    let non_sys: Vec<String>;
-    if args.len() == total && last_is_system {
-        non_sys = args.iter().take(total.saturating_sub(1)).map(|a| a.trim().to_string()).collect();
-    } else if args.len() == total.saturating_sub(1) {
-        // 末尾の System の型実引数が省略済み
-        non_sys = args.iter().map(|a| a.trim().to_string()).collect();
-    } else {
+    // デフォルト確保器 (`std.alloc.System`) を明示した長い形式のみを短縮する。
+    // アロケータを省略した `alloc.x.Y<T>` は型引数の数が足りず検査エラーになるため、
+    // そのままにしておき、検査器がエラーを報告できるようにする（無効なプログラムを有効にしない）。
+    if !(args.len() == total && last_is_system) {
         return None;
     }
+    let non_sys: Vec<String> = args.iter().take(total.saturating_sub(1)).map(|a| a.trim().to_string()).collect();
     if non_sys.is_empty() {
         Some(std.to_string())
     } else {
@@ -432,11 +430,10 @@ fn short_type_args(std: &str, total: usize, args: &[String]) -> Option<String> {
 
 /// デフォルト確保器 (`std.alloc.System`) を短い型名に書き換える。
 /// `alloc.vec.Vec<u8, std.alloc.System>` → `std.vec.Vec<u8>`、
-/// `alloc.vec.Vec<u8>`（末尾の System を省略） → `std.vec.Vec<u8>`、
 /// `alloc.vec.Vec.new(std.alloc.SYSTEM)` → `std.vec.Vec.new()`、
-/// `alloc.vec.Vec.new()` → `std.vec.Vec.new()`。
 /// アロケータが非 System (`alloc.vec.Vec<T, A>` など) や、コンストラクタ以外の
 /// アロケータ取る関数 (`from_str` など)はそのままにする。文字列リテラルの中は触らない。
+/// `alloc.vec.Vec.new()`（アロケータなし）は短縮せず、検査器が E2001 を報告できるようにする。
 /// 入れ子のジェネリクスに対しては、書き換えた後でもう一度走査する。
 fn rewrite_alloc(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
@@ -501,20 +498,19 @@ fn rewrite_alloc(line: &str) -> String {
             }
             if p < n && chars[p] == '(' {
                 if let Some((rargs, end)) = parse_group_args(&chars, p) {
-                    let last_sys = rargs.last().map_or(false, |a| a.trim() == "std.alloc.SYSTEM");
-                    if rargs.is_empty() || last_sys {
-                        let non_alloc: Vec<String> = if rargs.is_empty() {
-                            vec![]
-                        } else {
-                            rargs.iter().take(rargs.len() - 1).map(|a| a.trim().to_string()).collect()
-                        };
+                    // デフォルト確保器を明示した形式のみを短縮する
+                    // (`alloc.x.Y.new(std.alloc.SYSTEM)` → `std.x.Y.new()`)。
+                    // `alloc.x.Y.new()`（アロケータなし）や `alloc.x.Y.new(A)`（非 System）はそのままにして、
+                    // 検査器が E2001（アロケータ未指定/不一致）を報告できるようにする
+                    //（無効なプログラムを有効にしない）。
+                    let is_system = rargs.len() == 1 && rargs[0].trim() == "std.alloc.SYSTEM";
+                    if is_system {
                         let t = if targs.is_empty() {
                             String::new()
                         } else {
                             format!("<{}>", targs.iter().map(|a| a.trim()).collect::<Vec<_>>().join(", "))
                         };
-                        let call = if non_alloc.is_empty() { "()".to_string() } else { format!("({})", non_alloc.join(", ")) };
-                        out.extend(format!("{}.new{}{}", std, t, call).chars());
+                        out.extend(format!("{}.new{}()", std, t).chars());
                         i = end;
                         replaced = true;
                     }
