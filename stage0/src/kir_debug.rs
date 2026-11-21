@@ -184,57 +184,71 @@ impl Fb {
 
 /// 10 進の整数 (128 ビットは対象外)。符号付きは `-` と大きさ (u64) に分け、桁を末尾から `buf` に置く。
 fn int_fn(t: Ty, fat: Ty) -> Func {
+    // 128 ビットは大きさを U128 で割って桁を取る (十進の最大は 39 桁なので、バッファは 40 バイト)。64 ビット以下は今までどおり U64。
+    let wide = t.bits() == 128;
+    let w = if wide { Ty::U128 } else { Ty::U64 };
+    let sw = if wide { Ty::I128 } else { Ty::I64 };
+    let cap: i128 = if wide { 40 } else { 20 };
     let mut b = Fb::new_d(&[t], fat);
-    let buf = b.emit(Ty::Ptr, Op::FrameBytes { size: 20 });
-    let tmp = b.emit(Ty::Ptr, Op::FrameBytes { size: 8 });
-    // i64 → u64 の再解釈 (値を保つ変換は無いので、同じ 8 バイトを書いて読み直す)
-    let as_u64 = |b: &mut Fb, x: VId| -> VId {
-        b.emit(Ty::Unit, Op::MemStore { ty: Ty::I64, p: tmp, off: 0, v: x });
-        b.emit(Ty::U64, Op::MemLoad { p: tmp, off: 0 })
+    let buf = b.emit(Ty::Ptr, Op::FrameBytes { size: cap as u32 });
+    let tmp = b.emit(Ty::Ptr, Op::FrameBytes { size: 16 });
+    // 符号付きの大きさ (負の値の `-x`、wrap) を符号なしの幅へ写す。64 ビットは同じ 8 バイトを書いて読み直す (値を保つ変換は無い)。
+    // 128 ビットは同じ幅なので変換で足りる。
+    let as_w = |b: &mut Fb, x: VId| -> VId {
+        b.emit(Ty::Unit, Op::MemStore { ty: sw, p: tmp, off: 0, v: x });
+        b.emit(w, Op::MemLoad { p: tmp, off: 0 })
     };
-    let (dig, dp) = b.block(&[Ty::U64]);
+    let (dig, dp) = b.block(&[w]);
     if t.signed() {
-        let x = if t == Ty::I64 { b.v } else { b.emit(Ty::I64, Op::Conv { src: t, a: b.v }) };
-        let zero = b.c(Ty::I64, 0);
-        let neg = b.cmp(Cc::Lt, Ty::I64, x, zero);
+        let x = if t == sw { b.v } else { b.emit(sw, Op::Conv { src: t, a: b.v }) };
+        let zero = b.c(sw, 0);
+        let neg = b.cmp(Cc::Lt, sw, x, zero);
         let (bn, _) = b.block(&[]);
         let (bp, _) = b.block(&[]);
         b.br_if(neg, bn, bp);
         b.at(bn);
         b.s("-");
-        let m = b.emit(Ty::I64, Op::Neg { a: x, mode: Mode::Wrap });
-        let mu = as_u64(&mut b, m);
+        let m = b.emit(sw, Op::Neg { a: x, mode: Mode::Wrap });
+        let mu = as_w(&mut b, m);
         b.goto(dig, vec![mu]);
         b.at(bp);
-        let pu = as_u64(&mut b, x);
+        let pu = as_w(&mut b, x);
         b.goto(dig, vec![pu]);
     } else {
-        let u = if t == Ty::U64 { b.v } else { b.emit(Ty::U64, Op::Conv { src: t, a: b.v }) };
+        let u = if t == w { b.v } else { b.emit(w, Op::Conv { src: t, a: b.v }) };
         b.goto(dig, vec![u]);
     }
-    let (lp, lv) = b.block(&[Ty::U64, Ty::Usize]);
+    let (lp, lv) = b.block(&[w, Ty::Usize]);
     let (out, ov) = b.block(&[Ty::Usize]);
     b.at(dig);
-    let i0 = b.c(Ty::Usize, 20);
+    let i0 = b.c(Ty::Usize, cap);
     b.goto(lp, vec![dp[0], i0]);
     b.at(lp);
     let one = b.c(Ty::Usize, 1);
     let i2 = b.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: lv[1], b: one });
-    let ten = b.c(Ty::U64, 10);
-    let d = b.emit(Ty::U64, Op::Arith { op: Aop::Rem, mode: Mode::Trap, a: lv[0], b: ten });
-    let q = b.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: lv[0], b: ten });
+    let ten = b.c(w, 10);
+    let d = b.emit(w, Op::Arith { op: Aop::Rem, mode: Mode::Trap, a: lv[0], b: ten });
+    let q = b.emit(w, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: lv[0], b: ten });
     let table = b.emit(Ty::Ptr, Op::StaticBytes(b"0123456789".to_vec()));
-    let du = b.emit(Ty::Usize, Op::Conv { src: Ty::U64, a: d });
+    // 桁 (0〜9) は 64 ビットに収まる。128 ビットからは直接 usize へ変換できないので、U64 を経由する。
+    // 128 ビットの縮小は KIR の変換に無いので、同じ番地に書いて下位 8 バイトを U64 として読む (リトルエンディアン)。
+    let d64 = if wide {
+        b.emit(Ty::Unit, Op::MemStore { ty: w, p: tmp, off: 0, v: d });
+        b.emit(Ty::U64, Op::MemLoad { p: tmp, off: 0 })
+    } else {
+        d
+    };
+    let du = b.emit(Ty::Usize, Op::Conv { src: Ty::U64, a: d64 });
     let tp = b.emit(Ty::Ptr, Op::PtrAdd { p: table, off: du });
     let ch = b.emit(Ty::U8, Op::MemLoad { p: tp, off: 0 });
     let bp = b.emit(Ty::Ptr, Op::PtrAdd { p: buf, off: i2 });
     b.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: bp, off: 0, v: ch });
-    let zero = b.c(Ty::U64, 0);
-    let done = b.cmp(Cc::Eq, Ty::U64, q, zero);
+    let zero = b.c(w, 0);
+    let done = b.cmp(Cc::Eq, w, q, zero);
     b.term(Term::BrIf(done, (out, vec![i2]), (lp, vec![q, i2])));
     b.at(out);
     let start = b.emit(Ty::Ptr, Op::PtrAdd { p: buf, off: ov[0] });
-    let twenty = b.c(Ty::Usize, 20);
+    let twenty = b.c(Ty::Usize, cap);
     let len = b.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: twenty, b: ov[0] });
     b.put(start, len);
     b.finish(&key(&t.name()))
@@ -561,7 +575,7 @@ impl<'a> Gen<'a> {
         match (src, ty) {
             (Src::Prim(s), Ty::Bool) if s == "bool" => self.need(src, ty, file),
             (Src::Prim(s), Ty::U32) if s == "char" => Err("char の Display の String への追記は未対応".to_string()),
-            (Src::Prim(_), t) if t.is_int() && t.bits() <= 64 => self.need(src, ty, file),
+            (Src::Prim(_), t) if t.is_int() => self.need(src, ty, file),
             // `f32` / `f64` の Display は Debug と同じ文字列 (`py_float` / `py_float32`)。
             (Src::Prim(_), t) if t.is_float() => Ok(self.scalar(&format!("{}.disp", t.name()), || float_fn(t, fat))),
             (_, t) if is_str(src, t, fat) => Ok(self.scalar("str.raw", || raw_fn(fat, fat, "str.raw"))),
@@ -622,7 +636,7 @@ impl<'a> Gen<'a> {
         match (src, ty) {
             (Src::Prim(s), Ty::Bool) if s == "bool" => Ok(self.scalar("bool", || bool_fn(fat))),
             (Src::Prim(s), Ty::U32) if s == "char" => Ok(self.scalar("char", || char_fn(fat))),
-            (Src::Prim(_), t) if t.is_int() && t.bits() <= 64 => Ok(self.scalar(&t.name(), || int_fn(t, fat))),
+            (Src::Prim(_), t) if t.is_int() => Ok(self.scalar(&t.name(), || int_fn(t, fat))),
             // `f32` / `f64` の Debug は Display と同じ文字列。
             (Src::Prim(_), t) if t.is_float() => Ok(self.scalar(&format!("{}.disp", t.name()), || float_fn(t, fat))),
             (_, t) if is_str(src, t, fat) => Ok(self.scalar("str", || str_fn(fat))),
@@ -650,7 +664,8 @@ impl<'a> Gen<'a> {
         match (src, ty) {
             (Src::Prim(s), Ty::Bool) if s == "bool" => Ok(self.scalar_eq("bool", ty, fat)),
             (Src::Prim(s), Ty::U32) if s == "char" => Ok(self.scalar_eq("char", ty, fat)),
-            (Src::Prim(_), t) if t.is_int() && t.bits() <= 64 => {
+            // 128 ビットの整数も同じ `icmp` で比べる (木走査の `v_eq` と同じ)。
+            (Src::Prim(_), t) if t.is_int() => {
                 let n = t.name();
                 Ok(self.scalar_eq(&n, t, fat))
             }

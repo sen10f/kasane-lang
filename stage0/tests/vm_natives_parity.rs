@@ -87,9 +87,10 @@ const NUMBERS: &str = r#"fn t.main() -> Result<(), std.io.Error> uses [io.consol
     core.check.eq(7i32.min(3i32), 3i32)
     core.check.eq(7i64.wrapping_mul(3i64), 21i64)
     let big = 170_141_183_460_469_231_731_687_303_715_884_105_727u128
-    let next = 170_141_183_460_469_231_731_687_303_715_884_105_729u128
-    core.check.eq(big.wrapping_add(2u128) == next, true)
-    core.check.eq(big.wrapping_mul(2u128).wrapping_add(2u128) == 0u128, true)
+    core.check.eq(big.wrapping_add(2u128), 170_141_183_460_469_231_731_687_303_715_884_105_729u128)
+    core.check.eq(big.wrapping_mul(2u128).wrapping_add(2u128), 0u128)
+    let lo = -170_141_183_460_469_231_731_687_303_715_884_105_727i128
+    core.check.eq(lo - 1i128, -170_141_183_460_469_231_731_687_303_715_884_105_728i128)
     core.check.eq(1.5f64.floor(), 1.0f64)
     core.check.eq(2.0f64.sqrt() * 2.0f64.sqrt() > 1.99f64, true)
     core.check.eq(0.0f64.is_nan(), false)
