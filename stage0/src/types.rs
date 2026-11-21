@@ -445,18 +445,6 @@ pub(crate) fn alloc_short_name(n: &str, args: &[Ty]) -> Option<String> {
     Some(format!("{}<{}>", std, non_alloc.join(", ")))
 }
 
-/// `alloc.x.Y.new[T, A: Allocator](allocator: A)` のように、アロケータを受け取るコンストラクタで、
-/// アロケータの型パラメータ名を返す。`new()` でアロケータを省略したとき、`System` を束縛する。
-pub(crate) fn alloc_ctor_allocator_param(d: &Def) -> Option<String> {
-    let Some(owner) = d.name.rsplit_once('.').map(|(o, _)| o) else { return None };
-    if ALLOC_ALIASES.iter().all(|(_, a, _)| *a != owner) { return None; }
-    if d.params.len() != 1 { return None; }
-    let Ty::Param(ap) = &from_v(&d.params[0].1, &d.gnames()) else { return None };
-    let has_alloc = d.generics.iter().any(|g| {
-        g.0 == "type" && g.1 == *ap && items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]) == "alloc.alloc.Allocator"))
-    });
-    has_alloc.then_some(ap.clone())
-}
 
 /// 署名の省略規則 (E3021 と同じ): 入力の省略した領域に左から `Elided(0..)` を付け、戻り値の省略した領域は
 /// `&self` / `&mut self` があればその領域、なければ入力の領域がちょうど 1 つのときそれ、それ以外は `Unk` のまま。
@@ -5391,11 +5379,6 @@ impl<'a> TypeCk<'a> {
             return Ty::Unknown;
         }
         let segs = strs(&nf(callee)[0]);
-        // デフォルト確保器の短縮名 (`std.vec.Vec.new()`) のコンストラクタ呼び出しか。
-        // 長い形式 (`alloc.vec.Vec.new()`) はアロケータを省略できない (E2001)。
-        let short_ctor = segs.len() >= 2
-            && segs.last().map_or(false, |s| s == "new")
-            && std_to_alloc(&segs[..segs.len() - 1].join(".")).is_some();
         // `v.items.push(x)` のように、局所変数から始まるパスはメソッド呼び出し。
         if self.lookup(&segs[0]).is_some() {
             self.dep_on_local(&segs[0]);
@@ -5530,7 +5513,7 @@ impl<'a> TypeCk<'a> {
                 let i = self.p.sigs[fq];
                 self.method_form_check(i, &segs, line);
                 self.arg_static = arg_stat;
-                self.call_def(call_id, i, &argt, line, &sl, targs, short_ctor)
+                self.call_def(call_id, i, &argt, line, &sl, targs)
             }
             // 規範のシグネチャにない基本型の関連関数 (`usize.try_from_u64` など)。実行系は整数の変換を一般の規則で
             // 受け付けるが、規範はシグネチャなので拒否する (メソッドの E1108 と同じ方針)。近い名前を提案する。
@@ -5562,7 +5545,7 @@ impl<'a> TypeCk<'a> {
             Target::Fn(i) | Target::Sig(i) => {
                 self.method_form_check(i, &segs, line);
                 self.arg_static = arg_stat;
-                self.call_def(call_id, i, &argt, line, &sl, targs, short_ctor)
+                self.call_def(call_id, i, &argt, line, &sl, targs)
             }
             _ => {
                 argt.iter().for_each(|a| self.escape(a));
@@ -5595,9 +5578,7 @@ impl<'a> TypeCk<'a> {
     ///
     /// `sl` は、各引数の式が構造体リテラルかどうか。従来の検査は構造体リテラルの型引数を見ない
     /// (名前しか比べない) ので、同じ名前どうしの型引数の矛盾はここで報告する。
-    /// `short_ctor` はデフォルト確保器の短縮名 (`std.vec.Vec.new()`) の呼び出しか。
-    /// 長い形式 (`alloc.vec.Vec.new()`) はアロケータを省略できない (E2001)。
-    fn call_def(&mut self, call_id: u32, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V], short_ctor: bool) -> Ty {
+    fn call_def(&mut self, call_id: u32, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V]) -> Ty {
         let arg_stat = std::mem::take(&mut self.arg_static);
         let arg_ids = std::mem::take(&mut self.side.arg_ids);
         let d = &self.p.defs[i];
@@ -5670,15 +5651,6 @@ impl<'a> TypeCk<'a> {
         let mut map: HashMap<String, Ty> = HashMap::new();
         self.seed_targs(d, targs, &mut map, line);
         seed_effects(d, &mut map);
-        // デフォルト確保器を省略したコンストラクタ (`Vec.new()`): アロケータ型パラメータを `System` に束縛する。
-        // 短縮名 (`std.vec.Vec.new()`) のときだけ。長い形式 (`alloc.vec.Vec.new()`) は E2001 のまま。
-        if short_ctor {
-            if let Some(ap) = crate::types::alloc_ctor_allocator_param(d) {
-                if argt.len() == d.params.len() - 1 {
-                    map.insert(ap.to_string(), Ty::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default()));
-                }
-            }
-        }
         // Fn 境界を受け取る引数の位置と、渡されたクロージャの型 (決まっているものだけ)。
         let mut fn_args: Vec<(usize, String)> = vec![];
         let mut closures: HashMap<usize, Ty> = HashMap::new();

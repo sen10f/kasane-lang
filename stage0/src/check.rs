@@ -2495,10 +2495,7 @@ impl<'a> Checker<'a> {
                                 );
                             }
                             let n = items(&f[1]).len();
-                            // デフォルト確保器を省略したコンストラクタ (`Vec.new()`): 末尾のアロケータ引数は `System` に既定される。
-                            let alloc_omitted = crate::types::alloc_ctor_allocator_param(callee).is_some()
-                                && n == callee.params.len() - 1;
-                            if callee.params.len() != n && !alloc_omitted {
+                            if callee.params.len() != n {
                                 self.diag(
                                     "E2001",
                                     format!("{} takes {} argument(s) but {} given", callee.name, callee.params.len(), n),
