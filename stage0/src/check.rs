@@ -9,7 +9,6 @@ use crate::parser::{V, nid};
 pub(crate) mod borrowck;
 #[path = "with_check.rs"]
 mod with_check;
-pub(crate) use with_check::cleanup_exit;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Diag {
@@ -2807,15 +2806,9 @@ impl<'a> Checker<'a> {
     fn typeck(&mut self) {
         let user = self.user.clone();
         for &i in &user {
-            if self.def(i).kw == "trait" {
-                self.check_trait_lifetimes(i);
-            }
             self.check_lifetime_names(i);
             if self.def(i).kw == "fn" {
                 self.check_elision(i);
-            }
-            if matches!(self.def(i).kw.as_str(), "type" | "enum") {
-                self.check_field_elision(i);
             }
         }
         // 型付きの式推論に基づく検査 (レシーバの型によるメソッドの存在・引数の個数と型)。
@@ -3024,15 +3017,9 @@ impl<'a> Checker<'a> {
         }
         // 4.1: 出力位置の型パスは、ライフタイム引数を省略できない (入力位置だけ省略できる)。
         let mut missing: Vec<String> = vec![];
-        self.missing_life_args(&self.def(di).ret.clone(), &mut missing);
+        crate::tast_rules::lifetimes::missing_life_args(self.p, &self.def(di).ret.clone(), &mut missing);
         if !missing.is_empty() {
-            let msg = format!(
-                "{}: the output type `{}` takes lifetime arguments that must be named in an output position (write `{}<'a>` and declare `'a`)",
-                self.def(di).name,
-                missing[0],
-                missing[0]
-            );
-            self.diag("E3020", msg, di, 0);
+            // E3020 は TAST の規則 (tast_rules/lifetimes.rs の `sig_elision`) が出す。
             return;
         }
         let d = self.def(di);
@@ -3053,76 +3040,7 @@ impl<'a> Checker<'a> {
             }
             return;
         }
-        if head.contains('\'') {
-            return;
-        }
-        if !d.ret.dump().contains("ref") {
-            return;
-        }
-        let refs = d.params.iter().filter(|p| p.1.dump().contains("ref")).count();
-        let selfref = d.params.first().map_or(false, |p| p.0 == "self" && tag(&p.1) == "ref");
-        if !selfref && refs != 1 {
-            self.diag(
-                "E3020",
-                format!("{}: lifetime of the returned reference cannot be elided; declare lifetimes", d.name),
-                di,
-                0,
-            );
-        }
-    }
-
-    /// 型 `t` の中の名義型のうち、ライフタイム引数の個数が定義より少ないもの (`-> t.H` で `type t.H['a]`) の名前を集める。
-    fn missing_life_args(&self, t: &V, out: &mut Vec<String>) {
-        if tag(t) == "named" {
-            let name = st(tel(t, 1));
-            let args = items(tel(t, 2));
-            if let Some(&i) = self.p.types.get(&name) {
-                let want = self.def(i).generics.iter().filter(|g| g.0 == "life").count();
-                let have = args.iter().filter(|a| tag(a) == "life").count();
-                if have < want {
-                    out.push(name);
-                }
-            }
-            for a in args {
-                self.missing_life_args(a, out);
-            }
-            return;
-        }
-        if let V::L(xs) = t {
-            for x in xs {
-                self.missing_life_args(x, out);
-            }
-        }
-    }
-
-    /// トレイトのメソッドの宣言 (本体なし) が、宣言していないライフタイム (`'a`) を使う。本体の流れは見られないので、
-    /// 宣言の有無だけを見る。`program.rs` がメソッドごとの未宣言の名前を `field_lifetimes` に入れている。
-    fn check_trait_lifetimes(&mut self, di: usize) {
-        let d = self.def(di);
-        let names: Vec<String> = d.field_lifetimes.iter().filter(|(_, l)| !l.is_empty()).map(|(m, l)| format!("{}: '{}", m, l.join(", '"))).collect();
-        if names.is_empty() {
-            return;
-        }
-        let msg = format!(
-            "{}: lifetime of the returned reference is not declared (`{}`); declare it in the method's generics (for example `fn m['a](...)`)",
-            d.name,
-            names.join("`, `")
-        );
-        self.diag("E3020", msg, di, 0);
-    }
-
-    /// 4.1: `type` / `enum` のフィールド・バリアントの参照は、ライフタイムを省略できない (`'static` も明示)。
-    fn check_field_elision(&mut self, di: usize) {
-        let d = self.def(di);
-        if d.elided_refs.is_empty() {
-            return;
-        }
-        let msg = format!(
-            "{}: lifetime of the reference in `{}` cannot be elided; declare it (for example `&'a T` with `['a]`)",
-            d.name,
-            d.elided_refs.join("`, `")
-        );
-        self.diag("E3020", msg, di, 0);
+        // 参照を返す関数の省略が決まらない E3020 は TAST の規則が出す。
     }
 
     fn strip<'b>(&self, mut t: &'b V) -> &'b V {

@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use crate::check::{items, resolve_trait_fqn, st, Diag};
+use crate::check::{items, resolve_trait_fqn, st, tag, tel, Diag};
 use crate::parser::V;
 use crate::program::{Def, Program};
 use crate::tast::*;
@@ -20,6 +20,7 @@ use crate::types::{elide_sig, from_v, subst, Region, Ty, TypeCk};
 pub fn check(p: &Program, user: &[usize], tast: &Tast, _tk: &TypeCk) -> Vec<Diag> {
     let mut out = vec![];
     for &di in user {
+        out.extend(sig_elision(p, di));
         let Some(b) = tast.bodies.get(&di) else { continue };
         let d = &p.defs[di];
         if d.kw != "fn" {
@@ -28,6 +29,90 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, _tk: &TypeCk) -> Vec<Diag
         let mut w = W::new(p, di, b);
         w.run(b);
         out.extend(w.diags);
+    }
+    out
+}
+
+// ------------------------------------------------------------ 署名・型の欄のライフタイムの省略 (E3020)
+
+fn sig_diag(p: &Program, di: usize, msg: String) -> Diag {
+    let d = &p.defs[di];
+    let (line, col) = crate::parser::unpack_pos(d.line);
+    Diag { file: d.file.clone(), code: "E3020".into(), fqn: d.name.clone(), line, col, msg }
+}
+
+/// 型 `t` の中の名義型のうち、ライフタイム引数の個数が定義より少ないもの (`-> t.H` で `type t.H['a]`) の名前を集める。
+pub(crate) fn missing_life_args(p: &Program, t: &V, out: &mut Vec<String>) {
+    if tag(t) == "named" {
+        let name = st(tel(t, 1));
+        let args = items(tel(t, 2));
+        if let Some(&i) = p.types.get(&name) {
+            let want = p.defs[i].generics.iter().filter(|g| g.0 == "life").count();
+            let have = args.iter().filter(|a| tag(a) == "life").count();
+            if have < want {
+                out.push(name);
+            }
+        }
+        for a in args {
+            missing_life_args(p, a, out);
+        }
+        return;
+    }
+    if let V::L(xs) = t {
+        for x in xs {
+            missing_life_args(p, x, out);
+        }
+    }
+}
+
+/// 定義の署名だけで決まる E3020 (4.1): 出力の型パスのライフタイム引数の省略・参照を返す関数の省略が決まらない・
+/// トレイトのメソッドの宣言の未宣言のライフタイム・`type` / `enum` の欄の参照のライフタイムの省略。
+fn sig_elision(p: &Program, di: usize) -> Vec<Diag> {
+    let d = &p.defs[di];
+    let mut out = vec![];
+    if d.kw == "trait" {
+        let names: Vec<String> = d.field_lifetimes.iter().filter(|(_, l)| !l.is_empty()).map(|(m, l)| format!("{}: '{}", m, l.join(", '"))).collect();
+        if !names.is_empty() {
+            out.push(sig_diag(
+                p,
+                di,
+                format!(
+                    "{}: lifetime of the returned reference is not declared (`{}`); declare it in the method's generics (for example `fn m['a](...)`)",
+                    d.name,
+                    names.join("`, `")
+                ),
+            ));
+        }
+    }
+    if d.kw == "fn" {
+        let mut missing: Vec<String> = vec![];
+        missing_life_args(p, &d.ret, &mut missing);
+        if !missing.is_empty() {
+            out.push(sig_diag(
+                p,
+                di,
+                format!(
+                    "{}: the output type `{}` takes lifetime arguments that must be named in an output position (write `{}<'a>` and declare `'a`)",
+                    d.name, missing[0], missing[0]
+                ),
+            ));
+        } else {
+            let head = d.header.split(" uses ").next().unwrap_or("");
+            if !head.contains('\'') && d.ret.dump().contains("ref") {
+                let refs = d.params.iter().filter(|q| q.1.dump().contains("ref")).count();
+                let selfref = d.params.first().map_or(false, |q| q.0 == "self" && tag(&q.1) == "ref");
+                if !selfref && refs != 1 {
+                    out.push(sig_diag(p, di, format!("{}: lifetime of the returned reference cannot be elided; declare lifetimes", d.name)));
+                }
+            }
+        }
+    }
+    if matches!(d.kw.as_str(), "type" | "enum") && !d.elided_refs.is_empty() {
+        out.push(sig_diag(
+            p,
+            di,
+            format!("{}: lifetime of the reference in `{}` cannot be elided; declare it (for example `&'a T` with `['a]`)", d.name, d.elided_refs.join("`, `")),
+        ));
     }
     out
 }

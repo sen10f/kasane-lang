@@ -99,6 +99,6 @@ fn dedup(mut out: Vec<Diag>) -> Vec<Diag> {
 /// 報告する診断を選ぶ: 新しい規則 (TAST) + 残す旧パス。置き換えた旧パス (S4_REPLACED) の診断だけ旧から外す。
 pub fn select(prog: &Program, user: &[usize], old: Vec<Diag>) -> Vec<Diag> {
     warn_retired_mode();
-    let kept: Vec<Diag> = old.into_iter().filter(|d| !S4_REPLACED.contains(&d.code.as_str())).collect();
+    let kept: Vec<Diag> = old.into_iter().filter(|d| !S4_REPLACED.contains(&d.code.as_str()) && !matches!(d.code.as_str(), "E2023" | "E3041" | "E3042" | "E3020")).collect();
     dedup([kept, check(prog, user)].concat())
 }
