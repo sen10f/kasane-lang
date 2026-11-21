@@ -232,6 +232,8 @@ struct W<'a> {
     cl: Option<ClSig>,
     /// `match` の腕の束縛 (走査の対象の一時値はこの `match` の間は生きるので、腕の中の文の終わりで尽きさせない)。
     arm_vars: Vec<String>,
+    /// 閉包の本体を解く W だけ: 参照で取り込んだ名前。
+    cap_names: HashSet<String>,
 }
 
 /// 閉包を擬似の関数として見たときの署名と、外側の局所 (本体の中の局所と区別する)。
@@ -393,7 +395,7 @@ impl<'a> W<'a> {
             }
         });
         let gn = p.defs[di].gnames();
-        W { p, di, env: Env::default(), scopes: vec![vec![]], vals: HashMap::new(), uses, loops: vec![], ret, diags: vec![], seen: HashSet::new(), gn, cl: None, arm_vars: vec![] }
+        W { p, di, env: Env::default(), scopes: vec![vec![]], vals: HashMap::new(), uses, loops: vec![], ret, diags: vec![], seen: HashSet::new(), gn, cl: None, arm_vars: vec![], cap_names: HashSet::new() }
     }
 
     fn diag(&mut self, code: &str, msg: String, line: usize) {
@@ -574,6 +576,13 @@ impl<'a> W<'a> {
                     sub.env.vars.insert(c.name.clone(), Var { depth: 1, ..v });
                     sub.scopes[0].push(c.name.clone());
                 }
+            } else {
+                // 参照の取り込み: 本体の中では外側の値への参照 (`Arg` 扱い)。外側の場所へ書く値は、呼び出しごとに新しい
+                // 領域の引数や本体の局所を運んではいけない (M1)。
+                let rt = Ty::Ref(c.kind == "&mut", Box::new(c.ty.clone()), Region::Unk);
+                let v = if sub.carries(&rt) { Self::param_val(&c.name, &rt) } else { Val::default() };
+                sub.define(&c.name, 0, v, &rt);
+                sub.cap_names.insert(c.name.clone());
             }
         }
         for (n, t) in &ps {
@@ -595,10 +604,11 @@ impl<'a> W<'a> {
         if sub.carries(&ret) {
             let pnames: HashSet<String> = ps.iter().map(|(n, _)| n.clone()).collect();
             let outer = sub.cl.as_ref().map(|c| c.outer.clone()).unwrap_or_default();
+            let capn = sub.cap_names.clone();
             for l in leaves {
                 // 本体の局所 (外側の局所ではないもの) への借用だけが、戻り値で外へ出る。
                 let inside = |loan: &Loan| match loan {
-                    Loan::Local(n, id) => (*id == 0 && pnames.contains(n)) || !outer.contains(&(n.clone(), *id)),
+                    Loan::Local(n, id) => (*id == 0 && pnames.contains(n)) || (!outer.contains(&(n.clone(), *id)) && !(*id == 0 && capn.contains(n))),
                     Loan::Temp => true,
                     _ => false,
                 };
@@ -1375,7 +1385,15 @@ impl<'a> W<'a> {
 
     /// 引数 `q` の借用を引数 `p` の指す先へ入れる: `p` の指す先の領域と `q` の領域に共有する名前 (省略でない) が無ければ E3010。
     fn unrelated_store(&mut self, pn: &str, qn: &str, line: usize) {
-        if self.cl.is_some() || pn == qn {
+        // 閉包の本体: 取り込んだ場所 (引数でない名前) へ、呼び出しごとに新しい領域の引数の借用を入れる (M1)。
+        if let Some(cl) = &self.cl {
+            let is_p = |n: &str| cl.params.iter().any(|(x, _)| x == n);
+            if is_p(qn) && !is_p(pn) {
+                self.diag("E3030", format!("stores a reference derived from closure argument `{}` (a new lifetime per call) into captured `{}`, which outlives the call", qn, pn), line);
+            }
+            return;
+        }
+        if pn == qn {
             return;
         }
         let d = &self.p.defs[self.di];
