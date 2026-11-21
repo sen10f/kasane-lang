@@ -1,6 +1,6 @@
 //! 括弧・カンマの文面の補助 (型の文面を割る)。借用検査の本体は TAST (`tast_rules/borrows.rs`・`lifetimes.rs`) に移し、旧の検査はここから消した。
 
-use super::*;
+
 
 /// `s[open]` の括弧 (`(`・`[`・`<`) に対応する閉じ括弧の位置。`->` の `>` は数えない。
 pub(crate) fn match_close(s: &str, open: usize) -> Option<usize> {
