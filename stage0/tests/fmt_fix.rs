@@ -745,3 +745,52 @@ fn oneway_then_some_inside_a_larger_expression_becomes_if_expression() {
     let src = "fn t.a(c: bool) -> () uses [] panics never\n    core.mem.drop(c.then_some(1u32))\n    let o = Some(c.then_some(2u32))\n    core.mem.drop(o)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
     oneway_round_trip("oneway_then_some_arg", src, "E2063", "core.mem.drop(if c {");
 }
+
+#[test]
+fn oneway_bool_match_becomes_if() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    match c {\n        true => core.mem.drop(1u32)\n        false => core.mem.drop(2u32)\n    }\n    x\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_bool_match_becomes_if", src, "E2068", "if c {\n        core.mem.drop(1u32)\n    } else {\n        core.mem.drop(2u32)\n    }");
+}
+
+#[test]
+fn oneway_bool_match_blocks_become_if() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    let r = match c {\n        false => {\n            let z = 1u32\n            z\n        }\n        true => x\n    }\n    r\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_bool_match_blocks_become_if", src, "E2068", "let r = if c {\n        x\n    } else {\n        let z = 1u32\n        z\n    }");
+}
+
+#[test]
+fn oneway_option_match_none_unit_becomes_if_let() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    match o {\n        Some(v) => core.mem.drop(v)\n        None => ()\n    }\n    x\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_option_match_none_unit_becomes_if_let", src, "E2069", "if let Some(v) = o {\n        core.mem.drop(v)\n    }");
+}
+
+#[test]
+fn oneway_some_literal_comparison_becomes_is() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    core.mem.drop(o == Some(3u32))\n    core.mem.drop(o != Some(4u32))\n    x\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_some_literal_comparison_becomes_is", src, "E2071", "core.mem.drop(o is Some(3u32))");
+}
+
+#[test]
+fn oneway_counting_while_becomes_for() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    let mut i = 0u32\n    let mut acc = 0u32\n    while i < y {\n        acc = acc.wrapping_add(i)\n        i = i.wrapping_add(1u32)\n    }\n    acc\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_counting_while_becomes_for", src, "E2070", "for i in core.iter.range(0u32, y) {");
+}
+
+#[test]
+fn oneway_identity_bit_and_neg_forms_are_removed() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    let a = x.wrapping_neg().wrapping_neg()\n    let b = a | 0u32\n    let c2 = b.wrapping_add(3u32).wrapping_sub(3u32)\n    c2.max(c2)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_identity_bit_and_neg_forms_are_removed", src, "E2062", "let b = a\n");
+}
+
+#[test]
+fn oneway_identity_self_comparison_and_sub_are_constants() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    core.mem.drop(x == x)\n    core.mem.drop(x.wrapping_sub(x))\n    x\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_identity_self_comparison_and_sub_are_constants", src, "E2062", "core.mem.drop(true)");
+}
+
+#[test]
+fn oneway_counting_while_that_uses_the_counter_afterwards_is_kept() {
+    let src = "fn t.a(y: u32) -> u32 uses [] panics never\n    let mut i = 0u32\n    while i < y {\n        core.mem.drop(i)\n        i = i.wrapping_add(1u32)\n    }\n    i\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    let t = Tmp::new_raw("oneway_while_keep", src);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}

@@ -1,0 +1,10 @@
+fn t.a(c: bool) -> u32 uses [] panics never
+    match c {
+        true => 1u32
+        false => 2u32
+    }
+end t.a
+
+fn t.main() -> () uses [] panics never
+    ()
+end t.main

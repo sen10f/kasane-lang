@@ -1,0 +1,10 @@
+fn t.a(o: Option<u32>) -> () uses [] panics never
+    match o {
+        Some(v) => core.mem.drop(v)
+        None => ()
+    }
+end t.a
+
+fn t.main() -> () uses [] panics never
+    ()
+end t.main

@@ -333,7 +333,7 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             }
             vec![span(file, line, text, indent, text.len(), format!("core.mem.drop({})", expr))]
         }
-        "E2055" | "E2057" | "E2058" | "E2059" | "E2060" | "E2061" | "E2062" | "E2063" | "E2064" | "E2065" | "E2066" | "E2067" => oneway_fix(code, msg, file, line, lines),
+        "E2055" | "E2057" | "E2058" | "E2059" | "E2060" | "E2061" | "E2062" | "E2063" | "E2064" | "E2065" | "E2066" | "E2067" | "E2068" | "E2069" | "E2070" | "E2071" => oneway_fix(code, msg, file, line, lines),
         "E2042" => {
             let Some(text) = get(line) else { return vec![] };
             let indent = text.len() - text.trim_start().len();
@@ -1063,6 +1063,10 @@ fn oneway_fix(code: &str, msg: &str, file: &str, line: usize, lines: &[String]) 
             }
             vec![]
         }
+        "E2062" if msg.starts_with('[') => identity_fix(file, line, msg, text),
+        "E2068" | "E2069" => match_fix(code, file, line, lines),
+        "E2070" => while_fix(file, line, msg, lines),
+        "E2071" => some_lit_fix(file, line, msg, text),
         "E2062" => {
             let Some(name) = ["wrapping_add", "wrapping_sub", "wrapping_mul"].into_iter().find(|n| msg.contains(&format!("`.{n}(..)`"))) else { return vec![] };
             let lit = if name == "wrapping_mul" { "1" } else { "0" };
@@ -1183,4 +1187,268 @@ fn oneway_fix(code: &str, msg: &str, file: &str, line: usize, lines: &[String]) 
         }
         _ => vec![],
     }
+}
+
+
+/// 位置 `end` (バイト) の直前にある、名前と `.` だけの式の長さ。
+fn simple_back(text: &str, end: usize) -> usize {
+    text[..end].chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').map(char::len_utf8).sum()
+}
+
+/// E2062 の `[タグ]` ごとの書き換え。行の中で形が 1 か所に決まるときだけ直す。
+fn identity_fix(file: &str, line: usize, msg: &str, text: &str) -> Vec<Fix> {
+    let tag = msg[1..].split(']').next().unwrap_or("");
+    let lit_ok = |s: &str| !s.is_empty() && s.chars().next().unwrap().is_ascii_digit() && s.chars().all(|c| c.is_alphanumeric() || c == '_');
+    let once = |pat: &str| (text.matches(pat).count() == 1).then(|| text.find(pat).unwrap());
+    match tag {
+        "neg2" => {
+            let pat = ".wrapping_neg().wrapping_neg()";
+            once(pat).map_or(vec![], |at| vec![span(file, line, text, at, at + pat.len(), String::new())])
+        }
+        "addsub" => {
+            for (a, b) in [(".wrapping_add(", ".wrapping_sub("), (".wrapping_sub(", ".wrapping_add(")] {
+                let Some(at) = once(a) else { continue };
+                let rest = &text[at + a.len()..];
+                let Some(c) = rest.find(')') else { continue };
+                let lit = &rest[..c];
+                let tail = format!("){b}{lit})");
+                if lit_ok(lit) && rest[c..].starts_with(&tail) {
+                    return vec![span(file, line, text, at, at + a.len() + c + tail.len(), String::new())];
+                }
+            }
+            vec![]
+        }
+        "call0" => {
+            for m in [".wrapping_shl(", ".wrapping_shr(", ".shl(", ".shr("] {
+                if text.matches(m).count() == 1 {
+                    let at = text.find(m).unwrap();
+                    let rest = &text[at + m.len()..];
+                    if let Some(c) = rest.find(')') {
+                        let lit = &rest[..c];
+                        if lit.starts_with('0') && lit_ok(lit) && lit.trim_start_matches('0').chars().next().map_or(true, |ch| ch.is_alphabetic()) {
+                            return vec![span(file, line, text, at, at + m.len() + c + 1, String::new())];
+                        }
+                    }
+                }
+            }
+            vec![]
+        }
+        "maxmin" => {
+            for m in [".max(", ".min("] {
+                let Some(at) = once(m) else { continue };
+                let n = simple_back(text, at);
+                let rest = &text[at + m.len()..];
+                let Some(c) = rest.find(')') else { continue };
+                if n > 0 && rest[..c] == text[at - n..at] {
+                    return vec![span(file, line, text, at, at + m.len() + c + 1, String::new())];
+                }
+            }
+            vec![]
+        }
+        "bit0" | "ones" => {
+            let ops: &[&str] = if tag == "ones" { &["&"] } else { &["|", "^"] };
+            for op in ops {
+                let pat = format!(" {op} ");
+                if text.matches(&pat).count() != 1 {
+                    continue;
+                }
+                let at = text.find(&pat).unwrap();
+                let (n, rest) = (simple_back(text, at), &text[at + pat.len()..]);
+                let rl = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').map(char::len_utf8).sum::<usize>();
+                let lit = &rest[..rl];
+                let ok_lit = |l: &str| lit_ok(l) && (tag == "ones" || l.starts_with('0') && l.trim_start_matches('0').chars().next().map_or(true, |ch| ch.is_alphabetic()));
+                // 右がリテラル: `x | 0u32` の ` | 0u32` を消す。左がリテラル: `0u32 | x` の `0u32 | ` を消す。
+                if n > 0 && ok_lit(lit) && !text[at - n..at].chars().next().unwrap().is_ascii_digit() {
+                    return vec![span(file, line, text, at, at + pat.len() + rl, String::new())];
+                }
+                let ll = &text[at - n..at];
+                if n > 0 && ok_lit(ll) && rl > 0 && !rest.starts_with(|c: char| c.is_ascii_digit()) {
+                    return vec![span(file, line, text, at - n, at + pat.len(), String::new())];
+                }
+            }
+            vec![]
+        }
+        "same==" | "same!=" => {
+            let op = if tag == "same==" { " == " } else { " != " };
+            let Some(at) = once(op) else { return vec![] };
+            let n = simple_back(text, at);
+            let rest = &text[at + op.len()..];
+            let rl = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').map(char::len_utf8).sum::<usize>();
+            if n > 0 && rl == n && text[at - n..at] == rest[..rl] {
+                return vec![span(file, line, text, at - n, at + op.len() + rl, if tag == "same==" { "true" } else { "false" }.into())];
+            }
+            vec![]
+        }
+        t if t.starts_with("subself:") => {
+            let ty = &t["subself:".len()..];
+            let pat = ".wrapping_sub(";
+            let Some(at) = once(pat) else { return vec![] };
+            let n = simple_back(text, at);
+            let rest = &text[at + pat.len()..];
+            let Some(c) = rest.find(')') else { return vec![] };
+            if n > 0 && rest[..c] == text[at - n..at] && matches!(ty, "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize") {
+                return vec![span(file, line, text, at - n, at + pat.len() + c + 1, format!("0{ty}"))];
+            }
+            vec![]
+        }
+        _ => vec![],
+    }
+}
+
+/// `x == Some(リテラル)` → `x is Some(リテラル)`、`!=` → `!(x is Some(リテラル))`。
+fn some_lit_fix(file: &str, line: usize, msg: &str, text: &str) -> Vec<Fix> {
+    let (op, neg) = if msg.contains("`x == Some") { (" == Some(", false) } else { (" != Some(", true) };
+    if text.matches(op).count() != 1 {
+        return vec![];
+    }
+    let at = text.find(op).unwrap();
+    let n = simple_back(text, at);
+    let rest = &text[at + op.len()..];
+    let Some(c) = rest.find(')') else { return vec![] };
+    let lit = &rest[..c];
+    let end = at + op.len() + c + 1;
+    let after = text[end..].trim_start();
+    if n == 0 || !lit.chars().all(|ch| ch.is_alphanumeric() || ch == '_') || !(after.is_empty() || after.starts_with([')', '{', ',', '&', '|'])) {
+        return vec![];
+    }
+    let before = text[..at - n].trim_end();
+    if neg && !(before.is_empty() || before.ends_with(['(', ',', '=', '&', '|', '!']) || before.ends_with("if") || before.ends_with("return")) {
+        return vec![];
+    }
+    let recv = &text[at - n..at];
+    let rep = if neg { format!("!({recv} is Some({lit}))") } else { format!("{recv} is Some({lit})") };
+    vec![span(file, line, text, at - n, end, rep)]
+}
+
+struct MatchText {
+    indent: String,
+    prefix: String,
+    scrut: String,
+    arms: Vec<(String, Vec<String>)>,
+    end_line: usize,
+}
+
+/// `match X {` から閉じの `}` までの腕を行で読む (腕の本体は字下げを 4 減らした行にする)。
+fn parse_match(line: usize, lines: &[String]) -> Option<MatchText> {
+    let first = lines.get(line.checked_sub(1)?)?;
+    let indent: String = first.chars().take_while(|c| *c == ' ').collect();
+    let body = &first[indent.len()..];
+    let at = body.find("match ")?;
+    let prefix = &body[..at];
+    if !(prefix.is_empty() || prefix.starts_with("let ") && prefix.ends_with(" = ") && !prefix[4..prefix.len() - 3].contains(' ')) {
+        return None;
+    }
+    let scrut = body[at + 6..].strip_suffix(" {")?.to_string();
+    let arm_ind = format!("{indent}    ");
+    let mut arms: Vec<(String, Vec<String>, bool)> = vec![];
+    let mut i = line; // `lines[i]` は次の行
+    loop {
+        let l = lines.get(i)?;
+        i += 1;
+        if *l == format!("{indent}}}") {
+            break;
+        }
+        let is_arm_start = l.starts_with(&arm_ind) && !l[arm_ind.len()..].starts_with(' ') && !l[arm_ind.len()..].starts_with('}') && l.contains(" => ");
+        if is_arm_start {
+            let t = &l[arm_ind.len()..];
+            let (head, rest) = t.split_once(" => ")?;
+            if rest == "{" {
+                arms.push((head.to_string(), vec![], true));
+            } else {
+                arms.push((head.to_string(), vec![format!("{arm_ind}{rest}")], false));
+            }
+        } else {
+            let a = arms.last_mut()?;
+            let ded = l.strip_prefix("    ")?;
+            a.1.push(ded.to_string());
+        }
+    }
+    let arms: Vec<(String, Vec<String>)> = arms
+        .into_iter()
+        .map(|(h, mut b, block)| {
+            if block {
+                // 最後の行は腕を閉じる `}` (字下げは腕と同じ → 4 減らして `indent}`)。
+                if b.last().map(|x| x.as_str()) == Some(&format!("{indent}}}")) {
+                    b.pop();
+                    Some((h, b))
+                } else {
+                    None
+                }
+            } else {
+                Some((h, b))
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(MatchText { indent, prefix: prefix.to_string(), scrut, arms, end_line: i })
+}
+
+fn match_fix(code: &str, file: &str, line: usize, lines: &[String]) -> Vec<Fix> {
+    let Some(m) = parse_match(line, lines) else { return vec![] };
+    if m.arms.len() != 2 {
+        return vec![];
+    }
+    let ind = &m.indent;
+    let join = |b: &Vec<String>| b.iter().map(|x| format!("{x}\n")).collect::<String>();
+    let rep = if code == "E2068" {
+        let (t, f) = match (m.arms[0].0.as_str(), m.arms[1].0.as_str()) {
+            ("true", "false") => (&m.arms[0].1, &m.arms[1].1),
+            ("false", "true") => (&m.arms[1].1, &m.arms[0].1),
+            _ => return vec![],
+        };
+        if t.is_empty() || f.is_empty() {
+            return vec![];
+        }
+        format!("{ind}{}if {} {{\n{}{ind}}} else {{\n{}{ind}}}", m.prefix, m.scrut, join(t), join(f))
+    } else {
+        if !m.prefix.is_empty() {
+            return vec![];
+        }
+        let (some, none) = match (&m.arms[0], &m.arms[1]) {
+            (a, b) if a.0.starts_with("Some(") && b.0 == "None" => (a, b),
+            (a, b) if b.0.starts_with("Some(") && a.0 == "None" => (b, a),
+            _ => return vec![],
+        };
+        let unit = none.1.is_empty() || none.1.iter().all(|x| x.trim() == "()");
+        if !unit || some.1.is_empty() {
+            return vec![];
+        }
+        format!("{ind}if let {} = {} {{\n{}{ind}}}", some.0, m.scrut, join(&some.1))
+    };
+    let last = &lines[m.end_line - 1];
+    vec![Fix { file: file.to_string(), line, col: 1, end_line: m.end_line, end_col: last.chars().count() + 1, replace: rep }]
+}
+
+/// 数え上げの `while` → `for`。`let mut i = A` の行は、直前ならまとめて、離れていれば (初期値がリテラル) 消す。
+fn while_fix(file: &str, line: usize, msg: &str, lines: &[String]) -> Vec<Fix> {
+    let Some(let_line) = msg.rsplit("at line ").next().and_then(|r| r.trim_end_matches(')').parse::<usize>().ok()) else { return vec![] };
+    let (Some(wl), Some(ll)) = (lines.get(line.wrapping_sub(1)), lines.get(let_line.wrapping_sub(1))) else { return vec![] };
+    let indent: String = wl.chars().take_while(|c| *c == ' ').collect();
+    let Some(wt) = wl.strip_prefix(&format!("{indent}while ")).and_then(|r| r.strip_suffix(" {")) else { return vec![] };
+    let Some((i, b)) = wt.split_once(" < ") else { return vec![] };
+    let Some(a) = ll.strip_prefix(&format!("{indent}let mut {i} = ")) else { return vec![] };
+    // 本体: 次の `indent}` まで。最後の文は増分。
+    let mut end = line;
+    let mut body = vec![];
+    loop {
+        let Some(l) = lines.get(end) else { return vec![] };
+        end += 1;
+        if *l == format!("{indent}}}") {
+            break;
+        }
+        body.push(l.clone());
+    }
+    let step_pre = format!("{indent}    {i} = {i}.wrapping_add(1");
+    let Some(last) = body.pop() else { return vec![] };
+    if !last.starts_with(&step_pre) || !last.ends_with(')') || last[step_pre.len()..last.len() - 1].chars().any(|c| !c.is_alphanumeric()) || body.is_empty() {
+        return vec![];
+    }
+    let rep = format!("{indent}for {i} in core.iter.range({a}, {b}) {{\n{}{indent}}}", body.iter().map(|x| format!("{x}\n")).collect::<String>());
+    let endl = &lines[end - 1];
+    if let_line + 1 == line {
+        return vec![Fix { file: file.to_string(), line: let_line, col: 1, end_line: end, end_col: endl.chars().count() + 1, replace: rep }];
+    }
+    vec![
+        Fix { file: file.to_string(), line: let_line, col: 1, end_line: let_line + 1, end_col: 1, replace: String::new() },
+        Fix { file: file.to_string(), line, col: 1, end_line: end, end_col: endl.chars().count() + 1, replace: rep },
+    ]
 }

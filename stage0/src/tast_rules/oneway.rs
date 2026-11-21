@@ -85,6 +85,267 @@ fn flip(op: &str) -> &'static str {
     }
 }
 
+
+/// メソッド形の呼び出しの分解: 受け手 (名前の経路 `x.f` か、式)・メソッド名・引数。`x.m(..)` は経路 `x.m` を呼ぶ `Call`、
+/// 式の受け手 (`a.m().n()`) は `MCall` で表される。
+enum Recv<'a> {
+    Key(String),
+    Inner(&'a TExpr),
+}
+
+fn parts<'a>(e: &'a TExpr) -> Option<(Recv<'a>, &'a str, &'a [TExpr])> {
+    match &e.kind {
+        TKind::MCall { recv, name, args } => Some((Recv::Inner(recv), name.as_str(), args.as_slice())),
+        TKind::Call { callee, args } => {
+            let TKind::Path(p) = &callee.kind else { return None };
+            if p.len() < 2 || matches!(p[0].as_str(), "core" | "std" | "alloc") || is_int128(&Ty::Prim(p[0].clone())) {
+                return None;
+            }
+            if !matches!(callee.ty.strip(), Ty::Prim(_)) {
+                return None;
+            }
+            Some((Recv::Key(p[..p.len() - 1].join(".")), p[p.len() - 1].as_str(), args.as_slice()))
+        }
+        _ => None,
+    }
+}
+
+fn recv_key(r: &Recv) -> Option<String> {
+    match r {
+        Recv::Key(k) => Some(k.clone()),
+        Recv::Inner(x) => path_key(x),
+    }
+}
+
+fn path_key(e: &TExpr) -> Option<String> {
+    match &e.kind {
+        TKind::Path(p) if !p.is_empty() && p[0] != "None" => Some(p.join(".")),
+        _ => None,
+    }
+}
+
+fn lit_text(e: &TExpr) -> Option<&str> {
+    match &e.kind {
+        TKind::Lit(s) if s.starts_with("int:") => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+fn all_ones(t: &Ty, v: u128) -> bool {
+    match t.strip() {
+        Ty::Prim(n) => match n.as_str() {
+            "u8" => v == u8::MAX as u128,
+            "u16" => v == u16::MAX as u128,
+            "u32" => v == u32::MAX as u128,
+            "u64" => v == u64::MAX as u128,
+            "u128" => v == u128::MAX,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// 何も変えない・定数になる整数の式 (E2062)。メッセージの先頭の `[タグ]` が `ksn fix` の書き換えの種類。
+fn identity(e: &TExpr) -> Option<String> {
+    if !is_int128(&e.ty) && !matches!(&e.kind, TKind::Binary { .. }) {
+        return None;
+    }
+    if let TKind::Binary { op, lhs, rhs } = &e.kind {
+        let int = is_int128(&lhs.ty) && is_int128(&rhs.ty);
+        if !int {
+            return None;
+        }
+        let zero = |x: &TExpr| int_lit(x) == Some(0);
+        match op.as_str() {
+            "|" | "^" if zero(rhs) || zero(lhs) => return Some(format!("[bit0] `x {op} 0` changes nothing: write `x`")),
+            "&" if int_lit(rhs).map_or(false, |v| all_ones(&lhs.ty, v)) || int_lit(lhs).map_or(false, |v| all_ones(&rhs.ty, v)) => {
+                return Some("[ones] `x & <all ones>` changes nothing: write `x`".into())
+            }
+            "==" | "!=" => {
+                if let (Some(a), Some(b)) = (path_key(lhs), path_key(rhs)) {
+                    if a == b {
+                        return Some(format!("[same{op}] `x {op} x` on an integer is a constant: write `{}`", if op == "==" { "true" } else { "false" }));
+                    }
+                }
+            }
+            _ => {}
+        }
+        return None;
+    }
+    let (recv, name, args) = parts(e)?;
+    match (name, args.len()) {
+        ("wrapping_shl" | "wrapping_shr" | "shl" | "shr", 1) if int_lit(&args[0]) == Some(0) => Some(format!("[call0] `.{name}(0)` changes nothing: remove the call")),
+        ("wrapping_neg", 0) => {
+            if let Recv::Inner(i) = &recv {
+                if let Some((_, "wrapping_neg", a)) = parts(i) {
+                    if a.is_empty() {
+                        return Some("[neg2] `.wrapping_neg().wrapping_neg()` changes nothing: remove both calls".into());
+                    }
+                }
+            }
+            None
+        }
+        ("wrapping_sub" | "wrapping_add", 1) => {
+            if let (Recv::Inner(i), Some(c)) = (&recv, lit_text(&args[0])) {
+                if let Some((_, other, a)) = parts(i) {
+                    if a.len() == 1 && lit_text(&a[0]) == Some(c) && ((name == "wrapping_sub" && other == "wrapping_add") || (name == "wrapping_add" && other == "wrapping_sub")) {
+                        return Some("[addsub] `.wrapping_add(c).wrapping_sub(c)` changes nothing: remove both calls".into());
+                    }
+                }
+            }
+            if name == "wrapping_sub" {
+                if let (Some(k), Some(a)) = (recv_key(&recv), path_key(&args[0])) {
+                    if k == a {
+                        return Some(format!("[subself:{}] `x.wrapping_sub(x)` is `0`: write the literal", e.ty.show()));
+                    }
+                }
+            }
+            None
+        }
+        ("max" | "min", 1) => {
+            let (k, a) = (recv_key(&recv)?, path_key(&args[0])?);
+            (k == a).then(|| format!("[maxmin] `x.{name}(x)` is `x`"))
+        }
+        _ => None,
+    }
+}
+
+fn is_option(t: &Ty) -> bool {
+    matches!(t.strip(), Ty::Named(n, _, _) if n == "Option" || n == "core.option.Option")
+}
+
+/// `i < b` の `i` の名前 (`while` の条件)。
+fn cond_names(c: &TExpr) -> Option<String> {
+    match &c.kind {
+        TKind::Binary { op, lhs, .. } if op == "<" => match &lhs.kind {
+            TKind::Path(p) if p.len() == 1 => Some(p[0].clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn root_name(e: &TExpr) -> Option<&str> {
+    match &e.kind {
+        TKind::Path(p) => p.first().map(String::as_str),
+        TKind::Field { base, .. } | TKind::Index { base, .. } => root_name(base),
+        TKind::Unary { operand, .. } => root_name(operand),
+        _ => None,
+    }
+}
+
+/// `e` の中に、`name` を書き換える (代入・`&mut`) 所か `continue` があるか。
+fn writes_or_continues(e: &TExpr, name: &str, continues: bool) -> bool {
+    let mut hit = false;
+    super::impl_sig::walk(e, &mut |x| match &x.kind {
+        TKind::Block(ss) => {
+            for st in ss {
+                if let TStmt::Assign { place, .. } = st {
+                    if root_name(place) == Some(name) {
+                        hit = true;
+                    }
+                }
+            }
+        }
+        TKind::Unary { op, operand } if op == "&mut" && root_name(operand) == Some(name) => hit = true,
+        TKind::Other { name: "Continue", .. } if continues => hit = true,
+        _ => {}
+    });
+    hit
+}
+
+fn mentions_var(e: &TExpr, name: &str) -> bool {
+    let mut hit = false;
+    super::impl_sig::walk(e, &mut |x| {
+        if let TKind::Path(p) = &x.kind {
+            if p.first().map(String::as_str) == Some(name) {
+                hit = true;
+            }
+        }
+    });
+    hit
+}
+
+fn stmt_mentions(s: &TStmt, name: &str) -> bool {
+    match s {
+        TStmt::Let { init, .. } => init.as_ref().map_or(false, |x| mentions_var(x, name)),
+        TStmt::Expr(x) => mentions_var(x, name),
+        TStmt::Assign { place, value } => mentions_var(place, name) || mentions_var(value, name),
+    }
+}
+
+/// 複数行の書き換えが要る形 (E2068 bool の `match`・E2069 1 腕の `match`・E2070 数え上げの `while`・E2071 `== Some(リテラル)`)。
+fn shapes(_p: &Program, e: &TExpr, found: &mut Vec<(usize, &'static str, String)>) {
+    match &e.kind {
+        TKind::Match { scrut, arms } if arms.len() == 2 => {
+            if matches!(scrut.ty.strip(), Ty::Prim(n) if n == "bool") && arms.iter().all(|a| a.pat.kind == "PLit" && a.guard.is_none()) {
+                found.push((e.line, "E2068", "`match` on a `bool` is `if` / `else`".into()));
+            }
+            if is_option(&scrut.ty) {
+                let some = arms.iter().find(|a| a.pat.kind == "PVariant" && a.pat.path.last().map(String::as_str) == Some("Some"));
+                let none = arms.iter().find(|a| a.pat.kind == "PPath" && a.pat.path.last().map(String::as_str) == Some("None"));
+                if let (Some(sm), Some(nn)) = (some, none) {
+                    let unit_none = matches!(&nn.body.kind, TKind::Lit(l) if l == "unit") || matches!(&nn.body.kind, TKind::Block(b) if b.is_empty());
+                    if unit_none && nn.guard.is_none() && sm.guard.is_none() && matches!(sm.body.ty.strip(), Ty::Unit) {
+                        found.push((e.line, "E2069", "a `match` on an `Option` whose `None` arm is `()` is `if let Some(..) = x`".into()));
+                    }
+                }
+            }
+        }
+        TKind::Binary { op, lhs, rhs } if op == "==" || op == "!=" => {
+            if let TKind::Call { callee, args } = &rhs.kind {
+                if path_is(callee, &["Some"]) && args.len() == 1 && matches!(&args[0].kind, TKind::Lit(l) if l.starts_with("int:") || l.starts_with("bool")) && is_option(&lhs.ty) {
+                    found.push((e.line, "E2071", format!("`x {op} Some(lit)` is `x is Some(lit)`")));
+                }
+            }
+        }
+        TKind::Block(ss) => {
+            for k in 1..ss.len() {
+                let TStmt::Expr(w) = &ss[k] else { continue };
+                let TKind::Other { name: "While", children } = &w.kind else { continue };
+                let (Some(cond), Some(body)) = (children.first(), children.get(1)) else { continue };
+                let Some(j) = (0..k).rev().find(|&j| matches!(&ss[j], TStmt::Let { pat, .. } if pat.name.is_some() && pat.kind == "PBind" && matches!(&ss[k - 1], _) && cond_names(cond).as_deref() == pat.name.as_deref())) else { continue };
+                let TStmt::Let { pat, init: Some(init) } = &ss[j] else { continue };
+                // 間の文が `i` に触れない。`let` を `for` の所へ動かすので、離れているときは初期値がリテラルのときだけ。
+                if ss[j + 1..k].iter().any(|s| stmt_mentions(s, pat.name.as_deref().unwrap_or(""))) || (j + 1 < k && !matches!(&init.kind, TKind::Lit(_))) {
+                    continue;
+                }
+                if pat.kind != "PBind" || pat.lit.iter().any(|l| l == "ann") {
+                    continue;
+                }
+                let Some(i) = pat.name.as_deref() else { continue };
+                let TKind::Binary { op, lhs, rhs } = &cond.kind else { continue };
+                if op != "<" || !path_is(lhs, &[i]) || !is_int128(&lhs.ty) || !is_int128(&rhs.ty) || init.ty.show() != lhs.ty.show() {
+                    continue;
+                }
+                let bname = match &rhs.kind {
+                    TKind::Lit(l) if l.starts_with("int:") => None,
+                    TKind::Path(pth) if pth.len() == 1 => Some(pth[0].as_str()),
+                    _ => continue,
+                };
+                let TKind::Block(bs) = &body.kind else { continue };
+                if bs.len() < 2 {
+                    continue;
+                }
+                let Some(TStmt::Assign { place, value }) = bs.last() else { continue };
+                let step = matches!(&value.kind, TKind::Call { callee, args } if matches!(&callee.kind, TKind::Path(q) if q.len() == 2 && q[0] == i && q[1] == "wrapping_add") && args.len() == 1 && int_lit(&args[0]) == Some(1));
+                if !path_is(place, &[i]) || !step {
+                    continue;
+                }
+                let inner = TExpr { kind: TKind::Block(bs[..bs.len() - 1].to_vec()), ..body.clone() };
+                if writes_or_continues(&inner, i, true) || bname.map_or(false, |b| writes_or_continues(&inner, b, false)) {
+                    continue;
+                }
+                if ss[k + 1..].iter().any(|s| stmt_mentions(s, i)) {
+                    continue;
+                }
+                found.push((w.line, "E2070", format!("a counting `while` over `{i}` is `for {i} in core.iter.range(a, b)` (the `let mut {i}` is at line {})", pat.line)));
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
     let mut out: Vec<Diag> = vec![];
     for &di in user {
@@ -94,7 +355,12 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
         }
         let Some(b) = tast.bodies.get(&di) else { continue };
         let mut found: Vec<(usize, &'static str, String)> = vec![];
-        super::impl_sig::walk(&b.body, &mut |e| match &e.kind {
+        super::impl_sig::walk(&b.body, &mut |e| {
+            if let Some(m) = identity(e) {
+                found.push((e.line, "E2062", m));
+            }
+            shapes(p, e, &mut found);
+            match &e.kind {
             TKind::MCall { recv, name, args } => {
                 if args.is_empty() && matches!(name.as_str(), "is_some" | "is_none" | "is_ok" | "is_err") && is_named(&recv.ty, &["core.option.Option", "core.result.Result"]) {
                     found.push((e.line, "E2055", format!("`.{name}()` is not the canonical form: write `x is Some(_)` (or `if let` when the value is used)")));
@@ -231,6 +497,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                 }
             }
             _ => {}
+            }
         });
         found.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
         found.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
