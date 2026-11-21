@@ -44,11 +44,31 @@ pub fn canon_int(text: &str) -> String {
         None => ("", text),
     };
     let (body, suf) = split_suffix(rest, INT_SUFFIXES, true);
-    for p in ["0x", "0b", "0o"] {
+    // 整数のリテラルは 10 進だけ (設計_書き方は1通り.md 12 章): 0x / 0b / 0o は 10 進へ直す。
+    for (p, base) in [("0x", 16u32), ("0b", 2), ("0o", 8)] {
         if let Some(d) = body.strip_prefix(p) {
-            let t = d.trim_start_matches(|c| c == '0' || c == '_');
+            let digits: String = d.chars().filter(|c| *c != '_').collect();
+            if digits.is_empty() || !digits.chars().all(|c| c.is_digit(base)) {
+                return text.to_string();
+            }
+            // 10 進の桁の列 (下の位が先頭) へ、桁を 1 つずつ掛けて足す。桁数に上限は無い。
+            let mut dec: Vec<u32> = vec![0];
+            for c in digits.chars() {
+                let mut carry = c.to_digit(base).unwrap_or(0);
+                for x in dec.iter_mut() {
+                    let v = *x * base + carry;
+                    *x = v % 10;
+                    carry = v / 10;
+                }
+                while carry > 0 {
+                    dec.push(carry % 10);
+                    carry /= 10;
+                }
+            }
+            let s: String = dec.iter().rev().map(|x| char::from_digit(*x, 10).unwrap_or('0')).collect();
+            let t = s.trim_start_matches('0');
             let t = if t.is_empty() { "0" } else { t };
-            return format!("{}{}{}{}", sign, p, t, suf);
+            return format!("{}{}{}", sign, group3(t), suf);
         }
     }
     let digits: String = body.chars().filter(|c| *c != '_').collect();
