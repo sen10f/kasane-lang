@@ -1888,14 +1888,14 @@ fn the_orphan_rule_allows_impls_with_a_local_side() {
 
 #[test]
 fn trait_side_impls_work_for_foreign_types_in_run_and_llvm_build() {
-    // 3.2: トレイトを定義したモジュール以外 (ここでは別モジュール) の型 (`alloc.string.String` / ユーザー型 / 基本型) への
-    // impl のメソッドは `<トレイトFQN>.<型FQN>.<名前>` に置け、メソッド探索 (3) で見つかる。
+    // 3.2: 部外の型 (`alloc.string.String` / 基本型) への、自分のトレイトの impl は、トレイトを定義したモジュールに置き、
+    // メソッドは `<トレイトFQN>.<型FQN>.<名前>` になる。メソッド探索 (3) で見つかる。自分の型への impl は型のモジュールに置く。
     let t = tmp_files("trait_side", &[("t.ksnl", TRAIT_SIDE_MAIN), ("t/tr.ksnl", TRAIT_SIDE_TR), ("t/ty.ksnl", TRAIT_SIDE_TY)]);
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(codes(&out).is_empty(), "{}", out);
     let r = run(&["run"], &t.0);
     assert_eq!(text(&r.stdout), "ok\n", "{}", text(&r.stderr));
-    let g = run(&["get", "t.tr.Show.t.ty.P.show"], &t.0);
+    let g = run(&["get", "t.ty.P.show"], &t.0);
     assert!(text(&g.stdout).contains("impls t.tr.Show"), "{}", text(&g.stdout));
     if let Some((r, n)) = llvm_build_and_run(&t) {
         same_output(&r, &n);
@@ -1904,11 +1904,9 @@ fn trait_side_impls_work_for_foreign_types_in_run_and_llvm_build() {
 
 #[test]
 fn an_impl_placed_on_both_the_type_side_and_the_trait_side_is_a_duplicate() {
-    let ty = format!(
-        "{}\nimpl t.tr.Show for t.ty.P\nfn t.ty.P.show(self: &t.ty.P) -> u32 uses [] panics never impls t.tr.Show\n    1u32\nend t.ty.P.show\n",
-        TRAIT_SIDE_TY
-    );
-    let t = tmp_files("trait_side_dup", &[("t.ksnl", TRAIT_SIDE_MAIN), ("t/tr.ksnl", TRAIT_SIDE_TR), ("t/ty.ksnl", &ty)]);
+    // 型側 (t/ty.ksnl) と、トレイト側 (t/tr.ksnl に追加) の両方に同じ (トレイト, 型) の impl を置く。
+    let tr = format!("{}\n{}", TRAIT_SIDE_TR, TRAIT_SIDE_P_DUP);
+    let t = tmp_files("trait_side_dup", &[("t.ksnl", TRAIT_SIDE_MAIN), ("t/tr.ksnl", &tr), ("t/ty.ksnl", TRAIT_SIDE_TY)]);
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(codes(&out).iter().any(|c| c == "E1114"), "{}", out);
 }

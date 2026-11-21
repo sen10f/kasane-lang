@@ -40,20 +40,9 @@ fn prim_owner(name: &str) -> String {
     }
 }
 
-/// 孤児規則の違反 (E2043 は旧い検査が出す。違反の impl は過不足を見ない)。
+/// 孤児規則・置き場所の違反 (E2043 は旧い検査が出す。違反の impl は過不足を見ない)。規則は `check::orphan_violation`。
 fn orphan(p: &Program, user: &[usize], d: &Def, tb: &str, tgt: &str) -> bool {
-    let Some(&ti) = p.types.get(tb) else { return false };
-    if p.defs[ti].kw != "trait" || user.contains(&ti) || d.gnames().contains(tgt) {
-        return false;
-    }
-    match tag(&d.impl_for).as_str() {
-        "prim" => true,
-        "named" => match p.types.get(tgt) {
-            Some(&j) => !(user.contains(&j) && matches!(p.defs[j].kw.as_str(), "type" | "enum")),
-            None => false,
-        },
-        _ => false,
-    }
+    crate::check::orphan_violation(p, d, tb, tgt).is_some()
 }
 
 pub fn check(p: &Program, user: &[usize], tast: &Tast, side: &SideTabs) -> Vec<Diag> {
