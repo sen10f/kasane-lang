@@ -8,13 +8,13 @@ fn t.main() -> () uses [alloc, io.console] panics may
                 let cur: u32 = *n
                 let nn = cur.wrapping_add(1u32)
                 match m.insert(w, nn) {
-                    Ok(_r) => {
+                    Ok(_) => {
                     }
                     Err(_e) => core.panic.panic("insert")
                 }
             }
             None => match m.insert(w, 1u32) {
-                Ok(_r) => {
+                Ok(_) => {
                 }
                 Err(_e) => core.panic.panic("insert")
             }

@@ -111,7 +111,7 @@ fn emit.agg.parse_line(g: &mut emit.G, line: &str) -> () uses [alloc, io.console
     }
     let a = emit.agg.Agg { size: size, is_enum: is_enum, fstart: fstart, fcount: fcount }
     match g.tab.aggs.push(a) {
-        Ok(_u) => core.mem.drop(0u8)
+        Ok(_) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.agg.parse_line
@@ -131,11 +131,11 @@ fn emit.agg.push_field(g: &mut emit.G, tok: &str, _variant: bool) -> () uses [al
     }
     let tid = emit.ty.parse(g, ty_text)
     match g.tab.foffs.push(off) {
-        Ok(_u) => core.mem.drop(0u8)
+        Ok(_) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
     match g.tab.ftys.push(tid) {
-        Ok(_u) => core.mem.drop(0u8)
+        Ok(_) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.agg.push_field
@@ -143,7 +143,7 @@ end emit.agg.push_field
 fn emit.agg.push_var(g: &mut emit.G, agg: usize, variant: usize, start: usize, count: usize) -> () uses [alloc] panics may pub
     let v = emit.agg.Var { agg: agg, variant: variant, start: start, count: count }
     match g.tab.vars.push(v) {
-        Ok(_u) => core.mem.drop(0u8)
+        Ok(_) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.agg.push_var

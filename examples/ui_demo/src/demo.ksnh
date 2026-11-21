@@ -66,8 +66,8 @@ fn demo.bytes(s: &str) -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panic
             None => 0u8
         }
         match out.push(v) {
-            Ok(_u) => ()
-            Err(_e) => ()
+            Ok(_) => ()
+            Err(_) => ()
         }
         i = i.wrapping_add(1usize)
     }
@@ -85,8 +85,8 @@ fn demo.clone_bytes(bytes: &alloc.vec.Vec<u8, std.alloc.System>) -> alloc.vec.Ve
             None => 0u8
         }
         match out.push(v) {
-            Ok(_u) => ()
-            Err(_e) => ()
+            Ok(_) => ()
+            Err(_) => ()
         }
         k = k.wrapping_add(1usize)
     }
@@ -129,7 +129,7 @@ fn demo.main() -> Result<(), std.io.Error> uses [alloc, env, io.console] panics 
     let gpu_ctx = render.GpuCtx.create(demo.W, demo.H)
     let dev = match gpu_ctx {
         Ok(c) => c
-        Err(_e) => {
+        Err(_) => {
             core.mem.drop(std.io.print_line("FAIL: gpu_create"))
             return Ok(())
         }
@@ -187,7 +187,7 @@ end demo.parse_usize
 // 1 つの矩形アイテムをリストへ追加する（OOM 時は panic）。
 fn demo.push_rect(list: &mut alloc.vec.Vec<ui.render.Item, std.alloc.System>, r: ui.render.RectItem) -> () uses [alloc] panics may pub
     match list.push(render.Item.Rect(r)) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
 end demo.push_rect
@@ -202,8 +202,8 @@ fn demo.push_text(app: &mut demo.App, bytes: &alloc.vec.Vec<u8, std.alloc.System
             None => 0u8
         }
         match app.text.push(v) {
-            Ok(_u) => ()
-            Err(_e) => ()
+            Ok(_) => ()
+            Err(_) => ()
         }
         k = k.wrapping_add(1usize)
     }
@@ -239,7 +239,7 @@ fn demo.render_frame(app: &demo.App, gpu_ctx: &mut ui.render.GpuCtx, path: &str)
     // リスト領域（クリップ付き）
     let clip = render.mk_clip(demo.LIST_X, demo.LIST_Y, demo.LIST_W, demo.LIST_H)
     match list.push(render.Item.ClipPush(clip)) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
     let rc = app.items.len()
@@ -258,7 +258,7 @@ fn demo.render_frame(app: &demo.App, gpu_ctx: &mut ui.render.GpuCtx, path: &str)
         row = row.wrapping_add(1usize)
     }
     match list.push(render.Item.ClipPop) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
     // カウンタ表示欄
@@ -284,45 +284,45 @@ fn demo.script() -> alloc.vec.Vec<ui.event.Event, std.alloc.System> uses [alloc]
     let mut evs = alloc.vec.Vec.new(std.alloc.SYSTEM)
     // フレーム 1: IME 合成中（"こ"）
     match evs.push(event.Event.IMEUpdate(demo.bytes("こ"))) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     // フレーム 2: IME 確定（"こんにちは"）→ text に反映
     match evs.push(event.Event.IMECommit(demo.bytes("こんにちは"))) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     // フレーム 3: テキスト入力（" テスト"）
     match evs.push(event.Event.TextInput(demo.bytes(" テスト"))) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     // フレーム 4: 追加ボタンクリック（ボタン矩形の内側）→ counter++、items へ text を追加
     match evs.push(event.Event.PointerDown(500.0f32, 58.0f32, 1u8)) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     match evs.push(event.Event.PointerUp(500.0f32, 58.0f32, 1u8)) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     // フレーム 5: ホイール下方スクロール
     match evs.push(event.Event.Wheel(0.0f32, 0.0f32, 0.0f32, 1.0f32)) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     // フレーム 6: さらにテキスト入力＋追加
     match evs.push(event.Event.TextInput(demo.bytes(" 追加"))) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     match evs.push(event.Event.PointerDown(500.0f32, 58.0f32, 1u8)) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     match evs.push(event.Event.PointerUp(500.0f32, 58.0f32, 1u8)) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     evs
 end demo.script
@@ -353,8 +353,8 @@ fn demo.update(app: &mut demo.App, _ctx: &mut ui.event.Ctx, ev: &ui.event.Event)
         }
         event.Event.PointerDown(px, py, _) => if event.rect_contains(button_rect, *px, *py) {
             match app.items.push(demo.clone_bytes(&app.text)) {
-                Ok(_u) => ()
-                Err(_e) => ()
+                Ok(_) => ()
+                Err(_) => ()
             }
             app.counter = app.counter.wrapping_add(1u32)
             let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)

@@ -70,12 +70,12 @@ fn todo.config.read_string_field(doc: &std.json.Doc, v: std.json.Value, name: &s
     match std.json.decode_field(doc, v, name, 0usize) {
         Ok(value) => match std.json.decode_string(doc, value) {
             Ok(text) => Ok(text)
-            Err(_e) => match alloc.string.String.from_str(std.alloc.SYSTEM, fallback) {
+            Err(_) => match alloc.string.String.from_str(std.alloc.SYSTEM, fallback) {
                 Ok(s) => Ok(s)
                 Err(e) => Err(error.Error.Alloc(e))
             }
         }
-        Err(_e) => match alloc.string.String.from_str(std.alloc.SYSTEM, fallback) {
+        Err(_) => match alloc.string.String.from_str(std.alloc.SYSTEM, fallback) {
             Ok(s) => Ok(s)
             Err(e) => Err(error.Error.Alloc(e))
         }
@@ -87,9 +87,9 @@ fn todo.config.read_u64_field(doc: &std.json.Doc, v: std.json.Value, name: &str,
     match std.json.decode_field(doc, v, name, 0usize) {
         Ok(value) => match std.json.decode_u64(doc, value) {
             Ok(n) => Ok(n)
-            Err(_e) => Ok(fallback)
+            Err(_) => Ok(fallback)
         }
-        Err(_e) => Ok(fallback)
+        Err(_) => Ok(fallback)
     }
 end todo.config.read_u64_field
 
@@ -97,9 +97,9 @@ fn todo.config.read_usize_field(doc: &std.json.Doc, v: std.json.Value, name: &st
     match std.json.decode_field(doc, v, name, 0usize) {
         Ok(value) => match std.json.decode_usize(doc, value) {
             Ok(n) => Ok(n)
-            Err(_e) => Ok(fallback)
+            Err(_) => Ok(fallback)
         }
-        Err(_e) => Ok(fallback)
+        Err(_) => Ok(fallback)
     }
 end todo.config.read_usize_field
 

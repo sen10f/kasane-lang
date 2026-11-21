@@ -75,7 +75,7 @@ fn todo.router.extract_session_token(cookie_header: &str) -> Option<alloc.string
     }
     match alloc.string.String.from_str(std.alloc.SYSTEM, token_text) {
         Ok(s) => Some(s)
-        Err(_e) => None
+        Err(_) => None
     }
 end todo.router.extract_session_token
 
@@ -203,7 +203,7 @@ fn todo.router.query_param(query: &str, name: &str) -> Option<alloc.string.Strin
         }
         match alloc.string.String.from_str(std.alloc.SYSTEM, value_text) {
             Ok(s) => return Some(s)
-            Err(_e) => return None
+            Err(_) => return None
         }
     }
     None
@@ -213,7 +213,7 @@ fn todo.router.read_page(query: &str) -> usize uses [alloc] panics never
     match todo.router.query_param(query, "page") {
         Some(s) => match usize.parse(s.as_str()) {
             Ok(n) => n
-            Err(_e) => 1usize
+            Err(_) => 1usize
         }
         None => 1usize
     }
@@ -223,7 +223,7 @@ fn todo.router.read_page_size(query: &str) -> usize uses [alloc] panics never
     match todo.router.query_param(query, "page_size") {
         Some(s) => match usize.parse(s.as_str()) {
             Ok(n) => n
-            Err(_e) => store.DEFAULT_PAGE_SIZE
+            Err(_) => store.DEFAULT_PAGE_SIZE
         }
         None => store.DEFAULT_PAGE_SIZE
     }
@@ -249,7 +249,7 @@ end todo.router.register
 
 fn todo.router.remove_one(db: &mut todo.store.Store, id: i64) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs] panics never
     match db.remove(id) {
-        Ok(_u) => {
+        Ok(_) => {
             let empty = alloc.string.String.new(std.alloc.SYSTEM)
             Ok(http.json_response(204u16, empty))
         }
@@ -401,18 +401,18 @@ fn todo.router.split_query(path: &str) -> (alloc.string.String<std.alloc.System>
             }
             let base_s = match alloc.string.String.from_str(std.alloc.SYSTEM, base_text) {
                 Ok(s) => s
-                Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+                Err(_) => alloc.string.String.new(std.alloc.SYSTEM)
             }
             let query_s = match alloc.string.String.from_str(std.alloc.SYSTEM, rest) {
                 Ok(s) => s
-                Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+                Err(_) => alloc.string.String.new(std.alloc.SYSTEM)
             }
             (base_s, query_s)
         }
         None => {
             let base_s = match alloc.string.String.from_str(std.alloc.SYSTEM, path) {
                 Ok(s) => s
-                Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+                Err(_) => alloc.string.String.new(std.alloc.SYSTEM)
             }
             let query_s = alloc.string.String.new(std.alloc.SYSTEM)
             (base_s, query_s)

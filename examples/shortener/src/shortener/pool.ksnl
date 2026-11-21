@@ -10,7 +10,7 @@ fn shortener.pool.accept_all(listener: &std.net.TcpListener, jobs: &std.sync.Sen
     while count == 0usize || accepted < count {
         let stream = listener.accept()?
         match jobs.send(stream) {
-            Ok(_u) => {
+            Ok(_) => {
                 accepted = accepted.saturating_add(1usize)
             }
             Err(back) => core.mem.drop(back.value.close())
@@ -57,7 +57,7 @@ fn shortener.pool.run(left: usize, listener: &std.net.TcpListener, count: usize,
     let inner = shortener.pool.run(rest, listener, count, jobs, queue, give, take)
     match spawned {
         Ok(handle) => core.mem.drop(handle.join())
-        Err(_e) => {
+        Err(_) => {
         }
     }
     inner
@@ -86,14 +86,14 @@ fn shortener.pool.worker(first: std.sync.Receiver<std.net.TcpStream>, give: std.
     loop {
         match queue.recv() {
             Ok(stream) => match shortener.pool.serve_one(stream, &give, &take) {
-                Ok(_u) => {
+                Ok(_) => {
                     served = served.saturating_add(1u64)
                 }
-                Err(_e) => {
+                Err(_) => {
                 }
             }
-            Err(_e) => match queue.close() {
-                Ok(_u) => break
+            Err(_) => match queue.close() {
+                Ok(_) => break
                 Err(back) => {
                     queue = back
                 }

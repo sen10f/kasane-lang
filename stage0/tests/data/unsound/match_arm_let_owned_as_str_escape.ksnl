@@ -1,9 +1,6 @@
 fn t.dangling(s: &str) -> &str uses [alloc] panics never
     let x = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
-        Ok(v) => {
-            let w = v.as_str()
-            w
-        }
+        Ok(v) => v.as_str()
         Err(_e) => ""
     }
     x

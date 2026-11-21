@@ -471,7 +471,7 @@ fn types.infer.fresh_args(env: &types.env.Env, ar: &mut types.ty.Arena, item: us
     let file = types.infer.item_file(env, item)
     match env.units.as_slice().get(file) {
         Some(p2) => match env.srcs.as_slice().get(file) {
-            Some(_s2) => {
+            Some(_) => {
                 let n = parse.ast.get(&p2.ast, node)
                 let toks = types.lower.tparams(p2, n.c)?
                 for tk in toks.as_slice().iter() {

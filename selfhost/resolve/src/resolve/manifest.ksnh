@@ -44,7 +44,7 @@ fn resolve.manifest.read(dir: &str) -> Result<resolve.manifest.Pkg, resolve.Fail
     let bytes = resolve.load.read_bytes(path.as_str())?
     let text = match core.str.from_utf8(bytes.as_slice()) {
         Ok(s) => s
-        Err(_e) => return Err(resolve.Failure.Manifest)
+        Err(_) => return Err(resolve.Failure.Manifest)
     }
     let mut name = alloc.string.String.new(std.alloc.SYSTEM)
     let mut deps = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -69,7 +69,7 @@ fn resolve.manifest.read(dir: &str) -> Result<resolve.manifest.Pkg, resolve.Fail
             match line.split_once(" = ") {
                 Some((k, v)) => match v.split_once("path = ") {
                     Some((_a, rest)) => match rest.split_once("}") {
-                        Some((body, _b)) => {
+                        Some((body, _)) => {
                             let dpath = resolve.manifest.quoted(body.trim())
                             deps.push(resolve.manifest.dep(k, dpath)?)?
                         }

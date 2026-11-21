@@ -1,7 +1,7 @@
 fn t.bad() -> u32 uses [] panics never
     let mut x = 1u32
     match t.pair(&x) {
-        (a, _n) => {
+        (a, _) => {
             x = 2u32
             *a
         }

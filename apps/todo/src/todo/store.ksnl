@@ -30,7 +30,7 @@ fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &s
     }
     let id_base = match i64.try_from_usize(self.todos.len()) {
         Ok(n) => n
-        Err(_e) => return Err(error.Error.BadRequest)
+        Err(_) => return Err(error.Error.BadRequest)
     }
     let id = id_base.wrapping_add(1i64)
     let title_copy = alloc.string.String.from_str(std.alloc.SYSTEM, title)?
@@ -43,13 +43,13 @@ fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &s
     let tg = empty_tags
     let dl = match alloc.string.String.from_str(std.alloc.SYSTEM, "") {
         Ok(s) => s
-        Err(_e) => return Err(error.Error.BadRequest)
+        Err(_) => return Err(error.Error.BadRequest)
     }
     let od = owner_id
     let new_extra = model.TodoExtra { updated_at: ua, tags: tg, deadline: dl, owner_id: od }
     self.extras.push(new_extra)?
     match self.save() {
-        Ok(_u) => {
+        Ok(_) => {
             let all = self.todos.as_slice()
             match all.last() {
                 Some(t) => Ok(t)
@@ -77,7 +77,7 @@ fn todo.store.Store.add_extra(self: &mut todo.store.Store, id: i64, updated_at: 
         e.owner_id = owner_id
     }
     match self.save() {
-        Ok(_u) => {
+        Ok(_) => {
             let all = self.extras.as_slice()
             match all.get(index) {
                 Some(e) => Ok(e)
@@ -93,7 +93,7 @@ fn todo.store.Store.add_session(self: &mut todo.store.Store, token: &str, user_i
     let new_session = model.Session { token: token_copy, user_id: user_id, expires_at: expires_at }
     self.sessions.push(new_session)?
     match self.save_users() {
-        Ok(_u) => {
+        Ok(_) => {
             let all = self.sessions.as_slice()
             match all.last() {
                 Some(s) => Ok(s)
@@ -113,7 +113,7 @@ fn todo.store.Store.add_user(self: &mut todo.store.Store, username: &str, passwo
     }
     let id_base = match i64.try_from_usize(self.users.len()) {
         Ok(n) => n
-        Err(_e) => return Err(error.Error.BadRequest)
+        Err(_) => return Err(error.Error.BadRequest)
     }
     let id = id_base.wrapping_add(1i64)
     let username_copy = alloc.string.String.from_str(std.alloc.SYSTEM, username)?
@@ -128,7 +128,7 @@ fn todo.store.Store.add_user(self: &mut todo.store.Store, username: &str, passwo
     let new_user = model.User { id: ui, username: un, password_hash: ph, salt: sl, created_at: ca }
     self.users.push(new_user)?
     match self.save_users() {
-        Ok(_u) => {
+        Ok(_) => {
             let all = self.users.as_slice()
             match all.last() {
                 Some(u) => Ok(u)
@@ -183,7 +183,7 @@ fn todo.store.Store.delete_expired_sessions(self: &mut todo.store.Store, now: i6
         }
     }
     match self.save_users() {
-        Ok(_u) => Ok(removed)
+        Ok(_) => Ok(removed)
         Err(e) => Err(e)
     }
 end todo.store.Store.delete_expired_sessions
@@ -243,7 +243,7 @@ end todo.store.Store.get
 fn todo.store.Store.get_extra(self: &todo.store.Store, id: i64) -> Option<&todo.model.TodoExtra> uses [] panics never pub
     let index = match self.index_of(id) {
         Ok(n) => n
-        Err(_e) => return None
+        Err(_) => return None
     }
     self.extras.get(index)
 end todo.store.Store.get_extra
@@ -375,7 +375,7 @@ fn todo.store.Store.parse_into(self: &mut todo.store.Store, text: &str) -> Resul
                     let extras = model.decode_extra_array(&doc, std.json.decode_len(&doc, ev)?)
                     self.extras = extras?
                 }
-                Err(_e) => core.mem.drop(0u8)
+                Err(_) => core.mem.drop(0u8)
             }
         }
         Err(e) => return Err(error.Error.Json(e))
@@ -395,7 +395,7 @@ fn todo.store.Store.parse_users_into(self: &mut todo.store.Store, text: &str) ->
                     let sessions = model.decode_session_array(&doc, std.json.decode_len(&doc, sv)?)
                     self.sessions = sessions?
                 }
-                Err(_e) => core.mem.drop(0u8)
+                Err(_) => core.mem.drop(0u8)
             }
         }
         Err(e) => return Err(error.Error.Json(e))
@@ -510,7 +510,7 @@ fn todo.store.Store.set_done(self: &mut todo.store.Store, id: i64, done: bool) -
         t.done = done
     }
     match self.save() {
-        Ok(_u) => {
+        Ok(_) => {
             let all = self.todos.as_slice()
             match all.get(index) {
                 Some(t) => Ok(t)
@@ -555,7 +555,7 @@ fn todo.store.Store.toggle(self: &mut todo.store.Store, id: i64) -> Result<&todo
         t.done = !t.done
     }
     match self.save() {
-        Ok(_u) => {
+        Ok(_) => {
             let all = self.todos.as_slice()
             match all.get(index) {
                 Some(t) => Ok(t)
@@ -579,7 +579,7 @@ fn todo.store.Store.update_extra(self: &mut todo.store.Store, id: i64, updated_a
         e.owner_id = owner_id
     }
     match self.save() {
-        Ok(_u) => {
+        Ok(_) => {
             let all = self.extras.as_slice()
             match all.get(index) {
                 Some(e) => Ok(e)

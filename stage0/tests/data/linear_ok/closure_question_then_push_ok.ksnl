@@ -17,7 +17,7 @@ fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may
         Some(x) => core.check.eq(*x, 3i64)
     }
     match std.io.print_line("closure question ok") {
-        Ok(_done) => {
+        Ok(_) => {
         }
         Err(error) => return Err(t.Error.Io(error))
     }

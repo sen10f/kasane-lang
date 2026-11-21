@@ -3,12 +3,12 @@ fn t.bad() -> usize uses [alloc] panics never
     let mut x = 1u32
     let y = 2u32
     match v.push(&x) {
-        Ok(_u) => 0u32
-        Err(_e) => 1u32
+        Ok(_) => 0u32
+        Err(_) => 1u32
     }
     match v.push(&y) {
-        Ok(_u) => 0u32
-        Err(_e) => 1u32
+        Ok(_) => 0u32
+        Err(_) => 1u32
     }
     x = 3u32
     v.len()

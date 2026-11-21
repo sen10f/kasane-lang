@@ -5,7 +5,7 @@ fn std.path.extension(path: &str) -> Option<&str> uses [] panics never pub
             None
         } else {
             match name.split_at(at.wrapping_add(1usize)) {
-                Some((_head, tail)) => Some(tail)
+                Some((_, tail)) => Some(tail)
                 None => None
             }
         }
@@ -20,7 +20,7 @@ fn std.path.file_name(path: &str) -> Option<&str> uses [] panics never pub
     }
     let name = match std.path.last_byte(trimmed, b'/') {
         Some(at) => match trimmed.split_at(at.wrapping_add(1usize)) {
-            Some((_head, tail)) => tail
+            Some((_, tail)) => tail
             None => trimmed
         }
         None => trimmed
@@ -39,7 +39,7 @@ fn std.path.file_stem(path: &str) -> Option<&str> uses [] panics never pub
             Some(name)
         } else {
             match name.split_at(at) {
-                Some((head, _tail)) => Some(head)
+                Some((head, _)) => Some(head)
                 None => None
             }
         }
@@ -84,7 +84,7 @@ fn std.path.parent(path: &str) -> Option<&str> uses [] panics never pub
     }
     match std.path.last_byte(trimmed, b'/') {
         Some(at) => match trimmed.split_at(at) {
-            Some((head, _tail)) => {
+            Some((head, _)) => {
                 let up = std.path.trim_slashes(head)
                 if up.is_empty() {
                     Some("/")

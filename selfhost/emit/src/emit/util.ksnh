@@ -293,7 +293,7 @@ end emit.util.piece_count
 
 fn emit.util.push_byte(out: &mut alloc.vec.Vec<u8, std.alloc.System>, c: u8) -> () uses [alloc] panics may pub
     match out.push(c) {
-        Ok(_u) => core.mem.drop(0u8)
+        Ok(_) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.util.push_byte
@@ -335,14 +335,14 @@ end emit.util.push_i128
 // 十進の数を `out` へ追加する。
 fn emit.util.push_num(out: &mut alloc.string.String<std.alloc.System>, n: usize) -> () uses [alloc] panics may pub
     match out.push_u64(u64.from_usize(n)) {
-        Ok(_u) => core.mem.drop(0u8)
+        Ok(_) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.util.push_num
 
 fn emit.util.push_str(out: &mut alloc.string.String<std.alloc.System>, s: &str) -> () uses [alloc] panics may pub
     match out.push_str(s) {
-        Ok(_u) => core.mem.drop(0u8)
+        Ok(_) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.util.push_str
@@ -404,7 +404,7 @@ end emit.util.unquote
 
 fn emit.util.vec_push(v: &mut alloc.vec.Vec<usize, std.alloc.System>, x: usize) -> () uses [alloc] panics may pub
     match v.push(x) {
-        Ok(_u) => core.mem.drop(0u8)
+        Ok(_) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.util.vec_push
@@ -413,7 +413,7 @@ end emit.util.vec_push
 fn emit.util.vec_set(v: &mut alloc.vec.Vec<usize, std.alloc.System>, i: usize, x: usize) -> () uses [alloc] panics may pub
     while v.len() <= i {
         match v.push(0usize) {
-            Ok(_u) => core.mem.drop(0u8)
+            Ok(_) => core.mem.drop(0u8)
             Err(_e) => core.panic.panic("emit: out of memory")
         }
     }

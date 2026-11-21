@@ -4,8 +4,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
     let spawned = std.thread.spawn(
         std.alloc.SYSTEM,
         fn() -> u32 capture [move guard] {
-            let v = *guard.get()
-            v
+            *guard.get()
         },
     )
     match spawned {

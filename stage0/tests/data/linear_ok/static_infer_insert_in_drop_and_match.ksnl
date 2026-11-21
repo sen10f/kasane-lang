@@ -5,18 +5,18 @@ fn t.main() -> () uses [alloc, io.console] panics never
     let top1 = alloc.string.String.from_str(std.alloc.SYSTEM, "top page")
     match top1 {
         Ok(s1) => core.mem.drop(pages.insert("top", s1))
-        Err(_e) => {
+        Err(_) => {
         }
     }
     let top2 = alloc.string.String.from_str(std.alloc.SYSTEM, "updated top")
     match top2 {
         Ok(s2) => match pages.insert("top", s2) {
-            Ok(_old) => {
+            Ok(_) => {
             }
-            Err(_e) => {
+            Err(_) => {
             }
         }
-        Err(_e) => {
+        Err(_) => {
         }
     }
     match pages.get(&"top") {
@@ -24,7 +24,7 @@ fn t.main() -> () uses [alloc, io.console] panics never
         None => core.mem.drop(std.io.print_line(t.PAGE_NOT_FOUND))
     }
     match pages.get(&"missing") {
-        Some(_content) => {
+        Some(_) => {
         }
         None => core.mem.drop(std.io.print_line(t.PAGE_NOT_FOUND))
     }

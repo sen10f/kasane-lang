@@ -19,7 +19,7 @@ fn t.main() -> Result<(), t.Error> uses [alloc, io.console, io.fs] panics may
     core.mem.drop(buf.push(33u8)?)
     core.check.eq(buf.len(), 6usize)
     match std.io.print_line("fs read utf8 with ok") {
-        Ok(_done) => {
+        Ok(_) => {
         }
         Err(error) => return Err(t.Error.Io(error))
     }

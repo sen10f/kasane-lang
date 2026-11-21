@@ -188,11 +188,11 @@ end std.json.Value.index
 fn std.json.arr_at(doc: &std.json.Doc, at: usize) -> Option<(usize, usize)> uses [] panics never
     match doc.nodes.as_slice().get(at) {
         Some(std.json.Node.Array(first, count)) => Some((*first, *count))
-        Some(std.json.Node.Bool(_b)) => None
+        Some(std.json.Node.Bool(_)) => None
         Some(std.json.Node.Null) => None
-        Some(std.json.Node.Number(_n)) => None
-        Some(std.json.Node.Object(_a, _b)) => None
-        Some(std.json.Node.Str(_s)) => None
+        Some(std.json.Node.Number(_)) => None
+        Some(std.json.Node.Object(_, _)) => None
+        Some(std.json.Node.Str(_)) => None
         None => None
     }
 end std.json.arr_at
@@ -200,11 +200,11 @@ end std.json.arr_at
 fn std.json.bool_at(doc: &std.json.Doc, at: usize) -> Option<bool> uses [] panics never
     match doc.nodes.as_slice().get(at) {
         Some(std.json.Node.Bool(b)) => Some(*b)
-        Some(std.json.Node.Array(_a, _b)) => None
+        Some(std.json.Node.Array(_, _)) => None
         Some(std.json.Node.Null) => None
-        Some(std.json.Node.Number(_n)) => None
-        Some(std.json.Node.Object(_a, _b)) => None
-        Some(std.json.Node.Str(_s)) => None
+        Some(std.json.Node.Number(_)) => None
+        Some(std.json.Node.Object(_, _)) => None
+        Some(std.json.Node.Str(_)) => None
         None => None
     }
 end std.json.bool_at
@@ -241,7 +241,7 @@ fn std.json.decode_i16(doc: &std.json.Doc, v: std.json.Value) -> Result<i16, std
     let text = std.json.number_text(doc, v)?
     match i16.parse(text) {
         Ok(x) => Ok(x)
-        Err(_e) => Err(std.json.Error.OutOfRange)
+        Err(_) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_i16
 
@@ -249,7 +249,7 @@ fn std.json.decode_i32(doc: &std.json.Doc, v: std.json.Value) -> Result<i32, std
     let text = std.json.number_text(doc, v)?
     match i32.parse(text) {
         Ok(x) => Ok(x)
-        Err(_e) => Err(std.json.Error.OutOfRange)
+        Err(_) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_i32
 
@@ -257,7 +257,7 @@ fn std.json.decode_i64(doc: &std.json.Doc, v: std.json.Value) -> Result<i64, std
     let text = std.json.number_text(doc, v)?
     match i64.parse(text) {
         Ok(x) => Ok(x)
-        Err(_e) => Err(std.json.Error.OutOfRange)
+        Err(_) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_i64
 
@@ -265,7 +265,7 @@ fn std.json.decode_i8(doc: &std.json.Doc, v: std.json.Value) -> Result<i8, std.j
     let text = std.json.number_text(doc, v)?
     match i8.parse(text) {
         Ok(x) => Ok(x)
-        Err(_e) => Err(std.json.Error.OutOfRange)
+        Err(_) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_i8
 
@@ -273,7 +273,7 @@ fn std.json.decode_isize(doc: &std.json.Doc, v: std.json.Value) -> Result<isize,
     let text = std.json.number_text(doc, v)?
     match isize.parse(text) {
         Ok(x) => Ok(x)
-        Err(_e) => Err(std.json.Error.OutOfRange)
+        Err(_) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_isize
 
@@ -292,7 +292,7 @@ end std.json.decode_item
 
 fn std.json.decode_len(doc: &std.json.Doc, v: std.json.Value) -> Result<usize, std.json.Error> uses [] panics never pub
     match std.json.arr_at(doc, v.at) {
-        Some((_first, count)) => Ok(count)
+        Some((_, count)) => Ok(count)
         None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))
     }
 end std.json.decode_len
@@ -326,7 +326,7 @@ fn std.json.decode_u16(doc: &std.json.Doc, v: std.json.Value) -> Result<u16, std
     let text = std.json.number_text(doc, v)?
     match u16.parse(text) {
         Ok(x) => Ok(x)
-        Err(_e) => Err(std.json.Error.OutOfRange)
+        Err(_) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_u16
 
@@ -334,7 +334,7 @@ fn std.json.decode_u32(doc: &std.json.Doc, v: std.json.Value) -> Result<u32, std
     let text = std.json.number_text(doc, v)?
     match u32.parse(text) {
         Ok(x) => Ok(x)
-        Err(_e) => Err(std.json.Error.OutOfRange)
+        Err(_) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_u32
 
@@ -342,7 +342,7 @@ fn std.json.decode_u64(doc: &std.json.Doc, v: std.json.Value) -> Result<u64, std
     let text = std.json.number_text(doc, v)?
     match u64.parse(text) {
         Ok(x) => Ok(x)
-        Err(_e) => Err(std.json.Error.OutOfRange)
+        Err(_) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_u64
 
@@ -350,7 +350,7 @@ fn std.json.decode_u8(doc: &std.json.Doc, v: std.json.Value) -> Result<u8, std.j
     let text = std.json.number_text(doc, v)?
     match u8.parse(text) {
         Ok(x) => Ok(x)
-        Err(_e) => Err(std.json.Error.OutOfRange)
+        Err(_) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_u8
 
@@ -358,7 +358,7 @@ fn std.json.decode_usize(doc: &std.json.Doc, v: std.json.Value) -> Result<usize,
     let text = std.json.number_text(doc, v)?
     match usize.parse(text) {
         Ok(x) => Ok(x)
-        Err(_e) => Err(std.json.Error.OutOfRange)
+        Err(_) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_usize
 
@@ -446,22 +446,22 @@ end std.json.hex_value
 fn std.json.is_null(doc: &std.json.Doc, v: std.json.Value) -> bool uses [] panics never pub
     match doc.nodes.as_slice().get(v.at) {
         Some(std.json.Node.Null) => true
-        Some(std.json.Node.Array(_a, _b)) => false
-        Some(std.json.Node.Bool(_b)) => false
-        Some(std.json.Node.Number(_n)) => false
-        Some(std.json.Node.Object(_a, _b)) => false
-        Some(std.json.Node.Str(_s)) => false
+        Some(std.json.Node.Array(_, _)) => false
+        Some(std.json.Node.Bool(_)) => false
+        Some(std.json.Node.Number(_)) => false
+        Some(std.json.Node.Object(_, _)) => false
+        Some(std.json.Node.Str(_)) => false
         None => true
     }
 end std.json.is_null
 
 fn std.json.kind_at(doc: &std.json.Doc, v: std.json.Value) -> std.json.Kind uses [] panics never pub
     match doc.nodes.as_slice().get(v.at) {
-        Some(std.json.Node.Array(_a, _b)) => std.json.Kind.Array
-        Some(std.json.Node.Bool(_b)) => std.json.Kind.Bool
-        Some(std.json.Node.Number(_n)) => std.json.Kind.Number
-        Some(std.json.Node.Object(_a, _b)) => std.json.Kind.Object
-        Some(std.json.Node.Str(_s)) => std.json.Kind.Str
+        Some(std.json.Node.Array(_, _)) => std.json.Kind.Array
+        Some(std.json.Node.Bool(_)) => std.json.Kind.Bool
+        Some(std.json.Node.Number(_)) => std.json.Kind.Number
+        Some(std.json.Node.Object(_, _)) => std.json.Kind.Object
+        Some(std.json.Node.Str(_)) => std.json.Kind.Str
         Some(std.json.Node.Null) => std.json.Kind.Null
         None => std.json.Kind.Null
     }
@@ -493,11 +493,11 @@ end std.json.new_text
 fn std.json.num_at(doc: &std.json.Doc, at: usize) -> Option<&str> uses [] panics never
     match doc.nodes.as_slice().get(at) {
         Some(std.json.Node.Number(s)) => Some(s.as_str())
-        Some(std.json.Node.Array(_a, _b)) => None
-        Some(std.json.Node.Bool(_b)) => None
+        Some(std.json.Node.Array(_, _)) => None
+        Some(std.json.Node.Bool(_)) => None
         Some(std.json.Node.Null) => None
-        Some(std.json.Node.Object(_a, _b)) => None
-        Some(std.json.Node.Str(_s)) => None
+        Some(std.json.Node.Object(_, _)) => None
+        Some(std.json.Node.Str(_)) => None
         None => None
     }
 end std.json.num_at
@@ -512,11 +512,11 @@ end std.json.number_text
 fn std.json.obj_at(doc: &std.json.Doc, at: usize) -> Option<(usize, usize)> uses [] panics never
     match doc.nodes.as_slice().get(at) {
         Some(std.json.Node.Object(first, pairs)) => Some((*first, *pairs))
-        Some(std.json.Node.Array(_a, _b)) => None
-        Some(std.json.Node.Bool(_b)) => None
+        Some(std.json.Node.Array(_, _)) => None
+        Some(std.json.Node.Bool(_)) => None
         Some(std.json.Node.Null) => None
-        Some(std.json.Node.Number(_n)) => None
-        Some(std.json.Node.Str(_s)) => None
+        Some(std.json.Node.Number(_)) => None
+        Some(std.json.Node.Str(_)) => None
         None => None
     }
 end std.json.obj_at
@@ -551,7 +551,7 @@ fn std.json.parse_array(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: u
                     close = j
                     break
                 }
-                Some(_c) => return Err(std.json.Error.Unexpected(j))
+                Some(_) => return Err(std.json.Error.Unexpected(j))
                 None => return Err(std.json.Error.Eof)
             }
         }
@@ -600,7 +600,7 @@ fn std.json.parse_escape(src: &[u8], pos: usize, out: &mut alloc.string.String<s
             out.push('\t')?
             Ok(next)
         }
-        Some(_c) => Err(std.json.Error.BadEscape(pos))
+        Some(_) => Err(std.json.Error.BadEscape(pos))
     }
 end std.json.parse_escape
 
@@ -686,7 +686,7 @@ fn std.json.parse_object(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: 
                     close = j
                     break
                 }
-                Some(_c) => return Err(std.json.Error.Unexpected(j))
+                Some(_) => return Err(std.json.Error.Unexpected(j))
                 None => return Err(std.json.Error.Eof)
             }
         }
@@ -767,7 +767,7 @@ fn std.json.parse_value(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: u
         Some(b't') => std.json.parse_literal(doc, src, pos, "true", std.json.Node.Bool(true))
         Some(b'f') => std.json.parse_literal(doc, src, pos, "false", std.json.Node.Bool(false))
         Some(b'n') => std.json.parse_literal(doc, src, pos, "null", std.json.Node.Null)
-        Some(_c) => std.json.parse_number(doc, src, pos)
+        Some(_) => std.json.parse_number(doc, src, pos)
     }
 end std.json.parse_value
 
@@ -814,7 +814,7 @@ fn std.json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u
                 out.push_str(text)?
                 Ok(())
             }
-            Err(_e) => Err(std.json.Error.Unexpected(from))
+            Err(_) => Err(std.json.Error.Unexpected(from))
         }
         None => Err(std.json.Error.Eof)
     }
@@ -845,11 +845,11 @@ end std.json.str_at
 fn std.json.text_at(doc: &std.json.Doc, at: usize) -> Option<&str> uses [] panics never
     match doc.nodes.as_slice().get(at) {
         Some(std.json.Node.Str(s)) => Some(s.as_str())
-        Some(std.json.Node.Array(_a, _b)) => None
-        Some(std.json.Node.Bool(_b)) => None
+        Some(std.json.Node.Array(_, _)) => None
+        Some(std.json.Node.Bool(_)) => None
         Some(std.json.Node.Null) => None
-        Some(std.json.Node.Number(_n)) => None
-        Some(std.json.Node.Object(_a, _b)) => None
+        Some(std.json.Node.Number(_)) => None
+        Some(std.json.Node.Object(_, _)) => None
         None => None
     }
 end std.json.text_at

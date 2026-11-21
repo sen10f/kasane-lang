@@ -95,7 +95,7 @@ fn wiki.router.page_name_from_path(path: &str, prefix: &str) -> Option<alloc.str
         } else {
             match alloc.string.String.from_str(std.alloc.SYSTEM, rest) {
                 Ok(s) => Some(s)
-                Err(_e) => None
+                Err(_) => None
             }
         }
         None => None
@@ -109,7 +109,7 @@ fn wiki.router.query_param(query: &str, key: &str) -> Option<alloc.string.String
             Some((k, v)) => if k == key {
                 match alloc.string.String.from_str(std.alloc.SYSTEM, v) {
                     Ok(s) => return Some(s)
-                    Err(_e) => return None
+                    Err(_) => return None
                 }
             }
             None => core.mem.drop(0u8)

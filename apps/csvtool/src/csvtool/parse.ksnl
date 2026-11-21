@@ -107,7 +107,7 @@ fn csvtool.parse.sniff_delim(path: &str, text: &str) -> char uses [] panics neve
         None => core.mem.drop(0u8)
     }
     match text.split_at(line_end) {
-        Some((head, _tail)) => {
+        Some((head, _)) => {
             let mut tabs = 0usize
             let mut commas = 0usize
             for c in head.chars() {

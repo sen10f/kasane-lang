@@ -448,7 +448,7 @@ fn lower.cx.tyof(c: &lower.cx.Cx, v: usize) -> alloc.string.String<std.alloc.Sys
     match c.v.vty.as_slice().get(v) {
         Some(s) => match lower.cx.own(s.as_str()) {
             Ok(o) => o
-            Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+            Err(_) => alloc.string.String.new(std.alloc.SYSTEM)
         }
         None => alloc.string.String.new(std.alloc.SYSTEM)
     }

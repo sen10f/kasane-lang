@@ -8,7 +8,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
         fn() -> () capture [move a_rx, move b_tx] {
             match a_rx.recv() {
                 Ok(n) => match b_tx.send(n) {
-                    Ok(_u) => core.check.eq(n, n)
+                    Ok(_) => core.check.eq(n, n)
                     Err(_e) => core.panic.panic("send failed")
                 }
                 Err(_e) => core.panic.panic("recv failed")

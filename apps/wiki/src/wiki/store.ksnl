@@ -41,7 +41,7 @@ fn wiki.store.PageStore.load_latest(self: &mut wiki.store.PageStore, name: &str)
     if !std.fs.exists(current.as_str()) {
         let versions = match self.page_versions(name) {
             Ok(v) => v
-            Err(_e) => return None
+            Err(_) => return None
         }
         let mut max = 0u64
         let mut i = 0usize
@@ -62,11 +62,11 @@ fn wiki.store.PageStore.load_latest(self: &mut wiki.store.PageStore, name: &str)
     }
     let ver_text = match wiki.store.PageStore.read_text_file(current.as_str()) {
         Ok(t) => t
-        Err(_e) => return None
+        Err(_) => return None
     }
     let version = match usize.parse(ver_text.as_str()) {
         Ok(v) => v
-        Err(_e) => return None
+        Err(_) => return None
     }
     self.load_version(name, version)
 end wiki.store.PageStore.load_latest
@@ -81,7 +81,7 @@ fn wiki.store.PageStore.load_version(self: &mut wiki.store.PageStore, name: &str
     }
     match wiki.store.PageStore.read_text_file(path.as_str()) {
         Ok(t) => Some(t)
-        Err(_e) => None
+        Err(_) => None
     }
 end wiki.store.PageStore.load_version
 
@@ -152,13 +152,13 @@ fn wiki.store.PageStore.page_versions(self: &mut wiki.store.PageStore, name: &st
                     let cut = fname.len().wrapping_sub(3usize)
                     let splitted = fname.split_at(cut)
                     let head = match splitted {
-                        Some((h, _t)) => h
+                        Some((h, _)) => h
                         None => ""
                     }
                     let num_text = alloc.string.String.from_str(std.alloc.SYSTEM, head)?
                     match u64.parse(num_text.as_str()) {
                         Ok(v) => core.mem.drop(out.push(v)?)
-                        Err(_e) => core.mem.drop(0u8)
+                        Err(_) => core.mem.drop(0u8)
                     }
                 }
             }
@@ -277,7 +277,7 @@ test wiki.store.PageStore.new.test_creates_pages_dir
     let path = "/tmp/wiki-test-store-new-dir"
     core.mem.drop(wiki.remove_dir_all(path))
     match wiki.store.PageStore.new(path) {
-        Ok(_s) => {
+        Ok(_) => {
             let mut pages_path = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
             core.mem.drop(pages_path.push_str("/pages"))
             core.check.eq(std.fs.exists(pages_path.as_str()), true)

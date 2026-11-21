@@ -13,14 +13,14 @@ fn alloc.string.String.join[A: alloc.alloc.Allocator](allocator: A, parts: &[&st
     while i < n {
         if i > 0usize {
             match out.push_str(separator) {
-                Ok(_done) => {
+                Ok(_) => {
                 }
                 Err(error) => return Err(error)
             }
         }
         match parts.get(i) {
             Some(piece) => match out.push_str(*piece) {
-                Ok(_done) => {
+                Ok(_) => {
                 }
                 Err(error) => return Err(error)
             }
@@ -49,7 +49,7 @@ fn alloc.string.String.push[A: alloc.alloc.Allocator](self: &mut alloc.string.St
         n = 4usize
     }
     match self.reserve_bytes(n) {
-        Ok(_done) => {
+        Ok(_) => {
         }
         Err(error) => return Err(error)
     }
@@ -79,11 +79,11 @@ fn alloc.string.String.push[A: alloc.alloc.Allocator](self: &mut alloc.string.St
         }
         match u8.try_from_u32(value) {
             Ok(byte) => match self.buf.push_within_cap(byte) {
-                Ok(_done) => {
+                Ok(_) => {
                 }
-                Err(_lost) => return Err(alloc.alloc.AllocError { code: 1u32 })
+                Err(_) => return Err(alloc.alloc.AllocError { code: 1u32 })
             }
-            Err(_error) => return Err(alloc.alloc.AllocError { code: 2u32 })
+            Err(_) => return Err(alloc.alloc.AllocError { code: 2u32 })
         }
         shift = shift.wrapping_sub(6u32)
         i = i.wrapping_add(1usize)
@@ -94,7 +94,7 @@ end alloc.string.String.push
 fn alloc.string.String.push_bytes[A: alloc.alloc.Allocator](self: &mut alloc.string.String<A>, bytes: &[u8]) -> Result<(), alloc.string.PushBytesError> uses [alloc] panics never pub
     match core.str.from_utf8(bytes) {
         Ok(text) => match self.push_str(text) {
-            Ok(_done) => Ok(())
+            Ok(_) => Ok(())
             Err(error) => Err(alloc.string.PushBytesError.Alloc(error))
         }
         Err(error) => Err(alloc.string.PushBytesError.InvalidUtf8(error))
@@ -103,16 +103,16 @@ end alloc.string.String.push_bytes
 
 fn alloc.string.String.push_i64[A: alloc.alloc.Allocator](self: &mut alloc.string.String<A>, value: i64) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     match self.reserve_bytes(21usize) {
-        Ok(_done) => {
+        Ok(_) => {
         }
         Err(error) => return Err(error)
     }
     let neg = value < 0i64
     if neg {
         match self.buf.push_within_cap(45u8) {
-            Ok(_done) => {
+            Ok(_) => {
             }
-            Err(_lost) => return Err(alloc.alloc.AllocError { code: 1u32 })
+            Err(_) => return Err(alloc.alloc.AllocError { code: 1u32 })
         }
     }
     let start = self.buf.len()
@@ -134,11 +134,11 @@ fn alloc.string.String.push_i64[A: alloc.alloc.Allocator](self: &mut alloc.strin
         }
         match u8.try_from_i64(digit) {
             Ok(d8) => match self.buf.insert_within_cap(start, d8.wrapping_add(48u8)) {
-                Ok(_done) => {
+                Ok(_) => {
                 }
-                Err(_lost) => return Err(alloc.alloc.AllocError { code: 1u32 })
+                Err(_) => return Err(alloc.alloc.AllocError { code: 1u32 })
             }
-            Err(_error) => return Err(alloc.alloc.AllocError { code: 2u32 })
+            Err(_) => return Err(alloc.alloc.AllocError { code: 2u32 })
         }
         v = rest
         if v == 0i64 {
@@ -150,24 +150,24 @@ end alloc.string.String.push_i64
 
 fn alloc.string.String.push_str[A: alloc.alloc.Allocator](self: &mut alloc.string.String<A>, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     match self.buf.append_str_within_cap(text) {
-        Ok(_done) => return Ok(())
-        Err(_full) => {
+        Ok(_) => return Ok(())
+        Err(_) => {
         }
     }
     match self.reserve_bytes(text.len()) {
-        Ok(_done) => {
+        Ok(_) => {
         }
         Err(error) => return Err(error)
     }
     match self.buf.append_str_within_cap(text) {
-        Ok(_done) => Ok(())
-        Err(_lost) => Err(alloc.alloc.AllocError { code: 1u32 })
+        Ok(_) => Ok(())
+        Err(_) => Err(alloc.alloc.AllocError { code: 1u32 })
     }
 end alloc.string.String.push_str
 
 fn alloc.string.String.push_u64[A: alloc.alloc.Allocator](self: &mut alloc.string.String<A>, value: u64) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     match self.reserve_bytes(20usize) {
-        Ok(_done) => {
+        Ok(_) => {
         }
         Err(error) => return Err(error)
     }
@@ -184,11 +184,11 @@ fn alloc.string.String.push_u64[A: alloc.alloc.Allocator](self: &mut alloc.strin
         }
         match u8.try_from_u64(digit) {
             Ok(d8) => match self.buf.insert_within_cap(start, d8.wrapping_add(48u8)) {
-                Ok(_done) => {
+                Ok(_) => {
                 }
-                Err(_lost) => return Err(alloc.alloc.AllocError { code: 1u32 })
+                Err(_) => return Err(alloc.alloc.AllocError { code: 1u32 })
             }
-            Err(_error) => return Err(alloc.alloc.AllocError { code: 2u32 })
+            Err(_) => return Err(alloc.alloc.AllocError { code: 2u32 })
         }
         v = rest
         if v == 0u64 {
@@ -205,7 +205,7 @@ fn alloc.string.String.replace[A: alloc.alloc.Allocator](allocator: A, text: &st
     let m = from.len()
     if m == 0usize {
         match out.push_str(text) {
-            Ok(_done) => {
+            Ok(_) => {
             }
             Err(error) => return Err(error)
         }
@@ -242,9 +242,9 @@ fn alloc.string.String.replace[A: alloc.alloc.Allocator](allocator: A, text: &st
         }
         if same {
             match text.split_at(start) {
-                Some((_before, rest)) => match rest.split_at(i.wrapping_sub(start)) {
-                    Some((piece, _after)) => match out.push_str(piece) {
-                        Ok(_done) => {
+                Some((_, rest)) => match rest.split_at(i.wrapping_sub(start)) {
+                    Some((piece, _)) => match out.push_str(piece) {
+                        Ok(_) => {
                         }
                         Err(error) => return Err(error)
                     }
@@ -255,7 +255,7 @@ fn alloc.string.String.replace[A: alloc.alloc.Allocator](allocator: A, text: &st
                 }
             }
             match out.push_str(to) {
-                Ok(_done) => {
+                Ok(_) => {
                 }
                 Err(error) => return Err(error)
             }
@@ -266,8 +266,8 @@ fn alloc.string.String.replace[A: alloc.alloc.Allocator](allocator: A, text: &st
         }
     }
     match text.split_at(start) {
-        Some((_before, rest)) => match out.push_str(rest) {
-            Ok(_done) => {
+        Some((_, rest)) => match out.push_str(rest) {
+            Ok(_) => {
             }
             Err(error) => return Err(error)
         }
@@ -288,7 +288,7 @@ fn alloc.string.String.reserve_bytes[A: alloc.alloc.Allocator](self: &mut alloc.
             doubled
         }
         match self.buf.grow(target) {
-            Ok(_grown) => {
+            Ok(_) => {
             }
             Err(error) => return Err(error)
         }

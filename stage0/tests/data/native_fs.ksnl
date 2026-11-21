@@ -48,7 +48,7 @@ end t.many
 fn t.num(n: usize) -> i64 uses [] panics never
     match i64.try_from_usize(n) {
         Ok(v) => v
-        Err(_e) => -1i64
+        Err(_) => -1i64
     }
 end t.num
 
@@ -68,7 +68,7 @@ end t.ok_size
 
 fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
     match r {
-        Ok(_u) => {
+        Ok(_) => {
         }
         Err(_e) => core.panic.panic("unexpected I/O error")
     }

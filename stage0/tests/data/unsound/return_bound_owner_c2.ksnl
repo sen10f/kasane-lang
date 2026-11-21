@@ -1,7 +1,6 @@
 fn t.f(x: &u32) -> Option<&u32> uses [] panics never
     let t = Some(*x)
-    let r = t.as_ref()
-    r
+    t.as_ref()
 end t.f
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

@@ -18,11 +18,11 @@ end t.main
 fn t.many() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] panics may
     let listener = match std.net.listen("127.0.0.1:0") {
         Ok(l) => l
-        Err(_e) => return Err(t.fail(1i32))
+        Err(_) => return Err(t.fail(1i32))
     }
     let port = match listener.local_port() {
         Ok(p) => p
-        Err(_e) => 0u16
+        Err(_) => 0u16
     }
     let addr = t.addr(port)
     let mut i = 0usize
@@ -51,7 +51,7 @@ end t.many
 fn t.num(n: usize) -> i64 uses [] panics never
     match i64.try_from_usize(n) {
         Ok(v) => v
-        Err(_e) => -1i64
+        Err(_) => -1i64
     }
 end t.num
 
@@ -64,7 +64,7 @@ end t.ok_size
 
 fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
     match r {
-        Ok(_u) => {
+        Ok(_) => {
         }
         Err(_e) => core.panic.panic("unexpected I/O error")
     }
@@ -73,11 +73,11 @@ end t.ok_unit
 fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] panics may
     let listener = match std.net.listen("127.0.0.1:0") {
         Ok(l) => l
-        Err(_e) => return Err(t.fail(1i32))
+        Err(_) => return Err(t.fail(1i32))
     }
     let port = match listener.local_port() {
         Ok(p) => p
-        Err(_e) => 0u16
+        Err(_) => 0u16
     }
     core.check.is_true(port > 0u16)
     let addr = t.addr(port)
@@ -91,7 +91,7 @@ fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] p
     }
     let sent = match client.write(b"ping") {
         Ok(w) => w
-        Err(_e) => 0usize
+        Err(_) => 0usize
     }
     t.show("client sent", t.num(sent))
     match client.flush() {
@@ -101,7 +101,7 @@ fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] p
     let mut buf = [0u8; 16]
     let n = match server.read(&mut buf) {
         Ok(n) => n
-        Err(_e) => 0usize
+        Err(_) => 0usize
     }
     t.show("server received", t.num(n))
     match buf.get(0usize) {
@@ -110,19 +110,19 @@ fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] p
     }
     let replied = match server.write(b"pong!") {
         Ok(w) => w
-        Err(_e) => 0usize
+        Err(_) => 0usize
     }
     t.show("server sent", t.num(replied))
     core.mem.drop(server.close())
     let mut buf2 = [0u8; 16]
     let m = match client.read(&mut buf2) {
         Ok(m) => m
-        Err(_e) => 0usize
+        Err(_) => 0usize
     }
     t.show("client received", t.num(m))
     let eof = match client.read(&mut buf2) {
         Ok(k) => t.num(k)
-        Err(_e) => 99i64
+        Err(_) => 99i64
     }
     t.show("read at end of stream", eof)
     core.mem.drop(client.close())

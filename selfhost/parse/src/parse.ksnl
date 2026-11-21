@@ -11,7 +11,7 @@ end parse.Outcome
 fn parse.analyze(src: &[u8], path: &str, sig: bool, kinds: bool) -> Result<parse.Outcome, parse.Failure> uses [alloc] panics never
     let mut toks = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match parse.lex.lex(src, &mut toks) {
-        Ok(_u) => core.mem.drop(0u8)
+        Ok(_) => core.mem.drop(0u8)
         Err(parse.err.Error.Syntax(a, b, c, d)) => return Ok(parse.Outcome.Syntax(a, b, c, d))
         Err(parse.err.Error.Alloc(e)) => return Err(parse.Failure.Alloc(e))
     }
@@ -21,7 +21,7 @@ fn parse.analyze(src: &[u8], path: &str, sig: bool, kinds: bool) -> Result<parse
         Err(parse.err.Error.Alloc(e)) => return Err(parse.Failure.Alloc(e))
     }
     match parse.def.file(&mut p, src, sig) {
-        Ok(_u) => core.mem.drop(0u8)
+        Ok(_) => core.mem.drop(0u8)
         Err(parse.err.Error.Syntax(a, b, c, d)) => return Ok(parse.Outcome.Syntax(a, b, c, d))
         Err(parse.err.Error.Alloc(e)) => return Err(parse.Failure.Alloc(e))
     }
@@ -208,32 +208,32 @@ test parse.analyze.test_defs
     let src = "import a.b\n\nfn a.f(x: i32) -> i32 uses [] panics never\n    x\nend a.f\n"
     match parse.analyze(src.as_bytes(), "t", false, false) {
         Ok(parse.Outcome.Done(text)) => core.check.eq(text.as_str().starts_with("== t\nimport a.b 1\nfn a.f 3\nnodes "), true)
-        Ok(parse.Outcome.Syntax(_a, _b, _c, _d)) => core.check.eq(1u8, 2u8)
-        Err(_e) => core.check.eq(1u8, 2u8)
+        Ok(parse.Outcome.Syntax(_, _, _, _)) => core.check.eq(1u8, 2u8)
+        Err(_) => core.check.eq(1u8, 2u8)
     }
 end parse.analyze.test_defs
 
 test parse.analyze.test_end_mismatch
     let src = "fn a.f() -> i32 uses [] panics never\n    1i32\nend a.g\n"
     match parse.analyze(src.as_bytes(), "t", false, false) {
-        Ok(parse.Outcome.Done(_text)) => core.check.eq(1u8, 2u8)
-        Ok(parse.Outcome.Syntax(line, _b, code, _w)) => {
+        Ok(parse.Outcome.Done(_)) => core.check.eq(1u8, 2u8)
+        Ok(parse.Outcome.Syntax(line, _, code, _)) => {
             core.check.eq(line, 3usize)
             core.check.eq(code, parse.err.E_END_NAME)
         }
-        Err(_e) => core.check.eq(1u8, 2u8)
+        Err(_) => core.check.eq(1u8, 2u8)
     }
 end parse.analyze.test_end_mismatch
 
 test parse.analyze.test_missing_paren
     let src = "fn a.f() -> i32 uses [] panics never\n    a.g(1i32, 2i32\n    1i32\nend a.f\n"
     match parse.analyze(src.as_bytes(), "t", false, false) {
-        Ok(parse.Outcome.Done(_text)) => core.check.eq(1u8, 2u8)
-        Ok(parse.Outcome.Syntax(line, _b, code, want)) => {
+        Ok(parse.Outcome.Done(_)) => core.check.eq(1u8, 2u8)
+        Ok(parse.Outcome.Syntax(line, _, code, want)) => {
             core.check.eq(line, 2usize)
             core.check.eq(code, parse.err.E_EXPECT)
             core.check.eq(want, 41u32)
         }
-        Err(_e) => core.check.eq(1u8, 2u8)
+        Err(_) => core.check.eq(1u8, 2u8)
     }
 end parse.analyze.test_missing_paren

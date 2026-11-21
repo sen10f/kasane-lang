@@ -3,6 +3,5 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.opt_swap['a, 'b](x: &'a u32, y: &'b u32) -> Option<(&'a u32, &'b u32)> uses [] panics never
-    let z = Some((y, x))
-    z
+    Some((y, x))
 end t.opt_swap

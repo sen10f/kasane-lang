@@ -53,7 +53,7 @@ fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Res
     }
     let id = match i64.parse(id_text) {
         Ok(v) => v
-        Err(_e) => return Err(error.Error.Usage)
+        Err(_) => return Err(error.Error.Usage)
     }
     let title = match std.env.arg(title_index) {
         Some(t) => t
@@ -243,7 +243,7 @@ fn notes.cmd.rm(index: usize) -> Result<(), notes.error.Error> uses [alloc, env,
     }
     let id = match i64.parse(id_text) {
         Ok(v) => v
-        Err(_e) => return Err(error.Error.Usage)
+        Err(_) => return Err(error.Error.Usage)
     }
     let mut db = notes.cmd.load_store()?
     db.remove(id)?
@@ -280,7 +280,7 @@ fn notes.cmd.show(index: usize) -> Result<(), notes.error.Error> uses [alloc, en
     }
     let id = match i64.parse(id_text) {
         Ok(v) => v
-        Err(_e) => return Err(error.Error.Usage)
+        Err(_) => return Err(error.Error.Usage)
     }
     let db = notes.cmd.load_store()?
     match db.get(id) {
@@ -312,7 +312,7 @@ fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Er
     }
     let id = match i64.parse(id_text) {
         Ok(v) => v
-        Err(_e) => return Err(error.Error.Usage)
+        Err(_) => return Err(error.Error.Usage)
     }
     let tag = match std.env.arg(tag_index) {
         Some(t) => t

@@ -5,7 +5,7 @@ end t.Res
 fn t.bad(rx: std.sync.Receiver<t.Res>) -> u32 uses [alloc] panics may
     let mut all = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match all.push(rx) {
-        Ok(_u) => 0u32
+        Ok(_) => 0u32
         Err(_e) => core.panic.panic("oom")
     }
     0u32

@@ -19,13 +19,13 @@ fn t.ok() -> u32 uses [] panics never
     let o = 1u32
     let mut h = t.H { r: &o }
     {
-        h.r = &*&x
+        h.r = &x
     }
     let r = {
-        &*&x
+        &x
     }
     let o2 = {
-        Some(&*&x)
+        Some(&x)
     }
     let pr = {
         (t.id(&x), 1u8)

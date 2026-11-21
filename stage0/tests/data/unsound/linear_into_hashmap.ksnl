@@ -5,7 +5,7 @@ end t.Res
 fn t.bad() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     match m.insert(1u32, t.open()) {
-        Ok(_old) => Ok(())
+        Ok(_) => Ok(())
         Err(e) => Err(e)
     }
 end t.bad

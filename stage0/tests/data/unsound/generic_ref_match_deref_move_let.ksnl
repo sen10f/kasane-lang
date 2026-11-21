@@ -5,10 +5,7 @@ end t.main
 
 fn t.take_opt[T](o: &mut Option<T>) -> T uses [] panics never
     match o {
-        Some(v) => {
-            let z = *v
-            z
-        }
+        Some(v) => *v
         None => loop {
         }
     }

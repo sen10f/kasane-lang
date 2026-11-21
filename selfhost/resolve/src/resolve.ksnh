@@ -70,8 +70,8 @@ fn resolve.parse_file(src: &[u8], path: &str, sig: bool, rep: &mut resolve.repor
     rep.path.push_str(path)?
     rep.sig = sig
     match parse.lex.lex(src, &mut toks) {
-        Ok(_u) => core.mem.drop(0u8)
-        Err(parse.err.Error.Syntax(a, _b, c, d)) => {
+        Ok(_) => core.mem.drop(0u8)
+        Err(parse.err.Error.Syntax(a, _, c, d)) => {
             resolve.report.syntax(rep, a, c, d)?
             return Ok(None)
         }
@@ -79,15 +79,15 @@ fn resolve.parse_file(src: &[u8], path: &str, sig: bool, rep: &mut resolve.repor
     }
     let mut p = match parse.cur.new(toks) {
         Ok(q) => q
-        Err(parse.err.Error.Syntax(a, _b, c, d)) => {
+        Err(parse.err.Error.Syntax(a, _, c, d)) => {
             resolve.report.syntax(rep, a, c, d)?
             return Ok(None)
         }
         Err(parse.err.Error.Alloc(e)) => return Err(resolve.Failure.Alloc(e))
     }
     match parse.def.file(&mut p, src, sig) {
-        Ok(_u) => core.mem.drop(0u8)
-        Err(parse.err.Error.Syntax(a, _b, c, d)) => {
+        Ok(_) => core.mem.drop(0u8)
+        Err(parse.err.Error.Syntax(a, _, c, d)) => {
             resolve.report.syntax(rep, a, c, d)?
             return Ok(None)
         }

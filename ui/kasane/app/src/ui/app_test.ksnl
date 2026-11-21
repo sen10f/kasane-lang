@@ -16,15 +16,15 @@ end ui.app_test.make_rect
 
 fn ui.app_test.push_el(v: &mut alloc.vec.Vec<ui.tree.Element, std.alloc.System>, e: ui.tree.Element) -> () uses [alloc] panics never
     match v.push(e) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
 end ui.app_test.push_el
 
 fn ui.app_test.push_kid(kids: &mut alloc.vec.Vec<usize, std.alloc.System>, i: usize) -> () uses [alloc] panics never
     match kids.push(i) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
 end ui.app_test.push_kid
 
@@ -34,8 +34,8 @@ test ui.app_test.Suite.test_apply_add_child
     let root1 = ui.app_test.el(ui.tree.ViewKind.Block, None, ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements1, root1)
     match app.apply((), &elements1, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut root_children2 = ui.app_test.empty_kids()
@@ -49,7 +49,7 @@ test ui.app_test.Suite.test_apply_add_child
             core.check.eq(f.patch.added.len(), 1usize)
             core.check.is_true(!f.patch.is_empty())
         }
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_apply_add_child
 
@@ -63,8 +63,8 @@ test ui.app_test.Suite.test_apply_change_kind
     let child1 = ui.app_test.el(ui.tree.ViewKind.Leaf, Some(1u64), ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements1, child1)
     match app.apply((), &elements1, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut root_children2 = ui.app_test.empty_kids()
@@ -78,7 +78,7 @@ test ui.app_test.Suite.test_apply_change_kind
             core.check.eq(f.patch.changed.len(), 1usize)
             core.check.is_true(!f.patch.is_empty())
         }
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_apply_change_kind
 
@@ -88,12 +88,12 @@ test ui.app_test.Suite.test_apply_frame_increments
     let root_el = ui.app_test.el(ui.tree.ViewKind.Block, None, ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements, root_el)
     match app.apply((), &elements, 0usize) {
-        Ok(_f) => core.check.eq(1u64, 1u64)
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => core.check.eq(1u64, 1u64)
+        Err(_) => core.check.is_true(false)
     }
     match app.apply((), &elements, 0usize) {
-        Ok(_f2) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_apply_frame_increments
 
@@ -107,8 +107,8 @@ test ui.app_test.Suite.test_apply_keyed_insert
     let child1 = ui.app_test.el(ui.tree.ViewKind.Leaf, Some(1u64), ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements1, child1)
     match app.apply((), &elements1, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut root_children2 = ui.app_test.empty_kids()
@@ -125,7 +125,7 @@ test ui.app_test.Suite.test_apply_keyed_insert
             core.check.eq(f.patch.added.len(), 1usize)
             core.check.is_true(f.patch.moved.len() == 0usize)
         }
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_apply_keyed_insert
 
@@ -142,8 +142,8 @@ test ui.app_test.Suite.test_apply_keyed_reorder
     let leaf2 = ui.app_test.el(ui.tree.ViewKind.Leaf, Some(2u64), ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements1, leaf2)
     match app.apply((), &elements1, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut root_children2 = ui.app_test.empty_kids()
@@ -161,7 +161,7 @@ test ui.app_test.Suite.test_apply_keyed_reorder
             core.check.is_true(f.patch.added.len() == 0usize)
             core.check.is_true(f.patch.removed.len() == 0usize)
         }
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_apply_keyed_reorder
 
@@ -175,8 +175,8 @@ test ui.app_test.Suite.test_apply_keyed_replace
     let child1 = ui.app_test.el(ui.tree.ViewKind.Leaf, Some(1u64), ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements1, child1)
     match app.apply((), &elements1, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut root_children2 = ui.app_test.empty_kids()
@@ -190,7 +190,7 @@ test ui.app_test.Suite.test_apply_keyed_replace
             core.check.eq(f.patch.removed.len(), 1usize)
             core.check.eq(f.patch.added.len(), 1usize)
         }
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_apply_keyed_replace
 
@@ -208,8 +208,8 @@ test ui.app_test.Suite.test_apply_nested_children
     let leaf2 = ui.app_test.el(ui.tree.ViewKind.Leaf, Some(2u64), ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements1, leaf2)
     match app.apply((), &elements1, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut root_children2 = ui.app_test.empty_kids()
@@ -223,7 +223,7 @@ test ui.app_test.Suite.test_apply_nested_children
             core.check.eq(f.patch.removed.len(), 1usize)
             core.check.eq(f.patch.added.len(), 0usize)
         }
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_apply_nested_children
 
@@ -233,15 +233,15 @@ test ui.app_test.Suite.test_apply_no_changes
     let root_el = ui.app_test.el(ui.tree.ViewKind.Block, None, ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements, root_el)
     match app.apply((), &elements, 0usize) {
-        Ok(_f1) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     match app.apply((), &elements, 0usize) {
         Ok(f2) => {
             core.check.is_true(f2.patch.is_empty())
             core.check.is_true(f2.dirty.is_empty())
         }
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_apply_no_changes
 
@@ -254,7 +254,7 @@ test ui.app_test.Suite.test_apply_out_of_bounds_root
             core.check.is_true(f.dirty.is_empty())
             core.check.eq(f.redrew, false)
         }
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_apply_out_of_bounds_root
 
@@ -265,7 +265,7 @@ test ui.app_test.Suite.test_apply_redrew_flag
     ui.app_test.push_el(&mut elements, root_el)
     match app.apply((), &elements, 0usize) {
         Ok(f) => core.check.eq(f.redrew, true)
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_apply_redrew_flag
 
@@ -279,8 +279,8 @@ test ui.app_test.Suite.test_apply_remove_child
     let child1 = ui.app_test.el(ui.tree.ViewKind.Leaf, Some(1u64), ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements1, child1)
     match app.apply((), &elements1, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let root2 = ui.app_test.el(ui.tree.ViewKind.Block, None, ui.app_test.empty_kids())
@@ -290,7 +290,7 @@ test ui.app_test.Suite.test_apply_remove_child
             core.check.eq(f.patch.removed.len(), 1usize)
             core.check.is_true(!f.patch.is_empty())
         }
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_apply_remove_child
 
@@ -304,7 +304,7 @@ test ui.app_test.Suite.test_apply_single_root
             core.check.is_true(f.patch.is_empty())
             core.check.eq(f.redrew, true)
         }
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_apply_single_root
 
@@ -314,12 +314,12 @@ test ui.app_test.Suite.test_dirty_rect_empty_on_no_change
     let root_el = ui.app_test.el(ui.tree.ViewKind.Block, None, ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements, root_el)
     match app.apply((), &elements, 0usize) {
-        Ok(_f1) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     match app.apply((), &elements, 0usize) {
         Ok(f2) => core.check.is_true(f2.dirty.is_empty())
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_dirty_rect_empty_on_no_change
 
@@ -329,8 +329,8 @@ test ui.app_test.Suite.test_dirty_rect_on_add
     let root1 = ui.app_test.el(ui.tree.ViewKind.Block, None, ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements1, root1)
     match app.apply((), &elements1, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut root_children2 = ui.app_test.empty_kids()
@@ -341,7 +341,7 @@ test ui.app_test.Suite.test_dirty_rect_on_add
     ui.app_test.push_el(&mut elements2, child2)
     match app.apply((), &elements2, 0usize) {
         Ok(f) => core.check.is_true(!f.patch.is_empty())
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_dirty_rect_on_add
 
@@ -355,8 +355,8 @@ test ui.app_test.Suite.test_dirty_rect_on_change
     let child1 = ui.app_test.el(ui.tree.ViewKind.Leaf, Some(1u64), ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements1, child1)
     match app.apply((), &elements1, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     app.set_node_rect(1usize, ui.app_test.make_rect(10.0f32, 20.0f32, 100.0f32, 50.0f32))
     let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -368,7 +368,7 @@ test ui.app_test.Suite.test_dirty_rect_on_change
     ui.app_test.push_el(&mut elements2, child2)
     match app.apply((), &elements2, 0usize) {
         Ok(f) => core.check.is_true(!f.dirty.is_empty())
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_dirty_rect_on_change
 
@@ -385,8 +385,8 @@ test ui.app_test.Suite.test_dirty_rect_on_move
     let leaf2 = ui.app_test.el(ui.tree.ViewKind.Leaf, Some(2u64), ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements1, leaf2)
     match app.apply((), &elements1, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     app.set_node_rect(1usize, ui.app_test.make_rect(10.0f32, 20.0f32, 100.0f32, 50.0f32))
     app.set_node_rect(2usize, ui.app_test.make_rect(30.0f32, 40.0f32, 100.0f32, 50.0f32))
@@ -402,7 +402,7 @@ test ui.app_test.Suite.test_dirty_rect_on_move
     ui.app_test.push_el(&mut elements2, leaf4)
     match app.apply((), &elements2, 0usize) {
         Ok(f) => core.check.is_true(!f.dirty.is_empty())
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_dirty_rect_on_move
 
@@ -416,8 +416,8 @@ test ui.app_test.Suite.test_dirty_rect_on_remove
     let child1 = ui.app_test.el(ui.tree.ViewKind.Leaf, Some(1u64), ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements1, child1)
     match app.apply((), &elements1, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     app.set_node_rect(1usize, ui.app_test.make_rect(10.0f32, 20.0f32, 100.0f32, 50.0f32))
     let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -425,7 +425,7 @@ test ui.app_test.Suite.test_dirty_rect_on_remove
     ui.app_test.push_el(&mut elements2, root2)
     match app.apply((), &elements2, 0usize) {
         Ok(f) => core.check.is_true(!f.dirty.is_empty())
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_dirty_rect_on_remove
 
@@ -439,8 +439,8 @@ test ui.app_test.Suite.test_dirty_rect_union_added_and_removed
     let child1 = ui.app_test.el(ui.tree.ViewKind.Leaf, Some(1u64), ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements1, child1)
     match app.apply((), &elements1, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
     app.set_node_rect(1usize, ui.app_test.make_rect(10.0f32, 20.0f32, 100.0f32, 50.0f32))
     let mut elements2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -452,7 +452,7 @@ test ui.app_test.Suite.test_dirty_rect_union_added_and_removed
     ui.app_test.push_el(&mut elements2, child2)
     match app.apply((), &elements2, 0usize) {
         Ok(f) => core.check.is_true(!f.dirty.is_empty())
-        Err(_e) => core.check.is_true(false)
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_dirty_rect_union_added_and_removed
 
@@ -472,8 +472,8 @@ test ui.app_test.Suite.test_enqueue_then_apply
     let root_el = ui.app_test.el(ui.tree.ViewKind.Block, None, ui.app_test.empty_kids())
     ui.app_test.push_el(&mut elements, root_el)
     match app.apply((), &elements, 0usize) {
-        Ok(_f) => ()
-        Err(_e) => core.check.is_true(false)
+        Ok(_) => ()
+        Err(_) => core.check.is_true(false)
     }
 end ui.app_test.Suite.test_enqueue_then_apply
 

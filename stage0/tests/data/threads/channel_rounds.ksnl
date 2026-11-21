@@ -6,8 +6,8 @@ fn t.drain(first: std.sync.Receiver<std.net.TcpStream>) -> u32 uses [io.net, thr
             Ok(stream) => {
                 sum = sum.wrapping_add(t.handle(stream))
             }
-            Err(_e) => match rx.close() {
-                Ok(_u) => break
+            Err(_) => match rx.close() {
+                Ok(_) => break
                 Err(back) => {
                     rx = back
                 }
@@ -35,11 +35,11 @@ end t.main
 fn t.message(i: u32) -> alloc.string.String uses [alloc] panics may
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(match s.push_str("hello") {
-        Ok(_u) => 0u32
+        Ok(_) => 0u32
         Err(_e) => core.panic.panic("oom")
     })
     core.mem.drop(match s.push_u64(u64.from_u32(i)) {
-        Ok(_u) => 0u32
+        Ok(_) => 0u32
         Err(_e) => core.panic.panic("oom")
     })
     s
@@ -47,7 +47,7 @@ end t.message
 
 fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
     match r {
-        Ok(_u) => {
+        Ok(_) => {
         }
         Err(_e) => core.panic.panic("unexpected error")
     }
@@ -61,7 +61,7 @@ fn t.produce(tx: std.sync.Sender<alloc.string.String>, count: u32) -> () uses [a
     let mut i = 1u32
     while i <= count {
         core.mem.drop(match tx.send(t.message(i)) {
-            Ok(_u) => 0u32
+            Ok(_) => 0u32
             Err(_e) => core.panic.panic("send failed")
         })
         i = i + 1u32
@@ -122,7 +122,7 @@ fn t.threads() -> Result<(), std.io.Error> uses [alloc, thread] panics may
             Ok(s) => {
                 total = total + s.len()
             }
-            Err(_e) => break
+            Err(_) => break
         }
     }
     producer_a.join()
