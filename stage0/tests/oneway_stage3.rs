@@ -46,7 +46,8 @@ fn roundtrip_is(name: &str, bad: &str, mid: &str, fin: &str) {
     effects_fix(&t);
     assert!(text(&run(&["check"], &t.0).stdout).contains("E2055"), "{}", name);
     assert_eq!(run(&["fix"], &t.0).status.code(), Some(0), "{}", name);
-    assert_eq!(main_src(&t), wrap(fin), "{}: fix result", name);
+    // `fix` は見出しの効果も本体どおりに直す (`panics may` → `panics never`) ので、見出しをそろえて比べる。
+    assert_eq!(main_src(&t).replace("panics never", "panics may"), wrap(fin).replace("panics never", "panics may"), "{}: fix result", name);
     let c = run(&["check"], &t.0);
     assert_eq!(c.status.code(), Some(0), "{}: {}", name, text(&c.stdout));
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{}", name);
