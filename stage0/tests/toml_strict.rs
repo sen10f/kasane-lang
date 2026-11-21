@@ -35,7 +35,7 @@ fn with_dep(name: &str, toml: &str, lock: &str) -> (Tmp, std::path::PathBuf) {
         fs::create_dir_all(libdir.join("src")).unwrap();
         fs::write(libdir.join("kasane.toml"), "[package]\nname = \"lib\"\nversion = \"0.1.0\"\nedition = 1\n\n[dependencies]\n").unwrap();
         fs::write(libdir.join("kasane.lock"), "version = 1\n").unwrap();
-        fs::write(libdir.join("src").join("lib.ksnl"), "fn lib.hello() -> u32 pub\n    7\nend lib.hello\n").unwrap();
+        fs::write(libdir.join("src").join("lib.ksnl"), "fn lib.hello() -> u32 uses [] panics never pub\n    7u32\nend lib.hello\n").unwrap();
     });
     let rel = format!("../{}", libdir.file_name().unwrap().to_string_lossy());
     let t = Tmp::new_raw(name, "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let _x = lib.hello()\n    Ok(())\nend t.main\n");

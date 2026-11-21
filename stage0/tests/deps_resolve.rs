@@ -87,7 +87,7 @@ fn tagged_repo(w: &Work, name: &str, versions: &[&str]) -> (PathBuf, String, Vec
     for (i, v) in versions.iter().enumerate() {
         write(&repo.join("kasane.toml"), &manifest(name, v, false, ""));
         // 版の数 (`kasane.toml` の版) でコミットが別になる。
-        write(&repo.join("src/lib.ksnl"), &lib_src(name));
+        write(&repo.join(format!("src/{}.ksnl", name)), &lib_src(name));
         if i == 0 {
             git(&repo, &["init", "--quiet"]);
         }
@@ -103,7 +103,7 @@ fn tagged_repo(w: &Work, name: &str, versions: &[&str]) -> (PathBuf, String, Vec
 /// 版を 1 つ増やす (新しいタグ)。
 fn publish(repo: &Path, name: &str, v: &str) -> String {
     write(&repo.join("kasane.toml"), &manifest(name, v, false, ""));
-    write(&repo.join("src/lib.ksnl"), &lib_src(name));
+    write(&repo.join(format!("src/{}.ksnl", name)), &lib_src(name));
     git(repo, &["add", "-A"]);
     git(repo, &["commit", "--quiet", "-m", v]);
     git(repo, &["tag", &format!("v{}", v)]);

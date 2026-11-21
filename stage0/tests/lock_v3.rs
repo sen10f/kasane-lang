@@ -64,7 +64,7 @@ fn manifest(name: &str, entry: bool, deps: &str) -> String {
 }
 
 /// 依存 `gl` の 1 版目。
-const GL1: &str = "fn gl.double(x: u32) -> u32 uses [] panics never pub\n    x.wrapping_mul(2u32)\nend gl.double\n\nfn gl.pi() -> u32 uses [alloc] panics may pub\n    3u32\nend gl.pi\n\nfn gl.old() -> u32 uses [] panics never pub\n    1u32\nend gl.old\n";
+const GL1: &str = "fn gl.double(x: u32) -> u32 uses [] panics never pub\n    x.wrapping_mul(2u32)\nend gl.double\n\nfn gl.pi() -> u32 uses [io.console] panics may pub\n    core.mem.drop(std.io.print_line(\"x\"))\n    core.check.is_true(true)\n    3u32\nend gl.pi\n\nfn gl.old() -> u32 uses [] panics never pub\n    1u32\nend gl.old\n";
 const APP: &str = "fn app.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(gl.double(21u32), 42u32)\n    std.io.print_line(\"ok\")\nend app.main\n";
 
 struct Fx {
@@ -79,6 +79,7 @@ fn setup(name: &str) -> Fx {
     let repo = w.path("gl_repo");
     write(&repo.join("kasane.toml"), &manifest("gl", false, ""));
     write(&repo.join("src/gl.ksnl"), GL1);
+    let _ = w.ksn(&["fmt"], &repo);
     git(&repo, &["init", "--quiet"]);
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "--quiet", "-m", "v1"]);
@@ -97,6 +98,7 @@ impl Fx {
     /// 依存の新しい版 (ソースを差し替えてコミット) に上げる。`ksn update gl` は `hash` / `source` を更新するが `api` は保つ。
     fn bump(&self, src: &str) {
         write(&self.repo.join("src/gl.ksnl"), src);
+        let _ = self.w.ksn(&["fmt"], &self.repo);
         git(&self.repo, &["add", "-A"]);
         git(&self.repo, &["commit", "--quiet", "-m", "v2"]);
         let rev = git(&self.repo, &["rev-parse", "HEAD"]);
@@ -137,9 +139,9 @@ fn version_3_lock_is_canonical_fixpoint() {
     assert_eq!(o.status.code(), Some(0), "lock is not canonical: {}", all(&o));
 }
 
-/// 版 1 のロックは読める。
+/// 版 1 のロックは、git 依存があるとき止まる (S4。版 3 から落として承認の関門を外せない)。
 #[test]
-fn version_1_locks_are_read() {
+fn version_1_locks_with_a_git_dependency_are_rejected() {
     let f = setup("v1read");
     let v1: String = f.lock()
         .lines()
@@ -149,7 +151,10 @@ fn version_1_locks_are_read() {
         .collect::<String>()
         .replacen("version = 3", "version = 1", 1);
     write(&f.app.join("kasane.lock"), &v1);
-    assert_eq!(f.check().status.code(), Some(0), "{}", all(&f.check()));
+    // 版 1 は api の記録を持たず承認の関門 (E9060-E9062) を無効にするので、git 依存があるとき check は止める (S4)。
+    let o = f.check();
+    assert_eq!(o.status.code(), Some(1), "{}", all(&o));
+    assert!(all(&o).contains("E9021") && all(&o).contains("version 1"), "{}", all(&o));
 }
 
 /// 版 2 のロックは読める。
@@ -179,7 +184,10 @@ fn version_1_locks_are_upgraded_to_version_3() {
         .collect::<String>()
         .replacen("version = 3", "version = 1", 1);
     write(&f.app.join("kasane.lock"), &v1);
-    assert_eq!(f.check().status.code(), Some(0), "{}", all(&f.check()));
+    // 版 1 は api の記録を持たず承認の関門 (E9060-E9062) を無効にするので、git 依存があるとき check は止める (S4)。
+    let o = f.check();
+    assert_eq!(o.status.code(), Some(1), "{}", all(&o));
+    assert!(all(&o).contains("E9021") && all(&o).contains("version 1"), "{}", all(&o));
     let o = f.w.ksn(&["lock", "--upgrade"], &f.app);
     assert_eq!(o.status.code(), Some(0), "{}", all(&o));
     let lock = f.lock();
@@ -206,7 +214,7 @@ fn version_3_without_api_fails() {
 #[test]
 fn widened_effects_stop_with_e9060_until_accepted() {
     let f = setup("widen");
-    f.bump(&GL1.replace("fn gl.double(x: u32) -> u32 uses [] panics never pub", "fn gl.double(x: u32) -> u32 uses [io.console] panics never pub"));
+    f.bump(&GL1.replace("fn gl.double(x: u32) -> u32 uses [] panics never pub\n    x.wrapping_mul(2u32)", "fn gl.double(x: u32) -> u32 uses [io.console] panics never pub\n    core.mem.drop(std.io.print_line(\"x\"))\n    x.wrapping_mul(2u32)"));
     for sub in ["check", "build", "test", "run"] {
         let o = f.w.ksn(&[sub], &f.app);
         assert_eq!(o.status.code(), Some(1), "{}: {}", sub, all(&o));
@@ -234,7 +242,7 @@ fn changed_or_removed_signatures_stop_with_e9061() {
 #[test]
 fn narrowed_and_added_definitions_stop_with_e9062() {
     let f = setup("narrow");
-    f.bump(&GL1.replace("fn gl.pi() -> u32 uses [alloc] panics may pub", "fn gl.pi() -> u32 uses [] panics never pub"));
+    f.bump(&GL1.replace("fn gl.pi() -> u32 uses [io.console] panics may pub\n    core.mem.drop(std.io.print_line(\"x\"))\n    core.check.is_true(true)\n    3u32\nend gl.pi", "fn gl.pi() -> u32 uses [] panics never pub\n    3u32\nend gl.pi"));
     let o = f.check();
     assert_eq!(o.status.code(), Some(1), "{}", all(&o));
     assert!(all(&o).contains("E9062"), "{}", all(&o));

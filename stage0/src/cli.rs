@@ -577,23 +577,6 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
             rep.add(g.code, &g.msg, Some(&fl), g.line, g.col, true);
         }
     }
-    // 依存は `.ksnl` だけを読む (ハッシュも `.ksnl` だけ)。読む人が見る `.ksnh` が横にあるなら、`.ksnl` と合っていなければ E9050 (S1c)。
-    for dp in &l.deps {
-        for s in crate::project::load_dir_sources(&dp.root.join("src"), true) {
-            if !s.path.ends_with(".ksnh") {
-                continue;
-            }
-            let fl = rel(&s.path);
-            match &s.ksnl {
-                None => rep.add("E9050", "the .ksnl next to this .ksnh is missing", Some(&fl), 1, 1, true),
-                Some(k) => {
-                    if let Some(ln) = crate::ksnh::first_mismatch(&s.text, k) {
-                        rep.add("E9050", "the .ksnl of this dependency does not match this .ksnh with its comments removed", Some(&fl), ln, 1, true);
-                    }
-                }
-            }
-        }
-    }
     if use_cache {
         // 置き場の上限を超えていたら古いものから消す (1 回だけ。ファイルごとに数えると件数の 2 乗になる)。
         crate::check_cache::trim();
