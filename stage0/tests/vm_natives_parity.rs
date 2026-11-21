@@ -190,3 +190,25 @@ const FS: &str = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.fs, 
     Ok(())
 end t.main
 "#;
+
+/// `std.rand.fill_secure` (OS の乱数) は値が毎回違うので、長さと「全部 0 ではない」だけを 3 つの入口で比べる。
+#[test]
+fn rand_fill_agrees_across_tree_vm_and_native() {
+    const RAND: &str = r#"fn t.main() -> Result<(), std.io.Error> uses [rand, io.console] panics may
+    let mut buf = [0u8; 32]
+    std.rand.fill_secure(&mut buf)?
+    core.check.eq(buf.len(), 32usize)
+    let mut any = false
+    for b in buf {
+        if b != 0u8 {
+            any = true
+        }
+    }
+    core.check.eq(any, true)
+    std.io.print_line("end")?
+    Ok(())
+end t.main
+"#;
+    let out = three_way("vm_natives_rand", RAND);
+    assert!(out.ends_with("end\n"), "{}", out);
+}
