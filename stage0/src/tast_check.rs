@@ -141,11 +141,19 @@ pub fn select(prog: &Program, user: &[usize], old: Vec<Diag>) -> Vec<Diag> {
             // TAST の E2023 は旧が同じ行で出していない所だけ足す。
             let old_pos: std::collections::BTreeSet<(String, usize)> =
                 old.iter().filter(|d| d.code == "E2023").map(|d| (d.file.clone(), d.line)).collect();
+            // 寿命・クロージャの E3010/E3030/E3050 も旧の検査 (borrowck.rs の check_lifetime_store / check_return_flow /
+            // check_closure_*) を消したので TAST が出す。旧の競合の検査 (analyze) が同じ (ファイル, 行, コード) で出す所は旧に任せる。
+            let old_life: std::collections::BTreeSet<(String, usize, String)> = old
+                .iter()
+                .filter(|d| matches!(d.code.as_str(), "E3010" | "E3020" | "E3030" | "E3050"))
+                .map(|d| (d.file.clone(), d.line, d.code.clone()))
+                .collect();
             let kept: Vec<Diag> = old.into_iter().filter(|d| !is_tast_code(&d.code)).collect();
             let eff: Vec<Diag> = new
                 .into_iter()
                 .filter(|d| {
                     is_tast_code(&d.code)
+                        || (matches!(d.code.as_str(), "E3010" | "E3020" | "E3030" | "E3050") && !old_life.contains(&(d.file.clone(), d.line, d.code.clone())))
                         || d.code == "E1122"
                         || (is_tast_e2023(d) && !old_pos.contains(&(d.file.clone(), d.line)))
                 })
