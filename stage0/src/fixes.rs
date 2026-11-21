@@ -19,6 +19,82 @@ fn char_idx(text: &str, byte: usize) -> usize {
     text[..byte].chars().count()
 }
 
+/// 文字列として示された型の先頭の `&` の数 (参照の段数)。`&mut u8` は 1、&&`u8` は 2。
+fn ref_depth(ty: &str) -> usize {
+    ty.bytes().take_while(|&b| b == b'&').count()
+}
+
+/// 参照をちょうど1つ外した型 (`&mut u8` → `u8`)。一致の確認に使う。
+fn strip_one_ref(ty: &str) -> &str {
+    let t = ty.strip_prefix('&').unwrap_or(ty);
+    t.strip_prefix("mut ").unwrap_or(t)
+}
+
+/// 診断のある行より上の、最も近い関数ヘッダ行 (`fn ... uses [...] ...`)。行番号は1始まり。
+fn caller_header(lines: &[String], line: usize) -> Option<usize> {
+    let mut n = line.saturating_sub(1);
+    while n > 0 {
+        let t = lines.get(n - 1)?;
+        if t.contains("uses [") && t.split_whitespace().any(|w| w == "fn") {
+            return Some(n);
+        }
+        n -= 1;
+    }
+    None
+}
+
+/// ヘッダが `pub` ならAPIを変えるので直さない (非pubの関数だけに限る)。
+fn is_pub_header(text: &str) -> bool {
+    text.split_whitespace().any(|w| w == "pub")
+}
+
+/// `line` より上の `let name` (または `let mut name`) を関数境界まで遡って探し、
+/// `let name` なら `let mut name` にする (`let mut name` なら何もせず、`None` なら直せない)。
+fn add_mut_to_let(file: &str, line: usize, name: &str, lines: &[String]) -> Vec<Fix> {
+    let mut n = line.saturating_sub(1);
+    while n > 0 {
+        let Some(t) = lines.get(n.wrapping_sub(1)) else { break };
+        let trimmed = t.trim_start();
+        if trimmed.starts_with("fn ") || trimmed.starts_with("end ") {
+            break;
+        }
+        let Some(rest) = trimmed.strip_prefix("let ") else {
+            n -= 1;
+            continue;
+        };
+        let (rest, already_mut) = match rest.strip_prefix("mut ") {
+            Some(r) => (r, true),
+            None => (rest, false),
+        };
+        if rest.starts_with(name)
+            && rest[name.len()..].chars().next().map_or(true, |c| !(c.is_alphanumeric() || c == '_'))
+        {
+            if already_mut {
+                return vec![];
+            }
+            let indent = t.len() - trimmed.len();
+            let b = char_idx(t, indent + 4); // `let ` の後
+            return vec![span(file, n, t, b, b, "mut ".to_string())];
+        }
+        n -= 1;
+    }
+    vec![]
+}
+
+/// `inferred so far: \`T\`` の `T` が、注釈として書いても意味を変えない確かな具体型か。
+/// 推論の穴 (`_`、`{integer}` など) や未解決の型変数が含まれるときは直さない。
+fn is_concrete_type(ty: &str) -> bool {
+    !ty.is_empty()
+        && ty != "_"
+        && !ty.contains('_')
+        && !ty.contains('{')
+        && !ty.contains('}')
+        && !ty.contains('?')
+        && ty
+            .chars()
+            .all(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '.' | ':' | '<' | '>' | '[' | ']' | ',' | ' ' | '&' | '\''))
+}
+
 fn span(file: &str, line: usize, text: &str, from: usize, to: usize, replace: String) -> Fix {
     Fix {
         file: file.to_string(),
