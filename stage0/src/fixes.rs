@@ -603,6 +603,19 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             let b1 = char_idx(text, m.end());
             vec![span(file, h, text, b0, b1, new)]
         }
+        // 呼び出し元の `panics never` を `panics may` にする (E4002)。APIを変えるので `pub` の関数は直さない。
+        "E4002" => {
+            let Some(h) = caller_header(lines, line) else { return vec![] };
+            let Some(text) = get(h) else { return vec![] };
+            if is_pub_header(text) {
+                return vec![];
+            }
+            let re = Regex::new(r"\bpanics never\b").unwrap();
+            let Some(m) = re.find(text) else { return vec![] };
+            let b0 = char_idx(text, m.start());
+            let b1 = char_idx(text, m.end());
+            vec![span(file, h, text, b0, b1, "panics may".to_string())]
+        }
         _ => vec![],
     }
 }
