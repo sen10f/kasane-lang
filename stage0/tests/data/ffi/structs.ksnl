@@ -94,13 +94,13 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let v = unsafe "ffi" "sse" {
         t.vec2_scale(t.Vec2 { x: 1.5f32, y: 2.0f32 }, 2.0f32)
     }
-    core.check.is_true(v.x == 3.0f32)
-    core.check.is_true(v.y == 4.0f32)
+    core.check.eq(v.x, 3.0f32)
+    core.check.eq(v.y, 4.0f32)
     let w = unsafe "ffi" "sse2" {
         t.vec2d_add(t.Vec2d { x: 1.0f64, y: 2.0f64 }, t.Vec2d { x: 0.5f64, y: 0.25f64 })
     }
-    core.check.is_true(w.x == 1.5f64)
-    core.check.is_true(w.y == 2.25f64)
+    core.check.eq(w.x, 1.5f64)
+    core.check.eq(w.y, 2.25f64)
     let m = unsafe "ffi" "mixed" {
         t.mixed_make(7i64, 0.5f64)
     }
@@ -108,7 +108,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let ms = unsafe "ffi" "mixed sum" {
         t.mixed_sum(m)
     }
-    core.check.is_true(ms == 7.5f64)
+    core.check.eq(ms, 7.5f64)
     let b = unsafe "ffi" "big" {
         t.big_make(5i64)
     }
@@ -127,7 +127,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let ns = unsafe "ffi" "nested sum" {
         t.nested_sum(n)
     }
-    core.check.is_true(ns == 3.5f64)
+    core.check.eq(ns, 3.5f64)
     let p = unsafe "ffi" "padded" {
         t.padded_make(3i8, 4i16, 5i32, 0.5f64)
     }
@@ -135,15 +135,15 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let ps = unsafe "ffi" "padded sum" {
         t.padded_sum(p)
     }
-    core.check.is_true(ps == 12.5f64)
+    core.check.eq(ps, 12.5f64)
     let f = unsafe "ffi" "f3" {
         t.f3_make(1.0f32)
     }
-    core.check.is_true(f.c == 3.0f32)
+    core.check.eq(f.c, 3.0f32)
     let fs = unsafe "ffi" "f3 sum" {
         t.f3_sum(f)
     }
-    core.check.is_true(fs == 6.0f32)
+    core.check.eq(fs, 6.0f32)
     let mut local = t.Small { a: 1i32, b: 1i32 }
     unsafe "ffi" "by pointer" {
         t.small_inc(core.ptr.from_mut(&mut local))

@@ -173,7 +173,7 @@ fn check_fields(var: &str, fields: &[Field], seed: i64, ind: &str) -> String {
     for (j, (f, k, _)) in fields.iter().enumerate() {
         let want = lit(k, seed + j as i64);
         if k.starts_with('f') {
-            writeln!(o, "{}    core.check.is_true({}.{} == {})", ind, var, f, want).unwrap();
+            writeln!(o, "{}    core.check.eq({}.{}, {})", ind, var, f, want).unwrap();
         } else {
             writeln!(o, "{}    core.check.eq({}.{}, {})", ind, var, f, want).unwrap();
         }
@@ -264,16 +264,16 @@ fn gen_ksn(ts: &[S]) -> String {
         writeln!(k, "    unsafe \"ffi\" \"C calls for t.{}\" {{", n).unwrap();
         writeln!(k, "        let a = t.make_{}(10i32)", l).unwrap();
         k.push_str(&check_fields("a", &s.fields, 10, "    "));
-        writeln!(k, "        core.check.is_true(t.size_{}() == {}.0f64)", l, csize(s)).unwrap();
-        writeln!(k, "        core.check.is_true(t.sum_{}(b) == {}.0f64)", l, sum20).unwrap();
+        writeln!(k, "        core.check.eq(t.size_{}(), {}.0f64)", l, csize(s)).unwrap();
+        writeln!(k, "        core.check.eq(t.sum_{}(b), {}.0f64)", l, sum20).unwrap();
         writeln!(k, "        let e = t.echo_{}(b)", l).unwrap();
         k.push_str(&check_fields("e", &s.fields, 20, "    "));
         // C → Kasane (構造体を受けて返すコールバック)。
         writeln!(k, "        let c = t.cb_{}(t.cbfn_{}, b)", l, l).unwrap();
         k.push_str(&check_fields("c", &s.fields, 21, "    "));
         // レジスタが足りない位置・構造体を 2 個。
-        writeln!(k, "        core.check.is_true(t.spill_{}(1i64, 2i64, b, 6i64, 0.5f64) == {}.5f64)", l, 9 + sum20).unwrap();
-        writeln!(k, "        core.check.is_true(t.pair_{}(b, 1i64, b, 0.5f64) == {}.5f64)", l, 2 * sum20 + 1).unwrap();
+        writeln!(k, "        core.check.eq(t.spill_{}(1i64, 2i64, b, 6i64, 0.5f64), {}.5f64)", l, 9 + sum20).unwrap();
+        writeln!(k, "        core.check.eq(t.pair_{}(b, 1i64, b, 0.5f64), {}.5f64)", l, 2 * sum20 + 1).unwrap();
         // ポインタ渡し (C が書き換える)。
         writeln!(k, "        t.bump_{}(core.ptr.from_mut(&mut m))", l).unwrap();
         writeln!(k, "    }}").unwrap();

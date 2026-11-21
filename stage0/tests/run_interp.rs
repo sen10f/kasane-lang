@@ -35,7 +35,7 @@ fn run_ok_exits_0_and_prints() {
 
 #[test]
 fn gap_f32_precision() {
-    let b = "    let a = 16777216.0f32\n    let b = a + 1.0f32\n    core.check.is_true(b == a)\n";
+    let b = "    let a = 16777216.0f32\n    let b = a + 1.0f32\n    core.check.eq(b, a)\n";
     let t = Tmp::new("gap_f32", &main_wrap("", b));
     assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
 }

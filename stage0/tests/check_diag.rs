@@ -570,9 +570,9 @@ fn f32_arithmetic_is_single_precision() {
         "f32_arith",
         "    let a = 0.1f32\n\
          \x20   let b = 0.2f32\n\
-         \x20   core.check.is_true(a + b == 0.3f32)\n\
+         \x20   core.check.eq(a + b, 0.3f32)\n\
          \x20   core.check.is_true(a.to_f64() != 0.1f64)\n\
-         \x20   core.check.is_true(1.0f32 / 3.0f32 == 0.33333334f32)\n\
+         \x20   core.check.eq(1.0f32 / 3.0f32, 0.33333334f32)\n\
          \x20   core.check.eq(1.0f32.to_bits(), 0x3f800000u32)\n",
     );
 }

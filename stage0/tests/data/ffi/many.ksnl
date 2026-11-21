@@ -35,7 +35,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let total = unsafe "ffi" "many arguments" {
         t.many(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r)
     }
-    core.check.is_true(total == 2109.0f64)
+    core.check.eq(total, 2109.0f64)
     let sp = unsafe "ffi" "struct that does not fit the registers" {
         t.spill(1i64, 2i64, 3i64, 4i64, 5i64, t.Small { a: 6i32, b: 7i32 }, 8i64)
     }
@@ -56,13 +56,13 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let fd = unsafe "ffi" "float callback" {
         t.apply_dbl(t.dbl, 2.5f64, 1.0f32, 3i32)
     }
-    core.check.is_true(fd == 3.5f64)
+    core.check.eq(fd, 3.5f64)
     let fe = unsafe "ffi" "closure callback" {
         t.apply_dbl(fn(x: f64, _y: f32, _z: i32) -> f64 capture [] {
             x
         }, 4.0f64, 1.0f32, 3i32)
     }
-    core.check.is_true(fe == 5.0f64)
+    core.check.eq(fe, 5.0f64)
     core.mem.drop(std.io.print_line("many ok"))
     Ok(())
 end t.main
