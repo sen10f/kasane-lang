@@ -4,6 +4,6 @@
 - 旧い規則は「`Tr` がこのパッケージならどこでも」だったので、`impl` が `Tr` のモジュール以外 (同じパッケージの別モジュール) にあると、今は E2043 になる。型の側の `impl` を型のモジュール以外に置いていた試験の入力 (`check_diag` の `TRAIT_SIDE_*`) は、置き場所を移した。自分の型 `t.ty.P` の impl は型のモジュールに置くので、その試験の `ksn get` の FQN を `t.tr.Show.t.ty.P.show` から `t.ty.P.show` に変えた (ほかの期待値は変えていない)。
 - メソッド探索: 依存のトレイトのモジュールに置いた impl は、利用側が `import` していなくても見つかる (既に成り立っていた。`tests/orphan_rule.rs` で確かめる)。インタプリタと native (`ksn build --backend llvm`) の出力が一致する。
 - 試験: `stage0/tests/orphan_rule.rs` (2 パッケージ: ライブラリ `orl` のトレイトを `alloc.vec.Vec<u32, std.alloc.System>` と `u32` に trait 側で実装し、app が使う。型側の正しい置き場所、違う置き場所 (別モジュール・型のモジュールに対するトレイト側・両方部外・同じパッケージの別モジュール) の拒否)。
-- パッケージの同一は、モジュール名の最上位の成分で決める (`core`・`alloc`・`std` は別のパッケージ。標準ライブラリにも例外はない)。標準ライブラリの中の impl は、この検査の対象外 (移行の前の配置を残す)。`std.json` の `ToJson` / `FromJson` (型側と別モジュールに置いた 28 件) と `alloc.arena` の `Clone`・`alloc.collections` の `Iterator` は、新しい規則では違反になる。直すなら `spec/stdlib` の移動が要る (次の課題)。
+- パッケージの同一は、モジュール名の最上位の成分で決める (`core`・`alloc`・`std` は別のパッケージ。標準ライブラリにも例外はない)。
 
 - blanket impl (型パラメータへの impl) もトレイトのモジュールだけ (E2043)。試験 `a_blanket_impl_must_be_in_the_trait_module`。
