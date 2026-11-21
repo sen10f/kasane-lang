@@ -251,52 +251,6 @@ pub(crate) fn sig_has_ptr(d: &Def) -> bool {
     d.params.iter().any(|p| find_ptr_ty(&p.1, 0).is_some()) || find_ptr_ty(&d.ret, 0).is_some()
 }
 
-/// 型表 (`types.rs` の `tytab`) から、メソッド呼び出し (`v.pop();`) の式文で、戻り値が `()` / `!` 以外に
-/// 決まる行を集める (4.6, E2042)。`ty_of` は標準ライブラリのジェネリック型のメソッドの戻り値を決められないので、
-/// その戻り値 (レシーバの型引数を sig の戻り値型に代入した型) を型表から取る。
-/// 関数呼び出し・字段の捨ては対象外 (`discard_check` の担当で、従来どおり黙る形もある)。
-/// ブロックの最後の文 (ブロックの値) は捨てない。型に未知・型変数・型パラメータ・クロージャが
-/// 残るものは黙る (誤検出を出さない)。
-fn discarded_by_type(tk: &crate::types::TypeCk, d: &Def) -> Vec<usize> {
-    let Some(body) = &d.body else { return vec![] };
-    let mut all = vec![];
-    walk(body, &mut all);
-    // 局所名 (引数と `PBind`)。`v.pop()` は `Call` の経路 `["v", "pop"]` として parse され、先頭が
-    // 局所名のものだけがレシーバのあるメソッド呼び出し (型検査器の `call` と同じ判定)。
-    let mut locals: std::collections::HashSet<String> = d.params.iter().map(|p| p.0.clone()).collect();
-    for v in &all {
-        if nname(v) == "PBind" {
-            locals.insert(st(&nf(v)[0]));
-        }
-    }
-    let is_method_call = |e: &V| match nname(e) {
-        "MCall" => true,
-        "Call" => {
-            let callee = &nf(e)[0];
-            nname(callee) == "Path" && {
-                let segs = strs(&nf(callee)[0]);
-                segs.len() >= 2 && locals.contains(&segs[0])
-            }
-        }
-        _ => false,
-    };
-    let mut lines = vec![];
-    for b in all.iter().filter(|v| nname(v) == "Block") {
-        let stmts = items(&nf(b)[0]);
-        for s in stmts.iter().take(stmts.len().saturating_sub(1)) {
-            if nname(s) != "ExprStmt" || !is_method_call(&nf(s)[0]) {
-                continue;
-            }
-            let Some(et) = tk.expr_type(&d.name, crate::parser::nid(&nf(s)[0])) else { continue };
-            let unit = matches!(et.ty, crate::types::Ty::Unit | crate::types::Ty::Never)
-                || matches!(&et.ty, crate::types::Ty::Tuple(xs) if xs.is_empty());
-            if !unit && ty_fully_known(&et.ty) {
-                lines.push(nline(s));
-            }
-        }
-    }
-    lines
-}
 
 /// `discarded_by_type` の線形版: 途中の式文 (呼び出し・ブロック以外) の型が線形に決まる行。
 /// 型パラメータは `T: linear` の束縛を見る (`self.lin_gnames` は定義ごとに `d` で引く)。
@@ -360,16 +314,6 @@ fn ty_to_v_loose(t: &crate::types::Ty) -> Option<V> {
     })
 }
 
-/// 型が具体的に決まっているか (未知・型変数・型パラメータ・クロージャを含まない)。
-fn ty_fully_known(t: &crate::types::Ty) -> bool {
-    use crate::types::Ty;
-    match t {
-        Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Closure { .. } => false,
-        Ty::Never | Ty::Unit | Ty::Prim(_) | Ty::Const(_) | Ty::Dyn(..) => true,
-        Ty::Named(_, xs, _) | Ty::Tuple(xs) => xs.iter().all(ty_fully_known),
-        Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => ty_fully_known(x),
-    }
-}
 
 pub(crate) fn is_pat(v: &V) -> bool {
     matches!(nname(v), "PWild" | "PBind" | "PLit" | "PPath" | "PTuple" | "PVariant" | "PStruct" | "PRef")
@@ -3185,9 +3129,6 @@ impl<'a> Checker<'a> {
             let d = self.def(i);
             if (d.kw == "fn" && d.body.is_some()) || d.kw == "test" {
                 self.d = i;
-                for line in discarded_by_type(&tk, d) {
-                    self.tdiag("E2042", "a value other than () is discarded; use core.mem.drop(x)".into(), line);
-                }
                 // 文の位置の `if`/`else`・`match` などの値 (E2042 の対象外の形) が線形なら、捨てる式文と同じに E3003 (4.4)。
                 self.lin_gnames = d
                     .generics
@@ -3717,21 +3658,6 @@ impl<'a> Checker<'a> {
         tag(s) == "prim" && INT_PRIMS.contains(&st(tel(s, 1)).as_str())
     }
 
-    /// 4.6: `()` と `!` 以外の値を捨てる式文はエラー。
-    fn discard_check(&mut self, stmts: &[V], i: usize, env: &Env) {
-        let s = &stmts[i];
-        if i + 1 == stmts.len() || nname(s) != "ExprStmt" {
-            return;
-        }
-        let ty = self.ty_of(&nf(s)[0], env);
-        if is_nil(&ty) {
-            return;
-        }
-        let is_unit = tag(&ty) == "tuple" && items(tel(&ty, 1)).is_empty();
-        if !is_unit && tag(&ty) != "never" {
-            self.tdiag("E2042", "a value other than () is discarded; use core.mem.drop(x)".into(), nline(s));
-        }
-    }
 
     /// 型が線形か (4.4): `linear` と宣言された型、または線形な値を含む型
     /// (フィールド・バリアントのペイロード・タプル要素・配列要素・型引数)。
@@ -4551,7 +4477,6 @@ impl<'a> Checker<'a> {
         let stmts = items(&nf(b)[0]);
         for (i, s) in stmts.iter().enumerate() {
             self.tc_stmt(s, &mut env, &mut muts, consume && i + 1 == stmts.len());
-            self.discard_check(stmts, i, &env);
         }
         if stmts.iter().any(|s| self.diverges(s)) {
             // 後続へ進まないブロック: 漏れは `return` / `break` / `continue` の地点で報告済み。
@@ -5421,9 +5346,6 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                if let Some(c) = callee {
-                    self.check_bounds(c, items(&f[1]), env, nline(e));
-                }
                 if let Some((c, off)) = lin_callee {
                     let recv_ty = match nname(fnn) {
                         "Path" if off == 1 => {
@@ -6260,7 +6182,6 @@ impl<'a> Checker<'a> {
                 // 腕の束縛は、合流後には見えない。
                 merged.retain(|k, _| env.contains_key(k.split('.').next().unwrap_or(k)));
                 self.moved = merged;
-                self.exhaustive(e, env);
             }
             n => {
                 let mut inner = env.clone();
@@ -6416,170 +6337,8 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn exhaustive(&mut self, m: &V, env: &Env) {
-        let f = nf(m);
-        let pats: Vec<&V> = items(&f[1]).iter().map(|a| &items(a)[0]).collect();
-        // `if let` / `is` が作る「他の全部」の腕 (`PWild [true]`) は、全列挙の強制の対象外。
-        if pats.iter().any(|p| nname(p) == "PWild" && !nf(p).is_empty()) {
-            return;
-        }
-        if pats.iter().any(|p| matches!(nname(p), "PWild" | "PBind")) {
-            let got = self.ty_of(&f[0], env);
-            let s = self.strip(&got).clone();
-            let by_arm = pats.iter().any(|p| match nname(p) {
-                "PVariant" | "PPath" => {
-                    let segs = strs(&nf(p)[0]);
-                    (segs.len() == 1 && matches!(segs[0].as_str(), "None" | "Some" | "Ok" | "Err"))
-                        || matches!(
-                            self.p.resolve(&segs, &self.def(self.d).file),
-                            Some(Resolved { target: Target::Variant(..), .. })
-                        )
-                }
-                "PLit" => st(&nf(&nf(p)[0])[0]) == "bool",
-                _ => false,
-            });
-            if by_arm {
-                self.tdiag("E2021", "`_` / binding patterns cannot match an enum or bool; list all cases".into(), nline(m));
-                return;
-            }
-            if tag(&s) == "prim" && st(tel(&s, 1)) == "bool" {
-                self.tdiag("E2021", "`_` / binding patterns cannot match a bool; list `true` and `false`".into(), nline(m));
-                return;
-            }
-            if tag(&s) == "named" {
-                if let Some(&ti) = self.p.types.get(&st(tel(&s, 1))) {
-                    if self.def(ti).kw == "enum" {
-                        self.tdiag(
-                            "E2021",
-                            "`_` / binding patterns cannot match an enum; list all variants".into(),
-                            nline(m),
-                        );
-                        return;
-                    }
-                }
-            }
-        }
-        // 入れ子のパターンも含めた網羅性と、到達しない腕 (パターン行列。`exhaust.rs`)。
-        let mut sfields: HashMap<String, BTreeSet<String>> = HashMap::new();
-        for p in &pats {
-            Self::struct_fields(p, &mut sfields);
-        }
-        let mut xps = vec![];
-        for p in &pats {
-            match self.to_xp(p, &sfields) {
-                Some(x) => xps.push(x),
-                None => return,
-            }
-        }
-        let (wit, dead) = crate::exhaust::analyze(&xps);
-        if let Some(w) = wit {
-            self.tdiag("E2021", format!("non-exhaustive match: pattern `{}` is not covered", w), nline(m));
-        }
-        let arms = items(&f[1]);
-        for i in dead {
-            self.tdiag(
-                "E2052",
-                "unreachable `match` arm: the earlier arms already cover every value it matches".into(),
-                nline(&items(&arms[i])[0]),
-            );
-        }
-    }
 
-    fn struct_fields(p: &V, out: &mut HashMap<String, BTreeSet<String>>) {
-        match nname(p) {
-            "PStruct" => {
-                let e = out.entry(strs(&nf(p)[0]).join(".")).or_default();
-                for x in items(&nf(p)[1]) {
-                    e.insert(st(&items(x)[0]));
-                }
-                for x in items(&nf(p)[1]) {
-                    Self::struct_fields(&items(x)[1], out);
-                }
-            }
-            "PTuple" => items(&nf(p)[0]).iter().for_each(|q| Self::struct_fields(q, out)),
-            "PVariant" => items(&nf(p)[1]).iter().for_each(|q| Self::struct_fields(q, out)),
-            "PRef" => Self::struct_fields(&nf(p)[0], out),
-            _ => {}
-        }
-    }
 
-    /// パターンを行列用の形へ。形が合わない (型の誤りは別の検査が報告する) ときは `None` で検査を見送る。
-    fn to_xp(&self, p: &V, sf: &HashMap<String, BTreeSet<String>>) -> Option<crate::exhaust::XP> {
-        use crate::exhaust::XP;
-        use std::rc::Rc;
-        let single = |key: &str, n: usize| Some(Rc::new(vec![(key.to_string(), n)]));
-        match nname(p) {
-            "PWild" | "PBind" => Some(XP::Wild),
-            "PRef" => self.to_xp(&nf(p)[0], sf),
-            "PTuple" => {
-                let args: Option<Vec<XP>> = items(&nf(p)[0]).iter().map(|q| self.to_xp(q, sf)).collect();
-                let args = args?;
-                Some(XP::Ctor { fam: single("tuple", args.len()), key: "tuple".into(), args })
-            }
-            "PStruct" => {
-                let key = strs(&nf(p)[0]).join(".");
-                let names: Vec<String> = sf.get(&key)?.iter().cloned().collect();
-                let mut args = vec![];
-                for n in &names {
-                    let sub = items(&nf(p)[1]).iter().find(|x| st(&items(x)[0]) == *n);
-                    args.push(match sub {
-                        Some(x) => self.to_xp(&items(x)[1], sf)?,
-                        None => XP::Wild,
-                    });
-                }
-                let k = format!("struct:{}", key);
-                Some(XP::Ctor { fam: single(&k, args.len()), key: k, args })
-            }
-            "PLit" => {
-                let lit = &nf(p)[0];
-                let kind = st(&nf(lit)[0]);
-                if kind == "bool" {
-                    let all = Rc::new(vec![("True".to_string(), 0), ("False".to_string(), 0)]);
-                    let k = if matches!(nf(lit)[1], V::B(true)) { "True" } else { "False" };
-                    return Some(XP::Ctor { fam: Some(all), key: k.into(), args: vec![] });
-                }
-                if kind == "unit" {
-                    return Some(XP::Ctor { fam: single("()", 0), key: "()".into(), args: vec![] });
-                }
-                Some(XP::Ctor { fam: None, key: format!("lit:{:?}", nf(lit)), args: vec![] })
-            }
-            "PVariant" | "PPath" => {
-                let segs = strs(&nf(p)[0]);
-                let args: Vec<XP> = if nname(p) == "PVariant" {
-                    items(&nf(p)[1]).iter().map(|q| self.to_xp(q, sf)).collect::<Option<_>>()?
-                } else {
-                    vec![]
-                };
-                let named = |en: &str, vn: &str| (en.to_string(), vn.to_string());
-                let target = match self.p.resolve(&segs, &self.def(self.d).file) {
-                    Some(Resolved { target: Target::Variant(en, vn), .. }) => Some((en, vn)),
-                    _ if segs.len() == 1 && segs[0] == "None" => Some(named("Option", "None")),
-                    _ if segs.len() == 1 && segs[0] == "Some" => Some(named("Option", "Some")),
-                    _ if segs.len() == 1 && segs[0] == "Ok" => Some(named("Result", "Ok")),
-                    _ if segs.len() == 1 && segs[0] == "Err" => Some(named("Result", "Err")),
-                    _ => None,
-                };
-                let Some((en, vn)) = target else {
-                    // 変数に解決しない名前 (定数など): リテラルと同じく無限の族。
-                    return Some(XP::Ctor { fam: None, key: format!("lit:{}", segs.join(".")), args });
-                };
-                let all: Vec<(String, usize)> = match en.as_str() {
-                    "Option" => vec![("Some".into(), 1), ("None".into(), 0)],
-                    "Result" => vec![("Ok".into(), 1), ("Err".into(), 1)],
-                    _ => {
-                        let ti = *self.p.types.get(&en)?;
-                        self.def(ti).variants.iter().map(|v| (v.0.clone(), v.1.len())).collect()
-                    }
-                };
-                let want = all.iter().find(|x| x.0 == vn)?.1;
-                if want != args.len() {
-                    return None;
-                }
-                Some(XP::Ctor { fam: Some(Rc::new(all)), key: vn, args })
-            }
-            _ => None,
-        }
-    }
 
     /// 式の型。`ty_of` で決まらなければ型表 (`mv_types`) から引く (汎用関数の戻り値など、4.4 の検査が見る型)。
     fn lin_ty(&self, e: &V, env: &Env) -> V {
@@ -7044,49 +6803,6 @@ impl<'a> Checker<'a> {
         self.def(i).derive.iter().any(|x| DERIVE_TRAITS.iter().any(|(k, v)| k == x && *v == tr))
     }
 
-    fn check_bounds(&mut self, callee: &Def, args: &[V], env: &Env, line: usize) {
-        let mut bounds: HashMap<String, Vec<V>> = HashMap::new();
-        for g in &callee.generics {
-            if g.0 == "type" && !items(&g.2).is_empty() {
-                bounds.insert(g.1.clone(), items(&g.2).to_vec());
-            }
-        }
-        for ((_, pt), a) in callee.params.iter().zip(args) {
-            let base = self.strip(pt);
-            if tag(base) == "named" && bounds.contains_key(&st(tel(base, 1))) {
-                let got = self.ty_of(a, env);
-                let at = self.strip(&got).clone();
-                if tag(&at) != "named" {
-                    continue;
-                }
-                let bname = st(tel(base, 1));
-                for b in &bounds[&bname] {
-                    let V::L(bx) = b else { continue };
-                    let tr = st(&bx[0]);
-                    let known = self.p.types.get(&tr).map_or(false, |&i| self.def(i).kw == "trait");
-                    let derive_tr = DERIVE_TRAITS.iter().any(|(_, v)| *v == tr);
-                    if (known || derive_tr)
-                        && tr != "core.marker.Send"
-                        && tr != "core.marker.Sync"
-                        && !tr.starts_with("core.ops.Fn")
-                        && !self.implements(&st(tel(&at, 1)), &tr)
-                    {
-                        self.tdiag(
-                            "E2030",
-                            format!(
-                                "the trait bound `{}: {}` of {} is not satisfied by {}",
-                                bname,
-                                tr,
-                                callee.name,
-                                st(tel(&at, 1))
-                            ),
-                            line,
-                        );
-                    }
-                }
-            }
-        }
-    }
 
     /// `std.task.block_on` の入れ子 (仕様 5.6、E4023): `block_on` に渡す閉包の本体から、`block_on` を直接呼ぶ、
     /// または呼び出しグラフ上で `block_on` へ届くユーザの関数を呼ぶものを拒む。呼び出しグラフは名前の候補の和なので保守側に寄る。

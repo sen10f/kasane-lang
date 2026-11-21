@@ -91,9 +91,11 @@ const S4_REPLACED: &[&str] = &[
     "E2030",                    // 境界
 ];
 
-/// 効果の診断コード。Old では旧の検査を持たず、TAST の効果の規則だけが出す。
-fn is_effect_code(code: &str) -> bool {
-    matches!(code, "E4001" | "E4002")
+/// 旧の検査を持たず、TAST の規則だけが出す診断コード (Old)。効果 (E4001/E4002)、捨てた値 (E2042、
+/// discard.rs)、網羅性 (E2021/E2052、exhaustive.rs)、可変性 (E3031、mutability.rs)、境界 (E2030、bounds.rs)。
+/// 設計_S4の旧い検査の取り外し.md 3 段目 1・3。
+fn is_tast_code(code: &str) -> bool {
+    matches!(code, "E4001" | "E4002" | "E2042" | "E2021" | "E2052" | "E3031" | "E2030")
 }
 
 /// (ファイル, 行, コード, 文面) で重ねる。
@@ -128,8 +130,8 @@ pub fn select(prog: &Program, user: &[usize], old: Vec<Diag>) -> Vec<Diag> {
             // impl の署名 (E1122) も旧の検査を持たず、TAST の impl_sig 規則が出す (設計_S4の旧い検査の取り外し.md 3 段目 2)。
             // 他の旧の診断はそのまま出す (check.rs のフィールド可視性の E1122 を含む)。KSN_DUMP_TAST は木を出す確認用。
             let new = check(prog, user);
-            let kept: Vec<Diag> = old.into_iter().filter(|d| !is_effect_code(&d.code)).collect();
-            let eff: Vec<Diag> = new.into_iter().filter(|d| is_effect_code(&d.code) || d.code == "E1122").collect();
+            let kept: Vec<Diag> = old.into_iter().filter(|d| !is_tast_code(&d.code)).collect();
+            let eff: Vec<Diag> = new.into_iter().filter(|d| is_tast_code(&d.code) || d.code == "E1122").collect();
             dedup([kept, eff].concat())
         }
         Mode::New => check(prog, user),
