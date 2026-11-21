@@ -4,7 +4,7 @@ fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
 end t.consume
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str("hello, this is a long heap string"))
     let f = fn() -> () capture [&s] {
         t.consume(s)

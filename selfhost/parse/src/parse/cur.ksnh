@@ -5,7 +5,7 @@ type parse.cur.P pub
     ast: parse.ast.Ast pub
     depth: usize pub
     pos: usize pub
-    toks: alloc.vec.Vec<parse.tok.Tok, std.alloc.System> pub
+    toks: std.vec.Vec<parse.tok.Tok> pub
 end parse.cur.P
 
 fn parse.cur.accept_ch(p: &mut parse.cur.P, ch: u8) -> bool uses [] panics never pub
@@ -140,7 +140,7 @@ fn parse.cur.name_tok(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> use
     Ok(at)
 end parse.cur.name_tok
 
-fn parse.cur.new(toks: alloc.vec.Vec<parse.tok.Tok, std.alloc.System>) -> Result<parse.cur.P, parse.err.Error> uses [alloc] panics never pub
+fn parse.cur.new(toks: std.vec.Vec<parse.tok.Tok>) -> Result<parse.cur.P, parse.err.Error> uses [alloc] panics never pub
     let ast = parse.ast.new()?
     Ok(parse.cur.P { ast: ast, depth: 0usize, pos: 0usize, toks: toks })
 end parse.cur.new

@@ -2,7 +2,7 @@ trait t.Bad
     fn dup[T](self: &Self, x: T) -> () uses [] panics never
 end t.Bad
 
-fn t.f(b: &alloc.boxed.Box<dyn t.Bad + 'static, std.alloc.System>) -> () uses [] panics never
+fn t.f(b: &std.boxed.Box<dyn t.Bad + 'static>) -> () uses [] panics never
     core.mem.drop(b)
 end t.f
 

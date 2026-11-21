@@ -2,13 +2,13 @@ import alloc.string
 
 // 1 行のフィールド列。
 type csvtool.table.Row pub
-    fields: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    fields: std.vec.Vec<std.string.String> pub
 end csvtool.table.Row
 
 // 読み込んだ 1 つの表。ヘッダー (先頭行) と残りの行、出力に使う区切り文字を持つ。
 type csvtool.table.Table pub
-    header: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
-    rows: alloc.vec.Vec<csvtool.table.Row, std.alloc.System> pub
+    header: std.vec.Vec<std.string.String> pub
+    rows: std.vec.Vec<csvtool.table.Row> pub
     delim: char pub
 end csvtool.table.Table
 
@@ -105,12 +105,12 @@ fn csvtool.table.parse_index(spec: &str) -> Option<usize> uses [] panics never
 end csvtool.table.parse_index
 
 test csvtool.table.Table.cell.test_cell_and_bounds
-    let mut header = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut header = std.vec.Vec.new()
     core.mem.drop(header.push(string.String.from_str(std.alloc.SYSTEM, "a")?))
-    let mut row = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut row = std.vec.Vec.new()
     core.mem.drop(row.push(string.String.from_str(std.alloc.SYSTEM, "x")?))
     core.mem.drop(row.push(string.String.from_str(std.alloc.SYSTEM, "y")?))
-    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rows = std.vec.Vec.new()
     core.mem.drop(rows.push(csvtool.table.Row { fields: row })?)
     let t = csvtool.table.Table { header: header, rows: rows, delim: ',' }
     core.check.eq(t.cell(0usize, 1usize), Some("y"))
@@ -121,10 +121,10 @@ test csvtool.table.Table.cell.test_cell_and_bounds
 end csvtool.table.Table.cell.test_cell_and_bounds
 
 test csvtool.table.Table.col_index.test_name_and_number
-    let mut header = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut header = std.vec.Vec.new()
     core.mem.drop(header.push(string.String.from_str(std.alloc.SYSTEM, "name")?))
     core.mem.drop(header.push(string.String.from_str(std.alloc.SYSTEM, "amount")?))
-    let rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let rows = std.vec.Vec.new()
     let t = csvtool.table.Table { header: header, rows: rows, delim: ',' }
     core.check.eq(t.col_index("amount"), Some(1usize))
     core.check.eq(t.col_index("2"), Some(1usize))

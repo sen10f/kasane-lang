@@ -1,6 +1,6 @@
 // ブロックの本文 (`  b0(..):` と命令)。`alloca` / `frame.bytes 24` は入口ブロックの先頭へ集める。
-fn lower.func.body_text(c: &lower.cx.Cx) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn lower.func.body_text(c: &lower.cx.Cx) -> Result<std.string.String, resolve.Failure> uses [alloc] panics may pub
+    let mut out = std.string.String.new()
     let mut b = 0usize
     while b < c.v.hdr.len() {
         match c.v.hdr.as_slice().get(b) {
@@ -50,11 +50,11 @@ end lower.func.body_text
 
 // 関数 1 本の下ろし: 頭 (引数・戻り値・効果・panics・stack) と本体。結果は `c.g.tx` に、成否は `c.g.oks` に入れる。
 // 呼び出し側 (lower.main) は名前の順に 1 回ずつ呼ぶので、両者は同じ添字になる。
-fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, key: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>, ret0: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, key: &str, subs: &std.vec.Vec<usize>, ret0: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     lower.cx.reset(c)?
     let fqn_s = lower.tyk.item_fqn(env, item)
     let fqn = fqn_s.as_str()
-    let mut sb = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut sb = std.vec.Vec.new()
     for x in subs.as_slice().iter() {
         sb.push(*x)?
     }
@@ -78,11 +78,11 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     let sg = parse.ast.get(&p.ast, n.c)
     let at = parse.ast.get(&p.ast, sg.d)
     let mark = lower.cx.depth(c)
-    let mut bl = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut bl = std.vec.Vec.new()
     lower.expr.scan(env, c, p, src, n.d, &mut bl, true)?
     c.v.sl.bor = bl
     // 引数: 型は型検査の表 (Param 節)、値の番号を振って局所に入れる。
-    let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ps = std.vec.Vec.new()
     let np = resolve.ast.count(p, sg.b)
     for j in core.iter.range(0usize, np) {
         let pnode = resolve.ast.item(p, sg.b, j)
@@ -126,7 +126,7 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     }
     lower.expr.trunc(c, mark)
     // 頭の行。
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     out.push_str("fn ")?
     out.push_str(fqn)?
     out.push_str(" key=")?

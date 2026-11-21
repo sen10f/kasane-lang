@@ -22,8 +22,8 @@ fn ksnc.kbuild.make(dir: &str, root: &str, std_dir: &str, release: bool, target:
     let mut mk = std.process.Command.new("mkdir")
     mk.arg("-p")
     mk.arg(outdir.as_str())
-    let mut mk_out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut mk_err = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut mk_out = std.vec.Vec.new()
+    let mut mk_err = std.vec.Vec.new()
     let mk_st = mk.output(&mut mk_out, &mut mk_err)?
     ksnc.tool.expect_ok("ksnc: target/kasane を作れない\n", mk_st.code, &mk_out, &mk_err)?
     let base = std.path.join(outdir.as_str(), man.name.as_str())?
@@ -64,8 +64,8 @@ fn ksnc.kbuild.make(dir: &str, root: &str, std_dir: &str, release: bool, target:
     cc.arg(exe.as_str())
     cc.arg("-lm")
     cc.arg("-pthread")
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut err = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
+    let mut err = std.vec.Vec.new()
     let st = cc.output(&mut out, &mut err)?
     ksnc.tool.expect_ok("ksnc: clang の段が失敗した (--stages=kasane)\n", st.code, &out, &err)?
     std.io.print_line(exe.as_str())?

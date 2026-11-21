@@ -27,7 +27,7 @@ fn notes.cmd.add(start: usize) -> Result<(), notes.error.Error> uses [alloc, env
     let secs = now.unix_seconds()
     let dt = std.datetime.from_unix_seconds(secs)
     let created_at = dt.to_rfc3339()?
-    let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tags = std.vec.Vec.new()
     let mut i = start.wrapping_add(2usize)
     let n = std.env.arg_count()
     while i < n {
@@ -70,7 +70,7 @@ fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Res
     let mut db = notes.cmd.load_store()?
     match db.get(id) {
         Some(memo) => {
-            let mut new_tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let mut new_tags = std.vec.Vec.new()
             let all = memo.tags.as_slice()
             let mut i = 0usize
             let n = all.len()
@@ -114,7 +114,7 @@ fn notes.cmd.export(path_index: usize, format_index: usize) -> Result<(), notes.
     let mut i = 0usize
     let n = db.all_notes_len()
     if format == "json" {
-        let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut out = std.string.String.new()
         out.push_str("[")?
         while i < n {
             match db.get_at(i) {
@@ -132,7 +132,7 @@ fn notes.cmd.export(path_index: usize, format_index: usize) -> Result<(), notes.
         out.push_str("]")?
         std.fs.write_atomic(path, out.as_bytes())?
     } else if format == "md" {
-        let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut out = std.string.String.new()
         while i < n {
             match db.get_at(i) {
                 Some(memo) => {
@@ -172,8 +172,8 @@ fn notes.cmd.export(path_index: usize, format_index: usize) -> Result<(), notes.
 end notes.cmd.export
 
 // i64 を幅指定で文字列化する。
-fn notes.cmd.fmt_i64(value: i64, width: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn notes.cmd.fmt_i64(value: i64, width: usize) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     let spec = alloc.fmt.Spec.new().with_left().with_width(width)
     alloc.fmt.write_i64(&mut out, value, &spec)?
     Ok(out)
@@ -202,8 +202,8 @@ fn notes.cmd.load_store() -> Result<notes.store.Store, notes.error.Error> uses [
 end notes.cmd.load_store
 
 // 文字列を指定幅で左詰めにする（幅を超える場合はそのまま）。
-fn notes.cmd.pad_left(text: &str, width: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn notes.cmd.pad_left(text: &str, width: usize) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     if text.len() >= width {
         out.push_str(text)?
     } else {
@@ -220,7 +220,7 @@ end notes.cmd.pad_left
 
 // テーブルのヘッダ行を出力する。
 fn notes.cmd.print_header() -> Result<(), notes.error.Error> uses [alloc, io.console] panics never pub
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut line = std.string.String.new()
     let id_col = notes.cmd.pad_left("ID", notes.cmd.COL_ID)?
     line.push_str(id_col.as_str())?
     let title_col = notes.cmd.pad_left("TITLE", notes.cmd.COL_TITLE)?
@@ -235,7 +235,7 @@ end notes.cmd.print_header
 
 // 1 メモをテーブル形式で1行出力する。
 fn notes.cmd.print_row(n: &notes.note.Note) -> Result<(), notes.error.Error> uses [alloc, io.console] panics never pub
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut line = std.string.String.new()
     let id_text = notes.cmd.fmt_i64(n.id, notes.cmd.COL_ID)?
     line.push_str(id_text.as_str())?
     let title_col = notes.cmd.pad_left(n.title.as_str(), notes.cmd.COL_TITLE)?
@@ -342,7 +342,7 @@ fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Er
     let mut db = notes.cmd.load_store()?
     match db.get(id) {
         Some(memo) => {
-            let mut new_tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let mut new_tags = std.vec.Vec.new()
             let all = memo.tags.as_slice()
             let mut i = 0usize
             let n = all.len()
@@ -370,8 +370,8 @@ fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Er
 end notes.cmd.tag
 
 // タグベクトルをカンマ区切り文字列にする。
-fn notes.cmd.tags_to_string(tags: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn notes.cmd.tags_to_string(tags: &std.vec.Vec<std.string.String>) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     let all = tags.as_slice()
     let mut i = 0usize
     let n = all.len()
@@ -391,7 +391,7 @@ fn notes.cmd.tags_to_string(tags: &alloc.vec.Vec<alloc.string.String<std.alloc.S
 end notes.cmd.tags_to_string
 
 // JSON 文字列リテラルを出力用にエスケープして書き出す。
-fn notes.cmd.write_json_string(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn notes.cmd.write_json_string(out: &mut std.string.String, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     out.push_str("\"")?
     for c in text.chars() {
         if c == '"' {

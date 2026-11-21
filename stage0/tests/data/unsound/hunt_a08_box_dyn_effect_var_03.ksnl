@@ -24,6 +24,6 @@ fn t.main() -> Result<(), t.MyError> uses [alloc] panics never
     Ok(())
 end t.main
 
-fn t.take[E: uses, P: panics](h: alloc.boxed.Box<dyn t.Tr<E, P> + 'static, std.alloc.System>) -> () uses [] panics never
+fn t.take[E: uses, P: panics](h: std.boxed.Box<dyn t.Tr<E, P> + 'static>) -> () uses [] panics never
     h.m()
 end t.take

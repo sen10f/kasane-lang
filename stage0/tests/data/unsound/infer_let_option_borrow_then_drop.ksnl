@@ -1,5 +1,5 @@
 fn t.main() -> Result<(), alloc.alloc.AllocError> uses [] panics never
-    let opt = Some(alloc.string.String.new(std.alloc.SYSTEM))
+    let opt = Some(std.string.String.new())
     let r = if true {
         opt.as_ref()
     } else {

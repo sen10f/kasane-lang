@@ -1,6 +1,6 @@
 enum t.Tree derive [Drop] pub
     Leaf
-    Node(alloc.vec.Vec<t.Tree, std.alloc.System>)
+    Node(std.vec.Vec<t.Tree>)
 end t.Tree
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

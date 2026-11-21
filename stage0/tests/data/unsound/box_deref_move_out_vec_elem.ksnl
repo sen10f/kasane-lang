@@ -1,5 +1,5 @@
 fn t.bad() -> () uses [alloc] panics may
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     let s = match alloc.string.String.from_str(std.alloc.SYSTEM, "hi") {
         Ok(s) => s
         Err(_e) => core.panic.panic("oom")

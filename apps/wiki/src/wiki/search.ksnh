@@ -1,11 +1,11 @@
 import wiki.markdown
 
-fn wiki.search.index_add_page(index: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, name: &str, content: &str) -> Result<(), wiki.error.Error> uses [alloc] panics never pub
+fn wiki.search.index_add_page(index: &mut std.vec.Vec<std.string.String>, name: &str, content: &str) -> Result<(), wiki.error.Error> uses [alloc] panics never pub
     for word in content.split(" ") {
         if !word.is_empty() {
             let key = alloc.string.String.from_str(std.alloc.SYSTEM, word)?
             let nm = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
-            let mut entry = alloc.string.String.new(std.alloc.SYSTEM)
+            let mut entry = std.string.String.new()
             core.mem.drop(entry.push_str(key.as_str())?)
             core.mem.drop(entry.push_str(" ")?)
             core.mem.drop(entry.push_str(nm.as_str())?)
@@ -15,11 +15,11 @@ fn wiki.search.index_add_page(index: &mut alloc.vec.Vec<alloc.string.String<std.
     Ok(())
 end wiki.search.index_add_page
 
-fn wiki.search.index_new() -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [] panics never pub
-    alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn wiki.search.index_new() -> std.vec.Vec<std.string.String> uses [] panics never pub
+    std.vec.Vec.new()
 end wiki.search.index_new
 
-fn wiki.search.index_search(index: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, query: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+fn wiki.search.index_search(index: &std.vec.Vec<std.string.String>, query: &str) -> Result<std.vec.Vec<std.string.String>, wiki.error.Error> uses [alloc] panics never pub
     let mut results = wiki.search.index_new()
     for word in query.split(" ") {
         if !word.is_empty() {
@@ -63,7 +63,7 @@ fn wiki.search.index_search(index: &alloc.vec.Vec<alloc.string.String<std.alloc.
                                     k = k.saturating_add(1usize)
                                 }
                                 if !found {
-                                    let mut pc = alloc.string.String.new(std.alloc.SYSTEM)
+                                    let mut pc = std.string.String.new()
                                     core.mem.drop(pc.push_str(page)?)
                                     core.mem.drop(results.push(pc)?)
                                 }
@@ -84,13 +84,13 @@ test wiki.search.index_add_page.test_add_and_search
 
     // 文字列リテラルを直接関数引数に渡すと std.rand.fill_secure の呼び出し後に
     // 処理系側で破損することがあるため、すべてヒープ文字列として組み立てる。
-    let mut name_a = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut name_a = std.string.String.new()
     core.mem.drop(name_a.push('A')?)
     core.mem.drop(name_a.push('l')?)
     core.mem.drop(name_a.push('p')?)
     core.mem.drop(name_a.push('h')?)
     core.mem.drop(name_a.push('a')?)
-    let mut content_a = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut content_a = std.string.String.new()
     core.mem.drop(content_a.push('a')?)
     core.mem.drop(content_a.push('a')?)
     core.mem.drop(content_a.push('a')?)
@@ -98,12 +98,12 @@ test wiki.search.index_add_page.test_add_and_search
     core.mem.drop(content_a.push('b')?)
     core.mem.drop(content_a.push('b')?)
     core.mem.drop(content_a.push('b')?)
-    let mut name_b = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut name_b = std.string.String.new()
     core.mem.drop(name_b.push('B')?)
     core.mem.drop(name_b.push('e')?)
     core.mem.drop(name_b.push('t')?)
     core.mem.drop(name_b.push('a')?)
-    let mut content_b = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut content_b = std.string.String.new()
     core.mem.drop(content_b.push('b')?)
     core.mem.drop(content_b.push('b')?)
     core.mem.drop(content_b.push('b')?)
@@ -111,13 +111,13 @@ test wiki.search.index_add_page.test_add_and_search
     core.mem.drop(content_b.push('c')?)
     core.mem.drop(content_b.push('c')?)
     core.mem.drop(content_b.push('c')?)
-    let mut name_c = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut name_c = std.string.String.new()
     core.mem.drop(name_c.push('G')?)
     core.mem.drop(name_c.push('a')?)
     core.mem.drop(name_c.push('m')?)
     core.mem.drop(name_c.push('m')?)
     core.mem.drop(name_c.push('a')?)
-    let mut content_c = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut content_c = std.string.String.new()
     core.mem.drop(content_c.push('c')?)
     core.mem.drop(content_c.push('c')?)
     core.mem.drop(content_c.push('c')?)
@@ -130,7 +130,7 @@ test wiki.search.index_add_page.test_add_and_search
     core.mem.drop(wiki.search.index_add_page(&mut index, name_c.as_str(), content_c.as_str())?)
 
     // "bbb" は Alpha と Beta の両方に含まれる
-    let mut q_bbb = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut q_bbb = std.string.String.new()
     core.mem.drop(q_bbb.push('b')?)
     core.mem.drop(q_bbb.push('b')?)
     core.mem.drop(q_bbb.push('b')?)
@@ -157,7 +157,7 @@ test wiki.search.index_add_page.test_add_and_search
     core.check.eq(found_b, true)
 
     // "ccc" は Beta と Gamma の両方に含まれる
-    let mut q_ccc = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut q_ccc = std.string.String.new()
     core.mem.drop(q_ccc.push('c')?)
     core.mem.drop(q_ccc.push('c')?)
     core.mem.drop(q_ccc.push('c')?)
@@ -184,7 +184,7 @@ test wiki.search.index_add_page.test_add_and_search
     core.check.eq(found_c, true)
 
     // "zzz" はどのページにも含まれない
-    let mut q_zzz = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut q_zzz = std.string.String.new()
     core.mem.drop(q_zzz.push('z')?)
     core.mem.drop(q_zzz.push('z')?)
     core.mem.drop(q_zzz.push('z')?)
@@ -194,9 +194,9 @@ end wiki.search.index_add_page.test_add_and_search
 
 test wiki.search.index_search.test_duplicate_words
     let mut index = wiki.search.index_new()
-    let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut name = std.string.String.new()
     core.mem.drop(name.push('P')?)
-    let mut content = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut content = std.string.String.new()
     core.mem.drop(content.push('w')?)
     core.mem.drop(content.push('o')?)
     core.mem.drop(content.push('r')?)
@@ -212,7 +212,7 @@ test wiki.search.index_search.test_duplicate_words
     core.mem.drop(content.push('r')?)
     core.mem.drop(content.push('d')?)
     core.mem.drop(wiki.search.index_add_page(&mut index, name.as_str(), content.as_str())?)
-    let mut q = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut q = std.string.String.new()
     core.mem.drop(q.push('w')?)
     core.mem.drop(q.push('o')?)
     core.mem.drop(q.push('r')?)
@@ -223,7 +223,7 @@ end wiki.search.index_search.test_duplicate_words
 
 test wiki.search.index_search.test_empty_index
     let empty = wiki.search.index_new()
-    let mut q = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut q = std.string.String.new()
     core.mem.drop(q.push('a')?)
     let r = wiki.search.index_search(&empty, q.as_str())?
     core.check.eq(r.len(), 0usize)
@@ -231,9 +231,9 @@ end wiki.search.index_search.test_empty_index
 
 test wiki.search.index_search.test_empty_query
     let mut index = wiki.search.index_new()
-    let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut name = std.string.String.new()
     core.mem.drop(name.push('P')?)
-    let mut content = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut content = std.string.String.new()
     core.mem.drop(content.push('h')?)
     core.mem.drop(content.push('e')?)
     core.mem.drop(content.push('l')?)
@@ -247,9 +247,9 @@ end wiki.search.index_search.test_empty_query
 
 test wiki.search.index_search.test_multi_word_query
     let mut index = wiki.search.index_new()
-    let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut name = std.string.String.new()
     core.mem.drop(name.push('P')?)
-    let mut content = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut content = std.string.String.new()
     core.mem.drop(content.push('a')?)
     core.mem.drop(content.push('l')?)
     core.mem.drop(content.push('p')?)
@@ -267,7 +267,7 @@ test wiki.search.index_search.test_multi_word_query
     core.mem.drop(content.push('m')?)
     core.mem.drop(content.push('a')?)
     core.mem.drop(wiki.search.index_add_page(&mut index, name.as_str(), content.as_str())?)
-    let mut q = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut q = std.string.String.new()
     core.mem.drop(q.push('a')?)
     core.mem.drop(q.push('l')?)
     core.mem.drop(q.push('p')?)

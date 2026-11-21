@@ -1,15 +1,15 @@
 type t.Rec derive [Debug] pub
-    name: alloc.string.String<std.alloc.System>
-    xs: alloc.vec.Vec<u32, std.alloc.System>
+    name: std.string.String
+    xs: std.vec.Vec<u32>
 end t.Rec
 
 fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics never
-    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut m = std.collections.HashMap.new()
     let one = alloc.string.String.from_str(std.alloc.SYSTEM, "one")?
     core.mem.drop(m.insert(one, 1u32)?)
     let two = alloc.string.String.from_str(std.alloc.SYSTEM, "two")?
     core.mem.drop(m.insert(two, 2u32)?)
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     match m.get_str("one") {
         Some(v) => out.push_u64(u64.from_u32(*v))?
         None => out.push_str("none")?
@@ -47,11 +47,11 @@ fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panic
     core.mem.drop(std.io.print_line(out.as_str()))
     let name = alloc.string.String.from_str(std.alloc.SYSTEM, "hi")?
     let copy = name.try_clone()?
-    let mut xs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut xs = std.vec.Vec.new()
     xs.push(1u32)?
     xs.push(2u32)?
     let r = t.Rec { name: copy, xs: xs }
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut line = std.string.String.new()
     line.push_debug(&r)?
     line.push_str(" ")?
     line.push_str(name.as_str())?

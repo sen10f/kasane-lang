@@ -23,8 +23,8 @@ const types.ty.UNKNOWN: usize = 0usize pub
 const types.ty.USIZE: usize = 19usize pub
 
 type types.ty.Arena pub
-    nodes: alloc.vec.Vec<types.ty.Node, std.alloc.System> pub
-    lst: alloc.vec.Vec<usize, std.alloc.System> pub
+    nodes: std.vec.Vec<types.ty.Node> pub
+    lst: std.vec.Vec<usize> pub
     params: usize pub
 end types.ty.Arena
 
@@ -56,7 +56,7 @@ type types.ty.Node derive [Debug, Clone, Copy, PartialEq] pub
     m: bool pub
 end types.ty.Node
 
-fn types.ty.adt(ar: &mut types.ty.Arena, item: usize, ids: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn types.ty.adt(ar: &mut types.ty.Arena, item: usize, ids: &std.vec.Vec<usize>) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
     let (b, c) = types.ty.args(ar, ids)?
     types.ty.push(ar, types.ty.mk(types.ty.K.Adt, item, b, c, false))
 end types.ty.adt
@@ -68,7 +68,7 @@ fn types.ty.arg(ar: &types.ty.Arena, start: usize, k: usize) -> usize uses [] pa
     }
 end types.ty.arg
 
-fn types.ty.args(ar: &mut types.ty.Arena, ids: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(usize, usize), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn types.ty.args(ar: &mut types.ty.Arena, ids: &std.vec.Vec<usize>) -> Result<(usize, usize), alloc.alloc.AllocError> uses [alloc] panics never pub
     let first = ar.lst.len()
     for v in ids.as_slice().iter() {
         ar.lst.push(*v)?
@@ -192,8 +192,8 @@ fn types.ty.mk(k: types.ty.K, a: usize, b: usize, c: usize, m: bool) -> types.ty
 end types.ty.mk
 
 fn types.ty.new() -> Result<types.ty.Arena, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let lst = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let nodes = std.vec.Vec.new()
+    let lst = std.vec.Vec.new()
     let mut ar = types.ty.Arena { nodes: nodes, lst: lst, params: 0usize }
     ar.nodes.push(types.ty.mk(types.ty.K.Unknown, 0usize, 0usize, 0usize, false))?
     ar.nodes.push(types.ty.mk(types.ty.K.Unit, 0usize, 0usize, 0usize, false))?

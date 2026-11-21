@@ -7,8 +7,8 @@ fn t.Bag.pop(self: &mut t.Bag) -> u32 uses [] panics never
 end t.Bag.pop
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str("hello world, this is heap memory"))
     core.mem.drop(v.push(&s))
     match v.pop() {

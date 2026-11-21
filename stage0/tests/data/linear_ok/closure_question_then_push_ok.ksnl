@@ -4,7 +4,7 @@ enum t.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
 end t.Error
 
 fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     core.mem.drop(v.push(1i64)?)
     let mut f = fn() -> Result<(), t.Error> capture [&mut v] {
         core.mem.drop(v.push(2i64)?)

@@ -6,7 +6,7 @@ fn t.conv(e: alloc.alloc.AllocError) -> t.Error uses [] panics never
     t.Error.Alloc(e)
 end t.conv
 
-fn t.get_str(s: &alloc.string.String<std.alloc.System>) -> Result<&str, alloc.alloc.AllocError> uses [] panics never
+fn t.get_str(s: &std.string.String) -> Result<&str, alloc.alloc.AllocError> uses [] panics never
     Ok(s.as_str())
 end t.get_str
 

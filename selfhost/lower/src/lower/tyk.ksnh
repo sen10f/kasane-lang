@@ -23,24 +23,24 @@ const lower.tyk.VECO: usize = 1_000_000_000usize pub
 type lower.tyk.Lay pub
     size: usize pub
     align: usize pub
-    offs: alloc.vec.Vec<usize, std.alloc.System> pub
-    vlens: alloc.vec.Vec<usize, std.alloc.System> pub
+    offs: std.vec.Vec<usize> pub
+    vlens: std.vec.Vec<usize> pub
 end lower.tyk.Lay
 
 // 集成体の行の本体 (総称の具体化は `agg_line` が代入を入れてから呼ぶ)。
-fn lower.tyk.agg_body(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.tyk.agg_body(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id: usize) -> Result<std.string.String, resolve.Failure> uses [alloc] panics may pub
     if item >= lower.tyk.TUP && item < lower.tyk.INS {
         return lower.tup.agg_line(env, c, item, id)
     }
     if item == lower.tyk.VEC {
-        let mut vs = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut vs = std.string.String.new()
         vs.push_str("agg#")?
         vs.push_str(lower.cx.dec(id)?.as_str())?
         vs.push_str(" struct vec size=24 align=8 {ptr:ptr@0 len:usize@8 cap:usize@16}\n")?
         return Ok(vs)
     }
     if item >= lower.tyk.VECO && item < lower.tyk.BREF {
-        let mut vo = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut vo = std.string.String.new()
         vo.push_str("agg#")?
         vo.push_str(lower.cx.dec(id)?.as_str())?
         vo.push_str(" struct vec<#")?
@@ -49,20 +49,20 @@ fn lower.tyk.agg_body(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id:
         return Ok(vo)
     }
     if item == lower.tyk.BREF {
-        let mut bs = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut bs = std.string.String.new()
         bs.push_str("agg#")?
         bs.push_str(lower.cx.dec(id)?.as_str())?
         bs.push_str(" struct bref size=8 align=8 {ptr:ptr@0}\n")?
         return Ok(bs)
     }
     if item == lower.tyk.FAT {
-        let mut fs = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut fs = std.string.String.new()
         fs.push_str("agg#")?
         fs.push_str(lower.cx.dec(id)?.as_str())?
         fs.push_str(" struct fat size=16 align=8 {ptr:ptr@0 len:usize@8}\n")?
         return Ok(fs)
     }
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     let lay = lower.tyk.layout(env, c, item)?
     let real = lower.tyk.real_item(c, item)
     let kind = types.infer.item_kind(env, real)
@@ -73,7 +73,7 @@ fn lower.tyk.agg_body(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id:
     } else {
         match env.tab.items.as_slice().get(item) {
             Some(it) => lower.cx.own(it.fqn.as_str())?
-            None => alloc.string.String.new(std.alloc.SYSTEM)
+            None => std.string.String.new()
         }
     }
     let p = match types.env.unit(env, file) {
@@ -163,7 +163,7 @@ fn lower.tyk.agg_id(c: &mut lower.cx.Cx, item: usize) -> Result<usize, resolve.F
     Ok(c.g.aggs.len() - 1usize)
 end lower.tyk.agg_id
 
-fn lower.tyk.agg_line(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.tyk.agg_line(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id: usize) -> Result<std.string.String, resolve.Failure> uses [alloc] panics may pub
     if item >= lower.tyk.INS && item < lower.tyk.VEC {
         let saved = lower.tyk.enter(c, item)?
         let r = lower.tyk.agg_body(env, c, item, id)
@@ -174,8 +174,8 @@ fn lower.tyk.agg_line(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id:
 end lower.tyk.agg_line
 
 // 集成体の定義の行 (`agg#N struct FQN size=S align=A {...}`) を、登録の順に全部作る。
-fn lower.tyk.agg_lines(env: &types.env.Env, c: &mut lower.cx.Cx) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn lower.tyk.agg_lines(env: &types.env.Env, c: &mut lower.cx.Cx) -> Result<std.string.String, resolve.Failure> uses [alloc] panics may pub
+    let mut out = std.string.String.new()
     let mut i = 0usize
     while i < c.g.aggs.len() {
         let item = lower.tyk.at(c.g.aggs.as_slice(), i)
@@ -194,18 +194,18 @@ fn lower.tyk.at(xs: &[usize], i: usize) -> usize uses [] panics never pub
 end lower.tyk.at
 
 // `bref` の型の綴り (`agg#N`)。
-fn lower.tyk.bref_text(c: &mut lower.cx.Cx) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.tyk.bref_text(c: &mut lower.cx.Cx) -> Result<std.string.String, resolve.Failure> uses [alloc] panics may pub
     let id = lower.tyk.agg_id(c, lower.tyk.BREF)?
     lower.cx.cat2("agg#", lower.cx.dec(id)?.as_str())
 end lower.tyk.bref_text
 
 // 具体化の項目の引数を代入に入れる (元の値は返す)。
-fn lower.tyk.enter(c: &mut lower.cx.Cx, item: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.tyk.enter(c: &mut lower.cx.Cx, item: usize) -> Result<std.vec.Vec<usize>, resolve.Failure> uses [alloc] panics may pub
     let saved = lower.cx.copy_u(&c.v.subst)?
     let ty = lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.INS)
     let f = types.ty.find(&c.ar, ty)
     let n = types.ty.node(&c.ar, f)
-    let mut na = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut na = std.vec.Vec.new()
     for k in core.iter.range(0usize, n.c) {
         // 代入は (総称の番号, 型) の組。総称の番号は定義の並び (0 から) と同じ。
         na.push(k)?
@@ -233,8 +233,8 @@ fn lower.tyk.field_index(env: &types.env.Env, item: usize, name: &str) -> Result
 end lower.tyk.field_index
 
 // 構造体の宣言の順のフィールド名 (0 から)。
-fn lower.tyk.field_names(env: &types.env.Env, item: usize) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn lower.tyk.field_names(env: &types.env.Env, item: usize) -> Result<std.vec.Vec<std.string.String>, resolve.Failure> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
     let p = match types.env.unit(env, file) {
@@ -360,13 +360,13 @@ fn lower.tyk.is_vec_ty(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool u
 end lower.tyk.is_vec_ty
 
 // 項目の FQN (なければ空)。
-fn lower.tyk.item_fqn(env: &types.env.Env, item: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics never pub
+fn lower.tyk.item_fqn(env: &types.env.Env, item: usize) -> std.string.String uses [alloc] panics never pub
     match env.tab.items.as_slice().get(item) {
         Some(it) => match lower.cx.own(it.fqn.as_str()) {
             Ok(o) => o
-            Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+            Err(_e) => std.string.String.new()
         }
-        None => alloc.string.String.new(std.alloc.SYSTEM)
+        None => std.string.String.new()
     }
 end lower.tyk.item_fqn
 
@@ -422,8 +422,8 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
             let nm = lower.tup.name(env, c, lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.INS))?
             let msg = lower.cx.cat2("総称の型の大きさ (再帰する型は未対応): ", nm.as_str())?
             lower.cx.fail(c, msg.as_str())?
-            let e1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
-            let e2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let e1 = std.vec.Vec.new()
+            let e2 = std.vec.Vec.new()
             return Ok(lower.tyk.Lay { size: 0usize, align: 1usize, offs: e1, vlens: e2 })
         }
         let saved = lower.tyk.enter(c, item)?
@@ -435,7 +435,7 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
         let tt = lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.TUP)
         let f = types.ty.find(&c.ar, tt)
         let n = types.ty.node(&c.ar, f)
-        let mut offs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut offs = std.vec.Vec.new()
         let mut off = 0usize
         let mut al = 1usize
         for k in core.iter.range(0usize, n.c) {
@@ -449,23 +449,23 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
             }
         }
         let size = lower.tyk.up(off, al)
-        let vl = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let vl = std.vec.Vec.new()
         return Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vl })
     }
     if item == lower.tyk.VEC || item >= lower.tyk.VECO && item < lower.tyk.BREF {
-        let vo = alloc.vec.Vec.new(std.alloc.SYSTEM)
-        let vl = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let vo = std.vec.Vec.new()
+        let vl = std.vec.Vec.new()
         return Ok(lower.tyk.Lay { size: 24usize, align: 8usize, offs: vo, vlens: vl })
     }
     if item == lower.tyk.FAT {
-        let fo = alloc.vec.Vec.new(std.alloc.SYSTEM)
-        let fl = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let fo = std.vec.Vec.new()
+        let fl = std.vec.Vec.new()
         return Ok(lower.tyk.Lay { size: 16usize, align: 8usize, offs: fo, vlens: fl })
     }
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
-    let mut offs = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut vlens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut offs = std.vec.Vec.new()
+    let mut vlens = std.vec.Vec.new()
     let kind = types.infer.item_kind(env, item)
     let p = match types.env.unit(env, file) {
         Some(q) => q
@@ -533,7 +533,7 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
     Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vlens })
 end lower.tyk.layout
 
-fn lower.tyk.leave(c: &mut lower.cx.Cx, saved: alloc.vec.Vec<usize, std.alloc.System>) -> () uses [] panics never pub
+fn lower.tyk.leave(c: &mut lower.cx.Cx, saved: std.vec.Vec<usize>) -> () uses [] panics never pub
     c.v.subst = saved
 end lower.tyk.leave
 
@@ -669,8 +669,8 @@ fn lower.tyk.size_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Resu
     Ok((0usize, 1usize))
 end lower.tyk.size_of
 
-// 型の源の綴り (総称の鍵に使う: `u32`・`&str`・`alloc.string.String<std.alloc.System>`)。
-fn lower.tyk.src(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+// 型の源の綴り (総称の鍵に使う: `u32`・`&str`・`std.string.String`)。
+fn lower.tyk.src(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<std.string.String, resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
     if n.k == types.ty.K.Param {
@@ -729,10 +729,10 @@ fn lower.tyk.src(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<a
 end lower.tyk.src
 
 // types の型 id → KIR の型の文字列。未対応の型は fail して "unit" を返す。
-fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<std.string.String, resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     if n.k == types.ty.K.Param {
         let r = lower.inst.lookup(c, n.a)
         if r != 0usize {
@@ -913,9 +913,9 @@ fn lower.tyk.vec_item(env: &types.env.Env, c: &mut lower.cx.Cx, f: usize) -> Res
 end lower.tyk.vec_item
 
 // 未対応の型の名前 (診断用)。
-fn lower.tyk.why(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
+fn lower.tyk.why(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> Result<std.string.String, resolve.Failure> uses [alloc] panics never pub
     let n = types.ty.node(&c.ar, f)
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     if n.k == types.ty.K.Adt {
         let name = lower.tyk.item_fqn(env, n.a)
         s.push_str(name.as_str())?

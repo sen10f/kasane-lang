@@ -1,6 +1,6 @@
 type types.chk.Ctx pub
     file: usize pub
-    sc: alloc.vec.Vec<types.chk.Ent, std.alloc.System> pub
+    sc: std.vec.Vec<types.chk.Ent> pub
     pend: types.chk.Pend pub
     ret: usize pub
     rep: types.chk.Rep pub
@@ -10,23 +10,23 @@ end types.chk.Ctx
 
 // 検査の状態: 名前の並び (局所と総称)・整数リテラルの変数・戻り値の型・診断の文。
 type types.chk.Ent pub
-    name: alloc.string.String<std.alloc.System> pub
+    name: std.string.String pub
     ty: usize pub
     generic: bool pub
 end types.chk.Ent
 
 // 関数の終わりに決める項目: 整数リテラル (行つき) と、let の束縛の型 (行つき)。
 type types.chk.Pend pub
-    lits: alloc.vec.Vec<usize, std.alloc.System> pub
-    lit_lines: alloc.vec.Vec<usize, std.alloc.System> pub
-    lets: alloc.vec.Vec<usize, std.alloc.System> pub
-    let_lines: alloc.vec.Vec<usize, std.alloc.System> pub
+    lits: std.vec.Vec<usize> pub
+    lit_lines: std.vec.Vec<usize> pub
+    lets: std.vec.Vec<usize> pub
+    let_lines: std.vec.Vec<usize> pub
 end types.chk.Pend
 
 // 診断の文の出力。sigcall は直前に完了した関数呼び出しが .sig の宣言だったか (E2042 の判定用)。
 type types.chk.Rep pub
-    out: alloc.string.String<std.alloc.System> pub
-    path: alloc.string.String<std.alloc.System> pub
+    out: std.string.String pub
+    path: std.string.String pub
     errors: usize pub
     sigcall: bool pub
 end types.chk.Rep
@@ -65,13 +65,13 @@ fn types.chk.mark(cx: &types.chk.Ctx) -> usize uses [] panics never pub
 end types.chk.mark
 
 fn types.chk.new() -> Result<types.chk.Ctx, alloc.alloc.AllocError> uses [] panics never pub
-    let sc = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let lits = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let lit_lines = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let lets = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let let_lines = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let out = alloc.string.String.new(std.alloc.SYSTEM)
-    let path = alloc.string.String.new(std.alloc.SYSTEM)
+    let sc = std.vec.Vec.new()
+    let lits = std.vec.Vec.new()
+    let lit_lines = std.vec.Vec.new()
+    let lets = std.vec.Vec.new()
+    let let_lines = std.vec.Vec.new()
+    let out = std.string.String.new()
+    let path = std.string.String.new()
     let rep = types.chk.Rep { out: out, path: path, errors: 0usize, sigcall: false }
     let pend = types.chk.Pend { lits: lits, lit_lines: lit_lines, lets: lets, let_lines: let_lines }
     let rec = types.rec.empty()?

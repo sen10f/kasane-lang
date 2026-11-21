@@ -35,7 +35,7 @@ fn shortener_https.serve.connection(conn: std.tls.TlsStream, db: &mut shortener_
 end shortener_https.serve.connection
 
 fn shortener_https.serve.log_request(method: &str, path: &str, status: u16, keep: bool) -> Result<(), shortener_https.error.Error> uses [alloc, io.console, time] panics never
-    let mut code = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut code = std.string.String.new()
     code.push_u64(u64.from_u16(status))?
     let mut kept = "0"
     if keep {
@@ -67,7 +67,7 @@ fn shortener_https.serve.refuse(stream: &mut std.tls.TlsStream, failure: std.htt
 end shortener_https.serve.refuse
 
 fn shortener_https.serve.send(stream: &mut std.tls.TlsStream, reply: &shortener_https.router.Reply, keep: bool) -> Result<(), shortener_https.error.Error> uses [alloc, io.net] panics never
-    let mut head = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut head = std.string.String.new()
     head.push_str("Content-Type: application/json\r\n")?
     if !reply.location.is_empty() {
         head.push_str("Location: ")?

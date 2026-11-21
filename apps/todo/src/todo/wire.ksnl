@@ -3,7 +3,7 @@ import todo.http
 
 const todo.wire.MAX_REPLY: usize = 65_536usize
 
-fn todo.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<usize, todo.error.Error> uses [alloc, io.net] panics never pub
+fn todo.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut std.vec.Vec<u8>) -> Result<usize, todo.error.Error> uses [alloc, io.net] panics never pub
     let mut chunk = [0u8; 512]
     let n = stream.read(&mut chunk)?
     for i in core.iter.range(0usize, n) {
@@ -16,7 +16,7 @@ fn todo.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec
 end todo.wire.read_chunk
 
 fn todo.wire.read_request(stream: &mut std.net.TcpStream) -> Result<todo.http.Request, todo.error.Error> uses [alloc, io.net] panics never pub
-    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut data = std.vec.Vec.new()
     let mut head_end = 0usize
     loop {
         if todo.wire.read_chunk(stream, &mut data)? == 0usize {
@@ -51,13 +51,13 @@ fn todo.wire.read_request(stream: &mut std.net.TcpStream) -> Result<todo.http.Re
         Some(b) => b
         None => return Err(error.Error.BadRequest)
     }
-    let mut body = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut body = std.string.String.new()
     body.push_bytes(body_bytes).map_err(error.push_failed)?
     Ok(http.Request { body: body, cookie: head.cookie, method: head.method, path: head.path })
 end todo.wire.read_request
 
-fn todo.wire.read_to_close(stream: &mut std.net.TcpStream) -> Result<alloc.vec.Vec<u8, std.alloc.System>, todo.error.Error> uses [alloc, io.net] panics never pub
-    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn todo.wire.read_to_close(stream: &mut std.net.TcpStream) -> Result<std.vec.Vec<u8>, todo.error.Error> uses [alloc, io.net] panics never pub
+    let mut data = std.vec.Vec.new()
     loop {
         if todo.wire.read_chunk(stream, &mut data)? == 0usize {
             break

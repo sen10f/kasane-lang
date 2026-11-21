@@ -12,7 +12,7 @@ type t.Rect
 end t.Rect
 
 type t.Reg
-    items: alloc.vec.Vec<alloc.boxed.Box<dyn t.Shape + 'static, std.alloc.System>, std.alloc.System>
+    items: std.vec.Vec<std.boxed.Box<dyn t.Shape + 'static>>
 end t.Reg
 
 trait t.Shape requires t.Tagged

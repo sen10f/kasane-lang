@@ -5,10 +5,10 @@
 // ck: 呼び出し・経路の種別 (0 不明、1 関数項目、2 メソッド、3 局所の関数値、4 列挙子、5 局所に続くフィールドの経路)。
 // now_ck・now_callee: 直前に解決した呼び出し (types.rec.note_call が節に書く)。
 type types.rec.Rec pub
-    base: alloc.vec.Vec<usize, std.alloc.System> pub
-    ty: alloc.vec.Vec<usize, std.alloc.System> pub
-    callee: alloc.vec.Vec<usize, std.alloc.System> pub
-    ck: alloc.vec.Vec<usize, std.alloc.System> pub
+    base: std.vec.Vec<usize> pub
+    ty: std.vec.Vec<usize> pub
+    callee: std.vec.Vec<usize> pub
+    ck: std.vec.Vec<usize> pub
     now_ck: usize pub
     now_callee: usize pub
 end types.rec.Rec
@@ -39,10 +39,10 @@ end types.rec.ck_of
 
 // 記録のない表 (検査の前の初期値)。
 fn types.rec.empty() -> Result<types.rec.Rec, alloc.alloc.AllocError> uses [] panics never pub
-    let base = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let ty = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let callee = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let ck = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let base = std.vec.Vec.new()
+    let ty = std.vec.Vec.new()
+    let callee = std.vec.Vec.new()
+    let ck = std.vec.Vec.new()
     let now = 0usize
     Ok(types.rec.Rec { base: base, ty: ty, callee: callee, ck: ck, now_ck: now, now_callee: now })
 end types.rec.empty
@@ -90,7 +90,7 @@ fn types.rec.resolved(rec: &mut types.rec.Rec, ck: usize, callee: usize) -> () u
 end types.rec.resolved
 
 // Vec の k 番目を書き換える (範囲外は何もしない)。
-fn types.rec.set(v: &mut alloc.vec.Vec<usize, std.alloc.System>, k: usize, val: usize) -> () uses [] panics never pub
+fn types.rec.set(v: &mut std.vec.Vec<usize>, k: usize, val: usize) -> () uses [] panics never pub
     match v.as_mut_slice().get_mut(k) {
         Some(x) => {
             *x = val

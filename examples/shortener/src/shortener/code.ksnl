@@ -15,8 +15,8 @@ fn shortener.code.digit_char(d: u8) -> char uses [] panics never pub
     }
 end shortener.code.digit_char
 
-fn shortener.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
-    let mut digits: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn shortener.code.encode(n: u64) -> Result<std.string.String, shortener.error.Error> uses [alloc] panics never pub
+    let mut digits: std.vec.Vec<u8> = std.vec.Vec.new()
     let mut rest = n
     loop {
         let d = rest.checked_rem(36u64)
@@ -35,7 +35,7 @@ fn shortener.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.System>
             break
         }
     }
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     let len = digits.len()
     for k in core.iter.range(0usize, len) {
         let at = len.wrapping_sub(k).wrapping_sub(1usize)
@@ -47,7 +47,7 @@ fn shortener.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.System>
     Ok(out)
 end shortener.code.encode
 
-fn shortener.code.for_index(index: u64) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
+fn shortener.code.for_index(index: u64) -> Result<std.string.String, shortener.error.Error> uses [alloc] panics never pub
     match index.checked_add(shortener.code.OFFSET) {
         Some(n) => shortener.code.encode(n)
         None => Err(error.Error.Full)

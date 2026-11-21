@@ -1,8 +1,8 @@
 enum t.E pub
-    A(alloc.string.String<std.alloc.System>)
+    A(std.string.String)
 end t.E
 
-fn t.f(out: &mut alloc.string.String<std.alloc.System>) -> t.E uses [] panics never
+fn t.f(out: &mut std.string.String) -> t.E uses [] panics never
     t.E.A(out)
 end t.f
 

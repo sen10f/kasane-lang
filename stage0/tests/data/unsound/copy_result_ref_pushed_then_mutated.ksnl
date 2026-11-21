@@ -1,10 +1,10 @@
 fn t.b() -> usize uses [alloc] panics never
-    let mut src = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut src = std.vec.Vec.new()
     match src.push(1u32) {
         Ok(_u) => ()
         Err(_e) => ()
     }
-    let mut dst = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut dst = std.vec.Vec.new()
     match src.get(0usize) {
         Some(r) => match dst.push(r) {
             Ok(_u) => ()

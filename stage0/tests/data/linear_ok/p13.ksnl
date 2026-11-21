@@ -32,19 +32,19 @@ fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
     core.mem.drop(s)
 end t.consume
 
-fn t.keeps(v: &mut alloc.vec.Vec<&'static str, std.alloc.System>, s: &'static str) -> () uses [alloc] panics never
+fn t.keeps(v: &mut std.vec.Vec<&'static str>, s: &'static str) -> () uses [alloc] panics never
     core.mem.drop(v.push(s))
 end t.keeps
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
-    let mut v: alloc.vec.Vec<&'static str, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v: std.vec.Vec<&'static str> = std.vec.Vec.new()
     t.keeps(&mut v, "abc")
     core.check.eq(v.len(), 1usize)
     Ok(())
 end t.main
 
 fn t.mk() -> alloc.string.String uses [alloc] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str("hello, this is a long heap string"))
     s
 end t.mk

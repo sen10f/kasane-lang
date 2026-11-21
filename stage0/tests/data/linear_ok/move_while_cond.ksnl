@@ -27,7 +27,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.mk() -> alloc.string.String uses [] panics never
-    alloc.string.String.new(std.alloc.SYSTEM)
+    std.string.String.new()
 end t.mk
 
 fn t.peek(s: &alloc.string.String) -> usize uses [] panics never

@@ -10,12 +10,12 @@ fn lower.io.print_line(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
     let r1 = lower.cx.def(c, res.as_str(), w1.as_str())?
     let ts = lower.cx.cat2("tag ", lower.cx.vs(r1)?.as_str())?
     let failed = lower.cx.def(c, "bool", ts.as_str())?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let nb = lower.cx.blk(c, &empty)?
-    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut jps = std.vec.Vec.new()
     jps.push(lower.cx.newval(c, res.as_str())?)?
     let jb = lower.cx.blk(c, &jps)?
-    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a1 = std.vec.Vec.new()
     a1.push(r1)?
     let mut br = lower.cx.cat2("br_if ", lower.cx.vs(failed)?.as_str())?
     br.push_str(", ")?
@@ -33,7 +33,7 @@ fn lower.io.print_line(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
     let nl = lower.cx.def(c, ft.as_str(), mk2.as_str())?
     let w2 = lower.cx.cat2("write ", lower.expr.two(fd, nl)?.as_str())?
     let r2 = lower.cx.def(c, res.as_str(), w2.as_str())?
-    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a2 = std.vec.Vec.new()
     a2.push(r2)?
     let bj = lower.cx.cat2("br ", lower.cx.target(jb, &a2)?.as_str())?
     lower.cx.finish(c, bj)?

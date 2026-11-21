@@ -1,9 +1,9 @@
 const parse.ast.KIND_NAMES: &str = "Arm ArrayE ArrayRep Assign Attrs Bin Block Break Call Capture Closure ConstDef ConstInt ConstPath Continue Dot Effect EnumDef ExprStmt ExternDef FieldDecl FieldInit FnDef FnSig For GParam If ImplLine Import Index Let Linear List Lit Loop MCall Match Nil PBind PField PLit PPath PRef PStruct PTuple PVariant PWild Param Path Return StaticDef StructLit TArgConst TArgEffects TArgLife TArgPanic TArray TDyn TFn TNamed TNever TPrim TPtr TRef TSelf TSlice TTuple TestDef TraitDef TraitFn TraitRef Try TupleE TypeDef Unary Unsafe Variant While With" pub
 
 type parse.ast.Ast pub
-    defs: alloc.vec.Vec<usize, std.alloc.System> pub
-    links: alloc.vec.Vec<usize, std.alloc.System> pub
-    nodes: alloc.vec.Vec<parse.ast.Node, std.alloc.System> pub
+    defs: std.vec.Vec<usize> pub
+    links: std.vec.Vec<usize> pub
+    nodes: std.vec.Vec<parse.ast.Node> pub
 end parse.ast.Ast
 
 enum parse.ast.Kind derive [Debug, Clone, Copy, PartialEq] pub
@@ -305,7 +305,7 @@ fn parse.ast.kind_name(kind: parse.ast.Kind) -> &'static str uses [] panics neve
     }
 end parse.ast.kind_name
 
-fn parse.ast.list(ast: &mut parse.ast.Ast, items: &alloc.vec.Vec<usize, std.alloc.System>, tok: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+fn parse.ast.list(ast: &mut parse.ast.Ast, items: &std.vec.Vec<usize>, tok: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
     let first = ast.links.len()
     for v in items.as_slice().iter() {
         ast.links.push(*v)?
@@ -318,9 +318,9 @@ fn parse.ast.mk(kind: parse.ast.Kind, tok: usize, a: usize, b: usize, c: usize, 
 end parse.ast.mk
 
 fn parse.ast.new() -> Result<parse.ast.Ast, parse.err.Error> uses [alloc] panics never pub
-    let defs = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let links = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let defs = std.vec.Vec.new()
+    let links = std.vec.Vec.new()
+    let mut nodes = std.vec.Vec.new()
     nodes.push(parse.ast.mk(parse.ast.Kind.Nil, 0usize, 0usize, 0usize, 0usize, 0usize))?
     Ok(parse.ast.Ast { defs: defs, links: links, nodes: nodes })
 end parse.ast.new

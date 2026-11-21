@@ -4,8 +4,8 @@ import notes.note
 const notes.store.TEST_DIR: &str = "/home/kasane-wt/notes-cli/.notes-test-data"
 
 type notes.store.Store pub
-    dir: alloc.string.String<std.alloc.System>
-    notes: alloc.vec.Vec<notes.note.Note, std.alloc.System>
+    dir: std.string.String
+    notes: std.vec.Vec<notes.note.Note>
 end notes.store.Store
 
 fn notes.store.Store.add(self: &mut notes.store.Store, memo: notes.note.Note) -> Result<i64, notes.error.Error> uses [alloc, io.fs] panics never pub
@@ -95,7 +95,7 @@ end notes.store.Store.load
 
 fn notes.store.Store.new(dir: &str) -> Result<notes.store.Store, notes.error.Error> uses [alloc] panics never pub
     let d = alloc.string.String.from_str(std.alloc.SYSTEM, dir)?
-    let ns = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let ns = std.vec.Vec.new()
     let r = notes.store.Store { dir: d, notes: ns }
     Ok(r)
 end notes.store.Store.new
@@ -135,8 +135,8 @@ fn notes.store.Store.save_note(self: &notes.store.Store, n: &notes.note.Note) ->
     Ok(())
 end notes.store.Store.save_note
 
-fn notes.store.Store.search_ids(self: &notes.store.Store, q: &str) -> Result<alloc.vec.Vec<i64, std.alloc.System>, notes.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn notes.store.Store.search_ids(self: &notes.store.Store, q: &str) -> Result<std.vec.Vec<i64>, notes.error.Error> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     let mut i = 0usize
     let n = self.notes.len()
     while i < n {
@@ -198,8 +198,8 @@ fn notes.store.Store.set(self: &mut notes.store.Store, id: i64, u: notes.note.No
     Ok(())
 end notes.store.Store.set
 
-fn notes.store.Store.tagged_ids(self: &notes.store.Store, tag: &str) -> Result<alloc.vec.Vec<i64, std.alloc.System>, notes.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn notes.store.Store.tagged_ids(self: &notes.store.Store, tag: &str) -> Result<std.vec.Vec<i64>, notes.error.Error> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     let mut i = 0usize
     let n = self.notes.len()
     while i < n {
@@ -226,8 +226,8 @@ fn notes.store.Store.tagged_ids(self: &notes.store.Store, tag: &str) -> Result<a
     Ok(out)
 end notes.store.Store.tagged_ids
 
-fn notes.store.Store.tags(self: &notes.store.Store) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn notes.store.Store.tags(self: &notes.store.Store) -> Result<std.vec.Vec<std.string.String>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     let mut i = 0usize
     let n = self.notes.len()
     while i < n {
@@ -284,7 +284,7 @@ fn notes.store.index_of(store: &notes.store.Store, id: i64) -> Result<usize, not
     Err(error.Error.NotFound)
 end notes.store.index_of
 
-fn notes.store.note_path(dir: &str, id: i64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+fn notes.store.note_path(dir: &str, id: i64) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
     let mut p = alloc.string.String.from_str(std.alloc.SYSTEM, dir)?
     match p.push_str("/") {
         Ok(_u) => {
@@ -305,8 +305,8 @@ fn notes.store.note_path(dir: &str, id: i64) -> Result<alloc.string.String<std.a
 end notes.store.note_path
 
 // 1 メモを JSON オブジェクトとしてシリアライズする（std.json.to_string は KIR ステージ1で未対応のため手動）。
-fn notes.store.note_to_json(n: &notes.note.Note) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn notes.store.note_to_json(n: &notes.note.Note) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("{\"id\":")?
     let id_spec = alloc.fmt.Spec.new()
     alloc.fmt.write_i64(&mut out, n.id, &id_spec)?
@@ -338,12 +338,12 @@ fn notes.store.note_to_json(n: &notes.note.Note) -> Result<alloc.string.String<s
     Ok(out)
 end notes.store.note_to_json
 
-fn notes.store.read_text(path: &str) -> Result<alloc.string.String<std.alloc.System>, notes.error.Error> uses [alloc, io.fs] panics never
-    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn notes.store.read_text(path: &str) -> Result<std.string.String, notes.error.Error> uses [alloc, io.fs] panics never
+    let mut data = std.vec.Vec.new()
     with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
         core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
     }
-    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut text = std.string.String.new()
     text.push_bytes(data.as_slice()).map_err(error.push_failed)?
     Ok(text)
 end notes.store.read_text
@@ -375,7 +375,7 @@ fn notes.store.remove_dir_all(path: &str) -> Result<(), notes.error.Error> uses 
     Ok(())
 end notes.store.remove_dir_all
 
-fn notes.store.string_copy(s: &alloc.string.String<std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+fn notes.store.string_copy(s: &std.string.String) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
     alloc.string.String.from_str(std.alloc.SYSTEM, s.as_str())
 end notes.store.string_copy
 
@@ -386,7 +386,7 @@ fn notes.store.test_reset_dir() -> Result<(), notes.error.Error> uses [alloc, io
     Ok(())
 end notes.store.test_reset_dir
 
-fn notes.store.write_json_string(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+fn notes.store.write_json_string(out: &mut std.string.String, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     out.push_str("\"")?
     for c in text.chars() {
         if c == '"' {
@@ -411,7 +411,7 @@ test notes.store.Store.new.test_reset_and_load
     notes.store.test_reset_dir()?
     let mut store = notes.store.Store.load(notes.store.TEST_DIR)?
     core.check.eq(store.len(), 0usize)
-    let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tags = std.vec.Vec.new()
     core.mem.drop(tags.push(alloc.string.String.from_str(std.alloc.SYSTEM, "仕事")?))
     let n = note.Note.new(0i64, "打ち合わせ", "プロジェクトの打ち合わせ", tags, "2026-11-15T09:00:00Z")?
     let id = store.add(n)?
@@ -432,12 +432,12 @@ end notes.store.Store.new.test_reset_and_load
 test notes.store.Store.search_ids.test_search_and_tags
     notes.store.test_reset_dir()?
     let mut store = notes.store.Store.load(notes.store.TEST_DIR)?
-    let mut tags1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tags1 = std.vec.Vec.new()
     core.mem.drop(tags1.push(alloc.string.String.from_str(std.alloc.SYSTEM, "仕事")?))
     core.mem.drop(tags1.push(alloc.string.String.from_str(std.alloc.SYSTEM, "緊急")?))
     let note1 = note.Note.new(0i64, "打ち合わせ", "プロジェクトの打ち合わせ", tags1, "2026-11-15T09:00:00Z")?
     core.mem.drop(store.add(note1)?)
-    let mut tags2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tags2 = std.vec.Vec.new()
     core.mem.drop(tags2.push(alloc.string.String.from_str(std.alloc.SYSTEM, "買い物")?))
     let note2 = note.Note.new(0i64, "牛乳を買う", "午後3時に牛乳を買う", tags2, "2026-11-15T15:00:00Z")?
     core.mem.drop(store.add(note2)?)
@@ -452,10 +452,10 @@ end notes.store.Store.search_ids.test_search_and_tags
 test notes.store.Store.set.test_set_and_remove
     notes.store.test_reset_dir()?
     let mut store = notes.store.Store.load(notes.store.TEST_DIR)?
-    let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tags = std.vec.Vec.new()
     let memo = note.Note.new(0i64, "元", "本文", tags, "2026-11-15T09:00:00Z")?
     let id = store.add(memo)?
-    let mut tags2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tags2 = std.vec.Vec.new()
     core.mem.drop(tags2.push(alloc.string.String.from_str(std.alloc.SYSTEM, "変更")?))
     let u = note.Note.new(0i64, "変更後", "新しい本文", tags2, "2026-11-16T09:00:00Z")?
     store.set(id, u)?

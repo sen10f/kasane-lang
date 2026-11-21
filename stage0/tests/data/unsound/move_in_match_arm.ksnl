@@ -1,9 +1,9 @@
 type t.Wrap
-    v: alloc.vec.Vec<u32, std.alloc.System>
+    v: std.vec.Vec<u32>
 end t.Wrap
 
 fn t.bad(flag: Option<u32>) -> usize uses [] panics never
-    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let v = std.vec.Vec.new()
     match flag {
         Some(_n) => core.mem.drop(t.Wrap { v: v })
         None => {

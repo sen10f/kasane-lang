@@ -1,4 +1,4 @@
-fn t.f(xs: &mut alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics never
+fn t.f(xs: &mut std.vec.Vec<u32>) -> u32 uses [] panics never
     match xs.as_slice().get(0usize) {
         Some(k) => {
             match xs.as_mut_slice().get_mut(0usize) {
@@ -13,14 +13,14 @@ fn t.f(xs: &mut alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics neve
     }
 end t.f
 
-fn t.g(xs: &mut alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics never
+fn t.g(xs: &mut std.vec.Vec<u32>) -> u32 uses [] panics never
     let k = xs.as_slice().get(0usize)
     xs.clear()
     *k.unwrap_or(&0u32)
 end t.g
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     core.mem.drop(v.push(1u32))
     core.mem.drop(t.f(&mut v))
     core.mem.drop(t.g(&mut v))

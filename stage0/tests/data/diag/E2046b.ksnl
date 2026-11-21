@@ -15,7 +15,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     std.io.print_line("x")
 end t.main
 
-fn t.mk(s: t.Sq) -> Result<alloc.boxed.Box<t.Sq, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+fn t.mk(s: t.Sq) -> Result<std.boxed.Box<t.Sq>, alloc.alloc.AllocError> uses [alloc] panics never
     let b = alloc.boxed.Box.new(std.alloc.SYSTEM, s)?
     Ok(alloc.boxed.Box.into_dyn(b))
 end t.mk

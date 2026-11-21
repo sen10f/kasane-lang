@@ -35,7 +35,7 @@ fn t.many() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics m
         total = total + t.ok_size(f.write(b"abc"))
         t.ok_unit(f.close())
         let mut g = t.ok_file(std.fs.open("ksn_native_fs_many.txt"))
-        let mut rest = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut rest = std.vec.Vec.new()
         total = total + t.ok_size(std.fs.read_to_end(&mut g, &mut rest))
         t.ok_unit(g.close())
         i = i + 1usize
@@ -98,7 +98,7 @@ fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] pa
         Ok(k) => t.show("write to a read-only file", t.num(k))
         Err(e) => t.show_err("write to a read-only file", e)
     }
-    let mut rest = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rest = std.vec.Vec.new()
     let m = t.ok_size(std.fs.read_to_end(&mut g, &mut rest))
     t.show("rest", t.num(m))
     t.show("rest length", t.num(rest.len()))
@@ -141,7 +141,7 @@ fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] pa
 end t.round_trip
 
 fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))
     core.mem.drop(s.push_i64(n))
@@ -149,7 +149,7 @@ fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics never
 end t.show
 
 fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": kind "))
     core.mem.drop(s.push_i64(t.kind_num(e.kind)))

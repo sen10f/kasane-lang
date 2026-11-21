@@ -1,6 +1,6 @@
 fn t.main() -> () uses [alloc] panics never
-    let mut v: alloc.vec.Vec<u64, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut w: alloc.vec.Vec<u64, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v: std.vec.Vec<u64> = std.vec.Vec.new()
+    let mut w: std.vec.Vec<u64> = std.vec.Vec.new()
     core.mem.drop(v.push(1u64))
     core.mem.drop(w.push(1u64))
     let mut m = &mut w

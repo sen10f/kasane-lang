@@ -3,7 +3,7 @@ type t.RefCell['a]
 end t.RefCell
 
 fn t.bad() -> u32 uses [alloc] panics never
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     core.mem.drop(v.push(1u32))
     let s = v.as_mut_slice()
     let r = s.get_mut(0usize)

@@ -194,7 +194,7 @@ fn parse.tok.new(kind: parse.tok.Kind, code: u32, start: usize, stop: usize, lin
 end parse.tok.new
 
 // 記号・予約語の符号を `'名前'` として追記する。
-fn parse.tok.push_code_name(out: &mut alloc.string.String<std.alloc.System>, code: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn parse.tok.push_code_name(out: &mut std.string.String, code: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     out.push('\'')?
     let ops2 = "=> -> == != <= >= && || ::"
     let kws = parse.tok.KEYWORDS
@@ -218,7 +218,7 @@ fn parse.tok.push_code_name(out: &mut alloc.string.String<std.alloc.System>, cod
 end parse.tok.push_code_name
 
 // 語表の n 番目 (1 始まり) の語を追記する。
-fn parse.tok.push_word(out: &mut alloc.string.String<std.alloc.System>, table: &str, n: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn parse.tok.push_word(out: &mut std.string.String, table: &str, n: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut i = 0u32
     for w in table.split(" ") {
         i = i.wrapping_add(1u32)

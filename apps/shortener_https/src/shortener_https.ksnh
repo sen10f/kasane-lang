@@ -32,7 +32,7 @@ fn shortener_https.main() -> Result<(), shortener_https.error.Error> uses [alloc
         None => return Err(error.Error.BadRequest)
     }
     let served = shortener_https.run(address, connections, db_path, cert, key)?
-    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut text = std.string.String.new()
     text.push_u64(u64.from_usize(served))?
     core.mem.drop(std.log.info("stopped", &[("requests", text.as_str())]))
     Ok(())
@@ -50,7 +50,7 @@ end shortener_https.run
 fn shortener_https.serve_listener(listener: &std.net.TcpListener, acceptor: &std.tls.TlsAcceptor, connections: usize, db_path: &str) -> Result<usize, shortener_https.error.Error> uses [alloc, io.console, io.fs, io.net, time] panics never
     let mut db = store.Store.load(db_path)?
     let port = listener.local_port()?
-    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut text = std.string.String.new()
     text.push_u64(u64.from_u16(port))?
     core.mem.drop(std.log.info("listening", &[("port", text.as_str())]))
     let mut accepted = 0usize

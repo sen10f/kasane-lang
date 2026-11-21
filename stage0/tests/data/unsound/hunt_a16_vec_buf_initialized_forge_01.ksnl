@@ -1,5 +1,5 @@
 fn t.bad() -> u32 uses [] panics never
-    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v: std.vec.Vec<u32> = std.vec.Vec.new()
     v.buf.initialized = 1usize
     match v.get(0usize) {
         Some(x) => *x

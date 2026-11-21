@@ -1,6 +1,6 @@
 type wiki.page.Page pub
-    name: alloc.string.String<std.alloc.System>
-    content: alloc.string.String<std.alloc.System>
+    name: std.string.String
+    content: std.string.String
     version: u64
 end wiki.page.Page
 

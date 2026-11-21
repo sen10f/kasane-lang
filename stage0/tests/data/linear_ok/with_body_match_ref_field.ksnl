@@ -1,6 +1,6 @@
 type t.Res linear
     id: u32
-    inner: Option<alloc.vec.Vec<u64, std.alloc.System>>
+    inner: Option<std.vec.Vec<u64>>
 end t.Res
 
 fn t.Res.shut(self: t.Res) -> () uses [] panics never

@@ -8,7 +8,7 @@ end t.dangling
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let r = t.dangling("hello world, this is heap memory")
-    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut o = std.string.String.new()
     core.mem.drop(o.push_str("OVERWRITTEN BY ANOTHER ALLOCATION"))
     std.io.print_line(r)
 end t.main

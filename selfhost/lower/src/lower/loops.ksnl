@@ -1,5 +1,5 @@
-fn lower.loops.args(c: &lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>, extra: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn lower.loops.args(c: &lower.cx.Cx, ks: &std.vec.Vec<usize>, extra: &std.vec.Vec<usize>) -> Result<std.vec.Vec<usize>, resolve.Failure> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     for v in extra.as_slice().iter() {
         out.push(*v)?
     }
@@ -16,8 +16,8 @@ fn lower.loops.bin(c: &mut lower.cx.Cx, ty: &str, op: &str, a: usize, b: usize) 
     lower.cx.def(c, ty, s.as_str())
 end lower.loops.bin
 
-fn lower.loops.blk2(c: &mut lower.cx.Cx, ld: &alloc.vec.Vec<usize, std.alloc.System>, sv: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
-    let mut all = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn lower.loops.blk2(c: &mut lower.cx.Cx, ld: &std.vec.Vec<usize>, sv: &std.vec.Vec<usize>) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
+    let mut all = std.vec.Vec.new()
     for v in ld.as_slice().iter() {
         all.push(*v)?
     }
@@ -27,11 +27,11 @@ fn lower.loops.blk2(c: &mut lower.cx.Cx, ld: &alloc.vec.Vec<usize, std.alloc.Sys
     lower.cx.blk(c, &all)
 end lower.loops.blk2
 
-fn lower.loops.br(c: &mut lower.cx.Cx, b: usize, a: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.loops.br(c: &mut lower.cx.Cx, b: usize, a: &std.vec.Vec<usize>) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(b, a)?.as_str())?)
 end lower.loops.br
 
-fn lower.loops.brif(c: &mut lower.cx.Cx, cond: usize, b1: usize, a1: &alloc.vec.Vec<usize, std.alloc.System>, b2: usize, a2: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.loops.brif(c: &mut lower.cx.Cx, cond: usize, b1: usize, a1: &std.vec.Vec<usize>, b2: usize, a2: &std.vec.Vec<usize>) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let mut s = lower.cx.cat2("br_if ", lower.cx.vs(cond)?.as_str())?
     s.push_str(", ")?
     s.push_str(lower.cx.target(b1, a1)?.as_str())?
@@ -64,7 +64,7 @@ fn lower.loops.forsplit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     let sv2 = lower.std_calls.val_of(env, c, sv, lt)?
     let sep = lower.expr.expr(env, c, p, src, resolve.ast.item(p, it.b, 0usize), types.ty.UNKNOWN)?
     let base = lower.cx.depth(c)
-    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nms = std.vec.Vec.new()
     lower.expr.scan(env, c, p, src, n.c, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let s_ptr = lower.loops.fld(c, "ptr", sv2, "+0")?
@@ -185,14 +185,14 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let (sz, _al) = lower.tyk.size_of(env, c, elem)?
     let et = lower.tyk.text(env, c, elem)?
     let base = lower.cx.depth(c)
-    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nms = std.vec.Vec.new()
     lower.expr.scan(env, c, p, src, n.c, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let len0 = lower.vec.load_usize(c, hv, 8usize)?
     let p1 = lower.vec.load_ptr(c, hv)?
     let zero = lower.vec.usize_c(c, 0usize)?
     let iv = lower.cx.newval(c, "usize")?
-    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut hps = std.vec.Vec.new()
     hps.push(iv)?
     let mvh = lower.cx.fresh_vals(c, &ks)?
     for v in mvh.as_slice().iter() {
@@ -203,7 +203,7 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let cps = lower.cx.fresh_vals(c, &ks)?
     let contb = lower.cx.blk(c, &cps)?
     let head = lower.cx.blk(c, &hps)?
-    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a0 = std.vec.Vec.new()
     a0.push(zero)?
     let cur = lower.cx.cur_vals(c, &ks)?
     for v in cur.as_slice().iter() {
@@ -214,7 +214,7 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     lower.cx.bind_vals(c, &ks, &mvh)?
     let cmp_s = lower.cx.cat2("icmp.lt.usize ", lower.expr.two(iv, len0)?.as_str())?
     let cmp = lower.cx.def(c, "bool", cmp_s.as_str())?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let bodyb = lower.cx.blk(c, &empty)?
     let cv = lower.cx.cur_vals(c, &ks)?
     let mut s1 = lower.cx.cat2("br_if ", lower.cx.vs(cmp)?.as_str())?
@@ -279,7 +279,7 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     lower.cx.bind_vals(c, &ks, &cps)?
     let one = lower.vec.usize_c(c, 1usize)?
     let inc = lower.vec.arith(c, "add", iv, one)?
-    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a2 = std.vec.Vec.new()
     a2.push(inc)?
     let cur2 = lower.cx.cur_vals(c, &ks)?
     for v in cur2.as_slice().iter() {
@@ -377,7 +377,7 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     let hi = lower.expr.expr(env, c, p, src, resolve.ast.item(p, it.b, 1usize), types.ty.UNKNOWN)?
     let ity = lower.tyk.text(env, c, lo.t)?
     let base = lower.cx.depth(c)
-    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nms = std.vec.Vec.new()
     lower.expr.scan(env, c, p, src, n.c, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let eps = lower.cx.fresh_vals(c, &ks)?
@@ -385,14 +385,14 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     let cps = lower.cx.fresh_vals(c, &ks)?
     let contb = lower.cx.blk(c, &cps)?
     let iv = lower.cx.newval(c, ity.as_str())?
-    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut hps = std.vec.Vec.new()
     hps.push(iv)?
     let mvh = lower.cx.fresh_vals(c, &ks)?
     for v in mvh.as_slice().iter() {
         hps.push(*v)?
     }
     let head = lower.cx.blk(c, &hps)?
-    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a0 = std.vec.Vec.new()
     a0.push(lo.v)?
     let cur = lower.cx.cur_vals(c, &ks)?
     for v in cur.as_slice().iter() {
@@ -407,7 +407,7 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     let cmp_s0 = lower.cx.cat2(" ", cmp_op.as_str())?
     let cmp_s = lower.cx.cat2(cmp_src.as_str(), cmp_s0.as_str())?
     let cmp = lower.cx.def(c, "bool", cmp_s.as_str())?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let bodyb = lower.cx.blk(c, &empty)?
     let cv = lower.cx.cur_vals(c, &ks)?
     let mut s1 = lower.cx.cat2("br_if ", lower.cx.vs(cmp)?.as_str())?
@@ -458,7 +458,7 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     let inc_s0 = lower.cx.cat2(".wrap ", inc_op.as_str())?
     let inc_s = lower.cx.cat2(inc_src.as_str(), inc_s0.as_str())?
     let inc = lower.cx.def(c, ity.as_str(), inc_s.as_str())?
-    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a2 = std.vec.Vec.new()
     a2.push(inc)?
     let cur2 = lower.cx.cur_vals(c, &ks)?
     for v in cur2.as_slice().iter() {
@@ -482,8 +482,8 @@ fn lower.loops.make2(c: &mut lower.cx.Cx, ty: &str, a: usize, b: usize) -> Resul
     lower.cx.def(c, ty, lower.cx.cat2(s.as_str(), ")")?.as_str())
 end lower.loops.make2
 
-fn lower.loops.mk(c: &mut lower.cx.Cx, lead: usize, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(alloc.vec.Vec<usize, std.alloc.System>, alloc.vec.Vec<usize, std.alloc.System>), resolve.Failure> uses [alloc] panics never pub
-    let mut ld = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn lower.loops.mk(c: &mut lower.cx.Cx, lead: usize, ks: &std.vec.Vec<usize>) -> Result<(std.vec.Vec<usize>, std.vec.Vec<usize>), resolve.Failure> uses [alloc] panics never pub
+    let mut ld = std.vec.Vec.new()
     for _i in core.iter.range(0usize, lead) {
         ld.push(lower.cx.newval(c, "usize")?)?
     }
@@ -501,8 +501,8 @@ fn lower.loops.un(c: &mut lower.cx.Cx, ty: &str, op: &str, a: usize) -> Result<u
     lower.cx.def(c, ty, s.as_str())
 end lower.loops.un
 
-fn lower.loops.vv(n: usize, a: usize, b: usize, d: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn lower.loops.vv(n: usize, a: usize, b: usize, d: usize) -> Result<std.vec.Vec<usize>, resolve.Failure> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     if n > 0usize {
         out.push(a)?
     }

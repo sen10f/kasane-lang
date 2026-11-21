@@ -6,23 +6,23 @@
 // Drop の実装は、ユーザーの `impl core.ops.Drop for 型` の対象型の中に型名が出るものを数える
 // (ty_mentions と同じ)。
 type effects.drop.Acc pub
-    nm: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
-    un: alloc.vec.Vec<usize, std.alloc.System> pub
-    nd: alloc.vec.Vec<usize, std.alloc.System> pub
-    dv: alloc.vec.Vec<bool, std.alloc.System> pub
-    ofr: alloc.vec.Vec<usize, std.alloc.System> pub
-    onm: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
-    dfor: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    nm: std.vec.Vec<std.string.String> pub
+    un: std.vec.Vec<usize> pub
+    nd: std.vec.Vec<usize> pub
+    dv: std.vec.Vec<bool> pub
+    ofr: std.vec.Vec<usize> pub
+    onm: std.vec.Vec<std.string.String> pub
+    dfor: std.vec.Vec<std.string.String> pub
 end effects.drop.Acc
 
 fn effects.drop.acc_new() -> Result<effects.drop.Acc, alloc.alloc.AllocError> uses [] panics never pub
-    let nm = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let un = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let nd = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let dv = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let ofr = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let onm = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let dfor = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let nm = std.vec.Vec.new()
+    let un = std.vec.Vec.new()
+    let nd = std.vec.Vec.new()
+    let dv = std.vec.Vec.new()
+    let ofr = std.vec.Vec.new()
+    let onm = std.vec.Vec.new()
+    let dfor = std.vec.Vec.new()
     let acc = effects.drop.Acc { nm: nm, un: un, nd: nd, dv: dv, ofr: ofr, onm: onm, dfor: dfor }
     Ok(acc)
 end effects.drop.acc_new
@@ -41,7 +41,7 @@ fn effects.drop.check(acc: &mut effects.walk.Acc, tout: &types.export.Out) -> Re
         i = i.wrapping_add(1usize)
     }
     // 辺: 型 f の欄に名前 j が出る (書かれた名前が一致する) ならば f → j。
-    let mut edges = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut edges = std.vec.Vec.new()
     for o in core.iter.range(0usize, d.onm.len()) {
         let f = match d.ofr.as_slice().get(o) {
             Some(v) => *v
@@ -104,7 +104,7 @@ fn effects.drop.check(acc: &mut effects.walk.Acc, tout: &types.export.Out) -> Re
             Some(p) => resolve.ast.line_of(p, parse.ast.get(&p.ast, nd).tok)
             None => 0usize
         }
-        let mut msg = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut msg = std.string.String.new()
         msg.push_str("recursive type ")?
         match d.nm.as_slice().get(k) {
             Some(x) => msg.push_str(x.as_str())?
@@ -127,7 +127,7 @@ fn effects.drop.collect(d: &mut effects.drop.Acc, p: &parse.cur.P, src: &[u8], u
             d.un.push(unit)?
             d.nd.push(*dn)?
             d.dv.push(effects.drop.has_derive(p, src, n.e))?
-            let mut tys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let mut tys = std.vec.Vec.new()
             for m in core.iter.range(0usize, resolve.ast.count(p, n.d)) {
                 effects.drop.item_names(p, resolve.ast.item(p, n.d, m), &mut tys)?
             }
@@ -141,7 +141,7 @@ fn effects.drop.collect(d: &mut effects.drop.Acc, p: &parse.cur.P, src: &[u8], u
             let trn = resolve.ast.text(src, tr.a, tr.b)
             let is_drop = trn == "core.ops.Drop"
             if is_drop {
-                let mut tys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                let mut tys = std.vec.Vec.new()
                 effects.drop.names(p, n.e, &mut tys)?
                 for nd in tys.as_slice().iter() {
                     let t = parse.ast.get(&p.ast, *nd)
@@ -165,7 +165,7 @@ fn effects.drop.has_derive(p: &parse.cur.P, src: &[u8], l: usize) -> bool uses [
 end effects.drop.has_derive
 
 // 型の定義の 1 項目 (FieldDecl の型、Variant の各型) の中の型名。
-fn effects.drop.item_names(p: &parse.cur.P, it: usize, out: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn effects.drop.item_names(p: &parse.cur.P, it: usize, out: &mut std.vec.Vec<usize>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = parse.ast.get(&p.ast, it)
     if n.kind == parse.ast.Kind.FieldDecl {
         return effects.drop.names(p, n.b, out)
@@ -179,7 +179,7 @@ fn effects.drop.item_names(p: &parse.cur.P, it: usize, out: &mut alloc.vec.Vec<u
 end effects.drop.item_names
 
 // 型の木の中の型名 (TNamed の節) を out に集める。Rust の collect_ty_names と同じ節 (引数・参照・ポインタ・添字・組) をたどる。
-fn effects.drop.names(p: &parse.cur.P, ty: usize, out: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
+fn effects.drop.names(p: &parse.cur.P, ty: usize, out: &mut std.vec.Vec<usize>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
     if ty == 0usize {
         return Ok(())
     }
@@ -208,8 +208,8 @@ fn effects.drop.names(p: &parse.cur.P, ty: usize, out: &mut alloc.vec.Vec<usize,
 end effects.drop.names
 
 // 型の表の名前 (String) を作る。
-fn effects.drop.own_text(s: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+fn effects.drop.own_text(s: &str) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut o = std.string.String.new()
     o.push_str(s)?
     Ok(o)
 end effects.drop.own_text

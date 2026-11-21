@@ -43,21 +43,21 @@ const demo.W: i32 = 800i32
 
 // アプリ状態。
 type demo.App pub
-    text: alloc.vec.Vec<u8, std.alloc.System>
+    text: std.vec.Vec<u8>
     counter: u32
-    items: alloc.vec.Vec<alloc.vec.Vec<u8, std.alloc.System>, std.alloc.System>
+    items: std.vec.Vec<std.vec.Vec<u8>>
     scroll: f32
     focus_input: bool
 end demo.App
 
 fn demo.App.new() -> demo.App uses [] panics never pub
-    let text = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let text = std.vec.Vec.new()
+    let items = std.vec.Vec.new()
     demo.App { text: text, counter: 0u32, items: items, scroll: 0.0f32, focus_input: false }
 end demo.App.new
 
-fn demo.bytes(s: &str) -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn demo.bytes(s: &str) -> std.vec.Vec<u8> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     let b = s.as_bytes()
     let mut i = 0usize
     while i < b.len() {
@@ -75,8 +75,8 @@ fn demo.bytes(s: &str) -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panic
 end demo.bytes
 
 // 1 つのバイト列をコピーした Vec を作る。
-fn demo.clone_bytes(bytes: &alloc.vec.Vec<u8, std.alloc.System>) -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn demo.clone_bytes(bytes: &std.vec.Vec<u8>) -> std.vec.Vec<u8> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     let bs = bytes.as_slice()
     let mut k = 0usize
     while k < bs.len() {
@@ -185,7 +185,7 @@ fn demo.parse_usize(s: &str) -> usize uses [] panics never pub
 end demo.parse_usize
 
 // 1 つの矩形アイテムをリストへ追加する（OOM 時は panic）。
-fn demo.push_rect(list: &mut alloc.vec.Vec<ui.render.Item, std.alloc.System>, r: ui.render.RectItem) -> () uses [alloc] panics may pub
+fn demo.push_rect(list: &mut std.vec.Vec<ui.render.Item>, r: ui.render.RectItem) -> () uses [alloc] panics may pub
     match list.push(render.Item.Rect(r)) {
         Ok(_u) => ()
         Err(_e) => core.panic.panic("oom")
@@ -193,7 +193,7 @@ fn demo.push_rect(list: &mut alloc.vec.Vec<ui.render.Item, std.alloc.System>, r:
 end demo.push_rect
 
 // 1 つのバイト列を app.text の末尾へ追加する。
-fn demo.push_text(app: &mut demo.App, bytes: &alloc.vec.Vec<u8, std.alloc.System>) -> () uses [alloc] panics never pub
+fn demo.push_text(app: &mut demo.App, bytes: &std.vec.Vec<u8>) -> () uses [alloc] panics never pub
     let bs = bytes.as_slice()
     let mut k = 0usize
     while k < bs.len() {
@@ -211,7 +211,7 @@ end demo.push_text
 
 // 1 フレームを描画して PNG へ書き出す（headless）。
 fn demo.render_frame(app: &demo.App, gpu_ctx: &mut ui.render.GpuCtx, path: &str) -> () uses [alloc] panics may pub
-    let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut list = std.vec.Vec.new()
     let panel = render.rgba(0.95f32, 0.95f32, 0.95f32, 1.0f32)
     let white = render.rgba(1.0f32, 1.0f32, 1.0f32, 1.0f32)
     let input_bg = render.rgba(1.0f32, 1.0f32, 1.0f32, 1.0f32)
@@ -282,8 +282,8 @@ fn demo.render_frame(app: &demo.App, gpu_ctx: &mut ui.render.GpuCtx, path: &str)
 end demo.render_frame
 
 // スクリプト化した事象列（決定的）。各要素をフレーム番号順に再生する。
-fn demo.script() -> alloc.vec.Vec<ui.event.Event, std.alloc.System> uses [alloc] panics never pub
-    let mut evs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn demo.script() -> std.vec.Vec<ui.event.Event> uses [alloc] panics never pub
+    let mut evs = std.vec.Vec.new()
     // フレーム 1: IME 合成中（"こ"）
     match evs.push(event.Event.IMEUpdate(demo.bytes("こ"))) {
         Ok(_u) => ()
@@ -359,7 +359,7 @@ fn demo.update(app: &mut demo.App, _ctx: &mut ui.event.Ctx, ev: &ui.event.Event)
                 Err(_e) => ()
             }
             app.counter = app.counter.wrapping_add(1u32)
-            let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let empty = std.vec.Vec.new()
             app.text = empty
             event.Action.Redraw
         } else if event.rect_contains(input_rect, *px, *py) {

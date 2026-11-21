@@ -1,6 +1,6 @@
 // 1 ファイルの関数定義をすべて検査する。
 fn borrow.fns.check_file(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut ds = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ds = std.vec.Vec.new()
     for d in cx.p.ast.defs.as_slice().iter() {
         ds.push(*d)?
     }

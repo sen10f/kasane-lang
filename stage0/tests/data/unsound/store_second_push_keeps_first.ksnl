@@ -1,5 +1,5 @@
 fn t.bad() -> usize uses [alloc] panics never
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     let mut x = 1u32
     let y = 2u32
     match v.push(&x) {

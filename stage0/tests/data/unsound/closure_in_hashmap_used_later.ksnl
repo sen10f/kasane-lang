@@ -1,6 +1,6 @@
 fn t.bad() -> u32 uses [alloc] panics never
     let mut x = 1u32
-    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut m = std.collections.HashMap.new()
     let c = fn() -> u32 capture [&mut x] {
         x
     }

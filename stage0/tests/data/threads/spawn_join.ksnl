@@ -1,5 +1,5 @@
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     v.push(10u32).map_err(t.oom)?
     v.push(20u32).map_err(t.oom)?
     v.push(12u32).map_err(t.oom)?

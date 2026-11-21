@@ -7,7 +7,7 @@ const loops.N_SIEVE: usize = 200_000usize
 const loops.N_SUM: u64 = 1_000_000u64
 
 fn loops.count_primes(n: usize) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics may pub
-    let mut flags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut flags = std.vec.Vec.new()
     let mut k = 0usize
     while k < n {
         flags.push(true)?

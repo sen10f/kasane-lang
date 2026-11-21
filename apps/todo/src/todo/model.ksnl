@@ -5,44 +5,44 @@ const todo.model.MAX_TAGS: usize = 16usize
 const todo.model.MAX_TITLE: usize = 2048usize
 
 type todo.model.Session derive [Debug] pub
-    token: alloc.string.String<std.alloc.System> pub
+    token: std.string.String pub
     user_id: i64 pub
     expires_at: i64 pub
 end todo.model.Session
 
 type todo.model.Todo derive [Debug, PartialEq, Eq] pub
     id: i64 pub
-    title: alloc.string.String<std.alloc.System> pub
+    title: std.string.String pub
     done: bool pub
-    created_at: alloc.string.String<std.alloc.System> pub
+    created_at: std.string.String pub
 end todo.model.Todo
 
 type todo.model.TodoExtra pub
-    updated_at: alloc.string.String<std.alloc.System> pub
-    tags: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
-    deadline: alloc.string.String<std.alloc.System> pub
+    updated_at: std.string.String pub
+    tags: std.vec.Vec<std.string.String> pub
+    deadline: std.string.String pub
     owner_id: i64 pub
 end todo.model.TodoExtra
 
 type todo.model.UpdateFields pub
-    title: Option<alloc.string.String<std.alloc.System>> pub
+    title: Option<std.string.String> pub
     done: Option<bool> pub
-    deadline: Option<alloc.string.String<std.alloc.System>> pub
-    tags: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    deadline: Option<std.string.String> pub
+    tags: std.vec.Vec<std.string.String> pub
 end todo.model.UpdateFields
 
 type todo.model.User derive [Debug, PartialEq, Eq] pub
     id: i64 pub
-    username: alloc.string.String<std.alloc.System> pub
-    password_hash: alloc.string.String<std.alloc.System> pub
-    salt: alloc.string.String<std.alloc.System> pub
-    created_at: alloc.string.String<std.alloc.System> pub
+    username: std.string.String pub
+    password_hash: std.string.String pub
+    salt: std.string.String pub
+    created_at: std.string.String pub
 end todo.model.User
 
-fn todo.model.decode_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.Todo, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
+fn todo.model.decode_array(doc: &std.json.Doc, at: usize) -> Result<std.vec.Vec<todo.model.Todo>, std.json.Error> uses [alloc] panics never pub
     let root = std.json.decode_payload(doc.value_at(at))?
     let len = std.json.decode_len(doc, root)?
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     for i in core.iter.range(0usize, len) {
         let item = std.json.decode_item(doc, root, i)?
         out.push(todo.model.from_json_value(doc, item)?)?
@@ -50,10 +50,10 @@ fn todo.model.decode_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Ve
     Ok(out)
 end todo.model.decode_array
 
-fn todo.model.decode_extra_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.TodoExtra, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
+fn todo.model.decode_extra_array(doc: &std.json.Doc, at: usize) -> Result<std.vec.Vec<todo.model.TodoExtra>, std.json.Error> uses [alloc] panics never pub
     let root = std.json.decode_payload(doc.value_at(at))?
     let len = std.json.decode_len(doc, root)?
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     for i in core.iter.range(0usize, len) {
         let item = std.json.decode_item(doc, root, i)?
         out.push(todo.model.from_extra_json_value(doc, item)?)?
@@ -61,10 +61,10 @@ fn todo.model.decode_extra_array(doc: &std.json.Doc, at: usize) -> Result<alloc.
     Ok(out)
 end todo.model.decode_extra_array
 
-fn todo.model.decode_session_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.Session, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
+fn todo.model.decode_session_array(doc: &std.json.Doc, at: usize) -> Result<std.vec.Vec<todo.model.Session>, std.json.Error> uses [alloc] panics never pub
     let root = std.json.decode_payload(doc.value_at(at))?
     let len = std.json.decode_len(doc, root)?
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     for i in core.iter.range(0usize, len) {
         let item = std.json.decode_item(doc, root, i)?
         out.push(todo.model.from_session_json_value(doc, item)?)?
@@ -72,9 +72,9 @@ fn todo.model.decode_session_array(doc: &std.json.Doc, at: usize) -> Result<allo
     Ok(out)
 end todo.model.decode_session_array
 
-fn todo.model.decode_string_array(doc: &std.json.Doc, value: std.json.Value) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
+fn todo.model.decode_string_array(doc: &std.json.Doc, value: std.json.Value) -> Result<std.vec.Vec<std.string.String>, std.json.Error> uses [alloc] panics never pub
     let len = std.json.decode_len(doc, value)?
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     for i in core.iter.range(0usize, len) {
         let item = std.json.decode_item(doc, value, i)?
         let text = std.json.decode_string(doc, item)?
@@ -86,10 +86,10 @@ fn todo.model.decode_string_array(doc: &std.json.Doc, value: std.json.Value) -> 
     Ok(out)
 end todo.model.decode_string_array
 
-fn todo.model.decode_user_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.User, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
+fn todo.model.decode_user_array(doc: &std.json.Doc, at: usize) -> Result<std.vec.Vec<todo.model.User>, std.json.Error> uses [alloc] panics never pub
     let root = std.json.decode_payload(doc.value_at(at))?
     let len = std.json.decode_len(doc, root)?
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     for i in core.iter.range(0usize, len) {
         let item = std.json.decode_item(doc, root, i)?
         out.push(todo.model.from_user_json_value(doc, item)?)?
@@ -97,8 +97,8 @@ fn todo.model.decode_user_array(doc: &std.json.Doc, at: usize) -> Result<alloc.v
     Ok(out)
 end todo.model.decode_user_array
 
-fn todo.model.extra_to_json(extra: &todo.model.TodoExtra) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo.model.extra_to_json(extra: &todo.model.TodoExtra) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("{\"updated_at\":")?
     todo.model.push_quoted(&mut out, extra.updated_at.as_str())?
     out.push_str(",\"tags\":")?
@@ -111,7 +111,7 @@ fn todo.model.extra_to_json(extra: &todo.model.TodoExtra) -> Result<alloc.string
     Ok(out)
 end todo.model.extra_to_json
 
-fn todo.model.from_create_value(doc: &std.json.Doc, value: std.json.Value) -> Result<(alloc.string.String<std.alloc.System>, alloc.string.String<std.alloc.System>), std.json.Error> uses [alloc, time] panics never pub
+fn todo.model.from_create_value(doc: &std.json.Doc, value: std.json.Value) -> Result<(std.string.String, std.string.String), std.json.Error> uses [alloc, time] panics never pub
     let title_v = std.json.decode_field(doc, value, "title", 0usize)?
     let title = std.json.decode_string(doc, title_v)?
     if title.len() > todo.model.MAX_TITLE {
@@ -194,7 +194,7 @@ fn todo.model.from_update_value(doc: &std.json.Doc, value: std.json.Value) -> Re
     }
     let tags = match std.json.decode_field(doc, value, "tags", 3usize) {
         Ok(tags_v) => todo.model.decode_string_array(doc, tags_v)?
-        Err(_e) => alloc.vec.Vec.new(std.alloc.SYSTEM)
+        Err(_e) => std.vec.Vec.new()
     }
     Ok(todo.model.UpdateFields { title: title, done: done, deadline: deadline, tags: tags })
 end todo.model.from_update_value
@@ -230,7 +230,7 @@ fn todo.model.push_digit_char(d: u8) -> char uses [] panics never
     }
 end todo.model.push_digit_char
 
-fn todo.model.push_quoted(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn todo.model.push_quoted(out: &mut std.string.String, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     out.push_str("\"")?
     for c in text.chars() {
         if c == '"' {
@@ -263,8 +263,8 @@ fn todo.model.push_quoted(out: &mut alloc.string.String<std.alloc.System>, text:
     Ok(())
 end todo.model.push_quoted
 
-fn todo.model.session_to_json(session: &todo.model.Session) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo.model.session_to_json(session: &todo.model.Session) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("{\"token\":")?
     todo.model.push_quoted(&mut out, session.token.as_str())?
     out.push_str(",\"user_id\":")?
@@ -278,7 +278,7 @@ end todo.model.session_to_json
 fn todo.model.test_extra() -> todo.model.TodoExtra uses [alloc] panics may
     match alloc.string.String.from_str(std.alloc.SYSTEM, "2026-11-14T10:00:00Z") {
         Ok(u) => {
-            let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let mut tags = std.vec.Vec.new()
             match alloc.string.String.from_str(std.alloc.SYSTEM, "買い物") {
                 Ok(tag) => match tags.push(tag) {
                     Ok(_u) => {
@@ -301,7 +301,7 @@ fn todo.model.test_extra() -> todo.model.TodoExtra uses [alloc] panics may
 end todo.model.test_extra
 
 fn todo.model.test_memory() -> todo.model.Todo uses [alloc] panics may
-    let mut title = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut title = std.string.String.new()
     core.mem.drop(title.push_str("買い物"))
     match alloc.string.String.from_str(std.alloc.SYSTEM, "2026-11-14T10:00:00Z") {
         Ok(created) => todo.model.Todo { id: 7i64, title: title, done: true, created_at: created }
@@ -309,8 +309,8 @@ fn todo.model.test_memory() -> todo.model.Todo uses [alloc] panics may
     }
 end todo.model.test_memory
 
-fn todo.model.to_json(t: &todo.model.Todo) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo.model.to_json(t: &todo.model.Todo) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("{\"id\":")?
     out.push_i64(t.id)?
     out.push_str(",\"title\":")?
@@ -327,8 +327,8 @@ fn todo.model.to_json(t: &todo.model.Todo) -> Result<alloc.string.String<std.all
     Ok(out)
 end todo.model.to_json
 
-fn todo.model.user_to_json(user: &todo.model.User) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo.model.user_to_json(user: &todo.model.User) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("{\"id\":")?
     out.push_i64(user.id)?
     out.push_str(",\"username\":")?
@@ -343,7 +343,7 @@ fn todo.model.user_to_json(user: &todo.model.User) -> Result<alloc.string.String
     Ok(out)
 end todo.model.user_to_json
 
-fn todo.model.write_deadline(out: &mut alloc.string.String<std.alloc.System>, deadline: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn todo.model.write_deadline(out: &mut std.string.String, deadline: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     if deadline.is_empty() {
         out.push_str("null")?
     } else {
@@ -354,7 +354,7 @@ fn todo.model.write_deadline(out: &mut alloc.string.String<std.alloc.System>, de
     Ok(())
 end todo.model.write_deadline
 
-fn todo.model.write_tags(out: &mut alloc.string.String<std.alloc.System>, tags: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn todo.model.write_tags(out: &mut std.string.String, tags: &std.vec.Vec<std.string.String>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let all = tags.as_slice()
     out.push('[')?
     for i in core.iter.range(0usize, all.len()) {

@@ -12,7 +12,7 @@ fn emit.func.assemble(g: &mut emit.G) -> () uses [alloc, io.console, process] pa
     emit.func.write_params(g, p0, p1)
     emit.w(g, ") null_pointer_is_valid {\nentry:\n")
     let hoisted = emit.func.copy_str(&g.buf.hoisted)
-    g.buf.hoisted = alloc.string.String.new(std.alloc.SYSTEM)
+    g.buf.hoisted = std.string.String.new()
     emit.w(g, hoisted.as_str())
     emit.w(g, "  %depth = load i64, ptr @ksn.depth\n  %over = icmp uge i64 %depth, 2500\n")
     emit.w(g, "  br i1 %over, label %so, label %go\nso:\n  call void @ksn.overflow()\n")
@@ -34,20 +34,20 @@ fn emit.func.assemble(g: &mut emit.G) -> () uses [alloc, io.console, process] pa
     }
     emit.w(g, "}\n\n")
     let text = emit.func.copy_str(&g.buf.cur)
-    g.buf.cur = alloc.string.String.new(std.alloc.SYSTEM)
+    g.buf.cur = std.string.String.new()
     emit.util.push_str(&mut g.outs.fns, text.as_str())
 end emit.func.assemble
 
 // 確定したブロック `k` の本文の複製。
-fn emit.func.block_copy(g: &emit.G, k: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
+fn emit.func.block_copy(g: &emit.G, k: usize) -> std.string.String uses [alloc] panics may pub
     match g.flow.blocks.get(k) {
         Some(s) => emit.func.copy_str(s)
-        None => alloc.string.String.new(std.alloc.SYSTEM)
+        None => std.string.String.new()
     }
 end emit.func.block_copy
 
 // (2) 本体: ブロックごとに命令を `g.buf.cur` へ書き、終わりに `g.flow.blocks` へ積む。到達できないブロックは中身を書かない。
-fn emit.func.body(g: &mut emit.G, text: &str, starts: &alloc.vec.Vec<usize, std.alloc.System>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.body(g: &mut emit.G, text: &str, starts: &std.vec.Vec<usize>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
     let mut k = i.wrapping_add(1usize)
     let mut state = 0usize
     while k < j {
@@ -92,7 +92,7 @@ fn emit.func.body_text(g: &mut emit.G, l: &str) -> () uses [alloc, io.console, p
 end emit.func.body_text
 
 // 文字列の複製 (`String` は移せないので、中身を新しい文字列へ写す)。
-fn emit.func.copy_str(s: &alloc.string.String<std.alloc.System>) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
+fn emit.func.copy_str(s: &std.string.String) -> std.string.String uses [alloc] panics may pub
     let mut out = emit.util.new_str()
     emit.util.push_str(&mut out, s.as_str())
     out
@@ -107,7 +107,7 @@ fn emit.func.edge_at(g: &emit.G, e: usize) -> emit.Edge uses [] panics may pub
 end emit.func.edge_at
 
 // 1 関数 (`text` の `starts` で `i` 行目が `fn` 行、`j` 行目が `end` 行) を LLVM の関数として `g.outs.fns` へ足す。
-fn emit.func.emit_fn(g: &mut emit.G, text: &str, starts: &alloc.vec.Vec<usize, std.alloc.System>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.emit_fn(g: &mut emit.G, text: &str, starts: &std.vec.Vec<usize>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
     emit.reset_fn(g)
     g.misc.fidx = g.misc.fidx.wrapping_add(1usize)
     let head = emit.line_at(text, starts, i)
@@ -122,7 +122,7 @@ end emit.func.emit_fn
 // `g.buf.cur` の中身を `g.flow.blocks` に積み、新しい空の作業場所にする。
 fn emit.func.flush_block(g: &mut emit.G) -> () uses [alloc] panics may pub
     let done = emit.func.copy_str(&g.buf.cur)
-    g.buf.cur = alloc.string.String.new(std.alloc.SYSTEM)
+    g.buf.cur = std.string.String.new()
     match g.flow.blocks.push(done) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
@@ -196,7 +196,7 @@ fn emit.func.phis(g: &mut emit.G, k: usize) -> () uses [alloc, io.console, proce
     }
 end emit.func.phis
 
-fn emit.func.push_bool(v: &mut alloc.vec.Vec<bool, std.alloc.System>, x: bool) -> () uses [alloc] panics may pub
+fn emit.func.push_bool(v: &mut std.vec.Vec<bool>, x: bool) -> () uses [alloc] panics may pub
     match v.push(x) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
@@ -225,7 +225,7 @@ fn emit.func.push_succs(g: &mut emit.G, x: usize) -> () uses [alloc] panics may 
     }
 end emit.func.push_succs
 
-fn emit.func.push_usize(v: &mut alloc.vec.Vec<usize, std.alloc.System>, x: usize) -> () uses [alloc] panics may pub
+fn emit.func.push_usize(v: &mut std.vec.Vec<usize>, x: usize) -> () uses [alloc] panics may pub
     match v.push(x) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
@@ -272,7 +272,7 @@ fn emit.func.ret_text(head: &str) -> &str uses [] panics may pub
 end emit.func.ret_text
 
 // (1) 走査: 値の型 (`vty`)、ブロックの引数 (`bpar` / `bpty` / `bpst`)、後続 (`succ`)。
-fn emit.func.scan(g: &mut emit.G, text: &str, starts: &alloc.vec.Vec<usize, std.alloc.System>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.scan(g: &mut emit.G, text: &str, starts: &std.vec.Vec<usize>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
     let mut k = i.wrapping_add(1usize)
     let mut cur = 0usize
     while k < j {
@@ -346,7 +346,7 @@ end emit.func.scan_params
 // `fn NAME key=KEY ...` の KEY を `g.flags.fkey` へ入れる。
 fn emit.func.store_key(g: &mut emit.G, head: &str) -> () uses [alloc] panics may pub
     let key = emit.func.key_of(head)
-    g.flags.fkey = alloc.string.String.new(std.alloc.SYSTEM)
+    g.flags.fkey = std.string.String.new()
     emit.util.push_str(&mut g.flags.fkey, key)
 end emit.func.store_key
 

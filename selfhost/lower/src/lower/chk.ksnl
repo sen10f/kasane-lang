@@ -1,6 +1,6 @@
 const lower.chk.GEN: usize = 4_294_967_294usize pub
 
-fn lower.chk.d(o: &mut alloc.string.String<std.alloc.System>, k: usize, ty: &str, op: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.chk.d(o: &mut std.string.String, k: usize, ty: &str, op: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     o.push_str("    ")?
     lower.chk.v(o, k)?
     o.push_str(": ")?
@@ -10,18 +10,18 @@ fn lower.chk.d(o: &mut alloc.string.String<std.alloc.System>, k: usize, ty: &str
     Ok(())
 end lower.chk.d
 
-fn lower.chk.d0(o: &mut alloc.string.String<std.alloc.System>, k: usize, ty: &str, op: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.chk.d0(o: &mut std.string.String, k: usize, ty: &str, op: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     lower.chk.d(o, k, ty, op)?
     lower.chk.nl(o)
 end lower.chk.d0
 
-fn lower.chk.d1(o: &mut alloc.string.String<std.alloc.System>, k: usize, ty: &str, op: &str, a: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.chk.d1(o: &mut std.string.String, k: usize, ty: &str, op: &str, a: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     lower.chk.d(o, k, ty, op)?
     lower.chk.v(o, a)?
     lower.chk.nl(o)
 end lower.chk.d1
 
-fn lower.chk.d2(o: &mut alloc.string.String<std.alloc.System>, k: usize, ty: &str, op: &str, a: usize, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.chk.d2(o: &mut std.string.String, k: usize, ty: &str, op: &str, a: usize, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     lower.chk.d(o, k, ty, op)?
     lower.chk.v(o, a)?
     lower.chk.p(o, ", ")?
@@ -38,7 +38,7 @@ fn lower.chk.debug(c: &mut lower.cx.Cx, key: &str, v: usize) -> Result<(), resol
     Ok(())
 end lower.chk.debug
 
-fn lower.chk.digits(o: &mut alloc.string.String<std.alloc.System>, fat: &str, bl: usize, v0: usize, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.chk.digits(o: &mut std.string.String, fat: &str, bl: usize, v0: usize, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let i0 = v0 + 1usize
     lower.chk.p(o, "  b")?
     lower.chk.p(o, lower.cx.dec(bl)?.as_str())?
@@ -100,7 +100,7 @@ fn lower.chk.enum_cmp(env: &types.env.Env, c: &mut lower.cx.Cx, l: lower.cx.R, r
     let n = types.ty.node(&c.ar, f)
     let fqn = lower.tyk.item_fqn(env, n.a)
     let key = lower.cx.cat2(fqn.as_str(), ".$eq")?
-    let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut subs = std.vec.Vec.new()
     subs.push(n.a)?
     lower.expr.enqueue(c, key.as_str(), lower.chk.GEN, subs, types.ty.BOOL)?
     let co = lower.cx.cat2("call ", key.as_str())?
@@ -143,13 +143,13 @@ fn lower.chk.eq(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: 
         lower.cx.fail(c, "core.check.eq (整数と bool 以外は未対応)")?
         return lower.expr.dummy(c, t)
     }
-    let none = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let none = std.vec.Vec.new()
     let eqk = lower.cx.cat2(ty.as_str(), ".$eq")?
     let dbk = lower.cx.cat2(ty.as_str(), ".$debug")?
     lower.expr.enqueue(c, eqk.as_str(), lower.chk.GEN, none, types.ty.BOOL)?
-    let none2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let none2 = std.vec.Vec.new()
     lower.expr.enqueue(c, dbk.as_str(), lower.chk.GEN, none2, types.ty.UNIT)?
-    let mut args = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut args = std.vec.Vec.new()
     args.push(a.v)?
     args.push(b.v)?
     let co = lower.cx.cat2("call ", eqk.as_str())?
@@ -157,7 +157,7 @@ fn lower.chk.eq(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: 
     let co3 = lower.cx.cat2(co2.as_str(), lower.cx.vlist(&args)?.as_str())?
     let co4 = lower.cx.cat2(co3.as_str(), ")")?
     let cond = lower.cx.def(c, "bool", co4.as_str())?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let cont = lower.cx.blk(c, &empty)?
     let fail = lower.cx.blk(c, &empty)?
     let mut br = lower.cx.cat2("br_if ", lower.cx.vs(cond)?.as_str())?
@@ -186,12 +186,12 @@ fn lower.chk.eq_ok(ty: &str) -> bool uses [] panics never pub
     lower.chk.is_unsigned(ty) || lower.chk.is_signed(ty)
 end lower.chk.eq_ok
 
-fn lower.chk.fat(c: &mut lower.cx.Cx) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.chk.fat(c: &mut lower.cx.Cx) -> Result<std.string.String, resolve.Failure> uses [alloc] panics may pub
     let id = lower.tyk.agg_id(c, lower.tyk.FAT)?
     lower.cx.cat2("agg#", lower.cx.dec(id)?.as_str())
 end lower.chk.fat
 
-fn lower.chk.head(o: &mut alloc.string.String<std.alloc.System>, ty: &str, suffix: &str, tail: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.chk.head(o: &mut std.string.String, ty: &str, suffix: &str, tail: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     lower.chk.p(o, "fn ")?
     lower.chk.p(o, ty)?
     lower.chk.p(o, suffix)?
@@ -210,13 +210,13 @@ fn lower.chk.is_unsigned(ty: &str) -> bool uses [] panics never pub
     ty == "u8" || ty == "u16" || ty == "u32" || ty == "u64" || ty == "usize"
 end lower.chk.is_unsigned
 
-fn lower.chk.l(o: &mut alloc.string.String<std.alloc.System>, s: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.chk.l(o: &mut std.string.String, s: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     o.push_str(s)?
     o.push('\n')?
     Ok(())
 end lower.chk.l
 
-fn lower.chk.mk(o: &mut alloc.string.String<std.alloc.System>, k: usize, fat: &str, a: usize, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.chk.mk(o: &mut std.string.String, k: usize, fat: &str, a: usize, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     lower.chk.d(o, k, fat, "make(")?
     lower.chk.v(o, a)?
     lower.chk.p(o, ", ")?
@@ -224,7 +224,7 @@ fn lower.chk.mk(o: &mut alloc.string.String<std.alloc.System>, k: usize, fat: &s
     lower.chk.l(o, ")")
 end lower.chk.mk
 
-fn lower.chk.nl(o: &mut alloc.string.String<std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.chk.nl(o: &mut std.string.String) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     o.push('\n')?
     Ok(())
 end lower.chk.nl
@@ -241,10 +241,10 @@ fn lower.chk.opt_cmp(env: &types.env.Env, c: &mut lower.cx.Cx, l: lower.cx.R, r:
         break
     }
     let key = lower.cx.cat2(ty.as_str(), ".$eq")?
-    let subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let subs = std.vec.Vec.new()
     lower.expr.enqueue(c, key.as_str(), lower.chk.GEN, subs, types.ty.BOOL)?
     let ik = lower.cx.cat2(it, ".$eq")?
-    let subs2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let subs2 = std.vec.Vec.new()
     lower.expr.enqueue(c, ik.as_str(), lower.chk.GEN, subs2, types.ty.BOOL)?
     let co = lower.cx.cat2("call ", key.as_str())?
     let co2 = lower.cx.cat2(co.as_str(), lower.cx.cat2("(", lower.expr.two(l.v, r.v)?.as_str())?.as_str())?
@@ -258,19 +258,19 @@ fn lower.chk.opt_cmp(env: &types.env.Env, c: &mut lower.cx.Cx, l: lower.cx.R, r:
     Ok(lower.cx.R { v: nv, t: t })
 end lower.chk.opt_cmp
 
-fn lower.chk.p(o: &mut alloc.string.String<std.alloc.System>, s: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.chk.p(o: &mut std.string.String, s: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     o.push_str(s)?
     Ok(())
 end lower.chk.p
 
-fn lower.chk.record(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.chk.record(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &std.vec.Vec<usize>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     if !subs.is_empty() {
-        let mut eo = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut eo = std.string.String.new()
         lower.chk.text_enum_eq(env, c, &mut eo, key, lower.tyk.at(subs.as_slice(), 0usize))?
         return lower.func.record(c, eo.as_str(), "")
     }
     if key == "str.$eq" {
-        let mut so = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut so = std.string.String.new()
         lower.chk.text_str_eq(c, &mut so)?
         return lower.func.record(c, so.as_str(), "")
     }
@@ -279,7 +279,7 @@ fn lower.chk.record(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &
         ty = w
         break
     }
-    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut o = std.string.String.new()
     if key.ends_with("$eq") && ty.starts_with("Option<") {
         lower.chk.text_opt_eq(&mut o, ty)?
     } else if key.ends_with("$eq") {
@@ -290,7 +290,7 @@ fn lower.chk.record(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &
     lower.func.record(c, o.as_str(), "")
 end lower.chk.record
 
-fn lower.chk.say(o: &mut alloc.string.String<std.alloc.System>, fat: &str, hex: &str, len: &str, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.chk.say(o: &mut std.string.String, fat: &str, hex: &str, len: &str, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     lower.chk.d(o, k, "ptr", "static.bytes ")?
     lower.chk.l(o, hex)?
     lower.chk.d(o, k + 1usize, "usize", "const.usize ")?
@@ -300,7 +300,7 @@ fn lower.chk.say(o: &mut alloc.string.String<std.alloc.System>, fat: &str, hex: 
 end lower.chk.say
 
 fn lower.chk.str_cmp(_env: &types.env.Env, c: &mut lower.cx.Cx, l: lower.cx.R, r: lower.cx.R, ne: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    let subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let subs = std.vec.Vec.new()
     lower.expr.enqueue(c, "str.$eq", lower.chk.GEN, subs, types.ty.BOOL)?
     let co = lower.cx.cat2("call str.$eq(", lower.expr.two(l.v, r.v)?.as_str())?
     let v = lower.cx.def(c, "bool", lower.cx.cat2(co.as_str(), ")")?.as_str())?
@@ -313,7 +313,7 @@ fn lower.chk.str_cmp(_env: &types.env.Env, c: &mut lower.cx.Cx, l: lower.cx.R, r
     Ok(lower.cx.R { v: nv, t: t })
 end lower.chk.str_cmp
 
-fn lower.chk.text_debug(c: &mut lower.cx.Cx, o: &mut alloc.string.String<std.alloc.System>, ty: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.chk.text_debug(c: &mut lower.cx.Cx, o: &mut std.string.String, ty: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let fat = lower.chk.fat(c)?
     lower.chk.head(o, ty, ".$debug", "may stack=- ret=unit")?
     if ty == "bool" {
@@ -391,7 +391,7 @@ fn lower.chk.text_debug(c: &mut lower.cx.Cx, o: &mut alloc.string.String<std.all
     lower.chk.l(o, ".$debug")
 end lower.chk.text_debug
 
-fn lower.chk.text_enum_eq(env: &types.env.Env, c: &mut lower.cx.Cx, o: &mut alloc.string.String<std.alloc.System>, key: &str, item: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.chk.text_enum_eq(env: &types.env.Env, c: &mut lower.cx.Cx, o: &mut std.string.String, key: &str, item: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let agg = lower.tyk.agg_id(c, item)?
     let at = lower.cx.cat2("agg#", lower.cx.dec(agg)?.as_str())?
     let nv = lower.tyk.nvariants(env, item)
@@ -472,7 +472,7 @@ fn lower.chk.text_enum_eq(env: &types.env.Env, c: &mut lower.cx.Cx, o: &mut allo
     lower.chk.l(o, key)
 end lower.chk.text_enum_eq
 
-fn lower.chk.text_eq(o: &mut alloc.string.String<std.alloc.System>, ty: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.chk.text_eq(o: &mut std.string.String, ty: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     lower.chk.head(o, ty, ".$eq", "never stack=- ret=bool")?
     lower.chk.p(o, "  b0(%0: ")?
     lower.chk.p(o, ty)?
@@ -488,7 +488,7 @@ fn lower.chk.text_eq(o: &mut alloc.string.String<std.alloc.System>, ty: &str) ->
     lower.chk.l(o, ".$eq")
 end lower.chk.text_eq
 
-fn lower.chk.text_opt_eq(o: &mut alloc.string.String<std.alloc.System>, ty: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.chk.text_opt_eq(o: &mut std.string.String, ty: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let mut inner = ""
     for w in ty.split("<") {
         inner = w
@@ -535,7 +535,7 @@ fn lower.chk.text_opt_eq(o: &mut alloc.string.String<std.alloc.System>, ty: &str
     lower.chk.l(o, ".$eq")
 end lower.chk.text_opt_eq
 
-fn lower.chk.text_str_eq(c: &mut lower.cx.Cx, o: &mut alloc.string.String<std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.chk.text_str_eq(c: &mut lower.cx.Cx, o: &mut std.string.String) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let fat = lower.chk.fat(c)?
     lower.chk.head(o, "str", ".$eq", "never stack=- ret=bool")?
     lower.chk.p(o, "  b0(%0: ")?
@@ -575,7 +575,7 @@ fn lower.chk.text_str_eq(c: &mut lower.cx.Cx, o: &mut alloc.string.String<std.al
     lower.chk.l(o, "end str.$eq")
 end lower.chk.text_str_eq
 
-fn lower.chk.v(o: &mut alloc.string.String<std.alloc.System>, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.chk.v(o: &mut std.string.String, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     o.push('%')?
     o.push_str(lower.cx.dec(k)?.as_str())?
     Ok(())

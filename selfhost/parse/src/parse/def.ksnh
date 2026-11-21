@@ -8,7 +8,7 @@ end parse.def.accept_pub
 // 本体: `end` の手前までの文。Block を返す。
 fn parse.def.body(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let at = p.pos
-    let mut stmts = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut stmts = std.vec.Vec.new()
     loop {
         parse.cur.skip_nl(p)
         if parse.cur.is_kw(p, parse.tok.KW_END) || parse.cur.at_eof(p) {
@@ -40,7 +40,7 @@ fn parse.def.derive(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses 
     let at = p.pos
     parse.cur.advance(p)
     parse.cur.expect_ch(p, b'[')?
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     loop {
         let name = parse.cur.name_tok(p)?
         items.push(parse.ast.add1(&mut p.ast, parse.ast.Kind.Effect, name, name)?)?
@@ -204,7 +204,7 @@ fn parse.def.record(p: &mut parse.cur.P, src: &[u8], kind: parse.ast.Kind, is_en
     let generics = parse.ty.generics(p)?
     let (derive, flags) = parse.def.type_attrs(p)?
     parse.cur.expect_nl(p)?
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     loop {
         parse.cur.skip_nl(p)
         if parse.cur.is_kw(p, parse.tok.KW_END) || parse.cur.at_eof(p) {
@@ -250,7 +250,7 @@ fn parse.def.trait_def(p: &mut parse.cur.P, src: &[u8]) -> Result<usize, parse.e
     parse.cur.advance(p)
     let (a, b) = parse.cur.fqn(p)?
     let generics = parse.ty.generics(p)?
-    let mut reqs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut reqs = std.vec.Vec.new()
     if parse.cur.accept_kw(p, parse.tok.CX_REQUIRES) {
         reqs.push(parse.ty.trait_ref(p)?)?
         while parse.cur.accept_ch(p, b',') {
@@ -259,7 +259,7 @@ fn parse.def.trait_def(p: &mut parse.cur.P, src: &[u8]) -> Result<usize, parse.e
     }
     let vis = parse.def.accept_pub(p)
     parse.cur.expect_nl(p)?
-    let mut fns = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut fns = std.vec.Vec.new()
     loop {
         parse.cur.skip_nl(p)
         if parse.cur.is_kw(p, parse.tok.KW_END) || parse.cur.at_eof(p) {
@@ -311,7 +311,7 @@ end parse.def.type_attrs
 // バリアント行 `名前 [(型, ...)]`。Variant の a = 名前, b = 型の List。
 fn parse.def.variant(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never
     let name = parse.cur.name_tok(p)?
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     if parse.cur.accept_ch(p, b'(') {
         items.push(parse.ty.ty(p)?)?
         while parse.cur.accept_ch(p, b',') {

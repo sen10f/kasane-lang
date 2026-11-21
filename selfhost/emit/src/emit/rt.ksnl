@@ -70,7 +70,7 @@ fn emit.rt.assemble(g: &mut emit.G, entry: &str, nparams: usize, res: bool, rty:
 end emit.rt.assemble
 
 fn emit.rt.cstr(g: &mut emit.G, name: &str, text: &str) -> () uses [alloc] panics may pub
-    let mut bytes: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut bytes: std.vec.Vec<u8> = std.vec.Vec.new()
     let bb_b_ak = text.as_bytes()
     let mut kk_b_ak = 0usize
     while kk_b_ak < bb_b_ak.len() {
@@ -173,7 +173,7 @@ fn emit.rt.write_helper(g: &mut emit.G) -> () uses [alloc] panics may pub
         emit.util.push_str(&mut g.outs.out, ", i64 ")
         emit.util.push_str(&mut g.outs.out, cur.as_str())
         emit.util.push_str(&mut g.outs.out, "\n")
-        cur = alloc.string.String.new(std.alloc.SYSTEM)
+        cur = std.string.String.new()
         emit.util.push_str(&mut cur, "%k")
         emit.util.push_num(&mut cur, k)
         k = k.wrapping_add(1usize)

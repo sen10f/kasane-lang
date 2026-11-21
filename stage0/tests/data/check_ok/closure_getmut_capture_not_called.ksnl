@@ -1,13 +1,13 @@
 fn t.ok() -> u32 uses [alloc] panics never
-    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
-    core.mem.drop(m.insert(1u32, alloc.string.String.new(std.alloc.SYSTEM)))
+    let mut m = std.collections.HashMap.new()
+    core.mem.drop(m.insert(1u32, std.string.String.new()))
     let r = m.get_mut(&1u32)
     if let Some(v) = r {
         let c = fn() -> usize capture [&mut v] {
             0usize
         }
         core.mem.drop(c)
-        core.mem.drop(m.insert(2u32, alloc.string.String.new(std.alloc.SYSTEM)))
+        core.mem.drop(m.insert(2u32, std.string.String.new()))
     }
     0u32
 end t.ok

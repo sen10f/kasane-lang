@@ -1,8 +1,8 @@
 fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     let s = match alloc.string.String.from_str(std.alloc.SYSTEM, "a") {
         Ok(x) => x
-        Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+        Err(_e) => std.string.String.new()
     }
     core.mem.drop(v.push(s))
     let a = v[0usize]

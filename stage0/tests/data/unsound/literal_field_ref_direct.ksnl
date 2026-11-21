@@ -3,7 +3,7 @@ type t.S
 end t.S
 
 fn t.main() -> () uses [] panics never
-    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let s = std.string.String.new()
     let x = t.S { name: &s }
     core.mem.drop(x)
     core.mem.drop(s)

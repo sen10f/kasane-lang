@@ -11,7 +11,7 @@ fn t.Sq.area(self: &t.Sq) -> i64 uses [] panics never impls t.Shape
     self.side
 end t.Sq.area
 
-fn t.f(b: &alloc.boxed.Box<dyn t.Shape, std.alloc.System>) -> i64 uses [] panics never
+fn t.f(b: &std.boxed.Box<dyn t.Shape>) -> i64 uses [] panics never
     b.area()
 end t.f
 

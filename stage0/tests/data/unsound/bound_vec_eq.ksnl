@@ -3,8 +3,8 @@ type t.Plain
 end t.Plain
 
 fn t.bad() -> () uses [] panics may
-    let a: alloc.vec.Vec<t.Plain, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let b: alloc.vec.Vec<t.Plain, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let a: std.vec.Vec<t.Plain> = std.vec.Vec.new()
+    let b: std.vec.Vec<t.Plain> = std.vec.Vec.new()
     core.check.eq(a, b)
 end t.bad
 

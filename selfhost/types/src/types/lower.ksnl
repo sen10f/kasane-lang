@@ -17,8 +17,8 @@ fn types.lower.prim(name: &str) -> usize uses [] panics never pub
     types.ty.int_id(name)
 end types.lower.prim
 
-fn types.lower.targs(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.chk.Ctx, p: &parse.cur.P, src: &[u8], file: usize, l: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn types.lower.targs(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.chk.Ctx, p: &parse.cur.P, src: &[u8], file: usize, l: usize) -> Result<std.vec.Vec<usize>, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
+    let mut out = std.vec.Vec.new()
     if l == 0usize {
         return Ok(out)
     }
@@ -38,8 +38,8 @@ fn types.lower.targs(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.ch
     Ok(out)
 end types.lower.targs
 
-fn types.lower.tparams(p: &parse.cur.P, gl: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn types.lower.tparams(p: &parse.cur.P, gl: usize) -> Result<std.vec.Vec<usize>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     if gl == 0usize {
         return Ok(out)
     }

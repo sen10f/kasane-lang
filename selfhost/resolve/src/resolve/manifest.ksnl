@@ -1,11 +1,11 @@
 type resolve.manifest.Dep pub
-    name: alloc.string.String<std.alloc.System> pub
-    path: alloc.string.String<std.alloc.System> pub
+    name: std.string.String pub
+    path: std.string.String pub
 end resolve.manifest.Dep
 
 type resolve.manifest.Pkg pub
-    name: alloc.string.String<std.alloc.System> pub
-    deps: alloc.vec.Vec<resolve.manifest.Dep, std.alloc.System> pub
+    name: std.string.String pub
+    deps: std.vec.Vec<resolve.manifest.Dep> pub
 end resolve.manifest.Pkg
 
 fn resolve.manifest.dep(name: &str, path: &str) -> Result<resolve.manifest.Dep, alloc.alloc.AllocError> uses [alloc] panics never pub
@@ -14,8 +14,8 @@ fn resolve.manifest.dep(name: &str, path: &str) -> Result<resolve.manifest.Dep, 
     Ok(resolve.manifest.Dep { name: n, path: p })
 end resolve.manifest.dep
 
-fn resolve.manifest.join(dir: &str, rel: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn resolve.manifest.join(dir: &str, rel: &str) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str(dir)?
     out.push('/')?
     out.push_str(rel)?
@@ -40,8 +40,8 @@ fn resolve.manifest.read(dir: &str) -> Result<resolve.manifest.Pkg, resolve.Fail
         Ok(s) => s
         Err(_e) => return Err(resolve.Failure.Manifest)
     }
-    let mut name = alloc.string.String.new(std.alloc.SYSTEM)
-    let mut deps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut name = std.string.String.new()
+    let mut deps = std.vec.Vec.new()
     let mut sec = 0usize
     for raw in text.split("\n") {
         let line = raw.trim()

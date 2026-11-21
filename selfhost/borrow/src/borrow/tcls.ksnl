@@ -20,7 +20,7 @@ fn borrow.tcls.adt(tab: &borrow.base.Tab, env: &types.env.Env, ar: &types.ty.Are
     borrow.base.ty_lookup(tab, name)
 end borrow.tcls.adt
 
-fn borrow.tcls.at(v: &alloc.vec.Vec<usize, std.alloc.System>, k: usize) -> usize uses [] panics never pub
+fn borrow.tcls.at(v: &std.vec.Vec<usize>, k: usize) -> usize uses [] panics never pub
     match v.as_slice().get(k) {
         Some(c) => *c
         None => borrow.base.UNK
@@ -69,8 +69,8 @@ fn borrow.tcls.scalar(k: types.ty.K) -> bool uses [] panics never pub
     false
 end borrow.tcls.scalar
 
-fn borrow.tcls.table(out: &types.export.Out, file: usize, tab: &borrow.base.Tab) -> Result<alloc.vec.Vec<usize, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn borrow.tcls.table(out: &types.export.Out, file: usize, tab: &borrow.base.Tab) -> Result<std.vec.Vec<usize>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut v = std.vec.Vec.new()
     let cnt = match types.env.unit(&out.env, file) {
         Some(p) => p.ast.nodes.len()
         None => 0usize

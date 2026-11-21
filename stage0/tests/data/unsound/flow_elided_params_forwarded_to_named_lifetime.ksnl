@@ -1,11 +1,11 @@
-fn t.inner['a](v: &mut alloc.vec.Vec<&'a str, std.alloc.System>, x: &'a str) -> () uses [alloc] panics never
+fn t.inner['a](v: &mut std.vec.Vec<&'a str>, x: &'a str) -> () uses [alloc] panics never
     core.mem.drop(v.push(x))
 end t.inner
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     {
-        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut s = std.string.String.new()
         core.mem.drop(s.push_str("hello world, this is heap memory"))
         t.outer(&mut v, s.as_str())
     }
@@ -17,11 +17,11 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
 end t.main
 
 fn t.mk() -> alloc.string.String uses [alloc] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str("hello world, this is heap memory"))
     s
 end t.mk
 
-fn t.outer(v: &mut alloc.vec.Vec<&str, std.alloc.System>, x: &str) -> () uses [alloc] panics never
+fn t.outer(v: &mut std.vec.Vec<&str>, x: &str) -> () uses [alloc] panics never
     t.inner(v, x)
 end t.outer

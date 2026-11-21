@@ -15,7 +15,7 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
         match std.env.arg(j) {
             Some(s) => {
                 let it = types.env.get_def(&env.tab, s)
-                let none = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                let none = std.vec.Vec.new()
                 lower.expr.enqueue(&mut c, s, it, none, 0usize)?
             }
             None => break
@@ -41,19 +41,19 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
         }
         i = i + 1usize
     }
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     out.push_str("kir 1\n\n")?
     let aggs = lower.tyk.agg_lines(&env, &mut c)?
     out.push_str(aggs.as_str())?
     if !c.g.aggs.is_empty() {
         out.push('\n')?
     }
-    let mut used = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut used = std.vec.Vec.new()
     for _k in core.iter.range(0usize, c.g.nms.len()) {
         used.push(false)?
     }
     let mut firstf = true
-    let mut bad = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut bad = std.string.String.new()
     loop {
         let mut pick = c.g.nms.len()
         for k in core.iter.range(0usize, c.g.nms.len()) {
@@ -76,7 +76,7 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
         if pick == c.g.nms.len() {
             break
         }
-        let mut nused = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut nused = std.vec.Vec.new()
         let mut q = 0usize
         for flag in used.as_slice().iter() {
             if q == pick {
@@ -93,11 +93,11 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
         }
         let text = match c.g.tx.as_slice().get(pick) {
             Some(s) => lower.cx.own(s.as_str())?
-            None => alloc.string.String.new(std.alloc.SYSTEM)
+            None => std.string.String.new()
         }
         let nm = match c.g.nms.as_slice().get(pick) {
             Some(s) => lower.cx.own(s.as_str())?
-            None => alloc.string.String.new(std.alloc.SYSTEM)
+            None => std.string.String.new()
         }
         if ok {
             if !firstf {

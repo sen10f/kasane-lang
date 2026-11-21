@@ -1,5 +1,5 @@
 fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
-    let local = alloc.string.String.new(std.alloc.SYSTEM)
+    let local = std.string.String.new()
     let r = local.as_str()
     let spawned = std.thread.spawn(
         std.alloc.SYSTEM,

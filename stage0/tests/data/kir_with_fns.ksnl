@@ -2,8 +2,8 @@ fn t.lg(log: &mut u32, k: u32) -> () uses [] panics may
     *log = *log * 10u32 + k
 end t.lg
 
-fn t.nv() -> alloc.vec.Vec<u8, std.alloc.System> uses [] panics never
-    alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn t.nv() -> std.vec.Vec<u8> uses [] panics never
+    std.vec.Vec.new()
 end t.nv
 
 fn t.run_close_match(n: u32) -> u32 uses [] panics may

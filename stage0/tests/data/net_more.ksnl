@@ -1,5 +1,5 @@
-fn t.addr(port: u16) -> alloc.string.String<std.alloc.System> uses [alloc] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+fn t.addr(port: u16) -> std.string.String uses [alloc] panics never
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str("127.0.0.1:"))
     core.mem.drop(s.push_u64(u64.from_u16(port)))
     s
@@ -25,7 +25,7 @@ fn t.addresses(c: &std.net.TcpStream, s: &std.net.TcpStream, port: u16) -> () us
 end t.addresses
 
 fn t.by_name(listener: &std.net.TcpListener, port: u16) -> () uses [alloc, io.console, io.net] panics never
-    let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut name = std.string.String.new()
     core.mem.drop(name.push_str("localhost:"))
     core.mem.drop(name.push_u64(u64.from_u16(port)))
     match std.net.connect(name.as_str()) {
@@ -118,7 +118,7 @@ fn t.serve(listener: std.net.TcpListener) -> () uses [alloc, io.console, io.net]
 end t.serve
 
 fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))
     core.mem.drop(s.push_i64(n))
@@ -126,7 +126,7 @@ fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics never
 end t.show
 
 fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": kind "))
     core.mem.drop(s.push_i64(t.kind_num(e.kind)))
@@ -135,7 +135,7 @@ fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panic
     core.mem.drop(std.io.print_line(s.as_str()))
 end t.show_err
 
-fn t.show_list(label: &str, v: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> () uses [alloc, io.console] panics never
+fn t.show_list(label: &str, v: &std.vec.Vec<std.string.String>) -> () uses [alloc, io.console] panics never
     t.show_u(label, v.len())
     let items = v.as_slice()
     let mut i = 0usize
@@ -149,7 +149,7 @@ fn t.show_list(label: &str, v: &alloc.vec.Vec<alloc.string.String<std.alloc.Syst
 end t.show_list
 
 fn t.show_net_err(label: &str, e: std.net.Error) -> () uses [alloc, io.console] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": net code "))
     core.mem.drop(s.push_i64(i64.from_i32(e.code)))
@@ -157,7 +157,7 @@ fn t.show_net_err(label: &str, e: std.net.Error) -> () uses [alloc, io.console] 
 end t.show_net_err
 
 fn t.show_text(label: &str, text: &str) -> () uses [alloc, io.console] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))
     core.mem.drop(s.push_str(text))
@@ -165,7 +165,7 @@ fn t.show_text(label: &str, text: &str) -> () uses [alloc, io.console] panics ne
 end t.show_text
 
 fn t.show_u(label: &str, n: usize) -> () uses [alloc, io.console] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))
     core.mem.drop(s.push_u64(u64.from_usize(n)))
@@ -256,7 +256,7 @@ fn t.udp_pair(a: std.net.UdpSocket, b: std.net.UdpSocket) -> () uses [alloc, io.
         Err(e) => t.show_err("udp send", e)
     }
     let mut buf = [0u8; 16]
-    let mut from = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut from = std.string.String.new()
     match b.recv_from(&mut buf, &mut from) {
         Ok(n) => {
             t.show_u("udp received", n)
@@ -269,7 +269,7 @@ fn t.udp_pair(a: std.net.UdpSocket, b: std.net.UdpSocket) -> () uses [alloc, io.
         Err(e) => t.show_err("udp recv", e)
     }
     let mut buf2 = [0u8; 16]
-    let mut from2 = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut from2 = std.string.String.new()
     match a.recv_from(&mut buf2, &mut from2) {
         Ok(n) => {
             t.show_u("udp reply received", n)

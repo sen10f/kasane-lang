@@ -2,8 +2,8 @@ import shortener.http
 import shortener.server
 import shortener.wire
 
-fn shortener.client.address(port: u16) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn shortener.client.address(port: u16) -> Result<std.string.String, shortener.error.Error> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("127.0.0.1:")?
     out.push_u64(u64.from_u16(port))?
     Ok(out)

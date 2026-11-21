@@ -135,7 +135,7 @@ end borrow.walk.captures
 
 // 同じ式の中で、同じ局所を一方が可変で借りてもう一方も借りる組があれば E3010。
 // 同じ局所でも、根の直下の欄が違う (`&mut c.ar` と `&c.tc`) 組は別の値なので数えない。
-fn borrow.walk.check_pairs(cx: &mut borrow.cx.Cx, roots: &alloc.vec.Vec<usize, std.alloc.System>, muts: &alloc.vec.Vec<usize, std.alloc.System>, flds: &alloc.vec.Vec<usize, std.alloc.System>, tok: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn borrow.walk.check_pairs(cx: &mut borrow.cx.Cx, roots: &std.vec.Vec<usize>, muts: &std.vec.Vec<usize>, flds: &std.vec.Vec<usize>, tok: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = roots.len()
     for i in core.iter.range(0usize, n) {
         for j in core.iter.range(i.wrapping_add(1usize), n) {
@@ -413,7 +413,7 @@ end borrow.walk.ident_end
 fn borrow.walk.if_expr(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.ast.Node) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
     let dc = borrow.walk.expr(tab, cx, n.a, borrow.walk.READ)?
     let s0 = borrow.cx.snap(cx)?
-    let mut acc = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut acc = std.vec.Vec.new()
     let mut have = 0usize
     let d1 = borrow.walk.expr(tab, cx, n.b, borrow.walk.VAL)?
     if d1 == 0usize {
@@ -445,7 +445,7 @@ fn borrow.walk.is_dot_at(src: &[u8], i: usize) -> bool uses [] panics never pub
 end borrow.walk.is_dot_at
 
 // 生存する枝の状態を合流する。最初の一つは写し、以降は borrow.cx.join_into で合わせる。
-fn borrow.walk.join_one(cx: &borrow.cx.Cx, acc: &mut alloc.vec.Vec<usize, std.alloc.System>, cur: &alloc.vec.Vec<usize, std.alloc.System>, have: &mut usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn borrow.walk.join_one(cx: &borrow.cx.Cx, acc: &mut std.vec.Vec<usize>, cur: &std.vec.Vec<usize>, have: &mut usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     if *have == 1usize {
         borrow.cx.join_into(cx, acc, cur)
         return Ok(())
@@ -523,9 +523,9 @@ fn borrow.walk.let_stmt(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.a
             borrow.cx.add_borrow(cx, at, root.wrapping_sub(1usize), bmut, rps, rpe)?
         }
         if n.d != 0usize {
-            let mut roots = alloc.vec.Vec.new(std.alloc.SYSTEM)
-            let mut muts = alloc.vec.Vec.new(std.alloc.SYSTEM)
-            let mut flds = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let mut roots = std.vec.Vec.new()
+            let mut muts = std.vec.Vec.new()
+            let mut flds = std.vec.Vec.new()
             borrow.walk.operand_borrows(cx, n.d, &mut roots, &mut muts, &mut flds)?
             for k in core.iter.range(0usize, roots.len()) {
                 let r = match roots.as_slice().get(k) {
@@ -554,9 +554,9 @@ end borrow.walk.let_stmt
 fn borrow.walk.list(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, l: usize, ctx: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
     let cnt = resolve.ast.count(&cx.p, l)
     let mut dead = 0usize
-    let mut roots = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut muts = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut flds = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut roots = std.vec.Vec.new()
+    let mut muts = std.vec.Vec.new()
+    let mut flds = std.vec.Vec.new()
     for k in core.iter.range(0usize, cnt) {
         let it = resolve.ast.item(&cx.p, l, k)
         let d = borrow.walk.expr(tab, cx, it, ctx)?
@@ -619,7 +619,7 @@ fn borrow.walk.match_expr(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse
         }
     }
     let s0 = borrow.cx.snap(cx)?
-    let mut acc = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut acc = std.vec.Vec.new()
     let mut have = 0usize
     let mut all_dead = 1usize
     for k in core.iter.range(0usize, cnt) {
@@ -671,7 +671,7 @@ fn borrow.walk.method_root(cx: &borrow.cx.Cx, n: parse.ast.Node, bmut: &mut usiz
 end borrow.walk.method_root
 
 // 借用 (`&e`) が作る根と可変さを集める (Some・Ok・Err・組・構造体リテラルの中まで)。
-fn borrow.walk.operand_borrows(cx: &borrow.cx.Cx, e: usize, roots: &mut alloc.vec.Vec<usize, std.alloc.System>, muts: &mut alloc.vec.Vec<usize, std.alloc.System>, flds: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
+fn borrow.walk.operand_borrows(cx: &borrow.cx.Cx, e: usize, roots: &mut std.vec.Vec<usize>, muts: &mut std.vec.Vec<usize>, flds: &mut std.vec.Vec<usize>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
     if e == 0usize {
         return Ok(())
     }

@@ -27,7 +27,7 @@ fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may
     let h2 = a.insert(3u32)?
     core.check.is_true(h2 != h1)
     core.check.eq(a.get(h2), Some(&3u32))
-    let mut hs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut hs = std.vec.Vec.new()
     hs.push(h0)?
     hs.push(h2)?
     core.check.eq(hs.len(), 2usize)

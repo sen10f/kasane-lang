@@ -4,12 +4,12 @@ enum parse.Failure derive [Debug, Clone, Copy, PartialEq, From] pub
 end parse.Failure
 
 enum parse.Outcome pub
-    Done(alloc.string.String<std.alloc.System>)
+    Done(std.string.String)
     Syntax(usize, usize, u32, u32)
 end parse.Outcome
 
 fn parse.analyze(src: &[u8], path: &str, sig: bool, kinds: bool) -> Result<parse.Outcome, parse.Failure> uses [alloc] panics never
-    let mut toks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut toks = std.vec.Vec.new()
     match parse.lex.lex(src, &mut toks) {
         Ok(_u) => core.mem.drop(0u8)
         Err(parse.err.Error.Syntax(a, b, c, d)) => return Ok(parse.Outcome.Syntax(a, b, c, d))
@@ -79,8 +79,8 @@ fn parse.def_kind(kind: parse.ast.Kind) -> &'static str uses [] panics never
     "?"
 end parse.def_kind
 
-fn parse.error_text(src: &[u8], path: &str, line: usize, pos: usize, code: u32, want: u32) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn parse.error_text(src: &[u8], path: &str, line: usize, pos: usize, code: u32, want: u32) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut out = std.string.String.new()
     out.push_str("error ")?
     out.push_str(path)?
     out.push(':')?
@@ -125,9 +125,9 @@ fn parse.process(path: &str, kinds: bool) -> Result<(), parse.Failure> uses [all
     Ok(())
 end parse.process
 
-fn parse.push_kinds(p: &parse.cur.P, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+fn parse.push_kinds(p: &parse.cur.P, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let names = parse.ast.KIND_NAMES
-    let mut counts = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut counts = std.vec.Vec.new()
     for _w in names.split(" ") {
         counts.push(0usize)?
     }
@@ -164,7 +164,7 @@ fn parse.push_kinds(p: &parse.cur.P, out: &mut alloc.string.String<std.alloc.Sys
     Ok(())
 end parse.push_kinds
 
-fn parse.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], a: usize, b: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+fn parse.push_range(out: &mut std.string.String, src: &[u8], a: usize, b: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     match src.sub(a, b) {
         Some(bytes) => match core.str.from_utf8(bytes) {
             Ok(text) => out.push_str(text)
@@ -174,16 +174,16 @@ fn parse.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8],
     }
 end parse.push_range
 
-fn parse.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics never
-    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn parse.read_file(path: &str) -> Result<std.vec.Vec<u8>, std.io.Error> uses [alloc, io.fs] panics never
+    let mut buf = std.vec.Vec.new()
     with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
         core.mem.drop(std.fs.read_to_end(&mut file, &mut buf)?)
     }
     Ok(buf)
 end parse.read_file
 
-fn parse.summary(p: &parse.cur.P, src: &[u8], path: &str, kinds: bool) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn parse.summary(p: &parse.cur.P, src: &[u8], path: &str, kinds: bool) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut out = std.string.String.new()
     out.push_str("== ")?
     out.push_str(path)?
     out.push('\n')?

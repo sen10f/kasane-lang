@@ -1,5 +1,5 @@
 fn t.bad() -> () uses [] panics never
-    let s: alloc.string.String = alloc.string.String.new(std.alloc.SYSTEM)
+    let s: alloc.string.String = std.string.String.new()
     let f = fn() -> () capture [move s] {
         core.mem.drop(s)
     }

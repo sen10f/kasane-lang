@@ -1,7 +1,7 @@
 const t.WORDS: &str = "to be or not to be that is the question whether tis nobler in the mind to suffer"
 
 fn t.main() -> () uses [alloc, io.console] panics may
-    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut m = std.collections.HashMap.new()
     for w in t.WORDS.split(" ") {
         match m.get(&w) {
             Some(n) => {
@@ -21,7 +21,7 @@ fn t.main() -> () uses [alloc, io.console] panics may
         }
     }
     for (w, c) in m.iter() {
-        let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut line = std.string.String.new()
         match line.push_str(*w) {
             Ok(()) => {
             }

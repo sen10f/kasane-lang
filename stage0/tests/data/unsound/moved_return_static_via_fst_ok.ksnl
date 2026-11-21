@@ -3,7 +3,7 @@ type t.H['a]
 end t.H
 
 fn t.bad() -> &'static str uses [alloc] panics never
-    let mut x = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut x = std.string.String.new()
     core.mem.drop(x.push_str("hello"))
     let q = t.fst("d", x.as_str())
     q
@@ -22,7 +22,7 @@ fn t.snd['a, 'b](_x: &'a str, y: &'b str) -> &'b str uses [] panics never
 end t.snd
 
 fn t.wrap() -> t.H<'static> uses [alloc] panics never
-    let mut x = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut x = std.string.String.new()
     core.mem.drop(x.push_str("hello"))
     let q = t.snd(x.as_str(), "d")
     t.H { r: q }

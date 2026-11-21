@@ -1,7 +1,7 @@
 fn t.bad() -> usize uses [alloc] panics never
     let mut r = "d"
     {
-        let mut x = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut x = std.string.String.new()
         core.mem.drop(x.push_str("hello"))
         t.put(&mut r, x.as_str())
     }

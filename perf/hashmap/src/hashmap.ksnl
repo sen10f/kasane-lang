@@ -16,7 +16,7 @@ fn hashmap.main() -> Result<(), std.io.Error> uses [alloc] panics may
 end hashmap.main
 
 fn hashmap.run(n: u32) -> Result<(u32, u32), alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut m = std.collections.HashMap.new()
     let mut i = 0u32
     while i < n {
         core.mem.drop(m.insert(i, i.wrapping_mul(3u32).wrapping_add(1u32))?)

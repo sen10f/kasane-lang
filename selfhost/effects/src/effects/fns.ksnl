@@ -1,7 +1,7 @@
 type effects.fns.Fns pub
-    items: alloc.vec.Vec<effects.fns.Info, std.alloc.System> pub
-    names: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
-    eff: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    items: std.vec.Vec<effects.fns.Info> pub
+    names: std.vec.Vec<std.string.String> pub
+    eff: std.vec.Vec<std.string.String> pub
     map: effects.fns.Map pub
 end effects.fns.Fns
 
@@ -16,7 +16,7 @@ type effects.fns.Info derive [Debug, Clone, Copy, PartialEq] pub
 end effects.fns.Info
 
 type effects.fns.Map pub
-    m: alloc.collections.HashMap<alloc.string.String<std.alloc.System>, usize, std.alloc.System> pub
+    m: std.collections.HashMap<std.string.String, usize> pub
 end effects.fns.Map
 
 fn effects.fns.add(fs: &mut effects.fns.Fns, p: &parse.cur.P, src: &[u8], file: usize, own: bool, sig: bool, n: parse.ast.Node) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
@@ -29,7 +29,7 @@ fn effects.fns.add(fs: &mut effects.fns.Fns, p: &parse.cur.P, src: &[u8], file: 
     }
     let sg = parse.ast.get(&p.ast, n.c)
     let at = parse.ast.get(&p.ast, sg.d)
-    let mut ul = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut ul = std.string.String.new()
     let has = at.a != 0usize
     if has {
         for j in core.iter.range(0usize, resolve.ast.count(p, at.a)) {
@@ -99,10 +99,10 @@ fn effects.fns.name_of(fs: &effects.fns.Fns, ix: usize) -> &str uses [] panics n
 end effects.fns.name_of
 
 fn effects.fns.new() -> Result<effects.fns.Fns, alloc.alloc.AllocError> uses [] panics never pub
-    let items = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let names = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let effs = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let items = std.vec.Vec.new()
+    let names = std.vec.Vec.new()
+    let effs = std.vec.Vec.new()
+    let m = std.collections.HashMap.new()
     let map = effects.fns.Map { m: m }
     Ok(effects.fns.Fns { items: items, names: names, eff: effs, map: map })
 end effects.fns.new

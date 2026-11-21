@@ -11,7 +11,7 @@ fn emit.func.assemble(g: &mut emit.G) -> () uses [alloc, io.console, process] pa
     emit.func.write_params(g, p0, p1)
     emit.w(g, ") null_pointer_is_valid {\nentry:\n")
     let hoisted = emit.func.copy_str(&g.buf.hoisted)
-    g.buf.hoisted = alloc.string.String.new(std.alloc.SYSTEM)
+    g.buf.hoisted = std.string.String.new()
     emit.w(g, hoisted.as_str())
     emit.w(g, "  %depth = load i64, ptr @ksn.depth\n  %over = icmp uge i64 %depth, 2500\n")
     emit.w(g, "  br i1 %over, label %so, label %go\nso:\n  call void @ksn.overflow()\n")
@@ -33,18 +33,18 @@ fn emit.func.assemble(g: &mut emit.G) -> () uses [alloc, io.console, process] pa
     }
     emit.w(g, "}\n\n")
     let text = emit.func.copy_str(&g.buf.cur)
-    g.buf.cur = alloc.string.String.new(std.alloc.SYSTEM)
+    g.buf.cur = std.string.String.new()
     emit.util.push_str(&mut g.outs.fns, text.as_str())
 end emit.func.assemble
 
-fn emit.func.block_copy(g: &emit.G, k: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
+fn emit.func.block_copy(g: &emit.G, k: usize) -> std.string.String uses [alloc] panics may pub
     match g.flow.blocks.get(k) {
         Some(s) => emit.func.copy_str(s)
-        None => alloc.string.String.new(std.alloc.SYSTEM)
+        None => std.string.String.new()
     }
 end emit.func.block_copy
 
-fn emit.func.body(g: &mut emit.G, text: &str, starts: &alloc.vec.Vec<usize, std.alloc.System>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.body(g: &mut emit.G, text: &str, starts: &std.vec.Vec<usize>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
     let mut k = i.wrapping_add(1usize)
     let mut state = 0usize
     while k < j {
@@ -86,7 +86,7 @@ fn emit.func.body_text(g: &mut emit.G, l: &str) -> () uses [alloc, io.console, p
     }
 end emit.func.body_text
 
-fn emit.func.copy_str(s: &alloc.string.String<std.alloc.System>) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
+fn emit.func.copy_str(s: &std.string.String) -> std.string.String uses [alloc] panics may pub
     let mut out = emit.util.new_str()
     emit.util.push_str(&mut out, s.as_str())
     out
@@ -99,7 +99,7 @@ fn emit.func.edge_at(g: &emit.G, e: usize) -> emit.Edge uses [] panics may pub
     }
 end emit.func.edge_at
 
-fn emit.func.emit_fn(g: &mut emit.G, text: &str, starts: &alloc.vec.Vec<usize, std.alloc.System>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.emit_fn(g: &mut emit.G, text: &str, starts: &std.vec.Vec<usize>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
     emit.reset_fn(g)
     g.misc.fidx = g.misc.fidx.wrapping_add(1usize)
     let head = emit.line_at(text, starts, i)
@@ -113,7 +113,7 @@ end emit.func.emit_fn
 
 fn emit.func.flush_block(g: &mut emit.G) -> () uses [alloc] panics may pub
     let done = emit.func.copy_str(&g.buf.cur)
-    g.buf.cur = alloc.string.String.new(std.alloc.SYSTEM)
+    g.buf.cur = std.string.String.new()
     match g.flow.blocks.push(done) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
@@ -183,7 +183,7 @@ fn emit.func.phis(g: &mut emit.G, k: usize) -> () uses [alloc, io.console, proce
     }
 end emit.func.phis
 
-fn emit.func.push_bool(v: &mut alloc.vec.Vec<bool, std.alloc.System>, x: bool) -> () uses [alloc] panics may pub
+fn emit.func.push_bool(v: &mut std.vec.Vec<bool>, x: bool) -> () uses [alloc] panics may pub
     match v.push(x) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
@@ -210,7 +210,7 @@ fn emit.func.push_succs(g: &mut emit.G, x: usize) -> () uses [alloc] panics may 
     }
 end emit.func.push_succs
 
-fn emit.func.push_usize(v: &mut alloc.vec.Vec<usize, std.alloc.System>, x: usize) -> () uses [alloc] panics may pub
+fn emit.func.push_usize(v: &mut std.vec.Vec<usize>, x: usize) -> () uses [alloc] panics may pub
     match v.push(x) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
@@ -254,7 +254,7 @@ fn emit.func.ret_text(head: &str) -> &str uses [] panics may pub
     }
 end emit.func.ret_text
 
-fn emit.func.scan(g: &mut emit.G, text: &str, starts: &alloc.vec.Vec<usize, std.alloc.System>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
+fn emit.func.scan(g: &mut emit.G, text: &str, starts: &std.vec.Vec<usize>, i: usize, j: usize) -> () uses [alloc, io.console, process] panics may pub
     let mut k = i.wrapping_add(1usize)
     let mut cur = 0usize
     while k < j {
@@ -323,7 +323,7 @@ end emit.func.scan_params
 
 fn emit.func.store_key(g: &mut emit.G, head: &str) -> () uses [alloc] panics may pub
     let key = emit.func.key_of(head)
-    g.flags.fkey = alloc.string.String.new(std.alloc.SYSTEM)
+    g.flags.fkey = std.string.String.new()
     emit.util.push_str(&mut g.flags.fkey, key)
 end emit.func.store_key
 

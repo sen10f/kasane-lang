@@ -59,7 +59,7 @@ fn ksnc.stage.check(stages: &str, ksn: &str, dir: &str, std_dir: &str) -> Result
     std.io.print_line("== kasane (resolve・types・effects・borrow)")?
     let r = ksnc.kcheck.run(dir, std_dir)?
     ksnc.stage.text(r.text.as_str())?
-    let mut sum = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut sum = std.string.String.new()
     sum.push_str("== summary: rust ")?
     if rust_ok {
         sum.push_str("ok")?
@@ -92,7 +92,7 @@ fn ksnc.stage.fmt(stages: &str, ksn: &str, dir: &str, check: bool) -> Result<(),
     let rust_ok = ksnc.build.fmt(ksn, dir, true)?
     std.io.print_line("== kasane (fmt --check)")?
     let n = ksnc.kfmt.run(dir, true)?
-    let mut sum = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut sum = std.string.String.new()
     sum.push_str("== summary: rust ")?
     if rust_ok {
         sum.push_str("ok")?
@@ -105,8 +105,8 @@ fn ksnc.stage.fmt(stages: &str, ksn: &str, dir: &str, check: bool) -> Result<(),
     Ok(())
 end ksnc.stage.fmt
 
-fn ksnc.stage.num(n: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+fn ksnc.stage.num(n: usize) -> std.string.String uses [alloc] panics may pub
+    let mut s = std.string.String.new()
     match s.push_u64(u64.from_usize(n)) {
         Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("ksnc: out of memory")

@@ -36,7 +36,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.mk() -> alloc.string.String uses [] panics never
-    alloc.string.String.new(std.alloc.SYSTEM)
+    std.string.String.new()
 end t.mk
 
 fn t.once[F: core.ops.FnOnce<(), (), E, P>, E: uses, P: panics](f: F) -> () uses [E] panics P

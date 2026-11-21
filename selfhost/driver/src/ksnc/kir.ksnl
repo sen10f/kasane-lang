@@ -1,6 +1,6 @@
 type ksnc.kir.Kir pub
-    text: alloc.string.String<std.alloc.System> pub
-    bad: alloc.string.String<std.alloc.System> pub
+    text: std.string.String pub
+    bad: std.string.String pub
     nbad: usize pub
 end ksnc.kir.Kir
 
@@ -8,7 +8,7 @@ fn ksnc.kir.lower(dir: &str, std_dir: &str, entry: &str) -> Result<ksnc.kir.Kir,
     let tout = types.export.run(dir, std_dir)?
     let env = tout.env
     let mut c = lower.cx.new(tout.ar, tout.cx)?
-    let none = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let none = std.vec.Vec.new()
     lower.expr.enqueue(&mut c, entry, types.env.get_def(&env.tab, entry), none, 0usize)?
     let mut i = 0usize
     while i < c.g.nms.len() {
@@ -25,19 +25,19 @@ fn ksnc.kir.lower(dir: &str, std_dir: &str, entry: &str) -> Result<ksnc.kir.Kir,
         }
         i = i + 1usize
     }
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     out.push_str("kir 1\n\n")?
     let aggs = lower.tyk.agg_lines(&env, &mut c)?
     out.push_str(aggs.as_str())?
     if !c.g.aggs.is_empty() {
         out.push('\n')?
     }
-    let mut used = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut used = std.vec.Vec.new()
     for _k in core.iter.range(0usize, c.g.nms.len()) {
         used.push(false)?
     }
     let mut firstf = true
-    let mut bad = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut bad = std.string.String.new()
     let mut nbad = 0usize
     loop {
         let mut pick = c.g.nms.len()
@@ -61,7 +61,7 @@ fn ksnc.kir.lower(dir: &str, std_dir: &str, entry: &str) -> Result<ksnc.kir.Kir,
         if pick == c.g.nms.len() {
             break
         }
-        let mut nused = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut nused = std.vec.Vec.new()
         let mut q = 0usize
         for flag in used.as_slice().iter() {
             if q == pick {
@@ -78,11 +78,11 @@ fn ksnc.kir.lower(dir: &str, std_dir: &str, entry: &str) -> Result<ksnc.kir.Kir,
         }
         let text = match c.g.tx.as_slice().get(pick) {
             Some(s) => lower.cx.own(s.as_str())?
-            None => alloc.string.String.new(std.alloc.SYSTEM)
+            None => std.string.String.new()
         }
         let nm = match c.g.nms.as_slice().get(pick) {
             Some(s) => lower.cx.own(s.as_str())?
-            None => alloc.string.String.new(std.alloc.SYSTEM)
+            None => std.string.String.new()
         }
         if ok {
             if !firstf {

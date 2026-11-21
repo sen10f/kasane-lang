@@ -1,8 +1,8 @@
 fn t.bad() -> usize uses [alloc] panics never
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    core.mem.drop(v.push(alloc.string.String.new(std.alloc.SYSTEM)))
+    let mut v = std.vec.Vec.new()
+    core.mem.drop(v.push(std.string.String.new()))
     let r = t.fst((v.get(0usize), 1u32))
-    core.mem.drop(v.push(alloc.string.String.new(std.alloc.SYSTEM)))
+    core.mem.drop(v.push(std.string.String.new()))
     match r {
         Some(x) => x.len()
         None => 7usize

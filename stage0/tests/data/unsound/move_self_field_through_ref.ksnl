@@ -18,9 +18,9 @@ fn t.S.into_name(self: t.S) -> alloc.string.String uses [] panics never
 end t.S.into_name
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
-    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let s = std.string.String.new()
     core.mem.drop(s.push_str("hello"))
-    let o = t.O { opt: Some(s), inner: t.S { name: alloc.string.String.new(std.alloc.SYSTEM) } }
+    let o = t.O { opt: Some(s), inner: t.S { name: std.string.String.new() } }
     o.f()
     Ok(())
 end t.main

@@ -1,13 +1,13 @@
 type notes.note.Note derive [ToJson, FromJson] pub
     id: i64 pub
-    title: alloc.string.String<std.alloc.System> pub
-    body: alloc.string.String<std.alloc.System> pub
-    tags: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
-    created_at: alloc.string.String<std.alloc.System> pub
-    updated_at: alloc.string.String<std.alloc.System> pub
+    title: std.string.String pub
+    body: std.string.String pub
+    tags: std.vec.Vec<std.string.String> pub
+    created_at: std.string.String pub
+    updated_at: std.string.String pub
 end notes.note.Note
 
-fn notes.note.Note.new(id: i64, title: &str, body: &str, tags: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, created_at: &str) -> Result<notes.note.Note, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn notes.note.Note.new(id: i64, title: &str, body: &str, tags: std.vec.Vec<std.string.String>, created_at: &str) -> Result<notes.note.Note, alloc.alloc.AllocError> uses [alloc] panics never pub
     let t = alloc.string.String.from_str(std.alloc.SYSTEM, title)?
     let b = alloc.string.String.from_str(std.alloc.SYSTEM, body)?
     let c = alloc.string.String.from_str(std.alloc.SYSTEM, created_at)?
@@ -22,7 +22,7 @@ fn notes.note.Note.with_updated(self: &mut notes.note.Note, updated_at: &str) ->
 end notes.note.Note.with_updated
 
 test notes.note.Note.new.test_new
-    let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tags = std.vec.Vec.new()
     core.mem.drop(tags.push(alloc.string.String.from_str(std.alloc.SYSTEM, "メモ")?))
     let n = notes.note.Note.new(1i64, "タイトル", "本文", tags, "2026-11-15T00:00:00Z")?
     core.check.eq(n.id, 1i64)
@@ -33,7 +33,7 @@ test notes.note.Note.new.test_new
 end notes.note.Note.new.test_new
 
 test notes.note.Note.with_updated.test_with_updated
-    let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tags = std.vec.Vec.new()
     let mut n = notes.note.Note.new(2i64, "タイトル", "本文", tags, "2026-11-15T00:00:00Z")?
     n.with_updated("2026-11-16T00:00:00Z")?
     core.check.eq(n.updated_at.as_str(), "2026-11-16T00:00:00Z")

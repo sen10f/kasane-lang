@@ -1,6 +1,6 @@
 fn t.main() -> Result<(), std.io.Error> uses [alloc, env, io.console, thread, time] panics may
     let count = std.env.arg_count()
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut line = std.string.String.new()
     line.push_str("args=").map_err(t.oom)?
     line.push_u64(u64.from_usize(count)).map_err(t.oom)?
     std.io.print_line(line.as_str())?

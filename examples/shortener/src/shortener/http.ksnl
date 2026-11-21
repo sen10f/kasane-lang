@@ -7,7 +7,7 @@ const shortener.http.MAX_HEAD: usize = 8192usize pub
 type shortener.http.Head pub
     content_length: usize pub
     method: shortener.http.Method pub
-    path: alloc.string.String<std.alloc.System> pub
+    path: std.string.String pub
 end shortener.http.Head
 
 enum shortener.http.Method derive [Debug, Clone, Copy, PartialEq] pub
@@ -17,25 +17,25 @@ enum shortener.http.Method derive [Debug, Clone, Copy, PartialEq] pub
 end shortener.http.Method
 
 type shortener.http.Reply pub
-    body: alloc.string.String<std.alloc.System> pub
-    location: alloc.string.String<std.alloc.System> pub
+    body: std.string.String pub
+    location: std.string.String pub
     status: u16 pub
 end shortener.http.Reply
 
 type shortener.http.Request pub
-    body: alloc.string.String<std.alloc.System> pub
+    body: std.string.String pub
     method: shortener.http.Method pub
-    path: alloc.string.String<std.alloc.System> pub
+    path: std.string.String pub
 end shortener.http.Request
 
 type shortener.http.Response pub
-    body: alloc.string.String<std.alloc.System> pub
-    location: alloc.string.String<std.alloc.System> pub
+    body: std.string.String pub
+    location: std.string.String pub
     status: u16 pub
 end shortener.http.Response
 
-fn shortener.http.build_request(method: &str, path: &str, body: &str) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn shortener.http.build_request(method: &str, path: &str, body: &str) -> Result<std.string.String, shortener.error.Error> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str(method)?
     out.push_str(" ")?
     out.push_str(path)?
@@ -88,8 +88,8 @@ fn shortener.http.headers_well_formed(lines: &str) -> bool uses [] panics never
     true
 end shortener.http.headers_well_formed
 
-fn shortener.http.json_response(status: u16, body: alloc.string.String<std.alloc.System>) -> shortener.http.Response uses [] panics never pub
-    let location = alloc.string.String.new(std.alloc.SYSTEM)
+fn shortener.http.json_response(status: u16, body: std.string.String) -> shortener.http.Response uses [] panics never pub
+    let location = std.string.String.new()
     shortener.http.Response { body: body, location: location, status: status }
 end shortener.http.json_response
 
@@ -195,9 +195,9 @@ fn shortener.http.parse_reply(raw: &[u8]) -> Result<shortener.http.Reply, shorte
     if shortener.http.parse_content_length(headers)? != body_bytes.len() {
         return Err(error.Error.BadRequest)
     }
-    let mut body = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut body = std.string.String.new()
     body.push_bytes(body_bytes).map_err(error.push_failed)?
-    let mut location = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut location = std.string.String.new()
     match shortener.http.header_value(headers, "location") {
         Some(v) => location.push_str(v)?
         None => core.mem.drop(0u8)
@@ -218,13 +218,13 @@ fn shortener.http.reason(status: u16) -> &'static str uses [] panics never pub
     }
 end shortener.http.reason
 
-fn shortener.http.redirect_response(location: &str, body: alloc.string.String<std.alloc.System>) -> Result<shortener.http.Response, shortener.error.Error> uses [alloc] panics never pub
+fn shortener.http.redirect_response(location: &str, body: std.string.String) -> Result<shortener.http.Response, shortener.error.Error> uses [alloc] panics never pub
     let place = alloc.string.String.from_str(std.alloc.SYSTEM, location)?
     Ok(shortener.http.Response { body: body, location: place, status: 302u16 })
 end shortener.http.redirect_response
 
-fn shortener.http.render_response(response: &shortener.http.Response) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn shortener.http.render_response(response: &shortener.http.Response) -> Result<std.string.String, shortener.error.Error> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("HTTP/1.1 ")?
     out.push_u64(u64.from_u16(response.status))?
     out.push_str(" ")?
@@ -354,7 +354,7 @@ test shortener.http.parse_reply.test_rejects_wrong_length
 end shortener.http.parse_reply.test_rejects_wrong_length
 
 test shortener.http.parse_reply.test_round_trip
-    let body = alloc.string.String.new(std.alloc.SYSTEM)
+    let body = std.string.String.new()
     let response = shortener.http.json_response(404u16, body)
     match shortener.http.render_response(&response) {
         Ok(text) => match shortener.http.parse_reply(text.as_str().as_bytes()) {
@@ -370,7 +370,7 @@ test shortener.http.parse_reply.test_round_trip
 end shortener.http.parse_reply.test_round_trip
 
 test shortener.http.render_response.test_headers_and_length
-    let mut body = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut body = std.string.String.new()
     core.mem.drop(body.push_str("{\"a\":1}"))
     let response = shortener.http.json_response(201u16, body)
     match shortener.http.render_response(&response) {
@@ -380,7 +380,7 @@ test shortener.http.render_response.test_headers_and_length
         }
         Err(_e) => core.panic.panic("render")
     }
-    let mut note = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut note = std.string.String.new()
     core.mem.drop(note.push_str("日本"))
     match shortener.http.redirect_response("http://a.test/x", note) {
         Ok(r) => match shortener.http.render_response(&r) {

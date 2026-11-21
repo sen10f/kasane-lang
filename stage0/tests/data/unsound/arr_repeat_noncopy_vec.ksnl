@@ -1,5 +1,5 @@
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let v: std.vec.Vec<u8> = std.vec.Vec.new()
     let a = [v; 2]
     core.mem.drop(a)
     Ok(())

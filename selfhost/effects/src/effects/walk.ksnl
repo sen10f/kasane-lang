@@ -1,11 +1,11 @@
 type effects.walk.Acc pub
     rep: resolve.report.Report pub
-    edges: alloc.vec.Vec<usize, std.alloc.System> pub
-    cs: alloc.vec.Vec<usize, std.alloc.System> pub
-    cu: alloc.vec.Vec<bool, std.alloc.System> pub
+    edges: std.vec.Vec<usize> pub
+    cs: std.vec.Vec<usize> pub
+    cu: std.vec.Vec<bool> pub
     fnu: usize pub
-    cnt: alloc.vec.Vec<usize, std.alloc.System> pub
-    tix: alloc.vec.Vec<usize, std.alloc.System> pub
+    cnt: std.vec.Vec<usize> pub
+    tix: std.vec.Vec<usize> pub
 end effects.walk.Acc
 
 type effects.walk.Cx derive [Debug, Clone, Copy, PartialEq] pub
@@ -18,14 +18,14 @@ end effects.walk.Cx
 
 fn effects.walk.acc_new() -> Result<effects.walk.Acc, alloc.alloc.AllocError> uses [alloc] panics never pub
     let rep = resolve.report.new()?
-    let edges = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let cs = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let cu = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut cnt = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let edges = std.vec.Vec.new()
+    let cs = std.vec.Vec.new()
+    let cu = std.vec.Vec.new()
+    let mut cnt = std.vec.Vec.new()
     for _k in core.iter.range(0usize, 10usize) {
         cnt.push(0usize)?
     }
-    let tix = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let tix = std.vec.Vec.new()
     Ok(effects.walk.Acc { rep: rep, edges: edges, cs: cs, cu: cu, fnu: 0usize, cnt: cnt, tix: tix })
 end effects.walk.acc_new
 
@@ -140,7 +140,7 @@ fn effects.walk.callee(fs: &effects.fns.Fns, cx: effects.walk.Cx, acc: &mut effe
             if effects.walk.is_var(eff) {
                 effects.walk.und(acc, cx, 3usize)
             } else if !effects.walk.covered(cu, eff) {
-                let mut m = alloc.string.String.new(std.alloc.SYSTEM)
+                let mut m = std.string.String.new()
                 m.push_str(eff)?
                 m.push_str(" is not declared by the caller")?
                 effects.walk.diag(acc, "E4001", line, m.as_str(), name)?
@@ -374,13 +374,13 @@ fn effects.walk.is_var(eff: &str) -> bool uses [] panics never pub
     }
 end effects.walk.is_var
 
-fn effects.walk.key_of(st: &resolve.scope.St, name: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn effects.walk.key_of(st: &resolve.scope.St, name: &str) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
     let (first, rest) = match name.split_once(".") {
         Some((a, b)) => (a, b)
         None => (name, "")
     }
     let imp = st.import_index(first)
-    let mut key = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut key = std.string.String.new()
     if imp > 0usize {
         match st.fulls.as_slice().get(imp.wrapping_sub(1usize)) {
             Some(f) => key.push_str(f.as_str())?
@@ -433,9 +433,9 @@ fn effects.walk.pat(p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, pt: 
     Ok(())
 end effects.walk.pat
 
-fn effects.walk.reaches(edges: &alloc.vec.Vec<usize, std.alloc.System>, start: usize) -> Result<bool, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut seen = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut work = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn effects.walk.reaches(edges: &std.vec.Vec<usize>, start: usize) -> Result<bool, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut seen = std.vec.Vec.new()
+    let mut work = std.vec.Vec.new()
     work.push(start)?
     loop {
         let cur = match work.pop() {

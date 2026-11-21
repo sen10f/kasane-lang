@@ -1,5 +1,5 @@
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let pair = (alloc.string.String.new(std.alloc.SYSTEM), 3u32)
+    let pair = (std.string.String.new(), 3u32)
     let (a, _) = pair
     core.mem.drop(a)
     core.mem.drop(pair)
