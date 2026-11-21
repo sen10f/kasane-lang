@@ -23,40 +23,6 @@ fn scalar(t: &Ty) -> bool {
     matches!(t.strip(), Ty::Prim(_))
 }
 
-/// `Some(_)` / `None` の `is` が値を使い切らない型 (線形の値を含まない)。線形の値 (`Option<ハンドル>` など) は `is` が E3003 になるので、
-/// `is_some()` 等 (借用) のままにする。判定できない型 (型引数・未知・`&mut`) は `false` (直さない)。
-fn plain(p: &Program, t: &Ty, seen: &mut Vec<String>) -> bool {
-    match t.strip() {
-        Ty::Prim(_) | Ty::Unit | Ty::Never => true,
-        Ty::Ref(false, _, _) => true,
-        Ty::Tuple(xs) => xs.iter().all(|x| plain(p, x, seen)),
-        Ty::Array(x, _) | Ty::Slice(x) => plain(p, x, seen),
-        Ty::Named(n, args, _) => {
-            if !args.iter().all(|a| plain(p, a, seen)) {
-                return false;
-            }
-            if matches!(n.as_str(), "core.option.Option" | "core.result.Result" | "Option" | "Result") || seen.contains(n) {
-                return true;
-            }
-            let Some(&i) = p.types.get(n) else { return false };
-            let d = &p.defs[i];
-            if d.linear {
-                return false;
-            }
-            seen.push(n.clone());
-            let gn = d.gnames();
-            let ok = d.fields.iter().map(|f| crate::types::from_v(&f.1, &gn)).chain(d.variants.iter().flat_map(|v| v.1.iter().map(|x| crate::types::from_v(x, &gn)))).all(|x| plain(p, &x, seen));
-            seen.pop();
-            ok
-        }
-        _ => false,
-    }
-}
-
-fn plain_ty(p: &Program, t: &Ty) -> bool {
-    plain(p, t, &mut vec![])
-}
-
 fn path_is(e: &TExpr, want: &[&str]) -> bool {
     matches!(&e.kind, TKind::Path(p) if p.iter().map(String::as_str).eq(want.iter().copied()))
 }
@@ -130,7 +96,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
         let mut found: Vec<(usize, &'static str, String)> = vec![];
         super::impl_sig::walk(&b.body, &mut |e| match &e.kind {
             TKind::MCall { recv, name, args } => {
-                if args.is_empty() && matches!(name.as_str(), "is_some" | "is_none" | "is_ok" | "is_err") && is_named(&recv.ty, &["core.option.Option", "core.result.Result"]) && plain_ty(p, &recv.ty) {
+                if args.is_empty() && matches!(name.as_str(), "is_some" | "is_none" | "is_ok" | "is_err") && is_named(&recv.ty, &["core.option.Option", "core.result.Result"]) {
                     found.push((e.line, "E2055", format!("`.{name}()` is not the canonical form: write `x is Some(_)` (or `if let` when the value is used)")));
                 }
                 // `s.trim_start().trim_end()` (両順) は `s.trim()`。
@@ -209,7 +175,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     let name = p.defs[*id].name.as_str();
                     if let Some(m) = ["is_some", "is_none", "is_ok", "is_err"]
                         .into_iter()
-                        .find(|m| (name == format!("core.option.Option.{m}") || name == format!("core.result.Result.{m}")) && plain_ty(p, &callee.ty))
+                        .find(|m| (name == format!("core.option.Option.{m}") || name == format!("core.result.Result.{m}")))
                     {
                         let pat = match m {
                             "is_some" => "Some(_)",
@@ -259,7 +225,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                 }
             }
             TKind::Binary { op, lhs, rhs } if op == "==" || op == "!=" => {
-                let opt = |x: &TExpr| is_named(&x.ty, &["core.option.Option"]) && plain_ty(p, &x.ty);
+                let opt = |x: &TExpr| is_named(&x.ty, &["core.option.Option"]);
                 if (is_none_path(rhs) && opt(lhs)) || (is_none_path(lhs) && opt(rhs)) {
                     found.push((e.line, "E2055", format!("`{op} None` is not the canonical form: write `x is None` / `x is Some(_)`")));
                 }

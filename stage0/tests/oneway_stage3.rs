@@ -37,22 +37,6 @@ fn roundtrip(name: &str, bad: &str, want: &str) {
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{}", name);
 }
 
-/// `roundtrip` の `Option` 版: `fmt` は字句だけで `.is_none()` / `.is_some()` にし (型が要るので `is` にはできない)、
-/// 型が分かる `check` が E2055 で拒み、`ksn fix` が `is` の形 (`fin`) に直す (2026-11-21 の決定)。
-fn roundtrip_is(name: &str, bad: &str, mid: &str, fin: &str) {
-    let t = Tmp::new_raw(name, &wrap(bad));
-    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0), "{}", name);
-    assert_eq!(main_src(&t), wrap(mid), "{}: fmt result", name);
-    effects_fix(&t);
-    assert!(text(&run(&["check"], &t.0).stdout).contains("E2055"), "{}", name);
-    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0), "{}", name);
-    // `fix` は見出しの効果も本体どおりに直す (`panics may` → `panics never`) ので、見出しをそろえて比べる。
-    assert_eq!(main_src(&t).replace("panics never", "panics may"), wrap(fin).replace("panics never", "panics may"), "{}: fix result", name);
-    let c = run(&["check"], &t.0);
-    assert_eq!(c.status.code(), Some(0), "{}: {}", name, text(&c.stdout));
-    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{}", name);
-}
-
 /// 正規形はそのまま check を通り、`fmt` も変えない。
 fn canonical(name: &str, body: &str) {
     let t = Tmp::new_raw(name, &wrap(body));
@@ -128,10 +112,10 @@ fn d11_redundant_logic_is_rewritten() {
 #[test]
 fn d11_option_and_len_checks_are_rewritten() {
     // `None` との比較の正規形は `is_none()` / `is_some()` (借用するので、線形の値でも判定できる)。
-    roundtrip_is("d11_eq_none", "    let a = Some(1u32)\n    core.mem.drop(a == None)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_none())\n", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
-    roundtrip_is("d11_ne_none", "    let a = Some(1u32)\n    core.mem.drop(a != None)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_some())\n", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
-    roundtrip_is("d11_none_eq", "    let a = Some(1u32)\n    core.mem.drop(None == a)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_none())\n", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
-    roundtrip_is("d11_none_ne", "    let a = Some(1u32)\n    core.mem.drop(None != a)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_some())\n", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
+    roundtrip("d11_eq_none", "    let a = Some(1u32)\n    core.mem.drop(a == None)\n", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
+    roundtrip("d11_ne_none", "    let a = Some(1u32)\n    core.mem.drop(a != None)\n", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
+    roundtrip("d11_none_eq", "    let a = Some(1u32)\n    core.mem.drop(None == a)\n", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
+    roundtrip("d11_none_ne", "    let a = Some(1u32)\n    core.mem.drop(None != a)\n", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
     // `is` の形 (`a is None` / `a is Some(_)`) は従来どおり正規形。
     canonical("d11_is_none_stays", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
     canonical("d11_is_some_stays", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
@@ -302,7 +286,6 @@ fn d11_none_comparison_forms_keep_meaning() {
     let t = Tmp::new_raw("d11_none_meaning", &main_wrap("", &body));
     assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
     effects_fix(&t);
-    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));

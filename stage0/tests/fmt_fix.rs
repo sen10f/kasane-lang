@@ -723,3 +723,19 @@ fn oneway_turbofish_decided_by_arguments_is_removed() {
     let src = "fn t.id[T](x: T) -> T uses [] panics never\n    x\nend t.id\n\nfn t.a(n: u32) -> u32 uses [] panics never\n    t.id::<u32>(n)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
     oneway_round_trip("oneway_turbofish", src, "E2067", "t.id(n)");
 }
+
+#[test]
+fn oneway_is_none_on_linear_payload_becomes_is() {
+    let src = "type t.Res linear\n    id: u32\nend t.Res\n\nfn t.close(r: t.Res) -> u32 uses [] panics never\n    let t.Res { id: id } = r\n    id\nend t.close\n\nfn t.main() -> () uses [] panics never\n    let o = Some(t.Res { id: 1u32 })\n    core.mem.drop(o.is_none())\n    match o {\n        Some(r) => core.mem.drop(t.close(r))\n        None => core.mem.drop(0u32)\n    }\nend t.main\n";
+    oneway_round_trip("oneway_is_linear", src, "E2055", "o is None");
+}
+
+#[test]
+fn oneway_none_comparison_fmt_gives_is_directly() {
+    let src = "fn t.a(o: Option<u32>) -> bool uses [] panics never\n    o != None\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    let t = Tmp::new_raw("oneway_none_cmp", src);
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
+    let f = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    assert!(f.contains("o is Some(_)"), "{f}");
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
