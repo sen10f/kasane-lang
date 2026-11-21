@@ -212,3 +212,120 @@ end t.main
     let out = three_way("vm_natives_rand", RAND);
     assert!(out.ends_with("end\n"), "{}", out);
 }
+
+/// `Option` の値を集成体のフィールドに持つ形 (KIR のメモリの形は枠の後ろにタグのバイト、VM のスロットの形はタグが先頭) を、
+/// 作る・読む・書き換える・関数の引数と戻り値で運ぶ。3 つの入口が一致し、VM が退避しないこと。
+#[test]
+fn option_fields_agree_across_tree_vm_and_native() {
+    const OPTF: &str = r#"type t.P
+    a: Option<f32>
+    b: Option<u8>
+    d: Option<u64>
+end t.P
+
+fn t.bump(p: t.P) -> t.P uses [] panics never
+    let mut q = p
+    q.b = Some(9u8)
+    q.d = None
+    q
+end t.bump
+
+fn t.show(p: &t.P) -> u32 uses [] panics never
+    let mut n = 0u32
+    match p.a {
+        Some(x) => {
+            if x == 1.5f32 {
+                n = n.wrapping_add(1u32)
+            }
+        }
+        None => {
+            n = n.wrapping_add(0u32)
+        }
+    }
+    match p.b {
+        Some(v) => {
+            n = n.wrapping_add(u32.from_u8(v))
+        }
+        None => {
+            n = n.wrapping_add(100u32)
+        }
+    }
+    match p.d {
+        Some(_v) => {
+            n = n.wrapping_add(1000u32)
+        }
+        None => {
+            n = n.wrapping_add(10000u32)
+        }
+    }
+    n
+end t.show
+
+fn t.put(slot: &mut Option<u8>) -> () uses [] panics never
+    *slot = Some(3u8)
+end t.put
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut o: Option<u8> = None
+    t.put(&mut o)
+    match o {
+        Some(v) => {
+            core.check.eq(v, 3u8)
+        }
+        None => {
+            core.check.eq(0u8, 1u8)
+        }
+    }
+    let p = t.P { a: Some(1.5f32), b: None, d: Some(7u64) }
+    core.check.eq(t.show(&p), 1u32 + 100u32 + 1000u32)
+    let q = t.bump(p)
+    core.check.eq(t.show(&q), 1u32 + 9u32 + 10000u32)
+    match q.a {
+        Some(x) => {
+            core.check.eq(x, 1.5f32)
+        }
+        None => {
+            core.check.eq(0u8, 1u8)
+        }
+    }
+    std.io.print_line("end")?
+    Ok(())
+end t.main
+"#;
+    let out = three_way("vm_natives_optf", OPTF);
+    assert!(out.ends_with("end\n"), "{}", out);
+}
+
+/// `std.process` (`echo`・`true`・存在しないプログラム) を 3 つの入口で比べる。VM は子プロセスを `posix_spawnp`・`waitpid` 相当 (Rust の `std::process`) で動かす。
+#[test]
+fn process_helpers_agree_across_tree_vm_and_native() {
+    const PROC: &str = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, process] panics may
+    let mut cmd = std.process.Command.new("echo")
+    cmd.arg("hi")
+    cmd.arg("there")
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut err = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let st = cmd.output(&mut out, &mut err)?
+    core.check.eq(st.code, 0i32)
+    core.check.eq(st.signal, 0i32)
+    core.check.eq(out.len(), 9usize)
+    core.check.eq(err.len(), 0usize)
+    let t = std.process.Command.new("true")
+    let ch = t.spawn()?
+    let st2 = ch.wait()?
+    core.check.eq(st2.code, 0i32)
+    let f = std.process.Command.new("/nonexistent/ksn-no-such-program")
+    match f.spawn() {
+        Ok(c) => {
+            core.mem.drop(c.wait())
+            core.check.eq(1u8, 2u8)
+        }
+        Err(_e) => core.check.eq(0u8, 0u8)
+    }
+    std.io.print_line("end")?
+    Ok(())
+end t.main
+"#;
+    let out = three_way("vm_natives_proc", PROC);
+    assert!(out.ends_with("end\n"), "{}", out);
+}

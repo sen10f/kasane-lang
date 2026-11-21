@@ -108,6 +108,8 @@ pub struct MakeInfo {
     pub variant: Option<u32>,
     /// フィールドごとの (バイトオフセット, バイト数)。値の下位 `バイト数` バイトをそのまま写す (`unit` は 0 バイト)。
     pub fields: Vec<(u32, u32)>,
+    /// フィールドごとの `Option` / `Result` の形 (枠のバイト数 `sb`、語数 `pw`)。`sb == 0` は普通の値 (そのまま写す)。
+    pub packs: Vec<(u8, u8)>,
 }
 
 /// 呼び出しの引数などの表 (`VFunc::pool`) の項目: 下位 16 ビットがスロット、上位がスロット数。
@@ -225,6 +227,15 @@ pub enum Ins {
     FieldA { d: S, a: S, off: u32, nb: u32 },
     /// `a` (`ns` スロット) を `d` に写し、バイトオフセット `off` に `v` の下位 `nb` バイトを書く。
     SetField { d: S, a: S, v: S, off: u32, ns: u16, nb: u16 },
+    /// `Option` / `Result` の値を集成体のフィールドへ書く (KIR のメモリの形: 枠の `sb` バイトに続けてタグの 1 バイト。`pw` は枠の語数)。
+    SetFieldOpt { d: S, a: S, v: S, off: u32, ns: u16, sb: u8, pw: u8 },
+    /// `Option` / `Result` の値を集成体のフィールドから読む (`SetFieldOpt` の逆)。
+    FieldOpt { d: S, a: S, off: u32, sb: u8, pw: u8 },
+    /// `Option` / `Result` の値を番地 `p` + `off` から読む / そこへ書く (`Op::Load` / `Op::Store`)。
+    LoadOpt { d: S, p: S, off: u32, sb: u8, pw: u8 },
+    StoreOpt { p: S, off: u32, v: S, sb: u8, pw: u8 },
+    /// `std.process` の命令 (`ProcFn::ALL` の添字 `f`、引数は `a` の先頭から `n` 個)。結果は `d`。子プロセスの表は `Vm` が持つ。
+    Proc { d: S, f: u8, a: [S; 3] },
     /// 列挙型のタグ (i32) を読む。
     TagEnum { d: S, a: S },
     /// `Option` が Some か / `Result` が Err か。
@@ -407,4 +418,16 @@ pub fn arith_class(t: u8) -> u8 {
         8 | 9 => 2,
         _ => 0,
     }
+}
+
+/// `Option` / `Result` の値の集成体の中の形 (`(枠のバイト数, 語数)`)。`None` は `Option` / `Result` ではない。
+/// KIR のメモリの形 (`kir::opt_slot_bits`): 枠の `sb` バイトに続けてタグの 1 バイト (1 = Some / Err)。VM のスロットの形は
+/// 先頭がタグの語、続けて `pw` 語の枠 (`WrapN`)。この 2 つは並びが違うので、フィールドの読み書きで変換する。
+pub fn opt_shape(aggs: &[AggDef], t: Ty) -> Option<(u8, u8)> {
+    if !matches!(t, Ty::Opt(_) | Ty::Res(..)) {
+        return None;
+    }
+    let sb = crate::kir::opt_slot_bits(aggs, t) / 8;
+    let pw = slots_of(aggs, t) - 1;
+    Some((sb.min(255) as u8, pw.min(255) as u8))
 }
