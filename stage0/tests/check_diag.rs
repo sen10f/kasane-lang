@@ -1033,6 +1033,10 @@ fn explicit_type_args_are_respected_at_call_sites() {
               let x = 5u8\n    let y = t.id::<u8>(x)\n    \
               core.mem.drop(y)\n    Ok(())\nend t.main\n";
     let t = Tmp::new("targ_ok", ok);
+    // 引数で決まる型引数は書かない (E2067)。ほかの診断は出ない (型引数は推論に反映されている)。
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(codes(&text(&o.stdout)), vec!["E2067".to_string()], "{}", text(&o.stdout));
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
     assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
     let bad = ok.replace("t.id::<u8>(x)", "t.id::<u64>(x)");
     let t = Tmp::new("targ_bad", &bad);

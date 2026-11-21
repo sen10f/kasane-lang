@@ -168,20 +168,27 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     let def = &p.defs[*d];
                     let tys: Vec<&str> = def.generics.iter().filter(|g| g.0 != "life").map(|g| g.1.as_str()).collect();
                     let all_type = def.generics.iter().all(|g| g.0 == "type" || g.0 == "life");
-                    if n > 0 && all_type && n == tys.len() && !def.is_method() && args.len() == def.params.len() {
-                        let mut ok = true;
+                    // 書いた型引数を各引数の宣言の型に入れた型が、引数の式の型と一致するときだけ (食い違いは別の診断が出る。直して通してはならない)。
+                    let gn = def.gnames();
+                    let written: Vec<Ty> = e.etargs.0.iter().filter(|v| !matches!(v, crate::parser::V::L(y) if matches!(y.first(), Some(crate::parser::V::S(s)) if s == "life"))).map(|v| crate::types::from_v(v, &p.defs[di].gnames())).collect();
+                    let bind: std::collections::HashMap<String, Ty> = tys.iter().map(|s| s.to_string()).zip(written.iter().cloned()).collect();
+                    let mut ok = n > 0 && all_type && n == tys.len() && !def.is_method() && args.len() == def.params.len() && written.len() == n;
+                    if ok {
                         for t in &tys {
                             let mut seen = false;
                             for (i, (_, pty)) in def.params.iter().enumerate() {
                                 if mentions(&pty.dump(), t) {
                                     seen = true;
-                                    if !closed_arg(&args[i]) {
+                                    let want = crate::types::subst(&crate::types::from_v(pty, &gn), &bind);
+                                    if !closed_arg(&args[i]) || want.show() != args[i].ty.show() {
                                         ok = false;
                                     }
                                 }
                             }
                             ok &= seen;
                         }
+                    }
+                    {
                         if ok {
                             found.push((e.line, "E2067", "the type argument `::<..>` is decided by the arguments: remove it".into()));
                         }
