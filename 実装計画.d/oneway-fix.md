@@ -20,3 +20,14 @@
 - 追加 (統括者の依頼): E2065 (基本型の `.clone()` → 値)・E2066 (整数の `!(a < b)` → `a >= b` など。小数は対象外)・E2067 (引数で決まる `f::<T>(..)` の `::<T>` を消す。書いた型引数を引数の宣言の型に入れた型が、引数の式 (リテラル・名前・その `&`) の型と一致するときだけ。食い違いは E2023 のままで、直して通さない)。試験は `fmt_fix.rs` の `oneway_*` と `tests/data/diag/E2065〜E2067`。移行は `ui/kasane` のターボフィッシュ 7 か所と `check_ok` の 2 本。
 - 訂正: 線形の値を含む `Option` / `Result` に `x is Some(_)` は使えない (E3003: 線形の値が `_` で捨てられる)。E2055 は「線形を含まない」型 (`plain`) だけを直す。このため `fmt` の `== None` の書き換えは `.is_none()` / `.is_some()` のまま (字句の段では型が分からない) で、`oneway_stage3.rs` の `d11_*` は「fmt → check が E2055 → `ksn fix` で `is`」の 2 段を見る (統括者の決定の実装上の修正)。
 - 台帳: `shadow_diff` は廃止されたので `shadow_baseline.json` は触らない (前任の差分の 6 行は残っている)。
+
+#### 第 2 ラウンド (2026-11-21、統括者の決定)
+
+- `x is Some(_)` の E3003 は検査器の誤りとして直した: `moves.rs` の `Match` で、被検査式が場所で、腕が `is` の脱糖の形 (2 腕、1 つ目は名前を束縛しないパターン、2 つ目は `_`、本体はリテラル) なら、場所を移さず消費もしない (`is_shape_test`)。一時値 (`Some(f()) is Some(_)`) は今までどおり E3003 (`unsound/is_shape_test_temp_leaks`)。`check_ok/is_shape_test_ok`・`linear_ok/linear_ok_is_shape_test` を追加。E2055 の線形の制限は外し、`fmt` の `== None` / `!= None` は `x is None` / `x is Some(_)` を直接出す (`d11_*` は `is` の形。意図した変更)。
+- `then_some` / `todo` / `sort_unstable` は `.sig` に残し、どの位置でも E2063 / E2057 / E2058 で拒む。`then_some` の fix は式の中でも複数行の `if` 式に直す (前が `(` `,` `[` `=` `return`、後ろが `)` `,` `]` `}` か行末のとき)。
+- 追加した正規形: E2068 (`bool` の `match` → `if` / `else`)・E2069 (`None => ()` の `match` → `if let`。腕の前置き `Some(_r) => match ..` と `let x = match ..` も)・E2070 (数え上げの `while` → `for i in core.iter.range(a, b)`。本体が `i` を使わなければ `_`。`i` の `let mut` が離れているときは初期値がリテラルのときだけ)・E2071 (`x == Some(リテラル)` → `x is Some(リテラル)`。`is` のパターンは名前を束縛できないのでリテラルだけ。`!=` は `!(x is Some(..))`)・E2072 (書き換えない `let mut`。代入・`&mut`・`&mut self` のメソッドの受け手・関数値の呼び出し・閉包の中の言及があれば報告しない)・E2073 (引数を同じ順で総称でない関数に渡すだけの `capture []` の閉包 → 関数値)・E2062 の追加の `[タグ]` (`| 0` `^ 0` `& 全ビット 1` (`core.num.uN.MAX` も)・`wrapping_shl(0)` 系・二重の `wrapping_neg`・`wrapping_add(c).wrapping_sub(c)`・`x.max(x)`・整数の `x == x` と `x != x`・`x.wrapping_sub(x)` → `0uN`)・E2061 に `alloc.fmt.write(&mut s, &"lit")`。
+- 複数行の fix は `fixes.rs` の `parse_match` / `match_fix` / `while_fix` / `closure_fix` (診断の行から字下げを手がかりに読む。形が合わなければ直さない)。`.ksnh` を持つパッケージは、コメントを含む腕でも 1 行の腕の続きの行を動かさない形に直した。
+- `== Some(v)` は `v` がリテラルのときだけ `is` にできる (`is` のパターンが名前の束縛を許さないため)。変数のときは今の形のまま (診断なし)。
+- 試験の補助 `tests/common/mod.rs` の `one_way_fix` (`Tmp::new` が `ksn fmt` の後に当てる) に E2055〜E2073 を足した。`Tmp::new` を使う試験の入力はこれで自動で正規形になる (`new_raw` は直さない)。ループの試験の `while` が `for` に変わるものがある (意味は同じ)。
+- 移行: `examples`・`apps`・`selfhost`・`ui/kasane`・`bench/tasks/*/reference.ksnl`・`tests/data` を `ksn fix` で。`examples/native` の恒等の演算 2 行は消した。`tests/data/linear_ok/with_close_match_arms.ksnl` は `close match` の `bool` の腕が書けなくなったので `Option` の腕にした。
+- 外した: `tests/shadow_baseline.json` (dev/plan で廃止済み)。
