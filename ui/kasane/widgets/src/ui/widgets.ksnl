@@ -10,16 +10,16 @@ type ui.widgets.List derive [Debug] pub
     ih: f32 pub
     sy: f32 pub
     vh: f32 pub
-    keys: alloc.vec.Vec<u64, std.alloc.System> pub
+    keys: std.vec.Vec<u64> pub
     sel: Option<usize> pub
 end ui.widgets.List
 
 type ui.widgets.TextInput derive [Debug] pub
-    text: alloc.vec.Vec<u8, std.alloc.System> pub
+    text: std.vec.Vec<u8> pub
     caret: usize pub
     ss: usize pub
     se: usize pub
-    comp: alloc.vec.Vec<u8, std.alloc.System> pub
+    comp: std.vec.Vec<u8> pub
     focused: bool pub
 end ui.widgets.TextInput
 
@@ -92,7 +92,7 @@ fn ui.widgets.List.max_scroll(self: &ui.widgets.List) -> f32 uses [] panics neve
 end ui.widgets.List.max_scroll
 
 fn ui.widgets.List.new() -> ui.widgets.List uses [] panics never pub
-    let keys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let keys = std.vec.Vec.new()
     ui.widgets.List { rc: 0usize, ih: 24.0f32, sy: 0.0f32, vh: 0.0f32, keys: keys, sel: None }
 end ui.widgets.List.new
 
@@ -321,8 +321,8 @@ fn ui.widgets.TextInput.delete_forward(self: &mut ui.widgets.TextInput) -> () us
     }
 end ui.widgets.TextInput.delete_forward
 
-fn ui.widgets.TextInput.display(self: &ui.widgets.TextInput) -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn ui.widgets.TextInput.display(self: &ui.widgets.TextInput) -> std.vec.Vec<u8> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     let text = self.text.as_slice()
     let mut i = 0usize
     while i < self.caret {
@@ -387,8 +387,8 @@ fn ui.widgets.TextInput.move_right(self: &mut ui.widgets.TextInput) -> () uses [
 end ui.widgets.TextInput.move_right
 
 fn ui.widgets.TextInput.new() -> ui.widgets.TextInput uses [] panics never pub
-    let t = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let c = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let t = std.vec.Vec.new()
+    let c = std.vec.Vec.new()
     ui.widgets.TextInput { text: t, caret: 0usize, ss: 0usize, se: 0usize, comp: c, focused: false }
 end ui.widgets.TextInput.new
 

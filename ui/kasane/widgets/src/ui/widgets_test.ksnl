@@ -2,8 +2,8 @@ type ui.widgets_test.Target pub
     _dummy: bool
 end ui.widgets_test.Target
 
-fn ui.widgets_test.ascii_bytes() -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
-    let mut bytes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn ui.widgets_test.ascii_bytes() -> std.vec.Vec<u8> uses [alloc] panics never pub
+    let mut bytes = std.vec.Vec.new()
     match bytes.push(97u8) {
         Ok(_) => ()
         Err(_) => ()
@@ -19,8 +19,8 @@ fn ui.widgets_test.ascii_bytes() -> alloc.vec.Vec<u8, std.alloc.System> uses [al
     bytes
 end ui.widgets_test.ascii_bytes
 
-fn ui.widgets_test.japanese_a_bytes() -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
-    let mut bytes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn ui.widgets_test.japanese_a_bytes() -> std.vec.Vec<u8> uses [alloc] panics never pub
+    let mut bytes = std.vec.Vec.new()
     match bytes.push(227u8) {
         Ok(_) => ()
         Err(_) => ()
@@ -429,7 +429,7 @@ test ui.widgets_test.Target.test_text_replace_selection
     core.mem.drop(ti.on_event(&ev, &mut ctx))
     ti.ss = 1usize
     ti.se = 3usize
-    let mut bytes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut bytes = std.vec.Vec.new()
     match bytes.push(88u8) {
         Ok(_) => ()
         Err(_) => ()

@@ -11,12 +11,12 @@ enum ui.focus.Dir derive [Debug, Clone, Copy, PartialEq] pub
 end ui.focus.Dir
 
 type ui.focus.FocusManager derive [Debug] pub
-    scopes: alloc.vec.Vec<ui.focus.Scope, std.alloc.System> pub
+    scopes: std.vec.Vec<ui.focus.Scope> pub
     focus: Option<usize> pub
 end ui.focus.FocusManager
 
 type ui.focus.Keymap derive [Debug] pub
-    entries: alloc.vec.Vec<ui.focus.Shortcut, std.alloc.System> pub
+    entries: std.vec.Vec<ui.focus.Shortcut> pub
 end ui.focus.Keymap
 
 type ui.focus.Modifiers derive [Debug, Clone, Copy, PartialEq] pub
@@ -28,8 +28,8 @@ end ui.focus.Modifiers
 type ui.focus.Scope derive [Debug] pub
     id: usize pub
     parent: Option<usize> pub
-    nodes: alloc.vec.Vec<usize, std.alloc.System> pub
-    tab_index: alloc.vec.Vec<i32, std.alloc.System> pub
+    nodes: std.vec.Vec<usize> pub
+    tab_index: std.vec.Vec<i32> pub
     dir: ui.focus.Dir pub
     modal: bool pub
 end ui.focus.Scope
@@ -296,7 +296,7 @@ fn ui.focus.FocusManager.get_focus(self: &ui.focus.FocusManager) -> Option<usize
 end ui.focus.FocusManager.get_focus
 
 fn ui.focus.FocusManager.new() -> ui.focus.FocusManager uses [] panics never pub
-    let scopes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let scopes = std.vec.Vec.new()
     ui.focus.FocusManager { scopes: scopes, focus: None }
 end ui.focus.FocusManager.new
 
@@ -325,8 +325,8 @@ fn ui.focus.FocusManager.scope_add_node(self: &mut ui.focus.FocusManager, scope_
     false
 end ui.focus.FocusManager.scope_add_node
 
-fn ui.focus.FocusManager.scope_chain(self: &ui.focus.FocusManager) -> alloc.vec.Vec<usize, std.alloc.System> uses [alloc] panics never pub
-    let mut chain = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn ui.focus.FocusManager.scope_chain(self: &ui.focus.FocusManager) -> std.vec.Vec<usize> uses [alloc] panics never pub
+    let mut chain = std.vec.Vec.new()
     let focus = match self.focus {
         Some(f) => f
         None => return chain
@@ -489,13 +489,13 @@ fn ui.focus.FocusManager.scope_set_tab_index(self: &mut ui.focus.FocusManager, s
     false
 end ui.focus.FocusManager.scope_set_tab_index
 
-fn ui.focus.FocusManager.tab_order(self: &ui.focus.FocusManager, scope_id: usize) -> alloc.vec.Vec<usize, std.alloc.System> uses [alloc] panics never pub
+fn ui.focus.FocusManager.tab_order(self: &ui.focus.FocusManager, scope_id: usize) -> std.vec.Vec<usize> uses [alloc] panics never pub
     let s = match self.scope_ref(scope_id) {
         Some(v) => v
-        None => return alloc.vec.Vec.new(std.alloc.SYSTEM)
+        None => return std.vec.Vec.new()
     }
     let n = s.nodes.len()
-    let mut order = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut order = std.vec.Vec.new()
     let mut i = 0usize
     while i < n {
         let ti = match s.tab_index.get(i) {
@@ -527,7 +527,7 @@ fn ui.focus.FocusManager.tab_order(self: &ui.focus.FocusManager, scope_id: usize
         }
         i = i.wrapping_add(1usize)
     }
-    let mut result = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut result = std.vec.Vec.new()
     let mut k = 0usize
     let kl = order.len()
     while k < kl {
@@ -594,7 +594,7 @@ fn ui.focus.Keymap.dispatch(self: &ui.focus.Keymap, manager: &ui.focus.FocusMana
 end ui.focus.Keymap.dispatch
 
 fn ui.focus.Keymap.new() -> ui.focus.Keymap uses [] panics never pub
-    let entries = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let entries = std.vec.Vec.new()
     ui.focus.Keymap { entries: entries }
 end ui.focus.Keymap.new
 
@@ -622,8 +622,8 @@ fn ui.focus.Scope.add_node(self: &mut ui.focus.Scope, node: usize) -> () uses [a
 end ui.focus.Scope.add_node
 
 fn ui.focus.Scope.new(id: usize, parent: Option<usize>, dir: ui.focus.Dir, modal: bool) -> ui.focus.Scope uses [] panics never pub
-    let nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let t = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let nodes = std.vec.Vec.new()
+    let t = std.vec.Vec.new()
     ui.focus.Scope { id: id, parent: parent, nodes: nodes, tab_index: t, dir: dir, modal: modal }
 end ui.focus.Scope.new
 

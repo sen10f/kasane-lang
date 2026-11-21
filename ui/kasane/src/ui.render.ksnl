@@ -384,93 +384,93 @@ fn ui.render.rgba(cr: f32, cg: f32, cb: f32, ca: f32) -> ui.render.Rgba uses [] 
     ui.render.Rgba { cr: cr, cg: cg, cb: cb, ca: ca }
 end ui.render.rgba
 
-fn ui.render.scene_borders(list: &mut alloc.vec.Vec<ui.render.Item, std.alloc.System>) -> () uses [alloc] panics never pub
+fn ui.render.scene_borders(list: &mut std.vec.Vec<ui.render.Item>) -> () uses [alloc] panics never pub
     let c0 = ui.render.rgba(0.1f32, 0.5f32, 0.8f32, 1.0f32)
     let r0 = ui.render.mk_rect(20.0f32, 20.0f32, 80.0f32, 60.0f32, 12.0f32, c0)
     match list.push(ui.render.Item.Rect(r0)) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
 end ui.render.scene_borders
 
-fn ui.render.scene_clip(list: &mut alloc.vec.Vec<ui.render.Item, std.alloc.System>) -> () uses [alloc] panics never pub
+fn ui.render.scene_clip(list: &mut std.vec.Vec<ui.render.Item>) -> () uses [alloc] panics never pub
     let clip0 = ui.render.mk_clip(30.0f32, 30.0f32, 40.0f32, 40.0f32)
     match list.push(ui.render.Item.ClipPush(clip0)) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     let c0 = ui.render.rgba(0.4f32, 0.4f32, 0.4f32, 1.0f32)
     let r0 = ui.render.mk_rect(10.0f32, 10.0f32, 100.0f32, 100.0f32, 2.0f32, c0)
     match list.push(ui.render.Item.Rect(r0)) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     match list.push(ui.render.Item.ClipPop) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
 end ui.render.scene_clip
 
-fn ui.render.scene_rects(list: &mut alloc.vec.Vec<ui.render.Item, std.alloc.System>) -> () uses [alloc] panics never pub
+fn ui.render.scene_rects(list: &mut std.vec.Vec<ui.render.Item>) -> () uses [alloc] panics never pub
     let c0 = ui.render.rgba(0.2f32, 0.6f32, 0.9f32, 1.0f32)
     let r0 = ui.render.mk_rect(10.0f32, 10.0f32, 50.0f32, 40.0f32, 4.0f32, c0)
     match list.push(ui.render.Item.Rect(r0)) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     let c1 = ui.render.rgba(0.9f32, 0.2f32, 0.4f32, 1.0f32)
     let r1 = ui.render.mk_rect(70.0f32, 20.0f32, 60.0f32, 30.0f32, 6.0f32, c1)
     match list.push(ui.render.Item.Rect(r1)) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
 end ui.render.scene_rects
 
-fn ui.render.scene_shadow(list: &mut alloc.vec.Vec<ui.render.Item, std.alloc.System>) -> () uses [alloc] panics never pub
+fn ui.render.scene_shadow(list: &mut std.vec.Vec<ui.render.Item>) -> () uses [alloc] panics never pub
     let c0 = ui.render.rgba(0.0f32, 0.0f32, 0.0f32, 0.4f32)
     let s0 = ui.render.mk_shadow(40.0f32, 40.0f32, 60.0f32, 50.0f32, 6.0f32, c0, 4.0f32, 4.0f32)
     match list.push(ui.render.Item.Shadow(s0)) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     let c1 = ui.render.rgba(0.2f32, 0.7f32, 0.3f32, 1.0f32)
     let r1 = ui.render.mk_rect(40.0f32, 40.0f32, 60.0f32, 50.0f32, 6.0f32, c1)
     match list.push(ui.render.Item.Rect(r1)) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
 end ui.render.scene_shadow
 
 test ui.render.GpuCtx.test_batch_clip
-    let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut list = std.vec.Vec.new()
     let clip0 = ui.render.mk_clip(30.0f32, 30.0f32, 40.0f32, 40.0f32)
     match list.push(ui.render.Item.ClipPush(clip0)) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
     let c0 = ui.render.rgba(0.4f32, 0.4f32, 0.4f32, 1.0f32)
     let r0 = ui.render.mk_rect(10.0f32, 10.0f32, 100.0f32, 100.0f32, 2.0f32, c0)
     match list.push(ui.render.Item.Rect(r0)) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
     match list.push(ui.render.Item.ClipPop) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
     let c1 = ui.render.rgba(1.0f32, 0.0f32, 0.0f32, 1.0f32)
     let r1 = ui.render.mk_rect(50.0f32, 50.0f32, 10.0f32, 10.0f32, 0.0f32, c1)
     match list.push(ui.render.Item.Rect(r1)) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     let mut k = 0usize
     let z = 0.0f32
     let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
     while k < 16usize {
         match out.push(q) {
-            Ok(_u) => ()
+            Ok(_) => ()
             Err(_e) => core.panic.panic("oom")
         }
         k = k.wrapping_add(1usize)
@@ -493,28 +493,28 @@ test ui.render.GpuCtx.test_batch_clip
 end ui.render.GpuCtx.test_batch_clip
 
 test ui.render.GpuCtx.test_batch_cull
-    let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut list = std.vec.Vec.new()
     match list.push(ui.render.Item.ClipPush(ui.render.mk_clip(0.0f32, 0.0f32, 10.0f32, 10.0f32))) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
     let c0 = ui.render.rgba(1.0f32, 0.0f32, 0.0f32, 1.0f32)
     let r0 = ui.render.mk_rect(100.0f32, 100.0f32, 10.0f32, 10.0f32, 0.0f32, c0)
     match list.push(ui.render.Item.Rect(r0)) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
     match list.push(ui.render.Item.ClipPop) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     let mut k = 0usize
     let z = 0.0f32
     let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
     while k < 1usize {
         match out.push(q) {
-            Ok(_u) => ()
+            Ok(_) => ()
             Err(_e) => core.panic.panic("oom")
         }
         k = k.wrapping_add(1usize)
@@ -524,32 +524,32 @@ test ui.render.GpuCtx.test_batch_cull
 end ui.render.GpuCtx.test_batch_cull
 
 test ui.render.GpuCtx.test_batch_order
-    let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut list = std.vec.Vec.new()
     let c0 = ui.render.rgba(1.0f32, 0.0f32, 0.0f32, 1.0f32)
     let r0 = ui.render.mk_rect(0.0f32, 0.0f32, 10.0f32, 10.0f32, 0.0f32, c0)
     match list.push(ui.render.Item.Rect(r0)) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
     let c1 = ui.render.rgba(0.0f32, 1.0f32, 0.0f32, 1.0f32)
     let r1 = ui.render.mk_rect(20.0f32, 0.0f32, 10.0f32, 10.0f32, 0.0f32, c1)
     match list.push(ui.render.Item.Rect(r1)) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
     let c2 = ui.render.rgba(0.0f32, 0.0f32, 1.0f32, 1.0f32)
     let r2 = ui.render.mk_rect(40.0f32, 0.0f32, 10.0f32, 10.0f32, 0.0f32, c2)
     match list.push(ui.render.Item.Rect(r2)) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     let mut k = 0usize
     let z = 0.0f32
     let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
     while k < 16usize {
         match out.push(q) {
-            Ok(_u) => ()
+            Ok(_) => ()
             Err(_e) => core.panic.panic("oom")
         }
         k = k.wrapping_add(1usize)
@@ -571,26 +571,26 @@ test ui.render.GpuCtx.test_batch_order
 end ui.render.GpuCtx.test_batch_order
 
 test ui.render.GpuCtx.test_batch_shadow
-    let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut list = std.vec.Vec.new()
     let c0 = ui.render.rgba(0.0f32, 0.0f32, 0.0f32, 0.4f32)
     let s0 = ui.render.mk_shadow(40.0f32, 40.0f32, 60.0f32, 50.0f32, 6.0f32, c0, 4.0f32, 4.0f32)
     match list.push(ui.render.Item.Shadow(s0)) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
     let c1 = ui.render.rgba(0.2f32, 0.7f32, 0.3f32, 1.0f32)
     let r1 = ui.render.mk_rect(40.0f32, 40.0f32, 60.0f32, 50.0f32, 6.0f32, c1)
     match list.push(ui.render.Item.Rect(r1)) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     let mut k = 0usize
     let z = 0.0f32
     let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
     while k < 16usize {
         match out.push(q) {
-            Ok(_u) => ()
+            Ok(_) => ()
             Err(_e) => core.panic.panic("oom")
         }
         k = k.wrapping_add(1usize)
@@ -607,13 +607,13 @@ test ui.render.GpuCtx.test_render_borders
         let gpu_skip_msg = "SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"
         match ui.render.GpuCtx.create(160i32, 100i32) {
             Ok(ctx) => with mut c = ctx close c.close() {
-                let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                let mut list = std.vec.Vec.new()
                 ui.render.scene_borders(&mut list)
                 let ck = ui.render.render_checksum(&mut c, list.as_slice())
                 let is_zero = ck == 0u64
                 core.check.eq(is_zero, false)
             }
-            Err(_e) => core.mem.drop(std.io.print_line(gpu_skip_msg))
+            Err(_) => core.mem.drop(std.io.print_line(gpu_skip_msg))
         }
     }
 end ui.render.GpuCtx.test_render_borders
@@ -626,13 +626,13 @@ test ui.render.GpuCtx.test_render_clip
         let gpu_skip_msg = "SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"
         match ui.render.GpuCtx.create(160i32, 100i32) {
             Ok(ctx) => with mut c = ctx close c.close() {
-                let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                let mut list = std.vec.Vec.new()
                 ui.render.scene_clip(&mut list)
                 let ck = ui.render.render_checksum(&mut c, list.as_slice())
                 let is_zero = ck == 0u64
                 core.check.eq(is_zero, false)
             }
-            Err(_e) => core.mem.drop(std.io.print_line(gpu_skip_msg))
+            Err(_) => core.mem.drop(std.io.print_line(gpu_skip_msg))
         }
     }
 end ui.render.GpuCtx.test_render_clip
@@ -645,13 +645,13 @@ test ui.render.GpuCtx.test_render_rects
         let gpu_skip_msg = "SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"
         match ui.render.GpuCtx.create(160i32, 100i32) {
             Ok(ctx) => with mut c = ctx close c.close() {
-                let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                let mut list = std.vec.Vec.new()
                 ui.render.scene_rects(&mut list)
                 let ck = ui.render.render_checksum(&mut c, list.as_slice())
                 let is_zero = ck == 0u64
                 core.check.eq(is_zero, false)
             }
-            Err(_e) => core.mem.drop(std.io.print_line(gpu_skip_msg))
+            Err(_) => core.mem.drop(std.io.print_line(gpu_skip_msg))
         }
     }
 end ui.render.GpuCtx.test_render_rects
@@ -664,13 +664,13 @@ test ui.render.GpuCtx.test_render_shadow
         let gpu_skip_msg = "SKIP: GPU ライブラリが見つかりません（headless デバイス作成に失敗）"
         match ui.render.GpuCtx.create(160i32, 100i32) {
             Ok(ctx) => with mut c = ctx close c.close() {
-                let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                let mut list = std.vec.Vec.new()
                 ui.render.scene_shadow(&mut list)
                 let ck = ui.render.render_checksum(&mut c, list.as_slice())
                 let is_zero = ck == 0u64
                 core.check.eq(is_zero, false)
             }
-            Err(_e) => core.mem.drop(std.io.print_line(gpu_skip_msg))
+            Err(_) => core.mem.drop(std.io.print_line(gpu_skip_msg))
         }
     }
 end ui.render.GpuCtx.test_render_shadow

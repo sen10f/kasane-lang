@@ -31,8 +31,8 @@ fn todo.router.create(db: &mut todo.store.Store, owner_id: i64, body: &str) -> R
     Ok(http.json_response(201u16, s))
 end todo.router.create
 
-fn todo.router.error_body(message: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo.router.error_body(message: &str) -> Result<std.string.String, todo.error.Error> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("{\"error\":")?
     model.push_quoted(&mut out, message)?
     out.push_str("}")?
@@ -44,7 +44,7 @@ fn todo.router.error_response(status: u16, message: &str) -> Result<todo.http.Re
     Ok(http.json_response(status, body))
 end todo.router.error_response
 
-fn todo.router.extract_session_token(cookie_header: &str) -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics never pub
+fn todo.router.extract_session_token(cookie_header: &str) -> Option<std.string.String> uses [alloc] panics never pub
     let name = todo.router.SESSION_COOKIE_NAME
     let start = match cookie_header.find(name) {
         Some(p) => p
@@ -126,7 +126,7 @@ end todo.router.login
 
 fn todo.router.logout(db: &mut todo.store.Store, token: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs] panics never pub
     core.mem.drop(db.remove_session(token)?)
-    let body = alloc.string.String.new(std.alloc.SYSTEM)
+    let body = std.string.String.new()
     let mut response = http.json_response(200u16, body)
     let cookie_text = "session=; Path=/; Max-Age=0"
     let mut cookie_value = alloc.string.String.from_str(std.alloc.SYSTEM, cookie_text)?
@@ -147,7 +147,7 @@ fn todo.router.patch(db: &mut todo.store.Store, _owner_id: i64, id: i64, body: &
     Ok(http.json_response(200u16, s))
 end todo.router.patch
 
-fn todo.router.query_param(query: &str, name: &str) -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics never pub
+fn todo.router.query_param(query: &str, name: &str) -> Option<std.string.String> uses [alloc] panics never pub
     let mut start = 0usize
     while start < query.len() {
         let (_, rest) = match query.split_at(start) {
@@ -250,7 +250,7 @@ end todo.router.register
 fn todo.router.remove_one(db: &mut todo.store.Store, id: i64) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs] panics never
     match db.remove(id) {
         Ok(_u) => {
-            let empty = alloc.string.String.new(std.alloc.SYSTEM)
+            let empty = std.string.String.new()
             Ok(http.json_response(204u16, empty))
         }
         Err(error.Error.NotFound) => todo.router.error_response(404u16, "not found")
@@ -264,11 +264,11 @@ fn todo.router.route(db: &mut todo.store.Store, request: &todo.http.Request) -> 
     let path = base_path.as_str()
     let cookie_text = request.cookie.as_str()
     let session_token = if cookie_text.is_empty() {
-        alloc.string.String.new(std.alloc.SYSTEM)
+        std.string.String.new()
     } else {
         match todo.router.extract_session_token(cookie_text) {
             Some(t) => t
-            None => alloc.string.String.new(std.alloc.SYSTEM)
+            None => std.string.String.new()
         }
     }
     match request.method {
@@ -276,7 +276,7 @@ fn todo.router.route(db: &mut todo.store.Store, request: &todo.http.Request) -> 
             if path == "/todos" {
                 let q_string = match todo.router.query_param(query.as_str(), "q") {
                     Some(v) => v
-                    None => alloc.string.String.new(std.alloc.SYSTEM)
+                    None => std.string.String.new()
                 }
                 let q = q_string.as_str()
                 let page = todo.router.read_page(query.as_str())
@@ -315,9 +315,9 @@ fn todo.router.route(db: &mut todo.store.Store, request: &todo.http.Request) -> 
                 return todo.router.register(db, request.body.as_str())
             }
             if path == "/login" {
-                let a = alloc.string.String.new(std.alloc.SYSTEM)
-                let b = alloc.string.String.new(std.alloc.SYSTEM)
-                let h = alloc.string.String.new(std.alloc.SYSTEM)
+                let a = std.string.String.new()
+                let b = std.string.String.new()
+                let h = std.string.String.new()
                 let t = todo.router.SESSION_COOKIE_MAX_AGE
                 let m = 2048usize
                 let config = todo.config.Config { addr: a, db: b, hist: h, ttl: t, max: m }
@@ -387,7 +387,7 @@ fn todo.router.route(db: &mut todo.store.Store, request: &todo.http.Request) -> 
     }
 end todo.router.route
 
-fn todo.router.split_query(path: &str) -> (alloc.string.String<std.alloc.System>, alloc.string.String<std.alloc.System>) uses [alloc] panics never pub
+fn todo.router.split_query(path: &str) -> (std.string.String, std.string.String) uses [alloc] panics never pub
     let qmark = path.find("?")
     match qmark {
         Some(p) => {
@@ -401,20 +401,20 @@ fn todo.router.split_query(path: &str) -> (alloc.string.String<std.alloc.System>
             }
             let base_s = match alloc.string.String.from_str(std.alloc.SYSTEM, base_text) {
                 Ok(s) => s
-                Err(_) => alloc.string.String.new(std.alloc.SYSTEM)
+                Err(_) => std.string.String.new()
             }
             let query_s = match alloc.string.String.from_str(std.alloc.SYSTEM, rest) {
                 Ok(s) => s
-                Err(_) => alloc.string.String.new(std.alloc.SYSTEM)
+                Err(_) => std.string.String.new()
             }
             (base_s, query_s)
         }
         None => {
             let base_s = match alloc.string.String.from_str(std.alloc.SYSTEM, path) {
                 Ok(s) => s
-                Err(_) => alloc.string.String.new(std.alloc.SYSTEM)
+                Err(_) => std.string.String.new()
             }
-            let query_s = alloc.string.String.new(std.alloc.SYSTEM)
+            let query_s = std.string.String.new()
             (base_s, query_s)
         }
     }
@@ -422,7 +422,7 @@ end todo.router.split_query
 
 fn todo.router.stats(db: &todo.store.Store) -> Result<todo.http.Response, todo.error.Error> uses [alloc] panics never pub
     let stats = db.stats()?
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     out.push_str("{\"total\":")?
     out.push_u64(u64.from_usize(stats.total))?
     out.push_str(",\"completed\":")?

@@ -7,8 +7,7 @@ fn ui.platform_test.libksnui_available() -> bool uses [io.fs] panics never pub
     let b = std.fs.exists("../../../native/libksnui.so")
     let c = std.fs.exists("../native/libksnui.a")
     let d = std.fs.exists("../../../native/libksnui.a")
-    let available = a || b || c || d
-    available
+    a || b || c || d
 end ui.platform_test.libksnui_available
 
 fn ui.platform_test.zero_ev() -> ui.plat.KsnuiEvent uses [] panics never pub
