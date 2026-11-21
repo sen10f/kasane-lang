@@ -417,7 +417,8 @@ impl<'a> W<'a> {
         match t {
             Ty::Ref(..) | Ty::Unknown | Ty::Var(_) => true,
             Ty::Dyn(_, _, r) => !matches!(r, Region::Unk | Region::Static),
-            Ty::Closure { id, .. } => id.is_some(),
+            // 関数型 `fn(..)` の値も、取り込んだ借用の閉包を受けうる (呼び出し側で運ぶ借用を見る)。
+            Ty::Closure { .. } => true,
             // 定義の欄の中の型パラメータは、実引数の側で見ている。
             Ty::Param(p) => seen.is_empty() && !self.static_param(p),
             Ty::Tuple(xs) => xs.iter().any(|x| self.carries_in(x, seen)),
@@ -454,7 +455,7 @@ impl<'a> W<'a> {
     }
 
     fn keep(&self, v: Val, t: &Ty) -> Val {
-        if self.carries(t) && !t.refs_all_static() {
+        if self.carries(t) && !all_static(t) {
             v
         } else {
             Val::default()
@@ -464,7 +465,7 @@ impl<'a> W<'a> {
     // -------------------------------------------------------- 環境
 
     fn define(&mut self, name: &str, decl: u32, v: Val, t: &Ty) {
-        let carries = self.carries(t) && !t.refs_all_static();
+        let carries = self.carries(t) && !all_static(t);
         let val = if carries { v } else { Val::default() };
         self.env.vars.insert(name.to_string(), Var { val, carries, decl, is_ref: is_ref(t), depth: self.scopes.len(), ty: t.clone() });
         if let Some(sc) = self.scopes.last_mut() {
@@ -508,6 +509,9 @@ impl<'a> W<'a> {
 
     /// 引数の借用の値: 参照の参照は、内側の層ごとに `ArgIn` を持つ。
     fn param_val(n: &str, t: &Ty) -> Val {
+        if matches!(t, Ty::Closure { id: None, .. }) {
+            return Val::default();
+        }
         let mut v = Val::loan(Loan::Arg(n.to_string()), 0);
         for lvl in 1..depth(t).min(200) {
             v.set.insert((Loan::ArgIn(n.to_string(), lvl as u8), lvl as u8), 0);
@@ -519,7 +523,7 @@ impl<'a> W<'a> {
         let d = &self.p.defs[self.di];
         let params: Vec<(String, Ty)> = d.params.iter().map(|(n, t)| (n.clone(), from_v(t, &self.gn))).collect();
         for (n, t) in &params {
-            let v = if self.carries(t) && !t.refs_all_static() { Self::param_val(n, t) } else { Val::default() };
+            let v = if self.carries(t) && !all_static(t) { Self::param_val(n, t) } else { Val::default() };
             self.define(n, 0, v, t);
         }
         let _ = b;
@@ -586,7 +590,7 @@ impl<'a> W<'a> {
             }
         }
         for (n, t) in &ps {
-            let v = if sub.carries(t) && !t.refs_all_static() { Self::param_val(n, t) } else { Val::default() };
+            let v = if sub.carries(t) && !all_static(t) { Self::param_val(n, t) } else { Val::default() };
             sub.define(n, 0, v, t);
         }
         sub.ev(body);
@@ -1504,6 +1508,12 @@ impl<'a> W<'a> {
     fn call(&mut self, e: &TExpr, callee: &TExpr, args: &[TExpr]) -> Val {
         // 呼び先が局所の経路 (`x.m(..)` の経路形) なら、受け手は先頭の局所。
         let mut recv_arg: Option<Arg> = None;
+        // 局所の閉包・関数値の呼び出しは、その値の使用 (取り込んだ借用が尽きていれば E3010)。
+        if let TKind::Path(segs) = &callee.kind {
+            if segs.len() == 1 && self.env.vars.contains_key(&segs[0]) {
+                self.use_var(&segs[0], e.line);
+            }
+        }
         let mut dyn_call: Option<(Vec<(String, Ty)>, Ty, DefId)> = None;
         let def = match &e.res {
             Some(Callee::Def(di)) => Some(*di),
@@ -1829,4 +1839,19 @@ fn static_bound(bounds: &crate::parser::V) -> bool {
         crate::parser::V::L(xs) => xs.iter().any(|b| matches!(b, crate::parser::V::S(x) if x == "'static")),
         _ => false,
     }
+}
+
+/// 型の領域がすべて `'static` で、借用を運ぶ閉包・関数型を含まないか。閉包の型の領域は引数と戻り値の領域であって、
+/// 取り込んだ借用を言わないので、`fn() -> &'static str` でも局所を借りうる (M6)。
+fn all_static(t: &Ty) -> bool {
+    fn has_closure(t: &Ty) -> bool {
+        match t {
+            Ty::Closure { .. } => true,
+            Ty::Tuple(xs) => xs.iter().any(has_closure),
+            Ty::Array(x, _) | Ty::Slice(x) | Ty::Ref(_, x, _) => has_closure(x),
+            Ty::Named(_, xs, _) => xs.iter().any(has_closure),
+            _ => false,
+        }
+    }
+    t.refs_all_static() && !has_closure(t)
 }
