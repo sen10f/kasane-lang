@@ -1,0 +1,7 @@
+fn t.a(x: u32) -> u32 uses [] panics never
+    x.clone()
+end t.a
+
+fn t.main() -> () uses [] panics never
+    ()
+end t.main

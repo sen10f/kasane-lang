@@ -333,7 +333,7 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             }
             vec![span(file, line, text, indent, text.len(), format!("core.mem.drop({})", expr))]
         }
-        "E2055" | "E2057" | "E2058" | "E2059" | "E2060" | "E2061" | "E2062" | "E2063" | "E2064" => oneway_fix(code, msg, file, line, lines),
+        "E2055" | "E2057" | "E2058" | "E2059" | "E2060" | "E2061" | "E2062" | "E2063" | "E2064" | "E2065" | "E2066" | "E2067" => oneway_fix(code, msg, file, line, lines),
         "E2042" => {
             let Some(text) = get(line) else { return vec![] };
             let indent = text.len() - text.trim_start().len();
@@ -982,6 +982,86 @@ fn oneway_fix(code: &str, msg: &str, file: &str, line: usize, lines: &[String]) 
             }
             let body = &text[lit_from..lit_end];
             vec![span(file, line, text, at, lit_end + 2, format!(".push_str(\"{body}\")"))]
+        }
+        "E2065" => {
+            if text.matches(".clone()").count() != 1 {
+                return vec![];
+            }
+            let at = text.find(".clone()").unwrap();
+            // 受け手は名前と `.` だけ。
+            let n = text[..at].chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').map(char::len_utf8).sum::<usize>();
+            if n == 0 || text[..at - n].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ')' || c == ']') {
+                return vec![];
+            }
+            vec![span(file, line, text, at, at + 8, String::new())]
+        }
+        "E2066" => {
+            let Some(c) = ["<=", ">=", "<", ">"].into_iter().find(|c| msg.contains(&format!("`!(a {c} b)`"))) else { return vec![] };
+            let new = match c { "<" => ">=", "<=" => ">", ">" => "<=", _ => "<" };
+            if text.matches("!(").count() != 1 {
+                return vec![];
+            }
+            let start = text.find("!(").unwrap();
+            let open = start + 2;
+            let mut depth = 1i32;
+            let mut close = None;
+            let mut ops = vec![];
+            let b = text.as_bytes();
+            for i in open..b.len() {
+                match b[i] {
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(i);
+                            break;
+                        }
+                    }
+                    b'"' | b'\'' | b'&' | b'|' => return vec![],
+                    b'<' | b'>' if depth == 1 => ops.push(i),
+                    _ => {}
+                }
+            }
+            let Some(close) = close else { return vec![] };
+            let inner = &text[open..close];
+            let Some(rel) = inner.find(&format!(" {c} ")) else { return vec![] };
+            if inner.matches(&format!(" {c} ")).count() != 1 || ops.len() != 1 || inner.contains("=>") || inner.contains("->") || inner.contains("::<") {
+                return vec![];
+            }
+            let (a, r) = (&inner[..rel], &inner[rel + c.len() + 2..]);
+            // 周りは式の頭と終わり (`if` `&&` `||` `(` `=` `,` の後、行の終わり `{` `&&` `||` `)` `,` の前)。
+            let before = text[..start].trim_end();
+            let after = text[close + 1..].trim_start();
+            let ok_before = before.is_empty() || ["if", "while", "(", "=", "&&", "||", ",", "return"].iter().any(|w| before.ends_with(w));
+            let ok_after = after.is_empty() || after.starts_with(['{', ')', ',']) || after.starts_with("&&") || after.starts_with("||");
+            if !ok_before || !ok_after || a.is_empty() || r.is_empty() {
+                return vec![];
+            }
+            vec![span(file, line, text, start, close + 1, format!("{a} {new} {r}"))]
+        }
+        "E2067" => {
+            if text.matches("::<").count() != 1 {
+                return vec![];
+            }
+            let at = text.find("::<").unwrap();
+            let mut depth = 0i32;
+            for (i, c) in text[at + 2..].char_indices() {
+                match c {
+                    '<' => depth += 1,
+                    '>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            let end = at + 2 + i + 1;
+                            if !text[end..].starts_with('(') {
+                                return vec![];
+                            }
+                            return vec![span(file, line, text, at, end, String::new())];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            vec![]
         }
         "E2062" => {
             let Some(name) = ["wrapping_add", "wrapping_sub", "wrapping_mul"].into_iter().find(|n| msg.contains(&format!("`.{n}(..)`"))) else { return vec![] };

@@ -35,7 +35,7 @@ fn plain(p: &Program, t: &Ty, seen: &mut Vec<String>) -> bool {
             if !args.iter().all(|a| plain(p, a, seen)) {
                 return false;
             }
-            if n == "core.option.Option" || n == "core.result.Result" || seen.contains(n) {
+            if matches!(n.as_str(), "core.option.Option" | "core.result.Result" | "Option" | "Result") || seen.contains(n) {
                 return true;
             }
             let Some(&i) = p.types.get(n) else { return false };
@@ -79,6 +79,46 @@ fn is_int(t: &Ty) -> bool {
     matches!(t.strip(), Ty::Prim(n) if matches!(n.as_str(), "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize"))
 }
 
+/// 型引数を単語として含むか (`V` の `dump` の文字列で見る)。
+fn mentions(dump: &str, name: &str) -> bool {
+    let b = dump.as_bytes();
+    let n = name.len();
+    let mut i = 0;
+    while let Some(k) = dump[i..].find(name) {
+        let at = i + k;
+        let before = at == 0 || !(b[at - 1].is_ascii_alphanumeric() || b[at - 1] == b'_');
+        let after = at + n >= b.len() || !(b[at + n].is_ascii_alphanumeric() || b[at + n] == b'_');
+        if before && after {
+            return true;
+        }
+        i = at + n;
+    }
+    false
+}
+
+/// 引数の式の型が、その場の注釈や他の式の推論に頼らず決まっている (整数・小数・文字列のリテラル、単純な名前、それらの `&` `&mut`)。
+fn closed_arg(e: &TExpr) -> bool {
+    match &e.kind {
+        TKind::Lit(_) => true,
+        TKind::Path(p) => p.len() == 1 && p[0] != "None",
+        TKind::Unary { op, operand } if op == "&" || op == "&mut" => closed_arg(operand),
+        _ => false,
+    }
+}
+
+fn is_int128(t: &Ty) -> bool {
+    is_int(t) || matches!(t.strip(), Ty::Prim(n) if n == "u128" || n == "i128")
+}
+
+fn flip(op: &str) -> &'static str {
+    match op {
+        "<" => ">=",
+        "<=" => ">",
+        ">" => "<=",
+        _ => "<",
+    }
+}
+
 pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
     let mut out: Vec<Diag> = vec![];
     for &di in user {
@@ -106,7 +146,47 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     found.push((e.line, "E2058", format!("`{name}` is removed: use `{}`", name.replacen("sort_unstable", "sort", 1))));
                 }
             }
+            TKind::Unary { op, operand } if op == "!" => {
+                // 整数の `!(a < b)` は `a >= b` (小数は NaN で意味が変わるので対象外)。
+                if let TKind::Binary { op: c, lhs, rhs } = &operand.kind {
+                    if matches!(c.as_str(), "<" | "<=" | ">" | ">=") && is_int128(&lhs.ty) && is_int128(&rhs.ty) {
+                        found.push((e.line, "E2066", format!("`!(a {c} b)` on integers is `a {} b`", flip(c))));
+                    }
+                }
+            }
             TKind::Call { callee, args } => {
+                // `x.clone()` (基本型) は `x`。受け手は呼び出しの経路に入る。
+                if args.is_empty() {
+                    if let TKind::Path(pth) = &callee.kind {
+                        if pth.len() >= 2 && pth.last().map(String::as_str) == Some("clone") && matches!(callee.ty.strip(), Ty::Prim(n) if n != "str") && matches!(e.ty.strip(), Ty::Prim(_)) {
+                            found.push((e.line, "E2065", "`.clone()` on a `Copy` type is the value itself: remove the call".into()));
+                        }
+                    }
+                }
+                // 明示の型引数 `f::<T>(..)` が引数で決まるなら書かない。
+                if let (Some(n), Some(Callee::Def(d))) = (e.tf, &e.res) {
+                    let def = &p.defs[*d];
+                    let tys: Vec<&str> = def.generics.iter().filter(|g| g.0 != "life").map(|g| g.1.as_str()).collect();
+                    let all_type = def.generics.iter().all(|g| g.0 == "type" || g.0 == "life");
+                    if n > 0 && all_type && n == tys.len() && !def.is_method() && args.len() == def.params.len() {
+                        let mut ok = true;
+                        for t in &tys {
+                            let mut seen = false;
+                            for (i, (_, pty)) in def.params.iter().enumerate() {
+                                if mentions(&pty.dump(), t) {
+                                    seen = true;
+                                    if !closed_arg(&args[i]) {
+                                        ok = false;
+                                    }
+                                }
+                            }
+                            ok &= seen;
+                        }
+                        if ok {
+                            found.push((e.line, "E2067", "the type argument `::<..>` is decided by the arguments: remove it".into()));
+                        }
+                    }
+                }
                 // `s.push_display(&"lit")` は `s.push_str("lit")`。
                 if let Some(Callee::Def(d)) = &e.res {
                     if p.defs[*d].name == "alloc.string.String.push_display" && args.len() == 1 {

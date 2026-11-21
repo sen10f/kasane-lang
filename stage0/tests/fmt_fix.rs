@@ -697,3 +697,29 @@ fn oneway_from_str_radix_ten_becomes_parse() {
     let src = "fn t.a(s: &str) -> Result<u32, core.num.ParseIntError> uses [] panics never\n    u32.from_str_radix(s, 10u32)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
     oneway_round_trip("oneway_radix", src, "E2064", "u32.parse(s)");
 }
+
+#[test]
+fn oneway_clone_on_copy_becomes_the_value() {
+    let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    let y = x.clone()\n    y\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_clone", src, "E2065", "let y = x\n");
+}
+
+#[test]
+fn oneway_negated_integer_comparison_is_flipped() {
+    let src = "fn t.a(x: u32, y: u32) -> bool uses [] panics never\n    let a = !(x < y)\n    a && !(y >= 3u32)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_neg_cmp", src, "E2066", "let a = x >= y\n    a && y < 3u32");
+}
+
+#[test]
+fn oneway_negated_float_comparison_is_kept() {
+    let src = "fn t.a(x: f64, y: f64) -> bool uses [] panics never\n    !(x < y)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    let t = Tmp::new_raw("oneway_neg_float", src);
+    let c = run(&["check", "--json"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}", text(&c.stdout));
+}
+
+#[test]
+fn oneway_turbofish_decided_by_arguments_is_removed() {
+    let src = "fn t.id[T](x: T) -> T uses [] panics never\n    x\nend t.id\n\nfn t.a(n: u32) -> u32 uses [] panics never\n    t.id::<u32>(n)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_turbofish", src, "E2067", "t.id(n)");
+}

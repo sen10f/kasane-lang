@@ -1,0 +1,11 @@
+fn t.id[T](x: T) -> T uses [] panics never
+    x
+end t.id
+
+fn t.a(n: u32) -> u32 uses [] panics never
+    t.id::<u32>(n)
+end t.a
+
+fn t.main() -> () uses [] panics never
+    ()
+end t.main
