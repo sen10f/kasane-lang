@@ -1,0 +1,15 @@
+fn t.main() -> () uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(t.quiet))
+    core.mem.drop(v.push(t.say))
+    for g in v.iter() {
+        g()
+    }
+end t.main
+
+fn t.quiet() -> () uses [] panics never
+end t.quiet
+
+fn t.say() -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line("hi"))
+end t.say
