@@ -505,6 +505,80 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             }
             vec![span(file, line, text, at, at, format!(" {}", want))]
         }
+        // 呼び出しの引数の型が期待型と参照の段数でちょうど1つだけずれる (E2023)。
+        // 暗黙の参照の付与・外しは行わない (4.2)。段数の差が1で、それ以外の型が一致するときだけ機械的に直す:
+        // 期待側が1段多い → `&x`、実引数側が1段多い → `*x`。行の中の呼び出しが1つだけで、
+        // その引数が単純に特定できるときに限る。
+        "E2023" => {
+            let re = Regex::new(r"argument (\d+) of `([^`]+)`: expected `([^`]*)`, found `([^`]*)`").unwrap();
+            let Some(c) = re.captures(msg) else { return vec![] };
+            let k = match c[1].parse::<usize>() { Ok(k) if k > 0 => k - 1, _ => return vec![] };
+            let want = &c[3];
+            let got = &c[4];
+            let (dw, dg) = (ref_depth(want), ref_depth(got));
+            let kind = if dw == dg + 1 && strip_one_ref(want) == got {
+                b'&'
+            } else if dg == dw + 1 && strip_one_ref(got) == want {
+                b'*'
+            } else {
+                return vec![]
+            };
+            let Some(text) = get(line) else { return vec![] };
+            let seg = c[2].rsplit('.').next().unwrap_or(&c[2]);
+            let needle = format!("{}(", seg);
+            let mut occ = text.match_indices(&needle);
+            let (Some(first), None) = (occ.next().map(|(p, _)| p), occ.next()) else { return vec![] };
+            let open = first + seg.len(); // 行の中の `(` のバイト位置
+            // `(` に対応する `)` と、深さ1のカンマを同じ行の中で探す (文字列・文字リテラルの中は飛ばす)。
+            let mut depth = 1i32;
+            let mut close: Option<usize> = None;
+            let mut commas: Vec<usize> = vec![];
+            let mut j = open + 1;
+            let bs = text.as_bytes();
+            while j < bs.len() {
+                match bs[j] {
+                    b'"' => {
+                        j += 1;
+                        while j < bs.len() && bs[j] != b'"' {
+                            if bs[j] == b'\\' { j += 1; }
+                            j += 1;
+                        }
+                    }
+                    b'\'' => {
+                        if j + 1 < bs.len() && bs[j + 1] == b'\\' { j += 2; }
+                        while j < bs.len() && bs[j] != b'\'' { j += 1; }
+                    }
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' => {
+                        depth -= 1;
+                        if depth == 0 { close = Some(j); break; }
+                    }
+                    b',' if depth == 1 => commas.push(j),
+                    _ => {}
+                }
+                j += 1;
+            }
+            let Some(close) = close else { return vec![] };
+            // カンマで区切った各引数のトリム済みのバイト位置。
+            let mut segs: Vec<(usize, usize)> = vec![];
+            let mut from = open + 1;
+            for &comma in &commas {
+                segs.push((from, comma));
+                from = comma + 1;
+            }
+            segs.push((from, close));
+            let mut trim = |(a, b): (usize, usize)| -> Option<(usize, usize)> {
+                let mut a = a;
+                while a < b && bs[a] == b' ' { a += 1; }
+                let mut b = b;
+                while b > a && bs[b - 1] == b' ' { b -= 1; }
+                (a < b).then_some((a, b))
+            };
+            let segs: Vec<(usize, usize)> = segs.into_iter().filter_map(trim).collect();
+            let Some(&(a0, a1)) = segs.get(k) else { return vec![] };
+            let arg = &text[a0..a1];
+            vec![span(file, line, text, a0, a1, format!("{}{}", kind as char, arg))]
+        }
         _ => vec![],
     }
 }
