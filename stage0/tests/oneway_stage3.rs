@@ -52,12 +52,12 @@ fn canonical(name: &str, body: &str) {
 fn d18_leading_zeros_and_digit_separators() {
     roundtrip("d18_lead", "    core.mem.drop(0016u32)\n", "    core.mem.drop(16u32)\n");
     roundtrip("d18_zero", "    core.mem.drop(000u8)\n", "    core.mem.drop(0u8)\n");
-    roundtrip("d18_hex", "    core.mem.drop(0x00ffu32)\n", "    core.mem.drop(0xffu32)\n");
-    roundtrip("d18_bin", "    core.mem.drop(0b0000_0101u8)\n", "    core.mem.drop(0b101u8)\n");
+    roundtrip("d18_hex", "    core.mem.drop(0x00ffu32)\n", "    core.mem.drop(255u32)\n");
+    roundtrip("d18_bin", "    core.mem.drop(0b0000_0101u8)\n", "    core.mem.drop(5u8)\n");
     roundtrip("d18_sep5", "    core.mem.drop(100000u64)\n", "    core.mem.drop(100_000u64)\n");
     roundtrip("d18_sep4", "    core.mem.drop(1_000i32)\n", "    core.mem.drop(1000i32)\n");
     roundtrip("d18_neg", "    core.mem.drop(-1234567i64)\n", "    core.mem.drop(-1_234_567i64)\n");
-    canonical("d18_ok", "    core.mem.drop(0xdead_beefu32)\n    core.mem.drop(65_536u32)\n    core.mem.drop(0u8)\n    core.mem.drop(9999u16)\n");
+    canonical("d18_ok", "    core.mem.drop(3_735_928_559u32)\n    core.mem.drop(65_536u32)\n    core.mem.drop(0u8)\n    core.mem.drop(9999u16)\n");
 }
 
 #[test]

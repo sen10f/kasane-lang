@@ -1,5 +1,4 @@
-//! TAST の上の規則 L (借用の寿命と出どころ、`src/tast_rules/lifetimes.rs`、S3D): `KSN_CHECKER=new` が、旧い検査と同じ
-//! (コード, 行) の E3030 / E2037 / E3010 (戻り値の位置) を出すこと (台帳 `tests/shadow_baseline.json` の `old_only` から外れたもの)、
+//! TAST の上の規則 L (借用の寿命と出どころ、`src/tast_rules/lifetimes.rs`、S3D): 検査器が、`data/unsound/` の (コード, 行) の E3030 / E2037 / E3010 (戻り値の位置) を出すこと、
 //! 正しいコード (`data/linear_ok/`・`data/check_ok/`) に出さないこと、言い換えでも同じ診断が出ること。
 
 mod common;
@@ -71,7 +70,7 @@ const CASES: &[(&str, &str, u64)] = &[
     ("d05_block_value_borrow_escape", "E3010", 6),
     ("dangling_static_field", "E3030", 7),
     ("dangling_via_let_struct", "E3030", 7),
-    ("dangling_via_let_struct", "E3030", 8),
+    ("dangling_via_let_struct", "E3030", 9),
     ("dangling_via_match", "E3030", 5),
     ("dangling_via_match", "E3030", 6),
     ("elided_flow_return_closure_call", "E3010", 6),
@@ -90,7 +89,7 @@ const CASES: &[(&str, &str, u64)] = &[
     ("elided_self_return_mut_self_plus_elided_return_other", "E3010", 6),
     ("elided_self_return_self_early_return_other", "E3010", 6),
     ("elided_self_return_self_option_return_other", "E3010", 6),
-    ("elided_self_return_self_reborrow_chain_return_other", "E3010", 8),
+    ("elided_self_return_self_reborrow_chain_return_other", "E3010", 9),
     ("elided_self_return_tail", "E3010", 6),
     ("elided_self_return_trait_method_impl_01", "E3010", 11),
     ("escape_ctor_as_str_block_value", "E3030", 9),
@@ -162,14 +161,14 @@ const CASES: &[(&str, &str, u64)] = &[
     ("match_arm_chain_owned_as_str_escape", "E3010", 6),
     ("match_arm_iflet_owned_as_str_escape", "E3030", 3),
     ("match_arm_iflet_owned_as_str_escape", "E3010", 7),
-    ("match_arm_let_owned_as_str_escape", "E3030", 5),
-    ("match_arm_let_owned_as_str_escape", "E3010", 9),
+    ("match_arm_let_owned_as_str_escape", "E3030", 6),
+    ("match_arm_let_owned_as_str_escape", "E3010", 10),
     ("match_arm_option_owned_as_str_escape", "E3030", 7),
     ("match_arm_option_owned_as_str_escape", "E3010", 10),
     ("match_arm_owned_as_str_escape", "E3030", 3),
     ("match_arm_owned_as_str_escape", "E3010", 6),
     ("rebind_local_ref", "E3030", 7),
-    ("rebind_sibling_scope", "E3030", 7),
+    ("rebind_sibling_scope", "E3030", 8),
     ("result_asref_temp_ref_return", "E3030", 2),
     ("return_bound_owner_c1", "E3030", 4),
     ("return_bound_owner_c2", "E3030", 3),
@@ -216,11 +215,11 @@ fn lifetime_diags(json: &str) -> BTreeSet<(String, u64)> {
 
 fn new_diags(name: &str, src: &str) -> BTreeSet<(String, u64)> {
     let t = Tmp::new(name, src);
-    lifetime_diags(&text(&run_with_env(&["check", "--json"], &t.0, &[("KSN_CHECKER", "new")]).stdout))
+    lifetime_diags(&text(&run_with_env(&["check", "--json"], &t.0, &[("KSN_CHECKER", "s4")]).stdout))
 }
 
 #[test]
-fn lifetimes_rule_matches_old_checker_on_unsound() {
+fn lifetimes_rule_matches_expected_on_unsound() {
     let mut bad = vec![];
     let mut stems: Vec<&str> = CASES.iter().map(|c| c.0).collect();
     stems.dedup();

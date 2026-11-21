@@ -151,7 +151,7 @@ const MAIN: &str = "\nfn t.main() -> Result<(), std.io.Error> uses [] panics nev
 fn borrow_rule_rephrasings_still_rejected() {
     let cases: &[(&str, &str, u64)] = &[
         ("hop", "fn t.bad() -> u32 uses [] panics never\n    let mut x = 1u32\n    let r = &x\n    let q = r\n    x = 2u32\n    *q\nend t.bad\n", 5),
-        ("block", "fn t.bad() -> u32 uses [] panics never\n    let mut x = 1u32\n    let r = {\n        let t = &x\n        t\n    }\n    x = 2u32\n    *r\nend t.bad\n", 7),
+        ("block", "fn t.bad() -> u32 uses [] panics never\n    let mut x = 1u32\n    let r = {\n        let t = &x\n        core.mem.drop(0u8)\n        t\n    }\n    x = 2u32\n    *r\nend t.bad\n", 8),
         ("arm", "fn t.bad(n: u32) -> u32 uses [] panics never\n    let mut x = 1u32\n    let r = match n {\n        1u32 => &x\n        _ => &x\n    }\n    x = 2u32\n    *r\nend t.bad\n", 7),
         ("generic", "fn t.bad() -> u32 uses [] panics never\n    let mut x = 1u32\n    let r = t.id(&x)\n    x = 2u32\n    *r\nend t.bad\n\nfn t.id[T](v: T) -> T uses [] panics never\n    v\nend t.id\n", 4),
         ("option", "fn t.bad() -> u32 uses [] panics never\n    let mut x = 1u32\n    let o = Some(&x)\n    x = 2u32\n    match o {\n        Some(r) => *r\n        None => 0u32\n    }\nend t.bad\n", 4),

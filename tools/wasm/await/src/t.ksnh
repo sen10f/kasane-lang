@@ -29,7 +29,7 @@ end t.main
 fn t.say(text: &str) -> () uses [io.console] panics never
     match std.io.print_line(text) {
         Ok(u) => u
-        Err(_e) => ()
+        Err(_) => ()
     }
 end t.say
 
