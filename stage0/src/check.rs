@@ -5951,18 +5951,19 @@ pub(crate) fn has_manual_copy(p: &crate::program::Program, nm: &str) -> bool {
 /// Tr のモジュール。基本型は標準ライブラリのもの (所属は `core.num` などの 4.5 のモジュール)。
 /// どちらも部外なら置けない。違反のとき、理由 (E2043 の説明の後ろ) を返す。
 /// 判定しないもの (`None`): Tr がトレイトでない・未解決の名前・型パラメータ (blanket impl)・名義型と基本型以外の対象。
-/// パッケージの同一は最上位のモジュール成分で決める (`core`・`alloc`・`std` は標準ライブラリの 1 つのパッケージ)。
+/// パッケージの同一は最上位のモジュール成分で決める (`core`・`alloc`・`std` は別のパッケージ)。
 pub(crate) fn orphan_violation(p: &Program, d: &Def, tb: &str, tgt: &str) -> Option<String> {
     let &ti = p.types.get(tb)?;
-    if p.defs[ti].kw != "trait" || d.gnames().contains(tgt) {
+    if p.defs[ti].kw != "trait" {
         return None;
+    }
+    if d.gnames().contains(tgt) {
+        // blanket impl: トレイトを定義したモジュールにだけ置ける。
+        let want = &p.defs[ti].module;
+        return (d.module != *want)
+            .then(|| format!("it is placed in module {}, but it must be in module {}", d.module, want));
     }
     let here = package_of(&d.module);
-    // 標準ライブラリの中の impl は、移行の前の配置を残す (`std.json` の `ToJson` など、型側と別モジュールに置いたもの)。
-    // 検査は利用者のパッケージの impl にだけかける。
-    if here == "std" {
-        return None;
-    }
     let trait_here = package_of(&p.defs[ti].module) == here;
     // 名義型なら、その型がこのパッケージのものか。基本型は部外 (標準ライブラリ)。
     let type_home = match tag(&d.impl_for).as_str() {
@@ -5985,12 +5986,9 @@ pub(crate) fn orphan_violation(p: &Program, d: &Def, tb: &str, tgt: &str) -> Opt
     Some(format!("it is placed in module {}, but it must be in module {}", d.module, want))
 }
 
-/// モジュール名のパッケージ (最上位の成分。標準ライブラリの `core` / `alloc` / `std` は 1 つのパッケージ)。
+/// モジュール名のパッケージ (最上位の成分。標準ライブラリの `core` / `alloc` / `std` はそれぞれ別のパッケージ)。
 fn package_of(module: &str) -> &str {
-    match module.split('.').next().unwrap_or("") {
-        "core" | "alloc" | "std" => "std",
-        top => top,
-    }
+    module.split('.').next().unwrap_or("")
 }
 
 /// 基本型の所有者 FQN (impl のメソッドを置く場所。3.2 の孤児規則)。

@@ -222,3 +222,25 @@ fn a_local_trait_impl_for_a_foreign_type_must_be_in_the_trait_module_in_one_pack
     assert!(has_code(&out, "E2043"), "{}", out);
     assert!(out.contains("must be in module app.tr"), "{}", out);
 }
+
+#[test]
+fn a_blanket_impl_must_be_in_the_trait_module() {
+    let w = Work::new("blanket_wrong");
+    let app = w.path("app");
+    make_pkg(
+        &app,
+        "app",
+        true,
+        "",
+        &[
+            ("src/app.ksnl", "fn app.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"ok\")?\n    Ok(())\nend app.main\n"),
+            ("src/app/tr.ksnl", "trait app.tr.Show pub\n    fn show(self: &Self) -> u32 uses [] panics never\nend app.tr.Show\n"),
+            ("src/app/wrong.ksnl", "impl[T] app.tr.Show for T\nfn app.tr.Show.blanket.show[T](self: &T) -> u32 uses [] panics never impls app.tr.Show\n    1u32\nend app.tr.Show.blanket.show\n"),
+        ],
+    );
+    let o = Command::new(exe()).arg("fmt").current_dir(&app).output().expect("fmt");
+    let c = w.ksn(&["check", "--json"], &app);
+    let out = text(&c.stdout);
+    assert!(has_code(&out, "E2043"), "{} {}", all(&o), out);
+    assert!(out.contains("must be in module app.tr"), "{}", out);
+}
