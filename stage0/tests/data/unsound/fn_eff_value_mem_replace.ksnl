@@ -1,0 +1,12 @@
+fn t.main() -> () uses [] panics never
+    let mut g = t.quiet
+    core.mem.drop(core.mem.replace(&mut g, t.say))
+    g()
+end t.main
+
+fn t.quiet() -> () uses [] panics never
+end t.quiet
+
+fn t.say() -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line("hi"))
+end t.say

@@ -1,0 +1,12 @@
+fn t.main() -> () uses [] panics never
+    let mut a = [3u32, 1u32, 2u32]
+    a.as_mut_slice().sort_by(
+        fn(x: &u32, y: &u32) -> core.cmp.Ordering capture [] {
+            core.mem.drop(std.io.print_line("cmp side effect"))
+            if *x == 1u32 {
+                core.panic.panic("boom")
+            }
+            x.cmp(y)
+        },
+    )
+end t.main
