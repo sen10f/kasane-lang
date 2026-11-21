@@ -1136,6 +1136,26 @@ impl<'a> Vm<'a> {
                     self.socks.remove(&fd);
                     w!(*d, 0);
                 }
+                Ins::RandFill { d, buf, len, fatal } => {
+                    let (p, n) = (r!(*buf), r!(*len) as usize);
+                    let mut bytes = vec![0u8; n];
+                    match (crate::natives::os_random(&mut bytes), *fatal) {
+                        (Ok(()), _) => {
+                            if n > 0 {
+                                let dst = addr(p, n)?;
+                                unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst as *mut u8, n) };
+                            }
+                            w!(*d, 0);
+                        }
+                        // 致命的な形 (`Rng.from_entropy`): 文言を出して終わる (kir_exec と同じ)。
+                        (Err(_), true) => {
+                            self.flush();
+                            eprint!("{}", crate::natives::ENTROPY_FAILED);
+                            return Ok(Outcome::Abort);
+                        }
+                        (Err(e), false) => fs_err(rp, &prog.aggs, *d, &e)?,
+                    }
+                }
                 Ins::FsOpen { d, path, create } => {
                     let s = std::str::from_utf8(Self::fat_bytes(rp, *path as usize)?).unwrap_or("").to_string();
                     let opened = if *create {

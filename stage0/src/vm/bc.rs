@@ -295,6 +295,8 @@ pub enum Ins {
     FsSync { d: S, fd: S },
     FsRead { d: S, fd: S, buf: S, len: S },
     FsWrite { d: S, fd: S, buf: S, len: S },
+    /// `std.rand` の OS の乱数 (`fatal`: `Rng.from_entropy` の致命的な形)。
+    RandFill { d: S, buf: S, len: S, fatal: bool },
 }
 
 const _: () = assert!(std::mem::size_of::<Ins>() <= 16);

@@ -801,7 +801,7 @@ impl<'a> Fc<'a> {
             Op::FsWrite { fd, buf, len } => Ins::FsWrite { d, fd: self.s(*fd), buf: self.s(*buf), len: self.s(*len) },
             Op::Proc { .. } => return Err("std.process の命令は VM 未対応".into()),
             // OS の乱数 (`std.rand.fill_secure` / `from_entropy`) は VM 未対応 (木走査か参照実行器へ退避する)。
-            Op::RandFill { .. } => return Err("std.rand の命令は VM 未対応".into()),
+            Op::RandFill { buf, len, fatal } => Ins::RandFill { d, buf: self.s(*buf), len: self.s(*len), fatal: *fatal },
             // std.net の追加分 (タイムアウト・shutdown・アドレス・resolve・UDP) も VM 未対応 (木走査へ退避する)。
             Op::NetSys { .. } => return Err("std.net の追加分は VM 未対応".into()),
         };
