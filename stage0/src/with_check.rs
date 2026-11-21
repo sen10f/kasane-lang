@@ -3,7 +3,7 @@
 //!
 //! AST: `With [PBind(名前), mut, 初期化式, 後始末式, 本体ブロック]`。
 //! 検査 (すべて「型が決まらない所では黙る」作法に従う):
-//! - E3040: 本体で束縛を消費している (move・値渡し・`self` を値で受けるメソッド)。後始末が use after move になる。
+//! - E3040: TAST の移動の規則 (tast_rules/moves.rs) が出す (旧の検査は取り外した)。
 //! - E3041: 後始末式が束縛を消費していない。
 //! - E3042: 後始末式の中に `return` / `break` / `continue` / `?` がある (後始末は必ず最後まで走る)。
 //! - E3043: 本体の値が束縛から借りた参照 (後始末のあとに残る)。
@@ -60,20 +60,6 @@ impl<'a> Checker<'a> {
         self.tc_expr(&f[4], &inner, &inner_muts, consume);
         // 型が分かり、Copy でも参照でもない束縛だけを検査する。
         let checkable = !is_nil(&ty) && tag(&ty) != "ref" && !self.is_copy(&ty);
-        // E3040: 本体の終わりで束縛 (かその欄) が move 済みなら、後始末式が使えない。構文の形ではなく、
-        // 型検査の一般の move の記録 (`self.moved`) を見る (欄の move・`match` / `if let` の分解・関数の引数も同じ)。
-        if checkable {
-            let moved = self.moved_overlap(&name, &[]).map(|(_, l)| l);
-            // 束縛そのものへの再代入は、元の値を後始末の前に捨てる (move の記録を消すので、形で見る)。
-            let reassigned = Self::reassigns(&f[4], &name);
-            if let Some(line) = moved.map(|l| crate::parser::unpack_pos(l).0).or(reassigned) {
-                self.tdiag(
-                    "E3040",
-                    format!("`{}` cannot be moved or reassigned in the `with` body; the `close` expression consumes it (4.4)", name),
-                    line,
-                );
-            }
-        }
         // E3043 (本体の値・外の変数への代入が束縛の借用を運ぶ) は、借用検査 (borrowck.rs の `With`) が見る。
         // 本体での move 記録は、後始末の検査に持ち越さない (後始末は本体とは別の経路)。
         self.revive_place(std::slice::from_ref(&name));
@@ -82,14 +68,6 @@ impl<'a> Checker<'a> {
             self.tdiag("E3041", format!("the `close` expression of `with` must consume `{}` (4.4)", name), nline(&f[3]));
         }
         self.revive_place(std::slice::from_ref(&name));
-    }
-
-    /// 本体 `e` の中に、束縛 `name` そのものへの再代入があれば、その行。
-    fn reassigns(e: &V, name: &str) -> Option<usize> {
-        if nname(e) == "Assign" && nname(&nf(e)[0]) == "Path" && strs(&nf(&nf(e)[0])[0]) == [name.to_string()] {
-            return Some(nline(e));
-        }
-        children(e).into_iter().find_map(|c| Self::reassigns(c, name))
     }
 
     /// 式 `e` の中に、束縛 `name` を値として消費する使い方があれば、その位置。
