@@ -26,9 +26,10 @@ fn t.kind(c: char, b: bool, n: u32) -> u32 uses [] panics never
         'a' => 1u32
         _ => 0u32
     }
-    let k = match b {
-        true => 1u32
-        false => 0u32
+    let k = if b {
+        1u32
+    } else {
+        0u32
     }
     let m = match n {
         7 => 1u32

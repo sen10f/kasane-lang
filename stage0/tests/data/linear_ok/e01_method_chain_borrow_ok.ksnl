@@ -7,11 +7,8 @@ end t.f_ok
 fn t.g_ok(xs: &mut alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics never
     let k = xs.as_slice().get(0usize)
     core.mem.drop(*k.unwrap_or(&0u32))
-    match xs.as_mut_slice().get_mut(0usize) {
-        Some(p) => {
-            *p = 7u32
-        }
-        None => ()
+    if let Some(p) = xs.as_mut_slice().get_mut(0usize) {
+        *p = 7u32
     }
     0u32
 end t.g_ok

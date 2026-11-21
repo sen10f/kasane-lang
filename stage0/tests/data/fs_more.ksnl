@@ -21,15 +21,11 @@ fn t.big_listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] p
     }
     let mut j = 0usize
     while j < entries.len() {
-        match entries.get(j) {
-            Some(en) => {
-                let mut full = alloc.string.String.new(std.alloc.SYSTEM)
-                core.mem.drop(full.push_str("d/big/"))
-                core.mem.drop(full.push_str(en.name.as_str()))
-                t.ok_unit(std.fs.remove_file(full.as_str()))
-            }
-            None => {
-            }
+        if let Some(en) = entries.get(j) {
+            let mut full = alloc.string.String.new(std.alloc.SYSTEM)
+            core.mem.drop(full.push_str("d/big/"))
+            core.mem.drop(full.push_str(en.name.as_str()))
+            t.ok_unit(std.fs.remove_file(full.as_str()))
         }
         j = j + 1usize
     }
@@ -284,18 +280,14 @@ end t.show
 fn t.show_entries(label: &str, entries: &alloc.vec.Vec<std.fs.DirEntry, std.alloc.System>) -> () uses [alloc, io.console] panics may
     let mut i = 0usize
     while i < entries.len() {
-        match entries.get(i) {
-            Some(en) => {
-                let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-                core.mem.drop(s.push_str(label))
-                core.mem.drop(s.push_str(" "))
-                core.mem.drop(s.push_str(en.name.as_str()))
-                core.mem.drop(s.push_str(" kind "))
-                core.mem.drop(s.push_i64(t.kind_of(en.kind)))
-                core.mem.drop(std.io.print_line(s.as_str()))
-            }
-            None => {
-            }
+        if let Some(en) = entries.get(i) {
+            let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+            core.mem.drop(s.push_str(label))
+            core.mem.drop(s.push_str(" "))
+            core.mem.drop(s.push_str(en.name.as_str()))
+            core.mem.drop(s.push_str(" kind "))
+            core.mem.drop(s.push_i64(t.kind_of(en.kind)))
+            core.mem.drop(std.io.print_line(s.as_str()))
         }
         i = i + 1usize
     }

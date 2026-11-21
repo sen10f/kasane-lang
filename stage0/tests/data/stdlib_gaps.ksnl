@@ -26,12 +26,8 @@ fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panic
     if !m.contains_key_str("tw") {
         out.push_str(" no-tw")?
     }
-    match m.get_mut_str("two") {
-        Some(v) => {
-            *v = 20u32
-        }
-        None => {
-        }
+    if let Some(v) = m.get_mut_str("two") {
+        *v = 20u32
     }
     out.push_str(" ")?
     match m.remove_str("two") {
