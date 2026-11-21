@@ -1294,6 +1294,15 @@ impl<'a> W<'a> {
                     }
                     cur = operand;
                 }
+                // `*guard.get_mut() = ..`: 参照を返すメソッドの受け手が場所の根 (その参照は受け手から借りる)。
+                TKind::MCall { recv, .. } if is_ref(&cur.ty) && !matches!(recv.kind, TKind::Lit(..)) => {
+                    through_ref = true;
+                    cur = recv;
+                }
+                TKind::Call { callee, .. } if is_ref(&cur.ty) && matches!(&callee.kind, TKind::Path(segs) if segs.len() >= 2) => {
+                    through_ref = true;
+                    cur = callee;
+                }
                 _ => break,
             }
         }
@@ -1337,6 +1346,17 @@ impl<'a> W<'a> {
         // 参照を通る (`*r = ..`・`r.f = ..`)・欄への代入。
         if through_ref || target_is_ref {
             self.store_through(&var.val, &v, line, false);
+            // 出どころの分からない (static・保護の先の) 場所へ、借用を運ぶ閉包を入れる: 閉包は場所より先に尽きる (M6)。
+            if through_ref && var.val.loans().is_empty() && has_closure(&place.ty) {
+                for (k, _) in &v.loans() {
+                    if let Loan::Local(kn, _) | Loan::Dead(kn) = k {
+                        self.diag("E3030", format!("stores a closure borrowing the local variable `{}` into a place that outlives it", kn), line);
+                    }
+                    if matches!(k, Loan::Temp) {
+                        self.diag("E3030", "stores a closure borrowing a temporary value into a place that outlives it".to_string(), line);
+                    }
+                }
+            }
         }
         if !through_ref {
             if let Some(x) = self.env.vars.get_mut(&n) {
@@ -1844,14 +1864,15 @@ fn static_bound(bounds: &crate::parser::V) -> bool {
 /// 型の領域がすべて `'static` で、借用を運ぶ閉包・関数型を含まないか。閉包の型の領域は引数と戻り値の領域であって、
 /// 取り込んだ借用を言わないので、`fn() -> &'static str` でも局所を借りうる (M6)。
 fn all_static(t: &Ty) -> bool {
-    fn has_closure(t: &Ty) -> bool {
-        match t {
-            Ty::Closure { .. } => true,
-            Ty::Tuple(xs) => xs.iter().any(has_closure),
-            Ty::Array(x, _) | Ty::Slice(x) | Ty::Ref(_, x, _) => has_closure(x),
-            Ty::Named(_, xs, _) => xs.iter().any(has_closure),
-            _ => false,
-        }
-    }
     t.refs_all_static() && !has_closure(t)
+}
+
+fn has_closure(t: &Ty) -> bool {
+    match t {
+        Ty::Closure { .. } => true,
+        Ty::Tuple(xs) => xs.iter().any(has_closure),
+        Ty::Array(x, _) | Ty::Slice(x) | Ty::Ref(_, x, _) => has_closure(x),
+        Ty::Named(_, xs, _) => xs.iter().any(has_closure),
+        _ => false,
+    }
 }

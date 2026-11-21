@@ -1,0 +1,28 @@
+static t.SLOT: std.sync.Mutex<Option<fn() -> usize uses [] panics never>> = std.sync.Mutex.new(None)
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics never
+    if true {
+        let s = t.mk()
+        let mut guard = t.SLOT.lock()
+        *guard.get_mut() = Some(
+            fn() -> usize capture [&s] {
+                s.len()
+            },
+        )
+    }
+    let guard2 = t.SLOT.lock()
+    match guard2.get() {
+        Some(g) => if g() == 33usize {
+            std.io.print_line("called dangling closure")
+        } else {
+            std.io.print_line("other")
+        }
+        None => std.io.print_line("none")
+    }
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello, this is a long heap string"))
+    s
+end t.mk
