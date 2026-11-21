@@ -9,3 +9,11 @@
 - 残り (未了): 規則 (2) `match` の `bool` → `if` (複数行の書き換え)、(6) 数え上げの `while` → `for range`、`Option` の 1 腕 `match` と `if let`、`core.panic.todo` と `sort_unstable` と `then_some` の stdlib からの削除 (今は診断と fix だけ。`parser.rs` の `sort_unstable` の黙った書き換えも残る)、新しい 9 点の残り (a) 恒等の算術・(b) 不要な `mut`・(c) `then_some`・(e) `from_str_radix(s, 10)`・(g) 閉包の eta。
 - 競合: `設計_書き方は1通り.md` 12 章 (2026-11-19) の `x.is_none()` の正規形と、2026-11-21 の `is` の決定が食い違う。ここでは後者 (`is`) に従った。
 - 試験の入力の `is_true(..)` のうち、型が基本型でないもの (`Handle`・`String`・`Ordering`) は今は直さず残した (診断が出ない)。
+
+#### 引き継ぎ後の追加 (2026-11-21)
+
+- E2062 (何も変えない整数演算のリテラル `wrapping_add(0)` / `wrapping_sub(0)` / `wrapping_mul(1)`)・E2063 (`bool.then_some` → 複数行の `if`。行全体がこの式のときだけ fix)・E2064 (`from_str_radix(s, 10)` → `parse(s)`)。`explain` と `tests/data/diag/` と `fmt_fix.rs` の `oneway_*` に試験。
+- 決定の変更 (統括者): `x == None` / `x != None` の `fmt` の書き換えを `.is_none()` / `.is_some()` から `is None` / `is Some(_)` に変えた (`parser.rs` の `cmp_rewrites`)。`oneway_stage3.rs` の `d11_*` の期待を新しい正規形に直した (意図した変更)。E2055 の `scalar_payload` の制限は外した (`is` の `Some(_)` は借用だけ)。`parser.rs` の `sort_unstable` の黙った書き換えは削除 (E2058 が拒み `ksn fix` が直す)。
+- `ksn todo` を廃止 (`cmd_todo`・仕様書・チートシートの行)。`check_diag.rs` の `todo_is_a_typed_hole_that_panics_and_is_listed` は `todo_is_abolished_and_ksn_fix_rewrites_it` (E2057 → fix → 走る) に置き換えた (意図した変更)。
+- 移行: `examples/native`、`spec/stdlib/core/slice.ksnl` (`b.wrapping_sub(0usize)` → `b`)、`tests/data` の 3 本 (`linear_ok/*`・`unsound/iter_panic_fold_map`)、試験の中の inline プログラム (`core.check.eq(x.is_some(), true)` → `core.check.is_true(x is Some(_))`、`from_str_radix(s, 10u32)` → `parse(s)`、`sort_unstable` → `sort`、`then_some` → `if`)。
+- 未了 (理由): `todo` / `sort_unstable` / `then_some` を `spec/stdlib/*.sig`・組み込みから消すこと (消すと E2057/E2058/E2063 に届く前に名前の未解決で止まり、`ksn fix` が使えなくなる。次の版で消す)。bool の `match` → `if` と 1 腕 `match` → `if let`・数え上げの `while` → `for range` (複数行の書き換えで、意味が同じと言い切れる形の見極めが要る)。`== Some(v)` → `is Some(v)`。監査項目の (a) のうち `shl(0)`・`x | 0` などの二項演算と二重の `wrapping_neg` (E2062 はメソッド呼びの 3 形だけ)、(b) `let mut` の未変更 (E1020 の範囲の確認が要る)、(d) の `alloc.fmt.write`、(g) 閉包の関数値への置き換え。

@@ -1090,7 +1090,7 @@ fn oneway_fix(code: &str, msg: &str, file: &str, line: usize, lines: &[String]) 
                 }
                 let start = at - n;
                 let recv = &text[start..at];
-                let rep = if neg { format!("!({recv} is None)") } else { format!("{recv} is None") };
+                let rep = if neg { format!("{recv} is Some(_)") } else { format!("{recv} is None") };
                 return vec![span(file, line, text, start, at + op.len(), rep)];
             }
             vec![]

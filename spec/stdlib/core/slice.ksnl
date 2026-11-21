@@ -187,7 +187,7 @@ fn core.slice.symmerge_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, 
                 i = h.wrapping_add(1usize)
             }
         }
-        core.slice.rotate_range(s, i, m, b.wrapping_sub(0usize))
+        core.slice.rotate_range(s, i, m, b)
         return
     }
     let mid = a.wrapping_add(b) / 2usize

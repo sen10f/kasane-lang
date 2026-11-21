@@ -139,7 +139,7 @@ fn usize_constants_are_32_bit_on_wasm32() {
         eprintln!("skipped: node / wasm-ld-20 / clang のどれかがない");
         return;
     }
-    let src = "fn t.main() -> () uses [] panics may\n    core.check.eq(core.num.usize.BITS, 32u32)\n    core.check.eq(core.num.usize.MAX, 4294967295usize)\n    core.check.eq(core.num.isize.MIN, -2147483648isize)\n    let r = usize.try_from_u64(4294967296u64)\n    core.check.eq(r.is_err(), true)\nend t.main\n";
+    let src = "fn t.main() -> () uses [] panics may\n    core.check.eq(core.num.usize.BITS, 32u32)\n    core.check.eq(core.num.usize.MAX, 4294967295usize)\n    core.check.eq(core.num.isize.MIN, -2147483648isize)\n    let r = usize.try_from_u64(4294967296u64)\n    core.check.is_true(r is Err(_))\nend t.main\n";
     let t = Tmp::new("wasm_usize_consts", src);
     let w = run_wasm(&build_wasm(&t.0));
     assert_eq!(w.status.code(), Some(0), "{}", both(&w));

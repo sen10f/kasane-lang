@@ -1,6 +1,6 @@
 //! 規則 O: 書き方は 1 通り (設計_書き方は1通り.md 12 章、2026-11-21 の決定)。TAST の型と呼び出し先だけで決める。
 //! - E2055: `Option` / `Result` の判定メソッド (`is_some` `is_none` `is_ok` `is_err`) は `式 is Some(_)` 等と書く。
-//! - E2055: `Option` と `None` の比較 `x == None` / `x != None` は `x is None` / `!(x is None)` と書く。
+//! - E2055: `Option` と `None` の比較 `x == None` / `x != None` は `x is Some(_)` と書く。
 //! - E2057: `core.panic.todo()` は廃止。`core.panic.panic("..")` と書く。
 //! - E2058: `sort_unstable` / `sort_unstable_by` は廃止。`sort` / `sort_by` と書く。
 //! - E2059: `core.check.is_true(a == b)` は `core.check.eq(a, b)` と書く。
@@ -21,11 +21,6 @@ fn is_named(t: &Ty, names: &[&str]) -> bool {
 /// 値の型が `Copy` に近い基本型 (整数・浮動小数・真偽・文字)。`is` や `core.check.eq` は値を取るので、移動しない型だけを直す。
 fn scalar(t: &Ty) -> bool {
     matches!(t.strip(), Ty::Prim(_))
-}
-
-/// `Option<T>` / `Result<T, E>` で、すべての型の引数が基本型 (`is` の書き換えが移動を増やさない)。
-fn scalar_payload(t: &Ty) -> bool {
-    matches!(t.strip(), Ty::Named(_, args, _) if !args.is_empty() && args.iter().all(scalar))
 }
 
 fn path_is(e: &TExpr, want: &[&str]) -> bool {
@@ -92,7 +87,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                 if let Some(Callee::Def(id)) = &e.res {
                     let name = p.defs[*id].name.as_str();
                     if let Some(m) = ["is_some", "is_none", "is_ok", "is_err"].into_iter().find(|m| {
-                        (name == format!("core.option.Option.{m}") || name == format!("core.result.Result.{m}")) && scalar_payload(&callee.ty)
+                        (name == format!("core.option.Option.{m}") || name == format!("core.result.Result.{m}"))
                     }) {
                         let pat = match m {
                             "is_some" => "Some(_)",
@@ -142,9 +137,9 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                 }
             }
             TKind::Binary { op, lhs, rhs } if op == "==" || op == "!=" => {
-                let opt = |x: &TExpr| is_named(&x.ty, &["core.option.Option"]) && scalar_payload(&x.ty);
+                let opt = |x: &TExpr| is_named(&x.ty, &["core.option.Option"]);
                 if (is_none_path(rhs) && opt(lhs)) || (is_none_path(lhs) && opt(rhs)) {
-                    found.push((e.line, "E2055", format!("`{op} None` is not the canonical form: write `x is None` / `!(x is None)`")));
+                    found.push((e.line, "E2055", format!("`{op} None` is not the canonical form: write `x is None` / `x is Some(_)`")));
                 }
             }
             _ => {}

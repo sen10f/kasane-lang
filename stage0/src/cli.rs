@@ -1404,28 +1404,6 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
     }
 }
 
-/// `ksn todo`: `core.panic.todo()` の呼び出し (未実装の穴) を一覧する。
-fn cmd_todo() -> i32 {
-    let root = match find_root().and_then(|r| load_package(&r)) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("ksn: {}: {}", e.code, e.msg);
-            return 2;
-        }
-    };
-    let mut n = 0;
-    for s in &root.sources {
-        for (i, line) in s.lines.iter().enumerate() {
-            if line.contains("core.panic.todo(") {
-                println!("{}:{}: {}", rel(&s.path), i + 1, line.trim());
-                n += 1;
-            }
-        }
-    }
-    println!("{} todo(s)", n);
-    0
-}
-
 /// `ksn fix`: `check` の修正案をすべて適用し、`fmt` で整える。
 fn cmd_fix() -> i32 {
     let mut total = 0usize;
@@ -4611,7 +4589,6 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "strip" => cmd_strip(&rest),
         "sync" => cmd_sync(&rest),
         "fix" => cmd_fix(),
-        "todo" => cmd_todo(),
         "context" => cmd_context(&rest),
         "explain" => cmd_explain(&rest),
         "bindgen" => {

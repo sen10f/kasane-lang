@@ -9,7 +9,7 @@ end t.close
 
 fn t.good() -> u32 uses [] panics never
     let o = Some(t.open(1u32))
-    core.mem.drop(o.is_none())
+    core.mem.drop(o is None)
     match o {
         Some(r) => core.mem.drop(t.close(r))
         None => core.mem.drop(0u8)

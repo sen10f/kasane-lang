@@ -102,14 +102,14 @@ fn scr.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
             let gotb = b.remove(&key)
             match scr.model_find(&keys, key) {
                 Some(i) => {
-                    core.check.eq(got.is_some(), true)
-                    core.check.eq(gotb.is_some(), true)
+                    core.check.is_true(got is Some(_))
+                    core.check.is_true(gotb is Some(_))
                     core.mem.drop(keys.remove(i))
                     core.mem.drop(vals.remove(i))
                 }
                 None => {
-                    core.check.eq(got.is_none(), true)
-                    core.check.eq(gotb.is_none(), true)
+                    core.check.is_true(got is None)
+                    core.check.is_true(gotb is None)
                 }
             }
         } else {
@@ -117,8 +117,8 @@ fn scr.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
             let oldb = scr.unwrap_alloc(b.insert(key, value))
             match scr.model_find(&keys, key) {
                 Some(i) => {
-                    core.check.eq(old.is_some(), true)
-                    core.check.eq(oldb.is_some(), true)
+                    core.check.is_true(old is Some(_))
+                    core.check.is_true(oldb is Some(_))
                     match vals.as_mut_slice().get_mut(i) {
                         Some(slot) => {
                             *slot = value
@@ -128,8 +128,8 @@ fn scr.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
                     }
                 }
                 None => {
-                    core.check.eq(old.is_none(), true)
-                    core.check.eq(oldb.is_none(), true)
+                    core.check.is_true(old is None)
+                    core.check.is_true(oldb is None)
                     core.mem.drop(scr.unwrap_alloc(keys.push(key)))
                     core.mem.drop(scr.unwrap_alloc(vals.push(value)))
                 }

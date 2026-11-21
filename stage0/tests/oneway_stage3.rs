@@ -111,11 +111,11 @@ fn d11_redundant_logic_is_rewritten() {
 
 #[test]
 fn d11_option_and_len_checks_are_rewritten() {
-    // `None` との比較の正規形は `is_none()` / `is_some()` (借用するので、線形の値でも判定できる)。
-    roundtrip("d11_eq_none", "    let a = Some(1u32)\n    core.mem.drop(a == None)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_none())\n");
-    roundtrip("d11_ne_none", "    let a = Some(1u32)\n    core.mem.drop(a != None)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_some())\n");
-    roundtrip("d11_none_eq", "    let a = Some(1u32)\n    core.mem.drop(None == a)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_none())\n");
-    roundtrip("d11_none_ne", "    let a = Some(1u32)\n    core.mem.drop(None != a)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_some())\n");
+    // `None` との比較の正規形は `is None` / `is Some(_)` (2026-11-21 の決定で `is_none()` / `is_some()` から変更。`_` は束縛しないので線形の値でも判定できる)。
+    roundtrip("d11_eq_none", "    let a = Some(1u32)\n    core.mem.drop(a == None)\n", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
+    roundtrip("d11_ne_none", "    let a = Some(1u32)\n    core.mem.drop(a != None)\n", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
+    roundtrip("d11_none_eq", "    let a = Some(1u32)\n    core.mem.drop(None == a)\n", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
+    roundtrip("d11_none_ne", "    let a = Some(1u32)\n    core.mem.drop(None != a)\n", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
     // `is` の形 (`a is None` / `a is Some(_)`) は従来どおり正規形。
     canonical("d11_is_none_stays", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
     canonical("d11_is_some_stays", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");

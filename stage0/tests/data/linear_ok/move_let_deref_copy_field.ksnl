@@ -6,7 +6,7 @@ end t.f
 fn t.main() -> () uses [] panics never
     let x = (alloc.string.String.new(std.alloc.SYSTEM), 1usize)
     let r = t.f(&x)
-    core.mem.drop(r.wrapping_add(0usize))
+    core.mem.drop(r)
 end t.main
 
 fn t.peek(s: &alloc.string.String) -> usize uses [] panics never

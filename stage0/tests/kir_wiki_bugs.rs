@@ -111,10 +111,10 @@ end t.main
     core.mem.drop(v.truncate(0usize))
     core.mem.drop(v.reserve(16usize))
     core.slice.sort(v.as_mut_slice())
-    core.slice.sort_unstable(v.as_mut_slice())
+    core.slice.sort(v.as_mut_slice())
     core.slice.reverse(v.as_mut_slice())
     let r = core.slice.binary_search(v.as_slice(), &7u32)
-    core.check.eq(r.is_err(), true)
+    core.check.is_true(r is Err(_))
     std.io.print_line(\"sorted\")?
     Ok(())
 end t.main
