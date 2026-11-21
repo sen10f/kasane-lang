@@ -26,7 +26,7 @@ fn realtime.Ring.new(cap: usize) -> realtime.Ring uses [alloc] panics never pub
         match items.push(0u32) {
             Ok(_u) => {
             }
-            Err(_e) => break
+            Err(_) => break
         }
         i = i.wrapping_add(1usize)
     }

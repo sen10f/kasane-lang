@@ -65,7 +65,7 @@ fn notes.store.Store.load(dir: &str) -> Result<notes.store.Store, notes.error.Er
                 let name = e.name.as_str()
                 if name.len() > 5usize && name.ends_with(".json") {
                     let base = match name.split_at(name.len().wrapping_sub(5usize)) {
-                        Some((b, _tail)) => b
+                        Some((b, _)) => b
                         None => name
                     }
                     match i64.parse(base) {
@@ -75,14 +75,14 @@ fn notes.store.Store.load(dir: &str) -> Result<notes.store.Store, notes.error.Er
                                 Ok(text) => match std.json.parse(text.as_str()) {
                                     Ok(doc) => match note.Note.from_json(&doc, doc.root()) {
                                         Ok(parsed) => core.mem.drop(store.notes.push(parsed)?)
-                                        Err(_e) => core.mem.drop(0u8)
+                                        Err(_) => core.mem.drop(0u8)
                                     }
-                                    Err(_e) => core.mem.drop(0u8)
+                                    Err(_) => core.mem.drop(0u8)
                                 }
-                                Err(_e) => core.mem.drop(0u8)
+                                Err(_) => core.mem.drop(0u8)
                             }
                         }
-                        Err(_e) => core.mem.drop(0u8)
+                        Err(_) => core.mem.drop(0u8)
                     }
                 }
             }

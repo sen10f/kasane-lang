@@ -93,7 +93,7 @@ fn todo.pool.worker(first: std.sync.Receiver<std.net.TcpStream>, give: std.sync.
                 }
             }
             Err(_e) => match queue.close() {
-                Ok(_u) => break
+                Ok(_) => break
                 Err(back) => {
                     queue = back
                 }

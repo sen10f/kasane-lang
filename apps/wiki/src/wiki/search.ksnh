@@ -81,7 +81,6 @@ end wiki.search.index_search
 
 test wiki.search.index_add_page.test_add_and_search
     let mut index = wiki.search.index_new()
-
     // 文字列リテラルを直接関数引数に渡すと std.rand.fill_secure の呼び出し後に
     // 処理系側で破損することがあるため、すべてヒープ文字列として組み立てる。
     let mut name_a = alloc.string.String.new(std.alloc.SYSTEM)
@@ -128,7 +127,6 @@ test wiki.search.index_add_page.test_add_and_search
     core.mem.drop(wiki.search.index_add_page(&mut index, name_a.as_str(), content_a.as_str())?)
     core.mem.drop(wiki.search.index_add_page(&mut index, name_b.as_str(), content_b.as_str())?)
     core.mem.drop(wiki.search.index_add_page(&mut index, name_c.as_str(), content_c.as_str())?)
-
     // "bbb" は Alpha と Beta の両方に含まれる
     let mut q_bbb = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(q_bbb.push('b')?)
@@ -155,7 +153,6 @@ test wiki.search.index_add_page.test_add_and_search
     }
     core.check.eq(found_a, true)
     core.check.eq(found_b, true)
-
     // "ccc" は Beta と Gamma の両方に含まれる
     let mut q_ccc = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(q_ccc.push('c')?)
@@ -182,7 +179,6 @@ test wiki.search.index_add_page.test_add_and_search
     }
     core.check.eq(found_b2, true)
     core.check.eq(found_c, true)
-
     // "zzz" はどのページにも含まれない
     let mut q_zzz = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(q_zzz.push('z')?)

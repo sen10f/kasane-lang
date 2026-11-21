@@ -27,7 +27,7 @@ fn core.slice.insertion_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>,
             match s.swap(j, j.wrapping_sub(1usize)) {
                 Ok(_done) => {
                 }
-                Err(_error) => return
+                Err(_) => return
             }
             j = j.wrapping_sub(1usize)
         }
@@ -69,7 +69,7 @@ fn core.slice.reverse_range[T](s: &mut [T], from: usize, to: usize) -> () uses [
         match s.swap(i, j) {
             Ok(_done) => {
             }
-            Err(_error) => return
+            Err(_) => return
         }
         i = i.wrapping_add(1usize)
     }
@@ -96,7 +96,7 @@ fn core.slice.sift_down_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>,
             match s.swap(root, child) {
                 Ok(_done) => {
                 }
-                Err(_error) => return
+                Err(_) => return
             }
             root = child
         } else {
@@ -152,7 +152,7 @@ fn core.slice.sort_unstable_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E,
         match self.swap(0usize, stop) {
             Ok(_done) => {
             }
-            Err(_error) => return
+            Err(_) => return
         }
         core.slice.sift_down_by(self, &compare, 0usize, stop)
     }

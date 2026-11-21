@@ -5,7 +5,7 @@ end t.Res
 fn t.bad(tx: std.sync.Sender<t.Res>) -> u32 uses [thread] panics never
     let r = t.open()
     match tx.send(r) {
-        Ok(_u) => 0u32
+        Ok(_) => 0u32
         Err(back) => t.close(back.value)
     }
     t.close(r)

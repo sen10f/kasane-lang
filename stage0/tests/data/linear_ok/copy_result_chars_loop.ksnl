@@ -4,8 +4,8 @@ fn t.a(s: &str) -> usize uses [alloc] panics never
     loop {
         match it.next() {
             Some(c) => match v.push(c) {
-                Ok(_u) => ()
-                Err(_e) => ()
+                Ok(_) => ()
+                Err(_) => ()
             }
             None => break
         }

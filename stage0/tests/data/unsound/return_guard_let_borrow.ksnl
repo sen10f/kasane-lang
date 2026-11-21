@@ -8,15 +8,15 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     let r = t.borrow(&m)
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     match alloc.fmt.write(&mut out, r) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(e) => core.mem.drop(e)
     }
     match out.push_str("\n") {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(e) => core.mem.drop(e)
     }
     match std.io.print_line(out.as_str()) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(e) => core.mem.drop(e)
     }
     Ok(())

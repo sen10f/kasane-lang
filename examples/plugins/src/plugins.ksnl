@@ -52,8 +52,8 @@ impl plugins.Handler<[io.console], never> for plugins.Logger
 fn plugins.Logger.handle(self: &mut plugins.Logger, event: &str) -> u32 uses [io.console] panics never impls plugins.Handler<[io.console], never>
     self.calls = self.calls.wrapping_add(1u32)
     match std.io.print_line(event) {
-        Ok(_u) => self.calls
-        Err(_e) => 0u32
+        Ok(_) => self.calls
+        Err(_) => 0u32
     }
 end plugins.Logger.handle
 

@@ -74,7 +74,7 @@ fn alloc.vec.Vec.dedup[T: core.cmp.PartialEq<T>, A: alloc.alloc.Allocator](self:
             match self.as_mut_slice().swap(keep, i) {
                 Ok(_done) => {
                 }
-                Err(_error) => return
+                Err(_) => return
             }
             keep = keep.wrapping_add(1usize)
         }
@@ -113,7 +113,7 @@ fn alloc.vec.Vec.insert[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T,
         return Err(alloc.vec.InsertError.OutOfBounds)
     }
     match self.buf.insert_within_cap(index, value) {
-        Ok(_done) => Ok(())
+        Ok(_) => Ok(())
         Err(back) => {
             match self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize)) {
                 Ok(_grown) => {
@@ -121,7 +121,7 @@ fn alloc.vec.Vec.insert[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T,
                 Err(error) => return Err(alloc.vec.InsertError.Alloc(error))
             }
             match self.buf.insert_within_cap(index, back) {
-                Ok(_done) => Ok(())
+                Ok(_) => Ok(())
                 Err(_lost) => {
                     Err(alloc.vec.InsertError.Alloc(alloc.alloc.AllocError { code: 1u32 }))
                 }
@@ -144,7 +144,7 @@ end alloc.vec.Vec.pop
 
 fn alloc.vec.Vec.push[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>, value: T) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     match self.buf.push_within_cap(value) {
-        Ok(_done) => Ok(())
+        Ok(_) => Ok(())
         Err(back) => {
             match self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize)) {
                 Ok(_grown) => {
@@ -152,8 +152,8 @@ fn alloc.vec.Vec.push[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A
                 Err(error) => return Err(error)
             }
             match self.buf.push_within_cap(back) {
-                Ok(_done) => Ok(())
-                Err(_lost) => Err(alloc.alloc.AllocError { code: 1u32 })
+                Ok(_) => Ok(())
+                Err(_) => Err(alloc.alloc.AllocError { code: 1u32 })
             }
         }
     }

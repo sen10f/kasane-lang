@@ -2,6 +2,7 @@ fn t.dangling(s: &str) -> &str uses [alloc] panics never
     let x = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
         Ok(v) => {
             let w = v.as_str()
+            core.mem.drop(0u8)
             w
         }
         Err(_e) => ""

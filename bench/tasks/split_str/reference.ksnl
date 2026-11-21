@@ -31,9 +31,9 @@ fn bench.split_str(text: &str, sep: &str) -> alloc.vec.Vec<alloc.string.String<s
                     match alloc.string.String.from_str(std.alloc.SYSTEM, head) {
                         Ok(s) => match out.push(s) {
                             Ok(_) => ()
-                            Err(_e) => ()
+                            Err(_) => ()
                         }
-                        Err(_e) => ()
+                        Err(_) => ()
                     }
                     match cur.split_at(pos.wrapping_add(sep_len)) {
                         Some((_h, tail)) => {
@@ -49,9 +49,9 @@ fn bench.split_str(text: &str, sep: &str) -> alloc.vec.Vec<alloc.string.String<s
                 match alloc.string.String.from_str(std.alloc.SYSTEM, rest) {
                     Ok(s) => match out.push(s) {
                         Ok(_) => ()
-                        Err(_e) => ()
+                        Err(_) => ()
                     }
-                    Err(_e) => ()
+                    Err(_) => ()
                 }
                 break
             }

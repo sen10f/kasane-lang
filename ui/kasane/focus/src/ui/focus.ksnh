@@ -129,11 +129,11 @@ fn ui.focus.FocusManager.focus_after_remove(self: &mut ui.focus.FocusManager, re
                 None => return None
             }
             match scope.nodes.remove(node_idx) {
-                Some(_u) => ()
+                Some(_) => ()
                 None => ()
             }
             match scope.tab_index.remove(node_idx) {
-                Some(_u) => ()
+                Some(_) => ()
                 None => ()
             }
             let n2 = scope.nodes.len()
@@ -358,8 +358,8 @@ fn ui.focus.FocusManager.scope_add_node(self: &mut ui.focus.FocusManager, scope_
             }
             s.add_node(node)
             match self.scopes.insert(i, s) {
-                Ok(_u) => ()
-                Err(_e) => ()
+                Ok(_) => ()
+                Err(_) => ()
             }
             return true
         }
@@ -381,8 +381,8 @@ fn ui.focus.FocusManager.scope_chain(self: &ui.focus.FocusManager) -> alloc.vec.
     }
     loop {
         match chain.push(current) {
-            Ok(_u) => ()
-            Err(_e) => ()
+            Ok(_) => ()
+            Err(_) => ()
         }
         let s = match self.scope_ref(current) {
             Some(v) => v
@@ -402,8 +402,8 @@ end ui.focus.FocusManager.scope_chain
 fn ui.focus.FocusManager.scope_new(self: &mut ui.focus.FocusManager, id: usize, parent: Option<usize>, dir: ui.focus.Dir, modal: bool) -> () uses [alloc] panics never pub
     let s = ui.focus.Scope.new(id, parent, dir, modal)
     match self.scopes.push(s) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
 end ui.focus.FocusManager.scope_new
 
@@ -478,8 +478,8 @@ fn ui.focus.FocusManager.scope_set_dir(self: &mut ui.focus.FocusManager, scope_i
             }
             s.set_dir(dir)
             match self.scopes.insert(i, s) {
-                Ok(_u) => ()
-                Err(_e) => ()
+                Ok(_) => ()
+                Err(_) => ()
             }
             return true
         }
@@ -504,8 +504,8 @@ fn ui.focus.FocusManager.scope_set_modal(self: &mut ui.focus.FocusManager, scope
             }
             s.set_modal(modal)
             match self.scopes.insert(i, s) {
-                Ok(_u) => ()
-                Err(_e) => ()
+                Ok(_) => ()
+                Err(_) => ()
             }
             return true
         }
@@ -530,8 +530,8 @@ fn ui.focus.FocusManager.scope_set_tab_index(self: &mut ui.focus.FocusManager, s
             }
             let r = s.set_tab_index(node, index)
             match self.scopes.insert(i, s) {
-                Ok(_u) => ()
-                Err(_e) => ()
+                Ok(_) => ()
+                Err(_) => ()
             }
             return r
         }
@@ -573,8 +573,8 @@ fn ui.focus.FocusManager.tab_order(self: &ui.focus.FocusManager, scope_id: usize
                 j = j.wrapping_add(1usize)
             }
             match order.insert(insert_at, i) {
-                Ok(_u) => ()
-                Err(_e) => ()
+                Ok(_) => ()
+                Err(_) => ()
             }
         }
         i = i.wrapping_add(1usize)
@@ -592,8 +592,8 @@ fn ui.focus.FocusManager.tab_order(self: &ui.focus.FocusManager, scope_id: usize
             None => 0usize
         }
         match result.push(node) {
-            Ok(_u) => ()
-            Err(_e) => ()
+            Ok(_) => ()
+            Err(_) => ()
         }
         k = k.wrapping_add(1usize)
     }
@@ -658,8 +658,8 @@ end ui.focus.Keymap.new
 fn ui.focus.Keymap.register(self: &mut ui.focus.Keymap, scope: usize, key: u32, modifiers: ui.focus.Modifiers, action: u32) -> () uses [alloc] panics never pub
     let sh = ui.focus.Shortcut { scope: scope, key: key, modifiers: modifiers, action: action }
     match self.entries.push(sh) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
 end ui.focus.Keymap.register
 
@@ -671,12 +671,12 @@ end ui.focus.Modifiers.default
 /// ノードを文書順に追加する。tab_index は既定の 0。
 fn ui.focus.Scope.add_node(self: &mut ui.focus.Scope, node: usize) -> () uses [alloc] panics never pub
     match self.nodes.push(node) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     match self.tab_index.push(0i32) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
 end ui.focus.Scope.add_node
 
@@ -708,12 +708,12 @@ fn ui.focus.Scope.set_tab_index(self: &mut ui.focus.Scope, node: usize, index: i
         }
         if n == node {
             match self.tab_index.remove(i) {
-                Some(_u) => ()
+                Some(_) => ()
                 None => ()
             }
             match self.tab_index.insert(i, index) {
-                Ok(_u) => ()
-                Err(_e) => ()
+                Ok(_) => ()
+                Err(_) => ()
             }
             return true
         }

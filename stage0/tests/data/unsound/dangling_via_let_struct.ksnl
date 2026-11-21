@@ -5,6 +5,7 @@ end t.Holder
 fn t.bad() -> t.Holder uses [] panics never
     let x = 5u32
     let h = t.Holder { r: &x }
+    core.mem.drop(0u8)
     h
 end t.bad
 

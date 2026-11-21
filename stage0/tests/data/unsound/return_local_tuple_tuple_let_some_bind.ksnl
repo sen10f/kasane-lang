@@ -1,8 +1,7 @@
 fn t.bad(_p: &u32) -> Option<&u32> uses [] panics never
     let v = 7u32
     let (a, _b) = (&v, 1u8)
-    let x = Some(a)
-    x
+    Some(a)
 end t.bad
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

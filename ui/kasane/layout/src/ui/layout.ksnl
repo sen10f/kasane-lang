@@ -140,7 +140,6 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
         true => y + pad
         false => x + pad
     }
-
     let mut basis_sum = 0.0f32
     let mut grow_sum = 0.0f32
     let mut shrink_sum = 0.0f32
@@ -170,7 +169,6 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
     let gap_count = core.num.f32.from_usize_nearest(count.wrapping_sub(1usize))
     let gap_total = style.space.gap * gap_count
     let free = content_main - basis_sum - gap_total
-
     let gs = grow_sum
     let ss = shrink_sum
     let mut total = 0.0f32
@@ -209,7 +207,6 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
         total = total + size
         i = i.wrapping_add(1usize)
     }
-
     let justify_raw = content_main - total - gap_total
     let justify_free = justify_raw.max(0.0f32)
     let (leading, between) = match style.jus {
@@ -225,7 +222,6 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
             (0.0f32, b)
         }
     }
-
     let mut cursor = content_start_main + leading
     i = 0usize
     while i < count {
@@ -292,8 +288,7 @@ end ui.layout.Tree.layout_at
 fn ui.layout.Tree.new() -> ui.layout.Tree uses [] panics never pub
     let nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let t = ui.layout.Tree { nodes: nodes, kids: kids }
-    t
+    ui.layout.Tree { nodes: nodes, kids: kids }
 end ui.layout.Tree.new
 
 fn ui.layout.Tree.node_at(self: &ui.layout.Tree, index: usize) -> Option<ui.layout.Node> uses [] panics never
@@ -306,7 +301,7 @@ end ui.layout.Tree.node_at
 fn ui.layout.Tree.push_child(self: &mut ui.layout.Tree, parent: usize, child: usize) -> () uses [alloc] panics may pub
     match self.kids.get_mut(parent) {
         Some(kids) => match kids.push(child) {
-            Ok(_u) => ()
+            Ok(_) => ()
             Err(_e) => core.panic.panic("ui.layout: out of memory")
         }
         None => core.panic.panic("ui.layout: unknown parent")
@@ -318,12 +313,12 @@ fn ui.layout.Tree.push_node(self: &mut ui.layout.Tree, style: ui.layout.Style) -
     let rect = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 0.0f32, height: 0.0f32 }
     let node = ui.layout.Node { style: style, rect: rect }
     match self.nodes.push(node) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("ui.layout: out of memory")
     }
     let kids_vec = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match self.kids.push(kids_vec) {
-        Ok(_u) => ()
+        Ok(_) => ()
         Err(_e) => core.panic.panic("ui.layout: out of memory")
     }
     index

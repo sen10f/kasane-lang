@@ -138,7 +138,7 @@ fn todo.http.parse_content_length(head: &str) -> Result<usize, todo.error.Error>
     }
     let n = match usize.parse(value) {
         Ok(n) => n
-        Err(_e) => return Err(error.Error.BadRequest)
+        Err(_) => return Err(error.Error.BadRequest)
     }
     if n > todo.http.MAX_BODY {
         return Err(error.Error.TooLarge)
@@ -181,7 +181,7 @@ fn todo.http.parse_head(head: &[u8]) -> Result<todo.http.Head, todo.error.Error>
     let owned = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
     let cookie = match alloc.string.String.from_str(std.alloc.SYSTEM, cookie_value) {
         Ok(s) => s
-        Err(_e) => return Err(error.Error.Alloc(alloc.alloc.AllocError { code: 0u32 }))
+        Err(_) => return Err(error.Error.Alloc(alloc.alloc.AllocError { code: 0u32 }))
     }
     let cl = content_length
     let ck = cookie
@@ -212,7 +212,7 @@ fn todo.http.parse_reply(raw: &[u8]) -> Result<todo.http.Reply, todo.error.Error
     }
     let status = match u16.parse(code_text) {
         Ok(n) => n
-        Err(_e) => return Err(error.Error.BadRequest)
+        Err(_) => return Err(error.Error.BadRequest)
     }
     if todo.http.parse_content_length(headers)? != body_bytes.len() {
         return Err(error.Error.BadRequest)
@@ -277,7 +277,7 @@ end todo.http.test_head
 
 fn todo.http.test_head_err(text: &str) -> Result<(), todo.error.Error> uses [alloc] panics never
     match todo.http.test_head(text) {
-        Ok(_h) => Ok(())
+        Ok(_) => Ok(())
         Err(e) => Err(e)
     }
 end todo.http.test_head_err

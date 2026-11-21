@@ -2,6 +2,6 @@ fn t.main() -> () uses [] panics never
     let o = Some(1u8)
     match o {
         Ok(x) => core.mem.drop(x)
-        Err(_e) => core.mem.drop(())
+        Err(_) => core.mem.drop(())
     }
 end t.main

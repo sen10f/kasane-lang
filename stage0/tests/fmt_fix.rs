@@ -369,7 +369,7 @@ fn a_tail_return_is_fixed_by_fmt_and_is_an_error_in_check() {
                fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\n    t.nop(None)\n    return\nend t.main\n";
     let want = "fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\n    t.nop(None)\n    ()\nend t.main\n\n\
                 fn t.nop(o: Option<u32>) -> () uses [] panics never\n    match o {\n        Some(_) => ()\n        None => ()\n    }\nend t.nop\n\n\
-                fn t.pick(n: u32) -> u32 uses [] panics never\n    if n < 2u32 {\n        n\n    } else {\n        n.wrapping_add(1u32)\n    }\nend t.pick\n";
+                fn t.pick(n: u32) -> u32 uses [] panics never\n    if n < 2u32 {\n        return n\n    }\n    n.wrapping_add(1u32)\nend t.pick\n";
     fmt_roundtrip("tail_return", src, want);
     // 途中の `return` (末尾でない) と、`else` の無い `if` の中の `return` は残る。
     let keep = "fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\nend t.main\n\n\
@@ -621,4 +621,153 @@ fn ksn_fix_e2044_skips_non_concrete_inferred_type() {
     // 注釈を足さないので E2044 は残る。
     let c = run(&["check", "--json"], &t.0);
     assert!(codes(&text(&c.stdout)).iter().any(|c| c == "E2044"), "{}", text(&c.stdout));
+}
+
+// 整形の形の規則 (設計_書き方は1通り.md 12 章): 悪い形は `ksn check` が E0020 で拒み、`ksn fmt` で正規形になり、
+// その結果が検査を通り、もう一度 `ksn fmt` しても変わらない (冪等)。
+
+fn canon_main(call: &str) -> String {
+    format!("\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop({})\n    Ok(())\nend t.main\n", call)
+}
+
+/// `bad` (悪い形) を整形すると `must` を含み `must_not` を含まず、検査が通り、冪等になることを確かめる。
+fn canon_round(name: &str, bad: &str, must: &[&str], must_not: &[&str]) {
+    let t = Tmp::new_raw(name, bad);
+    let c = run(&["check"], &t.0);
+    let out = format!("{}{}", text(&c.stdout), text(&c.stderr));
+    assert!(out.contains("E0020"), "悪い形が E0020 で拒まれない:\n{}", out);
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    for m in must {
+        assert!(fixed.contains(m), "整形後に {:?} が無い:\n{}", m, fixed);
+    }
+    for m in must_not {
+        assert!(!fixed.contains(m), "整形後に {:?} が残る:\n{}", m, fixed);
+    }
+    let c = run(&["check"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "整形後も検査が通らない:\n{}{}", text(&c.stdout), text(&c.stderr));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
+    let again = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert_eq!(fixed, again, "fmt が冪等でない");
+}
+
+#[test]
+fn canon_bool_if_becomes_condition() {
+    let src = format!(
+        "fn t.f(c: bool) -> bool uses [] panics never\n    let a = if c {{ true }} else {{ false }}\n    let b = if c {{\n        false\n    }} else {{\n        true\n    }}\n    a && b\nend t.f\n{}",
+        canon_main("t.f(true)")
+    );
+    canon_round("canon_bool_if", &src, &["let a = c\n", "let b = !c\n"], &["{ true }", "else"]);
+}
+
+#[test]
+fn canon_no_op_ref_deref_pairs_are_removed() {
+    let src = format!(
+        "fn t.f(c: bool) -> u32 uses [] panics never\n    let x = &7u32\n    let p = *&*x\n    let q = &*&p\n    if c {{\n        p.wrapping_add(*q)\n    }} else {{\n        p\n    }}\nend t.f\n{}",
+        canon_main("t.f(true)")
+    );
+    canon_round("canon_refs", &src, &["let p = *x\n", "let q = &p\n"], &["*&*", "&*&"]);
+}
+
+#[test]
+fn canon_integer_literals_are_decimal() {
+    let src = format!(
+        "fn t.f() -> u32 uses [] panics never\n    let v = 0x10u32\n    let w = 0b1111_0000u32\n    let big = 0xFFFF_FFFF_FFFF_FFFF_FFFFu128\n    core.mem.drop(big)\n    v.wrapping_add(w)\nend t.f\n{}",
+        canon_main("t.f()")
+    );
+    canon_round("canon_radix", &src, &["let v = 16u32\n", "let w = 240u32\n", "1_208_925_819_614_629_174_706_175u128"], &["0x", "0b"]);
+}
+
+#[test]
+fn canon_blank_lines_inside_bodies_are_removed() {
+    let src = format!(
+        "fn t.f(c: bool) -> u32 uses [] panics never\n    let a = 1u32\n\n    let b = 2u32\n\n    if c {{\n        a\n    }} else {{\n        b\n    }}\nend t.f\n{}",
+        canon_main("t.f(true)")
+    );
+    let t = Tmp::new_raw("canon_blank", &src);
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    let f = fixed.split("end t.f").next().unwrap();
+    assert!(!f.contains("\n\n"), "本体の中に空行が残る:\n{}", fixed);
+    assert!(fixed.contains("end t.f\n\nfn t.main"), "定義の間は空行 1 つ:\n{}", fixed);
+}
+
+#[test]
+fn canon_return_then_else_moves_else_after_if() {
+    let src = format!(
+        "fn t.f(c: bool) -> u32 uses [] panics never\n    if c {{\n        return 1u32\n    }} else {{\n        2u32\n    }}\nend t.f\n{}",
+        canon_main("t.f(true)")
+    );
+    canon_round("canon_ret_else", &src, &["        return 1u32\n    }\n    2u32\nend t.f"], &["} else {"]);
+}
+
+#[test]
+fn canon_return_else_with_let_is_left_alone() {
+    // else の `let` を後ろへ出すと、後の `let y` と同じ名前になる (E1021) ので、`else` は残す。
+    let src = format!(
+        "fn t.f(c: bool) -> u32 uses [] panics never\n    if c {{\n        return 1u32\n    }} else {{\n        let y = 2u32\n        core.mem.drop(y)\n    }}\n    let y = 3u32\n    y\nend t.f\n{}",
+        canon_main("t.f(true)")
+    );
+    let t = Tmp::new_raw("canon_let_else", &src);
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("} else {"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn canon_let_then_tail_use_becomes_the_expression() {
+    let src = format!(
+        "fn t.f(x: u32) -> u32 uses [] panics never\n    let y = x.wrapping_add(1u32)\n    y\nend t.f\n{}",
+        canon_main("t.f(1u32)")
+    );
+    canon_round("canon_let_tail", &src, &["    x.wrapping_add(1u32)\nend t.f"], &["let y"]);
+}
+
+#[test]
+fn canon_empty_else_is_dropped() {
+    let src = format!(
+        "fn t.f(c: bool) -> u32 uses [] panics never\n    if c {{\n        core.mem.drop(1u32)\n    }} else {{\n    }}\n    2u32\nend t.f\n{}",
+        canon_main("t.f(true)")
+    );
+    canon_round("canon_empty_else", &src, &["    }\n    2u32"], &["else"]);
+}
+
+#[test]
+fn canon_unused_match_binding_is_underscore() {
+    let src = format!(
+        "fn t.f(p: (u32, u32)) -> u32 uses [] panics never\n    match p {{\n        (a, _b) => a\n    }}\nend t.f\n{}",
+        canon_main("t.f((1u32, 2u32))")
+    );
+    canon_round("canon_arm_binding", &src, &["        (a, _) => a"], &["_b"]);
+}
+
+#[test]
+fn canon_static_str_let_is_str() {
+    let src = format!(
+        "fn t.f() -> u32 uses [] panics never\n    let s: &'static str = \"hi\"\n    core.mem.drop(s)\n    1u32\nend t.f\n{}",
+        canon_main("t.f()")
+    );
+    canon_round("canon_static_str", &src, &["let s: &str = \"hi\""], &["'static"]);
+}
+
+#[test]
+fn canon_star_amp_of_a_place_is_the_place() {
+    let src = format!(
+        "fn t.f(c: bool) -> u32 uses [] panics never\n    let p = *&c\n    core.mem.drop(p)\n    1u32\nend t.f\n{}",
+        canon_main("t.f(true)")
+    );
+    canon_round("canon_star_amp", &src, &["    let p = c\n"], &["*&"]);
+}
+
+#[test]
+fn canon_mut_through_shared_ref_is_left_alone() {
+    // `*&x` は可変性を変えるので、`&mut *&x` は書き換えない (書き換えると `&mut x` になり、拒まれる形が通ってしまう)。
+    let src = "fn t.bad() -> u32 uses [] panics never\n    let mut x = 1u32\n    let r2 = &mut *&x\n    *r2 = 2u32\n    x\nend t.bad\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.bad())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("canon_mut_shared", src);
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("let r2 = &mut *&x\n"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(1), "通ってはいけない");
 }

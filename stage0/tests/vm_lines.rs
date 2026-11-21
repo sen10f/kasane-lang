@@ -91,8 +91,7 @@ fn overflow_after_a_loop_reports_the_failing_line() {
         acc = acc.wrapping_add(acc)
         i = i.wrapping_add(1u8)
     }
-    let big = acc * 200u8
-    big
+    acc * 200u8
 end pt.grow
 
 fn pt.main() -> Result<(), std.io.Error> uses [] panics may

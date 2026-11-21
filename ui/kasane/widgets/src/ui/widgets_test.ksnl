@@ -4,34 +4,34 @@ end ui.widgets_test.Target
 
 fn ui.widgets_test.ascii_bytes() -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
     let mut bytes = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match bytes.push(0x61u8) {
-        Ok(_u) => ()
-        Err(_e) => ()
+    match bytes.push(97u8) {
+        Ok(_) => ()
+        Err(_) => ()
     }
-    match bytes.push(0x62u8) {
-        Ok(_u) => ()
-        Err(_e) => ()
+    match bytes.push(98u8) {
+        Ok(_) => ()
+        Err(_) => ()
     }
-    match bytes.push(0x63u8) {
-        Ok(_u) => ()
-        Err(_e) => ()
+    match bytes.push(99u8) {
+        Ok(_) => ()
+        Err(_) => ()
     }
     bytes
 end ui.widgets_test.ascii_bytes
 
 fn ui.widgets_test.japanese_a_bytes() -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
     let mut bytes = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match bytes.push(0xe3u8) {
-        Ok(_u) => ()
-        Err(_e) => ()
+    match bytes.push(227u8) {
+        Ok(_) => ()
+        Err(_) => ()
     }
-    match bytes.push(0x81u8) {
-        Ok(_u) => ()
-        Err(_e) => ()
+    match bytes.push(129u8) {
+        Ok(_) => ()
+        Err(_) => ()
     }
-    match bytes.push(0x82u8) {
-        Ok(_u) => ()
-        Err(_e) => ()
+    match bytes.push(130u8) {
+        Ok(_) => ()
+        Err(_) => ()
     }
     bytes
 end ui.widgets_test.japanese_a_bytes
@@ -173,12 +173,12 @@ test ui.widgets_test.Target.test_list_key_at
     let mut list = ui.widgets.List.new()
     list.rc = 2usize
     match list.keys.push(100u64) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     match list.keys.push(200u64) {
-        Ok(_u) => ()
-        Err(_e) => ()
+        Ok(_) => ()
+        Err(_) => ()
     }
     core.check.eq(list.key(0usize), Some(100u64))
     core.check.eq(list.key(1usize), Some(200u64))
@@ -430,9 +430,9 @@ test ui.widgets_test.Target.test_text_replace_selection
     ti.ss = 1usize
     ti.se = 3usize
     let mut bytes = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match bytes.push(0x58u8) {
-        Ok(_u) => ()
-        Err(_e) => ()
+    match bytes.push(88u8) {
+        Ok(_) => ()
+        Err(_) => ()
     }
     let ev2 = ui.event.Event.TextInput(bytes)
     let action = ti.on_event(&ev2, &mut ctx)

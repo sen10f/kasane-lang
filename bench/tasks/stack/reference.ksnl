@@ -17,7 +17,7 @@ end bench.Stack.pop
 
 fn bench.Stack.push(self: &mut bench.Stack, v: u32) -> bool uses [alloc] panics never
     match self.items.push(v) {
-        Ok(_u) => true
-        Err(_e) => false
+        Ok(_) => true
+        Err(_) => false
     }
 end bench.Stack.push

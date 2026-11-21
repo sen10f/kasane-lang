@@ -2,9 +2,11 @@ fn t.f(p: &[u8], c: bool) -> Option<&u8> uses [] panics never
     let v = [1u8, 2u8]
     if c {
         let x = p.first()
+        core.mem.drop(0u8)
         x
     } else {
         let x = v.first()
+        core.mem.drop(0u8)
         x
     }
 end t.f

@@ -21,8 +21,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&r0.x) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("rect c0 x")?
         std.io.print_line(s.as_str())?
@@ -30,8 +30,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&r0.y) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("rect c0 y")?
         std.io.print_line(s.as_str())?
@@ -39,8 +39,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&r0.width) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("rect c0 width")?
         std.io.print_line(s.as_str())?
@@ -48,8 +48,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&r0.height) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("rect c0 height")?
         std.io.print_line(s.as_str())?
@@ -57,8 +57,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&r1.x) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("rect c1 x")?
         std.io.print_line(s.as_str())?
@@ -66,8 +66,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&r1.y) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("rect c1 y")?
         std.io.print_line(s.as_str())?
@@ -75,8 +75,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&r1.width) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("rect c1 width")?
         std.io.print_line(s.as_str())?
@@ -84,8 +84,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&r1.height) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("rect c1 height")?
         std.io.print_line(s.as_str())?

@@ -149,7 +149,7 @@ fn csvtool.cmd.head(start: usize) -> Result<(), csvtool.error.Error> uses [alloc
     let n_text = csvtool.cmd.arg_at(start.wrapping_add(1usize))?
     let n = match usize.parse(n_text) {
         Ok(v) => v
-        Err(_e) => return Err(error.usage())
+        Err(_) => return Err(error.usage())
     }
     let tbl = csvtool.cmd.load_table(path)?
     let mut header_line = alloc.string.String.new(std.alloc.SYSTEM)
@@ -257,7 +257,7 @@ fn csvtool.cmd.resolve_cols(tbl: &csvtool.table.Table, start: usize) -> Result<a
                 Some(c) => core.mem.drop(cols.push(c)?)
                 None => return Err(error.bad_column())
             }
-            Err(_e) => core.mem.drop(0u8)
+            Err(_) => core.mem.drop(0u8)
         }
         i = i.wrapping_add(1usize)
     }
