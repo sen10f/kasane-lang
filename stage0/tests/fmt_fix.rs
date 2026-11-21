@@ -739,3 +739,9 @@ fn oneway_none_comparison_fmt_gives_is_directly() {
     assert!(f.contains("o is Some(_)"), "{f}");
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
 }
+
+#[test]
+fn oneway_then_some_inside_a_larger_expression_becomes_if_expression() {
+    let src = "fn t.a(c: bool) -> () uses [] panics never\n    core.mem.drop(c.then_some(1u32))\n    let o = Some(c.then_some(2u32))\n    core.mem.drop(o)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_then_some_arg", src, "E2063", "core.mem.drop(if c {");
+}

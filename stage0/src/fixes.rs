@@ -1126,9 +1126,15 @@ fn oneway_fix(code: &str, msg: &str, file: &str, line: usize, lines: &[String]) 
             }
             let Some(close) = close else { return vec![] };
             let (recv, v) = (&text[start..at], &rest[..close]);
-            // 1 行ブロックは書けないので、行全体がこの式のとき (末尾の式) だけ複数行に直す。
-            let ind = &text[..start];
-            if !ind.chars().all(|c| c == ' ') || !text[at + head.len() + close + 1..].trim().is_empty() {
+            // 1 行ブロックは書けないので、複数行の `if` 式にする (ブロックの中身は字下げ + 4)。式の前後が `if` の式に置き換えてよい位置
+            // (`(` `,` `[` `=` `return` の後、`)` `,` `]` `}` か行末の前) のときだけ。メソッド連鎖や演算子の途中は直さない。
+            let ind: String = text.chars().take_while(|c| *c == ' ').collect();
+            let before = text[..start].trim_end();
+            let tail = &text[at + head.len() + close + 1..];
+            let after = tail.trim_start();
+            let ok_before = before.ends_with(['(', ',', '[', '=']) && !before.ends_with("==") || before.ends_with("return") || before.is_empty();
+            let ok_after = after.is_empty() || after.starts_with([')', ',', ']', '}']);
+            if !ok_before || !ok_after || text[..start].ends_with("= =") {
                 return vec![];
             }
             vec![span(file, line, text, start, at + head.len() + close + 1, format!("if {recv} {{\n{ind}    Some({v})\n{ind}}} else {{\n{ind}    None\n{ind}}}"))]
