@@ -54,8 +54,7 @@ fn ui.text.break_lines(advances: &[f32], classes: &[ui.text.BreakClass], width: 
         Some(a) => *a
         None => 0.0f32
     }
-    let mut i = 1usize
-    while i < n {
+    for i in core.iter.range(1usize, n) {
         let breakable = match classes.get(i) {
             Some(c) => match *c {
                 ui.text.BreakClass.Normal => true
@@ -82,7 +81,6 @@ fn ui.text.break_lines(advances: &[f32], classes: &[ui.text.BreakClass], width: 
         } else {
             cur_w = cur_w + ai
         }
-        i = i.wrapping_add(1usize)
     }
     match out.get_mut(count) {
         Some(slot) => {
@@ -123,11 +121,9 @@ fn ui.text.measure(font_path: &str, face: u32, size_px: f32, text: &str) -> (f32
     let mut glyphs = [zero; 256]
     let n = usize.from_u64(ui.text.shape_text(font_path, face, size_px, text, &mut glyphs))
     let mut total = 0.0f32
-    let mut i = 0usize
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         let g = glyphs[i]
         total = total + g.x_advance
-        i = i.wrapping_add(1usize)
     }
     let h = ui.text.line_height(font_path, face, size_px)
     (total, h)
@@ -136,8 +132,7 @@ end ui.text.measure
 fn ui.text.measure_wrapped(advances: &[f32], classes: &[ui.text.BreakClass], line_height: f32, width: f32, out: &mut [ui.text.Line]) -> (f32, f32) uses [] panics never pub
     let lines = ui.text.break_lines(advances, classes, width, out)
     let mut w = 0.0f32
-    let mut i = 0usize
-    while i < lines {
+    for i in core.iter.range(0usize, lines) {
         let l = match out.get(i) {
             Some(v) => *v
             None => ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }
@@ -145,7 +140,6 @@ fn ui.text.measure_wrapped(advances: &[f32], classes: &[ui.text.BreakClass], lin
         if l.width > w {
             w = l.width
         }
-        i = i.wrapping_add(1usize)
     }
     let h = f32.from_usize_nearest(lines) * line_height
     (w, h)
@@ -175,13 +169,9 @@ fn ui.text.pack_atlas(ws: &[i32], hs: &[i32], atlas_w: i32, atlas_h: i32, pad: i
         if y.wrapping_add(h).wrapping_add(pad) > atlas_h {
             ok = false
             while i < n {
-                match out.get_mut(i) {
-                    Some(slot) => {
-                        let r = ui.text.AtlasRect { x: 0i32, y: 0i32, w: 0i32, h: 0i32 }
-                        *slot = ui.text.AtlasCell { ok: false, rect: r }
-                    }
-                    None => {
-                    }
+                if let Some(slot) = out.get_mut(i) {
+                    let r = ui.text.AtlasRect { x: 0i32, y: 0i32, w: 0i32, h: 0i32 }
+                    *slot = ui.text.AtlasCell { ok: false, rect: r }
                 }
                 i = i.wrapping_add(1usize)
             }

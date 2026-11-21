@@ -173,7 +173,7 @@ test ui.event_test.Target.test_route_focus_gained_no_focus
     let root = tree.push_node(ui.layout.Style.default())
     tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
     let utree = ui.tree.Tree.new()
-    let mut ctx = ui.event.Ctx.new()
+    let ctx = ui.event.Ctx.new()
     let ev = ui.event.Event.FocusGained
     let routed = ui.event.route(&ctx, &tree, &utree, root, &ev, 50.0f32, 50.0f32)
     core.check.eq(routed, Some(root))
@@ -209,7 +209,7 @@ test ui.event_test.Target.test_route_quit_returns_none
     let root = tree.push_node(ui.layout.Style.default())
     tree.layout_at(root, 0.0f32, 0.0f32, 100.0f32, 100.0f32)
     let utree = ui.tree.Tree.new()
-    let mut ctx = ui.event.Ctx.new()
+    let ctx = ui.event.Ctx.new()
     let ev = ui.event.Event.Quit
     let routed = ui.event.route(&ctx, &tree, &utree, root, &ev, 0.0f32, 0.0f32)
     core.check.eq(routed, None)

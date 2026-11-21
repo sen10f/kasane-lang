@@ -124,21 +124,25 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
         ui.layout.FlexDirection.Row => true
         ui.layout.FlexDirection.Column => false
     }
-    let content_main = match is_row {
-        true => content_w
-        false => content_h
+    let content_main = if is_row {
+        content_w
+    } else {
+        content_h
     }
-    let content_cross = match is_row {
-        true => content_h
-        false => content_w
+    let content_cross = if is_row {
+        content_h
+    } else {
+        content_w
     }
-    let content_start_main = match is_row {
-        true => x + pad
-        false => y + pad
+    let content_start_main = if is_row {
+        x + pad
+    } else {
+        y + pad
     }
-    let content_start_cross = match is_row {
-        true => y + pad
-        false => x + pad
+    let content_start_cross = if is_row {
+        y + pad
+    } else {
+        x + pad
     }
     let mut basis_sum = 0.0f32
     let mut grow_sum = 0.0f32
@@ -153,9 +157,10 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
             Some(n) => n.style
             None => ui.layout.Style.default()
         }
-        let fixed_main = match is_row {
-            true => cstyle.size.w
-            false => cstyle.size.h
+        let fixed_main = if is_row {
+            cstyle.size.w
+        } else {
+            cstyle.size.h
         }
         let basis = match fixed_main {
             Some(v) => v
@@ -182,21 +187,24 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
             Some(n) => n.style
             None => ui.layout.Style.default()
         }
-        let fixed_main = match is_row {
-            true => cstyle.size.w
-            false => cstyle.size.h
+        let fixed_main = if is_row {
+            cstyle.size.w
+        } else {
+            cstyle.size.h
         }
         let basis = match fixed_main {
             Some(v) => v
             None => 0.0f32
         }
-        let min_main = match is_row {
-            true => cstyle.size.mnw
-            false => cstyle.size.mnh
+        let min_main = if is_row {
+            cstyle.size.mnw
+        } else {
+            cstyle.size.mnh
         }
-        let max_main = match is_row {
-            true => cstyle.size.mxw
-            false => cstyle.size.mxh
+        let max_main = if is_row {
+            cstyle.size.mxw
+        } else {
+            cstyle.size.mxh
         }
         let gr = cstyle.gr
         let sr = cstyle.sr
@@ -233,21 +241,24 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
             Some(n) => n.style
             None => ui.layout.Style.default()
         }
-        let fixed_main = match is_row {
-            true => cstyle.size.w
-            false => cstyle.size.h
+        let fixed_main = if is_row {
+            cstyle.size.w
+        } else {
+            cstyle.size.h
         }
         let basis = match fixed_main {
             Some(v) => v
             None => 0.0f32
         }
-        let min_main = match is_row {
-            true => cstyle.size.mnw
-            false => cstyle.size.mnh
+        let min_main = if is_row {
+            cstyle.size.mnw
+        } else {
+            cstyle.size.mnh
         }
-        let max_main = match is_row {
-            true => cstyle.size.mxw
-            false => cstyle.size.mxh
+        let max_main = if is_row {
+            cstyle.size.mxw
+        } else {
+            cstyle.size.mxh
         }
         let gr = cstyle.gr
         let sr = cstyle.sr
@@ -255,18 +266,21 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
         let lo = min_main.unwrap_or(0.0f32)
         let hi = max_main.unwrap_or(core.num.f32.INFINITY)
         let size = raw.max(lo).min(hi)
-        let fixed_cross = match is_row {
-            true => cstyle.size.h
-            false => cstyle.size.w
+        let fixed_cross = if is_row {
+            cstyle.size.h
+        } else {
+            cstyle.size.w
         }
         let raw_cross = ui.layout.cross_size(fixed_cross, content_cross, style.ali)
-        let min_cross = match is_row {
-            true => cstyle.size.mnh
-            false => cstyle.size.mnw
+        let min_cross = if is_row {
+            cstyle.size.mnh
+        } else {
+            cstyle.size.mnw
         }
-        let max_cross = match is_row {
-            true => cstyle.size.mxh
-            false => cstyle.size.mxw
+        let max_cross = if is_row {
+            cstyle.size.mxh
+        } else {
+            cstyle.size.mxw
         }
         let clo = min_cross.unwrap_or(0.0f32)
         let chi = max_cross.unwrap_or(core.num.f32.INFINITY)
@@ -275,9 +289,10 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
         let main_pos = cursor + mar
         let off = ui.layout.cross_offset(cross_size, content_cross, style.ali)
         let cross_pos = content_start_cross + off + mar
-        let (cx, cy, cw_child, ch_child) = match is_row {
-            true => (main_pos, cross_pos, size, cross_size)
-            false => (cross_pos, main_pos, cross_size, size)
+        let (cx, cy, cw_child, ch_child) = if is_row {
+            (main_pos, cross_pos, size, cross_size)
+        } else {
+            (cross_pos, main_pos, cross_size, size)
         }
         self.layout_at(ci, cx, cy, cw_child, ch_child)
         cursor = main_pos + size + mar + between
@@ -659,7 +674,7 @@ end ui.layout.Tree.test_row_justify_space_between
 
 test ui.layout.Tree.test_row_margin
     let mut tree = ui.layout.Tree.new()
-    let mut r = ui.layout.Style.default()
+    let r = ui.layout.Style.default()
     let root = tree.push_node(r)
     let mut s0 = ui.layout.Style.default()
     s0.size.w = Some(100.0f32)

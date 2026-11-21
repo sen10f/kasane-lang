@@ -40,11 +40,11 @@ end tutorial_ffi.grown
 
 fn tutorial_ffi.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let r = tutorial_ffi.rect(0.0f64, 0.0f64, 3.0f64, 2.0f64)
-    core.check.is_true(tutorial_ffi.area(r) == 6.0f64)
-    core.check.is_true(tutorial_ffi.area(tutorial_ffi.grown(r, 1.0f64)) == 20.0f64)
+    core.check.eq(tutorial_ffi.area(r), 6.0f64)
+    core.check.eq(tutorial_ffi.area(tutorial_ffi.grown(r, 1.0f64)), 20.0f64)
     let stats = tutorial_ffi.vertex_stats(r)
     core.check.eq(stats.count, 4i32)
-    core.check.is_true(stats.sum == 10.0f64)
+    core.check.eq(stats.sum, 10.0f64)
     std.io.print_line("tutorial_ffi ok")?
     Ok(())
 end tutorial_ffi.main
@@ -78,12 +78,12 @@ end tutorial_ffi.vertex_stats
 
 test tutorial_ffi.area.test_area
     let r = tutorial_ffi.rect(1.0f64, 1.0f64, 4.0f64, 5.0f64)
-    core.check.is_true(tutorial_ffi.area(r) == 12.0f64)
+    core.check.eq(tutorial_ffi.area(r), 12.0f64)
 end tutorial_ffi.area.test_area
 
 test tutorial_ffi.vertex_stats.test_vertices
     let r = tutorial_ffi.rect(0.0f64, 0.0f64, 1.0f64, 1.0f64)
     let s = tutorial_ffi.vertex_stats(r)
     core.check.eq(s.count, 4i32)
-    core.check.is_true(s.sum == 4.0f64)
+    core.check.eq(s.sum, 4.0f64)
 end tutorial_ffi.vertex_stats.test_vertices

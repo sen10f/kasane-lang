@@ -1,0 +1,7 @@
+fn t.a(s: &str) -> Result<u32, core.num.ParseIntError> uses [] panics never
+    u32.from_str_radix(s, 10u32)
+end t.a
+
+fn t.main() -> () uses [] panics never
+    ()
+end t.main

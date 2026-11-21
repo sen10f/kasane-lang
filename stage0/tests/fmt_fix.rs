@@ -365,10 +365,10 @@ fn list_order_in_headers_is_fixed_by_fmt_and_is_an_error_in_check() {
 fn a_tail_return_is_fixed_by_fmt_and_is_an_error_in_check() {
     // S7: 関数本体の末尾の `return x` は式 `x` に、`if` / `else` の枝と `match` の腕も同じ。値のない `return` は `()`。
     let src = "fn t.pick(n: u32) -> u32 uses [] panics never\n    if n < 2u32 {\n        return n\n    } else {\n        return n.wrapping_add(1u32)\n    }\nend t.pick\n\n\
-               fn t.nop(o: Option<u32>) -> () uses [] panics never\n    match o {\n        Some(_) => return\n        None => ()\n    }\nend t.nop\n\n\
-               fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\n    t.nop(None)\n    return\nend t.main\n";
-    let want = "fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\n    t.nop(None)\n    ()\nend t.main\n\n\
-                fn t.nop(o: Option<u32>) -> () uses [] panics never\n    match o {\n        Some(_) => ()\n        None => ()\n    }\nend t.nop\n\n\
+               fn t.nop(o: Result<u32, u32>) -> () uses [] panics never\n    match o {\n        Ok(_) => return\n        Err(_) => ()\n    }\nend t.nop\n\n\
+               fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\n    t.nop(Ok(1u32))\n    return\nend t.main\n";
+    let want = "fn t.main() -> () uses [] panics never\n    core.mem.drop(t.pick(1u32))\n    t.nop(Ok(1u32))\n    ()\nend t.main\n\n\
+                fn t.nop(o: Result<u32, u32>) -> () uses [] panics never\n    match o {\n        Ok(_) => ()\n        Err(_) => ()\n    }\nend t.nop\n\n\
                 fn t.pick(n: u32) -> u32 uses [] panics never\n    if n < 2u32 {\n        return n\n    }\n    n.wrapping_add(1u32)\nend t.pick\n";
     fmt_roundtrip("tail_return", src, want);
     // 途中の `return` (末尾でない) と、`else` の無い `if` の中の `return` は残る。
@@ -770,4 +770,201 @@ fn canon_mut_through_shared_ref_is_left_alone() {
     let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
     assert!(fixed.contains("let r2 = &mut *&x\n"), "{}", fixed);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(1), "通ってはいけない");
+}
+
+
+/// 規則 O (書き方は 1 通り、2026-11-21): 診断 → `ksn fix` → `check` が通る → 2 回目の `fix` は何も変えない。
+fn oneway_round_trip(name: &str, src: &str, code: &str, want: &str) {
+    let t = Tmp::new_raw(name, src);
+    let before = run(&["check", "--json"], &t.0);
+    assert_eq!(before.status.code(), Some(1), "{}", text(&before.stdout));
+    assert!(codes(&text(&before.stdout)).iter().any(|c| c == code), "{}", text(&before.stdout));
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    assert!(fixed.contains(want), "{fixed}");
+    let c = run(&["check", "--json"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}", text(&c.stdout));
+    run(&["fix"], &t.0);
+    assert_eq!(fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap(), fixed);
+}
+
+#[test]
+fn oneway_option_is_some_becomes_is_pattern() {
+    let src = "fn t.a(o: Option<u32>, q: Option<u32>) -> bool uses [] panics never\n    let b = q\n    !o.is_none() && b.is_some()\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_is_some", src, "E2055", "!(o is None) && b is Some(_)");
+}
+
+#[test]
+fn oneway_result_is_err_becomes_is_pattern() {
+    let src = "fn t.a(r: Result<u32, u32>) -> bool uses [] panics never\n    r.is_err()\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_is_err", src, "E2055", "r is Err(_)");
+}
+
+#[test]
+fn oneway_todo_becomes_panic_with_message() {
+    let src = "fn t.a() -> () uses [] panics may\n    core.panic.todo()\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_todo", src, "E2057", "core.panic.panic(\"todo\")");
+}
+
+#[test]
+fn oneway_sort_unstable_becomes_sort() {
+    let src = "fn t.a(v: &mut [u32]) -> () uses [] panics never\n    v.sort_unstable()\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_sort", src, "E2058", "v.sort()");
+}
+
+#[test]
+fn oneway_is_true_eq_becomes_check_eq() {
+    let src = "fn t.a(v: u32) -> () uses [] panics may\n    core.check.is_true(v == 1u32)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_is_true", src, "E2059", "core.check.eq(v, 1u32)");
+}
+
+#[test]
+fn oneway_trim_pair_becomes_trim() {
+    let src = "fn t.a(s: &str) -> &str uses [] panics never\n    s.trim_start().trim_end()\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_trim", src, "E2060", "s.trim()");
+}
+
+#[test]
+fn oneway_push_display_literal_becomes_push_str() {
+    let src = "fn t.a() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never\n    let mut s = alloc.string.String.from_str(std.alloc.SYSTEM, \"a\")?\n    s.push_display(&\"lit\")?\n    core.mem.drop(s)\n    Ok(())\nend t.a\n\nfn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never\n    t.a()?\n    Ok(())\nend t.main\n";
+    oneway_round_trip("oneway_push_display", src, "E2061", "s.push_str(\"lit\")?");
+}
+
+#[test]
+fn oneway_noop_wrapping_add_zero_is_removed() {
+    let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    x.wrapping_add(0u32)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_noop_add", src, "E2062", "    x\nend t.a");
+}
+
+#[test]
+fn oneway_then_some_becomes_if() {
+    let src = "fn t.a(c: bool) -> Option<u32> uses [] panics never\n    c.then_some(1u32)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_then_some", src, "E2063", "if c");
+}
+
+#[test]
+fn oneway_from_str_radix_ten_becomes_parse() {
+    let src = "fn t.a(s: &str) -> Result<u32, core.num.ParseIntError> uses [] panics never\n    u32.from_str_radix(s, 10u32)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_radix", src, "E2064", "u32.parse(s)");
+}
+
+#[test]
+fn oneway_clone_on_copy_becomes_the_value() {
+    let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    let y = x.clone()\n    y\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_clone", src, "E2065", "let y = x\n");
+}
+
+#[test]
+fn oneway_negated_integer_comparison_is_flipped() {
+    let src = "fn t.a(x: u32, y: u32) -> bool uses [] panics never\n    let a = !(x < y)\n    a && !(y >= 3u32)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_neg_cmp", src, "E2066", "let a = x >= y\n    a && y < 3u32");
+}
+
+#[test]
+fn oneway_negated_float_comparison_is_kept() {
+    let src = "fn t.a(x: f64, y: f64) -> bool uses [] panics never\n    !(x < y)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    let t = Tmp::new_raw("oneway_neg_float", src);
+    let c = run(&["check", "--json"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}", text(&c.stdout));
+}
+
+#[test]
+fn oneway_turbofish_decided_by_arguments_is_removed() {
+    let src = "fn t.id[T](x: T) -> T uses [] panics never\n    x\nend t.id\n\nfn t.a(n: u32) -> u32 uses [] panics never\n    t.id::<u32>(n)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_turbofish", src, "E2067", "t.id(n)");
+}
+
+#[test]
+fn oneway_is_none_on_linear_payload_becomes_is() {
+    let src = "type t.Res linear\n    id: u32\nend t.Res\n\nfn t.close(r: t.Res) -> u32 uses [] panics never\n    let t.Res { id: id } = r\n    id\nend t.close\n\nfn t.main() -> () uses [] panics never\n    let o = Some(t.Res { id: 1u32 })\n    core.mem.drop(o.is_none())\n    match o {\n        Some(r) => core.mem.drop(t.close(r))\n        None => core.mem.drop(0u32)\n    }\nend t.main\n";
+    oneway_round_trip("oneway_is_linear", src, "E2055", "o is None");
+}
+
+#[test]
+fn oneway_none_comparison_fmt_gives_is_directly() {
+    let src = "fn t.a(o: Option<u32>) -> bool uses [] panics never\n    o != None\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    let t = Tmp::new_raw("oneway_none_cmp", src);
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
+    let f = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    assert!(f.contains("o is Some(_)"), "{f}");
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn oneway_then_some_inside_a_larger_expression_becomes_if_expression() {
+    let src = "fn t.a(c: bool) -> () uses [] panics never\n    core.mem.drop(c.then_some(1u32))\n    let o = Some(c.then_some(2u32))\n    core.mem.drop(o)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_then_some_arg", src, "E2063", "core.mem.drop(if c {");
+}
+
+#[test]
+fn oneway_bool_match_becomes_if() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    match c {\n        true => core.mem.drop(1u32)\n        false => core.mem.drop(2u32)\n    }\n    x\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_bool_match_becomes_if", src, "E2068", "if c {\n        core.mem.drop(1u32)\n    } else {\n        core.mem.drop(2u32)\n    }");
+}
+
+#[test]
+fn oneway_bool_match_blocks_become_if() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    let r = match c {\n        false => {\n            let z = 1u32\n            z\n        }\n        true => x\n    }\n    r\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_bool_match_blocks_become_if", src, "E2068", "let r = if c {\n        x\n    } else {\n        let z = 1u32\n        z\n    }");
+}
+
+#[test]
+fn oneway_option_match_none_unit_becomes_if_let() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    match o {\n        Some(v) => core.mem.drop(v)\n        None => ()\n    }\n    x\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_option_match_none_unit_becomes_if_let", src, "E2069", "if let Some(v) = o {\n        core.mem.drop(v)\n    }");
+}
+
+#[test]
+fn oneway_some_literal_comparison_becomes_is() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    core.mem.drop(o == Some(3u32))\n    core.mem.drop(o != Some(4u32))\n    x\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_some_literal_comparison_becomes_is", src, "E2071", "core.mem.drop(o is Some(3u32))");
+}
+
+#[test]
+fn oneway_counting_while_becomes_for() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    let mut i = 0u32\n    let mut acc = 0u32\n    while i < y {\n        acc = acc.wrapping_add(i)\n        i = i.wrapping_add(1u32)\n    }\n    acc\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_counting_while_becomes_for", src, "E2070", "for i in core.iter.range(0u32, y) {");
+}
+
+#[test]
+fn oneway_identity_bit_and_neg_forms_are_removed() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    let a = x.wrapping_neg().wrapping_neg()\n    let b = a | 0u32\n    let c2 = b.wrapping_add(3u32).wrapping_sub(3u32)\n    c2.max(c2)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_identity_bit_and_neg_forms_are_removed", src, "E2062", "let b = a\n");
+}
+
+#[test]
+fn oneway_identity_self_comparison_and_sub_are_constants() {
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    core.mem.drop(x == x)\n    core.mem.drop(x.wrapping_sub(x))\n    x\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_identity_self_comparison_and_sub_are_constants", src, "E2062", "core.mem.drop(true)");
+}
+
+#[test]
+fn oneway_counting_while_that_uses_the_counter_afterwards_is_kept() {
+    let src = "fn t.a(y: u32) -> u32 uses [] panics never\n    let mut i = 0u32\n    while i < y {\n        core.mem.drop(i)\n        i = i.wrapping_add(1u32)\n    }\n    i\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    let t = Tmp::new_raw("oneway_while_keep", src);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn oneway_unmutated_let_mut_becomes_let() {
+    let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    let mut z = x\n    let mut w = x\n    w = w.wrapping_add(1u32)\n    z.wrapping_add(w)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_let_mut", src, "E2072", "let z = x\n    let mut w = x");
+}
+
+#[test]
+fn oneway_trivial_closure_becomes_the_function_value() {
+    let src = "fn t.add(a: u32, b: u32) -> u32 uses [] panics never\n    a.wrapping_add(b)\nend t.add\n\nfn t.a(x: u32) -> u32 uses [] panics never\n    let f = fn(p: u32, q: u32) -> u32 capture [] {\n        t.add(p, q)\n    }\n    f(x, x)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_closure", src, "E2073", "let f = t.add\n");
+}
+
+#[test]
+fn oneway_fmt_write_literal_becomes_push_str() {
+    let src = "fn t.a() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never\n    let mut s = alloc.string.String.from_str(std.alloc.SYSTEM, \"a\")?\n    alloc.fmt.write(&mut s, &\"lit\")?\n    core.mem.drop(s)\n    Ok(())\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_fmt_write", src, "E2061", "s.push_str(\"lit\")?");
+}
+
+#[test]
+fn oneway_and_with_max_constant_is_removed() {
+    let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    let y = x & core.num.u32.MAX\n    y\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_max", src, "E2062", "let y = x\n");
 }

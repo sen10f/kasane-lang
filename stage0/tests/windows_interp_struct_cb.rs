@@ -187,27 +187,27 @@ fn gen_ksn() -> String {
     k.push_str("extern t.cb_s24(f: fn(t.S24) -> t.S24 uses [] panics never, s: t.S24) -> t.S24 link \"LIB:cb_s24\"\n");
     k.push_str("fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n");
     k.push_str("    unsafe \"ffi\" \"struct by value on Win64\" {\n");
-    k.push_str("        core.check.is_true(t.size_s4() == 4.0f64)\n");
-    k.push_str("        core.check.is_true(t.size_s8() == 8.0f64)\n");
-    k.push_str("        core.check.is_true(t.size_s16() == 16.0f64)\n");
-    k.push_str("        core.check.is_true(t.size_s24() == 24.0f64)\n");
+    k.push_str("        core.check.eq(t.size_s4(), 4.0f64)\n");
+    k.push_str("        core.check.eq(t.size_s8(), 8.0f64)\n");
+    k.push_str("        core.check.eq(t.size_s16(), 16.0f64)\n");
+    k.push_str("        core.check.eq(t.size_s24(), 24.0f64)\n");
     // make / sum / echo: 構造体の値渡しと値返し。
     k.push_str("        let m4 = t.make_s4(10i32)\n");
     k.push_str("        core.check.eq(m4.a, 10i32)\n");
-    k.push_str("        core.check.is_true(t.sum_s4(m4) == 10.0f64)\n");
+    k.push_str("        core.check.eq(t.sum_s4(m4), 10.0f64)\n");
     k.push_str("        let e4 = t.echo_s4(m4)\n");
     k.push_str("        core.check.eq(e4.a, 10i32)\n");
     k.push_str("        let m8 = t.make_s8(10i32)\n");
     k.push_str("        core.check.eq(m8.a, 10i32)\n");
     k.push_str("        core.check.eq(m8.b, 11i32)\n");
-    k.push_str("        core.check.is_true(t.sum_s8(m8) == 21.0f64)\n");
+    k.push_str("        core.check.eq(t.sum_s8(m8), 21.0f64)\n");
     k.push_str("        let e8 = t.echo_s8(m8)\n");
     k.push_str("        core.check.eq(e8.a, 10i32)\n");
     k.push_str("        core.check.eq(e8.b, 11i32)\n");
     k.push_str("        let m16 = t.make_s16(10i64)\n");
     k.push_str("        core.check.eq(m16.a, 10i64)\n");
     k.push_str("        core.check.eq(m16.b, 11i64)\n");
-    k.push_str("        core.check.is_true(t.sum_s16(m16) == 21.0f64)\n");
+    k.push_str("        core.check.eq(t.sum_s16(m16), 21.0f64)\n");
     k.push_str("        let e16 = t.echo_s16(m16)\n");
     k.push_str("        core.check.eq(e16.a, 10i64)\n");
     k.push_str("        core.check.eq(e16.b, 11i64)\n");
@@ -215,7 +215,7 @@ fn gen_ksn() -> String {
     k.push_str("        core.check.eq(m24.a, 10i64)\n");
     k.push_str("        core.check.eq(m24.b, 11i64)\n");
     k.push_str("        core.check.eq(m24.c, 12i64)\n");
-    k.push_str("        core.check.is_true(t.sum_s24(m24) == 33.0f64)\n");
+    k.push_str("        core.check.eq(t.sum_s24(m24), 33.0f64)\n");
     k.push_str("        let e24 = t.echo_s24(m24)\n");
     k.push_str("        core.check.eq(e24.a, 10i64)\n");
     k.push_str("        core.check.eq(e24.b, 11i64)\n");
@@ -234,10 +234,10 @@ fn gen_ksn() -> String {
     k.push_str("        core.check.eq(c24.b, 12i64)\n");
     k.push_str("        core.check.eq(c24.c, 13i64)\n");
     // レジスタが足りなくなる位置。
-    k.push_str("        core.check.is_true(t.spill_s4(1i64, m4, 2i64, 0.5f64) == 3.5f64)\n");
-    k.push_str("        core.check.is_true(t.spill_s8(1i64, m8, 2i64, 0.5f64) == 11.5f64)\n");
-    k.push_str("        core.check.is_true(t.spill_s16(1i64, m16, 2i64, 0.5f64) == 11.5f64)\n");
-    k.push_str("        core.check.is_true(t.spill_s24(1i64, m24, 2i64, 0.5f64) == 12.5f64)\n");
+    k.push_str("        core.check.eq(t.spill_s4(1i64, m4, 2i64, 0.5f64), 3.5f64)\n");
+    k.push_str("        core.check.eq(t.spill_s8(1i64, m8, 2i64, 0.5f64), 11.5f64)\n");
+    k.push_str("        core.check.eq(t.spill_s16(1i64, m16, 2i64, 0.5f64), 11.5f64)\n");
+    k.push_str("        core.check.eq(t.spill_s24(1i64, m24, 2i64, 0.5f64), 12.5f64)\n");
     // ポインタ渡し: C が書き換える。
     k.push_str("        let mut mv4 = m4\n");
     k.push_str("        t.bump_s4(core.ptr.from_mut(&mut mv4))\n");

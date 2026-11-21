@@ -581,9 +581,9 @@ fn f32_arithmetic_is_single_precision() {
         "f32_arith",
         "    let a = 0.1f32\n\
          \x20   let b = 0.2f32\n\
-         \x20   core.check.is_true(a + b == 0.3f32)\n\
+         \x20   core.check.eq(a + b, 0.3f32)\n\
          \x20   core.check.is_true(a.to_f64() != 0.1f64)\n\
-         \x20   core.check.is_true(1.0f32 / 3.0f32 == 0.33333334f32)\n\
+         \x20   core.check.eq(1.0f32 / 3.0f32, 0.33333334f32)\n\
          \x20   core.check.eq(1.0f32.to_bits(), 0x3f800000u32)\n",
     );
 }
@@ -715,17 +715,21 @@ fn ksn_fix_repairs_simple_diagnostics() {
 
 // ---- 型付きの穴: core.panic.todo ----
 
+/// 2026-11-21 の決定で `core.panic.todo` は廃止 (旧: 型付きの穴として走って panic し、`ksn todo` が一覧した。`ksn todo` も廃止)。
+/// `check` は E2057 で拒み、`ksn fix` が `core.panic.panic("todo")` に直す。
 #[test]
-fn todo_is_a_typed_hole_that_panics_and_is_listed() {
+fn todo_is_abolished_and_ksn_fix_rewrites_it() {
     let f = "fn t.a() -> u8 uses [] panics may pub\n    core.panic.todo()\nend t.a\n\n";
     let b = body(&["core.mem.drop(t.a())"]);
-    let t = Tmp::new("todo", &main_wrap(f, &b));
+    let t = Tmp::new_raw("todo", &main_wrap(f, &b));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E2057"), "{}", text(&o.stdout));
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(101));
-    assert!(text(&o.stderr).contains("not yet implemented"));
-    let l = run(&["todo"], &t.0);
-    assert!(text(&l.stdout).contains("core.panic.todo()") && text(&l.stdout).contains("1 todo(s)"), "{}", text(&l.stdout));
+    assert!(text(&o.stderr).contains("todo"), "{}", text(&o.stderr));
+    assert_ne!(run(&["todo"], &t.0).status.code(), Some(0));
 }
 
 #[test]
@@ -1039,7 +1043,11 @@ fn explicit_type_args_are_respected_at_call_sites() {
               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
               let x = 5u8\n    let y = t.id::<u8>(x)\n    \
               core.mem.drop(y)\n    Ok(())\nend t.main\n";
-    let t = Tmp::new("targ_ok", ok);
+    let t = Tmp::new_raw("targ_ok", ok);
+    // 引数で決まる型引数は書かない (E2067)。ほかの診断は出ない (型引数は推論に反映されている)。
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(codes(&text(&o.stdout)), vec!["E2067".to_string()], "{}", text(&o.stdout));
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
     assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
     let bad = ok.replace("t.id::<u8>(x)", "t.id::<u64>(x)");
     let t = Tmp::new("targ_bad", &bad);
@@ -2361,7 +2369,7 @@ fn a_wrong_iterator_result_in_the_native_build_fails_the_check() {
 
 #[test]
 fn a_failed_conversion_check_in_the_native_build_exits_with_101() {
-    let (_t, exe_path, out) = build_native("clif_std_bad", &clif_std_program("    core.check.eq(u8.try_from_i32(256i32).is_ok(), true)"), false);
+    let (_t, exe_path, out) = build_native("clif_std_bad", &clif_std_program("    core.check.is_true(u8.try_from_i32(256i32) is Ok(_))"), false);
     let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
@@ -3596,7 +3604,7 @@ fn sig_listed_numeric_conversions_run() {
             "core.check.eq(u32.from_u8(3u8), 3u32)",
             "core.check.eq(f64.from_usize_nearest(3usize), 3.0f64)",
             "core.check.eq(f32.from_u32_nearest(3u32), 3.0f32)",
-            "core.check.eq(u8.try_from_u32(300u32).is_err(), true)",
+            "core.check.is_true(u8.try_from_u32(300u32) is Err(_))",
         ]),
     );
 }
@@ -5087,8 +5095,8 @@ fn lifetime_declared_only_in_inputs_is_e3021_unless_it_ties_inputs() {
 #[test]
 fn final_review_split_long_sep_and_radix_edges() {
     let fns = "fn t.sp(k: u32) -> u64 uses [] panics may\n    let mut n = 0u64\n    let s = if k == 0u32 {\n        \"a\"\n    } else {\n        \"\"\n    }\n    for p in s.split(\"\\r\\n\") {\n        n = n.wrapping_mul(10u64).wrapping_add(u64.from_usize(p.len())).wrapping_add(1u64)\n    }\n    n\nend t.sp\n\n\
-fn t.ctl(k: u32) -> u64 uses [] panics never\n    let s = if k == 0u32 {\n        \"\\u{11}2\"\n    } else {\n        \"\\u{19}\"\n    }\n    match u8.from_str_radix(s, 10u32) {\n        Ok(v) => u64.from_u8(v)\n        Err(e) => 1000u64.wrapping_add(u64.from_u8(e.kind))\n    }\nend t.ctl\n\n\
-fn t.over(k: u32) -> u64 uses [] panics never\n    let s = if k == 0u32 {\n        \"1111111111111111111111111111111111111111\"\n    } else {\n        \"18446744073709551616\"\n    }\n    match u64.from_str_radix(s, 10u32) {\n        Ok(_v) => 7u64\n        Err(e) => 1000u64.wrapping_add(u64.from_u8(e.kind))\n    }\nend t.over\n";
+fn t.ctl(k: u32) -> u64 uses [] panics never\n    let s = if k == 0u32 {\n        \"\\u{11}2\"\n    } else {\n        \"\\u{19}\"\n    }\n    match u8.parse(s) {\n        Ok(v) => u64.from_u8(v)\n        Err(e) => 1000u64.wrapping_add(u64.from_u8(e.kind))\n    }\nend t.ctl\n\n\
+fn t.over(k: u32) -> u64 uses [] panics never\n    let s = if k == 0u32 {\n        \"1111111111111111111111111111111111111111\"\n    } else {\n        \"18446744073709551616\"\n    }\n    match u64.parse(s) {\n        Ok(_v) => 7u64\n        Err(e) => 1000u64.wrapping_add(u64.from_u8(e.kind))\n    }\nend t.over\n";
     kir_review_cases("final_sp", fns, "t.sp", &[(&["0"], "t.sp(0u32)", "2u64", "2"), (&["1"], "t.sp(1u32)", "1u64", "1")]);
     kir_review_cases("final_ctl", fns, "t.ctl", &[(&["0"], "t.ctl(0u32)", "1000u64", "1000"), (&["1"], "t.ctl(1u32)", "1000u64", "1000")]);
     kir_review_cases("final_over", fns, "t.over", &[(&["0"], "t.over(0u32)", "1001u64", "1001"), (&["1"], "t.over(1u32)", "1001u64", "1001")]);

@@ -1,11 +1,8 @@
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let x = 1u8
-    match &Some(x) {
-        Some(p) => {
-            let n = *p
-            core.mem.drop(n)
-        }
-        None => ()
+    if let Some(p) = &Some(x) {
+        let n = *p
+        core.mem.drop(n)
     }
     Ok(())
 end t.main

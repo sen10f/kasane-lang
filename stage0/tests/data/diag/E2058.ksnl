@@ -1,0 +1,7 @@
+fn t.a(v: &mut [u32]) -> () uses [] panics never
+    v.sort_unstable()
+end t.a
+
+fn t.main() -> () uses [] panics never
+    ()
+end t.main

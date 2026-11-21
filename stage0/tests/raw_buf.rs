@@ -31,7 +31,7 @@ impl Tmp {
         // 書き方は 1 通り (E0020): 試験の入力は `ksn fmt` の出力にそろえる。
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
         // 効果の宣言は本体の効果と完全に一致させる (D5・D13): 固定の見出し (`main_wrap`) などを直す。
-        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025").current_dir(&d).output();
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025,E2055,E2057,E2058,E2059,E2060,E2061,E2062,E2063,E2064,E2065,E2066,E2067,E2068,E2069,E2070,E2071,E2072,E2073").current_dir(&d).output();
         Tmp(d)
     }
 }
@@ -288,13 +288,13 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
         Ok(b) => b
         Err(_e) => core.panic.panic("oom")
     }
-    core.check.eq(b.push_within_cap(t.item("a", 1u32)).is_ok(), true)
-    core.check.eq(b.push_within_cap(t.item("b", 2u32)).is_ok(), true)
-    core.check.eq(b.push_within_cap(t.item("c", 3u32)).is_ok(), true)
-    core.check.eq(b.insert_within_cap(1usize, t.item("x", 9u32)).is_ok(), true)
+    core.check.is_true(b.push_within_cap(t.item("a", 1u32)) is Ok(_))
+    core.check.is_true(b.push_within_cap(t.item("b", 2u32)) is Ok(_))
+    core.check.is_true(b.push_within_cap(t.item("c", 3u32)) is Ok(_))
+    core.check.is_true(b.insert_within_cap(1usize, t.item("x", 9u32)) is Ok(_))
     core.check.eq(b.len(), 4usize)
     let full = b.push_within_cap(t.item("y", 10u32))
-    core.check.eq(full.is_err(), true)
+    core.check.is_true(full is Err(_))
     match b.swap_remove(0usize) {
         Some(it) => core.check.eq(it.n, 1u32)
         None => core.panic.panic("swap_remove")
@@ -339,8 +339,8 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     }
     core.check.eq(v.len(), 20usize)
     core.check.eq(v.pop(), Some(19u32))
-    core.check.eq(v.insert(0usize, 100u32).is_ok(), true)
-    core.check.eq(v.insert(99usize, 1u32).is_err(), true)
+    core.check.is_true(v.insert(0usize, 100u32) is Ok(_))
+    core.check.is_true(v.insert(99usize, 1u32) is Err(_))
     core.check.eq(v.remove(0usize), Some(100u32))
     core.check.eq(v.remove(50usize), None)
     core.check.eq(v.reserve(100usize), Ok(()))
@@ -353,7 +353,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let mut names = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.check.eq(names.push(t.name("ann")), Ok(()))
     core.check.eq(names.push(t.name("bob")), Ok(()))
-    core.check.eq(names.insert(1usize, t.name("cy")).is_ok(), true)
+    core.check.is_true(names.insert(1usize, t.name("cy")) is Ok(_))
     match names.remove(0usize) {
         Some(s) => core.check.eq(s.len(), 3usize)
         None => core.panic.panic("remove")

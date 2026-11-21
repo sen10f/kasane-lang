@@ -26,9 +26,10 @@ fn t.kind(c: char, b: bool, n: u32) -> u32 uses [] panics never
         'a' => 1u32
         _ => 0u32
     }
-    let k = match b {
-        true => 1u32
-        false => 0u32
+    let k = if b {
+        1u32
+    } else {
+        0u32
     }
     let m = match n {
         7 => 1u32
@@ -46,7 +47,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let f: [u8; 2] = t.fill::<2>(9u8)
     let pr = t.Pair { a: 1u32, b: 2u8 }
     let o = Some(1u32)
-    t.sink(t.id::<u32>(1u32))
+    t.sink(t.id(1u32))
     t.sink(t.run::<u32, []>(2u32))
     let r: Result<u32, u8> = Ok(1u32)
     core.mem.drop((a, b, c, d, e, f, pr, r))

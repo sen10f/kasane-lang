@@ -178,13 +178,13 @@ end csvtool.parse.parse_text.test_tsv_blank_and_no_newline
 
 test csvtool.parse.sniff_delim.test_by_path_and_content
     let d1 = csvtool.parse.sniff_delim("a.tsv", "a,b")
-    core.check.is_true(d1 == '\t')
+    core.check.eq(d1, '\t')
     let d2 = csvtool.parse.sniff_delim("a.csv", "a\tb")
-    core.check.is_true(d2 == ',')
+    core.check.eq(d2, ',')
     let d3 = csvtool.parse.sniff_delim("a.txt", "a\tb\tc")
-    core.check.is_true(d3 == '\t')
+    core.check.eq(d3, '\t')
     let d4 = csvtool.parse.sniff_delim("a.txt", "a,b,c")
-    core.check.is_true(d4 == ',')
+    core.check.eq(d4, ',')
     let d5 = csvtool.parse.sniff_delim("a.txt", "a,b\tc")
-    core.check.is_true(d5 == '\t')
+    core.check.eq(d5, '\t')
 end csvtool.parse.sniff_delim.test_by_path_and_content

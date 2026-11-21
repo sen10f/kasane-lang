@@ -430,7 +430,7 @@ fn vm_run_matches_tree_walker_on_programs_from_cli_tests() {
         // 型で決まる揺れ (接尾辞・メソッドの呼び方・欄の順) は診断の fix で直す (段 3)。
         common::one_way_fix(&d);
         // 効果の宣言は本体の効果と完全に一致させる (D5・D13): 固定の見出し (`main_wrap`) などを直す。
-        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025").current_dir(&d).output();
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025,E2055,E2057,E2058,E2059,E2060,E2061,E2062,E2063,E2064,E2065,E2066,E2067,E2068,E2069,E2070,E2071,E2072,E2073").current_dir(&d).output();
         let (r, kind) = compare(&format!("{} #{}", name, i), &["run"], &d, false, 60);
         counts[kind as usize].fetch_add(1, Ordering::SeqCst);
         if kind == Kind::CheckFailed && std::env::var("VM_PARITY_SHOW").is_ok() {

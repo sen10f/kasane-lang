@@ -58,16 +58,14 @@ end csvtool.table.Table.width
 
 fn csvtool.table.name_index(self: &csvtool.table.Table, spec: &str) -> Option<usize> uses [] panics never
     let h = self.header.as_slice()
-    let mut i = 0usize
     let n = h.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match h.get(i) {
             Some(name) => if name.as_str() == spec {
                 return Some(i)
             }
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     None
 end csvtool.table.name_index

@@ -55,14 +55,12 @@ end csvtool.agg.Stats.new
 // 1 つの列を表全体で集計する (欠けているセルは行数に入れない)。
 fn csvtool.agg.column_stats(tbl: &csvtool.table.Table, col: usize) -> Result<csvtool.agg.Stats, csvtool.error.Error> uses [] panics never pub
     let mut st = csvtool.agg.Stats.new()
-    let mut r = 0usize
     let n = tbl.height()
-    while r < n {
+    for r in core.iter.range(0usize, n) {
         match tbl.cell(r, col) {
             Some(text) => st.add(text)
             None => core.mem.drop(0u8)
         }
-        r = r.wrapping_add(1usize)
     }
     Ok(st)
 end csvtool.agg.column_stats
@@ -139,23 +137,20 @@ end csvtool.agg.fmt_scaled
 // キーでグループに分けて、値の列を集計し、キーの順に整列して返す。
 fn csvtool.agg.groupby(tbl: &csvtool.table.Table, key_col: usize, val_col: usize) -> Result<std.vec.Vec<csvtool.agg.Group>, csvtool.error.Error> uses [alloc] panics never pub
     let mut groups = csvtool.agg.groups_new()
-    let mut r = 0usize
     let n = tbl.height()
-    while r < n {
+    for r in core.iter.range(0usize, n) {
         match tbl.cell(r, key_col) {
             Some(k) => {
                 let mut idx = groups.len()
                 let gs = groups.as_slice()
                 let gl = gs.len()
-                let mut gi = 0usize
-                while gi < gl {
+                for gi in core.iter.range(0usize, gl) {
                     match gs.get(gi) {
                         Some(g) => if g.key.as_str() == k {
                             idx = gi
                         }
                         None => core.mem.drop(0u8)
                     }
-                    gi = gi.wrapping_add(1usize)
                 }
                 let v = match tbl.cell(r, val_col) {
                     Some(v) => v
@@ -175,7 +170,6 @@ fn csvtool.agg.groupby(tbl: &csvtool.table.Table, key_col: usize, val_col: usize
             }
             None => core.mem.drop(0u8)
         }
-        r = r.wrapping_add(1usize)
     }
     let mut out = groups
     let s = out.as_mut_slice()

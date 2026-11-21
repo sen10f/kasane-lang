@@ -1,11 +1,9 @@
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let mut x = 1u32
     let mut r = &x
-    let mut i = 0u32
-    while i < 2u32 {
+    for _ in core.iter.range(0u32, 2u32) {
         x = 2u32
         r = &x
-        i = i.wrapping_add(1u32)
     }
     core.mem.drop(*r)
     Ok(())

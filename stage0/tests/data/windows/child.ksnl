@@ -6,10 +6,8 @@ fn h.main() -> Result<(), std.io.Error> uses [env, io.console, process] panics m
     if mode == "args" {
         let mut i = 1usize
         while i < std.env.arg_count() {
-            match std.env.arg(i) {
-                Some(a) => std.io.print_line(a)?
-                None => {
-                }
+            if let Some(a) = std.env.arg(i) {
+                std.io.print_line(a)?
             }
             i = i + 1usize
         }

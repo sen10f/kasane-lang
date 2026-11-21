@@ -104,8 +104,7 @@ end t.special_bits
 
 fn t.sweep32() -> u32 uses [] panics never
     let mut acc = 2_166_136_261u32
-    let mut k = 0u32
-    while k < 3000u32 {
+    for k in core.iter.range(0u32, 3000u32) {
         let x = k.to_f64().nearest_to_f32() * 0.0173f32 - 25.0f32
         let p = (k.to_f64().nearest_to_f32() + 0.5f32) * 0.0911f32
         acc = t.fold32(acc, x.sin().to_bits())
@@ -116,15 +115,13 @@ fn t.sweep32() -> u32 uses [] panics never
         acc = t.fold32(acc, x.atan2(p).to_bits())
         acc = t.fold32(acc, p.atan2(x).to_bits())
         acc = t.fold32(acc, x.powi(7i32).to_bits())
-        k = k.wrapping_add(1u32)
     }
     acc
 end t.sweep32
 
 fn t.sweep64() -> u64 uses [] panics never
     let mut acc = 14_695_981_039_346_656_037u64
-    let mut k = 0u32
-    while k < 4000u32 {
+    for k in core.iter.range(0u32, 4000u32) {
         let x = k.to_f64() * 0.0173 - 34.5
         let p = (k.to_f64() + 0.5) * 0.0911
         acc = t.fold64(acc, x.sin().to_bits())
@@ -136,7 +133,6 @@ fn t.sweep64() -> u64 uses [] panics never
         acc = t.fold64(acc, p.atan2(x).to_bits())
         acc = t.fold64(acc, x.powi(7i32).to_bits())
         acc = t.fold64(acc, p.powi(-3i32).to_bits())
-        k = k.wrapping_add(1u32)
     }
     acc
 end t.sweep64

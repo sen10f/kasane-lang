@@ -1,0 +1,7 @@
+fn t.main() -> () uses [] panics never
+    let o = Some(1u32)
+    let r: Result<u32, u32> = Ok(2u32)
+    core.mem.drop(o is Some(_))
+    core.mem.drop(r is Err(_))
+    core.mem.drop(o)
+end t.main

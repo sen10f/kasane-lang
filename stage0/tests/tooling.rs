@@ -135,7 +135,7 @@ fn scalar_display_and_derived_methods_run_in_both() {
     core.mem.drop(t.display_fmt(&mut f4))
     core.check.eq(core.str.from_utf8(f4.written()), Ok(\"true\"))
     core.check.eq(n != 3i64, true)
-    core.check.eq(n.partial_cmp(&3i64).is_some(), true)
+    core.check.is_true(n.partial_cmp(&3i64) is Some(_))
 end t.main.test_scalar_display
 ";
     let src = format!("{}\n{}", main_wrap("", ""), test);
@@ -176,7 +176,7 @@ test t.main.test_c_str_derived_cmp
     core.check.eq(s.eq(&t), false)
     core.check.eq(s != t, true)
     core.check.eq(s.cmp(&t) == core.cmp.Ordering.Less, true)
-    core.check.eq(s.partial_cmp(&t).is_some(), true)
+    core.check.is_true(s.partial_cmp(&t) is Some(_))
 end t.main.test_c_str_derived_cmp
 
 test t.main.test_d_to_string
@@ -236,7 +236,7 @@ fn derived_cmp_and_iter_count_boundaries_run_native() {
     core.check.eq(sb.cmp(&sa) == core.cmp.Ordering.Greater, true)
     core.check.eq(sa.eq(&sb), false)
     let pa = sa.partial_cmp(&sb)
-    core.check.eq(pa.is_some(), true)
+    core.check.is_true(pa is Some(_))
 end t.main.test_e_option_boundaries
 
 test t.main.test_f_result_boundaries
@@ -290,7 +290,7 @@ test t.main.test_g_str_boundaries
     core.check.eq(e1.eq(&e1), true)
     core.check.eq(e1.eq(&e5), false)
     let p = ab.partial_cmp(&abc)
-    core.check.eq(p.is_some(), true)
+    core.check.is_true(p is Some(_))
     core.check.eq(p.unwrap() == core.cmp.Ordering.Less, true)
 end t.main.test_g_str_boundaries
 
@@ -298,7 +298,7 @@ test t.main.test_h_count_boundaries
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.check.eq(v.iter().count(), 0usize)
     let mut it0 = v.iter()
-    core.check.eq(it0.next().is_none(), true)
+    core.check.is_true(it0.next() is None)
     core.check.eq(it0.count(), 0usize)
     core.mem.drop(v.push(7u32))
     core.mem.drop(v.push(8u32))
@@ -311,7 +311,7 @@ test t.main.test_h_count_boundaries
     core.mem.drop(it2.next())
     core.mem.drop(it2.next())
     core.mem.drop(it2.next())
-    core.check.eq(it2.next().is_none(), true)
+    core.check.is_true(it2.next() is None)
     core.check.eq(it2.count(), 0usize)
 end t.main.test_h_count_boundaries
 "#;
@@ -665,9 +665,9 @@ fn float_specials_and_unsigned_from_str_radix_agree_with_native() {
         "core.check.eq((-2.0f64).sqrt() != (-2.0f64).sqrt(), true)".into(),
         "core.check.eq(t.pinf().sqrt(), t.pinf())".into(),
         "core.check.eq(1.0f64 / (-(0.0f64)).sqrt() < 0.0f64, true)".into(),
-        "core.check.eq(u8.from_str_radix(\"-0\", 10u32) != Ok(0u8), true)".into(),
-        "core.check.eq(u8.from_str_radix(\"+7\", 10u32), Ok(7u8))".into(),
-        "core.check.eq(i8.from_str_radix(\"-0\", 10u32), Ok(0i8))".into(),
+        "core.check.eq(u8.parse(\"-0\") != Ok(0u8), true)".into(),
+        "core.check.eq(u8.parse(\"+7\"), Ok(7u8))".into(),
+        "core.check.eq(i8.parse(\"-0\"), Ok(0i8))".into(),
     ];
     for (i, c) in checks.iter().enumerate() {
         src.push_str(&format!("\ntest t.main.test_{}\n    {}\nend t.main.test_{}\n", i, c, i));
@@ -823,7 +823,7 @@ end t.main.test_f_neg_conv
 
 test t.main.test_g_try_conv
     let big = core.num.u128.MAX
-    core.check.eq(u8.try_from_u128(big).is_err(), true)
+    core.check.is_true(u8.try_from_u128(big) is Err(_))
 end t.main.test_g_try_conv
 "#;
     let t = Tmp::new("clif_i128_scope", src);

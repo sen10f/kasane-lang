@@ -239,7 +239,7 @@ fn t.show(p: &t.P) -> u32 uses [] panics never
             }
         }
         None => {
-            n = n.wrapping_add(0u32)
+            ()
         }
     }
     match p.b {

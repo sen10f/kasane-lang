@@ -233,7 +233,7 @@ fn gen_ksn(ts: &[S], lib: &str) -> String {
                 // コールバックは配列の欄を変えない。
                 let want = lit(kt, 20 + j as i64 + if kp.contains('[') { 0 } else { 1 });
                 if kt.starts_with('f') {
-                    writeln!(o, "    core.check.is_true({}.{} == {})", var, kp, want).unwrap();
+                    writeln!(o, "    core.check.eq({}.{}, {})", var, kp, want).unwrap();
                 } else {
                     writeln!(o, "    core.check.eq({}.{}, {})", var, kp, want).unwrap();
                 }
@@ -245,7 +245,7 @@ fn gen_ksn(ts: &[S], lib: &str) -> String {
             for (j, (kp, _, kt)) in sc.iter().enumerate() {
                 let want = lit(kt, seed + j as i64);
                 if kt.starts_with('f') {
-                    writeln!(o, "    core.check.is_true({}.{} == {})", var, kp, want).unwrap();
+                    writeln!(o, "    core.check.eq({}.{}, {})", var, kp, want).unwrap();
                 } else {
                     writeln!(o, "    core.check.eq({}.{}, {})", var, kp, want).unwrap();
                 }
@@ -265,16 +265,16 @@ fn gen_ksn(ts: &[S], lib: &str) -> String {
         writeln!(k, "    let b = {}", lit20).unwrap();
         k.push_str(&check_fields("b", 20));
         writeln!(k, "    let sb = unsafe \"ffi\" \"sum\" {{\n        t.sum_{l}(b)\n    }}").unwrap();
-        writeln!(k, "    core.check.is_true(sb == {}.0f64)", sum_of(20)).unwrap();
+        writeln!(k, "    core.check.eq(sb, {}.0f64)", sum_of(20)).unwrap();
         writeln!(k, "    let e = unsafe \"ffi\" \"echo\" {{\n        t.echo_{l}(b)\n    }}").unwrap();
         k.push_str(&check_fields("e", 20));
         writeln!(k, "    let c = unsafe \"ffi\" \"callback\" {{\n        t.cb_{l}(t.cbfn_{l}, b)\n    }}").unwrap();
         k.push_str(&check_cb("c"));
         writeln!(k, "    let sp = unsafe \"ffi\" \"spill\" {{\n        t.sp_{l}(1i64, 2i64, 3i64, 4i64, 5i64, b, 6i64, 0.5f64)\n    }}").unwrap();
-        writeln!(k, "    core.check.is_true(sp == {}.5f64)", 21 + sum_of(20)).unwrap();
+        writeln!(k, "    core.check.eq(sp, {}.5f64)", 21 + sum_of(20)).unwrap();
         writeln!(k, "    let z = 1.0f64").unwrap();
         writeln!(k, "    let sp2 = unsafe \"ffi\" \"spill sse\" {{\n        t.sp2_{l}(z, z, z, z, z, z, z, z, b, z)\n    }}").unwrap();
-        writeln!(k, "    core.check.is_true(sp2 == {}.0f64)", 9 + sum_of(20)).unwrap();
+        writeln!(k, "    core.check.eq(sp2, {}.0f64)", 9 + sum_of(20)).unwrap();
         writeln!(k, "    let mut m = b").unwrap();
         writeln!(k, "    let pm = unsafe \"ffi\" \"pointer to a local\" {{\n        core.ptr.from_mut(&mut m)\n    }}").unwrap();
         writeln!(k, "    unsafe \"ffi\" \"by pointer\" {{\n        t.bump_{l}(pm)\n    }}").unwrap();

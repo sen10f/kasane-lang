@@ -107,7 +107,12 @@ fn kir_char_and_bool_methods_are_resolved() {
     let c = 'a'
     let b = true
     let u = c.to_u32()
-    core.mem.drop(b.then_some(1u8))
+    let o = if b {
+        Some(1u8)
+    } else {
+        None
+    }
+    core.mem.drop(o)
     core.mem.drop(c.to_ascii_uppercase())
     u
 end t.chars

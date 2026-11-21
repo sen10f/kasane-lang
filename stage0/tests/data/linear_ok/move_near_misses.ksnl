@@ -22,10 +22,8 @@ fn t.look(s: &t.S) -> u32 uses [] panics never
 end t.look
 
 fn t.loop_copy[T: core.ops.Copy](x: T) -> () uses [] panics never
-    let mut i = 0u32
-    while i < 3u32 {
+    for _ in core.iter.range(0u32, 3u32) {
         core.mem.drop(t.id(x))
-        i = i.wrapping_add(1u32)
     }
 end t.loop_copy
 

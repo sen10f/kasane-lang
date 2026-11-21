@@ -3,7 +3,7 @@ fn t.main() -> () uses [] panics never
         core.iter.map(
             core.iter.range(0u64, 2u64),
             fn(x: u64) -> u64 capture [] {
-                core.panic.todo()
+                core.panic.panic("todo")
                 x
             },
         ),

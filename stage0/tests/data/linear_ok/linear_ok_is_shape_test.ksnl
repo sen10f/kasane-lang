@@ -1,0 +1,27 @@
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.close(r: t.Res) -> u32 uses [] panics never
+    let t.Res { id: id } = r
+    id
+end t.close
+
+fn t.good() -> u32 uses [] panics never
+    let o = Some(t.open(1u32))
+    core.mem.drop(o is None)
+    core.mem.drop(o is Some(_))
+    match o {
+        Some(r) => core.mem.drop(t.close(r))
+        None => core.mem.drop(0u8)
+    }
+    0u32
+end t.good
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main
+
+fn t.open(n: u32) -> t.Res uses [] panics never
+    t.Res { id: n }
+end t.open

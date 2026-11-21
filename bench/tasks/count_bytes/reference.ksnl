@@ -6,13 +6,10 @@ fn bench.count_bytes(text: &str) -> std.collections.HashMap<u8, u32> uses [alloc
         match bytes.get(i) {
             Some(c) => {
                 match m.get(c) {
-                    Some(_cnt) => match m.get_mut(c) {
-                        Some(n) => {
-                            let old: u32 = *n
-                            *n = old.wrapping_add(1u32)
-                            ()
-                        }
-                        None => ()
+                    Some(_cnt) => if let Some(n) = m.get_mut(c) {
+                        let old: u32 = *n
+                        *n = old.wrapping_add(1u32)
+                        ()
                     }
                     None => match m.insert(*c, 1u32) {
                         Ok(_) => ()

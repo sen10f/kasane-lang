@@ -202,7 +202,7 @@ fn t.w_try_in(n: u32) -> Result<u32, u32> uses [] panics never
 end t.w_try_in
 
 fn t.w_val_own(n: u32) -> u32 uses [] panics may
-    let mut v = t.nv()
+    let v = t.nv()
     let r = with mut s = v close core.mem.drop(s) {
         n + 1u32
     }

@@ -102,14 +102,14 @@ fn scr.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
             let gotb = b.remove(&key)
             match scr.model_find(&keys, key) {
                 Some(i) => {
-                    core.check.eq(got.is_some(), true)
-                    core.check.eq(gotb.is_some(), true)
+                    core.check.is_true(got is Some(_))
+                    core.check.is_true(gotb is Some(_))
                     core.mem.drop(keys.remove(i))
                     core.mem.drop(vals.remove(i))
                 }
                 None => {
-                    core.check.eq(got.is_none(), true)
-                    core.check.eq(gotb.is_none(), true)
+                    core.check.is_true(got is None)
+                    core.check.is_true(gotb is None)
                 }
             }
         } else {
@@ -117,8 +117,8 @@ fn scr.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
             let oldb = scr.unwrap_alloc(b.insert(key, value))
             match scr.model_find(&keys, key) {
                 Some(i) => {
-                    core.check.eq(old.is_some(), true)
-                    core.check.eq(oldb.is_some(), true)
+                    core.check.is_true(old is Some(_))
+                    core.check.is_true(oldb is Some(_))
                     match vals.as_mut_slice().get_mut(i) {
                         Some(slot) => {
                             *slot = value
@@ -128,8 +128,8 @@ fn scr.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
                     }
                 }
                 None => {
-                    core.check.eq(old.is_none(), true)
-                    core.check.eq(oldb.is_none(), true)
+                    core.check.is_true(old is None)
+                    core.check.is_true(oldb is None)
                     core.mem.drop(scr.unwrap_alloc(keys.push(key)))
                     core.mem.drop(scr.unwrap_alloc(vals.push(value)))
                 }
@@ -248,7 +248,7 @@ impl Tmp {
         // 書き方は 1 通り (E0020): 標準の本体を写して組み立てた入力は `ksn fmt` の出力にそろえる。
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
         // 効果の宣言は本体の効果と完全に一致させる (D5・D13): 固定の見出し (`main_wrap`) などを直す。
-        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025").current_dir(&d).output();
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025,E2055,E2057,E2058,E2059,E2060,E2061,E2062,E2063,E2064,E2065,E2066,E2067,E2068,E2069,E2070,E2071,E2072,E2073").current_dir(&d).output();
         Tmp(d)
     }
 }

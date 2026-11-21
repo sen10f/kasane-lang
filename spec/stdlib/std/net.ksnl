@@ -39,8 +39,7 @@ fn std.net.resolve(host: &str, port: u16) -> Result<std.vec.Vec<std.string.Strin
     let total = std.net.resolve_raw(host, port, &mut buf)?
     let mut out = std.vec.Vec.new()
     let mut start = 0usize
-    let mut i = 0usize
-    while i < total {
+    for i in core.iter.range(0usize, total) {
         if buf.get(i) == Some(&0u8) {
             let s = std.net.text_range(&buf, start, i)?
             match out.push(s) {
@@ -50,7 +49,6 @@ fn std.net.resolve(host: &str, port: u16) -> Result<std.vec.Vec<std.string.Strin
             }
             start = i.wrapping_add(1usize)
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(out)
 end std.net.resolve

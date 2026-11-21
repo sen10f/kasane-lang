@@ -15,16 +15,14 @@ end bench.main
 
 fn bench.run_fsm(inputs: &[u8]) -> bench.State uses [] panics never pub
     let mut s = bench.State.A
-    let mut i = 0usize
     let n = inputs.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match inputs.get(i) {
             Some(v) => {
                 s = bench.step(s, *v)
             }
             None => break
         }
-        i = i.wrapping_add(1usize)
     }
     s
 end bench.run_fsm

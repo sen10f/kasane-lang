@@ -34,7 +34,7 @@ impl Tmp {
         // 書き方は 1 通り (E0020): 試験の入力は `ksn fmt` の出力にそろえる。
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fmt").current_dir(&d).output();
         // 効果の宣言は本体の効果と完全に一致させる (D5・D13): 固定の見出し (`main_wrap`) などを直す。
-        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025").current_dir(&d).output();
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_ksn")).arg("fix").env("KSN_FIX_ONLY", "E4020,E4025,E2055,E2057,E2058,E2059,E2060,E2061,E2062,E2063,E2064,E2065,E2066,E2067,E2068,E2069,E2070,E2071,E2072,E2073").current_dir(&d).output();
         Tmp(d)
     }
 }
@@ -147,7 +147,7 @@ fn t.case(n: usize, shape: u32) -> Result<(), t.Error> uses [alloc, io.console] 
         a.key.cmp(&b.key)
     })
     w.as_mut_slice().sort()
-    u.as_mut_slice().sort_unstable()
+    u.as_mut_slice().sort()
     let vs = v.as_slice()
     let ws = w.as_slice()
     let us = u.as_slice()
@@ -229,7 +229,7 @@ const VEC: &str = r#"fn t.main() -> Result<(), alloc.alloc.AllocError> uses [all
         b.cmp(a)
     })
     core.check.eq(v.as_slice(), &[8u32, 7u32, 5u32, 4u32, 2u32, 1u32, 1u32])
-    v.as_mut_slice().sort_unstable()
+    v.as_mut_slice().sort()
     core.check.eq(v.as_slice().binary_search(&5u32), Ok(4usize))
     core.check.eq(v.as_slice().binary_search(&3u32), Err(3usize))
     core.check.eq(v.as_slice().binary_search(&0u32), Err(0usize))

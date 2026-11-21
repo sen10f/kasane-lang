@@ -35,7 +35,7 @@ fn run_ok_exits_0_and_prints() {
 
 #[test]
 fn gap_f32_precision() {
-    let b = "    let a = 16777216.0f32\n    let b = a + 1.0f32\n    core.check.is_true(b == a)\n";
+    let b = "    let a = 16777216.0f32\n    let b = a + 1.0f32\n    core.check.eq(b, a)\n";
     let t = Tmp::new("gap_f32", &main_wrap("", b));
     assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
 }
@@ -194,7 +194,7 @@ fn std_net_loopback_round_trip() {
         "        return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 3i32 })",
         "    }",
         "}",
-        "core.check.eq(client.write(b\"ping\").is_ok(), true)",
+        "core.check.is_true(client.write(b\"ping\") is Ok(_))",
         "let mut buf = [0u8; 16]",
         "let n = match server.read(&mut buf) {",
         "    Ok(n) => n",
@@ -202,7 +202,7 @@ fn std_net_loopback_round_trip() {
         "}",
         "core.check.eq(n, 4usize)",
         "core.check.eq(buf.get(0usize), Some(&112u8))",
-        "core.check.eq(server.write(b\"pong!\").is_ok(), true)",
+        "core.check.is_true(server.write(b\"pong!\") is Ok(_))",
         "core.mem.drop(server.close())",
         "let mut buf2 = [0u8; 16]",
         "let m = match client.read(&mut buf2) {",

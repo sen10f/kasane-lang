@@ -112,10 +112,10 @@ fn d11_redundant_logic_is_rewritten() {
 #[test]
 fn d11_option_and_len_checks_are_rewritten() {
     // `None` との比較の正規形は `is_none()` / `is_some()` (借用するので、線形の値でも判定できる)。
-    roundtrip("d11_eq_none", "    let a = Some(1u32)\n    core.mem.drop(a == None)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_none())\n");
-    roundtrip("d11_ne_none", "    let a = Some(1u32)\n    core.mem.drop(a != None)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_some())\n");
-    roundtrip("d11_none_eq", "    let a = Some(1u32)\n    core.mem.drop(None == a)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_none())\n");
-    roundtrip("d11_none_ne", "    let a = Some(1u32)\n    core.mem.drop(None != a)\n", "    let a = Some(1u32)\n    core.mem.drop(a.is_some())\n");
+    roundtrip("d11_eq_none", "    let a = Some(1u32)\n    core.mem.drop(a == None)\n", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
+    roundtrip("d11_ne_none", "    let a = Some(1u32)\n    core.mem.drop(a != None)\n", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
+    roundtrip("d11_none_eq", "    let a = Some(1u32)\n    core.mem.drop(None == a)\n", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
+    roundtrip("d11_none_ne", "    let a = Some(1u32)\n    core.mem.drop(None != a)\n", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
     // `is` の形 (`a is None` / `a is Some(_)`) は従来どおり正規形。
     canonical("d11_is_none_stays", "    let a = Some(1u32)\n    core.mem.drop(a is None)\n");
     canonical("d11_is_some_stays", "    let a = Some(1u32)\n    core.mem.drop(a is Some(_))\n");
@@ -183,11 +183,11 @@ fn d11_else_if_and_single_expression_arms() {
     );
     roundtrip(
         "d15_arm_block",
-        "    let a = Some(1u32)\n    match a {\n        Some(x) => {\n            core.mem.drop(x)\n        }\n        None => {\n            ()\n        }\n    }\n",
-        "    let a = Some(1u32)\n    match a {\n        Some(x) => core.mem.drop(x)\n        None => ()\n    }\n",
+        "    let a: Result<u32, u32> = Ok(1u32)\n    match a {\n        Ok(x) => {\n            core.mem.drop(x)\n        }\n        Err(_) => {\n            ()\n        }\n    }\n",
+        "    let a: Result<u32, u32> = Ok(1u32)\n    match a {\n        Ok(x) => core.mem.drop(x)\n        Err(_) => ()\n    }\n",
     );
     // 腕に複数の文があればブロックのまま。
-    canonical("d15_arm_multi", "    let a = Some(1u32)\n    match a {\n        Some(x) => {\n            core.mem.drop(x)\n            core.mem.drop(1u8)\n        }\n        None => ()\n    }\n");
+    canonical("d15_arm_multi", "    let a: Result<u32, u32> = Ok(1u32)\n    match a {\n        Ok(x) => {\n            core.mem.drop(x)\n            core.mem.drop(1u8)\n        }\n        Err(_) => ()\n    }\n");
 }
 
 #[test]

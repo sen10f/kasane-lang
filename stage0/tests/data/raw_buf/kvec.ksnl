@@ -113,10 +113,8 @@ end t.leak
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let mut v = t.Kvec.new(std.alloc.SYSTEM)
-    let mut i = 0u32
-    while i < 10u32 {
+    for i in core.iter.range(0u32, 10u32) {
         core.check.eq(v.push(i), Ok(()))
-        i = i.wrapping_add(1u32)
     }
     core.check.eq(v.len(), 10usize)
     core.check.eq(v.pop(), Some(9u32))
@@ -132,10 +130,8 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(v.len(), 2usize)
     v.clear()
     core.check.eq(v.is_empty(), true)
-    let mut k = 0u32
-    while k < 2000u32 {
+    for _ in core.iter.range(0u32, 2000u32) {
         t.leak()
-        k = k.wrapping_add(1u32)
     }
     std.io.print_line("ok")?
     Ok(())

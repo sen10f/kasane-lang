@@ -2,10 +2,10 @@ fn t.big_listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] p
     t.ok_unit(std.fs.create_dir("d/big"))
     let mut i = 0usize
     while i < 400usize {
-        let mut name = std.string.String.new()
+        let mut name = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(name.push_str("d/big/file_with_a_longer_name_"))
         core.mem.drop(name.push_i64(t.num(i)))
-        let mut f = t.ok_file(std.fs.create(name.as_str()))
+        let f = t.ok_file(std.fs.create(name.as_str()))
         t.ok_unit(f.close())
         i = i + 1usize
     }
@@ -21,15 +21,11 @@ fn t.big_listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] p
     }
     let mut j = 0usize
     while j < entries.len() {
-        match entries.get(j) {
-            Some(en) => {
-                let mut full = std.string.String.new()
-                core.mem.drop(full.push_str("d/big/"))
-                core.mem.drop(full.push_str(en.name.as_str()))
-                t.ok_unit(std.fs.remove_file(full.as_str()))
-            }
-            None => {
-            }
+        if let Some(en) = entries.get(j) {
+            let mut full = alloc.string.String.new(std.alloc.SYSTEM)
+            core.mem.drop(full.push_str("d/big/"))
+            core.mem.drop(full.push_str(en.name.as_str()))
+            t.ok_unit(std.fs.remove_file(full.as_str()))
         }
         j = j + 1usize
     }
@@ -37,7 +33,7 @@ fn t.big_listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] p
     Ok(())
 end t.big_listing
 
-fn t.byte(v: &std.vec.Vec<u8>, i: usize) -> u8 uses [] panics never
+fn t.byte(v: &alloc.vec.Vec<u8, std.alloc.System>, i: usize) -> u8 uses [] panics never
     match v.as_slice().get(i) {
         Some(b) => *b
         None => 0u8
@@ -52,7 +48,7 @@ fn t.dirs() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics m
     t.ok_unit(std.fs.create_dir_all("d/a/b/c"))
     t.ok_unit(std.fs.create_dir_all("d/a//b/c/"))
     t.flag("deep dir exists", std.fs.exists("d/a/b/c"))
-    let mut f = t.ok_file(std.fs.create("d/plain"))
+    let f = t.ok_file(std.fs.create("d/plain"))
     t.ok_unit(f.close())
     t.fail_unit("create_dir_all through a file", std.fs.create_dir_all("d/plain/sub"))
     t.fail_unit("create_dir_all over a file", std.fs.create_dir_all("d/plain"))
@@ -62,7 +58,7 @@ fn t.dirs() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics m
     Ok(())
 end t.dirs
 
-fn t.drop_res(r: Result<std.vec.Vec<std.fs.DirEntry>, std.io.Error>) -> Result<(), std.io.Error> uses [] panics never
+fn t.drop_res(r: Result<alloc.vec.Vec<std.fs.DirEntry, std.alloc.System>, std.io.Error>) -> Result<(), std.io.Error> uses [] panics never
     match r {
         Ok(v) => {
             core.mem.drop(v)
@@ -74,7 +70,7 @@ end t.drop_res
 
 fn t.fail_unit(label: &str, r: Result<(), std.io.Error>) -> () uses [alloc, io.console] panics never
     match r {
-        Ok(_) => t.show(label, 0i64)
+        Ok(_u) => t.show(label, 0i64)
         Err(e) => t.show_err(label, e)
     }
 end t.fail_unit
@@ -154,9 +150,9 @@ fn t.kind_of(k: std.fs.FileKind) -> i64 uses [] panics never
 end t.kind_of
 
 fn t.listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
-    let mut f = t.ok_file(std.fs.create("d/Zed"))
+    let f = t.ok_file(std.fs.create("d/Zed"))
     t.ok_unit(f.close())
-    let mut g = t.ok_file(std.fs.create("d/abc"))
+    let g = t.ok_file(std.fs.create("d/abc"))
     t.ok_unit(g.close())
     let entries = std.fs.read_dir("d")?
     t.show("entries", t.num(entries.len()))
@@ -180,14 +176,14 @@ end t.main
 fn t.num(n: usize) -> i64 uses [] panics never
     match i64.try_from_usize(n) {
         Ok(v) => v
-        Err(_) => -1i64
+        Err(_e) => -1i64
     }
 end t.num
 
 fn t.num_u64(n: u64) -> i64 uses [] panics never
     match i64.try_from_u64(n) {
         Ok(v) => v
-        Err(_) => -1i64
+        Err(_e) => -1i64
     }
 end t.num_u64
 
@@ -257,16 +253,16 @@ fn t.paths() -> () uses [alloc, io.console] panics never
     }
 end t.paths
 
-fn t.read_all(path: &str) -> Result<std.vec.Vec<u8>, std.io.Error> uses [alloc, io.fs] panics may
+fn t.read_all(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics may
     let mut f = std.fs.open(path)?
-    let mut out = std.vec.Vec.new()
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     core.mem.drop(std.fs.read_to_end(&mut f, &mut out))
     t.ok_unit(f.close())
     Ok(out)
 end t.read_all
 
 fn t.say(label: &str, text: &str) -> () uses [alloc, io.console] panics never
-    let mut s = std.string.String.new()
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))
     core.mem.drop(s.push_str(text))
@@ -274,35 +270,31 @@ fn t.say(label: &str, text: &str) -> () uses [alloc, io.console] panics never
 end t.say
 
 fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics never
-    let mut s = std.string.String.new()
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))
     core.mem.drop(s.push_i64(n))
     core.mem.drop(std.io.print_line(s.as_str()))
 end t.show
 
-fn t.show_entries(label: &str, entries: &std.vec.Vec<std.fs.DirEntry>) -> () uses [alloc, io.console] panics may
+fn t.show_entries(label: &str, entries: &alloc.vec.Vec<std.fs.DirEntry, std.alloc.System>) -> () uses [alloc, io.console] panics may
     let mut i = 0usize
     while i < entries.len() {
-        match entries.get(i) {
-            Some(en) => {
-                let mut s = std.string.String.new()
-                core.mem.drop(s.push_str(label))
-                core.mem.drop(s.push_str(" "))
-                core.mem.drop(s.push_str(en.name.as_str()))
-                core.mem.drop(s.push_str(" kind "))
-                core.mem.drop(s.push_i64(t.kind_of(en.kind)))
-                core.mem.drop(std.io.print_line(s.as_str()))
-            }
-            None => {
-            }
+        if let Some(en) = entries.get(i) {
+            let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+            core.mem.drop(s.push_str(label))
+            core.mem.drop(s.push_str(" "))
+            core.mem.drop(s.push_str(en.name.as_str()))
+            core.mem.drop(s.push_str(" kind "))
+            core.mem.drop(s.push_i64(t.kind_of(en.kind)))
+            core.mem.drop(std.io.print_line(s.as_str()))
         }
         i = i + 1usize
     }
 end t.show_entries
 
 fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panics never
-    let mut s = std.string.String.new()
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": kind "))
     core.mem.drop(s.push_i64(t.kind_num(e.kind)))

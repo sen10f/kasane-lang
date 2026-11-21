@@ -1,0 +1,7 @@
+fn t.a(x: u32, y: u32) -> bool uses [] panics never
+    !(x < y)
+end t.a
+
+fn t.main() -> () uses [] panics never
+    ()
+end t.main

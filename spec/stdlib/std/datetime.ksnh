@@ -290,17 +290,13 @@ end std.datetime.parse_rfc3339
 // 書き出しで 1 桁ずつ書く (`value` は 0 以上、`width` 桁。足りない上位は 0 で埋める)。
 fn std.datetime.push_digits(out: &mut std.string.String, value: i64, width: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let mut p = 1i64
-    let mut k = 1usize
-    while k < width {
+    for _ in core.iter.range(1usize, width) {
         p = p.wrapping_mul(10i64)
-        k = k.wrapping_add(1usize)
     }
-    let mut i = 0usize
-    while i < width {
+    for _ in core.iter.range(0usize, width) {
         let d = std.time.rem_floor(std.time.div_floor(value, p), 10i64)
         out.push_i64(d)?
         p = std.time.div_floor(p, 10i64)
-        i = i.wrapping_add(1usize)
     }
     Ok(())
 end std.datetime.push_digits
@@ -308,8 +304,7 @@ end std.datetime.push_digits
 // `at` から `count` 桁の 10 進数を読む。途中で数字でなければ、その位置の位置付きエラー。
 fn std.datetime.read_fixed(b: &[u8], at: usize, count: usize) -> Result<i64, std.datetime.Error> uses [] panics never
     let mut v = 0i64
-    let mut k = 0usize
-    while k < count {
+    for k in core.iter.range(0usize, count) {
         let pos = at.wrapping_add(k)
         match std.datetime.digit_at(b, pos) {
             Some(d) => {
@@ -322,7 +317,6 @@ fn std.datetime.read_fixed(b: &[u8], at: usize, count: usize) -> Result<i64, std
                 return Err(std.datetime.Error.Unexpected(pos))
             }
         }
-        k = k.wrapping_add(1usize)
     }
     Ok(v)
 end std.datetime.read_fixed

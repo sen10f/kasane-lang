@@ -35,12 +35,10 @@ fn parse.col_of(src: &[u8], pos: usize) -> usize uses [] panics never
         ls = ls.wrapping_sub(1usize)
     }
     let mut col = 1usize
-    let mut i = ls
-    while i < pos {
+    for i in core.iter.range(ls, pos) {
         if parse.lex.at(src, i) & 192u8 != 128u8 {
             col = col.wrapping_add(1usize)
         }
-        i = i.wrapping_add(1usize)
     }
     col
 end parse.col_of

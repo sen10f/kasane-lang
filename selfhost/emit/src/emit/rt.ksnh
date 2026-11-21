@@ -167,8 +167,7 @@ fn emit.rt.write_helper(g: &mut emit.G) -> () uses [alloc] panics may pub
     // 既定は Other (9)。`cur` は今の値の名前 (最初は定数 9、以後は `%k<番号>`)。
     let mut cur = emit.util.new_str()
     emit.util.push_str(&mut cur, "9")
-    let mut k = 0usize
-    while k < 9usize {
+    for k in core.iter.range(0usize, 9usize) {
         let (errno, kind) = emit.rt.errno_row(k)
         emit.util.push_str(&mut g.outs.out, "  %c")
         emit.util.push_num(&mut g.outs.out, k)
@@ -186,7 +185,6 @@ fn emit.rt.write_helper(g: &mut emit.G) -> () uses [alloc] panics may pub
         cur = std.string.String.new()
         emit.util.push_str(&mut cur, "%k")
         emit.util.push_num(&mut cur, k)
-        k = k.wrapping_add(1usize)
     }
     emit.util.push_str(&mut g.outs.out, "  %ez = zext i32 %e to i64\n  %eh = shl i64 %ez, 32\n  %r = or i64 %eh, ")
     emit.util.push_str(&mut g.outs.out, cur.as_str())

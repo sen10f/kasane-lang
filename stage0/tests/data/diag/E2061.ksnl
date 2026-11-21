@@ -1,0 +1,11 @@
+fn t.a() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = alloc.string.String.from_str(std.alloc.SYSTEM, "a")?
+    s.push_display(&"lit")?
+    core.mem.drop(s)
+    Ok(())
+end t.a
+
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    t.a()?
+    Ok(())
+end t.main

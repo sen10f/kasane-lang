@@ -8,11 +8,9 @@ end t.eat
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let mut s = t.S { v: 1u32 }
-    let mut i = 0u8
-    while i < 2u8 {
+    for _ in core.iter.range(0u8, 2u8) {
         core.mem.drop(t.eat(s))
         s = t.S { v: 1u32 }
-        i = i.wrapping_add(1u8)
     }
     core.mem.drop(t.eat(s))
     Ok(())

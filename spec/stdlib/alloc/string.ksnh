@@ -10,8 +10,7 @@ end alloc.string.String.is_empty
 fn alloc.string.String.join[A: alloc.alloc.Allocator](allocator: A, parts: &[&str], separator: &str) -> Result<alloc.string.String<A>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(allocator)
     let n = parts.len()
-    let mut i = 0usize
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         if i > 0usize {
             match out.push_str(separator) {
                 Ok(_done) => {
@@ -19,16 +18,13 @@ fn alloc.string.String.join[A: alloc.alloc.Allocator](allocator: A, parts: &[&st
                 Err(error) => return Err(error)
             }
         }
-        match parts.get(i) {
-            Some(piece) => match out.push_str(*piece) {
+        if let Some(piece) = parts.get(i) {
+            match out.push_str(*piece) {
                 Ok(_done) => {
                 }
                 Err(error) => return Err(error)
             }
-            None => {
-            }
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(out)
 end alloc.string.String.join
@@ -66,13 +62,10 @@ fn alloc.string.String.push[A: alloc.alloc.Allocator](self: &mut alloc.string.St
         lead = 240u32
     }
     let mut shift = 0u32
-    let mut k = 1usize
-    while k < n {
+    for _ in core.iter.range(1usize, n) {
         shift = shift.wrapping_add(6u32)
-        k = k.wrapping_add(1usize)
     }
-    let mut i = 0usize
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         let q = code.wrapping_shr(shift)
         let value = if i == 0usize {
             lead.wrapping_add(q)
@@ -88,7 +81,6 @@ fn alloc.string.String.push[A: alloc.alloc.Allocator](self: &mut alloc.string.St
             Err(_) => return Err(alloc.alloc.AllocError { code: 2u32 })
         }
         shift = shift.wrapping_sub(6u32)
-        i = i.wrapping_add(1usize)
     }
     Ok(())
 end alloc.string.String.push
@@ -225,15 +217,9 @@ fn alloc.string.String.replace[A: alloc.alloc.Allocator](allocator: A, text: &st
             let mut k = 0usize
             while k < m {
                 let mut eq = false
-                match hay.get(i.wrapping_add(k)) {
-                    Some(x) => match pat.get(k) {
-                        Some(y) => {
-                            eq = *x == *y
-                        }
-                        None => {
-                        }
-                    }
-                    None => {
+                if let Some(x) = hay.get(i.wrapping_add(k)) {
+                    if let Some(y) = pat.get(k) {
+                        eq = *x == *y
                     }
                 }
                 if eq {
@@ -245,17 +231,13 @@ fn alloc.string.String.replace[A: alloc.alloc.Allocator](allocator: A, text: &st
             }
         }
         if same {
-            match text.split_at(start) {
-                Some((_before, rest)) => match rest.split_at(i.wrapping_sub(start)) {
-                    Some((piece, _after)) => match out.push_str(piece) {
+            if let Some((_before, rest)) = text.split_at(start) {
+                if let Some((piece, _after)) = rest.split_at(i.wrapping_sub(start)) {
+                    match out.push_str(piece) {
                         Ok(_done) => {
                         }
                         Err(error) => return Err(error)
                     }
-                    None => {
-                    }
-                }
-                None => {
                 }
             }
             match out.push_str(to) {
@@ -269,13 +251,11 @@ fn alloc.string.String.replace[A: alloc.alloc.Allocator](allocator: A, text: &st
             i = i.wrapping_add(1usize)
         }
     }
-    match text.split_at(start) {
-        Some((_before, rest)) => match out.push_str(rest) {
+    if let Some((_before, rest)) = text.split_at(start) {
+        match out.push_str(rest) {
             Ok(_done) => {
             }
             Err(error) => return Err(error)
-        }
-        None => {
         }
     }
     Ok(out)

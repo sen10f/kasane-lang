@@ -176,7 +176,7 @@ fn ui.scroll.chain(dy: f32, inner_off: f32, inner_max: f32, outer_off: f32, oute
         inner = inner_max
     }
     let consumed = inner - inner_off
-    let mut left = dy - consumed
+    let left = dy - consumed
     let mut outer = outer_off + left
     if outer < 0.0f32 {
         outer = 0.0f32

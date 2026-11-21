@@ -3,12 +3,10 @@ fn t.consume(s: alloc.string.String) -> () uses [] panics never
 end t.consume
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let mut s = std.string.String.new()
-    let mut i = 0u8
-    while i < 2u8 {
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    for _ in core.iter.range(0u8, 2u8) {
         core.mem.drop(t.consume(s))
-        s = std.string.String.new()
-        i = i.wrapping_add(1u8)
+        s = alloc.string.String.new(std.alloc.SYSTEM)
     }
     core.mem.drop(t.consume(s))
     Ok(())

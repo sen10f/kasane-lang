@@ -20,8 +20,7 @@ fn core.slice.binary_search[T: core.cmp.Ord](self: &[T], x: &T) -> Result<usize,
 end core.slice.binary_search
 
 fn core.slice.insertion_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](s: &mut [T], f: &F, from: usize, to: usize) -> () uses [E] panics P
-    let mut i = from.wrapping_add(1usize)
-    while i < to {
+    for i in core.iter.range(from.wrapping_add(1usize), to) {
         let mut j = i
         while j > from && core.slice.less_at(&*s, f, j, j.wrapping_sub(1usize)) {
             match s.swap(j, j.wrapping_sub(1usize)) {
@@ -31,7 +30,6 @@ fn core.slice.insertion_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>,
             }
             j = j.wrapping_sub(1usize)
         }
-        i = i.wrapping_add(1usize)
     }
 end core.slice.insertion_by
 
@@ -187,7 +185,7 @@ fn core.slice.symmerge_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, 
                 i = h.wrapping_add(1usize)
             }
         }
-        core.slice.rotate_range(s, i, m, b.wrapping_sub(0usize))
+        core.slice.rotate_range(s, i, m, b)
         return
     }
     let mid = a.wrapping_add(b) / 2usize

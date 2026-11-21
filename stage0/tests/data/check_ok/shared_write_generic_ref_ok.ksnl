@@ -15,7 +15,7 @@ fn t.main() -> () uses [] panics never
     *c.get_mut() = 5u64
     let n = 7u64
     let r = t.id(&n)
-    let m = t.id::<&u64>(&n)
+    let m = t.id(&n)
     core.mem.drop(r)
     core.mem.drop(m)
     core.mem.drop(c)

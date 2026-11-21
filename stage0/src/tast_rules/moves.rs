@@ -742,6 +742,11 @@ impl<'a> W<'a> {
             }
             TKind::Match { scrut, arms } => {
                 let scr = self.scrut_pre(scrut);
+                // `場所 is パターン` (`match 場所 { P => true, _ => false }`、P は何も束縛しない): 形を見るだけで、
+                // 場所を移さず消費もしない (`o is Some(_)` は線形の値を含む `o` にも使える)。
+                if matches!(scr, Scr::Place(..)) && Self::is_shape_test(arms) {
+                    return;
+                }
                 let s0 = self.st.clone();
                 let mut outs = vec![];
                 for (k, a) in arms.iter().enumerate() {
@@ -1285,6 +1290,17 @@ impl<'a> W<'a> {
         }
         self.eval(scrut, Cx::Value);
         Scr::Val(scrut.ty.clone())
+    }
+
+    /// `x is P` の脱糖 (`parser.rs` の `cmp_expr`): 腕が 2 つ、1 つ目の `P` は名前を束縛せず、2 つ目は `_`、本体はどちらもリテラル。
+    fn is_shape_test(arms: &[TArm]) -> bool {
+        fn binds(q: &TPat) -> bool {
+            q.kind == "PBind" || q.children.iter().any(binds)
+        }
+        arms.len() == 2
+            && arms.iter().all(|a| a.guard.is_none() && matches!(a.body.kind, TKind::Lit(_)))
+            && arms[1].pat.kind == "PWild"
+            && !binds(&arms[0].pat)
     }
 
     fn irrefutable(&self, q: &TPat) -> bool {

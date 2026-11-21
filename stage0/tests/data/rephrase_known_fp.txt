@@ -26,6 +26,7 @@ fp fold borrow_scalar_results_ok#0
 fp fold flow_default_ok#2
 fp fold temp_named_and_in_statement#0
 fp fold with_body_ref_let#0
+fp hoist move_near_misses#4
 fp hoist mutref_implicit_reborrow_concrete#3
 fp hoist mutref_implicit_reborrow_concrete#4
 fp hoist mutref_implicit_reborrow_concrete#5
@@ -47,8 +48,10 @@ fp id generic_linear_consumed#3
 fp id generic_linear_consumed#4
 fp id if_let_irrefutable_struct#0
 fp id linear_destructure_by_ref_then_shut#0
+fp id linear_ok_is_shape_test#0
 fp id linear_ok_method_on_bound#0
 fp id linear_ok_pair_fields_consumed#0
+fp id move_near_misses#4
 fp id moved_to_consumer#0
 fp id moved_to_consumer#1
 fp id moved_to_consumer#2
@@ -70,8 +73,9 @@ fp id ok_pair_both_fields#3
 fp id ok_pair_destructured#0
 fp id ok_pair_destructured#1
 fp id ok_pair_match_both#0
-fp id ok_reassign_chain#1
 fp id ok_reassign_chain#2
+fp id ok_reassign_chain#3
+fp id ok_reassign_chain#4
 fp id ok_spawn_move_linear#0
 fp id ok_spawn_move_linear#2
 fp id ok_spawn_move_linear#4
@@ -96,8 +100,14 @@ fp id with_body_ref_let#0
 fp id with_close_ifelse#0
 fp id with_close_match_arms#0
 fp id with_nested_borrow_only#1
+fp iflet2match discard_explicit_ok#0
+fp iflet2match e01_method_chain_borrow_ok#0
+fp iflet2match match_temp_subject_ok#0
+fp iflet2match p26#0
+fp iflet2match ref_destructure_binding_modes#0
 fp match2iflet arm_consumed#0
 fp match2iflet arm_returned#0
 fp match2iflet generic_linear_consumed#0
+fp match2iflet linear_ok_is_shape_test#0
 fp match2iflet linear_ok_method_on_bound#0
 fp match2iflet ok_match_option#0

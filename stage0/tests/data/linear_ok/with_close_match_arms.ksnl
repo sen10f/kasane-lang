@@ -2,10 +2,10 @@ type t.Res linear
     id: u32
 end t.Res
 
-fn t.good(flag: bool) -> u32 uses [] panics never
+fn t.good(flag: Option<u32>) -> u32 uses [] panics never
     with r = t.open(1u32) close match flag {
-        true => t.shut(r)
-        false => t.shut(r)
+        Some(_) => t.shut(r)
+        None => t.shut(r)
     } {
         core.mem.drop(0u8)
     }

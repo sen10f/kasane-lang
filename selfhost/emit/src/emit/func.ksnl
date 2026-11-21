@@ -19,8 +19,7 @@ fn emit.func.assemble(g: &mut emit.G) -> () uses [alloc, io.console, process] pa
     emit.w(g, "go:\n  %depth1 = add i64 %depth, 1\n  store i64 %depth1, ptr @ksn.depth\n")
     emit.w(g, "  br label %b0\n")
     let nb = g.misc.nblk
-    let mut k = 0usize
-    while k < nb {
+    for k in core.iter.range(0usize, nb) {
         if emit.func.reached(g, k) {
             emit.w(g, "b")
             emit.wn(g, k)
@@ -29,7 +28,6 @@ fn emit.func.assemble(g: &mut emit.G) -> () uses [alloc, io.console, process] pa
             let blk = emit.func.block_copy(g, k)
             emit.w(g, blk.as_str())
         }
-        k = k.wrapping_add(1usize)
     }
     emit.w(g, "}\n\n")
     let text = emit.func.copy_str(&g.buf.cur)
@@ -176,10 +174,8 @@ end emit.func.phi_one
 fn emit.func.phis(g: &mut emit.G, k: usize) -> () uses [alloc, io.console, process] panics may pub
     let q0 = *g.lay.bpst.get(k).unwrap_or(&0usize)
     let q1 = *g.lay.bpst.get(k.wrapping_add(1usize)).unwrap_or(&0usize)
-    let mut q = q0
-    while q < q1 {
+    for q in core.iter.range(q0, q1) {
         emit.func.phi_one(g, k, q0, q)
-        q = q.wrapping_add(1usize)
     }
 end emit.func.phis
 
@@ -219,10 +215,8 @@ end emit.func.push_usize
 
 fn emit.func.reach(g: &mut emit.G) -> () uses [alloc] panics may pub
     let nb = g.misc.nblk
-    let mut b = 0usize
-    while b < nb {
+    for _ in core.iter.range(0usize, nb) {
         emit.func.push_bool(&mut g.lay.reach, false)
-        b = b.wrapping_add(1usize)
     }
     emit.func.push_usize(&mut g.flow.stk, 0usize)
     while !g.flow.stk.is_empty() {
@@ -311,13 +305,11 @@ fn emit.func.scan_params(g: &mut emit.G, l: &str) -> () uses [alloc, io.console,
         None => core.panic.panic("internal: block header")
     }
     let np_item_lu = emit.util.piece_count(inner, ", ")
-    let mut kk_item_lu = 0usize
-    while kk_item_lu < np_item_lu {
+    for kk_item_lu in core.iter.range(0usize, np_item_lu) {
         let item = emit.util.piece_at(inner, ", ", kk_item_lu)
         if !item.is_empty() {
             emit.func.push_param(g, item)
         }
-        kk_item_lu = kk_item_lu.wrapping_add(1usize)
     }
 end emit.func.scan_params
 
@@ -337,8 +329,7 @@ fn emit.func.target(tok: &str) -> usize uses [] panics never pub
 end emit.func.target
 
 fn emit.func.write_params(g: &mut emit.G, p0: usize, p1: usize) -> () uses [alloc, io.console, process] panics may pub
-    let mut p = p0
-    while p < p1 {
+    for p in core.iter.range(p0, p1) {
         if p > p0 {
             emit.w(g, ", ")
         }
@@ -346,6 +337,5 @@ fn emit.func.write_params(g: &mut emit.G, p0: usize, p1: usize) -> () uses [allo
         emit.ty.wlty(g, tid)
         emit.w(g, " %arg")
         emit.wn(g, p.wrapping_sub(p0))
-        p = p.wrapping_add(1usize)
     }
 end emit.func.write_params

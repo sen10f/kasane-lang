@@ -173,7 +173,7 @@ fn smoke.main() -> () uses [io.console] panics may
     while i < n_glyphs {
         let idx = usize.from_u64(i)
         let g = unsafe "ptr" "read glyph" {
-            core.ptr.read(core.ptr.add::<smoke.Glyph>(glyphs_p, idx))
+            core.ptr.read(core.ptr.add(glyphs_p, idx))
         }
         let gid = g.glyph_id
         let mut gbuf = [0u8; 65_536]
@@ -250,7 +250,7 @@ fn smoke.main() -> () uses [io.console] panics may
         q.cb = 1.0f32
         q.ca = 1.0f32
         unsafe "ptr" "write quad" {
-            core.ptr.write(core.ptr.add::<smoke.Quad>(quads_p, idx), q)
+            core.ptr.write(core.ptr.add(quads_p, idx), q)
         }
         pen_x = pen_x + g.x_advance
         atlas_x = atlas_x + gw + 2i32
@@ -261,7 +261,7 @@ fn smoke.main() -> () uses [io.console] panics may
     }
     let n_valid = i
     let quads_p_const = unsafe "ptr" "quads const pointer" {
-        core.ptr.as_const::<smoke.Quad>(quads_p)
+        core.ptr.as_const(quads_p)
     }
     unsafe "bindgen" "upload atlas" {
         smoke.raw_ksnui_gpu_atlas_upload(dev, 256i32, 256i32, atlas_p)

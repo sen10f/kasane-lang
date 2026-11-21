@@ -129,7 +129,7 @@ fn todo.router.logout(db: &mut todo.store.Store, token: &str) -> Result<todo.htt
     let body = std.string.String.new()
     let mut response = http.json_response(200u16, body)
     let cookie_text = "session=; Path=/; Max-Age=0"
-    let mut cookie_value = alloc.string.String.from_str(std.alloc.SYSTEM, cookie_text)?
+    let cookie_value = alloc.string.String.from_str(std.alloc.SYSTEM, cookie_text)?
     response.set_cookie = cookie_value
     Ok(response)
 end todo.router.logout

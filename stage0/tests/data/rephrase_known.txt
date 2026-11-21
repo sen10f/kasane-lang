@@ -25,6 +25,7 @@ changed id const_init_explicit_panic#0
 changed id const_init_nested_fn_panic#0
 changed id const_init_step_limit#0
 changed id hunt_a13_assign_through_shared_ref_04#0
+changed iflet2match if_let_linear_no_else#0
 hole block flow_call_same_mut_ref_twice#2
 hole block flow_mem_swap_same_ref_twice#2
 hole block flow_reborrow_mut_arg_user_fn#1
@@ -57,6 +58,5 @@ hole hoist flow_swap_generic_relay#3
 hole hoist flow_swap_option_ref_vars#3
 hole hoist flow_swap_ref_vars#3
 hole iflet2match if_let_linear_else_leak#0
-hole iflet2match if_let_linear_no_else#0
 hole match2iflet exh_match_nested_nonexhaustive#0
 hole match2iflet exh_match_result_option_nonexhaustive#0

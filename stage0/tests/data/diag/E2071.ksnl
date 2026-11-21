@@ -1,0 +1,7 @@
+fn t.a(o: Option<u32>) -> bool uses [] panics never
+    o == Some(3u32)
+end t.a
+
+fn t.main() -> () uses [] panics never
+    ()
+end t.main
