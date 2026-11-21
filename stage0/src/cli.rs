@@ -579,12 +579,12 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         ck.diags
     };
     // 新しい検査 (TAST、tast_check.rs) の差し込み口: 検査器は 1 つ (`KSN_CHECKER=old|new|shadow` は非推奨で無視)。
-    let mut diags = crate::tast_check::select(&prog, &user, diags);
+    let mut diags = crate::tast_check::select(&prog, &user, &crate::project::unsafe_modules(&l.pkg.manifest), diags);
     // 他の診断が無いときだけ、`const` / `static` の初期化式を評価して、評価中の panic を E4024 にする (4.1)。
     let (prog, const_diags) = if diags.is_empty() { eval_const_inits(prog, &user) } else { (prog, vec![]) };
     diags.extend(const_diags);
-    // 隠しの切り替え (試験用): 借用・線形の診断 (E30xx) を外して実行する。検査器の穴を実行時の検査 (解放済みの値の読み) で確かめる。
-    let diags: Vec<_> = if std::env::var_os("KSN_SKIP_BORROW_DIAGS").is_some() {
+    // 隠しの切り替え (試験用。配布の release ビルドでは効かない: debug か feature `test-hooks` のときだけ): 借用・線形の診断 (E30xx) を外して実行する。検査器の穴を実行時の検査 (解放済みの値の読み) で確かめる。
+    let diags: Vec<_> = if cfg!(any(debug_assertions, feature = "test-hooks")) && std::env::var_os("KSN_SKIP_BORROW_DIAGS").is_some() {
         diags.into_iter().filter(|d| !d.code.starts_with("E30")).collect()
     } else {
         diags

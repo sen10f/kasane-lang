@@ -25,6 +25,9 @@ pub fn forbidden(c: char) -> bool {
     if matches!(c, '\n' | ' ' | '\t' | '\r') {
         return false;
     }
+    if blank_filler(c) {
+        return true;
+    }
     matches!(
         get_general_category(c),
         G::Control
@@ -38,6 +41,14 @@ pub fn forbidden(c: char) -> bool {
     )
 }
 
+/// 一般カテゴリは Letter / Mark だが、何も描かない詰め物と異体字選択子 (見た目が同じ別の文字列を作れる)。
+/// 表: ハングルの詰め物 U+115F U+1160 U+3164 U+FFA0、点字の空白 U+2800、結合しない字の結合 U+034F、
+/// クメールの固有母音 U+17B4 U+17B5、モンゴルの異体字選択子 U+180B..U+180D、異体字選択子 U+FE00..U+FE0D と
+/// U+E0100..U+E01EF。絵文字の提示選択子 U+FE0E U+FE0F だけは書いてよい (絵文字の並びに要る)。
+fn blank_filler(c: char) -> bool {
+    matches!(c as u32, 0x115F | 0x1160 | 0x3164 | 0xFFA0 | 0x2800 | 0x034F | 0x17B4 | 0x17B5 | 0x180B..=0x180D | 0xFE00..=0xFE0D | 0xE0100..=0xE01EF)
+}
+
 /// リテラルの中で `\u{..}` で書く文字か (そのまま書けない文字。ただし名前のある 4 つは名前で書く)。
 /// `kasane.toml` / `kasane.lock` の文字列の正規形でも同じ規則を使う (tomlstrict.rs)。
 pub fn needs_u_escape(c: char) -> bool {
@@ -48,6 +59,7 @@ fn what(c: char) -> &'static str {
     match c {
         '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}' | '\u{061c}' => "text-direction control character",
         '\u{feff}' => "BOM / zero width no-break space",
+        _ if blank_filler(c) => "invisible filler or variation selector",
         _ => match get_general_category(c) {
             G::Control => "control character",
             G::Format => "invisible format character",

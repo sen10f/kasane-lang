@@ -1,6 +1,8 @@
 //! インタプリタをネイティブの挙動に合わせる試験 (設計_インタプリタ一致.md)。
 //! 段 1: `core.mem.drop` した所有する値を、借用越しに読んだら panic (終了コード 101) になる。
 //! 検査器の穴 (借用検査は通ってしまう形) は、隠しの `KSN_SKIP_BORROW_DIAGS=1` で E30xx を外して走らせる。
+//! 隠しの切り替えは配布ビルドでは効かない (2026-11-21): `cargo test --release --features test-hooks --test interp_parity` で回す。
+#![cfg(feature = "test-hooks")]
 
 #![allow(dead_code, unused_imports)]
 

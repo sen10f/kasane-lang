@@ -157,3 +157,17 @@ fn get_and_doc_show_forbidden_chars_visibly() {
     let out = text(&o.stdout);
     assert!(!out.contains('\u{202e}'), "{}", out);
 }
+
+#[test]
+fn invisible_fillers_and_variation_selectors_are_rejected_in_literals() {
+    // 見えない詰め物・異体字選択子は文字列・文字に生で書けない (E0004)。絵文字の提示選択子 U+FE0F は書いてよい。
+    for (k, c) in ['\u{115f}', '\u{1160}', '\u{3164}', '\u{ffa0}', '\u{2800}', '\u{34f}', '\u{17b4}', '\u{180b}', '\u{180e}', '\u{fe00}', '\u{e0100}']
+        .iter()
+        .enumerate()
+    {
+        let in_str = prog(&format!("    let s = \"a{}b\"\n", c));
+        assert!(check_codes_of(&format!("lx_fill{}", k), &in_str).contains(&"E0004".to_string()), "string U+{:04X}", *c as u32);
+    }
+    let ok = prog("    let s = \"a\u{2764}\u{fe0f}b\"\n");
+    assert!(!check_codes_of("lx_fill_ok", &ok).contains(&"E0004".to_string()));
+}

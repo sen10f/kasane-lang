@@ -204,6 +204,14 @@ pub(crate) fn find_ptr_ty(v: &V, line: usize) -> Option<usize> {
 }
 
 /// 定義のシグネチャ (引数・戻り値) に生ポインタ型があるか。
+/// 3.5: `[unsafe] modules` の完全一致または接頭辞一致。core / alloc / std は暗黙に許可。
+pub(crate) fn module_allows_unsafe(unsafe_modules: &[String], module: &str) -> bool {
+    let top = module.split('.').next().unwrap_or("");
+    if matches!(top, "core" | "alloc" | "std") {
+        return true;
+    }
+    unsafe_modules.iter().any(|m| module == m || module.starts_with(&format!("{}.", m)))
+}
 pub(crate) fn sig_has_ptr(d: &Def) -> bool {
     d.params.iter().any(|p| find_ptr_ty(&p.1, 0).is_some()) || find_ptr_ty(&d.ret, 0).is_some()
 }
@@ -690,11 +698,7 @@ impl<'a> Checker<'a> {
 
     /// 3.5: `[unsafe] modules` の完全一致または接頭辞一致。core / alloc / std は暗黙に許可。
     fn module_may_use_unsafe(&self, module: &str) -> bool {
-        let top = module.split('.').next().unwrap_or("");
-        if matches!(top, "core" | "alloc" | "std") {
-            return true;
-        }
-        self.unsafe_modules.iter().any(|m| module == m || module.starts_with(&format!("{}.", m)))
+        module_allows_unsafe(&self.unsafe_modules, module)
     }
 
     // ---- 宣言レベルの規則 (3.5 / 5.3 / 8.2)
