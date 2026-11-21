@@ -940,12 +940,37 @@ fn bool_if_line(l: &str) -> Option<String> {
     Some(format!("{}{}", pre, rewritten))
 }
 
-/// 1 行の中の no-op の参照と間接参照の対 (`*&*r` → `*r`、`&*&x` → `&x`)。値の意味は変わらない。
+/// no-op の参照と間接参照の対 (`*&*r` → `*r`、`*&x` → `x`、`&*&x` → `&x`)。
+/// 値の意味は同じだが、`*&` は可変性を変える (`&mut *&x`・`*&x = ..` は拒まれる形なのに `&mut x` へ直すと通ってしまう)。
+/// そこで `*&` は `let 名前 = <全体>` の右辺だけ (値として読む)、`&*&` は `&mut` にならない形 (共有から共有) だけ直す。
 fn noop_refs(l: &str) -> String {
-    let a = Regex::new(r"(^|[\s(,=\[{!:])\*&\*([A-Za-z_])").unwrap();
-    let b = Regex::new(r"(^|[\s(,=\[{!:])&\*&([A-Za-z_])").unwrap();
-    let s = a.replace_all(l, "${1}*${2}").into_owned();
-    b.replace_all(&s, "${1}&${2}").into_owned()
+    let t = l.trim_start();
+    let lead = &l[..l.len() - t.len()];
+    if t.starts_with("let ") {
+        if let Some((head, rhs)) = t.split_once(" = ") {
+            let rhs = rhs.trim_end();
+            let body = if let Some(r) = rhs.strip_prefix("*&*") {
+                if r.chars().all(|c| c.is_alphanumeric() || c == '_') && !r.is_empty() && r != "mut" { Some(format!("*{}", r)) } else { None }
+            } else if let Some(r) = rhs.strip_prefix("*&") {
+                if r.chars().all(|c| c.is_alphanumeric() || c == '_') && !r.is_empty() && r != "mut" && !r.starts_with(|c: char| c.is_ascii_digit()) { Some(r.to_string()) } else { None }
+            } else {
+                None
+            };
+            if let Some(b) = body {
+                return format!("{}{} = {}", lead, head, b);
+            }
+        }
+    }
+    // `&*&x` → `&x` (共有から共有へ。`&mut` の形は変えない)。
+    let b = Regex::new(r"(^|[\s(,=\[{!:])&\*&([A-Za-z_]\w*)").unwrap();
+    b.replace_all(l, |caps: &regex::Captures| {
+        if &caps[2] == "mut" {
+            caps[0].to_string()
+        } else {
+            format!("{}&{}", &caps[1], &caps[2])
+        }
+    })
+    .into_owned()
 }
 
 /// 複数行の形 (字下げ `I` の `if` 行 `i` から):
@@ -1024,6 +1049,7 @@ fn block_forms(lines: &mut Vec<String>, i: usize) -> bool {
 /// 整形の形の規則 (設計_書き方は1通り.md 12 章。意味を変えないと機械で言い切れるものだけ)。
 fn fix_forms(lines: &mut Vec<String>) {
     for l in lines.iter_mut() {
+        *l = static_str_let(l);
         if l.trim_start().starts_with("//") || l.contains('"') || l.contains('\'') {
             continue;
         }
@@ -1031,10 +1057,81 @@ fn fix_forms(lines: &mut Vec<String>) {
             *l = n;
         }
         *l = noop_refs(l);
+        *l = unused_arm_binding(l);
     }
     let mut i = 0;
     while i < lines.len() {
-        block_forms(lines, i);
+        if !block_forms(lines, i) {
+            if !let_tail(lines, i) {
+                empty_else(lines, i);
+            }
+        }
         i += 1;
+    }
+}
+
+/// `} else {` の直後が同じ字下げの `}` (空の else) なら、else を消す。
+fn empty_else(lines: &mut Vec<String>, i: usize) -> bool {
+    if i + 1 < lines.len() && lines[i].trim() == "} else {" && lines[i + 1].trim() == "}" && ind(&lines[i]) == ind(&lines[i + 1]) {
+        lines[i] = format!("{}}}", pad(ind(&lines[i])));
+        lines.remove(i + 1);
+        return true;
+    }
+    false
+}
+
+/// `let x = e` の次の行が同じ字下げの `x` で、その次がブロックの終わり (字下げの浅い行) なら、`e` に直す。
+/// 注釈・`mut`・複数行の `e` は触らない (x の型を変えない・式の途中で切らない)。
+fn let_tail(lines: &mut Vec<String>, i: usize) -> bool {
+    if i + 2 >= lines.len() {
+        return false;
+    }
+    let l = lines[i].clone();
+    let ii = ind(&l);
+    let t = l.trim_start();
+    let Some(rest) = t.strip_prefix("let ") else { return false };
+    let Some((name, expr)) = rest.split_once(" = ") else { return false };
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') || name.starts_with(|c: char| c.is_ascii_digit()) {
+        return false;
+    }
+    if expr.trim_end().ends_with('{') || expr.trim().is_empty() || expr.contains('"') || expr.contains('\'') {
+        return false;
+    }
+    if lines[i + 1].trim_end() != format!("{}{}", pad(ii), name) || lines[i + 1].trim() != name {
+        return false;
+    }
+    if !(ind(&lines[i + 2]) < ii && !lines[i + 2].trim().is_empty()) {
+        return false;
+    }
+    lines[i] = format!("{}{}", pad(ii), expr);
+    lines.remove(i + 1);
+    true
+}
+
+/// 1 行の `_名前 => e` の腕で、パターンの `_名前` が本体にも無い (使わない) ものを `_` にする。
+/// ガード (`if`) のある腕と、文字列を含む行は触らない。`_` だけの名前は変えない。
+fn unused_arm_binding(l: &str) -> String {
+    if l.contains('"') || l.contains('\'') || l.contains(" if ") {
+        return l.to_string();
+    }
+    let Some((pat, body)) = l.split_once(" => ") else { return l.to_string() };
+    let re = Regex::new(r"\b_[A-Za-z0-9_]+\b").unwrap();
+    let mut out = pat.to_string();
+    let names: Vec<String> = re.find_iter(pat).map(|m| m.as_str().to_string()).collect();
+    for n in names {
+        let used = Regex::new(&format!(r"\b{}\b", regex::escape(&n))).unwrap().is_match(body);
+        if !used {
+            out = Regex::new(&format!(r"\b{}\b", regex::escape(&n))).unwrap().replace_all(&out, "_").into_owned();
+        }
+    }
+    format!("{} => {}", out, body)
+}
+
+/// `let 名前: &'static str = "文字列"` の `'static` は、文字列の値の型から同じ意味になる (`&str`)。
+fn static_str_let(l: &str) -> String {
+    let re = Regex::new(r#"^(\s*let \w+: )&'static str = ("[^"\\]*")$"#).unwrap();
+    match re.captures(l) {
+        Some(c) => format!("{}&str = {}", &c[1], &c[2]),
+        None => l.to_string(),
     }
 }

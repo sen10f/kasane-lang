@@ -714,3 +714,60 @@ fn canon_return_else_with_let_is_left_alone() {
     assert!(fixed.contains("} else {"), "{}", fixed);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
 }
+
+#[test]
+fn canon_let_then_tail_use_becomes_the_expression() {
+    let src = format!(
+        "fn t.f(x: u32) -> u32 uses [] panics never\n    let y = x.wrapping_add(1u32)\n    y\nend t.f\n{}",
+        canon_main("t.f(1u32)")
+    );
+    canon_round("canon_let_tail", &src, &["    x.wrapping_add(1u32)\nend t.f"], &["let y"]);
+}
+
+#[test]
+fn canon_empty_else_is_dropped() {
+    let src = format!(
+        "fn t.f(c: bool) -> u32 uses [] panics never\n    if c {{\n        core.mem.drop(1u32)\n    }} else {{\n    }}\n    2u32\nend t.f\n{}",
+        canon_main("t.f(true)")
+    );
+    canon_round("canon_empty_else", &src, &["    }\n    2u32"], &["else"]);
+}
+
+#[test]
+fn canon_unused_match_binding_is_underscore() {
+    let src = format!(
+        "fn t.f(p: (u32, u32)) -> u32 uses [] panics never\n    match p {{\n        (a, _b) => a\n    }}\nend t.f\n{}",
+        canon_main("t.f((1u32, 2u32))")
+    );
+    canon_round("canon_arm_binding", &src, &["        (a, _) => a"], &["_b"]);
+}
+
+#[test]
+fn canon_static_str_let_is_str() {
+    let src = format!(
+        "fn t.f() -> u32 uses [] panics never\n    let s: &'static str = \"hi\"\n    core.mem.drop(s)\n    1u32\nend t.f\n{}",
+        canon_main("t.f()")
+    );
+    canon_round("canon_static_str", &src, &["let s: &str = \"hi\""], &["'static"]);
+}
+
+#[test]
+fn canon_star_amp_of_a_place_is_the_place() {
+    let src = format!(
+        "fn t.f(c: bool) -> u32 uses [] panics never\n    let p = *&c\n    core.mem.drop(p)\n    1u32\nend t.f\n{}",
+        canon_main("t.f(true)")
+    );
+    canon_round("canon_star_amp", &src, &["    let p = c\n"], &["*&"]);
+}
+
+#[test]
+fn canon_mut_through_shared_ref_is_left_alone() {
+    // `*&x` は可変性を変えるので、`&mut *&x` は書き換えない (書き換えると `&mut x` になり、拒まれる形が通ってしまう)。
+    let src = "fn t.bad() -> u32 uses [] panics never\n    let mut x = 1u32\n    let r2 = &mut *&x\n    *r2 = 2u32\n    x\nend t.bad\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.bad())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("canon_mut_shared", src);
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("let r2 = &mut *&x\n"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(1), "通ってはいけない");
+}
