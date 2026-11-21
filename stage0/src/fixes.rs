@@ -616,6 +616,13 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             let b1 = char_idx(text, m.end());
             vec![span(file, h, text, b0, b1, "panics may".to_string())]
         }
+        // `&mut` で使う場所の束縛を `let mut` にする (E3031)。文面から変数名を得て、`let` 宣言を遡る。
+        "E3031" => {
+            let re = Regex::new(r"declare it with `let mut ([A-Za-z_][A-Za-z0-9_]*)`").unwrap();
+            let Some(c) = re.captures(msg) else { return vec![] };
+            let name = &c[1];
+            add_mut_to_let(file, line, name, lines)
+        }
         _ => vec![],
     }
 }
