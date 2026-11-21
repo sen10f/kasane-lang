@@ -3076,7 +3076,6 @@ impl<'a> TypeCk<'a> {
                 self.unify_fn_bound(d, k, &pname, &cl, &mut map, line, &mut cap_bad);
             }
         }
-        self.check_bounds(d, &map, line, false);
         let r = self.inst(&Self::inst_regions(call_id, &sig_ret), &mut map);
         self.note_type_args(call_id, d, &map);
         self.box_hooks(d, &map, line);
@@ -3818,54 +3817,6 @@ impl<'a> TypeCk<'a> {
         }
     }
 
-    /// 型パラメータの境界 (`T: core.cmp.Ord` など) を、解決された型が満たすか。
-    fn check_bounds(&mut self, d: &Def, map: &HashMap<String, Ty>, line: usize, direct_only_skip: bool) {
-        let _ = direct_only_skip;
-        for g in &d.generics {
-            if g.0 != "type" || items(&g.2).is_empty() {
-                continue;
-            }
-            let Some(t) = map.get(&g.1) else { continue };
-            let t = self.deep(t);
-            let t = t.strip();
-            for b in items(&g.2) {
-                let V::L(bx) = b else { continue };
-                let tr = st(&bx[0]);
-                if tr == "core.marker.Send" || tr == "core.marker.Sync" || tr.starts_with("core.ops.Fn") {
-                    continue;
-                }
-                let known = self.p.types.get(&tr).map_or(false, |&i| self.p.defs[i].kw == "trait")
-                    || crate::check::DERIVE_TRAITS.iter().any(|(_, v)| *v == tr);
-                if !known {
-                    continue;
-                }
-                if let Some(leaf) = self.unsatisfied(t, &tr) {
-                    let mut msg = format!("the trait bound `{}: {}` of {} is not satisfied by {}", g.1, tr, d.name, t.show());
-                    if let Ty::Param(pn) = &leaf {
-                        let short = tr.rsplit('.').next().unwrap_or(&tr);
-                        msg.push_str(&format!(
-                            ": `{}` has no bound `{}` in {}; add `{}: {}` to the type parameters of the caller",
-                            pn,
-                            short,
-                            self.def().name,
-                            pn,
-                            tr
-                        ));
-                    } else if leaf != *t {
-                        let short = tr.rsplit('.').next().unwrap_or(&tr);
-                        msg.push_str(&format!(
-                            ": `{}` is not `{}` (the type arguments of a derived impl must satisfy it too); add `derive [{}]` to `{}`",
-                            leaf.show(),
-                            short,
-                            short,
-                            leaf.show()
-                        ));
-                    }
-                    self.diag("E2030", msg, line);
-                }
-            }
-        }
-    }
 
     /// `alloc.boxed.Box.into_dyn` (変換先と `T: Tr` は関数の推論が終わってから検査する) と、
     /// `dyn` の `into_inner` (E2046) の印を付ける (5.1)。
@@ -4124,7 +4075,6 @@ impl<'a> TypeCk<'a> {
                     // 途中の式文のブロック・`unsafe`・`with` の値は捨てる (4.6, E2042)。
                     // 途中の式文はすべて対象 (呼び出し・メソッド・`if`/`else`・`match` を含む)。`If` の else 無しは下の `If` 側で報告済み。
                     if i + 1 < stmts.len() && nname(s) == "ExprStmt" && !(nname(&nf(s)[0]) == "If" && is_nil(&nf(&nf(s)[0])[2])) {
-                        self.discard_value(&t, nline(s), "this statement");
                     }
                     if i + 1 == stmts.len() && nname(s) == "ExprStmt" {
                         last = t;
@@ -4535,9 +4485,8 @@ impl<'a> TypeCk<'a> {
                 self.bind_pat_from(&f[0], &elem, src, nline(e));
                 self.note_pat_binds(&f[0], nline(e));
                 self.loop_breaks.push(false);
-                let t = self.infer(&f[2]);
+                self.infer(&f[2]);
                 self.loop_breaks.pop();
-                self.loop_body_discard(&f[2], &t);
                 self.scopes.pop();
                 Ty::Unit
             }
@@ -4675,15 +4624,13 @@ impl<'a> TypeCk<'a> {
             "While" => {
                 self.check_cond(&f[0], "`while`", nline(e));
                 self.loop_breaks.push(false);
-                let t = self.infer(&f[1]);
+                self.infer(&f[1]);
                 self.loop_breaks.pop();
-                self.loop_body_discard(&f[1], &t);
                 Ty::Unit
             }
             "Loop" => {
                 self.loop_breaks.push(false);
-                let t = self.infer(&f[0]);
-                self.loop_body_discard(&f[0], &t);
+                self.infer(&f[0]);
                 // `break` のない `loop` は戻らない。
                 if self.loop_breaks.pop() == Some(true) { Ty::Unit } else { Ty::Never }
             }
@@ -4744,27 +4691,7 @@ impl<'a> TypeCk<'a> {
         }
     }
 
-    /// 4.6: 値を捨てる位置 (途中の式文) の型が `()` / `!` 以外ならE2042。`what` は診断に出す捨て場所の説明。
-    fn discard_value(&mut self, t: &Ty, line: usize, what: &str) {
-        if *t != Ty::Never && self.unify2(&Ty::Unit, t).is_err() {
-            let got = self.deep(t).show();
-            self.diag("E2042", format!("a value other than () is discarded at {}: its type is {}; use `core.mem.drop(x)` or make it `()`", what, got), line);
-        }
-    }
 
-    /// 4.6: `while` / `loop` / `for` の本体の末尾の値は捨てる。本体の末尾が `()` / `!` 以外なら E2042。
-    /// `break` は値を取らない (パーサは `break` の値を受けない) ので、`loop` の型は `()` か `!` のまま。
-    fn loop_body_discard(&mut self, body: &V, t: &Ty) {
-        if nname(body) != "Block" {
-            return;
-        }
-        let stmts = items(&nf(body)[0]);
-        let Some(last) = stmts.last() else { return };
-        if nname(last) != "ExprStmt" {
-            return;
-        }
-        self.discard_value(t, nline(last), "the end of this loop body");
-    }
 
     fn stmt(&mut self, s: &V) -> Ty {
         let f = nf(s);
@@ -5774,7 +5701,6 @@ impl<'a> TypeCk<'a> {
             let Some(cl) = closures.get(k).cloned() else { continue };
             self.unify_fn_bound(d, *k, name, &cl, &mut map, line, &mut cap_bad);
         }
-        self.check_bounds(d, &map, line, true);
         // 決まらなかった型パラメータは escape する (分からない型と同じ扱い)。ただし数値リテラル由来の
         // 型変数 (kind != 0) は escape しない。`t.id(5)` の `5` は、後から決まればそれに従い、最後まで
         // 決まらなければ finish_literals が E2027 にする。
