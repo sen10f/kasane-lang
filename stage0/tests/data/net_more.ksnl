@@ -100,7 +100,7 @@ end t.resolving
 fn t.serve(listener: std.net.TcpListener) -> () uses [alloc, io.console, io.net] panics never
     let port = match listener.local_port() {
         Ok(p) => p
-        Err(_) => 0u16
+        Err(_e) => 0u16
     }
     let addr = t.addr(port)
     match std.net.connect(addr.as_str()) {
@@ -243,11 +243,11 @@ end t.udp
 fn t.udp_pair(a: std.net.UdpSocket, b: std.net.UdpSocket) -> () uses [alloc, io.console, io.net] panics never
     let pa = match a.local_port() {
         Ok(p) => p
-        Err(_) => 0u16
+        Err(_e) => 0u16
     }
     let pb = match b.local_port() {
         Ok(p) => p
-        Err(_) => 0u16
+        Err(_e) => 0u16
     }
     let addr_a = t.addr(pa)
     let addr_b = t.addr(pb)

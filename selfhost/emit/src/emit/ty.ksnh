@@ -162,7 +162,7 @@ fn emit.ty.push(g: &mut emit.G, kind: u32, bits: u32, signed: bool, mutbl: bool,
     let at = g.tab.tys.len()
     let t = emit.ty.Ty { kind: kind, bits: bits, signed: signed, mutbl: mutbl, a: a, b: b }
     match g.tab.tys.push(t) {
-        Ok(_) => core.mem.drop(0u8)
+        Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
     at

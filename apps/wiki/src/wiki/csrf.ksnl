@@ -55,7 +55,7 @@ fn wiki.csrf.verify_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.all
         match tokens.as_slice().get(i) {
             Some(s) => if s.as_str() == token {
                 match tokens.remove(i) {
-                    Some(_) => return true
+                    Some(_v) => return true
                     None => core.mem.drop(0u8)
                 }
             }

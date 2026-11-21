@@ -78,7 +78,7 @@ fn emit.edge(g: &mut emit.G, to: usize, j: usize, v: usize) -> () uses [alloc] p
     let nm = g.misc.curnum
     let e = emit.Edge { to: to, fromblk: fb, num: nm, j: j, v: v }
     match g.flow.edges.push(e) {
-        Ok(_) => core.mem.drop(0u8)
+        Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.edge
@@ -165,7 +165,7 @@ fn emit.main() -> () uses [alloc, env, io.console, io.fs, process] panics may pu
     let mut g = emit.new_g()
     emit.module(&mut g, text, entry)
     match std.io.print_line(g.outs.out.as_str()) {
-        Ok(_) => core.mem.drop(0u8)
+        Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("cannot write the output")
     }
 end emit.main
@@ -295,7 +295,7 @@ end emit.tmp
 
 fn emit.w(g: &mut emit.G, s: &str) -> () uses [alloc] panics may pub
     match g.buf.cur.push_str(s) {
-        Ok(_) => core.mem.drop(0u8)
+        Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.w

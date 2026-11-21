@@ -54,6 +54,6 @@ end todo.error.not_authenticated
 fn todo.error.push_failed(value: alloc.string.PushBytesError) -> todo.error.Error uses [] panics never pub
     match value {
         string.PushBytesError.Alloc(a) => todo.error.Error.Alloc(a)
-        string.PushBytesError.InvalidUtf8(_) => todo.error.Error.BadRequest
+        string.PushBytesError.InvalidUtf8(_u) => todo.error.Error.BadRequest
     }
 end todo.error.push_failed

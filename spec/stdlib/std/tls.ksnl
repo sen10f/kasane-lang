@@ -143,7 +143,7 @@ fn std.tls.TlsStream.read(self: &mut std.tls.TlsStream, buffer: &mut [u8]) -> Re
     if got > 0i32 {
         return match usize.try_from_i32(got) {
             Ok(n) => Ok(n)
-            Err(_) => Err(std.tls.io_failure(0i32))
+            Err(_e) => Err(std.tls.io_failure(0i32))
         }
     }
     let code = std.tls.failure_code(self.ssl, got)
@@ -159,7 +159,7 @@ fn std.tls.TlsStream.write(self: &mut std.tls.TlsStream, buffer: &[u8]) -> Resul
     if put > 0i32 {
         return match usize.try_from_i32(put) {
             Ok(n) => Ok(n)
-            Err(_) => Err(std.tls.io_failure(0i32))
+            Err(_e) => Err(std.tls.io_failure(0i32))
         }
     }
     Err(std.tls.io_failure(std.tls.failure_code(self.ssl, put)))
@@ -207,7 +207,7 @@ fn std.tls.chunk_len(n: usize) -> i32 uses [] panics never
     }
     match i32.try_from_usize(n) {
         Ok(v) => v
-        Err(_) => 16_384i32
+        Err(_e) => 16_384i32
     }
 end std.tls.chunk_len
 

@@ -5,7 +5,7 @@ end t.Pair
 
 fn t.Pair.snd_as_fst['a, 'b](self: &t.Pair<'a, 'b>, _y: &t.Pair<'a, 'b>) -> &'a u32 uses [] panics never
     match *self {
-        t.Pair { fst: _, snd: s } => s
+        t.Pair { fst: _f, snd: s } => s
     }
 end t.Pair.snd_as_fst
 

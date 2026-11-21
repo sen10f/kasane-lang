@@ -169,7 +169,7 @@ fn http.main() -> Result<(), http.Error> uses [alloc, io.console, io.net] panics
     line.push_str("200 OK, body bytes: ")?
     http.append_decimal(&mut line, length)?
     match std.io.print_line(line.as_str()) {
-        Ok(_) => Ok(())
+        Ok(_u) => Ok(())
         Err(e) => Err(http.Error.Io(e))
     }
 end http.main

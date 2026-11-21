@@ -13,7 +13,7 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console, thread] panics never
     }
     match std.io.print_line(msg) {
         Ok(_) => ()
-        Err(_) => ()
+        Err(_e) => ()
     }
     Ok(())
 end t.main

@@ -115,7 +115,7 @@ fn emit.func.flush_block(g: &mut emit.G) -> () uses [alloc] panics may pub
     let done = emit.func.copy_str(&g.buf.cur)
     g.buf.cur = alloc.string.String.new(std.alloc.SYSTEM)
     match g.flow.blocks.push(done) {
-        Ok(_) => core.mem.drop(0u8)
+        Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.func.flush_block
@@ -185,7 +185,7 @@ end emit.func.phis
 
 fn emit.func.push_bool(v: &mut alloc.vec.Vec<bool, std.alloc.System>, x: bool) -> () uses [alloc] panics may pub
     match v.push(x) {
-        Ok(_) => core.mem.drop(0u8)
+        Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.func.push_bool
@@ -212,7 +212,7 @@ end emit.func.push_succs
 
 fn emit.func.push_usize(v: &mut alloc.vec.Vec<usize, std.alloc.System>, x: usize) -> () uses [alloc] panics may pub
     match v.push(x) {
-        Ok(_) => core.mem.drop(0u8)
+        Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
     }
 end emit.func.push_usize

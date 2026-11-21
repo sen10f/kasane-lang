@@ -10,7 +10,7 @@ fn t.bump(state_tx: std.sync.Sender<u64>, state_rx: std.sync.Receiver<u64>, roun
     while i < rounds {
         core.mem.drop(match state_rx.recv() {
             Ok(n) => match state_tx.send(n + 1u64) {
-                Ok(_) => 0u32
+                Ok(_u) => 0u32
                 Err(_e) => core.panic.panic("send failed")
             }
             Err(_e) => core.panic.panic("state lost")
@@ -36,8 +36,8 @@ fn t.drain(first: std.sync.Receiver<std.net.TcpStream>) -> u32 uses [io.net, thr
             Ok(stream) => {
                 sum = sum.wrapping_add(t.handle(stream))
             }
-            Err(_) => match rx.close() {
-                Ok(_) => break
+            Err(_e) => match rx.close() {
+                Ok(_u) => break
                 Err(back) => {
                     rx = back
                 }
@@ -52,7 +52,7 @@ fn t.handle(stream: std.net.TcpStream) -> u32 uses [io.net] panics never
     let mut one = [0u8; 4]
     let got = match s.read(&mut one) {
         Ok(n) => n
-        Err(_) => 0usize
+        Err(_e) => 0usize
     }
     core.mem.drop(s.close())
     if got > 0usize {
@@ -68,7 +68,7 @@ end t.main
 
 fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
     match r {
-        Ok(_) => {
+        Ok(_u) => {
         }
         Err(_e) => core.panic.panic("unexpected I/O error")
     }
@@ -140,7 +140,7 @@ fn t.session(listener: &std.net.TcpListener) -> Result<(), std.io.Error> uses [a
         core.mem.drop(t.client(addr.as_str()).close())
         core.mem.drop(match listener.accept() {
             Ok(s) => match tx.send(s) {
-                Ok(_) => 0u32
+                Ok(_u) => 0u32
                 Err(back) => t.handle(back.value)
             }
             Err(_e) => core.panic.panic("accept failed")
@@ -155,7 +155,7 @@ fn t.session(listener: &std.net.TcpListener) -> Result<(), std.io.Error> uses [a
     core.mem.drop(t.client(addr.as_str()).close())
     core.mem.drop(match listener.accept() {
         Ok(s) => match left_tx.send(s) {
-            Ok(_) => 0u32
+            Ok(_u) => 0u32
             Err(back) => t.handle(back.value)
         }
         Err(_e) => core.panic.panic("accept failed")
@@ -189,7 +189,7 @@ fn t.session(listener: &std.net.TcpListener) -> Result<(), std.io.Error> uses [a
         Err(_e) => core.panic.panic("spawn failed")
     }
     core.mem.drop(match state_tx.send(0u64) {
-        Ok(_) => 0u32
+        Ok(_u) => 0u32
         Err(_e) => core.panic.panic("send failed")
     })
     ha.join()

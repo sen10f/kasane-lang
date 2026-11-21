@@ -18,7 +18,7 @@ end ksnc.Failure
 fn ksnc.main() -> Result<(), ksnc.Failure> uses [alloc, env, io.console, io.fs, process] panics may
     // ksn が KSN_CLANG として呼んだときは clang の段になる (KSNC_SHIM は ksnc が ksn を起動するときだけ付ける)。
     match std.env.var("KSNC_SHIM") {
-        Some(_) => return ksnc.clang.shim()
+        Some(_s) => return ksnc.clang.shim()
         None => core.mem.drop(0u8)
     }
     let n = std.env.arg_count()

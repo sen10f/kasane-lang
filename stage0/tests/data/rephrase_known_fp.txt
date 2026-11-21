@@ -77,7 +77,7 @@ fp id ok_spawn_move_linear#2
 fp id ok_spawn_move_linear#4
 fp id ok_spawn_move_linear#5
 fp id ok_try_after_consume#1
-fp id param_borrowed#2
+fp id param_borrowed#3
 fp id param_destructured#0
 fp id param_passed_to_fn#0
 fp id param_passed_to_fn#1
@@ -86,6 +86,7 @@ fp id param_returned#1
 fp id param_returned#2
 fp id pattern_all_fields#0
 fp id pattern_all_fields#1
+fp id return_arg_borrow_ok2#1
 fp id temp_linear_consumed#0
 fp id temp_linear_consumed#3
 fp id temp_method_by_value#0

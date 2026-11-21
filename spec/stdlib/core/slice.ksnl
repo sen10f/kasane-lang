@@ -25,9 +25,9 @@ fn core.slice.insertion_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>,
         let mut j = i
         while j > from && core.slice.less_at(&*s, f, j, j.wrapping_sub(1usize)) {
             match s.swap(j, j.wrapping_sub(1usize)) {
-                Ok(_) => {
+                Ok(_done) => {
                 }
-                Err(_) => return
+                Err(_error) => return
             }
             j = j.wrapping_sub(1usize)
         }
@@ -67,9 +67,9 @@ fn core.slice.reverse_range[T](s: &mut [T], from: usize, to: usize) -> () uses [
     while i < j {
         j = j.wrapping_sub(1usize)
         match s.swap(i, j) {
-            Ok(_) => {
+            Ok(_done) => {
             }
-            Err(_) => return
+            Err(_error) => return
         }
         i = i.wrapping_add(1usize)
     }
@@ -94,9 +94,9 @@ fn core.slice.sift_down_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>,
         }
         if core.slice.less_at(&*s, f, root, child) {
             match s.swap(root, child) {
-                Ok(_) => {
+                Ok(_done) => {
                 }
-                Err(_) => return
+                Err(_error) => return
             }
             root = child
         } else {
@@ -150,9 +150,9 @@ fn core.slice.sort_unstable_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E,
     while stop > 1usize {
         stop = stop.wrapping_sub(1usize)
         match self.swap(0usize, stop) {
-            Ok(_) => {
+            Ok(_done) => {
             }
-            Err(_) => return
+            Err(_error) => return
         }
         core.slice.sift_down_by(self, &compare, 0usize, stop)
     }

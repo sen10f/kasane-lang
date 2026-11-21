@@ -5,7 +5,7 @@ end t.Wrap
 fn t.bad(flag: Option<u32>) -> usize uses [] panics never
     let v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match flag {
-        Some(_) => core.mem.drop(t.Wrap { v: v })
+        Some(_n) => core.mem.drop(t.Wrap { v: v })
         None => {
         }
     }

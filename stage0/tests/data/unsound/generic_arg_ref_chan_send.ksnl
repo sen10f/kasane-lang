@@ -4,14 +4,14 @@ fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, thread] panics ne
     let s = alloc.string.String.new(std.alloc.SYSTEM)
     let mut got = alloc.string.String.new(std.alloc.SYSTEM)
     match tx.send(&s) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
     match rx.recv() {
         Ok(g) => {
             got = g
         }
-        Err(_) => ()
+        Err(_e) => ()
     }
     core.mem.drop(tx)
     core.mem.drop(rx)

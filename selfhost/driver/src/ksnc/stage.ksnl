@@ -18,19 +18,19 @@ fn ksnc.stage.build(stages: &str, ksn: &str, root: &str, dir: &str, release: boo
     }
     std.io.print_line("== rust (ksn build)")?
     let rust_ok = match ksnc.front.check(dir, std_dir) {
-        Ok(_) => match ksnc.build.check(ksn, dir) {
-            Ok(_) => true
-            Err(_) => false
+        Ok(_u) => match ksnc.build.check(ksn, dir) {
+            Ok(_v) => true
+            Err(_e) => false
         }
-        Err(_) => false
+        Err(_e) => false
     }
     if rust_ok {
         ksnc.build.make(ksn, root, dir, release, target)?
     }
     std.io.print_line("== kasane (ksnc build --stages=kasane)")?
     let kasane_ok = match ksnc.kbuild.make(dir, root, std_dir, release, target) {
-        Ok(_) => true
-        Err(_) => false
+        Ok(_u) => true
+        Err(_e) => false
     }
     if !rust_ok || !kasane_ok {
         return Err(ksnc.Failure.Tool)
@@ -108,7 +108,7 @@ end ksnc.stage.fmt
 fn ksnc.stage.num(n: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     match s.push_u64(u64.from_usize(n)) {
-        Ok(_) => core.mem.drop(0u8)
+        Ok(_u) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("ksnc: out of memory")
     }
     s

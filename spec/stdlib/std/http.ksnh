@@ -274,7 +274,7 @@ end std.http.is_method
 fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, std.http.Error> uses [alloc] panics never
     let text = match core.str.from_utf8(head) {
         Ok(t) => t
-        Err(_) => return Err(std.http.Error.BadRequest)
+        Err(_e) => return Err(std.http.Error.BadRequest)
     }
     let (line, rest) = match text.split_once("\r\n") {
         Some(pair) => pair
@@ -356,7 +356,7 @@ fn std.http.parse_length(value: &str, max_body: usize) -> Result<usize, std.http
             }
             Ok(n)
         }
-        Err(_) => Err(std.http.Error.BodyTooLarge)
+        Err(_e) => Err(std.http.Error.BodyTooLarge)
     }
 end std.http.parse_length
 

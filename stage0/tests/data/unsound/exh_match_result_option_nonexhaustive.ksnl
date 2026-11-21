@@ -5,7 +5,7 @@ end t.E
 fn t.f(r: Result<Option<u32>, t.E>) -> u32 uses [] panics never
     match r {
         Ok(Some(n)) => n
-        Err(_) => 0u32
+        Err(_e) => 0u32
     }
 end t.f
 

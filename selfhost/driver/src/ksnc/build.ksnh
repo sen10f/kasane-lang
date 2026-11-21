@@ -73,7 +73,7 @@ fn ksnc.build.make(ksn: &str, root: &str, dir: &str, release: bool, target: &str
     ksnc.tool.expect_ok("ksnc: ksn build が失敗した\n", st.code, &out, &err)?
     let text = match core.str.from_utf8(out.as_slice()) {
         Ok(s) => s
-        Err(_) => return Err(ksnc.Failure.Tool)
+        Err(_e) => return Err(ksnc.Failure.Tool)
     }
     std.io.print_line(text)?
     Ok(())

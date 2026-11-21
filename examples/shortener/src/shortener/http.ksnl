@@ -126,7 +126,7 @@ fn shortener.http.parse_content_length(head: &str) -> Result<usize, shortener.er
     }
     let n = match usize.parse(value) {
         Ok(n) => n
-        Err(_) => return Err(error.Error.BadRequest)
+        Err(_e) => return Err(error.Error.BadRequest)
     }
     if n > shortener.http.MAX_BODY {
         return Err(error.Error.TooLarge)
@@ -190,7 +190,7 @@ fn shortener.http.parse_reply(raw: &[u8]) -> Result<shortener.http.Reply, shorte
     }
     let status = match u16.parse(code_text) {
         Ok(n) => n
-        Err(_) => return Err(error.Error.BadRequest)
+        Err(_e) => return Err(error.Error.BadRequest)
     }
     if shortener.http.parse_content_length(headers)? != body_bytes.len() {
         return Err(error.Error.BadRequest)
@@ -248,7 +248,7 @@ end shortener.http.test_head
 
 fn shortener.http.test_head_err(text: &str) -> Result<(), shortener.error.Error> uses [alloc] panics never
     match shortener.http.test_head(text) {
-        Ok(_) => Ok(())
+        Ok(_h) => Ok(())
         Err(e) => Err(e)
     }
 end shortener.http.test_head_err

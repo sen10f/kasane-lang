@@ -123,7 +123,7 @@ end t.churn
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     match t.run() {
-        Ok(_) => core.check.is_true(true)
+        Ok(_u) => core.check.is_true(true)
         Err(_e) => core.panic.panic("out of memory")
     }
     Ok(())

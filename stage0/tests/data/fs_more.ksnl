@@ -74,7 +74,7 @@ end t.drop_res
 
 fn t.fail_unit(label: &str, r: Result<(), std.io.Error>) -> () uses [alloc, io.console] panics never
     match r {
-        Ok(_) => t.show(label, 0i64)
+        Ok(_u) => t.show(label, 0i64)
         Err(e) => t.show_err(label, e)
     }
 end t.fail_unit
@@ -180,14 +180,14 @@ end t.main
 fn t.num(n: usize) -> i64 uses [] panics never
     match i64.try_from_usize(n) {
         Ok(v) => v
-        Err(_) => -1i64
+        Err(_e) => -1i64
     }
 end t.num
 
 fn t.num_u64(n: u64) -> i64 uses [] panics never
     match i64.try_from_u64(n) {
         Ok(v) => v
-        Err(_) => -1i64
+        Err(_e) => -1i64
     }
 end t.num_u64
 
@@ -207,7 +207,7 @@ end t.ok_size
 
 fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
     match r {
-        Ok(_) => {
+        Ok(_u) => {
         }
         Err(_e) => core.panic.panic("unexpected I/O error")
     }

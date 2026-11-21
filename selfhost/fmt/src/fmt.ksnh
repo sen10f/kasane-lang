@@ -620,7 +620,7 @@ fn fmt.mechanical(src: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.all
         let buf_slice = buf.as_slice()
         let buf_str = match core.str.from_utf8(buf_slice) {
             Ok(t) => t
-            Err(_) => {
+            Err(_e) => {
                 let err = std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 }
                 return Err(fmt.Failure.Io(err))
             }
@@ -714,7 +714,7 @@ fn fmt.name_of(kw: &str, l: &str) -> Result<alloc.string.String<std.alloc.System
     let name_slice = name_buf.as_slice()
     let name_str = match core.str.from_utf8(name_slice) {
         Ok(t) => t
-        Err(_) => {
+        Err(_e) => {
             let err = std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 }
             return Err(fmt.Failure.Io(err))
         }
@@ -729,7 +729,7 @@ fn fmt.process(path: &str) -> Result<(), fmt.Failure> uses [alloc, io.console, i
     }
     let src = match core.str.from_utf8(buf.as_slice()) {
         Ok(t) => t
-        Err(_) => {
+        Err(_e) => {
             let err = std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 }
             return Err(fmt.Failure.Io(err))
         }
@@ -747,7 +747,7 @@ fn fmt.scan_defs(lines: &[alloc.string.String<std.alloc.System>]) -> Result<allo
         let s = match lines.get(i) {
             Some(x) => match alloc.string.String.from_str(std.alloc.SYSTEM, x.as_str()) {
                 Ok(owned) => owned
-                Err(_) => break
+                Err(_e) => break
             }
             None => break
         }
@@ -765,7 +765,7 @@ fn fmt.scan_defs(lines: &[alloc.string.String<std.alloc.System>]) -> Result<allo
                 let sj = match lines.get(j) {
                     Some(x) => match alloc.string.String.from_str(std.alloc.SYSTEM, x.as_str()) {
                         Ok(owned) => owned
-                        Err(_) => break
+                        Err(_e) => break
                     }
                     None => break
                 }

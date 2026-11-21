@@ -132,7 +132,7 @@ fn todo.model.from_extra_json_value(doc: &std.json.Doc, value: std.json.Value) -
         Ok(d) => d
         Err(_e) => match alloc.string.String.from_str(std.alloc.SYSTEM, "") {
             Ok(s) => s
-            Err(_) => return Err(std.json.Error.OutOfRange)
+            Err(_e2) => return Err(std.json.Error.OutOfRange)
         }
     }
     let owner_v = std.json.decode_field(doc, value, "owner_id", 3usize)?
@@ -180,21 +180,21 @@ fn todo.model.from_update_value(doc: &std.json.Doc, value: std.json.Value) -> Re
     let title_v = std.json.decode_field(doc, value, "title", 0usize)?
     let title = match std.json.decode_string(doc, title_v) {
         Ok(t) => Some(t)
-        Err(_) => None
+        Err(_e) => None
     }
     let done_v = std.json.decode_field(doc, value, "done", 1usize)?
     let done = match std.json.decode_bool(doc, done_v) {
         Ok(d) => Some(d)
-        Err(_) => None
+        Err(_e) => None
     }
     let deadline_v = std.json.decode_field(doc, value, "deadline", 2usize)?
     let deadline = match std.json.decode_string(doc, deadline_v) {
         Ok(d) => Some(d)
-        Err(_) => None
+        Err(_e) => None
     }
     let tags = match std.json.decode_field(doc, value, "tags", 3usize) {
         Ok(tags_v) => todo.model.decode_string_array(doc, tags_v)?
-        Err(_) => alloc.vec.Vec.new(std.alloc.SYSTEM)
+        Err(_e) => alloc.vec.Vec.new(std.alloc.SYSTEM)
     }
     Ok(todo.model.UpdateFields { title: title, done: done, deadline: deadline, tags: tags })
 end todo.model.from_update_value
@@ -249,11 +249,11 @@ fn todo.model.push_quoted(out: &mut alloc.string.String<std.alloc.System>, text:
             out.push_str("\\u00")?
             match u8.try_from_u32(high) {
                 Ok(d) => out.push(todo.model.push_digit_char(d))?
-                Err(_) => return Err(alloc.alloc.AllocError { code: 0u32 })
+                Err(_e) => return Err(alloc.alloc.AllocError { code: 0u32 })
             }
             match u8.try_from_u32(low) {
                 Ok(d) => out.push(todo.model.push_digit_char(d))?
-                Err(_) => return Err(alloc.alloc.AllocError { code: 0u32 })
+                Err(_e) => return Err(alloc.alloc.AllocError { code: 0u32 })
             }
         } else {
             out.push(c)?
@@ -281,7 +281,7 @@ fn todo.model.test_extra() -> todo.model.TodoExtra uses [alloc] panics may
             let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
             match alloc.string.String.from_str(std.alloc.SYSTEM, "買い物") {
                 Ok(tag) => match tags.push(tag) {
-                    Ok(_) => {
+                    Ok(_u) => {
                     }
                     Err(_e) => core.panic.panic("test_extra")
                 }

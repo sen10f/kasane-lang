@@ -4,7 +4,8 @@ fn t.f(p: &[u8], c: bool) -> Option<&u8> uses [] panics never
         let x = p.first()
         return x
     }
-    v.first()
+    let x = v.first()
+    x
 end t.f
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

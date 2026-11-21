@@ -10,16 +10,16 @@ test ui.event_test.Target.test_capture_drag
     let mut ctx = ui.event.Ctx.new()
     let mut events = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match events.push(ui.event.Event.PointerDown(50.0f32, 50.0f32, 1u8)) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
     match events.push(ui.event.Event.PointerMove(50.0f32, 50.0f32)) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
     match events.push(ui.event.Event.PointerUp(50.0f32, 50.0f32, 1u8)) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
     ui.event.replay(&mut ctx, &events, &tree, &utree, root, 0.0f32, 0.0f32)
     core.check.eq(ctx.get_capture(), None)
@@ -145,16 +145,16 @@ test ui.event_test.Target.test_replay_determinism
     let utree = ui.tree.Tree.new()
     let mut events = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match events.push(ui.event.Event.PointerDown(50.0f32, 50.0f32, 1u8)) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
     match events.push(ui.event.Event.KeyDown(9u32, ui.event.Modifiers.default())) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
     match events.push(ui.event.Event.PointerUp(50.0f32, 50.0f32, 1u8)) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
     let mut ctx1 = ui.event.Ctx.new()
     ui.event.replay(&mut ctx1, &events, &tree, &utree, root, 0.0f32, 0.0f32)

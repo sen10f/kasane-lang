@@ -17,7 +17,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
             Ok(n) => {
                 sum = sum + u64.from_u32(n)
             }
-            Err(_) => break
+            Err(_e) => break
         }
     }
     producer.join()
@@ -36,7 +36,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
                     Ok(s) => {
                         total = total + s.len()
                     }
-                    Err(_) => break
+                    Err(_e) => break
                 }
             }
             total
@@ -49,7 +49,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     let mut i = 0u32
     while i < 50u32 {
         core.mem.drop(match text_tx.send(t.message(i)) {
-            Ok(_) => 0u32
+            Ok(_u) => 0u32
             Err(_e) => core.panic.panic("send failed")
         })
         i = i + 1u32
@@ -64,11 +64,11 @@ end t.main
 fn t.message(i: u32) -> alloc.string.String uses [alloc] panics may
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(match s.push_str("hello") {
-        Ok(_) => 0u32
+        Ok(_u) => 0u32
         Err(_e) => core.panic.panic("oom")
     })
     core.mem.drop(match s.push_u64(u64.from_u32(i)) {
-        Ok(_) => 0u32
+        Ok(_u) => 0u32
         Err(_e) => core.panic.panic("oom")
     })
     s
@@ -82,7 +82,7 @@ fn t.produce(tx: std.sync.Sender<u32>, count: u32) -> () uses [thread] panics ma
     let mut i = 1u32
     while i <= count {
         core.mem.drop(match tx.send(i.wrapping_mul(i)) {
-            Ok(_) => 0u32
+            Ok(_u) => 0u32
             Err(_e) => core.panic.panic("send failed")
         })
         i = i + 1u32

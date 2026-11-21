@@ -18,5 +18,6 @@ fn t.mk() -> alloc.string.String uses [alloc] panics never
 end t.mk
 
 fn t.steal(r: &alloc.string.String) -> alloc.string.String uses [] panics never
-    *r
+    let a = *r
+    a
 end t.steal

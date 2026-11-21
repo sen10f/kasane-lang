@@ -9,10 +9,10 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
             loop {
                 core.mem.drop(match job_rx.recv() {
                     Ok(n) => match reply_tx.send(n + 1u32) {
-                        Ok(_) => 0u32
+                        Ok(_u) => 0u32
                         Err(_e) => core.panic.panic("send failed")
                     }
-                    Err(_) => break
+                    Err(_e) => break
                 })
             }
         },
@@ -24,7 +24,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     let mut round = 1u32
     while round <= 3u32 {
         core.mem.drop(match job_tx.send(round) {
-            Ok(_) => 0u32
+            Ok(_u) => 0u32
             Err(_e) => core.panic.panic("send failed")
         })
         match reply_rx.recv() {

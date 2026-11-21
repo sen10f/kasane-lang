@@ -1,14 +1,14 @@
 fn todo_spa.model.after(s: &str, i: usize) -> &str uses [] panics never
     match s.split_at(i) {
         None => s
-        Some((_, tail)) => tail
+        Some((_head, tail)) => tail
     }
 end todo_spa.model.after
 
 fn todo_spa.model.before(s: &str, i: usize) -> &str uses [] panics never
     match s.split_at(i) {
         None => s
-        Some((head, _)) => head
+        Some((head, _tail)) => head
     }
 end todo_spa.model.before
 

@@ -25,7 +25,7 @@ end notes.error.not_found
 fn notes.error.push_failed(value: alloc.string.PushBytesError) -> notes.error.Error uses [] panics never pub
     match value {
         string.PushBytesError.Alloc(a) => notes.error.Error.Alloc(a)
-        string.PushBytesError.InvalidUtf8(_) => notes.error.Error.Corrupt
+        string.PushBytesError.InvalidUtf8(_u) => notes.error.Error.Corrupt
     }
 end notes.error.push_failed
 

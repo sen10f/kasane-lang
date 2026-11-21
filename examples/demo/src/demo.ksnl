@@ -31,7 +31,7 @@ fn demo.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let v = shape.area(shape.Shape.Rect(3i32, 4i32))
     let mut vec = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match vec.push(demo.fib(10u32)) {
-        Ok(_) => ()
+        Ok(_u) => ()
         Err(_e) => core.panic.panic("oom")
     }
     std.io.print_line("hello from demo")?

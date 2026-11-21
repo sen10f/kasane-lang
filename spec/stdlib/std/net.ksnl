@@ -23,9 +23,9 @@ fn std.net.UdpSocket.recv_from(self: &std.net.UdpSocket, buffer: &mut [u8], from
     let text = std.net.text_range(&raw, 0usize, stop)?
     from.clear()
     match from.push_str(text.as_str()) {
-        Ok(_) => {
+        Ok(_u) => {
         }
-        Err(_) => return Err(std.net.oom())
+        Err(_e) => return Err(std.net.oom())
     }
     Ok(n)
 end std.net.UdpSocket.recv_from
@@ -44,9 +44,9 @@ fn std.net.resolve(host: &str, port: u16) -> Result<alloc.vec.Vec<alloc.string.S
         if buf.get(i) == Some(&0u8) {
             let s = std.net.text_range(&buf, start, i)?
             match out.push(s) {
-                Ok(_) => {
+                Ok(_u) => {
                 }
-                Err(_) => return Err(std.net.oom())
+                Err(_e) => return Err(std.net.oom())
             }
             start = i.wrapping_add(1usize)
         }
@@ -62,9 +62,9 @@ fn std.net.text_range(bytes: &[u8], start: usize, last: usize) -> Result<alloc.s
         None => return Err(std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 })
     }
     match out.push_bytes(part) {
-        Ok(_) => {
+        Ok(_u) => {
         }
-        Err(_) => return Err(std.net.oom())
+        Err(_e) => return Err(std.net.oom())
     }
     Ok(out)
 end std.net.text_range

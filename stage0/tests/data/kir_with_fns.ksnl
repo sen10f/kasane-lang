@@ -49,15 +49,15 @@ fn t.w_body_owned(n: u32) -> usize uses [alloc] panics never
     let w = with s = n close core.mem.drop(s) {
         let mut b = t.nv()
         match b.push(1u8) {
-            Ok(_) => {
+            Ok(_u) => {
             }
-            Err(_) => {
+            Err(_e) => {
             }
         }
         match b.push(2u8) {
-            Ok(_) => {
+            Ok(_u) => {
             }
-            Err(_) => {
+            Err(_e) => {
             }
         }
         b
@@ -147,9 +147,9 @@ end t.w_sock
 fn t.w_str_borrow(n: u32) -> usize uses [alloc] panics never
     let mut v = t.nv()
     match v.push(1u8) {
-        Ok(_) => {
+        Ok(_u) => {
         }
-        Err(_) => {
+        Err(_e) => {
         }
     }
     with mut s = v close core.mem.drop(s) {
@@ -167,9 +167,9 @@ fn t.w_str_close(n: u32) -> usize uses [alloc] panics may
         i = i + 1u32
         with mut s = t.nv() close core.mem.drop(s) {
             match s.push(1u8) {
-                Ok(_) => {
+                Ok(_u) => {
                 }
-                Err(_) => {
+                Err(_e) => {
                 }
             }
             if i == 2u32 {
@@ -212,15 +212,15 @@ end t.w_val_own
 fn t.w_vec_own(n: u32) -> usize uses [alloc] panics may
     with mut s = t.nv() close core.mem.drop(s) {
         match s.push(1u8) {
-            Ok(_) => {
+            Ok(_u) => {
             }
-            Err(_) => {
+            Err(_e) => {
             }
         }
         match s.push(2u8) {
-            Ok(_) => {
+            Ok(_u) => {
             }
-            Err(_) => {
+            Err(_e) => {
             }
         }
         if n > 0u32 {

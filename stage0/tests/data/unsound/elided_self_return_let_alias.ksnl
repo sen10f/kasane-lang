@@ -4,7 +4,8 @@ end t.Named
 
 fn t.Named.pick(self: &t.Named, other: &str) -> &str uses [] panics never
     let o = other
-    o
+    let r = o
+    r
 end t.Named.pick
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

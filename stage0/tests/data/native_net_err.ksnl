@@ -8,11 +8,11 @@ end t.addr
 fn t.closed_port() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] panics never
     let listener = match std.net.listen("127.0.0.1:0") {
         Ok(l) => l
-        Err(_) => return Err(t.fail(1i32))
+        Err(_e) => return Err(t.fail(1i32))
     }
     let port = match listener.local_port() {
         Ok(p) => p
-        Err(_) => 0u16
+        Err(_e) => 0u16
     }
     let busy = t.addr(port)
     match std.net.listen(busy.as_str()) {
@@ -66,7 +66,7 @@ end t.main
 
 fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
     match r {
-        Ok(_) => {
+        Ok(_u) => {
         }
         Err(_e) => core.panic.panic("unexpected I/O error")
     }

@@ -9,7 +9,7 @@ end t.f
 fn t.g(p: (u8, bool)) -> u8 uses [] panics never
     match p {
         (n, true) => n
-        (_, false) => 0u8
+        (_n, false) => 0u8
     }
 end t.g
 

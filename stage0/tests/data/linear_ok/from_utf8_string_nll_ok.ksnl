@@ -12,7 +12,7 @@ fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may
     }
     core.mem.drop(s.push_str(" world")?)
     match std.io.print_line("string from_utf8 nll ok") {
-        Ok(_) => {
+        Ok(_done) => {
         }
         Err(error) => return Err(t.Error.Io(error))
     }

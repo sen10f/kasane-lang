@@ -2,7 +2,7 @@ fn t.main() -> () uses [alloc] panics may
     let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     let s = alloc.string.String.new(std.alloc.SYSTEM)
     match m.insert(s.as_str(), 1u32) {
-        Ok(_) => {
+        Ok(_r) => {
         }
         Err(_e) => core.panic.panic("insert")
     }

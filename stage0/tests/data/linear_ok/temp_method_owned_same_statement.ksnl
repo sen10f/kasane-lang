@@ -16,5 +16,6 @@ end t.mk
 
 fn t.ok() -> usize uses [] panics never
     let w = t.W { n: 1u32 }
-    w.dup().as_str().len()
+    let n = w.dup().as_str().len()
+    n
 end t.ok

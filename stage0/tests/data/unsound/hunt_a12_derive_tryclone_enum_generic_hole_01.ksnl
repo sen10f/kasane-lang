@@ -10,7 +10,7 @@ end t.Opt
 fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     let v = t.Opt.Some(t.NoClone { a: 1u8 })
     match v.try_clone() {
-        Ok(_) => Ok(())
-        Err(_) => Ok(())
+        Ok(_c) => Ok(())
+        Err(_e) => Ok(())
     }
 end t.main

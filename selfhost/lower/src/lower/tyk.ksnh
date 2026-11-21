@@ -364,7 +364,7 @@ fn lower.tyk.item_fqn(env: &types.env.Env, item: usize) -> alloc.string.String<s
     match env.tab.items.as_slice().get(item) {
         Some(it) => match lower.cx.own(it.fqn.as_str()) {
             Ok(o) => o
-            Err(_) => alloc.string.String.new(std.alloc.SYSTEM)
+            Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
         }
         None => alloc.string.String.new(std.alloc.SYSTEM)
     }

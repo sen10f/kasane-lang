@@ -33,7 +33,7 @@ fn resolve.ast.text(src: &[u8], a: usize, b: usize) -> &str uses [] panics never
     match src.sub(a, b) {
         Some(bytes) => match core.str.from_utf8(bytes) {
             Ok(t) => t
-            Err(_) => bad
+            Err(_e) => bad
         }
         None => bad
     }

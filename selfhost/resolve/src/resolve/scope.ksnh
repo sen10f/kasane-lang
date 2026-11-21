@@ -161,7 +161,7 @@ fn resolve.scope.lookup_key(t: &resolve.table.Table, key: &str, file: usize) -> 
     }
     let vm = &t.variants.m
     match vm.get_str(k.as_str()) {
-        Some(_) => Ok(resolve.scope.Res.Variant)
+        Some(_v) => Ok(resolve.scope.Res.Variant)
         None => Ok(resolve.scope.Res.Missing)
     }
 end resolve.scope.lookup_key
@@ -230,13 +230,13 @@ end resolve.scope.prefix
 test resolve.scope.prefix.test_drops_last
     match resolve.scope.prefix("a.b.c") {
         Ok(p) => core.check.eq(p.as_str(), "a.b")
-        Err(_) => core.check.eq(1u8, 2u8)
+        Err(_e) => core.check.eq(1u8, 2u8)
     }
 end resolve.scope.prefix.test_drops_last
 
 test resolve.scope.prefix.test_single
     match resolve.scope.prefix("a") {
         Ok(p) => core.check.eq(p.len(), 0usize)
-        Err(_) => core.check.eq(1u8, 2u8)
+        Err(_e) => core.check.eq(1u8, 2u8)
     }
 end resolve.scope.prefix.test_single

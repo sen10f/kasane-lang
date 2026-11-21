@@ -9,7 +9,7 @@ fn t.main() -> () uses [alloc, suspend] panics may
                 let mut v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
                 match v.push(7u8) {
                     Ok(u) => u
-                    Err(_) => ()
+                    Err(_e) => ()
                 }
                 v
             },

@@ -166,8 +166,8 @@ end ui.event.Ctx.set_focus
 
 fn ui.event.Ctx.tab_push(self: &mut ui.event.Ctx, node: usize) -> () uses [alloc] panics never pub
     match self.tab_order.push(node) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
 end ui.event.Ctx.tab_push
 

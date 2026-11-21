@@ -5,10 +5,10 @@ end t.Res
 fn t.bad(rx: std.sync.Receiver<t.Res>) -> u32 uses [thread] panics never
     match rx.recv() {
         Ok(r) => 0u32
-        Err(_) => 0u32
+        Err(_e) => 0u32
     }
     match rx.close() {
-        Ok(_) => 0u32
+        Ok(_u) => 0u32
         Err(back) => 1u32
     }
 end t.bad

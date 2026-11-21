@@ -49,7 +49,7 @@ fn ui.app.App.apply(self: &mut ui.app.App, new_model: (), elements: &alloc.vec.V
         None => ()
     }
     match self.diff_children(0usize, &root_el.children, elements, &mut patch) {
-        Ok(_) => ()
+        Ok(_u) => ()
         Err(e) => return Err(e)
     }
     let mut dirty = ui.app.Rect.empty()
@@ -108,7 +108,7 @@ fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: 
                         None => break
                     }
                     match tmp.push(v) {
-                        Ok(_) => ()
+                        Ok(_u) => ()
                         Err(e) => return Err(e)
                     }
                     ei = ei.wrapping_add(1usize)
@@ -124,7 +124,7 @@ fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: 
     let mut ti = 0usize
     while ti < existing_count {
         match used.push(false) {
-            Ok(_) => ()
+            Ok(_u) => ()
             Err(e) => return Err(e)
         }
         ti = ti.wrapping_add(1usize)
@@ -184,54 +184,54 @@ fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: 
                 }
                 if !ui.app.same_kind(old_kind, child_el.kind) || old_key != child_el.key {
                     match patch.changed.push(reused) {
-                        Ok(_) => ()
+                        Ok(_u) => ()
                         Err(e) => return Err(e)
                     }
                 }
                 if found_pos != ci {
                     match patch.moved.push((reused, ci)) {
-                        Ok(_) => ()
+                        Ok(_u) => ()
                         Err(e) => return Err(e)
                     }
                 }
                 match self.diff_children(reused, &child_el.children, elements, patch) {
-                    Ok(_) => ()
+                    Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
                 match new_kids.push(reused) {
-                    Ok(_) => ()
+                    Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
             }
             None => {
                 let new_node = self.kind.len()
                 match self.kind.push(child_el.kind) {
-                    Ok(_) => ()
+                    Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
                 match self.key.push(key) {
-                    Ok(_) => ()
+                    Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
                 match self.rect.push(ui.app.Rect.empty()) {
-                    Ok(_) => ()
+                    Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
                 let empty_kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
                 match self.kids.push(empty_kids) {
-                    Ok(_) => ()
+                    Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
                 match patch.added.push(new_node) {
-                    Ok(_) => ()
+                    Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
                 match self.diff_children(new_node, &child_el.children, elements, patch) {
-                    Ok(_) => ()
+                    Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
                 match new_kids.push(new_node) {
-                    Ok(_) => ()
+                    Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
             }
@@ -248,7 +248,7 @@ fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: 
                     None => break
                 }
                 match kids.push(v) {
-                    Ok(_) => ()
+                    Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
                 ni = ni.wrapping_add(1usize)
@@ -268,7 +268,7 @@ fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: 
                 None => break
             }
             match patch.removed.push(ekid) {
-                Ok(_) => ()
+                Ok(_u) => ()
                 Err(e) => return Err(e)
             }
         }
@@ -279,8 +279,8 @@ end ui.app.App.diff_children
 
 fn ui.app.App.enqueue(self: &mut ui.app.App, msg: u64) -> () uses [alloc] panics never pub
     match self.pending.push(msg) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
 end ui.app.App.enqueue
 
@@ -291,20 +291,20 @@ fn ui.app.App.new(model: ()) -> ui.app.App uses [alloc] panics never pub
     let mut rect = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut kids = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match kind.push(ui.tree.ViewKind.Block) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
     match key.push(None) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
     match rect.push(ui.app.Rect.empty()) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
     match kids.push(alloc.vec.Vec.new(std.alloc.SYSTEM)) {
-        Ok(_) => ()
-        Err(_) => ()
+        Ok(_u) => ()
+        Err(_e) => ()
     }
     let m = model
     let p = pending
@@ -330,7 +330,7 @@ end ui.app.App.pending_len
 
 fn ui.app.App.set_node_rect(self: &mut ui.app.App, node: usize, rect: ui.app.Rect) -> () uses [alloc] panics never pub
     match self.rect.get(node) {
-        Some(_) => match self.rect.as_mut_slice().get_mut(node) {
+        Some(_r) => match self.rect.as_mut_slice().get_mut(node) {
             Some(slot) => {
                 *slot = rect
             }
@@ -340,8 +340,8 @@ fn ui.app.App.set_node_rect(self: &mut ui.app.App, node: usize, rect: ui.app.Rec
             let mut i = self.rect.len()
             while i <= node {
                 match self.rect.push(ui.app.Rect.empty()) {
-                    Ok(_) => ()
-                    Err(_) => return
+                    Ok(_u) => ()
+                    Err(_e) => return
                 }
                 i = i.wrapping_add(1usize)
             }

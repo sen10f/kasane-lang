@@ -4,7 +4,8 @@ end t.Holder
 
 fn t.bad() -> t.Holder uses [] panics never
     let x = 5u32
-    t.Holder { r: &x }
+    let h = t.Holder { r: &x }
+    h
 end t.bad
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

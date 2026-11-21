@@ -3,7 +3,8 @@ type t.L linear pub
 end t.L
 
 fn t.look(l: &t.L) -> u32 uses [] panics never
-    l.v
+    let x = l.v
+    x
 end t.look
 
 fn t.main() -> () uses [] panics never

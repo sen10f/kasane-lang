@@ -12,11 +12,11 @@ fn t.net_roundtrip() -> () uses [alloc, io.net] panics may
             core.check.eq(port == 0u16, false)
             let mut address = alloc.string.String.new(std.alloc.SYSTEM)
             match address.push_str("127.0.0.1:") {
-                Ok(_) => ()
+                Ok(_u) => ()
                 Err(_e) => core.panic.panic("push_str failed")
             }
             match address.push_u64(u64.from_u16(port)) {
-                Ok(_) => ()
+                Ok(_u) => ()
                 Err(_e) => core.panic.panic("push_u64 failed")
             }
             let a = address.as_str()
@@ -24,11 +24,11 @@ fn t.net_roundtrip() -> () uses [alloc, io.net] panics may
                 Ok(c) => {
                     let mut s = c
                     match s.write("hello".as_bytes()) {
-                        Ok(_) => ()
+                        Ok(_n) => ()
                         Err(_e) => core.panic.panic("write failed")
                     }
                     match s.close() {
-                        Ok(_) => ()
+                        Ok(_u) => ()
                         Err(_e) => core.panic.panic("close failed")
                     }
                 }
@@ -38,18 +38,18 @@ fn t.net_roundtrip() -> () uses [alloc, io.net] panics may
                 Ok(accepted) => {
                     let mut s2 = accepted
                     match s2.write("hi".as_bytes()) {
-                        Ok(_) => ()
+                        Ok(_n) => ()
                         Err(_e) => core.panic.panic("server write failed")
                     }
                     match s2.close() {
-                        Ok(_) => ()
+                        Ok(_u) => ()
                         Err(_e) => core.panic.panic("close2 failed")
                     }
                 }
                 Err(_e) => core.panic.panic("accept failed")
             }
             match l.close() {
-                Ok(_) => ()
+                Ok(_u) => ()
                 Err(_e) => core.panic.panic("close3 failed")
             }
         }

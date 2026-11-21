@@ -1,5 +1,6 @@
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     if let 0u64 = 1u32 {
+    } else {
     }
     Ok(())
 end t.main

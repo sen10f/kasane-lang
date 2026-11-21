@@ -5,7 +5,7 @@ end t.E
 
 fn t.f(e: t.E) -> i32 uses [] panics never
     match e {
-        t.E.A(x, _, _) => x
+        t.E.A(x, _y, _z) => x
         t.E.B => 0i32
     }
 end t.f

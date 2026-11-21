@@ -11,7 +11,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     let mut i = 0u32
     while i < 30u32 {
         match job_tx.send(i) {
-            Ok(_) => core.check.eq(i, i)
+            Ok(_u) => core.check.eq(i, i)
             Err(_e) => core.panic.panic("send failed")
         }
         i = i + 1u32
@@ -60,11 +60,11 @@ fn t.work(rx: std.sync.Receiver<u32>, reply: std.sync.Sender<u32>) -> () uses [t
                 *r = *r + 1u64
                 core.mem.drop(g)
                 match reply.send(n * 2u32) {
-                    Ok(_) => core.check.eq(n, n)
+                    Ok(_u) => core.check.eq(n, n)
                     Err(_e) => core.panic.panic("send failed")
                 }
             }
-            Err(_) => break
+            Err(_e) => break
         }
     }
 end t.work

@@ -50,7 +50,7 @@ end notes.store.Store.len
 
 fn notes.store.Store.load(dir: &str) -> Result<notes.store.Store, notes.error.Error> uses [alloc, io.fs] panics never pub
     match std.fs.create_dir_all(dir) {
-        Ok(_) => {
+        Ok(_u) => {
         }
         Err(e) => return Err(error.Error.Io(e))
     }
@@ -65,7 +65,7 @@ fn notes.store.Store.load(dir: &str) -> Result<notes.store.Store, notes.error.Er
                 let name = e.name.as_str()
                 if name.len() > 5usize && name.ends_with(".json") {
                     let base = match name.split_at(name.len().wrapping_sub(5usize)) {
-                        Some((b, _)) => b
+                        Some((b, _tail)) => b
                         None => name
                     }
                     match i64.parse(base) {
@@ -75,14 +75,14 @@ fn notes.store.Store.load(dir: &str) -> Result<notes.store.Store, notes.error.Er
                                 Ok(text) => match std.json.parse(text.as_str()) {
                                     Ok(doc) => match note.Note.from_json(&doc, doc.root()) {
                                         Ok(parsed) => core.mem.drop(store.notes.push(parsed)?)
-                                        Err(_) => core.mem.drop(0u8)
+                                        Err(_e) => core.mem.drop(0u8)
                                     }
-                                    Err(_) => core.mem.drop(0u8)
+                                    Err(_e) => core.mem.drop(0u8)
                                 }
-                                Err(_) => core.mem.drop(0u8)
+                                Err(_e) => core.mem.drop(0u8)
                             }
                         }
-                        Err(_) => core.mem.drop(0u8)
+                        Err(_e) => core.mem.drop(0u8)
                     }
                 }
             }
@@ -287,17 +287,17 @@ end notes.store.index_of
 fn notes.store.note_path(dir: &str, id: i64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
     let mut p = alloc.string.String.from_str(std.alloc.SYSTEM, dir)?
     match p.push_str("/") {
-        Ok(_) => {
+        Ok(_u) => {
         }
         Err(e) => return Err(e)
     }
     match p.push_i64(id) {
-        Ok(_) => {
+        Ok(_u) => {
         }
         Err(e) => return Err(e)
     }
     match p.push_str(".json") {
-        Ok(_) => {
+        Ok(_u) => {
         }
         Err(e) => return Err(e)
     }

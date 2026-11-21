@@ -1115,6 +1115,11 @@ fn unused_arm_binding(l: &str) -> String {
         return l.to_string();
     }
     let Some((pat, body)) = l.split_once(" => ") else { return l.to_string() };
+    // 腕の本体が同じ行で終わるものだけ (`=> {` や `=> f(` で続く腕は、後の行で名前を使うかもしれない)。
+    let bt = body.trim_end();
+    if bt.is_empty() || bt.ends_with(|c: char| "{([,".contains(c)) {
+        return l.to_string();
+    }
     let re = Regex::new(r"\b_[A-Za-z0-9_]+\b").unwrap();
     let mut out = pat.to_string();
     let names: Vec<String> = re.find_iter(pat).map(|m| m.as_str().to_string()).collect();

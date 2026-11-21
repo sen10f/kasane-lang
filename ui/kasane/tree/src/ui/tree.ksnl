@@ -81,11 +81,11 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.ve
             None => None
         }
         match existing_indices.push(kid_index) {
-            Ok(_) => ()
+            Ok(_u) => ()
             Err(e) => return Err(e)
         }
         match existing_keys.push(key) {
-            Ok(_) => ()
+            Ok(_u) => ()
             Err(e) => return Err(e)
         }
         ei = ei.wrapping_add(1usize)
@@ -94,7 +94,7 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.ve
     ei = 0usize
     while ei < existing_count {
         match used.push(false) {
-            Ok(_) => ()
+            Ok(_u) => ()
             Err(e) => return Err(e)
         }
         ei = ei.wrapping_add(1usize)
@@ -151,7 +151,7 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.ve
                     None => {
                         let new_node = self.push_node(kind, style, key)?
                         match self.commit(new_node, elements, child_index) {
-                            Ok(_) => ()
+                            Ok(_u) => ()
                             Err(e) => return Err(e)
                         }
                         new_node
@@ -161,14 +161,14 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.ve
             None => {
                 let new_node = self.push_node(kind, style, key)?
                 match self.commit(new_node, elements, child_index) {
-                    Ok(_) => ()
+                    Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
                 new_node
             }
         }
         match new_kids.push(kid) {
-            Ok(_) => ()
+            Ok(_u) => ()
             Err(e) => return Err(e)
         }
         ci = ci.wrapping_add(1usize)
@@ -183,7 +183,7 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &alloc.ve
                     None => break
                 }
                 match kids.push(v) {
-                    Ok(_) => ()
+                    Ok(_u) => ()
                     Err(e) => return Err(e)
                 }
                 ni = ni.wrapping_add(1usize)
@@ -246,8 +246,8 @@ end ui.tree.Tree.parent_of
 fn ui.tree.Tree.push_child(self: &mut ui.tree.Tree, parent: usize, child: usize) -> bool uses [alloc] panics never pub
     match self.kids.get_mut(parent) {
         Some(kids) => match kids.push(child) {
-            Ok(_) => true
-            Err(_) => false
+            Ok(_u) => true
+            Err(_e) => false
         }
         None => false
     }
@@ -257,12 +257,12 @@ fn ui.tree.Tree.push_node(self: &mut ui.tree.Tree, kind: ui.tree.ViewKind, style
     let index = self.nodes.len()
     let node = ui.tree.Node { kind: kind, style: style, key: key, state: None }
     match self.nodes.push(node) {
-        Ok(_) => ()
+        Ok(_u) => ()
         Err(e) => return Err(e)
     }
     let kids_vec = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match self.kids.push(kids_vec) {
-        Ok(_) => ()
+        Ok(_u) => ()
         Err(e) => return Err(e)
     }
     Ok(index)

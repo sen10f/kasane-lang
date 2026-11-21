@@ -2,7 +2,7 @@ fn t.leak(l: &std.net.TcpListener) -> u32 uses [io.net] panics never
     let r = l.accept()
     match r {
         Ok(_) => 1u32
-        Err(_) => 0u32
+        Err(_e) => 0u32
     }
 end t.leak
 

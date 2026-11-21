@@ -11,7 +11,7 @@ fn shortener_https.store.Store.add(self: &mut shortener_https.store.Store, url: 
     let copy = alloc.string.String.from_str(std.alloc.SYSTEM, url)?
     self.urls.push(copy)?
     match self.save() {
-        Ok(_) => Ok(code_text)
+        Ok(_u) => Ok(code_text)
         Err(e) => {
             core.mem.drop(self.urls.pop())
             Err(e)

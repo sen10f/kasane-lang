@@ -1,7 +1,7 @@
 fn t.bad(_p: &u32) -> Option<&u32> uses [] panics never
     let v = 7u32
     match (&v, 1u8) {
-        (r, _) => Some(r)
+        (r, _b) => Some(r)
     }
 end t.bad
 

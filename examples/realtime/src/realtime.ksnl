@@ -24,9 +24,9 @@ fn realtime.Ring.new(cap: usize) -> realtime.Ring uses [alloc] panics never pub
     let mut i = 0usize
     while i < cap {
         match items.push(0u32) {
-            Ok(_) => {
+            Ok(_u) => {
             }
-            Err(_) => break
+            Err(_e) => break
         }
         i = i.wrapping_add(1usize)
     }

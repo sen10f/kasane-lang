@@ -38,7 +38,7 @@ fn tour.ints() -> u8 uses [] panics never pub
     let b = a.saturating_add(10u8)
     let c = a.wrapping_add(10u8)
     let d = match a.checked_add(10u8) {
-        Some(_) => 1u8
+        Some(_v) => 1u8
         None => 2u8
     }
     b.wrapping_add(c).wrapping_add(d)

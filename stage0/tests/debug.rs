@@ -24,6 +24,7 @@ end t.P
 
 fn t.add(a: i32, b: i32) -> i32 uses [] panics never pub
     let s = a.wrapping_add(b)
+    core.mem.drop(s)
     s
 end t.add
 
@@ -46,6 +47,7 @@ end t.noisy
 fn t.work(p: t.P) -> i32 uses [] panics never pub
     let sum = t.add(p.x, p.y)
     let twice = sum.wrapping_mul(2i32)
+    core.mem.drop(twice)
     twice
 end t.work
 
@@ -252,15 +254,18 @@ fn step_in_next_out_and_finish() {
     assert_eq!(lines[..2], [l_sum as u64, l_twice as u64], "{:?}", lines);
     assert_eq!(stops(&evs)[1]["reason"], "step");
     // step: 呼び出しの中へ入る。呼び出し列が 1 つ深くなる
-    let (evs, _) = session(&pkg, &[], &["break t.work", "run", "step", "bt", "step", "step", "step", "quit"]);
+    let (evs, _) = session(&pkg, &[], &["break t.work", "run", "step", "bt", "step", "step", "step", "step", "quit"]);
     let s = stops(&evs);
     assert_eq!(s[1]["frame"]["function"], "t.add");
     assert_eq!(s[1]["frame"]["line"], l_s);
     assert_eq!(of(&evs, "stack")[0]["frames"].as_array().unwrap().len(), 3);
     assert_eq!(s[2]["frame"]["line"], l_ret);
+    // (`core.mem.drop(s)` を挟んだので、戻り値の `s` は次の行)
+    assert_eq!(s[3]["frame"]["function"], "t.add");
+    assert_eq!(s[3]["frame"]["line"], l_ret + 1);
     // t.add の最後の文から step すると、呼び出し元に戻って次の文に止まる
-    assert_eq!(s[3]["frame"]["function"], "t.work");
-    assert_eq!(s[3]["frame"]["line"], l_twice);
+    assert_eq!(s[4]["frame"]["function"], "t.work");
+    assert_eq!(s[4]["frame"]["line"], l_twice);
     // finish: 戻り値つきで呼び出し元に止まる
     let (evs, _) = session(&pkg, &[], &["break t.add", "run", "finish", "locals", "quit"]);
     let s = stops(&evs);

@@ -52,7 +52,7 @@ fn threads.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] p
             Ok(n) => {
                 sum = sum + n
             }
-            Err(_) => break
+            Err(_e) => break
         }
     }
     producer.join()
@@ -77,7 +77,7 @@ fn threads.produce(tx: std.sync.Sender<u32>, count: u32) -> () uses [thread] pan
     let mut i = 1u32
     while i <= count {
         match tx.send(i) {
-            Ok(_) => ()
+            Ok(_u) => ()
             Err(_e) => core.panic.panic("send failed")
         }
         i = i + 1u32

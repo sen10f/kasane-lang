@@ -1,7 +1,8 @@
 const t.K: u32 = t.f(0u32)
 
 fn t.f(x: u32) -> u32 const uses [] panics may
-    t.g(x)
+    let y = t.g(x)
+    y
 end t.f
 
 fn t.g(x: u32) -> u32 const uses [] panics may

@@ -18,7 +18,7 @@ end ui.state.ViewState
 fn ui.state.Arena.contains[T, A: alloc.alloc.Allocator](self: &ui.state.Arena<T, A>, h: ui.state.Handle) -> bool uses [] panics never pub
     match self.slots.get(h.index) {
         Some(v) => match v {
-            Some(_) => true
+            Some(_x) => true
             None => false
         }
         None => false
@@ -48,7 +48,7 @@ end ui.state.Arena.get_mut
 fn ui.state.Arena.insert[T, A: alloc.alloc.Allocator](self: &mut ui.state.Arena<T, A>, value: T) -> Result<ui.state.Handle, alloc.alloc.AllocError> uses [alloc] panics never pub
     let index = self.slots.len()
     match self.slots.push(Some(value)) {
-        Ok(_) => Ok(ui.state.Handle { index: index })
+        Ok(_u) => Ok(ui.state.Handle { index: index })
         Err(e) => Err(e)
     }
 end ui.state.Arena.insert

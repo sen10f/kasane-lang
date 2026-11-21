@@ -1,7 +1,7 @@
 fn t.keep(s: &str) -> &str uses [alloc] panics never
     let o = alloc.string.String.from_str(std.alloc.SYSTEM, s)
     let x = match o {
-        Ok(_) => s
+        Ok(_v) => s
         Err(_e) => ""
     }
     x

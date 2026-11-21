@@ -23,7 +23,7 @@ fn shortener_https.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.S
         match d {
             Some(v) => match u8.try_from_u64(v) {
                 Ok(small) => digits.push(small)?
-                Err(_) => return Err(error.Error.Corrupt)
+                Err(_e) => return Err(error.Error.Corrupt)
             }
             None => return Err(error.Error.Corrupt)
         }
@@ -79,7 +79,7 @@ fn shortener_https.code.to_index(text: &str) -> Option<u64> uses [] panics never
     }
     match u64.from_str_radix(text, shortener_https.code.BASE) {
         Ok(n) => n.checked_sub(shortener_https.code.OFFSET)
-        Err(_) => None
+        Err(_e) => None
     }
 end shortener_https.code.to_index
 

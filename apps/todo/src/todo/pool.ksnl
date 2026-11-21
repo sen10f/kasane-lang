@@ -10,7 +10,7 @@ fn todo.pool.accept_all(listener: &std.net.TcpListener, jobs: &std.sync.Sender<s
     while count == 0usize || accepted < count {
         let stream = listener.accept()?
         match jobs.send(stream) {
-            Ok(_) => {
+            Ok(_u) => {
                 accepted = accepted.saturating_add(1usize)
             }
             Err(back) => core.mem.drop(back.value.close())
@@ -57,7 +57,7 @@ fn todo.pool.run(left: usize, listener: &std.net.TcpListener, count: usize, jobs
     let inner = todo.pool.run(rest, listener, count, jobs, queue, give, take)
     match spawned {
         Ok(handle) => core.mem.drop(handle.join())
-        Err(_) => {
+        Err(_e) => {
         }
     }
     inner
@@ -86,14 +86,14 @@ fn todo.pool.worker(first: std.sync.Receiver<std.net.TcpStream>, give: std.sync.
     loop {
         match queue.recv() {
             Ok(stream) => match todo.pool.serve_one(stream, &give, &take) {
-                Ok(_) => {
+                Ok(_u) => {
                     served = served.saturating_add(1u64)
                 }
-                Err(_) => {
+                Err(_e) => {
                 }
             }
-            Err(_) => match queue.close() {
-                Ok(_) => break
+            Err(_e) => match queue.close() {
+                Ok(_u) => break
                 Err(back) => {
                     queue = back
                 }
