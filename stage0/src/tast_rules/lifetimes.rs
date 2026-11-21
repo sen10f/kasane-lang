@@ -232,6 +232,8 @@ struct W<'a> {
     cl: Option<ClSig>,
     /// `match` の腕の束縛 (走査の対象の一時値はこの `match` の間は生きるので、腕の中の文の終わりで尽きさせない)。
     arm_vars: Vec<String>,
+    /// 閉包の本体を解く W だけ: 参照で取り込んだ名前。
+    cap_names: HashSet<String>,
 }
 
 /// 閉包を擬似の関数として見たときの署名と、外側の局所 (本体の中の局所と区別する)。
@@ -393,7 +395,7 @@ impl<'a> W<'a> {
             }
         });
         let gn = p.defs[di].gnames();
-        W { p, di, env: Env::default(), scopes: vec![vec![]], vals: HashMap::new(), uses, loops: vec![], ret, diags: vec![], seen: HashSet::new(), gn, cl: None, arm_vars: vec![] }
+        W { p, di, env: Env::default(), scopes: vec![vec![]], vals: HashMap::new(), uses, loops: vec![], ret, diags: vec![], seen: HashSet::new(), gn, cl: None, arm_vars: vec![], cap_names: HashSet::new() }
     }
 
     fn diag(&mut self, code: &str, msg: String, line: usize) {
@@ -415,7 +417,8 @@ impl<'a> W<'a> {
         match t {
             Ty::Ref(..) | Ty::Unknown | Ty::Var(_) => true,
             Ty::Dyn(_, _, r) => !matches!(r, Region::Unk | Region::Static),
-            Ty::Closure { id, .. } => id.is_some(),
+            // 関数型 `fn(..)` の値も、取り込んだ借用の閉包を受けうる (呼び出し側で運ぶ借用を見る)。
+            Ty::Closure { .. } => true,
             // 定義の欄の中の型パラメータは、実引数の側で見ている。
             Ty::Param(p) => seen.is_empty() && !self.static_param(p),
             Ty::Tuple(xs) => xs.iter().any(|x| self.carries_in(x, seen)),
@@ -452,7 +455,7 @@ impl<'a> W<'a> {
     }
 
     fn keep(&self, v: Val, t: &Ty) -> Val {
-        if self.carries(t) && !t.refs_all_static() {
+        if self.carries(t) && !all_static(t) {
             v
         } else {
             Val::default()
@@ -462,7 +465,7 @@ impl<'a> W<'a> {
     // -------------------------------------------------------- 環境
 
     fn define(&mut self, name: &str, decl: u32, v: Val, t: &Ty) {
-        let carries = self.carries(t) && !t.refs_all_static();
+        let carries = self.carries(t) && !all_static(t);
         let val = if carries { v } else { Val::default() };
         self.env.vars.insert(name.to_string(), Var { val, carries, decl, is_ref: is_ref(t), depth: self.scopes.len(), ty: t.clone() });
         if let Some(sc) = self.scopes.last_mut() {
@@ -506,6 +509,9 @@ impl<'a> W<'a> {
 
     /// 引数の借用の値: 参照の参照は、内側の層ごとに `ArgIn` を持つ。
     fn param_val(n: &str, t: &Ty) -> Val {
+        if matches!(t, Ty::Closure { id: None, .. }) {
+            return Val::default();
+        }
         let mut v = Val::loan(Loan::Arg(n.to_string()), 0);
         for lvl in 1..depth(t).min(200) {
             v.set.insert((Loan::ArgIn(n.to_string(), lvl as u8), lvl as u8), 0);
@@ -517,7 +523,7 @@ impl<'a> W<'a> {
         let d = &self.p.defs[self.di];
         let params: Vec<(String, Ty)> = d.params.iter().map(|(n, t)| (n.clone(), from_v(t, &self.gn))).collect();
         for (n, t) in &params {
-            let v = if self.carries(t) && !t.refs_all_static() { Self::param_val(n, t) } else { Val::default() };
+            let v = if self.carries(t) && !all_static(t) { Self::param_val(n, t) } else { Val::default() };
             self.define(n, 0, v, t);
         }
         let _ = b;
@@ -574,10 +580,17 @@ impl<'a> W<'a> {
                     sub.env.vars.insert(c.name.clone(), Var { depth: 1, ..v });
                     sub.scopes[0].push(c.name.clone());
                 }
+            } else {
+                // 参照の取り込み: 本体の中では外側の値への参照 (`Arg` 扱い)。外側の場所へ書く値は、呼び出しごとに新しい
+                // 領域の引数や本体の局所を運んではいけない (M1)。
+                let rt = Ty::Ref(c.kind == "&mut", Box::new(c.ty.clone()), Region::Unk);
+                let v = if sub.carries(&rt) { Self::param_val(&c.name, &rt) } else { Val::default() };
+                sub.define(&c.name, 0, v, &rt);
+                sub.cap_names.insert(c.name.clone());
             }
         }
         for (n, t) in &ps {
-            let v = if sub.carries(t) && !t.refs_all_static() { Self::param_val(n, t) } else { Val::default() };
+            let v = if sub.carries(t) && !all_static(t) { Self::param_val(n, t) } else { Val::default() };
             sub.define(n, 0, v, t);
         }
         sub.ev(body);
@@ -595,10 +608,11 @@ impl<'a> W<'a> {
         if sub.carries(&ret) {
             let pnames: HashSet<String> = ps.iter().map(|(n, _)| n.clone()).collect();
             let outer = sub.cl.as_ref().map(|c| c.outer.clone()).unwrap_or_default();
+            let capn = sub.cap_names.clone();
             for l in leaves {
                 // 本体の局所 (外側の局所ではないもの) への借用だけが、戻り値で外へ出る。
                 let inside = |loan: &Loan| match loan {
-                    Loan::Local(n, id) => (*id == 0 && pnames.contains(n)) || !outer.contains(&(n.clone(), *id)),
+                    Loan::Local(n, id) => (*id == 0 && pnames.contains(n)) || (!outer.contains(&(n.clone(), *id)) && !(*id == 0 && capn.contains(n))),
                     Loan::Temp => true,
                     _ => false,
                 };
@@ -1280,6 +1294,15 @@ impl<'a> W<'a> {
                     }
                     cur = operand;
                 }
+                // `*guard.get_mut() = ..`: 参照を返すメソッドの受け手が場所の根 (その参照は受け手から借りる)。
+                TKind::MCall { recv, .. } if is_ref(&cur.ty) && !matches!(recv.kind, TKind::Lit(..)) => {
+                    through_ref = true;
+                    cur = recv;
+                }
+                TKind::Call { callee, .. } if is_ref(&cur.ty) && matches!(&callee.kind, TKind::Path(segs) if segs.len() >= 2) => {
+                    through_ref = true;
+                    cur = callee;
+                }
                 _ => break,
             }
         }
@@ -1323,6 +1346,17 @@ impl<'a> W<'a> {
         // 参照を通る (`*r = ..`・`r.f = ..`)・欄への代入。
         if through_ref || target_is_ref {
             self.store_through(&var.val, &v, line, false);
+            // 出どころの分からない (static・保護の先の) 場所へ、借用を運ぶ閉包を入れる: 閉包は場所より先に尽きる (M6)。
+            if through_ref && var.val.loans().is_empty() && has_closure(&place.ty) {
+                for (k, _) in &v.loans() {
+                    if let Loan::Local(kn, _) | Loan::Dead(kn) = k {
+                        self.diag("E3030", format!("stores a closure borrowing the local variable `{}` into a place that outlives it", kn), line);
+                    }
+                    if matches!(k, Loan::Temp) {
+                        self.diag("E3030", "stores a closure borrowing a temporary value into a place that outlives it".to_string(), line);
+                    }
+                }
+            }
         }
         if !through_ref {
             if let Some(x) = self.env.vars.get_mut(&n) {
@@ -1375,7 +1409,15 @@ impl<'a> W<'a> {
 
     /// 引数 `q` の借用を引数 `p` の指す先へ入れる: `p` の指す先の領域と `q` の領域に共有する名前 (省略でない) が無ければ E3010。
     fn unrelated_store(&mut self, pn: &str, qn: &str, line: usize) {
-        if self.cl.is_some() || pn == qn {
+        // 閉包の本体: 取り込んだ場所 (引数でない名前) へ、呼び出しごとに新しい領域の引数の借用を入れる (M1)。
+        if let Some(cl) = &self.cl {
+            let is_p = |n: &str| cl.params.iter().any(|(x, _)| x == n);
+            if is_p(qn) && !is_p(pn) {
+                self.diag("E3030", format!("stores a reference derived from closure argument `{}` (a new lifetime per call) into captured `{}`, which outlives the call", qn, pn), line);
+            }
+            return;
+        }
+        if pn == qn {
             return;
         }
         let d = &self.p.defs[self.di];
@@ -1486,6 +1528,12 @@ impl<'a> W<'a> {
     fn call(&mut self, e: &TExpr, callee: &TExpr, args: &[TExpr]) -> Val {
         // 呼び先が局所の経路 (`x.m(..)` の経路形) なら、受け手は先頭の局所。
         let mut recv_arg: Option<Arg> = None;
+        // 局所の閉包・関数値の呼び出しは、その値の使用 (取り込んだ借用が尽きていれば E3010)。
+        if let TKind::Path(segs) = &callee.kind {
+            if segs.len() == 1 && self.env.vars.contains_key(&segs[0]) {
+                self.use_var(&segs[0], e.line);
+            }
+        }
         let mut dyn_call: Option<(Vec<(String, Ty)>, Ty, DefId)> = None;
         let def = match &e.res {
             Some(Callee::Def(di)) => Some(*di),
@@ -1809,6 +1857,22 @@ impl<'a> W<'a> {
 fn static_bound(bounds: &crate::parser::V) -> bool {
     match bounds {
         crate::parser::V::L(xs) => xs.iter().any(|b| matches!(b, crate::parser::V::S(x) if x == "'static")),
+        _ => false,
+    }
+}
+
+/// 型の領域がすべて `'static` で、借用を運ぶ閉包・関数型を含まないか。閉包の型の領域は引数と戻り値の領域であって、
+/// 取り込んだ借用を言わないので、`fn() -> &'static str` でも局所を借りうる (M6)。
+fn all_static(t: &Ty) -> bool {
+    t.refs_all_static() && !has_closure(t)
+}
+
+fn has_closure(t: &Ty) -> bool {
+    match t {
+        Ty::Closure { .. } => true,
+        Ty::Tuple(xs) => xs.iter().any(has_closure),
+        Ty::Array(x, _) | Ty::Slice(x) | Ty::Ref(_, x, _) => has_closure(x),
+        Ty::Named(_, xs, _) => xs.iter().any(has_closure),
         _ => false,
     }
 }

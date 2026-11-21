@@ -1,0 +1,27 @@
+fn t.c03() -> usize uses [alloc] panics never
+    let mut g = fn() -> usize capture [] {
+        0usize
+    }
+    if true {
+        let s = t.mk()
+        let mut k = fn() -> usize capture [&s] {
+            s.len()
+        }
+        core.mem.swap(&mut g, &mut k)
+    }
+    g()
+end t.c03
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let n = t.c03()
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(line.push_u64(u64.from_usize(n)))
+    std.io.print_line(line.as_str())?
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello, this is a long heap string"))
+    s
+end t.mk

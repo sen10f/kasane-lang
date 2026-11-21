@@ -1,0 +1,27 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let mut v: alloc.vec.Vec<&'static str, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let f = fn(x: &str) -> () capture [&mut v] {
+        core.mem.drop(v.push(x))
+    }
+    if true {
+        let s = t.mk("hello, this is a long heap string")
+        f(s.as_str())
+    }
+    let other = t.mk("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+    t.show(v)?
+    core.mem.drop(other)
+    Ok(())
+end t.main
+
+fn t.mk(text: &str) -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(text))
+    s
+end t.mk
+
+fn t.show(v: alloc.vec.Vec<&'static str, std.alloc.System>) -> Result<(), std.io.Error> uses [io.console] panics never
+    match v.get(0usize) {
+        Some(r) => std.io.print_line(*r)
+        None => Ok(())
+    }
+end t.show
