@@ -1,0 +1,26 @@
+fn t.feed[F: core.ops.FnMut<(&str,), ()>](f: F) -> () uses [alloc] panics never
+    let s = t.mk("hello, this is a long heap string")
+    f(s.as_str())
+end t.feed
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let mut slot: Option<&str> = None
+    t.feed(
+        fn(x: &str) -> () capture [&mut slot] {
+            *slot = Some(x)
+        },
+    )
+    let other = t.mk("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+    match slot {
+        Some(r) => std.io.print_line(r)?
+        None => ()
+    }
+    core.mem.drop(other)
+    Ok(())
+end t.main
+
+fn t.mk(text: &str) -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(text))
+    s
+end t.mk

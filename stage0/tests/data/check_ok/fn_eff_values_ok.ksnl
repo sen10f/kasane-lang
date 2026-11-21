@@ -1,0 +1,23 @@
+fn t.main() -> () uses [io.console] panics never
+    let mut g = t.say
+    g = t.say
+    g()
+    let mut a = [3u32, 1u32, 2u32]
+    a.as_mut_slice().sort_by(
+        fn(x: &u32, y: &u32) -> core.cmp.Ordering capture [] {
+            x.cmp(y)
+        },
+    )
+    let k = fn(q: fn() -> () uses [io.console] panics never) -> () capture [] {
+        q()
+    }
+    k(t.quiet)
+    k(t.say)
+end t.main
+
+fn t.quiet() -> () uses [] panics never
+end t.quiet
+
+fn t.say() -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line("hi"))
+end t.say

@@ -1,0 +1,17 @@
+static t.X: u32 = t.f()
+
+fn t.f() -> u32 uses [process] panics never
+    let mut c = std.process.Command.new("/bin/touch")
+    c.arg("/tmp/ksn_constinit_user_fn_process")
+    match c.spawn() {
+        Ok(child) => match child.wait() {
+            Ok(_) => 1u32
+            Err(_) => 3u32
+        }
+        Err(_) => 2u32
+    }
+end t.f
+
+fn t.main() -> u32 uses [] panics never
+    t.X
+end t.main

@@ -1888,14 +1888,14 @@ fn the_orphan_rule_allows_impls_with_a_local_side() {
 
 #[test]
 fn trait_side_impls_work_for_foreign_types_in_run_and_llvm_build() {
-    // 3.2: トレイトを定義したモジュール以外 (ここでは別モジュール) の型 (`alloc.string.String` / ユーザー型 / 基本型) への
-    // impl のメソッドは `<トレイトFQN>.<型FQN>.<名前>` に置け、メソッド探索 (3) で見つかる。
+    // 3.2: 部外の型 (`alloc.string.String` / 基本型) への、自分のトレイトの impl は、トレイトを定義したモジュールに置き、
+    // メソッドは `<トレイトFQN>.<型FQN>.<名前>` になる。メソッド探索 (3) で見つかる。自分の型への impl は型のモジュールに置く。
     let t = tmp_files("trait_side", &[("t.ksnl", TRAIT_SIDE_MAIN), ("t/tr.ksnl", TRAIT_SIDE_TR), ("t/ty.ksnl", TRAIT_SIDE_TY)]);
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(codes(&out).is_empty(), "{}", out);
     let r = run(&["run"], &t.0);
     assert_eq!(text(&r.stdout), "ok\n", "{}", text(&r.stderr));
-    let g = run(&["get", "t.tr.Show.t.ty.P.show"], &t.0);
+    let g = run(&["get", "t.ty.P.show"], &t.0);
     assert!(text(&g.stdout).contains("impls t.tr.Show"), "{}", text(&g.stdout));
     if let Some((r, n)) = llvm_build_and_run(&t) {
         same_output(&r, &n);
@@ -1904,11 +1904,9 @@ fn trait_side_impls_work_for_foreign_types_in_run_and_llvm_build() {
 
 #[test]
 fn an_impl_placed_on_both_the_type_side_and_the_trait_side_is_a_duplicate() {
-    let ty = format!(
-        "{}\nimpl t.tr.Show for t.ty.P\nfn t.ty.P.show(self: &t.ty.P) -> u32 uses [] panics never impls t.tr.Show\n    1u32\nend t.ty.P.show\n",
-        TRAIT_SIDE_TY
-    );
-    let t = tmp_files("trait_side_dup", &[("t.ksnl", TRAIT_SIDE_MAIN), ("t/tr.ksnl", TRAIT_SIDE_TR), ("t/ty.ksnl", &ty)]);
+    // 型側 (t/ty.ksnl) と、トレイト側 (t/tr.ksnl に追加) の両方に同じ (トレイト, 型) の impl を置く。
+    let tr = format!("{}\n{}", TRAIT_SIDE_TR, TRAIT_SIDE_P_DUP);
+    let t = tmp_files("trait_side_dup", &[("t.ksnl", TRAIT_SIDE_MAIN), ("t/tr.ksnl", &tr), ("t/ty.ksnl", TRAIT_SIDE_TY)]);
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(codes(&out).iter().any(|c| c == "E1114"), "{}", out);
 }
@@ -5274,4 +5272,27 @@ end t.main
             assert!(got.is_empty(), "{}: {}", name, text(&o.stdout));
         }
     }
+}
+
+/// `static` / `const` の初期化式から効果のある関数を呼んでも、`ksn check` はそれを実行しない (X1)。
+/// 1 つ目は検査 (E2038) が拒み、2 つ目 (`const fn` の検査を通り抜けた場合) は評価の防御線 (E4024) が止める。
+#[test]
+fn check_never_runs_effects_of_const_initializers() {
+    let marker = std::env::temp_dir().join(format!("ksn_constinit_marker_{}", std::process::id()));
+    let _ = fs::remove_file(&marker);
+    let m = marker.to_string_lossy().to_string();
+    let src = format!(
+        "static t.X: u32 = t.f()\n\nfn t.f() -> u32 uses [process] panics never\n    let mut c = std.process.Command.new(\"/bin/touch\")\n    c.arg(\"{m}\")\n    match c.spawn() {{\n        Ok(child) => match child.wait() {{\n            Ok(_) => 1u32\n            Err(_) => 3u32\n        }}\n        Err(_) => 2u32\n    }}\nend t.f\n\nfn t.main() -> u32 uses [] panics never\n    t.X\nend t.main\n"
+    );
+    let t = Tmp::new_strict("constinit_no_exec", &src);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E2038"), "{}", text(&o.stdout));
+    assert!(!marker.exists(), "`ksn check` ran a constant initializer's effects");
+    let src2 = format!(
+        "static t.X: bool = std.fs.create_dir(\"{m}\").is_ok()\n\nfn t.main() -> bool uses [] panics never\n    t.X\nend t.main\n"
+    );
+    let t2 = Tmp::new_strict("constinit_no_exec2", &src2);
+    let o2 = run(&["check", "--json"], &t2.0);
+    assert_ne!(o2.status.code(), Some(0));
+    assert!(!marker.exists(), "`ksn check` ran a constant initializer's effects");
 }

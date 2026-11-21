@@ -666,6 +666,31 @@ impl Interp {
         ))
     }
 
+    fn const_fail<T>(&self, what: &str) -> Result<T, Ctl> {
+        panic(format!("{}: `{}` cannot run during constant evaluation (4.1)", crate::interp::CONST_EFFECT_MSG, what))
+    }
+
+    pub(crate) fn const_guard_def(&mut self, d: &crate::program::Def) -> Result<(), Ctl> {
+        if d.uses.is_empty() { Ok(()) } else { self.const_fail(&d.name) }
+    }
+
+    pub(crate) fn const_guard_method(&mut self, name: &str) -> Result<(), Ctl> {
+        match self.p.method_idx.get(name) {
+            Some(c) if c.iter().all(|&i| self.p.defs[i].uses.is_empty()) => Ok(()),
+            Some(_) => self.const_fail(&format!(".{}()", name)),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn const_guard_native(&mut self, name: &str) -> Result<(), Ctl> {
+        for cand in [name.to_string(), format!("core.num.{}", name), format!("core.char.{}", name), format!("core.bool.{}", name)] {
+            if let Some(d) = self.p.defs.iter().find(|d| d.name == cand && d.kw == "fn" && d.body.is_none()) {
+                return if d.uses.is_empty() { Ok(()) } else { self.const_fail(name) };
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn dbg_guard_def(&mut self, d: &crate::program::Def) -> Result<(), Ctl> {
         if pure_def(d) { Ok(()) } else { self.guard_fail(&d.name) }
     }

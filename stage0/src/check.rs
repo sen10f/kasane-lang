@@ -204,6 +204,19 @@ pub(crate) fn find_ptr_ty(v: &V, line: usize) -> Option<usize> {
 }
 
 /// 定義のシグネチャ (引数・戻り値) に生ポインタ型があるか。
+/// 3.5: `[unsafe] modules` の完全一致または接頭辞一致。core / alloc / std は暗黙に許可。
+/// `unsafe` を使ってよいモジュールか。`unsafe_modules` は (パッケージの `src/`・`tests/` の道, モジュール) の組で、
+/// 許可はそのパッケージ自身のファイルにだけ効く (2026-11-21 の脆弱性の直し S1)。暗黙の許可は標準ライブラリだけで、
+/// 利用者のパッケージは `core` / `alloc` / `std` の名前を持てない (読み込みの E1001、S2・S3)。
+pub(crate) fn module_allows_unsafe(unsafe_modules: &[(String, String)], module: &str, file: &str) -> bool {
+    let top = module.split('.').next().unwrap_or("");
+    if matches!(top, "core" | "alloc" | "std") {
+        return true;
+    }
+    unsafe_modules
+        .iter()
+        .any(|(dir, m)| file.starts_with(dir.as_str()) && (module == m || module.starts_with(&format!("{}.", m))))
+}
 pub(crate) fn sig_has_ptr(d: &Def) -> bool {
     d.params.iter().any(|p| find_ptr_ty(&p.1, 0).is_some()) || find_ptr_ty(&d.ret, 0).is_some()
 }
@@ -461,7 +474,8 @@ pub struct Checker<'a> {
     closure_blocked: Vec<HashSet<String>>,
     /// いま `const fn` の本体を検査中か (呼べるのは const fn と組み込みのみ、3.2)。
     in_const_fn: bool,
-    pub unsafe_modules: Vec<String>,
+    /// (パッケージのソースのディレクトリ, そのパッケージの `[unsafe] modules` の 1 つ)。モジュールの許可は、そのパッケージのファイルの定義だけに効く (S1)。
+    pub unsafe_modules: Vec<(String, String)>,
     /// `tests/` 配下 (統合テスト、3.2) のファイルパス。ここに属する定義には別の規則を当てる。
     pub integration_files: HashSet<String>,
     unsafe_ok: bool,
@@ -650,7 +664,10 @@ impl<'a> Checker<'a> {
                 "const" | "static" => {
                     self.check_header_types(i, &[d.ret.clone()]);
                     if let Some(init) = &d.init {
+                        // 初期化式は検査時に評価される (4.1)。`const fn` と同じ規則: 呼べるのは `const fn` と組み込みだけ。
+                        self.in_const_fn = true;
                         self.visit(init, &mut HashSet::new(), i, true);
+                        self.in_const_fn = false;
                         self.check_const_range(init, &d.ret, i);
                     }
                 }
@@ -686,12 +703,8 @@ impl<'a> Checker<'a> {
     }
 
     /// 3.5: `[unsafe] modules` の完全一致または接頭辞一致。core / alloc / std は暗黙に許可。
-    fn module_may_use_unsafe(&self, module: &str) -> bool {
-        let top = module.split('.').next().unwrap_or("");
-        if matches!(top, "core" | "alloc" | "std") {
-            return true;
-        }
-        self.unsafe_modules.iter().any(|m| module == m || module.starts_with(&format!("{}.", m)))
+    fn module_may_use_unsafe(&self, module: &str, file: &str) -> bool {
+        module_allows_unsafe(&self.unsafe_modules, module, file)
     }
 
     // ---- 宣言レベルの規則 (3.5 / 5.3 / 8.2)
@@ -700,7 +713,7 @@ impl<'a> Checker<'a> {
         // 5.3: 再帰を含む型 (自己参照・相互再帰の両方) の集合。
         let recursive = self.recursive_types();
         for &i in &user {
-            if !self.module_may_use_unsafe(&self.def(i).module) {
+            if !self.module_may_use_unsafe(&self.def(i).module, &self.def(i).file) {
                 self.check_unsafe_surface(i);
             }
             let d = self.def(i);
@@ -947,7 +960,7 @@ impl<'a> Checker<'a> {
             let tb = d.impl_trait.clone();
             // 5.5: 手動の `Send` / `Sync` impl (内部可変性の表明) は unsafe 許可モジュールのみ。
             if matches!(tb.as_str(), "core.marker.Send" | "core.marker.Sync") {
-                if !self.module_may_use_unsafe(&d.module) {
+                if !self.module_may_use_unsafe(&d.module, &d.file) {
                     self.diag(
                         "E5002",
                         format!("manual impl of {} is only allowed in an unsafe-permitted module (5.5)", tb),
@@ -974,16 +987,8 @@ impl<'a> Checker<'a> {
             // 4.3 (3.2): 孤児規則 — `impl Tr for T` は、Tr と T のどちらかがこのパッケージ内で
             // 定義されたもののときだけ置ける。impl の置き場所自体が不正なときは、ここで報告して
             // メソッドの過不足 (E1112) は見ない (メソッドを置ける場所がそもそも無いので E1112 では直せない)。
-            if self.orphan_violation(d, &tb, &tgt) {
-                self.diag(
-                    "E2043",
-                    format!(
-                        "impl {} for {} violates the orphan rule: neither the trait nor the type is defined in this package (3.2)",
-                        tb, tgt
-                    ),
-                    i,
-                    0,
-                );
+            if let Some(why) = self.orphan_violation(d, &tb, &tgt) {
+                self.diag("E2043", format!("impl {} for {} violates the orphan rule: {} (3.2)", tb, tgt, why), i, 0);
                 continue;
             }
             let owner = prim_owner(&tgt);
@@ -1114,33 +1119,8 @@ impl<'a> Checker<'a> {
     /// 4.3 (3.2): 孤児規則。`impl Tr for T` は、Tr と T のどちらか一方がこのパッケージ内で
     /// 定義されたもののときだけ許される。対象が型パラメータ (blanket impl) のとき、名前が
     /// 未解決のとき、名義型・基本型以外の対象 (参照・スライス・タプル・fn 型) のときは黙る (誤検出厳禁)。
-    fn orphan_violation(&self, d: &Def, tb: &str, tgt: &str) -> bool {
-        let Some(&ti) = self.p.types.get(tb) else { return false };
-        let td = self.def(ti);
-        if td.kw != "trait" {
-            return false; // トレイトでない名前はここでは扱わない。
-        }
-        if self.user.contains(&ti) {
-            return false; // このパッケージのトレイトなら常に許す。
-        }
-        // 対象が型パラメータ (blanket impl) なら黙る。
-        if d.gnames().contains(tgt) {
-            return false;
-        }
-        // 対象の形: 名義型と基本型だけが impl の対象。それ以外の形は黙る。
-        match tag(&d.impl_for).as_str() {
-            "prim" => return true, // 基本型はユーザーパッケージでは定義できない
-            "named" => {}
-            _ => return false,
-        }
-        match self.p.types.get(tgt) {
-            // このパッケージの名義型なら許す。
-            Some(&j) if self.user.contains(&j) && matches!(self.def(j).kw.as_str(), "type" | "enum") => false,
-            // 部外の型 (標準ライブラリ・依存パッケージ)。トレイトも部外なので違反。
-            Some(_) => true,
-            // 未解決の名前。
-            None => false,
-        }
+    fn orphan_violation(&self, d: &Def, tb: &str, tgt: &str) -> Option<String> {
+        orphan_violation(self.p, d, tb, tgt)
     }
 
     /// 4.3: `derive` は生成するトレイトの `requires` が揃うときだけ可能 (E2035)。
@@ -2261,7 +2241,11 @@ impl<'a> Checker<'a> {
         self.shadow_check(&params, &HashSet::new(), di, 0);
         self.cur_panics = if test { "may".into() } else { d.panics.clone().unwrap_or("may".into()) };
         self.in_const_fn = !test && d.is_const;
-        self.unsafe_ok = self.module_may_use_unsafe(&d.module);
+        // 3.2: `const fn` は `uses []`。検査時に評価されるので、効果のある関数は許さない。
+        if self.in_const_fn && !d.uses.is_empty() {
+            self.diag("E2038", format!("`const fn` {} must be `uses []` (3.2)", d.name), di, 0);
+        }
+        self.unsafe_ok = self.module_may_use_unsafe(&d.module, &d.file);
         let body = d.body.as_ref().unwrap();
         let names = self.def(di).gnames();
         self.check_body_types(body, di, &names);
@@ -2476,10 +2460,33 @@ impl<'a> Checker<'a> {
                     }
                     let r = self.resolve_path(&segs, di, nline(fnn));
                     if let Some(r) = r {
+                        // 組み込み (Native) も、宣言 (.sig) の `uses` が空でなければ検査時には呼べない。
+                        if self.in_const_fn {
+                            if let Target::Native(n) = &r.target {
+                                if let Some(&si) = self.p.sigs.get(n) {
+                                    let sd = self.def(si);
+                                    if !sd.uses.is_empty() {
+                                        let msg = format!(
+                                            "`const fn` / initializer cannot call {}, which has effects (uses [{}])",
+                                            sd.name,
+                                            sd.uses.join(", ")
+                                        );
+                                        self.diag("E2038", msg, di, nline(e));
+                                    }
+                                }
+                            }
+                        }
                         if matches!(r.target, Target::Fn(_) | Target::Sig(_)) && r.rest.is_empty() {
                             let callee = self.p.fn_def(&r).unwrap();
                             // 3.2: `const fn` の本体から呼べるのは `const fn` と組み込みのみ。
-                            if self.in_const_fn && !callee.is_const {
+                            if self.in_const_fn && !callee.uses.is_empty() {
+                                self.diag(
+                                    "E2038",
+                                    format!("`const fn` / initializer cannot call {}, which has effects (uses [{}])", callee.name, callee.uses.join(", ")),
+                                    di,
+                                    nline(e),
+                                );
+                            } else if self.in_const_fn && !callee.is_const {
                                 self.diag(
                                     "E2038",
                                     format!("`const fn` cannot call non-const fn {}", callee.name),
@@ -5609,6 +5616,51 @@ pub(crate) fn has_manual_copy(p: &crate::program::Program, nm: &str) -> bool {
             && impl_target(&d.impl_for) == nm
             && d.generics.iter().all(|g| g.0 != "type" || items(&g.2).is_empty())
     })
+}
+
+/// 3.2 の置き場所の規則 (旧い検査と TAST 規則の両方が使う)。`impl Tr for T` の置き場所は 1 つに決まる:
+/// T が impl と同じパッケージの名義型なら T のモジュール、そうでなくて Tr が impl と同じパッケージのトレイトなら
+/// Tr のモジュール。基本型は標準ライブラリのもの (所属は `core.num` などの 4.5 のモジュール)。
+/// どちらも部外なら置けない。違反のとき、理由 (E2043 の説明の後ろ) を返す。
+/// 判定しないもの (`None`): Tr がトレイトでない・未解決の名前・型パラメータ (blanket impl)・名義型と基本型以外の対象。
+/// パッケージの同一は最上位のモジュール成分で決める (`core`・`alloc`・`std` は別のパッケージ)。
+pub(crate) fn orphan_violation(p: &Program, d: &Def, tb: &str, tgt: &str) -> Option<String> {
+    let &ti = p.types.get(tb)?;
+    if p.defs[ti].kw != "trait" {
+        return None;
+    }
+    if d.gnames().contains(tgt) {
+        // blanket impl: トレイトを定義したモジュールにだけ置ける。
+        let want = &p.defs[ti].module;
+        return (d.module != *want)
+            .then(|| format!("it is placed in module {}, but it must be in module {}", d.module, want));
+    }
+    let here = package_of(&d.module);
+    let trait_here = package_of(&p.defs[ti].module) == here;
+    // 名義型なら、その型がこのパッケージのものか。基本型は部外 (標準ライブラリ)。
+    let type_home = match tag(&d.impl_for).as_str() {
+        "prim" => None,
+        "named" => match p.types.get(tgt) {
+            Some(&j) if package_of(&p.defs[j].module) == here => Some(p.defs[j].module.clone()),
+            Some(_) => None,
+            None => return None, // 未解決の名前
+        },
+        _ => return None,
+    };
+    let want = match type_home {
+        Some(m) => m,
+        None if trait_here => p.defs[ti].module.clone(),
+        None => return Some("neither the trait nor the type is defined in this package".to_string()),
+    };
+    if d.module == want {
+        return None;
+    }
+    Some(format!("it is placed in module {}, but it must be in module {}", d.module, want))
+}
+
+/// モジュール名のパッケージ (最上位の成分。標準ライブラリの `core` / `alloc` / `std` はそれぞれ別のパッケージ)。
+fn package_of(module: &str) -> &str {
+    module.split('.').next().unwrap_or("")
 }
 
 /// 基本型の所有者 FQN (impl のメソッドを置く場所。3.2 の孤児規則)。

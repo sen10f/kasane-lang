@@ -273,10 +273,27 @@ impl<'a> Ck<'a> {
         }
         argt.extend(args.iter().map(|a| a.ty.clone()));
         if c.kw != "extern" {
+            let mut bound: std::collections::HashMap<String, Ty> = std::collections::HashMap::new();
             for (k, a) in argt.iter().enumerate() {
                 let Some(prm) = c.params.get(k) else { break };
                 let raw = from_v(&prm.1, &gn);
                 self.walk(&raw, a, line);
+                // 型パラメータは、先の引数 (受け手を含む) が決めた型で受ける: `v.push(f)` の `T` は `v` の要素の型、
+                // `mem.replace(&mut g, f)` の `T` は `g` の型。関数型の効果は型にあり、初期値のものではない。
+                if bound.is_empty() {
+                    for (j, aj) in argt.iter().enumerate() {
+                        let Some(pj) = c.params.get(j) else { break };
+                        let mut slots = vec![];
+                        super::captures::param_slots(&from_v(&pj.1, &gn), aj, &mut slots);
+                        for (n, t) in slots {
+                            bound.entry(n).or_insert(t);
+                        }
+                    }
+                }
+                if !bound.is_empty() {
+                    let inst = crate::types::subst(&raw, &bound);
+                    self.walk(&inst, a, line);
+                }
                 // `F: Fn<..>` の型パラメータへ、より広い (効果変数・panic 変数を持つ) 境界の型パラメータを渡す。
                 let mut wslots = vec![];
                 collect_params(&raw, &mut wslots);
@@ -333,10 +350,39 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
         let mut ck = Ck { p, d, found: vec![], seen: HashSet::new() };
         // 戻り値・注釈つきの `let` は旧い検査と同じく定義の行 (0) で報告する。
         ck.walk(&b.ret, &b.body.ty, 0);
+        // 局所の名前 → 束縛の型 (`let` と引数。同じ名前が複数あれば全部と比べる)。
+        let mut locals: std::collections::HashMap<String, Vec<Ty>> = std::collections::HashMap::new();
+        for q in &b.params {
+            locals.entry(q.name.clone()).or_default().push(q.ty.clone());
+        }
+        super::impl_sig::walk(&b.body, &mut |e| match &e.kind {
+            TKind::Block(ss) => {
+                for st in ss {
+                    if let TStmt::Let { pat, .. } = st {
+                        fn pb(q: &TPat, m: &mut std::collections::HashMap<String, Vec<Ty>>) {
+                            if let Some((n, t, _)) = q.info.as_ref().and_then(|i| i.bind.as_ref()) {
+                                m.entry(n.clone()).or_default().push(t.clone());
+                            }
+                            q.children.iter().for_each(|c| pb(c, m));
+                        }
+                        pb(pat, &mut locals);
+                    }
+                }
+            }
+            TKind::Closure { params, .. } => {
+                for q in params {
+                    locals.entry(q.name.clone()).or_default().push(q.ty.clone());
+                }
+            }
+            _ => {}
+        });
         super::impl_sig::walk(&b.body, &mut |e| {
             match &e.kind {
                 TKind::Block(ss) => {
                     for st in ss {
+                        if let TStmt::Assign { place, value } = st {
+                            ck.walk(&place.ty, &value.ty, e.line);
+                        }
                         if let TStmt::Let { pat, init: Some(init) } = st {
                             if pat.kind == "PBind" && pat.lit.iter().any(|l| l == "ann") {
                                 if let Some((_, ty, _)) = pat.info.as_ref().and_then(|i| i.bind.as_ref()) {
@@ -355,9 +401,34 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     ck.into_dyn(&e.targs, e.line);
                 }
                 TKind::MCall { name, .. } if name == "into_dyn" && !matches!(e.res, Some(Callee::Def(_))) => ck.into_dyn(&e.targs, e.line),
+                TKind::Call { callee, args } if matches!(e.res, Some(Callee::Local(_))) => {
+                    // 関数値・閉包の呼び出し: 実引数は、その型の仮引数の型 (関数型なら効果つき) に入る。
+                    let Some(Callee::Local(n)) = &e.res else { return };
+                    let _ = callee;
+                    for lt in locals.get(n).into_iter().flatten() {
+                        if let Ty::Closure { args: pa, .. } = strip(lt) {
+                            for (w, a) in pa.iter().zip(args.iter()) {
+                                ck.walk(w, &a.ty, e.line);
+                            }
+                        }
+                    }
+                }
                 TKind::Call { args, .. } | TKind::MCall { args, .. } => {
-                    let Some(Callee::Def(ci)) = &e.res else { return };
-                    let c = &p.defs[*ci];
+                    let cis: Vec<usize> = match &e.res {
+                        Some(Callee::Def(ci)) => vec![*ci],
+                        Some(Callee::Methods(v)) => {
+                            let mut o: Vec<usize> = vec![];
+                            for &ci in v {
+                                if !o.iter().any(|&x| p.defs[x].name == p.defs[ci].name && p.defs[x].params.len() == p.defs[ci].params.len()) {
+                                    o.push(ci);
+                                }
+                            }
+                            o
+                        }
+                        _ => return,
+                    };
+                    for ci in cis {
+                    let c = &p.defs[ci];
                     let recv: Option<Ty> = match &e.kind {
                         TKind::MCall { recv, .. } => Some(recv.ty.clone()),
                         TKind::Call { callee, .. } if c.params.len() > args.len() && matches!(&callee.kind, TKind::Path(s) if s.len() >= 2) => Some(callee.ty.clone()),
@@ -365,6 +436,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     };
                     ck.call(c, recv.as_ref(), args, &e.targs, e.line);
                 }
+                    }
                 _ => {}
             }
         });

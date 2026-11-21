@@ -247,17 +247,24 @@ fn empty_program() -> Program {
 
 /// std + 依存 + 本体の順に登録する。返す添字は本体の定義。
 pub(crate) fn build_program(l: &Loaded) -> (Program, Vec<usize>) {
-    build_program_with(l, None)
+    let (p, u, _) = build_program_with(l, None);
+    (p, u)
 }
 
 /// `build_program` の、標準ライブラリの定義を複製せず `Loaded` から移すもの (起動時間の短縮)。
 /// 移したあとの `l.std[*].defs` は空になるので、あとで標準ライブラリの定義を読まない呼び出しだけが使う。
 pub(crate) fn build_program_take(l: &mut Loaded) -> (Program, Vec<usize>) {
+    let (p, u, _) = build_program_take3(l);
+    (p, u)
+}
+
+/// `build_program_take` に、依存パッケージの定義の番号も返す (検査は根と依存の全部に掛ける)。
+fn build_program_take3(l: &mut Loaded) -> (Program, Vec<usize>, Vec<usize>) {
     let mut std_defs: Vec<Vec<Def>> = l.std.iter_mut().map(|s| std::mem::take(&mut s.defs)).collect();
     build_program_with(l, Some(&mut std_defs))
 }
 
-fn build_program_with(l: &Loaded, taken: Option<&mut Vec<Vec<Def>>>) -> (Program, Vec<usize>) {
+fn build_program_with(l: &Loaded, taken: Option<&mut Vec<Vec<Def>>>) -> (Program, Vec<usize>, Vec<usize>) {
     let mut prog = empty_program();
     prog.entry = l.pkg.entry();
     match taken {
@@ -277,9 +284,11 @@ fn build_program_with(l: &Loaded, taken: Option<&mut Vec<Vec<Def>>>) -> (Program
         }
     }
     let n_std = prog.defs.len();
+    let mut dep_idx = vec![];
     for dp in &l.deps {
         for s in &dp.sources {
             for d in &s.defs {
+                dep_idx.push(prog.defs.len());
                 prog.add_def(d.clone());
             }
         }
@@ -295,7 +304,7 @@ fn build_program_with(l: &Loaded, taken: Option<&mut Vec<Vec<Def>>>) -> (Program
     crate::infer::run(&mut prog);
     crate::infer::annotate_int_lits(&mut prog, &user);
     crate::infer::annotate_owned_drops(&mut prog, &user);
-    (prog, user)
+    (prog, user, dep_idx)
 }
 
 /// lint がモジュール名を求めるための、ソースルートからの相対パス風の名前。
@@ -415,8 +424,16 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
     let use_cache = crate::check_cache::enabled();
     // パッケージが `len` / `is_empty` を独自に定義しているか (D11)。定義しているプログラムでは `x.len() == 0` の
     // 書き換えをしないので、その framework のファイルキーにもこの数を拾わせる (check_cache.rs::file_key)。
-    let own_len = crate::fmt::own_len_method(&l.pkg.sources.iter().map(|s| s.text.as_str()).collect::<Vec<_>>());
-    for s in &l.pkg.sources {
+    let own_len_root = crate::fmt::own_len_method(&l.pkg.sources.iter().map(|s| s.text.as_str()).collect::<Vec<_>>());
+    // 検査の対象は根のソースと、依存パッケージのソースの全部 (依存の本体も根と同じ検査を受ける。S1)。
+    let mut all_srcs: Vec<(&Source, String, bool)> = l.pkg.sources.iter().map(|s| (s, srcroot.clone(), own_len_root)).collect();
+    for dp in &l.deps {
+        let dl = crate::fmt::own_len_method(&dp.sources.iter().map(|s| s.text.as_str()).collect::<Vec<_>>());
+        let dr = norm(&dp.root.join("src"));
+        all_srcs.extend(dp.sources.iter().map(|s| (s, dr.clone(), dl)));
+    }
+    for (s, srcroot, own_len) in all_srcs {
+        let srcroot = srcroot.as_str();
         let fl = rel(&s.path);
         if s.path.ends_with(".ksnh") {
             // `.ksnh` が正。`strip(.ksnh)` が横の `.ksnl` とバイト一致しなければ E9050。
@@ -443,7 +460,7 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         }
         // 文面だけで決まる検査 (文法・正規形・lint) は、キャッシュが有効ならファイル単位で再利用する
         // (check_cache.rs、設計_増分検査.md)。無効のときは従来どおり毎回計算する。
-        let relpath = lint_rel(s, &srcroot);
+        let relpath = lint_rel(s, srcroot);
         let mut memo = if use_cache && s.error.is_none() { crate::check_cache::load(&s.path, &relpath) } else { Default::default() };
         let gram = if s.error.is_none() {
             Some(if use_cache { grammar.check_memo(&s.text, &mut memo.gram) } else { grammar.check(&s.text) })
@@ -565,26 +582,49 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         crate::check_cache::trim();
     }
     crate::vm::tick("lint");
-    if l.pkg.sources.iter().any(|s| s.error.is_some()) {
+    if l.pkg.sources.iter().chain(l.deps.iter().flat_map(|d| d.sources.iter())).any(|s| s.error.is_some()) {
         return Ok((l, None, vec![]));
     }
-    let (prog, user) = if take_std { build_program_take(&mut l) } else { build_program(&l) };
+    // パッケージは自分の名前の下の定義だけを置ける。`core` / `alloc` / `std` は処理系の標準ライブラリだけのもの (S2/S3)。
+    if l.pkg.source != STDLIB_SOURCE {
+        for p in std::iter::once(&l.pkg).chain(l.deps.iter()) {
+            package_name_rule(p, rep);
+        }
+    }
+    let (prog, user, dep_idx) = if take_std {
+        build_program_take3(&mut l)
+    } else {
+        build_program_with(&l, None)
+    };
+    let checked: Vec<usize> = dep_idx.iter().chain(user.iter()).copied().collect();
     crate::vm::tick("build_prog");
+    // `[unsafe] modules` はパッケージごと。各パッケージは自分の名前の下のモジュールだけを列挙できる (他の名前は無視)。
+    let unsafe_pairs: Vec<(String, String)> = std::iter::once(&l.pkg)
+        .chain(l.deps.iter())
+        .flat_map(|p| {
+            let root = norm(&p.root);
+            let ms = crate::project::unsafe_modules(&p.manifest);
+            ["src", "tests"].into_iter().flat_map(move |sub| {
+                let dir = format!("{}/{}/", root, sub);
+                ms.clone().into_iter().map(move |m| (dir.clone(), m))
+            })
+        })
+        .collect();
     let mut diags = {
-        let mut ck = Checker::new(&prog, user.clone());
-        ck.unsafe_modules = crate::project::unsafe_modules(&l.pkg.manifest);
+        let mut ck = Checker::new(&prog, checked.clone());
+        ck.unsafe_modules = unsafe_pairs.clone();
         ck.integration_files = l.pkg.sources.iter().filter(|s| s.is_test).map(|s| s.path.clone()).collect();
         ck.run();
         crate::vm::tick("checker");
         ck.diags
     };
     // 新しい検査 (TAST、tast_check.rs) の差し込み口: 検査器は 1 つ (`KSN_CHECKER=old|new|shadow` は非推奨で無視)。
-    let mut diags = crate::tast_check::select(&prog, &user, diags);
+    let mut diags = crate::tast_check::select(&prog, &checked, &unsafe_pairs, diags);
     // 他の診断が無いときだけ、`const` / `static` の初期化式を評価して、評価中の panic を E4024 にする (4.1)。
     let (prog, const_diags) = if diags.is_empty() { eval_const_inits(prog, &user) } else { (prog, vec![]) };
     diags.extend(const_diags);
-    // 隠しの切り替え (試験用): 借用・線形の診断 (E30xx) を外して実行する。検査器の穴を実行時の検査 (解放済みの値の読み) で確かめる。
-    let diags: Vec<_> = if std::env::var_os("KSN_SKIP_BORROW_DIAGS").is_some() {
+    // 隠しの切り替え (試験用。配布の release ビルドでは効かない: debug か feature `test-hooks` のときだけ): 借用・線形の診断 (E30xx) を外して実行する。検査器の穴を実行時の検査 (解放済みの値の読み) で確かめる。
+    let diags: Vec<_> = if cfg!(any(debug_assertions, feature = "test-hooks")) && std::env::var_os("KSN_SKIP_BORROW_DIAGS").is_some() {
         diags.into_iter().filter(|d| !d.code.starts_with("E30")).collect()
     } else {
         diags
@@ -607,6 +647,30 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         });
     }
     Ok((l, Some(prog), user))
+}
+
+/// パッケージのソースが置ける名前の規則 (S2/S3): 定義の FQN もモジュールも、先頭が `core` / `alloc` / `std`
+/// (処理系の標準ライブラリだけのもの) であってはならない。違えば E1001。
+fn package_name_rule(p: &Package, rep: &mut Report) {
+    for s in &p.sources {
+        for d in &s.defs {
+            if matches!(d.kw.as_str(), "impl" | "import" | "test" | "link") {
+                continue;
+            }
+            let top = d.name.split('.').next().unwrap_or("");
+            let mtop = d.module.split('.').next().unwrap_or("");
+            if matches!(top, "core" | "alloc" | "std") || matches!(mtop, "core" | "alloc" | "std") {
+                rep.add(
+                    "E1001",
+                    &format!("`{}` (module `{}`) is under `core` / `alloc` / `std`, which belong to the standard library: a package cannot define names there", d.name, d.module),
+                    Some(&rel(&s.path)),
+                    d.line,
+                    1,
+                    true,
+                );
+            }
+        }
+    }
 }
 
 /// 利用者の `const` / `static` の初期化式を評価し、評価中の panic (ゼロ除算・溢れ・範囲外・`panic` など) を

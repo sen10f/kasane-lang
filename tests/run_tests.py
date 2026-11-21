@@ -64,6 +64,12 @@ r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'par_test.
 _ct = r.stdout + r.stderr
 _fails = '\n'.join(l for l in _ct.splitlines() if ' FAILED' in l or 'panicked at' in l or l.startswith('error: test failed'))[:3000]
 step('stage0: cargo test', r.returncode == 0, (_fails + '\n---\n' + _ct[-1500:]) if _fails else _ct[-1500:])
+# 2a. feature `test-hooks` が要る試験 (隠しの環境変数で借用の診断を捨てる `KSN_SKIP_BORROW_DIAGS` は、配布の
+#     バイナリでは効かない。2026-11-21 の脆弱性の直し E1)。target を別にする。
+r = subprocess.run(['cargo', 'test', '--release', '--features', 'test-hooks', '--test', 'interp_parity'], cwd=os.path.join(ROOT, 'stage0'),
+                   capture_output=True, text=True, encoding='utf-8', errors='replace',
+                   env=dict(os.environ, CARGO_TARGET_DIR=os.path.join(ROOT, 'stage0', 'target', 'hooks')))
+step('stage0: cargo test --features test-hooks (interp_parity)', r.returncode == 0, r.stdout[-1500:] + r.stderr[-500:])
 
 HR = """fn hr.main() -> Result<(), std.io.Error> uses [io.console, thread, time] panics never
     let mut i = 0u8

@@ -1,0 +1,24 @@
+fn t.within() -> usize uses [alloc] panics never
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut g = fn() -> usize capture [] {
+        0usize
+    }
+    g = fn() -> usize capture [&s] {
+        s.len()
+    }
+    g()
+end t.within
+
+fn t.owned() -> fn() -> usize uses [] panics never uses [] panics never
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    fn() -> usize capture [move s] {
+        s.len()
+    }
+end t.owned
+
+fn t.fill(out: &mut alloc.vec.Vec<usize, std.alloc.System>) -> () uses [alloc] panics never
+    let f = fn(x: &str) -> () capture [&mut out] {
+        core.mem.drop(out.push(x.len()))
+    }
+    f("abc")
+end t.fill

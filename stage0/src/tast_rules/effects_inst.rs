@@ -514,10 +514,25 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                         ck.dyn_call(&tr, &ta.0, name, e.line);
                     }
                 }
-                (TKind::Call { args, .. }, Some(Callee::Def(ci))) | (TKind::MCall { args, .. }, Some(Callee::Def(ci))) => {
-                    let c = &p.defs[*ci];
+                (TKind::Call { args, .. }, Some(Callee::Def(_) | Callee::Methods(_))) | (TKind::MCall { args, .. }, Some(Callee::Def(_) | Callee::Methods(_))) => {
+                    // 候補が複数 (`.sig` と本体の同名の定義など) のときは、同じ宣言 (名前・効果) を 1 つにして、残りをすべて検査する。
+                    let mut cis: Vec<usize> = vec![];
+                    match &e.res {
+                        Some(Callee::Def(ci)) => cis.push(*ci),
+                        Some(Callee::Methods(v)) => {
+                            for &ci in v {
+                                let c = &p.defs[ci];
+                                if !cis.iter().any(|&o| p.defs[o].name == c.name && p.defs[o].uses == c.uses && p.defs[o].panics == c.panics) {
+                                    cis.push(ci);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    for ci in cis {
+                    let c = &p.defs[ci];
                     if c.inferred {
-                        return;
+                        continue;
                     }
                     if !e.etargs.0.is_empty() {
                         // 明示型引数 `f::<..>`: 効果・panic の実引数で宣言を実体化する (実体化できなければ宣言のまま)。
@@ -528,7 +543,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                         if let Some((code, msg)) = violation(&ck.c, &c.name, &u, pn.as_deref()) {
                             ck.found.push((code, msg, e.line));
                         }
-                        return;
+                        continue;
                     }
                     let mut argt: Vec<Ty> = vec![];
                     match &e.kind {
@@ -567,6 +582,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                                 }
                             }
                         }
+                    }
                     }
                 }
                 _ => {}

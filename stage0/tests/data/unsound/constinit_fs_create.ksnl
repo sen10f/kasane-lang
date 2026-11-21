@@ -1,0 +1,5 @@
+const t.X: bool = std.fs.create_dir("/tmp/ksn_constinit_fs_create").is_ok()
+
+fn t.main() -> bool uses [] panics never
+    t.X
+end t.main

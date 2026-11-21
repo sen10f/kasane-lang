@@ -1,0 +1,14 @@
+fn t.main() -> () uses [] panics never
+    let outer = fn() -> () capture [] {
+        t.say()
+    }
+    let k = fn(q: fn() -> () uses [] panics never) -> () capture [] {
+        q()
+    }
+    k(outer)
+end t.main
+
+fn t.say() -> () uses [io.console] panics may
+    core.mem.drop(std.io.print_line("side effect from pure main"))
+    core.panic.panic("and a panic")
+end t.say

@@ -919,6 +919,14 @@ pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
         if lock_source != dp.source {
             errs.push(bad(format!("source of {} is {} in kasane.toml but {} in the lock", dp.name, dp.source, lock_source)));
         }
+        // 版 1 は api の記録を持たない。git・レジストリの依存があるのに版 1 へ落とすと、承認の関門 (E9060〜E9062) が
+        // 黙って無効になるので拒む (path 依存だけの lock は版 1 でよい)。
+        if version == Some(1) && (dp.source.starts_with("git+") || dp.source.starts_with("registry+")) {
+            errs.push(bad(format!(
+                "{} is a git or registry dependency but the lock is version 1, which records no api; the approval gate (E9060-E9062) would be disabled",
+                dp.name
+            )));
+        }
         let mut want: Vec<String> =
             dp.manifest.get("dependencies").and_then(|d| d.as_table()).map(|t| t.keys().cloned().collect()).unwrap_or_default();
         want.sort();
