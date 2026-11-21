@@ -165,12 +165,8 @@ pub fn tmp_files(name: &str, files: &[(&str, &str)]) -> Tmp {
 pub const TRAIT_SIDE_TR: &str = "trait t.tr.Show pub
     fn show(self: &Self) -> u32 uses [] panics never
 end t.tr.Show
-";
-pub const TRAIT_SIDE_TY: &str = "type t.ty.P pub
-    a: u32 pub
-end t.ty.P
-";
-pub const TRAIT_SIDE_MAIN: &str = "impl t.tr.Show for alloc.string.String
+
+impl t.tr.Show for alloc.string.String
 fn t.tr.Show.alloc.string.String.show(self: &alloc.string.String) -> u32 uses [] panics never impls t.tr.Show
     if self.is_empty() {
         return 100u32
@@ -178,18 +174,28 @@ fn t.tr.Show.alloc.string.String.show(self: &alloc.string.String) -> u32 uses []
     3u32
 end t.tr.Show.alloc.string.String.show
 
-impl t.tr.Show for t.ty.P
-fn t.tr.Show.t.ty.P.show(self: &t.ty.P) -> u32 uses [] panics never impls t.tr.Show
-    self.a.wrapping_add(1u32)
-end t.tr.Show.t.ty.P.show
-
 impl t.tr.Show for u32
 fn t.tr.Show.u32.show(self: &u32) -> u32 uses [] panics never impls t.tr.Show
     let v = *self
     v.wrapping_add(10u32)
 end t.tr.Show.u32.show
+";
+pub const TRAIT_SIDE_TY: &str = "type t.ty.P pub
+    a: u32 pub
+end t.ty.P
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+impl t.tr.Show for t.ty.P
+fn t.ty.P.show(self: &t.ty.P) -> u32 uses [] panics never impls t.tr.Show
+    self.a.wrapping_add(1u32)
+end t.ty.P.show
+";
+/// 型側の impl (`TRAIT_SIDE_TY`) と同じ (トレイト, 型) をトレイト側にも置く (E1114 の試験用。トレイトのモジュールに置く)。
+pub const TRAIT_SIDE_P_DUP: &str = "impl t.tr.Show for t.ty.P
+fn t.tr.Show.t.ty.P.show(self: &t.ty.P) -> u32 uses [] panics never impls t.tr.Show
+    1u32
+end t.tr.Show.t.ty.P.show
+";
+pub const TRAIT_SIDE_MAIN: &str = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let s = alloc.string.String.from_str(std.alloc.SYSTEM, \"abc\").unwrap()
     let p = t.ty.P { a: 4u32 }
     let n = 7u32

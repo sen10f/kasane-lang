@@ -1125,7 +1125,7 @@ impl<'a> Checker<'a> {
     /// 定義されたもののときだけ許される。対象が型パラメータ (blanket impl) のとき、名前が
     /// 未解決のとき、名義型・基本型以外の対象 (参照・スライス・タプル・fn 型) のときは黙る (誤検出厳禁)。
     fn orphan_violation(&self, d: &Def, tb: &str, tgt: &str) -> Option<String> {
-        orphan_violation(self.p, &self.user, d, tb, tgt)
+        orphan_violation(self.p, d, tb, tgt)
     }
 
     /// 4.3: `derive` は生成するトレイトの `requires` が揃うときだけ可能 (E2035)。
@@ -5947,35 +5947,50 @@ pub(crate) fn has_manual_copy(p: &crate::program::Program, nm: &str) -> bool {
 }
 
 /// 3.2 の置き場所の規則 (旧い検査と TAST 規則の両方が使う)。`impl Tr for T` の置き場所は 1 つに決まる:
-/// T がこのパッケージの名義型なら T のモジュール、そうでなくて Tr がこのパッケージのトレイトなら Tr のモジュール。
+/// T が impl と同じパッケージの名義型なら T のモジュール、そうでなくて Tr が impl と同じパッケージのトレイトなら
+/// Tr のモジュール。基本型は標準ライブラリのもの (所属は `core.num` などの 4.5 のモジュール)。
 /// どちらも部外なら置けない。違反のとき、理由 (E2043 の説明の後ろ) を返す。
 /// 判定しないもの (`None`): Tr がトレイトでない・未解決の名前・型パラメータ (blanket impl)・名義型と基本型以外の対象。
-pub(crate) fn orphan_violation(p: &Program, user: &[usize], d: &Def, tb: &str, tgt: &str) -> Option<String> {
+/// パッケージの同一は最上位のモジュール成分で決める (`core`・`alloc`・`std` は標準ライブラリの 1 つのパッケージ)。
+pub(crate) fn orphan_violation(p: &Program, d: &Def, tb: &str, tgt: &str) -> Option<String> {
     let &ti = p.types.get(tb)?;
     if p.defs[ti].kw != "trait" || d.gnames().contains(tgt) {
         return None;
     }
-    // 対象の (このパッケージの名義型か, 所属モジュール) を決める。
-    let (tgt_home, tgt_user) = match tag(&d.impl_for).as_str() {
-        "prim" => (None, false), // 基本型はユーザーパッケージでは定義できない (所属は標準ライブラリ)
+    let here = package_of(&d.module);
+    // 標準ライブラリの中の impl は、移行の前の配置を残す (`std.json` の `ToJson` など、型側と別モジュールに置いたもの)。
+    // 検査は利用者のパッケージの impl にだけかける。
+    if here == "std" {
+        return None;
+    }
+    let trait_here = package_of(&p.defs[ti].module) == here;
+    // 名義型なら、その型がこのパッケージのものか。基本型は部外 (標準ライブラリ)。
+    let type_home = match tag(&d.impl_for).as_str() {
+        "prim" => None,
         "named" => match p.types.get(tgt) {
-            Some(&j) if user.contains(&j) && matches!(p.defs[j].kw.as_str(), "type" | "enum") => {
-                (Some(p.defs[j].module.clone()), true)
-            }
-            Some(&j) => (Some(p.defs[j].module.clone()), false),
+            Some(&j) if package_of(&p.defs[j].module) == here => Some(p.defs[j].module.clone()),
+            Some(_) => None,
             None => return None, // 未解決の名前
         },
         _ => return None,
     };
-    let want = match (tgt_user, tgt_home) {
-        (true, Some(m)) => m,
-        _ if user.contains(&ti) => p.defs[ti].module.clone(),
-        _ => return Some("neither the trait nor the type is defined in this package".to_string()),
+    let want = match type_home {
+        Some(m) => m,
+        None if trait_here => p.defs[ti].module.clone(),
+        None => return Some("neither the trait nor the type is defined in this package".to_string()),
     };
     if d.module == want {
         return None;
     }
     Some(format!("it is placed in module {}, but it must be in module {}", d.module, want))
+}
+
+/// モジュール名のパッケージ (最上位の成分。標準ライブラリの `core` / `alloc` / `std` は 1 つのパッケージ)。
+fn package_of(module: &str) -> &str {
+    match module.split('.').next().unwrap_or("") {
+        "core" | "alloc" | "std" => "std",
+        top => top,
+    }
 }
 
 /// 基本型の所有者 FQN (impl のメソッドを置く場所。3.2 の孤児規則)。

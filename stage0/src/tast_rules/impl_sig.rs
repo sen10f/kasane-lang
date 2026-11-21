@@ -42,7 +42,7 @@ fn prim_owner(name: &str) -> String {
 
 /// 孤児規則・置き場所の違反 (E2043 は旧い検査が出す。違反の impl は過不足を見ない)。規則は `check::orphan_violation`。
 fn orphan(p: &Program, user: &[usize], d: &Def, tb: &str, tgt: &str) -> bool {
-    crate::check::orphan_violation(p, user, d, tb, tgt).is_some()
+    crate::check::orphan_violation(p, d, tb, tgt).is_some()
 }
 
 pub fn check(p: &Program, user: &[usize], tast: &Tast, side: &SideTabs) -> Vec<Diag> {
