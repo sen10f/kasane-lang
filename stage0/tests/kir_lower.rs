@@ -671,8 +671,8 @@ end t.main
 #[test]
 fn kir_lower_dump_on_check_is_hidden_behind_the_env_var() {
     // `KSN_DUMP_KIR=1 ksn check` だけ KIR を stderr に出す。通常の check の出力は変えない。
-    // `i32.successor` は段階 1 では未対応 (理由付きで出る)。以前の例 `char.is_ascii_digit` は kir/native-gaps-3 で下りるようになった
-    let t = kir_pkg("kir_dump", "    core.check.eq(i32.successor(&1i32), Some(2i32))\n");
+    // `i128.successor` は Option<i128> の戻り値のため段階 1 では未対応 (理由付きで出る)。64 ビット以下の `successor` は下りる (kir/s6-2)。
+    let t = kir_pkg("kir_dump", "    core.check.eq(i128.successor(&1i128), Some(2i128))\n");
     let plain = run(&["check"], &t.0);
     let dumped = Command::new(exe())
         .args(["check"])

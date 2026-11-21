@@ -44,6 +44,19 @@ fn numeric_helpers_agree_across_tree_vm_and_native() {
     assert!(out.ends_with("end\n"), "{}", out);
 }
 
+/// `std.fs` (作成・書き込み・読み出し・メタデータ・ディレクトリの列挙・改名・削除) を、3 つの入口で比べる。
+/// 作業は一時ディレクトリの中だけで行い、終わったら消す。
+#[test]
+fn fs_helpers_agree_across_tree_vm_and_native() {
+    let dir = std::env::temp_dir().join(format!("vm_natives_fs_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let d = dir.to_string_lossy().replace('\\', "/");
+    let src = FS.replace("@DIR@", &d);
+    let out = three_way("vm_natives_fs", &src);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out.ends_with("end\n"), "{}", out);
+}
+
 #[test]
 fn collection_helpers_agree_across_tree_vm_and_native() {
     let out = three_way("vm_natives_coll", COLLECTIONS);
@@ -87,9 +100,15 @@ const NUMBERS: &str = r#"fn t.main() -> Result<(), std.io.Error> uses [io.consol
     core.check.eq(7i32.min(3i32), 3i32)
     core.check.eq(7i64.wrapping_mul(3i64), 21i64)
     let big = 170_141_183_460_469_231_731_687_303_715_884_105_727u128
-    let next = 170_141_183_460_469_231_731_687_303_715_884_105_729u128
-    core.check.eq(big.wrapping_add(2u128) == next, true)
-    core.check.eq(big.wrapping_mul(2u128).wrapping_add(2u128) == 0u128, true)
+    core.check.eq(big.wrapping_add(2u128), 170_141_183_460_469_231_731_687_303_715_884_105_729u128)
+    core.check.eq(big.wrapping_mul(2u128).wrapping_add(2u128), 0u128)
+    let lo = -170_141_183_460_469_231_731_687_303_715_884_105_727i128
+    core.check.eq(lo - 1i128, -170_141_183_460_469_231_731_687_303_715_884_105_728i128)
+    core.check.eq(3u8.successor(), Some(4u8))
+    core.check.eq(255u8.successor(), None)
+    core.check.eq((-2i32).successor(), Some(-1i32))
+    core.check.eq(9223372036854775807i64.successor(), None)
+    core.check.eq(big.wrapping_add(2u128) == 0u128, false)
     core.check.eq(1.5f64.floor(), 1.0f64)
     core.check.eq(2.0f64.sqrt() * 2.0f64.sqrt() > 1.99f64, true)
     core.check.eq(0.0f64.is_nan(), false)
@@ -149,3 +168,47 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     Ok(())
 end t.main
 "#;
+
+const FS: &str = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.fs, io.console] panics may
+    let dir = "@DIR@"
+    std.fs.create_dir_all(dir)?
+    let p = "@DIR@/a.txt"
+    std.fs.write_atomic(p, b"hello\n")?
+    core.check.eq(std.fs.metadata(p)?.size, 6u64)
+    core.check.eq(std.fs.exists(p), true)
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with mut file = std.fs.open(p)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
+    }
+    core.check.eq(data.len(), 6usize)
+    let ents = std.fs.read_dir(dir)?
+    core.check.eq(ents.len(), 1usize)
+    core.check.eq(std.fs.exists("@DIR@/nope"), false)
+    std.fs.remove_file(p)?
+    core.check.eq(std.fs.exists(p), false)
+    std.io.print_line("end")?
+    Ok(())
+end t.main
+"#;
+
+/// `std.rand.fill_secure` (OS の乱数) は値が毎回違うので、長さと「全部 0 ではない」だけを 3 つの入口で比べる。
+#[test]
+fn rand_fill_agrees_across_tree_vm_and_native() {
+    const RAND: &str = r#"fn t.main() -> Result<(), std.io.Error> uses [rand, io.console] panics may
+    let mut buf = [0u8; 32]
+    std.rand.fill_secure(&mut buf)?
+    core.check.eq(buf.len(), 32usize)
+    let mut any = false
+    for b in buf {
+        if b != 0u8 {
+            any = true
+        }
+    }
+    core.check.eq(any, true)
+    std.io.print_line("end")?
+    Ok(())
+end t.main
+"#;
+    let out = three_way("vm_natives_rand", RAND);
+    assert!(out.ends_with("end\n"), "{}", out);
+}

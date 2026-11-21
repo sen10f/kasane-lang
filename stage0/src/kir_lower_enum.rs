@@ -303,6 +303,10 @@ impl<'a> Lw<'a> {
         if m.starts_with("checked_") || m.starts_with("trunc_to_") {
             return Some(self.checked_mcall(e));
         }
+        // `x.successor()` (整数の `Step`): `x.checked_add(1)` と同じ。木走査の `successor` と同じ `Option<整数>`。
+        if m == "successor" && items(&nf(e)[2]).is_empty() {
+            return Some(self.successor_mcall(e));
+        }
         if matches!(m.as_str(), "map" | "and_then" | "ok") {
             let f = nf(e);
             let args = items(&f[2]).to_vec();
@@ -607,6 +611,24 @@ impl<'a> Lw<'a> {
         let args = items(&f[2]).to_vec();
         let method = st(&f[1]);
         self.checked_with(e, recv, &method, &args)
+    }
+
+    /// 64 ビット以下の整数の `successor()`: `Some(x + 1)`、最大値なら `None`。128 ビットは `Option<u128>` が未対応なのでここでは出さない。
+    fn successor_mcall(&mut self, e: &V) -> LR<Option<VId>> {
+        let line = nline(e);
+        let f = nf(e);
+        let Some(recv) = self.expr(&f[0])? else { return Ok(None) };
+        let rt = self.vty(recv);
+        if !rt.is_int() || rt.bits() > 64 {
+            return self.err(line, "successor の受け手は 64 ビット以下の整数だけ段階 1 の対象");
+        }
+        let t = self.ty_of(e)?;
+        let want = Ty::Opt(Pay::of(rt).expect("整数はスカラー"));
+        if t != want {
+            return self.err(line, format!("successor の結果の型 {} が {} と違う", t.name(), want.name()));
+        }
+        let one = self.emit(rt, Op::Const(1));
+        Ok(Some(self.emit(t, Op::Checked { op: Aop::Add, a: recv, b: one })))
     }
 
     /// 整数の受け手 `recv` に対する `checked_*(args[0])`。結果は `Option<受け手の型>`。

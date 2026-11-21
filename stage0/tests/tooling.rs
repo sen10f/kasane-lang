@@ -573,10 +573,10 @@ fn test_both_runs_a_test_without_uses_that_calls_alloc_and_console_functions_on_
 
 #[test]
 fn test_both_falls_back_from_llvm_to_the_bundle_with_the_reason() {
-    // `i32.successor` は KIR に下ろせない (段階 1 の対象外) ので、LLVM は理由を出してバンドルへ退避する (以前の例 `char.is_ascii_digit` は kir/native-gaps-3 で下りるようになった)。
+    // `i128.successor` は Option<i128> の戻り値のため KIR に下ろせない (段階 1 の対象外) ので、LLVM は理由を出してバンドルへ退避する (以前の例 `char.is_ascii_digit` は kir/native-gaps-3 で下りるようになった)。
     // バンドルの文言は木走査と同じなので一致になる。
     let src = format!(
-        "{}\ntest t.main.test_mixed\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\n    core.check.eq(i32.successor(&1i32), Some(2i32))\nend t.main.test_mixed\n",
+        "{}\ntest t.main.test_mixed\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\n    core.check.eq(i128.successor(&1i128), Some(2i128))\nend t.main.test_mixed\n",
         BOTH_SRC
     );
     let t = Tmp::new("both_llvm_to_native", &src);
@@ -633,7 +633,7 @@ fn test_both_compares_failure_classes_when_both_backends_fail() {
 fn test_both_falls_back_to_the_bundle_when_llvm_cannot_build_128_bit_integers() {
     // 128 ビットの値・除算・剰余は KIR (LLVM) に下ろせないので、LLVM の理由を出してバンドルで比べる。
     let src = format!(
-        "{}\ntest t.main.test_wide\n    let x = 5i128\n    core.check.eq(x, 5i128)\nend t.main.test_wide\n\
+        "{}\ntest t.main.test_wide\n    core.check.eq(5i128.checked_add(0i128), Some(5i128))\nend t.main.test_wide\n\
          test t.main.test_div\n    let m = core.num.i128.MIN\n    core.check.eq(m.checked_rem(-1i128), None)\nend t.main.test_div\n",
         BOTH_SRC
     );
@@ -832,10 +832,12 @@ end t.main.test_g_try_conv
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains("7 passed; 0 failed"), "{}", out);
     assert!(!out.contains("disagree"), "{}", out);
-    for name in ["test_e_cmp_shift", "test_f_neg_conv"] {
-        assert!(out.contains(&format!("t.main.{} ... ok (both: bundle (llvm skipped: ", name)), "{}", out);
+    // 2026-11-21: 128 ビットの `/` `%`・比較・符号反転・`from_i64`/`from_u64` は KIR に下りるようになった (LLVM で比べる)。
+    // バンドルのまま残るのは `Option<i128>` の戻り値 (`checked_*`) と、`Result` の変換の形だけ。
+    for name in ["test_c_ops", "test_e_cmp_shift", "test_f_neg_conv"] {
+        assert!(out.contains(&format!("t.main.{} ... ok (both: llvm)", name)), "{}", out);
     }
-    for name in ["test_a_div", "test_b_rem", "test_c_ops", "test_d_mul", "test_g_try_conv"] {
+    for name in ["test_a_div", "test_b_rem", "test_d_mul", "test_g_try_conv"] {
         assert!(out.contains(&format!("t.main.{} ... ok (both: bundle (llvm skipped: ", name)), "{}", out);
     }
 }
