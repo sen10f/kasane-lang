@@ -63,8 +63,7 @@ fn ui.event.Ctx.focus_next(self: &mut ui.event.Ctx) -> () uses [] panics never p
     }
     let mut pos = 0usize
     let mut found = false
-    let mut i = 0usize
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let v = match self.tab_order.get(i) {
             Some(v) => *v
             None => break
@@ -74,7 +73,6 @@ fn ui.event.Ctx.focus_next(self: &mut ui.event.Ctx) -> () uses [] panics never p
             found = true
             break
         }
-        i = i.wrapping_add(1usize)
     }
     let next_pos = if found {
         match pos.wrapping_add(1usize).checked_rem(len) {
@@ -109,8 +107,7 @@ fn ui.event.Ctx.focus_previous(self: &mut ui.event.Ctx) -> () uses [] panics nev
     }
     let mut pos = 0usize
     let mut found = false
-    let mut i = 0usize
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let v = match self.tab_order.get(i) {
             Some(v) => *v
             None => break
@@ -120,7 +117,6 @@ fn ui.event.Ctx.focus_previous(self: &mut ui.event.Ctx) -> () uses [] panics nev
             found = true
             break
         }
-        i = i.wrapping_add(1usize)
     }
     let prev_pos = if found {
         if pos == 0usize {
@@ -204,9 +200,8 @@ fn ui.event.rect_contains(rect: ui.layout.Rect, x: f32, y: f32) -> bool uses [] 
 end ui.event.rect_contains
 
 fn ui.event.replay(ctx: &mut ui.event.Ctx, events: &std.vec.Vec<ui.event.Event>, layout: &ui.layout.Tree, _tree: &ui.tree.Tree, root: usize, _x: f32, _y: f32) -> () uses [] panics never pub
-    let mut i = 0usize
     let len = events.len()
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let event = match events.get(i) {
             Some(e) => e
             None => break
@@ -214,9 +209,8 @@ fn ui.event.replay(ctx: &mut ui.event.Ctx, events: &std.vec.Vec<ui.event.Event>,
         match event {
             ui.event.Event.PointerDown(px, py, _) => {
                 let target = ui.event.hit_test(layout, root, *px, *py)
-                match target {
-                    Some(t) => ctx.set_capture(t)
-                    None => ()
+                if let Some(t) = target {
+                    ctx.set_capture(t)
                 }
             }
             ui.event.Event.PointerUp(_, _, _) => ctx.release_capture()
@@ -236,7 +230,6 @@ fn ui.event.replay(ctx: &mut ui.event.Ctx, events: &std.vec.Vec<ui.event.Event>,
             ui.event.Event.DPIChange(_) => ()
             ui.event.Event.Quit => ()
         }
-        i = i.wrapping_add(1usize)
     }
 end ui.event.replay
 

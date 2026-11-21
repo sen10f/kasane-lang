@@ -305,7 +305,7 @@ test wiki.html.history_view.test_versions
 end wiki.html.history_view.test_versions
 
 test wiki.html.list_view.test_empty
-    let mut v = std.vec.Vec.new()
+    let v = std.vec.Vec.new()
     let s = wiki.html.list_view(v.as_slice())?
     core.check.eq(s.as_str().contains("<h1>ページ一覧</h1>"), true)
     core.check.eq(s.as_str().contains("<ul></ul>"), true)

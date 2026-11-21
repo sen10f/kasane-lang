@@ -36,17 +36,11 @@ fn ui.app.App.apply(self: &mut ui.app.App, new_model: (), elements: &std.vec.Vec
         Some(e) => e
         None => return Ok(ui.app.Frame { patch: patch, dirty: self.dirty, redrew: false })
     }
-    match self.kind.as_mut_slice().get_mut(0usize) {
-        Some(slot) => {
-            *slot = root_el.kind
-        }
-        None => ()
+    if let Some(slot) = self.kind.as_mut_slice().get_mut(0usize) {
+        *slot = root_el.kind
     }
-    match self.key.as_mut_slice().get_mut(0usize) {
-        Some(slot) => {
-            *slot = root_el.key
-        }
-        None => ()
+    if let Some(slot) = self.key.as_mut_slice().get_mut(0usize) {
+        *slot = root_el.key
     }
     match self.diff_children(0usize, &root_el.children, elements, &mut patch) {
         Ok(_) => ()
@@ -99,22 +93,19 @@ end ui.app.App.apply
 fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: &std.vec.Vec<usize>, elements: &std.vec.Vec<ui.tree.Element>, patch: &mut ui.app.Patch) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
     let existing = {
         let mut tmp = std.vec.Vec.new()
-        match self.kids.get(parent) {
-            Some(kids) => {
-                let mut ei = 0usize
-                while ei < kids.len() {
-                    let v = match kids.as_slice().get(ei) {
-                        Some(v) => *v
-                        None => break
-                    }
-                    match tmp.push(v) {
-                        Ok(_) => ()
-                        Err(e) => return Err(e)
-                    }
-                    ei = ei.wrapping_add(1usize)
+        if let Some(kids) = self.kids.get(parent) {
+            let mut ei = 0usize
+            while ei < kids.len() {
+                let v = match kids.as_slice().get(ei) {
+                    Some(v) => *v
+                    None => break
                 }
+                match tmp.push(v) {
+                    Ok(_) => ()
+                    Err(e) => return Err(e)
+                }
+                ei = ei.wrapping_add(1usize)
             }
-            None => ()
         }
         tmp
     }
@@ -130,8 +121,7 @@ fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: 
         ti = ti.wrapping_add(1usize)
     }
     let mut new_kids = std.vec.Vec.new()
-    let mut ci = 0usize
-    while ci < new_count {
+    for ci in core.iter.range(0usize, new_count) {
         let child_index = match new_children.as_slice().get(ci) {
             Some(v) => *v
             None => break
@@ -143,8 +133,7 @@ fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: 
         let key = child_el.key
         let mut found: Option<usize> = None
         let mut found_pos = 0usize
-        let mut ti2 = 0usize
-        while ti2 < existing_count {
+        for ti2 in core.iter.range(0usize, existing_count) {
             let u = match used.as_slice().get(ti2) {
                 Some(v) => *v
                 None => false
@@ -161,16 +150,12 @@ fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: 
                 if ekey == key {
                     found = Some(ekid)
                     found_pos = ti2
-                    match used.as_mut_slice().get_mut(ti2) {
-                        Some(f) => {
-                            *f = true
-                        }
-                        None => ()
+                    if let Some(f) = used.as_mut_slice().get_mut(ti2) {
+                        *f = true
                     }
                     break
                 }
             }
-            ti2 = ti2.wrapping_add(1usize)
         }
         match found {
             Some(reused) => {
@@ -236,25 +221,21 @@ fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: 
                 }
             }
         }
-        ci = ci.wrapping_add(1usize)
     }
-    match self.kids.get_mut(parent) {
-        Some(kids) => {
-            kids.clear()
-            let mut ni = 0usize
-            while ni < new_kids.len() {
-                let v = match new_kids.as_slice().get(ni) {
-                    Some(v) => *v
-                    None => break
-                }
-                match kids.push(v) {
-                    Ok(_) => ()
-                    Err(e) => return Err(e)
-                }
-                ni = ni.wrapping_add(1usize)
+    if let Some(kids) = self.kids.get_mut(parent) {
+        kids.clear()
+        let mut ni = 0usize
+        while ni < new_kids.len() {
+            let v = match new_kids.as_slice().get(ni) {
+                Some(v) => *v
+                None => break
             }
+            match kids.push(v) {
+                Ok(_) => ()
+                Err(e) => return Err(e)
+            }
+            ni = ni.wrapping_add(1usize)
         }
-        None => ()
     }
     ti = 0usize
     while ti < existing_count {
@@ -285,7 +266,7 @@ fn ui.app.App.enqueue(self: &mut ui.app.App, msg: u64) -> () uses [alloc] panics
 end ui.app.App.enqueue
 
 fn ui.app.App.new(model: ()) -> ui.app.App uses [alloc] panics never pub
-    let mut pending = std.vec.Vec.new()
+    let pending = std.vec.Vec.new()
     let mut kind = std.vec.Vec.new()
     let mut key = std.vec.Vec.new()
     let mut rect = std.vec.Vec.new()
@@ -330,11 +311,8 @@ end ui.app.App.pending_len
 
 fn ui.app.App.set_node_rect(self: &mut ui.app.App, node: usize, rect: ui.app.Rect) -> () uses [alloc] panics never pub
     match self.rect.get(node) {
-        Some(_r) => match self.rect.as_mut_slice().get_mut(node) {
-            Some(slot) => {
-                *slot = rect
-            }
-            None => ()
+        Some(_r) => if let Some(slot) = self.rect.as_mut_slice().get_mut(node) {
+            *slot = rect
         }
         None => {
             let mut i = self.rect.len()
@@ -345,11 +323,8 @@ fn ui.app.App.set_node_rect(self: &mut ui.app.App, node: usize, rect: ui.app.Rec
                 }
                 i = i.wrapping_add(1usize)
             }
-            match self.rect.as_mut_slice().get_mut(node) {
-                Some(slot) => {
-                    *slot = rect
-                }
-                None => ()
+            if let Some(slot) = self.rect.as_mut_slice().get_mut(node) {
+                *slot = rect
             }
         }
     }

@@ -54,15 +54,13 @@ fn ui.platform.clipboard_get(win: &ui.platform.Window) -> std.vec.Vec<u8> uses [
         let p = core.ptr.from_mut(&mut buf)
         let n = ui.platform.raw_ksnui_clipboard_get(win.ptr, p, 4096u64)
         let mut out = std.vec.Vec.new()
-        let mut i = 0u64
         let len = n
-        while i < len {
+        for i in core.iter.range(0u64, len) {
             let b = buf[usize.from_u64(i)]
             match out.push(b) {
                 Ok(_) => ()
                 Err(_) => ()
             }
-            i = i.wrapping_add(1u64)
         }
         out
     }
@@ -98,19 +96,16 @@ fn ui.platform.poll_events(win: &ui.platform.Window) -> std.vec.Vec<ui.event.Eve
         let cap = u64.from_usize(4096usize / ev_sz)
         let n = ui.plat.ksnui_poll_events(win.ptr, ev_ptr, cap, pool_ptr, 4096u64)
         let mut events = std.vec.Vec.new()
-        let mut i = 0u64
-        while i < n {
+        for i in core.iter.range(0u64, n) {
             let idx = usize.from_u64(i)
-            let ev_ptr_added = core.ptr.add::<ui.plat.KsnuiEvent>(ev_ptr, idx)
+            let ev_ptr_added = core.ptr.add(ev_ptr, idx)
             let ev = core.ptr.read(core.ptr.as_const(ev_ptr_added))
-            match ui.platform.translate_event(&ev, &text_pool) {
-                Some(e) => match events.push(e) {
+            if let Some(e) = ui.platform.translate_event(&ev, &text_pool) {
+                match events.push(e) {
                     Ok(_) => ()
                     Err(_) => ()
                 }
-                None => ()
             }
-            i = i.wrapping_add(1u64)
         }
         events
     }

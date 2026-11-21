@@ -102,8 +102,7 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &std.vec.
     let mut new_kids = std.vec.Vec.new()
     let elem_children = &element.children
     let children_len = elem_children.len()
-    let mut ci = 0usize
-    while ci < children_len {
+    for ci in core.iter.range(0usize, children_len) {
         let child_index = match elem_children.as_slice().get(ci) {
             Some(v) => *v
             None => break
@@ -118,8 +117,7 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &std.vec.
         let kid = match key {
             Some(k) => {
                 let mut found: Option<usize> = None
-                let mut ti = 0usize
-                while ti < existing_count {
+                for ti in core.iter.range(0usize, existing_count) {
                     let used_flag = match used.as_slice().get(ti) {
                         Some(v) => *v
                         None => false
@@ -135,16 +133,12 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &std.vec.
                         }
                         if existing_key == Some(k) {
                             found = Some(existing_kid)
-                            match used.as_mut_slice().get_mut(ti) {
-                                Some(f) => {
-                                    *f = true
-                                }
-                                None => ()
+                            if let Some(f) = used.as_mut_slice().get_mut(ti) {
+                                *f = true
                             }
                             break
                         }
                     }
-                    ti = ti.wrapping_add(1usize)
                 }
                 match found {
                     Some(reused) => reused
@@ -171,25 +165,21 @@ fn ui.tree.Tree.commit(self: &mut ui.tree.Tree, root: usize, elements: &std.vec.
             Ok(_) => ()
             Err(e) => return Err(e)
         }
-        ci = ci.wrapping_add(1usize)
     }
-    match self.kids.get_mut(root) {
-        Some(kids) => {
-            kids.clear()
-            let mut ni = 0usize
-            while ni < new_kids.len() {
-                let v = match new_kids.as_slice().get(ni) {
-                    Some(v) => *v
-                    None => break
-                }
-                match kids.push(v) {
-                    Ok(_) => ()
-                    Err(e) => return Err(e)
-                }
-                ni = ni.wrapping_add(1usize)
+    if let Some(kids) = self.kids.get_mut(root) {
+        kids.clear()
+        let mut ni = 0usize
+        while ni < new_kids.len() {
+            let v = match new_kids.as_slice().get(ni) {
+                Some(v) => *v
+                None => break
             }
+            match kids.push(v) {
+                Ok(_) => ()
+                Err(e) => return Err(e)
+            }
+            ni = ni.wrapping_add(1usize)
         }
-        None => ()
     }
     Ok(root)
 end ui.tree.Tree.commit
@@ -273,11 +263,8 @@ fn ui.tree.Tree.state_ref(self: &ui.tree.Tree) -> &ui.state.Arena<ui.tree.StateE
 end ui.tree.Tree.state_ref
 
 fn ui.tree.Tree.state_tick(self: &mut ui.tree.Tree, h: ui.state.Handle) -> () uses [] panics never pub
-    match self.state.get_mut(h) {
-        Some(entry) => {
-            let vs = entry.value.as_mut()
-            vs.tick()
-        }
-        None => ()
+    if let Some(entry) = self.state.get_mut(h) {
+        let vs = entry.value.as_mut()
+        vs.tick()
     }
 end ui.tree.Tree.state_tick

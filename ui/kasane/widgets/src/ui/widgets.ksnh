@@ -277,13 +277,11 @@ fn ui.widgets.TextInput.delete_backspace(self: &mut ui.widgets.TextInput) -> () 
         let text = self.text.as_slice()
         let prev = ui.widgets.utf8_prev_boundary(text, self.caret)
         let count = self.caret.wrapping_sub(prev)
-        let mut removed = 0usize
-        while removed < count {
+        for _ in core.iter.range(0usize, count) {
             match self.text.remove(prev) {
                 Some(_) => ()
                 None => break
             }
-            removed = removed.wrapping_add(1usize)
         }
         self.caret = prev
         self.ss = prev
@@ -311,13 +309,11 @@ fn ui.widgets.TextInput.delete_forward(self: &mut ui.widgets.TextInput) -> () us
             let text = self.text.as_slice()
             let next = ui.widgets.utf8_next_boundary(text, self.caret)
             let count = next.wrapping_sub(self.caret)
-            let mut removed = 0usize
-            while removed < count {
+            for _ in core.iter.range(0usize, count) {
                 match self.text.remove(self.caret) {
                     Some(_) => ()
                     None => break
                 }
-                removed = removed.wrapping_add(1usize)
             }
         }
     }
@@ -328,36 +324,33 @@ fn ui.widgets.TextInput.display(self: &ui.widgets.TextInput) -> std.vec.Vec<u8> 
     let text = self.text.as_slice()
     let mut i = 0usize
     while i < self.caret {
-        match text.get(i) {
-            Some(v) => match out.push(*v) {
+        if let Some(v) = text.get(i) {
+            match out.push(*v) {
                 Ok(_) => ()
                 Err(_) => ()
             }
-            None => ()
         }
         i = i.wrapping_add(1usize)
     }
     let comp = self.comp.as_slice()
     let mut j = 0usize
     while j < comp.len() {
-        match comp.get(j) {
-            Some(v) => match out.push(*v) {
+        if let Some(v) = comp.get(j) {
+            match out.push(*v) {
                 Ok(_) => ()
                 Err(_) => ()
             }
-            None => ()
         }
         j = j.wrapping_add(1usize)
     }
     let mut rest = self.caret
     let n = text.len()
     while rest < n {
-        match text.get(rest) {
-            Some(v) => match out.push(*v) {
+        if let Some(v) = text.get(rest) {
+            match out.push(*v) {
                 Ok(_) => ()
                 Err(_) => ()
             }
-            None => ()
         }
         rest = rest.wrapping_add(1usize)
     }
@@ -420,12 +413,11 @@ fn ui.widgets.TextInput.on_event(self: &mut ui.widgets.TextInput, event: &ui.eve
             let c = comp.as_slice()
             let mut k = 0usize
             while k < c.len() {
-                match c.get(k) {
-                    Some(v) => match self.comp.push(*v) {
+                if let Some(v) = c.get(k) {
+                    match self.comp.push(*v) {
                         Ok(_) => ()
                         Err(_) => ()
                     }
-                    None => ()
                 }
                 k = k.wrapping_add(1usize)
             }
@@ -535,8 +527,7 @@ end ui.widgets.utf8_lead_len
 
 fn ui.widgets.utf8_next_boundary(bytes: &[u8], idx: usize) -> usize uses [] panics never pub
     let n = bytes.len()
-    let mut i = idx.wrapping_add(1usize)
-    while i < n {
+    for i in core.iter.range(idx.wrapping_add(1usize), n) {
         let b = match bytes.get(i) {
             Some(v) => *v
             None => 0u8
@@ -544,7 +535,6 @@ fn ui.widgets.utf8_next_boundary(bytes: &[u8], idx: usize) -> usize uses [] pani
         if b < 128u8 || b > 191u8 {
             return i
         }
-        i = i.wrapping_add(1usize)
     }
     n
 end ui.widgets.utf8_next_boundary

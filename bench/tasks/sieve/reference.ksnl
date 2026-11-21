@@ -31,30 +31,22 @@ end bench.main
 
 fn bench.sieve(n: usize) -> std.vec.Vec<bool> uses [alloc] panics never pub
     let mut is_prime = std.vec.Vec.new()
-    let mut i = 0usize
-    while i < n {
+    for _ in core.iter.range(0usize, n) {
         match is_prime.push(true) {
             Ok(_) => ()
             Err(_) => ()
         }
-        i = i.wrapping_add(1usize)
     }
     if n > 0usize {
-        match is_prime.get_mut(0usize) {
-            Some(v) => {
-                *v = false
-                ()
-            }
-            None => ()
+        if let Some(v) = is_prime.get_mut(0usize) {
+            *v = false
+            ()
         }
     }
     if n > 1usize {
-        match is_prime.get_mut(1usize) {
-            Some(v) => {
-                *v = false
-                ()
-            }
-            None => ()
+        if let Some(v) = is_prime.get_mut(1usize) {
+            *v = false
+            ()
         }
     }
     let mut p = 2usize
@@ -63,12 +55,9 @@ fn bench.sieve(n: usize) -> std.vec.Vec<bool> uses [alloc] panics never pub
             Some(v) => if *v {
                 let mut mult = p.wrapping_mul(p)
                 while mult < n {
-                    match is_prime.get_mut(mult) {
-                        Some(m) => {
-                            *m = false
-                            ()
-                        }
-                        None => ()
+                    if let Some(m) = is_prime.get_mut(mult) {
+                        *m = false
+                        ()
                     }
                     mult = mult.wrapping_add(p)
                 }

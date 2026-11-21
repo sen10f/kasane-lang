@@ -86,13 +86,11 @@ end todo.auth.nibble_to_char
 
 fn todo.auth.u64_to_hex(n: u64) -> Result<std.string.String, todo.error.Error> uses [alloc] panics never pub
     let mut out = std.string.String.new()
-    let mut i = 0u32
-    while i < 16u32 {
+    for i in core.iter.range(0u32, 16u32) {
         let shift = 15u32.wrapping_sub(i).wrapping_mul(4u32)
         let nibble = n.wrapping_shr(shift) & 15u64
         let c = todo.auth.nibble_to_char(nibble)?
         out.push(c)?
-        i = i.wrapping_add(1u32)
     }
     Ok(out)
 end todo.auth.u64_to_hex

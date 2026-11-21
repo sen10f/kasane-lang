@@ -123,7 +123,7 @@ test ui.app_test.Suite.test_apply_keyed_insert
     match app.apply((), &elements2, 0usize) {
         Ok(f) => {
             core.check.eq(f.patch.added.len(), 1usize)
-            core.check.is_true(f.patch.moved.len() == 0usize)
+            core.check.eq(f.patch.moved.len(), 0usize)
         }
         Err(_) => core.check.is_true(false)
     }
@@ -158,8 +158,8 @@ test ui.app_test.Suite.test_apply_keyed_reorder
     match app.apply((), &elements2, 0usize) {
         Ok(f) => {
             core.check.eq(f.patch.moved.len(), 2usize)
-            core.check.is_true(f.patch.added.len() == 0usize)
-            core.check.is_true(f.patch.removed.len() == 0usize)
+            core.check.eq(f.patch.added.len(), 0usize)
+            core.check.eq(f.patch.removed.len(), 0usize)
         }
         Err(_) => core.check.is_true(false)
     }
@@ -247,7 +247,7 @@ end ui.app_test.Suite.test_apply_no_changes
 
 test ui.app_test.Suite.test_apply_out_of_bounds_root
     let mut app = ui.app.App.new(())
-    let mut elements = std.vec.Vec.new()
+    let elements = std.vec.Vec.new()
     match app.apply((), &elements, 0usize) {
         Ok(f) => {
             core.check.is_true(f.patch.is_empty())

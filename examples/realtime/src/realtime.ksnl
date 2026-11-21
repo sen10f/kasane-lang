@@ -21,14 +21,12 @@ end realtime.Phase.next
 
 fn realtime.Ring.new(cap: usize) -> realtime.Ring uses [alloc] panics never pub
     let mut items = std.vec.Vec.new()
-    let mut i = 0usize
-    while i < cap {
+    for _ in core.iter.range(0usize, cap) {
         match items.push(0u32) {
             Ok(_u) => {
             }
             Err(_) => break
         }
-        i = i.wrapping_add(1usize)
     }
     realtime.Ring { items: items, head: 0usize, len: 0usize, cap: cap }
 end realtime.Ring.new

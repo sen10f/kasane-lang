@@ -5,9 +5,8 @@ const notes.USAGE: &str = "usage: notes <add|list|show|edit|rm|tag|search|export
 
 fn notes.args() -> Result<std.vec.Vec<std.string.String>, notes.error.Error> uses [alloc, env] panics never
     let mut out = std.vec.Vec.new()
-    let mut i = 0usize
     let n = std.env.arg_count()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match std.env.arg(i) {
             Some(s) => {
                 let t = alloc.string.String.from_str(std.alloc.SYSTEM, s)?
@@ -15,7 +14,6 @@ fn notes.args() -> Result<std.vec.Vec<std.string.String>, notes.error.Error> use
             }
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(out)
 end notes.args
