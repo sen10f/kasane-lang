@@ -5273,3 +5273,26 @@ end t.main
         }
     }
 }
+
+/// `static` / `const` の初期化式から効果のある関数を呼んでも、`ksn check` はそれを実行しない (X1)。
+/// 1 つ目は検査 (E2038) が拒み、2 つ目 (`const fn` の検査を通り抜けた場合) は評価の防御線 (E4024) が止める。
+#[test]
+fn check_never_runs_effects_of_const_initializers() {
+    let marker = std::env::temp_dir().join(format!("ksn_constinit_marker_{}", std::process::id()));
+    let _ = fs::remove_file(&marker);
+    let m = marker.to_string_lossy().to_string();
+    let src = format!(
+        "static t.X: u32 = t.f()\n\nfn t.f() -> u32 uses [process] panics never\n    let mut c = std.process.Command.new(\"/bin/touch\")\n    c.arg(\"{m}\")\n    match c.spawn() {{\n        Ok(child) => match child.wait() {{\n            Ok(_) => 1u32\n            Err(_) => 3u32\n        }}\n        Err(_) => 2u32\n    }}\nend t.f\n\nfn t.main() -> u32 uses [] panics never\n    t.X\nend t.main\n"
+    );
+    let t = Tmp::new_strict("constinit_no_exec", &src);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E2038"), "{}", text(&o.stdout));
+    assert!(!marker.exists(), "`ksn check` ran a constant initializer's effects");
+    let src2 = format!(
+        "static t.X: bool = std.fs.create_dir(\"{m}\").is_ok()\n\nfn t.main() -> bool uses [] panics never\n    t.X\nend t.main\n"
+    );
+    let t2 = Tmp::new_strict("constinit_no_exec2", &src2);
+    let o2 = run(&["check", "--json"], &t2.0);
+    assert_ne!(o2.status.code(), Some(0));
+    assert!(!marker.exists(), "`ksn check` ran a constant initializer's effects");
+}

@@ -1,0 +1,5 @@
+const t.X: bool = std.fs.exists("/tmp/ksn_constinit_fs")
+
+fn t.main() -> bool uses [] panics never
+    t.X
+end t.main

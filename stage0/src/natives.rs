@@ -611,6 +611,9 @@ impl Interp {
         if self.dbg_guard {
             self.dbg_guard_native(name)?;
         }
+        if self.const_guard {
+            self.const_guard_native(name)?;
+        }
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
         match name {
             "core.mem.drop" => Ok(Val::Unit),
