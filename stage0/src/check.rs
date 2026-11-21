@@ -464,8 +464,6 @@ pub struct Checker<'a> {
     pub unsafe_modules: Vec<String>,
     /// `tests/` 配下 (統合テスト、3.2) のファイルパス。ここに属する定義には別の規則を当てる。
     pub integration_files: HashSet<String>,
-    /// `KSN_CHECKER=s4`: TAST に置き換わる形を見る借用検査 (borrowck) を走らせない (tast_check.rs が診断を選ぶ)。
-    pub s4: bool,
     unsafe_ok: bool,
     // typeck の状態
     d: usize,
@@ -565,7 +563,6 @@ impl<'a> Checker<'a> {
             in_const_fn: false,
             unsafe_modules: vec![],
             integration_files: HashSet::new(),
-            s4: false,
             unsafe_ok: false,
             d: 0,
             names: HashSet::new(),
