@@ -95,7 +95,7 @@ const S4_REPLACED: &[&str] = &[
 /// discard.rs)、網羅性 (E2021/E2052、exhaustive.rs)、可変性 (E3031、mutability.rs)、境界 (E2030、bounds.rs)。
 /// 設計_S4の旧い検査の取り外し.md 3 段目 1・3。
 fn is_tast_code(code: &str) -> bool {
-    matches!(code, "E4001" | "E4002" | "E2042" | "E2021" | "E2052" | "E3031" | "E2030")
+    matches!(code, "E4001" | "E4002" | "E2042" | "E2021" | "E2052" | "E3031" | "E2030" | "E3002" | "E3003" | "E3006" | "E3040")
 }
 
 /// 型の食い違いの E2023 (引数・欄・要素・ペイロード・パターン)。型パラメータの個数の E2023 (`takes N explicit type argument(s)`)

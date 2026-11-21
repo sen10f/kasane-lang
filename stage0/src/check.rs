@@ -770,7 +770,6 @@ impl<'a> Checker<'a> {
         self.check_integration_files();
         self.check_visibility();
         self.check_linear();
-        self.check_linear_type_args();
         self.check_derive();
         self.check_impl_requires();
         for &i in &user {
@@ -1499,67 +1498,6 @@ impl<'a> Checker<'a> {
                 Some(is_copy)
             }
             _ => None,
-        }
-    }
-
-    /// 4.4・8.3: 定義の型 (フィールド・バリアントのペイロード・仮引数・戻り値) に書かれた型に、
-    /// 線形な型を `linear` でない型パラメータへの実引数として渡しているものがないか (`Vec<TcpStream, A>` など)。
-    fn check_linear_type_args(&mut self) {
-        for i in self.user.clone() {
-            let d = self.def(i);
-            let mut tys: Vec<V> = d.fields.iter().map(|f| f.1.clone()).collect();
-            tys.extend(d.variants.iter().flat_map(|v| v.1.iter().cloned()));
-            tys.extend(d.params.iter().map(|p| p.1.clone()));
-            tys.push(d.ret.clone());
-            let gn = d.gnames();
-            for t in tys {
-                if !is_nil(&t) && !self.is_generic(&t, &gn) {
-                    self.check_ty_linear_args(&t, i, 0);
-                }
-            }
-        }
-    }
-
-    /// 型 `t` の中の、非線形の型パラメータに線形な型を渡している適用を E3006 にする。
-    fn check_ty_linear_args(&mut self, t: &V, di: usize, line: usize) {
-        match tag(t).as_str() {
-            "named" => {
-                let n = st(tel(t, 1));
-                let args: Vec<V> = items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_))).cloned().collect();
-                if let Some(&ti) = self.p.types.get(&n) {
-                    let d = self.def(ti);
-                    let params: Vec<&(String, String, V)> = d.generics.iter().filter(|g| g.0 == "type").collect();
-                    if params.len() == args.len() {
-                        for (g, a) in params.iter().zip(&args) {
-                            let declared_linear = items(&g.2).iter().any(|b| matches!(b, V::S(x) if x == "linear"));
-                            if !declared_linear && self.is_linear(a) {
-                                self.diag(
-                                    "E3006",
-                                    format!(
-                                        "linear type {} is given for the type parameter `{}` of {}, which is not declared `linear` (4.4)",
-                                        if tag(a) == "named" { st(tel(a, 1)) } else { "(tuple)".to_string() },
-                                        g.1,
-                                        n
-                                    ),
-                                    di,
-                                    line,
-                                );
-                            }
-                        }
-                    }
-                }
-                for a in &args {
-                    self.check_ty_linear_args(a, di, line);
-                }
-            }
-            "ref" | "ptr" => self.check_ty_linear_args(tel(t, 2), di, line),
-            "slice" | "array" => self.check_ty_linear_args(tel(t, 1), di, line),
-            "tuple" => {
-                for x in items(tel(t, 1)) {
-                    self.check_ty_linear_args(x, di, line);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -4517,10 +4455,6 @@ impl<'a> Checker<'a> {
                 }
                 if !is_nil(&f[2]) {
                     self.mismatch(&f[2], &got, nline(s), "let binding");
-                    if !self.is_generic(&f[2], &self.names) {
-                        let t = f[2].clone();
-                        self.check_ty_linear_args(&t, self.d, nline(s));
-                    }
                 }
                 let ty = if !is_nil(&f[2]) { f[2].clone() } else { got.clone() };
                 // パターンに沿って束縛名の型を決める (PBind と、分解 `let (a, b) = ..`)。
@@ -5206,7 +5140,6 @@ impl<'a> Checker<'a> {
             }
             "Call" => {
                 let mut callee: Option<&Def> = None;
-                let mut lin_callee: Option<(&Def, usize)> = None;
                 let fnn = &f[0];
                 // 局所変数のメソッド呼び出し `t.m()` は `Path` の形で来る (`v.push(x)` と同じ)。レシーバの型で検査する。
                 let local_method = nname(fnn) == "Path" && {
@@ -5247,21 +5180,9 @@ impl<'a> Checker<'a> {
                             if let Target::Fn(i) = r.target {
                                 if r.rest.is_empty() {
                                     callee = Some(self.def(i));
-                                    lin_callee = Some((self.def(i), 0));
                                     let cn = self.def(i).name.clone();
                                     let cur = self.def(self.d).name.clone();
                                     self.graph.entry(cur).or_default().insert(cn);
-                                }
-                            } else if r.rest.is_empty() {
-                                // 標準ライブラリの関数 (`core.mem.drop`、`Box.new` など。組み込みを含む):
-                                // 線形な引数の検査だけ行う。
-                                let sig = match &r.target {
-                                    Target::Sig(i) => Some(*i),
-                                    Target::Native(n) => self.p.sigs.get(n).copied(),
-                                    _ => None,
-                                };
-                                if let Some(i) = sig.filter(|&i| self.def(i).kw == "fn") {
-                                    lin_callee = Some((self.def(i), 0));
                                 }
                             }
                         }
@@ -5297,11 +5218,6 @@ impl<'a> Checker<'a> {
                             self.moved.insert(segs[0].clone(), nline(e));
                         }
                         if segs.len() >= 2 {
-                            if let Some(md) = self.method_def(&segs[0], recv, &segs[segs.len() - 1], env) {
-                                if md.is_method() {
-                                    lin_callee = Some((md, 1));
-                                }
-                            }
                         }
                     }
                 } else {
@@ -5346,16 +5262,6 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                if let Some((c, off)) = lin_callee {
-                    let recv_ty = match nname(fnn) {
-                        "Path" if off == 1 => {
-                            let segs = strs(&nf(fnn)[0]);
-                            self.place_ty(&segs[0], &segs[1..segs.len() - 1], env)
-                        }
-                        _ => None,
-                    };
-                    self.check_linear_args(c, off, recv_ty, items(&f[1]), env, nline(e));
-                }
             }
             "MCall" => {
                 // 取り消しの検査 (仕様 5.6 の第 4 段): 閉包の中のメソッド呼び出しは、`Task` と数などの型に限る (ユーザのメソッドは中断しうる)。
@@ -5399,11 +5305,6 @@ impl<'a> Checker<'a> {
                 }
                 for a in items(&f[2]) {
                     self.tc_expr(a, env, muts, true);
-                }
-                // 線形な型を線形でない型パラメータへ渡していないか (レシーバの型だけに現れる型パラメータも)。
-                let rty = self.lin_ty(&f[0], env);
-                if let Some(md) = self.method_of_named(&rty, &st(&f[1])).filter(|m| m.is_method()) {
-                    self.check_linear_args(md, 1, Some(rty), items(&f[2]), env, nline(e));
                 }
             }
             "Unary" if matches!(st(&f[0]).as_str(), "&" | "&mut") => {
@@ -6687,108 +6588,6 @@ impl<'a> Checker<'a> {
             res[i].live = all;
         }
         self.lin = res;
-    }
-
-    /// 型パラメータが `linear` と宣言されていない関数に、線形な値を渡していないか (4.4・8.3)。
-    /// `off` は、引数列に対する仮引数列のずれ (`v.push(x)` の `self` で 1)。仮引数の型と実引数の型を
-    /// 構造で突き合わせ、線形でない型パラメータに線形な型が束縛されるとき E3006。
-    fn check_linear_args(&mut self, c: &Def, off: usize, recv: Option<V>, args: &[V], env: &Env, line: usize) {
-        let nonlin: HashSet<String> = c
-            .generics
-            .iter()
-            .filter(|g| g.0 == "type" && !items(&g.2).iter().any(|b| matches!(b, V::S(x) if x == "linear")))
-            .map(|g| g.1.clone())
-            .collect();
-        if nonlin.is_empty() {
-            return;
-        }
-        // レシーバ (`self` の仮引数) も突き合わせる: `r.ok()` の `X` はレシーバの型にだけ現れる。
-        if let (Some(rt), true) = (recv, off >= 1) {
-            if let Some((_, pt)) = c.params.first() {
-                let mut hit = vec![];
-                self.lin_unify(pt, &rt, &nonlin, &mut hit);
-                if let Some((p, t)) = hit.first() {
-                    self.tdiag(
-                        "E3006",
-                        format!("linear value of type {t} is passed for the type parameter `{p}` of {}, which is not declared `linear` (4.4)", c.name),
-                        line,
-                    );
-                }
-            }
-        }
-        for (i, a) in args.iter().enumerate() {
-            let Some((_, pt)) = c.params.get(i + off) else { break };
-            let at = self.ty_of(a, env);
-            if is_nil(&at) {
-                // 型が付かない線形な値 (線形な値を `move` で取り込んだクロージャを束縛した名前) も、
-                // 線形でない型パラメータには渡せない (`core.mem.drop(f)`)。
-                if nname(a) == "Path" && tag(pt) == "named" && items(tel(pt, 2)).is_empty() && nonlin.contains(&st(tel(pt, 1))) {
-                    let segs = strs(&nf(a)[0]);
-                    if segs.len() == 1 && self.lin_find(&segs[0]).is_some_and(|k| self.lin[k].linear) {
-                        self.tdiag(
-                            "E3006",
-                            format!(
-                                "linear closure `{}` is passed for the type parameter `{}` of {}, which is not declared `linear` (4.4)",
-                                segs[0],
-                                st(tel(pt, 1)),
-                                c.name
-                            ),
-                            line,
-                        );
-                    }
-                }
-                continue;
-            }
-            let mut hit = vec![];
-            self.lin_unify(pt, &at, &nonlin, &mut hit);
-            if let Some((p, t)) = hit.first() {
-                self.tdiag(
-                    "E3006",
-                    format!(
-                        "linear value of type {t} is passed for the type parameter `{p}` of {}, which is not declared `linear` (4.4)",
-                        c.name
-                    ),
-                    line,
-                );
-            }
-        }
-    }
-
-    /// 仮引数の型 `pt` と実引数の型 `at` を構造で突き合わせ、線形でない型パラメータ (`nonlin`) に
-    /// 線形な型が当たった組 (パラメータ名, 型の表示) を `out` に集める。
-    fn lin_unify(&self, pt: &V, at: &V, nonlin: &HashSet<String>, out: &mut Vec<(String, String)>) {
-        match tag(pt).as_str() {
-            "named" => {
-                let n = st(tel(pt, 1));
-                let pargs: Vec<&V> = items(tel(pt, 2)).iter().filter(|a| matches!(a, V::L(_))).collect();
-                if pargs.is_empty() && nonlin.contains(&n) {
-                    if self.is_linear(at) {
-                        let shown = if tag(at) == "named" { st(tel(at, 1)) } else { "(tuple)".to_string() };
-                        out.push((n, shown));
-                    }
-                    return;
-                }
-                if tag(at) == "named" && st(tel(at, 1)) == n {
-                    let aargs: Vec<&V> = items(tel(at, 2)).iter().filter(|a| matches!(a, V::L(_))).collect();
-                    if aargs.len() == pargs.len() {
-                        for (p, a) in pargs.iter().zip(aargs) {
-                            self.lin_unify(p, a, nonlin, out);
-                        }
-                    }
-                }
-            }
-            "ref" => {
-                let inner = if tag(at) == "ref" { tel(at, 2) } else { at };
-                self.lin_unify(tel(pt, 2), inner, nonlin, out);
-            }
-            "tuple" if tag(at) == "tuple" && items(tel(pt, 1)).len() == items(tel(at, 1)).len() => {
-                for (p, a) in items(tel(pt, 1)).iter().zip(items(tel(at, 1))) {
-                    self.lin_unify(p, a, nonlin, out);
-                }
-            }
-            "array" | "slice" if tag(at) == tag(pt) => self.lin_unify(tel(pt, 1), tel(at, 1), nonlin, out),
-            _ => {}
-        }
     }
 
     fn implements(&self, ty: &str, tr: &str) -> bool {
