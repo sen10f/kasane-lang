@@ -91,6 +91,11 @@ const NUMBERS: &str = r#"fn t.main() -> Result<(), std.io.Error> uses [io.consol
     core.check.eq(big.wrapping_mul(2u128).wrapping_add(2u128), 0u128)
     let lo = -170_141_183_460_469_231_731_687_303_715_884_105_727i128
     core.check.eq(lo - 1i128, -170_141_183_460_469_231_731_687_303_715_884_105_728i128)
+    core.check.eq(3u8.successor(), Some(4u8))
+    core.check.eq(255u8.successor(), None)
+    core.check.eq((-2i32).successor(), Some(-1i32))
+    core.check.eq(9223372036854775807i64.successor(), None)
+    core.check.eq(big.wrapping_add(2u128) == 0u128, false)
     core.check.eq(1.5f64.floor(), 1.0f64)
     core.check.eq(2.0f64.sqrt() * 2.0f64.sqrt() > 1.99f64, true)
     core.check.eq(0.0f64.is_nan(), false)
