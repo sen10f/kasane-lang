@@ -968,3 +968,21 @@ fn oneway_and_with_max_constant_is_removed() {
     let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    let y = x & core.num.u32.MAX\n    y\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
     oneway_round_trip("oneway_max", src, "E2062", "let y = x\n");
 }
+
+
+#[test]
+fn fmt_drops_import_made_unused_by_short_names_only() {
+    // 短縮名への書き換えで使われなくなった `import alloc.vec` は fmt が落とす。
+    let src = "import alloc.vec\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let v: alloc.vec.Vec<i32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let _ = v\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fmtdropimp", src);
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
+    let out = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(!out.contains("import alloc.vec"), "{out}");
+    assert!(out.contains("std.vec.Vec<i32>"), "{out}");
+    // 元から未使用の import は落とさない (E1020 のまま)。
+    let src2 = "import alloc.vec\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t2 = Tmp::new_raw("fmtkeepimp", src2);
+    run(&["fmt"], &t2.0);
+    let out2 = fs::read_to_string(t2.0.join("src/t.ksnl")).unwrap();
+    assert!(out2.contains("import alloc.vec"), "{out2}");
+}

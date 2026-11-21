@@ -97,7 +97,7 @@ end t.main
 #[test]
 fn short_names_of_other_alloc_types_are_accepted() {
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut m: std.collections.HashMap<u8, u8> = std.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut m: std.collections.HashMap<u8, u8> = std.collections.HashMap.new()
     match m.insert(1u8, 2u8) {
         Ok(_old) => ()
         Err(_e) => ()

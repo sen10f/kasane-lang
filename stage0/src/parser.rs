@@ -81,6 +81,30 @@ fn anchor(p: usize, left: &V) -> usize {
         p
     }
 }
+/// デフォルト確保器の短縮名のコンストラクタ (`std.vec.Vec.new(..)`) を、正式名の呼び出し
+/// (`alloc.vec.Vec.new(std.alloc.SYSTEM, ..)`) に直す。インタプリタ・検査・KIR は正式名だけを見る。
+/// 長い形式 (`alloc.vec.Vec.new()`) はそのまま (アロケータを省略すると引数の個数の誤り)。
+fn short_ctor_call(callee: V, args: V) -> (V, V) {
+    if let V::Node("Path", pf, line, id) = &callee {
+        let segs: Vec<String> = match &pf[0] {
+            V::L(l) => l.iter().filter_map(|x| if let V::S(t) = x { Some(t.clone()) } else { None }).collect(),
+            _ => vec![],
+        };
+        if segs.len() >= 2 && segs[segs.len() - 1] == "new" {
+            if let Some(a) = crate::types::std_to_alloc(&segs[..segs.len() - 1].join(".")) {
+                let mut ns: Vec<String> = a.split('.').map(String::from).collect();
+                ns.push("new".into());
+                let mut npf = pf.clone();
+                npf[0] = strs(&ns);
+                let mut av = match &args { V::L(l) => l.clone(), _ => vec![] };
+                av.insert(0, V::Node("Path", vec![strs(&["std".to_string(), "alloc".to_string(), "SYSTEM".to_string()]), V::Nil], *line, 0));
+                return (V::Node("Path", npf, *line, *id), V::L(av));
+            }
+        }
+    }
+    (callee, args)
+}
+
 pub(crate) fn ndl(line: usize, n: &'static str, fs: Vec<V>) -> V {
     V::Node(n, fs, line, 0)
 }
@@ -1064,7 +1088,8 @@ impl Parser {
                             }
                         }
                     }
-                    e = ndl(anchor(c.pos(), &e), "Call", vec![e, args, V::Nil]);
+                    let (e2, args) = short_ctor_call(e, args);
+                    e = ndl(anchor(c.pos(), &e2), "Call", vec![e2, args, V::Nil]);
                 }
                 "[" => {
                     self.i += 1;
@@ -1268,6 +1293,7 @@ impl Parser {
                 let p = ndl(c.pos(), "Path", vec![strs(&segs), targs.clone()]);
                 if !matches!(targs, V::Nil) && self.is_op("(") {
                     let args = self.call_args()?;
+                    let (p, args) = short_ctor_call(p, args);
                     return Ok(ndl(c.pos(), "Call", vec![p, args, targs]));
                 }
                 return Ok(p);

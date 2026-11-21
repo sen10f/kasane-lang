@@ -354,6 +354,28 @@ fn fix_lists(line: &str) -> String {
     l
 }
 
+/// `import a.b` のモジュール `a.b` (または短縮形 `b`) が `import` 行以外で `a.b.X` / `b.X` として使われているか。
+fn module_used(lines: &[String], full: &str) -> bool {
+    let tail = full.rsplit('.').next().unwrap_or(full);
+    for l in lines {
+        if l.starts_with("import ") {
+            continue;
+        }
+        let cs: Vec<char> = l.chars().collect();
+        for pat in [full, tail] {
+            let p: Vec<char> = pat.chars().chain(std::iter::once('.')).collect();
+            let mut i = 0;
+            while i + p.len() <= cs.len() {
+                if cs[i..i + p.len()] == p[..] && (i == 0 || !(is_alloc_id_char(cs[i - 1]) || cs[i - 1] == '.')) {
+                    return true;
+                }
+                i += 1;
+            }
+        }
+    }
+    false
+}
+
 /// 文字が識別子の構成文字か。
 fn is_alloc_id_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -931,8 +953,23 @@ pub fn format_source_with(text: &str, path: &str, canon: bool, own_len: bool) ->
     if canon {
         fix_forms(&mut lines);
         // 1 行の中のトークンの間隔 (spacing.rs の表) と、デフォルト確保器の短縮名書き換え。
+        let before = lines.clone();
         for l in lines.iter_mut() {
             *l = canon_line_with_alloc(l);
+        }
+        // 短縮名への書き換えで使われなくなった import (`import alloc.vec` など) だけを落とす。
+        // 書き換える前から未使用だった import は、そのまま E1020 の誤りにする。
+        let mut drop_imp: Vec<usize> = vec![];
+        for (k, l) in lines.iter().enumerate() {
+            if let Some(m) = l.strip_prefix("import ") {
+                let m = m.trim();
+                if m.chars().all(|c| is_alloc_id_char(c) || c == '.') && module_used(&before, m) && !module_used(&lines, m) {
+                    drop_imp.push(k);
+                }
+            }
+        }
+        for k in drop_imp.into_iter().rev() {
+            lines.remove(k);
         }
     }
     if canon {
