@@ -15,8 +15,8 @@ fn bench.count_bytes(text: &str) -> alloc.collections.HashMap<u8, u32, std.alloc
                         None => ()
                     }
                     None => match m.insert(*c, 1u32) {
-                        Ok(_old) => ()
-                        Err(_e) => ()
+                        Ok(_) => ()
+                        Err(_) => ()
                     }
                 }
                 i = i.wrapping_add(1usize)

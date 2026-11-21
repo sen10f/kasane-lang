@@ -5,7 +5,7 @@ fn t.bad() -> () uses [alloc] panics never
             core.mem.drop(doc)
             let _b = std.json.is_null(&doc, v)
         }
-        Err(_e) => ()
+        Err(_) => ()
     }
 end t.bad
 

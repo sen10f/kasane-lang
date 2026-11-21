@@ -6,12 +6,12 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let ts = ui.layout.Style.default()
     let troot = match tree.push_node(ui.tree.ViewKind.Block, ts, None) {
         Ok(n) => n
-        Err(_e) => 0usize
+        Err(_) => 0usize
     }
     let mut ctx = ui.event.Ctx.new()
     let hit = ui.event.hit_test(&layout, root, 10.0f32, 10.0f32)
     let hit_some = match hit {
-        Some(_n) => true
+        Some(_) => true
         None => false
     }
     let ev = ui.event.Event.PointerDown(10.0f32, 10.0f32, 1u8)
@@ -19,8 +19,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&hit_some) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("hit_some")?
         std.io.print_line(s.as_str())?
@@ -32,8 +32,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
             {
                 let mut s = alloc.string.String.new(std.alloc.SYSTEM)
                 core.mem.drop(match s.push_display(&n) {
-                    Ok(_u) => 0u8
-                    Err(_e) => 1u8
+                    Ok(_) => 0u8
+                    Err(_) => 1u8
                 })
                 std.io.print_line("routed_index")?
                 std.io.print_line(s.as_str())?

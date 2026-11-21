@@ -4,7 +4,7 @@ end t.Res
 
 fn t.bad(c: Option<u32>) -> () uses [] panics never
     match c {
-        Some(_n) => t.open()
+        Some(_) => t.open()
         None => t.open()
     }
     core.mem.drop(1u32)

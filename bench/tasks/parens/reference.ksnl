@@ -19,17 +19,17 @@ fn bench.parens_balanced(text: &str) -> bool uses [alloc] panics never pub
             Some(c) => if *c == 40u8 {
                 match stack.push(*c) {
                     Ok(_) => ()
-                    Err(_e) => ()
+                    Err(_) => ()
                 }
             } else if *c == 91u8 {
                 match stack.push(*c) {
                     Ok(_) => ()
-                    Err(_e) => ()
+                    Err(_) => ()
                 }
             } else if *c == 123u8 {
                 match stack.push(*c) {
                     Ok(_) => ()
-                    Err(_e) => ()
+                    Err(_) => ()
                 }
             } else if *c == 41u8 {
                 match stack.pop() {

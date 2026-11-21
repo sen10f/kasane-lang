@@ -6,8 +6,7 @@ fn t.Named.pick(self: &t.Named, other: &str) -> &str uses [] panics never
     if other.is_empty() {
         return self.name.as_str()
     }
-    let o = self.name.as_str()
-    o
+    self.name.as_str()
 end t.Named.pick
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

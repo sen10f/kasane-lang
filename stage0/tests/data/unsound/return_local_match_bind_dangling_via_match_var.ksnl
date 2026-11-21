@@ -2,7 +2,7 @@ fn t.bad(v: &[u32]) -> &u32 uses [] panics never
     let tmp = 3u32
     match &tmp {
         rr => match v.get(0usize) {
-            Some(_q) => rr
+            Some(_) => rr
             None => rr
         }
     }

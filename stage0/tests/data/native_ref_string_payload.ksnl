@@ -18,7 +18,7 @@ end t.main
 
 fn t.probe(c: &t.Cell) -> usize uses [] panics never
     match c {
-        t.Cell.Entry(_h, k) => t.len(k)
+        t.Cell.Entry(_, k) => t.len(k)
         t.Cell.Empty => 0usize
     }
 end t.probe

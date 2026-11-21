@@ -27,7 +27,7 @@ fn std.fs.create_dir_all(path: &str) -> Result<(), std.io.Error> uses [io.fs] pa
         }
         if at_end || is_sep {
             let prefix = match path.split_at(i) {
-                Some((head, _tail)) => head
+                Some((head, _)) => head
                 None => path
             }
             if !prefix.ends_with("/") {
@@ -41,7 +41,7 @@ end std.fs.create_dir_all
 
 fn std.fs.make_dir_if_absent(path: &str) -> Result<(), std.io.Error> uses [io.fs] panics never
     match std.fs.create_dir(path) {
-        Ok(_u) => Ok(())
+        Ok(_) => Ok(())
         Err(e) => {
             if e.kind == std.io.ErrorKind.AlreadyExists {
                 let md = std.fs.metadata(path)?
@@ -104,12 +104,12 @@ fn std.fs.read_dir(path: &str) -> Result<alloc.vec.Vec<std.fs.DirEntry, std.allo
         match name.push_bytes(name_bytes) {
             Ok(_u) => {
             }
-            Err(_e) => return Err(std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 })
+            Err(_) => return Err(std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 })
         }
         match out.push(std.fs.DirEntry { name: name, kind: kind }) {
             Ok(_u) => {
             }
-            Err(_e) => return Err(std.fs.oom())
+            Err(_) => return Err(std.fs.oom())
         }
         i = j.wrapping_add(1usize)
     }
@@ -121,12 +121,12 @@ fn std.fs.write_atomic(path: &str, bytes: &[u8]) -> Result<(), std.io.Error> use
     match tmp.push_str(path) {
         Ok(_u) => {
         }
-        Err(_e) => return Err(std.fs.oom())
+        Err(_) => return Err(std.fs.oom())
     }
     match tmp.push_str(".ksn-tmp") {
         Ok(_u) => {
         }
-        Err(_e) => return Err(std.fs.oom())
+        Err(_) => return Err(std.fs.oom())
     }
     let mut file = std.fs.create(tmp.as_str())?
     match file.write(bytes) {
@@ -156,7 +156,7 @@ fn std.fs.write_atomic(path: &str, bytes: &[u8]) -> Result<(), std.io.Error> use
         }
     }
     match std.fs.rename(tmp.as_str(), path) {
-        Ok(_u) => Ok(())
+        Ok(_) => Ok(())
         Err(e) => {
             core.mem.drop(std.fs.remove_file(tmp.as_str()))
             Err(e)

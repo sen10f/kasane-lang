@@ -370,11 +370,11 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
         }
         let gw_u = match u32.try_from_i32(gw) {
             Ok(v) => v
-            Err(_e) => 0u32
+            Err(_) => 0u32
         }
         let gh_u = match u32.try_from_i32(gh) {
             Ok(v) => v
-            Err(_e) => 0u32
+            Err(_) => 0u32
         }
         if atlas_x + gw + 2i32 > 256i32 {
             atlas_x = 4i32
@@ -392,11 +392,11 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
                 let dst_off = (atlas_y + row) * 256i32 + atlas_x + col
                 let s = match u32.try_from_i32(src_off) {
                     Ok(v) => usize.from_u32(v)
-                    Err(_e) => 0usize
+                    Err(_) => 0usize
                 }
                 let d = match u32.try_from_i32(dst_off) {
                     Ok(v) => usize.from_u32(v)
-                    Err(_e) => 0usize
+                    Err(_) => 0usize
                 }
                 atlas[d] = gbuf[s]
                 col = col + 1i32

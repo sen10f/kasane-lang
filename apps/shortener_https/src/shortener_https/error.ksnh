@@ -22,6 +22,6 @@ end shortener_https.error.io_failed
 fn shortener_https.error.push_failed(value: alloc.string.PushBytesError) -> shortener_https.error.Error uses [] panics never pub
     match value {
         alloc.string.PushBytesError.Alloc(a) => shortener_https.error.Error.Alloc(a)
-        alloc.string.PushBytesError.InvalidUtf8(_u) => shortener_https.error.Error.BadRequest
+        alloc.string.PushBytesError.InvalidUtf8(_) => shortener_https.error.Error.BadRequest
     }
 end shortener_https.error.push_failed

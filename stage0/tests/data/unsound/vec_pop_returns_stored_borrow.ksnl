@@ -2,8 +2,8 @@ fn t.bad() -> u32 uses [alloc] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut x = 1u32
     match v.push(&x) {
-        Ok(_u) => 0u32
-        Err(_e) => 1u32
+        Ok(_) => 0u32
+        Err(_) => 1u32
     }
     match v.pop() {
         Some(r) => {

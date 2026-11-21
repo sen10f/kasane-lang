@@ -80,7 +80,7 @@ fn bench.mat_mul(a: &bench.Matrix, b: &bench.Matrix) -> bench.Matrix uses [alloc
             }
             match data.push(acc) {
                 Ok(_) => ()
-                Err(_e) => ()
+                Err(_) => ()
             }
             j = j.wrapping_add(1usize)
         }

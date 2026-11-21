@@ -24,8 +24,7 @@ end t.mk
 fn t.ok() -> u32 uses [] panics never
     with r = t.mk() close r.shut() {
         let x = &r
-        let n = x.id
-        n
+        x.id
     }
 end t.ok
 

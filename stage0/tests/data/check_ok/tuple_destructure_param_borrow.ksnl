@@ -1,3 +1,7 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
 fn t.ok(p: &u32) -> Option<&u32> uses [] panics never
     let (a, _b) = (p, 1u8)
     Some(a)
@@ -8,7 +12,3 @@ fn t.ok2(p: &u32) -> Option<&u32> uses [] panics never
     let (a, _b) = o
     a
 end t.ok2
-
-fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    Ok(())
-end t.main

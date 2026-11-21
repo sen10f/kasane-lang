@@ -3,25 +3,25 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let root_style = ui.layout.Style.default()
     let root = match tree.push_node(ui.tree.ViewKind.Block, root_style, None) {
         Ok(n) => n
-        Err(_e) => 0usize
+        Err(_) => 0usize
     }
     let child_style = ui.layout.Style.default()
     let c0 = match tree.push_node(ui.tree.ViewKind.Text, child_style, None) {
         Ok(n) => n
-        Err(_e) => 0usize
+        Err(_) => 0usize
     }
     let ok = tree.push_child(root, c0)
     let n = tree.child_count(root)
     let node = tree.node_at(c0)
     let is_some = match node {
-        Some(_n) => true
+        Some(_) => true
         None => false
     }
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&root) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("root")?
         std.io.print_line(s.as_str())?
@@ -29,8 +29,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&c0) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("child")?
         std.io.print_line(s.as_str())?
@@ -38,8 +38,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&ok) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("push_child_ok")?
         std.io.print_line(s.as_str())?
@@ -47,8 +47,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&n) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("child_count")?
         std.io.print_line(s.as_str())?
@@ -56,8 +56,8 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     {
         let mut s = alloc.string.String.new(std.alloc.SYSTEM)
         core.mem.drop(match s.push_display(&is_some) {
-            Ok(_u) => 0u8
-            Err(_e) => 1u8
+            Ok(_) => 0u8
+            Err(_) => 1u8
         })
         std.io.print_line("node_at_some")?
         std.io.print_line(s.as_str())?

@@ -44,7 +44,7 @@ fn bench.bst_insert(t: &mut bench.Bst, x: u32) -> () uses [alloc] panics never p
         if idx >= n {
             match t.nodes.insert(idx, bench.Node { value: x, left: 0usize, right: 0usize }) {
                 Ok(_) => ()
-                Err(_e) => ()
+                Err(_) => ()
             }
             break
         }
@@ -61,7 +61,7 @@ fn bench.bst_insert(t: &mut bench.Bst, x: u32) -> () uses [alloc] panics never p
                         node.left = n
                         match t.nodes.push(bench.Node { value: x, left: 0usize, right: 0usize }) {
                             Ok(_) => ()
-                            Err(_e) => ()
+                            Err(_) => ()
                         }
                         break
                     }
@@ -71,7 +71,7 @@ fn bench.bst_insert(t: &mut bench.Bst, x: u32) -> () uses [alloc] panics never p
                         node.right = n
                         match t.nodes.push(bench.Node { value: x, left: 0usize, right: 0usize }) {
                             Ok(_) => ()
-                            Err(_e) => ()
+                            Err(_) => ()
                         }
                         break
                     }
@@ -87,7 +87,7 @@ fn bench.bst_new() -> bench.Bst uses [alloc] panics never pub
     let mut nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
     match nodes.push(bench.Node { value: 0u32, left: 0usize, right: 0usize }) {
         Ok(_) => ()
-        Err(_e) => ()
+        Err(_) => ()
     }
     bench.Bst { nodes: nodes }
 end bench.bst_new

@@ -4,18 +4,18 @@ fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] pani
             let mut g = f
             match g.write("hi".as_bytes()) {
                 Ok(_) => ()
-                Err(_e) => ()
+                Err(_) => ()
             }
             match g.sync() {
                 Ok(_) => ()
-                Err(_e) => ()
+                Err(_) => ()
             }
             match g.close() {
                 Ok(_) => ()
-                Err(_e) => ()
+                Err(_) => ()
             }
         }
-        Err(_e) => ()
+        Err(_) => ()
     }
     let n = bench.resource("rsrc.txt")?
     core.check.eq(n, 2usize)
@@ -27,8 +27,8 @@ fn bench.resource(path: &str) -> Result<usize, std.io.Error> uses [alloc, io.fs]
     let n = with mut f = std.fs.open(path)? close core.mem.drop(f.close()) {
         let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
         match std.fs.read_to_end(&mut f, &mut buf) {
-            Ok(_sz) => buf.len()
-            Err(_e) => 0usize
+            Ok(_) => buf.len()
+            Err(_) => 0usize
         }
     }
     core.check.eq(n, 2usize)

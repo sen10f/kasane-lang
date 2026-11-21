@@ -17,7 +17,7 @@ fn t.drain(first: std.sync.Receiver<t.Res>) -> u32 uses [thread] panics never
                 sum = sum.wrapping_add(t.close(r))
             }
             Err(_e) => match rx.close() {
-                Ok(_u) => break
+                Ok(_) => break
                 Err(back) => {
                     rx = back
                 }
@@ -44,7 +44,7 @@ fn t.pool(rx: std.sync.Receiver<t.Res>, tx: std.sync.Sender<t.Res>) -> u32 uses 
         },
     )
     core.mem.drop(match tx.send(t.open()) {
-        Ok(_u) => 0u32
+        Ok(_) => 0u32
         Err(back) => t.close(back.value)
     })
     core.mem.drop(tx)

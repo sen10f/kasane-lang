@@ -37,7 +37,7 @@ fn t.Kvec.insert[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>, index: us
             }
             match self.buf.insert_within_cap(index, back) {
                 Ok(_) => Ok(())
-                Err(_lost) => Err(t.InsertError.Alloc(alloc.alloc.AllocError { code: 1u32 }))
+                Err(_) => Err(t.InsertError.Alloc(alloc.alloc.AllocError { code: 1u32 }))
             }
         }
     }
@@ -66,7 +66,7 @@ fn t.Kvec.push[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>, value: T) -
             self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize))?
             match self.buf.push_within_cap(back) {
                 Ok(_) => Ok(())
-                Err(_lost) => Err(alloc.alloc.AllocError { code: 1u32 })
+                Err(_) => Err(alloc.alloc.AllocError { code: 1u32 })
             }
         }
     }

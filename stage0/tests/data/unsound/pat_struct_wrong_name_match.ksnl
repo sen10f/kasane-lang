@@ -8,7 +8,7 @@ end t.T
 
 fn t.f(s: t.S) -> bool uses [] panics never
     match s {
-        t.T { v: _v } => true
+        t.T { v: _ } => true
     }
 end t.f
 

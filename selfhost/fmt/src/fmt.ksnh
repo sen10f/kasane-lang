@@ -747,7 +747,7 @@ fn fmt.scan_defs(lines: &[alloc.string.String<std.alloc.System>]) -> Result<allo
         let s = match lines.get(i) {
             Some(x) => match alloc.string.String.from_str(std.alloc.SYSTEM, x.as_str()) {
                 Ok(owned) => owned
-                Err(_e) => break
+                Err(_) => break
             }
             None => break
         }
@@ -765,7 +765,7 @@ fn fmt.scan_defs(lines: &[alloc.string.String<std.alloc.System>]) -> Result<allo
                 let sj = match lines.get(j) {
                     Some(x) => match alloc.string.String.from_str(std.alloc.SYSTEM, x.as_str()) {
                         Ok(owned) => owned
-                        Err(_e) => break
+                        Err(_) => break
                     }
                     None => break
                 }

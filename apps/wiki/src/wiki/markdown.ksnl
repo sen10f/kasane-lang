@@ -278,7 +278,7 @@ fn wiki.markdown.substring(s: &str, from: usize, to: usize) -> &str uses [] pani
     match bytes.sub(from, to) {
         Some(b) => match core.str.from_utf8(b) {
             Ok(t) => t
-            Err(_e) => s
+            Err(_) => s
         }
         None => s
     }

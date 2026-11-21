@@ -263,7 +263,7 @@ fn ui.widgets.TextInput.delete_backspace(self: &mut ui.widgets.TextInput) -> () 
         let mut removed = 0usize
         while removed < hi.wrapping_sub(lo) {
             match self.text.remove(lo) {
-                Some(_u) => ()
+                Some(_) => ()
                 None => break
             }
             removed = removed.wrapping_add(1usize)
@@ -278,7 +278,7 @@ fn ui.widgets.TextInput.delete_backspace(self: &mut ui.widgets.TextInput) -> () 
         let mut removed = 0usize
         while removed < count {
             match self.text.remove(prev) {
-                Some(_u) => ()
+                Some(_) => ()
                 None => break
             }
             removed = removed.wrapping_add(1usize)
@@ -295,7 +295,7 @@ fn ui.widgets.TextInput.delete_forward(self: &mut ui.widgets.TextInput) -> () us
         let mut removed = 0usize
         while removed < hi.wrapping_sub(lo) {
             match self.text.remove(lo) {
-                Some(_u) => ()
+                Some(_) => ()
                 None => break
             }
             removed = removed.wrapping_add(1usize)
@@ -312,7 +312,7 @@ fn ui.widgets.TextInput.delete_forward(self: &mut ui.widgets.TextInput) -> () us
             let mut removed = 0usize
             while removed < count {
                 match self.text.remove(self.caret) {
-                    Some(_u) => ()
+                    Some(_) => ()
                     None => break
                 }
                 removed = removed.wrapping_add(1usize)
@@ -328,8 +328,8 @@ fn ui.widgets.TextInput.display(self: &ui.widgets.TextInput) -> alloc.vec.Vec<u8
     while i < self.caret {
         match text.get(i) {
             Some(v) => match out.push(*v) {
-                Ok(_u) => ()
-                Err(_e) => ()
+                Ok(_) => ()
+                Err(_) => ()
             }
             None => ()
         }
@@ -340,8 +340,8 @@ fn ui.widgets.TextInput.display(self: &ui.widgets.TextInput) -> alloc.vec.Vec<u8
     while j < comp.len() {
         match comp.get(j) {
             Some(v) => match out.push(*v) {
-                Ok(_u) => ()
-                Err(_e) => ()
+                Ok(_) => ()
+                Err(_) => ()
             }
             None => ()
         }
@@ -352,8 +352,8 @@ fn ui.widgets.TextInput.display(self: &ui.widgets.TextInput) -> alloc.vec.Vec<u8
     while rest < n {
         match text.get(rest) {
             Some(v) => match out.push(*v) {
-                Ok(_u) => ()
-                Err(_e) => ()
+                Ok(_) => ()
+                Err(_) => ()
             }
             None => ()
         }
@@ -420,8 +420,8 @@ fn ui.widgets.TextInput.on_event(self: &mut ui.widgets.TextInput, event: &ui.eve
             while k < c.len() {
                 match c.get(k) {
                     Some(v) => match self.comp.push(*v) {
-                        Ok(_u) => ()
-                        Err(_e) => ()
+                        Ok(_) => ()
+                        Err(_) => ()
                     }
                     None => ()
                 }
@@ -481,7 +481,7 @@ fn ui.widgets.TextInput.replace_sel(self: &mut ui.widgets.TextInput, bytes: &[u8
     let mut removed = 0usize
     while removed < hi.wrapping_sub(lo) {
         match self.text.remove(lo) {
-            Some(_u) => ()
+            Some(_) => ()
             None => break
         }
         removed = removed.wrapping_add(1usize)
@@ -493,8 +493,8 @@ fn ui.widgets.TextInput.replace_sel(self: &mut ui.widgets.TextInput, bytes: &[u8
             None => 0u8
         }
         match self.text.insert(lo.wrapping_add(k), b) {
-            Ok(_u) => ()
-            Err(_e) => ()
+            Ok(_) => ()
+            Err(_) => ()
         }
         k = k.wrapping_add(1usize)
     }

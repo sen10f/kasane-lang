@@ -10,7 +10,7 @@ fn alloc.arena.Arena.get[T, A: alloc.alloc.Allocator](self: &alloc.arena.Arena<T
             } else {
                 None
             }
-            alloc.arena.Slot.Free(_g, _n) => None
+            alloc.arena.Slot.Free(_, _) => None
         }
         None => None
     }
@@ -25,7 +25,7 @@ fn alloc.arena.Arena.get_mut[T, A: alloc.alloc.Allocator](self: &mut alloc.arena
             } else {
                 None
             }
-            alloc.arena.Slot.Free(_g, _n) => None
+            alloc.arena.Slot.Free(_, _) => None
         }
         None => None
     }
@@ -73,7 +73,7 @@ fn alloc.arena.Arena.insert[T, A: alloc.alloc.Allocator](self: &mut alloc.arena.
                 self.live = self.live.wrapping_add(1usize)
                 Ok(alloc.arena.Handle { index: index, generation: 0u32 })
             }
-            Err(_back) => Err(alloc.alloc.AllocError { code: 1u32 })
+            Err(_) => Err(alloc.alloc.AllocError { code: 1u32 })
         }
     }
 end alloc.arena.Arena.insert
@@ -99,7 +99,7 @@ fn alloc.arena.Arena.remove[T, A: alloc.alloc.Allocator](self: &mut alloc.arena.
             alloc.arena.Slot.Taken(g, _v2) => {
                 generation = *g
             }
-            alloc.arena.Slot.Free(_g, _n) => return None
+            alloc.arena.Slot.Free(_, _) => return None
         }
         None => return None
     }
@@ -113,8 +113,8 @@ fn alloc.arena.Arena.remove[T, A: alloc.alloc.Allocator](self: &mut alloc.arena.
         Some(slot) => {
             let past = core.mem.replace(slot, alloc.arena.Slot.Free(bumped, free_head))
             match past {
-                alloc.arena.Slot.Taken(_g, value) => Some(value)
-                alloc.arena.Slot.Free(_g, _n) => None
+                alloc.arena.Slot.Taken(_, value) => Some(value)
+                alloc.arena.Slot.Free(_, _) => None
             }
         }
         None => None

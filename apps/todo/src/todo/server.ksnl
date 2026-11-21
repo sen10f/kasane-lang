@@ -30,7 +30,7 @@ end todo.server.serve_one
 
 fn todo.server.settle(handled: Result<(), todo.error.Error>) -> Result<(), todo.error.Error> uses [] panics never pub
     match handled {
-        Ok(_u) => Ok(())
+        Ok(_) => Ok(())
         Err(error.Error.Alloc(a)) => Err(error.Error.Alloc(a))
         Err(error.Error.AuthFailed) => Ok(())
         Err(error.Error.BadRequest) => Ok(())
@@ -38,9 +38,9 @@ fn todo.server.settle(handled: Result<(), todo.error.Error>) -> Result<(), todo.
         Err(error.Error.Config) => Err(error.Error.Config)
         Err(error.Error.Corrupt) => Err(error.Error.Corrupt)
         Err(error.Error.History) => Err(error.Error.History)
-        Err(error.Error.Io(_e)) => Ok(())
-        Err(error.Error.Json(_e)) => Ok(())
-        Err(error.Error.Net(_e)) => Ok(())
+        Err(error.Error.Io(_)) => Ok(())
+        Err(error.Error.Json(_)) => Ok(())
+        Err(error.Error.Net(_)) => Ok(())
         Err(error.Error.NotAuthenticated) => Ok(())
         Err(error.Error.NotFound) => Ok(())
         Err(error.Error.TooLarge) => Ok(())

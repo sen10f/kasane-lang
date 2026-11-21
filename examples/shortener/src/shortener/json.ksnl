@@ -46,11 +46,11 @@ fn shortener.json.push_control(out: &mut alloc.string.String<std.alloc.System>, 
     let low = unit & 15u32
     match u8.try_from_u32(high) {
         Ok(d) => out.push(code.digit_char(d))?
-        Err(_e) => return Err(error.Error.Corrupt)
+        Err(_) => return Err(error.Error.Corrupt)
     }
     match u8.try_from_u32(low) {
         Ok(d) => out.push(code.digit_char(d))?
-        Err(_e) => return Err(error.Error.Corrupt)
+        Err(_) => return Err(error.Error.Corrupt)
     }
     Ok(())
 end shortener.json.push_control
@@ -73,7 +73,7 @@ end shortener.json.stats_body
 fn shortener.json.test_escape(text: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     match shortener.json.escape_into(&mut out, text) {
-        Ok(_u) => out
+        Ok(_) => out
         Err(_e) => core.panic.panic("escape failed")
     }
 end shortener.json.test_escape

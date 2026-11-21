@@ -66,8 +66,8 @@ fn wiki.server.refuse(stream: &mut std.net.TcpStream, failure: std.http.Error) -
         std.http.Error.HeadTooLarge => 431u16
         std.http.Error.Unsupported => 501u16
         std.http.Error.Truncated => 0u16
-        std.http.Error.Io(_x) => 0u16
-        std.http.Error.Alloc(_a) => 500u16
+        std.http.Error.Io(_) => 0u16
+        std.http.Error.Alloc(_) => 500u16
     }
     if status == 0u16 {
         core.mem.drop(std.log.warn("connection ended early", &[("reason", "truncated")]))

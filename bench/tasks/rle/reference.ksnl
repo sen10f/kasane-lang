@@ -54,7 +54,7 @@ fn bench.rle(text: &str) -> alloc.vec.Vec<bench.Run, std.alloc.System> uses [all
                 }
                 match out.push(bench.Run { ch: *c, count: count }) {
                     Ok(_) => ()
-                    Err(_e) => ()
+                    Err(_) => ()
                 }
                 i = j
             }

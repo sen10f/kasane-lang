@@ -38,7 +38,7 @@ fn core.fmt.Formatter.push_bytes(self: &mut core.fmt.Formatter, bytes: &[u8]) ->
     }
     match dst.copy_from(bytes) {
         Ok(done) => done
-        Err(_error) => return Err(core.fmt.Error { code: 1u32 })
+        Err(_) => return Err(core.fmt.Error { code: 1u32 })
     }
     self.len = stop
     Ok(())
