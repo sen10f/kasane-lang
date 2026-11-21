@@ -205,12 +205,17 @@ pub(crate) fn find_ptr_ty(v: &V, line: usize) -> Option<usize> {
 
 /// 定義のシグネチャ (引数・戻り値) に生ポインタ型があるか。
 /// 3.5: `[unsafe] modules` の完全一致または接頭辞一致。core / alloc / std は暗黙に許可。
-pub(crate) fn module_allows_unsafe(unsafe_modules: &[String], module: &str) -> bool {
+/// `unsafe` を使ってよいモジュールか。`unsafe_modules` は (パッケージの `src/`・`tests/` の道, モジュール) の組で、
+/// 許可はそのパッケージ自身のファイルにだけ効く (2026-11-21 の脆弱性の直し S1)。暗黙の許可は標準ライブラリだけで、
+/// 利用者のパッケージは `core` / `alloc` / `std` の名前を持てない (読み込みの E1001、S2・S3)。
+pub(crate) fn module_allows_unsafe(unsafe_modules: &[(String, String)], module: &str, file: &str) -> bool {
     let top = module.split('.').next().unwrap_or("");
     if matches!(top, "core" | "alloc" | "std") {
         return true;
     }
-    unsafe_modules.iter().any(|m| module == m || module.starts_with(&format!("{}.", m)))
+    unsafe_modules
+        .iter()
+        .any(|(dir, m)| file.starts_with(dir.as_str()) && (module == m || module.starts_with(&format!("{}.", m))))
 }
 pub(crate) fn sig_has_ptr(d: &Def) -> bool {
     d.params.iter().any(|p| find_ptr_ty(&p.1, 0).is_some()) || find_ptr_ty(&d.ret, 0).is_some()
@@ -469,7 +474,8 @@ pub struct Checker<'a> {
     closure_blocked: Vec<HashSet<String>>,
     /// いま `const fn` の本体を検査中か (呼べるのは const fn と組み込みのみ、3.2)。
     in_const_fn: bool,
-    pub unsafe_modules: Vec<String>,
+    /// (パッケージのソースのディレクトリ, そのパッケージの `[unsafe] modules` の 1 つ)。モジュールの許可は、そのパッケージのファイルの定義だけに効く (S1)。
+    pub unsafe_modules: Vec<(String, String)>,
     /// `tests/` 配下 (統合テスト、3.2) のファイルパス。ここに属する定義には別の規則を当てる。
     pub integration_files: HashSet<String>,
     unsafe_ok: bool,
@@ -697,8 +703,8 @@ impl<'a> Checker<'a> {
     }
 
     /// 3.5: `[unsafe] modules` の完全一致または接頭辞一致。core / alloc / std は暗黙に許可。
-    fn module_may_use_unsafe(&self, module: &str) -> bool {
-        module_allows_unsafe(&self.unsafe_modules, module)
+    fn module_may_use_unsafe(&self, module: &str, file: &str) -> bool {
+        module_allows_unsafe(&self.unsafe_modules, module, file)
     }
 
     // ---- 宣言レベルの規則 (3.5 / 5.3 / 8.2)
@@ -707,7 +713,7 @@ impl<'a> Checker<'a> {
         // 5.3: 再帰を含む型 (自己参照・相互再帰の両方) の集合。
         let recursive = self.recursive_types();
         for &i in &user {
-            if !self.module_may_use_unsafe(&self.def(i).module) {
+            if !self.module_may_use_unsafe(&self.def(i).module, &self.def(i).file) {
                 self.check_unsafe_surface(i);
             }
             let d = self.def(i);
@@ -954,7 +960,7 @@ impl<'a> Checker<'a> {
             let tb = d.impl_trait.clone();
             // 5.5: 手動の `Send` / `Sync` impl (内部可変性の表明) は unsafe 許可モジュールのみ。
             if matches!(tb.as_str(), "core.marker.Send" | "core.marker.Sync") {
-                if !self.module_may_use_unsafe(&d.module) {
+                if !self.module_may_use_unsafe(&d.module, &d.file) {
                     self.diag(
                         "E5002",
                         format!("manual impl of {} is only allowed in an unsafe-permitted module (5.5)", tb),
@@ -2269,7 +2275,7 @@ impl<'a> Checker<'a> {
         if self.in_const_fn && !d.uses.is_empty() {
             self.diag("E2038", format!("`const fn` {} must be `uses []` (3.2)", d.name), di, 0);
         }
-        self.unsafe_ok = self.module_may_use_unsafe(&d.module);
+        self.unsafe_ok = self.module_may_use_unsafe(&d.module, &d.file);
         let body = d.body.as_ref().unwrap();
         let names = self.def(di).gnames();
         self.check_body_types(body, di, &names);

@@ -9,7 +9,7 @@ use crate::check::Diag;
 use crate::program::{Program, Target};
 use crate::tast::*;
 
-pub fn check(p: &Program, user: &[usize], tast: &Tast, unsafe_modules: &[String]) -> Vec<Diag> {
+pub fn check(p: &Program, user: &[usize], tast: &Tast, unsafe_modules: &[(String, String)]) -> Vec<Diag> {
     let mut out: Vec<Diag> = vec![];
     for &di in user {
         let d = &p.defs[di];
@@ -58,7 +58,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, unsafe_modules: &[String]
         found.sort();
         found.dedup();
         // E5001: 許可の無いモジュールでは、呼び先の署名が生ポインタを持つ呼び出しを、呼び方 (経路・メソッド・総称の境界・閉包の中) に関わらず拒む。
-        if !crate::check::module_allows_unsafe(unsafe_modules, &d.module) {
+        if !crate::check::module_allows_unsafe(unsafe_modules, &d.module, &d.file) {
             let mut raw: Vec<(usize, String)> = vec![];
             super::impl_sig::walk(&b.body, &mut |e| {
                 if !matches!(e.kind, TKind::Call { .. } | TKind::MCall { .. }) {
