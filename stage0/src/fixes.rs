@@ -579,6 +579,30 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             let arg = &text[a0..a1];
             vec![span(file, line, text, a0, a1, format!("{}{}", kind as char, arg))]
         }
+        // 呼び出し元の `uses` に足りない効果を追加する (E4001)。APIを変えるので `pub` の関数は直さない。
+        "E4001" => {
+            let re = Regex::new(r"uses effect `([^`]+)`").unwrap();
+            let Some(c) = re.captures(msg) else { return vec![] };
+            let eff = &c[1];
+            let Some(h) = caller_header(lines, line) else { return vec![] };
+            let Some(text) = get(h) else { return vec![] };
+            if is_pub_header(text) {
+                return vec![];
+            }
+            let re = Regex::new(r"uses \[([^\]]*)\]").unwrap();
+            let Some(m) = re.find(text) else { return vec![] };
+            let mut effs: Vec<&str> = m.as_str()[6..].trim_end_matches(']').split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+            if effs.iter().any(|&e| e == eff) {
+                return vec![];
+            }
+            effs.push(eff);
+            effs.sort();
+            // 置き換えの範囲は `uses [...]` 全体なので、`uses ` のキーワードを残す。
+            let new = if effs.is_empty() { "uses []".to_string() } else { format!("uses [{}]", effs.join(", ")) };
+            let b0 = char_idx(text, m.start());
+            let b1 = char_idx(text, m.end());
+            vec![span(file, h, text, b0, b1, new)]
+        }
         _ => vec![],
     }
 }
