@@ -773,7 +773,7 @@ impl Parser {
     /// `a == None` → `a is None`、`a == true` / `true == a` → `a`、`a != true` / `a == false` → `!a` (`!` は括弧ごと),
     /// `x.len() == 0` / `0 == x.len()` → `x.is_empty()`、`!=` と `>` と (左が 0 の) `<` は `!x.is_empty()`。
     /// 比較の書き換え (D11)。literal は左右どちらにあってもよい (`true == x` = `x == true`、`0usize == v.len()` = `v.len() == 0usize`)。
-    /// `a == None` / `None == a` → `a is None`、`a != None` / `None != a` → `a is Some(_)` (Option の判定の正規形。2026-11-21 の決定で `is` に統一。`Some(_)` は何も束縛しないので借用だけ)、
+    /// `a == None` / `None == a` → `a.is_none()`、`a != None` / `None != a` → `a.is_some()` (Option の判定の正規形)、
     /// `a == true` / `true == a` → `a`、`a != true` / `a == false` → `!a` (`!` は括弧ごと)、
     /// `x.len() == 0` / `0 == x.len()` → `x.is_empty()`、`!=` と `>` と (左が 0 の) `<` は `!x.is_empty()`。
     /// `None` と `len()` の正規形は std のメソッド (`is_none` / `is_some` / `is_empty`)。`own_len` (プログラムが
@@ -798,11 +798,11 @@ impl Parser {
             };
             if let Some(keep) = none_keep {
                 if !self.fn_name.ends_with(".is_none") && !self.fn_name.ends_with(".is_some") {
-                    let m = if ot == "==" { " is None" } else { " is Some(_)" };
+                    let m = if ot == "==" { "is_none" } else { "is_some" };
                     self.rw.push(Rw {
                         a: s0,
                         b: end,
-                        parts: vec![Part::Span(keep.0, keep.1), Part::Lit(m.to_string())],
+                        parts: vec![Part::Span(keep.0, keep.1), Part::Lit(format!(".{}()", m))],
                         del_line: false,
                         inside: false,
                     });

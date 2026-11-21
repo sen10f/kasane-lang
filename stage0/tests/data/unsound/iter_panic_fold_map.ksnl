@@ -1,4 +1,4 @@
-fn t.main() -> () uses [] panics may
+fn t.main() -> () uses [] panics never
     core.mem.drop(core.iter.fold(
         core.iter.map(
             core.iter.range(0u64, 2u64),
