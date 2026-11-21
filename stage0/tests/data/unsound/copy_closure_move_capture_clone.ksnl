@@ -1,0 +1,21 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let s = t.mk("hello, this is a long heap string")
+    let f = fn() -> alloc.string.String capture [move s] {
+        s
+    }
+    let g = f.clone()
+    let first = f()
+    let second = g()
+    std.io.print_line(first.as_str())?
+    core.mem.drop(first)
+    let other = t.mk("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+    std.io.print_line(second.as_str())?
+    core.mem.drop(other)
+    Ok(())
+end t.main
+
+fn t.mk(text: &str) -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(text))
+    s
+end t.mk

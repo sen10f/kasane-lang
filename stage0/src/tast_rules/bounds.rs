@@ -9,6 +9,7 @@ use crate::tast::*;
 use crate::types::{from_v, param_bound_implies, Ty};
 
 struct B<'a> {
+    tk: &'a crate::types::TypeCk<'a>,
     p: &'a Program,
     caller: &'a Def,
 }
@@ -82,6 +83,7 @@ impl<'a> B<'a> {
             if g.0 != "type" || items(&g.2).is_empty() {
                 continue;
             }
+            let t0 = t;
             let t = t.strip();
             for b in items(&g.2) {
                 let V::L(bx) = b else { continue };
@@ -109,7 +111,13 @@ impl<'a> B<'a> {
                 if !known {
                     continue;
                 }
-                if let Some(leaf) = self.unsatisfied(t, &tr) {
+                let found = if matches!(tr.as_str(), "core.ops.Copy" | "core.ops.Clone" | "alloc.alloc.TryClone") {
+                    let caps = |n: &str| self.tk.side.closure_caps.get(n).map(|c| c.iter().map(|c| (c.kind.clone(), c.ty.clone())).collect());
+                    crate::types::marker_unsat(t0, &caps, &|x: &Ty| self.unsatisfied(x.strip(), &tr))
+                } else {
+                    self.unsatisfied(t, &tr)
+                };
+                if let Some(leaf) = found {
                     let mut msg = format!("the trait bound `{}: {}` of {} is not satisfied by {}", g.1, tr, callee.name, t.show());
                     if let Ty::Param(pn) = &leaf {
                         let short = tr.rsplit('.').next().unwrap_or(&tr);
@@ -135,7 +143,7 @@ impl<'a> B<'a> {
     }
 }
 
-pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
+pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &crate::types::TypeCk) -> Vec<Diag> {
     let mut out: Vec<Diag> = vec![];
     for &di in user {
         let d = &p.defs[di];
@@ -143,7 +151,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
             continue;
         }
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let ck = B { p, caller: d };
+        let ck = B { tk, p, caller: d };
         let mut found: Vec<(String, usize)> = vec![];
         super::impl_sig::walk(&b.body, &mut |e| {
             if let (TKind::Call { .. } | TKind::MCall { .. }, Some(Callee::Def(ci))) = (&e.kind, &e.res) {
