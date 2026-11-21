@@ -679,3 +679,21 @@ fn oneway_push_display_literal_becomes_push_str() {
     let src = "fn t.a() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never\n    let mut s = alloc.string.String.from_str(std.alloc.SYSTEM, \"a\")?\n    s.push_display(&\"lit\")?\n    core.mem.drop(s)\n    Ok(())\nend t.a\n\nfn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never\n    t.a()?\n    Ok(())\nend t.main\n";
     oneway_round_trip("oneway_push_display", src, "E2061", "s.push_str(\"lit\")?");
 }
+
+#[test]
+fn oneway_noop_wrapping_add_zero_is_removed() {
+    let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    x.wrapping_add(0u32)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_noop_add", src, "E2062", "    x\nend t.a");
+}
+
+#[test]
+fn oneway_then_some_becomes_if() {
+    let src = "fn t.a(c: bool) -> Option<u32> uses [] panics never\n    c.then_some(1u32)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_then_some", src, "E2063", "if c");
+}
+
+#[test]
+fn oneway_from_str_radix_ten_becomes_parse() {
+    let src = "fn t.a(s: &str) -> Result<u32, core.num.ParseIntError> uses [] panics never\n    u32.from_str_radix(s, 10u32)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_radix", src, "E2064", "u32.parse(s)");
+}

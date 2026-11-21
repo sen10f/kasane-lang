@@ -1,0 +1,7 @@
+fn t.a(c: bool) -> Option<u32> uses [] panics never
+    c.then_some(1u32)
+end t.a
+
+fn t.main() -> () uses [] panics never
+    ()
+end t.main

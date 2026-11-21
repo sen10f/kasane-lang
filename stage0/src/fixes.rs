@@ -333,7 +333,7 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             }
             vec![span(file, line, text, indent, text.len(), format!("core.mem.drop({})", expr))]
         }
-        "E2055" | "E2057" | "E2058" | "E2059" | "E2060" | "E2061" => oneway_fix(code, msg, file, line, lines),
+        "E2055" | "E2057" | "E2058" | "E2059" | "E2060" | "E2061" | "E2062" | "E2063" | "E2064" => oneway_fix(code, msg, file, line, lines),
         "E2042" => {
             let Some(text) = get(line) else { return vec![] };
             let indent = text.len() - text.trim_start().len();
@@ -982,6 +982,76 @@ fn oneway_fix(code: &str, msg: &str, file: &str, line: usize, lines: &[String]) 
             }
             let body = &text[lit_from..lit_end];
             vec![span(file, line, text, at, lit_end + 2, format!(".push_str(\"{body}\")"))]
+        }
+        "E2062" => {
+            let Some(name) = ["wrapping_add", "wrapping_sub", "wrapping_mul"].into_iter().find(|n| msg.contains(&format!("`.{n}(..)`"))) else { return vec![] };
+            let lit = if name == "wrapping_mul" { "1" } else { "0" };
+            let head = format!(".{name}({lit}");
+            if text.matches(&head).count() != 1 {
+                return vec![];
+            }
+            let at = text.find(&head).unwrap();
+            let rest = &text[at + head.len()..];
+            let suffix_len = rest.chars().take_while(|c| c.is_alphanumeric()).map(char::len_utf8).sum::<usize>();
+            let after = &rest[suffix_len..];
+            if !after.starts_with(')') || rest[..suffix_len].starts_with(|c: char| c.is_ascii_digit()) {
+                return vec![];
+            }
+            vec![span(file, line, text, at, at + head.len() + suffix_len + 1, String::new())]
+        }
+        "E2064" => {
+            let head = ".from_str_radix(";
+            if text.matches(head).count() != 1 {
+                return vec![];
+            }
+            let at = text.find(head).unwrap();
+            // `T.from_str_radix(arg, 10)` → `T.parse(arg)`。引数は 1 つめに `,` を含まない形だけ。
+            let rest = &text[at + head.len()..];
+            let Some(close) = rest.find(')') else { return vec![] };
+            let inner = &rest[..close];
+            let Some((a, r)) = inner.split_once(", ") else { return vec![] };
+            let rn = r.trim_end_matches(|c: char| c.is_alphabetic() || c.is_ascii_digit() && false);
+            if a.contains(['(', ')', ',']) || !(rn == "10" || r.starts_with("10") && r[2..].chars().all(|c| c.is_alphanumeric())) {
+                return vec![];
+            }
+            vec![span(file, line, text, at, at + head.len() + close + 1, format!(".parse({a})"))]
+        }
+        "E2063" => {
+            let head = ".then_some(";
+            if text.matches(head).count() != 1 {
+                return vec![];
+            }
+            let at = text.find(head).unwrap();
+            let n = ident_before(at);
+            if n == 0 || text[..at - n].ends_with(|c: char| c == '.' || c == '_' || c.is_alphanumeric()) {
+                return vec![];
+            }
+            let start = at - n;
+            let rest = &text[at + head.len()..];
+            let mut depth = 1usize;
+            let mut close = None;
+            for (i, c) in rest.char_indices() {
+                match c {
+                    '"' | '\'' => return vec![],
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(close) = close else { return vec![] };
+            let (recv, v) = (&text[start..at], &rest[..close]);
+            // 1 行ブロックは書けないので、行全体がこの式のとき (末尾の式) だけ複数行に直す。
+            let ind = &text[..start];
+            if !ind.chars().all(|c| c == ' ') || !text[at + head.len() + close + 1..].trim().is_empty() {
+                return vec![];
+            }
+            vec![span(file, line, text, start, at + head.len() + close + 1, format!("if {recv} {{\n{ind}    Some({v})\n{ind}}} else {{\n{ind}    None\n{ind}}}"))]
         }
         "E2055" => {
             // `recv.is_some()` 等の形 (受け手は単純な名前だけ)。

@@ -36,6 +36,20 @@ fn is_none_path(e: &TExpr) -> bool {
     path_is(e, &["None"]) || path_is(e, &["core", "option", "None"])
 }
 
+/// 整数リテラル `<値>` の値 (接尾辞付きでも可)。`Lit` の文字列は `int:<値>:<接尾辞>` 形。
+fn int_lit(e: &TExpr) -> Option<u128> {
+    let TKind::Lit(s) = &e.kind else { return None };
+    let mut it = s.split(':');
+    if it.next()? != "int" {
+        return None;
+    }
+    it.next()?.replace('_', "").parse().ok()
+}
+
+fn is_int(t: &Ty) -> bool {
+    matches!(t.strip(), Ty::Prim(n) if matches!(n.as_str(), "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize"))
+}
+
 pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
     let mut out: Vec<Diag> = vec![];
     for &di in user {
@@ -87,6 +101,26 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                             _ => "Err(_)",
                         };
                         found.push((e.line, "E2055", format!("`.{m}()` is not the canonical form: write `x is {pat}` (or `if let` when the value is used)")));
+                    }
+                }
+                if let Some(Callee::Def(d)) = &e.res {
+                    let n = p.defs[*d].name.as_str();
+                    let last = n.rsplit('.').next().unwrap_or("");
+                    if args.len() == 1 && n.starts_with("core.num.") {
+                        let v = int_lit(&args[0]);
+                        if matches!((last, v), ("wrapping_add" | "wrapping_sub", Some(0)) | ("wrapping_mul", Some(1))) {
+                            found.push((e.line, "E2062", format!("`.{last}(..)` with this literal changes nothing: remove the call")));
+                        }
+                    }
+                    if n == "core.bool.bool.then_some" {
+                        found.push((e.line, "E2063", "`then_some` is removed: write `if c { Some(v) } else { None }`".into()));
+                    }
+                }
+                // `u32.from_str_radix(s, 10)` は `u32.parse(s)`。
+                if let Some(Callee::Def(d)) = &e.res {
+                    let n = p.defs[*d].name.as_str();
+                    if n.starts_with("core.num.") && n.ends_with(".from_str_radix") && args.len() == 2 && int_lit(&args[1]) == Some(10) {
+                        found.push((e.line, "E2064", "`from_str_radix(s, 10)` is `parse(s)`".into()));
                     }
                 }
                 if let TKind::Path(pth) = &callee.kind {
