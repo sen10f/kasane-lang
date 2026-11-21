@@ -588,7 +588,20 @@ impl Parser {
         }
         if c.kind == "ident" || c.kind == "upper" {
             let nm = self.fqn()?;
-            let args = if self.is_op("<") { self.targs()? } else { vec![] };
+            let mut args = if self.is_op("<") { self.targs()? } else { vec![] };
+            // デフォルト確保器の短縮名 (`std.vec.Vec<T>`) は、構文木にする時点で正式名
+            // (`alloc.vec.Vec<T, std.alloc.System>`) に直す。以降の段は長い形だけを見る。
+            let nm = match crate::types::std_to_alloc(&nm) {
+                Some(a) => {
+                    let total = crate::types::ALLOC_ALIASES.iter().find(|(_, al, _)| *al == a).map_or(0, |x| x.2);
+                    let ntype = args.iter().filter(|x| !matches!(x, V::L(l) if matches!(l.first(), Some(V::S(t)) if t == "life"))).count();
+                    if ntype + 1 == total {
+                        args.push(V::L(vec![s("named"), V::S("std.alloc.System".to_string()), V::L(vec![])]));
+                    }
+                    a.to_string()
+                }
+                None => nm,
+            };
             return Ok(V::L(vec![s("named"), V::S(nm), V::L(args)]));
         }
         self.err("expected a type")

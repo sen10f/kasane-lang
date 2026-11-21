@@ -1172,6 +1172,28 @@ impl<'a> Lw<'a> {
     }
 
     fn call(&mut self, e: &V) -> LR<Option<VId>> {
+        // デフォルト確保器の短縮名のコンストラクタ (`std.vec.Vec.new()`) は、正式名の呼び出し
+        // (`alloc.vec.Vec.new(std.alloc.SYSTEM)`) に直してから下ろす。
+        if let V::Node(tag, kids, ln, id) = e {
+            if let Some(V::Node("Path", pf, pl, pid)) = kids.first() {
+                let segs = strs(&pf[0]);
+                if segs.len() >= 2 && segs[segs.len() - 1] == "new" && crate::types::std_to_alloc(&segs[..segs.len() - 1].join(".")).is_some() {
+                    let canon = crate::program::Program::expand_alias_segs_pub(&segs);
+                    let mut nk = kids.clone();
+                    let mut npf = pf.clone();
+                    npf[0] = V::L(canon.iter().map(|x| V::S(x.clone())).collect());
+                    nk[0] = V::Node("Path", npf, *pl, *pid);
+                    let mut a = items(&kids[1]).to_vec();
+                    let cn = canon.join(".");
+                    let want = self.p.defs.iter().find(|d| d.kw == "fn" && d.name == cn).map(|d| d.params.len());
+                    if want == Some(a.len() + 1) {
+                        a.push(V::Node("Path", vec![V::L(["std", "alloc", "SYSTEM"].iter().map(|x| V::S(x.to_string())).collect()), V::Nil], *ln, 0));
+                    }
+                    nk[1] = V::L(a);
+                    return self.call(&V::Node(tag, nk, *ln, *id));
+                }
+            }
+        }
         if let Some(r) = self.const_str_call(e) {
             return r;
         }

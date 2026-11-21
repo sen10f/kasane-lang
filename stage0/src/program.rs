@@ -883,6 +883,10 @@ impl Program {
 
     /// `std.vec.Vec.new` → `alloc.vec.Vec.new` のように、デフォルト確保器の短縮名 (`std..`) を
     /// 正式名 (`alloc..`) に置き換える。短縮名がプレフィックスに続く場合も同様に置き換える。
+    pub(crate) fn expand_alias_segs_pub(segs: &[String]) -> Vec<String> {
+        Self::expand_alias_segs(segs)
+    }
+
     fn expand_alias_segs(segs: &[String]) -> Vec<String> {
         for (std, alloc, _) in crate::types::ALLOC_ALIASES {
             let std_segs: Vec<&str> = std.split('.').collect();
