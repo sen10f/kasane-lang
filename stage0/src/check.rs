@@ -461,7 +461,8 @@ pub struct Checker<'a> {
     closure_blocked: Vec<HashSet<String>>,
     /// いま `const fn` の本体を検査中か (呼べるのは const fn と組み込みのみ、3.2)。
     in_const_fn: bool,
-    pub unsafe_modules: Vec<String>,
+    /// (パッケージのソースのディレクトリ, そのパッケージの `[unsafe] modules` の 1 つ)。モジュールの許可は、そのパッケージのファイルの定義だけに効く (S1)。
+    pub unsafe_modules: Vec<(String, String)>,
     /// `tests/` 配下 (統合テスト、3.2) のファイルパス。ここに属する定義には別の規則を当てる。
     pub integration_files: HashSet<String>,
     unsafe_ok: bool,
@@ -686,12 +687,13 @@ impl<'a> Checker<'a> {
     }
 
     /// 3.5: `[unsafe] modules` の完全一致または接頭辞一致。core / alloc / std は暗黙に許可。
-    fn module_may_use_unsafe(&self, module: &str) -> bool {
+    fn module_may_use_unsafe(&self, module: &str, file: &str) -> bool {
         let top = module.split('.').next().unwrap_or("");
+        // 暗黙の許可は標準ライブラリのソースだけ。利用者のパッケージは `core` / `alloc` / `std` の名前を持てない (読み込みの段で E1001)。
         if matches!(top, "core" | "alloc" | "std") {
             return true;
         }
-        self.unsafe_modules.iter().any(|m| module == m || module.starts_with(&format!("{}.", m)))
+        self.unsafe_modules.iter().any(|(dir, m)| file.starts_with(dir.as_str()) && (module == m || module.starts_with(&format!("{}.", m))))
     }
 
     // ---- 宣言レベルの規則 (3.5 / 5.3 / 8.2)
@@ -700,7 +702,7 @@ impl<'a> Checker<'a> {
         // 5.3: 再帰を含む型 (自己参照・相互再帰の両方) の集合。
         let recursive = self.recursive_types();
         for &i in &user {
-            if !self.module_may_use_unsafe(&self.def(i).module) {
+            if !self.module_may_use_unsafe(&self.def(i).module, &self.def(i).file) {
                 self.check_unsafe_surface(i);
             }
             let d = self.def(i);
@@ -947,7 +949,7 @@ impl<'a> Checker<'a> {
             let tb = d.impl_trait.clone();
             // 5.5: 手動の `Send` / `Sync` impl (内部可変性の表明) は unsafe 許可モジュールのみ。
             if matches!(tb.as_str(), "core.marker.Send" | "core.marker.Sync") {
-                if !self.module_may_use_unsafe(&d.module) {
+                if !self.module_may_use_unsafe(&d.module, &d.file) {
                     self.diag(
                         "E5002",
                         format!("manual impl of {} is only allowed in an unsafe-permitted module (5.5)", tb),
@@ -2258,7 +2260,7 @@ impl<'a> Checker<'a> {
         self.shadow_check(&params, &HashSet::new(), di, 0);
         self.cur_panics = if test { "may".into() } else { d.panics.clone().unwrap_or("may".into()) };
         self.in_const_fn = !test && d.is_const;
-        self.unsafe_ok = self.module_may_use_unsafe(&d.module);
+        self.unsafe_ok = self.module_may_use_unsafe(&d.module, &d.file);
         let body = d.body.as_ref().unwrap();
         let names = self.def(di).gnames();
         self.check_body_types(body, di, &names);
