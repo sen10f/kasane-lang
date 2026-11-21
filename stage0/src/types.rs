@@ -595,6 +595,8 @@ pub struct TypeCk<'a> {
     pub bound_sites: HashMap<(usize, u32), String>,
     /// `trait_bound_method` が見つけた境界のメソッドの名前 (`call_method` が式 ID と結び付けて取る)。
     bound_hit: Option<String>,
+    /// 直近のトレイトメソッドの呼び出し (`dyn` 越し・境界越し) の実体化した仮引数の型 (`call_method` が取って側の表へ移す)。
+    wants_tmp: Option<Vec<Ty>>,
     /// メソッド呼び出しごと (書き手の定義, 呼び出しノードの式 ID) の解決先。メソッド形は `MCall`、`x.m(..)` の経路形は `Call` のノード。`None` は決められない呼び出し
     /// (借用検査は安全側に倒す)。候補が複数なら引数の個数が合うものすべて。
     pub call_res: HashMap<(usize, u32), Option<Vec<usize>>>,
@@ -717,7 +719,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, wants_tmp: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1359,6 +1361,10 @@ impl<'a> TypeCk<'a> {
         for (id, (kind, line, t)) in std::mem::take(&mut self.expr_pending) {
             let ty = self.deep(&t);
             self.tytab.insert((fqn.clone(), id), ExprTy { kind, line, ty });
+        }
+        for (key, ws) in std::mem::take(&mut self.side.arg_wants_pending) {
+            let ws = ws.iter().map(|w| self.deep(w)).collect();
+            self.side.arg_wants.insert(key, ws);
         }
     }
 
@@ -2452,15 +2458,14 @@ impl<'a> TypeCk<'a> {
     /// 効果 (`uses [..]`) と panic (`never` / `may`) の実引数は効果検査 (check.rs) で扱うのでここでは無視する。
     /// 実引数の種別が宣言と並ばない (誤った) 呼び出しでは何も束縛しない (黙る)。
     /// 型の実引数は、書かれた位置 (呼び出し元) の型パラメータ名で解釈する。
-    fn seed_targs(&mut self, d: &Def, targs: &[V], map: &mut HashMap<String, Ty>, line: usize) {
+    fn seed_targs(&mut self, d: &Def, targs: &[V], map: &mut HashMap<String, Ty>, _line: usize) {
         if targs.is_empty() {
             return;
         }
-        // 明示型引数の数は宣言と一致しなければならない (型・定数・効果・panic の実引数をすべて数える。ライフタイムは除く)。
+        // 明示型引数の数は宣言と一致しなければならない (E2023 は TAST の規則 T の `turbofish` が報告する)。
         let want = d.generics.iter().filter(|g| g.0 != "life").count();
         let got = targs.iter().filter(|a| tag(a) != "life").count();
         if want != got {
-            self.diag("E2023", format!("`{}` takes {} explicit type argument(s) (types, constants, effects and panics), found {}", d.name, want, got), line);
             return;
         }
         let Some(pairs) = crate::check::align_targs(&d.generics, targs) else { return };
@@ -2801,7 +2806,11 @@ impl<'a> TypeCk<'a> {
         let saved = self.last_fit.take();
         let arg_ids = std::mem::take(&mut self.side.arg_ids);
         self.bound_hit = None;
+        self.wants_tmp = None;
         let t = self.call_method_in(id, recv, base, name, args, line, targs, local);
+        if let Some(ws) = self.wants_tmp.take() {
+            self.side.arg_wants_pending.push(((self.cur, id), ws));
+        }
         if let Some(f) = self.bound_hit.take() {
             self.bound_sites.insert((self.cur, id), f);
         }
@@ -3027,18 +3036,7 @@ impl<'a> TypeCk<'a> {
         for (k, a) in args.iter().enumerate() {
             let pt = self.inst(&Self::inst_regions(call_id, &sig_ps[k + 1]), &mut map);
             self.note_region_cstr(call_id, &pt, a, "arg");
-            if let Err(e) = self.unify2(&pt, a) {
-                if fit.len() == 1 {
-                    {
-                        let (want, got) = self.prim_conflict(&e).or_else(|| self.ptr_mismatch(&pt, a)).unwrap_or_else(|| Self::raw_pair(&e));
-                        self.diag(
-                            "E2023",
-                            format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
-                            line,
-                        );
-                    }
-                }
-            }
+            let _ = self.unify2(&pt, a);
         }
         self.resolve_impl_bounds(d, &mut map);
         // Fn 境界 (6 の 1): `map_err(f)` などの引数のクロージャ・関数項目を、境界の引数・戻り値と単一化する
@@ -3051,7 +3049,7 @@ impl<'a> TypeCk<'a> {
                 continue;
             }
             if let cl @ Ty::Closure { .. } = self.resolve(a) {
-                self.unify_fn_bound(d, k, &pname, &cl, &mut map, line, &mut cap_bad);
+                self.unify_fn_bound(d, &pname, &cl, &mut map, line, &mut cap_bad);
             }
         }
         let r = self.inst(&Self::inst_regions(call_id, &sig_ret), &mut map);
@@ -3318,24 +3316,19 @@ impl<'a> TypeCk<'a> {
             let tparams: Vec<&(String, String, V)> = td.generics.iter().filter(|g| g.0 != "life").collect();
             for (g, a) in tparams.iter().zip(&targs) {
                 if g.0 == "type" {
-                    let a = if *a == Ty::Param("Self".into()) { deep.clone() } else { a.clone() };
+                    let a = if *a == Ty::Param("Self".into()) { deep.strip().clone() } else { a.clone() };
                     map.insert(g.1.clone(), a);
                 }
             }
+            // 実引数との食い違い (E2023) は TAST の規則 T が `arg_wants` から報告する。ここは推論 (型変数の束縛) だけ。
+            let mut wants = vec![];
             for (k, a) in args.iter().enumerate() {
                 let pt = self.sig_ty(&params[k + 1].1, &gn);
                 let pt = self.inst(&pt, &mut map);
-                if let Err(e) = self.unify2(&pt, a) {
-                    {
-                        let (want, got) = self.prim_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
-                        self.diag(
-                            "E2023",
-                            format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
-                            line,
-                        );
-                    }
-                }
+                let _ = self.unify2(&pt, a);
+                wants.push(pt);
             }
+            self.wants_tmp = Some(wants);
             if let Some((u, p)) = eff {
                 self.check_trait_effects(format!("{}.{}", tr, name), u, p, line);
             }
@@ -3675,20 +3668,15 @@ impl<'a> TypeCk<'a> {
                     self.need_mut(b, name, line);
                 }
             }
+            // 実引数との食い違い (E2023) は TAST の規則 T が `arg_wants` から報告する。ここは推論 (型変数の束縛) だけ。
+            let mut wants = vec![];
             for (k, a) in args.iter().enumerate() {
                 let pt = self.sig_ty(&params[k + 1].1, &gn);
                 let pt = self.inst(&pt, &mut map);
-                if let Err(e) = self.unify2(&pt, a) {
-                    {
-                        let (want, got) = self.prim_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
-                        self.diag(
-                            "E2023",
-                            format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
-                            line,
-                        );
-                    }
-                }
+                let _ = self.unify2(&pt, a);
+                wants.push(pt);
             }
+            self.wants_tmp = Some(wants);
             // 効果 (5.1): `dyn Tr` の型引数は `Ty::Dyn` が持たないので、トレイトの効果変数は束縛せず落とす (黙る)。
             // 具体名と `never` / `may` の宣言で検査する。
             let eff = Self::trait_effects_inst(td, name, &[]);
@@ -4317,16 +4305,7 @@ impl<'a> TypeCk<'a> {
                     }
                     let declared = self.field_ty(&Ty::Named(fq.clone(), args.clone(), crate::types::Rgs::default()), &st(&items(x)[0]));
                     self.note_conv(&items(x)[1], &declared, &vt);
-                    if let Err(err) = self.unify2(&declared, &vt) {
-                        {
-                            let (want, got) = self.type_conflict(&err).or_else(|| self.vec_seq_mismatch(&declared, &vt)).unwrap_or_else(|| Self::raw_pair(&err));
-                            self.diag(
-                                "E2023",
-                                format!("field `{}` of `{}`: expected `{}`, found `{}`", st(&items(x)[0]), fq, want, got),
-                                nline(e),
-                            );
-                        }
-                    }
+                    let _ = self.unify2(&declared, &vt);
                     // 構造体の欄は「受け側」の関数型が分かる: 宣言 × 宣言の効果の食い違いをここで報告する。
                     self.check_fn_conv_dir(&declared, &vt);
                 }
@@ -4341,12 +4320,9 @@ impl<'a> TypeCk<'a> {
             "ArrayE" => {
                 let ts: Vec<Ty> = items(&f[0]).iter().map(|x| self.infer(x)).collect();
                 let elem = self.fresh(0);
-                for (k, t) in ts.iter().enumerate() {
-                    // 要素の型はすべて同じでなければならない (`[1u32, 2u8]` は誤り)。
-                    if let Err(err) = self.unify2(&elem, t) {
-                        let (want, got) = self.type_conflict(&err).unwrap_or_else(|| Self::raw_pair(&err));
-                        self.diag("E2023", format!("array element {}: expected `{}`, found `{}`", k + 1, want, got), nline(e));
-                    }
+                for t in ts.iter() {
+                    // 要素の型はすべて同じでなければならない (`[1u32, 2u8]` は誤り。E2023 は TAST の規則 T)。
+                    let _ = self.unify2(&elem, t);
                 }
                 // 配列リテラルでクロージャが合流する: 実際の効果を和にして要素型に残す。
                 if let Ty::Var(v) = &elem {
@@ -4924,19 +4900,6 @@ impl<'a> TypeCk<'a> {
                     Ty::Tuple(ts) => ts.clone(),
                     _ => vec![],
                 };
-                // タプルのパターンの要素数は、照合する値の型と同じでなければならない (値が具体的な型のときだけ)。
-                {
-                    let scrut = self.deep(ty);
-                    let n = items(&f[0]).len();
-                    let bad = match scrut.strip() {
-                        Ty::Tuple(ts) => ts.len() != n,
-                        Ty::Prim(_) | Ty::Named(..) | Ty::Array(..) | Ty::Slice(_) | Ty::Unit => true,
-                        _ => false,
-                    };
-                    if bad {
-                        self.diag("E2023", format!("a tuple pattern of {} element(s) cannot match a value of type `{}`", n, scrut.show()), self.pat_line);
-                    }
-                }
                 for (i, p) in items(&f[0]).iter().enumerate() {
                     let t = ts.get(i).cloned().unwrap_or(Ty::Unknown);
                     self.bind_pat(p, &t);
@@ -4953,16 +4916,6 @@ impl<'a> TypeCk<'a> {
                             let n = td.generics.iter().filter(|g| g.0 == "type").count();
                             let args: Vec<Ty> = (0..n).map(|_| self.fresh(0)).collect();
                             let t = Ty::Named(td.name.clone(), args, crate::types::Rgs::default());
-                            // 構造体のパターンの名前は、照合する値の型と同じでなければならない (値が具体的な型のときだけ)。
-                            let scrut = self.deep(ty);
-                            let bad = match scrut.strip() {
-                                Ty::Named(n, _, _) => *n != td.name,
-                                Ty::Prim(_) | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_) | Ty::Unit => true,
-                                _ => false,
-                            };
-                            if bad {
-                                self.diag("E2023", format!("the pattern `{}` is a struct of type `{}`, but the value has type `{}`", segs.join("."), td.name, scrut.show()), self.pat_line);
-                            }
                             let _ = self.unify2(ty, &t);
                             fty = Some((td.name.clone(), t));
                         }
@@ -4985,13 +4938,6 @@ impl<'a> TypeCk<'a> {
                 let segs = strs(&f[0]);
                 self.shape_for_variant(&segs, ty);
                 let payload: Vec<Ty> = self.variant_payload(&segs, ty);
-                // 列挙子のパターンの欄の数は、宣言のペイロードの数と同じでなければならない。
-                if let Some(want) = self.variant_arity(&segs) {
-                    let got = items(&f[1]).len();
-                    if want != got {
-                        self.diag("E2023", format!("the pattern `{}` has {} field(s), but the variant has {}", segs.join("."), got, want), self.pat_line);
-                    }
-                }
                 for (i, p) in items(&f[1]).iter().enumerate() {
                     let t = payload.get(i).cloned().unwrap_or(Ty::Unknown);
                     self.bind_pat(p, &t);
@@ -5001,61 +4947,8 @@ impl<'a> TypeCk<'a> {
             "PPath" => {
                 let segs = strs(&f[0]);
                 self.shape_for_variant(&segs, ty);
-                if let Some(want) = self.variant_arity(&segs) {
-                    if want != 0 {
-                        self.diag("E2023", format!("the pattern `{}` has no fields, but the variant has {}", segs.join("."), want), self.pat_line);
-                    }
-                }
             }
-            // 接尾辞付きの数値リテラルのパターンは、照合する値の型と一致しなければならない (`match 1u32 { 0u64 => .. }`)。
-            // 値の型が基本型に決まっているときだけ比べる (参照・型変数は黙る)。
-            "PLit" => {
-                let lit = &f[0];
-                let lf = nf(lit);
-                let suffix = match st(&lf[0]).as_str() {
-                    "int" => lf.get(2),
-                    "float" => lf.get(1),
-                    _ => None,
-                };
-                // リテラルの種類は、照合する値の型と合わなければならない (`match 1u32 { "x" => .. }`)。
-                // 値の型が具体的に決まっているときだけ比べる (参照は外して見る。型変数・型パラメータ・不明は黙る)。
-                {
-                    let kind = st(&lf[0]);
-                    let scrut = self.deep(ty);
-                    let base = scrut.strip();
-                    let concrete = matches!(base, Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_) | Ty::Array(..) | Ty::Slice(_) | Ty::Unit);
-                    let is_int = |t: &Ty| matches!(t, Ty::Prim(p) if INTS.contains(&p.as_str()));
-                    let is_float = |t: &Ty| matches!(t, Ty::Prim(p) if p == "f32" || p == "f64");
-                    let (ok, what) = match kind.as_str() {
-                        "str" => (matches!(base, Ty::Prim(p) if p == "str"), "&str"),
-                        "char" => (matches!(base, Ty::Prim(p) if p == "char"), "char"),
-                        "byte" => (matches!(base, Ty::Prim(p) if p == "u8"), "u8"),
-                        "bool" => (matches!(base, Ty::Prim(p) if p == "bool"), "bool"),
-                        "int" => (is_int(base), "an integer"),
-                        "float" => (is_float(base), "a float"),
-                        _ => (true, ""),
-                    };
-                    if concrete && !ok {
-                        self.diag(
-                            "E2023",
-                            format!("the {} literal pattern cannot match a value of type `{}` (expected {})", kind, scrut.show(), what),
-                            self.pat_line,
-                        );
-                    }
-                }
-                if let Some(V::S(s)) = suffix {
-                    let want = self.deep(ty);
-                    if let Ty::Prim(w) = want.strip() {
-                        if w != s && INTS.iter().chain(["f32", "f64"].iter()).any(|x| x == w) {
-                            self.diag(
-                                "E2023",
-                                format!("literal pattern of type `{}` does not match the scrutinee type `{}`", s, w),
-                                self.pat_line,
-                            );
-                        }
-                    }
-                }
-            }
+            // リテラルのパターン (種類・接尾辞が値の型と合うか、の E2023) は TAST の規則 T が見る。
             _ => {
                 let mut b = vec![];
                 pat_binds(pat, &mut b);
@@ -5099,30 +4992,12 @@ impl<'a> TypeCk<'a> {
                     _ => false,
                 };
                 if mismatch {
-                    self.diag("E2023", format!("the pattern `{}` is a variant of `{}`, but the value has type `{}`", segs.join("."), en, scrut.show()), self.pat_line);
+                    // E2023 は TAST の規則 T が報告する。
                     return;
                 }
             }
             let _ = self.unify2(&w, ty);
         }
-    }
-
-    /// 列挙子のペイロードの数 (宣言から分かるもの)。`Some` / `Ok` / `Err` は 1、`None` は 0。
-    fn variant_arity(&self, segs: &[String]) -> Option<usize> {
-        let name = segs.last()?;
-        if segs.len() == 1 {
-            match name.as_str() {
-                "Some" | "Ok" | "Err" => return Some(1),
-                "None" => return Some(0),
-                _ => {}
-            }
-        }
-        let r = self.p.resolve(segs, &self.def().file)?;
-        if let Target::Variant(en, vn) = &r.target {
-            let td = self.type_def(en)?;
-            return td.variants.iter().find(|v| &v.0 == vn).map(|v| v.1.len());
-        }
-        None
     }
 
     fn variant_payload(&self, segs: &[String], ty: &Ty) -> Vec<Ty> {
@@ -5258,7 +5133,6 @@ impl<'a> TypeCk<'a> {
         let argt: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
         self.side.arg_ids = args.iter().map(crate::parser::nid).collect();
         // 構造体リテラルの引数: 従来の検査は型引数を見ないので、呼び出し側でも型引数の矛盾を見る。
-        let sl: Vec<bool> = args.iter().map(|a| nname(a) == "StructLit").collect();
         let arg_stat: Vec<bool> = args.iter().map(|a| self.static_expr(a)).collect();
         // その位置にクロージャ式が直接書かれているか (効果検査 ② が変数経由を避けるのに使う)。
         if nname(callee) != "Path" {
@@ -5406,7 +5280,7 @@ impl<'a> TypeCk<'a> {
                 let i = self.p.sigs[fq];
                 self.method_form_check(i, &segs, line);
                 self.arg_static = arg_stat;
-                self.call_def(call_id, i, &argt, line, &sl, targs)
+                self.call_def(call_id, i, &argt, line, targs)
             }
             // 規範のシグネチャにない基本型の関連関数 (`usize.try_from_u64` など)。実行系は整数の変換を一般の規則で
             // 受け付けるが、規範はシグネチャなので拒否する (メソッドの E1108 と同じ方針)。近い名前を提案する。
@@ -5438,7 +5312,7 @@ impl<'a> TypeCk<'a> {
             Target::Fn(i) | Target::Sig(i) => {
                 self.method_form_check(i, &segs, line);
                 self.arg_static = arg_stat;
-                self.call_def(call_id, i, &argt, line, &sl, targs)
+                self.call_def(call_id, i, &argt, line, targs)
             }
             _ => {
                 argt.iter().for_each(|a| self.escape(a));
@@ -5469,9 +5343,7 @@ impl<'a> TypeCk<'a> {
     /// それ以外 (クロージャでない・型変数が解決しない) のときは従来どおり、この呼び出しに渡した
     /// リテラルなどの型変数は決まらなくてもエラーにしない (`escape`)。
     ///
-    /// `sl` は、各引数の式が構造体リテラルかどうか。従来の検査は構造体リテラルの型引数を見ない
-    /// (名前しか比べない) ので、同じ名前どうしの型引数の矛盾はここで報告する。
-    fn call_def(&mut self, call_id: u32, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V]) -> Ty {
+    fn call_def(&mut self, call_id: u32, i: usize, argt: &[Ty], line: usize, targs: &[V]) -> Ty {
         let arg_stat = std::mem::take(&mut self.arg_static);
         let arg_ids = std::mem::take(&mut self.side.arg_ids);
         let d = &self.p.defs[i];
@@ -5593,7 +5465,7 @@ impl<'a> TypeCk<'a> {
                 continue;
             }
             let Some(cl) = closures.get(k).cloned() else { continue };
-            self.unify_fn_bound(d, *k, name, &cl, &mut map, line, &mut cap_bad);
+            self.unify_fn_bound(d, name, &cl, &mut map, line, &mut cap_bad);
         }
         for (k, a) in argt.iter().enumerate() {
             if d.params.get(k).is_none() { break; }
@@ -5614,24 +5486,8 @@ impl<'a> TypeCk<'a> {
                 // パラメータに渡す。受け側の境界が具体的で渡し側に効果変数・panic 変数があり、
                 // 実体化が分からないなら fail-closed で E4001 / E4002 にする。
             }
-            if let Err(e) = ur {
-                // 型パラメータを含まない引数の型は従来の検査 (E2020) が見る。ここでは重複を避ける。
-                // ただし構造体リテラルの引数で、宣言と同じ型名どうしの矛盾 (型引数の違い) は、
-                // 従来の検査が名前しか比べないので黙る。ここでだけ報告する。
-                // 定数実引数どうしの違い (異なる定数は別単相、4.3) も従来の検査は見ないので、ここで報告する。
-                let pt = self.deep(&pt);
-                let av = self.deep(a);
-                let same_named = match (pt.strip(), av.strip()) {
-                    (Ty::Named(x, _, _), Ty::Named(y, _, _)) => x == y,
-                    _ => false,
-                };
-                let _ = (same_named, &sl);
-                // 生ポインタの取り違え (`*const` を `*mut` の引数へ、ポインタと値など) は宣言に型パラメータがなくても報告する。
-                // `extern` の呼び出しも同じ (数値の食い違いは黙って変換しない)。
-                let ptr = self.ptr_mismatch(&pt, &av);
-                let (want, got) = self.prim_conflict(&e).or(ptr).unwrap_or_else(|| Self::raw_pair(&e));
-                self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got), line);
-            }
+            // 実引数の食い違い (E2023) は TAST の規則 T が報告する (推論はここで済む)。
+            let _ = ur;
         }
         // `I: core.iter.Iterator<T, ..>` の境界: 引数 `I` の型が分かれば、その要素の型を `T` に結びつける。
         for g in &d.generics {
@@ -5659,7 +5515,7 @@ impl<'a> TypeCk<'a> {
                 continue;
             }
             let Some(cl) = closures.get(k).cloned() else { continue };
-            self.unify_fn_bound(d, *k, name, &cl, &mut map, line, &mut cap_bad);
+            self.unify_fn_bound(d, name, &cl, &mut map, line, &mut cap_bad);
         }
         // 決まらなかった型パラメータは escape する (分からない型と同じ扱い)。ただし数値リテラル由来の
         // 型変数 (kind != 0) は escape しない。`t.id(5)` の `5` は、後から決まればそれに従い、最後まで
@@ -5692,7 +5548,7 @@ impl<'a> TypeCk<'a> {
     /// メソッド呼び出し (`call_method`) で共通に使う。`k` は引数の添字 (0 始まり。メッセージは 1 始まり)。
     /// `cap_bad` は、この呼び出しで E2030 を出し済みかどうか (同じ呼び出しで 2 回出さない)。
     #[allow(clippy::too_many_arguments)]
-    fn unify_fn_bound(&mut self, d: &Def, k: usize, name: &str, cl: &Ty, map: &mut HashMap<String, Ty>, line: usize, cap_bad: &mut bool) {
+    fn unify_fn_bound(&mut self, d: &Def, name: &str, cl: &Ty, map: &mut HashMap<String, Ty>, line: usize, cap_bad: &mut bool) {
         let gn = d.gnames();
         let Ty::Closure { args, ret, cap, .. } = self.deep(cl) else { return };
         let bounds = self.fn_bound(d, name);
@@ -5704,40 +5560,14 @@ impl<'a> TypeCk<'a> {
             }
             let targs = tel(b, 1);
             if let Ty::Tuple(want_args) = self.inst(&from_v(tel(&targs, 0), &gn), map) {
-                if args.len() != want_args.len() {
-                    self.diag(
-                        "E2023",
-                        format!(
-                            "argument {} of `{}`: expected `{}`, found `{}`",
-                            k + 1,
-                            d.name,
-                            Ty::Tuple(want_args.clone()).show(),
-                            cl.show()
-                        ),
-                        line,
-                    );
-                } else {
+                if args.len() == want_args.len() {
                     for (w, g) in want_args.iter().zip(&args) {
-                        if let Err(e) = self.unify2(w, g) {
-                            {
-                                let (want, got) = self.type_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
-                                self.diag(
-                                    "E2023",
-                                    format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got),
-                                    line,
-                                );
-                            }
-                        }
+                        let _ = self.unify2(w, g);
                     }
                 }
             }
             let want_ret = self.inst(&from_v(tel(&targs, 1), &gn), map);
-            if let Err(e) = self.unify2(&want_ret, &ret) {
-                {
-                    let (want, got) = self.type_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
-                    self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got), line);
-                }
-            }
+            let _ = self.unify2(&want_ret, &ret);
             // capture の能力: `Fn` は共有参照だけ、`FnMut` は値での取り込み以外まで、`FnOnce` は無条件。
             let ok = match tr.as_str() {
                 "core.ops.Fn" => cap == Cap::Fn,
@@ -6159,17 +5989,8 @@ impl<'a> TypeCk<'a> {
             argt.iter().for_each(|a| self.escape(a));
             return Some(Ty::Unknown);
         }
-        for (i, (w, g)) in args.iter().zip(argt).enumerate() {
-            if let Err(e) = self.unify2(w, g) {
-                {
-                    let (want, got) = self.type_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
-                    self.diag(
-                        "E2023",
-                        format!("argument {} of the closure: expected `{}`, found `{}`", i + 1, want, got),
-                        line,
-                    );
-                }
-            }
+        for (w, g) in args.iter().zip(argt) {
+            let _ = self.unify2(w, g);
         }
         if let (Some(name), Some(node)) = (eff_name, id.as_deref()) {
             self.closure_call_effects(node, name, line);
