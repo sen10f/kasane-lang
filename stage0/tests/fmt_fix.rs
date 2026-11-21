@@ -850,7 +850,7 @@ fn oneway_from_str_radix_ten_becomes_parse() {
 
 #[test]
 fn oneway_clone_on_copy_becomes_the_value() {
-    let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    let y = x.clone()\n    y\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    let y = x.clone()\n    core.mem.drop(0u8)\n    y\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
     oneway_round_trip("oneway_clone", src, "E2065", "let y = x\n");
 }
 
@@ -904,8 +904,8 @@ fn oneway_bool_match_becomes_if() {
 
 #[test]
 fn oneway_bool_match_blocks_become_if() {
-    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    let r = match c {\n        false => {\n            let z = 1u32\n            z\n        }\n        true => x\n    }\n    r\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
-    oneway_round_trip("oneway_bool_match_blocks_become_if", src, "E2068", "let r = if c {\n        x\n    } else {\n        let z = 1u32\n        z\n    }");
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    let r = match c {\n        false => {\n            let z = 1u32\n            core.mem.drop(0u8)\n            z\n        }\n        true => x\n    }\n    core.mem.drop(0u8)\n    r\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_bool_match_blocks_become_if", src, "E2068", "let r = if c {\n        x\n    } else {\n        let z = 1u32\n        core.mem.drop(0u8)\n        z\n    }");
 }
 
 #[test]
@@ -928,7 +928,7 @@ fn oneway_counting_while_becomes_for() {
 
 #[test]
 fn oneway_identity_bit_and_neg_forms_are_removed() {
-    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    let a = x.wrapping_neg().wrapping_neg()\n    let b = a | 0u32\n    let c2 = b.wrapping_add(3u32).wrapping_sub(3u32)\n    c2.max(c2)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    let src = "fn t.a(c: bool, o: Option<u32>, x: u32, y: u32) -> u32 uses [] panics never\n    let a = x.wrapping_neg().wrapping_neg()\n    let b = a | 0u32\n    let c2 = b.wrapping_add(3u32).wrapping_sub(3u32)\n    core.mem.drop(0u8)\n    c2.max(c2)\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
     oneway_round_trip("oneway_identity_bit_and_neg_forms_are_removed", src, "E2062", "let b = a\n");
 }
 
@@ -965,7 +965,7 @@ fn oneway_fmt_write_literal_becomes_push_str() {
 
 #[test]
 fn oneway_and_with_max_constant_is_removed() {
-    let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    let y = x & core.num.u32.MAX\n    y\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
+    let src = "fn t.a(x: u32) -> u32 uses [] panics never\n    let y = x & core.num.u32.MAX\n    core.mem.drop(0u8)\n    y\nend t.a\n\nfn t.main() -> () uses [] panics never\n    ()\nend t.main\n";
     oneway_round_trip("oneway_max", src, "E2062", "let y = x\n");
 }
 
