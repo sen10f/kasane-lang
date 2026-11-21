@@ -9,8 +9,8 @@ end ui.event.Action
 type ui.event.Ctx pub
     focus: Option<usize>
     capture: Option<usize>
-    tab_order: alloc.vec.Vec<usize, std.alloc.System>
-    text: alloc.vec.Vec<u8, std.alloc.System>
+    tab_order: std.vec.Vec<usize>
+    text: std.vec.Vec<u8>
 end ui.event.Ctx
 
 enum ui.event.Event derive [Debug] pub
@@ -20,10 +20,10 @@ enum ui.event.Event derive [Debug] pub
     Wheel(f32, f32, f32, f32)
     KeyDown(u32, ui.event.Modifiers)
     KeyUp(u32, ui.event.Modifiers)
-    TextInput(alloc.vec.Vec<u8, std.alloc.System>)
+    TextInput(std.vec.Vec<u8>)
     IMEStart
-    IMEUpdate(alloc.vec.Vec<u8, std.alloc.System>)
-    IMECommit(alloc.vec.Vec<u8, std.alloc.System>)
+    IMEUpdate(std.vec.Vec<u8>)
+    IMECommit(std.vec.Vec<u8>)
     FocusGained
     FocusLost
     Resize(f32, f32)
@@ -147,8 +147,8 @@ fn ui.event.Ctx.get_focus(self: &ui.event.Ctx) -> Option<usize> uses [] panics n
 end ui.event.Ctx.get_focus
 
 fn ui.event.Ctx.new() -> ui.event.Ctx uses [] panics never pub
-    let tab_order = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let text = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let tab_order = std.vec.Vec.new()
+    let text = std.vec.Vec.new()
     ui.event.Ctx { focus: None, capture: None, tab_order: tab_order, text: text }
 end ui.event.Ctx.new
 
@@ -203,7 +203,7 @@ fn ui.event.rect_contains(rect: ui.layout.Rect, x: f32, y: f32) -> bool uses [] 
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 end ui.event.rect_contains
 
-fn ui.event.replay(ctx: &mut ui.event.Ctx, events: &alloc.vec.Vec<ui.event.Event, std.alloc.System>, layout: &ui.layout.Tree, _tree: &ui.tree.Tree, root: usize, _x: f32, _y: f32) -> () uses [] panics never pub
+fn ui.event.replay(ctx: &mut ui.event.Ctx, events: &std.vec.Vec<ui.event.Event>, layout: &ui.layout.Tree, _tree: &ui.tree.Tree, root: usize, _x: f32, _y: f32) -> () uses [] panics never pub
     let mut i = 0usize
     let len = events.len()
     while i < len {

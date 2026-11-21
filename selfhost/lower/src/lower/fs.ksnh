@@ -36,14 +36,14 @@ fn lower.fs.read_to_end(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     let rt = lower.tyk.text(env, c, t)?
     let orig = lower.vec.load_usize(c, h, 8usize)?
     let zero = lower.vec.usize_c(c, 0usize)?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
+    let mut hps = std.vec.Vec.new()
     hps.push(lower.cx.newval(c, "usize")?)?
-    let mut xps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut xps = std.vec.Vec.new()
     xps.push(lower.cx.newval(c, rt.as_str())?)?
     let hd = lower.cx.blk(c, &hps)?
     let exit = lower.cx.blk(c, &xps)?
-    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a0 = std.vec.Vec.new()
     a0.push(zero)?
     lower.loops.br(c, hd, &a0)?
     lower.cx.goto(c, hd)
@@ -82,7 +82,7 @@ fn lower.fs.read_to_end(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     lower.loops.brif(c, is_err, on_err, &empty, on_ok, &empty)?
     lower.cx.goto(c, on_err)
     core.mem.drop(lower.vec.store_at(c, "usize", h, 8usize, orig)?)
-    let mut ea = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ea = std.vec.Vec.new()
     ea.push(r)?
     lower.loops.br(c, exit, &ea)?
     lower.cx.goto(c, on_ok)
@@ -94,14 +94,14 @@ fn lower.fs.read_to_end(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     lower.loops.brif(c, at_end, done, &empty, more, &empty)?
     lower.cx.goto(c, done)
     let okv = lower.cx.def1(c, rt.as_str(), "ok ", total)?
-    let mut da = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut da = std.vec.Vec.new()
     da.push(okv)?
     lower.loops.br(c, exit, &da)?
     lower.cx.goto(c, more)
     let nl = lower.vec.arith(c, "add", len, got)?
     core.mem.drop(lower.vec.store_at(c, "usize", h, 8usize, nl)?)
     let nt = lower.vec.arith(c, "add", total, got)?
-    let mut ma = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ma = std.vec.Vec.new()
     ma.push(nt)?
     lower.loops.br(c, hd, &ma)?
     lower.cx.goto(c, exit)
@@ -110,7 +110,7 @@ end lower.fs.read_to_end
 
 // 局所 k の後始末の式を置く (0 = 外す)。
 fn lower.fs.set_close(c: &mut lower.cx.Cx, k: usize, node: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
-    let mut tail = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tail = std.vec.Vec.new()
     while c.v.sl.cl.len() > k + 1usize {
         match c.v.sl.cl.pop() {
             Some(x) => tail.push(x)?

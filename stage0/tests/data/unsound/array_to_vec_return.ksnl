@@ -1,4 +1,4 @@
-fn t.bad(a: &[u32; 3]) -> &alloc.vec.Vec<u32, std.alloc.System> uses [] panics never
+fn t.bad(a: &[u32; 3]) -> &std.vec.Vec<u32> uses [] panics never
     a
 end t.bad
 

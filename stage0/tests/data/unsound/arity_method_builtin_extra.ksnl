@@ -1,4 +1,4 @@
 fn t.main() -> () uses [alloc] panics never
-    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let v: std.vec.Vec<u8> = std.vec.Vec.new()
     core.mem.drop(v.len(1u32))
 end t.main

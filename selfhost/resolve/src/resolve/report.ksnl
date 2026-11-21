@@ -1,6 +1,6 @@
 type resolve.report.Report pub
-    text: alloc.string.String<std.alloc.System> pub
-    path: alloc.string.String<std.alloc.System> pub
+    text: std.string.String pub
+    path: std.string.String pub
     errors: usize pub
     refs: usize pub
     sig: bool pub
@@ -102,8 +102,8 @@ fn resolve.report.line_from(src: &[u8], start: usize) -> &str uses [] panics nev
 end resolve.report.line_from
 
 fn resolve.report.new() -> Result<resolve.report.Report, alloc.alloc.AllocError> uses [] panics never pub
-    let text = alloc.string.String.new(std.alloc.SYSTEM)
-    let path = alloc.string.String.new(std.alloc.SYSTEM)
+    let text = std.string.String.new()
+    let path = std.string.String.new()
     let nosig = false
     Ok(resolve.report.Report { text: text, path: path, errors: 0usize, refs: 0usize, sig: nosig })
 end resolve.report.new

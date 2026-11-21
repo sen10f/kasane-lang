@@ -27,6 +27,19 @@ PRIM_HOME['str'] = 'core.str'
 ROOTS = ('core', 'alloc', 'std')
 TYPEREF = re.compile(r'(?<![A-Za-z0-9_])((?:core|alloc|std)(?:\.[a-z_][a-z0-9_]*)*(?:\.[A-Z][a-z][A-Za-z0-9]*))')
 
+# デフォルト確保器の短縮名 (std.x.Y) -> 正式名 (alloc.x.Y)。xref は .sig/.ksnl の
+# 定義 (alloc.x.Y) を known に入れるので、std.* 参照も受け付ける (types.rs の
+# ALLOC_ALIASES と対応)。
+ALLOC_ALIASES = {
+    'std.vec.Vec': 'alloc.vec.Vec',
+    'std.string.String': 'alloc.string.String',
+    'std.collections.HashMap': 'alloc.collections.HashMap',
+    'std.collections.BtreeMap': 'alloc.collections.BtreeMap',
+    'std.collections.HashSet': 'alloc.collections.HashSet',
+    'std.collections.VecDeque': 'alloc.collections.VecDeque',
+    'std.boxed.Box': 'alloc.boxed.Box',
+}
+
 
 def base_of(text):
     """`core.iter.Iterator<T, E, P>` -> core.iter.Iterator"""
@@ -97,7 +110,8 @@ def main():
             text = it['text']
             for m in TYPEREF.finditer(text):
                 ref = m.group(1)
-                if ref not in known and ref.rsplit('.', 1)[0] not in known:
+                alloc_ref = ALLOC_ALIASES.get(ref)
+                if ref not in known and ref.rsplit('.', 1)[0] not in known and (alloc_ref is None or alloc_ref not in known):
                     err('ref', f, n, f'unknown type/trait {ref}')
             if it['kw'] == 'impl':
                 mm = re.match(r'impl(?:\[.*?\])?\s+(.*?) for (.*)$', text)

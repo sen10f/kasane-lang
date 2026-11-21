@@ -1,6 +1,6 @@
 type t.S pub
     v: u32
-    s: alloc.string.String<std.alloc.System>
+    s: std.string.String
 end t.S
 
 fn t.bad() -> u32 uses [] panics never

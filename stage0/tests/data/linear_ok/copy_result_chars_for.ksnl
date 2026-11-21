@@ -1,5 +1,5 @@
 fn t.c(s: &str) -> usize uses [alloc] panics never
-    let mut v: alloc.vec.Vec<char, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v: std.vec.Vec<char> = std.vec.Vec.new()
     for c in s.chars() {
         match v.push(c) {
             Ok(_) => ()

@@ -1,5 +1,5 @@
 fn t.main() -> () uses [] panics never
-    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let s = std.string.String.new()
     let a = Some(s)
     core.mem.drop(a)
     core.mem.drop(a)

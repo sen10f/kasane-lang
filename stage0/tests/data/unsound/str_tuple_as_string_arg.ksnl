@@ -3,7 +3,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-fn t.sink(p: (&alloc.string.String<std.alloc.System>, u32)) -> () uses [] panics never
+fn t.sink(p: (&std.string.String, u32)) -> () uses [] panics never
     match p {
         (s, n) => {
             core.mem.drop(s)

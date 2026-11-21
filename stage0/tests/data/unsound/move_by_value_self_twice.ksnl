@@ -1,5 +1,5 @@
 type t.Wrap
-    v: alloc.vec.Vec<u32, std.alloc.System>
+    v: std.vec.Vec<u32>
 end t.Wrap
 
 fn t.Wrap.into_len(self: t.Wrap) -> usize uses [] panics never
@@ -7,7 +7,7 @@ fn t.Wrap.into_len(self: t.Wrap) -> usize uses [] panics never
 end t.Wrap.into_len
 
 fn t.bad() -> usize uses [] panics never
-    let w = t.Wrap { v: alloc.vec.Vec.new(std.alloc.SYSTEM) }
+    let w = t.Wrap { v: std.vec.Vec.new() }
     let a = w.into_len()
     a.wrapping_add(w.into_len())
 end t.bad

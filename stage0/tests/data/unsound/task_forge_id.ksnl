@@ -1,12 +1,12 @@
-fn t.forge(id: usize) -> std.task.Task<alloc.vec.Vec<u8, std.alloc.System>> uses [] panics never
+fn t.forge(id: usize) -> std.task.Task<std.vec.Vec<u8>> uses [] panics never
     std.task.Task { id: id }
 end t.forge
 
 fn t.main() -> () uses [alloc, suspend] panics may
     std.task.block_on(fn() -> () capture [] {
         let b = std.task.spawn_local(
-            fn() -> alloc.vec.Vec<u8, std.alloc.System> capture [] {
-                let mut v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            fn() -> std.vec.Vec<u8> capture [] {
+                let mut v: std.vec.Vec<u8> = std.vec.Vec.new()
                 match v.push(7u8) {
                     Ok(u) => u
                     Err(_) => ()

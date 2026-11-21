@@ -1,5 +1,5 @@
 fn vecstr.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     let s = alloc.string.String.from_str(std.alloc.SYSTEM, "hello")
     match s {
         Ok(t) => core.mem.drop(v.push(t))

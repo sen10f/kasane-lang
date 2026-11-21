@@ -15,8 +15,8 @@ fn shortener_https.code.digit_char(d: u8) -> char uses [] panics never pub
     }
 end shortener_https.code.digit_char
 
-fn shortener_https.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.System>, shortener_https.error.Error> uses [alloc] panics never pub
-    let mut digits: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn shortener_https.code.encode(n: u64) -> Result<std.string.String, shortener_https.error.Error> uses [alloc] panics never pub
+    let mut digits: std.vec.Vec<u8> = std.vec.Vec.new()
     let mut rest = n
     loop {
         let d = rest.checked_rem(36u64)
@@ -35,7 +35,7 @@ fn shortener_https.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.S
             break
         }
     }
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     let len = digits.len()
     for k in core.iter.range(0usize, len) {
         let at = len.wrapping_sub(k).wrapping_sub(1usize)
@@ -47,7 +47,7 @@ fn shortener_https.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.S
     Ok(out)
 end shortener_https.code.encode
 
-fn shortener_https.code.for_index(index: u64) -> Result<alloc.string.String<std.alloc.System>, shortener_https.error.Error> uses [alloc] panics never pub
+fn shortener_https.code.for_index(index: u64) -> Result<std.string.String, shortener_https.error.Error> uses [alloc] panics never pub
     match index.checked_add(shortener_https.code.OFFSET) {
         Some(n) => shortener_https.code.encode(n)
         None => Err(error.Error.Full)

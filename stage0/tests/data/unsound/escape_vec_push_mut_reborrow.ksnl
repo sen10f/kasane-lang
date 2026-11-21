@@ -1,5 +1,5 @@
 fn t.bad() -> usize uses [alloc] panics never
-    let mut v: alloc.vec.Vec<&mut u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v: std.vec.Vec<&mut u32> = std.vec.Vec.new()
     {
         let mut x = 7u32
         core.mem.drop(v.push(&mut *&mut x))

@@ -22,14 +22,14 @@ fn ksnc.kcheck.borrow(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.F
         }
         k = k.wrapping_add(1usize)
     }
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     let mut errors = 0usize
     k = 0usize
     for s in tout.env.srcs.as_slice().iter() {
         if s.own && !s.sig {
             match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut rep)? {
                 Some(p) => {
-                    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                    let mut buf = std.vec.Vec.new()
                     for b in s.text.as_slice().iter() {
                         buf.push(*b)?
                     }
@@ -101,7 +101,7 @@ fn ksnc.kcheck.effects(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.
         }
     }
     let s = effects.run.summary(&acc)?
-    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut text = std.string.String.new()
     text.push_str(acc.rep.text.as_str())?
     text.push_str(s.as_str())?
     text.push('\n')?

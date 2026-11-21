@@ -1,6 +1,6 @@
 fn hashmap.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
-    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
-    let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut m = std.collections.HashMap.new()
+    let mut name = std.string.String.new()
     core.mem.drop(name.push_str("fn"))
     core.mem.drop(m.insert(name, 1usize))
     let key = alloc.string.String.from_str(std.alloc.SYSTEM, "fn")

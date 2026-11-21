@@ -25,7 +25,7 @@ end bench.main
 
 fn bench.resource(path: &str) -> Result<usize, std.io.Error> uses [alloc, io.fs] panics may
     let n = with mut f = std.fs.open(path)? close core.mem.drop(f.close()) {
-        let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut buf = std.vec.Vec.new()
         match std.fs.read_to_end(&mut f, &mut buf) {
             Ok(_) => buf.len()
             Err(_) => 0usize

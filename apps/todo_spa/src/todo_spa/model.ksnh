@@ -18,8 +18,8 @@ end todo_spa.model.before
 // 1 行 1 件の `id<TAB>done(0 か 1)<TAB>title` (title は JSON の中身のまま。表示のときだけ unescape) を作る。
 // サーバの一覧の JSON から、一覧の行 (1 行 1 件、各行の末尾は改行) を作る。形が合わないところで読むのをやめる。
 // 読む位置 `pos` は入力の先頭からのバイト数 (借用を保つため、続きは入力の末尾から取り直す)。
-fn todo_spa.model.from_server(text: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo_spa.model.from_server(text: &str) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics may pub
+    let mut out = std.string.String.new()
     let mut pos = 0usize
     let mut more = true
     while more {
@@ -47,7 +47,7 @@ fn todo_spa.model.from_server(text: &str) -> Result<alloc.string.String<std.allo
 end todo_spa.model.from_server
 
 // `{"id":` の後ろから 1 件を読む。読めれば (行, 続きの位置)。形が合わなければ None。
-fn todo_spa.model.item(after: &str) -> Result<Option<(alloc.string.String<std.alloc.System>, &str)>, alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.model.item(after: &str) -> Result<Option<(std.string.String, &str)>, alloc.alloc.AllocError> uses [alloc] panics may
     match after.split_once(",\"title\":\"") {
         None => Ok(None)
         Some((id_text, title_on)) => todo_spa.model.item_title(id_text, title_on)
@@ -55,7 +55,7 @@ fn todo_spa.model.item(after: &str) -> Result<Option<(alloc.string.String<std.al
 end todo_spa.model.item
 
 // `item` の後半: 完了の値 (`"done":true` など) を読んで行を作る。
-fn todo_spa.model.item_rest['a](id_text: &str, raw: &str, tail: &'a str) -> Result<Option<(alloc.string.String<std.alloc.System>, &'a str)>, alloc.alloc.AllocError> uses [alloc] panics never
+fn todo_spa.model.item_rest['a](id_text: &str, raw: &str, tail: &'a str) -> Result<Option<(std.string.String, &'a str)>, alloc.alloc.AllocError> uses [alloc] panics never
     match tail.split_once(",\"done\":") {
         None => Ok(None)
         Some((head, flag_on)) => {
@@ -64,7 +64,7 @@ fn todo_spa.model.item_rest['a](id_text: &str, raw: &str, tail: &'a str) -> Resu
             if flag_on.starts_with("true") {
                 flag = "1"
             }
-            let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+            let mut line = std.string.String.new()
             line.push_str(id_text)?
             line.push_str("\t")?
             line.push_str(flag)?
@@ -76,7 +76,7 @@ fn todo_spa.model.item_rest['a](id_text: &str, raw: &str, tail: &'a str) -> Resu
 end todo_spa.model.item_rest
 
 // `item` の中間: 文字列の終わりを探して title を切り出す。
-fn todo_spa.model.item_title['a](id_text: &str, title_on: &'a str) -> Result<Option<(alloc.string.String<std.alloc.System>, &'a str)>, alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.model.item_title['a](id_text: &str, title_on: &'a str) -> Result<Option<(std.string.String, &'a str)>, alloc.alloc.AllocError> uses [alloc] panics may
     match todo_spa.model.quote_end(title_on) {
         None => Ok(None)
         Some(stop) => {
@@ -88,7 +88,7 @@ fn todo_spa.model.item_title['a](id_text: &str, title_on: &'a str) -> Result<Opt
 end todo_spa.model.item_title
 
 // JSON の文字列の中身として `text` を書く (`"` と `\` を逃がす。タブと改行は空白にする)。
-fn todo_spa.model.push_json_text(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn todo_spa.model.push_json_text(out: &mut std.string.String, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     for c in text.chars() {
         if c == '"' {
             out.push_str("\\\"")?
@@ -135,8 +135,8 @@ fn todo_spa.model.split_rest['a](id: &'a str, rest: &'a str) -> Option<(&'a str,
 end todo_spa.model.split_rest
 
 // 持っている title (JSON の中身) を表示用の文字列に戻す。`\n` `\t` `\r` は空白にする。
-fn todo_spa.model.unescape(raw: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo_spa.model.unescape(raw: &str) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     let mut esc = false
     for c in raw.chars() {
         if esc {

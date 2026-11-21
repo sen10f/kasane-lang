@@ -1,5 +1,5 @@
 fn t.f['a]() -> Result<u32, &'a str> uses [] panics never
-    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let s = std.string.String.new()
     let n = t.z(s.as_str())?
     Ok(n)
 end t.f

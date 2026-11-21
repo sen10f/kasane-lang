@@ -4,6 +4,6 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-fn t.make_string() -> alloc.string.String<std.alloc.System> uses [] panics never
-    alloc.string.String.new(std.alloc.SYSTEM)
+fn t.make_string() -> std.string.String uses [] panics never
+    std.string.String.new()
 end t.make_string

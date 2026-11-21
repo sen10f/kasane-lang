@@ -56,10 +56,10 @@ fn lower.own.emit(c: &mut lower.cx.Cx, k: usize, kind: &str) -> Result<(), resol
 end lower.own.emit
 
 // 総称の型 f の型引数を、定義の総称の番号 (0 から) への代入にする (戻すのは `lower.tyk.leave`)。
-fn lower.own.enter_ty(c: &mut lower.cx.Cx, f: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
+fn lower.own.enter_ty(c: &mut lower.cx.Cx, f: usize) -> Result<std.vec.Vec<usize>, resolve.Failure> uses [alloc] panics never pub
     let saved = lower.cx.copy_u(&c.v.subst)?
     let n = types.ty.node(&c.ar, f)
-    let mut na = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut na = std.vec.Vec.new()
     for k in core.iter.range(0usize, n.c) {
         na.push(k)?
         na.push(types.ty.arg(&c.ar, n.b, k))?
@@ -105,7 +105,7 @@ fn lower.own.is_copy(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool use
 end lower.own.is_copy
 
 // 型が線形か (組・配列の要素、型引数、宣言の印、欄・変種の型。Sender は除く)。seen は調べ済みの項目。
-fn lower.own.is_linear(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, seen: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<bool, resolve.Failure> uses [alloc] panics may pub
+fn lower.own.is_linear(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, seen: &mut std.vec.Vec<usize>) -> Result<bool, resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
     if n.k == types.ty.K.Tuple {
@@ -191,7 +191,7 @@ fn lower.own.item_linear(env: &types.env.Env, item: usize) -> bool uses [] panic
 end lower.own.item_linear
 
 fn lower.own.linear(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<bool, resolve.Failure> uses [alloc] panics may pub
-    let mut seen = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut seen = std.vec.Vec.new()
     lower.own.is_linear(env, c, t, &mut seen)
 end lower.own.linear
 
@@ -214,7 +214,7 @@ end lower.own.scrut_loc
 
 // 局所 k の注釈の識別子 (VId + 1、無ければ 0) を置く。
 fn lower.own.set(c: &mut lower.cx.Cx, k: usize, id: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
-    let mut tail = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tail = std.vec.Vec.new()
     while c.v.sl.own.len() > k + 1usize {
         match c.v.sl.own.pop() {
             Some(x) => tail.push(x)?

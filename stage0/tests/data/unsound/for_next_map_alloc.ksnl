@@ -1,6 +1,6 @@
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     for x in core.iter.map(core.iter.range(0u32, 2u32), fn(i: u32) -> u32 capture [] {
-        let mut w = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut w = std.vec.Vec.new()
         let r = w.push(i)
         core.mem.drop(r)
         core.mem.drop(w)

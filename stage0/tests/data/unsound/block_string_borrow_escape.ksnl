@@ -1,6 +1,6 @@
 fn t.bad() -> &str uses [alloc] panics never
     let x = {
-        let s = alloc.string.String.new(std.alloc.SYSTEM)
+        let s = std.string.String.new()
         core.mem.drop(s.push_str("x"))
         s.as_str()
     }

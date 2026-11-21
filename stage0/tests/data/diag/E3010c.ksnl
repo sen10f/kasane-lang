@@ -1,5 +1,5 @@
 fn t.main() -> Result<(), std.io.Error> uses [] panics may
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     let mut x = 1u8
     match v.push(&x) {
         Ok(_u) => 0u8

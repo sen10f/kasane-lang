@@ -7,7 +7,7 @@ fn t.S.into_name(self: t.S) -> alloc.string.String uses [] panics never
     name
 end t.S.into_name
 
-fn t.bad(v: &alloc.vec.Vec<t.S, std.alloc.System>) -> () uses [] panics may
+fn t.bad(v: &std.vec.Vec<t.S>) -> () uses [] panics may
     t.consume(v[0usize].into_name())
 end t.bad
 

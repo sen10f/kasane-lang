@@ -1,5 +1,5 @@
-fn ksnc.kfmt.line(pre: &str, path: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+fn ksnc.kfmt.line(pre: &str, path: &str) -> std.string.String uses [alloc] panics may pub
+    let mut s = std.string.String.new()
     match s.push_str(pre) {
         Ok(_) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("ksnc: out of memory")
@@ -13,7 +13,7 @@ end ksnc.kfmt.line
 
 fn ksnc.kfmt.run(dir: &str, check: bool) -> Result<usize, ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
     let own_src = resolve.manifest.join(dir, "src")?
-    let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut srcs = std.vec.Vec.new()
     resolve.load.collect(own_src.as_str(), "", true, &mut srcs)?
     let mut changed = 0usize
     for s in srcs.as_slice().iter() {
@@ -23,7 +23,7 @@ fn ksnc.kfmt.run(dir: &str, check: bool) -> Result<usize, ksnc.Failure> uses [al
                 Err(_) => return Err(ksnc.Failure.Tool)
             }
             let body = fmt.format_source(text)?
-            let mut nt = alloc.string.String.new(std.alloc.SYSTEM)
+            let mut nt = std.string.String.new()
             nt.push_str(body.as_str())?
             nt.push('\n')?
             if nt.as_str() != text {

@@ -19,6 +19,6 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     std.io.print_line("x")
 end t.main
 
-fn t.mk(k: t.Tok) -> Result<alloc.boxed.Box<t.Tok, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+fn t.mk(k: t.Tok) -> Result<std.boxed.Box<t.Tok>, alloc.alloc.AllocError> uses [alloc] panics never
     alloc.boxed.Box.new(std.alloc.SYSTEM, k)
 end t.mk

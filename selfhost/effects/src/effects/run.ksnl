@@ -1,4 +1,4 @@
-fn effects.run.report_rec(acc: &mut effects.walk.Acc, fs: &effects.fns.Fns, srcs: &alloc.vec.Vec<resolve.load.Src, std.alloc.System>, c: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn effects.run.report_rec(acc: &mut effects.walk.Acc, fs: &effects.fns.Fns, srcs: &std.vec.Vec<resolve.load.Src>, c: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let info = effects.fns.at(fs, c)
     match srcs.as_slice().get(info.file) {
         Some(s) => {
@@ -13,8 +13,8 @@ fn effects.run.report_rec(acc: &mut effects.walk.Acc, fs: &effects.fns.Fns, srcs
     Ok(())
 end effects.run.report_rec
 
-fn effects.run.summary(acc: &effects.walk.Acc) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn effects.run.summary(acc: &effects.walk.Acc) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("summary errors ")?
     out.push_u64(u64.from_usize(acc.rep.errors))?
     out.push_str(" ok ")?

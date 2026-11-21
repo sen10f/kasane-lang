@@ -1,5 +1,5 @@
 fn btree.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
-    let mut m = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)
+    let mut m = std.collections.BtreeMap.new()
     core.mem.drop(m.insert(3u32, 4u32))
     match m.get(&3u32) {
         Some(v) => {

@@ -501,8 +501,8 @@ fn fmt_does_not_rewrite_and_points_at_the_original_line_when_a_long_line_remains
 #[test]
 fn fmt_removes_only_the_trailing_commas_of_match_arms() {
     let src = "type t.Point derive [Clone, Copy] pub\n    x: u32\n    y: u32\nend t.Point\n\n\
-               type t.S\n    items: alloc.vec.Vec<u32, std.alloc.System>\nend t.S\n\n\
-               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let mut a = 1u32\n    let mut b = 2u32\n    let s = t.S { items: alloc.vec.Vec.new(std.alloc.SYSTEM) }\n    let r: Result<(), std.io.Error> = match 1u32 {\n        1u32 => {\n            let v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n            let p = t.Point { x: 1u32, y: 2u32 }\n            let l = [1u32, 2u32]\n            let n = 1u32.wrapping_add(2u32)\n            core.mem.swap(&mut a, &mut b)\n            core.mem.drop(p)\n            core.mem.drop(l)\n            core.mem.drop(v)\n            core.mem.drop(n)\n            Ok(())\n        },\n        _ => Ok(()),\n    }\n    core.mem.drop(r)\n    core.mem.drop(s)\n    Ok(())\nend t.main\n";
+               type t.S\n    items: std.vec.Vec<u32>\nend t.S\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let mut a = 1u32\n    let mut b = 2u32\n    let s = t.S { items: std.vec.Vec.new() }\n    let r: Result<(), std.io.Error> = match 1u32 {\n        1u32 => {\n            let v: std.vec.Vec<u32> = std.vec.Vec.new()\n            let p = t.Point { x: 1u32, y: 2u32 }\n            let l = [1u32, 2u32]\n            let n = 1u32.wrapping_add(2u32)\n            core.mem.swap(&mut a, &mut b)\n            core.mem.drop(p)\n            core.mem.drop(l)\n            core.mem.drop(v)\n            core.mem.drop(n)\n            Ok(())\n        },\n        _ => Ok(()),\n    }\n    core.mem.drop(r)\n    core.mem.drop(s)\n    Ok(())\nend t.main\n";
     let t = Tmp::new_raw("arm_comma", src);
     // まだ整形できていないファイルは check が拒む (書き方の揺れ)。
     let c = run(&["check"], &t.0);

@@ -1,4 +1,4 @@
 fn t.main() -> () uses [] panics never
-    let v: alloc.vec.Vec<u64, std.alloc.System> = 7u64
+    let v: std.vec.Vec<u64> = 7u64
     core.mem.drop(v.len())
 end t.main

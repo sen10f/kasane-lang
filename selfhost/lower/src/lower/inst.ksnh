@@ -1,8 +1,8 @@
 // 呼び出し n (引数の列) の型引数: 宣言の引数の型と、実際の引数の型の照合。番号の順に並べた組。
-fn lower.inst.args_of(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, item: usize, n: parse.ast.Node) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.inst.args_of(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, item: usize, n: parse.ast.Node) -> Result<std.vec.Vec<usize>, resolve.Failure> uses [alloc] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
-    let mut pairs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut pairs = std.vec.Vec.new()
     let cp = match types.env.unit(env, file) {
         Some(q) => q
         None => return Ok(pairs)
@@ -43,8 +43,8 @@ fn lower.inst.decl_ret(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) ->
     if fd.d == 0usize {
         return lower.inst.sig_ty(env, c, item, resolve.ast.count(cp, sg.b))
     }
-    let mut names = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut nos = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut names = std.vec.Vec.new()
+    let mut nos = std.vec.Vec.new()
     for j in core.iter.range(0usize, resolve.ast.count(cp, sg.b)) {
         let pn = resolve.ast.item(cp, sg.b, j)
         let prm = parse.ast.get(&cp.ast, pn)
@@ -58,7 +58,7 @@ fn lower.inst.decl_ret(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) ->
     while k < names.len() {
         let nm = match names.as_slice().get(k) {
             Some(x) => lower.cx.own(x.as_str())?
-            None => alloc.string.String.new(std.alloc.SYSTEM)
+            None => std.string.String.new()
         }
         let no = lower.tyk.at(nos.as_slice(), k)
         let pt = types.ty.param(&mut c.ar, no)?
@@ -128,7 +128,7 @@ fn lower.inst.is_sig(env: &types.env.Env, item: usize) -> bool uses [] panics ne
 end lower.inst.is_sig
 
 // インスタンスの鍵: fqn<型,..> (型引数の文字列は番号の順)。
-fn lower.inst.key(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.inst.key(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, subs: &std.vec.Vec<usize>) -> Result<std.string.String, resolve.Failure> uses [alloc] panics may pub
     if subs.is_empty() {
         return lower.cx.own(fqn)
     }
@@ -164,7 +164,7 @@ fn lower.inst.lookup(c: &lower.cx.Cx, no: usize) -> usize uses [] panics may pub
 end lower.inst.lookup
 
 // 宣言の型 decl (Param を含む) と実際の型 act の照合: 未決めの番号に act を入れる。
-fn lower.inst.matchp(c: &mut lower.cx.Cx, decl: usize, act: usize, out: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.inst.matchp(c: &mut lower.cx.Cx, decl: usize, act: usize, out: &mut std.vec.Vec<usize>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let d = types.ty.find(&c.ar, decl)
     let dn = types.ty.node(&c.ar, d)
     let a = types.ty.find(&c.ar, act)
@@ -201,10 +201,10 @@ fn lower.inst.matchp(c: &mut lower.cx.Cx, decl: usize, act: usize, out: &mut all
 end lower.inst.matchp
 
 // メソッドの型引数: 受け手の型 (rt) と、引数の列 (args) の照合。宣言の self は受け手と照合する。
-fn lower.inst.method_args(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, item: usize, rt: usize, args: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+fn lower.inst.method_args(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, item: usize, rt: usize, args: usize) -> Result<std.vec.Vec<usize>, resolve.Failure> uses [alloc] panics may pub
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
-    let mut pairs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut pairs = std.vec.Vec.new()
     let cp = match types.env.unit(env, file) {
         Some(q) => q
         None => return Ok(pairs)
@@ -236,7 +236,7 @@ end lower.inst.method_args
 
 // 型の注釈 tn (構文) と、それに対応する型 d (型引数を含む) から、名前 (型引数の名前) と番号の組を集める。
 // 注釈の `T` / `&T` の形だけを見る (他の形は読まない)。
-fn lower.inst.names_of(c: &lower.cx.Cx, cp: &parse.cur.P, src: &[u8], tn: usize, d: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, nos: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.inst.names_of(c: &lower.cx.Cx, cp: &parse.cur.P, src: &[u8], tn: usize, d: usize, out: &mut std.vec.Vec<std.string.String>, nos: &mut std.vec.Vec<usize>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let tnode = parse.ast.get(&cp.ast, tn)
     let df = types.ty.find(&c.ar, d)
     let dn = types.ty.node(&c.ar, df)
@@ -252,9 +252,9 @@ fn lower.inst.names_of(c: &lower.cx.Cx, cp: &parse.cur.P, src: &[u8], tn: usize,
 end lower.inst.names_of
 
 // 総称の関数の呼び出しの戻り値の型 (型引数で代入した宣言の戻り値)。
-fn lower.inst.ret_of(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, subs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.inst.ret_of(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, subs: &std.vec.Vec<usize>) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let d = lower.inst.decl_ret(env, c, item)?
-    let mut sb = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut sb = std.vec.Vec.new()
     for x in subs.as_slice().iter() {
         sb.push(*x)?
     }
@@ -307,9 +307,9 @@ fn lower.inst.sig_ty(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, j: u
 end lower.inst.sig_ty
 
 // 番号の順に並べ直す (鍵の型引数の順)。
-fn lower.inst.sorted(pairs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut used = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn lower.inst.sorted(pairs: &std.vec.Vec<usize>) -> Result<std.vec.Vec<usize>, resolve.Failure> uses [alloc] panics may pub
+    let mut out = std.vec.Vec.new()
+    let mut used = std.vec.Vec.new()
     let mut i = 0usize
     while i + 1usize < pairs.len() {
         used.push(false)?
@@ -338,7 +338,7 @@ fn lower.inst.sorted(pairs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<a
         }
         out.push(best)?
         out.push(lower.tyk.at(pairs.as_slice(), bi + 1usize))?
-        let mut nu = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut nu = std.vec.Vec.new()
         let mut q = 0usize
         while q < used.len() {
             if q == bi / 2usize {
@@ -377,7 +377,7 @@ fn lower.inst.subst(c: &mut lower.cx.Cx, t: usize) -> Result<usize, resolve.Fail
         return Ok(types.ty.push(&mut c.ar, rn)?)
     }
     if n.k == types.ty.K.Adt && n.c > 0usize {
-        let mut ids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut ids = std.vec.Vec.new()
         let mut changed = false
         for k in core.iter.range(0usize, n.c) {
             let a = types.ty.arg(&c.ar, n.b, k)

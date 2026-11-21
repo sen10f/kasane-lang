@@ -1,5 +1,5 @@
 type bench.Bst pub
-    nodes: alloc.vec.Vec<bench.Node, std.alloc.System>
+    nodes: std.vec.Vec<bench.Node>
 end bench.Bst
 
 type bench.Node derive [Debug, Clone, Copy, PartialEq, Eq] pub
@@ -84,7 +84,7 @@ fn bench.bst_insert(t: &mut bench.Bst, x: u32) -> () uses [alloc] panics never p
 end bench.bst_insert
 
 fn bench.bst_new() -> bench.Bst uses [alloc] panics never pub
-    let mut nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nodes = std.vec.Vec.new()
     match nodes.push(bench.Node { value: 0u32, left: 0usize, right: 0usize }) {
         Ok(_) => ()
         Err(_) => ()

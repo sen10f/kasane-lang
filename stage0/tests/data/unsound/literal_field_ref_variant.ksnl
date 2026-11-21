@@ -3,7 +3,7 @@ enum t.E
 end t.E
 
 fn t.main() -> () uses [] panics never
-    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let s = std.string.String.new()
     let x = t.E.A(&s)
     core.mem.drop(x)
     core.mem.drop(s)

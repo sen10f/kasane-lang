@@ -15,10 +15,10 @@ const borrow.base.UNK: usize = 0usize pub
 
 // パッケージの型と関数の表 (末尾の名前から引く。同じ名前が二つあれば不明にする)。
 type borrow.base.Tab pub
-    tnames: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
-    tcls: alloc.vec.Vec<usize, std.alloc.System> pub
-    fnames: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
-    fcls: alloc.vec.Vec<usize, std.alloc.System> pub
+    tnames: std.vec.Vec<std.string.String> pub
+    tcls: std.vec.Vec<usize> pub
+    fnames: std.vec.Vec<std.string.String> pub
+    fcls: std.vec.Vec<usize> pub
 end borrow.base.Tab
 
 // 開き波括弧 open に対応する閉じ波括弧のトークン番号 (見つからなければトークン数)。
@@ -181,7 +181,7 @@ fn borrow.base.put_ty(tab: &mut borrow.base.Tab, name: &str, cls: usize) -> Resu
 end borrow.base.put_ty
 
 // Vec<usize> の k 番目を書き換える (範囲外は何もしない)。
-fn borrow.base.set_usize(v: &mut alloc.vec.Vec<usize, std.alloc.System>, k: usize, val: usize) -> () uses [] panics never pub
+fn borrow.base.set_usize(v: &mut std.vec.Vec<usize>, k: usize, val: usize) -> () uses [] panics never pub
     match v.as_mut_slice().get_mut(k) {
         Some(x) => {
             *x = val
@@ -191,10 +191,10 @@ fn borrow.base.set_usize(v: &mut alloc.vec.Vec<usize, std.alloc.System>, k: usiz
 end borrow.base.set_usize
 
 fn borrow.base.tab_new() -> borrow.base.Tab uses [] panics never pub
-    let tn = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let tc = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let fnm = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let fc = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let tn = std.vec.Vec.new()
+    let tc = std.vec.Vec.new()
+    let fnm = std.vec.Vec.new()
+    let fc = std.vec.Vec.new()
     borrow.base.Tab { tnames: tn, tcls: tc, fnames: fnm, fcls: fc }
 end borrow.base.tab_new
 

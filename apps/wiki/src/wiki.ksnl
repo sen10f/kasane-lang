@@ -4,11 +4,11 @@ import wiki.store
 const wiki.DEMO_ADDR: &str = "127.0.0.1:0"
 
 fn wiki.demo() -> Result<(), wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never
-    let mut csrf_tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut csrf_tokens = std.vec.Vec.new()
     with listener = std.net.listen(wiki.DEMO_ADDR)? close core.mem.drop(listener.close()) {
         let mut page_store = store.PageStore.new("/tmp/wiki-test-demo")?
         let n = server.serve_listener(&listener, &mut page_store, &mut csrf_tokens, 3usize)?
-        let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut line = std.string.String.new()
         line.push_str("served ")?
         line.push_u64(u64.from_usize(n))?
         line.push_str(" requests")?

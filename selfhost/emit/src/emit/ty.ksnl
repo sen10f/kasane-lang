@@ -43,7 +43,7 @@ fn emit.ty.is_signed(g: &emit.G, id: usize) -> bool uses [] panics may pub
     emit.ty.get(g, id).signed
 end emit.ty.is_signed
 
-fn emit.ty.lty_into(g: &emit.G, id: usize, out: &mut alloc.string.String<std.alloc.System>) -> () uses [alloc, io.console, process] panics may pub
+fn emit.ty.lty_into(g: &emit.G, id: usize, out: &mut std.string.String) -> () uses [alloc, io.console, process] panics may pub
     let t = emit.ty.get(g, id)
     if t.kind == emit.ty.K_UNIT {
         emit.util.push_str(out, "i8")
@@ -60,7 +60,7 @@ fn emit.ty.lty_into(g: &emit.G, id: usize, out: &mut alloc.string.String<std.all
     }
 end emit.ty.lty_into
 
-fn emit.ty.mty_into(g: &emit.G, id: usize, out: &mut alloc.string.String<std.alloc.System>) -> () uses [alloc, io.console, process] panics may pub
+fn emit.ty.mty_into(g: &emit.G, id: usize, out: &mut std.string.String) -> () uses [alloc, io.console, process] panics may pub
     if emit.ty.get(g, id).kind == emit.ty.K_BOOL {
         emit.util.push_str(out, "i8")
     } else {
@@ -219,7 +219,7 @@ fn emit.ty.split_top(s: &str) -> (&str, &str) uses [] panics may pub
     core.panic.panic("internal: missing comma in Result type")
 end emit.ty.split_top
 
-fn emit.ty.text_of(g: &emit.G, id: usize, mem: bool) -> alloc.string.String<std.alloc.System> uses [alloc, io.console, process] panics may pub
+fn emit.ty.text_of(g: &emit.G, id: usize, mem: bool) -> std.string.String uses [alloc, io.console, process] panics may pub
     let mut out = emit.util.new_str()
     if mem {
         emit.ty.mty_into(g, id, &mut out)

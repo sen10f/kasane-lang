@@ -1,5 +1,5 @@
 fn t.h() -> u32 uses [alloc] panics never
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     core.mem.drop(v.push(1u32))
     let k = v.get(0usize)
     core.mem.drop(v.push(2u32))

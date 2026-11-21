@@ -2,7 +2,7 @@ enum t.Error derive [Debug, Clone, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
 end t.Error
 
-fn t.inner(s: &alloc.string.String<std.alloc.System>) -> Result<&str, t.Error> uses [] panics never
+fn t.inner(s: &std.string.String) -> Result<&str, t.Error> uses [] panics never
     Ok(s.as_str())
 end t.inner
 
@@ -14,6 +14,6 @@ fn t.main() -> Result<(), t.Error> uses [alloc] panics never
     Ok(())
 end t.main
 
-fn t.outer(s: &alloc.string.String<std.alloc.System>) -> Result<&str, t.Error> uses [] panics never
+fn t.outer(s: &std.string.String) -> Result<&str, t.Error> uses [] panics never
     t.inner(s)
 end t.outer

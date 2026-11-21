@@ -2,8 +2,8 @@ fn ksnc.clang.at(i: usize) -> &'static str uses [env] panics never pub
     ksnc.tool.env_or_arg(i)
 end ksnc.clang.at
 
-fn ksnc.clang.new_list() -> alloc.vec.Vec<&'static str, std.alloc.System> uses [] panics never pub
-    alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn ksnc.clang.new_list() -> std.vec.Vec<&'static str> uses [] panics never pub
+    std.vec.Vec.new()
 end ksnc.clang.new_list
 
 fn ksnc.clang.shim() -> Result<(), ksnc.Failure> uses [alloc, env, io.console, io.fs, process] panics never pub
@@ -96,8 +96,8 @@ fn ksnc.clang.shim() -> Result<(), ksnc.Failure> uses [alloc, env, io.console, i
     cc.arg(exe)
     cc.arg("-lm")
     cc.arg("-pthread")
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut err = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
+    let mut err = std.vec.Vec.new()
     let st = cc.output(&mut out, &mut err)?
     if rt_core {
         core.mem.drop(std.fs.remove_file(rt_path.as_str())?)

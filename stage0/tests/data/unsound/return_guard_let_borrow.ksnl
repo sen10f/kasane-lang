@@ -6,7 +6,7 @@ end t.borrow
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics never
     let m = std.sync.Mutex.new(10u32)
     let r = t.borrow(&m)
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     match alloc.fmt.write(&mut out, r) {
         Ok(_) => ()
         Err(e) => core.mem.drop(e)

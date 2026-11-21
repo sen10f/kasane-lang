@@ -3,7 +3,7 @@ type t.S
     n: u32
 end t.S
 
-fn t.arms(v: &mut alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> () uses [] panics never
+fn t.arms(v: &mut std.vec.Vec<alloc.string.String>) -> () uses [] panics never
     match v.pop() {
         Some(s) => {
             t.show(&s)
@@ -34,7 +34,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.once() -> () uses [] panics never
-    let s: alloc.string.String = alloc.string.String.new(std.alloc.SYSTEM)
+    let s: alloc.string.String = std.string.String.new()
     let f = fn() -> () capture [move s] {
         core.mem.drop(s)
     }

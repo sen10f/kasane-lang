@@ -1,5 +1,5 @@
 fn t.bad() -> u32 uses [alloc] panics never
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     v.push(1u32)
     let r = v.get_mut(0usize)
     if let Some(x) = r {

@@ -1,6 +1,6 @@
 fn t.bad() -> usize uses [] panics never
     let a = [1u32, 2u32, 3u32]
-    let v: &alloc.vec.Vec<u32, std.alloc.System> = &a
+    let v: &std.vec.Vec<u32> = &a
     v.len()
 end t.bad
 

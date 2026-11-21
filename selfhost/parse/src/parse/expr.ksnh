@@ -15,7 +15,7 @@ end parse.expr.and_expr
 fn parse.expr.array(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let at = p.pos
     parse.cur.advance(p)
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     if parse.cur.accept_ch(p, b']') {
         let l = parse.ast.list(&mut p.ast, &items, at)?
         return parse.ast.add1(&mut p.ast, parse.ast.Kind.ArrayE, at, l)
@@ -67,7 +67,7 @@ fn parse.expr.block(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses 
     let at = p.pos
     parse.cur.expect_ch(p, b'{')?
     parse.cur.skip_nl(p)
-    let mut stmts = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut stmts = std.vec.Vec.new()
     while !parse.cur.is_ch(p, b'}') {
         stmts.push(parse.expr.stmt(p)?)?
         if !parse.cur.is_ch(p, b'}') {
@@ -84,7 +84,7 @@ end parse.expr.block
 fn parse.expr.call_args(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let at = p.pos
     parse.cur.expect_ch(p, b'(')?
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     if !parse.cur.is_ch(p, b')') {
         loop {
             items.push(parse.expr.expr(p, false)?)?
@@ -126,7 +126,7 @@ fn parse.expr.closure(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> use
     let ret = parse.ty.ty(p)?
     parse.cur.expect_kw(p, parse.tok.CX_CAPTURE)?
     parse.cur.expect_ch(p, b'[')?
-    let mut caps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut caps = std.vec.Vec.new()
     if !parse.cur.is_ch(p, b']') {
         loop {
             caps.push(parse.expr.capture(p)?)?
@@ -161,7 +161,7 @@ fn parse.expr.cmp_expr(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err
         let false_lit = parse.ast.add2(&mut p.ast, parse.ast.Kind.Lit, at, 7usize, at)?
         let arm1 = parse.ast.add2(&mut p.ast, parse.ast.Kind.Arm, at, pat, true_lit)?
         let arm2 = parse.ast.add2(&mut p.ast, parse.ast.Kind.Arm, at, wild, false_lit)?
-        let mut arms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut arms = std.vec.Vec.new()
         arms.push(arm1)?
         arms.push(arm2)?
         let arm_list = parse.ast.list(&mut p.ast, &arms, at)?
@@ -242,11 +242,11 @@ fn parse.expr.if_let_rest(p: &mut parse.cur.P, at: usize) -> Result<usize, parse
             els = parse.expr.block(p)?
         }
     } else {
-        let none = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let none = std.vec.Vec.new()
         let nl = parse.ast.list(&mut p.ast, &none, at)?
         els = parse.ast.add1(&mut p.ast, parse.ast.Kind.Block, at, nl)?
     }
-    let mut arms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut arms = std.vec.Vec.new()
     arms.push(parse.ast.add2(&mut p.ast, parse.ast.Kind.Arm, at, pat, then)?)?
     let rest_flag = parse.ast.add2(&mut p.ast, parse.ast.Kind.Lit, at, 7usize, at)?
     let rest = parse.ast.add1(&mut p.ast, parse.ast.Kind.PWild, at, rest_flag)?
@@ -288,7 +288,7 @@ fn parse.expr.match_expr(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> 
     let scrut = parse.expr.expr(p, true)?
     parse.cur.expect_ch(p, b'{')?
     parse.cur.skip_nl(p)
-    let mut arms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut arms = std.vec.Vec.new()
     while !parse.cur.is_ch(p, b'}') {
         let arm_at = p.pos
         let pat = parse.pat.pattern(p)?
@@ -324,7 +324,7 @@ fn parse.expr.paren(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses 
     if parse.cur.accept_ch(p, b')') {
         return Ok(first)
     }
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     items.push(first)?
     while parse.cur.accept_ch(p, b',') {
         if parse.cur.is_ch(p, b')') {
@@ -507,7 +507,7 @@ end parse.expr.stmt
 
 fn parse.expr.struct_lit(p: &mut parse.cur.P, at: usize, start: usize, stop: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     parse.cur.advance(p)
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     loop {
         let name = parse.cur.name_tok(p)?
         parse.cur.expect_ch(p, b':')?

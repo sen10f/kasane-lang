@@ -5,7 +5,7 @@ enum realtime.Phase derive [Debug, Clone, Copy, PartialEq] pub
 end realtime.Phase
 
 type realtime.Ring pub
-    items: alloc.vec.Vec<u32, std.alloc.System>
+    items: std.vec.Vec<u32>
     head: usize
     len: usize
     cap: usize
@@ -20,7 +20,7 @@ fn realtime.Phase.next(self: realtime.Phase) -> realtime.Phase uses [] panics ne
 end realtime.Phase.next
 
 fn realtime.Ring.new(cap: usize) -> realtime.Ring uses [alloc] panics never pub
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     let mut i = 0usize
     while i < cap {
         match items.push(0u32) {

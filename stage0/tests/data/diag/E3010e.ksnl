@@ -1,5 +1,5 @@
 fn t.main() -> Result<(), std.io.Error> uses [] panics may
-    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut m = std.collections.HashMap.new()
     let mut x = 1u8
     let mut y = 2u8
     match m.insert(1u8, &x) {

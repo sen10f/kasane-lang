@@ -1,5 +1,5 @@
 type t.Named
-    name: alloc.string.String<std.alloc.System>
+    name: std.string.String
 end t.Named
 
 fn t.Named.pick(self: &t.Named, other: &str) -> &str uses [] panics never

@@ -1,8 +1,8 @@
 type t.P
-    v: alloc.vec.Vec<alloc.string.String, std.alloc.System>
+    v: std.vec.Vec<alloc.string.String>
 end t.P
 
-fn t.grow(v: &mut alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> () uses [alloc] panics may
+fn t.grow(v: &mut std.vec.Vec<alloc.string.String>) -> () uses [alloc] panics may
     let mut i = 0u32
     while i < 1000u32 {
         core.mem.drop(v.push(t.mk()))
@@ -11,7 +11,7 @@ fn t.grow(v: &mut alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> () us
 end t.grow
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut s = t.P { v: alloc.vec.Vec.new(std.alloc.SYSTEM) }
+    let mut s = t.P { v: std.vec.Vec.new() }
     core.mem.drop(s.v.push(t.mk()))
     let p = &s
     let a = &p.v
@@ -25,7 +25,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
 end t.main
 
 fn t.mk() -> alloc.string.String uses [alloc] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str("hello world, this is heap memory"))
     s
 end t.mk

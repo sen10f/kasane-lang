@@ -10,7 +10,7 @@ fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
 end bench.main
 
 fn bench.parens_balanced(text: &str) -> bool uses [alloc] panics never pub
-    let mut stack = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut stack = std.vec.Vec.new()
     let bytes = text.as_bytes()
     let mut i = 0usize
     let n = bytes.len()

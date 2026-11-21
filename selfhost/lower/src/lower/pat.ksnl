@@ -18,10 +18,10 @@ fn lower.pat.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             return Ok(())
         }
         let lay = lower.tyk.layout(env, c, rn.a)?
-        let mut fvs = alloc.vec.Vec.new(std.alloc.SYSTEM)
-        let mut sts = alloc.vec.Vec.new(std.alloc.SYSTEM)
-        let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
-        let mut offs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut fvs = std.vec.Vec.new()
+        let mut sts = std.vec.Vec.new()
+        let mut subs = std.vec.Vec.new()
+        let mut offs = std.vec.Vec.new()
         for j in core.iter.range(0usize, resolve.ast.count(p, pat.c)) {
             let fi = parse.ast.get(&p.ast, resolve.ast.item(p, pat.c, j))
             let fname = resolve.ast.tok_text(p, src, fi.a)

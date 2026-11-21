@@ -1,4 +1,4 @@
-fn t.first(v: &alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> () uses [] panics never
+fn t.first(v: &std.vec.Vec<alloc.string.String>) -> () uses [] panics never
     match v.get(0usize) {
         Some(s) => core.mem.drop(s.len())
         None => ()
@@ -6,7 +6,7 @@ fn t.first(v: &alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> () uses 
 end t.first
 
 fn t.main() -> () uses [alloc] panics never
-    let mut v: alloc.vec.Vec<u64, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v: std.vec.Vec<u64> = std.vec.Vec.new()
     core.mem.drop(v.push(4096u64))
     t.first(&v)
 end t.main

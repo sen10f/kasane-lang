@@ -39,7 +39,7 @@ fn t.ok() -> u32 uses [] panics never
 end t.ok
 
 fn t.ok_str() -> usize uses [alloc] panics never
-    let mut x = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut x = std.string.String.new()
     core.mem.drop(x.push_str("hello"))
     let mut r = "d"
     {

@@ -16,12 +16,12 @@ type todo.store.Stats pub
 end todo.store.Stats
 
 type todo.store.Store pub
-    path: alloc.string.String<std.alloc.System>
-    users_path: alloc.string.String<std.alloc.System>
-    todos: alloc.vec.Vec<todo.model.Todo, std.alloc.System>
-    extras: alloc.vec.Vec<todo.model.TodoExtra, std.alloc.System>
-    users: alloc.vec.Vec<todo.model.User, std.alloc.System>
-    sessions: alloc.vec.Vec<todo.model.Session, std.alloc.System>
+    path: std.string.String
+    users_path: std.string.String
+    todos: std.vec.Vec<todo.model.Todo>
+    extras: std.vec.Vec<todo.model.TodoExtra>
+    users: std.vec.Vec<todo.model.User>
+    sessions: std.vec.Vec<todo.model.Session>
 end todo.store.Store
 
 fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &str, owner_id: i64) -> Result<&todo.model.Todo, todo.error.Error> uses [alloc, io.fs] panics never pub
@@ -38,7 +38,7 @@ fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &s
     let created_extra = alloc.string.String.from_str(std.alloc.SYSTEM, created_at)?
     let new_todo = model.Todo { id: id, title: title_copy, done: false, created_at: created_copy }
     self.todos.push(new_todo)?
-    let empty_tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty_tags = std.vec.Vec.new()
     let ua = created_extra
     let tg = empty_tags
     let dl = match alloc.string.String.from_str(std.alloc.SYSTEM, "") {
@@ -64,7 +64,7 @@ fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &s
     }
 end todo.store.Store.add
 
-fn todo.store.Store.add_extra(self: &mut todo.store.Store, id: i64, updated_at: &str, tags: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, deadline: alloc.string.String<std.alloc.System>, owner_id: i64) -> Result<&todo.model.TodoExtra, todo.error.Error> uses [alloc, io.fs] panics never pub
+fn todo.store.Store.add_extra(self: &mut todo.store.Store, id: i64, updated_at: &str, tags: std.vec.Vec<std.string.String>, deadline: std.string.String, owner_id: i64) -> Result<&todo.model.TodoExtra, todo.error.Error> uses [alloc, io.fs] panics never pub
     let index = self.index_of(id)?
     {
         let e = match self.extras.get_mut(index) {
@@ -150,7 +150,7 @@ fn todo.store.Store.append_history(self: &mut todo.store.Store, action: &str, to
     if hist_path.is_empty() {
         return Ok(())
     }
-    let mut entry = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut entry = std.string.String.new()
     entry.push_str("{\"ts\":")?
     model.push_quoted(&mut entry, ts)?
     entry.push_str(",\"action\":")?
@@ -248,7 +248,7 @@ fn todo.store.Store.get_extra(self: &todo.store.Store, id: i64) -> Option<&todo.
     self.extras.get(index)
 end todo.store.Store.get_extra
 
-fn todo.store.Store.hist_path(self: &todo.store.Store) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn todo.store.Store.hist_path(self: &todo.store.Store) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
     let path_str = self.path.as_str()
     let dot = match path_str.rfind(".") {
         Some(p) => p
@@ -258,7 +258,7 @@ fn todo.store.Store.hist_path(self: &todo.store.Store) -> Result<alloc.string.St
         Some((b, r)) => (b, r)
         None => (path_str, "")
     }
-    let mut hist = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut hist = std.string.String.new()
     hist.push_str(base)?
     hist.push_str("_hist")?
     hist.push_str(rest)?
@@ -282,8 +282,8 @@ fn todo.store.Store.len(self: &todo.store.Store) -> usize uses [] panics never p
     self.todos.len()
 end todo.store.Store.len
 
-fn todo.store.Store.list(self: &todo.store.Store) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo.store.Store.list(self: &todo.store.Store) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("[")?
     let all = self.todos.as_slice()
     for i in core.iter.range(0usize, all.len()) {
@@ -302,8 +302,8 @@ fn todo.store.Store.list(self: &todo.store.Store) -> Result<alloc.string.String<
     Ok(out)
 end todo.store.Store.list
 
-fn todo.store.Store.list_users(self: &todo.store.Store) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo.store.Store.list_users(self: &todo.store.Store) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("{\"users\":[")?
     let all = self.users.as_slice()
     for i in core.iter.range(0usize, all.len()) {
@@ -354,10 +354,10 @@ end todo.store.Store.load
 fn todo.store.Store.new(path: &str, users_path: &str) -> Result<todo.store.Store, todo.error.Error> uses [alloc] panics never pub
     let saved = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
     let users_saved = alloc.string.String.from_str(std.alloc.SYSTEM, users_path)?
-    let ts = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let es = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let us = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let ss = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let ts = std.vec.Vec.new()
+    let es = std.vec.Vec.new()
+    let us = std.vec.Vec.new()
+    let ss = std.vec.Vec.new()
     let p = saved
     let up = users_saved
     Ok(todo.store.Store { path: p, users_path: up, todos: ts, extras: es, users: us, sessions: ss })
@@ -448,7 +448,7 @@ fn todo.store.Store.save_users(self: &todo.store.Store) -> Result<(), todo.error
     Ok(())
 end todo.store.Store.save_users
 
-fn todo.store.Store.search(self: &todo.store.Store, q: &str, page: usize, page_size: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn todo.store.Store.search(self: &todo.store.Store, q: &str, page: usize, page_size: usize) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut total = 0usize
     let all = self.todos.as_slice()
     for i in core.iter.range(0usize, all.len()) {
@@ -459,7 +459,7 @@ fn todo.store.Store.search(self: &todo.store.Store, q: &str, page: usize, page_s
             None => return Err(alloc.alloc.AllocError { code: 0u32 })
         }
     }
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     out.push_str("{\"total\":")?
     out.push_u64(u64.from_usize(total))?
     out.push_str(",\"page\":")?
@@ -566,7 +566,7 @@ fn todo.store.Store.toggle(self: &mut todo.store.Store, id: i64) -> Result<&todo
     }
 end todo.store.Store.toggle
 
-fn todo.store.Store.update_extra(self: &mut todo.store.Store, id: i64, updated_at: &str, tags: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, deadline: alloc.string.String<std.alloc.System>, owner_id: i64) -> Result<&todo.model.TodoExtra, todo.error.Error> uses [alloc, io.fs] panics never pub
+fn todo.store.Store.update_extra(self: &mut todo.store.Store, id: i64, updated_at: &str, tags: std.vec.Vec<std.string.String>, deadline: std.string.String, owner_id: i64) -> Result<&todo.model.TodoExtra, todo.error.Error> uses [alloc, io.fs] panics never pub
     let index = self.index_of(id)?
     {
         let e = match self.extras.get_mut(index) {
@@ -590,12 +590,12 @@ fn todo.store.Store.update_extra(self: &mut todo.store.Store, id: i64, updated_a
     }
 end todo.store.Store.update_extra
 
-fn todo.store.read_text(path: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, io.fs] panics never
-    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn todo.store.read_text(path: &str) -> Result<std.string.String, todo.error.Error> uses [alloc, io.fs] panics never
+    let mut data = std.vec.Vec.new()
     with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
         core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
     }
-    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut text = std.string.String.new()
     text.push_bytes(data.as_slice()).map_err(error.push_failed)?
     Ok(text)
 end todo.store.read_text

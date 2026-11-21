@@ -1,6 +1,6 @@
 fn t.bad() -> u32 uses [alloc] panics never
     let mut x = 1u32
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     let c = fn() -> u32 capture [&mut x] {
         x
     }

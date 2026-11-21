@@ -64,7 +64,7 @@ end parse.ty.const_expr
 fn parse.ty.effect_set(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
     let at = p.pos
     parse.cur.expect_ch(p, b'[')?
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     if !parse.cur.is_ch(p, b']') {
         loop {
             let start = parse.cur.start_byte(p)
@@ -90,7 +90,7 @@ fn parse.ty.generics(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses
     }
     let at = p.pos
     parse.cur.advance(p)
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     items.push(parse.ty.gparam(p)?)?
     while parse.cur.accept_ch(p, b',') {
         items.push(parse.ty.gparam(p)?)?
@@ -121,7 +121,7 @@ fn parse.ty.gparam(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [
         return Err(parse.cur.fail(p, parse.err.E_EXPECT_NAME, 0u32))
     }
     parse.cur.advance(p)
-    let mut bounds = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut bounds = std.vec.Vec.new()
     let mut kind = 5usize
     if parse.cur.accept_ch(p, b':') {
         if parse.cur.accept_kw(p, parse.tok.KW_USES) {
@@ -160,7 +160,7 @@ end parse.ty.panic_val
 // `name: 型, ...` (閉じ括弧の手前まで)。List (子は Param) を返す。
 fn parse.ty.params(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
     let at = p.pos
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     if !parse.cur.is_ch(p, b')') {
         loop {
             let name = parse.cur.name_tok(p)?
@@ -221,7 +221,7 @@ end parse.ty.targ
 fn parse.ty.targs(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096 pub
     let at = p.pos
     parse.cur.expect_ch(p, b'<')?
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     items.push(parse.ty.targ(p)?)?
     while parse.cur.accept_ch(p, b',') {
         items.push(parse.ty.targ(p)?)?
@@ -245,7 +245,7 @@ end parse.ty.trait_ref
 fn parse.ty.tuple(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let at = p.pos
     parse.cur.advance(p)
-    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut items = std.vec.Vec.new()
     if parse.cur.accept_ch(p, b')') {
         let l = parse.ast.list(&mut p.ast, &items, at)?
         return parse.ast.add1(&mut p.ast, parse.ast.Kind.TTuple, at, l)
@@ -322,7 +322,7 @@ fn parse.ty.ty_kw(p: &mut parse.cur.P, code: u32) -> Result<usize, parse.err.Err
     if code == parse.tok.KW_FN {
         parse.cur.advance(p)
         parse.cur.expect_ch(p, b'(')?
-        let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut items = std.vec.Vec.new()
         if !parse.cur.is_ch(p, b')') {
             items.push(parse.ty.ty(p)?)?
             while parse.cur.accept_ch(p, b',') {

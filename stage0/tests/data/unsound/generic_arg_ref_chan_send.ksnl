@@ -1,8 +1,8 @@
 fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, thread] panics never
     let made = std.sync.channel::<alloc.string.String, std.alloc.System>(std.alloc.SYSTEM, 4usize)
     let (tx, rx) = made?
-    let s = alloc.string.String.new(std.alloc.SYSTEM)
-    let mut got = alloc.string.String.new(std.alloc.SYSTEM)
+    let s = std.string.String.new()
+    let mut got = std.string.String.new()
     match tx.send(&s) {
         Ok(_) => ()
         Err(_) => ()

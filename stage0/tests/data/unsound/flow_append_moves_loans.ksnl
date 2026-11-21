@@ -1,6 +1,6 @@
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
-    let mut a = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut b = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a = std.vec.Vec.new()
+    let mut b = std.vec.Vec.new()
     {
         let s = t.mk()
         core.mem.drop(b.push(s.as_str()))
@@ -14,7 +14,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
 end t.main
 
 fn t.mk() -> alloc.string.String uses [alloc] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str("hello world, this is heap memory"))
     s
 end t.mk

@@ -1,7 +1,7 @@
 type emit.Buf pub
-    cur: alloc.string.String<std.alloc.System> pub
-    hoisted: alloc.string.String<std.alloc.System> pub
-    globals: alloc.string.String<std.alloc.System> pub
+    cur: std.string.String pub
+    hoisted: std.string.String pub
+    globals: std.string.String pub
 end emit.Buf
 
 type emit.Edge derive [Clone, Copy] pub
@@ -16,14 +16,14 @@ type emit.Flags pub
     write_used: bool pub
     eprint_used: bool pub
     ret: usize pub
-    fkey: alloc.string.String<std.alloc.System> pub
+    fkey: std.string.String pub
 end emit.Flags
 
 type emit.Flow pub
-    edges: alloc.vec.Vec<emit.Edge, std.alloc.System> pub
-    succ: alloc.vec.Vec<usize, std.alloc.System> pub
-    stk: alloc.vec.Vec<usize, std.alloc.System> pub
-    blocks: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    edges: std.vec.Vec<emit.Edge> pub
+    succ: std.vec.Vec<usize> pub
+    stk: std.vec.Vec<usize> pub
+    blocks: std.vec.Vec<std.string.String> pub
 end emit.Flow
 
 type emit.G pub
@@ -37,11 +37,11 @@ type emit.G pub
 end emit.G
 
 type emit.Lay pub
-    vty: alloc.vec.Vec<usize, std.alloc.System> pub
-    bpar: alloc.vec.Vec<usize, std.alloc.System> pub
-    bpty: alloc.vec.Vec<usize, std.alloc.System> pub
-    bpst: alloc.vec.Vec<usize, std.alloc.System> pub
-    reach: alloc.vec.Vec<bool, std.alloc.System> pub
+    vty: std.vec.Vec<usize> pub
+    bpar: std.vec.Vec<usize> pub
+    bpty: std.vec.Vec<usize> pub
+    bpst: std.vec.Vec<usize> pub
+    reach: std.vec.Vec<bool> pub
 end emit.Lay
 
 type emit.Misc pub
@@ -53,17 +53,17 @@ type emit.Misc pub
 end emit.Misc
 
 type emit.Outs pub
-    intr: alloc.string.String<std.alloc.System> pub
-    out: alloc.string.String<std.alloc.System> pub
-    fns: alloc.string.String<std.alloc.System> pub
+    intr: std.string.String pub
+    out: std.string.String pub
+    fns: std.string.String pub
 end emit.Outs
 
 type emit.Tab pub
-    tys: alloc.vec.Vec<emit.ty.Ty, std.alloc.System> pub
-    aggs: alloc.vec.Vec<emit.agg.Agg, std.alloc.System> pub
-    foffs: alloc.vec.Vec<usize, std.alloc.System> pub
-    ftys: alloc.vec.Vec<usize, std.alloc.System> pub
-    vars: alloc.vec.Vec<emit.agg.Var, std.alloc.System> pub
+    tys: std.vec.Vec<emit.ty.Ty> pub
+    aggs: std.vec.Vec<emit.agg.Agg> pub
+    foffs: std.vec.Vec<usize> pub
+    ftys: std.vec.Vec<usize> pub
+    vars: std.vec.Vec<emit.agg.Var> pub
 end emit.Tab
 
 fn emit.decl(g: &mut emit.G, def: &str) -> () uses [alloc] panics may pub
@@ -103,7 +103,7 @@ fn emit.line(g: &mut emit.G, s: &str) -> () uses [alloc] panics may pub
     emit.w(g, "\n")
 end emit.line
 
-fn emit.line_at['a](text: &'a str, starts: &alloc.vec.Vec<usize, std.alloc.System>, k: usize) -> &'a str uses [] panics never pub
+fn emit.line_at['a](text: &'a str, starts: &std.vec.Vec<usize>, k: usize) -> &'a str uses [] panics never pub
     let a = match starts.get(k) {
         Some(x) => *x
         None => text.len()
@@ -127,8 +127,8 @@ fn emit.line_at['a](text: &'a str, starts: &alloc.vec.Vec<usize, std.alloc.Syste
     }
 end emit.line_at
 
-fn emit.line_starts(text: &str) -> alloc.vec.Vec<usize, std.alloc.System> uses [alloc] panics may pub
-    let mut starts: alloc.vec.Vec<usize, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn emit.line_starts(text: &str) -> std.vec.Vec<usize> uses [alloc] panics may pub
+    let mut starts: std.vec.Vec<usize> = std.vec.Vec.new()
     emit.util.vec_push(&mut starts, 0usize)
     let b = text.as_bytes()
     let mut k = 0usize
@@ -218,30 +218,30 @@ fn emit.module(g: &mut emit.G, text: &str, entry: &str) -> () uses [alloc, io.co
 end emit.module
 
 fn emit.new_g() -> emit.G uses [] panics never pub
-    let tys = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let aggs = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let foffs = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let ftys = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let vars = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let tys = std.vec.Vec.new()
+    let aggs = std.vec.Vec.new()
+    let foffs = std.vec.Vec.new()
+    let ftys = std.vec.Vec.new()
+    let vars = std.vec.Vec.new()
     let tab = emit.Tab { tys: tys, aggs: aggs, foffs: foffs, ftys: ftys, vars: vars }
-    let vty = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let bpar = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let bpty = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let bpst = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let reach = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let vty = std.vec.Vec.new()
+    let bpar = std.vec.Vec.new()
+    let bpty = std.vec.Vec.new()
+    let bpst = std.vec.Vec.new()
+    let reach = std.vec.Vec.new()
     let lay = emit.Lay { vty: vty, bpar: bpar, bpty: bpty, bpst: bpst, reach: reach }
-    let edges = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let succ = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let stk = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let blocks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let edges = std.vec.Vec.new()
+    let succ = std.vec.Vec.new()
+    let stk = std.vec.Vec.new()
+    let blocks = std.vec.Vec.new()
     let flow = emit.Flow { edges: edges, succ: succ, stk: stk, blocks: blocks }
-    let cur = alloc.string.String.new(std.alloc.SYSTEM)
-    let hoisted = alloc.string.String.new(std.alloc.SYSTEM)
-    let globals = alloc.string.String.new(std.alloc.SYSTEM)
+    let cur = std.string.String.new()
+    let hoisted = std.string.String.new()
+    let globals = std.string.String.new()
     let buf = emit.Buf { cur: cur, hoisted: hoisted, globals: globals }
-    let intr = alloc.string.String.new(std.alloc.SYSTEM)
-    let out = alloc.string.String.new(std.alloc.SYSTEM)
-    let fns = alloc.string.String.new(std.alloc.SYSTEM)
+    let intr = std.string.String.new()
+    let out = std.string.String.new()
+    let fns = std.string.String.new()
     let outs = emit.Outs { intr: intr, out: out, fns: fns }
     let n = 0usize
     let nblk = 0usize
@@ -252,7 +252,7 @@ fn emit.new_g() -> emit.G uses [] panics never pub
     let wu = false
     let eu = false
     let ret = 0usize
-    let fkey = alloc.string.String.new(std.alloc.SYSTEM)
+    let fkey = std.string.String.new()
     let flags = emit.Flags { write_used: wu, eprint_used: eu, ret: ret, fkey: fkey }
     emit.G { tab: tab, lay: lay, flow: flow, buf: buf, outs: outs, misc: misc, flags: flags }
 end emit.new_g
@@ -262,8 +262,8 @@ fn emit.newlab(g: &mut emit.G) -> usize uses [] panics never pub
     g.misc.n
 end emit.newlab
 
-fn emit.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics never pub
-    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn emit.read_file(path: &str) -> Result<std.vec.Vec<u8>, std.io.Error> uses [alloc, io.fs] panics never pub
+    let mut buf = std.vec.Vec.new()
     with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
         core.mem.drop(std.fs.read_to_end(&mut file, &mut buf)?)
     }
@@ -271,17 +271,17 @@ fn emit.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std
 end emit.read_file
 
 fn emit.reset_fn(g: &mut emit.G) -> () uses [] panics never pub
-    g.lay.vty = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    g.lay.bpar = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    g.lay.bpty = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    g.lay.bpst = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    g.lay.reach = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    g.flow.edges = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    g.flow.succ = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    g.flow.stk = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    g.flow.blocks = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    g.buf.cur = alloc.string.String.new(std.alloc.SYSTEM)
-    g.buf.hoisted = alloc.string.String.new(std.alloc.SYSTEM)
+    g.lay.vty = std.vec.Vec.new()
+    g.lay.bpar = std.vec.Vec.new()
+    g.lay.bpty = std.vec.Vec.new()
+    g.lay.bpst = std.vec.Vec.new()
+    g.lay.reach = std.vec.Vec.new()
+    g.flow.edges = std.vec.Vec.new()
+    g.flow.succ = std.vec.Vec.new()
+    g.flow.stk = std.vec.Vec.new()
+    g.flow.blocks = std.vec.Vec.new()
+    g.buf.cur = std.string.String.new()
+    g.buf.hoisted = std.string.String.new()
     g.misc.n = 0usize
     g.misc.nblk = 0usize
     g.misc.curfromblk = true

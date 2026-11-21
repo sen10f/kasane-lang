@@ -1479,10 +1479,12 @@ fn new_header(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let f = nf(e);
     let line = nline(e);
     let args = items(&f[1]);
-    let system = args.len() == 1 && nname(&args[0]) == "Path" && {
-        let sg = strs(&nf(&args[0])[0]);
-        sg == ["std", "alloc", "SYSTEM"] || (sg.len() == 1 && lw.lookup(&sg[0]).is_some() && matches!(lw.src_ty(&args[0]), Ok(Src::Named(n, _, _)) if n == "std.alloc.System"))
-    };
+    // アロケータ引数を省略した `std.string.String.new()` などは `std.alloc.System` が既定される。
+    let system = args.is_empty()
+        || (args.len() == 1 && nname(&args[0]) == "Path" && {
+            let sg = strs(&nf(&args[0])[0]);
+            sg == ["std", "alloc", "SYSTEM"] || (sg.len() == 1 && lw.lookup(&sg[0]).is_some() && matches!(lw.src_ty(&args[0]), Ok(Src::Named(n, _, _)) if n == "std.alloc.System"))
+        });
     if !system {
         return lw.err(line, "Vec / String の生成は std.alloc.SYSTEM だけ段階 1 の対象");
     }

@@ -1,5 +1,5 @@
 type t.B[T] derive [Drop]
-    k: Option<alloc.boxed.Box<t.B<i32>, std.alloc.System>>
+    k: Option<std.boxed.Box<t.B<i32>>>
 end t.B
 
 fn t.main() -> () uses [] panics never

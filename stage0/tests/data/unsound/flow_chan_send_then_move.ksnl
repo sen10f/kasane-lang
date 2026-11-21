@@ -1,7 +1,7 @@
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics never
     match std.sync.channel(std.alloc.SYSTEM, 2usize) {
         Ok((tx, rx)) => {
-            let s = alloc.string.String.new(std.alloc.SYSTEM)
+            let s = std.string.String.new()
             let sent = tx.send(&s)
             core.mem.drop(sent)
             let moved = s

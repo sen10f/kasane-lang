@@ -1,5 +1,5 @@
 fn t.bad() -> &'static str uses [] panics never
-    alloc.string.String.new(std.alloc.SYSTEM).as_str()
+    std.string.String.new().as_str()
 end t.bad
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

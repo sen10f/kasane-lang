@@ -141,8 +141,8 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     Ok(())
 end t.main
 
-fn t.name(text: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+fn t.name(text: &str) -> std.string.String uses [alloc] panics may
+    let mut s = std.string.String.new()
     core.check.eq(s.push_str(text), Ok(()))
     s
 end t.name

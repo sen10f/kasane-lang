@@ -42,7 +42,7 @@ fn csvtool.cmd.Widths.new(title: &str) -> csvtool.cmd.Widths uses [] panics neve
 end csvtool.cmd.Widths.new
 
 // 1 行を出力用に組み立てる (区切り文字と引用符が必要な文字を含むフィールドは "..." で囲む)。
-fn csvtool.cmd.append_field(out: &mut alloc.string.String<std.alloc.System>, text: &str, delim: char) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn csvtool.cmd.append_field(out: &mut std.string.String, text: &str, delim: char) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut quote = false
     for c in text.chars() {
         if c == delim || c == '"' || c == '\n' {
@@ -65,7 +65,7 @@ fn csvtool.cmd.append_field(out: &mut alloc.string.String<std.alloc.System>, tex
 end csvtool.cmd.append_field
 
 // 1 行 (Vec<String>) を区切り文字でつないで追記する。
-fn csvtool.cmd.append_row(out: &mut alloc.string.String<std.alloc.System>, fields: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, delim: char) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn csvtool.cmd.append_row(out: &mut std.string.String, fields: &std.vec.Vec<std.string.String>, delim: char) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let fs = fields.as_slice()
     let mut i = 0usize
     let n = fs.len()
@@ -103,7 +103,7 @@ fn csvtool.cmd.cols(start: usize) -> Result<(), csvtool.error.Error> uses [alloc
     while i < n {
         match h.get(i) {
             Some(name) => {
-                let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+                let mut line = std.string.String.new()
                 line.push_u64(u64.from_usize(i.wrapping_add(1usize)))?
                 core.mem.drop(line.push('\t')?)
                 line.push_str(name.as_str())?
@@ -121,7 +121,7 @@ end csvtool.cmd.cols
 fn csvtool.cmd.count(start: usize) -> Result<(), csvtool.error.Error> uses [alloc, env, io.console, io.fs] panics never pub
     let path = csvtool.cmd.arg_at(start)?
     let tbl = csvtool.cmd.load_table(path)?
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     s.push_u64(u64.from_usize(tbl.height()))?
     std.io.print_line(s.as_str())?
     Ok(())
@@ -166,7 +166,7 @@ fn csvtool.cmd.head(start: usize) -> Result<(), csvtool.error.Error> uses [alloc
         Err(_) => return Err(error.usage())
     }
     let tbl = csvtool.cmd.load_table(path)?
-    let mut header_line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut header_line = std.string.String.new()
     csvtool.cmd.append_row(&mut header_line, &tbl.header, tbl.delim)?
     std.io.print_line(header_line.as_str())?
     let total = tbl.height()
@@ -174,7 +174,7 @@ fn csvtool.cmd.head(start: usize) -> Result<(), csvtool.error.Error> uses [alloc
     while r < total && r < n {
         match tbl.rows.as_slice().get(r) {
             Some(row) => {
-                let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+                let mut line = std.string.String.new()
                 csvtool.cmd.append_row(&mut line, &row.fields, tbl.delim)?
                 std.io.print_line(line.as_str())?
             }
@@ -193,8 +193,8 @@ fn csvtool.cmd.load_table(path: &str) -> Result<csvtool.table.Table, csvtool.err
 end csvtool.cmd.load_table
 
 // テキストを指定幅まで空白で埋める (幅を超えるときはそのまま)。
-fn csvtool.cmd.pad(text: &str, width: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn csvtool.cmd.pad(text: &str, width: usize) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str(text)?
     while out.len() < width {
         core.mem.drop(out.push(' ')?)
@@ -203,7 +203,7 @@ fn csvtool.cmd.pad(text: &str, width: usize) -> Result<alloc.string.String<std.a
 end csvtool.cmd.pad
 
 // 統計 1 行を表示用テキストにする代わりに、表示列は stat_texts で作る。
-fn csvtool.cmd.print_stats(list: &alloc.vec.Vec<csvtool.agg.Group, std.alloc.System>, title: &str) -> Result<(), csvtool.error.Error> uses [alloc, io.console] panics never pub
+fn csvtool.cmd.print_stats(list: &std.vec.Vec<csvtool.agg.Group>, title: &str) -> Result<(), csvtool.error.Error> uses [alloc, io.console] panics never pub
     let mut w = csvtool.cmd.Widths.new(title)
     let mut i = 0usize
     let n = list.len()
@@ -214,7 +214,7 @@ fn csvtool.cmd.print_stats(list: &alloc.vec.Vec<csvtool.agg.Group, std.alloc.Sys
         }
         i = i.wrapping_add(1usize)
     }
-    let mut head = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut head = std.string.String.new()
     let t = csvtool.cmd.pad(title, w.key)?
     head.push_str(t.as_str())?
     csvtool.cmd.push_col(&mut head, "COUNT", w.count)?
@@ -229,7 +229,7 @@ fn csvtool.cmd.print_stats(list: &alloc.vec.Vec<csvtool.agg.Group, std.alloc.Sys
         match list.as_slice().get(r) {
             Some(g) => {
                 let texts = csvtool.cmd.stat_texts(g)?
-                let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+                let mut line = std.string.String.new()
                 let k = csvtool.cmd.pad(g.key.as_str(), w.key)?
                 line.push_str(k.as_str())?
                 csvtool.cmd.push_col(&mut line, csvtool.cmd.text_at(&texts, 0usize), w.count)?
@@ -248,7 +248,7 @@ fn csvtool.cmd.print_stats(list: &alloc.vec.Vec<csvtool.agg.Group, std.alloc.Sys
 end csvtool.cmd.print_stats
 
 // 出力行に "  " 区切りで 1 セル追記する。
-fn csvtool.cmd.push_col(out: &mut alloc.string.String<std.alloc.System>, text: &str, width: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn csvtool.cmd.push_col(out: &mut std.string.String, text: &str, width: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     out.push_str("  ")?
     let cell = csvtool.cmd.pad(text, width)?
     out.push_str(cell.as_str())?
@@ -256,19 +256,19 @@ fn csvtool.cmd.push_col(out: &mut alloc.string.String<std.alloc.System>, text: &
 end csvtool.cmd.push_col
 
 // テキストファイルを全部読む。
-fn csvtool.cmd.read_text(path: &str) -> Result<alloc.string.String<std.alloc.System>, csvtool.error.Error> uses [alloc, io.fs] panics never pub
-    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn csvtool.cmd.read_text(path: &str) -> Result<std.string.String, csvtool.error.Error> uses [alloc, io.fs] panics never pub
+    let mut data = std.vec.Vec.new()
     with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
         core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
     }
-    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut text = std.string.String.new()
     text.push_bytes(data.as_slice()).map_err(error.push_failed)?
     Ok(text)
 end csvtool.cmd.read_text
 
 // 列指定を解釈する (引数がなければ全列。指定の中に見つからない列があれば BadColumn)。
-fn csvtool.cmd.resolve_cols(tbl: &csvtool.table.Table, start: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, csvtool.error.Error> uses [alloc, env] panics never pub
-    let mut cols = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn csvtool.cmd.resolve_cols(tbl: &csvtool.table.Table, start: usize) -> Result<std.vec.Vec<usize>, csvtool.error.Error> uses [alloc, env] panics never pub
+    let mut cols = std.vec.Vec.new()
     let mut i = start.wrapping_add(1usize)
     let n = std.env.arg_count()
     while i < n {
@@ -298,7 +298,7 @@ fn csvtool.cmd.select(start: usize) -> Result<(), csvtool.error.Error> uses [all
     let path = csvtool.cmd.arg_at(start)?
     let tbl = csvtool.cmd.load_table(path)?
     let cols = csvtool.cmd.resolve_cols(&tbl, start)?
-    let mut header_line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut header_line = std.string.String.new()
     let cs = cols.as_slice()
     let mut j = 0usize
     let cn = cs.len()
@@ -321,7 +321,7 @@ fn csvtool.cmd.select(start: usize) -> Result<(), csvtool.error.Error> uses [all
     let total = tbl.height()
     let mut r = 0usize
     while r < total {
-        let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut line = std.string.String.new()
         let mut k = 0usize
         while k < cn {
             match cs.get(k) {
@@ -349,18 +349,18 @@ fn csvtool.cmd.select(start: usize) -> Result<(), csvtool.error.Error> uses [all
 end csvtool.cmd.select
 
 // 統計 1 行の表示用テキスト (count, numeric, sum, min, max, avg の順)。
-fn csvtool.cmd.stat_texts(g: &csvtool.agg.Group) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut cells = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut count = alloc.string.String.new(std.alloc.SYSTEM)
+fn csvtool.cmd.stat_texts(g: &csvtool.agg.Group) -> Result<std.vec.Vec<std.string.String>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut cells = std.vec.Vec.new()
+    let mut count = std.string.String.new()
     count.push_i64(g.stats.rows)?
     core.mem.drop(cells.push(count)?)
-    let mut numeric = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut numeric = std.string.String.new()
     numeric.push_i64(g.stats.numeric)?
     core.mem.drop(cells.push(numeric)?)
     let no_num = g.stats.numeric == 0i64
-    let mut sum = alloc.string.String.new(std.alloc.SYSTEM)
-    let mut min = alloc.string.String.new(std.alloc.SYSTEM)
-    let mut max = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut sum = std.string.String.new()
+    let mut min = std.string.String.new()
+    let mut max = std.string.String.new()
     if g.stats.ovf {
         sum.push_str("ovf")?
         min.push_str("ovf")?
@@ -391,7 +391,7 @@ fn csvtool.cmd.summary(start: usize) -> Result<(), csvtool.error.Error> uses [al
     let path = csvtool.cmd.arg_at(start)?
     let tbl = csvtool.cmd.load_table(path)?
     let cols = csvtool.cmd.resolve_cols(&tbl, start)?
-    let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut list = std.vec.Vec.new()
     let cs = cols.as_slice()
     let mut j = 0usize
     let cn = cs.len()
@@ -433,7 +433,7 @@ fn csvtool.cmd.test_write_sample() -> Result<(), csvtool.error.Error> uses [allo
 end csvtool.cmd.test_write_sample
 
 // 表示テキストの i 番目 (無ければ空文字列)。
-fn csvtool.cmd.text_at(cells: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, i: usize) -> &str uses [] panics never pub
+fn csvtool.cmd.text_at(cells: &std.vec.Vec<std.string.String>, i: usize) -> &str uses [] panics never pub
     let cs = cells.as_slice()
     let mut text = ""
     match cs.get(i) {

@@ -31,8 +31,8 @@ fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     Ok(())
 end bench.main
 
-fn bench.rle(text: &str) -> alloc.vec.Vec<bench.Run, std.alloc.System> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn bench.rle(text: &str) -> std.vec.Vec<bench.Run> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     let bytes = text.as_bytes()
     let mut i = 0usize
     let n = bytes.len()

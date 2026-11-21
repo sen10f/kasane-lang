@@ -4,7 +4,7 @@ fn lower.vec.arith(c: &mut lower.cx.Cx, op: &str, a: usize, b: usize) -> Result<
     lower.cx.def(c, "usize", s2.as_str())
 end lower.vec.arith
 
-fn lower.vec.call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usize, vs: &alloc.vec.Vec<usize, std.alloc.System>, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usize, vs: &std.vec.Vec<usize>, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let name = lower.expr.last_seg(fqn)
     let recv = lower.tyk.at(vs.as_slice(), 0usize)
     if name == "as_str" {
@@ -23,7 +23,7 @@ fn lower.vec.call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usiz
     let f = types.ty.strip(&c.ar, rty)
     let n = types.ty.node(&c.ar, f)
     let mut key = lower.cx.cat2(fqn, "<")?
-    let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut subs = std.vec.Vec.new()
     let want = if is_str {
         1usize
     } else {
@@ -108,7 +108,7 @@ fn lower.vec.free_slot(env: &types.env.Env, c: &mut lower.cx.Cx, slot: usize, t:
     lower.vec.free_hdr(c, slot)
 end lower.vec.free_slot
 
-fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>, ret: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &std.vec.Vec<usize>, ret: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     lower.cx.reset(c)?
     let mut fq = key
     for w in key.split("<") {
@@ -120,16 +120,16 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
     let elem = lower.tyk.at(subs.as_slice(), 1usize)
     let rt = lower.tyk.text(env, c, ret)?
     if is_str && name == "push" {
-        let mut po = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut po = std.string.String.new()
         lower.str.push_char_text(&mut po, fq, key, rt.as_str())?
         return lower.func.record(c, po.as_str(), "")
     }
     if is_str && name == "push_u64" {
-        let mut uo = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut uo = std.string.String.new()
         lower.str.push_u64_text(&mut uo, fq, key, rt.as_str())?
         return lower.func.record(c, uo.as_str(), "")
     }
-    let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ps = std.vec.Vec.new()
     let recv = lower.cx.newval(c, "ptr")?
     ps.push(recv)?
     let mut value = 0usize
@@ -169,7 +169,7 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
         let len0 = lower.vec.load_usize(c, recv, 8usize)?
         let lts = lower.cx.cat2("icmp.lt.usize ", lower.expr.two(value, len0)?.as_str())?
         let lt = lower.cx.def(c, "bool", lts.as_str())?
-        let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let empty = std.vec.Vec.new()
         let setb = lower.cx.blk(c, &empty)?
         let jb = lower.cx.blk(c, &empty)?
         let mut brs = lower.cx.cat2("br_if ", lower.cx.vs(lt)?.as_str())?
@@ -193,7 +193,7 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &all
         r = lower.str.push_str(env, c, recv, value, ret)?
     }
     lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(r.v)?.as_str())?)?
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     out.push_str("fn ")?
     out.push_str(fq)?
     out.push_str(" key=")?
@@ -284,7 +284,7 @@ fn lower.vec.load_hdr(env: &types.env.Env, c: &mut lower.cx.Cx, slot: usize, t: 
         }
     }
     let tt = lower.tyk.text(env, c, t)?
-    let mut mk = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut mk = std.string.String.new()
     mk.push_str("make(")?
     mk.push_str(lower.cx.vs(pv)?.as_str())?
     mk.push_str(", ")?
@@ -308,7 +308,7 @@ fn lower.vec.load_usize(c: &mut lower.cx.Cx, p: usize, off: usize) -> Result<usi
     lower.cx.def(c, "usize", s3.as_str())
 end lower.vec.load_usize
 
-fn lower.vec.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usize, vs: &alloc.vec.Vec<usize, std.alloc.System>, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.vec.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usize, vs: &std.vec.Vec<usize>, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let name = lower.expr.last_seg(fqn)
     let elem = lower.vec.elem(c, rty)
     let recv = lower.tyk.at(vs.as_slice(), 0usize)
@@ -365,11 +365,11 @@ fn lower.vec.pop(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: us
     let zero = lower.vec.usize_c(c, 0usize)?
     let eqs = lower.cx.cat2("icmp.eq.usize ", lower.expr.two(len0, zero)?.as_str())?
     let isz = lower.cx.def(c, "bool", eqs.as_str())?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let emptyb = lower.cx.blk(c, &empty)?
     let popb = lower.cx.blk(c, &empty)?
     let rt = lower.tyk.text(env, c, t)?
-    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut jps = std.vec.Vec.new()
     jps.push(lower.cx.newval(c, rt.as_str())?)?
     let jb = lower.cx.blk(c, &jps)?
     let mut brs = lower.cx.cat2("br_if ", lower.cx.vs(isz)?.as_str())?
@@ -380,7 +380,7 @@ fn lower.vec.pop(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: us
     lower.cx.finish(c, brs)?
     lower.cx.goto(c, emptyb)
     let nn = lower.cx.def(c, rt.as_str(), lower.cx.cat2("const.", lower.cx.cat2(rt.as_str(), " none")?.as_str())?.as_str())?
-    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a0 = std.vec.Vec.new()
     a0.push(nn)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a0)?.as_str())?)?
     lower.cx.goto(c, popb)
@@ -395,7 +395,7 @@ fn lower.vec.pop(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: us
     let v = lower.cx.def(c, et.as_str(), lower.cx.cat2(lds3.as_str(), " +0")?.as_str())?
     let sws = lower.cx.cat2("some ", lower.cx.vs(v)?.as_str())?
     let sv = lower.cx.def(c, rt.as_str(), sws.as_str())?
-    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a1 = std.vec.Vec.new()
     a1.push(sv)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a1)?.as_str())?)?
     lower.cx.goto(c, jb)
@@ -410,11 +410,11 @@ fn lower.vec.push(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: u
     let cap0 = lower.vec.load_usize(c, recv, 16usize)?
     let lts = lower.cx.cat2("icmp.lt.usize ", lower.expr.two(len0, cap0)?.as_str())?
     let lt = lower.cx.def(c, "bool", lts.as_str())?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let growb = lower.cx.blk(c, &empty)?
     let okb = lower.cx.blk(c, &empty)?
     let rt = lower.tyk.text(env, c, t)?
-    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut jps = std.vec.Vec.new()
     jps.push(lower.cx.newval(c, rt.as_str())?)?
     let jb = lower.cx.blk(c, &jps)?
     let mut brs = lower.cx.cat2("br_if ", lower.cx.vs(lt)?.as_str())?
@@ -445,7 +445,7 @@ fn lower.vec.push(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: u
     let u = lower.expr.unit(c)?
     let oks = lower.cx.cat2("ok ", lower.cx.vs(u)?.as_str())?
     let okv = lower.cx.def(c, rt.as_str(), oks.as_str())?
-    let mut a = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a = std.vec.Vec.new()
     a.push(okv)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a)?.as_str())?)?
     lower.cx.goto(c, jb)

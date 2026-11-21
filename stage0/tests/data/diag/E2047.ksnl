@@ -11,7 +11,7 @@ fn t.Sq.area(self: &t.Sq) -> i64 uses [] panics never impls t.Shape
     self.side
 end t.Sq.area
 
-fn t.f(v: &alloc.vec.Vec<dyn t.Shape + 'static, std.alloc.System>) -> usize uses [] panics never
+fn t.f(v: &std.vec.Vec<dyn t.Shape + 'static>) -> usize uses [] panics never
     v.len()
 end t.f
 

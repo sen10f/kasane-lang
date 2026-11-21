@@ -17,7 +17,7 @@ end t.H.set
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     let mut h = t.H { r: "x" }
     {
-        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut s = std.string.String.new()
         core.mem.drop(s.push_str("hello world, this is heap memory"))
         h.set(s.as_str())
     }

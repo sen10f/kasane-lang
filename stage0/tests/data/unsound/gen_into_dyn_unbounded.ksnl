@@ -5,7 +5,7 @@ trait t.Handler pub
 end t.Handler
 
 type t.Slot
-    handler: alloc.boxed.Box<dyn t.Handler + 'static, std.alloc.System>
+    handler: std.boxed.Box<dyn t.Handler + 'static>
 end t.Slot
 
 fn t.main() -> () uses [] panics never

@@ -4,7 +4,7 @@
 // `text` は診断の本文と誤りの数。`check` は既定の経路で、誤りがあれば本文を流して失敗する。
 // 検査の結果: 本文 (行の並び) と誤りの数。
 type ksnc.front.Text pub
-    text: alloc.string.String<std.alloc.System> pub
+    text: std.string.String pub
     errors: usize pub
 end ksnc.front.Text
 
@@ -20,7 +20,7 @@ end ksnc.front.check
 
 fn ksnc.front.text(dir: &str, std_dir: &str) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.fs] panics never pub
     let man = resolve.manifest.read(dir)?
-    let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut srcs = std.vec.Vec.new()
     let own_src = resolve.manifest.join(dir, "src")?
     resolve.load.collect(own_src.as_str(), "", true, &mut srcs)?
     let deps = man.deps

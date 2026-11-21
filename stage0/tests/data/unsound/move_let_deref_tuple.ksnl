@@ -8,7 +8,7 @@ fn t.f(x: &(alloc.string.String, u32)) -> () uses [] panics never
 end t.f
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let x = (alloc.string.String.new(std.alloc.SYSTEM), 1u32)
+    let x = (std.string.String.new(), 1u32)
     t.f(&x)
     Ok(())
 end t.main

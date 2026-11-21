@@ -3,7 +3,7 @@ import shortener.http
 
 const shortener.wire.MAX_REPLY: usize = 65_536usize
 
-fn shortener.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<usize, shortener.error.Error> uses [alloc, io.net] panics never
+fn shortener.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut std.vec.Vec<u8>) -> Result<usize, shortener.error.Error> uses [alloc, io.net] panics never
     let mut chunk = [0u8; 512]
     let n = stream.read(&mut chunk)?
     for i in core.iter.range(0usize, n) {
@@ -16,7 +16,7 @@ fn shortener.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.ve
 end shortener.wire.read_chunk
 
 fn shortener.wire.read_request(stream: &mut std.net.TcpStream) -> Result<shortener.http.Request, shortener.error.Error> uses [alloc, io.net] panics never pub
-    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut data = std.vec.Vec.new()
     let mut head_end = 0usize
     loop {
         if shortener.wire.read_chunk(stream, &mut data)? == 0usize {
@@ -51,13 +51,13 @@ fn shortener.wire.read_request(stream: &mut std.net.TcpStream) -> Result<shorten
         Some(b) => b
         None => return Err(error.Error.BadRequest)
     }
-    let mut body = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut body = std.string.String.new()
     body.push_bytes(body_bytes).map_err(error.push_failed)?
     Ok(http.Request { body: body, method: head.method, path: head.path })
 end shortener.wire.read_request
 
-fn shortener.wire.read_to_close(stream: &mut std.net.TcpStream) -> Result<alloc.vec.Vec<u8, std.alloc.System>, shortener.error.Error> uses [alloc, io.net] panics never pub
-    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn shortener.wire.read_to_close(stream: &mut std.net.TcpStream) -> Result<std.vec.Vec<u8>, shortener.error.Error> uses [alloc, io.net] panics never pub
+    let mut data = std.vec.Vec.new()
     loop {
         if shortener.wire.read_chunk(stream, &mut data)? == 0usize {
             break

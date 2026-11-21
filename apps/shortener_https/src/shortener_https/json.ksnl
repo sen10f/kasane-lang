@@ -1,15 +1,15 @@
 import shortener_https.code
 import shortener_https.error
 
-fn shortener_https.json.error_body(message: &str) -> Result<alloc.string.String<std.alloc.System>, shortener_https.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn shortener_https.json.error_body(message: &str) -> Result<std.string.String, shortener_https.error.Error> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("{\"error\":")?
     shortener_https.json.push_quoted(&mut out, message)?
     out.push_str("}")?
     Ok(out)
 end shortener_https.json.error_body
 
-fn shortener_https.json.escape_into(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), shortener_https.error.Error> uses [alloc] panics never pub
+fn shortener_https.json.escape_into(out: &mut std.string.String, text: &str) -> Result<(), shortener_https.error.Error> uses [alloc] panics never pub
     for c in text.chars() {
         if c == '"' {
             out.push_str("\\\"")?
@@ -30,8 +30,8 @@ fn shortener_https.json.escape_into(out: &mut alloc.string.String<std.alloc.Syst
     Ok(())
 end shortener_https.json.escape_into
 
-fn shortener_https.json.link_body(link_code: &str, url: &str) -> Result<alloc.string.String<std.alloc.System>, shortener_https.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn shortener_https.json.link_body(link_code: &str, url: &str) -> Result<std.string.String, shortener_https.error.Error> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("{\"code\":")?
     shortener_https.json.push_quoted(&mut out, link_code)?
     out.push_str(",\"url\":")?
@@ -40,7 +40,7 @@ fn shortener_https.json.link_body(link_code: &str, url: &str) -> Result<alloc.st
     Ok(out)
 end shortener_https.json.link_body
 
-fn shortener_https.json.push_control(out: &mut alloc.string.String<std.alloc.System>, unit: u32) -> Result<(), shortener_https.error.Error> uses [alloc] panics never
+fn shortener_https.json.push_control(out: &mut std.string.String, unit: u32) -> Result<(), shortener_https.error.Error> uses [alloc] panics never
     out.push_str("\\u00")?
     let high = unit.wrapping_shr(4u32)
     let low = unit & 15u32
@@ -55,23 +55,23 @@ fn shortener_https.json.push_control(out: &mut alloc.string.String<std.alloc.Sys
     Ok(())
 end shortener_https.json.push_control
 
-fn shortener_https.json.push_quoted(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), shortener_https.error.Error> uses [alloc] panics never
+fn shortener_https.json.push_quoted(out: &mut std.string.String, text: &str) -> Result<(), shortener_https.error.Error> uses [alloc] panics never
     out.push_str("\"")?
     shortener_https.json.escape_into(out, text)?
     out.push_str("\"")?
     Ok(())
 end shortener_https.json.push_quoted
 
-fn shortener_https.json.stats_body(links: usize) -> Result<alloc.string.String<std.alloc.System>, shortener_https.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn shortener_https.json.stats_body(links: usize) -> Result<std.string.String, shortener_https.error.Error> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str("{\"links\":")?
     out.push_u64(u64.from_usize(links))?
     out.push_str("}")?
     Ok(out)
 end shortener_https.json.stats_body
 
-fn shortener_https.json.test_escape(text: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn shortener_https.json.test_escape(text: &str) -> std.string.String uses [alloc] panics may
+    let mut out = std.string.String.new()
     match shortener_https.json.escape_into(&mut out, text) {
         Ok(_) => out
         Err(_e) => core.panic.panic("escape failed")

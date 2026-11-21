@@ -54,7 +54,7 @@ fn shortener.main() -> Result<(), shortener.error.Error> uses [alloc, env, io.co
 end shortener.main
 
 fn shortener.report(n: usize) -> Result<(), shortener.error.Error> uses [alloc, io.console] panics never
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut line = std.string.String.new()
     line.push_str("served ")?
     line.push_u64(u64.from_usize(n))?
     shortener.announce(line.as_str())
@@ -105,7 +105,7 @@ fn shortener.step(listener: &std.net.TcpListener, db: &mut shortener.store.Store
     shortener.expect(reply.status == status)?
     shortener.expect(reply.body.as_str() == expected)?
     shortener.expect(status != 302u16 || !reply.location.is_empty())?
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut line = std.string.String.new()
     line.push_str(method)?
     line.push_str(" ")?
     line.push_str(path)?

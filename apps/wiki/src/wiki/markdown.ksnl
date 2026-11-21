@@ -32,7 +32,7 @@ fn wiki.markdown.find_closing_backtick(text: &str, from: usize) -> Option<usize>
     None
 end wiki.markdown.find_closing_backtick
 
-fn wiki.markdown.flush_paragraph(out: &mut alloc.string.String<std.alloc.System>, block: &mut alloc.string.String<std.alloc.System>) -> Result<(), wiki.error.Error> uses [alloc] panics never
+fn wiki.markdown.flush_paragraph(out: &mut std.string.String, block: &mut std.string.String) -> Result<(), wiki.error.Error> uses [alloc] panics never
     let inline = wiki.markdown.inline(block.as_str())?
     out.push_str("<p>")?
     out.push_str(inline.as_str())?
@@ -66,8 +66,8 @@ fn wiki.markdown.heading_level(line: &str) -> Option<u32> uses [] panics never
     }
 end wiki.markdown.heading_level
 
-fn wiki.markdown.inline(text: &str) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn wiki.markdown.inline(text: &str) -> Result<std.string.String, wiki.error.Error> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     let mut i = 0usize
     let total = text.len()
     while i < total {
@@ -284,9 +284,9 @@ fn wiki.markdown.substring(s: &str, from: usize, to: usize) -> &str uses [] pani
     }
 end wiki.markdown.substring
 
-fn wiki.markdown.to_html(text: &str) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    let mut block = alloc.string.String.new(std.alloc.SYSTEM)
+fn wiki.markdown.to_html(text: &str) -> Result<std.string.String, wiki.error.Error> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
+    let mut block = std.string.String.new()
     let mut in_code_block = false
     let mut in_list = false
     for line in text.split("\n") {
@@ -303,12 +303,12 @@ fn wiki.markdown.to_html(text: &str) -> Result<alloc.string.String<std.alloc.Sys
         } else if is_blank {
             if !block.is_empty() {
                 wiki.markdown.flush_paragraph(&mut out, &mut block)?
-                block = alloc.string.String.new(std.alloc.SYSTEM)
+                block = std.string.String.new()
             }
         } else if line.starts_with("```") {
             if !block.is_empty() {
                 wiki.markdown.flush_paragraph(&mut out, &mut block)?
-                block = alloc.string.String.new(std.alloc.SYSTEM)
+                block = std.string.String.new()
             }
             in_code_block = true
             out.push_str("<pre><code>")?
@@ -317,7 +317,7 @@ fn wiki.markdown.to_html(text: &str) -> Result<alloc.string.String<std.alloc.Sys
                 Some(level) => {
                     if !block.is_empty() {
                         wiki.markdown.flush_paragraph(&mut out, &mut block)?
-                        block = alloc.string.String.new(std.alloc.SYSTEM)
+                        block = std.string.String.new()
                     }
                     let (_, rest) = match line.split_at(usize.from_u32(level)) {
                         Some(pair) => pair
@@ -325,9 +325,9 @@ fn wiki.markdown.to_html(text: &str) -> Result<alloc.string.String<std.alloc.Sys
                     }
                     let trimmed = wiki.markdown.trim_start(rest)
                     let inline = wiki.markdown.inline(trimmed)?
-                    let mut h = alloc.string.String.new(std.alloc.SYSTEM)
+                    let mut h = std.string.String.new()
                     h.push_str("<h")?
-                    let mut lv = alloc.string.String.new(std.alloc.SYSTEM)
+                    let mut lv = std.string.String.new()
                     lv.push_u64(u64.from_u32(level))?
                     h.push_str(lv.as_str())?
                     h.push_str(">")?
@@ -340,7 +340,7 @@ fn wiki.markdown.to_html(text: &str) -> Result<alloc.string.String<std.alloc.Sys
                 None => if line.starts_with("- ") {
                     if !block.is_empty() {
                         wiki.markdown.flush_paragraph(&mut out, &mut block)?
-                        block = alloc.string.String.new(std.alloc.SYSTEM)
+                        block = std.string.String.new()
                     }
                     if !in_list {
                         out.push_str("<ul>")?

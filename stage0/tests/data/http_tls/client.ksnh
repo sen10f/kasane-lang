@@ -1,9 +1,9 @@
-fn t.fetch(address: &str, ca: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.tls.Error> uses [alloc, io.fs, io.net] panics never
+fn t.fetch(address: &str, ca: &str) -> Result<std.vec.Vec<u8>, std.tls.Error> uses [alloc, io.fs, io.net] panics never
     let conn = std.tls.connect_with(address, "localhost", ca)?
     let mut tls = conn
     let request = "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
     core.mem.drop(tls.write(request.as_bytes()))
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     let mut chunk = [0u8; 512]
     let mut more = true
     while more {
@@ -60,7 +60,7 @@ end t.main
 
 // `std.tls` の利用者側の試験。引数: `<アドレス> <CA の PEM>`。サーバへ `GET /stats` を送り、最初の行を書く。
 // そのあと、既定の CA (この証明書は信頼されない) と、名前の違うホストへの接続が拒否されることを書く。
-fn t.push_part(out: &mut alloc.vec.Vec<u8, std.alloc.System>, chunk: &[u8], n: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+fn t.push_part(out: &mut std.vec.Vec<u8>, chunk: &[u8], n: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     match chunk.sub(0usize, n) {
         Some(part) => out.extend_from_slice(part)?
         None => core.mem.drop(0u8)

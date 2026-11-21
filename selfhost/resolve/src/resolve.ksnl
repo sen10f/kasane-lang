@@ -14,7 +14,7 @@ fn resolve.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, i
         None => return Ok(())
     }
     let man = resolve.manifest.read(pkg)?
-    let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut srcs = std.vec.Vec.new()
     let own_src = resolve.manifest.join(pkg, "src")?
     resolve.load.collect(own_src.as_str(), "", true, &mut srcs)?
     let deps = man.deps
@@ -61,7 +61,7 @@ fn resolve.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, i
 end resolve.main
 
 fn resolve.parse_file(src: &[u8], path: &str, sig: bool, rep: &mut resolve.report.Report) -> Result<Option<parse.cur.P>, resolve.Failure> uses [alloc] panics never pub
-    let mut toks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut toks = std.vec.Vec.new()
     rep.path.clear()
     rep.path.push_str(path)?
     rep.sig = sig

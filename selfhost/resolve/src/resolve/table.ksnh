@@ -8,13 +8,13 @@ end resolve.table.Def
 
 // FQN (String) → 添字 (items の位置)。
 type resolve.table.Map pub
-    m: alloc.collections.HashMap<alloc.string.String<std.alloc.System>, usize, std.alloc.System> pub
+    m: std.collections.HashMap<std.string.String, usize> pub
 end resolve.table.Map
 
 type resolve.table.Table pub
     defs: resolve.table.Map pub
     variants: resolve.table.Map pub
-    items: alloc.vec.Vec<resolve.table.Def, std.alloc.System> pub
+    items: std.vec.Vec<resolve.table.Def> pub
 end resolve.table.Table
 
 // 1 ファイルの定義と列挙子を表に入れる。file はファイル番号。sig は rep.sig (宣言ファイルか)。
@@ -93,16 +93,16 @@ fn resolve.table.mk(kind: parse.ast.Kind, file: usize, line: usize, public: bool
 end resolve.table.mk
 
 fn resolve.table.new() -> Result<resolve.table.Table, alloc.alloc.AllocError> uses [] panics never pub
-    let dm = alloc.collections.HashMap.new(std.alloc.SYSTEM)
-    let vm = alloc.collections.HashMap.new(std.alloc.SYSTEM)
-    let items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let dm = std.collections.HashMap.new()
+    let vm = std.collections.HashMap.new()
+    let items = std.vec.Vec.new()
     let defs = resolve.table.Map { m: dm }
     let variants = resolve.table.Map { m: vm }
     Ok(resolve.table.Table { defs: defs, variants: variants, items: items })
 end resolve.table.new
 
 // 定義 1 件を items に足し、key を添字で表に入れる (defs か variants の表)。
-fn resolve.table.put_def(t: &mut resolve.table.Table, key: alloc.string.String<std.alloc.System>, def: resolve.table.Def) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn resolve.table.put_def(t: &mut resolve.table.Table, key: std.string.String, def: resolve.table.Def) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let ix = t.items.len()
     t.items.push(def)?
     let mm = &mut t.defs.m
@@ -110,7 +110,7 @@ fn resolve.table.put_def(t: &mut resolve.table.Table, key: alloc.string.String<s
     Ok(())
 end resolve.table.put_def
 
-fn resolve.table.put_var(t: &mut resolve.table.Table, key: alloc.string.String<std.alloc.System>, def: resolve.table.Def) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn resolve.table.put_var(t: &mut resolve.table.Table, key: std.string.String, def: resolve.table.Def) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let ix = t.items.len()
     t.items.push(def)?
     let mm = &mut t.variants.m
@@ -119,7 +119,7 @@ fn resolve.table.put_var(t: &mut resolve.table.Table, key: alloc.string.String<s
 end resolve.table.put_var
 
 // 既存の登録の状態: 0 = なし、1 = 宣言と実装の組 (sig の違い)、2 = 重複。
-fn resolve.table.state(t: &resolve.table.Table, m: &resolve.table.Map, key: &alloc.string.String<std.alloc.System>, sig: bool) -> usize uses [] panics never pub
+fn resolve.table.state(t: &resolve.table.Table, m: &resolve.table.Map, key: &std.string.String, sig: bool) -> usize uses [] panics never pub
     let mm = &m.m
     match mm.get_str(key.as_str()) {
         Some(ix) => {

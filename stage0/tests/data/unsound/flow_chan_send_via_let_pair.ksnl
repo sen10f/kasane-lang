@@ -3,7 +3,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     match made {
         Ok(pair) => {
             let (tx, rx) = pair
-            let s = alloc.string.String.new(std.alloc.SYSTEM)
+            let s = std.string.String.new()
             let sent = tx.send(&s)
             core.mem.drop(sent)
             core.mem.drop(s)

@@ -34,7 +34,7 @@ fn borrow.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io
         }
         k = k.wrapping_add(1usize)
     }
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     let mut errors = 0usize
     let mut undec = 0usize
     let mut files = 0usize
@@ -43,7 +43,7 @@ fn borrow.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io
         if s.own && !s.sig {
             match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut rep)? {
                 Some(p) => {
-                    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                    let mut buf = std.vec.Vec.new()
                     for b in s.text.as_slice().iter() {
                         buf.push(*b)?
                     }

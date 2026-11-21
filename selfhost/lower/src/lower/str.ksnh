@@ -10,7 +10,7 @@ fn lower.str.as_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, t: usize
 end lower.str.as_str
 
 // ブロックの頭 `  bN(...):`。
-fn lower.str.bh(o: &mut alloc.string.String<std.alloc.System>, b: usize, ps: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.str.bh(o: &mut std.string.String, b: usize, ps: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     o.push_str("  b")?
     o.push_str(lower.cx.dec(b)?.as_str())?
     o.push('(')?
@@ -20,7 +20,7 @@ fn lower.str.bh(o: &mut alloc.string.String<std.alloc.System>, b: usize, ps: &st
 end lower.str.bh
 
 // 幅 n (1〜4) の UTF-8 を、ch (%1) から番地 base へ書き、幅の定数を `br b9(%w)` で渡す。
-fn lower.str.enc(o: &mut alloc.string.String<std.alloc.System>, k: &mut usize, base: usize, n: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.str.enc(o: &mut std.string.String, k: &mut usize, base: usize, n: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     for j in core.iter.range(0usize, n) {
         let mut v = 1usize
         let shift = 6usize * (n - 1usize - j)
@@ -76,13 +76,13 @@ fn lower.str.from_str(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let buf = lower.cx.def1(c, "ptr", "heap.alloc ", bn)?
     let zero = lower.vec.usize_c(c, 0usize)?
     let one = lower.vec.usize_c(c, 1usize)?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
+    let mut hps = std.vec.Vec.new()
     hps.push(lower.cx.newval(c, "usize")?)?
     let hb = lower.cx.blk(c, &hps)?
     let bb = lower.cx.blk(c, &empty)?
     let eb = lower.cx.blk(c, &empty)?
-    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a0 = std.vec.Vec.new()
     a0.push(zero)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(hb, &a0)?.as_str())?)?
     lower.cx.goto(c, hb)
@@ -104,7 +104,7 @@ fn lower.str.from_str(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let sts3 = lower.cx.cat2(sts2.as_str(), lower.cx.vs(ld)?.as_str())?
     core.mem.drop(lower.cx.def(c, "unit", sts3.as_str())?)
     let ni = lower.vec.arith(c, "add", i, one)?
-    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a1 = std.vec.Vec.new()
     a1.push(ni)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(hb, &a1)?.as_str())?)?
     lower.cx.goto(c, eb)
@@ -119,7 +119,7 @@ fn lower.str.from_str(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
 end lower.str.from_str
 
 // `String` のメソッド (受け手 vs[0] は枠の番地、引数はその後)。
-fn lower.str.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, vs: &alloc.vec.Vec<usize, std.alloc.System>, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.str.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, vs: &std.vec.Vec<usize>, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let name = lower.expr.last_seg(fqn)
     let recv = lower.tyk.at(vs.as_slice(), 0usize)
     if name == "len" {
@@ -137,8 +137,8 @@ fn lower.str.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, vs: &al
 end lower.str.method
 
 // `op %a, %b` / `op %a` の綴り。
-fn lower.str.op2(op: &str, a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+fn lower.str.op2(op: &str, a: usize, b: usize) -> Result<std.string.String, resolve.Failure> uses [alloc] panics never pub
+    let mut s = std.string.String.new()
     s.push_str(op)?
     lower.str.pv(&mut s, a)?
     s.push_str(", ")?
@@ -147,7 +147,7 @@ fn lower.str.op2(op: &str, a: usize, b: usize) -> Result<alloc.string.String<std
 end lower.str.op2
 
 // `String.push(ch)` の本体 (Rust 版の形ではない): 4 バイト分の余地を取り、幅で場合分けして UTF-8 を書く。
-fn lower.str.push_char_text(o: &mut alloc.string.String<std.alloc.System>, fq: &str, key: &str, rt: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.str.push_char_text(o: &mut std.string.String, fq: &str, key: &str, rt: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     o.push_str("fn ")?
     o.push_str(fq)?
     o.push_str(" key=")?
@@ -205,7 +205,7 @@ fn lower.str.push_char_text(o: &mut alloc.string.String<std.alloc.System>, fq: &
     lower.str.enc(o, &mut k, base, 4usize)?
     let wp = k
     k = k + 1usize
-    let mut hd = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut hd = std.string.String.new()
     hd.push('%')?
     hd.push_str(lower.cx.dec(wp)?.as_str())?
     hd.push_str(": usize")?
@@ -232,11 +232,11 @@ fn lower.str.push_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, text: 
     let need = lower.vec.arith(c, "add", len0, tlen)?
     let ogs = lower.cx.cat2("icmp.gt.usize ", lower.expr.two(need, cap0)?.as_str())?
     let over = lower.cx.def(c, "bool", ogs.as_str())?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let growb = lower.cx.blk(c, &empty)?
     let okb = lower.cx.blk(c, &empty)?
     let rt = lower.tyk.text(env, c, t)?
-    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut jps = std.vec.Vec.new()
     jps.push(lower.cx.newval(c, rt.as_str())?)?
     let jb = lower.cx.blk(c, &jps)?
     let mut brs = lower.cx.cat2("br_if ", lower.cx.vs(over)?.as_str())?
@@ -263,13 +263,13 @@ fn lower.str.push_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, text: 
     let p1 = lower.vec.load_ptr(c, h)?
     let dst = lower.vec.padd(c, p1, len0)?
     let ivs = lower.cx.newval(c, "usize")?
-    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut hps = std.vec.Vec.new()
     hps.push(ivs)?
     let hb = lower.cx.blk(c, &hps)?
     let bodyb = lower.cx.blk(c, &empty)?
     let exitb = lower.cx.blk(c, &empty)?
     let zero = lower.vec.usize_c(c, 0usize)?
-    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a0 = std.vec.Vec.new()
     a0.push(zero)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(hb, &a0)?.as_str())?)?
     lower.cx.goto(c, hb)
@@ -293,7 +293,7 @@ fn lower.str.push_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, text: 
     core.mem.drop(lower.cx.def(c, "unit", sts3.as_str())?)
     let one = lower.vec.usize_c(c, 1usize)?
     let iv1 = lower.vec.arith(c, "add", ivs, one)?
-    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a1 = std.vec.Vec.new()
     a1.push(iv1)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(hb, &a1)?.as_str())?)?
     // 出口: 長さを直し、Ok(())。
@@ -301,7 +301,7 @@ fn lower.str.push_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, text: 
     core.mem.drop(lower.vec.store_at(c, "usize", h, 8usize, need)?)
     let u = lower.expr.unit(c)?
     let okv = lower.cx.def1(c, rt.as_str(), "ok ", u)?
-    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a2 = std.vec.Vec.new()
     a2.push(okv)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a2)?.as_str())?)?
     lower.cx.goto(c, jb)
@@ -309,7 +309,7 @@ fn lower.str.push_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, text: 
 end lower.str.push_str
 
 // `String.push_u64(n)` の本体 (Rust 版の形ではない): 20 バイト分の余地を取り、桁数を数えて、後ろの桁から書く。
-fn lower.str.push_u64_text(o: &mut alloc.string.String<std.alloc.System>, fq: &str, key: &str, rt: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.str.push_u64_text(o: &mut std.string.String, fq: &str, key: &str, rt: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     o.push_str("fn ")?
     o.push_str(fq)?
     o.push_str(" key=")?
@@ -351,7 +351,7 @@ fn lower.str.push_u64_text(o: &mut alloc.string.String<std.alloc.System>, fq: &s
     let n3 = k
     let d3 = k + 1usize
     k = k + 2usize
-    let mut h3 = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut h3 = std.string.String.new()
     lower.str.pv(&mut h3, n3)?
     h3.push_str(": u64, ")?
     lower.str.pv(&mut h3, d3)?
@@ -377,7 +377,7 @@ fn lower.str.push_u64_text(o: &mut alloc.string.String<std.alloc.System>, fq: &s
     let x6 = k
     let i6 = k + 1usize
     k = k + 2usize
-    let mut h6 = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut h6 = std.string.String.new()
     lower.str.pv(&mut h6, x6)?
     h6.push_str(": u64, ")?
     lower.str.pv(&mut h6, i6)?
@@ -417,14 +417,14 @@ fn lower.str.push_u64_text(o: &mut alloc.string.String<std.alloc.System>, fq: &s
 end lower.str.push_u64_text
 
 // 値の参照 `%k` を後ろへつなぐ。
-fn lower.str.pv(s: &mut alloc.string.String<std.alloc.System>, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn lower.str.pv(s: &mut std.string.String, k: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     s.push('%')?
     s.push_str(lower.cx.dec(k)?.as_str())?
     Ok(())
 end lower.str.pv
 
 // 行 `    %k: ty = op` を足し、k を返す (k は 1 つ進む)。
-fn lower.str.row(o: &mut alloc.string.String<std.alloc.System>, k: &mut usize, ty: &str, op: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+fn lower.str.row(o: &mut std.string.String, k: &mut usize, ty: &str, op: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let id = *k
     *k = id + 1usize
     o.push_str("    %")?

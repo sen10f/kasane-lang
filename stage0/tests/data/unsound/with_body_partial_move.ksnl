@@ -1,5 +1,5 @@
 type t.Box
-    s: alloc.string.String<std.alloc.System>
+    s: std.string.String
 end t.Box
 
 fn t.bad(b: t.Box) -> () uses [] panics never
@@ -12,6 +12,6 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-fn t.take(s: alloc.string.String<std.alloc.System>) -> () uses [] panics never
+fn t.take(s: std.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.take

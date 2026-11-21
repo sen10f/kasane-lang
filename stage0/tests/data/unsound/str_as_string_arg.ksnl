@@ -1,4 +1,4 @@
-fn t.cap(s: &alloc.string.String<std.alloc.System>) -> usize uses [] panics never
+fn t.cap(s: &std.string.String) -> usize uses [] panics never
     s.len()
 end t.cap
 

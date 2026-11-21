@@ -48,7 +48,7 @@ fn t.pass(code: u32) -> Result<u32, u32> uses [] panics never
 end t.pass
 
 fn t.push_one() -> Result<(), t.AppError> uses [alloc] panics never
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     v.push(1u8)?
     v.push(2u8)?
     Ok(())

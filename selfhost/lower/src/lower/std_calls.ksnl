@@ -59,8 +59,8 @@ fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         let v = lower.cx.def1(c, rt.as_str(), "env.arg ", a.v)?
         return Ok(lower.cx.R { v: v, t: t })
     }
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
+    let mut jps = std.vec.Vec.new()
     jps.push(lower.cx.newval(c, rt.as_str())?)?
     if fqn == "core.char.char.try_from_u32" {
         let hi = lower.cx.def(c, "u32", "const.u32 1114112")?
@@ -77,13 +77,13 @@ fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         lower.loops.brif(c, c5, sb, &empty, nb, &empty)?
         lower.cx.goto(c, sb)
         let sv = lower.cx.def1(c, rt.as_str(), "some ", a.v)?
-        let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut a1 = std.vec.Vec.new()
         a1.push(sv)?
         lower.loops.br(c, jb, &a1)?
         lower.cx.goto(c, nb)
         let nn = lower.cx.cat2("const.", lower.cx.cat2(rt.as_str(), " none")?.as_str())?
         let nv = lower.cx.def(c, rt.as_str(), nn.as_str())?
-        let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut a2 = std.vec.Vec.new()
         a2.push(nv)?
         lower.loops.br(c, jb, &a2)?
         lower.cx.goto(c, jb)
@@ -99,7 +99,7 @@ fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     lower.loops.brif(c, eq, b1, &empty, b2, &empty)?
     lower.cx.goto(c, b1)
     let okv = lower.cx.def1(c, rt.as_str(), "ok ", a.v)?
-    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a1 = std.vec.Vec.new()
     a1.push(okv)?
     lower.loops.br(c, jb, &a1)?
     lower.cx.goto(c, b2)
@@ -108,7 +108,7 @@ fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     let mks = lower.cx.cat2("make(", lower.cx.cat2(lower.cx.vs(ok)?.as_str(), ")")?.as_str())?
     let mk = lower.cx.def(c, et.as_str(), mks.as_str())?
     let ev = lower.cx.def1(c, rt.as_str(), "err ", mk)?
-    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a2 = std.vec.Vec.new()
     a2.push(ev)?
     lower.loops.br(c, jb, &a2)?
     lower.cx.goto(c, jb)
@@ -138,7 +138,7 @@ fn lower.std_calls.ld8(c: &mut lower.cx.Cx, p: usize) -> Result<usize, resolve.F
     lower.cx.def(c, "u8", lower.cx.cat2(s.as_str(), " +0")?.as_str())
 end lower.std_calls.ld8
 
-fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usize, vs: &alloc.vec.Vec<usize, std.alloc.System>, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usize, vs: &std.vec.Vec<usize>, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let recv = lower.tyk.at(vs.as_slice(), 0usize)
     if fqn == "alloc.string.String.as_str" {
         let p1 = lower.vec.load_ptr(c, recv)?
@@ -213,7 +213,7 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
     lower.expr.dummy(c, t)
 end lower.std_calls.method
 
-fn lower.std_calls.num_call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, nop: &str, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.std_calls.num_call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, nop: &str, vs: &std.vec.Vec<usize>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let (ty, _m) = lower.std_calls.num_parts(fqn)
     let recv = lower.std_calls.val_of(env, c, lower.tyk.at(vs.as_slice(), 0usize), rty)?
     let rs = lower.cx.vs(recv)?
@@ -309,7 +309,7 @@ fn lower.std_calls.num_parts(fqn: &str) -> (&str, &str) uses [] panics may pub
 end lower.std_calls.num_parts
 
 fn lower.std_calls.recv_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], fqn: &str, recv_node: usize, loc: usize, args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut vs = std.vec.Vec.new()
     let mut rty = 0usize
     if loc != 0usize {
         rty = lower.cx.tyof_t(c, loc - 1usize)
@@ -338,7 +338,7 @@ fn lower.std_calls.recv_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
     lower.std_calls.method(env, c, fqn, rty, &vs, t)
 end lower.std_calls.recv_call
 
-fn lower.std_calls.slice_contains(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.std_calls.slice_contains(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.vec.Vec<usize>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let fat = lower.std_calls.val_of(env, c, lower.tyk.at(vs.as_slice(), 0usize), rty)?
     let sn = types.ty.node(&c.ar, types.ty.strip(&c.ar, rty))
     let ety = lower.tyk.text(env, c, sn.a)?
@@ -348,21 +348,21 @@ fn lower.std_calls.slice_contains(env: &types.env.Env, c: &mut lower.cx.Cx, vs: 
     let ptr = lower.loops.fld(c, "ptr", fat, "+0")?
     let zero = lower.vec.usize_c(c, 0usize)?
     let iv = lower.cx.newval(c, "usize")?
-    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut hps = std.vec.Vec.new()
     hps.push(iv)?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let jp = lower.cx.newval(c, "bool")?
-    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut jps = std.vec.Vec.new()
     jps.push(jp)?
     let hb = lower.cx.blk(c, &hps)?
     let bb = lower.cx.blk(c, &empty)?
     let jb = lower.cx.blk(c, &jps)?
-    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a0 = std.vec.Vec.new()
     a0.push(zero)?
     lower.loops.br(c, hb, &a0)?
     lower.cx.goto(c, hb)
     let lt = lower.loops.bin(c, "bool", "icmp.lt.usize", iv, len)?
-    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a1 = std.vec.Vec.new()
     a1.push(lt)?
     lower.loops.brif(c, lt, bb, &empty, jb, &a1)?
     lower.cx.goto(c, bb)
@@ -378,24 +378,24 @@ fn lower.std_calls.slice_contains(env: &types.env.Env, c: &mut lower.cx.Cx, vs: 
     let eq = lower.loops.bin(c, "bool", lower.cx.cat2("icmp.eq.", ety.as_str())?.as_str(), el, want)?
     let one = lower.vec.usize_c(c, 1usize)?
     let nx = lower.loops.bin(c, "usize", "add.usize.wrap", iv, one)?
-    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a2 = std.vec.Vec.new()
     a2.push(eq)?
-    let mut a3 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a3 = std.vec.Vec.new()
     a3.push(nx)?
     lower.loops.brif(c, eq, jb, &a2, hb, &a3)?
     lower.cx.goto(c, jb)
     Ok(lower.cx.R { v: jp, t: t })
 end lower.std_calls.slice_contains
 
-fn lower.std_calls.slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, last: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.std_calls.slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.vec.Vec<usize>, rty: usize, last: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     lower.std_calls.slice_get_in(env, c, vs, rty, last, 0usize, t)
 end lower.std_calls.slice_get
 
-fn lower.std_calls.slice_get_hdr(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, last: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.std_calls.slice_get_hdr(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.vec.Vec<usize>, rty: usize, last: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     lower.std_calls.slice_get_in(env, c, vs, rty, last, 2usize, t)
 end lower.std_calls.slice_get_hdr
 
-fn lower.std_calls.slice_get_in(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, last: bool, mode: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.std_calls.slice_get_in(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.vec.Vec<usize>, rty: usize, last: bool, mode: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let hdr = mode != 0usize
     let recv = lower.tyk.at(vs.as_slice(), 0usize)
     let sn = types.ty.node(&c.ar, types.ty.strip(&c.ar, rty))
@@ -433,11 +433,11 @@ fn lower.std_calls.slice_get_in(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &a
         cond = lower.cx.def(c, "bool", lower.cx.cat2("icmp.lt.usize ", lower.expr.two(idx, len)?.as_str())?.as_str())?
     }
     let rt = lower.tyk.text(env, c, t)?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let sb = lower.cx.blk(c, &empty)?
     let nb = lower.cx.blk(c, &empty)?
     let jp = lower.cx.newval(c, rt.as_str())?
-    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut jps = std.vec.Vec.new()
     jps.push(jp)?
     let jb = lower.cx.blk(c, &jps)?
     let mut br = lower.cx.cat2("br_if ", lower.cx.vs(cond)?.as_str())?
@@ -467,19 +467,19 @@ fn lower.std_calls.slice_get_in(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &a
         ev = lower.cx.def(c, bt.as_str(), lower.cx.cat2("make(", lower.cx.cat2(lower.cx.vs(addr)?.as_str(), ")")?.as_str())?.as_str())?
     }
     let sv = lower.cx.def(c, rt.as_str(), lower.cx.cat2("some ", lower.cx.vs(ev)?.as_str())?.as_str())?
-    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a1 = std.vec.Vec.new()
     a1.push(sv)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a1)?.as_str())?)?
     lower.cx.goto(c, nb)
     let nv = lower.cx.def(c, rt.as_str(), lower.cx.cat2("const.", lower.cx.cat2(rt.as_str(), " none")?.as_str())?.as_str())?
-    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a2 = std.vec.Vec.new()
     a2.push(nv)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a2)?.as_str())?)?
     lower.cx.goto(c, jb)
     Ok(lower.cx.R { v: jp, t: t })
 end lower.std_calls.slice_get_in
 
-fn lower.std_calls.slice_sub(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.std_calls.slice_sub(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.vec.Vec<usize>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let fat = lower.std_calls.val_of(env, c, lower.tyk.at(vs.as_slice(), 0usize), rty)?
     let from = lower.tyk.at(vs.as_slice(), 1usize)
     let to = lower.tyk.at(vs.as_slice(), 2usize)
@@ -491,11 +491,11 @@ fn lower.std_calls.slice_sub(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &allo
     let c2 = lower.loops.bin(c, "bool", "icmp.le.usize", to, len)?
     let cond = lower.loops.bin(c, "bool", "and.bool", c1, c2)?
     let rt = lower.tyk.text(env, c, t)?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let sb = lower.cx.blk(c, &empty)?
     let nb = lower.cx.blk(c, &empty)?
     let jp = lower.cx.newval(c, rt.as_str())?
-    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut jps = std.vec.Vec.new()
     jps.push(jp)?
     let jb = lower.cx.blk(c, &jps)?
     lower.loops.brif(c, cond, sb, &empty, nb, &empty)?
@@ -510,19 +510,19 @@ fn lower.std_calls.slice_sub(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &allo
     let mut cnt = lower.loops.bin(c, "usize", "sub.usize.wrap", to, from)?
     cnt = lower.loops.make2(c, ft.as_str(), addr, cnt)?
     let sv = lower.loops.un(c, rt.as_str(), "some ", cnt)?
-    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a1 = std.vec.Vec.new()
     a1.push(sv)?
     lower.loops.br(c, jb, &a1)?
     lower.cx.goto(c, nb)
     let nv = lower.loops.none_of(c, rt.as_str())?
-    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a2 = std.vec.Vec.new()
     a2.push(nv)?
     lower.loops.br(c, jb, &a2)?
     lower.cx.goto(c, jb)
     Ok(lower.cx.R { v: jp, t: t })
 end lower.std_calls.slice_sub
 
-fn lower.std_calls.str_ends_with(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.std_calls.str_ends_with(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.vec.Vec<usize>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let a = lower.std_calls.val_of(env, c, lower.tyk.at(vs.as_slice(), 0usize), rty)?
     let sf = lower.tyk.at(vs.as_slice(), 1usize)
     let ap = lower.loops.fld(c, "ptr", a, "+0")?
@@ -535,12 +535,12 @@ fn lower.std_calls.str_ends_with(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &
     let short = lower.loops.bin(c, "bool", "icmp.lt.usize", al, sl)?
     let off = lower.loops.bin(c, "usize", "sub.usize.wrap", al, sl)?
     let base = lower.loops.bin(c, "ptr", "ptr.add", ap, off)?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let iv = lower.cx.newval(c, "usize")?
-    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut hps = std.vec.Vec.new()
     hps.push(iv)?
     let jp = lower.cx.newval(c, "bool")?
-    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut jps = std.vec.Vec.new()
     jps.push(jp)?
     let tv = lower.cx.def(c, "bool", "const.bool true")?
     let fv = lower.cx.def(c, "bool", "const.bool false")?
@@ -552,7 +552,7 @@ fn lower.std_calls.str_ends_with(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &
     let b6 = lower.cx.blk(c, &jps)?
     lower.loops.brif(c, empty_q, b4, &empty, b1, &empty)?
     lower.cx.goto(c, b1)
-    let mut z = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut z = std.vec.Vec.new()
     z.push(zero)?
     lower.loops.brif(c, short, b5, &empty, b2, &z)?
     lower.cx.goto(c, b2)
@@ -565,15 +565,15 @@ fn lower.std_calls.str_ends_with(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &
     let l2 = lower.std_calls.ld8(c, p2)?
     let eq = lower.loops.bin(c, "bool", "icmp.eq.u8", l1, l2)?
     let nx = lower.loops.bin(c, "usize", "add.usize.wrap", iv, one)?
-    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a1 = std.vec.Vec.new()
     a1.push(nx)?
     lower.loops.brif(c, eq, b2, &a1, b5, &empty)?
     lower.cx.goto(c, b4)
-    let mut at = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut at = std.vec.Vec.new()
     at.push(tv)?
     lower.loops.br(c, b6, &at)?
     lower.cx.goto(c, b5)
-    let mut af = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut af = std.vec.Vec.new()
     af.push(fv)?
     lower.loops.br(c, b6, &af)?
     lower.cx.goto(c, b6)
@@ -588,12 +588,12 @@ fn lower.std_calls.str_eq_inline(c: &mut lower.cx.Cx, l: lower.cx.R, r: lower.cx
     let zero = lower.vec.usize_c(c, 0usize)?
     let one = lower.vec.usize_c(c, 1usize)?
     let len_eq = lower.loops.bin(c, "bool", "icmp.eq.usize", la, lb)?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let iv = lower.cx.newval(c, "usize")?
-    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut hps = std.vec.Vec.new()
     hps.push(iv)?
     let jp = lower.cx.newval(c, "bool")?
-    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut jps = std.vec.Vec.new()
     jps.push(jp)?
     let hd = lower.cx.blk(c, &hps)?
     let body = lower.cx.blk(c, &empty)?
@@ -602,7 +602,7 @@ fn lower.std_calls.str_eq_inline(c: &mut lower.cx.Cx, l: lower.cx.R, r: lower.cx
     let join = lower.cx.blk(c, &jps)?
     let tv = lower.cx.def(c, "bool", "const.bool true")?
     let fv = lower.cx.def(c, "bool", "const.bool false")?
-    let mut z = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut z = std.vec.Vec.new()
     z.push(zero)?
     lower.loops.brif(c, len_eq, hd, &z, bad, &empty)?
     lower.cx.goto(c, hd)
@@ -615,15 +615,15 @@ fn lower.std_calls.str_eq_inline(c: &mut lower.cx.Cx, l: lower.cx.R, r: lower.cx
     let cb = lower.std_calls.ld8(c, bb)?
     let eq = lower.loops.bin(c, "bool", "icmp.eq.u8", ca, cb)?
     let ni = lower.loops.bin(c, "usize", "add.usize.wrap", iv, one)?
-    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a1 = std.vec.Vec.new()
     a1.push(ni)?
     lower.loops.brif(c, eq, hd, &a1, bad, &empty)?
     lower.cx.goto(c, okb)
-    let mut at = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut at = std.vec.Vec.new()
     at.push(tv)?
     lower.loops.br(c, join, &at)?
     lower.cx.goto(c, bad)
-    let mut af = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut af = std.vec.Vec.new()
     af.push(fv)?
     lower.loops.br(c, join, &af)?
     lower.cx.goto(c, join)
@@ -634,7 +634,7 @@ fn lower.std_calls.str_eq_inline(c: &mut lower.cx.Cx, l: lower.cx.R, r: lower.cx
     Ok(lower.cx.R { v: nv, t: t })
 end lower.std_calls.str_eq_inline
 
-fn lower.std_calls.unwrap_or(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.std_calls.unwrap_or(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.vec.Vec<usize>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     if lower.tyk.ref_scalar(c, t) {
         lower.cx.fail(c, "Option<&スカラー>.unwrap_or (未対応)")?
         return lower.expr.dummy(c, t)
@@ -646,11 +646,11 @@ fn lower.std_calls.unwrap_or(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &allo
     let os = lower.cx.vs(ov)?
     let ts = lower.cx.cat2("tag ", os.as_str())?
     let tg = lower.cx.def(c, "bool", ts.as_str())?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let sb = lower.cx.blk(c, &empty)?
     let nb = lower.cx.blk(c, &empty)?
     let jp = lower.cx.newval(c, tt.as_str())?
-    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut jps = std.vec.Vec.new()
     jps.push(jp)?
     let jb = lower.cx.blk(c, &jps)?
     let mut br = lower.cx.cat2("br_if ", lower.cx.vs(tg)?.as_str())?
@@ -662,12 +662,12 @@ fn lower.std_calls.unwrap_or(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &allo
     lower.cx.goto(c, sb)
     let ps = lower.cx.cat2("payload ", os.as_str())?
     let pv = lower.cx.def(c, tt.as_str(), ps.as_str())?
-    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a1 = std.vec.Vec.new()
     a1.push(pv)?
     let b1 = lower.cx.cat2("br ", lower.cx.target(jb, &a1)?.as_str())?
     lower.cx.finish(c, b1)?
     lower.cx.goto(c, nb)
-    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut a2 = std.vec.Vec.new()
     a2.push(dflt)?
     let b2 = lower.cx.cat2("br ", lower.cx.target(jb, &a2)?.as_str())?
     lower.cx.finish(c, b2)?

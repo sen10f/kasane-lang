@@ -1,5 +1,5 @@
 type t.Holder['a]
-    s: &'a alloc.string.String<std.alloc.System>
+    s: &'a std.string.String
 end t.Holder
 
 fn t.bad() -> usize uses [] panics never

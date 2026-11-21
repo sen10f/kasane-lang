@@ -70,7 +70,7 @@ fn t.one(tag: &str, bytes: &[u8], max_head: usize, max_body: usize) -> Result<()
 end t.one
 
 fn t.show(tag: &str, r: &std.http.Request) -> Result<(), std.http.Error> uses [alloc, io.console] panics never
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut line = std.string.String.new()
     line.push_str(tag)?
     line.push_str(" ")?
     line.push_str(r.method.as_str())?

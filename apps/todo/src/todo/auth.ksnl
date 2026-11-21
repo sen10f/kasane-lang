@@ -1,8 +1,8 @@
 import alloc.string
 import todo.error
 
-fn todo.auth.bytes_to_hex(bytes: &[u8]) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo.auth.bytes_to_hex(bytes: &[u8]) -> Result<std.string.String, todo.error.Error> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     let mut i = 0usize
     while i < bytes.len() {
         match bytes.get(i) {
@@ -19,8 +19,8 @@ fn todo.auth.bytes_to_hex(bytes: &[u8]) -> Result<alloc.string.String<std.alloc.
     Ok(out)
 end todo.auth.bytes_to_hex
 
-fn todo.auth.concat_strings(a: &str, b: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo.auth.concat_strings(a: &str, b: &str) -> Result<std.string.String, todo.error.Error> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     out.push_str(a)?
     out.push_str(b)?
     Ok(out)
@@ -41,20 +41,20 @@ fn todo.auth.hash_bytes(bytes: &[u8]) -> u64 uses [] panics never pub
     h
 end todo.auth.hash_bytes
 
-fn todo.auth.hash_password(password: &str, salt: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
+fn todo.auth.hash_password(password: &str, salt: &str) -> Result<std.string.String, todo.error.Error> uses [alloc] panics never pub
     let combined = todo.auth.concat_strings(password, salt)?
     let digest = todo.auth.hash_bytes(combined.as_bytes())
     let s = todo.auth.u64_to_hex(digest)?
     Ok(s)
 end todo.auth.hash_password
 
-fn todo.auth.make_salt() -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, rand] panics never pub
+fn todo.auth.make_salt() -> Result<std.string.String, todo.error.Error> uses [alloc, rand] panics never pub
     let mut buf = [0u8; 16]
     std.rand.fill_secure(&mut buf)?
     todo.auth.bytes_to_hex(&buf)
 end todo.auth.make_salt
 
-fn todo.auth.make_token() -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, rand] panics never pub
+fn todo.auth.make_token() -> Result<std.string.String, todo.error.Error> uses [alloc, rand] panics never pub
     let mut buf = [0u8; 16]
     std.rand.fill_secure(&mut buf)?
     todo.auth.bytes_to_hex(&buf)
@@ -84,8 +84,8 @@ fn todo.auth.nibble_to_char(n: u64) -> Result<char, todo.error.Error> uses [] pa
     }
 end todo.auth.nibble_to_char
 
-fn todo.auth.u64_to_hex(n: u64) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo.auth.u64_to_hex(n: u64) -> Result<std.string.String, todo.error.Error> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     let mut i = 0u32
     while i < 16u32 {
         let shift = 15u32.wrapping_sub(i).wrapping_mul(4u32)

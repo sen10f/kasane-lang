@@ -30,19 +30,19 @@ end borrow.cx.Br
 
 type borrow.cx.Cx pub
     p: parse.cur.P pub
-    src: alloc.vec.Vec<u8, std.alloc.System> pub
+    src: std.vec.Vec<u8> pub
     dat: borrow.cx.Dat pub
     rep: borrow.cx.Rep pub
     fnr: borrow.cx.FnInfo pub
-    tcls: alloc.vec.Vec<usize, std.alloc.System> pub
+    tcls: std.vec.Vec<usize> pub
 end borrow.cx.Cx
 
 // 局所と借用の表、深さごとの「次の文の先頭トークン」と「ブロックの閉じ位置」。
 type borrow.cx.Dat pub
-    locs: alloc.vec.Vec<borrow.cx.Loc, std.alloc.System> pub
-    brs: alloc.vec.Vec<borrow.cx.Br, std.alloc.System> pub
-    nexts: alloc.vec.Vec<usize, std.alloc.System> pub
-    bends: alloc.vec.Vec<usize, std.alloc.System> pub
+    locs: std.vec.Vec<borrow.cx.Loc> pub
+    brs: std.vec.Vec<borrow.cx.Br> pub
+    nexts: std.vec.Vec<usize> pub
+    bends: std.vec.Vec<usize> pub
     depth: usize pub
 end borrow.cx.Dat
 
@@ -70,8 +70,8 @@ end borrow.cx.Loc
 
 // 診断の出力と数え。
 type borrow.cx.Rep pub
-    path: alloc.string.String<std.alloc.System> pub
-    out: alloc.string.String<std.alloc.System> pub
+    path: std.string.String pub
+    out: std.string.String pub
     errors: usize pub
     undec: usize pub
 end borrow.cx.Rep
@@ -263,7 +263,7 @@ fn borrow.cx.has_index(cx: &borrow.cx.Cx, e: usize) -> bool uses [] panics never
 end borrow.cx.has_index
 
 // 分岐の合流: acc (none なら未確定) に cur を足す。
-fn borrow.cx.join_into(cx: &borrow.cx.Cx, acc: &mut alloc.vec.Vec<usize, std.alloc.System>, cur: &alloc.vec.Vec<usize, std.alloc.System>) -> () uses [] panics never pub
+fn borrow.cx.join_into(cx: &borrow.cx.Cx, acc: &mut std.vec.Vec<usize>, cur: &std.vec.Vec<usize>) -> () uses [] panics never pub
     for k in core.iter.range(0usize, acc.len()) {
         let a = match acc.as_slice().get(k) {
             Some(x) => *x
@@ -314,19 +314,19 @@ fn borrow.cx.mk_loc(a: usize, b: usize, cls: usize, mb: usize, dp: usize, fi: us
     borrow.cx.Loc { a: a, b: b, cl: cls, mu: mb, rf: z, pa: z, li: z, ir: z, dp: dp, fi: fi, st: z }
 end borrow.cx.mk_loc
 
-fn borrow.cx.new(p: parse.cur.P, src: alloc.vec.Vec<u8, std.alloc.System>, path: &str) -> Result<borrow.cx.Cx, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut nx = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn borrow.cx.new(p: parse.cur.P, src: std.vec.Vec<u8>, path: &str) -> Result<borrow.cx.Cx, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut nx = std.vec.Vec.new()
     nx.push(0usize)?
-    let mut be = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut be = std.vec.Vec.new()
     be.push(0usize)?
-    let vl = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let vb = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let vl = std.vec.Vec.new()
+    let vb = std.vec.Vec.new()
     let dat = borrow.cx.Dat { locs: vl, brs: vb, nexts: nx, bends: be, depth: 0usize }
     let pth = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
-    let ob = alloc.string.String.new(std.alloc.SYSTEM)
+    let ob = std.string.String.new()
     let rep = borrow.cx.Rep { path: pth, out: ob, errors: 0usize, undec: 0usize }
     let fnr = borrow.cx.FnInfo { ret_ref: 0usize, ret_life: 0usize, elide: 0usize }
-    let tcls = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let tcls = std.vec.Vec.new()
     Ok(borrow.cx.Cx { p: p, src: src, dat: dat, rep: rep, fnr: fnr, tcls: tcls })
 end borrow.cx.new
 
@@ -413,7 +413,7 @@ fn borrow.cx.recv_path(src: &[u8], ps: usize, pe: usize) -> (usize, usize) uses 
 end borrow.cx.recv_path
 
 // 写しの状態へ戻す (局所の数は同じ)。
-fn borrow.cx.restore(cx: &mut borrow.cx.Cx, s: &alloc.vec.Vec<usize, std.alloc.System>) -> () uses [] panics never pub
+fn borrow.cx.restore(cx: &mut borrow.cx.Cx, s: &std.vec.Vec<usize>) -> () uses [] panics never pub
     for k in core.iter.range(0usize, s.len()) {
         let v = match s.as_slice().get(k) {
             Some(x) => *x
@@ -433,7 +433,7 @@ fn borrow.cx.scope_exit(cx: &mut borrow.cx.Cx, mark: usize, tok: usize) -> Resul
         }
     }
     cx.dat.locs.truncate(mark)
-    let mut keep = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut keep = std.vec.Vec.new()
     for br in cx.dat.brs.as_slice().iter() {
         if br.holder < mark && br.target < mark {
             keep.push(*br)?
@@ -468,8 +468,8 @@ fn borrow.cx.set_st(cx: &mut borrow.cx.Cx, k: usize, st: usize) -> () uses [] pa
 end borrow.cx.set_st
 
 // 局所の並び (現在の状態) の写し。分岐の前後で使う。
-fn borrow.cx.snap(cx: &borrow.cx.Cx) -> Result<alloc.vec.Vec<usize, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn borrow.cx.snap(cx: &borrow.cx.Cx) -> Result<std.vec.Vec<usize>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     for k in core.iter.range(0usize, cx.dat.locs.len()) {
         out.push(borrow.cx.loc(cx, k).st)?
     }

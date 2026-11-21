@@ -1,5 +1,5 @@
 fn effects.tyinfo.fill(acc: &mut effects.walk.Acc, tout: &types.export.Out, fs: &effects.fns.Fns, file: usize, p: &parse.cur.P) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut tix = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tix = std.vec.Vec.new()
     for k in core.iter.range(0usize, p.ast.nodes.len()) {
         let mut v = 0usize
         if types.rec.ck_of(&tout.cx.rec, file, k) == 2usize {

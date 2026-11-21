@@ -1,4 +1,4 @@
-fn t.count(v: &alloc.vec.Vec<u8, std.alloc.System>) -> usize uses [] panics never
+fn t.count(v: &std.vec.Vec<u8>) -> usize uses [] panics never
     v.len()
 end t.count
 
@@ -7,7 +7,7 @@ fn t.main() -> () uses [] panics never
 end t.main
 
 fn t.run() -> usize uses [] panics never
-    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let v: std.vec.Vec<u8> = std.vec.Vec.new()
     let mut n = 0usize
     for _x in v.iter() {
         n = n.wrapping_add(1usize)

@@ -1,5 +1,5 @@
 type t.H
-    v: &'static alloc.vec.Vec<u32, std.alloc.System>
+    v: &'static std.vec.Vec<u32>
 end t.H
 
 fn t.bad(a: &'static [u32; 3]) -> t.H uses [] panics never

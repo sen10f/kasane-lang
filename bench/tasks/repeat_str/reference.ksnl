@@ -1,5 +1,5 @@
-fn bench.repeat_str(s: &str, n: u32) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn bench.repeat_str(s: &str, n: u32) -> std.string.String uses [alloc] panics may
+    let mut out = std.string.String.new()
     let mut i = 0u32
     while i < n {
         match out.push_str(s) {

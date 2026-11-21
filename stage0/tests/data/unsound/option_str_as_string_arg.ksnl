@@ -4,7 +4,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-fn t.sink(o: Option<&alloc.string.String<std.alloc.System>>) -> () uses [] panics never
+fn t.sink(o: Option<&std.string.String>) -> () uses [] panics never
     match o {
         Some(c) => core.mem.drop(c)
         None => core.mem.drop(())

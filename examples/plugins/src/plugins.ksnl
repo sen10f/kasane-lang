@@ -2,7 +2,7 @@ import alloc.boxed
 import alloc.vec
 
 type plugins.Bus pub
-    handlers: alloc.vec.Vec<plugins.Slot, std.alloc.System>
+    handlers: std.vec.Vec<plugins.Slot>
 end plugins.Bus
 
 type plugins.Counter pub

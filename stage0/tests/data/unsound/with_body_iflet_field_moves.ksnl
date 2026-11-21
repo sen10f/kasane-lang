@@ -1,6 +1,6 @@
 type t.Res linear
     id: u32
-    inner: Option<alloc.vec.Vec<u64, std.alloc.System>>
+    inner: Option<std.vec.Vec<u64>>
 end t.Res
 
 fn t.Res.shut(self: t.Res) -> () uses [] panics never
@@ -10,7 +10,7 @@ fn t.Res.shut(self: t.Res) -> () uses [] panics never
 end t.Res.shut
 
 fn t.bad() -> () uses [] panics never
-    let mut keep: Option<alloc.vec.Vec<u64, std.alloc.System>> = None
+    let mut keep: Option<std.vec.Vec<u64>> = None
     with r = t.mk() close r.shut() {
         if let Some(v) = r.inner {
             keep = Some(v)

@@ -1,8 +1,8 @@
 // 入れ子の腕が束ねる名前・値・型。
 type lower.opt.Binds pub
-    names: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
-    vals: alloc.vec.Vec<usize, std.alloc.System> pub
-    tys: alloc.vec.Vec<usize, std.alloc.System> pub
+    names: std.vec.Vec<std.string.String> pub
+    vals: std.vec.Vec<usize> pub
+    tys: std.vec.Vec<usize> pub
 end lower.opt.Binds
 
 // 局所の名前を束縛する。借用されるものはスロット (alloca + store) に置く。
@@ -34,9 +34,9 @@ fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize
 end lower.opt.bind
 
 fn lower.opt.binds_new() -> lower.opt.Binds uses [] panics never pub
-    let names = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let vals = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let tys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let names = std.vec.Vec.new()
+    let vals = std.vec.Vec.new()
+    let tys = std.vec.Vec.new()
     lower.opt.Binds { names: names, vals: vals, tys: tys }
 end lower.opt.binds_new
 
@@ -88,7 +88,7 @@ fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     if k == 0usize {
         // 利用者の列挙型: 変種の番号 k と、フィールドの値を並べた make.vK。
         let vi = lower.tyk.variant_index(env, owner, vname)?
-        let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut vs = std.vec.Vec.new()
         for j in core.iter.range(0usize, nargs) {
             let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, j), types.ty.UNKNOWN)?
             vs.push(a.v)?
@@ -119,7 +119,7 @@ fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         }
     }
     if !known {
-        let mut ids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut ids = std.vec.Vec.new()
         if lower.opt.owner_k(vname) == 1usize {
             ids.push(a.t)?
         } else {
@@ -182,8 +182,8 @@ fn lower.opt.deref_val(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R) 
 end lower.opt.deref_val
 
 // `fieldaddr %v, +off` の文字列。
-fn lower.opt.faddr_src(v: usize, off: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+fn lower.opt.faddr_src(v: usize, off: usize) -> Result<std.string.String, resolve.Failure> uses [alloc] panics never pub
+    let mut s = std.string.String.new()
     s.push_str("fieldaddr ")?
     s.push_str(lower.cx.vs(v)?.as_str())?
     s.push_str(", +")?
@@ -343,7 +343,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let sv = sc.v
     let own_scrut = lower.drop.temp_scrut(env, c, p, n.a, sc.t)?
     let base = lower.cx.depth(c)
-    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nms = std.vec.Vec.new()
     lower.expr.scan_arms(env, c, p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let saved = lower.cx.cur_vals(c, &ks)?
@@ -362,7 +362,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
         let mark = lower.cx.depth(c)
         if pat.kind == parse.ast.Kind.PWild {
             done = true
-            let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let empty = std.vec.Vec.new()
             let nb = lower.cx.blk(c, &empty)?
             lower.expr.br_to(c, nb)?
             lower.cx.goto(c, nb)
@@ -437,7 +437,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                     return lower.expr.dummy(c, t)
                 }
             }
-            let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let empty = std.vec.Vec.new()
             let armb = lower.cx.blk(c, &empty)?
             if j + 1usize == nv {
                 lower.expr.br_to(c, armb)?
@@ -564,7 +564,7 @@ fn lower.opt.recv_value(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R,
 end lower.opt.recv_value
 
 // 参照の型の文字列 (`ref<T>` / `mutref<T>`)。
-fn lower.opt.refty(mutable: bool, t: &str) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
+fn lower.opt.refty(mutable: bool, t: &str) -> Result<std.string.String, resolve.Failure> uses [alloc] panics never pub
     let head = if mutable {
         "mutref<"
     } else {
@@ -589,10 +589,10 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         return lower.expr.dummy(c, t)
     }
     let tg = lower.cx.def1(c, "bool", "tag ", x.v)?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let okb = lower.cx.blk(c, &empty)?
     let errb = lower.cx.blk(c, &empty)?
-    let mut br = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut br = std.string.String.new()
     br.push_str("br_if ")?
     br.push_str(lower.cx.vs(tg)?.as_str())?
     br.push_str(", ")?
@@ -647,7 +647,7 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
 end lower.opt.tryx
 
 // `op %a, %b` の文字列。
-fn lower.opt.two_op(op: &str, a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
+fn lower.opt.two_op(op: &str, a: usize, b: usize) -> Result<std.string.String, resolve.Failure> uses [alloc] panics never pub
     let t = lower.expr.two(a, b)?
     lower.cx.cat2(op, t.as_str())
 end lower.opt.two_op
@@ -678,7 +678,7 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         return lower.std_calls.recv_call(env, c, p, src, sfq.as_str(), recv_node, loc, args, t)
     }
     let generic = lower.inst.is_generic(env, c, item)
-    let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut subs = std.vec.Vec.new()
     let mut key = lower.tyk.item_fqn(env, item)
     if generic {
         let rt0 = if loc != 0usize {
@@ -747,7 +747,7 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         let r = lower.expr.expr(env, c, p, src, recv_node, types.ty.UNKNOWN)?
         recv = lower.opt.recv_value(env, c, r, self_ref, sdn.m)?
     }
-    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut vs = std.vec.Vec.new()
     vs.push(recv)?
     let na = resolve.ast.count(p, args)
     for j in core.iter.range(0usize, na) {

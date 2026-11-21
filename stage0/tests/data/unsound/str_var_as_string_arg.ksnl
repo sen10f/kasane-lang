@@ -4,6 +4,6 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-fn t.sink(text: &alloc.string.String<std.alloc.System>) -> () uses [] panics never
+fn t.sink(text: &std.string.String) -> () uses [] panics never
     core.mem.drop(text)
 end t.sink

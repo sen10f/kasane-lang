@@ -1,9 +1,9 @@
 const types.infer.OP_REF_MUT: usize = 1000usize pub
 
 // Adt の引数を Vec に写す。
-fn types.infer.adt_args(ar: &types.ty.Arena, id: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn types.infer.adt_args(ar: &types.ty.Arena, id: usize) -> Result<std.vec.Vec<usize>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = types.ty.node(ar, types.ty.find(ar, id))
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     for k in core.iter.range(0usize, n.c) {
         out.push(types.ty.arg(ar, n.b, k))?
     }
@@ -11,8 +11,8 @@ fn types.infer.adt_args(ar: &types.ty.Arena, id: usize) -> Result<alloc.vec.Vec<
 end types.infer.adt_args
 
 // 項目の FQN (文字列)。
-fn types.infer.adt_fqn(env: &types.env.Env, item: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn types.infer.adt_fqn(env: &types.env.Env, item: usize) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     match env.tab.items.as_slice().get(item) {
         Some(it) => out.push_str(it.fqn.as_str())?
         None => core.mem.drop(0u8)
@@ -21,9 +21,9 @@ fn types.infer.adt_fqn(env: &types.env.Env, item: usize) -> Result<alloc.string.
 end types.infer.adt_fqn
 
 // 型 (Adt) の FQN 付きの接頭辞。
-fn types.infer.adt_prefix(env: &types.env.Env, ar: &types.ty.Arena, rs: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn types.infer.adt_prefix(env: &types.env.Env, ar: &types.ty.Arena, rs: usize) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = types.ty.node(ar, rs)
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     if n.k == types.ty.K.Adt {
         match env.tab.items.as_slice().get(n.a) {
             Some(it) => out.push_str(it.fqn.as_str())?
@@ -133,7 +133,7 @@ fn types.infer.call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types
             if kind == parse.ast.Kind.Variant {
                 let enum_item = types.infer.item_owner(env, item).wrapping_sub(1usize)
                 let args = types.infer.fresh_args(env, ar, enum_item)?
-                let mut params = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                let mut params = std.vec.Vec.new()
                 for j in core.iter.range(0usize, types.infer.variant_arity(env, item)) {
                     let pt = types.infer.payload_ty(env, ar, cx, item, enum_item, &args, j)?
                     params.push(pt)?
@@ -147,7 +147,7 @@ fn types.infer.call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types
             let lt = types.ty.strip(ar, types.chk.ty_at(cx, loc.wrapping_sub(1usize)))
             let ln = types.ty.node(ar, lt)
             if ln.k == types.ty.K.Fnty {
-                let mut params = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                let mut params = std.vec.Vec.new()
                 for j in core.iter.range(0usize, ln.c) {
                     params.push(types.ty.arg(ar, ln.b, j))?
                 }
@@ -174,7 +174,7 @@ fn types.infer.call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types
 end types.infer.call
 
 // 引数の列を、params (の skip 番目以降) と照らす。
-fn types.infer.check_args(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], l: usize, params: &alloc.vec.Vec<usize, std.alloc.System>, skip: usize, callline: usize) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+fn types.infer.check_args(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], l: usize, params: &std.vec.Vec<usize>, skip: usize, callline: usize) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
     let nargs = resolve.ast.count(p, l)
     let mut expect = 0usize
     if params.len() >= skip {
@@ -203,7 +203,7 @@ fn types.infer.closure(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut ty
         ret = types.lower.ty(env, ar, cx, p, src, cx.file, n.b)?
     }
     let mark = types.chk.mark(cx)
-    let mut pts = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut pts = std.vec.Vec.new()
     for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
         let prm = parse.ast.get(&p.ast, resolve.ast.item(p, n.a, j))
         let pt = types.lower.ty(env, ar, cx, p, src, cx.file, prm.b)?
@@ -344,7 +344,7 @@ fn types.infer.expr_in(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut ty
         return types.infer.structlit(env, ar, cx, p, src, n)
     }
     if k == parse.ast.Kind.TupleE {
-        let mut ids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut ids = std.vec.Vec.new()
         for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
             let ex2 = resolve.ast.item(p, n.a, j)
             let t = types.infer.expr(env, ar, cx, p, src, ex2, types.ty.UNKNOWN)?
@@ -421,7 +421,7 @@ fn types.infer.field(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut type
 end types.infer.field
 
 // 型の定義 (TypeDef) のフィールド fname の型。args は型の総称の具体型。見つからなければ UNKNOWN。
-fn types.infer.field_ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, item: usize, args: &alloc.vec.Vec<usize, std.alloc.System>, fname: &str) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
+fn types.infer.field_ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, item: usize, args: &std.vec.Vec<usize>, fname: &str) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let node = types.infer.item_node(env, item)
     let file = types.infer.item_file(env, item)
     let p2 = match env.units.as_slice().get(file) {
@@ -486,8 +486,8 @@ fn types.infer.fqn_is(env: &types.env.Env, item: usize, name: &str) -> bool uses
 end types.infer.fqn_is
 
 // 項目の総称の数だけ新しい型変数。
-fn types.infer.fresh_args(env: &types.env.Env, ar: &mut types.ty.Arena, item: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn types.infer.fresh_args(env: &types.env.Env, ar: &mut types.ty.Arena, item: usize) -> Result<std.vec.Vec<usize>, resolve.Failure> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     let node = types.infer.item_node(env, item)
     let file = types.infer.item_file(env, item)
     match env.units.as_slice().get(file) {
@@ -761,7 +761,7 @@ fn types.infer.matchx(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut typ
     let sn = types.ty.node(ar, sst)
     let mut closed = sn.k == types.ty.K.Bool
     let mut catch_any = false
-    let mut seen = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut seen = std.vec.Vec.new()
     if sn.k == types.ty.K.Adt && types.infer.item_kind(env, sn.a) == parse.ast.Kind.EnumDef {
         closed = true
     }
@@ -862,7 +862,7 @@ fn types.infer.method_call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mu
 end types.infer.method_call
 
 // メソッドの FQN (接頭辞 + `.` + 名前)。Adt は項目の FQN、基本型は core の所属。
-fn types.infer.method_key(env: &types.env.Env, ar: &types.ty.Arena, rs: usize, mname: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn types.infer.method_key(env: &types.env.Env, ar: &types.ty.Arena, rs: usize, mname: &str) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut pre = types.infer.prefix(ar, rs)?
     if pre.is_empty() {
         pre = types.infer.adt_prefix(env, ar, rs)?
@@ -876,7 +876,7 @@ fn types.infer.method_key(env: &types.env.Env, ar: &types.ty.Arena, rs: usize, m
 end types.infer.method_key
 
 // 腕のパターンが覆う名前 (列挙子の末尾名・bool の綴り) を seen に入れる (重複はなし)。
-fn types.infer.note_arm(p: &parse.cur.P, src: &[u8], pt: usize, seen: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn types.infer.note_arm(p: &parse.cur.P, src: &[u8], pt: usize, seen: &mut std.vec.Vec<std.string.String>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = parse.ast.get(&p.ast, pt)
     let mut name = ""
     if n.kind == parse.ast.Kind.PPath || n.kind == parse.ast.Kind.PVariant {
@@ -904,7 +904,7 @@ fn types.infer.note_arm(p: &parse.cur.P, src: &[u8], pt: usize, seen: &mut alloc
 end types.infer.note_arm
 
 // 引数の並びの k 番目 (範囲外は UNKNOWN)。
-fn types.infer.param_at(params: &alloc.vec.Vec<usize, std.alloc.System>, k: usize) -> usize uses [] panics never pub
+fn types.infer.param_at(params: &std.vec.Vec<usize>, k: usize) -> usize uses [] panics never pub
     match params.as_slice().get(k) {
         Some(q) => *q
         None => types.ty.UNKNOWN
@@ -1044,7 +1044,7 @@ fn types.infer.path_text(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut 
 end types.infer.path_text
 
 // 列挙子 vitem のペイロード j 番目の型 (列挙型の総称は args に具体化する)。
-fn types.infer.payload_ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, vitem: usize, enum_item: usize, args: &alloc.vec.Vec<usize, std.alloc.System>, j: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
+fn types.infer.payload_ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, vitem: usize, enum_item: usize, args: &std.vec.Vec<usize>, j: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let vnode = types.infer.item_node(env, vitem)
     let file = types.infer.item_file(env, vitem)
     let p2 = match env.units.as_slice().get(file) {
@@ -1066,9 +1066,9 @@ fn types.infer.payload_ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut
 end types.infer.payload_ty
 
 // 型の接頭辞 (メソッドの探索先の FQN)。対応しない型は空。
-fn types.infer.prefix(ar: &types.ty.Arena, rs: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn types.infer.prefix(ar: &types.ty.Arena, rs: usize) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = types.ty.node(ar, rs)
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     if n.k == types.ty.K.Int {
         out.push_str("core.num.")?
         out.push_str(types.ty.int_name(n.a))?
@@ -1091,7 +1091,7 @@ fn types.infer.prefix(ar: &types.ty.Arena, rs: usize) -> Result<alloc.string.Str
 end types.infer.prefix
 
 // 定義 item の総称の名前 (トークン) を、args の型で cx に押す。戻り値は押す前の長さ。
-fn types.infer.push_generics(env: &types.env.Env, cx: &mut types.chk.Ctx, item: usize, args: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
+fn types.infer.push_generics(env: &types.env.Env, cx: &mut types.chk.Ctx, item: usize, args: &std.vec.Vec<usize>) -> Result<usize, resolve.Failure> uses [alloc] panics never pub
     let mark = types.chk.mark(cx)
     let node = types.infer.item_node(env, item)
     let file = types.infer.item_file(env, item)
@@ -1127,8 +1127,8 @@ fn types.infer.ref_of(ar: &mut types.ty.Arena, t: usize) -> Result<usize, alloc.
 end types.infer.ref_of
 
 // 関数項目の署名を、総称を新しい型変数にして具体化する。(引数の型の並び, 戻り値の型)。
-fn types.infer.sig_of(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, item: usize) -> Result<(alloc.vec.Vec<usize, std.alloc.System>, usize), resolve.Failure> uses [alloc] panics never pub
-    let mut params = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn types.infer.sig_of(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, item: usize) -> Result<(std.vec.Vec<usize>, usize), resolve.Failure> uses [alloc] panics never pub
+    let mut params = std.vec.Vec.new()
     let node = types.infer.item_node(env, item)
     let file = types.infer.item_file(env, item)
     let p2 = match env.units.as_slice().get(file) {

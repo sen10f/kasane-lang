@@ -12,8 +12,8 @@ fn todo_spa.model.before(s: &str, i: usize) -> &str uses [] panics never
     }
 end todo_spa.model.before
 
-fn todo_spa.model.from_server(text: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo_spa.model.from_server(text: &str) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics may pub
+    let mut out = std.string.String.new()
     let mut pos = 0usize
     let mut more = true
     while more {
@@ -40,14 +40,14 @@ fn todo_spa.model.from_server(text: &str) -> Result<alloc.string.String<std.allo
     Ok(out)
 end todo_spa.model.from_server
 
-fn todo_spa.model.item(after: &str) -> Result<Option<(alloc.string.String<std.alloc.System>, &str)>, alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.model.item(after: &str) -> Result<Option<(std.string.String, &str)>, alloc.alloc.AllocError> uses [alloc] panics may
     match after.split_once(",\"title\":\"") {
         None => Ok(None)
         Some((id_text, title_on)) => todo_spa.model.item_title(id_text, title_on)
     }
 end todo_spa.model.item
 
-fn todo_spa.model.item_rest['a](id_text: &str, raw: &str, tail: &'a str) -> Result<Option<(alloc.string.String<std.alloc.System>, &'a str)>, alloc.alloc.AllocError> uses [alloc] panics never
+fn todo_spa.model.item_rest['a](id_text: &str, raw: &str, tail: &'a str) -> Result<Option<(std.string.String, &'a str)>, alloc.alloc.AllocError> uses [alloc] panics never
     match tail.split_once(",\"done\":") {
         None => Ok(None)
         Some((head, flag_on)) => {
@@ -56,7 +56,7 @@ fn todo_spa.model.item_rest['a](id_text: &str, raw: &str, tail: &'a str) -> Resu
             if flag_on.starts_with("true") {
                 flag = "1"
             }
-            let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+            let mut line = std.string.String.new()
             line.push_str(id_text)?
             line.push_str("\t")?
             line.push_str(flag)?
@@ -67,7 +67,7 @@ fn todo_spa.model.item_rest['a](id_text: &str, raw: &str, tail: &'a str) -> Resu
     }
 end todo_spa.model.item_rest
 
-fn todo_spa.model.item_title['a](id_text: &str, title_on: &'a str) -> Result<Option<(alloc.string.String<std.alloc.System>, &'a str)>, alloc.alloc.AllocError> uses [alloc] panics may
+fn todo_spa.model.item_title['a](id_text: &str, title_on: &'a str) -> Result<Option<(std.string.String, &'a str)>, alloc.alloc.AllocError> uses [alloc] panics may
     match todo_spa.model.quote_end(title_on) {
         None => Ok(None)
         Some(stop) => {
@@ -78,7 +78,7 @@ fn todo_spa.model.item_title['a](id_text: &str, title_on: &'a str) -> Result<Opt
     }
 end todo_spa.model.item_title
 
-fn todo_spa.model.push_json_text(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn todo_spa.model.push_json_text(out: &mut std.string.String, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     for c in text.chars() {
         if c == '"' {
             out.push_str("\\\"")?
@@ -122,8 +122,8 @@ fn todo_spa.model.split_rest['a](id: &'a str, rest: &'a str) -> Option<(&'a str,
     }
 end todo_spa.model.split_rest
 
-fn todo_spa.model.unescape(raw: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn todo_spa.model.unescape(raw: &str) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     let mut esc = false
     for c in raw.chars() {
         if esc {

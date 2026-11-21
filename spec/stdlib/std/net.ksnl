@@ -1,16 +1,16 @@
-fn std.net.TcpStream.local_addr(self: &std.net.TcpStream) -> Result<alloc.string.String<std.alloc.System>, std.io.Error> uses [alloc, io.net] panics never pub
+fn std.net.TcpStream.local_addr(self: &std.net.TcpStream) -> Result<std.string.String, std.io.Error> uses [alloc, io.net] panics never pub
     let mut buf = [0u8; 64]
     let n = self.local_addr_raw(&mut buf)?
     std.net.text_range(&buf, 0usize, n)
 end std.net.TcpStream.local_addr
 
-fn std.net.TcpStream.peer_addr(self: &std.net.TcpStream) -> Result<alloc.string.String<std.alloc.System>, std.io.Error> uses [alloc, io.net] panics never pub
+fn std.net.TcpStream.peer_addr(self: &std.net.TcpStream) -> Result<std.string.String, std.io.Error> uses [alloc, io.net] panics never pub
     let mut buf = [0u8; 64]
     let n = self.peer_addr_raw(&mut buf)?
     std.net.text_range(&buf, 0usize, n)
 end std.net.TcpStream.peer_addr
 
-fn std.net.UdpSocket.recv_from(self: &std.net.UdpSocket, buffer: &mut [u8], from: &mut alloc.string.String<std.alloc.System>) -> Result<usize, std.io.Error> uses [alloc, io.net] panics never pub
+fn std.net.UdpSocket.recv_from(self: &std.net.UdpSocket, buffer: &mut [u8], from: &mut std.string.String) -> Result<usize, std.io.Error> uses [alloc, io.net] panics never pub
     let mut raw = [0u8; 128]
     let n = self.recv_from_raw(buffer, &mut raw)?
     let mut stop = 0usize
@@ -34,10 +34,10 @@ fn std.net.oom() -> std.io.Error uses [] panics never
     std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
 end std.net.oom
 
-fn std.net.resolve(host: &str, port: u16) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, std.io.Error> uses [alloc, io.net] panics never pub
+fn std.net.resolve(host: &str, port: u16) -> Result<std.vec.Vec<std.string.String>, std.io.Error> uses [alloc, io.net] panics never pub
     let mut buf = [0u8; 4096]
     let total = std.net.resolve_raw(host, port, &mut buf)?
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     let mut start = 0usize
     let mut i = 0usize
     while i < total {
@@ -55,8 +55,8 @@ fn std.net.resolve(host: &str, port: u16) -> Result<alloc.vec.Vec<alloc.string.S
     Ok(out)
 end std.net.resolve
 
-fn std.net.text_range(bytes: &[u8], start: usize, last: usize) -> Result<alloc.string.String<std.alloc.System>, std.io.Error> uses [alloc] panics never
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn std.net.text_range(bytes: &[u8], start: usize, last: usize) -> Result<std.string.String, std.io.Error> uses [alloc] panics never
+    let mut out = std.string.String.new()
     let part = match bytes.sub(start, last) {
         Some(s) => s
         None => return Err(std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 })

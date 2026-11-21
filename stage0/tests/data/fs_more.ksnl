@@ -2,7 +2,7 @@ fn t.big_listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] p
     t.ok_unit(std.fs.create_dir("d/big"))
     let mut i = 0usize
     while i < 400usize {
-        let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut name = std.string.String.new()
         core.mem.drop(name.push_str("d/big/file_with_a_longer_name_"))
         core.mem.drop(name.push_i64(t.num(i)))
         let mut f = t.ok_file(std.fs.create(name.as_str()))
@@ -23,7 +23,7 @@ fn t.big_listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] p
     while j < entries.len() {
         match entries.get(j) {
             Some(en) => {
-                let mut full = alloc.string.String.new(std.alloc.SYSTEM)
+                let mut full = std.string.String.new()
                 core.mem.drop(full.push_str("d/big/"))
                 core.mem.drop(full.push_str(en.name.as_str()))
                 t.ok_unit(std.fs.remove_file(full.as_str()))
@@ -37,7 +37,7 @@ fn t.big_listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] p
     Ok(())
 end t.big_listing
 
-fn t.byte(v: &alloc.vec.Vec<u8, std.alloc.System>, i: usize) -> u8 uses [] panics never
+fn t.byte(v: &std.vec.Vec<u8>, i: usize) -> u8 uses [] panics never
     match v.as_slice().get(i) {
         Some(b) => *b
         None => 0u8
@@ -62,7 +62,7 @@ fn t.dirs() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics m
     Ok(())
 end t.dirs
 
-fn t.drop_res(r: Result<alloc.vec.Vec<std.fs.DirEntry, std.alloc.System>, std.io.Error>) -> Result<(), std.io.Error> uses [] panics never
+fn t.drop_res(r: Result<std.vec.Vec<std.fs.DirEntry>, std.io.Error>) -> Result<(), std.io.Error> uses [] panics never
     match r {
         Ok(v) => {
             core.mem.drop(v)
@@ -257,16 +257,16 @@ fn t.paths() -> () uses [alloc, io.console] panics never
     }
 end t.paths
 
-fn t.read_all(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics may
+fn t.read_all(path: &str) -> Result<std.vec.Vec<u8>, std.io.Error> uses [alloc, io.fs] panics may
     let mut f = std.fs.open(path)?
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut out = std.vec.Vec.new()
     core.mem.drop(std.fs.read_to_end(&mut f, &mut out))
     t.ok_unit(f.close())
     Ok(out)
 end t.read_all
 
 fn t.say(label: &str, text: &str) -> () uses [alloc, io.console] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))
     core.mem.drop(s.push_str(text))
@@ -274,19 +274,19 @@ fn t.say(label: &str, text: &str) -> () uses [alloc, io.console] panics never
 end t.say
 
 fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))
     core.mem.drop(s.push_i64(n))
     core.mem.drop(std.io.print_line(s.as_str()))
 end t.show
 
-fn t.show_entries(label: &str, entries: &alloc.vec.Vec<std.fs.DirEntry, std.alloc.System>) -> () uses [alloc, io.console] panics may
+fn t.show_entries(label: &str, entries: &std.vec.Vec<std.fs.DirEntry>) -> () uses [alloc, io.console] panics may
     let mut i = 0usize
     while i < entries.len() {
         match entries.get(i) {
             Some(en) => {
-                let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+                let mut s = std.string.String.new()
                 core.mem.drop(s.push_str(label))
                 core.mem.drop(s.push_str(" "))
                 core.mem.drop(s.push_str(en.name.as_str()))
@@ -302,7 +302,7 @@ fn t.show_entries(label: &str, entries: &alloc.vec.Vec<std.fs.DirEntry, std.allo
 end t.show_entries
 
 fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": kind "))
     core.mem.drop(s.push_i64(t.kind_num(e.kind)))

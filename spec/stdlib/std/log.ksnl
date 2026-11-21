@@ -14,8 +14,8 @@ fn std.log.Level.name(self: std.log.Level) -> &'static str uses [] panics never 
     }
 end std.log.Level.name
 
-fn std.log.build_line(level: std.log.Level, msg: &str, fields: &[(&str, &str)]) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc, time] panics never
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn std.log.build_line(level: std.log.Level, msg: &str, fields: &[(&str, &str)]) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc, time] panics never
+    let mut out = std.string.String.new()
     let now = std.datetime.DateTime.now()
     let ts = now.to_rfc3339()?
     out.push_str("{\"ts\":\"")?
@@ -71,7 +71,7 @@ fn std.log.info(msg: &str, fields: &[(&str, &str)]) -> Result<(), std.io.Error> 
     std.log.emit(std.log.Level.Info, msg, fields)
 end std.log.info
 
-fn std.log.line(level: std.log.Level, msg: &str, fields: &[(&str, &str)]) -> Result<alloc.string.String<std.alloc.System>, std.io.Error> uses [alloc, time] panics never pub
+fn std.log.line(level: std.log.Level, msg: &str, fields: &[(&str, &str)]) -> Result<std.string.String, std.io.Error> uses [alloc, time] panics never pub
     match std.log.build_line(level, msg, fields) {
         Ok(text) => Ok(text)
         Err(_) => Err(std.log.oom())

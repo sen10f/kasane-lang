@@ -5,7 +5,7 @@ end t.consume
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let mut i = 0u8
     while i < 2u8 {
-        let s = alloc.string.String.new(std.alloc.SYSTEM)
+        let s = std.string.String.new()
         core.mem.drop(t.consume(s))
         i = i.wrapping_add(1u8)
     }

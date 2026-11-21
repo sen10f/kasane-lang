@@ -24,9 +24,9 @@ const todo.config.DEFAULT_MAX_TITLE: usize = 2048usize
 const todo.config.DEFAULT_SESSION_TTL_SECONDS: u64 = 3600u64
 
 type todo.config.Config derive [Debug] pub
-    addr: alloc.string.String<std.alloc.System> pub
-    db: alloc.string.String<std.alloc.System> pub
-    hist: alloc.string.String<std.alloc.System> pub
+    addr: std.string.String pub
+    db: std.string.String pub
+    hist: std.string.String pub
     ttl: u64 pub
     max: usize pub
 end todo.config.Config
@@ -66,7 +66,7 @@ fn todo.config.load(path: &str) -> Result<todo.config.Config, todo.error.Error> 
 end todo.config.load
 
 // 文字列の JSON フィールドを読む。欠落または型不一致なら `fallback` を返す。
-fn todo.config.read_string_field(doc: &std.json.Doc, v: std.json.Value, name: &str, fallback: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
+fn todo.config.read_string_field(doc: &std.json.Doc, v: std.json.Value, name: &str, fallback: &str) -> Result<std.string.String, todo.error.Error> uses [alloc] panics never pub
     match std.json.decode_field(doc, v, name, 0usize) {
         Ok(value) => match std.json.decode_string(doc, value) {
             Ok(text) => Ok(text)
@@ -104,12 +104,12 @@ fn todo.config.read_usize_field(doc: &std.json.Doc, v: std.json.Value, name: &st
 end todo.config.read_usize_field
 
 // store.read_text と同じ読み込みをここで行う (store は model に依存するため循環を避ける)。
-fn todo.config.store_read_text(path: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, io.fs] panics never
-    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn todo.config.store_read_text(path: &str) -> Result<std.string.String, todo.error.Error> uses [alloc, io.fs] panics never
+    let mut data = std.vec.Vec.new()
     with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
         core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
     }
-    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut text = std.string.String.new()
     text.push_bytes(data.as_slice()).map_err(error.push_failed)?
     Ok(text)
 end todo.config.store_read_text

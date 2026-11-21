@@ -13,7 +13,7 @@ fn t.Sq.area(self: &t.Sq) -> i64 uses [] panics never impls t.Shape
     self.side
 end t.Sq.area
 
-fn t.bad(s: t.Sq) -> Result<alloc.boxed.Box<dyn t.Shape + 'static, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+fn t.bad(s: t.Sq) -> Result<std.boxed.Box<dyn t.Shape + 'static>, alloc.alloc.AllocError> uses [alloc] panics never
     boxed.Box.new(std.alloc.SYSTEM, s)
 end t.bad
 

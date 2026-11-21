@@ -17,7 +17,7 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let ev = ui.event.Event.PointerDown(10.0f32, 10.0f32, 1u8)
     let routed = ui.event.route(&mut ctx, &layout, &tree, troot, &ev, 10.0f32, 10.0f32)
     {
-        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut s = std.string.String.new()
         core.mem.drop(match s.push_display(&hit_some) {
             Ok(_) => 0u8
             Err(_) => 1u8
@@ -30,7 +30,7 @@ fn drv.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
             std.io.print_line("routed_some")?
             std.io.print_line("true")?
             {
-                let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+                let mut s = std.string.String.new()
                 core.mem.drop(match s.push_display(&n) {
                     Ok(_) => 0u8
                     Err(_) => 1u8

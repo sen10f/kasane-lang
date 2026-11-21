@@ -2,8 +2,8 @@ import wiki.markdown
 import wiki.store
 
 // `name` への被リンク元ページ名を一覧する。
-fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, wiki.error.Error> uses [alloc, io.fs] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) -> Result<std.vec.Vec<std.string.String>, wiki.error.Error> uses [alloc, io.fs] panics never pub
+    let mut out = std.vec.Vec.new()
     let pages = page_store.list_pages()?
     let mut i = 0usize
     let n = pages.len()
@@ -21,7 +21,7 @@ fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) ->
                 while j < m {
                     match links.as_slice().get(j) {
                         Some(link) => if link.as_str() == name {
-                            let mut cloned = alloc.string.String.new(std.alloc.SYSTEM)
+                            let mut cloned = std.string.String.new()
                             cloned.push_str(page_name.as_str())?
                             core.mem.drop(out.push(cloned)?)
                             break
@@ -37,7 +37,7 @@ fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) ->
     }
     // core.slice.sort はネイティブバックエンドで segfault するため未使用。
     // 重複除去はソートを前提とせず、O(n^2) で全要素と比較する。
-    let mut deduped = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut deduped = std.vec.Vec.new()
     let mut k = 0usize
     let n2 = out.len()
     while k < n2 {
@@ -49,7 +49,7 @@ fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) ->
                 while j < m {
                     match deduped.as_slice().get(j) {
                         Some(d) => {
-                            let d_ref: &alloc.string.String<std.alloc.System> = d
+                            let d_ref: &std.string.String = d
                             if d_ref.as_str() == v.as_str() {
                                 found = true
                             }
@@ -59,7 +59,7 @@ fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) ->
                     j = j.saturating_add(1usize)
                 }
                 if !found {
-                    let mut v_copy = alloc.string.String.new(std.alloc.SYSTEM)
+                    let mut v_copy = std.string.String.new()
                     core.mem.drop(v_copy.push_str(v.as_str())?)
                     core.mem.drop(deduped.push(v_copy)?)
                 }
@@ -72,8 +72,8 @@ fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) ->
 end wiki.link.backlinks_for
 
 // `[[WikiPage]]` 形式のウィキリンクを抽出する。
-fn wiki.link.extract_wiki_links(text: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn wiki.link.extract_wiki_links(text: &str) -> Result<std.vec.Vec<std.string.String>, wiki.error.Error> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
     let mut i = 0usize
     let total = text.len()
     while i < total {
@@ -122,7 +122,7 @@ fn wiki.link.extract_wiki_links(text: &str) -> Result<alloc.vec.Vec<alloc.string
     }
     // core.slice.sort はネイティブバックエンドで segfault するため未使用。
     // 重複除去はソートを前提とせず、O(n^2) で全要素と比較する。
-    let mut deduped = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut deduped = std.vec.Vec.new()
     let mut k = 0usize
     let n2 = out.len()
     while k < n2 {
@@ -134,7 +134,7 @@ fn wiki.link.extract_wiki_links(text: &str) -> Result<alloc.vec.Vec<alloc.string
                 while j < m {
                     match deduped.as_slice().get(j) {
                         Some(d) => {
-                            let d_ref: &alloc.string.String<std.alloc.System> = d
+                            let d_ref: &std.string.String = d
                             if d_ref.as_str() == v.as_str() {
                                 found = true
                             }
@@ -144,7 +144,7 @@ fn wiki.link.extract_wiki_links(text: &str) -> Result<alloc.vec.Vec<alloc.string
                     j = j.saturating_add(1usize)
                 }
                 if !found {
-                    let mut v_copy = alloc.string.String.new(std.alloc.SYSTEM)
+                    let mut v_copy = std.string.String.new()
                     core.mem.drop(v_copy.push_str(v.as_str())?)
                     core.mem.drop(deduped.push(v_copy)?)
                 }

@@ -3,7 +3,7 @@ fn t.consume(s: alloc.string.String) -> () uses [] panics never
 end t.consume
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let s = std.string.String.new()
     let mut i = 0u8
     loop {
         core.mem.drop(t.consume(s))

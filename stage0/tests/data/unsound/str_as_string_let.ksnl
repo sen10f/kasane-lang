@@ -1,5 +1,5 @@
 fn t.bad() -> usize uses [] panics never
-    let x: &alloc.string.String<std.alloc.System> = "zzz"
+    let x: &std.string.String = "zzz"
     x.len()
 end t.bad
 

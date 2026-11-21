@@ -6,7 +6,7 @@ end bench.Coin
 
 type bench.Machine pub
     mode: bench.Mode
-    shelf: alloc.vec.Vec<bench.Product, std.alloc.System>
+    shelf: std.vec.Vec<bench.Product>
 end bench.Machine
 
 enum bench.Mode derive [Debug, Clone, Copy, PartialEq] pub
@@ -140,6 +140,5 @@ fn bench.Machine.insert_coin(self: &mut bench.Machine, c: bench.Coin) -> u32 use
 end bench.Machine.insert_coin
 
 fn bench.Machine.new() -> bench.Machine uses [] panics never
-    bench.Machine { mode: bench.Mode.Idle, shelf: alloc.vec.Vec.new(std.alloc.SYSTEM) }
+    bench.Machine { mode: bench.Mode.Idle, shelf: std.vec.Vec.new() }
 end bench.Machine.new
-

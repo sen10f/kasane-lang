@@ -15,22 +15,22 @@ const csvtool.parse.ST_TEXT: u8 = 1u8
 fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Table, csvtool.error.Error> uses [alloc] panics never pub
     let clean = alloc.string.String.replace(std.alloc.SYSTEM, text, "\r\n", "\n")?
     let clean2 = alloc.string.String.replace(std.alloc.SYSTEM, clean.as_str(), "\r", "\n")?
-    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut field = alloc.string.String.new(std.alloc.SYSTEM)
-    let mut row = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rows = std.vec.Vec.new()
+    let mut field = std.string.String.new()
+    let mut row = std.vec.Vec.new()
     let mut state = csvtool.parse.ST_FIELD
     for c in clean2.as_str().chars() {
         if state == csvtool.parse.ST_FIELD {
             if c == '"' {
                 state = csvtool.parse.ST_QUOTED
             } else if c == delim {
-                core.mem.drop(row.push(alloc.string.String.new(std.alloc.SYSTEM))?)
+                core.mem.drop(row.push(std.string.String.new())?)
             } else if c == '\n' {
                 if !row.is_empty() {
                     core.mem.drop(row.push(field)?)
-                    field = alloc.string.String.new(std.alloc.SYSTEM)
+                    field = std.string.String.new()
                     core.mem.drop(rows.push(table.Row { fields: row })?)
-                    row = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                    row = std.vec.Vec.new()
                 }
             } else {
                 core.mem.drop(field.push(c)?)
@@ -39,14 +39,14 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
         } else if state == csvtool.parse.ST_TEXT {
             if c == delim {
                 core.mem.drop(row.push(field)?)
-                field = alloc.string.String.new(std.alloc.SYSTEM)
+                field = std.string.String.new()
                 state = csvtool.parse.ST_FIELD
             } else if c == '\n' {
                 core.mem.drop(row.push(field)?)
-                field = alloc.string.String.new(std.alloc.SYSTEM)
+                field = std.string.String.new()
                 state = csvtool.parse.ST_FIELD
                 core.mem.drop(rows.push(table.Row { fields: row })?)
-                row = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                row = std.vec.Vec.new()
             } else {
                 core.mem.drop(field.push(c)?)
             }
@@ -62,14 +62,14 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
             state = csvtool.parse.ST_QUOTED
         } else if c == delim {
             core.mem.drop(row.push(field)?)
-            field = alloc.string.String.new(std.alloc.SYSTEM)
+            field = std.string.String.new()
             state = csvtool.parse.ST_FIELD
         } else if c == '\n' {
             core.mem.drop(row.push(field)?)
-            field = alloc.string.String.new(std.alloc.SYSTEM)
+            field = std.string.String.new()
             state = csvtool.parse.ST_FIELD
             core.mem.drop(rows.push(table.Row { fields: row })?)
-            row = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            row = std.vec.Vec.new()
         } else {
             core.mem.drop(field.push('"')?)
             core.mem.drop(field.push(c)?)
@@ -83,7 +83,7 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
         core.mem.drop(field)
         core.mem.drop(row)
     }
-    let mut header = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut header = std.vec.Vec.new()
     if !rows.is_empty() {
         match rows.remove(0usize) {
             Some(first) => {

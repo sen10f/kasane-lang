@@ -1,19 +1,19 @@
 type wiki.csrf.CsrfManager pub
-    tokens: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>
+    tokens: std.vec.Vec<std.string.String>
 end wiki.csrf.CsrfManager
 
 fn wiki.csrf.CsrfManager.new() -> Result<wiki.csrf.CsrfManager, wiki.error.Error> uses [] panics never pub
-    let vec = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let vec = std.vec.Vec.new()
     Ok(wiki.csrf.CsrfManager { tokens: vec })
 end wiki.csrf.CsrfManager.new
 
-fn wiki.csrf.generate_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc, rand] panics never pub
-    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn wiki.csrf.generate_token(tokens: &mut std.vec.Vec<std.string.String>) -> Result<std.string.String, wiki.error.Error> uses [alloc, rand] panics never pub
+    let mut buf = std.vec.Vec.new()
     for _ in core.iter.range(0usize, 32usize) {
         buf.push(0u8)?
     }
     std.rand.fill_secure(buf.as_mut_slice())?
-    let mut hex = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut hex = std.string.String.new()
     let mut i = 0usize
     let n = buf.len()
     while i < n {
@@ -28,7 +28,7 @@ fn wiki.csrf.generate_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.a
         }
         i = i.saturating_add(1usize)
     }
-    let mut hex_copy = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut hex_copy = std.string.String.new()
     core.mem.drop(hex_copy.push_str(hex.as_str())?)
     core.mem.drop(tokens.push(hex)?)
     Ok(hex_copy)
@@ -48,7 +48,7 @@ fn wiki.csrf.hex_digit(v: u8) -> char uses [] panics never pub
     }
 end wiki.csrf.hex_digit
 
-fn wiki.csrf.verify_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, token: &str) -> bool uses [] panics never pub
+fn wiki.csrf.verify_token(tokens: &mut std.vec.Vec<std.string.String>, token: &str) -> bool uses [] panics never pub
     let mut i = 0usize
     let n = tokens.len()
     while i < n {
@@ -67,21 +67,21 @@ fn wiki.csrf.verify_token(tokens: &mut alloc.vec.Vec<alloc.string.String<std.all
 end wiki.csrf.verify_token
 
 test wiki.csrf.generate_token.test_distinct_tokens
-    let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tokens = std.vec.Vec.new()
     let t1 = wiki.csrf.generate_token(&mut tokens)?
     let t2 = wiki.csrf.generate_token(&mut tokens)?
     core.check.eq(t1.as_str() == t2.as_str(), false)
 end wiki.csrf.generate_token.test_distinct_tokens
 
 test wiki.csrf.generate_token.test_generate_and_verify
-    let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tokens = std.vec.Vec.new()
     let token = wiki.csrf.generate_token(&mut tokens)?
     core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), true)
     core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), false)
 end wiki.csrf.generate_token.test_generate_and_verify
 
 test wiki.csrf.generate_token.test_token_is_hex
-    let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tokens = std.vec.Vec.new()
     let token = wiki.csrf.generate_token(&mut tokens)?
     let s = token.as_str()
     let mut i = 0usize
@@ -118,21 +118,21 @@ test wiki.csrf.hex_digit.test_cases
 end wiki.csrf.hex_digit.test_cases
 
 test wiki.csrf.verify_token.test_case_sensitive
-    let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tokens = std.vec.Vec.new()
     let token = wiki.csrf.generate_token(&mut tokens)?
-    let mut modified = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut modified = std.string.String.new()
     core.mem.drop(modified.push_str(token.as_str())?)
     core.mem.drop(modified.push('x')?)
     core.check.eq(wiki.csrf.verify_token(&mut tokens, modified.as_str()), false)
 end wiki.csrf.verify_token.test_case_sensitive
 
 test wiki.csrf.verify_token.test_reject_unknown
-    let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tokens = std.vec.Vec.new()
     core.check.eq(wiki.csrf.verify_token(&mut tokens, "deadbeef"), false)
 end wiki.csrf.verify_token.test_reject_unknown
 
 test wiki.csrf.verify_token.test_token_removed_after_use
-    let mut tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tokens = std.vec.Vec.new()
     let token = wiki.csrf.generate_token(&mut tokens)?
     core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), true)
     core.check.eq(wiki.csrf.verify_token(&mut tokens, token.as_str()), false)

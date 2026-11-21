@@ -3,7 +3,7 @@ type t.Res linear
 end t.Res
 
 fn t.bad() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
-    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut m = std.collections.HashMap.new()
     match m.insert(1u32, t.open()) {
         Ok(_) => Ok(())
         Err(e) => Err(e)

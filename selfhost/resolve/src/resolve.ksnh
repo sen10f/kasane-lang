@@ -15,7 +15,7 @@ fn resolve.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, i
     }
     let man = resolve.manifest.read(pkg)?
     // (1) 読み込み: 自パッケージ、直接の path 依存の src/、標準ライブラリ。
-    let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut srcs = std.vec.Vec.new()
     let own_src = resolve.manifest.join(pkg, "src")?
     resolve.load.collect(own_src.as_str(), "", true, &mut srcs)?
     let deps = man.deps
@@ -65,7 +65,7 @@ end resolve.main
 
 // 1 ファイルを解析する。構文エラーは報告して None (そのファイルは表にも解決にも入れない)。
 fn resolve.parse_file(src: &[u8], path: &str, sig: bool, rep: &mut resolve.report.Report) -> Result<Option<parse.cur.P>, resolve.Failure> uses [alloc] panics never pub
-    let mut toks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut toks = std.vec.Vec.new()
     rep.path.clear()
     rep.path.push_str(path)?
     rep.sig = sig

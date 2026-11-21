@@ -21,10 +21,10 @@ end resolve.scope.Res
 // 1 ファイルの解決の状態。locals[base..] が今見える局所束縛。
 type resolve.scope.St pub
     file: usize pub
-    tails: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
-    fulls: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
-    gens: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
-    locals: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    tails: std.vec.Vec<std.string.String> pub
+    fulls: std.vec.Vec<std.string.String> pub
+    gens: std.vec.Vec<std.string.String> pub
+    locals: std.vec.Vec<std.string.String> pub
     base: usize pub
 end resolve.scope.St
 
@@ -105,7 +105,7 @@ fn resolve.scope.find(t: &resolve.table.Table, st: &resolve.scope.St, name: &str
         return Ok(resolve.scope.Res.Builtin)
     }
     let imp = st.import_index(first)
-    let mut key = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut key = std.string.String.new()
     if imp > 0usize {
         match st.fulls.as_slice().get(imp.wrapping_sub(1usize)) {
             Some(f) => key.push_str(f.as_str())?
@@ -187,10 +187,10 @@ end resolve.scope.member
 
 // 空の状態 (ファイル番号だけ入れる)。
 fn resolve.scope.mk(file: usize) -> Result<resolve.scope.St, alloc.alloc.AllocError> uses [] panics never pub
-    let a = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let b = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let c = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let d = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let a = std.vec.Vec.new()
+    let b = std.vec.Vec.new()
+    let c = std.vec.Vec.new()
+    let d = std.vec.Vec.new()
     Ok(resolve.scope.St { file: file, tails: a, fulls: b, gens: c, locals: d, base: 0usize })
 end resolve.scope.mk
 
@@ -210,8 +210,8 @@ fn resolve.scope.new(file: usize, p: &parse.cur.P, src: &[u8]) -> Result<resolve
 end resolve.scope.new
 
 // 末尾の成分を外した接頭辞 (`a.b.c` → `a.b`。成分が 1 つだけなら空)。
-fn resolve.scope.prefix(name: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn resolve.scope.prefix(name: &str) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     let mut prev = ""
     let mut has = false
     for c in name.split(".") {

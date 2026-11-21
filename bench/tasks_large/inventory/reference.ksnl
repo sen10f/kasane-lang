@@ -5,8 +5,8 @@ enum bench.InvError derive [Debug, Clone, Copy, PartialEq, From] pub
 end bench.InvError
 
 type bench.Inventory pub
-    stock: alloc.collections.HashMap<alloc.string.String, bench.Item, std.alloc.System>
-    order: alloc.vec.Vec<alloc.string.String, std.alloc.System>
+    stock: std.collections.HashMap<alloc.string.String, bench.Item>
+    order: std.vec.Vec<alloc.string.String>
 end bench.Inventory
 
 type bench.Item derive [Debug, Clone, Copy, PartialEq] pub
@@ -38,8 +38,8 @@ fn bench.Inventory.count(self: &bench.Inventory) -> usize uses [] panics never
     self.stock.len()
 end bench.Inventory.count
 
-fn bench.Inventory.find_below(self: &bench.Inventory, min_qty: u32) -> Result<alloc.vec.Vec<alloc.string.String, std.alloc.System>, bench.InvError> uses [alloc] panics never
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn bench.Inventory.find_below(self: &bench.Inventory, min_qty: u32) -> Result<std.vec.Vec<alloc.string.String>, bench.InvError> uses [alloc] panics never
+    let mut out = std.vec.Vec.new()
     let mut i = 0usize
     while i < self.order.len() {
         match self.order.get(i) {
@@ -67,8 +67,8 @@ fn bench.Inventory.is_empty(self: &bench.Inventory) -> bool uses [] panics never
     self.stock.is_empty()
 end bench.Inventory.is_empty
 
-fn bench.Inventory.names(self: &bench.Inventory) -> Result<alloc.vec.Vec<alloc.string.String, std.alloc.System>, bench.InvError> uses [alloc] panics never
-    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn bench.Inventory.names(self: &bench.Inventory) -> Result<std.vec.Vec<alloc.string.String>, bench.InvError> uses [alloc] panics never
+    let mut out = std.vec.Vec.new()
     let mut i = 0usize
     while i < self.order.len() {
         match self.order.get(i) {
@@ -81,8 +81,8 @@ fn bench.Inventory.names(self: &bench.Inventory) -> Result<alloc.vec.Vec<alloc.s
 end bench.Inventory.names
 
 fn bench.Inventory.new() -> bench.Inventory uses [] panics never
-    let stock = alloc.collections.HashMap.new(std.alloc.SYSTEM)
-    let order = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let stock = std.collections.HashMap.new()
+    let order = std.vec.Vec.new()
     bench.Inventory { stock: stock, order: order }
 end bench.Inventory.new
 
@@ -159,4 +159,3 @@ fn bench.Inventory.total_value(self: &bench.Inventory) -> Result<u64, bench.InvE
     }
     Ok(total)
 end bench.Inventory.total_value
-

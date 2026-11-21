@@ -10,14 +10,14 @@ fn t.first_piece_is(text: &str, sep: &str, want: &str) -> bool uses [] panics ne
     ok
 end t.first_piece_is
 
-fn t.fmt_i(v: i64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+fn t.fmt_i(v: i64) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = std.string.String.new()
     s.push_i64(v)?
     Ok(s)
 end t.fmt_i
 
-fn t.fmt_u(v: u64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+fn t.fmt_u(v: u64) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = std.string.String.new()
     s.push_u64(v)?
     Ok(s)
 end t.fmt_u
@@ -133,7 +133,7 @@ fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
     core.check.eq(t.fmt_i(-1i64)?.as_str(), "-1")
     core.check.eq(t.fmt_i(9_223_372_036_854_775_807i64)?.as_str(), "9223372036854775807")
     core.check.eq(t.fmt_i(-9_223_372_036_854_775_808i64)?.as_str(), "-9223372036854775808")
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut line = std.string.String.new()
     line.push_str("n=")?
     line.push_i64(i64.from_i32(-17i32))?
     line.push(' ')?
@@ -142,7 +142,7 @@ fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
     core.check.eq(line.as_str().ends_with("6"), true)
     core.check.eq(line.contains("-17"), true)
     core.check.eq(line.trim(), "n=-17 6")
-    let mut b = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut b = std.string.String.new()
     core.check.eq(b.push_bytes("héy".as_bytes()) is Ok(_), true)
     core.check.eq(b.push_bytes("".as_bytes()) is Ok(_), true)
     let bad = [255u8, 66u8]

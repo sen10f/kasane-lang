@@ -16,7 +16,7 @@ fn vecops.main() -> Result<(), std.io.Error> uses [alloc] panics may
 end vecops.main
 
 fn vecops.run(n: usize) -> Result<(u64, u64), alloc.alloc.AllocError> uses [alloc] panics may pub
-    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut v = std.vec.Vec.new()
     let mut i = 0usize
     let mut k = 1u64
     while i < n {

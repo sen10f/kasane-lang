@@ -1,4 +1,4 @@
-fn t.f(out: &mut alloc.string.String<std.alloc.System>) -> () uses [] panics never
+fn t.f(out: &mut std.string.String) -> () uses [] panics never
     out
 end t.f
 

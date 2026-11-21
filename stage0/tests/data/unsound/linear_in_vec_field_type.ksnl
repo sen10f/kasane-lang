@@ -1,5 +1,5 @@
 type t.Pool
-    items: alloc.vec.Vec<t.Res, std.alloc.System>
+    items: std.vec.Vec<t.Res>
 end t.Pool
 
 type t.Res linear

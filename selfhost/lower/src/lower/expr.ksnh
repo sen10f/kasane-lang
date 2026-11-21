@@ -1,5 +1,5 @@
 // 腕の本体: 値を合流へ渡し、腕の中の束縛の並びを戻す。
-fn lower.expr.arm_body(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], body: usize, t: usize, rty: &str, ks: &alloc.vec.Vec<usize, std.alloc.System>, saved: &alloc.vec.Vec<usize, std.alloc.System>, jb: usize, mark: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.arm_body(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], body: usize, t: usize, rty: &str, ks: &std.vec.Vec<usize>, saved: &std.vec.Vec<usize>, jb: usize, mark: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     lower.cx.bind_vals(c, ks, saved)?
     let r = lower.expr.expr(env, c, p, src, body, t)?
     if !c.s.term {
@@ -190,7 +190,7 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         lower.cx.fail(c, "集成体の比較 (未対応)")?
         return lower.expr.dummy(c, t)
     }
-    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut o = std.string.String.new()
     let lf3 = types.ty.find(&c.ar, l.t)
     if types.ty.node(&c.ar, lf3).k == types.ty.K.Float {
         o.push_str("fcmp.")?
@@ -207,8 +207,8 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
 end lower.expr.bin
 
 // 合流の後: 可変の局所を合流の引数に入れ替える。
-fn lower.expr.bind_join(c: &mut lower.cx.Cx, rty: &str, ks: &alloc.vec.Vec<usize, std.alloc.System>, jps: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
-    let mut mv = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn lower.expr.bind_join(c: &mut lower.cx.Cx, rty: &str, ks: &std.vec.Vec<usize>, jps: &std.vec.Vec<usize>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut mv = std.vec.Vec.new()
     let mut skip = 1usize
     if rty == "unit" {
         skip = 0usize
@@ -272,8 +272,8 @@ end lower.expr.block
 
 // `br_if %c, bT(), bF()` (引数なし) を足す。
 fn lower.expr.br_if(c: &mut lower.cx.Cx, cond: usize, tb: usize, fb: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
-    let e = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let e = std.vec.Vec.new()
+    let mut s = std.string.String.new()
     s.push_str("br_if ")?
     s.push_str(lower.cx.vs(cond)?.as_str())?
     s.push_str(", ")?
@@ -285,7 +285,7 @@ end lower.expr.br_if
 
 // `br bN()` (引数なし) を現在のブロックに足す。
 fn lower.expr.br_to(c: &mut lower.cx.Cx, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
-    let e = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let e = std.vec.Vec.new()
     let s = lower.cx.cat2("br ", lower.cx.target(b, &e)?.as_str())?
     lower.cx.finish(c, s)
 end lower.expr.br_to
@@ -343,7 +343,7 @@ fn lower.expr.call_named(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     }
     let fqn = match env.tab.items.as_slice().get(item) {
         Some(x) => lower.cx.own(x.fqn.as_str())?
-        None => alloc.string.String.new(std.alloc.SYSTEM)
+        None => std.string.String.new()
     }
     // `core.mem.drop(x)`: 組み込み (本体のない宣言)。引数を評価し、単位の値を返す。
     if fqn.as_str() == "core.mem.drop" {
@@ -419,7 +419,7 @@ fn lower.expr.call_named(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     }
     // 総称の関数は型引数を照合で決めて、インスタンスの鍵 (fqn<型,..>) で下ろす。
     let mut key = lower.cx.own(fqn.as_str())?
-    let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut subs = std.vec.Vec.new()
     let mut rty = t
     if lower.inst.is_generic(env, c, item) {
         subs = lower.inst.args_of(env, c, p, item, n)?
@@ -431,13 +431,13 @@ fn lower.expr.call_named(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         }
     }
     lower.expr.enqueue(c, key.as_str(), item + 1usize, subs, rty)?
-    let mut args = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut args = std.vec.Vec.new()
     for j in core.iter.range(0usize, resolve.ast.count(p, n.b)) {
         let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, j), types.ty.UNKNOWN)?
         args.push(a.v)?
     }
     // 引数を全部評価してから、`&mut` → `&` の付け替えを順に出す (Rust 版と同じ並び)。
-    let mut cargs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut cargs = std.vec.Vec.new()
     let mut ai = 0usize
     for av in args.as_slice().iter() {
         cargs.push(lower.expr.coerce_shared(env, c, item, ai, *av)?)?
@@ -445,7 +445,7 @@ fn lower.expr.call_named(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     }
     args = cargs
     let rt = lower.tyk.text(env, c, rty)?
-    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut o = std.string.String.new()
     o.push_str("call ")?
     o.push_str(key.as_str())?
     o.push('(')?
@@ -596,7 +596,7 @@ fn lower.expr.end_locals(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
 end lower.expr.end_locals
 
 // 関数の下ろしを予約する (未処理なら末尾に足す)。
-fn lower.expr.enqueue(c: &mut lower.cx.Cx, key: &str, item1: usize, subs: alloc.vec.Vec<usize, std.alloc.System>, ret: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.enqueue(c: &mut lower.cx.Cx, key: &str, item1: usize, subs: std.vec.Vec<usize>, ret: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let mut i = 0usize
     while i < c.g.nms.len() {
         let same = match c.g.nms.as_slice().get(i) {
@@ -770,8 +770,8 @@ fn lower.expr.field(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
 end lower.expr.field
 
 // `field %v, +off` の文字列。
-fn lower.expr.field_src(v: usize, off: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+fn lower.expr.field_src(v: usize, off: usize) -> Result<std.string.String, resolve.Failure> uses [alloc] panics never pub
+    let mut s = std.string.String.new()
     s.push_str("field ")?
     s.push_str(lower.cx.vs(v)?.as_str())?
     s.push_str(", +")?
@@ -795,7 +795,7 @@ fn lower.expr.field_store(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cu
         let ft = lower.tyk.text(env, c, lt)?
         let bty = lower.tyk.text(env, c, bt)?
         let _old = lower.cx.def(c, ft.as_str(), lower.expr.field_src(bv, off)?.as_str())?
-        let mut so = alloc.string.String.new(std.alloc.SYSTEM)
+        let mut so = std.string.String.new()
         so.push_str("setfield ")?
         so.push_str(lower.cx.vs(bv)?.as_str())?
         so.push_str(", +")?
@@ -894,7 +894,7 @@ fn lower.expr.getmut_match(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.c
     let idx = lower.expr.expr(env, c, p, src, resolve.ast.item(p, sn.d, 0usize), types.ty.UNKNOWN)?
     let (sz, _al) = lower.tyk.size_of(env, c, elem)?
     let base = lower.cx.depth(c)
-    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nms = std.vec.Vec.new()
     lower.expr.scan_arms(env, c, p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let saved = lower.cx.cur_vals(c, &ks)?
@@ -903,7 +903,7 @@ fn lower.expr.getmut_match(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.c
     let len = lower.vec.load_usize(c, hp, 8usize)?
     let ptr = lower.vec.load_ptr(c, hp)?
     let cond = lower.loops.bin(c, "bool", "icmp.lt.usize", idx.v, len)?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let sb = lower.cx.blk(c, &empty)?
     let nb = lower.cx.blk(c, &empty)?
     let jb = lower.cx.blk(c, &jps)?
@@ -944,7 +944,7 @@ end lower.expr.getmut_match
 // `Vec` の場所 (局所、または `局所.欄(.欄)*`) のヘッダの番地。戻りは (番地, Vec の型, 成功か)。
 // 欄をたどるときは `fieldaddr` の連鎖と `bitcast.ptr`、局所の `Vec` はその枠 (参照引数は値の ptr)。
 fn lower.expr.hdr_of(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str) -> Result<(usize, usize, bool), resolve.Failure> uses [alloc] panics may pub
-    let mut segs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut segs = std.vec.Vec.new()
     for w in name.split(".") {
         segs.push(lower.cx.own(w)?)?
     }
@@ -1007,12 +1007,12 @@ end lower.expr.hdr_of
 fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
     let cr = lower.expr.expr(env, c, p, src, n.a, types.ty.BOOL)?
-    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nms = std.vec.Vec.new()
     lower.expr.scan(env, c, p, src, n.b, &mut nms, false)?
     lower.expr.scan(env, c, p, src, n.c, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let rty = lower.tyk.text(env, c, t)?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let tb = lower.cx.blk(c, &empty)?
     let eb = lower.cx.blk(c, &empty)?
     let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
@@ -1105,8 +1105,8 @@ fn lower.expr.is_wrapping(m: &str) -> bool uses [] panics never pub
 end lower.expr.is_wrapping
 
 // 合流への分岐の引数: 結果 (あれば) と可変の局所の現在の値。
-fn lower.expr.jargs(c: &lower.cx.Cx, rty: &str, res: usize, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
-    let mut a = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn lower.expr.jargs(c: &lower.cx.Cx, rty: &str, res: usize, ks: &std.vec.Vec<usize>) -> Result<std.vec.Vec<usize>, resolve.Failure> uses [alloc] panics never pub
+    let mut a = std.vec.Vec.new()
     if rty != "unit" {
         a.push(res)?
     }
@@ -1118,8 +1118,8 @@ fn lower.expr.jargs(c: &lower.cx.Cx, rty: &str, res: usize, ks: &alloc.vec.Vec<u
 end lower.expr.jargs
 
 // 合流の値を作る (結果の型が unit でなければ先頭の引数になる)。
-fn lower.expr.join_params(c: &mut lower.cx.Cx, rty: &str, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
-    let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn lower.expr.join_params(c: &mut lower.cx.Cx, rty: &str, ks: &std.vec.Vec<usize>) -> Result<std.vec.Vec<usize>, resolve.Failure> uses [alloc] panics never pub
+    let mut ps = std.vec.Vec.new()
     if rty != "unit" {
         ps.push(lower.cx.newval(c, rty)?)?
     }
@@ -1285,7 +1285,7 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             digits = false
         }
     }
-    let mut op = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut op = std.string.String.new()
     op.push_str("const.")?
     op.push_str(ty.as_str())?
     op.push(' ')?
@@ -1296,7 +1296,7 @@ end lower.expr.lit
 
 fn lower.expr.loopx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
-    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nms = std.vec.Vec.new()
     lower.expr.scan(env, c, p, src, n.a, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let hps = lower.cx.fresh_vals(c, &ks)?
@@ -1344,7 +1344,7 @@ end lower.expr.loopx
 // ブロックは腕ごとに (次の腕・この腕の本体) の順。`_` の腕では、行き止まりの `unreachable` のブロックだけ作り、
 // 本体は今のブロック (前の腕の外れた先) に下ろす (Rust 版と同じ並び)。
 fn lower.expr.matchint(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, sc: lower.cx.R, base: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nms = std.vec.Vec.new()
     lower.expr.scan_arms(env, c, p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let saved = lower.cx.cur_vals(c, &ks)?
@@ -1353,7 +1353,7 @@ fn lower.expr.matchint(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
     let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
     let jb = lower.cx.blk(c, &jps)?
     let nv = resolve.ast.count(p, n.b)
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     for j in core.iter.range(0usize, nv) {
         let arm = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, j))
         let pat = parse.ast.get(&p.ast, arm.a)
@@ -1437,7 +1437,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         return lower.opt.optmatch(env, c, p, src, n, t, sc0, sloc, slin)
     }
     let own_scrut = lower.drop.temp_scrut(env, c, p, n.a, sc.t)?
-    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nms = std.vec.Vec.new()
     lower.expr.scan_arms(env, c, p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
     let saved = lower.cx.cur_vals(c, &ks)?
@@ -1456,7 +1456,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         let mark = lower.cx.depth(c)
         if pat.kind == parse.ast.Kind.PWild {
             done = true
-            let nb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
+            let nb = lower.cx.blk(c, &std.vec.Vec.new())?
             lower.expr.br_to(c, nb)?
             lower.cx.goto(c, nb)
             lower.drop.arm_head(env, c, own_scrut, false, sc.v, sc.t)?
@@ -1471,8 +1471,8 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
             let csrc = lower.expr.two(tg, kv)?
             let cond_src = lower.cx.cat2("icmp.eq.i32 ", csrc.as_str())?
             let cond = lower.cx.def(c, "bool", cond_src.as_str())?
-            let nextb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
-            let armb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
+            let nextb = lower.cx.blk(c, &std.vec.Vec.new())?
+            let armb = lower.cx.blk(c, &std.vec.Vec.new())?
             lower.expr.br_if(c, cond, armb, nextb)?
             lower.cx.goto(c, armb)
             // 変種の基点 (ペイロードの読み出しの位置) と、束縛。
@@ -1491,8 +1491,8 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
                 subs = resolve.ast.count(p, pat.c)
             }
             let mut bound = false
-            let mut boffs = alloc.vec.Vec.new(std.alloc.SYSTEM)
-            let mut btys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let mut boffs = std.vec.Vec.new()
+            let mut btys = std.vec.Vec.new()
             let mut i = 0usize
             while i < subs {
                 let sub = resolve.ast.item(p, pat.c, i)
@@ -1603,7 +1603,7 @@ fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         want = types.ty.UNKNOWN
     }
     let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.d, 0usize), want)?
-    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut o = std.string.String.new()
     o.push_str(op)?
     o.push_str(".")?
     o.push_str(rty.as_str())?
@@ -1614,9 +1614,9 @@ fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
 end lower.expr.mcall
 
 // 利用者の `&mut self` のメソッドの呼び出し `x.m(..)` / `x.f.m(..)` / `self.f.m(..)` の根の局所の名前。
-fn lower.expr.mut_recv_root(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node) -> Result<(alloc.string.String<std.alloc.System>, bool), resolve.Failure> uses [alloc] panics may pub
-    let no = (alloc.string.String.new(std.alloc.SYSTEM), false)
-    let mut root = alloc.string.String.new(std.alloc.SYSTEM)
+fn lower.expr.mut_recv_root(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node) -> Result<(std.string.String, bool), resolve.Failure> uses [alloc] panics may pub
+    let no = (std.string.String.new(), false)
+    let mut root = std.string.String.new()
     if n.kind == parse.ast.Kind.Call {
         let cn = parse.ast.get(&p.ast, n.a)
         if cn.kind != parse.ast.Kind.Path {
@@ -1771,7 +1771,7 @@ fn lower.expr.retx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
 end lower.expr.retx
 
 // 式の中で代入されている局所の名前 (`x = e` の x) を集める。分岐と合流で引き回す局所を絞るため。
-fn lower.expr.scan(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.scan(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, out: &mut std.vec.Vec<std.string.String>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     if e == 0usize {
         return Ok(())
     }
@@ -1929,7 +1929,7 @@ fn lower.expr.scan(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
 end lower.expr.scan
 
 // match の腕の並び: 腕の本体を集める。
-fn lower.expr.scan_arms(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.scan_arms(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, out: &mut std.vec.Vec<std.string.String>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
         let arm = parse.ast.get(&p.ast, resolve.ast.item(p, l, j))
         lower.expr.scan(env, c, p, src, arm.b, out, bor)?
@@ -1938,7 +1938,7 @@ fn lower.expr.scan_arms(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
 end lower.expr.scan_arms
 
 // 名前 `x.f...` の根の局所 x が所有物を持つ値 (参照でない) なら、名前を out に足す。
-fn lower.expr.scan_field_root(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.scan_field_root(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, out: &mut std.vec.Vec<std.string.String>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     if lower.expr.seg_count(name) < 2usize {
         return Ok(())
     }
@@ -1959,7 +1959,7 @@ fn lower.expr.scan_field_root(env: &types.env.Env, c: &mut lower.cx.Cx, name: &s
 end lower.expr.scan_field_root
 
 // 式の並び (リスト) の中を集める。
-fn lower.expr.scan_list(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.scan_list(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, out: &mut std.vec.Vec<std.string.String>, bor: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
         lower.expr.scan(env, c, p, src, resolve.ast.item(p, l, j), out, bor)?
     }
@@ -1994,7 +1994,7 @@ end lower.expr.self_chain
 
 // 可変かどうかの印を立てる (k < 長さ)。set_val と同じ組み直し。
 fn lower.expr.set_mut(c: &mut lower.cx.Cx, k: usize, m: bool) -> Result<(), resolve.Failure> uses [alloc] panics never pub
-    let mut tail = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut tail = std.vec.Vec.new()
     while c.v.mutf.len() > k {
         match c.v.mutf.pop() {
             Some(x) => tail.push(x)?
@@ -2015,9 +2015,9 @@ end lower.expr.set_mut
 // `a && b` / `a || b`: 右辺は必要なときだけ評価する (短絡)。Rust 版 `short_circuit` と同じ枝。
 fn lower.expr.shortc(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, is_or: bool) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let a = lower.expr.expr(env, c, p, src, n.b, types.ty.BOOL)?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let rhs = lower.cx.blk(c, &empty)?
-    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut jps = std.vec.Vec.new()
     jps.push(lower.cx.newval(c, "bool")?)?
     let jb = lower.cx.blk(c, &jps)?
     let kc = if is_or {
@@ -2026,9 +2026,9 @@ fn lower.expr.shortc(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         "const.bool false"
     }
     let k = lower.cx.def(c, "bool", kc)?
-    let mut kv = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut kv = std.vec.Vec.new()
     kv.push(k)?
-    let mut ev = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ev = std.vec.Vec.new()
     let mut br = lower.cx.cat2("br_if ", lower.cx.vs(a.v)?.as_str())?
     br.push_str(", ")?
     if is_or {
@@ -2098,8 +2098,8 @@ fn lower.expr.structlit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
         return lower.expr.dummy(c, t)
     }
     let item = it - 1usize
-    let mut names = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut names = std.vec.Vec.new()
+    let mut vs = std.vec.Vec.new()
     for j in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
         let fi = parse.ast.get(&p.ast, resolve.ast.item(p, n.c, j))
         let r = lower.expr.expr(env, c, p, src, fi.b, types.ty.UNKNOWN)?
@@ -2107,12 +2107,12 @@ fn lower.expr.structlit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
         vs.push(r.v)?
     }
     let decl = lower.tyk.field_names(env, item)?
-    let mut ordered = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ordered = std.vec.Vec.new()
     let mut di = 0usize
     while di < decl.len() {
         let dn = match decl.as_slice().get(di) {
             Some(x) => lower.cx.own(x.as_str())?
-            None => alloc.string.String.new(std.alloc.SYSTEM)
+            None => std.string.String.new()
         }
         di = di + 1usize
         let mut found = 0usize
@@ -2139,10 +2139,10 @@ fn lower.expr.structlit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     }
     let key = lower.tyk.key_of(env, c, t, item)?
     let agg = lower.tyk.agg_id(c, key)?
-    let mut ty = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut ty = std.string.String.new()
     ty.push_str("agg#")?
     ty.push_str(lower.cx.dec(agg)?.as_str())?
-    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut o = std.string.String.new()
     o.push_str("make(")?
     o.push_str(lower.cx.vlist(&ordered)?.as_str())?
     o.push(')')?
@@ -2164,8 +2164,8 @@ fn lower.expr.trunc(c: &mut lower.cx.Cx, mark: usize) -> () uses [] panics never
 end lower.expr.trunc
 
 // 2 つの値の並び `%a, %b`。
-fn lower.expr.two(a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics never pub
-    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn lower.expr.two(a: usize, b: usize) -> Result<std.string.String, resolve.Failure> uses [alloc] panics never pub
+    let mut vs = std.vec.Vec.new()
     vs.push(a)?
     vs.push(b)?
     lower.cx.vlist(&vs)
@@ -2305,7 +2305,7 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         return lower.expr.dummy(c, t)
     }
     let x = lower.expr.expr(env, c, p, src, n.b, types.ty.BOOL)?
-    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut o = std.string.String.new()
     o.push_str("not.bool ")?
     o.push_str(lower.cx.vs(x.v)?.as_str())?
     let v = lower.cx.def(c, "bool", o.as_str())?
@@ -2314,10 +2314,10 @@ end lower.expr.unary
 
 // 文字列リテラルの中身 src[a..b] のエスケープ (`\n` `\t` `\r` `\0` `\\` `\"` `\'`) を外した 16 進と長さ。
 // 未対応のエスケープ (`\x` `\u`) は 3 つ目が false。
-fn lower.expr.unesc(src: &[u8], a: usize, b: usize) -> Result<(alloc.string.String<std.alloc.System>, usize, bool), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.unesc(src: &[u8], a: usize, b: usize) -> Result<(std.string.String, usize, bool), resolve.Failure> uses [alloc] panics may pub
     let digits = "0123456789abcdef"
     let db = digits.as_bytes()
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = std.string.String.new()
     let mut n = 0usize
     let mut i = a
     while i < b {
@@ -2370,7 +2370,7 @@ fn lower.expr.vec_field_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
     if !fqn.as_str().starts_with("alloc.vec.Vec.") && !fqn.as_str().starts_with("alloc.string.String.") {
         return Ok((no, false))
     }
-    let mut segs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut segs = std.vec.Vec.new()
     for w in name.split(".") {
         segs.push(lower.cx.own(w)?)?
     }
@@ -2430,12 +2430,12 @@ fn lower.expr.vec_field_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
     let bc2 = lower.cx.cat2(bc.as_str(), " ")?
     let pv = lower.cx.def(c, "ptr", lower.cx.cat2(bc2.as_str(), lower.cx.vs(cur)?.as_str())?.as_str())?
     // 受け手の欄の番地の後で引数を評価する (Rust 版と同じ並び)。
-    let mut avs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut avs = std.vec.Vec.new()
     for a in core.iter.range(0usize, resolve.ast.count(p, args)) {
         let av = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, a), types.ty.UNKNOWN)?
         avs.push(av.v)?
     }
-    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut vs = std.vec.Vec.new()
     vs.push(pv)?
     for av in avs.as_slice().iter() {
         vs.push(*av)?
@@ -2492,7 +2492,7 @@ fn lower.expr.vec_slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.
     if !ok {
         return Ok((no, false))
     }
-    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut vs = std.vec.Vec.new()
     vs.push(hp)?
     if sfq.as_str() == "core.slice.get" {
         let an0 = resolve.ast.item(p, n.d, 0usize)
@@ -2527,7 +2527,7 @@ fn lower.expr.vec_val_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.c
     let fv = lower.cx.def(c, hty.as_str(), lower.expr.field_src(bv, off)?.as_str())?
     let slot = lower.cx.def(c, "ptr", "frame.bytes 24")?
     lower.vec.store_hdr(c, slot, fv)?
-    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut vs = std.vec.Vec.new()
     vs.push(slot)?
     for a in core.iter.range(0usize, resolve.ast.count(p, args)) {
         let av = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, a), types.ty.UNKNOWN)?
@@ -2536,7 +2536,7 @@ fn lower.expr.vec_val_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.c
     let r = lower.vec.call(env, c, fqn, ft, &vs, t)?
     let nh = lower.vec.load_hdr(env, c, slot, ft, false)?
     let _old = lower.cx.def(c, hty.as_str(), lower.expr.field_src(bv, off)?.as_str())?
-    let mut so = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut so = std.string.String.new()
     so.push_str("setfield ")?
     so.push_str(lower.cx.vs(bv)?.as_str())?
     so.push_str(", +")?
@@ -2550,7 +2550,7 @@ end lower.expr.vec_val_call
 
 fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
-    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nms = std.vec.Vec.new()
     lower.expr.scan(env, c, p, src, n.a, &mut nms, false)?
     lower.expr.scan(env, c, p, src, n.b, &mut nms, false)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
@@ -2564,7 +2564,7 @@ fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     lower.cx.goto(c, head)
     lower.cx.bind_vals(c, &ks, &hps)?
     let cr = lower.expr.expr(env, c, p, src, n.a, types.ty.BOOL)?
-    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty = std.vec.Vec.new()
     let body = lower.cx.blk(c, &empty)?
     let mut s1 = lower.cx.own("br_if ")?
     s1.push_str(lower.cx.vs(cr.v)?.as_str())?
@@ -2625,7 +2625,7 @@ fn lower.expr.wrapping(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
         return lower.expr.dummy(c, t)
     }
     let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, 0usize), types.ty.UNKNOWN)?
-    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut o = std.string.String.new()
     o.push_str(op)?
     o.push_str(".")?
     o.push_str(rty.as_str())?
@@ -2649,7 +2649,7 @@ fn lower.expr.wrapping_field(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
         return lower.expr.dummy(c, t)
     }
     let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, 0usize), types.ty.UNKNOWN)?
-    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut o = std.string.String.new()
     let opn = match n3.strip_prefix("wrapping_") {
         Some(s) => s
         None => ""

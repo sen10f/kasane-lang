@@ -191,7 +191,7 @@ fn parse.tok.new(kind: parse.tok.Kind, code: u32, start: usize, stop: usize, lin
     parse.tok.Tok { code: code, stop: stop, kind: kind, line: line, start: start }
 end parse.tok.new
 
-fn parse.tok.push_code_name(out: &mut alloc.string.String<std.alloc.System>, code: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn parse.tok.push_code_name(out: &mut std.string.String, code: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     out.push('\'')?
     let ops2 = "=> -> == != <= >= && || ::"
     let kws = parse.tok.KEYWORDS
@@ -214,7 +214,7 @@ fn parse.tok.push_code_name(out: &mut alloc.string.String<std.alloc.System>, cod
     out.push('\'')
 end parse.tok.push_code_name
 
-fn parse.tok.push_word(out: &mut alloc.string.String<std.alloc.System>, table: &str, n: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+fn parse.tok.push_word(out: &mut std.string.String, table: &str, n: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut i = 0u32
     for w in table.split(" ") {
         i = i.wrapping_add(1u32)

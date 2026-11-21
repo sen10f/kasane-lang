@@ -1,4 +1,4 @@
-fn t.bad(v: alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> () uses [] panics never
+fn t.bad(v: std.vec.Vec<alloc.string.String>) -> () uses [] panics never
     for s in v {
         t.consume(s)
         t.consume(s)

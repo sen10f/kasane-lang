@@ -1084,7 +1084,7 @@ fn emit.inst.minmax(g: &mut emit.G, dst: usize, ty: usize, max: bool, args: &str
     emit.w(g, ")\n")
 end emit.inst.minmax
 
-fn emit.inst.name_fv(g: &mut emit.G, prefix: &str, dst: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
+fn emit.inst.name_fv(g: &mut emit.G, prefix: &str, dst: usize) -> std.string.String uses [alloc] panics may pub
     let mut s = emit.util.new_str()
     emit.util.push_str(&mut s, prefix)
     emit.util.push_num(&mut s, g.misc.fidx)
@@ -1196,10 +1196,10 @@ end emit.inst.pack_vid
 
 fn emit.inst.panic(g: &mut emit.G, dst: usize, rest: &str) -> () uses [alloc] panics may pub
     let q = emit.util.after(rest, 5usize).trim()
-    let mut raw: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut raw: std.vec.Vec<u8> = std.vec.Vec.new()
     let stop = emit.util.unquote(q, &mut raw)
     let tail = emit.util.after(q, stop.wrapping_add(1usize)).trim()
-    let mut fmt: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut fmt: std.vec.Vec<u8> = std.vec.Vec.new()
     let bb_b_anp = "panic: ".as_bytes()
     let mut kk_b_anp = 0usize
     while kk_b_anp < bb_b_anp.len() {
@@ -1223,7 +1223,7 @@ fn emit.inst.panic(g: &mut emit.G, dst: usize, rest: &str) -> () uses [alloc] pa
         emit.util.push_byte(&mut fmt, b)
         kk_b_ans = kk_b_ans.wrapping_add(1usize)
     }
-    let mut vals = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut vals = std.string.String.new()
     if tail.starts_with("%") {
         let v = emit.util.vid(tail)
         let vt = emit.inst.vt(g, v)
@@ -1486,7 +1486,7 @@ fn emit.inst.shift(g: &mut emit.G, dst: usize, ty: usize, left: bool, args: &str
 end emit.inst.shift
 
 fn emit.inst.static_bytes(g: &mut emit.G, dst: usize, hex: &str) -> () uses [alloc] panics may pub
-    let mut bytes: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut bytes: std.vec.Vec<u8> = std.vec.Vec.new()
     let hb = hex.as_bytes()
     let mut i = 0usize
     while i.wrapping_add(1usize) < hb.len() {

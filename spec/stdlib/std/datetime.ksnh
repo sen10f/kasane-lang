@@ -27,8 +27,8 @@ end std.datetime.DateTime.now
 
 // RFC 3339 の書き出し (`2026-11-14T10:20:30Z`、ナノ秒が 0 でなければ `.` と 9 桁の小数を付け、末尾の 0 は省く)。
 // 年は 4 桁に揃える。0000〜9999 の外の年は RFC 3339 の形にならないが、そのまま符号付きで書く。
-fn std.datetime.DateTime.to_rfc3339(self: &std.datetime.DateTime) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+fn std.datetime.DateTime.to_rfc3339(self: &std.datetime.DateTime) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.string.String.new()
     if self.year < 0i64 {
         out.push('-')?
         std.datetime.push_digits(&mut out, self.year.wrapping_neg(), 4usize)?
@@ -288,7 +288,7 @@ fn std.datetime.parse_rfc3339(text: &str) -> Result<std.datetime.DateTime, std.d
 end std.datetime.parse_rfc3339
 
 // 書き出しで 1 桁ずつ書く (`value` は 0 以上、`width` 桁。足りない上位は 0 で埋める)。
-fn std.datetime.push_digits(out: &mut alloc.string.String<std.alloc.System>, value: i64, width: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+fn std.datetime.push_digits(out: &mut std.string.String, value: i64, width: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let mut p = 1i64
     let mut k = 1usize
     while k < width {

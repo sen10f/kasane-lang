@@ -23,10 +23,10 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(t.head(b"abc").len(), 3usize)
     core.check.eq(t.empty_bytes().len(), 0usize)
     core.check.eq(t.biggest(&3u32, &9u32), 9u32)
-    let mut owner = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut owner = std.string.String.new()
     core.mem.drop(owner.push_str("owned text"))
     core.check.eq(t.view(&owner), "owned text")
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut line = std.string.String.new()
     core.mem.drop(line.push_str(t.name_of(1u32)))
     core.mem.drop(line.push_str(", "))
     core.mem.drop(line.push_str(t.trimmed("  and  ")))
@@ -52,6 +52,6 @@ fn t.trimmed(text: &str) -> &str uses [] panics never
     text.trim()
 end t.trimmed
 
-fn t.view(buf: &alloc.string.String<std.alloc.System>) -> &str uses [] panics never
+fn t.view(buf: &std.string.String) -> &str uses [] panics never
     buf.as_str()
 end t.view

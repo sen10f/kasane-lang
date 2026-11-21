@@ -6,7 +6,7 @@ end t.after
 fn t.channel_owned() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics never
     match std.sync.channel(std.alloc.SYSTEM, 2usize) {
         Ok((tx, rx)) => {
-            let s = alloc.string.String.new(std.alloc.SYSTEM)
+            let s = std.string.String.new()
             core.mem.drop(tx.send(s))
             match rx.recv() {
                 Ok(x) => std.io.print_line(x.as_str())?

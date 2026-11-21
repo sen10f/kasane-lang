@@ -29,7 +29,7 @@ fn demo.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
         },
     )
     let v = shape.area(shape.Shape.Rect(3i32, 4i32))
-    let mut vec = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut vec = std.vec.Vec.new()
     match vec.push(demo.fib(10u32)) {
         Ok(_) => ()
         Err(_e) => core.panic.panic("oom")

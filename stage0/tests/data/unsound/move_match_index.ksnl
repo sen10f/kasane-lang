@@ -1,4 +1,4 @@
-fn t.bad(v: &alloc.vec.Vec<Option<alloc.string.String>, std.alloc.System>) -> () uses [] panics may
+fn t.bad(v: &std.vec.Vec<Option<alloc.string.String>>) -> () uses [] panics may
     match v[0usize] {
         Some(x) => t.consume(x)
         None => core.mem.drop(0u8)
@@ -14,5 +14,5 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.mk() -> alloc.string.String uses [] panics never
-    alloc.string.String.new(std.alloc.SYSTEM)
+    std.string.String.new()
 end t.mk

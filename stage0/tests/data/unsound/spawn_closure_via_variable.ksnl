@@ -1,5 +1,5 @@
 fn t.mk() -> alloc.string.String uses [] panics never
-    alloc.string.String.new(std.alloc.SYSTEM)
+    std.string.String.new()
 end t.mk
 
 fn t.start() -> std.thread.JoinHandle<usize, std.alloc.System> uses [alloc, thread] panics may

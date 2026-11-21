@@ -3,7 +3,7 @@ type t.Res linear
 end t.Res
 
 fn t.bad(rx: std.sync.Receiver<t.Res>) -> u32 uses [alloc] panics may
-    let mut all = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut all = std.vec.Vec.new()
     match all.push(rx) {
         Ok(_) => 0u32
         Err(_e) => core.panic.panic("oom")
