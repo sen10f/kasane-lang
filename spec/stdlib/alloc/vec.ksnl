@@ -16,10 +16,8 @@ fn alloc.vec.Vec.append[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T,
         }
     }
     let after = self.len()
-    match self.as_mut_slice().sub_mut(before, after) {
-        Some(tail) => tail.reverse()
-        None => {
-        }
+    if let Some(tail) = self.as_mut_slice().sub_mut(before, after) {
+        tail.reverse()
     }
     Ok(())
 end alloc.vec.Vec.append
@@ -43,11 +41,9 @@ end alloc.vec.Vec.clear
 fn alloc.vec.Vec.contains[T: core.cmp.PartialEq<T>, A: alloc.alloc.Allocator](self: &alloc.vec.Vec<T, A>, value: &T) -> bool uses [] panics never pub
     let mut i = 0usize
     while i < self.len() {
-        match self.as_slice().get(i) {
-            Some(x) => if x.eq(value) {
+        if let Some(x) = self.as_slice().get(i) {
+            if x.eq(value) {
                 return true
-            }
-            None => {
             }
         }
         i = i.wrapping_add(1usize)
@@ -61,8 +57,7 @@ fn alloc.vec.Vec.dedup[T: core.cmp.PartialEq<T>, A: alloc.alloc.Allocator](self:
         return
     }
     let mut keep = 1usize
-    let mut i = 1usize
-    while i < n {
+    for i in core.iter.range(1usize, n) {
         let same = match self.as_slice().get(i) {
             Some(x) => match self.as_slice().get(keep.wrapping_sub(1usize)) {
                 Some(y) => x.eq(y)
@@ -78,7 +73,6 @@ fn alloc.vec.Vec.dedup[T: core.cmp.PartialEq<T>, A: alloc.alloc.Allocator](self:
             }
             keep = keep.wrapping_add(1usize)
         }
-        i = i.wrapping_add(1usize)
     }
     self.truncate(keep)
 end alloc.vec.Vec.dedup
@@ -91,16 +85,14 @@ fn alloc.vec.Vec.extend_from_slice[T: alloc.alloc.TryClone, A: alloc.alloc.Alloc
     }
     let mut i = 0usize
     while i < source.len() {
-        match source.get(i) {
-            Some(x) => match x.try_clone() {
+        if let Some(x) = source.get(i) {
+            match x.try_clone() {
                 Ok(c) => match self.push(c) {
                     Ok(_done) => {
                     }
                     Err(error) => return Err(error)
                 }
                 Err(error) => return Err(error)
-            }
-            None => {
             }
         }
         i = i.wrapping_add(1usize)

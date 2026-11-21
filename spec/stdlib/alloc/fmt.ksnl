@@ -93,10 +93,8 @@ fn alloc.fmt.digit(d: u64, upper: bool) -> char uses [] panics never
 end alloc.fmt.digit
 
 fn alloc.fmt.pad[A: alloc.alloc.Allocator](b: &mut alloc.string.String<A>, fill: char, count: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
-    let mut i = 0usize
-    while i < count {
+    for _ in core.iter.range(0usize, count) {
         b.push(fill)?
-        i = i.wrapping_add(1usize)
     }
     Ok(())
 end alloc.fmt.pad

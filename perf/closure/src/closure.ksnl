@@ -4,10 +4,8 @@ const closure.N: u64 = 300_000u64
 
 fn closure.apply_n[F: core.ops.Fn<(u64,), u64, E, P>, E: uses, P: panics](f: F, n: u64) -> u64 uses [E] panics P pub
     let mut acc = 0u64
-    let mut i = 0u64
-    while i < n {
+    for i in core.iter.range(0u64, n) {
         acc = acc.wrapping_add(f(i))
-        i = i.wrapping_add(1u64)
     }
     acc
 end closure.apply_n

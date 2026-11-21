@@ -4,10 +4,8 @@ const strcat.N: usize = 200_000usize
 
 fn strcat.build(n: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-    let mut i = 0usize
-    while i < n {
+    for _ in core.iter.range(0usize, n) {
         s.push_str("ab")?
-        i = i.wrapping_add(1usize)
     }
     Ok(s.len())
 end strcat.build

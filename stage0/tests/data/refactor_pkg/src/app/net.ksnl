@@ -28,17 +28,19 @@ fn app.net.fail(e: u32) -> u32 uses [] panics never pub
 end app.net.fail
 
 fn app.net.make(len: u32) -> app.net.Header uses [] panics never pub
-    let kind = match len > app.net.MAX_LEN {
-        true => app.net.Kind.Big
-        false => app.net.Kind.Small
+    let kind = if len > app.net.MAX_LEN {
+        app.net.Kind.Big
+    } else {
+        app.net.Kind.Small
     }
     app.net.Header { kind: kind, len: len }
 end app.net.make
 
 fn app.net.parse(len: u32) -> Result<app.net.Header, u32> uses [] panics never pub
-    match len > 100u32 {
-        true => Err(len)
-        false => Ok(app.net.make(len))
+    if len > 100u32 {
+        Err(len)
+    } else {
+        Ok(app.net.make(len))
     }
 end app.net.parse
 

@@ -32,11 +32,9 @@ end structs.main
 fn structs.run(n: u64) -> i64 uses [] panics never pub
     let mut b = structs.Body { x: 0i64, y: 0i64, vx: 7i64, vy: -5i64 }
     let mut acc = 0i64
-    let mut i = 0u64
-    while i < n {
+    for _ in core.iter.range(0u64, n) {
         b.step()
         acc = acc.wrapping_add(b.energy())
-        i = i.wrapping_add(1u64)
     }
     acc
 end structs.run
