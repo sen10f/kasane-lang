@@ -183,11 +183,11 @@ fn d11_else_if_and_single_expression_arms() {
     );
     roundtrip(
         "d15_arm_block",
-        "    let a = Some(1u32)\n    match a {\n        Some(x) => {\n            core.mem.drop(x)\n        }\n        None => {\n            ()\n        }\n    }\n",
-        "    let a = Some(1u32)\n    match a {\n        Some(x) => core.mem.drop(x)\n        None => ()\n    }\n",
+        "    let a: Result<u32, u32> = Ok(1u32)\n    match a {\n        Ok(x) => {\n            core.mem.drop(x)\n        }\n        Err(_) => {\n            ()\n        }\n    }\n",
+        "    let a: Result<u32, u32> = Ok(1u32)\n    match a {\n        Ok(x) => core.mem.drop(x)\n        Err(_) => ()\n    }\n",
     );
     // 腕に複数の文があればブロックのまま。
-    canonical("d15_arm_multi", "    let a = Some(1u32)\n    match a {\n        Some(x) => {\n            core.mem.drop(x)\n            core.mem.drop(1u8)\n        }\n        None => ()\n    }\n");
+    canonical("d15_arm_multi", "    let a: Result<u32, u32> = Ok(1u32)\n    match a {\n        Ok(x) => {\n            core.mem.drop(x)\n            core.mem.drop(1u8)\n        }\n        Err(_) => ()\n    }\n");
 }
 
 #[test]

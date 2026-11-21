@@ -1426,10 +1426,17 @@ fn match_fix(code: &str, file: &str, line: usize, lines: &[String]) -> Vec<Fix> 
             ("false", "true") => (&m.arms[1].1, &m.arms[0].1),
             _ => return vec![],
         };
-        if t.is_empty() || f.is_empty() {
-            return vec![];
+        match (t.is_empty(), f.is_empty()) {
+            (true, true) => return vec![],
+            // 空の腕は `else` を書かない (空の `else` は書き方が 1 通りでない)。値を返す `match` (前置きがある) では空の腕はない。
+            (false, true) if m.prefix.is_empty() => format!("{ind}if {} {{\n{}{ind}}}", m.scrut, join(t)),
+            (true, false) if m.prefix.is_empty() => {
+                let c = if m.scrut.contains([' ', '&', '|', '<', '>', '=']) { format!("!({})", m.scrut) } else { format!("!{}", m.scrut) };
+                format!("{ind}if {c} {{\n{}{ind}}}", join(f))
+            }
+            (false, false) => format!("{ind}{}if {} {{\n{}{ind}}} else {{\n{}{ind}}}", m.prefix, m.scrut, join(t), join(f)),
+            _ => return vec![],
         }
-        format!("{ind}{}if {} {{\n{}{ind}}} else {{\n{}{ind}}}", m.prefix, m.scrut, join(t), join(f))
     } else {
         if !(m.prefix.is_empty() || m.prefix.ends_with(" => ")) {
             return vec![];

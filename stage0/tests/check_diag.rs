@@ -710,7 +710,7 @@ fn ksn_fix_repairs_simple_diagnostics() {
 fn todo_is_abolished_and_ksn_fix_rewrites_it() {
     let f = "fn t.a() -> u8 uses [] panics may pub\n    core.panic.todo()\nend t.a\n\n";
     let b = body(&["core.mem.drop(t.a())"]);
-    let t = Tmp::new("todo", &main_wrap(f, &b));
+    let t = Tmp::new_raw("todo", &main_wrap(f, &b));
     let o = run(&["check", "--json"], &t.0);
     assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E2057"), "{}", text(&o.stdout));
     assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
@@ -1032,7 +1032,7 @@ fn explicit_type_args_are_respected_at_call_sites() {
               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
               let x = 5u8\n    let y = t.id::<u8>(x)\n    \
               core.mem.drop(y)\n    Ok(())\nend t.main\n";
-    let t = Tmp::new("targ_ok", ok);
+    let t = Tmp::new_raw("targ_ok", ok);
     // 引数で決まる型引数は書かない (E2067)。ほかの診断は出ない (型引数は推論に反映されている)。
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(codes(&text(&o.stdout)), vec!["E2067".to_string()], "{}", text(&o.stdout));

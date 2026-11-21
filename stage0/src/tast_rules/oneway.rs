@@ -241,6 +241,33 @@ fn root_name(e: &TExpr) -> Option<&str> {
     }
 }
 
+/// `e` の中で `name` のアドレスを取る (`&i`・`&mut i`・`&self` のメソッドの受け手)。`for` の束縛はネイティブの下ろしでアドレスを取れない
+/// (「局所 k のアドレスを取れない」) ので、そういう数え上げは `while` のままにする。
+fn takes_address(p: &Program, e: &TExpr, name: &str) -> bool {
+    let mut hit = false;
+    super::impl_sig::walk(e, &mut |x| match &x.kind {
+        TKind::Unary { op, operand } if (op == "&" || op == "&mut") && root_name(operand) == Some(name) => hit = true,
+        TKind::MCall { recv, .. } if root_name(recv) == Some(name) && self_is_ref(p, x) => hit = true,
+        TKind::Call { callee, .. } => {
+            if let TKind::Path(pth) = &callee.kind {
+                if pth.first().map(String::as_str) == Some(name) && pth.len() >= 2 && self_is_ref(p, x) {
+                    hit = true;
+                }
+            }
+        }
+        _ => {}
+    });
+    hit
+}
+
+fn self_is_ref(p: &Program, e: &TExpr) -> bool {
+    let Some(Callee::Def(d)) = &e.res else { return true };
+    match p.defs[*d].params.first() {
+        Some((n, t)) if n == "self" => t.dump().starts_with("[ref"),
+        _ => true,
+    }
+}
+
 /// `e` の中に、`name` を書き換える (代入・`&mut`) 所か `continue` があるか。
 fn writes_or_continues(e: &TExpr, name: &str, continues: bool) -> bool {
     let mut hit = false;
@@ -420,7 +447,7 @@ fn shapes(p: &Program, e: &TExpr, found: &mut Vec<(usize, &'static str, String)>
                     continue;
                 }
                 let inner = TExpr { kind: TKind::Block(bs[..bs.len() - 1].to_vec()), ..body.clone() };
-                if writes_or_continues(&inner, i, true) || bname.map_or(false, |b| writes_or_continues(&inner, b, false)) {
+                if writes_or_continues(&inner, i, true) || takes_address(p, &inner, i) || bname.map_or(false, |b| writes_or_continues(&inner, b, false)) {
                     continue;
                 }
                 if ss[k + 1..].iter().any(|s| stmt_mentions(s, i)) {

@@ -22,8 +22,9 @@ fn hashmap.run(n: u32) -> Result<(u32, u32), alloc.alloc.AllocError> uses [alloc
     }
     let mut hits = 0u32
     let mut misses = 0u32
+    let mut k = 0u32
     let limit = n.wrapping_mul(2u32)
-    for k in core.iter.range(0u32, limit) {
+    while k < limit {
         match m.get(&k) {
             Some(v) => {
                 hits = hits.wrapping_add(*v)
@@ -32,6 +33,7 @@ fn hashmap.run(n: u32) -> Result<(u32, u32), alloc.alloc.AllocError> uses [alloc
                 misses = misses.wrapping_add(1u32)
             }
         }
+        k = k.wrapping_add(1u32)
     }
     Ok((hits, misses))
 end hashmap.run

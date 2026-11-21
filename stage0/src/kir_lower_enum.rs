@@ -727,6 +727,8 @@ impl<'a> Lw<'a> {
             None => self.src_ty(&f[0]).ok().map(|t| (sty, t)),
         };
         let bodies: Vec<&V> = arms.iter().map(|a| &items(a)[1]).collect();
+        // `x is P` の脱糖 (`match x { P => true, _ => false }`、P は何も束縛しない): 形を見るだけで、対象を移さない (TAST の `is_shape_test` と同じ)。
+        let is_shape = arms.len() == 2 && nname(pats[1]) == "PWild" && bodies.iter().all(|b| nname(b) == "Lit");
         let slots = self.assigned(&bodies);
         let slot_tys: Vec<Ty> = slots.iter().map(|x| self.slots[*x].1).collect();
         let carry = matches!(res, Some(t) if t != Ty::Unit);
@@ -780,7 +782,7 @@ impl<'a> Lw<'a> {
             // 線形な対象は、`_` 以外の腕では義務を果たす (空の変種の腕も含む)。
             if let Some((n, s)) = &scrut_local {
                 // `if let` の省略された else (構文が作る `PWild`) は消費しない: 対象の線形値の義務が残る (AST と同じ)。
-                if arm_binds.iter().any(|(_, src)| !self.src_is_copy(src)) || (scrut_linear && nname(pat) != "PWild") {
+                if arm_binds.iter().any(|(_, src)| !self.src_is_copy(src)) || (scrut_linear && nname(pat) != "PWild" && !(is_shape && arm_binds.is_empty())) {
                     self.own_emit(n, *s, crate::kir::OwnKind::Consume);
                 }
             }
