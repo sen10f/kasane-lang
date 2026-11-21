@@ -55,11 +55,11 @@ end shapes.grown
 
 fn shapes.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let r = shapes.rect(0.0f64, 0.0f64, 3.0f64, 2.0f64)
-    core.check.is_true(shapes.area(r) == 6.0f64)
-    core.check.is_true(shapes.area(shapes.grown(r, 1.0f64)) == 20.0f64)
+    core.check.eq(shapes.area(r), 6.0f64)
+    core.check.eq(shapes.area(shapes.grown(r, 1.0f64)), 20.0f64)
     let stats = shapes.vertex_stats(r)
     core.check.eq(stats.count, 4i32)
-    core.check.is_true(stats.sum == 10.0f64)
+    core.check.eq(stats.sum, 10.0f64)
     core.check.eq(shapes.area_of_size(6i32, 7i32), 42i32)
     std.io.print_line("shapes ok")
 end shapes.main
@@ -92,11 +92,11 @@ fn shapes.vertex_stats(r: shapes.Rect) -> shapes.Acc uses [] panics never
 end shapes.vertex_stats
 
 test shapes.area.test_area
-    core.check.is_true(shapes.area(shapes.rect(1.0f64, 1.0f64, 4.0f64, 5.0f64)) == 12.0f64)
+    core.check.eq(shapes.area(shapes.rect(1.0f64, 1.0f64, 4.0f64, 5.0f64)), 12.0f64)
 end shapes.area.test_area
 
 test shapes.vertex_stats.test_vertices
     let s = shapes.vertex_stats(shapes.rect(0.0f64, 0.0f64, 1.0f64, 1.0f64))
     core.check.eq(s.count, 4i32)
-    core.check.is_true(s.sum == 4.0f64)
+    core.check.eq(s.sum, 4.0f64)
 end shapes.vertex_stats.test_vertices

@@ -33,11 +33,11 @@ end tutorial_bindgen.for_each
 
 fn tutorial_bindgen.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let p = tutorial_bindgen.make_point(3.0f64, 4.0f64)
-    core.check.is_true(tutorial_bindgen.area(p) == 12.0f64)
+    core.check.eq(tutorial_bindgen.area(p), 12.0f64)
     core.check.eq(tutorial_bindgen.MAX_POINTS, 100i32)
-    core.check.is_true(tutorial_bindgen.RED == 0u32)
-    core.check.is_true(tutorial_bindgen.GREEN == 1u32)
-    core.check.is_true(tutorial_bindgen.BLUE == 2u32)
+    core.check.eq(tutorial_bindgen.RED, 0u32)
+    core.check.eq(tutorial_bindgen.GREEN, 1u32)
+    core.check.eq(tutorial_bindgen.BLUE, 2u32)
     std.io.print_line("tutorial_bindgen ok")?
     Ok(())
 end tutorial_bindgen.main
