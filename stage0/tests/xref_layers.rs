@@ -111,8 +111,10 @@ fn layer_modules_may_reference_their_own_and_lower_layers() {
             ),
         ],
     );
-    let o = run(&["check"], &ok.0);
-    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    // 利用者のパッケージは `core` / `alloc` / `std` の名前を持てない (E1001。供給網の規則 S2/S3)。層の規則 (E1118) は出ない。
+    let o = run(&["check", "--json"], &ok.0);
+    let cs = codes(&text(&o.stdout));
+    assert!(!cs.is_empty() && cs.iter().all(|c| c == "E1001"), "{:?}", cs);
 }
 
 #[test]
