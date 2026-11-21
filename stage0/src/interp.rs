@@ -21,6 +21,7 @@ const PRIMS: &[&str] = &[
 /// 定数の評価 (`const` / `static` の初期化式) が超えた場合の panic の文面 (cli.rs の E4024 が見分ける)。
 pub const STEP_LIMIT_MSG: &str = "the evaluation of the constant exceeded the step limit";
 /// 定数の評価が、評価中の自分自身に戻った (関数越しの循環。cli.rs の E4024 が見分ける)。
+pub const CONST_EFFECT_MSG: &str = "effectful call in a constant initializer";
 pub const CONST_CYCLE_MSG: &str = "the evaluation of the constant depends on itself";
 /// 定数の評価が入れ子で深すぎる (Rust のスタックを守る上限。cli.rs の E4024 が見分ける)。
 pub const CONST_DEPTH_MSG: &str = "the evaluation of the constants is nested too deeply";
@@ -65,6 +66,8 @@ pub struct Interp {
     pub dbg: Option<Box<crate::debug::Debugger>>,
     /// デバッガが式を評価している間 true: 副作用・panic のありうる呼び出しを拒否する (debug.rs)
     pub dbg_guard: bool,
+    /// `const` / `static` の初期化式を評価している間 true: 効果のある呼び出し (`uses` が空でない関数・extern・組み込み) は止める。
+    pub const_guard: bool,
     pub reload: Option<std::sync::mpsc::Receiver<Program>>,
     keep: Vec<Rc<Program>>,
     /// std.fs で開いたファイル (記述子 -> ファイル)
@@ -241,6 +244,7 @@ impl Interp {
             out: std::io::BufWriter::new(Box::new(std::io::stdout())),
             dbg: None,
             dbg_guard: false,
+            const_guard: false,
             reload: None,
             keep: vec![],
             files: HashMap::new(),
@@ -432,7 +436,9 @@ impl Interp {
         }
         let sc = new_scope(None, Rc::from(d.file.as_str()));
         self.const_busy.push(d.name.clone());
+        let prev_guard = std::mem::replace(&mut self.const_guard, true);
         let r = self.eval(d.init.as_ref().unwrap(), &sc);
+        self.const_guard = prev_guard;
         self.const_busy.pop();
         let v = self.coerce(r?, &d.ret);
         self.const_cache.insert(d.name.clone(), v.clone());
@@ -465,6 +471,9 @@ impl Interp {
         }
         if self.dbg_guard {
             self.dbg_guard_def(d)?;
+        }
+        if self.const_guard {
+            self.const_guard_def(d)?;
         }
         self.depth += 1;
         if self.depth > self.max_depth || stack_exhausted() {
@@ -1723,6 +1732,9 @@ impl Interp {
                     return self.invoke_method(recv, parts[parts.len() - 1], it.collect(), None);
                 }
                 if d.kw == "extern" {
+                    if self.const_guard {
+                        return panic(format!("{}: `extern` function {} cannot run during constant evaluation (4.1)", CONST_EFFECT_MSG, d.name));
+                    }
                     return self.extern_call(d, args);
                 }
                 if d.name.starts_with("core.ptr.") {
@@ -1840,6 +1852,9 @@ impl Interp {
         }
         if self.dbg_guard {
             self.dbg_guard_method(name)?;
+        }
+        if self.const_guard {
+            self.const_guard_method(name)?;
         }
         self.native_method(&recv, &v, name, args, place)
     }

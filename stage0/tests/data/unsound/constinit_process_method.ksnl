@@ -1,0 +1,5 @@
+static t.X: bool = std.process.Command.new("/bin/touch").spawn().is_ok()
+
+fn t.main() -> bool uses [] panics never
+    t.X
+end t.main

@@ -650,7 +650,10 @@ impl<'a> Checker<'a> {
                 "const" | "static" => {
                     self.check_header_types(i, &[d.ret.clone()]);
                     if let Some(init) = &d.init {
+                        // 初期化式は検査時に評価される (4.1)。`const fn` と同じ規則: 呼べるのは `const fn` と組み込みだけ。
+                        self.in_const_fn = true;
                         self.visit(init, &mut HashSet::new(), i, true);
+                        self.in_const_fn = false;
                         self.check_const_range(init, &d.ret, i);
                     }
                 }
@@ -2258,6 +2261,10 @@ impl<'a> Checker<'a> {
         self.shadow_check(&params, &HashSet::new(), di, 0);
         self.cur_panics = if test { "may".into() } else { d.panics.clone().unwrap_or("may".into()) };
         self.in_const_fn = !test && d.is_const;
+        // 3.2: `const fn` は `uses []`。検査時に評価されるので、効果のある関数は許さない。
+        if self.in_const_fn && !d.uses.is_empty() {
+            self.diag("E2038", format!("`const fn` {} must be `uses []` (3.2)", d.name), di, 0);
+        }
         self.unsafe_ok = self.module_may_use_unsafe(&d.module);
         let body = d.body.as_ref().unwrap();
         let names = self.def(di).gnames();
@@ -2473,10 +2480,33 @@ impl<'a> Checker<'a> {
                     }
                     let r = self.resolve_path(&segs, di, nline(fnn));
                     if let Some(r) = r {
+                        // 組み込み (Native) も、宣言 (.sig) の `uses` が空でなければ検査時には呼べない。
+                        if self.in_const_fn {
+                            if let Target::Native(n) = &r.target {
+                                if let Some(&si) = self.p.sigs.get(n) {
+                                    let sd = self.def(si);
+                                    if !sd.uses.is_empty() {
+                                        let msg = format!(
+                                            "`const fn` / initializer cannot call {}, which has effects (uses [{}])",
+                                            sd.name,
+                                            sd.uses.join(", ")
+                                        );
+                                        self.diag("E2038", msg, di, nline(e));
+                                    }
+                                }
+                            }
+                        }
                         if matches!(r.target, Target::Fn(_) | Target::Sig(_)) && r.rest.is_empty() {
                             let callee = self.p.fn_def(&r).unwrap();
                             // 3.2: `const fn` の本体から呼べるのは `const fn` と組み込みのみ。
-                            if self.in_const_fn && !callee.is_const {
+                            if self.in_const_fn && !callee.uses.is_empty() {
+                                self.diag(
+                                    "E2038",
+                                    format!("`const fn` / initializer cannot call {}, which has effects (uses [{}])", callee.name, callee.uses.join(", ")),
+                                    di,
+                                    nline(e),
+                                );
+                            } else if self.in_const_fn && !callee.is_const {
                                 self.diag(
                                     "E2038",
                                     format!("`const fn` cannot call non-const fn {}", callee.name),
