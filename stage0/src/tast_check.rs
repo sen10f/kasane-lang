@@ -1,5 +1,5 @@
 //! 新しい検査 (TAST の上の検査、設計_型付き検査.md 4 章の S2・S3) の差し込み口。
-//! 今は何も検査せず、診断 0 件を返す。`KSN_CHECKER=shadow` で旧い検査との差を取る (`tests/shadow_diff.py`)。
+//! 検査の判断は TAST の規則 (tast_rules/) に一本化した (旧い検査は推論と残すパスだけ)。
 //! 規則を移すときは、この `check` の中だけを育てる (呼び出しは cli.rs の 1 か所)。
 
 use crate::check::Diag;
@@ -56,23 +56,14 @@ pub fn check(prog: &Program, user: &[usize]) -> Vec<Diag> {
     out
 }
 
-/// `KSN_CHECKER` の値。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Mode {
-    Old,
-    New,
-    Shadow,
-    /// S4 が既定になるときの形: 新しい規則 + 残す旧パス (設計_S4の切り替え.md 1.1・1.2)。
-    S4,
-}
-
-pub fn mode() -> Mode {
-    match std::env::var("KSN_CHECKER").as_deref() {
-        Ok("new") => Mode::New,
-        Ok("shadow") => Mode::Shadow,
-        Ok("old") => Mode::Old,
-        // 既定は s4 (2026-11-20 に old から切り替え。old / new / shadow は 1 リリースだけ残す)。
-        _ => Mode::S4,
+/// `KSN_CHECKER` の旧い値 (old / new / shadow) は、検査器が 1 つになったので何も変えない。
+/// 1 リリースだけ受け付け、stderr に非推奨を 1 行出す (s4 は黙って受け付ける)。
+fn warn_retired_mode() {
+    if let Ok(v) = std::env::var("KSN_CHECKER") {
+        if matches!(v.as_str(), "old" | "new" | "shadow") {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| eprintln!("warning: KSN_CHECKER={} is deprecated and ignored: there is a single checker now (it will be rejected in the next release)", v));
+        }
     }
 }
 
@@ -100,12 +91,6 @@ fn is_tast_code(code: &str) -> bool {
     matches!(code, "E4001" | "E4002" | "E2042" | "E2021" | "E2052" | "E3031" | "E2030" | "E3002" | "E3003" | "E3006" | "E3040")
 }
 
-/// 型の食い違いの E2023 (引数・欄・要素・ペイロード・パターン)。型パラメータの個数の E2023 (`takes N explicit type argument(s)`)
-/// は旧の解決・推論側に残るので除く (`select` の Old 分岐でだけ使う)。
-fn is_tast_e2023(d: &Diag) -> bool {
-    d.code == "E2023" && !d.msg.contains("type argument")
-}
-
 /// (ファイル, 行, コード, 文面) で重ねる。
 fn dedup(mut out: Vec<Diag>) -> Vec<Diag> {
     let mut seen = std::collections::BTreeSet::new();
@@ -113,72 +98,9 @@ fn dedup(mut out: Vec<Diag>) -> Vec<Diag> {
     out
 }
 
-fn js(s: &str) -> String {
-    let mut o = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => o.push_str("\\\""),
-            '\\' => o.push_str("\\\\"),
-            '\n' => o.push_str("\\n"),
-            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
-            c => o.push(c),
-        }
-    }
-    o.push('"');
-    o
-}
-
-/// 旧い検査の診断と新しい検査の診断を (ファイル, 行, コード) で比べ、差を stderr に 1 行 1 件の JSON で出す。
-/// 返すのは実際に報告する診断 (`old` / `new` / `shadow` のどれでも旧に従う。`new` は新だけ)。
+/// 報告する診断を選ぶ: 新しい規則 (TAST) + 残す旧パス。置き換えた旧パス (S4_REPLACED) の診断だけ旧から外す。
 pub fn select(prog: &Program, user: &[usize], old: Vec<Diag>) -> Vec<Diag> {
-    match mode() {
-        Mode::Old => {
-            // 効果の診断 (E4001/E4002) は旧の検査を持たず、TAST の効果の規則 (effects_*) だけが出す
-            // (設計_S4の旧い検査の取り外し.md 3 段目 1。旧の効果検査は check.rs から消した)。
-            // impl の署名 (E1122) も旧の検査を持たず、TAST の impl_sig 規則が出す (設計_S4の旧い検査の取り外し.md 3 段目 2)。
-            // 他の旧の診断はそのまま出す (check.rs のフィールド可視性の E1122 を含む)。KSN_DUMP_TAST は木を出す確認用。
-            let new = check(prog, user);
-            // E2023 の参照の段数 (引数・欄・ペイロードの `&` の食い違い) は旧の検査を持たず、TAST の ref_levels が出す
-            // (設計_S4の旧い検査の取り外し.md 3 段目 4)。旧に残る型の食い違い (総称・クロージャ・dyn の単一化) は旧が出し、
-            // TAST の E2023 は旧が同じ行で出していない所だけ足す。
-            let old_pos: std::collections::BTreeSet<(String, usize)> =
-                old.iter().filter(|d| d.code == "E2023").map(|d| (d.file.clone(), d.line)).collect();
-            // 寿命・クロージャの E3010/E3030/E3050 も旧の検査 (borrowck.rs の check_lifetime_store / check_return_flow /
-            // check_closure_*) を消したので TAST が出す。旧の競合の検査 (analyze) が同じ (ファイル, 行, コード) で出す所は旧に任せる。
-            let old_life: std::collections::BTreeSet<(String, usize, String)> = old
-                .iter()
-                .filter(|d| matches!(d.code.as_str(), "E3010" | "E3020" | "E3030" | "E3050"))
-                .map(|d| (d.file.clone(), d.line, d.code.clone()))
-                .collect();
-            let kept: Vec<Diag> = old.into_iter().filter(|d| !is_tast_code(&d.code)).collect();
-            let eff: Vec<Diag> = new
-                .into_iter()
-                .filter(|d| {
-                    is_tast_code(&d.code)
-                        || (matches!(d.code.as_str(), "E3010" | "E3020" | "E3030" | "E3050") && !old_life.contains(&(d.file.clone(), d.line, d.code.clone())))
-                        || d.code == "E1122"
-                        || (is_tast_e2023(d) && !old_pos.contains(&(d.file.clone(), d.line)))
-                })
-                .collect();
-            dedup([kept, eff].concat())
-        }
-        Mode::New => check(prog, user),
-        Mode::S4 => {
-            // 新しい規則 + 残す旧パス。置き換えた旧パス (S4_REPLACED) の診断だけ旧から外す。
-            let kept: Vec<Diag> = old.into_iter().filter(|d| !S4_REPLACED.contains(&d.code.as_str())).collect();
-            dedup([kept, check(prog, user)].concat())
-        }
-        Mode::Shadow => {
-            let new = check(prog, user);
-            let key = |d: &Diag| (d.file.clone(), d.line, d.code.clone());
-            let ok: std::collections::BTreeSet<_> = old.iter().map(key).collect();
-            let nk: std::collections::BTreeSet<_> = new.iter().map(key).collect();
-            for (side, a, b) in [("old_only", &ok, &nk), ("new_only", &nk, &ok)] {
-                for (f, l, c) in a.difference(b) {
-                    eprintln!("{{\"shadow\": \"{}\", \"file\": {}, \"line\": {}, \"code\": {}}}", side, js(f), l, js(c));
-                }
-            }
-            old
-        }
-    }
+    warn_retired_mode();
+    let kept: Vec<Diag> = old.into_iter().filter(|d| !S4_REPLACED.contains(&d.code.as_str())).collect();
+    dedup([kept, check(prog, user)].concat())
 }
