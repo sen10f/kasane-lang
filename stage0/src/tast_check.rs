@@ -6,7 +6,7 @@ use crate::check::Diag;
 use crate::program::Program;
 
 /// 新しい検査。`prog` は構築済みのプログラム、`user` は利用者の定義の添字。
-pub fn check(prog: &Program, user: &[usize]) -> Vec<Diag> {
+pub fn check(prog: &Program, user: &[usize], unsafe_modules: &[String]) -> Vec<Diag> {
     let mut tk = crate::types::TypeCk::new(prog);
     for &i in user {
         let d = &prog.defs[i];
@@ -45,7 +45,7 @@ pub fn check(prog: &Program, user: &[usize]) -> Vec<Diag> {
     // 可変にできない場所 (規則 W)。
     out.extend(crate::tast_rules::mutability::check(prog, user, &tast));
     // `extern` / `core.ptr` の呼び出し (規則 U)。
-    out.extend(crate::tast_rules::unsafe_calls::check(prog, user, &tast));
+    out.extend(crate::tast_rules::unsafe_calls::check(prog, user, &tast, unsafe_modules));
     // 型パラメータの境界の充足 (規則 I の拡張)。
     out.extend(crate::tast_rules::bounds::check(prog, user, &tast));
     // 同じ診断を 2 つの規則が出すことがある (参照の段数と型の一致): (ファイル, 行, コード, 文面) で重ねる。
@@ -97,8 +97,8 @@ fn dedup(mut out: Vec<Diag>) -> Vec<Diag> {
 }
 
 /// 報告する診断を選ぶ: 新しい規則 (TAST) + 残す旧パス。置き換えた旧パス (S4_REPLACED) の診断だけ旧から外す。
-pub fn select(prog: &Program, user: &[usize], old: Vec<Diag>) -> Vec<Diag> {
+pub fn select(prog: &Program, user: &[usize], unsafe_modules: &[String], old: Vec<Diag>) -> Vec<Diag> {
     warn_retired_mode();
     let kept: Vec<Diag> = old.into_iter().filter(|d| !S4_REPLACED.contains(&d.code.as_str())).collect();
-    dedup([kept, check(prog, user)].concat())
+    dedup([kept, check(prog, user, unsafe_modules)].concat())
 }

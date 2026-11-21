@@ -1,0 +1,6 @@
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let fit = alloc.alloc.Layout { size: 64usize, align: 8usize }
+    let p = std.alloc.SYSTEM.alloc(fit)?
+    std.alloc.SYSTEM.dealloc(p, fit)
+    Ok(())
+end t.main

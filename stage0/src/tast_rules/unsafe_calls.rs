@@ -9,7 +9,7 @@ use crate::check::Diag;
 use crate::program::{Program, Target};
 use crate::tast::*;
 
-pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
+pub fn check(p: &Program, user: &[usize], tast: &Tast, unsafe_modules: &[String]) -> Vec<Diag> {
     let mut out: Vec<Diag> = vec![];
     for &di in user {
         let d = &p.defs[di];
@@ -57,6 +57,36 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
         });
         found.sort();
         found.dedup();
+        // E5001: 許可の無いモジュールでは、呼び先の署名が生ポインタを持つ呼び出しを、呼び方 (経路・メソッド・総称の境界・閉包の中) に関わらず拒む。
+        if !crate::check::module_allows_unsafe(unsafe_modules, &d.module) {
+            let mut raw: Vec<(usize, String)> = vec![];
+            super::impl_sig::walk(&b.body, &mut |e| {
+                if !matches!(e.kind, TKind::Call { .. } | TKind::MCall { .. }) {
+                    return;
+                }
+                let mut ids: Vec<usize> = vec![];
+                match &e.res {
+                    Some(Callee::Def(i)) | Some(Callee::Dyn(i)) => ids.push(*i),
+                    Some(Callee::Methods(v)) => ids.extend(v.iter().copied()),
+                    _ => {}
+                }
+                for i in ids {
+                    let t = &p.defs[i];
+                    let mname = if let TKind::MCall { name, .. } = &e.kind { name.as_str() } else { "" };
+                    let hit = crate::check::is_unsafe_only(t)
+                        || crate::check::sig_has_ptr(t)
+                        || (t.kw == "trait" && t.trait_sigs.iter().any(|(n, ps, r)| n == mname && (ps.iter().any(|q| crate::check::find_ptr_ty(&q.1, 0).is_some()) || crate::check::find_ptr_ty(r, 0).is_some())));
+                    if hit {
+                        raw.push((e.line, format!("`{}` uses raw pointers and is only allowed in modules listed in [unsafe] modules", t.name)));
+                    }
+                }
+            });
+            raw.sort();
+            raw.dedup();
+            for (line, msg) in raw {
+                out.push(Diag { file: d.file.clone(), code: "E5001".into(), fqn: d.name.clone(), line, col: 0, msg });
+            }
+        }
         for (line, msg) in found {
             out.push(Diag { file: d.file.clone(), code: "E5003".into(), fqn: d.name.clone(), line, col: 0, msg });
         }
