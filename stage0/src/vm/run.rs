@@ -101,6 +101,9 @@ pub struct Vm<'a> {
     socks: std::collections::HashMap<i128, NetSock>,
     /// `std.fs` のファイル表 (記述子 → ファイル)。記述子の番号は `next_fd` と共有する。
     files: std::collections::HashMap<i128, std::fs::File>,
+    /// `std.process` の未起動の `Command` (記述子 → 設定) と、起動した子 (pid → `Child`)。
+    cmds: std::collections::HashMap<i32, std::process::Command>,
+    children: std::collections::HashMap<i32, std::process::Child>,
     next_fd: i128,
     /// コールバックのフレームを積む位置 (`CallExt` の呼び出し元のフレームの上)。
     top: usize,
@@ -209,7 +212,7 @@ fn io_error_bytes(aggs: &[crate::kir::AggDef], kind: &str, code: i32) -> Result<
 
 impl<'a> Vm<'a> {
     pub fn new(prog: &'a Prog) -> Vm<'a> {
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), next_fd: 0, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), children: Default::default(), next_fd: 0, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
     }
 
     /// 最後の panic の位置 (`in <関数> at <ファイル>:<行>`。デバッガと同じ形)。行表がない関数では `None`。
@@ -722,7 +725,11 @@ impl<'a> Vm<'a> {
                     CUR_VM.with(|c| c.set(prev));
                     // コールバックが `regs` を伸ばしたかもしれない。
                     rp = unsafe { self.regs.as_mut_ptr().add(base) };
-                    w!(*d, v? as u64);
+                    // 外部の関数の解決・呼び出しの失敗は木走査と同じく panic (終了コード 101)。
+                    match v {
+                        Ok(x) => w!(*d, x as u64),
+                        Err(m) => return Ok(Outcome::Panic(m)),
+                    }
                 }
                 Ins::Ret { v } => {
                     let abase = match self.frames.last() {
@@ -811,10 +818,29 @@ impl<'a> Vm<'a> {
                         for (k, (off, nb)) in mi.fields.iter().enumerate() {
                             let e = *f.pool.get_unchecked(*argp as usize + k);
                             let sp = rp.add((e & 0xffff) as usize) as *const u8;
-                            std::ptr::copy(sp, dp.add(*off as usize), *nb as usize);
+                            match mi.packs.get(k) {
+                                Some(&(sb, pw)) if sb > 0 => pack_opt(dp.add(*off as usize), sp as *const u64, sb, pw),
+                                _ => std::ptr::copy(sp, dp.add(*off as usize), *nb as usize),
+                            }
                         }
                     }
                 }
+                Ins::LoadOpt { d, p, off, sb, pw } => unsafe {
+                    let src = addr(r!(*p) + *off as u64, *sb as usize + 1)? as *const u8;
+                    unpack_opt(rp.add(*d as usize), src, *sb, *pw);
+                },
+                Ins::StoreOpt { p, off, v, sb, pw } => unsafe {
+                    let dst = addr(r!(*p) + *off as u64, *sb as usize + 1)?;
+                    pack_opt(dst, rp.add(*v as usize) as *const u64, *sb, *pw);
+                },
+                Ins::FieldOpt { d, a, off, sb, pw } => unsafe {
+                    let src = (rp.add(*a as usize) as *const u8).add(*off as usize);
+                    unpack_opt(rp.add(*d as usize), src, *sb, *pw);
+                },
+                Ins::SetFieldOpt { d, a, v, off, ns, sb, pw } => unsafe {
+                    std::ptr::copy(rp.add(*a as usize), rp.add(*d as usize), *ns as usize);
+                    pack_opt((rp.add(*d as usize) as *mut u8).add(*off as usize), rp.add(*v as usize) as *const u64, *sb, *pw);
+                },
                 Ins::FieldS { d, a, off, k } => unsafe {
                     let p = (rp.add(*a as usize) as *const u8).add(*off as usize);
                     if *k == LK::I128 {
@@ -1136,6 +1162,9 @@ impl<'a> Vm<'a> {
                     self.socks.remove(&fd);
                     w!(*d, 0);
                 }
+                Ins::Proc { d, f, a } => {
+                    self.proc_op(rp, &prog.aggs, *d, *f, *a)?;
+                }
                 Ins::RandFill { d, buf, len, fatal } => {
                     let (p, n) = (r!(*buf), r!(*len) as usize);
                     let mut bytes = vec![0u8; n];
@@ -1342,4 +1371,201 @@ fn fs_err(rp: *mut u64, aggs: &[crate::kir::AggDef], d: S, e: &std::io::Error) -
     unsafe { *rp.add(d as usize) = 1 };
     put_bytes(rp, d as usize + 1, &b);
     Ok(())
+}
+
+/// スロットの形の `Option` / `Result` (先頭がタグの語、続けて `pw` 語の枠) を、集成体のメモリの形 (枠の `sb` バイト、続けてタグの 1 バイト) へ書く。
+/// `dst` は `sb + 1` バイト以上あること。
+unsafe fn pack_opt(dst: *mut u8, src: *const u64, sb: u8, pw: u8) {
+    let sb = sb as usize;
+    std::ptr::write_bytes(dst, 0, sb + 1);
+    let n = sb.min(pw as usize * 8);
+    std::ptr::copy_nonoverlapping(src.add(1) as *const u8, dst, n);
+    *dst.add(sb) = (*src != 0) as u8;
+}
+
+/// `pack_opt` の逆: 集成体のメモリの形から、スロットの形 (タグの語、続けて枠の語) へ読む。
+unsafe fn unpack_opt(dst: *mut u64, src: *const u8, sb: u8, pw: u8) {
+    let sb = sb as usize;
+    let pwb = pw as usize * 8;
+    std::ptr::write_bytes(dst.add(1) as *mut u8, 0, pwb);
+    std::ptr::copy(src, dst.add(1) as *mut u8, sb.min(pwb));
+    *dst = (*src.add(sb) & 1) as u64;
+}
+
+/// 子プロセスの一時の出力先 (`output` が標準出力・標準エラーを受ける無名のファイル)。作って直ちに名前を消す (Unix)。
+#[cfg(unix)]
+fn anon_temp_file() -> std::io::Result<std::fs::File> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let p = std::env::temp_dir().join(format!("ksn-proc-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    let f = std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&p)?;
+    let _ = std::fs::remove_file(&p);
+    Ok(f)
+}
+
+/// `Child` (`{ pid, stdin, stdout, stderr }` の 4 つの i32、ないものは -1) の 16 バイト。
+fn child_bytes(v: [i32; 4]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+/// `std.process` の命令。`ProcFn::ALL` の順。結果は `d` に書く (`Result` の Err は `std.io.Error`)。
+impl<'a> Vm<'a> {
+    fn proc_op(&mut self, rp: *mut u64, aggs: &[crate::kir::AggDef], d: S, f: u8, a: [S; 3]) -> Result<(), String> {
+        use crate::kir::ProcFn as P;
+        let kind = *crate::kir::ProcFn::ALL.get(f as usize).ok_or("std.process の未知の命令")?;
+        let h = |s: S| unsafe { *rp.add(s as usize) as u32 as i32 };
+        let fat = |s: S| -> Result<String, String> { Ok(std::str::from_utf8(Self::fat_bytes(rp, s as usize)?).unwrap_or("").to_string()) };
+        let unit = |rp: *mut u64, d: S| unsafe { *rp.add(d as usize) = 0 };
+        #[cfg(not(unix))]
+        {
+            let _ = (h, fat, unit);
+            let e = std::io::Error::new(std::io::ErrorKind::Unsupported, "std.process は Windows の VM では未対応");
+            return fs_err(rp, aggs, d, &e);
+        }
+        #[cfg(unix)]
+        {
+
+            use std::process::{Command, Stdio};
+            let wr = |s: S, v: u64| unsafe { *rp.add(s as usize) = v };
+            match kind {
+                P::New => {
+                    let prog = fat(a[0])?;
+                    let id = self.next_fd as u32 as u64;
+                    self.next_fd += 1;
+                    self.cmds.insert(id as i32, Command::new(prog));
+                    wr(d, id);
+                }
+                P::Arg => {
+                    let s = fat(a[1])?;
+                    if let Some(c) = self.cmds.get_mut(&h(a[0])) {
+                        c.arg(s);
+                    }
+                    unit(rp, d);
+                }
+                P::EnvRemove => {
+                    let s = fat(a[1])?;
+                    if let Some(c) = self.cmds.get_mut(&h(a[0])) {
+                        c.env_remove(s);
+                    }
+                    unit(rp, d);
+                }
+                P::Dir => {
+                    let s = fat(a[1])?;
+                    if let Some(c) = self.cmds.get_mut(&h(a[0])) {
+                        c.current_dir(s);
+                    }
+                    unit(rp, d);
+                }
+                P::Env => {
+                    let (k, v) = (fat(a[1])?, fat(a[2])?);
+                    if let Some(c) = self.cmds.get_mut(&h(a[0])) {
+                        c.env(k, v);
+                    }
+                    unit(rp, d);
+                }
+                P::EnvClear => {
+                    if let Some(c) = self.cmds.get_mut(&h(a[0])) {
+                        c.env_clear();
+                    }
+                    unit(rp, d);
+                }
+                P::InPiped | P::InNull | P::OutPiped | P::OutNull | P::ErrPiped | P::ErrNull => {
+                    let mode = |piped: bool| if piped { Stdio::piped() } else { Stdio::null() };
+                    if let Some(c) = self.cmds.get_mut(&h(a[0])) {
+                        match kind {
+                            P::InPiped => c.stdin(mode(true)),
+                            P::InNull => c.stdin(mode(false)),
+                            P::OutPiped => c.stdout(mode(true)),
+                            P::OutNull => c.stdout(mode(false)),
+                            P::ErrPiped => c.stderr(mode(true)),
+                            _ => c.stderr(mode(false)),
+                        };
+                    }
+                    unit(rp, d);
+                }
+                P::Cancel => {
+                    self.cmds.remove(&h(a[0]));
+                    unit(rp, d);
+                }
+                P::Spawn => {
+                    let Some(mut c) = self.cmds.remove(&h(a[0])) else { return Err("無効な Command の記述子".into()) };
+                    match c.spawn() {
+                        Ok(mut ch) => {
+                            let mut fds = [-1i32; 3];
+                            if let Some(s) = ch.stdin.take() {
+                                fds[0] = self.new_file(std::fs::File::from(std::os::unix::io::OwnedFd::from(s))) as i32;
+                            }
+                            if let Some(s) = ch.stdout.take() {
+                                fds[1] = self.new_file(std::fs::File::from(std::os::unix::io::OwnedFd::from(s))) as i32;
+                            }
+                            if let Some(s) = ch.stderr.take() {
+                                fds[2] = self.new_file(std::fs::File::from(std::os::unix::io::OwnedFd::from(s))) as i32;
+                            }
+                            let pid = ch.id() as i32;
+                            self.children.insert(pid, ch);
+                            wr(d, 0);
+                            put_bytes(rp, d as usize + 1, &child_bytes([pid, fds[0], fds[1], fds[2]]));
+                        }
+                        Err(e) => fs_err(rp, aggs, d, &e)?,
+                    }
+                }
+                P::Output => {
+                    let Some(mut c) = self.cmds.remove(&h(a[0])) else { return Err("無効な Command の記述子".into()) };
+                    c.stdin(Stdio::null());
+                    match c.output() {
+                        Ok(o) => {
+                            let (code, sig) = status_parts(&o.status);
+                            let mut fds = [-1i32; 2];
+                            for (k, bytes) in [o.stdout, o.stderr].into_iter().enumerate() {
+                                let mut f = anon_temp_file().map_err(|e| format!("一時ファイル: {e}"))?;
+                                std::io::Write::write_all(&mut f, &bytes).map_err(|e| format!("一時ファイル: {e}"))?;
+                                std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(0)).map_err(|e| format!("一時ファイル: {e}"))?;
+                                fds[k] = self.new_file(f) as i32;
+                            }
+                            wr(d, 0);
+                            put_bytes(rp, d as usize + 1, &child_bytes([code, sig, fds[0], fds[1]]));
+                        }
+                        Err(e) => fs_err(rp, aggs, d, &e)?,
+                    }
+                }
+                P::Wait => {
+                    let pid = h(a[0]);
+                    let Some(mut ch) = self.children.remove(&pid) else {
+                        let e = std::io::Error::new(std::io::ErrorKind::InvalidInput, "子プロセスではない記述子");
+                        return fs_err(rp, aggs, d, &e);
+                    };
+                    match ch.wait() {
+                        Ok(st) => {
+                            let (code, sig) = status_parts(&st);
+                            wr(d, 0);
+                            put_bytes(rp, d as usize + 1, &child_bytes([code, sig, 0, 0])[..8]);
+                        }
+                        Err(e) => fs_err(rp, aggs, d, &e)?,
+                    }
+                }
+                P::Kill => {
+                    let pid = h(a[0]);
+                    let r = match self.children.get_mut(&pid) {
+                        Some(ch) => ch.kill(),
+                        None => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "子プロセスではない記述子")),
+                    };
+                    match r {
+                        Ok(()) => unit(rp, d),
+                        Err(e) => fs_err(rp, aggs, d, &e)?,
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// 終了の状態 (`code`、シグナルで終わったときは `-1`、`sig`)。Unix のシグナル番号は `sig`、それ以外は 0 (`sysrt.c` の `wait_status` と同じ)。
+#[cfg(unix)]
+fn status_parts(st: &std::process::ExitStatus) -> (i32, i32) {
+    use std::os::unix::process::ExitStatusExt;
+    match st.code() {
+        Some(c) => (c, 0),
+        None => (-1, st.signal().unwrap_or(0)),
+    }
 }

@@ -606,7 +606,12 @@ impl<'a> Fc<'a> {
                     _ => return Err("make の変種が集成体の種類と合わない".into()),
                 };
                 let n = fdefs.len().min(fields.len());
-                let info = MakeInfo { nslots: self.w(ty), variant: *variant, fields: fdefs.iter().take(n).map(|f| (f.off, size_of(&self.m.aggs, f.ty))).collect() };
+                let info = MakeInfo {
+                    nslots: self.w(ty),
+                    variant: *variant,
+                    fields: fdefs.iter().take(n).map(|f| (f.off, size_of(&self.m.aggs, f.ty))).collect(),
+                    packs: fdefs.iter().take(n).map(|f| opt_shape(&self.m.aggs, f.ty).unwrap_or((0, 0))).collect(),
+                };
                 self.prog.makes.push(info);
                 let (argp, _) = self.pool_slots(&fields[..n]);
                 Ins::Make { d, info: (self.prog.makes.len() - 1) as u32, argp }
@@ -614,6 +619,10 @@ impl<'a> Fc<'a> {
             Op::Field { a, off } => match ty {
                 Ty::Agg(ai) => Ins::FieldA { d, a: self.s(*a), off: *off, nb: self.m.aggs[ai as usize].size },
                 Ty::Unit => Ins::ConstI { d, v: 0 },
+                t if opt_shape(&self.m.aggs, t).is_some() => {
+                    let (sb, pw) = opt_shape(&self.m.aggs, t).unwrap_or_default();
+                    Ins::FieldOpt { d, a: self.s(*a), off: *off, sb, pw }
+                }
                 t => {
                     let Some(k) = lk(t) else { return Err(format!("field の型 {} が読めない", t.name())) };
                     Ins::FieldS { d, a: self.s(*a), off: *off, k }
@@ -627,7 +636,10 @@ impl<'a> Fc<'a> {
                 if nb > u16::MAX as u32 || self.w(ty) > u16::MAX as u32 {
                     return Err("setfield の集成体が大きすぎる".into());
                 }
-                Ins::SetField { d, a: self.s(*a), v: self.s(*v), off: *off, ns: self.w(ty) as u16, nb: nb as u16 }
+                match opt_shape(&self.m.aggs, fty) {
+                    Some((sb, pw)) => Ins::SetFieldOpt { d, a: self.s(*a), v: self.s(*v), off: *off, ns: self.w(ty) as u16, sb, pw },
+                    None => Ins::SetField { d, a: self.s(*a), v: self.s(*v), off: *off, ns: self.w(ty) as u16, nb: nb as u16 },
+                }
             }
             Op::Tag(a) => {
                 let a = self.s(*a);
@@ -699,6 +711,11 @@ impl<'a> Fc<'a> {
                 }
             }
             Op::Load(p) => match ty {
+                t if opt_shape(&self.m.aggs, t).is_some() => {
+                    let (pp, off) = self.addr_of(*p);
+                    let (sb, pw) = opt_shape(&self.m.aggs, t).unwrap_or_default();
+                    Ins::LoadOpt { d, p: pp, off, sb, pw }
+                }
                 Ty::Agg(ai) => {
                     self.unfold(*p);
                     Ins::LoadAgg { d, p: self.s(*p), size: self.m.aggs[ai as usize].size }
@@ -718,6 +735,11 @@ impl<'a> Fc<'a> {
                 Ty::Agg(ai) => {
                     self.unfold(*ptr);
                     Ins::StoreAgg { p: self.s(*ptr), v: self.s(*val), size: self.m.aggs[ai as usize].size }
+                }
+                t if opt_shape(&self.m.aggs, t).is_some() => {
+                    let (pp, off) = self.addr_of(*ptr);
+                    let (sb, pw) = opt_shape(&self.m.aggs, t).unwrap_or_default();
+                    Ins::StoreOpt { p: pp, off, v: self.s(*val), sb, pw }
                 }
                 t => {
                     let Some(w) = width(t) else { return Err(format!("store の型 {} が書けない", t.name())) };
@@ -799,7 +821,11 @@ impl<'a> Fc<'a> {
             Op::FsFlush { fd } | Op::FsSync { fd } => Ins::FsSync { d, fd: self.s(*fd) },
             Op::FsRead { fd, buf, len } => Ins::FsRead { d, fd: self.s(*fd), buf: self.s(*buf), len: self.s(*len) },
             Op::FsWrite { fd, buf, len } => Ins::FsWrite { d, fd: self.s(*fd), buf: self.s(*buf), len: self.s(*len) },
-            Op::Proc { .. } => return Err("std.process の命令は VM 未対応".into()),
+            Op::Proc { f, args } => {
+                let k = crate::kir::ProcFn::ALL.iter().position(|x| x == f).ok_or("std.process の未知の命令")? as u8;
+                let at = |i: usize| -> S { args.get(i).map_or(0, |v| self.s(*v)) };
+                Ins::Proc { d, f: k, a: [at(0), at(1), at(2)] }
+            }
             // OS の乱数 (`std.rand.fill_secure` / `from_entropy`) は VM 未対応 (木走査か参照実行器へ退避する)。
             Op::RandFill { buf, len, fatal } => Ins::RandFill { d, buf: self.s(*buf), len: self.s(*len), fatal: *fatal },
             // std.net の追加分 (タイムアウト・shutdown・アドレス・resolve・UDP) も VM 未対応 (木走査へ退避する)。
