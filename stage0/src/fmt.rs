@@ -4,6 +4,7 @@ use regex::Regex;
 
 use crate::lexer::{self, Tok};
 use crate::program::load_file;
+use crate::types::ALLOC_ALIASES;
 use std::collections::HashSet;
 
 const DERIVE_ORDER: &[&str] = &["Debug", "Clone", "Copy", "TryClone", "Drop", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash", "From", "ToJson", "FromJson"];
@@ -353,7 +354,202 @@ fn fix_lists(line: &str) -> String {
     l
 }
 
-/// 末尾位置の `return` (4.6、S7): 関数・クロージャの本体のブロックの最後の式、その `if` (`else` あり) の枝と `match` の腕。
+/// 文字が識別子の構成文字か。
+fn is_alloc_id_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// `<...>` / `(...)` / `[...]` の中を、深さ 1 のカンマで分割したトップレベルの実引数を返す。
+/// 閉じ括弧が見つからなければ None。文字列リテラルの中は分割しない。
+fn parse_group_args(chars: &[char], start: usize) -> Option<(Vec<String>, usize)> {
+    let open = chars[start];
+    let close = match open { '<' => '>', '(' => ')', '[' => ']', _ => return None };
+    let mut depth = 1u32;
+    let mut i = start + 1;
+    let mut cur: Vec<char> = vec![];
+    let mut args: Vec<String> = vec![];
+    let mut in_str = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_str {
+            cur.push(c);
+            if c == '"' {
+                in_str = false;
+            } else if c == '\\' && i + 1 < chars.len() {
+                cur.push(chars[i + 1]);
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '"' => {
+                in_str = true;
+                cur.push(c);
+            }
+            '<' | '[' | '(' => {
+                depth += 1;
+                cur.push(c);
+            }
+            c if c == close => {
+                depth -= 1;
+                if depth == 0 {
+                    args.push(cur.iter().collect());
+                    return Some((args.into_iter().filter(|s| !s.trim().is_empty()).collect(), i + 1));
+                }
+                cur.push(c);
+            }
+            ',' if depth == 1 => {
+                args.push(cur.iter().collect());
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `alloc.x.Y<実引数>` がデフォルト確保器 (`std.alloc.System`) を短縮して書ける形なら、
+/// `std.x.Y<非アロケータ実引数>` を返す。アロケータ引数が省略済みか、明示的に `System` なら短縮する。
+fn short_type_args(std: &str, total: usize, args: &[String]) -> Option<String> {
+    let last_is_system = args.last().map_or(false, |a| a.trim() == "std.alloc.System");
+    let non_sys: Vec<String>;
+    if args.len() == total && last_is_system {
+        non_sys = args.iter().take(total.saturating_sub(1)).map(|a| a.trim().to_string()).collect();
+    } else if args.len() == total.saturating_sub(1) {
+        // 末尾の System の型実引数が省略済み
+        non_sys = args.iter().map(|a| a.trim().to_string()).collect();
+    } else {
+        return None;
+    }
+    if non_sys.is_empty() {
+        Some(std.to_string())
+    } else {
+        Some(format!("{}<{}>", std, non_sys.join(", ")))
+    }
+}
+
+/// デフォルト確保器 (`std.alloc.System`) を短い型名に書き換える。
+/// `alloc.vec.Vec<u8, std.alloc.System>` → `std.vec.Vec<u8>`、
+/// `alloc.vec.Vec<u8>`（末尾の System を省略） → `std.vec.Vec<u8>`、
+/// `alloc.vec.Vec.new(std.alloc.SYSTEM)` → `std.vec.Vec.new()`、
+/// `alloc.vec.Vec.new()` → `std.vec.Vec.new()`。
+/// アロケータが非 System (`alloc.vec.Vec<T, A>` など) や、コンストラクタ以外の
+/// アロケータ取る関数 (`from_str` など)はそのままにする。文字列リテラルの中は触らない。
+/// 入れ子のジェネリクスに対しては、書き換えた後でもう一度走査する。
+fn rewrite_alloc(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let n = chars.len();
+    let mut out: Vec<char> = vec![];
+    let mut i = 0;
+    while i < n {
+        if chars[i] == '"' {
+            out.push('"');
+            i += 1;
+            while i < n && chars[i] != '"' {
+                if chars[i] == '\\' && i + 1 < n {
+                    out.push('\\');
+                    out.push(chars[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                out.push(chars[i]);
+                i += 1;
+            }
+            if i < n {
+                out.push('"');
+                i += 1;
+            }
+            continue;
+        }
+        let cand = ALLOC_ALIASES.iter().find(|(_, alloc, _)| {
+            let ac: Vec<char> = alloc.chars().collect();
+            i + ac.len() <= n
+                && chars[i..i + ac.len()] == ac[..]
+                && (i == 0 || !is_alloc_id_char(chars[i - 1]))
+                && (i + ac.len() == n || !is_alloc_id_char(chars[i + ac.len()]))
+        });
+        let Some((std, alloc, total)) = cand else {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        };
+        let alloc_len = alloc.chars().count();
+        let after = i + alloc_len;
+        let mut replaced = false;
+        // 型実引数 `alloc.x.Y<...>`
+        if after < n && chars[after] == '<' {
+            if let Some((args, end)) = parse_group_args(&chars, after) {
+                if let Some(short) = short_type_args(std, *total, &args) {
+                    out.extend(short.chars());
+                    i = end;
+                    replaced = true;
+                }
+            }
+        }
+        // コンストラクタ呼び出し `alloc.x.Y.new[..](...)` または裸の `alloc.x.Y.new`
+        if !replaced && after + 4 <= n && chars[after] == '.' && chars[after + 1] == 'n' && chars[after + 2] == 'e' && chars[after + 3] == 'w'
+            && (after + 4 == n || !is_alloc_id_char(chars[after + 4])) {
+            let mut p = after + 4; // ".new" の後
+            let mut targs: Vec<String> = vec![];
+            if p < n && chars[p] == '<' {
+                if let Some((ts, end)) = parse_group_args(&chars, p) {
+                    targs = ts;
+                    p = end;
+                }
+            }
+            if p < n && chars[p] == '(' {
+                if let Some((rargs, end)) = parse_group_args(&chars, p) {
+                    let last_sys = rargs.last().map_or(false, |a| a.trim() == "std.alloc.SYSTEM");
+                    if rargs.is_empty() || last_sys {
+                        let non_alloc: Vec<String> = if rargs.is_empty() {
+                            vec![]
+                        } else {
+                            rargs.iter().take(rargs.len() - 1).map(|a| a.trim().to_string()).collect()
+                        };
+                        let t = if targs.is_empty() {
+                            String::new()
+                        } else {
+                            format!("<{}>", targs.iter().map(|a| a.trim()).collect::<Vec<_>>().join(", "))
+                        };
+                        let call = if non_alloc.is_empty() { "()".to_string() } else { format!("({})", non_alloc.join(", ")) };
+                        out.extend(format!("{}.new{}{}", std, t, call).chars());
+                        i = end;
+                        replaced = true;
+                    }
+                }
+            } else if p == n || chars[p] == ' ' || chars[p] == '\t' || chars[p] == ',' || chars[p] == ';' || chars[p] == ')' || chars[p] == '>' {
+                // 裸の `alloc.x.Y.new` 参照。ただし `end <修飾名>.new` は定義の終端で、ヘッダと揃える必要があるため
+                // 短縮しない (ヘッダの `alloc.x.Y.new[..]` は `(` で始まる型実引数ではなく `[` なのでそのまま残る)。
+                let is_end_def = i >= 4 && &line[i - 4..i] == "end ";
+                if !is_end_def {
+                    let t = if targs.is_empty() { String::new() } else { format!("<{}>", targs.iter().map(|a| a.trim()).collect::<Vec<_>>().join(", ")) };
+                    out.extend(format!("{}.new{}", std, t).chars());
+                    i = p;
+                    replaced = true;
+                }
+            }
+        }
+        if !replaced {
+            out.extend(alloc.chars());
+            i = after;
+        }
+    }
+    let res: String = out.into_iter().collect();
+    // 入れ子のジェネリクス (`alloc.vec.Vec<alloc.string.String<std.alloc.System>>` など) に対しては、
+    // 一回の走査では内側まで届かないので、変化がなくなるまで繰り返す。
+    if res != line {
+        rewrite_alloc(&res)
+    } else {
+        res
+    }
+}
+
+/// 1 行の中のトークンの間隔 (spacing.rs の表) に加えて、デフォルト確保器の短縮名書き換えを行う。
+fn canon_line_with_alloc(line: &str) -> String {
+    rewrite_alloc(&fix_lists(&crate::spacing::canon_line(&crate::canon::numbers_line(line))))
+}
 /// `(行, 列, 値あり)` を集める。値なしの `return` は `()` に、値ありは `return ` を外す。
 fn tail_returns(v: &crate::parser::V, unit: bool, out: &mut Vec<(usize, usize, bool)>) {
     use crate::parser::V;
@@ -737,9 +933,9 @@ pub fn format_source_with(text: &str, path: &str, canon: bool, own_len: bool) ->
     };
     let mut lines = mechanical(text);
     if canon {
-        // 1 行の中のトークンの間隔 (spacing.rs の表)。
+        // 1 行の中のトークンの間隔 (spacing.rs の表) と、デフォルト確保器の短縮名書き換え。
         for l in lines.iter_mut() {
-            *l = fix_lists(&crate::spacing::canon_line(&crate::canon::numbers_line(l)));
+            *l = canon_line_with_alloc(l);
         }
     }
     if canon {

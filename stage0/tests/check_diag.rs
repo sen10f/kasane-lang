@@ -3153,7 +3153,9 @@ fn fqn_of_an_imported_module_in_a_body_is_an_error_and_fmt_shortens_it() {
     let body_new = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let items: alloc.vec.Vec<t.lib.Item, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let n = items.len()\n    core.mem.drop(items)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
     assert!(SN_CANON.contains(body_old));
     let src = SN_CANON.replace(body_old, body_new);
-    let want = SN_CANON.replace(body_old, &body_new.replace("t.lib.Item", "lib.Item"));
+    // 長い形式 (`alloc.vec.Vec<.., System> = alloc.vec.Vec.new(std.alloc.SYSTEM)`) は fmt で短縮名 (`std.vec.Vec<..> = std.vec.Vec.new()`) に書き換えられる。
+    let want_body = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let items: std.vec.Vec<lib.Item> = std.vec.Vec.new()\n    let n = items.len()\n    core.mem.drop(items)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
+    let want = SN_CANON.replace(body_old, want_body);
     sn_roundtrip("sn_body_fqn_ty", &src, &want);
 }
 

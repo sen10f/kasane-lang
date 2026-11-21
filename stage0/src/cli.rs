@@ -2777,6 +2777,13 @@ fn fmt_diag(s: &crate::project::Source, text: &str, relpath: &str, grammar: &Gra
 
 fn cmd_fmt(args: &[String]) -> i32 {
     let check = args.iter().any(|a| a == "--check");
+    let targets: Vec<&str> = args.iter().filter(|a| a.as_str() != "--check").map(|s| s.as_str()).collect();
+    if !targets.is_empty() {
+        // ディレクトリ / ファイル指定モード (パッケージ外: spec/stdlib、bench/tasks、
+        // stage0/tests/data など。kasane.toml は不要。lint・診断は行わず正規形に書き換えるだけ。
+        return cmd_fmt_paths(targets, check);
+    }
+    // パッケージモード (カレントディレクトリの kasane.toml を使う)。
     let root = match find_root() {
         Ok(r) => r,
         Err(e) => {
@@ -2899,6 +2906,77 @@ fn cmd_fmt(args: &[String]) -> i32 {
         }
     }
     if diff || (changed && check) { 1 } else { 0 }
+}
+
+/// ディレクトリまたはファイルを直接整形する (パッケージ外モード)。
+/// 対象は `.ksnl`・`.ksnh`。`.ksnh` を整形したあと横の `.ksnl` を `strip` で作り直す。
+/// lint・診断は行わず、正規形に書き換えるだけ。`--check` なら変更があるときは "would reformat" を出して 1 を返す。
+fn cmd_fmt_paths(targets: Vec<&str>, check: bool) -> i32 {
+    let mut files: Vec<PathBuf> = vec![];
+    for t in &targets {
+        let p = Path::new(t);
+        if p.is_dir() {
+            collect_fmt_files(p, &mut files);
+        } else if p.is_file() {
+            files.push(p.to_path_buf());
+        } else {
+            eprintln!("ksn: E0002: {}: no such file or directory", t);
+            return 1;
+        }
+    }
+    files.sort();
+    files.dedup();
+    let mut changed = false;
+    for f in files {
+        if fmt_one_file(&f, check) {
+            changed = true;
+        }
+    }
+    if check && changed { 1 } else { 0 }
+}
+
+fn collect_fmt_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            collect_fmt_files(&p, out);
+        } else if p.is_file() {
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext == "ksnl" || ext == "ksnh" {
+                out.push(p);
+            }
+        }
+    }
+}
+
+/// 1 ファイルを正規形に書き換える (パッケージ外モード)。変更があれば true。
+fn fmt_one_file(path: &Path, check: bool) -> bool {
+    let Ok(text) = fs::read_to_string(path) else { return false };
+    let s = path.to_string_lossy().replace('\\', "/");
+    let nt = crate::fmt::format_source(&text, &s);
+    let mut changed = false;
+    if path.extension().and_then(|e| e.to_str()) == Some("ksnh") {
+        // `.ksnh` の整形のあと、横の `.ksnl` を `strip` で作り直す (`--check` は食い違いも差分とする)。
+        let w = crate::ksnh::strip(&nt);
+        let out = Path::new(s.trim_end_matches(".ksnh")).with_extension("ksnl");
+        let existing = fs::read_to_string(&out).unwrap_or_default();
+        if existing != w {
+            changed = true;
+            println!("{} {}", if check { "would reformat" } else { "reformatted" }, out.display());
+            if !check {
+                let _ = fs::write(&out, &w);
+            }
+        }
+    }
+    if nt != text {
+        changed = true;
+        println!("{} {}", if check { "would reformat" } else { "reformatted" }, s);
+        if !check {
+            let _ = fs::write(path, &nt);
+        }
+    }
+    changed
 }
 
 fn cmd_explain(args: &[String]) -> i32 {

@@ -773,6 +773,10 @@ impl Program {
             }
             "type" | "enum" | "trait" => {
                 self.types.insert(d.name.clone(), idx);
+                // デフォルト確保器の短縮名 (`std.vec.Vec` = `alloc.vec.Vec<..., std.alloc.System>` など) も型表に入れる。
+                if let Some(short) = crate::types::alloc_std_alias(d.name.as_str()) {
+                    self.types.insert(short.to_string(), idx);
+                }
                 if d.kw == "enum" {
                     if d.derive.iter().any(|x| x == "From") {
                         self.from_enums.insert(d.name.clone());
@@ -812,6 +816,7 @@ impl Program {
 
     pub fn resolve(&self, segs: &[String], file: &str) -> Option<Resolved> {
         crate::s5_meter::count_active("resolve");
+        let segs = Self::expand_alias_segs(segs);
         if segs.len() == 1 {
             let pre = match segs[0].as_str() {
                 "Some" => Some(("Option", "Some")),
@@ -835,10 +840,10 @@ impl Program {
                 segs[0].clone()
             };
             let mut v = vec!["core".to_string(), m];
-            v.extend_from_slice(segs);
+            v.extend_from_slice(&segs);
             v
         } else {
-            self.expand(segs, file)
+            self.expand(&segs, file)
         };
         for k in (1..=segs.len()).rev() {
             let fq = segs[..k].join(".");
@@ -874,6 +879,22 @@ impl Program {
             }
         }
         None
+    }
+
+    /// `std.vec.Vec.new` → `alloc.vec.Vec.new` のように、デフォルト確保器の短縮名 (`std..`) を
+    /// 正式名 (`alloc..`) に置き換える。短縮名がプレフィックスに続く場合も同様に置き換える。
+    fn expand_alias_segs(segs: &[String]) -> Vec<String> {
+        for (std, alloc, _) in crate::types::ALLOC_ALIASES {
+            let std_segs: Vec<&str> = std.split('.').collect();
+            let n = std_segs.len();
+            if segs.len() >= n && segs.iter().zip(std_segs).all(|(s, a)| *s == *a) {
+                let alloc_segs: Vec<&str> = alloc.split('.').collect();
+                let mut v: Vec<String> = alloc_segs.iter().map(|s| s.to_string()).collect();
+                v.extend_from_slice(&segs[n..]);
+                return v;
+            }
+        }
+        segs.to_vec()
     }
 
     pub fn fn_def(&self, r: &Resolved) -> Option<&Def> {

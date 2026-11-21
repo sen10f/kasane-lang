@@ -1,4 +1,0 @@
-fn t.main() -> () uses [] panics never
-    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new()
-    core.mem.drop(v)
-end t.main

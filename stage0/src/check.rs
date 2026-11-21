@@ -2089,7 +2089,10 @@ impl<'a> Checker<'a> {
                 for (k, a) in items(tel(t, 2)).iter().enumerate() {
                     if tag(a) == "dyn" {
                         // `dyn` は `alloc.boxed.Box` の第1型引数にだけ置ける。ライフタイム境界は `'static` のみ (5.1)。
-                        if nm == "alloc.boxed.Box" && k == 0 {
+                        // 短縮名 (`std.boxed.Box` / import 省略の `boxed.Box`) も正式名とみなす。
+                        let is_box = nm == "alloc.boxed.Box"
+                            || crate::types::std_to_alloc(&nm).map_or(false, |a| a == "alloc.boxed.Box");
+                        if is_box && k == 0 {
                             if st(tel(a, 2)) != "'static" {
                                 self.diag("E2047", "`Box<dyn ..>` must be written `dyn Tr + 'static`".into(), di, line);
                             }
@@ -2503,7 +2506,10 @@ impl<'a> Checker<'a> {
                                 );
                             }
                             let n = items(&f[1]).len();
-                            if callee.params.len() != n {
+                            // デフォルト確保器を省略したコンストラクタ (`Vec.new()`): 末尾のアロケータ引数は `System` に既定される。
+                            let alloc_omitted = crate::types::alloc_ctor_allocator_param(callee).is_some()
+                                && n == callee.params.len() - 1;
+                            if callee.params.len() != n && !alloc_omitted {
                                 self.diag(
                                     "E2001",
                                     format!("{} takes {} argument(s) but {} given", callee.name, callee.params.len(), n),
@@ -3505,14 +3511,20 @@ impl<'a> Checker<'a> {
         if wt == "never" || gt == "never" {
             return;
         }
-        let mut msg = format!("type mismatch in {}: expected {}, found {}", what, st(tel(&w, 1)), st(tel(&g, 1)));
+        // デフォルト確保器の短縮名 (`std.vec.Vec`) と正式名 (`alloc.vec.Vec`) は同じ型なので、
+        // 名前を正式名に正規化してから比べる。
+        let wname = st(tel(&w, 1));
+        let gname = st(tel(&g, 1));
+        let cw = crate::types::std_to_alloc(&wname).map_or(wname.clone(), |s| s.to_string());
+        let cg = crate::types::std_to_alloc(&gname).map_or(gname.clone(), |s| s.to_string());
+        let mut msg = format!("type mismatch in {}: expected {}, found {}", what, wname, gname);
         if wt == "prim" && gt == "prim" {
             msg += &crate::types::conv_hint(&st(tel(&w, 1)), &st(tel(&g, 1)));
         }
         if wt == "prim" && gt == "prim" && st(tel(&w, 1)) != st(tel(&g, 1)) {
             self.tdiag("E2020", msg, line);
-        } else if wt == "named" && gt == "named" && st(tel(&w, 1)) != st(tel(&g, 1)) {
-            let (a, b) = (st(tel(&w, 1)), st(tel(&g, 1)));
+        } else if wt == "named" && gt == "named" && cw != cg {
+            let (a, b) = (cw.as_str(), cg.as_str());
             if a != "Option" && a != "Result" && b != "Option" && b != "Result" {
                 self.tdiag("E2020", msg, line);
             }
