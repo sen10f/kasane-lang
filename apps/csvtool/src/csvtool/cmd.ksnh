@@ -67,9 +67,8 @@ end csvtool.cmd.append_field
 // 1 行 (Vec<String>) を区切り文字でつないで追記する。
 fn csvtool.cmd.append_row(out: &mut alloc.string.String<std.alloc.System>, fields: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, delim: char) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let fs = fields.as_slice()
-    let mut i = 0usize
     let n = fs.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match fs.get(i) {
             Some(f) => {
                 if i > 0usize {
@@ -79,7 +78,6 @@ fn csvtool.cmd.append_row(out: &mut alloc.string.String<std.alloc.System>, field
             }
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(())
 end csvtool.cmd.append_row
@@ -98,9 +96,8 @@ fn csvtool.cmd.cols(start: usize) -> Result<(), csvtool.error.Error> uses [alloc
     let path = csvtool.cmd.arg_at(start)?
     let tbl = csvtool.cmd.load_table(path)?
     let h = tbl.header.as_slice()
-    let mut i = 0usize
     let n = h.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match h.get(i) {
             Some(name) => {
                 let mut line = alloc.string.String.new(std.alloc.SYSTEM)
@@ -111,7 +108,6 @@ fn csvtool.cmd.cols(start: usize) -> Result<(), csvtool.error.Error> uses [alloc
             }
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(())
 end csvtool.cmd.cols
@@ -205,14 +201,12 @@ end csvtool.cmd.pad
 // 統計 1 行を表示用テキストにする代わりに、表示列は stat_texts で作る。
 fn csvtool.cmd.print_stats(list: &alloc.vec.Vec<csvtool.agg.Group, std.alloc.System>, title: &str) -> Result<(), csvtool.error.Error> uses [alloc, io.console] panics never pub
     let mut w = csvtool.cmd.Widths.new(title)
-    let mut i = 0usize
     let n = list.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match list.as_slice().get(i) {
             Some(g) => w.grow(g)?
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     let mut head = alloc.string.String.new(std.alloc.SYSTEM)
     let t = csvtool.cmd.pad(title, w.key)?
@@ -224,8 +218,7 @@ fn csvtool.cmd.print_stats(list: &alloc.vec.Vec<csvtool.agg.Group, std.alloc.Sys
     csvtool.cmd.push_col(&mut head, "MAX", w.max)?
     csvtool.cmd.push_col(&mut head, "AVG", w.avg)?
     std.io.print_line(head.as_str())?
-    let mut r = 0usize
-    while r < n {
+    for r in core.iter.range(0usize, n) {
         match list.as_slice().get(r) {
             Some(g) => {
                 let texts = csvtool.cmd.stat_texts(g)?
@@ -242,7 +235,6 @@ fn csvtool.cmd.print_stats(list: &alloc.vec.Vec<csvtool.agg.Group, std.alloc.Sys
             }
             None => core.mem.drop(0u8)
         }
-        r = r.wrapping_add(1usize)
     }
     Ok(())
 end csvtool.cmd.print_stats
@@ -283,10 +275,8 @@ fn csvtool.cmd.resolve_cols(tbl: &csvtool.table.Table, start: usize) -> Result<a
     }
     if cols.is_empty() {
         let w = tbl.width()
-        let mut c = 0usize
-        while c < w {
+        for c in core.iter.range(0usize, w) {
             core.mem.drop(cols.push(c)?)
-            c = c.wrapping_add(1usize)
         }
     }
     Ok(cols)
@@ -300,9 +290,8 @@ fn csvtool.cmd.select(start: usize) -> Result<(), csvtool.error.Error> uses [all
     let cols = csvtool.cmd.resolve_cols(&tbl, start)?
     let mut header_line = alloc.string.String.new(std.alloc.SYSTEM)
     let cs = cols.as_slice()
-    let mut j = 0usize
     let cn = cs.len()
-    while j < cn {
+    for j in core.iter.range(0usize, cn) {
         match cs.get(j) {
             Some(col) => {
                 if j > 0usize {
@@ -315,15 +304,12 @@ fn csvtool.cmd.select(start: usize) -> Result<(), csvtool.error.Error> uses [all
             }
             None => core.mem.drop(0u8)
         }
-        j = j.wrapping_add(1usize)
     }
     std.io.print_line(header_line.as_str())?
     let total = tbl.height()
-    let mut r = 0usize
-    while r < total {
+    for r in core.iter.range(0usize, total) {
         let mut line = alloc.string.String.new(std.alloc.SYSTEM)
-        let mut k = 0usize
-        while k < cn {
+        for k in core.iter.range(0usize, cn) {
             match cs.get(k) {
                 Some(col) => {
                     if k > 0usize {
@@ -340,10 +326,8 @@ fn csvtool.cmd.select(start: usize) -> Result<(), csvtool.error.Error> uses [all
                 }
                 None => core.mem.drop(0u8)
             }
-            k = k.wrapping_add(1usize)
         }
         std.io.print_line(line.as_str())?
-        r = r.wrapping_add(1usize)
     }
     Ok(())
 end csvtool.cmd.select
@@ -393,9 +377,8 @@ fn csvtool.cmd.summary(start: usize) -> Result<(), csvtool.error.Error> uses [al
     let cols = csvtool.cmd.resolve_cols(&tbl, start)?
     let mut list = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let cs = cols.as_slice()
-    let mut j = 0usize
     let cn = cs.len()
-    while j < cn {
+    for j in core.iter.range(0usize, cn) {
         match cs.get(j) {
             Some(col) => {
                 let mut name = ""
@@ -411,7 +394,6 @@ fn csvtool.cmd.summary(start: usize) -> Result<(), csvtool.error.Error> uses [al
             }
             None => core.mem.drop(0u8)
         }
-        j = j.wrapping_add(1usize)
     }
     csvtool.cmd.print_stats(&list, "COLUMN")?
     Ok(())

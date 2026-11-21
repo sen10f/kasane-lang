@@ -1335,7 +1335,7 @@ fn parse_match(line: usize, lines: &[String]) -> Option<MatchText> {
     let body = &first[indent.len()..];
     let at = body.find("match ")?;
     let prefix = &body[..at];
-    if !(prefix.is_empty() || prefix.starts_with("let ") && prefix.ends_with(" = ") && !prefix[4..prefix.len() - 3].contains(' ')) {
+    if !(prefix.is_empty() || prefix.starts_with("let ") && prefix.ends_with(" = ") || prefix.ends_with(" => ") && !prefix.contains("match") || prefix == "return ") {
         return None;
     }
     let scrut = body[at + 6..].strip_suffix(" {")?.to_string();
@@ -1359,8 +1359,12 @@ fn parse_match(line: usize, lines: &[String]) -> Option<MatchText> {
             }
         } else {
             let a = arms.last_mut()?;
-            let ded = l.strip_prefix("    ")?;
-            a.1.push(ded.to_string());
+            // 1 行の腕の続きの行は、書き出し (字下げ + 4) と同じ基準なので動かさない。ブロックの腕の中身は 4 減らす。
+            if a.2 {
+                a.1.push(l.strip_prefix("    ")?.to_string());
+            } else {
+                a.1.push(l.clone());
+            }
         }
     }
     let arms: Vec<(String, Vec<String>)> = arms
@@ -1400,7 +1404,7 @@ fn match_fix(code: &str, file: &str, line: usize, lines: &[String]) -> Vec<Fix> 
         }
         format!("{ind}{}if {} {{\n{}{ind}}} else {{\n{}{ind}}}", m.prefix, m.scrut, join(t), join(f))
     } else {
-        if !m.prefix.is_empty() {
+        if !(m.prefix.is_empty() || m.prefix.ends_with(" => ")) {
             return vec![];
         }
         let (some, none) = match (&m.arms[0], &m.arms[1]) {
@@ -1412,7 +1416,7 @@ fn match_fix(code: &str, file: &str, line: usize, lines: &[String]) -> Vec<Fix> 
         if !unit || some.1.is_empty() {
             return vec![];
         }
-        format!("{ind}if let {} = {} {{\n{}{ind}}}", some.0, m.scrut, join(&some.1))
+        format!("{ind}{}if let {} = {} {{\n{}{ind}}}", m.prefix, some.0, m.scrut, join(&some.1))
     };
     let last = &lines[m.end_line - 1];
     vec![Fix { file: file.to_string(), line, col: 1, end_line: m.end_line, end_col: last.chars().count() + 1, replace: rep }]
@@ -1442,7 +1446,10 @@ fn while_fix(file: &str, line: usize, msg: &str, lines: &[String]) -> Vec<Fix> {
     if !last.starts_with(&step_pre) || !last.ends_with(')') || last[step_pre.len()..last.len() - 1].chars().any(|c| !c.is_alphanumeric()) || body.is_empty() {
         return vec![];
     }
-    let rep = format!("{indent}for {i} in core.iter.range({a}, {b}) {{\n{}{indent}}}", body.iter().map(|x| format!("{x}\n")).collect::<String>());
+    // 本体が `i` を使わないなら `_` (未使用の変数は E1020)。
+    let uses_i = body.iter().any(|l| l.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == i));
+    let var = if uses_i { i } else { "_" };
+    let rep = format!("{indent}for {var} in core.iter.range({a}, {b}) {{\n{}{indent}}}", body.iter().map(|x| format!("{x}\n")).collect::<String>());
     let endl = &lines[end - 1];
     if let_line + 1 == line {
         return vec![Fix { file: file.to_string(), line: let_line, col: 1, end_line: end, end_col: endl.chars().count() + 1, replace: rep }];

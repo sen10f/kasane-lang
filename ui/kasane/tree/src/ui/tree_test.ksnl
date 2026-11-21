@@ -95,13 +95,11 @@ test ui.tree_test.Suite.test_child_at
         Some(v) => core.check.eq(v, b)
         None => core.check.is_true(false)
     }
-    match t.child_at(root, 2usize) {
-        Some(_v) => core.check.is_true(false)
-        None => ()
+    if let Some(_v) = t.child_at(root, 2usize) {
+        core.check.is_true(false)
     }
-    match t.child_at(a, 0usize) {
-        Some(_v) => core.check.is_true(false)
-        None => ()
+    if let Some(_v) = t.child_at(a, 0usize) {
+        core.check.is_true(false)
     }
 end ui.tree_test.Suite.test_child_at
 
@@ -110,26 +108,23 @@ test ui.tree_test.Suite.test_child_at_node_without_children
     let root = ui.tree_test.push_block(&mut t)
     let leaf = ui.tree_test.push_leaf(&mut t)
     core.check.is_true(t.push_child(root, leaf))
-    match t.child_at(leaf, 0usize) {
-        Some(_v) => core.check.is_true(false)
-        None => ()
+    if let Some(_v) = t.child_at(leaf, 0usize) {
+        core.check.is_true(false)
     }
 end ui.tree_test.Suite.test_child_at_node_without_children
 
 test ui.tree_test.Suite.test_child_at_out_of_range
     let mut t = ui.tree.Tree.new()
     let root = ui.tree_test.push_block(&mut t)
-    match t.child_at(root, 0usize) {
-        Some(_v) => core.check.is_true(false)
-        None => ()
+    if let Some(_v) = t.child_at(root, 0usize) {
+        core.check.is_true(false)
     }
 end ui.tree_test.Suite.test_child_at_out_of_range
 
 test ui.tree_test.Suite.test_child_at_unknown_node
     let mut t = ui.tree.Tree.new()
-    match t.child_at(99usize, 0usize) {
-        Some(_v) => core.check.is_true(false)
-        None => ()
+    if let Some(_v) = t.child_at(99usize, 0usize) {
+        core.check.is_true(false)
     }
 end ui.tree_test.Suite.test_child_at_unknown_node
 
@@ -274,9 +269,8 @@ end ui.tree_test.Suite.test_find_key
 test ui.tree_test.Suite.test_find_key_missing
     let mut t = ui.tree.Tree.new()
     let _root = ui.tree_test.push_block(&mut t)
-    match t.find_key(1u64) {
-        Some(_v) => core.check.is_true(false)
-        None => ()
+    if let Some(_v) = t.find_key(1u64) {
+        core.check.is_true(false)
     }
 end ui.tree_test.Suite.test_find_key_missing
 
@@ -357,17 +351,15 @@ end ui.tree_test.Suite.test_parent_of_deep
 test ui.tree_test.Suite.test_parent_of_root_none
     let mut t = ui.tree.Tree.new()
     let root = ui.tree_test.push_block(&mut t)
-    match t.parent_of(root) {
-        Some(_v) => core.check.is_true(false)
-        None => ()
+    if let Some(_v) = t.parent_of(root) {
+        core.check.is_true(false)
     }
 end ui.tree_test.Suite.test_parent_of_root_none
 
 test ui.tree_test.Suite.test_parent_of_unknown_node
     let mut t = ui.tree.Tree.new()
-    match t.parent_of(99usize) {
-        Some(_v) => core.check.is_true(false)
-        None => ()
+    if let Some(_v) = t.parent_of(99usize) {
+        core.check.is_true(false)
     }
 end ui.tree_test.Suite.test_parent_of_unknown_node
 

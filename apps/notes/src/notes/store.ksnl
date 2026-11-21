@@ -22,16 +22,14 @@ fn notes.store.Store.all_notes_len(self: &notes.store.Store) -> usize uses [] pa
 end notes.store.Store.all_notes_len
 
 fn notes.store.Store.get(self: &notes.store.Store, id: i64) -> Option<&notes.note.Note> uses [] panics never pub
-    let mut i = 0usize
     let n = self.notes.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match self.get_at(i) {
             Some(memo) => if memo.id == id {
                 return Some(memo)
             }
             None => return None
         }
-        i = i.wrapping_add(1usize)
     }
     None
 end notes.store.Store.get
@@ -57,9 +55,8 @@ fn notes.store.Store.load(dir: &str) -> Result<notes.store.Store, notes.error.Er
     let mut store = notes.store.Store.new(dir)?
     let entries = std.fs.read_dir(dir)?
     let all = entries.as_slice()
-    let mut i = 0usize
     let n = all.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match all.get(i) {
             Some(e) => if e.kind == std.fs.FileKind.File {
                 let name = e.name.as_str()
@@ -88,7 +85,6 @@ fn notes.store.Store.load(dir: &str) -> Result<notes.store.Store, notes.error.Er
             }
             None => return Err(error.Error.Corrupt)
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(store)
 end notes.store.Store.load
@@ -102,16 +98,14 @@ end notes.store.Store.new
 
 fn notes.store.Store.next_id(self: &notes.store.Store) -> Result<i64, notes.error.Error> uses [] panics never pub
     let mut max = 0i64
-    let mut i = 0usize
     let n = self.notes.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match self.get_at(i) {
             Some(memo) => if memo.id > max {
                 max = memo.id
             }
             None => return Err(error.Error.Corrupt)
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(max.wrapping_add(1i64))
 end notes.store.Store.next_id
@@ -137,9 +131,8 @@ end notes.store.Store.save_note
 
 fn notes.store.Store.search_ids(self: &notes.store.Store, q: &str) -> Result<alloc.vec.Vec<i64, std.alloc.System>, notes.error.Error> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut i = 0usize
     let n = self.notes.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match self.get_at(i) {
             Some(memo) => {
                 let mut matched = false
@@ -151,16 +144,14 @@ fn notes.store.Store.search_ids(self: &notes.store.Store, q: &str) -> Result<all
                 }
                 if !matched {
                     let tg = memo.tags.as_slice()
-                    let mut j = 0usize
                     let m = tg.len()
-                    while j < m {
+                    for j in core.iter.range(0usize, m) {
                         match tg.get(j) {
                             Some(tag) => if tag.as_str().contains(q) {
                                 matched = true
                             }
                             None => core.mem.drop(0u8)
                         }
-                        j = j.wrapping_add(1usize)
                     }
                 }
                 if matched {
@@ -169,7 +160,6 @@ fn notes.store.Store.search_ids(self: &notes.store.Store, q: &str) -> Result<all
             }
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(out)
 end notes.store.Store.search_ids
@@ -200,15 +190,13 @@ end notes.store.Store.set
 
 fn notes.store.Store.tagged_ids(self: &notes.store.Store, tag: &str) -> Result<alloc.vec.Vec<i64, std.alloc.System>, notes.error.Error> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut i = 0usize
     let n = self.notes.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match self.get_at(i) {
             Some(memo) => {
                 let tg = memo.tags.as_slice()
-                let mut j = 0usize
                 let m = tg.len()
-                while j < m {
+                for j in core.iter.range(0usize, m) {
                     match tg.get(j) {
                         Some(t) => if t.as_str() == tag {
                             core.mem.drop(out.push(memo.id)?)
@@ -216,41 +204,35 @@ fn notes.store.Store.tagged_ids(self: &notes.store.Store, tag: &str) -> Result<a
                         }
                         None => core.mem.drop(0u8)
                     }
-                    j = j.wrapping_add(1usize)
                 }
             }
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(out)
 end notes.store.Store.tagged_ids
 
 fn notes.store.Store.tags(self: &notes.store.Store) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut i = 0usize
     let n = self.notes.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match self.get_at(i) {
             Some(memo) => {
                 let tg = memo.tags.as_slice()
-                let mut j = 0usize
                 let m = tg.len()
-                while j < m {
+                for j in core.iter.range(0usize, m) {
                     match tg.get(j) {
                         Some(g) => {
                             let mut found = false
                             let o = out.as_slice()
-                            let mut k = 0usize
                             let o_len = o.len()
-                            while k < o_len {
+                            for k in core.iter.range(0usize, o_len) {
                                 match o.get(k) {
                                     Some(existing) => if *existing == *g {
                                         found = true
                                     }
                                     None => core.mem.drop(0u8)
                                 }
-                                k = k.wrapping_add(1usize)
                             }
                             if !found {
                                 let c = alloc.string.String.from_str(std.alloc.SYSTEM, g.as_str())?
@@ -259,27 +241,23 @@ fn notes.store.Store.tags(self: &notes.store.Store) -> Result<alloc.vec.Vec<allo
                         }
                         None => core.mem.drop(0u8)
                     }
-                    j = j.wrapping_add(1usize)
                 }
             }
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(out)
 end notes.store.Store.tags
 
 fn notes.store.index_of(store: &notes.store.Store, id: i64) -> Result<usize, notes.error.Error> uses [] panics never pub
-    let mut i = 0usize
     let n = store.notes.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match store.get_at(i) {
             Some(memo) => if memo.id == id {
                 return Ok(i)
             }
             None => return Err(error.Error.Corrupt)
         }
-        i = i.wrapping_add(1usize)
     }
     Err(error.Error.NotFound)
 end notes.store.index_of
@@ -315,9 +293,8 @@ fn notes.store.note_to_json(n: &notes.note.Note) -> Result<alloc.string.String<s
     notes.store.write_json_string(&mut out, n.body.as_str())?
     out.push_str(",\"tags\":[")?
     let tg = n.tags.as_slice()
-    let mut i = 0usize
     let m = tg.len()
-    while i < m {
+    for i in core.iter.range(0usize, m) {
         match tg.get(i) {
             Some(tag) => {
                 if i > 0usize {
@@ -327,7 +304,6 @@ fn notes.store.note_to_json(n: &notes.note.Note) -> Result<alloc.string.String<s
             }
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     out.push_str("],\"created_at\":")?
     notes.store.write_json_string(&mut out, n.created_at.as_str())?
@@ -352,9 +328,8 @@ fn notes.store.remove_dir_all(path: &str) -> Result<(), notes.error.Error> uses 
         return Ok(())
     }
     let entries = std.fs.read_dir(path)?
-    let mut i = 0usize
     let n = entries.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match entries.as_slice().get(i) {
             Some(e) => {
                 let mut p = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
@@ -368,7 +343,6 @@ fn notes.store.remove_dir_all(path: &str) -> Result<(), notes.error.Error> uses 
             }
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     core.mem.drop(std.fs.remove_dir(path))
     Ok(())

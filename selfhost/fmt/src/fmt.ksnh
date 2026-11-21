@@ -40,9 +40,10 @@ fn fmt.def_range(d: &fmt.Def, lines: &alloc.vec.Vec<alloc.string.String<std.allo
             break
         }
     }
-    let e = match d.last_line > 0usize {
-        true => d.last_line
-        false => d.line
+    let e = if d.last_line > 0usize {
+        d.last_line
+    } else {
+        d.line
     }
     (s, e)
 end fmt.def_range
@@ -81,22 +82,17 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
 
     let mut pending = n
     let mut impl_has_child = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut zi = 0usize
-    while zi < n {
+    for _ in core.iter.range(0usize, n) {
         impl_has_child.push(false)?
-        zi = zi.wrapping_add(1usize)
     }
     let mut fn_impl = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut fi = 0usize
-    while fi < n {
+    for _ in core.iter.range(0usize, n) {
         fn_impl.push(n)?
-        fi = fi.wrapping_add(1usize)
     }
     let ihc = impl_has_child.as_mut_slice()
     let fis = fn_impl.as_mut_slice()
 
-    let mut di = 0usize
-    while di < n {
+    for di in core.iter.range(0usize, n) {
         let d = match ds.get(di) {
             Some(x) => x
             None => break
@@ -105,26 +101,18 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         if kw == "impl" {
             pending = di
         } else if kw == "fn" && d.has_impls && pending != n {
-            match ihc.get_mut(pending) {
-                Some(p) => {
-                    *p = true
-                }
-                None => ()
+            if let Some(p) = ihc.get_mut(pending) {
+                *p = true
             }
-            match fis.get_mut(di) {
-                Some(p) => {
-                    *p = pending
-                }
-                None => ()
+            if let Some(p) = fis.get_mut(di) {
+                *p = pending
             }
         } else {
             pending = n
         }
-        di = di.wrapping_add(1usize)
     }
 
-    let mut di2 = 0usize
-    while di2 < n {
+    for di2 in core.iter.range(0usize, n) {
         let d = match ds.get(di2) {
             Some(x) => x
             None => break
@@ -150,7 +138,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
                 _ => ()
             }
         }
-        di2 = di2.wrapping_add(1usize)
     }
 
     let g0m = g0.as_mut_slice()
@@ -173,8 +160,7 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
 
     let g0len = g0.len()
     if g0len > 0usize {
-        let mut ki = 0usize
-        while ki < g0len {
+        for ki in core.iter.range(0usize, g0len) {
             let di3 = match g0.get(ki) {
                 Some(x) => *x
                 None => break
@@ -189,14 +175,12 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
             if ki.wrapping_add(1usize) < g0len {
                 out.push('\n')?
             }
-            ki = ki.wrapping_add(1usize)
         }
         first_chunk = false
     }
 
-    let mut ki2 = 0usize
     let g1len = g1.len()
-    while ki2 < g1len {
+    for ki2 in core.iter.range(0usize, g1len) {
         let di3 = match g1.get(ki2) {
             Some(x) => *x
             None => break
@@ -213,12 +197,10 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         }
         first_chunk = false
         out.push_str(chunk.as_str())?
-        ki2 = ki2.wrapping_add(1usize)
     }
 
-    let mut ki2b = 0usize
     let g2len = g2.len()
-    while ki2b < g2len {
+    for ki2b in core.iter.range(0usize, g2len) {
         let di3 = match g2.get(ki2b) {
             Some(x) => *x
             None => break
@@ -235,12 +217,10 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         }
         first_chunk = false
         out.push_str(chunk.as_str())?
-        ki2b = ki2b.wrapping_add(1usize)
     }
 
-    let mut ki2c = 0usize
     let g3len = g3.len()
-    while ki2c < g3len {
+    for ki2c in core.iter.range(0usize, g3len) {
         let di3 = match g3.get(ki2c) {
             Some(x) => *x
             None => break
@@ -257,12 +237,10 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         }
         first_chunk = false
         out.push_str(chunk.as_str())?
-        ki2c = ki2c.wrapping_add(1usize)
     }
 
-    let mut ki2d = 0usize
     let g4len = g4.len()
-    while ki2d < g4len {
+    for ki2d in core.iter.range(0usize, g4len) {
         let di3 = match g4.get(ki2d) {
             Some(x) => *x
             None => break
@@ -279,21 +257,17 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         }
         first_chunk = false
         out.push_str(chunk.as_str())?
-        ki2d = ki2d.wrapping_add(1usize)
     }
 
     let mut emitted_impls = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut ei = 0usize
-    while ei < n {
+    for _ in core.iter.range(0usize, n) {
         emitted_impls.push(false)?
-        ei = ei.wrapping_add(1usize)
     }
     let eism = emitted_impls.as_mut_slice()
 
     let g5len = g5.len()
-    let mut ki3 = 0usize
     let mut impl_just_emitted = false
-    while ki3 < g5len {
+    for ki3 in core.iter.range(0usize, g5len) {
         let di3 = match g5.get(ki3) {
             Some(x) => *x
             None => break
@@ -324,11 +298,8 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
                 }
                 first_chunk = false
                 out.push_str(ptext.as_str())?
-                match eism.get_mut(p) {
-                    Some(pp) => {
-                        *pp = true
-                    }
-                    None => ()
+                if let Some(pp) = eism.get_mut(p) {
+                    *pp = true
                 }
                 impl_just_emitted = true
             }
@@ -347,12 +318,10 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
             first_chunk = false
             out.push_str(chunk.as_str())?
         }
-        ki3 = ki3.wrapping_add(1usize)
     }
 
     let g6len = g6.len()
-    let mut ki4 = 0usize
-    while ki4 < g6len {
+    for ki4 in core.iter.range(0usize, g6len) {
         let di3 = match g6.get(ki4) {
             Some(x) => *x
             None => break
@@ -369,7 +338,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         }
         first_chunk = false
         out.push_str(chunk.as_str())?
-        ki4 = ki4.wrapping_add(1usize)
     }
 
     Ok(out)
@@ -577,13 +545,11 @@ end fmt.leading_kw
 
 fn fmt.main() -> Result<(), fmt.Failure> uses [alloc, env, io.console, io.fs] panics never
     let n = std.env.arg_count()
-    let mut k = 0usize
-    while k < n {
+    for k in core.iter.range(0usize, n) {
         match std.env.arg(k) {
             Some(path) => fmt.process(path)?
             None => return Ok(())
         }
-        k = k.wrapping_add(1usize)
     }
     Ok(())
 end fmt.main
@@ -623,14 +589,12 @@ fn fmt.mechanical(src: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.all
             buf.push(32u8)?
             t2 = t2.wrapping_add(1usize)
         }
-        let mut ci = tabs
-        while ci < trimmed_len {
+        for ci in core.iter.range(tabs, trimmed_len) {
             let c = match bytes.get(ci) {
                 Some(x) => *x
                 None => 0u8
             }
             buf.push(c)?
-            ci = ci.wrapping_add(1usize)
         }
         let buf_slice = buf.as_slice()
         let buf_str = match core.str.from_utf8(buf_slice) {
@@ -717,14 +681,12 @@ fn fmt.name_of(kw: &str, l: &str) -> Result<alloc.string.String<std.alloc.System
         }
     }
     let mut name_buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut i = start
-    while i < end_pos {
+    for i in core.iter.range(start, end_pos) {
         let c = match lb.get(i) {
             Some(x) => *x
             None => 0u8
         }
         name_buf.push(c)?
-        i = i.wrapping_add(1usize)
     }
     let name_slice = name_buf.as_slice()
     let name_str = match core.str.from_utf8(name_slice) {
@@ -775,8 +737,7 @@ fn fmt.scan_defs(lines: &[alloc.string.String<std.alloc.System>]) -> Result<allo
         let name = fmt.name_of(kw, s.as_str())?
         let mut end_line = 0usize
         if fmt.has_body(kw) {
-            let mut j = i.wrapping_add(1usize)
-            while j < n {
+            for j in core.iter.range(i.wrapping_add(1usize), n) {
                 let sj = match lines.get(j) {
                     Some(x) => match alloc.string.String.from_str(std.alloc.SYSTEM, x.as_str()) {
                         Ok(owned) => owned
@@ -788,7 +749,6 @@ fn fmt.scan_defs(lines: &[alloc.string.String<std.alloc.System>]) -> Result<allo
                     end_line = j.wrapping_add(1usize)
                     break
                 }
-                j = j.wrapping_add(1usize)
             }
             if end_line == 0usize {
                 let err = std.io.Error { kind: std.io.ErrorKind.UnexpectedEof, code: 0i32 }
@@ -802,9 +762,10 @@ fn fmt.scan_defs(lines: &[alloc.string.String<std.alloc.System>]) -> Result<allo
         let kw_str = alloc.string.String.from_str(std.alloc.SYSTEM, kw)?
         let def = fmt.def_new(kw_str, name, ln, end_line, has_impls)
         out.push(def)?
-        let ni = match end_line > 0usize {
-            true => end_line
-            false => ln
+        let ni = if end_line > 0usize {
+            end_line
+        } else {
+            ln
         }
         i = ni
     }
@@ -813,8 +774,7 @@ end fmt.scan_defs
 
 fn fmt.sort_def_indices(ds: &[fmt.Def], idxs: &mut [usize]) -> () uses [] panics never pub
     let n = idxs.len()
-    let mut i = 0usize
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         let mut j = i
         while j > 0usize {
             let left = match idxs.get(j.wrapping_sub(1usize)) {
@@ -852,6 +812,5 @@ fn fmt.sort_def_indices(ds: &[fmt.Def], idxs: &mut [usize]) -> () uses [] panics
                 break
             }
         }
-        i = i.wrapping_add(1usize)
     }
 end fmt.sort_def_indices

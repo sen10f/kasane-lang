@@ -60,9 +60,8 @@ fn ui.focus.FocusManager.focus_after_remove(self: &mut ui.focus.FocusManager, re
             Some(v) => v
             None => break
         }
-        let mut j = 0usize
         let n = s.nodes.len()
-        while j < n {
+        for j in core.iter.range(0usize, n) {
             let v = match s.nodes.get(j) {
                 Some(vv) => *vv
                 None => break
@@ -73,7 +72,6 @@ fn ui.focus.FocusManager.focus_after_remove(self: &mut ui.focus.FocusManager, re
                 i = len
                 break
             }
-            j = j.wrapping_add(1usize)
         }
         i = i.wrapping_add(1usize)
     }
@@ -93,13 +91,11 @@ fn ui.focus.FocusManager.focus_after_remove(self: &mut ui.focus.FocusManager, re
                 Some(v) => v
                 None => return None
             }
-            match scope.nodes.remove(node_idx) {
-                Some(_u) => ()
-                None => ()
+            if let Some(_u) = scope.nodes.remove(node_idx) {
+                ()
             }
-            match scope.tab_index.remove(node_idx) {
-                Some(_u) => ()
-                None => ()
+            if let Some(_u) = scope.tab_index.remove(node_idx) {
+                ()
             }
             let n2 = scope.nodes.len()
             nf = if node_idx < n2 {
@@ -150,8 +146,7 @@ fn ui.focus.FocusManager.focus_move(self: &mut ui.focus.FocusManager, dir: ui.fo
     }
     let mut pos = 0usize
     let mut found = false
-    let mut i = 0usize
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let v = match order.get(i) {
             Some(v) => *v
             None => break
@@ -161,7 +156,6 @@ fn ui.focus.FocusManager.focus_move(self: &mut ui.focus.FocusManager, dir: ui.fo
             found = true
             break
         }
-        i = i.wrapping_add(1usize)
     }
     if !found {
         return false
@@ -205,8 +199,7 @@ fn ui.focus.FocusManager.focus_next(self: &mut ui.focus.FocusManager) -> bool us
     }
     let mut pos = 0usize
     let mut found = false
-    let mut i = 0usize
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let v = match order.get(i) {
             Some(v) => *v
             None => break
@@ -216,7 +209,6 @@ fn ui.focus.FocusManager.focus_next(self: &mut ui.focus.FocusManager) -> bool us
             found = true
             break
         }
-        i = i.wrapping_add(1usize)
     }
     let next = if found {
         match pos.wrapping_add(1usize).checked_rem(len) {
@@ -261,8 +253,7 @@ fn ui.focus.FocusManager.focus_previous(self: &mut ui.focus.FocusManager) -> boo
     }
     let mut pos = 0usize
     let mut found = false
-    let mut i = 0usize
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let v = match order.get(i) {
             Some(v) => *v
             None => break
@@ -272,7 +263,6 @@ fn ui.focus.FocusManager.focus_previous(self: &mut ui.focus.FocusManager) -> boo
             found = true
             break
         }
-        i = i.wrapping_add(1usize)
     }
     let next = if found {
         if pos == 0usize {
@@ -301,9 +291,8 @@ fn ui.focus.FocusManager.new() -> ui.focus.FocusManager uses [] panics never pub
 end ui.focus.FocusManager.new
 
 fn ui.focus.FocusManager.scope_add_node(self: &mut ui.focus.FocusManager, scope_id: usize, node: usize) -> bool uses [alloc] panics never pub
-    let mut i = 0usize
     let len = self.scopes.len()
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let sid = match self.scopes.get(i) {
             Some(v) => v.id
             None => break
@@ -320,7 +309,6 @@ fn ui.focus.FocusManager.scope_add_node(self: &mut ui.focus.FocusManager, scope_
             }
             return true
         }
-        i = i.wrapping_add(1usize)
     }
     false
 end ui.focus.FocusManager.scope_add_node
@@ -367,9 +355,8 @@ fn ui.focus.FocusManager.scope_node_position(self: &ui.focus.FocusManager, scope
         Some(v) => v
         None => return None
     }
-    let mut i = 0usize
     let n = s.nodes.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         let v = match s.nodes.get(i) {
             Some(vv) => *vv
             None => break
@@ -377,15 +364,13 @@ fn ui.focus.FocusManager.scope_node_position(self: &ui.focus.FocusManager, scope
         if v == node {
             return Some(i)
         }
-        i = i.wrapping_add(1usize)
     }
     None
 end ui.focus.FocusManager.scope_node_position
 
 fn ui.focus.FocusManager.scope_of(self: &ui.focus.FocusManager, node: usize) -> Option<usize> uses [] panics never pub
-    let mut i = 0usize
     let len = self.scopes.len()
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let s = match self.scopes.get(i) {
             Some(v) => v
             None => break
@@ -393,15 +378,13 @@ fn ui.focus.FocusManager.scope_of(self: &ui.focus.FocusManager, node: usize) -> 
         if s.nodes.contains(&node) {
             return Some(s.id)
         }
-        i = i.wrapping_add(1usize)
     }
     None
 end ui.focus.FocusManager.scope_of
 
 fn ui.focus.FocusManager.scope_ref(self: &ui.focus.FocusManager, scope_id: usize) -> Option<&ui.focus.Scope> uses [] panics never pub
-    let mut i = 0usize
     let len = self.scopes.len()
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let s = match self.scopes.get(i) {
             Some(v) => v
             None => break
@@ -409,15 +392,13 @@ fn ui.focus.FocusManager.scope_ref(self: &ui.focus.FocusManager, scope_id: usize
         if s.id == scope_id {
             return Some(s)
         }
-        i = i.wrapping_add(1usize)
     }
     None
 end ui.focus.FocusManager.scope_ref
 
 fn ui.focus.FocusManager.scope_set_dir(self: &mut ui.focus.FocusManager, scope_id: usize, dir: ui.focus.Dir) -> bool uses [alloc] panics never pub
-    let mut i = 0usize
     let len = self.scopes.len()
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let sid = match self.scopes.get(i) {
             Some(v) => v.id
             None => break
@@ -434,15 +415,13 @@ fn ui.focus.FocusManager.scope_set_dir(self: &mut ui.focus.FocusManager, scope_i
             }
             return true
         }
-        i = i.wrapping_add(1usize)
     }
     false
 end ui.focus.FocusManager.scope_set_dir
 
 fn ui.focus.FocusManager.scope_set_modal(self: &mut ui.focus.FocusManager, scope_id: usize, modal: bool) -> bool uses [alloc] panics never pub
-    let mut i = 0usize
     let len = self.scopes.len()
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let sid = match self.scopes.get(i) {
             Some(v) => v.id
             None => break
@@ -459,15 +438,13 @@ fn ui.focus.FocusManager.scope_set_modal(self: &mut ui.focus.FocusManager, scope
             }
             return true
         }
-        i = i.wrapping_add(1usize)
     }
     false
 end ui.focus.FocusManager.scope_set_modal
 
 fn ui.focus.FocusManager.scope_set_tab_index(self: &mut ui.focus.FocusManager, scope_id: usize, node: usize, index: i32) -> bool uses [alloc] panics never pub
-    let mut i = 0usize
     let len = self.scopes.len()
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let sid = match self.scopes.get(i) {
             Some(v) => v.id
             None => break
@@ -484,7 +461,6 @@ fn ui.focus.FocusManager.scope_set_tab_index(self: &mut ui.focus.FocusManager, s
             }
             return r
         }
-        i = i.wrapping_add(1usize)
     }
     false
 end ui.focus.FocusManager.scope_set_tab_index
@@ -496,8 +472,7 @@ fn ui.focus.FocusManager.tab_order(self: &ui.focus.FocusManager, scope_id: usize
     }
     let n = s.nodes.len()
     let mut order = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut i = 0usize
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         let ti = match s.tab_index.get(i) {
             Some(v) => *v
             None => 0i32
@@ -525,12 +500,10 @@ fn ui.focus.FocusManager.tab_order(self: &ui.focus.FocusManager, scope_id: usize
                 Err(_e) => ()
             }
         }
-        i = i.wrapping_add(1usize)
     }
     let mut result = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut k = 0usize
     let kl = order.len()
-    while k < kl {
+    for k in core.iter.range(0usize, kl) {
         let p = match order.get(k) {
             Some(v) => *v
             None => break
@@ -543,7 +516,6 @@ fn ui.focus.FocusManager.tab_order(self: &ui.focus.FocusManager, scope_id: usize
             Ok(_u) => ()
             Err(_e) => ()
         }
-        k = k.wrapping_add(1usize)
     }
     result
 end ui.focus.FocusManager.tab_order
@@ -569,16 +541,14 @@ end ui.focus.FocusManager.trap_scope
 
 fn ui.focus.Keymap.dispatch(self: &ui.focus.Keymap, manager: &ui.focus.FocusManager, key: u32, modifiers: ui.focus.Modifiers) -> Option<u32> uses [alloc] panics never pub
     let chain = manager.scope_chain()
-    let mut ci = 0usize
     let clen = chain.len()
-    while ci < clen {
+    for ci in core.iter.range(0usize, clen) {
         let scope_id = match chain.get(ci) {
             Some(v) => *v
             None => break
         }
-        let mut ei = 0usize
         let elen = self.entries.len()
-        while ei < elen {
+        for ei in core.iter.range(0usize, elen) {
             let e = match self.entries.get(ei) {
                 Some(v) => v
                 None => break
@@ -586,9 +556,7 @@ fn ui.focus.Keymap.dispatch(self: &ui.focus.Keymap, manager: &ui.focus.FocusMana
             if e.scope == scope_id && e.key == key && e.modifiers == modifiers {
                 return Some(e.action)
             }
-            ei = ei.wrapping_add(1usize)
         }
-        ci = ci.wrapping_add(1usize)
     }
     None
 end ui.focus.Keymap.dispatch
@@ -636,17 +604,15 @@ fn ui.focus.Scope.set_modal(self: &mut ui.focus.Scope, modal: bool) -> () uses [
 end ui.focus.Scope.set_modal
 
 fn ui.focus.Scope.set_tab_index(self: &mut ui.focus.Scope, node: usize, index: i32) -> bool uses [alloc] panics never pub
-    let mut i = 0usize
     let len = self.nodes.len()
-    while i < len {
+    for i in core.iter.range(0usize, len) {
         let n = match self.nodes.get(i) {
             Some(v) => *v
             None => break
         }
         if n == node {
-            match self.tab_index.remove(i) {
-                Some(_u) => ()
-                None => ()
+            if let Some(_u) = self.tab_index.remove(i) {
+                ()
             }
             match self.tab_index.insert(i, index) {
                 Ok(_u) => ()
@@ -654,7 +620,6 @@ fn ui.focus.Scope.set_tab_index(self: &mut ui.focus.Scope, node: usize, index: i
             }
             return true
         }
-        i = i.wrapping_add(1usize)
     }
     false
 end ui.focus.Scope.set_tab_index

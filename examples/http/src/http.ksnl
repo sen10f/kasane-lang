@@ -78,8 +78,7 @@ end http.client_send
 
 fn http.content_length(buf: &[u8], head_end: usize) -> Result<usize, http.Error> uses [] panics may
     let key = b"Content-Length: "
-    let mut i = 0usize
-    while i < head_end {
+    for i in core.iter.range(0usize, head_end) {
         if http.has_prefix(buf, i, key) {
             let mut j = i.wrapping_add(key.len())
             let mut value = 0usize
@@ -101,7 +100,6 @@ fn http.content_length(buf: &[u8], head_end: usize) -> Result<usize, http.Error>
             }
             return Err(http.Error.BadResponse)
         }
-        i = i.wrapping_add(1usize)
     }
     Err(http.Error.BadResponse)
 end http.content_length

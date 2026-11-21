@@ -3,8 +3,6 @@ fn native.collatz(n: u64) -> u32 uses [] panics never
     let mut cur = n
     while cur != 1u64 {
         if cur & 1u64 == 0u64 {
-            cur = cur
-            cur = cur.wrapping_sub(cur.wrapping_sub(cur))
             cur = native.half(cur)
         } else {
             cur = cur.wrapping_mul(3u64).wrapping_add(1u64)

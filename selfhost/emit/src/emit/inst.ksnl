@@ -233,8 +233,7 @@ fn emit.inst.call(g: &mut emit.G, dst: usize, ty: usize, rest: &str) -> () uses 
     emit.w(g, "\"(")
     let mut j = 0usize
     let np_item_ii = emit.util.piece_count(argstr, ", ")
-    let mut kk_item_ii = 0usize
-    while kk_item_ii < np_item_ii {
+    for kk_item_ii in core.iter.range(0usize, np_item_ii) {
         let item = emit.util.piece_at(argstr, ", ", kk_item_ii)
         if !item.is_empty() {
             let v = emit.util.vid(item.trim())
@@ -246,7 +245,6 @@ fn emit.inst.call(g: &mut emit.G, dst: usize, ty: usize, rest: &str) -> () uses 
             emit.wv(g, v)
             j = j.wrapping_add(1usize)
         }
-        kk_item_ii = kk_item_ii.wrapping_add(1usize)
     }
     emit.w(g, ")\n")
 end emit.inst.call
@@ -369,15 +367,13 @@ end emit.inst.def_head
 fn emit.inst.edges_of(g: &mut emit.G, to: usize, args: &str) -> () uses [alloc] panics may pub
     let mut j = 0usize
     let np_item_np = emit.util.piece_count(args, ", ")
-    let mut kk_item_np = 0usize
-    while kk_item_np < np_item_np {
+    for kk_item_np in core.iter.range(0usize, np_item_np) {
         let item = emit.util.piece_at(args, ", ", kk_item_np)
         if !item.is_empty() {
             let v = emit.util.vid(item.trim())
             emit.edge(g, to, j, v)
             j = j.wrapping_add(1usize)
         }
-        kk_item_np = kk_item_np.wrapping_add(1usize)
     }
 end emit.inst.edges_of
 
@@ -962,8 +958,7 @@ fn emit.inst.make(g: &mut emit.G, dst: usize, ty: usize, s1: &str, args: &str) -
     }
     let mut j = 0usize
     let np_item_aei = emit.util.piece_count(args, ", ")
-    let mut kk_item_aei = 0usize
-    while kk_item_aei < np_item_aei {
+    for kk_item_aei in core.iter.range(0usize, np_item_aei) {
         let item = emit.util.piece_at(args, ", ", kk_item_aei)
         if !item.is_empty() {
             let v = emit.util.vid(item.trim())
@@ -983,7 +978,6 @@ fn emit.inst.make(g: &mut emit.G, dst: usize, ty: usize, s1: &str, args: &str) -
             acc = o
             j = j.wrapping_add(1usize)
         }
-        kk_item_aei = kk_item_aei.wrapping_add(1usize)
     }
     emit.inst.copy_from(g, dst, ty, acc)
 end emit.inst.make
@@ -1359,10 +1353,8 @@ end emit.inst.place
 
 fn emit.inst.pow2(w: usize) -> i128 uses [] panics never pub
     let mut m = 1i128
-    let mut k = 0usize
-    while k < w {
+    for _ in core.iter.range(0usize, w) {
         m = m.wrapping_mul(2i128)
-        k = k.wrapping_add(1usize)
     }
     m
 end emit.inst.pow2

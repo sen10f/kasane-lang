@@ -235,14 +235,12 @@ end emit.util.open_pos
 fn emit.util.part(s: &str, k: usize) -> &str uses [] panics never pub
     let mut i = 0usize
     let np_p_ie = emit.util.piece_count(s, ".")
-    let mut kk_p_ie = 0usize
-    while kk_p_ie < np_p_ie {
+    for kk_p_ie in core.iter.range(0usize, np_p_ie) {
         let p = emit.util.piece_at(s, ".", kk_p_ie)
         if i == k {
             return p
         }
         i = i.wrapping_add(1usize)
-        kk_p_ie = kk_p_ie.wrapping_add(1usize)
     }
     ""
 end emit.util.part
@@ -250,15 +248,13 @@ end emit.util.part
 // `s` を `sep` で割った `k` 番目の片 (0 始まり)。範囲外は空。
 fn emit.util.piece_at['a](s: &'a str, sep: &str, k: usize) -> &'a str uses [] panics never pub
     let mut r = s
-    let mut i = 0usize
-    while i < k {
+    for _ in core.iter.range(0usize, k) {
         match r.find(sep) {
             Some(p) => {
                 r = emit.util.after(r, p.wrapping_add(sep.len()))
             }
             None => return ""
         }
-        i = i.wrapping_add(1usize)
     }
     match r.find(sep) {
         Some(p) => match r.split_at(p) {

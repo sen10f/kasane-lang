@@ -68,9 +68,8 @@ fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Res
         Some(memo) => {
             let mut new_tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
             let all = memo.tags.as_slice()
-            let mut i = 0usize
             let n = all.len()
-            while i < n {
+            for i in core.iter.range(0usize, n) {
                 match all.get(i) {
                     Some(t) => {
                         let c = alloc.string.String.from_str(std.alloc.SYSTEM, t.as_str())?
@@ -78,7 +77,6 @@ fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Res
                     }
                     None => core.mem.drop(0u8)
                 }
-                i = i.wrapping_add(1usize)
             }
             let created_at = memo.created_at.as_str()
             let updated = note.Note.new(0i64, title, body, new_tags, created_at)?
@@ -174,14 +172,12 @@ end notes.cmd.fmt_i64
 fn notes.cmd.list() -> Result<(), notes.error.Error> uses [alloc, io.console, io.fs] panics never pub
     let db = notes.cmd.load_store()?
     notes.cmd.print_header()?
-    let mut i = 0usize
     let n = db.all_notes_len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match db.get_at(i) {
             Some(memo) => notes.cmd.print_row(memo)?
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(())
 end notes.cmd.list
@@ -198,10 +194,8 @@ fn notes.cmd.pad_left(text: &str, width: usize) -> Result<alloc.string.String<st
     } else {
         out.push_str(text)?
         let pad_count = width.wrapping_sub(text.len())
-        let mut i = 0usize
-        while i < pad_count {
+        for _ in core.iter.range(0usize, pad_count) {
             out.push(' ')?
-            i = i.wrapping_add(1usize)
         }
     }
     Ok(out)
@@ -258,9 +252,8 @@ fn notes.cmd.search(index: usize) -> Result<(), notes.error.Error> uses [alloc, 
     let db = notes.cmd.load_store()?
     let found = db.search_ids(q)?
     notes.cmd.print_header()?
-    let mut i = 0usize
     let n = found.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match found.get(i) {
             Some(found_id) => match db.get(*found_id) {
                 Some(memo) => notes.cmd.print_row(memo)?
@@ -268,7 +261,6 @@ fn notes.cmd.search(index: usize) -> Result<(), notes.error.Error> uses [alloc, 
             }
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(())
 end notes.cmd.search
@@ -323,9 +315,8 @@ fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Er
         Some(memo) => {
             let mut new_tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
             let all = memo.tags.as_slice()
-            let mut i = 0usize
             let n = all.len()
-            while i < n {
+            for i in core.iter.range(0usize, n) {
                 match all.get(i) {
                     Some(t) => {
                         let c = alloc.string.String.from_str(std.alloc.SYSTEM, t.as_str())?
@@ -333,7 +324,6 @@ fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Er
                     }
                     None => core.mem.drop(0u8)
                 }
-                i = i.wrapping_add(1usize)
             }
             let tag_str = alloc.string.String.from_str(std.alloc.SYSTEM, tag)?
             core.mem.drop(new_tags.push(tag_str)?)
@@ -351,9 +341,8 @@ end notes.cmd.tag
 fn notes.cmd.tags_to_string(tags: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     let all = tags.as_slice()
-    let mut i = 0usize
     let n = all.len()
-    while i < n {
+    for i in core.iter.range(0usize, n) {
         match all.get(i) {
             Some(tag) => {
                 if i > 0usize {
@@ -363,7 +352,6 @@ fn notes.cmd.tags_to_string(tags: &alloc.vec.Vec<alloc.string.String<std.alloc.S
             }
             None => core.mem.drop(0u8)
         }
-        i = i.wrapping_add(1usize)
     }
     Ok(out)
 end notes.cmd.tags_to_string

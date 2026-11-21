@@ -200,13 +200,9 @@ fn ui.render.batch_rects(list: &[ui.render.Item], out: &mut [ui.gpu.KsnuiRect]) 
                     let c = ui.render.current_clip(slots, stack_len)
                     wi = ui.render.emit_shadow(*s, c, out, wi)
                 }
-                ui.render.Item.ClipPush(c) => match slots.get_mut(stack_len) {
-                    Some(slot) => {
-                        *slot = *c
-                        stack_len = stack_len.wrapping_add(1usize)
-                    }
-                    None => {
-                    }
+                ui.render.Item.ClipPush(c) => if let Some(slot) = slots.get_mut(stack_len) {
+                    *slot = *c
+                    stack_len = stack_len.wrapping_add(1usize)
                 }
                 ui.render.Item.ClipPop => if stack_len > 0usize {
                     stack_len = stack_len.wrapping_sub(1usize)
@@ -465,15 +461,13 @@ test ui.render.GpuCtx.test_batch_clip
         Err(_e) => core.panic.panic("oom")
     }
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut k = 0usize
     let z = 0.0f32
     let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
-    while k < 16usize {
+    for _ in core.iter.range(0usize, 16usize) {
         match out.push(q) {
             Ok(_u) => ()
             Err(_e) => core.panic.panic("oom")
         }
-        k = k.wrapping_add(1usize)
     }
     let n = ui.render.batch_rects(list.as_slice(), out.as_mut_slice())
     core.check.eq(n, 2usize)
@@ -509,15 +503,13 @@ test ui.render.GpuCtx.test_batch_cull
         Err(_e) => core.panic.panic("oom")
     }
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut k = 0usize
     let z = 0.0f32
     let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
-    while k < 1usize {
+    for _ in core.iter.range(0usize, 1usize) {
         match out.push(q) {
             Ok(_u) => ()
             Err(_e) => core.panic.panic("oom")
         }
-        k = k.wrapping_add(1usize)
     }
     let n = ui.render.batch_rects(list.as_slice(), out.as_mut_slice())
     core.check.eq(n, 0usize)
@@ -544,15 +536,13 @@ test ui.render.GpuCtx.test_batch_order
         Err(_e) => core.panic.panic("oom")
     }
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut k = 0usize
     let z = 0.0f32
     let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
-    while k < 16usize {
+    for _ in core.iter.range(0usize, 16usize) {
         match out.push(q) {
             Ok(_u) => ()
             Err(_e) => core.panic.panic("oom")
         }
-        k = k.wrapping_add(1usize)
     }
     let n = ui.render.batch_rects(list.as_slice(), out.as_mut_slice())
     core.check.eq(n, 3usize)
@@ -585,15 +575,13 @@ test ui.render.GpuCtx.test_batch_shadow
         Err(_e) => core.panic.panic("oom")
     }
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mut k = 0usize
     let z = 0.0f32
     let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
-    while k < 16usize {
+    for _ in core.iter.range(0usize, 16usize) {
         match out.push(q) {
             Ok(_u) => ()
             Err(_e) => core.panic.panic("oom")
         }
-        k = k.wrapping_add(1usize)
     }
     let n = ui.render.batch_rects(list.as_slice(), out.as_mut_slice())
     core.check.eq(n, 2usize)

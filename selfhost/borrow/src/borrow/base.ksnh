@@ -25,8 +25,7 @@ end borrow.base.Tab
 fn borrow.base.block_end(p: &parse.cur.P, open: usize) -> usize uses [] panics never pub
     let n = p.toks.len()
     let mut depth = 0usize
-    let mut k = open
-    while k < n {
+    for k in core.iter.range(open, n) {
         if borrow.base.is_op_tok(p, k, 123u32) {
             depth = depth.wrapping_add(1usize)
         }
@@ -36,7 +35,6 @@ fn borrow.base.block_end(p: &parse.cur.P, open: usize) -> usize uses [] panics n
                 return k
             }
         }
-        k = k.wrapping_add(1usize)
     }
     n
 end borrow.base.block_end
@@ -76,8 +74,7 @@ end borrow.base.flag
 // 関数の戻り値の分類 (末尾の名前から引く)。
 fn borrow.base.fn_lookup(tab: &borrow.base.Tab, name: &str) -> usize uses [] panics never pub
     let n = tab.fnames.len()
-    let mut k = 0usize
-    while k < n {
+    for k in core.iter.range(0usize, n) {
         let same = match tab.fnames.as_slice().get(k) {
             Some(s) => s.as_str() == name
             None => false
@@ -88,7 +85,6 @@ fn borrow.base.fn_lookup(tab: &borrow.base.Tab, name: &str) -> usize uses [] pan
                 None => borrow.base.UNK
             }
         }
-        k = k.wrapping_add(1usize)
     }
     borrow.base.UNK
 end borrow.base.fn_lookup
@@ -143,8 +139,7 @@ end borrow.base.pick
 // 関数の表に名前を入れる (同名は不明)。
 fn borrow.base.put_fn(tab: &mut borrow.base.Tab, name: &str, cls: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = tab.fnames.len()
-    let mut k = 0usize
-    while k < n {
+    for k in core.iter.range(0usize, n) {
         let same = match tab.fnames.as_slice().get(k) {
             Some(s) => s.as_str() == name
             None => false
@@ -153,7 +148,6 @@ fn borrow.base.put_fn(tab: &mut borrow.base.Tab, name: &str, cls: usize) -> Resu
             borrow.base.set_usize(&mut tab.fcls, k, borrow.base.UNK)
             return Ok(())
         }
-        k = k.wrapping_add(1usize)
     }
     tab.fnames.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
     tab.fcls.push(cls)?
@@ -163,8 +157,7 @@ end borrow.base.put_fn
 // 型の表に名前を入れる。既にあれば不明 (0) にする。
 fn borrow.base.put_ty(tab: &mut borrow.base.Tab, name: &str, cls: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = tab.tnames.len()
-    let mut k = 0usize
-    while k < n {
+    for k in core.iter.range(0usize, n) {
         let same = match tab.tnames.as_slice().get(k) {
             Some(s) => s.as_str() == name
             None => false
@@ -173,7 +166,6 @@ fn borrow.base.put_ty(tab: &mut borrow.base.Tab, name: &str, cls: usize) -> Resu
             borrow.base.set_usize(&mut tab.tcls, k, borrow.base.UNK)
             return Ok(())
         }
-        k = k.wrapping_add(1usize)
     }
     tab.tnames.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
     tab.tcls.push(cls)?
@@ -260,8 +252,7 @@ end borrow.base.ty_cls
 // 型の名前 (末尾の成分) の分類。知らなければ不明。
 fn borrow.base.ty_lookup(tab: &borrow.base.Tab, name: &str) -> usize uses [] panics never pub
     let n = tab.tnames.len()
-    let mut k = 0usize
-    while k < n {
+    for k in core.iter.range(0usize, n) {
         let same = match tab.tnames.as_slice().get(k) {
             Some(s) => s.as_str() == name
             None => false
@@ -272,7 +263,6 @@ fn borrow.base.ty_lookup(tab: &borrow.base.Tab, name: &str) -> usize uses [] pan
                 None => borrow.base.UNK
             }
         }
-        k = k.wrapping_add(1usize)
     }
     borrow.base.UNK
 end borrow.base.ty_lookup

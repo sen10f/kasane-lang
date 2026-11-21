@@ -113,15 +113,13 @@ end ksnc.tool.ksn_path
 // リポジトリの根: dir から上へ辿って `spec/stdlib` を含む最初のディレクトリ (6 段まで)。
 fn ksnc.tool.root(dir: &str) -> Result<alloc.string.String<std.alloc.System>, ksnc.Failure> uses [alloc, io.console, io.fs] panics never pub
     let mut base = alloc.string.String.from_str(std.alloc.SYSTEM, dir)?
-    let mut k = 0usize
-    while k < 6usize {
+    for _ in core.iter.range(0usize, 6usize) {
         let probe = std.path.join(base.as_str(), "spec/stdlib")?
         if std.fs.exists(probe.as_str()) {
             return Ok(base)
         }
         let up = std.path.join(base.as_str(), "..")?
         base = up
-        k = k.wrapping_add(1usize)
     }
     ksnc.tool.say_err("ksnc: spec/stdlib が見つからない (パッケージの上の 6 段まで探した)\n")?
     Err(ksnc.Failure.Tool)

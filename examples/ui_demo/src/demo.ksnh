@@ -138,21 +138,18 @@ fn demo.main() -> Result<(), std.io.Error> uses [alloc, env, io.console] panics 
         let mut app = demo.App.new()
         let mut ctx = event.Ctx.new()
         let script = demo.script()
-        let mut f = 0usize
-        while f < frames {
+        for f in core.iter.range(0usize, frames) {
             let limit = if f < script.len() {
                 f.wrapping_add(1usize)
             } else {
                 script.len()
             }
-            let mut k = 0usize
-            while k < limit {
+            for k in core.iter.range(0usize, limit) {
                 let ev = match script.get(k) {
                     Some(e) => e
                     None => break
                 }
                 let _action = demo.update(&mut app, &mut ctx, ev)
-                k = k.wrapping_add(1usize)
             }
             let frame_path = if f.wrapping_add(1usize) == frames {
                 out_path
@@ -160,7 +157,6 @@ fn demo.main() -> Result<(), std.io.Error> uses [alloc, env, io.console] panics 
                 "/tmp/opencode/ui_demo_tmp.png"
             }
             demo.render_frame(&app, &mut c, frame_path)
-            f = f.wrapping_add(1usize)
         }
         core.mem.drop(std.io.print_line("demo: headless frames done"))
     }

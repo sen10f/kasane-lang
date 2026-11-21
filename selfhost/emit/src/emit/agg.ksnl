@@ -17,14 +17,12 @@ fn emit.agg.enum_variant(g: &mut emit.G, id: usize, k: usize, tok: &str) -> () u
     let inner = emit.util.inner(emit.util.after(tok, emit.util.open_pos(tok)))
     let mut vcount = 0usize
     let np_item_t = emit.util.piece_count(inner, ",")
-    let mut kk_item_t = 0usize
-    while kk_item_t < np_item_t {
+    for kk_item_t in core.iter.range(0usize, np_item_t) {
         let item = emit.util.piece_at(inner, ",", kk_item_t)
         if item.contains("@") {
             emit.agg.push_field(g, item, true)
             vcount = vcount.wrapping_add(1usize)
         }
-        kk_item_t = kk_item_t.wrapping_add(1usize)
     }
     emit.agg.push_var(g, id, k, vstart, vcount)
 end emit.agg.enum_variant
@@ -90,23 +88,19 @@ fn emit.agg.parse_line(g: &mut emit.G, line: &str) -> () uses [alloc, io.console
     if is_enum {
         let mut k = 0usize
         let np_tok_cn = emit.util.piece_count(body, " ")
-        let mut kk_tok_cn = 0usize
-        while kk_tok_cn < np_tok_cn {
+        for kk_tok_cn in core.iter.range(0usize, np_tok_cn) {
             let tok = emit.util.piece_at(body, " ", kk_tok_cn)
             emit.agg.enum_variant(g, id, k, tok)
             k = k.wrapping_add(1usize)
-            kk_tok_cn = kk_tok_cn.wrapping_add(1usize)
         }
     } else {
         let np_tok_cs = emit.util.piece_count(body, " ")
-        let mut kk_tok_cs = 0usize
-        while kk_tok_cs < np_tok_cs {
+        for kk_tok_cs in core.iter.range(0usize, np_tok_cs) {
             let tok = emit.util.piece_at(body, " ", kk_tok_cs)
             if tok.contains("@") {
                 emit.agg.push_field(g, tok, false)
                 fcount = fcount.wrapping_add(1usize)
             }
-            kk_tok_cs = kk_tok_cs.wrapping_add(1usize)
         }
     }
     let a = emit.agg.Agg { size: size, is_enum: is_enum, fstart: fstart, fcount: fcount }
