@@ -44,6 +44,19 @@ fn numeric_helpers_agree_across_tree_vm_and_native() {
     assert!(out.ends_with("end\n"), "{}", out);
 }
 
+/// `std.fs` (作成・書き込み・読み出し・メタデータ・ディレクトリの列挙・改名・削除) を、3 つの入口で比べる。
+/// 作業は一時ディレクトリの中だけで行い、終わったら消す。
+#[test]
+fn fs_helpers_agree_across_tree_vm_and_native() {
+    let dir = std::env::temp_dir().join(format!("vm_natives_fs_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let d = dir.to_string_lossy().replace('\\', "/");
+    let src = FS.replace("@DIR@", &d);
+    let out = three_way("vm_natives_fs", &src);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out.ends_with("end\n"), "{}", out);
+}
+
 #[test]
 fn collection_helpers_agree_across_tree_vm_and_native() {
     let out = three_way("vm_natives_coll", COLLECTIONS);
@@ -151,6 +164,28 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(m.contains_key(&104u8), true)
     core.check.eq(m.contains_key(&122u8), false)
     core.check.eq(m.len(), 4usize)
+    std.io.print_line("end")?
+    Ok(())
+end t.main
+"#;
+
+const FS: &str = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.fs, io.console] panics may
+    let dir = "@DIR@"
+    std.fs.create_dir_all(dir)?
+    let p = "@DIR@/a.txt"
+    std.fs.write_atomic(p, b"hello\n")?
+    core.check.eq(std.fs.metadata(p)?.size, 6u64)
+    core.check.eq(std.fs.exists(p), true)
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with mut file = std.fs.open(p)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
+    }
+    core.check.eq(data.len(), 6usize)
+    let ents = std.fs.read_dir(dir)?
+    core.check.eq(ents.len(), 1usize)
+    core.check.eq(std.fs.exists("@DIR@/nope"), false)
+    std.fs.remove_file(p)?
+    core.check.eq(std.fs.exists(p), false)
     std.io.print_line("end")?
     Ok(())
 end t.main

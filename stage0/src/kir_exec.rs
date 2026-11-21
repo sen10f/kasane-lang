@@ -81,7 +81,7 @@ fn alloc_next_fd(next: &mut i128) -> i128 {
 
 /// ディレクトリのエントリのファイル名をバイト列にする。Unix は生バイト、
 /// Windows は UTF-8 のみ扱え、非 UTF-8 なら呼び出し側で `InvalidInput` にするため `None` を返す。
-fn dir_entry_name(ent: &std::fs::DirEntry) -> Option<Vec<u8>> {
+pub(crate) fn dir_entry_name(ent: &std::fs::DirEntry) -> Option<Vec<u8>> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;

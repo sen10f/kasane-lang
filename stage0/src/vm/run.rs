@@ -99,6 +99,8 @@ pub struct Vm<'a> {
     pub args: Vec<String>,
     /// `std.net` のソケット表 (記述子 → ソケット)。
     socks: std::collections::HashMap<i128, NetSock>,
+    /// `std.fs` のファイル表 (記述子 → ファイル)。記述子の番号は `next_fd` と共有する。
+    files: std::collections::HashMap<i128, std::fs::File>,
     next_fd: i128,
     /// コールバックのフレームを積む位置 (`CallExt` の呼び出し元のフレームの上)。
     top: usize,
@@ -207,7 +209,7 @@ fn io_error_bytes(aggs: &[crate::kir::AggDef], kind: &str, code: i32) -> Result<
 
 impl<'a> Vm<'a> {
     pub fn new(prog: &'a Prog) -> Vm<'a> {
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), next_fd: 0, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), next_fd: 0, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
     }
 
     /// 最後の panic の位置 (`in <関数> at <ファイル>:<行>`。デバッガと同じ形)。行表がない関数では `None`。
@@ -332,6 +334,13 @@ impl<'a> Vm<'a> {
         let p = unsafe { malloc(bytes.len().max(1)) } as *mut u8;
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len()) };
         (p as u64, bytes.len() as u64)
+    }
+
+    fn new_file(&mut self, f: std::fs::File) -> i128 {
+        let fd = self.next_fd;
+        self.next_fd += 1;
+        self.files.insert(fd, f);
+        fd
     }
 
     fn new_fd(&mut self, sock: NetSock) -> i128 {
@@ -1127,6 +1136,154 @@ impl<'a> Vm<'a> {
                     self.socks.remove(&fd);
                     w!(*d, 0);
                 }
+                Ins::FsOpen { d, path, create } => {
+                    let s = std::str::from_utf8(Self::fat_bytes(rp, *path as usize)?).unwrap_or("").to_string();
+                    let opened = if *create {
+                        std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&s)
+                    } else {
+                        std::fs::OpenOptions::new().read(true).open(&s)
+                    };
+                    match opened {
+                        Ok(f) => {
+                            let fd = self.new_file(f);
+                            w!(*d, 0);
+                            w!(*d + 1, fd as i32 as u32 as u64);
+                        }
+                        Err(e) => fs_err(rp, &prog.aggs, *d, &e)?,
+                    }
+                }
+                Ins::FsExists { d, path } => {
+                    let s = std::str::from_utf8(Self::fat_bytes(rp, *path as usize)?).unwrap_or("").to_string();
+                    w!(*d, std::path::Path::new(&s).exists() as u64);
+                }
+                Ins::FsRemove { d, path } => {
+                    let s = std::str::from_utf8(Self::fat_bytes(rp, *path as usize)?).unwrap_or("").to_string();
+                    match std::fs::remove_file(&s) {
+                        Ok(()) => w!(*d, 0),
+                        Err(e) => fs_err(rp, &prog.aggs, *d, &e)?,
+                    }
+                }
+                Ins::FsSys { d, kind, a, b, c } => {
+                    // kind: 0 rename・1 create_dir・2 remove_dir・3 open_append・4 stat・5 read_dir (kir_exec の `FsK` と同じ)。
+                    let p0 = std::str::from_utf8(Self::fat_bytes(rp, *a as usize)?).unwrap_or("").to_string();
+                    let res: std::io::Result<u64> = match *kind {
+                        0 => {
+                            let p1 = std::str::from_utf8(Self::fat_bytes(rp, *b as usize)?).unwrap_or("").to_string();
+                            std::fs::rename(&p0, &p1).map(|_| 0)
+                        }
+                        1 => std::fs::create_dir(&p0).map(|_| 0),
+                        2 => std::fs::remove_dir(&p0).map(|_| 0),
+                        3 => std::fs::OpenOptions::new().append(true).create(true).open(&p0).map(|f| self.new_file(f) as u64),
+                        4 => {
+                            let field = r!(*b);
+                            std::fs::metadata(&p0).map(|md| match field {
+                                0 => md.len(),
+                                1 => {
+                                    if md.is_file() {
+                                        0
+                                    } else if md.is_dir() {
+                                        1
+                                    } else {
+                                        2
+                                    }
+                                }
+                                _ => md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos().min(u64::MAX as u128) as u64).unwrap_or(0),
+                            })
+                        }
+                        _ => {
+                            let buf_p = r!(*b);
+                            let cap = r!(*c) as usize;
+                            std::fs::read_dir(&p0).and_then(|rd| {
+                                let mut ents: Vec<(Vec<u8>, u8)> = Vec::new();
+                                for ent in rd {
+                                    let ent = ent?;
+                                    let name = crate::kir_exec::dir_entry_name(&ent).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+                                    let kd = match std::fs::metadata(ent.path()) {
+                                        Ok(md) if md.is_file() => 0u8,
+                                        Ok(md) if md.is_dir() => 1u8,
+                                        _ => 2u8,
+                                    };
+                                    ents.push((name, kd));
+                                }
+                                ents.sort();
+                                let mut out = Vec::new();
+                                for (n, kd) in &ents {
+                                    out.push(*kd);
+                                    out.extend_from_slice(n);
+                                    out.push(0);
+                                }
+                                if !out.is_empty() && out.len() <= cap {
+                                    let dst = addr(buf_p, out.len()).map_err(std::io::Error::other)?;
+                                    unsafe { std::ptr::copy_nonoverlapping(out.as_ptr(), dst as *mut u8, out.len()) };
+                                }
+                                Ok(out.len() as u64)
+                            })
+                        }
+                    };
+                    match res {
+                        Ok(v) => {
+                            w!(*d, 0);
+                            w!(*d + 1, v);
+                        }
+                        Err(e) => fs_err(rp, &prog.aggs, *d, &e)?,
+                    }
+                }
+                Ins::FsClose { d, fd } => {
+                    let fd = r!(*fd) as i32 as i128;
+                    self.files.remove(&fd);
+                    w!(*d, 0);
+                }
+                Ins::FsSync { d, fd } => {
+                    let fd = r!(*fd) as i32 as i128;
+                    let Some(f) = self.files.get(&fd) else { return Err(format!("無効なファイル記述子 {}", fd)) };
+                    match f.sync_all() {
+                        Ok(()) => w!(*d, 0),
+                        Err(e) => fs_err(rp, &prog.aggs, *d, &e)?,
+                    }
+                }
+                Ins::FsRead { d, fd, buf, len } => {
+                    use std::io::Read;
+                    let (fd, p, n) = (r!(*fd) as i32 as i128, r!(*buf), r!(*len) as usize);
+                    let Some(f) = self.files.get_mut(&fd) else { return Err(format!("無効なファイル記述子 {}", fd)) };
+                    let mut tmp = vec![0u8; n];
+                    // 中断 (EINTR) は読み直す (kir_exec と同じ)。
+                    let res = loop {
+                        match f.read(&mut tmp) {
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                            r => break r,
+                        }
+                    };
+                    match res {
+                        Ok(nr) => {
+                            if nr > 0 {
+                                unsafe { std::ptr::copy_nonoverlapping(tmp.as_ptr(), addr(p, nr)?, nr) };
+                            }
+                            w!(*d, 0);
+                            w!(*d + 1, nr as u64);
+                        }
+                        Err(e) => fs_err(rp, &prog.aggs, *d, &e)?,
+                    }
+                }
+                Ins::FsWrite { d, fd, buf, len } => {
+                    use std::io::Write;
+                    let (fd, p, n) = (r!(*fd) as i32 as i128, r!(*buf), r!(*len) as usize);
+                    let bytes: &[u8] = if n == 0 { &[] } else { unsafe { std::slice::from_raw_parts(addr(p, n)? as *const u8, n) } };
+                    // 記述子 2 は標準エラー (`std.io.write_stderr`、kir_exec と同じ)。それ以外は開いているファイルだけ。
+                    if fd == 2 {
+                        self.err_write(bytes);
+                        w!(*d, 0);
+                        w!(*d + 1, n as u64);
+                    } else {
+                        let Some(f) = self.files.get_mut(&fd) else { return Err(format!("書き込みできるのはファイル記述子だけ: {}", fd)) };
+                        match f.write_all(bytes) {
+                            Ok(()) => {
+                                w!(*d, 0);
+                                w!(*d + 1, n as u64);
+                            }
+                            Err(e) => fs_err(rp, &prog.aggs, *d, &e)?,
+                        }
+                    }
+                }
                 Ins::NetLocalPort { d, sock } => {
                     let fd = r!(*sock) as i32 as i128;
                     let Some(NetSock::Listener(l)) = self.socks.get(&fd) else { return Err(format!("local_port できるのはリスナーソケットだけ: {}", fd)) };
@@ -1157,4 +1314,12 @@ impl<'a> Vm<'a> {
 #[allow(dead_code)]
 fn _unused() -> i128 {
     0
+}
+
+/// `std.io.Error` を結果 (`Result<..., std.io.Error>`) の Err として `d` に書く (タグ 1、エラーの値は `d + 1` から)。
+fn fs_err(rp: *mut u64, aggs: &[crate::kir::AggDef], d: S, e: &std::io::Error) -> Result<(), String> {
+    let b = io_error_bytes(aggs, crate::natives::io_kind_name(e), e.raw_os_error().unwrap_or(0))?;
+    unsafe { *rp.add(d as usize) = 1 };
+    put_bytes(rp, d as usize + 1, &b);
+    Ok(())
 }

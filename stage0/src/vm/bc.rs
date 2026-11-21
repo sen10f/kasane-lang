@@ -282,6 +282,19 @@ pub enum Ins {
     NetFlush { d: S, sock: S },
     NetClose { d: S, sock: S },
     NetLocalPort { d: S, sock: S },
+
+    // ---- std.fs (kir_exec と同じ意味。ファイル表は `Vm` が持つ)。結果は `Result<..., std.io.Error>` か `bool`。
+    /// `create`: 作成して切り詰め (`FsCreate`)、false なら読み取り専用 (`FsOpen`)。
+    FsOpen { d: S, path: S, create: bool },
+    FsExists { d: S, path: S },
+    FsRemove { d: S, path: S },
+    /// `kind`: 0 rename・1 create_dir・2 remove_dir・3 open_append・4 stat・5 read_dir (`FsK` の順)。`a` `b` `c` は引数の slot (使わなければ 0)。
+    FsSys { d: S, kind: u8, a: S, b: S, c: S },
+    FsClose { d: S, fd: S },
+    /// `flush` と `sync` はどちらも `sync_all` (kir_exec と同じ)。
+    FsSync { d: S, fd: S },
+    FsRead { d: S, fd: S, buf: S, len: S },
+    FsWrite { d: S, fd: S, buf: S, len: S },
 }
 
 const _: () = assert!(std::mem::size_of::<Ins>() <= 16);

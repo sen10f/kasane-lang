@@ -2,6 +2,7 @@
 //!
 //! 呼び先の解決・型の判定・集成体の配置はここで終える。`Err` は「この KIR は VM が扱えない」理由 (呼び出し側が木走査へ退避する)。
 
+use crate::kir::FsK;
 use std::collections::HashMap;
 
 use super::bc::*;
@@ -778,18 +779,27 @@ impl<'a> Fc<'a> {
                 }
                 Ins::FnPtr { d, f: ci as u32 }
             }
-            // std.fs の命令は VM 未対応 (木走査へ退避する)。
-            Op::Proc { .. }
-            | Op::FsCreate { .. }
-            | Op::FsOpen { .. }
-            | Op::FsExists { .. }
-            | Op::FsRemove { .. }
-            | Op::FsSys { .. }
-            | Op::FsClose { .. }
-            | Op::FsFlush { .. }
-            | Op::FsRead { .. }
-            | Op::FsSync { .. }
-            | Op::FsWrite { .. } => return Err("std.fs の命令は VM 未対応".into()),
+            Op::FsCreate { path } => Ins::FsOpen { d, path: self.s(*path), create: true },
+            Op::FsOpen { path } => Ins::FsOpen { d, path: self.s(*path), create: false },
+            Op::FsExists { path } => Ins::FsExists { d, path: self.s(*path) },
+            Op::FsRemove { path } => Ins::FsRemove { d, path: self.s(*path) },
+            Op::FsSys { kind, args } => {
+                let k = match kind {
+                    FsK::Rename => 0,
+                    FsK::CreateDir => 1,
+                    FsK::RemoveDir => 2,
+                    FsK::OpenAppend => 3,
+                    FsK::Stat => 4,
+                    FsK::ReadDir => 5,
+                };
+                let at = |i: usize| -> S { args.get(i).map_or(0, |v| self.s(*v)) };
+                Ins::FsSys { d, kind: k, a: at(0), b: at(1), c: at(2) }
+            }
+            Op::FsClose { fd } => Ins::FsClose { d, fd: self.s(*fd) },
+            Op::FsFlush { fd } | Op::FsSync { fd } => Ins::FsSync { d, fd: self.s(*fd) },
+            Op::FsRead { fd, buf, len } => Ins::FsRead { d, fd: self.s(*fd), buf: self.s(*buf), len: self.s(*len) },
+            Op::FsWrite { fd, buf, len } => Ins::FsWrite { d, fd: self.s(*fd), buf: self.s(*buf), len: self.s(*len) },
+            Op::Proc { .. } => return Err("std.process の命令は VM 未対応".into()),
             // OS の乱数 (`std.rand.fill_secure` / `from_entropy`) は VM 未対応 (木走査か参照実行器へ退避する)。
             Op::RandFill { .. } => return Err("std.rand の命令は VM 未対応".into()),
             // std.net の追加分 (タイムアウト・shutdown・アドレス・resolve・UDP) も VM 未対応 (木走査へ退避する)。
