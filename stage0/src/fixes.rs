@@ -19,6 +19,82 @@ fn char_idx(text: &str, byte: usize) -> usize {
     text[..byte].chars().count()
 }
 
+/// 文字列として示された型の先頭の `&` の数 (参照の段数)。`&mut u8` は 1、&&`u8` は 2。
+fn ref_depth(ty: &str) -> usize {
+    ty.bytes().take_while(|&b| b == b'&').count()
+}
+
+/// 参照をちょうど1つ外した型 (`&mut u8` → `u8`)。一致の確認に使う。
+fn strip_one_ref(ty: &str) -> &str {
+    let t = ty.strip_prefix('&').unwrap_or(ty);
+    t.strip_prefix("mut ").unwrap_or(t)
+}
+
+/// 診断のある行より上の、最も近い関数ヘッダ行 (`fn ... uses [...] ...`)。行番号は1始まり。
+fn caller_header(lines: &[String], line: usize) -> Option<usize> {
+    let mut n = line.saturating_sub(1);
+    while n > 0 {
+        let t = lines.get(n - 1)?;
+        if t.contains("uses [") && t.split_whitespace().any(|w| w == "fn") {
+            return Some(n);
+        }
+        n -= 1;
+    }
+    None
+}
+
+/// ヘッダが `pub` ならAPIを変えるので直さない (非pubの関数だけに限る)。
+fn is_pub_header(text: &str) -> bool {
+    text.split_whitespace().any(|w| w == "pub")
+}
+
+/// `line` より上の `let name` (または `let mut name`) を関数境界まで遡って探し、
+/// `let name` なら `let mut name` にする (`let mut name` なら何もせず、`None` なら直せない)。
+fn add_mut_to_let(file: &str, line: usize, name: &str, lines: &[String]) -> Vec<Fix> {
+    let mut n = line.saturating_sub(1);
+    while n > 0 {
+        let Some(t) = lines.get(n.wrapping_sub(1)) else { break };
+        let trimmed = t.trim_start();
+        if trimmed.starts_with("fn ") || trimmed.starts_with("end ") {
+            break;
+        }
+        let Some(rest) = trimmed.strip_prefix("let ") else {
+            n -= 1;
+            continue;
+        };
+        let (rest, already_mut) = match rest.strip_prefix("mut ") {
+            Some(r) => (r, true),
+            None => (rest, false),
+        };
+        if rest.starts_with(name)
+            && rest[name.len()..].chars().next().map_or(true, |c| !(c.is_alphanumeric() || c == '_'))
+        {
+            if already_mut {
+                return vec![];
+            }
+            let indent = t.len() - trimmed.len();
+            let b = char_idx(t, indent + 4); // `let ` の後
+            return vec![span(file, n, t, b, b, "mut ".to_string())];
+        }
+        n -= 1;
+    }
+    vec![]
+}
+
+/// `inferred so far: \`T\`` の `T` が、注釈として書いても意味を変えない確かな具体型か。
+/// 推論の穴 (`_`、`{integer}` など) や未解決の型変数が含まれるときは直さない。
+fn is_concrete_type(ty: &str) -> bool {
+    !ty.is_empty()
+        && ty != "_"
+        && !ty.contains('_')
+        && !ty.contains('{')
+        && !ty.contains('}')
+        && !ty.contains('?')
+        && ty
+            .chars()
+            .all(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '.' | ':' | '<' | '>' | '[' | ']' | ',' | ' ' | '&' | '\''))
+}
+
 fn span(file: &str, line: usize, text: &str, from: usize, to: usize, replace: String) -> Fix {
     Fix {
         file: file.to_string(),
@@ -428,6 +504,139 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
                 at = t.len() - 4;
             }
             vec![span(file, line, text, at, at, format!(" {}", want))]
+        }
+        // 呼び出しの引数の型が期待型と参照の段数でちょうど1つだけずれる (E2023)。
+        // 暗黙の参照の付与・外しは行わない (4.2)。段数の差が1で、それ以外の型が一致するときだけ機械的に直す:
+        // 期待側が1段多い → `&x`、実引数側が1段多い → `*x`。行の中の呼び出しが1つだけで、
+        // その引数が単純に特定できるときに限る。
+        "E2023" => {
+            let re = Regex::new(r"argument (\d+) of `([^`]+)`: expected `([^`]*)`, found `([^`]*)`").unwrap();
+            let Some(c) = re.captures(msg) else { return vec![] };
+            let k = match c[1].parse::<usize>() { Ok(k) if k > 0 => k - 1, _ => return vec![] };
+            let want = &c[3];
+            let got = &c[4];
+            let (dw, dg) = (ref_depth(want), ref_depth(got));
+            let kind = if dw == dg + 1 && strip_one_ref(want) == got {
+                b'&'
+            } else if dg == dw + 1 && strip_one_ref(got) == want {
+                b'*'
+            } else {
+                return vec![]
+            };
+            let Some(text) = get(line) else { return vec![] };
+            let seg = c[2].rsplit('.').next().unwrap_or(&c[2]);
+            let needle = format!("{}(", seg);
+            let mut occ = text.match_indices(&needle);
+            let (Some(first), None) = (occ.next().map(|(p, _)| p), occ.next()) else { return vec![] };
+            let open = first + seg.len(); // 行の中の `(` のバイト位置
+            // `(` に対応する `)` と、深さ1のカンマを同じ行の中で探す (文字列・文字リテラルの中は飛ばす)。
+            let mut depth = 1i32;
+            let mut close: Option<usize> = None;
+            let mut commas: Vec<usize> = vec![];
+            let mut j = open + 1;
+            let bs = text.as_bytes();
+            while j < bs.len() {
+                match bs[j] {
+                    b'"' => {
+                        j += 1;
+                        while j < bs.len() && bs[j] != b'"' {
+                            if bs[j] == b'\\' { j += 1; }
+                            j += 1;
+                        }
+                    }
+                    b'\'' => {
+                        if j + 1 < bs.len() && bs[j + 1] == b'\\' { j += 2; }
+                        while j < bs.len() && bs[j] != b'\'' { j += 1; }
+                    }
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' => {
+                        depth -= 1;
+                        if depth == 0 { close = Some(j); break; }
+                    }
+                    b',' if depth == 1 => commas.push(j),
+                    _ => {}
+                }
+                j += 1;
+            }
+            let Some(close) = close else { return vec![] };
+            // カンマで区切った各引数のトリム済みのバイト位置。
+            let mut segs: Vec<(usize, usize)> = vec![];
+            let mut from = open + 1;
+            for &comma in &commas {
+                segs.push((from, comma));
+                from = comma + 1;
+            }
+            segs.push((from, close));
+            let mut trim = |(a, b): (usize, usize)| -> Option<(usize, usize)> {
+                let mut a = a;
+                while a < b && bs[a] == b' ' { a += 1; }
+                let mut b = b;
+                while b > a && bs[b - 1] == b' ' { b -= 1; }
+                (a < b).then_some((a, b))
+            };
+            let segs: Vec<(usize, usize)> = segs.into_iter().filter_map(trim).collect();
+            let Some(&(a0, a1)) = segs.get(k) else { return vec![] };
+            let arg = &text[a0..a1];
+            vec![span(file, line, text, a0, a1, format!("{}{}", kind as char, arg))]
+        }
+        // 呼び出し元の `uses` に足りない効果を追加する (E4001)。APIを変えるので `pub` の関数は直さない。
+        "E4001" => {
+            let re = Regex::new(r"uses effect `([^`]+)`").unwrap();
+            let Some(c) = re.captures(msg) else { return vec![] };
+            let eff = &c[1];
+            let Some(h) = caller_header(lines, line) else { return vec![] };
+            let Some(text) = get(h) else { return vec![] };
+            if is_pub_header(text) {
+                return vec![];
+            }
+            let re = Regex::new(r"uses \[([^\]]*)\]").unwrap();
+            let Some(m) = re.find(text) else { return vec![] };
+            let mut effs: Vec<&str> = m.as_str()[6..].trim_end_matches(']').split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+            if effs.iter().any(|&e| e == eff) {
+                return vec![];
+            }
+            effs.push(eff);
+            effs.sort();
+            // 置き換えの範囲は `uses [...]` 全体なので、`uses ` のキーワードを残す。
+            let new = if effs.is_empty() { "uses []".to_string() } else { format!("uses [{}]", effs.join(", ")) };
+            let b0 = char_idx(text, m.start());
+            let b1 = char_idx(text, m.end());
+            vec![span(file, h, text, b0, b1, new)]
+        }
+        // 呼び出し元の `panics never` を `panics may` にする (E4002)。APIを変えるので `pub` の関数は直さない。
+        "E4002" => {
+            let Some(h) = caller_header(lines, line) else { return vec![] };
+            let Some(text) = get(h) else { return vec![] };
+            if is_pub_header(text) {
+                return vec![];
+            }
+            let re = Regex::new(r"\bpanics never\b").unwrap();
+            let Some(m) = re.find(text) else { return vec![] };
+            let b0 = char_idx(text, m.start());
+            let b1 = char_idx(text, m.end());
+            vec![span(file, h, text, b0, b1, "panics may".to_string())]
+        }
+        // `&mut` で使う場所の束縛を `let mut` にする (E3031)。文面から変数名を得て、`let` 宣言を遡る。
+        "E3031" => {
+            let re = Regex::new(r"declare it with `let mut ([A-Za-z_][A-Za-z0-9_]*)`").unwrap();
+            let Some(c) = re.captures(msg) else { return vec![] };
+            let name = &c[1];
+            add_mut_to_let(file, line, name, lines)
+        }
+        // 型が決まらない `let` 束縛に、推論された具体型の注釈を足す (E2044)。
+        // 束縛が単純な名前で、推論型に穴がないときだけ機械的に直す。
+        "E2044" => {
+            let re = Regex::new(r"inferred so far: `([^`]+)`").unwrap();
+            let Some(c) = re.captures(msg) else { return vec![] };
+            let ty = &c[1];
+            if !is_concrete_type(ty) {
+                return vec![];
+            }
+            let Some(text) = get(line) else { return vec![] };
+            let re = Regex::new(r"^\s*let (?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap();
+            let Some(m) = re.captures(text) else { return vec![] };
+            let name_end = m.get(1).unwrap().end();
+            vec![span(file, line, text, name_end, name_end, format!(": {}", ty))]
         }
         _ => vec![],
     }

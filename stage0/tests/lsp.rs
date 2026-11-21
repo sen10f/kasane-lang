@@ -331,6 +331,37 @@ fn code_action_applies_the_fix() {
 }
 
 #[test]
+fn code_action_e2023_adds_missing_reference() {
+    // `t.a(v)` (v: u8) は `a(x: &u8)` への呼び出しなので、引数に `&` が足りない (E2023)。
+    let src = "\
+fn t.a(x: &u8) -> u8 uses [] panics never pub
+    *x
+end t.a
+
+fn t.main() -> u32 uses [] panics never pub
+    let v = 1u8
+    t.a(v)
+end t.main
+";
+    let t = Tmp::new("e2023", src);
+    let uri = t.uri("src/t.ksnl");
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    c.open(&uri, src);
+    c.diagnostics_until(&uri, |d| !d.is_empty());
+    // `t.a(v)` は 7 行目 (0 始まり 6)。
+    let acts = c.call(
+        "textDocument/codeAction",
+        json!({"textDocument": tdoc(&uri), "range": {"start": {"line": 6, "character": 0}, "end": {"line": 6, "character": 0}}, "context": {"diagnostics": []}}),
+    );
+    let a = acts.as_array().unwrap().iter().find(|a| a["title"].as_str().unwrap().contains("E2023")).expect("quickfix for E2023");
+    assert_eq!(a["kind"], "quickfix");
+    let fixed = apply(src, &a["edit"]["changes"][&uri]);
+    assert!(fixed.contains("t.a(&v)"), "{}", fixed);
+    c.shutdown();
+}
+
+#[test]
 fn hover_definition_references() {
     let t = Tmp::new("nav", SRC_GOOD);
     let uri = t.uri("src/t.ksnh");
