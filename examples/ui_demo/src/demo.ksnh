@@ -218,7 +218,6 @@ fn demo.render_frame(app: &demo.App, gpu_ctx: &mut ui.render.GpuCtx, path: &str)
     let button_bg = render.rgba(0.2f32, 0.6f32, 0.9f32, 1.0f32)
     let row_bg = render.rgba(1.0f32, 1.0f32, 1.0f32, 1.0f32)
     let row_alt = render.rgba(0.98f32, 0.98f32, 0.98f32, 1.0f32)
-
     // 背景
     let w = f32.from_i32_nearest(demo.W)
     let h = f32.from_i32_nearest(demo.H)
@@ -266,7 +265,6 @@ fn demo.render_frame(app: &demo.App, gpu_ctx: &mut ui.render.GpuCtx, path: &str)
     let crx = demo.INPUT_X
     let cry = demo.COUNTER_Y
     demo.push_rect(&mut list, render.mk_rect(crx, cry, 200.0f32, 24.0f32, 0.0f32, white))
-
     let rq = demo.zero_rect()
     let mut rects = [rq; 256]
     let mut glyphs: [gpu.KsnuiGlyphQuad; 0] = []

@@ -70,7 +70,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
     let defs = fmt.scan_defs(lines.as_slice())?
     let n = defs.len()
     let ds = defs.as_slice()
-
     let mut g0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut g1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut g2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -78,7 +77,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
     let mut g4 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut g5 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut g6 = alloc.vec.Vec.new(std.alloc.SYSTEM)
-
     let mut pending = n
     let mut impl_has_child = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut zi = 0usize
@@ -94,7 +92,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
     }
     let ihc = impl_has_child.as_mut_slice()
     let fis = fn_impl.as_mut_slice()
-
     let mut di = 0usize
     while di < n {
         let d = match ds.get(di) {
@@ -122,7 +119,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         }
         di = di.wrapping_add(1usize)
     }
-
     let mut di2 = 0usize
     while di2 < n {
         let d = match ds.get(di2) {
@@ -152,7 +148,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         }
         di2 = di2.wrapping_add(1usize)
     }
-
     let g0m = g0.as_mut_slice()
     fmt.sort_def_indices(ds, g0m)
     let g1m = g1.as_mut_slice()
@@ -167,10 +162,8 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
     fmt.sort_def_indices(ds, g5m)
     let g6m = g6.as_mut_slice()
     fmt.sort_def_indices(ds, g6m)
-
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     let mut first_chunk = true
-
     let g0len = g0.len()
     if g0len > 0usize {
         let mut ki = 0usize
@@ -193,7 +186,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         }
         first_chunk = false
     }
-
     let mut ki2 = 0usize
     let g1len = g1.len()
     while ki2 < g1len {
@@ -215,7 +207,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         out.push_str(chunk.as_str())?
         ki2 = ki2.wrapping_add(1usize)
     }
-
     let mut ki2b = 0usize
     let g2len = g2.len()
     while ki2b < g2len {
@@ -237,7 +228,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         out.push_str(chunk.as_str())?
         ki2b = ki2b.wrapping_add(1usize)
     }
-
     let mut ki2c = 0usize
     let g3len = g3.len()
     while ki2c < g3len {
@@ -259,7 +249,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         out.push_str(chunk.as_str())?
         ki2c = ki2c.wrapping_add(1usize)
     }
-
     let mut ki2d = 0usize
     let g4len = g4.len()
     while ki2d < g4len {
@@ -281,7 +270,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         out.push_str(chunk.as_str())?
         ki2d = ki2d.wrapping_add(1usize)
     }
-
     let mut emitted_impls = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut ei = 0usize
     while ei < n {
@@ -289,7 +277,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         ei = ei.wrapping_add(1usize)
     }
     let eism = emitted_impls.as_mut_slice()
-
     let g5len = g5.len()
     let mut ki3 = 0usize
     let mut impl_just_emitted = false
@@ -349,7 +336,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         }
         ki3 = ki3.wrapping_add(1usize)
     }
-
     let g6len = g6.len()
     let mut ki4 = 0usize
     while ki4 < g6len {
@@ -371,7 +357,6 @@ fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>
         out.push_str(chunk.as_str())?
         ki4 = ki4.wrapping_add(1usize)
     }
-
     Ok(out)
 end fmt.format_source
 

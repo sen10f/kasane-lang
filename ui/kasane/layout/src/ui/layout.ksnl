@@ -140,7 +140,6 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
         true => y + pad
         false => x + pad
     }
-
     let mut basis_sum = 0.0f32
     let mut grow_sum = 0.0f32
     let mut shrink_sum = 0.0f32
@@ -170,7 +169,6 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
     let gap_count = core.num.f32.from_usize_nearest(count.wrapping_sub(1usize))
     let gap_total = style.space.gap * gap_count
     let free = content_main - basis_sum - gap_total
-
     let gs = grow_sum
     let ss = shrink_sum
     let mut total = 0.0f32
@@ -209,7 +207,6 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
         total = total + size
         i = i.wrapping_add(1usize)
     }
-
     let justify_raw = content_main - total - gap_total
     let justify_free = justify_raw.max(0.0f32)
     let (leading, between) = match style.jus {
@@ -225,7 +222,6 @@ fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f
             (0.0f32, b)
         }
     }
-
     let mut cursor = content_start_main + leading
     i = 0usize
     while i < count {

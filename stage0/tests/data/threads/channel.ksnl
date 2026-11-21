@@ -22,7 +22,6 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
     }
     producer.join()
     core.check.eq(sum, 333_833_500u64)
-
     let made_text = std.sync.channel::<alloc.string.String, std.alloc.System>(
         std.alloc.SYSTEM,
         3usize,

@@ -58,7 +58,6 @@ extern golden.raw_ksnui_text_shape(font_path: *const u8, size: f32, face_index: 
 
 fn golden.finish(dev: *mut u8, out: &str) -> () uses [io.console] panics may
     golden.gpu_end(dev)
-
     let mut rgba = [0u8; 76_800]
     let rgba_p = unsafe "ptr" "rgba pointer" {
         core.ptr.from_mut(&mut rgba)
@@ -69,12 +68,10 @@ fn golden.finish(dev: *mut u8, out: &str) -> () uses [io.console] panics may
         golden.gpu_destroy(dev)
         return
     }
-
     let path_p = unsafe "ptr" "png path pointer" {
         core.ptr.from_ref(out.as_bytes())
     }
     core.mem.drop(golden.png_write(path_p, 160i32, 120i32, rgba_p))
-
     golden.gpu_destroy(dev)
     core.mem.drop(std.io.print_line("golden OK"))
 end golden.finish
@@ -181,26 +178,22 @@ fn golden.scene_alpha(out: &str) -> () uses [io.console] panics may
         return
     }
     core.mem.drop(golden.gpu_begin(dev))
-
     let ax = 20.0f32
     let ay = 20.0f32
     let aw = 70.0f32
     let ah = 50.0f32
     let arad = 6.0f32
     let a = golden.mk_rect(ax, ay, aw, ah, arad, 0.2f32, 0.6f32, 0.9f32, 0.6f32)
-
     let bx = 50.0f32
     let by = 35.0f32
     let bw = 70.0f32
     let bh = 50.0f32
     let b_rad = 6.0f32
     let b = golden.mk_rect(bx, by, bw, bh, b_rad, 0.9f32, 0.6f32, 0.2f32, 0.6f32)
-
     let rects_p = unsafe "ptr" "rects pointer" {
         core.ptr.from_ref(&[a, b])
     }
     golden.gpu_draw_rects(dev, rects_p, 2u64)
-
     golden.finish(dev, out)
 end golden.scene_alpha
 
@@ -214,26 +207,22 @@ fn golden.scene_clip(out: &str) -> () uses [io.console] panics may
         return
     }
     core.mem.drop(golden.gpu_begin(dev))
-
     let x = 20.0f32
     let y = 30.0f32
     let w = 100.0f32
     let h = 40.0f32
     let rad = 6.0f32
     let base = golden.mk_rect(x, y, w, h, rad, 0.4f32, 0.4f32, 0.4f32, 1.0f32)
-
     let bx = 70.0f32
     let by = 34.0f32
     let bw = 50.0f32
     let bh = 32.0f32
     let brad = 4.0f32
     let cover = golden.mk_rect(bx, by, bw, bh, brad, 0.1f32, 0.1f32, 0.1f32, 1.0f32)
-
     let rects_p = unsafe "ptr" "rects pointer" {
         core.ptr.from_ref(&[base, cover])
     }
     golden.gpu_draw_rects(dev, rects_p, 2u64)
-
     golden.finish(dev, out)
 end golden.scene_clip
 
@@ -247,7 +236,6 @@ fn golden.scene_rect(out: &str) -> () uses [io.console] panics may
         return
     }
     core.mem.drop(golden.gpu_begin(dev))
-
     let x = 20.0f32
     let y = 20.0f32
     let w = 60.0f32
@@ -262,7 +250,6 @@ fn golden.scene_rect(out: &str) -> () uses [io.console] panics may
         core.ptr.from_ref(&rect_v)
     }
     golden.gpu_draw_rects(dev, rect_p, 1u64)
-
     golden.finish(dev, out)
 end golden.scene_rect
 
@@ -276,26 +263,22 @@ fn golden.scene_round_border(out: &str) -> () uses [io.console] panics may
         return
     }
     core.mem.drop(golden.gpu_begin(dev))
-
     let x = 10.0f32
     let y = 10.0f32
     let w = 80.0f32
     let h = 56.0f32
     let rad = 12.0f32
     let border = golden.mk_rect(x, y, w, h, rad, 0.9f32, 0.6f32, 0.2f32, 1.0f32)
-
     let x2 = 18.0f32
     let y2 = 18.0f32
     let w2 = 64.0f32
     let h2 = 40.0f32
     let rad2 = 6.0f32
     let fill = golden.mk_rect(x2, y2, w2, h2, rad2, 0.2f32, 0.6f32, 0.9f32, 1.0f32)
-
     let rects_p = unsafe "ptr" "rects pointer" {
         core.ptr.from_ref(&[border, fill])
     }
     golden.gpu_draw_rects(dev, rects_p, 2u64)
-
     golden.finish(dev, out)
 end golden.scene_round_border
 
@@ -309,9 +292,7 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
         return
     }
     core.mem.drop(golden.gpu_begin(dev))
-
     let size = 24.0f32
-
     let mut font_path = [0u8; 55]
     let font_src = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".as_bytes()
     let mut fi = 0usize
@@ -322,7 +303,6 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
     let font_p = unsafe "ptr" "font path pointer" {
         core.ptr.from_ref(&font_path[0usize])
     }
-
     let mut text = [0u8; 23]
     let text_src = "こんにちは Kasane".as_bytes()
     let mut ti = 0usize
@@ -333,7 +313,6 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
     let text_p = unsafe "ptr" "text pointer" {
         core.ptr.from_ref(&text[0usize])
     }
-
     let mut glyphs = [0u8; 768]
     let glyphs_p = unsafe "ptr" "glyphs pointer" {
         core.ptr.cast::<u8, golden.Glyph>(core.ptr.from_mut(&mut glyphs))
@@ -344,7 +323,6 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
         golden.gpu_destroy(dev)
         return
     }
-
     let mut atlas = [0u8; 65_536]
     let atlas_p = unsafe "ptr" "atlas pointer" {
         core.ptr.from_mut(&mut atlas)
@@ -353,12 +331,10 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
     let quads_p = unsafe "ptr" "quads pointer" {
         core.ptr.cast::<u8, golden.KsnuiGlyphQuad>(core.ptr.from_mut(&mut quads))
     }
-
     let mut atlas_x = 4i32
     let mut atlas_y = 4i32
     let mut max_row_h = 0i32
     let mut pen_x = 40.0f32
-
     let mut i = 0u64
     let cap = 65_536u64
     while i < n_glyphs {
@@ -367,7 +343,6 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
             core.ptr.read(core.ptr.add::<golden.Glyph>(glyphs_p, idx))
         }
         let gid = g.glyph_id
-
         let mut gbuf = [0u8; 65_536]
         let gbuf_p = unsafe "ptr" "glyph buffer pointer" {
             core.ptr.from_mut(&mut gbuf)
@@ -393,7 +368,6 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
             i = i.wrapping_add(1u64)
             continue
         }
-
         let gw_u = match u32.try_from_i32(gw) {
             Ok(v) => v
             Err(_e) => 0u32
@@ -402,7 +376,6 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
             Ok(v) => v
             Err(_e) => 0u32
         }
-
         if atlas_x + gw + 2i32 > 256i32 {
             atlas_x = 4i32
             atlas_y = atlas_y + max_row_h + 2i32
@@ -411,7 +384,6 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
         if atlas_y + gh > 256i32 {
             break
         }
-
         let mut row = 0i32
         while row < gh {
             let mut col = 0i32
@@ -431,7 +403,6 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
             }
             row = row + 1i32
         }
-
         let mut q = golden.zero_quad()
         q.x = pen_x + g.x_offset
         q.y = 90.0f32 - f32.from_i32_nearest(gh) + f32.from_i32_nearest(top)
@@ -448,23 +419,19 @@ fn golden.scene_text(out: &str) -> () uses [io.console] panics may
         unsafe "ptr" "write quad" {
             core.ptr.write(core.ptr.add::<golden.KsnuiGlyphQuad>(quads_p, idx), q)
         }
-
         pen_x = pen_x + g.x_advance
         atlas_x = atlas_x + gw + 2i32
         if gh > max_row_h {
             max_row_h = gh
         }
-
         i = i.wrapping_add(1u64)
     }
-
     let n_valid = i
     let quads_p_const = unsafe "ptr" "quads const pointer" {
         core.ptr.as_const::<golden.KsnuiGlyphQuad>(quads_p)
     }
     golden.gpu_atlas_upload(dev, atlas_p)
     golden.gpu_draw_glyphs(dev, quads_p_const, n_valid)
-
     golden.finish(dev, out)
 end golden.scene_text
 

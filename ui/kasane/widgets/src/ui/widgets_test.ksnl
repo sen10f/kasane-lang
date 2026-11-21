@@ -4,15 +4,15 @@ end ui.widgets_test.Target
 
 fn ui.widgets_test.ascii_bytes() -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
     let mut bytes = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match bytes.push(0x61u8) {
+    match bytes.push(97u8) {
         Ok(_u) => ()
         Err(_e) => ()
     }
-    match bytes.push(0x62u8) {
+    match bytes.push(98u8) {
         Ok(_u) => ()
         Err(_e) => ()
     }
-    match bytes.push(0x63u8) {
+    match bytes.push(99u8) {
         Ok(_u) => ()
         Err(_e) => ()
     }
@@ -21,15 +21,15 @@ end ui.widgets_test.ascii_bytes
 
 fn ui.widgets_test.japanese_a_bytes() -> alloc.vec.Vec<u8, std.alloc.System> uses [alloc] panics never pub
     let mut bytes = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match bytes.push(0xe3u8) {
+    match bytes.push(227u8) {
         Ok(_u) => ()
         Err(_e) => ()
     }
-    match bytes.push(0x81u8) {
+    match bytes.push(129u8) {
         Ok(_u) => ()
         Err(_e) => ()
     }
-    match bytes.push(0x82u8) {
+    match bytes.push(130u8) {
         Ok(_u) => ()
         Err(_e) => ()
     }
@@ -430,7 +430,7 @@ test ui.widgets_test.Target.test_text_replace_selection
     ti.ss = 1usize
     ti.se = 3usize
     let mut bytes = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match bytes.push(0x58u8) {
+    match bytes.push(88u8) {
         Ok(_u) => ()
         Err(_e) => ()
     }
