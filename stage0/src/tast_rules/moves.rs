@@ -1220,7 +1220,38 @@ impl<'a> W<'a> {
         // `close` は本体とは別の経路。束縛の move の記録を消して評価する。
         self.revive(&root, &[]);
         if let Some(c) = close {
+            // E3042: `close` の中の `return` / `break` / `continue` / `?` (閉包の中は数えない)。後始末は必ず最後まで走る。
+            let mut inside = HashSet::new();
+            let mut exit: Option<(&'static str, usize)> = None;
+            super::impl_sig::walk(c, &mut |x| {
+                if inside.contains(&x.id) {
+                    return;
+                }
+                match &x.kind {
+                    TKind::Closure { body, .. } => super::impl_sig::walk(body, &mut |y| {
+                        inside.insert(y.id);
+                    }),
+                    TKind::Other { name, .. } if exit.is_none() => {
+                        let what = match *name {
+                            "Return" => "return",
+                            "Break" => "break",
+                            "Continue" => "continue",
+                            "Try" => "?",
+                            _ => return,
+                        };
+                        exit = Some((what, x.line));
+                    }
+                    _ => {}
+                }
+            });
+            if let Some((what, line)) = exit {
+                self.diag("E3042", format!("`{}` is not allowed in the `close` expression of `with`; cleanup always runs to the end (4.4)", what), line);
+            }
             self.eval(c, Cx::Value);
+            // E3041: `close` が全経路で束縛の全体を消費する。
+            if checkable && !self.st.dead && !self.st.must.contains_key(&(root.clone(), vec![])) {
+                self.diag("E3041", format!("the `close` expression of `with` must consume `{}` (4.4)", name), c.line);
+            }
         }
         self.revive(&root, &[]);
         self.close_scope(base);

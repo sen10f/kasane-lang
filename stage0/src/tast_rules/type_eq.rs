@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 
 use crate::check::Diag;
+use crate::parser::V;
 use crate::program::{Def, FromVariant, Program, Target};
 use crate::tast::*;
 use crate::types::{conv_hint, from_v, ref_hint, Ty, TypeCk};
@@ -248,6 +249,40 @@ impl<'a> W<'a> {
             let raw = from_v(&pr.1, &gn);
             let inst = subst(&raw, &bind);
             self.eq2023(format!("argument {} of `{}`", k + 1, name), &raw, &inst, &a.ty, line);
+            self.fn_bound(d, &gn, &bind, &raw, &a.ty, k, name, line);
+        }
+    }
+
+    /// `F: Fn<(引数..), 戻り値, ..>` の型パラメータに渡した閉包の引数の個数・引数の型・戻り値の型は、境界へ型引数を入れたものと一致する (E2023)。
+    #[allow(clippy::too_many_arguments)]
+    fn fn_bound(&mut self, d: &Def, gn: &std::collections::HashSet<String>, bind: &HashMap<String, Ty>, raw: &Ty, got: &Ty, k: usize, name: &str, line: usize) {
+        let Ty::Param(f) = raw.strip() else { return };
+        let Ty::Closure { args, ret, .. } = got.strip() else { return };
+        for g in d.generics.iter().filter(|g| g.0 == "type" && g.1 == *f) {
+            for b in crate::check::items(&g.2) {
+                let V::L(bx) = b else { continue };
+                if !crate::check::st(&bx[0]).starts_with("core.ops.Fn") {
+                    continue;
+                }
+                let targs = crate::check::tel(b, 1);
+                if let Ty::Tuple(want_args) = subst(&from_v(crate::check::tel(targs, 0), gn), bind) {
+                    if want_args.len() != args.len() {
+                        self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, Ty::Tuple(want_args.clone()).show(), got.strip().show()), line);
+                    } else {
+                        for (w, g) in want_args.iter().zip(args) {
+                            if let Err(err) = unify(w, g, false, 0) {
+                                let (w, g) = shown(w, g, &err);
+                                self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, w, g), line);
+                            }
+                        }
+                    }
+                }
+                let want_ret = subst(&from_v(crate::check::tel(targs, 1), gn), bind);
+                if let Err(err) = unify(&want_ret, ret, false, 0) {
+                    let (w, g) = shown(&want_ret, ret, &err);
+                    self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, w, g), line);
+                }
+            }
         }
     }
 
@@ -277,6 +312,7 @@ impl<'a> W<'a> {
             }
             TKind::MCall { recv, name, args } => {
                 self.expr(recv);
+                self.trait_args(e, args, name);
                 let d = match &e.res {
                     Some(Callee::Def(d)) => Some(*d),
                     Some(Callee::Methods(v)) if v.len() == 1 => Some(v[0]),
@@ -566,8 +602,17 @@ impl<'a> W<'a> {
         }
     }
 
+    /// `dyn` 越し・型パラメータの境界越しのトレイトメソッド: 推論が実体化した仮引数の型 (`arg_wants`) と実引数を照らす (E2023)。
+    fn trait_args(&mut self, e: &TExpr, args: &[TExpr], name: &str) {
+        let Some(ws) = self.tk.side.arg_wants.get(&(self.di, e.id)) else { return };
+        for (k, (w, a)) in ws.iter().zip(args).enumerate() {
+            self.eq2023(format!("argument {} of `{}`", k + 1, name), w, w, &a.ty, e.line);
+        }
+    }
+
     fn call(&mut self, e: &TExpr, callee: &TExpr, args: &[TExpr]) {
         let TKind::Path(segs) = &callee.kind else { return };
+        self.trait_args(e, args, segs.last().map(|s| s.as_str()).unwrap_or(""));
         let file = &self.p.defs[self.di].file;
         // クロージャ・関数値の呼び出し: 引数は関数型の引数と照らす。
         if let Some(Callee::Local(n)) = &e.res {
@@ -623,9 +668,12 @@ impl<'a> W<'a> {
                 };
                 if let Some(d) = d {
                     let d = &self.p.defs[d];
+                    self.turbofish(d, e);
                     if d.is_method() {
-                        self.turbofish(d, e);
                         self.check_args(d, 1, &e.targs, args, segs.last().map(|s| s.as_str()).unwrap_or(""), e.line);
+                    } else if matches!(by_path, Some(Target::Native(_))) {
+                        // 組み込みの自由関数 (`core.iter.range` など。解決先は `Native`): 宣言 (sig) の型へ型引数を入れて引数を照らす。
+                        self.check_args(d, 0, &e.targs, args, &d.name, e.line);
                     }
                 }
             }

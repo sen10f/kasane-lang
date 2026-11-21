@@ -115,6 +115,10 @@ pub struct SideTabs {
     pub arg_ids: Vec<ExprId>,
     /// 【担当 C の作業用】引数の (鍵, 期待の型, 実際の型)。型が決まる関数の終わり (`flush_expr_types`) で `coercions` に変える。
     pub conv_pending: Vec<(Key, Ty, Ty)>,
+    /// `dyn` 越し・型パラメータの境界越しのトレイトメソッドの呼び出し (呼び出しの節点の鍵) ごとの、実体化した仮引数の型 (`self` を除く)。
+    /// 規則 T (型の一致) が実引数の型と照らす。`arg_wants_pending` は作業用 (型が決まる関数の終わりに解決して `arg_wants` へ)。
+    pub arg_wants: HashMap<Key, Vec<Ty>>,
+    pub arg_wants_pending: Vec<(Key, Vec<Ty>)>,
     /// 【担当 C の作業用】受け手の (鍵, 受け手の型, `self` パラメータの宣言の型)。同上。
     pub recv_pending: Vec<(Key, Ty, Ty)>,
     /// 【担当 C の作業用】`?` のエラー変換 (`?` の鍵, 元のエラー型, 戻り値のエラー型, バリアント名)。同上。
