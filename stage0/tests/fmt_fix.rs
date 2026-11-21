@@ -526,3 +526,99 @@ fn fmt_removes_only_the_trailing_commas_of_match_arms() {
     assert!(!text(&again.stdout).contains("reformatted"), "{}", text(&again.stdout));
     assert_eq!(fs::read_to_string(t.0.join("src/t.ksnl")).unwrap(), after);
 }
+
+/// 引数の型が期待型と参照の段数でちょうど1つずれる (E2023): `t.a(v)` (v: u8, a(x: &u8))
+/// を `t.a(&v)` にする。段数の差が1でそれ以外の型が一致するときだけ機械的に直す。
+#[test]
+fn ksn_fix_e2023_adds_missing_reference_to_argument() {
+    let src = "fn t.a(x: &u8) -> u8 uses [] panics never\n    *x\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let v = 1u8\n    core.mem.drop(t.a(v))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fix_e2023", src);
+    let c = run(&["check", "--json"], &t.0);
+    let cout = text(&c.stdout);
+    assert!(codes(&cout).iter().any(|c| c == "E2023"), "{}", cout);
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("t.a(&v)"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    let again = run(&["fix"], &t.0);
+    assert!(!text(&again.stdout).contains("applied 1 fix(es)"), "{}", text(&again.stdout));
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+/// 呼び出し元の `uses` に足りない効果を追加する (E4001)。`pub` の関数はAPIを変えるので直さない。
+#[test]
+fn ksn_fix_e4001_adds_missing_effect_to_uses() {
+    let src = "fn t.callee() -> u8 uses [io.console] panics never\n    core.mem.drop(std.io.print_line(\"x\"))\n    1u8\nend t.callee\n\n\
+               fn t.caller() -> u8 uses [] panics never\n    core.mem.drop(t.callee())\n    1u8\nend t.caller\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.caller())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fix_e4001", src);
+    let c = run(&["check", "--json"], &t.0);
+    let cout = text(&c.stdout);
+    assert!(codes(&cout).iter().any(|c| c == "E4001"), "{}", cout);
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("fn t.caller() -> u8 uses [io.console] panics never"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    let again = run(&["fix"], &t.0);
+    assert!(!text(&again.stdout).contains("applied 1 fix(es)"), "{}", text(&again.stdout));
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+/// `panics never` の関数から `panics may` を呼ぶ呼び出し元の `panics never` を `panics may` にする (E4002)。
+/// `pub` の関数はAPIを変えるので直さない。
+#[test]
+fn ksn_fix_e4002_changes_panics_never_to_may() {
+    // t.callee は `core.panic.panic` を呼ぶので本体が本当に `panics may` (E4025 で `never` に縮められない)。
+    // 呼び出し元 t.caller の `panics never` は `panics may` に広げられ、元に戻されない。
+    let src = "fn t.callee() -> u8 uses [] panics may\n    core.panic.panic(\"x\")\nend t.callee\n\n\
+               fn t.caller() -> u8 uses [] panics never\n    core.mem.drop(t.callee())\n    1u8\nend t.caller\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.caller())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fix_e4002", src);
+    let c = run(&["check", "--json"], &t.0);
+    let cout = text(&c.stdout);
+    assert!(codes(&cout).iter().any(|c| c == "E4002"), "{}", cout);
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("fn t.caller() -> u8 uses [] panics may"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    let again = run(&["fix"], &t.0);
+    assert!(!text(&again.stdout).contains("applied 1 fix(es)"), "{}", text(&again.stdout));
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+/// `&mut` を必要とする呼び出しのため、束縛を `let mut` にする (E3031)。文面から変数名を得て `let` を遡る。
+#[test]
+fn ksn_fix_e3031_adds_mut_to_borrowed_variable() {
+    let src = "fn t.bump(r: &mut u8) -> u8 uses [] panics never\n    *r\nend t.bump\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let n = 1u8\n    core.mem.drop(t.bump(&mut n))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fix_e3031", src);
+    let c = run(&["check", "--json"], &t.0);
+    let cout = text(&c.stdout);
+    assert!(codes(&cout).iter().any(|c| c == "E3031"), "{}", cout);
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("    let mut n = 1u8\n"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    let again = run(&["fix"], &t.0);
+    assert!(!text(&again.stdout).contains("applied 1 fix(es)"), "{}", text(&again.stdout));
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+/// 型が決まらない `let` 束縛に推論型の注釈を足す (E2044)。推論型に `_` の穴がある (`Option<_>` など) ときは
+/// 注釈として書いても意味を変えないので、`ksn fix` は何も直さない。
+#[test]
+fn ksn_fix_e2044_skips_non_concrete_inferred_type() {
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let n = None\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fix_e2044_skip", src);
+    let c = run(&["check", "--json"], &t.0);
+    let cout = text(&c.stdout);
+    assert!(codes(&cout).iter().any(|c| c == "E2044"), "{}", cout);
+    assert!(cout.contains("inferred so far: `Option<_>`"), "{}", cout);
+    // 推論型に `_` が含まれるので `ksn fix` は注釈を足さず、適用件数は 0。
+    let fixed = run(&["fix"], &t.0);
+    assert!(!text(&fixed.stdout).contains("applied 1 fix(es)"), "{}", text(&fixed.stdout));
+    // 注釈を足さないので E2044 は残る。
+    let c = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&c.stdout)).iter().any(|c| c == "E2044"), "{}", text(&c.stdout));
+}
