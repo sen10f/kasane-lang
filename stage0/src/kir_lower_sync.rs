@@ -112,8 +112,7 @@ pub(super) fn sync_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             }
         }
         if meth == "lock" && args.is_empty() {
-            let owner = &segs[..segs.len() - 1];
-            if let Some(Tgt::Const(di)) = lw.p.resolve(owner, &lw.def.file).map(|r| r.target) {
+            if let Some(Tgt::Const(di)) = lw.path_res(&f[0]).filter(|r| r.rest.len() == 1).map(|r| r.target) {
                 if lw.p.defs[di].kw == "static" {
                     return Some(static_lock(lw, di, line));
                 }

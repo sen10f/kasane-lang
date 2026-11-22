@@ -881,6 +881,27 @@ impl Program {
         None
     }
 
+    /// 完全修飾名 (型の FQN など、推論が決めた名前) の定義を引く。`import` の展開はしない (S5-4: 下ろしが `resolve` を引き直さない入口)。
+    pub fn lookup_fqn(&self, name: &str) -> Option<Target> {
+        let segs: Vec<String> = name.split('.').map(String::from).collect();
+        let fq = Self::expand_alias_segs(&segs).join(".");
+        Some(if let Some(&i) = self.funcs.get(&fq) {
+            Target::Fn(i)
+        } else if let Some(&i) = self.consts.get(&fq) {
+            Target::Const(i)
+        } else if let Some(&(ei, vi)) = self.variants.get(&fq) {
+            Target::Variant(self.defs[ei].name.clone(), self.defs[ei].variants[vi].0.clone())
+        } else if self.natives.contains(&fq) {
+            Target::Native(fq.clone())
+        } else if let Some(&i) = self.types.get(&fq) {
+            Target::Type(i)
+        } else if let Some(&i) = self.sigs.get(&fq) {
+            Target::Sig(i)
+        } else {
+            return None;
+        })
+    }
+
     /// `std.vec.Vec.new` → `alloc.vec.Vec.new` のように、デフォルト確保器の短縮名 (`std..`) を
     /// 正式名 (`alloc..`) に置き換える。短縮名がプレフィックスに続く場合も同様に置き換える。
     pub(crate) fn expand_alias_segs_pub(segs: &[String]) -> Vec<String> {

@@ -179,10 +179,10 @@ fn read_dir_raw(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
 /// `std.fs.create` / `std.fs.open` / `std.fs.exists` / `std.fs.remove_file` / `std.fs.read_to_end` (フリー関数)。
 pub(super) fn fs_call(lw: &mut Lw, _e: &V, name: &str, args: &[V], line: usize) -> LR<Option<VId>> {
     let segs: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
-    let Some(r) = lw.p.resolve(&segs, &lw.def.file) else {
+    let Some(r) = lw.p.lookup_fqn(&segs.join(".")) else {
         return lw.err(line, "std.fs.create が見つからない");
     };
-    if !matches!(r.target, Tgt::Fn(_) | Tgt::Sig(_) | Tgt::Native(_)) {
+    if !matches!(r, Tgt::Fn(_) | Tgt::Sig(_) | Tgt::Native(_)) {
         return lw.err(line, "std.fs.create が関数として解決できない");
     };
     // `std.fs.File` を KIR の型表に登録し、その集成体添字を取得する。
@@ -193,10 +193,10 @@ pub(super) fn fs_call(lw: &mut Lw, _e: &V, name: &str, args: &[V], line: usize) 
         i
     } else {
         let segs: Vec<String> = ["std", "fs", "File"].iter().map(|s| s.to_string()).collect();
-        let Some(r) = lw.p.resolve(&segs, &lw.def.file) else {
+        let Some(r) = lw.p.lookup_fqn(&segs.join(".")) else {
             return lw.err(line, "std.fs.File の定義がない");
         };
-        let Tgt::Type(di) = r.target else {
+        let Tgt::Type(di) = r else {
             return lw.err(line, "std.fs.File が型ではない");
         };
         match lw.aggs.borrow_mut().intern_def(lw.p, di) {
@@ -359,10 +359,10 @@ pub(super) fn std_stream_call(lw: &mut Lw, name: &str, args: &[V], line: usize) 
         _ => ("std.io.Stderr", 2),
     };
     let segs: Vec<String> = ty.split('.').map(|s| s.to_string()).collect();
-    let Some(r) = lw.p.resolve(&segs, &lw.def.file) else {
+    let Some(r) = lw.p.lookup_fqn(&segs.join(".")) else {
         return lw.err(line, format!("{} の定義がない", ty));
     };
-    let Tgt::Type(di) = r.target else {
+    let Tgt::Type(di) = r else {
         return lw.err(line, format!("{} が型ではない", ty));
     };
     let agg = match lw.aggs.borrow_mut().intern_def(lw.p, di) {

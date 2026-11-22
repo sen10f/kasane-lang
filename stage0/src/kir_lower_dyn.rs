@@ -21,8 +21,8 @@ use super::agg::{trait_fqn, AggTab, VtEntry};
 use super::{coll, Lw, TyIdx, LR};
 
 /// 呼び先の標準ライブラリの関数の名前 (`import` した別名の形 `boxed.Box.new` も FQN にする)。
-fn canon(lw: &Lw, segs: &[String]) -> Option<String> {
-    let r = lw.p.resolve(segs, &lw.def.file)?;
+fn canon(lw: &Lw, callee: &V) -> Option<String> {
+    let r = lw.path_res(callee)?;
     if !r.rest.is_empty() {
         return None;
     }
@@ -102,7 +102,7 @@ pub(super) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         let _ = bt;
         return Some(method(lw, e, recv, &m, &args));
     }
-    let name = canon(lw, &segs)?;
+    let name = canon(lw, &nf(e)[0])?;
     match name.as_str() {
         "alloc.boxed.Box.new" => Some(box_new(lw, e, &args)),
         "alloc.boxed.Box.into_dyn" => Some(into_dyn(lw, e, &args)),

@@ -105,7 +105,7 @@ fn user_next(lw: &Lw, it: &V) -> Option<usize> {
     }
     let mut segs: Vec<String> = base.split('.').map(String::from).collect();
     segs.push("next".to_string());
-    match lw.p.resolve(&segs, &lw.def.file).map(|r| r.target) {
+    match lw.p.lookup_fqn(&segs.join(".")) {
         Some(crate::program::Target::Fn(di)) if lw.p.defs[di].is_method() && lw.method_takes_mut(di) => Some(di),
         _ => None,
     }

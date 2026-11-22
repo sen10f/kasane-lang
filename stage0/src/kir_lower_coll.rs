@@ -1026,7 +1026,7 @@ fn pat_cover(lw: &Lw, p: &V, t: Ty) -> LR<Cover> {
                 ([n], Ty::Res(_, e0)) if n == "Err" => vec![e0.ty()],
                 _ => {
                     let Some(d) = agg(t) else { return lw.err(line, "パターンの対象の型が合わない") };
-                    let (Some(crate::program::Target::Variant(_, vn)), AggKind::Enum(vs)) = (lw.p.resolve(&segs, &lw.def.file).map(|r| r.target), &d.kind) else {
+                    let (Some(crate::program::Target::Variant(_, vn)), AggKind::Enum(vs)) = (lw.path_res(p).map(|r| r.target), &d.kind) else {
                         return lw.err(line, "列挙子のパターンの対象が列挙型でない");
                     };
                     let Some(v) = vs.iter().find(|x| x.name == vn) else { return lw.err(line, "列挙子がない") };
@@ -1190,7 +1190,7 @@ pub(crate) fn drop_unbound(lw: &mut Lw, p: &V, v: VId, t: Ty) -> LR<()> {
                 _ => {
                     let Ty::Agg(i) = t else { return lw.err(line, "列挙子のパターンの対象が集成体でない") };
                     let d = lw.aggs.borrow().defs[i as usize].clone();
-                    let (Some(crate::program::Target::Variant(_, vn)), AggKind::Enum(vs)) = (lw.p.resolve(&segs, &lw.def.file).map(|r| r.target), &d.kind) else {
+                    let (Some(crate::program::Target::Variant(_, vn)), AggKind::Enum(vs)) = (lw.path_res(p).map(|r| r.target), &d.kind) else {
                         return lw.err(line, "列挙子のパターンの対象が列挙型でない");
                     };
                     let Some(var) = vs.iter().find(|x| x.name == vn) else { return lw.err(line, "列挙子がない") };
@@ -1638,7 +1638,7 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         return Some(super::iter_lower::pipe_call(lw, e, segs[2] == "fold"));
     }
     // 型引数に型パラメータを持つ関数 (`Fn` 境界の引数) は、渡されたクロージャごとに単相化する。
-    if let Some(Target::Fn(di)) = lw.p.resolve(&segs, &lw.def.file).map(|r| r.target) {
+    if let Some(Target::Fn(di)) = lw.path_res(&f[0]).map(|r| r.target) {
         if (lw.p.defs[di].generics.iter().any(|g| g.0 == "type") || has_fn_param(&lw.p.defs[di])) && has_closure_arg(lw, items(&f[1])) {
             return Some(generic_call(lw, e, di));
         }
@@ -1667,7 +1667,7 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         }
     }
     // `import alloc.vec` の別名の形 (`vec.Vec.new`) も、解決した FQN で照合する。
-    let segs: Vec<String> = match lw.p.resolve(&segs, &lw.def.file) {
+    let segs: Vec<String> = match lw.path_res(&f[0]) {
         Some(r) if r.rest.is_empty() => match r.target {
             Target::Native(n) => n.split('.').map(String::from).collect(),
             Target::Sig(di) | Target::Fn(di) => lw.p.defs[di].name.split('.').map(String::from).collect(),
@@ -1745,7 +1745,7 @@ fn is_fn_item(lw: &Lw, e: &V) -> bool {
     if segs.len() == 1 && lw.lookup(&segs[0]).is_some() {
         return false;
     }
-    matches!(lw.p.resolve(&segs, &lw.def.file), Some(r) if r.rest.is_empty() && matches!(r.target, Target::Fn(di) if {
+    matches!(lw.path_res(e), Some(r) if r.rest.is_empty() && matches!(r.target, Target::Fn(di) if {
         let cd = &lw.p.defs[di];
         cd.kw == "fn" && cd.body.is_some() && !cd.is_method() && cd.generics.iter().all(|g| g.0 == "life")
     }))
@@ -1891,7 +1891,7 @@ pub(crate) fn fn_item_kind(lw: &mut Lw, e: &V) -> Option<Kind> {
     if segs.len() == 1 && lw.lookup(&segs[0]).is_some() {
         return None;
     }
-    let r = lw.p.resolve(&segs, &lw.def.file)?;
+    let r = lw.path_res(e)?;
     if !r.rest.is_empty() {
         return None;
     }
@@ -2410,7 +2410,7 @@ pub(crate) fn callable(lw: &mut Lw, f: &V) -> LR<(String, Vec<Ty>, Ty)> {
     }
     if nname(f) == "Path" {
         let segs = strs(&nf(f)[0]);
-        if let Some(Target::Fn(di)) = lw.p.resolve(&segs, &lw.def.file).map(|r| r.target) {
+        if let Some(Target::Fn(di)) = lw.path_res(f).map(|r| r.target) {
             let cd = &lw.p.defs[di];
             if cd.kw == "fn" && cd.body.is_some() && !cd.is_method() && cd.generics.iter().all(|g| g.0 == "life") {
                 let gn = HashSet::new();
@@ -3796,7 +3796,7 @@ fn user_iter_for(lw: &mut Lw, e: &V, pat: &V, it_e: &V, body: &V) -> Option<LR<O
     }
     let mut segs: Vec<String> = base.split('.').map(String::from).collect();
     segs.push("next".to_string());
-    let di = match lw.p.resolve(&segs, &lw.def.file).map(|r| r.target) {
+    let di = match lw.p.lookup_fqn(&segs.join(".")) {
         Some(Target::Fn(di)) if lw.p.defs[di].is_method() => di,
         _ => return None,
     };

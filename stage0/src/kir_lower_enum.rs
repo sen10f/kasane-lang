@@ -917,7 +917,7 @@ impl<'a> Lw<'a> {
                         Ok(self.emit(Ty::Bool, Op::Not(tag)))
                     }
                     _ if t.is_int() => {
-                        let Some(Tgt::Const(ci)) = self.p.resolve(&segs, &self.def.file).filter(|r| r.rest.is_empty()).map(|r| r.target) else {
+                        let Some(Tgt::Const(ci)) = self.path_res(p).filter(|r| r.rest.is_empty()).map(|r| r.target) else {
                             return self.err(line, format!("パターン {} は型 {} に対して段階 1 の対象外", segs.join("."), t.name()));
                         };
                         let init = self.p.defs[ci].init.clone();
@@ -1195,7 +1195,7 @@ impl<'a> Lw<'a> {
         let Ty::Agg(ai) = elem else { return self.err(line, "列挙子のパターンの対象が集成体でない") };
         let segs = strs(&nf(sub)[0]);
         let subs = if nname(sub) == "PVariant" { items(&nf(sub)[1]).to_vec() } else { vec![] };
-        let Some(Tgt::Variant(en, vn)) = self.p.resolve(&segs, &self.def.file).map(|r| r.target) else {
+        let Some(Tgt::Variant(en, vn)) = self.path_res(sub).map(|r| r.target) else {
             return self.err(line, format!("パターン {} は段階 1 の対象外", segs.join(".")));
         };
         let d = self.agg_def(ai);

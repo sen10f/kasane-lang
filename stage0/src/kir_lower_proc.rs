@@ -19,10 +19,10 @@ fn proc_agg(lw: &mut Lw, name: &str, line: usize) -> LR<u32> {
         return Ok(i);
     }
     let segs: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
-    let Some(r) = lw.p.resolve(&segs, &lw.def.file) else {
+    let Some(r) = lw.p.lookup_fqn(&segs.join(".")) else {
         return lw.err(line, format!("{} の定義がない", name));
     };
-    let Tgt::Type(di) = r.target else {
+    let Tgt::Type(di) = r else {
         return lw.err(line, format!("{} が型ではない", name));
     };
     let t = lw.aggs.borrow_mut().intern_def(lw.p, di);

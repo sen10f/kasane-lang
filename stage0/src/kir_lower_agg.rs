@@ -117,7 +117,7 @@ pub struct VtEntry {
 /// `dyn Tr` の `Tr` (書かれた名前) を、トレイト定義の FQN にする。解決できなければ書かれた名前のまま。
 pub fn trait_fqn(p: &Program, file: &str, written: &str) -> String {
     let segs: Vec<String> = written.split('.').map(String::from).collect();
-    match p.resolve(&segs, file).map(|r| r.target) {
+    match p.lookup_fqn(&p.expand(&segs, file).join(".")) {
         Some(Tgt::Type(di)) | Some(Tgt::Sig(di)) if p.defs[di].kw == "trait" => p.defs[di].name.clone(),
         _ => written.to_string(),
     }
@@ -267,8 +267,7 @@ impl AggTab {
                 Ok(if name == "std.sync.SendError" { self.send_err(elem) } else { self.chan_end(name == "std.sync.Sender", elem) })
             }
             Src::Named(name, args, _) => {
-                let segs: Vec<String> = name.split('.').map(String::from).collect();
-                match p.resolve(&segs, file).map(|r| r.target) {
+                match p.lookup_fqn(name) {
                     // ソケットの型 (`std.net.TcpListener` / `TcpStream`) は `&` の形でも現れるので、型表に入れる (設計_KIR.md 12 章)。
                     Some(Tgt::Type(di)) if !args.is_empty() && self.user.contains(&di) => self.intern_generic(p, di, args),
                     // 段 2 の `HashMap` などは、利用者の型と同じ集成体として下ろす (`spec/stdlib/alloc/collections.ksnl`)。
@@ -907,7 +906,7 @@ impl<'a> Lw<'a> {
         let f = nf(e);
         let line = nline(e);
         let segs: Vec<String> = st(&f[0]).split('.').map(String::from).collect();
-        let Some(Tgt::Type(_)) = self.p.resolve(&segs, &self.def.file).map(|r| r.target) else {
+        let Some(Tgt::Type(_)) = self.path_res(e).map(|r| r.target) else {
             return self.err(line, "構造体リテラルの名前が段階 1 の対象外");
         };
         let ty = self.ty_of(e)?;
@@ -1315,9 +1314,9 @@ impl<'a> Lw<'a> {
     }
 
     /// 列挙型の変種の試験 (タグの比較)。ペイロードのフィールドを返す。
-    fn variant_test(&mut self, segs: &[String], val: VId, ty: Ty, fail: Option<usize>, line: usize) -> LR<Vec<Field>> {
-        let Some(Tgt::Variant(en, vn)) = self.p.resolve(segs, &self.def.file).map(|r| r.target) else {
-            return self.err(line, format!("パターン {} は段階 1 の対象外", segs.join(".")));
+    fn variant_test(&mut self, pn: &V, val: VId, ty: Ty, fail: Option<usize>, line: usize) -> LR<Vec<Field>> {
+        let Some(Tgt::Variant(en, vn)) = self.path_res(pn).map(|r| r.target) else {
+            return self.err(line, format!("パターン {} は段階 1 の対象外", strs(&nf(pn)[0]).join(".")));
         };
         let Ty::Agg(ai) = ty else {
             return self.err(line, "列挙型のパターンの対象が集成体でない");
@@ -1510,7 +1509,7 @@ impl<'a> Lw<'a> {
                 let segs = strs(&nf(p)[0]);
                 let subs = if nname(p) == "PVariant" { items(&nf(p)[1]).to_vec() } else { vec![] };
                 let cur = self.emit(Ty::Agg(ai), Op::Load(val));
-                let fields = self.variant_test(&segs, cur, Ty::Agg(ai), fail, line)?;
+                let fields = self.variant_test(p, cur, Ty::Agg(ai), fail, line)?;
                 if nname(p) == "PVariant" && subs.len() != fields.len() {
                     return self.err(line, "列挙子のパターンの要素数が違う");
                 }
@@ -1535,7 +1534,7 @@ impl<'a> Lw<'a> {
             "PVariant" => {
                 let segs = strs(&nf(p)[0]);
                 let subs = items(&nf(p)[1]);
-                let fields = self.variant_test(&segs, val, ty, fail, line)?;
+                let fields = self.variant_test(p, val, ty, fail, line)?;
                 if subs.len() != fields.len() {
                     return self.err(line, "列挙子のパターンの要素数が違う");
                 }
@@ -1553,7 +1552,7 @@ impl<'a> Lw<'a> {
             }
             "PPath" => {
                 let segs = strs(&nf(p)[0]);
-                self.variant_test(&segs, val, ty, fail, line)?;
+                self.variant_test(p, val, ty, fail, line)?;
             }
             other => return self.err(line, format!("パターン {} は段階 1 の対象外", other)),
         }
@@ -1576,7 +1575,7 @@ impl<'a> Lw<'a> {
         match nname(p) {
             "PPath" | "PVariant" => {
                 let segs = strs(&nf(p)[0]);
-                let Some(Tgt::Variant(en, vn)) = self.p.resolve(&segs, &self.def.file).map(|r| r.target) else {
+                let Some(Tgt::Variant(en, vn)) = self.path_res(p).map(|r| r.target) else {
                     return self.err(line, format!("パターン {} は段階 1 の対象外", segs.join(".")));
                 };
                 let AggKind::Enum(vs) = &d.kind else {

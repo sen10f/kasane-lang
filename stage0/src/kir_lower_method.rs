@@ -69,7 +69,7 @@ impl<'a> Lw<'a> {
         let name = name.split('<').next().unwrap_or("").to_string();
         let mut segs: Vec<String> = name.split('.').map(String::from).collect();
         segs.push(m.to_string());
-        match self.p.resolve(&segs, &self.def.file)?.target {
+        match self.p.lookup_fqn(&segs.join("."))? {
             Tgt::Fn(di) if self.p.defs[di].is_method() => Some(di),
             _ => None,
         }
@@ -161,7 +161,7 @@ impl<'a> Lw<'a> {
         }
         let mut segs: Vec<String> = name.split('.').map(String::from).collect();
         segs.push(m);
-        let di = match self.p.resolve(&segs, &self.def.file)?.target {
+        let di = match self.p.lookup_fqn(&segs.join("."))? {
             Tgt::Fn(di) if self.p.defs[di].is_method() => di,
             _ => return None,
         };
@@ -178,14 +178,15 @@ impl<'a> Lw<'a> {
     pub(super) fn variant_method_call(&mut self, e: &V, en: &str, m: &str) -> Option<LR<Option<VId>>> {
         let mut segs: Vec<String> = en.split('.').map(String::from).collect();
         segs.push(m.to_string());
-        let di = match self.p.resolve(&segs, &self.def.file)?.target {
+        let di = match self.p.lookup_fqn(&segs.join("."))? {
             Tgt::Fn(di) if self.p.defs[di].is_method() => di,
             _ => return None,
         };
         let f = nf(e);
         let callee = strs(&nf(&f[0])[0]);
         let recv_segs: Vec<V> = callee[..callee.len() - 1].iter().map(|x| V::S(x.clone())).collect();
-        let recv = V::Node("Path", vec![V::L(recv_segs), V::Nil], nline(e), 0);
+        let cid = if let V::Node(_, _, _, i) = &f[0] { *i } else { 0 };
+        let recv = V::Node("Path", vec![V::L(recv_segs), V::Nil], nline(e), cid | crate::tast::PREFIX_BIT);
         let args = items(&f[1]).to_vec();
         Some(self.call_method(e, di, Place::Expr(&recv), &args))
     }

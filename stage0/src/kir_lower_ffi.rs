@@ -44,8 +44,7 @@ pub(super) fn ffi_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     }
     // `extern` 宣言の呼び出し。
     let line = nline(e);
-    let resolved = lw.p.resolve(&segs, &lw.def.file);
-    let Some(target) = resolved.map(|r| r.target) else { return None };
+    let Some(target) = lw.path_res(&f[0]).map(|r| r.target) else { return None };
     let Tgt::Sig(di) = target else { return None };
     let d = &lw.p.defs[di];
     if d.kw != "extern" {
@@ -287,7 +286,7 @@ fn fn_ptr_arg(lw: &mut Lw, a: &V, line: usize) -> LR<Option<VId>> {
     if segs.is_empty() {
         return lw.err(line, "extern の関数ポインタ引数の形式が不正");
     }
-    let Some(Tgt::Fn(di)) = lw.p.resolve(&segs, &lw.def.file).map(|r| r.target) else {
+    let Some(Tgt::Fn(di)) = lw.path_res(a).map(|r| r.target) else {
         return lw.err(line, format!("extern の関数ポインタ引数 {} は関数ではない", segs.join(".")));
     };
     let fd = &lw.p.defs[di];
@@ -377,8 +376,7 @@ fn src_to_kir_extern(aggs: &std::cell::RefCell<agg::AggTab>, p: &Program, file: 
                 .map(|_| Ty::Ptr)
                 .ok_or_else(|| format!("ポインタ型 {} は未対応", show(t))),
             Src::Named(n, _, _) => {
-                let segs: Vec<String> = n.split('.').map(String::from).collect();
-                match p.resolve(&segs, file).map(|r| r.target) {
+                match p.lookup_fqn(n) {
                     Some(Tgt::Type(_)) => {
                         let ty = aggs.borrow_mut().lower_ty(p, file, &**inner).map_err(|e| format!("{}", e))?;
                         if matches!(ty, Ty::Agg(_)) {
