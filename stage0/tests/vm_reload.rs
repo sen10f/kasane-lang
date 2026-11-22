@@ -17,13 +17,11 @@ fn exe() -> &'static str {
 // リロード（ウォッチャは 200 ms 毎にpoll、書き換え後すぐに着く）が着くまで必ず走り続ける。
 // 書き換え後は新版（v2）が出るまで終了しない（本テストでは最初の v1 を待ってから書き換える）。
 const HR: &str = "fn hr.main() -> Result<(), std.io.Error> uses [io.console] panics never
-    let mut i = 0u64
-    while i < 60u64 {
+    for _ in core.iter.range(0u64, 60u64) {
         let r = hr.msg()
         core.mem.drop(r)
         let s = hr.spin(7_000_000u64)
         core.mem.drop(s)
-        i = i.wrapping_add(1u64)
     }
     Ok(())
 end hr.main
@@ -35,10 +33,8 @@ end hr.msg
 
 fn hr.spin(n: u64) -> u64 uses [] panics never
     let mut a = 0u64
-    let mut k = 0u64
-    while k < n {
+    for k in core.iter.range(0u64, n) {
         a = a.wrapping_add(k.wrapping_mul(3u64))
-        k = k.wrapping_add(1u64)
     }
     a.wrapping_add(2u64)
 end hr.spin

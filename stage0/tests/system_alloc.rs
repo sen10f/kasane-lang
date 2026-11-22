@@ -13,7 +13,7 @@ const SRC: &str = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.conso
     }
     let q = unsafe \"ptr\" \"write and read the fresh block\" {
         core.ptr.write::<u8>(p, 7u8)
-        core.ptr.write::<u8>(core.ptr.add::<u8>(p, 15usize), 9u8)
+        core.ptr.write(core.ptr.add(p, 15usize), 9u8)
         core.ptr.add::<u8>(p, 0usize)
     }
     let r = match std.alloc.SYSTEM.realloc(q, lay, 64usize) {
@@ -24,7 +24,7 @@ const SRC: &str = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.conso
         core.ptr.read::<u8>(r)
     }
     let b = unsafe \"ptr\" \"read after realloc\" {
-        core.ptr.read::<u8>(core.ptr.add::<u8>(r, 15usize))
+        core.ptr.read(core.ptr.add(r, 15usize))
     }
     std.alloc.SYSTEM.dealloc(r, alloc.alloc.Layout { size: 64usize, align: 8usize })
     // 大きさ 0 は 1 バイトとして確保する (木走査もネイティブも。`malloc(0)` の NULL を `Err` にしない)。

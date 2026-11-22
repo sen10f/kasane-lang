@@ -72,12 +72,10 @@ r = subprocess.run(['cargo', 'test', '--release', '--features', 'test-hooks', '-
 step('stage0: cargo test --features test-hooks (interp_parity)', r.returncode == 0, r.stdout[-1500:] + r.stderr[-500:])
 
 HR = """fn hr.main() -> Result<(), std.io.Error> uses [io.console, thread, time] panics never
-    let mut i = 0u8
-    while i < 80u8 {
+    for _ in core.iter.range(0u8, 80u8) {
         let r = hr.msg()
         core.mem.drop(r)
         std.thread.sleep(100u64)
-        i = i.wrapping_add(1u8)
     }
     Ok(())
 end hr.main

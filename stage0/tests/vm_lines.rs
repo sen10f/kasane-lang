@@ -86,10 +86,8 @@ fn overflow_after_a_loop_reports_the_failing_line() {
     check(
         "fn pt.grow(n: u8) -> u8 uses [] panics may pub
     let mut acc = 1u8
-    let mut i = 0u8
-    while i < n {
+    for _ in core.iter.range(0u8, n) {
         acc = acc.wrapping_add(acc)
-        i = i.wrapping_add(1u8)
     }
     acc * 200u8
 end pt.grow
@@ -100,6 +98,6 @@ fn pt.main() -> Result<(), std.io.Error> uses [] panics may
     Ok(())
 end pt.main
 ",
-        8,
+        6,
     );
 }
