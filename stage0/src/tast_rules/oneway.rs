@@ -9,9 +9,27 @@ use crate::check::Diag;
 use crate::program::Program;
 use crate::tast::*;
 use crate::types::Ty;
+use std::collections::HashMap;
 
-fn diag(p: &Program, di: usize, line: usize, code: &str, msg: String) -> Diag {
-    Diag { file: p.defs[di].file.clone(), code: code.into(), fqn: p.defs[di].name.clone(), line, col: 0, msg }
+/// 診断の位置。`col` は `::<` の 1 始まりの列 (E2067 の修正対象を特定する)。0 は「列不明」。
+fn diag(p: &Program, di: usize, line: usize, col: usize, code: &str, msg: String) -> Diag {
+    Diag { file: p.defs[di].file.clone(), code: code.into(), fqn: p.defs[di].name.clone(), line, col, msg }
+}
+
+/// ソースの `line` 行目にある `nth` 番目の `::<` の列 (1 始まり) を返す。見つからなければ 0。
+fn nth_turbofish_col(file: &str, line: usize, nth: usize) -> usize {
+    let Ok(src) = std::fs::read_to_string(file) else { return 0 };
+    let Some(l) = src.split('\n').nth(line.wrapping_sub(1)) else { return 0 };
+    let mut count = 0usize;
+    let mut start = 0;
+    while let Some(at) = l[start..].find("::<") {
+        count += 1;
+        if count == nth {
+            return l[..start + at].chars().count() + 1;
+        }
+        start += at + 2;
+    }
+    0
 }
 
 fn is_named(t: &Ty, names: &[&str]) -> bool {
@@ -356,11 +374,11 @@ fn stmt_may_mutate(p: &Program, s: &TStmt, name: &str) -> bool {
 }
 
 /// 複数行の書き換えが要る形 (E2068 bool の `match`・E2069 1 腕の `match`・E2070 数え上げの `while`・E2071 `== Some(リテラル)`)。
-fn shapes(p: &Program, e: &TExpr, found: &mut Vec<(usize, &'static str, String)>) {
+fn shapes(p: &Program, e: &TExpr, found: &mut Vec<(usize, usize, &'static str, String)>) {
     match &e.kind {
         TKind::Match { scrut, arms } if arms.len() == 2 => {
             if matches!(scrut.ty.strip(), Ty::Prim(n) if n == "bool") && arms.iter().all(|a| a.pat.kind == "PLit" && a.guard.is_none()) {
-                found.push((e.line, "E2068", "`match` on a `bool` is `if` / `else`".into()));
+                found.push((e.line, 0, "E2068", "`match` on a `bool` is `if` / `else`".into()));
             }
             if is_option(&scrut.ty) {
                 let some = arms.iter().find(|a| a.pat.kind == "PVariant" && a.pat.path.last().map(String::as_str) == Some("Some"));
@@ -368,7 +386,7 @@ fn shapes(p: &Program, e: &TExpr, found: &mut Vec<(usize, &'static str, String)>
                 if let (Some(sm), Some(nn)) = (some, none) {
                     let unit_none = matches!(&nn.body.kind, TKind::Lit(l) if l == "unit") || matches!(&nn.body.kind, TKind::Block(b) if b.is_empty());
                     if unit_none && nn.guard.is_none() && sm.guard.is_none() && matches!(sm.body.ty.strip(), Ty::Unit) {
-                        found.push((e.line, "E2069", "a `match` on an `Option` whose `None` arm is `()` is `if let Some(..) = x`".into()));
+                        found.push((e.line, 0, "E2069", "a `match` on an `Option` whose `None` arm is `()` is `if let Some(..) = x`".into()));
                     }
                 }
             }
@@ -376,7 +394,7 @@ fn shapes(p: &Program, e: &TExpr, found: &mut Vec<(usize, &'static str, String)>
         TKind::Binary { op, lhs, rhs } if op == "==" || op == "!=" => {
             if let TKind::Call { callee, args } = &rhs.kind {
                 if path_is(callee, &["Some"]) && args.len() == 1 && matches!(&args[0].kind, TKind::Lit(l) if l.starts_with("int:") || l.starts_with("bool")) && is_option(&lhs.ty) {
-                    found.push((e.line, "E2071", format!("`x {op} Some(lit)` is `x is Some(lit)`")));
+                    found.push((e.line, 0, "E2071", format!("`x {op} Some(lit)` is `x is Some(lit)`")));
                 }
             }
         }
@@ -396,7 +414,7 @@ fn shapes(p: &Program, e: &TExpr, found: &mut Vec<(usize, &'static str, String)>
                     let in_order = args.len() == params.len() && args.iter().zip(params.iter()).all(|(a, q)| path_is(a, &[q.name.as_str()]));
                     let same_sig = def.params.len() == params.len() && def.params.iter().zip(params.iter()).all(|((_, pv), q)| crate::types::from_v(pv, &Default::default()).show() == q.ty.show());
                     if def.kw == "fn" && def.generics.is_empty() && !def.is_method() && in_order && same_sig && !params.iter().any(|q| cp.first() == Some(&q.name)) && cp.join(".") == def.name {
-                        found.push((e.line, "E2073", format!("this closure only calls `{}` with its own parameters: write the function `{}` itself", def.name, def.name)));
+                        found.push((e.line, 0, "E2073", format!("this closure only calls `{}` with its own parameters: write the function `{}` itself", def.name, def.name)));
                     }
                 }
             }
@@ -408,7 +426,7 @@ fn shapes(p: &Program, e: &TExpr, found: &mut Vec<(usize, &'static str, String)>
                     if pat.kind == "PBind" && pat.lit.iter().any(|l| l == "mut") {
                         if let Some(n) = pat.name.as_deref() {
                             if !n.starts_with('_') && ss[j + 1..].iter().any(|s| stmt_mentions(s, n)) && !ss[j + 1..].iter().any(|s| stmt_may_mutate(p, s, n)) {
-                                found.push((pat.line, "E2072", format!("`let mut {n}` is never mutated: write `let {n}`")));
+                                found.push((pat.line, 0, "E2072", format!("`let mut {n}` is never mutated: write `let {n}`")));
                             }
                         }
                     }
@@ -453,7 +471,7 @@ fn shapes(p: &Program, e: &TExpr, found: &mut Vec<(usize, &'static str, String)>
                 if ss[k + 1..].iter().any(|s| stmt_mentions(s, i)) {
                     continue;
                 }
-                found.push((w.line, "E2070", format!("a counting `while` over `{i}` is `for {i} in core.iter.range(a, b)` (the `let mut {i}` is at line {})", pat.line)));
+                found.push((w.line, 0, "E2070", format!("a counting `while` over `{i}` is `for {i} in core.iter.range(a, b)` (the `let mut {i}` is at line {})", pat.line)));
             }
         }
         _ => {}
@@ -468,44 +486,52 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
             continue;
         }
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut found: Vec<(usize, &'static str, String)> = vec![];
+        let mut found: Vec<(usize, usize, &'static str, String)> = vec![];
+        // 同じ行に複数の `::<` があるとき、E2067 の修正対象をどの `::<` か特定するため、
+        // 歩行の順序 (= ソース順) でその行に現れた `::<` 付き呼び出しを数える。
+        let mut turbo_seen: HashMap<usize, usize> = HashMap::new();
         super::impl_sig::walk(&b.body, &mut |e| {
             if let Some(m) = identity(e) {
-                found.push((e.line, "E2062", m));
+                found.push((e.line, 0, "E2062", m));
             }
             shapes(p, e, &mut found);
             match &e.kind {
             TKind::MCall { recv, name, args } => {
                 if args.is_empty() && matches!(name.as_str(), "is_some" | "is_none" | "is_ok" | "is_err") && is_named(&recv.ty, &["core.option.Option", "core.result.Result"]) {
-                    found.push((e.line, "E2055", format!("`.{name}()` is not the canonical form: write `x is Some(_)` (or `if let` when the value is used)")));
+                    found.push((e.line, 0, "E2055", format!("`.{name}()` is not the canonical form: write `x is Some(_)` (or `if let` when the value is used)")));
                 }
                 // `s.trim_start().trim_end()` (両順) は `s.trim()`。
                 if let (Some(Callee::Def(outer)), TKind::Call { .. }) = (&e.res, &recv.kind) {
                     if let Some(Callee::Def(inner)) = &recv.res {
                         let (o, i) = (p.defs[*outer].name.as_str(), p.defs[*inner].name.as_str());
                         if (o == "core.str.trim_end" && i == "core.str.trim_start") || (o == "core.str.trim_start" && i == "core.str.trim_end") {
-                            found.push((e.line, "E2060", "`trim_start().trim_end()` (either order) is `trim()`".into()));
+                            found.push((e.line, 0, "E2060", "`trim_start().trim_end()` (either order) is `trim()`".into()));
                         }
                     }
                 }
                 if matches!(name.as_str(), "sort_unstable" | "sort_unstable_by") {
-                    found.push((e.line, "E2058", format!("`{name}` is removed: use `{}`", name.replacen("sort_unstable", "sort", 1))));
+                    found.push((e.line, 0, "E2058", format!("`{name}` is removed: use `{}`", name.replacen("sort_unstable", "sort", 1))));
                 }
             }
             TKind::Unary { op, operand } if op == "!" => {
                 // 整数の `!(a < b)` は `a >= b` (小数は NaN で意味が変わるので対象外)。
                 if let TKind::Binary { op: c, lhs, rhs } = &operand.kind {
                     if matches!(c.as_str(), "<" | "<=" | ">" | ">=") && is_int128(&lhs.ty) && is_int128(&rhs.ty) {
-                        found.push((e.line, "E2066", format!("`!(a {c} b)` on integers is `a {} b`", flip(c))));
+                        found.push((e.line, 0, "E2066", format!("`!(a {c} b)` on integers is `a {} b`", flip(c))));
                     }
                 }
             }
             TKind::Call { callee, args } => {
+                // `::<` を書いた呼び出しをソース順に数え、同一行の E2067 がどの `::<` を指すか特定できるようにする。
+                if e.tf.is_some() {
+                    let c = turbo_seen.entry(e.line).or_insert(0);
+                    *c += 1;
+                }
                 // `x.clone()` (基本型) は `x`。受け手は呼び出しの経路に入る。
                 if args.is_empty() {
                     if let TKind::Path(pth) = &callee.kind {
                         if pth.len() >= 2 && pth.last().map(String::as_str) == Some("clone") && matches!(callee.ty.strip(), Ty::Prim(n) if n != "str") && matches!(e.ty.strip(), Ty::Prim(_)) {
-                            found.push((e.line, "E2065", "`.clone()` on a `Copy` type is the value itself: remove the call".into()));
+                            found.push((e.line, 0, "E2065", "`.clone()` on a `Copy` type is the value itself: remove the call".into()));
                         }
                     }
                 }
@@ -536,7 +562,10 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     }
                     {
                         if ok {
-                            found.push((e.line, "E2067", "the type argument `::<..>` is decided by the arguments: remove it".into()));
+                            // この呼び出しの `::<` は、同じ行の nth 番目の `::<` (n = turbo_seen[e.line])。
+                            let k = *turbo_seen.get(&e.line).unwrap_or(&0);
+                            let col = nth_turbofish_col(&p.defs[di].file, e.line, k);
+                            found.push((e.line, col, "E2067", "the type argument `::<..>` is decided by the arguments: remove it".into()));
                         }
                     }
                 }
@@ -545,7 +574,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     if p.defs[*d].name == "alloc.fmt.write" && args.len() == 2 {
                         if let TKind::Unary { op, operand } = &args[1].kind {
                             if op == "&" && matches!(operand.kind, TKind::Lit(_)) && matches!(operand.ty.strip(), Ty::Prim(n) if n == "str") {
-                                found.push((e.line, "E2061", "`alloc.fmt.write(&mut s, &\"..\")` of a string literal is `s.push_str(\"..\")`".into()));
+                                found.push((e.line, 0, "E2061", "`alloc.fmt.write(&mut s, &\"..\")` of a string literal is `s.push_str(\"..\")`".into()));
                             }
                         }
                     }
@@ -555,7 +584,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     if p.defs[*d].name == "alloc.string.String.push_display" && args.len() == 1 {
                         if let TKind::Unary { op, operand } = &args[0].kind {
                             if op == "&" && matches!(operand.kind, TKind::Lit(_)) && matches!(operand.ty.strip(), Ty::Prim(n) if n == "str") {
-                                found.push((e.line, "E2061", "`push_display(&\"..\")` of a string literal is `push_str(\"..\")`".into()));
+                                found.push((e.line, 0, "E2061", "`push_display(&\"..\")` of a string literal is `push_str(\"..\")`".into()));
                             }
                         }
                     }
@@ -573,7 +602,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                             "is_ok" => "Ok(_)",
                             _ => "Err(_)",
                         };
-                        found.push((e.line, "E2055", format!("`.{m}()` is not the canonical form: write `x is {pat}` (or `if let` when the value is used)")));
+                        found.push((e.line, 0, "E2055", format!("`.{m}()` is not the canonical form: write `x is {pat}` (or `if let` when the value is used)")));
                     }
                 }
                 if let Some(Callee::Def(d)) = &e.res {
@@ -582,33 +611,33 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     if args.len() == 1 && n.starts_with("core.num.") {
                         let v = int_lit(&args[0]);
                         if matches!((last, v), ("wrapping_add" | "wrapping_sub", Some(0)) | ("wrapping_mul", Some(1))) {
-                            found.push((e.line, "E2062", format!("`.{last}(..)` with this literal changes nothing: remove the call")));
+                            found.push((e.line, 0, "E2062", format!("`.{last}(..)` with this literal changes nothing: remove the call")));
                         }
                     }
                     if n == "core.bool.bool.then_some" {
-                        found.push((e.line, "E2063", "`then_some` is removed: write `if c { Some(v) } else { None }`".into()));
+                        found.push((e.line, 0, "E2063", "`then_some` is removed: write `if c { Some(v) } else { None }`".into()));
                     }
                 }
                 // `u32.from_str_radix(s, 10)` は `u32.parse(s)`。
                 if let Some(Callee::Def(d)) = &e.res {
                     let n = p.defs[*d].name.as_str();
                     if n.starts_with("core.num.") && n.ends_with(".from_str_radix") && args.len() == 2 && int_lit(&args[1]) == Some(10) {
-                        found.push((e.line, "E2064", "`from_str_radix(s, 10)` is `parse(s)`".into()));
+                        found.push((e.line, 0, "E2064", "`from_str_radix(s, 10)` is `parse(s)`".into()));
                     }
                 }
                 if let TKind::Path(pth) = &callee.kind {
                     let s: Vec<&str> = pth.iter().map(String::as_str).collect();
                     if s == ["core", "panic", "todo"] && args.is_empty() {
-                        found.push((e.line, "E2057", "`core.panic.todo` is removed: write `core.panic.panic(\"...\")`".into()));
+                        found.push((e.line, 0, "E2057", "`core.panic.todo` is removed: write `core.panic.panic(\"...\")`".into()));
                     }
                     if matches!(s.as_slice(), [.., "sort_unstable"] | [.., "sort_unstable_by"]) {
                         let last = *s.last().unwrap();
-                        found.push((e.line, "E2058", format!("`{last}` is removed: use `{}`", last.replacen("sort_unstable", "sort", 1))));
+                        found.push((e.line, 0, "E2058", format!("`{last}` is removed: use `{}`", last.replacen("sort_unstable", "sort", 1))));
                     }
                     if s == ["core", "check", "is_true"] && args.len() == 1 {
                         if let TKind::Binary { op, lhs, rhs } = &args[0].kind {
                             if op == "==" && scalar(&lhs.ty) && scalar(&rhs.ty) {
-                                found.push((e.line, "E2059", "`core.check.is_true(a == b)` is not the canonical form: write `core.check.eq(a, b)`".into()));
+                                found.push((e.line, 0, "E2059", "`core.check.is_true(a == b)` is not the canonical form: write `core.check.eq(a, b)`".into()));
                             }
                         }
                     }
@@ -617,16 +646,16 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
             TKind::Binary { op, lhs, rhs } if op == "==" || op == "!=" => {
                 let opt = |x: &TExpr| is_named(&x.ty, &["core.option.Option"]);
                 if (is_none_path(rhs) && opt(lhs)) || (is_none_path(lhs) && opt(rhs)) {
-                    found.push((e.line, "E2055", format!("`{op} None` is not the canonical form: write `x is None` / `x is Some(_)`")));
+                    found.push((e.line, 0, "E2055", format!("`{op} None` is not the canonical form: write `x is None` / `x is Some(_)`")));
                 }
             }
             _ => {}
             }
         });
-        found.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-        found.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
-        for (line, code, msg) in found {
-            out.push(diag(p, di, line, code, msg));
+        found.sort_by(|a, b| (a.0, a.2).cmp(&(b.0, b.2)));
+        found.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1 && a.2 == b.2);
+        for (line, col, code, msg) in found {
+            out.push(diag(p, di, line, col, code, msg));
         }
     }
     out

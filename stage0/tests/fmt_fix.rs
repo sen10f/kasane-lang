@@ -875,6 +875,15 @@ fn oneway_turbofish_decided_by_arguments_is_removed() {
 }
 
 #[test]
+fn oneway_turbofish_nested_on_one_line_is_removed() {
+    // 同一行にネストした 2 つの `::<` がある。内側のみ引数で型が決まり、
+    // 外側は受け手の型から決まるので対象外。列指定で内側の `::<` だけを外す。
+    // 列不明のフォールバックは `::<` が複数ある行を直さない。
+    let src = "fn t.id[T](x: T) -> T uses [] panics never\n    x\nend t.id\n\nfn t.main() -> () uses [] panics never\n    let x = t.id::<u32>(t.id::<u32>(1u32))\n    core.mem.drop(x)\n    ()\nend t.main\n";
+    oneway_round_trip("oneway_turbofish_nested", src, "E2067", "t.id::<u32>(t.id(1u32))");
+}
+
+#[test]
 fn oneway_is_none_on_linear_payload_becomes_is() {
     let src = "type t.Res linear\n    id: u32\nend t.Res\n\nfn t.close(r: t.Res) -> u32 uses [] panics never\n    let t.Res { id: id } = r\n    id\nend t.close\n\nfn t.main() -> () uses [] panics never\n    let o = Some(t.Res { id: 1u32 })\n    core.mem.drop(o.is_none())\n    match o {\n        Some(r) => core.mem.drop(t.close(r))\n        None => core.mem.drop(0u32)\n    }\nend t.main\n";
     oneway_round_trip("oneway_is_linear", src, "E2055", "o is None");
