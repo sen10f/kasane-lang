@@ -333,7 +333,7 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             }
             vec![span(file, line, text, indent, text.len(), format!("core.mem.drop({})", expr))]
         }
-        "E2055" | "E2057" | "E2058" | "E2059" | "E2060" | "E2061" | "E2062" | "E2063" | "E2064" | "E2065" | "E2066" | "E2067" | "E2068" | "E2069" | "E2070" | "E2071" | "E2072" | "E2073" => oneway_fix(code, msg, file, line, lines),
+        "E2055" | "E2057" | "E2058" | "E2059" | "E2060" | "E2061" | "E2062" | "E2063" | "E2064" | "E2065" | "E2066" | "E2067" | "E2068" | "E2069" | "E2070" | "E2071" | "E2072" | "E2073" => oneway_fix(code, msg, file, line, col, lines),
         "E2042" => {
             let Some(text) = get(line) else { return vec![] };
             let indent = text.len() - text.trim_start().len();
@@ -880,7 +880,7 @@ fn struct_order_fix(file: &str, msg: &str, line: usize, col: usize, lines: &[Str
 }
 
 /// 書き方は 1 通りの規則 (規則 O、`tast_rules/oneway.rs`) の直し。行の中で一意に決まる形だけ直す (それ以外は直さず診断だけ残す)。
-fn oneway_fix(code: &str, msg: &str, file: &str, line: usize, lines: &[String]) -> Vec<Fix> {
+fn oneway_fix(code: &str, msg: &str, file: &str, line: usize, col: usize, lines: &[String]) -> Vec<Fix> {
     let Some(text) = lines.get(line.wrapping_sub(1)).map(|s| s.as_str()) else { return vec![] };
     let ident_before = |at: usize| -> usize {
         let head = &text[..at];
@@ -1057,10 +1057,24 @@ fn oneway_fix(code: &str, msg: &str, file: &str, line: usize, lines: &[String]) 
             vec![span(file, line, text, start, close + 1, format!("{a} {new} {r}"))]
         }
         "E2067" => {
-            if text.matches("::<").count() != 1 {
-                return vec![];
-            }
-            let at = text.find("::<").unwrap();
+            // `col` は oneway 側で特定した `::<` の列 (同じ行に複数の `::<` があるときの修正対象)。
+            // 列不明 (0) のときは、`::<` が 1 つだけの行だけ直す (従来どおり)。
+            let at: Option<usize> = if col > 0 {
+                text.char_indices()
+                    .nth(col.wrapping_sub(1))
+                    .and_then(|(b, _)| text[b..].starts_with("::<").then_some(b))
+            } else {
+                None
+            };
+            let at = match at {
+                Some(a) => a,
+                None => {
+                    if text.matches("::<").count() != 1 {
+                        return vec![];
+                    }
+                    text.find("::<").unwrap()
+                }
+            };
             let mut depth = 0i32;
             for (i, c) in text[at + 2..].char_indices() {
                 match c {
