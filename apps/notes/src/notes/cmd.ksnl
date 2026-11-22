@@ -31,7 +31,7 @@ fn notes.cmd.add(start: usize) -> Result<(), notes.error.Error> uses [alloc, env
     while i < n {
         match std.env.arg(i) {
             Some(tag) => {
-                let tag_str = alloc.string.String.from_str(std.alloc.SYSTEM, tag)?
+                let tag_str = std.string.String.from_str(tag)?
                 core.mem.drop(tags.push(tag_str)?)
             }
             None => core.mem.drop(0u8)
@@ -72,7 +72,7 @@ fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Res
             for i in core.iter.range(0usize, n) {
                 match all.get(i) {
                     Some(t) => {
-                        let c = alloc.string.String.from_str(std.alloc.SYSTEM, t.as_str())?
+                        let c = std.string.String.from_str(t.as_str())?
                         core.mem.drop(new_tags.push(c)?)
                     }
                     None => core.mem.drop(0u8)
@@ -319,13 +319,13 @@ fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Er
             for i in core.iter.range(0usize, n) {
                 match all.get(i) {
                     Some(t) => {
-                        let c = alloc.string.String.from_str(std.alloc.SYSTEM, t.as_str())?
+                        let c = std.string.String.from_str(t.as_str())?
                         core.mem.drop(new_tags.push(c)?)
                     }
                     None => core.mem.drop(0u8)
                 }
             }
-            let tag_str = alloc.string.String.from_str(std.alloc.SYSTEM, tag)?
+            let tag_str = std.string.String.from_str(tag)?
             core.mem.drop(new_tags.push(tag_str)?)
             let title = memo.title.as_str()
             let body = memo.body.as_str()

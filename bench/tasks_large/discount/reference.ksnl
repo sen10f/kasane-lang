@@ -27,7 +27,7 @@ enum bench.RuleKind derive [Debug, Clone, Copy, PartialEq] pub
 end bench.RuleKind
 
 type bench.Slot
-    rule: alloc.boxed.Box<dyn bench.Rule<[], never> + 'static, std.alloc.System>
+    rule: std.boxed.Box<dyn bench.Rule<[], never> + 'static>
 end bench.Slot
 
 type bench.StepOff derive [Debug, Clone, Copy] pub
@@ -80,7 +80,7 @@ fn bench.PercentOff.kind(self: &bench.PercentOff) -> bench.RuleKind uses [] pani
 end bench.PercentOff.kind
 
 fn bench.Pricer.add[R: bench.Rule<[], never>](self: &mut bench.Pricer, r: R) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
-    let b = alloc.boxed.Box.new(std.alloc.SYSTEM, r)?
+    let b = std.boxed.Box.new(r)?
     let slot = bench.Slot { rule: alloc.boxed.Box.into_dyn(b) }
     self.rules.push(slot)?
     Ok(())

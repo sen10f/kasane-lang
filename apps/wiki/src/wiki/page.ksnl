@@ -5,8 +5,8 @@ type wiki.page.Page pub
 end wiki.page.Page
 
 fn wiki.page.Page.new(name: &str, content: &str, version: u64) -> Result<wiki.page.Page, wiki.error.Error> uses [alloc] panics never pub
-    let n = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
-    let c = alloc.string.String.from_str(std.alloc.SYSTEM, content)?
+    let n = std.string.String.from_str(name)?
+    let c = std.string.String.from_str(content)?
     Ok(wiki.page.Page { name: n, content: c, version: version })
 end wiki.page.Page.new
 

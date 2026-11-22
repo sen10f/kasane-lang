@@ -307,7 +307,7 @@ end std.json.decode_payload
 fn std.json.decode_string(doc: &std.json.Doc, v: std.json.Value) -> Result<std.string.String, std.json.Error> uses [alloc] panics never pub
     match std.json.text_at(doc, v.at) {
         Some(s) => {
-            let copy = alloc.string.String.from_str(std.alloc.SYSTEM, s)?
+            let copy = std.string.String.from_str(s)?
             Ok(copy)
         }
         None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))

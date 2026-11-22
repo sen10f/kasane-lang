@@ -19,7 +19,7 @@ type ui.app.Patch pub
     added: std.vec.Vec<usize> pub
     removed: std.vec.Vec<usize> pub
     changed: std.vec.Vec<usize> pub
-    moved: alloc.vec.Vec<(usize, usize), std.alloc.System> pub
+    moved: std.vec.Vec<(usize, usize)> pub
 end ui.app.Patch
 
 type ui.app.Rect derive [Debug, Clone, Copy, PartialEq] pub

@@ -28,7 +28,7 @@ fn bench.split_str(text: &str, sep: &str) -> std.vec.Vec<std.string.String> uses
         match cur.find(sep) {
             Some(pos) => match cur.split_at(pos) {
                 Some((head, _tail)) => {
-                    match alloc.string.String.from_str(std.alloc.SYSTEM, head) {
+                    match std.string.String.from_str(head) {
                         Ok(s) => match out.push(s) {
                             Ok(_) => ()
                             Err(_) => ()
@@ -46,7 +46,7 @@ fn bench.split_str(text: &str, sep: &str) -> std.vec.Vec<std.string.String> uses
                 None => break
             }
             None => {
-                match alloc.string.String.from_str(std.alloc.SYSTEM, rest) {
+                match std.string.String.from_str(rest) {
                     Ok(s) => match out.push(s) {
                         Ok(_) => ()
                         Err(_) => ()

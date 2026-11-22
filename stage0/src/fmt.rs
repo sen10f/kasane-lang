@@ -421,6 +421,13 @@ fn parse_group_args(chars: &[char], start: usize) -> Option<(Vec<String>, usize)
                 }
                 cur.push(c);
             }
+            '>' | ']' | ')' => {
+                // 閉じ括弧の種類に関わらず深さを下げる（`dyn T<[], never>` のように
+                // `<` の中に `[]` が入る場合に、外側の `>` で深さが 0 にならずパースが
+                // 失敗するのを防ぐ）。
+                depth = depth.saturating_sub(1);
+                cur.push(c);
+            }
             ',' if depth == 1 => {
                 args.push(cur.iter().collect());
                 cur.clear();
@@ -507,46 +514,62 @@ fn rewrite_alloc(line: &str) -> String {
                 }
             }
         }
-        // コンストラクタ呼び出し `alloc.x.Y.new[..](...)` または裸の `alloc.x.Y.new`
-        if !replaced && after + 4 <= n && chars[after] == '.' && chars[after + 1] == 'n' && chars[after + 2] == 'e' && chars[after + 3] == 'w'
-            && (after + 4 == n || !is_alloc_id_char(chars[after + 4])) {
-            let mut p = after + 4; // ".new" の後
-            let mut targs: Vec<String> = vec![];
-            if p < n && chars[p] == '<' {
-                if let Some((ts, end)) = parse_group_args(&chars, p) {
-                    targs = ts;
-                    p = end;
-                }
+        // コンストラクタ呼び出し `alloc.x.Y.<ctor>(std.alloc.SYSTEM, ..)` または裸の `alloc.x.Y.<ctor>`
+        // (`<ctor>` は `alloc_ctor_takes_allocator_first` でアロケータを第1パラメータに取るもの。
+        // `alloc.x.Y.<ctor>()`（アロケータなし）や `alloc.x.Y.<ctor>(A)`（非 System）はそのままにして、
+        // 検査器が E2001 を報告できるようにする（無効なプログラムを有効にしない）)。
+        if !replaced && after + 1 <= n && chars[after] == '.' {
+            let mut q = after + 1;
+            let ctor_start = q;
+            while q < n && is_alloc_id_char(chars[q]) {
+                q += 1;
             }
-            if p < n && chars[p] == '(' {
-                if let Some((rargs, end)) = parse_group_args(&chars, p) {
-                    // デフォルト確保器を明示した形式のみを短縮する
-                    // (`alloc.x.Y.new(std.alloc.SYSTEM)` → `std.x.Y.new()`)。
-                    // `alloc.x.Y.new()`（アロケータなし）や `alloc.x.Y.new(A)`（非 System）はそのままにして、
-                    // 検査器が E2001（アロケータ未指定/不一致）を報告できるようにする
-                    //（無効なプログラムを有効にしない）。
-                    let is_system = rargs.len() == 1 && rargs[0].trim() == "std.alloc.SYSTEM";
-                    if is_system {
-                        let t = if targs.is_empty() {
-                            String::new()
-                        } else {
-                            format!("<{}>", targs.iter().map(|a| a.trim()).collect::<Vec<_>>().join(", "))
-                        };
-                        out.extend(format!("{}.new{}()", std, t).chars());
-                        i = end;
+            let ctor: String = chars[ctor_start..q].iter().collect();
+            if crate::types::alloc_ctor_takes_allocator_first(alloc, &ctor) {
+                let mut p = q;
+                let mut targs: Vec<String> = vec![];
+                if p < n && chars[p] == '<' {
+                    if let Some((ts, end)) = parse_group_args(&chars, p) {
+                        targs = ts;
+                        p = end;
+                    }
+                }
+                if p < n && chars[p] == '(' {
+                    if let Some((rargs, end)) = parse_group_args(&chars, p) {
+                        let is_system = !rargs.is_empty() && rargs[0].trim() == "std.alloc.SYSTEM";
+                        if is_system {
+                            let t = if targs.is_empty() {
+                                String::new()
+                            } else {
+                                format!("<{}>", targs.iter().map(|a| a.trim()).collect::<Vec<_>>().join(", "))
+                            };
+                            let aargs = rargs[1..].iter().map(|a| a.trim()).collect::<Vec<_>>().join(", ");
+                            out.extend(format!("{}.{}{}({})", std, ctor, t, aargs).chars());
+                            i = end;
+                            replaced = true;
+                        }
+                    }
+                } else if p == n || chars[p] == ' ' || chars[p] == '\t' || chars[p] == ',' || chars[p] == ';' || chars[p] == ')' || chars[p] == '>' {
+                    // 裸の `alloc.x.Y.<ctor>` 参照。ただし `end <修飾名>.<ctor>` は定義の終端で、ヘッダと揃える必要があるため
+                    // 短縮しない。
+                    let is_end_def = i >= 4 && &line[i - 4..i] == "end ";
+                    if !is_end_def {
+                        let t = if targs.is_empty() { String::new() } else { format!("<{}>", targs.iter().map(|a| a.trim()).collect::<Vec<_>>().join(", ")) };
+                        out.extend(format!("{}.{}{}", std, ctor, t).chars());
+                        i = p;
                         replaced = true;
                     }
                 }
-            } else if p == n || chars[p] == ' ' || chars[p] == '\t' || chars[p] == ',' || chars[p] == ';' || chars[p] == ')' || chars[p] == '>' {
-                // 裸の `alloc.x.Y.new` 参照。ただし `end <修飾名>.new` は定義の終端で、ヘッダと揃える必要があるため
-                // 短縮しない (ヘッダの `alloc.x.Y.new[..]` は `(` で始まる型実引数ではなく `[` なのでそのまま残る)。
-                let is_end_def = i >= 4 && &line[i - 4..i] == "end ";
-                if !is_end_def {
-                    let t = if targs.is_empty() { String::new() } else { format!("<{}>", targs.iter().map(|a| a.trim()).collect::<Vec<_>>().join(", ")) };
-                    out.extend(format!("{}.new{}", std, t).chars());
-                    i = p;
-                    replaced = true;
-                }
+            }
+        }
+        // 裸の型参照 `alloc.x.Y`（型実引数なし、メソッド呼び出しなし）→ `std.x.Y`。
+        // アロケータをすべて省略しても有効な型（`total == 1`、現在は `std.string.String` のみ）だけを短縮する。
+        if !replaced {
+            let is_bare_type = after == n || matches!(chars[after], ' ' | '\t' | ',' | '>' | ';' | ')');
+            if is_bare_type && *total == 1 {
+                out.extend(std.chars());
+                i = after;
+                replaced = true;
             }
         }
         if !replaced {

@@ -130,7 +130,7 @@ fn todo.model.from_extra_json_value(doc: &std.json.Doc, value: std.json.Value) -
     let deadline_v = std.json.decode_field(doc, value, "deadline", 2usize)?
     let deadline = match std.json.decode_string(doc, deadline_v) {
         Ok(d) => d
-        Err(_e) => match alloc.string.String.from_str(std.alloc.SYSTEM, "") {
+        Err(_e) => match std.string.String.from_str("") {
             Ok(s) => s
             Err(_) => return Err(std.json.Error.OutOfRange)
         }
@@ -276,10 +276,10 @@ fn todo.model.session_to_json(session: &todo.model.Session) -> Result<std.string
 end todo.model.session_to_json
 
 fn todo.model.test_extra() -> todo.model.TodoExtra uses [alloc] panics may
-    match alloc.string.String.from_str(std.alloc.SYSTEM, "2026-11-14T10:00:00Z") {
+    match std.string.String.from_str("2026-11-14T10:00:00Z") {
         Ok(u) => {
             let mut tags = std.vec.Vec.new()
-            match alloc.string.String.from_str(std.alloc.SYSTEM, "買い物") {
+            match std.string.String.from_str("買い物") {
                 Ok(tag) => match tags.push(tag) {
                     Ok(_u) => {
                     }
@@ -287,7 +287,7 @@ fn todo.model.test_extra() -> todo.model.TodoExtra uses [alloc] panics may
                 }
                 Err(_e) => core.panic.panic("test_extra")
             }
-            match alloc.string.String.from_str(std.alloc.SYSTEM, "2026-12-01T00:00:00Z") {
+            match std.string.String.from_str("2026-12-01T00:00:00Z") {
                 Ok(d) => {
                     let dl = d
                     let o = 1i64
@@ -303,7 +303,7 @@ end todo.model.test_extra
 fn todo.model.test_memory() -> todo.model.Todo uses [alloc] panics may
     let mut title = std.string.String.new()
     core.mem.drop(title.push_str("買い物"))
-    match alloc.string.String.from_str(std.alloc.SYSTEM, "2026-11-14T10:00:00Z") {
+    match std.string.String.from_str("2026-11-14T10:00:00Z") {
         Ok(created) => todo.model.Todo { id: 7i64, title: title, done: true, created_at: created }
         Err(_e) => core.panic.panic("test_memory")
     }

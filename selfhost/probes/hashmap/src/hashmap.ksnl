@@ -3,7 +3,7 @@ fn hashmap.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics ne
     let mut name = std.string.String.new()
     core.mem.drop(name.push_str("fn"))
     core.mem.drop(m.insert(name, 1usize))
-    let key = alloc.string.String.from_str(std.alloc.SYSTEM, "fn")
+    let key = std.string.String.from_str("fn")
     match key {
         Ok(k) => match m.get_str(k.as_str()) {
             Some(v) => {

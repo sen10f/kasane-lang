@@ -162,7 +162,7 @@ fn shortener.http.parse_head(head: &[u8]) -> Result<shortener.http.Head, shorten
         return Err(error.Error.BadRequest)
     }
     let content_length = shortener.http.parse_content_length(headers)?
-    let owned = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    let owned = std.string.String.from_str(path)?
     Ok(shortener.http.Head { content_length: content_length, method: method, path: owned })
 end shortener.http.parse_head
 
@@ -219,7 +219,7 @@ fn shortener.http.reason(status: u16) -> &'static str uses [] panics never pub
 end shortener.http.reason
 
 fn shortener.http.redirect_response(location: &str, body: std.string.String) -> Result<shortener.http.Response, shortener.error.Error> uses [alloc] panics never pub
-    let place = alloc.string.String.from_str(std.alloc.SYSTEM, location)?
+    let place = std.string.String.from_str(location)?
     Ok(shortener.http.Response { body: body, location: place, status: 302u16 })
 end shortener.http.redirect_response
 

@@ -27,9 +27,9 @@ fn ksnc.kbuild.make(dir: &str, root: &str, std_dir: &str, release: bool, target:
     let mk_st = mk.output(&mut mk_out, &mut mk_err)?
     ksnc.tool.expect_ok("ksnc: target/kasane を作れない\n", mk_st.code, &mk_out, &mk_err)?
     let base = std.path.join(outdir.as_str(), man.name.as_str())?
-    let mut ll_path = alloc.string.String.from_str(std.alloc.SYSTEM, base.as_str())?
+    let mut ll_path = std.string.String.from_str(base.as_str())?
     ll_path.push_str(".ll")?
-    let mut exe = alloc.string.String.from_str(std.alloc.SYSTEM, base.as_str())?
+    let mut exe = std.string.String.from_str(base.as_str())?
     exe.push_str(".native")?
     std.fs.write_atomic(ll_path.as_str(), g.outs.out.as_bytes())?
     let ir = g.outs.out.as_str()

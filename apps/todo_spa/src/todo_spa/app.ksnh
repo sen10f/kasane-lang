@@ -262,7 +262,7 @@ fn todo_spa.app.text_of(buf: &[u8], n: i32) -> Result<std.string.String, alloc.a
                     core.mem.drop(e)
                     Ok(std.string.String.new())
                 }
-                Ok(text) => alloc.string.String.from_str(std.alloc.SYSTEM, text)
+                Ok(text) => std.string.String.from_str(text)
             }
         }
     }

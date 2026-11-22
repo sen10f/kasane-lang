@@ -1,9 +1,10 @@
 //! 意味検査 (stage0)。Python 参照実装 ksn/sema.py (Checker) と ksn/typeck.py (TypeCk) の移植。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs;
 
 use crate::program::{Def, Program, Resolved, Target};
-use crate::parser::{V, nid};
+use crate::parser::{unpack_pos, V, nid};
 
 #[path = "borrowck.rs"]
 pub(crate) mod borrowck;
@@ -86,6 +87,77 @@ pub(crate) fn items(v: &V) -> &[V] {
         V::L(xs) => xs,
         _ => &[],
     }
+}
+
+/// 引数リストの原文を、各引数の位置からソースを読んで再構成する。
+/// 位置が取れない引数はスキップする。
+pub(crate) fn args_source_text(file: &str, args: &[V]) -> String {
+    let Ok(src) = fs::read_to_string(file) else { return String::new() };
+    let lines: Vec<&str> = src.lines().collect();
+    let mut parts: Vec<String> = vec![];
+    for a in args {
+        let (ln, col) = unpack_pos(nline(a));
+        if ln == 0 || ln > lines.len() {
+            continue;
+        }
+        let line = lines[ln - 1];
+        let mut byte = 0;
+        let mut cp = 0;
+        let mut found = false;
+        for (bb, _) in line.char_indices() {
+            if cp == col.saturating_sub(1) {
+                byte = bb;
+                found = true;
+                break;
+            }
+            cp += 1;
+        }
+        if !found {
+            byte = line.len();
+        }
+        let bytes = line.as_bytes();
+        let mut end = byte;
+        let mut depth = 0u32;
+        let mut in_str = false;
+        while end < bytes.len() {
+            let c = line[end..].chars().next().unwrap();
+            let clen = c.len_utf8();
+            if in_str {
+                if c == '"' {
+                    in_str = false;
+                }
+                end += clen;
+                continue;
+            }
+            match c {
+                '"' => {
+                    in_str = true;
+                    end += clen;
+                    continue;
+                }
+                '(' | '[' | '<' => {
+                    depth += 1;
+                    end += clen;
+                    continue;
+                }
+                ')' | ']' | '>' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    end += clen;
+                    continue;
+                }
+                ',' if depth == 0 => {
+                    break;
+                }
+                _ => {}
+            }
+            end += clen;
+        }
+        parts.push(line[byte..end].trim().to_string());
+    }
+    parts.join(", ")
 }
 pub(crate) fn st(v: &V) -> String {
     match v {
@@ -2515,7 +2587,34 @@ impl<'a> Checker<'a> {
                                 // 組み込み・標準の関数も `.sig` の宣言と引数の数を照らす (利用者の関数と同じ E2001)。
                                 let (want, n) = (self.def(si).params.len(), items(&f[1]).len());
                                 if want != n {
-                                    self.diag("E2001", format!("{} takes {} argument(s) but {} given", self.def(si).name, want, n), di, nline(e));
+                                    let mut msg =
+                                        format!("{} takes {} argument(s) but {} given", self.def(si).name, want, n);
+                                    // デフォルト確保器だけを取るコンストラクタ (`alloc.vec.Vec.new` /
+                                    // `alloc.string.String.from_str` など) で、アロケータ引数だけが不足している場合、
+                                    // 短い書き方を案内する。`given == want - 1` は、値など他の引数は渡されていて
+                                    // アロケータだけが欠けている状態。
+                                    if want >= 1 && n == want.saturating_sub(1) {
+                                        let name = self.def(si).name.as_str();
+                                        if let Some((alloc_type, ctor)) = name.rsplit_once('.') {
+                                            if let Some(alloc) = crate::types::ALLOC_ALIASES
+                                                .iter()
+                                                .find_map(|(_, a, _)| if *a == alloc_type { Some(*a) } else { None })
+                                            {
+                                                if let Some(std) = crate::types::alloc_std_alias(alloc) {
+                                                    if crate::types::alloc_ctor_takes_allocator_first(alloc, ctor) {
+                                                        let args = args_source_text(&self.def(di).file, items(&f[1]));
+                                                        msg.push_str(&format!(
+                                                            " write `{}.{}({})` (default allocator) or pass the allocator: `{}.{}(std.alloc.SYSTEM{})`",
+                                                            std, ctor, args,
+                                                            alloc, ctor,
+                                                            if args.is_empty() { String::new() } else { format!(", {args}") }
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    self.diag("E2001", msg, di, nline(e));
                                 }
                             }
                         }

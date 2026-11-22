@@ -55,13 +55,13 @@ fn ksnc.clang.shim() -> Result<(), ksnc.Failure> uses [alloc, env, io.console, i
         Some(b) => b
         None => exe
     }
-    let mut ll = alloc.string.String.from_str(std.alloc.SYSTEM, base)?
+    let mut ll = std.string.String.from_str(base)?
     ll.push_str(".ll")?
     std.fs.write_atomic(ll.as_str(), bytes.as_slice())?
     let clang = ksnc.tool.clang()?
-    let mut rt_path = alloc.string.String.from_str(std.alloc.SYSTEM, base)?
+    let mut rt_path = std.string.String.from_str(base)?
     rt_path.push_str(".ll.rt.c")?
-    let mut sys_path = alloc.string.String.from_str(std.alloc.SYSTEM, base)?
+    let mut sys_path = std.string.String.from_str(base)?
     sys_path.push_str(".ll.sys.c")?
     if rt_core {
         let src = std.path.join(root, "stage0/src/kir_rt.c")?

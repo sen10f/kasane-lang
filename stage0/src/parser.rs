@@ -81,8 +81,9 @@ fn anchor(p: usize, left: &V) -> usize {
         p
     }
 }
-/// デフォルト確保器の短縮名のコンストラクタ (`std.vec.Vec.new(..)`) を、正式名の呼び出し
-/// (`alloc.vec.Vec.new(std.alloc.SYSTEM, ..)`) に直す。インタプリタ・検査・KIR は正式名だけを見る。
+/// デフォルト確保器の短縮名のコンストラクタ (`std.vec.Vec.new(..)` /
+/// `std.string.String.from_str(..)` など) を、正式名の呼び出し
+/// (`alloc.vec.Vec.new(std.alloc.SYSTEM, ..)` など) に直す。インタプリタ・検査・KIR は正式名だけを見る。
 /// 長い形式 (`alloc.vec.Vec.new()`) はそのまま (アロケータを省略すると引数の個数の誤り)。
 fn short_ctor_call(callee: V, args: V) -> (V, V) {
     if let V::Node("Path", pf, line, id) = &callee {
@@ -90,15 +91,19 @@ fn short_ctor_call(callee: V, args: V) -> (V, V) {
             V::L(l) => l.iter().filter_map(|x| if let V::S(t) = x { Some(t.clone()) } else { None }).collect(),
             _ => vec![],
         };
-        if segs.len() >= 2 && segs[segs.len() - 1] == "new" {
-            if let Some(a) = crate::types::std_to_alloc(&segs[..segs.len() - 1].join(".")) {
-                let mut ns: Vec<String> = a.split('.').map(String::from).collect();
-                ns.push("new".into());
-                let mut npf = pf.clone();
-                npf[0] = strs(&ns);
-                let mut av = match &args { V::L(l) => l.clone(), _ => vec![] };
-                av.insert(0, V::Node("Path", vec![strs(&["std".to_string(), "alloc".to_string(), "SYSTEM".to_string()]), V::Nil], *line, 0));
-                return (V::Node("Path", npf, *line, *id), V::L(av));
+        if segs.len() >= 2 {
+            let ctor = &segs[segs.len() - 1];
+            let type_part = segs[..segs.len() - 1].join(".");
+            if let Some(a) = crate::types::std_to_alloc(&type_part) {
+                if crate::types::alloc_ctor_takes_allocator_first(a, ctor) {
+                    let mut ns: Vec<String> = a.split('.').map(String::from).collect();
+                    ns.push(ctor.clone());
+                    let mut npf = pf.clone();
+                    npf[0] = strs(&ns);
+                    let mut av = match &args { V::L(l) => l.clone(), _ => vec![] };
+                    av.insert(0, V::Node("Path", vec![strs(&["std".to_string(), "alloc".to_string(), "SYSTEM".to_string()]), V::Nil], *line, 0));
+                    return (V::Node("Path", npf, *line, *id), V::L(av));
+                }
             }
         }
     }

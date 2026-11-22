@@ -8,22 +8,22 @@ type notes.note.Note derive [ToJson, FromJson] pub
 end notes.note.Note
 
 fn notes.note.Note.new(id: i64, title: &str, body: &str, tags: std.vec.Vec<std.string.String>, created_at: &str) -> Result<notes.note.Note, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let t = alloc.string.String.from_str(std.alloc.SYSTEM, title)?
-    let b = alloc.string.String.from_str(std.alloc.SYSTEM, body)?
-    let c = alloc.string.String.from_str(std.alloc.SYSTEM, created_at)?
-    let u = alloc.string.String.from_str(std.alloc.SYSTEM, created_at)?
+    let t = std.string.String.from_str(title)?
+    let b = std.string.String.from_str(body)?
+    let c = std.string.String.from_str(created_at)?
+    let u = std.string.String.from_str(created_at)?
     Ok(notes.note.Note { id: id, title: t, body: b, tags: tags, created_at: c, updated_at: u })
 end notes.note.Note.new
 
 fn notes.note.Note.with_updated(self: &mut notes.note.Note, updated_at: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
-    let c = alloc.string.String.from_str(std.alloc.SYSTEM, updated_at)?
+    let c = std.string.String.from_str(updated_at)?
     self.updated_at = c
     Ok(())
 end notes.note.Note.with_updated
 
 test notes.note.Note.new.test_new
     let mut tags = std.vec.Vec.new()
-    core.mem.drop(tags.push(alloc.string.String.from_str(std.alloc.SYSTEM, "メモ")?))
+    core.mem.drop(tags.push(std.string.String.from_str("メモ")?))
     let n = notes.note.Note.new(1i64, "タイトル", "本文", tags, "2026-11-15T00:00:00Z")?
     core.check.eq(n.id, 1i64)
     core.check.eq(n.title.as_str(), "タイトル")

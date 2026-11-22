@@ -178,8 +178,8 @@ fn todo.http.parse_head(head: &[u8]) -> Result<todo.http.Head, todo.error.Error>
         Some(v) => v
         None => ""
     }
-    let owned = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
-    let cookie = match alloc.string.String.from_str(std.alloc.SYSTEM, cookie_value) {
+    let owned = std.string.String.from_str(path)?
+    let cookie = match std.string.String.from_str(cookie_value) {
         Ok(s) => s
         Err(_) => return Err(error.Error.Alloc(alloc.alloc.AllocError { code: 0u32 }))
     }
@@ -242,7 +242,7 @@ fn todo.http.reason(status: u16) -> &'static str uses [] panics never pub
 end todo.http.reason
 
 fn todo.http.redirect_response(location: &str, body: std.string.String) -> Result<todo.http.Response, todo.error.Error> uses [alloc] panics never pub
-    let place = alloc.string.String.from_str(std.alloc.SYSTEM, location)?
+    let place = std.string.String.from_str(location)?
     let cookie = std.string.String.new()
     Ok(todo.http.Response { body: body, location: place, set_cookie: cookie, status: 302u16 })
 end todo.http.redirect_response

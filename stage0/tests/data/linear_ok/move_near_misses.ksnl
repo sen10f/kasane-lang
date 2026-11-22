@@ -32,7 +32,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.once() -> () uses [] panics never
-    let s: alloc.string.String = std.string.String.new()
+    let s = std.string.String.new()
     let f = fn() -> () capture [move s] {
         core.mem.drop(s)
     }

@@ -71,12 +71,12 @@ fn resolve.scope.St.mark(self: &resolve.scope.St) -> usize uses [] panics never 
 end resolve.scope.St.mark
 
 fn resolve.scope.St.push_generic(self: &mut resolve.scope.St, name: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
-    self.gens.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
+    self.gens.push(std.string.String.from_str(name)?)?
     Ok(())
 end resolve.scope.St.push_generic
 
 fn resolve.scope.St.push_local(self: &mut resolve.scope.St, name: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
-    self.locals.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
+    self.locals.push(std.string.String.from_str(name)?)?
     Ok(())
 end resolve.scope.St.push_local
 
@@ -139,7 +139,7 @@ end resolve.scope.is_prim
 
 // 定義の表で FQN key を引く。別ファイルの非 pub は Private。
 fn resolve.scope.lookup_key(t: &resolve.table.Table, key: &str, file: usize) -> Result<resolve.scope.Res, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let k = alloc.string.String.from_str(std.alloc.SYSTEM, key)?
+    let k = std.string.String.from_str(key)?
     let dm = &t.defs.m
     match dm.get_str(k.as_str()) {
         Some(ix) => {
@@ -202,8 +202,8 @@ fn resolve.scope.new(file: usize, p: &parse.cur.P, src: &[u8]) -> Result<resolve
         if n.kind == parse.ast.Kind.Import {
             let full = resolve.ast.text(src, n.a, n.b)
             let tail = resolve.ast.last_part(full)
-            st.tails.push(alloc.string.String.from_str(std.alloc.SYSTEM, tail)?)?
-            st.fulls.push(alloc.string.String.from_str(std.alloc.SYSTEM, full)?)?
+            st.tails.push(std.string.String.from_str(tail)?)?
+            st.fulls.push(std.string.String.from_str(full)?)?
         }
     }
     Ok(st)

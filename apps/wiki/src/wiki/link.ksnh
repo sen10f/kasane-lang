@@ -13,7 +13,7 @@ fn wiki.link.backlinks_for(page_store: &mut wiki.store.PageStore, name: &str) ->
                 let pn = page_name.as_str()
                 let content = match page_store.load_latest(pn) {
                     Some(c) => c
-                    None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
+                    None => std.string.String.from_str("")?
                 }
                 let links = wiki.link.extract_wiki_links(content.as_str())?
                 let mut j = 0usize
@@ -102,7 +102,7 @@ fn wiki.link.extract_wiki_links(text: &str) -> Result<std.vec.Vec<std.string.Str
                             let page_start = i.saturating_add(2usize)
                             let page = markdown.substring(text, page_start, found)
                             if !page.is_empty() {
-                                let s = alloc.string.String.from_str(std.alloc.SYSTEM, page)?
+                                let s = std.string.String.from_str(page)?
                                 core.mem.drop(out.push(s)?)
                             }
                             i = found.saturating_add(2usize)

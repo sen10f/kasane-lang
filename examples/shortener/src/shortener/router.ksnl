@@ -61,11 +61,11 @@ fn shortener.router.shorten(db: &mut shortener.store.Store, body: &str) -> Resul
 end shortener.router.shorten
 
 fn shortener.router.test_call(db: &mut shortener.store.Store, method: shortener.http.Method, path: &str, body: &str) -> shortener.http.Response uses [alloc, io.fs] panics may
-    let copy_path = match alloc.string.String.from_str(std.alloc.SYSTEM, path) {
+    let copy_path = match std.string.String.from_str(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("alloc")
     }
-    let copy_body = match alloc.string.String.from_str(std.alloc.SYSTEM, body) {
+    let copy_body = match std.string.String.from_str(body) {
         Ok(s) => s
         Err(_e) => core.panic.panic("alloc")
     }

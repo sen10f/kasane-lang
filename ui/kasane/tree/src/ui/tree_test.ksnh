@@ -12,7 +12,7 @@ type ui.tree_test.Suite derive [Debug, Clone, Copy] pub
 end ui.tree_test.Suite
 
 type ui.tree_test.ViewBox pub
-    v: alloc.boxed.Box<dyn ui.tree.View<[alloc], may> + 'static, std.alloc.System> pub
+    v: std.boxed.Box<dyn ui.tree.View<[alloc], may> + 'static> pub
 end ui.tree_test.ViewBox
 
 impl ui.state.ViewState for ui.tree_test.Counter
@@ -388,7 +388,7 @@ end ui.tree_test.Suite.test_push_node_indices
 test ui.tree_test.Suite.test_state_insert
     let t = ui.tree.Tree.new()
     let c = ui.tree_test.Counter { n: 0u32 }
-    match alloc.boxed.Box.new(std.alloc.SYSTEM, c) {
+    match std.boxed.Box.new(c) {
         Ok(b) => {
             let entry = ui.tree.StateEntry { value: alloc.boxed.Box.into_dyn(b) }
             match t.state_ref().insert(entry) {
@@ -403,7 +403,7 @@ end ui.tree_test.Suite.test_state_insert
 
 test ui.tree_test.Suite.test_state_insert_two
     let t = ui.tree.Tree.new()
-    match alloc.boxed.Box.new(std.alloc.SYSTEM, ui.tree_test.Counter { n: 0u32 }) {
+    match std.boxed.Box.new(ui.tree_test.Counter { n: 0u32 }) {
         Ok(b) => {
             match t.state_ref().insert(ui.tree.StateEntry { value: alloc.boxed.Box.into_dyn(b) }) {
                 Ok(h0) => core.check.eq(h0.index, 0usize)
@@ -412,7 +412,7 @@ test ui.tree_test.Suite.test_state_insert_two
         }
         Err(_) => core.check.is_true(false)
     }
-    match alloc.boxed.Box.new(std.alloc.SYSTEM, ui.tree_test.Counter { n: 0u32 }) {
+    match std.boxed.Box.new(ui.tree_test.Counter { n: 0u32 }) {
         Ok(b) => {
             match t.state_ref().insert(ui.tree.StateEntry { value: alloc.boxed.Box.into_dyn(b) }) {
                 Ok(h1) => core.check.eq(h1.index, 1usize)
@@ -426,7 +426,7 @@ end ui.tree_test.Suite.test_state_insert_two
 
 test ui.tree_test.Suite.test_state_remove
     let t = ui.tree.Tree.new()
-    match alloc.boxed.Box.new(std.alloc.SYSTEM, ui.tree_test.Counter { n: 0u32 }) {
+    match std.boxed.Box.new(ui.tree_test.Counter { n: 0u32 }) {
         Ok(b) => {
             match t.state_ref().insert(ui.tree.StateEntry { value: alloc.boxed.Box.into_dyn(b) }) {
                 Ok(h) => {
@@ -447,7 +447,7 @@ end ui.tree_test.Suite.test_state_remove
 
 test ui.tree_test.Suite.test_state_tick
     let mut t = ui.tree.Tree.new()
-    match alloc.boxed.Box.new(std.alloc.SYSTEM, ui.tree_test.Counter { n: 5u32 }) {
+    match std.boxed.Box.new(ui.tree_test.Counter { n: 5u32 }) {
         Ok(b) => {
             match t.state_ref().insert(ui.tree.StateEntry { value: alloc.boxed.Box.into_dyn(b) }) {
                 Ok(h) => {
@@ -463,7 +463,7 @@ end ui.tree_test.Suite.test_state_tick
 
 test ui.tree_test.Suite.test_view_box_dyn
     let view = ui.tree_test.LeafView { w: 5.0f32, h: 7.0f32 }
-    match alloc.boxed.Box.new(std.alloc.SYSTEM, view) {
+    match std.boxed.Box.new(view) {
         Ok(b) => {
             let boxed = ui.tree_test.ViewBox { v: alloc.boxed.Box.into_dyn(b) }
             let mut sink = ui.tree_test.new_sink()

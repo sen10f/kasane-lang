@@ -418,6 +418,26 @@ pub(crate) const ALLOC_ALIASES: &[(&str, &str, usize)] = &[
     ("std.boxed.Box", "alloc.boxed.Box", 2),
 ];
 
+/// `alloc.x.Y.<ctor>` のうちアロケータを第1パラメータに取るコンストラクタ名。
+/// `spec/stdlib/alloc/**/*.sig` のコンストラクタ署名から導く（すべて第1パラメータが
+/// `A: alloc.alloc.Allocator`）。`std.x.Y.<ctor>()`（アロケータ省略）を
+/// `alloc.x.Y.<ctor>(std.alloc.SYSTEM, ..)` に直す際に使う。
+pub(crate) const ALLOC_CTORS: &[(&str, &[&str])] = &[
+    ("alloc.vec.Vec", &["new", "with_capacity"]),
+    ("alloc.string.String", &["new", "from_str"]),
+    ("alloc.collections.HashMap", &["new"]),
+    ("alloc.collections.BtreeMap", &["new"]),
+    ("alloc.collections.VecDeque", &["new"]),
+    ("alloc.boxed.Box", &["new"]),
+];
+
+/// `alloc.x.Y.<ctor>` がアロケータを第1パラメータに取るコンストラクタか。
+pub(crate) fn alloc_ctor_takes_allocator_first(alloc: &str, ctor: &str) -> bool {
+    ALLOC_CTORS
+        .iter()
+        .any(|(a, ctors)| *a == alloc && ctors.contains(&ctor))
+}
+
 /// 短縮名 `std.vec.Vec` に対応する正式名 `alloc.vec.Vec`。`from_v` で短縮名を正式名に置き換えるために使う。
 pub(crate) fn std_to_alloc(std: &str) -> Option<&str> {
     ALLOC_ALIASES.iter().find(|(s, _, _)| *s == std).map(|(_, a, _)| *a)

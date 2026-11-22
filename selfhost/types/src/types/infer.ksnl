@@ -857,7 +857,7 @@ fn types.infer.note_arm(p: &parse.cur.P, src: &[u8], pt: usize, seen: &mut std.v
             None => core.mem.drop(0u8)
         }
     }
-    seen.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
+    seen.push(std.string.String.from_str(name)?)?
     Ok(())
 end types.infer.note_arm
 

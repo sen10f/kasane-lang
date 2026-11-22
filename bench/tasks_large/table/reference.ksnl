@@ -1,4 +1,4 @@
-fn bench.column_widths(rows: &std.vec.Vec<std.vec.Vec<alloc.string.String>>) -> Result<std.vec.Vec<usize>, alloc.alloc.AllocError> uses [alloc] panics never
+fn bench.column_widths(rows: &std.vec.Vec<std.vec.Vec<std.string.String>>) -> Result<std.vec.Vec<usize>, alloc.alloc.AllocError> uses [alloc] panics never
     let mut widths = std.vec.Vec.new()
     let mut ncols = 0usize
     let mut i = 0usize
@@ -42,7 +42,7 @@ fn bench.column_widths(rows: &std.vec.Vec<std.vec.Vec<alloc.string.String>>) -> 
     Ok(widths)
 end bench.column_widths
 
-fn bench.copy_row(row: &std.vec.Vec<alloc.string.String>) -> Result<std.vec.Vec<alloc.string.String>, alloc.alloc.AllocError> uses [alloc] panics never
+fn bench.copy_row(row: &std.vec.Vec<std.string.String>) -> Result<std.vec.Vec<std.string.String>, alloc.alloc.AllocError> uses [alloc] panics never
     let mut out = std.vec.Vec.new()
     let mut i = 0usize
     while i < row.len() {
@@ -55,7 +55,7 @@ fn bench.copy_row(row: &std.vec.Vec<alloc.string.String>) -> Result<std.vec.Vec<
     Ok(out)
 end bench.copy_row
 
-fn bench.dashes(n: usize) -> Result<alloc.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+fn bench.dashes(n: usize) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
     let mut s = std.string.String.new()
     let mut i = 0usize
     while i < n {
@@ -65,12 +65,12 @@ fn bench.dashes(n: usize) -> Result<alloc.string.String, alloc.alloc.AllocError>
     Ok(s)
 end bench.dashes
 
-fn bench.mkrow(cells: &[&str]) -> Result<std.vec.Vec<alloc.string.String>, alloc.alloc.AllocError> uses [alloc] panics never
+fn bench.mkrow(cells: &[&str]) -> Result<std.vec.Vec<std.string.String>, alloc.alloc.AllocError> uses [alloc] panics never
     let mut row = std.vec.Vec.new()
     let mut i = 0usize
     while i < cells.len() {
         match cells.get(i) {
-            Some(c) => row.push(alloc.string.String.from_str(std.alloc.SYSTEM, *c)?)?
+            Some(c) => row.push(std.string.String.from_str(*c)?)?
             None => break
         }
         i = i.wrapping_add(1usize)
@@ -78,7 +78,7 @@ fn bench.mkrow(cells: &[&str]) -> Result<std.vec.Vec<alloc.string.String>, alloc
     Ok(row)
 end bench.mkrow
 
-fn bench.pad_right(text: &str, width: usize) -> Result<alloc.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+fn bench.pad_right(text: &str, width: usize) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
     let mut s = std.string.String.new()
     s.push_str(text)?
     while s.len() < width {
@@ -87,7 +87,7 @@ fn bench.pad_right(text: &str, width: usize) -> Result<alloc.string.String, allo
     Ok(s)
 end bench.pad_right
 
-fn bench.render_row(cells: &std.vec.Vec<alloc.string.String>, widths: &std.vec.Vec<usize>) -> Result<alloc.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+fn bench.render_row(cells: &std.vec.Vec<std.string.String>, widths: &std.vec.Vec<usize>) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
     let mut line = std.string.String.new()
     line.push_str("| ")?
     let mut j = 0usize
@@ -111,7 +111,7 @@ fn bench.render_row(cells: &std.vec.Vec<alloc.string.String>, widths: &std.vec.V
     Ok(line)
 end bench.render_row
 
-fn bench.separator(widths: &std.vec.Vec<usize>) -> Result<alloc.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+fn bench.separator(widths: &std.vec.Vec<usize>) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
     let mut line = std.string.String.new()
     line.push_str("+")?
     let mut j = 0usize
@@ -128,7 +128,7 @@ fn bench.separator(widths: &std.vec.Vec<usize>) -> Result<alloc.string.String, a
     Ok(line)
 end bench.separator
 
-fn bench.table(headers: &std.vec.Vec<alloc.string.String>, rows: &std.vec.Vec<std.vec.Vec<alloc.string.String>>) -> Result<alloc.string.String, alloc.alloc.AllocError> uses [alloc] panics never
+fn bench.table(headers: &std.vec.Vec<std.string.String>, rows: &std.vec.Vec<std.vec.Vec<std.string.String>>) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
     let mut all = std.vec.Vec.new()
     all.push(bench.copy_row(headers)?)?
     let mut i = 0usize

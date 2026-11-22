@@ -1,6 +1,6 @@
 fn ksnc.tool.absolute(pwd: &str, dir: &str) -> Result<std.string.String, ksnc.Failure> uses [alloc] panics never pub
     if pwd == "" || dir.starts_with("/") {
-        return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, dir)?)
+        return Ok(std.string.String.from_str(dir)?)
     }
     Ok(std.path.join(pwd, dir)?)
 end ksnc.tool.absolute
@@ -15,13 +15,13 @@ end ksnc.tool.after
 fn ksnc.tool.clang() -> Result<std.string.String, ksnc.Failure> uses [alloc, env] panics never pub
     let a = ksnc.tool.env_or("KSNC_CLANG")
     if a != "" {
-        return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, a)?)
+        return Ok(std.string.String.from_str(a)?)
     }
     let b = ksnc.tool.env_or("KSN_CLANG")
     if b != "" {
-        return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, b)?)
+        return Ok(std.string.String.from_str(b)?)
     }
-    Ok(alloc.string.String.from_str(std.alloc.SYSTEM, "clang")?)
+    Ok(std.string.String.from_str("clang")?)
 end ksnc.tool.clang
 
 fn ksnc.tool.dump(out: &std.vec.Vec<u8>, err: &std.vec.Vec<u8>) -> Result<(), std.io.Error> uses [io.console] panics never pub
@@ -52,7 +52,7 @@ fn ksnc.tool.entry(dir: &str) -> Result<std.string.String, ksnc.Failure> uses [a
             match line.split_once(" = ") {
                 Some((k, v)) => if k == "entry" {
                     let q = resolve.manifest.quoted(v)
-                    return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, q)?)
+                    return Ok(std.string.String.from_str(q)?)
                 }
                 None => core.mem.drop(0u8)
             }
@@ -89,18 +89,18 @@ end ksnc.tool.expect_ok
 
 fn ksnc.tool.ksn_path(root: &str) -> Result<std.string.String, ksnc.Failure> uses [alloc, env, io.fs] panics never pub
     match std.env.var("KSNC_KSN") {
-        Some(p) => return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, p)?)
+        Some(p) => return Ok(std.string.String.from_str(p)?)
         None => core.mem.drop(0u8)
     }
     let cand = std.path.join(root, "stage0/target/release/ksn")?
     if std.fs.exists(cand.as_str()) {
         return Ok(cand)
     }
-    Ok(alloc.string.String.from_str(std.alloc.SYSTEM, "ksn")?)
+    Ok(std.string.String.from_str("ksn")?)
 end ksnc.tool.ksn_path
 
 fn ksnc.tool.root(dir: &str) -> Result<std.string.String, ksnc.Failure> uses [alloc, io.console, io.fs] panics never pub
-    let mut base = alloc.string.String.from_str(std.alloc.SYSTEM, dir)?
+    let mut base = std.string.String.from_str(dir)?
     for _ in core.iter.range(0usize, 6usize) {
         let probe = std.path.join(base.as_str(), "spec/stdlib")?
         if std.fs.exists(probe.as_str()) {
@@ -115,7 +115,7 @@ end ksnc.tool.root
 
 fn ksnc.tool.root_of(dir: &str) -> Result<std.string.String, ksnc.Failure> uses [alloc, env, io.console, io.fs] panics never pub
     match std.env.var("KSNC_ROOT") {
-        Some(r) => return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, r)?)
+        Some(r) => return Ok(std.string.String.from_str(r)?)
         None => core.mem.drop(0u8)
     }
     ksnc.tool.root(dir)
@@ -152,7 +152,7 @@ end ksnc.tool.show
 
 fn ksnc.tool.std_dir(root: &str) -> Result<std.string.String, ksnc.Failure> uses [alloc, env] panics never pub
     match std.env.var("KSN_STDLIB") {
-        Some(p) => return Ok(alloc.string.String.from_str(std.alloc.SYSTEM, p)?)
+        Some(p) => return Ok(std.string.String.from_str(p)?)
         None => core.mem.drop(0u8)
     }
     Ok(std.path.join(root, "spec/stdlib")?)
