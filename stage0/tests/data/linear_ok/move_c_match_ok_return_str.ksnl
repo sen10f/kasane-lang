@@ -1,4 +1,4 @@
-fn t.consume(s: alloc.string.String) -> () uses [] panics never
+fn t.consume(s: std.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.consume
 

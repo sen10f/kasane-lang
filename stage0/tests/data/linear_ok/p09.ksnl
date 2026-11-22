@@ -5,8 +5,8 @@ type t.Buf
 end t.Buf
 
 type t.S
-    name: alloc.string.String
-    other: alloc.string.String
+    name: std.string.String
+    other: std.string.String
 end t.S
 
 type t.Tok
@@ -14,20 +14,20 @@ type t.Tok
     n: usize
 end t.Tok
 
-fn t.Buf.push(self: &mut t.Buf, s: &alloc.string.String) -> () uses [] panics never
+fn t.Buf.push(self: &mut t.Buf, s: &std.string.String) -> () uses [] panics never
     self.n = self.n.wrapping_add(s.len())
 end t.Buf.push
 
-fn t.S.into_name(self: t.S) -> alloc.string.String uses [] panics never
+fn t.S.into_name(self: t.S) -> std.string.String uses [] panics never
     let t.S { name: name, other: _o } = self
     name
 end t.S.into_name
 
-fn t.classify(s: &alloc.string.String) -> t.Tok uses [] panics never
+fn t.classify(s: &std.string.String) -> t.Tok uses [] panics never
     t.Tok { kind: "word", n: s.len() }
 end t.classify
 
-fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
+fn t.consume(s: std.string.String) -> () uses [io.console] panics never
     core.mem.drop(std.io.print_line(s.as_str()))
     core.mem.drop(s)
 end t.consume
@@ -40,7 +40,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     Ok(())
 end t.main
 
-fn t.mk() -> alloc.string.String uses [alloc] panics never
+fn t.mk() -> std.string.String uses [alloc] panics never
     let mut s = std.string.String.new()
     core.mem.drop(s.push_str("hello, this is a long heap string"))
     s
@@ -50,7 +50,7 @@ fn t.mks() -> t.S uses [alloc] panics never
     t.S { name: t.mk(), other: t.mk() }
 end t.mks
 
-fn t.peek(s: &alloc.string.String) -> usize uses [io.console] panics never
+fn t.peek(s: &std.string.String) -> usize uses [io.console] panics never
     core.mem.drop(std.io.print_line(s.as_str()))
     s.len()
 end t.peek
@@ -59,6 +59,6 @@ fn t.pick[T](a: &T) -> &T uses [] panics never
     a
 end t.pick
 
-fn t.same(s: &alloc.string.String) -> &alloc.string.String uses [] panics never
+fn t.same(s: &std.string.String) -> &std.string.String uses [] panics never
     s
 end t.same

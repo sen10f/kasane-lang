@@ -1,9 +1,9 @@
 type t.S
-    name: alloc.string.String
+    name: std.string.String
     n: u32
 end t.S
 
-fn t.arms(v: &mut std.vec.Vec<alloc.string.String>) -> () uses [] panics never
+fn t.arms(v: &mut std.vec.Vec<std.string.String>) -> () uses [] panics never
     match v.pop() {
         Some(s) => {
             t.show(&s)
@@ -47,6 +47,6 @@ fn t.refs(s: &mut t.S) -> () uses [] panics never
     core.mem.drop(s.n)
 end t.refs
 
-fn t.show(s: &alloc.string.String) -> () uses [] panics never
+fn t.show(s: &std.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.show

@@ -1,14 +1,14 @@
 type t.S
-    name: alloc.string.String
-    other: alloc.string.String
+    name: std.string.String
+    other: std.string.String
 end t.S
 
-fn t.S.into_name(self: t.S) -> alloc.string.String uses [] panics never
+fn t.S.into_name(self: t.S) -> std.string.String uses [] panics never
     let t.S { name: name, other: _o } = self
     name
 end t.S.into_name
 
-fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
+fn t.consume(s: std.string.String) -> () uses [io.console] panics never
     core.mem.drop(std.io.print_line(s.as_str()))
     core.mem.drop(s)
 end t.consume
@@ -21,7 +21,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     Ok(())
 end t.main
 
-fn t.mk() -> alloc.string.String uses [alloc] panics never
+fn t.mk() -> std.string.String uses [alloc] panics never
     let mut s = std.string.String.new()
     core.mem.drop(s.push_str("hello, this is a long heap string"))
     s
@@ -31,7 +31,7 @@ fn t.mks() -> t.S uses [alloc] panics never
     t.S { name: t.mk(), other: t.mk() }
 end t.mks
 
-fn t.peek(s: &alloc.string.String) -> usize uses [io.console] panics never
+fn t.peek(s: &std.string.String) -> usize uses [io.console] panics never
     core.mem.drop(std.io.print_line(s.as_str()))
     s.len()
 end t.peek

@@ -9,7 +9,7 @@ trait t.Handler[E: uses, P: panics] pub
 end t.Handler
 
 type t.Slot
-    handler: alloc.boxed.Box<dyn t.Handler<[io.console], never> + 'static, std.alloc.System>
+    handler: std.boxed.Box<dyn t.Handler<[io.console], never> + 'static>
 end t.Slot
 
 impl t.Handler<[], never> for t.Counter

@@ -3,7 +3,7 @@ enum t.E
 end t.E
 
 type t.S
-    name: alloc.string.String
+    name: std.string.String
     n: u64
 end t.S
 

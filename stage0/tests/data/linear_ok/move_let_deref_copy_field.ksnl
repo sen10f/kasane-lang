@@ -1,4 +1,4 @@
-fn t.f(x: &(alloc.string.String, usize)) -> usize uses [] panics never
+fn t.f(x: &(std.string.String, usize)) -> usize uses [] panics never
     let (n, k) = x
     t.peek(n).wrapping_add(*k)
 end t.f
@@ -9,6 +9,6 @@ fn t.main() -> () uses [] panics never
     core.mem.drop(r)
 end t.main
 
-fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+fn t.peek(s: &std.string.String) -> usize uses [] panics never
     s.len()
 end t.peek

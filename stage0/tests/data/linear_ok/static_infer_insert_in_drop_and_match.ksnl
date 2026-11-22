@@ -2,13 +2,13 @@ const t.PAGE_NOT_FOUND: &str = "page not found"
 
 fn t.main() -> () uses [alloc, io.console] panics never
     let mut pages = std.collections.HashMap.new()
-    let top1 = alloc.string.String.from_str(std.alloc.SYSTEM, "top page")
+    let top1 = std.string.String.from_str("top page")
     match top1 {
         Ok(s1) => core.mem.drop(pages.insert("top", s1))
         Err(_e) => {
         }
     }
-    let top2 = alloc.string.String.from_str(std.alloc.SYSTEM, "updated top")
+    let top2 = std.string.String.from_str("updated top")
     match top2 {
         Ok(s2) => match pages.insert("top", s2) {
             Ok(_old) => {

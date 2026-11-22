@@ -1,5 +1,5 @@
 type t.S
-    name: alloc.string.String
+    name: std.string.String
     n: u32
 end t.S
 
@@ -7,7 +7,7 @@ fn t.borrow_only(s: &t.S) -> usize uses [] panics never
     t.peek(&(*s).name).wrapping_add(t.peek(&s.name))
 end t.borrow_only
 
-fn t.consume(s: alloc.string.String) -> () uses [] panics never
+fn t.consume(s: std.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.consume
 
@@ -21,10 +21,10 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-fn t.mk() -> alloc.string.String uses [] panics never
+fn t.mk() -> std.string.String uses [] panics never
     std.string.String.new()
 end t.mk
 
-fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+fn t.peek(s: &std.string.String) -> usize uses [] panics never
     s.len()
 end t.peek

@@ -10,7 +10,7 @@ type t.Pair[A, B] pub
 end t.Pair
 
 type t.W pub
-    s: alloc.string.String
+    s: std.string.String
 end t.W
 
 fn t.fill[const M: usize](x: u8) -> [u8; M] uses [] panics never

@@ -4,7 +4,7 @@ enum t.Error derive [Debug, Clone, PartialEq, From] pub
 end t.Error
 
 fn t.main() -> Result<(), t.Error> uses [alloc] panics never
-    let s = alloc.string.String.from_str(std.alloc.SYSTEM, "key=value")?
+    let s = std.string.String.from_str("key=value")?
     let (k, v) = t.split_kv(&s)?
     core.mem.drop(k)
     core.mem.drop(v)

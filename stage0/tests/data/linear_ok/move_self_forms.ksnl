@@ -1,9 +1,9 @@
 type t.S
-    name: alloc.string.String
+    name: std.string.String
     n: u32
 end t.S
 
-fn t.S.into_name(self: t.S) -> alloc.string.String uses [] panics never
+fn t.S.into_name(self: t.S) -> std.string.String uses [] panics never
     let t.S { name: name, n: _ } = self
     name
 end t.S.into_name
@@ -17,7 +17,7 @@ fn t.S.once(self: t.S) -> usize uses [] panics never
     0usize
 end t.S.once
 
-fn t.consume(s: alloc.string.String) -> () uses [] panics never
+fn t.consume(s: std.string.String) -> () uses [] panics never
     core.mem.drop(s)
 end t.consume
 
@@ -25,11 +25,11 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-fn t.mk() -> alloc.string.String uses [] panics never
+fn t.mk() -> std.string.String uses [] panics never
     std.string.String.new()
 end t.mk
 
-fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+fn t.peek(s: &std.string.String) -> usize uses [] panics never
     s.len()
 end t.peek
 

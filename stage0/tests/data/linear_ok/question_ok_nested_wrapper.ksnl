@@ -7,7 +7,7 @@ fn t.inner(s: &std.string.String) -> Result<&str, t.Error> uses [] panics never
 end t.inner
 
 fn t.main() -> Result<(), t.Error> uses [alloc] panics never
-    let s = alloc.string.String.from_str(std.alloc.SYSTEM, "hello")?
+    let s = std.string.String.from_str("hello")?
     let r = t.outer(&s)?
     core.mem.drop(r)
     core.mem.drop(s)

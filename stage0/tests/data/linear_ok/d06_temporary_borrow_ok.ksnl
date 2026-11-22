@@ -8,16 +8,16 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     Ok(())
 end t.main
 
-fn t.mk() -> alloc.string.String uses [alloc] panics never
+fn t.mk() -> std.string.String uses [alloc] panics never
     let mut s = std.string.String.new()
     core.mem.drop(s.push_str("x"))
     s
 end t.mk
 
-fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+fn t.peek(s: &std.string.String) -> usize uses [] panics never
     s.len()
 end t.peek
 
-fn t.same(s: &alloc.string.String) -> &alloc.string.String uses [] panics never
+fn t.same(s: &std.string.String) -> &std.string.String uses [] panics never
     s
 end t.same

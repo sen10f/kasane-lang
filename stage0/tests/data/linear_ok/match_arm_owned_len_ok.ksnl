@@ -1,5 +1,5 @@
 fn t.count(s: &str) -> usize uses [alloc] panics never
-    let n = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+    let n = match std.string.String.from_str(s) {
         Ok(v) => v.as_str().len()
         Err(_) => 0usize
     }

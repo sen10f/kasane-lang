@@ -11,7 +11,7 @@ fn t.get_str(s: &std.string.String) -> Result<&str, alloc.alloc.AllocError> uses
 end t.get_str
 
 fn t.main() -> Result<(), t.Error> uses [alloc] panics never
-    let s = alloc.string.String.from_str(std.alloc.SYSTEM, "hello")?
+    let s = std.string.String.from_str("hello")?
     let r = t.get_str(&s).map_err(t.conv)?
     core.mem.drop(r)
     core.mem.drop(s)
