@@ -1,4 +1,4 @@
-fn t.go() -> () uses [alloc] panics never
+fn t.go() -> () uses [] panics never
     with mut s = std.string.String.new() close core.mem.drop(s) {
         let r = s.as_str()
         s.clear()
@@ -6,6 +6,6 @@ fn t.go() -> () uses [alloc] panics never
     }
 end t.go
 
-fn t.main() -> () uses [alloc] panics never
+fn t.main() -> () uses [] panics never
     t.go()
 end t.main

@@ -1,0 +1,16 @@
+type t.P
+    n: u32
+    m: u32
+end t.P
+
+fn t.go() -> () uses [] panics never
+    with mut p = t.P { n: 1u32, m: 2u32 } close core.mem.drop(p) {
+        let r = &p.n
+        p.n = 5u32
+        core.mem.drop(*r)
+    }
+end t.go
+
+fn t.main() -> () uses [] panics never
+    t.go()
+end t.main
