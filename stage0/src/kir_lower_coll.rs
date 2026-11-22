@@ -3194,7 +3194,8 @@ fn strip_seq_wrap(it: &V, by_ref: bool, by_mut: bool) -> (V, bool, bool) {
                             r = true;
                         }
                         let rs: Vec<V> = segs[..segs.len() - 1].iter().map(|s| V::S(s.clone())).collect();
-                        Some(V::Node("Path", vec![V::L(rs), V::Nil], 0, 0))
+                        let cid = if let V::Node(_, _, _, i) = &nf(&cur)[0] { *i } else { 0 };
+                        Some(V::Node("Path", vec![V::L(rs), V::Nil], 0, cid | crate::tast::PREFIX_BIT))
                     }
                     _ => None,
                 }

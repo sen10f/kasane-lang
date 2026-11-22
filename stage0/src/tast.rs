@@ -444,8 +444,8 @@ impl<'a> Builder<'a> {
             return;
         }
         if let Some(r) = self.p.resolve(segs, &self.p.defs[self.di].file) {
-            // `E.V.m(..)` の受け手 `E.V` (下ろしが作る節点の ID = 呼び先の ID + `PREFIX_BIT`) の解決先も残す。
-            if let (crate::program::Target::Variant(..), 1) = (&r.target, r.rest.len()) {
+            // `E.V.m(..)` / `C.iter()` の受け手 `E.V` / `C` (下ろしが作る節点の ID = 呼び先の ID + `PREFIX_BIT`) の解決先も残す。
+            if r.rest.len() == 1 {
                 self.pres.push((id | PREFIX_BIT, PathRes { target: r.target.clone(), rest: vec![] }));
             }
             self.pres.push((id, PathRes { target: r.target, rest: r.rest }));
