@@ -3,10 +3,6 @@ type t.P derive [Clone, Copy]
     y: u32
 end t.P
 
-fn t.pair[T: core.ops.Copy](x: T) -> (T, T) uses [] panics never
-    (x, x)
-end t.pair
-
 fn t.main() -> bool uses [] panics never
     let p = t.P { x: 1u32, y: 2u32 }
     let o = Some(&p)
@@ -24,3 +20,7 @@ fn t.main() -> bool uses [] panics never
     }
     g() == h() && q.x == r.x && a.y == b.y && v == 1u32
 end t.main
+
+fn t.pair[T: core.ops.Copy](x: T) -> (T, T) uses [] panics never
+    (x, x)
+end t.pair

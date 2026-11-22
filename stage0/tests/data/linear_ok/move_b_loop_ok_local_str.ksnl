@@ -4,7 +4,7 @@ end t.consume
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     for _ in core.iter.range(0u8, 2u8) {
-        let s = alloc.string.String.new(std.alloc.SYSTEM)
+        let s = std.string.String.new()
         core.mem.drop(t.consume(s))
     }
     Ok(())
