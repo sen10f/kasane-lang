@@ -75,7 +75,7 @@ fn types.chk.new() -> Result<types.chk.Ctx, alloc.alloc.AllocError> uses [] pani
 end types.chk.new
 
 fn types.chk.push(cx: &mut types.chk.Ctx, name: &str, ty: usize, generic: bool) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
-    let nm = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let nm = std.string.String.from_str(name)?
     cx.sc.push(types.chk.Ent { name: nm, ty: ty, generic: generic })?
     Ok(())
 end types.chk.push

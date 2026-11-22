@@ -149,7 +149,7 @@ fn borrow.base.put_fn(tab: &mut borrow.base.Tab, name: &str, cls: usize) -> Resu
             return Ok(())
         }
     }
-    tab.fnames.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
+    tab.fnames.push(std.string.String.from_str(name)?)?
     tab.fcls.push(cls)?
     Ok(())
 end borrow.base.put_fn
@@ -167,7 +167,7 @@ fn borrow.base.put_ty(tab: &mut borrow.base.Tab, name: &str, cls: usize) -> Resu
             return Ok(())
         }
     }
-    tab.tnames.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
+    tab.tnames.push(std.string.String.from_str(name)?)?
     tab.tcls.push(cls)?
     Ok(())
 end borrow.base.put_ty

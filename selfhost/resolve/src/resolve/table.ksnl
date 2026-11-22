@@ -22,7 +22,7 @@ fn resolve.table.add_file(t: &mut resolve.table.Table, p: &parse.cur.P, src: &[u
         let n = parse.ast.get(&p.ast, *d)
         if n.kind != parse.ast.Kind.Import && n.kind != parse.ast.Kind.ImplLine {
             let name = resolve.ast.text(src, n.a, n.b)
-            let key = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+            let key = std.string.String.from_str(name)?
             let line = resolve.ast.line_of(p, n.tok)
             let public = resolve.table.is_pub(&n)
             let def = resolve.table.mk(n.kind, file, line, public, sig)
@@ -44,7 +44,7 @@ fn resolve.table.add_variants(t: &mut resolve.table.Table, p: &parse.cur.P, src:
     for k in core.iter.range(0usize, resolve.ast.count(p, list)) {
         let v = parse.ast.get(&p.ast, resolve.ast.item(p, list, k))
         let vname = resolve.ast.tok_text(p, src, v.a)
-        let mut key = alloc.string.String.from_str(std.alloc.SYSTEM, owner)?
+        let mut key = std.string.String.from_str(owner)?
         key.push('.')?
         key.push_str(vname)?
         let line = resolve.ast.line_of(p, v.tok)

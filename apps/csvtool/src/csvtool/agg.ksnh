@@ -1,4 +1,3 @@
-import alloc.string
 import csvtool.parse
 
 // キー (列名またはグループ名) と統計の組。summary と groupby の出力で共通に使う。
@@ -78,14 +77,14 @@ end csvtool.agg.digit
 // 統計の平均を表示用の文字列にする。数値がなければ "-"、桁あふれがあれば "ovf"。
 fn csvtool.agg.fmt_avg(stats: &csvtool.agg.Stats) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
     if stats.ovf {
-        return alloc.string.String.from_str(std.alloc.SYSTEM, "ovf")
+        return std.string.String.from_str("ovf")
     }
     if stats.numeric == 0i64 {
-        return alloc.string.String.from_str(std.alloc.SYSTEM, "-")
+        return std.string.String.from_str("-")
     }
     match stats.sum.checked_div(stats.numeric) {
         Some(avg) => csvtool.agg.fmt_scaled(avg)
-        None => alloc.string.String.from_str(std.alloc.SYSTEM, "ovf")
+        None => std.string.String.from_str("ovf")
     }
 end csvtool.agg.fmt_avg
 
@@ -157,7 +156,7 @@ fn csvtool.agg.groupby(tbl: &csvtool.table.Table, key_col: usize, val_col: usize
                     None => ""
                 }
                 if idx == gl {
-                    let key = alloc.string.String.from_str(std.alloc.SYSTEM, k)?
+                    let key = std.string.String.from_str(k)?
                     let mut st = csvtool.agg.Stats.new()
                     st.add(v)
                     core.mem.drop(groups.push(csvtool.agg.Group { key: key, stats: st })?)

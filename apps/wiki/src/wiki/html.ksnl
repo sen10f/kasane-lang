@@ -314,8 +314,8 @@ end wiki.html.list_view.test_empty
 
 test wiki.html.list_view.test_renders_links
     let mut v = std.vec.Vec.new()
-    core.mem.drop(v.push(alloc.string.String.from_str(std.alloc.SYSTEM, "Alpha")?)?)
-    core.mem.drop(v.push(alloc.string.String.from_str(std.alloc.SYSTEM, "Beta")?)?)
+    core.mem.drop(v.push(std.string.String.from_str("Alpha")?)?)
+    core.mem.drop(v.push(std.string.String.from_str("Beta")?)?)
     let s = wiki.html.list_view(v.as_slice())?
     core.check.eq(s.as_str().contains("/page/Alpha"), true)
     core.check.eq(s.as_str().contains("/page/Beta"), true)
@@ -323,9 +323,9 @@ end wiki.html.list_view.test_renders_links
 
 test wiki.html.list_view.test_three_pages
     let mut v = std.vec.Vec.new()
-    core.mem.drop(v.push(alloc.string.String.from_str(std.alloc.SYSTEM, "A")?)?)
-    core.mem.drop(v.push(alloc.string.String.from_str(std.alloc.SYSTEM, "B")?)?)
-    core.mem.drop(v.push(alloc.string.String.from_str(std.alloc.SYSTEM, "C")?)?)
+    core.mem.drop(v.push(std.string.String.from_str("A")?)?)
+    core.mem.drop(v.push(std.string.String.from_str("B")?)?)
+    core.mem.drop(v.push(std.string.String.from_str("C")?)?)
     let s = wiki.html.list_view(v.as_slice())?
     core.check.eq(s.as_str().contains("/page/A"), true)
     core.check.eq(s.as_str().contains("/page/B"), true)
@@ -359,7 +359,7 @@ test wiki.html.page_view.test_renders_content_and_links
     core.mem.drop(versions.push(1u64)?)
     core.mem.drop(versions.push(2u64)?)
     let mut backlinks = std.vec.Vec.new()
-    core.mem.drop(backlinks.push(alloc.string.String.from_str(std.alloc.SYSTEM, "Other")?)?)
+    core.mem.drop(backlinks.push(std.string.String.from_str("Other")?)?)
     let s = wiki.html.page_view("Hello", "<p>body</p>", versions.as_slice(), backlinks.as_slice())?
     core.check.eq(s.as_str().contains("<h1>Hello</h1>"), true)
     core.check.eq(s.as_str().contains("<p>body</p>"), true)
@@ -377,8 +377,8 @@ end wiki.html.search_view.test_empty_results
 
 test wiki.html.search_view.test_results
     let mut results = std.vec.Vec.new()
-    core.mem.drop(results.push(alloc.string.String.from_str(std.alloc.SYSTEM, "Alpha")?)?)
-    core.mem.drop(results.push(alloc.string.String.from_str(std.alloc.SYSTEM, "Beta")?)?)
+    core.mem.drop(results.push(std.string.String.from_str("Alpha")?)?)
+    core.mem.drop(results.push(std.string.String.from_str("Beta")?)?)
     let s = wiki.html.search_view("query", results.as_slice())?
     core.check.eq(s.as_str().contains("<h1>検索: query</h1>"), true)
     core.check.eq(s.as_str().contains("/page/Alpha"), true)

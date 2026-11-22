@@ -15,7 +15,7 @@ enum bench.Mode derive [Debug, Clone, Copy, PartialEq] pub
 end bench.Mode
 
 type bench.Product
-    name: alloc.string.String
+    name: std.string.String
     price: u32
     qty: u32
 end bench.Product
@@ -35,7 +35,7 @@ fn bench.Coin.value(self: &bench.Coin) -> u32 uses [] panics never
 end bench.Coin.value
 
 fn bench.Machine.add_product(self: &mut bench.Machine, name: &str, price: u32, qty: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
-    let probe = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let probe = std.string.String.from_str(name)?
     let mut idx: Option<usize> = None
     let mut i = 0usize
     while i < self.shelf.len() {
@@ -62,7 +62,7 @@ fn bench.Machine.add_product(self: &mut bench.Machine, name: &str, price: u32, q
             ()
         }
         None => {
-            let n = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+            let n = std.string.String.from_str(name)?
             let p = bench.Product { name: n, price: price, qty: qty }
             self.shelf.push(p)?
             ()

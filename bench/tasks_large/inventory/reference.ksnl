@@ -5,8 +5,8 @@ enum bench.InvError derive [Debug, Clone, Copy, PartialEq, From] pub
 end bench.InvError
 
 type bench.Inventory pub
-    stock: std.collections.HashMap<alloc.string.String, bench.Item>
-    order: std.vec.Vec<alloc.string.String>
+    stock: std.collections.HashMap<std.string.String, bench.Item>
+    order: std.vec.Vec<std.string.String>
 end bench.Inventory
 
 type bench.Item derive [Debug, Clone, Copy, PartialEq] pub
@@ -15,19 +15,19 @@ type bench.Item derive [Debug, Clone, Copy, PartialEq] pub
 end bench.Item
 
 fn bench.Inventory.add(self: &mut bench.Inventory, name: &str, qty: u32, price: u32) -> Result<(), bench.InvError> uses [alloc] panics never
-    let probe = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let probe = std.string.String.from_str(name)?
     match self.stock.get(&probe) {
         Some(old) => {
             let item = *old
-            let key = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+            let key = std.string.String.from_str(name)?
             let added = bench.Item { qty: item.qty.wrapping_add(qty), price: item.price }
             core.mem.drop(self.stock.insert(key, added)?)
             ()
         }
         None => {
-            let key = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+            let key = std.string.String.from_str(name)?
             core.mem.drop(self.stock.insert(key, bench.Item { qty: qty, price: price })?)
-            self.order.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
+            self.order.push(std.string.String.from_str(name)?)?
             ()
         }
     }
@@ -38,13 +38,13 @@ fn bench.Inventory.count(self: &bench.Inventory) -> usize uses [] panics never
     self.stock.len()
 end bench.Inventory.count
 
-fn bench.Inventory.find_below(self: &bench.Inventory, min_qty: u32) -> Result<std.vec.Vec<alloc.string.String>, bench.InvError> uses [alloc] panics never
+fn bench.Inventory.find_below(self: &bench.Inventory, min_qty: u32) -> Result<std.vec.Vec<std.string.String>, bench.InvError> uses [alloc] panics never
     let mut out = std.vec.Vec.new()
     let mut i = 0usize
     while i < self.order.len() {
         match self.order.get(i) {
             Some(n) => {
-                let key = alloc.string.String.from_str(std.alloc.SYSTEM, n.as_str())?
+                let key = std.string.String.from_str(n.as_str())?
                 match self.stock.get(&key) {
                     Some(v) => {
                         if v.qty < min_qty {
@@ -67,7 +67,7 @@ fn bench.Inventory.is_empty(self: &bench.Inventory) -> bool uses [] panics never
     self.stock.is_empty()
 end bench.Inventory.is_empty
 
-fn bench.Inventory.names(self: &bench.Inventory) -> Result<std.vec.Vec<alloc.string.String>, bench.InvError> uses [alloc] panics never
+fn bench.Inventory.names(self: &bench.Inventory) -> Result<std.vec.Vec<std.string.String>, bench.InvError> uses [alloc] panics never
     let mut out = std.vec.Vec.new()
     let mut i = 0usize
     while i < self.order.len() {
@@ -87,7 +87,7 @@ fn bench.Inventory.new() -> bench.Inventory uses [] panics never
 end bench.Inventory.new
 
 fn bench.Inventory.remove(self: &mut bench.Inventory, name: &str) -> Result<bench.Item, bench.InvError> uses [alloc] panics never
-    let probe = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let probe = std.string.String.from_str(name)?
     let item = match self.stock.remove(&probe) {
         Some(v) => v
         None => return Err(bench.InvError.NotFound)
@@ -110,19 +110,19 @@ fn bench.Inventory.remove(self: &mut bench.Inventory, name: &str) -> Result<benc
 end bench.Inventory.remove
 
 fn bench.Inventory.restock(self: &mut bench.Inventory, name: &str, n: u32) -> Result<(), bench.InvError> uses [alloc] panics never
-    let probe = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let probe = std.string.String.from_str(name)?
     let item = match self.stock.get(&probe) {
         Some(v) => *v
         None => return Err(bench.InvError.NotFound)
     }
-    let key = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let key = std.string.String.from_str(name)?
     let filled = bench.Item { qty: item.qty.wrapping_add(n), price: item.price }
     core.mem.drop(self.stock.insert(key, filled)?)
     Ok(())
 end bench.Inventory.restock
 
 fn bench.Inventory.take(self: &mut bench.Inventory, name: &str, n: u32) -> Result<bench.Item, bench.InvError> uses [alloc] panics never
-    let probe = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let probe = std.string.String.from_str(name)?
     let item = match self.stock.get(&probe) {
         Some(v) => *v
         None => return Err(bench.InvError.NotFound)
@@ -131,7 +131,7 @@ fn bench.Inventory.take(self: &mut bench.Inventory, name: &str, n: u32) -> Resul
         return Err(bench.InvError.Insufficient(n.wrapping_sub(item.qty)))
     }
     let left = bench.Item { qty: item.qty.wrapping_sub(n), price: item.price }
-    let key = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let key = std.string.String.from_str(name)?
     core.mem.drop(self.stock.insert(key, left)?)
     Ok(left)
 end bench.Inventory.take
@@ -142,7 +142,7 @@ fn bench.Inventory.total_value(self: &bench.Inventory) -> Result<u64, bench.InvE
     while i < self.order.len() {
         match self.order.get(i) {
             Some(n) => {
-                let key = alloc.string.String.from_str(std.alloc.SYSTEM, n.as_str())?
+                let key = std.string.String.from_str(n.as_str())?
                 match self.stock.get(&key) {
                     Some(v) => {
                         let add = u64.from_u32(v.qty).wrapping_mul(u64.from_u32(v.price))

@@ -33,9 +33,9 @@ end todo.config.Config
 
 // 規定値の設定を作る。
 fn todo.config.default() -> Result<todo.config.Config, todo.error.Error> uses [alloc] panics never pub
-    let a = alloc.string.String.from_str(std.alloc.SYSTEM, todo.config.DEFAULT_ADDRESS)?
-    let b = alloc.string.String.from_str(std.alloc.SYSTEM, todo.config.DEFAULT_DB_PATH)?
-    let h = alloc.string.String.from_str(std.alloc.SYSTEM, todo.config.DEFAULT_HISTORY_PATH)?
+    let a = std.string.String.from_str(todo.config.DEFAULT_ADDRESS)?
+    let b = std.string.String.from_str(todo.config.DEFAULT_DB_PATH)?
+    let h = std.string.String.from_str(todo.config.DEFAULT_HISTORY_PATH)?
     let t = todo.config.DEFAULT_SESSION_TTL_SECONDS
     let m = todo.config.DEFAULT_MAX_TITLE
     Ok(todo.config.Config { addr: a, db: b, hist: h, ttl: t, max: m })
@@ -70,12 +70,12 @@ fn todo.config.read_string_field(doc: &std.json.Doc, v: std.json.Value, name: &s
     match std.json.decode_field(doc, v, name, 0usize) {
         Ok(value) => match std.json.decode_string(doc, value) {
             Ok(text) => Ok(text)
-            Err(_e) => match alloc.string.String.from_str(std.alloc.SYSTEM, fallback) {
+            Err(_e) => match std.string.String.from_str(fallback) {
                 Ok(s) => Ok(s)
                 Err(e) => Err(error.Error.Alloc(e))
             }
         }
-        Err(_e) => match alloc.string.String.from_str(std.alloc.SYSTEM, fallback) {
+        Err(_e) => match std.string.String.from_str(fallback) {
             Ok(s) => Ok(s)
             Err(e) => Err(error.Error.Alloc(e))
         }

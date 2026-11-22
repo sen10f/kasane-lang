@@ -9,7 +9,7 @@ fn notes.args() -> Result<std.vec.Vec<std.string.String>, notes.error.Error> use
     for i in core.iter.range(0usize, n) {
         match std.env.arg(i) {
             Some(s) => {
-                let t = alloc.string.String.from_str(std.alloc.SYSTEM, s)?
+                let t = std.string.String.from_str(s)?
                 out.push(t)?
             }
             None => core.mem.drop(0u8)

@@ -34,7 +34,7 @@ fn wiki.remove_dir_all(path: &str) -> Result<(), wiki.error.Error> uses [alloc, 
     while i < n {
         match entries.as_slice().get(i) {
             Some(e) => {
-                let mut p = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+                let mut p = std.string.String.from_str(path)?
                 core.mem.drop(p.push_str("/"))
                 core.mem.drop(p.push_str(e.name.as_str()))
                 if e.kind == std.fs.FileKind.Dir {

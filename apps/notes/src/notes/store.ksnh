@@ -90,7 +90,7 @@ fn notes.store.Store.load(dir: &str) -> Result<notes.store.Store, notes.error.Er
 end notes.store.Store.load
 
 fn notes.store.Store.new(dir: &str) -> Result<notes.store.Store, notes.error.Error> uses [alloc] panics never pub
-    let d = alloc.string.String.from_str(std.alloc.SYSTEM, dir)?
+    let d = std.string.String.from_str(dir)?
     let ns = std.vec.Vec.new()
     let r = notes.store.Store { dir: d, notes: ns }
     Ok(r)
@@ -235,7 +235,7 @@ fn notes.store.Store.tags(self: &notes.store.Store) -> Result<std.vec.Vec<std.st
                                 }
                             }
                             if !found {
-                                let c = alloc.string.String.from_str(std.alloc.SYSTEM, g.as_str())?
+                                let c = std.string.String.from_str(g.as_str())?
                                 core.mem.drop(out.push(c)?)
                             }
                         }
@@ -263,7 +263,7 @@ fn notes.store.index_of(store: &notes.store.Store, id: i64) -> Result<usize, not
 end notes.store.index_of
 
 fn notes.store.note_path(dir: &str, id: i64) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
-    let mut p = alloc.string.String.from_str(std.alloc.SYSTEM, dir)?
+    let mut p = std.string.String.from_str(dir)?
     match p.push_str("/") {
         Ok(_u) => {
         }
@@ -333,7 +333,7 @@ fn notes.store.remove_dir_all(path: &str) -> Result<(), notes.error.Error> uses 
     for i in core.iter.range(0usize, n) {
         match entries.as_slice().get(i) {
             Some(e) => {
-                let mut p = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+                let mut p = std.string.String.from_str(path)?
                 core.mem.drop(p.push_str("/"))
                 core.mem.drop(p.push_str(e.name.as_str()))
                 if e.kind == std.fs.FileKind.Dir {
@@ -350,7 +350,7 @@ fn notes.store.remove_dir_all(path: &str) -> Result<(), notes.error.Error> uses 
 end notes.store.remove_dir_all
 
 fn notes.store.string_copy(s: &std.string.String) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never
-    alloc.string.String.from_str(std.alloc.SYSTEM, s.as_str())
+    std.string.String.from_str(s.as_str())
 end notes.store.string_copy
 
 // ディレクトリ（存在すれば中身ごと）を削除する。
@@ -386,7 +386,7 @@ test notes.store.Store.new.test_reset_and_load
     let mut store = notes.store.Store.load(notes.store.TEST_DIR)?
     core.check.eq(store.len(), 0usize)
     let mut tags = std.vec.Vec.new()
-    core.mem.drop(tags.push(alloc.string.String.from_str(std.alloc.SYSTEM, "仕事")?))
+    core.mem.drop(tags.push(std.string.String.from_str("仕事")?))
     let n = note.Note.new(0i64, "打ち合わせ", "プロジェクトの打ち合わせ", tags, "2026-11-15T09:00:00Z")?
     let id = store.add(n)?
     core.check.eq(id, 1i64)
@@ -407,12 +407,12 @@ test notes.store.Store.search_ids.test_search_and_tags
     notes.store.test_reset_dir()?
     let mut store = notes.store.Store.load(notes.store.TEST_DIR)?
     let mut tags1 = std.vec.Vec.new()
-    core.mem.drop(tags1.push(alloc.string.String.from_str(std.alloc.SYSTEM, "仕事")?))
-    core.mem.drop(tags1.push(alloc.string.String.from_str(std.alloc.SYSTEM, "緊急")?))
+    core.mem.drop(tags1.push(std.string.String.from_str("仕事")?))
+    core.mem.drop(tags1.push(std.string.String.from_str("緊急")?))
     let note1 = note.Note.new(0i64, "打ち合わせ", "プロジェクトの打ち合わせ", tags1, "2026-11-15T09:00:00Z")?
     core.mem.drop(store.add(note1)?)
     let mut tags2 = std.vec.Vec.new()
-    core.mem.drop(tags2.push(alloc.string.String.from_str(std.alloc.SYSTEM, "買い物")?))
+    core.mem.drop(tags2.push(std.string.String.from_str("買い物")?))
     let note2 = note.Note.new(0i64, "牛乳を買う", "午後3時に牛乳を買う", tags2, "2026-11-15T15:00:00Z")?
     core.mem.drop(store.add(note2)?)
     let found = store.search_ids("牛乳")?
@@ -430,7 +430,7 @@ test notes.store.Store.set.test_set_and_remove
     let memo = note.Note.new(0i64, "元", "本文", tags, "2026-11-15T09:00:00Z")?
     let id = store.add(memo)?
     let mut tags2 = std.vec.Vec.new()
-    core.mem.drop(tags2.push(alloc.string.String.from_str(std.alloc.SYSTEM, "変更")?))
+    core.mem.drop(tags2.push(std.string.String.from_str("変更")?))
     let u = note.Note.new(0i64, "変更後", "新しい本文", tags2, "2026-11-16T09:00:00Z")?
     store.set(id, u)?
     let got = store.get(id)

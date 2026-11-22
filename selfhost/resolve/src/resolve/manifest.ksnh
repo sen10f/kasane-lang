@@ -12,8 +12,8 @@ end resolve.manifest.Pkg
 
 // 依存 1 件 (名前と path)。
 fn resolve.manifest.dep(name: &str, path: &str) -> Result<resolve.manifest.Dep, alloc.alloc.AllocError> uses [alloc] panics never pub
-    let n = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
-    let p = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    let n = std.string.String.from_str(name)?
+    let p = std.string.String.from_str(path)?
     Ok(resolve.manifest.Dep { name: n, path: p })
 end resolve.manifest.dep
 

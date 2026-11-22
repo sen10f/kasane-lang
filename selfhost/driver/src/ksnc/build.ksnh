@@ -37,7 +37,7 @@ fn ksnc.build.make(ksn: &str, root: &str, dir: &str, release: bool, target: &str
     let self_exe = if me == "" {
         std.path.join(root, "selfhost/driver/target/release/ksnc.native")?
     } else {
-        alloc.string.String.from_str(std.alloc.SYSTEM, me)?
+        std.string.String.from_str(me)?
     }
     // ksn が呼ぶ clang は ksnc に差し替える。ksnc は実際の clang を KSNC_CLANG から読む (無ければ KSN_CLANG、それも無ければ clang)。
     let real = ksnc.tool.clang()?

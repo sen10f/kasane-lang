@@ -8,7 +8,7 @@ end shortener.store.Store
 
 fn shortener.store.Store.add(self: &mut shortener.store.Store, url: &str) -> Result<std.string.String, shortener.error.Error> uses [alloc, io.fs] panics never pub
     let code_text = code.for_index(u64.from_usize(self.urls.len()))?
-    let copy = alloc.string.String.from_str(std.alloc.SYSTEM, url)?
+    let copy = std.string.String.from_str(url)?
     self.urls.push(copy)?
     match self.save() {
         Ok(_) => Ok(code_text)
@@ -29,7 +29,7 @@ fn shortener.store.Store.load(path: &str) -> Result<shortener.store.Store, short
         let text = shortener.store.read_text(path)?
         store.parse_into(text.as_str())?
     }
-    store.path = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    store.path = std.string.String.from_str(path)?
     Ok(store)
 end shortener.store.Store.load
 
@@ -43,7 +43,7 @@ fn shortener.store.Store.lookup(self: &shortener.store.Store, code_text: &str) -
 end shortener.store.Store.lookup
 
 fn shortener.store.Store.new(path: &str) -> Result<shortener.store.Store, shortener.error.Error> uses [alloc] panics never pub
-    let saved = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    let saved = std.string.String.from_str(path)?
     Ok(shortener.store.Store { path: saved, urls: std.vec.Vec.new() })
 end shortener.store.Store.new
 
@@ -58,7 +58,7 @@ fn shortener.store.Store.parse_into(self: &mut shortener.store.Store, text: &str
             if expected.as_str() != code_text || !shortener.store.is_valid_url(url) {
                 return Err(error.Error.Corrupt)
             }
-            let copy = alloc.string.String.from_str(std.alloc.SYSTEM, url)?
+            let copy = std.string.String.from_str(url)?
             self.urls.push(copy)?
         }
     }

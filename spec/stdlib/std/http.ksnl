@@ -299,16 +299,16 @@ fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, st
                 }
                 chunked = true
             }
-            let name = alloc.string.String.from_str(std.alloc.SYSTEM, key)?
-            let text_value = alloc.string.String.from_str(std.alloc.SYSTEM, value)?
+            let name = std.string.String.from_str(key)?
+            let text_value = std.string.String.from_str(value)?
             headers.push(std.http.Header { name: name, value: text_value })?
         }
     }
     if has_encoding && has_length {
         return Err(std.http.Error.BadRequest)
     }
-    let method = alloc.string.String.from_str(std.alloc.SYSTEM, method_text)?
-    let path = alloc.string.String.from_str(std.alloc.SYSTEM, path_text)?
+    let method = std.string.String.from_str(method_text)?
+    let path = std.string.String.from_str(path_text)?
     let frame = std.http.Framing { chunked: chunked, length: length }
     Ok(std.http.Head { framing: frame, headers: headers, http11: v11, method: method, path: path })
 end std.http.parse_head

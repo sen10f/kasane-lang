@@ -1,4 +1,3 @@
-import alloc.string
 import csvtool.agg
 import csvtool.error
 import csvtool.parse
@@ -364,7 +363,7 @@ fn csvtool.cmd.summary(start: usize) -> Result<(), csvtool.error.Error> uses [al
                     None => core.mem.drop(0u8)
                 }
                 let st = agg.column_stats(&tbl, *col)?
-                let key = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+                let key = std.string.String.from_str(name)?
                 core.mem.drop(list.push(agg.Group { key: key, stats: st })?)
             }
             None => core.mem.drop(0u8)
@@ -382,7 +381,7 @@ end csvtool.cmd.test_reset_dir
 
 fn csvtool.cmd.test_write_sample() -> Result<(), csvtool.error.Error> uses [alloc, io.fs] panics never
     let text = "name,age,city\nalice,30,tokyo\nbob,25,osaka\ncarol,35,tokyo\n"
-    let s = alloc.string.String.from_str(std.alloc.SYSTEM, text)?
+    let s = std.string.String.from_str(text)?
     std.fs.write_atomic(".csvtool-test-data/people.csv", s.as_bytes())?
     Ok(())
 end csvtool.cmd.test_write_sample

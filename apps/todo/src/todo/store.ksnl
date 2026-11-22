@@ -33,15 +33,15 @@ fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &s
         Err(_) => return Err(error.Error.BadRequest)
     }
     let id = id_base.wrapping_add(1i64)
-    let title_copy = alloc.string.String.from_str(std.alloc.SYSTEM, title)?
-    let created_copy = alloc.string.String.from_str(std.alloc.SYSTEM, created_at)?
-    let created_extra = alloc.string.String.from_str(std.alloc.SYSTEM, created_at)?
+    let title_copy = std.string.String.from_str(title)?
+    let created_copy = std.string.String.from_str(created_at)?
+    let created_extra = std.string.String.from_str(created_at)?
     let new_todo = model.Todo { id: id, title: title_copy, done: false, created_at: created_copy }
     self.todos.push(new_todo)?
     let empty_tags = std.vec.Vec.new()
     let ua = created_extra
     let tg = empty_tags
-    let dl = match alloc.string.String.from_str(std.alloc.SYSTEM, "") {
+    let dl = match std.string.String.from_str("") {
         Ok(s) => s
         Err(_) => return Err(error.Error.BadRequest)
     }
@@ -71,7 +71,7 @@ fn todo.store.Store.add_extra(self: &mut todo.store.Store, id: i64, updated_at: 
             Some(e) => e
             None => return Err(error.Error.NotFound)
         }
-        e.updated_at = alloc.string.String.from_str(std.alloc.SYSTEM, updated_at)?
+        e.updated_at = std.string.String.from_str(updated_at)?
         e.tags = tags
         e.deadline = deadline
         e.owner_id = owner_id
@@ -89,7 +89,7 @@ fn todo.store.Store.add_extra(self: &mut todo.store.Store, id: i64, updated_at: 
 end todo.store.Store.add_extra
 
 fn todo.store.Store.add_session(self: &mut todo.store.Store, token: &str, user_id: i64, expires_at: i64) -> Result<&todo.model.Session, todo.error.Error> uses [alloc, io.fs] panics never pub
-    let token_copy = alloc.string.String.from_str(std.alloc.SYSTEM, token)?
+    let token_copy = std.string.String.from_str(token)?
     let new_session = model.Session { token: token_copy, user_id: user_id, expires_at: expires_at }
     self.sessions.push(new_session)?
     match self.save_users() {
@@ -116,10 +116,10 @@ fn todo.store.Store.add_user(self: &mut todo.store.Store, username: &str, passwo
         Err(_) => return Err(error.Error.BadRequest)
     }
     let id = id_base.wrapping_add(1i64)
-    let username_copy = alloc.string.String.from_str(std.alloc.SYSTEM, username)?
-    let hash_copy = alloc.string.String.from_str(std.alloc.SYSTEM, password_hash)?
-    let salt_copy = alloc.string.String.from_str(std.alloc.SYSTEM, salt)?
-    let created_copy = alloc.string.String.from_str(std.alloc.SYSTEM, created_at)?
+    let username_copy = std.string.String.from_str(username)?
+    let hash_copy = std.string.String.from_str(password_hash)?
+    let salt_copy = std.string.String.from_str(salt)?
+    let created_copy = std.string.String.from_str(created_at)?
     let ui = id
     let un = username_copy
     let ph = hash_copy
@@ -342,18 +342,18 @@ fn todo.store.Store.load(path: &str, users_path: &str) -> Result<todo.store.Stor
         let text = todo.store.read_text(path)?
         store.parse_into(text.as_str())?
     }
-    store.path = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    store.path = std.string.String.from_str(path)?
     if std.fs.exists(users_path) {
         let text = todo.store.read_text(users_path)?
         store.parse_users_into(text.as_str())?
     }
-    store.users_path = alloc.string.String.from_str(std.alloc.SYSTEM, users_path)?
+    store.users_path = std.string.String.from_str(users_path)?
     Ok(store)
 end todo.store.Store.load
 
 fn todo.store.Store.new(path: &str, users_path: &str) -> Result<todo.store.Store, todo.error.Error> uses [alloc] panics never pub
-    let saved = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
-    let users_saved = alloc.string.String.from_str(std.alloc.SYSTEM, users_path)?
+    let saved = std.string.String.from_str(path)?
+    let users_saved = std.string.String.from_str(users_path)?
     let ts = std.vec.Vec.new()
     let es = std.vec.Vec.new()
     let us = std.vec.Vec.new()
@@ -573,7 +573,7 @@ fn todo.store.Store.update_extra(self: &mut todo.store.Store, id: i64, updated_a
             Some(e) => e
             None => return Err(error.Error.NotFound)
         }
-        e.updated_at = alloc.string.String.from_str(std.alloc.SYSTEM, updated_at)?
+        e.updated_at = std.string.String.from_str(updated_at)?
         e.tags = tags
         e.deadline = deadline
         e.owner_id = owner_id

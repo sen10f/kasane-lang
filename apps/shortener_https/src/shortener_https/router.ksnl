@@ -26,7 +26,7 @@ fn shortener_https.router.lookup(db: &shortener_https.store.Store, path: &str) -
     match db.lookup(code_text) {
         Some(url) => {
             let body = json.link_body(code_text, url)?
-            let location = alloc.string.String.from_str(std.alloc.SYSTEM, url)?
+            let location = std.string.String.from_str(url)?
             Ok(shortener_https.router.Reply { body: body, location: location, status: 302u16 })
         }
         None => shortener_https.router.error_reply(404u16, "not found")

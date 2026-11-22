@@ -20,7 +20,7 @@ end bench.Tok
 
 fn bench.add_op(t: bench.Tok) -> Option<u8> uses [] panics never
     match t {
-        bench.Tok.Num(_n) => None
+        bench.Tok.Num(_) => None
         bench.Tok.Plus => Some(0u8)
         bench.Tok.Minus => Some(1u8)
         bench.Tok.Star => None
@@ -42,7 +42,7 @@ end bench.eval
 
 fn bench.mul_op(t: bench.Tok) -> Option<u8> uses [] panics never
     match t {
-        bench.Tok.Num(_n) => None
+        bench.Tok.Num(_) => None
         bench.Tok.Plus => None
         bench.Tok.Minus => None
         bench.Tok.Star => Some(0u8)

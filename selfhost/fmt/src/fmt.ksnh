@@ -589,7 +589,7 @@ fn fmt.mechanical(src: &str) -> Result<std.vec.Vec<std.string.String>, fmt.Failu
                 return Err(fmt.Failure.Io(err))
             }
         }
-        let result = alloc.string.String.from_str(std.alloc.SYSTEM, buf_str)?
+        let result = std.string.String.from_str(buf_str)?
         out.push(result)?
     }
     while !out.is_empty() {
@@ -681,7 +681,7 @@ fn fmt.name_of(kw: &str, l: &str) -> Result<std.string.String, fmt.Failure> uses
             return Err(fmt.Failure.Io(err))
         }
     }
-    Ok(alloc.string.String.from_str(std.alloc.SYSTEM, name_str)?)
+    Ok(std.string.String.from_str(name_str)?)
 end fmt.name_of
 
 fn fmt.process(path: &str) -> Result<(), fmt.Failure> uses [alloc, io.console, io.fs] panics never pub
@@ -707,7 +707,7 @@ fn fmt.scan_defs(lines: &[std.string.String]) -> Result<std.vec.Vec<fmt.Def>, fm
     let mut i = 0usize
     while i < n {
         let s = match lines.get(i) {
-            Some(x) => match alloc.string.String.from_str(std.alloc.SYSTEM, x.as_str()) {
+            Some(x) => match std.string.String.from_str(x.as_str()) {
                 Ok(owned) => owned
                 Err(_) => break
             }
@@ -724,7 +724,7 @@ fn fmt.scan_defs(lines: &[std.string.String]) -> Result<std.vec.Vec<fmt.Def>, fm
         if fmt.has_body(kw) {
             for j in core.iter.range(i.wrapping_add(1usize), n) {
                 let sj = match lines.get(j) {
-                    Some(x) => match alloc.string.String.from_str(std.alloc.SYSTEM, x.as_str()) {
+                    Some(x) => match std.string.String.from_str(x.as_str()) {
                         Ok(owned) => owned
                         Err(_) => break
                     }
@@ -744,7 +744,7 @@ fn fmt.scan_defs(lines: &[std.string.String]) -> Result<std.vec.Vec<fmt.Def>, fm
         if kw == "fn" {
             has_impls = fmt.has_impls_attr(s.as_str())
         }
-        let kw_str = alloc.string.String.from_str(std.alloc.SYSTEM, kw)?
+        let kw_str = std.string.String.from_str(kw)?
         let def = fmt.def_new(kw_str, name, ln, end_line, has_impls)
         out.push(def)?
         let ni = if end_line > 0usize {

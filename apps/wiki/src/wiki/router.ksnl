@@ -15,7 +15,7 @@ fn wiki.router.edit_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mu
     let token = csrf.generate_token(csrf_tokens)?
     let content = match page_store.load_latest(name) {
         Some(c) => c
-        None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
+        None => std.string.String.from_str("")?
     }
     let body = html.edit_form(name, content.as_str(), token.as_str())?
     let location = wiki.router.empty()
@@ -72,7 +72,7 @@ fn wiki.router.page_links(page_store: &mut wiki.store.PageStore, name: &str) -> 
     }
     let content = match page_store.load_latest(name) {
         Some(c) => c
-        None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
+        None => std.string.String.from_str("")?
     }
     let links = link.extract_wiki_links(content.as_str())?
     let body = html.links_view(name, links.as_slice())?
@@ -85,7 +85,7 @@ fn wiki.router.page_name_from_path(path: &str, prefix: &str) -> Option<std.strin
         Some(rest) => if rest.is_empty() || rest.contains("/") {
             None
         } else {
-            match alloc.string.String.from_str(std.alloc.SYSTEM, rest) {
+            match std.string.String.from_str(rest) {
                 Ok(s) => Some(s)
                 Err(_) => None
             }
@@ -98,7 +98,7 @@ fn wiki.router.query_param(query: &str, key: &str) -> Option<std.string.String> 
     for pair in query.split("&") {
         match pair.split_once("=") {
             Some((k, v)) => if k == key {
-                match alloc.string.String.from_str(std.alloc.SYSTEM, v) {
+                match std.string.String.from_str(v) {
                     Ok(s) => return Some(s)
                     Err(_) => return None
                 }
@@ -114,7 +114,7 @@ fn wiki.router.reply(status: u16, body: std.string.String, location: std.string.
 end wiki.router.reply
 
 fn wiki.router.route(page_store: &mut wiki.store.PageStore, method: &str, path: &str, body: &str, csrf_tokens: &mut std.vec.Vec<std.string.String>) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand] panics never pub
-    let path_heap = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    let path_heap = std.string.String.from_str(path)?
     let (path_part, query) = match path_heap.as_str().split_once("?") {
         Some(pair) => pair
         None => (path_heap.as_str(), "")
@@ -237,7 +237,7 @@ fn wiki.router.save_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mu
     }
     let version = page_store.next_version(name)?
     core.mem.drop(page_store.save_version(name, content.as_str(), version)?)
-    let mut location = alloc.string.String.from_str(std.alloc.SYSTEM, "/page/")?
+    let mut location = std.string.String.from_str("/page/")?
     location.push_str(name)?
     let reply_body = std.string.String.new()
     Ok(wiki.router.Reply { body: reply_body, location: location, status: 303u16 })
@@ -253,7 +253,7 @@ fn wiki.router.search_pages(page_store: &mut wiki.store.PageStore, query: &str) 
             Some(name) => {
                 let content = match page_store.load_latest(name.as_str()) {
                     Some(c) => c
-                    None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
+                    None => std.string.String.from_str("")?
                 }
                 search.index_add_page(&mut index, name.as_str(), content.as_str())?
             }
@@ -486,7 +486,7 @@ test wiki.router.route.test_save_page
     let form_resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/new", "")
     core.check.eq(form_resp.status, 200u16)
     let token = csrf.generate_token(&mut csrf_tokens)?
-    let mut body = alloc.string.String.from_str(std.alloc.SYSTEM, "csrf=")?
+    let mut body = std.string.String.from_str("csrf=")?
     core.mem.drop(body.push_str(token.as_str())?)
     core.mem.drop(body.push_str("&content=Hello+World")?)
     let ps = &mut page_store
@@ -500,7 +500,7 @@ end wiki.router.route.test_save_page
 test wiki.router.route.test_save_page_invalid_csrf
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    let body = alloc.string.String.from_str(std.alloc.SYSTEM, "csrf=invalid&content=hello")?
+    let body = std.string.String.from_str("csrf=invalid&content=hello")?
     let ps = &mut page_store
     let ct = &mut csrf_tokens
     let b = body.as_str()
@@ -511,7 +511,7 @@ end wiki.router.route.test_save_page_invalid_csrf
 test wiki.router.route.test_save_page_missing_csrf
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    let body = alloc.string.String.from_str(std.alloc.SYSTEM, "content=hello")?
+    let body = std.string.String.from_str("content=hello")?
     let ps = &mut page_store
     let ct = &mut csrf_tokens
     let b = body.as_str()
@@ -523,7 +523,7 @@ test wiki.router.route.test_save_page_then_show
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
     let token = csrf.generate_token(&mut csrf_tokens)?
-    let mut body = alloc.string.String.from_str(std.alloc.SYSTEM, "csrf=")?
+    let mut body = std.string.String.from_str("csrf=")?
     core.mem.drop(body.push_str(token.as_str())?)
     core.mem.drop(body.push_str("&content=# New Page\n")?)
     let ps = &mut page_store

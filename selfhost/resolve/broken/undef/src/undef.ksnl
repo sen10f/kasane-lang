@@ -17,8 +17,7 @@ fn undef.k() -> i32 uses [] panics never
     let _f = Nope { a: 1i32 }
     let g = other.f()
     let h = {
-        let inner = 1i32
-        inner
+        1i32
     }
     let i = inner
     let q: Foo = 1i32
