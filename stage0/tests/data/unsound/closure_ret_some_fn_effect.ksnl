@@ -1,0 +1,18 @@
+fn t.eff() -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line("x"))
+end t.eff
+
+fn t.go() -> () uses [] panics never
+    let mk = fn() -> Option<fn() -> () uses [] panics never> capture [] {
+        Some(t.eff)
+    }
+    core.mem.drop(mk())
+end t.go
+
+fn t.main() -> () uses [] panics never
+    t.go()
+end t.main
+
+fn t.pure() -> () uses [] panics never
+    ()
+end t.pure
