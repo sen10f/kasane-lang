@@ -1,0 +1,13 @@
+fn t.go() -> () uses [alloc] panics never
+    with mut v = std.vec.Vec.new() close core.mem.drop(v) {
+        core.mem.drop(v.push(1u64))
+        for x in v.iter() {
+            core.mem.drop(x)
+            v.clear()
+        }
+    }
+end t.go
+
+fn t.main() -> () uses [alloc] panics never
+    t.go()
+end t.main

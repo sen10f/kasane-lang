@@ -1,0 +1,22 @@
+fn t.go() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let mut outer = t.mk("outer string that is long enough...")
+    with mut s = t.mk("hello, this is a long heap string") close core.mem.drop(s) {
+        let r = s.as_str()
+        core.mem.swap(&mut s, &mut outer)
+        core.mem.drop(outer)
+        let other = t.mk("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+        std.io.print_line(r)?
+        core.mem.drop(other)
+    }
+    Ok(())
+end t.go
+
+fn t.main() -> () uses [alloc, io.console] panics never
+    core.mem.drop(t.go())
+end t.main
+
+fn t.mk(text: &str) -> std.string.String uses [alloc] panics never
+    let mut s = std.string.String.new()
+    core.mem.drop(s.push_str(text))
+    s
+end t.mk

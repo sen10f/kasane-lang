@@ -1,0 +1,12 @@
+fn t.go() -> usize uses [] panics never
+    with mut s = std.string.String.new() close core.mem.drop(s) {
+        let n = s.as_str().len()
+        s.clear()
+        let m = s.len()
+        n.wrapping_add(m)
+    }
+end t.go
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.go())
+end t.main
