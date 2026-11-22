@@ -1069,3 +1069,15 @@ fn fix_surface_impl_with_fqn_methods_and_indented_end() {
     let src = "trait t.Tr[E: uses, P: panics] pub\n    fn get(self: &Self) -> u8 uses [E] panics P\nend t.Tr\n\ntype t.S\n    v: u8\nend t.S\n\nimpl t.Tr<[], never> for t.S\n    fn t.S.get(self: &Self) -> u8 uses [] panics never\n        self.v\n    end t.S.get\nend t.S\n\nfn t.main() -> u8 uses [] panics never\n    1u8\nend t.main\n";
     surface_round("sf_impl_fqn", src, "E0062", "fn t.S.get(self: &t.S) -> u8 uses [] panics never impls t.Tr<[], never>");
 }
+
+#[test]
+fn fix_surface_trailing_colon_header_and_spaced_static() {
+    let src = "type t.S: a: std.boxed.Box<dyn t.Tr + ' static> end t.S\n\ntrait t.Tr[E: uses, P: panics]:\n    fn a(self: &Self) -> u8 uses [E] panics P\nend t.Tr\n\nfn t.main() -> u8 uses [] panics never\n    1u8\nend t.main\n";
+    surface_round("sf_static", src, "E0002", "trait t.Tr[E: uses, P: panics]\n    fn a(");
+}
+
+#[test]
+fn fix_surface_field_shorthand_and_empty_impl_end() {
+    let src = "type t.P\n    a: u8\n    b: u8\nend t.P\n\ntrait t.Tr[E: uses, P: panics] pub\n    fn g(self: &Self) -> u8 uses [E] panics P\nend t.Tr\n\nimpl core.cmp.Eq for t.P\nend core.cmp.Eq for t.P\n\nfn t.main() -> t.P uses [] panics never\n    let a = 1u8\n    let b = 2u8\n    t.P { a, b }\nend t.main\n";
+    surface_round("sf_short", src, "E0061", "t.P { a: a, b: b }");
+}
