@@ -1045,31 +1045,25 @@ pub fn stdlib_dir() -> PathBuf {
     if let Ok(d) = std::env::var("KSN_STDLIB") {
         return PathBuf::from(d);
     }
-    let mut starts: Vec<PathBuf> = vec![];
+    // 作業ディレクトリとその親は見ない (2026-11-22 sec2-X2: 落としてきたリポジトリの stdlib/ が標準ライブラリになった)。
+    // 実行体の場所だけから探す: 実行体の隣の stdlib/、実行体の親をたどった先の spec/stdlib (開発の配置 stage0/target/<profile>/ksn)。
     if let Ok(e) = std::env::current_exe() {
-        starts.push(e.parent().unwrap().to_path_buf());
-    }
-    if let Ok(c) = std::env::current_dir() {
-        starts.push(c);
-    }
-    for s in starts {
-        let mut d = Some(s.as_path());
-        while let Some(x) = d {
-            let c = x.join("spec").join("stdlib");
-            if c.is_dir() {
-                return c;
-            }
-            let c2 = x.join("stdlib");
+        if let Some(dir) = e.parent() {
+            let c2 = dir.join("stdlib");
             if c2.is_dir() {
                 return c2;
             }
-            d = x.parent();
+            let mut d = Some(dir);
+            while let Some(x) = d {
+                let c = x.join("spec").join("stdlib");
+                if c.is_dir() {
+                    return c;
+                }
+                d = x.parent();
+            }
         }
     }
     let rel = PathBuf::from("spec/stdlib");
-    if rel.is_dir() {
-        return rel;
-    }
     embedded_stdlib_dir().unwrap_or(rel)
 }
 
