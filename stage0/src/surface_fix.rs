@@ -39,6 +39,11 @@ fn skip_lit(cs: &[char], i: usize) -> usize {
 
 /// 最上位 (括弧の深さ 0・リテラルの外) で `sep` の位置に区切る。深さの釣り合いが取れないときは None。
 fn split_top(s: &str, sep: char) -> Option<Vec<String>> {
+    split_top_a(s, sep, false)
+}
+
+/// `angle` なら `<` `>` も深さに数える (`->` と `=>` の `>` は数えない)。型の欄の区切り用。
+fn split_top_a(s: &str, sep: char, angle: bool) -> Option<Vec<String>> {
     let cs: Vec<char> = s.chars().collect();
     let (mut depth, mut i, mut start) = (0i32, 0usize, 0usize);
     let mut out = vec![];
@@ -50,6 +55,8 @@ fn split_top(s: &str, sep: char) -> Option<Vec<String>> {
             }
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth -= 1,
+            '<' if angle => depth += 1,
+            '>' if angle && i > 0 && cs[i - 1] != '-' && cs[i - 1] != '=' => depth -= 1,
             c if c == sep && depth == 0 => {
                 out.push(cs[start..i].iter().collect::<String>());
                 start = i + 1;
@@ -129,8 +136,20 @@ fn inline_blocks(lines: Vec<String>) -> Vec<String> {
         };
         let prefix: String = cs[..a].iter().collect();
         let body: String = cs[a + 1..b].iter().collect();
-        let rest: String = cs[b + 1..].iter().collect();
+        let mut rest: String = cs[b + 1..].iter().collect();
         let ptrim = prefix.trim_end();
+        // `if c { a } else { b }` / `else if c2 { .. }` の連なりを、組ごとに行へ展開する。
+        let mut chain: Vec<(String, String)> = vec![];
+        loop {
+            let r = rest.trim_start().to_string();
+            if !r.starts_with("else") {
+                break;
+            }
+            let rc: Vec<char> = r.chars().collect();
+            let Some((a2, b2)) = first_brace(&rc) else { break };
+            chain.push((rc[..a2].iter().collect::<String>().trim().to_string(), rc[a2 + 1..b2].iter().collect()));
+            rest = rc[b2 + 1..].iter().collect();
+        }
         // 構造体リテラル・構造体パターン (直前の語が大文字始まり) と、`{ }` の後ろに続きがある形は触らない。
         if last_ident(ptrim).chars().next().map_or(false, |c| c.is_uppercase()) || !matches!(rest.trim(), "" | ",") || ptrim.is_empty() {
             out.push(l);
@@ -142,7 +161,7 @@ fn inline_blocks(lines: Vec<String>) -> Vec<String> {
             continue;
         }
         if body.trim().is_empty() {
-            if ptrim.ends_with("=>") {
+            if ptrim.ends_with("=>") && chain.is_empty() {
                 out.push(format!("{} (){}", ptrim, rest.trim_end()));
             } else {
                 out.push(l);
@@ -159,9 +178,29 @@ fn inline_blocks(lines: Vec<String>) -> Vec<String> {
             continue;
         }
         let ind = " ".repeat(indent_of(&l));
-        out.push(format!("{}{{", prefix.trim_end().to_string() + " "));
-        for s in stmts {
-            out.push(format!("{}    {}", ind, s));
+        let mut groups: Vec<(String, Vec<String>)> = vec![(format!("{} {{", prefix.trim_end()), stmts)];
+        let mut ok = true;
+        for (h, bd) in &chain {
+            match split_top(bd, ';') {
+                Some(v) => {
+                    let v: Vec<String> = v.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    if v.is_empty() {
+                        ok = false;
+                    }
+                    groups.push((format!("{}}} {} {{", ind, h), v));
+                }
+                None => ok = false,
+            }
+        }
+        if !ok {
+            out.push(l);
+            continue;
+        }
+        for (h, v) in groups {
+            out.push(h);
+            for s in v {
+                out.push(format!("{}    {}", ind, s));
+            }
         }
         out.push(format!("{}}}{}", ind, rest.trim_end()));
     }
@@ -178,6 +217,7 @@ fn wrapped_literals(lines: Vec<String>) -> Vec<String> {
         let first = t.split_whitespace().next().unwrap_or("");
         let lit = t.ends_with('{')
             && !t.starts_with("//")
+            && !t.starts_with('}')
             && !matches!(first, "if" | "while" | "for" | "loop" | "match" | "else" | "fn" | "impl" | "trait" | "enum" | "type" | "unsafe" | "with")
             && last_ident(&t[..t.len() - 1]).chars().next().map_or(false, |c| c.is_uppercase());
         if lit {
@@ -235,7 +275,7 @@ fn paren_bodies(lines: Vec<String>) -> Vec<String> {
             out.push(l);
             continue;
         };
-        let Some(items) = split_top(&body, ',') else {
+        let Some(items) = split_top_a(&body, ',', kw == "type") else {
             out.push(l);
             continue;
         };
@@ -310,9 +350,18 @@ fn one_line_defs(lines: Vec<String>) -> Vec<String> {
     let mut in_def: Option<&'static str> = None;
     for l in lines {
         let kw = l.split_whitespace().next().unwrap_or("");
-        if indent_of(&l) == 0 && matches!(kw, "type" | "enum") {
-            let kw: &'static str = if kw == "type" { "type" } else { "enum" };
+        if indent_of(&l) == 0 && matches!(kw, "type" | "enum" | "trait") {
+            let kw: &'static str = match kw {
+                "type" => "type",
+                "trait" => "trait",
+                _ => "enum",
+            };
             let mut line = l.replace(" derive []", "");
+            if kw == "trait" {
+                in_def = None;
+                out.push(line.trim_end().to_string());
+                continue;
+            }
             // 1 行に `end N` まである形
             let rest = line[kw.len()..].trim_start().to_string();
             let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect();
@@ -351,7 +400,7 @@ fn one_line_defs(lines: Vec<String>) -> Vec<String> {
         }
         if let (Some(kw), true) = (in_def, indent_of(&l) == 4) {
             let t = l.trim();
-            if let Some(parts) = split_top(t, ',') {
+            if let Some(parts) = split_top_a(t, ',', kw == "type") {
                 let parts: Vec<String> = parts.into_iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
                 if parts.len() > 1 && parts.iter().all(|p| if kw == "type" { p.contains(':') } else { !p.contains(':') }) {
                     for p in parts {
@@ -411,7 +460,7 @@ fn impl_methods(lines: Vec<String>) -> Vec<String> {
                     buf.pop();
                 }
                 out.append(buf);
-                out.push(format!("end {}.{}", ty, n));
+                out.push(format!("end {}", n));
                 out.push(String::new());
             }
             buf.clear();
@@ -420,10 +469,13 @@ fn impl_methods(lines: Vec<String>) -> Vec<String> {
             if indent_of(b) == 4 && b.trim_start().starts_with("fn ") {
                 flush(&mut cur, &mut buf, &mut out);
                 let sig = b.trim_start()[3..].trim_start();
-                let name: String = sig.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                let name: String = sig.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect();
                 let rest = replace_self(&sig[name.len()..], &ty);
-                cur = Some(name.clone());
-                buf.push(format!("fn {}.{}{} impls {}", ty, name, rest.trim_end(), tr));
+                let full = if name.contains('.') { name.clone() } else { format!("{}.{}", ty, name) };
+                cur = Some(full.clone());
+                buf.push(format!("fn {}{} impls {}", full, rest.trim_end(), tr));
+            } else if cur.as_ref().map_or(false, |c| indent_of(b) == 4 && b.trim() == format!("end {}", c)) {
+                continue;
             } else if cur.is_some() {
                 let s = if b.len() >= 4 { &b[4..] } else { "" };
                 buf.push(replace_self(s, &ty));
@@ -462,16 +514,189 @@ fn replace_self(s: &str, ty: &str) -> String {
     out
 }
 
+fn def_name(kw: &str, hdr: &str) -> String {
+    let rest = hdr[kw.len()..].trim_start();
+    let rest = if kw == "impl" { rest.rsplit_once(" for ").map_or(rest, |(_, y)| y.trim()) } else { rest };
+    rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect()
+}
+
+/// E0043: 定義の `{ ... }` (`fn f(..) -> T {` ... `}`) を、波括弧なし・`end <名前>` で閉じる形に。
+/// 閉じの `}` を `end` にするのは最上位の `}` だけ。`impl` は `end <型>` (impl_methods が続けて平らにする)。
+fn brace_defs(lines: Vec<String>) -> Vec<String> {
+    let mut out = vec![];
+    // 外側 (最上位) の定義と、`impl` / `trait` の中のメソッド (字下げ 4) の開き。
+    let mut open: Option<(String, bool, bool)> = None;
+    let mut inner = false;
+    for l in lines {
+        let t = l.trim_end();
+        let kw = t.split_whitespace().next().unwrap_or("");
+        if indent_of(t) == 0 && open.is_none() && matches!(kw, "fn" | "trait" | "type" | "enum" | "impl" | "test") && t.ends_with(" {") {
+            let name = def_name(kw, t);
+            if !name.is_empty() {
+                open = Some((name, matches!(kw, "type" | "enum"), matches!(kw, "impl" | "trait")));
+                out.push(t[..t.len() - 2].trim_end().to_string());
+                continue;
+            }
+        }
+        if let Some((name, fields, methods)) = &open {
+            if *methods && !inner && indent_of(t) == 4 && kw == "fn" && t.ends_with(" {") {
+                inner = true;
+                out.push(t[..t.len() - 2].trim_end().to_string());
+                continue;
+            }
+            if inner && t == "    }" {
+                inner = false;
+                continue;
+            }
+            if t == "}" && !inner {
+                out.push(format!("end {}", name));
+                open = None;
+                continue;
+            }
+            if *fields && indent_of(t) == 4 && t.ends_with(',') {
+                out.push(t[..t.len() - 1].to_string());
+                continue;
+            }
+        }
+        out.push(l);
+    }
+    out
+}
+
+/// 単独の `end` を、直前に開いた定義の名前つきの `end <名前>` にする。
+fn bare_end(lines: Vec<String>) -> Vec<String> {
+    let mut out = vec![];
+    let mut open: Option<String> = None;
+    let mut imp: Option<String> = None;
+    for l in lines {
+        let kw = l.split_whitespace().next().unwrap_or("");
+        if imp.is_some() && indent_of(&l) == 4 && l.trim() == "end" {
+            continue;
+        }
+        if indent_of(&l) == 0 && !l.trim().is_empty() {
+            if kw == "impl" {
+                imp = Some(def_name("impl", l.trim_end())).filter(|n| !n.is_empty());
+            } else if l.trim() == "end" {
+                if let Some(n) = imp.take() {
+                    out.push(format!("end {}", n));
+                    continue;
+                }
+            } else {
+                imp = None;
+            }
+        }
+        if indent_of(&l) == 0 {
+            if matches!(kw, "fn" | "trait" | "type" | "enum" | "test") {
+                let n = def_name(kw, l.trim_end());
+                open = if n.is_empty() { None } else { Some(n) };
+            } else if l.trim() == "end" {
+                if let Some(n) = open.take() {
+                    out.push(format!("end {}", n));
+                    continue;
+                }
+            } else if kw == "end" {
+                open = None;
+            }
+        }
+        out.push(l);
+    }
+    out
+}
+
+/// `trait N[..]: fn m(..)` (見出しと最初のメソッドが同じ行) を 2 行に分ける。
+fn trait_header_colon(lines: Vec<String>) -> Vec<String> {
+    let mut out = vec![];
+    for l in lines {
+        if indent_of(&l) == 0 && l.starts_with("trait ") {
+            if let Some(p) = l.find(": fn ") {
+                let head = &l[..p];
+                if split_top(head, '\u{0}').is_some() {
+                    out.push(head.trim_end().to_string());
+                    out.push(format!("    {}", l[p + 2..].trim()));
+                    continue;
+                }
+            }
+        }
+        if indent_of(&l) == 4 && l.trim_start().starts_with("fn ") {
+            if let Some(parts) = split_top(l.trim(), ';') {
+                let parts: Vec<String> = parts.into_iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+                if parts.len() > 1 && parts.iter().all(|p| p.starts_with("fn ")) {
+                    for p in parts {
+                        out.push(format!("    {}", p));
+                    }
+                    continue;
+                }
+            }
+        }
+        out.push(l);
+    }
+    out
+}
+
+/// 文の末尾の `,` (`x = expr,`): 代入の行だけ消す。
+fn stmt_commas(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|l| {
+            let t = l.trim();
+            if t.ends_with(',') && !t.starts_with("//") && balanced(t) {
+                if let Some((lhs, _)) = t.split_once(" = ") {
+                    if !lhs.is_empty() && lhs.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') && !lhs.contains(char::is_whitespace) && !t.contains("=>") {
+                        return l.trim_end().trim_end_matches(',').to_string();
+                    }
+                }
+            }
+            l
+        })
+        .collect()
+}
+
+/// `type` / `enum` / `trait` の定義が `end <名前>` で閉じていなければ、本体の終わりに足す。
+fn ensure_end(lines: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut open: Option<String> = None;
+    let close = |open: &mut Option<String>, out: &mut Vec<String>| {
+        if let Some(n) = open.take() {
+            let at = out.iter().rposition(|x| !x.trim().is_empty()).map_or(0, |k| k + 1);
+            out.insert(at, format!("end {}", n));
+        }
+    };
+    for l in lines {
+        if indent_of(&l) == 0 && !l.trim().is_empty() {
+            let kw = l.split_whitespace().next().unwrap_or("");
+            if kw == "end" {
+                open = None;
+            } else {
+                close(&mut open, &mut out);
+                if matches!(kw, "type" | "enum" | "trait") {
+                    let n = def_name(kw, l.trim_end());
+                    if !n.is_empty() {
+                        open = Some(n);
+                    }
+                }
+            }
+        }
+        out.push(l);
+    }
+    close(&mut open, &mut out);
+    out
+}
+
 /// 生の文面にすべての表面の書き換えを、動かなくなるまで当てる。
 pub fn rewrite(text: &str) -> String {
     let mut cur = text.to_string();
     for _ in 0..50 {
         let mut lines: Vec<String> = cur.split('\n').map(String::from).collect();
+        lines = brace_defs(lines);
+        lines = bare_end(lines);
+        lines = trait_header_colon(lines);
         lines = impl_methods(lines);
+        lines = stmt_commas(lines);
         lines = one_line_defs(lines);
         lines = paren_bodies(lines);
         lines = wrapped_literals(lines);
         lines = inline_blocks(lines);
+        lines = ensure_end(lines);
         let next = lines.join("\n");
         if next == cur {
             break;

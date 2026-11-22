@@ -1039,3 +1039,33 @@ fn fix_surface_one_line_definitions_and_empty_derive() {
     let src = "type t.Item derive [Debug, Clone] pub a: u32 b: u32 end t.Item\n\nenum t.E derive [Debug] pub X(u8) Y end t.E\n\ntype t.C derive [] pub\n    p: u32, q: u32\nend t.C\n\nfn t.main() -> u8 uses [] panics never\n    1u8\nend t.main\n";
     surface_round("sf_oneline", src, "E0002", "type t.Item derive [Debug, Clone] pub\n    a: u32\n    b: u32\nend t.Item");
 }
+
+#[test]
+fn fix_surface_brace_definitions() {
+    let src = "type t.S {\n    a: u8,\n    b: u8,\n}\n\nfn t.main() -> u8 uses [] panics never {\n    1u8\n}\n";
+    surface_round("sf_brace", src, "E0043", "type t.S\n    a: u8\n    b: u8\nend t.S");
+}
+
+#[test]
+fn fix_surface_colon_definitions_without_end_and_bare_end() {
+    let src = "type t.S: a: u8, b: std.vec.Vec<u8, std.alloc.System>\nenum t.E: X, Y(u8)\n\nfn t.main() -> u8 uses [] panics never\n    1u8\nend\n";
+    surface_round("sf_colon", src, "E0002", "type t.S\n    a: u8\n    b: std.vec.Vec<u8, std.alloc.System>\nend t.S");
+}
+
+#[test]
+fn fix_surface_trait_colon_header_and_semicolon_methods() {
+    let src = "trait t.Tr[E: uses, P: panics]: fn a(self: &Self) -> u8 uses [E] panics P; fn b(self: &Self) -> u8 uses [E] panics P\n\nfn t.main() -> u8 uses [] panics never\n    1u8\nend t.main\n";
+    surface_round("sf_trait", src, "E0002", "trait t.Tr[E: uses, P: panics]\n    fn a(");
+}
+
+#[test]
+fn fix_surface_one_line_if_else_chain() {
+    let src = "fn t.main() -> u8 uses [] panics never\n    let c = true\n    let v = if c { 1u8 } else { 2u8 }\n    v\nend t.main\n";
+    surface_round("sf_ifelse", src, "E0056", "if c {\n        1u8\n    } else {\n        2u8\n    }");
+}
+
+#[test]
+fn fix_surface_impl_with_fqn_methods_and_indented_end() {
+    let src = "trait t.Tr[E: uses, P: panics] pub\n    fn get(self: &Self) -> u8 uses [E] panics P\nend t.Tr\n\ntype t.S\n    v: u8\nend t.S\n\nimpl t.Tr<[], never> for t.S\n    fn t.S.get(self: &Self) -> u8 uses [] panics never\n        self.v\n    end t.S.get\nend t.S\n\nfn t.main() -> u8 uses [] panics never\n    1u8\nend t.main\n";
+    surface_round("sf_impl_fqn", src, "E0062", "fn t.S.get(self: &t.S) -> u8 uses [] panics never impls t.Tr<[], never>");
+}
