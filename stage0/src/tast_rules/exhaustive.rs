@@ -140,7 +140,14 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                 if let Ty::Named(n, _, _) = &s {
                     if let Some(&ti) = p.types.get(n) {
                         if p.defs[ti].kw == "enum" {
-                            found.push(("E2021", "`_` / binding patterns cannot match an enum; list all variants".into(), e.line));
+                            let variants: Vec<String> = p.defs[ti].variants.iter().map(|(vn, payload)| {
+                                if payload.is_empty() {
+                                    format!("{}.{}", n, vn)
+                                } else {
+                                    format!("{}.{}(..)", n, vn)
+                                }
+                            }).collect();
+                            found.push(("E2021", format!("`_` / binding patterns cannot match an enum; list all variants: {}", variants.join(", ")).into(), e.line));
                             return;
                         }
                     }
