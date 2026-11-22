@@ -926,7 +926,7 @@ impl<'a> Lw<'a> {
     fn const_val(&mut self, ci: usize, e: &V) -> LR<VId> {
         let c = &self.p.defs[ci];
         // `for x in K.split(..)` の `K` は下ろしが作った式 (番号 0) で型表にない。定数の宣言の型を使う。
-        let ty = if nid(e) == 0 {
+        let ty = if nid(e) == 0 || nid(e) & crate::tast::PREFIX_BIT != 0 {
             let src = from_v(&c.ret, &HashSet::new());
             match coll::value_ty(self, &src).or_else(|| self.conv_t(&src)) {
                 Some(t) => t,
