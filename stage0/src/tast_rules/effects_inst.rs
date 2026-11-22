@@ -447,6 +447,16 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                 return;
             }
             match (&e.kind, &e.res) {
+                // 関数型の値を式で呼ぶ `g()()`・`(s.f)(x)`・`xs[0]()`・`(if c { a } else { b })()`: 関数型の効果・panic を呼び出し元が負う。
+                (TKind::Call { callee, .. }, _) if !matches!(&callee.kind, TKind::Path(_)) => {
+                    if let Ty::Closure { eff, .. } = strip_refs(&callee.ty) {
+                        if let Some(ef) = &eff.0 {
+                            let uses: Vec<String> = ef.uses.iter().filter(|u| !is_effect_var(u)).cloned().collect();
+                            let panics = (ef.may == Some(true)).then(|| "may".to_string());
+                            ck.report("the called function value", &uses, panics.as_deref(), e.line);
+                        }
+                    }
+                }
                 // `F: Fn<.., E, P>` の型パラメータの値の呼び出し `f(x)`: 境界が宣言する具体的な効果と `may`。
                 (TKind::Call { callee, .. }, Some(Callee::Local(f))) => {
                     let Some(pt) = b.params.iter().find(|q| &q.name == f).map(|q| strip_refs(&q.ty)) else { return };

@@ -376,6 +376,23 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
             }
             _ => {}
         });
+        // 閉包ごとの宣言した戻り値の型と、その閉包に属する `return` (一番内側の閉包が持つ)。
+        let mut closures: Vec<(Ty, Vec<*const TExpr>, usize)> = vec![];
+        super::impl_sig::walk(&b.body, &mut |e| {
+            if let (TKind::Closure { body, .. }, Ty::Closure { ret, .. }) = (&e.kind, e.ty.strip()) {
+                let mut rs = vec![];
+                let mut n = 0usize;
+                super::impl_sig::walk(body, &mut |x| {
+                    n += 1;
+                    if matches!(&x.kind, TKind::Other { name: "Return", .. }) {
+                        rs.push(x as *const TExpr);
+                    }
+                });
+                // 閉包の本体の末尾の値も、宣言した戻り値の型へ入る。
+                ck.walk(ret, &body.ty, e.line);
+                closures.push(((**ret).clone(), rs, n));
+            }
+        });
         super::impl_sig::walk(&b.body, &mut |e| {
             match &e.kind {
                 TKind::Block(ss) => {
@@ -394,7 +411,12 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                 }
                 TKind::Other { name: "Return", children } => {
                     if let Some(c) = children.first() {
-                        ck.walk(&b.ret, &c.ty, 0);
+                        let me = e as *const TExpr;
+                        let inner = closures.iter().filter(|(_, rs, _)| rs.contains(&me)).min_by_key(|(_, _, n)| *n);
+                        match inner {
+                            Some((r, _, _)) => ck.walk(r, &c.ty, e.line),
+                            None => ck.walk(&b.ret, &c.ty, 0),
+                        }
                     }
                 }
                 TKind::Call { callee, .. } if matches!(&callee.kind, TKind::Path(s) if s.last().map_or(false, |x| x == "into_dyn") && s.len() == 2) && !matches!(e.res, Some(Callee::Def(_))) => {
