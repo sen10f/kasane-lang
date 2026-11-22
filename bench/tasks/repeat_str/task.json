@@ -2,7 +2,7 @@
   "id": "repeat_str",
   "title": "文字列の繰り返し(String を返す)",
   "spec": "文字列 s を n 回つなげた String を返す。確保に失敗したら core.panic.panic(\"oom\") でよい。n=0 なら空の String。",
-  "decl": "fn bench.repeat_str(s: &str, n: u32) -> alloc.string.String<std.alloc.System>",
+  "decl": "fn bench.repeat_str(s: &str, n: u32) -> std.string.String",
   "level": "hard",
   "order": 19
 }

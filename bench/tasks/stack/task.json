@@ -1,8 +1,8 @@
 {
   "id": "stack",
   "title": "スタック(Vec を持つ型)",
-  "spec": "type bench.Stack を定義する(フィールド items: alloc.vec.Vec<u32, std.alloc.System>)。new は空のスタック、push は末尾に追加して成功なら true(確保に失敗したら false)、pop は末尾を取り出して Some(値)(空なら None)、len は要素数を返す。",
-  "decl": "type bench.Stack: one field items of type alloc.vec.Vec<u32, std.alloc.System>\nfn bench.Stack.new() -> bench.Stack\nfn bench.Stack.push(self: &mut bench.Stack, v: u32) -> bool\nfn bench.Stack.pop(self: &mut bench.Stack) -> Option<u32>\nfn bench.Stack.len(self: &bench.Stack) -> usize",
+  "spec": "type bench.Stack を定義する(フィールド items: std.vec.Vec<u32>)。new は空のスタック、push は末尾に追加して成功なら true(確保に失敗したら false)、pop は末尾を取り出して Some(値)(空なら None)、len は要素数を返す。",
+  "decl": "type bench.Stack: one field items of type std.vec.Vec<u32>\nfn bench.Stack.new() -> bench.Stack\nfn bench.Stack.push(self: &mut bench.Stack, v: u32) -> bool\nfn bench.Stack.pop(self: &mut bench.Stack) -> Option<u32>\nfn bench.Stack.len(self: &bench.Stack) -> usize",
   "level": "hard",
   "order": 17
 }
