@@ -35,7 +35,8 @@ pub(super) fn try_str_for(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
                 .iter()
                 .map(|s| V::S(s.clone()))
                 .collect();
-            let recv = V::Node("Path", vec![V::L(recv_segs), V::Nil], 0, 0);
+            let cid = if let V::Node(_, _, _, i) = &cf[0] { *i } else { 0 };
+            let recv = V::Node("Path", vec![V::L(recv_segs), V::Nil], 0, cid | crate::tast::PREFIX_BIT);
             (recv, m, items(&cf[1]))
         }
         "MCall" => {

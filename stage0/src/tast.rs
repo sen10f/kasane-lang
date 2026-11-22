@@ -21,6 +21,8 @@ pub type ExprId = u32;
 pub type PatId = u32;
 /// 側の表の鍵: (書き手の定義, 節点の式 ID)。
 pub type Key = (DefId, ExprId);
+/// 経路 `E.V.m` の前置 `E.V` だけの解決先を持つ鍵の印 (S5-4)。
+pub const PREFIX_BIT: ExprId = 0x8000_0000;
 
 /// 呼び出しの解決先。
 #[derive(Clone, Debug, PartialEq)]
@@ -204,6 +206,13 @@ pub struct TExpr {
     pub pats: Vec<TPat>,
 }
 
+/// 経路の解決先 (`Program::resolve` の結果の写し)。
+#[derive(Clone, Debug, PartialEq)]
+pub struct PathRes {
+    pub target: crate::program::Target,
+    pub rest: Vec<String>,
+}
+
 /// 節点の形。式の形ごとの場合分けは、ここ (木を組む側) に 1 回だけ置く (設計 2.3 の末尾)。
 #[derive(Clone, Debug, PartialEq)]
 pub enum TKind {
@@ -285,6 +294,8 @@ pub struct TBody {
 #[derive(Clone, Debug, Default)]
 pub struct Tast {
     pub bodies: std::collections::BTreeMap<DefId, TBody>,
+    /// 名前の解決先の表 (S5-4): (書き手の定義, 節点の ID) → 解決先。`Path` 式・`PVariant` / `PPath` / `PStruct` パターン・構造体リテラルの型名の節点。
+    pub pres: HashMap<Key, PathRes>,
     pub stats: Stats,
 }
 
@@ -333,7 +344,7 @@ pub fn build(p: &Program, user: &[DefId], tytab: &std::collections::BTreeMap<(St
         };
         let Some(body) = body else { continue };
         let gn = d.gnames();
-        let mut b = Builder { di, fqn: &d.name, tytab, side, let_tys, scopes: vec![HashMap::new()], gn: &gn, stats: Stats::default(), missing: false };
+        let mut b = Builder { p, pres: vec![], di, fqn: &d.name, tytab, side, let_tys, scopes: vec![HashMap::new()], gn: &gn, stats: Stats::default(), missing: false };
         let mut params = vec![];
         for (n, t) in &d.params {
             b.scopes[0].insert(n.clone(), 0);
@@ -343,6 +354,9 @@ pub fn build(p: &Program, user: &[DefId], tytab: &std::collections::BTreeMap<(St
         let tb = b.expr(body, false);
         let st = b.stats.clone();
         let complete = !b.missing;
+        for (id, r) in std::mem::take(&mut b.pres) {
+            out.pres.insert((di, id), r);
+        }
         out.bodies.insert(di, TBody { def: di, params, ret, body: tb, complete });
         let s = &mut out.stats;
         s.exprs += st.exprs;
@@ -359,6 +373,8 @@ pub fn build(p: &Program, user: &[DefId], tytab: &std::collections::BTreeMap<(St
 }
 
 struct Builder<'a> {
+    p: &'a Program,
+    pres: Vec<(ExprId, PathRes)>,
     di: DefId,
     fqn: &'a str,
     tytab: &'a std::collections::BTreeMap<(String, u32), crate::types::ExprTy>,
@@ -422,6 +438,20 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// 名前の経路 `segs` の解決先を、節点 `id` の鍵で表に残す。
+    fn note_res(&mut self, id: ExprId, segs: &[String]) {
+        if id == 0 {
+            return;
+        }
+        if let Some(r) = self.p.resolve(segs, &self.p.defs[self.di].file) {
+            // `E.V.m(..)` / `C.iter()` の受け手 `E.V` / `C` (下ろしが作る節点の ID = 呼び先の ID + `PREFIX_BIT`) の解決先も残す。
+            if r.rest.len() == 1 {
+                self.pres.push((id | PREFIX_BIT, PathRes { target: r.target.clone(), rest: vec![] }));
+            }
+            self.pres.push((id, PathRes { target: r.target, rest: r.rest }));
+        }
+    }
+
     fn pat(&mut self, v: &V) -> TPat {
         let V::Node(kind, f, ln, id) = v else {
             return TPat { id: 0, kind: "", line: 0, info: None, children: vec![], name: None, path: vec![], lit: vec![] };
@@ -435,9 +465,13 @@ impl<'a> Builder<'a> {
             "PTuple" => children = lv(&f[0]).iter().map(|x| self.pat(x)).collect(),
             "PVariant" => {
                 path = lv(&f[0]).iter().map(sv).collect();
+                self.note_res(*id, &path.clone());
                 children = lv(&f[1]).iter().map(|x| self.pat(x)).collect()
             }
-            "PPath" => path = lv(&f[0]).iter().map(sv).collect(),
+            "PPath" => {
+                path = lv(&f[0]).iter().map(sv).collect();
+                self.note_res(*id, &path.clone());
+            }
             "PLit" => {
                 let lf = fs(&f[0]);
                 let k = lf.first().map(sv).unwrap_or_default();
@@ -464,6 +498,7 @@ impl<'a> Builder<'a> {
             }
             "PStruct" => {
                 path = lv(&f[0]).iter().map(sv).collect();
+                self.note_res(*id, &path.clone());
                 lit = lv(&f[1]).iter().filter(|x| lv(x).get(1).is_some()).map(|x| sv(&lv(x)[0])).collect();
                 children = lv(&f[1]).iter().filter_map(|x| lv(x).get(1)).map(|x| self.pat(x)).collect()
             }
@@ -532,6 +567,7 @@ impl<'a> Builder<'a> {
                         place = Some(pl);
                     }
                 }
+                self.note_res(*id, &segs);
                 TKind::Path(segs)
             }
             "Call" => {
@@ -569,6 +605,8 @@ impl<'a> Builder<'a> {
                 TKind::Binary { op: sv(&f[0]), lhs: Box::new(lhs), rhs: Box::new(rhs) }
             }
             "StructLit" => {
+                let tn: Vec<String> = sv(&f[0]).split('.').map(String::from).collect();
+                self.note_res(*id, &tn);
                 let fields = lv(&f[1]).iter().map(|x| (sv(&lv(x)[0]), self.expr(&lv(x)[1], false))).collect();
                 TKind::StructLit { name: sv(&f[0]), fields }
             }

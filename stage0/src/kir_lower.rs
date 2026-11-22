@@ -140,6 +140,8 @@ pub(super) struct TyIdx {
     tab: BTreeMap<(String, u32), ExprTy>,
     /// 束縛の解決先の表 (設計 3.1、S5-2): (関数の FQN, パターン ID) → (束縛の型, 束縛モード)。TAST の `PatInfo::bind` から作る。
     pub(super) binds: HashMap<(String, u32), (Src, crate::tast::BindMode)>,
+    /// 経路の解決先の表 (S5-4): (関数の FQN, `Path` 節点の式 ID) → 解決先。TAST の `TExpr::pres` から作る。
+    pub(super) paths: HashMap<(String, u32), crate::tast::PathRes>,
 }
 
 impl TyIdx {
@@ -177,6 +179,10 @@ fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> TyIdx {
         crate::s5_meter::set_tast(p, &t);
     }
     let mut tast: HashMap<(String, u32), Src> = HashMap::new();
+    let mut paths: HashMap<(String, u32), crate::tast::PathRes> = HashMap::new();
+    for ((di, id), r) in &t.pres {
+        paths.insert((p.defs[*di].name.clone(), *id), r.clone());
+    }
     for (di, body) in &t.bodies {
         let name = &p.defs[*di].name;
         crate::tast_rules::impl_sig::walk(&body.body, &mut |e| {
@@ -193,7 +199,7 @@ fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> TyIdx {
             }
         }
     }
-    TyIdx { tast, tab: tk.tytab, binds }
+    TyIdx { tast, tab: tk.tytab, binds, paths }
 }
 
 fn is_candidate(d: &Def) -> bool {
@@ -344,6 +350,12 @@ struct Lw<'a> {
 }
 
 impl<'a> Lw<'a> {
+    /// 経路節点 `v` の解決先を TAST から引く (S5-4)。
+    pub(super) fn path_res(&self, v: &V) -> Option<crate::tast::PathRes> {
+        let V::Node(_, _, _, id) = v else { return None };
+        self.tys.paths.get(&(self.def.name.clone(), *id)).cloned()
+    }
+
     fn new(p: &'a Program, tys: &'a TyIdx, aggs: &'a RefCell<agg::AggTab>, def: &'a Def) -> Lw<'a> {
         Lw {
             p,
@@ -559,7 +571,7 @@ impl<'a> Lw<'a> {
     fn lower(mut self) -> LR<Vec<(Func, BTreeSet<String>)>> {
         let d = self.def;
         let body = d.body.as_ref().expect("候補は本体を持つ");
-        let rewritten = ufcs_rewrite(body, self.p, &d.file);
+        let rewritten = ufcs_rewrite(body, self.p, self.tys, &d.name);
         let body = rewritten.as_ref().unwrap_or(body);
         let mut params = vec![];
         for (_, t) in &d.params {
@@ -895,7 +907,7 @@ impl<'a> Lw<'a> {
         if !matches!(nf(e).get(1), Some(V::Nil) | None) {
             return self.err(line, "型引数付きの名前は段階 1 の対象外");
         }
-        let resolved = self.p.resolve(&segs, &self.def.file);
+        let resolved = self.path_res(e);
         if matches!(&resolved, Some(r) if !r.rest.is_empty()) {
             return self.err(line, format!("名前 {} は段階 1 の対象外 (名前の一部だけが解決される)", segs.join(".")));
         }
@@ -914,7 +926,7 @@ impl<'a> Lw<'a> {
     fn const_val(&mut self, ci: usize, e: &V) -> LR<VId> {
         let c = &self.p.defs[ci];
         // `for x in K.split(..)` の `K` は下ろしが作った式 (番号 0) で型表にない。定数の宣言の型を使う。
-        let ty = if nid(e) == 0 {
+        let ty = if nid(e) == 0 || nid(e) & crate::tast::PREFIX_BIT != 0 {
             let src = from_v(&c.ret, &HashSet::new());
             match coll::value_ty(self, &src).or_else(|| self.conv_t(&src)) {
                 Some(t) => t,
@@ -1359,7 +1371,7 @@ impl<'a> Lw<'a> {
                 return Ok(Some(self.emit(rt, Op::Arith { op: aop, mode: Mode::Wrap, a: recv, b })));
             }
         }
-        let resolved = self.p.resolve(&segs, &self.def.file);
+        let resolved = self.path_res(callee);
         // `E.V.m(..)`: 列挙子の値へのメソッド呼び出し。解決は `E.V` で止まり、残りの名前 (`m`) を落とすと別の値になる。
         if let Some(r) = &resolved {
             if let (Tgt::Variant(en, _), false) = (&r.target, r.rest.is_empty()) {
@@ -1413,7 +1425,7 @@ impl<'a> Lw<'a> {
         // `HashMap::new(a)` / `BtreeMap::new(a)` (組み込みの宣言だけ) は、Kasane 版の `new_empty` (本体あり) を呼ぶ。
         if matches!(callee_name.as_str(), "alloc.collections.HashMap.new" | "alloc.collections.BtreeMap.new") {
             let alt: Vec<String> = format!("{}_empty", callee_name).split('.').map(String::from).collect();
-            let Some(Tgt::Fn(di)) = self.p.resolve(&alt, &self.def.file).map(|r| r.target) else {
+            let Some(Tgt::Fn(di)) = self.p.lookup_fqn(&alt.join(".")) else {
                 return self.err(line, format!("{} の Kasane 版がない", callee_name));
             };
             return self.call_def(e, di, args, line);
@@ -2290,13 +2302,13 @@ pub fn dump_hidden(prog: Option<&Program>, user: &[usize]) {
 
 /// 完全修飾のメソッド呼び出し `core.num.i32.checked_shl(x, n)` / `core.slice.get(&a, i)` を、受け手を第 1 引数にしたメソッド呼び出し
 /// (`x.checked_shl(n)` / `a.get(i)`) の木に直す (式 ID は同じ)。直す所がなければ `None`。
-fn ufcs_rewrite(v: &V, p: &crate::program::Program, file: &str) -> Option<V> {
+fn ufcs_rewrite(v: &V, p: &crate::program::Program, tys: &TyIdx, fname: &str) -> Option<V> {
     match v {
         V::Node(n, fs, line, id) => {
             let mut changed = false;
             let mut fs2: Vec<V> = fs
                 .iter()
-                .map(|x| match ufcs_rewrite(x, p, file) {
+                .map(|x| match ufcs_rewrite(x, p, tys, fname) {
                     Some(y) => {
                         changed = true;
                         y
@@ -2310,7 +2322,8 @@ fn ufcs_rewrite(v: &V, p: &crate::program::Program, file: &str) -> Option<V> {
                 let assoc = m.starts_with("from_") || m.starts_with("try_from") || m == "parse" || m == "new" || m == "with_capacity";
                 let ty_ok = (segs.len() == 4 && segs[1] == "num" && Ty::parse(&segs[2]).is_some()) || (segs.len() == 3 && segs[1] == "slice");
                 let args = items(&fs2[1]).to_vec();
-                let bodiless = matches!(p.resolve(&segs, file).map(|r| r.target), Some(Tgt::Sig(di) | Tgt::Fn(di)) if p.defs[di].body.is_none());
+                let pid = if let V::Node(_, _, _, i) = &fs2[0] { *i } else { 0 };
+                let bodiless = matches!(tys.paths.get(&(fname.to_string(), pid)).map(|r| &r.target), Some(Tgt::Sig(di) | Tgt::Fn(di)) if p.defs[*di].body.is_none());
                 // `core.str.find(s, p)` なども受け手を第 1 引数にしたメソッド呼び出しへ (Kasane 版の本体を持つので bodiless は問わない)。
                 let str_ok = segs.len() == 3 && segs[1] == "str" && !assoc && !matches!(m, "from_utf8" | "from_utf8_unchecked");
                 if segs[0] == "core" && ((ty_ok && bodiless) || str_ok) && !assoc && !args.is_empty() {
@@ -2333,7 +2346,7 @@ fn ufcs_rewrite(v: &V, p: &crate::program::Program, file: &str) -> Option<V> {
             let mut changed = false;
             let ys: Vec<V> = xs
                 .iter()
-                .map(|x| match ufcs_rewrite(x, p, file) {
+                .map(|x| match ufcs_rewrite(x, p, tys, fname) {
                     Some(y) => {
                         changed = true;
                         y

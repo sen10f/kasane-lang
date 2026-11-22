@@ -239,7 +239,7 @@ impl<'a> Lw<'a> {
         if segs.len() < 2 || self.lookup(&segs[0]).is_some() {
             return None;
         }
-        let r = self.p.resolve(&segs, &self.def.file)?;
+        let r = self.path_res(&f[0])?;
         let crate::program::Target::Const(ci) = r.target else { return None };
         if r.rest.len() != 1 {
             return None;
@@ -281,7 +281,7 @@ impl<'a> Lw<'a> {
         if segs.len() < 2 || self.lookup(&segs[0]).is_some() {
             return None;
         }
-        let r = self.p.resolve(&segs, &self.def.file)?;
+        let r = self.path_res(&f[0])?;
         let crate::program::Target::Const(ci) = r.target else { return None };
         if r.rest.len() != 1 || !matches!(f.get(2), Some(V::Nil) | None) {
             return None;
