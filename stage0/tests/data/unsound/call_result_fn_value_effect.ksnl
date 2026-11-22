@@ -1,0 +1,27 @@
+type t.H
+    f: fn() -> () uses [io.console] panics never
+end t.H
+
+fn t.boom() -> () uses [] panics may
+    core.panic.panic("b")
+end t.boom
+
+fn t.eff() -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line("x"))
+end t.eff
+
+fn t.go() -> () uses [] panics never
+    t.id(t.eff)()
+end t.go
+
+fn t.id[T](x: T) -> T uses [] panics never
+    x
+end t.id
+
+fn t.main() -> () uses [] panics never
+    t.go()
+end t.main
+
+fn t.pure() -> () uses [] panics never
+    ()
+end t.pure
