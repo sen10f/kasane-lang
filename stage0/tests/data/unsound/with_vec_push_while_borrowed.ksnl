@@ -1,0 +1,37 @@
+enum t.E derive [From]
+    A(alloc.alloc.AllocError)
+    I(std.io.Error)
+end t.E
+
+fn t.go() -> Result<(), t.E> uses [alloc, io.console] panics never
+    with mut v = t.mkv()? close core.mem.drop(v) {
+        if let Some(r) = v.get(0usize) {
+            for i in core.iter.range(0u64, 4096u64) {
+                v.push(i)?
+            }
+            t.p("stale element", *r)?
+        }
+    }
+    Ok(())
+end t.go
+
+fn t.main() -> () uses [alloc, io.console] panics never
+    if t.go().is_err() {
+        core.mem.drop(std.io.print_line("go: Err"))
+    }
+end t.main
+
+fn t.mkv() -> Result<std.vec.Vec<u64>, t.E> uses [alloc] panics never
+    let mut v = std.vec.Vec.new()
+    v.push(4242u64)?
+    Ok(v)
+end t.mkv
+
+fn t.p(label: &str, n: u64) -> Result<(), t.E> uses [alloc, io.console] panics never
+    let mut s = std.string.String.new()
+    s.push_str(label)?
+    s.push_str(" = ")?
+    s.push_display(&n)?
+    std.io.print_line(s.as_str())?
+    Ok(())
+end t.p

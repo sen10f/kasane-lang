@@ -1,0 +1,11 @@
+fn t.go() -> () uses [alloc] panics never
+    with mut s = std.string.String.new() close core.mem.drop(s) {
+        let r = s.as_str()
+        s.clear()
+        core.mem.drop(r.len())
+    }
+end t.go
+
+fn t.main() -> () uses [alloc] panics never
+    t.go()
+end t.main

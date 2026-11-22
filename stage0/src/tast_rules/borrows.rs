@@ -738,6 +738,20 @@ impl<'a> Walker<'a> {
                 self.cfg.cur = exit;
                 vec![]
             }
+            "With" => {
+                // 束縛は普通の局所 (`let`) と同じ。子は [初期化, (後始末), 本体]、実行順は 初期化 → 本体 → 後始末。
+                let srcs = ch.first().map(|x| self.expr(x)).unwrap_or_default();
+                self.scopes.push(HashMap::new());
+                for q in &e.pats {
+                    self.bind_pat(q, &srcs);
+                }
+                let tail = ch.last().filter(|_| ch.len() > 1).map(|x| self.expr(x)).unwrap_or_default();
+                if ch.len() > 2 {
+                    self.expr(&ch[1]);
+                }
+                self.scopes.pop();
+                tail
+            }
             "Break" | "Continue" => {
                 for x in ch {
                     self.expr(x);
