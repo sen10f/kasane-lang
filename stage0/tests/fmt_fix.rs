@@ -1081,3 +1081,34 @@ fn fix_surface_field_shorthand_and_empty_impl_end() {
     let src = "type t.P\n    a: u8\n    b: u8\nend t.P\n\ntrait t.Tr[E: uses, P: panics] pub\n    fn g(self: &Self) -> u8 uses [E] panics P\nend t.Tr\n\nimpl core.cmp.Eq for t.P\nend core.cmp.Eq for t.P\n\nfn t.main() -> t.P uses [] panics never\n    let a = 1u8\n    let b = 2u8\n    t.P { a, b }\nend t.main\n";
     surface_round("sf_short", src, "E0061", "t.P { a: a, b: b }");
 }
+
+// ---- `as` キャスト (E0042) の `ksn fix` ----
+
+/// 幅が広がる `as` キャストは `T.from_src(x)` に直り、`ksn check` が通り、2 回目は無変化。
+#[test]
+fn fix_as_cast_widening() {
+    surface_round(
+        "as_widen",
+        "fn t.main() -> u64 uses [] panics never\n    let x: u8 = 5u8\n    let y: u64 = x as u64\n    y\nend t.main\n",
+        "E0042",
+        "u64.from_u8(x)",
+    );
+}
+
+/// 縮小・符号変更の `as` キャストは `try_from` が `Result` を返すため機械適用不可。
+/// `ksn fix` は何も変えず、E0042 はそのまま残り、`ksn explain E0042` で直し方が示される。
+#[test]
+fn fix_as_cast_narrowing_left_unfixed() {
+    let src = "fn t.main() -> u8 uses [] panics never\n    let x: u64 = 500u64\n    let y: u8 = x as u8\n    y\nend t.main\n";
+    let t = Tmp::new_raw("as_narrow", src);
+    // 修正前には E0042 が出る。
+    let before = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&before.stdout)).iter().any(|c| c == "E0042"), "{}", text(&before.stdout));
+    // `fix` は何も変えない（check は E0042 でまだ失敗する）。
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(1));
+    let fixed = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    assert_eq!(fixed, src, "narrowing as cast must not be rewritten");
+    // E0042 はそのまま。
+    let after = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&after.stdout)).iter().any(|c| c == "E0042"), "{}", text(&after.stdout));
+}

@@ -106,6 +106,37 @@ fn span(file: &str, line: usize, text: &str, from: usize, to: usize, replace: St
     }
 }
 
+/// `line` より上の `let <name>: <Type> =`（または `let mut <name>: <Type> =`）を関数境界まで遡って探し、
+/// `<name>` の型注釈を返す。型注釈が無い（推論任せ）ときは None。
+fn as_cast_src_type(lines: &[String], line: usize, name: &str) -> Option<String> {
+    let mut n = line.saturating_sub(1);
+    while n > 0 {
+        let t = lines.get(n.wrapping_sub(1))?;
+        let trimmed = t.trim_start();
+        if trimmed.starts_with("fn ") || trimmed.starts_with("end ") {
+            break;
+        }
+        let Some(rest) = trimmed.strip_prefix("let ") else {
+            n -= 1;
+            continue;
+        };
+        let Some((name_part, ty_part)) = rest.split_once(':') else {
+            n -= 1;
+            continue;
+        };
+        let var_name = name_part.trim().strip_prefix("mut ").unwrap_or(name_part.trim());
+        if var_name == name {
+            let ty_end = ty_part.find('=').unwrap_or(ty_part.len());
+            let ty = ty_part[..ty_end].trim();
+            if !ty.is_empty() {
+                return Some(ty.to_string());
+            }
+        }
+        n -= 1;
+    }
+    None
+}
+
 /// 診断 (`code`, `msg`, 位置 `line`) に対する修正案。無ければ空。
 pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lines: &[String]) -> Vec<Fix> {
     let get = |n: usize| lines.get(n.wrapping_sub(1)).map(|s| s.as_str());
@@ -320,6 +351,66 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             let Some(c) = re.captures(text) else { return vec![] };
             let new = format!("{}{} = {} {} {}", &c[1], &c[2], &c[2], &c[3], &c[4]);
             vec![span(file, line, text, 0, text.len(), new)]
+        }
+        // `as` キャスト (E0042): `x as T` を `T.from_src(x)` に書き換える（`x` が整数型で、幅が広がる変換に限る）。
+        // `as` は構文エラーなので検査器に届かず、元の型は直上の `let x: Type =` からしか分からない。
+        // 縮小・符号変更は `try_from` が `Result` を返すため機械適用不可。float も `from_*` が無いので直さない。
+        "E0042" => {
+            let Some(text) = get(line) else { return vec![] };
+            let cs: Vec<char> = text.chars().collect();
+            let as_pos = col.wrapping_sub(1);
+            if as_pos + 2 > cs.len() || &cs[as_pos..as_pos + 2] != ['a', 's'] {
+                return vec![];
+            }
+            // `as` の前の空白を飛ばし、さらに前の識別子（ソース変数名）を取り出す（`.` の直後はフィードアクセスなので除く）。
+            let mut s = as_pos;
+            while s > 0 && cs[s - 1] == ' ' {
+                s -= 1;
+            }
+            let var_end = s;
+            while s > 0 && (cs[s - 1].is_alphanumeric() || cs[s - 1] == '_') {
+                s -= 1;
+            }
+            if s == var_end || s > 0 && cs[s - 1] == '.' {
+                return vec![];
+            }
+            let src_var: String = cs[s..var_end].iter().collect();
+            // `as` の後の空白を飛ばし、識別子（目標型）を取り出す。
+            let mut e = as_pos + 2;
+            while e < cs.len() && cs[e] == ' ' {
+                e += 1;
+            }
+            let ty_start = e;
+            while e < cs.len() && (cs[e].is_alphanumeric() || cs[e] == '_' || cs[e] == '.') {
+                e += 1;
+            }
+            if e == ty_start {
+                return vec![];
+            }
+            let target: String = cs[ty_start..e].iter().collect();
+            // ソース変数の型を、直上の `let <var>: <Type> =` から探す（関数境界まで）。
+            let Some(src_ty) = as_cast_src_type(lines, line, &src_var) else {
+                return vec![];
+            };
+            let int = |t: &str| crate::types::INTS.contains(&t);
+            if !int(&src_ty) || !int(&target) {
+                return vec![];
+            }
+            let shape = |t: &str| -> (bool, u32) {
+                let signed = t.starts_with('i');
+                let bits = match &t[1..] {
+                    "size" => 64,
+                    n => n.parse().unwrap_or(64),
+                };
+                (signed, bits)
+            };
+            let ((ws, wb), (gs, gb)) = (shape(&target), shape(&src_ty));
+            let widening = (ws == gs && wb >= gb) || (ws && !gs && wb > gb);
+            if !widening {
+                return vec![];
+            }
+            let replace = format!("{target}.from_{src_ty}({src_var})");
+            vec![span(file, line, text, s, e, replace)]
         }
         // 演算子の片側だけ参照が多い (types.rs の operator_ref_operands): 単純な名前の被演算子に `*` を足す。
         "E2024" => {
