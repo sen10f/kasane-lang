@@ -32,6 +32,7 @@ python bench/run_bench.py --provider nim
 | `--retry-base SEC` | バックオフの基準秒 (既定 2) |
 | `--out-dir DIR` | 結果の出力先 (既定 `bench/results`) |
 | `--docs`, `--repairs`, `--tasks`, `--max-tokens`, `--timeout`, `--tag` | 従来どおり |
+| `--no-tools` | モデルの答案に `ksn fmt` / `ksn fix` を当てずに採点する (道具の効き目の比較用)。既定では当てる。fmt が構文の誤りで失敗したときは、先に fix を当ててからもう一度 fmt する |
 | `--large` | `bench/tasks_large` の大規模課題を対象にする。`verify_reference.py` / `run_bench.py` で指定。既定は `bench/tasks` |
 
 ## API キーの扱い
