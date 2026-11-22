@@ -254,6 +254,118 @@ fn paren_bodies(lines: Vec<String>) -> Vec<String> {
     out
 }
 
+/// 深さ 0 (`()` `[]` `<>` `{}` の外) の空白で区切る。
+fn split_ws(s: &str) -> Option<Vec<String>> {
+    let (mut d, mut cur, mut out) = (0i32, String::new(), vec![]);
+    for c in s.chars() {
+        match c {
+            '(' | '[' | '<' | '{' => d += 1,
+            ')' | ']' | '>' | '}' => d -= 1,
+            _ => {}
+        }
+        if d < 0 {
+            return None;
+        }
+        if c.is_whitespace() && d == 0 {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(c);
+        }
+    }
+    if d != 0 {
+        return None;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    Some(out)
+}
+
+/// 本体の文面 (`f: T g: U` / `A B(T)` / `f: T, g: U`) を 1 項目ずつに分ける。
+fn body_items(kw: &str, body: &str) -> Option<Vec<String>> {
+    let toks = split_ws(body)?;
+    let mut items: Vec<String> = vec![];
+    for t in toks {
+        let t = if t.ends_with(',') { t[..t.len() - 1].to_string() } else { t };
+        let new = if kw == "type" { t.contains(':') } else { true };
+        if new || items.is_empty() {
+            items.push(t);
+        } else {
+            let l = items.last_mut().unwrap();
+            l.push(' ');
+            l.push_str(&t);
+        }
+    }
+    if items.is_empty() || !items.iter().all(|i| if kw == "type" { i.contains(':') && !i.ends_with(':') } else { !i.contains(':') }) {
+        return None;
+    }
+    Some(items)
+}
+
+/// 1 行の定義 (`type N derive [..] pub f: T g: U end N`) と、本体の 1 行に複数の項目 (`a: T, b: U`)、空の `derive []`。
+fn one_line_defs(lines: Vec<String>) -> Vec<String> {
+    let mut out = vec![];
+    let mut in_def: Option<&'static str> = None;
+    for l in lines {
+        let kw = l.split_whitespace().next().unwrap_or("");
+        if indent_of(&l) == 0 && matches!(kw, "type" | "enum") {
+            let kw: &'static str = if kw == "type" { "type" } else { "enum" };
+            let mut line = l.replace(" derive []", "");
+            // 1 行に `end N` まである形
+            let rest = line[kw.len()..].trim_start().to_string();
+            let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect();
+            if let Some(pos) = rest.rfind(&format!(" end {}", name)) {
+                if rest[pos..].trim() == format!("end {}", name) && !name.is_empty() {
+                    let mut mid = rest[name.len()..pos].trim().to_string();
+                    let mut head = format!("{} {}", kw, name);
+                    if mid.starts_with("derive") {
+                        if let (Some(a), Some(b)) = (mid.find('['), mid.find(']')) {
+                            let d = mid[a..=b].to_string();
+                            head = format!("{} derive {}", head, d);
+                            mid = mid[b + 1..].trim().to_string();
+                        }
+                    }
+                    if mid.starts_with("pub ") || mid == "pub" {
+                        head.push_str(" pub");
+                        mid = mid[3..].trim().to_string();
+                    }
+                    if let Some(items) = body_items(kw, &mid) {
+                        out.push(head);
+                        for i in items {
+                            out.push(format!("    {}", i));
+                        }
+                        out.push(format!("end {}", name));
+                        continue;
+                    }
+                }
+            }
+            line = line.trim_end().to_string();
+            in_def = Some(kw);
+            out.push(line);
+            continue;
+        }
+        if indent_of(&l) == 0 && !l.trim().is_empty() {
+            in_def = None;
+        }
+        if let (Some(kw), true) = (in_def, indent_of(&l) == 4) {
+            let t = l.trim();
+            if let Some(parts) = split_top(t, ',') {
+                let parts: Vec<String> = parts.into_iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+                if parts.len() > 1 && parts.iter().all(|p| if kw == "type" { p.contains(':') } else { !p.contains(':') }) {
+                    for p in parts {
+                        out.push(format!("    {}", p));
+                    }
+                    continue;
+                }
+            }
+        }
+        out.push(l);
+    }
+    out
+}
+
 /// E0062: `impl T for Y` の中の `fn name(self: &Self, ..)` を、`fn Y.name(..) .. impls T` の平らな関数にする。
 fn impl_methods(lines: Vec<String>) -> Vec<String> {
     let mut out = vec![];
@@ -356,6 +468,7 @@ pub fn rewrite(text: &str) -> String {
     for _ in 0..50 {
         let mut lines: Vec<String> = cur.split('\n').map(String::from).collect();
         lines = impl_methods(lines);
+        lines = one_line_defs(lines);
         lines = paren_bodies(lines);
         lines = wrapped_literals(lines);
         lines = inline_blocks(lines);

@@ -1024,3 +1024,9 @@ fn fix_surface_impl_methods() {
     let src = "trait t.Tr[E: uses, P: panics] pub\n    fn get(self: &Self) -> u8 uses [E] panics P\nend t.Tr\n\ntype t.S\n    v: u8\nend t.S\n\nimpl t.Tr<[], never> for t.S\n    fn get(self: &Self) -> u8 uses [] panics never\n        self.v\nend t.S\n\nfn t.main() -> u8 uses [] panics never\n    1u8\nend t.main\n";
     surface_round("sf_impl", src, "E0062", "fn t.S.get(self: &t.S) -> u8 uses [] panics never impls t.Tr<[], never>");
 }
+
+#[test]
+fn fix_surface_one_line_definitions_and_empty_derive() {
+    let src = "type t.Item derive [Debug, Clone] pub a: u32 b: u32 end t.Item\n\nenum t.E derive [Debug] pub X(u8) Y end t.E\n\ntype t.C derive [] pub\n    p: u32, q: u32\nend t.C\n\nfn t.main() -> u8 uses [] panics never\n    1u8\nend t.main\n";
+    surface_round("sf_oneline", src, "E0002", "type t.Item derive [Debug, Clone] pub\n    a: u32\n    b: u32\nend t.Item");
+}
