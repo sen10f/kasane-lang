@@ -93,6 +93,62 @@ end t.main
     assert!(text(&o.stdout).contains("E0020"), "{}", text(&o.stdout));
 }
 
+/// `alloc.vec.Vec.new()` / `alloc.string.String.new()`（アロケータ未指定）は E2001 で、
+// メッセージに短い書き方の案内が入り、`ksn fix` で `std.x.Y.new()` に短縮され、その後 check が通る。
+// `from_str`/`with_capacity` 系には短縮形（short_ctor_call で書き換えられるのは `.new` だけ）がないので、
+// 案内文は付かず E2001 だけが出る。
+#[test]
+fn e2001_alloc_ctor_missing_allocator_hint_and_fix() {
+    let cases = [
+        ("alloc.vec.Vec.new()", "alloc.vec.Vec.new(std.alloc.SYSTEM)", "std.vec.Vec.new()", "std.vec.Vec<u8>"),
+        (
+            "alloc.string.String.new()",
+            "alloc.string.String.new(std.alloc.SYSTEM)",
+            "std.string.String.new()",
+            "std.string.String",
+        ),
+    ];
+    for (ctor, pass_ctor, short, ty) in cases {
+        let src = format!(
+            "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let v: {} = {}\n    core.mem.drop(v)\n    Ok(())\nend t.main\n",
+            ty, ctor
+        );
+        let t = Tmp::new_raw(&format!("e2001_alloc_ctor_{}", short), &src);
+        let o = run(&["check", "--json"], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}{}", text(&o.stdout), text(&o.stderr));
+        let out = text(&o.stdout);
+        assert!(out.contains("E2001"), "{}", out);
+        assert!(
+            out.contains(&format!(" write `{}` (default allocator) or pass the allocator: `{}`", short, pass_ctor)),
+            "{}",
+            out
+        );
+        let o = run(&["fix"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+        let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+        assert!(fixed.contains(&format!("= {}", short)), "{}", fixed);
+        let o = run(&["check"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    }
+
+    // 短縮形が無いコンストラクタ（`short_ctor_call` で書き換えられない）は案内文が付かない。
+    for (ctor, _ty) in [
+        ("alloc.string.String.from_str(\"x\")", "Result<std.string.String, alloc.alloc.AllocError>"),
+        ("alloc.vec.Vec.with_capacity(4usize)", "Result<alloc.vec.Vec<u8>, alloc.alloc.AllocError>"),
+    ] {
+        let src = format!(
+            "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    match {} {{\n        Ok(v) => {{ core.mem.drop(v) }}\n        Err(_) => ()\n    }}\n    Ok(())\nend t.main\n",
+            ctor
+        );
+        let t = Tmp::new_raw("e2001_alloc_ctor_noshort", &src);
+        let o = run(&["check", "--json"], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}{}", text(&o.stdout), text(&o.stderr));
+        let out = text(&o.stdout);
+        assert!(out.contains("E2001"), "{}", out);
+        assert!(!out.contains("write `"), "{}", out);
+    }
+}
+
 /// 短縮型名は文字列・ハッシュマップなど他の確保器付き型でも型検査を通る。
 #[test]
 fn short_names_of_other_alloc_types_are_accepted() {

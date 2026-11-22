@@ -199,6 +199,46 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             let b1 = bytes.get(col - 1 + len).map_or(text.len(), |&(b, _)| b);
             vec![span(file, line, text, b0, b1, rep.to_string())]
         }
+        // `alloc.vec.Vec.new()`（アロケータ引数を 0 個で省略）→ `std.vec.Vec.new()` に短縮する修正。
+        // アロケータだけを取るコンストラクタ (`takes 1 argument(s) but 0 given`) に限る。
+        "E2001" => {
+            let re = Regex::new(r"^([^ ]+) takes (\d+) argument\(s\) but (\d+) given").unwrap();
+            let Some(c) = re.captures(msg) else { return vec![] };
+            let want: usize = c[2].parse().unwrap_or(0);
+            let given: usize = c[3].parse().unwrap_or(0);
+            if want != 1 || given != 0 {
+                return vec![];
+            }
+            let callee = &c[1];
+            let Some((std, alloc, _)) = crate::types::ALLOC_ALIASES.iter().find(|(_, a, _)| {
+                callee == &format!("{}.new", a)
+            }) else {
+                return vec![];
+            };
+            let Some(text) = get(line) else { return vec![] };
+            let start = col.wrapping_sub(1);
+            let Some(start_byte) = text.char_indices().nth(start).map(|(b, _)| b) else { return vec![] };
+            let rest = &text[start_byte..];
+            let Some(dot) = rest.find(".new") else { return vec![] };
+            let head = &rest[..dot];
+            // `alloc.x.Y` の後ろに `::<型引数>` がある場合はそれを残す。
+            let (path, targs) = match head.rfind("::<") {
+                Some(p) => (&head[..p], &head[p..]),
+                None => (head, ""),
+            };
+            if path != *alloc {
+                return vec![];
+            }
+            let replaced_scalars = head.chars().count();
+            vec![Fix {
+                file: file.to_string(),
+                line,
+                col,
+                end_line: line,
+                end_col: col + replaced_scalars,
+                replace: format!("{}{}", std, targs),
+            }]
+        }
         "E1101" => {
             let re = Regex::new(r"unresolved name (\S+); did you mean (\S+)\?").unwrap();
             let Some(c) = re.captures(msg) else { return vec![] };

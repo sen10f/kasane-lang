@@ -2515,7 +2515,23 @@ impl<'a> Checker<'a> {
                                 // 組み込み・標準の関数も `.sig` の宣言と引数の数を照らす (利用者の関数と同じ E2001)。
                                 let (want, n) = (self.def(si).params.len(), items(&f[1]).len());
                                 if want != n {
-                                    self.diag("E2001", format!("{} takes {} argument(s) but {} given", self.def(si).name, want, n), di, nline(e));
+                                    let mut msg =
+                                        format!("{} takes {} argument(s) but {} given", self.def(si).name, want, n);
+                                    // デフォルト確保器だけを取るコンストラクタ (`alloc.vec.Vec.new` など) で、
+                                    // アロケータ引数をまったく渡さなかった場合、短い書き方を案内する。
+                                    // `alloc.boxed.Box.new` は値も取るので 0 引数では案内しない
+                                    //（どちらの書き方でも値が足りなくなるため）。
+                                    if n == 0 && want == 1 {
+                                        if let Some((std, alloc, _)) = crate::types::ALLOC_ALIASES.iter().find(
+                                            |(_, a, _)| self.def(si).name == format!("{}.new", a),
+                                        ) {
+                                            msg.push_str(&format!(
+                                                " write `{}.new()` (default allocator) or pass the allocator: `{}.new(std.alloc.SYSTEM)`",
+                                                std, alloc
+                                            ));
+                                        }
+                                    }
+                                    self.diag("E2001", msg, di, nline(e));
                                 }
                             }
                         }
