@@ -1488,6 +1488,21 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
 /// `ksn fix`: `check` の修正案をすべて適用し、`fmt` で整える。
 fn cmd_fix() -> i32 {
     let mut total = 0usize;
+    // 前段: 構文として読めなくても当てられる、Rust 風の表面の形の文面の書き換え (surface_fix.rs)。
+    if let (Ok(root), true) = (find_root(), std::env::var("KSN_FIX_ONLY").is_err()) {
+        let mut files: Vec<PathBuf> = vec![];
+        collect_fmt_files(&Path::new(&root).join("src"), &mut files);
+        files.retain(|f| f.extension().map_or(false, |e| e == "ksnl"));
+        for f in files {
+            if let Ok(text) = fs::read_to_string(&f) {
+                let new = crate::surface_fix::rewrite(&text);
+                if new != text {
+                    fs::write(&f, new).unwrap();
+                    total += 1;
+                }
+            }
+        }
+    }
     for _ in 0..200 {
         let mut rep = Report::new(false);
         let root = match find_root() {
