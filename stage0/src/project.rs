@@ -1053,13 +1053,15 @@ pub fn stdlib_dir() -> PathBuf {
             if c2.is_dir() {
                 return c2;
             }
-            let mut d = Some(dir);
-            while let Some(x) = d {
-                let c = x.join("spec").join("stdlib");
-                if c.is_dir() {
-                    return c;
+            // 開発の配置だけ: <root>/stage0/target/<profile>/ksn か <root>/stage0/target/<triple>/<profile>/ksn の <root>。
+            for up in [3, 4] {
+                if let Some(root) = dir.ancestors().nth(up) {
+                    let ok = dir.ancestors().nth(up - 2).is_some_and(|t| t.ends_with("stage0/target"));
+                    let c = root.join("spec").join("stdlib");
+                    if ok && c.is_dir() {
+                        return c;
+                    }
                 }
-                d = x.parent();
             }
         }
     }
