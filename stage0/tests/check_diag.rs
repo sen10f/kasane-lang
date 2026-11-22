@@ -5072,6 +5072,55 @@ fn derive_clone_on_string_or_vec_field_is_e2036() {
     }
 }
 
+/// ユーザー定義の型の欄がトレイトを実装していない E2036 では、同じトレイトをその型に derive するよう案内する。
+#[test]
+fn e2036_user_type_field_hint_adds_derive() {
+    let src = "enum bench.Mode pub\n    Fast\n    Slow\nend bench.Mode\n\ntype bench.Product derive [Clone] pub\n    mode: bench.Mode\nend bench.Product\n\nfn bench.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend bench.main\n";
+    let t = Tmp::new("e2036_user_field_hint", src);
+    let o = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(o.contains("E2036"), "{}", o);
+    assert!(o.contains("derive [Clone] on bench.Product: the field type bench.Mode does not implement core.ops.Clone"), "{}", o);
+    assert!(o.contains("add `derive [Clone]` to `bench.Mode`"), "{}", o);
+}
+
+/// `String` / `Vec` の欄を持つ型の `derive [Clone]` は `Clone` を外して `try_clone` (確保が失敗しうる) を使うよう案内する。
+#[test]
+fn e2036_std_type_field_hint_try_clone() {
+    for (tag, field, api) in [("string", "alloc.string.String<std.alloc.System>", "try_clone"), ("vec", "alloc.vec.Vec<u8, std.alloc.System>", "try_clone")] {
+        let src = format!("type t.P derive [Clone] pub\n    x: {}\nend t.P\n\nfn t.main() -> () uses [] panics never\nend t.main\n", field);
+        let t = Tmp::new(&format!("e2036_std_hint_{}", tag), &src);
+        let o = text(&run(&["check", "--json"], &t.0).stdout);
+        assert!(o.contains("E2036"), "{}", o);
+        assert!(o.contains(&format!("derive [Clone] on t.P: the field type {} does not implement core.ops.Clone", field.split('<').next().unwrap())), "{}", o);
+        assert!(o.contains("remove `Clone` from the derive list"), "{}", o);
+        assert!(o.contains(api), "{}", o);
+    }
+}
+
+/// `HashMap` の欄を持つ型の `derive [Clone]` は `Clone` を外すよう案内するが、`try_clone` は名乗らない（`HashMap` には複製 API が無い）。
+#[test]
+fn e2036_std_type_field_hint_hashmap_no_clone_api() {
+    let src = "type t.Q derive [Clone] pub\n    m: alloc.collections.HashMap<u32, u32, std.alloc.System>\nend t.Q\n\nfn t.main() -> () uses [] panics never\nend t.main\n";
+    let t = Tmp::new("e2036_std_hint_hashmap", src);
+    let o = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(o.contains("E2036"), "{}", o);
+    assert!(o.contains("derive [Clone] on t.Q: the field type alloc.collections.HashMap does not implement core.ops.Clone"), "{}", o);
+    assert!(o.contains("remove `Clone` from the derive list"), "{}", o);
+    assert!(!o.contains("try_clone"), "{}", o);
+}
+
+/// E2021 で列挙型の `_` / 束縛腕には、列挙すべきバリアント名を案内する。
+#[test]
+fn e2021_enum_hint_lists_variants() {
+    let src = "enum bench.Tok pub\n    Num(u32)\n    Plus\nend bench.Tok\n\nfn bench.main() -> Result<(), std.io.Error> uses [] panics never\n    let e = bench.Tok.Plus\n    match e {\n        x => 0u8\n    }\n    Ok(())\nend bench.main\n";
+    let t = Tmp::new("e2021_enum_hint", src);
+    let o = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(o.contains("E2021"), "{}", o);
+    assert!(o.contains("`_` / binding patterns cannot match an enum; list all variants:"), "{}", o);
+    assert!(o.contains("bench.Tok.Num(..)"), "{}", o);
+    assert!(o.contains("bench.Tok.Plus"), "{}", o);
+}
+
 /// 4.1 (0.10.2): 入力位置に 2 回以上現れて入力どうしを結ぶライフタイムは、出力に現れなくても明示できる。
 /// 1 回だけ現れる宣言は省略が正規形で E3021 (`'ab` は `'a` と別の名前として数える)。
 #[test]

@@ -1291,7 +1291,20 @@ impl<'a> Checker<'a> {
                         }
                     }
                     for n in missing {
-                        self.diag("E2036", format!("derive [{}] on {}: the field type {} does not implement {}", dv, d.name, n, tr), i, 0);
+                        let mut msg = format!("derive [{}] on {}: the field type {} does not implement {}", dv, d.name, n, tr);
+                        if user_types.contains(&n) {
+                            // ユーザー定義の型の欄: 同じトレイトを derive すれば直る。
+                            msg.push_str(&format!(" — add `derive [{}]` to `{}`", dv, n));
+                        } else if dv == "Clone" {
+                            // String / Vec / HashMap など確保を行う標準ライブラリの型は Clone ではない。
+                            // 複製は確保が失敗しうる `try_clone` で行う (型による。HashMap には無い)。
+                            if self.implements(&n, "alloc.alloc.TryClone") {
+                                msg.push_str(" — remove `Clone` from the derive list; copy with `try_clone` (fallible) instead");
+                            } else {
+                                msg.push_str(" — remove `Clone` from the derive list");
+                            }
+                        }
+                        self.diag("E2036", msg, i, 0);
                     }
                 }
             }
