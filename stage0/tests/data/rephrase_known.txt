@@ -1,6 +1,8 @@
 # 言い換えで通ってしまう (hole) / 診断コードが変わる (changed) 台帳。REPHRASE_UPDATE=1 で再生成。
 changed block closure_in_hashmap_used_later#1
 changed block closure_in_vec_used_later#1
+changed closure sec2_closure_capture_helper_store#0
+changed closure sec2_closure_capture_mem_replace_store#0
 changed fold flow_ref_field_borrow_inherits_loan#0
 changed fold hunt_a05_andmut_via_shared_ref_01#0
 changed fold hunt_a05_fnmut_call_through_shared_ref_01#0

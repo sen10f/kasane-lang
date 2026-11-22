@@ -105,6 +105,7 @@ fp iflet2match e01_method_chain_borrow_ok#0
 fp iflet2match match_temp_subject_ok#0
 fp iflet2match p26#0
 fp iflet2match ref_destructure_binding_modes#0
+fp iflet2match sec2_closure_two_captures_owned_store#0
 fp match2iflet arm_consumed#0
 fp match2iflet arm_returned#0
 fp match2iflet generic_linear_consumed#0
