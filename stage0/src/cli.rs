@@ -712,25 +712,53 @@ fn eval_const_inits(prog: Program, user: &[usize]) -> (Program, Vec<crate::check
         for &i in idx.iter().filter(|i| !skip.contains(i)) {
             // 上限は初期化式ごとに数える (1 つの式が他の式の予算を使い切らないように)。
             it.steps = 0;
-            if let Err(crate::value::Ctl::Panic(m)) = it.const_value(i) {
-                let d = &rc.defs[i];
-                let msg = if m == crate::interp::STEP_LIMIT_MSG {
-                    format!("evaluating the initializer of `{}` did not finish: it exceeded {} evaluation steps, the limit of constant evaluation (4.1)", d.name, CONST_STEP_LIMIT)
-                } else if m == crate::interp::CONST_CYCLE_MSG {
-                    format!("the initializer of `{}` is cyclic: it depends on itself through a function call (4.1: a `const` / `static` cannot depend on itself)", d.name)
-                } else if m == crate::interp::CONST_DEPTH_MSG {
-                    format!("evaluating the initializer of `{}` nests the constants too deeply (4.1)", d.name)
-                } else {
-                    format!("evaluating the initializer of `{}` panics: {} (4.1: a panic during const evaluation is a compile error)", d.name, m)
-                };
-                out.push(crate::check::Diag {
-                    file: d.file.clone(),
-                    code: "E4024".into(),
-                    fqn: d.name.clone(),
-                    line: d.line,
-                    col: 0,
-                    msg,
-                });
+            match it.const_value(i) {
+                Err(crate::value::Ctl::Panic(m)) => {
+                    let d = &rc.defs[i];
+                    let msg = if m == crate::interp::STEP_LIMIT_MSG {
+                        format!("evaluating the initializer of `{}` did not finish: it exceeded {} evaluation steps, the limit of constant evaluation (4.1)", d.name, CONST_STEP_LIMIT)
+                    } else if m == crate::interp::CONST_CYCLE_MSG {
+                        format!("the initializer of `{}` is cyclic: it depends on itself through a function call (4.1: a `const` / `static` cannot depend on itself)", d.name)
+                    } else if m == crate::interp::CONST_DEPTH_MSG {
+                        format!("evaluating the initializer of `{}` nests the constants too deeply (4.1)", d.name)
+                    } else {
+                        format!("evaluating the initializer of `{}` panics: {} (4.1: a panic during const evaluation is a compile error)", d.name, m)
+                    };
+                    out.push(crate::check::Diag {
+                        file: d.file.clone(),
+                        code: "E4024".into(),
+                        fqn: d.name.clone(),
+                        line: d.line,
+                        col: 0,
+                        msg,
+                    });
+                }
+                Err(crate::value::Ctl::Exit(c)) => {
+                    // `stack overflow` など、評価が中断された (panic 以外の Exit)。初期化式が
+                    // 正しく評価できなかったので E4024 を出し、rc=0 で通さない (P3)。
+                    let d = &rc.defs[i];
+                    out.push(crate::check::Diag {
+                        file: d.file.clone(),
+                        code: "E4024".into(),
+                        fqn: d.name.clone(),
+                        line: d.line,
+                        col: 0,
+                        msg: format!("evaluating the initializer of `{}` did not finish: the constant evaluation was interrupted (exit {}) (4.1)", d.name, c),
+                    });
+                }
+                Err(_) => {
+                    // `break` / `continue` / `return` など、初期化式の中で評価が完了しなかった中断。
+                    let d = &rc.defs[i];
+                    out.push(crate::check::Diag {
+                        file: d.file.clone(),
+                        code: "E4024".into(),
+                        fqn: d.name.clone(),
+                        line: d.line,
+                        col: 0,
+                        msg: format!("evaluating the initializer of `{}` did not finish (4.1)", d.name),
+                    });
+                }
+                Ok(_) => {}
             }
         }
     }

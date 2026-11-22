@@ -746,6 +746,16 @@ impl Interp {
                     }
                     _ => 0,
                 };
+                // 繰り返しの要素数も評価ステップとして数える。
+                // これを数えなければ `[0u64; 4_000_000_000]` のような巨大な配列が上限をすり抜けて
+                // 巨大なメモリを確保し、E4024 のステップ上限の意味がなくなる。
+                if let Some(l) = self.step_limit {
+                    let new_steps = self.steps.saturating_add(n as u64);
+                    if new_steps > l {
+                        return Err(Ctl::Panic(STEP_LIMIT_MSG.into()));
+                    }
+                    self.steps = new_steps;
+                }
                 let out: Vec<Val> = (0..n).map(|_| self.cp(v.clone())).collect();
                 Ok(Val::Arr(new_list(out)))
             }
