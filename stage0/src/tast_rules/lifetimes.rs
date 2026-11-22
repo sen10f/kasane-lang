@@ -319,6 +319,8 @@ struct W<'a> {
     arm_vars: Vec<String>,
     /// 閉包の本体を解く W だけ: 参照で取り込んだ名前。
     cap_names: HashSet<String>,
+    /// 閉包の本体を解く W だけ: 取り込み A から得た借用を取り込み B の指す先へ書いた組 (A, B, 行)。
+    cap_stores: Vec<(String, String, usize)>,
 }
 
 /// 閉包を擬似の関数として見たときの署名と、外側の局所 (本体の中の局所と区別する)。
@@ -480,7 +482,7 @@ impl<'a> W<'a> {
             }
         });
         let gn = p.defs[di].gnames();
-        W { p, di, env: Env::default(), scopes: vec![vec![]], vals: HashMap::new(), uses, loops: vec![], ret, diags: vec![], seen: HashSet::new(), gn, cl: None, arm_vars: vec![], cap_names: HashSet::new() }
+        W { p, di, env: Env::default(), scopes: vec![vec![]], vals: HashMap::new(), uses, loops: vec![], ret, diags: vec![], seen: HashSet::new(), gn, cl: None, arm_vars: vec![], cap_names: HashSet::new(), cap_stores: vec![] }
     }
 
     fn diag(&mut self, code: &str, msg: String, line: usize) {
@@ -707,6 +709,22 @@ impl<'a> W<'a> {
         }
         for dg in std::mem::take(&mut sub.diags) {
             self.diag(&dg.code, dg.msg, dg.line);
+        }
+        // 取り込み A の借用を取り込み B の先へ書く: 外側で `B = ..A の借用..` と書いたのと同じに扱う (M7)。
+        // 取り込みごとの領域は外側の場所の領域なので、A が B の指す先より先に尽きれば、外側の通常の規則 (E3030 / E3010) が止める。
+        for (a, b, line) in std::mem::take(&mut sub.cap_stores) {
+            let Some(av) = self.env.vars.get(&a).cloned() else { continue };
+            let mut add = av.val.flat();
+            add.add(&Val::loan(Loan::Local(a.clone(), av.decl), line));
+            if let Some(bv) = self.env.vars.get_mut(&b) {
+                if bv.carries {
+                    bv.val.add(&add.with_line(line));
+                }
+            }
+            if let (Some(bv), true) = (self.env.vars.get(&b).cloned(), av.depth > self.env.vars.get(&b).map_or(0, |x| x.depth)) {
+                let _ = bv;
+                self.diag("E3030", format!("stores a reference to the captured local variable `{}` into captured `{}`, which outlives it", a, b), line);
+            }
         }
     }
 
@@ -1497,6 +1515,9 @@ impl<'a> W<'a> {
         // 閉包の本体: 取り込んだ場所 (引数でない名前) へ、呼び出しごとに新しい領域の引数の借用を入れる (M1)。
         if let Some(cl) = &self.cl {
             let is_p = |n: &str| cl.params.iter().any(|(x, _)| x == n);
+            if self.cap_names.contains(pn) && self.cap_names.contains(qn) && pn != qn {
+                self.cap_stores.push((qn.to_string(), pn.to_string(), line));
+            }
             if is_p(qn) && !is_p(pn) {
                 self.diag("E3030", format!("stores a reference derived from closure argument `{}` (a new lifetime per call) into captured `{}`, which outlives the call", qn, pn), line);
             }
