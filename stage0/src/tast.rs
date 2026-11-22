@@ -202,6 +202,15 @@ pub struct TExpr {
     pub etargs: ETargs,
     /// `For` / `With` だけ: 束縛するパターン (`Other` の子には入らない)。
     pub pats: Vec<TPat>,
+    /// `Path` 節点だけ: 名前の解決先 (S5-4。下ろしが `p.resolve` を引き直さずにここを読む)。
+    pub pres: Option<PathRes>,
+}
+
+/// 経路の解決先 (`Program::resolve` の結果の写し)。
+#[derive(Clone, Debug, PartialEq)]
+pub struct PathRes {
+    pub target: crate::program::Target,
+    pub rest: Vec<String>,
 }
 
 /// 節点の形。式の形ごとの場合分けは、ここ (木を組む側) に 1 回だけ置く (設計 2.3 の末尾)。
@@ -333,7 +342,7 @@ pub fn build(p: &Program, user: &[DefId], tytab: &std::collections::BTreeMap<(St
         };
         let Some(body) = body else { continue };
         let gn = d.gnames();
-        let mut b = Builder { di, fqn: &d.name, tytab, side, let_tys, scopes: vec![HashMap::new()], gn: &gn, stats: Stats::default(), missing: false };
+        let mut b = Builder { p, di, fqn: &d.name, tytab, side, let_tys, scopes: vec![HashMap::new()], gn: &gn, stats: Stats::default(), missing: false };
         let mut params = vec![];
         for (n, t) in &d.params {
             b.scopes[0].insert(n.clone(), 0);
@@ -359,6 +368,7 @@ pub fn build(p: &Program, user: &[DefId], tytab: &std::collections::BTreeMap<(St
 }
 
 struct Builder<'a> {
+    p: &'a Program,
     di: DefId,
     fqn: &'a str,
     tytab: &'a std::collections::BTreeMap<(String, u32), crate::types::ExprTy>,
@@ -513,11 +523,12 @@ impl<'a> Builder<'a> {
     /// 式の節点を組む。`callee` は `Call` の第 1 子 (被覆の数え方だけが違う)。
     fn expr(&mut self, v: &V, callee: bool) -> TExpr {
         let V::Node(kind, f, ln, id) = v else {
-            return TExpr { id: 0, line: 0, kind: TKind::Other { name: "?", children: vec![] }, ty: Ty::Unknown, place: None, conv: vec![], res: None, targs: vec![], tf: None, etargs: ETargs::default(), pats: vec![] };
+            return TExpr { id: 0, line: 0, kind: TKind::Other { name: "?", children: vec![] }, ty: Ty::Unknown, place: None, conv: vec![], res: None, targs: vec![], tf: None, etargs: ETargs::default(), pats: vec![], pres: None };
         };
         let key = (self.di, *id);
         let mut place = None;
         let mut pats = vec![];
+        let mut pres = None;
         let tkind = match *kind {
             "Lit" => TKind::Lit(f.iter().map(sv).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(":")),
             "Path" => {
@@ -532,6 +543,7 @@ impl<'a> Builder<'a> {
                         place = Some(pl);
                     }
                 }
+                pres = self.p.resolve(&segs, &self.p.defs[self.di].file).map(|r| PathRes { target: r.target, rest: r.rest });
                 TKind::Path(segs)
             }
             "Call" => {
@@ -696,7 +708,7 @@ impl<'a> Builder<'a> {
             _ => vec![],
         })
         .unwrap_or_default());
-        TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs, tf, etargs, pats }
+        TExpr { id: *id, line: crate::parser::unpack_pos(*ln).0, kind: tkind, ty, place, conv, res, targs, tf, etargs, pats, pres }
     }
 }
 

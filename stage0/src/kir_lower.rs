@@ -140,6 +140,8 @@ pub(super) struct TyIdx {
     tab: BTreeMap<(String, u32), ExprTy>,
     /// 束縛の解決先の表 (設計 3.1、S5-2): (関数の FQN, パターン ID) → (束縛の型, 束縛モード)。TAST の `PatInfo::bind` から作る。
     pub(super) binds: HashMap<(String, u32), (Src, crate::tast::BindMode)>,
+    /// 経路の解決先の表 (S5-4): (関数の FQN, `Path` 節点の式 ID) → 解決先。TAST の `TExpr::pres` から作る。
+    pub(super) paths: HashMap<(String, u32), crate::tast::PathRes>,
 }
 
 impl TyIdx {
@@ -177,11 +179,15 @@ fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> TyIdx {
         crate::s5_meter::set_tast(p, &t);
     }
     let mut tast: HashMap<(String, u32), Src> = HashMap::new();
+    let mut paths: HashMap<(String, u32), crate::tast::PathRes> = HashMap::new();
     for (di, body) in &t.bodies {
         let name = &p.defs[*di].name;
         crate::tast_rules::impl_sig::walk(&body.body, &mut |e| {
             if e.id != 0 && e.ty != Src::Unknown {
                 tast.entry((name.clone(), e.id)).or_insert_with(|| e.ty.clone());
+            }
+            if let (true, Some(r)) = (e.id != 0, &e.pres) {
+                paths.insert((name.clone(), e.id), r.clone());
             }
         });
     }
@@ -193,7 +199,7 @@ fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> TyIdx {
             }
         }
     }
-    TyIdx { tast, tab: tk.tytab, binds }
+    TyIdx { tast, tab: tk.tytab, binds, paths }
 }
 
 fn is_candidate(d: &Def) -> bool {
@@ -344,6 +350,18 @@ struct Lw<'a> {
 }
 
 impl<'a> Lw<'a> {
+    /// 経路節点 `v` の解決先を TAST から引く (S5-4)。
+    pub(super) fn path_res(&self, v: &V) -> Option<crate::tast::PathRes> {
+        let V::Node(_, f, _, id) = v else { return None };
+        // 式 ID 0 = 下ろしが作った節点 (`E.V.m()` の受け手 `E.V`)。TAST に節点が無いので、ここだけ引き直す (S5-4 の残り)。
+        if *id == 0 {
+            let segs = strs(&nf(v)[0]);
+            let _ = f;
+            return self.p.resolve(&segs, &self.def.file).map(|r| crate::tast::PathRes { target: r.target, rest: r.rest });
+        }
+        self.tys.paths.get(&(self.def.name.clone(), *id)).cloned()
+    }
+
     fn new(p: &'a Program, tys: &'a TyIdx, aggs: &'a RefCell<agg::AggTab>, def: &'a Def) -> Lw<'a> {
         Lw {
             p,
@@ -895,7 +913,7 @@ impl<'a> Lw<'a> {
         if !matches!(nf(e).get(1), Some(V::Nil) | None) {
             return self.err(line, "型引数付きの名前は段階 1 の対象外");
         }
-        let resolved = self.p.resolve(&segs, &self.def.file);
+        let resolved = self.path_res(e);
         if matches!(&resolved, Some(r) if !r.rest.is_empty()) {
             return self.err(line, format!("名前 {} は段階 1 の対象外 (名前の一部だけが解決される)", segs.join(".")));
         }
@@ -1359,7 +1377,7 @@ impl<'a> Lw<'a> {
                 return Ok(Some(self.emit(rt, Op::Arith { op: aop, mode: Mode::Wrap, a: recv, b })));
             }
         }
-        let resolved = self.p.resolve(&segs, &self.def.file);
+        let resolved = self.path_res(callee);
         // `E.V.m(..)`: 列挙子の値へのメソッド呼び出し。解決は `E.V` で止まり、残りの名前 (`m`) を落とすと別の値になる。
         if let Some(r) = &resolved {
             if let (Tgt::Variant(en, _), false) = (&r.target, r.rest.is_empty()) {
