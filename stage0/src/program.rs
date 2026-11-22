@@ -817,6 +817,11 @@ impl Program {
     pub fn resolve(&self, segs: &[String], file: &str) -> Option<Resolved> {
         crate::s5_meter::count_active("resolve");
         let segs = Self::expand_alias_segs(segs);
+        if segs.is_empty() {
+            // `t.id(f)()` のように、呼び出しの結果を呼ぶ式は名前の道を持たない。
+            // 範囲外の添字で panic せず、未解決（None）として普通の診断の道へ渡す。
+            return None;
+        }
         if segs.len() == 1 {
             let pre = match segs[0].as_str() {
                 "Some" => Some(("Option", "Some")),
