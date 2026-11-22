@@ -376,6 +376,9 @@ fn one_line_defs(lines: Vec<String>) -> Vec<String> {
                             mid = mid[b + 1..].trim().to_string();
                         }
                     }
+                    if let Some(m) = mid.strip_prefix(':') {
+                        mid = m.trim().to_string();
+                    }
                     if mid.starts_with("pub ") || mid == "pub" {
                         head.push_str(" pub");
                         mid = mid[3..].trim().to_string();
@@ -474,7 +477,7 @@ fn impl_methods(lines: Vec<String>) -> Vec<String> {
                 let full = if name.contains('.') { name.clone() } else { format!("{}.{}", ty, name) };
                 cur = Some(full.clone());
                 buf.push(format!("fn {}{} impls {}", full, rest.trim_end(), tr));
-            } else if cur.as_ref().map_or(false, |c| indent_of(b) == 4 && b.trim() == format!("end {}", c)) {
+            } else if cur.as_ref().map_or(false, |c| indent_of(b) == 4 && (b.trim() == format!("end {}", c) || Some(b.trim()) == c.rsplit('.').next().map(|n| format!("end {}", n)).as_deref())) {
                 continue;
             } else if cur.is_some() {
                 let s = if b.len() >= 4 { &b[4..] } else { "" };
@@ -486,6 +489,14 @@ fn impl_methods(lines: Vec<String>) -> Vec<String> {
             out.pop();
         }
         i = j + 1;
+        // 重ねて書かれた閉じ (`end Y` の後の `end impl ..` など) も取る。
+        while i < lines.len() && indent_of(&lines[i]) == 0 && lines[i].trim_start().starts_with("end ") && !lines[i].trim().starts_with("end fn") {
+            let nxt = i + 1 < lines.len() && lines[i].contains(" for ") || lines[i].trim_start().starts_with("end impl ");
+            if !nxt {
+                break;
+            }
+            i += 1;
+        }
     }
     out
 }
@@ -682,11 +693,77 @@ fn ensure_end(lines: Vec<String>) -> Vec<String> {
     out
 }
 
+/// 定義の見出しの末尾の `:` (`trait N[..]:` / `type N:`)、`' static` (アポストロフィの後の空白)。
+fn header_colon(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|l| {
+            let l = if l.contains("' static") && !l.contains('"') { l.replace("' static", "'static") } else { l };
+            let kw = l.split_whitespace().next().unwrap_or("").to_string();
+            let kw = kw.as_str();
+            if indent_of(&l) == 0 && matches!(kw, "trait" | "type" | "enum") && l.trim_end().ends_with(':') {
+                return l.trim_end().trim_end_matches(':').to_string();
+            }
+            l
+        })
+        .collect()
+}
+
+/// E0061: 構造体リテラル・パターンの欄の省略形 `T { x, y }` → `T { x: x, y: y }` (同じ行に閉じる形だけ)。
+fn field_shorthand(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|l| {
+            let t = l.trim_start();
+            let first = t.split_whitespace().next().unwrap_or("");
+            if t.starts_with("//") || matches!(first, "if" | "while" | "for" | "match" | "else" | "loop" | "with" | "unsafe" | "fn" | "impl" | "trait" | "type" | "enum") || t.starts_with('}') {
+                return l;
+            }
+            let cs: Vec<char> = l.chars().collect();
+            let Some((a, b)) = first_brace(&cs) else { return l };
+            let before: String = cs[..a].iter().collect();
+            let bt = before.trim_end();
+            if !last_ident(bt).chars().next().map_or(false, |c| c.is_uppercase()) || before.contains(" if ") || before.contains(" match ") || before.contains(" while ") {
+                return l;
+            }
+            let inner: String = cs[a + 1..b].iter().collect();
+            let Some(items) = split_top(&inner, ',') else { return l };
+            let items: Vec<String> = items.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let bare = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_') && s.chars().next().map_or(false, |c| c.is_lowercase() || c == '_');
+            if items.is_empty() || !items.iter().any(|s| bare(s)) || !items.iter().all(|s| bare(s) || (s.contains(':') && !s.starts_with("..") && !s.contains(" if "))) {
+                return l;
+            }
+            let new: Vec<String> = items.iter().map(|s| if bare(s) { format!("{}: {}", s, s) } else { s.clone() }).collect();
+            let rest: String = cs[b + 1..].iter().collect();
+            format!("{}{{ {} }}{}", before, new.join(", "), rest)
+        })
+        .collect()
+}
+
+/// 空の `impl T for Y` に付いた `end T for Y` を外す。
+fn empty_impl_end(lines: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for l in lines {
+        if indent_of(&l) == 0 && l.starts_with("end ") && l.contains(" for ") {
+            if let Some(prev) = out.iter().rev().find(|x| !x.trim().is_empty()) {
+                if prev.starts_with("impl ") && prev[5..].trim() == l[4..].trim() {
+                    continue;
+                }
+            }
+        }
+        out.push(l);
+    }
+    out
+}
+
 /// 生の文面にすべての表面の書き換えを、動かなくなるまで当てる。
 pub fn rewrite(text: &str) -> String {
     let mut cur = text.to_string();
     for _ in 0..50 {
         let mut lines: Vec<String> = cur.split('\n').map(String::from).collect();
+        lines = header_colon(lines);
+        lines = empty_impl_end(lines);
+        lines = field_shorthand(lines);
         lines = brace_defs(lines);
         lines = bare_end(lines);
         lines = trait_header_colon(lines);
