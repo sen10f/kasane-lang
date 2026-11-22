@@ -167,6 +167,9 @@ def run_ksn_retry(args, cwd, tries=3):
     return rc, out
 
 
+NO_TOOLS = False
+
+
 def evaluate_full(code, tests):
     """コード + テストをパッケージにして採点する。(段階, 出力, コード一覧, 正規形か) を返す。
     段階: pass / check / test / infra (ksn がシグナルで落ち続けた: モデルの失敗ではない)。
@@ -182,24 +185,37 @@ def evaluate_full(code, tests):
         src = code.rstrip(nl) + nl
         path = os.path.join(td, 'src', 'bench.ksnl')
         open(path, 'w', newline='\n', encoding='utf-8').write(src)
+        # 0. `--no-tools`: fmt も fix も当てず、モデルの答案をそのまま検査する (道具の効き目を測る比較用)。
+        if NO_TOOLS:
+            after = src
         # 1. モデルのコードを先に `ksn fmt` に通す。前後で変わったか = 最初から正規形だったか。
-        rc, out = run_ksn_retry(['fmt'], td)
+        #    構文の誤りで fmt が失敗したら、先に `ksn fix` (Rust 風の表面の形の書き直し) を当ててからもう一度 fmt
+        #    (利用者の決定 2026-11-22)。それでも失敗するなら check の段の失敗として返す。
+        rc, out = (0, '') if NO_TOOLS else run_ksn_retry(['fmt'], td)
         if rc < 0:
             return 'infra', f'ksn fmt がシグナル {-rc} で落ちた', [], None
+        if rc != 0:
+            rc, out = run_ksn_retry(['fix'], td)
+            if rc < 0:
+                return 'infra', f'ksn fix がシグナル {-rc} で落ちた', [], None
+            rc, out = run_ksn_retry(['fmt'], td)
+            if rc < 0:
+                return 'infra', f'ksn fmt がシグナル {-rc} で落ちた', [], None
         if rc != 0:  # 構文の誤り。今と同じ形で check の段の失敗として返す。
             return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out), False
         # 1b. 続けて `ksn fix` (機械的に直せる診断: 効果の宣言の書き足し・冗長な注釈・get から get_str など) を当て、
         #     もう一度 `ksn fmt`。LLM の作業の流れでは道具が fmt と fix を先に当てる (利用者の決定 2026-11-20、
         #     Kasane の考え方そのもの)。fix が直せないもの (rc != 0) は次の check がそのまま知らせる。
-        rc, out = run_ksn_retry(['fix'], td)
-        if rc < 0:
-            return 'infra', f'ksn fix がシグナル {-rc} で落ちた', [], None
-        rc, out = run_ksn_retry(['fmt'], td)
-        if rc < 0:
-            return 'infra', f'ksn fmt がシグナル {-rc} で落ちた', [], None
-        if rc != 0:
-            return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out), False
-        after = open(path, encoding='utf-8').read()
+        if not NO_TOOLS:
+            rc, out = run_ksn_retry(['fix'], td)
+            if rc < 0:
+                return 'infra', f'ksn fix がシグナル {-rc} で落ちた', [], None
+            rc, out = run_ksn_retry(['fmt'], td)
+            if rc < 0:
+                return 'infra', f'ksn fmt がシグナル {-rc} で落ちた', [], None
+            if rc != 0:
+                return 'check', out.strip(), re.findall(r'\b(E\d{4})\b', out), False
+            after = open(path, encoding='utf-8').read()
         # 正規形か = fmt と fix を当てる前後でファイルが変わらなかったか (道具の前の、モデルの答案そのものの質)。
         canonical = after == src
         src = after
@@ -335,8 +351,11 @@ def main():
     ap.add_argument('--max-tokens', type=int, default=12000)
     ap.add_argument('--timeout', type=int, default=900)
     ap.add_argument('--tag', default='')
+    ap.add_argument('--no-tools', action='store_true', help='fmt / fix を当てずに採点する (道具の効き目の比較用)')
     ap.add_argument('--large', action='store_true', help='bench/tasks_large の大規模課題を対象にする')
     a = ap.parse_args()
+    global NO_TOOLS
+    NO_TOOLS = a.no_tools
     sys.stdout.reconfigure(encoding='utf-8')
 
     # 大規模課題か通常課題かで TASKS を切り替える
