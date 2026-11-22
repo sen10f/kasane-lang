@@ -620,12 +620,18 @@ impl<'a> Walker<'a> {
 
     fn closure(&mut self, e: &TExpr, params: &[TBinding], captures: &[Capture], body: &TExpr) -> Vec<Src> {
         let mut srcs = vec![];
+        // 参照の取り込みごとの (束縛の鍵, 型が借用を持てるか, 作った貸し出し)。
+        let mut by_ref: Vec<(String, bool, Vec<Src>)> = vec![];
         for c in captures {
             let Some((id, _)) = self.lookup(&c.name) else { continue };
             let root = key(&c.name, id);
             self.cfg.emit(Ev::Use(root.clone()));
             match c.kind.as_str() {
-                "&" | "&mut" => srcs.extend(self.borrow(&root, &[], c.kind == "&mut", e.line)),
+                "&" | "&mut" => {
+                    let b = self.borrow(&root, &[], c.kind == "&mut", e.line);
+                    srcs.extend(b.iter().cloned());
+                    by_ref.push((root.clone(), c.kind == "&mut" && holds(self.p, &c.ty), b));
+                }
                 _ => {
                     let k = if not_copy(self.p, &c.ty) { Acc::Move } else { Acc::Read };
                     self.acc(&root, &[], k, e.line);
@@ -633,6 +639,23 @@ impl<'a> Walker<'a> {
                         srcs.push(Src::Var(root));
                     }
                 }
+            }
+        }
+        // 取り込みごとの領域は外側の場所の領域。本体は取り込み A から得た借用を、`&mut` で取り込んだ B の先へ書き得る (M7): 外側で
+        // `B = ..A の借用..` と書いたのと同じに、B が A の貸し出し (と A が持つ貸し出し) を持つとして扱う。
+        for (bi, (broot, bholds, _)) in by_ref.iter().enumerate() {
+            if !*bholds {
+                continue;
+            }
+            let mut add: Vec<Src> = vec![];
+            for (ai, (aroot, _, aloans)) in by_ref.iter().enumerate() {
+                if ai != bi {
+                    add.extend(aloans.iter().cloned());
+                    add.push(Src::Var(aroot.clone()));
+                }
+            }
+            if !add.is_empty() {
+                self.bind(broot.clone(), add, false);
             }
         }
         // 本体は別のグラフで検査する (外側の束縛は見える)。
