@@ -986,3 +986,41 @@ fn fmt_drops_import_made_unused_by_short_names_only() {
     let out2 = fs::read_to_string(t2.0.join("src/t.ksnl")).unwrap();
     assert!(out2.contains("import alloc.vec"), "{out2}");
 }
+
+// ---- Rust 風の表面の形を、構文として読めないファイルでも `ksn fix` が正規形に直す (surface_fix.rs) ----
+
+fn surface_round(name: &str, src: &str, gone: &str, want: &str) {
+    let t = Tmp::new_raw(name, src);
+    run(&["fix"], &t.0);
+    let f = t.0.join("src").join("t.ksnl");
+    let once = fs::read_to_string(&f).unwrap();
+    assert!(once.contains(want), "{}: want {:?} in\n{}", name, want, once);
+    let o = run(&["check", "--json"], &t.0);
+    let got = text(&o.stdout);
+    assert!(!got.contains(gone), "{}: {} remains\n{}", name, gone, got);
+    run(&["fix"], &t.0);
+    assert_eq!(fs::read_to_string(&f).unwrap(), once, "{}: second fix changed the file", name);
+}
+
+#[test]
+fn fix_surface_enum_header_body() {
+    surface_round("sf_enum", "enum t.E: A(u8), B, C\nend t.E\n\nfn t.main() -> u8 uses [] panics never\n    1u8\nend t.main\n", "E0047", "    A(u8)\n    B\n    C\n");
+}
+
+#[test]
+fn fix_surface_empty_arm_and_inline_block() {
+    let src = "fn t.main() -> u8 uses [] panics never\n    let mut x = 1u8\n    match Some(2u8) {\n        Some(_) => { x = 3u8; x = 4u8; }\n        None => {}\n    }\n    x\nend t.main\n";
+    surface_round("sf_block", src, "E0056", "x = 3u8\n        x = 4u8\n");
+}
+
+#[test]
+fn fix_surface_wrapped_struct_literal() {
+    let src = "type t.P\n    a: u8\n    b: u8\nend t.P\n\nfn t.main() -> t.P uses [] panics never\n    t.P {\n        a: 1u8,\n        b: 2u8\n    }\nend t.main\n";
+    surface_round("sf_lit", src, "E0053", "t.P { a: 1u8, b: 2u8 }");
+}
+
+#[test]
+fn fix_surface_impl_methods() {
+    let src = "trait t.Tr[E: uses, P: panics] pub\n    fn get(self: &Self) -> u8 uses [E] panics P\nend t.Tr\n\ntype t.S\n    v: u8\nend t.S\n\nimpl t.Tr<[], never> for t.S\n    fn get(self: &Self) -> u8 uses [] panics never\n        self.v\nend t.S\n\nfn t.main() -> u8 uses [] panics never\n    1u8\nend t.main\n";
+    surface_round("sf_impl", src, "E0062", "fn t.S.get(self: &t.S) -> u8 uses [] panics never impls t.Tr<[], never>");
+}

@@ -1,5 +1,6 @@
 #[path = "native/lld.rs"]
 mod lld;
+mod surface_fix;
 mod debug;
 mod derive_drop;
 mod derive_json;
