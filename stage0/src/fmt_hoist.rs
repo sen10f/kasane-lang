@@ -115,7 +115,7 @@ fn hoistable(a: &str) -> bool {
     let cs: Vec<char> = a.chars().collect();
     // 受け手が呼び出しの結果 (`)` の直後の `.name(`) で、借りるメソッドなら括り出さない。
     for i in 0..cs.len() {
-        if cs[i] == '.' && i > 0 && cs[i - 1] == ')' {
+        if cs[i] == '.' && i > 0 && (cs[i - 1] == ')' || cs[i - 1] == '?') {
             let name: String = cs[i + 1..].iter().take_while(|c| is_id(**c)).collect();
             if BORROWING.contains(&name.as_str()) {
                 return false;
@@ -130,6 +130,12 @@ fn hoistable(a: &str) -> bool {
         }
     }
     true
+}
+
+/// 比較を含む式 (結果は bool で、中の借用は式の中で終わる) は、`&` を含んでも括り出せる。
+fn hoistable_bool(a: &str) -> bool {
+    let cmp = [" == ", " != ", " < ", " > ", " <= ", " >= "].iter().any(|c| a.contains(c));
+    if cmp { hoistable(&a.replace("&mut ", "").replace('&', "")) } else { hoistable(a) }
 }
 
 /// 引数の式から名前を作る: 末尾が呼び出しなら `<直前の語>_<名前>` か `<名前>`、それ以外は `val`。
@@ -162,7 +168,8 @@ fn base_name(a: &str) -> String {
                 } else {
                     String::new()
                 };
-                base = if prev.is_empty() || prev.chars().next().unwrap().is_ascii_digit() { name } else { format!("{}_{}", prev, name) };
+                let no_args = o + 1 < cs.len() && cs[o + 1] == ')';
+                base = if no_args || prev.is_empty() || prev.chars().next().unwrap().is_ascii_digit() { name } else { format!("{}_{}", prev, name) };
             }
         }
     }
@@ -195,7 +202,12 @@ fn unique(base: &str, used: &HashSet<String>) -> String {
 
 /// 1 行を縮める。縮められなければ None。`used` はその関数で使われている名前。
 fn hoist_line(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
-    hoist_cond(line, used).or_else(|| hoist_call(line, used)).or_else(|| hoist_chain(line, used))
+    hoist_cond(line, used)
+        .or_else(|| hoist_call(line, used))
+        .or_else(|| hoist_struct(line, used))
+        .or_else(|| hoist_array(line, used))
+        .or_else(|| hoist_match(line, used))
+        .or_else(|| hoist_chain(line, used))
 }
 
 fn hoist_call(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
@@ -208,19 +220,7 @@ fn hoist_call(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
     if HEADER_KW.contains(&first) {
         return None;
     }
-    // 右辺の前の部分 (`let [mut] name[: T] = ` / `path = ` / なし)。
-    let (head, rhs) = if first == "let" {
-        let p = t.find(" = ")?;
-        (&t[..p + 3], &t[p + 3..])
-    } else if let Some(p) = t.find(" = ") {
-        let lhs = &t[..p];
-        if !trivial(lhs) || RESERVED.contains(&lhs) {
-            return None;
-        }
-        (&t[..p + 3], &t[p + 3..])
-    } else {
-        ("", t)
-    };
+    let (head, rhs) = split_head(t)?;
     // 単純な `let` / 代入 / 式だけ。`let ... else`・if・match などはここに来ない (callee の形で落とす)。
     let rcs: Vec<char> = rhs.chars().collect();
     let mut k = 0;
@@ -244,33 +244,53 @@ fn hoist_call(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
         return None;
     }
     let callee_last = callee.rsplit('.').next().unwrap().to_string();
+    let items: Vec<(String, String)> = args.iter().map(|a| (String::new(), a.clone())).collect();
+    let namer = |_: &str, a: &str| {
+        let b = base_name(a);
+        if b == "val" { format!("{}_arg", callee_last) } else { b }
+    };
+    hoist_items(indent, head, &format!("{}(", callee), &items, ")", &rest, used, &namer)
+}
+
+/// 並び (`f(a, b)` の引数・構造体リテラルの欄・配列の要素) の先頭から、括り出せる式を順に `let` にして行を縮める。
+/// どれも書いてある順に、全体より先に評価されるので、先頭から括り出せば順は変わらない。
+/// `items` は (欄の `name: ` か空, 式)。`namer` は (欄, 式) から名前の元を作る。
+fn hoist_items(
+    indent: usize,
+    head: &str,
+    pre: &str,
+    items: &[(String, String)],
+    post: &str,
+    rest: &str,
+    used: &HashSet<String>,
+    namer: &dyn Fn(&str, &str) -> String,
+) -> Option<Vec<String>> {
+    let pad = " ".repeat(indent);
     let mut used = used.clone();
-    let mut new_args: Vec<String> = args.clone();
+    let mut new_items: Vec<String> = items.iter().map(|(l, e)| format!("{}{}", l, e)).collect();
     let mut lets: Vec<String> = vec![];
-    for i in 0..args.len() {
-        let a = &args[i];
+    for i in 0..items.len() {
+        let (label, a) = (&items[i].0, &items[i].1);
         if trivial(a) {
             continue;
         }
         if !hoistable(a) {
             return None;
         }
-        // 先に評価される引数を飛び越えるので、飛び越えた引数と同じ名前を触る式は括り出さない。
+        // 先に評価される項目を飛び越えるので、飛び越えた項目と同じ名前を触る式は括り出さない。
         let ai = idents(a);
         for j in 0..i {
-            if new_args[j] == args[j] && !idents(&args[j]).is_disjoint(&ai) {
-                return None;
-            }
-            if new_args[j] == args[j] && args[j].starts_with('&') {
+            let unhoisted = new_items[j] == format!("{}{}", items[j].0, items[j].1);
+            if unhoisted && (!idents(&items[j].1).is_disjoint(&ai) || items[j].1.starts_with('&')) {
                 return None;
             }
         }
-        let base = if base_name(a) == "val" { format!("{}_arg", callee_last) } else { base_name(a) };
+        let base = namer(label, a);
         let name = unique(&base, &used);
         used.insert(name.clone());
-        lets.push(format!("{}let {} = {}", " ".repeat(indent), name, a));
-        new_args[i] = name;
-        let rebuilt = format!("{}{}{}({}){}", " ".repeat(indent), head, callee, new_args.join(", "), rest);
+        lets.push(format!("{}let {} = {}", pad, name, a));
+        new_items[i] = format!("{}{}", label, name);
+        let rebuilt = format!("{}{}{}{}{}{}", pad, head, pre, new_items.join(", "), post, rest);
         if rebuilt.chars().count() <= 100 && lets.iter().all(|l| l.chars().count() <= 100) {
             lets.push(rebuilt);
             return Some(lets);
@@ -279,10 +299,126 @@ fn hoist_call(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
     None
 }
 
+/// 構造体リテラル `let x = Path { f: a, g: b }` の欄の値。欄は書いた順に、構築より先に評価される。
+fn hoist_struct(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
+    let indent = line.len() - line.trim_start().len();
+    let t = &line[indent..];
+    if t.contains('"') || t.contains("=>") || t.contains(';') {
+        return None;
+    }
+    let first = t.split(|c| c == ' ' || c == '(' || c == '[').next().unwrap_or("");
+    if HEADER_KW.contains(&first) {
+        return None;
+    }
+    let (head, rhs) = split_head(t)?;
+    let open = rhs.find(" { ")?;
+    let path = &rhs[..open];
+    let last = path.rsplit('.').next()?;
+    if path.is_empty() || !path.chars().all(|c| is_id(c) || c == '.') || !last.chars().next()?.is_ascii_uppercase() {
+        return None;
+    }
+    let inner = rhs[open + 3..].strip_suffix(" }")?;
+    if inner.contains('{') || inner.contains('}') {
+        return None;
+    }
+    let fields = split_args(&inner.chars().collect::<Vec<_>>())?;
+    let mut items = vec![];
+    for f in &fields {
+        let (n, e) = f.split_once(": ")?;
+        if !n.chars().all(is_id) {
+            return None;
+        }
+        items.push((format!("{}: ", n), e.trim().to_string()));
+    }
+    let namer = |label: &str, _: &str| format!("{}_v", label.trim_end_matches(": "));
+    hoist_items(indent, head, &format!("{} {{ ", path), &items, " }", "", used, &namer)
+}
+
+/// 配列リテラル `[a, b, c]` の要素 (書いた順に評価される)。
+fn hoist_array(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
+    let indent = line.len() - line.trim_start().len();
+    let t = &line[indent..];
+    if t.contains('"') || t.contains("=>") || t.contains(';') || t.contains('{') {
+        return None;
+    }
+    let (head, rhs) = split_head(t)?;
+    if head.is_empty() {
+        return None;
+    }
+    let inner = rhs.strip_prefix('[')?.strip_suffix(']')?;
+    let elems = split_args(&inner.chars().collect::<Vec<_>>())?;
+    let items: Vec<(String, String)> = elems.into_iter().map(|e| (String::new(), e)).collect();
+    let namer = |_: &str, a: &str| {
+        let b = base_name(a);
+        if b == "val" { "elem".to_string() } else { b }
+    };
+    hoist_items(indent, head, "[", &items, "]", "", used, &namer)
+}
+
+/// `match f(..) {` / `let p = match f(..) {` の被検査式を `let` に括り出す (どの腕よりも先に評価される)。
+/// 借りる結果 (一時値の借用) になりそうな式は括り出さない。
+fn hoist_match(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
+    let indent = line.len() - line.trim_start().len();
+    let t = &line[indent..];
+    if t.contains('"') || t.contains("=>") {
+        return None;
+    }
+    let first = t.split(|c| c == ' ' || c == '(' || c == '[').next().unwrap_or("");
+    let (head, rhs) = if first == "match" { ("", t) } else if first == "let" { split_head(t)? } else { return None };
+    let scrut = rhs.strip_prefix("match ")?.strip_suffix(" {")?;
+    if scrut.contains('{') || scrut.contains('}') || trivial(scrut) {
+        return None;
+    }
+    // 被検査式そのものが入らなければ、その呼び出しの引数を括り出す (引数も先に評価される)。
+    if let Some(v) = hoist_match_whole(indent, head, scrut, used) {
+        return Some(v);
+    }
+    let rcs: Vec<char> = scrut.chars().collect();
+    let mut k = 0;
+    while k < rcs.len() && (is_id(rcs[k]) || rcs[k] == '.') {
+        k += 1;
+    }
+    if k == 0 || k >= rcs.len() || rcs[k] != '(' || matching(&rcs, k)? != rcs.len() - 1 {
+        return None;
+    }
+    let callee: String = rcs[..k].iter().collect();
+    let args = split_args(&rcs[k + 1..rcs.len() - 1])?;
+    let items: Vec<(String, String)> = args.iter().map(|a| (String::new(), a.clone())).collect();
+    let last = callee.rsplit('.').next().unwrap().to_string();
+    let namer = |_: &str, a: &str| {
+        let b = base_name(a);
+        if b == "val" { format!("{}_arg", last) } else { b }
+    };
+    hoist_items(indent, &format!("{}match ", head), &format!("{}(", callee), &items, ")", " {", used, &namer)
+}
+
+fn hoist_match_whole(indent: usize, head: &str, scrut: &str, used: &HashSet<String>) -> Option<Vec<String>> {
+    let relaxed = scrut.replace("::<", "<");
+    if !hoistable(&relaxed) {
+        return None;
+    }
+    // 型引数の `<` が `a < b` の比較とは別物であることだけ確かめる: 括り出す式は呼び出しで終わる (`f::<T>(..)`)。
+    if !scrut.ends_with(')') || scrut.contains("||") || scrut.contains("&&") {
+        return None;
+    }
+    let pad = " ".repeat(indent);
+    let b = base_name(scrut);
+    let name = unique(&if b == "val" { "matched".to_string() } else { b }, used);
+    let l1 = format!("{}let {} = {}", pad, name, scrut);
+    let l2 = format!("{}{}match {} {{", pad, head, name);
+    if l1.chars().count() <= 100 && l2.chars().count() <= 100 {
+        Some(vec![l1, l2])
+    } else {
+        None
+    }
+}
+
 /// 先頭の `let [mut] x[: T] = ` / `path = ` を分ける (残りは右辺)。
 fn split_head(t: &str) -> Option<(&str, &str)> {
     let first = t.split(|c| c == ' ' || c == '(' || c == '[').next().unwrap_or("");
-    if first == "let" {
+    if first == "return" {
+        Some(("return ", &t[7..]))
+    } else if first == "let" {
         let p = t.find(" = ")?;
         Some((&t[..p + 3], &t[p + 3..]))
     } else if let Some(p) = t.find(" = ") {
@@ -331,7 +467,8 @@ fn split_op<'a>(e: &'a str, op: &str) -> Option<Vec<&'a str>> {
                 i += 2;
                 continue;
             }
-            if two == other {
+            // `&&` は `||` より強いので、`||` で分けるときは項の中の `&&` を許す。`&&` で分けるときの `||` は許さない。
+            if two == other && op == "&&" {
                 return None;
             }
         }
@@ -363,7 +500,7 @@ fn hoist_cond(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
     }
     let op = if split_op(body, "||").is_some() { "||" } else { "&&" };
     let ops = split_op(body, op)?;
-    if ops.iter().any(|o| o.is_empty() || !hoistable(o)) {
+    if ops.iter().any(|o| o.is_empty() || !hoistable_bool(o)) {
         return None;
     }
     let pad = " ".repeat(indent);
@@ -476,12 +613,59 @@ fn hoist_chain(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
     }
 }
 
+/// 文字列リテラルを同じ長さの名前 (`Q<番号>___`) に置き換える (括弧と区切りの走査で文字列の中を見ないため)。
+/// 戻りは (置き換えた行, 元の文字列の並び)。長さが足りなくて名前にできない文字列があれば None。
+fn mask_strings(line: &str) -> Option<(String, Vec<String>)> {
+    let cs: Vec<char> = line.chars().collect();
+    let (mut out, mut strs) = (String::new(), vec![]);
+    let mut i = 0;
+    while i < cs.len() {
+        if cs[i] == '\'' && i + 2 < cs.len() && cs[i + 1] != '\\' && cs[i + 2] == '\'' {
+            out.extend(&cs[i..i + 3]);
+            i += 3;
+        } else if cs[i] == '"' {
+            let mut j = i + 1;
+            while j < cs.len() && cs[j] != '"' {
+                j += if cs[j] == '\\' { 2 } else { 1 };
+            }
+            if j >= cs.len() {
+                return None;
+            }
+            let len = j - i + 1;
+            let name = format!("Q{}", strs.len());
+            if name.len() > len {
+                return None;
+            }
+            out.push_str(&name);
+            out.extend(std::iter::repeat('_').take(len - name.len()));
+            strs.push(cs[i..=j].iter().collect());
+            i = j + 1;
+        } else {
+            out.push(cs[i]);
+            i += 1;
+        }
+    }
+    Some((out, strs))
+}
+
+fn unmask(line: &str, strs: &[String]) -> String {
+    let mut out = line.to_string();
+    for (k, s) in strs.iter().enumerate().rev() {
+        let name = format!("Q{}", k);
+        // `Q<k>` の後ろの `_` の並びごと戻す (元の長さ - 名前の長さ だけ)。
+        let pad = s.chars().count() - name.len();
+        out = out.replace(&format!("{}{}", name, "_".repeat(pad)), s);
+    }
+    out
+}
+
 pub fn hoist_long_lines(lines: &mut Vec<String>) -> bool {
     let mut changed = false;
     let mut i = 0;
     while i < lines.len() {
         let l = lines[i].clone();
-        if l.chars().count() > 100 && l.is_ascii() {
+        let masked = if l.chars().count() > 100 { mask_strings(&l) } else { None };
+        if let Some((l, strs)) = masked.filter(|(m, _)| m.is_ascii()) {
             let prev_ok = (0..i).rev().map(|j| lines[j].trim_end()).find(|s| !s.is_empty()).map_or(true, |p| {
                 !(p.ends_with(['(', '[', ',', '=', '+', '-', '*', '/', '.', '&', '|', '<', '>']) || p.ends_with("=>"))
             });
@@ -490,6 +674,7 @@ pub fn hoist_long_lines(lines: &mut Vec<String>) -> bool {
                 let stop = (i..lines.len()).find(|&j| lines[j].starts_with("end ")).unwrap_or(lines.len() - 1);
                 let used = idents(&lines[start..=stop].join("\n"));
                 if let Some(new) = hoist_line(&l, &used) {
+                    let new: Vec<String> = new.iter().map(|x| unmask(x, &strs)).collect();
                     let n = new.len();
                     changed = true;
                     lines.splice(i..=i, new);
@@ -503,3 +688,93 @@ pub fn hoist_long_lines(lines: &mut Vec<String>) -> bool {
     changed
 }
 
+
+/// E0055 の文面に足す、括り出す式の名指し (`ksn fmt` が自分で縮められなかった行用)。
+/// 括弧・欄の中のいちばん長い項目 (引数・欄・要素)、なければ `||` / `&&` の連なりの左の部分を挙げる。
+pub fn suggest(line: &str) -> Option<String> {
+    let t = line.trim_start();
+    if t.starts_with("//") || !line.is_ascii() {
+        return None;
+    }
+    let shorten = |e: &str| -> String {
+        let e = e.trim();
+        if e.chars().count() > 60 { format!("{}...", e.chars().take(57).collect::<String>()) } else { e.to_string() }
+    };
+    for op in ["||", "&&"] {
+        let body = t.strip_prefix("if ").and_then(|r| r.strip_suffix(" {")).or_else(|| t.split_once(" = ").map(|x| x.1)).unwrap_or(t);
+        if let Some(ops) = split_op(body, op) {
+            if ops.len() >= 3 {
+                let k = ops.len() / 2;
+                return Some(format!("bind the left part `{}` to a `let` before this line", shorten(&ops[..k].join(&format!(" {} ", op)))));
+            }
+        }
+    }
+    let cs: Vec<char> = t.chars().collect();
+    let (mut depth, mut cur, mut best): (i32, String, String) = (0, String::new(), String::new());
+    for &c in &cs {
+        match c {
+            '(' | '[' | '{' => {
+                depth += 1;
+                if depth == 1 {
+                    cur.clear();
+                    continue;
+                }
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if cur.trim().chars().count() > best.chars().count() {
+                        best = cur.trim().to_string();
+                    }
+                    cur.clear();
+                    continue;
+                }
+            }
+            ',' if depth == 1 => {
+                if cur.trim().chars().count() > best.chars().count() {
+                    best = cur.trim().to_string();
+                }
+                cur.clear();
+                continue;
+            }
+            _ => {}
+        }
+        if depth >= 1 {
+            cur.push(c);
+        }
+    }
+    let best = best.split_once(": ").map_or(best.clone(), |(n, e)| if n.chars().all(is_id) { e.to_string() } else { best.clone() });
+    if best.chars().count() >= 12 && !trivial(&best) {
+        return Some(format!("bind `{}` to a `let` before this line", shorten(&best)));
+    }
+    None
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn h(l: &str) -> Option<Vec<String>> {
+        let mut lines = vec![l.to_string()];
+        let used = HashSet::new();
+        let (m, strs) = mask_strings(l)?;
+        let _ = &mut lines;
+        hoist_line(&m, &used).map(|v| v.iter().map(|x| unmask(x, &strs)).collect())
+    }
+
+    #[test]
+    fn return_with_a_call_argument() {
+        let l = "                    return bench.http.render_json(400u16, request.keep_alive(), body.as_str().as_bytes())";
+        let r = h(l);
+        eprintln!("{:?}", r);
+        assert!(r.is_some());
+    }
+
+    #[test]
+    fn mixed_or_and_chain() {
+        let l = "                    let is_alpha_num = (*b >= b'A' && *b <= b'Z') || (*b >= b'a' && *b <= b'z') || *b >= b'0' && *b <= b'9'";
+        eprintln!("{:?}", h(l));
+        assert!(h(l).is_some());
+    }
+}

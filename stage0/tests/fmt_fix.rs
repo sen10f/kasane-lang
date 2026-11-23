@@ -478,8 +478,8 @@ fn long_struct_literal_line_is_e0055_at_the_original_position() {
     assert!(!codes(&cout).iter().any(|c| c == "E0002"), "{cout}");
 }
 
-/// fmt が直せないもの (100 文字を超える行) が残るとき、ファイルは書き換えず、診断は元のファイルの
-/// 行:列を指す。`t.zz` (長い行) を `t.aa` より後に置くと、整形すると `t.aa` が先頭に来て行が動る。
+/// fmt が直せないもの (100 文字を超える行) が残っても、直せる所 (並べ替えなど) は書き、残った長い行を
+/// 書いた後のファイルの行:列で報せる (2026-11-23)。
 #[test]
 fn fmt_does_not_rewrite_and_points_at_the_original_line_when_a_long_line_remains() {
     let src = "fn t.zz() -> t.Point uses [] panics never\n    t.Point { aaaaaaaaaaaaaaaaaaaaaaaa: 1u32, bbbbbbbbbbbbbbbbbbbbbbbb: 2u32, cccccccccccccccccccccccc: 3u32 }\nend t.zz\n\n\
@@ -489,11 +489,11 @@ fn fmt_does_not_rewrite_and_points_at_the_original_line_when_a_long_line_remains
     let o = run(&["fmt"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     let out = text(&o.stdout);
-    assert!(out.contains("src/t.ksnl:2:101: E0055"), "{out}");
-    // 並べ替えたあとの行 (6 行目) ではなく、元の 2 行目を指す。ファイルも元のまま。
-    assert!(!out.contains("src/t.ksnl:6:"), "{out}");
-    assert!(!out.contains("reformatted"), "{out}");
-    assert_eq!(fs::read_to_string(t.0.join("src/t.ksnl")).unwrap(), src);
+    let written = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    let ln = written.lines().position(|l| l.contains("aaaaaaaaaaaaaaaaaaaaaaaa: 1u32")).unwrap() + 1;
+    assert!(out.contains("reformatted"), "{out}");
+    assert!(out.contains(&format!("src/t.ksnl:{}:101: E0055", ln)), "{out}");
+    assert!(written.find("fn t.aa()").unwrap() < written.find("fn t.zz()").unwrap(), "{written}");
 }
 
 /// match の腕の末尾の `,` は `ksn fmt` が消す (G53 の `;` と同じ)。腕の本体の中の呼び出し・
@@ -1149,7 +1149,7 @@ fn fmt_keeps_e0055_when_hoisting_would_change_meaning() {
     let long = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
     for (k, line) in [
         format!("    let r = if c > 1u32 {{ u32.from_usize({}.len()) }} else {{ 0u32 }}", long),
-        format!("    let r = c < 1u32 || c > 2u32 && c < 3u32 || c > 4u32 && c < 5u32 || c < 6u32 && c > 7u32 || c == 800000000u32"),
+        format!("    while c < 1u32 || c > 2u32 || c < 3u32 || c > 4u32 || c < 5u32 || c < 6u32 || c > 7u32 || c == 800000000u32 {{"),
         format!("    let r = t.f(|v| v.wrapping_add({}u32), c, c)", "1000000000000000000000000000000000000000000000000000000000000000000000"),
         format!("    let r = t.f(&c.wrapping_add({}), c)", "1u32).wrapping_add(c.wrapping_mul(7777777u32).wrapping_add(88888888u32).wrapping_add(99999999u32"),
         format!("    let r = t.f(make().as_str().len(), {}, c)", "c.wrapping_add(1000000000u32).wrapping_add(1000000000u32).wrapping_add(1000000000u32).wrapping_add(7u32)"),
@@ -1162,7 +1162,8 @@ fn fmt_keeps_e0055_when_hoisting_would_change_meaning() {
         let before = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
         run(&["fmt"], &t.0);
         let after = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
-        assert_eq!(before, after, "case {} must stay unchanged", k);
+        // 括り出されない (数の桁区切りなどの整形は入ってよい)。
+        assert_eq!(before.matches("let ").count(), after.matches("let ").count(), "case {} must not gain a let:\n{}", k, after);
         assert!(text(&run(&["check"], &t.0).stdout).contains("E0055"), "case {} keeps E0055", k);
     }
 }
@@ -1179,4 +1180,33 @@ fn fmt_hoists_leading_call_arguments_in_order() {
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
     let o = run(&["run"], &t.0);
     assert_eq!(text(&o.stdout).trim(), "3000000000004", "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn fmt_hoists_struct_fields_array_elements_and_match_scrutinee() {
+    let src = "type t.P\n    first: u64\n    second: u64\n    third: u64\nend t.P\n\n\
+               fn t.mk(a: u64) -> Option<u64> uses [] panics never\n    Some(a)\nend t.mk\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    let big = 1000000000000u64\n\
+               \x20   let p = t.P { first: big.wrapping_add(2000000000000u64), second: big.wrapping_mul(3000000007u64), third: big.wrapping_sub(1u64) }\n\
+               \x20   let arr = [big.wrapping_add(2000000000000u64), big.wrapping_mul(3000000007u64), big.wrapping_sub(1u64), big.wrapping_sub(9u64)]\n\
+               \x20   let got_value_of_the_match = match t.mk(big.wrapping_add(p.first).wrapping_add(p.second).wrapping_add(p.third)) {\n        Some(v) => v\n        None => 0u64\n    }\n\
+               \x20   core.mem.drop(got_value_of_the_match)\n    core.mem.drop(arr)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("hoist_shapes", src);
+    let o = run(&["fmt"], &t.0);
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.lines().all(|l| l.chars().count() <= 100), "{}\n{}", fixed, text(&o.stdout));
+    assert!(fixed.contains("let first_v = ") && fixed.contains("let t_mk = ") && fixed.contains("match t_mk {"), "{}", fixed);
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{}", fixed);
+}
+
+#[test]
+fn fmt_fixes_what_it_can_and_keeps_e0055_for_the_rest() {
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    let c = 7u32\n    let ok = c < 1u32 || c > 2048u32 || c == 5u32 || c == 6u32 || c == 9u32 || c == 10u32 || c == 11u32 || c == 12u32\n    let r = t.f(&c.wrapping_add(1u32).wrapping_add(c.wrapping_mul(7777777u32).wrapping_add(88888888u32).wrapping_add(99999999u32)), c)\n    core.mem.drop(ok)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("hoist_partial", src);
+    let o = run(&["fmt"], &t.0);
+    let out = text(&o.stdout);
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("let ok_a = "), "the fixable line is fixed:\n{}", fixed);
+    assert!(out.contains("E0055") && out.contains("bind `"), "{}", out);
+    assert_eq!(o.status.code(), Some(1));
 }

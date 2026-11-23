@@ -343,6 +343,9 @@ pub struct GramRes {
     pub msg: String,
 }
 
+/// 真の間は 100 文字を超える行 (E0055) を事前検査で拒まない (`ksn fmt` が残った長い行を報告しつつ、ほかを整形するため)。
+pub static ALLOW_LONG_LINES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn precheck(text: &str) -> Result<(), Pre> {
     if text.starts_with('\u{feff}') {
         return Err(Pre { code: "E0002", line: 1, col: 1, msg: "BOM".into() });
@@ -363,7 +366,7 @@ fn precheck(text: &str) -> Result<(), Pre> {
             return Err(Pre { code: "E0002", line: n, col: 1, msg: format!("line {}: trailing space", n) });
         }
         let first = l.trim_start_matches(' ').split(|c| c == ' ' || c == '(' || c == '[').next().unwrap_or("");
-        if l.chars().count() > 100 && !HEADER_KW.contains(&first) && !l.contains('"') {
+        if l.chars().count() > 100 && !HEADER_KW.contains(&first) && !l.contains('"') && !ALLOW_LONG_LINES.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(Pre { code: "E0055", line: n, col: 101, msg: crate::rustisms::long_line_msg(l) });
         }
     }

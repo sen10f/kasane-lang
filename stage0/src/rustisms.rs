@@ -27,8 +27,11 @@ pub fn name_needs_module_msg(kw: &str, module: Option<&str>, name: &str) -> Stri
 /// (`grammar.rs` の `precheck`) とここで 1 つにそろえる。
 pub fn long_line_msg(line: &str) -> String {
     let mut m = "this line is longer than 100 characters: shorten it (drop a redundant type annotation, or bind a sub-expression with `let`)".to_string();
+    if let Some(h) = crate::fmt_hoist::suggest(line) {
+        m.push_str(&format!("; e.g. {}", h));
+    }
     if has_struct_literal(&line.chars().collect::<Vec<char>>()) {
-        m.push_str("; struct literals are one line: bind field values with `let` first");
+        m.push_str("; struct literals are one line: bind field values with `let` first, or shorten the field and variable names");
     }
     m
 }
