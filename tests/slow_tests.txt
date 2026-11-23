@@ -14,3 +14,5 @@ wasm32
 kir_lower
 windows_target
 windows_ffi_struct
+check_diag
+check_borrow
