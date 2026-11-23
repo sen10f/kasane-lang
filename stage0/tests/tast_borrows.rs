@@ -132,16 +132,20 @@ fn new_checker(name: &str, src: &str) -> BTreeSet<u64> {
 
 #[test]
 fn borrow_rule_matches_old_checker_on_unsound() {
-    let mut bad = vec![];
-    for stem in STEMS {
+    let bad: Vec<String> = par_map(STEMS, |stem| {
         let src = fs::read_to_string(root().join("stage0/tests/data/unsound").join(format!("{}.ksnl", stem))).unwrap();
         let t = Tmp::new(&format!("tast_bw_{}", stem), &src);
         let old = e3010(&text(&run_with_env(&["check", "--json"], &t.0, &[("KSN_CHECKER", "old")]).stdout), true);
         let new = e3010(&text(&run_with_env(&["check", "--json"], &t.0, &[("KSN_CHECKER", "new")]).stdout), false);
         if old.is_empty() || !old.is_subset(&new) {
-            bad.push(format!("{}: old={:?} new={:?}", stem, old, new));
+            Some(format!("{}: old={:?} new={:?}", stem, old, new))
+        } else {
+            None
         }
-    }
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
@@ -176,20 +180,26 @@ fn borrow_rule_allows_copy_out_and_loop_reassign() {
 /// 正しいコード (`linear_ok/`・`check_ok/`) で規則 B が何も出さないこと (配列の定数添字の要素への `mem.replace` の強い更新を含む)。
 #[test]
 fn borrow_rule_silent_on_correct_code() {
-    let mut bad = vec![];
+    let mut files = Vec::new();
     for dir in ["linear_ok", "check_ok"] {
         let d = root().join("stage0/tests/data").join(dir);
-        let mut files: Vec<_> = fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
-        files.sort();
-        for f in files {
-            let stem = f.file_stem().unwrap().to_string_lossy().to_string();
-            let src = fs::read_to_string(&f).unwrap();
-            let got = new_checker(&format!("tast_bw_c_{}", stem), &src);
-            if !got.is_empty() {
-                bad.push(format!("{}/{}: {:?}", dir, stem, got));
-            }
-        }
+        let mut v: Vec<_> = fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
+        v.sort();
+        files.extend(v.into_iter().map(|f| (dir, f)));
     }
+    let bad: Vec<String> = par_map(&files, |(dir, f)| {
+        let stem = f.file_stem().unwrap().to_string_lossy().to_string();
+        let src = fs::read_to_string(f).unwrap();
+        let got = new_checker(&format!("tast_bw_c_{}", stem), &src);
+        if !got.is_empty() {
+            Some(format!("{}/{}: {:?}", dir, stem, got))
+        } else {
+            None
+        }
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 

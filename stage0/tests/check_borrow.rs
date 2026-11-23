@@ -14,21 +14,26 @@ use common::*;
 #[test]
 fn linear_corpus_is_rejected_for_linear_reasons() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/unsound");
-    let mut n = 0;
-    for e in fs::read_dir(&dir).unwrap() {
-        let p = e.unwrap().path();
-        if p.extension().map_or(true, |x| x != "ksnl") {
-            continue;
-        }
+    let paths: Vec<PathBuf> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().map_or(false, |x| x == "ksnl") && p.file_stem().unwrap().to_string_lossy().starts_with("linear_"))
+        .collect();
+    let n = paths.len();
+    let fails: Vec<String> = par_map(&paths, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        if !stem.starts_with("linear_") {
-            continue;
-        }
-        n += 1;
-        let t = Tmp::new(&format!("linear_why_{}", stem), &fs::read_to_string(&p).unwrap());
+        let t = Tmp::new(&format!("linear_why_{}", stem), &fs::read_to_string(p).unwrap());
         let out = text(&run(&["check", "--json"], &t.0).stdout);
-        assert!(codes(&out).iter().any(|c| matches!(c.as_str(), "E3002" | "E3003" | "E3006")), "{}: {}", stem, out);
-    }
+        if codes(&out).iter().any(|c| matches!(c.as_str(), "E3002" | "E3003" | "E3006")) {
+            None
+        } else {
+            Some(format!("{}: {}", stem, out))
+        }
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    assert!(fails.is_empty(), "{}", fails.join("\n"));
     assert!(n >= 20, "linear cases missing");
 }
 
@@ -711,16 +716,20 @@ fn linear_ok_cases_pass_check() {
     let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(!names.is_empty(), "linear_ok cases missing");
-    let mut failures = Vec::new();
-    for p in names {
+    let failures: Vec<String> = par_map(&names, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("ok_{}", stem), &fs::read_to_string(&p).unwrap());
+        let t = Tmp::new(&format!("ok_{}", stem), &fs::read_to_string(p).unwrap());
         let o = run(&["check", "--json"], &t.0);
         let got = codes(&text(&o.stdout));
         if o.status.code() != Some(0) || !got.is_empty() {
-            failures.push(format!("{}: rc={:?} codes={:?}", stem, o.status.code(), got));
+            Some(format!("{}: rc={:?} codes={:?}", stem, o.status.code(), got))
+        } else {
+            None
         }
-    }
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 

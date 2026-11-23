@@ -220,39 +220,43 @@ fn new_diags(name: &str, src: &str) -> BTreeSet<(String, u64)> {
 
 #[test]
 fn lifetimes_rule_matches_expected_on_unsound() {
-    let mut bad = vec![];
     let mut stems: Vec<&str> = CASES.iter().map(|c| c.0).collect();
     stems.dedup();
-    for stem in stems {
+    let bad: Vec<String> = par_map(&stems, |stem| {
+        let mut bad = Vec::new();
         let src = fs::read_to_string(root().join("stage0/tests/data/unsound").join(format!("{}.ksnl", stem))).unwrap();
         let new = new_diags(&format!("tast_lt_{}", stem), &src);
-        for (s, code, line) in CASES.iter().filter(|c| c.0 == stem) {
+        for (s, code, line) in CASES.iter().filter(|c| c.0 == *stem) {
             if !new.contains(&(code.to_string(), *line)) {
                 bad.push(format!("{}: missing {} at line {}", s, code, line));
             }
         }
-    }
+        bad
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
 #[test]
 fn lifetimes_rule_is_quiet_on_correct_code() {
-    let mut bad = vec![];
-    for dir in ["linear_ok"] {
-        let d = root().join("stage0/tests/data").join(dir);
-        for e in fs::read_dir(&d).unwrap() {
-            let p = e.unwrap().path();
-            if p.extension().map_or(true, |x| x != "ksnl") {
-                continue;
-            }
-            let src = fs::read_to_string(&p).unwrap();
-            let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-            let new = new_diags(&format!("tast_ltok_{}", stem), &src);
-            if !new.is_empty() {
-                bad.push(format!("{}/{}: {:?}", dir, stem, new));
-            }
+    let d = root().join("stage0/tests/data/linear_ok");
+    let mut files: Vec<_> = fs::read_dir(&d).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
+    files.sort();
+    let bad: Vec<String> = par_map(&files, |p| {
+        let src = fs::read_to_string(p).unwrap();
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let new = new_diags(&format!("tast_ltok_{}", stem), &src);
+        if !new.is_empty() {
+            Some(format!("linear_ok/{}: {:?}", stem, new))
+        } else {
+            None
         }
-    }
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 

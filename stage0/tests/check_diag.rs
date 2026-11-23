@@ -19,11 +19,10 @@ fn diagnostics_each_case_reports_its_code() {
     let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(names.len() >= 20, "diag cases missing");
-    let mut failures = Vec::new();
-    for p in names {
+    let failures: Vec<String> = par_map(&names, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
         let code = &stem[..5];
-        let t = Tmp::new_raw(&stem, &fs::read_to_string(&p).unwrap());
+        let t = Tmp::new_raw(&stem, &fs::read_to_string(p).unwrap());
         // 横に `<名前>.ksnh` があるケースは、それも `src/t.ksnh` に置く (コメントそのものや `.ksnl` との一致を試すもの)。
         if let Ok(h) = fs::read_to_string(p.with_extension("ksnh")) {
             fs::write(t.0.join("src").join("t.ksnh"), h).unwrap();
@@ -31,9 +30,14 @@ fn diagnostics_each_case_reports_its_code() {
         let o = run(&["check", "--json"], &t.0);
         let got = codes(&text(&o.stdout));
         if o.status.code() != Some(1) || !got.iter().any(|c| c == code) {
-            failures.push(format!("{}: rc={:?} codes={:?}", stem, o.status.code(), got));
+            Some(format!("{}: rc={:?} codes={:?}", stem, o.status.code(), got))
+        } else {
+            None
         }
-    }
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
@@ -49,13 +53,13 @@ fn unsound_programs_are_rejected() {
     let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(names.len() >= 16, "unsound cases missing");
-    let mut failures = Vec::new();
-    for p in names {
+    let failures: Vec<String> = par_map(&names, |p| {
+        let mut fails = Vec::new();
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let src = fs::read_to_string(&p).unwrap();
+        let src = fs::read_to_string(p).unwrap();
         let t = Tmp::new_strict(&format!("unsound_{}", stem), &src);
         // `.expect` の `target: X` は `ksn check --target X` で検査する (ポインタの幅などターゲットで変わる穴)。
-        let target = expect_value(&p, "target");
+        let target = expect_value(p, "target");
         let mut args = vec!["check"];
         if let Some(tg) = &target {
             args.extend(["--target", tg.as_str()]);
@@ -65,25 +69,29 @@ fn unsound_programs_are_rejected() {
         let rejected = o.status.code() == Some(1);
         let hole = KNOWN_HOLES.contains(&stem.as_str());
         // `expect: Exxxx` は`.expect` から読む。穴以外は必ず持つ。
-        let want = expect_value(&p, "expect");
+        let want = expect_value(p, "expect");
         if hole && rejected {
-            failures.push(format!("{}: now rejected; remove it from KNOWN_HOLES", stem));
+            fails.push(format!("{}: now rejected; remove it from KNOWN_HOLES", stem));
         } else if !hole && !rejected {
-            failures.push(format!("{}: passes check but must be rejected (rc={:?})", stem, o.status.code()));
+            fails.push(format!("{}: passes check but must be rejected (rc={:?})", stem, o.status.code()));
         } else if !hole {
             match want {
-                None => failures.push(format!("{}: no `expect: Exxxx` in the .expect file (every unsound case names its code)", stem)),
+                None => fails.push(format!("{}: no `expect: Exxxx` in the .expect file (every unsound case names its code)", stem)),
                 Some(want) => {
                     let got = codes(&text(&o.stdout));
                     if !got.iter().any(|c| *c == want) {
-                        failures.push(format!("{}: want {} codes={:?}", stem, want, got));
+                        fails.push(format!("{}: want {} codes={:?}", stem, want, got));
                     }
                 }
             }
         }
         // 整形の違反で落ちているのではないこと (意味の誤りとして報告されること)。
         assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{} is not canonical", stem);
-    }
+        fails
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
@@ -94,13 +102,13 @@ fn correct_linear_programs_are_accepted() {
     let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(names.len() >= 8, "linear_ok cases missing");
-    for p in names {
+    par_map(&names, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("linear_ok_{}", stem), &fs::read_to_string(&p).unwrap());
+        let t = Tmp::new(&format!("linear_ok_{}", stem), &fs::read_to_string(p).unwrap());
         let o = run(&["check", "--json"], &t.0);
         assert_eq!(o.status.code(), Some(0), "{}: {}", stem, text(&o.stdout));
         assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{} is not canonical", stem);
-    }
+    });
 }
 
 /// 型検査だけを見る正しいコード (`tests/data/check_ok/`。KIR に下ろせない `dyn` を含む) は `ksn check` を通る。
@@ -110,12 +118,12 @@ fn check_only_correct_programs_are_accepted() {
     let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(!names.is_empty(), "check_ok cases missing");
-    for p in names {
+    par_map(&names, |p| {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("check_ok_{}", stem), &fs::read_to_string(&p).unwrap());
+        let t = Tmp::new(&format!("check_ok_{}", stem), &fs::read_to_string(p).unwrap());
         let o = run(&["check", "--json"], &t.0);
         assert_eq!(o.status.code(), Some(0), "{}: {}", stem, text(&o.stdout));
-    }
+    });
 }
 
 /// 組・構造体・`Some` / `Ok` の中で領域を入れ替えて返す正しいコードは、ヘッダの位置どおりに通る (AST の借用検査)。
