@@ -21,6 +21,8 @@ use super::{Lw, LR};
 
 /// 大域領域の中の pthread mutex の位置 (`+0` 旗、`+8` 値、`+16` mutex)。
 const MUTEX_OFF: u32 = 16;
+/// 集成体の値の置き場所 (旗 +0、mutex +16.. の後ろ)。
+const VAL_AGG: u32 = 80;
 
 const RNG: &str = "std.rand.Rng";
 
@@ -551,16 +553,19 @@ fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
     let Some(elem) = lw.conv_t(&targs[0]) else {
         return lw.err(line, format!("static {} の Mutex の値の型 {} は段階 1 の対象外", name, super::show(&targs[0])));
     };
-    if !elem.is_scalar() || elem == Ty::Unit || matches!(elem, Ty::I128 | Ty::U128) {
-        return lw.err(line, format!("static {} の Mutex の値の型 {} は 64 ビット以下のスカラーだけ対象", name, super::show(&targs[0])));
+    let scalar = elem.is_scalar() && elem != Ty::Unit && !matches!(elem, Ty::I128 | Ty::U128);
+    if !scalar && !matches!(elem, Ty::Agg(_)) {
+        return lw.err(line, format!("static {} の Mutex の値の型 {} は 64 ビット以下のスカラーか構造体だけ対象", name, super::show(&targs[0])));
     }
     let Some(p) = Pointee::of(elem) else { return lw.err(line, "Mutex の値の型が参照の指す先になれない") };
+    // 値の置き場所: スカラーは `+8` (従来どおり)、集成体は `+VAL_AGG` から (旗・mutex の後ろ、16 バイト境界)。
+    let (val_off, gsize) = if scalar { (8u32, 80u32) } else { (VAL_AGG, (VAL_AGG + crate::kir::size_of(&lw.aggs.borrow().defs, elem)).div_ceil(16) * 16) };
     // 初期化の式 `std.sync.Mutex.new(init)` の `init`。
     let init = match &d.init {
         Some(v) if nname(v) == "Call" && strs(&nf(&nf(v)[0])[0]).join(".") == "std.sync.Mutex.new" && items(&nf(v)[1]).len() == 1 => items(&nf(v)[1])[0].clone(),
         _ => return lw.err(line, format!("static {} の初期化が std.sync.Mutex.new(値) の形でない", name)),
     };
-    let g = lw.emit(Ty::Ptr, Op::GlobalBytes { name, size: 80 });
+    let g = lw.emit(Ty::Ptr, Op::GlobalBytes { name: name.clone(), size: gsize });
     // 初期化済みなら (旗の読みはアトミック) 大域のロックを取らずに進む。初期化の判定は大域のロックの下 (実スレッドで 2 重に初期化しない)。
     let f0 = atm(lw, "load", Ty::U8, "u8", vec![g], Ty::U8);
     let z0 = lw.emit(Ty::U8, Op::Const(0));
@@ -579,16 +584,27 @@ fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
     lw.cur = Some(run);
     // static の初期化の式は型表に載らないので、整数・bool のリテラルだけを直接読む。
     let iv = match (nname(&init), nf(&init).first().map(|x| crate::check::st(x))) {
-        ("Lit", Some(k)) if k == "int" && elem.is_int() => {
+        ("Lit", Some(k)) if scalar && k == "int" && elem.is_int() => {
             let Some(n) = super::parse_int(&nf(&init)[1]).filter(|n| elem.in_range(*n)) else {
                 return lw.err(line, "static の Mutex の初期値の整数が読めない・範囲外");
             };
             lw.emit(elem, Op::Const(n))
         }
-        ("Lit", Some(k)) if k == "bool" && elem == Ty::Bool => lw.emit(Ty::Bool, Op::Const(matches!(nf(&init)[1], V::B(true)) as i128)),
-        _ => return lw.err(line, "static の Mutex の初期値は整数か bool のリテラルだけ対象"),
+        ("Lit", Some(k)) if scalar && k == "bool" && elem == Ty::Bool => lw.emit(Ty::Bool, Op::Const(matches!(nf(&init)[1], V::B(true)) as i128)),
+        // 集成体: 引数なしの `const fn` の呼び出し `path()` (戻り値の型は Mutex の値の型)。
+        ("Call", _) if !scalar && items(&nf(&init)[1]).is_empty() => {
+            let cname = strs(&nf(&nf(&init)[0])[0]).join(".");
+            let Some(ci) = lw.p.defs.iter().position(|d| d.kw == "fn" && d.name == cname && d.params.is_empty() && d.generics.is_empty()) else {
+                return lw.err(line, format!("static {} の初期化の関数 {} が見つからない", name, cname));
+            };
+            match lw.call_def(&init, ci, &[], line)? {
+                Some(v) if lw.vty(v) == elem => v,
+                _ => return lw.err(line, format!("static {} の初期化の関数の戻り値の型が Mutex の値の型と合わない", name)),
+            }
+        }
+        _ => return lw.err(line, "static の Mutex の初期値は整数・bool のリテラルか、集成体なら引数なしの const fn の呼び出しだけ対象"),
     };
-    lw.emit(Ty::Unit, Op::MemStore { ty: elem, p: g, off: 8, v: iv });
+    lw.emit(Ty::Unit, Op::MemStore { ty: elem, p: g, off: val_off, v: iv });
     let mo = lw.emit(Ty::Usize, Op::Const(MUTEX_OFF as i128));
     let mp = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off: mo });
     rt_call(lw, MINIT, vec![mp], Ty::Unit);
@@ -605,7 +621,7 @@ fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
     // `coll::register_unlock` が決める (4.4): 束縛された変数のスコープの終わり・`core.mem.drop(g)`、束縛されない一時なら文の終わり。
     // 協調実行では何もしない。
     rt_call(lw, MLOCK, vec![mp], Ty::Unit);
-    let off = lw.emit(Ty::Usize, Op::Const(8));
+    let off = lw.emit(Ty::Usize, Op::Const(val_off as i128));
     let vp = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off });
     let r = lw.emit(Ty::Ref(true, p), Op::Bitcast { src: Ty::Ptr, a: vp });
     super::coll::register_unlock(lw, mp, r);
