@@ -1,0 +1,176 @@
+fn t.big() -> Result<(), std.http.Error> uses [alloc, io.console] panics never
+    let mut d = std.http.ResponseDecoder.new(8192usize, 262_144usize)
+    d.feed(b"HTTP/1.0 200 OK\r\n\r\n")?
+    let chunk = [0u8; 16_384]
+    let mut fed = 0usize
+    let mut got = 0usize
+    let mut peak = 0usize
+    let mut outcome = "none"
+    while fed < 268_000_000usize {
+        match d.feed(&chunk) {
+            Ok(_) => {
+                fed = fed.saturating_add(16_384usize)
+                let b = d.buffered()
+                if b > peak {
+                    peak = b
+                }
+                let part = d.take_body()?
+                got = got.saturating_add(part.len())
+            }
+            Err(e) => {
+                outcome = t.name(e)
+                break
+            }
+        }
+    }
+    let mut line = std.string.String.new()
+    line.push_str("big ")?
+    line.push_str(outcome)?
+    line.push_str(" fed=")?
+    line.push_u64(u64.from_usize(fed))?
+    line.push_str(" got=")?
+    line.push_u64(u64.from_usize(got))?
+    line.push_str(" peak=")?
+    line.push_u64(u64.from_usize(peak))?
+    std.io.print_line(line.as_str())?
+    Ok(())
+end t.big
+
+fn t.err(tag: &str, e: std.http.Error) -> Result<(), std.http.Error> uses [alloc, io.console] panics never
+    let mut line = std.string.String.new()
+    line.push_str(tag)?
+    line.push_str(" ")?
+    line.push_str(t.name(e))?
+    std.io.print_line(line.as_str())?
+    Ok(())
+end t.err
+
+fn t.main() -> Result<(), std.http.Error> uses [alloc, io.console] panics never
+    t.one("cl", b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello", 8192usize, 1024usize)?
+    t.one("chunked", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5;ext=1\r\npedia\r\n0\r\nX-T: 1\r\n\r\n", 8192usize, 1024usize)?
+    t.one("close", b"HTTP/1.0 200 OK\r\n\r\nabc", 8192usize, 1024usize)?
+    t.one("interim", b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", 8192usize, 1024usize)?
+    t.one("interim2", b"HTTP/1.1 103 Early\r\nLink: x\r\n\r\nHTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("nobody204", b"HTTP/1.1 204 No Content\r\nContent-Length: 2\r\n\r\n", 8192usize, 1024usize)?
+    t.one("nobody304", b"HTTP/1.1 304 Not Modified\r\n\r\n", 8192usize, 1024usize)?
+    t.one("empty", b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("noreason", b"HTTP/1.1 200\r\nContent-Length: 1\r\n\r\nx", 8192usize, 1024usize)?
+    t.one("partial", b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab", 8192usize, 1024usize)?
+    t.one("nohead", b"HTTP/1.1 200 OK\r\nContent-Len", 8192usize, 1024usize)?
+    t.slow("slow", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;x=1\r\nhello\r\n0\r\nX: y\r\n\r\n")?
+    t.two("split", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n", b"\r\nok")?
+    t.pipe()?
+    t.one("clte", b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\nx", 8192usize, 1024usize)?
+    t.one("twocl", b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx", 8192usize, 1024usize)?
+    t.one("clplus", b"HTTP/1.1 200 OK\r\nContent-Length: +2\r\n\r\nab", 8192usize, 1024usize)?
+    t.one("clminus", b"HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n", 8192usize, 1024usize)?
+    t.one("clempty", b"HTTP/1.1 200 OK\r\nContent-Length: \r\n\r\n", 8192usize, 1024usize)?
+    t.one("clspace", b"HTTP/1.1 200 OK\r\nContent-Length: 1 2\r\n\r\nx", 8192usize, 1024usize)?
+    t.one("clbig", b"HTTP/1.1 200 OK\r\nContent-Length: 2000\r\n\r\n", 8192usize, 1024usize)?
+    t.one("twote", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("gzip", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("v10chunk", b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("valcr", b"HTTP/1.1 200 OK\r\nX: a\rb\r\nContent-Length: 0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("valnul", b"HTTP/1.1 200 OK\r\nX: a\0b\r\nContent-Length: 0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("reasoncr", b"HTTP/1.1 200 O\rK\r\nContent-Length: 0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("reasonnul", b"HTTP/1.1 200 O\0K\r\nContent-Length: 0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("barelf", b"HTTP/1.1 200 OK\nContent-Length: 0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("fold", b"HTTP/1.1 200 OK\r\nA: 1\r\n  folded\r\nContent-Length: 0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("status2", b"HTTP/1.1 20\r\n\r\n", 8192usize, 1024usize)?
+    t.one("statusabc", b"HTTP/1.1 abc OK\r\n\r\n", 8192usize, 1024usize)?
+    t.one("status099", b"HTTP/1.1 099 X\r\n\r\n", 8192usize, 1024usize)?
+    t.one("http2", b"HTTP/2.0 200 OK\r\n\r\n", 8192usize, 1024usize)?
+    t.one("status101", b"HTTP/1.1 101 Switching Protocols\r\n\r\n", 8192usize, 1024usize)?
+    t.one("noline", b"garbage\r\n\r\n", 8192usize, 1024usize)?
+    t.one("chunkplus", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n+5\r\nhello\r\n0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("chunkdata", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhelloXX0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("chunkhuge", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFF\r\n", 8192usize, 1024usize)?
+    t.one("trailerlf", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX: y\n\r\n", 8192usize, 1024usize)?
+    t.one("headbig", b"HTTP/1.1 200 OK\r\nX: aaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n\r\n", 16usize, 1024usize)?
+    t.big()?
+    Ok(())
+end t.main
+
+fn t.name(e: std.http.Error) -> &'static str uses [] panics never
+    match e {
+        std.http.Error.BadRequest => "BadRequest"
+        std.http.Error.BodyTooLarge => "BodyTooLarge"
+        std.http.Error.HeadTooLarge => "HeadTooLarge"
+        std.http.Error.Truncated => "Truncated"
+        std.http.Error.Unsupported => "Unsupported"
+        std.http.Error.Io(_x) => "Io"
+        std.http.Error.Alloc(_a) => "Alloc"
+    }
+end t.name
+
+fn t.one(tag: &str, bytes: &[u8], max_head: usize, max_body: usize) -> Result<(), std.http.Error> uses [alloc, io.console] panics never
+    let mut d = std.http.ResponseDecoder.new(max_head, max_body)
+    match t.read(&mut d, bytes) {
+        Ok(_) => t.report(tag, &mut d)
+        Err(e) => t.err(tag, e)
+    }
+end t.one
+
+fn t.pipe() -> Result<(), std.http.Error> uses [alloc, io.console] panics never
+    let mut d = std.http.ResponseDecoder.new(8192usize, 1024usize)
+    d.feed(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nAHTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")?
+    t.report("pipe1", &mut d)?
+    d.reset_next()?
+    t.report("pipe2", &mut d)?
+    d.finish()?
+    Ok(())
+end t.pipe
+
+fn t.read(d: &mut std.http.ResponseDecoder, bytes: &[u8]) -> Result<(), std.http.Error> uses [alloc] panics never
+    d.feed(bytes)?
+    d.finish()
+end t.read
+
+fn t.report(tag: &str, d: &mut std.http.ResponseDecoder) -> Result<(), std.http.Error> uses [alloc, io.console] panics never
+    let body = d.take_body()?
+    let text = match core.str.from_utf8(body.as_slice()) {
+        Ok(s) => s
+        Err(_) => "<bin>"
+    }
+    let resp = d.response()
+    let mut line = std.string.String.new()
+    line.push_str(tag)?
+    line.push_str(" ")?
+    line.push_u64(u64.from_u16(resp.status))?
+    line.push_str(" ")?
+    line.push_str(resp.reason.as_str())?
+    line.push_str(" body=")?
+    line.push_str(text)?
+    if d.is_done() {
+        line.push_str(" done=1")?
+    } else {
+        line.push_str(" done=0")?
+    }
+    std.io.print_line(line.as_str())?
+    Ok(())
+end t.report
+
+fn t.slow(tag: &str, msg: &[u8]) -> Result<(), std.http.Error> uses [alloc, io.console] panics never
+    let mut d = std.http.ResponseDecoder.new(8192usize, 1024usize)
+    let mut i = 0usize
+    while i < msg.len() {
+        match msg.sub(i, i.saturating_add(1usize)) {
+            Some(p) => d.feed(p)?
+            None => return Err(std.http.Error.BadRequest)
+        }
+        i = i.saturating_add(1usize)
+    }
+    d.finish()?
+    t.report(tag, &mut d)
+end t.slow
+
+fn t.two(tag: &str, a: &[u8], b: &[u8]) -> Result<(), std.http.Error> uses [alloc, io.console] panics never
+    let mut d = std.http.ResponseDecoder.new(8192usize, 1024usize)
+    d.feed(a)?
+    if d.has_response() {
+        std.io.print_line("early")?
+    }
+    d.feed(b)?
+    d.finish()?
+    t.report(tag, &mut d)
+end t.two
