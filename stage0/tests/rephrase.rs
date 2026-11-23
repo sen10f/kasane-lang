@@ -880,7 +880,7 @@ fn run_dir_mode(dir: &Path, unsound: bool, mode: Option<&str>) -> Report {
                 }
                 let p = &names[k];
                 let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-                let src = fs::read_to_string(p).unwrap();
+                let src = fold_struct_literals(&fs::read_to_string(p).unwrap());
                 let want = expect_value(p, "expect");
                 let target = expect_value(p, "target");
                 for tf in TRANSFORMS {
@@ -916,6 +916,49 @@ fn run_dir_mode(dir: &Path, unsound: bool, mode: Option<&str>) -> Report {
         }
     });
     rep.into_inner().unwrap()
+}
+
+/// 構造体リテラル・パターンは正規形が複数行 (1 行 1 欄) だが、この生成器は「1 行 = 1 文」を前提にした行ごとの変換なので、
+/// 入力は旧い 1 行の形 (`T { a: x, b: y }`) に畳んでから変換する。変換後の入力は `check_src_mode` が `ksn fmt` で正規形に直す。
+fn fold_struct_literals(text: &str) -> String {
+    fn ind(l: &str) -> usize {
+        l.len() - l.trim_start_matches(' ').len()
+    }
+    fn opens_literal(t: &str) -> bool {
+        let Some(head) = t.strip_suffix(" {") else { return false };
+        let first = head.split_whitespace().next().unwrap_or("");
+        if matches!(first, "if" | "while" | "for" | "loop" | "match" | "else" | "fn" | "impl" | "trait" | "enum" | "type" | "unsafe" | "with" | "extern" | "test" | "}") {
+            return false;
+        }
+        let last = head.rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
+        last.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+    }
+    fn fold(lines: &[String]) -> Vec<String> {
+        let mut out: Vec<String> = vec![];
+        let mut i = 0;
+        while i < lines.len() {
+            let l = &lines[i];
+            let t = l.trim();
+            if opens_literal(t) {
+                let n = ind(l);
+                if let Some(off) = lines[i + 1..].iter().position(|x| ind(x) == n && x.trim_start().starts_with('}')) {
+                    let j = i + 1 + off;
+                    let inner = fold(&lines[i + 1..j]);
+                    let fields: Vec<String> = inner.iter().map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+                    if fields.iter().all(|f| f.contains(':')) && !fields.is_empty() {
+                        out.push(format!("{}{} {} {}", " ".repeat(n), t, fields.join(", "), lines[j].trim()));
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            }
+            out.push(l.clone());
+            i += 1;
+        }
+        out
+    }
+    let lines: Vec<String> = text.split('\n').map(String::from).collect();
+    fold(&lines).join("\n")
 }
 
 fn ledger(path: &Path) -> BTreeSet<String> {
