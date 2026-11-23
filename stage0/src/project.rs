@@ -116,6 +116,8 @@ pub struct Source {
     pub lines: Vec<String>,
     pub defs: Vec<Def>,
     pub error: Option<PErr>,
+    /// 誤りのある定義ごとの (始めの行, 終わりの行, 誤り)。`error` は先頭の 1 件。構造の誤りはファイル全体の 1 件。
+    pub all_errors: Vec<(usize, usize, PErr)>,
     /// `tests/` 配下の統合テストのファイルか (3.2)。
     pub is_test: bool,
     /// `.ksnh` から読んだソースのとき、横の `.ksnl` の本文 (無ければ `None`)。`path` は `.ksnh`。
@@ -196,11 +198,12 @@ impl Source {
     fn from_text_in(path: &str, module: String, text: String, is_test: bool) -> Source {
         let lines = text.split('\n').map(String::from).collect();
         crate::refs_check::remember(path, &text);
-        let (defs, error) = match load_file(path, &module, &text) {
-            Ok(d) => (d, None),
-            Err(e) => (vec![], Some(decode_err(&e))),
+        let (defs, all_errors) = match crate::program::load_file_all(path, &module, &text) {
+            Ok(d) => (d, vec![]),
+            Err(v) => (vec![], v.into_iter().map(|(a, b, e)| (a, b, decode_err(&e))).collect()),
         };
-        Source { path: path.to_string(), module, text, lines, defs, error, is_test, ksnl: None }
+        let error = all_errors.first().map(|e| e.2.clone());
+        Source { path: path.to_string(), module, text, lines, defs, error, all_errors, is_test, ksnl: None }
     }
 }
 
@@ -1249,7 +1252,7 @@ pub fn load_stdlib() -> Vec<Source> {
                 .zip(defs)
                 .map(|(((path, text), module), defs)| {
                     let lines = text.split('\n').map(String::from).collect();
-                    Source { path, module, text, lines, defs, error: None, is_test: false, ksnl: None }
+                    Source { path, module, text, lines, defs, error: None, all_errors: vec![], is_test: false, ksnl: None }
                 })
                 .collect();
         }
