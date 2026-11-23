@@ -1289,7 +1289,7 @@ impl<'a> Lw<'a> {
                 }
                 if is_fs_ty(self, rt) {
                     let meth = segs[segs.len() - 1].clone();
-                    if matches!(meth.as_str(), "close" | "flush" | "read" | "sync" | "write") {
+                    if matches!(meth.as_str(), "close" | "flush" | "read" | "sync" | "write" | "open_file_beneath" | "metadata" | "read_to_end_limited") {
                         if meth == "close" {
                             self.own_emit(&segs[0], s, if segs.len() == 2 { crate::kir::OwnKind::Consume } else { crate::kir::OwnKind::Part });
                         }
@@ -1406,7 +1406,7 @@ impl<'a> Lw<'a> {
         if matches!(callee_name.as_str(), "std.net.resolve_raw" | "std.net.UdpSocket.bind") {
             return net_free_call(self, e, &callee_name, line);
         }
-        if matches!(callee_name.as_str(), "std.fs.create" | "std.fs.open" | "std.fs.exists" | "std.fs.remove_file" | "std.fs.read_to_end" | "std.fs.open_append" | "std.fs.rename" | "std.fs.create_dir" | "std.fs.remove_dir" | "std.fs.stat_raw" | "std.fs.read_dir_raw") {
+        if matches!(callee_name.as_str(), "std.fs.create" | "std.fs.open" | "std.fs.exists" | "std.fs.remove_file" | "std.fs.read_to_end" | "std.fs.open_append" | "std.fs.rename" | "std.fs.create_dir" | "std.fs.remove_dir" | "std.fs.stat_raw" | "std.fs.read_dir_raw" | "std.fs.open_dir_raw" | "std.fs.Dir.open" | "std.fs.open_beneath_raw" | "std.fs.stat_fd_raw") {
             return fs_call(self, e, &callee_name, args, line);
         }
         if callee_name == "std.process.Command.new" {

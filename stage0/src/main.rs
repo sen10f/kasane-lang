@@ -73,6 +73,7 @@ mod tast_rules;
 mod types;
 mod typecov;
 mod vm;
+mod fs_beneath;
 
 /// 実行用の主スレッドのスタック (仮想メモリの予約。深さの上限 `kir_exec::MAX_DEPTH` の木走査を支える)。
 const MAIN_STACK: usize = 4 << 30;

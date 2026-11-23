@@ -1149,8 +1149,8 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 Op::FsSys { kind, args } => {
                     // fat (`&str`) のパスを読む。
                     let mut paths: Vec<String> = Vec::new();
-                    let npaths = if matches!(kind, FsK::Rename) { 2 } else { 1 };
-                    for a in &args[..npaths] {
+                    for &ix in kind.path_slots() {
+                        let a = &args[ix];
                         let h = get(&stack[top], a) as usize;
                         let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
                         let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
@@ -1171,6 +1171,30 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                                 files.insert(fd, f);
                                 fd
                             }),
+                            FsK::OpenDir => crate::fs_beneath::open_dir(&paths[0]).map(|f| {
+                                let fd = alloc_next_fd(&mut next_fd);
+                                files.insert(fd, f);
+                                fd
+                            }),
+                            FsK::OpenBeneath => {
+                                let dirfd = get(&stack[top], &args[0]);
+                                match files.get(&dirfd) {
+                                    Some(d) => crate::fs_beneath::open_beneath(d, &paths[0]).map(|f| {
+                                        let fd = alloc_next_fd(&mut next_fd);
+                                        files.insert(fd, f);
+                                        fd
+                                    }),
+                                    None => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                                }
+                            }
+                            FsK::FStat => {
+                                let fd = get(&stack[top], &args[0]);
+                                let field = get(&stack[top], &args[1]);
+                                match files.get(&fd) {
+                                    Some(f) => crate::fs_beneath::stat_field(f, field as u64).map(|v| v as i128),
+                                    None => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                                }
+                            }
                             FsK::Stat => {
                                 let field = get(&stack[top], &args[1]);
                                 std::fs::metadata(&paths[0]).map(|md| match field {
@@ -1225,7 +1249,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     }
                     match r {
                         Ok(v) => {
-                            if matches!(kind, FsK::OpenAppend) {
+                            if matches!(kind, FsK::OpenAppend | FsK::OpenDir | FsK::OpenBeneath) {
                                 desc_agg(&mut heap, v)?
                             } else {
                                 v

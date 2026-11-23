@@ -1213,9 +1213,31 @@ impl<'a> Vm<'a> {
                     }
                 }
                 Ins::FsSys { d, kind, a, b, c } => {
-                    // kind: 0 rename・1 create_dir・2 remove_dir・3 open_append・4 stat・5 read_dir (kir_exec の `FsK` と同じ)。
-                    let p0 = std::str::from_utf8(Self::fat_bytes(rp, *a as usize)?).unwrap_or("").to_string();
+                    // kind: 0 rename・1 create_dir・2 remove_dir・3 open_append・4 stat・5 read_dir・6 open_dir・7 open_beneath・8 fstat (kir_exec の `FsK` と同じ)。
+                    // 7 は a が記述子、b がパス。8 は a が記述子、b が field。
+                    let p0 = match *kind {
+                        7 => std::str::from_utf8(Self::fat_bytes(rp, *b as usize)?).unwrap_or("").to_string(),
+                        8 => String::new(),
+                        _ => std::str::from_utf8(Self::fat_bytes(rp, *a as usize)?).unwrap_or("").to_string(),
+                    };
                     let res: std::io::Result<u64> = match *kind {
+                        6 => crate::fs_beneath::open_dir(&p0).map(|f| self.new_file(f) as u64),
+                        7 => {
+                            let dirfd = r!(*a) as i32 as i128;
+                            let opened = match self.files.get(&dirfd) {
+                                Some(d) => crate::fs_beneath::open_beneath(d, &p0),
+                                None => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                            };
+                            opened.map(|f| self.new_file(f) as u64)
+                        }
+                        8 => {
+                            let fd = r!(*a) as i32 as i128;
+                            let field = r!(*b);
+                            match self.files.get(&fd) {
+                                Some(f) => crate::fs_beneath::stat_field(f, field),
+                                None => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                            }
+                        }
                         0 => {
                             let p1 = std::str::from_utf8(Self::fat_bytes(rp, *b as usize)?).unwrap_or("").to_string();
                             std::fs::rename(&p0, &p1).map(|_| 0)

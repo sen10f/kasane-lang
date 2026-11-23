@@ -287,6 +287,118 @@ i64 ksn_rt_sys_stat(const u8 *p, u64 n, i32 field, i32 *e) {
     return secs * 1000000000LL + ns;
 }
 
+/* std.fs.Dir と open_file_beneath (fs_beneath.rs と同じ規則)。
+ * 相対パスだけ。空・`/` で始まる・NUL・`..` の成分は拒む。Linux は openat2 (RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS)、
+ * カーネルに無い (ENOSYS) ときと他の Unix は成分ごとの openat(O_NOFOLLOW)。Windows は ENOSYS (リンクを辿らない)。 */
+static int beneath_has_dotdot(const u8 *p, u64 n) {
+    u64 s = 0;
+    for (u64 i = 0; i <= n; i++) {
+        if (i == n || p[i] == '/') {
+            if (i - s == 2 && p[s] == '.' && p[s + 1] == '.') return 1;
+            s = i + 1;
+        }
+    }
+    return 0;
+}
+
+i64 ksn_rt_sys_opendir(const u8 *p, u64 n, i32 *e) {
+    int nul;
+    char *path = cstr(p, n, &nul);
+    if (!path) return nul ? fail_invalid(e) : fail(e, ENOMEM);
+#ifdef _WIN32
+    free(path);
+    return fail(e, ENOSYS);
+#else
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int err = errno;
+    free(path);
+    if (fd < 0) return fail(e, err);
+    struct stat st;
+    if (fstat(fd, &st) != 0) { err = errno; close(fd); return fail(e, err); }
+    if (!S_ISDIR(st.st_mode)) { close(fd); return fail(e, ENOTDIR); }
+    return fd;
+#endif
+}
+
+#ifndef _WIN32
+static i64 beneath_slow(int dirfd, const u8 *p, u64 n, i32 *e) {
+    char *buf = (char *)malloc(n + 1);
+    if (!buf) return fail(e, ENOMEM);
+    memcpy(buf, p, n);
+    buf[n] = 0;
+    int cur = dirfd, owned = 0, err = 0;
+    char *save = NULL;
+    char *tok = strtok_r(buf, "/", &save);
+    while (tok) {
+        char *next = strtok_r(NULL, "/", &save);
+        while (next && strcmp(next, ".") == 0) next = strtok_r(NULL, "/", &save);
+        if (strcmp(tok, ".") == 0) { tok = next; continue; }
+        int flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW | (next ? O_DIRECTORY : 0);
+        int fd = openat(cur, tok, flags);
+        if (fd < 0) { err = errno; break; }
+        if (owned) close(cur);
+        cur = fd;
+        owned = 1;
+        tok = next;
+    }
+    free(buf);
+    if (err) {
+        if (owned) close(cur);
+        return fail(e, err);
+    }
+    if (!owned) return fail_invalid(e);
+    return cur;
+}
+#endif
+
+i64 ksn_rt_sys_openbeneath(i32 dirfd, const u8 *p, u64 n, i32 *e) {
+#ifdef _WIN32
+    (void)dirfd;
+    (void)p;
+    (void)n;
+    return fail(e, ENOSYS);
+#else
+    if (n == 0 || p[0] == '/' || memchr(p, 0, n) != NULL || beneath_has_dotdot(p, n)) return fail_invalid(e);
+#if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
+    {
+        struct { u64 flags, mode, resolve; } how;
+        int nul;
+        char *path = cstr(p, n, &nul);
+        if (!path) return fail(e, ENOMEM);
+        how.flags = O_RDONLY | O_CLOEXEC;
+        how.mode = 0;
+        how.resolve = 0x08 | 0x04; /* RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS */
+        long fd = syscall(437 /* openat2 */, dirfd, path, &how, sizeof how);
+        int err = errno;
+        free(path);
+        if (fd >= 0) return (i64)fd;
+        if (err != ENOSYS) return fail(e, err);
+    }
+#endif
+    return beneath_slow(dirfd, p, n, e);
+#endif
+}
+
+i64 ksn_rt_sys_fstat(i32 fd, i32 field, i32 *e) {
+#ifdef _WIN32
+    (void)fd;
+    (void)field;
+    return fail(e, ENOSYS);
+#else
+    struct stat st;
+    if (fstat(fd, &st) != 0) return fail(e, errno);
+    if (field == 0) return (i64)st.st_size;
+    if (field == 1) return kind_of_mode((unsigned)st.st_mode);
+#if defined(__APPLE__)
+    i64 secs = (i64)st.st_mtimespec.tv_sec, ns = (i64)st.st_mtimespec.tv_nsec;
+#else
+    i64 secs = (i64)st.st_mtim.tv_sec, ns = (i64)st.st_mtim.tv_nsec;
+#endif
+    if (secs < 0 || secs > 9223372035LL) return 0;
+    return secs * 1000000000LL + ns;
+#endif
+}
+
 #ifndef _WIN32
 #include <dirent.h>
 struct dent { u8 *name; int kind; };
