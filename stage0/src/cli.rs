@@ -495,7 +495,7 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
             if dup {
                 continue;
             }
-            if !(e.code == "E0002" && guided.contains(&e.line)) {
+            if !(matches!(e.code.as_str(), "E0002" | "E0003") && guided.contains(&e.line)) {
                 rep.add(&e.code, &e.msg, Some(&fl), e.line, e.col, true);
             }
             continue;

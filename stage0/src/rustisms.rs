@@ -5,6 +5,8 @@
 //! (構文エラーは最初の1件で止まるため、1回に1つずつしか直せなくなるのを避ける)。
 //! 文字列・文字リテラルと `//` コメントの中は見ない。
 
+use crate::grammar::RESERVED;
+
 pub struct Hit {
     pub code: &'static str,
     pub line: usize,
@@ -494,6 +496,102 @@ pub fn scan(text: &str) -> Vec<Hit> {
                 col: 1,
                 msg: "a lone `}` closes nothing in Kasane: definitions are closed with `end <FQN>`".into(),
             });
+        }
+        // `type X = T`: Kasane に型の別名はない（`= T` の形は無効。`type` は構造体/列挙子を宣言する）。
+        if indent == 0 {
+            let w = t.trim_start();
+            if w.starts_with("type") && w[4..].chars().next().map_or(false, |c| c.is_whitespace()) {
+                let after_kw = &w[4..];
+                let lead = after_kw.chars().take_while(|c| c.is_whitespace()).count();
+                let name: String = after_kw[lead..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+                    .collect();
+                let after_name = &after_kw[lead + name.len()..];
+                if !name.is_empty() && after_name.trim_start().starts_with('=') {
+                    let eq_lead = after_name.chars().take_while(|c| c.is_whitespace()).count();
+                    let col = 4 + lead + name.len() + eq_lead + 1;
+                    hits.push(Hit {
+                        code: "E0063",
+                        line: ln,
+                        col,
+                        msg: "Kasane has no type aliases: `type X = T` is not a definition. A `type` declares a struct or enum — write the header alone, then its fields/variants indented by 4 spaces, and close with `end X`.".into(),
+                    });
+                }
+            }
+        }
+        // `end test X` (`end <予約語>`): `end` の後にはキーワードではなく FQN を書く。
+        if indent == 0 {
+            let w = t.trim_start();
+            if w.starts_with("end") && w[3..].chars().next().map_or(false, |c| c.is_whitespace()) {
+                let rest = w[3..].trim_start();
+                let word: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if RESERVED.contains(&word.as_str()) {
+                    hits.push(Hit {
+                        code: "E0064",
+                        line: ln,
+                        col: 1,
+                        msg: format!(
+                            "Kasane has no `end {}`: close a definition with `end <FQN>` (the full path from the header, e.g. `end t.foo.test_bar`), not `end {}`",
+                            word, word
+                        ),
+                    });
+                }
+            }
+        }
+        // `p.0`: タプルに番号付きの欄はない。分解して使う。
+        for i in 0..cs.len().saturating_sub(1) {
+            if cs[i] == '.' && cs[i + 1].is_ascii_digit() && (i == 0 || !cs[i - 1].is_ascii_digit()) {
+                hits.push(Hit {
+                    code: "E0065",
+                    line: ln,
+                    col: i + 1,
+                    msg: "Kasane has no `p.0` tuple field access: tuples have no numbered fields; destructure with `let (a, b) = p` or `match p { (a, b) => .. }`."
+                        .into(),
+                });
+                break;
+            }
+        }
+        // 定義の名前の一部に予約語 (`fn t.end` など)。予約語は名前に使えない。
+        if indent == 0 {
+            let w = t.trim_start();
+            let kw = w
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .next()
+                .unwrap_or("");
+            if matches!(
+                kw,
+                "fn" | "type" | "enum" | "trait" | "test" | "import" | "const" | "static" | "extern"
+            ) {
+                let after_kw = &w[kw.len()..];
+                let lead = after_kw.chars().take_while(|c| c.is_whitespace()).count();
+                let name: String = after_kw[lead..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+                    .collect();
+                if !name.is_empty() {
+                    let mut seg_off = 0usize;
+                    for seg in name.split('.') {
+                        if !seg.is_empty() && RESERVED.contains(&seg) {
+                            let col = kw.len() + lead + seg_off + 1;
+                            hits.push(Hit {
+                                code: "E0066",
+                                line: ln,
+                                col,
+                                msg: format!(
+                                    "`{}` is a reserved word and cannot be used in a name; use a different name (e.g. `t.finish` instead of `t.end`)",
+                                    seg
+                                ),
+                            });
+                            break;
+                        }
+                        seg_off += seg.len() + 1;
+                    }
+                }
+            }
         }
     }
     hits
