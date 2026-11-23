@@ -1,0 +1,38 @@
+type t.Store
+    names: std.vec.Vec<std.string.String>
+    next: u64
+end t.Store
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let (give, take) = std.sync.channel::<t.Store, std.alloc.System>(
+        std.alloc.SYSTEM,
+        1usize,
+    ).unwrap()
+    let names = std.vec.Vec.new()
+    core.mem.drop(give.send(t.Store { names: names, next: 1u64 }))
+    let mine = t.touch_owned(give, take)
+    let mut line = std.string.String.new()
+    line.push_str("ids=").unwrap()
+    line.push_u64(mine).unwrap()
+    std.io.print_line(line.as_str())
+end t.main
+
+fn t.touch(give: &std.sync.Sender<t.Store>, take: &std.sync.Receiver<t.Store>) -> u64 uses [alloc, thread] panics never
+    let mut store = match take.recv() {
+        Ok(s) => s
+        Err(_) => return 0u64
+    }
+    let id = store.next
+    store.next = id.wrapping_add(1u64)
+    match std.string.String.from_str("lit") {
+        Ok(owned) => core.mem.drop(store.names.push(owned))
+        Err(_e) => {
+        }
+    }
+    core.mem.drop(give.send(store))
+    id
+end t.touch
+
+fn t.touch_owned(give: std.sync.Sender<t.Store>, take: std.sync.Receiver<t.Store>) -> u64 uses [alloc, thread] panics never
+    t.touch(&give, &take)
+end t.touch_owned

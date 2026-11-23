@@ -423,6 +423,8 @@ struct An<'a> {
     /// 借用を作る命令 (`reborrow` / `as_shared` / `field_addr`) → 親の値。
     parent: HashMap<VId, VId>,
     move_loads: HashSet<VId>,
+    /// 自分のヒープ領域を解放・再確保するスロット (持ち主)。持ち主でない一時のスロットの `Buf` は借用の出どころにしない。
+    owners: HashSet<VId>,
     move_stores: HashSet<(usize, usize)>,
     /// 値 → (入口の引数の番号, その引数の指す先からのオフセット)。アドレスの命令をたどって分かる値だけ。
     pabs: Vec<Option<(u32, u32)>>,
@@ -573,7 +575,7 @@ impl<'a> An<'a> {
                         _ => None,
                     };
                     let mut take = |c: &Cell| {
-                        if t == Ty::Ptr && c.live {
+                        if t == Ty::Ptr && c.live && self.owners.contains(&r) {
                             out.insert(Loan::Buf(r));
                         }
                         out.extend(c.loans.iter().copied());
@@ -1171,7 +1173,22 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
             }
         }
     }
-    let mut an = An { aggs, f, hdr, callee, n, ty, org: vec![Set::new(); n], place, parent, move_loads, move_stores, pabs, sfo, freg };
+    // 解放・再確保する値が、スロット自身のメモリからの読み出しそのものなら、そのスロットは持ち主。
+    // `&mut` の受け手を写して呼んだあとに読み戻す作業場所は、持ち主でない (所有は読み戻した値へ移っただけ)。
+    let mut owners: HashSet<VId> = HashSet::new();
+    {
+        let defs: HashMap<VId, &Inst> = f.blocks.iter().flat_map(|b| b.insts.iter()).map(|i| (i.dst, i)).collect();
+        for i in f.blocks.iter().flat_map(|b| b.insts.iter()) {
+            if let Op::HeapFree(p) | Op::HeapRealloc { p, .. } = &i.op {
+                if let Some(Inst { op: Op::MemLoad { p: q, .. } | Op::Load(q), .. }) = defs.get(p) {
+                    if let Some((r, _)) = place[*q as usize] {
+                        owners.insert(r);
+                    }
+                }
+            }
+        }
+    }
+    let mut an = An { aggs, f, hdr, callee, n, ty, org: vec![Set::new(); n], place, parent, move_loads, owners, move_stores, pabs, sfo, freg };
     let ins = an.run();
     let mut diags: Vec<Diag> = vec![];
     let mut cons: Vec<Cons> = vec![];
