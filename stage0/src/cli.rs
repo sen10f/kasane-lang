@@ -1979,10 +1979,13 @@ fn cmd_test(args: &[String]) -> i32 {
     };
     let mut both = false;
     let mut doc_only = false;
+    let mut native_required = false;
     let mut prefix: Option<String> = None;
     for a in &args {
         if a == "--both" {
             both = true;
+        } else if a == "--native-required" {
+            native_required = true;
         } else if a == "--doc" {
             doc_only = true;
         } else {
@@ -2011,6 +2014,10 @@ fn cmd_test(args: &[String]) -> i32 {
         return 1;
     }
     rep.flush();
+    if native_required && !both {
+        eprintln!("ksn: `ksn test --native-required` needs `--both` (it checks the native build of each test)");
+        return 2;
+    }
     if doc_only {
         // `--doc`: `src/` の `///` のコード例 (tests/ の仮想ファイル doc_<番号>.ksnl) だけを走らせる (3.2)。
         prefix = Some(format!("{}.tests.doc_", l.pkg.name));
@@ -2075,6 +2082,8 @@ fn cmd_test(args: &[String]) -> i32 {
         // 理由を出してバンドル (インタプリタ同梱) で走らせる。
         let mut other = "";
         let mut label = String::new();
+        // `--native-required`: ネイティブのビルドが飛ばされた (バンドルへ退避する) テストは、退避して走らせずに失敗にする。
+        let mut strict_fail: Option<String> = None;
         if both {
             match build_llvm_test(&root, &prog, &user_nat, *ti, &nat_args) {
                 Ok(exe) => {
@@ -2082,12 +2091,21 @@ fn cmd_test(args: &[String]) -> i32 {
                     other = "llvm";
                     label = "both: llvm".into();
                 }
+                Err(why_llvm) if native_required => {
+                    let one_line = why_llvm.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" / ");
+                    strict_fail = Some(format!("native build required, but it was skipped: {}", user_reason_text(&one_line)));
+                }
                 Err(why_llvm) => {
                     results.push(run_in_bundle(&root, &name, &l));
                     other = "bundle";
                     label = format!("both: bundle (llvm skipped: {})", first_line(&why_llvm));
                 }
             }
+        }
+        if let Some(msg) = strict_fail {
+            failed += 1;
+            println!("test {} ... FAILED: {}", name, msg);
+            continue;
         }
         if !other.is_empty() {
             names.push(other);
@@ -4373,6 +4391,33 @@ fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str, t
 /// 「関数ごとに 1 行」のメッセージにする。`entry` が指定されるとその理由を先頭に出す
 /// (ユーザが下ろそうとした入口が最も目立つように)。`max` が `Some(n)` のときは先頭 `n` 件だけ出し、
 /// 超えた分は「... 他 N 件」と件数を出す。
+/// 下ろしの理由 (内部の文言) を利用者向けの文に直す。構文の名前と「行 N」はそのまま残し、
+/// 直し方が決まっている形には回避策を添える (E9040 の本文・`--native-required` の失敗)。
+fn user_reason_text(why: &str) -> String {
+    let mut s = why
+        .replace(" は段階 1 の対象外", " is not supported by native code yet")
+        .replace(" は未対応", " is not supported by native code yet")
+        .replace(" が未対応", " is not supported by native code yet")
+        .replace("は段階 1 の対象外", " is not supported by native code yet")
+        .replace("は未対応", " is not supported by native code yet")
+        .replace("が未対応", " is not supported by native code yet")
+        .replace("段階 1 の対象外", "is not supported by native code yet")
+        .replace("段階 1 の対象", "is only supported by native code for")
+        .replace("段階 1 にない", "is not supported by native code yet")
+        .replace("この型は KIR の型表に入らない", "native code cannot lay out this type")
+        .replace("が型表に戻せない", " cannot be laid out for native code")
+        .replace("型表に戻せない", "cannot be laid out for native code");
+    if s.contains("hint:") {
+        return s;
+    }
+    if why.contains("&mut の受け手") || why.contains("受け手や引数") {
+        s.push_str(" — hint: the receiver is a reference: bind `let v = *x` first, then call the method on `v`");
+    } else if why.contains("メソッド flush") {
+        s.push_str(" — hint: chained `stdout().flush()` is not supported: bind the stdout handle first (`let out = std.io.stdout()`), then `out.flush()`");
+    }
+    s
+}
+
 fn format_reasons(prog: &Program, unsupported: &[(String, String)], entry: &str, max: Option<usize>) -> String {
     let limit = max.unwrap_or(usize::MAX);
     // 入口の理由を先頭に、それ以外を元の順序でその後ろに。
@@ -4393,7 +4438,7 @@ fn format_reasons(prog: &Program, unsupported: &[(String, String)], entry: &str,
             .find(|d| d.name == **fq)
             .map(|d| format!("{}:{}", d.file, d.line))
             .unwrap_or_else(|| fq.clone());
-        lines.push(format!("{} を KIR に下ろせない ({}): {}", fq, loc, why));
+        lines.push(format!("{} を KIR に下ろせない ({}): {}", fq, loc, user_reason_text(why)));
     }
     if let Some(max) = max {
         if unsupported.len() > max {
