@@ -451,6 +451,34 @@ fn grammar_mismatch_points_at_real_line() {
     assert!(out.contains("src/t.ksnl:6") || out.contains("src/t.ksnl:5"), "{out}");
 }
 
+/// `.ksnl` にトップレベルコメントがあると `ksn fmt` は E0059 を行:列つきで出し、ゼロで終わらない
+/// (コメントは整形でも消せない)。`.ksnh` は触らない。
+#[test]
+fn fmt_reports_e0059_for_comment_in_ksnl() {
+    let src = "// top-level comment\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fmt_e0059_comment", src);
+    let o = run(&["fmt"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    let out = text(&o.stdout);
+    assert!(out.contains("src/t.ksnl:1:1: E0059: a comment cannot be placed in a .ksnl; write it in a .ksnh next to it"), "{out}");
+    // fmt はコメントを消さず (ファイルは依然無効)、非ゼロで終わる。
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("// top-level comment"), "{fixed}");
+}
+
+/// コメントと構文エラーの両方がある `.ksnl` は、E0059 と構文エラーを一緒に出す。
+#[test]
+fn fmt_reports_e0059_together_with_syntax_error() {
+    let src = "// comment\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let = 3\nend t.main\n";
+    let t = Tmp::new_raw("fmt_e0059_syntax", src);
+    let o = run(&["fmt"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    let out = text(&o.stdout);
+    assert!(out.contains("src/t.ksnl:1:1: E0059"), "{out}");
+    // 構文エラーも一緒に出る (どのコードかは文法側に任せる)。
+    assert!(out.contains("E0002") || out.contains("E0003"), "{out}");
+}
+
 // ---- 100 文字を超える行 (E0055) と、fmt が直せないときの位置 (G58) ----
 
 /// 105 文字の構造体リテラルの行 (8 行目)。E0055 が行:列つきで、構造体リテラルの直し方を添えて出る。

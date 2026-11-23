@@ -1,0 +1,2 @@
+type t.Alias = u32
+end t.Alias

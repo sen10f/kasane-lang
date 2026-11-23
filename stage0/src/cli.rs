@@ -196,12 +196,30 @@ impl Report {
                     None => "<project>".to_string(),
                 };
                 println!("{}: {}{}: {}", loc, it.code, if it.fatal { "" } else { " (non-fatal)" }, it.message);
+                // 字を指す診断 (col > 0) は、該当するソース行と列位置を示す `^` を添える。
+                if it.col > 0 {
+                    if let Some((line_text, caret)) = source_line_caret(it.file.as_deref(), it.line, it.col) {
+                        println!("   | {}", line_text);
+                        println!("   | {}", caret);
+                    }
+                }
             }
         }
     }
     fn fatal(&self) -> bool {
         self.items.iter().any(|i| i.fatal)
     }
+}
+
+/// 診断が指すソース行と、列（1 始まり、文字基準）を示す `^` の行を返す。
+fn source_line_caret(file: Option<&str>, line: usize, col: usize) -> Option<(String, String)> {
+    let file = file?;
+    let text = read_text(file)?;
+    let line_text = text.split('\n').nth(line.wrapping_sub(1))?;
+    let len = line_text.chars().count();
+    let spaces = (col - 1).min(len);
+    let caret = " ".repeat(spaces) + "^";
+    Some((line_text.to_string(), caret))
 }
 
 pub fn rel(path: &str) -> String {
@@ -495,7 +513,7 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
             if dup {
                 continue;
             }
-            if !(e.code == "E0002" && guided.contains(&e.line)) {
+            if !(matches!(e.code.as_str(), "E0002" | "E0003") && guided.contains(&e.line)) {
                 rep.add(&e.code, &e.msg, Some(&fl), e.line, e.col, true);
             }
             continue;
@@ -2964,6 +2982,14 @@ fn cmd_fmt(args: &[String]) -> i32 {
                 diff = true;
                 println!("{}:{}:{}: {}: {}", rel(&s.path), want.gram.line, want.gram.col, want.gram.code, want.gram.msg);
             }
+            // `.ksnl` にコメントは置けない (E0059)。整形でもコメントは消せないので、元のファイルの行で
+            // 報告し、非ゼロで終わる (fmt が有効なファイルを作れない)。`.ksnh` は触らない。
+            if s.path.ends_with(".ksnl") {
+                for ln in crate::ksnh::comment_lines_in_ksnl(&s.text) {
+                    diff = true;
+                    println!("{}:{}:1: E0059: a comment cannot be placed in a .ksnl; write it in a .ksnh next to it", rel(&s.path), ln);
+                }
+            }
             continue;
         }
         // 書かない。診断は元のファイルの行:列で出す (直せないものが元のファイルにもある)。
@@ -2987,6 +3013,14 @@ fn cmd_fmt(args: &[String]) -> i32 {
             }
         }
         println!("{}: note: the file cannot be formatted to a valid file, so `ksn fmt` left it unchanged; fix the error(s) above in this file and run `ksn fmt` again", rel(&s.path));
+        // `.ksnl` にコメントは置けない (E0059)。整形でもコメントは消せないので、元のファイルの行で
+        // 報告し、非ゼロで終わる (fmt が有効なファイルを作れない)。`.ksnh` は触らない。
+        if s.path.ends_with(".ksnl") {
+            for ln in crate::ksnh::comment_lines_in_ksnl(&s.text) {
+                diff = true;
+                println!("{}:{}:1: E0059: a comment cannot be placed in a .ksnl; write it in a .ksnh next to it", rel(&s.path), ln);
+            }
+        }
     }
     // `kasane.toml` / `kasane.lock` も整える (設計_tomlとlockの書き方.md 7 章)。直せない誤り (E0004 など) は
     // `.ksnl` と同じく報告だけ。
