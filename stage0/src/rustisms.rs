@@ -539,7 +539,83 @@ pub fn scan(text: &str) -> Vec<Hit> {
             }
         }
     }
+    guided_forms(&lines, &mut hits);
     hits
+}
+
+/// 単語 `w` の出現位置 (文字の添字) を、前後が識別子の文字でないものだけ返す。
+fn word_at(cs: &[char], w: &str) -> Vec<usize> {
+    let wc: Vec<char> = w.chars().collect();
+    let mut out = vec![];
+    for i in 0..cs.len() {
+        if cs.len() - i < wc.len() || cs[i..i + wc.len()] != wc[..] {
+            continue;
+        }
+        let prev_ok = i == 0 || !(cs[i - 1].is_alphanumeric() || cs[i - 1] == '_');
+        let next_ok = cs.get(i + wc.len()).map_or(true, |n| !(n.is_alphanumeric() || *n == '_'));
+        if prev_ok && next_ok {
+            out.push(i);
+        }
+    }
+    out
+}
+
+/// 直し方が機械では決まらない Rust の癖 (`mut` の束縛・`end` の名前・欄つきの列挙の要素・値の `break`) に、
+/// 直し方を文面で言う。`fix` は出さない。報告は E0002 (構文の誤り) として、同じ行の一般的な E0002 の代わりに出す。
+fn guided_forms(lines: &[&str], hits: &mut Vec<Hit>) {
+    let mut in_enum = false;
+    for (idx, line) in lines.iter().enumerate() {
+        let ln = idx + 1;
+        let code: Vec<char> = code_part(line);
+        let s: String = code.iter().collect();
+        let t = s.trim_end();
+        if t.trim().is_empty() {
+            continue;
+        }
+        let indent = t.len() - t.trim_start().len();
+        if indent == 0 {
+            in_enum = t.starts_with("enum ");
+        }
+        let cs: Vec<char> = t.chars().collect();
+        let mut push = |col: usize, msg: &str| hits.push(Hit { code: "E0002", line: ln, col, msg: msg.to_string() });
+        // `mut` が丸括弧・カンマの直後にある (パターン `Ok(mut s)` と引数 `fn f(mut q: T)`)。
+        for i in word_at(&cs, "mut") {
+            let p = cs[..i].iter().rev().find(|c| !c.is_whitespace());
+            if matches!(p, Some('(') | Some(',')) {
+                push(i + 1, "`mut` is not allowed in a pattern or parameter: bind the value as `Ok(s0) =>` (or `fn f(q0: ..)`) and write `let mut s = s0` (or `let mut q = q0`) on the next line");
+                break;
+            }
+        }
+        // `end` を変数・引数・メソッドの名前に使う (`let end`・`let mut end`・`(end: T)`・`h.end()`)。
+        for i in word_at(&cs, "end") {
+            let before: String = cs[..i].iter().collect();
+            let b = before.trim_end();
+            let after: String = cs[i + 3..].iter().collect();
+            let is_let = b.ends_with("let") || b.ends_with("let mut");
+            let is_param = (b.ends_with('(') || b.ends_with(',')) && after.trim_start().starts_with(':');
+            let is_method = b.ends_with('.') && after.starts_with('(');
+            if is_let || is_param || is_method {
+                push(i + 1, "`end` is a reserved word and cannot name a variable, parameter or method: use another name (e.g. `stop`, `finish`)");
+                break;
+            }
+        }
+        // 欄つきの列挙の要素 `Ins { pos: usize, len: usize }` (列挙の中だけ)。
+        if in_enum && indent > 0 {
+            let w = t.trim_start();
+            let name_len = w.chars().take_while(|c| c.is_alphanumeric() || *c == '_').count();
+            if name_len > 0 && w.chars().next().map_or(false, |c| c.is_uppercase()) && w[name_len..].starts_with(" {") && w.contains(':') {
+                push(indent + 1, "an enum variant cannot have named fields: use a tuple variant `Ins(usize, usize)`, or put the fields in a separate `type`");
+            }
+        }
+        // 値を持つ `break` (`break Some(x)`・`break v`)。Kasane の `break` は値を取らない。
+        if let Some(&i) = word_at(&cs, "break").first() {
+            let rest: String = cs[i + 5..].iter().collect();
+            let rest = rest.trim();
+            if !rest.is_empty() && !rest.starts_with('\'') {
+                push(i + 1, "`break` takes no value in Kasane: write `break` alone, and set a `let mut` variable before the `break` to carry the result out of the loop");
+            }
+        }
+    }
 }
 
 fn word_positions(cs: &[char]) -> Vec<(usize, String)> {

@@ -1287,3 +1287,21 @@ fn fmt_fixes_what_it_can_and_keeps_e0055_for_the_rest() {
     assert!(out.contains("E0055") && out.contains("bind `"), "{}", out);
     assert_eq!(o.status.code(), Some(1));
 }
+
+#[test]
+fn fix_surface_one_line_match_arms_each_on_own_line() {
+    let src = "fn t.pick(x: Option<i32>) -> i32 uses [] panics never\n    let v = match x { Some(v) => v, None => 0i32 }\n    v\nend t.pick\n";
+    surface_round("sf_match1", src, "E0002", "        Some(v) => v\n        None => 0i32\n");
+}
+
+#[test]
+fn fix_surface_fn_without_return_type_gets_unit() {
+    let src = "fn t.a(x: u8) uses [] panics never\n    1u8\nend t.a\n";
+    surface_round("sf_unit", src, "E0002", "-> () uses [] panics never");
+}
+
+#[test]
+fn fix_surface_arm_deref_assignment_opens_a_block() {
+    let src = "fn t.set(flag: &mut bool) -> () uses [] panics never\n    match Some(flag) {\n        Some(f) => *f = true\n        None => {}\n    }\nend t.set\n";
+    surface_round("sf_deref_arm", src, "E0002", "*f = true\n");
+}

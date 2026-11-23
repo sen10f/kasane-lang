@@ -5401,3 +5401,14 @@ fn check_never_runs_effects_of_const_initializers() {
     assert_ne!(o2.status.code(), Some(0));
     assert!(!marker.exists(), "`ksn check` ran a constant initializer's effects");
 }
+
+#[test]
+fn rust_forms_forbidden_by_decision_get_guidance_not_a_fix() {
+    let src = "enum t.Op\n    Ins { pos: usize, len: usize }\nend t.Op\n\nfn t.g(mut q: i32) -> i32 uses [] panics never\n    let end = q\n    match res {\n        Ok(mut s) => s\n        Err(e) => 0\n    }\n    loop {\n        break Some(3i32)\n    }\n    q\nend t.g\n";
+    let t = Tmp::new_raw("rust_forms_guidance", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(out.contains("tuple variant `Ins(usize, usize)`"), "{}", out);
+    assert!(out.contains("`mut` is not allowed in a pattern or parameter"), "{}", out);
+    assert!(out.contains("`end` is a reserved word"), "{}", out);
+    assert!(out.contains("`break` takes no value"), "{}", out);
+}
