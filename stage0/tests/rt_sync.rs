@@ -129,3 +129,39 @@ fn rt_sync_contended_relock_is_a_deadlock_101_native() {
         let _ = fs::remove_dir_all(&cache);
     }
 }
+
+/// 別のスレッドが生きて (眠り続けて) いても、同じスレッドの再ロックはすぐ deadlock (101)。木走査・ネイティブ。60 秒眠るスレッドがいるので、
+/// 全員待ちの検出に頼る実装は 10 秒の制限で落ちる。
+#[test]
+fn rt_sync_relock_with_busy_second_thread_is_a_deadlock_101_everywhere() {
+    if cfg!(windows) {
+        return;
+    }
+    let src = fs::read_to_string(root().join("stage0").join("tests").join("data").join("rt_sync").join("relock_busy.ksnl")).unwrap();
+    let t = Tmp::new("rt_sync_relock_busy", &src);
+    let msg = "panic: deadlock: lock() on a Mutex that another thread holds";
+    let timed = |args: &[&str]| {
+        let mut c = Command::new("timeout");
+        c.arg("10").arg(exe()).args(args).current_dir(&t.0);
+        c.output().unwrap()
+    };
+    let tw = timed(&["run"]);
+    assert_eq!(tw.status.code(), Some(101), "木走査: {}{}", text(&tw.stdout), text(&tw.stderr));
+    assert!(text(&tw.stderr).contains(msg), "{}", text(&tw.stderr));
+    for release in [false, true] {
+        let cache = scratch::Scratch::at(format!("ksn_cache_rt_sync_relock3_{}_{}", std::process::id(), release));
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
+        if release {
+            c.args(["--release", "--allow-bundle"]);
+        }
+        let o = c.output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+        let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t.native");
+        let p = if p.exists() { p } else { p.with_extension("") };
+        let r = Command::new("timeout").arg("10").arg(&p).output().unwrap();
+        assert_eq!(r.status.code(), Some(101), "native release={}: {}{}", release, text(&r.stdout), text(&r.stderr));
+        assert!(text(&r.stderr).contains(msg), "{}", text(&r.stderr));
+        let _ = fs::remove_dir_all(&cache);
+    }
+}
