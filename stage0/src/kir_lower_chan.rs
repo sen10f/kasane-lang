@@ -16,10 +16,19 @@ use crate::check::{items, nf, nlineno as nline, nname, strs};
 use crate::kir::{Aop, Cc, Mode, Op, Pay, Pointee, Term, Ty, VId};
 use crate::parser::V;
 
-use super::thread_lower::{rt_call, LOCK, UNLOCK, WAIT};
+use super::thread_lower::{rt_call, RUN_ONE};
 use super::{Lw, LR};
 
-const STATE: i128 = 48;
+const STATE: i128 = 152;
+/// チャネルごとのロックと待ち (ネイティブ。`kir_llvm.rs` の `ksn.chan.rt.*`)。状態の `+48` に `pthread_mutex_t` (40 バイト)、`+88` に
+/// `pthread_cond_t` (48 バイト)、`+136` に待っている数、`+144` に起こしの札の数。実行器 (協調実行) では何もしない (`wait` は保留のスレッドを 1 本走らせる)。
+const CINIT: &str = "ksn.chan.rt.init";
+const CLOCK: &str = "ksn.chan.rt.lock";
+/// 起こさずに外す / 待っている 1 本だけ起こして外す / 待っている全員を起こして外す。
+const CUNLOCK: &str = "ksn.chan.rt.unlock";
+const CUNLOCK1: &str = "ksn.chan.rt.unlock1";
+const CUNLOCKALL: &str = "ksn.chan.rt.unlockall";
+const CWAIT: &str = "ksn.chan.rt.wait";
 /// 補助の関数: `grow(state)` は `cap*2+4` 要素に伸ばす、`free(state)` は `buf` と状態を解放する。`alloc` の効果は端の側 (`channel` の
 /// `uses [alloc]`) が持つので、呼び出し側の効果の包含は見ない (kir.rs の検査)。
 const GROW: &str = "ksn.chan.grow";
@@ -88,7 +97,7 @@ fn cmp_eq0(lw: &mut Lw, v: VId) -> VId {
 pub(crate) fn drop_end(lw: &mut Lw, v: VId, sender: bool, elem: Ty) {
     let st = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
     let off = if sender { SENDERS } else { RECEIVERS };
-    rt_call(lw, LOCK, vec![], Ty::Unit);
+    rt_call(lw, CLOCK, vec![st], Ty::Unit);
     let n = ld(lw, st, off);
     let one = us(lw, 1);
     let n1 = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: n, b: one });
@@ -98,7 +107,7 @@ pub(crate) fn drop_end(lw: &mut Lw, v: VId, sender: bool, elem: Ty) {
     let sum = add(lw, s, r);
     let z = cmp_eq0(lw, sum);
     // 本数を変えたので待っている受け手を起こす。0 になったなら誰も状態に触れないので、ロックを外してから解放する。
-    rt_call(lw, UNLOCK, vec![], Ty::Unit);
+    rt_call(lw, CUNLOCKALL, vec![st], Ty::Unit);
     let (free, _) = lw.new_block(&[]);
     let (join, _) = lw.new_block(&[]);
     lw.branch(z, (free, vec![]), (join, vec![]));
@@ -193,12 +202,12 @@ pub(super) fn chan_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         "recv" => recv(lw, e, st, elem, line),
         _ => {
             let off = if sender { SENDERS } else { RECEIVERS };
-            rt_call(lw, LOCK, vec![], Ty::Unit);
+            rt_call(lw, CLOCK, vec![st], Ty::Unit);
             let n = ld(lw, st, off);
             let one = us(lw, 1);
             let n1 = add(lw, n, one);
             put(lw, st, off, n1);
-            rt_call(lw, UNLOCK, vec![], Ty::Unit);
+            rt_call(lw, CUNLOCK, vec![st], Ty::Unit);
             Ok(Some(lw.emit(end_t, Op::Make { variant: None, fields: vec![st] })))
         }
     })
@@ -213,7 +222,7 @@ fn close_end(lw: &mut Lw, e: &V, end: VId, end_t: Ty, line: usize) -> LR<Option<
     let elem = end_info(lw, end_t).map(|x| x.2).unwrap_or(Ty::U8);
     let st = lw.emit(Ty::Ptr, Op::Field { a: end, off: 0 });
     let (fin, fp) = lw.new_block(&[rty]);
-    rt_call(lw, LOCK, vec![], Ty::Unit);
+    rt_call(lw, CLOCK, vec![st], Ty::Unit);
     let rc = ld(lw, st, RECEIVERS);
     let one = us(lw, 1);
     let many = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: rc, b: one });
@@ -227,13 +236,13 @@ fn close_end(lw: &mut Lw, e: &V, end: VId, end_t: Ty, line: usize) -> LR<Option<
     lw.cur = Some(try_empty);
     lw.branch(empty, (shut, vec![]), (keep, vec![]));
     lw.cur = Some(shut);
-    rt_call(lw, UNLOCK, vec![], Ty::Unit);
+    rt_call(lw, CUNLOCKALL, vec![st], Ty::Unit);
     drop_end(lw, end, false, elem);
     let u = lw.unit();
     let ok = lw.emit(rty, Op::Ok(u));
     lw.goto(fin, vec![ok]);
     lw.cur = Some(keep);
-    rt_call(lw, UNLOCK, vec![], Ty::Unit);
+    rt_call(lw, CUNLOCK, vec![st], Ty::Unit);
     let er = lw.emit(rty, Op::Err(end));
     lw.goto(fin, vec![er]);
     lw.cur = Some(fin);
@@ -266,6 +275,7 @@ fn channel(lw: &mut Lw, e: &V, args: &[V], line: usize) -> LR<Option<VId>> {
     let one = us(lw, 1);
     put(lw, st, SENDERS, one);
     put(lw, st, RECEIVERS, one);
+    rt_call(lw, CINIT, vec![st], Ty::Unit);
     let tx = lw.emit(fields[0], Op::Make { variant: None, fields: vec![st] });
     let rx = lw.emit(fields[1], Op::Make { variant: None, fields: vec![st] });
     let pair = lw.emit(Ty::Agg(tup), Op::Make { variant: None, fields: vec![tx, rx] });
@@ -280,14 +290,14 @@ fn send(lw: &mut Lw, e: &V, st: VId, elem: Ty, arg: &V, line: usize) -> LR<Optio
         return lw.err(line, "send の引数の型が要素の型と違う");
     }
     let (fin, fp) = lw.new_block(&[rty]);
-    rt_call(lw, LOCK, vec![], Ty::Unit);
+    rt_call(lw, CLOCK, vec![st], Ty::Unit);
     let rc = ld(lw, st, RECEIVERS);
     let closed = cmp_eq0(lw, rc);
     let (cl, _) = lw.new_block(&[]);
     let (open, _) = lw.new_block(&[]);
     lw.branch(closed, (cl, vec![]), (open, vec![]));
     lw.cur = Some(cl);
-    rt_call(lw, UNLOCK, vec![], Ty::Unit);
+    rt_call(lw, CUNLOCK, vec![st], Ty::Unit);
     let se = lw.emit(Ty::Agg(serr), Op::Make { variant: None, fields: vec![v] });
     let er = lw.emit(rty, Op::Err(se));
     lw.goto(fin, vec![er]);
@@ -314,7 +324,7 @@ fn send(lw: &mut Lw, e: &V, st: VId, elem: Ty, arg: &V, line: usize) -> LR<Optio
     let one = us(lw, 1);
     let l1 = add(lw, len, one);
     put(lw, st, LEN, l1);
-    rt_call(lw, UNLOCK, vec![], Ty::Unit);
+    rt_call(lw, CUNLOCK1, vec![st], Ty::Unit);
     let u = lw.unit();
     let ok = lw.emit(rty, Op::Ok(u));
     lw.goto(fin, vec![ok]);
@@ -330,7 +340,7 @@ fn recv(lw: &mut Lw, e: &V, st: VId, elem: Ty, line: usize) -> LR<Option<VId>> {
     }
     let (fin, fp) = lw.new_block(&[rty]);
     let (lp, _) = lw.new_block(&[]);
-    rt_call(lw, LOCK, vec![], Ty::Unit);
+    rt_call(lw, CLOCK, vec![st], Ty::Unit);
     lw.goto(lp, vec![]);
     lw.cur = Some(lp);
     let head = ld(lw, st, HEAD);
@@ -348,7 +358,7 @@ fn recv(lw: &mut Lw, e: &V, st: VId, elem: Ty, line: usize) -> LR<Option<VId>> {
     let one = us(lw, 1);
     let h1 = add(lw, head, one);
     put(lw, st, HEAD, h1);
-    rt_call(lw, UNLOCK, vec![], Ty::Unit);
+    rt_call(lw, CUNLOCK, vec![st], Ty::Unit);
     let ok = lw.emit(rty, Op::Ok(x));
     lw.goto(fin, vec![ok]);
     lw.cur = Some(empty);
@@ -358,7 +368,7 @@ fn recv(lw: &mut Lw, e: &V, st: VId, elem: Ty, line: usize) -> LR<Option<VId>> {
     let (wait, _) = lw.new_block(&[]);
     lw.branch(none, (closed, vec![]), (wait, vec![]));
     lw.cur = Some(closed);
-    rt_call(lw, UNLOCK, vec![], Ty::Unit);
+    rt_call(lw, CUNLOCK, vec![st], Ty::Unit);
     let zero = lw.emit(Ty::U8, Op::Const(0));
     let re = lw.emit(Ty::Agg(rerr), Op::Make { variant: None, fields: vec![zero] });
     let er = lw.emit(rty, Op::Err(re));
@@ -366,7 +376,7 @@ fn recv(lw: &mut Lw, e: &V, st: VId, elem: Ty, line: usize) -> LR<Option<VId>> {
     lw.cur = Some(wait);
     // 空で送り手が生きている: 協調実行では保留中のスレッドを 1 本走らせる (走らせるものが無ければ deadlock の panic)。
     // LLVM では条件変数で待つ (ロックを手放して、起こされたら取り直す)。
-    rt_call(lw, WAIT, vec![], Ty::Unit);
+    rt_call(lw, CWAIT, vec![st], Ty::Unit);
     lw.goto(lp, vec![]);
     lw.cur = Some(fin);
     Ok(Some(fp[0]))
@@ -378,6 +388,31 @@ pub(super) fn finish(ok: &mut Vec<(crate::kir::Func, std::collections::BTreeSet<
     use std::collections::BTreeSet;
     let called = |n: &str| ok.iter().any(|(_, cs)| cs.contains(n));
     let (want_grow, want_free) = (called(GROW), called(FREE));
+    // ロックと待ちの補助 (実行器では協調実行なので何もしない。ネイティブは `kir_llvm.rs` が本体に差し替える)。
+    let all: Vec<String> = ["alloc", "env", "io.console", "io.fs", "io.net", "process", "rand", "thread", "time"].iter().map(|s| s.to_string()).collect();
+    let wanted_rt: Vec<&str> = [CINIT, CLOCK, CUNLOCK, CUNLOCK1, CUNLOCKALL, CWAIT].into_iter().filter(|n| called(n)).collect();
+    for name in wanted_rt {
+        let mut b = Fb::new(&[Ty::Ptr]);
+        let mut callees = BTreeSet::new();
+        if name == CWAIT {
+            // 空の recv の待ち: 保留中のスレッドを 1 本走らせる。走らせるものが無ければ deadlock の panic。
+            callees.insert(RUN_ONE.to_string());
+            let r = b.emit(Ty::Bool, Op::Call { callee: RUN_ONE.to_string(), args: vec![] });
+            let (yes, _) = b.block(&[]);
+            let (dead, _) = b.block(&[]);
+            b.br_if(r, yes, dead);
+            b.at(dead);
+            b.emit(Ty::Unit, Op::Panic { msg: crate::interp::DEADLOCK_RECV.to_string(), arg: None });
+            b.term(Term::Unreachable);
+            b.at(yes);
+        }
+        let u = b.emit(Ty::Unit, Op::Const(0));
+        b.term(Term::Ret(u));
+        let mut f = b.build(name, &[], Ty::Unit);
+        f.uses = all.clone();
+        f.may_panic = true;
+        ok.push((f, callees));
+    }
     if want_grow {
         let mut b = Fb::new(&[Ty::Ptr, Ty::Usize]);
         let cap = b.load(Ty::Usize, 0, CAPF as i128);
