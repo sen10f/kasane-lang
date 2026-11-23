@@ -128,7 +128,6 @@ impl W {
             derive, linear, layout_c, fields, field_lifetimes, variants, elided_refs, body, init, has_impls, impls_trait, methods, trait_sigs,
             trait_effs, requires, generic_methods, trait_method_generics, trait_sig_text, impl_trait, link, impl_for, impl_targs, header_only,
         } = d;
-        self.b(*header_only);
         self.s(kw);
         self.s(name);
         self.n(*line as u64);
@@ -142,6 +141,8 @@ impl W {
         }
         self.params(params);
         self.v(ret);
+        // 読む側 (Rd::def) と同じ順: ret の直後に header_only。
+        self.b(*header_only);
         self.b(*is_const);
         self.strs(uses);
         self.b(*inferred);
