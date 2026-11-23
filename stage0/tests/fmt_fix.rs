@@ -136,7 +136,7 @@ fn ksn_fix_converts_paren_struct_literal_to_braces() {
     assert!(codes(&cout).iter().any(|c| c == "E0048"), "{}", cout);
     assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
     let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
-    assert!(fixed.contains("t.P { x: 1u32 }"), "{}", fixed);
+    assert!(fixed.contains("t.P {\n        x: 1u32\n    }"), "{}", fixed);
     assert!(!fixed.contains("t.P(x: 1u32)"), "{}", fixed);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
     let again = run(&["fix"], &t.0);
@@ -485,40 +485,32 @@ fn fmt_reports_e0059_together_with_syntax_error() {
 const LONG_STRUCT: &str = "type t.Point derive [Clone, Copy] pub\n    aaaaaaaaaaaaaaaaaaaa: u32\n    bbbbbbbbbbbbbbbbbbbb: u32\n    cccccccccccccccccccc: u32\nend t.Point\n\n\
                            fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let p = t.Point { aaaaaaaaaaaaaaaaaaaa: 1u32, bbbbbbbbbbbbbbbbbbbb: 2u32, cccccccccccccccccccc: 3u32 }\n    core.mem.drop(p)\n    Ok(())\nend t.main\n";
 
-/// 100 文字を超える行は E0055 (行:列つき、構造体リテラルの直し方つき) で、元のファイルの位置を指す。
+/// 長い構造体リテラルの行は、E0055 ではなく `ksn fmt` が 1 行 1 欄に直す (2026-11-23。欄ごとに行が短くなる)。
 #[test]
-fn long_struct_literal_line_is_e0055_at_the_original_position() {
+fn long_struct_literal_line_is_rewritten_one_field_per_line_by_fmt() {
     let t = Tmp::new_raw("long_struct", LONG_STRUCT);
     let o = run(&["fmt"], &t.0);
-    assert_eq!(o.status.code(), Some(1));
-    let out = text(&o.stdout);
-    assert!(out.contains("src/t.ksnl:8:101: E0055"), "{out}");
-    assert!(out.contains("struct literals are one line: bind field values with `let` first"), "{out}");
-    // 半分だけ書き換えたファイルを残さない (次の診断が元のファイルの行を指す)。
-    assert_eq!(fs::read_to_string(t.0.join("src/t.ksnl")).unwrap(), LONG_STRUCT);
-    assert!(!out.contains("reformatted"), "{out}");
-    // check も行:列つきの E0055 を出す (E0002 ではない)。
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    let out = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(out.contains("    let p = t.Point {\n        aaaaaaaaaaaaaaaaaaaa: 1u32\n        bbbbbbbbbbbbbbbbbbbb: 2u32\n        cccccccccccccccccccc: 3u32\n    }\n"), "{out}");
     let c = run(&["check", "--json"], &t.0);
     let cout = text(&c.stdout);
-    assert!(codes(&cout).iter().any(|c| c == "E0055"), "{cout}");
-    assert!(cout.contains("\"line\": 8"), "{cout}");
-    assert!(cout.contains("\"col\": 101"), "{cout}");
-    assert!(!codes(&cout).iter().any(|c| c == "E0002"), "{cout}");
+    assert_eq!(c.status.code(), Some(0), "{cout}");
+    assert!(!codes(&cout).iter().any(|c| c == "E0055" || c == "E0053"), "{cout}");
 }
 
 /// fmt が直せないもの (100 文字を超える行) が残っても、直せる所 (並べ替えなど) は書き、残った長い行を
 /// 書いた後のファイルの行:列で報せる (2026-11-23)。
 #[test]
 fn fmt_does_not_rewrite_and_points_at_the_original_line_when_a_long_line_remains() {
-    let src = "fn t.zz() -> t.Point uses [] panics never\n    t.Point { aaaaaaaaaaaaaaaaaaaaaaaa: 1u32, bbbbbbbbbbbbbbbbbbbbbbbb: 2u32, cccccccccccccccccccccccc: 3u32 }\nend t.zz\n\n\
-               type t.Point derive [Clone, Copy] pub\n    aaaaaaaaaaaaaaaaaaaaaaaa: u32\n    bbbbbbbbbbbbbbbbbbbbbbbb: u32\n    cccccccccccccccccccccccc: u32\nend t.Point\n\n\
+    let src = "fn t.zz() -> u32 uses [] panics never\n    t.f(&aaaaaaaaaaaaaaaaaaaaaaaa.wrapping_add(1u32).wrapping_add(bbbbbbbbbbbbbbbbbbbbbbbb.wrapping_mul(7777777u32).wrapping_add(88888888u32)), cccccccccccccccccccccccc)\nend t.zz\n\n\
                fn t.aa() -> u8 uses [] panics never\n    1u8\nend t.aa\n";
     let t = Tmp::new_raw("long_reorder", src);
     let o = run(&["fmt"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     let out = text(&o.stdout);
     let written = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
-    let ln = written.lines().position(|l| l.contains("aaaaaaaaaaaaaaaaaaaaaaaa: 1u32")).unwrap() + 1;
+    let ln = written.lines().position(|l| l.contains("t.f(&aaaaaaaaaaaaaaaaaaaaaaaa")).unwrap() + 1;
     assert!(out.contains("reformatted"), "{out}");
     assert!(out.contains(&format!("src/t.ksnl:{}:101: E0055", ln)), "{out}");
     assert!(written.find("fn t.aa()").unwrap() < written.find("fn t.zz()").unwrap(), "{written}");
@@ -542,9 +534,9 @@ fn fmt_removes_only_the_trailing_commas_of_match_arms() {
     let after = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
     assert!(!after.contains("},"), "{after}");
     assert!(!after.contains("Ok(()),"), "{after}");
-    assert_eq!(after.matches(',').count(), src.matches(',').count() - 2, "{after}");
+    assert_eq!(after.matches(',').count(), src.matches(',').count() - 3, "{after}");
     // 残った `,` は腕の本体の中のものだけ。
-    for keep in ["t.Point { x: 1u32, y: 2u32 }", "[1u32, 2u32]", "core.mem.swap(&mut a, &mut b)", "derive [Clone, Copy] pub"] {
+    for keep in ["let p = t.Point {\n                x: 1u32\n                y: 2u32\n            }\n", "[1u32, 2u32]", "core.mem.swap(&mut a, &mut b)", "derive [Clone, Copy] pub"] {
         assert!(after.contains(keep), "{after}: {keep}");
     }
     // 直した結果は check を通り、もう 1 回かけても変わらない。
@@ -1101,7 +1093,7 @@ fn fix_surface_trailing_colon_header_and_spaced_static() {
 #[test]
 fn fix_surface_field_shorthand_and_empty_impl_end() {
     let src = "type t.P\n    a: u8\n    b: u8\nend t.P\n\ntrait t.Tr[E: uses, P: panics] pub\n    fn g(self: &Self) -> u8 uses [E] panics P\nend t.Tr\n\nimpl core.cmp.Eq for t.P\nend core.cmp.Eq for t.P\n\nfn t.main() -> t.P uses [] panics never\n    let a = 1u8\n    let b = 2u8\n    t.P { a, b }\nend t.main\n";
-    surface_round("sf_short", src, "E0061", "t.P { a: a, b: b }");
+    surface_round("sf_short", src, "E0061", "t.P {\n        a: a\n        b: b\n    }");
 }
 
 // ---- `as` キャスト (E0042) の `ksn fix` ----
@@ -1280,7 +1272,7 @@ fn fmt_hoists_struct_fields_array_elements_and_match_scrutinee() {
     let o = run(&["fmt"], &t.0);
     let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
     assert!(fixed.lines().all(|l| l.chars().count() <= 100), "{}\n{}", fixed, text(&o.stdout));
-    assert!(fixed.contains("let first_v = ") && fixed.contains("let t_mk = ") && fixed.contains("match t_mk {"), "{}", fixed);
+    assert!(fixed.contains("let p = t.P {\n        first: ") && fixed.contains("let t_mk = ") && fixed.contains("match t_mk {"), "{}", fixed);
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{}", fixed);
 }
 
