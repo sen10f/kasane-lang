@@ -7,7 +7,9 @@ fn t.get(p: &t.P) -> &str uses [] panics never
 end t.get
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let p = t.P { src: "hi" }
+    let p = t.P {
+        src: "hi"
+    }
     core.mem.drop(t.get(&p))
     Ok(())
 end t.main

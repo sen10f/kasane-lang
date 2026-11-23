@@ -10,11 +10,15 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
         t.make(&a)
     }
     match h {
-        t.Hold { v: r } => core.mem.drop(*r)
+        t.Hold {
+            v: r
+        } => core.mem.drop(*r)
     }
     Ok(())
 end t.main
 
 fn t.make(r: &u32) -> t.Hold<&u32> uses [] panics never
-    t.Hold { v: r }
+    t.Hold {
+        v: r
+    }
 end t.make

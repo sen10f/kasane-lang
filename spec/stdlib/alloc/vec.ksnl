@@ -115,7 +115,9 @@ fn alloc.vec.Vec.insert[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T,
             match self.buf.insert_within_cap(index, back) {
                 Ok(_) => Ok(())
                 Err(_lost) => {
-                    Err(alloc.vec.InsertError.Alloc(alloc.alloc.AllocError { code: 1u32 }))
+                    Err(alloc.vec.InsertError.Alloc(alloc.alloc.AllocError {
+                        code: 1u32
+                    }))
                 }
             }
         }
@@ -145,7 +147,9 @@ fn alloc.vec.Vec.push[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A
             }
             match self.buf.push_within_cap(back) {
                 Ok(_) => Ok(())
-                Err(_) => Err(alloc.alloc.AllocError { code: 1u32 })
+                Err(_) => Err(alloc.alloc.AllocError {
+                    code: 1u32
+                })
             }
         }
     }

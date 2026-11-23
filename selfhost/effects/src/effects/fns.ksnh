@@ -92,7 +92,15 @@ end effects.fns.lookup
 
 // 情報 1 件を作る (引数の順は Info のフィールドの順)。
 fn effects.fns.mk(f: usize, l: usize, b: usize, p: usize, h: bool, s: bool, o: bool) -> effects.fns.Info uses [] panics never pub
-    effects.fns.Info { file: f, line: l, body: b, pan: p, hasu: h, stk: s, own: o }
+    effects.fns.Info {
+        file: f
+        line: l
+        body: b
+        pan: p
+        hasu: h
+        stk: s
+        own: o
+    }
 end effects.fns.mk
 
 // 番号 ix の FQN。
@@ -109,8 +117,15 @@ fn effects.fns.new() -> Result<effects.fns.Fns, alloc.alloc.AllocError> uses [] 
     let names = std.vec.Vec.new()
     let effs = std.vec.Vec.new()
     let m = std.collections.HashMap.new()
-    let map = effects.fns.Map { m: m }
-    Ok(effects.fns.Fns { items: items, names: names, eff: effs, map: map })
+    let map = effects.fns.Map {
+        m: m
+    }
+    Ok(effects.fns.Fns {
+        items: items
+        names: names
+        eff: effs
+        map: map
+    })
 end effects.fns.new
 
 // 番号 ix の情報 (範囲外は本体のない空の情報)。

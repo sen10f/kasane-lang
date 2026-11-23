@@ -7,7 +7,9 @@ fn t.B.get_mut(self: &t.B) -> &mut u32 uses [] panics never
 end t.B.get_mut
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let b = t.B { v: 1u32 }
+    let b = t.B {
+        v: 1u32
+    }
     core.mem.drop(b.get_mut())
     Ok(())
 end t.main

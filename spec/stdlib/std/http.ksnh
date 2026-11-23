@@ -79,7 +79,11 @@ end std.http.Decoder.is_empty
 
 fn std.http.Decoder.new(max_head: usize, max_body: usize) -> std.http.Decoder uses [] panics never pub
     let buf = std.vec.Vec.new()
-    std.http.Decoder { buf: buf, max_body: max_body, max_head: max_head }
+    std.http.Decoder {
+        buf: buf
+        max_body: max_body
+        max_head: max_head
+    }
 end std.http.Decoder.new
 
 // 1 件の要求を取り出す。足りなければ `None` (バイトは残る)。読み残しは先頭に詰め直す。
@@ -129,7 +133,13 @@ fn std.http.assemble(head: std.http.Head, body: std.vec.Vec<u8>) -> std.http.Req
     let http11 = head.http11
     let method = head.method
     let path = head.path
-    std.http.Request { body: body, headers: headers, http11: http11, method: method, path: path }
+    std.http.Request {
+        body: body
+        headers: headers
+        http11: http11
+        method: method
+        path: path
+    }
 end std.http.assemble
 
 // `data` の `i` 番目のバイト。範囲外は 0 (呼び出し側が長さを確かめる)。
@@ -327,7 +337,10 @@ fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, st
             }
             let name = std.string.String.from_str(key)?
             let text_value = std.string.String.from_str(value)?
-            headers.push(std.http.Header { name: name, value: text_value })?
+            headers.push(std.http.Header {
+                name: name
+                value: text_value
+            })?
         }
     }
     if has_encoding && has_length {
@@ -335,8 +348,17 @@ fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, st
     }
     let method = std.string.String.from_str(method_text)?
     let path = std.string.String.from_str(path_text)?
-    let frame = std.http.Framing { chunked: chunked, length: length }
-    Ok(std.http.Head { framing: frame, headers: headers, http11: v11, method: method, path: path })
+    let frame = std.http.Framing {
+        chunked: chunked
+        length: length
+    }
+    Ok(std.http.Head {
+        framing: frame
+        headers: headers
+        http11: v11
+        method: method
+        path: path
+    })
 end std.http.parse_head
 
 // `Content-Length` の値。数字だけ。上限を超えれば `BodyTooLarge` (桁あふれも含む)。
@@ -497,7 +519,10 @@ fn std.http.write_all[W: linear + std.io.Write<[io.net]>](out: &mut W, bytes: &[
         }
         let n = out.write(rest)?
         if n == 0usize {
-            let broken = std.io.Error { kind: std.io.ErrorKind.BrokenPipe, code: 0i32 }
+            let broken = std.io.Error {
+                kind: std.io.ErrorKind.BrokenPipe
+                code: 0i32
+            }
             return Err(std.http.Error.Io(broken))
         }
         sent = sent.saturating_add(n)

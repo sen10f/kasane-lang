@@ -8,7 +8,10 @@ fn t.consume(s: alloc.string.String) -> () uses [] panics never
 end t.consume
 
 fn t.f(x: &t.S) -> () uses [] panics never
-    let t.S { name: n, other: o } = x
+    let t.S {
+        name: n
+        other: o
+    } = x
     t.consume(n)
     t.consume(o)
 end t.f
@@ -16,7 +19,10 @@ end t.f
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = std.string.String.new()
     let b = std.string.String.new()
-    let x = t.S { name: a, other: b }
+    let x = t.S {
+        name: a
+        other: b
+    }
     t.f(&x)
     Ok(())
 end t.main

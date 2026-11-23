@@ -8,7 +8,14 @@ type t.S pub
 end t.S
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let s = t.S { f: t.P { a: 1u8 }, g: t.P { a: 2u8 } }
+    let s = t.S {
+        f: t.P {
+            a: 1u8
+        }
+        g: t.P {
+            a: 2u8
+        }
+    }
     t.take(s.f)
     t.take_s(s)
     Ok(())

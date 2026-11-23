@@ -72,16 +72,38 @@ fn types.chk.new() -> Result<types.chk.Ctx, alloc.alloc.AllocError> uses [] pani
     let let_lines = std.vec.Vec.new()
     let out = std.string.String.new()
     let path = std.string.String.new()
-    let rep = types.chk.Rep { out: out, path: path, errors: 0usize, sigcall: false }
-    let pend = types.chk.Pend { lits: lits, lit_lines: lit_lines, lets: lets, let_lines: let_lines }
+    let rep = types.chk.Rep {
+        out: out
+        path: path
+        errors: 0usize
+        sigcall: false
+    }
+    let pend = types.chk.Pend {
+        lits: lits
+        lit_lines: lit_lines
+        lets: lets
+        let_lines: let_lines
+    }
     let rec = types.rec.empty()?
     let z = 0usize
-    Ok(types.chk.Ctx { file: z, sc: sc, pend: pend, ret: z, rep: rep, unknown: z, rec: rec })
+    Ok(types.chk.Ctx {
+        file: z
+        sc: sc
+        pend: pend
+        ret: z
+        rep: rep
+        unknown: z
+        rec: rec
+    })
 end types.chk.new
 
 fn types.chk.push(cx: &mut types.chk.Ctx, name: &str, ty: usize, generic: bool) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let nm = std.string.String.from_str(name)?
-    cx.sc.push(types.chk.Ent { name: nm, ty: ty, generic: generic })?
+    cx.sc.push(types.chk.Ent {
+        name: nm
+        ty: ty
+        generic: generic
+    })?
     Ok(())
 end types.chk.push
 

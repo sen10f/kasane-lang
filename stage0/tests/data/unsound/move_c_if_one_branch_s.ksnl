@@ -7,7 +7,9 @@ fn t.eat(s: t.S) -> u32 uses [] panics never
 end t.eat
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let s = t.S { v: 1u32 }
+    let s = t.S {
+        v: 1u32
+    }
     let c = true
     if c {
         core.mem.drop(t.eat(s))

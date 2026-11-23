@@ -15,7 +15,10 @@ end t.Pair.snd_via_loop
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = 1u32
     let b = 2u32
-    let p = t.Pair { fst: &a, snd: &b }
+    let p = t.Pair {
+        fst: &a
+        snd: &b
+    }
     core.mem.drop(*p.snd_via_loop(&p))
     Ok(())
 end t.main

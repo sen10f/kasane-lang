@@ -16,5 +16,8 @@ fn core.iter.Map.next[I: core.iter.Iterator<T, E, P>, F: core.ops.Fn<(T,), U, E,
 end core.iter.Map.next
 
 fn core.iter.map[I: core.iter.Iterator<T, E, P>, F: core.ops.Fn<(T,), U, E, P>, T, U, E: uses, P: panics](it: I, f: F) -> core.iter.Map<I, F, T, U, E, P> uses [] panics never pub
-    core.iter.Map { it: it, f: f }
+    core.iter.Map {
+        it: it
+        f: f
+    }
 end core.iter.map

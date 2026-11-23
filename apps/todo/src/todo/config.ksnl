@@ -25,7 +25,13 @@ fn todo.config.default() -> Result<todo.config.Config, todo.error.Error> uses [a
     let h = std.string.String.from_str(todo.config.DEFAULT_HISTORY_PATH)?
     let t = todo.config.DEFAULT_SESSION_TTL_SECONDS
     let m = todo.config.DEFAULT_MAX_TITLE
-    Ok(todo.config.Config { addr: a, db: b, hist: h, ttl: t, max: m })
+    Ok(todo.config.Config {
+        addr: a
+        db: b
+        hist: h
+        ttl: t
+        max: m
+    })
 end todo.config.default
 
 fn todo.config.load(path: &str) -> Result<todo.config.Config, todo.error.Error> uses [alloc, io.fs] panics never pub
@@ -48,7 +54,13 @@ fn todo.config.load(path: &str) -> Result<todo.config.Config, todo.error.Error> 
     let h = todo.config.read_string_field(&doc, root, "history_path", hist_def)?
     let t = todo.config.read_u64_field(&doc, root, "session_ttl_seconds", ttl_def)?
     let m = todo.config.read_usize_field(&doc, root, "max_title", max_def)?
-    Ok(todo.config.Config { addr: a, db: b, hist: h, ttl: t, max: m })
+    Ok(todo.config.Config {
+        addr: a
+        db: b
+        hist: h
+        ttl: t
+        max: m
+    })
 end todo.config.load
 
 fn todo.config.read_string_field(doc: &std.json.Doc, v: std.json.Value, name: &str, fallback: &str) -> Result<std.string.String, todo.error.Error> uses [alloc] panics never pub
@@ -150,6 +162,12 @@ test todo.config.validate.test_rejects_empty
     let eh = string.String.from_str(std.alloc.SYSTEM, "x")?
     let t = 3600u64
     let m = 2048usize
-    let bad = todo.config.Config { addr: ea, db: eb, hist: eh, ttl: t, max: m }
+    let bad = todo.config.Config {
+        addr: ea
+        db: eb
+        hist: eh
+        ttl: t
+        max: m
+    }
     core.check.eq(todo.config.validate(&bad) is Err(_), true)
 end todo.config.validate.test_rejects_empty

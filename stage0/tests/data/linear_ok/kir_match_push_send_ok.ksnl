@@ -9,7 +9,10 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics 
         1usize,
     ).unwrap()
     let names = std.vec.Vec.new()
-    core.mem.drop(give.send(t.Store { names: names, next: 1u64 }))
+    core.mem.drop(give.send(t.Store {
+        names: names
+        next: 1u64
+    }))
     let mine = t.touch_owned(give, take)
     let mut line = std.string.String.new()
     line.push_str("ids=").unwrap()

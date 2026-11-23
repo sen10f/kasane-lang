@@ -96,7 +96,12 @@ end todo.http.headers_well_formed
 fn todo.http.json_response(status: u16, body: std.string.String) -> todo.http.Response uses [] panics never pub
     let location = std.string.String.new()
     let cookie = std.string.String.new()
-    todo.http.Response { body: body, location: location, set_cookie: cookie, status: status }
+    todo.http.Response {
+        body: body
+        location: location
+        set_cookie: cookie
+        status: status
+    }
 end todo.http.json_response
 
 fn todo.http.method_of(text: &str) -> Option<todo.http.Method> uses [] panics never
@@ -181,11 +186,18 @@ fn todo.http.parse_head(head: &[u8]) -> Result<todo.http.Head, todo.error.Error>
     let owned = std.string.String.from_str(path)?
     let cookie = match std.string.String.from_str(cookie_value) {
         Ok(s) => s
-        Err(_) => return Err(error.Error.Alloc(alloc.alloc.AllocError { code: 0u32 }))
+        Err(_) => return Err(error.Error.Alloc(alloc.alloc.AllocError {
+            code: 0u32
+        }))
     }
     let cl = content_length
     let ck = cookie
-    Ok(todo.http.Head { content_length: cl, cookie: ck, method: method, path: owned })
+    Ok(todo.http.Head {
+        content_length: cl
+        cookie: ck
+        method: method
+        path: owned
+    })
 end todo.http.parse_head
 
 fn todo.http.parse_reply(raw: &[u8]) -> Result<todo.http.Reply, todo.error.Error> uses [alloc] panics never pub
@@ -224,7 +236,11 @@ fn todo.http.parse_reply(raw: &[u8]) -> Result<todo.http.Reply, todo.error.Error
         Some(v) => location.push_str(v)?
         None => core.mem.drop(0u8)
     }
-    Ok(todo.http.Reply { body: body, location: location, status: status })
+    Ok(todo.http.Reply {
+        body: body
+        location: location
+        status: status
+    })
 end todo.http.parse_reply
 
 fn todo.http.reason(status: u16) -> &'static str uses [] panics never pub
@@ -244,7 +260,12 @@ end todo.http.reason
 fn todo.http.redirect_response(location: &str, body: std.string.String) -> Result<todo.http.Response, todo.error.Error> uses [alloc] panics never pub
     let place = std.string.String.from_str(location)?
     let cookie = std.string.String.new()
-    Ok(todo.http.Response { body: body, location: place, set_cookie: cookie, status: 302u16 })
+    Ok(todo.http.Response {
+        body: body
+        location: place
+        set_cookie: cookie
+        status: 302u16
+    })
 end todo.http.redirect_response
 
 fn todo.http.render_response(response: &todo.http.Response) -> Result<std.string.String, todo.error.Error> uses [alloc] panics never pub

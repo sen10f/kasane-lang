@@ -30,7 +30,12 @@ fn structs.main() -> Result<(), std.io.Error> uses [] panics may
 end structs.main
 
 fn structs.run(n: u64) -> i64 uses [] panics never pub
-    let mut b = structs.Body { x: 0i64, y: 0i64, vx: 7i64, vy: -5i64 }
+    let mut b = structs.Body {
+        x: 0i64
+        y: 0i64
+        vx: 7i64
+        vy: -5i64
+    }
     let mut acc = 0i64
     for _ in core.iter.range(0u64, n) {
         b.step()

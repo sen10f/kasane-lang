@@ -7,7 +7,9 @@ fn t.look(s: &t.S) -> u32 uses [] panics never
 end t.look
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let s = t.S { v: 1u32 }
+    let s = t.S {
+        v: 1u32
+    }
     for _ in core.iter.range(0u8, 3u8) {
         core.mem.drop(t.look(&s))
     }

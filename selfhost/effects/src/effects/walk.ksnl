@@ -26,7 +26,15 @@ fn effects.walk.acc_new() -> Result<effects.walk.Acc, alloc.alloc.AllocError> us
         cnt.push(0usize)?
     }
     let tix = std.vec.Vec.new()
-    Ok(effects.walk.Acc { rep: rep, edges: edges, cs: cs, cu: cu, fnu: 0usize, cnt: cnt, tix: tix })
+    Ok(effects.walk.Acc {
+        rep: rep
+        edges: edges
+        cs: cs
+        cu: cu
+        fnu: 0usize
+        cnt: cnt
+        tix: tix
+    })
 end effects.walk.acc_new
 
 fn effects.walk.bin_at(p: &parse.cur.P, src: &[u8], acc: &mut effects.walk.Acc, cx: effects.walk.Cx, n: parse.ast.Node) -> Result<(), resolve.Failure> uses [alloc] panics never pub
@@ -157,7 +165,13 @@ fn effects.walk.callee(fs: &effects.fns.Fns, cx: effects.walk.Cx, acc: &mut effe
 end effects.walk.callee
 
 fn effects.walk.closure(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, cx: effects.walk.Cx, acc: &mut effects.walk.Acc, n: parse.ast.Node) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
-    let inner = effects.walk.Cx { fi: cx.fi, own: cx.own, hasu: cx.hasu, pan: cx.pan, inclo: true }
+    let inner = effects.walk.Cx {
+        fi: cx.fi
+        own: cx.own
+        hasu: cx.hasu
+        pan: cx.pan
+        inclo: true
+    }
     let saved = st.base
     let top = st.mark()
     st.base = top
@@ -317,7 +331,13 @@ fn effects.walk.fn_body(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse
     let info = effects.fns.at(fs, fi)
     let sg = parse.ast.get(&p.ast, n.c)
     let at = parse.ast.get(&p.ast, sg.d)
-    let cx = effects.walk.Cx { fi: fi, own: info.own, hasu: info.hasu, pan: at.b, inclo: false }
+    let cx = effects.walk.Cx {
+        fi: fi
+        own: info.own
+        hasu: info.hasu
+        pan: at.b
+        inclo: false
+    }
     acc.fnu = 0usize
     let mark = st.mark()
     for j in core.iter.range(0usize, resolve.ast.count(p, sg.b)) {

@@ -13,7 +13,10 @@ test bench.Inventory.test_add_existing_keeps_price
     inv.add("pen", 5u32, 999u32)?
     core.check.eq(inv.count(), 1usize)
     match inv.take("pen", 15u32) {
-        Ok(item) => core.check.eq(item, bench.Item { qty: 0u32, price: 100u32 })
+        Ok(item) => core.check.eq(item, bench.Item {
+            qty: 0u32
+            price: 100u32
+        })
         Err(_e) => core.check.eq(0usize, 1usize)
     }
     let fin: Result<(), bench.InvError> = Ok(())
@@ -94,7 +97,10 @@ test bench.Inventory.test_remove_present_and_missing
     let mut inv = bench.Inventory.new()
     inv.add("pen", 3u32, 120u32)?
     match inv.remove("pen") {
-        Ok(item) => core.check.eq(item, bench.Item { qty: 3u32, price: 120u32 })
+        Ok(item) => core.check.eq(item, bench.Item {
+            qty: 3u32
+            price: 120u32
+        })
         Err(_e) => core.check.eq(0usize, 1usize)
     }
     core.check.eq(inv.count(), 0usize)
@@ -110,12 +116,18 @@ test bench.Inventory.test_restock
     inv.add("pen", 3u32, 100u32)?
     inv.restock("pen", 7u32)?
     match inv.take("pen", 10u32) {
-        Ok(item) => core.check.eq(item, bench.Item { qty: 0u32, price: 100u32 })
+        Ok(item) => core.check.eq(item, bench.Item {
+            qty: 0u32
+            price: 100u32
+        })
         Err(_e) => core.check.eq(0usize, 1usize)
     }
     inv.restock("pen", 1u32)?
     match inv.take("pen", 1u32) {
-        Ok(item) => core.check.eq(item, bench.Item { qty: 0u32, price: 100u32 })
+        Ok(item) => core.check.eq(item, bench.Item {
+            qty: 0u32
+            price: 100u32
+        })
         Err(_e) => core.check.eq(0usize, 1usize)
     }
     let fin: Result<(), bench.InvError> = Ok(())
@@ -142,11 +154,17 @@ test bench.Inventory.test_take_normal
     let mut inv = bench.Inventory.new()
     inv.add("pen", 10u32, 100u32)?
     match inv.take("pen", 4u32) {
-        Ok(item) => core.check.eq(item, bench.Item { qty: 6u32, price: 100u32 })
+        Ok(item) => core.check.eq(item, bench.Item {
+            qty: 6u32
+            price: 100u32
+        })
         Err(_e) => core.check.eq(0usize, 1usize)
     }
     match inv.take("pen", 6u32) {
-        Ok(item) => core.check.eq(item, bench.Item { qty: 0u32, price: 100u32 })
+        Ok(item) => core.check.eq(item, bench.Item {
+            qty: 0u32
+            price: 100u32
+        })
         Err(_e) => core.check.eq(0usize, 1usize)
     }
     let fin: Result<(), bench.InvError> = Ok(())
@@ -166,7 +184,10 @@ test bench.Inventory.test_take_zero_from_empty_stock
     let mut inv = bench.Inventory.new()
     inv.add("pen", 0u32, 500u32)?
     match inv.take("pen", 0u32) {
-        Ok(item) => core.check.eq(item, bench.Item { qty: 0u32, price: 500u32 })
+        Ok(item) => core.check.eq(item, bench.Item {
+            qty: 0u32
+            price: 500u32
+        })
         Err(_e) => core.check.eq(0usize, 1usize)
     }
     core.check.eq(inv.take("pen", 1u32), Err(bench.InvError.Insufficient(1u32)))

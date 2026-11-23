@@ -22,7 +22,11 @@ fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
         Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
-    let a = bench.Matrix { rows: 2usize, cols: 2usize, data: da }
+    let a = bench.Matrix {
+        rows: 2usize
+        cols: 2usize
+        data: da
+    }
     let mut db = std.vec.Vec.new()
     match db.push(5i32) {
         Ok(_) => ()
@@ -40,7 +44,11 @@ fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
         Ok(_) => ()
         Err(_e) => core.panic.panic("oom")
     }
-    let b = bench.Matrix { rows: 2usize, cols: 2usize, data: db }
+    let b = bench.Matrix {
+        rows: 2usize
+        cols: 2usize
+        data: db
+    }
     let c = bench.mat_mul(&a, &b)
     match c.data.as_slice().get(0usize) {
         Some(v) => core.check.eq(*v, 19i32)
@@ -86,5 +94,9 @@ fn bench.mat_mul(a: &bench.Matrix, b: &bench.Matrix) -> bench.Matrix uses [alloc
         }
         i = i.wrapping_add(1usize)
     }
-    bench.Matrix { rows: a.rows, cols: b.cols, data: data }
+    bench.Matrix {
+        rows: a.rows
+        cols: b.cols
+        data: data
+    }
 end bench.mat_mul

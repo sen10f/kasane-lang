@@ -60,11 +60,22 @@ type ui.layout.Tree pub
 end ui.layout.Tree
 
 fn ui.layout.Size.default() -> ui.layout.Size uses [] panics never pub
-    ui.layout.Size { w: None, h: None, mnw: None, mxw: None, mnh: None, mxh: None }
+    ui.layout.Size {
+        w: None
+        h: None
+        mnw: None
+        mxw: None
+        mnh: None
+        mxh: None
+    }
 end ui.layout.Size.default
 
 fn ui.layout.Space.default() -> ui.layout.Space uses [] panics never pub
-    ui.layout.Space { pad: 0.0f32, mar: 0.0f32, gap: 0.0f32 }
+    ui.layout.Space {
+        pad: 0.0f32
+        mar: 0.0f32
+        gap: 0.0f32
+    }
 end ui.layout.Space.default
 
 fn ui.layout.Style.default() -> ui.layout.Style uses [] panics never pub
@@ -75,7 +86,15 @@ fn ui.layout.Style.default() -> ui.layout.Style uses [] panics never pub
     let sr = 0.0f32
     let size = ui.layout.Size.default()
     let space = ui.layout.Space.default()
-    ui.layout.Style { dir: dir, jus: jus, ali: ali, gr: gr, sr: sr, size: size, space: space }
+    ui.layout.Style {
+        dir: dir
+        jus: jus
+        ali: ali
+        gr: gr
+        sr: sr
+        size: size
+        space: space
+    }
 end ui.layout.Style.default
 
 fn ui.layout.Tree.child_at(self: &ui.layout.Tree, node: usize, i: usize) -> Option<usize> uses [] panics never pub
@@ -102,7 +121,12 @@ end ui.layout.Tree.layout
 fn ui.layout.Tree.layout_at(self: &mut ui.layout.Tree, node: usize, x: f32, y: f32, aw: f32, ah: f32) -> () uses [] panics never stack 4096 pub
     match self.nodes.get_mut(node) {
         Some(n) => {
-            n.rect = ui.layout.Rect { x: x, y: y, width: aw, height: ah }
+            n.rect = ui.layout.Rect {
+                x: x
+                y: y
+                width: aw
+                height: ah
+            }
         }
         None => return
     }
@@ -303,7 +327,10 @@ end ui.layout.Tree.layout_at
 fn ui.layout.Tree.new() -> ui.layout.Tree uses [] panics never pub
     let nodes = std.vec.Vec.new()
     let kids = std.vec.Vec.new()
-    ui.layout.Tree { nodes: nodes, kids: kids }
+    ui.layout.Tree {
+        nodes: nodes
+        kids: kids
+    }
 end ui.layout.Tree.new
 
 fn ui.layout.Tree.node_at(self: &ui.layout.Tree, index: usize) -> Option<ui.layout.Node> uses [] panics never
@@ -325,8 +352,16 @@ end ui.layout.Tree.push_child
 
 fn ui.layout.Tree.push_node(self: &mut ui.layout.Tree, style: ui.layout.Style) -> usize uses [alloc] panics may pub
     let index = self.nodes.len()
-    let rect = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 0.0f32, height: 0.0f32 }
-    let node = ui.layout.Node { style: style, rect: rect }
+    let rect = ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 0.0f32
+        height: 0.0f32
+    }
+    let node = ui.layout.Node {
+        style: style
+        rect: rect
+    }
     match self.nodes.push(node) {
         Ok(_) => ()
         Err(_e) => core.panic.panic("ui.layout: out of memory")
@@ -342,7 +377,12 @@ end ui.layout.Tree.push_node
 fn ui.layout.Tree.rect(self: &ui.layout.Tree, index: usize) -> ui.layout.Rect uses [] panics never pub
     match self.nodes.get(index) {
         Some(n) => n.rect
-        None => ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 0.0f32, height: 0.0f32 }
+        None => ui.layout.Rect {
+            x: 0.0f32
+            y: 0.0f32
+            width: 0.0f32
+            height: 0.0f32
+        }
     }
 end ui.layout.Tree.rect
 
@@ -404,8 +444,18 @@ test ui.layout.Tree.test_column_align_end
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 300.0f32, 400.0f32)
-    let e0 = ui.layout.Rect { x: 200.0f32, y: 0.0f32, width: 100.0f32, height: 100.0f32 }
-    let e1 = ui.layout.Rect { x: 200.0f32, y: 100.0f32, width: 100.0f32, height: 100.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 200.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 100.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 200.0f32
+        y: 100.0f32
+        width: 100.0f32
+        height: 100.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_column_align_end
@@ -425,8 +475,18 @@ test ui.layout.Tree.test_column_grow_stretch
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 200.0f32, 400.0f32)
-    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 200.0f32, height: 200.0f32 }
-    let e1 = ui.layout.Rect { x: 0.0f32, y: 200.0f32, width: 200.0f32, height: 200.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 200.0f32
+        height: 200.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 0.0f32
+        y: 200.0f32
+        width: 200.0f32
+        height: 200.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_column_grow_stretch
@@ -444,7 +504,12 @@ test ui.layout.Tree.test_column_pad_offset
     let c0 = tree.push_node(s0)
     tree.push_child(root, c0)
     tree.layout(root, 200.0f32, 300.0f32)
-    let e0 = ui.layout.Rect { x: 10.0f32, y: 10.0f32, width: 100.0f32, height: 50.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 10.0f32
+        y: 10.0f32
+        width: 100.0f32
+        height: 50.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
 end ui.layout.Tree.test_column_pad_offset
 
@@ -472,11 +537,36 @@ test ui.layout.Tree.test_nesting
     tree.push_child(c0, gc0)
     tree.push_child(c0, gc1)
     tree.layout(root, 400.0f32, 300.0f32)
-    let er = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 400.0f32, height: 300.0f32 }
-    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 150.0f32, height: 300.0f32 }
-    let e1 = ui.layout.Rect { x: 150.0f32, y: 0.0f32, width: 150.0f32, height: 300.0f32 }
-    let eg0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 150.0f32, height: 100.0f32 }
-    let eg1 = ui.layout.Rect { x: 0.0f32, y: 100.0f32, width: 150.0f32, height: 100.0f32 }
+    let er = ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 400.0f32
+        height: 300.0f32
+    }
+    let e0 = ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 150.0f32
+        height: 300.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 150.0f32
+        y: 0.0f32
+        width: 150.0f32
+        height: 300.0f32
+    }
+    let eg0 = ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 150.0f32
+        height: 100.0f32
+    }
+    let eg1 = ui.layout.Rect {
+        x: 0.0f32
+        y: 100.0f32
+        width: 150.0f32
+        height: 100.0f32
+    }
     core.check.eq(tree.rect(root), er)
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
@@ -500,8 +590,18 @@ test ui.layout.Tree.test_row_align_center
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 300.0f32, 200.0f32)
-    let e0 = ui.layout.Rect { x: 0.0f32, y: 75.0f32, width: 100.0f32, height: 50.0f32 }
-    let e1 = ui.layout.Rect { x: 100.0f32, y: 75.0f32, width: 100.0f32, height: 50.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 0.0f32
+        y: 75.0f32
+        width: 100.0f32
+        height: 50.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 100.0f32
+        y: 75.0f32
+        width: 100.0f32
+        height: 50.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_row_align_center
@@ -522,8 +622,18 @@ test ui.layout.Tree.test_row_align_end
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 300.0f32, 200.0f32)
-    let e0 = ui.layout.Rect { x: 0.0f32, y: 150.0f32, width: 100.0f32, height: 50.0f32 }
-    let e1 = ui.layout.Rect { x: 100.0f32, y: 150.0f32, width: 100.0f32, height: 50.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 0.0f32
+        y: 150.0f32
+        width: 100.0f32
+        height: 50.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 100.0f32
+        y: 150.0f32
+        width: 100.0f32
+        height: 50.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_row_align_end
@@ -544,8 +654,18 @@ test ui.layout.Tree.test_row_align_stretch_fixed_wins
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 300.0f32, 200.0f32)
-    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 100.0f32, height: 50.0f32 }
-    let e1 = ui.layout.Rect { x: 100.0f32, y: 0.0f32, width: 100.0f32, height: 50.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 50.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 100.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 50.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_row_align_stretch_fixed_wins
@@ -569,9 +689,24 @@ test ui.layout.Tree.test_row_gap
     tree.push_child(root, c1)
     tree.push_child(root, c2)
     tree.layout(root, 500.0f32, 200.0f32)
-    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
-    let e1 = ui.layout.Rect { x: 120.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
-    let e2 = ui.layout.Rect { x: 240.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 120.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
+    let e2 = ui.layout.Rect {
+        x: 240.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
     core.check.eq(tree.rect(c2), e2)
@@ -595,9 +730,24 @@ test ui.layout.Tree.test_row_grow_stretch
     tree.push_child(root, c1)
     tree.push_child(root, c2)
     tree.layout(root, 300.0f32, 200.0f32)
-    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
-    let e1 = ui.layout.Rect { x: 100.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
-    let e2 = ui.layout.Rect { x: 200.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 100.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
+    let e2 = ui.layout.Rect {
+        x: 200.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
     core.check.eq(tree.rect(c2), e2)
@@ -618,8 +768,18 @@ test ui.layout.Tree.test_row_justify_center
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 300.0f32, 200.0f32)
-    let e0 = ui.layout.Rect { x: 50.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
-    let e1 = ui.layout.Rect { x: 150.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 50.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 150.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_row_justify_center
@@ -639,8 +799,18 @@ test ui.layout.Tree.test_row_justify_end
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 300.0f32, 200.0f32)
-    let e0 = ui.layout.Rect { x: 100.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
-    let e1 = ui.layout.Rect { x: 200.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 100.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 200.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_row_justify_end
@@ -664,9 +834,24 @@ test ui.layout.Tree.test_row_justify_space_between
     tree.push_child(root, c1)
     tree.push_child(root, c2)
     tree.layout(root, 400.0f32, 200.0f32)
-    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
-    let e1 = ui.layout.Rect { x: 150.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
-    let e2 = ui.layout.Rect { x: 300.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 150.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
+    let e2 = ui.layout.Rect {
+        x: 300.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
     core.check.eq(tree.rect(c2), e2)
@@ -689,8 +874,18 @@ test ui.layout.Tree.test_row_margin
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 400.0f32, 300.0f32)
-    let e0 = ui.layout.Rect { x: 10.0f32, y: 10.0f32, width: 100.0f32, height: 100.0f32 }
-    let e1 = ui.layout.Rect { x: 130.0f32, y: 10.0f32, width: 100.0f32, height: 100.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 10.0f32
+        y: 10.0f32
+        width: 100.0f32
+        height: 100.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 130.0f32
+        y: 10.0f32
+        width: 100.0f32
+        height: 100.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_row_margin
@@ -711,8 +906,18 @@ test ui.layout.Tree.test_row_max_width
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 300.0f32, 200.0f32)
-    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
-    let e1 = ui.layout.Rect { x: 100.0f32, y: 0.0f32, width: 100.0f32, height: 200.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 100.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 200.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_row_max_width
@@ -733,8 +938,18 @@ test ui.layout.Tree.test_row_min_width
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 300.0f32, 200.0f32)
-    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 60.0f32, height: 200.0f32 }
-    let e1 = ui.layout.Rect { x: 60.0f32, y: 0.0f32, width: 60.0f32, height: 200.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 60.0f32
+        height: 200.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 60.0f32
+        y: 0.0f32
+        width: 60.0f32
+        height: 200.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_row_min_width
@@ -754,8 +969,18 @@ test ui.layout.Tree.test_row_pad_grow
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 400.0f32, 300.0f32)
-    let e0 = ui.layout.Rect { x: 20.0f32, y: 20.0f32, width: 180.0f32, height: 260.0f32 }
-    let e1 = ui.layout.Rect { x: 200.0f32, y: 20.0f32, width: 180.0f32, height: 260.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 20.0f32
+        y: 20.0f32
+        width: 180.0f32
+        height: 260.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 200.0f32
+        y: 20.0f32
+        width: 180.0f32
+        height: 260.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_row_pad_grow
@@ -772,7 +997,12 @@ test ui.layout.Tree.test_row_pad_offset
     let c0 = tree.push_node(s0)
     tree.push_child(root, c0)
     tree.layout(root, 300.0f32, 200.0f32)
-    let e0 = ui.layout.Rect { x: 10.0f32, y: 10.0f32, width: 100.0f32, height: 50.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 10.0f32
+        y: 10.0f32
+        width: 100.0f32
+        height: 50.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
 end ui.layout.Tree.test_row_pad_offset
 
@@ -792,8 +1022,18 @@ test ui.layout.Tree.test_row_shrink
     tree.push_child(root, c0)
     tree.push_child(root, c1)
     tree.layout(root, 300.0f32, 200.0f32)
-    let e0 = ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 150.0f32, height: 200.0f32 }
-    let e1 = ui.layout.Rect { x: 150.0f32, y: 0.0f32, width: 150.0f32, height: 200.0f32 }
+    let e0 = ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 150.0f32
+        height: 200.0f32
+    }
+    let e1 = ui.layout.Rect {
+        x: 150.0f32
+        y: 0.0f32
+        width: 150.0f32
+        height: 200.0f32
+    }
     core.check.eq(tree.rect(c0), e0)
     core.check.eq(tree.rect(c1), e1)
 end ui.layout.Tree.test_row_shrink

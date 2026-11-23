@@ -3,7 +3,9 @@ type t.W
 end t.W
 
 fn t.main() -> () uses [] panics never
-    let w = t.W { n: 1u64 }
+    let w = t.W {
+        n: 1u64
+    }
     let mut o: Option<&mut t.W> = None
     t.put(&mut o, &w)
 end t.main

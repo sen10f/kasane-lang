@@ -64,7 +64,13 @@ fn resolve.table.at(t: &resolve.table.Table, ix: usize) -> resolve.table.Def use
 end resolve.table.at
 
 fn resolve.table.copy(d: &resolve.table.Def) -> resolve.table.Def uses [] panics never pub
-    resolve.table.Def { kind: d.kind, file: d.file, line: d.line, public: d.public, sig: d.sig }
+    resolve.table.Def {
+        kind: d.kind
+        file: d.file
+        line: d.line
+        public: d.public
+        sig: d.sig
+    }
 end resolve.table.copy
 
 fn resolve.table.is_pub(n: &parse.ast.Node) -> bool uses [] panics never pub
@@ -82,16 +88,30 @@ fn resolve.table.is_pub(n: &parse.ast.Node) -> bool uses [] panics never pub
 end resolve.table.is_pub
 
 fn resolve.table.mk(kind: parse.ast.Kind, file: usize, line: usize, public: bool, sig: bool) -> resolve.table.Def uses [] panics never pub
-    resolve.table.Def { kind: kind, file: file, line: line, public: public, sig: sig }
+    resolve.table.Def {
+        kind: kind
+        file: file
+        line: line
+        public: public
+        sig: sig
+    }
 end resolve.table.mk
 
 fn resolve.table.new() -> Result<resolve.table.Table, alloc.alloc.AllocError> uses [] panics never pub
     let dm = std.collections.HashMap.new()
     let vm = std.collections.HashMap.new()
     let items = std.vec.Vec.new()
-    let defs = resolve.table.Map { m: dm }
-    let variants = resolve.table.Map { m: vm }
-    Ok(resolve.table.Table { defs: defs, variants: variants, items: items })
+    let defs = resolve.table.Map {
+        m: dm
+    }
+    let variants = resolve.table.Map {
+        m: vm
+    }
+    Ok(resolve.table.Table {
+        defs: defs
+        variants: variants
+        items: items
+    })
 end resolve.table.new
 
 fn resolve.table.put_def(t: &mut resolve.table.Table, key: std.string.String, def: resolve.table.Def) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub

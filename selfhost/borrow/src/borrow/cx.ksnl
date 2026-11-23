@@ -128,7 +128,13 @@ fn borrow.cx.add_borrow(cx: &mut borrow.cx.Cx, k: usize, target: usize, mutb: us
         }
         None => core.mem.drop(0u8)
     }
-    cx.dat.brs.push(borrow.cx.Br { holder: k, target: target, mutb: mutb, ps: ps, pe: pe })?
+    cx.dat.brs.push(borrow.cx.Br {
+        holder: k
+        target: target
+        mutb: mutb
+        ps: ps
+        pe: pe
+    })?
     Ok(())
 end borrow.cx.add_borrow
 
@@ -202,7 +208,13 @@ fn borrow.cx.dot_join(bs: usize, be: usize, fs: usize, fe: usize) -> (usize, usi
 end borrow.cx.dot_join
 
 fn borrow.cx.empty_br() -> borrow.cx.Br uses [] panics never pub
-    borrow.cx.Br { holder: 0usize, target: 0usize, mutb: 0usize, ps: 0usize, pe: 0usize }
+    borrow.cx.Br {
+        holder: 0usize
+        target: 0usize
+        mutb: 0usize
+        ps: 0usize
+        pe: 0usize
+    }
 end borrow.cx.empty_br
 
 fn borrow.cx.empty_loc() -> borrow.cx.Loc uses [] panics never pub
@@ -285,7 +297,19 @@ end borrow.cx.mark_undec
 
 fn borrow.cx.mk_loc(a: usize, b: usize, cls: usize, mb: usize, dp: usize, fi: usize) -> borrow.cx.Loc uses [] panics never pub
     let z = 0usize
-    borrow.cx.Loc { a: a, b: b, cl: cls, mu: mb, rf: z, pa: z, li: z, ir: z, dp: dp, fi: fi, st: z }
+    borrow.cx.Loc {
+        a: a
+        b: b
+        cl: cls
+        mu: mb
+        rf: z
+        pa: z
+        li: z
+        ir: z
+        dp: dp
+        fi: fi
+        st: z
+    }
 end borrow.cx.mk_loc
 
 fn borrow.cx.new(p: parse.cur.P, src: std.vec.Vec<u8>, path: &str) -> Result<borrow.cx.Cx, alloc.alloc.AllocError> uses [alloc] panics never pub
@@ -295,13 +319,35 @@ fn borrow.cx.new(p: parse.cur.P, src: std.vec.Vec<u8>, path: &str) -> Result<bor
     be.push(0usize)?
     let vl = std.vec.Vec.new()
     let vb = std.vec.Vec.new()
-    let dat = borrow.cx.Dat { locs: vl, brs: vb, nexts: nx, bends: be, depth: 0usize }
+    let dat = borrow.cx.Dat {
+        locs: vl
+        brs: vb
+        nexts: nx
+        bends: be
+        depth: 0usize
+    }
     let pth = std.string.String.from_str(path)?
     let ob = std.string.String.new()
-    let rep = borrow.cx.Rep { path: pth, out: ob, errors: 0usize, undec: 0usize }
-    let fnr = borrow.cx.FnInfo { ret_ref: 0usize, ret_life: 0usize, elide: 0usize }
+    let rep = borrow.cx.Rep {
+        path: pth
+        out: ob
+        errors: 0usize
+        undec: 0usize
+    }
+    let fnr = borrow.cx.FnInfo {
+        ret_ref: 0usize
+        ret_life: 0usize
+        elide: 0usize
+    }
     let tcls = std.vec.Vec.new()
-    Ok(borrow.cx.Cx { p: p, src: src, dat: dat, rep: rep, fnr: fnr, tcls: tcls })
+    Ok(borrow.cx.Cx {
+        p: p
+        src: src
+        dat: dat
+        rep: rep
+        fnr: fnr
+        tcls: tcls
+    })
 end borrow.cx.new
 
 fn borrow.cx.path_fields(src: &[u8], a: usize, b: usize, ctx: usize) -> (usize, usize) uses [] panics never pub

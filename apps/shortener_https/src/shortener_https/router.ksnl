@@ -15,7 +15,11 @@ end shortener_https.router.empty
 fn shortener_https.router.error_reply(status: u16, message: &str) -> Result<shortener_https.router.Reply, shortener_https.error.Error> uses [alloc] panics never pub
     let body = json.error_body(message)?
     let location = shortener_https.router.empty()
-    Ok(shortener_https.router.Reply { body: body, location: location, status: status })
+    Ok(shortener_https.router.Reply {
+        body: body
+        location: location
+        status: status
+    })
 end shortener_https.router.error_reply
 
 fn shortener_https.router.lookup(db: &shortener_https.store.Store, path: &str) -> Result<shortener_https.router.Reply, shortener_https.error.Error> uses [alloc] panics never
@@ -27,14 +31,22 @@ fn shortener_https.router.lookup(db: &shortener_https.store.Store, path: &str) -
         Some(url) => {
             let body = json.link_body(code_text, url)?
             let location = std.string.String.from_str(url)?
-            Ok(shortener_https.router.Reply { body: body, location: location, status: 302u16 })
+            Ok(shortener_https.router.Reply {
+                body: body
+                location: location
+                status: 302u16
+            })
         }
         None => shortener_https.router.error_reply(404u16, "not found")
     }
 end shortener_https.router.lookup
 
 fn shortener_https.router.reply(status: u16, body: std.string.String, location: std.string.String) -> shortener_https.router.Reply uses [] panics never pub
-    shortener_https.router.Reply { body: body, location: location, status: status }
+    shortener_https.router.Reply {
+        body: body
+        location: location
+        status: status
+    }
 end shortener_https.router.reply
 
 fn shortener_https.router.route(db: &mut shortener_https.store.Store, method: &str, path: &str, body: &str) -> Result<shortener_https.router.Reply, shortener_https.error.Error> uses [alloc, io.fs] panics never pub
@@ -68,7 +80,11 @@ fn shortener_https.router.shorten(db: &mut shortener_https.store.Store, body: &s
         Ok(code_text) => {
             let out = json.link_body(code_text.as_str(), url)?
             let location = shortener_https.router.empty()
-            Ok(shortener_https.router.Reply { body: out, location: location, status: 201u16 })
+            Ok(shortener_https.router.Reply {
+                body: out
+                location: location
+                status: 201u16
+            })
         }
         Err(error.Error.Alloc(a)) => Err(error.Error.Alloc(a))
         Err(_other) => shortener_https.router.error_reply(500u16, "storage failure")

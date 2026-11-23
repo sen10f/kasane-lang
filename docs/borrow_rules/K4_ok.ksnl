@@ -4,7 +4,9 @@ end t.Parser
 
 fn t.main() -> () uses [] panics never
     let src = [72u8, 105u8]
-    let mut p = t.Parser { pos: 0usize }
+    let mut p = t.Parser {
+        pos: 0usize
+    }
     let b = t.next(&mut p, &src)
     core.mem.drop(b)
 end t.main

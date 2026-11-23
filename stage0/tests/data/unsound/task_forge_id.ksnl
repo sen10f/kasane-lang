@@ -1,5 +1,7 @@
 fn t.forge(id: usize) -> std.task.Task<std.vec.Vec<u8>> uses [] panics never
-    std.task.Task { id: id }
+    std.task.Task {
+        id: id
+    }
 end t.forge
 
 fn t.main() -> () uses [alloc, suspend] panics may

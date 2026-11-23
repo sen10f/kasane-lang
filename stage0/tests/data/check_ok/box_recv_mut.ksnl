@@ -7,7 +7,9 @@ fn t.X.bump(self: &mut t.X) -> () uses [] panics never
 end t.X.bump
 
 fn t.go() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
-    let mut b = std.boxed.Box.new(t.X { v: 3u32 })?
+    let mut b = std.boxed.Box.new(t.X {
+        v: 3u32
+    })?
     b.bump()
     core.mem.drop(b)
     Ok(())

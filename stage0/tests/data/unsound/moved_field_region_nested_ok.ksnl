@@ -17,14 +17,22 @@ end t.Outer.get_snd
 
 fn t.Pair.pick['a, 'b](self: &t.Pair<'a, 'b>, _y: &t.Pair<'a, 'b>, _fb: &'a u32) -> &'a u32 uses [] panics never
     match *self {
-        t.Pair { fst: f, snd: _ } => f
+        t.Pair {
+            fst: f
+            snd: _
+        } => f
     }
 end t.Pair.pick
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = 1u32
     let b = 2u32
-    let o = t.Outer { inner: t.Pair { fst: &a, snd: &b } }
+    let o = t.Outer {
+        inner: t.Pair {
+            fst: &a
+            snd: &b
+        }
+    }
     core.mem.drop(*o.get_fst(&o))
     core.mem.drop(*o.get_snd(&o))
     Ok(())

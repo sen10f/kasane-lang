@@ -12,7 +12,9 @@ fn t.bad(p: t.Pair) -> u32 uses [] panics never
 end t.bad
 
 fn t.close(r: t.Res) -> u32 uses [] panics never
-    let t.Res { id: id } = r
+    let t.Res {
+        id: id
+    } = r
     id
 end t.close
 

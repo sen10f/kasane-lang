@@ -3,7 +3,9 @@ type t.P[T]
 end t.P
 
 fn t.P.of[T](v: T) -> t.P<T> uses [] panics never
-    t.P { v: v }
+    t.P {
+        v: v
+    }
 end t.P.of
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

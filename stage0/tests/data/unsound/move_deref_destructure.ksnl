@@ -3,7 +3,9 @@ type t.S
 end t.S
 
 fn t.bad(s: &t.S) -> () uses [] panics never
-    let t.S { name: n } = *s
+    let t.S {
+        name: n
+    } = *s
     t.consume(n)
 end t.bad
 

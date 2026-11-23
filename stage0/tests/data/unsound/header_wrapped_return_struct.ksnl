@@ -3,5 +3,7 @@ type t.H['a]
 end t.H
 
 fn t.bad['a, 'b](_x: &'a u32, y: &'b u32) -> t.H<'a> uses [] panics never
-    t.H { r: y }
+    t.H {
+        r: y
+    }
 end t.bad

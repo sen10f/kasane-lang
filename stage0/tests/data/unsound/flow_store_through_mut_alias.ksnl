@@ -3,7 +3,9 @@ type t.H['a]
 end t.H
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
-    let mut h = t.H { r: "x" }
+    let mut h = t.H {
+        r: "x"
+    }
     {
         let s = t.mk()
         let p = &mut h

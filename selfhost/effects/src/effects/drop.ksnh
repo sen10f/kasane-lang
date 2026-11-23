@@ -23,7 +23,15 @@ fn effects.drop.acc_new() -> Result<effects.drop.Acc, alloc.alloc.AllocError> us
     let ofr = std.vec.Vec.new()
     let onm = std.vec.Vec.new()
     let dfor = std.vec.Vec.new()
-    let acc = effects.drop.Acc { nm: nm, un: un, nd: nd, dv: dv, ofr: ofr, onm: onm, dfor: dfor }
+    let acc = effects.drop.Acc {
+        nm: nm
+        un: un
+        nd: nd
+        dv: dv
+        ofr: ofr
+        onm: onm
+        dfor: dfor
+    }
     Ok(acc)
 end effects.drop.acc_new
 

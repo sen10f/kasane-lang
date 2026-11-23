@@ -13,7 +13,9 @@ fn t.fail(code: u32) -> Result<u32, t.Inner> uses [] panics never
     if code == 0u32 {
         return Ok(1u32)
     }
-    Err(t.Inner { code: code })
+    Err(t.Inner {
+        code: code
+    })
 end t.fail
 
 fn t.keep(e: t.AppError) -> Result<u32, t.AppError> uses [] panics never
@@ -24,8 +26,12 @@ end t.keep
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(t.run(0u32), Ok(11u32))
-    core.check.eq(t.run(7u32), Err(t.AppError.Code(t.Inner { code: 7u32 })))
-    core.check.eq(t.same(5u32), Err(t.Inner { code: 5u32 }))
+    core.check.eq(t.run(7u32), Err(t.AppError.Code(t.Inner {
+        code: 7u32
+    })))
+    core.check.eq(t.same(5u32), Err(t.Inner {
+        code: 5u32
+    }))
     core.check.eq(t.wide(3u32), Err(t.AppError.Wide(3u32)))
     core.check.eq(t.wide(0u32), Ok(0u32))
     core.check.eq(t.opt(None), None)
@@ -70,5 +76,7 @@ fn t.wide(code: u32) -> Result<u32, t.AppError> uses [] panics never
 end t.wide
 
 test t.run.test_converted
-    core.check.eq(t.run(7u32), Err(t.AppError.Code(t.Inner { code: 7u32 })))
+    core.check.eq(t.run(7u32), Err(t.AppError.Code(t.Inner {
+        code: 7u32
+    })))
 end t.run.test_converted

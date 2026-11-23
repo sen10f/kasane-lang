@@ -69,7 +69,11 @@ fn shortener.router.test_call(db: &mut shortener.store.Store, method: shortener.
         Ok(s) => s
         Err(_e) => core.panic.panic("alloc")
     }
-    let request = http.Request { body: copy_body, method: method, path: copy_path }
+    let request = http.Request {
+        body: copy_body
+        method: method
+        path: copy_path
+    }
     match shortener.router.route(db, &request) {
         Ok(r) => r
         Err(_e) => core.panic.panic("route failed")

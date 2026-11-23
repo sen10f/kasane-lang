@@ -43,10 +43,14 @@ fn alloc.arena.Arena.insert[T, A: alloc.alloc.Allocator](self: &mut alloc.arena.
                     free_head = *next
                 }
                 alloc.arena.Slot.Taken(_g, _value) => {
-                    return Err(alloc.alloc.AllocError { code: 1u32 })
+                    return Err(alloc.alloc.AllocError {
+                        code: 1u32
+                    })
                 }
             }
-            None => return Err(alloc.alloc.AllocError { code: 1u32 })
+            None => return Err(alloc.alloc.AllocError {
+                code: 1u32
+            })
         }
         self.free = free_head
         self.live = self.live.wrapping_add(1usize)
@@ -54,9 +58,14 @@ fn alloc.arena.Arena.insert[T, A: alloc.alloc.Allocator](self: &mut alloc.arena.
             Some(slot) => {
                 let fresh = alloc.arena.Slot.Taken(generation, value)
                 *slot = fresh
-                Ok(alloc.arena.Handle { index: index, generation: generation })
+                Ok(alloc.arena.Handle {
+                    index: index
+                    generation: generation
+                })
             }
-            None => Err(alloc.alloc.AllocError { code: 1u32 })
+            None => Err(alloc.alloc.AllocError {
+                code: 1u32
+            })
         }
     } else {
         if self.slots.len() >= self.slots.cap() {
@@ -71,9 +80,14 @@ fn alloc.arena.Arena.insert[T, A: alloc.alloc.Allocator](self: &mut alloc.arena.
             Ok(_done) => {
                 let index = self.slots.len().wrapping_sub(1usize)
                 self.live = self.live.wrapping_add(1usize)
-                Ok(alloc.arena.Handle { index: index, generation: 0u32 })
+                Ok(alloc.arena.Handle {
+                    index: index
+                    generation: 0u32
+                })
             }
-            Err(_) => Err(alloc.alloc.AllocError { code: 1u32 })
+            Err(_) => Err(alloc.alloc.AllocError {
+                code: 1u32
+            })
         }
     }
 end alloc.arena.Arena.insert
@@ -88,7 +102,11 @@ end alloc.arena.Arena.len
 
 fn alloc.arena.Arena.new[T, A: alloc.alloc.Allocator](allocator: A) -> alloc.arena.Arena<T, A> uses [] panics never pub
     let slots = alloc.raw.Buf.new(allocator)
-    alloc.arena.Arena { slots: slots, free: core.num.usize.MAX, live: 0usize }
+    alloc.arena.Arena {
+        slots: slots
+        free: core.num.usize.MAX
+        live: 0usize
+    }
 end alloc.arena.Arena.new
 
 fn alloc.arena.Arena.remove[T, A: alloc.alloc.Allocator](self: &mut alloc.arena.Arena<T, A>, h: alloc.arena.Handle<T>) -> Option<T> uses [] panics never pub
@@ -123,5 +141,8 @@ end alloc.arena.Arena.remove
 
 impl[T] core.ops.Clone for alloc.arena.Handle<T>
 fn alloc.arena.Handle.clone[T](self: &alloc.arena.Handle<T>) -> alloc.arena.Handle<T> uses [] panics never impls core.ops.Clone
-    alloc.arena.Handle { index: (*self).index, generation: (*self).generation }
+    alloc.arena.Handle {
+        index: (*self).index
+        generation: (*self).generation
+    }
 end alloc.arena.Handle.clone

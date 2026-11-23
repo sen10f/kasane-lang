@@ -9,9 +9,19 @@ end t.S
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let s = t.mk()
-    let out = t.Out { inner: t.S { name: &s, n: 1usize } }
-    let t.Out { inner: inner } = out
-    let t.S { name: moved, n: _n } = inner
+    let out = t.Out {
+        inner: t.S {
+            name: &s
+            n: 1usize
+        }
+    }
+    let t.Out {
+        inner: inner
+    } = out
+    let t.S {
+        name: moved
+        n: _n
+    } = inner
     core.mem.drop(moved)
     core.mem.drop(s)
     Ok(())

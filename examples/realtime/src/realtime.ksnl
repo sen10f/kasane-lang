@@ -28,7 +28,12 @@ fn realtime.Ring.new(cap: usize) -> realtime.Ring uses [alloc] panics never pub
             Err(_) => break
         }
     }
-    realtime.Ring { items: items, head: 0usize, len: 0usize, cap: cap }
+    realtime.Ring {
+        items: items
+        head: 0usize
+        len: 0usize
+        cap: cap
+    }
 end realtime.Ring.new
 
 fn realtime.Ring.pop(self: &mut realtime.Ring) -> Option<u32> uses [] panics never pub

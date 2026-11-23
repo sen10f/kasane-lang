@@ -10,7 +10,9 @@ fn t.S.m(self: &t.S, x: &u32) -> &u32 uses [] panics never
 end t.S.m
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let s = t.S { v: 1u32 }
+    let s = t.S {
+        v: 1u32
+    }
     let a = 2u32
     core.mem.drop(*s.m(&a))
     Ok(())

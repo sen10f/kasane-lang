@@ -11,7 +11,10 @@ end resolve.manifest.Pkg
 fn resolve.manifest.dep(name: &str, path: &str) -> Result<resolve.manifest.Dep, alloc.alloc.AllocError> uses [alloc] panics never pub
     let n = std.string.String.from_str(name)?
     let p = std.string.String.from_str(path)?
-    Ok(resolve.manifest.Dep { name: n, path: p })
+    Ok(resolve.manifest.Dep {
+        name: n
+        path: p
+    })
 end resolve.manifest.dep
 
 fn resolve.manifest.join(dir: &str, rel: &str) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
@@ -74,5 +77,8 @@ fn resolve.manifest.read(dir: &str) -> Result<resolve.manifest.Pkg, resolve.Fail
             }
         }
     }
-    Ok(resolve.manifest.Pkg { name: name, deps: deps })
+    Ok(resolve.manifest.Pkg {
+        name: name
+        deps: deps
+    })
 end resolve.manifest.read

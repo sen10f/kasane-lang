@@ -15,9 +15,18 @@ end t.Node.drop
 
 fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may
     let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)
-    let n0 = a.insert(t.Node { name: 0u32, kids: std.vec.Vec.new() })?
-    let n1 = a.insert(t.Node { name: 1u32, kids: std.vec.Vec.new() })?
-    let n2 = a.insert(t.Node { name: 2u32, kids: std.vec.Vec.new() })?
+    let n0 = a.insert(t.Node {
+        name: 0u32
+        kids: std.vec.Vec.new()
+    })?
+    let n1 = a.insert(t.Node {
+        name: 1u32
+        kids: std.vec.Vec.new()
+    })?
+    let n2 = a.insert(t.Node {
+        name: 2u32
+        kids: std.vec.Vec.new()
+    })?
     core.check.eq(a.len(), 3usize)
     match a.get_mut(n0) {
         Some(v) => core.mem.drop(v.kids.push(n1))

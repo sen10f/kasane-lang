@@ -12,7 +12,14 @@ fn notes.note.Note.new(id: i64, title: &str, body: &str, tags: std.vec.Vec<std.s
     let b = std.string.String.from_str(body)?
     let c = std.string.String.from_str(created_at)?
     let u = std.string.String.from_str(created_at)?
-    Ok(notes.note.Note { id: id, title: t, body: b, tags: tags, created_at: c, updated_at: u })
+    Ok(notes.note.Note {
+        id: id
+        title: t
+        body: b
+        tags: tags
+        created_at: c
+        updated_at: u
+    })
 end notes.note.Note.new
 
 fn notes.note.Note.with_updated(self: &mut notes.note.Note, updated_at: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never

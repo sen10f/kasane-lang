@@ -6,7 +6,10 @@ end t.W
 fn t.main() -> () uses [] panics never
     let s = std.string.String.new()
     let t2 = std.string.String.new()
-    let x = t.W { v: t2, w: &s }
+    let x = t.W {
+        v: t2
+        w: &s
+    }
     core.mem.drop(x)
     core.mem.drop(s)
 end t.main

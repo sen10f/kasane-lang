@@ -19,10 +19,14 @@ fn t.Counter.handle(self: &mut t.Counter, _event: &str) -> u32 uses [] panics ne
 end t.Counter.handle
 
 fn t.main() -> () uses [alloc] panics never
-    core.mem.drop(t.wrap(t.Counter { seen: 0u32 }))
+    core.mem.drop(t.wrap(t.Counter {
+        seen: 0u32
+    }))
 end t.main
 
 fn t.wrap[H: t.Handler<[io.console], never> + 'static](handler: H) -> Result<t.Slot, alloc.alloc.AllocError> uses [alloc] panics never
     let b = boxed.Box.new(std.alloc.SYSTEM, handler)?
-    Ok(t.Slot { handler: b.into_dyn() })
+    Ok(t.Slot {
+        handler: b.into_dyn()
+    })
 end t.wrap

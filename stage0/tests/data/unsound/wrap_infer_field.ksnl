@@ -3,7 +3,9 @@ type t.Wrap[T]
 end t.Wrap
 
 fn t.f(x: &u32) -> &u32 uses [] panics never
-    let w = t.Wrap { inner: x }
+    let w = t.Wrap {
+        inner: x
+    }
     w.inner
 end t.f
 

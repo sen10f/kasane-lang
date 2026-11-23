@@ -16,7 +16,10 @@ fn shortener_https.error.bad_number(_value: core.num.ParseIntError) -> shortener
 end shortener_https.error.bad_number
 
 fn shortener_https.error.io_failed() -> shortener_https.error.Error uses [] panics never pub
-    shortener_https.error.Error.Io(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 })
+    shortener_https.error.Error.Io(std.io.Error {
+        kind: std.io.ErrorKind.Other
+        code: 0i32
+    })
 end shortener_https.error.io_failed
 
 fn shortener_https.error.push_failed(value: alloc.string.PushBytesError) -> shortener_https.error.Error uses [] panics never pub

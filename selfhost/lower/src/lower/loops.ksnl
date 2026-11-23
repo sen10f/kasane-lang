@@ -176,7 +176,10 @@ fn lower.loops.forsplit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     lower.cx.goto(c, xb)
     lower.cx.bind_vals(c, &ks, &xs)?
     let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: t })
+    Ok(lower.cx.R {
+        v: u
+        t: t
+    })
 end lower.loops.forsplit
 
 fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, by_ref: bool, hv: usize, hbt: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -289,7 +292,10 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     lower.cx.goto(c, exitb)
     lower.cx.bind_vals(c, &ks, &eps)?
     let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: t })
+    Ok(lower.cx.R {
+        v: u
+        t: t
+    })
 end lower.loops.forvec
 
 fn lower.loops.forvec_path(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, bname: &str) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -469,7 +475,10 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     lower.cx.goto(c, exitb)
     lower.cx.bind_vals(c, &ks, &eps)?
     let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: t })
+    Ok(lower.cx.R {
+        v: u
+        t: t
+    })
 end lower.loops.forx
 
 fn lower.loops.ld8(c: &mut lower.cx.Cx, a: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub

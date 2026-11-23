@@ -4,7 +4,9 @@ end t.Ptr
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
     let mut x = 10u32
-    let s = t.Ptr { p: core.ptr.from_mut(&mut x) }
+    let s = t.Ptr {
+        p: core.ptr.from_mut(&mut x)
+    }
     let spawned = std.thread.spawn(
         std.alloc.SYSTEM,
         fn() -> u32 capture [move s] {

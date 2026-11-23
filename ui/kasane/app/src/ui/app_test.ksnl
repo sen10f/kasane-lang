@@ -3,7 +3,12 @@ type ui.app_test.Suite derive [Debug, Clone, Copy] pub
 end ui.app_test.Suite
 
 fn ui.app_test.el(kind: ui.tree.ViewKind, key: Option<u64>, children: std.vec.Vec<usize>) -> ui.tree.Element uses [] panics never
-    ui.tree.Element { kind: kind, style: ui.layout.Style.default(), key: key, children: children }
+    ui.tree.Element {
+        kind: kind
+        style: ui.layout.Style.default()
+        key: key
+        children: children
+    }
 end ui.app_test.el
 
 fn ui.app_test.empty_kids() -> std.vec.Vec<usize> uses [] panics never
@@ -11,7 +16,12 @@ fn ui.app_test.empty_kids() -> std.vec.Vec<usize> uses [] panics never
 end ui.app_test.empty_kids
 
 fn ui.app_test.make_rect(x: f32, y: f32, w: f32, h: f32) -> ui.app.Rect uses [] panics never
-    ui.app.Rect { x: x, y: y, width: w, height: h }
+    ui.app.Rect {
+        x: x
+        y: y
+        width: w
+        height: h
+    }
 end ui.app_test.make_rect
 
 fn ui.app_test.push_el(v: &mut std.vec.Vec<ui.tree.Element>, e: ui.tree.Element) -> () uses [alloc] panics never

@@ -53,7 +53,11 @@ fn shortener.wire.read_request(stream: &mut std.net.TcpStream) -> Result<shorten
     }
     let mut body = std.string.String.new()
     body.push_bytes(body_bytes).map_err(error.push_failed)?
-    Ok(http.Request { body: body, method: head.method, path: head.path })
+    Ok(http.Request {
+        body: body
+        method: head.method
+        path: head.path
+    })
 end shortener.wire.read_request
 
 fn shortener.wire.read_to_close(stream: &mut std.net.TcpStream) -> Result<std.vec.Vec<u8>, shortener.error.Error> uses [alloc, io.net] panics never pub

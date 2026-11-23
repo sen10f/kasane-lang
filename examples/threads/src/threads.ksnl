@@ -70,7 +70,10 @@ fn threads.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] p
 end threads.main
 
 fn threads.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
-    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+    std.io.Error {
+        kind: std.io.ErrorKind.OutOfMemory
+        code: 0i32
+    }
 end threads.oom
 
 fn threads.produce(tx: std.sync.Sender<u32>, count: u32) -> () uses [thread] panics may

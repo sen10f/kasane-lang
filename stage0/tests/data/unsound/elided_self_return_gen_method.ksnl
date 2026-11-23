@@ -7,7 +7,9 @@ fn t.S.get[T](self: &t.S, x: &T) -> &T uses [] panics never
 end t.S.get
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let s = t.S { v: 1u32 }
+    let s = t.S {
+        v: 1u32
+    }
     let a = 2u32
     core.mem.drop(*s.get(&a))
     Ok(())

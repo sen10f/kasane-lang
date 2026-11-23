@@ -13,14 +13,21 @@ fn t.O.f(self: &t.O) -> () uses [] panics may
 end t.O.f
 
 fn t.S.into_name(self: t.S) -> alloc.string.String uses [] panics never
-    let t.S { name: name } = self
+    let t.S {
+        name: name
+    } = self
     name
 end t.S.into_name
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
     let s = std.string.String.new()
     core.mem.drop(s.push_str("hello"))
-    let o = t.O { opt: Some(s), inner: t.S { name: std.string.String.new() } }
+    let o = t.O {
+        opt: Some(s)
+        inner: t.S {
+            name: std.string.String.new()
+        }
+    }
     o.f()
     Ok(())
 end t.main

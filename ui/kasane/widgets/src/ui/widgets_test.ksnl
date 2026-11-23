@@ -37,11 +37,20 @@ fn ui.widgets_test.japanese_a_bytes() -> std.vec.Vec<u8> uses [alloc] panics nev
 end ui.widgets_test.japanese_a_bytes
 
 fn ui.widgets_test.mods() -> ui.event.Modifiers uses [] panics never pub
-    ui.event.Modifiers { shift: false, ctrl: false, alt: false }
+    ui.event.Modifiers {
+        shift: false
+        ctrl: false
+        alt: false
+    }
 end ui.widgets_test.mods
 
 fn ui.widgets_test.rect() -> ui.layout.Rect uses [] panics never pub
-    ui.layout.Rect { x: 0.0f32, y: 0.0f32, width: 100.0f32, height: 40.0f32 }
+    ui.layout.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 100.0f32
+        height: 40.0f32
+    }
 end ui.widgets_test.rect
 
 test ui.widgets_test.Target.test_button_click

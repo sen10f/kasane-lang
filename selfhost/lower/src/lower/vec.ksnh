@@ -53,7 +53,10 @@ fn lower.vec.call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usiz
     let co3 = lower.cx.cat2(co2.as_str(), lower.cx.vlist(vs)?.as_str())?
     let co4 = lower.cx.cat2(co3.as_str(), ")")?
     let v = lower.cx.def(c, rt.as_str(), co4.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.vec.call
 
 // `Vec` の型 (参照を外した後) の要素の型。
@@ -163,7 +166,10 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &std
     }
     let _b0 = lower.cx.blk(c, &ps)?
     lower.cx.goto(c, 0usize)
-    let mut r = lower.cx.R { v: 0usize, t: ret }
+    let mut r = lower.cx.R {
+        v: 0usize
+        t: ret
+    }
     if name == "len" {
         r = lower.vec.len(env, c, recv, false, ret)?
     } else if name == "is_empty" {
@@ -175,7 +181,10 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &std
     } else if name == "clear" {
         let z = lower.vec.usize_c(c, 0usize)?
         core.mem.drop(lower.vec.store_at(c, "usize", recv, 8usize, z)?)
-        r = lower.cx.R { v: lower.expr.unit(c)?, t: ret }
+        r = lower.cx.R {
+            v: lower.expr.unit(c)?
+            t: ret
+        }
     } else if name == "truncate" {
         // 長さを縮めるだけ (n < len のときだけ)。要素の解放はしない (所有物の要素は漏れる。README 29 章)。
         let len0 = lower.vec.load_usize(c, recv, 8usize)?
@@ -194,13 +203,19 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &std
         core.mem.drop(lower.vec.store_at(c, "usize", recv, 8usize, value)?)
         lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &empty)?.as_str())?)?
         lower.cx.goto(c, jb)
-        r = lower.cx.R { v: lower.expr.unit(c)?, t: ret }
+        r = lower.cx.R {
+            v: lower.expr.unit(c)?
+            t: ret
+        }
     } else if name == "as_slice" {
         let pv = lower.vec.load_ptr(c, recv)?
         let lv = lower.vec.load_usize(c, recv, 8usize)?
         let mk = lower.cx.cat2("make(", lower.expr.two(pv, lv)?.as_str())?
         let mv = lower.cx.def(c, rt.as_str(), lower.cx.cat2(mk.as_str(), ")")?.as_str())?
-        r = lower.cx.R { v: mv, t: ret }
+        r = lower.cx.R {
+            v: mv
+            t: ret
+        }
     } else if is_str {
         r = lower.str.push_str(env, c, recv, value, ret)?
     }
@@ -236,7 +251,10 @@ fn lower.vec.index(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: 
     let lds2 = lower.cx.cat2(lds.as_str(), " ")?
     let lds3 = lower.cx.cat2(lds2.as_str(), lower.cx.vs(addr)?.as_str())?
     let v = lower.cx.def(c, et.as_str(), lower.cx.cat2(lds3.as_str(), " +0")?.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.vec.index
 
 // `base[idx]` (読み出し)。基は参照 (値) か、スロットの局所。
@@ -278,13 +296,19 @@ end lower.vec.is_hdr
 fn lower.vec.len(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, empty_q: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics never pub
     let len0 = lower.vec.load_usize(c, recv, 8usize)?
     if !empty_q {
-        return Ok(lower.cx.R { v: len0, t: t })
+        return Ok(lower.cx.R {
+            v: len0
+            t: t
+        })
     }
     let zero = lower.vec.usize_c(c, 0usize)?
     let eqs = lower.cx.cat2("icmp.eq.usize ", lower.expr.two(len0, zero)?.as_str())?
     let v = lower.cx.def(c, "bool", eqs.as_str())?
     core.mem.drop(env.srcs.len())
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.vec.len
 
 // 枠 slot の値を取り出す (移動): 3 つの欄を読み、先頭の番地を null にして、`vec` の値を作る。
@@ -363,7 +387,10 @@ fn lower.vec.new(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<l
     let mk5 = lower.cx.cat2(mk4.as_str(), lower.cx.vs(z)?.as_str())?
     let mk6 = lower.cx.cat2(mk5.as_str(), ")")?
     let v = lower.cx.def(c, tt.as_str(), mk6.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.vec.new
 
 // `Vec` の型 t (参照を外した後) の要素が所有物か。
@@ -425,7 +452,10 @@ fn lower.vec.pop(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: us
     a1.push(sv)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a1)?.as_str())?)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+    Ok(lower.cx.R {
+        v: lower.tyk.at(jps.as_slice(), 0usize)
+        t: t
+    })
 end lower.vec.pop
 
 // `v.push(x)`: 容量が足りなければ `cap * 2 + 4` に広げ (heap.realloc)、末尾へ書く。結果は Ok(())。
@@ -478,7 +508,10 @@ fn lower.vec.push(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: u
     a.push(okv)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a)?.as_str())?)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+    Ok(lower.cx.R {
+        v: lower.tyk.at(jps.as_slice(), 0usize)
+        t: t
+    })
 end lower.vec.push
 
 // `store` の命令を書く (`mem.store.T <p> +off, v` の形)。

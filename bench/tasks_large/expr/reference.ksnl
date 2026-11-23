@@ -32,7 +32,9 @@ end bench.add_op
 
 fn bench.eval(text: &str) -> Result<i64, bench.EvError> uses [alloc] panics never
     let toks = bench.tokenize(text)?
-    let mut cur = bench.Cursor { pos: 0usize }
+    let mut cur = bench.Cursor {
+        pos: 0usize
+    }
     let v = bench.parse_expr(&toks, &mut cur)?
     if cur.pos != toks.len() {
         return Err(bench.EvError.Syntax)

@@ -11,7 +11,9 @@ fn t.X.handle(self: &t.X) -> u32 uses [] panics never
 end t.X.handle
 
 fn t.aa_bind() -> () uses [] panics never
-    let mut x = t.X { v: 7u32 }
+    let mut x = t.X {
+        v: 7u32
+    }
     let h: &dyn t.H<[], never> + 'static = &mut x
     core.mem.drop(h)
 end t.aa_bind

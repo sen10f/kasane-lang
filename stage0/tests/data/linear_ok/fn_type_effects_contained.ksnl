@@ -41,7 +41,9 @@ fn t.strict[F: core.ops.Fn<(), u32, [], never>](f: F) -> u32 uses [] panics neve
 end t.strict
 
 fn t.use_all() -> u32 uses [io] panics may
-    let h = t.H { f: t.loud }
+    let h = t.H {
+        f: t.loud
+    }
     let a = t.apply_io(t.loud) + t.apply_io(t.quiet) + t.apply_io(t.inferred) + t.apply_may(t.loud)
     let b = t.apply_var(t.loud) + t.apply_var(t.quiet)
     let f = h.f

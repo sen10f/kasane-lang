@@ -8,14 +8,18 @@ type t.Res linear
 end t.Res
 
 fn t.Res.shut(self: t.Res) -> () uses [] panics never
-    let t.Res { id: id } = self
+    let t.Res {
+        id: id
+    } = self
     core.mem.drop(id)
 end t.Res.shut
 
 fn t.bad() -> () uses [] panics never
     let p = t.mk()
     match p {
-        t.Pair { a: x } => core.mem.drop(x)
+        t.Pair {
+            a: x
+        } => core.mem.drop(x)
     }
 end t.bad
 
@@ -24,5 +28,10 @@ fn t.main() -> () uses [] panics never
 end t.main
 
 fn t.mk() -> t.Pair uses [] panics never
-    t.Pair { a: 1u32, b: t.Res { id: 2u32 } }
+    t.Pair {
+        a: 1u32
+        b: t.Res {
+            id: 2u32
+        }
+    }
 end t.mk

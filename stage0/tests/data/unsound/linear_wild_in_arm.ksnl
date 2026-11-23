@@ -3,7 +3,9 @@ type t.L linear
 end t.L
 
 fn t.main() -> () uses [] panics never
-    let o = Some(t.L { v: 1u32 })
+    let o = Some(t.L {
+        v: 1u32
+    })
     match o {
         Some(_) => core.mem.drop(1u8)
         None => core.mem.drop(2u8)

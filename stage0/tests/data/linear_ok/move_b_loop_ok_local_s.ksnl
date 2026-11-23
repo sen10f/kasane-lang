@@ -8,7 +8,9 @@ end t.eat
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     for _ in core.iter.range(0u8, 2u8) {
-        let s = t.S { v: 1u32 }
+        let s = t.S {
+            v: 1u32
+        }
         core.mem.drop(t.eat(s))
     }
     Ok(())

@@ -7,7 +7,9 @@ fn t.Res.get(self: &t.Res) -> u32 uses [] panics never
 end t.Res.get
 
 fn t.Res.shut(self: t.Res) -> () uses [] panics never
-    let t.Res { id: id } = self
+    let t.Res {
+        id: id
+    } = self
     core.mem.drop(id)
 end t.Res.shut
 
@@ -15,7 +17,9 @@ fn t.bad() -> () uses [] panics never
     let mut c = fn() -> u32 capture [] {
         0u32
     }
-    with r = t.Res { id: 1u32 } close r.shut() {
+    with r = t.Res {
+        id: 1u32
+    } close r.shut() {
         c = fn() -> u32 capture [&r] {
             r.get()
         }

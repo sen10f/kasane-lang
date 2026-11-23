@@ -37,7 +37,11 @@ fn lower.opt.binds_new() -> lower.opt.Binds uses [] panics never pub
     let names = std.vec.Vec.new()
     let vals = std.vec.Vec.new()
     let tys = std.vec.Vec.new()
-    lower.opt.Binds { names: names, vals: vals, tys: tys }
+    lower.opt.Binds {
+        names: names
+        vals: vals
+        tys: tys
+    }
 end lower.opt.binds_new
 
 // `Option<&T>` の中身 `bref` の値 bv から、`ref<T>` を取り出す (`field bv, +0` の後に `bitcast.ref<T>.ptr`)。
@@ -56,15 +60,24 @@ fn lower.opt.const_value(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     let node = types.infer.item_node(env, item)
     let p2 = match types.env.unit(env, file) {
         Some(q) => q
-        None => return Ok(lower.cx.R { v: 0usize, t: t })
+        None => return Ok(lower.cx.R {
+            v: 0usize
+            t: t
+        })
     }
     let src2 = match env.srcs.as_slice().get(file) {
         Some(x) => x.text.as_slice()
-        None => return Ok(lower.cx.R { v: 0usize, t: t })
+        None => return Ok(lower.cx.R {
+            v: 0usize
+            t: t
+        })
     }
     let cn = parse.ast.get(&p2.ast, node)
     if cn.d == 0usize {
-        return Ok(lower.cx.R { v: 0usize, t: t })
+        return Ok(lower.cx.R {
+            v: 0usize
+            t: t
+        })
     }
     let init = parse.ast.get(&p2.ast, cn.d)
     if init.kind != parse.ast.Kind.Lit || init.a != 1usize {
@@ -100,7 +113,10 @@ fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         let op3 = lower.cx.cat2(op2.as_str(), lower.cx.vlist(&vs)?.as_str())?
         let op4 = lower.cx.cat2(op3.as_str(), ")")?
         let v = lower.cx.def(c, ty.as_str(), op4.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if nargs != 1usize {
         lower.cx.fail(c, "列挙子の構築 (引数の個数)")?
@@ -156,7 +172,10 @@ fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     }
     let op = lower.cx.cat2(head, lower.cx.vs(a.v)?.as_str())?
     let v = lower.cx.def(c, tt.as_str(), op.as_str())?
-    Ok(lower.cx.R { v: v, t: rty })
+    Ok(lower.cx.R {
+        v: v
+        t: rty
+    })
 end lower.opt.ctor
 
 // 参照の型 (ref / mutref) の中身と可変かどうか。参照でなければ (e, false, false)。
@@ -178,7 +197,10 @@ fn lower.opt.deref_val(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R) 
     let it = lower.tyk.text(env, c, inner)?
     let op = lower.cx.cat2("load ", lower.cx.vs(r.v)?.as_str())?
     let v = lower.cx.def(c, it.as_str(), op.as_str())?
-    Ok(lower.cx.R { v: v, t: inner })
+    Ok(lower.cx.R {
+        v: v
+        t: inner
+    })
 end lower.opt.deref_val
 
 // `fieldaddr %v, +off` の文字列。
@@ -206,10 +228,16 @@ fn lower.opt.field(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, bt: usize
         let fa = lower.cx.def(c, rt.as_str(), fa_src.as_str())?
         let ld = lower.cx.cat2("load ", lower.cx.vs(fa)?.as_str())?
         let fv = lower.cx.def(c, fty.as_str(), ld.as_str())?
-        return Ok(lower.cx.R { v: fv, t: t })
+        return Ok(lower.cx.R {
+            v: fv
+            t: t
+        })
     }
     let fv = lower.cx.def(c, fty.as_str(), lower.expr.field_src(v, off)?.as_str())?
-    Ok(lower.cx.R { v: fv, t: t })
+    Ok(lower.cx.R {
+        v: fv
+        t: t
+    })
 end lower.opt.field
 
 // 構造体のフィールドの番地 (`fieldaddr`)。bv は参照 (ref / mutref) か、スロット (mutref<構造体>)。
@@ -515,10 +543,16 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     }
     if rty.as_str() == "unit" {
         let u = lower.expr.unit(c)?
-        return Ok(lower.cx.R { v: u, t: t })
+        return Ok(lower.cx.R {
+            v: u
+            t: t
+        })
     }
     let rv = lower.tyk.at(jps.as_slice(), 0usize)
-    Ok(lower.cx.R { v: rv, t: t })
+    Ok(lower.cx.R {
+        v: rv
+        t: t
+    })
 end lower.opt.optmatch
 
 // 変種の名前から、組み立てる型の引数の数 (Option は 1、Result は 2) を決める。
@@ -643,7 +677,10 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     lower.cx.goto(c, okb)
     let tt = lower.tyk.text(env, c, t)?
     let val = lower.cx.def1(c, tt.as_str(), "payload ", x.v)?
-    Ok(lower.cx.R { v: val, t: t })
+    Ok(lower.cx.R {
+        v: val
+        t: t
+    })
 end lower.opt.tryx
 
 // `op %a, %b` の文字列。
@@ -667,7 +704,10 @@ fn lower.opt.unit_variant(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize,
     let op = lower.cx.cat2("make.v", lower.cx.dec(vi)?.as_str())?
     let op2 = lower.cx.cat2(op.as_str(), "()")?
     let v = lower.cx.def(c, ty.as_str(), op2.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.opt.unit_variant
 
 // メソッドの呼び出し (利用者の関数): 受け手は宣言の `self` の型に合わせて参照する (自動参照・自動逆参照)。
@@ -736,7 +776,10 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
             recv = lower.cx.def(c, st.as_str(), so.as_str())?
         } else {
             let rv = lower.opt.local_val(env, c, loc - 1usize, bt)?
-            let rr = lower.cx.R { v: rv, t: bt }
+            let rr = lower.cx.R {
+                v: rv
+                t: bt
+            }
             recv = lower.opt.recv_value(env, c, rr, self_ref, sdn.m)?
             if !self_ref {
                 lower.drop.moved(c, loc - 1usize)?
@@ -783,7 +826,10 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     let co3 = lower.cx.cat2(co2.as_str(), lower.cx.vlist(&vs)?.as_str())?
     let co4 = lower.cx.cat2(co3.as_str(), ")")?
     let v = lower.cx.def(c, rt.as_str(), co4.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.opt.user_method
 
 // 束縛の型が参照で、値が参照でないとき (パターンの既定の束縛): 値をスロットに置いて参照にする。

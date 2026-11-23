@@ -34,7 +34,11 @@ fn ui.app.App.apply(self: &mut ui.app.App, new_model: (), elements: &std.vec.Vec
     let mut patch = ui.app.Patch.new()
     let root_el = match elements.as_slice().get(root_elem) {
         Some(e) => e
-        None => return Ok(ui.app.Frame { patch: patch, dirty: self.dirty, redrew: false })
+        None => return Ok(ui.app.Frame {
+            patch: patch
+            dirty: self.dirty
+            redrew: false
+        })
     }
     if let Some(slot) = self.kind.as_mut_slice().get_mut(0usize) {
         *slot = root_el.kind
@@ -87,7 +91,11 @@ fn ui.app.App.apply(self: &mut ui.app.App, new_model: (), elements: &std.vec.Vec
     self.dirty = dirty
     self.frame = self.frame.wrapping_add(1u64)
     let d = dirty
-    Ok(ui.app.Frame { patch: patch, dirty: d, redrew: true })
+    Ok(ui.app.Frame {
+        patch: patch
+        dirty: d
+        redrew: true
+    })
 end ui.app.App.apply
 
 fn ui.app.App.diff_children(self: &mut ui.app.App, parent: usize, new_children: &std.vec.Vec<usize>, elements: &std.vec.Vec<ui.tree.Element>, patch: &mut ui.app.Patch) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
@@ -295,7 +303,16 @@ fn ui.app.App.new(model: ()) -> ui.app.App uses [alloc] panics never pub
     let d = kids
     let e = ui.app.Rect.empty()
     let f = 0u64
-    ui.app.App { model: m, pending: p, kind: k, key: k2, rect: r, kids: d, dirty: e, frame: f }
+    ui.app.App {
+        model: m
+        pending: p
+        kind: k
+        key: k2
+        rect: r
+        kids: d
+        dirty: e
+        frame: f
+    }
 end ui.app.App.new
 
 fn ui.app.App.node_rect_at(self: &ui.app.App, node: usize) -> ui.app.Rect uses [] panics never pub
@@ -341,11 +358,21 @@ fn ui.app.Patch.new() -> ui.app.Patch uses [] panics never pub
     let removed = std.vec.Vec.new()
     let changed = std.vec.Vec.new()
     let moved = std.vec.Vec.new()
-    ui.app.Patch { added: added, removed: removed, changed: changed, moved: moved }
+    ui.app.Patch {
+        added: added
+        removed: removed
+        changed: changed
+        moved: moved
+    }
 end ui.app.Patch.new
 
 fn ui.app.Rect.empty() -> ui.app.Rect uses [] panics never pub
-    ui.app.Rect { x: 0.0f32, y: 0.0f32, width: 0.0f32, height: 0.0f32 }
+    ui.app.Rect {
+        x: 0.0f32
+        y: 0.0f32
+        width: 0.0f32
+        height: 0.0f32
+    }
 end ui.app.Rect.empty
 
 fn ui.app.Rect.is_empty(self: &ui.app.Rect) -> bool uses [] panics never pub
@@ -377,7 +404,12 @@ fn ui.app.Rect.union(self: &ui.app.Rect, other: &ui.app.Rect) -> ui.app.Rect use
     } else {
         oy2
     }
-    ui.app.Rect { x: nx, y: ny, width: nx2 - nx, height: ny2 - ny }
+    ui.app.Rect {
+        x: nx
+        y: ny
+        width: nx2 - nx
+        height: ny2 - ny
+    }
 end ui.app.Rect.union
 
 fn ui.app.same_kind(a: ui.tree.ViewKind, b: ui.tree.ViewKind) -> bool uses [] panics never pub

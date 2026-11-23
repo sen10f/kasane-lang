@@ -12,7 +12,9 @@ fn t.Boxed.m(self: &Self) -> () uses [] panics may impls t.Tr<[], may>
 end t.Boxed.m
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let b = t.Boxed { x: 1u32 }
+    let b = t.Boxed {
+        x: 1u32
+    }
     core.mem.drop(t.take(&b))
     Ok(())
 end t.main

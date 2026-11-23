@@ -44,7 +44,10 @@ fn ksnc.kcheck.borrow(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.F
         }
         k = k.wrapping_add(1usize)
     }
-    Ok(ksnc.front.Text { text: out, errors: errors })
+    Ok(ksnc.front.Text {
+        text: out
+        errors: errors
+    })
 end ksnc.kcheck.borrow
 
 // 効果の段 (effects.main の (2)〜(5))。`tout` は型の段の結果。
@@ -105,7 +108,10 @@ fn ksnc.kcheck.effects(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.
     text.push_str(acc.rep.text.as_str())?
     text.push_str(s.as_str())?
     text.push('\n')?
-    Ok(ksnc.front.Text { text: text, errors: acc.rep.errors })
+    Ok(ksnc.front.Text {
+        text: text
+        errors: acc.rep.errors
+    })
 end ksnc.kcheck.effects
 
 // 段 3 (Kasane 版): 検査を名前解決・型・効果・借用の順に行う。

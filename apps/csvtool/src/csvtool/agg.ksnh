@@ -48,7 +48,14 @@ fn csvtool.agg.Stats.add(self: &mut csvtool.agg.Stats, text: &str) -> () uses []
 end csvtool.agg.Stats.add
 
 fn csvtool.agg.Stats.new() -> csvtool.agg.Stats uses [] panics never pub
-    csvtool.agg.Stats { rows: 0i64, numeric: 0i64, sum: 0i64, min: 0i64, max: 0i64, ovf: false }
+    csvtool.agg.Stats {
+        rows: 0i64
+        numeric: 0i64
+        sum: 0i64
+        min: 0i64
+        max: 0i64
+        ovf: false
+    }
 end csvtool.agg.Stats.new
 
 // 1 つの列を表全体で集計する (欠けているセルは行数に入れない)。
@@ -159,7 +166,10 @@ fn csvtool.agg.groupby(tbl: &csvtool.table.Table, key_col: usize, val_col: usize
                     let key = std.string.String.from_str(k)?
                     let mut st = csvtool.agg.Stats.new()
                     st.add(v)
-                    core.mem.drop(groups.push(csvtool.agg.Group { key: key, stats: st })?)
+                    core.mem.drop(groups.push(csvtool.agg.Group {
+                        key: key
+                        stats: st
+                    })?)
                 } else {
                     match groups.as_mut_slice().get_mut(idx) {
                         Some(g) => g.stats.add(v)

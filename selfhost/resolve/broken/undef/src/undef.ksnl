@@ -14,7 +14,9 @@ fn undef.k() -> i32 uses [] panics never
     let c = other.nothere()
     let d = other.g()
     let _e = other.E.Nope
-    let _f = Nope { a: 1i32 }
+    let _f = Nope {
+        a: 1i32
+    }
     let g = other.f()
     let h = {
         1i32

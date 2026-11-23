@@ -90,7 +90,11 @@ fn ui.render.GpuCtx.begin(self: &mut ui.render.GpuCtx, r: f32, g: f32, b: f32, a
 end ui.render.GpuCtx.begin
 
 fn ui.render.GpuCtx.close(self: ui.render.GpuCtx) -> () uses [] panics may pub
-    let ui.render.GpuCtx { dev: d, width: _w, height: _h } = self
+    let ui.render.GpuCtx {
+        dev: d
+        width: _w
+        height: _h
+    } = self
     unsafe "bindgen" "C の関数 ksnui_gpu_destroy を呼ぶ" {
         ui.gpu.ksnui_gpu_destroy(d)
     }
@@ -107,7 +111,11 @@ fn ui.render.GpuCtx.create(w: i32, h: i32) -> Result<ui.render.GpuCtx, ui.render
     if is_null {
         Err(ui.render.GpuError.CreateFailed)
     } else {
-        Ok(ui.render.GpuCtx { dev: d, width: w, height: h })
+        Ok(ui.render.GpuCtx {
+            dev: d
+            width: w
+            height: h
+        })
     }
 end ui.render.GpuCtx.create
 
@@ -183,7 +191,12 @@ fn ui.render.batch_glyphs(list: &[ui.render.Item], out: &mut [ui.gpu.KsnuiGlyphQ
 end ui.render.batch_glyphs
 
 fn ui.render.batch_rects(list: &[ui.render.Item], out: &mut [ui.gpu.KsnuiRect]) -> usize uses [] panics never pub
-    let empty = ui.render.Clip { x: 0.0f32, y: 0.0f32, w: 0.0f32, h: 0.0f32 }
+    let empty = ui.render.Clip {
+        x: 0.0f32
+        y: 0.0f32
+        w: 0.0f32
+        h: 0.0f32
+    }
     let mut stack = [empty; 8]
     let mut stack_len = 0usize
     let slots = stack.as_mut_slice()
@@ -309,8 +322,19 @@ fn ui.render.emit_shadow(s: ui.render.Shadow, clip: Option<ui.render.Clip>, out:
     let c = s.color
     let bw = 0.0f32
     let ra = s.radius
-    let style = ui.render.RectStyle { fill: c, border: border, border_w: bw, radius: ra }
-    let r = ui.render.RectItem { x: s.x + s.dx, y: s.y + s.dy, w: s.w, h: s.h, style: style }
+    let style = ui.render.RectStyle {
+        fill: c
+        border: border
+        border_w: bw
+        radius: ra
+    }
+    let r = ui.render.RectItem {
+        x: s.x + s.dx
+        y: s.y + s.dy
+        w: s.w
+        h: s.h
+        style: style
+    }
     ui.render.emit_rect(&r, clip, out, wi)
 end ui.render.emit_shadow
 
@@ -336,29 +360,70 @@ fn ui.render.intersect(rect: &ui.render.RectItem, clip: &ui.render.Clip) -> Opti
         clip.y + clip.h
     }
     if x1 > x0 && y1 > y0 {
-        Some(ui.render.RectItem { x: x0, y: y0, w: x1 - x0, h: y1 - y0, style: rect.style })
+        Some(ui.render.RectItem {
+            x: x0
+            y: y0
+            w: x1 - x0
+            h: y1 - y0
+            style: rect.style
+        })
     } else {
         None
     }
 end ui.render.intersect
 
 fn ui.render.mk_clip(x: f32, y: f32, w: f32, h: f32) -> ui.render.Clip uses [] panics never pub
-    ui.render.Clip { x: x, y: y, w: w, h: h }
+    ui.render.Clip {
+        x: x
+        y: y
+        w: w
+        h: h
+    }
 end ui.render.mk_clip
 
 fn ui.render.mk_rect(x: f32, y: f32, w: f32, h: f32, r: f32, fill: ui.render.Rgba) -> ui.render.RectItem uses [] panics never pub
     let border = ui.render.rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)
-    let style = ui.render.RectStyle { fill: fill, border: border, border_w: 0.0f32, radius: r }
-    ui.render.RectItem { x: x, y: y, w: w, h: h, style: style }
+    let style = ui.render.RectStyle {
+        fill: fill
+        border: border
+        border_w: 0.0f32
+        radius: r
+    }
+    ui.render.RectItem {
+        x: x
+        y: y
+        w: w
+        h: h
+        style: style
+    }
 end ui.render.mk_rect
 
 fn ui.render.mk_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, color: ui.render.Rgba, dx: f32, dy: f32) -> ui.render.Shadow uses [] panics never pub
-    ui.render.Shadow { x: x, y: y, w: w, h: h, radius: radius, color: color, dx: dx, dy: dy }
+    ui.render.Shadow {
+        x: x
+        y: y
+        w: w
+        h: h
+        radius: radius
+        color: color
+        dx: dx
+        dy: dy
+    }
 end ui.render.mk_shadow
 
 fn ui.render.render_checksum(ctx: &mut ui.render.GpuCtx, list: &[ui.render.Item]) -> u64 uses [] panics may pub
     let z = 0.0f32
-    let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+    let q = ui.gpu.KsnuiRect {
+        x: z
+        y: z
+        w: z
+        h: z
+        r: z
+        cr: z
+        cg: z
+        cb: z
+        ca: z
+    }
     let mut rects = [q; 64usize]
     core.mem.drop(ui.render.batch_rects(list, rects.as_mut_slice()))
     core.mem.drop(ctx.begin(0.1f32, 0.1f32, 0.1f32, 1.0f32))
@@ -377,7 +442,12 @@ fn ui.render.render_checksum(ctx: &mut ui.render.GpuCtx, list: &[ui.render.Item]
 end ui.render.render_checksum
 
 fn ui.render.rgba(cr: f32, cg: f32, cb: f32, ca: f32) -> ui.render.Rgba uses [] panics never pub
-    ui.render.Rgba { cr: cr, cg: cg, cb: cb, ca: ca }
+    ui.render.Rgba {
+        cr: cr
+        cg: cg
+        cb: cb
+        ca: ca
+    }
 end ui.render.rgba
 
 fn ui.render.scene_borders(list: &mut std.vec.Vec<ui.render.Item>) -> () uses [alloc] panics never pub
@@ -462,7 +532,17 @@ test ui.render.GpuCtx.test_batch_clip
     }
     let mut out = std.vec.Vec.new()
     let z = 0.0f32
-    let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+    let q = ui.gpu.KsnuiRect {
+        x: z
+        y: z
+        w: z
+        h: z
+        r: z
+        cr: z
+        cg: z
+        cb: z
+        ca: z
+    }
     for _ in core.iter.range(0usize, 16usize) {
         match out.push(q) {
             Ok(_) => ()
@@ -504,7 +584,17 @@ test ui.render.GpuCtx.test_batch_cull
     }
     let mut out = std.vec.Vec.new()
     let z = 0.0f32
-    let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+    let q = ui.gpu.KsnuiRect {
+        x: z
+        y: z
+        w: z
+        h: z
+        r: z
+        cr: z
+        cg: z
+        cb: z
+        ca: z
+    }
     for _ in core.iter.range(0usize, 1usize) {
         match out.push(q) {
             Ok(_) => ()
@@ -537,7 +627,17 @@ test ui.render.GpuCtx.test_batch_order
     }
     let mut out = std.vec.Vec.new()
     let z = 0.0f32
-    let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+    let q = ui.gpu.KsnuiRect {
+        x: z
+        y: z
+        w: z
+        h: z
+        r: z
+        cr: z
+        cg: z
+        cb: z
+        ca: z
+    }
     for _ in core.iter.range(0usize, 16usize) {
         match out.push(q) {
             Ok(_) => ()
@@ -576,7 +676,17 @@ test ui.render.GpuCtx.test_batch_shadow
     }
     let mut out = std.vec.Vec.new()
     let z = 0.0f32
-    let q = ui.gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+    let q = ui.gpu.KsnuiRect {
+        x: z
+        y: z
+        w: z
+        h: z
+        r: z
+        cr: z
+        cg: z
+        cb: z
+        ca: z
+    }
     for _ in core.iter.range(0usize, 16usize) {
         match out.push(q) {
             Ok(_) => ()

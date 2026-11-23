@@ -54,7 +54,10 @@ fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
 end t.ok_unit
 
 fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
-    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+    std.io.Error {
+        kind: std.io.ErrorKind.OutOfMemory
+        code: 0i32
+    }
 end t.oom
 
 fn t.produce(tx: std.sync.Sender<alloc.string.String>, count: u32) -> () uses [alloc, thread] panics may

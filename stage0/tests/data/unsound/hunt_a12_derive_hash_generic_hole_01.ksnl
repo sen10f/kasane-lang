@@ -7,7 +7,11 @@ type t.NoHash
 end t.NoHash
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let b = t.Box { x: t.NoHash { a: 1u8 } }
+    let b = t.Box {
+        x: t.NoHash {
+            a: 1u8
+        }
+    }
     let mut h = core.hash.Fnv64.new()
     b.hash(&mut h)
     let _n = h.finish()

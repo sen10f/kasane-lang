@@ -3,7 +3,9 @@ type t.L linear pub
 end t.L
 
 fn t.main() -> () uses [] panics never
-    t.skip(t.L { v: 1u32 })
+    t.skip(t.L {
+        v: 1u32
+    })
 end t.main
 
 fn t.skip(_l: t.L) -> () uses [] panics never

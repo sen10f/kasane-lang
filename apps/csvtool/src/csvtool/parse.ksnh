@@ -29,7 +29,9 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
                 if !row.is_empty() {
                     core.mem.drop(row.push(field)?)
                     field = std.string.String.new()
-                    core.mem.drop(rows.push(table.Row { fields: row })?)
+                    core.mem.drop(rows.push(table.Row {
+                        fields: row
+                    })?)
                     row = std.vec.Vec.new()
                 }
             } else {
@@ -45,7 +47,9 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
                 core.mem.drop(row.push(field)?)
                 field = std.string.String.new()
                 state = csvtool.parse.ST_FIELD
-                core.mem.drop(rows.push(table.Row { fields: row })?)
+                core.mem.drop(rows.push(table.Row {
+                    fields: row
+                })?)
                 row = std.vec.Vec.new()
             } else {
                 core.mem.drop(field.push(c)?)
@@ -68,7 +72,9 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
             core.mem.drop(row.push(field)?)
             field = std.string.String.new()
             state = csvtool.parse.ST_FIELD
-            core.mem.drop(rows.push(table.Row { fields: row })?)
+            core.mem.drop(rows.push(table.Row {
+                fields: row
+            })?)
             row = std.vec.Vec.new()
         } else {
             core.mem.drop(field.push('"')?)
@@ -78,7 +84,9 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
     }
     if !field.is_empty() || !row.is_empty() || state != csvtool.parse.ST_FIELD {
         core.mem.drop(row.push(field)?)
-        core.mem.drop(rows.push(table.Row { fields: row })?)
+        core.mem.drop(rows.push(table.Row {
+            fields: row
+        })?)
     } else {
         core.mem.drop(field)
         core.mem.drop(row)
@@ -92,7 +100,11 @@ fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Tab
             None => core.mem.drop(0u8)
         }
     }
-    let t = table.Table { header: header, rows: rows, delim: delim }
+    let t = table.Table {
+        header: header
+        rows: rows
+        delim: delim
+    }
     Ok(t)
 end csvtool.parse.parse_text
 

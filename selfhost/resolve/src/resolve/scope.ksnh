@@ -191,7 +191,14 @@ fn resolve.scope.mk(file: usize) -> Result<resolve.scope.St, alloc.alloc.AllocEr
     let b = std.vec.Vec.new()
     let c = std.vec.Vec.new()
     let d = std.vec.Vec.new()
-    Ok(resolve.scope.St { file: file, tails: a, fulls: b, gens: c, locals: d, base: 0usize })
+    Ok(resolve.scope.St {
+        file: file
+        tails: a
+        fulls: b
+        gens: c
+        locals: d
+        base: 0usize
+    })
 end resolve.scope.mk
 
 // ファイルの import から状態を作る。末尾名は最後の成分。

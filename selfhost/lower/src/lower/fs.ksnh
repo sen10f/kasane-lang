@@ -105,7 +105,10 @@ fn lower.fs.read_to_end(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     ma.push(nt)?
     lower.loops.br(c, hd, &ma)?
     lower.cx.goto(c, exit)
-    Ok(lower.cx.R { v: lower.tyk.at(xps.as_slice(), 0usize), t: t })
+    Ok(lower.cx.R {
+        v: lower.tyk.at(xps.as_slice(), 0usize)
+        t: t
+    })
 end lower.fs.read_to_end
 
 // 局所 k の後始末の式を置く (0 = 外す)。
@@ -146,5 +149,8 @@ fn lower.fs.withx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         lower.expr.end_locals(env, c, p, src, mark)?
     }
     lower.expr.trunc(c, mark)
-    Ok(lower.cx.R { v: r.v, t: t })
+    Ok(lower.cx.R {
+        v: r.v
+        t: t
+    })
 end lower.fs.withx

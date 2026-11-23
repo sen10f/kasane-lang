@@ -329,7 +329,10 @@ end ui.focus.FocusManager.get_focus
 
 fn ui.focus.FocusManager.new() -> ui.focus.FocusManager uses [] panics never pub
     let scopes = std.vec.Vec.new()
-    ui.focus.FocusManager { scopes: scopes, focus: None }
+    ui.focus.FocusManager {
+        scopes: scopes
+        focus: None
+    }
 end ui.focus.FocusManager.new
 
 /// スコープ `scope_id` へノードを文書順に追加する。スコープが無ければ偽。
@@ -619,12 +622,19 @@ end ui.focus.Keymap.dispatch
 
 fn ui.focus.Keymap.new() -> ui.focus.Keymap uses [] panics never pub
     let entries = std.vec.Vec.new()
-    ui.focus.Keymap { entries: entries }
+    ui.focus.Keymap {
+        entries: entries
+    }
 end ui.focus.Keymap.new
 
 /// ショートカットを登録する。
 fn ui.focus.Keymap.register(self: &mut ui.focus.Keymap, scope: usize, key: u32, modifiers: ui.focus.Modifiers, action: u32) -> () uses [alloc] panics never pub
-    let sh = ui.focus.Shortcut { scope: scope, key: key, modifiers: modifiers, action: action }
+    let sh = ui.focus.Shortcut {
+        scope: scope
+        key: key
+        modifiers: modifiers
+        action: action
+    }
     match self.entries.push(sh) {
         Ok(_) => ()
         Err(_) => ()
@@ -633,7 +643,11 @@ end ui.focus.Keymap.register
 
 /// `ui.focus.Modifiers` の既定値（全修飾キー off）。
 fn ui.focus.Modifiers.default() -> ui.focus.Modifiers uses [] panics never pub
-    ui.focus.Modifiers { shift: false, ctrl: false, alt: false }
+    ui.focus.Modifiers {
+        shift: false
+        ctrl: false
+        alt: false
+    }
 end ui.focus.Modifiers.default
 
 /// ノードを文書順に追加する。tab_index は既定の 0。
@@ -652,7 +666,14 @@ end ui.focus.Scope.add_node
 fn ui.focus.Scope.new(id: usize, parent: Option<usize>, dir: ui.focus.Dir, modal: bool) -> ui.focus.Scope uses [] panics never pub
     let nodes = std.vec.Vec.new()
     let t = std.vec.Vec.new()
-    ui.focus.Scope { id: id, parent: parent, nodes: nodes, tab_index: t, dir: dir, modal: modal }
+    ui.focus.Scope {
+        id: id
+        parent: parent
+        nodes: nodes
+        tab_index: t
+        dir: dir
+        modal: modal
+    }
 end ui.focus.Scope.new
 
 /// スコープの並び方向を設定する。

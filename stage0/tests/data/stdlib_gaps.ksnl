@@ -46,7 +46,10 @@ fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panic
     let mut xs = std.vec.Vec.new()
     xs.push(1u32)?
     xs.push(2u32)?
-    let r = t.Rec { name: copy, xs: xs }
+    let r = t.Rec {
+        name: copy
+        xs: xs
+    }
     let mut line = std.string.String.new()
     line.push_debug(&r)?
     line.push_str(" ")?

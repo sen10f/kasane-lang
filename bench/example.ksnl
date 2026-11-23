@@ -17,7 +17,10 @@ fn bench.Stats.mean(self: &bench.Stats) -> Option<u32> uses [] panics may pub
 end bench.Stats.mean
 
 fn bench.Stats.new() -> bench.Stats uses [] panics never pub
-    bench.Stats { total: 0u32, count: 0u32 }
+    bench.Stats {
+        total: 0u32
+        count: 0u32
+    }
 end bench.Stats.new
 
 fn bench.first_big(xs: &[u32], limit: u32) -> Option<u32> uses [] panics may

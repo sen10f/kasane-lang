@@ -11,7 +11,9 @@ fn t.X.handle(self: &t.X) -> u64 uses [] panics never
 end t.X.handle
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics may
-    let mut x = t.X { v: 7u32 }
+    let mut x = t.X {
+        v: 7u32
+    }
     core.check.eq(t.sink(&mut x), 7u32)
     Ok(())
 end t.main

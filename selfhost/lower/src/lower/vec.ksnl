@@ -50,7 +50,10 @@ fn lower.vec.call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usiz
     let co3 = lower.cx.cat2(co2.as_str(), lower.cx.vlist(vs)?.as_str())?
     let co4 = lower.cx.cat2(co3.as_str(), ")")?
     let v = lower.cx.def(c, rt.as_str(), co4.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.vec.call
 
 fn lower.vec.elem(c: &lower.cx.Cx, vt: usize) -> usize uses [] panics never pub
@@ -152,7 +155,10 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &std
     }
     let _b0 = lower.cx.blk(c, &ps)?
     lower.cx.goto(c, 0usize)
-    let mut r = lower.cx.R { v: 0usize, t: ret }
+    let mut r = lower.cx.R {
+        v: 0usize
+        t: ret
+    }
     if name == "len" {
         r = lower.vec.len(env, c, recv, false, ret)?
     } else if name == "is_empty" {
@@ -164,7 +170,10 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &std
     } else if name == "clear" {
         let z = lower.vec.usize_c(c, 0usize)?
         core.mem.drop(lower.vec.store_at(c, "usize", recv, 8usize, z)?)
-        r = lower.cx.R { v: lower.expr.unit(c)?, t: ret }
+        r = lower.cx.R {
+            v: lower.expr.unit(c)?
+            t: ret
+        }
     } else if name == "truncate" {
         let len0 = lower.vec.load_usize(c, recv, 8usize)?
         let lts = lower.cx.cat2("icmp.lt.usize ", lower.expr.two(value, len0)?.as_str())?
@@ -182,13 +191,19 @@ fn lower.vec.gen(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &std
         core.mem.drop(lower.vec.store_at(c, "usize", recv, 8usize, value)?)
         lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &empty)?.as_str())?)?
         lower.cx.goto(c, jb)
-        r = lower.cx.R { v: lower.expr.unit(c)?, t: ret }
+        r = lower.cx.R {
+            v: lower.expr.unit(c)?
+            t: ret
+        }
     } else if name == "as_slice" {
         let pv = lower.vec.load_ptr(c, recv)?
         let lv = lower.vec.load_usize(c, recv, 8usize)?
         let mk = lower.cx.cat2("make(", lower.expr.two(pv, lv)?.as_str())?
         let mv = lower.cx.def(c, rt.as_str(), lower.cx.cat2(mk.as_str(), ")")?.as_str())?
-        r = lower.cx.R { v: mv, t: ret }
+        r = lower.cx.R {
+            v: mv
+            t: ret
+        }
     } else if is_str {
         r = lower.str.push_str(env, c, recv, value, ret)?
     }
@@ -223,7 +238,10 @@ fn lower.vec.index(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: 
     let lds2 = lower.cx.cat2(lds.as_str(), " ")?
     let lds3 = lower.cx.cat2(lds2.as_str(), lower.cx.vs(addr)?.as_str())?
     let v = lower.cx.def(c, et.as_str(), lower.cx.cat2(lds3.as_str(), " +0")?.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.vec.index
 
 fn lower.vec.index_expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -262,13 +280,19 @@ end lower.vec.is_hdr
 fn lower.vec.len(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, empty_q: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics never pub
     let len0 = lower.vec.load_usize(c, recv, 8usize)?
     if !empty_q {
-        return Ok(lower.cx.R { v: len0, t: t })
+        return Ok(lower.cx.R {
+            v: len0
+            t: t
+        })
     }
     let zero = lower.vec.usize_c(c, 0usize)?
     let eqs = lower.cx.cat2("icmp.eq.usize ", lower.expr.two(len0, zero)?.as_str())?
     let v = lower.cx.def(c, "bool", eqs.as_str())?
     core.mem.drop(env.srcs.len())
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.vec.len
 
 fn lower.vec.load_hdr(env: &types.env.Env, c: &mut lower.cx.Cx, slot: usize, t: usize, take: bool) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
@@ -340,7 +364,10 @@ fn lower.vec.new(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<l
     let mk5 = lower.cx.cat2(mk4.as_str(), lower.cx.vs(z)?.as_str())?
     let mk6 = lower.cx.cat2(mk5.as_str(), ")")?
     let v = lower.cx.def(c, tt.as_str(), mk6.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.vec.new
 
 fn lower.vec.owns_elems(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<bool, resolve.Failure> uses [alloc] panics may pub
@@ -399,7 +426,10 @@ fn lower.vec.pop(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: us
     a1.push(sv)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a1)?.as_str())?)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+    Ok(lower.cx.R {
+        v: lower.tyk.at(jps.as_slice(), 0usize)
+        t: t
+    })
 end lower.vec.pop
 
 fn lower.vec.push(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: usize, value: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -449,7 +479,10 @@ fn lower.vec.push(env: &types.env.Env, c: &mut lower.cx.Cx, recv: usize, elem: u
     a.push(okv)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a)?.as_str())?)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+    Ok(lower.cx.R {
+        v: lower.tyk.at(jps.as_slice(), 0usize)
+        t: t
+    })
 end lower.vec.push
 
 fn lower.vec.store_at(c: &mut lower.cx.Cx, ty: &str, p: usize, off: usize, v: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub

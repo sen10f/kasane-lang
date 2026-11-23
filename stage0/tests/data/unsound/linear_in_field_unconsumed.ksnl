@@ -7,7 +7,11 @@ type t.Res linear
 end t.Res
 
 fn t.bad() -> u32 uses [] panics never
-    let b = t.Box { r: t.Res { id: 1u32 } }
+    let b = t.Box {
+        r: t.Res {
+            id: 1u32
+        }
+    }
     b.r.id
 end t.bad
 

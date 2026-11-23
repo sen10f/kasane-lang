@@ -8,10 +8,14 @@ end t.T
 
 fn t.f(s: t.S) -> bool uses [] panics never
     match s {
-        t.T { v: _ } => true
+        t.T {
+            v: _
+        } => true
     }
 end t.f
 
 fn t.main() -> () uses [] panics never
-    core.mem.drop(t.f(t.S { v: 7u32 }))
+    core.mem.drop(t.f(t.S {
+        v: 7u32
+    }))
 end t.main

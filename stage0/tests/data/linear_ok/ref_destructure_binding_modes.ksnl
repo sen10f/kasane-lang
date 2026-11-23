@@ -23,8 +23,14 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let pair = (1u32, 2u32)
     let (a, b) = &pair
     core.mem.drop(a.wrapping_add(*b))
-    let pt = t.Pt { x: 1u32, y: 2u32 }
-    let t.Pt { x: px, y: py } = &pt
+    let pt = t.Pt {
+        x: 1u32
+        y: 2u32
+    }
+    let t.Pt {
+        x: px
+        y: py
+    } = &pt
     core.mem.drop(px.wrapping_add(*py))
     let nested = Some((1u32, 2u32))
     if let Some((c, d)) = &nested {

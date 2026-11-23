@@ -37,14 +37,24 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     }
     core.check.eq(total, 2109.0f64)
     let sp = unsafe "ffi" "struct that does not fit the registers" {
-        t.spill(1i64, 2i64, 3i64, 4i64, 5i64, t.Small { a: 6i32, b: 7i32 }, 8i64)
+        t.spill(1i64, 2i64, 3i64, 4i64, 5i64, t.Small {
+            a: 6i32
+            b: 7i32
+        }, 8i64)
     }
     core.check.eq(sp, 7623i64)
     let sb = unsafe "ffi" "memory struct after many ints" {
-        t.spill_big(1i64, 2i64, 3i64, 4i64, 5i64, 6i64, t.Big { a: 7i64, b: 8i64, c: 9i64 }, 10i64)
+        t.spill_big(1i64, 2i64, 3i64, 4i64, 5i64, 6i64, t.Big {
+            a: 7i64
+            b: 8i64
+            c: 9i64
+        }, 10i64)
     }
     core.check.eq(sb, 11_008i64)
-    let mut acc = t.Acc { total: 0i64, count: 0i32 }
+    let mut acc = t.Acc {
+        total: 0i64
+        count: 0i32
+    }
     let user = unsafe "ptr" "make or convert a raw pointer" {
         core.ptr.from_mut(&mut acc)
     }
@@ -71,6 +81,9 @@ fn t.tick(i: i32, user: *mut t.Acc) -> () uses [] panics never
     unsafe "ffi" "accumulate through the user data" {
         let cur = core.ptr.read(user)
         let total = cur.total.wrapping_add(10i64)
-        core.ptr.write(user, t.Acc { total: total, count: cur.count.wrapping_add(i) })
+        core.ptr.write(user, t.Acc {
+            total: total
+            count: cur.count.wrapping_add(i)
+        })
     }
 end t.tick

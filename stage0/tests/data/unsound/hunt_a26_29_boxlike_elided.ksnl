@@ -3,7 +3,9 @@ type t.BoxLike['a]
 end t.BoxLike
 
 fn t.bad['a, 'b](x: &u32, _y: &'b u32) -> t.BoxLike<'a> uses [] panics never
-    t.BoxLike { v: x }
+    t.BoxLike {
+        v: x
+    }
 end t.bad
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

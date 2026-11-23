@@ -65,8 +65,14 @@ fn shapes.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end shapes.main
 
 fn shapes.rect(x0: f64, y0: f64, x1: f64, y1: f64) -> shapes.Rect uses [] panics never
-    let a = shapes.Point { x: x0, y: y0 }
-    let b = shapes.Point { x: x1, y: y1 }
+    let a = shapes.Point {
+        x: x0
+        y: y0
+    }
+    let b = shapes.Point {
+        x: x1
+        y: y1
+    }
     unsafe "shapes" "structs by value, returned in registers or memory" {
         shapes.rect_from(a, b)
     }
@@ -76,12 +82,18 @@ fn shapes.vertex(x: f64, y: f64, user: *mut shapes.Acc) -> () uses [] panics nev
     unsafe "callback" "accumulate through the user data pointer" {
         let acc = core.ptr.read(user)
         let sum = acc.sum + x + y
-        core.ptr.write(user, shapes.Acc { count: acc.count.wrapping_add(1i32), sum: sum })
+        core.ptr.write(user, shapes.Acc {
+            count: acc.count.wrapping_add(1i32)
+            sum: sum
+        })
     }
 end shapes.vertex
 
 fn shapes.vertex_stats(r: shapes.Rect) -> shapes.Acc uses [] panics never
-    let mut acc = shapes.Acc { count: 0i32, sum: 0.0f64 }
+    let mut acc = shapes.Acc {
+        count: 0i32
+        sum: 0.0f64
+    }
     let p = unsafe "shapes" "take a raw pointer to a local accumulator" {
         core.ptr.from_mut(&mut acc)
     }

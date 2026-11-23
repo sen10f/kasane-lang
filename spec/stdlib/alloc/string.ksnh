@@ -76,9 +76,13 @@ fn alloc.string.String.push[A: alloc.alloc.Allocator](self: &mut alloc.string.St
             Ok(byte) => match self.buf.push_within_cap(byte) {
                 Ok(_done) => {
                 }
-                Err(_) => return Err(alloc.alloc.AllocError { code: 1u32 })
+                Err(_) => return Err(alloc.alloc.AllocError {
+                    code: 1u32
+                })
             }
-            Err(_) => return Err(alloc.alloc.AllocError { code: 2u32 })
+            Err(_) => return Err(alloc.alloc.AllocError {
+                code: 2u32
+            })
         }
         shift = shift.wrapping_sub(6u32)
     }
@@ -106,7 +110,9 @@ fn alloc.string.String.push_i64[A: alloc.alloc.Allocator](self: &mut alloc.strin
         match self.buf.push_within_cap(45u8) {
             Ok(_done) => {
             }
-            Err(_) => return Err(alloc.alloc.AllocError { code: 1u32 })
+            Err(_) => return Err(alloc.alloc.AllocError {
+                code: 1u32
+            })
         }
     }
     let start = self.buf.len()
@@ -115,11 +121,15 @@ fn alloc.string.String.push_i64[A: alloc.alloc.Allocator](self: &mut alloc.strin
     loop {
         let rest = match v.checked_div(10i64) {
             Some(q) => q
-            None => return Err(alloc.alloc.AllocError { code: 2u32 })
+            None => return Err(alloc.alloc.AllocError {
+                code: 2u32
+            })
         }
         let r = match v.checked_rem(10i64) {
             Some(d) => d
-            None => return Err(alloc.alloc.AllocError { code: 2u32 })
+            None => return Err(alloc.alloc.AllocError {
+                code: 2u32
+            })
         }
         let zero = 0i64
         let digit = if neg {
@@ -131,9 +141,13 @@ fn alloc.string.String.push_i64[A: alloc.alloc.Allocator](self: &mut alloc.strin
             Ok(d8) => match self.buf.insert_within_cap(start, d8.wrapping_add(48u8)) {
                 Ok(_done) => {
                 }
-                Err(_) => return Err(alloc.alloc.AllocError { code: 1u32 })
+                Err(_) => return Err(alloc.alloc.AllocError {
+                    code: 1u32
+                })
             }
-            Err(_) => return Err(alloc.alloc.AllocError { code: 2u32 })
+            Err(_) => return Err(alloc.alloc.AllocError {
+                code: 2u32
+            })
         }
         v = rest
         if v == 0i64 {
@@ -156,7 +170,9 @@ fn alloc.string.String.push_str[A: alloc.alloc.Allocator](self: &mut alloc.strin
     }
     match self.buf.append_str_within_cap(text) {
         Ok(_) => Ok(())
-        Err(_) => Err(alloc.alloc.AllocError { code: 1u32 })
+        Err(_) => Err(alloc.alloc.AllocError {
+            code: 1u32
+        })
     }
 end alloc.string.String.push_str
 
@@ -171,19 +187,27 @@ fn alloc.string.String.push_u64[A: alloc.alloc.Allocator](self: &mut alloc.strin
     loop {
         let rest = match v.checked_div(10u64) {
             Some(q) => q
-            None => return Err(alloc.alloc.AllocError { code: 2u32 })
+            None => return Err(alloc.alloc.AllocError {
+                code: 2u32
+            })
         }
         let digit = match v.checked_rem(10u64) {
             Some(d) => d
-            None => return Err(alloc.alloc.AllocError { code: 2u32 })
+            None => return Err(alloc.alloc.AllocError {
+                code: 2u32
+            })
         }
         match u8.try_from_u64(digit) {
             Ok(d8) => match self.buf.insert_within_cap(start, d8.wrapping_add(48u8)) {
                 Ok(_done) => {
                 }
-                Err(_) => return Err(alloc.alloc.AllocError { code: 1u32 })
+                Err(_) => return Err(alloc.alloc.AllocError {
+                    code: 1u32
+                })
             }
-            Err(_) => return Err(alloc.alloc.AllocError { code: 2u32 })
+            Err(_) => return Err(alloc.alloc.AllocError {
+                code: 2u32
+            })
         }
         v = rest
         if v == 0u64 {

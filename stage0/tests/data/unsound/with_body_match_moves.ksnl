@@ -4,15 +4,24 @@ type t.Res linear
 end t.Res
 
 fn t.Res.shut(self: t.Res) -> () uses [] panics never
-    let t.Res { id: id, data: data } = self
+    let t.Res {
+        id: id
+        data: data
+    } = self
     core.mem.drop(id)
     core.mem.drop(data)
 end t.Res.shut
 
 fn t.bad() -> () uses [] panics never
-    with r = t.Res { id: 1u32, data: std.vec.Vec.new() } close r.shut() {
+    with r = t.Res {
+        id: 1u32
+        data: std.vec.Vec.new()
+    } close r.shut() {
         match r {
-            t.Res { id: id, data: data } => core.mem.drop(data)
+            t.Res {
+                id: id
+                data: data
+            } => core.mem.drop(data)
         }
     }
 end t.bad

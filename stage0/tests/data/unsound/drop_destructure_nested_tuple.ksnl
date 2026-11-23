@@ -12,7 +12,9 @@ fn t.main() -> () uses [] panics never
 end t.main
 
 fn t.take(p: (t.P, i32)) -> i32 uses [] panics never
-    let (t.P { v: v }, n) = p
+    let (t.P {
+        v: v
+    }, n) = p
     core.mem.drop(n)
     v
 end t.take

@@ -145,7 +145,12 @@ end ui.event.Ctx.get_focus
 fn ui.event.Ctx.new() -> ui.event.Ctx uses [] panics never pub
     let tab_order = std.vec.Vec.new()
     let text = std.vec.Vec.new()
-    ui.event.Ctx { focus: None, capture: None, tab_order: tab_order, text: text }
+    ui.event.Ctx {
+        focus: None
+        capture: None
+        tab_order: tab_order
+        text: text
+    }
 end ui.event.Ctx.new
 
 fn ui.event.Ctx.release_capture(self: &mut ui.event.Ctx) -> () uses [] panics never pub
@@ -168,7 +173,11 @@ fn ui.event.Ctx.tab_push(self: &mut ui.event.Ctx, node: usize) -> () uses [alloc
 end ui.event.Ctx.tab_push
 
 fn ui.event.Modifiers.default() -> ui.event.Modifiers uses [] panics never pub
-    ui.event.Modifiers { shift: false, ctrl: false, alt: false }
+    ui.event.Modifiers {
+        shift: false
+        ctrl: false
+        alt: false
+    }
 end ui.event.Modifiers.default
 
 fn ui.event.hit_test(layout: &ui.layout.Tree, root: usize, x: f32, y: f32) -> Option<usize> uses [] panics never stack 4096 pub

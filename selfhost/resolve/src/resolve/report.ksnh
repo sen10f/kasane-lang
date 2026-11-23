@@ -110,7 +110,13 @@ fn resolve.report.new() -> Result<resolve.report.Report, alloc.alloc.AllocError>
     let text = std.string.String.new()
     let path = std.string.String.new()
     let nosig = false
-    Ok(resolve.report.Report { text: text, path: path, errors: 0usize, refs: 0usize, sig: nosig })
+    Ok(resolve.report.Report {
+        text: text
+        path: path
+        errors: 0usize
+        refs: 0usize
+        sig: nosig
+    })
 end resolve.report.new
 
 // 以後の診断・定義の行に使うパスを設定する。

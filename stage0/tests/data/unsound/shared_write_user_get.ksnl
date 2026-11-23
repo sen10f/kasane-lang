@@ -7,7 +7,9 @@ fn t.Cell.get(self: &t.Cell) -> &u64 uses [] panics never
 end t.Cell.get
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let c = t.Cell { n: 0u64 }
+    let c = t.Cell {
+        n: 0u64
+    }
     *c.get() = 5u64
     core.mem.drop(c)
     Ok(())

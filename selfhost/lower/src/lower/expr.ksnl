@@ -20,10 +20,16 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         let so = lower.opt.two_op("store ", ptr.v, r.v)?
         let sv = lower.cx.def(c, "unit", so.as_str())?
         if stmt {
-            return Ok(lower.cx.R { v: sv, t: types.ty.UNIT })
+            return Ok(lower.cx.R {
+                v: sv
+                t: types.ty.UNIT
+            })
         }
         let u = lower.expr.unit(c)?
-        return Ok(lower.cx.R { v: u, t: types.ty.UNIT })
+        return Ok(lower.cx.R {
+            v: u
+            t: types.ty.UNIT
+        })
     }
     if ln.kind == parse.ast.Kind.Dot {
         let base = parse.ast.get(&p.ast, ln.a)
@@ -33,15 +39,24 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         }
         if bloc == 0usize {
             lower.cx.fail(c, "代入 (フィールドの基が局所でない・未対応)")?
-            return Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
+            return Ok(lower.cx.R {
+                v: 0usize
+                t: types.ty.UNIT
+            })
         }
         let fname = resolve.ast.tok_text(p, src, ln.b)
         let sv = lower.expr.field_store(env, c, p, src, bloc - 1usize, fname, n.b, lt)?
         if stmt {
-            return Ok(lower.cx.R { v: sv, t: types.ty.UNIT })
+            return Ok(lower.cx.R {
+                v: sv
+                t: types.ty.UNIT
+            })
         }
         let u = lower.expr.unit(c)?
-        return Ok(lower.cx.R { v: u, t: types.ty.UNIT })
+        return Ok(lower.cx.R {
+            v: u
+            t: types.ty.UNIT
+        })
     }
     let name = resolve.ast.text(src, ln.a, ln.b)
     let (pf1, pf2) = lower.expr.split2(name)
@@ -49,15 +64,24 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         let bloc2 = lower.cx.find(c, pf1)
         let sv2 = lower.expr.field_store(env, c, p, src, bloc2 - 1usize, pf2, n.b, lt)?
         if stmt {
-            return Ok(lower.cx.R { v: sv2, t: types.ty.UNIT })
+            return Ok(lower.cx.R {
+                v: sv2
+                t: types.ty.UNIT
+            })
         }
         let u2 = lower.expr.unit(c)?
-        return Ok(lower.cx.R { v: u2, t: types.ty.UNIT })
+        return Ok(lower.cx.R {
+            v: u2
+            t: types.ty.UNIT
+        })
     }
     let loc = lower.cx.find(c, name)
     if ln.kind != parse.ast.Kind.Path || loc == 0usize {
         lower.cx.fail(c, "代入 (局所以外への代入は未対応)")?
-        return Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
+        return Ok(lower.cx.R {
+            v: 0usize
+            t: types.ty.UNIT
+        })
     }
     let r = lower.expr.expr(env, c, p, src, n.b, lt)?
     if lower.cx.is_slot(c, loc - 1usize) {
@@ -80,10 +104,16 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         }
     }
     if stmt {
-        return Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
+        return Ok(lower.cx.R {
+            v: 0usize
+            t: types.ty.UNIT
+        })
     }
     let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: types.ty.UNIT })
+    Ok(lower.cx.R {
+        v: u
+        t: types.ty.UNIT
+    })
 end lower.expr.assign
 
 fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -136,7 +166,10 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         let aop4 = lower.cx.cat2(aop3.as_str(), lower.expr.two(l.v, r.v)?.as_str())?
         let rt = lower.tyk.text(env, c, t)?
         let v = lower.cx.def(c, rt.as_str(), aop4.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if op == 38usize || op == 124usize || op == 94usize {
         let l = lower.expr.expr(env, c, p, src, n.b, t)?
@@ -154,7 +187,10 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         let b4 = lower.cx.cat2(b3.as_str(), lower.expr.two(l.v, r.v)?.as_str())?
         let rt = lower.tyk.text(env, c, t)?
         let v = lower.cx.def(c, rt.as_str(), b4.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if cc == "" {
         lower.cx.fail(c, "二項演算 (未対応)")?
@@ -194,7 +230,10 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     o.push(' ')?
     o.push_str(lower.expr.two(l.v, r.v)?.as_str())?
     let v = lower.cx.def(c, "bool", o.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.expr.bin
 
 fn lower.expr.bind_join(c: &mut lower.cx.Cx, rty: &str, ks: &std.vec.Vec<usize>, jps: &std.vec.Vec<usize>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
@@ -256,7 +295,10 @@ fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     }
     lower.expr.end_locals(env, c, p, src, mark)?
     lower.expr.trunc(c, mark)
-    Ok(lower.cx.R { v: res, t: t })
+    Ok(lower.cx.R {
+        v: res
+        t: t
+    })
 end lower.expr.block
 
 fn lower.expr.br_if(c: &mut lower.cx.Cx, cond: usize, tb: usize, fb: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
@@ -340,14 +382,20 @@ fn lower.expr.call_named(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         }
         core.mem.drop(dv)
         let u = lower.expr.unit(c)?
-        return Ok(lower.cx.R { v: u, t: t })
+        return Ok(lower.cx.R {
+            v: u
+            t: t
+        })
     }
     if fqn.as_str() == "std.fs.read_to_end" {
         return lower.fs.read_to_end(env, c, p, src, n, t)
     }
     if fqn.as_str() == "std.env.arg_count" {
         let v = lower.cx.def(c, "usize", "env.arg_count")?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     let (nty, nm) = lower.std_calls.num_parts(fqn.as_str())
     if nm == "from_str_radix" && resolve.ast.count(p, n.b) == 2usize {
@@ -359,7 +407,10 @@ fn lower.expr.call_named(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         let op1 = lower.cx.cat2(op0.as_str(), " ")?
         let op2 = lower.cx.cat2(op1.as_str(), lower.expr.two(a0.v, a1.v)?.as_str())?
         let v = lower.cx.def(c, rt0.as_str(), op2.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if lower.expr.is_widen(nty, nm) && resolve.ast.count(p, n.b) == 1usize {
         let sty = lower.expr.from_src(nm)
@@ -371,7 +422,10 @@ fn lower.expr.call_named(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         let cv3 = lower.cx.cat2(cv2.as_str(), " ")?
         let cv4 = lower.cx.cat2(cv3.as_str(), lower.cx.vs(a0.v)?.as_str())?
         let cv = lower.cx.def(c, nty, cv4.as_str())?
-        return Ok(lower.cx.R { v: cv, t: t })
+        return Ok(lower.cx.R {
+            v: cv
+            t: t
+        })
     }
     if fqn.as_str() == "core.check.eq" {
         return lower.chk.eq(env, c, p, src, n, t)
@@ -428,7 +482,10 @@ fn lower.expr.call_named(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     o.push_str(lower.cx.vlist(&args)?.as_str())?
     o.push(')')?
     let v = lower.cx.def(c, rt.as_str(), o.as_str())?
-    Ok(lower.cx.R { v: v, t: rty })
+    Ok(lower.cx.R {
+        v: v
+        t: rty
+    })
 end lower.expr.call_named
 
 fn lower.expr.chr_val(src: &[u8], a: usize, b: usize) -> (usize, bool) uses [] panics may pub
@@ -537,7 +594,10 @@ end lower.expr.dotted
 
 fn lower.expr.dummy(c: &mut lower.cx.Cx, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics never pub
     let v = lower.cx.newval(c, "unit")?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.expr.dummy
 
 fn lower.expr.end_locals(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], mark: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
@@ -780,7 +840,10 @@ fn lower.expr.from_src(nm: &str) -> &str uses [] panics never pub
 end lower.expr.from_src
 
 fn lower.expr.getmut_match(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
-    let no = lower.cx.R { v: 0usize, t: t }
+    let no = lower.cx.R {
+        v: 0usize
+        t: t
+    }
     let sn = parse.ast.get(&p.ast, n.a)
     if sn.kind != parse.ast.Kind.MCall {
         return Ok((no, false))
@@ -893,9 +956,15 @@ fn lower.expr.getmut_match(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.c
     lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
     if rty.as_str() == "unit" {
         let u = lower.expr.unit(c)?
-        return Ok((lower.cx.R { v: u, t: t }, true))
+        return Ok((lower.cx.R {
+            v: u
+            t: t
+        }, true))
     }
-    Ok((lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t }, true))
+    Ok((lower.cx.R {
+        v: lower.tyk.at(jps.as_slice(), 0usize)
+        t: t
+    }, true))
 end lower.expr.getmut_match
 
 fn lower.expr.hdr_of(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str) -> Result<(usize, usize, bool), resolve.Failure> uses [alloc] panics may pub
@@ -990,7 +1059,10 @@ fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     }
     lower.cx.goto(c, eb)
     lower.cx.bind_vals(c, &ks, &saved)?
-    let mut er = lower.cx.R { v: 0usize, t: t }
+    let mut er = lower.cx.R {
+        v: 0usize
+        t: t
+    }
     if n.c != 0usize {
         er = lower.expr.expr(env, c, p, src, n.c, t)?
     }
@@ -1008,13 +1080,19 @@ fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
     if rty.as_str() == "unit" {
         let u = lower.expr.unit(c)?
-        return Ok(lower.cx.R { v: u, t: t })
+        return Ok(lower.cx.R {
+            v: u
+            t: t
+        })
     }
     let rv = match jps.as_slice().get(0usize) {
         Some(x) => *x
         None => 0usize
     }
-    Ok(lower.cx.R { v: rv, t: t })
+    Ok(lower.cx.R {
+        v: rv
+        t: t
+    })
 end lower.expr.ifx
 
 fn lower.expr.is_assign(p: &parse.cur.P, e: usize) -> bool uses [] panics never pub
@@ -1119,7 +1197,10 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     let ty = lower.tyk.text(env, c, t)?
     if n.a == 8usize {
         let v = lower.expr.unit(c)?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     let tk = parse.cur.peek_at(p, n.b)
     let txt = resolve.ast.text(src, tk.start, tk.stop)
@@ -1129,7 +1210,10 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             op = "const.bool true"
         }
         let v = lower.cx.def(c, "bool", op)?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if n.a == 4usize || n.a == 5usize {
         let mut qa = tk.start + 1usize
@@ -1149,7 +1233,10 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             "u32"
         }
         let v = lower.cx.def(c, lt, lower.cx.cat2(op, lower.cx.dec(cv)?.as_str())?.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if n.a == 3usize {
         let tk3 = parse.cur.peek_at(p, n.b)
@@ -1178,7 +1265,10 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         let mk3 = lower.cx.cat2(mk2.as_str(), ")")?
         let ft = lower.tyk.text(env, c, t)?
         let v = lower.cx.def(c, ft.as_str(), mk3.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if n.a == 2usize {
         let mut stop_at = txt.len()
@@ -1203,7 +1293,10 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             fo3.push_str(".0")?
         }
         let v = lower.cx.def(c, ty.as_str(), fo3.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if n.a != 1usize {
         lower.cx.fail(c, "リテラルの種類 (未対応)")?
@@ -1225,7 +1318,10 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     op.push(' ')?
     op.push_str(lower.cx.dec(acc)?.as_str())?
     let v = lower.cx.def(c, ty.as_str(), op.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.expr.lit
 
 fn lower.expr.loopx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -1271,7 +1367,10 @@ fn lower.expr.loopx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     }
     lower.cx.bind_vals(c, &ks, &eps)?
     let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: t })
+    Ok(lower.cx.R {
+        v: u
+        t: t
+    })
 end lower.expr.loopx
 
 fn lower.expr.matchint(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, sc: lower.cx.R, base: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -1300,10 +1399,16 @@ fn lower.expr.matchint(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
             lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
             if rty.as_str() == "unit" {
                 let u = lower.expr.unit(c)?
-                return Ok(lower.cx.R { v: u, t: t })
+                return Ok(lower.cx.R {
+                    v: u
+                    t: t
+                })
             }
             let rv = lower.tyk.at(jps.as_slice(), 0usize)
-            return Ok(lower.cx.R { v: rv, t: t })
+            return Ok(lower.cx.R {
+                v: rv
+                t: t
+            })
         }
         if pat.kind != parse.ast.Kind.PLit {
             let kn = parse.ast.kind_name(pat.kind)
@@ -1327,10 +1432,16 @@ fn lower.expr.matchint(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
     lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
     if rty.as_str() == "unit" {
         let u = lower.expr.unit(c)?
-        return Ok(lower.cx.R { v: u, t: t })
+        return Ok(lower.cx.R {
+            v: u
+            t: t
+        })
     }
     let rv = lower.tyk.at(jps.as_slice(), 0usize)
-    Ok(lower.cx.R { v: rv, t: t })
+    Ok(lower.cx.R {
+        v: rv
+        t: t
+    })
 end lower.expr.matchint
 
 fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -1474,13 +1585,19 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
     if rty.as_str() == "unit" {
         let u = lower.expr.unit(c)?
-        return Ok(lower.cx.R { v: u, t: t })
+        return Ok(lower.cx.R {
+            v: u
+            t: t
+        })
     }
     let rv = match jps.as_slice().get(0usize) {
         Some(x) => *x
         None => 0usize
     }
-    Ok(lower.cx.R { v: rv, t: t })
+    Ok(lower.cx.R {
+        v: rv
+        t: t
+    })
 end lower.expr.matchx
 
 fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -1535,7 +1652,10 @@ fn lower.expr.mcall(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     o.push_str(".wrap ")?
     o.push_str(lower.expr.two(r.v, a.v)?.as_str())?
     let v = lower.cx.def(c, rty.as_str(), o.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.expr.mcall
 
 fn lower.expr.mut_recv_root(env: &types.env.Env, c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node) -> Result<(std.string.String, bool), resolve.Failure> uses [alloc] panics may pub
@@ -1623,7 +1743,10 @@ fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: pars
             let op = lower.cx.cat2("const.", tt.as_str())?
             let op2 = lower.cx.cat2(op.as_str(), " none")?
             let v = lower.cx.def(c, tt.as_str(), op2.as_str())?
-            return Ok(lower.cx.R { v: v, t: t })
+            return Ok(lower.cx.R {
+                v: v
+                t: t
+            })
         }
         let it = types.env.lookup(env, c.s.file, name)?
         if it != 0usize {
@@ -1655,7 +1778,10 @@ fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: pars
             lower.drop.moved(c, loc - 1usize)?
             lower.own.emit(c, loc - 1usize, "own.consume ")?
         }
-        return Ok(lower.cx.R { v: base, t: bt })
+        return Ok(lower.cx.R {
+            v: base
+            t: bt
+        })
     }
     let fr = lower.opt.field(env, c, base, bt, second, t)?
     if lower.own.is_copy(env, c, t) {
@@ -1950,7 +2076,10 @@ fn lower.expr.shortc(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     ev.push(b.v)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &ev)?.as_str())?)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+    Ok(lower.cx.R {
+        v: lower.tyk.at(jps.as_slice(), 0usize)
+        t: t
+    })
 end lower.expr.shortc
 
 fn lower.expr.split2(name: &str) -> (&str, &str) uses [] panics may pub
@@ -2048,7 +2177,10 @@ fn lower.expr.structlit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     o.push_str(lower.cx.vlist(&ordered)?.as_str())?
     o.push(')')?
     let v = lower.cx.def(c, ty.as_str(), o.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.expr.structlit
 
 fn lower.expr.sync(c: &mut lower.cx.Cx) -> Result<(), resolve.Failure> uses [] panics never pub
@@ -2081,15 +2213,24 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
             let op2 = lower.cx.cat2(op1.as_str(), " ")?
             let op3 = lower.cx.cat2(op2.as_str(), lower.cx.vs(r.v)?.as_str())?
             let v1 = lower.cx.def(c, tt.as_str(), lower.cx.cat2(op3.as_str(), " +0")?.as_str())?
-            return Ok(lower.cx.R { v: v1, t: t })
+            return Ok(lower.cx.R {
+                v: v1
+                t: t
+            })
         }
         let rkt = lower.cx.tyof(c, r.v)
         if !rkt.as_str().starts_with("ref") && !rkt.as_str().starts_with("mutref") && rkt.as_str() == tt.as_str() {
-            return Ok(lower.cx.R { v: r.v, t: t })
+            return Ok(lower.cx.R {
+                v: r.v
+                t: t
+            })
         }
         let op = lower.cx.cat2("load ", lower.cx.vs(r.v)?.as_str())?
         let v = lower.cx.def(c, tt.as_str(), op.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if n.a == 38usize || n.a == 1000usize {
         let inner = parse.ast.get(&p.ast, n.b)
@@ -2106,7 +2247,10 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
             }
             let op2 = lower.cx.cat2(head2, lower.cx.vs(rr.v)?.as_str())?
             let v2 = lower.cx.def(c, tt2.as_str(), op2.as_str())?
-            return Ok(lower.cx.R { v: v2, t: t })
+            return Ok(lower.cx.R {
+                v: v2
+                t: t
+            })
         }
         if inner.kind == parse.ast.Kind.Path {
             let loc = lower.cx.find(c, resolve.ast.text(src, inner.a, inner.b))
@@ -2132,7 +2276,10 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
                         }
                         let oph = lower.cx.cat2(hh, lower.cx.vs(hp)?.as_str())?
                         let vh = lower.cx.def(c, tth.as_str(), oph.as_str())?
-                        return Ok(lower.cx.R { v: vh, t: t })
+                        return Ok(lower.cx.R {
+                            v: vh
+                            t: t
+                        })
                     }
                 }
             }
@@ -2144,9 +2291,15 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
                     let tt3 = lower.tyk.text(env, c, t)?
                     let o3 = lower.cx.cat2("asshared ", lower.cx.vs(fa)?.as_str())?
                     let v3 = lower.cx.def(c, tt3.as_str(), o3.as_str())?
-                    return Ok(lower.cx.R { v: v3, t: t })
+                    return Ok(lower.cx.R {
+                        v: v3
+                        t: t
+                    })
                 }
-                return Ok(lower.cx.R { v: fa, t: t })
+                return Ok(lower.cx.R {
+                    v: fa
+                    t: t
+                })
             }
         }
         if slot == 0usize {
@@ -2176,7 +2329,10 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         }
         let op = lower.cx.cat2(head, lower.cx.vs(slot)?.as_str())?
         let v = lower.cx.def(c, tt.as_str(), op.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if n.a == 45usize {
         let x = lower.expr.expr(env, c, p, src, n.b, t)?
@@ -2185,7 +2341,10 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         let nop2 = lower.cx.cat2(nop.as_str(), ".trap ")?
         let nop3 = lower.cx.cat2(nop2.as_str(), lower.cx.vs(x.v)?.as_str())?
         let v = lower.cx.def(c, tt.as_str(), nop3.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if n.a != 33usize {
         lower.cx.fail(c, "単項演算 (! 以外は未対応)")?
@@ -2196,7 +2355,10 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     o.push_str("not.bool ")?
     o.push_str(lower.cx.vs(x.v)?.as_str())?
     let v = lower.cx.def(c, "bool", o.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.expr.unary
 
 fn lower.expr.unesc(src: &[u8], a: usize, b: usize) -> Result<(std.string.String, usize, bool), resolve.Failure> uses [alloc] panics may pub
@@ -2243,7 +2405,10 @@ fn lower.expr.unit(c: &mut lower.cx.Cx) -> Result<usize, resolve.Failure> uses [
 end lower.expr.unit
 
 fn lower.expr.vec_field_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, name: &str, args: usize, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
-    let no = lower.cx.R { v: 0usize, t: t }
+    let no = lower.cx.R {
+        v: 0usize
+        t: t
+    }
     let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
     if it == 0usize {
         return Ok((no, false))
@@ -2324,7 +2489,10 @@ fn lower.expr.vec_field_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
 end lower.expr.vec_field_call
 
 fn lower.expr.vec_slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
-    let no = lower.cx.R { v: 0usize, t: t }
+    let no = lower.cx.R {
+        v: 0usize
+        t: t
+    }
     let rn = parse.ast.get(&p.ast, n.a)
     let mut cname = ""
     if rn.kind == parse.ast.Kind.MCall && resolve.ast.tok_text(p, src, rn.b) == "as_slice" && resolve.ast.count(p, rn.d) == 0usize {
@@ -2384,7 +2552,10 @@ fn lower.expr.vec_slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.
 end lower.expr.vec_slice_get
 
 fn lower.expr.vec_val_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], fqn: &str, k: usize, fname: &str, args: usize, t: usize) -> Result<(lower.cx.R, bool), resolve.Failure> uses [alloc] panics may pub
-    let no = lower.cx.R { v: 0usize, t: t }
+    let no = lower.cx.R {
+        v: 0usize
+        t: t
+    }
     let bt = lower.cx.tyof_t(c, k)
     let bv = lower.cx.get_val(c, k).wrapping_sub(1usize)
     let rs = types.ty.strip(&c.ar, bt)
@@ -2475,13 +2646,19 @@ fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     lower.cx.goto(c, exitb)
     lower.cx.bind_vals(c, &ks, &eps)?
     let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: t })
+    Ok(lower.cx.R {
+        v: u
+        t: t
+    })
 end lower.expr.whilex
 
 fn lower.expr.wrapping(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], rv: &str, meth: &str, args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let k = lower.cx.find(c, rv) - 1usize
     let rv0 = lower.opt.local_val(env, c, k, lower.cx.tyof_t(c, k))?
-    let rr = lower.opt.deref_val(env, c, lower.cx.R { v: rv0, t: lower.cx.tyof_t(c, k) })?
+    let rr = lower.opt.deref_val(env, c, lower.cx.R {
+        v: rv0
+        t: lower.cx.tyof_t(c, k)
+    })?
     let rvv = rr.v
     let rty = lower.tyk.text(env, c, rr.t)?
     let mut op = ""
@@ -2508,7 +2685,10 @@ fn lower.expr.wrapping(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
     o.push_str(".wrap ")?
     o.push_str(lower.expr.two(rvv, a.v)?.as_str())?
     let v = lower.cx.def(c, rty.as_str(), o.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.expr.wrapping
 
 fn lower.expr.wrapping_field(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], names: (&str, &str, &str), args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -2535,5 +2715,8 @@ fn lower.expr.wrapping_field(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse
     o.push_str(".wrap ")?
     o.push_str(lower.expr.two(fr.v, a.v)?.as_str())?
     let v = lower.cx.def(c, rty.as_str(), o.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.expr.wrapping_field

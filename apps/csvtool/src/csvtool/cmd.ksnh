@@ -37,7 +37,15 @@ fn csvtool.cmd.Widths.new(title: &str) -> csvtool.cmd.Widths uses [] panics neve
     let c = 5usize
     let n = 7usize
     let w = 3usize
-    csvtool.cmd.Widths { key: title.len(), count: c, numeric: n, sum: w, min: w, max: w, avg: w }
+    csvtool.cmd.Widths {
+        key: title.len()
+        count: c
+        numeric: n
+        sum: w
+        min: w
+        max: w
+        avg: w
+    }
 end csvtool.cmd.Widths.new
 
 // 1 行を出力用に組み立てる (区切り文字と引用符が必要な文字を含むフィールドは "..." で囲む)。
@@ -389,7 +397,10 @@ fn csvtool.cmd.summary(start: usize) -> Result<(), csvtool.error.Error> uses [al
                 }
                 let st = agg.column_stats(&tbl, *col)?
                 let key = std.string.String.from_str(name)?
-                core.mem.drop(list.push(agg.Group { key: key, stats: st })?)
+                core.mem.drop(list.push(agg.Group {
+                    key: key
+                    stats: st
+                })?)
             }
             None => core.mem.drop(0u8)
         }

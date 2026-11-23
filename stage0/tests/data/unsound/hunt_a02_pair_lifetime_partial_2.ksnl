@@ -8,5 +8,8 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.pair_lifetime_partial['a, 'b](f: &'a u32, s: &'b u32) -> t.Pair<'b, 'a> uses [] panics never
-    t.Pair { f: s, s: s }
+    t.Pair {
+        f: s
+        s: s
+    }
 end t.pair_lifetime_partial

@@ -10,8 +10,14 @@ end t.Pair.set_snd_from_fst
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = 1u32
     let b = 2u32
-    let mut p1 = t.Pair { fst: &a, snd: &b }
-    let p2 = t.Pair { fst: &a, snd: &b }
+    let mut p1 = t.Pair {
+        fst: &a
+        snd: &b
+    }
+    let p2 = t.Pair {
+        fst: &a
+        snd: &b
+    }
     p1.set_snd_from_fst(&p2)
     core.mem.drop(p1)
     core.mem.drop(p2)

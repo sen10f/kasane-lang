@@ -23,7 +23,10 @@ fn t.mk() -> alloc.string.String uses [alloc] panics never
 end t.mk
 
 fn t.mks() -> t.S uses [alloc] panics never
-    t.S { name: t.mk(), other: t.mk() }
+    t.S {
+        name: t.mk()
+        other: t.mk()
+    }
 end t.mks
 
 fn t.peek(s: &alloc.string.String) -> usize uses [io.console] panics never

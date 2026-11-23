@@ -42,8 +42,14 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     core.check.eq(t.kind_code(t.Kind.Num(1u32)), 2000u32)
     core.check.eq(t.both_ok(Some(1u32), Some(2u32)), true)
     core.check.eq(t.both_ok(Some(1u32), None), false)
-    core.check.eq(t.pick(t.Pt { x: 1u32, y: 9u32 }), 9u32)
-    core.check.eq(t.pick(t.Pt { x: 0u32, y: 9u32 }), 0u32)
+    core.check.eq(t.pick(t.Pt {
+        x: 1u32
+        y: 9u32
+    }), 9u32)
+    core.check.eq(t.pick(t.Pt {
+        x: 0u32
+        y: 9u32
+    }), 0u32)
     let k = t.Kind.Num(8u32)
     core.check.is_true(k is t.Kind.Num(_))
     core.check.is_true(!(k is t.Kind.Eof))
@@ -58,7 +64,10 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end t.main
 
 fn t.pick(p: t.Pt) -> u32 uses [] panics never
-    if let t.Pt { x: 1u32, y: y } = p {
+    if let t.Pt {
+        x: 1u32
+        y: y
+    } = p {
         return y
     }
     0u32

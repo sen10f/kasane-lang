@@ -7,7 +7,9 @@ fn t.P.bump(self: &mut t.P) -> u32 uses [] panics never
 end t.P.bump
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let p = t.P { n: 1u32 }
+    let p = t.P {
+        n: 1u32
+    }
     let x = p.bump()
     core.mem.drop((p, x))
     Ok(())

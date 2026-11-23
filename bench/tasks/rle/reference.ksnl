@@ -52,7 +52,10 @@ fn bench.rle(text: &str) -> std.vec.Vec<bench.Run> uses [alloc] panics never pub
                         None => break
                     }
                 }
-                match out.push(bench.Run { ch: *c, count: count }) {
+                match out.push(bench.Run {
+                    ch: *c
+                    count: count
+                }) {
                     Ok(_) => ()
                     Err(_) => ()
                 }

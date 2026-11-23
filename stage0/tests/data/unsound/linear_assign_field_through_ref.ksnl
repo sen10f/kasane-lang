@@ -8,7 +8,9 @@ type t.Res linear
 end t.Res
 
 fn t.close(r: t.Res) -> u32 uses [] panics never
-    let t.Res { id: id } = r
+    let t.Res {
+        id: id
+    } = r
     id
 end t.close
 
@@ -17,7 +19,9 @@ fn t.main() -> () uses [] panics never
 end t.main
 
 fn t.open(n: u32) -> t.Res uses [] panics never
-    t.Res { id: n }
+    t.Res {
+        id: n
+    }
 end t.open
 
 fn t.over(p: &mut t.Pair, n: t.Res) -> () uses [] panics never

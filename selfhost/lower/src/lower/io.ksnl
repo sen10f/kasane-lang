@@ -39,5 +39,8 @@ fn lower.io.print_line(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P
     lower.cx.finish(c, bj)?
     lower.cx.goto(c, jb)
     let rv = lower.tyk.at(jps.as_slice(), 0usize)
-    Ok(lower.cx.R { v: rv, t: t })
+    Ok(lower.cx.R {
+        v: rv
+        t: t
+    })
 end lower.io.print_line

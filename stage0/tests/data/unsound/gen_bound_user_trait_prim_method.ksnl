@@ -11,6 +11,8 @@ fn t.Bus.register[H: t.Handler<[io.console], never>](self: &mut t.Bus, handler: 
 end t.Bus.register
 
 fn t.main() -> () uses [] panics never
-    let mut bus = t.Bus { x: 0u32 }
+    let mut bus = t.Bus {
+        x: 0u32
+    }
     bus.register(true)
 end t.main

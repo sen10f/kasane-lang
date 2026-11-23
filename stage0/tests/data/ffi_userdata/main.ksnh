@@ -12,7 +12,10 @@ extern t.acc_ticks(f: fn(*mut (), i32) -> () uses [] panics never, user: *mut ()
 extern t.acc_twice(f: fn(*mut (), i32) -> () uses [] panics never, user: *mut (), a: i32, b: i32) -> () link "LIB:acc_twice"
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut acc = t.Acc { total: 0i32, count: 0i32 }
+    let mut acc = t.Acc {
+        total: 0i32
+        count: 0i32
+    }
     let mut cb = fn(x: i32) -> () capture [&mut acc] {
         acc.total = acc.total.wrapping_add(x)
         acc.count = acc.count.wrapping_add(1i32)

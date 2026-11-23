@@ -218,7 +218,10 @@ fn json.parse(text: &str) -> Result<(json.Doc, usize), json.Error> uses [alloc] 
     let src = text.as_bytes()
     let links = std.vec.Vec.new()
     let nodes = std.vec.Vec.new()
-    let mut doc = json.Doc { links: links, nodes: nodes }
+    let mut doc = json.Doc {
+        links: links
+        nodes: nodes
+    }
     let (root, after) = json.value(&mut doc, src, json.skip_ws(src, 0usize))?
     let tail = json.skip_ws(src, after)
     if tail != src.len() {

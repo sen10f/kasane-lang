@@ -43,7 +43,10 @@ fn ksnc.kcheck.borrow(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.F
         }
         k = k.wrapping_add(1usize)
     }
-    Ok(ksnc.front.Text { text: out, errors: errors })
+    Ok(ksnc.front.Text {
+        text: out
+        errors: errors
+    })
 end ksnc.kcheck.borrow
 
 fn ksnc.kcheck.effects(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc] panics never
@@ -103,7 +106,10 @@ fn ksnc.kcheck.effects(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.
     text.push_str(acc.rep.text.as_str())?
     text.push_str(s.as_str())?
     text.push('\n')?
-    Ok(ksnc.front.Text { text: text, errors: acc.rep.errors })
+    Ok(ksnc.front.Text {
+        text: text
+        errors: acc.rep.errors
+    })
 end ksnc.kcheck.effects
 
 fn ksnc.kcheck.run(dir: &str, std_dir: &str) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.fs] panics never pub

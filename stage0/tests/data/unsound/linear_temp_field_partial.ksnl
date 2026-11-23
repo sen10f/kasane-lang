@@ -13,7 +13,9 @@ fn t.bad() -> u32 uses [] panics never
 end t.bad
 
 fn t.close(r: t.Res) -> u32 uses [] panics never
-    let t.Res { id: id } = r
+    let t.Res {
+        id: id
+    } = r
     id
 end t.close
 
@@ -22,9 +24,14 @@ fn t.main() -> () uses [] panics never
 end t.main
 
 fn t.mkpair() -> t.Pair uses [] panics never
-    t.Pair { a: t.open(1u32), b: t.open(2u32) }
+    t.Pair {
+        a: t.open(1u32)
+        b: t.open(2u32)
+    }
 end t.mkpair
 
 fn t.open(n: u32) -> t.Res uses [] panics never
-    t.Res { id: n }
+    t.Res {
+        id: n
+    }
 end t.open

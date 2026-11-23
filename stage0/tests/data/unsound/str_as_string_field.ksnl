@@ -3,7 +3,9 @@ type t.Holder['a]
 end t.Holder
 
 fn t.bad() -> usize uses [] panics never
-    let h = t.Holder { s: "literal" }
+    let h = t.Holder {
+        s: "literal"
+    }
     h.s.len()
 end t.bad
 

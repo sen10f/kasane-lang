@@ -8,7 +8,9 @@ end t.H.set
 
 fn t.bad() -> () uses [] panics never
     let mut o = 1u32
-    let mut h = t.H { r: &mut o }
+    let mut h = t.H {
+        r: &mut o
+    }
     {
         let mut x = 7u32
         h.set(t.id(&mut x))

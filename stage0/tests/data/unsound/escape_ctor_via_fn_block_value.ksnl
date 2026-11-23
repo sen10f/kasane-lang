@@ -5,7 +5,9 @@ end t.H
 fn t.bad() -> u32 uses [] panics never
     let h = {
         let x = 7u32
-        t.H { r: t.id(&x) }
+        t.H {
+            r: t.id(&x)
+        }
     }
     *h.r
 end t.bad

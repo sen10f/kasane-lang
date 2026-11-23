@@ -12,7 +12,9 @@ fn t.X.handle(self: &mut t.X) -> u32 uses [io.console] panics never impls t.H<[i
 end t.X.handle
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
-    let mut x = t.X { v: 7u32 }
+    let mut x = t.X {
+        v: 7u32
+    }
     let d = match alloc.boxed.Box.new(std.alloc.SYSTEM, x) {
         Ok(b) => b.into_dyn()
         Err(e) => {

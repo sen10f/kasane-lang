@@ -13,5 +13,8 @@ fn wiki.error.bad_number(_value: core.num.ParseIntError) -> wiki.error.Error use
 end wiki.error.bad_number
 
 fn wiki.error.io_failed() -> wiki.error.Error uses [] panics never pub
-    wiki.error.Error.Io(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 })
+    wiki.error.Error.Io(std.io.Error {
+        kind: std.io.ErrorKind.Other
+        code: 0i32
+    })
 end wiki.error.io_failed

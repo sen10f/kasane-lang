@@ -109,8 +109,14 @@ test csvtool.table.Table.cell.test_cell_and_bounds
     core.mem.drop(row.push(string.String.from_str(std.alloc.SYSTEM, "x")?))
     core.mem.drop(row.push(string.String.from_str(std.alloc.SYSTEM, "y")?))
     let mut rows = std.vec.Vec.new()
-    core.mem.drop(rows.push(csvtool.table.Row { fields: row })?)
-    let t = csvtool.table.Table { header: header, rows: rows, delim: ',' }
+    core.mem.drop(rows.push(csvtool.table.Row {
+        fields: row
+    })?)
+    let t = csvtool.table.Table {
+        header: header
+        rows: rows
+        delim: ','
+    }
     core.check.eq(t.cell(0usize, 1usize), Some("y"))
     core.check.eq(t.cell(0usize, 2usize), None)
     core.check.eq(t.cell(1usize, 0usize), None)
@@ -123,7 +129,11 @@ test csvtool.table.Table.col_index.test_name_and_number
     core.mem.drop(header.push(string.String.from_str(std.alloc.SYSTEM, "name")?))
     core.mem.drop(header.push(string.String.from_str(std.alloc.SYSTEM, "amount")?))
     let rows = std.vec.Vec.new()
-    let t = csvtool.table.Table { header: header, rows: rows, delim: ',' }
+    let t = csvtool.table.Table {
+        header: header
+        rows: rows
+        delim: ','
+    }
     core.check.eq(t.col_index("amount"), Some(1usize))
     core.check.eq(t.col_index("2"), Some(1usize))
     core.check.eq(t.col_index("0"), None)

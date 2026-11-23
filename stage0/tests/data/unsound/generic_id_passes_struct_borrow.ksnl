@@ -4,7 +4,9 @@ end t.W
 
 fn t.bad() -> u32 uses [] panics never
     let mut x = 1u32
-    let w = t.id(t.W { r: &x })
+    let w = t.id(t.W {
+        r: &x
+    })
     x = 2u32
     *w.r
 end t.bad

@@ -44,7 +44,10 @@ end shortener_https.store.Store.lookup
 
 fn shortener_https.store.Store.new(path: &str) -> Result<shortener_https.store.Store, shortener_https.error.Error> uses [alloc] panics never pub
     let saved = std.string.String.from_str(path)?
-    Ok(shortener_https.store.Store { path: saved, urls: std.vec.Vec.new() })
+    Ok(shortener_https.store.Store {
+        path: saved
+        urls: std.vec.Vec.new()
+    })
 end shortener_https.store.Store.new
 
 fn shortener_https.store.Store.parse_into(self: &mut shortener_https.store.Store, text: &str) -> Result<(), shortener_https.error.Error> uses [alloc] panics never pub

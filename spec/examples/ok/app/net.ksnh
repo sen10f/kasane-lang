@@ -41,5 +41,8 @@ fn app.net.parse_header(buf: &[u8]) -> Result<app.net.Header, app.net.ParseError
     for b in buf.iter() {
         total = total.wrapping_add(usize.from_u8(*b))
     }
-    Ok(app.net.Header { size: total, flags: first })
+    Ok(app.net.Header {
+        size: total
+        flags: first
+    })
 end app.net.parse_header

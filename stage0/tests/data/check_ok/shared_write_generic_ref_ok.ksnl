@@ -11,7 +11,9 @@ fn t.id[T](x: T) -> T uses [] panics never
 end t.id
 
 fn t.main() -> () uses [] panics never
-    let mut c = t.Cell { n: 0u64 }
+    let mut c = t.Cell {
+        n: 0u64
+    }
     *c.get_mut() = 5u64
     let n = 7u64
     let r = t.id(&n)

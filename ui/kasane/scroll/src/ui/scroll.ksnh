@@ -41,7 +41,15 @@ end ui.scroll.Ctx.max_scroll
 
 fn ui.scroll.Ctx.new(vw: f32, vh: f32, cw: f32, ch: f32, axis: ui.scroll.Axis) -> ui.scroll.Ctx uses [] panics never pub
     let z = 0.0f32
-    let mut s = ui.scroll.Ctx { axis: axis, vw: vw, vh: vh, cw: cw, ch: ch, ox: z, oy: z }
+    let mut s = ui.scroll.Ctx {
+        axis: axis
+        vw: vw
+        vh: vh
+        cw: cw
+        ch: ch
+        ox: z
+        oy: z
+    }
     s.clamp()
     s
 end ui.scroll.Ctx.new

@@ -8,7 +8,9 @@ end t.check
 
 fn t.close(r: t.Res) -> u32 uses [] panics never
     match r {
-        t.Res { id: id } => id
+        t.Res {
+            id: id
+        } => id
     }
 end t.close
 
@@ -27,5 +29,7 @@ fn t.ok(flag: bool) -> u32 uses [] panics never
 end t.ok
 
 fn t.open() -> t.Res uses [] panics never
-    t.Res { id: 1u32 }
+    t.Res {
+        id: 1u32
+    }
 end t.open

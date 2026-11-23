@@ -7,7 +7,9 @@ fn t.S.boom(self: t.S) -> u32 uses [] panics may
 end t.S.boom
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let s = t.S { n: 1u32 }
+    let s = t.S {
+        n: 1u32
+    }
     core.mem.drop(s.boom())
     Ok(())
 end t.main

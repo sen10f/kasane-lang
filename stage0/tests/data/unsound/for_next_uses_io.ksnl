@@ -12,7 +12,9 @@ fn t.Up.next(self: &mut t.Up) -> Option<u32> uses [io.console] panics may impls 
 end t.Up.next
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let u = t.Up { cur: 0u32 }
+    let u = t.Up {
+        cur: 0u32
+    }
     for x in u {
         core.mem.drop(x)
     }

@@ -50,5 +50,8 @@ fn ksnc.front.text(dir: &str, std_dir: &str) -> Result<ksnc.front.Text, ksnc.Fai
         }
         i = i.wrapping_add(1usize)
     }
-    Ok(ksnc.front.Text { text: rep.text, errors: rep.errors })
+    Ok(ksnc.front.Text {
+        text: rep.text
+        errors: rep.errors
+    })
 end ksnc.front.text

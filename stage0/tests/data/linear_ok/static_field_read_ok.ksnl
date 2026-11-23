@@ -7,7 +7,9 @@ fn t.Q.rest(self: &t.Q) -> &'static str uses [] panics never
 end t.Q.rest
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
-    let q = t.Q { src: "hello" }
+    let q = t.Q {
+        src: "hello"
+    }
     core.mem.drop(std.io.print_line(q.rest()))
     Ok(())
 end t.main

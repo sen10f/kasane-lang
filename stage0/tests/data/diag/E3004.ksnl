@@ -3,7 +3,9 @@ type t.E pub
 end t.E
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let e = t.E { x: 1u8 }
+    let e = t.E {
+        x: 1u8
+    }
     core.ops.Drop.drop(e)
     Ok(())
 end t.main

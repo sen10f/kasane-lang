@@ -69,10 +69,15 @@ fn alloc.collections.BtreeMap.insert[K: core.cmp.Ord, V, A: alloc.alloc.Allocato
                 let old = core.mem.replace(&mut entry.value, value)
                 Ok(Some(old))
             }
-            None => Err(alloc.alloc.AllocError { code: 1u32 })
+            None => Err(alloc.alloc.AllocError {
+                code: 1u32
+            })
         }
         Err(i) => {
-            let fresh = alloc.collections.MapEntry { key: key, value: value }
+            let fresh = alloc.collections.MapEntry {
+                key: key
+                value: value
+            }
             match self.entries.insert_within_cap(i, fresh) {
                 Ok(_) => Ok(None)
                 Err(back) => {
@@ -84,7 +89,9 @@ fn alloc.collections.BtreeMap.insert[K: core.cmp.Ord, V, A: alloc.alloc.Allocato
                     }
                     match self.entries.insert_within_cap(i, back) {
                         Ok(_) => Ok(None)
-                        Err(_) => Err(alloc.alloc.AllocError { code: 1u32 })
+                        Err(_) => Err(alloc.alloc.AllocError {
+                            code: 1u32
+                        })
                     }
                 }
             }
@@ -98,7 +105,11 @@ end alloc.collections.BtreeMap.is_empty
 
 fn alloc.collections.BtreeMap.iter['a, K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &'a alloc.collections.BtreeMap<K, V, A>) -> alloc.collections.BtreeMapIter<'a, K, V> uses [] panics never pub
     let n = self.entries.len()
-    alloc.collections.BtreeMapIter { entries: self.entries.as_slice(), position: 0usize, stop: n }
+    alloc.collections.BtreeMapIter {
+        entries: self.entries.as_slice()
+        position: 0usize
+        stop: n
+    }
 end alloc.collections.BtreeMap.iter
 
 fn alloc.collections.BtreeMap.last[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &alloc.collections.BtreeMap<K, V, A>) -> Option<(&K, &V)> uses [] panics never pub
@@ -122,7 +133,9 @@ end alloc.collections.BtreeMap.len
 
 fn alloc.collections.BtreeMap.new_empty[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.BtreeMap<K, V, A> uses [] panics never
     let entries = alloc.raw.Buf.new(allocator)
-    alloc.collections.BtreeMap { entries: entries }
+    alloc.collections.BtreeMap {
+        entries: entries
+    }
 end alloc.collections.BtreeMap.new_empty
 
 fn alloc.collections.BtreeMap.range['a, K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &'a alloc.collections.BtreeMap<K, V, A>, lo: &K, hi: &K) -> alloc.collections.BtreeMapIter<'a, K, V> uses [] panics never pub
@@ -139,7 +152,11 @@ fn alloc.collections.BtreeMap.range['a, K: core.cmp.Ord, V, A: alloc.alloc.Alloc
         finish = stop
     }
     let entries = self.entries.as_slice()
-    alloc.collections.BtreeMapIter { entries: entries, position: start, stop: finish }
+    alloc.collections.BtreeMapIter {
+        entries: entries
+        position: start
+        stop: finish
+    }
 end alloc.collections.BtreeMap.range
 
 fn alloc.collections.BtreeMap.remove[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.BtreeMap<K, V, A>, key: &K) -> Option<V> uses [] panics never pub
@@ -347,7 +364,9 @@ fn alloc.collections.HashMap.insert[K: core.cmp.Eq + core.hash.Hash, V, A: alloc
                     alloc.collections.HashCell.Index(_) => Ok(None)
                 }
             }
-            None => Err(alloc.alloc.AllocError { code: 1u32 })
+            None => Err(alloc.alloc.AllocError {
+                code: 1u32
+            })
         }
         None => {
             let n = self.len()
@@ -377,7 +396,9 @@ fn alloc.collections.HashMap.insert[K: core.cmp.Eq + core.hash.Hash, V, A: alloc
                     match self.cells.push_within_cap(back) {
                         Ok(_done) => {
                         }
-                        Err(_) => return Err(alloc.alloc.AllocError { code: 1u32 })
+                        Err(_) => return Err(alloc.alloc.AllocError {
+                            code: 1u32
+                        })
                     }
                 }
             }
@@ -393,7 +414,10 @@ fn alloc.collections.HashMap.is_empty[K: core.cmp.Eq + core.hash.Hash, V, A: all
 end alloc.collections.HashMap.is_empty
 
 fn alloc.collections.HashMap.iter['a, K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &'a alloc.collections.HashMap<K, V, A>) -> alloc.collections.HashMapIter<'a, K, V> uses [] panics never pub
-    alloc.collections.HashMapIter { cells: self.cells.as_slice(), position: self.slots }
+    alloc.collections.HashMapIter {
+        cells: self.cells.as_slice()
+        position: self.slots
+    }
 end alloc.collections.HashMap.iter
 
 fn alloc.collections.HashMap.len[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>) -> usize uses [] panics never pub
@@ -402,7 +426,10 @@ end alloc.collections.HashMap.len
 
 fn alloc.collections.HashMap.new_empty[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.HashMap<K, V, A> uses [] panics never
     let cells = alloc.raw.Buf.new(allocator)
-    alloc.collections.HashMap { cells: cells, slots: 0usize }
+    alloc.collections.HashMap {
+        cells: cells
+        slots: 0usize
+    }
 end alloc.collections.HashMap.new_empty
 
 fn alloc.collections.HashMap.place[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, h: usize, pos: usize) -> () uses [] panics never
@@ -447,7 +474,9 @@ fn alloc.collections.HashMap.rebuild[K: core.cmp.Eq + core.hash.Hash, V, A: allo
         match self.cells.push_within_cap(alloc.collections.HashCell.Empty) {
             Ok(_done) => {
             }
-            Err(_) => return Err(alloc.alloc.AllocError { code: 1u32 })
+            Err(_) => return Err(alloc.alloc.AllocError {
+                code: 1u32
+            })
         }
     }
     let mid = old.wrapping_add(n)
@@ -577,7 +606,9 @@ fn alloc.collections.HashSet.is_empty[T: core.cmp.Eq + core.hash.Hash, A: alloc.
 end alloc.collections.HashSet.is_empty
 
 fn alloc.collections.HashSet.iter['a, T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator](self: &'a alloc.collections.HashSet<T, A>) -> alloc.collections.HashSetIter<'a, T> uses [] panics never pub
-    alloc.collections.HashSetIter { inner: self.map.iter() }
+    alloc.collections.HashSetIter {
+        inner: self.map.iter()
+    }
 end alloc.collections.HashSet.iter
 
 fn alloc.collections.HashSet.len[T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator](self: &alloc.collections.HashSet<T, A>) -> usize uses [] panics never pub
@@ -585,7 +616,10 @@ fn alloc.collections.HashSet.len[T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc
 end alloc.collections.HashSet.len
 
 fn alloc.collections.HashSet.new[T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.HashSet<T, A> uses [] panics never pub
-    alloc.collections.HashSet { map: alloc.collections.HashMap.new(allocator), count: 0usize }
+    alloc.collections.HashSet {
+        map: alloc.collections.HashMap.new(allocator)
+        count: 0usize
+    }
 end alloc.collections.HashSet.new
 
 fn alloc.collections.HashSet.remove[T: core.cmp.Eq + core.hash.Hash, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashSet<T, A>, value: &T) -> bool uses [] panics never pub

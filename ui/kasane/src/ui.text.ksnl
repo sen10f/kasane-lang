@@ -66,7 +66,11 @@ fn ui.text.break_lines(advances: &[f32], classes: &[ui.text.BreakClass], width: 
         if breakable && cur_w + ai > width {
             match out.get_mut(count) {
                 Some(slot) => {
-                    *slot = ui.text.Line { start: line_start, to: i, width: cur_w }
+                    *slot = ui.text.Line {
+                        start: line_start
+                        to: i
+                        width: cur_w
+                    }
                 }
                 None => return count
             }
@@ -79,7 +83,11 @@ fn ui.text.break_lines(advances: &[f32], classes: &[ui.text.BreakClass], width: 
     }
     match out.get_mut(count) {
         Some(slot) => {
-            *slot = ui.text.Line { start: line_start, to: n, width: cur_w }
+            *slot = ui.text.Line {
+                start: line_start
+                to: n
+                width: cur_w
+            }
         }
         None => return count
     }
@@ -130,7 +138,11 @@ fn ui.text.measure_wrapped(advances: &[f32], classes: &[ui.text.BreakClass], lin
     for i in core.iter.range(0usize, lines) {
         let l = match out.get(i) {
             Some(v) => *v
-            None => ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }
+            None => ui.text.Line {
+                start: 0usize
+                to: 0usize
+                width: 0.0f32
+            }
         }
         if l.width > w {
             w = l.width
@@ -165,8 +177,16 @@ fn ui.text.pack_atlas(ws: &[i32], hs: &[i32], atlas_w: i32, atlas_h: i32, pad: i
             ok = false
             while i < n {
                 if let Some(slot) = out.get_mut(i) {
-                    let r = ui.text.AtlasRect { x: 0i32, y: 0i32, w: 0i32, h: 0i32 }
-                    *slot = ui.text.AtlasCell { ok: false, rect: r }
+                    let r = ui.text.AtlasRect {
+                        x: 0i32
+                        y: 0i32
+                        w: 0i32
+                        h: 0i32
+                    }
+                    *slot = ui.text.AtlasCell {
+                        ok: false
+                        rect: r
+                    }
                 }
                 i = i.wrapping_add(1usize)
             }
@@ -174,8 +194,16 @@ fn ui.text.pack_atlas(ws: &[i32], hs: &[i32], atlas_w: i32, atlas_h: i32, pad: i
         }
         match out.get_mut(i) {
             Some(slot) => {
-                let r = ui.text.AtlasRect { x: x, y: y, w: w, h: h }
-                *slot = ui.text.AtlasCell { ok: true, rect: r }
+                let r = ui.text.AtlasRect {
+                    x: x
+                    y: y
+                    w: w
+                    h: h
+                }
+                *slot = ui.text.AtlasCell {
+                    ok: true
+                    rect: r
+                }
             }
             None => {
                 ok = false
@@ -222,8 +250,16 @@ fn ui.text.zero_glyph() -> ui.text.KsnuiShapedGlyph uses [] panics never pub
 end ui.text.zero_glyph
 
 test ui.text.AtlasCell.test_pack_atlas_empty
-    let empty_rect = ui.text.AtlasRect { x: 0i32, y: 0i32, w: 0i32, h: 0i32 }
-    let filled_cell = ui.text.AtlasCell { ok: true, rect: empty_rect }
+    let empty_rect = ui.text.AtlasRect {
+        x: 0i32
+        y: 0i32
+        w: 0i32
+        h: 0i32
+    }
+    let filled_cell = ui.text.AtlasCell {
+        ok: true
+        rect: empty_rect
+    }
     let mut out = [filled_cell; 1]
     let ok = ui.text.pack_atlas(&[], &[], 10i32, 10i32, 1i32, &mut out)
     core.check.eq(ok, true)
@@ -232,8 +268,16 @@ end ui.text.AtlasCell.test_pack_atlas_empty
 test ui.text.AtlasCell.test_pack_atlas_exact_fit
     let ws = [50i32, 50i32]
     let hs = [50i32, 50i32]
-    let empty_rect = ui.text.AtlasRect { x: 0i32, y: 0i32, w: 0i32, h: 0i32 }
-    let empty_cell = ui.text.AtlasCell { ok: false, rect: empty_rect }
+    let empty_rect = ui.text.AtlasRect {
+        x: 0i32
+        y: 0i32
+        w: 0i32
+        h: 0i32
+    }
+    let empty_cell = ui.text.AtlasCell {
+        ok: false
+        rect: empty_rect
+    }
     let mut out = [empty_cell; 2]
     let ok = ui.text.pack_atlas(&ws, &hs, 100i32, 100i32, 0i32, &mut out)
     core.check.eq(ok, true)
@@ -250,8 +294,16 @@ end ui.text.AtlasCell.test_pack_atlas_exact_fit
 test ui.text.AtlasCell.test_pack_atlas_simple
     let ws = [10i32, 20i32]
     let hs = [10i32, 20i32]
-    let empty_rect = ui.text.AtlasRect { x: 0i32, y: 0i32, w: 0i32, h: 0i32 }
-    let empty_cell = ui.text.AtlasCell { ok: false, rect: empty_rect }
+    let empty_rect = ui.text.AtlasRect {
+        x: 0i32
+        y: 0i32
+        w: 0i32
+        h: 0i32
+    }
+    let empty_cell = ui.text.AtlasCell {
+        ok: false
+        rect: empty_rect
+    }
     let mut out = [empty_cell; 2]
     let ok = ui.text.pack_atlas(&ws, &hs, 100i32, 100i32, 0i32, &mut out)
     core.check.eq(ok, true)
@@ -270,8 +322,16 @@ end ui.text.AtlasCell.test_pack_atlas_simple
 test ui.text.AtlasCell.test_pack_atlas_vertical_overflow
     let ws = [10i32]
     let hs = [60i32]
-    let empty_rect = ui.text.AtlasRect { x: 0i32, y: 0i32, w: 0i32, h: 0i32 }
-    let filled_cell = ui.text.AtlasCell { ok: true, rect: empty_rect }
+    let empty_rect = ui.text.AtlasRect {
+        x: 0i32
+        y: 0i32
+        w: 0i32
+        h: 0i32
+    }
+    let filled_cell = ui.text.AtlasCell {
+        ok: true
+        rect: empty_rect
+    }
     let mut out = [filled_cell; 1]
     let ok = ui.text.pack_atlas(&ws, &hs, 100i32, 50i32, 0i32, &mut out)
     core.check.eq(ok, false)
@@ -281,8 +341,16 @@ end ui.text.AtlasCell.test_pack_atlas_vertical_overflow
 test ui.text.AtlasCell.test_pack_atlas_with_pad
     let ws = [10i32]
     let hs = [10i32]
-    let empty_rect = ui.text.AtlasRect { x: 0i32, y: 0i32, w: 0i32, h: 0i32 }
-    let empty_cell = ui.text.AtlasCell { ok: false, rect: empty_rect }
+    let empty_rect = ui.text.AtlasRect {
+        x: 0i32
+        y: 0i32
+        w: 0i32
+        h: 0i32
+    }
+    let empty_cell = ui.text.AtlasCell {
+        ok: false
+        rect: empty_rect
+    }
     let mut out = [empty_cell; 1]
     let ok = ui.text.pack_atlas(&ws, &hs, 100i32, 100i32, 4i32, &mut out)
     core.check.eq(ok, true)
@@ -296,8 +364,16 @@ end ui.text.AtlasCell.test_pack_atlas_with_pad
 test ui.text.AtlasCell.test_pack_atlas_wraps_to_new_row
     let ws = [60i32, 60i32]
     let hs = [10i32, 10i32]
-    let empty_rect = ui.text.AtlasRect { x: 0i32, y: 0i32, w: 0i32, h: 0i32 }
-    let empty_cell = ui.text.AtlasCell { ok: false, rect: empty_rect }
+    let empty_rect = ui.text.AtlasRect {
+        x: 0i32
+        y: 0i32
+        w: 0i32
+        h: 0i32
+    }
+    let empty_cell = ui.text.AtlasCell {
+        ok: false
+        rect: empty_rect
+    }
     let mut out = [empty_cell; 2]
     let ok = ui.text.pack_atlas(&ws, &hs, 100i32, 100i32, 0i32, &mut out)
     core.check.eq(ok, true)
@@ -314,7 +390,11 @@ end ui.text.AtlasCell.test_pack_atlas_wraps_to_new_row
 test ui.text.Line.test_break_lines_all_fit_one_line
     let advances = [10.0f32, 20.0f32, 30.0f32]
     let classes = [ui.text.BreakClass.Normal; 3]
-    let mut out = [ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }; 4]
+    let mut out = [ui.text.Line {
+        start: 0usize
+        to: 0usize
+        width: 0.0f32
+    }; 4]
     let n = ui.text.break_lines(&advances, &classes, 100.0f32, &mut out)
     core.check.eq(n, 1usize)
     core.check.eq(out[0usize].start, 0usize)
@@ -325,7 +405,11 @@ end ui.text.Line.test_break_lines_all_fit_one_line
 test ui.text.Line.test_break_lines_breaks_when_wider
     let advances = [10.0f32, 20.0f32, 30.0f32, 40.0f32]
     let classes = [ui.text.BreakClass.Normal; 4]
-    let mut out = [ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }; 4]
+    let mut out = [ui.text.Line {
+        start: 0usize
+        to: 0usize
+        width: 0.0f32
+    }; 4]
     let n = ui.text.break_lines(&advances, &classes, 50.0f32, &mut out)
     core.check.eq(n, 3usize)
     core.check.eq(out[0usize].start, 0usize)
@@ -344,7 +428,11 @@ test ui.text.Line.test_break_lines_cluster_cont_not_breakable
     let normal = ui.text.BreakClass.Normal
     let cluster_cont = ui.text.BreakClass.ClusterCont
     let classes = [normal, cluster_cont, normal]
-    let mut out = [ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }; 3]
+    let mut out = [ui.text.Line {
+        start: 0usize
+        to: 0usize
+        width: 0.0f32
+    }; 3]
     let n = ui.text.break_lines(&advances, &classes, 25.0f32, &mut out)
     core.check.eq(n, 2usize)
     core.check.eq(out[0usize].start, 0usize)
@@ -356,7 +444,11 @@ test ui.text.Line.test_break_lines_cluster_cont_not_breakable
 end ui.text.Line.test_break_lines_cluster_cont_not_breakable
 
 test ui.text.Line.test_break_lines_empty
-    let mut out = [ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }; 1]
+    let mut out = [ui.text.Line {
+        start: 0usize
+        to: 0usize
+        width: 0.0f32
+    }; 1]
     let n = ui.text.break_lines(&[], &[], 100.0f32, &mut out)
     core.check.eq(n, 0usize)
 end ui.text.Line.test_break_lines_empty
@@ -366,7 +458,11 @@ test ui.text.Line.test_break_lines_kinsoku_not_breakable
     let normal = ui.text.BreakClass.Normal
     let kinsoku = ui.text.BreakClass.Kinsoku
     let classes = [normal, kinsoku, normal]
-    let mut out = [ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }; 3]
+    let mut out = [ui.text.Line {
+        start: 0usize
+        to: 0usize
+        width: 0.0f32
+    }; 3]
     let n = ui.text.break_lines(&advances, &classes, 25.0f32, &mut out)
     core.check.eq(n, 2usize)
     core.check.eq(out[0usize].start, 0usize)
@@ -380,7 +476,11 @@ end ui.text.Line.test_break_lines_kinsoku_not_breakable
 test ui.text.Line.test_break_lines_out_too_small
     let advances = [10.0f32, 20.0f32]
     let classes = [ui.text.BreakClass.Normal, ui.text.BreakClass.Normal]
-    let mut out = [ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }; 1]
+    let mut out = [ui.text.Line {
+        start: 0usize
+        to: 0usize
+        width: 0.0f32
+    }; 1]
     let n = ui.text.break_lines(&advances, &classes, 5.0f32, &mut out)
     core.check.eq(n, 1usize)
     core.check.eq(out[0usize].start, 0usize)
@@ -391,7 +491,11 @@ end ui.text.Line.test_break_lines_out_too_small
 test ui.text.Line.test_break_lines_single_wider_than_width
     let advances = [60.0f32]
     let classes = [ui.text.BreakClass.Normal]
-    let mut out = [ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }; 2]
+    let mut out = [ui.text.Line {
+        start: 0usize
+        to: 0usize
+        width: 0.0f32
+    }; 2]
     let n = ui.text.break_lines(&advances, &classes, 50.0f32, &mut out)
     core.check.eq(n, 1usize)
     core.check.eq(out[0usize].start, 0usize)
@@ -404,7 +508,11 @@ test ui.text.Line.test_break_lines_space_breakable
     let normal = ui.text.BreakClass.Normal
     let space = ui.text.BreakClass.Space
     let classes = [normal, space, normal]
-    let mut out = [ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }; 4]
+    let mut out = [ui.text.Line {
+        start: 0usize
+        to: 0usize
+        width: 0.0f32
+    }; 4]
     let n = ui.text.break_lines(&advances, &classes, 25.0f32, &mut out)
     core.check.eq(n, 3usize)
     core.check.eq(out[0usize].start, 0usize)
@@ -421,7 +529,11 @@ end ui.text.Line.test_break_lines_space_breakable
 test ui.text.Line.test_measure_wrapped_single_line
     let advances = [10.0f32, 20.0f32, 30.0f32]
     let classes = [ui.text.BreakClass.Normal; 3]
-    let mut out = [ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }; 4]
+    let mut out = [ui.text.Line {
+        start: 0usize
+        to: 0usize
+        width: 0.0f32
+    }; 4]
     let (w, h) = ui.text.measure_wrapped(&advances, &classes, 10.0f32, 100.0f32, &mut out)
     core.check.eq(w, 60.0f32)
     core.check.eq(h, 10.0f32)
@@ -430,7 +542,11 @@ end ui.text.Line.test_measure_wrapped_single_line
 test ui.text.Line.test_measure_wrapped_two_lines
     let advances = [10.0f32, 20.0f32, 30.0f32]
     let classes = [ui.text.BreakClass.Normal; 3]
-    let mut out = [ui.text.Line { start: 0usize, to: 0usize, width: 0.0f32 }; 4]
+    let mut out = [ui.text.Line {
+        start: 0usize
+        to: 0usize
+        width: 0.0f32
+    }; 4]
     let (w, h) = ui.text.measure_wrapped(&advances, &classes, 10.0f32, 45.0f32, &mut out)
     core.check.eq(w, 30.0f32)
     core.check.eq(h, 20.0f32)

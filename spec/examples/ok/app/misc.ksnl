@@ -85,7 +85,13 @@ fn app.misc.sum(xs: &[i32]) -> i32 uses [] panics never pub
         }
     }
     let (a, b) = (acc, 1i32)
-    let app.misc.Point { x: px, y: py } = app.misc.Point { x: a, y: b }
+    let app.misc.Point {
+        x: px
+        y: py
+    } = app.misc.Point {
+        x: a
+        y: b
+    }
     core.mem.drop(py)
     app.misc.id::<i32>(px)
 end app.misc.sum

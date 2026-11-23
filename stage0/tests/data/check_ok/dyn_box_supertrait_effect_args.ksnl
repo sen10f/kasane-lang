@@ -32,7 +32,9 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
 end t.main
 
 fn t.make() -> std.boxed.Box<dyn t.Sub<[], never> + 'static> uses [alloc] panics may
-    let x = t.X { v: 7u32 }
+    let x = t.X {
+        v: 7u32
+    }
     match std.boxed.Box.new(x) {
         Ok(b) => b.into_dyn()
         Err(e) => {

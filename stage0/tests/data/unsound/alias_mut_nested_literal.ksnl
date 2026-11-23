@@ -5,7 +5,10 @@ end t.Pair
 
 fn t.bad() -> u32 uses [] panics never
     let mut x = 1u32
-    let _p = t.Pair { a: Some(&mut x), b: Some(&mut x) }
+    let _p = t.Pair {
+        a: Some(&mut x)
+        b: Some(&mut x)
+    }
     x
 end t.bad
 

@@ -1,5 +1,7 @@
 fn std.time.SystemTime.now() -> std.time.SystemTime uses [time] panics never pub
-    std.time.SystemTime { nanos: std.time.system_nanos() }
+    std.time.SystemTime {
+        nanos: std.time.system_nanos()
+    }
 end std.time.SystemTime.now
 
 fn std.time.SystemTime.unix_nanos(self: &std.time.SystemTime) -> i64 uses [] panics never pub

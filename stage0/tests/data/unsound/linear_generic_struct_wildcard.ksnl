@@ -7,12 +7,16 @@ type t.Res linear
 end t.Res
 
 fn t.close(r: t.Res) -> u32 uses [] panics never
-    let t.Res { id: id } = r
+    let t.Res {
+        id: id
+    } = r
     id
 end t.close
 
 fn t.forget[T: linear](h: t.Holder<T>) -> u8 uses [] panics never
-    let t.Holder { v: _ } = h
+    let t.Holder {
+        v: _
+    } = h
     1u8
 end t.forget
 
@@ -21,5 +25,7 @@ fn t.main() -> () uses [] panics never
 end t.main
 
 fn t.open(n: u32) -> t.Res uses [] panics never
-    t.Res { id: n }
+    t.Res {
+        id: n
+    }
 end t.open

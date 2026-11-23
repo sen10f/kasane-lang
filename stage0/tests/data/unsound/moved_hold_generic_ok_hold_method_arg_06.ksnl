@@ -4,13 +4,17 @@ end t.Hold
 
 fn t.Hold.get(self: t.Hold<&u32>) -> &u32 uses [] panics never
     match self {
-        t.Hold { v: r } => r
+        t.Hold {
+            v: r
+        } => r
     }
 end t.Hold.get
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = 10u32
-    let h = t.Hold { v: &a }
+    let h = t.Hold {
+        v: &a
+    }
     let r = h.get()
     core.mem.drop(*r)
     Ok(())

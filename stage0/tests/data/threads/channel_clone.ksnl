@@ -64,7 +64,10 @@ fn t.message(i: u32) -> alloc.string.String uses [alloc] panics may
 end t.message
 
 fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
-    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+    std.io.Error {
+        kind: std.io.ErrorKind.OutOfMemory
+        code: 0i32
+    }
 end t.oom
 
 fn t.produce(tx: std.sync.Sender<alloc.string.String>, count: u32) -> () uses [alloc, thread] panics may

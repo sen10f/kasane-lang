@@ -99,5 +99,9 @@ fn ksnc.kir.lower(dir: &str, std_dir: &str, entry: &str) -> Result<ksnc.kir.Kir,
             nbad = nbad.wrapping_add(1usize)
         }
     }
-    Ok(ksnc.kir.Kir { text: out, bad: bad, nbad: nbad })
+    Ok(ksnc.kir.Kir {
+        text: out
+        bad: bad
+        nbad: nbad
+    })
 end ksnc.kir.lower

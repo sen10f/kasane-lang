@@ -4,8 +4,12 @@ end t.H
 
 fn t.f(x: &u32) -> t.H uses [] panics never
     match true {
-        true => t.H { r: x }
-        false => t.H { r: x }
+        true => t.H {
+            r: x
+        }
+        false => t.H {
+            r: x
+        }
     }
 end t.f
 

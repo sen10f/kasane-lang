@@ -14,7 +14,9 @@ end t.Sq.tag
 fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let mut r: Option<&u64> = None
     {
-        let b = alloc.boxed.Box.new(std.alloc.SYSTEM, t.Sq { side: 3u64 })?
+        let b = alloc.boxed.Box.new(std.alloc.SYSTEM, t.Sq {
+            side: 3u64
+        })?
         let d: std.boxed.Box<dyn t.Tag + 'static> = b.into_dyn()
         let q = d.as_ref()
         r = Some(q.tag())

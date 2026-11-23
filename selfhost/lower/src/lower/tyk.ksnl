@@ -392,7 +392,12 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
             lower.cx.fail(c, msg.as_str())?
             let e1 = std.vec.Vec.new()
             let e2 = std.vec.Vec.new()
-            return Ok(lower.tyk.Lay { size: 0usize, align: 1usize, offs: e1, vlens: e2 })
+            return Ok(lower.tyk.Lay {
+                size: 0usize
+                align: 1usize
+                offs: e1
+                vlens: e2
+            })
         }
         let saved = lower.tyk.enter(c, item)?
         let r = lower.tyk.layout(env, c, lower.tyk.real_item(c, item))?
@@ -418,17 +423,32 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
         }
         let size = lower.tyk.up(off, al)
         let vl = std.vec.Vec.new()
-        return Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vl })
+        return Ok(lower.tyk.Lay {
+            size: size
+            align: al
+            offs: offs
+            vlens: vl
+        })
     }
     if item == lower.tyk.VEC || item >= lower.tyk.VECO && item < lower.tyk.BREF {
         let vo = std.vec.Vec.new()
         let vl = std.vec.Vec.new()
-        return Ok(lower.tyk.Lay { size: 24usize, align: 8usize, offs: vo, vlens: vl })
+        return Ok(lower.tyk.Lay {
+            size: 24usize
+            align: 8usize
+            offs: vo
+            vlens: vl
+        })
     }
     if item == lower.tyk.FAT {
         let fo = std.vec.Vec.new()
         let fl = std.vec.Vec.new()
-        return Ok(lower.tyk.Lay { size: 16usize, align: 8usize, offs: fo, vlens: fl })
+        return Ok(lower.tyk.Lay {
+            size: 16usize
+            align: 8usize
+            offs: fo
+            vlens: fl
+        })
     }
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -437,11 +457,21 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
     let kind = types.infer.item_kind(env, item)
     let p = match types.env.unit(env, file) {
         Some(q) => q
-        None => return Ok(lower.tyk.Lay { size: 0usize, align: 1usize, offs: offs, vlens: vlens })
+        None => return Ok(lower.tyk.Lay {
+            size: 0usize
+            align: 1usize
+            offs: offs
+            vlens: vlens
+        })
     }
     let src_r = match env.srcs.as_slice().get(file) {
         Some(s) => s
-        None => return Ok(lower.tyk.Lay { size: 0usize, align: 1usize, offs: offs, vlens: vlens })
+        None => return Ok(lower.tyk.Lay {
+            size: 0usize
+            align: 1usize
+            offs: offs
+            vlens: vlens
+        })
     }
     let src = src_r.text.as_slice()
     let nd = parse.ast.get(&p.ast, node)
@@ -460,7 +490,12 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
             }
         }
         let size = lower.tyk.up(off, al)
-        return Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vlens })
+        return Ok(lower.tyk.Lay {
+            size: size
+            align: al
+            offs: offs
+            vlens: vlens
+        })
     }
     let mut endp = 4usize
     let mut al = 4usize
@@ -497,7 +532,12 @@ fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Re
         }
     }
     let size = lower.tyk.up(endp, al)
-    Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vlens })
+    Ok(lower.tyk.Lay {
+        size: size
+        align: al
+        offs: offs
+        vlens: vlens
+    })
 end lower.tyk.layout
 
 fn lower.tyk.leave(c: &mut lower.cx.Cx, saved: std.vec.Vec<usize>) -> () uses [] panics never pub

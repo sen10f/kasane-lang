@@ -92,7 +92,10 @@ end notes.store.Store.load
 fn notes.store.Store.new(dir: &str) -> Result<notes.store.Store, notes.error.Error> uses [alloc] panics never pub
     let d = std.string.String.from_str(dir)?
     let ns = std.vec.Vec.new()
-    let r = notes.store.Store { dir: d, notes: ns }
+    let r = notes.store.Store {
+        dir: d
+        notes: ns
+    }
     Ok(r)
 end notes.store.Store.new
 

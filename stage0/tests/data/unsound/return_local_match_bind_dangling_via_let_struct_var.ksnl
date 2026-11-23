@@ -5,7 +5,9 @@ end t.Holder
 fn t.bad() -> t.Holder uses [] panics never
     let x = 5u32
     match &x {
-        rr => t.Holder { r: rr }
+        rr => t.Holder {
+            r: rr
+        }
     }
 end t.bad
 

@@ -7,12 +7,16 @@ fn t.Res.get(self: &t.Res) -> u32 uses [] panics never
 end t.Res.get
 
 fn t.Res.shut(self: t.Res) -> () uses [] panics never
-    let t.Res { id: id } = self
+    let t.Res {
+        id: id
+    } = self
     core.mem.drop(id)
 end t.Res.shut
 
 fn t.f() -> () uses [] panics never
-    with a = t.Res { id: 1u32 } close a.shut() {
+    with a = t.Res {
+        id: 1u32
+    } close a.shut() {
         let x = a
         x.shut()
     }

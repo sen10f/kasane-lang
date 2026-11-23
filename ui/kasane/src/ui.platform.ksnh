@@ -113,7 +113,11 @@ fn ui.platform.modifiers_from(mods: i32) -> ui.event.Modifiers uses [] panics ne
     let s = mods & ui.platform.KMOD_SHIFT != 0i32
     let c = mods & ui.platform.KMOD_CTRL != 0i32
     let a = mods & ui.platform.KMOD_ALT != 0i32
-    ui.event.Modifiers { shift: s, ctrl: c, alt: a }
+    ui.event.Modifiers {
+        shift: s
+        ctrl: c
+        alt: a
+    }
 end ui.platform.modifiers_from
 
 // 窓から滞っている事象を全部取り出し、ui.event.Event のリストに変換する。
@@ -233,7 +237,9 @@ end ui.platform.translate_event
 
 // 窓を閉じる。線型ハンドルをここで 1 度だけ消費する。
 fn ui.platform.window_close(self: ui.platform.Window) -> () uses [] panics may pub
-    let ui.platform.Window { ptr: p } = self
+    let ui.platform.Window {
+        ptr: p
+    } = self
     unsafe "bindgen" "SDL の窓を閉じる（ptr が null なら何もしない）" {
         ui.plat.ksnui_window_destroy(p)
     }
@@ -244,7 +250,9 @@ fn ui.platform.window_create(title: &str, w: i32, h: i32) -> ui.platform.Window 
     unsafe "bindgen" "SDL の窓を作る（title は null 終端の UTF-8）" {
         let p = core.ptr.from_ref(title.as_bytes())
         let win = ui.platform.raw_ksnui_window_create(p, w, h)
-        ui.platform.Window { ptr: win }
+        ui.platform.Window {
+            ptr: win
+        }
     }
 end ui.platform.window_create
 

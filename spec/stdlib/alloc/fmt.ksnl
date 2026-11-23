@@ -7,7 +7,13 @@ type alloc.fmt.Spec derive [Debug, Clone, Copy, PartialEq, Eq] pub
 end alloc.fmt.Spec
 
 fn alloc.fmt.Spec.new() -> alloc.fmt.Spec const uses [] panics never pub
-    alloc.fmt.Spec { width: 0usize, fill: ' ', left: false, radix: 10u32, upper: false }
+    alloc.fmt.Spec {
+        width: 0usize
+        fill: ' '
+        left: false
+        radix: 10u32
+        upper: false
+    }
 end alloc.fmt.Spec.new
 
 fn alloc.fmt.Spec.with_fill(self: &alloc.fmt.Spec, c: char) -> alloc.fmt.Spec uses [] panics never pub

@@ -64,5 +64,11 @@ end resolve.load.read_bytes
 
 // 読み込んだ 1 ファイル。
 fn resolve.load.src(path: std.string.String, module: std.string.String, sig: bool, own: bool, text: std.vec.Vec<u8>) -> resolve.load.Src uses [] panics never pub
-    resolve.load.Src { path: path, module: module, sig: sig, own: own, text: text }
+    resolve.load.Src {
+        path: path
+        module: module
+        sig: sig
+        own: own
+        text: text
+    }
 end resolve.load.src

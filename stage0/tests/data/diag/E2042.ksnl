@@ -8,5 +8,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.mk() -> t.W uses [] panics never
-    t.W { num: 7u8 }
+    t.W {
+        num: 7u8
+    }
 end t.mk

@@ -4,12 +4,16 @@ end t.Holder
 
 fn t.main() -> () uses [] panics never
     let r = match &t.make() {
-        t.Holder { v: x } => x
+        t.Holder {
+            v: x
+        } => x
     }
     let v = *r
     core.mem.drop(v)
 end t.main
 
 fn t.make() -> t.Holder uses [] panics never
-    t.Holder { v: 42u32 }
+    t.Holder {
+        v: 42u32
+    }
 end t.make
