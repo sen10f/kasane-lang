@@ -111,6 +111,24 @@ fn std.http.Request.header(self: &std.http.Request, name: &str) -> Option<&str> 
     None
 end std.http.Request.header
 
+fn std.http.Request.header_unique(self: &std.http.Request, name: &str) -> Result<Option<&str>, std.http.Error> uses [] panics never pub
+    let mut found: Option<&str> = None
+    for k in core.iter.range(0usize, self.headers.len()) {
+        match self.headers.as_slice().get(k) {
+            Some(h) => {
+                if h.name.as_str().eq_ignore_ascii_case(name) {
+                    if found.is_some() {
+                        return Err(std.http.Error.BadRequest)
+                    }
+                    found = Some(h.value.as_str())
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    Ok(found)
+end std.http.Request.header_unique
+
 // `Connection` ヘッダを見て、応答のあとも接続を保つかを決める。1.1 は既定で保ち、1.0 は既定で閉じる。
 fn std.http.Request.keep_alive(self: &std.http.Request) -> bool uses [] panics never pub
     match self.header("connection") {
@@ -271,6 +289,19 @@ fn std.http.has_bare_ctl(data: &[u8]) -> bool uses [] panics never
     false
 end std.http.has_bare_ctl
 
+fn std.http.has_ctl(data: &[u8]) -> bool uses [] panics never
+    let len = data.len()
+    let mut i = 0usize
+    while i < len {
+        let b = std.http.byte_at(data, i)
+        if b < 32u8 || b == 127u8 {
+            return true
+        }
+        i = i.saturating_add(1usize)
+    }
+    false
+end std.http.has_ctl
+
 fn std.http.hex_value(c: u8) -> Option<usize> uses [] panics never
     if c >= b'0' && c <= b'9' {
         return Some(usize.from_u8(c.wrapping_sub(b'0')))
@@ -321,6 +352,9 @@ fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, st
     if version == "HTTP/1.1" {
         v11 = true
     } else if version != "HTTP/1.0" {
+        return Err(std.http.Error.BadRequest)
+    }
+    if std.http.has_ctl(path_text.as_bytes()) {
         return Err(std.http.Error.BadRequest)
     }
     if !std.http.is_method(method_text) || !path_text.starts_with("/") {

@@ -727,11 +727,27 @@ pub(crate) fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
     }
 }
 
+/// `parse_decimal` の形: 任意の `-` (符号つきの型だけ) の後に 1 桁以上の ASCII 数字。
+/// 先頭の 0 は "0" 1 文字のときだけ許す。`-0`・`+`・空白・非 ASCII の数字は拒む。
+pub(crate) fn plain_decimal(bytes: &[u8], is_signed: bool) -> bool {
+    let (neg, digits) = match bytes.first() {
+        Some(b'-') if is_signed => (true, &bytes[1..]),
+        _ => (false, bytes),
+    };
+    !digits.is_empty()
+        && digits.iter().all(|c| c.is_ascii_digit())
+        && (digits.len() == 1 || digits[0] != b'0')
+        && !(neg && digits == b"0")
+}
+
 /// `core.num.<int>.from_str_radix` の参照実行器側の規則。
 /// 戻り値: `(ret, lo, hi)`。`ret` は 0=成功、1=ParseIntError kind 0、2=kind 1。
 /// `lo`/`hi` は成功時の 128 ビットの値の下位・上位 64 ビット。
 /// 規則は `stage0/src/natives.rs` の `from_str_radix` / `parse` と同一。
-pub(crate) fn parse_int(bytes: &[u8], radix: u32, bits: u32, is_signed: bool) -> (u8, u64, u64) {
+pub(crate) fn parse_int(bytes: &[u8], radix: u32, bits: u32, is_signed: bool, strict: bool) -> (u8, u64, u64) {
+    if strict && !plain_decimal(bytes, is_signed) {
+        return (1, 0, 0);
+    }
     if radix < 2 || radix > 36 {
         return (1, 0, 0);
     }
@@ -1552,7 +1568,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let _ = write_fd(2, s.as_bytes());
                     0
                 }
-                Op::ParseInt { ty, s, radix } => {
+                Op::ParseInt { ty, s, radix, strict } => {
                     let fi = get(&stack[top], s) as usize;
                     let fblob = match heap.get(fi) {
                         Some(b) if b.len() >= 16 => b,
@@ -1565,7 +1581,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         Err(e) => return Ok(Outcome::Panic(e)),
                     };
                     let radix = get(&stack[top], radix) as u32;
-                    let (ret, lo, hi) = parse_int(&bytes, radix, ty.bits(), ty.signed());
+                    let (ret, lo, hi) = parse_int(&bytes, radix, ty.bits(), ty.signed(), *strict);
                     if ret == 0 {
                         let v = ((hi as u128) << 64) | (lo as u128);
                         // ペイロードを型のビット幅で切り下ろし、タグビット(64ビット目)を立てない。

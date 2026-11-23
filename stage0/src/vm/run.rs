@@ -1367,10 +1367,10 @@ impl<'a> Vm<'a> {
                     w!(*d, 0);
                     w!(*d + 1, port);
                 }
-                Ins::ParseInt { d, s, radix, ty } => {
+                Ins::ParseInt { d, s, radix, ty, strict } => {
                     let t = tyof!(ty);
                     let bytes = Self::fat_bytes(rp, *s as usize)?;
-                    let (ret, lo, hi) = kir_exec::parse_int(bytes, r!(*radix) as u32, t.bits(), t.signed());
+                    let (ret, lo, hi) = kir_exec::parse_int(bytes, r!(*radix) as u32, t.bits(), t.signed(), *strict);
                     if ret == 0 {
                         let v = ((hi as u128) << 64) | (lo as u128);
                         let bits = t.bits();

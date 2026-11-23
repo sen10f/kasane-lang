@@ -59,6 +59,38 @@ fn t.main() -> Result<(), std.http.Error> uses [alloc, io.console] panics never
     if let Some(r3) = split.next()? {
         t.show("split2", &r3)?
     }
+    t.one("tgtab", b"GET /a\tb HTTP/1.1\r\nHost: x\r\n\r\n", 8192usize, 1024usize)?
+    t.one("tgtdel", b"GET /a\x7fb HTTP/1.1\r\nHost: x\r\n\r\n", 8192usize, 1024usize)?
+    t.one("tgtsp", b"GET /a b HTTP/1.1\r\nHost: x\r\n\r\n", 8192usize, 1024usize)?
+    t.one("clplus", b"POST /x HTTP/1.1\r\nContent-Length: +3\r\n\r\nabc", 8192usize, 1024usize)?
+    t.one("chplus", b"POST /c HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n+3\r\nabc\r\n0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("clneg", b"POST /x HTTP/1.1\r\nContent-Length: -0\r\n\r\n", 8192usize, 1024usize)?
+    let mut dh = std.http.Decoder.new(8192usize, 1024usize)
+    dh.feed(b"GET /d HTTP/1.1\r\nHost: x\r\nX-A: 1\r\nx-a: 2\r\nX-B: 3\r\n\r\nGET /e HTTP/1.1\r\nHost: x\r\nX-A: 4\r\n\r\n")?
+    if let Some(d1) = dh.next()? {
+        match d1.header_unique("x-a") {
+            Ok(Some(v)) => std.io.print_line(v)?
+            Ok(None) => std.io.print_line("none")?
+            Err(e) => t.err("dup", e)?
+        }
+        match d1.header_unique("X-B") {
+            Ok(Some(v)) => std.io.print_line(v)?
+            Ok(None) => std.io.print_line("none")?
+            Err(e) => t.err("dupb", e)?
+        }
+        match d1.header_unique("X-C") {
+            Ok(Some(v)) => std.io.print_line(v)?
+            Ok(None) => std.io.print_line("none")?
+            Err(e) => t.err("dupc", e)?
+        }
+    }
+    if let Some(d2) = dh.next()? {
+        match d2.header_unique("X-A") {
+            Ok(Some(v)) => std.io.print_line(v)?
+            Ok(None) => std.io.print_line("none")?
+            Err(e) => t.err("dup2", e)?
+        }
+    }
     Ok(())
 end t.main
 

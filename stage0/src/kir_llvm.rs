@@ -712,7 +712,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     }
     if cx.parse_int {
         // 長さはポインタの幅 (wasm32 は i32)。呼び出し側の宣言 (`ParseInt`) と同じ型にする。x86_64 / aarch64 は従来どおり i64。
-        cx.decls.insert(format!("declare i32 @ksn_parse_int(ptr, {}, i32, i32, i32, ptr, ptr)", size_ty()));
+        cx.decls.insert(format!("declare i32 @ksn_parse_int(ptr, {}, i32, i32, i32, i32, ptr, ptr)", size_ty()));
     }
     if cx.env {
         cx.decls.insert("declare i64 @ksn_rt_sys_arg_count()".to_string());
@@ -2809,9 +2809,9 @@ impl<'a> Fe<'a> {
                 let r = self.t(format!("call i64 @ksn_rt_sys_random(ptr {}, i64 {}, ptr {})", self.r(*buf), n, ep));
                 self.fs_result(&d, &r, &ep);
             }
-            Op::ParseInt { ty, s, radix } => {
+            Op::ParseInt { ty, s, radix, strict } => {
                 self.cx.parse_int = true;
-                self.cx.decl(format!("declare i32 @ksn_parse_int(ptr, {}, i32, i32, i32, ptr, ptr)", size_ty()));
+                self.cx.decl(format!("declare i32 @ksn_parse_int(ptr, {}, i32, i32, i32, i32, ptr, ptr)", size_ty()));
                 let av = self.r(*s);
                 let pi = self.extract(&av, 128, 0, 64);
                 let p = self.t(format!("inttoptr i64 {} to ptr", pi));
@@ -2820,11 +2820,12 @@ impl<'a> Fe<'a> {
                 let rv = self.r(*radix);
                 let bits = ty.bits();
                 let iss = if ty.signed() { 1 } else { 0 };
+                let strict_v = if *strict { 1 } else { 0 };
                 let lo_ptr = self.t("alloca i64".to_string());
                 let hi_ptr = self.t("alloca i64".to_string());
                 let ret = self.t(format!(
-                    "call i32 @ksn_parse_int(ptr {}, {} {}, i32 {}, i32 {}, i32 {}, ptr {}, ptr {})",
-                    p, size_ty(), n, rv, bits, iss, lo_ptr, hi_ptr
+                    "call i32 @ksn_parse_int(ptr {}, {} {}, i32 {}, i32 {}, i32 {}, i32 {}, ptr {}, ptr {})",
+                    p, size_ty(), n, rv, bits, iss, strict_v, lo_ptr, hi_ptr
                 ));
                 let lo = self.t(format!("load i64, i64* {}", lo_ptr));
                 let is_ok = self.t(format!("icmp eq i32 {}, 0", ret));

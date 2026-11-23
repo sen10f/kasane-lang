@@ -66,6 +66,23 @@ pipe2 GET /2 body=0 keep=0
 pipe3 none
 split1 none
 split2 POST /c body=4 keep=1
+tgtab
+BadRequest
+tgtdel
+BadRequest
+tgtsp
+BadRequest
+clplus
+BadRequest
+chplus
+BadRequest
+clneg
+BadRequest
+dup
+BadRequest
+3
+none
+4
 ";
 
 /// `client.ksnl` の期待出力: 証明書を指定した接続の応答の最初の行、既定の CA の拒否、ホスト名の不一致の拒否。
