@@ -906,7 +906,9 @@ impl Lint {
             let mut stack: Vec<(&str, usize)> = vec![];
             let mut stmt_base = 0usize;
             for (k, l) in it.body.iter().enumerate() {
-                if l.is_empty() {
+                // 空白だけの行は字下げの対象外。trim().is_empty() で飛ばさないと、
+                // l.trim() が空になった行で s.chars().next().unwrap() がパニックする (src/lint.rs:924)。
+                if l.trim().is_empty() {
                     continue;
                 }
                 let n = it.body_start + k + 1;
