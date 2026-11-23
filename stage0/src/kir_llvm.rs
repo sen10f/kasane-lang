@@ -157,7 +157,7 @@ fn fname(key: &str) -> String {
 const THREAD_ENTRY_SIZE: usize = 256;
 
 /// 全員待ちの検出 (設計_KIR.md 22.7)。Mutex の lock の待ちの文言 (木走査は Mutex の待ちを持たないので、ネイティブだけの文言)。
-const DEADLOCK_LOCK: &str = "deadlock: lock() on a Mutex that another thread holds, and every live thread is waiting";
+use crate::interp::DEADLOCK_LOCK;
 
 /// 待ちの本体 (`mu` を持って呼ぶ)。待っている数 `blocked` を 1 増やし、生きている数 `live` 以上なら全員が待っているので
 /// `msg` (`@ksn.rt.deadlock*`) を出して終了コード 101 で終わる。そうでなければ状態が変わる (`gen` が進む) まで条件変数で待つ。

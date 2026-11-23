@@ -104,6 +104,7 @@ pub struct Interp {
 }
 
 pub const DEADLOCK_JOIN: &str = "deadlock: a thread waits for itself, or two threads wait for each other (the interpreter runs each thread to completion and cannot suspend one)";
+pub const DEADLOCK_LOCK: &str = "deadlock: lock() on a Mutex that another thread holds, and every live thread is waiting";
 pub const DEADLOCK_RECV: &str = "deadlock: recv() on an empty channel whose Sender is still alive, and no other thread can run \
 (native threads would block here forever; or the program needs a back-and-forth with a thread that is waiting on this one, which the \
 single-threaded interpreter cannot schedule. Drop the Sender when done sending)";
@@ -1598,6 +1599,7 @@ impl Interp {
                 // `core.mem.drop(tx)`: 変数の値を落とす (チャネルの端なら閉じる)。
                 if let (Some(a), Some(v)) = (items(&f[1]).first(), args.first()) {
                     self.move_out(a, sc, v);
+                    crate::value::release_guard(v);
                     // 検査器が「所有する値」と決めた呼び出し (`infer::annotate_owned_drops`) は、値を解放済みにする。
                     if matches!(f.get(3), Some(V::S(m)) if m == "own") {
                         mark_dead(v);

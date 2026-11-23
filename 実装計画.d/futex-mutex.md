@@ -7,3 +7,5 @@
 - `std.thread.sleep` / `Instant.now|elapsed|since` / `Duration.from_millis|as_nanos`: `ksn.time.mono` / `ksn.time.sleep` (LLVM は `ksn_rt_sys_now_ns` / `ksn_rt_sys_sleep_ms`、KIR 実行器は `TimeNowNs` の待ち回し)。wasm32 は未対応。
 - 試験: `stage0/tests/rt_sync.rs`。
 - 計測 (1 操作あたり、全体の時間 / 操作数): 前 406 / 1719 / 3547 / 4187 ns → 後 111 / 43 / 43 / 77 ns (1 / 4 / 8 / 16 スレッド)。
+- 追補: 同じスレッドの再ロックは木走査 (`HELD_MUTEXES` と `MutexGuard` の `Drop`・`core.mem.drop`)・KIR 実行器 (`mlock`/`munlock` の本体)・ネイティブの全部で deadlock (101、同じ文言)。試験は `rt_sync_same_thread_relock_...`。
+- 公平な計測 (同じ静的 Mutex の 2M 回/スレッド、プロセス全体の時間 / 操作数、3 回の中央値、ns/op、1/4/8/16 スレッド): 旧 350/1590/6120/10608、新 24/108/300/902、Rust std 20/105/145/148。
