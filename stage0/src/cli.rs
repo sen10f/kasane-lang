@@ -196,12 +196,30 @@ impl Report {
                     None => "<project>".to_string(),
                 };
                 println!("{}: {}{}: {}", loc, it.code, if it.fatal { "" } else { " (non-fatal)" }, it.message);
+                // 字を指す診断 (col > 0) は、該当するソース行と列位置を示す `^` を添える。
+                if it.col > 0 {
+                    if let Some((line_text, caret)) = source_line_caret(it.file.as_deref(), it.line, it.col) {
+                        println!("   | {}", line_text);
+                        println!("   | {}", caret);
+                    }
+                }
             }
         }
     }
     fn fatal(&self) -> bool {
         self.items.iter().any(|i| i.fatal)
     }
+}
+
+/// 診断が指すソース行と、列（1 始まり、文字基準）を示す `^` の行を返す。
+fn source_line_caret(file: Option<&str>, line: usize, col: usize) -> Option<(String, String)> {
+    let file = file?;
+    let text = read_text(file)?;
+    let line_text = text.split('\n').nth(line.wrapping_sub(1))?;
+    let len = line_text.chars().count();
+    let spaces = (col - 1).min(len);
+    let caret = " ".repeat(spaces) + "^";
+    Some((line_text.to_string(), caret))
 }
 
 pub fn rel(path: &str) -> String {
