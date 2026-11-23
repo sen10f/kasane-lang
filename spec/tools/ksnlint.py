@@ -94,6 +94,17 @@ class Lint:
                 it['body'] = L[i + 1:j]
                 it['body_start'] = i + 1
                 i = j + 1
+            elif kw in ('const', 'static') and l.rstrip().endswith('{'):
+                # 構造体リテラルの初期化式は複数行 (いつも 1 行 1 欄)。行頭の `}` で閉じるまでが 1 つの定義。
+                j = i + 1
+                while j < len(L) and not L[j].startswith('}'):
+                    j += 1
+                if j >= len(L):
+                    self.err('fqn', i + 1, 'missing }')
+                    j = len(L) - 1
+                it['end'] = j
+                it['body'] = []
+                i = j + 1
             else:
                 it['end'] = i
                 it['body'] = []

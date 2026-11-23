@@ -418,13 +418,11 @@ test ui.tree_test.Suite.test_state_insert_two
     match std.boxed.Box.new(ui.tree_test.Counter {
         n: 0u32
     }) {
-        Ok(b) => {
-            match t.state_ref().insert(ui.tree.StateEntry {
-                value: alloc.boxed.Box.into_dyn(b)
-            }) {
-                Ok(h0) => core.check.eq(h0.index, 0usize)
-                Err(_) => core.check.is_true(false)
-            }
+        Ok(b) => match t.state_ref().insert(ui.tree.StateEntry {
+            value: alloc.boxed.Box.into_dyn(b)
+        }) {
+            Ok(h0) => core.check.eq(h0.index, 0usize)
+            Err(_) => core.check.is_true(false)
         }
         Err(_) => core.check.is_true(false)
     }
@@ -449,21 +447,19 @@ test ui.tree_test.Suite.test_state_remove
     match std.boxed.Box.new(ui.tree_test.Counter {
         n: 0u32
     }) {
-        Ok(b) => {
-            match t.state_ref().insert(ui.tree.StateEntry {
-                value: alloc.boxed.Box.into_dyn(b)
-            }) {
-                Ok(h) => {
-                    core.check.eq(t.state_ref().len(), 1usize)
-                    let removed: Option<ui.tree.StateEntry> = t.state_ref().remove(h)
-                    match removed {
-                        Some(_) => core.check.is_true(true)
-                        None => core.check.is_true(false)
-                    }
-                    core.check.eq(t.state_ref().len(), 1usize)
+        Ok(b) => match t.state_ref().insert(ui.tree.StateEntry {
+            value: alloc.boxed.Box.into_dyn(b)
+        }) {
+            Ok(h) => {
+                core.check.eq(t.state_ref().len(), 1usize)
+                let removed: Option<ui.tree.StateEntry> = t.state_ref().remove(h)
+                match removed {
+                    Some(_) => core.check.is_true(true)
+                    None => core.check.is_true(false)
                 }
-                Err(_) => core.check.is_true(false)
+                core.check.eq(t.state_ref().len(), 1usize)
             }
+            Err(_) => core.check.is_true(false)
         }
         Err(_) => core.check.is_true(false)
     }
@@ -474,16 +470,14 @@ test ui.tree_test.Suite.test_state_tick
     match std.boxed.Box.new(ui.tree_test.Counter {
         n: 5u32
     }) {
-        Ok(b) => {
-            match t.state_ref().insert(ui.tree.StateEntry {
-                value: alloc.boxed.Box.into_dyn(b)
-            }) {
-                Ok(h) => {
-                    t.state_tick(h)
-                    core.check.eq(t.state_ref().len(), 1usize)
-                }
-                Err(_) => core.check.is_true(false)
+        Ok(b) => match t.state_ref().insert(ui.tree.StateEntry {
+            value: alloc.boxed.Box.into_dyn(b)
+        }) {
+            Ok(h) => {
+                t.state_tick(h)
+                core.check.eq(t.state_ref().len(), 1usize)
             }
+            Err(_) => core.check.is_true(false)
         }
         Err(_) => core.check.is_true(false)
     }
