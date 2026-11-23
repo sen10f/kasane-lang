@@ -90,6 +90,10 @@ fp id param_returned#1
 fp id param_returned#2
 fp id pattern_all_fields#0
 fp id pattern_all_fields#1
+fp id static_str_merge_ok#0
+fp id static_str_merge_ok#1
+fp id static_str_merge_ok#2
+fp id static_str_merge_ok#3
 fp id temp_linear_consumed#0
 fp id temp_linear_consumed#3
 fp id temp_method_by_value#0
