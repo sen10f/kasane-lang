@@ -49,6 +49,18 @@ headbig
 HeadTooLarge
 headok GET / body=0 keep=1
 crlfbad GET /x body=0 keep=1
+barecr
+BadRequest
+nul
+BadRequest
+nohost
+BadRequest
+twohost
+BadRequest
+twote
+BadRequest
+v10chunk
+BadRequest
 pipe1 GET /1 body=0 keep=1
 pipe2 GET /2 body=0 keep=0
 pipe3 none
