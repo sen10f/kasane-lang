@@ -2982,6 +2982,14 @@ fn cmd_fmt(args: &[String]) -> i32 {
                 diff = true;
                 println!("{}:{}:{}: {}: {}", rel(&s.path), want.gram.line, want.gram.col, want.gram.code, want.gram.msg);
             }
+            // `.ksnl` にコメントは置けない (E0059)。整形でもコメントは消せないので、元のファイルの行で
+            // 報告し、非ゼロで終わる (fmt が有効なファイルを作れない)。`.ksnh` は触らない。
+            if s.path.ends_with(".ksnl") {
+                for ln in crate::ksnh::comment_lines_in_ksnl(&s.text) {
+                    diff = true;
+                    println!("{}:{}:1: E0059: a comment cannot be placed in a .ksnl; write it in a .ksnh next to it", rel(&s.path), ln);
+                }
+            }
             continue;
         }
         // 書かない。診断は元のファイルの行:列で出す (直せないものが元のファイルにもある)。
@@ -3005,6 +3013,14 @@ fn cmd_fmt(args: &[String]) -> i32 {
             }
         }
         println!("{}: note: the file cannot be formatted to a valid file, so `ksn fmt` left it unchanged; fix the error(s) above in this file and run `ksn fmt` again", rel(&s.path));
+        // `.ksnl` にコメントは置けない (E0059)。整形でもコメントは消せないので、元のファイルの行で
+        // 報告し、非ゼロで終わる (fmt が有効なファイルを作れない)。`.ksnh` は触らない。
+        if s.path.ends_with(".ksnl") {
+            for ln in crate::ksnh::comment_lines_in_ksnl(&s.text) {
+                diff = true;
+                println!("{}:{}:1: E0059: a comment cannot be placed in a .ksnl; write it in a .ksnh next to it", rel(&s.path), ln);
+            }
+        }
     }
     // `kasane.toml` / `kasane.lock` も整える (設計_tomlとlockの書き方.md 7 章)。直せない誤り (E0004 など) は
     // `.ksnl` と同じく報告だけ。
