@@ -40,6 +40,32 @@ type std.http.Request pub
     path: std.string.String pub
 end std.http.Request
 
+type std.http.Response pub
+    headers: std.vec.Vec<std.http.Header> pub
+    http11: bool pub
+    reason: std.string.String pub
+    status: u16 pub
+end std.http.Response
+
+type std.http.ResponseDecoder pub
+    body: std.vec.Vec<u8>
+    body_total: usize
+    chunk_digits: usize
+    chunk_n: usize
+    cr: bool
+    ext: bool
+    has_head: bool
+    head: std.vec.Vec<u8>
+    line_len: usize
+    max_body: usize
+    max_head: usize
+    phase: u8
+    remaining: usize
+    resp: std.http.Response
+    section: usize
+    spare: std.vec.Vec<u8>
+end std.http.ResponseDecoder
+
 fn std.http.Decoder.consume(self: &mut std.http.Decoder, used: usize) -> Result<(), std.http.Error> uses [alloc] panics never
     let rest = std.http.copy_tail(self.buf.as_slice(), used)?
     self.buf.clear()
@@ -127,6 +153,307 @@ fn std.http.Request.keep_alive(self: &std.http.Request) -> bool uses [] panics n
     }
 end std.http.Request.keep_alive
 
+fn std.http.ResponseDecoder.buffered(self: &std.http.ResponseDecoder) -> usize uses [] panics never pub
+    self.head.len().saturating_add(self.body.len()).saturating_add(self.spare.len())
+end std.http.ResponseDecoder.buffered
+
+fn std.http.ResponseDecoder.chunk_end_byte(self: &mut std.http.ResponseDecoder, c: u8) -> Result<(), std.http.Error> uses [] panics never
+    if !self.cr {
+        if c == b'\r' {
+            self.cr = true
+            return Ok(())
+        }
+        return Err(std.http.Error.BadRequest)
+    }
+    if c != b'\n' {
+        return Err(std.http.Error.BadRequest)
+    }
+    self.cr = false
+    self.phase = 2u8
+    self.section = 0usize
+    self.line_len = 0usize
+    self.chunk_n = 0usize
+    self.chunk_digits = 0usize
+    self.ext = false
+    Ok(())
+end std.http.ResponseDecoder.chunk_end_byte
+
+fn std.http.ResponseDecoder.feed(self: &mut std.http.ResponseDecoder, bytes: &[u8]) -> Result<(), std.http.Error> uses [alloc] panics never pub
+    let mut i = 0usize
+    while i < bytes.len() {
+        let used = self.step(bytes, i)?
+        i = i.saturating_add(used)
+    }
+    Ok(())
+end std.http.ResponseDecoder.feed
+
+fn std.http.ResponseDecoder.feed_part(self: &mut std.http.ResponseDecoder, chunk: &[u8], n: usize) -> Result<(), std.http.Error> uses [alloc] panics never pub
+    match chunk.sub(0usize, n) {
+        Some(part) => self.feed(part)?
+        None => return Err(std.http.Error.BadRequest)
+    }
+    Ok(())
+end std.http.ResponseDecoder.feed_part
+
+fn std.http.ResponseDecoder.finish(self: &mut std.http.ResponseDecoder) -> Result<(), std.http.Error> uses [] panics never pub
+    if self.phase == 7u8 {
+        return Ok(())
+    }
+    if self.phase == 6u8 {
+        self.phase = 7u8
+        return Ok(())
+    }
+    Err(std.http.Error.Truncated)
+end std.http.ResponseDecoder.finish
+
+fn std.http.ResponseDecoder.finish_head(self: &mut std.http.ResponseDecoder) -> Result<(), std.http.Error> uses [alloc] panics never
+    let resp = std.http.parse_response_head(self.head.as_slice())?
+    self.head.clear()
+    let (kind, n) = std.http.response_framing(&resp, self.max_body)?
+    if resp.status < 200u16 {
+        if resp.status == 101u16 {
+            return Err(std.http.Error.Unsupported)
+        }
+        return Ok(())
+    }
+    self.resp = resp
+    self.has_head = true
+    if kind == 0u8 {
+        self.phase = 6u8
+    } else if kind == 1u8 {
+        if n == 0usize {
+            self.phase = 7u8
+        } else {
+            self.remaining = n
+            self.phase = 1u8
+        }
+    } else if kind == 2u8 {
+        self.phase = 2u8
+        self.section = 0usize
+        self.line_len = 0usize
+        self.chunk_n = 0usize
+        self.chunk_digits = 0usize
+        self.ext = false
+        self.cr = false
+    } else {
+        self.phase = 7u8
+    }
+    Ok(())
+end std.http.ResponseDecoder.finish_head
+
+fn std.http.ResponseDecoder.has_response(self: &std.http.ResponseDecoder) -> bool uses [] panics never pub
+    self.has_head
+end std.http.ResponseDecoder.has_response
+
+fn std.http.ResponseDecoder.head_byte(self: &mut std.http.ResponseDecoder, c: u8) -> Result<(), std.http.Error> uses [alloc] panics never
+    if self.head.len() >= self.max_head {
+        return Err(std.http.Error.HeadTooLarge)
+    }
+    self.head.push(c)?
+    if std.http.ends_crlf2(self.head.as_slice()) {
+        self.finish_head()?
+    }
+    Ok(())
+end std.http.ResponseDecoder.head_byte
+
+fn std.http.ResponseDecoder.is_done(self: &std.http.ResponseDecoder) -> bool uses [] panics never pub
+    self.phase == 7u8
+end std.http.ResponseDecoder.is_done
+
+fn std.http.ResponseDecoder.new(max_head: usize, max_body: usize) -> std.http.ResponseDecoder uses [] panics never pub
+    let head = std.vec.Vec.new()
+    let body = std.vec.Vec.new()
+    let spare = std.vec.Vec.new()
+    let resp = std.http.blank_response()
+    std.http.ResponseDecoder {
+        body: body
+        body_total: 0usize
+        chunk_digits: 0usize
+        chunk_n: 0usize
+        cr: false
+        ext: false
+        has_head: false
+        head: head
+        line_len: 0usize
+        max_body: max_body
+        max_head: max_head
+        phase: 0u8
+        remaining: 0usize
+        resp: resp
+        section: 0usize
+        spare: spare
+    }
+end std.http.ResponseDecoder.new
+
+fn std.http.ResponseDecoder.push_body(self: &mut std.http.ResponseDecoder, part: &[u8]) -> Result<(), std.http.Error> uses [alloc] panics never
+    let total = self.body_total.saturating_add(part.len())
+    if total > self.max_body {
+        return Err(std.http.Error.BodyTooLarge)
+    }
+    self.body.extend_from_slice(part)?
+    self.body_total = total
+    Ok(())
+end std.http.ResponseDecoder.push_body
+
+fn std.http.ResponseDecoder.reset_next(self: &mut std.http.ResponseDecoder) -> Result<(), std.http.Error> uses [alloc] panics never pub
+    if self.phase != 7u8 {
+        return Err(std.http.Error.Truncated)
+    }
+    let mut rest = std.vec.Vec.new()
+    rest.extend_from_slice(self.spare.as_slice())?
+    self.spare.clear()
+    self.body.clear()
+    self.body_total = 0usize
+    self.head.clear()
+    self.has_head = false
+    self.resp = std.http.blank_response()
+    self.phase = 0u8
+    self.feed(rest.as_slice())
+end std.http.ResponseDecoder.reset_next
+
+fn std.http.ResponseDecoder.response(self: &std.http.ResponseDecoder) -> &std.http.Response uses [] panics never pub
+    &self.resp
+end std.http.ResponseDecoder.response
+
+fn std.http.ResponseDecoder.size_byte(self: &mut std.http.ResponseDecoder, c: u8) -> Result<(), std.http.Error> uses [] panics never
+    self.section = self.section.saturating_add(1usize)
+    if self.section > self.max_head {
+        return Err(std.http.Error.HeadTooLarge)
+    }
+    if c == b'\n' {
+        if !self.cr || self.chunk_digits == 0usize {
+            return Err(std.http.Error.BadRequest)
+        }
+        self.cr = false
+        if self.chunk_n == 0usize {
+            self.phase = 5u8
+            self.section = 0usize
+            self.line_len = 0usize
+        } else {
+            self.remaining = self.chunk_n
+            self.phase = 3u8
+        }
+        return Ok(())
+    }
+    if self.cr {
+        return Err(std.http.Error.BadRequest)
+    }
+    if c == b'\r' {
+        self.cr = true
+        return Ok(())
+    }
+    if self.ext {
+        if std.http.is_ctl(c) {
+            return Err(std.http.Error.BadRequest)
+        }
+        return Ok(())
+    }
+    if c == b';' {
+        if self.chunk_digits == 0usize {
+            return Err(std.http.Error.BadRequest)
+        }
+        self.ext = true
+        return Ok(())
+    }
+    let v = match std.http.hex_value(c) {
+        Some(d) => d
+        None => return Err(std.http.Error.BadRequest)
+    }
+    self.chunk_n = self.chunk_n.saturating_mul(16usize).saturating_add(v)
+    self.chunk_digits = self.chunk_digits.saturating_add(1usize)
+    if self.chunk_n > self.max_body {
+        return Err(std.http.Error.BodyTooLarge)
+    }
+    Ok(())
+end std.http.ResponseDecoder.size_byte
+
+fn std.http.ResponseDecoder.step(self: &mut std.http.ResponseDecoder, data: &[u8], i: usize) -> Result<usize, std.http.Error> uses [alloc] panics never
+    let phase = self.phase
+    let avail = data.len().saturating_sub(i)
+    if phase == 7u8 {
+        if self.spare.len().saturating_add(avail) > self.max_head {
+            return Err(std.http.Error.HeadTooLarge)
+        }
+        let rest = match data.sub(i, data.len()) {
+            Some(r) => r
+            None => return Err(std.http.Error.BadRequest)
+        }
+        self.spare.extend_from_slice(rest)?
+        return Ok(avail)
+    }
+    if phase == 1u8 || phase == 3u8 || phase == 6u8 {
+        let mut k = avail
+        if phase != 6u8 && self.remaining < avail {
+            k = self.remaining
+        }
+        let part = match data.sub(i, i.saturating_add(k)) {
+            Some(p) => p
+            None => return Err(std.http.Error.BadRequest)
+        }
+        self.push_body(part)?
+        if phase != 6u8 {
+            self.remaining = self.remaining.saturating_sub(k)
+        }
+        if phase == 1u8 && self.remaining == 0usize {
+            self.phase = 7u8
+        }
+        if phase == 3u8 && self.remaining == 0usize {
+            self.phase = 4u8
+            self.cr = false
+        }
+        return Ok(k)
+    }
+    let c = std.http.byte_at(data, i)
+    if phase == 0u8 {
+        self.head_byte(c)?
+    } else if phase == 2u8 {
+        self.size_byte(c)?
+    } else if phase == 4u8 {
+        self.chunk_end_byte(c)?
+    } else {
+        self.trailer_byte(c)?
+    }
+    Ok(1usize)
+end std.http.ResponseDecoder.step
+
+fn std.http.ResponseDecoder.take_body(self: &mut std.http.ResponseDecoder) -> Result<std.vec.Vec<u8>, std.http.Error> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
+    out.extend_from_slice(self.body.as_slice())?
+    self.body.clear()
+    Ok(out)
+end std.http.ResponseDecoder.take_body
+
+fn std.http.ResponseDecoder.trailer_byte(self: &mut std.http.ResponseDecoder, c: u8) -> Result<(), std.http.Error> uses [] panics never
+    self.section = self.section.saturating_add(1usize)
+    if self.section > self.max_head {
+        return Err(std.http.Error.HeadTooLarge)
+    }
+    if c == b'\n' {
+        if !self.cr {
+            return Err(std.http.Error.BadRequest)
+        }
+        self.cr = false
+        if self.line_len == 0usize {
+            self.phase = 7u8
+            return Ok(())
+        }
+        self.line_len = 0usize
+        return Ok(())
+    }
+    if self.cr {
+        return Err(std.http.Error.BadRequest)
+    }
+    if c == b'\r' {
+        self.cr = true
+        return Ok(())
+    }
+    if std.http.is_ctl(c) {
+        return Err(std.http.Error.BadRequest)
+    }
+    self.line_len = self.line_len.saturating_add(1usize)
+    Ok(())
+end std.http.ResponseDecoder.trailer_byte
+
 fn std.http.assemble(head: std.http.Head, body: std.vec.Vec<u8>) -> std.http.Request uses [] panics never
     let headers = head.headers
     let http11 = head.http11
@@ -140,6 +467,17 @@ fn std.http.assemble(head: std.http.Head, body: std.vec.Vec<u8>) -> std.http.Req
         path: path
     }
 end std.http.assemble
+
+fn std.http.blank_response() -> std.http.Response uses [] panics never
+    let headers = std.vec.Vec.new()
+    let reason = std.string.String.new()
+    std.http.Response {
+        headers: headers
+        http11: false
+        reason: reason
+        status: 0u16
+    }
+end std.http.blank_response
 
 fn std.http.byte_at(data: &[u8], i: usize) -> u8 uses [] panics never
     match data.get(i) {
@@ -222,6 +560,13 @@ fn std.http.decode_chunked(data: &[u8], max_body: usize, body: &mut std.vec.Vec<
     }
 end std.http.decode_chunked
 
+fn std.http.ends_crlf2(data: &[u8]) -> bool uses [] panics never
+    let n = data.len()
+    let first = std.http.crlf_at(data, n.saturating_sub(4usize))
+    let second = std.http.crlf_at(data, n.saturating_sub(2usize))
+    n >= 4usize && first && second
+end std.http.ends_crlf2
+
 fn std.http.find_crlf(data: &[u8], from: usize) -> Option<usize> uses [] panics never
     let len = data.len()
     let mut i = from
@@ -245,6 +590,26 @@ fn std.http.find_head_end(data: &[u8]) -> Option<usize> uses [] panics never
     }
     None
 end std.http.find_head_end
+
+fn std.http.has_bad_ctl(data: &[u8]) -> bool uses [] panics never
+    let len = data.len()
+    let mut i = 0usize
+    while i < len {
+        let b = std.http.byte_at(data, i)
+        if b == b'\r' {
+            if !std.http.crlf_at(data, i) {
+                return true
+            }
+            i = i.saturating_add(2usize)
+        } else {
+            if b == b'\n' || std.http.is_ctl(b) {
+                return true
+            }
+            i = i.saturating_add(1usize)
+        }
+    }
+    false
+end std.http.has_bad_ctl
 
 fn std.http.has_bare_ctl(data: &[u8]) -> bool uses [] panics never
     let len = data.len()
@@ -287,6 +652,10 @@ fn std.http.hex_value(c: u8) -> Option<usize> uses [] panics never
     }
     None
 end std.http.hex_value
+
+fn std.http.is_ctl(c: u8) -> bool uses [] panics never
+    c == 0u8 || c == 127u8 || c < 32u8 && c != 9u8
+end std.http.is_ctl
 
 fn std.http.is_method(text: &str) -> bool uses [] panics never
     if text.is_empty() {
@@ -421,6 +790,88 @@ fn std.http.parse_length(value: &str, max_body: usize) -> Result<usize, std.http
     }
 end std.http.parse_length
 
+fn std.http.parse_resp_length(value: &str, max_body: usize) -> Result<usize, std.http.Error> uses [] panics never
+    let bytes = value.as_bytes()
+    if bytes.is_empty() {
+        return Err(std.http.Error.BadRequest)
+    }
+    let mut n = 0usize
+    let mut i = 0usize
+    while i < bytes.len() {
+        let c = std.http.byte_at(bytes, i)
+        if c < b'0' || c > b'9' {
+            return Err(std.http.Error.BadRequest)
+        }
+        n = n.saturating_mul(10usize).saturating_add(usize.from_u8(c.wrapping_sub(b'0')))
+        if n > max_body {
+            return Err(std.http.Error.BodyTooLarge)
+        }
+        i = i.saturating_add(1usize)
+    }
+    Ok(n)
+end std.http.parse_resp_length
+
+fn std.http.parse_response_head(head: &[u8]) -> Result<std.http.Response, std.http.Error> uses [alloc] panics never
+    if std.http.has_bad_ctl(head) {
+        return Err(std.http.Error.BadRequest)
+    }
+    let text = match core.str.from_utf8(head) {
+        Ok(t) => t
+        Err(_) => return Err(std.http.Error.BadRequest)
+    }
+    let (line, rest) = match text.split_once("\r\n") {
+        Some(pair) => pair
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let (version, after) = match line.split_once(" ") {
+        Some(pair) => pair
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let mut http11 = false
+    if version == "HTTP/1.1" {
+        http11 = true
+    } else if version != "HTTP/1.0" {
+        return Err(std.http.Error.BadRequest)
+    }
+    let (code, reason_text) = match after.split_once(" ") {
+        Some(pair) => pair
+        None => (after, "")
+    }
+    let status = match std.http.status_code(code) {
+        Some(s) => s
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let mut headers = std.vec.Vec.new()
+    for field in rest.split("\r\n") {
+        if !field.is_empty() {
+            if field.starts_with(" ") || field.starts_with("\t") {
+                return Err(std.http.Error.BadRequest)
+            }
+            let (key, raw_value) = match field.split_once(":") {
+                Some(pair) => pair
+                None => return Err(std.http.Error.BadRequest)
+            }
+            if key.is_empty() || key.contains(" ") || key.contains("\t") {
+                return Err(std.http.Error.BadRequest)
+            }
+            let value = raw_value.trim()
+            let name = std.string.String.from_str(key)?
+            let text_value = std.string.String.from_str(value)?
+            headers.push(std.http.Header {
+                name: name
+                value: text_value
+            })?
+        }
+    }
+    let reason = std.string.String.from_str(reason_text)?
+    Ok(std.http.Response {
+        headers: headers
+        http11: http11
+        reason: reason
+        status: status
+    })
+end std.http.parse_response_head
+
 fn std.http.read_request[R: linear + std.io.Read<[io.net]>](source: &mut R, decoder: &mut std.http.Decoder) -> Result<Option<std.http.Request>, std.http.Error> uses [alloc, io.net] panics never pub
     loop {
         match decoder.next()? {
@@ -482,6 +933,47 @@ fn std.http.render(status: u16, head: &str, body: &[u8], keep_alive: bool) -> Re
     Ok(out)
 end std.http.render
 
+fn std.http.response_framing(resp: &std.http.Response, max_body: usize) -> Result<(u8, usize), std.http.Error> uses [] panics never
+    let mut n_len = 0usize
+    let mut n_te = 0usize
+    let mut length = 0usize
+    let mut te_chunked = false
+    for k in core.iter.range(0usize, resp.headers.len()) {
+        match resp.headers.as_slice().get(k) {
+            Some(h) => if h.name.as_str().eq_ignore_ascii_case("content-length") {
+                n_len = n_len.saturating_add(1usize)
+                length = std.http.parse_resp_length(h.value.as_str(), max_body)?
+            } else if h.name.as_str().eq_ignore_ascii_case("transfer-encoding") {
+                n_te = n_te.saturating_add(1usize)
+                te_chunked = h.value.as_str().eq_ignore_ascii_case("chunked")
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    if n_len > 1usize || n_te > 1usize {
+        return Err(std.http.Error.BadRequest)
+    }
+    if n_len == 1usize && n_te == 1usize {
+        return Err(std.http.Error.BadRequest)
+    }
+    let mut kind = 0u8
+    if n_te == 1usize {
+        if !te_chunked {
+            return Err(std.http.Error.Unsupported)
+        }
+        if !resp.http11 {
+            return Err(std.http.Error.BadRequest)
+        }
+        kind = 2u8
+    } else if n_len == 1usize {
+        kind = 1u8
+    }
+    if resp.status < 200u16 || resp.status == 204u16 || resp.status == 304u16 {
+        return Ok((3u8, 0usize))
+    }
+    Ok((kind, length))
+end std.http.response_framing
+
 fn std.http.skip_trailers(data: &[u8], from: usize) -> Result<Option<usize>, std.http.Error> uses [] panics never
     let mut pos = from
     loop {
@@ -495,6 +987,27 @@ fn std.http.skip_trailers(data: &[u8], from: usize) -> Result<Option<usize>, std
         pos = stop.saturating_add(2usize)
     }
 end std.http.skip_trailers
+
+fn std.http.status_code(text: &str) -> Option<u16> uses [] panics never
+    let b = text.as_bytes()
+    if b.len() != 3usize {
+        return None
+    }
+    let mut st = 0u16
+    let mut i = 0usize
+    while i < 3usize {
+        let c = std.http.byte_at(b, i)
+        if c < b'0' || c > b'9' {
+            return None
+        }
+        st = st.wrapping_mul(10u16).wrapping_add(u16.from_u8(c.wrapping_sub(b'0')))
+        i = i.saturating_add(1usize)
+    }
+    if st < 100u16 {
+        return None
+    }
+    Some(st)
+end std.http.status_code
 
 fn std.http.take_request(data: &[u8], max_head: usize, max_body: usize) -> Result<Option<(std.http.Request, usize)>, std.http.Error> uses [alloc] panics never
     let head_end = match std.http.find_head_end(data) {

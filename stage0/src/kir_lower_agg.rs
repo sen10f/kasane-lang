@@ -35,7 +35,7 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 
 /// Kasane の定義 (`spec/stdlib` の `type` / `enum`) を持ち、利用者の型と同じ集成体として型表に入れる標準ライブラリの型 (設計_KIR.md 12.1)。
 /// 利用者のエラー型 (`shortener.error.Error` / `http.Error` など) がペイロードや変種に持つ標準型もここに入れる (段階 2)。
-pub const STD_TYPES: [&str; 59] = ["alloc.alloc.Layout", "core.fmt.Error", "core.slice.LengthError", "std.io.Stdin", "std.io.Stdout", "std.io.Stderr", "core.fmt.Formatter", "core.hash.Fnv64", "std.http.Decoder", "std.http.Error", "std.http.Framing", "std.http.Head", "std.http.Header", "std.http.Request", "std.tls.TlsAcceptor", "std.tls.Error", "std.tls.TlsStream", "std.process.Command", "std.process.Child", "std.process.ExitStatus", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec", "std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "core.cmp.Ordering", "std.time.SystemTime", "std.time.Instant", "std.time.Duration", "std.datetime.DateTime", "std.datetime.Error", "std.log.Level", "std.net.Shutdown", "std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "core.slice.IndexError", "std.json.Doc", "std.json.Error", "std.json.Kind", "std.json.Node", "std.json.Value", "core.sync.AtomicBool", "core.sync.AtomicU64", "core.sync.AtomicUsize", "core.sync.Ordering", "std.fs.Dir"];
+pub const STD_TYPES: [&str; 61] = ["alloc.alloc.Layout", "core.fmt.Error", "core.slice.LengthError", "std.io.Stdin", "std.io.Stdout", "std.io.Stderr", "core.fmt.Formatter", "core.hash.Fnv64", "std.http.Decoder", "std.http.Error", "std.http.Framing", "std.http.Head", "std.http.Header", "std.http.Request", "std.http.Response", "std.http.ResponseDecoder", "std.tls.TlsAcceptor", "std.tls.Error", "std.tls.TlsStream", "std.process.Command", "std.process.Child", "std.process.ExitStatus", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec", "std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "core.cmp.Ordering", "std.time.SystemTime", "std.time.Instant", "std.time.Duration", "std.datetime.DateTime", "std.datetime.Error", "std.log.Level", "std.net.Shutdown", "std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "core.slice.IndexError", "std.json.Doc", "std.json.Error", "std.json.Kind", "std.json.Node", "std.json.Value", "core.sync.AtomicBool", "core.sync.AtomicU64", "core.sync.AtomicUsize", "core.sync.Ordering", "std.fs.Dir"];
 
 /// Kasane で書いた標準ライブラリの総称型 (`spec/stdlib/alloc/collections.ksnl`)。利用者の型と同じ集成体として下ろす。
 pub fn is_kasane_std_generic(name: &str) -> bool {
@@ -1805,6 +1805,8 @@ end t.main
                 "t.C" => (48, 8, vec![0, 40], vec![]),
                 "t.E" => (16, 8, vec![], vec![vec![8, 12], vec![8], vec![8, 10, 12], vec![]]),
                 "(u8,i64)" => (16, 8, vec![0, 8], vec![]),
+                // `std.http.response_framing` の結果 (枠組みの種類 `u8` と長さ `usize`)。
+                "(u8,usize)" => (16, 8, vec![0, 8], vec![]),
                 "(bool,i16,u8,i32)" => (12, 4, vec![0, 2, 4, 8], vec![]),
                 // 列挙子の番地の借用 (`Option<&T>` の `Some(E::V(..))`) が入れる 2 つのタプル。ヘッダ `vec` は 24 バイト・整列 8。
                 "(usize,usize)" => (16, 8, vec![0, 8], vec![]),
