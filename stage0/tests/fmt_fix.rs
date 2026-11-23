@@ -1112,3 +1112,71 @@ fn fix_as_cast_narrowing_left_unfixed() {
     let after = run(&["check", "--json"], &t.0);
     assert!(codes(&text(&after.stdout)).iter().any(|c| c == "E0042"), "{}", text(&after.stdout));
 }
+
+/// 100 文字を超える行の `let` への括り出し (fmt_hoist.rs)。`ksn fmt` が縮め、`check` が通り、`run` の出力が同じ。
+fn hoist_case(name: &str, body: &str) -> (String, String) {
+    let src = format!("fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n{}\n    Ok(())\nend t.main\n", body);
+    let t = Tmp::new_raw(name, &src);
+    let o = run(&["fmt"], &t.0);
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "not a fixpoint: {}\n{}", fixed, text(&o.stdout));
+    let c = run(&["check"], &t.0);
+    let out = run(&["run"], &t.0);
+    (fixed, format!("{}{}|{}", text(&c.stdout), text(&c.stderr), text(&out.stdout)))
+}
+
+#[test]
+fn fmt_hoists_leading_call_arguments_into_lets() {
+    let body = "    let b = 1000000000000u64\n    let t = b.wrapping_add(b.wrapping_add(2000000000000u64)).wrapping_add(b.wrapping_mul(3u64)).wrapping_add(b)\n    core.mem.drop(std.io.print_line(std.string.String.new().as_str()))\n    let q = t.min(b.wrapping_add(b.wrapping_mul(2u64)).wrapping_add(b.wrapping_sub(1u64))).wrapping_add(b.wrapping_mul(8u64)).wrapping_add(t)\n    core.mem.drop(q)";
+    let (fixed, outcome) = hoist_case("hoist_chain", body);
+    assert!(fixed.lines().all(|l| l.chars().count() <= 100), "{}", fixed);
+    assert!(fixed.contains("let q_a = "), "{}", fixed);
+    assert!(!outcome.contains("E0055") && !outcome.contains("error"), "{}\n{}", fixed, outcome);
+}
+
+#[test]
+fn fmt_hoists_the_left_part_of_a_condition_chain() {
+    let body = "    let c = 7u32\n    let ok = c < 1u32 || c > 2048u32 || c == 5u32 || c == 6u32 || c == 9u32 || c == 10u32 || c == 11u32 || c == 12u32\n    if ok {\n        core.mem.drop(std.io.print_line(\"big\"))\n    }";
+    let (fixed, outcome) = hoist_case("hoist_cond", body);
+    assert!(fixed.contains("let ok_a = c < 1u32 || "), "{}", fixed);
+    assert!(fixed.contains("let ok = ok_a || "), "{}", fixed);
+    assert!(!outcome.contains("E0055") && !outcome.contains("error"), "{}\n{}", fixed, outcome);
+}
+
+#[test]
+fn fmt_keeps_e0055_when_hoisting_would_change_meaning() {
+    // `&&` 混じり・`if` の枝・閉包・借用 (`&`)・一時値を借りるメソッドの引数は括り出さない。
+    let long = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    for (k, line) in [
+        format!("    let r = if c > 1u32 {{ u32.from_usize({}.len()) }} else {{ 0u32 }}", long),
+        format!("    let r = c < 1u32 || c > 2u32 && c < 3u32 || c > 4u32 && c < 5u32 || c < 6u32 && c > 7u32 || c == 800000000u32"),
+        format!("    let r = t.f(|v| v.wrapping_add({}u32), c, c)", "1000000000000000000000000000000000000000000000000000000000000000000000"),
+        format!("    let r = t.f(&c.wrapping_add({}), c)", "1u32).wrapping_add(c.wrapping_mul(7777777u32).wrapping_add(88888888u32).wrapping_add(99999999u32"),
+        format!("    let r = t.f(make().as_str().len(), {}, c)", "c.wrapping_add(1000000000u32).wrapping_add(1000000000u32).wrapping_add(1000000000u32).wrapping_add(7u32)"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let src = format!("fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let c = 1u32\n{}\n    Ok(())\nend t.main\n", line);
+        let t = Tmp::new_raw(&format!("hoist_refuse{}", k), &src);
+        let before = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+        run(&["fmt"], &t.0);
+        let after = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+        assert_eq!(before, after, "case {} must stay unchanged", k);
+        assert!(text(&run(&["check"], &t.0).stdout).contains("E0055"), "case {} keeps E0055", k);
+    }
+}
+
+#[test]
+fn fmt_hoists_leading_call_arguments_in_order() {
+    let src = "fn t.add4(a: u64, b: u64, c: u64, d: u64) -> u64 uses [] panics never\n    a.wrapping_add(b).wrapping_add(c).wrapping_add(d)\nend t.add4\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never\n    let base = 1000000000000u64\n    let total = t.add4(base.wrapping_add(2000000000000u64), base.wrapping_mul(3u64), base.wrapping_sub(4000000000000u64), 4u64)\n    let mut line = std.string.String.new()\n    core.mem.drop(line.push_u64(total))\n    std.io.print_line(line.as_str())\nend t.main\n";
+    let t = Tmp::new_raw("hoist_call", src);
+    run(&["fmt"], &t.0);
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    let (a, b, c) = (fixed.find("let base_wrapping_add = ").unwrap(), fixed.find("let base_wrapping_mul = ").unwrap(), fixed.find("let base_wrapping_sub = ").unwrap());
+    assert!(a < b && b < c && fixed.contains("t.add4(base_wrapping_add, base_wrapping_mul, base_wrapping_sub, 4u64)"), "{}", fixed);
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
+    let o = run(&["run"], &t.0);
+    assert_eq!(text(&o.stdout).trim(), "3000000000004", "{}{}", text(&o.stdout), text(&o.stderr));
+}

@@ -307,7 +307,20 @@ fn split_op<'a>(e: &'a str, op: &str) -> Option<Vec<&'a str>> {
         match cs[i] {
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth -= 1,
-            '\'' => return None,
+            '\'' => {
+                if i + 2 < cs.len() && cs[i + 1] != '\\' && cs[i + 2] == '\'' {
+                    i += 3;
+                    continue;
+                } else if i + 1 < cs.len() && cs[i + 1] == '\\' {
+                    i += 2;
+                    while i < cs.len() && cs[i] != '\'' {
+                        i += 1;
+                    }
+                    i += 1;
+                    continue;
+                }
+                return None;
+            }
             _ => {}
         }
         if depth == 0 && i + 1 < cs.len() {
@@ -334,7 +347,7 @@ fn split_op<'a>(e: &'a str, op: &str) -> Option<Vec<&'a str>> {
 fn hoist_cond(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
     let indent = line.len() - line.trim_start().len();
     let t = &line[indent..];
-    if t.contains('"') || t.contains("::<") || t.contains("=>") || t.contains('\'') {
+    if t.contains('"') || t.contains("::<") || t.contains("=>") {
         return None;
     }
     let (head, body, tail) = if let Some(b) = t.strip_prefix("if ").and_then(|r| r.strip_suffix(" {")) {
@@ -363,7 +376,12 @@ fn hoist_cond(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
             lets.push(line);
             return Some(lets);
         }
-        let name = unique("cond", &used);
+        let target = head.strip_prefix("let ").map(|h| h.trim_start_matches("mut ").split(|c| c == ':' || c == ' ').next().unwrap_or("").to_string());
+        let base = match target {
+            Some(t) if !t.is_empty() => format!("{}_{}", t, (b'a' + lets.len().min(25) as u8) as char),
+            _ => "cond".to_string(),
+        };
+        let name = unique(&base, &used);
         // 先頭から入る最長の連なり (2 項以上) を `let` にする。
         let mut m = 0;
         for k in 2..cur.len() {
@@ -463,7 +481,7 @@ pub fn hoist_long_lines(lines: &mut Vec<String>) -> bool {
     let mut i = 0;
     while i < lines.len() {
         let l = lines[i].clone();
-        if l.chars().count() > 100 {
+        if l.chars().count() > 100 && l.is_ascii() {
             let prev_ok = (0..i).rev().map(|j| lines[j].trim_end()).find(|s| !s.is_empty()).map_or(true, |p| {
                 !(p.ends_with(['(', '[', ',', '=', '+', '-', '*', '/', '.', '&', '|', '<', '>']) || p.ends_with("=>"))
             });
