@@ -813,6 +813,9 @@ impl<'a> Fc<'a> {
                     FsK::OpenAppend => 3,
                     FsK::Stat => 4,
                     FsK::ReadDir => 5,
+                    FsK::OpenDir => 6,
+                    FsK::OpenBeneath => 7,
+                    FsK::FStat => 8,
                 };
                 let at = |i: usize| -> S { args.get(i).map_or(0, |v| self.s(*v)) };
                 Ins::FsSys { d, kind: k, a: at(0), b: at(1), c: at(2) }

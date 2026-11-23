@@ -349,7 +349,7 @@ fn wasm_unsupported(ir: &str, wasi: bool) -> Option<String> {
         "std.net (ソケット) は wasm32 では未対応"
     } else if has("@ksn_rt_sys_proc_") {
         "std.process (外部コマンド) は wasm32 では未対応"
-    } else if !wasi && (has("@ksn_rt_sys_open(") || has("@ksn_rt_sys_exists(") || has("@ksn_rt_sys_remove(") || has("@ksn_rt_sys_rename(") || has("@ksn_rt_sys_stat(") || has("@ksn_rt_sys_readdir(")) {
+    } else if !wasi && (has("@ksn_rt_sys_open(") || has("@ksn_rt_sys_exists(") || has("@ksn_rt_sys_remove(") || has("@ksn_rt_sys_rename(") || has("@ksn_rt_sys_stat(") || has("@ksn_rt_sys_readdir(") || has("@ksn_rt_sys_opendir(") || has("@ksn_rt_sys_openbeneath(") || has("@ksn_rt_sys_fstat(")) {
         "std.fs (ファイル) は wasm32 では未対応"
     } else if !wasi && (has("@ksn_rt_sys_arg") || has("@ksn_rt_sys_var(")) {
         "std.env・引数 (ホストの環境) は wasm32 では未対応"
@@ -723,6 +723,9 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         cx.decls.insert("declare i64 @ksn_rt_sys_rmdir(ptr, i64, i32*)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_stat(ptr, i64, i32, i32*)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_readdir(ptr, i64, ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_opendir(ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_openbeneath(i32, ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_fstat(i32, i32, i32*)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_read(i32, ptr, i64, i32*)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_write(i32, ptr, i64, i32*)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_close(i32)".to_string());
@@ -2725,9 +2728,9 @@ impl<'a> Fe<'a> {
             }
             Op::FsSys { kind, args } => {
                 self.cx.fs = true;
-                let npaths = if matches!(kind, FsK::Rename) { 2 } else { 1 };
                 let mut pl: Vec<(String, String)> = Vec::new();
-                for a in &args[..npaths] {
+                for &ix in kind.path_slots() {
+                    let a = &args[ix];
                     let Ty::Agg(_) = self.ty(*a) else { return Err("fs のパスが fat でない".into()) };
                     let av = self.r(*a);
                     let pi = self.extract(&av, 128, 0, 64);
@@ -2742,6 +2745,15 @@ impl<'a> Fe<'a> {
                     FsK::RemoveDir => self.t(format!("call i64 @ksn_rt_sys_rmdir(ptr {}, i64 {}, ptr {})", pl[0].0, pl[0].1, ep)),
                     FsK::OpenAppend => self.t(format!("call i64 @ksn_rt_sys_open(ptr {}, i64 {}, i32 2, ptr {})", pl[0].0, pl[0].1, ep)),
                     FsK::Stat => self.t(format!("call i64 @ksn_rt_sys_stat(ptr {}, i64 {}, i32 {}, ptr {})", pl[0].0, pl[0].1, self.r(args[1]), ep)),
+                    FsK::OpenDir => self.t(format!("call i64 @ksn_rt_sys_opendir(ptr {}, i64 {}, ptr {})", pl[0].0, pl[0].1, ep)),
+                    FsK::OpenBeneath => {
+                        let dirfd = self.r(args[0]);
+                        self.t(format!("call i64 @ksn_rt_sys_openbeneath(i32 {}, ptr {}, i64 {}, ptr {})", dirfd, pl[0].0, pl[0].1, ep))
+                    }
+                    FsK::FStat => {
+                        let fd = self.r(args[0]);
+                        self.t(format!("call i64 @ksn_rt_sys_fstat(i32 {}, i32 {}, ptr {})", fd, self.r(args[1]), ep))
+                    }
                     FsK::ReadDir => {
                         let cap = self.len64(args[2]);
                         self.t(format!("call i64 @ksn_rt_sys_readdir(ptr {}, i64 {}, ptr {}, i64 {}, ptr {})", pl[0].0, pl[0].1, self.r(args[1]), cap, ep))

@@ -277,9 +277,75 @@ pub(super) fn fs_call(lw: &mut Lw, _e: &V, name: &str, args: &[V], line: usize) 
             (Op::FsSys { kind, args: vs }, rt)
         }
         "std.fs.read_to_end" => return read_to_end(lw, args, line),
+        "std.fs.open_dir_raw" | "std.fs.Dir.open" => {
+            if args.len() != 1 {
+                return lw.err(line, "std.fs.open_dir_raw の引数は 1 個のはず");
+            }
+            let dir = fs_agg_index(lw, "std.fs.Dir", line)?;
+            let Some(path) = lw.expr(&args[0])? else { return Ok(None) };
+            if lw.vty(path) != lw.fat_ty() {
+                return lw.err(line, "std.fs.open_dir_raw のパスは &str ではない");
+            }
+            (Op::FsSys { kind: FsK::OpenDir, args: vec![path] }, Ty::Res(Pay::Agg(dir), ioerr))
+        }
+        "std.fs.open_beneath_raw" => {
+            if args.len() != 2 {
+                return lw.err(line, "std.fs.open_beneath_raw の引数は 2 個のはず");
+            }
+            let Some(dv) = lw.expr(&args[0])? else { return Ok(None) };
+            let dt = lw.vty(dv);
+            if !is_dir_ty(lw, dt) {
+                return lw.err(line, "std.fs.open_beneath_raw の受け手は &std.fs.Dir のはず");
+            }
+            let dfd = fs_fd(lw, dv, dt, line)?;
+            let Some(rel) = lw.expr(&args[1])? else { return Ok(None) };
+            if lw.vty(rel) != lw.fat_ty() {
+                return lw.err(line, "std.fs.open_beneath_raw の相対パスは &str ではない");
+            }
+            (Op::FsSys { kind: FsK::OpenBeneath, args: vec![dfd, rel] }, Ty::Res(Pay::Agg(file), ioerr))
+        }
+        "std.fs.stat_fd_raw" => {
+            if args.len() != 2 {
+                return lw.err(line, "std.fs.stat_fd_raw の引数は 2 個のはず");
+            }
+            let Some(fv) = lw.expr(&args[0])? else { return Ok(None) };
+            let ft = lw.vty(fv);
+            let ffd = fs_fd(lw, fv, ft, line)?;
+            let Some(field) = lw.expr(&args[1])? else { return Ok(None) };
+            if lw.vty(field) != Ty::U32 {
+                return lw.err(line, "std.fs.stat_fd_raw の field は u32 のはず");
+            }
+            (Op::FsSys { kind: FsK::FStat, args: vec![ffd, field] }, fs_err_ty(lw, Ty::U64))
+        }
         _ => return Ok(None),
     };
     Ok(Some(lw.emit(res_ty, op)))
+}
+
+/// `std.fs.Dir` (ディレクトリの取っ手) の KIR 集成体添字。型表にまだ無ければ登録する。
+fn fs_agg_index(lw: &mut Lw, name: &str, line: usize) -> LR<u32> {
+    if let Some(i) = lw.aggs.borrow().agg_index(name) {
+        return Ok(i);
+    }
+    let segs: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
+    let Some(r) = lw.p.lookup_fqn(&segs.join(".")) else {
+        return lw.err(line, format!("{} の定義がない", name));
+    };
+    let Tgt::Type(di) = r else {
+        return lw.err(line, format!("{} が型ではない", name));
+    };
+    match lw.aggs.borrow_mut().intern_def(lw.p, di) {
+        Ok(Ty::Agg(i)) => Ok(i),
+        _ => lw.err(line, format!("{} の KIR 型表登録に失敗", name)),
+    }
+}
+
+/// 型 `rt` が `std.fs.Dir` (裸または参照) か。
+fn is_dir_ty(lw: &Lw, rt: Ty) -> bool {
+    match rt {
+        Ty::Agg(ai) | Ty::Ref(_, Pointee::Agg(ai)) => lw.aggs.borrow().defs[ai as usize].name == "std.fs.Dir",
+        _ => false,
+    }
 }
 
 /// `std.fs.File` のメソッド `close`/`flush`/`read`/`sync`/`write`。
@@ -330,6 +396,18 @@ pub(super) fn fs_method(lw: &mut Lw, _e: &V, name: &str, recv: VId, rt: Ty, args
             let (ptr, len) = fs_buf_ptr_len(lw, buf, line)?;
             (Op::FsWrite { fd, buf: ptr, len }, fs_err_ty(lw, Ty::Usize))
         }
+        "open_file_beneath" => {
+            if args.len() != 1 {
+                return lw.err(line, "open_file_beneath の引数は 1 個のはず");
+            }
+            let file = fs_agg_index(lw, "std.fs.File", line)?;
+            let Some(rel) = lw.expr(&args[0])? else { return Ok(None) };
+            if lw.vty(rel) != lw.fat_ty() {
+                return lw.err(line, "open_file_beneath の相対パスは &str ではない");
+            }
+            let ioerr = Pay::of(lw.aggs.borrow_mut().io_error(lw.p).expect("std.io.Error")).expect("ペイロード");
+            (Op::FsSys { kind: FsK::OpenBeneath, args: vec![fd, rel] }, Ty::Res(Pay::Agg(file), ioerr))
+        }
         _ => return Ok(None),
     };
     Ok(Some(lw.emit(res_ty, op)))
@@ -341,7 +419,7 @@ pub(super) fn is_fs_ty(lw: &Lw, rt: Ty) -> bool {
         Ty::Agg(ai) | Ty::Ref(_, Pointee::Agg(ai)) => {
             matches!(
                 lw.aggs.borrow().defs[ai as usize].name.as_str(),
-                "std.fs.File" | "std.io.Stdin" | "std.io.Stdout" | "std.io.Stderr"
+                "std.fs.File" | "std.fs.Dir" | "std.io.Stdin" | "std.io.Stdout" | "std.io.Stderr"
             )
         }
         _ => false,

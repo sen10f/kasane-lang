@@ -700,6 +700,12 @@ pub enum FsK {
     Stat,
     /// `read_dir(path, buf, cap)`: 名前のバイト順に整列した `[種別 1 バイト][名前][0]` の並びを `buf` (容量 `cap` バイト) へ書き、必要な総バイト数を返す (`cap` を超えたら何も書かず、呼び直す)。結果は `Result<usize, std.io.Error>`。
     ReadDir,
+    /// `open_dir(path)`: ディレクトリを読み取りで開く。結果は `Result<std.fs.Dir, std.io.Error>`。ディレクトリでなければ ENOTDIR。
+    OpenDir,
+    /// `open_beneath(dir, rel)`: `dir` (記述子 i32) の下だけを開く。`..`・絶対・どの symlink も拒む。結果は `Result<std.fs.File, std.io.Error>`。
+    OpenBeneath,
+    /// `fstat(fd, field)`: 開いている記述子の情報 (`stat` と同じ field)。リンクを辿らない。結果は `Result<u64, std.io.Error>`。
+    FStat,
 }
 
 impl FsK {
@@ -711,16 +717,38 @@ impl FsK {
             FsK::OpenAppend => "open_append",
             FsK::Stat => "stat",
             FsK::ReadDir => "read_dir",
+            FsK::OpenDir => "open_dir",
+            FsK::OpenBeneath => "open_beneath",
+            FsK::FStat => "fstat",
         }
     }
     pub fn arity(self) -> usize {
         match self {
-            FsK::Rename | FsK::Stat => 2,
-            FsK::CreateDir | FsK::RemoveDir | FsK::OpenAppend => 1,
+            FsK::Rename | FsK::Stat | FsK::OpenBeneath | FsK::FStat => 2,
+            FsK::CreateDir | FsK::RemoveDir | FsK::OpenAppend | FsK::OpenDir => 1,
             FsK::ReadDir => 3,
         }
     }
-    pub const ALL: [FsK; 6] = [FsK::Rename, FsK::CreateDir, FsK::RemoveDir, FsK::OpenAppend, FsK::Stat, FsK::ReadDir];
+    /// fat (`&str`) のパスの引数の位置。`OpenBeneath` は `args[0]` が記述子 (i32)、`args[1]` がパス。`FStat` はパスを取らない。
+    pub fn path_slots(self) -> &'static [usize] {
+        match self {
+            FsK::Rename => &[0, 1],
+            FsK::OpenBeneath => &[1],
+            FsK::FStat => &[],
+            _ => &[0],
+        }
+    }
+    pub const ALL: [FsK; 9] = [
+        FsK::Rename,
+        FsK::CreateDir,
+        FsK::RemoveDir,
+        FsK::OpenAppend,
+        FsK::Stat,
+        FsK::ReadDir,
+        FsK::OpenDir,
+        FsK::OpenBeneath,
+        FsK::FStat,
+    ];
 }
 
 /// `Op::NetSys` の種類 (`std.net` の原始操作のうち、`listen` / `connect` / `accept` / `read` / `write` / `flush` / `close` / `local_port` 以外)。
@@ -2991,21 +3019,21 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if args.len() != kind.arity() {
                             return Err(format!("fs.{} の引数は {} 個のはず", kind.name(), kind.arity()));
                         }
-                        let paths = match kind {
-                            FsK::Rename => 2,
-                            _ => 1,
-                        };
-                        for a in &args[..paths] {
-                            if ty_of(*a)? != fat_ty(m)? {
+                        for &ix in kind.path_slots() {
+                            if ty_of(args[ix])? != fat_ty(m)? {
                                 return Err(format!("fs.{} のパスは fat (&str) のはず", kind.name()));
                             }
                         }
                         let ok = match kind {
                             FsK::Rename | FsK::CreateDir | FsK::RemoveDir => matches!(i.ty, Ty::Res(Pay::Unit, e) if is_io_error(m, e.ty())),
-                            FsK::OpenAppend => matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_io_error(m, e.ty())),
+                            FsK::OpenAppend | FsK::OpenDir | FsK::OpenBeneath => matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_io_error(m, e.ty())),
                             FsK::Stat => matches!(i.ty, Ty::Res(_, e) if is_io_error(m, e.ty())) && ty_of(args[1])? == Ty::U32,
+                            FsK::FStat => matches!(i.ty, Ty::Res(_, e) if is_io_error(m, e.ty())) && ty_of(args[0])? == Ty::I32 && ty_of(args[1])? == Ty::U32,
                             FsK::ReadDir => matches!(i.ty, Ty::Res(_, e) if is_io_error(m, e.ty())),
                         };
+                        if *kind == FsK::OpenBeneath && ty_of(args[0])? != Ty::I32 {
+                            return Err("fs.open_beneath の記述子は i32 のはず".into());
+                        }
                         if !ok {
                             return Err(format!("fs.{} の結果の型が合わない", kind.name()));
                         }

@@ -28,8 +28,9 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.system_nanos", "std.time.Duration.from_millis", "std.thread.spawn", "std.thread.spawn_deep",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new", "core.sync.AtomicBool.new", "core.sync.AtomicU64.new", "core.sync.AtomicUsize.new",
     "std.task.block_on", "std.task.spawn_local", "std.task.yield_now", "std.task.await_js",
-    "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.rand.fill_secure", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
-    "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.connect_timeout", "std.net.listen", "std.net.UdpSocket.bind", "std.net.resolve_raw", "std.process.Command.new",
+    "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.rand.fill_secure", "std.fs.exists", "std.fs.remove_file", "std.fs.open", "std.fs.open_dir_raw", "std.fs.Dir.open", "std.fs.open_beneath_raw", "std.fs.stat_fd_raw",
+    "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.net.UdpSocket.bind", "std.net.resolve_raw", "std.process.Command.new",
+    "std.net.connect_timeout",
 ];
 
 const NUM_EXTRA: &[&str] = &[
@@ -872,6 +873,55 @@ impl Interp {
                     Err(e) => err(io_error(&e)),
                 })
             }
+            "std.fs.open_dir_raw" | "std.fs.Dir.open" => {
+                let path = str_of(&a0).unwrap_or_default();
+                Ok(match crate::fs_beneath::open_dir(&path) {
+                    Ok(f) => {
+                        let fd = self.next_fd;
+                        self.next_fd += 1;
+                        self.files.insert(fd, f);
+                        ok(Val::Struct(Rc::new(StructV {
+                            ty: "std.fs.Dir".into(),
+                            f: RefCell::new(vec![("descriptor".into(), int(fd, "i32"))]),
+                        })))
+                    }
+                    Err(e) => err(io_error(&e)),
+                })
+            }
+            "std.fs.open_beneath_raw" => {
+                let Some(dfd) = file_fd(&a0) else { return panic("open_beneath: not a dir") };
+                let rel = str_of(&args.get(1).cloned().unwrap_or(Val::Unit)).unwrap_or_default();
+                let r = match self.files.get(&dfd) {
+                    Some(d) => crate::fs_beneath::open_beneath(d, &rel),
+                    None => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                };
+                Ok(match r {
+                    Ok(f) => {
+                        let fd = self.next_fd;
+                        self.next_fd += 1;
+                        self.files.insert(fd, f);
+                        ok(Val::Struct(Rc::new(StructV {
+                            ty: "std.fs.File".into(),
+                            f: RefCell::new(vec![("descriptor".into(), int(fd, "i32"))]),
+                        })))
+                    }
+                    Err(e) => err(io_error(&e)),
+                })
+            }
+            "std.fs.stat_fd_raw" => {
+                let Some(fd) = file_fd(&a0) else { return panic("stat_fd: not a file") };
+                let field = match args.get(1).map(dr) {
+                    Some(Val::Int(i, _)) => i as u64,
+                    _ => 0,
+                };
+                Ok(match self.files.get(&fd) {
+                    Some(f) => match crate::fs_beneath::stat_field(f, field) {
+                        Ok(v) => ok(int(v as i128, "u64")),
+                        Err(e) => err(io_error(&e)),
+                    },
+                    None => err(io_error_kind("InvalidInput")),
+                })
+            }
             "std.fs.open" | "std.fs.create" => {
                 let path = str_of(&a0).unwrap_or_default();
                 let r = if name == "std.fs.open" {
@@ -1206,7 +1256,7 @@ impl Interp {
                 if s.ty.starts_with("std.process.") {
                     return self.process_method(s, name, &args);
                 }
-                if s.ty == "std.fs.File" {
+                if s.ty == "std.fs.File" || s.ty == "std.fs.Dir" {
                     return self.file_method(s, name, &args);
                 }
                 if s.ty == "std.alloc.System" {
@@ -1957,7 +2007,7 @@ pub(crate) fn io_error(e: &std::io::Error) -> Val {
 
 fn file_fd(v: &Val) -> Option<i128> {
     if let Val::Struct(s) = dr(v) {
-        if s.ty == "std.fs.File" {
+        if s.ty == "std.fs.File" || s.ty == "std.fs.Dir" {
             if let Some(Val::Int(fd, _)) = s.get("descriptor") {
                 return Some(fd);
             }
@@ -2164,6 +2214,25 @@ impl Interp {
                     _ => {}
                 }
                 Ok(ok(int(n as i128, "usize")))
+            }
+            "open_file_beneath" => {
+                let rel = str_of(&args.first().cloned().unwrap_or(Val::Unit)).unwrap_or_default();
+                let r = match self.files.get(&fd) {
+                    Some(d) => crate::fs_beneath::open_beneath(d, &rel),
+                    None => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                };
+                Ok(match r {
+                    Ok(f) => {
+                        let nfd = self.next_fd;
+                        self.next_fd += 1;
+                        self.files.insert(nfd, f);
+                        ok(Val::Struct(Rc::new(StructV {
+                            ty: "std.fs.File".into(),
+                            f: RefCell::new(vec![("descriptor".into(), int(nfd, "i32"))]),
+                        })))
+                    }
+                    Err(e) => err(io_error(&e)),
+                })
             }
             _ => panic(format!("no method {} on File", name)),
         }
