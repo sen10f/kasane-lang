@@ -270,7 +270,7 @@ impl ByteMem {
     fn write(&mut self, addr: i128, ty: Ty, v: i128) -> Result<(), String> {
         let n = width(&self.aggs, ty);
         let at = self.locate(addr, n)?;
-        let bytes = (v as u128).to_le_bytes();
+        let bytes = (kir_scalar::canon_bits(ty, v) as u128).to_le_bytes();
         self.mem[at..at + n].copy_from_slice(&bytes[..n]);
         self.init[at..at + n].iter_mut().for_each(|b| *b = true);
         Ok(())
@@ -498,7 +498,7 @@ pub(crate) fn write_val(buf: &mut [u8], off: usize, aggs: &[AggDef], t: Ty, v: i
         buf[off..off + src.len()].copy_from_slice(src);
     } else {
         let n = size_of(aggs, t) as usize;
-        let bytes = (v as u128).to_le_bytes();
+        let bytes = (kir_scalar::canon_bits(t, v) as u128).to_le_bytes();
         buf[off..off + n].copy_from_slice(&bytes[..n]);
     }
 }
@@ -1578,7 +1578,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 Op::FUn { f, src, a } => kir_scalar::funary(*f, *src, inst.ty, get(&stack[top], a)),
                 Op::FBin { f, a, b } => kir_scalar::fbin(*f, inst.ty, get(&stack[top], a), get(&stack[top], b)),
                 Op::Conv { src, a } => kir_scalar::conv(*src, inst.ty, get(&stack[top], a)),
-                Op::Bitcast { a, .. } => get(&stack[top], a),
+                Op::Bitcast { src, a } => kir_scalar::canon_bits(*src, get(&stack[top], a)),
                 Op::BitCount { k, src, a } => kir_scalar::bitcount(*k, *src, get(&stack[top], a)),
                 Op::Neg { a, mode } => {
                     let x = get(&stack[top], a);

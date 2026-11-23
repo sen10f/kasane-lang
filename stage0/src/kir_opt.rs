@@ -764,9 +764,9 @@ fn conv(src: Ty, dst: Ty, a: i128) -> i128 {
     crate::kir_scalar::conv(src, dst, a)
 }
 
-fn bitcast(_src: Ty, a: i128) -> i128 {
-    // ビット列をそのまま使う。型は同じ幅なので値は不変。
-    a
+fn bitcast(src: Ty, a: i128) -> i128 {
+    // ビット列をそのまま使う (型は同じ幅)。浮動小数の NaN だけは見える所なので正規化する (設計_KIR.md 17.8)。
+    crate::kir_scalar::canon_bits(src, a)
 }
 
 fn not_val(ty: Ty, x: i128) -> i128 {

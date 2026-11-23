@@ -23,6 +23,15 @@ pub fn from_f64(ty: Ty, x: f64) -> i128 {
     }
 }
 
+/// ビットが見える所 (`to_bits`・メモリへの書き出し・FFI) で、NaN を正の quiet NaN にそろえる。NaN 以外と整数は変えない (17.8)。
+pub fn canon_bits(ty: Ty, bits: i128) -> i128 {
+    match ty {
+        Ty::F32 if f32::from_bits(bits as u32).is_nan() => 0x7FC0_0000,
+        Ty::F64 if f64::from_bits(bits as u64).is_nan() => 0x7FF8_0000_0000_0000,
+        _ => bits,
+    }
+}
+
 /// 浮動小数の `+ - * /`。`f32` は `f32` のまま計算する。`f64` の `/` は 0 除算を木走査 (`binary`) と同じ規則で扱う。
 pub fn farith(op: Aop, ty: Ty, x: i128, y: i128) -> i128 {
     if ty == Ty::F32 {
