@@ -427,6 +427,20 @@ fn full_check_opts(root: &Path, rep: &mut Report, run_mode: bool, take_std: bool
 fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
     let grammar = Grammar::new();
     check_lock(&l.pkg, &l.deps, rep);
+    // 本体の無い `fn` (ヘッダの直後に `end`): `ksn check --signatures-only` だけが本体なしの宣言として受ける。`ksn build` / `run` / `test` は E0067 で止める。
+    // `ksn check` (フラグの無い) は従来どおり: 本体が空の `-> ()` の関数は正しい無動作の関数なので通す (既存の試験の入力もこれに頼る)。
+    let sigs_only = SIGNATURES_ONLY.with(|c| c.get());
+    let check_cmd = CHECK_CMD.with(|c| c.get());
+    for s in l.pkg.sources.iter_mut().chain(l.deps.iter_mut().flat_map(|d| d.sources.iter_mut())) {
+        let is_root = s.path.starts_with(&*norm(&l.pkg.root).to_string());
+        for d in s.defs.iter_mut().filter(|d| d.header_only) {
+            if sigs_only && is_root {
+                d.body = None;
+            } else if !check_cmd {
+                rep.add("E0067", &format!("`{}` has no body: write the body (a header-only definition is only checked by `ksn check --signatures-only`)", d.name), Some(&rel(&s.path)), d.line, 1, true);
+            }
+        }
+    }
     // ``[`FQN`]`` のリンクは読み込んだ全定義に解決しなければならない (3.2、E1125)。
     {
         let known = crate::doclink::Known::of_loaded(&l);
@@ -583,7 +597,9 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         if use_cache {
             crate::check_cache::store(&s.path, &relpath, &memo);
         }
-        for (code, ln, msg) in fc.lint {
+        // 本体の無い定義 (`--signatures-only`) の未使用の引数は本体が無いので数えない (E1020 を出さない)。
+        let headless: Vec<usize> = if sigs_only { s.defs.iter().filter(|d| d.header_only).map(|d| d.line).collect() } else { vec![] };
+        for (code, ln, msg) in fc.lint.into_iter().filter(|(c, ln, _)| !(c == "unused" && headless.contains(ln))) {
             // `order` (E0020) も致命 (書き方は 1 通り。`ksn fmt` が直せるものは skip の分岐で 1 件にまとめる)。
             let fatal = !(run_mode && code == "unused");
             rep.add(lint_code(&code), &msg, Some(&fl), ln, 0, fatal);
@@ -1240,6 +1256,13 @@ fn target_bits_arg(args: &[String]) -> Result<u32, String> {
             Err(format!("ksn: E9040: unsupported target `{}` (supported: {})", name, names.join(", ")))
         }
     }
+}
+
+thread_local! {
+    /// `ksn check --signatures-only` のとき。本体の無い `fn` (E0067 の対象) を本体なしの宣言として検査する。
+    static SIGNATURES_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// `ksn check` から来た検査のとき。build / run / test は本体の無い `fn` を E0067 で止める。
+    static CHECK_CMD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `Package::source` の印。標準ライブラリ (`spec/stdlib`) を 1 つのパッケージとして検査するときに使う。
@@ -4819,6 +4842,9 @@ pub fn main_cli(args: Vec<String>) -> i32 {
     let tail = rest.split_off(cut);
     rest.retain(|a| a != "--no-strict-types" && a != "--strict-types");
     rest.extend(tail);
+    if args[0] == "check" {
+        CHECK_CMD.with(|c| c.set(true));
+    }
     match args[0].as_str() {
         "new" => match rest.first() {
             Some(n) => cmd_new(n),
@@ -4828,6 +4854,11 @@ pub fn main_cli(args: Vec<String>) -> i32 {
             }
         },
         "check" => match target_bits_arg(&rest) {
+            _ if rest.iter().any(|a| a == "--signatures-only") => {
+                SIGNATURES_ONLY.with(|c| c.set(true));
+                let _width = crate::ptrwidth::Guard::set(target_bits_arg(&rest).unwrap_or(64));
+                cmd_check(rest.iter().any(|a| a == "--json"))
+            }
             // `--target wasm32-unknown-unknown` は `usize` / `isize` の幅を 32 ビットにして検査する (リテラルの範囲、修正プラン 4-2)。
             Ok(bits) => {
                 let _width = crate::ptrwidth::Guard::set(bits);

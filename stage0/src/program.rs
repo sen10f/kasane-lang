@@ -42,6 +42,8 @@ pub struct Def {
     /// `type` / `enum` のフィールド・バリアントのうち、参照のライフタイムを省略したものの名前 (4.1 / E3020)。
     pub elided_refs: Vec<String>,
     pub body: Option<V>,
+    /// 本体の無い `fn` (ヘッダの直後に `end` が来る形)。`ksn check --signatures-only` でだけ本体なしの宣言として扱う (E0067 が他で止める)。
+    pub header_only: bool,
     pub init: Option<V>,
     pub has_impls: bool,
     /// `impls <トレイト>` のトレイト名 (基底。`has_impls` のときだけ意味を持つ)。
@@ -493,6 +495,9 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 d.name = l.to_string();
             }
             _ => {}
+        }
+        if sp.kw == "fn" && !sig {
+            d.header_only = body_lines.is_empty();
         }
         if (sp.kw == "fn" && !sig) || sp.kw == "test" {
             let body = body_lines.join("\n") + "\n";

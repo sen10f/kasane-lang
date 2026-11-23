@@ -732,6 +732,13 @@ impl<'a> Checker<'a> {
             let d = self.def(i);
             match d.kw.as_str() {
                 "fn" if d.body.is_some() => self.check_fn_sema(i, false),
+                // 本体の無い `fn` (`--signatures-only` の宣言): 本体に依る検査は飛ばし、シグネチャの型・境界だけ見る。
+                "fn" => {
+                    let mut tys: Vec<V> = d.params.iter().map(|p| p.1.clone()).collect();
+                    tys.push(d.ret.clone());
+                    tys.extend(d.generics.iter().map(|g| g.2.clone()));
+                    self.check_header_types(i, &tys);
+                }
                 "test" => self.check_fn_sema(i, true),
                 "const" | "static" => {
                     self.check_header_types(i, &[d.ret.clone()]);
