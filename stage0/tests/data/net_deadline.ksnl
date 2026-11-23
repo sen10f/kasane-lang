@@ -1,0 +1,160 @@
+fn t.flag(b: bool) -> i64 uses [] panics never
+    if b {
+        1i64
+    } else {
+        0i64
+    }
+end t.flag
+
+fn t.kind_num(k: std.io.ErrorKind) -> i64 uses [] panics never
+    match k {
+        std.io.ErrorKind.NotFound => 1i64
+        std.io.ErrorKind.PermissionDenied => 2i64
+        std.io.ErrorKind.AlreadyExists => 3i64
+        std.io.ErrorKind.InvalidInput => 4i64
+        std.io.ErrorKind.UnexpectedEof => 5i64
+        std.io.ErrorKind.BrokenPipe => 6i64
+        std.io.ErrorKind.Interrupted => 7i64
+        std.io.ErrorKind.OutOfMemory => 8i64
+        std.io.ErrorKind.TimedOut => 9i64
+        std.io.ErrorKind.Other => 10i64
+    }
+end t.kind_num
+
+fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics never
+    let mut s = std.string.String.new()
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": "))
+    core.mem.drop(s.push_i64(n))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show
+
+fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panics never
+    let mut s = std.string.String.new()
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": kind "))
+    core.mem.drop(s.push_i64(t.kind_num(e.kind)))
+    core.mem.drop(s.push_str(" code "))
+    core.mem.drop(s.push_i64(i64.from_i32(e.code)))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show_err
+
+fn t.show_net_err(label: &str, e: std.net.Error) -> () uses [alloc, io.console] panics never
+    let mut s = std.string.String.new()
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": net code "))
+    core.mem.drop(s.push_i64(i64.from_i32(e.code)))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show_net_err
+
+fn t.main() -> () uses [alloc, env, io.console, io.net] panics never
+    match std.env.var("KSN_DL_PORT") {
+        Some(p) => t.slow_server(p)
+        None => t.checks()
+    }
+end t.main
+
+fn t.slow_server(port: &str) -> () uses [alloc, io.console, io.net] panics never
+    let mut addr = std.string.String.new()
+    core.mem.drop(addr.push_str("127.0.0.1:"))
+    core.mem.drop(addr.push_str(port))
+    match std.net.listen(addr.as_str()) {
+        Ok(l) => {
+            match l.accept() {
+                Ok(s) => t.trickle_read(s)
+                Err(e) => t.show_net_err("accept", e)
+            }
+            core.mem.drop(l.close())
+        }
+        Err(e) => t.show_net_err("listen", e)
+    }
+end t.slow_server
+
+fn t.trickle_read(s0: std.net.TcpStream) -> () uses [alloc, io.console, io.net] panics never
+    let mut s = s0
+    match s.set_read_deadline(300u64) {
+        Ok(_u) => t.show("deadline set", 1i64)
+        Err(e) => t.show_err("set_read_deadline", e)
+    }
+    let mut got = 0i64
+    let mut going = true
+    let mut buf = [0u8; 1]
+    while going {
+        match s.read(&mut buf) {
+            Ok(n) => {
+                if n == 0usize {
+                    going = false
+                    t.show("eof", 1i64)
+                } else {
+                    got = got.wrapping_add(1i64)
+                }
+            }
+            Err(e) => {
+                going = false
+                t.show_err("read deadline", e)
+            }
+        }
+    }
+    t.show("bytes before deadline", got)
+    core.mem.drop(s.close())
+end t.trickle_read
+
+fn t.checks() -> () uses [alloc, io.console, io.net] panics never
+    match std.net.connect_timeout("127.0.0.1:1", 500u64) {
+        Ok(c) => {
+            core.mem.drop(c.close())
+            t.show("closed port connected", 1i64)
+        }
+        Err(e) => t.show_net_err("closed port refused", e)
+    }
+    match std.net.connect_timeout("10.255.255.1:9", 200u64) {
+        Ok(c) => {
+            core.mem.drop(c.close())
+            t.show("unroutable connected", 1i64)
+        }
+        Err(_e) => t.show("unroutable failed", 1i64)
+    }
+    match std.net.listen("127.0.0.1:0") {
+        Ok(l) => {
+            match l.accept_timeout(150u64) {
+                Ok(s) => {
+                    core.mem.drop(s.close())
+                    t.show("accept timeout connected", 1i64)
+                }
+                Err(e) => t.show_net_err("accept timeout", e)
+            }
+            match l.local_port() {
+                Ok(port) => {
+                    let mut addr = std.string.String.new()
+                    core.mem.drop(addr.push_str("127.0.0.1:"))
+                    core.mem.drop(addr.push_u64(u64.from_u16(port)))
+                    match std.net.connect(addr.as_str()) {
+                        Ok(c) => {
+                            t.pair_options(c)
+                        }
+                        Err(e) => t.show_net_err("connect", e)
+                    }
+                }
+                Err(e) => t.show_net_err("local_port", e)
+            }
+            core.mem.drop(l.close())
+        }
+        Err(e) => t.show_net_err("listen", e)
+    }
+end t.checks
+
+fn t.pair_options(c: std.net.TcpStream) -> () uses [alloc, io.console, io.net] panics never
+    match c.set_nodelay(true) {
+        Ok(_u) => t.show("nodelay ok", 1i64)
+        Err(e) => t.show_err("set_nodelay", e)
+    }
+    match c.set_write_deadline(1000u64) {
+        Ok(_u) => t.show("write deadline ok", 1i64)
+        Err(e) => t.show_err("set_write_deadline", e)
+    }
+    match c.clear_deadlines() {
+        Ok(_u) => t.show("clear deadlines ok", 1i64)
+        Err(e) => t.show_err("clear_deadlines", e)
+    }
+    core.mem.drop(c.close())
+end t.pair_options

@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use std::time::{Duration, Instant};
 
 use crate::interp::{py_float, py_float32};
 use crate::natives::io_kind_name;
@@ -538,6 +539,81 @@ pub(crate) fn io_error_value(aggs: &[AggDef], heap: &mut Vec<Vec<u8>>, kind: &st
 
 /// `{ descriptor: i32 }` のソケット集成体を置き場に作り、その添字を返す。
 /// `std.net.Error` (`{ code: i32 }`、4 バイト) の値。`code` は errno (取れなければ -1。木走査の `net_error` と同じ)。
+/// 期限切れの OS 番号 (sysrt.c の `ETIMEDOUT` と同じ値。macOS は 60、それ以外の Unix は 110)。
+#[cfg(target_os = "macos")]
+const ETIMEDOUT_CODE: i32 = 60;
+#[cfg(all(unix, not(target_os = "macos")))]
+const ETIMEDOUT_CODE: i32 = 110;
+#[cfg(not(unix))]
+const ETIMEDOUT_CODE: i32 = 10060;
+
+/// 期限つきの読み (`write_side` = false) か書き。`at` が無ければそのまま `f`。期限を過ぎていれば TimedOut。
+/// 期限の中では、残りの時間を socket のタイムアウトに入れて待つ (待ちきれなければ TimedOut に直す)。
+pub(crate) fn dl_call<T>(
+    s: &mut TcpStream,
+    at: Option<Instant>,
+    write_side: bool,
+    f: impl FnOnce(&mut TcpStream) -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let Some(at) = at else { return f(s) };
+    let now = Instant::now();
+    if now >= at {
+        return Err(std::io::Error::from_raw_os_error(ETIMEDOUT_CODE));
+    }
+    if write_side {
+        s.set_write_timeout(Some(at - now))?;
+    } else {
+        s.set_read_timeout(Some(at - now))?;
+    }
+    f(s).map_err(|e| {
+        if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) {
+            std::io::Error::from_raw_os_error(ETIMEDOUT_CODE)
+        } else {
+            e
+        }
+    })
+}
+
+/// 期限つきの受理: 非ブロッキングで待ち、期限までに来なければ ETIMEDOUT。
+pub(crate) fn accept_until(l: &TcpListener, ms: u64) -> std::io::Result<TcpStream> {
+    let end = Instant::now() + Duration::from_millis(ms);
+    l.set_nonblocking(true)?;
+    let out = loop {
+        match l.accept() {
+            Ok((st, _)) => {
+                st.set_nonblocking(false)?;
+                break Ok(st);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= end {
+                    break Err(std::io::Error::from_raw_os_error(ETIMEDOUT_CODE));
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(e) => break Err(e),
+        }
+    };
+    l.set_nonblocking(false)?;
+    out
+}
+
+/// 期限つきの接続: 候補を順に試し、全体の期限内に繋がらなければ ETIMEDOUT。
+pub(crate) fn connect_until(addr: &str, ms: u64) -> std::io::Result<TcpStream> {
+    let end = Instant::now() + Duration::from_millis(ms);
+    let mut last = std::io::Error::from_raw_os_error(ETIMEDOUT_CODE);
+    for a in addr.to_socket_addrs()? {
+        let now = Instant::now();
+        if now >= end {
+            break;
+        }
+        match TcpStream::connect_timeout(&a, end - now) {
+            Ok(s) => return Ok(s),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
 pub(crate) fn net_error_agg(heap: &mut Vec<Vec<u8>>, code: i32) -> Result<i128, String> {
     heap.push(code.to_le_bytes().to_vec());
     Ok((heap.len() - 1) as i128)
@@ -794,6 +870,8 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     let mut globals: HashMap<String, i128> = HashMap::new();
     // ソケット表 (記述子 -> ホストのソケット)。リスナとストリームは同じ番号空間を使う。
     let mut sockets: HashMap<i128, NetSock> = HashMap::new();
+    // 期限 (`set_read_deadline` / `set_write_deadline`) の絶対時刻。fd ごとに読みと書き。
+    let mut deadlines: HashMap<i128, (Option<Instant>, Option<Instant>)> = HashMap::new();
     let mut files: HashMap<i128, File> = HashMap::new();
     let mut next_fd: i128 = 0;
     let mut stack = vec![enter(entry, args, None, 0, 0)];
@@ -936,13 +1014,18 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         get(&stack[top], buf),
                         get(&stack[top], len),
                     );
+                    let at = deadlines.get(&fd).and_then(|d| d.0);
                     let Some(NetSock::Stream(s)) = sockets.get_mut(&fd) else {
                         return Err(format!("読み出しできるのはストリームソケットだけ: {}", fd));
                     };
                     let mut vec = vec![0u8; n as usize];
-                    let nr = s.read(&mut vec).map_err(|e| format!("read: {e}"))?;
-                    bm.write_bytes(p, &vec[..nr])?;
-                    nr as i128
+                    match dl_call(s, at, false, |s| s.read(&mut vec)) {
+                        Ok(nr) => {
+                            bm.write_bytes(p, &vec[..nr])?;
+                            nr as i128
+                        }
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    }
                 }
                 Op::NetWrite { sock, buf, len } => {
                     let (fd, p, n) = (
@@ -950,12 +1033,15 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         get(&stack[top], buf),
                         get(&stack[top], len),
                     );
+                    let at = deadlines.get(&fd).and_then(|d| d.1);
                     let Some(NetSock::Stream(s)) = sockets.get_mut(&fd) else {
                         return Err(format!("書き込みできるのはストリームソケットだけ: {}", fd));
                     };
                     let bytes = bm.read_bytes(p, n as usize)?;
-                    s.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
-                    n
+                    match dl_call(s, at, true, |s| s.write_all(&bytes)) {
+                        Ok(()) => n,
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    }
                 }
                 Op::NetFlush { sock } => {
                     let fd = get(&stack[top], sock);
@@ -1000,6 +1086,65 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                             match r {
                                 Ok(()) => 0,
                                 Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                            }
+                        }
+                        NetK::ReadDeadline | NetK::WriteDeadline => {
+                            let ms = a(1) as u64;
+                            let at = Instant::now() + Duration::from_millis(ms);
+                            if !sockets.contains_key(&a(0)) {
+                                TAG_BIT | io_error_value(&m.aggs, &mut heap, "InvalidInput", 0)?
+                            } else {
+                                let d = deadlines.entry(a(0)).or_insert((None, None));
+                                if matches!(kind, NetK::ReadDeadline) {
+                                    d.0 = Some(at);
+                                } else {
+                                    d.1 = Some(at);
+                                }
+                                0
+                            }
+                        }
+                        NetK::ClearDeadlines => {
+                            deadlines.remove(&a(0));
+                            0
+                        }
+                        NetK::SetNoDelay => {
+                            let r = match sockets.get(&a(0)) {
+                                Some(NetSock::Stream(s)) => s.set_nodelay(a(1) != 0),
+                                _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                            };
+                            match r {
+                                Ok(()) => 0,
+                                Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                            }
+                        }
+                        NetK::AcceptTimeout => {
+                            let ms = a(1) as u64;
+                            let r = match sockets.get(&a(0)) {
+                                Some(NetSock::Listener(l)) => accept_until(l, ms),
+                                _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                            };
+                            match r {
+                                Ok(st) => {
+                                    let nfd = alloc_next_fd(&mut next_fd);
+                                    sockets.insert(nfd, NetSock::Stream(st));
+                                    desc_agg(&mut heap, nfd)?
+                                }
+                                Err(e) => TAG_BIT | net_error_agg(&mut heap, e.raw_os_error().unwrap_or(-1))?,
+                            }
+                        }
+                        NetK::ConnectTimeout => {
+                            let h = a(0) as usize;
+                            let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
+                            let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
+                            let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+                            let s = std::str::from_utf8(&bytes).unwrap_or("");
+                            match connect_until(s, a(1) as u64) {
+                                Ok(sock) => {
+                                    let fd = alloc_next_fd(&mut next_fd);
+                                    sockets.insert(fd, NetSock::Stream(sock));
+                                    desc_agg(&mut heap, fd)?
+                                }
+                                Err(e) => TAG_BIT | net_error_agg(&mut heap, e.raw_os_error().unwrap_or(-1))?,
                             }
                         }
                         NetK::Shutdown => {

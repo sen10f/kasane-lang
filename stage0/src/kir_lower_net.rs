@@ -152,6 +152,49 @@ pub(super) fn net_method(lw: &mut Lw, _e: &V, name: &str, recv: VId, rt: Ty, arg
             let res_ty = net_err_ty(lw, Ty::Unit);
             return Ok(Some(lw.emit(res_ty, Op::NetSys { kind, args: vec![fd, ms] })));
         }
+        // 期限つき (`ReadDeadline` など): 引数は ms (u64) か、nodelay の bool。
+        "set_read_deadline" | "set_write_deadline" => {
+            if args.len() != 1 {
+                return lw.err(line, format!("{} の引数は 1 個のはず", name));
+            }
+            let Some(ms) = lw.expr(&args[0])? else { return Ok(None) };
+            if lw.vty(ms) != Ty::U64 {
+                return lw.err(line, format!("{} の引数は u64 のはず", name));
+            }
+            let kind = if name == "set_read_deadline" { NetK::ReadDeadline } else { NetK::WriteDeadline };
+            let res_ty = net_err_ty(lw, Ty::Unit);
+            return Ok(Some(lw.emit(res_ty, Op::NetSys { kind, args: vec![fd, ms] })));
+        }
+        "clear_deadlines" => {
+            if !args.is_empty() {
+                return lw.err(line, "clear_deadlines の引数は 0 個のはず");
+            }
+            let res_ty = net_err_ty(lw, Ty::Unit);
+            return Ok(Some(lw.emit(res_ty, Op::NetSys { kind: NetK::ClearDeadlines, args: vec![fd] })));
+        }
+        "set_nodelay" => {
+            if args.len() != 1 {
+                return lw.err(line, "set_nodelay の引数は 1 個のはず");
+            }
+            let Some(on) = lw.expr(&args[0])? else { return Ok(None) };
+            if lw.vty(on) != Ty::Bool {
+                return lw.err(line, "set_nodelay の引数は bool のはず");
+            }
+            let res_ty = net_err_ty(lw, Ty::Unit);
+            return Ok(Some(lw.emit(res_ty, Op::NetSys { kind: NetK::SetNoDelay, args: vec![fd, on] })));
+        }
+        "accept_timeout" => {
+            if args.len() != 1 {
+                return lw.err(line, "accept_timeout の引数は 1 個のはず");
+            }
+            let Some(ms) = lw.expr(&args[0])? else { return Ok(None) };
+            if lw.vty(ms) != Ty::U64 {
+                return lw.err(line, "accept_timeout の引数は u64 のはず");
+            }
+            let agg = lw.aggs.borrow().agg_index("std.net.TcpStream").expect("std.net.TcpStream が型表にない");
+            let res_ty = net_sock_err_ty(lw, Pay::Agg(agg));
+            return Ok(Some(lw.emit(res_ty, Op::NetSys { kind: NetK::AcceptTimeout, args: vec![fd, ms] })));
+        }
         "shutdown" => {
             if args.len() != 1 {
                 return lw.err(line, "shutdown の引数は 1 個のはず");
@@ -216,6 +259,22 @@ pub(super) fn net_method(lw: &mut Lw, _e: &V, name: &str, recv: VId, rt: Ty, arg
 pub(super) fn net_free_call(lw: &mut Lw, e: &V, name: &str, line: usize) -> LR<Option<VId>> {
     let f = nf(e);
     let args = items(&f[1]);
+    if name == "std.net.connect_timeout" {
+        if args.len() != 2 {
+            return lw.err(line, "std.net.connect_timeout の引数は 2 個のはず");
+        }
+        let Some(addr) = lw.expr(&args[0])? else { return Ok(None) };
+        if lw.vty(addr) != lw.fat_ty() {
+            return lw.err(line, "std.net.connect_timeout のアドレスは &str ではない");
+        }
+        let Some(ms) = lw.expr(&args[1])? else { return Ok(None) };
+        if lw.vty(ms) != Ty::U64 {
+            return lw.err(line, "std.net.connect_timeout の期限は u64 ではない");
+        }
+        let agg = lw.aggs.borrow().agg_index("std.net.TcpStream").expect("std.net.TcpStream が型表にない");
+        let res_ty = net_sock_err_ty(lw, Pay::Agg(agg));
+        return Ok(Some(lw.emit(res_ty, Op::NetSys { kind: NetK::ConnectTimeout, args: vec![addr, ms] })));
+    }
     if name == "std.net.UdpSocket.bind" {
         if args.len() != 1 {
             return lw.err(line, "std.net.UdpSocket.bind の引数は 1 個のはず");

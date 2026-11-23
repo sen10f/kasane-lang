@@ -2482,15 +2482,21 @@ impl<'a> Fe<'a> {
                 let r = self.t(format!("call i64 @ksn.net_accept(i32 {})", self.r(*sock)));
                 self.net_result(&d, &r, true)?;
             }
-            Op::NetRead { sock, buf, len } => {
+            Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => {
+                // 期限を見る読み書き (sysrt.c の `ksn_rt_sys_net_rw`)。失敗は std.io.Error の受け口へ。
                 self.cx.net = true;
-                let r = self.t(format!("call i64 @ksn.net_read(i32 {}, ptr {}, i64 {})", self.r(*sock), self.r(*buf), self.r(*len)));
-                self.net_result(&d, &r, false)?;
-            }
-            Op::NetWrite { sock, buf, len } => {
-                self.cx.net = true;
-                let r = self.t(format!("call i64 @ksn.net_write(i32 {}, ptr {}, i64 {})", self.r(*sock), self.r(*buf), self.r(*len)));
-                self.net_result(&d, &r, false)?;
+                let write_side = if matches!(i.op, Op::NetWrite { .. }) { 1 } else { 0 };
+                self.decl("declare i64 @ksn_rt_sys_net_rw(i32, i32, ptr, i64, ptr)".to_string());
+                let ep = self.fs_err_slot();
+                let r = self.t(format!(
+                    "call i64 @ksn_rt_sys_net_rw(i32 {}, i32 {}, ptr {}, i64 {}, ptr {})",
+                    self.r(*sock),
+                    write_side,
+                    self.r(*buf),
+                    self.r(*len),
+                    ep
+                ));
+                self.fs_result(&d, &r, &ep);
             }
             Op::NetFlush { sock } => {
                 self.cx.net = true;
@@ -2517,6 +2523,39 @@ impl<'a> Fe<'a> {
                         let ep = self.fs_err_slot();
                         let r = self.t(format!("call i64 @ksn_rt_sys_net_timeout(i32 {}, i32 {}, i64 {}, ptr {})", self.r(args[0]), write_side, self.r(args[1]), ep));
                         self.fs_result(&d, &r, &ep);
+                    }
+                    NetK::ReadDeadline | NetK::WriteDeadline => {
+                        let write_side = if matches!(kind, NetK::WriteDeadline) { 1 } else { 0 };
+                        self.decl("declare i64 @ksn_rt_sys_net_deadline(i32, i32, i64, ptr)".to_string());
+                        let ep = self.fs_err_slot();
+                        let r = self.t(format!("call i64 @ksn_rt_sys_net_deadline(i32 {}, i32 {}, i64 {}, ptr {})", self.r(args[0]), write_side, self.r(args[1]), ep));
+                        self.fs_result(&d, &r, &ep);
+                    }
+                    NetK::ClearDeadlines => {
+                        self.decl("declare i64 @ksn_rt_sys_net_clear_deadlines(i32, ptr)".to_string());
+                        let ep = self.fs_err_slot();
+                        let r = self.t(format!("call i64 @ksn_rt_sys_net_clear_deadlines(i32 {}, ptr {})", self.r(args[0]), ep));
+                        self.fs_result(&d, &r, &ep);
+                    }
+                    NetK::SetNoDelay => {
+                        let on = self.t(format!("zext i1 {} to i32", self.r(args[1])));
+                        self.decl("declare i64 @ksn_rt_sys_net_nodelay(i32, i32, ptr)".to_string());
+                        let ep = self.fs_err_slot();
+                        let r = self.t(format!("call i64 @ksn_rt_sys_net_nodelay(i32 {}, i32 {}, ptr {})", self.r(args[0]), on, ep));
+                        self.fs_result(&d, &r, &ep);
+                    }
+                    NetK::AcceptTimeout => {
+                        self.decl("declare i64 @ksn_rt_sys_accept_timeout(i32, i64, ptr)".to_string());
+                        let ep = self.fs_err_slot();
+                        let r = self.t(format!("call i64 @ksn_rt_sys_accept_timeout(i32 {}, i64 {}, ptr {})", self.r(args[0]), self.r(args[1]), ep));
+                        self.net_err_result(&d, &r, &ep);
+                    }
+                    NetK::ConnectTimeout => {
+                        let (p, n) = self.fat_parts(args[0])?;
+                        self.decl("declare i64 @ksn_rt_sys_connect_timeout(ptr, i64, i64, ptr)".to_string());
+                        let ep = self.fs_err_slot();
+                        let r = self.t(format!("call i64 @ksn_rt_sys_connect_timeout(ptr {}, i64 {}, i64 {}, ptr {})", p, n, self.r(args[1]), ep));
+                        self.net_err_result(&d, &r, &ep);
                     }
                     NetK::Shutdown => {
                         self.decl("declare i64 @ksn_rt_sys_net_shutdown(i32, i32, ptr)".to_string());
