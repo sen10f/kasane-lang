@@ -1,0 +1,20 @@
+trait t.Job[E: uses, P: panics] pub
+    fn run(self: &Self) -> u32 uses [E] panics P
+end t.Job
+
+type t.W pub
+    n: u32
+end t.W
+
+impl t.Job<[io.console], never> for t.W
+fn t.W.run(self: &t.W) -> u32 uses [io.console] panics never impls t.Job<[io.console], never>
+    core.mem.drop(std.io.print_line("LEAK"))
+    self.n
+end t.W.run
+
+fn t.later(o: &Option<std.boxed.Box<dyn t.Job<[io.console], never> + 'static>>) -> u32 uses [] panics never
+    match o {
+        Some(j) => j.run()
+        None => 0u32
+    }
+end t.later
