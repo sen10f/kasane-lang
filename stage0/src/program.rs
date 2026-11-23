@@ -443,6 +443,10 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                         t.line += sp.line - 1;
                     }
                     p = Parser::new(toks);
+                    // `pub` は閉じの行 (`} pub`) にある。公開の判定は見出しの字面で行うので、見出しの末尾に写す。
+                    if ends_with_pub(l) {
+                        d.header.push_str(" pub");
+                    }
                 }
                 p.i = 1;
                 d.name = p.fqn()?;
