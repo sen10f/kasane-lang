@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use crate::parser::V;
 use crate::program::Def;
 
-const MAGIC: &[u8; 8] = b"KSNSTD03";
+const MAGIC: &[u8; 8] = b"KSNSTD04";
 
 fn dir() -> std::path::PathBuf {
     crate::project::cache_dir().join("std")
@@ -126,8 +126,9 @@ impl W {
         let Def {
             kw, name, line, end_line, file: _, module: _, header, generics, params, ret, is_const, uses, inferred, panics, stack, depth,
             derive, linear, layout_c, fields, field_lifetimes, variants, elided_refs, body, init, has_impls, impls_trait, methods, trait_sigs,
-            trait_effs, requires, generic_methods, trait_method_generics, trait_sig_text, impl_trait, link, impl_for, impl_targs,
+            trait_effs, requires, generic_methods, trait_method_generics, trait_sig_text, impl_trait, link, impl_for, impl_targs, header_only,
         } = d;
+        self.b(*header_only);
         self.s(kw);
         self.s(name);
         self.n(*line as u64);
@@ -361,6 +362,7 @@ impl<'a> Rd<'a> {
         let generics = (0..n).map(|_| Some((self.s()?, self.s()?, self.v()?))).collect::<O<Vec<_>>>()?;
         let params = self.params()?;
         let ret = self.v()?;
+        let header_only = self.b()?;
         let is_const = self.b()?;
         let uses = self.strs()?;
         let inferred = self.b()?;
@@ -411,6 +413,7 @@ impl<'a> Rd<'a> {
         let impl_for = self.v()?;
         let impl_targs = self.v()?;
         Some(Def {
+            header_only,
             kw,
             name,
             line,
