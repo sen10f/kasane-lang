@@ -31,7 +31,7 @@ end t.main
 #[test]
 fn unlowerable_use_is_warned_in_check_as_non_fatal() {
     let t = Tmp::new_raw("native_warn_check", SLEEP);
-    let o = run(&["check", "--json"], &t.0);
+    let o = run(&["check", "--json", "--native"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "警告は致命でない: {}", out);
     assert!(out.contains("\"code\": \"W9040\"") && out.contains("\"fatal\": false"), "{}", out);
@@ -43,7 +43,7 @@ fn unlowerable_use_is_warned_in_check_as_non_fatal() {
 #[test]
 fn warning_is_printed_in_human_format_with_non_fatal_marker() {
     let t = Tmp::new_raw("native_warn_human", SLEEP);
-    let o = run(&["check"], &t.0);
+    let o = run(&["check", "--native"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}", out);
     assert!(out.contains("W9040 (non-fatal):"), "{}", out);
@@ -52,10 +52,22 @@ fn warning_is_printed_in_human_format_with_non_fatal_marker() {
 #[test]
 fn lowerable_program_gets_no_warning() {
     let t = Tmp::new_raw("native_warn_ok", LOWERABLE);
-    let o = run(&["check", "--json"], &t.0);
+    let o = run(&["check", "--json", "--native"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}", out);
     assert!(!out.contains("W9040"), "下ろせる形に警告が出た: {}", out);
+}
+
+#[test]
+fn plain_check_gives_no_w9040() {
+    // 通常の `ksn check` は W9040 を出さない (`--native` のときだけ)。下ろせない形でも、出力は変わらない。
+    for (name, src) in [("native_warn_plain_sleep", SLEEP), ("native_warn_plain_ok", LOWERABLE)] {
+        let t = Tmp::new_raw(name, src);
+        let o = run(&["check", "--json"], &t.0);
+        let out = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{}", out);
+        assert!(!out.contains("W9040"), "通常の check に W9040 が出た: {}", out);
+    }
 }
 
 #[test]

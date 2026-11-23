@@ -1237,6 +1237,11 @@ fn native_lowering_warnings(rep: &mut Report, prog: Option<&Program>, user: &[us
 }
 
 fn cmd_check(json: bool) -> i32 {
+    cmd_check_opts(json, false)
+}
+
+/// `ksn check [--native]`: `native` のとき、ネイティブに下ろせない形を非致命の警告 (W9040) で出す。
+fn cmd_check_opts(json: bool, native: bool) -> i32 {
     let mut rep = Report::new(json);
     let bc_mode = std::env::var("KSN_BORROWCK").ok().or_else(|| std::env::args().find_map(|a| a.strip_prefix("--borrowck=").map(String::from))).unwrap_or_default();
     let kir_only = bc_mode == "kir-only";
@@ -1245,7 +1250,9 @@ fn cmd_check(json: bool) -> i32 {
     match find_root().and_then(|r| {
         full_check(&r, &mut rep, false).map(|(_, prog, user)| {
             crate::kir_lower::dump_hidden(prog.as_ref(), &user);
-            native_lowering_warnings(&mut rep, prog.as_ref(), &user);
+            if native {
+                native_lowering_warnings(&mut rep, prog.as_ref(), &user);
+            }
             if kir_bc {
                 kir_borrowck_hidden(&mut rep, prog.as_ref(), &user, kir_own, kir_only);
             } else if bc_mode != "ast" {
@@ -4865,7 +4872,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
             // `--target wasm32-unknown-unknown` は `usize` / `isize` の幅を 32 ビットにして検査する (リテラルの範囲、修正プラン 4-2)。
             Ok(bits) => {
                 let _width = crate::ptrwidth::Guard::set(bits);
-                cmd_check(rest.iter().any(|a| a == "--json"))
+                cmd_check_opts(rest.iter().any(|a| a == "--json"), rest.iter().any(|a| a == "--native"))
             }
             Err(why) => {
                 eprintln!("{}", why);
