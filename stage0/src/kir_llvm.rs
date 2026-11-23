@@ -295,6 +295,8 @@ const PANICS: [(&str, &str); 8] = [
 ];
 
 struct Ctx {
+    /// 呼び出しの輪に入らず、輪に入る関数も呼ばない関数 (「純粋域」) と、その呼び出し鎖の高さ (自分を含む)。深さの記録 (入口の検査と加算) を省き、呼び出し側が高さ分を先に検査する。
+    pure_h: HashMap<String, u64>,
     decls: BTreeSet<String>,
     globals: String,
     math: BTreeSet<Math>,
@@ -606,7 +608,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     } else {
         crate::kir_cabi::Arch::X86_64
     };
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int, arch };
+    let mut cx = Ctx { pure_h: pure_region(m, entry), decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int, arch };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -791,6 +793,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             "define private void @ksn.panic.index({sz} %len, {sz} %ix) noreturn cold {{\n{widen}  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.index, i64 {a}, i64 {b})\n  call void @exit(i32 101)\n  unreachable\n}}\n\n"
         ));
     }
+    out.push_str("define internal void @ksn.chk(i64 %d, i64 %h) alwaysinline {\n  %m = load i64, ptr @ksn.dmax\n  %e = add i64 %d, %h\n  %o = icmp uge i64 %e, %m\n  br i1 %o, label %so, label %ok\nso:\n  call void @ksn.overflow()\n  unreachable\nok:\n  ret void\n}\n");
     out.push_str("define private void @ksn.overflow() noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.so)\n  call void @exit(i32 102)\n  unreachable\n}\n");
     if cx.fmt_float {
         out.push_str(&fmt_float_helpers());
@@ -1104,6 +1107,78 @@ fn kasane_base_inst(key: &str) -> bool {
     key.starts_with("alloc.string.String.") || key.starts_with("alloc.vec.Vec.")
 }
 
+/// 呼び出しの輪に入らず、輪に入る関数・FFI・関数のアドレスも使わない関数 (純粋域) → 自分を含む鎖の高さ。
+/// 入口・wasm の公開関数・`ksn.` の補助・`extern`・`fnptr` の対象は含めない。
+fn pure_region(m: &Module, entry: &str) -> HashMap<String, u64> {
+    let idx: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
+    let mut taken: BTreeSet<&str> = BTreeSet::new();
+    for f in &m.funcs {
+        for b in &f.blocks {
+            for i in &b.insts {
+                if let Op::FnPtr { callee } = &i.op {
+                    taken.insert(callee.as_str());
+                }
+            }
+        }
+    }
+    // 状態: 0 = 未訪問、1 = 訪問中、2 = 済み。高さ None = 純粋でない。
+    fn go(m: &Module, idx: &HashMap<&str, usize>, taken: &BTreeSet<&str>, entry: &str, k: usize, st: &mut Vec<u8>, h: &mut Vec<Option<u64>>) -> Option<u64> {
+        if st[k] == 2 {
+            return h[k];
+        }
+        if st[k] == 1 {
+            return None;
+        }
+        st[k] = 1;
+        let f = &m.funcs[k];
+        let mut ok = f.key != entry && f.link.is_none() && !f.key.starts_with("ksn.") && wasm_export_name(&f.key).is_none() && !taken.contains(f.key.as_str()) && !kasane_base_inst(&f.key);
+        let mut hh = 0u64;
+        if ok {
+            'o: for b in &f.blocks {
+                for i in &b.insts {
+                    match &i.op {
+                        Op::FnPtr { .. } => {
+                            ok = false;
+                            break 'o;
+                        }
+                        Op::Call { callee, .. } => {
+                            let Some(&c) = idx.get(callee.as_str()) else {
+                                ok = false;
+                                break 'o;
+                            };
+                            let cf = &m.funcs[c];
+                            if cf.link.is_some() {
+                                continue;
+                            }
+                            if kasane_base_inst(&cf.key) {
+                                continue;
+                            }
+                            match go(m, idx, taken, entry, c, st, h) {
+                                Some(x) => hh = hh.max(x),
+                                None => {
+                                    ok = false;
+                                    break 'o;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        st[k] = 2;
+        h[k] = if ok { Some(hh + 1) } else { None };
+        h[k]
+    }
+    let n = m.funcs.len();
+    let mut st = vec![0u8; n];
+    let mut h: Vec<Option<u64>> = vec![None; n];
+    for k in 0..n {
+        go(m, &idx, &taken, entry, k, &mut st, &mut h);
+    }
+    m.funcs.iter().enumerate().filter_map(|(k, f)| h[k].map(|x| (f.key.clone(), x))).collect()
+}
+
 /// IR が C の実行時補助を要するか。
 pub fn needs_runtime(ll: &str) -> bool {
     ll.contains("@ksn_w_") || ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int") || ll.contains("@ksn_rt_sys_") || ll.contains("@ksn_ext_resolve")
@@ -1336,6 +1411,7 @@ struct Fe<'a> {
     extern_dl: &'a HashMap<String, (String, String)>,
     /// 全関数 (`Op::Fnptr` の呼び先の型を引くため)。
     funcs: &'a [Func],
+    bare_fn: bool,
     fi: usize,
     tys: HashMap<VId, Ty>,
     /// 定数と unit の値 (命令を作らずに、使う側へ直接書く)。
@@ -1349,7 +1425,7 @@ struct Fe<'a> {
 
 impl<'a> Fe<'a> {
     fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, extern_dl: &'a HashMap<String, (String, String)>, funcs: &'a [Func], fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, extern_links, extern_dl, funcs, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
+        Fe { cx, aggs, f, extern_links, extern_dl, funcs, bare_fn: false, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -2281,6 +2357,11 @@ impl<'a> Fe<'a> {
                         self.line(format!("{} = call {} {}({})", d, rt, target, a.join(", ")));
                     }
                 } else {
+                    if !self.bare_fn {
+                        if let Some(h) = self.cx.pure_h.get(callee.as_str()).copied() {
+                            self.line(format!("call void @ksn.chk(i64 %depth1, i64 {})", h - 1));
+                        }
+                    }
                     self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
                 }
             }
@@ -3058,7 +3139,9 @@ impl<'a> Fe<'a> {
         }
         let mut hoisted = String::new();
         // Kasane の基本メソッドの単相インスタンス (下の先頭と戻りで深さの記録を省く)。
-        let bare = kasane_base_inst(&f.key);
+        let pure_f = self.cx.pure_h.contains_key(&f.key);
+        let bare = kasane_base_inst(&f.key) || pure_f;
+        self.bare_fn = bare;
         let mut texts: Vec<String> = vec![String::new(); f.blocks.len()];
         for (k, b) in f.blocks.iter().enumerate() {
             if !reach[k] {
@@ -3137,7 +3220,7 @@ impl<'a> Fe<'a> {
         // Kasane で書いた基本メソッド (`alloc/vec.ksnl` / `alloc/string.ksnl` の単相インスタンス) は、組み込みの下ろしと同じく呼び出しを残さない。
         // 再帰せず、呼び先も有界なので、呼び出しの深さの記録 (`ksn.depth`) を省いて、LLVM が展開できるようにする
         // (組み込みは呼び出しなしで展開されていたので、深さの記録の分だけ遅くなるのを防ぐ。深さの上限の検査は呼び出し側が行う)。
-        let inline = if bare { "alwaysinline " } else { "" };
+        let inline = if kasane_base_inst(&f.key) { "alwaysinline " } else { "" };
         // wasm32 で公開する関数は外部リンケージの `define` にして、`wasm-export-name` で export の名前を決める (WASM ABI)。
         let (head, exp) = match wasm_export_name(&f.key) {
             Some(n) => ("define", format!(" \"wasm-export-name\"=\"{}\"", n)),
