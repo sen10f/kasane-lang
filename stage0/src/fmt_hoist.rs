@@ -613,59 +613,13 @@ fn hoist_chain(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
     }
 }
 
-/// 文字列リテラルを同じ長さの名前 (`Q<番号>___`) に置き換える (括弧と区切りの走査で文字列の中を見ないため)。
-/// 戻りは (置き換えた行, 元の文字列の並び)。長さが足りなくて名前にできない文字列があれば None。
-fn mask_strings(line: &str) -> Option<(String, Vec<String>)> {
-    let cs: Vec<char> = line.chars().collect();
-    let (mut out, mut strs) = (String::new(), vec![]);
-    let mut i = 0;
-    while i < cs.len() {
-        if cs[i] == '\'' && i + 2 < cs.len() && cs[i + 1] != '\\' && cs[i + 2] == '\'' {
-            out.extend(&cs[i..i + 3]);
-            i += 3;
-        } else if cs[i] == '"' {
-            let mut j = i + 1;
-            while j < cs.len() && cs[j] != '"' {
-                j += if cs[j] == '\\' { 2 } else { 1 };
-            }
-            if j >= cs.len() {
-                return None;
-            }
-            let len = j - i + 1;
-            let name = format!("Q{}", strs.len());
-            if name.len() > len {
-                return None;
-            }
-            out.push_str(&name);
-            out.extend(std::iter::repeat('_').take(len - name.len()));
-            strs.push(cs[i..=j].iter().collect());
-            i = j + 1;
-        } else {
-            out.push(cs[i]);
-            i += 1;
-        }
-    }
-    Some((out, strs))
-}
-
-fn unmask(line: &str, strs: &[String]) -> String {
-    let mut out = line.to_string();
-    for (k, s) in strs.iter().enumerate().rev() {
-        let name = format!("Q{}", k);
-        // `Q<k>` の後ろの `_` の並びごと戻す (元の長さ - 名前の長さ だけ)。
-        let pad = s.chars().count() - name.len();
-        out = out.replace(&format!("{}{}", name, "_".repeat(pad)), s);
-    }
-    out
-}
-
 pub fn hoist_long_lines(lines: &mut Vec<String>) -> bool {
     let mut changed = false;
     let mut i = 0;
     while i < lines.len() {
         let l = lines[i].clone();
-        let masked = if l.chars().count() > 100 { mask_strings(&l) } else { None };
-        if let Some((l, strs)) = masked.filter(|(m, _)| m.is_ascii()) {
+        // 文字列を含む行は事前検査が E0055 の対象にしない (整った正しいファイルを触らない)。
+        if l.chars().count() > 100 && l.is_ascii() && !l.contains('"') {
             let prev_ok = (0..i).rev().map(|j| lines[j].trim_end()).find(|s| !s.is_empty()).map_or(true, |p| {
                 !(p.ends_with(['(', '[', ',', '=', '+', '-', '*', '/', '.', '&', '|', '<', '>']) || p.ends_with("=>"))
             });
@@ -674,7 +628,6 @@ pub fn hoist_long_lines(lines: &mut Vec<String>) -> bool {
                 let stop = (i..lines.len()).find(|&j| lines[j].starts_with("end ")).unwrap_or(lines.len() - 1);
                 let used = idents(&lines[start..=stop].join("\n"));
                 if let Some(new) = hoist_line(&l, &used) {
-                    let new: Vec<String> = new.iter().map(|x| unmask(x, &strs)).collect();
                     let n = new.len();
                     changed = true;
                     lines.splice(i..=i, new);
@@ -756,11 +709,7 @@ mod tests {
     use super::*;
 
     fn h(l: &str) -> Option<Vec<String>> {
-        let mut lines = vec![l.to_string()];
-        let used = HashSet::new();
-        let (m, strs) = mask_strings(l)?;
-        let _ = &mut lines;
-        hoist_line(&m, &used).map(|v| v.iter().map(|x| unmask(x, &strs)).collect())
+        hoist_line(l, &HashSet::new())
     }
 
     #[test]
