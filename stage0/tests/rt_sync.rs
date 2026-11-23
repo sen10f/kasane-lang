@@ -49,6 +49,12 @@ fn rt_sync_mutex_counts_exactly_under_contention() {
     same_output("mutex", "mutex ok\n");
 }
 
+/// 16 スレッド x 20 万回の増分が Mutex の下でちょうど 320 万になる (待ちは Mutex 自身の語の futex)。
+#[test]
+fn rt_sync_mutex_stress_16_threads_exact_total() {
+    same_output("mutex_stress", "mutex stress ok\n");
+}
+
 #[test]
 fn rt_sync_static_atomics_lower_and_count_exactly() {
     same_output("static_atomic", "atomic ok\n");
@@ -92,6 +98,33 @@ fn rt_sync_same_thread_relock_is_a_deadlock_101_everywhere() {
         let p = if p.exists() { p } else { p.with_extension("") };
         let r = Command::new(&p).output().unwrap();
         assert_eq!(r.status.code(), Some(101), "release={}: {}", release, text(&r.stderr));
+        assert!(text(&r.stderr).contains(msg), "{}", text(&r.stderr));
+        let _ = fs::remove_dir_all(&cache);
+    }
+}
+
+/// 待ちが何本もいる中での再ロックも deadlock (101、同じ文言)。ネイティブ (debug / release)。
+#[test]
+fn rt_sync_contended_relock_is_a_deadlock_101_native() {
+    if cfg!(windows) {
+        return;
+    }
+    let src = fs::read_to_string(root().join("stage0").join("tests").join("data").join("rt_sync").join("relock_contended.ksnl")).unwrap();
+    let t = Tmp::new("rt_sync_relock_contended", &src);
+    let msg = "panic: deadlock: lock() on a Mutex that another thread holds";
+    for release in [false, true] {
+        let cache = scratch::Scratch::at(format!("ksn_cache_rt_sync_relock2_{}_{}", std::process::id(), release));
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
+        if release {
+            c.args(["--release", "--allow-bundle"]);
+        }
+        let o = c.output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+        let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t.native");
+        let p = if p.exists() { p } else { p.with_extension("") };
+        let r = Command::new(&p).output().unwrap();
+        assert_eq!(r.status.code(), Some(101), "release={}: {}{}", release, text(&r.stdout), text(&r.stderr));
         assert!(text(&r.stderr).contains(msg), "{}", text(&r.stderr));
         let _ = fs::remove_dir_all(&cache);
     }
