@@ -6,14 +6,16 @@ mod common;
 
 use common::{run, run_with_env, text, Tmp};
 
-/// `ksn fmt` の出力と同じ形の入力 (E0020 にならないように、そのまま書く)。`std.thread.sleep` は KIR に下ろせない。
-const SLEEP: &str = "fn t.main() -> Result<(), std.io.Error> uses [thread, time] panics never
-    t.nap()
+/// `ksn fmt` の出力と同じ形の入力 (E0020 にならないように、そのまま書く)。連鎖した `std.io.stdout().flush()` は、
+/// 今の下ろしが段階 1 の対象外として拒む (メソッドの連鎖の受け手)。`std.thread.sleep` は下ろせるようになったので使わない。
+const SLEEP: &str = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    t.nap()?
     Ok(())
 end t.main
 
-fn t.nap() -> () uses [thread, time] panics never
-    std.thread.sleep(1u64)
+fn t.nap() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.stdout().flush()?
+    Ok(())
 end t.nap
 ";
 
@@ -35,8 +37,8 @@ fn unlowerable_use_is_warned_in_check_as_non_fatal() {
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "警告は致命でない: {}", out);
     assert!(out.contains("\"code\": \"W9040\"") && out.contains("\"fatal\": false"), "{}", out);
-    assert!(out.contains("std.thread.sleep") && out.contains("t.nap"), "理由と関数が出る: {}", out);
-    // 使う所 (`std.thread.sleep` の行 = 7 行目) を指す。
+    assert!(out.contains("flush") && out.contains("t.nap"), "理由と関数が出る: {}", out);
+    // 使う所 (`flush` の行 = 7 行目) を指す。
     assert!(out.contains("\"line\": 7"), "{}", out);
 }
 
@@ -78,6 +80,6 @@ fn release_build_list_has_no_rt_panic_noise() {
     let err = text(&o.stderr) + &text(&o.stdout);
     let _ = std::fs::remove_dir_all(&cache);
     assert_ne!(o.status.code(), Some(0), "{}", err);
-    assert!(err.contains("E9040") && err.contains("std.thread.sleep"), "{}", err);
+    assert!(err.contains("E9040") && err.contains("flush"), "{}", err);
     assert!(!err.contains("rt_panic"), "E9040 の一覧に無関係な rt_panic が出た: {}", err);
 }
