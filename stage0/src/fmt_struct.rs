@@ -113,24 +113,25 @@ fn opens_literal(t: &str) -> bool {
 
 /// 旧い形の複数行 (欄の末尾の `,`) から `,` を落とす。
 fn strip_field_commas(lines: &mut [String]) {
-    let mut stack: Vec<usize> = vec![];
+    let mut stack: Vec<(usize, bool)> = vec![];
     for l in lines.iter_mut() {
         let t = l.trim().to_string();
         if t.is_empty() || t.starts_with("//") {
             continue;
         }
         let ind = indent_of(l);
-        while let Some(&top) = stack.last() {
+        while let Some(&(top, _)) = stack.last() {
             if ind < top + 4 && !(ind == top && t.starts_with('}')) {
                 stack.pop();
             } else {
                 break;
             }
         }
-        if let Some(&top) = stack.last() {
+        if let Some(&(top, is_field)) = stack.last() {
             if ind == top && t.starts_with('}') {
                 stack.pop();
-                if t.ends_with(',') && !t.contains("=>") {
+                // 欄の値の構造体リテラルを閉じる `},` だけ `,` を落とす (呼び出しの引数の `},` は引数の区切り)。
+                if is_field && t.ends_with(',') && !t.contains("=>") {
                     *l = l.trim_end().trim_end_matches(',').to_string();
                 }
                 continue;
@@ -143,7 +144,8 @@ fn strip_field_commas(lines: &mut [String]) {
             }
         }
         if t.ends_with('{') && !t.starts_with('}') && opens_literal(&t) {
-            stack.push(ind);
+            let is_field = lex(&t).map_or(false, |k| k.len() > 2 && k[0].kind == "ident" && is_op(&k[1], ":"));
+            stack.push((ind, is_field));
         }
     }
 }
@@ -158,4 +160,51 @@ pub fn canon(lines: &mut Vec<String>) -> bool {
     }
     *lines = out;
     *lines != before
+}
+
+/// 解析用: 複数行の構造体リテラル / パターンを旧い 1 行の形 (`T { a: x, b: y }`) に畳む。
+/// 正規形を行ごとの正規表現で読む補助 (`lint.rs` の束縛・未使用の判定) が、欄の並びを 1 行で見られるようにする。
+pub fn fold(text: &str) -> String {
+    let lines: Vec<String> = text.split('\n').map(String::from).collect();
+    fold_lines(&lines).join("\n")
+}
+
+fn fold_lines(lines: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut i = 0;
+    while i < lines.len() {
+        let l = &lines[i];
+        let t = l.trim().to_string();
+        if t.ends_with('{') && !t.starts_with('}') && opens_literal(&t) {
+            let ind = indent_of(l);
+            if let Some(off) = lines[i + 1..].iter().position(|x| indent_of(x) == ind && x.trim_start().starts_with('}')) {
+                let j = i + 1 + off;
+                let inner = fold_lines(&lines[i + 1..j]);
+                let mut fields: Vec<String> = vec![];
+                for x in &inner {
+                    let xt = x.trim();
+                    if xt.is_empty() {
+                        continue;
+                    }
+                    let starts_field = indent_of(x) == ind + 4
+                        && xt.split_once(':').map_or(false, |(a, _)| !a.is_empty() && a.chars().all(|c| c.is_alphanumeric() || c == '_'));
+                    if starts_field || fields.is_empty() {
+                        fields.push(xt.to_string());
+                    } else {
+                        let last = fields.last_mut().unwrap();
+                        if !(last.ends_with('(') || last.ends_with('[') || xt.starts_with(')') || xt.starts_with(']') || xt.starts_with('.')) {
+                            last.push(' ');
+                        }
+                        last.push_str(xt);
+                    }
+                }
+                out.push(format!("{}{} {} {}", " ".repeat(ind), t, fields.join(", "), lines[j].trim()));
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(l.clone());
+        i += 1;
+    }
+    out
 }

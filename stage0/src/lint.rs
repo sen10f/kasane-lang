@@ -1027,7 +1027,7 @@ impl Lint {
         // それらは空白に置き換えてから走査・カウントする。
         // (`'` は Kasane でバイトリテラル `b'X'` やライフタイム `'static` にも使われるため、
         //  strip 対象から外している。)
-        let body = strip_literals_and_comments(&it.body.join("\n"));
+        let body = strip_literals_and_comments(&crate::fmt_struct::fold(&it.body.join("\n")));
         // 束縛の場所 (`let` / `if let` / `while let` / `for` / `with` / クロージャの引数) は、パターンの
         // 文字列を取り出して `pattern_binds` へ渡す一か所で集める。`match` の腕は、腕ごとの範囲で数えるので
         // `names_one` が同じ `pattern_binds` で集める。
