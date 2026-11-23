@@ -1,0 +1,32 @@
+trait t.Job[E: uses, P: panics] pub
+    fn run(self: &Self) -> u32 uses [E] panics P
+end t.Job
+
+type t.Slot pub
+    job: std.boxed.Box<dyn t.Job<[io.console], never> + 'static>
+end t.Slot
+
+type t.W pub
+    n: u32
+end t.W
+
+impl t.Job<[io.console], never> for t.W
+fn t.W.run(self: &t.W) -> u32 uses [io.console] panics never impls t.Job<[io.console], never>
+    core.mem.drop(std.io.print_line("LEAK"))
+    self.n
+end t.W.run
+
+fn t.later(s: &t.Slot) -> u32 uses [] panics never
+    s.job.run()
+end t.later
+
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let b = alloc.boxed.Box.new(std.alloc.SYSTEM, t.W {
+        n: 1u32
+    })?
+    let s = t.Slot {
+        job: alloc.boxed.Box.into_dyn(b)
+    }
+    core.mem.drop(t.later(&s))
+    Ok(())
+end t.main

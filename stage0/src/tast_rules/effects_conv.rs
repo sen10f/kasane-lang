@@ -394,6 +394,26 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
             }
         });
         super::impl_sig::walk(&b.body, &mut |e| {
+            for c in &e.conv {
+                if let crate::tast::Coercion::Unsize { from, to } = c {
+                    ck.walk(to, from, e.line);
+                }
+            }
+            let is_into_dyn = match &e.kind {
+                TKind::Call { callee, .. } => match &callee.kind {
+                    TKind::Path(s) => s.len() >= 2 && s.last().map_or(false, |x| x == "into_dyn"),
+                    _ => false,
+                },
+                TKind::MCall { name, .. } => name == "into_dyn",
+                _ => false,
+            };
+            let is_into_dyn = is_into_dyn && match &e.res {
+                Some(Callee::Def(ci)) => p.defs[*ci].name == "alloc.boxed.Box.into_dyn",
+                _ => true,
+            };
+            if is_into_dyn {
+                ck.into_dyn(&e.targs, e.line);
+            }
             match &e.kind {
                 TKind::Block(ss) => {
                     for st in ss {
@@ -419,10 +439,6 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                         }
                     }
                 }
-                TKind::Call { callee, .. } if matches!(&callee.kind, TKind::Path(s) if s.last().map_or(false, |x| x == "into_dyn") && s.len() == 2) && !matches!(e.res, Some(Callee::Def(_))) => {
-                    ck.into_dyn(&e.targs, e.line);
-                }
-                TKind::MCall { name, .. } if name == "into_dyn" && !matches!(e.res, Some(Callee::Def(_))) => ck.into_dyn(&e.targs, e.line),
                 TKind::Call { callee, args } if matches!(e.res, Some(Callee::Local(_))) => {
                     // 関数値・閉包の呼び出し: 実引数は、その型の仮引数の型 (関数型なら効果つき) に入る。
                     let Some(Callee::Local(n)) = &e.res else { return };

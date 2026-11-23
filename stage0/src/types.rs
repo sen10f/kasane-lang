@@ -5346,7 +5346,7 @@ impl<'a> TypeCk<'a> {
             self.arg_static = arg_stat;
             // `x.m(..)` の経路形の呼び先ノードに、受け手の型を載せる (KIR が トレイト側の impl (3.2) を引くため)。
             let cid = crate::parser::nid(callee);
-            if segs.len() == 2 && cid != 0 && !self.p.trait_side.is_empty() {
+            if cid != 0 && (segs.len() > 2 || !self.p.trait_side.is_empty()) {
                 self.expr_pending.insert(cid, ("RecvPath".to_string(), nline(callee), t.clone()));
             }
             let pos = nline(callee);
