@@ -32,51 +32,7 @@ pub fn long_line_msg(line: &str) -> String {
     if let Some(h) = crate::fmt_hoist::suggest(line) {
         m.push_str(&format!("; e.g. {}", h));
     }
-    if has_struct_literal(&line.chars().collect::<Vec<char>>()) {
-        m.push_str("; struct literals are one line: bind field values with `let` first, or shorten the field and variable names");
-    }
     m
-}
-
-/// 行の中に `Name { field: value, .. }` の形の構造体リテラルがあるか (字だけの簡易判定)。
-/// `{` の直前の名前が大文字で始まり、対応する `}` までの同深さに `:` があれば構造体リテラルとする。
-/// ブロック (`if cond {`・`else {`・`=> {`) は直前が小文字の語・記号なので、ここでは構造体リテラルと見ない。
-fn has_struct_literal(cs: &[char]) -> bool {
-    for (i, c) in cs.iter().enumerate() {
-        if *c != '{' {
-            continue;
-        }
-        let mut j = i;
-        while j > 0 && (cs[j - 1] == ' ') {
-            j -= 1;
-        }
-        let mut k = j;
-        while k > 0 && (cs[k - 1].is_alphanumeric() || cs[k - 1] == '_') {
-            k -= 1;
-        }
-        if k >= j || !cs[k].is_ascii_uppercase() {
-            continue;
-        }
-        let mut depth = 0usize;
-        let mut colon = false;
-        for d in cs.iter().skip(i) {
-            match d {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                ':' if depth == 1 => colon = true,
-                _ => {}
-            }
-        }
-        if colon {
-            return true;
-        }
-    }
-    false
 }
 
 /// match の腕の末尾の `,` (E0049) を行をまたぐ括弧の深さで追う (`scan` が 1 行ずつ渡す)。
@@ -404,20 +360,6 @@ pub fn scan(text: &str) -> Vec<Hit> {
                     ),
                 });
                 break;
-            }
-        }
-        // 構造体リテラルを複数行に折り返している: `bench.Stack {` で行が終わる。
-        if t.ends_with('{') && !t.trim_start().starts_with('}') && !matches!(first, "if" | "while" | "for" | "loop" | "match" | "else" | "fn" | "impl" | "trait" | "enum" | "type" | "unsafe" | "with") {
-            let before = t[..t.len() - 1].trim_end();
-            let last = before.rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
-            if last.chars().next().map_or(false, |c| c.is_uppercase()) {
-                hits.push(Hit {
-                    code: "E0053",
-                    line: ln,
-                    col: t.chars().count(),
-                    msg: "Kasane struct literals must be on ONE line (they cannot wrap): bind each field to a variable first, then write `bench.Stack { items: items }`"
-                        .into(),
-                });
             }
         }
         // `type X (a: T)` / `enum X (A, B)`: 本体は 1 行ずつインデントして書く。

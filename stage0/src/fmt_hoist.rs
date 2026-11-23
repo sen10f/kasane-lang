@@ -204,7 +204,6 @@ fn unique(base: &str, used: &HashSet<String>) -> String {
 fn hoist_line(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
     hoist_cond(line, used)
         .or_else(|| hoist_call(line, used))
-        .or_else(|| hoist_struct(line, used))
         .or_else(|| hoist_array(line, used))
         .or_else(|| hoist_match(line, used))
         .or_else(|| hoist_chain(line, used))
@@ -297,41 +296,6 @@ fn hoist_items(
         }
     }
     None
-}
-
-/// 構造体リテラル `let x = Path { f: a, g: b }` の欄の値。欄は書いた順に、構築より先に評価される。
-fn hoist_struct(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
-    let indent = line.len() - line.trim_start().len();
-    let t = &line[indent..];
-    if t.contains('"') || t.contains("=>") || t.contains(';') {
-        return None;
-    }
-    let first = t.split(|c| c == ' ' || c == '(' || c == '[').next().unwrap_or("");
-    if HEADER_KW.contains(&first) {
-        return None;
-    }
-    let (head, rhs) = split_head(t)?;
-    let open = rhs.find(" { ")?;
-    let path = &rhs[..open];
-    let last = path.rsplit('.').next()?;
-    if path.is_empty() || !path.chars().all(|c| is_id(c) || c == '.') || !last.chars().next()?.is_ascii_uppercase() {
-        return None;
-    }
-    let inner = rhs[open + 3..].strip_suffix(" }")?;
-    if inner.contains('{') || inner.contains('}') {
-        return None;
-    }
-    let fields = split_args(&inner.chars().collect::<Vec<_>>())?;
-    let mut items = vec![];
-    for f in &fields {
-        let (n, e) = f.split_once(": ")?;
-        if !n.chars().all(is_id) {
-            return None;
-        }
-        items.push((format!("{}: ", n), e.trim().to_string()));
-    }
-    let namer = |label: &str, _: &str| format!("{}_v", label.trim_end_matches(": "));
-    hoist_items(indent, head, &format!("{} {{ ", path), &items, " }", "", used, &namer)
 }
 
 /// 配列リテラル `[a, b, c]` の要素 (書いた順に評価される)。

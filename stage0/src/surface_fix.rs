@@ -1,5 +1,5 @@
 //! `ksn fix` の前段: 構文として読めないファイルでも当てられる、生の文面の書き換え。
-//! Rust 風の表面の形 (E0056 1 行ブロック・E0053 構造体リテラルの折り返し・E0047 `enum X: A, B` /
+//! Rust 風の表面の形 (E0056 1 行ブロック・E0047 `enum X: A, B` /
 //! `type X: f: T` と丸括弧の本体・E0062 `impl T for Y` の中の短い `fn`) を、直し方が 1 つに決まるものだけ
 //! 正規形へ書き換える。決まらない形は触らない (診断が残る)。意味は変えない。
 
@@ -203,49 +203,6 @@ fn inline_blocks(lines: Vec<String>) -> Vec<String> {
             }
         }
         out.push(format!("{}}}{}", ind, rest.trim_end()));
-    }
-    out
-}
-
-/// E0053: `Name {` で終わる行から `}` だけの行までを 1 行に畳む。
-fn wrapped_literals(lines: Vec<String>) -> Vec<String> {
-    let mut out: Vec<String> = vec![];
-    let mut i = 0;
-    while i < lines.len() {
-        let l = &lines[i];
-        let t = l.trim();
-        let first = t.split_whitespace().next().unwrap_or("");
-        let lit = t.ends_with('{')
-            && !t.starts_with("//")
-            && !t.starts_with('}')
-            && !matches!(first, "if" | "while" | "for" | "loop" | "match" | "else" | "fn" | "impl" | "trait" | "enum" | "type" | "unsafe" | "with")
-            && last_ident(&t[..t.len() - 1]).chars().next().map_or(false, |c| c.is_uppercase());
-        if lit {
-            let ind = indent_of(l);
-            let mut j = i + 1;
-            let mut fields: Vec<String> = vec![];
-            let mut ok = false;
-            while j < lines.len() {
-                let u = lines[j].trim();
-                if indent_of(&lines[j]) == ind && (u == "}" || u == "}," || u.starts_with("}")) {
-                    ok = u == "}" || u == "},";
-                    break;
-                }
-                if indent_of(&lines[j]) <= ind || u.starts_with("//") {
-                    break;
-                }
-                fields.push(u.trim_end_matches(',').to_string());
-                j += 1;
-            }
-            if ok && !fields.is_empty() && fields.iter().all(|f| balanced(f) && f.contains(':') && !f.is_empty()) {
-                let tail = lines[j].trim().trim_start_matches('}').to_string();
-                out.push(format!("{} {} }}{}", l.trim_end(), fields.join(", "), tail));
-                i = j + 1;
-                continue;
-            }
-        }
-        out.push(l.clone());
-        i += 1;
     }
     out
 }
@@ -771,7 +728,6 @@ pub fn rewrite(text: &str) -> String {
         lines = stmt_commas(lines);
         lines = one_line_defs(lines);
         lines = paren_bodies(lines);
-        lines = wrapped_literals(lines);
         lines = inline_blocks(lines);
         lines = ensure_end(lines);
         let next = lines.join("\n");

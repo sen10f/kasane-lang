@@ -974,6 +974,7 @@ pub fn format_source_with(text: &str, path: &str, canon: bool, own_len: bool) ->
     };
     let mut lines = mechanical(text);
     if canon {
+        crate::fmt_struct::canon(&mut lines);
         fix_forms(&mut lines);
         // 1 行の中のトークンの間隔 (spacing.rs の表) と、デフォルト確保器の短縮名書き換え。
         let before = lines.clone();
