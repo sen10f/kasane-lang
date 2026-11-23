@@ -5,8 +5,8 @@ enum httpserver.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
     Net(std.net.Error)
 end httpserver.Error
 
-fn httpserver.address(port: u16) -> Result<alloc.string.String<std.alloc.System>, httpserver.Error> uses [alloc] panics never
-    let mut address = alloc.string.String.new(std.alloc.SYSTEM)
+fn httpserver.address(port: u16) -> Result<std.string.String, httpserver.Error> uses [alloc] panics never
+    let mut address = std.string.String.new()
     address.push_str("127.0.0.1:")?
     address.push_u64(u64.from_u16(port))?
     Ok(address)
