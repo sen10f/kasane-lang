@@ -380,7 +380,7 @@ fn float_op(name: &str, ty: &str, a: &[Val]) -> Res {
     // f32 のビット列は f64 へ広げずに扱う。広げると signaling NaN が quiet NaN に変わる (KIR の Bitcast は保つ)。
     if name == "to_bits" && f32mode {
         if let Some(Val::F32(x)) = a.first() {
-            return Ok(int(x.to_bits() as i128, "u32"));
+            return Ok(int(crate::kir_scalar::canon_bits(crate::kir::Ty::F32, x.to_bits() as i128), "u32"));
         }
     }
     if name == "from_bits" && ty == "f32" {
@@ -428,9 +428,9 @@ fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
     }
     if name == "to_bits" {
         if ty == "f32" {
-            return Ok(int((x as f32).to_bits() as i128, "u32"));
+            return Ok(int(crate::kir_scalar::canon_bits(crate::kir::Ty::F32, (x as f32).to_bits() as i128), "u32"));
         }
-        return Ok(int(x.to_bits() as i128, "u64"));
+        return Ok(int(crate::kir_scalar::canon_bits(crate::kir::Ty::F64, x.to_bits() as i128), "u64"));
     }
     if let Some(t) = name.strip_prefix("trunc_to_") {
         if x.is_nan() || x.is_infinite() {

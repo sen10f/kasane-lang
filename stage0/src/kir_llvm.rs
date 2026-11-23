@@ -1458,8 +1458,9 @@ impl<'a> Fe<'a> {
             return Ok("0".into());
         }
         let x = match t {
-            Ty::F32 => self.t(format!("bitcast float {} to i32", v)),
-            Ty::F64 => self.t(format!("bitcast double {} to i64", v)),
+            Ty::F32 | Ty::F64 => {
+                self.canon_i(t, v)
+            }
             Ty::Ptr | Ty::Ref(..) => self.t(format!("ptrtoint ptr {} to {}", v, pty())),
             _ => v.to_string(),
         };
@@ -1635,8 +1636,9 @@ impl<'a> Fe<'a> {
     fn to_bits(&mut self, t: Ty, v: &str) -> R<String> {
         Ok(match t {
             Ty::Bool => self.t(format!("zext i1 {} to i8", v)),
-            Ty::F32 => self.t(format!("bitcast float {} to i32", v)),
-            Ty::F64 => self.t(format!("bitcast double {} to i64", v)),
+            Ty::F32 | Ty::F64 => {
+                self.canon_i(t, v)
+            }
             Ty::Ptr | Ty::Ref(..) => self.t(format!("ptrtoint ptr {} to {}", v, pty())),
             Ty::Opt(_) => {
                 let w = self.field_w(t)?;
@@ -1838,25 +1840,29 @@ impl<'a> Fe<'a> {
         }
     }
 
-    /// NaN の規則 (`fmath::nan_rule64` / `nan_rule32` と同じ、設計_KIR.md 17.8): 結果 `r` が NaN のとき、`a` が NaN なら `a` (quiet 化)、
-    /// そうでなく `b` が NaN なら `b` (quiet 化)、どちらでもなければ正の quiet NaN。結果が NaN でなければ `r`。
-    /// 定数畳み込み (正の NaN) と実機の実行時 (符号ビットの立った NaN) の違いを消す。`t` は `float` か `double`。
-    fn nan_rule(&mut self, t: &str, a: &str, b: &str, r: &str) -> String {
-        let (it, quiet, canon) = if t == "float" { ("i32", 0x0040_0000u64, 0x7FC0_0000u64) } else { ("i64", 0x0008_0000_0000_0000u64, 0x7FF8_0000_0000_0000u64) };
-        let rn = self.t(format!("fcmp uno {} {}, {}", t, r, r));
-        let an = self.t(format!("fcmp uno {} {}, {}", t, a, a));
-        let bn = self.t(format!("fcmp uno {} {}, {}", t, b, b));
-        let ab = self.t(format!("bitcast {} {} to {}", t, a, it));
-        let aq = self.t(format!("or {} {}, {}", it, ab, quiet));
-        let af = self.t(format!("bitcast {} {} to {}", it, aq, t));
-        let bb = self.t(format!("bitcast {} {} to {}", t, b, it));
-        let bq = self.t(format!("or {} {}, {}", it, bb, quiet));
-        let bf = self.t(format!("bitcast {} {} to {}", it, bq, t));
-        let cb = self.t(format!("or {} 0, {}", it, canon));
-        let cf = self.t(format!("bitcast {} {} to {}", it, cb, t));
-        let s1 = self.t(format!("select i1 {}, {} {}, {} {}", bn, t, bf, t, cf));
-        let s2 = self.t(format!("select i1 {}, {} {}, {} {}", an, t, af, t, s1));
-        self.t(format!("select i1 {}, {} {}, {} {}", rn, t, s2, t, r))
+    /// ビットが見える所 (`to_bits`・メモリへの書き出し・FFI の引数) で NaN を正の quiet NaN にそろえる (設計_KIR.md 17.8)。
+    /// 演算ごとには行わない (ベクトル化を妨げるため)。NaN 以外は変えない。
+    fn canon_f(&mut self, ty: Ty, v: &str) -> String {
+        let (t, it) = match ty {
+            Ty::F32 => ("float", "i32"),
+            Ty::F64 => ("double", "i64"),
+            _ => return v.to_string(),
+        };
+        let c = self.canon_i(ty, v);
+        self.t(format!("bitcast {} {} to {}", it, c, t))
+    }
+
+    /// `canon_f` の整数版 (ビット列を返す)。浮動小数の `select` は LLVM が NaN どうしを同一視して畳むので、整数のビットで判定する。
+    fn canon_i(&mut self, ty: Ty, v: &str) -> String {
+        let (t, it, inf, canon) = match ty {
+            Ty::F32 => ("float", "i32", 0x7F80_0000u64, 0x7FC0_0000u64),
+            _ => ("double", "i64", 0x7FF0_0000_0000_0000u64, 0x7FF8_0000_0000_0000u64),
+        };
+        let mask = if ty == Ty::F32 { 0x7FFF_FFFFu64 } else { 0x7FFF_FFFF_FFFF_FFFFu64 };
+        let b = self.t(format!("bitcast {} {} to {}", t, v, it));
+        let ab = self.t(format!("and {} {}, {}", it, b, mask));
+        let n = self.t(format!("icmp ugt {} {}, {}", it, ab, inf));
+        self.t(format!("select i1 {}, {} {}, {} {}", n, it, canon, it, b))
     }
 
     fn math_call(&mut self, m: Math, args: &str) -> String {
@@ -1895,8 +1901,7 @@ impl<'a> Fe<'a> {
                 let r = match f {
                     FUn::Abs => unreachable!(),
                     FUn::Sqrt => {
-                        let r = self.f64_intr("sqrt", &w);
-                        self.nan_rule("double", &w, &w, &r)
+                        self.f64_intr("sqrt", &w)
                     }
                     FUn::Floor => self.f64_intr("floor", &w),
                     FUn::Ceil => self.f64_intr("ceil", &w),
@@ -1932,8 +1937,7 @@ impl<'a> Fe<'a> {
                         self.t(format!("call double @{}(double {}, double {})", full, x, y))
                     }
                     FBin::Rem => {
-                        let q = self.t(format!("frem double {}, {}", x, y));
-                        self.nan_rule("double", &x, &y, &q)
+                        self.t(format!("frem double {}, {}", x, y))
                     }
                     FBin::Atan2 => self.math_call(Math::Atan2, &format!("double {}, double {}", x, y)),
                     FBin::Powi => unreachable!(),
@@ -1955,10 +1959,7 @@ impl<'a> Fe<'a> {
                     Aop::Mul => "fmul",
                     _ => "fdiv",
                 };
-                let q = self.t(format!("{} {} {}, {}", ins, t, x, y));
-                // NaN になる結果は、木走査・参照実行器と同じ規則のビット列にする (17.8)。
-                let r = self.nan_rule(&t, &x, &y, &q);
-                self.mov(&d, &t, &r);
+                self.line(format!("{} = {} {} {}, {}", d, ins, t, x, y));
             }
         }
     }
@@ -2214,7 +2215,12 @@ impl<'a> Fe<'a> {
             Op::Bitcast { src, a } => {
                 let (st, dt) = (self.lt(*src), self.lt(i.ty));
                 let v = self.r(*a);
-                self.line(format!("{} = bitcast {} {} to {}", d, st, v, dt));
+                if matches!(*src, Ty::F32 | Ty::F64) {
+                    let c = self.canon_i(*src, &v);
+                    self.line(format!("{} = add {} {}, 0", d, dt, c));
+                } else {
+                    self.line(format!("{} = bitcast {} {} to {}", d, st, v, dt));
+                }
             }
             Op::Not(a) => {
                 let t = self.lt(i.ty);
@@ -2237,7 +2243,13 @@ impl<'a> Fe<'a> {
                     return self.c_call(&d, i, callee, args);
                 }
                 let rt = self.lt(i.ty);
-                let a: Vec<String> = args.iter().map(|v| format!("{} {}", lty(aggs, self.ty(*v)), self.r(*v))).collect();
+                let is_ext = self.extern_links.contains_key(callee);
+                let mut a: Vec<String> = vec![];
+                for v in args {
+                    let (vt, vr) = (self.ty(*v), self.r(*v));
+                    let vr = if is_ext { self.canon_f(vt, &vr) } else { vr };
+                    a.push(format!("{} {}", lty(aggs, vt), vr));
+                }
                 if let Some(sym) = self.extern_links.get(callee) {
                     // C の関数の戻り値が `()` のときは `void` で呼ぶ (宣言も `void`。実行時の補助の宣言と食い違わない)。
                     let unit = i.ty == Ty::Unit;
@@ -2937,6 +2949,7 @@ impl<'a> Fe<'a> {
             self.line(format!("store i8 {}, ptr {}{}", z, addr, align));
         } else {
             let lt = self.lt(t);
+            let v = self.canon_f(t, v);
             self.line(format!("store {} {}, ptr {}{}", lt, v, addr, align));
         }
         Ok(())

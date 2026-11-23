@@ -2077,8 +2077,8 @@ const FLOAT_SPECIAL_CASES: &[(&str, &str, &str)] = &[
     ("t.sqrt_inf64", "9218868437227405312u64", "9218868437227405312"),  // sqrt(+inf) は +inf
     ("t.abs_ninf32", "2139095040u32", "2139095040"),                    // f32 の abs(-inf) は +inf
     ("t.sqrt_ninf32", "true", "true"),
-    ("t.nan32_bits", "2139095041u32", "2139095041"), // f32 の signaling NaN のビットは保つ
-    ("t.nan64_bits", "9218868437227405313u64", "9218868437227405313"),
+    ("t.nan32_bits", "2143289344u32", "2143289344"), // NaN は to_bits で正の quiet NaN にそろう (17.8)
+    ("t.nan64_bits", "9221120237041090560u64", "9221120237041090560"),
 ];
 
 #[test]
@@ -2224,9 +2224,9 @@ end t.absbits
 
 fn t.main() -> () uses [] panics may
     let s = core.num.f32.from_bits(2139095041u32)
-    core.check.eq(s.abs().to_bits(), 2139095041u32)
-    core.check.eq((-s).abs().to_bits(), 2139095041u32)
-    core.check.eq(t.absbits(s), 2139095041u32)
+    core.check.eq(s.abs().to_bits(), 2143289344u32)
+    core.check.eq((-s).abs().to_bits(), 2143289344u32)
+    core.check.eq(t.absbits(s), 2143289344u32)
 end t.main
 "#;
     let t = Tmp::new("f32_abs_snan", src);
@@ -2236,7 +2236,7 @@ end t.main
     for arg in ["2139095041", "4286578689"] {
         let k = kir_run(&["kir", "t.absbits", "--run", arg], &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", arg, text(&k.stderr));
-        assert_eq!(text(&k.stdout).trim(), "2139095041", "kir abs of bits {}", arg);
+        assert_eq!(text(&k.stdout).trim(), "2143289344", "kir abs of bits {}", arg);
     }
 }
 

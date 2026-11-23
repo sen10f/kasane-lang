@@ -1203,7 +1203,8 @@ fn t.run_wild(n: u32) -> usize uses [alloc] panics may\n    let mut g = t.Gen { 
 
 #[test]
 fn kir_review_nan_bits_follow_one_rule() {
-    // NaN になる演算 (`+ - * / %`・`sqrt`) の結果のビット列: 第 1 被演算子が NaN ならそれ (quiet 化)、第 2 が NaN ならそれ、
+    // 2026-11-23 以降: ビットが見える所 (`to_bits`) で NaN は正の quiet NaN にそろう (ペイロードは残らない。演算ごとの規則は機械語から外した)。
+    // (旧) NaN になる演算 (`+ - * / %`・`sqrt`) の結果のビット列: 第 1 被演算子が NaN ならそれ (quiet 化)、第 2 が NaN ならそれ、
     // どちらでもなければ正の quiet NaN。実機の既定の NaN (符号ビット付き) と LLVM の定数畳み込み (正) の違いを、
     // 木走査・参照実行器・機械語 (最適化 -O1 と ASan の -O0) の 3 者で揃える (設計_KIR.md 17.8)。
     let fns = "fn t.d(b: u64) -> f64 uses [] panics never\n    core.num.f64.from_bits(b)\nend t.d\n\n\
@@ -1218,26 +1219,25 @@ fn t.div32(a: f32, b: f32) -> u32 uses [] panics never\n    (a / b).to_bits()\ne
     const INF: &str = "9218868437227405312";
     const CANON: &str = "9221120237041090560";
     const SNAN: &str = "9218868437227405313";
-    const QSNAN: &str = "9221120237041090561";
     const ONE: &str = "4607182418800017408";
     let c64 = |f: &'static str, a: &'static str, b: &'static str, want: &'static str| -> (&'static str, Vec<&'static str>, String, String, String) {
         (f, vec![a, b], format!("{}(t.d({}u64), t.d({}u64))", f, a, b), format!("{}u64", want), want.to_string())
     };
     let mut cases = vec![
         c64("t.sub64", INF, INF, CANON),
-        c64("t.sub64", SNAN, ONE, QSNAN),
-        c64("t.sub64", ONE, SNAN, QSNAN),
+        c64("t.sub64", SNAN, ONE, CANON),
+        c64("t.sub64", ONE, SNAN, CANON),
         c64("t.mul64", "0", INF, CANON),
         c64("t.div64", INF, INF, CANON),
         c64("t.div64", "0", "0", CANON),
-        c64("t.div64", SNAN, "0", QSNAN),
+        c64("t.div64", SNAN, "0", CANON),
         c64("t.rem64", ONE, "0", CANON),
         c64("t.rem64", INF, ONE, CANON),
     ];
     cases.push(("t.sqrt64", vec!["13836000000000000000"], "t.sqrt64(t.d(13836000000000000000u64))".into(), format!("{}u64", CANON), CANON.to_string()));
     cases.push(("t.add32", vec!["2139095040", "4286578688"], "t.add32(t.s(2139095040u32), t.s(4286578688u32))".into(), "2143289344u32".into(), "2143289344".into()));
     cases.push(("t.div32", vec!["0", "0"], "t.div32(t.s(0u32), t.s(0u32))".into(), "2143289344u32".into(), "2143289344".into()));
-    cases.push(("t.add32", vec!["2139095041", "1065353216"], "t.add32(t.s(2139095041u32), t.s(1065353216u32))".into(), "2143289345u32".into(), "2143289345".into()));
+    cases.push(("t.add32", vec!["2139095041", "1065353216"], "t.add32(t.s(2139095041u32), t.s(1065353216u32))".into(), "2143289344u32".into(), "2143289344".into()));
     for (i, (f, args, call, lit, want)) in cases.iter().enumerate() {
         kir_review_cases(&format!("nan{}", i), &fns, f, &[(&args[..], call.as_str(), lit.as_str(), want.as_str())]);
     }
