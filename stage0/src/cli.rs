@@ -1203,6 +1203,39 @@ fn kir_borrowck_hidden(rep: &mut Report, prog: Option<&Program>, user: &[usize],
     }
 }
 
+/// `ksn check` の非致命の警告 (W9040): ネイティブ (KIR) に下ろせない利用者の関数を、下ろしの理由つきで指す。
+/// 理由は `lower_user` の `unsupported` をそのまま使う (別の一覧を持たない)。ほかの関数の理由を写しただけ
+/// (「呼び先が未対応」) の関数は、原因の関数の所で出すので出さない。致命の診断があるときは出さない。
+fn native_lowering_warnings(rep: &mut Report, prog: Option<&Program>, user: &[usize]) {
+    if rep.items.iter().any(|i| i.fatal) {
+        return;
+    }
+    let Some(p) = prog else { return };
+    let lo = crate::kir_lower::lower_user(p, user);
+    for &i in user {
+        let d = &p.defs[i];
+        if crate::project::is_stdlib_file(&d.file) {
+            continue;
+        }
+        let pre = format!("{}<", d.name);
+        for (k, why) in &lo.unsupported {
+            if (*k != d.name && !k.starts_with(&pre)) || why.starts_with("呼び先 ") {
+                continue;
+            }
+            // 理由が `行 N: ...` の形なら、その行を指す (無ければ関数の定義の行)。
+            let (line, msg) = match why.strip_prefix("行 ").and_then(|r| r.split_once(": ")) {
+                Some((n, m)) if n.parse::<usize>().is_ok() => (n.parse::<usize>().unwrap_or(1), m),
+                _ => (d.line, why.as_str()),
+            };
+            let text = format!("ネイティブに下ろせない ({}): {}", k, msg);
+            if rep.items.iter().any(|x| x.code == "W9040" && x.file.as_deref() == Some(d.file.as_str()) && x.line == line.max(1) && x.message == text) {
+                continue;
+            }
+            rep.add("W9040", &text, Some(&d.file), line.max(1), 1, false);
+        }
+    }
+}
+
 fn cmd_check(json: bool) -> i32 {
     let mut rep = Report::new(json);
     let bc_mode = std::env::var("KSN_BORROWCK").ok().or_else(|| std::env::args().find_map(|a| a.strip_prefix("--borrowck=").map(String::from))).unwrap_or_default();
@@ -1212,6 +1245,7 @@ fn cmd_check(json: bool) -> i32 {
     match find_root().and_then(|r| {
         full_check(&r, &mut rep, false).map(|(_, prog, user)| {
             crate::kir_lower::dump_hidden(prog.as_ref(), &user);
+            native_lowering_warnings(&mut rep, prog.as_ref(), &user);
             if kir_bc {
                 kir_borrowck_hidden(&mut rep, prog.as_ref(), &user, kir_own, kir_only);
             } else if bc_mode != "ast" {

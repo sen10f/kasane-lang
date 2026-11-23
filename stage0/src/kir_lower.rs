@@ -2123,6 +2123,9 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     }
     let mut ok: Vec<(Func, BTreeSet<String>)> = vec![];
     let mut bad: Vec<(String, String)> = vec![];
+    // 下ろせなかった `extern` (リンク先の宣言)。呼ぶ関数が下ろせないときの理由として使う。呼ばれないものは一覧に出さない
+    // (`core.panic.rt_panic` のように、どの利用者の関数からも呼ばれない宣言の理由が E9040 の一覧に混ざるのを防ぐ)。
+    let mut ext_bad: Vec<(String, String)> = vec![];
     crate::s5_meter::set_active(true);
     for &i in user {
         let d = &p.defs[i];
@@ -2157,7 +2160,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
         }
         match ffi_lower::extern_func(p, d, &aggs) {
             Ok(f) => ok.push((f, BTreeSet::new())),
-            Err(why) => bad.push((d.name.clone(), why)),
+            Err(why) => ext_bad.push((d.name.clone(), why)),
         }
     }
     if let Some(e) = entry {
@@ -2181,7 +2184,11 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
         let mut drop: Vec<(String, String)> = vec![];
         for (f, callees) in &ok {
             if let Some(c) = callees.iter().find(|c| !keys.contains(*c)) {
-                drop.push((f.key.clone(), format!("呼び先 {} が未対応", c)));
+                let why = match ext_bad.iter().find(|(k, _)| k == c) {
+                    Some((_, w)) => format!("{} を下ろせない: {}", c, w),
+                    None => format!("呼び先 {} が未対応", c),
+                };
+                drop.push((f.key.clone(), why));
             }
         }
         if drop.is_empty() {
