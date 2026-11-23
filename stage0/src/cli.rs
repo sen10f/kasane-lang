@@ -2932,6 +2932,7 @@ fn cmd_fmt(args: &[String]) -> i32 {
         // 文法への一致だけの不一致は、並べ替えでコメントが動くファイル (import の前に `//` を置くなど、
         // 文法がまだ受け付けない形) でも書けるように、従来どおり書いてから候補の位置で報告する。
         let want = fmt_diag(s, &nt, &relpath, &grammar);
+       
         if !want.unfixable() {
             let mut text = s.text.clone();
             // `.ksnh` の整形のあと、横の `.ksnl` を `strip` で作り直す (`--check` は食い違いも差分とする)。

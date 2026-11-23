@@ -176,9 +176,16 @@ fn unique(base: &str, used: &HashSet<String>) -> String {
     if !used.contains(base) {
         return base.to_string();
     }
-    let mut n = 2;
+    // snake_case は `_2` のような数字だけの部分を認めないので、b, c, .. z, ba, bb, .. の文字で区別する。
+    let mut n = 1usize;
     loop {
-        let c = format!("{}_{}", base, n);
+        let mut digits = vec![];
+        let mut k = n;
+        while k > 0 {
+            digits.push((b'a' + (k % 26) as u8) as char);
+            k /= 26;
+        }
+        let c = format!("{}_{}", base, digits.iter().rev().collect::<String>());
         if !used.contains(&c) {
             return c;
         }
@@ -188,6 +195,10 @@ fn unique(base: &str, used: &HashSet<String>) -> String {
 
 /// 1 行を縮める。縮められなければ None。`used` はその関数で使われている名前。
 fn hoist_line(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
+    hoist_cond(line, used).or_else(|| hoist_call(line, used)).or_else(|| hoist_chain(line, used))
+}
+
+fn hoist_call(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
     let indent = line.len() - line.trim_start().len();
     let t = &line[indent..];
     if t.starts_with("//") || t.contains('"') || t.contains("::<") || t.contains("=>") || t.contains('{') || t.contains('}') {
@@ -268,7 +279,187 @@ fn hoist_line(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
     None
 }
 
-pub fn hoist_long_lines(lines: &mut Vec<String>) {
+/// 先頭の `let [mut] x[: T] = ` / `path = ` を分ける (残りは右辺)。
+fn split_head(t: &str) -> Option<(&str, &str)> {
+    let first = t.split(|c| c == ' ' || c == '(' || c == '[').next().unwrap_or("");
+    if first == "let" {
+        let p = t.find(" = ")?;
+        Some((&t[..p + 3], &t[p + 3..]))
+    } else if let Some(p) = t.find(" = ") {
+        let lhs = &t[..p];
+        if !trivial(lhs) || RESERVED.contains(&lhs) {
+            return None;
+        }
+        Some((&t[..p + 3], &t[p + 3..]))
+    } else {
+        Some(("", t))
+    }
+}
+
+/// 深さ 0 の `op` (`||` か `&&`) で式を分ける。ほかの深さ 0 の二項演算子 (`||` と `&&` の混在) があれば None。
+fn split_op<'a>(e: &'a str, op: &str) -> Option<Vec<&'a str>> {
+    let cs: Vec<char> = e.chars().collect();
+    let other = if op == "||" { "&&" } else { "||" };
+    let (mut depth, mut last, mut out) = (0i32, 0usize, vec![]);
+    let bytes = e.as_bytes();
+    let mut i = 0;
+    while i < cs.len() {
+        match cs[i] {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '\'' => return None,
+            _ => {}
+        }
+        if depth == 0 && i + 1 < cs.len() {
+            let two = &e[i..i + 2];
+            if two == op {
+                out.push(e[last..i].trim());
+                last = i + 2;
+                i += 2;
+                continue;
+            }
+            if two == other {
+                return None;
+            }
+        }
+        i += 1;
+    }
+    let _ = bytes;
+    out.push(e[last..].trim());
+    if out.len() < 2 { None } else { Some(out) }
+}
+
+/// `if a || b || c {` と `let x = a && b && c` の長い連なり: 左の部分を `let` に括り出す。
+/// 同じ演算子だけの連なりなので、左の連なりを束縛しても短絡の順は変わらない。
+fn hoist_cond(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
+    let indent = line.len() - line.trim_start().len();
+    let t = &line[indent..];
+    if t.contains('"') || t.contains("::<") || t.contains("=>") || t.contains('\'') {
+        return None;
+    }
+    let (head, body, tail) = if let Some(b) = t.strip_prefix("if ").and_then(|r| r.strip_suffix(" {")) {
+        ("if ", b, " {")
+    } else if t.starts_with("let ") {
+        let (h, r) = split_head(t)?;
+        (h, r, "")
+    } else {
+        return None;
+    };
+    if body.contains('{') || body.contains('}') || body.contains('|') && !body.contains("||") {
+        return None;
+    }
+    let op = if split_op(body, "||").is_some() { "||" } else { "&&" };
+    let ops = split_op(body, op)?;
+    if ops.iter().any(|o| o.is_empty() || !hoistable(o)) {
+        return None;
+    }
+    let pad = " ".repeat(indent);
+    let mut used = used.clone();
+    let mut cur: Vec<String> = ops.iter().map(|s| s.to_string()).collect();
+    let mut lets: Vec<String> = vec![];
+    loop {
+        let line = format!("{}{}{}{}", pad, head, cur.join(&format!(" {} ", op)), tail);
+        if line.chars().count() <= 100 {
+            lets.push(line);
+            return Some(lets);
+        }
+        let name = unique("cond", &used);
+        // 先頭から入る最長の連なり (2 項以上) を `let` にする。
+        let mut m = 0;
+        for k in 2..cur.len() {
+            if format!("{}let {} = {}", pad, name, cur[..k].join(&format!(" {} ", op))).chars().count() <= 100 {
+                m = k;
+            }
+        }
+        if m < 2 || m >= cur.len() && head != "if " {
+            return None;
+        }
+        used.insert(name.clone());
+        lets.push(format!("{}let {} = {}", pad, name, cur[..m].join(&format!(" {} ", op))));
+        let rest: Vec<String> = cur[m..].to_vec();
+        cur = std::iter::once(name).chain(rest).collect();
+    }
+}
+
+fn numeric_method(n: &str) -> bool {
+    n.starts_with("wrapping_") || n.starts_with("saturating_") || n.starts_with("checked_") || matches!(n, "len" | "abs" | "min" | "max" | "pow" | "rem_euclid")
+}
+
+/// 値を作る数のメソッドの連なり `a.wrapping_add(x).wrapping_mul(y)..`: 先頭の部分を `let` に括り出す。
+/// 括り出す部分は数 (Copy) を返すので、一時値の寿命は変わらない。
+fn hoist_chain(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
+    let indent = line.len() - line.trim_start().len();
+    let t = &line[indent..];
+    if t.contains('"') || t.contains("::<") || t.contains("=>") || t.contains('{') || t.contains('}') || t.contains('\'') {
+        return None;
+    }
+    let (head, rhs) = split_head(t)?;
+    if head.is_empty() || head.starts_with("if ") {
+        // 文の頭が呼び出しの式 (`line.push(..).unwrap()` など) は、受け手の可変性が変わりうるので対象にしない。
+        return None;
+    }
+    let pad = " ".repeat(indent);
+    let mut used = used.clone();
+    let mut rhs = rhs.to_string();
+    let mut lets: Vec<String> = vec![];
+    loop {
+        let fin = format!("{}{}{}", pad, head, rhs);
+        if fin.chars().count() <= 100 {
+            lets.push(fin);
+            return if lets.len() > 1 { Some(lets) } else { None };
+        }
+        let cs: Vec<char> = rhs.chars().collect();
+        // 最上位の `)` の直後が `.` になる位置 (連なりの切れ目)。
+        let (mut depth, mut cuts) = (0i32, vec![]);
+        for i in 0..cs.len() {
+            match cs[i] {
+                '(' | '[' => depth += 1,
+                ')' | ']' => {
+                    depth -= 1;
+                    if depth == 0 && i + 1 < cs.len() && cs[i + 1] == '.' {
+                        cuts.push(i + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            return None;
+        }
+        let mut done = false;
+        for c in cuts.into_iter().rev() {
+            let prefix: String = cs[..c].iter().collect();
+            let remain: String = cs[c..].iter().collect();
+            let p: Vec<char> = prefix.chars().collect();
+            let Some(o) = (0..p.len()).rev().find(|&i| p[i] == '(' && matching(&p, i) == Some(p.len() - 1)) else { continue };
+            let last: String = p[..o].iter().rev().take_while(|c| is_id(**c)).collect::<Vec<_>>().into_iter().rev().collect();
+            if !numeric_method(&last) || !hoistable(&prefix) {
+                continue;
+            }
+            let target = head.strip_prefix("let ").map(|h| h.trim_start_matches("mut ").split(|c| c == ':' || c == ' ').next().unwrap_or("").to_string());
+            let base = match target {
+                Some(t) if !t.is_empty() => format!("{}_{}", t, (b'a' + lets.len() as u8) as char),
+                _ => format!("{}_val", last),
+            };
+            let name = unique(&base, &used);
+            let l1 = format!("{}let {} = {}", pad, name, prefix);
+            if l1.chars().count() > 100 {
+                continue;
+            }
+            used.insert(name.clone());
+            lets.push(l1);
+            rhs = format!("{}{}", name, remain);
+            done = true;
+            break;
+        }
+        if !done {
+            return None;
+        }
+    }
+}
+
+pub fn hoist_long_lines(lines: &mut Vec<String>) -> bool {
+    let mut changed = false;
     let mut i = 0;
     while i < lines.len() {
         let l = lines[i].clone();
@@ -282,6 +473,7 @@ pub fn hoist_long_lines(lines: &mut Vec<String>) {
                 let used = idents(&lines[start..=stop].join("\n"));
                 if let Some(new) = hoist_line(&l, &used) {
                     let n = new.len();
+                    changed = true;
                     lines.splice(i..=i, new);
                     i += n;
                     continue;
@@ -290,4 +482,6 @@ pub fn hoist_long_lines(lines: &mut Vec<String>) {
         }
         i += 1;
     }
+    changed
 }
+
