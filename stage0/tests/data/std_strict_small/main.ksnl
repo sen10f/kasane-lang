@@ -1,0 +1,91 @@
+fn t.eqs(tag: &str, a: &[u8], b: &[u8]) -> Result<(), std.io.Error> uses [io.console] panics never
+    if core.slice.ct_eq(a, b) {
+        std.io.print_line(tag)?
+    } else {
+        std.io.print_line("ne")?
+    }
+    Ok(())
+end t.eqs
+
+fn t.i64(s: &str) -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line(s)?
+    match i64.parse_decimal(s) {
+        Ok(_v) => std.io.print_line("ok")?
+        Err(_) => std.io.print_line("err")?
+    }
+    Ok(())
+end t.i64
+
+fn t.i8(s: &str) -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line(s)?
+    match i8.parse_decimal(s) {
+        Ok(_v) => std.io.print_line("ok")?
+        Err(_) => std.io.print_line("err")?
+    }
+    Ok(())
+end t.i8
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    t.eqs("eq-abc", b"abc", b"abc")?
+    t.eqs("ne-abc", b"abc", b"abd")?
+    t.eqs("ne-len", b"abc", b"ab")?
+    t.eqs("eq-empty", b"", b"")?
+    t.u8("0")?
+    t.u8("7")?
+    t.u8("00")?
+    t.u8("007")?
+    t.u8("255")?
+    t.u8("256")?
+    t.u8("+1")?
+    t.u8("-0")?
+    t.u8("")?
+    t.u8(" 1")?
+    t.u8("1 ")?
+    t.u8("٣")?
+    t.u8("12a")?
+    t.i8("-128")?
+    t.i8("-129")?
+    t.i8("127")?
+    t.i8("128")?
+    t.i8("-0")?
+    t.i8("-00")?
+    t.i8("-0x1")?
+    t.i8("-1")?
+    t.i8("+1")?
+    t.u64("18446744073709551615")?
+    t.u64("18446744073709551616")?
+    t.u64("0")?
+    t.i64("-9223372036854775808")?
+    t.i64("9223372036854775808")?
+    t.i64("-9223372036854775809")?
+    t.usize("123")?
+    t.usize("-1")?
+    Ok(())
+end t.main
+
+fn t.u64(s: &str) -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line(s)?
+    match u64.parse_decimal(s) {
+        Ok(_v) => std.io.print_line("ok")?
+        Err(_) => std.io.print_line("err")?
+    }
+    Ok(())
+end t.u64
+
+fn t.u8(s: &str) -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line(s)?
+    match u8.parse_decimal(s) {
+        Ok(_v) => std.io.print_line("ok")?
+        Err(_) => std.io.print_line("err")?
+    }
+    Ok(())
+end t.u8
+
+fn t.usize(s: &str) -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line(s)?
+    match usize.parse_decimal(s) {
+        Ok(_v) => std.io.print_line("ok")?
+        Err(_) => std.io.print_line("err")?
+    }
+    Ok(())
+end t.usize

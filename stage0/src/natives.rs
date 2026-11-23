@@ -34,7 +34,7 @@ pub const NATIVE_NAMES: &[&str] = &[
 ];
 
 const NUM_EXTRA: &[&str] = &[
-    "abs", "max", "min", "count_ones", "leading_zeros", "trailing_zeros", "successor", "to_f64", "from_str_radix", "parse",
+    "abs", "max", "min", "count_ones", "leading_zeros", "trailing_zeros", "successor", "to_f64", "from_str_radix", "parse", "parse_decimal",
     "to_bits", "from_bits", "rem", "sqrt", "floor", "ceil", "sin", "cos", "tan", "exp", "ln", "powi", "trunc",
     "round_ties_even", "is_nan", "is_finite", "atan2", "nearest_to_f32", "then_some", "is_ascii_alphabetic",
     "is_ascii_digit", "is_ascii_whitespace", "len_utf8", "to_ascii_lowercase", "to_ascii_uppercase", "to_u32",
@@ -220,9 +220,13 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
         Val::Float(f) => *f as i128,
         _ => 0,
     };
-    if name == "from_str_radix" || name == "parse" {
+    if name == "from_str_radix" || name == "parse" || name == "parse_decimal" {
         let text = str_of(&x).unwrap_or_default();
-        let radix = if name == "parse" { 10 } else { iv(&a[1]) as u32 };
+        // `parse_decimal`: 1 桁以上の ASCII 数字だけ。先頭の 0 は "0" のときだけ (機械語・参照実行器と同じ)。
+        if name == "parse_decimal" && !crate::kir_exec::plain_decimal(text.as_bytes(), ty.starts_with('i')) {
+            return Ok(err(parse_err(0)));
+        }
+        let radix = if name == "parse" || name == "parse_decimal" { 10 } else { iv(&a[1]) as u32 };
         let ty = ity(ty);
         // 基数が 2..=36 の外なら Err (種類 0)。sig は `panics never` なので、Rust の `from_str_radix` のように panic しない。
         if !(2..=36).contains(&radix) {

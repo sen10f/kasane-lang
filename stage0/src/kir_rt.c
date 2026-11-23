@@ -209,8 +209,19 @@ long long ksn_utf8_valid(const unsigned char *p, long long n) {
  *     違反は kind 1。符号なし: v <= 2^bits-1 (bits>=64 なら常に範囲内)。違反は kind 1。
  * 戻り値: 0 = 成功 (out_lo/out_hi に 128 ビットの値)、1 = kind 0、2 = kind 1。 */
 int ksn_parse_int(const unsigned char *p, long len, unsigned radix,
-                  int bits, int is_signed,
+                  int bits, int is_signed, int strict,
                   unsigned long long *out_lo, unsigned long long *out_hi) {
+    if (strict) {
+        /* parse_decimal: 符号つきの型だけ先頭の `-`、その後に 1 桁以上の ASCII 数字。先頭の 0 は "0" のときだけ、-0 は拒む。 */
+        long s = (is_signed && len > 0 && p[0] == '-') ? 1 : 0;
+        long nd = len - s;
+        if (nd == 0) return 1;
+        if (nd > 1 && p[s] == '0') return 1;
+        if (s == 1 && nd == 1 && p[s] == '0') return 1; /* -0 */
+        for (long i = s; i < len; i++) {
+            if (p[i] < '0' || p[i] > '9') return 1;
+        }
+    }
     if (radix < 2 || radix > 36) return 1;
     if (len == 0) return 1;
     int is_minus = p[0] == '-';

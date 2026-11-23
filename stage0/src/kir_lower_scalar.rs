@@ -512,7 +512,8 @@ impl<'a> Lw<'a> {
         let Some(dst) = Ty::parse(&segs[0]) else { return Ok(None) };
         // `u8.from_str_radix(text, radix)` など。`&str` をバイトごとに読み、checked な乗算・加算で解析する。
         // `i64.parse(text)` は基数 10 の `from_str_radix` と同じ (木走査 natives.rs も同じ経路)。
-        let is_parse = segs[1] == "parse" && args.len() == 1 && dst.is_int();
+        let is_parse = (segs[1] == "parse" || segs[1] == "parse_decimal") && args.len() == 1 && dst.is_int();
+        let strict = segs[1] == "parse_decimal";
         if (segs[1] == "from_str_radix" && args.len() == 2 && dst.is_int()) || is_parse {
             let Ok(res) = self.ty_of(e) else { return Ok(None) };
             let Ty::Res(t0, _) = res else {
@@ -536,7 +537,7 @@ impl<'a> Lw<'a> {
             if self.vty(radix) != Ty::U32 {
                 return self.err(line, format!("{} の基数は u32 ではない", segs[1]));
             }
-            return Ok(Some(Some(self.emit(res, Op::ParseInt { ty: int_ty, s, radix }))));
+            return Ok(Some(Some(self.emit(res, Op::ParseInt { ty: int_ty, s, radix, strict }))));
         }
         // `<dst>.try_from_<src>(x)`: x が dst の範囲に入るなら Ok(写し)、範囲外なら
         // Err(core.num.TryFromIntError { kind: 0u8 })。`try_from_*` は非可逆の幅変換なので、

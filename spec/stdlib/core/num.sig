@@ -172,6 +172,7 @@ fn core.num.i128.max(self: i128, other: i128) -> i128 uses [] panics never pub
 fn core.num.i128.min(self: i128, other: i128) -> i128 uses [] panics never pub
 fn core.num.i128.nearest_to_f64(self: i128) -> f64 uses [] panics never pub
 fn core.num.i128.parse(text: &str) -> Result<i128, core.num.ParseIntError> uses [] panics never pub
+fn core.num.i128.parse_decimal(text: &str) -> Result<i128, core.num.ParseIntError> uses [] panics never pub
 fn core.num.i128.saturating_add(self: i128, other: i128) -> i128 uses [] panics never pub
 fn core.num.i128.saturating_mul(self: i128, other: i128) -> i128 uses [] panics never pub
 fn core.num.i128.saturating_neg(self: i128) -> i128 uses [] panics never pub
@@ -203,6 +204,7 @@ fn core.num.i16.leading_zeros(self: i16) -> u32 uses [] panics never pub
 fn core.num.i16.max(self: i16, other: i16) -> i16 uses [] panics never pub
 fn core.num.i16.min(self: i16, other: i16) -> i16 uses [] panics never pub
 fn core.num.i16.parse(text: &str) -> Result<i16, core.num.ParseIntError> uses [] panics never pub
+fn core.num.i16.parse_decimal(text: &str) -> Result<i16, core.num.ParseIntError> uses [] panics never pub
 fn core.num.i16.saturating_add(self: i16, other: i16) -> i16 uses [] panics never pub
 fn core.num.i16.saturating_mul(self: i16, other: i16) -> i16 uses [] panics never pub
 fn core.num.i16.saturating_neg(self: i16) -> i16 uses [] panics never pub
@@ -245,6 +247,7 @@ fn core.num.i32.leading_zeros(self: i32) -> u32 uses [] panics never pub
 fn core.num.i32.max(self: i32, other: i32) -> i32 uses [] panics never pub
 fn core.num.i32.min(self: i32, other: i32) -> i32 uses [] panics never pub
 fn core.num.i32.parse(text: &str) -> Result<i32, core.num.ParseIntError> uses [] panics never pub
+fn core.num.i32.parse_decimal(text: &str) -> Result<i32, core.num.ParseIntError> uses [] panics never pub
 fn core.num.i32.saturating_add(self: i32, other: i32) -> i32 uses [] panics never pub
 fn core.num.i32.saturating_mul(self: i32, other: i32) -> i32 uses [] panics never pub
 fn core.num.i32.saturating_neg(self: i32) -> i32 uses [] panics never pub
@@ -289,6 +292,7 @@ fn core.num.i64.max(self: i64, other: i64) -> i64 uses [] panics never pub
 fn core.num.i64.min(self: i64, other: i64) -> i64 uses [] panics never pub
 fn core.num.i64.nearest_to_f64(self: i64) -> f64 uses [] panics never pub
 fn core.num.i64.parse(text: &str) -> Result<i64, core.num.ParseIntError> uses [] panics never pub
+fn core.num.i64.parse_decimal(text: &str) -> Result<i64, core.num.ParseIntError> uses [] panics never pub
 fn core.num.i64.saturating_add(self: i64, other: i64) -> i64 uses [] panics never pub
 fn core.num.i64.saturating_mul(self: i64, other: i64) -> i64 uses [] panics never pub
 fn core.num.i64.saturating_neg(self: i64) -> i64 uses [] panics never pub
@@ -321,6 +325,7 @@ fn core.num.i8.leading_zeros(self: i8) -> u32 uses [] panics never pub
 fn core.num.i8.max(self: i8, other: i8) -> i8 uses [] panics never pub
 fn core.num.i8.min(self: i8, other: i8) -> i8 uses [] panics never pub
 fn core.num.i8.parse(text: &str) -> Result<i8, core.num.ParseIntError> uses [] panics never pub
+fn core.num.i8.parse_decimal(text: &str) -> Result<i8, core.num.ParseIntError> uses [] panics never pub
 fn core.num.i8.saturating_add(self: i8, other: i8) -> i8 uses [] panics never pub
 fn core.num.i8.saturating_mul(self: i8, other: i8) -> i8 uses [] panics never pub
 fn core.num.i8.saturating_neg(self: i8) -> i8 uses [] panics never pub
@@ -369,6 +374,7 @@ fn core.num.isize.max(self: isize, other: isize) -> isize uses [] panics never p
 fn core.num.isize.min(self: isize, other: isize) -> isize uses [] panics never pub
 fn core.num.isize.nearest_to_f64(self: isize) -> f64 uses [] panics never pub
 fn core.num.isize.parse(text: &str) -> Result<isize, core.num.ParseIntError> uses [] panics never pub
+fn core.num.isize.parse_decimal(text: &str) -> Result<isize, core.num.ParseIntError> uses [] panics never pub
 fn core.num.isize.saturating_add(self: isize, other: isize) -> isize uses [] panics never pub
 fn core.num.isize.saturating_mul(self: isize, other: isize) -> isize uses [] panics never pub
 fn core.num.isize.saturating_neg(self: isize) -> isize uses [] panics never pub
@@ -406,6 +412,7 @@ fn core.num.u128.max(self: u128, other: u128) -> u128 uses [] panics never pub
 fn core.num.u128.min(self: u128, other: u128) -> u128 uses [] panics never pub
 fn core.num.u128.nearest_to_f64(self: u128) -> f64 uses [] panics never pub
 fn core.num.u128.parse(text: &str) -> Result<u128, core.num.ParseIntError> uses [] panics never pub
+fn core.num.u128.parse_decimal(text: &str) -> Result<u128, core.num.ParseIntError> uses [] panics never pub
 fn core.num.u128.saturating_add(self: u128, other: u128) -> u128 uses [] panics never pub
 fn core.num.u128.saturating_mul(self: u128, other: u128) -> u128 uses [] panics never pub
 fn core.num.u128.saturating_sub(self: u128, other: u128) -> u128 uses [] panics never pub
@@ -439,6 +446,7 @@ fn core.num.u16.leading_zeros(self: u16) -> u32 uses [] panics never pub
 fn core.num.u16.max(self: u16, other: u16) -> u16 uses [] panics never pub
 fn core.num.u16.min(self: u16, other: u16) -> u16 uses [] panics never pub
 fn core.num.u16.parse(text: &str) -> Result<u16, core.num.ParseIntError> uses [] panics never pub
+fn core.num.u16.parse_decimal(text: &str) -> Result<u16, core.num.ParseIntError> uses [] panics never pub
 fn core.num.u16.saturating_add(self: u16, other: u16) -> u16 uses [] panics never pub
 fn core.num.u16.saturating_mul(self: u16, other: u16) -> u16 uses [] panics never pub
 fn core.num.u16.saturating_sub(self: u16, other: u16) -> u16 uses [] panics never pub
@@ -478,6 +486,7 @@ fn core.num.u32.leading_zeros(self: u32) -> u32 uses [] panics never pub
 fn core.num.u32.max(self: u32, other: u32) -> u32 uses [] panics never pub
 fn core.num.u32.min(self: u32, other: u32) -> u32 uses [] panics never pub
 fn core.num.u32.parse(text: &str) -> Result<u32, core.num.ParseIntError> uses [] panics never pub
+fn core.num.u32.parse_decimal(text: &str) -> Result<u32, core.num.ParseIntError> uses [] panics never pub
 fn core.num.u32.saturating_add(self: u32, other: u32) -> u32 uses [] panics never pub
 fn core.num.u32.saturating_mul(self: u32, other: u32) -> u32 uses [] panics never pub
 fn core.num.u32.saturating_sub(self: u32, other: u32) -> u32 uses [] panics never pub
@@ -519,6 +528,7 @@ fn core.num.u64.max(self: u64, other: u64) -> u64 uses [] panics never pub
 fn core.num.u64.min(self: u64, other: u64) -> u64 uses [] panics never pub
 fn core.num.u64.nearest_to_f64(self: u64) -> f64 uses [] panics never pub
 fn core.num.u64.parse(text: &str) -> Result<u64, core.num.ParseIntError> uses [] panics never pub
+fn core.num.u64.parse_decimal(text: &str) -> Result<u64, core.num.ParseIntError> uses [] panics never pub
 fn core.num.u64.saturating_add(self: u64, other: u64) -> u64 uses [] panics never pub
 fn core.num.u64.saturating_mul(self: u64, other: u64) -> u64 uses [] panics never pub
 fn core.num.u64.saturating_sub(self: u64, other: u64) -> u64 uses [] panics never pub
@@ -552,6 +562,7 @@ fn core.num.u8.leading_zeros(self: u8) -> u32 uses [] panics never pub
 fn core.num.u8.max(self: u8, other: u8) -> u8 uses [] panics never pub
 fn core.num.u8.min(self: u8, other: u8) -> u8 uses [] panics never pub
 fn core.num.u8.parse(text: &str) -> Result<u8, core.num.ParseIntError> uses [] panics never pub
+fn core.num.u8.parse_decimal(text: &str) -> Result<u8, core.num.ParseIntError> uses [] panics never pub
 fn core.num.u8.saturating_add(self: u8, other: u8) -> u8 uses [] panics never pub
 fn core.num.u8.saturating_mul(self: u8, other: u8) -> u8 uses [] panics never pub
 fn core.num.u8.saturating_sub(self: u8, other: u8) -> u8 uses [] panics never pub
@@ -595,6 +606,7 @@ fn core.num.usize.max(self: usize, other: usize) -> usize uses [] panics never p
 fn core.num.usize.min(self: usize, other: usize) -> usize uses [] panics never pub
 fn core.num.usize.nearest_to_f64(self: usize) -> f64 uses [] panics never pub
 fn core.num.usize.parse(text: &str) -> Result<usize, core.num.ParseIntError> uses [] panics never pub
+fn core.num.usize.parse_decimal(text: &str) -> Result<usize, core.num.ParseIntError> uses [] panics never pub
 fn core.num.usize.saturating_add(self: usize, other: usize) -> usize uses [] panics never pub
 fn core.num.usize.saturating_mul(self: usize, other: usize) -> usize uses [] panics never pub
 fn core.num.usize.saturating_sub(self: usize, other: usize) -> usize uses [] panics never pub

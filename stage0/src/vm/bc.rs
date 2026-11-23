@@ -280,7 +280,7 @@ pub enum Ins {
     Eprint { data: S },
     FmtFloat { a: S, bits: u32 },
     FloatText { d: S, a: S, dst: S, bits: u32 },
-    ParseInt { d: S, s: S, radix: S, ty: u32 },
+    ParseInt { d: S, s: S, radix: S, ty: u32, strict: bool },
     EnvArgCount { d: S },
     EnvArg { d: S, i: S },
     EnvVar { d: S, name: S },

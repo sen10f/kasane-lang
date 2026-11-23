@@ -1025,7 +1025,8 @@ pub enum Op {
     /// `core.num.<int>.from_str_radix(text, radix)`。`ty` は結果の整数型、`s` は `&str` (fat)、`radix` は `u32`。
     /// 結果は `Result<ty, core.num.ParseIntError>` (tag bit が 0 なら Ok でペイロードは整数、1 なら Err でペイロードは ParseIntError の kind)。
     /// `panics never` だけで使える (エラーは値として返す)。128 ビット整数は戻り値の型で表せる範囲だけ扱う。
-    ParseInt { ty: Ty, s: VId, radix: VId },
+    /// `strict` は `parse_decimal` (符号・先頭の 0・空白・非 ASCII の数字を拒む 10 進の厳密版)。
+    ParseInt { ty: Ty, s: VId, radix: VId, strict: bool },
 }
 
 /// `Op::Own` の種類 (設計_KIR.md 24 章)。
@@ -1563,7 +1564,10 @@ fn fmt_inst(i: &Inst) -> String {
         Op::Abort => "abort".to_string(),
         Op::FmtFloat { bits, a } => format!("fmtfloat.{bits} {}", fmt_val(*a)),
         Op::FloatText { bits, a, dst } => format!("floattext.{bits} {}", fmt_vals(&[*a, *dst])),
-        Op::ParseInt { ty, s, radix } => format!("parseint.{} {}", ty.name(), fmt_vals(&[*s, *radix])),
+        Op::ParseInt { ty, s, radix, strict } => {
+            let kw = if *strict { "parseint.dec" } else { "parseint" };
+            format!("{}.{} {}", kw, ty.name(), fmt_vals(&[*s, *radix]))
+        }
     };
     format!("%{}: {} = {}", i.dst, fmt_ty(i.ty), body)
 }
@@ -2112,7 +2116,8 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             let v = operands(2)?;
             Ok(Op::FloatText { bits, a: v[0], dst: v[1] })
         }
-        ("parseint", [t]) => {
+        ("parseint", [kw @ .., t]) if kw.is_empty() || kw == ["dec"] => {
+            let strict = !kw.is_empty();
             let Some(ty) = Ty::parse(t) else {
                 return Err(perr(line, format!("parseint の型 {} は不明", t)));
             };
@@ -2120,7 +2125,7 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
                 return Err(perr(line, format!("parseint の型 {} は整数ではない", ty.name())));
             }
             let vs = operands(2)?;
-            Ok(Op::ParseInt { ty, s: vs[0], radix: vs[1] })
+            Ok(Op::ParseInt { ty, s: vs[0], radix: vs[1], strict })
         }
         ("index", ["check"]) if ty == Ty::Unit => {
             let v = operands(2)?;
@@ -3187,7 +3192,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("floattext の書き先は ptr のはず".into());
                         }
                     }
-                    Op::ParseInt { ty, s, radix } => {
+                    Op::ParseInt { ty, s, radix, .. } => {
                         if !ty.is_int() {
                             return Err(format!("parseint の結果の整数型 {} は整数ではない", ty.name()));
                         }
