@@ -1,0 +1,13 @@
+static t.L: std.sync.RwLock<u64> = std.sync.RwLock.new(0u64) pub
+
+fn t.go() -> () uses [thread] panics may
+    let g = t.L.write()
+    core.check.eq(*g.get(), 0u64)
+    let h = t.L.read()
+    core.check.eq(*h.get(), 0u64)
+end t.go
+
+fn t.main() -> Result<(), std.io.Error> uses [thread] panics may
+    t.go()
+    Ok(())
+end t.main

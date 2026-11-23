@@ -1,0 +1,35 @@
+static t.L: std.sync.RwLock<u64> = std.sync.RwLock.new(0u64) pub
+
+fn t.go() -> () uses [alloc, thread] panics may
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 1usize)
+    match made {
+        Ok(pair) => {
+            let (tx, rx) = pair
+            let spawned = std.thread.spawn(
+                std.alloc.SYSTEM,
+                fn() -> () capture [move rx] {
+                    let g = t.L.write()
+                    match rx.recv() {
+                        Ok(n) => core.check.eq(n, 1u32)
+                        Err(_e) => core.panic.panic("recv failed")
+                    }
+                    core.check.eq(*g.get(), 0u64)
+                },
+            )
+            let worker = match spawned {
+                Ok(h) => h
+                Err(_e) => core.panic.panic("spawn failed")
+            }
+            let g2 = t.L.read()
+            core.check.eq(*g2.get(), 0u64)
+            worker.join()
+            core.mem.drop(tx)
+        }
+        Err(_e) => core.panic.panic("channel failed")
+    }
+end t.go
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
+    t.go()
+    Ok(())
+end t.main

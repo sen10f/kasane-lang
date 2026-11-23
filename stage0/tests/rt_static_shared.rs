@@ -54,3 +54,54 @@ fn rt_static_shared_struct_payload_under_16_threads() {
 fn rt_static_shared_rwlock_many_readers_and_writers() {
     same_output("rwlock", "rw ok\n");
 }
+
+/// 全員待ち・同じスレッドの再取得は deadlock (終了コード 101、Mutex と同じ文言)。木走査・KIR 実行器・ネイティブのどれでも。
+fn deadlock_everywhere(name: &str, entry: &str) {
+    if cfg!(windows) {
+        return;
+    }
+    let src = fs::read_to_string(root().join("stage0").join("tests").join("data").join("rt_static_shared").join(format!("{}.ksnl", name))).unwrap();
+    let t = Tmp::new(&format!("rt_static_shared_{}", name), &src);
+    let msg = "panic: deadlock: lock() on a Mutex that another thread holds";
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(101), "{} 木走査: {}{}", name, text(&tw.stdout), text(&tw.stderr));
+    assert!(text(&tw.stderr).contains("deadlock"), "{}", text(&tw.stderr));
+    let k = run(&["kir", entry, "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "{} KIR: {}{}", name, text(&k.stdout), text(&k.stderr));
+    assert!(text(&k.stderr).contains("deadlock"), "{}", text(&k.stderr));
+    for release in [false, true] {
+        let cache = scratch::Scratch::at(format!("ksn_cache_rt_static_shared_dl_{}_{}_{}", std::process::id(), name, release));
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
+        if release {
+            c.arg("--release");
+        }
+        let o = c.output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+        let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t.native");
+        let r = Command::new(&p).output().unwrap();
+        assert_eq!(r.status.code(), Some(101), "{} release={}: {}", name, release, text(&r.stderr));
+        assert!(text(&r.stderr).contains(msg), "{}", text(&r.stderr));
+        let _ = fs::remove_dir_all(&cache);
+    }
+}
+
+#[test]
+fn rt_static_shared_rwlock_same_thread_write_write_is_a_deadlock_101() {
+    deadlock_everywhere("relock_ww", "t.go");
+}
+
+#[test]
+fn rt_static_shared_rwlock_same_thread_read_then_write_is_a_deadlock_101() {
+    deadlock_everywhere("relock_rw", "t.go");
+}
+
+#[test]
+fn rt_static_shared_rwlock_same_thread_write_then_read_is_a_deadlock_101() {
+    deadlock_everywhere("relock_wr", "t.go");
+}
+
+#[test]
+fn rt_static_shared_rwlock_all_threads_blocked_is_a_deadlock_101() {
+    deadlock_everywhere("rw_blocked", "t.go");
+}

@@ -1245,6 +1245,17 @@ impl Interp {
                 }
                 // RwLock: 協調実行では各スレッドが最後まで走るので、読み書きの衝突はない (ガードは持たれた印を取らない)。
                 if name == "read" || name == "write" {
+                    let addr = Rc::as_ptr(c) as *const () as usize;
+                    if name == "read" {
+                        if crate::value::HELD_MUTEXES.with(|h| h.borrow().contains(&addr)) {
+                            return panic(crate::interp::DEADLOCK_LOCK);
+                        }
+                        crate::value::HELD_READS.with(|h| *h.borrow_mut().entry(addr).or_insert(0) += 1);
+                    } else {
+                        if crate::value::HELD_READS.with(|h| h.borrow().contains_key(&addr)) || !crate::value::HELD_MUTEXES.with(|h| h.borrow_mut().insert(addr)) {
+                            return panic(crate::interp::DEADLOCK_LOCK);
+                        }
+                    }
                     let ty = if name == "read" { "std.sync.RwLockReadGuard" } else { "std.sync.RwLockWriteGuard" };
                     return Ok(Val::Struct(Rc::new(StructV {
                         ty: ty.into(),

@@ -162,6 +162,15 @@ use crate::interp::DEADLOCK_LOCK;
 /// 待ちの本体 (`mu` を持って呼ぶ)。待っている数 `blocked` を 1 増やし、生きている数 `live` 以上なら全員が待っているので
 /// `msg` (`@ksn.rt.deadlock*`) を出して終了コード 101 で終わる。そうでなければ状態が変わる (`gen` が進む) まで条件変数で待つ。
 /// ラベル `dead` / `w` / `lp` / `done` を使うので、1 つの関数に 1 回だけ入れる。最後は `done:` の後に続ける。
+/// RwLock の取得 (`k` は `rd` / `wr`)。まず try、だめなら 20 ms の時間つきの待ちを繰り返す。時間切れのとき、初回だけ大域の `blocked` を
+/// 1 つ増やし (Mutex と同じ「全員待ち」の判定: `blocked >= live` なら deadlock で 101)、取れたら (増やしていれば) 1 つ戻す。
+fn rw_lock_body(k: &str) -> String {
+    format!(
+        "  %ts = alloca [16 x i8], align 8\n  %t = call i32 @pthread_rwlock_try{k}lock(ptr %arg0)\n  %ok = icmp eq i32 %t, 0\n  br i1 %ok, label %got, label %lp\ngot:\n  ret i8 0\nlp:\n  %cnt = phi i32 [ 0, %entry ], [ 1, %cont ]\n  %cg = call i32 @clock_gettime(i32 0, ptr %ts)\n  %sec = load i64, ptr %ts\n  %np = getelementptr i8, ptr %ts, i64 8\n  %ns = load i64, ptr %np\n  %ns2 = add i64 %ns, 20000000\n  %over = icmp uge i64 %ns2, 1000000000\n  %ns3 = sub i64 %ns2, 1000000000\n  %nsf = select i1 %over, i64 %ns3, i64 %ns2\n  %sc = add i64 %sec, 1\n  %secf = select i1 %over, i64 %sc, i64 %sec\n  store i64 %secf, ptr %ts\n  store i64 %nsf, ptr %np\n  %r = call i32 @pthread_rwlock_timed{k}lock(ptr %arg0, ptr %ts)\n  %okk = icmp eq i32 %r, 0\n  br i1 %okk, label %locked, label %to\nto:\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %b = load i64, ptr @ksn.rt.blocked\n  %first = icmp eq i32 %cnt, 0\n  %inc = zext i1 %first to i64\n  %b1 = add i64 %b, %inc\n  store i64 %b1, ptr @ksn.rt.blocked\n  %l = load i64, ptr @ksn.rt.live\n  %d = icmp uge i64 %b1, %l\n  br i1 %d, label %dead, label %cont\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.rt.deadlock_lock)\n  call void @exit(i32 101)\n  unreachable\ncont:\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  br label %lp\nlocked:\n  %was = icmp ne i32 %cnt, 0\n  br i1 %was, label %dec, label %fin\ndec:\n  %lk2 = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %b2 = load i64, ptr @ksn.rt.blocked\n  %pos = icmp ugt i64 %b2, 0\n  %bm = sub i64 %b2, 1\n  %b3 = select i1 %pos, i64 %bm, i64 0\n  store i64 %b3, ptr @ksn.rt.blocked\n  %um2 = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  br label %fin\nfin:\n  ret i8 0\n",
+        k = k
+    )
+}
+
 fn block_body(msg: &str) -> String {
     format!(
         "  %b = load i64, ptr @ksn.rt.blocked\n  %b1 = add i64 %b, 1\n  store i64 %b1, ptr @ksn.rt.blocked\n  %l = load i64, ptr @ksn.rt.live\n  %d = icmp uge i64 %b1, %l\n  br i1 %d, label %dead, label %w\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr {msg})\n  call void @exit(i32 101)\n  unreachable\nw:\n  %g0 = load i64, ptr @ksn.rt.gen\n  br label %lp\nlp:\n  %r = call i32 @pthread_cond_wait(ptr @ksn.rt.cv, ptr @ksn.rt.mu)\n  %g1 = load i64, ptr @ksn.rt.gen\n  %same = icmp eq i64 %g1, %g0\n  br i1 %same, label %lp, label %done\ndone:\n"
@@ -219,8 +228,16 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
         ),
         // RwLock: glibc の `pthread_rwlock_t` (零で初期化済みと同じ)。読み手は同時に持て、書き手は 1 本だけ。待ちは OS の rwlock に任せる
         // (待ちの deadlock の検出は Mutex だけ)。
-        "ksn.thr.rwrd" => def("i8", "ptr %arg0", "  %r = call i32 @pthread_rwlock_rdlock(ptr %arg0)\n  ret i8 0\n"),
-        "ksn.thr.rwwr" => def("i8", "ptr %arg0", "  %r = call i32 @pthread_rwlock_wrlock(ptr %arg0)\n  ret i8 0\n"),
+        "ksn.thr.rwrd" => def(
+            "i8",
+            "ptr %arg0",
+            &rw_lock_body("rd"),
+        ),
+        "ksn.thr.rwwr" => def(
+            "i8",
+            "ptr %arg0",
+            &rw_lock_body("wr"),
+        ),
         "ksn.thr.rwunlock" => def("i8", "ptr %arg0", "  %r = call i32 @pthread_rwlock_unlock(ptr %arg0)\n  ret i8 0\n"),
         "ksn.thr.wait" => def("i8", "", &format!("{}  ret i8 0\n", block_body("@ksn.rt.deadlock"))),
         "ksn.thr.new" => def("i64", "", &format!("  %p = call ptr @calloc(i64 1, i64 {})\n  %z = icmp eq ptr %p, null\n  br i1 %z, label %oom, label %ok\noom:\n  call void @exit(i32 101)\n  unreachable\nok:\n  %i = ptrtoint ptr %p to i64\n  ret i64 %i\n", THREAD_ENTRY_SIZE)),
@@ -680,8 +697,11 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
                     "declare i32 @pthread_mutexattr_settype(ptr, i32)",
                     "declare i32 @pthread_mutexattr_destroy(ptr)",
                     "declare i32 @pthread_mutex_init(ptr, ptr)",
-                    "declare i32 @pthread_rwlock_rdlock(ptr)",
-                    "declare i32 @pthread_rwlock_wrlock(ptr)",
+                    "declare i32 @pthread_rwlock_tryrdlock(ptr)",
+                    "declare i32 @pthread_rwlock_trywrlock(ptr)",
+                    "declare i32 @pthread_rwlock_timedrdlock(ptr, ptr)",
+                    "declare i32 @pthread_rwlock_timedwrlock(ptr, ptr)",
+                    "declare i32 @clock_gettime(i32, ptr)",
                     "declare i32 @pthread_rwlock_unlock(ptr)",
                 ] {
                     cx.decl(d);
