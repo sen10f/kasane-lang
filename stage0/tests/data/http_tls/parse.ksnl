@@ -15,12 +15,12 @@ end t.err
 
 fn t.main() -> Result<(), std.http.Error> uses [alloc, io.console] panics never
     t.one("plain", b"GET /a HTTP/1.1\r\nHost: x\r\n\r\n", 8192usize, 1024usize)?
-    t.one("close", b"GET /a HTTP/1.1\r\nConnection: close\r\n\r\n", 8192usize, 1024usize)?
+    t.one("close", b"GET /a HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", 8192usize, 1024usize)?
     t.one("v10", b"GET /a HTTP/1.0\r\n\r\n", 8192usize, 1024usize)?
     t.one("v10ka", b"GET /a HTTP/1.0\r\nConnection: keep-alive\r\n\r\n", 8192usize, 1024usize)?
-    t.one("body", b"POST /s HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc", 8192usize, 1024usize)?
-    t.one("chunked", b"POST /c HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5;ext=1\r\npedia\r\n0\r\nX-T: 1\r\n\r\n", 8192usize, 1024usize)?
-    t.one("partial", b"POST /s HTTP/1.1\r\nContent-Length: 5\r\n\r\nab", 8192usize, 1024usize)?
+    t.one("body", b"POST /s HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc", 8192usize, 1024usize)?
+    t.one("chunked", b"POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5;ext=1\r\npedia\r\n0\r\nX-T: 1\r\n\r\n", 8192usize, 1024usize)?
+    t.one("partial", b"POST /s HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nab", 8192usize, 1024usize)?
     t.one("badreq", b"GET x HTTP/1.1\r\n\r\n", 8192usize, 1024usize)?
     t.one("http2", b"GET /x HTTP/2\r\n\r\n", 8192usize, 1024usize)?
     t.one("badhdr", b"GET /x HTTP/1.1\r\nbroken\r\n\r\n", 8192usize, 1024usize)?
@@ -28,13 +28,19 @@ fn t.main() -> Result<(), std.http.Error> uses [alloc, io.console] panics never
     t.one("gzip", b"POST /x HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n", 8192usize, 1024usize)?
     t.one("clbig", b"POST /x HTTP/1.1\r\nContent-Length: 2000\r\n\r\n", 8192usize, 1024usize)?
     t.one("clnan", b"POST /x HTTP/1.1\r\nContent-Length: 1x\r\n\r\n", 8192usize, 1024usize)?
-    t.one("hexbad", b"POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n", 8192usize, 1024usize)?
-    t.one("chunkbig", b"POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n800\r\n", 8192usize, 100usize)?
+    t.one("hexbad", b"POST /x HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n", 8192usize, 1024usize)?
+    t.one("chunkbig", b"POST /x HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n800\r\n", 8192usize, 100usize)?
     t.one("headbig", b"GET /x HTTP/1.1\r\nX: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n", 16usize, 1024usize)?
-    t.one("headok", b"GET / HTTP/1.1\r\n\r\n", 18usize, 1024usize)?
-    t.one("crlfbad", b"GET /x HTTP/1.1\r\nA: 1\r\n\r\nPOSTX", 8192usize, 1024usize)?
+    t.one("headok", b"GET / HTTP/1.1\r\nHost: x\r\n\r\n", 27usize, 1024usize)?
+    t.one("crlfbad", b"GET /x HTTP/1.1\r\nHost: x\r\nA: 1\r\n\r\nPOSTX", 8192usize, 1024usize)?
+    t.one("barecr", b"GET /x HTTP/1.1\r\nHost: x\r\nA: 1\rB\r\n\r\n", 8192usize, 1024usize)?
+    t.one("nul", b"GET /x HTTP/1.1\r\nHost: x\r\nA: 1\0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("nohost", b"GET /x HTTP/1.1\r\nA: 1\r\n\r\n", 8192usize, 1024usize)?
+    t.one("twohost", b"GET /x HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n", 8192usize, 1024usize)?
+    t.one("twote", b"POST /x HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("v10chunk", b"POST /x HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", 8192usize, 1024usize)?
     let mut d = std.http.Decoder.new(8192usize, 1024usize)
-    d.feed(b"GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\nConnection: close\r\n\r\n")?
+    d.feed(b"GET /1 HTTP/1.1\r\nHost: x\r\n\r\nGET /2 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")?
     if let Some(r1) = d.next()? {
         t.show("pipe1", &r1)?
     }
@@ -45,7 +51,7 @@ fn t.main() -> Result<(), std.http.Error> uses [alloc, io.console] panics never
         std.io.print_line("pipe3 none")?
     }
     let mut split = std.http.Decoder.new(8192usize, 1024usize)
-    split.feed(b"POST /c HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWi")?
+    split.feed(b"POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWi")?
     if split.next()? is None {
         std.io.print_line("split1 none")?
     }

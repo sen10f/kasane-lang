@@ -230,6 +230,22 @@ fn std.http.find_head_end(data: &[u8]) -> Option<usize> uses [] panics never
     None
 end std.http.find_head_end
 
+fn std.http.has_bare_ctl(data: &[u8]) -> bool uses [] panics never
+    let len = data.len()
+    let mut i = 0usize
+    while i < len {
+        let b = std.http.byte_at(data, i)
+        if b == 0u8 {
+            return true
+        }
+        if b == b'\r' && !std.http.crlf_at(data, i) {
+            return true
+        }
+        i = i.saturating_add(1usize)
+    }
+    false
+end std.http.has_bare_ctl
+
 fn std.http.hex_value(c: u8) -> Option<usize> uses [] panics never
     if c >= b'0' && c <= b'9' {
         return Some(usize.from_u8(c.wrapping_sub(b'0')))
@@ -256,6 +272,9 @@ fn std.http.is_method(text: &str) -> bool uses [] panics never
 end std.http.is_method
 
 fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, std.http.Error> uses [alloc] panics never
+    if std.http.has_bare_ctl(head) {
+        return Err(std.http.Error.BadRequest)
+    }
     let text = match core.str.from_utf8(head) {
         Ok(t) => t
         Err(_) => return Err(std.http.Error.BadRequest)
@@ -285,6 +304,7 @@ fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, st
     let mut length = 0usize
     let mut has_length = false
     let mut has_encoding = false
+    let mut has_host = false
     let mut chunked = false
     for field in rest.split("\r\n") {
         if !field.is_empty() {
@@ -296,13 +316,21 @@ fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, st
                 return Err(std.http.Error.BadRequest)
             }
             let value = raw_value.trim()
-            if key.eq_ignore_ascii_case("content-length") {
+            if key.eq_ignore_ascii_case("host") {
+                if has_host {
+                    return Err(std.http.Error.BadRequest)
+                }
+                has_host = true
+            } else if key.eq_ignore_ascii_case("content-length") {
                 if has_length {
                     return Err(std.http.Error.BadRequest)
                 }
                 has_length = true
                 length = std.http.parse_length(value, max_body)?
             } else if key.eq_ignore_ascii_case("transfer-encoding") {
+                if has_encoding {
+                    return Err(std.http.Error.BadRequest)
+                }
                 has_encoding = true
                 if !value.eq_ignore_ascii_case("chunked") {
                     return Err(std.http.Error.Unsupported)
@@ -318,6 +346,12 @@ fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, st
         }
     }
     if has_encoding && has_length {
+        return Err(std.http.Error.BadRequest)
+    }
+    if v11 && !has_host {
+        return Err(std.http.Error.BadRequest)
+    }
+    if chunked && !v11 {
         return Err(std.http.Error.BadRequest)
     }
     let method = std.string.String.from_str(method_text)?
