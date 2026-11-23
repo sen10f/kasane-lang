@@ -1112,3 +1112,65 @@ fn fix_as_cast_narrowing_left_unfixed() {
     let after = run(&["check", "--json"], &t.0);
     assert!(codes(&text(&after.stdout)).iter().any(|c| c == "E0042"), "{}", text(&after.stdout));
 }
+
+/// 編集距離の「did you mean」案内は診断の文面に残るが、`ksn fix` は何も当てはめない
+/// (B3: 編集距離の当て推量を黙って適用して意味を変えるのをやめる。診断から
+/// 「(`ksn fix` で直せる)」は外れる)。
+#[test]
+fn fix_does_not_apply_did_you_mean_method_guess() {
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.trailing(1u64))\n    Ok(())\nend t.main\n\n\
+               fn t.trailing(a: u64) -> u32 uses [] panics never\n    a.trailing_ones()\nend t.trailing\n";
+    let t = Tmp::new_raw("fix_didyoumean_trailing", src);
+    let before = run(&["check", "--json"], &t.0);
+    let bout = text(&before.stdout);
+    assert!(codes(&bout).iter().any(|c| c == "E1108"), "{}", bout);
+    assert!(bout.contains("did you mean `trailing_zeros`"), "{}", bout);
+    // `fix` は何も当てはめず、終了コードは 1（エラーが残る）。
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(1));
+    let fixed = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    assert_eq!(fixed, src, "did-you-mean guess must not be applied: {fixed}");
+    // チェックはまだ失敗し、案内は文面に残る。
+    let after = run(&["check", "--json"], &t.0);
+    let aout = text(&after.stdout);
+    assert!(codes(&aout).iter().any(|c| c == "E1108"), "{}", aout);
+    assert!(aout.contains("did you mean `trailing_zeros`"), "{}", aout);
+}
+
+/// `4u8.success()` は存在しない (`successor` はある)。`ksn fix` は `successor` に
+/// 書き換えず、ファイルは不変、`ksn check` はまだ E1108 を出す。
+#[test]
+fn fix_does_not_apply_did_you_mean_successor() {
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(4u8.success())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fix_didyoumean_success", src);
+    let before = run(&["check", "--json"], &t.0);
+    let bout = text(&before.stdout);
+    assert!(codes(&bout).iter().any(|c| c == "E1108"), "{}", bout);
+    assert!(bout.contains("did you mean `successor`"), "{}", bout);
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(1));
+    let fixed = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    assert_eq!(fixed, src, "did-you-mean guess must not be applied: {fixed}");
+    let after = run(&["check", "--json"], &t.0);
+    let aout = text(&after.stdout);
+    assert!(codes(&aout).iter().any(|c| c == "E1108"), "{}", aout);
+    assert!(aout.contains("did you mean `successor`"), "{}", aout);
+}
+
+/// `core.cmp.max` は未解決 (`core.cmp.Eq` は別のもの)。`ksn fix` は `Eq` に
+/// 書き換えず、ファイルは不変、`ksn check` はまだ E1101 を出す。
+#[test]
+fn fix_does_not_apply_did_you_mean_core_cmp_max() {
+    let src = "fn t.m(a: u64, b: u64) -> u64 uses [] panics never\n    core.cmp.max(a, b)\nend t.m\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.m(1u64, 2u64))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fix_didyoumean_cmp_max", src);
+    let before = run(&["check", "--json"], &t.0);
+    let bout = text(&before.stdout);
+    assert!(codes(&bout).iter().any(|c| c == "E1101"), "{}", bout);
+    assert!(bout.contains("did you mean"), "{}", bout);
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(1));
+    let fixed = fs::read_to_string(t.0.join("src").join("t.ksnl")).unwrap();
+    assert_eq!(fixed, src, "did-you-mean guess must not be applied: {fixed}");
+    let after = run(&["check", "--json"], &t.0);
+    let aout = text(&after.stdout);
+    assert!(codes(&aout).iter().any(|c| c == "E1101"), "{}", aout);
+    assert!(aout.contains("did you mean"), "{}", aout);
+}

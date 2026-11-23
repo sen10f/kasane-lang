@@ -685,8 +685,10 @@ fn unknown_method_diagnostic_carries_a_fix() {
     let b = body(&["let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)", "core.mem.drop(v.pushh(1u8))"]);
     let t = Tmp::new("fix_method", &main_wrap("", &b));
     let out = text(&run(&["check", "--json"], &t.0).stdout);
-    assert!(out.contains("\"replace\": \"push\""), "{}", out);
-    assert!(out.contains("\"end_col\""), "{}", out);
+    // 「did you mean」の案内は文面に残るが、編集距離の当て推量は fix に付けない。
+    assert!(out.contains("unknown method `pushh`; did you mean `push`?"), "{}", out);
+    assert!(!out.contains(" (`ksn fix` で直せる)"), "{}", out);
+    assert!(out.contains("\"fix\": []"), "{}", out);
 }
 
 #[test]
@@ -704,13 +706,18 @@ fn ksn_fix_repairs_simple_diagnostics() {
     );
     let t = Tmp::new("fix_all", &src);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(1));
+    // 他の診断は直るが、編集距離の「did you mean」 (`pushh` → `push`) は直らない。
     let o = run(&["fix"], &t.0);
-    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
-    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    assert_eq!(o.status.code(), Some(1), "{}{}", text(&o.stdout), text(&o.stderr));
     let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
     assert!(fixed.contains("let _unused = 1u8"), "{}", fixed);
     assert!(fixed.contains("core.mem.drop(2u8)"), "{}", fixed);
-    assert!(fixed.contains("v.push(1u8)"), "{}", fixed);
+    assert!(fixed.contains("v.pushh(1u8)"), "{}", fixed);
+    // 意味の当て推量は直らないので check はまだ E1108 で止まり、案内は文面に残る。
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+    assert!(out.contains("did you mean `push`"), "{}", out);
+    assert!(!out.contains(" (`ksn fix` で直せる)"), "{}", out);
 }
 
 // ---- 型付きの穴: core.panic.todo ----
@@ -1175,7 +1182,8 @@ fn unresolved_name_suggests_a_close_definition_and_fix() {
     let t = Tmp::new("near_name", &main_wrap("", &b));
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(out.contains("did you mean alloc.vec.Vec.new"), "{}", out);
-    assert!(out.contains("\"replace\": \"alloc.vec.Vec.new\""), "{}", out);
+    assert!(!out.contains(" (`ksn fix` で直せる)"), "{}", out);
+    assert!(out.contains("\"fix\": []"), "{}", out);
 }
 
 // ---- 診断の改善 (3): 1行ブロック・型を値として使う・先頭の無効な行 ----
