@@ -265,8 +265,12 @@ fn parse.expr.is_unary_op(code: u32) -> bool uses [] panics never
 end parse.expr.is_unary_op
 
 fn parse.expr.looks_struct_lit(p: &parse.cur.P) -> bool uses [] panics never
-    let a = parse.cur.peek(p, 1usize)
-    let b = parse.cur.peek(p, 2usize)
+    let mut k = 1usize
+    while parse.cur.peek(p, k).kind == parse.tok.Kind.Nl {
+        k = k + 1usize
+    }
+    let a = parse.cur.peek(p, k)
+    let b = parse.cur.peek(p, k + 1usize)
     a.kind == parse.tok.Kind.Ident && b.kind == parse.tok.Kind.Op && b.code == 58u32
 end parse.expr.looks_struct_lit
 
@@ -490,16 +494,21 @@ end parse.expr.stmt
 
 fn parse.expr.struct_lit(p: &mut parse.cur.P, at: usize, start: usize, stop: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     parse.cur.advance(p)
+    parse.cur.skip_nl(p)
     let mut items = std.vec.Vec.new()
     loop {
         let name = parse.cur.name_tok(p)?
         parse.cur.expect_ch(p, b':')?
         let e = parse.expr.expr(p, false)?
         items.push(parse.ast.add2(&mut p.ast, parse.ast.Kind.FieldInit, name, name, e)?)?
-        if !parse.cur.accept_ch(p, b',') {
+        let sep = parse.cur.accept_ch(p, b',')
+        let nl = parse.cur.kind(p) == parse.tok.Kind.Nl
+        parse.cur.skip_nl(p)
+        if parse.cur.is_ch(p, b'}') || !(sep || nl) {
             break
         }
     }
+    parse.cur.skip_nl(p)
     parse.cur.expect_ch(p, b'}')?
     let l = parse.ast.list(&mut p.ast, &items, at)?
     parse.ast.add3(&mut p.ast, parse.ast.Kind.StructLit, at, start, stop, l)
