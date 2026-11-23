@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -66,6 +67,9 @@ def build(job):
         cls, why = 'error', f'{TIMEOUT} 秒を超えた'
     # 判定が済んだら、パッケージごとのキャッシュ (実行体の写しで 1 本 約 130 MB) をすぐ消す (全部を残すと /tmp が数十 GB 埋まる)。
     shutil.rmtree(env['KSN_CACHE_DIR'], ignore_errors=True)
+    # ビルドの成果物 (target/ にバンドルが置かれる。1 本 約 130 MB) も判定の後すぐ消す。全部を残すと 1 回で 25 GB を超え、
+    # tmpfs の /tmp が埋まる (2026-11-23)。
+    shutil.rmtree(os.path.join(cwd, 'target'), ignore_errors=True)
     return group, name, cls, why
 
 
@@ -107,6 +111,8 @@ def main():
         return 2
     t0 = time.monotonic()
     work = tempfile.mkdtemp(prefix='ksn_native_ratio_')
+    # `timeout` などの SIGTERM でも finally の片付けが走るように、SystemExit に変える。
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
         jobs = collect(work)
         with cf.ThreadPoolExecutor(max_workers=JOBS) as ex:
