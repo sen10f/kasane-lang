@@ -221,9 +221,15 @@ fn ends_with_pub(line: &str) -> bool {
 
 /// ファイル1つを Def の列にする。module / layer は呼び出し側が与える。
 pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
+    load_file_all(path, module, src).map_err(|mut v| v.remove(0).2)
+}
+
+/// `load_file` と同じだが、誤りを定義ごとに全部返す: (始めの行, 終わりの行, 誤り)。定義の構造そのものが
+/// 壊れている (`end` の欠落など) ときは、ファイル全体を指す 1 件だけ。定義の構文解析は互いに独立。
+pub fn load_file_all(path: &str, module: &str, src: &str) -> Result<Vec<Def>, Vec<(usize, usize, String)>> {
     let sig = path.ends_with(".sig");
     let lines: Vec<&str> = src.split('\n').collect();
-    let spans = defs::scan_with(src, sig)?;
+    let spans = defs::scan_with(src, sig).map_err(|e| vec![(1, lines.len().max(1), e)])?;
     let build = |sp: &defs::DefSpan| -> R<Def> {
         let l = lines[sp.line - 1];
         let mut p = Parser::new(line_tokens(l, sp.line)?);
@@ -502,20 +508,31 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
     };
     // 定義の数が多いファイル (`core/num.sig` は約 800 件) は、定義ごとの構文解析が独立なので並列にする。
     let mut out: Vec<Def> = Vec::with_capacity(spans.len());
+    let mut errs: Vec<(usize, usize, String)> = vec![];
     let nt = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 8);
     if spans.len() >= 256 && nt > 1 {
         let per = spans.len().div_ceil(nt);
-        let parts: Vec<R<Vec<Def>>> = std::thread::scope(|sc| {
-            let hs: Vec<_> = spans.chunks(per).map(|ch| sc.spawn(|| ch.iter().map(&build).collect::<R<Vec<Def>>>())).collect();
+        let parts: Vec<Vec<R<Def>>> = std::thread::scope(|sc| {
+            let hs: Vec<_> = spans.chunks(per).map(|ch| sc.spawn(|| ch.iter().map(&build).collect::<Vec<R<Def>>>())).collect();
             hs.into_iter().map(|h| h.join().expect("構文解析のスレッド")).collect()
         });
-        for p in parts {
-            out.extend(p?);
+        let all = parts.into_iter().flatten();
+        for (sp, r) in spans.iter().zip(all) {
+            match r {
+                Ok(d) => out.push(d),
+                Err(e) => errs.push((sp.line, sp.end_line.max(sp.line), e)),
+            }
         }
     } else {
         for sp in &spans {
-            out.push(build(sp)?);
+            match build(sp) {
+                Ok(d) => out.push(d),
+                Err(e) => errs.push((sp.line, sp.end_line.max(sp.line), e)),
+            }
         }
+    }
+    if !errs.is_empty() {
+        return Err(errs);
     }
     normalize_short_names(&mut out);
     Ok(out)

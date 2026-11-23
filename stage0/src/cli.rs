@@ -496,6 +496,10 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
                 if h.code == "E0062" && s.error.is_none() {
                     continue;
                 }
+                // 誤りのある定義の外の行は、先の誤りの巻き添えか別の定義の話なので出さない (正しい定義には診断を付けない)。
+                if matches!(h.code, "E0055" | "E0057") && !s.all_errors.is_empty() && !s.all_errors.iter().any(|(a, b, _)| h.line >= *a && h.line <= *b) {
+                    continue;
+                }
                 guided.push(h.line);
                 rep.add(h.code, &h.msg, Some(&fl), h.line, h.col, true);
             }
@@ -514,8 +518,10 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
             if dup {
                 continue;
             }
-            if !(matches!(e.code.as_str(), "E0002" | "E0003") && guided.contains(&e.line)) {
-                rep.add(&e.code, &e.msg, Some(&fl), e.line, e.col, true);
+            for (_, _, e) in &s.all_errors {
+                if !(matches!(e.code.as_str(), "E0002" | "E0003") && guided.contains(&e.line)) {
+                    rep.add(&e.code, &e.msg, Some(&fl), e.line, e.col, true);
+                }
             }
             continue;
         }
@@ -2864,6 +2870,8 @@ struct FmtDiag {
     gram: crate::grammar::GramRes,
     /// 読み込み (構文) の誤り。
     err: Option<crate::project::PErr>,
+    /// 定義ごとの読み込みの誤りの全部 (`err` は先頭)。
+    errs: Vec<crate::project::PErr>,
     /// 構文の誤りの文件面から拾った Rust 風の書き方 (行:列つき)。
     hits: Vec<crate::rustisms::Hit>,
     /// 事前検査 (100 文字を超える行など) が通ったか。
@@ -2887,13 +2895,15 @@ fn fmt_diag(s: &crate::project::Source, text: &str, relpath: &str, grammar: &Gra
     let lints: Vec<_> = Lint::new(relpath, &text.replace("\r\n", "\n")).run().into_iter().filter(|(c, _, _)| c != "unused").collect();
     let gram = grammar.check(text);
     // 元のファイルと同じ文字列なら、読み込み時の誤りをそのまま使う (読む手間を省く)。
-    let err = if text == s.text {
-        s.error.clone()
+    let all: Vec<(usize, usize, crate::project::PErr)> = if text == s.text {
+        s.all_errors.clone()
     } else {
-        crate::program::load_file(&s.path, "", text).err().map(|e| decode_err(&e))
+        crate::program::load_file_all(&s.path, "", text).err().map_or(vec![], |v| v.into_iter().map(|(a, b, e)| (a, b, decode_err(&e))).collect())
     };
-    let hits = if err.is_some() { crate::rustisms::scan(text) } else { vec![] };
-    FmtDiag { lex: crate::lexrules::scan(text), lint: lints, precheck_ok: grammar.precheck_ok(text), gram, err, hits }
+    let err = all.first().map(|e| e.2.clone());
+    let hits = if err.is_some() { crate::rustisms::scan(text).into_iter().filter(|h| !matches!(h.code, "E0055" | "E0057") || all.iter().any(|(a, b, _)| h.line >= *a && h.line <= *b)).collect() } else { vec![] };
+    let errs = all.into_iter().map(|e| e.2).collect();
+    FmtDiag { lex: crate::lexrules::scan(text), lint: lints, precheck_ok: grammar.precheck_ok(text), gram, err, errs, hits }
 }
 
 fn cmd_fmt(args: &[String]) -> i32 {
@@ -3029,7 +3039,7 @@ fn cmd_fmt(args: &[String]) -> i32 {
         if !d.gram.ok && !d.hits.iter().any(|h| h.line == d.gram.line) {
             println!("{}:{}:{}: {}: {}", rel(&s.path), d.gram.line, d.gram.col, d.gram.code, d.gram.msg);
         }
-        if let Some(e) = &d.err {
+        for e in &d.errs {
             if !(e.code == "E0002" && d.hits.iter().any(|h| h.line == e.line)) {
                 println!("{}:{}:{}: {}: {}", rel(&s.path), e.line, e.col, e.code, e.msg);
             }
