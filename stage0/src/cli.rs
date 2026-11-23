@@ -2915,7 +2915,13 @@ fn cmd_fmt(args: &[String]) -> i32 {
             if st != s.text && crate::program::load_file(&s.path, "", &st).is_ok() {
                 format_source_prog(&st, &s.path, own_len)
             } else {
-                mechanical_collapse(&st)
+                // 100 文字を超える行は、`let` への括り出しで縮められれば整形する (fmt_hoist.rs)。
+                let hoisted = format_source_prog(&st, &s.path, own_len);
+                if hoisted != st && crate::program::load_file(&s.path, "", &hoisted).is_ok() {
+                    hoisted
+                } else {
+                    mechanical_collapse(&st)
+                }
             }
         };
         let relpath = lint_rel(s, &srcroot);

@@ -997,6 +997,7 @@ pub fn format_source_with(text: &str, path: &str, canon: bool, own_len: bool) ->
     }
     if canon {
         fix_syntax(path, own_len, &mut lines);
+        crate::fmt_hoist::hoist_long_lines(&mut lines);
     }
     let joined = lines.join("\n") + "\n";
     let defs = match load_file(path, "", &joined) {
