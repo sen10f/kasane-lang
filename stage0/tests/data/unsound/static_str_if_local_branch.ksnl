@@ -1,0 +1,13 @@
+fn t.main() -> () uses [alloc, env] panics may
+    let s = std.string.String.from_str("loc").unwrap()
+    let bad = if s.len() == 3usize {
+        "lit"
+    } else {
+        s.as_str()
+    }
+    core.mem.drop(t.work(bad))
+end t.main
+
+fn t.work(token: &'static str) -> usize uses [] panics never
+    token.len()
+end t.work

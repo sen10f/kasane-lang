@@ -2077,7 +2077,13 @@ impl<'a> TypeCk<'a> {
             }
             // `e?`: 戻り値の参照がすべて `'static` と宣言された関数の結果は、`?` で取り出しても `'static`。
             "Try" => self.static_expr(&nf(e)[0]),
-            "Match" => self.static_nodes.contains(&crate::parser::nid(e)),
+            "Match" | "If" | "Block" => self.static_nodes.contains(&crate::parser::nid(e)),
+            // `'static` の値を持つ `Option` / `Result` から値を取り出す (`unwrap`・`expect`)、既定値も `'static` の `unwrap_or`。
+            "MCall" => match st(&nf(e)[1]).as_str() {
+                "unwrap" | "expect" => self.static_expr(&nf(e)[0]),
+                "unwrap_or" => self.static_expr(&nf(e)[0]) && items(&nf(e)[2]).first().map_or(false, |a| self.static_expr(a)),
+                _ => false,
+            },
             "Call" => {
                 let callee = &nf(e)[0];
                 if nname(callee) != "Path" {
@@ -2089,6 +2095,8 @@ impl<'a> TypeCk<'a> {
                 }
                 match self.p.resolve(&segs, &self.def().file).map(|r| r.target) {
                     Some(Target::Fn(i)) | Some(Target::Sig(i)) => ret_is_static(&self.p.defs[i].header),
+                    // 標準ライブラリの組み込み (`std.env.arg` など) は、`spec/stdlib` の署名で戻り値の領域を見る。
+                    Some(Target::Native(ref fq)) | Some(Target::Value(ref fq)) => self.p.sigs.get(fq).map_or(false, |&i| ret_is_static(&self.p.defs[i].header)),
                     _ => false,
                 }
             }
@@ -4173,6 +4181,11 @@ impl<'a> TypeCk<'a> {
                         last = t;
                     }
                 }
+                if let Some(l) = stmts.last().filter(|s| nname(s) == "ExprStmt") {
+                    if last != Ty::Never && self.static_expr(&nf(l)[0]) {
+                        self.static_nodes.insert(crate::parser::nid(e));
+                    }
+                }
                 self.scopes.pop();
                 last
             }
@@ -4490,8 +4503,12 @@ impl<'a> TypeCk<'a> {
                     return b;
                 }
                 // 6 の 2: 両方の枝は同じ型になる。`Ok(..)` と `Err(..)` の枝の型変数は、互いに一致させて決まる。
+                let (sa, sb) = (self.static_expr(&f[1]), self.static_expr(&f[2]));
                 if has_else && b != Ty::Never {
                     a = self.join_arm(&a, &b, nline(e), "`if` branches");
+                }
+                if sa && sb {
+                    self.static_nodes.insert(crate::parser::nid(e));
                 }
                 a
             }
