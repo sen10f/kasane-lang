@@ -179,6 +179,15 @@ impl<'a> Lw<'a> {
 
     /// `recv.name(args)` の数値のメソッド。受け手の値 `recv` は型 `rt`、呼び出しの結果の型は `res`。
     /// 対象外の名前や個数は、命令を置く前に `None` を返す。
+    /// 評価済みの数値の受け手 `recv` (参照は外してある) の数値メソッド。数値の計画に無ければ `None`。
+    pub(super) fn num_call_on(&mut self, e: &V, recv: VId, rt: Ty, name: &str, args: &[V]) -> LR<Option<Option<VId>>> {
+        if num_plan(rt, name, args.len()).is_none() {
+            return Ok(None);
+        }
+        let Ok(res) = self.ty_of(e) else { return Ok(None) };
+        self.num_method(nline(e), recv, rt, res, name, args)
+    }
+
     fn num_method(&mut self, line: usize, recv: VId, rt: Ty, res: Ty, name: &str, args: &[V]) -> LR<Option<Option<VId>>> {
         let Some(plan) = num_plan(rt, name, args.len()) else { return Ok(None) };
         let out = match plan {
@@ -399,11 +408,18 @@ impl<'a> Lw<'a> {
             let Some(state) = self.expr(&args[0])? else { return Ok(Some(None)) };
             return Ok(Some(Some(self.int_hash(a, state, line)?)));
         }
+        let (rt, by_ref) = match rt {
+            Ty::Ref(_, p) if p.ty().is_int() || p.ty().is_float() => (p.ty(), true),
+            t => (t, false),
+        };
         if num_plan(rt, &name, args.len()).is_none() {
             return Ok(None);
         }
         let Ok(res) = self.ty_of(e) else { return Ok(None) };
-        let Some(recv) = self.expr(&f[0])? else { return Ok(Some(None)) };
+        let Some(mut recv) = self.expr(&f[0])? else { return Ok(Some(None)) };
+        if by_ref {
+            recv = self.emit(rt, Op::Load(recv));
+        }
         self.num_method(line, recv, rt, res, &name, args)
     }
 
@@ -451,10 +467,17 @@ impl<'a> Lw<'a> {
                 let Some(b) = self.expr(&args[0])? else { return Ok(Some(None)) };
                 return Ok(Some(self.int_cmp_named(&segs[1], a, b, line)?));
             }
+            let (rt, by_ref) = match rt {
+                Ty::Ref(_, p) if p.ty().is_int() || p.ty().is_float() => (p.ty(), true),
+                t => (t, false),
+            };
             if num_plan(rt, &segs[1], args.len()).is_none() {
                 return Ok(None);
             }
-            let recv = self.read_slot(s);
+            let mut recv = self.read_slot(s);
+            if by_ref {
+                recv = self.emit(rt, Op::Load(recv));
+            }
             return self.num_method(line, recv, rt, res, &segs[1], args);
         }
         // `char.try_from_u32(x)`: 有効な文字 (0x110000 未満で、サロゲート 0xD800..=0xDFFF の外) なら `Some(x)`、そうでなければ `None`。

@@ -36,6 +36,13 @@ pub(super) fn elem_src(lw: &Lw, t: Ty) -> Option<Src> {
                 let inner = elem_src(lw, el)?;
                 return Some(Src::Named("alloc.boxed.Box".into(), vec![inner, Src::Named("std.alloc.System".into(), vec![], crate::types::Rgs::default())], crate::types::Rgs::default()));
             }
+            // タプル `(A, B, ..)`: 各欄の型を戻せれば `Src::Tuple`。
+            if let crate::kir::AggKind::Tuple(fs) = &aggs.defs[i as usize].kind {
+                let tys: Vec<Ty> = fs.iter().map(|f| f.ty).collect();
+                drop(aggs);
+                let xs: Option<Vec<Src>> = tys.into_iter().map(|t| elem_src(lw, t)).collect();
+                return xs.map(Src::Tuple);
+            }
             let n = &aggs.defs[i as usize].name;
             // `Vec` / `String` のヘッダ (`vec`、要素が所有物なら `vec<#N>`): 配置と解放は同じなので、`String` / `Vec<要素>` に戻す。
             // `&str` と `&[T]` の値 (`fat`): 配置は同じなので `&str`。
