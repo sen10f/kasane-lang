@@ -162,12 +162,114 @@ use crate::interp::DEADLOCK_LOCK;
 /// 待ちの本体 (`mu` を持って呼ぶ)。待っている数 `blocked` を 1 増やし、生きている数 `live` 以上なら全員が待っているので
 /// `msg` (`@ksn.rt.deadlock*`) を出して終了コード 101 で終わる。そうでなければ状態が変わる (`gen` が進む) まで条件変数で待つ。
 /// ラベル `dead` / `w` / `lp` / `done` を使うので、1 つの関数に 1 回だけ入れる。最後は `done:` の後に続ける。
+/// スレッドごとの RwLock の保持表 (`@ksn.rw.held`: 錠の番地 8 個 + 数 8 個。書き手は -1、読み手は数)。同じスレッドの再取得 (書→書・読→書・書→読) は
+/// 待たずに deadlock の 101 (木走査・KIR 実行器と同じ。他のスレッドが生きていても同じ)。
+const RW_HELPERS: &str = "
+define internal i64 @ksn.rw.find(i64 %k) {
+entry:
+  br label %lp
+lp:
+  %i = phi i64 [ 0, %entry ], [ %i1, %nx ]
+  %c = icmp ult i64 %i, 8
+  br i1 %c, label %chk, label %nf
+chk:
+  %a = getelementptr i64, ptr @ksn.rw.held, i64 %i
+  %v = load i64, ptr %a
+  %e = icmp eq i64 %v, %k
+  br i1 %e, label %hit, label %nx
+nx:
+  %i1 = add i64 %i, 1
+  br label %lp
+hit:
+  ret i64 %i
+nf:
+  ret i64 -1
+}
+
+define internal void @ksn.rw.check(ptr %p, i64 %wr) {
+entry:
+  %pi = ptrtoint ptr %p to i64
+  %ix = call i64 @ksn.rw.find(i64 %pi)
+  %none = icmp slt i64 %ix, 0
+  br i1 %none, label %ok, label %have
+have:
+  %j = add i64 %ix, 8
+  %ca = getelementptr i64, ptr @ksn.rw.held, i64 %j
+  %cnt = load i64, ptr %ca
+  %isw = icmp ne i64 %wr, 0
+  %busy = icmp ne i64 %cnt, 0
+  %wrt = icmp eq i64 %cnt, -1
+  %bad = select i1 %isw, i1 %busy, i1 %wrt
+  br i1 %bad, label %dead, label %ok
+dead:
+  %q = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.rt.deadlock_lock)
+  call void @exit(i32 101)
+  unreachable
+ok:
+  ret void
+}
+
+define internal void @ksn.rw.rec(ptr %p, i64 %wr) {
+entry:
+  %pi = ptrtoint ptr %p to i64
+  %ix = call i64 @ksn.rw.find(i64 %pi)
+  %none = icmp slt i64 %ix, 0
+  br i1 %none, label %alloc, label %set
+alloc:
+  %fx = call i64 @ksn.rw.find(i64 0)
+  %full = icmp slt i64 %fx, 0
+  br i1 %full, label %ret, label %claim
+claim:
+  %pa = getelementptr i64, ptr @ksn.rw.held, i64 %fx
+  store i64 %pi, ptr %pa
+  br label %set
+set:
+  %ix2 = phi i64 [ %ix, %entry ], [ %fx, %claim ]
+  %j = add i64 %ix2, 8
+  %ca = getelementptr i64, ptr @ksn.rw.held, i64 %j
+  %cnt = load i64, ptr %ca
+  %inc = add i64 %cnt, 1
+  %isw = icmp ne i64 %wr, 0
+  %nv = select i1 %isw, i64 -1, i64 %inc
+  store i64 %nv, ptr %ca
+  br label %ret
+ret:
+  ret void
+}
+
+define internal void @ksn.rw.rel(ptr %p) {
+entry:
+  %pi = ptrtoint ptr %p to i64
+  %ix = call i64 @ksn.rw.find(i64 %pi)
+  %none = icmp slt i64 %ix, 0
+  br i1 %none, label %ret, label %have
+have:
+  %j = add i64 %ix, 8
+  %ca = getelementptr i64, ptr @ksn.rw.held, i64 %j
+  %cnt = load i64, ptr %ca
+  %last = icmp sle i64 %cnt, 1
+  br i1 %last, label %clear, label %dec
+clear:
+  %pa = getelementptr i64, ptr @ksn.rw.held, i64 %ix
+  store i64 0, ptr %pa
+  store i64 0, ptr %ca
+  br label %ret
+dec:
+  %nv = sub i64 %cnt, 1
+  store i64 %nv, ptr %ca
+  br label %ret
+ret:
+  ret void
+}
+";
+
 /// RwLock の取得 (`k` は `rd` / `wr`)。まず try、だめなら 20 ms の時間つきの待ちを繰り返す。時間切れのとき、初回だけ大域の `blocked` を
 /// 1 つ増やし (Mutex と同じ「全員待ち」の判定: `blocked >= live` なら deadlock で 101)、取れたら (増やしていれば) 1 つ戻す。
 fn rw_lock_body(k: &str) -> String {
     format!(
-        "  %ts = alloca [16 x i8], align 8\n  %t = call i32 @pthread_rwlock_try{k}lock(ptr %arg0)\n  %ok = icmp eq i32 %t, 0\n  br i1 %ok, label %got, label %lp\ngot:\n  ret i8 0\nlp:\n  %cnt = phi i32 [ 0, %entry ], [ 1, %cont ]\n  %cg = call i32 @clock_gettime(i32 0, ptr %ts)\n  %sec = load i64, ptr %ts\n  %np = getelementptr i8, ptr %ts, i64 8\n  %ns = load i64, ptr %np\n  %ns2 = add i64 %ns, 20000000\n  %over = icmp uge i64 %ns2, 1000000000\n  %ns3 = sub i64 %ns2, 1000000000\n  %nsf = select i1 %over, i64 %ns3, i64 %ns2\n  %sc = add i64 %sec, 1\n  %secf = select i1 %over, i64 %sc, i64 %sec\n  store i64 %secf, ptr %ts\n  store i64 %nsf, ptr %np\n  %r = call i32 @pthread_rwlock_timed{k}lock(ptr %arg0, ptr %ts)\n  %okk = icmp eq i32 %r, 0\n  br i1 %okk, label %locked, label %to\nto:\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %b = load i64, ptr @ksn.rt.blocked\n  %first = icmp eq i32 %cnt, 0\n  %inc = zext i1 %first to i64\n  %b1 = add i64 %b, %inc\n  store i64 %b1, ptr @ksn.rt.blocked\n  %l = load i64, ptr @ksn.rt.live\n  %d = icmp uge i64 %b1, %l\n  br i1 %d, label %dead, label %cont\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.rt.deadlock_lock)\n  call void @exit(i32 101)\n  unreachable\ncont:\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  br label %lp\nlocked:\n  %was = icmp ne i32 %cnt, 0\n  br i1 %was, label %dec, label %fin\ndec:\n  %lk2 = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %b2 = load i64, ptr @ksn.rt.blocked\n  %pos = icmp ugt i64 %b2, 0\n  %bm = sub i64 %b2, 1\n  %b3 = select i1 %pos, i64 %bm, i64 0\n  store i64 %b3, ptr @ksn.rt.blocked\n  %um2 = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  br label %fin\nfin:\n  ret i8 0\n",
-        k = k
+        "  %ts = alloca [16 x i8], align 8\n  call void @ksn.rw.check(ptr %arg0, i64 {wr})\n  %t = call i32 @pthread_rwlock_try{k}lock(ptr %arg0)\n  %ok = icmp eq i32 %t, 0\n  br i1 %ok, label %got, label %lp\ngot:\n  call void @ksn.rw.rec(ptr %arg0, i64 {wr})\n  ret i8 0\nlp:\n  %cnt = phi i32 [ 0, %entry ], [ 1, %cont ]\n  %cg = call i32 @clock_gettime(i32 0, ptr %ts)\n  %sec = load i64, ptr %ts\n  %np = getelementptr i8, ptr %ts, i64 8\n  %ns = load i64, ptr %np\n  %ns2 = add i64 %ns, 20000000\n  %over = icmp uge i64 %ns2, 1000000000\n  %ns3 = sub i64 %ns2, 1000000000\n  %nsf = select i1 %over, i64 %ns3, i64 %ns2\n  %sc = add i64 %sec, 1\n  %secf = select i1 %over, i64 %sc, i64 %sec\n  store i64 %secf, ptr %ts\n  store i64 %nsf, ptr %np\n  %r = call i32 @pthread_rwlock_timed{k}lock(ptr %arg0, ptr %ts)\n  %okk = icmp eq i32 %r, 0\n  br i1 %okk, label %locked, label %chkd\nchkd:\n  %ed = icmp eq i32 %r, 35\n  br i1 %ed, label %dead, label %to\nto:\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %b = load i64, ptr @ksn.rt.blocked\n  %first = icmp eq i32 %cnt, 0\n  %inc = zext i1 %first to i64\n  %b1 = add i64 %b, %inc\n  store i64 %b1, ptr @ksn.rt.blocked\n  %l = load i64, ptr @ksn.rt.live\n  %d = icmp uge i64 %b1, %l\n  br i1 %d, label %dead, label %cont\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.rt.deadlock_lock)\n  call void @exit(i32 101)\n  unreachable\ncont:\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  br label %lp\nlocked:\n  %was = icmp ne i32 %cnt, 0\n  br i1 %was, label %dec, label %fin\ndec:\n  %lk2 = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %b2 = load i64, ptr @ksn.rt.blocked\n  %pos = icmp ugt i64 %b2, 0\n  %bm = sub i64 %b2, 1\n  %b3 = select i1 %pos, i64 %bm, i64 0\n  store i64 %b3, ptr @ksn.rt.blocked\n  %um2 = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  br label %fin\nfin:\n  call void @ksn.rw.rec(ptr %arg0, i64 {wr})\n  ret i8 0\n",
+        k = k,
+        wr = (k == "wr") as i32
     )
 }
 
@@ -238,7 +340,7 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
             "ptr %arg0",
             &rw_lock_body("wr"),
         ),
-        "ksn.thr.rwunlock" => def("i8", "ptr %arg0", "  %r = call i32 @pthread_rwlock_unlock(ptr %arg0)\n  ret i8 0\n"),
+        "ksn.thr.rwunlock" => def("i8", "ptr %arg0", "  call void @ksn.rw.rel(ptr %arg0)\n  %r = call i32 @pthread_rwlock_unlock(ptr %arg0)\n  ret i8 0\n") .map(|d| d + RW_HELPERS),
         "ksn.thr.wait" => def("i8", "", &format!("{}  ret i8 0\n", block_body("@ksn.rt.deadlock"))),
         "ksn.thr.new" => def("i64", "", &format!("  %p = call ptr @calloc(i64 1, i64 {})\n  %z = icmp eq ptr %p, null\n  br i1 %z, label %oom, label %ok\noom:\n  call void @exit(i32 101)\n  unreachable\nok:\n  %i = ptrtoint ptr %p to i64\n  ret i64 %i\n", THREAD_ENTRY_SIZE)),
         "ksn.thr.ent" => def("ptr", "i64 %arg0", "  %p = inttoptr i64 %arg0 to ptr\n  ret ptr %p\n"),
@@ -677,7 +779,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
                 cx.decl("declare void @ksn_rt_sys_sleep_ms(i64)");
             } else if !pthread_used {
                 pthread_used = true;
-                cx.globals.push_str("@ksn.rt.mu = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.cv = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.live = internal global i64 1\n@ksn.rt.blocked = internal global i64 0\n@ksn.rt.gen = internal global i64 0\n");
+                cx.globals.push_str("@ksn.rt.mu = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.cv = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.live = internal global i64 1\n@ksn.rt.blocked = internal global i64 0\n@ksn.rt.gen = internal global i64 0\n@ksn.rw.held = internal thread_local global [16 x i64] zeroinitializer, align 8\n");
                 cx.globals.push_str(&str_const("ksn.rt.deadlock", &format!("panic: {}\n\0", crate::interp::DEADLOCK_RECV)));
                 cx.globals.push_str(&str_const("ksn.rt.deadlock_join", &format!("panic: {}\n\0", crate::interp::DEADLOCK_JOIN)));
                 cx.globals.push_str(&str_const("ksn.rt.deadlock_lock", &format!("panic: {}\n\0", DEADLOCK_LOCK)));
