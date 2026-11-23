@@ -436,7 +436,8 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         for d in s.defs.iter_mut().filter(|d| d.header_only) {
             if sigs_only && is_root {
                 d.body = None;
-            } else if !check_cmd {
+            } else if !check_cmd && !d.header.contains("-> () ") {
+                // 本体が空で `-> ()` を返す関数は、正しい無動作の関数 (雛形と見分けない)。止めるのは値を返すはずの関数だけ。
                 rep.add("E0067", &format!("`{}` has no body: write the body (a header-only definition is only checked by `ksn check --signatures-only`)", d.name), Some(&rel(&s.path)), d.line, 1, true);
             }
         }

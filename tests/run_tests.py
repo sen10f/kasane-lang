@@ -54,16 +54,35 @@ r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'test_harn
                    capture_output=True, text=True, encoding='utf-8', errors='replace')
 step('bench/test_harness.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
 
-# 2. Rust 版の cargo test (試験のバイナリを並列に回す。ビルドは 0 で先に済ませる)
-# 段は既定で full。担当の統合の前の確かめ (kasane-verify/tools/fulltest.sh) は KSN_TEST_TIER=fast で速い段だけにし、
-# 遅い段のうち統合で落ちやすい言い換えの試験 (rephrase) は別に回す。
-_tier = os.environ.get('KSN_TEST_TIER', 'full')
-r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'par_test.py'), '--tier', _tier],
+# 10. ネイティブになった割合 (速い段。cargo test より先に回す、2026-11-23)。
+r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'native_ratio.py')],
                    capture_output=True, text=True, encoding='utf-8', errors='replace')
-# 落ちたときは、失敗したテストの名前と panic の行を先に出す (末尾は警告で埋まることがある)。
-_ct = r.stdout + r.stderr
-_fails = '\n'.join(l for l in _ct.splitlines() if ' FAILED' in l or 'panicked at' in l or l.startswith('error: test failed'))[:3000]
-step('stage0: cargo test', r.returncode == 0, (_fails + '\n---\n' + _ct[-1500:]) if _fails else _ct[-1500:])
+summary = next((ln for ln in r.stdout.splitlines() if ln.startswith('native ratio:')), 'native ratio: (集計が出力されなかった)')
+step(summary, r.returncode == 0, r.stdout + r.stderr)
+if r.returncode == 0:
+    for ln in r.stdout.splitlines():
+        if ln.startswith('note: '):
+            print('     ' + ln)
+
+
+# 2. Rust 版の cargo test (試験のバイナリを並列に回す。ビルドは 0 で先に済ませる)
+# 2026-11-23: まず速いバイナリ (`--tier fast`) を回し、ここまでの段 (仕様・参照解・ハーネス・ネイティブ率・速い試験) が
+# 1 つでも落ちたら、遅いバイナリと後の段に入らずに止める (落ちる束を 10〜15 分で知らせる)。最後まで回すなら KSN_FULL_ANYWAY=1。
+# KSN_TEST_TIER=fast なら遅いバイナリは回さない。
+_tier = os.environ.get('KSN_TEST_TIER', 'full')
+def _cargo_tier(tier, label):
+    r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'par_test.py'), '--tier', tier],
+                       capture_output=True, text=True, encoding='utf-8', errors='replace')
+    # 落ちたときは、失敗したテストの名前と panic の行を先に出す (末尾は警告で埋まることがある)。
+    ct = r.stdout + r.stderr
+    fails = '\n'.join(l for l in ct.splitlines() if ' FAILED' in l or 'panicked at' in l or l.startswith('error: test failed'))[:3000]
+    step(label, r.returncode == 0, (fails + '\n---\n' + ct[-1500:]) if fails else ct[-1500:])
+_cargo_tier('fast', 'stage0: cargo test (fast)')
+if failures and os.environ.get('KSN_FULL_ANYWAY') != '1':
+    print(f'\n{len(failures)} FAILED (速い段で止めた。遅い試験と後の段は回していない。最後まで回すなら KSN_FULL_ANYWAY=1): {failures}')
+    sys.exit(1)
+if _tier == 'full':
+    _cargo_tier('slow', 'stage0: cargo test (slow)')
 # 2a. feature `test-hooks` が要る試験 (隠しの環境変数で借用の診断を捨てる `KSN_SKIP_BORROW_DIAGS` は、配布の
 #     バイナリでは効かない。2026-11-21 の脆弱性の直し E1)。target を別にする。
 r = subprocess.run(['cargo', 'test', '--release', '--features', 'test-hooks', '--test', 'interp_parity'], cwd=os.path.join(ROOT, 'stage0'),
@@ -152,16 +171,6 @@ r = subprocess.run([RSEXE, 'test', '--both'], cwd=d, capture_output=True, text=T
 want_label = '(both: llvm)' if shutil.which('clang') else '(both: bundle'
 step('rust ksn: test --both (interpreter and native agree)', r.returncode == 0 and want_label in r.stdout and 'disagree' not in r.stdout, r.stdout + r.stderr)
 shutil.rmtree(os.path.join(d, 'target'), ignore_errors=True)
-
-# 10. ネイティブになった割合 (修正プラン 3-5)。下限 (tests/native_ratio_floor.json) を下回ったら落とす。
-r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'native_ratio.py')],
-                   capture_output=True, text=True, encoding='utf-8', errors='replace')
-summary = next((ln for ln in r.stdout.splitlines() if ln.startswith('native ratio:')), 'native ratio: (集計が出力されなかった)')
-step(summary, r.returncode == 0, r.stdout + r.stderr)
-if r.returncode == 0:
-    for ln in r.stdout.splitlines():
-        if ln.startswith('note: '):
-            print('     ' + ln)
 
 # 11. selfhost/* の全パッケージ (selfhost/probes/*・selfhost/lower/probes/* を含む) で Rust 版 `ksn check` の診断が
 # 期待どおりであること。既定は 0 件。期待で診断を出すパッケージだけを下の表に書く (コード → 件数)。

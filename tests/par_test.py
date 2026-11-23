@@ -2,12 +2,12 @@
 """Rust 版 ksn の cargo の試験を、試験のバイナリ単位で並列に回す (`cargo test --release` の代わり)。
 
 使い方 (stage0 の中でも、リポジトリのどこからでも可):
-  python3 tests/par_test.py [--tier fast|full] [--jobs N]
+  python3 tests/par_test.py [--tier fast|slow|full] [--jobs N]
 
 - 試験のバイナリの一覧は `cargo test --release --no-run --message-format=json` で取る。
 - `--jobs N` 本ずつ並列に走らせ、各バイナリには `--test-threads = CPU の数 / N` を渡す。
   既定の N は CPU の数の 1/4 (最小 2)。cargo-nextest は使わない。
-- `--tier fast` は tests/slow_tests.txt の遅いバイナリを除く。`--tier full` は全部 (既定)。
+- `--tier fast` は tests/slow_tests.txt の遅いバイナリを除く。`--tier slow` はその遅いバイナリだけ。`--tier full` は全部 (既定)。
 - 各バイナリの時間は stage0/target/par_test_times.json に書き、遅い順の上位 10 を出す。
 - 失敗があれば、失敗したバイナリと試験の名前を最後に出し、終了コード 1。
 """
@@ -80,7 +80,7 @@ def run_one(name, exe, threads):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--tier', choices=['fast', 'full'], default='full')
+    ap.add_argument('--tier', choices=['fast', 'slow', 'full'], default='full')
     ap.add_argument('--jobs', type=int, default=None)
     args = ap.parse_args()
 
@@ -104,6 +104,10 @@ def main():
         skipped = sorted(n for n in bins if n in slow)
         todo = {n: e for n, e in bins.items() if n not in slow}
         print(f'tier fast: {len(todo)} バイナリ (除外 {len(skipped)}: {", ".join(skipped)})')
+    elif args.tier == 'slow':
+        # fast の残り (run_tests.py が fast を先に回し、通ったときだけこちらを回す。2026-11-23)。
+        todo = {n: e for n, e in bins.items() if n in slow}
+        print(f'tier slow: {len(todo)} バイナリ')
     else:
         todo = bins
         print(f'tier full: {len(todo)} バイナリ')
