@@ -1,0 +1,50 @@
+static t.COUNTER: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
+
+fn t.adder(arg: u32) -> std.thread.JoinHandle<(), std.alloc.System> uses [alloc, thread] panics may
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move arg] {
+            let mut i = 0u32
+            while i < arg {
+                let mut g = t.COUNTER.lock()
+                let seen = *g.get()
+                *g.get_mut() = seen + 1u64
+                i = i + 1u32
+            }
+        },
+    )
+    match spawned {
+        Ok(handle) => handle
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.adder
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let h0 = t.adder(5000u32)
+    let h1 = t.adder(5000u32)
+    let h2 = t.adder(5000u32)
+    let h3 = t.adder(5000u32)
+    let h4 = t.adder(5000u32)
+    let h5 = t.adder(5000u32)
+    let h6 = t.adder(5000u32)
+    let h7 = t.adder(5000u32)
+    h0.join()
+    h1.join()
+    h2.join()
+    h3.join()
+    h4.join()
+    h5.join()
+    h6.join()
+    h7.join()
+    let g = t.COUNTER.lock()
+    core.check.eq(*g.get(), 40_000u64)
+    std.io.print_line("mutex ok")?
+    Ok(())
+end t.main
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
+    std.io.Error {
+        kind: std.io.ErrorKind.OutOfMemory
+        code: 0i32
+    }
+end t.oom
