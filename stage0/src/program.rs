@@ -434,6 +434,16 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 }
             }
             "const" | "static" => {
+                // 構造体リテラルの初期化式は複数行 (行頭の `}` まで)。
+                let l = if sp.end_line > sp.line { lines[sp.end_line - 1] } else { l };
+                if sp.end_line > sp.line {
+                    let text = lines[sp.line - 1..sp.end_line].join("\n");
+                    let mut toks = lexer::lex(&format!("{}\n", text)).map_err(|e| shift_err(e, sp.line - 1))?;
+                    for t in toks.iter_mut() {
+                        t.line += sp.line - 1;
+                    }
+                    p = Parser::new(toks);
+                }
                 p.i = 1;
                 d.name = p.fqn()?;
                 p.expect_op(":")?;

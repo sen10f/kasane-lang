@@ -84,6 +84,18 @@ pub fn scan_with(src: &str, sig: bool) -> Result<Vec<DefSpan>, String> {
             d.end_line = j + 1;
             i = j + 1;
         }
+        // `const` / `static` の初期化式が構造体リテラルなら、行頭の `}` で閉じるまでが 1 つの定義 (いつも 1 行 1 欄)。
+        if matches!(kw, "const" | "static") && l.trim_end().ends_with('{') {
+            let mut j = i;
+            while j < n && !lines[j].starts_with('}') {
+                j += 1;
+            }
+            if j >= n {
+                return Err(format!("E0003|{}|1|missing `}}` for {}", ln, name));
+            }
+            d.end_line = j + 1;
+            i = j + 1;
+        }
         out.push(d);
     }
     Ok(out)

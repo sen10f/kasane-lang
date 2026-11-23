@@ -34,7 +34,7 @@ fn end_col(t: &Tok) -> usize {
 /// 1 行に閉じた構造体リテラル / パターン `Name { a: x, b: y }` の最初のもの (`{` と `}` のトークンの番号)。
 fn first_inline(toks: &[Tok]) -> Option<(usize, usize)> {
     let first = toks.first()?;
-    if first.kind == "kw" && matches!(first.text.as_str(), "fn" | "impl" | "trait" | "enum" | "type" | "extern" | "test" | "const" | "static") {
+    if first.kind == "kw" && matches!(first.text.as_str(), "fn" | "impl" | "trait" | "enum" | "type" | "extern" | "test") {
         return None;
     }
     for k in 1..toks.len().saturating_sub(2) {
