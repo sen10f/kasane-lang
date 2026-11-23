@@ -997,6 +997,11 @@ pub fn format_source_with(text: &str, path: &str, canon: bool, own_len: bool) ->
     }
     if canon {
         fix_syntax(path, own_len, &mut lines);
+        // 括り出した行は、もう一度整形して正規形にそろえる (不動点)。
+        if crate::fmt_hoist::hoist_long_lines(&mut lines) {
+            let again = lines.join("\n") + "\n";
+            return format_source_with(&again, path, canon, own_len);
+        }
     }
     let joined = lines.join("\n") + "\n";
     let defs = match load_file(path, "", &joined) {

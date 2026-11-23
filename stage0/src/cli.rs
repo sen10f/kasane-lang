@@ -2928,13 +2928,14 @@ fn cmd_fmt(args: &[String]) -> i32 {
         let nt = if s.error.is_none() {
             format_source_prog(&s.text, &s.path, own_len)
         } else {
-            // 読めないファイルでも、行末の `;` と match の腕の末尾の `,` を消して読めるようになるなら、普通に整形する (並べ替えも)。
+            // 読めないファイルでも、行末の `;` と match の腕の末尾の `,` を消し、100 文字を超える行を `let` に括り出し
+            // (fmt_hoist.rs)、読めるようになるなら、普通に整形する (並べ替えも)。縮められない長い行は残し、下で E0055 を報せる。
             let st = crate::fmt::strip_line_marks(&s.text, &["E0040", "E0049"]);
-            if st != s.text && crate::program::load_file(&s.path, "", &st).is_ok() {
-                format_source_prog(&st, &s.path, own_len)
-            } else {
-                mechanical_collapse(&st)
-            }
+            crate::grammar::ALLOW_LONG_LINES.store(true, std::sync::atomic::Ordering::Relaxed);
+            let cand = format_source_prog(&st, &s.path, own_len);
+            let ok = crate::program::load_file(&s.path, "", &cand).is_ok();
+            crate::grammar::ALLOW_LONG_LINES.store(false, std::sync::atomic::Ordering::Relaxed);
+            if ok { cand } else { mechanical_collapse(&st) }
         };
         let relpath = lint_rel(s, &srcroot);
         // 候補 (整形後の文字列) を、何も書かないうちに診断する (G58)。fmt が直せないもの (100 文字を
@@ -2944,6 +2945,26 @@ fn cmd_fmt(args: &[String]) -> i32 {
         // 文法への一致だけの不一致は、並べ替えでコメントが動くファイル (import の前に `//` を置くなど、
         // 文法がまだ受け付けない形) でも書けるように、従来どおり書いてから候補の位置で報告する。
         let want = fmt_diag(s, &nt, &relpath, &grammar);
+        // 縮められなかった長い行 (E0055) だけが残るなら、直せた所は書き、残りの行を報せる。
+        let nt_hits: Vec<_> = crate::rustisms::scan(&nt).into_iter().filter(|h| h.code == "E0055").collect();
+        let only_long = nt != s.text && !want.precheck_ok && want.lex.is_empty() && want.lint.is_empty() && !nt_hits.is_empty() && {
+            crate::grammar::ALLOW_LONG_LINES.store(true, std::sync::atomic::Ordering::Relaxed);
+            let ok = crate::program::load_file(&s.path, "", &nt).is_ok() && Grammar::new().check(&nt).ok;
+            crate::grammar::ALLOW_LONG_LINES.store(false, std::sync::atomic::Ordering::Relaxed);
+            ok
+        };
+        if only_long {
+            changed = true;
+            diff = true;
+            println!("{} {}", if check { "would reformat" } else { "reformatted" }, rel(&s.path));
+            if !check {
+                fs::write(&s.path, &nt).unwrap();
+            }
+            for h in nt_hits.iter() {
+                println!("{}:{}:{}: {}: {}", rel(&s.path), h.line, h.col, h.code, h.msg);
+            }
+            continue;
+        }
         if !want.unfixable() {
             let mut text = s.text.clone();
             // `.ksnh` の整形のあと、横の `.ksnl` を `strip` で作り直す (`--check` は食い違いも差分とする)。
