@@ -26,16 +26,7 @@
 
 ## 既知の検査の穴
 
-`stage0/tests/check_diag.rs` の `KNOWN_HOLES` に、次の 6 件が登録されています。これらは現在 `ksn check` を通るため、安全性が保証されたコードとして扱わないでください。
-
-| 名前 | 内容 |
-| --- | --- |
-| `impl_sig_method_generics_count` | トレイト実装のメソッドについて、型パラメータの個数がトレイト宣言と一致するか 검사しません。 |
-| `impl_sig_method_generics_bound` | トレイト実装のメソッドに追加された型パラメータ境界を検査しません。 |
-| `impl_sig_lifetime_ret` | トレイト実装のメソッドの戻り値と、トレイト宣言の参照の寿命の対応を検査しません。 |
-| `len_of_linear_array_then_consumed` | 線形な要素を持つ配列の `len` を取ったあと、その配列を消費する形を検査しません。 |
-| `return_local_tuple_destructure` | 局所値の借用を含むタプルを分解して返す形を検査しません。 |
-| `return_local_option_tuple_destructure` | 局所値の借用を含む `Option` のタプルを分解して返す形を検査しません。 |
+`stage0/tests/check_diag.rs` の `KNOWN_HOLES` は空（`const KNOWN_HOLES: &[&str] = &[]`）です。S4 統合（コミット `97178d39`）で旧い検査器は取り外され、`KNOWN_HOLES` への登録は残っていません（`KSN_CHECKER=old|new|shadow` も非推奨で、1 つの検査器だけが走ります）。通ってはいけないコードは `stage0/tests/data/unsound/` に1ファイル1ケースで置き、まだ塞げないものは `check_diag.rs` の `KNOWN_HOLES` に載せる慣習です。
 
 ## インタプリタへの退避
 
