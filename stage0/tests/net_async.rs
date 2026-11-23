@@ -64,3 +64,14 @@ fn native_small_counts() {
         assert_eq!(text(&o.stdout).trim(), "async echo done", "n={}", n);
     }
 }
+
+#[test]
+fn windows_and_wasm_are_rejected_with_a_reason() {
+    let t = Tmp::new("net_async_cross", &with_clients(2));
+    for (target, reason) in [("x86_64-windows-gnu", "非同期ソケット"), ("wasm32-unknown-unknown", "std.net")] {
+        let o = Command::new(exe()).args(["build", "--release", "--target", target]).current_dir(&t.0).output().unwrap();
+        let out = text(&o.stdout) + &text(&o.stderr);
+        assert_ne!(o.status.code(), Some(0), "{}: {}", target, out);
+        assert!(out.contains("E9040") && out.contains(reason), "{}: {}", target, out);
+    }
+}

@@ -830,7 +830,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     out.push_str(&math);
     out.push('\n');
     out.push_str(&main);
-    if is_windows(target) && out.lines().any(|l| l.contains("call ") && l.contains("@ksn.task.io.poll(") && !l.contains("define ")) {
+    if is_windows(target) && out.lines().any(|l| l.contains("call ") && l.contains("@\"k.ksn.task.io.poll\"(") && !l.contains("define ")) {
         return Err("非同期ソケット (accept_async / read_async / write_async) は Windows では未対応 (epoll が無い。IOCP / WSAPoll は今後)".to_string());
     }
     if is_wasm(target) {
