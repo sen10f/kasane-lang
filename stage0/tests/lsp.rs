@@ -317,10 +317,9 @@ fn code_action_applies_the_fix() {
         "textDocument/codeAction",
         json!({"textDocument": tdoc(&uri), "range": {"start": {"line": 7, "character": 0}, "end": {"line": 7, "character": 0}}, "context": {"diagnostics": []}}),
     );
-    let a = acts.as_array().unwrap().iter().find(|a| a["title"].as_str().unwrap().contains("E1108")).expect("quickfix for E1108");
-    assert_eq!(a["kind"], "quickfix");
-    let fixed = apply(SRC_BAD, &a["edit"]["changes"][&uri]);
-    assert!(fixed.contains("\"あ😀\".len().wrapping_add(1usize)"), "{}", fixed);
+    // 編集距離の当て推量 (`wrapping_ad` → `wrapping_add`) は直しとして出さない (2026-11-23、B3:
+    // 意味が同じと言い切れる書き換えだけを直しにする)。案内は診断の文面に残る。
+    assert!(!acts.as_array().unwrap().iter().any(|a| a["title"].as_str().unwrap().contains("E1108")), "{}", acts);
     // 範囲外の行には出ない。
     let none = c.call(
         "textDocument/codeAction",

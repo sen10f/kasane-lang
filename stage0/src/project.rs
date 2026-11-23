@@ -608,14 +608,13 @@ fn normalize_link(link: &str, root: &Path) -> String {
 
 /// `lib` が絶対パス（Unix では `/` で始まる、Windows ではドライブ文字または `\` で始まる）か。
 fn is_absolute_path(lib: &str) -> bool {
-    if cfg!(windows) {
-        lib.starts_with('\\')
-            || (lib.len() >= 2
-                && lib.as_bytes()[1] == b':'
-                && lib.chars().next().map_or(false, |c| c.is_ascii_alphabetic()))
-    } else {
-        lib.starts_with('/')
-    }
+    // 的 (target) が Windows のときは、Linux の上でビルドしても `Z:/..` や `\\..` が絶対の道になる。
+    // 機械によらず、どの書き方も絶対として扱う。
+    lib.starts_with('/')
+        || lib.starts_with('\\')
+        || (lib.len() >= 2
+            && lib.as_bytes()[1] == b':'
+            && lib.chars().next().map_or(false, |c| c.is_ascii_alphabetic()))
 }
 
 // ------------------------------------------------------------ 依存の解決 (8.1)

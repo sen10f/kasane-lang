@@ -196,8 +196,9 @@ impl Report {
                     None => "<project>".to_string(),
                 };
                 println!("{}: {}{}: {}", loc, it.code, if it.fatal { "" } else { " (non-fatal)" }, it.message);
-                // 字を指す診断 (col > 0) は、該当するソース行と列位置を示す `^` を添える。
-                if it.col > 0 {
+                // 字を指す診断 (col > 0) は、該当するソース行と列位置を示す `^` を添える。止めない診断
+                // (non-fatal) には添えない (`ksn run` はそれをプログラムの出力と同じ標準出力に出すため)。
+                if it.col > 0 && it.fatal {
                     if let Some((line_text, caret)) = source_line_caret(it.file.as_deref(), it.line, it.col) {
                         println!("   | {}", line_text);
                         println!("   | {}", caret);
