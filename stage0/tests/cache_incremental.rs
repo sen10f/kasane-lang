@@ -28,7 +28,8 @@ fn build_produces_artifacts_and_is_cached() {
     let o = b(true);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     let tgt = d.join("target").join("release");
-    assert!(tgt.join("ksn.exe").exists() || tgt.join("ksn").exists());
+    assert!(!tgt.join("ksn.exe").exists() && !tgt.join("ksn").exists(), "release はバンドルの ksn を書かない");
+    assert!(tgt.join("native.native").exists() || tgt.join("native.exe").exists());
     let again = b(true);
     assert_eq!(again.status.code(), Some(0));
     let _ = fs::remove_dir_all(&cache);
@@ -1856,5 +1857,52 @@ fn shared_ksn_of_other_builds_is_bounded_to_the_newest_three() {
     for k in 0..6 {
         assert!(cache.join(format!("fakeentry-old{}", k)).join("ksn").exists(), "エントリのハードリンクは消えない (k={})", k);
     }
+    let _ = fs::remove_dir_all(&cache);
+}
+
+fn tree_size(p: &Path, seen: &mut std::collections::HashSet<(u64, u64)>) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(m) = fs::symlink_metadata(p) else { return 0 };
+    if m.is_dir() {
+        return fs::read_dir(p).map(|rd| rd.flatten().map(|e| tree_size(&e.path(), seen)).sum()).unwrap_or(0);
+    }
+    if seen.insert((m.dev(), m.ino())) { m.len() } else { 0 }
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_stays_under_the_cap_and_stores_ksn_once() {
+    // 異なるパッケージを続けてビルドしても、上限 (KSN_CACHE_MAX) を超えない。同梱の ksn はキャッシュに 1 本だけ。
+    let cache = scratch::Scratch::at(format!("ksn_cache_cap_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let cap: u64 = 400 * 1024;
+    let mut dirs = Vec::new();
+    for k in 0..8 {
+        let t = Tmp::new(&format!("cache_cap_{}", k), &CACHE_SRC.replace("1u32", &format!("{}u32", k + 1)));
+        let o = build_with_cache(exe(), &t.0, &cache, &[], &[("KSN_CACHE_MAX", &cap.to_string()), ("KSN_CACHE_GRACE", "0")]);
+        assert!(o.status.success(), "{}", text(&o.stderr));
+        dirs.push(t);
+    }
+    let ksn_copies = fs::read_dir(&cache).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ksn-")).count();
+    assert_eq!(ksn_copies, 1, "同梱の ksn の共有実体は 1 本");
+    let mut seen = std::collections::HashSet::new();
+    let ksn_len = fs::metadata(exe()).unwrap().len();
+    let total = tree_size(&cache, &mut seen);
+    assert!(total <= cap.max(ksn_len + cap), "キャッシュ {} B が上限 {} B (+共有の ksn {} B) を超えた", total, cap, ksn_len);
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn release_native_build_writes_no_interpreter_bundle() {
+    let t = Tmp::new("cache_release_nobundle", CACHE_SRC);
+    let cache = scratch::Scratch::at(format!("ksn_cache_relnb_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let o = build_with_cache(exe(), &t.0, &cache, &["--release", "--backend", "llvm"], &[]);
+    assert!(o.status.success(), "{}{}", text(&o.stdout), text(&o.stderr));
+    let out = t.0.join("target").join("release");
+    assert!(!out.join("pkg").exists() && !out.join("stdlib").exists(), "release にバンドルがある");
+    assert!(!out.join(if cfg!(windows) { "ksn.exe" } else { "ksn" }).exists(), "release に ksn の写しがある");
+    assert!(out.join(if cfg!(windows) { "t.exe" } else { "t.native" }).exists());
+    assert!(!text(&o.stdout).contains("portable interpreter bundle"), "{}", text(&o.stdout));
     let _ = fs::remove_dir_all(&cache);
 }

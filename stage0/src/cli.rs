@@ -3862,6 +3862,10 @@ fn evict(cdir: &Path, keep: &str) {
         })
         .collect();
     ents.sort();
+    // 作ったばかり・使ったばかりのエントリ (別のプロセスがバンドルを複製中かもしれない) は消さない。猶予は KSN_CACHE_GRACE 秒 (既定 60)。
+    let grace = std::time::Duration::from_secs(std::env::var("KSN_CACHE_GRACE").ok().and_then(|v| v.parse().ok()).unwrap_or(60));
+    let now = std::time::SystemTime::now();
+    let young = |t: &std::time::SystemTime| now.duration_since(*t).map_or(true, |d| d < grace);
     // 使用量は共有の `ksn-<識別子>` を含め、実体ごとに 1 度だけ数える (消すとリンク数が変わるので、そのたびに数え直す)。
     let total_of = |ents: &[(std::time::SystemTime, PathBuf)]| {
         let mut seen = std::collections::HashSet::new();
@@ -3877,6 +3881,9 @@ fn evict(cdir: &Path, keep: &str) {
     };
     let mut total = total_of(&ents);
     while !ents.is_empty() && total > limit {
+        if young(&ents[0].0) {
+            break;
+        }
         let (_, p) = ents.remove(0);
         let _ = fs::remove_dir_all(&p);
         total = total_of(&ents);
@@ -4228,7 +4235,12 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let out = if explicit { l.pkg.root.join("target").join(&target).join(kind) } else { l.pkg.root.join("target").join(kind) };
     let _ = fs::remove_dir_all(&out);
     let name = l.pkg.name.clone();
-    if runs_here {
+    // リリースで実行ファイルを作るときは、インタプリタ同梱のバンドル (ksn の写しを含む) を `target` に書かない (失敗したら退避せず止まる)。
+    let skip_bundle = release && !allow_bundle && l.pkg.entry().is_some();
+    if runs_here && skip_bundle {
+        let _ = fs::create_dir_all(&out);
+        let _ = fs::write(out.join(BUILD_STAMP), &key);
+    } else if runs_here {
         copy_entry(&cached, &out);
         let _ = fs::write(out.join(BUILD_STAMP), &key);
         // %~dp0 は常に絶対パス。sh 版は $0 (相対パス・PATH 経由の名前) を絶対パスに直してから
@@ -4349,11 +4361,18 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
             return 1;
         }
     }
+    let native_ok = native.is_ok();
     match native {
         Ok(()) => println!("native executable: {}", rel(&norm(&exe))),
         Err(e) => println!("native backend skipped: {}; the interpreter bundle is used", e),
     }
-    println!("built {} ({}, target {}; portable interpreter bundle)", rel(&norm(&out)), kind, target);
+    if native_ok && skip_bundle {
+        println!("built {} ({}, target {}; native executable only, no interpreter bundle)", rel(&norm(&out)), kind, target);
+    } else if native_ok {
+        println!("built {} ({}, target {}; native executable + portable interpreter bundle)", rel(&norm(&out)), kind, target);
+    } else {
+        println!("built {} ({}, target {}; portable interpreter bundle)", rel(&norm(&out)), kind, target);
+    }
     0
 }
 
