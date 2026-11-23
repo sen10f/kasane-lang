@@ -924,6 +924,47 @@ fn struct_order_fix(file: &str, msg: &str, line: usize, col: usize, lines: &[Str
     let Some(text) = lines.get(line.wrapping_sub(1)) else { return vec![] };
     let cs: Vec<char> = text.chars().collect();
     let Some(open) = (col.saturating_sub(1)..cs.len()).find(|&i| cs[i] == '{') else { return vec![] };
+    // 正規形 (1 行 1 欄): `{` で行が終わる。欄の行 (字下げ +4 の `名前: 値`) の塊を並べ替える。
+    if cs[open + 1..].iter().all(|c| c.is_whitespace()) {
+        let ind = text.chars().take_while(|c| *c == ' ').count();
+        let Some(off) = lines[line..].iter().position(|l| l.chars().take_while(|c| *c == ' ').count() == ind && l.trim_start().starts_with('}')) else { return vec![] };
+        let close_line = line + 1 + off;
+        let mut groups: Vec<(String, Vec<String>)> = vec![];
+        for l in &lines[line..close_line - 1] {
+            let li = l.chars().take_while(|c| *c == ' ').count();
+            let t = l.trim();
+            let head = t.split_once(':').map(|(n, _)| n.trim().to_string());
+            match head {
+                Some(n) if li == ind + 4 && !n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || c == '_') => groups.push((n, vec![l.clone()])),
+                _ => match groups.last_mut() {
+                    Some(g) => g.1.push(l.clone()),
+                    None => return vec![],
+                },
+            }
+        }
+        // 副作用・panic がありうる式 (呼び出し・添字・`?`・ブロック・クロージャ) があれば直さない。
+        for (_, ls) in &groups {
+            let init = ls.join(" ");
+            let init = init.split_once(':').map_or("", |x| x.1).to_string();
+            let ic: Vec<char> = init.chars().collect();
+            for (k, c) in ic.iter().enumerate() {
+                let prev = if k > 0 { ic[k - 1] } else { ' ' };
+                if matches!(c, '(' | '[') && (prev.is_alphanumeric() || matches!(prev, '_' | ')' | ']' | '>')) || matches!(c, '?' | '{') {
+                    return vec![];
+                }
+            }
+        }
+        let mut out: Vec<String> = vec![];
+        for n in &order {
+            let Some((_, ls)) = groups.iter().find(|(x, _)| x == n) else { return vec![] };
+            out.extend(ls.iter().cloned());
+        }
+        if out.len() != close_line - 1 - line {
+            return vec![];
+        }
+        let new = out.join("\n") + "\n";
+        return vec![Fix { file: file.to_string(), line: line + 1, col: 1, end_line: close_line, end_col: 1, replace: new }];
+    }
     // 欄 (深さ 1 のカンマ区切り) を集める。文字列・文字リテラルの中は飛ばす。
     let mut depth = 0i32;
     let mut items: Vec<(usize, usize)> = vec![];

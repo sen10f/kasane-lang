@@ -253,13 +253,13 @@ fn d11_own_len_method_suppresses_the_rewrite() {
     let mk = |body: &str| format!("{}fn t.main() -> () uses [] panics may\n{}end t.main\n", pre, body);
     let t = Tmp::new_raw(
         "d11_own_len",
-        &mk("    let it = t.Item { n: 0usize }\n    core.check.eq(it.len() == 0usize, true)\n    core.check.eq(it.is_empty(), true)\n    core.mem.drop(it)\n"),
+        &mk("    let it = t.Item {\n        n: 0usize\n    }\n    core.check.eq(it.len() == 0usize, true)\n    core.check.eq(it.is_empty(), true)\n    core.mem.drop(it)\n"),
     );
     // 独自の `len` があるので `fmt` は `is_empty()` に書き換えない (型を見ないので、プログラム全体で抑制する)。
     assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0));
     assert_eq!(
         main_src(&t),
-        mk("    let it = t.Item { n: 0usize }\n    core.check.eq(it.len() == 0usize, true)\n    core.check.eq(it.is_empty(), true)\n    core.mem.drop(it)\n"),
+        mk("    let it = t.Item {\n        n: 0usize\n    }\n    core.check.eq(it.len() == 0usize, true)\n    core.check.eq(it.is_empty(), true)\n    core.mem.drop(it)\n"),
         "{}",
         main_src(&t)
     );
@@ -315,7 +315,8 @@ fn struct_field_shorthand_is_reported_and_fixed() {
     assert_eq!(got.matches("\"E0061\"").count(), 2, "{}", got);
     assert!(got.contains("(`ksn fix` で直せる)"), "{}", got);
     run(&["fix"], &t.0);
-    assert!(main_src(&t).contains("let it = t.Item { qty: qty, price: price }"), "{}", main_src(&t));
+    run(&["fmt"], &t.0);
+    assert!(main_src(&t).contains("let it = t.Item {\n        qty: qty\n        price: price\n    }"), "{}", main_src(&t));
     effects_fix(&t);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
 }
@@ -364,18 +365,18 @@ fn impl_block_gets_its_own_guidance() {
 #[test]
 fn d16_struct_literal_field_order() {
     let pre = "type t.P pub\n    a: u32\n    b: u32\nend t.P\n\n";
-    let src = format!("{}fn t.main() -> () uses [] panics may\n    let p = t.P {{ b: 2u32, a: 1u32 }}\n    core.mem.drop(p)\nend t.main\n", pre);
+    let src = format!("{}fn t.main() -> () uses [] panics may\n    let p = t.P {{\n        b: 2u32\n        a: 1u32\n    }}\n    core.mem.drop(p)\nend t.main\n", pre);
     let t = Tmp::new_raw("d16", &src);
     let o = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(o.contains("E2048"), "{}", o);
     run(&["fix"], &t.0);
-    assert!(main_src(&t).contains("t.P { a: 1u32, b: 2u32 }"), "{}", main_src(&t));
+    assert!(main_src(&t).contains("t.P {\n        a: 1u32\n        b: 2u32\n    }"), "{}", main_src(&t));
     effects_fix(&t);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
     // 初期化式に呼び出しがあれば、直さず誤りのまま。
-    let src = format!("{}fn t.f() -> u32 uses [] panics never\n    1u32\nend t.f\n\nfn t.main() -> () uses [] panics may\n    let p = t.P {{ b: t.f(), a: 1u32 }}\n    core.mem.drop(p)\nend t.main\n", pre);
+    let src = format!("{}fn t.f() -> u32 uses [] panics never\n    1u32\nend t.f\n\nfn t.main() -> () uses [] panics may\n    let p = t.P {{\n        b: t.f()\n        a: 1u32\n    }}\n    core.mem.drop(p)\nend t.main\n", pre);
     let t = Tmp::new_raw("d16_call", &src);
     run(&["fix"], &t.0);
-    assert!(main_src(&t).contains("t.P { b: t.f(), a: 1u32 }"), "{}", main_src(&t));
+    assert!(main_src(&t).contains("t.P {\n        b: t.f()\n        a: 1u32\n    }"), "{}", main_src(&t));
     assert!(text(&run(&["check", "--json"], &t.0).stdout).contains("E2048"));
 }
