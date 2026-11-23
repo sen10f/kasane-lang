@@ -745,6 +745,17 @@ pub enum NetK {
     UdpSendTo,
     /// `UdpSocket.recv_from_raw(sock, buf, len, from, fromcap)`: 送り元を `from` へ `ip:port\0` で書く。結果は `Result<usize, std.io.Error>`。
     UdpRecvFrom,
+    /// `set_read_deadline(sock, ms: u64)` / `set_write_deadline`: 今から `ms` 後を、以後の読み / 書きの期限にする。結果は `Result<(), std.io.Error>`。
+    ReadDeadline,
+    WriteDeadline,
+    /// `clear_deadlines(sock)`: 読み・書きの期限を両方外す。結果は `Result<(), std.io.Error>`。
+    ClearDeadlines,
+    /// `set_nodelay(sock, on: bool)`: `TCP_NODELAY`。結果は `Result<(), std.io.Error>`。
+    SetNoDelay,
+    /// `accept_timeout(sock, ms: u64)`: 期限つきの受理。期限切れは ETIMEDOUT。結果は `Result<TcpStream 集成体, std.net.Error>`。
+    AcceptTimeout,
+    /// `connect_timeout(addr, ms: u64)`: 期限つきの接続。結果は `Result<TcpStream 集成体, std.net.Error>`。
+    ConnectTimeout,
 }
 
 impl NetK {
@@ -759,6 +770,12 @@ impl NetK {
             NetK::UdpBind => "udp_bind",
             NetK::UdpSendTo => "udp_send_to",
             NetK::UdpRecvFrom => "udp_recv_from",
+            NetK::ReadDeadline => "set_read_deadline",
+            NetK::WriteDeadline => "set_write_deadline",
+            NetK::ClearDeadlines => "clear_deadlines",
+            NetK::SetNoDelay => "set_nodelay",
+            NetK::AcceptTimeout => "accept_timeout",
+            NetK::ConnectTimeout => "connect_timeout",
         }
     }
     pub fn arity(self) -> usize {
@@ -768,9 +785,11 @@ impl NetK {
             NetK::Resolve | NetK::UdpSendTo => 4,
             NetK::UdpBind => 1,
             NetK::UdpRecvFrom => 5,
+            NetK::ReadDeadline | NetK::WriteDeadline | NetK::SetNoDelay | NetK::AcceptTimeout | NetK::ConnectTimeout => 2,
+            NetK::ClearDeadlines => 1,
         }
     }
-    pub const ALL: [NetK; 9] = [
+    pub const ALL: [NetK; 15] = [
         NetK::ReadTimeout,
         NetK::WriteTimeout,
         NetK::Shutdown,
@@ -780,6 +799,12 @@ impl NetK {
         NetK::UdpBind,
         NetK::UdpSendTo,
         NetK::UdpRecvFrom,
+        NetK::ReadDeadline,
+        NetK::WriteDeadline,
+        NetK::ClearDeadlines,
+        NetK::SetNoDelay,
+        NetK::AcceptTimeout,
+        NetK::ConnectTimeout,
     ];
 }
 
@@ -2917,6 +2942,11 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             NetK::UdpBind => vec![fat],
                             NetK::UdpSendTo => vec![Ty::I32, Ty::Ptr, Ty::Usize, fat],
                             NetK::UdpRecvFrom => vec![Ty::I32, Ty::Ptr, Ty::Usize, Ty::Ptr, Ty::Usize],
+                            NetK::ReadDeadline | NetK::WriteDeadline => vec![Ty::I32, Ty::U64],
+                            NetK::ClearDeadlines => vec![Ty::I32],
+                            NetK::SetNoDelay => vec![Ty::I32, Ty::Bool],
+                            NetK::AcceptTimeout => vec![Ty::I32, Ty::U64],
+                            NetK::ConnectTimeout => vec![fat, Ty::U64],
                         };
                         for (a, w) in args.iter().zip(want.iter()) {
                             if ty_of(*a)? != *w {
@@ -2924,8 +2954,16 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             }
                         }
                         let ok = match kind {
-                            NetK::UdpBind => matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_net_error(m, e.ty())),
-                            NetK::ReadTimeout | NetK::WriteTimeout | NetK::Shutdown => {
+                            NetK::UdpBind | NetK::AcceptTimeout | NetK::ConnectTimeout => {
+                                matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_net_error(m, e.ty()))
+                            }
+                            NetK::ReadTimeout
+                            | NetK::WriteTimeout
+                            | NetK::Shutdown
+                            | NetK::ReadDeadline
+                            | NetK::WriteDeadline
+                            | NetK::ClearDeadlines
+                            | NetK::SetNoDelay => {
                                 matches!(i.ty, Ty::Res(Pay::Unit, e) if is_io_error(m, e.ty()))
                             }
                             _ => matches!(i.ty, Ty::Res(Pay::Usize, e) if is_io_error(m, e.ty())),

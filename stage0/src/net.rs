@@ -19,6 +19,8 @@ pub struct NetTable {
     pub listeners: std::collections::HashMap<i128, TcpListener>,
     pub streams: std::collections::HashMap<i128, TcpStream>,
     pub udps: std::collections::HashMap<i128, UdpSocket>,
+    /// 期限 (`set_read_deadline` / `set_write_deadline`) の絶対時刻。fd ごとに読みと書き。
+    pub deadlines: std::collections::HashMap<i128, (Option<std::time::Instant>, Option<std::time::Instant>)>,
 }
 
 fn net_error(e: &std::io::Error) -> Val {
@@ -115,6 +117,20 @@ impl Interp {
                 }
                 Err(e) => err(net_error(&e)),
             }),
+            "std.net.connect_timeout" => {
+                let ms = match args.get(1).map(dr) {
+                    Some(Val::Int(v, _)) => v as u64,
+                    _ => 0,
+                };
+                Ok(match crate::kir_exec::connect_until(addr.as_str(), ms) {
+                    Ok(s) => {
+                        let fd = self.sock_fd(&s);
+                        self.net.streams.insert(fd, s);
+                        ok(handle("std.net.TcpStream", fd))
+                    }
+                    Err(e) => err(net_error(&e)),
+                })
+            }
             "std.net.listen" => Ok(match TcpListener::bind(addr.as_str()) {
                 Ok(l) => {
                     let fd = self.sock_fd(&l);
@@ -174,6 +190,23 @@ impl Interp {
                     Some(a) => ok(int(a.port() as i128, "u16")),
                     None => err(net_error_code(-1)),
                 },
+                "accept_timeout" => {
+                    let ms = match args.first().map(dr) {
+                        Some(Val::Int(v, _)) => v as u64,
+                        _ => 0,
+                    };
+                    match self.net.listeners.get(&fd) {
+                        Some(l) => match crate::kir_exec::accept_until(l, ms) {
+                            Ok(st) => {
+                                let nfd = self.sock_fd(&st);
+                                self.net.streams.insert(nfd, st);
+                                ok(handle("std.net.TcpStream", nfd))
+                            }
+                            Err(e) => err(net_error(&e)),
+                        },
+                        None => err(net_error_code(-1)),
+                    }
+                }
                 "close" => {
                     self.net.listeners.remove(&fd);
                     ok(Val::Unit)
@@ -201,9 +234,41 @@ impl Interp {
             }),
             "write" => {
                 let data = bytes_of(args.first().unwrap_or(&Val::Unit));
+                let at = self.net.deadlines.get(&fd).and_then(|d| d.1);
                 Ok(match self.net.streams.get_mut(&fd) {
-                    Some(st) => match st.write_all(&data) {
+                    Some(st) => match crate::kir_exec::dl_call(st, at, true, |s| s.write_all(&data)) {
                         Ok(()) => ok(int(data.len() as i128, "usize")),
+                        Err(e) => err(io_error(&e)),
+                    },
+                    None => invalid(),
+                })
+            }
+            "set_read_deadline" | "set_write_deadline" => {
+                let ms = match args.first().map(dr) {
+                    Some(Val::Int(v, _)) => v as u64,
+                    _ => 0,
+                };
+                if !self.net.streams.contains_key(&fd) {
+                    return Ok(err(io_error(&std::io::Error::from(std::io::ErrorKind::InvalidInput))));
+                }
+                let at = std::time::Instant::now() + Duration::from_millis(ms);
+                let d = self.net.deadlines.entry(fd).or_insert((None, None));
+                if name == "set_read_deadline" {
+                    d.0 = Some(at);
+                } else {
+                    d.1 = Some(at);
+                }
+                Ok(ok(Val::Unit))
+            }
+            "clear_deadlines" => {
+                self.net.deadlines.remove(&fd);
+                Ok(ok(Val::Unit))
+            }
+            "set_nodelay" => {
+                let on = matches!(args.first().map(dr), Some(Val::Bool(true)));
+                Ok(match self.net.streams.get(&fd) {
+                    Some(st) => match st.set_nodelay(on) {
+                        Ok(()) => ok(Val::Unit),
                         Err(e) => err(io_error(&e)),
                     },
                     None => invalid(),
@@ -212,8 +277,9 @@ impl Interp {
             "read" => {
                 let target = dr(args.first().unwrap_or(&Val::Unit));
                 let mut buf = vec![0u8; seq_items(&target).map_or(0, |x| x.len())];
+                let at = self.net.deadlines.get(&fd).and_then(|d| d.0);
                 let n = match self.net.streams.get_mut(&fd) {
-                    Some(st) => match st.read(&mut buf) {
+                    Some(st) => match crate::kir_exec::dl_call(st, at, false, |s| s.read(&mut buf)) {
                         Ok(n) => n,
                         Err(e) => return Ok(err(io_error(&e))),
                     },

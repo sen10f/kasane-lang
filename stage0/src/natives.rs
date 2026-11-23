@@ -29,7 +29,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new", "core.sync.AtomicBool.new", "core.sync.AtomicU64.new", "core.sync.AtomicUsize.new",
     "std.task.block_on", "std.task.spawn_local", "std.task.yield_now", "std.task.await_js",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.rand.fill_secure", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
-    "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.net.UdpSocket.bind", "std.net.resolve_raw", "std.process.Command.new",
+    "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.connect_timeout", "std.net.listen", "std.net.UdpSocket.bind", "std.net.resolve_raw", "std.process.Command.new",
 ];
 
 const NUM_EXTRA: &[&str] = &[
@@ -1010,7 +1010,7 @@ impl Interp {
                     Err(e) => Ok(err(io_error(&e))),
                 }
             }
-            "std.net.connect" | "std.net.listen" | "std.net.UdpSocket.bind" | "std.net.resolve_raw" => self.net_native(name, &args),
+            "std.net.connect" | "std.net.connect_timeout" | "std.net.listen" | "std.net.UdpSocket.bind" | "std.net.resolve_raw" => self.net_native(name, &args),
             "std.process.Command.new" => self.process_native(name, &args),
             _ => {
                 if let Some((ty, f)) = name.split_once('.') {
