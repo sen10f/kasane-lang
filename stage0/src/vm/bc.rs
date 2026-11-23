@@ -203,6 +203,8 @@ pub enum Ins {
     FBin { d: S, a: S, b: S, f: FBin, res: u32 },
     Conv { d: S, a: S, src: u32, dst: u32 },
     NotB { d: S, a: S },
+    /// 浮動小数の NaN を、その場で正の quiet NaN にそろえる (ビットが見える所の前。設計_KIR.md 17.8)。
+    CanonF { a: S, bits: u32 },
     NotI { d: S, a: S, ty: u32 },
     /// `& | ^` (0 = and, 1 = or, 2 = xor)。64 ビット以下と bool。
     BitOp { d: S, a: S, b: S, k: u8 },

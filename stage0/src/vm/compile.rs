@@ -421,6 +421,14 @@ impl<'a> Fc<'a> {
         }
     }
 
+    /// 浮動小数の値 `v` (型 `t`) を、ビットが見える使い方の前にその場で正規の NaN にする (整数・集成体は何もしない)。
+    fn canon_val(&mut self, t: Ty, v: VId) {
+        if matches!(t, Ty::F32 | Ty::F64) {
+            let a = self.s(v);
+            self.code.push(Ins::CanonF { a, bits: if t == Ty::F32 { 32 } else { 64 } });
+        }
+    }
+
     fn push(&mut self, i: Ins) {
         self.code.push(i);
     }
@@ -554,7 +562,8 @@ impl<'a> Fc<'a> {
                     Ins::Conv { d, a, src: self.ty_of(*src), dst: self.ty_of(ty) }
                 }
             }
-            Op::Bitcast { a, .. } => {
+            Op::Bitcast { src, a } => {
+                self.canon_val(*src, *a);
                 if wide128(ty) {
                     Ins::MovN { d, s: self.s(*a), n: 2 }
                 } else {
@@ -588,6 +597,11 @@ impl<'a> Fc<'a> {
                 let Some(&ci) = self.index.get(callee.as_str()) else {
                     return Err(format!("呼び先 {} がない", callee));
                 };
+                if self.m.funcs[ci].link.is_some() {
+                    for a in args {
+                        self.canon_val(self.vty[*a as usize], *a);
+                    }
+                }
                 let (argp, argn) = self.pool_slots(args);
                 let cf = &self.m.funcs[ci];
                 if cf.link.is_some() {
@@ -606,6 +620,9 @@ impl<'a> Fc<'a> {
                     _ => return Err("make の変種が集成体の種類と合わない".into()),
                 };
                 let n = fdefs.len().min(fields.len());
+                for (f, a) in fdefs.iter().zip(fields.iter()) {
+                    self.canon_val(f.ty, *a);
+                }
                 let info = MakeInfo {
                     nslots: self.w(ty),
                     variant: *variant,
@@ -632,6 +649,7 @@ impl<'a> Fc<'a> {
                 let Ty::Agg(ai) = ty else { return Err("setfield の結果が集成体でない".into()) };
                 let dd = &self.m.aggs[ai as usize];
                 let Some(fty) = crate::kir_exec::field_ty_at(dd, *off) else { return Err("setfield のフィールドがない".into()) };
+                self.canon_val(fty, *v);
                 let nb = size_of(&self.m.aggs, fty);
                 if nb > u16::MAX as u32 || self.w(ty) > u16::MAX as u32 {
                     return Err("setfield の集成体が大きすぎる".into());
@@ -704,6 +722,7 @@ impl<'a> Fc<'a> {
                 }
             }
             Op::MemStore { ty: sty, p, off, v } => {
+                self.canon_val(*sty, *v);
                 let Some(w) = width(*sty) else { return Err(format!("mem.store の型 {} が書けない", sty.name())) };
                 match fuse_pa(self, *p) {
                     Some((p, x)) => Ins::StoreX { p, x, off: *off, v: self.s(*v), w },
@@ -731,7 +750,7 @@ impl<'a> Fc<'a> {
                     }
                 }
             },
-            Op::Store { ptr, val } => match self.vty[*val as usize] {
+            Op::Store { ptr, val } => match { self.canon_val(self.vty[*val as usize], *val); self.vty[*val as usize] } {
                 Ty::Agg(ai) => {
                     self.unfold(*ptr);
                     Ins::StoreAgg { p: self.s(*ptr), v: self.s(*val), size: self.m.aggs[ai as usize].size }
