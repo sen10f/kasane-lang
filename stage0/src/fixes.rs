@@ -164,22 +164,8 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
                 }
                 return vec![span(file, line, text, start, at + call.len(), format!("{}.{}({})", &c[2], &c[3], recv))];
             }
-            // unknown method `X`; did you mean `Y`?
-            let re = Regex::new(r"unknown method `([^`]+)`; did you mean `([^`]+)`").unwrap();
-            let Some(c) = re.captures(msg) else { return vec![] };
-            let (bad, good) = (&c[1], &c[2]);
-            let Some(text) = get(line) else { return vec![] };
-            let needle = format!(".{}", bad);
-            let mut from = 0;
-            while let Some(p) = text[from..].find(&needle) {
-                let start = from + p + 1;
-                let end = start + bad.len();
-                let after = text[end..].chars().next();
-                if !matches!(after, Some(c) if c.is_alphanumeric() || c == '_') {
-                    return vec![span(file, line, text, start, end, good.to_string())];
-                }
-                from = end;
-            }
+            // 編集距離の「did you mean」は診断の文面に残すだけで、`fix` では当てはめない
+            // (別名の対応表に載る「意味が同じと言い切れる書き換え」だけが fix の対象)。
             vec![]
         }
         // 字句の規則 (lexrules.rs): エスケープを唯一の書き方に直す (E0005)、NFC に直す (E0006)。
@@ -278,12 +264,8 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             }]
         }
         "E1101" => {
-            let re = Regex::new(r"unresolved name (\S+); did you mean (\S+)\?").unwrap();
-            let Some(c) = re.captures(msg) else { return vec![] };
-            let (bad, good) = (&c[1], &c[2]);
-            let Some(text) = get(line) else { return vec![] };
-            let Some(p) = text.find(bad) else { return vec![] };
-            vec![span(file, line, text, p, p + bad.len(), good.to_string())]
+            // 編集距離の「did you mean」は診断の文面に残すだけで、`fix` では当てはめない。
+            vec![]
         }
         // 接尾辞のない整数リテラル (D12): 推論した型を接尾辞として足す。
         "E2028" => {
