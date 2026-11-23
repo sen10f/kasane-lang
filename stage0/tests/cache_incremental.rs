@@ -1906,3 +1906,23 @@ fn release_native_build_writes_no_interpreter_bundle() {
     assert!(!text(&o.stdout).contains("portable interpreter bundle"), "{}", text(&o.stdout));
     let _ = fs::remove_dir_all(&cache);
 }
+
+#[cfg(unix)]
+#[test]
+fn old_shared_ksn_copies_are_evicted_with_their_entries_under_a_small_cap() {
+    // ksn を作り直すたびに増える `ksn-<識別子>` (3 つの識別子を模す) も、上限を超えれば、繋いでいるエントリと一緒に消える。
+    let t = Tmp::new("cache_evict_shared", CACHE_SRC);
+    let cache = scratch::Scratch::at(format!("ksn_cache_evsh_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    fs::create_dir_all(&cache).unwrap();
+    let shared: Vec<PathBuf> = (0..3).map(|k| fake_shared_ksn(&cache, &format!("id{}", k), k, true)).collect();
+    for f in &shared {
+        fs::write(f, vec![0u8; 300 * 1024]).unwrap();
+    }
+    let o = build_with_cache(exe(), &t.0, &cache, &[], &[("KSN_CACHE_MAX", "100000"), ("KSN_CACHE_GRACE", "0")]);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    for f in &shared {
+        assert!(!f.exists(), "古い識別子の ksn が残った: {}", f.display());
+    }
+    let _ = fs::remove_dir_all(&cache);
+}
