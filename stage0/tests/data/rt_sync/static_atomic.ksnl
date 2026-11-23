@@ -1,0 +1,51 @@
+static t.FLAG: core.sync.AtomicBool = core.sync.AtomicBool.new(false) pub
+
+static t.HITS: core.sync.AtomicU64 = core.sync.AtomicU64.new(0u64) pub
+
+static t.SLOTS: core.sync.AtomicUsize = core.sync.AtomicUsize.new(7usize) pub
+
+fn t.bump(arg: u32) -> std.thread.JoinHandle<(), std.alloc.System> uses [alloc, thread] panics may
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move arg] {
+            let mut i = 0u32
+            while i < arg {
+                core.mem.drop(t.HITS.fetch_add(1u64, core.sync.Ordering.SeqCst))
+                i = i + 1u32
+            }
+        },
+    )
+    match spawned {
+        Ok(handle) => handle
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let h0 = t.bump(5000u32)
+    let h1 = t.bump(5000u32)
+    let h2 = t.bump(5000u32)
+    let h3 = t.bump(5000u32)
+    h0.join()
+    h1.join()
+    h2.join()
+    h3.join()
+    core.check.eq(t.HITS.load(core.sync.Ordering.SeqCst), 20_000u64)
+    core.check.eq(t.SLOTS.load(core.sync.Ordering.SeqCst), 7usize)
+    core.check.eq(t.SLOTS.fetch_add(3usize, core.sync.Ordering.SeqCst), 7usize)
+    core.check.eq(t.SLOTS.load(core.sync.Ordering.SeqCst), 10usize)
+    core.check.is_true(!t.FLAG.load(core.sync.Ordering.SeqCst))
+    t.FLAG.store(true, core.sync.Ordering.SeqCst)
+    core.check.is_true(t.FLAG.swap(false, core.sync.Ordering.SeqCst))
+    core.check.is_true(!t.FLAG.load(core.sync.Ordering.SeqCst))
+    match t.HITS.compare_exchange(20_000u64, 1u64, core.sync.Ordering.SeqCst) {
+        Ok(old) => core.check.eq(old, 20_000u64)
+        Err(_e) => core.panic.panic("compare_exchange should succeed")
+    }
+    match t.HITS.compare_exchange(5u64, 9u64, core.sync.Ordering.SeqCst) {
+        Ok(_old) => core.panic.panic("compare_exchange should fail")
+        Err(seen) => core.check.eq(seen, 1u64)
+    }
+    std.io.print_line("atomic ok")?
+    Ok(())
+end t.main

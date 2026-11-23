@@ -1,0 +1,14 @@
+static t.M: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
+
+fn t.go() -> () uses [thread] panics may
+    let g = t.M.lock()
+    core.check.eq(*g.get(), 0u64)
+    let h = t.M.lock()
+    core.check.eq(*h.get(), 0u64)
+end t.go
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console, thread] panics may
+    t.go()
+    std.io.print_line("relocked")?
+    Ok(())
+end t.main

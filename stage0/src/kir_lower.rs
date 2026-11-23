@@ -1576,6 +1576,14 @@ impl<'a> Lw<'a> {
                 return r;
             }
         }
+        if matches!(st(&f[1]).as_str(), "elapsed" | "since" | "as_nanos") {
+            let t = self.ty_of(&f[0])?;
+            if sync_lower::is_time_method(self, t, &st(&f[1])) {
+                let Some(a) = self.expr(&f[0])? else { return Ok(None) };
+                let args = items(&f[2]).to_vec();
+                return sync_lower::time_mcall(self, a, &st(&f[1]), &args, line);
+            }
+        }
         if let Some(r) = self.trait_side_mcall(e) {
             return r;
         }

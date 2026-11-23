@@ -1,0 +1,54 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 3usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    let h0 = t.producer(tx.clone(), 0u32)
+    let h1 = t.producer(tx.clone(), 1000u32)
+    let h2 = t.producer(tx.clone(), 2000u32)
+    let h3 = t.producer(tx, 3000u32)
+    let mut sum = 0u64
+    let mut count = 0u32
+    loop {
+        match rx.recv() {
+            Ok(n) => {
+                sum = sum + u64.from_u32(n)
+                count = count + 1u32
+            }
+            Err(_) => break
+        }
+    }
+    h0.join()
+    h1.join()
+    h2.join()
+    h3.join()
+    core.check.eq(count, 4000u32)
+    core.check.eq(sum, 7_998_000u64)
+    std.io.print_line("channel ok")?
+    Ok(())
+end t.main
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
+    std.io.Error {
+        kind: std.io.ErrorKind.OutOfMemory
+        code: 0i32
+    }
+end t.oom
+
+fn t.producer(tx: std.sync.Sender<u32>, base: u32) -> std.thread.JoinHandle<(), std.alloc.System> uses [alloc, thread] panics may
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move base, move tx] {
+            let mut i = 0u32
+            while i < 1000u32 {
+                core.mem.drop(match tx.send(base + i) {
+                    Ok(_) => 0u32
+                    Err(_e) => core.panic.panic("send failed")
+                })
+                i = i + 1u32
+            }
+        },
+    )
+    match spawned {
+        Ok(handle) => handle
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.producer

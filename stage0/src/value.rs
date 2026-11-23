@@ -108,6 +108,38 @@ pub struct StructV {
     pub ty: String,
     pub f: RefCell<Vec<(String, Val)>>,
 }
+
+thread_local! {
+    /// 今ガードが持たれている `Mutex` (`Rc` の番地)。同じスレッドの 2 回目の `lock` は deadlock (ネイティブと同じ)。
+    pub static HELD_MUTEXES: RefCell<std::collections::HashSet<usize>> = RefCell::new(std::collections::HashSet::new());
+}
+
+/// `core.mem.drop(g)`: `MutexGuard` なら、すぐに持たれている印を外す (後の `Drop` は何もしない)。
+pub fn release_guard(v: &Val) {
+    if let Val::Struct(s) = v {
+        if s.ty == "std.sync.MutexGuard" {
+            let mut f = s.f.borrow_mut();
+            if let Some(e) = f.iter_mut().find(|(k, _)| k == "cell") {
+                if let Val::Ref(c) = &e.1 {
+                    let a = Rc::as_ptr(c) as *const () as usize;
+                    HELD_MUTEXES.with(|h| h.borrow_mut().remove(&a));
+                }
+                e.1 = Val::Unit;
+            }
+        }
+    }
+}
+
+impl Drop for StructV {
+    fn drop(&mut self) {
+        if self.ty == "std.sync.MutexGuard" {
+            if let Some((_, Val::Ref(c))) = self.f.get_mut().iter().find(|(k, _)| k == "cell") {
+                let a = Rc::as_ptr(c) as *const () as usize;
+                let _ = HELD_MUTEXES.try_with(|h| h.borrow_mut().remove(&a));
+            }
+        }
+    }
+}
 impl StructV {
     pub fn get(&self, name: &str) -> Option<Val> {
         self.f.borrow().iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())

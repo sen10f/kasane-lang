@@ -86,6 +86,9 @@ pub(super) fn sync_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     if segs.join(".") == "std.rand.Rng.from_entropy" {
         return Some(from_entropy(lw, &args, line));
     }
+    if let Some(r) = time_path_call(lw, &segs.join("."), &args, line) {
+        return Some(r);
+    }
     // `core.sync.AtomicX.new(v)` / `core.sync.AtomicX.m(&a, ..)`。
     if segs.len() == 4 && segs[0] == "core" && segs[1] == "sync" && is_atomic_name(&segs[2]) {
         let tname = format!("core.sync.{}", segs[2]);
@@ -106,9 +109,19 @@ pub(super) fn sync_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             if meth == "next_u64" && is_rng(lw, t) {
                 return Some(next_u64(lw, s, &args, line));
             }
+            if let Some(r) = time_method_call(lw, s, meth, &args, line) {
+                return Some(r);
+            }
             // `a.load(..)` など (`a` は Atomic の局所・`&Atomic` の引数)。順序の引数は木走査と同じく無視する。
             if let Some(r) = atomic_local_call(lw, e, s, meth, &args, line) {
                 return Some(r);
+            }
+        }
+        {
+            if let Some(Tgt::Const(di)) = lw.path_res(&f[0]).filter(|r| r.rest.len() == 1).map(|r| r.target) {
+                if lw.p.defs[di].kw == "static" && static_atomic_kind(lw, di).is_some() {
+                    return Some(static_atomic_call(lw, e, di, meth, &args, line));
+                }
             }
         }
         if meth == "lock" && args.is_empty() {
@@ -344,6 +357,187 @@ fn next_u64(lw: &mut Lw, s: usize, args: &[V], line: usize) -> LR<Option<VId>> {
     Ok(Some(out))
 }
 
+const MONO: &str = "ksn.time.mono";
+const SLEEP: &str = "ksn.time.sleep";
+
+fn time_ty(lw: &Lw, name: &str) -> Option<Ty> {
+    lw.conv_t(&Src::Named(name.to_string(), vec![], crate::types::Rgs::default()))
+}
+
+/// `std.thread.sleep(ms)` / `std.time.Instant.now()` / `std.time.Duration.from_millis(ms)`。
+fn time_path_call(lw: &mut Lw, path: &str, args: &[V], line: usize) -> Option<LR<Option<VId>>> {
+    match path {
+        "std.thread.sleep" => Some((|| {
+            if args.len() != 1 {
+                return lw.err(line, "std.thread.sleep の引数は 1 個のはず");
+            }
+            let Some(ms) = lw.expr(&args[0])? else { return Ok(None) };
+            rt_call(lw, SLEEP, vec![ms], Ty::Unit);
+            Ok(Some(lw.unit()))
+        })()),
+        "std.time.Instant.now" => Some((|| {
+            let Some(ty) = time_ty(lw, "std.time.Instant") else { return lw.err(line, "Instant の型が型表に入らない") };
+            let t = rt_call(lw, MONO, vec![], Ty::U64);
+            Ok(Some(lw.emit(ty, Op::Make { variant: None, fields: vec![t] })))
+        })()),
+        "std.time.Duration.from_millis" => Some((|| {
+            if args.len() != 1 {
+                return lw.err(line, "Duration.from_millis の引数は 1 個のはず");
+            }
+            let Some(ty) = time_ty(lw, "std.time.Duration") else { return lw.err(line, "Duration の型が型表に入らない") };
+            let Some(ms) = lw.expr(&args[0])? else { return Ok(None) };
+            let k = c64(lw, 1_000_000);
+            let n = arith(lw, Aop::Mul, ms, k);
+            Ok(Some(lw.emit(ty, Op::Make { variant: None, fields: vec![n] })))
+        })()),
+        _ => None,
+    }
+}
+
+/// 型が `std.time.<name>` (値・参照) か。
+fn is_time_ty(lw: &Lw, t: Ty, name: &str) -> bool {
+    match t {
+        Ty::Agg(ai) | Ty::Ref(_, Pointee::Agg(ai)) => lw.aggs.borrow().defs[ai as usize].name == name,
+        _ => false,
+    }
+}
+
+/// 値 (または参照) `v` の先頭の u64 の欄。
+fn first_u64(lw: &mut Lw, v: VId, line: usize) -> LR<VId> {
+    let Some(a) = atomic_addr_of(lw, v) else { return lw.err(line, "時刻の値が値か参照でない") };
+    Ok(lw.emit(Ty::U64, Op::MemLoad { p: a, off: 0 }))
+}
+
+/// `i.elapsed()` / `i.since(&j)` / `d.as_nanos()` (`i` / `d` は局所)。
+fn time_method_call(lw: &mut Lw, s: usize, meth: &str, args: &[V], line: usize) -> Option<LR<Option<VId>>> {
+    let t = lw.slots[s].1;
+    if !is_time_method(lw, t, meth) {
+        return None;
+    }
+    let recv = lw.read_slot(s);
+    Some(time_method_on(lw, recv, meth, args, line))
+}
+
+/// 型 `t` の受け手で `meth` が時刻のメソッド (`Instant.elapsed` / `Instant.since` / `Duration.as_nanos`) か。
+pub(super) fn is_time_method(lw: &Lw, t: Ty, meth: &str) -> bool {
+    (is_time_ty(lw, t, "std.time.Instant") && matches!(meth, "elapsed" | "since")) || (is_time_ty(lw, t, "std.time.Duration") && meth == "as_nanos")
+}
+
+/// 受け手が式 (`std.time.Duration.from_millis(3).as_nanos()` など) のときの入口。
+pub(super) fn time_mcall(lw: &mut Lw, recv: VId, meth: &str, args: &[V], line: usize) -> LR<Option<VId>> {
+    time_method_on(lw, recv, meth, args, line)
+}
+
+fn time_method_on(lw: &mut Lw, recv: VId, meth: &str, args: &[V], line: usize) -> LR<Option<VId>> {
+    let a = first_u64(lw, recv, line)?;
+    match meth {
+        "as_nanos" => Ok(Some(a)),
+        "elapsed" => {
+            let Some(dty) = time_ty(lw, "std.time.Duration") else { return lw.err(line, "Duration の型が型表に入らない") };
+            let now = rt_call(lw, MONO, vec![], Ty::U64);
+            let n = sat_sub(lw, now, a);
+            Ok(Some(lw.emit(dty, Op::Make { variant: None, fields: vec![n] })))
+        }
+        _ => {
+            if args.len() != 1 {
+                return lw.err(line, "Instant.since の引数は 1 個のはず");
+            }
+            let Some(other) = lw.expr(&args[0])? else { return Ok(None) };
+            let b = first_u64(lw, other, line)?;
+            let Some(dty) = time_ty(lw, "std.time.Duration") else { return lw.err(line, "Duration の型が型表に入らない") };
+            let Ty::Agg(dai) = dty else { return lw.err(line, "Duration が集成体でない") };
+            let rt = Ty::Opt(crate::kir::Pay::Agg(dai));
+            let ge = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U64, a, b });
+            let (yes, _) = lw.new_block(&[]);
+            let (no, _) = lw.new_block(&[]);
+            let (done, dp) = lw.new_block(&[rt]);
+            lw.branch(ge, (yes, vec![]), (no, vec![]));
+            lw.cur = Some(yes);
+            let n = arith(lw, Aop::Sub, a, b);
+            let d = lw.emit(dty, Op::Make { variant: None, fields: vec![n] });
+            let sv = lw.emit(rt, Op::Some(d));
+            lw.goto(done, vec![sv]);
+            lw.cur = Some(no);
+            let nv = lw.emit(rt, Op::Const(0));
+            lw.goto(done, vec![nv]);
+            lw.cur = Some(done);
+            Ok(Some(dp[0]))
+        }
+    }
+}
+
+/// `a - b` (u64、`a < b` なら 0)。
+fn sat_sub(lw: &mut Lw, a: VId, b: VId) -> VId {
+    let ge = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U64, a, b });
+    let (yes, _) = lw.new_block(&[]);
+    let (no, _) = lw.new_block(&[]);
+    let (done, dp) = lw.new_block(&[Ty::U64]);
+    lw.branch(ge, (yes, vec![]), (no, vec![]));
+    lw.cur = Some(yes);
+    let d = arith(lw, Aop::Sub, a, b);
+    lw.goto(done, vec![d]);
+    lw.cur = Some(no);
+    let z = c64(lw, 0);
+    lw.goto(done, vec![z]);
+    lw.cur = Some(done);
+    dp[0]
+}
+
+/// `static` が `core.sync.Atomic*` なら (型名)。
+fn static_atomic_kind(lw: &Lw, di: usize) -> Option<String> {
+    let Src::Named(tn, _, _) = from_v(&lw.p.defs[di].ret, &std::collections::HashSet::new()) else { return None };
+    atomic_kind(&tn).map(|_| tn)
+}
+
+/// `static` のアトミックのメソッド呼び出し (`NAME.fetch_add(..)` など)。大域領域は `+0` が初期化の旗、`+8` がセル。
+/// 初期化 (`core.sync.AtomicX.new(リテラル)`) は旗が 0 のとき大域のロックの下で 1 度だけ行う。
+fn static_atomic_call(lw: &mut Lw, e: &V, di: usize, meth: &str, args: &[V], line: usize) -> LR<Option<VId>> {
+    let name = lw.p.defs[di].name.clone();
+    let Some(tn) = static_atomic_kind(lw, di) else { return lw.err(line, "static の型が Atomic でない") };
+    let Some((cell, sfx)) = atomic_kind(&tn) else { return lw.err(line, "static の型が Atomic でない") };
+    let init = match &lw.p.defs[di].init {
+        Some(v) if nname(v) == "Call" && items(&nf(v)[1]).len() == 1 && strs(&nf(&nf(v)[0])[0]).last().map(|s| s.as_str()) == Some("new") => items(&nf(v)[1])[0].clone(),
+        _ => return lw.err(line, format!("static {} の初期化が Atomic.new(値) の形でない", name)),
+    };
+    let g = lw.emit(Ty::Ptr, Op::GlobalBytes { name, size: 16 });
+    let flag = atm(lw, "load", Ty::U8, "u8", vec![g], Ty::U8);
+    let zero = lw.emit(Ty::U8, Op::Const(0));
+    let fresh = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U8, a: flag, b: zero });
+    let (run, _) = lw.new_block(&[]);
+    let (cont, _) = lw.new_block(&[]);
+    lw.branch(fresh, (run, vec![]), (cont, vec![]));
+    lw.cur = Some(run);
+    rt_call(lw, LOCK, vec![], Ty::Unit);
+    let flag2 = lw.emit(Ty::U8, Op::MemLoad { p: g, off: 0 });
+    let z2 = lw.emit(Ty::U8, Op::Const(0));
+    let fresh2 = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U8, a: flag2, b: z2 });
+    let (set, _) = lw.new_block(&[]);
+    let (done, _) = lw.new_block(&[]);
+    lw.branch(fresh2, (set, vec![]), (done, vec![]));
+    lw.cur = Some(set);
+    let iv = match (nname(&init), nf(&init).first().map(|x| crate::check::st(x))) {
+        ("Lit", Some(k)) if k == "int" && cell.is_int() => {
+            let Some(n) = super::parse_int(&nf(&init)[1]).filter(|n| cell.in_range(*n)) else {
+                return lw.err(line, "static のアトミックの初期値の整数が読めない・範囲外");
+            };
+            lw.emit(cell, Op::Const(n))
+        }
+        ("Lit", Some(k)) if k == "bool" && cell == Ty::U8 => lw.emit(Ty::U8, Op::Const(matches!(nf(&init)[1], V::B(true)) as i128)),
+        _ => return lw.err(line, "static のアトミックの初期値は整数か bool のリテラルだけ対象"),
+    };
+    lw.emit(Ty::Unit, Op::MemStore { ty: cell, p: g, off: 8, v: iv });
+    let one = lw.emit(Ty::U8, Op::Const(1));
+    atm(lw, "store", Ty::U8, "u8", vec![g, one], Ty::Unit);
+    lw.goto(done, vec![]);
+    lw.cur = Some(done);
+    rt_call(lw, UNLOCK, vec![], Ty::Unit);
+    lw.goto(cont, vec![]);
+    lw.cur = Some(cont);
+    let off = lw.emit(Ty::Usize, Op::Const(8));
+    let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off });
+    atomic_method(lw, e, &addr, cell, sfx, meth, args, line)
+}
+
 /// `static` の `Mutex<T>` の `lock()`。値の場所を指す `&mut T` を返す。
 fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
     let d = &lw.p.defs[di];
@@ -367,7 +561,14 @@ fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
         _ => return lw.err(line, format!("static {} の初期化が std.sync.Mutex.new(値) の形でない", name)),
     };
     let g = lw.emit(Ty::Ptr, Op::GlobalBytes { name, size: 80 });
-    // 初期化の判定は大域のロックの下 (実スレッドで 2 重に初期化しない)。
+    // 初期化済みなら (旗の読みはアトミック) 大域のロックを取らずに進む。初期化の判定は大域のロックの下 (実スレッドで 2 重に初期化しない)。
+    let f0 = atm(lw, "load", Ty::U8, "u8", vec![g], Ty::U8);
+    let z0 = lw.emit(Ty::U8, Op::Const(0));
+    let fresh0 = lw.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty: Ty::U8, a: f0, b: z0 });
+    let (slow, _) = lw.new_block(&[]);
+    let (skip, _) = lw.new_block(&[]);
+    lw.branch(fresh0, (slow, vec![]), (skip, vec![]));
+    lw.cur = Some(slow);
     rt_call(lw, LOCK, vec![], Ty::Unit);
     let flag = lw.emit(Ty::U8, Op::MemLoad { p: g, off: 0 });
     let zero = lw.emit(Ty::U8, Op::Const(0));
@@ -388,18 +589,21 @@ fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
         _ => return lw.err(line, "static の Mutex の初期値は整数か bool のリテラルだけ対象"),
     };
     lw.emit(Ty::Unit, Op::MemStore { ty: elem, p: g, off: 8, v: iv });
-    let one = lw.emit(Ty::U8, Op::Const(1));
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: g, off: 0, v: one });
     let mo = lw.emit(Ty::Usize, Op::Const(MUTEX_OFF as i128));
     let mp = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off: mo });
     rt_call(lw, MINIT, vec![mp], Ty::Unit);
+    let one = lw.emit(Ty::U8, Op::Const(1));
+    atm(lw, "store", Ty::U8, "u8", vec![g, one], Ty::Unit);
     lw.goto(cont, vec![]);
     lw.cur = Some(cont);
     rt_call(lw, UNLOCK, vec![], Ty::Unit);
-    // 実スレッドの相互排他: 値ごとの再帰 mutex。ガードの寿命 (外す時点) は `coll::register_unlock` が決める (4.4):
-    // 束縛された変数のスコープの終わり・`core.mem.drop(g)`、束縛されない一時なら文の終わり。協調実行では何もしない。
+    lw.goto(skip, vec![]);
+    lw.cur = Some(skip);
     let mo = lw.emit(Ty::Usize, Op::Const(MUTEX_OFF as i128));
     let mp = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off: mo });
+    // 実スレッドの相互排他: 値ごとの futex 型の 32 ビットの語 (0 空き・1 持たれている・2 待ちがいる)。ガードの寿命 (外す時点) は
+    // `coll::register_unlock` が決める (4.4): 束縛された変数のスコープの終わり・`core.mem.drop(g)`、束縛されない一時なら文の終わり。
+    // 協調実行では何もしない。
     rt_call(lw, MLOCK, vec![mp], Ty::Unit);
     let off = lw.emit(Ty::Usize, Op::Const(8));
     let vp = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off });
@@ -418,6 +622,38 @@ pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
         if let Some(f) = atm_fn(&name) {
             ok.push((f, BTreeSet::new()));
         }
+    }
+    // 単調時計と sleep (KIR の本体は `TimeNowNs` を使う。LLVM では `ksn_rt_sys_now_ns` / `ksn_rt_sys_sleep_ms` に差し替える)。
+    let used = |n: &str| ok.iter().any(|(_, cs)| cs.contains(n));
+    let (want_mono, want_sleep) = (used(MONO), used(SLEEP));
+    if want_mono || want_sleep {
+        let mut b = Fb::new(&[]);
+        let t = b.emit(Ty::I64, Op::TimeNowNs);
+        let u = b.emit(Ty::U64, Op::Conv { src: Ty::I64, a: t });
+        b.term(Term::Ret(u));
+        let mut f = b.build(MONO, &[], Ty::U64);
+        f.uses = vec!["time".to_string()];
+        ok.push((f, BTreeSet::new()));
+    }
+    if want_sleep {
+        let mut b = Fb::new(&[Ty::U64]);
+        let now = b.emit(Ty::U64, Op::Call { callee: MONO.to_string(), args: vec![] });
+        let k = b.c(Ty::U64, 1_000_000);
+        let d = b.emit(Ty::U64, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: 0, b: k });
+        let end = b.emit(Ty::U64, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: now, b: d });
+        let (hd, _) = b.block(&[]);
+        let (done, _) = b.block(&[]);
+        b.goto(hd, vec![]);
+        b.at(hd);
+        let n2 = b.emit(Ty::U64, Op::Call { callee: MONO.to_string(), args: vec![] });
+        let lt = b.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::U64, a: n2, b: end });
+        b.br_if(lt, hd, done);
+        b.at(done);
+        let u = b.emit(Ty::Unit, Op::Const(0));
+        b.term(Term::Ret(u));
+        let mut f = b.build(SLEEP, &[], Ty::Unit);
+        f.uses = vec!["thread".to_string(), "time".to_string()];
+        ok.push((f, BTreeSet::from([MONO.to_string()])));
     }
 }
 
