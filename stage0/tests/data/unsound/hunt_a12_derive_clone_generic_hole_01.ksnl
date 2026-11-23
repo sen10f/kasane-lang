@@ -4,7 +4,9 @@ end t.Box
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
     let s = std.string.String.new()
-    let b = t.Box { x: s }
+    let b = t.Box {
+        x: s
+    }
     let c = b.clone()
     core.mem.drop(c)
     core.mem.drop(b)

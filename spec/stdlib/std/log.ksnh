@@ -90,7 +90,10 @@ fn std.log.line(level: std.log.Level, msg: &str, fields: &[(&str, &str)]) -> Res
 end std.log.line
 
 fn std.log.oom() -> std.io.Error uses [] panics never
-    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+    std.io.Error {
+        kind: std.io.ErrorKind.OutOfMemory
+        code: 0i32
+    }
 end std.log.oom
 
 fn std.log.warn(msg: &str, fields: &[(&str, &str)]) -> Result<(), std.io.Error> uses [alloc, io.console, time] panics never pub

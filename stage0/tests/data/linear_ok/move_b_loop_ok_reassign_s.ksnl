@@ -7,10 +7,14 @@ fn t.eat(s: t.S) -> u32 uses [] panics never
 end t.eat
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let mut s = t.S { v: 1u32 }
+    let mut s = t.S {
+        v: 1u32
+    }
     for _ in core.iter.range(0u8, 2u8) {
         core.mem.drop(t.eat(s))
-        s = t.S { v: 1u32 }
+        s = t.S {
+            v: 1u32
+        }
     }
     core.mem.drop(t.eat(s))
     Ok(())

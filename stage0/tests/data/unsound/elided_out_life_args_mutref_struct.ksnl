@@ -3,7 +3,9 @@ type t.H['b]
 end t.H
 
 fn t.f(x: &mut u32) -> t.H uses [] panics never
-    t.H { r: x }
+    t.H {
+        r: x
+    }
 end t.f
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

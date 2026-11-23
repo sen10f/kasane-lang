@@ -6,11 +6,17 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = 10u32
     let tag = true
     let h = match tag {
-        true => t.Hold { v: &a }
-        false => t.Hold { v: &a }
+        true => t.Hold {
+            v: &a
+        }
+        false => t.Hold {
+            v: &a
+        }
     }
     match h {
-        t.Hold { v: r } => core.mem.drop(*r)
+        t.Hold {
+            v: r
+        } => core.mem.drop(*r)
     }
     Ok(())
 end t.main

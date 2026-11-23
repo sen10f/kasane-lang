@@ -12,7 +12,9 @@ fn t.X.handle(self: &t.X) -> u32 uses [io.console] panics never impls t.H<[io.co
 end t.X.handle
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let x = t.X { v: 7u32 }
+    let x = t.X {
+        v: 7u32
+    }
     let r = t.takes_ref(&x)
     core.mem.drop(r)
     Ok(())

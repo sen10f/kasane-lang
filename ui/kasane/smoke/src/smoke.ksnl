@@ -294,16 +294,46 @@ fn smoke.main() -> () uses [io.console] panics may
 end smoke.main
 
 fn smoke.mk_rect(x: f32, y: f32, w: f32, h: f32, r: f32, a: f32, b: f32, c: f32, d: f32) -> smoke.KsnuiRect uses [] panics never pub
-    smoke.KsnuiRect { x: x, y: y, w: w, h: h, r: r, cr: a, cg: b, cb: c, ca: d }
+    smoke.KsnuiRect {
+        x: x
+        y: y
+        w: w
+        h: h
+        r: r
+        cr: a
+        cg: b
+        cb: c
+        ca: d
+    }
 end smoke.mk_rect
 
 fn smoke.zero_glyph() -> smoke.Glyph uses [] panics never pub
     let a = 0u32
     let b = 0.0f32
-    smoke.Glyph { glyph_id: a, cluster: a, x_advance: b, y_advance: b, x_offset: b, y_offset: b }
+    smoke.Glyph {
+        glyph_id: a
+        cluster: a
+        x_advance: b
+        y_advance: b
+        x_offset: b
+        y_offset: b
+    }
 end smoke.zero_glyph
 
 fn smoke.zero_quad() -> smoke.Quad uses [] panics never pub
     let z = 0.0f32
-    smoke.Quad { x: z, y: z, w: z, h: z, u0: z, v0: z, u1: z, v1: z, cr: z, cg: z, cb: z, ca: z }
+    smoke.Quad {
+        x: z
+        y: z
+        w: z
+        h: z
+        u0: z
+        v0: z
+        u1: z
+        v1: z
+        cr: z
+        cg: z
+        cb: z
+        ca: z
+    }
 end smoke.zero_quad

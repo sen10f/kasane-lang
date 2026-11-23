@@ -4,7 +4,9 @@ end t.H
 
 fn t.bad() -> usize uses [] panics never
     let s = t.mk()
-    let h = t.H { r: &s }
+    let h = t.H {
+        r: &s
+    }
     t.consume(s)
     t.peek(h.r)
 end t.bad

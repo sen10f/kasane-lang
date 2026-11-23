@@ -17,7 +17,9 @@ end t.main
 fn t.ok() -> u32 uses [] panics never
     let x = 7u32
     let o = 1u32
-    let mut h = t.H { r: &o }
+    let mut h = t.H {
+        r: &o
+    }
     {
         h.r = &x
     }
@@ -46,7 +48,9 @@ fn t.ok_str() -> usize uses [alloc] panics never
         r = &*x.as_str()
     }
     let h = {
-        t.S { s: &*x.as_str() }
+        t.S {
+            s: &*x.as_str()
+        }
     }
     r.len().wrapping_add(h.s.len())
 end t.ok_str

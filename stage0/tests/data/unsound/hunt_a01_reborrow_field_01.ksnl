@@ -4,7 +4,9 @@ end t.H
 
 fn t.bad() -> u32 uses [] panics never
     let mut x = 1u32
-    let mut h = t.H { r: &mut x }
+    let mut h = t.H {
+        r: &mut x
+    }
     let r2 = &mut *h.r
     *h.r = 2u32
     *r2

@@ -8,6 +8,9 @@ fn t.main() -> () uses [] panics never
 end t.main
 
 fn t.takeq(p: t.Q) -> Option<std.boxed.Box<t.Q>> uses [] panics never
-    let t.Q { v: _v, kid: kid } = p
+    let t.Q {
+        v: _v
+        kid: kid
+    } = p
     kid
 end t.takeq

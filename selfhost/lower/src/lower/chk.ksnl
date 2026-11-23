@@ -109,12 +109,18 @@ fn lower.chk.enum_cmp(env: &types.env.Env, c: &mut lower.cx.Cx, l: lower.cx.R, r
     let co4 = lower.cx.cat2(co3.as_str(), ")")?
     let v = lower.cx.def(c, "bool", co4.as_str())?
     if !ne {
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     let tr = lower.cx.def(c, "bool", "const.bool true")?
     let xo = lower.cx.cat2("xor.bool ", lower.expr.two(v, tr)?.as_str())?
     let nv = lower.cx.def(c, "bool", xo.as_str())?
-    Ok(lower.cx.R { v: nv, t: t })
+    Ok(lower.cx.R {
+        v: nv
+        t: t
+    })
 end lower.chk.enum_cmp
 
 fn lower.chk.eprint(c: &mut lower.cx.Cx, hex: &str, len: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
@@ -176,7 +182,10 @@ fn lower.chk.eq(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: 
     lower.cx.finish(c, lower.cx.own("unreachable")?)?
     lower.cx.goto(c, cont)
     let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: types.ty.UNIT })
+    Ok(lower.cx.R {
+        v: u
+        t: types.ty.UNIT
+    })
 end lower.chk.eq
 
 fn lower.chk.eq_ok(ty: &str) -> bool uses [] panics never pub
@@ -250,12 +259,18 @@ fn lower.chk.opt_cmp(env: &types.env.Env, c: &mut lower.cx.Cx, l: lower.cx.R, r:
     let co2 = lower.cx.cat2(co.as_str(), lower.cx.cat2("(", lower.expr.two(l.v, r.v)?.as_str())?.as_str())?
     let v = lower.cx.def(c, "bool", lower.cx.cat2(co2.as_str(), ")")?.as_str())?
     if !ne {
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     let tr = lower.cx.def(c, "bool", "const.bool true")?
     let xo = lower.cx.cat2("xor.bool ", lower.expr.two(v, tr)?.as_str())?
     let nv = lower.cx.def(c, "bool", xo.as_str())?
-    Ok(lower.cx.R { v: nv, t: t })
+    Ok(lower.cx.R {
+        v: nv
+        t: t
+    })
 end lower.chk.opt_cmp
 
 fn lower.chk.p(o: &mut std.string.String, s: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
@@ -305,12 +320,18 @@ fn lower.chk.str_cmp(_env: &types.env.Env, c: &mut lower.cx.Cx, l: lower.cx.R, r
     let co = lower.cx.cat2("call str.$eq(", lower.expr.two(l.v, r.v)?.as_str())?
     let v = lower.cx.def(c, "bool", lower.cx.cat2(co.as_str(), ")")?.as_str())?
     if !ne {
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     let tr = lower.cx.def(c, "bool", "const.bool true")?
     let xo = lower.cx.cat2("xor.bool ", lower.expr.two(v, tr)?.as_str())?
     let nv = lower.cx.def(c, "bool", xo.as_str())?
-    Ok(lower.cx.R { v: nv, t: t })
+    Ok(lower.cx.R {
+        v: nv
+        t: t
+    })
 end lower.chk.str_cmp
 
 fn lower.chk.text_debug(c: &mut lower.cx.Cx, o: &mut std.string.String, ty: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub

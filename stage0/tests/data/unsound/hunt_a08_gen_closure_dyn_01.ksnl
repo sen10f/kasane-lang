@@ -17,7 +17,9 @@ end t.gen
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     core.mem.drop(t.gen(fn() -> () capture [] {
-        let b = t.Boxed { x: 1u32 }
+        let b = t.Boxed {
+            x: 1u32
+        }
         core.mem.drop(t.take(&b))
     }))
     Ok(())

@@ -185,7 +185,10 @@ fn lower.loops.forsplit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     lower.cx.goto(c, xb)
     lower.cx.bind_vals(c, &ks, &xs)?
     let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: t })
+    Ok(lower.cx.R {
+        v: u
+        t: t
+    })
 end lower.loops.forsplit
 
 // `for x in v.iter()` (`x` は要素への参照) と `for x in v` (要素の値) の `Vec`。添字の番号で回す。
@@ -302,7 +305,10 @@ fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     lower.cx.goto(c, exitb)
     lower.cx.bind_vals(c, &ks, &eps)?
     let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: t })
+    Ok(lower.cx.R {
+        v: u
+        t: t
+    })
 end lower.loops.forvec
 
 // `for x in NAME.as_slice().iter()`: NAME は `Vec` の局所 (1 つの名前) か欄の連なり。
@@ -490,7 +496,10 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     lower.cx.goto(c, exitb)
     lower.cx.bind_vals(c, &ks, &eps)?
     let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: t })
+    Ok(lower.cx.R {
+        v: u
+        t: t
+    })
 end lower.loops.forx
 
 fn lower.loops.ld8(c: &mut lower.cx.Cx, a: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never pub

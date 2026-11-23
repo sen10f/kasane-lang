@@ -30,7 +30,10 @@ fn probe.main() -> () uses [] panics never
 end probe.main
 
 fn probe.mk(a: i32) -> probe.P uses [] panics never
-    probe.P { x: a, y: 3u8 }
+    probe.P {
+        x: a
+        y: 3u8
+    }
 end probe.mk
 
 fn probe.pick(e: probe.E) -> i32 uses [] panics never

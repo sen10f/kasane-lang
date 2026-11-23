@@ -3,7 +3,9 @@ type t.L linear pub
 end t.L
 
 fn t.main() -> () uses [] panics never
-    let l = t.L { v: 1u32 }
+    let l = t.L {
+        v: 1u32
+    }
     core.mem.drop(t.peek(&l))
 end t.main
 

@@ -76,7 +76,13 @@ end emit.decl
 fn emit.edge(g: &mut emit.G, to: usize, j: usize, v: usize) -> () uses [alloc] panics may pub
     let fb = g.misc.curfromblk
     let nm = g.misc.curnum
-    let e = emit.Edge { to: to, fromblk: fb, num: nm, j: j, v: v }
+    let e = emit.Edge {
+        to: to
+        fromblk: fb
+        num: nm
+        j: j
+        v: v
+    }
     match g.flow.edges.push(e) {
         Ok(_) => core.mem.drop(0u8)
         Err(_e) => core.panic.panic("emit: out of memory")
@@ -223,38 +229,82 @@ fn emit.new_g() -> emit.G uses [] panics never pub
     let foffs = std.vec.Vec.new()
     let ftys = std.vec.Vec.new()
     let vars = std.vec.Vec.new()
-    let tab = emit.Tab { tys: tys, aggs: aggs, foffs: foffs, ftys: ftys, vars: vars }
+    let tab = emit.Tab {
+        tys: tys
+        aggs: aggs
+        foffs: foffs
+        ftys: ftys
+        vars: vars
+    }
     let vty = std.vec.Vec.new()
     let bpar = std.vec.Vec.new()
     let bpty = std.vec.Vec.new()
     let bpst = std.vec.Vec.new()
     let reach = std.vec.Vec.new()
-    let lay = emit.Lay { vty: vty, bpar: bpar, bpty: bpty, bpst: bpst, reach: reach }
+    let lay = emit.Lay {
+        vty: vty
+        bpar: bpar
+        bpty: bpty
+        bpst: bpst
+        reach: reach
+    }
     let edges = std.vec.Vec.new()
     let succ = std.vec.Vec.new()
     let stk = std.vec.Vec.new()
     let blocks = std.vec.Vec.new()
-    let flow = emit.Flow { edges: edges, succ: succ, stk: stk, blocks: blocks }
+    let flow = emit.Flow {
+        edges: edges
+        succ: succ
+        stk: stk
+        blocks: blocks
+    }
     let cur = std.string.String.new()
     let hoisted = std.string.String.new()
     let globals = std.string.String.new()
-    let buf = emit.Buf { cur: cur, hoisted: hoisted, globals: globals }
+    let buf = emit.Buf {
+        cur: cur
+        hoisted: hoisted
+        globals: globals
+    }
     let intr = std.string.String.new()
     let out = std.string.String.new()
     let fns = std.string.String.new()
-    let outs = emit.Outs { intr: intr, out: out, fns: fns }
+    let outs = emit.Outs {
+        intr: intr
+        out: out
+        fns: fns
+    }
     let n = 0usize
     let nblk = 0usize
     let fidx = 0usize
     let curfromblk = true
     let curnum = 0usize
-    let misc = emit.Misc { n: n, nblk: nblk, fidx: fidx, curfromblk: curfromblk, curnum: curnum }
+    let misc = emit.Misc {
+        n: n
+        nblk: nblk
+        fidx: fidx
+        curfromblk: curfromblk
+        curnum: curnum
+    }
     let wu = false
     let eu = false
     let ret = 0usize
     let fkey = std.string.String.new()
-    let flags = emit.Flags { write_used: wu, eprint_used: eu, ret: ret, fkey: fkey }
-    emit.G { tab: tab, lay: lay, flow: flow, buf: buf, outs: outs, misc: misc, flags: flags }
+    let flags = emit.Flags {
+        write_used: wu
+        eprint_used: eu
+        ret: ret
+        fkey: fkey
+    }
+    emit.G {
+        tab: tab
+        lay: lay
+        flow: flow
+        buf: buf
+        outs: outs
+        misc: misc
+        flags: flags
+    }
 end emit.new_g
 
 fn emit.newlab(g: &mut emit.G) -> usize uses [] panics never pub

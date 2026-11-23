@@ -13,7 +13,9 @@ fn t.Boxed.m(self: &Self) -> u32 uses [io.console] panics never impls t.Tr<[io.c
 end t.Boxed.m
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let b = t.Boxed { x: 1u32 }
+    let b = t.Boxed {
+        x: 1u32
+    }
     let r = t.take(&b)
     core.mem.drop(r)
     Ok(())

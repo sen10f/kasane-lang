@@ -11,7 +11,9 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let c = fn() -> () capture [] {
         core.mem.drop(std.io.print_line("side effect"))
     }
-    let s = t.S { f: c }
+    let s = t.S {
+        f: c
+    }
     s.call()
     Ok(())
 end t.main

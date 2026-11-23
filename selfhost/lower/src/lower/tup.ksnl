@@ -64,7 +64,10 @@ fn lower.tup.make(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     let mk2 = lower.cx.cat2(mk.as_str(), ")")?
     let v = lower.cx.def(c, ts.as_str(), mk2.as_str())?
     ts.push(' ')?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.tup.make
 
 fn lower.tup.name(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<std.string.String, resolve.Failure> uses [alloc] panics may pub

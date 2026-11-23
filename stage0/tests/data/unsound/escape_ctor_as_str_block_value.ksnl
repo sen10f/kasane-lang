@@ -6,7 +6,9 @@ fn t.bad() -> usize uses [alloc] panics never
     let h = {
         let mut x = std.string.String.new()
         core.mem.drop(x.push_str("hello"))
-        t.H { r: x.as_str() }
+        t.H {
+            r: x.as_str()
+        }
     }
     h.r.len()
 end t.bad

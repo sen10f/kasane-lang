@@ -19,7 +19,10 @@ fn shortener.error.bad_text(_value: core.str.Utf8Error) -> shortener.error.Error
 end shortener.error.bad_text
 
 fn shortener.error.io_failed() -> shortener.error.Error uses [] panics never pub
-    shortener.error.Error.Io(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 })
+    shortener.error.Error.Io(std.io.Error {
+        kind: std.io.ErrorKind.Other
+        code: 0i32
+    })
 end shortener.error.io_failed
 
 fn shortener.error.push_failed(value: alloc.string.PushBytesError) -> shortener.error.Error uses [] panics never pub

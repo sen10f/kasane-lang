@@ -12,7 +12,9 @@ fn t.X.handle(self: &t.X) -> () uses [] panics never impls t.H<[], never>
 end t.X.handle
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let mut x = t.X { v: 7u32 }
+    let mut x = t.X {
+        v: 7u32
+    }
     core.mem.drop(t.sink(&mut x))
     Ok(())
 end t.main

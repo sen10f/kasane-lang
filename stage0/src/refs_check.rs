@@ -413,13 +413,17 @@ impl<'a> Scan<'a> {
             let end = close - 1;
             let mut j = i + 2;
             while j < end {
+                if self.toks[j].kind == "nl" {
+                    j += 1;
+                    continue;
+                }
                 if self.toks[j].kind != "ident" {
                     break;
                 }
                 let fname = self.toks[j].text.clone();
                 let (va, vb, next) = if j + 1 < end && is_op(&self.toks[j + 1], ":") {
                     let mut k = j + 2;
-                    while k < end && !is_op(&self.toks[k], ",") {
+                    while k < end && !is_op(&self.toks[k], ",") && self.toks[k].kind != "nl" {
                         k = if self.toks[k].kind == "op" && matches!(self.toks[k].text.as_str(), "(" | "[" | "{") { skip_group(&self.toks, k) } else { k + 1 };
                     }
                     (j + 2, k, k + 1)
@@ -624,13 +628,17 @@ fn init_literal_static(p: &Program, toks: &[Tok], name: &str, statics: &HashSet<
                 depth += 1;
             } else if toks[m].kind == "op" && matches!(toks[m].text.as_str(), ")" | "]" | "}") {
                 depth -= 1;
-            } else if depth == 0 && is_op(&toks[m], ",") {
+            } else if depth == 0 && (is_op(&toks[m], ",") || toks[m].kind == "nl") {
                 starts.push(m + 1);
             }
         }
         starts.push(end + 1);
         for w in starts.windows(2) {
             let (a, b) = (w[0], (w[1] - 1).min(end));
+            // 欄は改行区切り: 空の区間 (`{` の直後の改行・閉じの前の改行) は読み飛ばす。
+            if a >= b {
+                continue;
+            }
             // `欄: 値` の値の部分
             if a + 1 >= b || !is_op(&toks[a + 1], ":") {
                 return false;

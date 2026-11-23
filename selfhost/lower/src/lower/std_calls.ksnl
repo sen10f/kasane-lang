@@ -53,11 +53,17 @@ fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
             "fs.create "
         }
         let fv = lower.cx.def1(c, rt.as_str(), op, a.v)?
-        return Ok(lower.cx.R { v: fv, t: t })
+        return Ok(lower.cx.R {
+            v: fv
+            t: t
+        })
     }
     if fqn == "std.env.arg" {
         let v = lower.cx.def1(c, rt.as_str(), "env.arg ", a.v)?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     let empty = std.vec.Vec.new()
     let mut jps = std.vec.Vec.new()
@@ -87,7 +93,10 @@ fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         a2.push(nv)?
         lower.loops.br(c, jb, &a2)?
         lower.cx.goto(c, jb)
-        return Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+        return Ok(lower.cx.R {
+            v: lower.tyk.at(jps.as_slice(), 0usize)
+            t: t
+        })
     }
     let ptr = lower.loops.fld(c, "ptr", a.v, "+0")?
     let len = lower.loops.fld(c, "usize", a.v, "+8")?
@@ -112,7 +121,10 @@ fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     a2.push(ev)?
     lower.loops.br(c, jb, &a2)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+    Ok(lower.cx.R {
+        v: lower.tyk.at(jps.as_slice(), 0usize)
+        t: t
+    })
 end lower.std_calls.call1
 
 fn lower.std_calls.has_fn(fqn: &str) -> bool uses [] panics never pub
@@ -147,18 +159,27 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
         let mk2 = lower.cx.cat2(mk.as_str(), ")")?
         let tt = lower.tyk.text(env, c, t)?
         let v = lower.cx.def(c, tt.as_str(), mk2.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if fqn == "std.fs.File.close" {
         let fv = lower.std_calls.val_of(env, c, recv, rty)?
         let fdv = lower.loops.fld(c, "i32", fv, "+0")?
         let rt0 = lower.tyk.text(env, c, t)?
         let cv = lower.cx.def1(c, rt0.as_str(), "fs.close ", fdv)?
-        return Ok(lower.cx.R { v: cv, t: t })
+        return Ok(lower.cx.R {
+            v: cv
+            t: t
+        })
     }
     if fqn == "core.str.as_bytes" {
         let fat = lower.std_calls.val_of(env, c, recv, rty)?
-        return Ok(lower.cx.R { v: fat, t: t })
+        return Ok(lower.cx.R {
+            v: fat
+            t: t
+        })
     }
     if fqn == "core.str.len" {
         let fat = lower.std_calls.val_of(env, c, recv, rty)?
@@ -166,13 +187,19 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
         let ln = lower.cx.cat2("field ", fs.as_str())?
         let ln2 = lower.cx.cat2(ln.as_str(), ", +8")?
         let v = lower.cx.def(c, "usize", ln2.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if fqn == "core.slice.len" {
         let fat = lower.std_calls.val_of(env, c, recv, rty)?
         let ls = lower.cx.cat2("field ", lower.cx.vs(fat)?.as_str())?
         let lv = lower.cx.def(c, "usize", lower.cx.cat2(ls.as_str(), ", +8")?.as_str())?
-        return Ok(lower.cx.R { v: lv, t: t })
+        return Ok(lower.cx.R {
+            v: lv
+            t: t
+        })
     }
     if fqn == "core.slice.contains" {
         return lower.std_calls.slice_contains(env, c, vs, rty, t)
@@ -199,7 +226,10 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
             let ns = lower.cx.cat2("not.bool ", lower.cx.vs(tg)?.as_str())?
             v = lower.cx.def(c, "bool", ns.as_str())?
         }
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if fqn == "core.option.Option.unwrap_or" {
         return lower.std_calls.unwrap_or(env, c, vs, rty, t)
@@ -234,7 +264,10 @@ fn lower.std_calls.num_call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str,
         o.push_str(lower.expr.two(recv, lower.tyk.at(vs.as_slice(), 1usize))?.as_str())?
     }
     let v = lower.cx.def(c, tt.as_str(), o.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.std_calls.num_call
 
 fn lower.std_calls.num_op(fqn: &str) -> &'static str uses [] panics may pub
@@ -384,7 +417,10 @@ fn lower.std_calls.slice_contains(env: &types.env.Env, c: &mut lower.cx.Cx, vs: 
     a3.push(nx)?
     lower.loops.brif(c, eq, jb, &a2, hb, &a3)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: jp, t: t })
+    Ok(lower.cx.R {
+        v: jp
+        t: t
+    })
 end lower.std_calls.slice_contains
 
 fn lower.std_calls.slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.vec.Vec<usize>, rty: usize, last: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -476,7 +512,10 @@ fn lower.std_calls.slice_get_in(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &s
     a2.push(nv)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a2)?.as_str())?)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: jp, t: t })
+    Ok(lower.cx.R {
+        v: jp
+        t: t
+    })
 end lower.std_calls.slice_get_in
 
 fn lower.std_calls.slice_sub(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.vec.Vec<usize>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -519,7 +558,10 @@ fn lower.std_calls.slice_sub(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.
     a2.push(nv)?
     lower.loops.br(c, jb, &a2)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: jp, t: t })
+    Ok(lower.cx.R {
+        v: jp
+        t: t
+    })
 end lower.std_calls.slice_sub
 
 fn lower.std_calls.str_ends_with(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.vec.Vec<usize>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -577,7 +619,10 @@ fn lower.std_calls.str_ends_with(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &
     af.push(fv)?
     lower.loops.br(c, b6, &af)?
     lower.cx.goto(c, b6)
-    Ok(lower.cx.R { v: jp, t: t })
+    Ok(lower.cx.R {
+        v: jp
+        t: t
+    })
 end lower.std_calls.str_ends_with
 
 fn lower.std_calls.str_eq_inline(c: &mut lower.cx.Cx, l: lower.cx.R, r: lower.cx.R, ne: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics never pub
@@ -628,10 +673,16 @@ fn lower.std_calls.str_eq_inline(c: &mut lower.cx.Cx, l: lower.cx.R, r: lower.cx
     lower.loops.br(c, join, &af)?
     lower.cx.goto(c, join)
     if !ne {
-        return Ok(lower.cx.R { v: jp, t: t })
+        return Ok(lower.cx.R {
+            v: jp
+            t: t
+        })
     }
     let nv = lower.cx.def1(c, "bool", "not.bool ", jp)?
-    Ok(lower.cx.R { v: nv, t: t })
+    Ok(lower.cx.R {
+        v: nv
+        t: t
+    })
 end lower.std_calls.str_eq_inline
 
 fn lower.std_calls.unwrap_or(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.vec.Vec<usize>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -672,7 +723,10 @@ fn lower.std_calls.unwrap_or(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.
     let b2 = lower.cx.cat2("br ", lower.cx.target(jb, &a2)?.as_str())?
     lower.cx.finish(c, b2)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: jp, t: t })
+    Ok(lower.cx.R {
+        v: jp
+        t: t
+    })
 end lower.std_calls.unwrap_or
 
 fn lower.std_calls.val_of(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, rty: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub

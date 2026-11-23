@@ -44,7 +44,10 @@ end shortener.store.Store.lookup
 
 fn shortener.store.Store.new(path: &str) -> Result<shortener.store.Store, shortener.error.Error> uses [alloc] panics never pub
     let saved = std.string.String.from_str(path)?
-    Ok(shortener.store.Store { path: saved, urls: std.vec.Vec.new() })
+    Ok(shortener.store.Store {
+        path: saved
+        urls: std.vec.Vec.new()
+    })
 end shortener.store.Store.new
 
 fn shortener.store.Store.parse_into(self: &mut shortener.store.Store, text: &str) -> Result<(), shortener.error.Error> uses [alloc] panics never pub

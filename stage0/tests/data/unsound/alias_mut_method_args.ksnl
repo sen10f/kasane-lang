@@ -8,7 +8,9 @@ fn t.S.two(self: &t.S, a: &mut u32, b: &mut u32) -> () uses [] panics never
 end t.S.two
 
 fn t.bad() -> u32 uses [] panics never
-    let s = t.S { n: 1u32 }
+    let s = t.S {
+        n: 1u32
+    }
     let mut x = 1u32
     s.two(&mut x, &mut x)
     x

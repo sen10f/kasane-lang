@@ -4,7 +4,9 @@ end t.S
 
 fn t.main() -> () uses [] panics never
     let s = std.string.String.new()
-    let x = t.S { name: &s }
+    let x = t.S {
+        name: &s
+    }
     core.mem.drop(x)
     core.mem.drop(s)
 end t.main

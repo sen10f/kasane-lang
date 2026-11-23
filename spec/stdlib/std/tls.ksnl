@@ -95,11 +95,16 @@ fn std.tls.TlsAcceptor.accept(self: &std.tls.TlsAcceptor, tcp: std.net.TcpStream
         std.tls.free_session(ssl)
         return std.tls.refuse(tcp, failed)
     }
-    Ok(std.tls.TlsStream { ssl: ssl, tcp: tcp })
+    Ok(std.tls.TlsStream {
+        ssl: ssl
+        tcp: tcp
+    })
 end std.tls.TlsAcceptor.accept
 
 fn std.tls.TlsAcceptor.close(self: std.tls.TlsAcceptor) -> () uses [] panics never pub
-    let std.tls.TlsAcceptor { ctx: ctx } = self
+    let std.tls.TlsAcceptor {
+        ctx: ctx
+    } = self
     std.tls.free_ctx(ctx)
 end std.tls.TlsAcceptor.close
 
@@ -122,11 +127,16 @@ fn std.tls.TlsAcceptor.load(cert_file: &str, key_file: &str) -> Result<std.tls.T
         std.tls.free_ctx(ctx)
         return Err(failed)
     }
-    Ok(std.tls.TlsAcceptor { ctx: ctx })
+    Ok(std.tls.TlsAcceptor {
+        ctx: ctx
+    })
 end std.tls.TlsAcceptor.load
 
 fn std.tls.TlsStream.close(self: std.tls.TlsStream) -> Result<(), std.net.Error> uses [io.net] panics never pub
-    let std.tls.TlsStream { ssl: ssl, tcp: tcp } = self
+    let std.tls.TlsStream {
+        ssl: ssl
+        tcp: tcp
+    } = self
     std.tls.shutdown_and_free(ssl)
     tcp.close()
 end std.tls.TlsStream.close
@@ -259,7 +269,10 @@ fn std.tls.connect_with(address: &str, host: &str, ca_file: &str) -> Result<std.
         std.tls.free_session(ssl)
         return std.tls.refuse(tcp, failed)
     }
-    Ok(std.tls.TlsStream { ssl: ssl, tcp: tcp })
+    Ok(std.tls.TlsStream {
+        ssl: ssl
+        tcp: tcp
+    })
 end std.tls.connect_with
 
 fn std.tls.ctx_check_key(ctx: *mut u8) -> i32 uses [] panics never
@@ -322,7 +335,10 @@ fn std.tls.handshake_failure(ssl: *mut u8, ret: i32) -> std.tls.Error uses [] pa
 end std.tls.handshake_failure
 
 fn std.tls.io_failure(code: i32) -> std.io.Error uses [] panics never
-    std.io.Error { kind: std.io.ErrorKind.Other, code: code }
+    std.io.Error {
+        kind: std.io.ErrorKind.Other
+        code: code
+    }
 end std.tls.io_failure
 
 fn std.tls.is_null(pointer: *mut u8) -> bool uses [] panics never

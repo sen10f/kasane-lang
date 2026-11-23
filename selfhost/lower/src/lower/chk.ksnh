@@ -117,12 +117,18 @@ fn lower.chk.enum_cmp(env: &types.env.Env, c: &mut lower.cx.Cx, l: lower.cx.R, r
     let co4 = lower.cx.cat2(co3.as_str(), ")")?
     let v = lower.cx.def(c, "bool", co4.as_str())?
     if !ne {
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     let tr = lower.cx.def(c, "bool", "const.bool true")?
     let xo = lower.cx.cat2("xor.bool ", lower.expr.two(v, tr)?.as_str())?
     let nv = lower.cx.def(c, "bool", xo.as_str())?
-    Ok(lower.cx.R { v: nv, t: t })
+    Ok(lower.cx.R {
+        v: nv
+        t: t
+    })
 end lower.chk.enum_cmp
 
 // 固定の文字列 (16 進の綴りと長さ) を stderr へ書く。
@@ -186,7 +192,10 @@ fn lower.chk.eq(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: 
     lower.cx.finish(c, lower.cx.own("unreachable")?)?
     lower.cx.goto(c, cont)
     let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: types.ty.UNIT })
+    Ok(lower.cx.R {
+        v: u
+        t: types.ty.UNIT
+    })
 end lower.chk.eq
 
 // 型の名前 ty が `core.check.eq` で扱える (整数と bool) か。
@@ -264,12 +273,18 @@ fn lower.chk.opt_cmp(env: &types.env.Env, c: &mut lower.cx.Cx, l: lower.cx.R, r:
     let co2 = lower.cx.cat2(co.as_str(), lower.cx.cat2("(", lower.expr.two(l.v, r.v)?.as_str())?.as_str())?
     let v = lower.cx.def(c, "bool", lower.cx.cat2(co2.as_str(), ")")?.as_str())?
     if !ne {
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     let tr = lower.cx.def(c, "bool", "const.bool true")?
     let xo = lower.cx.cat2("xor.bool ", lower.expr.two(v, tr)?.as_str())?
     let nv = lower.cx.def(c, "bool", xo.as_str())?
-    Ok(lower.cx.R { v: nv, t: t })
+    Ok(lower.cx.R {
+        v: nv
+        t: t
+    })
 end lower.chk.opt_cmp
 
 // 行の部品: 文字列 `s`、値 `%k`、行末。
@@ -323,12 +338,18 @@ fn lower.chk.str_cmp(_env: &types.env.Env, c: &mut lower.cx.Cx, l: lower.cx.R, r
     let co = lower.cx.cat2("call str.$eq(", lower.expr.two(l.v, r.v)?.as_str())?
     let v = lower.cx.def(c, "bool", lower.cx.cat2(co.as_str(), ")")?.as_str())?
     if !ne {
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     let tr = lower.cx.def(c, "bool", "const.bool true")?
     let xo = lower.cx.cat2("xor.bool ", lower.expr.two(v, tr)?.as_str())?
     let nv = lower.cx.def(c, "bool", xo.as_str())?
-    Ok(lower.cx.R { v: nv, t: t })
+    Ok(lower.cx.R {
+        v: nv
+        t: t
+    })
 end lower.chk.str_cmp
 
 // `$debug`: bool は true / false、整数は 10 進 (負は先に `-`)。

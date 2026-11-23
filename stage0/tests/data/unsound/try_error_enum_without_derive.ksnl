@@ -7,7 +7,9 @@ type t.Inner pub
 end t.Inner
 
 fn t.f() -> Result<u8, t.Inner> uses [] panics never
-    Err(t.Inner { a: 1u8 })
+    Err(t.Inner {
+        a: 1u8
+    })
 end t.f
 
 fn t.g() -> Result<u8, t.Error> uses [] panics never

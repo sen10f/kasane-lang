@@ -3,9 +3,13 @@ type t.S
 end t.S
 
 fn t.main() -> () uses [] panics never
-    let s = t.S { v: t.mk() }
+    let s = t.S {
+        v: t.mk()
+    }
     match &s {
-        t.S { v: v } => core.mem.drop(*v)
+        t.S {
+            v: v
+        } => core.mem.drop(*v)
     }
 end t.main
 

@@ -64,11 +64,17 @@ fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
             "fs.create "
         }
         let fv = lower.cx.def1(c, rt.as_str(), op, a.v)?
-        return Ok(lower.cx.R { v: fv, t: t })
+        return Ok(lower.cx.R {
+            v: fv
+            t: t
+        })
     }
     if fqn == "std.env.arg" {
         let v = lower.cx.def1(c, rt.as_str(), "env.arg ", a.v)?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     let empty = std.vec.Vec.new()
     let mut jps = std.vec.Vec.new()
@@ -98,7 +104,10 @@ fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         a2.push(nv)?
         lower.loops.br(c, jb, &a2)?
         lower.cx.goto(c, jb)
-        return Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+        return Ok(lower.cx.R {
+            v: lower.tyk.at(jps.as_slice(), 0usize)
+            t: t
+        })
     }
     // from_utf8: 先頭から有効な長さを `utf8.valid` で求め、全体と等しければ Ok(bytes)。
     let ptr = lower.loops.fld(c, "ptr", a.v, "+0")?
@@ -124,7 +133,10 @@ fn lower.std_calls.call1(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     a2.push(ev)?
     lower.loops.br(c, jb, &a2)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+    Ok(lower.cx.R {
+        v: lower.tyk.at(jps.as_slice(), 0usize)
+        t: t
+    })
 end lower.std_calls.call1
 
 // 自由関数の呼び出しを、この表で下ろせるか。
@@ -166,7 +178,10 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
         let mk2 = lower.cx.cat2(mk.as_str(), ")")?
         let tt = lower.tyk.text(env, c, t)?
         let v = lower.cx.def(c, tt.as_str(), mk2.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if fqn == "std.fs.File.close" {
         // 受け手 (File の値) の記述子を読んで閉じる (`field +0` と `fs.close`)。
@@ -174,11 +189,17 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
         let fdv = lower.loops.fld(c, "i32", fv, "+0")?
         let rt0 = lower.tyk.text(env, c, t)?
         let cv = lower.cx.def1(c, rt0.as_str(), "fs.close ", fdv)?
-        return Ok(lower.cx.R { v: cv, t: t })
+        return Ok(lower.cx.R {
+            v: cv
+            t: t
+        })
     }
     if fqn == "core.str.as_bytes" {
         let fat = lower.std_calls.val_of(env, c, recv, rty)?
-        return Ok(lower.cx.R { v: fat, t: t })
+        return Ok(lower.cx.R {
+            v: fat
+            t: t
+        })
     }
     if fqn == "core.str.len" {
         let fat = lower.std_calls.val_of(env, c, recv, rty)?
@@ -186,13 +207,19 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
         let ln = lower.cx.cat2("field ", fs.as_str())?
         let ln2 = lower.cx.cat2(ln.as_str(), ", +8")?
         let v = lower.cx.def(c, "usize", ln2.as_str())?
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if fqn == "core.slice.len" {
         let fat = lower.std_calls.val_of(env, c, recv, rty)?
         let ls = lower.cx.cat2("field ", lower.cx.vs(fat)?.as_str())?
         let lv = lower.cx.def(c, "usize", lower.cx.cat2(ls.as_str(), ", +8")?.as_str())?
-        return Ok(lower.cx.R { v: lv, t: t })
+        return Ok(lower.cx.R {
+            v: lv
+            t: t
+        })
     }
     if fqn == "core.slice.contains" {
         return lower.std_calls.slice_contains(env, c, vs, rty, t)
@@ -219,7 +246,10 @@ fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, r
             let ns = lower.cx.cat2("not.bool ", lower.cx.vs(tg)?.as_str())?
             v = lower.cx.def(c, "bool", ns.as_str())?
         }
-        return Ok(lower.cx.R { v: v, t: t })
+        return Ok(lower.cx.R {
+            v: v
+            t: t
+        })
     }
     if fqn == "core.option.Option.unwrap_or" {
         return lower.std_calls.unwrap_or(env, c, vs, rty, t)
@@ -255,7 +285,10 @@ fn lower.std_calls.num_call(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str,
         o.push_str(lower.expr.two(recv, lower.tyk.at(vs.as_slice(), 1usize))?.as_str())?
     }
     let v = lower.cx.def(c, tt.as_str(), o.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.std_calls.num_call
 
 // `core.num.<型>.<メソッド>` の、命令にそのまま下ろせるものの命令名 (なければ空)。
@@ -414,7 +447,10 @@ fn lower.std_calls.slice_contains(env: &types.env.Env, c: &mut lower.cx.Cx, vs: 
     a3.push(nx)?
     lower.loops.brif(c, eq, jb, &a2, hb, &a3)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: jp, t: t })
+    Ok(lower.cx.R {
+        v: jp
+        t: t
+    })
 end lower.std_calls.slice_contains
 
 fn lower.std_calls.slice_get(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.vec.Vec<usize>, rty: usize, last: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -510,7 +546,10 @@ fn lower.std_calls.slice_get_in(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &s
     a2.push(nv)?
     lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a2)?.as_str())?)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: jp, t: t })
+    Ok(lower.cx.R {
+        v: jp
+        t: t
+    })
 end lower.std_calls.slice_get_in
 
 // `s.sub(a, b)` (`&[T]` の [a, b)): a <= b && b <= len なら some (make(..))、でなければ none。
@@ -554,7 +593,10 @@ fn lower.std_calls.slice_sub(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.
     a2.push(nv)?
     lower.loops.br(c, jb, &a2)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: jp, t: t })
+    Ok(lower.cx.R {
+        v: jp
+        t: t
+    })
 end lower.std_calls.slice_sub
 
 // `s.ends_with(sfx)`: 末尾から sfx の長さ分を、添字で先頭から比べる (Rust 版と同じ並び)。
@@ -613,7 +655,10 @@ fn lower.std_calls.str_ends_with(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &
     af.push(fv)?
     lower.loops.br(c, b6, &af)?
     lower.cx.goto(c, b6)
-    Ok(lower.cx.R { v: jp, t: t })
+    Ok(lower.cx.R {
+        v: jp
+        t: t
+    })
 end lower.std_calls.str_ends_with
 
 // `&str` どうしの `==` / `!=` (Rust 版 `str_eq`): 長さを比べ、1 バイトずつ比べるループをその場に出す。
@@ -665,10 +710,16 @@ fn lower.std_calls.str_eq_inline(c: &mut lower.cx.Cx, l: lower.cx.R, r: lower.cx
     lower.loops.br(c, join, &af)?
     lower.cx.goto(c, join)
     if !ne {
-        return Ok(lower.cx.R { v: jp, t: t })
+        return Ok(lower.cx.R {
+            v: jp
+            t: t
+        })
     }
     let nv = lower.cx.def1(c, "bool", "not.bool ", jp)?
-    Ok(lower.cx.R { v: nv, t: t })
+    Ok(lower.cx.R {
+        v: nv
+        t: t
+    })
 end lower.std_calls.str_eq_inline
 
 // `opt.unwrap_or(d)`: Rust 版と同じ形。tag で分け、Some なら payload、None なら既定の値を、
@@ -712,7 +763,10 @@ fn lower.std_calls.unwrap_or(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &std.
     let b2 = lower.cx.cat2("br ", lower.cx.target(jb, &a2)?.as_str())?
     lower.cx.finish(c, b2)?
     lower.cx.goto(c, jb)
-    Ok(lower.cx.R { v: jp, t: t })
+    Ok(lower.cx.R {
+        v: jp
+        t: t
+    })
 end lower.std_calls.unwrap_or
 
 // 受け手の値。型が参照 (`ref<T>` / `mutref<T>`) なら、中身を読む (`load`)。値なら、そのまま。

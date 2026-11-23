@@ -11,6 +11,8 @@ fn t.grow(m: &mut t.W) -> () uses [] panics never
 end t.grow
 
 fn t.main() -> () uses [] panics may
-    let w = t.W { n: 1u64 }
+    let w = t.W {
+        n: 1u64
+    }
     t.call(t.grow, &w)
 end t.main

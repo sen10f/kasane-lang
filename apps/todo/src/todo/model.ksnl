@@ -141,7 +141,12 @@ fn todo.model.from_extra_json_value(doc: &std.json.Doc, value: std.json.Value) -
     let tg = tags
     let dl = deadline
     let od = owner_id
-    Ok(todo.model.TodoExtra { updated_at: ua, tags: tg, deadline: dl, owner_id: od })
+    Ok(todo.model.TodoExtra {
+        updated_at: ua
+        tags: tg
+        deadline: dl
+        owner_id: od
+    })
 end todo.model.from_extra_json_value
 
 fn todo.model.from_json_value(doc: &std.json.Doc, value: std.json.Value) -> Result<todo.model.Todo, std.json.Error> uses [alloc] panics never pub
@@ -160,7 +165,12 @@ fn todo.model.from_json_value(doc: &std.json.Doc, value: std.json.Value) -> Resu
     let t = title
     let d = done
     let ca = created_at
-    Ok(todo.model.Todo { id: i, title: t, done: d, created_at: ca })
+    Ok(todo.model.Todo {
+        id: i
+        title: t
+        done: d
+        created_at: ca
+    })
 end todo.model.from_json_value
 
 fn todo.model.from_session_json_value(doc: &std.json.Doc, value: std.json.Value) -> Result<todo.model.Session, std.json.Error> uses [alloc] panics never pub
@@ -173,7 +183,11 @@ fn todo.model.from_session_json_value(doc: &std.json.Doc, value: std.json.Value)
     let tk = token
     let uid = user_id
     let ea = expires_at
-    Ok(todo.model.Session { token: tk, user_id: uid, expires_at: ea })
+    Ok(todo.model.Session {
+        token: tk
+        user_id: uid
+        expires_at: ea
+    })
 end todo.model.from_session_json_value
 
 fn todo.model.from_update_value(doc: &std.json.Doc, value: std.json.Value) -> Result<todo.model.UpdateFields, std.json.Error> uses [alloc] panics never pub
@@ -196,7 +210,12 @@ fn todo.model.from_update_value(doc: &std.json.Doc, value: std.json.Value) -> Re
         Ok(tags_v) => todo.model.decode_string_array(doc, tags_v)?
         Err(_) => std.vec.Vec.new()
     }
-    Ok(todo.model.UpdateFields { title: title, done: done, deadline: deadline, tags: tags })
+    Ok(todo.model.UpdateFields {
+        title: title
+        done: done
+        deadline: deadline
+        tags: tags
+    })
 end todo.model.from_update_value
 
 fn todo.model.from_user_json_value(doc: &std.json.Doc, value: std.json.Value) -> Result<todo.model.User, std.json.Error> uses [alloc] panics never pub
@@ -215,7 +234,13 @@ fn todo.model.from_user_json_value(doc: &std.json.Doc, value: std.json.Value) ->
     let ph = password_hash
     let sl = salt
     let ca = created_at
-    Ok(todo.model.User { id: i, username: un, password_hash: ph, salt: sl, created_at: ca })
+    Ok(todo.model.User {
+        id: i
+        username: un
+        password_hash: ph
+        salt: sl
+        created_at: ca
+    })
 end todo.model.from_user_json_value
 
 fn todo.model.push_digit_char(d: u8) -> char uses [] panics never
@@ -249,11 +274,15 @@ fn todo.model.push_quoted(out: &mut std.string.String, text: &str) -> Result<(),
             out.push_str("\\u00")?
             match u8.try_from_u32(high) {
                 Ok(d) => out.push(todo.model.push_digit_char(d))?
-                Err(_) => return Err(alloc.alloc.AllocError { code: 0u32 })
+                Err(_) => return Err(alloc.alloc.AllocError {
+                    code: 0u32
+                })
             }
             match u8.try_from_u32(low) {
                 Ok(d) => out.push(todo.model.push_digit_char(d))?
-                Err(_) => return Err(alloc.alloc.AllocError { code: 0u32 })
+                Err(_) => return Err(alloc.alloc.AllocError {
+                    code: 0u32
+                })
             }
         } else {
             out.push(c)?
@@ -291,7 +320,12 @@ fn todo.model.test_extra() -> todo.model.TodoExtra uses [alloc] panics may
                 Ok(d) => {
                     let dl = d
                     let o = 1i64
-                    todo.model.TodoExtra { updated_at: u, tags: tags, deadline: dl, owner_id: o }
+                    todo.model.TodoExtra {
+                        updated_at: u
+                        tags: tags
+                        deadline: dl
+                        owner_id: o
+                    }
                 }
                 Err(_e) => core.panic.panic("test_extra")
             }
@@ -304,7 +338,12 @@ fn todo.model.test_memory() -> todo.model.Todo uses [alloc] panics may
     let mut title = std.string.String.new()
     core.mem.drop(title.push_str("買い物"))
     match std.string.String.from_str("2026-11-14T10:00:00Z") {
-        Ok(created) => todo.model.Todo { id: 7i64, title: title, done: true, created_at: created }
+        Ok(created) => todo.model.Todo {
+            id: 7i64
+            title: title
+            done: true
+            created_at: created
+        }
         Err(_e) => core.panic.panic("test_memory")
     }
 end todo.model.test_memory
@@ -363,7 +402,9 @@ fn todo.model.write_tags(out: &mut std.string.String, tags: &std.vec.Vec<std.str
         }
         match all.get(i) {
             Some(t) => todo.model.push_quoted(out, t.as_str())?
-            None => return Err(alloc.alloc.AllocError { code: 0u32 })
+            None => return Err(alloc.alloc.AllocError {
+                code: 0u32
+            })
         }
     }
     out.push(']')?

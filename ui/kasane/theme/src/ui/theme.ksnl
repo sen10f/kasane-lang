@@ -85,15 +85,30 @@ fn ui.theme.Color.blend(self: ui.theme.Color, over: ui.theme.Color) -> ui.theme.
     } else {
         0.0f32
     }
-    ui.theme.Color { r: r, g: g, b: b, a: out_a }
+    ui.theme.Color {
+        r: r
+        g: g
+        b: b
+        a: out_a
+    }
 end ui.theme.Color.blend
 
 fn ui.theme.Color.linear(r: f32, g: f32, b: f32, a: f32) -> ui.theme.Color uses [] panics never pub
-    ui.theme.Color { r: r, g: g, b: b, a: a }
+    ui.theme.Color {
+        r: r
+        g: g
+        b: b
+        a: a
+    }
 end ui.theme.Color.linear
 
 fn ui.theme.Color.premul(self: ui.theme.Color) -> ui.theme.Color uses [] panics never pub
-    ui.theme.Color { r: self.r * self.a, g: self.g * self.a, b: self.b * self.a, a: self.a }
+    ui.theme.Color {
+        r: self.r * self.a
+        g: self.g * self.a
+        b: self.b * self.a
+        a: self.a
+    }
 end ui.theme.Color.premul
 
 fn ui.theme.Color.relative_luminance(self: ui.theme.Color) -> f32 uses [] panics never pub
@@ -104,7 +119,12 @@ fn ui.theme.Color.srgb(r: f32, g: f32, b: f32, a: f32) -> ui.theme.Color uses []
     let rr = ui.theme.srgb_to_linear(r)
     let gg = ui.theme.srgb_to_linear(g)
     let bb = ui.theme.srgb_to_linear(b)
-    ui.theme.Color { r: rr, g: gg, b: bb, a: a }
+    ui.theme.Color {
+        r: rr
+        g: gg
+        b: bb
+        a: a
+    }
 end ui.theme.Color.srgb
 
 fn ui.theme.Color.to_srgb(self: ui.theme.Color) -> (f32, f32, f32, f32) uses [] panics never pub
@@ -116,9 +136,19 @@ end ui.theme.Color.to_srgb
 
 fn ui.theme.Color.unpremul(self: ui.theme.Color) -> ui.theme.Color uses [] panics never pub
     if self.a > 0.0f32 {
-        ui.theme.Color { r: self.r / self.a, g: self.g / self.a, b: self.b / self.a, a: self.a }
+        ui.theme.Color {
+            r: self.r / self.a
+            g: self.g / self.a
+            b: self.b / self.a
+            a: self.a
+        }
     } else {
-        ui.theme.Color { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }
+        ui.theme.Color {
+            r: 0.0f32
+            g: 0.0f32
+            b: 0.0f32
+            a: 0.0f32
+        }
     }
 end ui.theme.Color.unpremul
 
@@ -127,7 +157,13 @@ fn ui.theme.button_base(theme: ui.theme.Theme) -> ui.theme.Style uses [] panics 
     let brd = theme.color.outl
     let r = theme.space.radius_medium
     let t = theme.color.on_prim
-    ui.theme.Style { background: bgc, border: brd, border_w: 1.0f32, radius: r, text: t }
+    ui.theme.Style {
+        background: bgc
+        border: brd
+        border_w: 1.0f32
+        radius: r
+        text: t
+    }
 end ui.theme.button_base
 
 fn ui.theme.colors_dark() -> ui.theme.Colors uses [] panics never pub
@@ -138,7 +174,15 @@ fn ui.theme.colors_dark() -> ui.theme.Colors uses [] panics never pub
     let p = ui.theme.Color.srgb(0.733f32, 0.525f32, 0.984f32, 1.0f32)
     let op = ui.theme.Color.srgb(0.0f32, 0.0f32, 0.0f32, 1.0f32)
     let ol = ui.theme.Color.srgb(0.216f32, 0.278f32, 0.314f32, 1.0f32)
-    ui.theme.Colors { bg: b, surf: u, on_bg: ob, on_surf: os, prim: p, on_prim: op, outl: ol }
+    ui.theme.Colors {
+        bg: b
+        surf: u
+        on_bg: ob
+        on_surf: os
+        prim: p
+        on_prim: op
+        outl: ol
+    }
 end ui.theme.colors_dark
 
 fn ui.theme.colors_light() -> ui.theme.Colors uses [] panics never pub
@@ -149,7 +193,15 @@ fn ui.theme.colors_light() -> ui.theme.Colors uses [] panics never pub
     let p = ui.theme.Color.srgb(0.384f32, 0.0f32, 0.933f32, 1.0f32)
     let op = ui.theme.Color.srgb(1.0f32, 1.0f32, 1.0f32, 1.0f32)
     let ol = ui.theme.Color.srgb(0.741f32, 0.741f32, 0.741f32, 1.0f32)
-    ui.theme.Colors { bg: b, surf: u, on_bg: ob, on_surf: os, prim: p, on_prim: op, outl: ol }
+    ui.theme.Colors {
+        bg: b
+        surf: u
+        on_bg: ob
+        on_surf: os
+        prim: p
+        on_prim: op
+        outl: ol
+    }
 end ui.theme.colors_light
 
 fn ui.theme.contrast_ratio(a: ui.theme.Color, b: ui.theme.Color) -> f32 uses [] panics never pub
@@ -205,7 +257,13 @@ fn ui.theme.refine(base: ui.theme.Style, patch: ui.theme.StylePatch) -> ui.theme
         Some(v) => v
         None => base.text
     }
-    ui.theme.Style { background: bg, border: br, border_w: bw, radius: ra, text: t }
+    ui.theme.Style {
+        background: bg
+        border: br
+        border_w: bw
+        radius: ra
+        text: t
+    }
 end ui.theme.refine
 
 fn ui.theme.resolve(base: ui.theme.Style, variant: Option<ui.theme.StylePatch>, overrides: ui.theme.StateOverrides, state: ui.theme.WidgetState) -> ui.theme.Style uses [] panics never pub
@@ -236,10 +294,23 @@ fn ui.theme.theme_dark() -> ui.theme.Theme uses [] panics never pub
     let rs = 4.0f32
     let rm = 8.0f32
     let rl = 16.0f32
-    let sp = ui.theme.Space { spacing: s, radius_small: rs, radius_medium: rm, radius_large: rl }
-    let fo = ui.theme.Font { caption: 12.0f32, body: 14.0f32, heading: 20.0f32 }
+    let sp = ui.theme.Space {
+        spacing: s
+        radius_small: rs
+        radius_medium: rm
+        radius_large: rl
+    }
+    let fo = ui.theme.Font {
+        caption: 12.0f32
+        body: 14.0f32
+        heading: 20.0f32
+    }
     let c = ui.theme.colors_dark()
-    ui.theme.Theme { space: sp, font: fo, color: c }
+    ui.theme.Theme {
+        space: sp
+        font: fo
+        color: c
+    }
 end ui.theme.theme_dark
 
 fn ui.theme.theme_light() -> ui.theme.Theme uses [] panics never pub
@@ -247,10 +318,23 @@ fn ui.theme.theme_light() -> ui.theme.Theme uses [] panics never pub
     let rs = 4.0f32
     let rm = 8.0f32
     let rl = 16.0f32
-    let sp = ui.theme.Space { spacing: s, radius_small: rs, radius_medium: rm, radius_large: rl }
-    let fo = ui.theme.Font { caption: 12.0f32, body: 14.0f32, heading: 20.0f32 }
+    let sp = ui.theme.Space {
+        spacing: s
+        radius_small: rs
+        radius_medium: rm
+        radius_large: rl
+    }
+    let fo = ui.theme.Font {
+        caption: 12.0f32
+        body: 14.0f32
+        heading: 20.0f32
+    }
     let c = ui.theme.colors_light()
-    ui.theme.Theme { space: sp, font: fo, color: c }
+    ui.theme.Theme {
+        space: sp
+        font: fo
+        color: c
+    }
 end ui.theme.theme_light
 
 test ui.theme.Color.test_blend_half_white_over_black
@@ -388,10 +472,22 @@ test ui.theme.Style.test_refine_none_keeps_base
     let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
     let bw = 2.0f32
     let ra = 4.0f32
-    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let base = ui.theme.Style {
+        background: b
+        border: r
+        border_w: bw
+        radius: ra
+        text: t
+    }
     let x = None
     let y = None
-    let patch = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
+    let patch = ui.theme.StylePatch {
+        background: x
+        border: x
+        border_w: y
+        radius: y
+        text: x
+    }
     let out = ui.theme.refine(base, patch)
     core.check.eq(out.background, base.background)
     core.check.eq(out.border, base.border)
@@ -406,11 +502,23 @@ test ui.theme.Style.test_refine_some
     let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
     let bw = 2.0f32
     let ra = 4.0f32
-    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let base = ui.theme.Style {
+        background: b
+        border: r
+        border_w: bw
+        radius: ra
+        text: t
+    }
     let pb = Some(ui.theme.Color.linear(0.7f32, 0.8f32, 0.9f32, 1.0f32))
     let x = None
     let y = None
-    let patch = ui.theme.StylePatch { background: pb, border: x, border_w: y, radius: y, text: x }
+    let patch = ui.theme.StylePatch {
+        background: pb
+        border: x
+        border_w: y
+        radius: y
+        text: x
+    }
     let out = ui.theme.refine(base, patch)
     core.check.eq(out.background.r, 0.7f32)
     core.check.eq(out.border.r, base.border.r)
@@ -425,13 +533,36 @@ test ui.theme.Style.test_resolve_applies_disabled
     let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
     let bw = 2.0f32
     let ra = 4.0f32
-    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let base = ui.theme.Style {
+        background: b
+        border: r
+        border_w: bw
+        radius: ra
+        text: t
+    }
     let x = None
     let y = None
     let dbg = Some(ui.theme.Color.linear(0.5f32, 0.5f32, 0.5f32, 1.0f32))
-    let d = ui.theme.StylePatch { background: dbg, border: x, border_w: y, radius: y, text: x }
-    let p0 = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
-    let overrides = ui.theme.StateOverrides { hovered: p0, pressed: p0, focused: p0, disabled: d }
+    let d = ui.theme.StylePatch {
+        background: dbg
+        border: x
+        border_w: y
+        radius: y
+        text: x
+    }
+    let p0 = ui.theme.StylePatch {
+        background: x
+        border: x
+        border_w: y
+        radius: y
+        text: x
+    }
+    let overrides = ui.theme.StateOverrides {
+        hovered: p0
+        pressed: p0
+        focused: p0
+        disabled: d
+    }
     let out = ui.theme.resolve(base, None, overrides, ui.theme.WidgetState.Disabled)
     core.check.eq(out.background.r, 0.5f32)
     core.check.eq(out.border.r, base.border.r)
@@ -443,13 +574,36 @@ test ui.theme.Style.test_resolve_applies_focused
     let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
     let bw = 2.0f32
     let ra = 4.0f32
-    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let base = ui.theme.Style {
+        background: b
+        border: r
+        border_w: bw
+        radius: ra
+        text: t
+    }
     let x = None
     let y = None
     let bw3 = Some(3.0f32)
-    let f = ui.theme.StylePatch { background: x, border: x, border_w: bw3, radius: y, text: x }
-    let p0 = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
-    let overrides = ui.theme.StateOverrides { hovered: p0, pressed: p0, focused: f, disabled: p0 }
+    let f = ui.theme.StylePatch {
+        background: x
+        border: x
+        border_w: bw3
+        radius: y
+        text: x
+    }
+    let p0 = ui.theme.StylePatch {
+        background: x
+        border: x
+        border_w: y
+        radius: y
+        text: x
+    }
+    let overrides = ui.theme.StateOverrides {
+        hovered: p0
+        pressed: p0
+        focused: f
+        disabled: p0
+    }
     let out = ui.theme.resolve(base, None, overrides, ui.theme.WidgetState.Focused)
     core.check.eq(out.border_w, 3.0f32)
     core.check.eq(out.background.r, base.background.r)
@@ -461,13 +615,36 @@ test ui.theme.Style.test_resolve_applies_hovered
     let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
     let bw = 2.0f32
     let ra = 4.0f32
-    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let base = ui.theme.Style {
+        background: b
+        border: r
+        border_w: bw
+        radius: ra
+        text: t
+    }
     let hbg = Some(ui.theme.Color.linear(0.8f32, 0.8f32, 0.8f32, 1.0f32))
     let x = None
     let y = None
-    let h = ui.theme.StylePatch { background: hbg, border: x, border_w: y, radius: y, text: x }
-    let p0 = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
-    let overrides = ui.theme.StateOverrides { hovered: h, pressed: p0, focused: p0, disabled: p0 }
+    let h = ui.theme.StylePatch {
+        background: hbg
+        border: x
+        border_w: y
+        radius: y
+        text: x
+    }
+    let p0 = ui.theme.StylePatch {
+        background: x
+        border: x
+        border_w: y
+        radius: y
+        text: x
+    }
+    let overrides = ui.theme.StateOverrides {
+        hovered: h
+        pressed: p0
+        focused: p0
+        disabled: p0
+    }
     let out = ui.theme.resolve(base, None, overrides, ui.theme.WidgetState.Hovered)
     core.check.eq(out.background.r, 0.8f32)
     core.check.eq(out.border.r, base.border.r)
@@ -479,13 +656,36 @@ test ui.theme.Style.test_resolve_applies_pressed
     let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
     let bw = 2.0f32
     let ra = 4.0f32
-    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let base = ui.theme.Style {
+        background: b
+        border: r
+        border_w: bw
+        radius: ra
+        text: t
+    }
     let pbg = Some(ui.theme.Color.linear(0.2f32, 0.2f32, 0.2f32, 1.0f32))
     let x = None
     let y = None
-    let p = ui.theme.StylePatch { background: pbg, border: x, border_w: y, radius: y, text: x }
-    let p0 = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
-    let overrides = ui.theme.StateOverrides { hovered: p0, pressed: p, focused: p0, disabled: p0 }
+    let p = ui.theme.StylePatch {
+        background: pbg
+        border: x
+        border_w: y
+        radius: y
+        text: x
+    }
+    let p0 = ui.theme.StylePatch {
+        background: x
+        border: x
+        border_w: y
+        radius: y
+        text: x
+    }
+    let overrides = ui.theme.StateOverrides {
+        hovered: p0
+        pressed: p
+        focused: p0
+        disabled: p0
+    }
     let out = ui.theme.resolve(base, None, overrides, ui.theme.WidgetState.Pressed)
     core.check.eq(out.background.r, 0.2f32)
     core.check.eq(out.border.r, base.border.r)
@@ -497,13 +697,36 @@ test ui.theme.Style.test_resolve_applies_variant
     let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
     let bw = 2.0f32
     let ra = 4.0f32
-    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let base = ui.theme.Style {
+        background: b
+        border: r
+        border_w: bw
+        radius: ra
+        text: t
+    }
     let vbg = Some(ui.theme.Color.linear(0.5f32, 0.5f32, 0.5f32, 1.0f32))
     let x = None
     let y = None
-    let v = ui.theme.StylePatch { background: vbg, border: x, border_w: y, radius: y, text: x }
-    let p0 = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
-    let overrides = ui.theme.StateOverrides { hovered: p0, pressed: p0, focused: p0, disabled: p0 }
+    let v = ui.theme.StylePatch {
+        background: vbg
+        border: x
+        border_w: y
+        radius: y
+        text: x
+    }
+    let p0 = ui.theme.StylePatch {
+        background: x
+        border: x
+        border_w: y
+        radius: y
+        text: x
+    }
+    let overrides = ui.theme.StateOverrides {
+        hovered: p0
+        pressed: p0
+        focused: p0
+        disabled: p0
+    }
     let out = ui.theme.resolve(base, Some(v), overrides, ui.theme.WidgetState.Base)
     core.check.eq(out.background.r, 0.5f32)
     core.check.eq(out.border.r, base.border.r)
@@ -515,11 +738,28 @@ test ui.theme.Style.test_resolve_base_only
     let t = ui.theme.Color.linear(0.9f32, 0.9f32, 0.9f32, 1.0f32)
     let bw = 2.0f32
     let ra = 4.0f32
-    let base = ui.theme.Style { background: b, border: r, border_w: bw, radius: ra, text: t }
+    let base = ui.theme.Style {
+        background: b
+        border: r
+        border_w: bw
+        radius: ra
+        text: t
+    }
     let x = None
     let y = None
-    let p0 = ui.theme.StylePatch { background: x, border: x, border_w: y, radius: y, text: x }
-    let overrides = ui.theme.StateOverrides { hovered: p0, pressed: p0, focused: p0, disabled: p0 }
+    let p0 = ui.theme.StylePatch {
+        background: x
+        border: x
+        border_w: y
+        radius: y
+        text: x
+    }
+    let overrides = ui.theme.StateOverrides {
+        hovered: p0
+        pressed: p0
+        focused: p0
+        disabled: p0
+    }
     let out = ui.theme.resolve(base, None, overrides, ui.theme.WidgetState.Base)
     core.check.eq(out, base)
 end ui.theme.Style.test_resolve_base_only

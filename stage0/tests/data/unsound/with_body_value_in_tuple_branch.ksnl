@@ -4,7 +4,10 @@ type t.Res linear
 end t.Res
 
 fn t.Res.shut(self: t.Res) -> () uses [] panics never
-    let t.Res { id: id, inner: inner } = self
+    let t.Res {
+        id: id
+        inner: inner
+    } = self
     core.mem.drop(id)
     core.mem.drop(inner)
 end t.Res.shut
@@ -27,7 +30,10 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.mk() -> t.Res uses [] panics never
-    t.Res { id: 1u32, inner: None }
+    t.Res {
+        id: 1u32
+        inner: None
+    }
 end t.mk
 
 fn t.wrap(x: &t.Res) -> &t.Res uses [] panics never

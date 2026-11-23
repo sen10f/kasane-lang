@@ -48,7 +48,9 @@ end ui.state.Arena.get_mut
 fn ui.state.Arena.insert[T, A: alloc.alloc.Allocator](self: &mut ui.state.Arena<T, A>, value: T) -> Result<ui.state.Handle, alloc.alloc.AllocError> uses [alloc] panics never pub
     let index = self.slots.len()
     match self.slots.push(Some(value)) {
-        Ok(_) => Ok(ui.state.Handle { index: index })
+        Ok(_) => Ok(ui.state.Handle {
+            index: index
+        })
         Err(e) => Err(e)
     }
 end ui.state.Arena.insert
@@ -63,7 +65,9 @@ end ui.state.Arena.len
 
 fn ui.state.Arena.new[T, A: alloc.alloc.Allocator](allocator: A) -> ui.state.Arena<T, A> uses [] panics never pub
     let slots = alloc.vec.Vec.new(allocator)
-    ui.state.Arena { slots: slots }
+    ui.state.Arena {
+        slots: slots
+    }
 end ui.state.Arena.new
 
 fn ui.state.Arena.remove[T, A: alloc.alloc.Allocator](self: &mut ui.state.Arena<T, A>, h: ui.state.Handle) -> Option<T> uses [] panics never pub

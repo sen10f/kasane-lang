@@ -18,7 +18,9 @@ end t.Counter
 /// 1 増やす。**重要**。
 ///
 /// ```ksn
-/// let mut c = t.Counter { n: 0u32 }
+/// let mut c = t.Counter {
+///     n: 0u32
+/// }
 /// core.check.eq(c.bump(), 1u32)
 /// ```
 fn t.Counter.bump(self: &mut t.Counter) -> u32 uses [] panics never pub
@@ -31,7 +33,9 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 test t.Counter.bump.test_once
-    let mut c = t.Counter { n: 4u32 }
+    let mut c = t.Counter {
+        n: 4u32
+    }
     core.check.eq(c.bump(), 5u32)
 end t.Counter.bump.test_once
 ";

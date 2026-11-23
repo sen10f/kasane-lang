@@ -63,16 +63,21 @@ fn parse.pat.named(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [
         return parse.ast.add3(&mut p.ast, parse.ast.Kind.PVariant, at, start, stop, l)
     }
     if parse.cur.accept_ch(p, b'{') {
+        parse.cur.skip_nl(p)
         let mut items = std.vec.Vec.new()
         loop {
             let name = parse.cur.name_tok(p)?
             parse.cur.expect_ch(p, b':')?
             let sub = parse.pat.pattern(p)?
             items.push(parse.ast.add2(&mut p.ast, parse.ast.Kind.PField, name, name, sub)?)?
-            if !parse.cur.accept_ch(p, b',') {
+            let sep = parse.cur.accept_ch(p, b',')
+            let nl = parse.cur.kind(p) == parse.tok.Kind.Nl
+            parse.cur.skip_nl(p)
+            if parse.cur.is_ch(p, b'}') || !(sep || nl) {
                 break
             }
         }
+        parse.cur.skip_nl(p)
         parse.cur.expect_ch(p, b'}')?
         let l = parse.ast.list(&mut p.ast, &items, at)?
         return parse.ast.add3(&mut p.ast, parse.ast.Kind.PStruct, at, start, stop, l)

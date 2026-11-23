@@ -16,5 +16,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.wrap(s: &alloc.string.String) -> t.H uses [] panics never
-    t.H { r: s }
+    t.H {
+        r: s
+    }
 end t.wrap

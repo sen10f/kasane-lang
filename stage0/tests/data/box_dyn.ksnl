@@ -71,7 +71,9 @@ fn t.Reg.grow_all(self: &mut t.Reg) -> () uses [] panics may
 end t.Reg.grow_all
 
 fn t.Reg.new() -> t.Reg uses [] panics never
-    t.Reg { items: vec.Vec.new(std.alloc.SYSTEM) }
+    t.Reg {
+        items: vec.Vec.new(std.alloc.SYSTEM)
+    }
 end t.Reg.new
 
 fn t.Reg.tags(self: &t.Reg) -> i64 uses [] panics never
@@ -112,7 +114,10 @@ fn t.churn(count: u32) -> Result<i64, alloc.alloc.AllocError> uses [alloc] panic
     let mut acc = 0i64
     for _ in core.iter.range(0u32, count) {
         let name = alloc.string.String.from_str(std.alloc.SYSTEM, "hello box")?
-        let b = boxed.Box.new(std.alloc.SYSTEM, t.Named { name: name, n: 3i64 })?
+        let b = boxed.Box.new(std.alloc.SYSTEM, t.Named {
+            name: name
+            n: 3i64
+        })?
         let d: boxed.Box<dyn t.Shape + 'static, std.alloc.System> = b.into_dyn()
         acc = acc.wrapping_add(d.area())
     }
@@ -129,15 +134,25 @@ end t.main
 
 fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
     let mut reg = t.Reg.new()
-    reg.add(t.Sq { side: 3i64 })?
-    reg.add(t.Rect { w: 2i64, h: 5i64 })?
+    reg.add(t.Sq {
+        side: 3i64
+    })?
+    reg.add(t.Rect {
+        w: 2i64
+        h: 5i64
+    })?
     let name = alloc.string.String.from_str(std.alloc.SYSTEM, "named")?
-    reg.add(t.Named { name: name, n: 7i64 })?
+    reg.add(t.Named {
+        name: name
+        n: 7i64
+    })?
     core.check.eq(reg.total(), 9i64 + 10i64 + 7i64)
     core.check.eq(reg.tags(), 123i64)
     reg.grow_all()
     core.check.eq(reg.total(), 16i64 + 15i64 + 17i64)
-    let mut sq = t.Sq { side: 4i64 }
+    let mut sq = t.Sq {
+        side: 4i64
+    }
     t.bump(&mut sq)
     core.check.eq(sq.side, 5i64)
     let first = t.show(&sq)

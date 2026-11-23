@@ -6,7 +6,9 @@ fn t.bad() -> usize uses [] panics never
     let v = std.vec.Vec.new()
     let mut n = 0usize
     while n < 3usize {
-        let w = t.Wrap { v: v }
+        let w = t.Wrap {
+            v: v
+        }
         n = n.wrapping_add(w.v.len()).wrapping_add(1usize)
     }
     n

@@ -6,7 +6,10 @@ fn t.addr(port: u16) -> std.string.String uses [alloc] panics never
 end t.addr
 
 fn t.fail(code: i32) -> std.io.Error uses [] panics never
-    std.io.Error { kind: std.io.ErrorKind.Other, code: code }
+    std.io.Error {
+        kind: std.io.ErrorKind.Other
+        code: code
+    }
 end t.fail
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] panics may

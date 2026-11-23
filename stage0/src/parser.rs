@@ -1282,16 +1282,22 @@ impl Parser {
                 }
                 if !ns && self.is_op("{") && self.looks_struct_lit() {
                     self.i += 1;
+                    self.skip_nl();
                     let mut fields = Vec::new();
                     loop {
                         let fnm = self.name_tok()?;
                         self.expect_op(":")?;
                         let e = self.expr(false)?;
                         fields.push(V::L(vec![V::S(fnm), e]));
-                        if !self.accept_op(",") {
+                        // 欄は改行で区切る (`,` は書かない)。旧い `,` 区切りは読めるが、`ksn fmt` が直す (E0020)。
+                        let sep = self.accept_op(",");
+                        let nl = self.cur().kind == "nl";
+                        self.skip_nl();
+                        if self.is_op("}") || !(sep || nl) {
                             break;
                         }
                     }
+                    self.skip_nl();
                     self.expect_op("}")?;
                     return Ok(ndl(c.pos(), "StructLit", vec![V::S(segs.join(".")), V::L(fields)]));
                 }
@@ -1318,8 +1324,12 @@ impl Parser {
     }
 
     pub(crate) fn looks_struct_lit(&self) -> bool {
-        let a = self.peek(1);
-        let b = self.peek(2);
+        let mut k = 1;
+        while self.peek(k).kind == "nl" {
+            k += 1;
+        }
+        let a = self.peek(k);
+        let b = self.peek(k + 1);
         a.kind == "ident" && b.kind == "op" && b.text == ":"
     }
 
@@ -1584,16 +1594,21 @@ impl Parser {
             }
             if self.is_op("{") && !self.pat_ns {
                 self.i += 1;
+                self.skip_nl();
                 let mut fl = Vec::new();
                 loop {
                     let fnm = self.name_tok()?;
                     self.expect_op(":")?;
                     let p = self.pattern()?;
                     fl.push(V::L(vec![V::S(fnm), p]));
-                    if !self.accept_op(",") {
+                    let sep = self.accept_op(",");
+                    let nl = self.cur().kind == "nl";
+                    self.skip_nl();
+                    if self.is_op("}") || !(sep || nl) {
                         break;
                     }
                 }
+                self.skip_nl();
                 self.expect_op("}")?;
                 return Ok(ndl(c.pos(), "PStruct", vec![strs(&segs), V::L(fl)]));
             }

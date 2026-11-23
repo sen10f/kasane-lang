@@ -87,17 +87,32 @@ extern t.vec2d_add(a: t.Vec2d, b: t.Vec2d) -> t.Vec2d link "LIB:vec2d_add"
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let s = unsafe "ffi" "small" {
-        t.small_add(t.Small { a: 1i32, b: 2i32 }, t.Small { a: 10i32, b: 20i32 })
+        t.small_add(t.Small {
+            a: 1i32
+            b: 2i32
+        }, t.Small {
+            a: 10i32
+            b: 20i32
+        })
     }
     core.check.eq(s.a, 11i32)
     core.check.eq(s.b, 22i32)
     let v = unsafe "ffi" "sse" {
-        t.vec2_scale(t.Vec2 { x: 1.5f32, y: 2.0f32 }, 2.0f32)
+        t.vec2_scale(t.Vec2 {
+            x: 1.5f32
+            y: 2.0f32
+        }, 2.0f32)
     }
     core.check.eq(v.x, 3.0f32)
     core.check.eq(v.y, 4.0f32)
     let w = unsafe "ffi" "sse2" {
-        t.vec2d_add(t.Vec2d { x: 1.0f64, y: 2.0f64 }, t.Vec2d { x: 0.5f64, y: 0.25f64 })
+        t.vec2d_add(t.Vec2d {
+            x: 1.0f64
+            y: 2.0f64
+        }, t.Vec2d {
+            x: 0.5f64
+            y: 0.25f64
+        })
     }
     core.check.eq(w.x, 1.5f64)
     core.check.eq(w.y, 2.25f64)
@@ -144,7 +159,10 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
         t.f3_sum(f)
     }
     core.check.eq(fs, 6.0f32)
-    let mut local = t.Small { a: 1i32, b: 1i32 }
+    let mut local = t.Small {
+        a: 1i32
+        b: 1i32
+    }
     unsafe "ffi" "by pointer" {
         t.small_inc(core.ptr.from_mut(&mut local))
     }

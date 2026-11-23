@@ -1522,7 +1522,7 @@ pub fn agree_with_interpreter_masking(name: &str, src: &str, mask: &str) -> Stri
 
 // ---- 3.3: 名前の参照形。`check` はどちらの形も受け入れ、`fmt` が正規形にする。
 
-pub const SN_LIB: &str = "type t.lib.Item pub\n    n: u8 pub\nend t.lib.Item\n\nfn t.lib.make() -> t.lib.Item uses [] panics never pub\n    t.lib.Item { n: 1u8 }\nend t.lib.make\n";
+pub const SN_LIB: &str = "type t.lib.Item pub\n    n: u8 pub\nend t.lib.Item\n\nfn t.lib.make() -> t.lib.Item uses [] panics never pub\n    t.lib.Item {\n        n: 1u8\n    }\nend t.lib.make\n";
 
 pub const SN_CANON: &str = "import t.lib\n\nfn t.get(x: &t.lib.Item) -> u8 uses [] panics never\n    x.n\nend t.get\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let item = lib.make()\n    let n = t.get(&item)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
 

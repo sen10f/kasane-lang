@@ -19,7 +19,10 @@ fn t.Buf.push(self: &mut t.Buf, s: &std.string.String) -> () uses [] panics neve
 end t.Buf.push
 
 fn t.S.into_name(self: t.S) -> std.string.String uses [] panics never
-    let t.S { name: name, other: _o } = self
+    let t.S {
+        name: name
+        other: _o
+    } = self
     name
 end t.S.into_name
 
@@ -28,7 +31,10 @@ fn t.add(b: &mut t.Buf, s: &std.string.String) -> () uses [] panics never
 end t.add
 
 fn t.classify(s: &std.string.String) -> t.Tok uses [] panics never
-    t.Tok { kind: "word", n: s.len() }
+    t.Tok {
+        kind: "word"
+        n: s.len()
+    }
 end t.classify
 
 fn t.consume(s: std.string.String) -> () uses [io.console] panics never
@@ -37,7 +43,9 @@ fn t.consume(s: std.string.String) -> () uses [io.console] panics never
 end t.consume
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut b = t.Buf { n: 0usize }
+    let mut b = t.Buf {
+        n: 0usize
+    }
     let s = t.mk()
     t.add(&mut b, &s)
     t.consume(s)
@@ -52,7 +60,10 @@ fn t.mk() -> std.string.String uses [alloc] panics never
 end t.mk
 
 fn t.mks() -> t.S uses [alloc] panics never
-    t.S { name: t.mk(), other: t.mk() }
+    t.S {
+        name: t.mk()
+        other: t.mk()
+    }
 end t.mks
 
 fn t.peek(s: &std.string.String) -> usize uses [io.console] panics never

@@ -4,7 +4,10 @@ type t.S
 end t.S
 
 fn t.S.into_name(self: t.S) -> std.string.String uses [] panics never
-    let t.S { name: name, n: _ } = self
+    let t.S {
+        name: name
+        n: _
+    } = self
     name
 end t.S.into_name
 

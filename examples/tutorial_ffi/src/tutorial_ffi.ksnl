@@ -50,8 +50,14 @@ fn tutorial_ffi.main() -> Result<(), std.io.Error> uses [io.console] panics may
 end tutorial_ffi.main
 
 fn tutorial_ffi.rect(x0: f64, y0: f64, x1: f64, y1: f64) -> tutorial_ffi.Rect uses [] panics never
-    let a = tutorial_ffi.Point { x: x0, y: y0 }
-    let b = tutorial_ffi.Point { x: x1, y: y1 }
+    let a = tutorial_ffi.Point {
+        x: x0
+        y: y0
+    }
+    let b = tutorial_ffi.Point {
+        x: x1
+        y: y1
+    }
     unsafe "ffi" "structs by value" {
         tutorial_ffi.rect_from(a, b)
     }
@@ -61,12 +67,18 @@ fn tutorial_ffi.vertex(x: f64, y: f64, user: *mut tutorial_ffi.Acc) -> () uses [
     unsafe "callback" "accumulate through the user data pointer" {
         let acc = core.ptr.read(user)
         let sum = acc.sum + x + y
-        core.ptr.write(user, tutorial_ffi.Acc { count: acc.count.wrapping_add(1i32), sum: sum })
+        core.ptr.write(user, tutorial_ffi.Acc {
+            count: acc.count.wrapping_add(1i32)
+            sum: sum
+        })
     }
 end tutorial_ffi.vertex
 
 fn tutorial_ffi.vertex_stats(r: tutorial_ffi.Rect) -> tutorial_ffi.Acc uses [] panics never
-    let mut acc = tutorial_ffi.Acc { count: 0i32, sum: 0.0f64 }
+    let mut acc = tutorial_ffi.Acc {
+        count: 0i32
+        sum: 0.0f64
+    }
     let p = unsafe "ffi" "take a raw pointer to a local accumulator" {
         core.ptr.from_mut(&mut acc)
     }

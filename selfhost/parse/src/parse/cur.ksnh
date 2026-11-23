@@ -142,7 +142,12 @@ end parse.cur.name_tok
 
 fn parse.cur.new(toks: std.vec.Vec<parse.tok.Tok>) -> Result<parse.cur.P, parse.err.Error> uses [alloc] panics never pub
     let ast = parse.ast.new()?
-    Ok(parse.cur.P { ast: ast, depth: 0usize, pos: 0usize, toks: toks })
+    Ok(parse.cur.P {
+        ast: ast
+        depth: 0usize
+        pos: 0usize
+        toks: toks
+    })
 end parse.cur.new
 
 // 先頭から k 個先のトークン (範囲外は最後の Eof)。

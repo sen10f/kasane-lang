@@ -190,7 +190,13 @@ fn parse.tok.kind_name(kind: parse.tok.Kind) -> &'static str uses [] panics neve
 end parse.tok.kind_name
 
 fn parse.tok.new(kind: parse.tok.Kind, code: u32, start: usize, stop: usize, line: usize) -> parse.tok.Tok uses [] panics never pub
-    parse.tok.Tok { code: code, stop: stop, kind: kind, line: line, start: start }
+    parse.tok.Tok {
+        code: code
+        stop: stop
+        kind: kind
+        line: line
+        start: start
+    }
 end parse.tok.new
 
 // 記号・予約語の符号を `'名前'` として追記する。

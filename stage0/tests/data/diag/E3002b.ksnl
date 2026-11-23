@@ -3,7 +3,9 @@ type t.P pub
 end t.P
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let p = t.P { a: 1u8 }
+    let p = t.P {
+        a: 1u8
+    }
     let q = p
     core.mem.drop(q)
     core.mem.drop(p)

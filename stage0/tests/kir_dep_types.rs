@@ -49,7 +49,10 @@ fn lib.Shape.weight(self: lib.Shape) -> u32 uses [] panics never pub
 end lib.Shape.weight
 
 fn lib.make(a: u32) -> lib.Pt uses [] panics never pub
-    lib.Pt { x: a, y: 2u32 }
+    lib.Pt {
+        x: a
+        y: 2u32
+    }
 end lib.make
 
 fn lib.pick(p: lib.Pt, s: lib.Shape) -> lib.Shape uses [] panics never pub

@@ -41,7 +41,10 @@ fn todo.error.history_failed() -> todo.error.Error uses [] panics never pub
 end todo.error.history_failed
 
 fn todo.error.io_failed() -> todo.error.Error uses [] panics never pub
-    todo.error.Error.Io(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 })
+    todo.error.Error.Io(std.io.Error {
+        kind: std.io.ErrorKind.Other
+        code: 0i32
+    })
 end todo.error.io_failed
 
 fn todo.error.not_authenticated() -> todo.error.Error uses [] panics never pub

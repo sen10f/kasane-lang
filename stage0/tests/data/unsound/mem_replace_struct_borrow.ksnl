@@ -5,8 +5,12 @@ end t.H
 fn t.bad() -> u64 uses [] panics never
     let mut a = 5u64
     let b = 7u64
-    let mut h = t.H { r: &a }
-    let old = core.mem.replace(&mut h, t.H { r: &b })
+    let mut h = t.H {
+        r: &a
+    }
+    let old = core.mem.replace(&mut h, t.H {
+        r: &b
+    })
     a = 6u64
     *old.r
 end t.bad

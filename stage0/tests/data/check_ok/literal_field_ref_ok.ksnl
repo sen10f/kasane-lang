@@ -14,8 +14,13 @@ end t.W
 fn t.main() -> () uses [] panics never
     let k = 5u64
     let r = &k
-    let x = t.S { name: std.string.String.new(), n: *r }
-    let w = t.W { v: *r }
+    let x = t.S {
+        name: std.string.String.new()
+        n: *r
+    }
+    let w = t.W {
+        v: *r
+    }
     let e = t.E.A(*r)
     core.mem.drop(x)
     core.mem.drop(w)

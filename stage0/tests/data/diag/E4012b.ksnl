@@ -16,7 +16,9 @@ fn t.dispatch(s: &dyn t.Shape) -> u32 uses [] panics never stack 1
 end t.dispatch
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let c = t.Circle { r: 1u32 }
+    let c = t.Circle {
+        r: 1u32
+    }
     core.mem.drop(t.dispatch(&c))
     Ok(())
 end t.main

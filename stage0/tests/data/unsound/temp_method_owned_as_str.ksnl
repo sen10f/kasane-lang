@@ -7,7 +7,9 @@ fn t.W.dup(self: &t.W) -> alloc.string.String uses [] panics never
 end t.W.dup
 
 fn t.bad() -> usize uses [] panics never
-    let w = t.W { n: 1u32 }
+    let w = t.W {
+        n: 1u32
+    }
     let r = w.dup().as_str()
     let z = t.mk()
     core.mem.drop(z)

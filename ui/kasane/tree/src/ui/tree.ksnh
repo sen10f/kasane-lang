@@ -203,7 +203,11 @@ fn ui.tree.Tree.new() -> ui.tree.Tree uses [] panics never pub
     let nodes = std.vec.Vec.new()
     let kids = std.vec.Vec.new()
     let state = ui.state.Arena.new(std.alloc.SYSTEM)
-    ui.tree.Tree { nodes: nodes, kids: kids, state: state }
+    ui.tree.Tree {
+        nodes: nodes
+        kids: kids
+        state: state
+    }
 end ui.tree.Tree.new
 
 fn ui.tree.Tree.node_at(self: &ui.tree.Tree, index: usize) -> Option<&ui.tree.Node> uses [] panics never pub
@@ -245,7 +249,12 @@ end ui.tree.Tree.push_child
 
 fn ui.tree.Tree.push_node(self: &mut ui.tree.Tree, kind: ui.tree.ViewKind, style: ui.layout.Style, key: Option<u64>) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
     let index = self.nodes.len()
-    let node = ui.tree.Node { kind: kind, style: style, key: key, state: None }
+    let node = ui.tree.Node {
+        kind: kind
+        style: style
+        key: key
+        state: None
+    }
     match self.nodes.push(node) {
         Ok(_) => ()
         Err(e) => return Err(e)

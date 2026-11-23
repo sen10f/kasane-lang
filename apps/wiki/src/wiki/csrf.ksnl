@@ -4,7 +4,9 @@ end wiki.csrf.CsrfManager
 
 fn wiki.csrf.CsrfManager.new() -> Result<wiki.csrf.CsrfManager, wiki.error.Error> uses [] panics never pub
     let vec = std.vec.Vec.new()
-    Ok(wiki.csrf.CsrfManager { tokens: vec })
+    Ok(wiki.csrf.CsrfManager {
+        tokens: vec
+    })
 end wiki.csrf.CsrfManager.new
 
 fn wiki.csrf.generate_token(tokens: &mut std.vec.Vec<std.string.String>) -> Result<std.string.String, wiki.error.Error> uses [alloc, rand] panics never pub

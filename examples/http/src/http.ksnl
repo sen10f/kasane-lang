@@ -153,7 +153,10 @@ fn http.has_prefix(buf: &[u8], at: usize, lit: &[u8]) -> bool uses [] panics nev
 end http.has_prefix
 
 fn http.io_failed() -> http.Error uses [] panics never
-    http.Error.Io(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 })
+    http.Error.Io(std.io.Error {
+        kind: std.io.ErrorKind.Other
+        code: 0i32
+    })
 end http.io_failed
 
 fn http.main() -> Result<(), http.Error> uses [alloc, io.console, io.net] panics may
@@ -195,7 +198,10 @@ fn http.parse_request_line(buf: &[u8]) -> Result<http.Request, http.Error> uses 
     if !http.has_prefix(buf, i, b" HTTP/1.1\r\n") {
         return Err(http.Error.BadRequest)
     }
-    Ok(http.Request { path_end: i, path_start: path_start })
+    Ok(http.Request {
+        path_end: i
+        path_start: path_start
+    })
 end http.parse_request_line
 
 fn http.read_body(stream: &mut std.net.TcpStream, data: &mut std.vec.Vec<u8>, total: usize) -> Result<(), http.Error> uses [alloc, io.net] panics never

@@ -37,7 +37,9 @@ fn t.Kvec.insert[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>, index: us
             }
             match self.buf.insert_within_cap(index, back) {
                 Ok(_) => Ok(())
-                Err(_) => Err(t.InsertError.Alloc(alloc.alloc.AllocError { code: 1u32 }))
+                Err(_) => Err(t.InsertError.Alloc(alloc.alloc.AllocError {
+                    code: 1u32
+                }))
             }
         }
     }
@@ -52,7 +54,9 @@ fn t.Kvec.len[T, A: alloc.alloc.Allocator](self: &t.Kvec<T, A>) -> usize uses []
 end t.Kvec.len
 
 fn t.Kvec.new[T, A: alloc.alloc.Allocator](allocator: A) -> t.Kvec<T, A> uses [] panics never pub
-    t.Kvec { buf: alloc.raw.Buf.new(allocator) }
+    t.Kvec {
+        buf: alloc.raw.Buf.new(allocator)
+    }
 end t.Kvec.new
 
 fn t.Kvec.pop[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>) -> Option<T> uses [] panics never pub
@@ -66,7 +70,9 @@ fn t.Kvec.push[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>, value: T) -
             self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize))?
             match self.buf.push_within_cap(back) {
                 Ok(_) => Ok(())
-                Err(_) => Err(alloc.alloc.AllocError { code: 1u32 })
+                Err(_) => Err(alloc.alloc.AllocError {
+                    code: 1u32
+                })
             }
         }
     }
@@ -90,7 +96,9 @@ end t.Kvec.truncate
 
 fn t.Kvec.with_capacity[T, A: alloc.alloc.Allocator](allocator: A, capacity: usize) -> Result<t.Kvec<T, A>, alloc.alloc.AllocError> uses [alloc] panics never pub
     match alloc.raw.Buf.with_capacity(allocator, capacity) {
-        Ok(buf) => Ok(t.Kvec { buf: buf })
+        Ok(buf) => Ok(t.Kvec {
+            buf: buf
+        })
         Err(e) => Err(e)
     }
 end t.Kvec.with_capacity

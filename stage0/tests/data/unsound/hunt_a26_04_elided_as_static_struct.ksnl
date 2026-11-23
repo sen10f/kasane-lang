@@ -3,7 +3,9 @@ type t.H['a]
 end t.H
 
 fn t.bad['a](x: &u32) -> t.H<'static> uses [] panics never
-    t.H { r: x }
+    t.H {
+        r: x
+    }
 end t.bad
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

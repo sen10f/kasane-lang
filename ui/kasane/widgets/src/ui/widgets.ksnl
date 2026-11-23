@@ -24,7 +24,12 @@ type ui.widgets.TextInput derive [Debug] pub
 end ui.widgets.TextInput
 
 fn ui.widgets.Button.new() -> ui.widgets.Button uses [] panics never pub
-    ui.widgets.Button { hovered: false, pressed: false, focused: false, clicked: false }
+    ui.widgets.Button {
+        hovered: false
+        pressed: false
+        focused: false
+        clicked: false
+    }
 end ui.widgets.Button.new
 
 fn ui.widgets.Button.on_event(self: &mut ui.widgets.Button, event: &ui.event.Event, rect: ui.layout.Rect, _ctx: &mut ui.event.Ctx) -> ui.event.Action uses [] panics never pub
@@ -93,7 +98,14 @@ end ui.widgets.List.max_scroll
 
 fn ui.widgets.List.new() -> ui.widgets.List uses [] panics never pub
     let keys = std.vec.Vec.new()
-    ui.widgets.List { rc: 0usize, ih: 24.0f32, sy: 0.0f32, vh: 0.0f32, keys: keys, sel: None }
+    ui.widgets.List {
+        rc: 0usize
+        ih: 24.0f32
+        sy: 0.0f32
+        vh: 0.0f32
+        keys: keys
+        sel: None
+    }
 end ui.widgets.List.new
 
 fn ui.widgets.List.on_event(self: &mut ui.widgets.List, event: &ui.event.Event, _ctx: &mut ui.event.Ctx) -> ui.event.Action uses [] panics never pub
@@ -191,7 +203,12 @@ end ui.widgets.List.on_event
 
 fn ui.widgets.List.row_rect(self: &ui.widgets.List, index: usize, width: f32) -> ui.layout.Rect uses [] panics never pub
     let y = self.row_y(index)
-    ui.layout.Rect { x: 0.0f32, y: y, width: width, height: self.ih }
+    ui.layout.Rect {
+        x: 0.0f32
+        y: y
+        width: width
+        height: self.ih
+    }
 end ui.widgets.List.row_rect
 
 fn ui.widgets.List.row_y(self: &ui.widgets.List, index: usize) -> f32 uses [] panics never pub
@@ -382,7 +399,14 @@ end ui.widgets.TextInput.move_right
 fn ui.widgets.TextInput.new() -> ui.widgets.TextInput uses [] panics never pub
     let t = std.vec.Vec.new()
     let c = std.vec.Vec.new()
-    ui.widgets.TextInput { text: t, caret: 0usize, ss: 0usize, se: 0usize, comp: c, focused: false }
+    ui.widgets.TextInput {
+        text: t
+        caret: 0usize
+        ss: 0usize
+        se: 0usize
+        comp: c
+        focused: false
+    }
 end ui.widgets.TextInput.new
 
 fn ui.widgets.TextInput.on_event(self: &mut ui.widgets.TextInput, event: &ui.event.Event, _ctx: &mut ui.event.Ctx) -> ui.event.Action uses [alloc] panics never pub

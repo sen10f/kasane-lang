@@ -8,7 +8,9 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics may
 end t.main
 
 fn t.make() -> t.S uses [] panics never
-    t.S { v: 7u32 }
+    t.S {
+        v: 7u32
+    }
 end t.make
 
 fn t.ok() -> u32 uses [] panics may

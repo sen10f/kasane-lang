@@ -281,7 +281,7 @@ fn rename_field_and_variant() {
     p.rename_ok("app.net.Header.len", "app.net.Header.size");
     no_trace(&p, FILES, &[".len,", " len:", "h.len", "self.len"]);
     assert!(p.read("src/app/net.ksnl").contains("size: u32 pub"));
-    assert!(p.read("src/app/net.ksnl").contains("app.net.Header { kind: kind, size: len }"));
+    assert!(p.read("src/app/net.ksnl").contains("app.net.Header {\n        kind: kind\n        size: len\n    }"));
     p.rename_ok("app.net.Kind.Small", "app.net.Kind.Tiny");
     assert!(p.read("src/app/util.ksnl").contains("net.Kind.Tiny => 0u32"));
     assert!(p.read("src/app/net.ksnl").contains("    Tiny\n"));
@@ -548,7 +548,7 @@ fn vis_fixture(name: &str) -> Pkg {
     .unwrap();
     fs::write(
         src.join("src/v/shape.ksnl"),
-        "const v.shape.SCALE: u32 = 1u32\n\ntype v.shape.Sq pub\n    side: u32\nend v.shape.Sq\n\nfn v.shape.area(s: &v.shape.Sq) -> u32 uses [] panics never pub\n    v.shape.mul(s.side, s.side)\nend v.shape.area\n\nfn v.shape.make(side: u32) -> v.shape.Sq uses [] panics never pub\n    v.shape.Sq { side: side }\nend v.shape.make\n\nfn v.shape.mul(a: u32, b: u32) -> u32 uses [] panics never\n    a.wrapping_mul(b).wrapping_mul(v.shape.SCALE)\nend v.shape.mul\n\nfn v.shape.side_twice(s: &v.shape.Sq) -> u32 uses [] panics never pub\n    s.side.wrapping_mul(2u32).wrapping_mul(v.shape.SCALE)\nend v.shape.side_twice\n",
+        "const v.shape.SCALE: u32 = 1u32\n\ntype v.shape.Sq pub\n    side: u32\nend v.shape.Sq\n\nfn v.shape.area(s: &v.shape.Sq) -> u32 uses [] panics never pub\n    v.shape.mul(s.side, s.side)\nend v.shape.area\n\nfn v.shape.make(side: u32) -> v.shape.Sq uses [] panics never pub\n    v.shape.Sq {\n        side: side\n    }\nend v.shape.make\n\nfn v.shape.mul(a: u32, b: u32) -> u32 uses [] panics never\n    a.wrapping_mul(b).wrapping_mul(v.shape.SCALE)\nend v.shape.mul\n\nfn v.shape.side_twice(s: &v.shape.Sq) -> u32 uses [] panics never pub\n    s.side.wrapping_mul(2u32).wrapping_mul(v.shape.SCALE)\nend v.shape.side_twice\n",
     )
     .unwrap();
     fs::write(src.join("src/v/other.ksnl"), "fn v.other.one() -> u32 uses [] panics never pub\n    1u32\nend v.other.one\n").unwrap();

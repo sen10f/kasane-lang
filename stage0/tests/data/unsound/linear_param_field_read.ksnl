@@ -8,5 +8,7 @@ fn t.keep(l: t.L) -> u32 uses [] panics never
 end t.keep
 
 fn t.main() -> () uses [] panics never
-    core.mem.drop(t.keep(t.L { v: 2u32 }))
+    core.mem.drop(t.keep(t.L {
+        v: 2u32
+    }))
 end t.main

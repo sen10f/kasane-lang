@@ -193,7 +193,15 @@ end std.datetime.is_leap_year
 
 // 7 つの欄から `DateTime` を作る (構造体リテラルは 1 行に書く決まりなので、関数にまとめる)。
 fn std.datetime.make(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64, n: i64) -> std.datetime.DateTime uses [] panics never pub
-    std.datetime.DateTime { year: y, month: m, day: d, hour: h, minute: mi, second: s, nanos: n }
+    std.datetime.DateTime {
+        year: y
+        month: m
+        day: d
+        hour: h
+        minute: mi
+        second: s
+        nanos: n
+    }
 end std.datetime.make
 
 // RFC 3339 の解析 (`YYYY-MM-DDTHH:MM:SS[.小数]オフセット`)。`T` / `t`、`Z` / `z`、`±HH:MM` を受け付ける。

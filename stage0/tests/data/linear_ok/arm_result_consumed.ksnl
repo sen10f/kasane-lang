@@ -3,12 +3,16 @@ type t.L linear pub
 end t.L
 
 fn t.eat(l: t.L) -> () uses [] panics never
-    let t.L { v: v } = l
+    let t.L {
+        v: v
+    } = l
     core.mem.drop(v)
 end t.eat
 
 fn t.main() -> () uses [] panics never
-    let r: Result<t.L, u8> = Ok(t.L { v: 1u32 })
+    let r: Result<t.L, u8> = Ok(t.L {
+        v: 1u32
+    })
     match r {
         Ok(l) => t.eat(l)
         Err(e) => core.mem.drop(e)

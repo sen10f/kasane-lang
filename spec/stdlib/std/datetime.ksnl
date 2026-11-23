@@ -174,7 +174,15 @@ fn std.datetime.is_leap_year(year: i64) -> bool uses [] panics never pub
 end std.datetime.is_leap_year
 
 fn std.datetime.make(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64, n: i64) -> std.datetime.DateTime uses [] panics never pub
-    std.datetime.DateTime { year: y, month: m, day: d, hour: h, minute: mi, second: s, nanos: n }
+    std.datetime.DateTime {
+        year: y
+        month: m
+        day: d
+        hour: h
+        minute: mi
+        second: s
+        nanos: n
+    }
 end std.datetime.make
 
 fn std.datetime.parse_rfc3339(text: &str) -> Result<std.datetime.DateTime, std.datetime.Error> uses [] panics never pub

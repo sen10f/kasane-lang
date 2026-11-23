@@ -30,12 +30,24 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     }
     core.check.eq(a.v[2usize], 12i32)
     let s = unsafe "ffi" "array in a struct, passed" {
-        t.arr3_sum(t.Arr3 { v: [1i32, 2i32, 3i32] })
+        t.arr3_sum(t.Arr3 {
+            v: [1i32, 2i32, 3i32]
+        })
     }
     core.check.eq(s, 6i32)
-    let small = t.Small { a: 1i32, b: 2i32 }
-    let vec = t.Vec2 { x: 0.5f32, y: 0.25f32 }
-    let d = t.Deep { s: small, v: vec, t: 4.0f64 }
+    let small = t.Small {
+        a: 1i32
+        b: 2i32
+    }
+    let vec = t.Vec2 {
+        x: 0.5f32
+        y: 0.25f32
+    }
+    let d = t.Deep {
+        s: small
+        v: vec
+        t: 4.0f64
+    }
     let sum = unsafe "ffi" "nested structs" {
         t.deep_sum(d)
     }

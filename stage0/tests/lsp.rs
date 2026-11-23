@@ -748,8 +748,12 @@ const METHODS: &str = concat!(
     "end t.Sq.area\n",
     "\n",
     "fn t.main() -> u32 uses [alloc] panics never\n",
-    "    let s = t.Sq { side: 2u32 }\n",
-    "    let c = t.Ci { r: 3u32 }\n",
+    "    let s = t.Sq {\n",
+    "        side: 2u32\n",
+    "    }\n",
+    "    let c = t.Ci {\n",
+    "        r: 3u32\n",
+    "    }\n",
     "    let mut v: alloc.vec.Vec<u32> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n",
     "    core.mem.drop(v.push(1u32))\n",
     "    let f = fn(q: &t.Sq) -> u32 capture [] {\n",
@@ -775,25 +779,25 @@ fn hover_definition_method_calls_resolve_by_receiver_type() {
     let mut c = Client::start();
     c.initialize(&t.0);
     c.open(&uri, METHODS);
-    // 同じ名前の 2 つのメソッド: `s.area()` は `Sq` の、`c.area()` は `Ci` の定義 (行 31 = 0 始まり 30)。
-    let md = hover_md(&mut c, &uri, 30, 7);
+    // 同じ名前の 2 つのメソッド: `s.area()` は `Sq` の、`c.area()` は `Ci` の定義 (行 35 = 0 始まり 34)。
+    let md = hover_md(&mut c, &uri, 34, 7);
     assert!(md.contains("fn t.Sq.area(self: &t.Sq) -> u32"), "{}", md);
-    let d = c.call("textDocument/definition", at(&uri, 30, 7));
+    let d = c.call("textDocument/definition", at(&uri, 34, 7));
     assert_eq!(d[0]["range"]["start"], json!({"line": 18, "character": 3}), "{}", d);
-    let md = hover_md(&mut c, &uri, 30, 29);
+    let md = hover_md(&mut c, &uri, 34, 29);
     assert!(md.contains("fn t.Ci.area(self: &t.Ci) -> u32"), "{}", md);
-    let d = c.call("textDocument/definition", at(&uri, 30, 29));
+    let d = c.call("textDocument/definition", at(&uri, 34, 29));
     assert_eq!(d[0]["range"]["start"], json!({"line": 13, "character": 3}), "{}", d);
     // 閉包の中の `q.area()` (`q: &t.Sq`)。
-    let md = hover_md(&mut c, &uri, 28, 11);
+    let md = hover_md(&mut c, &uri, 32, 11);
     assert!(md.contains("fn t.Sq.area"), "{}", md);
     // 総称の受け手 (境界 `T: t.Area`) の `v.area()`: 境界が宣言するメソッド (トレイトの宣言)。
-    let md = hover_md(&mut c, &uri, 34, 6);
+    let md = hover_md(&mut c, &uri, 38, 6);
     assert!(md.contains("fn area(self: &Self) -> u32"), "{}", md);
     // 標準のメソッド `v.push` (`alloc.vec.Vec` の定義)。
-    let md = hover_md(&mut c, &uri, 26, 21);
+    let md = hover_md(&mut c, &uri, 30, 21);
     assert!(md.contains("push"), "{}", md);
-    let d = c.call("textDocument/definition", at(&uri, 26, 21));
+    let d = c.call("textDocument/definition", at(&uri, 30, 21));
     assert!(d.as_array().map_or(false, |a| !a.is_empty()), "{}", d);
     c.shutdown();
 }
@@ -807,23 +811,23 @@ fn method_call_hover_through_ksnh_sibling_keeps_doc_and_lines() {
     assert!(!ksnl.contains("///") && ksnl.contains("fn t.Sq.area"));
     let mut c = Client::start();
     c.initialize(&t.0);
-    // `.ksnl` を開く: `s.area()` は ksnl の 31 行目 (0 始まり 30)。ksnh では 1 行多い。
+    // `.ksnl` を開く: `s.area()` は ksnl の 35 行目 (0 始まり 34)。ksnh では 1 行多い。
     let uri = t.uri("src/t.ksnl");
     c.open(&uri, &ksnl);
-    let md = hover_md(&mut c, &uri, 30, 7);
+    let md = hover_md(&mut c, &uri, 34, 7);
     assert!(md.contains("fn t.Sq.area(self: &t.Sq) -> u32") && md.contains("正方形の面積。"), "{}", md);
-    let d = c.call("textDocument/definition", at(&uri, 30, 7));
+    let d = c.call("textDocument/definition", at(&uri, 34, 7));
     assert!(d[0]["uri"].as_str().unwrap().ends_with("src/t.ksnl"), "{}", d);
     assert_eq!(d[0]["range"]["start"], json!({"line": 18, "character": 3}), "{}", d);
     c.shutdown();
-    // `.ksnh` を開く: 同じ呼び出しは ksnh の 32 行目 (0 始まり 31)。定義は `.ksnh` の中。
+    // `.ksnh` を開く: 同じ呼び出しは ksnh の 36 行目 (0 始まり 35)。定義は `.ksnh` の中。
     let mut c = Client::start();
     c.initialize(&t.0);
     let uri = t.uri("src/t.ksnh");
     c.open(&uri, &src);
-    let md = hover_md(&mut c, &uri, 31, 7);
+    let md = hover_md(&mut c, &uri, 35, 7);
     assert!(md.contains("fn t.Sq.area(self: &t.Sq) -> u32") && md.contains("正方形の面積。"), "{}", md);
-    let d = c.call("textDocument/definition", at(&uri, 31, 7));
+    let d = c.call("textDocument/definition", at(&uri, 35, 7));
     assert!(d[0]["uri"].as_str().unwrap().ends_with("src/t.ksnh"), "{}", d);
     assert_eq!(d[0]["range"]["start"], json!({"line": 19, "character": 3}), "{}", d);
     c.shutdown();

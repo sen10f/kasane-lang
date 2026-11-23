@@ -16,7 +16,13 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
 end t.main
 
 test t.add.test_sum
-    let s = t.add(t.Small { a: 1i32, b: 2i32 }, t.Small { a: 3i32, b: 4i32 })
+    let s = t.add(t.Small {
+        a: 1i32
+        b: 2i32
+    }, t.Small {
+        a: 3i32
+        b: 4i32
+    })
     core.check.eq(s.a, 4i32)
     core.check.eq(s.b, 6i32)
 end t.add.test_sum

@@ -4,7 +4,9 @@ end t.Wrap
 
 fn t.bad() -> usize uses [] panics never
     let v = std.vec.Vec.new()
-    let w = t.Wrap { v: v }
+    let w = t.Wrap {
+        v: v
+    }
     let n = v.len()
     core.mem.drop(w)
     n

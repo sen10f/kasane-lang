@@ -4,13 +4,17 @@ end t.Res
 
 fn t.close(r: t.Res) -> u32 uses [] panics never
     match r {
-        t.Res { id: id } => id
+        t.Res {
+            id: id
+        } => id
     }
 end t.close
 
 fn t.good() -> u32 uses [] panics never
     with r = t.open(1u32) close match r {
-        t.Res { id: id } => core.mem.drop(id)
+        t.Res {
+            id: id
+        } => core.mem.drop(id)
     } {
         core.mem.drop(0u8)
     }
@@ -22,5 +26,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.open(n: u32) -> t.Res uses [] panics never
-    t.Res { id: n }
+    t.Res {
+        id: n
+    }
 end t.open

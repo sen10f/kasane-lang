@@ -63,11 +63,18 @@ fn std.fs.metadata(path: &str) -> Result<std.fs.Metadata, std.io.Error> uses [io
         1u64 => std.fs.FileKind.Dir
         _ => std.fs.FileKind.Other
     }
-    Ok(std.fs.Metadata { size: size, kind: kind, modified_ns: modified })
+    Ok(std.fs.Metadata {
+        size: size
+        kind: kind
+        modified_ns: modified
+    })
 end std.fs.metadata
 
 fn std.fs.oom() -> std.io.Error uses [] panics never
-    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+    std.io.Error {
+        kind: std.io.ErrorKind.OutOfMemory
+        code: 0i32
+    }
 end std.fs.oom
 
 fn std.fs.read_dir(path: &str) -> Result<std.vec.Vec<std.fs.DirEntry>, std.io.Error> uses [alloc, io.fs] panics never pub
@@ -104,9 +111,15 @@ fn std.fs.read_dir(path: &str) -> Result<std.vec.Vec<std.fs.DirEntry>, std.io.Er
         match name.push_bytes(name_bytes) {
             Ok(_u) => {
             }
-            Err(_) => return Err(std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 })
+            Err(_) => return Err(std.io.Error {
+                kind: std.io.ErrorKind.InvalidInput
+                code: 0i32
+            })
         }
-        match out.push(std.fs.DirEntry { name: name, kind: kind }) {
+        match out.push(std.fs.DirEntry {
+            name: name
+            kind: kind
+        }) {
             Ok(_u) => {
             }
             Err(_) => return Err(std.fs.oom())

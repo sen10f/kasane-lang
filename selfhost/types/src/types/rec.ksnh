@@ -44,7 +44,14 @@ fn types.rec.empty() -> Result<types.rec.Rec, alloc.alloc.AllocError> uses [] pa
     let callee = std.vec.Vec.new()
     let ck = std.vec.Vec.new()
     let now = 0usize
-    Ok(types.rec.Rec { base: base, ty: ty, callee: callee, ck: ck, now_ck: now, now_callee: now })
+    Ok(types.rec.Rec {
+        base: base
+        ty: ty
+        callee: callee
+        ck: ck
+        now_ck: now
+        now_callee: now
+    })
 end types.rec.empty
 
 // 単位ごとの節の数に合わせて、表を 0 で用意する。

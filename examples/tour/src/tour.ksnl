@@ -65,7 +65,10 @@ fn tour.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(tour.ints(), 5u8)
     core.check.eq(tour.loops(), 110u32)
     core.check.eq(tour.shapes(), 30i32)
-    let mut acc = tour.Acc { total: 0i64, hits: 0u32 }
+    let mut acc = tour.Acc {
+        total: 0i64
+        hits: 0u32
+    }
     acc.add(5i64)
     acc.add(7i64)
     let snapshot = acc.clone()

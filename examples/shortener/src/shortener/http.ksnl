@@ -90,7 +90,11 @@ end shortener.http.headers_well_formed
 
 fn shortener.http.json_response(status: u16, body: std.string.String) -> shortener.http.Response uses [] panics never pub
     let location = std.string.String.new()
-    shortener.http.Response { body: body, location: location, status: status }
+    shortener.http.Response {
+        body: body
+        location: location
+        status: status
+    }
 end shortener.http.json_response
 
 fn shortener.http.method_of(text: &str) -> Option<shortener.http.Method> uses [] panics never
@@ -163,7 +167,11 @@ fn shortener.http.parse_head(head: &[u8]) -> Result<shortener.http.Head, shorten
     }
     let content_length = shortener.http.parse_content_length(headers)?
     let owned = std.string.String.from_str(path)?
-    Ok(shortener.http.Head { content_length: content_length, method: method, path: owned })
+    Ok(shortener.http.Head {
+        content_length: content_length
+        method: method
+        path: owned
+    })
 end shortener.http.parse_head
 
 fn shortener.http.parse_reply(raw: &[u8]) -> Result<shortener.http.Reply, shortener.error.Error> uses [alloc] panics never pub
@@ -202,7 +210,11 @@ fn shortener.http.parse_reply(raw: &[u8]) -> Result<shortener.http.Reply, shorte
         Some(v) => location.push_str(v)?
         None => core.mem.drop(0u8)
     }
-    Ok(shortener.http.Reply { body: body, location: location, status: status })
+    Ok(shortener.http.Reply {
+        body: body
+        location: location
+        status: status
+    })
 end shortener.http.parse_reply
 
 fn shortener.http.reason(status: u16) -> &'static str uses [] panics never pub
@@ -220,7 +232,11 @@ end shortener.http.reason
 
 fn shortener.http.redirect_response(location: &str, body: std.string.String) -> Result<shortener.http.Response, shortener.error.Error> uses [alloc] panics never pub
     let place = std.string.String.from_str(location)?
-    Ok(shortener.http.Response { body: body, location: place, status: 302u16 })
+    Ok(shortener.http.Response {
+        body: body
+        location: place
+        status: 302u16
+    })
 end shortener.http.redirect_response
 
 fn shortener.http.render_response(response: &shortener.http.Response) -> Result<std.string.String, shortener.error.Error> uses [alloc] panics never pub

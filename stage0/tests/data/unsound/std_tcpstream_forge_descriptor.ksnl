@@ -1,5 +1,7 @@
 fn t.main() -> Result<(), std.net.Error> uses [io.net] panics never
-    let s = std.net.TcpStream { descriptor: 3i32 }
+    let s = std.net.TcpStream {
+        descriptor: 3i32
+    }
     core.mem.drop(s.close())
     Ok(())
 end t.main

@@ -8,11 +8,16 @@ type t.Res linear
 end t.Res
 
 fn t.bad(r: t.Res) -> u32 uses [] panics never
-    t.peek(&t.Pair { a: r, b: t.open(1u32) })
+    t.peek(&t.Pair {
+        a: r
+        b: t.open(1u32)
+    })
 end t.bad
 
 fn t.close(r: t.Res) -> u32 uses [] panics never
-    let t.Res { id: id } = r
+    let t.Res {
+        id: id
+    } = r
     id
 end t.close
 
@@ -21,7 +26,9 @@ fn t.main() -> () uses [] panics never
 end t.main
 
 fn t.open(n: u32) -> t.Res uses [] panics never
-    t.Res { id: n }
+    t.Res {
+        id: n
+    }
 end t.open
 
 fn t.peek(p: &t.Pair) -> u32 uses [] panics never

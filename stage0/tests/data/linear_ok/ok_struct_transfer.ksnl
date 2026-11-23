@@ -12,7 +12,9 @@ end t.check
 
 fn t.close(r: t.Res) -> u32 uses [] panics never
     match r {
-        t.Res { id: id } => id
+        t.Res {
+            id: id
+        } => id
     }
 end t.close
 
@@ -22,16 +24,22 @@ end t.main
 
 fn t.ok() -> t.Holder uses [] panics never
     let r = t.open()
-    t.Holder { r: r }
+    t.Holder {
+        r: r
+    }
 end t.ok
 
 fn t.ok2() -> u32 uses [] panics never
     let h = t.ok()
     match h {
-        t.Holder { r: r } => t.close(r)
+        t.Holder {
+            r: r
+        } => t.close(r)
     }
 end t.ok2
 
 fn t.open() -> t.Res uses [] panics never
-    t.Res { id: 1u32 }
+    t.Res {
+        id: 1u32
+    }
 end t.open

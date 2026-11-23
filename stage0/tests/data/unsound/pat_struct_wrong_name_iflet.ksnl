@@ -7,8 +7,12 @@ type t.T
 end t.T
 
 fn t.main() -> () uses [] panics never
-    let s = t.S { v: 7u32 }
-    if let t.T { v: _v } = s {
+    let s = t.S {
+        v: 7u32
+    }
+    if let t.T {
+        v: _v
+    } = s {
         core.mem.drop(())
     }
 end t.main

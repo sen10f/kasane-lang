@@ -48,7 +48,13 @@ end demo.App
 fn demo.App.new() -> demo.App uses [] panics never pub
     let text = std.vec.Vec.new()
     let items = std.vec.Vec.new()
-    demo.App { text: text, counter: 0u32, items: items, scroll: 0.0f32, focus_input: false }
+    demo.App {
+        text: text
+        counter: 0u32
+        items: items
+        scroll: 0.0f32
+        focus_input: false
+    }
 end demo.App.new
 
 fn demo.bytes(s: &str) -> std.vec.Vec<u8> uses [alloc] panics never pub
@@ -306,12 +312,22 @@ fn demo.update(app: &mut demo.App, _ctx: &mut ui.event.Ctx, ev: &ui.event.Event)
     let iy = demo.INPUT_Y
     let iw = demo.INPUT_W
     let ih = demo.INPUT_H
-    let input_rect = layout.Rect { x: ix, y: iy, width: iw, height: ih }
+    let input_rect = layout.Rect {
+        x: ix
+        y: iy
+        width: iw
+        height: ih
+    }
     let bx = demo.BUTTON_X
     let by = demo.INPUT_Y
     let bw = demo.BUTTON_W
     let bh = demo.BUTTON_H
-    let button_rect = layout.Rect { x: bx, y: by, width: bw, height: bh }
+    let button_rect = layout.Rect {
+        x: bx
+        y: by
+        width: bw
+        height: bh
+    }
     match ev {
         event.Event.IMECommit(bytes) => {
             demo.push_text(app, bytes)
@@ -395,7 +411,17 @@ end demo.visible_range
 
 fn demo.zero_rect() -> ui.gpu.KsnuiRect uses [] panics never pub
     let z = 0.0f32
-    gpu.KsnuiRect { x: z, y: z, w: z, h: z, r: z, cr: z, cg: z, cb: z, ca: z }
+    gpu.KsnuiRect {
+        x: z
+        y: z
+        w: z
+        h: z
+        r: z
+        cr: z
+        cg: z
+        cb: z
+        ca: z
+    }
 end demo.zero_rect
 
 test demo.App.test_button_click_increments_counter_and_appends

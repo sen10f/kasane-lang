@@ -8,6 +8,8 @@ end t.L
 
 fn t.main() -> Result<(), t.E> uses [alloc] panics never
     let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)
-    core.mem.drop(a.insert(t.L { v: 1u32 }))
+    core.mem.drop(a.insert(t.L {
+        v: 1u32
+    }))
     Ok(())
 end t.main

@@ -8,7 +8,9 @@ fn t.f(s: &mut t.S, r: &u32) -> () uses [] panics never
 end t.f
 
 fn t.main() -> () uses [] panics never
-    let mut x = t.S { n: 1u32 }
+    let mut x = t.S {
+        n: 1u32
+    }
     let s = &mut x
     let r = &s.n
     t.f(s, r)

@@ -7,7 +7,9 @@ fn t.X.get(self: &t.X) -> u32 uses [] panics never
 end t.X.get
 
 fn t.go() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
-    let b = std.boxed.Box.new(t.X { v: 3u32 })?
+    let b = std.boxed.Box.new(t.X {
+        v: 3u32
+    })?
     let n = b.get()
     let r = &b
     let m = r.get()

@@ -8,7 +8,9 @@ fn t.P.display_fmt(self: &t.P, f: &mut core.fmt.Formatter) -> Result<(), core.fm
 end t.P.display_fmt
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let p = t.P { x: 1i32 }
+    let p = t.P {
+        x: 1i32
+    }
     let s = p.to_string()
     core.mem.drop(s)
     Ok(())

@@ -29,7 +29,11 @@ fn borrow.fns.check_fn(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, d: usize) -
     cx.dat.bends.truncate(0usize)
     let fin = borrow.base.block_end(&cx.p, body.tok)
     cx.dat.bends.push(fin)?
-    cx.fnr = borrow.cx.FnInfo { ret_ref: 0usize, ret_life: 0usize, elide: 0usize }
+    cx.fnr = borrow.cx.FnInfo {
+        ret_ref: 0usize
+        ret_life: 0usize
+        elide: 0usize
+    }
     if sg.c != 0usize {
         let rn = parse.ast.get(&cx.p.ast, sg.c)
         if rn.kind == parse.ast.Kind.TRef {

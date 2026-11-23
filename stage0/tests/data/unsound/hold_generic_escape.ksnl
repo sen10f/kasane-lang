@@ -4,7 +4,9 @@ end t.Hold
 
 fn t.Hold.get(self: t.Hold<&u32>) -> &u32 uses [] panics never
     match self {
-        t.Hold { v: r } => r
+        t.Hold {
+            v: r
+        } => r
     }
 end t.Hold.get
 
@@ -21,7 +23,9 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
         } else {
             t.make(&a)
         }
-        k3 = t.Hold { v: &a }.get()
+        k3 = t.Hold {
+            v: &a
+        }.get()
     }
     core.mem.drop(*k1.v)
     core.mem.drop(*k2.v)
@@ -30,5 +34,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.make(r: &u32) -> t.Hold<&u32> uses [] panics never
-    t.Hold { v: r }
+    t.Hold {
+        v: r
+    }
 end t.make

@@ -3,7 +3,9 @@ type t.Box
 end t.Box
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let b = t.Box { n: 1u32 }
+    let b = t.Box {
+        n: 1u32
+    }
     let a = [b; 3]
     core.mem.drop(a)
     Ok(())

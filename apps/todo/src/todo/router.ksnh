@@ -320,7 +320,13 @@ fn todo.router.route(db: &mut todo.store.Store, request: &todo.http.Request) -> 
                 let h = std.string.String.new()
                 let t = todo.router.SESSION_COOKIE_MAX_AGE
                 let m = 2048usize
-                let config = todo.config.Config { addr: a, db: b, hist: h, ttl: t, max: m }
+                let config = todo.config.Config {
+                    addr: a
+                    db: b
+                    hist: h
+                    ttl: t
+                    max: m
+                }
                 return todo.router.login(db, request.body.as_str(), config.ttl)
             }
             if path == "/logout" {
@@ -454,7 +460,12 @@ fn todo.router.test_call(db: &mut todo.store.Store, method: todo.http.Method, pa
         Ok(s) => s
         Err(_e) => core.panic.panic("alloc")
     }
-    let request = http.Request { body: copy_body, cookie: ck, method: method, path: copy_path }
+    let request = http.Request {
+        body: copy_body
+        cookie: ck
+        method: method
+        path: copy_path
+    }
     match todo.router.route(db, &request) {
         Ok(r) => r
         Err(_e) => core.panic.panic("route failed")

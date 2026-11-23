@@ -8,12 +8,17 @@ type t.Res linear
 end t.Res
 
 fn t.both(p: t.Pair) -> u32 uses [] panics never
-    let t.Pair { a: a, b: b } = p
+    let t.Pair {
+        a: a
+        b: b
+    } = p
     t.close(a).wrapping_add(t.close(b))
 end t.both
 
 fn t.close(r: t.Res) -> u32 uses [] panics never
-    let t.Res { id: id } = r
+    let t.Res {
+        id: id
+    } = r
     id
 end t.close
 

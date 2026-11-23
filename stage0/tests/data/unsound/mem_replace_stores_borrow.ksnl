@@ -5,7 +5,9 @@ end t.H
 fn t.bad() -> u32 uses [] panics never
     let a = 1u32
     let mut x = 2u32
-    let mut h = t.H { r: &a }
+    let mut h = t.H {
+        r: &a
+    }
     let _old = core.mem.replace(&mut h.r, &x)
     x = 3u32
     *h.r

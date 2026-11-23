@@ -7,8 +7,12 @@ fn t.look(l: &t.L) -> u32 uses [] panics never
 end t.look
 
 fn t.main() -> () uses [] panics never
-    let a = t.L { v: 1u32 }
+    let a = t.L {
+        v: 1u32
+    }
     core.mem.drop(t.look(&a))
-    let t.L { v: v } = a
+    let t.L {
+        v: v
+    } = a
     core.mem.drop(v)
 end t.main

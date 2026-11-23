@@ -3,7 +3,9 @@ type t.S
 end t.S
 
 fn t.bad() -> u32 uses [] panics never
-    let s = t.S { n: 1u32 }
+    let s = t.S {
+        n: 1u32
+    }
     let c = fn() -> u32 capture [move s] {
         s.n
     }

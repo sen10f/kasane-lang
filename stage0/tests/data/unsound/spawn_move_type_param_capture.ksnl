@@ -30,5 +30,7 @@ end t.mk
 
 fn t.start() -> std.thread.JoinHandle<usize, std.alloc.System> uses [alloc, thread] panics may
     let s = t.mk()
-    t.go(t.H { r: s.as_str() })
+    t.go(t.H {
+        r: s.as_str()
+    })
 end t.start

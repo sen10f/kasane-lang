@@ -187,7 +187,12 @@ fn borrow.base.tab_new() -> borrow.base.Tab uses [] panics never pub
     let tc = std.vec.Vec.new()
     let fnm = std.vec.Vec.new()
     let fc = std.vec.Vec.new()
-    borrow.base.Tab { tnames: tn, tcls: tc, fnames: fnm, fcls: fc }
+    borrow.base.Tab {
+        tnames: tn
+        tcls: tc
+        fnames: fnm
+        fcls: fc
+    }
 end borrow.base.tab_new
 
 // 節の範囲のトークン (開始・終わりのバイト位置)。

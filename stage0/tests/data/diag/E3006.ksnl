@@ -3,7 +3,9 @@ type t.L linear pub
 end t.L
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let l = t.L { a: 1u8 }
+    let l = t.L {
+        a: 1u8
+    }
     core.mem.drop(l)
     Ok(())
 end t.main

@@ -8,7 +8,9 @@ end bench.Stack.len
 
 fn bench.Stack.new() -> bench.Stack uses [] panics never
     let items = std.vec.Vec.new()
-    bench.Stack { items: items }
+    bench.Stack {
+        items: items
+    }
 end bench.Stack.new
 
 fn bench.Stack.pop(self: &mut bench.Stack) -> Option<u32> uses [] panics never

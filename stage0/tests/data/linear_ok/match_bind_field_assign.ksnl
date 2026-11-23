@@ -12,7 +12,9 @@ fn t.bump(arr: &mut [t.Node]) -> () uses [] panics never
 end t.bump
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let mut a = [t.Node { v: 1u32 }]
+    let mut a = [t.Node {
+        v: 1u32
+    }]
     t.bump(&mut a)
     core.check.eq(a[0usize].v, 2u32)
     std.io.print_line("ok")

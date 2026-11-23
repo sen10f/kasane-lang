@@ -144,7 +144,7 @@ primary       = literal
               | struct_lit | closure | if_expr | match_expr | loop_expr
               | while_expr | for_expr | unsafe_block | with_expr | block ;
 path          = fqn ;                           (* 変数 / フィールド連鎖 / FQN / 列挙子 / 定数は名前解決で区別 *)
-struct_lit    = fqn , "{" , field_init , { "," , field_init } , "}" ;   (* 1行のみ。折り返し不可 *)
+struct_lit    = fqn , "{" , NL , INDENT , field_init , NL , { INDENT , field_init , NL } , "}" ;   (* いつも 1 行 1 欄。区切りは改行で `,` は書かない。`}` は `{` の行の字下げ *)
                                                                        (* if/while/match/for の先頭式では括弧で囲む *)
 field_init    = ident , ":" , expr ;
 closure       = "fn" , "(" , [ params ] , ")" , "->" , type ,
@@ -185,7 +185,7 @@ with_expr     = "with" , [ "mut" ] , ident , "=" , expr , "close" , expr_nostruc
 (* 単独の小文字 ident は束縛、それ以外の fqn は列挙子 / 定数。"mut" は let の直後にのみ置く *)
 pattern       = "_" | literal | ident | fqn
               | fqn , "(" , pattern , { "," , pattern } , ")"
-              | fqn , "{" , ident , ":" , pattern , { "," , ident , ":" , pattern } , "}"
+              | fqn , "{" , NL , INDENT , ident , ":" , pattern , NL , { INDENT , ident , ":" , pattern , NL } , "}"   (* いつも 1 行 1 欄。`,` は書かない *)
               | "(" , pattern , "," , [ pattern , { "," , pattern } ] , ")"   (* タプル。括弧パターンはない *)
               | "&" , pattern ;
 

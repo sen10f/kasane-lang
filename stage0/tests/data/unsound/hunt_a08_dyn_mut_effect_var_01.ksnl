@@ -12,7 +12,9 @@ fn t.Boxed.m(self: &Self) -> () uses [io.console] panics never impls t.Tr<[io.co
 end t.Boxed.m
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let mut b = t.Boxed { x: 1u32 }
+    let mut b = t.Boxed {
+        x: 1u32
+    }
     core.mem.drop(t.take_mut(&mut b))
     Ok(())
 end t.main

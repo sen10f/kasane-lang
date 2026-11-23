@@ -110,7 +110,13 @@ end types.ty.bind
 
 // 添字の型を複写する (Copy の構造体の参照外しは段階 1 で下りないので、フィールドから作り直す)。
 fn types.ty.copy(n: &types.ty.Node) -> types.ty.Node uses [] panics never pub
-    types.ty.Node { k: n.k, a: n.a, b: n.b, c: n.c, m: n.m }
+    types.ty.Node {
+        k: n.k
+        a: n.a
+        b: n.b
+        c: n.c
+        m: n.m
+    }
 end types.ty.copy
 
 // 既定の型: 束縛されていない整数リテラル変数は i32。
@@ -204,13 +210,23 @@ fn types.ty.int_name(k: usize) -> &'static str uses [] panics never pub
 end types.ty.int_name
 
 fn types.ty.mk(k: types.ty.K, a: usize, b: usize, c: usize, m: bool) -> types.ty.Node uses [] panics never pub
-    types.ty.Node { k: k, a: a, b: b, c: c, m: m }
+    types.ty.Node {
+        k: k
+        a: a
+        b: b
+        c: c
+        m: m
+    }
 end types.ty.mk
 
 fn types.ty.new() -> Result<types.ty.Arena, alloc.alloc.AllocError> uses [alloc] panics never pub
     let nodes = std.vec.Vec.new()
     let lst = std.vec.Vec.new()
-    let mut ar = types.ty.Arena { nodes: nodes, lst: lst, params: 0usize }
+    let mut ar = types.ty.Arena {
+        nodes: nodes
+        lst: lst
+        params: 0usize
+    }
     ar.nodes.push(types.ty.mk(types.ty.K.Unknown, 0usize, 0usize, 0usize, false))?
     ar.nodes.push(types.ty.mk(types.ty.K.Unit, 0usize, 0usize, 0usize, false))?
     ar.nodes.push(types.ty.mk(types.ty.K.Bool, 0usize, 0usize, 0usize, false))?

@@ -63,7 +63,11 @@ fn bench.Machine.add_product(self: &mut bench.Machine, name: &str, price: u32, q
         }
         None => {
             let n = std.string.String.from_str(name)?
-            let p = bench.Product { name: n, price: price, qty: qty }
+            let p = bench.Product {
+                name: n
+                price: price
+                qty: qty
+            }
             self.shelf.push(p)?
             ()
         }
@@ -140,5 +144,8 @@ fn bench.Machine.insert_coin(self: &mut bench.Machine, c: bench.Coin) -> u32 use
 end bench.Machine.insert_coin
 
 fn bench.Machine.new() -> bench.Machine uses [] panics never
-    bench.Machine { mode: bench.Mode.Idle, shelf: std.vec.Vec.new() }
+    bench.Machine {
+        mode: bench.Mode.Idle
+        shelf: std.vec.Vec.new()
+    }
 end bench.Machine.new

@@ -8,7 +8,10 @@ fn t.arr(a: [u64; 2]) -> u64 uses [] panics may
 end t.arr
 
 fn t.bad() -> u64 uses [] panics may
-    t.arr(t.P { a: 1u64, b: 2u64 })
+    t.arr(t.P {
+        a: 1u64
+        b: 2u64
+    })
 end t.bad
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

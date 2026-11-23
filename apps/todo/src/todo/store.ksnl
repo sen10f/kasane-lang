@@ -36,7 +36,12 @@ fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &s
     let title_copy = std.string.String.from_str(title)?
     let created_copy = std.string.String.from_str(created_at)?
     let created_extra = std.string.String.from_str(created_at)?
-    let new_todo = model.Todo { id: id, title: title_copy, done: false, created_at: created_copy }
+    let new_todo = model.Todo {
+        id: id
+        title: title_copy
+        done: false
+        created_at: created_copy
+    }
     self.todos.push(new_todo)?
     let empty_tags = std.vec.Vec.new()
     let ua = created_extra
@@ -46,7 +51,12 @@ fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &s
         Err(_) => return Err(error.Error.BadRequest)
     }
     let od = owner_id
-    let new_extra = model.TodoExtra { updated_at: ua, tags: tg, deadline: dl, owner_id: od }
+    let new_extra = model.TodoExtra {
+        updated_at: ua
+        tags: tg
+        deadline: dl
+        owner_id: od
+    }
     self.extras.push(new_extra)?
     match self.save() {
         Ok(_u) => {
@@ -90,7 +100,11 @@ end todo.store.Store.add_extra
 
 fn todo.store.Store.add_session(self: &mut todo.store.Store, token: &str, user_id: i64, expires_at: i64) -> Result<&todo.model.Session, todo.error.Error> uses [alloc, io.fs] panics never pub
     let token_copy = std.string.String.from_str(token)?
-    let new_session = model.Session { token: token_copy, user_id: user_id, expires_at: expires_at }
+    let new_session = model.Session {
+        token: token_copy
+        user_id: user_id
+        expires_at: expires_at
+    }
     self.sessions.push(new_session)?
     match self.save_users() {
         Ok(_u) => {
@@ -125,7 +139,13 @@ fn todo.store.Store.add_user(self: &mut todo.store.Store, username: &str, passwo
     let ph = hash_copy
     let sl = salt_copy
     let ca = created_copy
-    let new_user = model.User { id: ui, username: un, password_hash: ph, salt: sl, created_at: ca }
+    let new_user = model.User {
+        id: ui
+        username: un
+        password_hash: ph
+        salt: sl
+        created_at: ca
+    }
     self.users.push(new_user)?
     match self.save_users() {
         Ok(_u) => {
@@ -295,7 +315,9 @@ fn todo.store.Store.list(self: &todo.store.Store) -> Result<std.string.String, a
                 let s = model.to_json(t)?
                 out.push_str(s.as_str())?
             }
-            None => return Err(alloc.alloc.AllocError { code: 0u32 })
+            None => return Err(alloc.alloc.AllocError {
+                code: 0u32
+            })
         }
     }
     out.push_str("]")?
@@ -315,7 +337,9 @@ fn todo.store.Store.list_users(self: &todo.store.Store) -> Result<std.string.Str
                 let s = model.user_to_json(u)?
                 out.push_str(s.as_str())?
             }
-            None => return Err(alloc.alloc.AllocError { code: 0u32 })
+            None => return Err(alloc.alloc.AllocError {
+                code: 0u32
+            })
         }
     }
     out.push_str("],\"sessions\":[")?
@@ -329,7 +353,9 @@ fn todo.store.Store.list_users(self: &todo.store.Store) -> Result<std.string.Str
                 let s2 = model.session_to_json(s)?
                 out.push_str(s2.as_str())?
             }
-            None => return Err(alloc.alloc.AllocError { code: 0u32 })
+            None => return Err(alloc.alloc.AllocError {
+                code: 0u32
+            })
         }
     }
     out.push_str("]}")?
@@ -360,7 +386,14 @@ fn todo.store.Store.new(path: &str, users_path: &str) -> Result<todo.store.Store
     let ss = std.vec.Vec.new()
     let p = saved
     let up = users_saved
-    Ok(todo.store.Store { path: p, users_path: up, todos: ts, extras: es, users: us, sessions: ss })
+    Ok(todo.store.Store {
+        path: p
+        users_path: up
+        todos: ts
+        extras: es
+        users: us
+        sessions: ss
+    })
 end todo.store.Store.new
 
 fn todo.store.Store.parse_into(self: &mut todo.store.Store, text: &str) -> Result<(), todo.error.Error> uses [alloc] panics never pub
@@ -456,7 +489,9 @@ fn todo.store.Store.search(self: &todo.store.Store, q: &str, page: usize, page_s
             Some(t) => if t.title.as_str().contains(q) {
                 total = total.saturating_add(1usize)
             }
-            None => return Err(alloc.alloc.AllocError { code: 0u32 })
+            None => return Err(alloc.alloc.AllocError {
+                code: 0u32
+            })
         }
     }
     let mut out = std.string.String.new()
@@ -493,7 +528,9 @@ fn todo.store.Store.search(self: &todo.store.Store, q: &str, page: usize, page_s
                 out.push_str(s.as_str())?
                 count = count.saturating_add(1usize)
             }
-            None => return Err(alloc.alloc.AllocError { code: 0u32 })
+            None => return Err(alloc.alloc.AllocError {
+                code: 0u32
+            })
         }
     }
     out.push_str("]}")?
@@ -542,7 +579,13 @@ fn todo.store.Store.stats(self: &todo.store.Store) -> Result<todo.store.Stats, t
     let t = total
     let c = completed
     let a = active
-    Ok(todo.store.Stats { total: t, completed: c, active: a, users: ulen, sessions: slen })
+    Ok(todo.store.Stats {
+        total: t
+        completed: c
+        active: a
+        users: ulen
+        sessions: slen
+    })
 end todo.store.Store.stats
 
 fn todo.store.Store.toggle(self: &mut todo.store.Store, id: i64) -> Result<&todo.model.Todo, todo.error.Error> uses [alloc, io.fs] panics never pub

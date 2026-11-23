@@ -3,7 +3,9 @@ type t.Res linear
 end t.Res
 
 fn t.bad() -> u32 uses [] panics never
-    let r = t.Res { id: 1u32 }
+    let r = t.Res {
+        id: 1u32
+    }
     let o = Some(r)
     match o {
         Some(_) => 1u32

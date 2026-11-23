@@ -81,7 +81,9 @@ end bench.PercentOff.kind
 
 fn bench.Pricer.add[R: bench.Rule<[], never>](self: &mut bench.Pricer, r: R) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
     let b = std.boxed.Box.new(r)?
-    let slot = bench.Slot { rule: alloc.boxed.Box.into_dyn(b) }
+    let slot = bench.Slot {
+        rule: alloc.boxed.Box.into_dyn(b)
+    }
     self.rules.push(slot)?
     Ok(())
 end bench.Pricer.add
@@ -108,7 +110,9 @@ fn bench.Pricer.kinds(self: &bench.Pricer) -> Result<std.vec.Vec<bench.RuleKind>
 end bench.Pricer.kinds
 
 fn bench.Pricer.new() -> bench.Pricer uses [] panics never
-    bench.Pricer { rules: std.vec.Vec.new() }
+    bench.Pricer {
+        rules: std.vec.Vec.new()
+    }
 end bench.Pricer.new
 
 fn bench.Pricer.price(self: &bench.Pricer, base: u32) -> u32 uses [] panics never

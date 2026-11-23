@@ -3,7 +3,9 @@ type t.W['a]
 end t.W
 
 fn t.a_wrap['a](r: &'a mut u32) -> t.W<'a> uses [] panics never
-    t.W { r: r }
+    t.W {
+        r: r
+    }
 end t.a_wrap
 
 fn t.bad() -> u32 uses [] panics never

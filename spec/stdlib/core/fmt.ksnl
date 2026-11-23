@@ -21,24 +21,36 @@ fn core.fmt.Formatter.new(limit: usize) -> core.fmt.Formatter const uses [] pani
     if cap > 256usize {
         cap = 256usize
     }
-    core.fmt.Formatter { buf: [0u8; 256], len: 0usize, limit: cap }
+    core.fmt.Formatter {
+        buf: [0u8; 256]
+        len: 0usize
+        limit: cap
+    }
 end core.fmt.Formatter.new
 
 fn core.fmt.Formatter.push_bytes(self: &mut core.fmt.Formatter, bytes: &[u8]) -> Result<(), core.fmt.Error> uses [] panics never
     let stop = match self.len.checked_add(bytes.len()) {
         Some(e) => e
-        None => return Err(core.fmt.Error { code: 1u32 })
+        None => return Err(core.fmt.Error {
+            code: 1u32
+        })
     }
     if stop > self.limit {
-        return Err(core.fmt.Error { code: 1u32 })
+        return Err(core.fmt.Error {
+            code: 1u32
+        })
     }
     let dst = match self.buf.sub_mut(self.len, stop) {
         Some(d) => d
-        None => return Err(core.fmt.Error { code: 1u32 })
+        None => return Err(core.fmt.Error {
+            code: 1u32
+        })
     }
     match dst.copy_from(bytes) {
         Ok(done) => done
-        Err(_) => return Err(core.fmt.Error { code: 1u32 })
+        Err(_) => return Err(core.fmt.Error {
+            code: 1u32
+        })
     }
     self.len = stop
     Ok(())

@@ -91,7 +91,10 @@ fn wiki.store.PageStore.new(data_dir: &str) -> Result<wiki.store.PageStore, wiki
     let mut pages = std.string.String.from_str(data_dir)?
     core.mem.drop(pages.push_str("/pages"))
     std.fs.create_dir_all(pages.as_str())?
-    Ok(wiki.store.PageStore { data_dir: saved, pages_dir: pages })
+    Ok(wiki.store.PageStore {
+        data_dir: saved
+        pages_dir: pages
+    })
 end wiki.store.PageStore.new
 
 fn wiki.store.PageStore.next_version(self: &mut wiki.store.PageStore, name: &str) -> Result<u64, wiki.error.Error> uses [alloc, io.fs] panics never pub

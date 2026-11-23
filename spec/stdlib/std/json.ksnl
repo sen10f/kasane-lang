@@ -77,14 +77,18 @@ impl[T: std.json.FromJson] std.json.FromJson for core.option.Option<T>
 impl[T: std.json.FromJson] std.json.FromJson for std.vec.Vec<T>
 
 fn std.json.Doc.root(self: &std.json.Doc) -> std.json.Value uses [] panics never pub
-    std.json.Value { at: self.top }
+    std.json.Value {
+        at: self.top
+    }
 end std.json.Doc.root
 
 fn std.json.Doc.value_at(self: &std.json.Doc, at: usize) -> Option<std.json.Value> uses [] panics never pub
     if at >= self.nodes.len() {
         None
     } else {
-        Some(std.json.Value { at: at })
+        Some(std.json.Value {
+            at: at
+        })
     }
 end std.json.Doc.value_at
 
@@ -228,7 +232,9 @@ fn std.json.decode_field(doc: &std.json.Doc, v: std.json.Value, name: &str, inde
                 let key = std.json.str_at(doc, std.json.link_at(doc, slot)?)?
                 if key == name {
                     let at = std.json.link_at(doc, slot.wrapping_add(1usize))?
-                    return Ok(std.json.Value { at: at })
+                    return Ok(std.json.Value {
+                        at: at
+                    })
                 }
             }
             Err(std.json.Error.MissingField(index))
@@ -284,7 +290,9 @@ fn std.json.decode_item(doc: &std.json.Doc, v: std.json.Value, index: usize) -> 
                 return Err(std.json.Error.Eof)
             }
             let at = std.json.link_at(doc, first.wrapping_add(index))?
-            Ok(std.json.Value { at: at })
+            Ok(std.json.Value {
+                at: at
+            })
         }
         None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))
     }
@@ -374,7 +382,9 @@ fn std.json.decode_variant(doc: &std.json.Doc, v: std.json.Value) -> Result<(&st
             }
             let name = std.json.str_at(doc, std.json.link_at(doc, first)?)?
             let at = std.json.link_at(doc, first.wrapping_add(1usize))?
-            Ok((name, Some(std.json.Value { at: at })))
+            Ok((name, Some(std.json.Value {
+                at: at
+            })))
         }
         None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))
     }
@@ -475,7 +485,11 @@ fn std.json.link_at(doc: &std.json.Doc, slot: usize) -> Result<usize, std.json.E
 end std.json.link_at
 
 fn std.json.new_doc() -> std.json.Doc uses [] panics never
-    std.json.Doc { links: std.json.new_links(), nodes: std.json.new_nodes(), top: 0usize }
+    std.json.Doc {
+        links: std.json.new_links()
+        nodes: std.json.new_nodes()
+        top: 0usize
+    }
 end std.json.new_doc
 
 fn std.json.new_links() -> std.vec.Vec<usize> uses [] panics never
@@ -899,7 +913,9 @@ end std.json.write
 
 fn std.json.write_link(doc: &std.json.Doc, slot: usize, out: &mut std.string.String) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096
     match doc.links.as_slice().get(slot) {
-        Some(n) => std.json.write(doc, std.json.Value { at: *n }, out)
+        Some(n) => std.json.write(doc, std.json.Value {
+            at: *n
+        }, out)
         None => Ok(())
     }
 end std.json.write_link

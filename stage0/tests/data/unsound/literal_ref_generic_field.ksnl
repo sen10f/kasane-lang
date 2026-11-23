@@ -4,7 +4,9 @@ end t.Wrap
 
 fn t.bad() -> u32 uses [] panics never
     let x = 1u32
-    *t.Wrap { inner: &x }.inner
+    *t.Wrap {
+        inner: &x
+    }.inner
 end t.bad
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

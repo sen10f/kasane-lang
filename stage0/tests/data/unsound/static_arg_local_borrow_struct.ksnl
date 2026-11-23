@@ -13,7 +13,9 @@ fn t.mk() -> alloc.string.String uses [] panics never
 end t.mk
 
 fn t.wrap(r: &'static str) -> t.S uses [] panics never
-    t.S { r: r }
+    t.S {
+        r: r
+    }
 end t.wrap
 
 fn t.wrapped() -> t.S uses [] panics never

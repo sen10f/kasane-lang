@@ -68,7 +68,10 @@ fn lower.tup.make(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     let mk2 = lower.cx.cat2(mk.as_str(), ")")?
     let v = lower.cx.def(c, ts.as_str(), mk2.as_str())?
     ts.push(' ')?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R {
+        v: v
+        t: t
+    })
 end lower.tup.make
 
 // 組の欄の名 (綴り用): 項目は FQN、参照は `&`、組は括弧、基本の型は型の綴り。

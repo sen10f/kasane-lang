@@ -351,14 +351,43 @@ fn lower.cx.new(ar: types.ty.Arena, tc: types.chk.Ctx) -> Result<lower.cx.Cx, re
     let sb = std.vec.Vec.new()
     let rt = std.vec.Vec.new()
     let tp = std.vec.Vec.new()
-    let g = lower.cx.Glob { itm: it, sbs: sb, rts: rt, aggs: ag, nms: nm, tx: tx, oks: ok, tps: tp }
+    let g = lower.cx.Glob {
+        itm: it
+        sbs: sb
+        rts: rt
+        aggs: ag
+        nms: nm
+        tx: tx
+        oks: ok
+        tps: tp
+    }
     let v = lower.cx.vs_new()
     let lks = std.vec.Vec.new()
-    let lp = lower.cx.Lp { head: 0usize, exit: 0usize, base: 0usize, brk: 0usize, ks: lks }
+    let lp = lower.cx.Lp {
+        head: 0usize
+        exit: 0usize
+        base: 0usize
+        brk: 0usize
+        ks: lks
+    }
     let us = std.string.String.new()
     let z = 0usize
-    let s = lower.cx.Sc { cur: z, term: false, file: z, ret_t: z, unsup: us, peek: false }
-    Ok(lower.cx.Cx { ar: ar, tc: tc, g: g, v: v, lp: lp, s: s })
+    let s = lower.cx.Sc {
+        cur: z
+        term: false
+        file: z
+        ret_t: z
+        unsup: us
+        peek: false
+    }
+    Ok(lower.cx.Cx {
+        ar: ar
+        tc: tc
+        g: g
+        v: v
+        lp: lp
+        s: s
+    })
 end lower.cx.new
 
 // 値を新しく作る (型の文字列を記録し、番号を返す)。
@@ -434,7 +463,15 @@ fn lower.cx.sl_new() -> lower.cx.Sl uses [] panics never pub
     let ow = std.vec.Vec.new()
     let fg = std.vec.Vec.new()
     let cl = std.vec.Vec.new()
-    lower.cx.Sl { names: nm, tys: ty, slotf: sf, bor: br, own: ow, flag: fg, cl: cl }
+    lower.cx.Sl {
+        names: nm
+        tys: ty
+        slotf: sf
+        bor: br
+        own: ow
+        flag: fg
+        cl: cl
+    }
 end lower.cx.sl_new
 
 // 型引数の組の複製 (k 番目)。
@@ -539,5 +576,14 @@ fn lower.cx.vs_new() -> lower.cx.Vs uses [] panics never pub
     let lb = std.vec.Vec.new()
     let vl = std.vec.Vec.new()
     let mf = std.vec.Vec.new()
-    lower.cx.Vs { subst: sb, sl: sl, vty: vt, hdr: hd, lines: ln, lblk: lb, vals: vl, mutf: mf }
+    lower.cx.Vs {
+        subst: sb
+        sl: sl
+        vty: vt
+        hdr: hd
+        lines: ln
+        lblk: lb
+        vals: vl
+        mutf: mf
+    }
 end lower.cx.vs_new

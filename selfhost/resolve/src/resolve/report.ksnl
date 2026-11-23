@@ -105,7 +105,13 @@ fn resolve.report.new() -> Result<resolve.report.Report, alloc.alloc.AllocError>
     let text = std.string.String.new()
     let path = std.string.String.new()
     let nosig = false
-    Ok(resolve.report.Report { text: text, path: path, errors: 0usize, refs: 0usize, sig: nosig })
+    Ok(resolve.report.Report {
+        text: text
+        path: path
+        errors: 0usize
+        refs: 0usize
+        sig: nosig
+    })
 end resolve.report.new
 
 fn resolve.report.set_path(rep: &mut resolve.report.Report, path: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub

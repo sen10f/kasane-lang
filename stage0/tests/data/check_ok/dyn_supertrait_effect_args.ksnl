@@ -25,7 +25,9 @@ fn t.good(h: &dyn t.Sub<[], never>) -> u32 uses [] panics never
 end t.good
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let x = t.X { v: 5u32 }
+    let x = t.X {
+        v: 5u32
+    }
     core.mem.drop(t.good(&x))
     Ok(())
 end t.main

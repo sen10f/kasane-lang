@@ -159,7 +159,17 @@ fn golden.main() -> () uses [env, io.console] panics may
 end golden.main
 
 fn golden.mk_rect(x: f32, y: f32, w: f32, h: f32, r: f32, a: f32, b: f32, c: f32, d: f32) -> golden.KsnuiRect uses [] panics never pub
-    golden.KsnuiRect { x: x, y: y, w: w, h: h, r: r, cr: a, cg: b, cb: c, ca: d }
+    golden.KsnuiRect {
+        x: x
+        y: y
+        w: w
+        h: h
+        r: r
+        cr: a
+        cg: b
+        cb: c
+        ca: d
+    }
 end golden.mk_rect
 
 fn golden.png_write(path: *const u8, w: i32, h: i32, rgba: *const u8) -> i32 uses [] panics may pub

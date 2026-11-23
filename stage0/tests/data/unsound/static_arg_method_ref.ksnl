@@ -8,7 +8,9 @@ end t.S.keep
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let s = t.mk()
-    let v = t.S { n: 1u32 }
+    let v = t.S {
+        n: 1u32
+    }
     core.mem.drop(v.keep(s.as_str()))
     Ok(())
 end t.main

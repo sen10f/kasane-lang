@@ -198,7 +198,11 @@ test ui.event_test.Target.test_route_key_down_with_modifiers
     let utree = ui.tree.Tree.new()
     let mut ctx = ui.event.Ctx.new()
     ctx.set_focus(root)
-    let modifiers = ui.event.Modifiers { shift: true, ctrl: false, alt: false }
+    let modifiers = ui.event.Modifiers {
+        shift: true
+        ctrl: false
+        alt: false
+    }
     let ev = ui.event.Event.KeyDown(65u32, modifiers)
     let routed = ui.event.route(&ctx, &tree, &utree, root, &ev, 0.0f32, 0.0f32)
     core.check.eq(routed, Some(root))

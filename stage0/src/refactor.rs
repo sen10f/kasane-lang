@@ -873,7 +873,7 @@ impl<'a> Engine<'a> {
                 }
             }
             if depth == 1 && t.text == op.member_old && matches!(t.kind, "ident" | "upper") {
-                let prev_ok = i > 0 && toks[i - 1].1.kind == "op" && matches!(toks[i - 1].1.text.as_str(), "{" | ",");
+                let prev_ok = i > 0 && (toks[i - 1].0 < toks[i].0 || (toks[i - 1].1.kind == "op" && matches!(toks[i - 1].1.text.as_str(), "{" | ",")));
                 let next_ok = i + 1 < toks.len() && toks[i + 1].1.kind == "op" && toks[i + 1].1.text == ":";
                 if prev_ok && next_ok {
                     let ln = toks[i].0;

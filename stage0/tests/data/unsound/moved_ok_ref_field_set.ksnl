@@ -9,7 +9,9 @@ end t.H.set
 fn t.go() -> u32 uses [] panics never
     let mut x = 1u32
     let mut y = 5u32
-    let mut h = t.H { r: &mut x }
+    let mut h = t.H {
+        r: &mut x
+    }
     let a = t.read(&h)
     h.set(&mut y)
     let b = t.read(&h)
@@ -19,7 +21,9 @@ end t.go
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let mut x = 1u32
     let mut y = 5u32
-    let mut h = t.H { r: &mut x }
+    let mut h = t.H {
+        r: &mut x
+    }
     let a = t.read(&h)
     h.set(&mut y)
     let b = t.read(&h)

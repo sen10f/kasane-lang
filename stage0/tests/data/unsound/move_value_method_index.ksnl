@@ -3,7 +3,9 @@ type t.S
 end t.S
 
 fn t.S.into_name(self: t.S) -> alloc.string.String uses [] panics never
-    let t.S { name: name } = self
+    let t.S {
+        name: name
+    } = self
     name
 end t.S.into_name
 

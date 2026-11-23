@@ -14,7 +14,12 @@ end t.Outer.get_snd_as_fst
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = 1u32
     let b = 2u32
-    let p = t.Outer { inner: t.Pair { fst: &a, snd: &b } }
+    let p = t.Outer {
+        inner: t.Pair {
+            fst: &a
+            snd: &b
+        }
+    }
     core.mem.drop(*p.get_snd_as_fst(&p))
     Ok(())
 end t.main

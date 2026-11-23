@@ -3,14 +3,20 @@ type t.Res linear
 end t.Res
 
 fn t.Res.shut(self: t.Res) -> () uses [] panics never
-    let t.Res { id: id } = self
+    let t.Res {
+        id: id
+    } = self
     core.mem.drop(id)
 end t.Res.shut
 
 fn t.a() -> () uses [] panics never
-    with r = t.Res { id: 1u32 } close r.shut() {
+    with r = t.Res {
+        id: 1u32
+    } close r.shut() {
         match r {
-            t.Res { id: _ } => ()
+            t.Res {
+                id: _
+            } => ()
         }
     }
 end t.a

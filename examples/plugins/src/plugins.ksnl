@@ -33,12 +33,16 @@ fn plugins.Bus.dispatch(self: &mut plugins.Bus, event: &str) -> u32 uses [io.con
 end plugins.Bus.dispatch
 
 fn plugins.Bus.new() -> plugins.Bus uses [] panics never pub
-    plugins.Bus { handlers: vec.Vec.new(std.alloc.SYSTEM) }
+    plugins.Bus {
+        handlers: vec.Vec.new(std.alloc.SYSTEM)
+    }
 end plugins.Bus.new
 
 fn plugins.Bus.register[H: plugins.Handler<[io.console], never>](self: &mut plugins.Bus, handler: H) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let b = boxed.Box.new(std.alloc.SYSTEM, handler)?
-    self.handlers.push(plugins.Slot { handler: boxed.Box.into_dyn(b) })?
+    self.handlers.push(plugins.Slot {
+        handler: boxed.Box.into_dyn(b)
+    })?
     Ok(())
 end plugins.Bus.register
 
@@ -68,8 +72,13 @@ end plugins.main
 fn plugins.run() -> Result<u32, alloc.alloc.AllocError> uses [alloc, io.console] panics may
     let mut bus = plugins.Bus.new()
     let prefix = std.string.String.from_str("log")?
-    bus.register(plugins.Counter { seen: 0u32 })?
-    bus.register(plugins.Logger { calls: 0u32, prefix: prefix })?
+    bus.register(plugins.Counter {
+        seen: 0u32
+    })?
+    bus.register(plugins.Logger {
+        calls: 0u32
+        prefix: prefix
+    })?
     let first = bus.dispatch("start")
     let second = bus.dispatch("stop")
     Ok(first.wrapping_add(second))

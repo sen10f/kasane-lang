@@ -11,7 +11,9 @@ fn t.bad() -> u32 uses [alloc] panics never
         Some(x) => x
         None => return 0u32
     }
-    let cell = t.RefCell { p: x }
+    let cell = t.RefCell {
+        p: x
+    }
     let c = fn() -> u32 capture [move cell] {
         *cell.p
     }

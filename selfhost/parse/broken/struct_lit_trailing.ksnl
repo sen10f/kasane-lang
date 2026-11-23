@@ -1,3 +1,5 @@
 fn a.f() -> a.P uses [] panics never
-    a.P { x: 1i32, }
+    a.P {
+        x: 1i32
+    }
 end a.f

@@ -11,7 +11,9 @@ fn t.bad() -> () uses [alloc] panics may
         Ok(b) => b
         Err(_e) => core.panic.panic("oom")
     }
-    let w = t.Wrapper { b: b }
+    let w = t.Wrapper {
+        b: b
+    }
     let x = *w.b
     core.mem.drop(x)
     core.mem.drop(w)

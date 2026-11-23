@@ -29,7 +29,10 @@ fn t.add(a: i32, b: i32) -> i32 uses [] panics never pub
 end t.add
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let p = t.P { x: 3i32, y: 4i32 }
+    let p = t.P {
+        x: 3i32
+        y: 4i32
+    }
     let w = t.work(p)
     std.io.print_line(\"hello\")?
     let mut i = 0i32

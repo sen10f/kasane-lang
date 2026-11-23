@@ -20,13 +20,19 @@ fn bench.Inventory.add(self: &mut bench.Inventory, name: &str, qty: u32, price: 
         Some(old) => {
             let item = *old
             let key = std.string.String.from_str(name)?
-            let added = bench.Item { qty: item.qty.wrapping_add(qty), price: item.price }
+            let added = bench.Item {
+                qty: item.qty.wrapping_add(qty)
+                price: item.price
+            }
             core.mem.drop(self.stock.insert(key, added)?)
             ()
         }
         None => {
             let key = std.string.String.from_str(name)?
-            core.mem.drop(self.stock.insert(key, bench.Item { qty: qty, price: price })?)
+            core.mem.drop(self.stock.insert(key, bench.Item {
+                qty: qty
+                price: price
+            })?)
             self.order.push(std.string.String.from_str(name)?)?
             ()
         }
@@ -83,7 +89,10 @@ end bench.Inventory.names
 fn bench.Inventory.new() -> bench.Inventory uses [] panics never
     let stock = std.collections.HashMap.new()
     let order = std.vec.Vec.new()
-    bench.Inventory { stock: stock, order: order }
+    bench.Inventory {
+        stock: stock
+        order: order
+    }
 end bench.Inventory.new
 
 fn bench.Inventory.remove(self: &mut bench.Inventory, name: &str) -> Result<bench.Item, bench.InvError> uses [alloc] panics never
@@ -116,7 +125,10 @@ fn bench.Inventory.restock(self: &mut bench.Inventory, name: &str, n: u32) -> Re
         None => return Err(bench.InvError.NotFound)
     }
     let key = std.string.String.from_str(name)?
-    let filled = bench.Item { qty: item.qty.wrapping_add(n), price: item.price }
+    let filled = bench.Item {
+        qty: item.qty.wrapping_add(n)
+        price: item.price
+    }
     core.mem.drop(self.stock.insert(key, filled)?)
     Ok(())
 end bench.Inventory.restock
@@ -130,7 +142,10 @@ fn bench.Inventory.take(self: &mut bench.Inventory, name: &str, n: u32) -> Resul
     if n > item.qty {
         return Err(bench.InvError.Insufficient(n.wrapping_sub(item.qty)))
     }
-    let left = bench.Item { qty: item.qty.wrapping_sub(n), price: item.price }
+    let left = bench.Item {
+        qty: item.qty.wrapping_sub(n)
+        price: item.price
+    }
     let key = std.string.String.from_str(name)?
     core.mem.drop(self.stock.insert(key, left)?)
     Ok(left)

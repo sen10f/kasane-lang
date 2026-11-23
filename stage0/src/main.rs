@@ -38,6 +38,7 @@ mod kir_suspend;
 mod kir_scalar;
 mod fmt;
 mod fmt_hoist;
+mod fmt_struct;
 mod canon;
 mod spacing;
 mod bindgen;

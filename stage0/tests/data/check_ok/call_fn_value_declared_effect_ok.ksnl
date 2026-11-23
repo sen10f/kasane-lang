@@ -12,7 +12,9 @@ end t.eff
 
 fn t.go() -> () uses [io.console] panics never
     t.id(t.eff)()
-    let h = t.H { f: t.eff }
+    let h = t.H {
+        f: t.eff
+    }
     core.mem.drop(h)
 end t.go
 

@@ -3,7 +3,9 @@ type t.H['a]
 end t.H
 
 fn t.H.wrap['a](self: &t.H<'a>, x: &u32) -> t.H<'a> uses [] panics never
-    t.H { r: x }
+    t.H {
+        r: x
+    }
 end t.H.wrap
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

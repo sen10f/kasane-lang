@@ -3,7 +3,9 @@ type t.P pub
 end t.P
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    t.show(t.P { a: 1u8 })
+    t.show(t.P {
+        a: 1u8
+    })
     Ok(())
 end t.main
 

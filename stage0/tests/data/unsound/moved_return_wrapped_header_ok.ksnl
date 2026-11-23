@@ -15,9 +15,13 @@ fn t.opt['a, 'b](x: &'a u32, _y: &'b u32) -> Option<&'a u32> uses [] panics neve
 end t.opt
 
 fn t.statik(x: &'static u32) -> t.H<'static> uses [] panics never
-    t.H { r: &*x }
+    t.H {
+        r: &*x
+    }
 end t.statik
 
 fn t.wrap['a, 'b](x: &'a u32, _y: &'b u32) -> t.H<'a> uses [] panics never
-    t.H { r: x }
+    t.H {
+        r: x
+    }
 end t.wrap

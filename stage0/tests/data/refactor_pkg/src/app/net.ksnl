@@ -33,7 +33,10 @@ fn app.net.make(len: u32) -> app.net.Header uses [] panics never pub
     } else {
         app.net.Kind.Small
     }
-    app.net.Header { kind: kind, len: len }
+    app.net.Header {
+        kind: kind
+        len: len
+    }
 end app.net.make
 
 fn app.net.parse(len: u32) -> Result<app.net.Header, u32> uses [] panics never pub

@@ -11,7 +11,9 @@ fn t.R.name(self: &t.R) -> &str uses [] panics never pub
 end t.R.name
 
 fn t.R.new(id: u32) -> t.R uses [] panics never pub
-    t.R { id: id }
+    t.R {
+        id: id
+    }
 end t.R.new
 
 fn t.R.shut(self: t.R) -> () uses [] panics never pub

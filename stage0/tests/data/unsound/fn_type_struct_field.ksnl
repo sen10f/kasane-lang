@@ -3,7 +3,9 @@ type t.H
 end t.H
 
 fn t.bad() -> u32 uses [] panics never
-    let h = t.H { f: t.loud }
+    let h = t.H {
+        f: t.loud
+    }
     let f = h.f
     f()
 end t.bad

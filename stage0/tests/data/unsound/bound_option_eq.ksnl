@@ -3,7 +3,9 @@ type t.Plain
 end t.Plain
 
 fn t.bad() -> () uses [] panics may
-    core.check.eq(Some(t.Plain { a: 1u8 }), None)
+    core.check.eq(Some(t.Plain {
+        a: 1u8
+    }), None)
 end t.bad
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never

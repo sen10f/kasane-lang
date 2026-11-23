@@ -13,7 +13,11 @@ fn types.export.run(pkg: &str, std_dir: &str) -> Result<types.export.Out, resolv
     let mut ar = types.ty.new()?
     let mut cx = types.chk.new()?
     types.check.all(&env, &mut ar, &mut cx)?
-    Ok(types.export.Out { env: env, ar: ar, cx: cx })
+    Ok(types.export.Out {
+        env: env
+        ar: ar
+        cx: cx
+    })
 end types.export.run
 
 // 節 node (単位 file) の型を、束縛をたどって読む (記録なしは UNKNOWN)。

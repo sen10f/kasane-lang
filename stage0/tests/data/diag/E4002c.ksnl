@@ -12,5 +12,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
 end t.main
 
 fn t.mk() -> t.S uses [] panics never
-    t.S { n: 1u32 }
+    t.S {
+        n: 1u32
+    }
 end t.mk

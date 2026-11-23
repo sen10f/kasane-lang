@@ -8,7 +8,9 @@ end t.H.set
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
     let s = std.string.String.new()
-    let mut h = t.H { r: "x" }
+    let mut h = t.H {
+        r: "x"
+    }
     h.set(t.same("a", "b"))
     std.io.print_line(h.r)
     std.io.print_line(t.stat("a"))

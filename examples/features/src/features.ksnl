@@ -76,7 +76,10 @@ fn features.collatz(n: u64) -> u32 uses [] panics never pub
 end features.collatz
 
 fn features.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let p = features.Point { x: 1i32, y: 2i32 }
+    let p = features.Point {
+        x: 1i32
+        y: 2i32
+    }
     let mut q = p
     q.x = 10i32
     core.check.eq(p.x, 1i32)
@@ -86,9 +89,14 @@ fn features.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics m
     core.check.eq(features.chain(250u8, 4u8), Ok(255u8))
     core.check.eq(features.chain(255u8, 1u8), Err(255u8))
     core.check.eq(features.collatz(27u64), 111u32)
-    let sq = features.Square { side: 7i64 }
+    let sq = features.Square {
+        side: 7i64
+    }
     core.check.eq(sq.area(), 49i64)
-    let it = features.Upto { cur: 0u32, stop: 4u32 }
+    let it = features.Upto {
+        cur: 0u32
+        stop: 4u32
+    }
     let mut acc = 0u32
     for n in it {
         acc = acc.wrapping_add(n)

@@ -11,7 +11,9 @@ fn t.grow(v: &mut std.vec.Vec<alloc.string.String>) -> () uses [alloc] panics ma
 end t.grow
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut s = t.P { v: std.vec.Vec.new() }
+    let mut s = t.P {
+        v: std.vec.Vec.new()
+    }
     core.mem.drop(s.v.push(t.mk()))
     let p = &s
     let a = &p.v

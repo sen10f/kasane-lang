@@ -19,7 +19,11 @@ fn wiki.router.edit_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mu
     }
     let body = html.edit_form(name, content.as_str(), token.as_str())?
     let location = wiki.router.empty()
-    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+    Ok(wiki.router.Reply {
+        body: body
+        location: location
+        status: 200u16
+    })
 end wiki.router.edit_page
 
 fn wiki.router.empty() -> std.string.String uses [] panics never pub
@@ -29,7 +33,11 @@ end wiki.router.empty
 fn wiki.router.error_reply(status: u16, message: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc] panics never pub
     let body = html.error_page(message)?
     let location = wiki.router.empty()
-    Ok(wiki.router.Reply { body: body, location: location, status: status })
+    Ok(wiki.router.Reply {
+        body: body
+        location: location
+        status: status
+    })
 end wiki.router.error_reply
 
 fn wiki.router.history_page(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
@@ -39,21 +47,33 @@ fn wiki.router.history_page(page_store: &mut wiki.store.PageStore, name: &str) -
     let versions = page_store.page_versions(name)?
     let body = html.history_view(name, versions.as_slice())?
     let location = wiki.router.empty()
-    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+    Ok(wiki.router.Reply {
+        body: body
+        location: location
+        status: 200u16
+    })
 end wiki.router.history_page
 
 fn wiki.router.list_pages(page_store: &mut wiki.store.PageStore) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
     let pages = page_store.list_pages()?
     let body = html.list_view(pages.as_slice())?
     let location = wiki.router.empty()
-    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+    Ok(wiki.router.Reply {
+        body: body
+        location: location
+        status: 200u16
+    })
 end wiki.router.list_pages
 
 fn wiki.router.new_page(csrf_tokens: &mut std.vec.Vec<std.string.String>) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, rand] panics never
     let token = csrf.generate_token(csrf_tokens)?
     let body = html.edit_form("New Page", "", token.as_str())?
     let location = wiki.router.empty()
-    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+    Ok(wiki.router.Reply {
+        body: body
+        location: location
+        status: 200u16
+    })
 end wiki.router.new_page
 
 fn wiki.router.page_backlinks(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
@@ -63,7 +83,11 @@ fn wiki.router.page_backlinks(page_store: &mut wiki.store.PageStore, name: &str)
     let backlinks = link.backlinks_for(page_store, name)?
     let body = html.links_view(name, backlinks.as_slice())?
     let location = wiki.router.empty()
-    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+    Ok(wiki.router.Reply {
+        body: body
+        location: location
+        status: 200u16
+    })
 end wiki.router.page_backlinks
 
 fn wiki.router.page_links(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
@@ -77,7 +101,11 @@ fn wiki.router.page_links(page_store: &mut wiki.store.PageStore, name: &str) -> 
     let links = link.extract_wiki_links(content.as_str())?
     let body = html.links_view(name, links.as_slice())?
     let location = wiki.router.empty()
-    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+    Ok(wiki.router.Reply {
+        body: body
+        location: location
+        status: 200u16
+    })
 end wiki.router.page_links
 
 fn wiki.router.page_name_from_path(path: &str, prefix: &str) -> Option<std.string.String> uses [alloc] panics never
@@ -110,7 +138,11 @@ fn wiki.router.query_param(query: &str, key: &str) -> Option<std.string.String> 
 end wiki.router.query_param
 
 fn wiki.router.reply(status: u16, body: std.string.String, location: std.string.String) -> wiki.router.Reply uses [] panics never pub
-    wiki.router.Reply { body: body, location: location, status: status }
+    wiki.router.Reply {
+        body: body
+        location: location
+        status: status
+    }
 end wiki.router.reply
 
 fn wiki.router.route(page_store: &mut wiki.store.PageStore, method: &str, path: &str, body: &str, csrf_tokens: &mut std.vec.Vec<std.string.String>) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand] panics never pub
@@ -240,7 +272,11 @@ fn wiki.router.save_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mu
     let mut location = std.string.String.from_str("/page/")?
     location.push_str(name)?
     let reply_body = std.string.String.new()
-    Ok(wiki.router.Reply { body: reply_body, location: location, status: 303u16 })
+    Ok(wiki.router.Reply {
+        body: reply_body
+        location: location
+        status: 303u16
+    })
 end wiki.router.save_page
 
 fn wiki.router.search_pages(page_store: &mut wiki.store.PageStore, query: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
@@ -264,7 +300,11 @@ fn wiki.router.search_pages(page_store: &mut wiki.store.PageStore, query: &str) 
     let results = search.index_search(&index, query)?
     let body = html.search_view(query, results.as_slice())?
     let location = wiki.router.empty()
-    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+    Ok(wiki.router.Reply {
+        body: body
+        location: location
+        status: 200u16
+    })
 end wiki.router.search_pages
 
 fn wiki.router.show_page(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
@@ -280,7 +320,11 @@ fn wiki.router.show_page(page_store: &mut wiki.store.PageStore, name: &str) -> R
     let versions = page_store.page_versions(name)?
     let body = html.page_view(name, html_body.as_str(), versions.as_slice(), backlinks.as_slice())?
     let location = wiki.router.empty()
-    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+    Ok(wiki.router.Reply {
+        body: body
+        location: location
+        status: 200u16
+    })
 end wiki.router.show_page
 
 fn wiki.router.show_version(page_store: &mut wiki.store.PageStore, name: &str, version: usize) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
@@ -295,7 +339,11 @@ fn wiki.router.show_version(page_store: &mut wiki.store.PageStore, name: &str, v
     let empty_links_slice = empty_links.as_slice()
     let body = html.page_view(name, html_body.as_str(), versions.as_slice(), empty_links_slice)?
     let location = wiki.router.empty()
-    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+    Ok(wiki.router.Reply {
+        body: body
+        location: location
+        status: 200u16
+    })
 end wiki.router.show_version
 
 fn wiki.router.test_csrf() -> std.vec.Vec<std.string.String> uses [] panics never pub
