@@ -14,7 +14,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <errno.h>
 
 typedef int64_t i64;
 typedef uint64_t u64;
@@ -536,18 +535,18 @@ i64 ksn_rt_sys_sync(i32 fd, i32 *e) {
 i64 ksn_rt_sys_opendir(const u8 *p, u64 n, i32 *e) {
     (void)p;
     (void)n;
-    return fail_lin(e, ENOSYS);
+    return fail_lin(e, 38); /* Linux の ENOSYS (wasm は sysroot を使わないので errno.h を含めない) */
 }
 
 i64 ksn_rt_sys_openbeneath(i32 dirfd, const u8 *p, u64 n, i32 *e) {
     (void)dirfd;
     (void)p;
     (void)n;
-    return fail_lin(e, ENOSYS);
+    return fail_lin(e, 38); /* Linux の ENOSYS (wasm は sysroot を使わないので errno.h を含めない) */
 }
 
 i64 ksn_rt_sys_fstat(i32 fd, i32 field, i32 *e) {
     (void)fd;
     (void)field;
-    return fail_lin(e, ENOSYS);
+    return fail_lin(e, 38); /* Linux の ENOSYS (wasm は sysroot を使わないので errno.h を含めない) */
 }
