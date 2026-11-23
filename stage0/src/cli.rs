@@ -3745,25 +3745,39 @@ fn cmd_git(rest: &[String]) -> i32 {
 
 // ------------------------------------------------------------ build
 #[cfg(unix)]
-fn shared_link(m: &fs::Metadata) -> bool {
+/// ファイルの実体 (inode) の識別子。非 unix では分からないので `None` (毎回数える)。
+#[cfg(unix)]
+fn inode_key(m: &fs::Metadata) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
-    m.nlink() > 1
+    Some((m.dev(), m.ino()))
 }
 #[cfg(not(unix))]
-fn shared_link(_m: &fs::Metadata) -> bool {
-    false
+fn inode_key(_m: &fs::Metadata) -> Option<(u64, u64)> {
+    None
 }
 
-fn dir_size(p: &Path) -> u64 {
-    let mut n = 0;
-    if let Ok(rd) = fs::read_dir(p) {
-        for e in rd.flatten() {
-            let q = e.path();
-            // ハードリンクで共有しているファイル (同梱の `ksn`) は、共有の 1 本が数えるので 0 とする。
-            n += if q.is_dir() { dir_size(&q) } else { e.metadata().map(|m| if shared_link(&m) { 0 } else { m.len() }).unwrap_or(0) };
-        }
+/// リンク数 (`ksn-<識別子>` の実体を繋いでいるエントリの数 + 1)。非 unix では保守的に 2 とする (消さない)。
+#[cfg(unix)]
+fn link_count(m: &fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    m.nlink()
+}
+#[cfg(not(unix))]
+fn link_count(_m: &fs::Metadata) -> u64 {
+    2
+}
+
+/// `p` の使用量。ハードリンクで共有する実体 (同梱の `ksn`) は `seen` で inode ごとに 1 度だけ数える。
+fn size_once(p: &Path, seen: &mut std::collections::HashSet<(u64, u64)>) -> u64 {
+    if p.is_dir() {
+        let Ok(rd) = fs::read_dir(p) else { return 0 };
+        return rd.flatten().map(|e| size_once(&e.path(), seen)).sum();
     }
-    n
+    let Ok(m) = fs::metadata(p) else { return 0 };
+    match inode_key(&m) {
+        Some(k) if !seen.insert(k) => 0,
+        _ => m.len(),
+    }
 }
 
 /// 配る単位 (`kasane.toml` と `src/**/*.ksnl`。`hash` の対象と同じ) だけを複製する。`.ksnh` は複製しない。
@@ -3866,11 +3880,60 @@ fn evict(cdir: &Path, keep: &str) {
         })
         .collect();
     ents.sort();
-    let mut total: u64 = ents.iter().map(|(_, p)| dir_size(p)).sum();
+    // 作ったばかり・使ったばかりのエントリ (別のプロセスがバンドルを複製中かもしれない) は消さない。猶予は KSN_CACHE_GRACE 秒 (既定 60)。
+    let grace = std::time::Duration::from_secs(std::env::var("KSN_CACHE_GRACE").ok().and_then(|v| v.parse().ok()).unwrap_or(60));
+    let now = std::time::SystemTime::now();
+    let young = |t: &std::time::SystemTime| now.duration_since(*t).map_or(true, |d| d < grace);
+    // 使用量は共有の `ksn-<識別子>` を含め、実体ごとに 1 度だけ数える (消すとリンク数が変わるので、そのたびに数え直す)。
+    let total_of = |ents: &[(std::time::SystemTime, PathBuf)]| {
+        let mut seen = std::collections::HashSet::new();
+        let mut n: u64 = ents.iter().map(|(_, p)| size_once(p, &mut seen)).sum();
+        if let Ok(rd) = fs::read_dir(cdir) {
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().starts_with("ksn-") {
+                    n += size_once(&e.path(), &mut seen);
+                }
+            }
+        }
+        n
+    };
+    let mut total = total_of(&ents);
     while !ents.is_empty() && total > limit {
+        if young(&ents[0].0) {
+            break;
+        }
         let (_, p) = ents.remove(0);
-        total -= dir_size(&p);
         let _ = fs::remove_dir_all(&p);
+        total = total_of(&ents);
+    }
+    prune_shared(cdir, env!("KSN_BUILD_ID"));
+}
+
+/// 今の識別子以外の `ksn-<識別子>` (同梱の `ksn` の共有実体) の掃除。
+/// どのエントリも繋いでいない (リンク数 1) ものと、新しい順に数えて `KEEP_SHARED_OTHER` 本を超えるものを消す。
+/// エントリのハードリンクは中身を保つので、消しても既存のバンドルは壊れない。今の識別子のものは残す。
+const KEEP_SHARED_OTHER: usize = 3;
+fn prune_shared(cdir: &Path, cur: &str) {
+    let Ok(rd) = fs::read_dir(cdir) else { return };
+    let cur_name = format!("ksn-{}", cur);
+    let mut others: Vec<(std::time::SystemTime, PathBuf, u64)> = Vec::new();
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("ksn-") || name == cur_name || name.ends_with(".tmp") {
+            continue;
+        }
+        let Ok(m) = e.metadata() else { continue };
+        if !m.is_file() {
+            continue;
+        }
+        let t = m.modified().unwrap_or(std::time::UNIX_EPOCH);
+        others.push((t, e.path(), link_count(&m)));
+    }
+    others.sort_by(|a, b| b.0.cmp(&a.0));
+    for (i, (_, p, links)) in others.into_iter().enumerate() {
+        if links <= 1 || i >= KEEP_SHARED_OTHER {
+            let _ = fs::remove_file(&p);
+        }
     }
 }
 
@@ -4127,6 +4190,8 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let kind = if release { "release" } else { "debug" };
     let key = build_key(&l, release, &target, &backend);
     let cdir = cache_dir();
+    // 起動のたびに、古い識別子の `ksn` の共有実体を掃除する (ksn を作り直すたびに 1 本ずつ増えないように)。
+    prune_shared(&cdir, env!("KSN_BUILD_ID"));
     let cached = cdir.join(&key);
     if cached.is_dir() {
         let _ = fs::write(cached.join(".used"), "");
@@ -4145,6 +4210,10 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
                 if fs::rename(&t, &shared).is_err() {
                     let _ = fs::remove_file(&t);
                 }
+            }
+            // 使った時刻を新しくして、古い識別子の掃除で後回しにする (最近使ったものを残す)。
+            if let Ok(f) = fs::File::open(&shared) {
+                let _ = f.set_modified(std::time::SystemTime::now());
             }
             link_or_copy(if shared.exists() { &shared } else { &exe }, &tmp.join(exe_name()));
         }
@@ -4184,7 +4253,12 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let out = if explicit { l.pkg.root.join("target").join(&target).join(kind) } else { l.pkg.root.join("target").join(kind) };
     let _ = fs::remove_dir_all(&out);
     let name = l.pkg.name.clone();
-    if runs_here {
+    // リリースで実行ファイルを作るときは、インタプリタ同梱のバンドル (ksn の写しを含む) を `target` に書かない (失敗したら退避せず止まる)。
+    let skip_bundle = release && !allow_bundle && l.pkg.entry().is_some();
+    if runs_here && skip_bundle {
+        let _ = fs::create_dir_all(&out);
+        let _ = fs::write(out.join(BUILD_STAMP), &key);
+    } else if runs_here {
         copy_entry(&cached, &out);
         let _ = fs::write(out.join(BUILD_STAMP), &key);
         // %~dp0 は常に絶対パス。sh 版は $0 (相対パス・PATH 経由の名前) を絶対パスに直してから
@@ -4305,11 +4379,18 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
             return 1;
         }
     }
+    let native_ok = native.is_ok();
     match native {
         Ok(()) => println!("native executable: {}", rel(&norm(&exe))),
         Err(e) => println!("native backend skipped: {}; the interpreter bundle is used", e),
     }
-    println!("built {} ({}, target {}; portable interpreter bundle)", rel(&norm(&out)), kind, target);
+    if native_ok && skip_bundle {
+        println!("built {} ({}, target {}; native executable only, no interpreter bundle)", rel(&norm(&out)), kind, target);
+    } else if native_ok {
+        println!("built {} ({}, target {}; native executable + portable interpreter bundle)", rel(&norm(&out)), kind, target);
+    } else {
+        println!("built {} ({}, target {}; portable interpreter bundle)", rel(&norm(&out)), kind, target);
+    }
     0
 }
 

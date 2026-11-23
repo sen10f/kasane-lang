@@ -28,7 +28,8 @@ fn build_produces_artifacts_and_is_cached() {
     let o = b(true);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     let tgt = d.join("target").join("release");
-    assert!(tgt.join("ksn.exe").exists() || tgt.join("ksn").exists());
+    assert!(!tgt.join("ksn.exe").exists() && !tgt.join("ksn").exists(), "release はバンドルの ksn を書かない");
+    assert!(tgt.join("native.native").exists() || tgt.join("native.exe").exists());
     let again = b(true);
     assert_eq!(again.status.code(), Some(0));
     let _ = fs::remove_dir_all(&cache);
@@ -1806,5 +1807,122 @@ fn build_key_changes_with_ksn_clang_args() {
     ok(&o);
     assert!(hit(&o), "同じ KSN_CLANG_ARGS ならキャッシュヒット: {}", text(&o.stdout));
 
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// 別の識別子の `ksn-<識別子>` (同梱の `ksn` の共有実体) を置く。`links` が真なら、エントリのハードリンクを 1 本つける。
+fn fake_shared_ksn(cache: &Path, id: &str, age_secs: u64, links: bool) -> PathBuf {
+    let f = cache.join(format!("ksn-{}", id));
+    fs::write(&f, b"ksn").unwrap();
+    if links {
+        let entry = cache.join(format!("fakeentry-{}", id));
+        fs::create_dir_all(&entry).unwrap();
+        fs::hard_link(&f, entry.join("ksn")).unwrap();
+    }
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + age_secs);
+    fs::File::open(&f).unwrap().set_modified(t).unwrap();
+    f
+}
+
+#[test]
+fn shared_ksn_of_other_builds_without_entries_is_removed_on_build() {
+    // エントリに繋がれていない (リンク数 1) ほかの識別子の `ksn-<識別子>` は、ビルドの起動時に消える。
+    let t = Tmp::new("cache_prune_orphan", CACHE_SRC);
+    let cache = scratch::Scratch::at(format!("ksn_cache_orphan_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    fs::create_dir_all(&cache).unwrap();
+    let orphans: Vec<PathBuf> = (0..4).map(|k| fake_shared_ksn(&cache, &format!("orphan{}", k), k, false)).collect();
+    let o = build_with_cache(exe(), &t.0, &cache, &[], &[]);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    for f in &orphans {
+        assert!(!f.exists(), "繋がれていない古い ksn が残った: {}", f.display());
+    }
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn shared_ksn_of_other_builds_is_bounded_to_the_newest_three() {
+    // エントリが繋いでいる古い識別子の共有実体は、新しい順に 3 本まで残す。エントリのハードリンクは消えない。
+    let t = Tmp::new("cache_prune_bounded", CACHE_SRC);
+    let cache = scratch::Scratch::at(format!("ksn_cache_bounded_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    fs::create_dir_all(&cache).unwrap();
+    // 新しさは age = 5 - k (k が小さいほど新しい)。
+    let shared: Vec<PathBuf> = (0..6).map(|k| fake_shared_ksn(&cache, &format!("old{}", k), 5 - k, true)).collect();
+    let o = build_with_cache(exe(), &t.0, &cache, &[], &[]);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    let kept = shared.iter().filter(|f| f.exists()).count();
+    assert_eq!(kept, 3, "古い識別子の ksn は新しい順に 3 本だけ残る");
+    assert!(shared[0].exists() && shared[1].exists() && shared[2].exists(), "新しい 3 本が残る");
+    for k in 0..6 {
+        assert!(cache.join(format!("fakeentry-old{}", k)).join("ksn").exists(), "エントリのハードリンクは消えない (k={})", k);
+    }
+    let _ = fs::remove_dir_all(&cache);
+}
+
+fn tree_size(p: &Path, seen: &mut std::collections::HashSet<(u64, u64)>) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(m) = fs::symlink_metadata(p) else { return 0 };
+    if m.is_dir() {
+        return fs::read_dir(p).map(|rd| rd.flatten().map(|e| tree_size(&e.path(), seen)).sum()).unwrap_or(0);
+    }
+    if seen.insert((m.dev(), m.ino())) { m.len() } else { 0 }
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_stays_under_the_cap_and_stores_ksn_once() {
+    // 異なるパッケージを続けてビルドしても、上限 (KSN_CACHE_MAX) を超えない。同梱の ksn はキャッシュに 1 本だけ。
+    let cache = scratch::Scratch::at(format!("ksn_cache_cap_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let cap: u64 = 400 * 1024;
+    let mut dirs = Vec::new();
+    for k in 0..8 {
+        let t = Tmp::new(&format!("cache_cap_{}", k), &CACHE_SRC.replace("1u32", &format!("{}u32", k + 1)));
+        let o = build_with_cache(exe(), &t.0, &cache, &[], &[("KSN_CACHE_MAX", &cap.to_string()), ("KSN_CACHE_GRACE", "0")]);
+        assert!(o.status.success(), "{}", text(&o.stderr));
+        dirs.push(t);
+    }
+    let ksn_copies = fs::read_dir(&cache).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ksn-")).count();
+    assert_eq!(ksn_copies, 1, "同梱の ksn の共有実体は 1 本");
+    let mut seen = std::collections::HashSet::new();
+    let ksn_len = fs::metadata(exe()).unwrap().len();
+    let total = tree_size(&cache, &mut seen);
+    assert!(total <= cap.max(ksn_len + cap), "キャッシュ {} B が上限 {} B (+共有の ksn {} B) を超えた", total, cap, ksn_len);
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn release_native_build_writes_no_interpreter_bundle() {
+    let t = Tmp::new("cache_release_nobundle", CACHE_SRC);
+    let cache = scratch::Scratch::at(format!("ksn_cache_relnb_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let o = build_with_cache(exe(), &t.0, &cache, &["--release", "--backend", "llvm"], &[]);
+    assert!(o.status.success(), "{}{}", text(&o.stdout), text(&o.stderr));
+    let out = t.0.join("target").join("release");
+    assert!(!out.join("pkg").exists() && !out.join("stdlib").exists(), "release にバンドルがある");
+    assert!(!out.join(if cfg!(windows) { "ksn.exe" } else { "ksn" }).exists(), "release に ksn の写しがある");
+    assert!(out.join(if cfg!(windows) { "t.exe" } else { "t.native" }).exists());
+    assert!(!text(&o.stdout).contains("portable interpreter bundle"), "{}", text(&o.stdout));
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[cfg(unix)]
+#[test]
+fn old_shared_ksn_copies_are_evicted_with_their_entries_under_a_small_cap() {
+    // ksn を作り直すたびに増える `ksn-<識別子>` (3 つの識別子を模す) も、上限を超えれば、繋いでいるエントリと一緒に消える。
+    let t = Tmp::new("cache_evict_shared", CACHE_SRC);
+    let cache = scratch::Scratch::at(format!("ksn_cache_evsh_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    fs::create_dir_all(&cache).unwrap();
+    let shared: Vec<PathBuf> = (0..3).map(|k| fake_shared_ksn(&cache, &format!("id{}", k), k, true)).collect();
+    for f in &shared {
+        fs::write(f, vec![0u8; 300 * 1024]).unwrap();
+    }
+    let o = build_with_cache(exe(), &t.0, &cache, &[], &[("KSN_CACHE_MAX", "100000"), ("KSN_CACHE_GRACE", "0")]);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    for f in &shared {
+        assert!(!f.exists(), "古い識別子の ksn が残った: {}", f.display());
+    }
     let _ = fs::remove_dir_all(&cache);
 }
