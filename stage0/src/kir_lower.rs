@@ -1289,7 +1289,7 @@ impl<'a> Lw<'a> {
                 }
                 if is_fs_ty(self, rt) {
                     let meth = segs[segs.len() - 1].clone();
-                    if matches!(meth.as_str(), "close" | "flush" | "read" | "sync" | "write" | "open_file_beneath" | "metadata" | "read_to_end_limited") {
+                    if matches!(meth.as_str(), "close" | "flush" | "read" | "sync" | "write" | "open_file_beneath") {
                         if meth == "close" {
                             self.own_emit(&segs[0], s, if segs.len() == 2 { crate::kir::OwnKind::Consume } else { crate::kir::OwnKind::Part });
                         }

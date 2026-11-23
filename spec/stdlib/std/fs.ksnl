@@ -15,6 +15,14 @@ type std.fs.Metadata derive [Debug, Clone, Copy, PartialEq, Eq] pub
     modified_ns: u64 pub
 end std.fs.Metadata
 
+fn std.fs.File.metadata(self: &std.fs.File) -> Result<std.fs.Metadata, std.io.Error> uses [io.fs] panics never pub
+    std.fs.metadata_fd(self)
+end std.fs.File.metadata
+
+fn std.fs.File.read_to_end_limited(self: &mut std.fs.File, max: usize) -> Result<std.vec.Vec<u8>, std.io.Error> uses [alloc, io.fs] panics never pub
+    std.fs.read_to_end_limited_raw(self, max)
+end std.fs.File.read_to_end_limited
+
 fn std.fs.create_dir_all(path: &str) -> Result<(), std.io.Error> uses [io.fs] panics never pub
     let bytes = path.as_bytes()
     let total = bytes.len()
@@ -69,6 +77,22 @@ fn std.fs.metadata(path: &str) -> Result<std.fs.Metadata, std.io.Error> uses [io
         modified_ns: modified
     })
 end std.fs.metadata
+
+fn std.fs.metadata_fd(file: &std.fs.File) -> Result<std.fs.Metadata, std.io.Error> uses [io.fs] panics never
+    let size = std.fs.stat_fd_raw(file, 0u32)?
+    let code = std.fs.stat_fd_raw(file, 1u32)?
+    let modified = std.fs.stat_fd_raw(file, 2u32)?
+    let kind = match code {
+        0u64 => std.fs.FileKind.File
+        1u64 => std.fs.FileKind.Dir
+        _ => std.fs.FileKind.Other
+    }
+    Ok(std.fs.Metadata {
+        size: size
+        kind: kind
+        modified_ns: modified
+    })
+end std.fs.metadata_fd
 
 fn std.fs.oom() -> std.io.Error uses [] panics never
     std.io.Error {
@@ -128,6 +152,51 @@ fn std.fs.read_dir(path: &str) -> Result<std.vec.Vec<std.fs.DirEntry>, std.io.Er
     }
     Ok(out)
 end std.fs.read_dir
+
+fn std.fs.read_to_end_limited_raw(file: &mut std.fs.File, max: usize) -> Result<std.vec.Vec<u8>, std.io.Error> uses [alloc, io.fs] panics never
+    let mut out = std.vec.Vec.new()
+    let mut chunk = [0u8; 4096]
+    let mut one = [0u8; 1]
+    loop {
+        let len = out.len()
+        let gap = max.wrapping_sub(len)
+        if gap >= 4096usize {
+            let n = file.read(&mut chunk)?
+            if n == 0usize {
+                return Ok(out)
+            }
+            let part = match chunk.sub(0usize, n) {
+                Some(s) => s
+                None => return Err(std.fs.oom())
+            }
+            match out.extend_from_slice(part) {
+                Ok(_u) => {
+                }
+                Err(_) => return Err(std.fs.oom())
+            }
+        } else {
+            let n = file.read(&mut one)?
+            if n == 0usize {
+                return Ok(out)
+            }
+            let part = match one.sub(0usize, n) {
+                Some(s) => s
+                None => return Err(std.fs.oom())
+            }
+            match out.extend_from_slice(part) {
+                Ok(_u) => {
+                }
+                Err(_) => return Err(std.fs.oom())
+            }
+            if out.len() > max {
+                return Err(std.io.Error {
+                    kind: std.io.ErrorKind.Other
+                    code: 0i32
+                })
+            }
+        }
+    }
+end std.fs.read_to_end_limited_raw
 
 fn std.fs.write_atomic(path: &str, bytes: &[u8]) -> Result<(), std.io.Error> uses [alloc, io.fs] panics never pub
     let mut tmp = std.string.String.new()

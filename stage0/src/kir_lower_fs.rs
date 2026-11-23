@@ -408,10 +408,6 @@ pub(super) fn fs_method(lw: &mut Lw, _e: &V, name: &str, recv: VId, rt: Ty, args
             let ioerr = Pay::of(lw.aggs.borrow_mut().io_error(lw.p).expect("std.io.Error")).expect("ペイロード");
             (Op::FsSys { kind: FsK::OpenBeneath, args: vec![fd, rel] }, Ty::Res(Pay::Agg(file), ioerr))
         }
-        // 木走査だけの対応 (ネイティブの下ろしは未実装。`ksn build` は退避か、release では失敗する)。
-        "metadata" | "read_to_end_limited" => {
-            return lw.err(line, format!("{} はネイティブでは未対応 (木走査 `ksn run` だけ)", name));
-        }
         _ => return Ok(None),
     };
     Ok(Some(lw.emit(res_ty, op)))

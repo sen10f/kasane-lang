@@ -2233,55 +2233,6 @@ impl Interp {
                     Err(e) => err(io_error(&e)),
                 })
             }
-            "metadata" => {
-                let Some(f) = self.files.get(&fd) else { return Ok(err(io_error_kind("InvalidInput"))) };
-                let vals = (0u64..3).map(|k| crate::fs_beneath::stat_field(f, k));
-                let mut out = Vec::new();
-                for v in vals {
-                    match v {
-                        Ok(x) => out.push(x),
-                        Err(e) => return Ok(err(io_error(&e))),
-                    }
-                }
-                let kind = match out[1] {
-                    0 => "File",
-                    1 => "Dir",
-                    _ => "Other",
-                };
-                Ok(ok(Val::Struct(Rc::new(StructV {
-                    ty: "std.fs.Metadata".into(),
-                    f: RefCell::new(vec![
-                        ("size".into(), int(out[0] as i128, "u64")),
-                        ("kind".into(), mk_enum("std.fs.FileKind", kind, vec![])),
-                        ("modified_ns".into(), int(out[2] as i128, "u64")),
-                    ]),
-                }))))
-            }
-            "read_to_end_limited" => {
-                let max = match args.first().map(dr) {
-                    Some(Val::Int(i, _)) => i as usize,
-                    _ => 0,
-                };
-                let Some(f) = self.files.get_mut(&fd) else { return Ok(err(io_error_kind("InvalidInput"))) };
-                let mut buf: Vec<u8> = Vec::new();
-                let mut chunk = [0u8; 4096];
-                loop {
-                    let room = (max as u128 + 1 - buf.len() as u128).min(4096) as usize;
-                    match f.read(&mut chunk[..room]) {
-                        Ok(0) => break,
-                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                        Err(e) => return Ok(err(io_error(&e))),
-                    }
-                    if buf.len() > max {
-                        return Ok(err(io_error_kind("Other")));
-                    }
-                }
-                let v = new_vec(Val::Struct(Rc::new(StructV { ty: "std.alloc.System".into(), f: RefCell::new(vec![]) })), 0);
-                if let Some(l) = item_list(&v) {
-                    l.borrow_mut().extend(buf.iter().map(|b| int(*b as i128, "u8")));
-                }
-                Ok(ok(v))
-            }
             _ => panic(format!("no method {} on File", name)),
         }
     }

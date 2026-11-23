@@ -249,15 +249,13 @@ fn fs_rooted_refuses_escapes_and_symlinks_and_checks_limits_in_the_interpreter()
     has("grow limit: refused");
 }
 
-/// 木走査と LLVM の debug のネイティブが、根の中の開き方と拒み方で一致すること (ネイティブが対応する範囲)。
+/// 木走査と LLVM の debug のネイティブが、全件 (読みの上限・情報を含む) で同じ出力になること。
 #[test]
 fn fs_rooted_open_cases_agree_with_the_native_build() {
     if !cfg!(unix) {
         return;
     }
-    let native_src = PROGRAM.replace("    t.extra_cases(root)\n", "");
-    assert!(native_src != PROGRAM, "試験の入力の置換が効いていない");
-    let p = Pkg::new("native", &native_src);
+    let p = Pkg::new("native", PROGRAM);
     let interp = interp_output(&p);
     let native = native_output(&p);
     assert_eq!(native, interp, "debug のネイティブと木走査の出力が違う");
@@ -270,4 +268,12 @@ fn fs_rooted_open_cases_agree_with_the_native_build() {
     has("symlink file in: refused: os");
     has("symlink dir: refused: os");
     has("dir of file: refused");
+    has("read exact: read");
+    has("read short: refused");
+    has("meta size: 5");
+    has("meta kind: file");
+    has("grow limit: refused");
+    let c = Command::new(exe()).args(["check", "--native"]).current_dir(&p.0).output().unwrap();
+    let log = text(&c.stdout) + &text(&c.stderr);
+    assert!(!log.contains("W9040"), "ネイティブの警告: {}", log);
 }
