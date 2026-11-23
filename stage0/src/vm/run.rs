@@ -634,6 +634,11 @@ impl<'a> Vm<'a> {
                     let (st, dt) = (tyof!(src), tyof!(dst));
                     wrv!(dt, *d, kir_scalar::conv(st, dt, rdv!(st, *a)))
                 }
+                Ins::CanonF { a, bits } => {
+                    let x = r!(*a);
+                    let c = crate::kir_scalar::canon_bits(if *bits == 32 { Ty::F32 } else { Ty::F64 }, x as i128) as u64;
+                    w!(*a, c)
+                }
                 Ins::NotB { d, a } => w!(*d, (r!(*a) == 0) as u64),
                 Ins::NotI { d, a, ty } => {
                     let t = tyof!(ty);

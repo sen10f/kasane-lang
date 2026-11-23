@@ -101,3 +101,14 @@ end t.main
         assert_eq!(text(&n.stdout), want, "{}{}", text(&n.stderr), text(&b.stderr));
     }
 }
+
+/// VM (`--engine=vm`) も、木走査・ネイティブと同じく `to_bits`・構造体の欄・`Vec` の要素で NaN を正規化する。
+#[test]
+fn nan_bits_match_on_the_vm_engine() {
+    let t = Tmp::new("float_nan_vm", SRC);
+    let tree = run(&["run"], &t.0);
+    let vm = run(&["run", "--engine=vm"], &t.0);
+    assert_eq!(vm.status.code(), Some(0), "{}", text(&vm.stderr));
+    assert_eq!(text(&vm.stdout), text(&tree.stdout), "{}", text(&vm.stderr));
+    assert!(text(&vm.stdout).contains("div=9221120237041090560\n"), "{}", text(&vm.stdout));
+}
