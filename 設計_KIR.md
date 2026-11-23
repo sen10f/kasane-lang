@@ -1094,8 +1094,9 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 未初期化の読み: `ByteMem` に書かれたかの印 (`init`) を持たせ、`heap.alloc` / `heap.realloc` の新しい部分は毒の値 (0xA5) で未初期化。スカラーの `mem.load` が未初期化のバイトを含むと内部エラー。`frame.bytes` / `alloca` は機械語が 0 で埋めるので書かれた扱い。集成体の読み出し (`read_bytes`) は詰め物を含むので調べない。`realloc` は旧い領域の書かれたバイトだけを引き継ぐ。
 
 ### 17.8 NaN のビット列
-- 規則 (`fmath::nan_rule64` / `nan_rule32`): `+ - * /`・`%`・`sqrt` の結果が NaN のとき、第 1 被演算子が NaN ならそれ (quiet 化)、そうでなく第 2 被演算子が NaN ならそれ、どちらでもなければ正の quiet NaN (`f64::NAN` / `f32::NAN`)。実機 (x86) は被演算子が NaN でないとき符号ビット付きの NaN を作り、LLVM の定数畳み込みは正の NaN を作るので、そのままでは 3 者が食い違う。
-- 木走査 (`interp.rs` の `binary`、`natives.rs` の `sqrt` / `rem`)、参照実行器 (`kir_scalar.rs`)、機械語 (`kir_llvm.rs` の `nan_rule`。`select` の連なり) が同じ規則で結果を決める。以前の `f64` の `/` の 0 除算の特別扱い (`NaN / 0` は正規の NaN) は、この規則に含まれた (`NaN / 0` は NaN の被演算子)。`sin` などの超越関数は `fmath::canon` が元から正規の NaN にする。`max` / `min` / `floor` などは対象外 (入力が NaN のときだけ NaN)。
+- 規則 (2026-11-23 改め): NaN の正規化は、ビットが見える所だけで行う。`to_bits` (float→整数の bitcast)、メモリへの書き出し (`Store` / `MemStore`、構造体・Option の欄へ詰めるとき)、extern (C) へ渡す浮動小数の引数。見える所では、NaN は正の quiet NaN (`f64` は `0x7FF8000000000000`、`f32` は `0x7FC00000`) にそろい、ペイロードと符号は残らない。書式化は NaN を `nan` と出し、`core.hash` は浮動小数をハッシュしない。
+- 機械語 (`kir_llvm.rs`) は `+ - * /`・`%`・`sqrt` で NaN の処理をしない (`fcmp uno` + `select` の連なりをやめた。ベクトル化を妨げていた)。見える所で整数のビットを判定して正規化する (`canon_i`。浮動小数の `select` は LLVM が NaN どうしを同一視して畳むので使わない)。
+- 木走査・参照実行器は演算ごとに従来の規則 (`fmath::nan_rule64` / `nan_rule32`: 第 1 被演算子が NaN ならそれ (quiet 化)、第 2 が NaN ならそれ、どちらでもなければ正の quiet NaN) で NaN を作るが、見える所 (`natives.rs` の `to_bits`、`kir_scalar::canon_bits`) で同じ正規化をするので、ビットが観測できる範囲では 3 者 (木走査・参照実行器・機械語) が一致する。見えない途中の NaN のペイロードは実行系で違ってよい。`sin` などの超越関数は `fmath::canon` が元から正規の NaN にする。
 
 ### 17.9 機械語の検査 (ASan)
 - `ksn` の環境変数 `KSN_CLANG_ARGS` (空白区切り) が、`ksn kir --native` と `ksn build --backend llvm` の clang の引数に足される (未設定なら何も変わらない)。`--native` の実行ファイルの名前の hash には引数も入る。

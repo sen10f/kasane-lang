@@ -61,3 +61,43 @@ fn nan_bits_match_between_interpreter_and_native() {
     }
     assert!(o.contains(&format!("py={}\n", 0x7FC00000u32)) && o.contains(&format!("cast={}\n", 0x7FC00000u32)), "{}", o);
 }
+
+/// NaN を extern の C 関数 (libm の `fabs`・`sqrt`) へ渡す・C から受け取る。どちらも `to_bits` で正の quiet NaN にそろう。
+/// (標準ライブラリの `core.hash` は浮動小数をハッシュしない (`spec/stdlib/core/hash.sig` に f32 / f64 が無い) ので、ハッシュの試験は無い。)
+#[test]
+fn nan_through_extern_c_matches_between_interpreter_and_native() {
+    let src = "extern t.fabs(x: f64) -> f64 link \"fabs\"
+
+extern t.sqrt(x: f64) -> f64 link \"sqrt\"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console, alloc] panics may
+    let mut s = std.string.String.new()
+    let a = unsafe \"libc\" \"fabs of a NaN\" {
+        t.fabs(f64.from_bits(0xFFF0000000000001u64))
+    }
+    let b = unsafe \"libc\" \"sqrt of a negative\" {
+        t.sqrt(-1.0f64)
+    }
+    s.push_str(\"fabs=\").unwrap()
+    s.push_u64(a.to_bits()).unwrap()
+    s.push_str(\" sqrt=\").unwrap()
+    s.push_u64(b.to_bits()).unwrap()
+    core.mem.drop(std.io.print_line(s.as_str()))
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("float_nan_ffi", src);
+    let manifest = t.0.join("kasane.toml");
+    let toml = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(&manifest, toml.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}{}", text(&interp.stdout), text(&interp.stderr));
+    let want = "fabs=9221120237041090560 sqrt=9221120237041090560\n";
+    assert_eq!(text(&interp.stdout), want);
+    let b = run(&["build", "--release", "--allow-bundle"], &t.0);
+    let p = t.0.join("target/release/t.native");
+    if p.exists() {
+        let n = Command::new(&p).output().unwrap();
+        assert_eq!(text(&n.stdout), want, "{}{}", text(&n.stderr), text(&b.stderr));
+    }
+}
