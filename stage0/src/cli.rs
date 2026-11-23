@@ -4405,8 +4405,8 @@ fn user_reason_text(why: &str) -> String {
         .replace("段階 1 の対象", "is only supported by native code for")
         .replace("段階 1 にない", "is not supported by native code yet")
         .replace("この型は KIR の型表に入らない", "native code cannot lay out this type")
-        .replace("型表に戻せない", "cannot be laid out for native code")
-        .replace("KIR に下ろせない", "cannot be compiled to native code");
+        .replace("が型表に戻せない", " cannot be laid out for native code")
+        .replace("型表に戻せない", "cannot be laid out for native code");
     if s.contains("hint:") {
         return s;
     }
@@ -4438,7 +4438,7 @@ fn format_reasons(prog: &Program, unsupported: &[(String, String)], entry: &str,
             .find(|d| d.name == **fq)
             .map(|d| format!("{}:{}", d.file, d.line))
             .unwrap_or_else(|| fq.clone());
-        lines.push(format!("{} cannot be compiled to native code ({}): {}", fq, loc, user_reason_text(why)));
+        lines.push(format!("{} を KIR に下ろせない ({}): {}", fq, loc, user_reason_text(why)));
     }
     if let Some(max) = max {
         if unsupported.len() > max {

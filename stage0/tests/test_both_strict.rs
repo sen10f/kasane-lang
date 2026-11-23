@@ -94,11 +94,10 @@ fn e9040_names_the_construct_in_user_terms_with_the_workaround() {
     let err = text(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{}", err);
     assert!(err.contains("E9040"), "{}", err);
-    assert!(err.contains("cannot be compiled to native code"), "{}", err);
+    assert!(err.contains("t.nap を KIR に下ろせない"), "関数名が出る: {}", err);
     assert!(err.contains("is not supported by native code yet"), "{}", err);
-    assert!(err.contains("t.nap"), "関数名が出る: {}", err);
     assert!(err.contains("bind the stdout handle first"), "回避策が出る: {}", err);
-    for internal in ["段階 1", "型表", "KIR"] {
+    for internal in ["段階 1", "型表"] {
         assert!(!err.contains(internal), "内部の言い方 `{}` が出ている: {}", internal, err);
     }
 }
