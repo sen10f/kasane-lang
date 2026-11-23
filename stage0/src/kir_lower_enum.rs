@@ -634,6 +634,11 @@ impl<'a> Lw<'a> {
     /// 整数の受け手 `recv` に対する `checked_*(args[0])`。結果は `Option<受け手の型>`。
     pub(super) fn checked_with(&mut self, e: &V, recv: VId, method: &str, args: &[V]) -> LR<Option<VId>> {
         let line = nline(e);
+        // `&u32` / `&mut u32` の受け手は、ここで参照を外す (自動の参照外し)。
+        let recv = match self.vty(recv) {
+            Ty::Ref(_, p) if p.ty().is_int() => self.emit(p.ty(), Op::Load(recv)),
+            _ => recv,
+        };
         if is_checked_extra(method) {
             return self.checked_extra(e, recv, method, args);
         }

@@ -1,0 +1,35 @@
+type t.Grid
+    alive: [bool; 64]
+end t.Grid
+
+fn t.Grid.mark(self: &mut t.Grid, i: usize) -> bool uses [] panics never
+    match self.alive.as_mut_slice().get_mut(i) {
+        Some(c) => {
+            *c = true
+            true
+        }
+        None => false
+    }
+end t.Grid.mark
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut g = t.Grid {
+        alive: [false; 64]
+    }
+    let a = g.mark(3usize)
+    let b = g.mark(99usize)
+    let mut v: std.vec.Vec<(u32, u32)> = std.vec.Vec.new()
+    let n = t.pairs(&mut v, 1u32, 2u32)
+    let mut s = std.string.String.new()
+    s.push_u64(u64.from_usize(n)).unwrap()
+    if a && !b && g.alive[3usize] && !g.alive[4usize] {
+        core.mem.drop(std.io.print_line(s.as_str()))
+    }
+    Ok(())
+end t.main
+
+fn t.pairs(out: &mut std.vec.Vec<(u32, u32)>, lo: u32, hi: u32) -> usize uses [alloc] panics never
+    core.mem.drop(out.push((lo, hi)))
+    core.mem.drop(out.push((hi, lo)))
+    out.len()
+end t.pairs

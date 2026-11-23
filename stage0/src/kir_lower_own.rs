@@ -604,11 +604,31 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
         }
     } else {
         let Some(src) = field_src(lw, s, &names) else { return lw.err(line, "get_mut の対象のフィールドの型が分からない") };
-        let Some(Kind::Vec(Some(t))) = coll::kind_of(lw, &src) else {
-            return lw.err(line, "get_mut の対象は要素型の分かる Vec だけ段階 1 の対象");
-        };
-        let pl = place(lw, s, &names, line)?;
-        (Seq::Hdr(pl.hdr), t)
+        match (coll::kind_of(lw, &src), &src) {
+            (Some(Kind::Vec(Some(t))), _) => {
+                let pl = place(lw, s, &names, line)?;
+                (Seq::Hdr(pl.hdr), t)
+            }
+            // 構造体の固定長配列のフィールド `[T; N]`: フィールドの番地と長さ N (配列は構造体の中に並ぶ)。
+            (Some(Kind::Slice(Some(t))), crate::types::Ty::Array(_, Some(n))) if u32::try_from(*n).is_ok() => {
+                let (p, ty) = lw.slots[s];
+                let base = match ty {
+                    Ty::Ref(_, Pointee::Agg(_)) => Some(lw.read_slot(s)),
+                    Ty::Agg(_) if lw.is_mem_val(p) => Some(p),
+                    _ => None,
+                };
+                let Some(mut cur) = base else {
+                    return lw.err(line, "get_mut の対象の配列のフィールドは、参照かメモリ上の構造体だけ段階 1 の対象");
+                };
+                for n in &names {
+                    cur = lw.field_addr(cur, n, line)?;
+                }
+                let rt = lw.vty(cur);
+                let ptr = lw.emit(Ty::Ptr, Op::Bitcast { src: rt, a: cur });
+                (Seq::Ptr(ptr, *n as u32), t)
+            }
+            _ => return lw.err(line, "get_mut の対象は要素型の分かる Vec・配列のフィールドだけ段階 1 の対象"),
+        }
     };
     let is_get = match nname(&nf(e)[0]) {
         "MCall" => st(&nf(&nf(e)[0])[1]) == "get",

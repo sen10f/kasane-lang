@@ -1,0 +1,39 @@
+fn t.flt(x: &f64) -> f64 uses [] panics never
+    x.sqrt().min(100.0f64).max(1.0f64)
+end t.flt
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut s = 77u32
+    let r = t.step(&mut s)
+    let q = t.shared(&s)
+    let mut out = std.string.String.new()
+    out.push_u64(u64.from_u32(r)).unwrap()
+    out.push_u64(u64.from_u32(q)).unwrap()
+    core.mem.drop(std.io.print_line(out.as_str()))
+    let x = 49.0f64
+    if t.flt(&x) == 7.0f64 {
+        core.mem.drop(std.io.print_line("ok"))
+    }
+    Ok(())
+end t.main
+
+fn t.shared(state: &u32) -> u32 uses [] panics never
+    state.wrapping_shr(1u32).wrapping_add(state.min(5u32)).wrapping_add(state.saturating_sub(1u32))
+end t.shared
+
+fn t.step(state: &mut u32) -> u32 uses [] panics never
+    let a = state.wrapping_shr(3u32)
+    let b = state.wrapping_shl(2u32)
+    let c = state.saturating_add(4_000_000_000u32)
+    let d = state.saturating_sub(7u32)
+    let e = state.min(9u32)
+    let f = state.max(9u32)
+    let g = state.checked_add(3u32).unwrap_or(0u32)
+    let h = state.checked_sub(100u32).unwrap_or(1u32)
+    let i = state.checked_mul(3u32).unwrap_or(0u32)
+    let j = state.checked_div(3u32).unwrap_or(0u32)
+    let k = state.checked_rem(4u32).unwrap_or(0u32)
+    let m = a.wrapping_add(b).wrapping_add(c).wrapping_add(d).wrapping_add(e)
+    let n = m.wrapping_add(f).wrapping_add(g).wrapping_add(h)
+    n.wrapping_add(i).wrapping_add(j).wrapping_add(k)
+end t.step

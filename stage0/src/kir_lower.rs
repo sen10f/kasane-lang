@@ -1326,9 +1326,12 @@ impl<'a> Lw<'a> {
                 }
                 // `&u32` / `&mut u32` の受け手は、整数メソッドの前に参照を外す (自動の参照外し)
                 let (recv, rt) = match rt {
-                    Ty::Ref(_, p) if p.ty().is_int() => (self.emit(p.ty(), Op::Load(recv)), p.ty()),
+                    Ty::Ref(_, p) if p.ty().is_int() || p.ty().is_float() => (self.emit(p.ty(), Op::Load(recv)), p.ty()),
                     _ => (recv, rt),
                 };
+                if let Some(r) = self.num_call_on(e, recv, rt, &meth, &items(&f[1]).to_vec())? {
+                    return Ok(r);
+                }
                 if meth == "try_clone" && args.is_empty() && rt.is_int() {
                     return self.int_cmp_named("try_clone", recv, recv, line);
                 }

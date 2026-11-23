@@ -2623,3 +2623,18 @@ end t.main
     let o = Command::new(t.0.join("target").join("release").join("t.native")).output().unwrap();
     assert_eq!((text(&o.stdout).trim(), o.status.code()), ("ok", Some(0)));
 }
+
+/// 参照の受け手の数値メソッド・配列フィールドの `get_mut`・タプルの `Vec.push` がネイティブに下りて、`ksn run` と同じ出力になる。
+#[test]
+fn ref_receiver_numeric_array_get_mut_and_tuple_push_lower_natively() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
+    for name in ["ref_receiver_num", "array_field_get_mut_tuple_push"] {
+        let src = fs::read_to_string(dir.join(format!("{}.ksnl", name))).unwrap();
+        let (t, exe_path, out) = build_native_strict(name, &src, false);
+        let p = exe_path.unwrap_or_else(|| panic!("{}: no native executable: {}", name, out));
+        let native = Command::new(&p).output().unwrap();
+        let interp = run(&["run"], &t.0);
+        assert_eq!(native.status.code(), interp.status.code(), "{}", name);
+        assert_eq!(text(&native.stdout), text(&interp.stdout), "{}", name);
+    }
+}
