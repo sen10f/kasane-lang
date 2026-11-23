@@ -510,6 +510,27 @@ end t.sys.f
     assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E5001"), "{}", text(&o.stdout));
 }
 
+/// 生のポインタを持つ構造体への `impl core.marker.Send` は、許可モジュール (`[unsafe] modules`) の中でだけ通る。
+/// 許可の無いモジュールでは E5002 (手動の Send/Sync impl)、許可のあるモジュールでは通る。
+#[test]
+fn send_impl_for_raw_pointer_only_in_unsafe_module() {
+    let body = "type t.sys.Shared
+    p: *const u32
+end t.sys.Shared
+
+impl core.marker.Send for t.sys.Shared
+";
+    let t = Tmp::new("send_impl_ok_probe", &main_wrap("", ""));
+    fs::create_dir_all(t.0.join("src/t")).unwrap();
+    fs::write(t.0.join("src/t/sys.ksnl"), body).unwrap();
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t.sys\"]\n\n[dependencies]", 1)).unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E5002"), "{}", text(&o.stdout));
+    fs::write(t.0.join("kasane.toml"), TOML).unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E5002"), "{}", text(&o.stdout));
+}
+
 #[test]
 fn unsafe_manifest_is_validated() {
     let t = Tmp::new("unsafe_bad", &main_wrap("", ""));
