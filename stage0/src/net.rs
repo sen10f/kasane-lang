@@ -84,6 +84,65 @@ fn io_error_kind_invalid() -> Val {
     }))
 }
 
+#[cfg(unix)]
+#[repr(C)]
+struct PollFd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
+#[cfg(unix)]
+extern "C" {
+    fn poll(fds: *mut PollFd, n: u64, timeout: i32) -> i32;
+    fn listen(fd: i32, backlog: i32) -> i32;
+}
+
+impl Interp {
+    /// `std.task.wait_io(fd, write)` (木走査): fd が読める / 書ける (または期限切れ) まで、他のタスクへ譲りながら待つ。
+    /// 結果は 0 (準備完了) か 1 (期限切れ)。実行器の外では待たずに 0 (その後の読み書きがそのまま待つ)。
+    /// 待つ相手が無いときに回り続けないよう、タスクを一巡して何も進まなければ短く眠る。
+    #[cfg(unix)]
+    pub fn task_wait_io(&mut self, fd: i128, write: bool) -> Res {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static MISSES: AtomicU64 = AtomicU64::new(0);
+        let start = std::time::Instant::now();
+        let mut at = self.net.deadlines.get(&fd).and_then(|d| if write { d.1 } else { d.0 });
+        if let Some(st) = self.net.streams.get(&fd) {
+            let t = if write { st.write_timeout().ok().flatten() } else { st.read_timeout().ok().flatten() };
+            if let Some(t) = t {
+                let a = start + t;
+                at = Some(at.map_or(a, |x| x.min(a)));
+            }
+        }
+        loop {
+            if !self.task_running() {
+                return Ok(int(0, "i32"));
+            }
+            let mut p = PollFd { fd: fd as i32, events: if write { 4 } else { 1 }, revents: 0 };
+            let r = unsafe { poll(&mut p, 1, 0) };
+            if r != 0 {
+                MISSES.store(0, Ordering::Relaxed);
+                return Ok(int(0, "i32"));
+            }
+            if at.is_some_and(|a| std::time::Instant::now() >= a) {
+                MISSES.store(0, Ordering::Relaxed);
+                return Ok(int(1, "i32"));
+            }
+            self.task_yield()?;
+            let m = MISSES.fetch_add(1, Ordering::Relaxed) + 1;
+            if m % 64 == 0 {
+                std::thread::sleep(Duration::from_micros(100));
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub fn task_wait_io(&mut self, _fd: i128, _write: bool) -> Res {
+        crate::value::panic("std.net の非同期ソケットは Windows では未対応 (epoll が無い)")
+    }
+}
+
 impl Interp {
     #[cfg_attr(unix, allow(dead_code))]
     fn alloc_fd(&mut self) -> i128 {
@@ -134,6 +193,11 @@ impl Interp {
             "std.net.listen" => Ok(match TcpListener::bind(addr.as_str()) {
                 Ok(l) => {
                     let fd = self.sock_fd(&l);
+                    // 待ち行列を大きくする (多数の接続が先に来る非同期サーバのため。ネイティブの `listen(s, 1024)` と同じ)。
+                    #[cfg(unix)]
+                    unsafe {
+                        listen(fd as i32, 1024);
+                    }
                     self.net.listeners.insert(fd, l);
                     ok(handle("std.net.TcpListener", fd))
                 }

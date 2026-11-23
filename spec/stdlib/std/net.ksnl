@@ -72,3 +72,42 @@ fn std.net.text_range(bytes: &[u8], start: usize, last: usize) -> Result<std.str
     }
     Ok(out)
 end std.net.text_range
+
+fn std.net.TcpListener.accept_async(self: &std.net.TcpListener) -> Result<std.net.TcpStream, std.net.Error> uses [io.net, suspend] panics never pub
+    if std.task.wait_io(self.descriptor, 0i32) != 0i32 {
+        return Err(std.net.Error {
+            code: 110i32
+        })
+    }
+    self.accept()
+end std.net.TcpListener.accept_async
+
+fn std.net.TcpStream.read_async(self: &mut std.net.TcpStream, buffer: &mut [u8]) -> Result<usize, std.io.Error> uses [io.net, suspend] panics never pub
+    if std.task.wait_io(self.descriptor, 0i32) != 0i32 {
+        return Err(std.net.timed_out())
+    }
+    self.read(buffer)
+end std.net.TcpStream.read_async
+
+fn std.net.TcpStream.write_async(self: &mut std.net.TcpStream, buffer: &[u8]) -> Result<usize, std.io.Error> uses [io.net, suspend] panics never pub
+    if std.task.wait_io(self.descriptor, 1i32) != 0i32 {
+        return Err(std.net.timed_out())
+    }
+    let n = buffer.len()
+    let chunk = if n > 16384usize {
+        16384usize
+    } else {
+        n
+    }
+    match buffer.sub(0usize, chunk) {
+        Some(part) => self.write(part)
+        None => Err(std.net.timed_out())
+    }
+end std.net.TcpStream.write_async
+
+fn std.net.timed_out() -> std.io.Error uses [] panics never
+    std.io.Error {
+        kind: std.io.ErrorKind.TimedOut
+        code: 110i32
+    }
+end std.net.timed_out

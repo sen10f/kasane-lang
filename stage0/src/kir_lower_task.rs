@@ -114,6 +114,7 @@ pub(super) fn path_call(lw: &mut Lw, segs: &[String], args: &[V], line: usize) -
         ["std", "task", "spawn_local"] => Some(spawn_local(lw, args, line)),
         ["std", "task", "yield_now"] => Some(yield_now(lw, args, line)),
         ["std", "task", "await_js"] => Some(await_js(lw, args, line)),
+        ["std", "task", "wait_io"] => Some(wait_io(lw, args, line)),
         _ => None,
     }
 }
@@ -175,6 +176,19 @@ fn yield_now(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
     lw.callees.insert(ks::YIELD.to_string());
     lw.emit(Ty::Unit, Op::Call { callee: ks::YIELD.to_string(), args: vec![] });
     Ok(Some(lw.unit()))
+}
+
+/// `std.task.wait_io(fd, write)` (内部。`std.net` の `*_async` が使う): ソケット `fd` が読める (`write` = 0) / 書ける (1) か、期限が来るまで中断する。
+/// 結果は 0 (準備完了) か 1 (期限切れ)。実行器の外・リアクターの無い対象では中断せず 0 を返す (その後の読み書きがそのまま待つ)。
+fn wait_io(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
+    let [fd, w] = args else { return lw.err(line, "std.task.wait_io の引数の個数が違う") };
+    let Some(fd) = lw.expr(fd)? else { return Ok(None) };
+    let Some(w) = lw.expr(w)? else { return Ok(None) };
+    let fd = lw.emit(Ty::U32, Op::Conv { src: Ty::I32, a: fd });
+    let w = lw.emit(Ty::U32, Op::Conv { src: Ty::I32, a: w });
+    mark_used();
+    lw.callees.insert(ks::IO.to_string());
+    Ok(Some(lw.emit(Ty::I32, Op::Call { callee: ks::IO.to_string(), args: vec![fd, w] })))
 }
 
 /// 型が `std.task.Task<T>` か (集成体の名前で決める)。
