@@ -554,8 +554,68 @@ fn load_package_src_opt(root: &Path, use_ksnh: bool) -> Result<Package, ProjectE
         return perr(&c, msg);
     }
     let name = m["package"]["name"].as_str().unwrap().to_string();
-    let sources = load_dir_sources(&root.join("src"), use_ksnh);
+    let mut sources = load_dir_sources(&root.join("src"), use_ksnh);
+    // `extern` の `link "ライブラリ:名前"` で相対パス（`/` または `\` を含み、絶対パスでない）を、
+    // パッケージのルートからの相対として絶対パスに正規化する。
+    // インタプリタ (`ffi::open_lib` → `dlopen`/`LoadLibrary`) とネイティブ
+    // (`kir_rt.c::ksn_ext_resolve` → `dlopen`/`LoadLibrary`、`ksn.ext.lib.*` 文字列) の両方が
+    // 同じ絶対パスを見るため、実行時の CWD に依存しない (B10)。
+    // スラッシュのない単純な soname（`libm.so.6` や `qsort`）と、すでに絶対のパスはそのまま残す。
+    for s in &mut sources {
+        for d in &mut s.defs {
+            d.link = normalize_link(&d.link, &root);
+        }
+    }
     Ok(Package { name, root, manifest: m, sources, source: String::new(), repository: None })
+}
+
+/// `extern` の `link` 文字列（`"ライブラリ:名前"` または単体のライブラリ名）のうち、相対の
+/// ファイルパスだけを `root` からの相対として絶対パスに書き換える。`:` でライブラリと
+/// シンボルを分ける（最後の `:` が区切り。Windows のドライブ文字つきパスを許すため）。
+/// パス区切りを含まなければ soname と見なし、絶対パスであればそのまま返す。
+fn normalize_link(link: &str, root: &Path) -> String {
+    let (lib, sym) = match link.rsplit_once(':') {
+        Some((l, s)) if !l.is_empty() && !s.is_empty() => (Some(l), Some(s)),
+        _ => (None, None),
+    };
+    let lib = match lib {
+        Some(l) => l,
+        None => return link.to_string(),
+    };
+    // パス区切りを含まなければ soname（OS の探索規則に委ねる）なのでそのまま。
+    if !lib.contains('/') && !lib.contains('\\') {
+        return match sym {
+            Some(s) => format!("{}:{}", lib, s),
+            None => lib.to_string(),
+        };
+    }
+    // すでに絶対パスならそのまま。
+    if is_absolute_path(lib) {
+        return match sym {
+            Some(s) => format!("{}:{}", lib, s),
+            None => lib.to_string(),
+        };
+    }
+    // `./` や `.\` の先頭を除いて、ルート直結のきれいな絶対パスにする。
+    let lib = lib.strip_prefix("./").or_else(|| lib.strip_prefix(".\\")).unwrap_or(lib);
+    let abs = root.join(lib);
+    let abs = abs.to_string_lossy().to_string();
+    match sym {
+        Some(s) => format!("{}:{}", abs, s),
+        None => abs,
+    }
+}
+
+/// `lib` が絶対パス（Unix では `/` で始まる、Windows ではドライブ文字または `\` で始まる）か。
+fn is_absolute_path(lib: &str) -> bool {
+    if cfg!(windows) {
+        lib.starts_with('\\')
+            || (lib.len() >= 2
+                && lib.as_bytes()[1] == b':'
+                && lib.chars().next().map_or(false, |c| c.is_ascii_alphabetic()))
+    } else {
+        lib.starts_with('/')
+    }
 }
 
 // ------------------------------------------------------------ 依存の解決 (8.1)

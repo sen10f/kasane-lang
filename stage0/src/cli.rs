@@ -3775,6 +3775,10 @@ fn build_key(l: &Loaded, release: bool, target: &str, backend: &str) -> String {
     let clang_args = clang_extra_args().join(" ");
     h.update(format!("{}|{}|{}|{}|{}|{}|{}|{}", VERSION, edition, if release { "release" } else { "debug" }, target, backend, clang, clang_version_line(&clang), clang_args).as_bytes());
     h.update(package_hash(&l.pkg.root).as_bytes());
+    // 同じ内容でもルートが違えば実行時に焼き込む絶対パス (`Def.link` からの dlopen パスなど) が違う。
+    // ルートをキーに入れないと、content-only のハッシュで異なる場所のパッケージがキャッシュを共有し、
+    // 古い絶対パスを焼き付けたバイナリを再利用して ENOENT になる (B10)。
+    h.update(l.pkg.root.to_string_lossy().as_bytes());
     // `[native]` の静的アーカイブは `kasane.toml` の字面だけでは足りない (アーカイブを組み直したら作り直す)。
     for f in crate::project::native_libs(&l.pkg.manifest).archives {
         h.update(f.as_bytes());
