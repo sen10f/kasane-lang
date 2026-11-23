@@ -413,11 +413,37 @@ pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
         ok.push((mk(b.build(TENT, &[], Ty::Ptr)), none()));
     }
     // start(i) / release(i) / lock() / unlock(): 協調実行では何もしない。
-    for (name, params) in [(TSTART, vec![Ty::Usize]), (TREL, vec![Ty::Usize]), (LOCK, vec![]), (UNLOCK, vec![]), (MINIT, vec![Ty::Ptr]), (MLOCK, vec![Ty::Ptr]), (MUNLOCK, vec![Ty::Ptr])] {
+    for (name, params) in [(TSTART, vec![Ty::Usize]), (TREL, vec![Ty::Usize]), (LOCK, vec![]), (UNLOCK, vec![]), (MINIT, vec![Ty::Ptr])] {
         let mut b = Fb::new(&params);
         let u = b.emit(Ty::Unit, Op::Const(0));
         b.term(Term::Ret(u));
         ok.push((mk(b.build(name, &[], Ty::Unit)), none()));
+    }
+    // mlock(p) / munlock(p): 協調実行では各スレッドが最後まで走るので、持たれている語 (u32) を見るのは同じスレッドの再ロックだけ
+    // (ネイティブと同じく deadlock の panic)。
+    {
+        let mut b = Fb::new(&[Ty::Ptr]);
+        let w = b.load(Ty::U32, 0, 0);
+        let z = b.c(Ty::U32, 0);
+        let free = b.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U32, a: w, b: z });
+        let (yes, _) = b.block(&[]);
+        let (no, _) = b.block(&[]);
+        b.br_if(free, yes, no);
+        b.at(no);
+        b.emit(Ty::Unit, Op::Panic { msg: crate::interp::DEADLOCK_LOCK.to_string(), arg: None });
+        b.term(Term::Unreachable);
+        b.at(yes);
+        let one = b.c(Ty::U32, 1);
+        b.store(Ty::U32, 0, 0, one);
+        let u = b.emit(Ty::Unit, Op::Const(0));
+        b.term(Term::Ret(u));
+        ok.push((mk(b.build(MLOCK, &[], Ty::Unit)), none()));
+        let mut b = Fb::new(&[Ty::Ptr]);
+        let zero = b.c(Ty::U32, 0);
+        b.store(Ty::U32, 0, 0, zero);
+        let u = b.emit(Ty::Unit, Op::Const(0));
+        b.term(Term::Ret(u));
+        ok.push((mk(b.build(MUNLOCK, &[], Ty::Unit)), none()));
     }
     // wait(): 空の recv の待ち。保留中のスレッドを 1 本走らせる。走らせるものが無ければ deadlock の panic。
     {

@@ -1234,6 +1234,10 @@ impl Interp {
             },
             Val::Mutex(c) => {
                 if name == "lock" {
+                    let addr = Rc::as_ptr(c) as *const () as usize;
+                    if !crate::value::HELD_MUTEXES.with(|h| h.borrow_mut().insert(addr)) {
+                        return panic(crate::interp::DEADLOCK_LOCK);
+                    }
                     return Ok(Val::Struct(Rc::new(StructV {
                         ty: "std.sync.MutexGuard".into(),
                         f: RefCell::new(vec![("cell".into(), Val::Ref(c.clone()))]),

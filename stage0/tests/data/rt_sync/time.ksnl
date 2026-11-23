@@ -1,0 +1,19 @@
+fn t.main() -> Result<(), std.io.Error> uses [io.console, thread, time] panics may
+    let first = std.time.Instant.now()
+    std.thread.sleep(30u64)
+    let waited = first.elapsed()
+    core.check.is_true(waited.as_nanos() >= 30_000_000u64)
+    core.check.is_true(waited.as_nanos() < 20_000_000_000u64)
+    let second = std.time.Instant.now()
+    match second.since(&first) {
+        Some(d) => core.check.is_true(d.as_nanos() >= 30_000_000u64)
+        None => core.panic.panic("time went backwards")
+    }
+    match first.since(&second) {
+        Some(_d) => core.panic.panic("an earlier instant must not be after a later one")
+        None => std.io.print_line("monotonic")?
+    }
+    core.check.eq(std.time.Duration.from_millis(3u64).as_nanos(), 3_000_000u64)
+    std.io.print_line("time ok")?
+    Ok(())
+end t.main
