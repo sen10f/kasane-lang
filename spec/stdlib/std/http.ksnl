@@ -40,6 +40,32 @@ type std.http.Request pub
     path: std.string.String pub
 end std.http.Request
 
+type std.http.Response pub
+    headers: std.vec.Vec<std.http.Header> pub
+    http11: bool pub
+    reason: std.string.String pub
+    status: u16 pub
+end std.http.Response
+
+type std.http.ResponseDecoder pub
+    body: std.vec.Vec<u8>
+    body_total: usize
+    chunk_digits: usize
+    chunk_n: usize
+    cr: bool
+    ext: bool
+    has_head: bool
+    head: std.vec.Vec<u8>
+    line_len: usize
+    max_body: usize
+    max_head: usize
+    phase: u8
+    remaining: usize
+    resp: std.http.Response
+    section: usize
+    spare: std.vec.Vec<u8>
+end std.http.ResponseDecoder
+
 fn std.http.Decoder.consume(self: &mut std.http.Decoder, used: usize) -> Result<(), std.http.Error> uses [alloc] panics never
     let rest = std.http.copy_tail(self.buf.as_slice(), used)?
     self.buf.clear()
@@ -110,451 +136,6 @@ fn std.http.Request.keep_alive(self: &std.http.Request) -> bool uses [] panics n
         None => self.http11
     }
 end std.http.Request.keep_alive
-
-fn std.http.assemble(head: std.http.Head, body: std.vec.Vec<u8>) -> std.http.Request uses [] panics never
-    let headers = head.headers
-    let http11 = head.http11
-    let method = head.method
-    let path = head.path
-    std.http.Request {
-        body: body
-        headers: headers
-        http11: http11
-        method: method
-        path: path
-    }
-end std.http.assemble
-
-fn std.http.byte_at(data: &[u8], i: usize) -> u8 uses [] panics never
-    match data.get(i) {
-        Some(b) => *b
-        None => 0u8
-    }
-end std.http.byte_at
-
-fn std.http.chunk_size(data: &[u8], from: usize, to: usize, max_body: usize) -> Result<usize, std.http.Error> uses [] panics never
-    let mut n = 0usize
-    let mut digits = 0usize
-    let mut i = from
-    while i < to {
-        let c = std.http.byte_at(data, i)
-        if c == b';' {
-            break
-        }
-        let v = match std.http.hex_value(c) {
-            Some(d) => d
-            None => return Err(std.http.Error.BadRequest)
-        }
-        if n > max_body {
-            return Err(std.http.Error.BodyTooLarge)
-        }
-        n = n.saturating_mul(16usize).saturating_add(v)
-        digits = digits.saturating_add(1usize)
-        i = i.saturating_add(1usize)
-    }
-    if digits == 0usize {
-        return Err(std.http.Error.BadRequest)
-    }
-    if n > max_body {
-        return Err(std.http.Error.BodyTooLarge)
-    }
-    Ok(n)
-end std.http.chunk_size
-
-fn std.http.copy_tail(data: &[u8], used: usize) -> Result<std.vec.Vec<u8>, std.http.Error> uses [alloc] panics never
-    let mut out = std.vec.Vec.new()
-    match data.sub(used, data.len()) {
-        Some(part) => out.extend_from_slice(part)?
-        None => return Err(std.http.Error.BadRequest)
-    }
-    Ok(out)
-end std.http.copy_tail
-
-fn std.http.crlf_at(data: &[u8], i: usize) -> bool uses [] panics never
-    std.http.byte_at(data, i) == b'\r' && std.http.byte_at(data, i.saturating_add(1usize)) == b'\n'
-end std.http.crlf_at
-
-fn std.http.decode_chunked(data: &[u8], max_body: usize, body: &mut std.vec.Vec<u8>) -> Result<Option<usize>, std.http.Error> uses [alloc] panics never
-    let mut pos = 0usize
-    loop {
-        let line_end = match std.http.find_crlf(data, pos) {
-            Some(e) => e
-            None => return Ok(None)
-        }
-        let size = std.http.chunk_size(data, pos, line_end, max_body)?
-        if size == 0usize {
-            return std.http.skip_trailers(data, line_end.saturating_add(2usize))
-        }
-        let data_start = line_end.saturating_add(2usize)
-        let data_end = data_start.saturating_add(size)
-        let next = data_end.saturating_add(2usize)
-        if data.len() < next {
-            return Ok(None)
-        }
-        if !std.http.crlf_at(data, data_end) {
-            return Err(std.http.Error.BadRequest)
-        }
-        if body.len().saturating_add(size) > max_body {
-            return Err(std.http.Error.BodyTooLarge)
-        }
-        let part = match data.sub(data_start, data_end) {
-            Some(p) => p
-            None => return Err(std.http.Error.BadRequest)
-        }
-        body.extend_from_slice(part)?
-        pos = next
-    }
-end std.http.decode_chunked
-
-fn std.http.find_crlf(data: &[u8], from: usize) -> Option<usize> uses [] panics never
-    let len = data.len()
-    let mut i = from
-    while i.saturating_add(1usize) < len {
-        if std.http.crlf_at(data, i) {
-            return Some(i)
-        }
-        i = i.saturating_add(1usize)
-    }
-    None
-end std.http.find_crlf
-
-fn std.http.find_head_end(data: &[u8]) -> Option<usize> uses [] panics never
-    let len = data.len()
-    let mut i = 0usize
-    while i.saturating_add(4usize) <= len {
-        if std.http.crlf_at(data, i) && std.http.crlf_at(data, i.saturating_add(2usize)) {
-            return Some(i.saturating_add(4usize))
-        }
-        i = i.saturating_add(1usize)
-    }
-    None
-end std.http.find_head_end
-
-fn std.http.has_bare_ctl(data: &[u8]) -> bool uses [] panics never
-    let len = data.len()
-    let mut i = 0usize
-    while i < len {
-        let b = std.http.byte_at(data, i)
-        if b == 0u8 {
-            return true
-        }
-        if b == b'\r' && !std.http.crlf_at(data, i) {
-            return true
-        }
-        i = i.saturating_add(1usize)
-    }
-    false
-end std.http.has_bare_ctl
-
-fn std.http.hex_value(c: u8) -> Option<usize> uses [] panics never
-    if c >= b'0' && c <= b'9' {
-        return Some(usize.from_u8(c.wrapping_sub(b'0')))
-    }
-    if c >= b'a' && c <= b'f' {
-        return Some(usize.from_u8(c.wrapping_sub(b'a').wrapping_add(10u8)))
-    }
-    if c >= b'A' && c <= b'F' {
-        return Some(usize.from_u8(c.wrapping_sub(b'A').wrapping_add(10u8)))
-    }
-    None
-end std.http.hex_value
-
-fn std.http.is_method(text: &str) -> bool uses [] panics never
-    if text.is_empty() {
-        return false
-    }
-    for c in text.chars() {
-        if c < 'A' || c > 'Z' {
-            return false
-        }
-    }
-    true
-end std.http.is_method
-
-fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, std.http.Error> uses [alloc] panics never
-    if std.http.has_bare_ctl(head) {
-        return Err(std.http.Error.BadRequest)
-    }
-    let text = match core.str.from_utf8(head) {
-        Ok(t) => t
-        Err(_) => return Err(std.http.Error.BadRequest)
-    }
-    let (line, rest) = match text.split_once("\r\n") {
-        Some(pair) => pair
-        None => return Err(std.http.Error.BadRequest)
-    }
-    let (method_text, after) = match line.split_once(" ") {
-        Some(pair) => pair
-        None => return Err(std.http.Error.BadRequest)
-    }
-    let (path_text, version) = match after.split_once(" ") {
-        Some(pair) => pair
-        None => return Err(std.http.Error.BadRequest)
-    }
-    let mut v11 = false
-    if version == "HTTP/1.1" {
-        v11 = true
-    } else if version != "HTTP/1.0" {
-        return Err(std.http.Error.BadRequest)
-    }
-    if !std.http.is_method(method_text) || !path_text.starts_with("/") {
-        return Err(std.http.Error.BadRequest)
-    }
-    let mut headers = std.vec.Vec.new()
-    let mut length = 0usize
-    let mut has_length = false
-    let mut has_encoding = false
-    let mut has_host = false
-    let mut chunked = false
-    for field in rest.split("\r\n") {
-        if !field.is_empty() {
-            let (key, raw_value) = match field.split_once(":") {
-                Some(pair) => pair
-                None => return Err(std.http.Error.BadRequest)
-            }
-            if key.is_empty() || key.contains(" ") || key.contains("\t") {
-                return Err(std.http.Error.BadRequest)
-            }
-            let value = raw_value.trim()
-            if key.eq_ignore_ascii_case("host") {
-                if has_host {
-                    return Err(std.http.Error.BadRequest)
-                }
-                has_host = true
-            } else if key.eq_ignore_ascii_case("content-length") {
-                if has_length {
-                    return Err(std.http.Error.BadRequest)
-                }
-                has_length = true
-                length = std.http.parse_length(value, max_body)?
-            } else if key.eq_ignore_ascii_case("transfer-encoding") {
-                if has_encoding {
-                    return Err(std.http.Error.BadRequest)
-                }
-                has_encoding = true
-                if !value.eq_ignore_ascii_case("chunked") {
-                    return Err(std.http.Error.Unsupported)
-                }
-                chunked = true
-            }
-            let name = std.string.String.from_str(key)?
-            let text_value = std.string.String.from_str(value)?
-            headers.push(std.http.Header {
-                name: name
-                value: text_value
-            })?
-        }
-    }
-    if has_encoding && has_length {
-        return Err(std.http.Error.BadRequest)
-    }
-    if v11 && !has_host {
-        return Err(std.http.Error.BadRequest)
-    }
-    if chunked && !v11 {
-        return Err(std.http.Error.BadRequest)
-    }
-    let method = std.string.String.from_str(method_text)?
-    let path = std.string.String.from_str(path_text)?
-    let frame = std.http.Framing {
-        chunked: chunked
-        length: length
-    }
-    Ok(std.http.Head {
-        framing: frame
-        headers: headers
-        http11: v11
-        method: method
-        path: path
-    })
-end std.http.parse_head
-
-fn std.http.parse_length(value: &str, max_body: usize) -> Result<usize, std.http.Error> uses [] panics never
-    if value.is_empty() {
-        return Err(std.http.Error.BadRequest)
-    }
-    for c in value.chars() {
-        if c < '0' || c > '9' {
-            return Err(std.http.Error.BadRequest)
-        }
-    }
-    match usize.parse(value) {
-        Ok(n) => {
-            if n > max_body {
-                return Err(std.http.Error.BodyTooLarge)
-            }
-            Ok(n)
-        }
-        Err(_) => Err(std.http.Error.BodyTooLarge)
-    }
-end std.http.parse_length
-
-fn std.http.read_request[R: linear + std.io.Read<[io.net]>](source: &mut R, decoder: &mut std.http.Decoder) -> Result<Option<std.http.Request>, std.http.Error> uses [alloc, io.net] panics never pub
-    loop {
-        match decoder.next()? {
-            Some(request) => return Ok(Some(request))
-            None => core.mem.drop(0u8)
-        }
-        let mut chunk = [0u8; 1024]
-        let n = source.read(&mut chunk)?
-        if n == 0usize {
-            if decoder.is_empty() {
-                return Ok(None)
-            }
-            return Err(std.http.Error.Truncated)
-        }
-        decoder.feed_part(&chunk, n)?
-    }
-end std.http.read_request
-
-fn std.http.reason(status: u16) -> &'static str uses [] panics never pub
-    match status {
-        200u16 => "OK"
-        201u16 => "Created"
-        204u16 => "No Content"
-        301u16 => "Moved Permanently"
-        302u16 => "Found"
-        400u16 => "Bad Request"
-        404u16 => "Not Found"
-        405u16 => "Method Not Allowed"
-        413u16 => "Payload Too Large"
-        431u16 => "Request Header Fields Too Large"
-        500u16 => "Internal Server Error"
-        501u16 => "Not Implemented"
-        503u16 => "Service Unavailable"
-        _ => "Unknown"
-    }
-end std.http.reason
-
-fn std.http.render(status: u16, head: &str, body: &[u8], keep_alive: bool) -> Result<std.vec.Vec<u8>, std.http.Error> uses [alloc] panics never pub
-    let mut out = std.vec.Vec.new()
-    let mut line = std.string.String.new()
-    line.push_str("HTTP/1.1 ")?
-    line.push_u64(u64.from_u16(status))?
-    line.push_str(" ")?
-    line.push_str(std.http.reason(status))?
-    line.push_str("\r\n")?
-    out.extend_from_slice(line.as_str().as_bytes())?
-    out.extend_from_slice(head.as_bytes())?
-    let mut length = std.string.String.new()
-    length.push_u64(u64.from_usize(body.len()))?
-    out.extend_from_slice(b"Content-Length: ")?
-    out.extend_from_slice(length.as_str().as_bytes())?
-    out.extend_from_slice(b"\r\n")?
-    if keep_alive {
-        out.extend_from_slice(b"Connection: keep-alive\r\n\r\n")?
-    } else {
-        out.extend_from_slice(b"Connection: close\r\n\r\n")?
-    }
-    out.extend_from_slice(body)?
-    Ok(out)
-end std.http.render
-
-fn std.http.skip_trailers(data: &[u8], from: usize) -> Result<Option<usize>, std.http.Error> uses [] panics never
-    let mut pos = from
-    loop {
-        let stop = match std.http.find_crlf(data, pos) {
-            Some(e) => e
-            None => return Ok(None)
-        }
-        if stop == pos {
-            return Ok(Some(stop.saturating_add(2usize)))
-        }
-        pos = stop.saturating_add(2usize)
-    }
-end std.http.skip_trailers
-
-fn std.http.take_request(data: &[u8], max_head: usize, max_body: usize) -> Result<Option<(std.http.Request, usize)>, std.http.Error> uses [alloc] panics never
-    let head_end = match std.http.find_head_end(data) {
-        Some(n) => n
-        None => {
-            if data.len() > max_head {
-                return Err(std.http.Error.HeadTooLarge)
-            }
-            return Ok(None)
-        }
-    }
-    if head_end > max_head {
-        return Err(std.http.Error.HeadTooLarge)
-    }
-    let head_bytes = match data.sub(0usize, head_end) {
-        Some(h) => h
-        None => return Err(std.http.Error.BadRequest)
-    }
-    let head = std.http.parse_head(head_bytes, max_body)?
-    if head.framing.chunked {
-        let rest = match data.sub(head_end, data.len()) {
-            Some(r) => r
-            None => return Err(std.http.Error.BadRequest)
-        }
-        let mut chunks = std.vec.Vec.new()
-        return match std.http.decode_chunked(rest, max_body, &mut chunks)? {
-            Some(used) => {
-                let request = std.http.assemble(head, chunks)
-                Ok(Some((request, head_end.saturating_add(used))))
-            }
-            None => Ok(None)
-        }
-    }
-    let total = head_end.saturating_add(head.framing.length)
-    if data.len() < total {
-        return Ok(None)
-    }
-    let part = match data.sub(head_end, total) {
-        Some(p) => p
-        None => return Err(std.http.Error.BadRequest)
-    }
-    let mut plain = std.vec.Vec.new()
-    plain.extend_from_slice(part)?
-    Ok(Some((std.http.assemble(head, plain), total)))
-end std.http.take_request
-
-fn std.http.write_all[W: linear + std.io.Write<[io.net]>](out: &mut W, bytes: &[u8]) -> Result<(), std.http.Error> uses [io.net] panics never pub
-    let mut sent = 0usize
-    while sent < bytes.len() {
-        let rest = match bytes.sub(sent, bytes.len()) {
-            Some(r) => r
-            None => return Err(std.http.Error.BadRequest)
-        }
-        let n = out.write(rest)?
-        if n == 0usize {
-            let broken = std.io.Error {
-                kind: std.io.ErrorKind.BrokenPipe
-                code: 0i32
-            }
-            return Err(std.http.Error.Io(broken))
-        }
-        sent = sent.saturating_add(n)
-    }
-    out.flush()?
-    Ok(())
-end std.http.write_all
-
-type std.http.Response pub
-    headers: std.vec.Vec<std.http.Header> pub
-    http11: bool pub
-    reason: std.string.String pub
-    status: u16 pub
-end std.http.Response
-
-type std.http.ResponseDecoder pub
-    body: std.vec.Vec<u8>
-    body_total: usize
-    chunk_digits: usize
-    chunk_n: usize
-    cr: bool
-    ext: bool
-    has_head: bool
-    head: std.vec.Vec<u8>
-    line_len: usize
-    max_body: usize
-    max_head: usize
-    phase: u8
-    remaining: usize
-    resp: std.http.Response
-    section: usize
-    spare: std.vec.Vec<u8>
-end std.http.ResponseDecoder
 
 fn std.http.ResponseDecoder.buffered(self: &std.http.ResponseDecoder) -> usize uses [] panics never pub
     self.head.len().saturating_add(self.body.len()).saturating_add(self.spare.len())
@@ -663,7 +244,7 @@ fn std.http.ResponseDecoder.is_done(self: &std.http.ResponseDecoder) -> bool use
     self.phase == 7u8
 end std.http.ResponseDecoder.is_done
 
-fn std.http.ResponseDecoder.new(max_head: usize, max_body: usize) -> std.http.ResponseDecoder uses [alloc] panics never pub
+fn std.http.ResponseDecoder.new(max_head: usize, max_body: usize) -> std.http.ResponseDecoder uses [] panics never pub
     let head = std.vec.Vec.new()
     let body = std.vec.Vec.new()
     let spare = std.vec.Vec.new()
@@ -698,10 +279,6 @@ fn std.http.ResponseDecoder.push_body(self: &mut std.http.ResponseDecoder, part:
     Ok(())
 end std.http.ResponseDecoder.push_body
 
-fn std.http.ResponseDecoder.response(self: &std.http.ResponseDecoder) -> &std.http.Response uses [] panics never pub
-    &self.resp
-end std.http.ResponseDecoder.response
-
 fn std.http.ResponseDecoder.reset_next(self: &mut std.http.ResponseDecoder) -> Result<(), std.http.Error> uses [alloc] panics never pub
     if self.phase != 7u8 {
         return Err(std.http.Error.Truncated)
@@ -717,6 +294,10 @@ fn std.http.ResponseDecoder.reset_next(self: &mut std.http.ResponseDecoder) -> R
     self.phase = 0u8
     self.feed(rest.as_slice())
 end std.http.ResponseDecoder.reset_next
+
+fn std.http.ResponseDecoder.response(self: &std.http.ResponseDecoder) -> &std.http.Response uses [] panics never pub
+    &self.resp
+end std.http.ResponseDecoder.response
 
 fn std.http.ResponseDecoder.size_byte(self: &mut std.http.ResponseDecoder, c: u8) -> Result<(), std.http.Error> uses [] panics never
     self.section = self.section.saturating_add(1usize)
@@ -857,6 +438,20 @@ fn std.http.ResponseDecoder.trailer_byte(self: &mut std.http.ResponseDecoder, c:
     Ok(())
 end std.http.ResponseDecoder.trailer_byte
 
+fn std.http.assemble(head: std.http.Head, body: std.vec.Vec<u8>) -> std.http.Request uses [] panics never
+    let headers = head.headers
+    let http11 = head.http11
+    let method = head.method
+    let path = head.path
+    std.http.Request {
+        body: body
+        headers: headers
+        http11: http11
+        method: method
+        path: path
+    }
+end std.http.assemble
+
 fn std.http.blank_response() -> std.http.Response uses [] panics never
     let headers = std.vec.Vec.new()
     let reason = std.string.String.new()
@@ -868,10 +463,117 @@ fn std.http.blank_response() -> std.http.Response uses [] panics never
     }
 end std.http.blank_response
 
+fn std.http.byte_at(data: &[u8], i: usize) -> u8 uses [] panics never
+    match data.get(i) {
+        Some(b) => *b
+        None => 0u8
+    }
+end std.http.byte_at
+
+fn std.http.chunk_size(data: &[u8], from: usize, to: usize, max_body: usize) -> Result<usize, std.http.Error> uses [] panics never
+    let mut n = 0usize
+    let mut digits = 0usize
+    let mut i = from
+    while i < to {
+        let c = std.http.byte_at(data, i)
+        if c == b';' {
+            break
+        }
+        let v = match std.http.hex_value(c) {
+            Some(d) => d
+            None => return Err(std.http.Error.BadRequest)
+        }
+        if n > max_body {
+            return Err(std.http.Error.BodyTooLarge)
+        }
+        n = n.saturating_mul(16usize).saturating_add(v)
+        digits = digits.saturating_add(1usize)
+        i = i.saturating_add(1usize)
+    }
+    if digits == 0usize {
+        return Err(std.http.Error.BadRequest)
+    }
+    if n > max_body {
+        return Err(std.http.Error.BodyTooLarge)
+    }
+    Ok(n)
+end std.http.chunk_size
+
+fn std.http.copy_tail(data: &[u8], used: usize) -> Result<std.vec.Vec<u8>, std.http.Error> uses [alloc] panics never
+    let mut out = std.vec.Vec.new()
+    match data.sub(used, data.len()) {
+        Some(part) => out.extend_from_slice(part)?
+        None => return Err(std.http.Error.BadRequest)
+    }
+    Ok(out)
+end std.http.copy_tail
+
+fn std.http.crlf_at(data: &[u8], i: usize) -> bool uses [] panics never
+    std.http.byte_at(data, i) == b'\r' && std.http.byte_at(data, i.saturating_add(1usize)) == b'\n'
+end std.http.crlf_at
+
+fn std.http.decode_chunked(data: &[u8], max_body: usize, body: &mut std.vec.Vec<u8>) -> Result<Option<usize>, std.http.Error> uses [alloc] panics never
+    let mut pos = 0usize
+    loop {
+        let line_end = match std.http.find_crlf(data, pos) {
+            Some(e) => e
+            None => return Ok(None)
+        }
+        let size = std.http.chunk_size(data, pos, line_end, max_body)?
+        if size == 0usize {
+            return std.http.skip_trailers(data, line_end.saturating_add(2usize))
+        }
+        let data_start = line_end.saturating_add(2usize)
+        let data_end = data_start.saturating_add(size)
+        let next = data_end.saturating_add(2usize)
+        if data.len() < next {
+            return Ok(None)
+        }
+        if !std.http.crlf_at(data, data_end) {
+            return Err(std.http.Error.BadRequest)
+        }
+        if body.len().saturating_add(size) > max_body {
+            return Err(std.http.Error.BodyTooLarge)
+        }
+        let part = match data.sub(data_start, data_end) {
+            Some(p) => p
+            None => return Err(std.http.Error.BadRequest)
+        }
+        body.extend_from_slice(part)?
+        pos = next
+    }
+end std.http.decode_chunked
+
 fn std.http.ends_crlf2(data: &[u8]) -> bool uses [] panics never
     let n = data.len()
-    n >= 4usize && std.http.crlf_at(data, n.saturating_sub(4usize)) && std.http.crlf_at(data, n.saturating_sub(2usize))
+    let first = std.http.crlf_at(data, n.saturating_sub(4usize))
+    let second = std.http.crlf_at(data, n.saturating_sub(2usize))
+    n >= 4usize && first && second
 end std.http.ends_crlf2
+
+fn std.http.find_crlf(data: &[u8], from: usize) -> Option<usize> uses [] panics never
+    let len = data.len()
+    let mut i = from
+    while i.saturating_add(1usize) < len {
+        if std.http.crlf_at(data, i) {
+            return Some(i)
+        }
+        i = i.saturating_add(1usize)
+    }
+    None
+end std.http.find_crlf
+
+fn std.http.find_head_end(data: &[u8]) -> Option<usize> uses [] panics never
+    let len = data.len()
+    let mut i = 0usize
+    while i.saturating_add(4usize) <= len {
+        if std.http.crlf_at(data, i) && std.http.crlf_at(data, i.saturating_add(2usize)) {
+            return Some(i.saturating_add(4usize))
+        }
+        i = i.saturating_add(1usize)
+    }
+    None
+end std.http.find_head_end
 
 fn std.http.has_bad_ctl(data: &[u8]) -> bool uses [] panics never
     let len = data.len()
@@ -893,13 +595,172 @@ fn std.http.has_bad_ctl(data: &[u8]) -> bool uses [] panics never
     false
 end std.http.has_bad_ctl
 
+fn std.http.has_bare_ctl(data: &[u8]) -> bool uses [] panics never
+    let len = data.len()
+    let mut i = 0usize
+    while i < len {
+        let b = std.http.byte_at(data, i)
+        if b == 0u8 {
+            return true
+        }
+        if b == b'\r' && !std.http.crlf_at(data, i) {
+            return true
+        }
+        i = i.saturating_add(1usize)
+    }
+    false
+end std.http.has_bare_ctl
+
+fn std.http.hex_value(c: u8) -> Option<usize> uses [] panics never
+    if c >= b'0' && c <= b'9' {
+        return Some(usize.from_u8(c.wrapping_sub(b'0')))
+    }
+    if c >= b'a' && c <= b'f' {
+        return Some(usize.from_u8(c.wrapping_sub(b'a').wrapping_add(10u8)))
+    }
+    if c >= b'A' && c <= b'F' {
+        return Some(usize.from_u8(c.wrapping_sub(b'A').wrapping_add(10u8)))
+    }
+    None
+end std.http.hex_value
+
 fn std.http.is_ctl(c: u8) -> bool uses [] panics never
-    c == 0u8 || c == 127u8 || (c < 32u8 && c != 9u8)
+    c == 0u8 || c == 127u8 || c < 32u8 && c != 9u8
 end std.http.is_ctl
+
+fn std.http.is_method(text: &str) -> bool uses [] panics never
+    if text.is_empty() {
+        return false
+    }
+    for c in text.chars() {
+        if c < 'A' || c > 'Z' {
+            return false
+        }
+    }
+    true
+end std.http.is_method
+
+fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, std.http.Error> uses [alloc] panics never
+    if std.http.has_bare_ctl(head) {
+        return Err(std.http.Error.BadRequest)
+    }
+    let text = match core.str.from_utf8(head) {
+        Ok(t) => t
+        Err(_) => return Err(std.http.Error.BadRequest)
+    }
+    let (line, rest) = match text.split_once("\r\n") {
+        Some(pair) => pair
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let (method_text, after) = match line.split_once(" ") {
+        Some(pair) => pair
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let (path_text, version) = match after.split_once(" ") {
+        Some(pair) => pair
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let mut v11 = false
+    if version == "HTTP/1.1" {
+        v11 = true
+    } else if version != "HTTP/1.0" {
+        return Err(std.http.Error.BadRequest)
+    }
+    if !std.http.is_method(method_text) || !path_text.starts_with("/") {
+        return Err(std.http.Error.BadRequest)
+    }
+    let mut headers = std.vec.Vec.new()
+    let mut length = 0usize
+    let mut has_length = false
+    let mut has_encoding = false
+    let mut has_host = false
+    let mut chunked = false
+    for field in rest.split("\r\n") {
+        if !field.is_empty() {
+            let (key, raw_value) = match field.split_once(":") {
+                Some(pair) => pair
+                None => return Err(std.http.Error.BadRequest)
+            }
+            if key.is_empty() || key.contains(" ") || key.contains("\t") {
+                return Err(std.http.Error.BadRequest)
+            }
+            let value = raw_value.trim()
+            if key.eq_ignore_ascii_case("host") {
+                if has_host {
+                    return Err(std.http.Error.BadRequest)
+                }
+                has_host = true
+            } else if key.eq_ignore_ascii_case("content-length") {
+                if has_length {
+                    return Err(std.http.Error.BadRequest)
+                }
+                has_length = true
+                length = std.http.parse_length(value, max_body)?
+            } else if key.eq_ignore_ascii_case("transfer-encoding") {
+                if has_encoding {
+                    return Err(std.http.Error.BadRequest)
+                }
+                has_encoding = true
+                if !value.eq_ignore_ascii_case("chunked") {
+                    return Err(std.http.Error.Unsupported)
+                }
+                chunked = true
+            }
+            let name = std.string.String.from_str(key)?
+            let text_value = std.string.String.from_str(value)?
+            headers.push(std.http.Header {
+                name: name
+                value: text_value
+            })?
+        }
+    }
+    if has_encoding && has_length {
+        return Err(std.http.Error.BadRequest)
+    }
+    if v11 && !has_host {
+        return Err(std.http.Error.BadRequest)
+    }
+    if chunked && !v11 {
+        return Err(std.http.Error.BadRequest)
+    }
+    let method = std.string.String.from_str(method_text)?
+    let path = std.string.String.from_str(path_text)?
+    let frame = std.http.Framing {
+        chunked: chunked
+        length: length
+    }
+    Ok(std.http.Head {
+        framing: frame
+        headers: headers
+        http11: v11
+        method: method
+        path: path
+    })
+end std.http.parse_head
+
+fn std.http.parse_length(value: &str, max_body: usize) -> Result<usize, std.http.Error> uses [] panics never
+    if value.is_empty() {
+        return Err(std.http.Error.BadRequest)
+    }
+    for c in value.chars() {
+        if c < '0' || c > '9' {
+            return Err(std.http.Error.BadRequest)
+        }
+    }
+    match usize.parse(value) {
+        Ok(n) => {
+            if n > max_body {
+                return Err(std.http.Error.BodyTooLarge)
+            }
+            Ok(n)
+        }
+        Err(_) => Err(std.http.Error.BodyTooLarge)
+    }
+end std.http.parse_length
 
 fn std.http.parse_resp_length(value: &str, max_body: usize) -> Result<usize, std.http.Error> uses [] panics never
     let bytes = value.as_bytes()
-    if bytes.len() == 0usize {
+    if bytes.is_empty() {
         return Err(std.http.Error.BadRequest)
     }
     let mut n = 0usize
@@ -979,6 +840,67 @@ fn std.http.parse_response_head(head: &[u8]) -> Result<std.http.Response, std.ht
     })
 end std.http.parse_response_head
 
+fn std.http.read_request[R: linear + std.io.Read<[io.net]>](source: &mut R, decoder: &mut std.http.Decoder) -> Result<Option<std.http.Request>, std.http.Error> uses [alloc, io.net] panics never pub
+    loop {
+        match decoder.next()? {
+            Some(request) => return Ok(Some(request))
+            None => core.mem.drop(0u8)
+        }
+        let mut chunk = [0u8; 1024]
+        let n = source.read(&mut chunk)?
+        if n == 0usize {
+            if decoder.is_empty() {
+                return Ok(None)
+            }
+            return Err(std.http.Error.Truncated)
+        }
+        decoder.feed_part(&chunk, n)?
+    }
+end std.http.read_request
+
+fn std.http.reason(status: u16) -> &'static str uses [] panics never pub
+    match status {
+        200u16 => "OK"
+        201u16 => "Created"
+        204u16 => "No Content"
+        301u16 => "Moved Permanently"
+        302u16 => "Found"
+        400u16 => "Bad Request"
+        404u16 => "Not Found"
+        405u16 => "Method Not Allowed"
+        413u16 => "Payload Too Large"
+        431u16 => "Request Header Fields Too Large"
+        500u16 => "Internal Server Error"
+        501u16 => "Not Implemented"
+        503u16 => "Service Unavailable"
+        _ => "Unknown"
+    }
+end std.http.reason
+
+fn std.http.render(status: u16, head: &str, body: &[u8], keep_alive: bool) -> Result<std.vec.Vec<u8>, std.http.Error> uses [alloc] panics never pub
+    let mut out = std.vec.Vec.new()
+    let mut line = std.string.String.new()
+    line.push_str("HTTP/1.1 ")?
+    line.push_u64(u64.from_u16(status))?
+    line.push_str(" ")?
+    line.push_str(std.http.reason(status))?
+    line.push_str("\r\n")?
+    out.extend_from_slice(line.as_str().as_bytes())?
+    out.extend_from_slice(head.as_bytes())?
+    let mut length = std.string.String.new()
+    length.push_u64(u64.from_usize(body.len()))?
+    out.extend_from_slice(b"Content-Length: ")?
+    out.extend_from_slice(length.as_str().as_bytes())?
+    out.extend_from_slice(b"\r\n")?
+    if keep_alive {
+        out.extend_from_slice(b"Connection: keep-alive\r\n\r\n")?
+    } else {
+        out.extend_from_slice(b"Connection: close\r\n\r\n")?
+    }
+    out.extend_from_slice(body)?
+    Ok(out)
+end std.http.render
+
 fn std.http.response_framing(resp: &std.http.Response, max_body: usize) -> Result<(u8, usize), std.http.Error> uses [] panics never
     let mut n_len = 0usize
     let mut n_te = 0usize
@@ -986,14 +908,12 @@ fn std.http.response_framing(resp: &std.http.Response, max_body: usize) -> Resul
     let mut te_chunked = false
     for k in core.iter.range(0usize, resp.headers.len()) {
         match resp.headers.as_slice().get(k) {
-            Some(h) => {
-                if h.name.as_str().eq_ignore_ascii_case("content-length") {
-                    n_len = n_len.saturating_add(1usize)
-                    length = std.http.parse_resp_length(h.value.as_str(), max_body)?
-                } else if h.name.as_str().eq_ignore_ascii_case("transfer-encoding") {
-                    n_te = n_te.saturating_add(1usize)
-                    te_chunked = h.value.as_str().eq_ignore_ascii_case("chunked")
-                }
+            Some(h) => if h.name.as_str().eq_ignore_ascii_case("content-length") {
+                n_len = n_len.saturating_add(1usize)
+                length = std.http.parse_resp_length(h.value.as_str(), max_body)?
+            } else if h.name.as_str().eq_ignore_ascii_case("transfer-encoding") {
+                n_te = n_te.saturating_add(1usize)
+                te_chunked = h.value.as_str().eq_ignore_ascii_case("chunked")
             }
             None => core.mem.drop(0u8)
         }
@@ -1022,6 +942,20 @@ fn std.http.response_framing(resp: &std.http.Response, max_body: usize) -> Resul
     Ok((kind, length))
 end std.http.response_framing
 
+fn std.http.skip_trailers(data: &[u8], from: usize) -> Result<Option<usize>, std.http.Error> uses [] panics never
+    let mut pos = from
+    loop {
+        let stop = match std.http.find_crlf(data, pos) {
+            Some(e) => e
+            None => return Ok(None)
+        }
+        if stop == pos {
+            return Ok(Some(stop.saturating_add(2usize)))
+        }
+        pos = stop.saturating_add(2usize)
+    }
+end std.http.skip_trailers
+
 fn std.http.status_code(text: &str) -> Option<u16> uses [] panics never
     let b = text.as_bytes()
     if b.len() != 3usize {
@@ -1042,3 +976,69 @@ fn std.http.status_code(text: &str) -> Option<u16> uses [] panics never
     }
     Some(st)
 end std.http.status_code
+
+fn std.http.take_request(data: &[u8], max_head: usize, max_body: usize) -> Result<Option<(std.http.Request, usize)>, std.http.Error> uses [alloc] panics never
+    let head_end = match std.http.find_head_end(data) {
+        Some(n) => n
+        None => {
+            if data.len() > max_head {
+                return Err(std.http.Error.HeadTooLarge)
+            }
+            return Ok(None)
+        }
+    }
+    if head_end > max_head {
+        return Err(std.http.Error.HeadTooLarge)
+    }
+    let head_bytes = match data.sub(0usize, head_end) {
+        Some(h) => h
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let head = std.http.parse_head(head_bytes, max_body)?
+    if head.framing.chunked {
+        let rest = match data.sub(head_end, data.len()) {
+            Some(r) => r
+            None => return Err(std.http.Error.BadRequest)
+        }
+        let mut chunks = std.vec.Vec.new()
+        return match std.http.decode_chunked(rest, max_body, &mut chunks)? {
+            Some(used) => {
+                let request = std.http.assemble(head, chunks)
+                Ok(Some((request, head_end.saturating_add(used))))
+            }
+            None => Ok(None)
+        }
+    }
+    let total = head_end.saturating_add(head.framing.length)
+    if data.len() < total {
+        return Ok(None)
+    }
+    let part = match data.sub(head_end, total) {
+        Some(p) => p
+        None => return Err(std.http.Error.BadRequest)
+    }
+    let mut plain = std.vec.Vec.new()
+    plain.extend_from_slice(part)?
+    Ok(Some((std.http.assemble(head, plain), total)))
+end std.http.take_request
+
+fn std.http.write_all[W: linear + std.io.Write<[io.net]>](out: &mut W, bytes: &[u8]) -> Result<(), std.http.Error> uses [io.net] panics never pub
+    let mut sent = 0usize
+    while sent < bytes.len() {
+        let rest = match bytes.sub(sent, bytes.len()) {
+            Some(r) => r
+            None => return Err(std.http.Error.BadRequest)
+        }
+        let n = out.write(rest)?
+        if n == 0usize {
+            let broken = std.io.Error {
+                kind: std.io.ErrorKind.BrokenPipe
+                code: 0i32
+            }
+            return Err(std.http.Error.Io(broken))
+        }
+        sent = sent.saturating_add(n)
+    }
+    out.flush()?
+    Ok(())
+end std.http.write_all
