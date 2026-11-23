@@ -42,11 +42,9 @@ fn alloc.arena.Arena.insert[T, A: alloc.alloc.Allocator](self: &mut alloc.arena.
                     generation = *g
                     free_head = *next
                 }
-                alloc.arena.Slot.Taken(_g, _value) => {
-                    return Err(alloc.alloc.AllocError {
-                        code: 1u32
-                    })
-                }
+                alloc.arena.Slot.Taken(_g, _value) => return Err(alloc.alloc.AllocError {
+                    code: 1u32
+                })
             }
             None => return Err(alloc.alloc.AllocError {
                 code: 1u32
