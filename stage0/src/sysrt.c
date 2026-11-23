@@ -622,10 +622,17 @@ i64 ksn_rt_sys_accept(i32 lfd, i32 *e) {
     }
 }
 
-/* 期限つきの読み書き・受理・接続 (std.net の set_read_deadline など)。期限は fd ごとの表に絶対時刻 (単調時計、ミリ秒) で持つ。 */
+/* 期限つきの読み書き・受理・接続 (std.net の set_read_deadline など)。期限は fd ごとの表に絶対時刻 (単調時計、ミリ秒) で持つ。
+   期限が無いときの読み書きは普通の recv / send (Windows も同じ)。Windows の SO_RCVTIMEO は DWORD のミリ秒。 */
 #define KSN_DL_MAX 256
 typedef struct { i32 fd; int used; int has_rd; int has_wr; i64 rd_at; i64 wr_at; } ksn_dl;
 static ksn_dl ksn_dls[KSN_DL_MAX];
+
+#ifdef _WIN32
+#define KSN_SOCK(fd) ((SOCKET)(fd))
+#else
+#define KSN_SOCK(fd) (fd)
+#endif
 
 static i64 ksn_mono_ms(void) {
 #ifdef _WIN32
@@ -674,7 +681,28 @@ i64 ksn_rt_sys_net_clear_deadlines(i32 fd, i32 *e) {
     return 0;
 }
 
-#ifndef _WIN32
+/* 期限を SO_RCVTIMEO / SO_SNDTIMEO に入れる (rem ミリ秒、1 以上)。 */
+static void ksn_set_timeout(i32 fd, int write_side, i64 rem) {
+#ifdef _WIN32
+    DWORD tv = (DWORD)rem;
+    setsockopt(KSN_SOCK(fd), SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, (const char *)&tv, sizeof tv);
+#else
+    struct timeval tv;
+    tv.tv_sec = (time_t)(rem / 1000);
+    tv.tv_usec = (suseconds_t)((rem % 1000) * 1000);
+    setsockopt(fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, sizeof tv);
+#endif
+}
+
+/* 期限切れ・待ちきれなかったときの番号 (Windows は WSAETIMEDOUT / WSAEWOULDBLOCK が net_errno で ETIMEDOUT になる)。 */
+static int ksn_is_wait_timeout(void) {
+#ifdef _WIN32
+    return net_errno() == ETIMEDOUT;
+#else
+    return net_errno() == EAGAIN || net_errno() == EWOULDBLOCK;
+#endif
+}
+
 /* 期限つきの読み (write_side = 0) か書き (1)。期限が無ければ普通の recv / send。期限を過ぎたら ETIMEDOUT。 */
 i64 ksn_rt_sys_net_rw(i32 fd, i32 write_side, u8 *p, u64 n, i32 *e) {
     ksn_dl *d = ksn_dl_find(fd, 0);
@@ -684,23 +712,61 @@ i64 ksn_rt_sys_net_rw(i32 fd, i32 write_side, u8 *p, u64 n, i32 *e) {
         if (has) {
             i64 rem = ksn_remain(at);
             if (rem <= 0) return fail(e, ETIMEDOUT);
-            struct timeval tv;
-            tv.tv_sec = (time_t)(rem / 1000);
-            tv.tv_usec = (suseconds_t)((rem % 1000) * 1000);
-            setsockopt(fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, sizeof tv);
+            ksn_set_timeout(fd, write_side, rem);
         }
+#ifdef _WIN32
+        int r = write_side ? send((SOCKET)fd, (const char *)p, (int)n, 0) : recv((SOCKET)fd, (char *)p, (int)n, 0);
+#else
         ssize_t r = write_side ? send(fd, p, n, 0) : recv(fd, p, n, 0);
+#endif
         if (r >= 0) return (i64)r;
         if (net_errno() == EINTR) continue;
-        if (has && (net_errno() == EAGAIN || net_errno() == EWOULDBLOCK)) return fail(e, ETIMEDOUT);
+        if (has && ksn_is_wait_timeout()) return fail(e, ETIMEDOUT);
         return fail(e, net_errno());
     }
 }
 
 i64 ksn_rt_sys_net_nodelay(i32 fd, i32 on, i32 *e) {
     int v = on ? 1 : 0;
-    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof v) != 0) return fail(e, net_errno());
+    if (setsockopt(KSN_SOCK(fd), IPPROTO_TCP, TCP_NODELAY, (const char *)&v, sizeof v) != 0) return fail(e, net_errno());
     return 0;
+}
+
+/* 1 つの fd を poll (Windows は WSAPoll)。戻りは poll と同じ (0 = 期限切れ、負 = 失敗)。 */
+static int ksn_poll_one(i32 fd, int events, int ms) {
+#ifdef _WIN32
+    WSAPOLLFD pf;
+    pf.fd = (SOCKET)fd;
+    pf.events = (SHORT)events;
+    pf.revents = 0;
+    return WSAPoll(&pf, 1, ms);
+#else
+    struct pollfd pf;
+    pf.fd = fd;
+    pf.events = (short)events;
+    pf.revents = 0;
+    return poll(&pf, 1, ms);
+#endif
+}
+
+/* 非ブロッキングの切り替え (接続の期限のため)。 */
+static void ksn_set_nonblock(i32 s, int on) {
+#ifdef _WIN32
+    u_long m = on ? 1 : 0;
+    ioctlsocket((SOCKET)s, FIONBIO, &m);
+#else
+    int fl = fcntl(s, F_GETFL, 0);
+    fcntl(s, F_SETFL, on ? (fl | O_NONBLOCK) : (fl & ~O_NONBLOCK));
+#endif
+}
+
+/* 非ブロッキングの接続が「まだ途中」か。 */
+static int ksn_in_progress(void) {
+#ifdef _WIN32
+    return WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+    return errno == EINPROGRESS;
+#endif
 }
 
 /* 期限つきの受理。待ちは poll、受理は普通の accept。期限を過ぎたら ETIMEDOUT。 */
@@ -708,19 +774,15 @@ i64 ksn_rt_sys_accept_timeout(i32 lfd, u64 ms, i32 *e) {
     init_net();
     i64 at = ksn_mono_ms() + (i64)ms;
     for (;;) {
-        struct pollfd pf;
-        pf.fd = lfd;
-        pf.events = POLLIN;
-        pf.revents = 0;
-        int pr = poll(&pf, 1, (int)ksn_remain(at));
+        int pr = ksn_poll_one(lfd, POLLIN, (int)ksn_remain(at));
         if (pr < 0) {
             if (net_errno() == EINTR) continue;
             return fail(e, net_errno());
         }
         if (pr == 0) return fail(e, ETIMEDOUT);
-        int s = accept(lfd, NULL, NULL);
+        int s = accept(KSN_SOCK(lfd), NULL, NULL);
         if (s >= 0) { set_cloexec(s); return s; }
-        if (net_errno() == EINTR || net_errno() == EAGAIN || net_errno() == EWOULDBLOCK) continue;
+        if (net_errno() == EINTR || ksn_is_wait_timeout()) continue;
         return fail(e, net_errno());
     }
 }
@@ -736,29 +798,31 @@ i64 ksn_rt_sys_connect_timeout(const u8 *a, u64 n, u64 ms, i32 *e) {
         int s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (s < 0) { last = net_errno(); continue; }
         set_cloexec(s);
-        int fl = fcntl(s, F_GETFL, 0);
-        fcntl(s, F_SETFL, fl | O_NONBLOCK);
-        int rc = connect(s, ai->ai_addr, ai->ai_addrlen);
-        if (rc != 0 && errno == EINPROGRESS) {
-            struct pollfd pf;
-            pf.fd = s;
-            pf.events = POLLOUT;
-            pf.revents = 0;
-            int pr = poll(&pf, 1, (int)ksn_remain(at));
+        ksn_set_nonblock(s, 1);
+        int rc = connect(KSN_SOCK(s), ai->ai_addr, (ksn_sl)ai->ai_addrlen);
+        if (rc != 0 && ksn_in_progress()) {
+            int pr = ksn_poll_one(s, POLLOUT, (int)ksn_remain(at));
             if (pr == 0) { last = ETIMEDOUT; net_close(s); break; }
             if (pr < 0) { last = net_errno(); net_close(s); continue; }
             int soerr = 0;
-            socklen_t sl = sizeof soerr;
-            getsockopt(s, SOL_SOCKET, SO_ERROR, &soerr, &sl);
+            ksn_sl sl = sizeof soerr;
+            getsockopt(KSN_SOCK(s), SOL_SOCKET, SO_ERROR, (char *)&soerr, &sl);
             rc = soerr == 0 ? 0 : -1;
-            if (soerr) last = soerr;
+            if (soerr) {
+#ifdef _WIN32
+                WSASetLastError(soerr);
+                last = net_errno();
+#else
+                last = soerr;
+#endif
+            }
         }
         if (rc == 0) {
-            fcntl(s, F_SETFL, fl);
+            ksn_set_nonblock(s, 0);
             freeaddrinfo(res);
             return s;
         }
-        if (rc != 0 && errno != EINPROGRESS) last = net_errno();
+        if (rc != 0 && !ksn_in_progress()) last = net_errno();
         net_close(s);
     }
     freeaddrinfo(res);
@@ -766,13 +830,6 @@ i64 ksn_rt_sys_connect_timeout(const u8 *a, u64 n, u64 ms, i32 *e) {
     e[1] = (i32)last;
     return -1;
 }
-#else
-/* Windows の期限つき読み書き・受理・接続は未対応 (InvalidInput で失敗する)。 */
-i64 ksn_rt_sys_net_rw(i32 fd, i32 write_side, u8 *p, u64 n, i32 *e) { (void)fd; (void)write_side; (void)p; (void)n; return fail_invalid(e); }
-i64 ksn_rt_sys_net_nodelay(i32 fd, i32 on, i32 *e) { (void)fd; (void)on; return fail_invalid(e); }
-i64 ksn_rt_sys_accept_timeout(i32 lfd, u64 ms, i32 *e) { (void)lfd; (void)ms; return fail_invalid(e); }
-i64 ksn_rt_sys_connect_timeout(const u8 *a, u64 n, u64 ms, i32 *e) { (void)a; (void)n; (void)ms; return fail_invalid(e); }
-#endif
 
 i64 ksn_rt_sys_local_port(i32 fd, i32 *e) {
     struct sockaddr_storage ss;
