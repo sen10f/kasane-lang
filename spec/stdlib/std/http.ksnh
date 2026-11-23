@@ -115,13 +115,11 @@ fn std.http.Request.header_unique(self: &std.http.Request, name: &str) -> Result
     let mut found: Option<&str> = None
     for k in core.iter.range(0usize, self.headers.len()) {
         match self.headers.as_slice().get(k) {
-            Some(h) => {
-                if h.name.as_str().eq_ignore_ascii_case(name) {
-                    if found.is_some() {
-                        return Err(std.http.Error.BadRequest)
-                    }
-                    found = Some(h.value.as_str())
+            Some(h) => if h.name.as_str().eq_ignore_ascii_case(name) {
+                if found is Some(_) {
+                    return Err(std.http.Error.BadRequest)
                 }
+                found = Some(h.value.as_str())
             }
             None => core.mem.drop(0u8)
         }

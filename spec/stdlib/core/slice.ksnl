@@ -26,7 +26,9 @@ fn core.slice.ct_eq(a: &[u8], b: &[u8]) -> bool uses [] panics never pub
     let mut diff = 0u8
     let mut i = 0usize
     while i < a.len() {
-        diff = diff | (*a.get(i).unwrap_or(&0u8) ^ *b.get(i).unwrap_or(&0u8))
+        let x = *a.get(i).unwrap_or(&0u8)
+        let y = *b.get(i).unwrap_or(&0u8)
+        diff = diff | x ^ y
         i = i.wrapping_add(1usize)
     }
     diff == 0u8
