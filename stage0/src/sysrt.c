@@ -739,6 +739,8 @@ i64 ksn_rt_sys_accept(i32 lfd, i32 *e) {
 #define KSN_DL_MAX 256
 typedef struct { i32 fd; int used; int has_rd; int has_wr; i64 rd_at; i64 wr_at; } ksn_dl;
 static ksn_dl ksn_dls[KSN_DL_MAX];
+/* set_read_timeout / set_write_timeout (または期限つきの読み書き) を一度でも使ったか (0 = 読み、1 = 書き)。非同期ソケットが SO_*TIMEO を調べる要否を決める。 */
+static volatile int ksn_to_set[2];
 
 #ifdef _WIN32
 #define KSN_SOCK(fd) ((SOCKET)(fd))
@@ -795,6 +797,7 @@ i64 ksn_rt_sys_net_clear_deadlines(i32 fd, i32 *e) {
 
 /* 期限を SO_RCVTIMEO / SO_SNDTIMEO に入れる (rem ミリ秒、1 以上)。 */
 static void ksn_set_timeout(i32 fd, int write_side, i64 rem) {
+    ksn_to_set[write_side ? 1 : 0] = 1;
 #ifdef _WIN32
     DWORD tv = (DWORD)rem;
     setsockopt(KSN_SOCK(fd), SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, (const char *)&tv, sizeof tv);
@@ -974,6 +977,7 @@ static int format_addr(const struct sockaddr *sa, char *txt, size_t cap) {
 
 /* 0 = 秒 (ms = 0 はタイムアウトなし)。SO_RCVTIMEO (読み) / SO_SNDTIMEO (書き)。 */
 i64 ksn_rt_sys_net_timeout(i32 fd, i32 write_side, u64 ms, i32 *e) {
+    ksn_to_set[write_side ? 1 : 0] = 1;
 #ifdef _WIN32
     DWORD tv = (DWORD)ms; /* winsock はミリ秒の DWORD */
     if (setsockopt((SOCKET)fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, (const char *)&tv, sizeof tv) != 0)
@@ -1203,6 +1207,8 @@ static __thread int ksn_io_ep = -1;
 static __thread ksn_io_slot *ksn_io_tab;
 static __thread i64 ksn_io_cap;
 static __thread i64 ksn_io_nparked;
+static __thread int ksn_io_streak;
+static __thread unsigned ksn_io_tickn;
 static __thread i64 ksn_io_nfired; /* 印が 2 / 3 になって take されていない数 */
 
 static ksn_io_slot *ksn_io_slot_of(i32 fd) {
@@ -1226,7 +1232,7 @@ static i64 ksn_io_deadline(i32 fd, int write_side) {
     if (d && (write_side ? d->has_wr : d->has_rd)) at = write_side ? d->wr_at : d->rd_at;
     struct timeval tv;
     socklen_t l = sizeof tv;
-    if (getsockopt(fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, &l) == 0 && (tv.tv_sec || tv.tv_usec)) {
+    if (ksn_to_set[write_side ? 1 : 0] > 0 && getsockopt(fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, &l) == 0 && (tv.tv_sec || tv.tv_usec)) {
         i64 t = ksn_mono_ms() + (i64)tv.tv_sec * 1000 + (i64)(tv.tv_usec / 1000);
         if (at < 0 || t < at) at = t;
     }
@@ -1237,6 +1243,15 @@ static i64 ksn_io_deadline(i32 fd, int write_side) {
 i32 ksn_rt_sys_io_park(i32 fd, i32 write_side) {
     ksn_io_slot *s = ksn_io_slot_of(fd);
     if (!s) return 0;
+    /* すでに準備ができていれば中断しない (epoll に載せる 2 つの呼び出しを省く)。ほかのタスクが飢えないよう、続けて 16 回までにする。 */
+    if (ksn_io_streak < 16) {
+        struct pollfd pf;
+        pf.fd = fd;
+        pf.events = write_side ? POLLOUT : POLLIN;
+        pf.revents = 0;
+        if (poll(&pf, 1, 0) > 0) { ksn_io_streak++; return 0; }
+    }
+    ksn_io_streak = 0;
     if (ksn_io_ep < 0) {
         ksn_io_ep = epoll_create1(EPOLL_CLOEXEC);
         if (ksn_io_ep < 0) return 0;
@@ -1256,6 +1271,8 @@ i32 ksn_rt_sys_io_park(i32 fd, i32 write_side) {
 /* epoll_wait。block = 0 なら待たず、1 なら準備完了か最も近い期限まで待つ。新しく印が付いた数を返す。 */
 i32 ksn_rt_sys_io_poll(i32 block) {
     if (ksn_io_ep < 0 || ksn_io_nparked == 0) return 0;
+    /* 待たない確認は 8 回に 1 回だけ (1 回の切り替えごとに epoll_wait を呼ばない)。 */
+    if (!block && (++ksn_io_tickn & 7) != 0) return 0;
     i32 got = 0;
     i64 now = ksn_mono_ms();
     int timeout = 0;
