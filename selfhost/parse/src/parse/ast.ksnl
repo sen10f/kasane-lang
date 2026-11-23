@@ -127,7 +127,16 @@ fn parse.ast.add6(ast: &mut parse.ast.Ast, kind: parse.ast.Kind, tok: usize, a: 
 end parse.ast.add6
 
 fn parse.ast.copy(n: &parse.ast.Node) -> parse.ast.Node uses [] panics never
-    parse.ast.Node { a: n.a, b: n.b, c: n.c, d: n.d, e: n.e, f: n.f, kind: n.kind, tok: n.tok }
+    parse.ast.Node {
+        a: n.a
+        b: n.b
+        c: n.c
+        d: n.d
+        e: n.e
+        f: n.f
+        kind: n.kind
+        tok: n.tok
+    }
 end parse.ast.copy
 
 fn parse.ast.get(ast: &parse.ast.Ast, at: usize) -> parse.ast.Node uses [] panics never pub
@@ -314,7 +323,16 @@ fn parse.ast.list(ast: &mut parse.ast.Ast, items: &std.vec.Vec<usize>, tok: usiz
 end parse.ast.list
 
 fn parse.ast.mk(kind: parse.ast.Kind, tok: usize, a: usize, b: usize, c: usize, d: usize) -> parse.ast.Node uses [] panics never pub
-    parse.ast.Node { a: a, b: b, c: c, d: d, e: 0usize, f: 0usize, kind: kind, tok: tok }
+    parse.ast.Node {
+        a: a
+        b: b
+        c: c
+        d: d
+        e: 0usize
+        f: 0usize
+        kind: kind
+        tok: tok
+    }
 end parse.ast.mk
 
 fn parse.ast.new() -> Result<parse.ast.Ast, parse.err.Error> uses [alloc] panics never pub
@@ -322,7 +340,11 @@ fn parse.ast.new() -> Result<parse.ast.Ast, parse.err.Error> uses [alloc] panics
     let links = std.vec.Vec.new()
     let mut nodes = std.vec.Vec.new()
     nodes.push(parse.ast.mk(parse.ast.Kind.Nil, 0usize, 0usize, 0usize, 0usize, 0usize))?
-    Ok(parse.ast.Ast { defs: defs, links: links, nodes: nodes })
+    Ok(parse.ast.Ast {
+        defs: defs
+        links: links
+        nodes: nodes
+    })
 end parse.ast.new
 
 fn parse.ast.push(ast: &mut parse.ast.Ast, node: parse.ast.Node) -> Result<usize, parse.err.Error> uses [alloc] panics never pub

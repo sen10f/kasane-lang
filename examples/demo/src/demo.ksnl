@@ -18,7 +18,9 @@ fn demo.fib(n: u32) -> u32 uses [] panics never stack 4096 pub
 end demo.fib
 
 fn demo.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut c = demo.Counter { count: 0u32 }
+    let mut c = demo.Counter {
+        count: 0u32
+    }
     c.bump()
     c.bump()
     let total = core.iter.fold(

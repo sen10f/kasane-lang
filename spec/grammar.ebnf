@@ -185,7 +185,7 @@ with_expr     = "with" , [ "mut" ] , ident , "=" , expr , "close" , expr_nostruc
 (* 単独の小文字 ident は束縛、それ以外の fqn は列挙子 / 定数。"mut" は let の直後にのみ置く *)
 pattern       = "_" | literal | ident | fqn
               | fqn , "(" , pattern , { "," , pattern } , ")"
-              | fqn , "{" , ident , ":" , pattern , { "," , ident , ":" , pattern } , "}"
+              | fqn , "{" , NL , INDENT , ident , ":" , pattern , NL , { INDENT , ident , ":" , pattern , NL } , "}"   (* いつも 1 行 1 欄。`,` は書かない *)
               | "(" , pattern , "," , [ pattern , { "," , pattern } ] , ")"   (* タプル。括弧パターンはない *)
               | "&" , pattern ;
 

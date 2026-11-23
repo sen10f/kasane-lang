@@ -267,10 +267,10 @@ end parse.expr.is_unary_op
 fn parse.expr.looks_struct_lit(p: &parse.cur.P) -> bool uses [] panics never
     let mut k = 1usize
     while parse.cur.peek(p, k).kind == parse.tok.Kind.Nl {
-        k = k + 1usize
+        k = k.wrapping_add(1usize)
     }
     let a = parse.cur.peek(p, k)
-    let b = parse.cur.peek(p, k + 1usize)
+    let b = parse.cur.peek(p, k.wrapping_add(1usize))
     a.kind == parse.tok.Kind.Ident && b.kind == parse.tok.Kind.Op && b.code == 58u32
 end parse.expr.looks_struct_lit
 
