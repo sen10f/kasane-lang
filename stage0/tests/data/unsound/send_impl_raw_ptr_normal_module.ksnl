@@ -1,0 +1,9 @@
+type t.Shared
+    p: *const u32
+end t.Shared
+
+impl core.marker.Send for t.Shared
+
+fn t.main() -> i32 uses [] panics never
+    0
+end t.main

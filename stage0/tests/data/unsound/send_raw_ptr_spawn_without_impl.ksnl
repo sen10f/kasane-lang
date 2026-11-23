@@ -1,0 +1,21 @@
+type t.Shared
+    p: *const u8
+end t.Shared
+
+fn t.read(p: *const u8) -> u8 uses [] panics never
+    unsafe "ffi" "read one byte" {
+        core.ptr.read(p)
+    }
+end t.read
+
+fn t.main() -> i32 uses [thread] panics may
+    let s = t.Shared { p: core.ptr.null() }
+    let h = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u8 capture [move s] {
+            t.read(s.p)
+        },
+    ).unwrap()
+    let v = h.join()
+    0
+end t.main
