@@ -371,7 +371,7 @@ fn dep_package_types_in_test_native() {
     std::fs::write(root.join("dep/kasane.lock"), "version = 1\n").unwrap();
     std::fs::write(
         root.join("dep/src/tdep.ksnl"),
-        "type tdep.Style pub\n    gr: f32 pub\nend tdep.Style\n\nfn tdep.Style.default() -> tdep.Style uses [] panics never pub\n    tdep.Style { gr: 1.0f32 }\nend tdep.Style.default\n",
+        "type tdep.Style pub\n    gr: f32 pub\nend tdep.Style\n\nfn tdep.Style.default() -> tdep.Style uses [] panics never pub\n    tdep.Style {\n        gr: 1.0f32\n    }\nend tdep.Style.default\n",
     )
     .unwrap();
     std::fs::write(

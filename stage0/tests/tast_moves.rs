@@ -79,6 +79,12 @@ fn moves_rule_matches_old_checker_on_unsound() {
 
 const HEAD: &str = "type t.S\n    v: u32\nend t.S\n\nfn t.eat(s: t.S) -> u32 uses [] panics never\n    s.v\nend t.eat\n\nfn t.main() -> () uses [] panics never\n    t.run(true)\nend t.main\n\n";
 
+/// `Tmp::new` が `ksn fmt` で整える (構造体リテラルは 1 行 1 欄に伸びて行番号が動く) ので、行を数える前に整えた字面にする。
+fn formatted(name: &str, src: &str) -> String {
+    let t = Tmp::new(name, src);
+    fs::read_to_string(t.0.join("src/t.ksnl")).unwrap()
+}
+
 fn with_run(body: &str) -> String {
     format!("{}fn t.run(c: bool) -> () uses [] panics never\n    let s = t.S {{ v: 1u32 }}\n{}end t.run\n", HEAD, body)
 }
@@ -121,7 +127,7 @@ fn moves_that_are_fine_are_accepted() {
 
 #[test]
 fn use_after_move_reports_the_use_line() {
-    let src = with_run("    core.mem.drop(t.eat(s))\n    core.mem.drop(s.v)\n");
+    let src = formatted("tast_mv_line_fmt", &with_run("    core.mem.drop(t.eat(s))\n    core.mem.drop(s.v)\n"));
     let got = new_diags("tast_mv_line", &src);
     assert_eq!(got, BTreeSet::from([("E3002".to_string(), line_of(&src, "core.mem.drop(s.v)", 0))]));
 }
@@ -164,7 +170,7 @@ fn linear_consumed_on_every_path_is_accepted() {
 
 #[test]
 fn linear_into_non_linear_type_parameter_is_e3006() {
-    let src = lin("    let r = t.open()\n    core.mem.drop(r)\n");
+    let src = formatted("tast_mv_e3006_fmt", &lin("    let r = t.open()\n    core.mem.drop(r)\n"));
     let got = new_diags("tast_mv_e3006", &src);
     assert!(got.contains(&("E3006".to_string(), line_of(&src, "core.mem.drop(r)", 0))), "{:?}", got);
 }
