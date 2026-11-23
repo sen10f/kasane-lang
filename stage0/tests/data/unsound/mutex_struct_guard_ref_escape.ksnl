@@ -1,0 +1,16 @@
+static t.ST: std.sync.Mutex<t.S> = std.sync.Mutex.new(t.mk()) pub
+
+type t.S
+    n: u64
+end t.S
+
+fn t.leak['a]() -> &'a t.S uses [thread] panics never
+    let guard = t.ST.lock()
+    guard.get()
+end t.leak
+
+fn t.mk() -> t.S const uses [] panics never
+    t.S {
+        n: 0u64
+    }
+end t.mk

@@ -377,8 +377,27 @@ impl ByteMem {
     }
 
     /// 生存する (解放されていない、静的でない) 領域の数。
+    /// 大域領域 (`static` の Mutex の値など、プログラムの間ずっと生きる) から辿れる領域は漏れに数えない (ネイティブでも同じく終了まで持つ)。
     fn leaks(&self) -> usize {
-        self.blocks.values().filter(|b| b.live && !b.pinned).count()
+        let mut reached: std::collections::BTreeSet<i128> = std::collections::BTreeSet::new();
+        let mut work: Vec<i128> = vec![];
+        let mut see = |w: i128, reached: &mut std::collections::BTreeSet<i128>, work: &mut Vec<i128>| {
+            if self.blocks.get(&w).is_some_and(|b| b.live && !b.pinned) && reached.insert(w) {
+                work.push(w);
+            }
+        };
+        for b in self.blocks.values().filter(|b| b.live && b.pinned) {
+            for ch in self.mem[b.off..b.off + b.size].chunks_exact(8) {
+                see(u64::from_le_bytes(ch.try_into().expect("8 バイト")) as i128, &mut reached, &mut work);
+            }
+        }
+        while let Some(a) = work.pop() {
+            let b = &self.blocks[&a];
+            for ch in self.mem[b.off..b.off + b.size].chunks_exact(8) {
+                see(u64::from_le_bytes(ch.try_into().expect("8 バイト")) as i128, &mut reached, &mut work);
+            }
+        }
+        self.blocks.values().filter(|b| b.live && !b.pinned).count() - reached.len()
     }
 }
 

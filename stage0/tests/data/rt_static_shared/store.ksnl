@@ -1,0 +1,84 @@
+static t.STORE: std.sync.Mutex<t.Store> = std.sync.Mutex.new(t.mk())
+
+type t.Store
+    n: u64
+    names: std.vec.Vec<u64>
+    label: std.string.String
+    map: std.collections.HashMap<u64, u64>
+end t.Store
+
+fn t.adder(arg: u32) -> std.thread.JoinHandle<(), std.alloc.System> uses [alloc, thread] panics may
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move arg] {
+            let mut i = 0u32
+            while i < arg {
+                let mut g = t.STORE.lock()
+                let s = g.get_mut()
+                s.n = s.n + 1u64
+                core.mem.drop(s.names.push(u64.from_u32(i)))
+                core.mem.drop(s.map.insert(u64.from_u32(i), 1u64))
+                i = i + 1u32
+            }
+        },
+    )
+    match spawned {
+        Ok(handle) => handle
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.adder
+
+fn t.go() -> () uses [alloc, thread] panics may
+    let h0 = t.adder(500u32)
+    let h1 = t.adder(500u32)
+    let h2 = t.adder(500u32)
+    let h3 = t.adder(500u32)
+    let h4 = t.adder(500u32)
+    let h5 = t.adder(500u32)
+    let h6 = t.adder(500u32)
+    let h7 = t.adder(500u32)
+    let h8 = t.adder(500u32)
+    let h9 = t.adder(500u32)
+    let h10 = t.adder(500u32)
+    let h11 = t.adder(500u32)
+    let h12 = t.adder(500u32)
+    let h13 = t.adder(500u32)
+    let h14 = t.adder(500u32)
+    let h15 = t.adder(500u32)
+    h0.join()
+    h1.join()
+    h2.join()
+    h3.join()
+    h4.join()
+    h5.join()
+    h6.join()
+    h7.join()
+    h8.join()
+    h9.join()
+    h10.join()
+    h11.join()
+    h12.join()
+    h13.join()
+    h14.join()
+    h15.join()
+    let g = t.STORE.lock()
+    let s = g.get()
+    core.check.eq(s.n, 8000u64)
+    core.check.eq(s.names.len(), 8000usize)
+    core.check.eq(s.map.len(), 500usize)
+end t.go
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    t.go()
+    std.io.print_line("store ok")?
+    Ok(())
+end t.main
+
+fn t.mk() -> t.Store const uses [] panics never
+    t.Store {
+        n: 0u64
+        names: std.vec.Vec.new()
+        label: std.string.String.new()
+        map: std.collections.HashMap.new()
+    }
+end t.mk

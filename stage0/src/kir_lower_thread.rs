@@ -57,6 +57,9 @@ pub(super) const WAIT: &str = "ksn.thr.wait";
 pub(super) const MINIT: &str = "ksn.thr.minit";
 pub(super) const MLOCK: &str = "ksn.thr.mlock";
 pub(super) const MUNLOCK: &str = "ksn.thr.munlock";
+pub(super) const RWRD: &str = "ksn.thr.rwrd";
+pub(super) const RWWR: &str = "ksn.thr.rwwr";
+pub(super) const RWUNLOCK: &str = "ksn.thr.rwunlock";
 
 /// 補助の関数 `name(args)` の呼び出し (戻り値の型 `ret`)。
 pub(super) fn rt_call(lw: &mut Lw, name: &str, args: Vec<VId>, ret: Ty) -> VId {
@@ -267,7 +270,7 @@ pub(super) fn join_call(lw: &mut Lw, _e: &V, recv: VId, recv_ty: Ty, line: usize
 
 /// 全関数を下ろした後に、補助の関数 (`exec` / `run_one` / `join`) を作って足す。どれも呼ばれていなければ何もしない。
 pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
-    let wanted = |n: &str| n == JOIN || n == RUN_ONE || n == WAIT || n == TNEW || n == TENT || n == TSTART || n == TREL || n == LOCK || n == UNLOCK || n == MINIT || n == MLOCK || n == MUNLOCK;
+    let wanted = |n: &str| n == JOIN || n == RUN_ONE || n == WAIT || n == TNEW || n == TENT || n == TSTART || n == TREL || n == LOCK || n == UNLOCK || n == MINIT || n == MLOCK || n == MUNLOCK || n == RWRD || n == RWWR || n == RWUNLOCK;
     if !ok.iter().any(|(_, cs)| cs.iter().any(|c| wanted(c))) {
         return;
     }
@@ -413,7 +416,7 @@ pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
         ok.push((mk(b.build(TENT, &[], Ty::Ptr)), none()));
     }
     // start(i) / release(i) / lock() / unlock(): 協調実行では何もしない。
-    for (name, params) in [(TSTART, vec![Ty::Usize]), (TREL, vec![Ty::Usize]), (LOCK, vec![]), (UNLOCK, vec![]), (MINIT, vec![Ty::Ptr])] {
+    for (name, params) in [(TSTART, vec![Ty::Usize]), (TREL, vec![Ty::Usize]), (LOCK, vec![]), (UNLOCK, vec![]), (MINIT, vec![Ty::Ptr]), (RWRD, vec![Ty::Ptr]), (RWWR, vec![Ty::Ptr]), (RWUNLOCK, vec![Ty::Ptr])] {
         let mut b = Fb::new(&params);
         let u = b.emit(Ty::Unit, Op::Const(0));
         b.term(Term::Ret(u));

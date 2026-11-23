@@ -217,6 +217,11 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
             "ptr %arg0",
             "  %o = atomicrmw xchg ptr %arg0, i32 0 release, align 4\n  %w = icmp eq i32 %o, 2\n  br i1 %w, label %wake, label %done\nwake:\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %g = load i64, ptr @ksn.rt.gen\n  %g1 = add i64 %g, 1\n  store i64 %g1, ptr @ksn.rt.gen\n  store i64 0, ptr @ksn.rt.blocked\n  %bc = call i32 @pthread_cond_broadcast(ptr @ksn.rt.cv)\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  br label %done\ndone:\n  ret i8 0\n",
         ),
+        // RwLock: glibc の `pthread_rwlock_t` (零で初期化済みと同じ)。読み手は同時に持て、書き手は 1 本だけ。待ちは OS の rwlock に任せる
+        // (待ちの deadlock の検出は Mutex だけ)。
+        "ksn.thr.rwrd" => def("i8", "ptr %arg0", "  %r = call i32 @pthread_rwlock_rdlock(ptr %arg0)\n  ret i8 0\n"),
+        "ksn.thr.rwwr" => def("i8", "ptr %arg0", "  %r = call i32 @pthread_rwlock_wrlock(ptr %arg0)\n  ret i8 0\n"),
+        "ksn.thr.rwunlock" => def("i8", "ptr %arg0", "  %r = call i32 @pthread_rwlock_unlock(ptr %arg0)\n  ret i8 0\n"),
         "ksn.thr.wait" => def("i8", "", &format!("{}  ret i8 0\n", block_body("@ksn.rt.deadlock"))),
         "ksn.thr.new" => def("i64", "", &format!("  %p = call ptr @calloc(i64 1, i64 {})\n  %z = icmp eq ptr %p, null\n  br i1 %z, label %oom, label %ok\noom:\n  call void @exit(i32 101)\n  unreachable\nok:\n  %i = ptrtoint ptr %p to i64\n  ret i64 %i\n", THREAD_ENTRY_SIZE)),
         "ksn.thr.ent" => def("ptr", "i64 %arg0", "  %p = inttoptr i64 %arg0 to ptr\n  ret ptr %p\n"),
@@ -675,6 +680,9 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
                     "declare i32 @pthread_mutexattr_settype(ptr, i32)",
                     "declare i32 @pthread_mutexattr_destroy(ptr)",
                     "declare i32 @pthread_mutex_init(ptr, ptr)",
+                    "declare i32 @pthread_rwlock_rdlock(ptr)",
+                    "declare i32 @pthread_rwlock_wrlock(ptr)",
+                    "declare i32 @pthread_rwlock_unlock(ptr)",
                 ] {
                     cx.decl(d);
                 }

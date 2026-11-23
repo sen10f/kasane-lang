@@ -3,7 +3,7 @@
 //! - `std.rand.Rng` は構造体 `{ state: u64 }`。`from_seed(s)` は `{ s }`、`next_u64(&mut self)` は木走査 (`natives.rs` の `splitmix`) と同じ
 //!   列 (`s += 0x9E3779B97F4A7C15`、`z = (s ^ s>>30) * 0xBF58476D1CE4E5B9`、`z = (z ^ z>>27) * 0x94D049BB133111EB`、`z ^ z>>31`)。
 //!   `&mut` の受け手は局所の名前だけ (SSA の局所・アドレスを取られた局所・`&mut Rng` の引数)。
-//! - `static N: std.sync.Mutex<T> = std.sync.Mutex.new(init)` (T は 8 バイト以下のスカラー): 大域領域 `global.bytes N 16`
+//! - `static N: std.sync.Mutex<T> = std.sync.Mutex.new(init)` (T は 8 バイト以下のスカラーか構造体。構造体の値は `+80`、RwLock は同じ形で `read` / `write`): 大域領域 `global.bytes N 16`
 //!   (`+0` が初期化の旗、`+8` が値)。`N.lock()` は旗が 0 なら `init` の式を評価して値に書き、旗を 1 にしてから、値の場所を指す
 //!   `&mut T` を返す。この `&mut T` が `MutexGuard` の値 (`get()` は共有に、`get_mut()` はそのまま)。木走査の `lock` は無操作
 //!   (各スレッドは最後まで走る) なのでロック・アンロックは出さない。
@@ -16,7 +16,7 @@ use crate::program::Target as Tgt;
 use crate::types::{from_v, Ty as Src};
 
 use super::fb::Fb;
-use super::thread_lower::{rt_call, LOCK, MINIT, MLOCK, UNLOCK};
+use super::thread_lower::{rt_call, LOCK, MINIT, MLOCK, RWRD, RWWR, UNLOCK};
 use super::{Lw, LR};
 
 /// 大域領域の中の pthread mutex の位置 (`+0` 旗、`+8` 値、`+16` mutex)。
@@ -126,10 +126,10 @@ pub(super) fn sync_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
                 }
             }
         }
-        if meth == "lock" && args.is_empty() {
+        if matches!(meth, "lock" | "read" | "write") && args.is_empty() {
             if let Some(Tgt::Const(di)) = lw.path_res(&f[0]).filter(|r| r.rest.len() == 1).map(|r| r.target) {
                 if lw.p.defs[di].kw == "static" {
-                    return Some(static_lock(lw, di, line));
+                    return Some(static_lock(lw, di, meth, line));
                 }
             }
         }
@@ -541,14 +541,17 @@ fn static_atomic_call(lw: &mut Lw, e: &V, di: usize, meth: &str, args: &[V], lin
 }
 
 /// `static` の `Mutex<T>` の `lock()`。値の場所を指す `&mut T` を返す。
-fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
+/// `meth` は `lock` (Mutex)・`read` / `write` (RwLock。glibc の `pthread_rwlock_t` を `+16` に置く: 零で初期化済み = 静的初期化と同じ)。
+fn static_lock(lw: &mut Lw, di: usize, meth: &str, line: usize) -> LR<Option<VId>> {
+    let rw = meth != "lock";
+    let want = if rw { "std.sync.RwLock" } else { "std.sync.Mutex" };
     let d = &lw.p.defs[di];
     let name = d.name.clone();
     let Src::Named(tn, targs, _) = from_v(&d.ret, &std::collections::HashSet::new()) else {
         return lw.err(line, format!("static {} の型が Mutex<T> でない", name));
     };
-    if tn != "std.sync.Mutex" || targs.len() != 1 {
-        return lw.err(line, format!("static {} の型が Mutex<T> でない", name));
+    if tn != want || targs.len() != 1 {
+        return lw.err(line, format!("static {} の型が {}<T> でない", name, want));
     }
     let Some(elem) = lw.conv_t(&targs[0]) else {
         return lw.err(line, format!("static {} の Mutex の値の型 {} は段階 1 の対象外", name, super::show(&targs[0])));
@@ -562,7 +565,7 @@ fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
     let (val_off, gsize) = if scalar { (8u32, 80u32) } else { (VAL_AGG, (VAL_AGG + crate::kir::size_of(&lw.aggs.borrow().defs, elem)).div_ceil(16) * 16) };
     // 初期化の式 `std.sync.Mutex.new(init)` の `init`。
     let init = match &d.init {
-        Some(v) if nname(v) == "Call" && strs(&nf(&nf(v)[0])[0]).join(".") == "std.sync.Mutex.new" && items(&nf(v)[1]).len() == 1 => items(&nf(v)[1])[0].clone(),
+        Some(v) if nname(v) == "Call" && strs(&nf(&nf(v)[0])[0]).join(".") == format!("{}.new", want) && items(&nf(v)[1]).len() == 1 => items(&nf(v)[1])[0].clone(),
         _ => return lw.err(line, format!("static {} の初期化が std.sync.Mutex.new(値) の形でない", name)),
     };
     let g = lw.emit(Ty::Ptr, Op::GlobalBytes { name: name.clone(), size: gsize });
@@ -617,6 +620,18 @@ fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
     lw.cur = Some(skip);
     let mo = lw.emit(Ty::Usize, Op::Const(MUTEX_OFF as i128));
     let mp = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off: mo });
+    if rw {
+        let f = match meth {
+            "read" => RWRD,
+            _ => RWWR,
+        };
+        rt_call(lw, f, vec![mp], Ty::Unit);
+        let off = lw.emit(Ty::Usize, Op::Const(val_off as i128));
+        let vp = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off });
+        let r = lw.emit(Ty::Ref(true, p), Op::Bitcast { src: Ty::Ptr, a: vp });
+        super::coll::register_unlock_kind(lw, mp, r, true);
+        return Ok(Some(r));
+    }
     // 実スレッドの相互排他: 値ごとの futex 型の 32 ビットの語 (0 空き・1 持たれている・2 待ちがいる)。ガードの寿命 (外す時点) は
     // `coll::register_unlock` が決める (4.4): 束縛された変数のスコープの終わり・`core.mem.drop(g)`、束縛されない一時なら文の終わり。
     // 協調実行では何もしない。

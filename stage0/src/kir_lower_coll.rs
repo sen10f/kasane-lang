@@ -839,8 +839,17 @@ fn run_close(lw: &mut Lw, i: usize) {
 /// `static` の `Mutex` の `lock()` の結果 `value` (ガード) を登録する。印を立てて、現在のスコープの所有に入れる。
 /// 束縛されなければ、文の終わり (`end_guards`) に外す。束縛されれば (`bind_guard`) 変数の寿命か `core.mem.drop` まで保つ。
 pub(crate) fn register_unlock(lw: &mut Lw, m: VId, value: VId) {
-    let flag = emit_alloca(lw, 1);
+    register_unlock_kind(lw, m, value, false)
+}
+
+/// `rw` が真なら RwLock のガード (外すとき `ksn.thr.rwunlock`)。印の 2 バイト目が種類 (0 = Mutex、1 = RwLock)。
+pub(crate) fn register_unlock_kind(lw: &mut Lw, m: VId, value: VId, rw: bool) {
+    let flag = emit_alloca(lw, 2);
     set_flag(lw, flag, true);
+    if rw {
+        let k = lw.emit(Ty::U8, Op::Const(1));
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: flag, off: 1, v: k });
+    }
     let scope = lw.scopes.len() - 1;
     lw.coll.owned.push((scope, Owned::Unlock { m, flag }));
     lw.coll.stmt_guards.push((value, m, flag));
@@ -857,7 +866,17 @@ pub(crate) fn release_guard(lw: &mut Lw, m: VId, flag: VId) {
     lw.branch(on, (yes, vec![]), (join, vec![]));
     lw.cur = Some(yes);
     set_flag(lw, flag, false);
+    let kind = lw.emit(Ty::U8, Op::MemLoad { p: flag, off: 1 });
+    let zero = lw.emit(Ty::U8, Op::Const(0));
+    let is_mutex = lw.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty: Ty::U8, a: kind, b: zero });
+    let (mu, _) = lw.new_block(&[]);
+    let (rw, _) = lw.new_block(&[]);
+    lw.branch(is_mutex, (mu, vec![]), (rw, vec![]));
+    lw.cur = Some(mu);
     super::thread_lower::rt_call(lw, super::thread_lower::MUNLOCK, vec![m], Ty::Unit);
+    lw.goto(join, vec![]);
+    lw.cur = Some(rw);
+    super::thread_lower::rt_call(lw, super::thread_lower::RWUNLOCK, vec![m], Ty::Unit);
     lw.goto(join, vec![]);
     lw.cur = Some(join);
 }
