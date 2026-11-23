@@ -155,7 +155,9 @@ impl Source {
     /// 不正な UTF-8 だったファイルは E0007 (ほかの字句エラーより優先)。
     fn mark_bad_utf8(&mut self, bad: Option<(usize, usize)>) {
         if let Some((line, col)) = bad {
-            self.error = Some(PErr { code: "E0007".into(), line, col, msg: "invalid UTF-8 byte sequence (source files must be valid UTF-8)".into() });
+            let e = PErr { code: "E0007".into(), line, col, msg: "invalid UTF-8 byte sequence (source files must be valid UTF-8)".into() };
+            self.all_errors = vec![(1, self.lines.len().max(1), e.clone())];
+            self.error = Some(e);
         }
     }
 
