@@ -32,6 +32,9 @@ pub fn long_line_msg(line: &str) -> String {
     if let Some(h) = crate::fmt_hoist::suggest(line) {
         m.push_str(&format!("; e.g. {}", h));
     }
+    if line.contains('(') {
+        m.push_str("; or write the call one argument per line (`f(`, each argument on its own line ending with `,`, then `)`), and for `P => if c {` open the arm as `P => {` with the `if` inside");
+    }
     m
 }
 

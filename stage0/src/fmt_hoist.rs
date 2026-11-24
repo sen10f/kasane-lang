@@ -207,6 +207,16 @@ fn hoist_line(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
         .or_else(|| hoist_array(line, used))
         .or_else(|| hoist_match(line, used))
         .or_else(|| hoist_chain(line, used))
+        .or_else(|| fold_line(line))
+}
+
+/// `fold_line` を除く、`let` に括り出すだけの縮め方。
+fn hoist_lets(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
+    hoist_cond(line, used)
+        .or_else(|| hoist_call(line, used))
+        .or_else(|| hoist_array(line, used))
+        .or_else(|| hoist_match(line, used))
+        .or_else(|| hoist_chain(line, used))
 }
 
 fn hoist_call(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
@@ -249,6 +259,115 @@ fn hoist_call(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
         if b == "val" { format!("{}_arg", callee_last) } else { b }
     };
     hoist_items(indent, head, &format!("{}(", callee), &items, ")", &rest, used, &namer)
+}
+
+/// `callee(args)` + 末尾 (`?` か `.name()` の連なり) を、入らなければ引数 1 つ 1 行の形 (`f(` / 引数 `,` / `)`) にする。
+/// 評価の順も意味も変わらない (書き方の正規形が元から受け付けている形)。入らない引数は同じ規則で入れ子に畳む。
+fn fold_expr(pad: usize, prefix: &str, e: &str, suffix: &str) -> Option<Vec<String>> {
+    let one = format!("{}{}{}{}", " ".repeat(pad), prefix, e, suffix);
+    if one.chars().count() <= 100 {
+        return Some(vec![one]);
+    }
+    // 先頭の `&` / `&mut ` / `*` は、頭に回す。
+    for p in ["&mut ", "&", "*"] {
+        if let Some(x) = e.strip_prefix(p) {
+            return fold_expr(pad, &format!("{}{}", prefix, p), x, suffix);
+        }
+    }
+    let cs: Vec<char> = e.chars().collect();
+    // 左から見て、本体が `(` で始まる最初の呼び出し (引数あり) で、残りが `?` と引数なしのメソッドだけのもの。
+    let valid_rest = |rest: &str| -> bool {
+        let mut r = rest;
+        while !r.is_empty() {
+            if let Some(x) = r.strip_prefix('?') {
+                r = x;
+            } else if let Some(x) = r.strip_prefix('.') {
+                let n = x.chars().take_while(|c| is_id(*c)).count();
+                if n == 0 || !x[n..].starts_with("()") {
+                    return false;
+                }
+                r = &x[n + 2..];
+            } else {
+                return false;
+            }
+        }
+        true
+    };
+    let mut found = None;
+    let mut depth = 0i32;
+    for i in 0..cs.len() {
+        match cs[i] {
+            '(' if depth == 0 => {
+                let name_ok = i > 0 && (is_id(cs[i - 1]));
+                if let (true, Some(c)) = (name_ok, matching(&cs, i)) {
+                    let rest: String = cs[c + 1..].iter().collect();
+                    let nonempty = c > i + 1;
+                    if nonempty && valid_rest(&rest) {
+                        found = Some((i, c));
+                        break;
+                    }
+                }
+                depth += 1;
+            }
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            _ => {}
+        }
+    }
+    let (k, close) = found?;
+    let callee: String = cs[..k].iter().collect();
+    if RESERVED.contains(&callee.as_str()) || callee.is_empty() || callee.ends_with('.') {
+        return None;
+    }
+    let rest: String = cs[close + 1..].iter().collect();
+    let args = split_args(&cs[k + 1..close])?;
+    if args.is_empty() || args.iter().any(|a| a.is_empty()) {
+        return None;
+    }
+    let mut out = vec![format!("{}{}{}(", " ".repeat(pad), prefix, callee)];
+    for a in &args {
+        out.extend(fold_expr(pad + 4, "", a, ",")?);
+    }
+    out.push(format!("{}){}{}", " ".repeat(pad), rest, suffix));
+    Some(out)
+}
+
+/// 入らない行の最後の手段: 行の外側の呼び出しを、引数 1 つ 1 行の形にする。
+fn fold_line(line: &str) -> Option<Vec<String>> {
+    let indent = line.len() - line.trim_start().len();
+    let t = &line[indent..];
+    if t.starts_with("//") || t.contains('"') || t.contains("::<") || t.contains('{') && !t.ends_with(" {") || t.contains('|') {
+        return None;
+    }
+    // match の腕 `P => 式`: 腕の頭 (`P => `) はそのまま、式を畳む。
+    let (arm, t) = match t.find(" => ") {
+        Some(p) if !t[..p].contains(['(', '{']) || t[..p].ends_with(')') && t[..p].matches('(').count() == t[..p].matches(')').count() => (&t[..p + 4], &t[p + 4..]),
+        Some(_) => return None,
+        None => ("", t),
+    };
+    if t.contains("=>") {
+        return None;
+    }
+    let first = t.split(|c| c == ' ' || c == '(' || c == '[').next().unwrap_or("");
+    if HEADER_KW.contains(&first) {
+        return None;
+    }
+    let (head, expr, tail): (String, &str, &str) = if let Some(b) = t.strip_prefix("match ").and_then(|r| r.strip_suffix(" {")) {
+        ("match ".into(), b, " {")
+    } else if let Some(b) = t.strip_prefix("if ").and_then(|r| r.strip_suffix(" {")) {
+        match b.strip_prefix('!') {
+            Some(x) => ("if !".into(), x, " {"),
+            None => ("if ".into(), b, " {"),
+        }
+    } else if t.ends_with('{') {
+        return None;
+    } else {
+        let (h, r) = if arm.is_empty() { split_head(t)? } else { ("", t) };
+        (h.to_string(), r, "")
+    };
+    let head = format!("{}{}", arm, head);
+    let v = fold_expr(indent, &head, expr, tail)?;
+    if v.len() > 1 && v.iter().all(|l| l.chars().count() <= 100) { Some(v) } else { None }
 }
 
 /// 並び (`f(a, b)` の引数・構造体リテラルの欄・配列の要素) の先頭から、括り出せる式を順に `let` にして行を縮める。
@@ -577,6 +696,40 @@ fn hoist_chain(line: &str, used: &HashSet<String>) -> Option<Vec<String>> {
     }
 }
 
+/// `P => if c {` / `P => match x {` (本体が次の行から、腕と同じ字下げの `}` まで) を `P => {` + 字下げした本体に開く。
+/// 腕の本体が 1 つの式文のままブロックに包まれるだけで、意味は変わらない。
+fn open_arm(lines: &mut Vec<String>, i: usize, used: &HashSet<String>) -> bool {
+    let l = lines[i].clone();
+    let indent = l.len() - l.trim_start().len();
+    let t = l.trim_start();
+    if !t.ends_with(" {") || t.contains('"') {
+        return false;
+    }
+    let Some(p) = t.find(" => ") else { return false };
+    let (pat, body) = (&t[..p], &t[p + 4..]);
+    if !(body.starts_with("if ") || body.starts_with("match ")) || pat.contains('{') || pat.contains("=>") {
+        return false;
+    }
+    let pad = " ".repeat(indent);
+    let close = format!("{}}}", pad);
+    let Some(j) = (i + 1..lines.len()).find(|&j| lines[j] == close) else { return false };
+    if lines[i + 1..=j].iter().any(|s| s.matches('"').count() % 2 == 1) || lines[i + 1..j].iter().any(|s| !s.is_empty() && s.len() - s.trim_start().len() < indent + 4) {
+        return false;
+    }
+    // 開いた先で `let` に括り出せるときだけ開く (本体が 1 文のブロックの腕は、整形が 1 行の腕に戻してしまう)。
+    let inner = format!("{}    {}", pad, body);
+    let Some(new) = hoist_lets(&inner, used) else { return false };
+    for k in i + 1..=j {
+        if !lines[k].is_empty() {
+            lines[k] = format!("    {}", lines[k]);
+        }
+    }
+    lines.insert(j + 1, close);
+    lines[i] = format!("{}{} => {{", pad, pat);
+    lines.splice(i + 1..i + 1, new);
+    true
+}
+
 pub fn hoist_long_lines(lines: &mut Vec<String>) -> bool {
     let mut changed = false;
     let mut i = 0;
@@ -596,6 +749,12 @@ pub fn hoist_long_lines(lines: &mut Vec<String>) -> bool {
                     changed = true;
                     lines.splice(i..=i, new);
                     i += n;
+                    continue;
+                }
+                // 腕の頭 `P => if c {` / `P => match x {` が長いとき: 腕を `P => {` に開き、中で縮められるようにする。
+                if open_arm(lines, i, &used) {
+                    changed = true;
+                    i += 1;
                     continue;
                 }
             }

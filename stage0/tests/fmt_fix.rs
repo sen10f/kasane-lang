@@ -503,14 +503,14 @@ fn long_struct_literal_line_is_rewritten_one_field_per_line_by_fmt() {
 /// 書いた後のファイルの行:列で報せる (2026-11-23)。
 #[test]
 fn fmt_does_not_rewrite_and_points_at_the_original_line_when_a_long_line_remains() {
-    let src = "fn t.zz() -> u32 uses [] panics never\n    t.f(&aaaaaaaaaaaaaaaaaaaaaaaa.wrapping_add(1u32).wrapping_add(bbbbbbbbbbbbbbbbbbbbbbbb.wrapping_mul(7777777u32).wrapping_add(88888888u32)), cccccccccccccccccccccccc)\nend t.zz\n\n\
+    let src = "fn t.zz() -> u32 uses [] panics never\n    let r = (aaaaaaaaaaaaaaaaaaaaaaaa + bbbbbbbbbbbbbbbbbbbbbbbb * 7777777u32 + cccccccccccccccccccccccc * 88888888u32 + dddddddddddddddd) * 3u32\nend t.zz\n\n\
                fn t.aa() -> u8 uses [] panics never\n    1u8\nend t.aa\n";
     let t = Tmp::new_raw("long_reorder", src);
     let o = run(&["fmt"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     let out = text(&o.stdout);
     let written = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
-    let ln = written.lines().position(|l| l.contains("t.f(&aaaaaaaaaaaaaaaaaaaaaaaa")).unwrap() + 1;
+    let ln = written.lines().position(|l| l.contains("let r = (aaaaaaaaaaaaaaaaaaaaaaaa")).unwrap() + 1;
     assert!(out.contains("reformatted"), "{out}");
     assert!(out.contains(&format!("src/t.ksnl:{}:101: E0055", ln)), "{out}");
     assert!(written.find("fn t.aa()").unwrap() < written.find("fn t.zz()").unwrap(), "{written}");
@@ -1222,14 +1222,12 @@ fn fmt_hoists_the_left_part_of_a_condition_chain() {
 
 #[test]
 fn fmt_keeps_e0055_when_hoisting_would_change_meaning() {
-    // `&&` 混じり・`if` の枝・閉包・借用 (`&`)・一時値を借りるメソッドの引数は括り出さない。
+    // `&&` 混じり・`if` の枝・閉包は括り出さない (借用・一時値の引数は、`let` にせず引数 1 つ 1 行に畳む: 次の試験)。
     let long = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
     for (k, line) in [
         format!("    let r = if c > 1u32 {{ u32.from_usize({}.len()) }} else {{ 0u32 }}", long),
         format!("    while c < 1u32 || c > 2u32 || c < 3u32 || c > 4u32 || c < 5u32 || c < 6u32 || c > 7u32 || c == 800000000u32 {{"),
         format!("    let r = t.f(|v| v.wrapping_add({}u32), c, c)", "1000000000000000000000000000000000000000000000000000000000000000000000"),
-        format!("    let r = t.f(&c.wrapping_add({}), c)", "1u32).wrapping_add(c.wrapping_mul(7777777u32).wrapping_add(88888888u32).wrapping_add(99999999u32"),
-        format!("    let r = t.f(make().as_str().len(), {}, c)", "c.wrapping_add(1000000000u32).wrapping_add(1000000000u32).wrapping_add(1000000000u32).wrapping_add(7u32)"),
     ]
     .into_iter()
     .enumerate()
@@ -1243,6 +1241,47 @@ fn fmt_keeps_e0055_when_hoisting_would_change_meaning() {
         assert_eq!(before.matches("let ").count(), after.matches("let ").count(), "case {} must not gain a let:\n{}", k, after);
         assert!(text(&run(&["check"], &t.0).stdout).contains("E0055"), "case {} keeps E0055", k);
     }
+}
+
+#[test]
+fn fmt_folds_a_long_call_one_argument_per_line_when_it_cannot_hoist() {
+    // 借用 (`&`)・一時値を借りるメソッドの引数は `let` にできない: 呼び出しを引数 1 つ 1 行に畳む (意味は同じ)。
+    let long1 = "1u32).wrapping_add(c.wrapping_mul(7777777u32).wrapping_add(88888888u32).wrapping_add(99999999u32)";
+    let long2 = "c.wrapping_add(1000000000u32).wrapping_add(1000000000u32).wrapping_add(7u32)";
+    for (k, line) in [
+        format!("    let r = t.f(&c.wrapping_add({}), c)", long1),
+        format!("    let r = t.f(make().as_str().len(), {}, c)", long2),
+        format!("    if t.f(make().as_str().len(), {}, c).is_err() {{", long2),
+        format!("    match t.f(make().as_str().len(), {}, c) {{", long2),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tail = if k >= 2 { "\n        core.mem.drop(c)\n    }" } else { "" };
+        let tail = if k == 3 { "\n        _ => core.mem.drop(c)\n    }" } else { tail };
+        let src = format!("fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let c = 1u32\n{}{}\n    Ok(())\nend t.main\n", line, tail);
+        let t = Tmp::new_raw(&format!("fold_call{}", k), &src);
+        run(&["fmt"], &t.0);
+        let after = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+        assert!(after.lines().all(|l| l.chars().count() <= 100), "case {}:\n{}", k, after);
+        assert!(after.contains("t.f(\n"), "case {} folds the call:\n{}", k, after);
+        assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "case {} not a fixpoint:\n{}", k, after);
+        assert!(!text(&run(&["check"], &t.0).stdout).contains("E0055"), "case {}:\n{}", k, after);
+    }
+}
+
+#[test]
+fn fmt_folds_a_long_match_arm_header() {
+    let src = "fn t.w(a: &mut u32, b: &[u8], c: &[u8]) -> Result<(), ()> uses [] panics never\n    Ok(())\nend t.w\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never\n    let mut open = 1u32\n    let r: Result<std.vec.Vec<u8>, ()> = Ok(std.vec.Vec.new())\n    loop {\n        match r {\n            Ok(bytes) => if t.w(&mut open, bytes.as_slice(), bytes.as_slice()).is_err() && open > 100000000u32 {\n                break\n            }\n            Err(e) => break\n        }\n    }\n    Ok(())\nend t.main\n";
+    let src = src.replace(" && open > 100000000u32", "");
+    let src = src.replace("t.w(&mut open, bytes.as_slice(), bytes.as_slice())", "t.w(&mut open, bytes.as_slice().get_something_long_here(1usize), bytes.as_slice().other_long_thing(2usize))");
+    let t = Tmp::new_raw("fold_arm", &src);
+    run(&["fmt"], &t.0);
+    let after = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(after.lines().all(|l| l.chars().count() <= 100), "{}", after);
+    assert!(after.contains("Ok(bytes) => if t.w(\n"), "{}", after);
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{}", after);
 }
 
 #[test]
@@ -1278,7 +1317,7 @@ fn fmt_hoists_struct_fields_array_elements_and_match_scrutinee() {
 
 #[test]
 fn fmt_fixes_what_it_can_and_keeps_e0055_for_the_rest() {
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    let c = 7u32\n    let ok = c < 1u32 || c > 2048u32 || c == 5u32 || c == 6u32 || c == 9u32 || c == 10u32 || c == 11u32 || c == 12u32\n    let r = t.f(&c.wrapping_add(1u32).wrapping_add(c.wrapping_mul(7777777u32).wrapping_add(88888888u32).wrapping_add(99999999u32)), c)\n    core.mem.drop(ok)\n    Ok(())\nend t.main\n";
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    let c = 7u32\n    let ok = c < 1u32 || c > 2048u32 || c == 5u32 || c == 6u32 || c == 9u32 || c == 10u32 || c == 11u32 || c == 12u32\n    let r = (c + c * 7777777u32 + c * 88888888u32 + c) * 3u32 + 100000000000u32 + 100000000000u32 + 100000000000u32 + 100000000000u32\n    core.mem.drop(ok)\n    Ok(())\nend t.main\n";
     let t = Tmp::new_raw("hoist_partial", src);
     let o = run(&["fmt"], &t.0);
     let out = text(&o.stdout);
