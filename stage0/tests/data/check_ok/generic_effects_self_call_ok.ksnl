@@ -1,0 +1,19 @@
+type t.H[F: core.ops.Fn<(), (), E, P>, E: uses, P: panics]
+    f: F
+end t.H
+
+type t.O[F: core.ops.Fn<(), (), E, P>, E: uses, P: panics]
+    h: t.H<F, E, P>
+end t.O
+
+fn t.H.go[F: core.ops.Fn<(), (), E, P>, E: uses, P: panics](self: &t.H<F, E, P>) -> () uses [E] panics P
+    self.f.call(())
+end t.H.go
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.say() -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line("EFFECT"))
+end t.say

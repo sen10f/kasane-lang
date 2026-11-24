@@ -1,0 +1,31 @@
+type t.A
+    n: u32
+end t.A
+
+trait t.Tr[E: uses, P: panics]
+    fn go(self: &Self) -> () uses [E] panics P
+end t.Tr
+
+type t.W[X: t.Tr<E, P>, E: uses, P: panics]
+    x: X
+end t.W
+
+impl t.Tr<[io.console], may> for t.A
+fn t.A.go(self: &t.A) -> () uses [] panics never impls t.Tr<[io.console], may>
+    core.panic.panic("boom")
+end t.A.go
+
+fn t.go1[X: t.Tr<E, P>, E: uses, P: panics](x: &X) -> () uses [E] panics P
+    let c = fn() -> () capture [&x] {
+        x.go()
+    }
+    c()
+end t.go1
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.run[X: t.Tr<E, P>, E: uses, P: panics](w: &t.W<X, E, P>) -> () uses [E] panics P
+    t.go1(&w.x)
+end t.run
