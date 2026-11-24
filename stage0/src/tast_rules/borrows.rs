@@ -934,7 +934,7 @@ impl<'a> Walker<'a> {
             }
             let s = self.arg(a, pt.as_ref());
             self.slot_ok = None;
-            if !s.is_empty() && pos + 1 < order.len() {
+            if !s.is_empty() && (pos + 1 < order.len() || late_recv.is_some()) {
                 let t = self.fresh();
                 self.bind(t.clone(), s.clone(), true);
                 temps.push(t);

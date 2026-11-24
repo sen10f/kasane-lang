@@ -1,0 +1,6 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let mut v = std.vec.Vec.new()
+    core.mem.drop(v.push(1u32))
+    core.mem.drop(v.extend_from_slice(v.as_slice()))
+    Ok(())
+end t.main

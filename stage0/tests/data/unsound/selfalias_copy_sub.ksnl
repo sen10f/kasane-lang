@@ -1,0 +1,9 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let mut a = [1u32, 2u32, 3u32, 4u32]
+    let s = a.as_mut_slice()
+    let r = s.sub(0usize, 2usize)
+    if let Some(d) = s.sub_mut(2usize, 4usize) {
+        core.mem.drop(d.copy_from(r.unwrap()))
+    }
+    Ok(())
+end t.main

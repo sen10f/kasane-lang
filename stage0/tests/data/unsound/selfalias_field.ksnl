@@ -1,0 +1,11 @@
+type t.A
+    items: std.vec.Vec<u32>
+end t.A
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let mut a = t.A {
+        items: std.vec.Vec.new()
+    }
+    core.mem.drop(a.items.extend_from_slice(a.items.as_slice()))
+    Ok(())
+end t.main

@@ -1,0 +1,8 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    let mut m = std.collections.HashMap.new()
+    core.mem.drop(m.insert(1u32, std.string.String.new()))
+    let r = m.get(&1u32).unwrap()
+    core.mem.drop(m.insert(2u32, std.string.String.new()))
+    core.mem.drop(r.len())
+    Ok(())
+end t.main
