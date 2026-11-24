@@ -441,6 +441,8 @@ const PANICS: [(&str, &str); 8] = [
 ];
 
 struct Ctx {
+    /// 呼び出しの輪に入らず、輪に入る関数も呼ばない関数 (「純粋域」) と、その呼び出し鎖の高さ (自分を含む)。深さの記録 (入口の検査と加算) を省き、呼び出し側が高さ分を先に検査する。
+    pure_h: HashMap<String, (u64, u64)>,
     decls: BTreeSet<String>,
     globals: String,
     math: BTreeSet<Math>,
@@ -752,7 +754,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     } else {
         crate::kir_cabi::Arch::X86_64
     };
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int, arch };
+    let mut cx = Ctx { pure_h: pure_region(m, entry), decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int, arch };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -841,6 +843,24 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             continue;
         }
         funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, &extern_dl, &m.funcs, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
+        if let Some((h, fr)) = cx.pure_h.get(&f.key).copied() {
+            // 純粋域: 深さの記録つきの複製と、残りの深さで振り分ける入口 (`.w`、alwaysinline)。
+            let mut fe = Fe::new(&mut cx, &m.aggs, f, &extern_links, &extern_dl, &m.funcs, fi + m.funcs.len());
+            fe.slow = true;
+            funcs.push_str(&fe.emit().map_err(|e| format!("{}: {}", f.key, e))?);
+            let ps: Vec<String> = f.params().iter().enumerate().map(|(j, (_, t))| format!("{} %arg{}", lty(&m.aggs, *t), j)).collect();
+            let xs: Vec<String> = f.params().iter().enumerate().map(|(j, (_, t))| format!("{} %arg{}", lty(&m.aggs, *t), j)).collect();
+            let rt = lty(&m.aggs, f.ret);
+            let fl = if crate::ptrwidth::bits() == 32 {
+                "  %fits = icmp ult i64 %e, %dmax\n".to_string()
+            } else {
+                format!("  %ok1 = icmp ult i64 %e, %dmax\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl = load i64, ptr @ksn.floor\n  %need = add i64 %fl, {}\n  %ok2 = icmp uge i64 %sp, %need\n  %fits = and i1 %ok1, %ok2\n", fr)
+            };
+            funcs.push_str(&format!(
+                "define internal {rt} {w}({ps}) alwaysinline null_pointer_is_valid {{\n  %d = load i64, ptr @ksn.depth\n  %dmax = load i64, ptr @ksn.dmax\n  %e = add i64 %d, {h1}\n{fl}  br i1 %fits, label %fast, label %slow\nfast:\n  %rf = call {rt} {f}({xs})\n  ret {rt} %rf\nslow:\n  %rs = call {rt} {s}({xs})\n  ret {rt} %rs\n}}\n\n",
+                rt = rt, w = fname(&format!("{}.w", f.key)), ps = ps.join(", "), h1 = h, fl = fl, f = fname(&f.key), s = fname(&format!("{}.slow", f.key)), xs = xs.join(", ")
+            ));
+        }
     }
     let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
     let main = if is_wasm(target) { main } else { on_big_stack(&mut cx, main, m.depth) };
@@ -949,6 +969,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             "define private void @ksn.panic.index({sz} %len, {sz} %ix) noreturn cold {{\n{widen}  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.index, i64 {a}, i64 {b})\n  call void @exit(i32 101)\n  unreachable\n}}\n\n"
         ));
     }
+    out.push_str("define internal void @ksn.chk(i64 %d, i64 %h) alwaysinline {\n  %m = load i64, ptr @ksn.dmax\n  %e = add i64 %d, %h\n  %o = icmp uge i64 %e, %m\n  br i1 %o, label %so, label %ok\nso:\n  call void @ksn.overflow()\n  unreachable\nok:\n  ret void\n}\n");
     out.push_str("define private void @ksn.overflow() noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.so)\n  call void @exit(i32 102)\n  unreachable\n}\n");
     if cx.fmt_float {
         out.push_str(&fmt_float_helpers());
@@ -1262,6 +1283,106 @@ fn kasane_base_inst(key: &str) -> bool {
     key.starts_with("alloc.string.String.") || key.starts_with("alloc.vec.Vec.")
 }
 
+/// 呼び出しの輪に入らず、輪に入る関数・FFI・関数のアドレスも使わない関数 (純粋域) → 自分を含む鎖の高さ。
+/// 入口・wasm の公開関数・`ksn.` の補助・`extern`・`fnptr` の対象は含めない。
+fn pure_region(m: &Module, entry: &str) -> HashMap<String, (u64, u64)> {
+    // 1 つの関数の枠の上限 (バイト): 値 (SSA・ブロック引数・引数) の大きさの総和 + 静的な確保 + 余裕。
+    // 値がすべてスタックに溢れても、確保がすべて別々でも、これを超えない (レジスタに載れば実際はもっと小さい)。
+    fn frame_of(m: &Module, f: &Func) -> u64 {
+        let by = |t: Ty| (vbits(&m.aggs, t).max(64) as u64).div_ceil(8);
+        let mut n = 1024u64;
+        for (_, t) in f.params() {
+            n += by(*t);
+        }
+        for b in &f.blocks {
+            for (_, t) in &b.params {
+                n += by(*t);
+            }
+            for i in &b.insts {
+                n += by(i.ty);
+                match (&i.op, i.ty) {
+                    (Op::Alloca, Ty::Ref(_, p)) => n += by(p.ty()),
+                    (Op::FrameBytes { size }, _) => n += *size as u64,
+                    _ => {}
+                }
+            }
+        }
+        n
+    }
+    let idx: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
+    let mut taken: BTreeSet<&str> = BTreeSet::new();
+    for f in &m.funcs {
+        for b in &f.blocks {
+            for i in &b.insts {
+                if let Op::FnPtr { callee } = &i.op {
+                    taken.insert(callee.as_str());
+                }
+            }
+        }
+    }
+    // 状態: 0 = 未訪問、1 = 訪問中、2 = 済み。高さ None = 純粋でない。
+    fn go(m: &Module, idx: &HashMap<&str, usize>, taken: &BTreeSet<&str>, entry: &str, k: usize, st: &mut Vec<u8>, h: &mut Vec<Option<(u64, u64)>>) -> Option<(u64, u64)> {
+        if st[k] == 2 {
+            return h[k];
+        }
+        if st[k] == 1 {
+            return None;
+        }
+        st[k] = 1;
+        let f = &m.funcs[k];
+        let mut ok = f.key != entry && f.link.is_none() && !f.key.starts_with("ksn.") && wasm_export_name(&f.key).is_none() && !taken.contains(f.key.as_str()) && !kasane_base_inst(&f.key);
+        let mut hh = 0u64;
+        let mut ff = 0u64;
+        if ok {
+            'o: for b in &f.blocks {
+                for i in &b.insts {
+                    match &i.op {
+                        Op::FnPtr { .. } => {
+                            ok = false;
+                            break 'o;
+                        }
+                        Op::Call { callee, .. } => {
+                            let Some(&c) = idx.get(callee.as_str()) else {
+                                ok = false;
+                                break 'o;
+                            };
+                            let cf = &m.funcs[c];
+                            if cf.link.is_some() {
+                                continue;
+                            }
+                            if kasane_base_inst(&cf.key) {
+                                ff = ff.max(frame_of(m, cf));
+                                continue;
+                            }
+                            match go(m, idx, taken, entry, c, st, h) {
+                                Some((x, y)) => {
+                                    hh = hh.max(x);
+                                    ff = ff.max(y);
+                                }
+                                None => {
+                                    ok = false;
+                                    break 'o;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        st[k] = 2;
+        h[k] = if ok { Some((hh + 1, ff + frame_of(m, f))) } else { None };
+        h[k]
+    }
+    let n = m.funcs.len();
+    let mut st = vec![0u8; n];
+    let mut h: Vec<Option<(u64, u64)>> = vec![None; n];
+    for k in 0..n {
+        go(m, &idx, &taken, entry, k, &mut st, &mut h);
+    }
+    m.funcs.iter().enumerate().filter_map(|(k, f)| h[k].map(|x| (f.key.clone(), x))).collect()
+}
+
 /// IR が C の実行時補助を要するか。
 pub fn needs_runtime(ll: &str) -> bool {
     ll.contains("@ksn_w_") || ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int") || ll.contains("@ksn_rt_sys_") || ll.contains("@ksn_ext_resolve")
@@ -1494,6 +1615,9 @@ struct Fe<'a> {
     extern_dl: &'a HashMap<String, (String, String)>,
     /// 全関数 (`Op::Fnptr` の呼び先の型を引くため)。
     funcs: &'a [Func],
+    bare_fn: bool,
+    /// 純粋域の関数の「深さの記録つき」の複製を出している (名前は `.slow`)。
+    slow: bool,
     fi: usize,
     tys: HashMap<VId, Ty>,
     /// 定数と unit の値 (命令を作らずに、使う側へ直接書く)。
@@ -1507,7 +1631,7 @@ struct Fe<'a> {
 
 impl<'a> Fe<'a> {
     fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, extern_dl: &'a HashMap<String, (String, String)>, funcs: &'a [Func], fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, extern_links, extern_dl, funcs, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
+        Fe { cx, aggs, f, extern_links, extern_dl, funcs, bare_fn: false, slow: false, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -2439,7 +2563,18 @@ impl<'a> Fe<'a> {
                         self.line(format!("{} = call {} {}({})", d, rt, target, a.join(", ")));
                     }
                 } else {
-                    self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
+                    let tgt = if self.cx.pure_h.contains_key(callee.as_str()) {
+                        if self.slow {
+                            fname(&format!("{}.slow", callee))
+                        } else if self.cx.pure_h.contains_key(&self.f.key) {
+                            fname(callee)
+                        } else {
+                            fname(&format!("{}.w", callee))
+                        }
+                    } else {
+                        fname(callee)
+                    };
+                    self.line(format!("{} = call {} {}({})", d, rt, tgt, a.join(", ")));
                 }
             }
             // 関数のアドレスを `ptr` として取る (C のコールバック用)。
@@ -3217,7 +3352,9 @@ impl<'a> Fe<'a> {
         }
         let mut hoisted = String::new();
         // Kasane の基本メソッドの単相インスタンス (下の先頭と戻りで深さの記録を省く)。
-        let bare = kasane_base_inst(&f.key);
+        let pure_f = self.cx.pure_h.contains_key(&f.key);
+        let bare = kasane_base_inst(&f.key) || (pure_f && !self.slow);
+        self.bare_fn = bare;
         let mut texts: Vec<String> = vec![String::new(); f.blocks.len()];
         for (k, b) in f.blocks.iter().enumerate() {
             if !reach[k] {
@@ -3296,13 +3433,13 @@ impl<'a> Fe<'a> {
         // Kasane で書いた基本メソッド (`alloc/vec.ksnl` / `alloc/string.ksnl` の単相インスタンス) は、組み込みの下ろしと同じく呼び出しを残さない。
         // 再帰せず、呼び先も有界なので、呼び出しの深さの記録 (`ksn.depth`) を省いて、LLVM が展開できるようにする
         // (組み込みは呼び出しなしで展開されていたので、深さの記録の分だけ遅くなるのを防ぐ。深さの上限の検査は呼び出し側が行う)。
-        let inline = if bare { "alwaysinline " } else { "" };
+        let inline = if kasane_base_inst(&f.key) { "alwaysinline " } else { "" };
         // wasm32 で公開する関数は外部リンケージの `define` にして、`wasm-export-name` で export の名前を決める (WASM ABI)。
         let (head, exp) = match wasm_export_name(&f.key) {
             Some(n) => ("define", format!(" \"wasm-export-name\"=\"{}\"", n)),
             None => ("define internal", String::new()),
         };
-        let mut s = format!("{} {} {}({}){} {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), fname(&f.key), params.join(", "), exp, inline);
+        let mut s = format!("{} {} {}({}){} {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), if self.slow { fname(&format!("{}.slow", f.key)) } else { fname(&f.key) }, params.join(", "), exp, inline);
         s.push_str(&hoisted);
         if bare {
             // `b0` の phi は `go` を前の辺として参照するので、空の `go` を残す (最適化で消える)。
