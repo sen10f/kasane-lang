@@ -73,7 +73,7 @@ fn run(args: &[&str], cwd: &Path) -> Output {
 
 fn native_path(t: &Tmp) -> PathBuf {
     let dir = t.0.join("target/release");
-    let name = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).find(|n| n == "t");
+    let name = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).find(|n| !n.contains('.') && dir.join(n).is_file());
     dir.join(name.expect("native executable"))
 }
 
