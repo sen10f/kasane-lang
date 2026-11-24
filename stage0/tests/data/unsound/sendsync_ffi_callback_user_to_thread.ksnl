@@ -1,0 +1,27 @@
+extern t.mkcb() -> *mut () link "mkcb"
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
+    let mut n = 0i32
+    let mut cb = fn(x: i32) -> () capture [&mut n] {
+        n = n.wrapping_add(x)
+    }
+    let (f, user) = unsafe "ffi" "trampoline" {
+        core.ffi.trampoline(&mut cb)
+    }
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> bool capture [move f, move user] {
+            unsafe "t" "call from another thread" {
+                f(user, 1i32)
+            }
+            true
+        },
+    )
+    match spawned {
+        Ok(handle) => {
+            let _h = handle.join()
+        }
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    Ok(())
+end t.main

@@ -65,6 +65,10 @@ fn unsound_programs_are_rejected() {
             args.extend(["--target", tg.as_str()]);
         }
         args.push("--json");
+        // `.expect` の `unsafe: M` は `[unsafe] modules = ["M"]` を持つパッケージで検査する (許可モジュールの中で拒まれるべき形)。
+        if let Some(m) = expect_value(p, "unsafe") {
+            fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", &format!("[unsafe]\nmodules = [\"{}\"]\n\n[dependencies]", m), 1)).unwrap();
+        }
         let o = run(&args, &t.0);
         let rejected = o.status.code() == Some(1);
         let hole = KNOWN_HOLES.contains(&stem.as_str());

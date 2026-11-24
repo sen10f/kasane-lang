@@ -1,0 +1,33 @@
+type t.P
+    p: *mut u8
+end t.P
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
+    let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)
+    let mut x = 5u8
+    let h = match a.insert(t.P {
+        p: unsafe "p" "x outlives the arena" {
+            core.ptr.from_mut(&mut x)
+        }
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("alloc")
+    }
+    let m = std.sync.Mutex.new(a)
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> bool capture [move h, move m] {
+            let g = m.lock()
+            core.mem.drop(g)
+            core.mem.drop(h)
+            true
+        },
+    )
+    match spawned {
+        Ok(handle) => {
+            let _h = handle.join()
+        }
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    Ok(())
+end t.main
