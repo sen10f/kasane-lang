@@ -1047,6 +1047,23 @@ impl<'a> Checker<'a> {
                         0,
                     );
                 }
+                // 5.5 (H3): 実引数の位置の型パラメータは、`Send` なら `T: Send`、`Sync` なら `T: Sync` (`Mutex` のように `T: Send` でも可) の境界が要る。
+                if let crate::types::Ty::Named(_, iargs, _) = crate::types::from_v(&d.impl_for, &d.gnames()) {
+                    let sync = tb == "core.marker.Sync";
+                    for ia in &iargs {
+                        let crate::types::Ty::Param(gp) = ia else { continue };
+                        let Some(g) = d.generics.iter().find(|g| g.0 == "type" && g.1 == *gp) else { continue };
+                        let ok = items(&g.2).iter().any(|b| matches!(b, V::L(bx) if { let n = st(&bx[0]); n == tb || (sync && n == "core.marker.Send") }));
+                        if !ok {
+                            self.diag(
+                                "E5008",
+                                format!("manual impl of {} for a generic type needs the bound `{}: {}` (5.5): without it the type is {} even when `{}` is not", tb, gp, tb, tb.rsplit('.').next().unwrap_or(""), gp),
+                                i,
+                                0,
+                            );
+                        }
+                    }
+                }
                 continue;
             }
             // 4.3: `Fn` / `FnMut` / `FnOnce` は自動実装のみ。手動 impl はできない。
