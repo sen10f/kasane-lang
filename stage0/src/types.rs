@@ -767,6 +767,8 @@ pub struct TypeCk<'a> {
     closure_static: HashMap<String, HashSet<String>>,
     /// `std.thread.spawn` に渡したクロージャ (節, 行)。関数の推論が終わってから取り込みの `Send` を見る。
     spawn_closures: Vec<(String, usize)>,
+    /// 関数を値として使った箇所の、`Send` / `Sync` の境界つきの型引数 (定義の終わりに検査する、5.5)。
+    fn_value_markers: Vec<(String, bool, Ty, usize)>,
     /// 呼び出しの実引数ごとの「`'static` の値と式から分かる」印 (`call` が `call_def` へ渡す)。
     arg_static: Vec<bool>,
     /// `'static` の境界を持つ位置へ渡した値: (型, 出どころが `'static`, 行, 説明)。関数の終わりに型が決まってから見る。
@@ -842,7 +844,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, marker_def: std::cell::Cell::new(None), scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, wants_tmp: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, marker_def: std::cell::Cell::new(None), scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, wants_tmp: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], fn_value_markers: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1028,6 +1030,7 @@ impl<'a> TypeCk<'a> {
         self.check_unsize();
         self.report_undetermined();
         self.check_spawn_captures();
+        self.check_fn_value_markers();
         self.check_static_bounds();
         self.check_oneway_string_keys();
         // 型変数は関数ごとの表なので、ここで解決してから外へ出す。
@@ -1173,6 +1176,15 @@ impl<'a> TypeCk<'a> {
     /// 5.5: `std.thread.spawn` に渡したクロージャの取り込みが `core.marker.Send` を満たすかを見る。
     /// 取り込みは `&a` なら `&T`、`&mut a` なら `&mut T`、`move a` なら `T` として見る (仕様 5.5)。
     /// 満たさないものと、決まらないもの (`None`) は E2040 (fail-closed)。
+    fn check_fn_value_markers(&mut self) {
+        for (tr, _, t, line) in std::mem::take(&mut self.fn_value_markers) {
+            let t = self.deep(&t);
+            if self.auto_marker(&t, tr == "core.marker.Sync", &mut Vec::new()) != Some(true) {
+                self.diag("E2040", format!("the trait bound `{}` of a function used as a value is not satisfied by {} (5.5)", tr, t.show()), line);
+            }
+        }
+    }
+
     fn check_spawn_captures(&mut self) {
         let spawns = std::mem::take(&mut self.spawn_closures);
         for (node, line) in spawns {
@@ -5234,6 +5246,17 @@ impl<'a> TypeCk<'a> {
         seed_effects(d, &mut map);
         let args: Vec<Ty> = d.params.iter().map(|p| from_v(&p.1, &gn)).collect::<Vec<_>>().iter().map(|t| self.inst(t, &mut map)).collect();
         let ret = self.inst(&from_v(&d.ret, &gn), &mut map);
+        for g in d.generics.iter().filter(|g| g.0 == "type") {
+            for b in items(&g.2) {
+                let V::L(bx) = b else { continue };
+                let tr = st(&bx[0]);
+                if tr == "core.marker.Send" || tr == "core.marker.Sync" {
+                    if let Some(t) = map.get(&g.1) {
+                        self.fn_value_markers.push((tr, false, t.clone(), self.cur_line));
+                    }
+                }
+            }
+        }
         let eff = Eff(Some(EffInfo {
             decl: false,
             uses: d.uses.clone(),
