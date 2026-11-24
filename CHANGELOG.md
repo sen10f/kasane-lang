@@ -6,6 +6,7 @@
 
 ### 実装計画 2.10系（新しい順）
 
+- 2.10dj 型検査の逃げ道を廃止: E2044 は常に有効。`--no-strict-types` と `KSN_STRICT_TYPES=0` は終了 2 で止まる (`--strict-types` / `KSN_STRICT_TYPES=1` は 1 リリースだけ受け付けて何も変えない) (`check/remove-no-strict-types`、2026-11-24)
 - 2.10di S4C: 効果の型引数・E3010 の残りと、残りの old_only の振り分け (`tast_rules/effects_inst.rs`・`lifetimes.rs`)
 - 2.10dh 標準ライブラリの欠け: `&str` での辞書の検索・`String.try_clone`・`Vec` の `Debug` (2026-11-19、G54、a113 の 6・8・13)
 - 2.10dg Windows ターゲット x86_64-windows-gnu (N1w、native/n1w-windows、2026-11-19)

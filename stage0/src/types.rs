@@ -6,7 +6,7 @@
 //! 演算子の両辺の型の不一致 (E2024)、添字の型 (E2025)。
 //! 方針は「分からなければ落とす」(fail-closed、実装計画 1.2 / 段階 1): 関数の推論が終わっても型が決まらない
 //! 式・束縛は E2044 (型注釈を書かせる)。LLM が書いて誰も読まないので、誤検出は 1 回の書き直しで済み、
-//! 取りこぼしは残り続ける。逃げ道は `--no-strict-types` / `KSN_STRICT_TYPES=0` (1 リリースだけ)。
+//! 取りこぼしは残り続ける。逃げ道はない (`--no-strict-types` / `KSN_STRICT_TYPES=0` は廃止し、付けたら誤りで止まる)。
 //! 途中の `Ty::Unknown` は推論の穴で、関数の終わりに E2044 として拾われる。
 //! メソッド呼び出しは、型パラメータのレシーバは境界 (とスーパートレイト) が宣言するものだけ、基本型のレシーバは
 //! 規範のシグネチャにあるものだけ (どちらも E1108)。
@@ -727,9 +727,7 @@ pub struct TypeCk<'a> {
     recv_start: usize,
     /// いま推論している `Path` ノードの位置 (`path()` が局所変数の連鎖を記録するのに使う)。
     path_pos: usize,
-    /// `--strict-types` / `KSN_STRICT_TYPES=1`: 型が決まらない式・束縛を E2044 にする (実装計画 段階 1)。
-    strict: bool,
-    /// strict のとき、関数ごとに集める式・束縛の型の記録。
+    /// 関数ごとに集める式・束縛の型の記録 (E2044 の根拠)。
     sites: Vec<Site>,
     /// 推論中の式の記録の添字の列 (先頭が最も内側)。
     site_stack: Vec<usize>,
@@ -806,19 +804,6 @@ struct Site {
     deps: Vec<usize>,
 }
 
-static STRICT_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// `--no-strict-types` から旧来の挙動に戻す。
-pub fn set_strict_types(on: bool) {
-    STRICT_OFF.store(!on, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// strict モードか。既定で有効。`--no-strict-types` / `KSN_STRICT_TYPES=0` で旧来の「黙る」挙動に戻せる
-/// (移行用の逃げ道で、1 リリースのあいだだけ残す)。`--strict-types` / `KSN_STRICT_TYPES=1` は受け付けるが何も変えない。
-pub fn strict_types() -> bool {
-    !STRICT_OFF.load(std::sync::atomic::Ordering::Relaxed) && std::env::var("KSN_STRICT_TYPES").map_or(true, |v| v != "0")
-}
-
 impl<'a> TypeCk<'a> {
     pub fn new(p: &'a Program) -> Self {
         let mut owners: HashMap<String, HashMap<String, Vec<usize>>> = HashMap::new();
@@ -844,7 +829,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, marker_def: std::cell::Cell::new(None), scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, wants_tmp: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], fn_value_markers: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, marker_def: std::cell::Cell::new(None), scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, wants_tmp: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], fn_value_markers: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1420,13 +1405,10 @@ impl<'a> TypeCk<'a> {
         Some(false)
     }
 
-    /// strict: 関数の推論が終わった時点で型が決まっていない式・束縛を E2044 にする。
+    /// 関数の推論が終わった時点で型が決まっていない式・束縛を E2044 にする。
     /// 原因の連鎖 (下位の式が決まらないので上位も決まらない) は根の 1 件だけを報告する。
     fn report_undetermined(&mut self) {
         let sites = std::mem::take(&mut self.sites);
-        if !self.strict {
-            return;
-        }
         let und: Vec<bool> = sites.iter().map(|s| self.undetermined(&s.ty)).collect();
         let mut seen: HashSet<(usize, String)> = HashSet::new();
         for (i, s) in sites.iter().enumerate() {
@@ -2039,13 +2021,11 @@ impl<'a> TypeCk<'a> {
             Some(m) => Ty::Ref(m, Box::new(ty), crate::types::Region::Unk),
             None => ty,
         };
-        if self.strict {
-            let id = self.new_site(self.pat_line, format!("the binding `{}`", name), ty.clone());
-            if let Some(src) = self.pat_src {
-                self.sites[id].deps.push(src);
-            }
-            self.local_sites.insert(name.to_string(), id);
+        let id = self.new_site(self.pat_line, format!("the binding `{}`", name), ty.clone());
+        if let Some(src) = self.pat_src {
+            self.sites[id].deps.push(src);
         }
+        self.local_sites.insert(name.to_string(), id);
         if let Some(s) = self.scopes.last_mut() {
             s.remove(&static_mark(name));
             s.remove(&exact_mark(name));
@@ -4159,9 +4139,6 @@ impl<'a> TypeCk<'a> {
     }
 
     fn infer_site(&mut self, e: &V) -> Ty {
-        if !self.strict {
-            return self.infer_traced(e);
-        }
         let id = self.new_site(nline(e), self.describe(e), Ty::Unknown);
         self.site_stack.push(id);
         let t = self.infer_traced(e);
