@@ -1,0 +1,15 @@
+fn t.lens() -> () uses [alloc] panics never
+    let mut w = std.vec.Vec.new()
+    core.mem.drop(w.push(1usize))
+    core.mem.drop(w.push(w.len()))
+end t.lens
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let mut v = std.vec.Vec.new()
+    core.mem.drop(v.push(1u32))
+    core.mem.drop(v.push(0u32))
+    core.mem.drop(v.push(*v.get(0usize).unwrap_or(&0u32)))
+    let c = *v.get(0usize).unwrap_or(&0u32)
+    core.mem.drop(v.push(c))
+    Ok(())
+end t.main
