@@ -6,6 +6,8 @@ trait t.Run pub
     fn run(self: &Self) -> () uses [] panics never
 end t.Run
 
+impl core.marker.Send for t.P
+
 impl t.Run for t.P
 fn t.P.run(self: &t.P) -> () uses [] panics never impls t.Run
     for _ in core.iter.range(0u32, 20_000_000u32) {
