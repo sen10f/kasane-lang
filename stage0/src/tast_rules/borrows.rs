@@ -1429,9 +1429,7 @@ impl<'a> Walker<'a> {
                             if matches!(t, Ty::Unknown) {
                                 continue;
                             }
-                            self.tk.marker_def.set(Some(self.di));
-                            let m = self.tk.auto_marker(t, false, &mut Vec::new());
-                            self.tk.marker_def.set(None);
+                            let m = self.tk.marker_in(self.di, t, false);
                             if m != Some(true) {
                                 self.frame_bad.push((*line, show_var(v), self.cdepth > 0));
                             }

@@ -168,6 +168,21 @@ fn inline_blocks(lines: Vec<String>) -> Vec<String> {
             }
             continue;
         }
+        // `match x { A => a, B => b }` (1 行の腕の列): 腕ごとに行へ分ける (腕の区切りの `,` は消す)。
+        if ptrim.contains("match ") && chain.is_empty() {
+            if let Some(arms) = split_top(&body, ',') {
+                let arms: Vec<String> = arms.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                if arms.len() >= 2 && arms.iter().all(|a| a.contains(" => ")) {
+                    let ind = " ".repeat(indent_of(&l));
+                    out.push(format!("{} {{", ptrim));
+                    for a in arms {
+                        out.push(format!("{}    {}", ind, a));
+                    }
+                    out.push(format!("{}}}{}", ind, rest.trim_end()));
+                    continue;
+                }
+            }
+        }
         let Some(stmts) = split_top(&body, ';') else {
             out.push(l);
             continue;
@@ -713,6 +728,73 @@ fn empty_impl_end(lines: Vec<String>) -> Vec<String> {
     out
 }
 
+/// 腕の本体が代入 (`name = v` / `*name = v`) の `Pat => place = v` を、`Pat => {` ・代入 ・ `}` の 3 行にする (E0058 と同じ直し方)。
+fn arm_assign(lines: Vec<String>) -> Vec<String> {
+    let mut out = vec![];
+    for l in lines {
+        if let Some((head, rhs)) = l.trim_start().split_once(" => ") {
+            let stmt = rhs.trim().trim_end_matches(',').trim_end();
+            if !head.trim().is_empty() && is_place_assign(stmt) {
+                let ind = " ".repeat(indent_of(&l));
+                out.push(format!("{}{} => {{", ind, head));
+                out.push(format!("{}    {}", ind, stmt));
+                out.push(format!("{}}}", ind));
+                continue;
+            }
+        }
+        out.push(l);
+    }
+    out
+}
+
+/// `*`? の名前 (英数字・`_`・`.`) の後に、比較でない `=` が続く形か。
+fn is_place_assign(s: &str) -> bool {
+    let s = s.strip_prefix('*').unwrap_or(s);
+    let name_len: usize = s.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').map(char::len_utf8).sum();
+    let first_ok = s.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_');
+    if name_len == 0 || !first_ok {
+        return false;
+    }
+    let after = s[name_len..].trim_start();
+    after.starts_with('=') && !after.starts_with("==") && !after.starts_with("=>")
+}
+
+/// `fn` の見出しで戻り値の型を省いたもの (`fn f(..) uses [..] ...`) に `-> ()` を足す。直し方は 1 つに決まる。
+fn unit_return(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|l| {
+            let t = l.trim_start();
+            if !t.starts_with("fn ") {
+                return l;
+            }
+            let Some(open) = t.find('(') else { return l };
+            let mut depth = 0i32;
+            let mut close = None;
+            for (i, b) in t.bytes().enumerate().skip(open) {
+                match b {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(c) = close else { return l };
+            let rest = &t[c + 1..];
+            let r = rest.trim_start();
+            if !(r.starts_with("uses ") || r.starts_with("uses[") || r.starts_with("panics ")) {
+                return l;
+            }
+            format!("{}{} -> (){}", &l[..indent_of(&l)], &t[..=c], rest)
+        })
+        .collect()
+}
+
 /// 生の文面にすべての表面の書き換えを、動かなくなるまで当てる。
 pub fn rewrite(text: &str) -> String {
     let mut cur = text.to_string();
@@ -728,6 +810,8 @@ pub fn rewrite(text: &str) -> String {
         lines = stmt_commas(lines);
         lines = one_line_defs(lines);
         lines = paren_bodies(lines);
+        lines = unit_return(lines);
+        lines = arm_assign(lines);
         lines = inline_blocks(lines);
         lines = ensure_end(lines);
         let next = lines.join("\n");

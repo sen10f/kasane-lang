@@ -601,3 +601,73 @@ end t.make.test_done
     assert!(o.status.success(), "{}", out);
     assert!(out.contains("(both: llvm)") && !out.contains("bundle ("), "{}", out);
 }
+
+#[test]
+fn hashmap_remove_tombstones_keep_insertion_order() {
+    let out = same(
+        "hm_tomb",
+        &prog(
+            r#"fn t.order(m: &alloc.collections.HashMap<u64, u64, std.alloc.System>) -> u64 uses [] panics never
+    let mut acc = 0u64
+    for (k, v) in m.iter() {
+        acc = acc.wrapping_mul(1_000_003u64).wrapping_add(*k).wrapping_mul(31u64).wrapping_add(*v)
+    }
+    acc
+end t.order
+
+fn t.show(n: u64) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_u64(n))
+    std.io.print_line(s.as_str())
+end t.show
+
+fn t.run() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut i = 0u64
+    while i < 5000u64 {
+        core.mem.drop(m.insert(i, i.wrapping_mul(3u64)))
+        i = i.wrapping_add(1u64)
+    }
+    core.check.eq(m.len(), 5000usize)
+    i = 0u64
+    while i < 5000u64 {
+        if i % 3u64 != 0u64 {
+            core.check.eq(m.remove(&i), Some(i.wrapping_mul(3u64)))
+        }
+        i = i.wrapping_add(1u64)
+    }
+    core.check.eq(m.len(), 1667usize)
+    core.check.eq(m.remove(&1u64), None)
+    core.check.eq(m.get(&3u64), Some(&9u64))
+    core.check.eq(m.get(&4u64), None)
+    core.mem.drop(t.show(t.order(&m)))
+    i = 0u64
+    while i < 3000u64 {
+        core.mem.drop(m.insert(i, i))
+        i = i.wrapping_add(1u64)
+    }
+    core.mem.drop(t.show(t.order(&m)))
+    i = 0u64
+    while i < 20000u64 {
+        core.mem.drop(m.insert(i.wrapping_add(10_000u64), i))
+        if i % 2u64 == 0u64 {
+            core.mem.drop(m.remove(&i))
+        }
+        i = i.wrapping_add(1u64)
+    }
+    core.mem.drop(t.show(t.order(&m)))
+    core.mem.drop(t.show(u64.from_usize(m.len())))
+    let mut c = 0u64
+    while c < 100u64 {
+        core.mem.drop(m.remove(&c))
+        core.mem.drop(m.insert(c, c))
+        c = c.wrapping_add(1u64)
+    }
+    core.mem.drop(t.show(t.order(&m)))
+    Ok(())
+end t.run
+"#,
+        ),
+    );
+    assert!(out.lines().count() >= 4, "{}", out);
+}

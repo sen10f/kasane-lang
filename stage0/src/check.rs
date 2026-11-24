@@ -1006,6 +1006,46 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 5.5: 手動の `Send` / `Sync` impl の置き場所 (E5010: 型を定義したモジュールだけ。標準の型は標準ライブラリだけ)、
+    /// 二重の impl (E1114)、自動導出が成り立つ型への冗長な impl (E5011: 欄がすべて数値・`bool`・`char` の型だけ判定する)。
+    fn check_send_sync_site(&mut self, i: usize, tb: &str, seen: &mut HashSet<(String, String)>) {
+        let d = self.def(i);
+        let tgt = impl_target(&d.impl_for);
+        let in_std = matches!(package_of(&d.module), "core" | "alloc" | "std");
+        if in_std {
+            return;
+        }
+        let home = self.p.types.get(&tgt).map(|&j| self.p.defs[j].clone());
+        let module = d.module.clone();
+        let mut msgs: Vec<(&str, String)> = Vec::new();
+        match &home {
+            Some(h) if h.module == module => {
+                if !seen.insert((tb.to_string(), tgt.clone())) {
+                    msgs.push(("E1114", format!("duplicate impl of {} for {}", tb, tgt)));
+                }
+                let scalar = |t: &V| tag(t) == "prim" && !matches!(st(tel(t, 1)).as_str(), "str");
+                let auto = h.kw == "type"
+                    && h.generics.is_empty()
+                    && !h.fields.is_empty()
+                    && h.fields.iter().all(|f| scalar(&f.1));
+                if auto {
+                    msgs.push(("E5011", format!("{} is already implemented automatically for {}; remove the manual impl (5.5)", tb, tgt)));
+                }
+            }
+            Some(h) => msgs.push((
+                "E5010",
+                format!("impl {} for {} must be written in module {}, where the type is defined (5.5)", tb, tgt, h.module),
+            )),
+            None => msgs.push((
+                "E5010",
+                format!("impl {} for {}: the type is not defined in this package; manual Send/Sync is only for your own types (5.5)", tb, tgt),
+            )),
+        }
+        for (c, m) in msgs {
+            self.diag(c, m, i, 0);
+        }
+    }
+
     /// 3.2: `impl Tr for X` と `impls Tr` のメソッドの整合 (過不足)、`impl` 行の重複を検査する
     /// (`spec/tools/xref.py` の impl / dup の移植)。未知トレイトは E1104 が報告する。
     fn check_impls(&mut self) {
@@ -1030,6 +1070,7 @@ impl<'a> Checker<'a> {
             }
         }
         let impl_lines: Vec<usize> = self.user.iter().copied().filter(|&i| self.def(i).kw == "impl").collect();
+        let mut send_seen: HashSet<(String, String)> = HashSet::new();
         let mut seen: HashSet<(String, String)> = HashSet::new();
         let mut covered: HashSet<(String, String)> = HashSet::new();
         // (トレイト, owner) -> その impl 行の def 番号。メソッドの効果を impl の実引数で実体化する (E4021)。
@@ -1046,6 +1087,25 @@ impl<'a> Checker<'a> {
                         i,
                         0,
                     );
+                } else {
+                    self.check_send_sync_site(i, &tb, &mut send_seen);
+                }
+                // 5.5 (H3): 実引数の位置の型パラメータは、`Send` なら `T: Send`、`Sync` なら `T: Sync` (`Mutex` のように `T: Send` でも可) の境界が要る。
+                if let crate::types::Ty::Named(_, iargs, _) = crate::types::from_v(&d.impl_for, &d.gnames()) {
+                    let sync = tb == "core.marker.Sync";
+                    for ia in &iargs {
+                        let crate::types::Ty::Param(gp) = ia else { continue };
+                        let Some(g) = d.generics.iter().find(|g| g.0 == "type" && g.1 == *gp) else { continue };
+                        let ok = items(&g.2).iter().any(|b| matches!(b, V::L(bx) if { let n = st(&bx[0]); n == tb || (sync && n == "core.marker.Send") }));
+                        if !ok {
+                            self.diag(
+                                "E5008",
+                                format!("manual impl of {} for a generic type needs the bound `{}: {}` (5.5): without it the type is {} even when `{}` is not", tb, gp, tb, tb.rsplit('.').next().unwrap_or(""), gp),
+                                i,
+                                0,
+                            );
+                        }
+                    }
                 }
                 continue;
             }

@@ -6,7 +6,7 @@
 
 - 手順 1 (設計): 済み。`block_on_threads(allocator, n, f)` + `spawn[F: Send]`、枠の `Send` は E2074 (新設)、スケジューラの核は `sysrt.c`。仕様との衝突は無い。
 - 手順 2a (検査・`.sig`・木走査と KIR の決定的な代替): 済み。枠の `Send` は E2074 (E2041 は `let _ = e` の禁止で使用済みだったので替えた)。`std.task.spawn` / `block_on_threads` の閉包は E2040 (取り込み・結果) と E2037 (`static` 境界) を受ける。`n` と allocator は木走査・KIR では無視する。
-- 手順 2c (仕様 0.10.37・チートシート): 済み。
+- 手順 2c (仕様 0.10.40・チートシート): 済み。
 - 手順 3 (試験): `stage0/tests/net_async_mt.rs` (256 接続 echo と全バイトの確認、10 万の小タスクの合計が厳密、Send の拒否 4 件、木走査 == ネイティブ)。10 万タスクの試験で、1 スレッドの実行器の `pick` / `first_undone` / `free_from` が再帰で書かれていて stack overflow (102) になる不具合が見つかり、ループに直した (`kir_suspend_exec.kir`)。
 - 手順 2b (ネイティブの実スレッド実行器): **未着手**。今のネイティブの `block_on_threads` は `n` を無視して 1 スレッドの実行器で動く (結果は木走査と同じ)。測定 (手順 3 の後半) も 2b の後。
 

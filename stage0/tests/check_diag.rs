@@ -539,6 +539,33 @@ impl core.marker.Send for t.sys.Shared
     assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E5002"), "{}", text(&o.stdout));
 }
 
+/// 5.5: 手動の Send/Sync は型を定義したモジュール (かつ許可モジュール) だけ。別モジュール・標準の型は E5010、
+/// 冗長 (自動で成り立つ型) は E5011、二重は E1114。
+#[test]
+fn send_sync_impl_site_rules() {
+    let cases: [(&str, &str, &str, &str); 6] = [
+        ("other_module", "type t.Outer pub\n    inner: t.sys.Shared\nend t.Outer\n", "type t.sys.Shared pub\n    p: *const u8\nend t.sys.Shared\n\nimpl core.marker.Send for t.Outer\n", "E5010"),
+        ("std_type", "", "impl core.marker.Send for core.sync.AtomicBool\n", "E5010"),
+        ("std_generic", "", "impl core.marker.Send for std.sync.Receiver<u8>\n", "E5010"),
+        ("duplicate", "", "type t.sys.Shared pub\n    p: *const u8\nend t.sys.Shared\n\nimpl core.marker.Send for t.sys.Shared\n\nimpl core.marker.Send for t.sys.Shared\n", "E1114"),
+        ("redundant", "", "type t.sys.Plain pub\n    n: u32\nend t.sys.Plain\n\nimpl core.marker.Send for t.sys.Plain\n", "E5011"),
+        ("own_ok", "", "type t.sys.Shared pub\n    p: *const u8\nend t.sys.Shared\n\nimpl core.marker.Send for t.sys.Shared\n\nimpl core.marker.Sync for t.sys.Shared\n", ""),
+    ];
+    for (name, main_items, sys, want) in cases {
+        let t = Tmp::new(&format!("sendsync_site_{}", name), &main_wrap(main_items, ""));
+        fs::create_dir_all(t.0.join("src/t")).unwrap();
+        fs::write(t.0.join("src/t/sys.ksnl"), sys).unwrap();
+        fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t.sys\"]\n\n[dependencies]", 1)).unwrap();
+        let o = run(&["check", "--json"], &t.0);
+        let cs = codes(&text(&o.stdout));
+        if want.is_empty() {
+            assert!(cs.is_empty(), "{}: {:?}", name, cs);
+        } else {
+            assert!(cs.iter().any(|c| c == want), "{}: {:?} {}", name, cs, text(&o.stdout));
+        }
+    }
+}
+
 #[test]
 fn unsafe_manifest_is_validated() {
     let t = Tmp::new("unsafe_bad", &main_wrap("", ""));
@@ -5400,4 +5427,15 @@ fn check_never_runs_effects_of_const_initializers() {
     let o2 = run(&["check", "--json"], &t2.0);
     assert_ne!(o2.status.code(), Some(0));
     assert!(!marker.exists(), "`ksn check` ran a constant initializer's effects");
+}
+
+#[test]
+fn rust_forms_forbidden_by_decision_get_guidance_not_a_fix() {
+    let src = "enum t.Op\n    Ins { pos: usize, len: usize }\nend t.Op\n\nfn t.g(mut q: i32) -> i32 uses [] panics never\n    let end = q\n    match res {\n        Ok(mut s) => s\n        Err(e) => 0\n    }\n    loop {\n        break Some(3i32)\n    }\n    q\nend t.g\n";
+    let t = Tmp::new_raw("rust_forms_guidance", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(out.contains("tuple variant `Ins(usize, usize)`"), "{}", out);
+    assert!(out.contains("`mut` is not allowed in a pattern or parameter"), "{}", out);
+    assert!(out.contains("`end` is a reserved word"), "{}", out);
+    assert!(out.contains("`break` takes no value"), "{}", out);
 }
