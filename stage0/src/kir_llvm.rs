@@ -1019,11 +1019,19 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     }
     // AddressSanitizer が有効なら、全ての関数定義に sanitize_address を付ける (設計_KIR.md 17.9)。
     // `declare` は `define` ではないので置換されない。
-    if std::env::var("KSN_CLANG_ARGS")
-        .map(|s| s.split_whitespace().any(|a| a == "-fsanitize=address"))
-        .unwrap_or(false)
-    {
-        // `define ... {` → `define ... sanitize_address {`（関数属性は `{` の前に置く）。`declare` は対象外。
+    // ThreadSanitizer も同じく全ての関数定義に sanitize_thread を付ける。付けないと clang は生成コードを
+    // 計測せず、TSan の試験が競合を見逃す (空振り)。
+    let clang_args = std::env::var("KSN_CLANG_ARGS").unwrap_or_default();
+    let mut sanitize_attrs: Vec<&str> = Vec::new();
+    if clang_args.split_whitespace().any(|a| a == "-fsanitize=address") {
+        sanitize_attrs.push("sanitize_address");
+    }
+    if clang_args.split_whitespace().any(|a| a == "-fsanitize=thread") {
+        sanitize_attrs.push("sanitize_thread");
+    }
+    if !sanitize_attrs.is_empty() {
+        // `define ... {` → `define ... sanitize_address sanitize_thread {`（関数属性は `{` の前に置く）。`declare` は対象外。
+        let attrs = sanitize_attrs.join(" ");
         out = out
             .lines()
             .map(|l| {
@@ -1031,7 +1039,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
                 if trimmed.starts_with("define ") && trimmed.ends_with('{') {
                     let indent = &l[..l.len() - trimmed.len()];
                     let body = &trimmed[..trimmed.len() - 1];
-                    format!("{} {}sanitize_address {{\n", indent, body)
+                    format!("{} {}{} {{\n", indent, body, attrs)
                 } else {
                     l.to_string()
                 }
