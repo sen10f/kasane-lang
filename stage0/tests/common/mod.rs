@@ -324,7 +324,7 @@ pub fn build_native_strict(name: &str, src: &str, release: bool) -> (Tmp, Option
     let o = c.output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
     let kind = if release { "release" } else { "debug" };
-    let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t" });
     drop(cache);
     let found = if p.exists() { Some(p) } else { None };
     (t, found, out)
@@ -1694,7 +1694,7 @@ pub fn ffi_native(t: &Tmp, name: &str) -> (String, Option<Output>) {
     let b = Command::new(exe()).args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     let out = text(&b.stdout) + &text(&b.stderr);
-    let bin = t.0.join("target").join("debug").join("t.native");
+    let bin = t.0.join("target").join("debug").join("t");
     if !bin.exists() {
         return (out, None);
     }
@@ -2147,7 +2147,7 @@ pub fn llvm_build_and_run(t: &Tmp) -> Option<(Output, Output)> {
     if !clang_available() {
         return None;
     }
-    let exe = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let exe = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
     assert!(exe.exists(), "{}", out);
     let n = Command::new(&exe).current_dir(&t.0).output().expect("native");
     Some((run(&["run"], &t.0), n))

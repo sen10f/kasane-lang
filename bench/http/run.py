@@ -67,7 +67,7 @@ def build_all():
     cache = tempfile.mkdtemp(prefix="ksncache_")
     t = timed([KSN, "build", "--release"], cwd=SHORTENER, env=dict(os.environ, KSN_CACHE_DIR=cache))
     shutil.rmtree(cache, ignore_errors=True)
-    exe = os.path.join(SHORTENER, "target", "release", "shortener.native")
+    exe = os.path.join(SHORTENER, "target", "release", "shortener")
     info["Kasane (native, worker pool)"] = {"exe": exe, "build_s": t, "size": os.path.getsize(exe), "kasane": True}
     return info
 

@@ -99,7 +99,7 @@ fn ksn(args: &[&str], cwd: &Path) -> Output {
 /// `ksn build` の出力のネイティブを走らせ、標準出力と終了コードを返す。
 fn run_native(app: &Path, release: bool) -> (String, String) {
     let kind = if release { "release" } else { "debug" };
-    let bin = app.join("target").join(kind).join(if cfg!(windows) { "app.exe" } else { "app.native" });
+    let bin = app.join("target").join(kind).join(if cfg!(windows) { "app.exe" } else { "app" });
     let o = if release { ksn(&["build", "--release"], app) } else { ksn(&["build"], app) };
     let out = all(&o);
     assert!(!out.contains("KIR に下ろせない"), "下ろせない理由が出た: {}", out);

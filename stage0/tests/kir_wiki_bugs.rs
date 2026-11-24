@@ -32,7 +32,7 @@ fn asan_run(t: &Tmp, name: &str) -> Option<Output> {
         return None;
     }
     let dir = t.0.join("target/release");
-    let p = dir.join(fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).find(|n| n.to_string_lossy().ends_with(".native")).expect("native executable"));
+    let p = dir.join(fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).find(|n| n.to_string_lossy() == "t").expect("native executable"));
     Some(Command::new(&p).env("ASAN_OPTIONS", "detect_leaks=1").output().unwrap())
 }
 

@@ -56,7 +56,7 @@ fn both(name: &str, src: &str, want: &str) {
     let b = run(&["build", "--backend", "llvm"], &t.0);
     let bout = text(&b.stdout) + &text(&b.stderr);
     assert_eq!(b.status.code(), Some(0), "{name} build: {bout}");
-    let native = t.0.join("target").join("debug").join("t.native");
+    let native = t.0.join("target").join("debug").join("t");
     let prog = if native.exists() {
         native
     } else {

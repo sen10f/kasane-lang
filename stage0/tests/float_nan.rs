@@ -95,7 +95,7 @@ end t.main
     let want = "fabs=9221120237041090560 sqrt=9221120237041090560\n";
     assert_eq!(text(&interp.stdout), want);
     let b = run(&["build", "--release", "--allow-bundle"], &t.0);
-    let p = t.0.join("target/release/t.native");
+    let p = t.0.join("target/release/t");
     if p.exists() {
         let n = Command::new(&p).output().unwrap();
         assert_eq!(text(&n.stdout), want, "{}{}", text(&n.stderr), text(&b.stderr));

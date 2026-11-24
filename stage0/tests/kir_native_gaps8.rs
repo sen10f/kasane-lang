@@ -172,7 +172,7 @@ end t.main
         assert_eq!(b.status.code(), Some(0), "build (release: {}): {}", release, out);
         assert!(!out.contains("backend skipped"), "fell back (release: {}):\n{}", release, out);
         let rel = if release { "release" } else { "debug" };
-        let exe = t.0.join("target").join(rel).join("t.native");
+        let exe = t.0.join("target").join(rel).join("t");
         let n = std::process::Command::new(&exe).current_dir(&t.0).output().expect("run native");
         assert_eq!(n.status.code(), Some(0), "native (release: {}): {}{}", release, text(&n.stdout), text(&n.stderr));
         assert_eq!(text(&n.stdout), "ffi agg ok\n");

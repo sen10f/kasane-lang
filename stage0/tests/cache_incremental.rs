@@ -29,7 +29,7 @@ fn build_produces_artifacts_and_is_cached() {
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     let tgt = d.join("target").join("release");
     assert!(!tgt.join("ksn.exe").exists() && !tgt.join("ksn").exists(), "release はバンドルの ksn を書かない");
-    assert!(tgt.join("native.native").exists() || tgt.join("native.exe").exists());
+    assert!(tgt.join("native").exists() || tgt.join("native.exe").exists());
     let again = b(true);
     assert_eq!(again.status.code(), Some(0));
     let _ = fs::remove_dir_all(&cache);
@@ -51,7 +51,7 @@ fn the_realtime_example_runs_natively_through_the_native_build() {
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
         let kind = if release { "release" } else { "debug" };
-        let p = d.join("target").join(kind).join(if cfg!(windows) { "realtime.exe" } else { "realtime.native" });
+        let p = d.join("target").join(kind).join(if cfg!(windows) { "realtime.exe" } else { "realtime" });
         let p = native_or_launcher(p, &out);
         let r = Command::new(&p).output().unwrap();
         assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
@@ -69,7 +69,7 @@ fn the_demo_example_runs_natively_through_the_native_build() {
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
     let o = Command::new(exe()).args(["build", "--backend", "llvm"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
-    let p = d.join("target").join("debug").join(if cfg!(windows) { "demo.exe" } else { "demo.native" });
+    let p = d.join("target").join("debug").join(if cfg!(windows) { "demo.exe" } else { "demo" });
     let p = native_or_launcher(p, &out);
     let r = Command::new(&p).output().unwrap();
     assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
@@ -93,7 +93,7 @@ fn the_json_example_runs_natively_through_the_native_build() {
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
         let kind = if release { "release" } else { "debug" };
-        let p = d.join("target").join(kind).join(if cfg!(windows) { "json.exe" } else { "json.native" });
+        let p = d.join("target").join(kind).join(if cfg!(windows) { "json.exe" } else { "json" });
         let p = native_or_launcher(p, &out);
         let r = Command::new(&p).output().unwrap();
         assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
@@ -185,7 +185,7 @@ fn the_llvm_backend_compiles_map_get_mut_and_hashmap_iter() {
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
         let kind = if release { "release" } else { "debug" };
-        let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
+        let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t" });
         let p = native_or_launcher(p, &out);
         let r = Command::new(&p).output().unwrap();
         assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
@@ -229,7 +229,7 @@ fn the_llvm_backend_compiles_mutex_lock_and_guard() {
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
         let kind = if release { "release" } else { "debug" };
-        let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
+        let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t" });
         let p = native_or_launcher(p, &out);
         let r = Command::new(&p).output().unwrap();
         assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
@@ -254,7 +254,7 @@ fn the_features_example_runs_natively_through_the_native_build() {
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
         let kind = if release { "release" } else { "debug" };
-        let p = d.join("target").join(kind).join(if cfg!(windows) { "features.exe" } else { "features.native" });
+        let p = d.join("target").join(kind).join(if cfg!(windows) { "features.exe" } else { "features" });
         let p = native_or_launcher(p, &out);
         let r = Command::new(&p).output().unwrap();
         assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
@@ -272,7 +272,7 @@ fn the_threads_example_runs_natively_through_the_native_build() {
     assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
     let o = Command::new(exe()).args(["build", "--backend", "llvm"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
-    let p = d.join("target").join("debug").join(if cfg!(windows) { "threads.exe" } else { "threads.native" });
+    let p = d.join("target").join("debug").join(if cfg!(windows) { "threads.exe" } else { "threads" });
     let p = native_or_launcher(p, &out);
     let r = Command::new(&p).output().unwrap();
     assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
@@ -296,7 +296,7 @@ fn the_tour_example_runs_natively_through_the_native_build() {
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
         let kind = if release { "release" } else { "debug" };
-        let p = d.join("target").join(kind).join(if cfg!(windows) { "tour.exe" } else { "tour.native" });
+        let p = d.join("target").join(kind).join(if cfg!(windows) { "tour.exe" } else { "tour" });
         let p = native_or_launcher(p, &out);
         let r = Command::new(&p).output().unwrap();
         assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
@@ -319,7 +319,7 @@ fn ffi_extern_calls_and_raw_pointers_work_natively() {
         .output()
         .unwrap();
     let _ = fs::remove_dir_all(&cache);
-    let bin = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let bin = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
     let bin = native_or_launcher(bin, &(text(&b.stdout) + &text(&b.stderr)));
     let r = Command::new(&bin).output().unwrap();
     assert_eq!(text(&r.stdout), "ffi ok\n");
@@ -344,7 +344,7 @@ fn the_http_example_runs_natively_through_the_native_build() {
         let out = text(&o.stdout) + &text(&o.stderr);
         assert_native_or_reasoned_skip(&out);
         let kind = if release { "release" } else { "debug" };
-        let p = d.join("target").join(kind).join("http.native");
+        let p = d.join("target").join(kind).join("http");
         let p = native_or_launcher(p, &out);
         let r = Command::new(&p).output().unwrap();
         assert_eq!(r.status.code(), interp.status.code(), "{}", text(&r.stderr));
@@ -366,7 +366,7 @@ fn the_shortener_example_builds_natively_without_skips_and_matches_the_interpret
     let o = Command::new(exe()).args(["build", "--backend", "llvm"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
     assert_native_or_reasoned_skip(&out);
-    let p = native_or_launcher(d.join("target").join("debug").join("shortener.native"), &out);
+    let p = native_or_launcher(d.join("target").join("debug").join("shortener"), &out);
     let r = Command::new(&p).current_dir(&d).output().unwrap();
     assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
     assert_eq!(text(&r.stdout), text(&interp.stdout));
@@ -394,7 +394,7 @@ fn the_plugins_example_builds_natively_without_skips_and_matches_the_interpreter
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
         assert_native_or_reasoned_skip(&out);
-        let p = native_or_launcher(d.join("target").join(if release { "release" } else { "debug" }).join("plugins.native"), &out);
+        let p = native_or_launcher(d.join("target").join(if release { "release" } else { "debug" }).join("plugins"), &out);
         let r = Command::new(&p).current_dir(&d).output().unwrap();
         assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
         assert_eq!(text(&r.stdout), text(&interp.stdout));
@@ -429,7 +429,7 @@ fn the_ffi_example_checks_formats_tests_and_runs_the_same_in_both_backends() {
     let b = Command::new(exe()).args(["build", "--backend", "llvm"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let out = text(&b.stdout) + &text(&b.stderr);
     assert_native_or_reasoned_skip(&out);
-    let n = Command::new(native_or_launcher(d.join("target").join("debug").join("ffi.native"), &out)).current_dir(&d).output().unwrap();
+    let n = Command::new(native_or_launcher(d.join("target").join("debug").join("ffi"), &out)).current_dir(&d).output().unwrap();
     assert_eq!(text(&n.stdout), text(&interp.stdout));
     let _ = fs::remove_dir_all(d.join("target"));
     let _ = fs::remove_dir_all(&cache);
@@ -471,7 +471,7 @@ fn the_ffi_shapes_example_builds_its_c_library_and_passes_in_both_backends() {
     let b = Command::new(exe()).args(["build", "--backend", "llvm"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let out = text(&b.stdout) + &text(&b.stderr);
     assert_native_or_reasoned_skip(&out);
-    let n = Command::new(native_or_launcher(d.join("target").join("debug").join("shapes.native"), &out)).current_dir(&d).output().unwrap();
+    let n = Command::new(native_or_launcher(d.join("target").join("debug").join("shapes"), &out)).current_dir(&d).output().unwrap();
     assert_eq!(text(&n.stdout), text(&interp.stdout));
     let _ = fs::remove_dir_all(&d);
     let _ = fs::remove_dir_all(&cache);
@@ -570,7 +570,7 @@ fn the_hashmap_index_stays_consistent_across_growth_removal_and_reinsertion() {
         .output()
         .unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
-    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
     let p = native_or_launcher(p, &out);
     let r = Command::new(&p).output().unwrap();
     assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
@@ -729,7 +729,7 @@ fn cache_hit_reuses_native_artifact_without_compiling() {
     let t = Tmp::new("cache_artifact", CACHE_SRC);
     let cache = scratch::Scratch::at(format!("ksn_cache_art_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
-    let exe_file = if cfg!(windows) { "t.exe" } else { "t.native" };
+    let exe_file = if cfg!(windows) { "t.exe" } else { "t" };
     let exe_path = t.0.join("target").join("debug").join(exe_file);
 
     let first = build_with_cache(exe(), &t.0, &cache, &["--backend", "llvm"], &[("KSN_TIME", "1")]);
@@ -884,7 +884,7 @@ fn ffi_struct_by_value_works_on_both_backends_with_libc() {
         .output()
         .unwrap();
     let _ = fs::remove_dir_all(&cache);
-    let bin = t.0.join("target").join("debug").join("t.native");
+    let bin = t.0.join("target").join("debug").join("t");
     let bin = native_or_launcher(bin, &(text(&b.stdout) + &text(&b.stderr)));
     let r = Command::new(&bin).output().unwrap();
     assert_eq!(text(&r.stdout), "libc struct ok\n");
@@ -1045,7 +1045,7 @@ fn llvm_builds_of_real_packages_match_run() {
         assert_eq!(b.status.code(), Some(0), "{}: {}{}", pkg, out, text(&b.stderr));
         assert!(!out.contains("backend skipped"), "{}: {}", pkg, out);
         let r = Command::new(exe()).arg("run").current_dir(&dir).env("KSN_STDLIB", root().join("spec").join("stdlib")).output().unwrap();
-        let n = Command::new(dir.join("target").join("debug").join(format!("{}.native", name))).current_dir(&dir).output().unwrap();
+        let n = Command::new(dir.join("target").join("debug").join(format!("{}{}", name, if cfg!(windows) { ".exe" } else { "" }))).current_dir(&dir).output().unwrap();
         assert_eq!(n.status.code(), r.status.code(), "{}: 終了コード", pkg);
         assert_eq!(text(&n.stdout), text(&r.stdout), "{}: stdout", pkg);
         assert_eq!(text(&n.stderr), text(&r.stderr), "{}: stderr", pkg);
@@ -1570,7 +1570,7 @@ fn derive_try_clone_runs_and_builds_alike() {
     c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
     let o = c.output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
-    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
     let p = native_or_launcher(p, &out);
     let r = Command::new(&p).output().unwrap();
     assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
@@ -1773,7 +1773,7 @@ fn derive_json_round_trips_and_builds_alike() {
     c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
     let o = c.output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
-    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
     let p = native_or_launcher(p, &out);
     let r = Command::new(&p).output().unwrap();
     assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
@@ -1906,7 +1906,7 @@ fn release_native_build_writes_no_interpreter_bundle() {
     let out = t.0.join("target").join("release");
     assert!(!out.join("pkg").exists() && !out.join("stdlib").exists(), "release にバンドルがある");
     assert!(!out.join(if cfg!(windows) { "ksn.exe" } else { "ksn" }).exists(), "release に ksn の写しがある");
-    assert!(out.join(if cfg!(windows) { "t.exe" } else { "t.native" }).exists());
+    assert!(out.join(if cfg!(windows) { "t.exe" } else { "t" }).exists());
     assert!(!text(&o.stdout).contains("portable interpreter bundle"), "{}", text(&o.stdout));
     let _ = fs::remove_dir_all(&cache);
 }
@@ -1960,14 +1960,14 @@ mod cache_integrity {
         let hit = text(&build(&d, &cache).stdout);
         assert!(hit.contains("cache hit"), "{}", hit);
         let mut v = Vec::new();
-        find(&cache, &|p| p.parent().map_or(false, |q| q.ends_with("artifact")) && p.extension().map_or(false, |x| x == "native"), &mut v);
+        find(&cache, &|p| p.parent().map_or(false, |q| q.ends_with("artifact")) && p.extension().is_none() && p.file_name().map_or(false, |n| n == "t"), &mut v);
         assert_eq!(v.len(), 1);
         fs::write(&v[0], "#!/bin/sh\ntouch /tmp/ksn_cacheint_pwned\n").unwrap();
         let o = build(&d, &cache);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         assert!(text(&o.stderr).contains("integrity check"), "{}", text(&o.stderr));
         let mut b = Vec::new();
-        find(&d.join("target"), &|p| p.extension().map_or(false, |x| x == "native"), &mut b);
+        find(&d.join("target"), &|p| p.extension().is_none() && p.file_name().map_or(false, |n| n == "t"), &mut b);
         assert_eq!(b.len(), 1);
         assert!(!String::from_utf8_lossy(&fs::read(&b[0]).unwrap()).contains("ksn_cacheint_pwned"));
         let _ = fs::remove_dir_all(&cache);

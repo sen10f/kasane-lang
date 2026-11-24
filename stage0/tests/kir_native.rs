@@ -2544,7 +2544,7 @@ fn linear_ok_programs_build_native_and_match_run() {
         let t = Tmp::new(&format!("linear_native_{}", stem), &fs::read_to_string(p).unwrap());
         let b = run(&["build"], &t.0);
         let out = format!("{}{}", text(&b.stdout), text(&b.stderr));
-        let exe = t.0.join("target").join("debug").join("t.native");
+        let exe = t.0.join("target").join("debug").join("t");
         if out.contains("native backend skipped") || !exe.exists() {
             return Some(format!("{}: バンドルへ退避: {}", stem, out.lines().find(|l| l.contains("skipped")).unwrap_or("")));
         }
@@ -2620,7 +2620,7 @@ end t.main
     assert_eq!((text(&i.stdout).trim(), i.status.code()), ("ok", Some(0)), "{}", text(&i.stderr));
     let b = run(&["build", "--release"], &t.0);
     assert!(b.status.success(), "{}{}", text(&b.stdout), text(&b.stderr));
-    let o = Command::new(t.0.join("target").join("release").join("t.native")).output().unwrap();
+    let o = Command::new(t.0.join("target").join("release").join("t")).output().unwrap();
     assert_eq!((text(&o.stdout).trim(), o.status.code()), ("ok", Some(0)));
 }
 

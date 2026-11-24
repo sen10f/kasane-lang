@@ -27,7 +27,7 @@ fn native_output(name: &str, release: bool) -> String {
     assert_eq!(o.status.code(), Some(0), "ksn build が失敗:\n{}", log);
     assert!(!log.contains("skipped"), "ネイティブに下ろせず退避した (退避は許さない):\n{}", log);
     let kind = if release { "release" } else { "debug" };
-    let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t" });
     assert!(p.exists(), "ネイティブの実行ファイルがない:\n{}", log);
     let o = std::process::Command::new(&p).current_dir(&t.0).output().expect("run native");
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));

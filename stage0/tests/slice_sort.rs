@@ -63,7 +63,7 @@ fn run_all(name: &str, src: &str) -> String {
     assert!(b.status.success(), "{}{}", text(&b.stdout), text(&b.stderr));
     let _ = fs::remove_dir_all(&cache);
     let launcher = t.0.join("target/debug").join("t");
-    let native = t.0.join("target/debug").join("t.native");
+    let native = t.0.join("target/debug").join("t");
     let p = if native.exists() { native } else { launcher };
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
@@ -279,7 +279,7 @@ fn build_native_and_compare(name: &str, src: &str) {
     let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     let log = format!("{}{}", text(&b.stdout), text(&b.stderr));
-    let native = t.0.join("target/debug/t.native");
+    let native = t.0.join("target/debug/t");
     assert!(b.status.success() && native.exists(), "ネイティブにならない: {}", log);
     let o = Command::new(&native).output().unwrap();
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));

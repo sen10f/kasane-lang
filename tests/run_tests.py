@@ -157,7 +157,7 @@ atexit.register(lambda: None if os.environ.get('KSN_KEEP_TMP') == '1' else shuti
 envc = dict(os.environ, KSN_CACHE_DIR=cache2)
 d = os.path.join(ROOT, 'examples', 'native')
 r = subprocess.run([RSEXE, 'build', '--release'], cwd=d, capture_output=True, text=True, encoding='utf-8', env=envc)
-exe2 = os.path.join(d, 'target', 'release', 'native.exe' if os.name == 'nt' else 'native.native')
+exe2 = os.path.join(d, 'target', 'release', 'native.exe' if os.name == 'nt' else 'native')
 step('rust ksn: build produces a native executable', r.returncode == 0 and os.path.exists(exe2), r.stdout + r.stderr)
 if os.path.exists(exe2):
     r = subprocess.run([exe2], capture_output=True, text=True)

@@ -157,7 +157,7 @@ fn derive_drop_frees_a_million_deep_chain_and_tree_natively_with_a_small_stack()
     let o = Command::new(exe()).args(["build"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
     let _ = fs::remove_dir_all(&cache);
-    let native = t.0.join("target").join("debug").join("t.native");
+    let native = t.0.join("target").join("debug").join("t");
     assert!(native.exists(), "derive [Drop] の型はネイティブに下ろせるはず: {}", out);
     // 1 回の繰り返しで鎖 (約 100 万 × 40 バイト) と木が生きる。12 回漏らすと 1 GB を超える。
     let o = Command::new("sh")
@@ -280,7 +280,7 @@ fn the_selfhost_boxtree_probe_builds_natively_with_derive_drop() {
     let o = Command::new(exe()).args(["build"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
     let _ = fs::remove_dir_all(&cache);
-    let native = d.join("target").join("debug").join("boxtree.native");
+    let native = d.join("target").join("debug").join("boxtree");
     assert!(native.exists(), "{}", out);
     let o = Command::new(&native).output().unwrap();
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));

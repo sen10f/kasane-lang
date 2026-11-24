@@ -99,7 +99,7 @@ fn string_kasane_push_family_matches_in_tree_and_native_paths() {
     let out = text(&b.stdout) + &text(&b.stderr);
     assert!(b.status.success(), "{}", out);
     assert!(!out.contains("backend skipped"), "ネイティブにならず退避した:\n{}", out);
-    let native = t.0.join("target").join("debug").join("t.native");
+    let native = t.0.join("target").join("debug").join("t");
     let o = Command::new(&native).output().expect("run native");
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     assert_eq!(text(&o.stdout), EXPECT, "ネイティブの出力が期待値と違う");
@@ -143,7 +143,7 @@ fn string_kasane_as_str_sees_later_writes_in_all_paths() {
     let b = Command::new(exe()).args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     assert!(b.status.success(), "{}{}", text(&b.stdout), text(&b.stderr));
-    let o = Command::new(t.0.join("target").join("debug").join("t.native")).output().expect("run native");
+    let o = Command::new(t.0.join("target").join("debug").join("t")).output().expect("run native");
     assert_eq!(text(&o.stdout), EXPECT_I, "ネイティブ");
 }
 

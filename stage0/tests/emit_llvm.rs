@@ -50,7 +50,7 @@ fn emit_llvm_matches_native_output() {
         &[("KSN_CACHE_DIR", cache.to_str().unwrap()), ("KSN_STDLIB", stdlib.to_str().unwrap())],
     );
     assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
-    let native = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let native = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
     assert!(native.exists(), "native executable after ksn build");
     let n = Command::new(&native).output().unwrap();
     assert_eq!(n.status.code(), Some(0), "{} {}", text(&n.stdout), text(&n.stderr));

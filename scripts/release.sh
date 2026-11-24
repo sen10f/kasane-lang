@@ -215,10 +215,10 @@ case "$TARGET" in
     out_run="$(run_ksn run)"
     run_ksn build --release
     if [ -z "$QEMU" ]; then
-      out_native="$(./target/release/hello.native)"
+      out_native="$(./target/release/hello)"
       [ "$out_run" = "Hello, Kasane!" ] || { echo "release: smoke: ksn run の出力が想定外: $out_run" >&2; exit 1; }
-      [ "$out_native" = "Hello, Kasane!" ] || { echo "release: smoke: hello.native の出力が想定外: $out_native" >&2; exit 1; }
-      echo "release: スモークテスト OK (ksn --version / ksn run / ksn build --release / ./target/release/hello.native)"
+      [ "$out_native" = "Hello, Kasane!" ] || { echo "release: smoke: hello の出力が想定外: $out_native" >&2; exit 1; }
+      echo "release: スモークテスト OK (ksn --version / ksn run / ksn build --release / ./target/release/hello)"
     else
       [ "$out_run" = "Hello, Kasane!" ] || { echo "release: smoke: ksn run の出力が想定外: $out_run" >&2; exit 1; }
       echo "release: スモークテスト OK (qemu-aarch64 ksn --version / ksn new / ksn run / ksn build --release)"

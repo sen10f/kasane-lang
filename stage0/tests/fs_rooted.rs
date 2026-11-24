@@ -208,7 +208,7 @@ fn native_output(p: &Pkg) -> String {
     let o = Command::new(exe()).arg("build").current_dir(&p.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let log = text(&o.stdout) + &text(&o.stderr);
     let _ = fs::remove_dir_all(&cache);
-    let bin = p.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let bin = p.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
     assert!(bin.exists(), "ネイティブが作れなかった (退避は許さない): {}", log);
     let o = Command::new(&bin).current_dir(&p.0).output().unwrap();
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));

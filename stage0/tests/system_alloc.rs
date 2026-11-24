@@ -67,7 +67,7 @@ fn system_alloc_realloc_dealloc_agree_between_interpreter_and_native() {
         return;
     }
     assert!(!bo.contains("backend skipped"), "{}", bo);
-    let exe_path = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let exe_path = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
     let n = Command::new(&exe_path).current_dir(&t.0).output().expect("native");
     same_output(&r, &n);
 }

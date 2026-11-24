@@ -56,11 +56,11 @@ rustc -C opt-level=3 -o bench/http/target/loadgen bench/http/loadgen/loadgen.rs
 
 taskset -c 0-9 bench/http/target/server_rust 127.0.0.1:18080 4
 taskset -c 0-9 bench/http/target/server_go -addr 127.0.0.1:18080 -workers 4
-taskset -c 0-9 examples/shortener/target/release/shortener.native 127.0.0.1:18080 0 "" 4
+taskset -c 0-9 examples/shortener/target/release/shortener 127.0.0.1:18080 0 "" 4
 taskset -c 12-31 bench/http/target/loadgen 127.0.0.1:18080 64 10
 ```
 
-Kasane 版の引数は `shortener.native <アドレス> <接続数> <保存先> [ワーカー数]`。接続数 0 は、ワーカーの形では「無制限」
+Kasane 版の引数は `shortener <アドレス> <接続数> <保存先> [ワーカー数]`。接続数 0 は、ワーカーの形では「無制限」
 (従来の 1 接続ずつの形では 0 件で終わる)。保存先 `""` はメモリのみ (ファイルへ書かない)。ワーカー数を省くか 0 にすると従来の 1 接続ずつ。
 インタプリタ (`ksn run`) でもワーカーの形は動くが、スレッドは 1 つずつ最後まで走るので、先に接続数ぶんの接続が来ていないと受付で止まる
 (テストはそう書いてある)。実サーバはネイティブで動かす。

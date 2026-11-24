@@ -4543,8 +4543,11 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
     } else if crate::kir_llvm::is_wasm(tgt) {
         format!("{}.wasm", name)
     } else {
-        format!("{}.native", name)
+        // Linux などでは拡張子なし。バンドルの起動スクリプトも同じ名前なので、ネイティブができれば置き換わる。
+        name.to_string()
     });
+    // 旧名 (`<名前>.native`) が前のビルドから残っていたら消す (古い実行ファイルを走らせない)。
+    let _ = fs::remove_file(out.join(format!("{}.native", name)));
     // キャッシュに同じキーの生成物があれば複製し、コンパイルとリンクを省く。
     let stored = cached.join(ARTIFACT_DIR).join(exe.file_name().expect("exe has a file name"));
     let reused = entry.is_some() && artifact_intact(&stored, &stored) && fs::copy(&stored, &exe).is_ok() && artifact_intact(&stored, &exe);
@@ -4650,7 +4653,7 @@ fn build_llvm_test(root: &Path, prog: &Program, user: &[usize], ti: usize, nat: 
     let lo = crate::kir_lower::lower_test(prog, user, ti);
     let dir = root.join("target").join("test-llvm");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let exe = dir.join(format!("{}_{}{}", ti, test_stem(&d.name), if cfg!(windows) { ".exe" } else { ".native" }));
+    let exe = dir.join(format!("{}_{}{}", ti, test_stem(&d.name), if cfg!(windows) { ".exe" } else { "" }));
     let _ = fs::remove_file(&exe);
     match llvm_exe(lo, &d.name, &exe, "-O1", Tgt { ir: crate::kir_llvm::host_target(), clang: None }, nat) {
         Ok(()) => Ok(exe),

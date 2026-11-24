@@ -28,7 +28,7 @@ fn build(t: &Tmp, release: bool) -> PathBuf {
     let o = c.output().unwrap();
     assert_native_or_reasoned_skip(&(text(&o.stdout) + &text(&o.stderr)));
     let kind = if release { "release" } else { "debug" };
-    let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t" });
     let p = native_or_launcher(p, &(text(&o.stdout) + &text(&o.stderr)));
     let _ = fs::remove_dir_all(&cache);
     p

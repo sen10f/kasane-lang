@@ -71,7 +71,7 @@ fn relative_link_resolves_to_package_root_not_cwd() {
             .unwrap();
         let outb = text(&b.stdout) + &text(&b.stderr);
         assert_eq!(b.status.code(), Some(0), "build: {}", outb);
-        let exe = t.0.join("target").join("debug").join("t.native");
+        let exe = t.0.join("target").join("debug").join("t");
         assert!(exe.exists(), "native executable missing: {}", outb);
         let n = Command::new(&exe).current_dir(&evil_dir).output().unwrap();
         let outn = text(&n.stdout);
