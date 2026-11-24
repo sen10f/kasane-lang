@@ -1,0 +1,46 @@
+static t.S: std.sync.Mutex<u32> = std.sync.Mutex.new(0u32)
+
+fn t.a() -> () uses [suspend, thread] panics never
+    let mut g = t.S.lock()
+    t.bump(g.get_mut())
+    core.mem.drop(g)
+end t.a
+
+fn t.b() -> u32 uses [thread] panics never
+    let mut g = t.S.lock()
+    *g.get_mut() = 1000u32
+    let v = *g.get_mut()
+    core.mem.drop(g)
+    v
+end t.b
+
+fn t.bump(r: &mut u32) -> () uses [suspend] panics never
+    std.task.yield_now()
+    *r = r.wrapping_add(1u32)
+end t.bump
+
+fn t.main() -> () uses [alloc, io.console, suspend, thread] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let a = std.task.spawn_local(fn() -> () capture [] {
+            t.a()
+        })
+        let b = std.task.spawn_local(fn() -> u32 capture [] {
+            t.b()
+        })
+        a.join_task()
+        let r = b.join_task()
+        t.say(u64.from_u32(r))
+        let g = t.S.lock()
+        t.say(u64.from_u32(*g.get()))
+        core.mem.drop(g)
+    })
+end t.main
+
+fn t.say(n: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    match s.push_u64(n) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.say

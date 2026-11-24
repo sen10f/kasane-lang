@@ -97,7 +97,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
         tk.susp_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
     for &di in user {
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
+        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], guards: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
         for q in &b.params {
             w.scopes[0].insert(q.name.clone(), (0, q.ty.clone()));
         }
@@ -255,6 +255,8 @@ struct Walker<'a> {
     diags: Vec<(usize, String)>,
     /// 中断点をまたぐ借用 (E3050)。コードが違うので分けて出す。
     susp_diags: Vec<(usize, String)>,
+    /// ロックのガード (`MutexGuard` など) を持つ束縛の持ち主。中断点で生きていれば E3050。
+    guards: BTreeSet<String>,
     /// 配列リテラルで作った変数 → 要素ごとの、その要素だけが持つ貸し出し (`[&mut x, &mut z]` なら `[[x], [z]]`)。
     slots: HashMap<String, Vec<Vec<usize>>>,
     /// 要素の持ち主が崩れ得る変数 (定数添字の `replace` 以外の可変借用・代入・流入があったもの)。`Kill` を捨てる。
@@ -575,6 +577,9 @@ impl<'a> Walker<'a> {
                 let ty = info.bind.as_ref().map(|b| b.1.clone()).unwrap_or_else(|| info.ty.clone());
                 self.scopes.last_mut().unwrap().insert(n.clone(), (q.id, ty.clone()));
                 let k = key(n, q.id);
+                if matches!(&ty, Ty::Named(g, _, _) if matches!(g.as_str(), "std.sync.MutexGuard" | "std.sync.RwLockReadGuard" | "std.sync.RwLockWriteGuard")) {
+                    self.guards.insert(k.clone());
+                }
                 let s = if holds_field(self.p, &ty) { srcs.to_vec() } else { vec![] };
                 self.bind(k, s, true);
             } else if let Some(n) = &q.name {
@@ -1365,6 +1370,9 @@ impl<'a> Walker<'a> {
             }
             for (k, ev) in evs.iter().enumerate() {
                 if let Ev::Suspend { line } = ev {
+                    for g in self.guards.iter().filter(|g| live_after[k].contains(*g)) {
+                        self.susp_diags.push((*line, format!("cannot hold a lock guard across a suspension point: `{}` is used after the call that may suspend (other tasks could not take the lock)", show_var(g))));
+                    }
                     // 中断点で生きている (この後使われる) 持ち主の貸し出しは E3050 (5.6)。
                     let mut holders: Vec<(&String, &BTreeSet<usize>)> = st.iter().collect();
                     holders.sort();

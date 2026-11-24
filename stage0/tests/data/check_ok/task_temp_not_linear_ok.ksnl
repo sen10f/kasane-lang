@@ -1,0 +1,20 @@
+type t.P derive [Debug, Clone, Copy] pub
+    v: u32
+end t.P
+
+fn t.eat(p: t.P, u: ()) -> u32 uses [] panics never
+    core.mem.drop(u)
+    p.v
+end t.eat
+
+fn t.run() -> () uses [suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let a = std.task.spawn_local(fn() -> u32 capture [] {
+            t.eat(t.P {
+                v: 1u32
+            }, std.task.yield_now())
+        })
+        std.task.yield_now()
+        a.cancel()
+    })
+end t.run

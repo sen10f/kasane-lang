@@ -1,0 +1,33 @@
+type t.L linear pub
+    v: u32
+end t.L
+
+fn t.eat(l: t.L) -> () uses [alloc, io.console] panics may
+    let t.L {
+        v: v
+    } = l
+    t.say(u64.from_u32(v))
+end t.eat
+
+fn t.main() -> () uses [alloc, io.console, suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let a = std.task.spawn_local(fn() -> () capture [] {
+            let l = t.L {
+                v: 7u32
+            }
+            std.task.yield_now()
+            t.eat(l)
+        })
+        std.task.yield_now()
+        a.cancel()
+    })
+end t.main
+
+fn t.say(n: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    match s.push_u64(n) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.say
