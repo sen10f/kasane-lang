@@ -1,0 +1,24 @@
+static t.S: std.sync.Mutex<u32> = std.sync.Mutex.new(0u32)
+
+fn t.main() -> () uses [io.console, suspend, thread] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let a = std.task.spawn_local(fn() -> () capture [] {
+            t.w()
+        })
+        a.join_task()
+        core.mem.drop(std.io.print_line("done"))
+    })
+end t.main
+
+fn t.w() -> () uses [suspend, thread] panics may
+    let g = t.S.lock()
+    let c = fn() -> () capture [move g] {
+        core.mem.drop(g)
+    }
+    let b = std.task.spawn_local(fn() -> () capture [] {
+        let g2 = t.S.lock()
+        core.mem.drop(g2)
+    })
+    core.mem.drop(c)
+    b.join_task()
+end t.w

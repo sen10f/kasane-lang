@@ -1813,7 +1813,12 @@ impl<'a> W<'a> {
             Some(Callee::Def(di)) => Some(*di),
             _ => None,
         };
-        let auto = recv.conv.iter().any(|c| matches!(c, Coercion::AutoRef(_))) && !is_ref(&recv.ty);
+        // `Vec` の受け手に付く `&[T]` の自動参照は `AutoRef` の印が無いことがある: 値の受け手を `&self` のメソッドへ渡すなら借用 (一時値なら文を越えない)。
+        let self_ref = def.map_or(false, |di| {
+            let d = &self.p.defs[di];
+            d.is_method() && d.params.first().map_or(false, |q| matches!(from_v(&q.1, &self.gn), Ty::Ref(..)))
+        });
+        let auto = (recv.conv.iter().any(|c| matches!(c, Coercion::AutoRef(_))) || self_ref) && !is_ref(&recv.ty);
         let mut avs = vec![self.arg_of(recv, auto)];
         for a in args {
             avs.push(self.arg_of(a, false));
