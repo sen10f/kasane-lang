@@ -1237,7 +1237,7 @@ u64 ksn_rt_sys_now_ns(void) {
 #if defined(__linux__)
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
-typedef struct { i64 at; int st; int reg; int dir; int rdy[2]; } ksn_io_slot; /* st: 0 なし / 1 待ち / 2 準備完了 / 3 期限切れ。reg: epoll に載せた。rdy[d]: 待ち手がいない間に端が来た */
+typedef struct { i64 at; i64 task; int st; int reg; int dir; int rdy[2]; } ksn_io_slot; /* st: 0 なし / 1 待ち / 2 準備完了 / 3 期限切れ。reg: epoll に載せた。rdy[d]: 待ち手がいない間に端が来た */
 static __thread int ksn_io_ep = -1;
 static __thread ksn_io_slot *ksn_io_tab;
 static __thread i64 ksn_io_cap;
@@ -1249,6 +1249,20 @@ static __thread i32 *ksn_io_dl; /* 期限つきで待っている fd の一覧 (
 static __thread i64 ksn_io_dl_n, ksn_io_dl_cap;
 static __thread int ksn_io_efd = -1; /* 複数スレッドの実行器: 他のワーカーが起こすための eventfd */
 static __thread uint64_t ksn_io_efd_gen;
+static __thread i64 *ksn_io_fq; /* 印が付いた待ちのタスク番号 (bind された物) の列。io_wake が next で読む */
+static __thread i64 ksn_io_fq_h, ksn_io_fq_n, ksn_io_fq_cap;
+static void ksn_io_fq_push(i64 task) {
+    if (task < 0) return;
+    if (ksn_io_fq_h == ksn_io_fq_n) ksn_io_fq_h = ksn_io_fq_n = 0;
+    if (ksn_io_fq_n == ksn_io_fq_cap) {
+        i64 nc = ksn_io_fq_cap ? ksn_io_fq_cap * 2 : 256;
+        i64 *t = (i64 *)realloc(ksn_io_fq, (size_t)nc * sizeof(i64));
+        if (!t) return;
+        ksn_io_fq = t;
+        ksn_io_fq_cap = nc;
+    }
+    ksn_io_fq[ksn_io_fq_n++] = task;
+}
 #define KSN_IO_EFD_TAG ((uint64_t)1 << 32)
 
 static ksn_io_slot *ksn_io_slot_of(i32 fd) {
@@ -1339,7 +1353,7 @@ static i32 ksn_io_scan_dl(i64 now, i64 *best) {
         if ((i64)fd >= ksn_io_cap) continue;
         ksn_io_slot *s = &ksn_io_tab[fd];
         if (s->st != 1 || s->at < 0) continue; /* 古い項 */
-        if (s->at <= now) { s->st = 3; got++; ksn_io_nfired++; continue; }
+        if (s->at <= now) { s->st = 3; got++; ksn_io_nfired++; ksn_io_fq_push(s->task); continue; }
         if (best && (*best < 0 || s->at < *best)) *best = s->at;
         ksn_io_dl[w++] = fd;
     }
@@ -1402,13 +1416,24 @@ i32 ksn_rt_sys_io_poll(i32 block) {
         hit[1] = (e & (EPOLLOUT | EPOLLHUP | EPOLLERR)) != 0;
         for (int d = 0; d < 2; d++) {
             if (!hit[d]) continue;
-            if (s->st == 1 && s->dir == d) { s->st = 2; got++; ksn_io_nfired++; }
+            if (s->st == 1 && s->dir == d) { s->st = 2; got++; ksn_io_nfired++; ksn_io_fq_push(s->task); }
             else s->rdy[d] = 1;
         }
     }
     /* 期限切れ (まだ起きていない待ちがあるときだけ、期限つきの待ちの一覧を見る) */
     if (ksn_io_dl_used && ksn_io_nparked > ksn_io_nfired) got += ksn_io_scan_dl(ksn_mono_ms(), NULL);
     return got;
+}
+
+/* 待ちの fd にタスク番号を結び付ける (park の直後)。印が付いたら io_wake が next でそのタスクだけを起こす。 */
+void ksn_rt_sys_io_bind(i32 fd, u64 task) {
+    ksn_io_slot *s = ksn_io_slot_of(fd);
+    if (s) s->task = (i64)task;
+}
+i32 ksn_rt_sys_io_nfired(void) { return ksn_io_fq_h < ksn_io_fq_n; }
+u64 ksn_rt_sys_io_next(void) {
+    if (ksn_io_fq_h >= ksn_io_fq_n) return 0;
+    return (u64)ksn_io_fq[ksn_io_fq_h++];
 }
 
 /* 印の確認 (消さない)。0 = まだ、1 = 準備完了か期限切れ。 */
@@ -1435,6 +1460,9 @@ i32 ksn_rt_sys_io_pending(void) {
 #else
 void ksn_rt_sys_io_forget(i32 fd) { (void)fd; }
 i32 ksn_rt_sys_io_park(i32 fd, i32 write_side) { (void)fd; (void)write_side; return 0; }
+void ksn_rt_sys_io_bind(i32 fd, u64 task) { (void)fd; (void)task; }
+i32 ksn_rt_sys_io_nfired(void) { return 0; }
+u64 ksn_rt_sys_io_next(void) { return 0; }
 i32 ksn_rt_sys_io_poll(i32 block) { (void)block; return 0; }
 i32 ksn_rt_sys_io_ready(i32 fd) { (void)fd; return 1; }
 i32 ksn_rt_sys_io_take(i32 fd) { (void)fd; return 0; }
@@ -1554,7 +1582,7 @@ i64 ksn_rt_sys_mt_take(void) {
         if (!ksn_mt.qh) ksn_mt.qt = NULL;
         c->qnext = NULL;
         __atomic_fetch_sub(&ksn_mt.qlen, 1, __ATOMIC_SEQ_CST);
-        if (c->state == 0) {
+        if (__atomic_load_n(&c->state, __ATOMIC_ACQUIRE) == 0) {
             __atomic_store_n(&c->state, 1, __ATOMIC_RELEASE);
             it = c;
             break;
@@ -1581,11 +1609,12 @@ uint32_t ksn_rt_sys_mt_cancel(i64 id) {
     ksn_mt_item *it = KSN_MT_IT(id);
     uint32_t r = 0;
     pthread_mutex_lock(&ksn_mt.mu);
-    if (it->state == 0) {
+    uint32_t cur = __atomic_load_n(&it->state, __ATOMIC_ACQUIRE);
+    if (cur == 0) {
         __atomic_store_n(&it->state, 3, __ATOMIC_RELEASE);
         __atomic_fetch_sub(&ksn_mt.unfinished, 1, __ATOMIC_SEQ_CST);
         r = 1;
-    } else if (it->state == 1) {
+    } else if (cur == 1) {
         __atomic_store_n(&it->cancel, 1, __ATOMIC_RELEASE);
         r = 2;
     }
