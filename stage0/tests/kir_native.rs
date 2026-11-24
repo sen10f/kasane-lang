@@ -12,28 +12,30 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use common::*;
 
-/// E2044 (型が決まらない式・束縛) は既定で有効。`--no-strict-types` と `KSN_STRICT_TYPES=0` で旧来の
-/// 「黙る」挙動に戻り、`--strict-types` と `KSN_STRICT_TYPES=1` は受け付けるが何も変えない。
+/// E2044 (型が決まらない式・束縛) は常に有効。移行用の逃げ道 `--no-strict-types` と `KSN_STRICT_TYPES=0` は
+/// 廃止され、付けると誤りで止まる (終了 2、廃止の文面)。`--strict-types` と `KSN_STRICT_TYPES=1` は受け付けるが何も変えない。
 /// ケースはそれ 1 件だけで、他の診断を伴わない。
 #[test]
-fn strict_types_is_the_default_and_can_be_turned_off() {
+fn strict_types_is_always_on_and_escape_hatches_are_removed() {
     let src = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/diag/E2044.ksnl")).unwrap();
     let t = Tmp::new("strict_types", &src);
     // 既定: E2044 だけ。
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     assert_eq!(codes(&text(&o.stdout)), vec!["E2044"], "{}", text(&o.stdout));
-    // 旧フラグ・環境変数 (1) は何も変えない。
+    // 受け付けるだけのフラグ・環境変数 (1) は何も変えない。
     let o = run(&["check", "--json", "--strict-types"], &t.0);
     assert_eq!(codes(&text(&o.stdout)), vec!["E2044"]);
     let o = Command::new(exe()).args(["check", "--json"]).env("KSN_STRICT_TYPES", "1").current_dir(&t.0).output().unwrap();
     assert_eq!(codes(&text(&o.stdout)), vec!["E2044"]);
-    // 逃げ道: `--no-strict-types` と `KSN_STRICT_TYPES=0` で通る。
+    // 廃止された逃げ道は黙って無視せず、どちらも終了 2 で止まる。
     let o = run(&["check", "--json", "--no-strict-types"], &t.0);
-    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o.stdout));
+    assert!(text(&o.stderr).contains("廃止"), "{}", text(&o.stderr));
     let o = Command::new(exe()).args(["check", "--json"]).env("KSN_STRICT_TYPES", "0").current_dir(&t.0).output().unwrap();
-    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
-    // build / test / run も同じ既定 (E2044 で止まる) で、逃げ道も効く。
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o.stdout));
+    assert!(text(&o.stderr).contains("廃止"), "{}", text(&o.stderr));
+    // build / test / run も同じ既定 (E2044 で止まる)。
     for cmd in ["build", "test", "run"] {
         let o = run(&[cmd], &t.0);
         assert!(text(&o.stderr).contains("E2044") || text(&o.stdout).contains("E2044"), "{}: {}{}", cmd, text(&o.stdout), text(&o.stderr));

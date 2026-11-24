@@ -5248,16 +5248,21 @@ fn cmd_exec(args: &[String]) -> i32 {
 
 // ------------------------------------------------------------ エントリ
 pub fn main_cli(args: Vec<String>) -> i32 {
-    // E2044 (型が決まらない) は既定で有効。`--no-strict-types` で旧来の挙動に戻す (移行用)。
-    // `--strict-types` は受け付けるだけで何も変えない。どちらも全コマンド共通 (check / build / test / run)。
+    // E2044 (型が決まらない) は常に有効。移行用の逃げ道 (`--no-strict-types` / `KSN_STRICT_TYPES=0`) は廃止した。
+    // 黙って無視すると設定を頼っていた人が気づけないので、使われたら誤りで止める。
+    // `--strict-types` / `KSN_STRICT_TYPES=1` は、あと 1 リリースだけ受け付けて何も変えない。
     let mut rest: Vec<String> = args[1..].to_vec();
     // `--` より後ろはプログラムへの引数なので触らない。
     let cut = rest.iter().position(|a| a == "--").unwrap_or(rest.len());
-    if rest[..cut].iter().any(|a| a == "--no-strict-types") {
-        crate::types::set_strict_types(false);
+    if rest[..cut].iter().any(|a| a == "--no-strict-types") || std::env::var("KSN_STRICT_TYPES").is_ok_and(|v| v == "0") {
+        eprintln!(
+            "error: `--no-strict-types` と `KSN_STRICT_TYPES=0` は廃止された (E2044 は常に有効)。\n\
+             決まらない型は型注釈を書いて直す (例: `let n: Option<u32> = None`)。詳しくは `ksn explain E2044`。"
+        );
+        return 2;
     }
     let tail = rest.split_off(cut);
-    rest.retain(|a| a != "--no-strict-types" && a != "--strict-types");
+    rest.retain(|a| a != "--strict-types");
     rest.extend(tail);
     if args[0] == "help" {
         return match rest.first() {
