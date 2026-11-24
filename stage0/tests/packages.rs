@@ -215,8 +215,9 @@ fn release_build_excludes_tests_and_native_build_ignores_test_helpers() {
     let root = int_pkg(&w, INT_OK);
     let o = w.ksn(&["build", "--release"], &root);
     assert_eq!(o.status.code(), Some(0), "{}", all(&o));
+    // ネイティブ実行ファイルができたときは、同梱物 (pkg/) を書かない。あっても (退避) tests/ は入らない。
     let pk = root.join("target/release/pkg");
-    assert!(pk.join("src/t.ksnl").exists());
+    assert!(!pk.exists(), "release に同梱物は無い");
     assert!(!pk.join("tests").exists(), "release bundle must not contain tests/");
     let bin = root.join("target/release/t.native");
     assert!(bin.exists(), "{}", all(&o));

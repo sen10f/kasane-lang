@@ -1885,10 +1885,14 @@ fn cache_stays_under_the_cap_and_stores_ksn_once() {
     }
     let ksn_copies = fs::read_dir(&cache).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ksn-")).count();
     assert_eq!(ksn_copies, 1, "同梱の ksn の共有実体は 1 本");
+    // 上限は共有の ksn も数える。ksn だけで上限を超えるので、残るのは「作ったばかりの最新のエントリ 1 本」だけ (それは消さない)。
+    let entries: Vec<PathBuf> = fs::read_dir(&cache).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir() && p.file_name().unwrap() != "check" && !p.file_name().unwrap().to_string_lossy().contains(".tmp")).collect();
+    assert_eq!(entries.len(), 1, "古いエントリが残った: {:?}", entries);
     let mut seen = std::collections::HashSet::new();
     let ksn_len = fs::metadata(exe()).unwrap().len();
-    let total = tree_size(&cache, &mut seen);
-    assert!(total <= cap.max(ksn_len + cap), "キャッシュ {} B が上限 {} B (+共有の ksn {} B) を超えた", total, cap, ksn_len);
+    let entry_len = tree_size(&entries[0], &mut seen);
+    let total = entry_len + fs::read_dir(&cache).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ksn-")).map(|e| tree_size(&e.path(), &mut seen)).sum::<u64>();
+    assert!(total <= ksn_len + entry_len, "キャッシュ {} B が ksn {} B + 最新のエントリ {} B を超えた", total, ksn_len, entry_len);
     let _ = fs::remove_dir_all(&cache);
 }
 
