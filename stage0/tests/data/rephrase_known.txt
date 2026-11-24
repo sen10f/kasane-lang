@@ -13,6 +13,7 @@ changed fold temp_let_as_str_ref#0
 changed fold temp_let_field_ref#0
 changed fold temp_let_string_field#0
 changed fold temp_let_whole_ref#0
+changed fold temp_two_arg_elision_len#0
 changed hoist closure_in_hashmap_used_later#1
 changed hoist closure_in_vec_used_later#1
 changed hoist flow_call_same_mut_ref_twice#1
@@ -55,8 +56,12 @@ hole fold return_local_tuple_match_some_arm#0
 hole fold return_local_tuple_tuple_let_ok#0
 hole fold return_local_tuple_tuple_let_some_bind#0
 hole fold return_local_tuple_via_wrap_fn#0
+hole fold temp_guard_get_len#0
+hole fold temp_guard_same_len#0
 hole fold temp_ref_str_len#0
 hole fold temp_ref_vec_len#0
+hole fold temp_string_same_len#0
+hole fold temp_vec_same_len#0
 hole hoist flow_swap_generic_relay#3
 hole hoist flow_swap_option_ref_vars#3
 hole hoist flow_swap_ref_vars#3
