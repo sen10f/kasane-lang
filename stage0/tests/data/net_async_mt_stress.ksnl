@@ -1,0 +1,45 @@
+static t.SUM: std.sync.Mutex<usize> = std.sync.Mutex.new(0usize) pub
+
+fn t.tiny(i: usize) -> usize uses [thread] panics never
+    let mut g = t.SUM.lock()
+    let r = g.get_mut()
+    *r = r.wrapping_add(i.wrapping_add(1usize))
+    core.mem.drop(g)
+    i
+end t.tiny
+
+fn t.batch(base: usize, count: usize) -> usize uses [thread] panics may
+    for i in core.iter.range(0usize, count) {
+        let id = base.wrapping_add(i)
+        let _h = std.task.spawn(
+            fn() -> usize capture [move id] {
+                t.tiny(id)
+            },
+        )
+    }
+    count
+end t.batch
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, suspend, thread] panics may
+    let spawned = std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        4usize,
+        fn() -> usize capture [] {
+            for b in core.iter.range(0usize, 1000usize) {
+                let base = b.wrapping_mul(100usize)
+                let _h = std.task.spawn(
+                    fn() -> usize capture [move base] {
+                        t.batch(base, 100usize)
+                    },
+                )
+            }
+            1000usize
+        },
+    )
+    core.check.eq(spawned, 1000usize)
+    let fin = t.SUM.lock()
+    core.check.eq(*fin.get(), 5000050000usize)
+    core.mem.drop(fin)
+    std.io.print_line("stress done")?
+    Ok(())
+end t.main

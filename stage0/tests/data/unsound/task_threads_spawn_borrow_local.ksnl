@@ -1,0 +1,16 @@
+fn t.main() -> () uses [alloc, suspend, thread] panics may
+    let v = std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        2usize,
+        fn() -> u32 capture [] {
+            let n = 5u32
+            let h = std.task.spawn(
+                fn() -> u32 capture [&n] {
+                    *n
+                },
+            )
+            h.join_task()
+        },
+    )
+    core.check.eq(v, 5u32)
+end t.main

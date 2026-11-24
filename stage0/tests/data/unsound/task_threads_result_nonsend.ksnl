@@ -1,0 +1,17 @@
+type t.Raw pub
+    p: *const u8
+end t.Raw
+
+fn t.main() -> () uses [alloc, thread] panics may
+    let v = std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        2usize,
+        fn() -> t.Raw capture [] {
+            let mut x = 10u8
+            t.Raw {
+                p: core.ptr.from_mut(&mut x)
+            }
+        },
+    )
+    core.mem.drop(v)
+end t.main

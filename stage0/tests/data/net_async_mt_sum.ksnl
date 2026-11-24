@@ -1,0 +1,40 @@
+fn t.leaf(i: usize) -> usize uses [suspend] panics never
+    std.task.yield_now()
+    i
+end t.leaf
+
+fn t.fan(base: usize, count: usize) -> usize uses [suspend] panics may
+    let mut sum = 0usize
+    for i in core.iter.range(0usize, count) {
+        let h = std.task.spawn(
+            fn() -> usize capture [move base, move i] {
+                t.leaf(base.wrapping_add(i))
+            },
+        )
+        sum = sum.wrapping_add(h.join_task())
+    }
+    sum
+end t.fan
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, suspend, thread] panics may
+    let total = std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        4usize,
+        fn() -> usize capture [] {
+            let a = std.task.spawn(
+                fn() -> usize capture [] {
+                    t.fan(0usize, 100usize)
+                },
+            )
+            let b = std.task.spawn(
+                fn() -> usize capture [] {
+                    t.fan(1000usize, 100usize)
+                },
+            )
+            a.join_task().wrapping_add(b.join_task())
+        },
+    )
+    std.io.print_line("sum ok")?
+    core.check.eq(total, 4950usize.wrapping_add(100000usize).wrapping_add(4950usize))
+    Ok(())
+end t.main

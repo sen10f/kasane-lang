@@ -1,0 +1,14 @@
+fn t.hold[T](x: T) -> () uses [suspend] panics never
+    std.task.yield_now()
+    core.mem.drop(x)
+end t.hold
+
+fn t.main() -> () uses [alloc, suspend, thread] panics may
+    std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        2usize,
+        fn() -> () capture [] {
+            t.hold(1u32)
+        },
+    )
+end t.main

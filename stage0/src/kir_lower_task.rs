@@ -111,7 +111,9 @@ pub(super) fn path_call(lw: &mut Lw, segs: &[String], args: &[V], line: usize) -
     let name = segs.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     match name.as_slice() {
         ["std", "task", "block_on"] => Some(block_on(lw, args, line)),
-        ["std", "task", "spawn_local"] => Some(spawn_local(lw, args, line)),
+        ["std", "task", "spawn_local"] | ["std", "task", "spawn"] => Some(spawn_local(lw, args, line)),
+        // 複数スレッドの実行器: アロケータと `n` は協調実行では使わず、`block_on` と同じに下ろす (ネイティブの実スレッドは 2b)。
+        ["std", "task", "block_on_threads"] if args.len() == 3 => Some(block_on(lw, &args[2..], line)),
         ["std", "task", "yield_now"] => Some(yield_now(lw, args, line)),
         ["std", "task", "await_js"] => Some(await_js(lw, args, line)),
         ["std", "task", "wait_io"] => Some(wait_io(lw, args, line)),
