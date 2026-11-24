@@ -192,11 +192,14 @@ impl Interp {
                 it.max_depth = md;
                 it.tasks.cur = id;
                 let body = it.tasks.slots[id].body.take();
-                let r = match body {
+                let r = match &body {
                     // 始まる前に取り消されたときは、本体を走らせない (枠は作られているが、中身の値は持たない)。
-                    Some(b) if !it.tasks.slots[id].cancelled => it.call_value(&b, vec![]),
+                    Some(b) if !it.tasks.slots[id].cancelled => it.call_value(b, vec![]),
                     _ => Ok(Val::Unit),
                 };
+                // 本体の `Rc` は、合図を持っているうちに (渡す前に) 手放す。取り消されて走らなかった本体を、スレッドの終了まで
+                // 持ち越すと、合図を渡したあとに参照数を非原子で減らして、別スレッドと競合する (malloc_consolidate で落ちた)。
+                drop(body);
                 match r {
                     Ok(v) => it.tasks.slots[id].result = Some(v),
                     // 取り消しの巻き戻し: エラーではない。結果は持たない。
