@@ -85,7 +85,7 @@ end scr.model_find
 fn scr.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let cells0 = alloc.raw.Buf.new(std.alloc.SYSTEM)
     let slots0 = 0usize
-    let mut m = scr.HashMap { cells: cells0, slots: slots0 }
+    let mut m = scr.HashMap { cells: cells0, slots: slots0, dead: 0usize }
     let bcells = alloc.raw.Buf.new(std.alloc.SYSTEM)
     let mut b = scr.BtreeMap { entries: bcells }
     let mut keys: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)

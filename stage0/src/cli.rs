@@ -3744,18 +3744,6 @@ fn cmd_git(rest: &[String]) -> i32 {
 }
 
 // ------------------------------------------------------------ build
-#[cfg(unix)]
-/// ファイルの実体 (inode) の識別子。非 unix では分からないので `None` (毎回数える)。
-#[cfg(unix)]
-fn inode_key(m: &fs::Metadata) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    Some((m.dev(), m.ino()))
-}
-#[cfg(not(unix))]
-fn inode_key(_m: &fs::Metadata) -> Option<(u64, u64)> {
-    None
-}
-
 /// リンク数 (`ksn-<識別子>` の実体を繋いでいるエントリの数 + 1)。非 unix では保守的に 2 とする (消さない)。
 #[cfg(unix)]
 fn link_count(m: &fs::Metadata) -> u64 {
@@ -3767,17 +3755,40 @@ fn link_count(_m: &fs::Metadata) -> u64 {
     2
 }
 
-/// `p` の使用量。ハードリンクで共有する実体 (同梱の `ksn`) は `seen` で inode ごとに 1 度だけ数える。
-fn size_once(p: &Path, seen: &mut std::collections::HashSet<(u64, u64)>) -> u64 {
-    if p.is_dir() {
-        let Ok(rd) = fs::read_dir(p) else { return 0 };
-        return rd.flatten().map(|e| size_once(&e.path(), seen)).sum();
+/// キャッシュのエントリの自前の使用量。ハードリンクで共有する実体 (リンク数 2 以上。同梱の `ksn` など) は数えない
+/// (共有の `ksn-<識別子>` の側で 1 度だけ数える)。生成物ディレクトリを除いた分は `.size` に書いて使い回す
+/// (作りかけかもしれない若いエントリでは書かない)。生成物ディレクトリは後から足されるので毎回数える。
+fn entry_size(p: &Path, young: bool) -> u64 {
+    fn walk(p: &Path) -> u64 {
+        let Ok(m) = fs::symlink_metadata(p) else { return 0 };
+        if m.is_dir() {
+            let Ok(rd) = fs::read_dir(p) else { return 0 };
+            return rd.flatten().map(|e| walk(&e.path())).sum();
+        }
+        if link_count(&m) > 1 {
+            0
+        } else {
+            m.len()
+        }
     }
-    let Ok(m) = fs::metadata(p) else { return 0 };
-    match inode_key(&m) {
-        Some(k) if !seen.insert(k) => 0,
-        _ => m.len(),
+    let art = walk(&p.join(ARTIFACT_DIR));
+    let f = p.join(".size");
+    if let Some(n) = fs::read_to_string(&f).ok().and_then(|s| s.trim().parse::<u64>().ok()) {
+        return n + art;
     }
+    let Ok(rd) = fs::read_dir(p) else { return art };
+    let base: u64 = rd
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            n != ".used" && n != ".size" && n != ARTIFACT_DIR
+        })
+        .map(|e| walk(&e.path()))
+        .sum();
+    if !young {
+        let _ = fs::write(&f, base.to_string());
+    }
+    base + art
 }
 
 /// 配る単位 (`kasane.toml` と `src/**/*.ksnl`。`hash` の対象と同じ) だけを複製する。`.ksnh` は複製しない。
@@ -3830,7 +3841,7 @@ fn copy_entry(src: &Path, dst: &Path) {
     let Ok(rd) = fs::read_dir(src) else { return };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
-        if name == ".used" || name == ARTIFACT_DIR {
+        if name == ".used" || name == ".size" || name == ARTIFACT_DIR {
             continue;
         }
         let (s, d) = (e.path(), dst.join(&name));
@@ -3884,27 +3895,25 @@ fn evict(cdir: &Path, keep: &str) {
     let grace = std::time::Duration::from_secs(std::env::var("KSN_CACHE_GRACE").ok().and_then(|v| v.parse().ok()).unwrap_or(60));
     let now = std::time::SystemTime::now();
     let young = |t: &std::time::SystemTime| now.duration_since(*t).map_or(true, |d| d < grace);
-    // 使用量は共有の `ksn-<識別子>` を含め、実体ごとに 1 度だけ数える (消すとリンク数が変わるので、そのたびに数え直す)。
-    let total_of = |ents: &[(std::time::SystemTime, PathBuf)]| {
-        let mut seen = std::collections::HashSet::new();
-        let mut n: u64 = ents.iter().map(|(_, p)| size_once(p, &mut seen)).sum();
-        if let Ok(rd) = fs::read_dir(cdir) {
-            for e in rd.flatten() {
-                if e.file_name().to_string_lossy().starts_with("ksn-") {
-                    n += size_once(&e.path(), &mut seen);
-                }
+    // 使用量 = 各エントリの自前の分 (ハードリンクで共有する実体は数えない) + 共有の `ksn-<識別子>` を 1 度ずつ。
+    // エントリの自前の分は `.size` に書いておき、次からはファイルを辿らない (以前はビルドのたびにキャッシュ全体を
+    // 辿り、消すたびに数え直していたので、エントリが数千になると 1 回のビルドが数分かかった)。
+    let mut sizes: Vec<u64> = ents.iter().map(|(t, p)| entry_size(p, young(t))).collect();
+    let mut total: u64 = sizes.iter().sum();
+    if let Ok(rd) = fs::read_dir(cdir) {
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().starts_with("ksn-") {
+                total += e.metadata().map(|m| m.len()).unwrap_or(0);
             }
         }
-        n
-    };
-    let mut total = total_of(&ents);
+    }
     while !ents.is_empty() && total > limit {
         if young(&ents[0].0) {
             break;
         }
         let (_, p) = ents.remove(0);
+        total = total.saturating_sub(sizes.remove(0));
         let _ = fs::remove_dir_all(&p);
-        total = total_of(&ents);
     }
     prune_shared(cdir, env!("KSN_BUILD_ID"));
 }

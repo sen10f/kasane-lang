@@ -8,6 +8,7 @@ changed fold hunt_a05_andmut_via_shared_ref_01#0
 changed fold hunt_a05_fnmut_call_through_shared_ref_01#0
 changed fold linear_array_len_discard#0
 changed fold ref_of_ref_deref#0
+changed fold sendbound_fn_value_let#0
 changed fold temp_let_as_str_ref#0
 changed fold temp_let_field_ref#0
 changed fold temp_let_string_field#0

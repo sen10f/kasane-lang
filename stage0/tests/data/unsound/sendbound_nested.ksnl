@@ -1,0 +1,18 @@
+type t.Shared
+    p: *const u8
+end t.Shared
+
+fn t.main() -> i32 uses [] panics never
+    t.mid(t.Shared {
+        p: core.ptr.as_const(core.ptr.null_mut())
+    })
+    0
+end t.main
+
+fn t.mid[U](x: U) -> () uses [] panics never
+    t.need(x)
+end t.mid
+
+fn t.need[T: core.marker.Send](x: T) -> () uses [] panics never
+    let _y = x
+end t.need
