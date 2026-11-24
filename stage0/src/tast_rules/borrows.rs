@@ -978,8 +978,22 @@ impl<'a> Walker<'a> {
         let def = if cands.len() == 1 { Some(cands[0]) } else { None };
         let gn = def.map(|i| self.p.defs[i].gnames()).unwrap_or_default();
         let mut dparams: Vec<Ty> = def.map(|i| self.p.defs[i].params.iter().map(|(_, t)| from_v(t, &gn)).collect()).unwrap_or_default();
-        let is_method = !cands.is_empty() && cands.iter().all(|&i| self.p.defs[i].is_method());
-        if def.is_none() && is_method {
+        let mut is_method = !cands.is_empty() && cands.iter().all(|&i| self.p.defs[i].is_method());
+        // 型パラメータの受け手 `x.m(..)` (`T: Tr`): 境界のトレイトの宣言の署名で、具体型と同じに読む。
+        if cands.is_empty() {
+            let site: Option<(Ty, String)> = match (recv, callee.map(|c| &c.kind), &e.kind) {
+                (Some(r), _, TKind::MCall { name, .. }) => Some((r.ty.clone(), name.clone())),
+                (None, Some(TKind::Path(segs)), _) if segs.len() == 2 => self.lookup(&segs[0]).map(|(_, t)| (t.clone(), segs[1].clone())),
+                _ => None,
+            };
+            if let Some((rt, name)) = site {
+                if let Some((ps, _, _)) = super::lifetimes::bound_sig_of(self.p, self.di, &rt, &name) {
+                    dparams = ps.into_iter().map(|(_, t)| t).collect();
+                    is_method = true;
+                }
+            }
+        }
+        if def.is_none() && is_method && !cands.is_empty() {
             // 候補が複数: 受け手の宣言は、全員が参照ならそれ (1 つでも可変なら可変)、そろわなければ不明。
             let sh: Vec<Ty> = cands.iter().map(|&i| from_v(&self.p.defs[i].params[0].1, &self.p.defs[i].gnames())).collect();
             if sh.iter().all(|t| matches!(t, Ty::Ref(..))) {
@@ -1166,6 +1180,8 @@ impl<'a> Walker<'a> {
             }
         }
         if let Some(c) = local_callee {
+            // 呼び出しの瞬間にも閉包を使う: 取り込んだ借用は、引数の `&mut` の貸し出しと重なる間は生きている。
+            self.cfg.emit(Ev::Use(c.clone()));
             res.push(Src::Var(c));
         }
         // `Sender.send(v)`: 送った値の貸し出しを、同じチャネルを持つ他の変数 (`rx`) の側へも流す。

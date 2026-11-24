@@ -1,0 +1,16 @@
+trait t.Tr
+    fn go(self: &mut Self, o: &Self) -> () uses [alloc] panics never
+end t.Tr
+
+type t.W
+    a: std.string.String
+end t.W
+
+impl t.Tr for t.W
+fn t.W.go(self: &mut t.W, o: &t.W) -> () uses [alloc] panics never impls t.Tr
+    core.mem.drop(self.a.push_str(o.a.as_str()))
+end t.W.go
+
+fn t.twice[T: t.Tr](x: &mut T, y: &T) -> () uses [alloc] panics never
+    x.go(y)
+end t.twice
