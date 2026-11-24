@@ -7,12 +7,16 @@ Kasane は「LLM が書き、機械が検証する、契約重視のシステム
 ## 2. 動作要件
 
 - ホスト OS: Linux（x86_64）。macOS は未対応です。Windows ホストでの開発も未対応ですが、Linux から Windows 向けへのクロスコンパイルは可能です。
-- このバイナリ版: 追加のインストールは不要です。`ksn` 実行ファイルを PATH に置くだけです。
+- このバイナリ版 (`ksn-<版>-x86_64-linux-gnu.tar.gz`): glibc 2.31 以上の x86_64 Linux で動きます (Debian 12・Debian 13・Arch の現行・Ubuntu 20.04 以降で確認する対象)。LLVM とリンカ (lld) は実行体に入っているので、clang・ld・LLVM は要りません。共有ライブラリは glibc の `libc` / `libm` / `libpthread` / `libdl` だけです。
+- `ksn build` (ネイティブ生成) が使う、利用者のマシン側の C の開発ファイル (crt 目的ファイルと libgcc):
+  - Debian / Ubuntu: `sudo apt install libc6-dev libgcc-12-dev` (Debian 12。Debian 13 は `libgcc-14-dev`。`gcc` を入れれば一式入ります)
+  - Arch: `sudo pacman -S gcc glibc` (`gcc` が `/usr/lib/gcc/x86_64-pc-linux-gnu/<版>/` の crtbeginS.o・libgcc を持ちます)
+  - 足りないとき `ksn build` は見つからないファイルと入れる package を示して失敗します。`ksn check` / `test` / `run` はこれらを要しません。
 - ソースから自分でビルドするだけなら: Rust（cargo）、clang か gcc、Python 3.10 以上、git。ネイティブ生成の既定ビルドには LLVM 20 開発ファイル・zlib/zstd 開発ファイルも必要です（README の「必要な環境」）。
 
 ## 3. 導入（実際に確認した手順）
 
-配布用のビルド済みバイナリはまだ公開されていません（README「導入」）。ベータでは、あらかじめビルド済みの `ksn` を使います。
+配布用の tarball を展開し、`ksn` を PATH に置きます。ライセンスは `LICENSE-MIT` / `LICENSE-APACHE`、同梱の第三者のライセンスは `THIRD_PARTY_LICENSES`、整合の確認は `SHA256SUMS` で行います。
 
 ```bash
 # ksn を PATH に置く（例）

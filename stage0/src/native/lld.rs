@@ -104,7 +104,9 @@ pub fn elf_args(name: &str, root: Option<&str>, objs: &[PathBuf], exe: &Path, na
     let crt1 = need("Scrt1.o", &libdirs, hint)?;
     let crti = need("crti.o", &libdirs, hint)?;
     let crtn = need("crtn.o", &libdirs, hint)?;
-    let gcc = newest_gcc_dir(Path::new(gccbase), "crtbeginS.o").ok_or_else(|| format!("{}/<版>/crtbeginS.o が見つからない: {} を入れる", gccbase, if host { "gcc (libgcc-*-dev)" } else { "gcc-aarch64-linux-gnu" }))?;
+    // Arch は `x86_64-pc-linux-gnu`、Fedora 系は `x86_64-redhat-linux` に gcc の crt・libgcc を置く。
+    let alt: &[&str] = if root.is_none() && name == "x86_64-linux-gnu" { &["/usr/lib/gcc/x86_64-pc-linux-gnu", "/usr/lib/gcc/x86_64-redhat-linux"] } else { &[] };
+    let gcc = std::iter::once(gccbase).chain(alt.iter().copied()).find_map(|b| newest_gcc_dir(Path::new(b), "crtbeginS.o")).ok_or_else(|| format!("{}/<版>/crtbeginS.o が見つからない: {} を入れる", gccbase, if host { "gcc (libgcc-*-dev)" } else { "gcc-aarch64-linux-gnu" }))?;
     let mut a: Vec<String> = ["-z", "relro", "--hash-style=gnu", "--build-id", "--eh-frame-hdr", "-m", emul, "-pie", "-dynamic-linker", dynld].iter().map(|s| s.to_string()).collect();
     a.push("-o".into());
     a.push(exe.display().to_string());

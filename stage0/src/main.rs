@@ -1,3 +1,5 @@
+#[cfg(feature = "glibc-compat")]
+mod glibc_compat;
 #[path = "native/lld.rs"]
 mod lld;
 mod surface_fix;
