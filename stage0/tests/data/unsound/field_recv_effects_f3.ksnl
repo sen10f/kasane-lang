@@ -1,0 +1,22 @@
+type t.W[I: core.iter.Iterator<u32, E, P>, E: uses, P: panics]
+    it: I
+end t.W
+
+fn t.f(x: u32) -> u32 uses [] panics may
+    core.panic.panic("boom")
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut w = t.W {
+        it: core.iter.map(core.iter.range(0u32, 3u32), t.f)
+    }
+    core.mem.drop(t.run(&mut w))
+    Ok(())
+end t.main
+
+fn t.run[I: core.iter.Iterator<u32, E, P>, E: uses, P: panics](w: &mut t.W<I, E, P>) -> u32 uses [] panics never
+    match w.it.next() {
+        Some(v) => v
+        None => 0u32
+    }
+end t.run

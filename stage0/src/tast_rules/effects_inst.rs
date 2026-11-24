@@ -418,7 +418,7 @@ fn bound_recv(e: &TExpr) -> Option<(String, String)> {
             _ => None,
         },
         TKind::Call { callee, .. } => match (&callee.kind, strip_refs(&callee.ty)) {
-            (TKind::Path(s), Ty::Param(pn)) if s.len() == 2 => Some((pn, s[1].clone())),
+            (TKind::Path(s), Ty::Param(pn)) if s.len() >= 2 => Some((pn, s[s.len() - 1].clone())),
             _ => None,
         },
         _ => None,
@@ -469,7 +469,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     let _ = callee;
                 }
                 // `f.call(x)`: 境界の `Fn<.., E, P>` の効果の実引数 (変数のままのものは呼び出し元が同じ変数を持つか)。
-                (TKind::Call { callee, .. }, Some(Callee::Unknown)) if matches!(&callee.kind, TKind::Path(s) if s.len() == 2 && s[1].starts_with("call")) => {
+                (TKind::Call { callee, .. }, Some(Callee::Unknown)) if matches!(&callee.kind, TKind::Path(s) if s.len() >= 2 && s[s.len() - 1].starts_with("call")) => {
                     let TKind::Path(segs) = &callee.kind else { return };
                     let Ty::Param(pn) = strip_refs(&callee.ty) else { return };
                     for g in d.generics.iter().filter(|g| g.0 == "type" && g.1 == pn) {
@@ -482,7 +482,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                             let bt = items(tel(bd, 1));
                             let uses = bt.get(2).and_then(targ_effs).unwrap_or_default();
                             let panics = bt.get(3).and_then(targ_panic);
-                            ck.report(&format!("{}.{}", tr, segs[1]), &uses, panics.as_deref(), e.line);
+                            ck.report(&format!("{}.{}", tr, segs[segs.len() - 1]), &uses, panics.as_deref(), e.line);
                         }
                     }
                 }
