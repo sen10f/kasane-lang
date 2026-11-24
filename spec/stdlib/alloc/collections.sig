@@ -10,7 +10,7 @@ end alloc.collections.BtreeMapIter
 
 enum alloc.collections.HashCell[K, V] pub
     Empty
-    Index(usize)
+    Index(usize, usize)
     Entry(usize, K, V)
 end alloc.collections.HashCell
 
