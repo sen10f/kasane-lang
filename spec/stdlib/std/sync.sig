@@ -71,7 +71,7 @@ fn std.sync.Sender.clone[T: linear](self: &std.sync.Sender<T>) -> std.sync.Sende
 impl[T: linear] core.ops.Drop for std.sync.Sender<T>
 fn std.sync.Sender.drop[T: linear](self: &mut std.sync.Sender<T>) -> () uses [] panics never impls core.ops.Drop
 fn std.sync.Sender.send[T: linear](self: &std.sync.Sender<T>, value: T) -> Result<(), std.sync.SendError<T>> uses [thread] panics never pub
-/// `capacity` は待っている要素の上限 (0 は 1)。満杯の `Sender.send` は、`Receiver.recv` が
+/// `capacity` は待っている要素の上限 (0 は 1 として扱う。待ち合わせではない)。満杯の `Sender.send` は、`Receiver.recv` が
 /// 空きを作るか受信側が全部落ちる (`Err(SendError { value })`) まで待つ。全員が待てば deadlock (101)。
 /// 協調実行 (木走査・KIR 実行器) は、保留のスレッドか同じチャネルの `recv` で止まった上の枠が
 /// あるあいだ、容量を超えて続ける。

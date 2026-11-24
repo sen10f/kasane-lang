@@ -109,3 +109,9 @@ fn chan_bounded_native_blocked_sender_wakes_with_err_when_receivers_drop() {
         assert_eq!(text(&r.stdout).trim(), "dropped ok");
     }
 }
+
+/// 容量 0 は 1 として扱う (待ち合わせではない): 受け手なしの 1 回の `send` は止まらない。
+#[test]
+fn chan_bounded_capacity_zero_is_one() {
+    same_output("cap0", "cap0 ok");
+}
