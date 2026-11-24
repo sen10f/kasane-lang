@@ -1271,7 +1271,7 @@ impl<'a> Lw<'a> {
                 let rt = self.vty(recv);
                 if is_net_ty(self, rt) {
                     let meth = segs[segs.len() - 1].clone();
-                    if matches!(meth.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port" | "set_read_timeout" | "set_write_timeout" | "set_read_deadline" | "set_write_deadline" | "clear_deadlines" | "set_nodelay" | "accept_timeout" | "shutdown" | "peer_addr_raw" | "local_addr_raw" | "send_to" | "recv_from_raw" | "fd") {
+                    if matches!(meth.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port" | "set_read_timeout" | "set_write_timeout" | "set_read_deadline" | "set_write_deadline" | "clear_deadlines" | "set_nodelay" | "accept_timeout" | "shutdown" | "peer_addr_raw" | "local_addr_raw" | "send_to" | "recv_from_raw" | "read_try" | "write_try" | "fd") {
                         // `x.close()` は値の受け手 (move)。
                         if meth == "close" {
                             self.own_emit(&segs[0], s, if segs.len() == 2 { crate::kir::OwnKind::Consume } else { crate::kir::OwnKind::Part });
@@ -1453,7 +1453,7 @@ impl<'a> Lw<'a> {
     }
 
     /// 関数の定義 `di` への呼び出し (総称関数は型引数を推論して単相インスタンスにする)。
-    fn call_def(&mut self, e: &V, di: usize, args: &[V], line: usize) -> LR<Option<VId>> {
+    pub(super) fn call_def(&mut self, e: &V, di: usize, args: &[V], line: usize) -> LR<Option<VId>> {
         let cd = &self.p.defs[di];
         if cd.kw != "fn" || cd.body.is_none() {
             return self.err(line, format!("呼び先 {} は段階 1 の対象外 (メソッド・本体なし)", cd.name));
@@ -1607,7 +1607,7 @@ impl<'a> Lw<'a> {
             };
             if is_net {
                 let m = st(&nf(e)[1]);
-                if matches!(m.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port" | "set_read_timeout" | "set_write_timeout" | "set_read_deadline" | "set_write_deadline" | "clear_deadlines" | "set_nodelay" | "accept_timeout" | "shutdown" | "peer_addr_raw" | "local_addr_raw" | "send_to" | "recv_from_raw" | "fd") {
+                if matches!(m.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port" | "set_read_timeout" | "set_write_timeout" | "set_read_deadline" | "set_write_deadline" | "clear_deadlines" | "set_nodelay" | "accept_timeout" | "shutdown" | "peer_addr_raw" | "local_addr_raw" | "send_to" | "recv_from_raw" | "read_try" | "write_try" | "fd") {
                     let Some(recv) = self.expr(&nf(e)[0])? else { return Ok(None) };
                     let rt = self.vty(recv);
                     let args = items(&nf(e)[2]).to_vec();

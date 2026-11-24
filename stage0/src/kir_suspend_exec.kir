@@ -311,9 +311,8 @@ fn ksn.task.run.poll key=ksn.task.run.poll uses=[alloc] panics=may stack=- ret=b
     %28: bool = icmp.eq.usize %27, %21
     br_if %28, b9(), b10(%27)
   b9():
-    %29: usize = const.usize 2
-    %30: bool = call ksn.task.js_waiting()
-    br_if %30, b17(%29), b18()
+    %90: bool = call ksn.task.io_idle()
+    br_if %90, b6(), b19()
   b10(%31: usize):
     br b3(%31)
   b11(%32: usize):
@@ -333,11 +332,10 @@ fn ksn.task.run.poll key=ksn.task.run.poll uses=[alloc] panics=may stack=- ret=b
     %43: usize = const.usize 1
     %44: usize = call ksn.task.pick(%41, %43, %42)
     %45: bool = icmp.eq.usize %44, %42
-    br_if %45, b14(), b10(%44)
-  b14():
-    %46: usize = const.usize 1
-    %47: bool = call ksn.task.js_waiting()
-    br_if %47, b17(%46), b18()
+    br_if %45, b14(%41), b10(%44)
+  b14(%93: usize):
+    %91: bool = call ksn.task.io_idle()
+    br_if %91, b13(%93), b20()
   b15(%48: usize):
     %49: ptr = global.bytes ksn.task.g 56
     %50: usize = mem.load.usize %49 +32
@@ -347,6 +345,7 @@ fn ksn.task.run.poll key=ksn.task.run.poll uses=[alloc] panics=may stack=- ret=b
   b16(%53: usize):
     %54: ptr = global.bytes ksn.task.g 56
     %55: unit = mem.store.usize %54 +24, %53
+    %92: unit = call ksn.task.io_tick()
     %56: u32 = call ksn.task.tag(%53)
     %57: ptr = call ksn.task.fp(%53)
     %58: bool = call ksn.task.dispatch(%56, %57)
@@ -359,6 +358,14 @@ fn ksn.task.run.poll key=ksn.task.run.poll uses=[alloc] panics=may stack=- ret=b
   b18():
     %63: unit = panic "deadlock: every std.task task is waiting for another task that cannot finish (a join cycle, or a join on the task itself)"
     unreachable
+  b19():
+    %29: usize = const.usize 2
+    %30: bool = call ksn.task.js_waiting()
+    br_if %30, b17(%29), b18()
+  b20():
+    %46: usize = const.usize 1
+    %47: bool = call ksn.task.js_waiting()
+    br_if %47, b17(%46), b18()
 end ksn.task.run.poll
 
 fn ksn.task.done key=ksn.task.done uses=[] panics=never stack=- ret=bool
@@ -805,3 +812,173 @@ fn ksn.task.wait.poll key=ksn.task.wait.poll uses=[suspend,alloc] panics=may sta
     %38: unit = panic "std.task.Task.join_task: the task was cancelled"
     unreachable
 end ksn.task.wait.poll
+fn ksn.io.park key=ksn.io.park uses=[] panics=never stack=- ret=u32
+  b0(%0: u32, %1: u32):
+    %2: u32 = const.u32 0
+    ret %2
+end ksn.io.park
+
+fn ksn.io.poll key=ksn.io.poll uses=[] panics=never stack=- ret=u32
+  b0(%0: u32):
+    %1: u32 = const.u32 0
+    ret %1
+end ksn.io.poll
+
+fn ksn.io.ready key=ksn.io.ready uses=[] panics=never stack=- ret=u32
+  b0(%0: u32):
+    %1: u32 = const.u32 1
+    ret %1
+end ksn.io.ready
+
+fn ksn.io.take key=ksn.io.take uses=[] panics=never stack=- ret=u32
+  b0(%0: u32):
+    %1: u32 = const.u32 0
+    ret %1
+end ksn.io.take
+
+fn ksn.io.pending key=ksn.io.pending uses=[] panics=never stack=- ret=u32
+  b0():
+    %0: u32 = const.u32 0
+    ret %0
+end ksn.io.pending
+
+fn ksn.task.io_wake key=ksn.task.io_wake uses=[] panics=never stack=- ret=unit
+  b0(%0: u32):
+    %1: u32 = call ksn.io.poll(%0)
+    %2: u32 = const.u32 0
+    %3: bool = icmp.ne.u32 %1, %2
+    br_if %3, b1(), b2()
+  b1():
+    %4: usize = call ksn.task.count()
+    %5: usize = const.usize 0
+    br b3(%5, %4)
+  b2():
+    %6: unit = const.unit ()
+    ret %6
+  b3(%7: usize, %8: usize):
+    %9: bool = icmp.ge.usize %7, %8
+    br_if %9, b2(), b4(%7, %8)
+  b4(%10: usize, %11: usize):
+    %12: u32 = call ksn.task.state(%10)
+    %13: u32 = const.u32 5
+    %14: bool = icmp.eq.u32 %12, %13
+    br_if %14, b5(%10, %11), b7(%10, %11)
+  b5(%15: usize, %16: usize):
+    %17: ptr = call ksn.task.leaf(%15)
+    %18: u32 = mem.load.u32 %17 +16
+    %19: u32 = call ksn.io.ready(%18)
+    %20: u32 = const.u32 0
+    %21: bool = icmp.ne.u32 %19, %20
+    br_if %21, b6(%15, %16), b7(%15, %16)
+  b6(%22: usize, %23: usize):
+    %24: u32 = const.u32 0
+    %25: unit = call ksn.task.set_state(%22, %24)
+    br b7(%22, %23)
+  b7(%26: usize, %27: usize):
+    %28: usize = const.usize 1
+    %29: usize = add.usize.wrap %26, %28
+    br b3(%29, %27)
+end ksn.task.io_wake
+
+fn ksn.task.io_tick key=ksn.task.io_tick uses=[] panics=never stack=- ret=unit
+  b0():
+    %0: u32 = call ksn.io.pending()
+    %1: u32 = const.u32 0
+    %2: bool = icmp.ne.u32 %0, %1
+    br_if %2, b1(), b2()
+  b1():
+    %3: u32 = const.u32 0
+    %4: unit = call ksn.task.io_wake(%3)
+    br b2()
+  b2():
+    %5: unit = const.unit ()
+    ret %5
+end ksn.task.io_tick
+
+fn ksn.task.io_idle key=ksn.task.io_idle uses=[] panics=never stack=- ret=bool
+  b0():
+    %0: u32 = call ksn.io.pending()
+    %1: u32 = const.u32 0
+    %2: bool = icmp.ne.u32 %0, %1
+    br_if %2, b1(), b2()
+  b1():
+    %3: u32 = const.u32 1
+    %4: unit = call ksn.task.io_wake(%3)
+    %5: bool = const.bool true
+    ret %5
+  b2():
+    %6: bool = const.bool false
+    ret %6
+end ksn.task.io_idle
+
+fn ksn.task.io key=ksn.task.io uses=[suspend] panics=never stack=- ret=i32
+  b0(%0: u32, %1: u32):
+    unreachable
+end ksn.task.io
+
+fn ksn.task.io.new key=ksn.task.io.new uses=[alloc] panics=may stack=- ret=ptr
+  b0(%0: u32, %1: u32):
+    %2: usize = const.usize 32
+    %3: ptr = heap.alloc %2
+    %4: ptr = const.ptr 0
+    %5: bool = icmp.eq.ptr %3, %4
+    br_if %5, b1(), b2(%3, %0, %1)
+  b1():
+    %6: unit = panic "std.net: out of memory (async socket frame)"
+    unreachable
+  b2(%7: ptr, %8: u32, %9: u32):
+    %10: u32 = const.u32 0
+    %11: unit = mem.store.u32 %7 +0, %10
+    %12: unit = mem.store.u32 %7 +8, %10
+    %13: unit = mem.store.u32 %7 +16, %8
+    %14: unit = mem.store.u32 %7 +24, %9
+    ret %7
+end ksn.task.io.new
+
+fn ksn.task.io.poll key=ksn.task.io.poll uses=[suspend,alloc] panics=never stack=- ret=bool
+  b0(%0: ptr):
+    %1: u32 = mem.load.u32 %0 +0
+    %2: u32 = const.u32 0
+    %3: bool = icmp.eq.u32 %1, %2
+    br_if %3, b1(%0), b2(%0, %1)
+  b1(%4: ptr):
+    %5: bool = call ksn.task.running()
+    br_if %5, b3(%4), b4(%4)
+  b2(%6: ptr, %7: u32):
+    %8: u32 = const.u32 1
+    %9: bool = icmp.eq.u32 %7, %8
+    br_if %9, b5(%6), b6()
+  b3(%10: ptr):
+    %11: u32 = mem.load.u32 %10 +16
+    %12: u32 = mem.load.u32 %10 +24
+    %13: u32 = call ksn.io.park(%11, %12)
+    %14: u32 = const.u32 0
+    %15: bool = icmp.ne.u32 %13, %14
+    br_if %15, b7(%10), b4(%10)
+  b4(%16: ptr):
+    %17: u32 = const.u32 2
+    %18: unit = mem.store.u32 %16 +0, %17
+    %19: bool = const.bool true
+    ret %19
+  b5(%20: ptr):
+    %21: u32 = mem.load.u32 %20 +16
+    %22: u32 = call ksn.io.take(%21)
+    %23: unit = mem.store.u32 %20 +8, %22
+    %24: u32 = const.u32 2
+    %25: unit = mem.store.u32 %20 +0, %24
+    %26: bool = const.bool true
+    ret %26
+  b6():
+    %27: bool = const.bool true
+    ret %27
+  b7(%28: ptr):
+    %29: u32 = const.u32 1
+    %30: unit = mem.store.u32 %28 +0, %29
+    %31: ptr = global.bytes ksn.task.g 56
+    %32: usize = mem.load.usize %31 +24
+    %33: u32 = const.u32 5
+    %34: unit = call ksn.task.set_state(%32, %33)
+    %35: unit = call ksn.task.set_leaf(%32, %28)
+    %36: bool = const.bool false
+    ret %36
+end ksn.task.io.poll

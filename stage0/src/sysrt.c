@@ -37,6 +37,10 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <linux/futex.h>
+#endif
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -712,7 +716,7 @@ i64 ksn_rt_sys_listen(const u8 *a, u64 n, i32 *e) {
         set_cloexec(s);
         int one = 1;
         setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-        if (bind(s, ai->ai_addr, ai->ai_addrlen) == 0 && listen(s, 128) == 0) { freeaddrinfo(res); return s; }
+        if (bind(s, ai->ai_addr, ai->ai_addrlen) == 0 && listen(s, 1024) == 0) { freeaddrinfo(res); return s; }
         last = net_errno();
         net_close(s);
     }
@@ -739,6 +743,8 @@ i64 ksn_rt_sys_accept(i32 lfd, i32 *e) {
 #define KSN_DL_MAX 256
 typedef struct { i32 fd; int used; int has_rd; int has_wr; i64 rd_at; i64 wr_at; } ksn_dl;
 static ksn_dl ksn_dls[KSN_DL_MAX];
+/* set_read_timeout / set_write_timeout (または期限つきの読み書き) を一度でも使ったか (0 = 読み、1 = 書き)。非同期ソケットが SO_*TIMEO を調べる要否を決める。 */
+static volatile int ksn_to_set[2];
 
 #ifdef _WIN32
 #define KSN_SOCK(fd) ((SOCKET)(fd))
@@ -795,6 +801,7 @@ i64 ksn_rt_sys_net_clear_deadlines(i32 fd, i32 *e) {
 
 /* 期限を SO_RCVTIMEO / SO_SNDTIMEO に入れる (rem ミリ秒、1 以上)。 */
 static void ksn_set_timeout(i32 fd, int write_side, i64 rem) {
+    ksn_to_set[write_side ? 1 : 0] = 1;
 #ifdef _WIN32
     DWORD tv = (DWORD)rem;
     setsockopt(KSN_SOCK(fd), SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, (const char *)&tv, sizeof tv);
@@ -804,6 +811,20 @@ static void ksn_set_timeout(i32 fd, int write_side, i64 rem) {
     tv.tv_usec = (suseconds_t)((rem % 1000) * 1000);
     setsockopt(fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, sizeof tv);
 #endif
+}
+
+/* 待たずに 1 回だけ読み (write_side = 0) か書き (1)。待つことになるなら EAGAIN (番号 11)。非同期ソケットが使う。 */
+i64 ksn_rt_sys_net_try(i32 fd, i32 write_side, u8 *p, u64 n, i32 *e) {
+    for (;;) {
+#ifdef _WIN32
+        int r = write_side ? send((SOCKET)fd, (const char *)p, (int)n, 0) : recv((SOCKET)fd, (char *)p, (int)n, 0);
+#else
+        ssize_t r = write_side ? send(fd, p, n, MSG_DONTWAIT | MSG_NOSIGNAL) : recv(fd, p, n, MSG_DONTWAIT);
+#endif
+        if (r >= 0) return (i64)r;
+        if (net_errno() == EINTR) continue;
+        return fail(e, net_errno());
+    }
 }
 
 /* 期限切れ・待ちきれなかったときの番号 (Windows は WSAETIMEDOUT / WSAEWOULDBLOCK が net_errno で ETIMEDOUT になる)。 */
@@ -974,6 +995,7 @@ static int format_addr(const struct sockaddr *sa, char *txt, size_t cap) {
 
 /* 0 = 秒 (ms = 0 はタイムアウトなし)。SO_RCVTIMEO (読み) / SO_SNDTIMEO (書き)。 */
 i64 ksn_rt_sys_net_timeout(i32 fd, i32 write_side, u64 ms, i32 *e) {
+    ksn_to_set[write_side ? 1 : 0] = 1;
 #ifdef _WIN32
     DWORD tv = (DWORD)ms; /* winsock はミリ秒の DWORD */
     if (setsockopt((SOCKET)fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, (const char *)&tv, sizeof tv) != 0)
@@ -1192,6 +1214,150 @@ u64 ksn_rt_sys_now_ns(void) {
 #endif
 }
 
+/* ---------------------------------------------------------------- std.task の非同期ソケット (Linux の epoll リアクター、単一スレッド)
+   `ksn.io.*` (実行器 `kir_suspend_exec.kir` が呼ぶ) の実体。ユーザーに fd 番号・EAGAIN は見えない。スレッドごとに別の epoll を持つ。
+   park: fd を epoll (ONESHOT) に登録して、待ちの印をつける。poll: epoll_wait で準備完了の fd に印を付ける (期限が切れた fd は期限切れの印)。
+   take: 印を読んで消す (0 = 準備完了、1 = 期限切れ)。 */
+#if defined(__linux__)
+#include <sys/epoll.h>
+typedef struct { i64 at; int st; int reg; int dir; int rdy[2]; } ksn_io_slot; /* st: 0 なし / 1 待ち / 2 準備完了 / 3 期限切れ。reg: epoll に載せた。rdy[d]: 待ち手がいない間に端が来た */
+static __thread int ksn_io_ep = -1;
+static __thread ksn_io_slot *ksn_io_tab;
+static __thread i64 ksn_io_cap;
+static __thread i64 ksn_io_nparked;
+static __thread unsigned ksn_io_tickn;
+static __thread i64 ksn_io_nfired; /* 印が 2 / 3 になって take されていない数 */
+
+static ksn_io_slot *ksn_io_slot_of(i32 fd) {
+    if (fd < 0) return NULL;
+    if ((i64)fd >= ksn_io_cap) {
+        i64 nc = ksn_io_cap ? ksn_io_cap : 1024;
+        while (nc <= (i64)fd) nc *= 2;
+        ksn_io_slot *t = (ksn_io_slot *)realloc(ksn_io_tab, (size_t)nc * sizeof(ksn_io_slot));
+        if (!t) return NULL;
+        for (i64 i = ksn_io_cap; i < nc; i++) { memset(&t[i], 0, sizeof t[i]); t[i].at = -1; }
+        ksn_io_tab = t;
+        ksn_io_cap = nc;
+    }
+    return &ksn_io_tab[fd];
+}
+
+/* fd の読み / 書きの期限 (単調時計のミリ秒の絶対時刻、無ければ -1)。set_*_deadline の表と、SO_RCVTIMEO / SO_SNDTIMEO を見る。 */
+static i64 ksn_io_deadline(i32 fd, int write_side) {
+    i64 at = -1;
+    ksn_dl *d = ksn_dl_find(fd, 0);
+    if (d && (write_side ? d->has_wr : d->has_rd)) at = write_side ? d->wr_at : d->rd_at;
+    struct timeval tv;
+    socklen_t l = sizeof tv;
+    if (ksn_to_set[write_side ? 1 : 0] > 0 && getsockopt(fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, &l) == 0 && (tv.tv_sec || tv.tv_usec)) {
+        i64 t = ksn_mono_ms() + (i64)tv.tv_sec * 1000 + (i64)(tv.tv_usec / 1000);
+        if (at < 0 || t < at) at = t;
+    }
+    return at;
+}
+
+/* fd を閉じる前に呼ぶ: 登録の記録を消す (OS は close で epoll から外す。同じ番号の別の fd に引き継がない)。 */
+void ksn_rt_sys_io_forget(i32 fd) {
+    if (fd < 0 || (i64)fd >= ksn_io_cap) return;
+    ksn_io_slot *s = &ksn_io_tab[fd];
+    if (s->st == 1) ksn_io_nparked--;
+    if (s->st >= 2) { ksn_io_nparked--; ksn_io_nfired--; }
+    memset(s, 0, sizeof *s);
+    s->at = -1;
+}
+
+/* 読み書きが EAGAIN だった fd を待つ。fd は最初の 1 回だけ、端起こし (EPOLLET) で読み・書きの両方を epoll に載せ、以後は載せ直さない。
+   待ち手がいない間に端が来ていれば (rdy)、待たずに 0 を返す (呼び出し側は読み書きを試し直す)。待つなら 1。epoll が使えなければ 0。 */
+i32 ksn_rt_sys_io_park(i32 fd, i32 write_side) {
+    ksn_io_slot *s = ksn_io_slot_of(fd);
+    if (!s) return 0;
+    int d = write_side ? 1 : 0;
+    if (ksn_io_ep < 0) {
+        ksn_io_ep = epoll_create1(EPOLL_CLOEXEC);
+        if (ksn_io_ep < 0) return 0;
+    }
+    if (!s->reg) {
+        struct epoll_event ev;
+        ev.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
+        ev.data.fd = fd;
+        if (epoll_ctl(ksn_io_ep, EPOLL_CTL_ADD, fd, &ev) != 0) return 0;
+        s->reg = 1;
+    }
+    if (s->rdy[d]) { s->rdy[d] = 0; return 0; }
+    if (s->st == 0) ksn_io_nparked++;
+    s->st = 1;
+    s->dir = d;
+    s->at = ksn_io_deadline(fd, d);
+    return 1;
+}
+
+/* epoll_wait。block = 0 なら待たず (8 回に 1 回だけ実際に呼ぶ)、1 なら準備完了か最も近い期限まで待つ。新しく印が付いた数を返す。 */
+i32 ksn_rt_sys_io_poll(i32 block) {
+    if (ksn_io_ep < 0 || ksn_io_nparked == 0) return 0;
+    if (!block && (++ksn_io_tickn & 7) != 0) return 0;
+    i32 got = 0;
+    i64 now = ksn_mono_ms();
+    int timeout = 0;
+    if (block) {
+        i64 best = -1;
+        for (i64 i = 0; i < ksn_io_cap; i++) {
+            if (ksn_io_tab[i].st == 1 && ksn_io_tab[i].at >= 0 && (best < 0 || ksn_io_tab[i].at < best)) best = ksn_io_tab[i].at;
+        }
+        timeout = best < 0 ? -1 : (int)(best > now ? best - now : 0);
+    }
+    struct epoll_event evs[256];
+    int n = epoll_wait(ksn_io_ep, evs, 256, timeout);
+    for (int k = 0; k < n; k++) {
+        ksn_io_slot *s = ksn_io_slot_of(evs[k].data.fd);
+        if (!s) continue;
+        uint32_t e = evs[k].events;
+        int hit[2];
+        hit[0] = (e & (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR)) != 0;
+        hit[1] = (e & (EPOLLOUT | EPOLLHUP | EPOLLERR)) != 0;
+        for (int d = 0; d < 2; d++) {
+            if (!hit[d]) continue;
+            if (s->st == 1 && s->dir == d) { s->st = 2; got++; ksn_io_nfired++; }
+            else s->rdy[d] = 1;
+        }
+    }
+    /* 期限切れ (まだ起きていない待ちがあるときだけ全表を見る) */
+    now = ksn_mono_ms();
+    for (i64 i = 0; i < ksn_io_cap && ksn_io_nparked > ksn_io_nfired; i++) {
+        if (ksn_io_tab[i].st == 1 && ksn_io_tab[i].at >= 0 && ksn_io_tab[i].at <= now) { ksn_io_tab[i].st = 3; got++; ksn_io_nfired++; }
+    }
+    return got;
+}
+
+/* 印の確認 (消さない)。0 = まだ、1 = 準備完了か期限切れ。 */
+i32 ksn_rt_sys_io_ready(i32 fd) {
+    ksn_io_slot *s = ksn_io_slot_of(fd);
+    return s && s->st >= 2;
+}
+
+/* 印を読んで消す。0 = 準備完了、1 = 期限切れ。 */
+i32 ksn_rt_sys_io_take(i32 fd) {
+    ksn_io_slot *s = ksn_io_slot_of(fd);
+    if (!s || s->st == 0) return 0;
+    i32 r = s->st == 3 ? 1 : 0;
+    if (s->st >= 2) ksn_io_nfired--;
+    ksn_io_nparked--;
+    s->st = 0;
+    return r;
+}
+
+/* 待っている fd の数 (0 なら実行器は待ち合わせを要しない)。 */
+i32 ksn_rt_sys_io_pending(void) {
+    return ksn_io_nparked > 0;
+}
+#else
+void ksn_rt_sys_io_forget(i32 fd) { (void)fd; }
+i32 ksn_rt_sys_io_park(i32 fd, i32 write_side) { (void)fd; (void)write_side; return 0; }
+i32 ksn_rt_sys_io_poll(i32 block) { (void)block; return 0; }
+i32 ksn_rt_sys_io_ready(i32 fd) { (void)fd; return 1; }
+i32 ksn_rt_sys_io_take(i32 fd) { (void)fd; return 0; }
+i32 ksn_rt_sys_io_pending(void) { return 0; }
+#endif
+
 /* `std.thread.sleep(ms)` / `std.thread.yield_now()` (スレッドが無くても使える) */
 void ksn_rt_sys_sleep_ms(u64 ms) {
 #ifdef _WIN32
@@ -1202,6 +1368,32 @@ void ksn_rt_sys_sleep_ms(u64 ms) {
     ts.tv_nsec = (long)((ms % 1000) * 1000000);
     while (nanosleep(&ts, &ts) != 0) {
     }
+#endif
+}
+
+/* Mutex の待ち。語 `a` が `expect` のままなら最大 `ms` ミリ秒眠る (Linux は futex、それ以外は ms 眠るだけ)。
+ * 戻り値は時間切れなら 1。起こされた・語が違った場合も戻る (呼び出し側が語を見直す)。 */
+uint32_t ksn_rt_sys_futex_wait(uint32_t *a, uint32_t expect, u64 ms) {
+#if defined(__linux__)
+    struct timespec ts;
+    ts.tv_sec = (time_t)(ms / 1000);
+    ts.tv_nsec = (long)((ms % 1000) * 1000000);
+    long r = syscall(SYS_futex, a, FUTEX_WAIT_PRIVATE, expect, &ts, NULL, 0);
+    return (r == -1 && errno == ETIMEDOUT) ? 1 : 0;
+#else
+    (void)expect;
+    (void)a;
+    (void)ms;
+    ksn_rt_sys_sleep_ms(ms);
+    return 1;
+#endif
+}
+
+void ksn_rt_sys_futex_wake(uint32_t *a) {
+#if defined(__linux__)
+    syscall(SYS_futex, a, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+#else
+    (void)a;
 #endif
 }
 

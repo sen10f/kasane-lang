@@ -26,8 +26,8 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.collections.HashMap.new", "alloc.collections.BtreeMap.new",
     "alloc.collections.VecDeque.new",
     "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.system_nanos", "std.time.Duration.from_millis", "std.thread.spawn", "std.thread.spawn_deep",
-    "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new", "core.sync.AtomicBool.new", "core.sync.AtomicU64.new", "core.sync.AtomicUsize.new",
-    "std.task.block_on", "std.task.spawn_local", "std.task.yield_now", "std.task.await_js",
+    "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new", "std.sync.RwLock.new", "core.sync.AtomicBool.new", "core.sync.AtomicU64.new", "core.sync.AtomicUsize.new",
+    "std.task.block_on", "std.task.spawn_local", "std.task.yield_now", "std.task.await_js", "std.task.wait_io",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.rand.fill_secure", "std.fs.exists", "std.fs.remove_file", "std.fs.open", "std.fs.open_dir_raw", "std.fs.Dir.open", "std.fs.open_beneath_raw", "std.fs.stat_fd_raw",
     "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.net.UdpSocket.bind", "std.net.resolve_raw", "std.process.Command.new",
     "std.net.connect_timeout",
@@ -839,6 +839,17 @@ impl Interp {
                 self.task_yield()?;
                 Ok(Val::Unit)
             }
+            "std.task.wait_io" => {
+                let fd = match dr(&a0) {
+                    Val::Int(v, _) => v,
+                    _ => return panic("std.task.wait_io: fd は i32"),
+                };
+                let w = match args.get(1).map(dr) {
+                    Some(Val::Int(v, _)) => v != 0,
+                    _ => false,
+                };
+                self.task_wait_io(fd, w)
+            }
             // JS の Promise を待つ中断は wasm32 の入口だけが再開できる (木走査には JS の相手がいない)。
             "std.task.await_js" => panic("std.task.await_js: needs a JavaScript host (build for wasm32-unknown-unknown and resume with ksn_resume); the tree-walker has none"),
             "std.sync.channel" => {
@@ -855,7 +866,7 @@ impl Interp {
                 };
                 Ok(Val::Struct(Rc::new(StructV { ty: ty.into(), f: RefCell::new(vec![("value".into(), v)]) })))
             }
-            "std.sync.Mutex.new" => Ok(Val::Mutex(Rc::new(CellPlace(RefCell::new(a0))))),
+            "std.sync.Mutex.new" | "std.sync.RwLock.new" => Ok(Val::Mutex(Rc::new(CellPlace(RefCell::new(a0))))),
             "std.rand.Rng.from_seed" => Ok(Val::Rng(Rc::new(Cell::new(if let Val::Int(i, _) = dr(&a0) { i as u64 } else { 0 })))),
             // 種だけを OS から取る。生成器は木走査・KIR と同じ splitmix64 (暗号用途には使えない。仕様 8.3)。
             "std.rand.Rng.from_entropy" => Ok(Val::Rng(Rc::new(Cell::new(entropy_seed())))),
@@ -1247,6 +1258,25 @@ impl Interp {
                         f: RefCell::new(vec![("cell".into(), Val::Ref(c.clone()))]),
                     })));
                 }
+                // RwLock: 協調実行では各スレッドが最後まで走るので、読み書きの衝突はない (ガードは持たれた印を取らない)。
+                if name == "read" || name == "write" {
+                    let addr = Rc::as_ptr(c) as *const () as usize;
+                    if name == "read" {
+                        if crate::value::HELD_MUTEXES.with(|h| h.borrow().contains(&addr)) {
+                            return panic(crate::interp::DEADLOCK_LOCK);
+                        }
+                        crate::value::HELD_READS.with(|h| *h.borrow_mut().entry(addr).or_insert(0) += 1);
+                    } else {
+                        if crate::value::HELD_READS.with(|h| h.borrow().contains_key(&addr)) || !crate::value::HELD_MUTEXES.with(|h| h.borrow_mut().insert(addr)) {
+                            return panic(crate::interp::DEADLOCK_LOCK);
+                        }
+                    }
+                    let ty = if name == "read" { "std.sync.RwLockReadGuard" } else { "std.sync.RwLockWriteGuard" };
+                    return Ok(Val::Struct(Rc::new(StructV {
+                        ty: ty.into(),
+                        f: RefCell::new(vec![("cell".into(), Val::Ref(c.clone()))]),
+                    })));
+                }
                 panic("no such method on Mutex")
             }
             Val::Rng(s) => {
@@ -1276,7 +1306,7 @@ impl Interp {
                 if matches!(s.ty.as_str(), "std.io.Stdin" | "std.io.Stdout" | "std.io.Stderr") {
                     return self.std_stream_method(s, name, &args);
                 }
-                if s.ty == "std.sync.MutexGuard" && (name == "get" || name == "get_mut") {
+                if matches!(s.ty.as_str(), "std.sync.MutexGuard" | "std.sync.RwLockReadGuard" | "std.sync.RwLockWriteGuard") && (name == "get" || name == "get_mut") {
                     return Ok(s.get("cell").unwrap());
                 }
                 if s.ty == "alloc.raw.Buf" {

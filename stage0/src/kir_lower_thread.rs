@@ -57,6 +57,9 @@ pub(super) const WAIT: &str = "ksn.thr.wait";
 pub(super) const MINIT: &str = "ksn.thr.minit";
 pub(super) const MLOCK: &str = "ksn.thr.mlock";
 pub(super) const MUNLOCK: &str = "ksn.thr.munlock";
+pub(super) const RWRD: &str = "ksn.thr.rwrd";
+pub(super) const RWWR: &str = "ksn.thr.rwwr";
+pub(super) const RWUNLOCK: &str = "ksn.thr.rwunlock";
 
 /// 補助の関数 `name(args)` の呼び出し (戻り値の型 `ret`)。
 pub(super) fn rt_call(lw: &mut Lw, name: &str, args: Vec<VId>, ret: Ty) -> VId {
@@ -267,7 +270,7 @@ pub(super) fn join_call(lw: &mut Lw, _e: &V, recv: VId, recv_ty: Ty, line: usize
 
 /// 全関数を下ろした後に、補助の関数 (`exec` / `run_one` / `join`) を作って足す。どれも呼ばれていなければ何もしない。
 pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
-    let wanted = |n: &str| n == JOIN || n == RUN_ONE || n == WAIT || n == TNEW || n == TENT || n == TSTART || n == TREL || n == LOCK || n == UNLOCK || n == MINIT || n == MLOCK || n == MUNLOCK;
+    let wanted = |n: &str| n == JOIN || n == RUN_ONE || n == WAIT || n == TNEW || n == TENT || n == TSTART || n == TREL || n == LOCK || n == UNLOCK || n == MINIT || n == MLOCK || n == MUNLOCK || n == RWRD || n == RWWR || n == RWUNLOCK || n.starts_with("ksn.chan.rt.");
     if !ok.iter().any(|(_, cs)| cs.iter().any(|c| wanted(c))) {
         return;
     }
@@ -417,6 +420,47 @@ pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
         let mut b = Fb::new(&params);
         let u = b.emit(Ty::Unit, Op::Const(0));
         b.term(Term::Ret(u));
+        ok.push((mk(b.build(name, &[], Ty::Unit)), none()));
+    }
+    // rwrd / rwwr / rwunlock (RwLock): 語 (u32) は 0 空き / 0x8000_0000 書き手 / それ以外は読み手の数。協調実行では持たれた語を見るのは
+    // 同じスレッドの再ロックだけで、衝突は deadlock の panic (Mutex と同じ文言・101)。
+    for name in [RWRD, RWWR, RWUNLOCK] {
+        let mut b = Fb::new(&[Ty::Ptr]);
+        let w = b.load(Ty::U32, 0, 0);
+        let wr = b.c(Ty::U32, 0x8000_0000);
+        let zero = b.c(Ty::U32, 0);
+        let one = b.c(Ty::U32, 1);
+        let (cmp_to, conflict_if_eq) = match name {
+            RWRD => (wr, true),
+            RWWR => (zero, false),
+            _ => (wr, true),
+        };
+        let is = b.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U32, a: w, b: cmp_to });
+        let (yes, _) = b.block(&[]);
+        let (no, _) = b.block(&[]);
+        b.br_if(is, yes, no);
+        // 「等しい」側 (yes) と「等しくない」側 (no)。
+        let (ok_blk, bad_blk) = if conflict_if_eq { (no, yes) } else { (yes, no) };
+        if name == RWUNLOCK {
+            b.at(yes);
+            b.store(Ty::U32, 0, 0, zero);
+            let u = b.emit(Ty::Unit, Op::Const(0));
+            b.term(Term::Ret(u));
+            b.at(no);
+            let nw = b.emit(Ty::U32, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: w, b: one });
+            b.store(Ty::U32, 0, 0, nw);
+            let u = b.emit(Ty::Unit, Op::Const(0));
+            b.term(Term::Ret(u));
+        } else {
+            b.at(bad_blk);
+            b.emit(Ty::Unit, Op::Panic { msg: crate::interp::DEADLOCK_LOCK.to_string(), arg: None });
+            b.term(Term::Unreachable);
+            b.at(ok_blk);
+            let nw = if name == RWRD { b.emit(Ty::U32, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: w, b: one }) } else { wr };
+            b.store(Ty::U32, 0, 0, nw);
+            let u = b.emit(Ty::Unit, Op::Const(0));
+            b.term(Term::Ret(u));
+        }
         ok.push((mk(b.build(name, &[], Ty::Unit)), none()));
     }
     // mlock(p) / munlock(p): 協調実行では各スレッドが最後まで走るので、持たれている語 (u32) を見るのは同じスレッドの再ロックだけ

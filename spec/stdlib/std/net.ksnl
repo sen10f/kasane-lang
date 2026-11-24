@@ -1,3 +1,22 @@
+fn std.net.TcpListener.accept_async(self: &std.net.TcpListener) -> Result<std.net.TcpStream, std.net.Error> uses [io.net, suspend] panics never pub
+    loop {
+        match self.accept_timeout(0u64) {
+            Ok(conn) => return Ok(conn)
+            Err(e) => {
+                if e.code != 110i32 {
+                    return Err(e)
+                }
+                if std.task.wait_io(self.descriptor, 0i32) != 0i32 {
+                    break
+                }
+            }
+        }
+    }
+    Err(std.net.Error {
+        code: 110i32
+    })
+end std.net.TcpListener.accept_async
+
 fn std.net.TcpStream.local_addr(self: &std.net.TcpStream) -> Result<std.string.String, std.io.Error> uses [alloc, io.net] panics never pub
     let mut buf = [0u8; 64]
     let n = self.local_addr_raw(&mut buf)?
@@ -9,6 +28,60 @@ fn std.net.TcpStream.peer_addr(self: &std.net.TcpStream) -> Result<std.string.St
     let n = self.peer_addr_raw(&mut buf)?
     std.net.text_range(&buf, 0usize, n)
 end std.net.TcpStream.peer_addr
+
+fn std.net.TcpStream.read_async(self: &mut std.net.TcpStream, buffer: &mut [u8]) -> Result<usize, std.io.Error> uses [io.net, suspend] panics never pub
+    let mut out = Err(std.net.timed_out())
+    loop {
+        match self.read_try(buffer) {
+            Ok(n) => {
+                out = Ok(n)
+                break
+            }
+            Err(e) => {
+                if e.code != 11i32 {
+                    out = Err(e)
+                    break
+                }
+                if std.task.wait_io(self.descriptor, 0i32) != 0i32 {
+                    break
+                }
+            }
+        }
+    }
+    out
+end std.net.TcpStream.read_async
+
+fn std.net.TcpStream.write_async(self: &mut std.net.TcpStream, buffer: &[u8]) -> Result<usize, std.io.Error> uses [io.net, suspend] panics never pub
+    let n = buffer.len()
+    let chunk = if n > 16_384usize {
+        16_384usize
+    } else {
+        n
+    }
+    let mut out = Err(std.net.timed_out())
+    loop {
+        let part = match buffer.sub(0usize, chunk) {
+            Some(p) => p
+            None => return Err(std.net.timed_out())
+        }
+        match self.write_try(part) {
+            Ok(k) => {
+                out = Ok(k)
+                break
+            }
+            Err(e) => {
+                if e.code != 11i32 {
+                    out = Err(e)
+                    break
+                }
+                if std.task.wait_io(self.descriptor, 1i32) != 0i32 {
+                    break
+                }
+            }
+        }
+    }
+    out
+end std.net.TcpStream.write_async
 
 fn std.net.UdpSocket.recv_from(self: &std.net.UdpSocket, buffer: &mut [u8], from: &mut std.string.String) -> Result<usize, std.io.Error> uses [alloc, io.net] panics never pub
     let mut raw = [0u8; 128]
@@ -72,3 +145,10 @@ fn std.net.text_range(bytes: &[u8], start: usize, last: usize) -> Result<std.str
     }
     Ok(out)
 end std.net.text_range
+
+fn std.net.timed_out() -> std.io.Error uses [] panics never
+    std.io.Error {
+        kind: std.io.ErrorKind.TimedOut
+        code: 110i32
+    }
+end std.net.timed_out

@@ -162,9 +162,120 @@ use crate::interp::DEADLOCK_LOCK;
 /// 待ちの本体 (`mu` を持って呼ぶ)。待っている数 `blocked` を 1 増やし、生きている数 `live` 以上なら全員が待っているので
 /// `msg` (`@ksn.rt.deadlock*`) を出して終了コード 101 で終わる。そうでなければ状態が変わる (`gen` が進む) まで条件変数で待つ。
 /// ラベル `dead` / `w` / `lp` / `done` を使うので、1 つの関数に 1 回だけ入れる。最後は `done:` の後に続ける。
+/// スレッドごとの RwLock の保持表 (`@ksn.rw.held`: 錠の番地 8 個 + 数 8 個。書き手は -1、読み手は数)。同じスレッドの再取得 (書→書・読→書・書→読) は
+/// 待たずに deadlock の 101 (木走査・KIR 実行器と同じ。他のスレッドが生きていても同じ)。
+const RW_HELPERS: &str = "
+define internal i64 @ksn.rw.find(i64 %k) {
+entry:
+  br label %lp
+lp:
+  %i = phi i64 [ 0, %entry ], [ %i1, %nx ]
+  %c = icmp ult i64 %i, 8
+  br i1 %c, label %chk, label %nf
+chk:
+  %a = getelementptr i64, ptr @ksn.rw.held, i64 %i
+  %v = load i64, ptr %a
+  %e = icmp eq i64 %v, %k
+  br i1 %e, label %hit, label %nx
+nx:
+  %i1 = add i64 %i, 1
+  br label %lp
+hit:
+  ret i64 %i
+nf:
+  ret i64 -1
+}
+
+define internal void @ksn.rw.check(ptr %p, i64 %wr) {
+entry:
+  %pi = ptrtoint ptr %p to i64
+  %ix = call i64 @ksn.rw.find(i64 %pi)
+  %none = icmp slt i64 %ix, 0
+  br i1 %none, label %ok, label %have
+have:
+  %j = add i64 %ix, 8
+  %ca = getelementptr i64, ptr @ksn.rw.held, i64 %j
+  %cnt = load i64, ptr %ca
+  %isw = icmp ne i64 %wr, 0
+  %busy = icmp ne i64 %cnt, 0
+  %wrt = icmp eq i64 %cnt, -1
+  %bad = select i1 %isw, i1 %busy, i1 %wrt
+  br i1 %bad, label %dead, label %ok
+dead:
+  %q = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.rt.deadlock_lock)
+  call void @exit(i32 101)
+  unreachable
+ok:
+  ret void
+}
+
+define internal void @ksn.rw.rec(ptr %p, i64 %wr) {
+entry:
+  %pi = ptrtoint ptr %p to i64
+  %ix = call i64 @ksn.rw.find(i64 %pi)
+  %none = icmp slt i64 %ix, 0
+  br i1 %none, label %alloc, label %set
+alloc:
+  %fx = call i64 @ksn.rw.find(i64 0)
+  %full = icmp slt i64 %fx, 0
+  br i1 %full, label %ret, label %claim
+claim:
+  %pa = getelementptr i64, ptr @ksn.rw.held, i64 %fx
+  store i64 %pi, ptr %pa
+  br label %set
+set:
+  %ix2 = phi i64 [ %ix, %entry ], [ %fx, %claim ]
+  %j = add i64 %ix2, 8
+  %ca = getelementptr i64, ptr @ksn.rw.held, i64 %j
+  %cnt = load i64, ptr %ca
+  %inc = add i64 %cnt, 1
+  %isw = icmp ne i64 %wr, 0
+  %nv = select i1 %isw, i64 -1, i64 %inc
+  store i64 %nv, ptr %ca
+  br label %ret
+ret:
+  ret void
+}
+
+define internal void @ksn.rw.rel(ptr %p) {
+entry:
+  %pi = ptrtoint ptr %p to i64
+  %ix = call i64 @ksn.rw.find(i64 %pi)
+  %none = icmp slt i64 %ix, 0
+  br i1 %none, label %ret, label %have
+have:
+  %j = add i64 %ix, 8
+  %ca = getelementptr i64, ptr @ksn.rw.held, i64 %j
+  %cnt = load i64, ptr %ca
+  %last = icmp sle i64 %cnt, 1
+  br i1 %last, label %clear, label %dec
+clear:
+  %pa = getelementptr i64, ptr @ksn.rw.held, i64 %ix
+  store i64 0, ptr %pa
+  store i64 0, ptr %ca
+  br label %ret
+dec:
+  %nv = sub i64 %cnt, 1
+  store i64 %nv, ptr %ca
+  br label %ret
+ret:
+  ret void
+}
+";
+
+/// RwLock の取得 (`k` は `rd` / `wr`)。まず try、だめなら 20 ms の時間つきの待ちを繰り返す。時間切れのとき、初回だけ大域の `blocked` を
+/// 1 つ増やし (Mutex と同じ「全員待ち」の判定: `blocked >= live` なら deadlock で 101)、取れたら (増やしていれば) 1 つ戻す。
+fn rw_lock_body(k: &str) -> String {
+    format!(
+        "  %ts = alloca [16 x i8], align 8\n  call void @ksn.rw.check(ptr %arg0, i64 {wr})\n  %t = call i32 @pthread_rwlock_try{k}lock(ptr %arg0)\n  %ok = icmp eq i32 %t, 0\n  br i1 %ok, label %got, label %lp\ngot:\n  call void @ksn.rw.rec(ptr %arg0, i64 {wr})\n  ret i8 0\nlp:\n  %cnt = phi i32 [ 0, %entry ], [ 1, %cont ]\n  %cg = call i32 @clock_gettime(i32 0, ptr %ts)\n  %sec = load i64, ptr %ts\n  %np = getelementptr i8, ptr %ts, i64 8\n  %ns = load i64, ptr %np\n  %ns2 = add i64 %ns, 20000000\n  %over = icmp uge i64 %ns2, 1000000000\n  %ns3 = sub i64 %ns2, 1000000000\n  %nsf = select i1 %over, i64 %ns3, i64 %ns2\n  %sc = add i64 %sec, 1\n  %secf = select i1 %over, i64 %sc, i64 %sec\n  store i64 %secf, ptr %ts\n  store i64 %nsf, ptr %np\n  %r = call i32 @pthread_rwlock_timed{k}lock(ptr %arg0, ptr %ts)\n  %okk = icmp eq i32 %r, 0\n  br i1 %okk, label %locked, label %chkd\nchkd:\n  %ed = icmp eq i32 %r, 35\n  br i1 %ed, label %dead, label %to\nto:\n  %first = icmp eq i32 %cnt, 0\n  br i1 %first, label %inc, label %dchk\ninc:\n  %ma = atomicrmw add ptr @ksn.rt.mwait, i64 1 seq_cst, align 8\n  br label %dchk\ndchk:\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %b1 = load i64, ptr @ksn.rt.blocked\n  %xm = load atomic i64, ptr @ksn.rt.mwait seq_cst, align 8\n  %xc = load atomic i64, ptr @ksn.rt.cblk seq_cst, align 8\n  %xs0 = add i64 %b1, %xm\n  %xs = add i64 %xs0, %xc\n  %l = load i64, ptr @ksn.rt.live\n  %d = icmp uge i64 %xs, %l\n  br i1 %d, label %dead, label %cont\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.rt.deadlock_lock)\n  call void @exit(i32 101)\n  unreachable\ncont:\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  br label %lp\nlocked:\n  %was = icmp ne i32 %cnt, 0\n  br i1 %was, label %dec, label %fin\ndec:\n  %md = atomicrmw sub ptr @ksn.rt.mwait, i64 1 seq_cst, align 8\n  br label %fin\nfin:\n  call void @ksn.rw.rec(ptr %arg0, i64 {wr})\n  ret i8 0\n",
+        k = k,
+        wr = (k == "wr") as i32
+    )
+}
+
 fn block_body(msg: &str) -> String {
     format!(
-        "  %b = load i64, ptr @ksn.rt.blocked\n  %b1 = add i64 %b, 1\n  store i64 %b1, ptr @ksn.rt.blocked\n  %l = load i64, ptr @ksn.rt.live\n  %d = icmp uge i64 %b1, %l\n  br i1 %d, label %dead, label %w\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr {msg})\n  call void @exit(i32 101)\n  unreachable\nw:\n  %g0 = load i64, ptr @ksn.rt.gen\n  br label %lp\nlp:\n  %r = call i32 @pthread_cond_wait(ptr @ksn.rt.cv, ptr @ksn.rt.mu)\n  %g1 = load i64, ptr @ksn.rt.gen\n  %same = icmp eq i64 %g1, %g0\n  br i1 %same, label %lp, label %done\ndone:\n"
+        "  %b = load i64, ptr @ksn.rt.blocked\n  %b1 = add i64 %b, 1\n  store i64 %b1, ptr @ksn.rt.blocked\n  %l = load i64, ptr @ksn.rt.live\n  %xm = load atomic i64, ptr @ksn.rt.mwait seq_cst, align 8\n  %xc = load atomic i64, ptr @ksn.rt.cblk seq_cst, align 8\n  %xs0 = add i64 %b1, %xm\n  %xs = add i64 %xs0, %xc\n  %d = icmp uge i64 %xs, %l\n  br i1 %d, label %dead, label %w\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr {msg})\n  call void @exit(i32 101)\n  unreachable\nw:\n  %g0 = load i64, ptr @ksn.rt.gen\n  br label %lp\nlp:\n  %r = call i32 @pthread_cond_wait(ptr @ksn.rt.cv, ptr @ksn.rt.mu)\n  %g1 = load i64, ptr @ksn.rt.gen\n  %same = icmp eq i64 %g1, %g0\n  br i1 %same, label %lp, label %done\ndone:\n"
     )
 }
 
@@ -188,6 +299,14 @@ fn atm_override(rest: &str) -> Option<String> {
     }
 }
 
+/// 非同期ソケットのリアクター (epoll) を使う対象か (Linux。`target` が `None` なら今の機械)。
+fn io_reactor_target(t: Option<Target>) -> bool {
+    match t {
+        Some(t) => t.triple.contains("linux"),
+        None => cfg!(target_os = "linux"),
+    }
+}
+
 fn thread_override(key: &str, m: &Module) -> Option<String> {
     if let Some(rest) = key.strip_prefix("ksn.atm.") {
         return atm_override(rest);
@@ -196,6 +315,12 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
     let name = fname(key);
     let def = |ret: &str, params: &str, body: &str| Some(format!("define internal {ret} {name}({params}) {{\nentry:\n{body}}}\n"));
     match key {
+        // std.task の非同期ソケット (Linux の epoll リアクター、sysrt.c)。Linux 以外は KIR の本体 (中断しない) のまま。
+        "ksn.io.park" => def("i32", "i32 %arg0, i32 %arg1", "  %r = call i32 @ksn_rt_sys_io_park(i32 %arg0, i32 %arg1)\n  ret i32 %r\n"),
+        "ksn.io.poll" => def("i32", "i32 %arg0", "  %r = call i32 @ksn_rt_sys_io_poll(i32 %arg0)\n  ret i32 %r\n"),
+        "ksn.io.ready" => def("i32", "i32 %arg0", "  %r = call i32 @ksn_rt_sys_io_ready(i32 %arg0)\n  ret i32 %r\n"),
+        "ksn.io.take" => def("i32", "i32 %arg0", "  %r = call i32 @ksn_rt_sys_io_take(i32 %arg0)\n  ret i32 %r\n"),
+        "ksn.io.pending" => def("i32", "", "  %r = call i32 @ksn_rt_sys_io_pending()\n  ret i32 %r\n"),
         "ksn.time.mono" => def("i64", "", "  %r = call i64 @ksn_rt_sys_now_ns()\n  ret i64 %r\n"),
         "ksn.time.sleep" => def("i8", "i64 %arg0", "  call void @ksn_rt_sys_sleep_ms(i64 %arg0)\n  ret i8 0\n"),
         "ksn.thr.lock" => def("i8", "", "  %r = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  ret i8 0\n"),
@@ -207,15 +332,50 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
         "ksn.thr.mlock" => def(
             "i8",
             "ptr %arg0",
-            &format!(
-                "  %c0 = cmpxchg ptr %arg0, i32 0, i32 1 acquire monotonic, align 4\n  %ok0 = extractvalue {{ i32, i1 }} %c0, 1\n  br i1 %ok0, label %got, label %spin\ngot:\n  ret i8 0\nspin:\n  %i = phi i32 [ 0, %entry ], [ %i1, %spin2 ]\n  %v = load atomic i32, ptr %arg0 monotonic, align 4\n  %free = icmp eq i32 %v, 0\n  br i1 %free, label %try, label %spin2\ntry:\n  %c1 = cmpxchg ptr %arg0, i32 0, i32 1 acquire monotonic, align 4\n  %ok1 = extractvalue {{ i32, i1 }} %c1, 1\n  br i1 %ok1, label %got, label %spin2\nspin2:\n  %i1 = add i32 %i, 1\n  %more = icmp ult i32 %i1, 100\n  br i1 %more, label %spin, label %slow\nslow:\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  br label %chk\nchk:\n  %o = atomicrmw xchg ptr %arg0, i32 2 acquire, align 4\n  %z = icmp eq i32 %o, 0\n  br i1 %z, label %took, label %blk\nblk:\n{}  br label %chk\ntook:\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  ret i8 0\n",
-                block_body("@ksn.rt.deadlock_lock")
-            ),
+            "  %cf = alloca i32, align 4\n  store i32 0, ptr %cf\n  %c0 = cmpxchg ptr %arg0, i32 0, i32 1 acquire monotonic, align 4\n  %ok0 = extractvalue { i32, i1 } %c0, 1\n  br i1 %ok0, label %got, label %chk0\nchk0:\n  %op = getelementptr i8, ptr %arg0, i64 8\n  %ow = load atomic i64, ptr %op monotonic, align 8\n  %me0 = call i64 @pthread_self()\n  %mine = icmp eq i64 %ow, %me0\n  br i1 %mine, label %dead, label %spin\ngot:\n  br label %fin\nspin:\n  %i = phi i32 [ 0, %chk0 ], [ %i1, %spin2 ]\n  %v = load atomic i32, ptr %arg0 monotonic, align 4\n  %free = icmp eq i32 %v, 0\n  br i1 %free, label %try, label %spin2\ntry:\n  %c1 = cmpxchg ptr %arg0, i32 0, i32 1 acquire monotonic, align 4\n  %ok1 = extractvalue { i32, i1 } %c1, 1\n  br i1 %ok1, label %got, label %spin2\nspin2:\n  %i1 = add i32 %i, 1\n  %more = icmp ult i32 %i1, 100\n  br i1 %more, label %spin, label %slow\nslow:\n  %o = atomicrmw xchg ptr %arg0, i32 2 acquire, align 4\n  %z = icmp eq i32 %o, 0\n  br i1 %z, label %took, label %wl\nwl:\n  %to = call i32 @ksn_rt_sys_futex_wait(ptr %arg0, i32 2, i64 20)\n  %o2 = atomicrmw xchg ptr %arg0, i32 2 acquire, align 4\n  %z2 = icmp eq i32 %o2, 0\n  br i1 %z2, label %took, label %chk\nchk:\n  %tz = icmp ne i32 %to, 0\n  br i1 %tz, label %tmo, label %wl\ntmo:\n  %c = load i32, ptr %cf\n  %nc = icmp eq i32 %c, 0\n  br i1 %nc, label %inc, label %dchk\ninc:\n  %ma = atomicrmw add ptr @ksn.rt.mwait, i64 1 seq_cst, align 8\n  store i32 1, ptr %cf\n  br label %dchk\ndchk:\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %b = load i64, ptr @ksn.rt.blocked\n  %l = load i64, ptr @ksn.rt.live\n  %m = load atomic i64, ptr @ksn.rt.mwait seq_cst, align 8\n  %sm0 = add i64 %b, %m\n  %cbm = load atomic i64, ptr @ksn.rt.cblk seq_cst, align 8\n  %sm = add i64 %sm0, %cbm\n  %d = icmp uge i64 %sm, %l\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  br i1 %d, label %rech, label %wl\nrech:\n  %o3 = atomicrmw xchg ptr %arg0, i32 2 acquire, align 4\n  %z3 = icmp eq i32 %o3, 0\n  br i1 %z3, label %took, label %dead\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.rt.deadlock_lock)\n  call void @exit(i32 101)\n  unreachable\ntook:\n  %cc = load i32, ptr %cf\n  %hc = icmp ne i32 %cc, 0\n  br i1 %hc, label %dec, label %fin\ndec:\n  %md = atomicrmw sub ptr @ksn.rt.mwait, i64 1 seq_cst, align 8\n  br label %fin\nfin:\n  %op2 = getelementptr i8, ptr %arg0, i64 8\n  %me = call i64 @pthread_self()\n  store atomic i64 %me, ptr %op2 monotonic, align 8\n  ret i8 0\n",
         ),
         "ksn.thr.munlock" => def(
             "i8",
             "ptr %arg0",
-            "  %o = atomicrmw xchg ptr %arg0, i32 0 release, align 4\n  %w = icmp eq i32 %o, 2\n  br i1 %w, label %wake, label %done\nwake:\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %g = load i64, ptr @ksn.rt.gen\n  %g1 = add i64 %g, 1\n  store i64 %g1, ptr @ksn.rt.gen\n  store i64 0, ptr @ksn.rt.blocked\n  %bc = call i32 @pthread_cond_broadcast(ptr @ksn.rt.cv)\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  br label %done\ndone:\n  ret i8 0\n",
+            "  %op = getelementptr i8, ptr %arg0, i64 8\n  store atomic i64 0, ptr %op monotonic, align 8\n  %o = atomicrmw xchg ptr %arg0, i32 0 release, align 4\n  %w = icmp eq i32 %o, 2\n  br i1 %w, label %wake, label %done\nwake:\n  call void @ksn_rt_sys_futex_wake(ptr %arg0)\n  br label %done\ndone:\n  ret i8 0\n",
+        ),
+        // RwLock: glibc の `pthread_rwlock_t` (零で初期化済みと同じ)。読み手は同時に持て、書き手は 1 本だけ。待ちは OS の rwlock に任せる
+        // (待ちの deadlock の検出は Mutex だけ)。
+        "ksn.thr.rwrd" => def(
+            "i8",
+            "ptr %arg0",
+            &rw_lock_body("rd"),
+        ),
+        "ksn.thr.rwwr" => def(
+            "i8",
+            "ptr %arg0",
+            &rw_lock_body("wr"),
+        ),
+        "ksn.thr.rwunlock" => def("i8", "ptr %arg0", "  call void @ksn.rw.rel(ptr %arg0)\n  %r = call i32 @pthread_rwlock_unlock(ptr %arg0)\n  ret i8 0\n") .map(|d| d + RW_HELPERS),
+        // チャネルごとのロックと待ち (`kir_lower_chan.rs`。状態の +48 に mutex、+88 に cond、+136 に待っている数、+144 に起こしの札)。
+        // 待ちは待っている数と大域の `cblk` を 1 増やし、起こす側が (チャネルのロックの下で) 札を 1 つ足して `cblk` を引くので、`cblk` は「札を
+        // 持たずに待っている数」と正確に等しい。全員待ちの検出は `cblk + blocked >= live` (待ちに入るとき、と 100ms の期限切れのたび)。
+        "ksn.chan.rt.init" => def(
+            "i8",
+            "ptr %arg0",
+            "  %mu = getelementptr i8, ptr %arg0, i64 48\n  %cv = getelementptr i8, ptr %arg0, i64 88\n  %at = alloca [16 x i8], align 8\n  %a0 = call i32 @pthread_mutexattr_init(ptr %at)\n  %a1 = call i32 @pthread_mutexattr_settype(ptr %at, i32 3)\n  %a = call i32 @pthread_mutex_init(ptr %mu, ptr %at)\n  %a2 = call i32 @pthread_mutexattr_destroy(ptr %at)\n  %b = call i32 @pthread_cond_init(ptr %cv, ptr null)\n  %wp = getelementptr i8, ptr %arg0, i64 136\n  %tp = getelementptr i8, ptr %arg0, i64 144\n  store i64 0, ptr %wp\n  store i64 0, ptr %tp\n  ret i8 0\n",
+        ),
+        "ksn.chan.rt.lock" => def("i8", "ptr %arg0", "  %mu = getelementptr i8, ptr %arg0, i64 48\n  %a = call i32 @pthread_mutex_lock(ptr %mu)\n  ret i8 0\n"),
+        "ksn.chan.rt.unlock" => def("i8", "ptr %arg0", "  %mu = getelementptr i8, ptr %arg0, i64 48\n  %a = call i32 @pthread_mutex_unlock(ptr %mu)\n  ret i8 0\n"),
+        "ksn.chan.rt.unlock1" => def(
+            "i8",
+            "ptr %arg0",
+            "  %mu = getelementptr i8, ptr %arg0, i64 48\n  %cv = getelementptr i8, ptr %arg0, i64 88\n  %wp = getelementptr i8, ptr %arg0, i64 136\n  %tp = getelementptr i8, ptr %arg0, i64 144\n  %w = load i64, ptr %wp\n  %t = load i64, ptr %tp\n  %hp = getelementptr i8, ptr %arg0, i64 8\n  %lp = getelementptr i8, ptr %arg0, i64 16\n  %hd = load i64, ptr %hp\n  %ln = load i64, ptr %lp\n  %q = sub i64 %ln, %hd\n  %a1 = icmp ne i64 %w, 0\n  %a2 = icmp ugt i64 %q, %t\n  %any = and i1 %a1, %a2\n  br i1 %any, label %wake, label %done\nwake:\n  %w1 = sub i64 %w, 1\n  store i64 %w1, ptr %wp\n  %t1 = add i64 %t, 1\n  store i64 %t1, ptr %tp\n  %o = atomicrmw sub ptr @ksn.rt.cblk, i64 1 seq_cst\n  %s = call i32 @pthread_cond_signal(ptr %cv)\n  br label %done\ndone:\n  %a = call i32 @pthread_mutex_unlock(ptr %mu)\n  ret i8 0\n",
+        ),
+        "ksn.chan.rt.unlockall" => def(
+            "i8",
+            "ptr %arg0",
+            "  %mu = getelementptr i8, ptr %arg0, i64 48\n  %cv = getelementptr i8, ptr %arg0, i64 88\n  %wp = getelementptr i8, ptr %arg0, i64 136\n  %tp = getelementptr i8, ptr %arg0, i64 144\n  %w = load i64, ptr %wp\n  %any = icmp ne i64 %w, 0\n  br i1 %any, label %wake, label %done\nwake:\n  store i64 0, ptr %wp\n  %t = load i64, ptr %tp\n  %t1 = add i64 %t, %w\n  store i64 %t1, ptr %tp\n  %o = atomicrmw sub ptr @ksn.rt.cblk, i64 %w seq_cst\n  %s = call i32 @pthread_cond_broadcast(ptr %cv)\n  br label %done\ndone:\n  %a = call i32 @pthread_mutex_unlock(ptr %mu)\n  ret i8 0\n",
+        ),
+        "ksn.chan.rt.wait" => def(
+            "i8",
+            "ptr %arg0",
+            "  %mu = getelementptr i8, ptr %arg0, i64 48\n  %cv = getelementptr i8, ptr %arg0, i64 88\n  %wp = getelementptr i8, ptr %arg0, i64 136\n  %tp = getelementptr i8, ptr %arg0, i64 144\n  %ts = alloca [16 x i8], align 8\n  %nsp = getelementptr i8, ptr %ts, i64 8\n  %w = load i64, ptr %wp\n  %w1 = add i64 %w, 1\n  store i64 %w1, ptr %wp\n  %c0 = atomicrmw add ptr @ksn.rt.cblk, i64 1 seq_cst\n  %c1 = add i64 %c0, 1\n  br label %chk\nchk:\n  %c = phi i64 [ %c1, %entry ], [ %cn, %again ]\n  %gb = load atomic i64, ptr @ksn.rt.blocked monotonic, align 8\n  %gm = load atomic i64, ptr @ksn.rt.mwait seq_cst, align 8\n  %sum0 = add i64 %c, %gb\n  %sum = add i64 %sum0, %gm\n  %l = load atomic i64, ptr @ksn.rt.live monotonic, align 8\n  %d = icmp uge i64 %sum, %l\n  br i1 %d, label %dead, label %lp\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.rt.deadlock)\n  call void @exit(i32 101)\n  unreachable\nlp:\n  %cg = call i32 @clock_gettime(i32 0, ptr %ts)\n  %sec = load i64, ptr %ts\n  %ns = load i64, ptr %nsp\n  %ns2 = add i64 %ns, 100000000\n  %cy = icmp uge i64 %ns2, 1000000000\n  %ns3 = sub i64 %ns2, 1000000000\n  %ns4 = select i1 %cy, i64 %ns3, i64 %ns2\n  %cz = zext i1 %cy to i64\n  %sec2 = add i64 %sec, %cz\n  store i64 %sec2, ptr %ts\n  store i64 %ns4, ptr %nsp\n  %tw = call i32 @pthread_cond_timedwait(ptr %cv, ptr %mu, ptr %ts)\n  %t = load i64, ptr %tp\n  %has = icmp ne i64 %t, 0\n  br i1 %has, label %take, label %again\ntake:\n  %t2 = sub i64 %t, 1\n  store i64 %t2, ptr %tp\n  ret i8 0\nagain:\n  %cn = load atomic i64, ptr @ksn.rt.cblk monotonic, align 8\n  br label %chk\n",
         ),
         "ksn.thr.wait" => def("i8", "", &format!("{}  ret i8 0\n", block_body("@ksn.rt.deadlock"))),
         "ksn.thr.new" => def("i64", "", &format!("  %p = call ptr @calloc(i64 1, i64 {})\n  %z = icmp eq ptr %p, null\n  br i1 %z, label %oom, label %ok\noom:\n  call void @exit(i32 101)\n  unreachable\nok:\n  %i = ptrtoint ptr %p to i64\n  ret i64 %i\n", THREAD_ENTRY_SIZE)),
@@ -295,6 +455,8 @@ const PANICS: [(&str, &str); 8] = [
 ];
 
 struct Ctx {
+    /// 呼び出しの輪に入らず、輪に入る関数も呼ばない関数 (「純粋域」) と、その呼び出し鎖の高さ (自分を含む)。深さの記録 (入口の検査と加算) を省き、呼び出し側が高さ分を先に検査する。
+    pure_h: HashMap<String, (u64, u64)>,
     decls: BTreeSet<String>,
     globals: String,
     math: BTreeSet<Math>,
@@ -606,7 +768,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     } else {
         crate::kir_cabi::Arch::X86_64
     };
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int, arch };
+    let mut cx = Ctx { pure_h: pure_region(m, entry), decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int, arch };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -649,16 +811,26 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             continue;
         }
         funcs.push('\n');
-        if let Some(text) = thread_override(&f.key, m) {
-            if f.key.starts_with("ksn.time.") {
+        let io_native = !f.key.starts_with("ksn.io.") || io_reactor_target(target);
+        if let Some(text) = thread_override(&f.key, m).filter(|_| io_native) {
+            if f.key.starts_with("ksn.io.") {
+                cx.decl("declare i32 @ksn_rt_sys_io_park(i32, i32)");
+                cx.decl("declare i32 @ksn_rt_sys_io_poll(i32)");
+                cx.decl("declare i32 @ksn_rt_sys_io_ready(i32)");
+                cx.decl("declare i32 @ksn_rt_sys_io_take(i32)");
+                cx.decl("declare i32 @ksn_rt_sys_io_pending()");
+            } else if f.key.starts_with("ksn.time.") {
                 cx.decl("declare i64 @ksn_rt_sys_now_ns()");
                 cx.decl("declare void @ksn_rt_sys_sleep_ms(i64)");
             } else if !pthread_used {
                 pthread_used = true;
-                cx.globals.push_str("@ksn.rt.mu = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.cv = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.live = internal global i64 1\n@ksn.rt.blocked = internal global i64 0\n@ksn.rt.gen = internal global i64 0\n");
+                cx.globals.push_str("@ksn.rt.mu = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.cv = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.live = internal global i64 1\n@ksn.rt.blocked = internal global i64 0\n@ksn.rt.gen = internal global i64 0\n@ksn.rt.mwait = internal global i64 0, align 8\n@ksn.rw.held = internal thread_local global [16 x i64] zeroinitializer, align 8\n@ksn.rt.cblk = internal global i64 0\n");
                 cx.globals.push_str(&str_const("ksn.rt.deadlock", &format!("panic: {}\n\0", crate::interp::DEADLOCK_RECV)));
                 cx.globals.push_str(&str_const("ksn.rt.deadlock_join", &format!("panic: {}\n\0", crate::interp::DEADLOCK_JOIN)));
                 cx.globals.push_str(&str_const("ksn.rt.deadlock_lock", &format!("panic: {}\n\0", DEADLOCK_LOCK)));
+                cx.decl("declare i32 @ksn_rt_sys_futex_wait(ptr, i32, i64)");
+                cx.decl("declare void @ksn_rt_sys_futex_wake(ptr)");
+                cx.decl("declare i64 @pthread_self()");
                 for d in [
                     "declare i32 @pthread_mutex_trylock(ptr)",
                     "declare i32 @pthread_create(ptr, ptr, ptr, ptr)",
@@ -675,6 +847,15 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
                     "declare i32 @pthread_mutexattr_settype(ptr, i32)",
                     "declare i32 @pthread_mutexattr_destroy(ptr)",
                     "declare i32 @pthread_mutex_init(ptr, ptr)",
+                    "declare i32 @pthread_rwlock_tryrdlock(ptr)",
+                    "declare i32 @pthread_rwlock_trywrlock(ptr)",
+                    "declare i32 @pthread_rwlock_timedrdlock(ptr, ptr)",
+                    "declare i32 @pthread_rwlock_timedwrlock(ptr, ptr)",
+                    "declare i32 @clock_gettime(i32, ptr)",
+                    "declare i32 @pthread_rwlock_unlock(ptr)",
+                    "declare i32 @pthread_cond_init(ptr, ptr)",
+                    "declare i32 @pthread_cond_signal(ptr)",
+                    "declare i32 @pthread_cond_timedwait(ptr, ptr, ptr)",
                 ] {
                     cx.decl(d);
                 }
@@ -683,6 +864,24 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             continue;
         }
         funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, &extern_dl, &m.funcs, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
+        if let Some((h, fr)) = cx.pure_h.get(&f.key).copied() {
+            // 純粋域: 深さの記録つきの複製と、残りの深さで振り分ける入口 (`.w`、alwaysinline)。
+            let mut fe = Fe::new(&mut cx, &m.aggs, f, &extern_links, &extern_dl, &m.funcs, fi + m.funcs.len());
+            fe.slow = true;
+            funcs.push_str(&fe.emit().map_err(|e| format!("{}: {}", f.key, e))?);
+            let ps: Vec<String> = f.params().iter().enumerate().map(|(j, (_, t))| format!("{} %arg{}", lty(&m.aggs, *t), j)).collect();
+            let xs: Vec<String> = f.params().iter().enumerate().map(|(j, (_, t))| format!("{} %arg{}", lty(&m.aggs, *t), j)).collect();
+            let rt = lty(&m.aggs, f.ret);
+            let fl = if crate::ptrwidth::bits() == 32 {
+                "  %fits = icmp ult i64 %e, %dmax\n".to_string()
+            } else {
+                format!("  %ok1 = icmp ult i64 %e, %dmax\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl = load i64, ptr @ksn.floor\n  %need = add i64 %fl, {}\n  %ok2 = icmp uge i64 %sp, %need\n  %fits = and i1 %ok1, %ok2\n", fr)
+            };
+            funcs.push_str(&format!(
+                "define internal {rt} {w}({ps}) alwaysinline null_pointer_is_valid {{\n  %d = load i64, ptr @ksn.depth\n  %dmax = load i64, ptr @ksn.dmax\n  %e = add i64 %d, {h1}\n{fl}  br i1 %fits, label %fast, label %slow\nfast:\n  %rf = call {rt} {f}({xs})\n  ret {rt} %rf\nslow:\n  %rs = call {rt} {s}({xs})\n  ret {rt} %rs\n}}\n\n",
+                rt = rt, w = fname(&format!("{}.w", f.key)), ps = ps.join(", "), h1 = h, fl = fl, f = fname(&f.key), s = fname(&format!("{}.slow", f.key)), xs = xs.join(", ")
+            ));
+        }
     }
     let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
     let main = if is_wasm(target) { main } else { on_big_stack(&mut cx, main, m.depth) };
@@ -791,6 +990,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             "define private void @ksn.panic.index({sz} %len, {sz} %ix) noreturn cold {{\n{widen}  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.index, i64 {a}, i64 {b})\n  call void @exit(i32 101)\n  unreachable\n}}\n\n"
         ));
     }
+    out.push_str("define internal void @ksn.chk(i64 %d, i64 %h) alwaysinline {\n  %m = load i64, ptr @ksn.dmax\n  %e = add i64 %d, %h\n  %o = icmp uge i64 %e, %m\n  br i1 %o, label %so, label %ok\nso:\n  call void @ksn.overflow()\n  unreachable\nok:\n  ret void\n}\n");
     out.push_str("define private void @ksn.overflow() noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.so)\n  call void @exit(i32 102)\n  unreachable\n}\n");
     if cx.fmt_float {
         out.push_str(&fmt_float_helpers());
@@ -809,6 +1009,9 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     out.push_str(&math);
     out.push('\n');
     out.push_str(&main);
+    if is_windows(target) && out.lines().any(|l| l.contains("call ") && l.contains("@\"k.ksn.task.io.poll\"(") && !l.contains("define ")) {
+        return Err("非同期ソケット (accept_async / read_async / write_async) は Windows では未対応 (epoll が無い。IOCP / WSAPoll は今後)".to_string());
+    }
     if is_wasm(target) {
         if let Some(why) = wasm_unsupported(&out, is_wasi(target)) {
             return Err(why);
@@ -1040,6 +1243,7 @@ fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
         "declare i32 @accept(i32, ptr, ptr)",
         "declare i32 @read(i32, ptr, i64)",
         "declare i32 @close(i32)",
+        "declare void @ksn_rt_sys_io_forget(i32)",
         "declare i32 @getsockname(i32, ptr, ptr)",
         &format!("declare ptr @{}()", errno_fn),
     ] {
@@ -1077,7 +1281,7 @@ fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
     s.push_str("  ret i64 0\n}\n\n");
     // net.close(fd)
     hdr!("ksn.net_close", "i32 %fd");
-    s.push_str("  %raw = call i32 @close(i32 %fd)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  ret i64 0\nerr:\n");
+    s.push_str("  call void @ksn_rt_sys_io_forget(i32 %fd)\n  %raw = call i32 @close(i32 %fd)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  ret i64 0\nerr:\n");
     errno_chain(errno_fn, &idx, &mut s)?;
     s.push_str("}\n\n");
     // net.local_port(fd): getsockname で sockaddr_in の sin_port (オフセット 2、ネットワークバイトオーダ) を取る。
@@ -1102,6 +1306,106 @@ pub const RUNTIME_C: &str = include_str!("kir_rt.c");
 /// Kasane で書いた基本メソッドの単相インスタンス (`alloc/vec.ksnl` / `alloc/string.ksnl`) か。再帰せず、呼び先も有界。
 fn kasane_base_inst(key: &str) -> bool {
     key.starts_with("alloc.string.String.") || key.starts_with("alloc.vec.Vec.")
+}
+
+/// 呼び出しの輪に入らず、輪に入る関数・FFI・関数のアドレスも使わない関数 (純粋域) → 自分を含む鎖の高さ。
+/// 入口・wasm の公開関数・`ksn.` の補助・`extern`・`fnptr` の対象は含めない。
+fn pure_region(m: &Module, entry: &str) -> HashMap<String, (u64, u64)> {
+    // 1 つの関数の枠の上限 (バイト): 値 (SSA・ブロック引数・引数) の大きさの総和 + 静的な確保 + 余裕。
+    // 値がすべてスタックに溢れても、確保がすべて別々でも、これを超えない (レジスタに載れば実際はもっと小さい)。
+    fn frame_of(m: &Module, f: &Func) -> u64 {
+        let by = |t: Ty| (vbits(&m.aggs, t).max(64) as u64).div_ceil(8);
+        let mut n = 1024u64;
+        for (_, t) in f.params() {
+            n += by(*t);
+        }
+        for b in &f.blocks {
+            for (_, t) in &b.params {
+                n += by(*t);
+            }
+            for i in &b.insts {
+                n += by(i.ty);
+                match (&i.op, i.ty) {
+                    (Op::Alloca, Ty::Ref(_, p)) => n += by(p.ty()),
+                    (Op::FrameBytes { size }, _) => n += *size as u64,
+                    _ => {}
+                }
+            }
+        }
+        n
+    }
+    let idx: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
+    let mut taken: BTreeSet<&str> = BTreeSet::new();
+    for f in &m.funcs {
+        for b in &f.blocks {
+            for i in &b.insts {
+                if let Op::FnPtr { callee } = &i.op {
+                    taken.insert(callee.as_str());
+                }
+            }
+        }
+    }
+    // 状態: 0 = 未訪問、1 = 訪問中、2 = 済み。高さ None = 純粋でない。
+    fn go(m: &Module, idx: &HashMap<&str, usize>, taken: &BTreeSet<&str>, entry: &str, k: usize, st: &mut Vec<u8>, h: &mut Vec<Option<(u64, u64)>>) -> Option<(u64, u64)> {
+        if st[k] == 2 {
+            return h[k];
+        }
+        if st[k] == 1 {
+            return None;
+        }
+        st[k] = 1;
+        let f = &m.funcs[k];
+        let mut ok = f.key != entry && f.link.is_none() && !f.key.starts_with("ksn.") && wasm_export_name(&f.key).is_none() && !taken.contains(f.key.as_str()) && !kasane_base_inst(&f.key);
+        let mut hh = 0u64;
+        let mut ff = 0u64;
+        if ok {
+            'o: for b in &f.blocks {
+                for i in &b.insts {
+                    match &i.op {
+                        Op::FnPtr { .. } => {
+                            ok = false;
+                            break 'o;
+                        }
+                        Op::Call { callee, .. } => {
+                            let Some(&c) = idx.get(callee.as_str()) else {
+                                ok = false;
+                                break 'o;
+                            };
+                            let cf = &m.funcs[c];
+                            if cf.link.is_some() {
+                                continue;
+                            }
+                            if kasane_base_inst(&cf.key) {
+                                ff = ff.max(frame_of(m, cf));
+                                continue;
+                            }
+                            match go(m, idx, taken, entry, c, st, h) {
+                                Some((x, y)) => {
+                                    hh = hh.max(x);
+                                    ff = ff.max(y);
+                                }
+                                None => {
+                                    ok = false;
+                                    break 'o;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        st[k] = 2;
+        h[k] = if ok { Some((hh + 1, ff + frame_of(m, f))) } else { None };
+        h[k]
+    }
+    let n = m.funcs.len();
+    let mut st = vec![0u8; n];
+    let mut h: Vec<Option<(u64, u64)>> = vec![None; n];
+    for k in 0..n {
+        go(m, &idx, &taken, entry, k, &mut st, &mut h);
+    }
+    m.funcs.iter().enumerate().filter_map(|(k, f)| h[k].map(|x| (f.key.clone(), x))).collect()
 }
 
 /// IR が C の実行時補助を要するか。
@@ -1336,6 +1640,9 @@ struct Fe<'a> {
     extern_dl: &'a HashMap<String, (String, String)>,
     /// 全関数 (`Op::Fnptr` の呼び先の型を引くため)。
     funcs: &'a [Func],
+    bare_fn: bool,
+    /// 純粋域の関数の「深さの記録つき」の複製を出している (名前は `.slow`)。
+    slow: bool,
     fi: usize,
     tys: HashMap<VId, Ty>,
     /// 定数と unit の値 (命令を作らずに、使う側へ直接書く)。
@@ -1349,7 +1656,7 @@ struct Fe<'a> {
 
 impl<'a> Fe<'a> {
     fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, extern_dl: &'a HashMap<String, (String, String)>, funcs: &'a [Func], fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, extern_links, extern_dl, funcs, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
+        Fe { cx, aggs, f, extern_links, extern_dl, funcs, bare_fn: false, slow: false, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -2281,7 +2588,18 @@ impl<'a> Fe<'a> {
                         self.line(format!("{} = call {} {}({})", d, rt, target, a.join(", ")));
                     }
                 } else {
-                    self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
+                    let tgt = if self.cx.pure_h.contains_key(callee.as_str()) {
+                        if self.slow {
+                            fname(&format!("{}.slow", callee))
+                        } else if self.cx.pure_h.contains_key(&self.f.key) {
+                            fname(callee)
+                        } else {
+                            fname(&format!("{}.w", callee))
+                        }
+                    } else {
+                        fname(callee)
+                    };
+                    self.line(format!("{} = call {} {}({})", d, rt, tgt, a.join(", ")));
                 }
             }
             // 関数のアドレスを `ptr` として取る (C のコールバック用)。
@@ -2615,6 +2933,20 @@ impl<'a> Fe<'a> {
                         let ep = self.fs_err_slot();
                         let r = self.t(format!("call i64 @ksn_rt_sys_net_udp_bind(ptr {}, i64 {}, ptr {})", p, n, ep));
                         self.net_err_result(&d, &r, &ep);
+                    }
+                    NetK::ReadTry | NetK::WriteTry => {
+                        let write_side = if matches!(kind, NetK::WriteTry) { 1 } else { 0 };
+                        self.decl("declare i64 @ksn_rt_sys_net_try(i32, i32, ptr, i64, ptr)".to_string());
+                        let ep = self.fs_err_slot();
+                        let r = self.t(format!(
+                            "call i64 @ksn_rt_sys_net_try(i32 {}, i32 {}, ptr {}, i64 {}, ptr {})",
+                            self.r(args[0]),
+                            write_side,
+                            self.r(args[1]),
+                            self.r(args[2]),
+                            ep
+                        ));
+                        self.fs_result(&d, &r, &ep);
                     }
                     NetK::UdpSendTo => {
                         let (ap, an) = self.fat_parts(args[3])?;
@@ -3059,7 +3391,9 @@ impl<'a> Fe<'a> {
         }
         let mut hoisted = String::new();
         // Kasane の基本メソッドの単相インスタンス (下の先頭と戻りで深さの記録を省く)。
-        let bare = kasane_base_inst(&f.key);
+        let pure_f = self.cx.pure_h.contains_key(&f.key);
+        let bare = kasane_base_inst(&f.key) || (pure_f && !self.slow);
+        self.bare_fn = bare;
         let mut texts: Vec<String> = vec![String::new(); f.blocks.len()];
         for (k, b) in f.blocks.iter().enumerate() {
             if !reach[k] {
@@ -3138,13 +3472,13 @@ impl<'a> Fe<'a> {
         // Kasane で書いた基本メソッド (`alloc/vec.ksnl` / `alloc/string.ksnl` の単相インスタンス) は、組み込みの下ろしと同じく呼び出しを残さない。
         // 再帰せず、呼び先も有界なので、呼び出しの深さの記録 (`ksn.depth`) を省いて、LLVM が展開できるようにする
         // (組み込みは呼び出しなしで展開されていたので、深さの記録の分だけ遅くなるのを防ぐ。深さの上限の検査は呼び出し側が行う)。
-        let inline = if bare { "alwaysinline " } else { "" };
+        let inline = if kasane_base_inst(&f.key) { "alwaysinline " } else { "" };
         // wasm32 で公開する関数は外部リンケージの `define` にして、`wasm-export-name` で export の名前を決める (WASM ABI)。
         let (head, exp) = match wasm_export_name(&f.key) {
             Some(n) => ("define", format!(" \"wasm-export-name\"=\"{}\"", n)),
             None => ("define internal", String::new()),
         };
-        let mut s = format!("{} {} {}({}){} {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), fname(&f.key), params.join(", "), exp, inline);
+        let mut s = format!("{} {} {}({}){} {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), if self.slow { fname(&format!("{}.slow", f.key)) } else { fname(&f.key) }, params.join(", "), exp, inline);
         s.push_str(&hoisted);
         if bare {
             // `b0` の phi は `go` を前の辺として参照するので、空の `go` を残す (最適化で消える)。

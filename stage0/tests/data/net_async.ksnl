@@ -1,0 +1,167 @@
+fn t.address(port: u16) -> std.string.String uses [alloc] panics may
+    let mut target = std.string.String.new()
+    match target.push_str("127.0.0.1:") {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match target.push_u64(u64.from_u16(port)) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    target
+end t.address
+
+fn t.client(port: u16, id: usize) -> usize uses [alloc, io.net, suspend] panics may
+    let target = t.address(port)
+    let mut stream = match std.net.connect(target.as_str()) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("connect failed")
+    }
+    let payload = [7u8; 200]
+    let mut sent = 0usize
+    while sent < 200usize {
+        let rest = match payload.sub(sent, 200usize) {
+            Some(r) => r
+            None => core.panic.panic("sub")
+        }
+        match stream.write_async(rest) {
+            Ok(n) => {
+                sent = sent.wrapping_add(n)
+            }
+            Err(_e) => core.panic.panic("write failed")
+        }
+    }
+    let mut back = [0u8; 200]
+    let mut got = 0usize
+    while got < 200usize {
+        let slot = match back.sub_mut(got, 200usize) {
+            Some(r) => r
+            None => core.panic.panic("sub")
+        }
+        match stream.read_async(slot) {
+            Ok(n) => {
+                if n == 0usize {
+                    break
+                }
+                got = got.wrapping_add(n)
+            }
+            Err(_e) => core.panic.panic("read failed")
+        }
+    }
+    core.mem.drop(stream.close())
+    core.check.eq(got, 200usize)
+    core.check.eq(back.get(199usize), Some(&7u8))
+    id
+end t.client
+
+fn t.echo(conn: std.net.TcpStream) -> usize uses [io.net, suspend] panics never
+    let mut stream = conn
+    let mut buf = [0u8; 4096]
+    let mut total = 0usize
+    loop {
+        match stream.read_async(&mut buf) {
+            Ok(n) => {
+                if n == 0usize {
+                    break
+                }
+                let part = match buf.sub(0usize, n) {
+                    Some(p) => p
+                    None => break
+                }
+                if !t.send_all(&mut stream, part) {
+                    break
+                }
+                total = total.saturating_add(n)
+            }
+            Err(_) => break
+        }
+    }
+    core.mem.drop(stream.close())
+    total
+end t.echo
+
+fn t.idle_client(port: u16) -> usize uses [alloc, io.net, suspend] panics may
+    let target = t.address(port)
+    let mut stream = match std.net.connect(target.as_str()) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("connect failed")
+    }
+    core.mem.drop(stream.set_read_timeout(300u64))
+    let mut back = [0u8; 16]
+    let timed_out = match stream.read_async(&mut back) {
+        Ok(_) => 0usize
+        Err(e) => if e.kind == std.io.ErrorKind.TimedOut {
+            1usize
+        } else {
+            0usize
+        }
+    }
+    core.mem.drop(stream.close())
+    timed_out
+end t.idle_client
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.net, suspend] panics may
+    let listener = match std.net.listen("127.0.0.1:0") {
+        Ok(l) => l
+        Err(_e) => core.panic.panic("listen failed")
+    }
+    let port = match listener.local_port() {
+        Ok(p) => p
+        Err(_e) => core.panic.panic("port failed")
+    }
+    let clients = 256usize
+    let served = std.task.block_on(fn() -> usize capture [move clients, move listener, move port] {
+        let _s = std.task.spawn_local(fn() -> usize capture [move clients, move listener] {
+            t.serve(listener, clients)
+        })
+        let idle = std.task.spawn_local(fn() -> usize capture [move port] {
+            t.idle_client(port)
+        })
+        for i in core.iter.range(1usize, clients) {
+            let _c = std.task.spawn_local(fn() -> usize capture [move i, move port] {
+                t.client(port, i)
+            })
+        }
+        idle.join_task()
+    })
+    std.io.print_line("async echo done")?
+    core.check.eq(served, 1usize)
+    Ok(())
+end t.main
+
+fn t.send_all(stream: &mut std.net.TcpStream, data: &[u8]) -> bool uses [io.net, suspend] panics never
+    let mut sent = 0usize
+    while sent < data.len() {
+        let rest = match data.sub(sent, data.len()) {
+            Some(r) => r
+            None => return false
+        }
+        match stream.write_async(rest) {
+            Ok(n) => {
+                if n == 0usize {
+                    return false
+                }
+                sent = sent.saturating_add(n)
+            }
+            Err(_) => return false
+        }
+    }
+    true
+end t.send_all
+
+fn t.serve(listener: std.net.TcpListener, clients: usize) -> usize uses [io.net, suspend] panics may
+    let mut accepted = 0usize
+    for _i in core.iter.range(0usize, clients) {
+        match listener.accept_async() {
+            Ok(conn) => {
+                let _t = std.task.spawn_local(fn() -> usize capture [move conn] {
+                    t.echo(conn)
+                })
+                accepted = accepted.wrapping_add(1usize)
+            }
+            Err(_e) => core.panic.panic("accept failed")
+        }
+    }
+    core.mem.drop(listener.close())
+    accepted
+end t.serve
