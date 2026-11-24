@@ -1886,7 +1886,7 @@ fn cache_stays_under_the_cap_and_stores_ksn_once() {
     let ksn_copies = fs::read_dir(&cache).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ksn-")).count();
     assert_eq!(ksn_copies, 1, "同梱の ksn の共有実体は 1 本");
     // 上限は共有の ksn も数える。ksn だけで上限を超えるので、残るのは「作ったばかりの最新のエントリ 1 本」だけ (それは消さない)。
-    let entries: Vec<PathBuf> = fs::read_dir(&cache).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir() && p.file_name().unwrap() != "check" && !p.file_name().unwrap().to_string_lossy().contains(".tmp")).collect();
+    let entries: Vec<PathBuf> = fs::read_dir(&cache).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir() && p.file_name().unwrap() != "check" && p.file_name().unwrap() != "hashes" && !p.file_name().unwrap().to_string_lossy().contains(".tmp")).collect();
     assert_eq!(entries.len(), 1, "古いエントリが残った: {:?}", entries);
     let mut seen = std::collections::HashSet::new();
     let ksn_len = fs::metadata(exe()).unwrap().len();
