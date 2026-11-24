@@ -27,7 +27,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.collections.VecDeque.new",
     "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.system_nanos", "std.time.Duration.from_millis", "std.thread.spawn", "std.thread.spawn_deep",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new", "std.sync.RwLock.new", "core.sync.AtomicBool.new", "core.sync.AtomicU64.new", "core.sync.AtomicUsize.new",
-    "std.task.block_on", "std.task.spawn_local", "std.task.yield_now", "std.task.await_js",
+    "std.task.block_on", "std.task.spawn_local", "std.task.yield_now", "std.task.await_js", "std.task.wait_io",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.rand.fill_secure", "std.fs.exists", "std.fs.remove_file", "std.fs.open", "std.fs.open_dir_raw", "std.fs.Dir.open", "std.fs.open_beneath_raw", "std.fs.stat_fd_raw",
     "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.net.UdpSocket.bind", "std.net.resolve_raw", "std.process.Command.new",
     "std.net.connect_timeout",
@@ -838,6 +838,17 @@ impl Interp {
             "std.task.yield_now" => {
                 self.task_yield()?;
                 Ok(Val::Unit)
+            }
+            "std.task.wait_io" => {
+                let fd = match dr(&a0) {
+                    Val::Int(v, _) => v,
+                    _ => return panic("std.task.wait_io: fd は i32"),
+                };
+                let w = match args.get(1).map(dr) {
+                    Some(Val::Int(v, _)) => v != 0,
+                    _ => false,
+                };
+                self.task_wait_io(fd, w)
             }
             // JS の Promise を待つ中断は wasm32 の入口だけが再開できる (木走査には JS の相手がいない)。
             "std.task.await_js" => panic("std.task.await_js: needs a JavaScript host (build for wasm32-unknown-unknown and resume with ksn_resume); the tree-walker has none"),

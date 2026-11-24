@@ -784,6 +784,9 @@ pub enum NetK {
     AcceptTimeout,
     /// `connect_timeout(addr, ms: u64)`: 期限つきの接続。結果は `Result<TcpStream 集成体, std.net.Error>`。
     ConnectTimeout,
+    /// `read_try(sock, buf, len)` / `write_try`: 待たずに 1 回だけ読み書きする (`MSG_DONTWAIT`)。待つことになるときは EAGAIN (番号 11) の `std.io.Error`。結果は `Result<usize, std.io.Error>`。非同期ソケットが使う。
+    ReadTry,
+    WriteTry,
 }
 
 impl NetK {
@@ -804,12 +807,14 @@ impl NetK {
             NetK::SetNoDelay => "set_nodelay",
             NetK::AcceptTimeout => "accept_timeout",
             NetK::ConnectTimeout => "connect_timeout",
+            NetK::ReadTry => "read_try",
+            NetK::WriteTry => "write_try",
         }
     }
     pub fn arity(self) -> usize {
         match self {
             NetK::ReadTimeout | NetK::WriteTimeout | NetK::Shutdown => 2,
-            NetK::PeerAddr | NetK::LocalAddr => 3,
+            NetK::PeerAddr | NetK::LocalAddr | NetK::ReadTry | NetK::WriteTry => 3,
             NetK::Resolve | NetK::UdpSendTo => 4,
             NetK::UdpBind => 1,
             NetK::UdpRecvFrom => 5,
@@ -817,7 +822,9 @@ impl NetK {
             NetK::ClearDeadlines => 1,
         }
     }
-    pub const ALL: [NetK; 15] = [
+    pub const ALL: [NetK; 17] = [
+        NetK::ReadTry,
+        NetK::WriteTry,
         NetK::ReadTimeout,
         NetK::WriteTimeout,
         NetK::Shutdown,
@@ -2970,7 +2977,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         let want: Vec<Ty> = match kind {
                             NetK::ReadTimeout | NetK::WriteTimeout => vec![Ty::I32, Ty::U64],
                             NetK::Shutdown => vec![Ty::I32, Ty::I32],
-                            NetK::PeerAddr | NetK::LocalAddr => vec![Ty::I32, Ty::Ptr, Ty::Usize],
+                            NetK::PeerAddr | NetK::LocalAddr | NetK::ReadTry | NetK::WriteTry => vec![Ty::I32, Ty::Ptr, Ty::Usize],
                             NetK::Resolve => vec![fat, Ty::U16, Ty::Ptr, Ty::Usize],
                             NetK::UdpBind => vec![fat],
                             NetK::UdpSendTo => vec![Ty::I32, Ty::Ptr, Ty::Usize, fat],

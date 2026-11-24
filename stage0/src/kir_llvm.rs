@@ -299,6 +299,14 @@ fn atm_override(rest: &str) -> Option<String> {
     }
 }
 
+/// 非同期ソケットのリアクター (epoll) を使う対象か (Linux。`target` が `None` なら今の機械)。
+fn io_reactor_target(t: Option<Target>) -> bool {
+    match t {
+        Some(t) => t.triple.contains("linux"),
+        None => cfg!(target_os = "linux"),
+    }
+}
+
 fn thread_override(key: &str, m: &Module) -> Option<String> {
     if let Some(rest) = key.strip_prefix("ksn.atm.") {
         return atm_override(rest);
@@ -307,6 +315,12 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
     let name = fname(key);
     let def = |ret: &str, params: &str, body: &str| Some(format!("define internal {ret} {name}({params}) {{\nentry:\n{body}}}\n"));
     match key {
+        // std.task の非同期ソケット (Linux の epoll リアクター、sysrt.c)。Linux 以外は KIR の本体 (中断しない) のまま。
+        "ksn.io.park" => def("i32", "i32 %arg0, i32 %arg1", "  %r = call i32 @ksn_rt_sys_io_park(i32 %arg0, i32 %arg1)\n  ret i32 %r\n"),
+        "ksn.io.poll" => def("i32", "i32 %arg0", "  %r = call i32 @ksn_rt_sys_io_poll(i32 %arg0)\n  ret i32 %r\n"),
+        "ksn.io.ready" => def("i32", "i32 %arg0", "  %r = call i32 @ksn_rt_sys_io_ready(i32 %arg0)\n  ret i32 %r\n"),
+        "ksn.io.take" => def("i32", "i32 %arg0", "  %r = call i32 @ksn_rt_sys_io_take(i32 %arg0)\n  ret i32 %r\n"),
+        "ksn.io.pending" => def("i32", "", "  %r = call i32 @ksn_rt_sys_io_pending()\n  ret i32 %r\n"),
         "ksn.time.mono" => def("i64", "", "  %r = call i64 @ksn_rt_sys_now_ns()\n  ret i64 %r\n"),
         "ksn.time.sleep" => def("i8", "i64 %arg0", "  call void @ksn_rt_sys_sleep_ms(i64 %arg0)\n  ret i8 0\n"),
         "ksn.thr.lock" => def("i8", "", "  %r = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  ret i8 0\n"),
@@ -797,8 +811,15 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             continue;
         }
         funcs.push('\n');
-        if let Some(text) = thread_override(&f.key, m) {
-            if f.key.starts_with("ksn.time.") {
+        let io_native = !f.key.starts_with("ksn.io.") || io_reactor_target(target);
+        if let Some(text) = thread_override(&f.key, m).filter(|_| io_native) {
+            if f.key.starts_with("ksn.io.") {
+                cx.decl("declare i32 @ksn_rt_sys_io_park(i32, i32)");
+                cx.decl("declare i32 @ksn_rt_sys_io_poll(i32)");
+                cx.decl("declare i32 @ksn_rt_sys_io_ready(i32)");
+                cx.decl("declare i32 @ksn_rt_sys_io_take(i32)");
+                cx.decl("declare i32 @ksn_rt_sys_io_pending()");
+            } else if f.key.starts_with("ksn.time.") {
                 cx.decl("declare i64 @ksn_rt_sys_now_ns()");
                 cx.decl("declare void @ksn_rt_sys_sleep_ms(i64)");
             } else if !pthread_used {
@@ -988,6 +1009,9 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     out.push_str(&math);
     out.push('\n');
     out.push_str(&main);
+    if is_windows(target) && out.lines().any(|l| l.contains("call ") && l.contains("@\"k.ksn.task.io.poll\"(") && !l.contains("define ")) {
+        return Err("非同期ソケット (accept_async / read_async / write_async) は Windows では未対応 (epoll が無い。IOCP / WSAPoll は今後)".to_string());
+    }
     if is_wasm(target) {
         if let Some(why) = wasm_unsupported(&out, is_wasi(target)) {
             return Err(why);
@@ -1219,6 +1243,7 @@ fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
         "declare i32 @accept(i32, ptr, ptr)",
         "declare i32 @read(i32, ptr, i64)",
         "declare i32 @close(i32)",
+        "declare void @ksn_rt_sys_io_forget(i32)",
         "declare i32 @getsockname(i32, ptr, ptr)",
         &format!("declare ptr @{}()", errno_fn),
     ] {
@@ -1256,7 +1281,7 @@ fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
     s.push_str("  ret i64 0\n}\n\n");
     // net.close(fd)
     hdr!("ksn.net_close", "i32 %fd");
-    s.push_str("  %raw = call i32 @close(i32 %fd)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  ret i64 0\nerr:\n");
+    s.push_str("  call void @ksn_rt_sys_io_forget(i32 %fd)\n  %raw = call i32 @close(i32 %fd)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  ret i64 0\nerr:\n");
     errno_chain(errno_fn, &idx, &mut s)?;
     s.push_str("}\n\n");
     // net.local_port(fd): getsockname で sockaddr_in の sin_port (オフセット 2、ネットワークバイトオーダ) を取る。
@@ -2908,6 +2933,20 @@ impl<'a> Fe<'a> {
                         let ep = self.fs_err_slot();
                         let r = self.t(format!("call i64 @ksn_rt_sys_net_udp_bind(ptr {}, i64 {}, ptr {})", p, n, ep));
                         self.net_err_result(&d, &r, &ep);
+                    }
+                    NetK::ReadTry | NetK::WriteTry => {
+                        let write_side = if matches!(kind, NetK::WriteTry) { 1 } else { 0 };
+                        self.decl("declare i64 @ksn_rt_sys_net_try(i32, i32, ptr, i64, ptr)".to_string());
+                        let ep = self.fs_err_slot();
+                        let r = self.t(format!(
+                            "call i64 @ksn_rt_sys_net_try(i32 {}, i32 {}, ptr {}, i64 {}, ptr {})",
+                            self.r(args[0]),
+                            write_side,
+                            self.r(args[1]),
+                            self.r(args[2]),
+                            ep
+                        ));
+                        self.fs_result(&d, &r, &ep);
                     }
                     NetK::UdpSendTo => {
                         let (ap, an) = self.fat_parts(args[3])?;

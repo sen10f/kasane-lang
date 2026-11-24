@@ -1247,6 +1247,32 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                                 Err(e) => TAG_BIT | net_error_agg(&mut heap, e.raw_os_error().unwrap_or(-1))?,
                             }
                         }
+                        NetK::ReadTry | NetK::WriteTry => {
+                            let (p, n) = (a(1), a(2));
+                            let write = matches!(kind, NetK::WriteTry);
+                            let r = match sockets.get_mut(&a(0)) {
+                                Some(NetSock::Stream(s)) => {
+                                    let _ = s.set_nonblocking(true);
+                                    let r = if write {
+                                        let data = if n == 0 { vec![] } else { bm.read_bytes(p, n as usize)? };
+                                        s.write(&data)
+                                    } else {
+                                        let mut vec = vec![0u8; n as usize];
+                                        s.read(&mut vec).map(|k| {
+                                            let _ = bm.write_bytes(p, &vec[..k]);
+                                            k
+                                        })
+                                    };
+                                    let _ = s.set_nonblocking(false);
+                                    r
+                                }
+                                _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                            };
+                            match r {
+                                Ok(k) => k as i128,
+                                Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                            }
+                        }
                         NetK::UdpSendTo => {
                             let (p, n) = (a(1), a(2));
                             let data = if n == 0 { vec![] } else { bm.read_bytes(p, n as usize)? };

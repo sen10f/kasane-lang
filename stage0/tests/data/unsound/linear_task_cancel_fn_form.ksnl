@@ -1,0 +1,16 @@
+fn t.main() -> () uses [io.net] panics may
+    let conn = t.open()
+    std.task.block_on(fn() -> () capture [move conn] {
+        let t = std.task.spawn_local(fn() -> () capture [move conn] {
+            core.mem.drop(conn.close())
+        })
+        std.task.Task.cancel(t)
+    })
+end t.main
+
+fn t.open() -> std.net.TcpStream uses [io.net] panics may
+    match std.net.connect("127.0.0.1:1") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("connect")
+    }
+end t.open

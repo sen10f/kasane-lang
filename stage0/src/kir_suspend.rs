@@ -36,6 +36,8 @@ pub const WAIT: &str = "ksn.task.wait";
 pub const CANCEL: &str = "ksn.task.cancel";
 /// `std.task.await_js` (JS の完了を待つ中断、仕様 5.6 の第 5 段。葉。`ksn_resume` が結果を入れて再開する)。
 pub const AWAIT: &str = "ksn.task.await";
+/// `std.task.wait_io` (ソケットの準備完了の待ち。葉。リアクターが起こす)。
+pub const IO: &str = "ksn.task.io";
 /// 入口の枠の置き場 (大域のバイト列、16 バイト): `[0]` 待っている枠、`[8]` 待ちの有無 (u32)。JS の完了を待つ入口が使う。
 pub const WRAP_PEND: &str = "ksn.wrap.pend";
 /// 実行器の入口 (`block_on` の本体) と、生成 (`spawn_local`) と、後始末。
