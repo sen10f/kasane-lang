@@ -4090,6 +4090,44 @@ fn evict(cdir: &Path, keep: &str) {
         let _ = fs::remove_dir_all(&p);
     }
     prune_shared(cdir, env!("KSN_BUILD_ID"));
+    prune_hashes(cdir, grace);
+}
+
+/// `hashes/<dev>-<inode>` のうち、走っている ksn・共有の `ksn-*`・エントリの `ksn` のどれの inode でもないものを消す
+/// (猶予より若いものは残す)。
+fn prune_hashes(cdir: &Path, grace: std::time::Duration) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(hd) = fs::read_dir(cdir.join("hashes")) else { return };
+        let mut live: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut add = |p: &Path| {
+            if let Ok(m) = fs::metadata(p) {
+                live.insert(format!("{}-{}", m.dev(), m.ino()));
+            }
+        };
+        if let Ok(e) = std::env::current_exe() {
+            add(&e);
+        }
+        for e in fs::read_dir(cdir).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with("ksn-") {
+                add(&e.path());
+            } else if e.path().is_dir() {
+                add(&e.path().join(exe_name()));
+            }
+        }
+        let now = std::time::SystemTime::now();
+        for e in hd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            let young = e.metadata().and_then(|m| m.modified()).map_or(true, |t| now.duration_since(t).map_or(true, |d| d < grace));
+            if !young && !n.contains(".tmp") && !live.contains(&n) {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (cdir, grace);
 }
 
 /// 今の識別子以外の `ksn-<識別子>` (同梱の `ksn` の共有実体) の掃除。

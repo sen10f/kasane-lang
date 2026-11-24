@@ -2012,6 +2012,26 @@ mod cache_integrity {
     }
 
     #[test]
+    fn stale_hash_memos_are_pruned() {
+        let t = Tmp::new("cacheint4", CACHE_SRC);
+        let cache = scratch::Scratch::at(format!("ksn_cacheint_prune_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&cache);
+        let dbg = |c: &Path| build_with_cache(exe(), &t.0, c, &[], &[("KSN_CACHE_GRACE", "0")]);
+        assert_eq!(dbg(&cache).status.code(), Some(0));
+        assert_eq!(dbg(&cache).status.code(), Some(0));
+        let h = cache.join("hashes");
+        let live = fs::read_dir(&h).unwrap().flatten().count();
+        assert!(live >= 1);
+        fs::write(h.join("1-2"), "stale\n").unwrap();
+        // 別のキーのビルドで evict が走る。
+        let t2 = Tmp::new("cacheint5", &CACHE_SRC.replace("1u32", "7u32"));
+        assert_eq!(build_with_cache(exe(), &t2.0, &cache, &[], &[("KSN_CACHE_GRACE", "0")]).status.code(), Some(0));
+        assert!(!h.join("1-2").exists(), "古いメモが残った");
+        assert_eq!(fs::read_dir(&h).unwrap().flatten().count(), live);
+        let _ = fs::remove_dir_all(&cache);
+    }
+
+    #[test]
     fn a_fresh_cache_dir_is_private_and_still_hits() {
         let t = Tmp::new("cacheint3", CACHE_SRC);
         let d = t.0.clone();
