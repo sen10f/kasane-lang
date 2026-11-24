@@ -743,8 +743,18 @@ i64 ksn_rt_sys_accept(i32 lfd, i32 *e) {
 #define KSN_DL_MAX 256
 typedef struct { i32 fd; int used; int has_rd; int has_wr; i64 rd_at; i64 wr_at; } ksn_dl;
 static ksn_dl ksn_dls[KSN_DL_MAX];
+#ifndef _WIN32
+static pthread_mutex_t ksn_dl_mu = PTHREAD_MUTEX_INITIALIZER;
+#define KSN_DL_LOCK() pthread_mutex_lock(&ksn_dl_mu)
+#define KSN_DL_UNLOCK() pthread_mutex_unlock(&ksn_dl_mu)
+#else
+#define KSN_DL_LOCK() ((void)0)
+#define KSN_DL_UNLOCK() ((void)0)
+#endif
 /* set_read_timeout / set_write_timeout (または期限つきの読み書き) を一度でも使ったか (0 = 読み、1 = 書き)。非同期ソケットが SO_*TIMEO を調べる要否を決める。 */
-static volatile int ksn_to_set[2];
+static int ksn_to_set[2];
+#define KSN_TO_SET(i) __atomic_load_n(&ksn_to_set[i], __ATOMIC_RELAXED)
+#define KSN_TO_MARK(i) __atomic_store_n(&ksn_to_set[i], 1, __ATOMIC_RELAXED)
 
 #ifdef _WIN32
 #define KSN_SOCK(fd) ((SOCKET)(fd))
@@ -784,24 +794,28 @@ static ksn_dl *ksn_dl_find(i32 fd, int create) {
 
 /* write_side = 0 で読み、1 で書きの期限を「今から ms」に置く。 */
 i64 ksn_rt_sys_net_deadline(i32 fd, i32 write_side, u64 ms, i32 *e) {
+    KSN_DL_LOCK();
     ksn_dl *d = ksn_dl_find(fd, 1);
-    if (!d) return fail(e, ENOBUFS);
+    if (!d) { KSN_DL_UNLOCK(); return fail(e, ENOBUFS); }
     i64 at = ksn_mono_ms() + (i64)ms;
     if (write_side) { d->has_wr = 1; d->wr_at = at; }
     else { d->has_rd = 1; d->rd_at = at; }
+    KSN_DL_UNLOCK();
     return 0;
 }
 
 i64 ksn_rt_sys_net_clear_deadlines(i32 fd, i32 *e) {
     (void)e;
+    KSN_DL_LOCK();
     ksn_dl *d = ksn_dl_find(fd, 0);
     if (d) d->used = 0;
+    KSN_DL_UNLOCK();
     return 0;
 }
 
 /* 期限を SO_RCVTIMEO / SO_SNDTIMEO に入れる (rem ミリ秒、1 以上)。 */
 static void ksn_set_timeout(i32 fd, int write_side, i64 rem) {
-    ksn_to_set[write_side ? 1 : 0] = 1;
+    KSN_TO_MARK(write_side ? 1 : 0);
 #ifdef _WIN32
     DWORD tv = (DWORD)rem;
     setsockopt(KSN_SOCK(fd), SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, (const char *)&tv, sizeof tv);
@@ -838,9 +852,11 @@ static int ksn_is_wait_timeout(void) {
 
 /* 期限つきの読み (write_side = 0) か書き (1)。期限が無ければ普通の recv / send。期限を過ぎたら ETIMEDOUT。 */
 i64 ksn_rt_sys_net_rw(i32 fd, i32 write_side, u8 *p, u64 n, i32 *e) {
+    KSN_DL_LOCK();
     ksn_dl *d = ksn_dl_find(fd, 0);
     int has = d && (write_side ? d->has_wr : d->has_rd);
     i64 at = d ? (write_side ? d->wr_at : d->rd_at) : 0;
+    KSN_DL_UNLOCK();
     for (;;) {
         if (has) {
             i64 rem = ksn_remain(at);
@@ -995,7 +1011,7 @@ static int format_addr(const struct sockaddr *sa, char *txt, size_t cap) {
 
 /* 0 = 秒 (ms = 0 はタイムアウトなし)。SO_RCVTIMEO (読み) / SO_SNDTIMEO (書き)。 */
 i64 ksn_rt_sys_net_timeout(i32 fd, i32 write_side, u64 ms, i32 *e) {
-    ksn_to_set[write_side ? 1 : 0] = 1;
+    KSN_TO_MARK(write_side ? 1 : 0);
 #ifdef _WIN32
     DWORD tv = (DWORD)ms; /* winsock はミリ秒の DWORD */
     if (setsockopt((SOCKET)fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, (const char *)&tv, sizeof tv) != 0)
@@ -1245,11 +1261,13 @@ static ksn_io_slot *ksn_io_slot_of(i32 fd) {
 /* fd の読み / 書きの期限 (単調時計のミリ秒の絶対時刻、無ければ -1)。set_*_deadline の表と、SO_RCVTIMEO / SO_SNDTIMEO を見る。 */
 static i64 ksn_io_deadline(i32 fd, int write_side) {
     i64 at = -1;
+    KSN_DL_LOCK();
     ksn_dl *d = ksn_dl_find(fd, 0);
     if (d && (write_side ? d->has_wr : d->has_rd)) at = write_side ? d->wr_at : d->rd_at;
+    KSN_DL_UNLOCK();
     struct timeval tv;
     socklen_t l = sizeof tv;
-    if (ksn_to_set[write_side ? 1 : 0] > 0 && getsockopt(fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, &l) == 0 && (tv.tv_sec || tv.tv_usec)) {
+    if (KSN_TO_SET(write_side ? 1 : 0) > 0 && getsockopt(fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, &l) == 0 && (tv.tv_sec || tv.tv_usec)) {
         i64 t = ksn_mono_ms() + (i64)tv.tv_sec * 1000 + (i64)(tv.tv_usec / 1000);
         if (at < 0 || t < at) at = t;
     }

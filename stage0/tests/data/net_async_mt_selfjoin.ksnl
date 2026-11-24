@@ -1,0 +1,43 @@
+type t.Slot
+    h: Option<std.task.Task<usize>>
+end t.Slot
+
+static t.SLOT: std.sync.Mutex<t.Slot> = std.sync.Mutex.new(t.Slot {
+    h: None
+}) pub
+
+fn t.waiter() -> usize uses [suspend, thread] panics may
+    loop {
+        let mut g = t.SLOT.lock()
+        let slot = g.get_mut()
+        let taken = slot.h.take()
+        core.mem.drop(g)
+        match taken {
+            Some(h) => {
+                return h.join_task()
+            }
+            None => {
+                std.task.yield_now()
+            }
+        }
+    }
+end t.waiter
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, suspend, thread] panics may
+    let r = std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        4usize,
+        fn() -> usize capture [] {
+            let h = std.task.spawn(fn() -> usize capture [] {
+                t.waiter()
+            })
+            let mut g = t.SLOT.lock()
+            let slot = g.get_mut()
+            slot.h = Some(h)
+            core.mem.drop(g)
+            1usize
+        },
+    )
+    core.check.eq(r, 1usize)
+    Ok(())
+end t.main

@@ -1,0 +1,20 @@
+fn t.boom() -> usize uses [suspend] panics may
+    std.task.yield_now()
+    core.panic.panic("worker boom")
+end t.boom
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, suspend, thread] panics may
+    let r = std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        4usize,
+        fn() -> usize capture [] {
+            let h = std.task.spawn(fn() -> usize capture [] {
+                t.boom()
+            })
+            h.join_task()
+        },
+    )
+    std.io.print_line("unreachable")?
+    core.check.eq(r, 1usize)
+    Ok(())
+end t.main
