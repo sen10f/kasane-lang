@@ -626,11 +626,19 @@ fn is_absolute_path(lib: &str) -> bool {
 
 /// ビルドキャッシュのルート (`KSN_CACHE_DIR`、既定は `~/.ksn/cache`)。
 pub fn cache_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("KSN_CACHE_DIR") {
-        return PathBuf::from(d);
+    let p = if let Ok(d) = std::env::var("KSN_CACHE_DIR") {
+        PathBuf::from(d)
+    } else {
+        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".into());
+        PathBuf::from(home).join(".ksn").join("cache")
+    };
+    // 無ければ 0700 で作る (他のユーザに書かれるキャッシュを避ける。既にあるものは `safe_cache_dir` が検査する)。
+    #[cfg(unix)]
+    if !p.exists() {
+        use std::os::unix::fs::DirBuilderExt;
+        let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(&p);
     }
-    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".ksn").join("cache")
+    p
 }
 
 /// 取得済みの git 依存の置き場 (`<キャッシュ>/git/<URL と rev のハッシュ>`)。内容は `rev` で決まる。

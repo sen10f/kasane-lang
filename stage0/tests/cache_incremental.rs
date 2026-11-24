@@ -1830,7 +1830,7 @@ fn shared_ksn_of_other_builds_without_entries_is_removed_on_build() {
     let t = Tmp::new("cache_prune_orphan", CACHE_SRC);
     let cache = scratch::Scratch::at(format!("ksn_cache_orphan_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
-    fs::create_dir_all(&cache).unwrap();
+    mk_private(&cache);
     let orphans: Vec<PathBuf> = (0..4).map(|k| fake_shared_ksn(&cache, &format!("orphan{}", k), k, false)).collect();
     let o = build_with_cache(exe(), &t.0, &cache, &[], &[]);
     assert!(o.status.success(), "{}", text(&o.stderr));
@@ -1846,7 +1846,7 @@ fn shared_ksn_of_other_builds_is_bounded_to_the_newest_three() {
     let t = Tmp::new("cache_prune_bounded", CACHE_SRC);
     let cache = scratch::Scratch::at(format!("ksn_cache_bounded_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
-    fs::create_dir_all(&cache).unwrap();
+    mk_private(&cache);
     // 新しさは age = 5 - k (k が小さいほど新しい)。
     let shared: Vec<PathBuf> = (0..6).map(|k| fake_shared_ksn(&cache, &format!("old{}", k), 5 - k, true)).collect();
     let o = build_with_cache(exe(), &t.0, &cache, &[], &[]);
@@ -1918,7 +1918,7 @@ fn old_shared_ksn_copies_are_evicted_with_their_entries_under_a_small_cap() {
     let t = Tmp::new("cache_evict_shared", CACHE_SRC);
     let cache = scratch::Scratch::at(format!("ksn_cache_evsh_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
-    fs::create_dir_all(&cache).unwrap();
+    mk_private(&cache);
     let shared: Vec<PathBuf> = (0..3).map(|k| fake_shared_ksn(&cache, &format!("id{}", k), k, true)).collect();
     for f in &shared {
         fs::write(f, vec![0u8; 300 * 1024]).unwrap();
@@ -1929,4 +1929,107 @@ fn old_shared_ksn_copies_are_evicted_with_their_entries_under_a_small_cap() {
         assert!(!f.exists(), "古い識別子の ksn が残った: {}", f.display());
     }
     let _ = fs::remove_dir_all(&cache);
+}
+
+#[cfg(unix)]
+mod cache_integrity {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn build(d: &Path, cache: &Path) -> Output {
+        build_with_cache(exe(), d, cache, &["--release"], &[])
+    }
+    fn find(dir: &Path, pred: &dyn Fn(&Path) -> bool, out: &mut Vec<PathBuf>) {
+        for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                find(&p, pred, out);
+            } else if pred(&p) {
+                out.push(p);
+            }
+        }
+    }
+
+    #[test]
+    fn a_tampered_cached_artifact_is_rebuilt_not_run() {
+        let t = Tmp::new("cacheint0", CACHE_SRC);
+        let d = t.0.clone();
+        let cache = scratch::Scratch::at(format!("ksn_cacheint_art_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&cache);
+        assert_eq!(build(&d, &cache).status.code(), Some(0));
+        let hit = text(&build(&d, &cache).stdout);
+        assert!(hit.contains("cache hit"), "{}", hit);
+        let mut v = Vec::new();
+        find(&cache, &|p| p.parent().map_or(false, |q| q.ends_with("artifact")) && p.extension().map_or(false, |x| x == "native"), &mut v);
+        assert_eq!(v.len(), 1);
+        fs::write(&v[0], "#!/bin/sh\ntouch /tmp/ksn_cacheint_pwned\n").unwrap();
+        let o = build(&d, &cache);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(text(&o.stderr).contains("integrity check"), "{}", text(&o.stderr));
+        let mut b = Vec::new();
+        find(&d.join("target"), &|p| p.extension().map_or(false, |x| x == "native"), &mut b);
+        assert_eq!(b.len(), 1);
+        assert!(!String::from_utf8_lossy(&fs::read(&b[0]).unwrap()).contains("ksn_cacheint_pwned"));
+        let _ = fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn a_tampered_shared_ksn_is_not_used() {
+        let t = Tmp::new("cacheint1", CACHE_SRC);
+        let d = t.0.clone();
+        let cache = scratch::Scratch::at(format!("ksn_cacheint_ksn_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&cache);
+        let o = build_with_cache(exe(), &d, &cache, &[], &[]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let shared: Vec<_> = fs::read_dir(&cache).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ksn-")).collect();
+        assert_eq!(shared.len(), 1);
+        let mut f = fs::OpenOptions::new().append(true).open(shared[0].path()).unwrap();
+        use std::io::Write;
+        f.write_all(b"evil").unwrap();
+        drop(f);
+        let o = build_with_cache(exe(), &d, &cache, &[], &[]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(text(&o.stderr).contains("integrity check") || text(&o.stderr).contains("does not match"), "{}", text(&o.stderr));
+        let s = fs::read_dir(&cache).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("ksn-")).unwrap();
+        assert_eq!(fs::metadata(s.path()).unwrap().len(), fs::metadata(exe()).unwrap().len());
+        let _ = fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn a_world_writable_cache_dir_disables_the_cache() {
+        let t = Tmp::new("cacheint2", CACHE_SRC);
+        let d = t.0.clone();
+        let cache = scratch::Scratch::at(format!("ksn_cacheint_perm_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&cache);
+        mk_private(&cache);
+        fs::set_permissions(&cache, fs::Permissions::from_mode(0o777)).unwrap();
+        let o = build(&d, &cache);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(text(&o.stderr).contains("build cache is disabled"), "{}", text(&o.stderr));
+        assert!(!text(&build(&d, &cache).stdout).contains("cache hit"));
+        fs::set_permissions(&cache, fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn a_fresh_cache_dir_is_private_and_still_hits() {
+        let t = Tmp::new("cacheint3", CACHE_SRC);
+        let d = t.0.clone();
+        let cache = scratch::Scratch::at(format!("ksn_cacheint_ok_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&cache);
+        assert_eq!(build(&d, &cache).status.code(), Some(0));
+        assert_eq!(fs::metadata(&cache).unwrap().permissions().mode() & 0o077, 0);
+        assert!(text(&build(&d, &cache).stdout).contains("cache hit"));
+        let _ = fs::remove_dir_all(&cache);
+    }
+}
+
+/// キャッシュの置き場は自分だけが書ける (0700) ことを求められるので、試験で先に作るときもそうする。
+fn mk_private(p: &Path) {
+    fs::create_dir_all(p).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(p, fs::Permissions::from_mode(0o700)).unwrap();
+    }
 }
