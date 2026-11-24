@@ -1,0 +1,15 @@
+type t.B
+    xs: std.vec.Vec<u32>
+end t.B
+
+fn t.B.add(self: &mut t.B, s: &[u32]) -> () uses [alloc] panics never
+    core.mem.drop(self.xs.extend_from_slice(s))
+end t.B.add
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let mut b = t.B {
+        xs: std.vec.Vec.new()
+    }
+    b.add(b.xs.as_slice())
+    Ok(())
+end t.main
