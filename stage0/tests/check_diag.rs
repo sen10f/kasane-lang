@@ -5478,3 +5478,24 @@ fn e0020_still_reports_the_other_diagnostics() {
     }
     assert!(checked >= 10, "比べた件数が少ない: {}", checked);
 }
+
+/// 手書きの `Send` / `Sync` の impl が、対象の型の奥に現れる型パラメータにも境界を求める (E5008) 形の、正しい書き方。
+#[test]
+fn manual_send_impl_with_nested_bound_is_accepted() {
+    let src = "type t.W[X]
+    v: X
+end t.W
+
+impl[T: core.marker.Send] core.marker.Send for t.W<Option<T>>
+
+impl[T: core.marker.Send] core.marker.Send for t.W<(T, u8)>
+
+fn t.main() -> i32 uses [] panics never
+    0i32
+end t.main
+";
+    let t = Tmp::new("send_nested_ok", src);
+    fs::write(t.0.join("kasane.toml"), TOML.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+}

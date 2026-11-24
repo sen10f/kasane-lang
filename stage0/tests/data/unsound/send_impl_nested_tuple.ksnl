@@ -1,0 +1,13 @@
+type t.G[X]
+    v: X
+end t.G
+
+type t.W[X]
+    v: X
+end t.W
+
+impl[T] core.marker.Send for t.W<(T, u8)>
+
+fn t.main() -> i32 uses [] panics never
+    0i32
+end t.main
