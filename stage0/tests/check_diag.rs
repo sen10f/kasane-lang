@@ -5439,3 +5439,38 @@ fn rust_forms_forbidden_by_decision_get_guidance_not_a_fix() {
     assert!(out.contains("`end` is a reserved word"), "{}", out);
     assert!(out.contains("`break` takes no value"), "{}", out);
 }
+
+// ---- E0020 の道でも検査を落とさない: 非正規形のファイルの他の診断は、`ksn fmt` 後と同じ (E0020 を除く) ----
+
+#[test]
+fn e0020_still_reports_the_other_diagnostics() {
+    let dir = root().join("stage0/tests/data");
+    let mut files: Vec<std::path::PathBuf> = vec![];
+    for sub in ["diag", "unsound"] {
+        let mut v: Vec<_> = std::fs::read_dir(dir.join(sub)).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |e| e == "ksnl")).collect();
+        v.sort();
+        files.extend(v.into_iter().skip(1).step_by(9).take(12));
+    }
+    let mut checked = 0;
+    for (i, f) in files.iter().enumerate() {
+        let src = std::fs::read_to_string(f).unwrap();
+        // 先に fmt で正規形にし (fmt が書き換える形は元の入力で変わるので)、その正規形の間隔をわざと崩したものと比べる。
+        let b = Tmp::new_raw(&format!("e0020_fmt{}", i), &src);
+        b.fmt();
+        let canon = std::fs::read_to_string(b.0.join("src/t.ksnl")).unwrap();
+        let loose = canon.replace(" = ", "   =   ").replace(": ", ":   ");
+        if loose == canon {
+            continue;
+        }
+        let a = Tmp::new_raw(&format!("e0020_loose{}", i), &loose);
+        let got: std::collections::BTreeSet<String> = codes(&text(&run(&["check", "--json"], &a.0).stdout)).into_iter().filter(|c| c != "E0020").collect();
+        let want: std::collections::BTreeSet<String> = codes(&text(&run(&["check", "--json"], &b.0).stdout)).into_iter().filter(|c| c != "E0020").collect();
+        // 長い行 (E0055) のように、fmt が行の形そのものを変えるものは固有の診断になる。そろえるのはそれ以外。
+        if got.contains("E0055") || got.contains("E0049") || want.contains("E0055") {
+            continue;
+        }
+        assert_eq!(got, want, "{}", f.display());
+        checked += 1;
+    }
+    assert!(checked >= 10, "比べた件数が少ない: {}", checked);
+}
