@@ -1,0 +1,19 @@
+fn t.main() -> Result<(), std.io.Error> uses [io.console, suspend] panics may
+    let r = std.task.block_on(fn() -> usize capture [] {
+        let mut total = 0usize
+        for i in core.iter.range(0usize, 200usize) {
+            let c = std.task.spawn_local(fn() -> usize capture [move i] {
+                i
+            })
+            if i % 2usize == 0usize {
+                c.cancel()
+            } else {
+                total = total.wrapping_add(c.join_task())
+            }
+        }
+        total
+    })
+    core.check.eq(r, 10_000usize)
+    std.io.print_line("cancel done")?
+    Ok(())
+end t.main
