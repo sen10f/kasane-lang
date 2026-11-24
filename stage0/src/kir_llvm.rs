@@ -296,7 +296,7 @@ const PANICS: [(&str, &str); 8] = [
 
 struct Ctx {
     /// 呼び出しの輪に入らず、輪に入る関数も呼ばない関数 (「純粋域」) と、その呼び出し鎖の高さ (自分を含む)。深さの記録 (入口の検査と加算) を省き、呼び出し側が高さ分を先に検査する。
-    pure_h: HashMap<String, u64>,
+    pure_h: HashMap<String, (u64, u64)>,
     decls: BTreeSet<String>,
     globals: String,
     math: BTreeSet<Math>,
@@ -685,7 +685,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             continue;
         }
         funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, &extern_dl, &m.funcs, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
-        if let Some(h) = cx.pure_h.get(&f.key).copied() {
+        if let Some((h, fr)) = cx.pure_h.get(&f.key).copied() {
             // 純粋域: 深さの記録つきの複製と、残りの深さで振り分ける入口 (`.w`、alwaysinline)。
             let mut fe = Fe::new(&mut cx, &m.aggs, f, &extern_links, &extern_dl, &m.funcs, fi + m.funcs.len());
             fe.slow = true;
@@ -696,7 +696,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             let fl = if crate::ptrwidth::bits() == 32 {
                 "  %fits = icmp ult i64 %e, %dmax\n".to_string()
             } else {
-                format!("  %ok1 = icmp ult i64 %e, %dmax\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl = load i64, ptr @ksn.floor\n  %need = add i64 %fl, {}\n  %ok2 = icmp uge i64 %sp, %need\n  %fits = and i1 %ok1, %ok2\n", h * 512)
+                format!("  %ok1 = icmp ult i64 %e, %dmax\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl = load i64, ptr @ksn.floor\n  %need = add i64 %fl, {}\n  %ok2 = icmp uge i64 %sp, %need\n  %fits = and i1 %ok1, %ok2\n", fr)
             };
             funcs.push_str(&format!(
                 "define internal {rt} {w}({ps}) alwaysinline null_pointer_is_valid {{\n  %d = load i64, ptr @ksn.depth\n  %dmax = load i64, ptr @ksn.dmax\n  %e = add i64 %d, {h1}\n{fl}  br i1 %fits, label %fast, label %slow\nfast:\n  %rf = call {rt} {f}({xs})\n  ret {rt} %rf\nslow:\n  %rs = call {rt} {s}({xs})\n  ret {rt} %rs\n}}\n\n",
@@ -1127,7 +1127,30 @@ fn kasane_base_inst(key: &str) -> bool {
 
 /// 呼び出しの輪に入らず、輪に入る関数・FFI・関数のアドレスも使わない関数 (純粋域) → 自分を含む鎖の高さ。
 /// 入口・wasm の公開関数・`ksn.` の補助・`extern`・`fnptr` の対象は含めない。
-fn pure_region(m: &Module, entry: &str) -> HashMap<String, u64> {
+fn pure_region(m: &Module, entry: &str) -> HashMap<String, (u64, u64)> {
+    // 1 つの関数の枠の上限 (バイト): 値 (SSA・ブロック引数・引数) の大きさの総和 + 静的な確保 + 余裕。
+    // 値がすべてスタックに溢れても、確保がすべて別々でも、これを超えない (レジスタに載れば実際はもっと小さい)。
+    fn frame_of(m: &Module, f: &Func) -> u64 {
+        let by = |t: Ty| (vbits(&m.aggs, t).max(64) as u64).div_ceil(8);
+        let mut n = 1024u64;
+        for (_, t) in f.params() {
+            n += by(*t);
+        }
+        for b in &f.blocks {
+            for (_, t) in &b.params {
+                n += by(*t);
+            }
+            for i in &b.insts {
+                n += by(i.ty);
+                match (&i.op, i.ty) {
+                    (Op::Alloca, Ty::Ref(_, p)) => n += by(p.ty()),
+                    (Op::FrameBytes { size }, _) => n += *size as u64,
+                    _ => {}
+                }
+            }
+        }
+        n
+    }
     let idx: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
     let mut taken: BTreeSet<&str> = BTreeSet::new();
     for f in &m.funcs {
@@ -1140,7 +1163,7 @@ fn pure_region(m: &Module, entry: &str) -> HashMap<String, u64> {
         }
     }
     // 状態: 0 = 未訪問、1 = 訪問中、2 = 済み。高さ None = 純粋でない。
-    fn go(m: &Module, idx: &HashMap<&str, usize>, taken: &BTreeSet<&str>, entry: &str, k: usize, st: &mut Vec<u8>, h: &mut Vec<Option<u64>>) -> Option<u64> {
+    fn go(m: &Module, idx: &HashMap<&str, usize>, taken: &BTreeSet<&str>, entry: &str, k: usize, st: &mut Vec<u8>, h: &mut Vec<Option<(u64, u64)>>) -> Option<(u64, u64)> {
         if st[k] == 2 {
             return h[k];
         }
@@ -1151,6 +1174,7 @@ fn pure_region(m: &Module, entry: &str) -> HashMap<String, u64> {
         let f = &m.funcs[k];
         let mut ok = f.key != entry && f.link.is_none() && !f.key.starts_with("ksn.") && wasm_export_name(&f.key).is_none() && !taken.contains(f.key.as_str()) && !kasane_base_inst(&f.key);
         let mut hh = 0u64;
+        let mut ff = 0u64;
         if ok {
             'o: for b in &f.blocks {
                 for i in &b.insts {
@@ -1169,10 +1193,14 @@ fn pure_region(m: &Module, entry: &str) -> HashMap<String, u64> {
                                 continue;
                             }
                             if kasane_base_inst(&cf.key) {
+                                ff = ff.max(frame_of(m, cf));
                                 continue;
                             }
                             match go(m, idx, taken, entry, c, st, h) {
-                                Some(x) => hh = hh.max(x),
+                                Some((x, y)) => {
+                                    hh = hh.max(x);
+                                    ff = ff.max(y);
+                                }
                                 None => {
                                     ok = false;
                                     break 'o;
@@ -1185,12 +1213,12 @@ fn pure_region(m: &Module, entry: &str) -> HashMap<String, u64> {
             }
         }
         st[k] = 2;
-        h[k] = if ok { Some(hh + 1) } else { None };
+        h[k] = if ok { Some((hh + 1, ff + frame_of(m, f))) } else { None };
         h[k]
     }
     let n = m.funcs.len();
     let mut st = vec![0u8; n];
-    let mut h: Vec<Option<u64>> = vec![None; n];
+    let mut h: Vec<Option<(u64, u64)>> = vec![None; n];
     for k in 0..n {
         go(m, &idx, &taken, entry, k, &mut st, &mut h);
     }

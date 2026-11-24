@@ -71,3 +71,33 @@ fn the_printing_chain_is_in_the_dispatched_region() {
     let ll = std::fs::read_to_string(t.0.join("out.ll")).unwrap();
     assert!(ll.contains("@\"k.t.c1.slow\"") && ll.contains("@\"k.t.c1.w\""), "t.c1 should be dispatched");
 }
+
+/// 鎖の関数が 2 MB の局所の配列を持つとき、残りの検査は鎖の枠の上限を見て遅い道へ回る。
+/// スレッドの再帰が底に近づいても、ネイティブは SIGSEGV (終了コードなし) ではなく `stack overflow` (102) で止まる。
+#[test]
+fn a_chain_with_a_huge_local_stops_with_102_not_sigsegv() {
+    if !clang_available() || cfg!(windows) {
+        return;
+    }
+    let source = "fn t.leaf(seed: u8) -> u64 uses [] panics may\n    let mut big = [seed; 2000000]\n    big[0] = seed.wrapping_add(1u8)\n    u64.from_u8(big[usize.from_u64(u64.from_u8(seed))])\nend t.leaf\n\n\
+fn t.mid(seed: u8) -> u64 uses [] panics may\n    t.leaf(seed.wrapping_add(1u8))\nend t.mid\n\n\
+fn t.down(n: u64, seed: u8) -> u64 uses [] panics may\n    let mut chunk = [seed; 100000]\n    chunk[0] = seed.wrapping_add(1u8)\n    let a = t.mid(chunk[usize.from_u64(n % 100000u64)])\n    if n == 0u64 {\n        return a\n    }\n    t.down(n.wrapping_sub(1u64), chunk[1]).wrapping_add(a)\nend t.down\n\n\
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may\n    let spawned = std.thread.spawn(\n        std.alloc.SYSTEM,\n        fn() -> u64 capture [] {\n            t.down(5000u64, 1u8)\n        },\n    )\n    let h = match spawned {\n        Ok(handle) => handle\n        Err(_e) => core.panic.panic(\"spawn failed\")\n    }\n    let r = h.join()\n    core.mem.drop(std.io.print_line(\"done\"))\n    core.mem.drop(r)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("depth_chain_huge", source);
+    let mut n = 0;
+    for release in [false, true] {
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "llvm"]).current_dir(&t.0);
+        if release {
+            c.args(["--release", "--allow-bundle"]);
+        }
+        let o = c.output().unwrap();
+        let out = text(&o.stdout) + &text(&o.stderr);
+        assert_native_or_reasoned_skip(&out);
+        let p = native_or_launcher(t.0.join("target").join(if release { "release" } else { "debug" }).join("t.native"), &out);
+        let r = Command::new(&p).output().unwrap();
+        assert_eq!((r.status.code(), text(&r.stderr)), (Some(102), "stack overflow\n".to_string()), "release={}", release);
+        n += 1;
+    }
+    assert!(n > 0);
+}
