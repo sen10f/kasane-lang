@@ -3862,6 +3862,179 @@ fn link_or_copy(src: &Path, dst: &Path) {
     }
 }
 
+fn sha_file(p: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut f = fs::File::open(p).ok()?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Some(h.finalize().iter().map(|b| format!("{:02x}", b)).collect())
+}
+
+/// 大きい実行体のハッシュを、ファイルの同一性 (dev・inode・サイズ・mtime・ctime) が 5 つとも同じ間だけ使い回す。
+/// ctime は一般のユーザが戻せないので、書き換え・置き換えは必ず外れて数え直しになる。
+/// 置き場は 0700 のキャッシュ直下の `hashes/<dev>-<inode>` (ハードリンクは inode が同じなので 1 度で足りる)。unix 以外は毎回数える。
+fn sha_file_memo(p: &Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        let m = fs::metadata(p).ok()?;
+        let id = format!("{} {} {} {} {} {} {}", m.dev(), m.ino(), m.len(), m.mtime(), m.mtime_nsec(), m.ctime(), m.ctime_nsec());
+        let dir = cache_dir().join("hashes");
+        let f = dir.join(format!("{}-{}", m.dev(), m.ino()));
+        if let Ok(t) = fs::read_to_string(&f) {
+            if let Some((a, h)) = t.trim_end().rsplit_once(' ') {
+                if a == id && h.len() == 64 {
+                    return Some(h.to_string());
+                }
+            }
+        }
+        let h = sha_file(p)?;
+        // 数えている間に書き換わったら、記録しない。
+        let m2 = fs::metadata(p).ok()?;
+        if (m2.ino(), m2.len(), m2.mtime(), m2.mtime_nsec(), m2.ctime(), m2.ctime_nsec()) == (m.ino(), m.len(), m.mtime(), m.mtime_nsec(), m.ctime(), m.ctime_nsec()) {
+            let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
+            let t = dir.join(format!("{}-{}.{}.tmp", m.dev(), m.ino(), std::process::id()));
+            if fs::write(&t, format!("{} {}\n", id, h)).is_ok() && fs::rename(&t, &f).is_err() {
+                let _ = fs::remove_file(&t);
+            }
+        }
+        Some(h)
+    }
+    #[cfg(not(unix))]
+    {
+        sha_file(p)
+    }
+}
+
+/// 走っている ksn 自身のハッシュ (プロセスごとに 1 度だけ)。
+fn self_hash() -> Option<&'static str> {
+    static H: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    H.get_or_init(|| std::env::current_exe().ok().and_then(|e| sha_file_memo(&e))).as_deref()
+}
+
+/// 共有の `ksn-<識別子>` などが、走っている ksn と同じ中身か。
+fn is_self(p: &Path) -> bool {
+    match (self_hash(), sha_file_memo(p)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// `dir` の下のファイル (`skip` の名前を除く) の相対パスと SHA-256 を、並びを固定して 1 行ずつ書いた文字列にする。
+fn manifest_text(dir: &Path, skip: &[&str]) -> String {
+    fn go(base: &Path, d: &Path, skip: &[&str], out: &mut Vec<String>) {
+        let Ok(rd) = fs::read_dir(d) else { return };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let p = e.path();
+            let rel = p.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
+            if skip.contains(&rel.as_str()) {
+                continue;
+            }
+            let Ok(m) = fs::symlink_metadata(&p) else { continue };
+            if m.is_dir() {
+                go(base, &p, skip, out);
+            } else if !name.ends_with(".tmp") {
+                out.push(format!("{}  {}", sha_file(&p).unwrap_or_default(), rel));
+            }
+        }
+    }
+    let mut v = Vec::new();
+    go(dir, dir, skip, &mut v);
+    v.sort();
+    v.join("\n")
+}
+
+const MANIFEST: &str = ".manifest";
+fn bundle_skip() -> Vec<&'static str> {
+    vec![".used", ".size", MANIFEST, ARTIFACT_DIR, if cfg!(windows) { "ksn.exe" } else { "ksn" }]
+}
+
+fn write_manifest(dir: &Path, skip: &[&str]) {
+    let _ = fs::write(dir.join(MANIFEST), manifest_text(dir, skip));
+}
+
+/// エントリのバンドルの中身がマニフェストと一致し、同梱の `ksn` が走っている ksn と同じか。
+fn entry_intact(cached: &Path, check_ksn: bool) -> bool {
+    let Ok(m) = fs::read_to_string(cached.join(MANIFEST)) else { return false };
+    if m != manifest_text(cached, &bundle_skip()) {
+        return false;
+    }
+    let k = cached.join(exe_name());
+    !check_ksn || !k.exists() || is_self(&k)
+}
+
+/// 生成物がマニフェストと一致するか。
+fn artifact_intact(stored: &Path, file: &Path) -> bool {
+    let (Some(dir), Some(name)) = (stored.parent(), stored.file_name()) else { return false };
+    let Ok(m) = fs::read_to_string(dir.join(MANIFEST)) else { return false };
+    let Some(h) = sha_file(file) else { return false };
+    let want = format!("{}  {}", h, name.to_string_lossy());
+    let ok = m.lines().any(|l| l == want);
+    if !ok && stored.exists() {
+        eprintln!("ksn: cached artifact {} failed its integrity check; rebuilding", stored.display());
+        let _ = fs::remove_file(stored);
+        let _ = fs::remove_file(file);
+    }
+    ok
+}
+
+/// キャッシュのルートを使ってよいか確かめて返す。自分のもので他人が書けない (0700) ものだけ使う。
+/// 使えなければ 1 行出して、プロセスごとの私的な一時キャッシュに切り替える (終わると消す)。
+fn safe_cache_dir() -> (PathBuf, Option<NoCache>) {
+    let c = cache_dir();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(&c);
+        let uid = unsafe { libc::geteuid() };
+        let bad = match fs::metadata(&c) {
+            Ok(m) => m.uid() != uid || m.mode() & 0o022 != 0,
+            Err(_) => true,
+        };
+        if bad {
+            eprintln!("ksn: cache dir {} is not owned by you or is group/world-writable; the build cache is disabled", c.display());
+            let t = std::env::temp_dir().join(format!("ksn-nocache-{}-{}", uid, std::process::id()));
+            let _ = fs::remove_dir_all(&t);
+            let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(&t);
+            std::env::set_var("KSN_CACHE_DIR", &t);
+            return (t.clone(), Some(NoCache(t)));
+        }
+        // 共有の実体は他人に書かれていないものだけ。
+        if let Ok(rd) = fs::read_dir(&c) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if !n.contains(".tmp") {
+                    if let Ok(m) = fs::symlink_metadata(e.path()) {
+                        if m.uid() != uid || (m.mode() & 0o002 != 0 && !m.file_type().is_symlink()) {
+                            let _ = fs::remove_dir_all(e.path()).or_else(|_| fs::remove_file(e.path()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = fs::create_dir_all(&c);
+    }
+    (c, None)
+}
+
+struct NoCache(PathBuf);
+impl Drop for NoCache {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 /// 生成したネイティブ実行ファイルをキャッシュ entry に保存する。
 /// entry が消えた後に半端なディレクトリを作らないよう `create_dir` (非再帰) を使う。
 fn store_artifact(cdir: &Path, key: &str, exe: &Path) {
@@ -3874,6 +4047,7 @@ fn store_artifact(cdir: &Path, key: &str, exe: &Path) {
     let tmp = adir.join(format!("{}.tmp", fname.to_string_lossy()));
     if fs::copy(exe, &tmp).is_ok() {
         let _ = fs::rename(&tmp, adir.join(fname));
+        write_manifest(&adir, &[MANIFEST]);
     }
     evict(cdir, key);
 }
@@ -3883,7 +4057,7 @@ fn evict(cdir: &Path, keep: &str) {
     let Ok(rd) = fs::read_dir(cdir) else { return };
     let mut ents: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy() != keep && e.file_name().to_string_lossy() != "git" && e.file_name().to_string_lossy() != "check" && !e.file_name().to_string_lossy().starts_with("ksn-") && !e.file_name().to_string_lossy().starts_with("stdlib-"))
+        .filter(|e| e.file_name().to_string_lossy() != keep && e.file_name().to_string_lossy() != "git" && e.file_name().to_string_lossy() != "check" && e.file_name().to_string_lossy() != "hashes" && !e.file_name().to_string_lossy().starts_with("ksn-") && !e.file_name().to_string_lossy().starts_with("stdlib-"))
         .map(|e| {
             let used = e.path().join(".used");
             let t = fs::metadata(&used).or_else(|_| e.metadata()).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
@@ -3916,6 +4090,44 @@ fn evict(cdir: &Path, keep: &str) {
         let _ = fs::remove_dir_all(&p);
     }
     prune_shared(cdir, env!("KSN_BUILD_ID"));
+    prune_hashes(cdir, grace);
+}
+
+/// `hashes/<dev>-<inode>` のうち、走っている ksn・共有の `ksn-*`・エントリの `ksn` のどれの inode でもないものを消す
+/// (猶予より若いものは残す)。
+fn prune_hashes(cdir: &Path, grace: std::time::Duration) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(hd) = fs::read_dir(cdir.join("hashes")) else { return };
+        let mut live: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut add = |p: &Path| {
+            if let Ok(m) = fs::metadata(p) {
+                live.insert(format!("{}-{}", m.dev(), m.ino()));
+            }
+        };
+        if let Ok(e) = std::env::current_exe() {
+            add(&e);
+        }
+        for e in fs::read_dir(cdir).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with("ksn-") {
+                add(&e.path());
+            } else if e.path().is_dir() {
+                add(&e.path().join(exe_name()));
+            }
+        }
+        let now = std::time::SystemTime::now();
+        for e in hd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            let young = e.metadata().and_then(|m| m.modified()).map_or(true, |t| now.duration_since(t).map_or(true, |d| d < grace));
+            if !young && !n.contains(".tmp") && !live.contains(&n) {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (cdir, grace);
 }
 
 /// 今の識別子以外の `ksn-<識別子>` (同梱の `ksn` の共有実体) の掃除。
@@ -4198,10 +4410,14 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     }
     let kind = if release { "release" } else { "debug" };
     let key = build_key(&l, release, &target, &backend);
-    let cdir = cache_dir();
+    let (cdir, _nocache_guard) = safe_cache_dir();
     // 起動のたびに、古い識別子の `ksn` の共有実体を掃除する (ksn を作り直すたびに 1 本ずつ増えないように)。
     prune_shared(&cdir, env!("KSN_BUILD_ID"));
     let cached = cdir.join(&key);
+    if cached.is_dir() && !entry_intact(&cached, !(release && !allow_bundle && l.pkg.entry().is_some())) {
+        eprintln!("ksn: cache entry {} failed its integrity check; rebuilding", cached.display());
+        let _ = fs::remove_dir_all(&cached);
+    }
     if cached.is_dir() {
         let _ = fs::write(cached.join(".used"), "");
         println!("cache hit");
@@ -4213,6 +4429,10 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         if let Ok(exe) = std::env::current_exe() {
             // `ksn` は 1 つの識別子につき 1 本だけキャッシュの直下 (`ksn-<識別子>`) に置き、各エントリはそのハードリンクにする。
             let shared = cdir.join(format!("ksn-{}", env!("KSN_BUILD_ID")));
+            if shared.exists() && !is_self(&shared) {
+                eprintln!("ksn: shared {} does not match the running ksn; replacing it", shared.display());
+                let _ = fs::remove_file(&shared);
+            }
             if !shared.exists() {
                 let t = cdir.join(format!("ksn-{}.{}.tmp", env!("KSN_BUILD_ID"), std::process::id()));
                 link_or_copy(&exe, &t);
@@ -4248,6 +4468,7 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
             copy_tree(&dp.root, &pk.join("vendor").join(&dp.name), &["target", "__pycache__", ".git"]);
         }
         let _ = fs::write(tmp.join(".used"), "");
+        write_manifest(&tmp, &bundle_skip());
         if let Err(e) = fs::rename(&tmp, &cached) {
             // 同じキーを並行にビルドした別のプロセスが先に置いた。中身は同じなので、それを使う。
             let _ = fs::remove_dir_all(&tmp);
@@ -4326,7 +4547,7 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
     });
     // キャッシュに同じキーの生成物があれば複製し、コンパイルとリンクを省く。
     let stored = cached.join(ARTIFACT_DIR).join(exe.file_name().expect("exe has a file name"));
-    let reused = entry.is_some() && fs::copy(&stored, &exe).is_ok();
+    let reused = entry.is_some() && artifact_intact(&stored, &stored) && fs::copy(&stored, &exe).is_ok() && artifact_intact(&stored, &exe);
     let native: Result<(), String> = match &entry {
         _ if reused => Ok(()),
         None => Err("library package".into()),
