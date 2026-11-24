@@ -830,11 +830,14 @@ impl Interp {
             }
             "std.thread.yield_now" => Ok(Val::Unit),
             // 協調実行器 (task.rs、仕様 5.6)。タスクは id で持ち、`std.task.Task` の値は `id` の欄だけを持つ。
-            "std.task.block_on" => self.task_block_on(dr(&a0)),
+            "std.task.block_on" => self.task_block_on(dr(&a0), false),
             // 複数スレッドの実行器 (5.6 第 2 段) の木走査の意味: アロケータと `n` を無視して、決定的な協調実行 (`block_on` と同じ)。
-            "std.task.block_on_threads" => self.task_block_on(dr(&args[2])),
+            "std.task.block_on_threads" => {
+                let threads = matches!(dr(&args[1]), Val::Int(k, _) if k > 1);
+                self.task_block_on(dr(&args[2]), threads)
+            }
             "std.task.spawn" | "std.task.spawn_local" => {
-                let (id, gen) = self.task_spawn(snapshot_closure(&dr(&a0)))?;
+                let (id, gen) = self.task_spawn(snapshot_closure(&dr(&a0)), name == "std.task.spawn_local")?;
                 Ok(task_value(id, gen))
             }
             "std.task.yield_now" => {

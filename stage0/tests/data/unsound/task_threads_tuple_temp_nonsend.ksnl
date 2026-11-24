@@ -1,0 +1,36 @@
+type t.Raw pub
+    p: *mut u8
+end t.Raw
+
+fn t.main() -> () uses [alloc, suspend, thread] panics may
+    std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        4usize,
+        fn() -> () capture [] {
+            let h = std.task.spawn(
+                fn() -> () capture [] {
+                    t.work()
+                },
+            )
+            h.join_task()
+        },
+    )
+end t.main
+
+fn t.mk() -> t.Raw uses [] panics never
+    unsafe "ffi" "null" {
+        t.Raw {
+            p: core.ptr.null_mut()
+        }
+    }
+end t.mk
+
+fn t.sus() -> usize uses [suspend] panics never
+    std.task.yield_now()
+    1usize
+end t.sus
+
+fn t.work() -> () uses [suspend] panics never
+    let a = (t.mk(), t.sus())
+    core.mem.drop(a)
+end t.work

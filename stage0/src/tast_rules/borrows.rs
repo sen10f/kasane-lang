@@ -381,6 +381,17 @@ impl<'a> Walker<'a> {
         self.scopes.iter().rev().find_map(|s| s.get(n)).map(|(i, t)| (*i, t))
     }
 
+    /// 先に評価した被演算子の値は、後の被演算子の評価の間、名前の無い一時値として生きる。中断点をまたいで `Send` かを見るため、型を持つ一時値 (`$snd`) を作る (E2074)。
+    fn snd_temp(&mut self, ty: &Ty) -> Option<String> {
+        if matches!(ty, Ty::Unknown | Ty::Unit) {
+            return None;
+        }
+        self.tmp += 1;
+        let t = format!("$snd{}", self.tmp);
+        self.vtys.insert(t.clone(), ty.clone());
+        Some(t)
+    }
+
     fn fresh(&mut self) -> String {
         self.tmp += 1;
         format!("$e{}", self.tmp)
@@ -640,9 +651,13 @@ impl<'a> Walker<'a> {
         let mut all = vec![];
         let mut temps = vec![];
         let mut guard_temps = vec![];
+        let mut snd = vec![];
         let n = es.len();
         for (i, x) in es.iter().enumerate() {
             let s = self.expr(x);
+            if i + 1 < n {
+                snd.extend(self.snd_temp(&x.ty));
+            }
             if i + 1 < n && has_guard(self.p, &x.ty) {
                 let t = self.fresh();
                 self.guards.insert(t.clone());
@@ -658,7 +673,7 @@ impl<'a> Walker<'a> {
                 }
             }
         }
-        for t in temps {
+        for t in temps.into_iter().chain(snd) {
             self.cfg.emit(Ev::Use(t));
         }
         for t in guard_temps {
@@ -1062,6 +1077,7 @@ impl<'a> Walker<'a> {
         let mut tys: Vec<Ty> = vec![];
         let mut temps = vec![];
         let mut call_guard_temps: Vec<String> = vec![];
+        let mut snd: Vec<String> = vec![];
         let mut idx = 0usize;
         // 受け手の可変借用は 2 段階借用 (`db.add(user.id)`、`v.push(v.len())`): 引数の評価が終わってから借りる。
         let has_recv = recv_place.is_some();
@@ -1097,6 +1113,9 @@ impl<'a> Walker<'a> {
             }
             let s = self.arg(a, pt.as_ref());
             self.slot_ok = None;
+            if pos + 1 < order.len() {
+                snd.extend(self.snd_temp(&a.ty));
+            }
             if pos + 1 < order.len() && has_guard(self.p, &a.ty) {
                 let t = self.fresh();
                 self.guards.insert(t.clone());
@@ -1139,7 +1158,7 @@ impl<'a> Walker<'a> {
         if let Some((pl, ty, decl, ex)) = late_recv {
             srcs_per[0] = self.receiver(pl, &ty, autoref, decl.as_ref(), ex, e.line);
         }
-        for t in temps {
+        for t in temps.into_iter().chain(snd) {
             self.cfg.emit(Ev::Use(t));
         }
         // 引数が運ぶ貸し出しの、戻り値への流れ。
@@ -1582,7 +1601,7 @@ impl<'a> Walker<'a> {
                 if let Ev::Suspend { line } = ev {
                     // 枠の `Send` (E2074): 中断点をまたいで生きる局所が `Send` でないものを覚える。
                     for v in live_after[k].iter() {
-                        if v.starts_with('$') {
+                        if v.starts_with('$') && !v.starts_with("$snd") {
                             continue;
                         }
                         if let Some(t) = self.vtys.get(v) {
@@ -1591,7 +1610,7 @@ impl<'a> Walker<'a> {
                             }
                             let m = self.tk.marker_in(self.di, t, false);
                             if m != Some(true) {
-                                self.frame_bad.push((*line, show_var(v), self.cdepth > 0));
+                                self.frame_bad.push((*line, if v.starts_with("$snd") { "a temporary value".to_string() } else { show_var(v) }, self.cdepth > 0));
                             }
                         }
                     }

@@ -88,6 +88,8 @@ pub struct Tasks {
     cancel_by: usize,
     /// 実行器の世代番号。`block_on` ごとに増やし、古い世代の `Task` ハンドルを拒否するために使う (Issue 4 対策)。
     generation: usize,
+    /// `block_on_threads` (n > 1) の中か。ネイティブと同じく `spawn_local` を拒む。
+    threads: bool,
 }
 
 /// タスクのスレッドへ `Interp` の生ポインタを渡すための包み。合図の順序で一度に 1 つだけが使う。
@@ -138,13 +140,13 @@ impl Interp {
     }
 
     /// `std.task.block_on`: 根のタスクとして `f` を走らせ、残りのタスクを全部終わらせてから結果を返す。
-    pub fn task_block_on(&mut self, f: Val) -> Res {
+    pub fn task_block_on(&mut self, f: Val, threads: bool) -> Res {
         if self.task_running() {
             return panic("std.task.block_on: already running (nested block_on is not supported in stage 1)");
         }
         let gen = self.tasks.generation.wrapping_add(1);
         let sched = Arc::new(Sched { m: Mutex::new(Shared { cur: 0, states: vec![St::Runnable] }), cv: Condvar::new() });
-        self.tasks = Tasks { sched: Some(sched), slots: vec![Slot { body: None, result: None, cancelled: false }], cur: 0, error: None, cancel_by: 0, generation: gen };
+        self.tasks = Tasks { sched: Some(sched), slots: vec![Slot { body: None, result: None, cancelled: false }], cur: 0, error: None, cancel_by: 0, generation: gen, threads };
         let r = match self.call_value(&f, vec![]) {
             Ok(v) => self.task_drain().map(|_| v),
             Err(e) => Err(e),
@@ -167,7 +169,10 @@ impl Interp {
     }
 
     /// `std.task.spawn_local`: タスクを作る (まだ走らせない)。返すのは (タスクの id, 実行器の世代番号)。
-    pub fn task_spawn(&mut self, f: Val) -> Result<(usize, usize), Ctl> {
+    pub fn task_spawn(&mut self, f: Val, local: bool) -> Result<(usize, usize), Ctl> {
+        if local && self.tasks.threads {
+            return panic("std.task.spawn_local: not allowed inside std.task.block_on_threads (use std.task.spawn)");
+        }
         let Some(sched) = self.tasks.sched.clone() else {
             return panic("std.task.spawn_local: no executor (call it inside std.task.block_on)");
         };
