@@ -23,3 +23,11 @@
 
 - `check_all` 通過、`verify_reference` bad 0、`native_ratio` linear_ok 187/187・examples 18/19 (ui_demo は `ui/native/libksnui.a` が worktree に無いだけ)・perf 8/8 (床どおり)。`check_diag` は 1 本 (`trait_side_impls_work_for_foreign_types_in_run_and_llvm_build`) を除いて 308 件通過、`suspend` / `suspend_native` / `net_async_mt` 通過、パッケージの `ksn check` は全て診断 0。
 - `par_test.py --tier fast` は**最後まで回らなかった**。共有のビルドキャッシュ `~/.ksn/cache` (2199 件) が重くて、`ksn build` がどの束でも (dev/plan のバイナリでも) 1 分以上かかる (専用の `KSN_CACHE_DIR` なら 4 秒)。fix/cache-limit の件で、この枠の変更とは無関係。キャッシュを片付けたあとで回し直す。
+
+## 2b の下調べ (dev/plan 4b4b7996 をマージしたあと)
+
+- `ksn.task.g` (と `ksn.wrap.pend`) は LLVM の下ろしですでに `thread_local` (`kir_llvm.rs` の `GlobalBytes`)。ワーカーごとに今の 1 スレッドの実行器をそのまま走らせられる。リアクターの epoll もスレッドごと。
+- ワーカーの生成は、既存のスレッドの補助 (`ksn.thr.new` / `ent` / `start` / `join`、スタックの床・深さの設定を含む pthread の入口) を使う: 実行器の KIR テキストに、`ksn.thr.site.ksn.task.worker` の入口と、`n - 1` 本を起動して最後に join する補助を足す (`thread_lower::finish` が入口の一覧から `ksn.thr.exec` を作るので、`task_lower::finish` より前に入口を `ok` へ足す。今の順は thread → … → task)。KIR 参照実行器では `ksn.task.mt_enabled()` を偽にして起動しない (協調実行のまま)。
+- 横取りは未開始のタスクだけ: `spawn` は 40 バイトの項目を堆に作り (id = 番地 + 2^62 の印、`entry(id)` が 2^62 以上なら番地として読む)、全体の注入列 (大域の `ksn.thr.lock` の下) へ積む。ワーカーは局所のタスクが無いとき・数回に 1 回注入列から取り、局所の表に取り込む。完了は項目の状態を `ksn.atm.store` で更新して `unlock` の broadcast で起こす。待ち手は `ready()` で項目の状態を読む。眠りは (IO の待ちが無ければ) `ksn.thr.wait` (全員待ちの検出つき)、IO の待ちがあるときは `epoll_wait` を 1 ms 以下の期限で。終了は「全体の未完了数 == 0」をルートが見て停止の旗を立て、ワーカーを join。
+- 取り消し: 開始前は項目の状態を CAS で取り消しにする。開始後は印を立てて次の再開で抜ける (同期でないので、仕様 5.6 の取り消しの文との差を明記する必要がある)。
+- 未実装。実装量が大きく (実行器の KIR テキストの `entry` / `spawn` / `ready` / `wait.poll` / `cancel` / `run.poll` の終了条件、ワーカーの本体、LLVM の補助、試験)、競合の検証に TSan の試験が要るので、独立した仕事として続ける。
