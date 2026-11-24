@@ -3877,15 +3877,51 @@ fn sha_file(p: &Path) -> Option<String> {
     Some(h.finalize().iter().map(|b| format!("{:02x}", b)).collect())
 }
 
+/// 大きい実行体のハッシュを、ファイルの同一性 (dev・inode・サイズ・mtime・ctime) が 5 つとも同じ間だけ使い回す。
+/// ctime は一般のユーザが戻せないので、書き換え・置き換えは必ず外れて数え直しになる。
+/// 置き場は 0700 のキャッシュ直下の `hashes/<dev>-<inode>` (ハードリンクは inode が同じなので 1 度で足りる)。unix 以外は毎回数える。
+fn sha_file_memo(p: &Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        let m = fs::metadata(p).ok()?;
+        let id = format!("{} {} {} {} {} {} {}", m.dev(), m.ino(), m.len(), m.mtime(), m.mtime_nsec(), m.ctime(), m.ctime_nsec());
+        let dir = cache_dir().join("hashes");
+        let f = dir.join(format!("{}-{}", m.dev(), m.ino()));
+        if let Ok(t) = fs::read_to_string(&f) {
+            if let Some((a, h)) = t.trim_end().rsplit_once(' ') {
+                if a == id && h.len() == 64 {
+                    return Some(h.to_string());
+                }
+            }
+        }
+        let h = sha_file(p)?;
+        // 数えている間に書き換わったら、記録しない。
+        let m2 = fs::metadata(p).ok()?;
+        if (m2.ino(), m2.len(), m2.mtime(), m2.mtime_nsec(), m2.ctime(), m2.ctime_nsec()) == (m.ino(), m.len(), m.mtime(), m.mtime_nsec(), m.ctime(), m.ctime_nsec()) {
+            let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
+            let t = dir.join(format!("{}-{}.{}.tmp", m.dev(), m.ino(), std::process::id()));
+            if fs::write(&t, format!("{} {}\n", id, h)).is_ok() && fs::rename(&t, &f).is_err() {
+                let _ = fs::remove_file(&t);
+            }
+        }
+        Some(h)
+    }
+    #[cfg(not(unix))]
+    {
+        sha_file(p)
+    }
+}
+
 /// 走っている ksn 自身のハッシュ (プロセスごとに 1 度だけ)。
 fn self_hash() -> Option<&'static str> {
     static H: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    H.get_or_init(|| std::env::current_exe().ok().and_then(|e| sha_file(&e))).as_deref()
+    H.get_or_init(|| std::env::current_exe().ok().and_then(|e| sha_file_memo(&e))).as_deref()
 }
 
 /// 共有の `ksn-<識別子>` などが、走っている ksn と同じ中身か。
 fn is_self(p: &Path) -> bool {
-    match (self_hash(), sha_file(p)) {
+    match (self_hash(), sha_file_memo(p)) {
         (Some(a), Some(b)) => a == b,
         _ => false,
     }
@@ -4021,7 +4057,7 @@ fn evict(cdir: &Path, keep: &str) {
     let Ok(rd) = fs::read_dir(cdir) else { return };
     let mut ents: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy() != keep && e.file_name().to_string_lossy() != "git" && e.file_name().to_string_lossy() != "check" && !e.file_name().to_string_lossy().starts_with("ksn-") && !e.file_name().to_string_lossy().starts_with("stdlib-"))
+        .filter(|e| e.file_name().to_string_lossy() != keep && e.file_name().to_string_lossy() != "git" && e.file_name().to_string_lossy() != "check" && e.file_name().to_string_lossy() != "hashes" && !e.file_name().to_string_lossy().starts_with("ksn-") && !e.file_name().to_string_lossy().starts_with("stdlib-"))
         .map(|e| {
             let used = e.path().join(".used");
             let t = fs::metadata(&used).or_else(|_| e.metadata()).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
