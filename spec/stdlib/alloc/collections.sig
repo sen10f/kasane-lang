@@ -17,6 +17,7 @@ end alloc.collections.HashCell
 type alloc.collections.HashMap[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator] pub
     cells: alloc.raw.Buf<alloc.collections.HashCell<K, V>, A>
     slots: usize
+    dead: usize
 end alloc.collections.HashMap
 
 type alloc.collections.HashMapIter['a, K, V] pub

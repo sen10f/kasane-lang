@@ -187,6 +187,33 @@ fn alloc.collections.BtreeMapIter.next[K, V](self: &mut alloc.collections.BtreeM
     }
 end alloc.collections.BtreeMapIter.next
 
+fn alloc.collections.HashMap.compact[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>) -> () uses [] panics never
+    let total = self.cells.len()
+    let mut w = self.slots
+    for r in core.iter.range(self.slots, total) {
+        let live = match self.cells.get(r) {
+            Some(cell) => match cell {
+                alloc.collections.HashCell.Entry(_, _, _) => true
+                alloc.collections.HashCell.Empty => false
+                alloc.collections.HashCell.Index(_) => false
+            }
+            None => false
+        }
+        if live {
+            if r != w {
+                match self.cells.as_mut_slice().swap(r, w) {
+                    Ok(_done) => {
+                    }
+                    Err(_) => return
+                }
+            }
+            w = w.wrapping_add(1usize)
+        }
+    }
+    self.cells.truncate(w)
+    self.dead = 0usize
+end alloc.collections.HashMap.compact
+
 fn alloc.collections.HashMap.contains_key[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>, key: &K) -> bool uses [] panics never pub
     match self.find(key) {
         Some(_) => true
@@ -369,17 +396,25 @@ fn alloc.collections.HashMap.insert[K: core.cmp.Eq + core.hash.Hash, V, A: alloc
             })
         }
         None => {
-            let n = self.len()
-            if n.wrapping_add(1usize).wrapping_mul(2usize) > self.slots {
-                let want = if self.slots > 4usize {
-                    self.slots.wrapping_mul(2usize)
-                } else {
-                    8usize
+            let used = self.cells.len().wrapping_sub(self.slots)
+            if used.wrapping_add(1usize).wrapping_mul(2usize) > self.slots {
+                if self.dead > 0usize {
+                    self.compact()
                 }
-                match self.rebuild(want) {
-                    Ok(_done) => {
+                let n = self.len()
+                if n.wrapping_add(1usize).wrapping_mul(2usize) > self.slots {
+                    let want = if self.slots > 4usize {
+                        self.slots.wrapping_mul(2usize)
+                    } else {
+                        8usize
                     }
-                    Err(error) => return Err(error)
+                    match self.rebuild(want) {
+                        Ok(_done) => {
+                        }
+                        Err(error) => return Err(error)
+                    }
+                } else {
+                    self.reindex()
                 }
             }
             let fresh = alloc.collections.HashCell.Entry(h, key, value)
@@ -421,7 +456,7 @@ fn alloc.collections.HashMap.iter['a, K: core.cmp.Eq + core.hash.Hash, V, A: all
 end alloc.collections.HashMap.iter
 
 fn alloc.collections.HashMap.len[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>) -> usize uses [] panics never pub
-    self.cells.len().wrapping_sub(self.slots)
+    self.cells.len().wrapping_sub(self.slots).wrapping_sub(self.dead)
 end alloc.collections.HashMap.len
 
 fn alloc.collections.HashMap.new_empty[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.HashMap<K, V, A> uses [] panics never
@@ -429,6 +464,7 @@ fn alloc.collections.HashMap.new_empty[K: core.cmp.Eq + core.hash.Hash, V, A: al
     alloc.collections.HashMap {
         cells: cells
         slots: 0usize
+        dead: 0usize
     }
 end alloc.collections.HashMap.new_empty
 
@@ -505,11 +541,14 @@ end alloc.collections.HashMap.reindex
 
 fn alloc.collections.HashMap.remove[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, key: &K) -> Option<V> uses [] panics never pub
     match self.find(key) {
-        Some(p) => match self.cells.remove(p) {
+        Some(p) => match self.cells.get_mut(p) {
             Some(cell) => {
-                self.reindex()
-                match cell {
-                    alloc.collections.HashCell.Entry(_, _, v) => Some(v)
+                let old = core.mem.replace(cell, alloc.collections.HashCell.Empty)
+                match old {
+                    alloc.collections.HashCell.Entry(_, _, v) => {
+                        self.dead = self.dead.wrapping_add(1usize)
+                        Some(v)
+                    }
                     alloc.collections.HashCell.Empty => None
                     alloc.collections.HashCell.Index(_) => None
                 }
@@ -522,11 +561,14 @@ end alloc.collections.HashMap.remove
 
 fn alloc.collections.HashMap.remove_str[V, A: alloc.alloc.Allocator, B: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<alloc.string.String<B>, V, A>, key: &str) -> Option<V> uses [] panics never pub
     match self.find_str(key) {
-        Some(p) => match self.cells.remove(p) {
+        Some(p) => match self.cells.get_mut(p) {
             Some(cell) => {
-                self.reindex()
-                match cell {
-                    alloc.collections.HashCell.Entry(_, _, v) => Some(v)
+                let old = core.mem.replace(cell, alloc.collections.HashCell.Empty)
+                match old {
+                    alloc.collections.HashCell.Entry(_, _, v) => {
+                        self.dead = self.dead.wrapping_add(1usize)
+                        Some(v)
+                    }
                     alloc.collections.HashCell.Empty => None
                     alloc.collections.HashCell.Index(_) => None
                 }
