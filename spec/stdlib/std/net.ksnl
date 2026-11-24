@@ -31,8 +31,8 @@ fn std.net.TcpStream.write_async(self: &mut std.net.TcpStream, buffer: &[u8]) ->
         return Err(std.net.timed_out())
     }
     let n = buffer.len()
-    let chunk = if n > 16384usize {
-        16384usize
+    let chunk = if n > 16_384usize {
+        16_384usize
     } else {
         n
     }
