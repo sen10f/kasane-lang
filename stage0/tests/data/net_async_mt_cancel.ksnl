@@ -1,0 +1,56 @@
+static t.COUNT: std.sync.Mutex<usize> = std.sync.Mutex.new(0usize) pub
+
+fn t.bump(i: usize) -> usize uses [thread] panics never
+    let mut g = t.COUNT.lock()
+    let r = g.get_mut()
+    *r = r.wrapping_add(1usize)
+    core.mem.drop(g)
+    i
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, suspend, thread] panics may
+    let r = std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        4usize,
+        fn() -> usize capture [] {
+            let a = std.task.spawn(fn() -> usize capture [] {
+                loop {
+                    std.task.yield_now()
+                }
+            })
+            let b = std.task.spawn(fn() -> usize capture [] {
+                loop {
+                    std.task.yield_now()
+                }
+            })
+            for _k in core.iter.range(0usize, 50usize) {
+                std.task.yield_now()
+            }
+            a.cancel()
+            for _k in core.iter.range(0usize, 10usize) {
+                std.task.yield_now()
+            }
+            b.cancel()
+            for i in core.iter.range(0usize, 200usize) {
+                let c = std.task.spawn(fn() -> usize capture [move i] {
+                    t.bump(i)
+                })
+                if i % 2usize == 0usize {
+                    c.cancel()
+                }
+            }
+            7usize
+        },
+    )
+    core.check.eq(r, 7usize)
+    std.io.print_line("cancel done")?
+    let g = t.COUNT.lock()
+    let n = *g.get()
+    core.mem.drop(g)
+    if n >= 100usize {
+        if n <= 200usize {
+            std.io.print_line("count ok")?
+        }
+    }
+    Ok(())
+end t.main

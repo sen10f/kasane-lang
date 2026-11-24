@@ -40,7 +40,7 @@ const TOTAL: u32 = 8 + CAP * ESZ;
 /// kir_llvm.rs の `THREAD_ENTRY_SIZE` (256) に収まる。
 const _: () = assert!(ESZ <= 256);
 
-const SITE: &str = "ksn.thr.site.";
+pub(super) const SITE: &str = "ksn.thr.site.";
 pub(super) const RUN_ONE: &str = "ksn.thr.run_one";
 /// 保留 (未開始) のスレッドがあるか (走らせない)。満杯の `send` が使う。
 pub(super) const HAS_PENDING: &str = "ksn.thr.has_pending";
@@ -70,7 +70,7 @@ pub(super) fn rt_call(lw: &mut Lw, name: &str, args: Vec<VId>, ret: Ty) -> VId {
 }
 
 /// 鍵の FNV-1a (入口を選ぶ tag)。
-fn tag_of(key: &str) -> u64 {
+pub(super) fn tag_of(key: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in key.bytes() {
         h ^= b as u64;

@@ -43,6 +43,11 @@ pub const WRAP_PEND: &str = "ksn.wrap.pend";
 /// 実行器の入口 (`block_on` の本体) と、生成 (`spawn_local`) と、後始末。
 pub const RUN: &str = "ksn.task.run";
 pub const SPAWN: &str = "ksn.task.spawn";
+/// `std.task.spawn` (`Send` の要る方)。複数スレッドの実行器が動いているときは全体の注入列へ積み、そうでなければ `SPAWN` と同じ。
+pub const SPAWN_ANY: &str = "ksn.task.spawn_any";
+pub const MT_BEGIN: &str = "ksn.task.mt_begin";
+pub const MT_END: &str = "ksn.task.mt_end";
+pub const WORKER: &str = "ksn.task.worker_main";
 pub const FINISH: &str = "ksn.task.finish";
 /// 枠の番地 (タスク `i`)、タスクの id の数。`join_task` の結果の読み出しに使う。
 pub const FP: &str = "ksn.task.fp";
@@ -916,11 +921,19 @@ fn dispatch_text(tasks: &[(u32, String)]) -> String {
 /// 実行器の KIR (テキスト)。`ksn.task.g` は大域の領域: `[0]` 表の番地、`[8]` 個数、`[16]` 容量、`[24]` 走っている番号、`[32]` 根が終わったか、`[40]` `run.poll` の再開の位置、`[48]` 世代 (`block_on` ごとに増やし、`finish` でも消さない。古い `Task` を拒む)。
 /// 表の項目 (32 バイト): `[0]` 状態 (0 走れる / 1 待ち / 2 終わり)、`[8]` 待つ相手、`[16]` 本体の番号 (u32)、`[24]` 枠。
 const EXEC_TEXT: &str = include_str!("kir_suspend_exec.kir");
+/// 複数スレッドの実行器のワーカーの起動・合流 (`ksn.thr.*` を呼ぶので、`block_on_threads` を使うときだけ足す)。`@WTAG@` はワーカーの入口の tag。
+const EXEC_MT_TEXT: &str = include_str!("kir_suspend_exec_mt.kir");
 
 /// 実行器と葉の関数 (`ksn.task.*`) と、本体の番号の表 (`dispatch`) を KIR の関数の列にする。
 /// `tasks` は (番号, 本体の鍵) の列。鍵は変換で `.poll` を作るもの (`transform` が作る) だけを渡す。
 pub fn exec_funcs(tasks: &[(u32, String)]) -> Result<Vec<Func>, String> {
-    let text = format!("kir 1\n\n{}\n{}", EXEC_TEXT, dispatch_text(tasks));
+    exec_funcs_mt(tasks, None)
+}
+
+/// `exec_funcs` に、複数スレッドの実行器のワーカーの起動・合流 (`mt_worker_tag` = ワーカーの入口の tag) を足したもの。
+pub fn exec_funcs_mt(tasks: &[(u32, String)], mt_worker_tag: Option<u64>) -> Result<Vec<Func>, String> {
+    let mt = mt_worker_tag.map(|t| EXEC_MT_TEXT.replace("@WTAG@", &t.to_string())).unwrap_or_default();
+    let text = format!("kir 1\n\n{}\n{}\n{}", EXEC_TEXT, mt, dispatch_text(tasks));
     let m = kir::parse_module(&text).map_err(|e| format!("実行器の KIR が読めない: {}", e))?;
     Ok(m.funcs)
 }

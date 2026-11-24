@@ -2150,6 +2150,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     }
     crate::s5_meter::set_active(false);
     // スレッドの補助の関数 (`ksn.thr.*`) は、全部の入口 (クロージャ) が揃ってから作る。
+    task_lower::pre_finish(&mut ok);
     thread_lower::finish(&mut ok);
     sync_lower::finish(&mut ok);
     chan_lower::finish(&mut ok);
