@@ -1,0 +1,10 @@
+static t.S: std.sync.Mutex<std.vec.Vec<u32>> = std.sync.Mutex.new(std.vec.Vec.new()) pub
+
+fn t.same(x: &std.vec.Vec<u32>) -> &std.vec.Vec<u32> uses [] panics never
+    x
+end t.same
+
+fn t.main() -> usize uses [thread] panics never
+    let r = t.same(t.S.lock().get())
+    r.len()
+end t.main

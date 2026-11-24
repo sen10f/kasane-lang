@@ -1,0 +1,1 @@
+static t.S: Option<std.sync.Receiver<u8>> = None pub

@@ -1,0 +1,12 @@
+fn t.mk() -> std.vec.Vec<u32> uses [] panics never
+    std.vec.Vec.new()
+end t.mk
+
+fn t.pick(x: &std.vec.Vec<u32>, n: usize) -> &std.vec.Vec<u32> uses [] panics never
+    x
+end t.pick
+
+fn t.main() -> usize uses [] panics never
+    let r = t.pick(&t.mk(), 1usize)
+    r.len()
+end t.main

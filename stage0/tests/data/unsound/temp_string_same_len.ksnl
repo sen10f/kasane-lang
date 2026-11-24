@@ -1,0 +1,12 @@
+fn t.mk() -> std.string.String uses [] panics never
+    std.string.String.new()
+end t.mk
+
+fn t.same(x: &std.string.String) -> &std.string.String uses [] panics never
+    x
+end t.same
+
+fn t.main() -> usize uses [] panics never
+    let r = t.same(&t.mk())
+    r.len()
+end t.main

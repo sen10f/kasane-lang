@@ -1,0 +1,12 @@
+fn t.mk() -> std.vec.Vec<u32> uses [] panics never
+    std.vec.Vec.new()
+end t.mk
+
+fn t.same(x: &std.vec.Vec<u32>) -> &std.vec.Vec<u32> uses [] panics never
+    x
+end t.same
+
+fn t.main() -> usize uses [] panics never
+    let r = t.same(&t.mk())
+    r.len()
+end t.main
