@@ -55,6 +55,7 @@ mod natives;
 mod net;
 mod process;
 mod ptrwidth;
+mod unsafe_report;
 mod value;
 mod parser;
 mod program;

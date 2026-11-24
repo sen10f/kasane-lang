@@ -2558,6 +2558,29 @@ fn doc_items<'a>(l: &'a Loaded, prog: &'a Program) -> (Vec<crate::doc::Item<'a>>
 }
 
 /// `ksn index [--std]`: LLM 向けの索引。1 定義 1 行の JSON (FQN のバイト順)。仕様 7 章。
+/// `ksn unsafe [--json]`: パッケージと依存の unsafe の使用の一覧 (読み出し専用)。
+fn cmd_unsafe(args: &[String]) -> i32 {
+    if args.iter().any(|a| a != "--json") {
+        eprintln!("ksn: usage: ksn unsafe [--json]");
+        return 2;
+    }
+    let root = match find_root() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let l = match load_all(&root) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    crate::unsafe_report::report(&l.pkg, &l.deps, !args.is_empty())
+}
+
 fn cmd_index(args: &[String]) -> i32 {
     for a in args {
         if a != "--std" {
@@ -5063,6 +5086,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "sig" => cmd_sig(&rest),
         "doc" => cmd_doc(&rest),
         "index" => cmd_index(&rest),
+        "unsafe" => cmd_unsafe(&rest),
         "refs" => cmd_refs(&rest),
         "rename" => cmd_rename(&rest),
         "fmt" => cmd_fmt(&rest),
@@ -5100,7 +5124,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         }
         _ => {
             eprintln!(
-                "usage: ksn <new|check|fix|todo|context|fmt|run|test|debug|dap|build|get|sig|doc|index|refs|rename|explain|lsp|update|lock|vendor|publish|yank|git|registry> [args]"
+                "usage: ksn <new|check|fix|todo|context|fmt|run|test|debug|dap|build|get|sig|doc|index|unsafe|refs|rename|explain|lsp|update|lock|vendor|publish|yank|git|registry> [args]"
             );
             2
         }
