@@ -1,0 +1,6 @@
+static t.S: std.sync.Mutex<u32> = std.sync.Mutex.new(0u32)
+
+fn t.a() -> () uses [suspend, thread] panics never
+    let _h = Some(t.S.lock())
+    std.task.yield_now()
+end t.a

@@ -1,0 +1,10 @@
+static t.S: std.sync.Mutex<u32> = std.sync.Mutex.new(0u32)
+
+fn t.a() -> () uses [suspend, thread] panics never
+    t.f(t.S.lock(), std.task.yield_now())
+end t.a
+
+fn t.f(g: std.sync.MutexGuard<u32>, u: ()) -> () uses [] panics never
+    core.mem.drop(g)
+    core.mem.drop(u)
+end t.f

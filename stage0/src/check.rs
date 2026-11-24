@@ -4313,6 +4313,9 @@ impl<'a> Checker<'a> {
                 } else {
                     None
                 };
+                if !self.spawn_scan.is_empty() && !frame_scalar(&self.lin_ty(&f[3], env)) {
+                    self.spawn_unsafe();
+                }
                 let got = self.ty_of(&f[3], env);
                 if !is_nil(&f[2]) {
                     self.mismatch(&f[2], &got, nline(s), "let binding");
@@ -4645,6 +4648,13 @@ impl<'a> Checker<'a> {
 
     fn tc_expr(&mut self, e: &V, env: &Env, muts: &BTreeSet<String>, consume: bool) {
         let f = nf(e);
+        // 取り消しの検査: 閉包の中で作る構造体・配列・タプルの値は、枠の型で解放の要らないものに限る (引数の位置の一時値も、中断をまたぎうる)。
+        if !self.spawn_scan.is_empty() && matches!(nname(e), "StructLit" | "ArrayRep" | "TupleE" | "ArrayE") && {
+            let t = self.lin_ty(e, env);
+            !frame_scalar(&t) && (is_nil(&t) || !self.is_copy(&t))
+        } {
+            self.spawn_unsafe();
+        }
         match nname(e) {
             "Path" => {
             }

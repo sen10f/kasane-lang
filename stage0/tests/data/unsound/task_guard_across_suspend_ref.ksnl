@@ -1,0 +1,62 @@
+static t.S: std.sync.RwLock<std.vec.Vec<u64>> = std.sync.RwLock.new(t.mk())
+
+fn t.main() -> () uses [alloc, io.console, suspend, thread] panics may
+    let mut g = t.S.write()
+    for i in core.iter.range(0u64, 4u64) {
+        core.mem.drop(g.get_mut().push(i))
+    }
+    core.mem.drop(g)
+    std.task.block_on(fn() -> () capture [] {
+        let a = std.task.spawn_local(fn() -> u64 capture [] {
+            t.reader()
+        })
+        let b = std.task.spawn_local(fn() -> () capture [] {
+            t.writer()
+        })
+        let r = a.join_task()
+        b.join_task()
+        t.say(r)
+    })
+end t.main
+
+fn t.mk() -> std.vec.Vec<u64> const uses [] panics never
+    std.vec.Vec.new()
+end t.mk
+
+fn t.reader() -> u64 uses [suspend, thread] panics never
+    let g = t.S.read()
+    let s = t.slow_sum(g.get())
+    core.mem.drop(g)
+    s
+end t.reader
+
+fn t.say(n: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    match s.push_u64(n) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.say
+
+fn t.slow_sum(v: &std.vec.Vec<u64>) -> u64 uses [suspend] panics never
+    let mut total = 0u64
+    let mut i = 0usize
+    while i < v.len() {
+        std.task.yield_now()
+        if let Some(x) = v.get(i) {
+            total = total.wrapping_add(*x)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    total
+end t.slow_sum
+
+fn t.writer() -> () uses [alloc, thread] panics never
+    let mut g = t.S.write()
+    let v = g.get_mut()
+    for i in core.iter.range(0u64, 100_000u64) {
+        core.mem.drop(v.push(i))
+    }
+    core.mem.drop(g)
+end t.writer

@@ -1,0 +1,13 @@
+fn t.main() -> () uses [suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let a = std.task.spawn_local(fn() -> () capture [] {
+            let n = 7u32
+            let p = (1u8, 2u8)
+            std.task.yield_now()
+            core.mem.drop(n)
+            core.mem.drop(p)
+        })
+        std.task.yield_now()
+        a.cancel()
+    })
+end t.main

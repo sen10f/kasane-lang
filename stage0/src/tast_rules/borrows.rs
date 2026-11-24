@@ -36,6 +36,10 @@ enum Src {
 #[derive(Clone, Debug)]
 enum Ev {
     Use(String),
+    /// ロックのガードを含む値の持ち主が生まれた (落とされるまでロックを持つ)。
+    Hold(String),
+    /// その持ち主が移動・`drop`・スコープの終わりで落とされた。
+    Release(String),
     Bind { var: String, srcs: Vec<Src>, replace: bool },
     Acc { root: String, path: Path, kind: Acc, line: usize },
     /// 配列の定数の添字の要素への強い更新 (`core.mem.replace(&mut a[0], ..)`): 要素が持っていた貸し出しが終わる。
@@ -97,9 +101,13 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
         tk.susp_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
     for &di in user {
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
+        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], guards: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
         for q in &b.params {
             w.scopes[0].insert(q.name.clone(), (0, q.ty.clone()));
+            if has_guard(p, &q.ty) {
+                w.guards.insert(key(&q.name, 0));
+                w.cfg.emit(Ev::Hold(key(&q.name, 0)));
+            }
         }
         w.expr(&b.body);
         let mut cfg = std::mem::replace(&mut w.cfg, Cfg::new());
@@ -177,8 +185,44 @@ fn holds_field(p: &Program, t: &Ty) -> bool {
     false
 }
 
+const GUARD_TYPES: [&str; 3] = ["std.sync.MutexGuard", "std.sync.RwLockReadGuard", "std.sync.RwLockWriteGuard"];
+
+/// 型がロックのガードを (欄・タプル・`Option` などの中に) 所有するか。参照 `&Guard` は所有しない。
+fn has_guard(p: &Program, t: &Ty) -> bool {
+    fn go(p: &Program, t: &Ty, seen: &mut Vec<String>) -> bool {
+        match t {
+            Ty::Tuple(a) => a.iter().any(|x| go(p, x, seen)),
+            Ty::Array(x, _) | Ty::Slice(x) => go(p, x, seen),
+            Ty::Named(n, a, _) => {
+                if GUARD_TYPES.contains(&n.as_str()) {
+                    return true;
+                }
+                if a.iter().any(|x| go(p, x, seen)) {
+                    return true;
+                }
+                if seen.contains(n) {
+                    return false;
+                }
+                seen.push(n.clone());
+                match p.types.get(n) {
+                    Some(&i) => {
+                        let gn = p.defs[i].gnames();
+                        p.defs[i].fields.iter().any(|f| go(p, &from_v(&f.1, &gn), seen))
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
+        }
+    }
+    go(p, t, &mut vec![])
+}
+
 /// 値として使うと移動する型 (確実にそうと分かるものだけ。分からない型は移動にしない)。
 fn not_copy(p: &Program, t: &Ty) -> bool {
+    if has_guard(p, t) {
+        return true;
+    }
     match t {
         Ty::Ref(m, ..) => *m,
         Ty::Tuple(a) => a.iter().any(|x| not_copy(p, x)),
@@ -255,6 +299,8 @@ struct Walker<'a> {
     diags: Vec<(usize, String)>,
     /// 中断点をまたぐ借用 (E3050)。コードが違うので分けて出す。
     susp_diags: Vec<(usize, String)>,
+    /// ロックのガード (`MutexGuard` など) を持つ束縛の持ち主。中断点で生きていれば E3050。
+    guards: BTreeSet<String>,
     /// 配列リテラルで作った変数 → 要素ごとの、その要素だけが持つ貸し出し (`[&mut x, &mut z]` なら `[[x], [z]]`)。
     slots: HashMap<String, Vec<Vec<usize>>>,
     /// 要素の持ち主が崩れ得る変数 (定数添字の `replace` 以外の可変借用・代入・流入があったもの)。`Kill` を捨てる。
@@ -356,7 +402,20 @@ impl<'a> Walker<'a> {
         }
     }
 
+    fn pop_scope(&mut self) {
+        if let Some(sc) = self.scopes.pop() {
+            let mut ks: Vec<String> = sc.iter().map(|(n, (id, _))| key(n, *id)).filter(|k| self.guards.contains(k)).collect();
+            ks.sort();
+            for k in ks {
+                self.cfg.emit(Ev::Release(k));
+            }
+        }
+    }
+
     fn acc(&mut self, root: &str, path: &[String], kind: Acc, line: usize) {
+        if kind == Acc::Move && path.is_empty() && self.guards.contains(root) {
+            self.cfg.emit(Ev::Release(root.to_string()));
+        }
         self.cfg.emit(Ev::Acc { root: root.to_string(), path: path.to_vec(), kind, line });
     }
 
@@ -449,7 +508,7 @@ impl<'a> Walker<'a> {
                         self.expr(g);
                     }
                     srcs.extend(self.expr(&a.body));
-                    self.scopes.pop();
+                    self.pop_scope();
                     let c = self.cfg.cur;
                     self.cfg.edge(c, join);
                 }
@@ -515,9 +574,16 @@ impl<'a> Walker<'a> {
     fn operands(&mut self, es: &[&TExpr]) -> Vec<Src> {
         let mut all = vec![];
         let mut temps = vec![];
+        let mut guard_temps = vec![];
         let n = es.len();
         for (i, x) in es.iter().enumerate() {
             let s = self.expr(x);
+            if i + 1 < n && has_guard(self.p, &x.ty) {
+                let t = self.fresh();
+                self.guards.insert(t.clone());
+                self.cfg.emit(Ev::Hold(t.clone()));
+                guard_temps.push(t);
+            }
             if !s.is_empty() {
                 all.extend(s.iter().cloned());
                 if i + 1 < n {
@@ -529,6 +595,9 @@ impl<'a> Walker<'a> {
         }
         for t in temps {
             self.cfg.emit(Ev::Use(t));
+        }
+        for t in guard_temps {
+            self.cfg.emit(Ev::Release(t));
         }
         all
     }
@@ -565,7 +634,7 @@ impl<'a> Walker<'a> {
                 TStmt::Assign { place, value } => self.assign(place, value),
             }
         }
-        self.scopes.pop();
+        self.pop_scope();
         self.keep(ty, tail)
     }
 
@@ -575,6 +644,10 @@ impl<'a> Walker<'a> {
                 let ty = info.bind.as_ref().map(|b| b.1.clone()).unwrap_or_else(|| info.ty.clone());
                 self.scopes.last_mut().unwrap().insert(n.clone(), (q.id, ty.clone()));
                 let k = key(n, q.id);
+                if has_guard(self.p, &ty) {
+                    self.guards.insert(k.clone());
+                    self.cfg.emit(Ev::Hold(k.clone()));
+                }
                 let s = if holds_field(self.p, &ty) { srcs.to_vec() } else { vec![] };
                 self.bind(k, s, true);
             } else if let Some(n) = &q.name {
@@ -682,7 +755,7 @@ impl<'a> Walker<'a> {
             self.cfg.edge(c, ex);
             self.cfg.evs[ex].push(Ev::Use("$cap".into()));
         }
-        self.scopes.pop();
+        self.pop_scope();
         let inner = std::mem::replace(&mut self.cfg, outer);
         self.analyze(inner);
         srcs
@@ -754,7 +827,7 @@ impl<'a> Walker<'a> {
                 for x in ch.iter().skip(1) {
                     self.expr(x);
                 }
-                self.scopes.pop();
+                self.pop_scope();
                 self.cfg.loops.pop();
                 let c = self.cfg.cur;
                 self.cfg.edge(c, head);
@@ -772,7 +845,7 @@ impl<'a> Walker<'a> {
                 if ch.len() > 2 {
                     self.expr(&ch[1]);
                 }
-                self.scopes.pop();
+                self.pop_scope();
                 tail
             }
             "Break" | "Continue" => {
@@ -899,6 +972,7 @@ impl<'a> Walker<'a> {
         let mut srcs_per: Vec<Vec<Src>> = vec![];
         let mut tys: Vec<Ty> = vec![];
         let mut temps = vec![];
+        let mut call_guard_temps: Vec<String> = vec![];
         let mut idx = 0usize;
         // 受け手の可変借用は 2 段階借用 (`db.add(user.id)`、`v.push(v.len())`): 引数の評価が終わってから借りる。
         let has_recv = recv_place.is_some();
@@ -934,6 +1008,12 @@ impl<'a> Walker<'a> {
             }
             let s = self.arg(a, pt.as_ref());
             self.slot_ok = None;
+            if pos + 1 < order.len() && has_guard(self.p, &a.ty) {
+                let t = self.fresh();
+                self.guards.insert(t.clone());
+                self.cfg.emit(Ev::Hold(t.clone()));
+                call_guard_temps.push(t);
+            }
             if !s.is_empty() && (pos + 1 < order.len() || late_recv.is_some()) {
                 let t = self.fresh();
                 self.bind(t.clone(), s.clone(), true);
@@ -1046,6 +1126,9 @@ impl<'a> Walker<'a> {
             || cands.iter().any(|&i| self.p.defs[i].uses.iter().any(|u| u == "suspend"));
         if may_suspend {
             self.cfg.emit(Ev::Suspend { line: e.line });
+        }
+        for t in call_guard_temps {
+            self.cfg.emit(Ev::Release(t));
         }
         let mut res = self.keep(&e.ty, res);
         // `std.sync.channel(..)` の結果はチャネル自体への擬似の貸し出しを持つ (送信が受信側へ借用を流す印)。
@@ -1339,6 +1422,47 @@ impl<'a> Walker<'a> {
                 if cur != live_in[b] {
                     live_in[b] = cur;
                     changed = true;
+                }
+            }
+        }
+        // ロックのガードを持ったまま中断点に着く (E3050): 落とされる (移動・`drop`・スコープの終わり) までロックを持つ。
+        {
+            let mut held_in: Vec<BTreeSet<String>> = vec![BTreeSet::new(); n];
+            let step = |ev: &Ev, cur: &mut BTreeSet<String>| match ev {
+                Ev::Hold(v) => {
+                    cur.insert(v.clone());
+                }
+                Ev::Release(v) => {
+                    cur.remove(v);
+                }
+                _ => {}
+            };
+            let mut changed = true;
+            while changed {
+                changed = false;
+                for b in 0..n {
+                    let mut cur = held_in[b].clone();
+                    for ev in &cfg.evs[b] {
+                        step(ev, &mut cur);
+                    }
+                    for &s in &cfg.succ[b] {
+                        if !cur.is_subset(&held_in[s]) {
+                            held_in[s].extend(cur.iter().cloned());
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            for b in 0..n {
+                let mut cur = held_in[b].clone();
+                for ev in &cfg.evs[b] {
+                    if let Ev::Suspend { line } = ev {
+                        for g in cur.iter().filter(|g| self.guards.contains(*g)) {
+                            let who = if g.starts_with("$") { "a temporary".to_string() } else { format!("`{}`", show_var(g)) };
+                            self.susp_diags.push((*line, format!("cannot hold a lock guard across a suspension point: {} still holds the lock (drop it with `core.mem.drop` before the call that may suspend)", who)));
+                        }
+                    }
+                    step(ev, &mut cur);
                 }
             }
         }

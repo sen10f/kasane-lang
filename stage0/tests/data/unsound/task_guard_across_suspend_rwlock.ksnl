@@ -1,0 +1,42 @@
+static t.S: std.sync.RwLock<u32> = std.sync.RwLock.new(0u32)
+
+fn t.inner(r: &u32) -> u32 uses [suspend] panics never
+    std.task.yield_now()
+    *r
+end t.inner
+
+fn t.main() -> () uses [alloc, io.console, suspend, thread] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let a = std.task.spawn_local(fn() -> u32 capture [] {
+            t.reader()
+        })
+        let b = std.task.spawn_local(fn() -> () capture [] {
+            t.writer()
+        })
+        let r = a.join_task()
+        b.join_task()
+        t.say(u64.from_u32(r))
+    })
+end t.main
+
+fn t.reader() -> u32 uses [suspend, thread] panics never
+    let g = t.S.read()
+    let v = t.inner(g.get())
+    core.mem.drop(g)
+    v
+end t.reader
+
+fn t.say(n: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    match s.push_u64(n) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.say
+
+fn t.writer() -> () uses [thread] panics never
+    let mut g = t.S.write()
+    *g.get_mut() = 77u32
+    core.mem.drop(g)
+end t.writer
