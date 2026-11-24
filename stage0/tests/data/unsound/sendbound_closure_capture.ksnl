@@ -1,0 +1,17 @@
+type t.Shared
+    p: *const u8
+end t.Shared
+
+fn t.main() -> i32 uses [] panics never
+    let s = t.Shared {
+        p: core.ptr.as_const(core.ptr.null_mut())
+    }
+    t.need(fn() -> () capture [move s] {
+        let _z = s
+    })
+    0
+end t.main
+
+fn t.need[T: core.marker.Send](x: T) -> () uses [] panics never
+    let _y = x
+end t.need

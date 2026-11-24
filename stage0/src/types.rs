@@ -670,6 +670,8 @@ pub struct TypeCk<'a> {
     pub redundant_on: bool,
     // 現在の関数
     cur: usize,
+    /// 規則側 (TAST) から `auto_marker` を呼ぶときの、型パラメータの境界を読む定義 (None なら `cur`)。
+    marker_def: std::cell::Cell<Option<usize>>,
     scopes: Vec<HashMap<String, Ty>>,
     /// 型変数の束縛 (None = 未束縛) と種類 (0 = 一般、1 = 整数リテラル、2 = 浮動小数リテラル)
     vars: Vec<Option<Ty>>,
@@ -840,7 +842,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, wants_tmp: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, marker_def: std::cell::Cell::new(None), scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, wants_tmp: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1271,6 +1273,14 @@ impl<'a> TypeCk<'a> {
     /// `None` は決まらない。`&T` は `T: Sync` のとき Send、`&mut T` は `T: Send` のとき Send。生ポインタは両方とも満たさない。
     /// 手動の impl は境界 (`T: core.marker.Send` など) を実引数に当てて見る。無いものは型の定義から自動導出する
     /// (循環は成立とみなす)。型パラメータは、その境界に当該マーカーがあるときだけ満たす。
+    /// 規則 (`tast_rules/bounds.rs`) から: 呼び出し元 `caller` (定義の添字) の境界の下で `t` が Send / Sync か。
+    pub fn marker_in(&self, caller: usize, t: &Ty, sync: bool) -> Option<bool> {
+        self.marker_def.set(Some(caller));
+        let r = self.auto_marker(t, sync, &mut Vec::new());
+        self.marker_def.set(None);
+        r
+    }
+
     fn auto_marker(&self, t: &Ty, sync: bool, seen: &mut Vec<String>) -> Option<bool> {
         let marker = if sync { "core.marker.Sync" } else { "core.marker.Send" };
         match self.deep(t) {
@@ -1280,7 +1290,8 @@ impl<'a> TypeCk<'a> {
             Ty::Tuple(xs) => xs.iter().fold(Some(true), |r, x| and_marker(r, self.auto_marker(x, sync, seen))),
             Ty::Array(x, _) | Ty::Slice(x) => self.auto_marker(&x, sync, seen),
             Ty::Param(p) => {
-                let bounded = self.def().generics.iter().any(|g| {
+                let md = self.marker_def.get().map_or_else(|| self.def(), |i| &self.p.defs[i]);
+                let bounded = md.generics.iter().any(|g| {
                     g.0 == "type" && g.1 == p && items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]) == marker))
                 });
                 if bounded { Some(true) } else { None }
@@ -1288,7 +1299,7 @@ impl<'a> TypeCk<'a> {
             Ty::Dyn(tr, _, _) => self.dyn_auto(&tr, marker),
             // クロージャは、取り込んだ実際の型がすべて満たすとき (5.5)。節が分からない (関数ポインタ) なら取り込みはない。
             Ty::Closure { id: Some(node), .. } => {
-                let caps = self.closure_caps.get(&node).cloned().unwrap_or_default();
+                let caps = self.closure_caps.get(&node).cloned().or_else(|| self.side.closure_caps.get(&node).map(|c| c.iter().map(|c| (c.kind.clone(), c.name.clone(), c.ty.clone())).collect())).unwrap_or_default();
                 caps.into_iter().fold(Some(true), |r, (k, _, t)| and_marker(r, self.auto_marker(&capture_ty(&k, t), sync, seen)))
             }
             Ty::Closure { id: None, .. } => Some(true),
