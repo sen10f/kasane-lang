@@ -1064,6 +1064,7 @@ fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
         "declare i32 @accept(i32, ptr, ptr)",
         "declare i32 @read(i32, ptr, i64)",
         "declare i32 @close(i32)",
+        "declare void @ksn_rt_sys_io_forget(i32)",
         "declare i32 @getsockname(i32, ptr, ptr)",
         &format!("declare ptr @{}()", errno_fn),
     ] {
@@ -1101,7 +1102,7 @@ fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
     s.push_str("  ret i64 0\n}\n\n");
     // net.close(fd)
     hdr!("ksn.net_close", "i32 %fd");
-    s.push_str("  %raw = call i32 @close(i32 %fd)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  ret i64 0\nerr:\n");
+    s.push_str("  call void @ksn_rt_sys_io_forget(i32 %fd)\n  %raw = call i32 @close(i32 %fd)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  ret i64 0\nerr:\n");
     errno_chain(errno_fn, &idx, &mut s)?;
     s.push_str("}\n\n");
     // net.local_port(fd): getsockname で sockaddr_in の sin_port (オフセット 2、ネットワークバイトオーダ) を取る。
@@ -2639,6 +2640,20 @@ impl<'a> Fe<'a> {
                         let ep = self.fs_err_slot();
                         let r = self.t(format!("call i64 @ksn_rt_sys_net_udp_bind(ptr {}, i64 {}, ptr {})", p, n, ep));
                         self.net_err_result(&d, &r, &ep);
+                    }
+                    NetK::ReadTry | NetK::WriteTry => {
+                        let write_side = if matches!(kind, NetK::WriteTry) { 1 } else { 0 };
+                        self.decl("declare i64 @ksn_rt_sys_net_try(i32, i32, ptr, i64, ptr)".to_string());
+                        let ep = self.fs_err_slot();
+                        let r = self.t(format!(
+                            "call i64 @ksn_rt_sys_net_try(i32 {}, i32 {}, ptr {}, i64 {}, ptr {})",
+                            self.r(args[0]),
+                            write_side,
+                            self.r(args[1]),
+                            self.r(args[2]),
+                            ep
+                        ));
+                        self.fs_result(&d, &r, &ep);
                     }
                     NetK::UdpSendTo => {
                         let (ap, an) = self.fat_parts(args[3])?;

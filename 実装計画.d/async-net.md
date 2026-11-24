@@ -33,3 +33,11 @@ echo / HTTP 風 (要求 64 バイト → 応答 128 バイト、持続接続、�
 
 - (1) `MSG_DONTWAIT` の試し読み・試し書き、(2) 走れるタスクの列、(3) N スレッド実行器、Windows (IOCP / WSAPoll) は次の段階。
 - 例 (`examples/` に非同期 echo) は足していない（このブランチは `examples/` を触らない規則）。
+
+## 第 2 回 (統括者の指示: 速度・sig・linear の健全性)
+
+- 速度: 読み書きは先に `read_try` / `write_try` (`MSG_DONTWAIT`) で試し、EAGAIN のときだけ `wait_io` で待つ (`accept_async` は `accept_timeout(0)`)。epoll は fd ごとに最初の 1 回だけ `EPOLLIN|EPOLLOUT|EPOLLET` で登録し (`epoll_ctl` は接続あたり 1 回)、待ち手がいない間に来た端は印 (`rdy`) に残す (取りこぼさない)。`close` の前に `ksn_rt_sys_io_forget` で記録を消す。1 要求の syscall は `recv` + `send` の 2 回になった。新しい `NetK::ReadTry / WriteTry` (kir / kir_exec / kir_llvm / 木走査 / sysrt.c)。
+- 計測 (load average 27〜34、256 接続、20 万要求): 非同期 1 スレッド 約 5.0 万 req/s (前回 1.8 万)。同じ CPU 1 つに固定 (`taskset`) した比較: 非同期 3.2 万 / Kasane 接続ごとにスレッド 4.2 万 / Rust 4.7 万 → **0.76 倍 / 0.68 倍**。全 CPU を使う接続ごとにスレッドは 約 34〜58 万 req/s なので 0.09〜0.15 倍。1 要求の CPU は user 約 4.6 µs + sys 約 14 µs で、sys (loopback の `send` が受け手の起床まで送り手の CPU で処理される) が 75%。1 スレッドでは 0.5 倍 (全 CPU) には届かない物理的な上限で、同じ CPU 予算の比較が公平。
+- 走れるタスクの列 (`pick` の O(1) 化) は入れていない: user 時間は 25% で、いまの O(n) の走査が効くのは数千接続から。必要になったら別の仕事にする。
+- `.sig` の規範: 3 つの公開関数は `net.sig` に **足せない**。`net.ksnl` に本体があり、`.sig` にも書くと xref 検査が「duplicate method」で落ちる (`local_addr` など `net.ksnl` の関数が `.sig` に無いのと同じ規則)。`net.ksnl` が規範で、`check_all` が検査する。`.sig` に足したのは内部の `read_try` / `write_try` (`pub` なし) と `task.sig` の `wait_io`。
+- linear の `F` (健全性): 規則は「`block_on` は根が終わっても残りのタスクを全部待つ (構造化)」「タスクの本体は取り込んだ線形値を自分で消費しなければ E3003」「`T` は線形不可 (E3006)」「取り消しは枠に解放の要る値がありうれば E4022 (関数の形 `Task.cancel(t)` も)」。`stage0/tests/data/unsound/linear_task_*.ksnl` と `linear_block_on_unconsumed` (未消費・分岐で未消費・取り消し・取り消しの関数形・移動後の使用・2 つの閉包に同じ値・線形の結果・`block_on` の閉包が消費しない) は全て拒否される。拒否されない形: 実行器の外の `spawn_local` (閉包は走らず、実行時の panic で終了する。panic はプロセスを終えるので線形値の漏れは観測されない)、タスクが永遠に準備ができない fd を待つ (ハング。漏れではない)。

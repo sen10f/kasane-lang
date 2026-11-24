@@ -37,6 +37,7 @@ fn std.net.TcpStream.local_addr_raw(self: &std.net.TcpStream, out: &mut [u8]) ->
 fn std.net.TcpStream.peer_addr_raw(self: &std.net.TcpStream, out: &mut [u8]) -> Result<usize, std.io.Error> uses [io.net] panics never pub
 impl std.io.Read<[io.net]> for std.net.TcpStream
 fn std.net.TcpStream.read(self: &mut std.net.TcpStream, buffer: &mut [u8]) -> Result<usize, std.io.Error> uses [io.net] panics never impls std.io.Read<[io.net]>
+fn std.net.TcpStream.read_try(self: &mut std.net.TcpStream, buffer: &mut [u8]) -> Result<usize, std.io.Error> uses [io.net] panics never
 fn std.net.TcpStream.set_nodelay(self: &std.net.TcpStream, on: bool) -> Result<(), std.io.Error> uses [io.net] panics never pub
 fn std.net.TcpStream.set_read_deadline(self: &std.net.TcpStream, ms_from_now: u64) -> Result<(), std.io.Error> uses [io.net] panics never pub
 fn std.net.TcpStream.set_read_timeout(self: &std.net.TcpStream, millis: u64) -> Result<(), std.io.Error> uses [io.net] panics never pub
@@ -44,6 +45,7 @@ fn std.net.TcpStream.set_write_deadline(self: &std.net.TcpStream, ms_from_now: u
 fn std.net.TcpStream.set_write_timeout(self: &std.net.TcpStream, millis: u64) -> Result<(), std.io.Error> uses [io.net] panics never pub
 fn std.net.TcpStream.shutdown(self: &std.net.TcpStream, how: std.net.Shutdown) -> Result<(), std.io.Error> uses [io.net] panics never pub
 fn std.net.TcpStream.write(self: &mut std.net.TcpStream, buffer: &[u8]) -> Result<usize, std.io.Error> uses [io.net] panics never impls std.io.Write<[io.net]>
+fn std.net.TcpStream.write_try(self: &mut std.net.TcpStream, buffer: &[u8]) -> Result<usize, std.io.Error> uses [io.net] panics never
 fn std.net.UdpSocket.bind(address: &str) -> Result<std.net.UdpSocket, std.net.Error> uses [io.net] panics never pub
 fn std.net.UdpSocket.close(self: std.net.UdpSocket) -> Result<(), std.net.Error> uses [io.net] panics never pub
 fn std.net.UdpSocket.local_port(self: &std.net.UdpSocket) -> Result<u16, std.net.Error> uses [io.net] panics never pub

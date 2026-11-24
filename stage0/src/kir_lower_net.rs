@@ -215,6 +215,16 @@ pub(super) fn net_method(lw: &mut Lw, _e: &V, name: &str, recv: VId, rt: Ty, arg
             let res_ty = net_err_ty(lw, Ty::Usize);
             return Ok(Some(lw.emit(res_ty, Op::NetSys { kind, args: vec![fd, p, n] })));
         }
+        "read_try" | "write_try" => {
+            if args.len() != 1 {
+                return lw.err(line, format!("{} の引数は 1 個のはず", name));
+            }
+            let Some(buf) = lw.expr(&args[0])? else { return Ok(None) };
+            let (p, n) = buf_ptr_len(lw, buf, line)?;
+            let kind = if name == "read_try" { NetK::ReadTry } else { NetK::WriteTry };
+            let res_ty = net_err_ty(lw, Ty::Usize);
+            return Ok(Some(lw.emit(res_ty, Op::NetSys { kind, args: vec![fd, p, n] })));
+        }
         "send_to" => {
             if args.len() != 2 {
                 return lw.err(line, "send_to の引数は 2 個のはず");

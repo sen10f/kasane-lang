@@ -296,6 +296,42 @@ impl Interp {
                 },
                 None => invalid(),
             }),
+            // 待たずに 1 回だけ読み書きする (非同期ソケットの下ごしらえ。待つなら EAGAIN の `std.io.Error`)。
+            "read_try" => {
+                let target = dr(args.first().unwrap_or(&Val::Unit));
+                let mut buf = vec![0u8; seq_items(&target).map_or(0, |x| x.len())];
+                let r = match self.net.streams.get_mut(&fd) {
+                    Some(st) => {
+                        let _ = st.set_nonblocking(true);
+                        let r = st.read(&mut buf);
+                        let _ = st.set_nonblocking(false);
+                        r
+                    }
+                    None => return Ok(invalid()),
+                };
+                match r {
+                    Ok(n) => {
+                        fill(&target, &buf[..n]);
+                        Ok(ok(int(n as i128, "usize")))
+                    }
+                    Err(e) => Ok(err(io_error(&e))),
+                }
+            }
+            "write_try" => {
+                let data = bytes_of(args.first().unwrap_or(&Val::Unit));
+                Ok(match self.net.streams.get_mut(&fd) {
+                    Some(st) => {
+                        let _ = st.set_nonblocking(true);
+                        let r = st.write(&data);
+                        let _ = st.set_nonblocking(false);
+                        match r {
+                            Ok(n) => ok(int(n as i128, "usize")),
+                            Err(e) => err(io_error(&e)),
+                        }
+                    }
+                    None => invalid(),
+                })
+            }
             "write" => {
                 let data = bytes_of(args.first().unwrap_or(&Val::Unit));
                 let at = self.net.deadlines.get(&fd).and_then(|d| d.1);
