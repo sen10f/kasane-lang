@@ -10,7 +10,7 @@ use crate::parser::V;
 use crate::program::Program;
 use crate::ptrwidth;
 use crate::interp::Interp;
-use crate::interp::{DEADLOCK_JOIN, DEADLOCK_RECV};
+use crate::interp::{DEADLOCK_JOIN, DEADLOCK_RECV, DEADLOCK_SEND};
 use crate::value::*;
 use crate::value::Scope;
 
@@ -853,7 +853,11 @@ impl Interp {
             // JS の Promise を待つ中断は wasm32 の入口だけが再開できる (木走査には JS の相手がいない)。
             "std.task.await_js" => panic("std.task.await_js: needs a JavaScript host (build for wasm32-unknown-unknown and resume with ksn_resume); the tree-walker has none"),
             "std.sync.channel" => {
-                let st = Rc::new(ChanState { q: RefCell::new(VecDeque::new()), senders: Cell::new(0), receivers: Cell::new(0) });
+                let cap = match args.get(1).map(dr) {
+                    Some(Val::Int(v, _)) => (v.max(1) as usize).min(usize::MAX / 2),
+                    _ => 1,
+                };
+                let st = Rc::new(ChanState { cap, q: RefCell::new(VecDeque::new()), senders: Cell::new(0), receivers: Cell::new(0) });
                 let tx = Val::Chan(Rc::new(ChanEnd::new(st.clone(), true)));
                 let rx = Val::Chan(Rc::new(ChanEnd::new(st, false)));
                 Ok(ok(Val::Tuple(Rc::new(vec![tx, rx]))))
@@ -1216,6 +1220,16 @@ impl Interp {
                     if end.st.receivers.get() == 0 {
                         let e = StructV { ty: "std.sync.SendError".into(), f: RefCell::new(vec![("value".into(), a0)]) };
                         return Ok(err(Val::Struct(Rc::new(e))));
+                    }
+                    // 満杯なら、保留中のスレッドを走らせて空きを待つ (空の `recv` と同じ協調実行)。
+                    while end.st.q.borrow().len() >= end.st.cap {
+                        if end.st.receivers.get() == 0 {
+                            let e = StructV { ty: "std.sync.SendError".into(), f: RefCell::new(vec![("value".into(), a0)]) };
+                            return Ok(err(Val::Struct(Rc::new(e))));
+                        }
+                        if !self.run_one_pending()? {
+                            return panic(DEADLOCK_SEND);
+                        }
                     }
                     end.st.q.borrow_mut().push_back(a0);
                     Ok(ok(Val::Unit))

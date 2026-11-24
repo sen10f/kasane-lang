@@ -1,7 +1,7 @@
 //! `std.sync.channel` / `Sender<T>` / `Receiver<T>` の KIR 下ろし (設計_KIR.md 22 章)。
 //!
 //! 木走査 (`natives.rs` の `std.sync.channel`、`native_method` の `Chan`) と同じ意味:
-//! - 容量は無視する (`send` は待たない)。受信側が 0 本なら `send` は `Err(SendError { value })`。
+//! - 容量 (0 は 1) を超える `send` は、`recv` が空きを作るか受信側が全部落ちるまで待つ (保留のスレッドを走らせ、走らせるものが無ければ deadlock の panic)。受信側が 0 本なら `send` は `Err(SendError { value })`。
 //! - `recv`: キューが空でなければ先頭を取る。空で、送信側が 0 本なら `Err(RecvError { code: 0 })`。空で送信側が生きていれば、
 //!   保留中のスレッドを生成順に 1 本走らせて (`ksn.thr.run_one`) やり直し、走らせるものが無ければ deadlock の panic (interp.rs の文言)。
 //! - 端の `clone` は同じチャネルの端を 1 本増やし、端が落ちる (スコープの終わり・関数の引数・スレッド終了で取り込み値が落ちる) と減る。
@@ -19,7 +19,7 @@ use crate::parser::V;
 use super::thread_lower::{rt_call, RUN_ONE};
 use super::{Lw, LR};
 
-const STATE: i128 = 152;
+const STATE: i128 = 168;
 /// チャネルごとのロックと待ち (ネイティブ。`kir_llvm.rs` の `ksn.chan.rt.*`)。状態の `+48` に `pthread_mutex_t` (40 バイト)、`+88` に
 /// `pthread_cond_t` (48 バイト)、`+136` に待っている数、`+144` に起こしの札の数。実行器 (協調実行) では何もしない (`wait` は保留のスレッドを 1 本走らせる)。
 const CINIT: &str = "ksn.chan.rt.init";
@@ -29,6 +29,10 @@ const CUNLOCK: &str = "ksn.chan.rt.unlock";
 const CUNLOCK1: &str = "ksn.chan.rt.unlock1";
 const CUNLOCKALL: &str = "ksn.chan.rt.unlockall";
 const CWAIT: &str = "ksn.chan.rt.wait";
+/// 満杯の `send` の待ち (待ちの本体は `wait` と同じで、全員待ちの panic の文言だけ違う) と、空きを作った `recv` のあとの解放
+/// (待っている送り手がいれば全員を起こす。いなければ `unlock` と同じ)。
+const CWAITS: &str = "ksn.chan.rt.waitsend";
+const CUNLOCKR: &str = "ksn.chan.rt.unlockrecv";
 /// 補助の関数: `grow(state)` は `cap*2+4` 要素に伸ばす、`free(state)` は `buf` と状態を解放する。`alloc` の効果は端の側 (`channel` の
 /// `uses [alloc]`) が持つので、呼び出し側の効果の包含は見ない (kir.rs の検査)。
 const GROW: &str = "ksn.chan.grow";
@@ -39,6 +43,9 @@ const LEN: u32 = 16;
 const CAPF: u32 = 24;
 const SENDERS: u32 = 32;
 const RECEIVERS: u32 = 40;
+/// 容量 (`channel` の引数。0 は 1)。待っている送り手の数 (ロックの下)。
+const LIMIT: u32 = 152;
+const SWAIT: u32 = 160;
 
 fn us(lw: &mut Lw, n: i128) -> VId {
     lw.emit(Ty::Usize, Op::Const(n))
@@ -262,14 +269,27 @@ fn channel(lw: &mut Lw, e: &V, args: &[V], line: usize) -> LR<Option<VId>> {
     if fields.len() != 2 {
         return lw.err(line, "std.sync.channel の結果の型が (Sender, Receiver) の組でない");
     }
-    // 容量は評価だけして捨てる (木走査と同じく無視する)。アロケータは KIR では使わない。
-    let Some(_cap) = lw.expr(&args[1])? else { return Ok(None) };
+    // アロケータは KIR では使わない。容量 0 は 1 として扱う。
+    let Some(cap) = lw.expr(&args[1])? else { return Ok(None) };
+    let cap0 = cmp_eq0(lw, cap);
+    let (lim_blk, lp) = lw.new_block(&[Ty::Usize]);
+    let (zero_blk, _) = lw.new_block(&[]);
+    let (keep_blk, _) = lw.new_block(&[]);
+    lw.branch(cap0, (zero_blk, vec![]), (keep_blk, vec![]));
+    lw.cur = Some(zero_blk);
+    let one0 = us(lw, 1);
+    lw.goto(lim_blk, vec![one0]);
+    lw.cur = Some(keep_blk);
+    lw.goto(lim_blk, vec![cap]);
+    lw.cur = Some(lim_blk);
+    let limit = lp[0];
     let n = us(lw, STATE);
     let st = lw.emit(Ty::Ptr, Op::HeapAlloc(n));
     let null = lw.emit(Ty::Ptr, Op::Const(0));
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: st, off: BUF, v: null });
     let z = us(lw, 0);
-    for off in [HEAD, LEN, CAPF] {
+    put(lw, st, LIMIT, limit);
+    for off in [HEAD, LEN, CAPF, SWAIT] {
         put(lw, st, off, z);
     }
     let one = us(lw, 1);
@@ -291,16 +311,39 @@ fn send(lw: &mut Lw, e: &V, st: VId, elem: Ty, arg: &V, line: usize) -> LR<Optio
     }
     let (fin, fp) = lw.new_block(&[rty]);
     rt_call(lw, CLOCK, vec![st], Ty::Unit);
+    let (sl, _) = lw.new_block(&[]);
+    lw.goto(sl, vec![]);
+    lw.cur = Some(sl);
     let rc = ld(lw, st, RECEIVERS);
     let closed = cmp_eq0(lw, rc);
     let (cl, _) = lw.new_block(&[]);
-    let (open, _) = lw.new_block(&[]);
-    lw.branch(closed, (cl, vec![]), (open, vec![]));
+    let (chk, _) = lw.new_block(&[]);
+    lw.branch(closed, (cl, vec![]), (chk, vec![]));
     lw.cur = Some(cl);
     rt_call(lw, CUNLOCK, vec![st], Ty::Unit);
     let se = lw.emit(Ty::Agg(serr), Op::Make { variant: None, fields: vec![v] });
     let er = lw.emit(rty, Op::Err(se));
     lw.goto(fin, vec![er]);
+    lw.cur = Some(chk);
+    // 満杯 (待っている要素が容量以上) なら、空きができるか受信側が全部落ちるまで待つ。
+    let head0 = ld(lw, st, HEAD);
+    let len0 = ld(lw, st, LEN);
+    let queued = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: len0, b: head0 });
+    let limit = ld(lw, st, LIMIT);
+    let is_full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: queued, b: limit });
+    let (wt, _) = lw.new_block(&[]);
+    let (open, _) = lw.new_block(&[]);
+    lw.branch(is_full, (wt, vec![]), (open, vec![]));
+    lw.cur = Some(wt);
+    let sw = ld(lw, st, SWAIT);
+    let one1 = us(lw, 1);
+    let sw1 = add(lw, sw, one1);
+    put(lw, st, SWAIT, sw1);
+    rt_call(lw, CWAITS, vec![st], Ty::Unit);
+    let sw2 = ld(lw, st, SWAIT);
+    let sw3 = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: sw2, b: one1 });
+    put(lw, st, SWAIT, sw3);
+    lw.goto(sl, vec![]);
     lw.cur = Some(open);
     // 満杯なら伸ばす。
     let len = ld(lw, st, LEN);
@@ -324,7 +367,20 @@ fn send(lw: &mut Lw, e: &V, st: VId, elem: Ty, arg: &V, line: usize) -> LR<Optio
     let one = us(lw, 1);
     let l1 = add(lw, len, one);
     put(lw, st, LEN, l1);
+    // 送り手が待っているなら、札の取り違えを避けて全員を起こす。
+    let swn = ld(lw, st, SWAIT);
+    let no_sw = cmp_eq0(lw, swn);
+    let (w1, _) = lw.new_block(&[]);
+    let (wall, _) = lw.new_block(&[]);
+    let (wdone, _) = lw.new_block(&[]);
+    lw.branch(no_sw, (w1, vec![]), (wall, vec![]));
+    lw.cur = Some(w1);
     rt_call(lw, CUNLOCK1, vec![st], Ty::Unit);
+    lw.goto(wdone, vec![]);
+    lw.cur = Some(wall);
+    rt_call(lw, CUNLOCKALL, vec![st], Ty::Unit);
+    lw.goto(wdone, vec![]);
+    lw.cur = Some(wdone);
     let u = lw.unit();
     let ok = lw.emit(rty, Op::Ok(u));
     lw.goto(fin, vec![ok]);
@@ -358,7 +414,7 @@ fn recv(lw: &mut Lw, e: &V, st: VId, elem: Ty, line: usize) -> LR<Option<VId>> {
     let one = us(lw, 1);
     let h1 = add(lw, head, one);
     put(lw, st, HEAD, h1);
-    rt_call(lw, CUNLOCK, vec![st], Ty::Unit);
+    rt_call(lw, CUNLOCKR, vec![st], Ty::Unit);
     let ok = lw.emit(rty, Op::Ok(x));
     lw.goto(fin, vec![ok]);
     lw.cur = Some(empty);
@@ -390,11 +446,11 @@ pub(super) fn finish(ok: &mut Vec<(crate::kir::Func, std::collections::BTreeSet<
     let (want_grow, want_free) = (called(GROW), called(FREE));
     // ロックと待ちの補助 (実行器では協調実行なので何もしない。ネイティブは `kir_llvm.rs` が本体に差し替える)。
     let all: Vec<String> = ["alloc", "env", "io.console", "io.fs", "io.net", "process", "rand", "thread", "time"].iter().map(|s| s.to_string()).collect();
-    let wanted_rt: Vec<&str> = [CINIT, CLOCK, CUNLOCK, CUNLOCK1, CUNLOCKALL, CWAIT].into_iter().filter(|n| called(n)).collect();
+    let wanted_rt: Vec<&str> = [CINIT, CLOCK, CUNLOCK, CUNLOCK1, CUNLOCKALL, CWAIT, CWAITS, CUNLOCKR].into_iter().filter(|n| called(n)).collect();
     for name in wanted_rt {
         let mut b = Fb::new(&[Ty::Ptr]);
         let mut callees = BTreeSet::new();
-        if name == CWAIT {
+        if name == CWAIT || name == CWAITS {
             // 空の recv の待ち: 保留中のスレッドを 1 本走らせる。走らせるものが無ければ deadlock の panic。
             callees.insert(RUN_ONE.to_string());
             let r = b.emit(Ty::Bool, Op::Call { callee: RUN_ONE.to_string(), args: vec![] });
@@ -402,7 +458,7 @@ pub(super) fn finish(ok: &mut Vec<(crate::kir::Func, std::collections::BTreeSet<
             let (dead, _) = b.block(&[]);
             b.br_if(r, yes, dead);
             b.at(dead);
-            b.emit(Ty::Unit, Op::Panic { msg: crate::interp::DEADLOCK_RECV.to_string(), arg: None });
+            b.emit(Ty::Unit, Op::Panic { msg: (if name == CWAITS { crate::interp::DEADLOCK_SEND } else { crate::interp::DEADLOCK_RECV }).to_string(), arg: None });
             b.term(Term::Unreachable);
             b.at(yes);
         }
@@ -415,6 +471,63 @@ pub(super) fn finish(ok: &mut Vec<(crate::kir::Func, std::collections::BTreeSet<
     }
     if want_grow {
         let mut b = Fb::new(&[Ty::Ptr, Ty::Usize]);
+        // 先頭 (`head`) がバッファの半分以上なら、伸ばさずに残りを先頭へ詰める (有界のキューのメモリを抑える)。
+        let head = b.load(Ty::Usize, 0, HEAD as i128);
+        let cap0 = b.load(Ty::Usize, 0, CAPF as i128);
+        let two0 = b.c(Ty::Usize, 2);
+        let h2 = b.mul(head, two0);
+        let big = b.cmp(Cc::Ge, h2, cap0);
+        let zero = b.c(Ty::Usize, 0);
+        let nz = b.cmp(Cc::Gt, head, zero);
+        let want = b.emit(Ty::Bool, Op::Bool(crate::kir::BoolOp::And, big, nz));
+        let (pack, _) = b.block(&[]);
+        let (gr, _) = b.block(&[]);
+        b.br_if(want, pack, gr);
+        b.at(pack);
+        let buf0 = b.load(Ty::Ptr, 0, BUF as i128);
+        let len0 = b.load(Ty::Usize, 0, LEN as i128);
+        let (lp_, lpp) = b.block(&[Ty::Usize]);
+        let (body, _) = b.block(&[]);
+        let (done, _) = b.block(&[]);
+        b.goto(lp_, vec![zero]);
+        b.at(lp_);
+        let i = lpp[0];
+        let n = b.sub(len0, head);
+        let more = b.cmp(Cc::Lt, i, n);
+        b.br_if(more, body, done);
+        b.at(body);
+        let stride_ = 1 as VId;
+        let io = b.mul(i, stride_);
+        let si = b.add(i, head);
+        let so = b.mul(si, stride_);
+        let eight = b.c(Ty::Usize, 8);
+        let (wl, wlp) = b.block(&[Ty::Usize]);
+        let (wb, _) = b.block(&[]);
+        let (we, _) = b.block(&[]);
+        b.goto(wl, vec![zero]);
+        b.at(wl);
+        let w = wlp[0];
+        let wm = b.cmp(Cc::Lt, w, stride_);
+        b.br_if(wm, wb, we);
+        b.at(wb);
+        let so2 = b.add(so, w);
+        let sp = b.padd(buf0, so2);
+        let x = b.load(Ty::Usize, sp, 0);
+        let io2 = b.add(io, w);
+        let dp = b.padd(buf0, io2);
+        b.store(Ty::Usize, dp, 0, x);
+        let w1 = b.add(w, eight);
+        b.goto(wl, vec![w1]);
+        b.at(we);
+        let one = b.c(Ty::Usize, 1);
+        let i1 = b.add(i, one);
+        b.goto(lp_, vec![i1]);
+        b.at(done);
+        b.store(Ty::Usize, 0, HEAD as i128, zero);
+        b.store(Ty::Usize, 0, LEN as i128, n);
+        let u0 = b.emit(Ty::Unit, Op::Const(0));
+        b.term(Term::Ret(u0));
+        b.at(gr);
         let cap = b.load(Ty::Usize, 0, CAPF as i128);
         let two = b.c(Ty::Usize, 2);
         let c2 = b.mul(cap, two);
