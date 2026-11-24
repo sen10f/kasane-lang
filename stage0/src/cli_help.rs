@@ -18,6 +18,7 @@ pub const HELP: &[(&str, &str, &str, &str)] = &[
     ("sig", "ksn sig <FQN>", "Print the signature of a definition.", "ksn sig demo.main"),
     ("doc", "ksn doc [--std] [--private]", "Print the package documentation.", "ksn doc --std"),
     ("index", "ksn index [--std]", "List the definitions of the package.", "ksn index"),
+    ("unsafe", "ksn unsafe [--json]", "List [unsafe] modules, manual Send/Sync impls, unsafe blocks, externs and raw-pointer types of the package and its dependencies.", "ksn unsafe --json"),
     ("refs", "ksn refs <FQN>", "List the uses of a definition.", "ksn refs demo.main"),
     ("rename", "ksn rename [--dry-run] <old> <new>", "Rename a definition everywhere.", "ksn rename --dry-run demo.a demo.b"),
     ("bindgen", "ksn bindgen <file> | ksn bindgen --c <header.h> [--prefix NAME] [--link LIB] -o <out.ksnh>", "Generate FFI bindings.", "ksn bindgen --c x.h -o x.ksnh"),

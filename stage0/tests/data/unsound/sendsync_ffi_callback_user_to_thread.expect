@@ -1,0 +1,3 @@
+expect: E2040
+unsafe: t
+note: H6 (設計_SendSyncとunsafe.md 第 3 波)。許可モジュールの中でも、生ポインタを持つ値は spawn に渡せない

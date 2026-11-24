@@ -1,0 +1,32 @@
+type t.H
+    p: *mut u8
+end t.H
+
+extern t.getbuf() -> *mut u8 link "getbuf"
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
+    let h = t.mk()
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> bool capture [move h] {
+            unsafe "x" "y" {
+                core.ptr.is_null(h.p)
+            }
+        },
+    )
+    match spawned {
+        Ok(handle) => {
+            let _h = handle.join()
+        }
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    Ok(())
+end t.main
+
+fn t.mk() -> t.H uses [] panics never
+    unsafe "ffi" "returns a pointer" {
+        t.H {
+            p: t.getbuf()
+        }
+    }
+end t.mk
