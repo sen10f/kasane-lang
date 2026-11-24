@@ -286,3 +286,32 @@ int main(void) {
     let _ = std::fs::remove_dir_all(&d);
     assert_eq!(text(&o.stdout), "3 2\n0\n", "{}", text(&o.stderr));
 }
+
+// ------------------------------------------------------------ sec-async-mt: 古い Task・入れ子・spawn_local の取り違え (木走査とネイティブで同じ panic)
+
+fn both_panic(name: &str, src: &str, msg: &str) {
+    let t = Tmp::new_strict(&format!("{}_i", name), src);
+    let o = run(&["run"], &t.0);
+    let out = text(&o.stdout) + &text(&o.stderr);
+    assert_eq!(o.status.code(), Some(101), "{}", out);
+    assert!(out.contains(msg), "want {}: {}", msg, out);
+    if let Some((out, rc)) = run_native(&format!("{}_n", name), src) {
+        assert_eq!(rc, Some(101), "{}", out);
+        assert!(out.contains(msg), "want {}: {}", msg, out);
+    }
+}
+
+#[test]
+fn stale_task_join_across_block_on_threads_panics_everywhere() {
+    both_panic("net_async_mt_stale", include_str!("data/net_async_mt_stale_task.ksnl"), "generation mismatch");
+}
+
+#[test]
+fn nested_block_on_threads_reports_already_running_everywhere() {
+    both_panic("net_async_mt_nested", include_str!("data/net_async_mt_nested.ksnl"), "already running");
+}
+
+#[test]
+fn spawn_local_inside_block_on_threads_panics_everywhere() {
+    both_panic("net_async_mt_spl", include_str!("data/net_async_mt_spawn_local.ksnl"), "spawn_local: not allowed inside std.task.block_on_threads");
+}

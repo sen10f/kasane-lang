@@ -42,7 +42,7 @@ pub const IO: &str = "ksn.task.io";
 pub const WRAP_PEND: &str = "ksn.wrap.pend";
 /// 実行器の入口 (`block_on` の本体) と、生成 (`spawn_local`) と、後始末。
 pub const RUN: &str = "ksn.task.run";
-pub const SPAWN: &str = "ksn.task.spawn";
+pub const SPAWN: &str = "ksn.task.spawn_local";
 /// `std.task.spawn` (`Send` の要る方)。複数スレッドの実行器が動いているときは全体の注入列へ積み、そうでなければ `SPAWN` と同じ。
 pub const SPAWN_ANY: &str = "ksn.task.spawn_any";
 pub const MT_BEGIN: &str = "ksn.task.mt_begin";
