@@ -130,7 +130,7 @@ fn rt_sync_contended_relock_is_a_deadlock_101_native() {
     }
 }
 
-/// 別のスレッドが生きて (眠り続けて) いても、同じスレッドの再ロックはすぐ deadlock (101)。木走査・ネイティブ。60 秒眠るスレッドがいるので、
+/// 別のスレッドが生きて (眠り続けて) いても、同じスレッドの再ロックはすぐ deadlock (101)。木走査・KIR・ネイティブ。60 秒眠るスレッドがいるので、
 /// 全員待ちの検出に頼る実装は 10 秒の制限で落ちる。
 #[test]
 fn rt_sync_relock_with_busy_second_thread_is_a_deadlock_101_everywhere() {
@@ -148,6 +148,9 @@ fn rt_sync_relock_with_busy_second_thread_is_a_deadlock_101_everywhere() {
     let tw = timed(&["run"]);
     assert_eq!(tw.status.code(), Some(101), "木走査: {}{}", text(&tw.stdout), text(&tw.stderr));
     assert!(text(&tw.stderr).contains(msg), "{}", text(&tw.stderr));
+    let k = timed(&["kir", "t.go", "--run"]);
+    assert_eq!(k.status.code(), Some(101), "KIR: {}{}", text(&k.stdout), text(&k.stderr));
+    assert!(text(&k.stderr).contains(msg), "{}", text(&k.stderr));
     for release in [false, true] {
         let cache = scratch::Scratch::at(format!("ksn_cache_rt_sync_relock3_{}_{}", std::process::id(), release));
         let mut c = Command::new(exe());
