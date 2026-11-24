@@ -244,20 +244,18 @@ fn alloc.collections.HashMap.find_hashed[K: core.cmp.Eq + core.hash.Hash, V, A: 
         match self.cells.get(i) {
             Some(cell) => match cell {
                 alloc.collections.HashCell.Empty => return None
-                alloc.collections.HashCell.Index(p, ih) => {
-                    if *ih == h {
-                        if let Some(found) = self.cells.get(*p) {
-                            match found {
-                                alloc.collections.HashCell.Entry(eh, ek, _ev) => {
-                                    let same = ek.eq(key)
-                                    if *eh == h && same {
-                                        return Some(*p)
-                                    }
+                alloc.collections.HashCell.Index(p, ih) => if *ih == h {
+                    if let Some(found) = self.cells.get(*p) {
+                        match found {
+                            alloc.collections.HashCell.Entry(eh, ek, _ev) => {
+                                let same = ek.eq(key)
+                                if *eh == h && same {
+                                    return Some(*p)
                                 }
-                                alloc.collections.HashCell.Empty => {
-                                }
-                                alloc.collections.HashCell.Index(_q, _qh) => {
-                                }
+                            }
+                            alloc.collections.HashCell.Empty => {
+                            }
+                            alloc.collections.HashCell.Index(_q, _qh) => {
                             }
                         }
                     }
@@ -283,20 +281,18 @@ fn alloc.collections.HashMap.find_str[V, A: alloc.alloc.Allocator, B: alloc.allo
         match self.cells.get(i) {
             Some(cell) => match cell {
                 alloc.collections.HashCell.Empty => return None
-                alloc.collections.HashCell.Index(p, ih) => {
-                    if *ih == h {
-                        if let Some(found) = self.cells.get(*p) {
-                            match found {
-                                alloc.collections.HashCell.Entry(eh, ek, _ev) => {
-                                    let same = key.eq(ek.as_str())
-                                    if *eh == h && same {
-                                        return Some(*p)
-                                    }
+                alloc.collections.HashCell.Index(p, ih) => if *ih == h {
+                    if let Some(found) = self.cells.get(*p) {
+                        match found {
+                            alloc.collections.HashCell.Entry(eh, ek, _ev) => {
+                                let same = key.eq(ek.as_str())
+                                if *eh == h && same {
+                                    return Some(*p)
                                 }
-                                alloc.collections.HashCell.Empty => {
-                                }
-                                alloc.collections.HashCell.Index(_q, _qh) => {
-                                }
+                            }
+                            alloc.collections.HashCell.Empty => {
+                            }
+                            alloc.collections.HashCell.Index(_q, _qh) => {
                             }
                         }
                     }
