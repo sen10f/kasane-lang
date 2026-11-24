@@ -2529,10 +2529,15 @@ impl<'a> Checker<'a> {
                         return;
                     }
                     // 5.5: spawn に渡すクロージャは 'static。局所束縛への参照キャプチャは不可。
-                    if self.p.expand(&segs, &self.def(di).file).join(".") == "std.thread.spawn"
-                        || self.p.expand(&segs, &self.def(di).file).join(".") == "std.thread.spawn_deep"
-                    {
-                        if let Some(cl) = items(&f[1]).get(1) {
+                    let spawn_fq = self.p.expand(&segs, &self.def(di).file).join(".");
+                    let spawn_arg = match spawn_fq.as_str() {
+                        "std.thread.spawn" | "std.thread.spawn_deep" => Some(1),
+                        "std.task.spawn" => Some(0),
+                        "std.task.block_on_threads" => Some(2),
+                        _ => None,
+                    };
+                    if let Some(spawn_arg) = spawn_arg {
+                        if let Some(cl) = items(&f[1]).get(spawn_arg) {
                             if nname(cl) == "Closure" {
                                 // 5.5: spawn の結果型 T も `Send` でなければならない。
                                 let user_types: HashSet<String> = self
@@ -5221,7 +5226,7 @@ impl<'a> Checker<'a> {
             return false;
         }
         let args = items(&nf(init)[1]);
-        let is_spawn = matches!(self.callee_target(&nf(init)[0], env), Some((n, _)) if n == "std.task.spawn_local");
+        let is_spawn = matches!(self.callee_target(&nf(init)[0], env), Some((n, _)) if n == "std.task.spawn_local" || n == "std.task.spawn");
         if !is_spawn || args.len() != 1 || nname(&args[0]) != "Closure" {
             return false;
         }

@@ -92,14 +92,16 @@ impl Cfg {
 
 pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag> {
     let mut out = vec![];
+    let mut frames: Vec<(usize, Vec<(usize, String, bool)>)> = vec![];
     // susp_lines は (定義, Pack した位置) なので行だけにほどく。
     let susp: std::collections::HashSet<(usize, usize)> =
         tk.susp_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
     for &di in user {
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
+        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
         for q in &b.params {
             w.scopes[0].insert(q.name.clone(), (0, q.ty.clone()));
+            w.vtys.insert(key(&q.name, 0), q.ty.clone());
         }
         w.expr(&b.body);
         let mut cfg = std::mem::replace(&mut w.cfg, Cfg::new());
@@ -119,8 +121,52 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
                 out.push(Diag { file: d.file.clone(), code: "E3050".into(), fqn: d.name.clone(), line, col: 0, msg });
             }
         }
+        if !w.frame_bad.is_empty() {
+            frames.push((di, w.frame_bad));
+        }
     }
+    frame_send(p, tk, &frames, &mut out);
     out
+}
+
+/// 枠の `Send` (E2074、仕様 5.6): `std.task.spawn` / `block_on_threads` のタスクから呼ばれうる関数 (呼び出しグラフの推移閉包) の、
+/// 中断点をまたいで生きる局所は `core.marker.Send` でなければならない (タスクはスレッドを移る)。呼び出し先が決まらない
+/// 局所の型は `Send` と言えないので誤り (保守側)。タスクを作る関数自身の閉包の本体も対象 (閉包ごとの判別はしない)。
+fn frame_send(p: &Program, tk: &TypeCk, frames: &[(usize, Vec<(usize, String, bool)>)], out: &mut Vec<Diag>) {
+    if tk.task_roots.is_empty() {
+        return;
+    }
+    let mut reach: BTreeSet<String> = BTreeSet::new();
+    let mut stack: Vec<String> = tk.task_roots.iter().map(|(_, n)| n.clone()).collect();
+    while let Some(n) = stack.pop() {
+        if let Some(es) = tk.edges.get(&n) {
+            for e in es {
+                if reach.insert(e.clone()) {
+                    stack.push(e.clone());
+                }
+            }
+        }
+    }
+    for (di, bad) in frames {
+        let d = &p.defs[*di];
+        let has_root = tk.task_roots.iter().any(|(r, _)| r == di);
+        let mut seen = BTreeSet::new();
+        for (line, var, in_closure) in bad {
+            if !(reach.contains(&d.name) || (*in_closure && has_root)) {
+                continue;
+            }
+            if seen.insert((*line, var.clone())) {
+                out.push(Diag {
+                    file: d.file.clone(),
+                    code: "E2074".into(),
+                    fqn: d.name.clone(),
+                    line: *line,
+                    col: 0,
+                    msg: format!("`{}` lives across a suspension point in a task that may move between threads (std.task.spawn / block_on_threads), but its type is not known to be core.marker.Send", var),
+                });
+            }
+        }
+    }
 }
 
 // ------------------------------------------------------------ 型だけを見る判定
@@ -255,6 +301,12 @@ struct Walker<'a> {
     diags: Vec<(usize, String)>,
     /// 中断点をまたぐ借用 (E3050)。コードが違うので分けて出す。
     susp_diags: Vec<(usize, String)>,
+    /// 変数の鍵 → 型 (枠の `Send` の検査 (E2074) が使う)。
+    vtys: HashMap<String, Ty>,
+    /// 中断点をまたいで生きていて `Send` でない局所 (行, 名前, 閉包の中か)。
+    frame_bad: Vec<(usize, String, bool)>,
+    /// 今、閉包の本体を解析している深さ。
+    cdepth: usize,
     /// 配列リテラルで作った変数 → 要素ごとの、その要素だけが持つ貸し出し (`[&mut x, &mut z]` なら `[[x], [z]]`)。
     slots: HashMap<String, Vec<Vec<usize>>>,
     /// 要素の持ち主が崩れ得る変数 (定数添字の `replace` 以外の可変借用・代入・流入があったもの)。`Kill` を捨てる。
@@ -575,6 +627,7 @@ impl<'a> Walker<'a> {
                 let ty = info.bind.as_ref().map(|b| b.1.clone()).unwrap_or_else(|| info.ty.clone());
                 self.scopes.last_mut().unwrap().insert(n.clone(), (q.id, ty.clone()));
                 let k = key(n, q.id);
+                self.vtys.insert(k.clone(), ty.clone());
                 let s = if holds_field(self.p, &ty) { srcs.to_vec() } else { vec![] };
                 self.bind(k, s, true);
             } else if let Some(n) = &q.name {
@@ -684,7 +737,9 @@ impl<'a> Walker<'a> {
         }
         self.scopes.pop();
         let inner = std::mem::replace(&mut self.cfg, outer);
+        self.cdepth += 1;
         self.analyze(inner);
+        self.cdepth -= 1;
         srcs
     }
 
@@ -1365,6 +1420,23 @@ impl<'a> Walker<'a> {
             }
             for (k, ev) in evs.iter().enumerate() {
                 if let Ev::Suspend { line } = ev {
+                    // 枠の `Send` (E2074): 中断点をまたいで生きる局所が `Send` でないものを覚える。
+                    for v in live_after[k].iter() {
+                        if v.starts_with('$') {
+                            continue;
+                        }
+                        if let Some(t) = self.vtys.get(v) {
+                            if matches!(t, Ty::Unknown) {
+                                continue;
+                            }
+                            self.tk.marker_def.set(Some(self.di));
+                            let m = self.tk.auto_marker(t, false, &mut Vec::new());
+                            self.tk.marker_def.set(None);
+                            if m != Some(true) {
+                                self.frame_bad.push((*line, show_var(v), self.cdepth > 0));
+                            }
+                        }
+                    }
                     // 中断点で生きている (この後使われる) 持ち主の貸し出しは E3050 (5.6)。
                     let mut holders: Vec<(&String, &BTreeSet<usize>)> = st.iter().collect();
                     holders.sort();

@@ -765,6 +765,10 @@ pub struct TypeCk<'a> {
     closure_static: HashMap<String, HashSet<String>>,
     /// `std.thread.spawn` に渡したクロージャ (節, 行)。関数の推論が終わってから取り込みの `Send` を見る。
     spawn_closures: Vec<(String, usize)>,
+    /// `std.task.spawn` / `block_on_threads` に渡したクロージャ (定義, 節)。枠の `Send` (E2074) の根。
+    pub task_roots: Vec<(usize, String)>,
+    /// 枠の `Send` を決めるときの定義 (型パラメータの境界を読む定義)。`None` なら今の定義。
+    pub marker_def: std::cell::Cell<Option<usize>>,
     /// 呼び出しの実引数ごとの「`'static` の値と式から分かる」印 (`call` が `call_def` へ渡す)。
     arg_static: Vec<bool>,
     /// `'static` の境界を持つ位置へ渡した値: (型, 出どころが `'static`, 行, 説明)。関数の終わりに型が決まってから見る。
@@ -840,7 +844,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, wants_tmp: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, wants_tmp: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], task_roots: vec![], marker_def: std::cell::Cell::new(None), arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1271,7 +1275,7 @@ impl<'a> TypeCk<'a> {
     /// `None` は決まらない。`&T` は `T: Sync` のとき Send、`&mut T` は `T: Send` のとき Send。生ポインタは両方とも満たさない。
     /// 手動の impl は境界 (`T: core.marker.Send` など) を実引数に当てて見る。無いものは型の定義から自動導出する
     /// (循環は成立とみなす)。型パラメータは、その境界に当該マーカーがあるときだけ満たす。
-    fn auto_marker(&self, t: &Ty, sync: bool, seen: &mut Vec<String>) -> Option<bool> {
+    pub fn auto_marker(&self, t: &Ty, sync: bool, seen: &mut Vec<String>) -> Option<bool> {
         let marker = if sync { "core.marker.Sync" } else { "core.marker.Send" };
         match self.deep(t) {
             Ty::Never | Ty::Unit | Ty::Prim(_) | Ty::Const(_) => Some(true),
@@ -1280,7 +1284,7 @@ impl<'a> TypeCk<'a> {
             Ty::Tuple(xs) => xs.iter().fold(Some(true), |r, x| and_marker(r, self.auto_marker(x, sync, seen))),
             Ty::Array(x, _) | Ty::Slice(x) => self.auto_marker(&x, sync, seen),
             Ty::Param(p) => {
-                let bounded = self.def().generics.iter().any(|g| {
+                let bounded = self.p.defs[self.marker_def.get().unwrap_or(self.cur)].generics.iter().any(|g| {
                     g.0 == "type" && g.1 == p && items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]) == marker))
                 });
                 if bounded { Some(true) } else { None }
@@ -2140,7 +2144,7 @@ impl<'a> TypeCk<'a> {
     }
 
     /// 中まで解決する。
-    fn deep(&self, t: &Ty) -> Ty {
+    pub fn deep(&self, t: &Ty) -> Ty {
         match self.resolve(t) {
             Ty::Named(n, a, rs) => Ty::Named(n, a.iter().map(|x| self.deep(x)).collect(), rs),
             Ty::Ref(m, x, rg) => Ty::Ref(m, Box::new(self.deep(&x)), rg),
@@ -5496,6 +5500,18 @@ impl<'a> TypeCk<'a> {
         if d.name == "std.thread.spawn" || d.name == "std.thread.spawn_deep" {
             if let Some(Ty::Closure { id: Some(node), .. }) = argt.get(1).map(|a| self.resolve(a)) {
                 self.spawn_closures.push((node, line));
+            }
+        }
+        // 複数スレッドの実行器 (5.6): タスクの閉包も同じ `Send` の検査を受け、枠の `Send` (E2074) の根になる。
+        let task_arg = match d.name.as_str() {
+            "std.task.spawn" => Some(0),
+            "std.task.block_on_threads" => Some(2),
+            _ => None,
+        };
+        if let Some(k) = task_arg {
+            if let Some(Ty::Closure { id: Some(node), .. }) = argt.get(k).map(|a| self.resolve(a)) {
+                self.spawn_closures.push((node.clone(), line));
+                self.task_roots.push((self.cur, node));
             }
         }
         self.add_edge(d.name.clone());

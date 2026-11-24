@@ -27,7 +27,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.collections.VecDeque.new",
     "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.system_nanos", "std.time.Duration.from_millis", "std.thread.spawn", "std.thread.spawn_deep",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new", "std.sync.RwLock.new", "core.sync.AtomicBool.new", "core.sync.AtomicU64.new", "core.sync.AtomicUsize.new",
-    "std.task.block_on", "std.task.spawn_local", "std.task.yield_now", "std.task.await_js", "std.task.wait_io",
+    "std.task.block_on", "std.task.block_on_threads", "std.task.spawn", "std.task.spawn_local", "std.task.yield_now", "std.task.await_js", "std.task.wait_io",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.rand.fill_secure", "std.fs.exists", "std.fs.remove_file", "std.fs.open", "std.fs.open_dir_raw", "std.fs.Dir.open", "std.fs.open_beneath_raw", "std.fs.stat_fd_raw",
     "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.net.UdpSocket.bind", "std.net.resolve_raw", "std.process.Command.new",
     "std.net.connect_timeout",
@@ -831,7 +831,9 @@ impl Interp {
             "std.thread.yield_now" => Ok(Val::Unit),
             // 協調実行器 (task.rs、仕様 5.6)。タスクは id で持ち、`std.task.Task` の値は `id` の欄だけを持つ。
             "std.task.block_on" => self.task_block_on(dr(&a0)),
-            "std.task.spawn_local" => {
+            // 複数スレッドの実行器 (5.6 第 2 段) の木走査の意味: アロケータと `n` を無視して、決定的な協調実行 (`block_on` と同じ)。
+            "std.task.block_on_threads" => self.task_block_on(dr(&args[2])),
+            "std.task.spawn" | "std.task.spawn_local" => {
                 let (id, gen) = self.task_spawn(snapshot_closure(&dr(&a0)))?;
                 Ok(task_value(id, gen))
             }
