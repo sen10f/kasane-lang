@@ -11,7 +11,7 @@ type t.W[X: t.Tr<E, P>, E: uses, P: panics]
 end t.W
 
 impl t.Tr<[io.console], may> for t.A
-fn t.A.go(self: &t.A) -> () uses [io.console] panics may impls t.Tr<[io.console], may>
+fn t.A.go(self: &t.A) -> () uses [] panics never impls t.Tr<[io.console], may>
     core.panic.panic("boom")
 end t.A.go
 
@@ -22,13 +22,7 @@ fn t.go1[X: t.Tr<E, P>, E: uses, P: panics](x: &X) -> () uses [E] panics P
     c()
 end t.go1
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let w = t.W {
-        x: t.A {
-            n: 1u32
-        }
-    }
-    t.run(&w)
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 

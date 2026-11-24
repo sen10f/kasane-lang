@@ -10,14 +10,10 @@ fn t.H.go[F: core.ops.Fn<(), (), E, P>, E: uses, P: panics](self: &t.H<F, E, P>)
     self.f.call(())
 end t.H.go
 
-fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let h = t.H {
-        f: t.say
-    }
-    h.go()
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-fn t.say() -> () uses [io.console] panics may
+fn t.say() -> () uses [io.console] panics never
     core.mem.drop(std.io.print_line("EFFECT"))
 end t.say
