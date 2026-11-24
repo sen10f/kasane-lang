@@ -1,0 +1,22 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let mut slot: Option<Option<&str>> = None
+    if true {
+        let s = t.mk("hello, this is a long heap string")
+        let f = fn(sl: &mut Option<Option<&str>>) -> () capture [&s] {
+            *sl = Some(Some(s.as_str()))
+        }
+        f(&mut slot)
+    }
+    let other = t.mk("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+    if let Some(Some(r)) = slot {
+        std.io.print_line(r)?
+    }
+    core.mem.drop(other)
+    Ok(())
+end t.main
+
+fn t.mk(text: &str) -> std.string.String uses [alloc] panics never
+    let mut s = std.string.String.new()
+    core.mem.drop(s.push_str(text))
+    s
+end t.mk
