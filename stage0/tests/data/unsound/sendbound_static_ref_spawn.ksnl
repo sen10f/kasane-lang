@@ -1,0 +1,23 @@
+static t.G: t.Shared = t.mk()
+
+type t.Shared
+    p: *const u8
+end t.Shared
+
+fn t.main() -> i32 uses [alloc, thread] panics may
+    let r = &t.G
+    let h = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move r] {
+            core.mem.drop(r.p)
+        },
+    ).unwrap()
+    let _r = h.join()
+    0i32
+end t.main
+
+fn t.mk() -> t.Shared const uses [] panics never
+    t.Shared {
+        p: core.ptr.as_const(core.ptr.null_mut())
+    }
+end t.mk

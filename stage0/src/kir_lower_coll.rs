@@ -3455,7 +3455,7 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
     let depth = lw.scopes.len() - 1;
     if let Some(n) = &name {
         match c.elem {
-            None => lw.bind(n, hp[0], c.ity),
+            None => lw.bind_let(n, hp[0], c.ity),
             Some((base, ety)) if owns_heap(lw, ety) => {
                 let addr = elem_addr_from_base(lw, base, hp[0], ety)?;
                 if c.take {
@@ -3484,7 +3484,7 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
                     lw.bind(n, r, rt);
                 } else {
                     let v = load_elem(lw, addr, ety);
-                    lw.bind(n, v, ety);
+                    lw.bind_let(n, v, ety);
                 }
                 if c.by_ref && !c.by_mut {
                     let s = lw.lookup(n).expect("束縛した名前");

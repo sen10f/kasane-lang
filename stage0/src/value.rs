@@ -196,8 +196,11 @@ pub struct ClosureV {
 }
 
 /// チャネルの状態 (インタプリタ)。送信側・受信側は `clone` で増える (端の参照数を数える)。
-/// 端の数が 0 になった側は閉じたとみなす。容量は無視する (満杯で待つことはしない。結果が実行順に依存しないプログラムでは観測できない)。
+/// 端の数が 0 になった側は閉じたとみなす。`cap` は容量 (0 は 1 として扱う)。満杯の `send` は受け取りか受信側の全滅まで待つ。
 pub struct ChanState {
+    pub cap: usize,
+    /// いま `recv` で止まって (入れ子で保留のスレッドを走らせて) いる枠の数。満杯の `send` が容量を超えて続けてよい根拠。
+    pub rwait: Cell<usize>,
     pub q: RefCell<VecDeque<Val>>,
     pub senders: Cell<usize>,
     pub receivers: Cell<usize>,

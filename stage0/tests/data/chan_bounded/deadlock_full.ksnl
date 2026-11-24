@@ -1,0 +1,15 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 1usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    core.mem.drop(tx.send(1u32))
+    core.mem.drop(tx.send(2u32))
+    core.mem.drop(rx)
+    Ok(())
+end t.main
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
+    std.io.Error {
+        kind: std.io.ErrorKind.OutOfMemory
+        code: 0i32
+    }
+end t.oom

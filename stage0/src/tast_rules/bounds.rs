@@ -12,6 +12,7 @@ struct B<'a> {
     tk: &'a crate::types::TypeCk<'a>,
     p: &'a Program,
     caller: &'a Def,
+    caller_idx: usize,
 }
 
 impl<'a> B<'a> {
@@ -104,6 +105,10 @@ impl<'a> B<'a> {
                     continue;
                 }
                 if tr == "core.marker.Send" || tr == "core.marker.Sync" {
+                    // 5.5: 実引数が Send / Sync と言い切れなければ (決まらないものも、fail-closed) 誤り。
+                    if self.tk.marker_in(self.caller_idx, t0, tr == "core.marker.Sync") != Some(true) {
+                        out.push((format!("the trait bound `{}: {}` of {} is not satisfied by {} (5.5)", g.1, tr, callee.name, t.show()), line));
+                    }
                     continue;
                 }
                 let known = self.p.types.get(&tr).map_or(false, |&i| self.p.defs[i].kw == "trait") || DERIVE_TRAITS.iter().any(|(_, v)| *v == tr);
@@ -151,12 +156,32 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &crate::types::TypeCk
             continue;
         }
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let ck = B { tk, p, caller: d };
+        let ck = B { tk, p, caller: d, caller_idx: di };
         let mut found: Vec<(String, usize)> = vec![];
         super::impl_sig::walk(&b.body, &mut |e| {
             if let (TKind::Call { .. } | TKind::MCall { .. }, Some(Callee::Def(ci))) = (&e.kind, &e.res) {
                 if !e.targs.is_empty() {
                     ck.call(&p.defs[*ci], &e.targs, e.line, &mut found);
+                }
+            }
+        });
+        // 構造体リテラルの型引数が、型宣言の `Send` / `Sync` の境界 (`type S[T: core.marker.Send]`) を満たすこと (5.5)。
+        super::impl_sig::walk(&b.body, &mut |e| {
+            let TKind::StructLit { .. } = &e.kind else { return };
+            let Ty::Named(n, args, _) = e.ty.strip() else { return };
+            let Some(&ti) = p.types.get(n) else { return };
+            let td = &p.defs[ti];
+            let gens: Vec<&(String, String, V)> = td.generics.iter().filter(|g| g.0 == "type" || g.0 == "const").collect();
+            for (g, a) in gens.iter().zip(args) {
+                if g.0 != "type" {
+                    continue;
+                }
+                for bd in items(&g.2) {
+                    let V::L(bx) = bd else { continue };
+                    let tr = st(&bx[0]);
+                    if (tr == "core.marker.Send" || tr == "core.marker.Sync") && tk.marker_in(di, a, tr == "core.marker.Sync") != Some(true) {
+                        found.push((format!("the trait bound `{}: {}` of {} is not satisfied by {} (5.5)", g.1, tr, td.name, a.show()), e.line));
+                    }
                 }
             }
         });

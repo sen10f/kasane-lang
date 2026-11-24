@@ -1,0 +1,9 @@
+type t.W[T]
+    v: T
+end t.W
+
+impl[T] core.marker.Send for t.W<T>
+
+fn t.main() -> i32 uses [] panics never
+    0i32
+end t.main
