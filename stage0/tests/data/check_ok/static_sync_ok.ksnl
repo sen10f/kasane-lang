@@ -1,0 +1,21 @@
+static t.HITS: core.sync.AtomicU64 = core.sync.AtomicU64.new(0u64) pub
+
+static t.LIMIT: u32 = 10u32
+
+static t.MAP: std.sync.Mutex<std.collections.HashMap<std.string.String, u32>> = std.sync.Mutex.new(std.collections.HashMap.new()) pub
+
+static t.PAIR: (u32, Option<u8>) = (1u32, None) pub
+
+static t.REG: std.sync.Mutex<t.Reg> = std.sync.Mutex.new(t.empty()) pub
+
+type t.Reg pub
+    names: std.vec.Vec<std.string.String>
+    count: u32
+end t.Reg
+
+fn t.empty() -> t.Reg const uses [] panics never
+    t.Reg {
+        names: std.vec.Vec.new()
+        count: 0u32
+    }
+end t.empty

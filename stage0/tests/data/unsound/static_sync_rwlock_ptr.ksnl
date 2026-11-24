@@ -1,0 +1,1 @@
+static t.S: std.sync.RwLock<*mut u32> = std.sync.RwLock.new(core.ptr.null_mut()) pub

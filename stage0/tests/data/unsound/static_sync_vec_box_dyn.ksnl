@@ -1,0 +1,4 @@
+trait t.Tr pub
+end t.Tr
+
+static t.S: std.vec.Vec<std.boxed.Box<dyn t.Tr<[], never>>> = std.vec.Vec.new() pub

@@ -1784,7 +1784,8 @@ impl<'a> W<'a> {
                                 recv_arg = Some(Arg { ty: Ty::Unknown, full, inner });
                             }
                         }
-                        _ => {}
+                        // 候補が複数のメソッド (`r.len()` など) も、受け手の局所の使用 (尽きた借用を持てば E3010)。
+                        _ => self.use_var(&rn, e.line),
                     }
                 }
             }

@@ -1,0 +1,15 @@
+type t.P derive [Clone, Copy] pub
+    p: *mut u32
+end t.P
+
+type t.Slot pub
+    cur: Option<t.P>
+end t.Slot
+
+static t.S: std.sync.Mutex<t.Slot> = std.sync.Mutex.new(t.empty()) pub
+
+fn t.empty() -> t.Slot const uses [] panics never
+    t.Slot {
+        cur: None
+    }
+end t.empty

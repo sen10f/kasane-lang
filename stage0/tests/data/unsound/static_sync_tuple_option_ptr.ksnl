@@ -1,0 +1,1 @@
+static t.S: (u32, Option<*mut u32>) = (1u32, None) pub

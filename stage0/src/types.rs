@@ -948,6 +948,17 @@ impl<'a> TypeCk<'a> {
     }
 
     pub fn check_def(&mut self, di: usize) {
+        if self.p.defs[di].kw == "static" {
+            // 3.1: `static` の型は `core.marker.Sync` (`spawn` の取り込みと同じ自動導出。型引数の中も見る)。
+            self.cur = di;
+            self.closure_caps.clear();
+            let d = &self.p.defs[di];
+            let t = from_v(&d.ret, &d.gnames());
+            let name = d.name.clone();
+            if self.auto_marker(&t, true, &mut Vec::new()) != Some(true) {
+                self.diag("E2031", format!("static {} must have a core.marker.Sync type (3.1)", name), 0);
+            }
+        }
         let d = &self.p.defs[di];
         // `const` / `static` は、初期化式の型を宣言の型と照らす (本体の代わりに初期化式を検査する)。
         let Some(body) = d.body.as_ref().or(if matches!(d.kw.as_str(), "const" | "static") { d.init.as_ref() } else { None }) else { return };
@@ -1324,7 +1335,7 @@ impl<'a> TypeCk<'a> {
     fn auto_named(&self, n: &str, args: &[Ty], sync: bool, seen: &mut Vec<String>) -> Option<bool> {
         let marker = if sync { "core.marker.Sync" } else { "core.marker.Send" };
         // `alloc.boxed.Box<T, A>` は `T` と `A` に従う (`T` が `dyn Tr` のときは `Tr` の `requires`、`Dyn` の枝)。
-        if n == "alloc.boxed.Box" {
+        if n == "alloc.boxed.Box" || n == "Option" || n == "Result" {
             return args.iter().fold(Some(true), |r, x| and_marker(r, self.auto_marker(x, sync, seen)));
         }
         // 手動の impl (`impl[T: Send, A: Send] Send for Vec<T, A>` など): 境界に書かれたマーカーだけを実引数に当てる。

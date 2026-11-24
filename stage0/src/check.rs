@@ -1813,9 +1813,6 @@ impl<'a> Checker<'a> {
             let t = d.ret.clone();
             let gn = d.gnames();
             let name = d.name.clone();
-            if self.sync_v(&t, &gn, &user_types, &mut HashSet::new()) == Some(false) {
-                self.diag("E2031", format!("static {} must have a core.marker.Sync type (3.1)", name), i, 0);
-            }
             if self.linear_v(&t, &gn, &user_types, &mut HashSet::new()) == Some(true) {
                 self.diag("E2031", format!("static {} must not have a linear type (3.1)", name), i, 0);
             }
