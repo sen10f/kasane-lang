@@ -12,21 +12,24 @@ Kasane は「LLM が書き、機械が検証する、契約重視のシステム
 
 ## 3. 導入（実際に確認した手順）
 
-配布用のビルド済みバイナリはまだ公開されていません（README「導入」）。ベータでは、あらかじめビルド済みの `ksn` を使います。
+配布用の tarball（`ksn-<版>-x86_64-linux-gnu.tar.gz`）を GitHub の Release から取得して展開します。Arch Linux と Debian 12 以降（glibc 2.36 以上）を対象にしています。
 
 ```bash
 # ksn を PATH に置く（例）
-install -m 0755 /home/kasane/kasane-verify/bin/current/ksn "$HOME/.local/bin/ksn"
+tar xzf ksn-<版>-x86_64-linux-gnu.tar.gz
+cd ksn-<版>-x86_64-linux-gnu
+# ksn と stdlib/ は同じディレクトリに置いたまま使います
+mkdir -p "$HOME/.local/opt" && cp -r . "$HOME/.local/opt/ksn"
+ln -sf "$HOME/.local/opt/ksn/ksn" "$HOME/.local/bin/ksn"
 export PATH="$HOME/.local/bin:$PATH"
 
-# キャッシュ先（任意。同じマシンで複数回ビルドする際に再利用されます）
-export KSN_CACHE_DIR=/tmp/beta_cache
-mkdir -p "$KSN_CACHE_DIR"
+# キャッシュは既定で ~/.ksn/cache（自分だけが書ける 0700 のディレクトリ）に置かれます。
+# KSN_CACHE_DIR で変える場合も、ほかの利用者が書き込める場所（/tmp など）は避けてください。
 
 ksn --version   # ksn 0.1.0
 ```
 
-`ksn` コマンドは、`kasane.toml` があるパッケージ直下で実行します。
+`ksn` コマンドは、パッケージ（`kasane.toml` がある所）の中で実行します。下のディレクトリからでも、上へたどってパッケージを見つけます。
 
 ## 4. 10 分チュートリアル
 
@@ -74,16 +77,16 @@ ksn run        # インタプリタで実行
 `ksn test` の出力: `test hello.double.test_basic ... ok` / `1 passed; 0 failed`。
 `ksn run` の出力: `double: 4`。
 
-`ksn fmt` を忘れると `ksn check` は E0020（整形未済）で止まり、先に `ksn fmt` を実行してください。
+`ksn fmt` の出力と違うファイルは E0020（整形未済）になります。ほかの誤りも同時に出るので、`ksn fmt` で整えてから残りを直してください。
 
 ### 4.4 ネイティブ実行ファイルをビルドして動かす
 
 ```bash
 ksn build --release
-./target/release/hello.native
+./target/release/hello
 ```
 
-出力: `double: 4`。ビルド後の実行ファイルは `hello.native`（拡張子 `.native` が付く）です。
+出力: `double: 4`。ビルドの最後に `built: target/release/hello (native)` と置き場所が出ます。
 
 ## 5. ドキュメントの場所
 
@@ -98,7 +101,8 @@ ksn build --release
 ## 6. 既知の制限（ベータ時点）
 
 - macOS でのホスト実行・ビルドは未対応。Windows ホストでの開発も未対応（Linux からのクロスビルドは可能）。
-- ビルド済みバイナリとライセンスは未確定（README「導入」）。
+- 配布物は x86_64 Linux（Arch、Debian 12 以降）だけです。ライセンスは MIT または Apache-2.0（`LICENSE-MIT` / `LICENSE-APACHE`、同梱の LLVM などは `THIRD_PARTY_LICENSES`）。
+- 検査器（`ksn check`）は、通ってはいけないコードを拒むことを目指していますが、穴探しでまだ穴が見つかり続けています（直したものは `stage0/tests/data/unsound/` にあります）。安全性が要るコードでは、ネイティブのビルドを ASan などでも確かめてください。おかしな受理を見つけたら、ぜひ知らせてください。
 - 中央パッケージレジストリと `ksn publish` はありません。依存は `kasane.toml` のローカルパスまたは Git URL + コミットハッシュで指定します。
 - `std.net` の非同期（`accept_async` / `read_async` / `write_async`）は Linux のみです。
 - ネイティブ生成に下ろせない機能（一部の `std.tls`・FFI など）はインタプリタ同梱バンドルに退避し、`ksn build --release` では E9040 で失敗します（`--release --allow-bundle` で退避を許可）。
