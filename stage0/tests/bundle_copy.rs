@@ -18,6 +18,12 @@ fn make_pkg() -> Tmp {
     let t = Tmp::new("bundle_copy", PROG);
     let cache = t.0.join(".cache");
     fs::create_dir_all(&cache).unwrap();
+    // キャッシュの置き場は自分だけが書ける (0700) ことが求められる。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&cache, fs::Permissions::from_mode(0o700)).unwrap();
+    }
     fs::write(cache.join("dummy"), "cached bytes").unwrap();
     // ビルド残骸が `target/` にあってもバンドルに混ぜない。
     fs::create_dir_all(t.0.join("target").join("debug")).unwrap();
