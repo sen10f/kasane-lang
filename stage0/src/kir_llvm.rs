@@ -685,6 +685,24 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             continue;
         }
         funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, &extern_dl, &m.funcs, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
+        if let Some(h) = cx.pure_h.get(&f.key).copied() {
+            // 純粋域: 深さの記録つきの複製と、残りの深さで振り分ける入口 (`.w`、alwaysinline)。
+            let mut fe = Fe::new(&mut cx, &m.aggs, f, &extern_links, &extern_dl, &m.funcs, fi + m.funcs.len());
+            fe.slow = true;
+            funcs.push_str(&fe.emit().map_err(|e| format!("{}: {}", f.key, e))?);
+            let ps: Vec<String> = f.params().iter().enumerate().map(|(j, (_, t))| format!("{} %arg{}", lty(&m.aggs, *t), j)).collect();
+            let xs: Vec<String> = f.params().iter().enumerate().map(|(j, (_, t))| format!("{} %arg{}", lty(&m.aggs, *t), j)).collect();
+            let rt = lty(&m.aggs, f.ret);
+            let fl = if crate::ptrwidth::bits() == 32 {
+                "  %fits = icmp ult i64 %e, %dmax\n".to_string()
+            } else {
+                format!("  %ok1 = icmp ult i64 %e, %dmax\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl = load i64, ptr @ksn.floor\n  %need = add i64 %fl, {}\n  %ok2 = icmp uge i64 %sp, %need\n  %fits = and i1 %ok1, %ok2\n", h * 512)
+            };
+            funcs.push_str(&format!(
+                "define internal {rt} {w}({ps}) alwaysinline null_pointer_is_valid {{\n  %d = load i64, ptr @ksn.depth\n  %dmax = load i64, ptr @ksn.dmax\n  %e = add i64 %d, {h1}\n{fl}  br i1 %fits, label %fast, label %slow\nfast:\n  %rf = call {rt} {f}({xs})\n  ret {rt} %rf\nslow:\n  %rs = call {rt} {s}({xs})\n  ret {rt} %rs\n}}\n\n",
+                rt = rt, w = fname(&format!("{}.w", f.key)), ps = ps.join(", "), h1 = h, fl = fl, f = fname(&f.key), s = fname(&format!("{}.slow", f.key)), xs = xs.join(", ")
+            ));
+        }
     }
     let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
     let main = if is_wasm(target) { main } else { on_big_stack(&mut cx, main, m.depth) };
@@ -1412,6 +1430,8 @@ struct Fe<'a> {
     /// 全関数 (`Op::Fnptr` の呼び先の型を引くため)。
     funcs: &'a [Func],
     bare_fn: bool,
+    /// 純粋域の関数の「深さの記録つき」の複製を出している (名前は `.slow`)。
+    slow: bool,
     fi: usize,
     tys: HashMap<VId, Ty>,
     /// 定数と unit の値 (命令を作らずに、使う側へ直接書く)。
@@ -1425,7 +1445,7 @@ struct Fe<'a> {
 
 impl<'a> Fe<'a> {
     fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, extern_dl: &'a HashMap<String, (String, String)>, funcs: &'a [Func], fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, extern_links, extern_dl, funcs, bare_fn: false, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
+        Fe { cx, aggs, f, extern_links, extern_dl, funcs, bare_fn: false, slow: false, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -2357,12 +2377,18 @@ impl<'a> Fe<'a> {
                         self.line(format!("{} = call {} {}({})", d, rt, target, a.join(", ")));
                     }
                 } else {
-                    if !self.bare_fn {
-                        if let Some(h) = self.cx.pure_h.get(callee.as_str()).copied() {
-                            self.line(format!("call void @ksn.chk(i64 %depth1, i64 {})", h - 1));
+                    let tgt = if self.cx.pure_h.contains_key(callee.as_str()) {
+                        if self.slow {
+                            fname(&format!("{}.slow", callee))
+                        } else if self.cx.pure_h.contains_key(&self.f.key) {
+                            fname(callee)
+                        } else {
+                            fname(&format!("{}.w", callee))
                         }
-                    }
-                    self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
+                    } else {
+                        fname(callee)
+                    };
+                    self.line(format!("{} = call {} {}({})", d, rt, tgt, a.join(", ")));
                 }
             }
             // 関数のアドレスを `ptr` として取る (C のコールバック用)。
@@ -3140,7 +3166,7 @@ impl<'a> Fe<'a> {
         let mut hoisted = String::new();
         // Kasane の基本メソッドの単相インスタンス (下の先頭と戻りで深さの記録を省く)。
         let pure_f = self.cx.pure_h.contains_key(&f.key);
-        let bare = kasane_base_inst(&f.key) || pure_f;
+        let bare = kasane_base_inst(&f.key) || (pure_f && !self.slow);
         self.bare_fn = bare;
         let mut texts: Vec<String> = vec![String::new(); f.blocks.len()];
         for (k, b) in f.blocks.iter().enumerate() {
@@ -3226,7 +3252,7 @@ impl<'a> Fe<'a> {
             Some(n) => ("define", format!(" \"wasm-export-name\"=\"{}\"", n)),
             None => ("define internal", String::new()),
         };
-        let mut s = format!("{} {} {}({}){} {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), fname(&f.key), params.join(", "), exp, inline);
+        let mut s = format!("{} {} {}({}){} {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), if self.slow { fname(&format!("{}.slow", f.key)) } else { fname(&f.key) }, params.join(", "), exp, inline);
         s.push_str(&hoisted);
         if bare {
             // `b0` の phi は `go` を前の辺として参照するので、空の `go` を残す (最適化で消える)。
