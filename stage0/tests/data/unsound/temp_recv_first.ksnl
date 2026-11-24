@@ -1,0 +1,15 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let r = t.mkv().first()
+    let other = t.mkv()
+    core.mem.drop(other)
+    if let Some(x) = r {
+        core.mem.drop(*x)
+    }
+    Ok(())
+end t.main
+
+fn t.mkv() -> std.vec.Vec<u8> uses [alloc] panics never
+    let mut v = std.vec.Vec.new()
+    core.mem.drop(v.push(65u8))
+    v
+end t.mkv

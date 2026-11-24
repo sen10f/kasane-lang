@@ -102,7 +102,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
         tk.susp_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
     for &di in user {
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
+        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), closure_held: vec![], held_closures: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
         for q in &b.params {
             w.scopes[0].insert(q.name.clone(), (0, q.ty.clone()));
             if has_guard(p, &q.ty) {
@@ -234,6 +234,15 @@ fn holds_field(p: &Program, t: &Ty) -> bool {
 const GUARD_TYPES: [&str; 3] = ["std.sync.MutexGuard", "std.sync.RwLockReadGuard", "std.sync.RwLockWriteGuard"];
 
 /// 型がロックのガードを (欄・タプル・`Option` などの中に) 所有するか。参照 `&Guard` は所有しない。
+fn has_closure_ty(t: &Ty) -> bool {
+    match t {
+        Ty::Closure { .. } => true,
+        Ty::Tuple(a) | Ty::Named(_, a, _) => a.iter().any(has_closure_ty),
+        Ty::Array(x, _) | Ty::Slice(x) => has_closure_ty(x),
+        _ => false,
+    }
+}
+
 fn has_guard(p: &Program, t: &Ty) -> bool {
     fn go(p: &Program, t: &Ty, seen: &mut Vec<String>) -> bool {
         match t {
@@ -347,6 +356,10 @@ struct Walker<'a> {
     susp_diags: Vec<(usize, String)>,
     /// ロックのガード (`MutexGuard` など) を持つ束縛の持ち主。中断点で生きていれば E3050。
     guards: BTreeSet<String>,
+    /// 直前の `move` の閉包が取り込んだロックのガード (束縛される閉包が、落とされるまでロックを持つ)。
+    closure_held: Vec<String>,
+    /// ガードを取り込んだ閉包の束縛 (値として渡すと移動で、ロックも渡る)。
+    held_closures: BTreeSet<String>,
     /// 変数の鍵 → 型 (枠の `Send` の検査 (E2074) が使う)。
     vtys: HashMap<String, Ty>,
     /// 中断点をまたいで生きていて `Send` でない局所 (行, 名前, 閉包の中か)。
@@ -465,7 +478,7 @@ impl<'a> Walker<'a> {
     }
 
     fn acc(&mut self, root: &str, path: &[String], kind: Acc, line: usize) {
-        if kind == Acc::Move && path.is_empty() && self.guards.contains(root) {
+        if (kind == Acc::Move || (kind == Acc::Read && self.held_closures.contains(root))) && path.is_empty() && self.guards.contains(root) {
             self.cfg.emit(Ev::Release(root.to_string()));
         }
         self.cfg.emit(Ev::Acc { root: root.to_string(), path: path.to_vec(), kind, line });
@@ -696,9 +709,13 @@ impl<'a> Walker<'a> {
                 let ty = info.bind.as_ref().map(|b| b.1.clone()).unwrap_or_else(|| info.ty.clone());
                 self.scopes.last_mut().unwrap().insert(n.clone(), (q.id, ty.clone()));
                 let k = key(n, q.id);
-                if has_guard(self.p, &ty) {
+                if has_guard(self.p, &ty) || (has_closure_ty(&ty) && !self.closure_held.is_empty()) {
                     self.guards.insert(k.clone());
+                    if !self.closure_held.is_empty() {
+                        self.held_closures.insert(k.clone());
+                    }
                     self.cfg.emit(Ev::Hold(k.clone()));
+                    self.closure_held.clear();
                 }
                 self.vtys.insert(k.clone(), ty.clone());
                 let s = if holds_field(self.p, &ty) { srcs.to_vec() } else { vec![] };
@@ -761,6 +778,9 @@ impl<'a> Walker<'a> {
                 _ => {
                     let k = if not_copy(self.p, &c.ty) { Acc::Move } else { Acc::Read };
                     self.acc(&root, &[], k, e.line);
+                    if has_guard(self.p, &c.ty) {
+                        self.closure_held.push(root.clone());
+                    }
                     if holds(self.p, &c.ty) {
                         srcs.push(Src::Var(root));
                     }
