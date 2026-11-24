@@ -150,40 +150,42 @@ end ksn.task.ready
 
 fn ksn.task.pick key=ksn.task.pick uses=[] panics=may stack=- ret=usize
   b0(%0: usize, %1: usize, %2: usize):
-    %3: bool = icmp.gt.usize %1, %2
-    br_if %3, b1(%2), b2(%0, %1, %2)
-  b1(%4: usize):
+    br b1(%0, %1, %2)
+  b1(%20: usize, %21: usize, %22: usize):
+    %3: bool = icmp.gt.usize %21, %22
+    br_if %3, b2(%22), b3(%20, %21, %22)
+  b2(%4: usize):
     ret %4
-  b2(%5: usize, %6: usize, %7: usize):
+  b3(%5: usize, %6: usize, %7: usize):
     %8: usize = add.usize.wrap %5, %6
     %9: usize = rem.usize.trap %8, %7
     %10: bool = call ksn.task.ready(%9)
-    br_if %10, b3(%9), b4(%5, %6, %7)
-  b3(%11: usize):
+    br_if %10, b4(%9), b5(%5, %6, %7)
+  b4(%11: usize):
     %12: u32 = const.u32 0
     %13: unit = call ksn.task.set_state(%11, %12)
     ret %11
-  b4(%14: usize, %15: usize, %16: usize):
+  b5(%14: usize, %15: usize, %16: usize):
     %17: usize = const.usize 1
     %18: usize = add.usize.wrap %15, %17
-    %19: usize = call ksn.task.pick(%14, %18, %16)
-    ret %19
+    br b1(%14, %18, %16)
 end ksn.task.pick
 
 fn ksn.task.first_undone key=ksn.task.first_undone uses=[] panics=never stack=- ret=usize
   b0(%0: usize, %1: usize):
-    %2: bool = icmp.ge.usize %0, %1
-    br_if %2, b1(%1), b2(%0, %1)
-  b1(%3: usize):
+    br b1(%0, %1)
+  b1(%14: usize, %15: usize):
+    %2: bool = icmp.ge.usize %14, %15
+    br_if %2, b2(%15), b3(%14, %15)
+  b2(%3: usize):
     ret %3
-  b2(%4: usize, %5: usize):
+  b3(%4: usize, %5: usize):
     %8: bool = call ksn.task.done(%4)
-    br_if %8, b3(%4, %5), b1(%4)
-  b3(%9: usize, %10: usize):
+    br_if %8, b4(%4, %5), b2(%4)
+  b4(%9: usize, %10: usize):
     %11: usize = const.usize 1
     %12: usize = add.usize.wrap %9, %11
-    %13: usize = call ksn.task.first_undone(%12, %10)
-    ret %13
+    br b1(%12, %10)
 end ksn.task.first_undone
 
 fn ksn.task.block key=ksn.task.block uses=[] panics=never stack=- ret=unit
@@ -581,25 +583,26 @@ end ksn.task.await.poll
 
 fn ksn.task.free_from key=ksn.task.free_from uses=[alloc] panics=never stack=- ret=unit
   b0(%0: usize):
+    br b1(%0)
+  b1(%15: usize):
     %1: usize = call ksn.task.count()
-    %2: bool = icmp.ge.usize %0, %1
-    br_if %2, b1(), b2(%0)
-  b1():
+    %2: bool = icmp.ge.usize %15, %1
+    br_if %2, b2(), b3(%15)
+  b2():
     %3: unit = const.unit ()
     ret %3
-  b2(%4: usize):
+  b3(%4: usize):
     %5: ptr = call ksn.task.fp(%4)
     %6: ptr = const.ptr 0
     %7: bool = icmp.eq.ptr %5, %6
-    br_if %7, b3(%4), b4(%4, %5)
-  b3(%11: usize):
+    br_if %7, b4(%4), b5(%4, %5)
+  b4(%11: usize):
     %12: usize = const.usize 1
     %13: usize = add.usize.wrap %11, %12
-    %14: unit = call ksn.task.free_from(%13)
-    ret %14
-  b4(%8: usize, %9: ptr):
+    br b1(%13)
+  b5(%8: usize, %9: ptr):
     %10: unit = heap.free %9
-    br b3(%8)
+    br b4(%8)
 end ksn.task.free_from
 
 fn ksn.task.finish key=ksn.task.finish uses=[alloc] panics=never stack=- ret=unit
