@@ -241,3 +241,48 @@ fn tsan_stress_spawned_tasks_have_no_data_races() {
 fn tsan_cancel_has_no_data_races() {
     tsan_run("net_async_mt_tsan_cancel", CANCEL, "cancel done\ncount ok");
 }
+
+/// 全員待ち (注入列が空・全ワーカーが眠り・IO の待ちが無い) の検出: 共有の核 (`sysrt.c` の `ksn_rt_sys_mt_*`) を C から直接試す。
+/// 2 本のうち 1 本が眠っているところへ 2 本目が眠ろうとすると 3 (deadlock) が返り、起こす出来事 (stop) で眠っていた方が 2 で戻る。
+#[test]
+fn mt_core_detects_all_workers_blocked() {
+    if !cfg!(target_os = "linux") || !clang_available() {
+        return;
+    }
+    let d = std::env::temp_dir().join(format!("ksn_amt_core_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("sysrt.c"), include_str!("../src/sysrt.c")).unwrap();
+    std::fs::write(
+        d.join("h.c"),
+        r#"#include "sysrt.c"
+int ksn_rt_argc; char **ksn_rt_argv;
+static i64 seen;
+static uint32_t r1 = 99;
+static void *w(void *a) { (void)a; r1 = ksn_rt_sys_mt_sleep(seen); return NULL; }
+int main(void) {
+    ksn_rt_sys_mt_begin(2);
+    seen = ksn_rt_sys_mt_epoch();
+    pthread_t t;
+    pthread_create(&t, NULL, w, NULL);
+    usleep(200000);
+    uint32_t r2 = ksn_rt_sys_mt_sleep(seen);
+    ksn_rt_sys_mt_stop();
+    pthread_join(t, NULL);
+    printf("%u %u\n", r2, r1);
+    /* push が世代を進めるので、古い世代で眠ろうとしても眠らず 0 */
+    ksn_rt_sys_mt_begin(2);
+    i64 e = ksn_rt_sys_mt_epoch();
+    ksn_rt_sys_mt_push(0, NULL);
+    printf("%u\n", ksn_rt_sys_mt_sleep(e));
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    let c = std::process::Command::new("clang").args(["-w", "-O1", "-o"]).arg(d.join("h")).arg(d.join("h.c")).arg("-lpthread").output().unwrap();
+    assert!(c.status.success(), "{}", text(&c.stderr));
+    let o = std::process::Command::new(d.join("h")).output().unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(text(&o.stdout), "3 2\n0\n", "{}", text(&o.stderr));
+}

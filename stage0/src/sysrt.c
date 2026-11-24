@@ -1243,6 +1243,7 @@ static __thread i64 ksn_io_cap;
 static __thread i64 ksn_io_nparked;
 static __thread unsigned ksn_io_tickn;
 static __thread i64 ksn_io_nfired; /* 印が 2 / 3 になって take されていない数 */
+static __thread int ksn_io_dl_used; /* 期限つきの待ちを一度でも載せたか (無ければ poll は期限の表を走査しない) */
 
 static ksn_io_slot *ksn_io_slot_of(i32 fd) {
     if (fd < 0) return NULL;
@@ -1306,6 +1307,7 @@ i32 ksn_rt_sys_io_park(i32 fd, i32 write_side) {
     s->st = 1;
     s->dir = d;
     s->at = ksn_io_deadline(fd, d);
+    if (s->at >= 0) ksn_io_dl_used = 1;
     return 1;
 }
 
@@ -1318,7 +1320,7 @@ i32 ksn_rt_sys_io_poll(i32 block) {
     int timeout = 0;
     if (block) {
         i64 best = -1;
-        for (i64 i = 0; i < ksn_io_cap; i++) {
+        for (i64 i = 0; ksn_io_dl_used && i < ksn_io_cap; i++) {
             if (ksn_io_tab[i].st == 1 && ksn_io_tab[i].at >= 0 && (best < 0 || ksn_io_tab[i].at < best)) best = ksn_io_tab[i].at;
         }
         timeout = best < 0 ? -1 : (int)(best > now ? best - now : 0);
@@ -1341,7 +1343,7 @@ i32 ksn_rt_sys_io_poll(i32 block) {
     }
     /* 期限切れ (まだ起きていない待ちがあるときだけ全表を見る) */
     now = ksn_mono_ms();
-    for (i64 i = 0; i < ksn_io_cap && ksn_io_nparked > ksn_io_nfired; i++) {
+    for (i64 i = 0; ksn_io_dl_used && i < ksn_io_cap && ksn_io_nparked > ksn_io_nfired; i++) {
         if (ksn_io_tab[i].st == 1 && ksn_io_tab[i].at >= 0 && ksn_io_tab[i].at <= now) { ksn_io_tab[i].st = 3; got++; ksn_io_nfired++; }
     }
     return got;
