@@ -37,6 +37,10 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <linux/futex.h>
+#endif
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -1202,6 +1206,32 @@ void ksn_rt_sys_sleep_ms(u64 ms) {
     ts.tv_nsec = (long)((ms % 1000) * 1000000);
     while (nanosleep(&ts, &ts) != 0) {
     }
+#endif
+}
+
+/* Mutex の待ち。語 `a` が `expect` のままなら最大 `ms` ミリ秒眠る (Linux は futex、それ以外は ms 眠るだけ)。
+ * 戻り値は時間切れなら 1。起こされた・語が違った場合も戻る (呼び出し側が語を見直す)。 */
+uint32_t ksn_rt_sys_futex_wait(uint32_t *a, uint32_t expect, u64 ms) {
+#if defined(__linux__)
+    struct timespec ts;
+    ts.tv_sec = (time_t)(ms / 1000);
+    ts.tv_nsec = (long)((ms % 1000) * 1000000);
+    long r = syscall(SYS_futex, a, FUTEX_WAIT_PRIVATE, expect, &ts, NULL, 0);
+    return (r == -1 && errno == ETIMEDOUT) ? 1 : 0;
+#else
+    (void)expect;
+    (void)a;
+    (void)ms;
+    ksn_rt_sys_sleep_ms(ms);
+    return 1;
+#endif
+}
+
+void ksn_rt_sys_futex_wake(uint32_t *a) {
+#if defined(__linux__)
+    syscall(SYS_futex, a, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+#else
+    (void)a;
 #endif
 }
 

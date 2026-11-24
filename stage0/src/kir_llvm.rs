@@ -207,15 +207,12 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
         "ksn.thr.mlock" => def(
             "i8",
             "ptr %arg0",
-            &format!(
-                "  %c0 = cmpxchg ptr %arg0, i32 0, i32 1 acquire monotonic, align 4\n  %ok0 = extractvalue {{ i32, i1 }} %c0, 1\n  br i1 %ok0, label %got, label %spin\ngot:\n  ret i8 0\nspin:\n  %i = phi i32 [ 0, %entry ], [ %i1, %spin2 ]\n  %v = load atomic i32, ptr %arg0 monotonic, align 4\n  %free = icmp eq i32 %v, 0\n  br i1 %free, label %try, label %spin2\ntry:\n  %c1 = cmpxchg ptr %arg0, i32 0, i32 1 acquire monotonic, align 4\n  %ok1 = extractvalue {{ i32, i1 }} %c1, 1\n  br i1 %ok1, label %got, label %spin2\nspin2:\n  %i1 = add i32 %i, 1\n  %more = icmp ult i32 %i1, 100\n  br i1 %more, label %spin, label %slow\nslow:\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  br label %chk\nchk:\n  %o = atomicrmw xchg ptr %arg0, i32 2 acquire, align 4\n  %z = icmp eq i32 %o, 0\n  br i1 %z, label %took, label %blk\nblk:\n{}  br label %chk\ntook:\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  ret i8 0\n",
-                block_body("@ksn.rt.deadlock_lock")
-            ),
+            "  %cf = alloca i32, align 4\n  store i32 0, ptr %cf\n  %c0 = cmpxchg ptr %arg0, i32 0, i32 1 acquire monotonic, align 4\n  %ok0 = extractvalue { i32, i1 } %c0, 1\n  br i1 %ok0, label %got, label %chk0\nchk0:\n  %op = getelementptr i8, ptr %arg0, i64 8\n  %ow = load atomic i64, ptr %op monotonic, align 8\n  %me0 = call i64 @pthread_self()\n  %mine = icmp eq i64 %ow, %me0\n  br i1 %mine, label %dead, label %spin\ngot:\n  br label %fin\nspin:\n  %i = phi i32 [ 0, %chk0 ], [ %i1, %spin2 ]\n  %v = load atomic i32, ptr %arg0 monotonic, align 4\n  %free = icmp eq i32 %v, 0\n  br i1 %free, label %try, label %spin2\ntry:\n  %c1 = cmpxchg ptr %arg0, i32 0, i32 1 acquire monotonic, align 4\n  %ok1 = extractvalue { i32, i1 } %c1, 1\n  br i1 %ok1, label %got, label %spin2\nspin2:\n  %i1 = add i32 %i, 1\n  %more = icmp ult i32 %i1, 100\n  br i1 %more, label %spin, label %slow\nslow:\n  %o = atomicrmw xchg ptr %arg0, i32 2 acquire, align 4\n  %z = icmp eq i32 %o, 0\n  br i1 %z, label %took, label %wl\nwl:\n  %to = call i32 @ksn_rt_sys_futex_wait(ptr %arg0, i32 2, i64 20)\n  %o2 = atomicrmw xchg ptr %arg0, i32 2 acquire, align 4\n  %z2 = icmp eq i32 %o2, 0\n  br i1 %z2, label %took, label %chk\nchk:\n  %tz = icmp ne i32 %to, 0\n  br i1 %tz, label %tmo, label %wl\ntmo:\n  %c = load i32, ptr %cf\n  %nc = icmp eq i32 %c, 0\n  br i1 %nc, label %inc, label %dchk\ninc:\n  %ma = atomicrmw add ptr @ksn.rt.mwait, i64 1 seq_cst, align 8\n  store i32 1, ptr %cf\n  br label %dchk\ndchk:\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %b = load i64, ptr @ksn.rt.blocked\n  %l = load i64, ptr @ksn.rt.live\n  %m = load atomic i64, ptr @ksn.rt.mwait seq_cst, align 8\n  %sm = add i64 %b, %m\n  %d = icmp uge i64 %sm, %l\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  br i1 %d, label %rech, label %wl\nrech:\n  %o3 = atomicrmw xchg ptr %arg0, i32 2 acquire, align 4\n  %z3 = icmp eq i32 %o3, 0\n  br i1 %z3, label %took, label %dead\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.rt.deadlock_lock)\n  call void @exit(i32 101)\n  unreachable\ntook:\n  %cc = load i32, ptr %cf\n  %hc = icmp ne i32 %cc, 0\n  br i1 %hc, label %dec, label %fin\ndec:\n  %md = atomicrmw sub ptr @ksn.rt.mwait, i64 1 seq_cst, align 8\n  br label %fin\nfin:\n  %op2 = getelementptr i8, ptr %arg0, i64 8\n  %me = call i64 @pthread_self()\n  store atomic i64 %me, ptr %op2 monotonic, align 8\n  ret i8 0\n",
         ),
         "ksn.thr.munlock" => def(
             "i8",
             "ptr %arg0",
-            "  %o = atomicrmw xchg ptr %arg0, i32 0 release, align 4\n  %w = icmp eq i32 %o, 2\n  br i1 %w, label %wake, label %done\nwake:\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %g = load i64, ptr @ksn.rt.gen\n  %g1 = add i64 %g, 1\n  store i64 %g1, ptr @ksn.rt.gen\n  store i64 0, ptr @ksn.rt.blocked\n  %bc = call i32 @pthread_cond_broadcast(ptr @ksn.rt.cv)\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  br label %done\ndone:\n  ret i8 0\n",
+            "  %op = getelementptr i8, ptr %arg0, i64 8\n  store atomic i64 0, ptr %op monotonic, align 8\n  %o = atomicrmw xchg ptr %arg0, i32 0 release, align 4\n  %w = icmp eq i32 %o, 2\n  br i1 %w, label %wake, label %done\nwake:\n  call void @ksn_rt_sys_futex_wake(ptr %arg0)\n  br label %done\ndone:\n  ret i8 0\n",
         ),
         "ksn.thr.wait" => def("i8", "", &format!("{}  ret i8 0\n", block_body("@ksn.rt.deadlock"))),
         "ksn.thr.new" => def("i64", "", &format!("  %p = call ptr @calloc(i64 1, i64 {})\n  %z = icmp eq ptr %p, null\n  br i1 %z, label %oom, label %ok\noom:\n  call void @exit(i32 101)\n  unreachable\nok:\n  %i = ptrtoint ptr %p to i64\n  ret i64 %i\n", THREAD_ENTRY_SIZE)),
@@ -655,10 +652,13 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
                 cx.decl("declare void @ksn_rt_sys_sleep_ms(i64)");
             } else if !pthread_used {
                 pthread_used = true;
-                cx.globals.push_str("@ksn.rt.mu = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.cv = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.live = internal global i64 1\n@ksn.rt.blocked = internal global i64 0\n@ksn.rt.gen = internal global i64 0\n");
+                cx.globals.push_str("@ksn.rt.mu = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.cv = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.live = internal global i64 1\n@ksn.rt.blocked = internal global i64 0\n@ksn.rt.gen = internal global i64 0\n@ksn.rt.mwait = internal global i64 0, align 8\n");
                 cx.globals.push_str(&str_const("ksn.rt.deadlock", &format!("panic: {}\n\0", crate::interp::DEADLOCK_RECV)));
                 cx.globals.push_str(&str_const("ksn.rt.deadlock_join", &format!("panic: {}\n\0", crate::interp::DEADLOCK_JOIN)));
                 cx.globals.push_str(&str_const("ksn.rt.deadlock_lock", &format!("panic: {}\n\0", DEADLOCK_LOCK)));
+                cx.decl("declare i32 @ksn_rt_sys_futex_wait(ptr, i32, i64)");
+                cx.decl("declare void @ksn_rt_sys_futex_wake(ptr)");
+                cx.decl("declare i64 @pthread_self()");
                 for d in [
                     "declare i32 @pthread_mutex_trylock(ptr)",
                     "declare i32 @pthread_create(ptr, ptr, ptr, ptr)",
