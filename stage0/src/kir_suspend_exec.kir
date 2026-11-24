@@ -24,11 +24,18 @@ fn ksn.task.entry key=ksn.task.entry uses=[] panics=never stack=- ret=ptr
     ret %5
 end ksn.task.entry
 
+fn ksn.mt.marked key=ksn.mt.marked uses=[] panics=never stack=- ret=u32
+  b0(%0: usize):
+    %1: u32 = const.u32 0
+    ret %1
+end ksn.mt.marked
+
 fn ksn.task.marked key=ksn.task.marked uses=[] panics=never stack=- ret=bool
   b0(%0: usize):
-    %1: usize = const.usize 4611686018427387904
-    %2: bool = icmp.ge.usize %0, %1
-    ret %2
+    %1: u32 = call ksn.mt.marked(%0)
+    %2: u32 = const.u32 0
+    %3: bool = icmp.ne.u32 %1, %2
+    ret %3
 end ksn.task.marked
 
 fn ksn.task.state key=ksn.task.state uses=[] panics=never stack=- ret=u32

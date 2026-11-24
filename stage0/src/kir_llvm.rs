@@ -322,6 +322,7 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
         "ksn.io.take" => def("i32", "i32 %arg0", "  %r = call i32 @ksn_rt_sys_io_take(i32 %arg0)\n  ret i32 %r\n"),
         "ksn.io.pending" => def("i32", "", "  %r = call i32 @ksn_rt_sys_io_pending()\n  ret i32 %r\n"),
         // 複数スレッドの実行器の共有の核 (Linux、sysrt.c の `ksn_rt_sys_mt_*`)。Linux 以外は KIR の本体 (協調実行) のまま。
+        "ksn.mt.marked" => def("i32", "i64 %arg0", "  %c = icmp uge i64 %arg0, 4611686018427387904\n  %r = zext i1 %c to i32\n  ret i32 %r\n"),
         "ksn.mt.begin" => def("i64", "i64 %arg0", "  %r = call i64 @ksn_rt_sys_mt_begin(i64 %arg0)\n  ret i64 %r\n"),
         "ksn.mt.on" => def("i32", "", "  %r = call i32 @ksn_rt_sys_mt_on()\n  ret i32 %r\n"),
         "ksn.mt.push" => def("i64", "i32 %arg0, ptr %arg1", "  %r = call i64 @ksn_rt_sys_mt_push(i32 %arg0, ptr %arg1)\n  ret i64 %r\n"),
