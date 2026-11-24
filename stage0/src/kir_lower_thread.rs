@@ -42,6 +42,8 @@ const _: () = assert!(ESZ <= 256);
 
 const SITE: &str = "ksn.thr.site.";
 pub(super) const RUN_ONE: &str = "ksn.thr.run_one";
+/// 保留 (未開始) のスレッドがあるか (走らせない)。満杯の `send` が使う。
+pub(super) const HAS_PENDING: &str = "ksn.thr.has_pending";
 const EXEC: &str = "ksn.thr.exec";
 pub(super) const JOIN: &str = "ksn.thr.join";
 /// 実行器 (参照実行器・VM) では協調実行の本体を持ち、LLVM (`kir_llvm.rs` の `thread_override`) では pthread の本体に差し替える補助の関数。
@@ -307,7 +309,7 @@ pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
         ok.push((mk(b.build(EXEC, &[], Ty::Unit)), callees));
     }
     // run_one(): 保留の最初の 1 本を最後まで走らせて true。無ければ false。
-    {
+    for (fname, run) in [(RUN_ONE, true), (HAS_PENDING, false)] {
         let mut b = Fb::new(&[]);
         let g = b.emit(Ty::Ptr, Op::GlobalBytes { name: TABLE.to_string(), size: TOTAL });
         let (lp, lv) = b.block(&[Ty::Usize]);
@@ -339,14 +341,17 @@ pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
         let i1 = b.add(lv[0], one);
         b.goto(lp, vec![i1]);
         b.at(start);
-        let one = b.c(Ty::Usize, 1);
-        b.store(Ty::Usize, ent, 0, one);
-        b.emit(Ty::Unit, Op::Call { callee: EXEC.to_string(), args: vec![lv[0]] });
-        let two = b.c(Ty::Usize, 2);
-        b.store(Ty::Usize, ent, 0, two);
+        if run {
+            let one = b.c(Ty::Usize, 1);
+            b.store(Ty::Usize, ent, 0, one);
+            b.emit(Ty::Unit, Op::Call { callee: EXEC.to_string(), args: vec![lv[0]] });
+            let two = b.c(Ty::Usize, 2);
+            b.store(Ty::Usize, ent, 0, two);
+        }
         let t = b.emit(Ty::Bool, Op::Const(1));
         b.term(Term::Ret(t));
-        ok.push((mk(b.build(RUN_ONE, &[], Ty::Bool)), BTreeSet::from([EXEC.to_string()])));
+        let cs = if run { BTreeSet::from([EXEC.to_string()]) } else { BTreeSet::new() };
+        ok.push((mk(b.build(fname, &[], Ty::Bool)), cs));
     }
     // join(id): 完了まで待つ。
     {

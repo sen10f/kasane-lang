@@ -461,7 +461,7 @@ fn t.vec_same_value() -> usize uses [alloc, thread] panics may
 end t.vec_same_value
 
 fn t.struct_loop(n: u32) -> Result<usize, std.io.Error> uses [alloc, thread] panics may
-    let made = std.sync.channel::<t.Job, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let made = std.sync.channel::<t.Job, std.alloc.System>(std.alloc.SYSTEM, 64usize)
     let (tx, rx) = made.map_err(t.oom)?
     let mut i = 0u32
     while i < n {
@@ -489,7 +489,7 @@ fn t.struct_loop_value(n: u32) -> usize uses [alloc, thread] panics may
 end t.struct_loop_value
 
 fn t.drop_unreceived() -> Result<usize, std.io.Error> uses [alloc, thread] panics may
-    let made = std.sync.channel::<t.Job, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let made = std.sync.channel::<t.Job, std.alloc.System>(std.alloc.SYSTEM, 64usize)
     let (tx, rx) = made.map_err(t.oom)?
     let mut i = 0u32
     while i < 40u32 {
@@ -636,7 +636,7 @@ fn t.pipe_sum() -> u32 uses [alloc, thread] panics may
 end t.pipe_sum
 
 fn t.same_thread() -> Result<u32, std.io.Error> uses [alloc, thread] panics may
-    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 4usize)
     let (tx, rx) = made.map_err(t.oom)?
     let tx2 = tx.clone()
     core.mem.drop(tx.send(1u32))

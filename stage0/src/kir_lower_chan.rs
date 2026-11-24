@@ -16,10 +16,10 @@ use crate::check::{items, nf, nlineno as nline, nname, strs};
 use crate::kir::{Aop, Cc, Mode, Op, Pay, Pointee, Term, Ty, VId};
 use crate::parser::V;
 
-use super::thread_lower::{rt_call, RUN_ONE};
+use super::thread_lower::{rt_call, HAS_PENDING, RUN_ONE};
 use super::{Lw, LR};
 
-const STATE: i128 = 168;
+const STATE: i128 = 176;
 /// チャネルごとのロックと待ち (ネイティブ。`kir_llvm.rs` の `ksn.chan.rt.*`)。状態の `+48` に `pthread_mutex_t` (40 バイト)、`+88` に
 /// `pthread_cond_t` (48 バイト)、`+136` に待っている数、`+144` に起こしの札の数。実行器 (協調実行) では何もしない (`wait` は保留のスレッドを 1 本走らせる)。
 const CINIT: &str = "ksn.chan.rt.init";
@@ -46,6 +46,8 @@ const RECEIVERS: u32 = 40;
 /// 容量 (`channel` の引数。0 は 1)。待っている送り手の数 (ロックの下)。
 const LIMIT: u32 = 152;
 const SWAIT: u32 = 160;
+/// 協調実行だけ: いま `recv` で止まっている枠の数 (満杯の `send` が容量を超えて続ける根拠)。
+const RWAITC: u32 = 168;
 
 fn us(lw: &mut Lw, n: i128) -> VId {
     lw.emit(Ty::Usize, Op::Const(n))
@@ -289,7 +291,7 @@ fn channel(lw: &mut Lw, e: &V, args: &[V], line: usize) -> LR<Option<VId>> {
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: st, off: BUF, v: null });
     let z = us(lw, 0);
     put(lw, st, LIMIT, limit);
-    for off in [HEAD, LEN, CAPF, SWAIT] {
+    for off in [HEAD, LEN, CAPF, SWAIT, RWAITC] {
         put(lw, st, off, z);
     }
     let one = us(lw, 1);
@@ -353,6 +355,47 @@ fn send(lw: &mut Lw, e: &V, st: VId, elem: Ty, arg: &V, line: usize) -> LR<Optio
     let (push, _) = lw.new_block(&[]);
     lw.branch(full, (grow, vec![]), (push, vec![]));
     lw.cur = Some(grow);
+    // 先頭 (`head`) がバッファの半分以上なら、伸ばさずに残りを先頭へ詰める (有界のキューのメモリを抑える。要素の型のまま読み書きする)。
+    let hd0 = ld(lw, st, HEAD);
+    let cp0 = ld(lw, st, CAPF);
+    let two = us(lw, 2);
+    let h2 = lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: hd0, b: two });
+    let big = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: h2, b: cp0 });
+    let z0 = us(lw, 0);
+    let pos = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: hd0, b: z0 });
+    let want = lw.emit(Ty::Bool, Op::Bool(crate::kir::BoolOp::And, big, pos));
+    let (pack, _) = lw.new_block(&[]);
+    let (real, _) = lw.new_block(&[]);
+    lw.branch(want, (pack, vec![]), (real, vec![]));
+    lw.cur = Some(pack);
+    let pbuf = lw.emit(Ty::Ptr, Op::MemLoad { p: st, off: BUF });
+    let plen = ld(lw, st, LEN);
+    let pn = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: plen, b: hd0 });
+    let pst = us(lw, stride_of(lw, elem));
+    let (ph, pp) = lw.new_block(&[Ty::Usize]);
+    let (pb, _) = lw.new_block(&[]);
+    let (pe, _) = lw.new_block(&[]);
+    lw.goto(ph, vec![z0]);
+    lw.cur = Some(ph);
+    let pi = pp[0];
+    let pc = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: pi, b: pn });
+    lw.branch(pc, (pb, vec![]), (pe, vec![]));
+    lw.cur = Some(pb);
+    let si = add(lw, pi, hd0);
+    let so = lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: si, b: pst });
+    let sslot = lw.emit(Ty::Ptr, Op::PtrAdd { p: pbuf, off: so });
+    let xv = slot_load(lw, sslot, elem);
+    let dof = lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: pi, b: pst });
+    let dslot = lw.emit(Ty::Ptr, Op::PtrAdd { p: pbuf, off: dof });
+    slot_store(lw, dslot, elem, xv);
+    let one2 = us(lw, 1);
+    let pi1 = add(lw, pi, one2);
+    lw.goto(ph, vec![pi1]);
+    lw.cur = Some(pe);
+    put(lw, st, HEAD, z0);
+    put(lw, st, LEN, pn);
+    lw.goto(push, vec![]);
+    lw.cur = Some(real);
     let stride = us(lw, stride_of(lw, elem));
     lw.callees.insert(GROW.to_string());
     lw.emit(Ty::Unit, Op::Call { callee: GROW.to_string(), args: vec![st, stride] });
@@ -451,13 +494,52 @@ pub(super) fn finish(ok: &mut Vec<(crate::kir::Func, std::collections::BTreeSet<
         let mut b = Fb::new(&[Ty::Ptr]);
         let mut callees = BTreeSet::new();
         if name == CWAIT || name == CWAITS {
-            // 空の recv の待ち: 保留中のスレッドを 1 本走らせる。走らせるものが無ければ deadlock の panic。
-            callees.insert(RUN_ONE.to_string());
-            let r = b.emit(Ty::Bool, Op::Call { callee: RUN_ONE.to_string(), args: vec![] });
+            // 保留中のスレッドを 1 本走らせる。走らせるものが無ければ: `send` は上の枠が同じチャネルの `recv` で止まっていれば
+            // 容量を 1 つ上げて続け (+168 が 0 より大きい)、そうでなければ deadlock の panic。`recv` は deadlock の panic。
+            callees.insert(if name == CWAITS { HAS_PENDING } else { RUN_ONE }.to_string());
+            let one = b.c(Ty::Usize, 1);
+            if name == CWAIT {
+                let c0 = b.load(Ty::Usize, 0, RWAITC as i128);
+                let c1 = b.add(c0, one);
+                b.store(Ty::Usize, 0, RWAITC as i128, c1);
+            }
+            let r = b.emit(Ty::Bool, Op::Call { callee: (if name == CWAITS { HAS_PENDING } else { RUN_ONE }).to_string(), args: vec![] });
+            if name == CWAIT {
+                let c0 = b.load(Ty::Usize, 0, RWAITC as i128);
+                let c1 = b.sub(c0, one);
+                b.store(Ty::Usize, 0, RWAITC as i128, c1);
+            }
             let (yes, _) = b.block(&[]);
             let (dead, _) = b.block(&[]);
-            b.br_if(r, yes, dead);
+            if name == CWAITS {
+                // 保留のスレッドがあれば、満杯でも容量を 1 つ上げて続ける (そのスレッドが受け手でも、入れ子では main に戻れないため)。
+                let (g1, _) = b.block(&[]);
+                b.br_if(r, g1, dead);
+                b.at(g1);
+                let l = b.load(Ty::Usize, 0, LIMIT as i128);
+                let l1 = b.add(l, one);
+                b.store(Ty::Usize, 0, LIMIT as i128, l1);
+                let u = b.emit(Ty::Unit, Op::Const(0));
+                b.term(Term::Ret(u));
+            } else {
+                b.br_if(r, yes, dead);
+            }
             b.at(dead);
+            if name == CWAITS {
+                let rc = b.load(Ty::Usize, 0, RWAITC as i128);
+                let z = b.c(Ty::Usize, 0);
+                let any = b.cmp(Cc::Gt, rc, z);
+                let (grow, _) = b.block(&[]);
+                let (pn, _) = b.block(&[]);
+                b.br_if(any, grow, pn);
+                b.at(grow);
+                let l = b.load(Ty::Usize, 0, LIMIT as i128);
+                let l1 = b.add(l, one);
+                b.store(Ty::Usize, 0, LIMIT as i128, l1);
+                let u = b.emit(Ty::Unit, Op::Const(0));
+                b.term(Term::Ret(u));
+                b.at(pn);
+            }
             b.emit(Ty::Unit, Op::Panic { msg: (if name == CWAITS { crate::interp::DEADLOCK_SEND } else { crate::interp::DEADLOCK_RECV }).to_string(), arg: None });
             b.term(Term::Unreachable);
             b.at(yes);
@@ -471,63 +553,6 @@ pub(super) fn finish(ok: &mut Vec<(crate::kir::Func, std::collections::BTreeSet<
     }
     if want_grow {
         let mut b = Fb::new(&[Ty::Ptr, Ty::Usize]);
-        // 先頭 (`head`) がバッファの半分以上なら、伸ばさずに残りを先頭へ詰める (有界のキューのメモリを抑える)。
-        let head = b.load(Ty::Usize, 0, HEAD as i128);
-        let cap0 = b.load(Ty::Usize, 0, CAPF as i128);
-        let two0 = b.c(Ty::Usize, 2);
-        let h2 = b.mul(head, two0);
-        let big = b.cmp(Cc::Ge, h2, cap0);
-        let zero = b.c(Ty::Usize, 0);
-        let nz = b.cmp(Cc::Gt, head, zero);
-        let want = b.emit(Ty::Bool, Op::Bool(crate::kir::BoolOp::And, big, nz));
-        let (pack, _) = b.block(&[]);
-        let (gr, _) = b.block(&[]);
-        b.br_if(want, pack, gr);
-        b.at(pack);
-        let buf0 = b.load(Ty::Ptr, 0, BUF as i128);
-        let len0 = b.load(Ty::Usize, 0, LEN as i128);
-        let (lp_, lpp) = b.block(&[Ty::Usize]);
-        let (body, _) = b.block(&[]);
-        let (done, _) = b.block(&[]);
-        b.goto(lp_, vec![zero]);
-        b.at(lp_);
-        let i = lpp[0];
-        let n = b.sub(len0, head);
-        let more = b.cmp(Cc::Lt, i, n);
-        b.br_if(more, body, done);
-        b.at(body);
-        let stride_ = 1 as VId;
-        let io = b.mul(i, stride_);
-        let si = b.add(i, head);
-        let so = b.mul(si, stride_);
-        let eight = b.c(Ty::Usize, 8);
-        let (wl, wlp) = b.block(&[Ty::Usize]);
-        let (wb, _) = b.block(&[]);
-        let (we, _) = b.block(&[]);
-        b.goto(wl, vec![zero]);
-        b.at(wl);
-        let w = wlp[0];
-        let wm = b.cmp(Cc::Lt, w, stride_);
-        b.br_if(wm, wb, we);
-        b.at(wb);
-        let so2 = b.add(so, w);
-        let sp = b.padd(buf0, so2);
-        let x = b.load(Ty::Usize, sp, 0);
-        let io2 = b.add(io, w);
-        let dp = b.padd(buf0, io2);
-        b.store(Ty::Usize, dp, 0, x);
-        let w1 = b.add(w, eight);
-        b.goto(wl, vec![w1]);
-        b.at(we);
-        let one = b.c(Ty::Usize, 1);
-        let i1 = b.add(i, one);
-        b.goto(lp_, vec![i1]);
-        b.at(done);
-        b.store(Ty::Usize, 0, HEAD as i128, zero);
-        b.store(Ty::Usize, 0, LEN as i128, n);
-        let u0 = b.emit(Ty::Unit, Op::Const(0));
-        b.term(Term::Ret(u0));
-        b.at(gr);
         let cap = b.load(Ty::Usize, 0, CAPF as i128);
         let two = b.c(Ty::Usize, 2);
         let c2 = b.mul(cap, two);

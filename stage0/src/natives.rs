@@ -857,7 +857,7 @@ impl Interp {
                     Some(Val::Int(v, _)) => (v.max(1) as usize).min(usize::MAX / 2),
                     _ => 1,
                 };
-                let st = Rc::new(ChanState { cap, q: RefCell::new(VecDeque::new()), senders: Cell::new(0), receivers: Cell::new(0) });
+                let st = Rc::new(ChanState { cap, rwait: Cell::new(0), q: RefCell::new(VecDeque::new()), senders: Cell::new(0), receivers: Cell::new(0) });
                 let tx = Val::Chan(Rc::new(ChanEnd::new(st.clone(), true)));
                 let rx = Val::Chan(Rc::new(ChanEnd::new(st, false)));
                 Ok(ok(Val::Tuple(Rc::new(vec![tx, rx]))))
@@ -1227,9 +1227,12 @@ impl Interp {
                             let e = StructV { ty: "std.sync.SendError".into(), f: RefCell::new(vec![("value".into(), a0)]) };
                             return Ok(err(Val::Struct(Rc::new(e))));
                         }
-                        if !self.run_one_pending()? {
-                            return panic(DEADLOCK_SEND);
+                        // 保留のスレッドがあるか、上の枠が同じチャネルの `recv` で止まっているなら、容量を超えて続ける
+                        // (入れ子で走るスレッドは main に戻れないので、保留のスレッドを先に走らせると受け手が行き詰まる)。
+                        if self.threads.iter().any(|t| t.state.get() == 0) || end.st.rwait.get() > 0 {
+                            break;
                         }
+                        return panic(DEADLOCK_SEND);
                     }
                     end.st.q.borrow_mut().push_back(a0);
                     Ok(ok(Val::Unit))
@@ -1245,7 +1248,10 @@ impl Interp {
                             return Ok(err(Val::Struct(Rc::new(e))));
                         }
                         // 空で、送信側はまだ生きている: 保留中のスレッドを走らせて、送ってくるのを待つ。
-                        if !self.run_one_pending()? {
+                        end.st.rwait.set(end.st.rwait.get() + 1);
+                        let ran = self.run_one_pending();
+                        end.st.rwait.set(end.st.rwait.get() - 1);
+                        if !ran? {
                             return panic(DEADLOCK_RECV);
                         }
                     }
