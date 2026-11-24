@@ -1304,6 +1304,7 @@ i32 ksn_rt_sys_io_poll(i32 block) {
             if (ksn_io_tab[i].st == 1 && ksn_io_tab[i].at >= 0 && (best < 0 || ksn_io_tab[i].at < best)) best = ksn_io_tab[i].at;
         }
         timeout = best < 0 ? -1 : (int)(best > now ? best - now : 0);
+        if (block == 2 && (timeout < 0 || timeout > 1)) timeout = 1; /* 複数スレッドの実行器: 注入列・完了を見直すため短く待つ */
     }
     struct epoll_event evs[256];
     int n = epoll_wait(ksn_io_ep, evs, 256, timeout);
@@ -1356,6 +1357,205 @@ i32 ksn_rt_sys_io_poll(i32 block) { (void)block; return 0; }
 i32 ksn_rt_sys_io_ready(i32 fd) { (void)fd; return 1; }
 i32 ksn_rt_sys_io_take(i32 fd) { (void)fd; return 0; }
 i32 ksn_rt_sys_io_pending(void) { return 0; }
+#endif
+
+/* 複数スレッドの実行器 (`std.task.block_on_threads`、設計_多重化したネット.md 9〜17 章) の共有の核。
+   ワーカーごとの実行器 (タスクの表・リアクター) はスレッドごとで、ここは「まだ始まっていないタスク」の注入列と、完了の印、眠りと全員待ちの検出だけを持つ。
+   状態はすべて 1 本の mutex の下 (正しさを優先する)。`epoch` は「何か起きた」の世代で、ワーカーは走査の前に読み、眠るときに同じ値を渡す
+   (走査と眠りの間の出来事を取りこぼさない)。 */
+#if defined(__linux__)
+typedef struct ksn_mt_item {
+    struct ksn_mt_item *qnext;
+    struct ksn_mt_item *all;
+    void *fp;
+    uint32_t tag;
+    uint32_t state; /* 0 = 待ち (注入列)、1 = 走行中、2 = 終わり、3 = 取り消し */
+    uint32_t cancel; /* 走行中の取り消しの印 */
+} ksn_mt_item;
+
+static struct {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    ksn_mt_item *qh, *qt, *all;
+    i64 unfinished;
+    uint64_t epoch;
+    int stop, on;
+    i64 n, idle;
+    i64 nthr;
+    i64 thr[64];
+} ksn_mt = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0}};
+
+#define KSN_MT_MARK ((uint64_t)1 << 62)
+#define KSN_MT_IT(id) ((ksn_mt_item *)(uintptr_t)((uint64_t)(id) & ~KSN_MT_MARK))
+
+static void ksn_mt_bump(void) { /* mu を持って呼ぶ */
+    ksn_mt.epoch++;
+    ksn_mt.idle = 0;
+    pthread_cond_broadcast(&ksn_mt.cv);
+}
+
+i64 ksn_rt_sys_mt_begin(i64 n) {
+    pthread_mutex_lock(&ksn_mt.mu);
+    if (n > 64) n = 64;
+    ksn_mt.qh = ksn_mt.qt = ksn_mt.all = NULL;
+    ksn_mt.unfinished = 0;
+    ksn_mt.stop = 0;
+    ksn_mt.idle = 0;
+    ksn_mt.nthr = 0;
+    ksn_mt.n = n;
+    ksn_mt.on = n > 1;
+    i64 r = ksn_mt.on ? n : 0;
+    pthread_mutex_unlock(&ksn_mt.mu);
+    return r;
+}
+
+i32 ksn_rt_sys_mt_on(void) { return __atomic_load_n(&ksn_mt.on, __ATOMIC_ACQUIRE); }
+
+i64 ksn_rt_sys_mt_push(uint32_t tag, void *fp) {
+    ksn_mt_item *it = (ksn_mt_item *)calloc(1, sizeof *it);
+    if (!it) { fputs("panic: std.task.spawn: out of memory\n", stderr); exit(101); }
+    it->fp = fp;
+    it->tag = tag;
+    pthread_mutex_lock(&ksn_mt.mu);
+    it->all = ksn_mt.all;
+    ksn_mt.all = it;
+    if (ksn_mt.qt) ksn_mt.qt->qnext = it; else ksn_mt.qh = it;
+    ksn_mt.qt = it;
+    ksn_mt.unfinished++;
+    ksn_mt_bump();
+    pthread_mutex_unlock(&ksn_mt.mu);
+    return (i64)((uintptr_t)it | KSN_MT_MARK);
+}
+
+/* 注入列の先頭を取って「走行中」にする。取り消し済みは捨てる。無ければ NULL。 */
+i64 ksn_rt_sys_mt_take(void) {
+    ksn_mt_item *it = NULL;
+    pthread_mutex_lock(&ksn_mt.mu);
+    while (ksn_mt.qh) {
+        ksn_mt_item *c = ksn_mt.qh;
+        ksn_mt.qh = c->qnext;
+        if (!ksn_mt.qh) ksn_mt.qt = NULL;
+        c->qnext = NULL;
+        if (c->state == 0) {
+            __atomic_store_n(&c->state, 1, __ATOMIC_RELEASE);
+            it = c;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&ksn_mt.mu);
+    return it ? (i64)((uintptr_t)it | KSN_MT_MARK) : 0;
+}
+
+void ksn_rt_sys_mt_finish(i64 id, uint32_t cancelled) {
+    ksn_mt_item *it = KSN_MT_IT(id);
+    pthread_mutex_lock(&ksn_mt.mu);
+    __atomic_store_n(&it->state, cancelled ? 3 : 2, __ATOMIC_RELEASE);
+    ksn_mt.unfinished--;
+    ksn_mt_bump();
+    pthread_mutex_unlock(&ksn_mt.mu);
+}
+
+uint32_t ksn_rt_sys_mt_state(i64 id) { return __atomic_load_n(&KSN_MT_IT(id)->state, __ATOMIC_ACQUIRE); }
+void *ksn_rt_sys_mt_fp(i64 id) { return KSN_MT_IT(id)->fp; }
+uint32_t ksn_rt_sys_mt_tag(i64 id) { return KSN_MT_IT(id)->tag; }
+uint32_t ksn_rt_sys_mt_cancelled(i64 id) { return __atomic_load_n(&KSN_MT_IT(id)->cancel, __ATOMIC_ACQUIRE); }
+
+/* 取り消し: 始まる前なら 1 を返して枠は呼び出し側が捨てる (item の fp は外す)。走行中なら印だけ立てて 0。 */
+uint32_t ksn_rt_sys_mt_cancel(i64 id) {
+    ksn_mt_item *it = KSN_MT_IT(id);
+    uint32_t r = 0;
+    pthread_mutex_lock(&ksn_mt.mu);
+    if (it->state == 0) {
+        __atomic_store_n(&it->state, 3, __ATOMIC_RELEASE);
+        ksn_mt.unfinished--;
+        r = 1;
+        ksn_mt_bump();
+    } else if (it->state == 1) {
+        __atomic_store_n(&it->cancel, 1, __ATOMIC_RELEASE);
+        ksn_mt_bump();
+    }
+    pthread_mutex_unlock(&ksn_mt.mu);
+    return r;
+}
+
+void ksn_rt_sys_mt_clear_fp(i64 id) { KSN_MT_IT(id)->fp = NULL; }
+
+i64 ksn_rt_sys_mt_epoch(void) {
+    pthread_mutex_lock(&ksn_mt.mu);
+    i64 e = (i64)ksn_mt.epoch + 1; /* 0 を「未取得」の印に使えるよう 1 から */
+    pthread_mutex_unlock(&ksn_mt.mu);
+    return e;
+}
+
+/* 眠る。世代が `seen` のままなら、起きる出来事 (push・finish・cancel・stop) まで待つ。0 = 起きた、2 = 止めの旗、3 = 全員待ち (deadlock)。 */
+uint32_t ksn_rt_sys_mt_sleep(i64 seen) {
+    uint32_t r = 0;
+    pthread_mutex_lock(&ksn_mt.mu);
+    if ((i64)ksn_mt.epoch + 1 == seen && !ksn_mt.stop) {
+        ksn_mt.idle++;
+        if (ksn_mt.idle >= ksn_mt.n) {
+            r = 3;
+        } else {
+            while ((i64)ksn_mt.epoch + 1 == seen && !ksn_mt.stop) pthread_cond_wait(&ksn_mt.cv, &ksn_mt.mu);
+        }
+    }
+    if (r == 0 && ksn_mt.stop) r = 2;
+    pthread_mutex_unlock(&ksn_mt.mu);
+    return r;
+}
+
+void ksn_rt_sys_mt_stop(void) {
+    pthread_mutex_lock(&ksn_mt.mu);
+    ksn_mt.stop = 1;
+    ksn_mt_bump();
+    pthread_mutex_unlock(&ksn_mt.mu);
+}
+
+uint32_t ksn_rt_sys_mt_stopped(void) {
+    pthread_mutex_lock(&ksn_mt.mu);
+    uint32_t r = (uint32_t)ksn_mt.stop;
+    pthread_mutex_unlock(&ksn_mt.mu);
+    return r;
+}
+
+i64 ksn_rt_sys_mt_unfinished(void) {
+    pthread_mutex_lock(&ksn_mt.mu);
+    i64 r = ksn_mt.unfinished;
+    pthread_mutex_unlock(&ksn_mt.mu);
+    return r;
+}
+
+void ksn_rt_sys_mt_reg(i64 idx) {
+    pthread_mutex_lock(&ksn_mt.mu);
+    if (ksn_mt.nthr < 64) ksn_mt.thr[ksn_mt.nthr++] = idx;
+    pthread_mutex_unlock(&ksn_mt.mu);
+}
+i64 ksn_rt_sys_mt_nthr(void) {
+    pthread_mutex_lock(&ksn_mt.mu);
+    i64 r = ksn_mt.nthr;
+    pthread_mutex_unlock(&ksn_mt.mu);
+    return r;
+}
+i64 ksn_rt_sys_mt_thr(i64 k) {
+    pthread_mutex_lock(&ksn_mt.mu);
+    i64 r = ksn_mt.thr[k];
+    pthread_mutex_unlock(&ksn_mt.mu);
+    return r;
+}
+
+/* 終わり: 項目を捨てて、実行器を切る。ワーカーは join 済み。 */
+void ksn_rt_sys_mt_end(void) {
+    pthread_mutex_lock(&ksn_mt.mu);
+    ksn_mt_item *it = ksn_mt.all;
+    ksn_mt.all = ksn_mt.qh = ksn_mt.qt = NULL;
+    __atomic_store_n(&ksn_mt.on, 0, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&ksn_mt.mu);
+    while (it) {
+        ksn_mt_item *n = it->all;
+        free(it);
+        it = n;
+    }
+}
 #endif
 
 /* `std.thread.sleep(ms)` / `std.thread.yield_now()` (スレッドが無くても使える) */

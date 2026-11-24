@@ -11,10 +11,12 @@
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 
-use crate::kir::{Func, Op, Pointee, Ty, VId};
+use crate::kir::{Func, Op, Pointee, Term, Ty, VId};
 use crate::kir_suspend as ks;
 use crate::parser::V;
 
+use super::fb::Fb;
+use super::thread_lower as thr;
 use super::{coll, Lw, LR};
 
 thread_local! {
@@ -22,7 +24,12 @@ thread_local! {
     static TASKS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// 実行器を使ったか (使わなければ実行器は足さない)。
     static USED: RefCell<bool> = const { RefCell::new(false) };
+    /// `block_on_threads` を使ったか (ワーカーの起動・合流の補助と入口を足す)。
+    static MT_USED: RefCell<bool> = const { RefCell::new(false) };
 }
+
+/// ワーカーの入口の鍵 (`ksn.thr.site.<これ>` が入口、tag はこの鍵の FNV-1a)。
+const WORKER_KEY: &str = "ksn.task.worker";
 
 /// 登録された閉包の鍵 (番号順)。`kir_suspend::transform` が、その `.new` / `.poll` を作る。
 pub(super) fn task_keys() -> Vec<String> {
@@ -33,6 +40,7 @@ pub(super) fn task_keys() -> Vec<String> {
 pub(super) fn reset() {
     TASKS.with(|t| t.borrow_mut().clear());
     USED.with(|u| *u.borrow_mut() = false);
+    MT_USED.with(|u| *u.borrow_mut() = false);
 }
 
 /// 閉包 `key` の番号 (初めてなら登録する)。
@@ -53,6 +61,22 @@ fn mark_used() {
     USED.with(|u| *u.borrow_mut() = true);
 }
 
+/// スレッドの補助の関数 (`thread_lower::finish`) より前に呼ぶ: `block_on_threads` を使っていれば、ワーカーの入口 `ksn.thr.site.ksn.task.worker` を足す
+/// (`ksn.thr.exec` が入口の一覧から作られるため)。
+pub(super) fn pre_finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
+    if !MT_USED.with(|u| *u.borrow()) {
+        return;
+    }
+    let mut b = Fb::new(&[Ty::Ptr]);
+    b.emit(Ty::Unit, Op::Call { callee: ks::WORKER.to_string(), args: vec![] });
+    let u = b.emit(Ty::Unit, Op::Const(0));
+    b.term(Term::Ret(u));
+    let mut f = b.build(&format!("{}{}", thr::SITE, WORKER_KEY), &[], Ty::Unit);
+    f.uses = ["alloc", "env", "io.console", "io.fs", "io.net", "process", "rand", "thread", "time"].iter().map(|s| s.to_string()).collect();
+    f.may_panic = true;
+    ok.push((f, BTreeSet::from([ks::WORKER.to_string()])));
+}
+
 /// 全部の関数を下ろした後に、実行器 (`ksn.task.*`) を `ok` に足す。使われていなければ何もしない。
 /// 表には、本体 (`K.poll` を作る閉包) が `ok` にあるものだけを入れる。
 pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
@@ -67,7 +91,8 @@ pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
             .map(|(i, k)| (i as u32, k.clone()))
             .collect()
     });
-    let funcs = ks::exec_funcs(&present).expect("実行器の KIR は読める (kir_suspend の試験で確かめている)");
+    let mt = MT_USED.with(|u| *u.borrow());
+    let funcs = ks::exec_funcs_mt(&present, if mt { Some(thr::tag_of(WORKER_KEY)) } else { None }).expect("実行器の KIR は読める (kir_suspend の試験で確かめている)");
     ok.extend(funcs.into_iter().map(|f| (f, BTreeSet::new())));
 }
 
@@ -111,9 +136,10 @@ pub(super) fn path_call(lw: &mut Lw, segs: &[String], args: &[V], line: usize) -
     let name = segs.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     match name.as_slice() {
         ["std", "task", "block_on"] => Some(block_on(lw, args, line)),
-        ["std", "task", "spawn_local"] | ["std", "task", "spawn"] => Some(spawn_local(lw, args, line)),
-        // 複数スレッドの実行器: アロケータと `n` は協調実行では使わず、`block_on` と同じに下ろす (ネイティブの実スレッドは 2b)。
-        ["std", "task", "block_on_threads"] if args.len() == 3 => Some(block_on(lw, &args[2..], line)),
+        ["std", "task", "spawn_local"] => Some(spawn_local(lw, args, line, ks::SPAWN)),
+        ["std", "task", "spawn"] => Some(spawn_local(lw, args, line, ks::SPAWN_ANY)),
+        // 複数スレッドの実行器: アロケータは使わない。`n` はネイティブ (Linux) だけが使い、参照実行器・木走査は協調実行のまま (決定的)。
+        ["std", "task", "block_on_threads"] if args.len() == 3 => Some(block_on_threads(lw, args, line)),
         ["std", "task", "yield_now"] => Some(yield_now(lw, args, line)),
         ["std", "task", "await_js"] => Some(await_js(lw, args, line)),
         ["std", "task", "wait_io"] => Some(wait_io(lw, args, line)),
@@ -153,15 +179,40 @@ fn block_on(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
     Ok(Some(v))
 }
 
-/// `std.task.spawn_local(閉包)`: 閉包を実行器の表へ登録し、`Task<T>` を返す。
-fn spawn_local(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
+/// `std.task.block_on_threads(アロケータ, n, 閉包)`: `n` 本のワーカー (ネイティブ Linux) で `block_on` と同じ意味に走らせる。
+fn block_on_threads(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
+    let [_alloc, nv, arg] = args else { return lw.err(line, "std.task.block_on_threads の引数の個数が違う") };
+    let (key, caps, ret) = closure_of(lw, arg, line, false)?;
+    let Some(n) = lw.expr(nv)? else { return Ok(None) };
+    mark_used();
+    MT_USED.with(|u| *u.borrow_mut() = true);
+    // ワーカーの入口 (`site_for_worker`) は `pre_finish` が足す。補助 (`ksn.thr.*`) を作らせるため、使う名前を呼び先に入れる。
+    lw.callees.insert(format!("{}{}", thr::SITE, WORKER_KEY));
+    for name in [thr::TNEW, thr::TENT, thr::TSTART, thr::TREL, thr::JOIN] {
+        lw.callees.insert(name.to_string());
+    }
+    let tag = task_no(&key);
+    let root = new_frame(lw, &key, &caps);
+    let tagv = lw.emit(Ty::U32, Op::Const(tag as i128));
+    rt_call(lw, ks::MT_BEGIN, vec![n], Ty::Unit);
+    rt_call(lw, ks::RUN, vec![tagv, root], Ty::Unit);
+    let zero = lw.emit(Ty::Usize, Op::Const(0));
+    let rfp = rt_call(lw, ks::FP, vec![zero], Ty::Ptr);
+    let v = result_of(lw, rfp, ret, line)?;
+    rt_call(lw, ks::MT_END, vec![], Ty::Unit);
+    rt_call(lw, ks::FINISH, vec![], Ty::Unit);
+    Ok(Some(v))
+}
+
+/// `std.task.spawn_local(閉包)` / `std.task.spawn(閉包)`: 閉包を実行器の表へ登録し、`Task<T>` を返す (`spawn_fn` は `ksn.task.spawn` か `spawn_any`)。
+fn spawn_local(lw: &mut Lw, args: &[V], line: usize, spawn_fn: &str) -> LR<Option<VId>> {
     let [arg] = args else { return lw.err(line, "std.task.spawn_local の引数の個数が違う") };
     let (key, caps, ret) = closure_of(lw, arg, line, true)?;
     mark_used();
     let tag = task_no(&key);
     let root = new_frame(lw, &key, &caps);
     let tagv = lw.emit(Ty::U32, Op::Const(tag as i128));
-    let ptr = rt_call(lw, ks::SPAWN, vec![tagv, root], Ty::Ptr);
+    let ptr = rt_call(lw, spawn_fn, vec![tagv, root], Ty::Ptr);
     let id = lw.emit(Ty::Usize, Op::MemLoad { p: ptr, off: 0 });
     let gen = lw.emit(Ty::Usize, Op::MemLoad { p: ptr, off: 8 });
     lw.emit(Ty::Unit, Op::HeapFree(ptr));

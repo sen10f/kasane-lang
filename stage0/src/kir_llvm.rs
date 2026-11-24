@@ -321,6 +321,27 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
         "ksn.io.ready" => def("i32", "i32 %arg0", "  %r = call i32 @ksn_rt_sys_io_ready(i32 %arg0)\n  ret i32 %r\n"),
         "ksn.io.take" => def("i32", "i32 %arg0", "  %r = call i32 @ksn_rt_sys_io_take(i32 %arg0)\n  ret i32 %r\n"),
         "ksn.io.pending" => def("i32", "", "  %r = call i32 @ksn_rt_sys_io_pending()\n  ret i32 %r\n"),
+        // 複数スレッドの実行器の共有の核 (Linux、sysrt.c の `ksn_rt_sys_mt_*`)。Linux 以外は KIR の本体 (協調実行) のまま。
+        "ksn.mt.begin" => def("i64", "i64 %arg0", "  %r = call i64 @ksn_rt_sys_mt_begin(i64 %arg0)\n  ret i64 %r\n"),
+        "ksn.mt.on" => def("i32", "", "  %r = call i32 @ksn_rt_sys_mt_on()\n  ret i32 %r\n"),
+        "ksn.mt.push" => def("i64", "i32 %arg0, ptr %arg1", "  %r = call i64 @ksn_rt_sys_mt_push(i32 %arg0, ptr %arg1)\n  ret i64 %r\n"),
+        "ksn.mt.take" => def("i64", "", "  %r = call i64 @ksn_rt_sys_mt_take()\n  ret i64 %r\n"),
+        "ksn.mt.finish" => def("i8", "i64 %arg0, i32 %arg1", "  call void @ksn_rt_sys_mt_finish(i64 %arg0, i32 %arg1)\n  ret i8 0\n"),
+        "ksn.mt.state" => def("i32", "i64 %arg0", "  %r = call i32 @ksn_rt_sys_mt_state(i64 %arg0)\n  ret i32 %r\n"),
+        "ksn.mt.fp" => def("ptr", "i64 %arg0", "  %r = call ptr @ksn_rt_sys_mt_fp(i64 %arg0)\n  ret ptr %r\n"),
+        "ksn.mt.tag" => def("i32", "i64 %arg0", "  %r = call i32 @ksn_rt_sys_mt_tag(i64 %arg0)\n  ret i32 %r\n"),
+        "ksn.mt.cancelled" => def("i32", "i64 %arg0", "  %r = call i32 @ksn_rt_sys_mt_cancelled(i64 %arg0)\n  ret i32 %r\n"),
+        "ksn.mt.cancel" => def("i32", "i64 %arg0", "  %r = call i32 @ksn_rt_sys_mt_cancel(i64 %arg0)\n  ret i32 %r\n"),
+        "ksn.mt.clear_fp" => def("i8", "i64 %arg0", "  call void @ksn_rt_sys_mt_clear_fp(i64 %arg0)\n  ret i8 0\n"),
+        "ksn.mt.epoch" => def("i64", "", "  %r = call i64 @ksn_rt_sys_mt_epoch()\n  ret i64 %r\n"),
+        "ksn.mt.sleep" => def("i32", "i64 %arg0", "  %r = call i32 @ksn_rt_sys_mt_sleep(i64 %arg0)\n  ret i32 %r\n"),
+        "ksn.mt.stop" => def("i8", "", "  call void @ksn_rt_sys_mt_stop()\n  ret i8 0\n"),
+        "ksn.mt.stopped" => def("i32", "", "  %r = call i32 @ksn_rt_sys_mt_stopped()\n  ret i32 %r\n"),
+        "ksn.mt.unfinished" => def("i64", "", "  %r = call i64 @ksn_rt_sys_mt_unfinished()\n  ret i64 %r\n"),
+        "ksn.mt.reg" => def("i8", "i64 %arg0", "  call void @ksn_rt_sys_mt_reg(i64 %arg0)\n  ret i8 0\n"),
+        "ksn.mt.nthr" => def("i64", "", "  %r = call i64 @ksn_rt_sys_mt_nthr()\n  ret i64 %r\n"),
+        "ksn.mt.thr" => def("i64", "i64 %arg0", "  %r = call i64 @ksn_rt_sys_mt_thr(i64 %arg0)\n  ret i64 %r\n"),
+        "ksn.mt.end" => def("i8", "", "  call void @ksn_rt_sys_mt_end()\n  ret i8 0\n"),
         "ksn.time.mono" => def("i64", "", "  %r = call i64 @ksn_rt_sys_now_ns()\n  ret i64 %r\n"),
         "ksn.time.sleep" => def("i8", "i64 %arg0", "  call void @ksn_rt_sys_sleep_ms(i64 %arg0)\n  ret i8 0\n"),
         "ksn.thr.lock" => def("i8", "", "  %r = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  ret i8 0\n"),
@@ -822,7 +843,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             continue;
         }
         funcs.push('\n');
-        let io_native = !f.key.starts_with("ksn.io.") || io_reactor_target(target);
+        let io_native = !(f.key.starts_with("ksn.io.") || f.key.starts_with("ksn.mt.")) || io_reactor_target(target);
         if let Some(text) = thread_override(&f.key, m).filter(|_| io_native) {
             if f.key.starts_with("ksn.io.") {
                 cx.decl("declare i32 @ksn_rt_sys_io_park(i32, i32)");
@@ -830,6 +851,31 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
                 cx.decl("declare i32 @ksn_rt_sys_io_ready(i32)");
                 cx.decl("declare i32 @ksn_rt_sys_io_take(i32)");
                 cx.decl("declare i32 @ksn_rt_sys_io_pending()");
+            } else if f.key.starts_with("ksn.mt.") {
+                for d in [
+                    "declare i64 @ksn_rt_sys_mt_begin(i64)",
+                    "declare i32 @ksn_rt_sys_mt_on()",
+                    "declare i64 @ksn_rt_sys_mt_push(i32, ptr)",
+                    "declare i64 @ksn_rt_sys_mt_take()",
+                    "declare void @ksn_rt_sys_mt_finish(i64, i32)",
+                    "declare i32 @ksn_rt_sys_mt_state(i64)",
+                    "declare ptr @ksn_rt_sys_mt_fp(i64)",
+                    "declare i32 @ksn_rt_sys_mt_tag(i64)",
+                    "declare i32 @ksn_rt_sys_mt_cancelled(i64)",
+                    "declare i32 @ksn_rt_sys_mt_cancel(i64)",
+                    "declare void @ksn_rt_sys_mt_clear_fp(i64)",
+                    "declare i64 @ksn_rt_sys_mt_epoch()",
+                    "declare i32 @ksn_rt_sys_mt_sleep(i64)",
+                    "declare void @ksn_rt_sys_mt_stop()",
+                    "declare i32 @ksn_rt_sys_mt_stopped()",
+                    "declare i64 @ksn_rt_sys_mt_unfinished()",
+                    "declare void @ksn_rt_sys_mt_reg(i64)",
+                    "declare i64 @ksn_rt_sys_mt_nthr()",
+                    "declare i64 @ksn_rt_sys_mt_thr(i64)",
+                    "declare void @ksn_rt_sys_mt_end()",
+                ] {
+                    cx.decl(d);
+                }
             } else if f.key.starts_with("ksn.time.") {
                 cx.decl("declare i64 @ksn_rt_sys_now_ns()");
                 cx.decl("declare void @ksn_rt_sys_sleep_ms(i64)");

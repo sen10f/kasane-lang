@@ -1,0 +1,43 @@
+fn ksn.task.mt_begin key=ksn.task.mt_begin uses=[alloc] panics=may stack=- ret=unit
+  b0(%0: usize):
+    %1: usize = call ksn.mt.begin(%0)
+    %2: usize = const.usize 1
+    br b1(%2, %1)
+  b1(%5: usize, %6: usize):
+    %7: bool = icmp.ge.usize %5, %6
+    br_if %7, b3(), b2(%5, %6)
+  b2(%8: usize, %9: usize):
+    %10: usize = call ksn.thr.new()
+    %11: ptr = call ksn.thr.ent(%10)
+    %12: u64 = const.u64 @WTAG@
+    %13: unit = mem.store.u64 %11 +8, %12
+    %14: unit = call ksn.mt.reg(%10)
+    %15: unit = call ksn.thr.start(%10)
+    %16: usize = const.usize 1
+    %17: usize = add.usize.wrap %8, %16
+    br b1(%17, %9)
+  b3():
+    %18: unit = const.unit ()
+    ret %18
+end ksn.task.mt_begin
+
+fn ksn.task.mt_end key=ksn.task.mt_end uses=[alloc] panics=may stack=- ret=unit
+  b0():
+    %0: usize = call ksn.mt.nthr()
+    %1: usize = const.usize 0
+    br b1(%1, %0)
+  b1(%2: usize, %3: usize):
+    %4: bool = icmp.ge.usize %2, %3
+    br_if %4, b2(), b3(%2, %3)
+  b2():
+    %5: unit = call ksn.mt.end()
+    %6: unit = const.unit ()
+    ret %6
+  b3(%7: usize, %8: usize):
+    %9: usize = call ksn.mt.thr(%7)
+    %10: unit = call ksn.thr.join(%9)
+    %11: unit = call ksn.thr.release(%9)
+    %12: usize = const.usize 1
+    %13: usize = add.usize.wrap %7, %12
+    br b1(%13, %8)
+end ksn.task.mt_end
