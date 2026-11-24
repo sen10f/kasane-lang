@@ -58,12 +58,12 @@ fn std.net.TcpStream.write_async(self: &mut std.net.TcpStream, buffer: &[u8]) ->
     } else {
         n
     }
-    let part = match buffer.sub(0usize, chunk) {
-        Some(p) => p
-        None => return Err(std.net.timed_out())
-    }
     let mut out = Err(std.net.timed_out())
     loop {
+        let part = match buffer.sub(0usize, chunk) {
+            Some(p) => p
+            None => return Err(std.net.timed_out())
+        }
         match self.write_try(part) {
             Ok(k) => {
                 out = Ok(k)
