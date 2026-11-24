@@ -1582,13 +1582,19 @@ impl<'a> W<'a> {
             if pp && self.cap_names.contains(qn) && !qp {
                 self.diag("E3030", format!("stores a reference to the captured variable `{}` into closure argument `{}`'s pointee, which outlives the closure's environment", qn, pn), line);
             }
-            return;
+            // 引数どうし: 閉包の引数も `fn` と同じ省略 (参照ごとに別の領域) で、名前付きの関係は書けない。
+            if !(pp && qp && pn != qn) {
+                return;
+            }
         }
         if pn == qn {
             return;
         }
         let d = &self.p.defs[self.di];
-        let ps0: Vec<(String, Ty)> = d.params.iter().map(|(n, t)| (n.clone(), from_v(t, &self.gn))).collect();
+        let ps0: Vec<(String, Ty)> = match &self.cl {
+            Some(c) => c.params.clone(),
+            None => d.params.iter().map(|(n, t)| (n.clone(), from_v(t, &self.gn))).collect(),
+        };
         let (ps, _) = elide_sig(&ps0, &Ty::Unit);
         let (Some(pi), Some(qi)) = (ps0.iter().position(|(n, _)| n == pn), ps0.iter().position(|(n, _)| n == qn)) else { return };
         let Ty::Ref(true, inner, _) = &ps[pi] else { return };
@@ -1625,44 +1631,7 @@ impl<'a> W<'a> {
     /// 受け手の型の境界のトレイトが持つメソッドの署名 (`Self` を受け手の指す先の型へ置き換える)。
     /// `Callee::Unknown` の経路形 `x.m()` (`x: &T`, `T: Tr`) はここで宣言の署名どおりに読む。
     fn bound_sig(&self, recv_ty: &Ty, meth: &str) -> Option<(Vec<(String, Ty)>, Ty, DefId)> {
-        let d = &self.p.defs[self.di];
-        let mut cur = recv_ty;
-        let pn = loop {
-            match cur {
-                Ty::Ref(_, inner, _) => cur = inner,
-                Ty::Param(p) => break p.clone(),
-                _ => return None,
-            }
-        };
-        let Some(g) = d.generics.iter().find(|g| g.0 == "type" && g.1 == pn) else { return None };
-        let dt = recv_ty.strip().clone();
-        // 境界のトレイトとそのスーパートレイト (`Copy` の `Clone` など) を幅優先で探す。
-        let mut queue: Vec<String> = items(&g.2).iter().filter_map(|b| if let V::L(bx) = b { resolve_trait_fqn(self.p, &st(&bx[0])) } else { None }).collect();
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut qi = 0;
-        while qi < queue.len() {
-            let tr = queue[qi].clone();
-            qi += 1;
-            if !seen.insert(tr.clone()) {
-                continue;
-            }
-            let Some(&ti) = self.p.types.get(&tr) else { continue };
-            let td = &self.p.defs[ti];
-            if td.kw != "trait" {
-                continue;
-            }
-            let Some((_, ps_v, ret_v)) = td.trait_sigs.iter().find(|s| s.0 == meth) else {
-                queue.extend(td.requires.iter().filter_map(|r| resolve_trait_fqn(self.p, &r.0)));
-                continue;
-            };
-            let mut gn = td.gnames();
-            gn.insert("Self".to_string());
-            let mut bind: HashMap<String, Ty> = HashMap::new();
-            bind.insert("Self".into(), dt.clone());
-            let ps0: Vec<(String, Ty)> = ps_v.iter().map(|(n, v)| (n.clone(), subst(&from_v(v, &gn), &bind))).collect();
-            return Some((ps0, subst(&from_v(ret_v, &gn), &bind), ti));
-        }
-        None
+        bound_sig_of(self.p, self.di, recv_ty, meth)
     }
 
     fn dyn_sig(&self, ti: DefId, meth: &str, recv_ty: &Ty) -> Option<(Vec<(String, Ty)>, Ty)> {
@@ -2044,3 +2013,45 @@ fn has_closure(t: &Ty) -> bool {
         _ => false,
     }
 }
+
+pub(super) fn bound_sig_of(p: &Program, di: DefId, recv_ty: &Ty, meth: &str) -> Option<(Vec<(String, Ty)>, Ty, DefId)> {
+    let d = &p.defs[di];
+    let mut cur = recv_ty;
+    let pn = loop {
+        match cur {
+            Ty::Ref(_, inner, _) => cur = inner,
+            Ty::Param(p) => break p.clone(),
+            _ => return None,
+        }
+    };
+    let Some(g) = d.generics.iter().find(|g| g.0 == "type" && g.1 == pn) else { return None };
+    let dt = recv_ty.strip().clone();
+    // 境界のトレイトとそのスーパートレイト (`Copy` の `Clone` など) を幅優先で探す。
+    let mut queue: Vec<String> = items(&g.2).iter().filter_map(|b| if let V::L(bx) = b { resolve_trait_fqn(p, &st(&bx[0])) } else { None }).collect();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut qi = 0;
+    while qi < queue.len() {
+        let tr = queue[qi].clone();
+        qi += 1;
+        if !seen.insert(tr.clone()) {
+            continue;
+        }
+        let Some(&ti) = p.types.get(&tr) else { continue };
+        let td = &p.defs[ti];
+        if td.kw != "trait" {
+            continue;
+        }
+        let Some((_, ps_v, ret_v)) = td.trait_sigs.iter().find(|s| s.0 == meth) else {
+            queue.extend(td.requires.iter().filter_map(|r| resolve_trait_fqn(p, &r.0)));
+            continue;
+        };
+        let mut gn = td.gnames();
+        gn.insert("Self".to_string());
+        let mut bind: HashMap<String, Ty> = HashMap::new();
+        bind.insert("Self".into(), dt.clone());
+        let ps0: Vec<(String, Ty)> = ps_v.iter().map(|(n, v)| (n.clone(), subst(&from_v(v, &gn), &bind))).collect();
+        return Some((ps0, subst(&from_v(ret_v, &gn), &bind), ti));
+    }
+    None
+}
+

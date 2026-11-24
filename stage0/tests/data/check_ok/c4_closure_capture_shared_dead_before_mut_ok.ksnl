@@ -1,0 +1,21 @@
+type t.W
+    a: std.string.String
+end t.W
+
+fn t.W.dup2(self: &mut t.W, o: &std.string.String) -> () uses [alloc] panics never
+    core.mem.drop(self.a.push_str(o.as_str()))
+end t.W.dup2
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let mut w = t.W {
+        a: std.string.String.new()
+    }
+    let other = std.string.String.new()
+    let ra = &w.a
+    let f = fn(_k: u32) -> usize capture [&ra] {
+        ra.len()
+    }
+    core.mem.drop(f(1u32))
+    w.dup2(&other)
+    Ok(())
+end t.main

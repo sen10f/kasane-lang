@@ -1,0 +1,15 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let keep = t.mk("keep")
+    let mut sref: &str = keep.as_str()
+    let f = fn(a: &str, b: &mut &str) -> () capture [] {
+        *b = a
+    }
+    f("x", &mut sref)
+    Ok(())
+end t.main
+
+fn t.mk(text: &str) -> std.string.String uses [alloc] panics never
+    let mut s = std.string.String.new()
+    core.mem.drop(s.push_str(text))
+    s
+end t.mk
