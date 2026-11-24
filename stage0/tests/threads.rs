@@ -1036,6 +1036,30 @@ fn kir_native_threads_have_no_data_races_under_threadsanitizer() {
     }
 }
 
+/// 陽性対照: 故意にデータ競合を起こすプログラム (`threads/tsan_race_control.ksnl`、生ポインタを `[unsafe]` モジュールで 2 スレッドから書く)。
+/// TSan が生成コードを計測していれば必ず "WARNING: ThreadSanitizer" を出す。出なければ TSan の試験は空振りなので失敗させる。
+#[test]
+fn tsan_positive_control_reports_a_deliberate_race() {
+    if !tsan_available() {
+        return;
+    }
+    let src = fs::read_to_string(root().join("stage0").join("tests").join("data").join("threads").join("tsan_race_control.ksnl")).unwrap();
+    let t = Tmp::new_raw("thr_tsan_control", &src);
+    let toml = fs::read_to_string(t.0.join("kasane.toml")).unwrap();
+    fs::write(t.0.join("kasane.toml"), toml.replacen("[dependencies]", "[unsafe]\nmodules = [\"t\"]\n\n[dependencies]", 1)).unwrap();
+    let cache = scratch::Scratch::at(format!("ksn_cache_tsan_control_{}", std::process::id()));
+    let mut c = Command::new(exe());
+    c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
+    c.env("KSN_CLANG_ARGS", "-fsanitize=thread -g -O1");
+    let o = c.output().unwrap();
+    let out = text(&o.stdout) + &text(&o.stderr);
+    assert_native_or_reasoned_skip(&out);
+    let p = native_or_launcher(t.0.join("target").join("debug").join("t.native"), &out);
+    let r = Command::new(&p).env("TSAN_OPTIONS", "halt_on_error=0").output().unwrap();
+    let err = text(&r.stderr);
+    assert!(err.contains("WARNING: ThreadSanitizer"), "陽性対照で TSan が競合を報告しない (TSan の試験が空振り)\n{}", err);
+}
+
 // ------------------------------------------------------------ 全員待ちの検出・Mutex のガードの寿命 (設計_KIR.md 22.7)
 
 /// 子プロセスを待つ。`Command::output` だと、全員待ちを検出できずに止まったとき、テストも止まってしまう。
