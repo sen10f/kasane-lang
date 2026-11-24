@@ -1,0 +1,18 @@
+type t.H[F: core.ops.Fn<(), (), E, P>, E: uses, P: panics]
+    f: F
+end t.H
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    t.run(t.H {
+        f: t.pan
+    })
+    Ok(())
+end t.main
+
+fn t.pan() -> () uses [] panics may
+    core.panic.panic("x")
+end t.pan
+
+fn t.run[F: core.ops.Fn<(), (), E, P>, E: uses, P: panics](h: t.H<F, E, P>) -> () uses [] panics never
+    h.f.call(())
+end t.run
