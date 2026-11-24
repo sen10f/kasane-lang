@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 型検査の段の比較: セルフホストの types.native と Rust 版 `ksn check --json` を並べる。
+# 型検査の段の比較: セルフホストの types と Rust 版 `ksn check --json` を並べる。
 #
 #   python3 -I compare.py [--group examples|apps|self|linear_ok|unsound|diag|all]
 #                         [--mine PATH] [--ksn PATH] [--keep]
@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 STD = os.path.join(ROOT, "spec", "stdlib")
 TOML = '[package]\nname = "t"\nversion = "0.1.0"\nedition = 1\nentry = "t.main"\n'
-MINE_DEFAULT = os.path.join(HERE, "target", "release", "types.native")
+MINE_DEFAULT = os.path.join(HERE, "target", "release", "types")
 KSN_DEFAULT = os.path.join(ROOT, "stage0", "target", "release", "ksn")
 
 MINE_RE = re.compile(r"^error (E\d+) (.+?):(\d+): ")

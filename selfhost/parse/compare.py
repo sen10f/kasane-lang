@@ -4,7 +4,7 @@
   python3 compare.py [--mine native|interp|COMMAND...] [--group NAME] [--list] [--details N]
                      [--files F...]
 
-  --mine native   target/release/parse.native (既定)
+  --mine native   target/release/parse (既定)
   --mine interp   `ksn run` (木走査)。パッケージ直下で実行する
   --group         examples / stdlib / linear_ok / bench / unsound / self (parse 自身のソース) / broken (複数回指定可。既定は先頭 5 つ)
   --files         グループの代わりにこのファイルだけを比べる
@@ -20,7 +20,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 KSN = os.path.join(ROOT, "stage0", "target", "release", "ksn")
-NATIVE = os.path.join(HERE, "target", "release", "parse.native")
+NATIVE = os.path.join(HERE, "target", "release", "parse")
 
 sys.path.insert(0, HERE)
 import rust_summary  # noqa: E402

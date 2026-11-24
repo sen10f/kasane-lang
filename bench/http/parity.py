@@ -12,7 +12,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT = os.path.join(HERE, "target")
-KASANE = os.path.join(ROOT, "examples", "shortener", "target", "release", "shortener.native")
+KASANE = os.path.join(ROOT, "examples", "shortener", "target", "release", "shortener")
 
 REQUESTS = [
     b"POST /shorten HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\n\r\nhttp://example.com/a",

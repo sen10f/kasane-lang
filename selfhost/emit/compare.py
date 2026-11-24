@@ -22,7 +22,7 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent  # selfhost/emit の 2 つ上 = ワークツリーのルート
 KSN = os.environ.get("KSN", str(ROOT / "stage0" / "target" / "release" / "ksn"))
-EMIT = os.environ.get("KSN_EMIT", str(HERE / "target" / "debug" / "emit.native"))
+EMIT = os.environ.get("KSN_EMIT", str(HERE / "target" / "debug" / "emit"))
 LINEAR = ROOT / "stage0" / "tests" / "data" / "linear_ok"
 RT_C = ROOT / "stage0" / "src" / "kir_rt.c"
 SYS_C = ROOT / "stage0" / "src" / "sysrt.c"
@@ -45,7 +45,7 @@ def make_pkg(work: pathlib.Path, src: pathlib.Path) -> pathlib.Path:
 
 def rust_reference(pkg: pathlib.Path):
     b = run([KSN, "build"], cwd=pkg)
-    exe = pkg / "target" / "debug" / "t.native"
+    exe = pkg / "target" / "debug" / "t"
     if b"native backend skipped" in b.stdout + b.stderr or not exe.exists():
         return None, "skip: the Rust reference is not native (" + (b.stdout + b.stderr).decode(errors="replace").strip().splitlines()[-1][:120] + ")"
     if b.returncode != 0:

@@ -3,7 +3,7 @@
 #
 # ui/kasane/golden の 5 シーン (rect, round_border, clip, text, alpha) を
 #   (1) ksn run (インタプリタ / 木走査)
-#   (2) ネイティブビルド (ui/kasane/golden/target/release/golden.native)
+#   (2) ネイティブビルド (ui/kasane/golden/target/release/golden)
 # で描き, ui/tools/golden.py で ui/golden/linux-llfmpipe/*.png と比較する.
 #
 # 使い方:
@@ -23,7 +23,7 @@ GOLDEN_DIR="$ROOT/ui/golden/linux-llvmpipe"
 PKG="$ROOT/ui/kasane/golden"
 TMP="${GOLDEN_TMP:-$(mktemp -d)}"
 SCENES="rect round_border clip text alpha demo"
-NATIVE_BIN="$PKG/target/release/golden.native"
+NATIVE_BIN="$PKG/target/release/golden"
 
 trap 'rm -rf "$TMP"' EXIT
 

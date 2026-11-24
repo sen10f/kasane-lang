@@ -33,8 +33,8 @@ AST の形 (要点): 再帰型を使わない。ノードは `Vec<Node>` に追�
 
 ```
 cd selfhost/parse
-ksn build --release              # target/release/parse.native (冷えた状態で約 4 秒)
-./target/release/parse.native FILE...     # または: ksn run FILE...  (木走査。引数は -- なしで渡る)
+ksn build --release              # target/release/parse (冷えた状態で約 4 秒)
+./target/release/parse FILE...     # または: ksn run FILE...  (木走査。引数は -- なしで渡る)
 ```
 
 出力 (ファイルごと): `== パス`、定義ごとに `種別 FQN 行番号`、`nodes N`。解析できなければ `error パス:行:桁: 説明 ['期待したトークン']`。`--kinds` を先頭に付けると AST の種別ごとの個数も出す。
@@ -93,7 +93,7 @@ Rust 版に「全体を構文解析して要約を出す」コマンドはない
 | 実行 | 時間 | 最大メモリ |
 | --- | ---: | ---: |
 | 木走査 `ksn run` | **44.5 秒** (約 330 行/秒) | 38 MB |
-| ネイティブ `parse.native` | **0.038 秒** (20 回平均、約 38 万行/秒) | 2.9 MB |
+| ネイティブ `parse` | **0.038 秒** (20 回平均、約 38 万行/秒) | 2.9 MB |
 | 比 | 約 1,170 倍 | |
 
 (参考: 比較用の Rust 版基準は 464 ファイル × 3 コマンドのプロセス起動を含めて 2.1 秒で、解析器そのものの速度ではない。)
@@ -180,8 +180,8 @@ Kasane 合計 1,318 行。テスト 2 本 (`ksn test`: `prefix` の規則)。`ks
 
 ```
 cd selfhost/resolve
-ksn build --release                                   # target/release/resolve.native (退避なし)
-./target/release/resolve.native PKG_DIR STD_DIR       # 例: ./target/release/resolve.native ../../examples/demo ../../spec/stdlib
+ksn build --release                                   # target/release/resolve (退避なし)
+./target/release/resolve PKG_DIR STD_DIR       # 例: ./target/release/resolve ../../examples/demo ../../spec/stdlib
 python3 -I compare.py [--group examples|apps|parse|broken|stdlib|all] [--mine interp] [-v]
 ```
 
@@ -334,8 +334,8 @@ python3 -I compare.py --group broken -v    # 差の中身
 cd stage0 && cargo build --release && cd ..
 cd selfhost/effects
 ksn check && ksn fmt --check
-ksn build --release                             # target/release/effects.native (退避なし)
-./target/release/effects.native . ../../spec/stdlib    # 自分自身。末尾の summary 行
+ksn build --release                             # target/release/effects (退避なし)
+./target/release/effects . ../../spec/stdlib    # 自分自身。末尾の summary 行
 cd ../.. && python3 -I selfhost/effects/compare.py --group all   # 約 3.5 分 (Rust 版を 2 回ずつ呼ぶ)
 ```
 
@@ -357,7 +357,7 @@ cd ../.. && python3 -I selfhost/effects/compare.py --group all   # 約 3.5 分 (
 - 作り方: `types.rec` が節 (ノード) ごとに型・呼び出しの種別 (`ck`: 1 関数・2 メソッド・3 局所の関数値・4 列挙子・5 局所のフィールド)・解決先の項目を記録する。`effects.tyinfo` が種別 2 の解決先を効果の表の番号へ変える。
 - 注意 (処理系と無関係の落とし穴): `resolve.table.add_file` は `rep.sig` で宣言ファイルかを見る。`resolve.parse_file` を通さずに呼ぶと `rep.sig` が古いままになり、標準の `.sig` で E1103 (`duplicate definition`) が出る。直接呼ぶ側で設定すること。
 
-再現 (10.6 と同じ。`effects.native` は `ksn build --release`):
+再現 (10.6 と同じ。`effects` は `ksn build --release`):
 
 ```
 cd selfhost/effects && ksn check && ksn fmt --check && ksn build --release
@@ -378,9 +378,9 @@ python3 -I compare.py --group all      # 約 105 秒
 ```
 cd selfhost/driver
 ksn build --release                              # Rust 版で ksnc を作る (不動点の出発点)
-./target/release/ksnc.native --stages            # 段の表 (どれが Kasane 製か Rust 製か)
-./target/release/ksnc.native check [DIR]         # 読み込み・名前解決・ksn check
-./target/release/ksnc.native build [--release] [--target <三つ組>] [DIR]
+./target/release/ksnc --stages            # 段の表 (どれが Kasane 製か Rust 製か)
+./target/release/ksnc check [DIR]         # 読み込み・名前解決・ksn check
+./target/release/ksnc build [--release] [--target <三つ組>] [DIR]
 ```
 
 `DIR` は省略時 `.`。入口の場所は、PWD と上へ辿った先の `spec/stdlib` から決める (`KSN_STDLIB` があればそれ)。`ksn` は `KSNC_KSN`、無ければ `<根>/stage0/target/release/ksn`、それも無ければ PATH の `ksn`。実際の clang は `KSNC_CLANG`、無ければ `KSN_CLANG`、それも無ければ `clang`。
@@ -438,7 +438,7 @@ ksnc が作ったものの確かめは、比べる前に `ksn` のビルドキ�
 
 2026-11-15。ブランチ `selfhost/types`。新規は `selfhost/types/` だけ (`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/`・他の `selfhost/` 部品は変えていない)。
 
-結論を先に: **関数本体の型検査は Kasane で書けて、`ksn build --release` で退避なしにネイティブになった** (`types.native`、約 0.04 秒で 63 ファイルの `apps/todo`)。ネイティブと木走査の出力は `apps/todo` で同一。正しいコードの受理は **139 / 139** (例 15、apps 3、selfhost の parse・resolve・types 3、`linear_ok` 118)。型の診断は、Rust 版と (コード, 行) が一致したのが `diag/E20*` で 38 件中 **10**、`unsound/` の型の診断を出すべきもので 66 件中 **15** (コードだけなら 23)。残りは型の規則そのものが未実装 (E2033 線形・E2036 derive・E2046 `?`・E2049 effects など) か、推論の不足。
+結論を先に: **関数本体の型検査は Kasane で書けて、`ksn build --release` で退避なしにネイティブになった** (`types`、約 0.04 秒で 63 ファイルの `apps/todo`)。ネイティブと木走査の出力は `apps/todo` で同一。正しいコードの受理は **139 / 139** (例 15、apps 3、selfhost の parse・resolve・types 3、`linear_ok` 118)。型の診断は、Rust 版と (コード, 行) が一致したのが `diag/E20*` で 38 件中 **10**、`unsound/` の型の診断を出すべきもので 66 件中 **15** (コードだけなら 23)。残りは型の規則そのものが未実装 (E2033 線形・E2036 derive・E2046 `?`・E2049 effects など) か、推論の不足。
 
 ### 12.1 構成と行数
 
@@ -461,8 +461,8 @@ Kasane 合計 2,255 行 (`compare.py` 除く)。`ksn check` は通る。
 
 ```
 cd selfhost/types
-ksn build --release                       # target/release/types.native (退避なし)
-./target/release/types.native PKG_DIR STD_DIR   # 例: ../../apps/todo ../../spec/stdlib
+ksn build --release                       # target/release/types (退避なし)
+./target/release/types PKG_DIR STD_DIR   # 例: ../../apps/todo ../../spec/stdlib
 python3 -I compare.py --group examples|apps|self|linear_ok|diag|unsound   # 比較 (Rust 版 stage0/target/release/ksn が要る)
 ```
 
@@ -484,7 +484,7 @@ python3 -I compare.py --group examples|apps|self|linear_ok|diag|unsound   # 比�
 | `unsound/*.ksnl` (Rust 版が型の診断を出すもの 66 件) | (コード, 行) が一致 **15 / 66**、コードだけ一致 23 |
 | `unsound/` で Rust 版は通すのに自分は型の診断を出したもの | 10 件 (下の 12.5) |
 
-時間: ネイティブ `types.native` は `examples/demo` 0.11 秒、`apps/todo` 0.04 秒 (標準ライブラリ 52 ファイルの読み込みを含む)。木走査 `ksn run` は `apps/todo` で約 47 秒 (標準ライブラリの解析が大半)。`compare.py` は 139 件の正しいコードを約 10 秒で回す。
+時間: ネイティブ `types` は `examples/demo` 0.11 秒、`apps/todo` 0.04 秒 (標準ライブラリ 52 ファイルの読み込みを含む)。木走査 `ksn run` は `apps/todo` で約 47 秒 (標準ライブラリの解析が大半)。`compare.py` は 139 件の正しいコードを約 10 秒で回す。
 
 ### 12.3 この段が見る規則
 
@@ -517,7 +517,7 @@ python3 -I compare.py --group examples|apps|self|linear_ok|diag|unsound   # 比�
 cd stage0 && cargo build --release && cd ..
 cd selfhost/types
 ksn check && ksn build --release
-./target/release/types.native ../../apps/todo ../../spec/stdlib
+./target/release/types ../../apps/todo ../../spec/stdlib
 python3 -I compare.py --group examples && python3 -I compare.py --group linear_ok
 python3 -I compare.py --group diag && python3 -I compare.py --group unsound
 ```
@@ -529,7 +529,7 @@ python3 -I compare.py --group diag && python3 -I compare.py --group unsound
 
 - 記録: `types.infer.expr` を、本体の `expr_in` を呼んで節の型を書く包みにした。`pat` は束縛パターンの型、関数の引数 (Param 節) は宣言の型を書く。呼び出しは `types.rec.resolved` で種別と解決先 (env の項目 + 1) を置き、包みで節に書く。局所に続くフィールド (`p.x`) は種別 5 と記録する (構文木で `s.len()` と `p.x` が同じ `Path` になる問題 (12.4 の 2) は、種別で区別する形で読める)。
 - 読み出し: `types.export.run(pkg, std_dir)` が `Out { env, ar, cx }` を返す。節の型は `types.rec.ty_of(&out.cx.rec, 単位, 節)` で取り、`types.ty.find` で束縛をたどる。単位の添字は `out.env.srcs` と揃う。
-- 診断は変えない: `types.native` の出力は `apps/todo`・`examples/demo`・`examples/threads`・`examples/http` で HEAD と同一 (md5 一致)。受理は `linear_ok` 118/118、`examples` 15/15 で変わらず。
+- 診断は変えない: `types` の出力は `apps/todo`・`examples/demo`・`examples/threads`・`examples/http` で HEAD と同一 (md5 一致)。受理は `linear_ok` 118/118、`examples` 15/15 で変わらず。
 - 使う側: `borrow` (15.8) と `effects` (10.7)。
 
 
@@ -556,8 +556,8 @@ Kasane 側は合計 3,460 行 (空行・注釈を含む)。`panics may` を全�
 
 ```
 cd selfhost/emit
-ksn check && ksn build --release               # target/release/emit.native
-target/release/emit.native FILE.kir t.main > out.ll
+ksn check && ksn build --release               # target/release/emit
+target/release/emit FILE.kir t.main > out.ll
 python3 -I compare.py --work /tmp/emit-work     # linear_ok の 118 件を比べる (作業場所は既定の外に)
 ```
 
@@ -566,7 +566,7 @@ python3 -I compare.py --work /tmp/emit-work     # linear_ok の 118 件を比べ
 | 項目 | 結果 |
 | --- | --- |
 | `linear_ok/` の 118 件: Kasane 版 `.ll` を Rust 版と同じランタイム (`kir_rt.c`・`sysrt.c`) と clang でリンクして走らせ、標準出力・標準エラー・終了コードが Rust 版のネイティブと一致 | **118 / 118** |
-| `ksn build --release` (退避なし、E9040 なし) | ネイティブ (`target/release/emit.native`)、約 5.5 秒 (この機械の負荷込み) |
+| `ksn build --release` (退避なし、E9040 なし) | ネイティブ (`target/release/emit`)、約 5.5 秒 (この機械の負荷込み) |
 | 118 件の変換の時間 (release、プロセス起動を含む) | 合計 0.16 秒。debug 版とは全件で出力が同じ |
 | IR の文字列の一致 (Rust 版の `ksn kir --llvm` と) | 測っていない。Rust 版は入口の包みや一時の名前の付け方が違い、文字列としては一致しない見込み。比べたのは実行結果 |
 
@@ -621,7 +621,7 @@ python3 -I compare.py --work /tmp/emit-work     # 118 / 118 (約 5 分)
 | ファイル | 行数 | 中身 |
 | --- | ---: | --- |
 | `src/fmt.ksnl` | 約 820 | 入口: 引数のファイルを読み、機械的整形 (タブ→4スペース・末尾空白除去・行末空行削除) → 定義走査 → 7 グループ (import/const-static/type-enum-trait/extern/impl/fn/その他) に分類 → UTF-8 バイト順で各グループ内を挿入ソート → impl は最初の子 fn と隣接して出力 → チャンク間に空行 1 行 → 最終改行 |
-| `compare.py` | 約 90 | Kasane 版 (`fmt.native`) と Rust 版 (`ksn fmt`) の出力をバイト単位で比較。4 行出力: コミットハッシュ・総行数・一致数/総数・native か否か |
+| `compare.py` | 約 90 | Kasane 版 (`fmt`) と Rust 版 (`ksn fmt`) の出力をバイト単位で比較。4 行出力: コミットハッシュ・総行数・一致数/総数・native か否か |
 
 Kasane 合計 約 910 行。`ksn check` / `ksn fmt --check` / `ksn build --release` はすべて通る。
 
@@ -638,8 +638,8 @@ Kasane 合計 約 910 行。`ksn check` / `ksn fmt --check` / `ksn build --relea
 
 ```
 cd selfhost/fmt
-ksn build --release                                   # target/release/fmt.native (退避なし)
-./target/release/fmt.native FILE...                   # 整形結果を stdout に出力
+ksn build --release                                   # target/release/fmt (退避なし)
+./target/release/fmt FILE...                   # 整形結果を stdout に出力
 python3 -I compare.py [--group examples|apps|selfhost|linear_ok|unsound|all] [--files F...] [-v]
 ```
 
@@ -659,7 +659,7 @@ python3 -I compare.py --group all -v                  # 594 件すべて一致
 
 2026-11-15。ブランチ `selfhost/borrow`。新規は `selfhost/borrow/` と、この節の追記だけ (`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` と `selfhost/` の他の部品は変えていない)。
 
-結論を先に: **関数本体の借用・線形性の検査は Kasane で書けて、`ksn build --release` で退避なしにネイティブになった** (`borrow.native`、自分自身で 0.02 秒)。正しいコードの誤検出は **0 件** (例 15・apps 3・selfhost 5・`linear_ok` 118 の計 141 件)。ただし拒否できた範囲は狭い。Rust 版が借用・線形性の診断 (E30xx) を出す `unsound/` の 262 件のうち、**同じコードで拒否したのが 31 件、コードの多重集合まで一致したのが 27 件**。型の情報が外へ出ないため、Copy か移動かの判定を型注釈と式の形の近似に頼り、判断できない形は「判断保留 (undec)」として数えた。
+結論を先に: **関数本体の借用・線形性の検査は Kasane で書けて、`ksn build --release` で退避なしにネイティブになった** (`borrow`、自分自身で 0.02 秒)。正しいコードの誤検出は **0 件** (例 15・apps 3・selfhost 5・`linear_ok` 118 の計 141 件)。ただし拒否できた範囲は狭い。Rust 版が借用・線形性の診断 (E30xx) を出す `unsound/` の 262 件のうち、**同じコードで拒否したのが 31 件、コードの多重集合まで一致したのが 27 件**。型の情報が外へ出ないため、Copy か移動かの判定を型注釈と式の形の近似に頼り、判断できない形は「判断保留 (undec)」として数えた。
 
 ### 15.1 構成と行数
 
@@ -712,7 +712,7 @@ Kasane 合計 1,688 行。`ksn check` は通る (`E0020` の並びも `ksn fmt` 
 
 - E30xx の内訳 (Rust 版が出すもの): E3010 100、E3002 83、E3003 64、E3030 38、E3006 12、E3031 7、E3040・E3041 各 2、E3050・E3043 各 1。自分が出したのは E3010・E3002・E3003・E3030。
 - 小さな確かめ (リポジトリに入れていない): 移動の後の使用 (E3002、行まで一致)、`let r = &mut x` の後の代入 (E3010、行まで一致)、`&x` の返却 (E3030、行まで一致)、正しい借用 (誤り 0)。寿命の照合の 4 本: `'b` の引数を `'a` で返す (E3010。Rust 版も E3010 で一致)、`'static` の引数と `'a` の引数を返す (OK。Rust 版も 0 件で一致)、省略された入力を `'b` で返す (E3010。Rust 版は何も出さない。仕様 4.3 では省略された入力は独立の新しい寿命なので、Rust 版の取りこぼしとみる)。
-- 時間: ネイティブ `borrow.native` は自分自身 0.02 秒、`apps/todo` 0.03 秒。木走査 `ksn run` は自分自身で 24.7 秒 (標準ライブラリ 52 本の解析が大半)。Rust 版 `ksn check` は自分自身で 0.23 秒。
+- 時間: ネイティブ `borrow` は自分自身 0.02 秒、`apps/todo` 0.03 秒。木走査 `ksn run` は自分自身で 24.7 秒 (標準ライブラリ 52 本の解析が大半)。Rust 版 `ksn check` は自分自身で 0.23 秒。
 
 ### 15.5 処理系の不足 (重要度順、処理系は直していない)
 
@@ -734,8 +734,8 @@ Kasane 合計 1,688 行。`ksn check` は通る (`E0020` の並びも `ksn fmt` 
 cd stage0 && cargo build --release && cd ..
 cd selfhost/borrow
 ksn check && ksn fmt --check
-ksn build --release                              # target/release/borrow.native (退避なし)
-./target/release/borrow.native ../../apps/todo ../../spec/stdlib   # 末尾の summary 行
+ksn build --release                              # target/release/borrow (退避なし)
+./target/release/borrow ../../apps/todo ../../spec/stdlib   # 末尾の summary 行
 python3 -I compare.py --group linear_ok          # 誤検出と受理 (118)
 python3 -I compare.py --group unsound            # 拒否・一致・余分 (Rust 版を 409 回呼ぶ。約 16 秒)
 python3 -I compare.py --group all                # 全部
@@ -771,7 +771,7 @@ python3 -I compare.py --group all      # 約 110 秒
 
 2026-11-15。ブランチ `selfhost/lower`。新規は `selfhost/lower/` と、この節の追記だけ (`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` と `selfhost/` の他の部品は変えていない。`dev/plan` は `selfhost/emit` の統合のために取り込んだ)。
 
-結論を先に: **関数の本体を KIR のテキストに下ろす段は Kasane で書けて、`ksn build --release` で退避なしにネイティブになった (`lower.native`。probe の 5 関数で 0.06 秒。木走査 `ksn run` の 26〜32 秒に比べる)。** 下ろせるのは、整数・`bool`・`if` / `while` / `loop` / `break` / `continue` / `return`・列挙型の `match`・構造体の構築と読み出し・関数呼び出し・`core.mem.drop` (単位の値) まで。`Option` / `Result` / `?` / `Vec` / `String` / 参照 / 総称関数は未着手で、ここが対象の大半 (14.4 章)。出力は Rust 版 `ksn kir` と、値・ブロック・集成体の番号を出た順に直して比べると、`linear_ok` の 439 関数のうち **47 が一致** (下ろせたのは 90)。下ろせた関数だけを数えると、一致は 47 / 90。
+結論を先に: **関数の本体を KIR のテキストに下ろす段は Kasane で書けて、`ksn build --release` で退避なしにネイティブになった (`lower`。probe の 5 関数で 0.06 秒。木走査 `ksn run` の 26〜32 秒に比べる)。** 下ろせるのは、整数・`bool`・`if` / `while` / `loop` / `break` / `continue` / `return`・列挙型の `match`・構造体の構築と読み出し・関数呼び出し・`core.mem.drop` (単位の値) まで。`Option` / `Result` / `?` / `Vec` / `String` / 参照 / 総称関数は未着手で、ここが対象の大半 (14.4 章)。出力は Rust 版 `ksn kir` と、値・ブロック・集成体の番号を出た順に直して比べると、`linear_ok` の 439 関数のうち **47 が一致** (下ろせたのは 90)。下ろせた関数だけを数えると、一致は 47 / 90。
 
 ### 16.1 構成と行数
 
@@ -793,8 +793,8 @@ Kasane 合計 2,063 行 (`compare.py` を除く)。`ksn check` と `ksn fmt --ch
 
 ```
 cd selfhost/lower
-ksn build --release                              # target/release/lower.native
-./target/release/lower.native PKG_DIR STD_DIR FQN...   # 例: ./target/release/lower.native ../../examples/demo ../../spec/stdlib demo.main
+ksn build --release                              # target/release/lower
+./target/release/lower PKG_DIR STD_DIR FQN...   # 例: ./target/release/lower ../../examples/demo ../../spec/stdlib demo.main
 python3 -I compare.py --group probe --mine native           # 比較 (probe / examples / linear_ok / all)
 ```
 
@@ -804,11 +804,11 @@ python3 -I compare.py --group probe --mine native           # 比較 (probe / ex
 
 | 対象 | 結果 |
 | --- | --- |
-| `ksn build --release` | ネイティブ (`target/release/lower.native`)。退避なし |
+| `ksn build --release` | ネイティブ (`target/release/lower`)。退避なし |
 | `probes/probe` (5 関数) | `add`・`mk`・`cnt` が Rust 版と一致。`pick` (列挙の `match`) と `main` (`core.mem.drop` の後の値の扱い) は違う (14.5 章) |
 | `stage0/tests/data/linear_ok/*.ksnl` (118 本、定義された関数 439 本) | **一致 47 / 439** (下ろせた 90、未対応 481 の理由) |
 | `examples/*` (172 関数) | 一致 0 / 172 (下ろせた 4)。ほとんどが `Vec` / `String` / `Option` / 総称の関数 |
-| 端から端まで (`t.main` が呼ぶ関数がすべて下ろせた 9 本) | Kasane 版の KIR → `selfhost/emit` (`emit.native`) → clang (`kir_rt.c`・`sysrt.c`) → 実行。Rust 版のネイティブと、標準出力・標準エラー・終了コードが **9 / 9 一致** |
+| 端から端まで (`t.main` が呼ぶ関数がすべて下ろせた 9 本) | Kasane 版の KIR → `selfhost/emit` (`emit`) → clang (`kir_rt.c`・`sysrt.c`) → 実行。Rust 版のネイティブと、標準出力・標準エラー・終了コードが **9 / 9 一致** |
 
 9 本の内訳: `temp_linear_consumed` `ok_pair_destructured` `for_owned_vec_by_ref` `for_linear_array_consumed` `generic_linear_consumed` `linear_ok_method_on_bound` `linear_ok_pair_fields_consumed` `ok_pair_both_fields` `ok_pair_match_both`。いずれも標準出力は空 (終了コードは 0)。実行の確かめは「下ろして、LLVM まで通して、同じ結果になる」ことまでで、出力の中身は見ていない。
 
@@ -1135,7 +1135,7 @@ python3 -I compare.py --group linear_ok --mine native --jobs 16   # 一致 120 /
 python3 -I compare.py --group examples --mine native               # 一致 11 / 全体 172 (下ろせた 39)
 ```
 
-端から端まで (`t.main` が全部下ろせた本だけ): `selfhost/emit` の `emit.native` を `ksn build` で作り (`selfhost/emit/target/debug/emit.native`)、各 `linear_ok` の本を `lower.native` → `emit.native` → clang (`kir_rt.c`・`sysrt.c`) → 実行で、Rust 版の実行ファイルと標準出力・標準エラー・終了コードを比べた。作業は `/tmp` (リポジトリの外)。結果は 51 件が一致、差 0。
+端から端まで (`t.main` が全部下ろせた本だけ): `selfhost/emit` の `emit` を `ksn build` で作り (`selfhost/emit/target/debug/emit`)、各 `linear_ok` の本を `lower` → `emit` → clang (`kir_rt.c`・`sysrt.c`) → 実行で、Rust 版の実行ファイルと標準出力・標準エラー・終了コードを比べた。作業は `/tmp` (リポジトリの外)。結果は 51 件が一致、差 0。
 
 
 ## 21. KIR への下ろしの段 (4b)
@@ -1254,7 +1254,7 @@ python3 -I compare.py --group linear_ok --mine native --jobs 8   # 一致 136 / 
 python3 -I compare.py --group examples --mine native             # 一致 22 / 全体 172 (下ろせた 52)、demo 2/4、tour 4/7
 ```
 
-端から端まで: 16.2 章・13.2 章の手順で、`lower.native` の出力 (`unsupported` の行がない本) を `selfhost/emit` の `emit.native` → clang (`kir_rt.c`・`sysrt.c`) → 実行し、Rust 版の `ksn build` の実行ファイルと比べた (作業は `/tmp`)。84 / 89 一致 (前も同じ)。
+端から端まで: 16.2 章・13.2 章の手順で、`lower` の出力 (`unsupported` の行がない本) を `selfhost/emit` の `emit` → clang (`kir_rt.c`・`sysrt.c`) → 実行し、Rust 版の `ksn build` の実行ファイルと比べた (作業は `/tmp`)。84 / 89 一致 (前も同じ)。
 
 ## 23. KIR への下ろしの段 (4d)
 
@@ -1287,7 +1287,7 @@ python3 -I compare.py --group examples --mine native             # 一致 22 / �
 | 端から端まで (emit → clang → 実行で Rust 版と一致 / `t.main` が全部下ろせた本) | 84 / 89 | **91 / 98** |
 
 - `demo` の残り 1 本 (`demo.main`) は 22.1 で書いたとおり `core.iter.fold(core.iter.range(..), ..)` を含み、Rust 版が段階 1 の対象外とするので、一致の相手がない。`tour` は 22 章と同じ 4/7。
-- 端から端まで: `stage0/tests/data/linear_ok` の 127 本のうち、`t.main` が全部下ろせたものを `lower.native` → `emit.native` → clang → 実行して、Rust 版 `ksn build` の実行ファイルと標準出力・標準エラー・終了コードを比べた。91 本が一致、7 本が clang で通らない (調べた `p09`・`p12`・`e02_d22_move_s_after_v_dead` は `String` を `i192` の値で持つ形で、22.4 の 3 と同じ原因。`lower` が `t.main` を全部下ろせる本が 89 → 98 に増えた)。差のある実行は 0 本。作業は `/tmp`。
+- 端から端まで: `stage0/tests/data/linear_ok` の 127 本のうち、`t.main` が全部下ろせたものを `lower` → `emit` → clang → 実行して、Rust 版 `ksn build` の実行ファイルと標準出力・標準エラー・終了コードを比べた。91 本が一致、7 本が clang で通らない (調べた `p09`・`p12`・`e02_d22_move_s_after_v_dead` は `String` を `i192` の値で持つ形で、22.4 の 3 と同じ原因。`lower` が `t.main` を全部下ろせる本が 89 → 98 に増えた)。差のある実行は 0 本。作業は `/tmp`。
 - `ksn check`: `selfhost/` の全パッケージで診断 0 件 (`probes/boxtree` の E4013 だけ期待どおり)。`selfhost/lower` の `ksn fmt --check` は通る。
 
 ### 23.3 まだ
@@ -1310,7 +1310,7 @@ python3 -I compare.py --group linear_ok --mine native --jobs 8   # 一致 201 / 
 python3 -I compare.py --group examples --mine native             # 一致 31 / 全体 172 (下ろせた 57)、demo 3/4、tour 4/7
 ```
 
-端から端まで: 22.5 と同じ手順 (`selfhost/emit` の `ksn build --release` で `emit.native` を作り、各 `linear_ok` の本を `lower.native` → `emit.native` → clang (`kir_rt.c`・`sysrt.c`) → 実行)。91 / 98 一致。
+端から端まで: 22.5 と同じ手順 (`selfhost/emit` の `ksn build --release` で `emit` を作り、各 `linear_ok` の本を `lower` → `emit` → clang (`kir_rt.c`・`sysrt.c`) → 実行)。91 / 98 一致。
 
 ## 24. KIR への下ろしの段 (4e)
 
@@ -1360,7 +1360,7 @@ python3 -I compare.py --group linear_ok --mine native --jobs 8   # 一致 345 / 
 python3 -I compare.py --group examples --mine native             # 一致 37 / 全体 172 (下ろせた 57)、demo 3/4、tour 4/7
 ```
 
-端から端まで: `selfhost/emit` を `ksn build --release` して、各 `linear_ok` の本を `lower.native` → `emit.native` → clang (`kir_rt.c`・`sysrt.c`) → 実行し、Rust 版 `ksn build` の実行ファイルと比べる。98 / 98 一致。
+端から端まで: `selfhost/emit` を `ksn build --release` して、各 `linear_ok` の本を `lower` → `emit` → clang (`kir_rt.c`・`sysrt.c`) → 実行し、Rust 版 `ksn build` の実行ファイルと比べる。98 / 98 一致。
 
 ## 25. KIR への下ろしの段 (4f)
 
@@ -1480,7 +1480,7 @@ python3 -I compare.py --group examples --mine native                 # 一致 44
 | `parse.analyze` | `match` の腕の入れ子の部分パターン |
 | `parse.ty.tuple` | `slice.get` で要素が `&str` のもの |
 
-- 端から端まで (全部下ろせた 98 本): 手順は 24.5 と同じ。再現用に `selfhost/emit/compare.py` の `ksn kir t.main` を `lower.native` の出力に替えたものを `/tmp` で回した (リポジトリには入れていない)。`selfhost/parse` 自身を端から端まで走らせる (項目 3) のは、未対応 10 関数が残るので未着手。
+- 端から端まで (全部下ろせた 98 本): 手順は 24.5 と同じ。再現用に `selfhost/emit/compare.py` の `ksn kir t.main` を `lower` の出力に替えたものを `/tmp` で回した (リポジトリには入れていない)。`selfhost/parse` 自身を端から端まで走らせる (項目 3) のは、未対応 10 関数が残るので未着手。
 
 ### 26.4 処理系の不足 (stage0。直していない)
 
@@ -1527,7 +1527,7 @@ python3 -I compare.py --group examples --mine native                 # 一致 49
 | **端から端まで `selfhost/parse`** (348 回の実行のうち、Rust 版と標準出力・終了コードが一致) | (未着手) | **348 / 348** |
 
 - `selfhost/parse` の「下ろせた」154 は、`parse.read_file` だけが下ろせず (27.3)、一致 154 は下ろせた全部と同じ。
-- `linear_ok` の「全部下ろせた」は、`t.main` から呼ぶ関数が全部下ろせた本 (呼び先が 1 つでも未対応なら除く)。4g の `lower.native` を作り直して同じ数え方で数えると 98 本で、この段は 99 本。途中で、部分的な移動と総称の解放を「未対応」で止めて 96 本まで減らしたが、解放しない形 (27.3) に直して戻した。
+- `linear_ok` の「全部下ろせた」は、`t.main` から呼ぶ関数が全部下ろせた本 (呼び先が 1 つでも未対応なら除く)。4g の `lower` を作り直して同じ数え方で数えると 98 本で、この段は 99 本。途中で、部分的な移動と総称の解放を「未対応」で止めて 96 本まで減らしたが、解放しない形 (27.3) に直して戻した。
 - `cargo test --release` (`--no-fail-fast`) は全件通過 (`/tmp/s7f_cargo.log`、rc=0)。1 度目に落ちた `http_tls` の `https_app_keeps_one_connection_for_several_requests` は、負荷が高いときの既知の不安定な試験で、2 度目は通った。
 - `ksn check`: `selfhost/` の全パッケージで診断 0 件 (`probes/boxtree` の E4013 だけ期待どおり)。`selfhost/lower` と `selfhost/emit` の `ksn fmt --check` は通る (`selfhost/borrow` の E0020 は前からで、この段では触っていない)。
 

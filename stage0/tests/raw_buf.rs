@@ -60,7 +60,7 @@ fn run_all(name: &str, src: &str) -> String {
     assert!(b.status.success(), "{}{}", text(&b.stdout), text(&b.stderr));
     let _ = fs::remove_dir_all(&cache);
     let launcher = t.0.join("target/debug").join("t");
-    let native = t.0.join("target/debug").join("t.native");
+    let native = t.0.join("target/debug").join("t");
     let p = if native.exists() { native } else { launcher };
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
@@ -83,7 +83,7 @@ fn run_native(name: &str, src: &str) -> String {
     let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     let log = format!("{}{}", text(&b.stdout), text(&b.stderr));
-    let native = t.0.join("target/debug/t.native");
+    let native = t.0.join("target/debug/t");
     assert!(b.status.success() && native.exists(), "ネイティブにならない: {}", log);
     let o = Command::new(&native).output().unwrap();
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
@@ -376,7 +376,7 @@ fn vec_methods_written_in_kasane_match_the_builtin_ones_natively() {
     let cache = scratch::Scratch::at(format!("ksn_rawbuf_cache_{}_vk", std::process::id()));
     let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
-    let native = t.0.join("target/debug/t.native");
+    let native = t.0.join("target/debug/t");
     assert!(b.status.success() && native.exists(), "ネイティブにならない: {}{}", text(&b.stdout), text(&b.stderr));
     let o = Command::new(&native).output().unwrap();
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));

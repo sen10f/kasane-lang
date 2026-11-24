@@ -5,7 +5,7 @@
 #
 # 使い方: python3 -I compare.py [--group probe|examples|linear_ok|parse|resolve|all] [--jobs N] [-v]
 #   --reasons  未対応の理由の内訳を出す (parse などで)。
-#   --mine native|interp  既定は interp (`ksn run`)。native は `target/release/lower.native` を使う (作れていれば)。
+#   --mine native|interp  既定は interp (`ksn run`)。native は `target/release/lower` を使う (作れていれば)。
 import argparse
 import concurrent.futures as cf
 import os
@@ -90,7 +90,7 @@ def norm(lines):
 
 def mine_fns(pkg, fqns, mode):
     if mode == "native":
-        exe = os.path.join(HERE, "target", "release", "lower.native")
+        exe = os.path.join(HERE, "target", "release", "lower")
         cmd = [exe, pkg, STD] + fqns
         cwd = None
     else:

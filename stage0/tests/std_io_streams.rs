@@ -61,7 +61,7 @@ fn stdin_stdout_stderr_interp_and_native_agree() {
         return;
     }
     assert!(!bo.contains("backend skipped"), "{}", bo);
-    let exe_path = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let exe_path = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
     assert!(exe_path.exists(), "{}", bo);
     let mut c = Command::new(&exe_path);
     c.current_dir(&t.0);

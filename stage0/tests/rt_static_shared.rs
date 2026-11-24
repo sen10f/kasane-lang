@@ -34,7 +34,7 @@ fn same_output(name: &str, want: &str) {
         let out = text(&o.stdout) + &text(&o.stderr);
         assert_eq!(o.status.code(), Some(0), "{} (release={}): {}", name, release, out);
         let kind = if release { "release" } else { "debug" };
-        let p = t.0.join("target").join(kind).join("t.native");
+        let p = t.0.join("target").join(kind).join("t");
         assert!(p.exists(), "{}: ネイティブの実行ファイルがない: {}", name, out);
         for _ in 0..3 {
             let r = Command::new(&p).output().unwrap();
@@ -83,7 +83,7 @@ fn deadlock_everywhere(name: &str, entry: &str) {
         }
         let o = c.output().unwrap();
         assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
-        let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t.native");
+        let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t");
         let r = Command::new("timeout").arg("30").arg(&p).output().unwrap();
         assert_eq!(r.status.code(), Some(101), "{} release={}: {}", name, release, text(&r.stderr));
         assert!(text(&r.stderr).contains(msg), "{}", text(&r.stderr));

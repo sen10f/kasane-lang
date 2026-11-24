@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""下ろした KIR を端から端まで走らせる検査: `lower.native` の KIR → `emit.native` → clang → 実行 を、Rust 版 `ksn build` の実行と比べる。
+"""下ろした KIR を端から端まで走らせる検査: `lower` の KIR → `emit` → clang → 実行 を、Rust 版 `ksn build` の実行と比べる。
 
 linear_ok の各本について t.main から呼ばれる関数が全部下ろせたものだけを対象にし (下ろせないものは「除外」に数える)、
 標準出力・標準エラー・終了コードが一致するかを数える。作業場所は /tmp の一時ディレクトリ (終わりに消す)。
@@ -17,8 +17,8 @@ import tempfile
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 KSN = str(ROOT / "stage0" / "target" / "release" / "ksn")
-LOWER = str(HERE / "target" / "release" / "lower.native")
-EMIT = str(ROOT / "selfhost" / "emit" / "target" / "release" / "emit.native")
+LOWER = str(HERE / "target" / "release" / "lower")
+EMIT = str(ROOT / "selfhost" / "emit" / "target" / "release" / "emit")
 LINEAR = ROOT / "stage0" / "tests" / "data" / "linear_ok"
 RT_C = str(ROOT / "stage0" / "src" / "kir_rt.c")
 SYS_C = str(ROOT / "stage0" / "src" / "sysrt.c")
@@ -40,7 +40,7 @@ def one(work, src):
     if "unsupported" in out:
         return src.stem, "unsup", ""
     run([KSN, "build"], cwd=d)
-    exe = d / "target" / "debug" / "t.native"
+    exe = d / "target" / "debug" / "t"
     if not exe.exists():
         return src.stem, "refskip", ""
     ref = run([str(exe)], cwd=d, timeout=20)

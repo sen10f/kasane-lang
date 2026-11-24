@@ -32,7 +32,7 @@ fn threads_build(t: &Tmp, release: bool) -> PathBuf {
     let out = text(&o.stdout) + &text(&o.stderr);
     assert_native_or_reasoned_skip(&out);
     let kind = if release { "release" } else { "debug" };
-    let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t" });
     let p = native_or_launcher(p, &out);
     let _ = fs::remove_dir_all(&cache);
     p
@@ -1015,7 +1015,7 @@ fn kir_native_threads_have_no_data_races_under_threadsanitizer() {
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
         assert_native_or_reasoned_skip(&out);
-        let p = native_or_launcher(t.0.join("target").join("debug").join("t.native"), &out);
+        let p = native_or_launcher(t.0.join("target").join("debug").join("t"), &out);
         let r = Command::new(&p).env("TSAN_OPTIONS", "halt_on_error=0").output().unwrap();
         let err = text(&r.stderr);
         assert!(!err.contains("WARNING: ThreadSanitizer"), "{}: TSan が競合を報告した\n{}", name, err);
@@ -1054,7 +1054,7 @@ fn tsan_positive_control_reports_a_deliberate_race() {
     let o = c.output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
     assert_native_or_reasoned_skip(&out);
-    let p = native_or_launcher(t.0.join("target").join("debug").join("t.native"), &out);
+    let p = native_or_launcher(t.0.join("target").join("debug").join("t"), &out);
     let r = Command::new(&p).env("TSAN_OPTIONS", "halt_on_error=0").output().unwrap();
     let err = text(&r.stderr);
     assert!(err.contains("WARNING: ThreadSanitizer"), "陽性対照で TSan が競合を報告しない (TSan の試験が空振り)\n{}", err);
@@ -1159,7 +1159,7 @@ fn kir_native_pool_guards_and_deadlock_have_no_data_races_under_threadsanitizer(
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
         assert_native_or_reasoned_skip(&out);
-        let p = native_or_launcher(t.0.join("target").join("debug").join("t.native"), &out);
+        let p = native_or_launcher(t.0.join("target").join("debug").join("t"), &out);
         let mut r = Command::new(&p);
         r.env("TSAN_OPTIONS", "halt_on_error=0");
         let r = output_within(r, 120);

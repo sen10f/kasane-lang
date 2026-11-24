@@ -56,8 +56,8 @@ fn both(name: &str, src: &str, want: &str) {
     let b = run(&["build", "--backend", "llvm"], &t.0);
     let bout = text(&b.stdout) + &text(&b.stderr);
     assert_eq!(b.status.code(), Some(0), "{name} build: {bout}");
-    let native = t.0.join("target").join("debug").join("t.native");
-    let prog = if native.exists() {
+    let native = t.0.join("target").join("debug").join("t");
+    let prog = if std::fs::read_to_string(&native.parent().unwrap().join(".ksn-artifact")).map_or(false, |m| m.trim() == "native") {
         native
     } else {
         assert!(bout.contains("skipped"), "{name}: ネイティブもバンドルの退避の表示もない: {bout}");
