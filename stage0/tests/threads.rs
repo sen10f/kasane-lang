@@ -1145,3 +1145,19 @@ fn kir_native_pool_guards_and_deadlock_have_no_data_races_under_threadsanitizer(
         let _ = fs::remove_dir_all(&cache);
     }
 }
+
+/// 16 本の送り手 × 10 万件を 1 つのチャネルへ流し、受け手が合計 (厳密) と送り手ごとの順序 (FIFO) を確かめる (ネイティブのチャネルごとのロック・待ち)。
+/// 木走査は遅いので走らせない (意味は他の `channel` の試験が同じ出力で確かめる)。空の recv の deadlock は `deadlock_join` / `deadlock_mutual` が見る。
+#[test]
+fn threads_native_channel_stress_16_producers_keep_exact_sum_and_per_producer_order() {
+    if cfg!(windows) {
+        return;
+    }
+    let t = threads_pkg("channel_stress", "stress");
+    for release in [false, true] {
+        let p = threads_build(&t, release);
+        let r = output_within(Command::new(&p), 300);
+        assert_eq!(r.status.code(), Some(0), "release={}: {}", release, text(&r.stderr));
+        assert_eq!(text(&r.stdout), "channel stress ok\n");
+    }
+}

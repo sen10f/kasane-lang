@@ -270,7 +270,7 @@ pub(super) fn join_call(lw: &mut Lw, _e: &V, recv: VId, recv_ty: Ty, line: usize
 
 /// 全関数を下ろした後に、補助の関数 (`exec` / `run_one` / `join`) を作って足す。どれも呼ばれていなければ何もしない。
 pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
-    let wanted = |n: &str| n == JOIN || n == RUN_ONE || n == WAIT || n == TNEW || n == TENT || n == TSTART || n == TREL || n == LOCK || n == UNLOCK || n == MINIT || n == MLOCK || n == MUNLOCK || n == RWRD || n == RWWR || n == RWUNLOCK;
+    let wanted = |n: &str| n == JOIN || n == RUN_ONE || n == WAIT || n == TNEW || n == TENT || n == TSTART || n == TREL || n == LOCK || n == UNLOCK || n == MINIT || n == MLOCK || n == MUNLOCK || n == RWRD || n == RWWR || n == RWUNLOCK || n.starts_with("ksn.chan.rt.");
     if !ok.iter().any(|(_, cs)| cs.iter().any(|c| wanted(c))) {
         return;
     }

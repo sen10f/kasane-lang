@@ -1,0 +1,98 @@
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
+    std.io.Error {
+        kind: std.io.ErrorKind.OutOfMemory
+        code: 0i32
+    }
+end t.oom
+
+fn t.producer(tx: std.sync.Sender<u64>, id: u64) -> std.thread.JoinHandle<(), std.alloc.System> uses [alloc, thread] panics may
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move tx, move id] {
+            let mut seq = 0u64
+            while seq < 100000u64 {
+                let v = id * 4294967296u64 + seq
+                core.mem.drop(match tx.send(v) {
+                    Ok(_) => 0u32
+                    Err(_e) => core.panic.panic("send failed")
+                })
+                seq = seq + 1u64
+            }
+        },
+    )
+    match spawned {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.producer
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let made = std.sync.channel::<u64, std.alloc.System>(std.alloc.SYSTEM, 64usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    let h0 = t.producer(tx.clone(), 0u64)
+    let h1 = t.producer(tx.clone(), 1u64)
+    let h2 = t.producer(tx.clone(), 2u64)
+    let h3 = t.producer(tx.clone(), 3u64)
+    let h4 = t.producer(tx.clone(), 4u64)
+    let h5 = t.producer(tx.clone(), 5u64)
+    let h6 = t.producer(tx.clone(), 6u64)
+    let h7 = t.producer(tx.clone(), 7u64)
+    let h8 = t.producer(tx.clone(), 8u64)
+    let h9 = t.producer(tx.clone(), 9u64)
+    let h10 = t.producer(tx.clone(), 10u64)
+    let h11 = t.producer(tx.clone(), 11u64)
+    let h12 = t.producer(tx.clone(), 12u64)
+    let h13 = t.producer(tx.clone(), 13u64)
+    let h14 = t.producer(tx.clone(), 14u64)
+    let h15 = t.producer(tx.clone(), 15u64)
+    core.mem.drop(tx)
+    let mut next = std.vec.Vec.new()
+    let mut k = 0u64
+    while k < 16u64 {
+        core.mem.drop(match next.push(0u64) {
+            Ok(_) => 0u32
+            Err(_e) => core.panic.panic("oom")
+        })
+        k = k + 1u64
+    }
+    let mut sum = 0u64
+    let mut count = 0u64
+    loop {
+        match rx.recv() {
+            Ok(v) => {
+                let id = v / 4294967296u64
+                let seq = v % 4294967296u64
+                match next.get_mut(usize.from_u64(id)) {
+                    Some(cell) => {
+                        core.check.eq(*cell, seq)
+                        *cell = seq + 1u64
+                    }
+                    None => core.panic.panic("bad producer id")
+                }
+                sum = sum + seq
+                count = count + 1u64
+            }
+            Err(_) => break
+        }
+    }
+    h0.join()
+    h1.join()
+    h2.join()
+    h3.join()
+    h4.join()
+    h5.join()
+    h6.join()
+    h7.join()
+    h8.join()
+    h9.join()
+    h10.join()
+    h11.join()
+    h12.join()
+    h13.join()
+    h14.join()
+    h15.join()
+    core.check.eq(count, 1600000u64)
+    core.check.eq(sum, 16u64 * 4999950000u64)
+    core.mem.drop(std.io.print_line("channel stress ok"))
+    Ok(())
+end t.main
