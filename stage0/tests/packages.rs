@@ -220,7 +220,7 @@ fn release_build_excludes_tests_and_native_build_ignores_test_helpers() {
     assert!(!pk.exists(), "release に同梱物は無い");
     assert!(!pk.join("tests").exists(), "release bundle must not contain tests/");
     let bin = root.join("target/release/t");
-    assert!(bin.exists(), "{}", all(&o));
+    assert!(std::fs::read_to_string(&bin.parent().unwrap().join(".ksn-artifact")).map_or(false, |m| m.trim() == "native"), "{}", all(&o));
     let r = Command::new(&bin).output().unwrap();
     assert!(String::from_utf8_lossy(&r.stdout).contains("t ok"));
     // デバッグの同梱物には、`--both` が使うので tests/ が入る。

@@ -104,7 +104,7 @@ fn run_native(app: &Path, release: bool) -> (String, String) {
     let out = all(&o);
     assert!(!out.contains("KIR に下ろせない"), "下ろせない理由が出た: {}", out);
     assert!(!out.contains("skipped"), "ネイティブでなくバンドルへ退避した: {}", out);
-    assert!(bin.exists(), "ネイティブの実行ファイルがない: {}", out);
+    assert!(std::fs::read_to_string(&bin.parent().unwrap().join(".ksn-artifact")).map_or(false, |m| m.trim() == "native"), "ネイティブの実行ファイルがない: {}", out);
     let r = Command::new(&bin).current_dir(app).output().expect("run native");
     (all(&r), r.status.code().map(|c| c.to_string()).unwrap_or_default())
 }

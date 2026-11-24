@@ -867,10 +867,10 @@ python3 -I compare.py --group examples --mine native               # 一致 0 / 
 ```
 cd selfhost/driver
 ksn build --release                                  # Rust 版で ksnc を作る (既定の経路)
-./target/release/ksnc --stages                # 段の表 (既定と --stages=kasane の担当)
-./target/release/ksnc check [--stages=rust|kasane|both] [DIR]
-./target/release/ksnc fmt   [--stages=rust|kasane|both] [--check] [DIR]
-./target/release/ksnc build [--stages=rust|kasane|both] [--release] [--target host] [DIR]
+./target/release/ksnc.native --stages                # 段の表 (既定と --stages=kasane の担当)
+./target/release/ksnc.native check [--stages=rust|kasane|both] [DIR]
+./target/release/ksnc.native fmt   [--stages=rust|kasane|both] [--check] [DIR]
+./target/release/ksnc.native build [--stages=rust|kasane|both] [--release] [--target host] [DIR]
 python3 -I compare.py check|fmt --pkgs all|examples|apps|selfhost
 python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、実行を Rust 版と比べる
 ```

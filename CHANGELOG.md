@@ -6,6 +6,8 @@
 
 ### 実装計画 2.10系（新しい順）
 
+- 2.10dk 実行ファイルの名前を `<名前>` (Windows は `<名前>.exe`) にする。旧 `<名前>.native` は作り直しで消す。バンドルの起動スクリプトと同名のため、`target/<kind>/.ksn-artifact` (`native` / `bundle`) で区別する
+
 - 2.10dj 中断の穴: E4022 が閉包の中の束縛・一時値の型を見る (線形の局所・引数の位置の線形の一時値)、ロックのガードが中断点をまたぐ形は E3050 (hunt3 の D1・C1・A1・A2・E1)
 - 2.10di S4C: 効果の型引数・E3010 の残りと、残りの old_only の振り分け (`tast_rules/effects_inst.rs`・`lifetimes.rs`)
 - 2.10dh 標準ライブラリの欠け: `&str` での辞書の検索・`String.try_clone`・`Vec` の `Debug` (2026-11-19、G54、a113 の 6・8・13)

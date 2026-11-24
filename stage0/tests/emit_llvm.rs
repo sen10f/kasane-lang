@@ -51,7 +51,7 @@ fn emit_llvm_matches_native_output() {
     );
     assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
     let native = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
-    assert!(native.exists(), "native executable after ksn build");
+    assert!(crate::common::artifact_is_native(&native), "native executable after ksn build");
     let n = Command::new(&native).output().unwrap();
     assert_eq!(n.status.code(), Some(0), "{} {}", text(&n.stdout), text(&n.stderr));
 

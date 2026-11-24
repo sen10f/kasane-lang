@@ -2545,7 +2545,7 @@ fn linear_ok_programs_build_native_and_match_run() {
         let b = run(&["build"], &t.0);
         let out = format!("{}{}", text(&b.stdout), text(&b.stderr));
         let exe = t.0.join("target").join("debug").join("t");
-        if out.contains("native backend skipped") || !exe.exists() {
+        if out.contains("native backend skipped") || !crate::common::artifact_is_native(&exe) {
             return Some(format!("{}: バンドルへ退避: {}", stem, out.lines().find(|l| l.contains("skipped")).unwrap_or("")));
         }
         let n = Command::new(&exe).current_dir(&t.0).output().unwrap();

@@ -4160,6 +4160,29 @@ fn prune_shared(cdir: &Path, cur: &str) {
 
 /// キャッシュ entry 内で生成物 (ネイティブ実行ファイル) を置く子ディレクトリ名。
 const ARTIFACT_DIR: &str = "artifact";
+/// バンドルの起動スクリプト (`<名前>`)。ネイティブが作れたときはこの名前が実行ファイルになる。
+const LAUNCHER_SH: &str = r#"#!/bin/sh
+case "$0" in
+  */*) p="$0" ;;
+  *) p="$(command -v "$0")" ;;
+esac
+# $0 がシンボリックリンクなら実体を辿ってから場所を特定する。
+# `readlink -f` は macOS などに無いので、`ls -l` のリンク先を辿るループで POSIX 的に解決する。
+while [ -L "$p" ]; do
+  target="$(ls -l "$p")"
+  target="${target#* -> }"
+  case "$target" in
+    /*) p="$target" ;;
+    *) p="$(dirname "$p")/$target" ;;
+  esac
+done
+d="$(cd "$(dirname "$p")" && pwd)"
+KSN_STDLIB="$d/stdlib"
+export KSN_STDLIB
+cd "$d/pkg" && exec "$d/ksn" _exec "$@"
+"#;
+/// `target/<kind>/.ksn-artifact`: 中身は `native` か `bundle`。`<名前>` が実行ファイルか起動スクリプトかを示す。
+const ARTIFACT_MARK: &str = ".ksn-artifact";
 /// `target/<kind>` に置く、そのビルドのキー。バンドルが今の ksn・ソースに対応するかの判定に使う。
 const BUILD_STAMP: &str = ".build-key";
 
@@ -4495,29 +4518,7 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         // pkg へ cd する (cd 後に相対パスの $d/ksn を exec すると失敗するため)。
         let _ = fs::write(out.join(format!("{}.cmd", name)), "@echo off\r\nset KSN_STDLIB=%~dp0stdlib\r\ncd /d \"%~dp0pkg\"\r\n\"%~dp0ksn.exe\" _exec %*\r\n");
         let launcher = out.join(&name);
-        let _ = fs::write(
-            &launcher,
-            r#"#!/bin/sh
-case "$0" in
-  */*) p="$0" ;;
-  *) p="$(command -v "$0")" ;;
-esac
-# $0 がシンボリックリンクなら実体を辿ってから場所を特定する。
-# `readlink -f` は macOS などに無いので、`ls -l` のリンク先を辿るループで POSIX 的に解決する。
-while [ -L "$p" ]; do
-  target="$(ls -l "$p")"
-  target="${target#* -> }"
-  case "$target" in
-    /*) p="$target" ;;
-    *) p="$(dirname "$p")/$target" ;;
-  esac
-done
-d="$(cd "$(dirname "$p")" && pwd)"
-KSN_STDLIB="$d/stdlib"
-export KSN_STDLIB
-cd "$d/pkg" && exec "$d/ksn" _exec "$@"
-"#,
-        );
+        let _ = fs::write(&launcher, LAUNCHER_SH);
         set_exec(&launcher);
     } else {
         let _ = fs::create_dir_all(&out);
@@ -4548,6 +4549,7 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
     });
     // 旧名 (`<名前>.native`) が前のビルドから残っていたら消す (古い実行ファイルを走らせない)。
     let _ = fs::remove_file(out.join(format!("{}.native", name)));
+    let _ = fs::remove_file(&exe);
     // キャッシュに同じキーの生成物があれば複製し、コンパイルとリンクを省く。
     let stored = cached.join(ARTIFACT_DIR).join(exe.file_name().expect("exe has a file name"));
     let reused = entry.is_some() && artifact_intact(&stored, &stored) && fs::copy(&stored, &exe).is_ok() && artifact_intact(&stored, &exe);
@@ -4613,6 +4615,14 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
         }
     }
     let native_ok = native.is_ok();
+    let unix_bundle = runs_here && !skip_bundle && !crate::kir_llvm::is_windows(tgt) && !crate::kir_llvm::is_wasm(tgt);
+    if !native_ok && unix_bundle {
+        // 失敗した作りかけの `<名前>` を、バンドルの起動スクリプトに戻す。
+        let launcher = out.join(&name);
+        let _ = fs::write(&launcher, LAUNCHER_SH);
+        set_exec(&launcher);
+    }
+    let _ = fs::write(out.join(ARTIFACT_MARK), if native_ok { "native\n" } else { "bundle\n" });
     match native {
         Ok(()) => println!("native executable: {}", rel(&norm(&exe))),
         Err(e) => println!("native backend skipped: {}; the interpreter bundle is used", e),

@@ -29,7 +29,7 @@ fn build_produces_artifacts_and_is_cached() {
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     let tgt = d.join("target").join("release");
     assert!(!tgt.join("ksn.exe").exists() && !tgt.join("ksn").exists(), "release はバンドルの ksn を書かない");
-    assert!(tgt.join("native").exists() || tgt.join("native.exe").exists());
+    assert!(crate::common::artifact_is_native(&tgt.join(if cfg!(windows) { "native.exe" } else { "native" })));
     let again = b(true);
     assert_eq!(again.status.code(), Some(0));
     let _ = fs::remove_dir_all(&cache);
@@ -1906,7 +1906,7 @@ fn release_native_build_writes_no_interpreter_bundle() {
     let out = t.0.join("target").join("release");
     assert!(!out.join("pkg").exists() && !out.join("stdlib").exists(), "release にバンドルがある");
     assert!(!out.join(if cfg!(windows) { "ksn.exe" } else { "ksn" }).exists(), "release に ksn の写しがある");
-    assert!(out.join(if cfg!(windows) { "t.exe" } else { "t" }).exists());
+    assert!(crate::common::artifact_is_native(&out.join(if cfg!(windows) { "t.exe" } else { "t" })));
     assert!(!text(&o.stdout).contains("portable interpreter bundle"), "{}", text(&o.stdout));
     let _ = fs::remove_dir_all(&cache);
 }

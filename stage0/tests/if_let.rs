@@ -74,7 +74,7 @@ fn if_let_and_is_run_and_build_to_the_same_output() {
     let out = text(&b.stdout) + &text(&b.stderr);
     let _ = fs::remove_dir_all(&cache);
     let native = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
-    assert!(native.exists(), "if let / is must lower to the native (LLVM) build: {}", out);
+    assert!(std::fs::read_to_string(&native.parent().unwrap().join(".ksn-artifact")).map_or(false, |m| m.trim() == "native"), "if let / is must lower to the native (LLVM) build: {}", out);
     let n = Command::new(&native).output().unwrap();
     assert_eq!(n.status.code(), Some(0), "{} {}", text(&n.stdout), text(&n.stderr));
     assert_eq!(text(&n.stdout), text(&o.stdout));

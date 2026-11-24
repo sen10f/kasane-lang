@@ -199,7 +199,7 @@ def one_build(work, src):
     ref = run_exe(ref_exe)
     # Kasane 版 (ksnc build --stages=kasane --release)。
     rc2, out2, err2 = run([KSNC, "--stages=kasane", "build", "--release"], cwd=pkg, timeout=900)
-    kex = pkg / "target" / "kasane" / "release" / "t"
+    kex = pkg / "target" / "kasane" / "release" / "t.native"
     if rc2 != 0 or not kex.exists():
         lines = [x for x in (out2 + err2).splitlines() if x.startswith("unsupported ")]
         if not lines:

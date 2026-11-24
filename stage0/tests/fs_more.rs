@@ -60,7 +60,7 @@ fn native_output(name: &str, src: &str, release: bool) -> String {
     let _ = fs::remove_dir_all(&cache);
     let kind = if release { "release" } else { "debug" };
     let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t" });
-    assert!(p.exists(), "ネイティブが作れなかった (退避は許さない): {}", log);
+    assert!(std::fs::read_to_string(&p.parent().unwrap().join(".ksn-artifact")).map_or(false, |m| m.trim() == "native"), "ネイティブが作れなかった (退避は許さない): {}", log);
     let o = Command::new(&p).current_dir(&t.0).output().unwrap();
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
     text(&o.stdout)

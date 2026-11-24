@@ -96,7 +96,7 @@ end t.main
     assert_eq!(text(&interp.stdout), want);
     let b = run(&["build", "--release", "--allow-bundle"], &t.0);
     let p = t.0.join("target/release/t");
-    if p.exists() {
+    if crate::common::artifact_is_native(&p) {
         let n = Command::new(&p).output().unwrap();
         assert_eq!(text(&n.stdout), want, "{}{}", text(&n.stderr), text(&b.stderr));
     }
