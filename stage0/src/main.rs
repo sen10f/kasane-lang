@@ -16,6 +16,7 @@ mod lexrules;
 mod check;
 mod check_cache;
 mod cli;
+mod cli_help;
 mod ffi;
 mod cnative;
 mod explain;

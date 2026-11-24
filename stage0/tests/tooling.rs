@@ -912,3 +912,48 @@ end t.main.test_string_ord
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains("test t.main.test_string_ord ... ok (both: llvm)"), "{}", out);
 }
+
+#[test]
+fn every_subcommand_answers_help_without_side_effects() {
+    let d = std::env::temp_dir().join(format!("ksn_test_{}_help", std::process::id()));
+    let _ = fs::remove_dir_all(&d);
+    fs::create_dir_all(&d).unwrap();
+    for cmd in ["new", "check", "run", "test", "build", "fmt", "fix", "explain", "doc", "lock"] {
+        let o = run(&[cmd, "--help"], &d);
+        assert_eq!(o.status.code(), Some(0), "{}", cmd);
+        let t = text(&o.stdout);
+        assert!(t.contains(&format!("usage: ksn {}", cmd)) && t.contains("example:"), "{}: {}", cmd, t);
+        assert_eq!(text(&run(&["help", cmd], &d).stdout), t);
+        assert_eq!(text(&run(&[cmd, "-h"], &d).stdout), t);
+    }
+    assert!(!d.join("--help").exists());
+    assert_eq!(run(&["help"], &d).status.code(), Some(0));
+    assert_eq!(run(&["help", "nope"], &d).status.code(), Some(2));
+    let _ = fs::remove_dir_all(&d);
+}
+
+#[test]
+fn package_commands_work_from_a_subdirectory_and_report_a_missing_package() {
+    let t = Tmp::new("beta_cli_sub", "fn t.main() -> ()\nend t.main\n");
+    let sub = t.0.join("src");
+    let a = run(&["fmt", "--check"], &t.0);
+    let b = run(&["fmt", "--check"], &sub);
+    assert_eq!(a.status.code(), b.status.code());
+    assert_eq!(text(&a.stdout), text(&b.stdout));
+    let none = std::env::temp_dir().join(format!("ksn_test_{}_nopkg", std::process::id()));
+    let _ = fs::remove_dir_all(&none);
+    fs::create_dir_all(&none).unwrap();
+    let o = run(&["check"], &none);
+    let all = format!("{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(all.contains("E9001") && all.contains("no kasane.toml in this directory or any parent") && all.contains("ksn new <name>"), "{}", all);
+    let _ = fs::remove_dir_all(&none);
+}
+
+#[test]
+fn build_ends_with_the_produced_path_line() {
+    let t = Tmp::new("beta_cli_build", "fn t.main() -> ()\nend t.main\n");
+    let o = run_with_env(&["build"], &t.0, &[("KSN_CACHE_DIR", &t.0.join("cache").to_string_lossy())]);
+    let out = text(&o.stdout);
+    let last = out.lines().last().unwrap_or("");
+    assert!(last.starts_with("built: target/debug/") || last.starts_with("built: target/"), "{}", out);
+}

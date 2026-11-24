@@ -1302,7 +1302,7 @@ pub fn find_root() -> Result<PathBuf, ProjectError> {
             return Ok(d);
         }
         if !d.pop() {
-            return perr("E9001", "kasane.toml not found (run inside a Kasane package)");
+            return perr("E9001", "no kasane.toml in this directory or any parent; run `ksn new <name>` to create a package");
         }
     }
 }
