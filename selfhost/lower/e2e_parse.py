@@ -21,8 +21,8 @@ import tempfile
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 KSN = str(ROOT / "stage0" / "target" / "release" / "ksn")
-LOWER = str(HERE / "target" / "release" / "lower.native")
-EMIT = str(ROOT / "selfhost" / "emit" / "target" / "release" / "emit.native")
+LOWER = str(HERE / "target" / "release" / "lower")
+EMIT = str(ROOT / "selfhost" / "emit" / "target" / "release" / "emit")
 RT_C = str(ROOT / "stage0" / "src" / "kir_rt.c")
 SYS_C = str(ROOT / "stage0" / "src" / "sysrt.c")
 STD = str(ROOT / "spec" / "stdlib")
@@ -58,7 +58,7 @@ def main():
             pkg = work / "parse"
             shutil.copytree(ROOT / "selfhost" / "parse", pkg, ignore=shutil.ignore_patterns("target", "broken", "*.py"))
         b = run([KSN, "build"], cwd=pkg)
-        ref = pkg / "target" / "debug" / "parse.native"
+        ref = pkg / "target" / "debug" / "parse"
         if not ref.exists():
             print("Rust 版のビルドに失敗:", b.stderr.decode(errors="replace")[-300:])
             return 2

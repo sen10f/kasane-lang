@@ -219,8 +219,8 @@ fn release_build_excludes_tests_and_native_build_ignores_test_helpers() {
     let pk = root.join("target/release/pkg");
     assert!(!pk.exists(), "release に同梱物は無い");
     assert!(!pk.join("tests").exists(), "release bundle must not contain tests/");
-    let bin = root.join("target/release/t.native");
-    assert!(bin.exists(), "{}", all(&o));
+    let bin = root.join("target/release/t");
+    assert!(std::fs::read_to_string(&bin.parent().unwrap().join(".ksn-artifact")).map_or(false, |m| m.trim() == "native"), "{}", all(&o));
     let r = Command::new(&bin).output().unwrap();
     assert!(String::from_utf8_lossy(&r.stdout).contains("t ok"));
     // デバッグの同梱物には、`--both` が使うので tests/ が入る。
@@ -370,7 +370,7 @@ fn path_and_git_dependencies_work_end_to_end() {
     assert!(all(&o).contains("deps ok"));
     let o = w.ksn(&["build"], &app);
     assert_eq!(o.status.code(), Some(0), "{}", all(&o));
-    let r = Command::new(app.join("target/debug/app.native")).output().unwrap();
+    let r = Command::new(app.join("target/debug/app")).output().unwrap();
     assert!(String::from_utf8_lossy(&r.stdout).contains("deps ok"), "{}", all(&o));
     // 同梱物 (インタプリタ) も、path 依存と git 依存の両方を持って動く。
     let r = Command::new(app.join("target/debug/app")).output().unwrap();
@@ -646,7 +646,7 @@ fn two_package_example_and_shortener_pass_all_commands() {
     assert!(all(&o).contains("kvapp ok"), "{}", all(&o));
     let o = w.ksn(&["build"], &app);
     assert_eq!(o.status.code(), Some(0), "{}", all(&o));
-    let r = Command::new(app.join("target/debug/kvapp.native")).output().unwrap();
+    let r = Command::new(app.join("target/debug/kvapp")).output().unwrap();
     assert!(String::from_utf8_lossy(&r.stdout).contains("kvapp ok"), "native build of kvapp: {}", all(&o));
     let o = w.ksn(&["test", "--both"], &ex.join("shortener"));
     assert!(all(&o).contains("35 passed; 0 failed"), "{}", all(&o));

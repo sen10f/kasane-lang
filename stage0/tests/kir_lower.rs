@@ -439,7 +439,7 @@ end t.main
     // LLVM ネイティブをビルドして同じ引数・環境変数で走らせ、表示が一致すること。
     let b = run(&["build", "--backend", "llvm"], &t.0);
     assert_eq!(b.status.code(), Some(0), "build: {}\n{}", text(&b.stdout), text(&b.stderr));
-    let native = native_or_launcher(t.0.join("target").join("debug").join("t.native"), &(text(&b.stdout) + &text(&b.stderr)));
+    let native = native_or_launcher(t.0.join("target").join("debug").join("t"), &(text(&b.stdout) + &text(&b.stderr)));
     let n = Command::new(&native)
         .args(["a", "b"])
         .current_dir(&t.0)

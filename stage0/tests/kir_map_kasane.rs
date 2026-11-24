@@ -57,7 +57,7 @@ fn same(name: &str, src: &str) -> String {
     let b = Command::new(exe()).args(["build", "--release"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     assert!(b.status.success(), "ネイティブにならない (退避なし): {}{}", text(&b.stdout), text(&b.stderr));
-    let p = t.0.join("target/release").join("t.native");
+    let p = t.0.join("target/release").join("t");
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), tree.status.code(), "終了コード: {}", text(&o.stderr));
     assert_eq!(text(&o.stdout), text(&tree.stdout), "ネイティブの出力が木走査と違う");

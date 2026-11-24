@@ -142,7 +142,7 @@ fn library_trait_implemented_in_its_module_runs_in_the_app_and_builds_native() {
     let b = w.ksn(&["build", "--backend", "llvm"], &app);
     assert_eq!(b.status.code(), Some(0), "{}", all(&b));
     if text(&b.stdout).contains("native executable") {
-        let n = Command::new(app.join("target").join("debug").join("app.native")).current_dir(&app).output().expect("native");
+        let n = Command::new(app.join("target").join("debug").join("app")).current_dir(&app).output().expect("native");
         assert_eq!(text(&n.stdout), text(&r.stdout), "native と run の出力");
         assert_eq!(n.status.code(), r.status.code());
     } else {

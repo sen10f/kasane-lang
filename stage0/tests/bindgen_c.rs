@@ -143,8 +143,8 @@ fn bindgen_c_calls_the_c_library_the_same_in_run_and_native() {
     let b = Command::new(exe()).args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     let out = text(&b.stdout) + &text(&b.stderr);
-    let bin = t.0.join("target/debug/sample.native");
-    let launcher = if bin.exists() { bin } else { t.0.join("target/debug/sample") };
+    let bin = t.0.join("target/debug/sample");
+    let launcher = if crate::common::artifact_is_native(&bin) { bin } else { t.0.join("target/debug/sample") };
     assert!(launcher.exists(), "ネイティブもバンドルもない: {}", out);
     let n = Command::new(&launcher).current_dir(&t.0).output().unwrap();
     assert_eq!(n.status.code(), Some(0), "native: {}", text(&n.stderr));

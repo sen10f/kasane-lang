@@ -21,7 +21,7 @@ fn strict_native_matches_run(name: &str, src: &str) -> String {
     assert_eq!(b.status.code(), Some(0), "build --release が失敗: {}", out);
     assert!(out.contains("native executable:"), "ネイティブが作れていない: {}", out);
     assert!(!out.contains("skipped"), "退避している: {}", out);
-    let exe = t.0.join("target").join("release").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let exe = t.0.join("target").join("release").join(if cfg!(windows) { "t.exe" } else { "t" });
     let n = Command::new(&exe).current_dir(&t.0).output().expect("native");
     let r = run(&["run"], &t.0);
     same_output(&r, &n);

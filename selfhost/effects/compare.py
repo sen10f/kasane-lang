@@ -3,7 +3,7 @@
 
 使い方 (リポジトリのルートから):
   python3 -I selfhost/effects/compare.py [--group clean|diag|unsound|all] [-v]
-  （先に `cd selfhost/effects && ksn build --release` で target/release/effects.native を作る）
+  （先に `cd selfhost/effects && ksn build --release` で target/release/effects を作る）
 
 比べるのは E4001 E4002 E4003 E4004 E4010 E4013 だけ (効果・panic・再帰・再帰する型の Drop の分野)。
 - clean: examples/*・apps/*・selfhost/{parse,resolve,effects}・stage0/tests/data/linear_ok/*.ksnl。
@@ -29,7 +29,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 KSN = os.path.join(ROOT, "stage0", "target", "release", "ksn")
-EFF = os.path.join(HERE, "target", "release", "effects.native")
+EFF = os.path.join(HERE, "target", "release", "effects")
 STD = os.path.join(ROOT, "spec", "stdlib")
 SET = {"E4001", "E4002", "E4003", "E4004", "E4010", "E4013"}
 UND_KEYS = ["und_value", "und_method", "und_infer", "und_var", "und_missing",
@@ -69,7 +69,7 @@ def mine(pkg):
             summ["errors"] = int(vals.get("errors", "0"))
             summ["ok"] = int(vals.get("ok", "0"))
     if r.returncode != 0 and "summary" not in out:
-        raise RuntimeError("effects.native failed on %s: %s" % (pkg, (r.stderr or out)[-400:]))
+        raise RuntimeError("effects failed on %s: %s" % (pkg, (r.stderr or out)[-400:]))
     return codes, summ, out
 
 
@@ -164,7 +164,7 @@ def main(argv):
     if "--group" in argv:
         group = argv[argv.index("--group") + 1]
     if not os.path.isfile(EFF):
-        print("effects.native が無い: cd selfhost/effects && ksn build --release", file=sys.stderr)
+        print("effects が無い: cd selfhost/effects && ksn build --release", file=sys.stderr)
         return 2
     t0 = time.time()
     if group in ("clean", "all"):

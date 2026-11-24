@@ -45,7 +45,7 @@ end t.main
         return;
     }
     assert!(!text(&b.stdout).contains("backend skipped"), "{}", text(&b.stdout));
-    let exe_path = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let exe_path = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
     let n = Command::new(&exe_path).current_dir(&t.0).output().expect("native");
     same_output(&interp, &n);
 }
@@ -184,7 +184,7 @@ fn e2001_alloc_ctor_missing_allocator_hint_and_fix() {
             continue;
         }
         assert!(!text(&b.stdout).contains("backend skipped"), "{}", text(&b.stdout));
-        let exe_path = t.0.join("target").join("debug").join("t.native");
+        let exe_path = t.0.join("target").join("debug").join("t");
         let n = std::process::Command::new(&exe_path).current_dir(&t.0).output().expect("native");
         assert_eq!(text(&interp.stdout), text(&n.stdout), "{}", text(&n.stderr));
     }

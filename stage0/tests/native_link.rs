@@ -97,8 +97,8 @@ fn a_static_archive_is_linked_into_the_native_executable() {
     assert_eq!(c.status.code(), Some(0), "{}{}", text(&c.stdout), text(&c.stderr));
     let b = build(&t);
     assert_eq!(b.status.code(), Some(0), "{}{}", text(&b.stdout), text(&b.stderr));
-    let exe = dir.join("target").join("debug").join("t.native");
-    assert!(exe.exists(), "{}", text(&b.stdout));
+    let exe = dir.join("target").join("debug").join("t");
+    assert!(crate::common::artifact_is_native(&exe), "{}", text(&b.stdout));
     assert!(ar.exists());
     let o = Command::new(&exe).current_dir(dir).output().unwrap();
     assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
@@ -128,8 +128,8 @@ fn a_dynamic_library_is_linked_natively_and_loaded_by_the_interpreter() {
     // ネイティブ: `search` の `-L` から `-lext` でつなぐ (実行時の探索先は LD_LIBRARY_PATH)。
     let b = build(&t);
     assert_eq!(b.status.code(), Some(0), "{}{}", text(&b.stdout), text(&b.stderr));
-    let exe = dir.join("target").join("debug").join("t.native");
-    assert!(exe.exists(), "{}", text(&b.stdout));
+    let exe = dir.join("target").join("debug").join("t");
+    assert!(crate::common::artifact_is_native(&exe), "{}", text(&b.stdout));
     assert!(so.exists());
     let o = Command::new(&exe).current_dir(dir).env("LD_LIBRARY_PATH", dir).output().unwrap();
     assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
