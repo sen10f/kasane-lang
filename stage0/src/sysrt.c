@@ -1236,6 +1236,7 @@ u64 ksn_rt_sys_now_ns(void) {
    take: 印を読んで消す (0 = 準備完了、1 = 期限切れ)。 */
 #if defined(__linux__)
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 typedef struct { i64 at; int st; int reg; int dir; int rdy[2]; } ksn_io_slot; /* st: 0 なし / 1 待ち / 2 準備完了 / 3 期限切れ。reg: epoll に載せた。rdy[d]: 待ち手がいない間に端が来た */
 static __thread int ksn_io_ep = -1;
 static __thread ksn_io_slot *ksn_io_tab;
@@ -1244,6 +1245,11 @@ static __thread i64 ksn_io_nparked;
 static __thread unsigned ksn_io_tickn;
 static __thread i64 ksn_io_nfired; /* 印が 2 / 3 になって take されていない数 */
 static __thread int ksn_io_dl_used; /* 期限つきの待ちを一度でも載せたか (無ければ poll は期限の表を走査しない) */
+static __thread i32 *ksn_io_dl; /* 期限つきで待っている fd の一覧 (古い項は走査のときに捨てる)。全表は走査しない */
+static __thread i64 ksn_io_dl_n, ksn_io_dl_cap;
+static __thread int ksn_io_efd = -1; /* 複数スレッドの実行器: 他のワーカーが起こすための eventfd */
+static __thread uint64_t ksn_io_efd_gen;
+#define KSN_IO_EFD_TAG ((uint64_t)1 << 32)
 
 static ksn_io_slot *ksn_io_slot_of(i32 fd) {
     if (fd < 0) return NULL;
@@ -1298,7 +1304,7 @@ i32 ksn_rt_sys_io_park(i32 fd, i32 write_side) {
     if (!s->reg) {
         struct epoll_event ev;
         ev.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
-        ev.data.fd = fd;
+        ev.data.u64 = (uint32_t)fd;
         if (epoll_ctl(ksn_io_ep, EPOLL_CTL_ADD, fd, &ev) != 0) return 0;
         s->reg = 1;
     }
@@ -1307,29 +1313,88 @@ i32 ksn_rt_sys_io_park(i32 fd, i32 write_side) {
     s->st = 1;
     s->dir = d;
     s->at = ksn_io_deadline(fd, d);
-    if (s->at >= 0) ksn_io_dl_used = 1;
+    if (s->at >= 0) {
+        ksn_io_dl_used = 1;
+        if (ksn_io_dl_n == ksn_io_dl_cap) {
+            i64 nc = ksn_io_dl_cap ? ksn_io_dl_cap * 2 : 256;
+            i32 *t = (i32 *)realloc(ksn_io_dl, (size_t)nc * sizeof(i32));
+            if (!t) { s->at = -1; return 1; }
+            ksn_io_dl = t;
+            ksn_io_dl_cap = nc;
+        }
+        ksn_io_dl[ksn_io_dl_n++] = fd;
+    }
     return 1;
 }
 
-/* epoll_wait。block = 0 なら待たず (8 回に 1 回だけ実際に呼ぶ)、1 なら準備完了か最も近い期限まで待つ。新しく印が付いた数を返す。 */
+static int ksn_mt_efd_register(int efd); /* 下 (複数スレッドの実行器) */
+static uint64_t ksn_mt_gen(void);
+
+/* 期限の一覧を走査する。now 以前は印 3 にして数を返し、残りの最も近い期限を *best に入れる (best は NULL でもよい)。 */
+static i32 ksn_io_scan_dl(i64 now, i64 *best) {
+    i32 got = 0;
+    i64 w = 0;
+    for (i64 i = 0; i < ksn_io_dl_n; i++) {
+        i32 fd = ksn_io_dl[i];
+        if ((i64)fd >= ksn_io_cap) continue;
+        ksn_io_slot *s = &ksn_io_tab[fd];
+        if (s->st != 1 || s->at < 0) continue; /* 古い項 */
+        if (s->at <= now) { s->st = 3; got++; ksn_io_nfired++; continue; }
+        if (best && (*best < 0 || s->at < *best)) *best = s->at;
+        ksn_io_dl[w++] = fd;
+    }
+    ksn_io_dl_n = w;
+    return got;
+}
+
+/* epoll_wait。block = 0 なら待たず (8 回に 1 回だけ実際に呼ぶ)、1 なら準備完了か最も近い期限まで待つ。
+   block = 2 (複数スレッドの実行器) は 1 と同じだが、他のワーカーの出来事 (注入列・完了・取り消し・止め) は eventfd で起こされるので、短い見直しの待ちは要らない。
+   新しく印が付いた数を返す。 */
 i32 ksn_rt_sys_io_poll(i32 block) {
     if (ksn_io_ep < 0 || ksn_io_nparked == 0) return 0;
     if (!block && (++ksn_io_tickn & 7) != 0) return 0;
+    int cap_ms = -1; /* 待ちの上限 (eventfd が使えないときだけ 1 ms) */
+    if (block == 2) {
+        uint64_t g = ksn_mt_gen();
+        if (ksn_io_efd < 0 || ksn_io_efd_gen != g) {
+            int efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+            struct epoll_event ev;
+            ev.events = EPOLLIN;
+            ev.data.u64 = KSN_IO_EFD_TAG | (uint32_t)efd;
+            if (efd >= 0 && epoll_ctl(ksn_io_ep, EPOLL_CTL_ADD, efd, &ev) == 0 && ksn_mt_efd_register(efd)) {
+                if (ksn_io_efd >= 0) close(ksn_io_efd); /* 前の世代の物 (リストからは mt_begin で外れている) */
+                ksn_io_efd = efd;
+                ksn_io_efd_gen = g;
+                block = 0; /* 登録の前に起きた出来事を取りこぼさないよう、登録した回は待たずに戻って走査し直させる */
+            } else {
+                if (efd >= 0) close(efd);
+                cap_ms = 1;
+            }
+        }
+    }
     i32 got = 0;
-    i64 now = ksn_mono_ms();
     int timeout = 0;
     if (block) {
         i64 best = -1;
-        for (i64 i = 0; ksn_io_dl_used && i < ksn_io_cap; i++) {
-            if (ksn_io_tab[i].st == 1 && ksn_io_tab[i].at >= 0 && (best < 0 || ksn_io_tab[i].at < best)) best = ksn_io_tab[i].at;
+        if (ksn_io_dl_used) got += ksn_io_scan_dl(ksn_mono_ms(), &best);
+        if (got > 0) {
+            timeout = 0;
+        } else {
+            i64 now = ksn_mono_ms();
+            timeout = best < 0 ? -1 : (int)(best > now ? best - now : 0);
+            if (cap_ms >= 0 && (timeout < 0 || timeout > cap_ms)) timeout = cap_ms;
         }
-        timeout = best < 0 ? -1 : (int)(best > now ? best - now : 0);
-        if (block == 2 && (timeout < 0 || timeout > 1)) timeout = 1; /* 複数スレッドの実行器: 注入列・完了を見直すため短く待つ */
     }
     struct epoll_event evs[256];
     int n = epoll_wait(ksn_io_ep, evs, 256, timeout);
     for (int k = 0; k < n; k++) {
-        ksn_io_slot *s = ksn_io_slot_of(evs[k].data.fd);
+        if (evs[k].data.u64 & KSN_IO_EFD_TAG) {
+            uint64_t junk;
+            ssize_t r = read((int)(uint32_t)evs[k].data.u64, &junk, sizeof junk);
+            (void)r;
+            continue;
+        }
+        ksn_io_slot *s = ksn_io_slot_of((i32)(uint32_t)evs[k].data.u64);
         if (!s) continue;
         uint32_t e = evs[k].events;
         int hit[2];
@@ -1341,11 +1406,8 @@ i32 ksn_rt_sys_io_poll(i32 block) {
             else s->rdy[d] = 1;
         }
     }
-    /* 期限切れ (まだ起きていない待ちがあるときだけ全表を見る) */
-    now = ksn_mono_ms();
-    for (i64 i = 0; ksn_io_dl_used && i < ksn_io_cap && ksn_io_nparked > ksn_io_nfired; i++) {
-        if (ksn_io_tab[i].st == 1 && ksn_io_tab[i].at >= 0 && ksn_io_tab[i].at <= now) { ksn_io_tab[i].st = 3; got++; ksn_io_nfired++; }
-    }
+    /* 期限切れ (まだ起きていない待ちがあるときだけ、期限つきの待ちの一覧を見る) */
+    if (ksn_io_dl_used && ksn_io_nparked > ksn_io_nfired) got += ksn_io_scan_dl(ksn_mono_ms(), NULL);
     return got;
 }
 
@@ -1403,15 +1465,31 @@ static struct {
     i64 n, idle;
     i64 nthr;
     i64 thr[64];
-} ksn_mt = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0}};
+    i64 nsleep; /* cond で眠っている (眠ろうとしている) ワーカーの数 */
+    i32 efd[64]; /* epoll で待つワーカーの起こし用 eventfd (登録順) */
+    i32 nefd;
+    i64 qlen; /* 注入列の長さの目安 (ロック無しで空かを見る) */
+    uint64_t gen; /* mt_begin ごとに増える (eventfd の登録の世代) */
+} ksn_mt = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0}, 0, {0}, 0, 0, 0};
 
 #define KSN_MT_MARK ((uint64_t)1 << 62)
 #define KSN_MT_IT(id) ((ksn_mt_item *)(uintptr_t)((uint64_t)(id) & ~KSN_MT_MARK))
 
-static void ksn_mt_bump(void) { /* mu を持って呼ぶ */
-    ksn_mt.epoch++;
-    ksn_mt.idle = 0;
-    pthread_cond_broadcast(&ksn_mt.cv);
+/* 世代を進め、眠っているワーカーと epoll で待つワーカーを起こす。mu は持たずに呼ぶ (cond で眠る者がいるときだけ mu を取る)。 */
+static void ksn_mt_bump(void) {
+    __atomic_fetch_add(&ksn_mt.epoch, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&ksn_mt.nsleep, __ATOMIC_SEQ_CST) > 0) {
+        pthread_mutex_lock(&ksn_mt.mu);
+        ksn_mt.idle = 0;
+        pthread_cond_broadcast(&ksn_mt.cv);
+        pthread_mutex_unlock(&ksn_mt.mu);
+    }
+    int ne = __atomic_load_n(&ksn_mt.nefd, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < ne; i++) {
+        uint64_t one = 1;
+        ssize_t w = write(ksn_mt.efd[i], &one, sizeof one);
+        (void)w;
+    }
 }
 
 i64 ksn_rt_sys_mt_begin(i64 n) {
@@ -1422,11 +1500,28 @@ i64 ksn_rt_sys_mt_begin(i64 n) {
     ksn_mt.stop = 0;
     ksn_mt.idle = 0;
     ksn_mt.nthr = 0;
+    ksn_mt.nsleep = 0;
+    ksn_mt.qlen = 0;
+    ksn_mt.nefd = 0;
+    ksn_mt.gen++;
     ksn_mt.n = n;
     ksn_mt.on = n > 1;
     i64 r = ksn_mt.on ? n : 0;
     pthread_mutex_unlock(&ksn_mt.mu);
     return r;
+}
+
+static uint64_t ksn_mt_gen(void) { return __atomic_load_n(&ksn_mt.gen, __ATOMIC_ACQUIRE); }
+static int ksn_mt_efd_register(int efd) {
+    int ok = 0;
+    pthread_mutex_lock(&ksn_mt.mu);
+    if (ksn_mt.nefd < 64) {
+        ksn_mt.efd[ksn_mt.nefd] = efd;
+        __atomic_store_n(&ksn_mt.nefd, ksn_mt.nefd + 1, __ATOMIC_RELEASE);
+        ok = 1;
+    }
+    pthread_mutex_unlock(&ksn_mt.mu);
+    return ok;
 }
 
 i32 ksn_rt_sys_mt_on(void) { return __atomic_load_n(&ksn_mt.on, __ATOMIC_ACQUIRE); }
@@ -1441,21 +1536,24 @@ i64 ksn_rt_sys_mt_push(uint32_t tag, void *fp) {
     ksn_mt.all = it;
     if (ksn_mt.qt) ksn_mt.qt->qnext = it; else ksn_mt.qh = it;
     ksn_mt.qt = it;
-    ksn_mt.unfinished++;
-    ksn_mt_bump();
+    __atomic_fetch_add(&ksn_mt.unfinished, 1, __ATOMIC_SEQ_CST);
+    __atomic_fetch_add(&ksn_mt.qlen, 1, __ATOMIC_SEQ_CST);
     pthread_mutex_unlock(&ksn_mt.mu);
+    ksn_mt_bump();
     return (i64)((uintptr_t)it | KSN_MT_MARK);
 }
 
 /* 注入列の先頭を取って「走行中」にする。取り消し済みは捨てる。無ければ NULL。 */
 i64 ksn_rt_sys_mt_take(void) {
     ksn_mt_item *it = NULL;
+    if (__atomic_load_n(&ksn_mt.qlen, __ATOMIC_ACQUIRE) <= 0) return 0; /* 空なら mu を取らない */
     pthread_mutex_lock(&ksn_mt.mu);
     while (ksn_mt.qh) {
         ksn_mt_item *c = ksn_mt.qh;
         ksn_mt.qh = c->qnext;
         if (!ksn_mt.qh) ksn_mt.qt = NULL;
         c->qnext = NULL;
+        __atomic_fetch_sub(&ksn_mt.qlen, 1, __ATOMIC_SEQ_CST);
         if (c->state == 0) {
             __atomic_store_n(&c->state, 1, __ATOMIC_RELEASE);
             it = c;
@@ -1468,11 +1566,9 @@ i64 ksn_rt_sys_mt_take(void) {
 
 void ksn_rt_sys_mt_finish(i64 id, uint32_t cancelled) {
     ksn_mt_item *it = KSN_MT_IT(id);
-    pthread_mutex_lock(&ksn_mt.mu);
     __atomic_store_n(&it->state, cancelled ? 3 : 2, __ATOMIC_RELEASE);
-    ksn_mt.unfinished--;
+    __atomic_fetch_sub(&ksn_mt.unfinished, 1, __ATOMIC_SEQ_CST);
     ksn_mt_bump();
-    pthread_mutex_unlock(&ksn_mt.mu);
 }
 
 uint32_t ksn_rt_sys_mt_state(i64 id) { return __atomic_load_n(&KSN_MT_IT(id)->state, __ATOMIC_ACQUIRE); }
@@ -1487,38 +1583,38 @@ uint32_t ksn_rt_sys_mt_cancel(i64 id) {
     pthread_mutex_lock(&ksn_mt.mu);
     if (it->state == 0) {
         __atomic_store_n(&it->state, 3, __ATOMIC_RELEASE);
-        ksn_mt.unfinished--;
+        __atomic_fetch_sub(&ksn_mt.unfinished, 1, __ATOMIC_SEQ_CST);
         r = 1;
-        ksn_mt_bump();
     } else if (it->state == 1) {
         __atomic_store_n(&it->cancel, 1, __ATOMIC_RELEASE);
-        ksn_mt_bump();
+        r = 2;
     }
     pthread_mutex_unlock(&ksn_mt.mu);
-    return r;
+    if (r) ksn_mt_bump();
+    return r == 1;
 }
 
 void ksn_rt_sys_mt_clear_fp(i64 id) { KSN_MT_IT(id)->fp = NULL; }
 
 i64 ksn_rt_sys_mt_epoch(void) {
-    pthread_mutex_lock(&ksn_mt.mu);
-    i64 e = (i64)ksn_mt.epoch + 1; /* 0 を「未取得」の印に使えるよう 1 から */
-    pthread_mutex_unlock(&ksn_mt.mu);
-    return e;
+    return (i64)__atomic_load_n(&ksn_mt.epoch, __ATOMIC_SEQ_CST) + 1; /* 0 を「未取得」の印に使えるよう 1 から */
 }
 
 /* 眠る。世代が `seen` のままなら、起きる出来事 (push・finish・cancel・stop) まで待つ。0 = 起きた、2 = 止めの旗、3 = 全員待ち (deadlock)。 */
 uint32_t ksn_rt_sys_mt_sleep(i64 seen) {
     uint32_t r = 0;
+#define KSN_MT_EP() ((i64)__atomic_load_n(&ksn_mt.epoch, __ATOMIC_SEQ_CST) + 1)
     pthread_mutex_lock(&ksn_mt.mu);
-    if ((i64)ksn_mt.epoch + 1 == seen && !ksn_mt.stop) {
+    __atomic_fetch_add(&ksn_mt.nsleep, 1, __ATOMIC_SEQ_CST); /* 先に眠る印を立ててから世代を見直す (起こす側と取りこぼさない) */
+    if (KSN_MT_EP() == seen && !ksn_mt.stop) {
         ksn_mt.idle++;
         if (ksn_mt.idle >= ksn_mt.n) {
             r = 3;
         } else {
-            while ((i64)ksn_mt.epoch + 1 == seen && !ksn_mt.stop) pthread_cond_wait(&ksn_mt.cv, &ksn_mt.mu);
+            while (KSN_MT_EP() == seen && !ksn_mt.stop) pthread_cond_wait(&ksn_mt.cv, &ksn_mt.mu);
         }
     }
+    __atomic_fetch_sub(&ksn_mt.nsleep, 1, __ATOMIC_SEQ_CST);
     if (r == 0 && ksn_mt.stop) r = 2;
     pthread_mutex_unlock(&ksn_mt.mu);
     return r;
@@ -1527,8 +1623,8 @@ uint32_t ksn_rt_sys_mt_sleep(i64 seen) {
 void ksn_rt_sys_mt_stop(void) {
     pthread_mutex_lock(&ksn_mt.mu);
     ksn_mt.stop = 1;
-    ksn_mt_bump();
     pthread_mutex_unlock(&ksn_mt.mu);
+    ksn_mt_bump();
 }
 
 uint32_t ksn_rt_sys_mt_stopped(void) {
@@ -1539,10 +1635,7 @@ uint32_t ksn_rt_sys_mt_stopped(void) {
 }
 
 i64 ksn_rt_sys_mt_unfinished(void) {
-    pthread_mutex_lock(&ksn_mt.mu);
-    i64 r = ksn_mt.unfinished;
-    pthread_mutex_unlock(&ksn_mt.mu);
-    return r;
+    return __atomic_load_n(&ksn_mt.unfinished, __ATOMIC_SEQ_CST);
 }
 
 void ksn_rt_sys_mt_reg(i64 idx) {
@@ -1569,6 +1662,12 @@ void ksn_rt_sys_mt_end(void) {
     ksn_mt_item *it = ksn_mt.all;
     ksn_mt.all = ksn_mt.qh = ksn_mt.qt = NULL;
     __atomic_store_n(&ksn_mt.on, 0, __ATOMIC_RELEASE);
+    int ne = ksn_mt.nefd;
+    __atomic_store_n(&ksn_mt.nefd, 0, __ATOMIC_RELEASE);
+    for (int i = 0; i < ne; i++) { /* ワーカーは join 済み: 起こし用の eventfd を閉じる (呼び出しスレッドの物は印も消す) */
+        if (ksn_mt.efd[i] == ksn_io_efd) ksn_io_efd = -1;
+        close(ksn_mt.efd[i]);
+    }
     pthread_mutex_unlock(&ksn_mt.mu);
     while (it) {
         ksn_mt_item *n = it->all;
