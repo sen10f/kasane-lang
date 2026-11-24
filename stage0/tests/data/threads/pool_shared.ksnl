@@ -1,9 +1,9 @@
 static t.M: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
-    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 32usize)
     let (job_tx, job_rx) = made.map_err(t.oom)?
-    let made2 = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let made2 = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 32usize)
     let (reply_tx, reply_rx) = made2.map_err(t.oom)?
     let h1 = t.spawn_one(job_rx.clone(), reply_tx.clone())
     let h2 = t.spawn_one(job_rx.clone(), reply_tx.clone())

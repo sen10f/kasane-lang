@@ -1,0 +1,39 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 1usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u32 capture [move tx] {
+            let mut i = 0u32
+            loop {
+                match tx.send(i) {
+                    Ok(_) => {
+                        i = i + 1u32
+                    }
+                    Err(e) => {
+                        return e.value
+                    }
+                }
+            }
+        },
+    )
+    let producer = match spawned {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    match rx.recv() {
+        Ok(n) => core.check.eq(n, 0u32)
+        Err(_e) => core.panic.panic("recv failed")
+    }
+    core.mem.drop(rx)
+    let lost = producer.join()
+    core.check.is_true(lost >= 1u32)
+    std.io.print_line("dropped ok")
+end t.main
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
+    std.io.Error {
+        kind: std.io.ErrorKind.OutOfMemory
+        code: 0i32
+    }
+end t.oom
