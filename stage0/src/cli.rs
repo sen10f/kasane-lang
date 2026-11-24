@@ -3238,7 +3238,11 @@ fn cmd_explain(args: &[String]) -> i32 {
             0
         }
         None => {
-            eprintln!("ksn: unknown code {}", code);
+            if code.is_empty() {
+                eprintln!("usage: ksn explain <code>   (example: ksn explain E2020)");
+            } else {
+                eprintln!("ksn: unknown code {} (diagnostic codes look like E2020; see `ksn help explain`)", code);
+            }
             1
         }
     }
@@ -4621,6 +4625,11 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
     } else {
         println!("built {} ({}, target {}; portable interpreter bundle)", rel(&norm(&out)), kind, target);
     }
+    if native_ok {
+        println!("built: {} (native)", rel(&norm(&exe)));
+    } else {
+        println!("built: {} (interpreter bundle: native build was skipped)", rel(&norm(&out)));
+    }
     0
 }
 
@@ -5250,6 +5259,34 @@ pub fn main_cli(args: Vec<String>) -> i32 {
     let tail = rest.split_off(cut);
     rest.retain(|a| a != "--no-strict-types" && a != "--strict-types");
     rest.extend(tail);
+    if args[0] == "help" {
+        return match rest.first() {
+            None => {
+                println!("{}", crate::cli_help::overview());
+                0
+            }
+            Some(c) => match crate::cli_help::text(c) {
+                Some(t) => {
+                    println!("{}", t);
+                    0
+                }
+                None => {
+                    eprintln!("ksn: unknown command {}\n{}", c, crate::cli_help::overview());
+                    2
+                }
+            },
+        };
+    }
+    if rest[..rest.iter().position(|a| a == "--").unwrap_or(rest.len())].iter().any(|a| a == "--help" || a == "-h") {
+        if let Some(t) = crate::cli_help::text(&args[0]) {
+            println!("{}", t);
+            return 0;
+        }
+    }
+    if args[0] == "--help" || args[0] == "-h" {
+        println!("{}", crate::cli_help::overview());
+        return 0;
+    }
     if args[0] == "check" {
         CHECK_CMD.with(|c| c.set(true));
     }
@@ -5320,9 +5357,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
             0
         }
         _ => {
-            eprintln!(
-                "usage: ksn <new|check|fix|todo|context|fmt|run|test|debug|dap|build|get|sig|doc|index|refs|rename|explain|lsp|update|lock|vendor|publish|yank|git|registry> [args]"
-            );
+            eprintln!("ksn: unknown command {}\n{}", args[0], crate::cli_help::overview());
             2
         }
     }
