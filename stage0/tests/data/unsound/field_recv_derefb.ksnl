@@ -1,0 +1,24 @@
+type t.A
+    n: u32
+end t.A
+
+trait t.Tr[E: uses, P: panics]
+    fn go(self: &Self) -> () uses [E] panics P
+end t.Tr
+
+type t.W
+    x: t.A
+end t.W
+
+impl t.Tr<[io.console], may> for t.A
+fn t.A.go(self: &t.A) -> () uses [io.console] panics may impls t.Tr<[io.console], may>
+    core.panic.panic("boom")
+end t.A.go
+
+fn t.bad(b: &t.W) -> () uses [] panics never
+    (*b).x.go()
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
