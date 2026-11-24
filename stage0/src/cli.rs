@@ -1179,7 +1179,8 @@ fn analyze_slice(mut l: Loaded, plan: SlicePlan, prev_items: &[Item]) -> Analysi
 fn kir_borrowck_union(rep: &mut Report, prog: Option<&Program>, user: &[usize]) {
     // 既定: AST の結果は残し、KIR の診断を足す (どちらかが拒めば拒む)。下ろせないときは AST の結果だけ。
     // すでに致命の診断があるなら足すものはない (誤りのあるプログラムは KIR に下ろす前提を満たさず、下ろす側が落ちることもある)。
-    if rep.items.iter().any(|i| i.fatal) {
+    // E0020 (書き方が `ksn fmt` の出力と違う) は意味に関わらないので、これだけなら KIR の検査も省かない (E0020 の道でも検査を落とさない)。
+    if rep.items.iter().any(|i| i.fatal && i.code != "E0020") {
         return;
     }
     let Some(p) = prog else { return };
