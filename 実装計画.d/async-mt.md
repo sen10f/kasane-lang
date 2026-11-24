@@ -18,3 +18,8 @@
 - 全員待ち: 眠る直前に `idle == n && 注入列が空 && 待つ fd と期限が無い` を数える。眠りは `epoll_wait` (eventfd つき) で、futex は使わない。
 - 参照: 木走査・KIR の参照実行器は今のまま (決定的、`n` を無視)。Windows / wasm32 は E9040。
 
+
+## FAST GATE の結果 (2026-11-24、機械の負荷が高い)
+
+- `check_all` 通過、`verify_reference` bad 0、`native_ratio` linear_ok 187/187・examples 18/19 (ui_demo は `ui/native/libksnui.a` が worktree に無いだけ)・perf 8/8 (床どおり)。`check_diag` は 1 本 (`trait_side_impls_work_for_foreign_types_in_run_and_llvm_build`) を除いて 308 件通過、`suspend` / `suspend_native` / `net_async_mt` 通過、パッケージの `ksn check` は全て診断 0。
+- `par_test.py --tier fast` は**最後まで回らなかった**。共有のビルドキャッシュ `~/.ksn/cache` (2199 件) が重くて、`ksn build` がどの束でも (dev/plan のバイナリでも) 1 分以上かかる (専用の `KSN_CACHE_DIR` なら 4 秒)。fix/cache-limit の件で、この枠の変更とは無関係。キャッシュを片付けたあとで回し直す。
