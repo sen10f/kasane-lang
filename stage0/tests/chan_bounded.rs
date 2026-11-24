@@ -51,7 +51,7 @@ fn same_output(name: &str, want: &str) {
 }
 
 /// 木走査・native のどちらも 101 で、満杯の send の文言。
-fn deadlocks_everywhere(name: &str) {
+fn deadlocks_everywhere(name: &str, exact: bool) {
     let t = pkg(name);
     let interp = run(&["run"], &t.0);
     assert_eq!(interp.status.code(), Some(101), "{}", text(&interp.stderr));
@@ -62,7 +62,8 @@ fn deadlocks_everywhere(name: &str) {
     for release in [false, true] {
         let r = Command::new(build(&t, release)).output().unwrap();
         assert_eq!(r.status.code(), Some(101), "{}", text(&r.stderr));
-        assert!(text(&r.stderr).contains("send() on a full channel"), "{}", text(&r.stderr));
+        // join で待つ側と送り手のどちらが先に全員待ちを見つけても deadlock なので、join の形は文言を "deadlock" だけ見る。
+        assert!(text(&r.stderr).contains(if exact { "send() on a full channel" } else { "deadlock" }), "{}", text(&r.stderr));
     }
 }
 
@@ -73,12 +74,12 @@ fn chan_bounded_capacity_one_ping_pong_matches_across_paths() {
 
 #[test]
 fn chan_bounded_send_on_full_without_a_receiver_is_deadlock_101() {
-    deadlocks_everywhere("deadlock_full");
+    deadlocks_everywhere("deadlock_full", true);
 }
 
 #[test]
 fn chan_bounded_send_on_full_while_joining_is_deadlock_101() {
-    deadlocks_everywhere("deadlock_join_full");
+    deadlocks_everywhere("deadlock_join_full", false);
 }
 
 /// 実スレッドだけの性質: 生産者が速くても、受け手から見える遅れは容量 + 数個に収まる (キューが伸びない)。
