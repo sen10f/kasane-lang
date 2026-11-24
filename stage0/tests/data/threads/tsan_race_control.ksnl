@@ -1,0 +1,41 @@
+type t.P derive [Clone, Copy] pub
+    p: *mut u32
+end t.P
+
+trait t.Run pub
+    fn run(self: &Self) -> () uses [] panics never
+end t.Run
+
+impl t.Run for t.P
+fn t.P.run(self: &t.P) -> () uses [] panics never impls t.Run
+    for _ in core.iter.range(0u32, 20_000_000u32) {
+        let v = unsafe "r" "racy read" {
+            core.ptr.read(core.ptr.as_const(self.p))
+        }
+        unsafe "w" "racy write" {
+            core.ptr.write(self.p, v.wrapping_mul(1_664_525u32).wrapping_add(1_013_904_223u32))
+        }
+    }
+end t.P.run
+
+fn t.main() -> () uses [alloc, thread] panics may
+    let mut counter = 0u32
+    let p = t.P {
+        p: unsafe "p" "address of counter" {
+            core.ptr.from_mut(&mut counter)
+        }
+    }
+    let h = t.par(p)
+    p.run()
+    h.join()
+    core.check.eq(counter, 12_345u32)
+end t.main
+
+fn t.par[T: core.marker.Send + t.Run + 'static](x: T) -> std.thread.JoinHandle<(), std.alloc.System> uses [alloc, thread] panics may
+    match std.thread.spawn(std.alloc.SYSTEM, fn() -> () capture [move x] {
+        x.run()
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("x")
+    }
+end t.par
