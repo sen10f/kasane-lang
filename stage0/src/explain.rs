@@ -167,6 +167,7 @@ pub const EXPLAIN: &[(&str, &str)] = &[
     ("E5007", r#"`extern` の引数・戻り値に C の型でないものがある(`layout c` でない構造体・列挙型・`str`・参照・スライス・タプル・配列の値渡し・`i128`)。生ポインタか `layout c` の構造体を使う(3.8)。"#),
     ("E5010", r#"手動の `core.marker.Send` / `Sync` impl は、その型を定義したモジュール (かつ `[unsafe] modules` のモジュール) にだけ書ける。別のモジュール・別のパッケージ・標準の型 (`core.*` / `std.*` / `alloc.*`) への impl は誤り。型のモジュールを `[unsafe] modules` に載せて、そこへ impl を移す(5.5)。"#),
     ("E5011", r#"欄がすべて数値・`bool`・`char` の型は `Send` / `Sync` が自動で成り立つので、手動 impl は冗長で誤り。消す(5.5)。同じ型への二重の impl は E1114。"#),
+    ("E5008", r#"総称型への手動の `core.marker.Send` / `Sync` impl は、型パラメータに同じマーカーの境界が要る(5.5)。`impl[T: core.marker.Send] core.marker.Send for W<T>` と書く。`Sync` は `T: core.marker.Sync` (`Mutex` のように中を排他で守る型は `T: core.marker.Send`)。境界が無いと、`T` が `Send` でなくても `W<T>` が `Send` になり、`Rc` に当たる型をスレッドへ持ち出せてしまう。直し方: 境界を足す。足せないなら欄を `Mutex` かアリーナの取っ手に置き換える。"#),
     ("E5002", r#"手動の `core.marker.Send` / `Sync` impl(内部可変性の表明)は、`kasane.toml` の `[unsafe] modules` に列挙したモジュールでのみ書ける(5.5)。"#),
     ("E9001", r#"`kasane.toml` が見つからない。"#),
     ("E9002", r#"`kasane.toml` が不正。"#),
