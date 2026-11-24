@@ -1,19 +1,25 @@
 # HashMap 性能 (kir/hashmap-perf)
 
-結論: 今回は処理系を変えていない (未達)。測定と原因の整理だけ。
+決定 (2026-11-24): 中の作りを詰めるだけ。挿入順を保つ。Fnv64 は変えない。
 
-## 測定 (`/tmp/perfcg_hashmap`、u64 1M insert + iter の和、5〜7 回の中央値、負荷 12〜25 で雑音大)
-- 変更前 Kasane 0.26〜0.27 s / Rust (`-C opt-level=3`) 0.16〜0.20 s = 約 1.3〜1.6 倍。
-- 試し: `kasane_base_inst` (`kir_llvm.rs`) に `core.hash.fnv_int`・`hash_key`・`HashMap.find_hashed`・`place`・`HashMapIter.next` を足して alwaysinline + 深さ記録省略 → 0.29 s。改善なし (戻した)。
-  呼び出しの壁が主因ではない。
-- get/miss/remove の測定、perf は未実施 (perf は入っていない)。
+## 変更
+1. remove は墓石 (`cells[p] = Empty`、`dead` を数える)。以前は `Vec.remove` + 全再索引で 1 回 O(n)。
+   索引の `Index(p, h)` は残すので探索の列は切れない。挿入で索引が半分を超えたら `compact` (前詰め、順序は保つ) してから、足りなければ倍に。
+2. 索引の項に鍵のハッシュも持たせた (`Index(pos, h)`)。ハッシュが違う項では実体の項を読まない (miss が主に速くなる)。型は `dead: usize` の欄と `Index(usize, usize)` が増えた。
+3. `for i in range(..)` の局所を `bind_let` で束縛 (`kir_lower_coll.rs`)。`&i` が下ろせるようになった (`get(&i)` / `remove(&i)`)。`let k = i; get(&k)` は元から下りた。
 
-## 原因の見立て (未検証の部分あり)
-- HashMap は `spec/stdlib/alloc/collections.ksnl` の Kasane 実装。`cells: Vec<HashCell>` (挿入順の本体、`Entry(h,K,V)` は 40 バイト級) + `Index(p)` の open addressing。
-  挿入順はこの cells の並びで保つ。1 要素あたりのメモリが Rust (16 バイト + 制御バイト) の 2〜3 倍で、メモリ帯域・キャッシュが支配的。
-- ハッシュは FNV-1a のバイトごとの 8 回の乗算 (`fnv_int`)。仕様 4.2 が Fnv64 を定めるので、速い整数ハッシュへ替えるのは仕様変更 (決定が要る)。
-- `get(&k)` で `&local` が下ろせない件は `kir_lower_refs.rs` の段 1 の制限で未着手。
+## 測定 (u64 1M、ms、3 回、負荷 19〜40 で雑音大。Rust は `-C opt-level=3`)
+| 操作 | 変更前 | 変更後 | Rust |
+|---|---|---|---|
+| insert | 285 | 210 | 185 |
+| get 命中 | 120 | 60 | 145 |
+| get 外れ | 175 | 97 | 48 |
+| iter | 3 | 3 | 4 |
+| remove 半分 | 65 (n=5000 では O(n^2)) | 52 | 71 |
+(変更前は 変更 1・2 の前、3 だけ入れた状態。insert+iter の perfcg は 0.26 → 約 0.22 s 対 Rust 0.16〜0.20。)
+- 常駐メモリは変わらず (98 MB 対 Rust 54 MB)。索引は同じ列の 40 バイト級の項のまま。
 
-## 次の手 (案)
-1. `Entry` から `h` を外す/cells と index を分ける (構造の変更。挿入順を保つ)。
-2. 整数キーだけ 8 バイトを 1 回の乗算で混ぜる経路 (仕様 4.2 の改訂が要る)。
+## 未達と理由
+- u32 の索引表への分離 (メモリ 1/2 以下): 索引用に 2 つ目の `Buf<u32, A>` が要るが、`Allocator` は複製できず (`A` の値は `cells` が持つ)、`Clone` 境界を足すと型の公開の API が変わる。生ポインタで `cells` の allocator を借りる案は unsafe を標準の外へ広げる。決定が要る。
+- get 外れは Rust の約 2 倍: Fnv64 の下位 32 ビットを使う線形探索の群れ (ハッシュを変えない決定)。
+- 呼び出しの inline (`kasane_base_inst` に HashMap の関数を足す) は効果なし (0.27 → 0.29 s)。足していない。
