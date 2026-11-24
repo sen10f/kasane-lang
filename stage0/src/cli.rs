@@ -4411,7 +4411,7 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
                 return 1;
             }
         };
-        let opt = if release { "-O2" } else { "-O1" };
+        let opt = if release { "-O3" } else { "-O1" };
         let triple = ll.lines().find_map(|l| l.strip_prefix("target triple = \"")).and_then(|r| r.split('"').next()).unwrap_or("");
         #[cfg(feature = "embedded-llvm")]
         let res = if crate::lld::enabled() {
@@ -4660,7 +4660,7 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
 /// 下ろせない関数が 1 つでもあれば、理由を `Err` で返す (呼び出し側が既定の経路へ退避する)。
 fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: bool, tg: Tgt, nat: &[String]) -> Result<(), String> {
     let lo = crate::kir_lower::lower_program(prog, user, Some(entry));
-    match llvm_exe(lo, entry, exe, if release { "-O2" } else { "-O1" }, tg, nat) {
+    match llvm_exe(lo, entry, exe, if release { "-O3" } else { "-O1" }, tg, nat) {
         Ok(()) => Ok(()),
         Err(BuildFail::Unsupported(unsupported)) => Err(format_reasons(prog, &unsupported, entry, if release { Some(20) } else { None })),
         Err(BuildFail::Tool(s)) => Err(s),

@@ -14,6 +14,7 @@
 //! - 入口 `main` は引数を 16 進の語 (下位・上位) で受け取り、結果も 16 進の 2 語で標準出力の最後に出す (前に制御文字 `\x01` を付ける。プログラム自身の出力と区別するため)。表示は呼び出し側
 //!   (`kir::show_value`) が行うので、`--run` と同じ表示になる。
 
+use crate::kir::Pointee;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -937,7 +938,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
                 format!("  %ok1 = icmp ult i64 %e, %dmax\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl = load i64, ptr @ksn.floor\n  %need = add i64 %fl, {}\n  %ok2 = icmp uge i64 %sp, %need\n  %fits = and i1 %ok1, %ok2\n", fr)
             };
             funcs.push_str(&format!(
-                "define internal {rt} {w}({ps}) alwaysinline null_pointer_is_valid {{\n  %d = load i64, ptr @ksn.depth\n  %dmax = load i64, ptr @ksn.dmax\n  %e = add i64 %d, {h1}\n{fl}  br i1 %fits, label %fast, label %slow\nfast:\n  %rf = call {rt} {f}({xs})\n  ret {rt} %rf\nslow:\n  %rs = call {rt} {s}({xs})\n  ret {rt} %rs\n}}\n\n",
+                "define internal {rt} {w}({ps}) alwaysinline nounwind null_pointer_is_valid {{\n  %d = load i64, ptr @ksn.depth\n  %dmax = load i64, ptr @ksn.dmax\n  %e = add i64 %d, {h1}\n{fl}  br i1 %fits, label %fast, label %slow\nfast:\n  %rf = call {rt} {f}({xs})\n  ret {rt} %rf\nslow:\n  %rs = call {rt} {s}({xs})\n  ret {rt} %rs\n}}\n\n",
                 rt = rt, w = fname(&format!("{}.w", f.key)), ps = ps.join(", "), h1 = h, fl = fl, f = fname(&f.key), s = fname(&format!("{}.slow", f.key)), xs = xs.join(", ")
             ));
         }
@@ -1116,7 +1117,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
 /// 入口 `main` を `NATIVE_STACK_BYTES` のスタックの別スレッドで動かす形にする (呼び出し深さの上限 `MAX_DEPTH` まで OS のスタックが足りるように。
 /// 主スレッドのスタックは通常 8 MiB)。元の `main` は `@ksn.rt.entry0(argc, argv)` に改名して残す。スレッドを作れなければ主スレッドのまま走らせる。
 fn on_big_stack(cx: &mut Ctx, main: String, depth: u64) -> String {
-    let head = "define i32 @main(i32 %argc, ptr %argv) null_pointer_is_valid {\nentry:\n";
+    let head = "define i32 @main(i32 %argc, ptr %argv) nounwind null_pointer_is_valid {\nentry:\n";
     let Some(rest) = main.strip_prefix(head) else { return main };
     for d in [
         "declare i32 @pthread_create(ptr, ptr, ptr, ptr)",
@@ -1129,9 +1130,9 @@ fn on_big_stack(cx: &mut Ctx, main: String, depth: u64) -> String {
     }
     cx.globals.push_str("@ksn.rt.main_argc = internal global i32 0\n@ksn.rt.main_argv = internal global ptr null\n");
     format!(
-        "define internal ptr @ksn.rt.entry(ptr %p) null_pointer_is_valid {{\nentry:\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl0 = sub i64 %sp, {fl}\n  store i64 %fl0, ptr @ksn.floor\n  store i64 {dm}, ptr @ksn.dmax\n  %a = load i32, ptr @ksn.rt.main_argc\n  %v = load ptr, ptr @ksn.rt.main_argv\n  %c = call i32 @ksn.rt.entry0(i32 %a, ptr %v)\n  %w = zext i32 %c to i64\n  %q = inttoptr i64 %w to ptr\n  ret ptr %q\n}}\n\n\
-         define i32 @main(i32 %argc, ptr %argv) null_pointer_is_valid {{\nentry:\n  store i32 %argc, ptr @ksn.rt.main_argc\n  store ptr %argv, ptr @ksn.rt.main_argv\n  %attr = alloca [64 x i8], align 16\n  %tid = alloca i64\n  %res = alloca ptr\n  store ptr null, ptr %res\n  %a0 = call i32 @pthread_attr_init(ptr %attr)\n  %a1 = call i32 @pthread_attr_setstacksize(ptr %attr, i64 {})\n  %r = call i32 @pthread_create(ptr %tid, ptr %attr, ptr @ksn.rt.entry, ptr null)\n  %a2 = call i32 @pthread_attr_destroy(ptr %attr)\n  %bad = icmp ne i32 %r, 0\n  br i1 %bad, label %direct, label %joined\ndirect:\n  %spp2 = call ptr @llvm.stacksave.p0()\n  %sp2 = ptrtoint ptr %spp2 to i64\n  %fl2 = sub i64 %sp2, 6291456\n  store i64 %fl2, ptr @ksn.floor\n  store i64 {dm}, ptr @ksn.dmax\n  %d = call i32 @ksn.rt.entry0(i32 %argc, ptr %argv)\n  ret i32 %d\njoined:\n  %t = load i64, ptr %tid\n  %j = call i32 @pthread_join(i64 %t, ptr %res)\n  %pv = load ptr, ptr %res\n  %iv = ptrtoint ptr %pv to i64\n  %code = trunc i64 %iv to i32\n  ret i32 %code\n}}\n\n\
-         define internal i32 @ksn.rt.entry0(i32 %argc, ptr %argv) null_pointer_is_valid {{\nentry:\n{}",
+        "define internal ptr @ksn.rt.entry(ptr %p) nounwind null_pointer_is_valid {{\nentry:\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl0 = sub i64 %sp, {fl}\n  store i64 %fl0, ptr @ksn.floor\n  store i64 {dm}, ptr @ksn.dmax\n  %a = load i32, ptr @ksn.rt.main_argc\n  %v = load ptr, ptr @ksn.rt.main_argv\n  %c = call i32 @ksn.rt.entry0(i32 %a, ptr %v)\n  %w = zext i32 %c to i64\n  %q = inttoptr i64 %w to ptr\n  ret ptr %q\n}}\n\n\
+         define i32 @main(i32 %argc, ptr %argv) nounwind null_pointer_is_valid {{\nentry:\n  store i32 %argc, ptr @ksn.rt.main_argc\n  store ptr %argv, ptr @ksn.rt.main_argv\n  %attr = alloca [64 x i8], align 16\n  %tid = alloca i64\n  %res = alloca ptr\n  store ptr null, ptr %res\n  %a0 = call i32 @pthread_attr_init(ptr %attr)\n  %a1 = call i32 @pthread_attr_setstacksize(ptr %attr, i64 {})\n  %r = call i32 @pthread_create(ptr %tid, ptr %attr, ptr @ksn.rt.entry, ptr null)\n  %a2 = call i32 @pthread_attr_destroy(ptr %attr)\n  %bad = icmp ne i32 %r, 0\n  br i1 %bad, label %direct, label %joined\ndirect:\n  %spp2 = call ptr @llvm.stacksave.p0()\n  %sp2 = ptrtoint ptr %spp2 to i64\n  %fl2 = sub i64 %sp2, 6291456\n  store i64 %fl2, ptr @ksn.floor\n  store i64 {dm}, ptr @ksn.dmax\n  %d = call i32 @ksn.rt.entry0(i32 %argc, ptr %argv)\n  ret i32 %d\njoined:\n  %t = load i64, ptr %tid\n  %j = call i32 @pthread_join(i64 %t, ptr %res)\n  %pv = load ptr, ptr %res\n  %iv = ptrtoint ptr %pv to i64\n  %code = trunc i64 %iv to i32\n  ret i32 %code\n}}\n\n\
+         define internal i32 @ksn.rt.entry0(i32 %argc, ptr %argv) nounwind null_pointer_is_valid {{\nentry:\n{}",
         main_stack_bytes(depth), rest, fl = main_stack_bytes(depth) - STACK_MARGIN, dm = crate::kir_exec::depth_limit(depth)
     )
 }
@@ -1143,7 +1144,7 @@ fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
         return Err(format!("入口 {} に引数がある", f.key));
     }
     let rt = lty(aggs, f.ret);
-    let mut s = String::from("define i32 @main(i32 %argc, ptr %argv) null_pointer_is_valid {\nentry:\n");
+    let mut s = String::from("define i32 @main(i32 %argc, ptr %argv) nounwind null_pointer_is_valid {\nentry:\n");
     // std.env の C ランタイムが argc/argv を参照するため、グローバルに保存する。
     // シンボル名は C から `extern` 参照できるようドットなしにする。
     cx.globals.push_str("@ksn_rt_argc = global i32 0\n");
@@ -1161,7 +1162,7 @@ fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
         // 実行器が動いていない (正常に終わった) か、`exit` を通った (panic など) なら、何もせず -2 を返す。
         s.push_str("@ksn_exited = external global i32\n");
         s.push_str(&format!(
-            "define i32 @ksn_resume(i32 %h, i32 %v) \"wasm-export-name\"=\"ksn_resume\" null_pointer_is_valid {{\nentry:\n  %ex = load i32, ptr @ksn_exited\n  %exd = icmp ne i32 %ex, 0\n  br i1 %exd, label %dead, label %live\nlive:\n  %running = call i1 {}()\n  br i1 %running, label %active, label %dead\nactive:\n  %put = call i1 {}(i32 %h, i32 %v)\n  %r = call {} {}()\n  %pend = call i1 {}()\n  br i1 %pend, label %waiting, label %go\nwaiting:\n  ret i32 -1\ngo:\n",
+            "define i32 @ksn_resume(i32 %h, i32 %v) \"wasm-export-name\"=\"ksn_resume\" nounwind null_pointer_is_valid {{\nentry:\n  %ex = load i32, ptr @ksn_exited\n  %exd = icmp ne i32 %ex, 0\n  br i1 %exd, label %dead, label %live\nlive:\n  %running = call i1 {}()\n  br i1 %running, label %active, label %dead\nactive:\n  %put = call i1 {}(i32 %h, i32 %v)\n  %r = call {} {}()\n  %pend = call i1 {}()\n  br i1 %pend, label %waiting, label %go\nwaiting:\n  ret i32 -1\ngo:\n",
             fname("ksn.task.running"),
             fname("ksn.js.put"),
             rt,
@@ -1486,7 +1487,7 @@ fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
     if f.params().iter().any(|(_, t)| bad(*t)) || bad(f.ret) {
         return Err(format!("関数 {} は集成体・参照・ptr を引数か戻り値に持つ (この入口では扱えない)", f.key));
     }
-    let mut s = String::from("define i32 @main(i32 %argc, ptr %argv) null_pointer_is_valid {\nentry:\n");
+    let mut s = String::from("define i32 @main(i32 %argc, ptr %argv) nounwind null_pointer_is_valid {\nentry:\n");
     let mut args = vec![];
     for (j, (_, t)) in f.params().iter().enumerate() {
         let (lo_i, hi_i) = (1 + 2 * j, 2 + 2 * j);
@@ -3534,7 +3535,16 @@ impl<'a> Fe<'a> {
             texts[k] = std::mem::take(&mut self.body);
         }
         // 先頭 (静的な確保と深さの検査) と本体。
-        let params: Vec<String> = f.params().iter().enumerate().map(|(j, (_, t))| format!("{} %arg{}", lty(self.aggs, *t), j)).collect();
+        let ro = shared_ref_attrs_ok(f);
+        let params: Vec<String> = f
+            .params()
+            .iter()
+            .enumerate()
+            .map(|(j, (_, t))| match t {
+                Ty::Ref(false, pt) if ro && !may_have_interior_mut(self.aggs, *pt) => format!("ptr noalias readonly %arg{}", j),
+                _ => format!("{} %arg{}", lty(self.aggs, *t), j),
+            })
+            .collect();
         // `null-pointer-is-valid`: `core.ptr.read(null)` などの null 参照を、最適化で消える未定義動作にせず、実際の fault (SIGSEGV) にする。
         // Kasane で書いた基本メソッド (`alloc/vec.ksnl` / `alloc/string.ksnl` の単相インスタンス) は、組み込みの下ろしと同じく呼び出しを残さない。
         // 再帰せず、呼び先も有界なので、呼び出しの深さの記録 (`ksn.depth`) を省いて、LLVM が展開できるようにする
@@ -3545,7 +3555,7 @@ impl<'a> Fe<'a> {
             Some(n) => ("define", format!(" \"wasm-export-name\"=\"{}\"", n)),
             None => ("define internal", String::new()),
         };
-        let mut s = format!("{} {} {}({}){} {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), if self.slow { fname(&format!("{}.slow", f.key)) } else { fname(&f.key) }, params.join(", "), exp, inline);
+        let mut s = format!("{} {} {}({}){} {}nounwind null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), if self.slow { fname(&format!("{}.slow", f.key)) } else { fname(&f.key) }, params.join(", "), exp, inline);
         s.push_str(&hoisted);
         if bare {
             // `b0` の phi は `go` を前の辺として参照するので、空の `go` を残す (最適化で消える)。
@@ -3616,5 +3626,50 @@ mod tests {
         let text = "kir 1\n\nfn t.r key=t.r uses=[] panics=never stack=- ret=ref<i32>\n  b0(%0: ref<i32>):\n    ret %0\nend t.r\n";
         let m = crate::kir::parse_module(text).expect("parse");
         assert!(emit(&m, "t.r").unwrap_err().contains("入口では扱えない"));
+    }
+}
+
+/// 共有参照 `&T` の引数に `noalias readonly` を付けてよい関数か。
+/// 外部宣言・FFI・生ポインタを扱う関数 (`Ty::Ptr` の引数・戻り値・値を持つもの、`core.ptr` など) は付けない。
+fn shared_ref_attrs_ok(f: &Func) -> bool {
+    if f.link.is_some() || f.key.starts_with("core.ptr") || f.key.starts_with("std.ffi") || f.key.starts_with("ksn.") {
+        return false;
+    }
+    if f.ret == Ty::Ptr || f.params().iter().any(|(_, t)| *t == Ty::Ptr) {
+        return false;
+    }
+    // 本体に生ポインタの値・FFI 呼び出しがあれば付けない (`unsafe` の中は共有参照の規則の外)。
+    !f.blocks.iter().any(|b| b.insts.iter().any(|i| i.ty == Ty::Ptr || matches!(&i.op, Op::Call { callee, .. } if callee.starts_with("core.ptr") || callee.starts_with("std.ffi"))))
+}
+
+/// `&T` の指す先に内部可変性 (別のスレッドや別の経路から共有のまま書き換わる可能性) が「あるかもしれない」か。
+/// 迷ったら真 (属性を付けない)。整数・浮動小数・bool と、それだけからなる構造体・タプル・配列だけが偽。
+fn may_have_interior_mut(aggs: &[AggDef], p: Pointee) -> bool {
+    fn ty_may(aggs: &[AggDef], t: Ty, depth: u32) -> bool {
+        if depth > 8 {
+            return true;
+        }
+        match t {
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::I128 | Ty::Isize | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::U128 | Ty::Usize | Ty::F32 | Ty::F64 | Ty::Bool | Ty::Unit => false,
+            Ty::Agg(i) => agg_may(aggs, i, depth + 1),
+            _ => true,
+        }
+    }
+    fn agg_may(aggs: &[AggDef], i: u32, depth: u32) -> bool {
+        let Some(a) = aggs.get(i as usize) else { return true };
+        let n = a.name.to_ascii_lowercase();
+        if ["atomic", "mutex", "rwlock", "cell", "chan", "sender", "receiver", "arc", "once", "lazy", "sync", "thread", "condvar", "barrier"].iter().any(|w| n.contains(w)) {
+            return true;
+        }
+        match &a.kind {
+            AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| ty_may(aggs, f.ty, depth)),
+            AggKind::Array(t, _) => ty_may(aggs, *t, depth),
+            AggKind::Enum(_) => true,
+        }
+    }
+    match p {
+        Pointee::I8 | Pointee::I16 | Pointee::I32 | Pointee::I64 | Pointee::I128 | Pointee::Isize | Pointee::U8 | Pointee::U16 | Pointee::U32 | Pointee::U64 | Pointee::U128 | Pointee::Usize | Pointee::F32 | Pointee::F64 | Pointee::Bool => false,
+        Pointee::Agg(i) => agg_may(aggs, i, 0),
+        _ => true,
     }
 }
