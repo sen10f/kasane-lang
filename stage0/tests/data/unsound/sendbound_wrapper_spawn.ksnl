@@ -1,0 +1,20 @@
+type t.Shared
+    p: *const u8
+end t.Shared
+
+fn t.main() -> i32 uses [thread] panics may
+    t.w(t.Shared {
+        p: core.ptr.as_const(core.ptr.null_mut())
+    })
+    0
+end t.main
+
+fn t.w[T: core.marker.Send](x: T) -> () uses [thread] panics may
+    let h = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move x] {
+            let _y = x
+        },
+    ).unwrap()
+    let _r = h.join()
+end t.w

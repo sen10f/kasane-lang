@@ -1,0 +1,16 @@
+type t.S[T: core.marker.Send]
+    v: T
+end t.S
+
+type t.Shared
+    p: *const u8
+end t.Shared
+
+fn t.main() -> i32 uses [] panics never
+    let _s = t.S {
+        v: t.Shared {
+            p: core.ptr.as_const(core.ptr.null_mut())
+        }
+    }
+    0
+end t.main

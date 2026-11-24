@@ -1,0 +1,21 @@
+type t.Box
+    n: u8
+end t.Box
+
+type t.Shared
+    p: *const u8
+end t.Shared
+
+fn t.Box.put[T: core.marker.Send](self: &t.Box, x: T) -> () uses [] panics never
+    let _y = x
+end t.Box.put
+
+fn t.main() -> i32 uses [] panics never
+    let b = t.Box {
+        n: 1u8
+    }
+    b.put(t.Shared {
+        p: core.ptr.as_const(core.ptr.null_mut())
+    })
+    0i32
+end t.main

@@ -1,0 +1,22 @@
+type t.Shared
+    p: *const u8
+end t.Shared
+
+fn t.ap(f: fn(t.Shared) -> () uses [] panics never, x: t.Shared) -> () uses [] panics never
+    f(x)
+end t.ap
+
+fn t.main() -> i32 uses [] panics never
+    t.ap(t.w, t.mk())
+    0i32
+end t.main
+
+fn t.mk() -> t.Shared uses [] panics never
+    t.Shared {
+        p: core.ptr.as_const(core.ptr.null_mut())
+    }
+end t.mk
+
+fn t.w[T: core.marker.Send](x: T) -> () uses [] panics never
+    let _y = x
+end t.w
