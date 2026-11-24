@@ -713,17 +713,50 @@ impl<'a> W<'a> {
         // 取り込み A の借用を取り込み B の先へ書く: 外側で `B = ..A の借用..` と書いたのと同じに扱う (M7)。
         // 取り込みごとの領域は外側の場所の領域なので、A が B の指す先より先に尽きれば、外側の通常の規則 (E3030 / E3010) が止める。
         for (a, b, line) in std::mem::take(&mut sub.cap_stores) {
+            // 入れ子の閉包: 自分の取り込みどうしの書き込みなら、さらに外側へ持ち上げる。自分の引数の指す先へ書くなら誤り。
+            if let Some(cl) = &self.cl {
+                let is_p = |n: &str| cl.params.iter().any(|(x, _)| x == n);
+                if is_p(&b) && self.cap_names.contains(&a) && !is_p(&a) {
+                    self.diag("E3030", format!("stores a reference to the captured local variable `{}` into closure argument `{}`'s pointee, which outlives it", a, b), line);
+                    continue;
+                }
+                if is_p(&a) && !is_p(&b) && self.cap_names.contains(&b) {
+                    self.diag("E3030", format!("stores a reference derived from closure argument `{}` (a new lifetime per call) into captured `{}`, which outlives the call", a, b), line);
+                    continue;
+                }
+                if self.cap_names.contains(&a) && self.cap_names.contains(&b) {
+                    self.cap_stores.push((a.clone(), b.clone(), line));
+                }
+            }
             let Some(av) = self.env.vars.get(&a).cloned() else { continue };
             let mut add = av.val.flat();
             add.add(&Val::loan(Loan::Local(a.clone(), av.decl), line));
-            if let Some(bv) = self.env.vars.get_mut(&b) {
-                if bv.carries {
-                    bv.val.add(&add.with_line(line));
+            // 書き込み先: 取り込み `b` そのものと、`b` (`&mut` の束縛) が指す局所。
+            let mut targets: Vec<String> = vec![b.clone()];
+            if let Some(bv) = self.env.vars.get(&b) {
+                if bv.is_ref {
+                    for (l, _) in bv.val.loans() {
+                        if let Loan::Local(n, nid) = l {
+                            // `move` で取り込んだ `&mut` が指す、さらに外側の局所: 外側へ持ち上げる。
+                            if let Some(cl) = &self.cl {
+                                if cl.outer.contains(&(n.clone(), nid)) && self.cap_names.contains(&a) {
+                                    self.cap_stores.push((a.clone(), n.clone(), line));
+                                }
+                            }
+                            targets.push(n);
+                        }
+                    }
                 }
             }
-            if let (Some(bv), true) = (self.env.vars.get(&b).cloned(), av.depth > self.env.vars.get(&b).map_or(0, |x| x.depth)) {
-                let _ = bv;
-                self.diag("E3030", format!("stores a reference to the captured local variable `{}` into captured `{}`, which outlives it", a, b), line);
+            for t in targets {
+                if let Some(tv) = self.env.vars.get_mut(&t) {
+                    if tv.carries {
+                        tv.val.add(&add.clone().with_line(line));
+                    }
+                }
+                if self.env.vars.get(&t).map_or(false, |x| av.depth > x.depth) {
+                    self.diag("E3030", format!("stores a reference to the captured local variable `{}` into captured `{}`, which outlives it", a, t), line);
+                }
             }
         }
     }
@@ -1474,8 +1507,25 @@ impl<'a> W<'a> {
     /// 局所の借用を入れたら E3030。
     fn store_through(&mut self, refs: &Val, v: &Val, line: usize, by_call: bool) {
         for (l, _) in &refs.loans() {
+            // 閉包の取り込み (`&` の取り込みが参照の変数を指すと 1 段深い層になる) は、層を問わず取り込みの借用として扱う。
+            let l = &match l {
+                Loan::ArgIn(n, _) if self.cap_names.contains(n) => Loan::Arg(n.clone()),
+                o => o.clone(),
+            };
             match l {
-                Loan::Local(n, _) => {
+                Loan::Local(n, nid) => {
+                    // 閉包の本体: `move` で取り込んだ `&mut` の先 (外側の局所) へ、取り込みの借用を書く。
+                    if let Some(cl) = &self.cl {
+                        if cl.outer.contains(&(n.clone(), *nid)) && !self.cap_names.contains(n) {
+                            for (k, _) in &v.loans() {
+                                if let Loan::Arg(qn) = k {
+                                    if self.cap_names.contains(qn) {
+                                        self.cap_stores.push((qn.clone(), n.clone(), line));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     let hd = self.env.vars.get(n).map(|x| x.depth).unwrap_or(0);
                     if let Some(x) = self.env.vars.get_mut(n) {
                         if x.carries {
@@ -1493,6 +1543,12 @@ impl<'a> W<'a> {
                 }
                 Loan::Arg(pn) => {
                     for (k, _) in &v.loans() {
+                        // 閉包の取り込み (`&` の取り込みが参照の変数を指すと 1 段深い層になる) は、層を問わず取り込みの借用として扱う。
+                        let k = match k {
+                            Loan::ArgIn(qn, _) if self.cap_names.contains(qn) => Loan::Arg(qn.clone()),
+                            o => o.clone(),
+                        };
+                        let k = &k;
                         let msg = match k {
                             Loan::Local(n, _) | Loan::Dead(n) => format!("stores a reference to the local variable `{}` into a place that outlives it", n),
                             Loan::Temp => "stores a reference to a temporary value into a place that outlives it".to_string(),
@@ -1515,11 +1571,16 @@ impl<'a> W<'a> {
         // 閉包の本体: 取り込んだ場所 (引数でない名前) へ、呼び出しごとに新しい領域の引数の借用を入れる (M1)。
         if let Some(cl) = &self.cl {
             let is_p = |n: &str| cl.params.iter().any(|(x, _)| x == n);
+            let (pp, qp) = (is_p(pn), is_p(qn));
             if self.cap_names.contains(pn) && self.cap_names.contains(qn) && pn != qn {
                 self.cap_stores.push((qn.to_string(), pn.to_string(), line));
             }
-            if is_p(qn) && !is_p(pn) {
+            if qp && !pp {
                 self.diag("E3030", format!("stores a reference derived from closure argument `{}` (a new lifetime per call) into captured `{}`, which outlives the call", qn, pn), line);
+            }
+            // 逆向き: 取り込み (閉包の環境の領域) の借用を、引数の指す先 (呼び出し側の値) へ書く。
+            if pp && self.cap_names.contains(qn) && !qp {
+                self.diag("E3030", format!("stores a reference to the captured variable `{}` into closure argument `{}`'s pointee, which outlives the closure's environment", qn, pn), line);
             }
             return;
         }
