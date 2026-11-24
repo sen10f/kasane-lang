@@ -1,0 +1,6 @@
+static t.CNT: std.sync.RwLock<u64> = std.sync.RwLock.new(0u64) pub
+
+fn t.leak['a]() -> &'a u64 uses [thread] panics never
+    let guard = t.CNT.read()
+    guard.get()
+end t.leak

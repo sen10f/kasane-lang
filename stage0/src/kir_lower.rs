@@ -1453,7 +1453,7 @@ impl<'a> Lw<'a> {
     }
 
     /// 関数の定義 `di` への呼び出し (総称関数は型引数を推論して単相インスタンスにする)。
-    fn call_def(&mut self, e: &V, di: usize, args: &[V], line: usize) -> LR<Option<VId>> {
+    pub(super) fn call_def(&mut self, e: &V, di: usize, args: &[V], line: usize) -> LR<Option<VId>> {
         let cd = &self.p.defs[di];
         if cd.kw != "fn" || cd.body.is_none() {
             return self.err(line, format!("呼び先 {} は段階 1 の対象外 (メソッド・本体なし)", cd.name));

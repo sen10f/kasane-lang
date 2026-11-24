@@ -114,15 +114,41 @@ thread_local! {
     pub static HELD_MUTEXES: RefCell<std::collections::HashSet<usize>> = RefCell::new(std::collections::HashSet::new());
 }
 
+thread_local! {
+    /// 今 `RwLock` の読みのガードが持たれている数 (`Rc` の番地ごと)。同じスレッドの読み→書きは deadlock (ネイティブと同じ)。
+    pub static HELD_READS: RefCell<std::collections::HashMap<usize, usize>> = RefCell::new(std::collections::HashMap::new());
+}
+
+/// ガードの種類ごとに持たれている印を外す (`MutexGuard` / `RwLockWriteGuard` は集合から、`RwLockReadGuard` は数を 1 減らす)。
+fn unhold(ty: &str, a: usize) {
+    match ty {
+        "std.sync.MutexGuard" | "std.sync.RwLockWriteGuard" => {
+            let _ = HELD_MUTEXES.try_with(|h| h.borrow_mut().remove(&a));
+        }
+        "std.sync.RwLockReadGuard" => {
+            let _ = HELD_READS.try_with(|h| {
+                let mut h = h.borrow_mut();
+                if let Some(n) = h.get_mut(&a) {
+                    *n -= 1;
+                    if *n == 0 {
+                        h.remove(&a);
+                    }
+                }
+            });
+        }
+        _ => {}
+    }
+}
+
 /// `core.mem.drop(g)`: `MutexGuard` なら、すぐに持たれている印を外す (後の `Drop` は何もしない)。
 pub fn release_guard(v: &Val) {
     if let Val::Struct(s) = v {
-        if s.ty == "std.sync.MutexGuard" {
+        if matches!(s.ty.as_str(), "std.sync.MutexGuard" | "std.sync.RwLockReadGuard" | "std.sync.RwLockWriteGuard") {
             let mut f = s.f.borrow_mut();
             if let Some(e) = f.iter_mut().find(|(k, _)| k == "cell") {
                 if let Val::Ref(c) = &e.1 {
                     let a = Rc::as_ptr(c) as *const () as usize;
-                    HELD_MUTEXES.with(|h| h.borrow_mut().remove(&a));
+                    unhold(&s.ty, a);
                 }
                 e.1 = Val::Unit;
             }
@@ -132,10 +158,10 @@ pub fn release_guard(v: &Val) {
 
 impl Drop for StructV {
     fn drop(&mut self) {
-        if self.ty == "std.sync.MutexGuard" {
+        if matches!(self.ty.as_str(), "std.sync.MutexGuard" | "std.sync.RwLockReadGuard" | "std.sync.RwLockWriteGuard") {
             if let Some((_, Val::Ref(c))) = self.f.get_mut().iter().find(|(k, _)| k == "cell") {
                 let a = Rc::as_ptr(c) as *const () as usize;
-                let _ = HELD_MUTEXES.try_with(|h| h.borrow_mut().remove(&a));
+                unhold(&self.ty, a);
             }
         }
     }

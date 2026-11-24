@@ -1,0 +1,62 @@
+static t.CFG: std.sync.RwLock<t.Cfg> = std.sync.RwLock.new(t.mk())
+
+type t.Cfg
+    hits: u64
+    names: std.vec.Vec<u64>
+end t.Cfg
+
+fn t.go() -> () uses [alloc, thread] panics may
+    let h0 = t.worker(true)
+    let h1 = t.worker(true)
+    let h2 = t.worker(false)
+    let h3 = t.worker(false)
+    let h4 = t.worker(false)
+    h0.join()
+    h1.join()
+    h2.join()
+    h3.join()
+    h4.join()
+    let g = t.CFG.read()
+    let s = g.get()
+    core.check.eq(s.hits, 4000u64)
+    core.check.eq(s.names.len(), 4000usize)
+end t.go
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    t.go()
+    std.io.print_line("rw ok")?
+    Ok(())
+end t.main
+
+fn t.mk() -> t.Cfg const uses [] panics never
+    t.Cfg {
+        hits: 0u64
+        names: std.vec.Vec.new()
+    }
+end t.mk
+
+fn t.worker(writer: bool) -> std.thread.JoinHandle<(), std.alloc.System> uses [alloc, thread] panics may
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move writer] {
+            let mut i = 0u32
+            while i < 2000u32 {
+                if writer {
+                    let mut g = t.CFG.write()
+                    let s = g.get_mut()
+                    core.mem.drop(s.names.push(u64.from_u32(i)))
+                    s.hits = s.hits + 1u64
+                } else {
+                    let g = t.CFG.read()
+                    let s = g.get()
+                    core.check.eq(s.hits >= 0u64, true)
+                }
+                i = i + 1u32
+            }
+        },
+    )
+    match spawned {
+        Ok(handle) => handle
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.worker

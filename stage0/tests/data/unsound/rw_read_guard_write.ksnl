@@ -1,0 +1,7 @@
+static t.CNT: std.sync.RwLock<u64> = std.sync.RwLock.new(0u64) pub
+
+fn t.main() -> () uses [thread] panics never
+    let guard = t.CNT.read()
+    *guard.get() = 5u64
+    core.mem.drop(guard)
+end t.main
