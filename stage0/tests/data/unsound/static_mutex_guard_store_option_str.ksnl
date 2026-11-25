@@ -1,0 +1,16 @@
+static t.M: std.sync.Mutex<Option<&'static str>> = std.sync.Mutex.new(None)
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut a = std.string.String.new()
+    a.push_str("hello world, this is heap").unwrap()
+    let mut g = t.M.lock()
+    *g.get_mut() = Some(a.as_str())
+    core.mem.drop(g)
+    core.mem.drop(a)
+    let g2 = t.M.lock()
+    match g2.get() {
+        Some(s) => std.io.print_line(s).unwrap()
+        None => std.io.print_line("none").unwrap()
+    }
+    Ok(())
+end t.main
