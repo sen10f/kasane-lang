@@ -6,23 +6,17 @@
 
 - macOS でのホスト実行と macOS 向けビルドには対応していません。動作確認済みのホストは Linux（x86_64）です。
 - Windows 向け実行ファイルは Linux からクロスコンパイルできますが、Windows 上のホスト開発環境には対応していません。
-- 配布用のビルド済みバイナリとライセンスは未確定です。README の各項目を参照してください。
+- 配布用のビルド済みバイナリは x86_64 Linux（Arch、Debian 12 以降 / glibc 2.36 以上）向けです。ライセンスは MIT または Apache-2.0（`LICENSE-MIT` / `LICENSE-APACHE`）。
 
 ## パッケージレジストリ
 
-中央レジストリと `ksn publish` はありません。依存パッケージは、`kasane.toml` に記述したローカルパス、または Git の URL とコミットハッシュで取得します。バージョン範囲の指定はありません。`ksn update` と `ksn vendor` は利用できますが、`vendor` の実ネットワーク動作は未検証です。
+中央の公共パッケージレジストリはありません。依存パッケージは、`kasane.toml` に記述したローカルパス、または Git の URL とコミットハッシュで取得します。バージョン範囲の指定はありません。`ksn publish --registry <URL>` でレジストリ（またはパス）へ公開でき、`ksn update` と `ksn vendor` は利用できますが、`vendor` の実ネットワーク動作は未検証です。
 
 ## S4 の検査器移行
 
-検査器を TAST（型付き AST）へ移す S4 の作業は進行中ですが、新検査器はまだ既定ではありません。通常の `ksn check` は従来検査器と KIR の検査を併用します。
+S4（検査器を TAST（型付き AST）へ移し、KIR への下ろしを TAST から行う作業）は統合済みです（コミット `97178d39`）。`KSN_CHECKER` の既定は `s4`（新しい検査 TAST）。`KSN_CHECKER=old|new|shadow` は 1 リリースだけ受け付けますが、同じ検査器が走り非推奨の旨を出力します。旧い検査器は取り外されました。
 
-2026-11-19 時点の進捗は次のとおりです。
-
-- S4A では、正しいコードに新検査器だけの診断（`new_only`）を出さないところまで進みました。
-- S4C では、明示した型引数の効果を実体化し、E4001 / E4002 の `old_only` を 0 件にしました。
-- 残りの主な `old_only` は、E2042 が 25 件、E3031 が 23 件、E5001 が 19 件、E5003 が 16 件です。E2044 など、型推論や名前の解決の段に残す項目もあります。
-
-検査器は 1 つに一本化されました (`KSN_CHECKER=old|new|shadow` は非推奨で、同じ検査器が走ります)。
+通ってはいけないコードは `stage0/tests/data/unsound/` に 1 ファイル 1 ケースで置き、まだ塞げないものは `stage0/tests/check_diag.rs` の `KNOWN_HOLES` に載せる慣習です。
 
 ## 手書きの `Drop` は実行されない
 
@@ -30,7 +24,7 @@
 
 ## 既知の検査の穴
 
-`stage0/tests/check_diag.rs` の `KNOWN_HOLES` は空（`const KNOWN_HOLES: &[&str] = &[]`）です。S4 統合（コミット `97178d39`）で旧い検査器は取り外され、`KNOWN_HOLES` への登録は残っていません（`KSN_CHECKER=old|new|shadow` も非推奨で、1 つの検査器だけが走ります）。通ってはいけないコードは `stage0/tests/data/unsound/` に1ファイル1ケースで置き、まだ塞げないものは `check_diag.rs` の `KNOWN_HOLES` に載せる慣習です。
+通ってはいけないコードは `stage0/tests/data/unsound/` に 1 ファイル 1 ケースで置き、まだ塞げないものは `stage0/tests/check_diag.rs` の `KNOWN_HOLES` に載せる慣習です（`KSN_CHECKER=old|new|shadow` も非推奨で、1 つの検査器だけが走ります）。
 
 ## インタプリタへの退避
 

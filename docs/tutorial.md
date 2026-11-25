@@ -82,25 +82,25 @@ enum wordcount.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
     Utf8(core.str.Utf8Error)
 end wordcount.Error
 
-fn wordcount.add_word(counts: &mut alloc.collections.HashMap<alloc.string.String<std.alloc.System>, usize, std.alloc.System>, word: &str) -> Result<(), wordcount.Error> uses [alloc] panics never
+fn wordcount.add_word(counts: &mut std.collections.HashMap<std.string.String, usize>, word: &str) -> Result<(), wordcount.Error> uses [alloc] panics never
     match counts.get_mut_str(word) {
         Some(count) => {
             *count = count.wrapping_add(1usize)
             Ok(())
         }
         None => {
-            let key = alloc.string.String.from_str(std.alloc.SYSTEM, word)?
+            let key = std.string.String.from_str(word)?
             match counts.insert(key, 1usize) {
-                Ok(_old) => Ok(())
+                Ok(_) => Ok(())
                 Err(error) => Err(wordcount.Error.Alloc(error))
             }
         }
     }
 end wordcount.add_word
 
-fn wordcount.count_text(text: &str) -> Result<alloc.collections.HashMap<alloc.string.String<std.alloc.System>, usize, std.alloc.System>, wordcount.Error> uses [alloc] panics never
-    let mut counts = alloc.collections.HashMap.new(std.alloc.SYSTEM)
-    let mut word = alloc.string.String.new(std.alloc.SYSTEM)
+fn wordcount.count_text(text: &str) -> Result<std.collections.HashMap<std.string.String, usize>, wordcount.Error> uses [alloc] panics never
+    let mut counts = std.collections.HashMap.new()
+    let mut word = std.string.String.new()
     for c in text.chars() {
         if c.is_ascii_whitespace() {
             if !word.is_empty() {
@@ -123,19 +123,19 @@ fn wordcount.main() -> Result<(), wordcount.Error> uses [alloc, io.console, io.f
     wordcount.print_count(&counts, "Kasane")?
     wordcount.print_count(&counts, "checks")?
     wordcount.print_count(&counts, "Language")?
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut line = std.string.String.new()
     line.push_str("unique words: ")?
     line.push_u64(u64.from_usize(counts.len()))?
     std.io.print_line(line.as_str())?
     Ok(())
 end wordcount.main
 
-fn wordcount.print_count(counts: &alloc.collections.HashMap<alloc.string.String<std.alloc.System>, usize, std.alloc.System>, word: &str) -> Result<(), wordcount.Error> uses [alloc, io.console] panics never
+fn wordcount.print_count(counts: &std.collections.HashMap<std.string.String, usize>, word: &str) -> Result<(), wordcount.Error> uses [alloc, io.console] panics never
     let count = match counts.get_str(word) {
         Some(value) => *value
         None => 0usize
     }
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut line = std.string.String.new()
     line.push_str(word)?
     line.push_str(": ")?
     line.push_u64(u64.from_usize(count))?
@@ -143,12 +143,12 @@ fn wordcount.print_count(counts: &alloc.collections.HashMap<alloc.string.String<
     Ok(())
 end wordcount.print_count
 
-fn wordcount.read_file(path: &str) -> Result<alloc.string.String<std.alloc.System>, wordcount.Error> uses [alloc, io.fs] panics never
-    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+fn wordcount.read_file(path: &str) -> Result<std.string.String, wordcount.Error> uses [alloc, io.fs] panics never
+    let mut data = std.vec.Vec.new()
     with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
         core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
     }
-    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut text = std.string.String.new()
     text.push_str(core.str.from_utf8(data.as_slice())?)?
     Ok(text)
 end wordcount.read_file
@@ -206,8 +206,8 @@ enum httpserver.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
     Net(std.net.Error)
 end httpserver.Error
 
-fn httpserver.address(port: u16) -> Result<alloc.string.String<std.alloc.System>, httpserver.Error> uses [alloc] panics never
-    let mut address = alloc.string.String.new(std.alloc.SYSTEM)
+fn httpserver.address(port: u16) -> Result<std.string.String, httpserver.Error> uses [alloc] panics never
+    let mut address = std.string.String.new()
     address.push_str("127.0.0.1:")?
     address.push_u64(u64.from_u16(port))?
     Ok(address)
@@ -348,7 +348,7 @@ void rect_each_vertex(Rect r, vertex_fn f, void *user) { ... }
 
 Kasane 側は `layout c` の構造体を定義し、`extern` でリンクします。
 
-```kasane
+```ksnl fragment
 type tutorial_ffi.Rect layout c derive [Clone, Copy]
     min: tutorial_ffi.Point
     max: tutorial_ffi.Point
@@ -419,7 +419,7 @@ ksn bindgen --c c/demo.h --prefix tutorial_bindgen --link libdemo.so -o src/tuto
 
 生成例（`src/tutorial_bindgen.ksnh` の一部）：
 
-```kasane
+```ksnl fragment
 const tutorial_bindgen.RED: u32 = 0u32 pub
 const tutorial_bindgen.MAX_POINTS: i32 = 100i32 pub
 
@@ -545,7 +545,7 @@ ui_event  = { path = "../../ui/kasane/event" }
 
 ### ソース（主要部）
 
-```kasane
+```ksnl fragment
 fn tutorial_ui.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let mut tree = ui.layout.Tree.new()
     let root_style = ui.layout.Style.default()
@@ -610,8 +610,8 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let mut a = alloc.arena.Arena.new(std.alloc.SYSTEM)
     core.check.is_true(a.is_empty())
     core.check.eq(a.len(), 0usize)
-    let h0 = a.insert(1u32)?
-    let h1 = a.insert(2u32)?
+    let h0 = a.insert(1u32).map_err(t.oom)?
+    let h1 = a.insert(2u32).map_err(t.oom)?
     core.check.eq(a.len(), 2usize)
     core.check.is_true(a.contains(h0))
     core.check.eq(a.get(h0), Some(&1u32))
@@ -627,12 +627,19 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.is_true(a.get(h1).is_none())
     core.check.is_true(!a.contains(h1))
     core.check.eq(a.len(), 1usize)
-    let h2 = a.insert(3u32)?
+    let h2 = a.insert(3u32).map_err(t.oom)?
     core.check.is_true(h2 != h1)
     core.check.eq(a.get(h2), Some(&3u32))
-    core.mem.drop(std.io.print_line("arena ok"))?
+    core.mem.drop(std.io.print_line("arena ok"))
     Ok(())
 end t.main
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error uses [] panics never
+    std.io.Error {
+        kind: std.io.ErrorKind.OutOfMemory
+        code: 0i32
+    }
+end t.oom
 ```
 
 `h1` を `remove` した後、同じスロットに `3u32` が入り、`h2 != h1`（世代が違う）。`a.get(h1)` は `None` で、古い取っ手は使い回しのスロットに当たらない。取っ手は `Copy` なので `Vec` に入れて回すこともでき、`T: linear` や参照を運ぶ型は `Arena` に入れられない。取っ手は（添字, 世代）だけを持つので、別の `Arena` の同じ（添字, 世代）の取っ手とは当たってしまう（型の違う取っ手は E2023）。
@@ -651,14 +658,14 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(s.contains(&7u32), true)
     core.check.eq(s.remove(&7u32), true)
     core.check.eq(s.remove(&7u32), false)
-    core.mem.drop(std.io.print_line("hashset ok"))?
+    core.mem.drop(std.io.print_line("hashset ok"))
     Ok(())
 end t.main
 ```
 
 ```kasane
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut b = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)
+    let mut b = std.collections.BtreeMap.new()
     core.mem.drop(b.insert(1u32, 10u32))
     core.mem.drop(b.insert(2u32, 20u32))
     core.mem.drop(b.insert(3u32, 30u32))
@@ -675,7 +682,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
         }
         None => core.panic.panic("no first")
     }
-    core.mem.drop(std.io.print_line("btree ok"))?
+    core.mem.drop(std.io.print_line("btree ok"))
     Ok(())
 end t.main
 ```
@@ -684,7 +691,7 @@ end t.main
 
 C の API が `void (*cb)(void *user, int x)` のように `void *user` を受け渡す形なら、`extern` の両側で同じ生ポインタ型（`*mut t.Acc` など）を宣言し、Kasane 側は `core.ptr.from_mut(&mut acc)` でユーザデータへのポインタを渡します。キャプチャを持つクロージャを C の関数ポインタとして渡すには `core.ffi.trampoline(&mut cb)` を使い、戻り値の `(fn(*mut (), A) -> R, *mut ())` を C のコールバックと `user` に渡します（`spec/stdlib/core/ffi.sig`）。
 
-```kasane
+```ksnl fragment
 type t.Acc
     total: i32
     count: i32
