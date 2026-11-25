@@ -732,9 +732,17 @@ impl<'a> Lw<'a> {
             return Ok(None);
         }
         let Some(r) = self.expr(scrut)? else { return Ok(Some(None)) };
-        let Ty::Ref(_, Pointee::Opt(pay)) = self.vty(r) else { return Ok(None) };
+        // 参照の値が、参照のままでなく先の `Option` の値で運ばれる局所 (`for x in v.iter()` の `x`) もある。
+        let (pay, ov) = match self.vty(r) {
+            Ty::Ref(_, Pointee::Opt(pay)) => (pay, self.emit(Ty::Opt(pay), Op::Load(r))),
+            // スカラーのペイロードは番地を持たないので、`match x { .. }` と同じに値で束縛する (`*p` は恒等)。
+            Ty::Opt(pay) if !matches!(pay.ty(), Ty::Agg(_)) => {
+                self.coll.scrut_override = Some((r, Src::Named("Option".into(), vec![x.clone()], crate::types::Rgs::default())));
+                return Ok(Some(self.match_(e)?));
+            }
+            _ => return self.err(line, "&Option の対象の値の型が分からない"),
+        };
         let ot = Ty::Opt(pay);
-        let ov = self.emit(ot, Op::Load(r));
         let bt = self.aggs.borrow_mut().bref();
         let Some(bp) = Pay::of(bt) else { return self.err(line, "bref を Option のペイロードにできない") };
         let opt = Ty::Opt(bp);

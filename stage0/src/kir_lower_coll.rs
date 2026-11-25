@@ -338,11 +338,22 @@ pub(super) fn kind_of(lw: &Lw, t: &Src) -> Option<Kind> {
         // が続く `get` / `len` / 添字 / `iter` で要素型を引き継ぐため、`size_of` ではなく
         // `elem_size` で弾く (F32/F64 など `elem_size` が `None` を返す型は早期に拒否し、
         // 行番号を正しく保つ)。
-        Src::Slice(e) => Some(Kind::Slice(conv(e).or_else(|| lw.conv_t(e)).filter(|t| elem_size(lw, *t).is_some()))),
+        Src::Slice(e) => Some(Kind::Slice(arr_elem_ty(lw, e))),
         // 固定長配列 `&[T; N]` の要素型。長さ N は `arr_len` で別途追跡する。
-        Src::Array(e, _) => Some(Kind::Slice(conv(e).or_else(|| lw.conv_t(e)).filter(|t| elem_size(lw, *t).is_some()))),
+        Src::Array(e, _) => Some(Kind::Slice(arr_elem_ty(lw, e))),
         _ => None,
     }
+}
+
+/// 配列・スライスの要素の格納時の型。要素がまた配列 (`[U; M]`) のとき、配列の値は `fat` (`{ptr, len}`) で
+/// 持つので (`array_lit` は要素の値の型 = fat で書く)、バッファの要素も fat で並ぶ (幅 16)。
+fn arr_elem_ty(lw: &Lw, e: &Src) -> Option<Ty> {
+    let t = conv(e).or_else(|| lw.conv_t(e))?;
+    let t = match t {
+        Ty::Agg(ai) if matches!(lw.agg_def(ai).kind, AggKind::Array(..)) => lw.fat_ty(),
+        t => t,
+    };
+    Some(t).filter(|t| elem_size(lw, *t).is_some())
 }
 
 
@@ -2380,13 +2391,13 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
         return lw.string_push_fmt(e, line, h, args, m == "push_debug");
     }
     if m == "get" {
-        return get_elem(lw, line, &kind, h, args);
+        return get_elem(lw, line, slot, &kind, h, args);
     }
     if (m == "first" || m == "last") && matches!(kind, Kind::Vec(_) | Kind::Slice(_)) {
-        return first_last(lw, line, &kind, h, m, args.len());
+        return first_last(lw, line, slot, &kind, h, m, args.len());
     }
     if m == "contains" && matches!(kind, Kind::Vec(_) | Kind::Slice(_)) && args.len() == 1 {
-        return contains_scalar(lw, line, &kind, h, args);
+        return contains_scalar(lw, line, slot, &kind, h, args);
     }
     if m == "sub" || m == "sub_mut" {
         return slice_sub(lw, line, &kind, h, args);
@@ -2630,29 +2641,28 @@ pub(super) fn slice_sub(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V
 
 /// `v.get(i)` / `s.get(i)` (要素はスカラー): `Option<要素>`。境界の内なら `Some(要素)`、外なら `None` (panic しない)。
 /// 木走査の `Option<&T>` はスカラーでは読み取りだけなので、値で持つ (設計_KIR.md 10.10)。
-pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
+pub(super) fn get_elem(lw: &mut Lw, line: usize, slot: Option<usize>, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
     if args.len() != 1 {
         return lw.err(line, "get の引数の個数が違う");
     }
-    pick_elem(lw, line, kind, h, Pick::At(&args[0]), "get")
+    pick_elem(lw, line, slot, kind, h, Pick::At(&args[0]), "get")
 }
 
 /// `v.first()` / `v.last()` (要素の型は `get` と同じ): `Option<&T>` と同じ形で `Option<要素>` を作る。空なら `None`。
-pub(super) fn first_last(lw: &mut Lw, line: usize, kind: &Kind, h: VId, m: &str, nargs: usize) -> LR<Option<VId>> {
+pub(super) fn first_last(lw: &mut Lw, line: usize, slot: Option<usize>, kind: &Kind, h: VId, m: &str, nargs: usize) -> LR<Option<VId>> {
     if nargs != 0 {
         return lw.err(line, format!("メソッド {} の引数は段階 1 の対象外", m));
     }
     let pick = if m == "first" { Pick::First } else { Pick::Last };
-    pick_elem(lw, line, kind, h, pick, m)
+    pick_elem(lw, line, slot, kind, h, pick, m)
 }
 
 /// `v.contains(&x)` (要素はスカラー): 先頭から順に `==` を見て、見つかれば `true`。木走査 (`natives.rs` の `contains`) と同じ順。
 /// 引数は `&T` の参照 (`&3u8`) か、値 (`T`) のどちらでもよい。要素が所有物・集成体の形は理由付きで拒む。
-pub(super) fn contains_scalar(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
-    let (seq, elem) = match kind {
-        Kind::Vec(Some(e)) => (Seq::Hdr(h), *e),
-        Kind::Slice(Some(e)) => (Seq::Fat(h), *e),
-        _ => return lw.err(line, "contains の対象は要素型の分かる Vec・スライスだけ段階 1 の対象"),
+pub(super) fn contains_scalar(lw: &mut Lw, line: usize, slot: Option<usize>, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
+    let (seq, elem) = match slice_seq(lw, slot, kind, h) {
+        Some(x) => x,
+        None => return lw.err(line, "contains の対象は要素型の分かる Vec・スライスだけ段階 1 の対象"),
     };
     if owns_heap(lw, elem) || matches!(elem, Ty::Agg(_)) {
         return lw.err(line, format!("contains の要素の型 {} は段階 1 の対象外 (スカラーだけ)", elem.name()));
@@ -2704,11 +2714,26 @@ pub(super) enum Pick<'a> {
     Last,
 }
 
-fn pick_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, pick: Pick, m: &str) -> LR<Option<VId>> {
-    let (seq, elem) = match kind {
-        Kind::Vec(Some(e)) => (Seq::Hdr(h), *e),
-        Kind::Slice(Some(e)) => (Seq::Fat(h), *e),
-        _ => return lw.err(line, format!("{} の対象は要素型の分かる Vec・スライスだけ段階 1 の対象", m)),
+/// `get` / `first` / `last` / `contains` の受け手の置き場。`&[T; N]` のスロットは `ptr` なので
+/// 長さ N を `arr_len` から取って `Seq::Ptr` にする (それ以外のスライスは `fat`)。
+fn slice_seq(lw: &mut Lw, slot: Option<usize>, kind: &Kind, h: VId) -> Option<(Seq, Ty)> {
+    match kind {
+        Kind::Vec(Some(e)) => Some((Seq::Hdr(h), *e)),
+        Kind::Slice(Some(e)) => {
+            if lw.vty(h) == Ty::Ptr {
+                slot.and_then(|s| arr_len_of(lw, s)).map(|n| (Seq::Ptr(h, n), *e))
+            } else {
+                Some((Seq::Fat(h), *e))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn pick_elem(lw: &mut Lw, line: usize, slot: Option<usize>, kind: &Kind, h: VId, pick: Pick, m: &str) -> LR<Option<VId>> {
+    let (seq, elem) = match slice_seq(lw, slot, kind, h) {
+        Some(x) => x,
+        None => return lw.err(line, format!("{} の対象は要素型の分かる Vec・スライスだけ段階 1 の対象", m)),
     };
     // 集成体の要素 (所有物を持つか否か) は、要素の番地を `bref` に包んで持つ (写さない。17.18)。
     // 写すと、`&T` の欄 (`(&K, &V)` など) の束縛が値になり、借用の型と合わなくなる。
@@ -2764,6 +2789,13 @@ fn pick_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, pick: Pick, m: &str)
         lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: k })
     };
     let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
+    // 要素がまた配列のとき、スロットは `fat` (`{ptr, len}`) で持つので、借用の番地はその `ptr` 欄にする。
+    let addr = if matches!(elem, Ty::Agg(ai) if lw.agg_def(ai).name == "fat") {
+        let fv = load_elem(lw, addr, elem);
+        lw.emit(Ty::Ptr, Op::Field { a: fv, off: 0 })
+    } else {
+        addr
+    };
     let x = if borrowed { lw.emit(pay.ty(), Op::Make { variant: None, fields: vec![addr] }) } else { load_elem(lw, addr, elem) };
     // スカラーの要素は値で持つ。`get` / `first` / `last` は木走査で `Option<&T>` なので、読んだ値は要素の借用を運ぶ (注釈。設計_KIR.md 24.11)。
     if !borrowed {
@@ -2967,7 +2999,10 @@ pub(crate) fn elem_prep_m(lw: &mut Lw, e: &V, m: bool) -> LR<()> {
     let line = nline(cur);
     let f = nf(cur);
     let Ok((seq, elem)) = vec_place(lw, &f[0], line) else { return Ok(()) };
-    if !owns_heap(lw, elem) {
+    // 所有物を持たない集成体の要素 (`bs[i].v = e` の形) も借用のスロットを作る。
+    // 借用のスロットを作るのは集成体の要素だけ (所有物を持つかどうかは問わない。持たない集成体の
+    // フィールドへの代入 `bs[i].v = e` もここで扱う)。
+    if !matches!(elem, Ty::Agg(_)) {
         return Ok(());
     }
     let Some(i) = lw.expr(&f[1])? else { return Ok(()) };
@@ -3075,7 +3110,7 @@ pub(crate) fn assign_elem_field(lw: &mut Lw, target: &V, rhs: &V, line: usize) -
     let idx = cur;
     let go = |lw: &mut Lw| -> LR<St> {
         let (_, elem) = vec_place(lw, &nf(idx)[0], line)?;
-        if !owns_heap(lw, elem) {
+        if !owns_heap(lw, elem) && !matches!(elem, Ty::Agg(_)) {
             return lw.err(line, "代入先は名前かフィールドだけ段階 1 の対象");
         }
         let Some(v) = lw.expr(rhs)? else { return Ok(St::Div) };
