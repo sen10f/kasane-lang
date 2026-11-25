@@ -90,6 +90,9 @@ pub(crate) enum Owned {
     /// 外すのは、束縛の変数のスコープの終わり・`core.mem.drop(g)`・一時のガードなら文の終わり (`end_guards`)。
     /// 外すときに印を落とすので、同じガードを二度外さない (`release_guard`)。
     Unlock { m: VId, flag: VId },
+    /// `&式` の一時値 (所有物を持つもの) を置いたスロットと、入っているときの印。文の終わり (`end_stmt_temps`) か、
+    /// 抜けるスコープの終わりで、印が立っていれば現在の値を破棄する (手書きの `Drop` は文の終わりに呼ぶ。4.4)。
+    TmpSlot { ptr: VId, t: Ty, flag: VId },
 }
 
 /// 下ろしの状態。`Lw` が 1 つ持つ。
@@ -813,6 +816,18 @@ fn drop_owned(lw: &mut Lw, o: Owned) {
         }
         Owned::With(i) => run_close(lw, i),
         Owned::Unlock { m, flag } => release_guard(lw, m, flag),
+        Owned::TmpSlot { ptr, t, flag } => {
+            let on = lw.emit(Ty::Bool, Op::MemLoad { p: flag, off: 0 });
+            let (yes, _) = lw.new_block(&[]);
+            let (join, _) = lw.new_block(&[]);
+            lw.branch(on, (yes, vec![]), (join, vec![]));
+            lw.cur = Some(yes);
+            set_flag(lw, flag, false);
+            let v = lw.emit(t, Op::Load(ptr));
+            drop_value(lw, v, t);
+            lw.goto(join, vec![]);
+            lw.cur = Some(join);
+        }
         Owned::Val { slot, flag } => {
             let t = lw.slots[slot].1;
             let on = lw.emit(Ty::Bool, Op::MemLoad { p: flag, off: 0 });
@@ -957,6 +972,50 @@ pub(crate) fn block_end(lw: &mut Lw) {
     let depth = lw.scopes.len() - 1;
     drop_from(lw, depth);
     lw.coll.owned.retain(|(d, _)| *d < depth);
+}
+
+/// `&式` の一時値 `v` (型 `t`、置き場 `ptr`) が手書きの `Drop` を含むなら、スロットに置いた直後に呼び、文の終わりまで登録する。
+/// 印は入口で 0 にするので、条件付きで評価される式 (`a && f(&x())`) の一時値も、評価されたときだけ破棄される。
+pub(crate) fn hold_ref_temp(lw: &mut Lw, ptr: VId, t: Ty) {
+    if !lw.aggs.borrow().has_user_drop_in(t) {
+        return;
+    }
+    let flag = lw.new_val(Ty::Ptr);
+    lw.coll.allocas.push(Inst { dst: flag, ty: Ty::Ptr, op: Op::FrameBytes { size: 1 } });
+    let zero = lw.new_val(Ty::Bool);
+    lw.coll.allocas.push(Inst { dst: zero, ty: Ty::Bool, op: Op::Const(0) });
+    let u = lw.new_val(Ty::Unit);
+    lw.coll.allocas.push(Inst { dst: u, ty: Ty::Unit, op: Op::MemStore { ty: Ty::Bool, p: flag, off: 0, v: zero } });
+    set_flag(lw, flag, true);
+    let scope = lw.scopes.len() - 1;
+    lw.coll.owned.push((scope, Owned::TmpSlot { ptr, t, flag }));
+}
+
+/// 文 (または条件式) の始まりの所有の登録の数 (`end_stmt_temps` に渡す)。
+pub(crate) fn temps_mark(lw: &Lw) -> usize {
+    lw.coll.owned.len()
+}
+
+/// 文の終わり: `mark` より後に登録された `&式` の一時値を、後入れ先出しで破棄して登録から外す。
+pub(crate) fn end_stmt_temps(lw: &mut Lw, mark: usize) {
+    if mark > lw.coll.owned.len() {
+        return;
+    }
+    let mut ended = vec![];
+    let mut i = mark;
+    while i < lw.coll.owned.len() {
+        if matches!(lw.coll.owned[i].1, Owned::TmpSlot { .. }) {
+            ended.push(lw.coll.owned.remove(i).1);
+        } else {
+            i += 1;
+        }
+    }
+    if lw.cur.is_none() {
+        return;
+    }
+    for o in ended.into_iter().rev() {
+        drop_owned(lw, o);
+    }
 }
 
 /// 評価済みの値 `v` が所有物なら、消費されるまでの間、現在のスコープの一時の所有に登録する。

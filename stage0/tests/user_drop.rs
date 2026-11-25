@@ -89,6 +89,12 @@ fn user_drop_enum_args_loops_tuple_struct_with_vec_destructure() {
     all_engines("misc");
 }
 
+/// `&式` の一時値 (文の終わり)・`&mut` の渡し・`with` の中の `return`・ブロックの値・`match &x`・`Vec.remove`・`for d in v`。
+#[test]
+fn user_drop_ref_temporaries_with_return_block_value_vec_remove_for() {
+    all_engines("temps");
+}
+
 /// `ksn test` も同じ (VM で走る)。
 #[test]
 fn user_drop_ksn_test_runs_the_drop() {

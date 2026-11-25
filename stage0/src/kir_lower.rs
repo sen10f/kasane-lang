@@ -1732,11 +1732,16 @@ impl<'a> Lw<'a> {
             let last = i + 1 == stmts.len();
             let temp_mark = self.coll.temps.len();
             let guard_mark = coll::guard_mark(self);
+            let tmp_mark = coll::temps_mark(self);
             // `let r = &temp()` の一時値の寿命は束縛のスコープまで延びる (文の終わりでは尽きない)。
             let extended = nname(s) == "Let" && nf(s).get(3).map_or(false, |init| nname(init) == "Unary" && st(&nf(init)[0]).starts_with('&'));
             let r = self.stmt(s)?;
             // 文の終わりで、束縛されなかった `Mutex` のガードを外す (4.4: 一時の寿命は文の終わり)。
             coll::end_guards(self, guard_mark);
+            // `&式` の一時値の手書きの `Drop` も文の終わりに呼ぶ (延長される `let r = &式` はスコープの終わり)。
+            if !extended {
+                coll::end_stmt_temps(self, tmp_mark);
+            }
             // 文の終わりで一時値の寿命が尽きる (借用検査の注釈)。
             for h in self.coll.temps.split_off(temp_mark) {
                 if self.cur.is_some() && !extended {
@@ -1878,9 +1883,11 @@ impl<'a> Lw<'a> {
         let f = nf(e);
         let line = nline(e);
         let gm = coll::guard_mark(self);
+        let tm = coll::temps_mark(self);
         let Some(c) = self.expr(&f[0])? else { return Ok(None) };
         // 条件の中の一時のガードは、分岐の前に外す。
         coll::end_guards(self, gm);
+        coll::end_stmt_temps(self, tm);
         if self.vty(c) != Ty::Bool {
             return self.err(line, "if の条件が bool ではない");
         }
@@ -1983,9 +1990,11 @@ impl<'a> Lw<'a> {
         let mut body_start = hb;
         if let Some(c) = cond {
             let gm = coll::guard_mark(self);
+            let tm = coll::temps_mark(self);
             let Some(cv) = self.expr(c)? else { return Ok(None) };
             // 条件の中の一時のガードは、毎回の条件の評価の後で外す (ループの各回で対になる)。
             coll::end_guards(self, gm);
+            coll::end_stmt_temps(self, tm);
             if self.vty(cv) != Ty::Bool {
                 return self.err(nline(e), "while の条件が bool ではない");
             }
