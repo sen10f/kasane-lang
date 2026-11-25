@@ -106,7 +106,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
         tk.susp_var_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
     for &di in user {
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut w = Walker { p, tk, susp: &susp, susp_var: &susp_var, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), closure_held: vec![], tail_reb: None, held_closures: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
+        let mut w = Walker { p, tk, susp: &susp, susp_var: &susp_var, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), closure_held: vec![], tail_reb: None, held_closures: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None, mut_alias: HashMap::new() };
         for q in &b.params {
             w.scopes[0].insert(q.name.clone(), (0, q.ty.clone()));
             if has_guard(p, &q.ty) {
@@ -365,6 +365,8 @@ struct Walker<'a> {
     closure_held: Vec<String>,
     /// 値を作る式 (`{..}` `if` `match` `with`) が `&mut` を引数へ渡すとき、その末尾の場所は再借用として読む (引数の型つき)。
     tail_reb: Option<Option<Ty>>,
+    /// `let p = &mut v` (`v` はそのままの局所) の `p` → `v`。`p` を `&mut` の入れ物として渡す呼び出し (`mem.swap(&mut a, p)`) で、流入の持ち主を `v` として扱う。
+    mut_alias: HashMap<String, String>,
     /// ガードを取り込んだ閉包の束縛 (値として渡すと移動で、ロックも渡る)。
     held_closures: BTreeSet<String>,
     /// 変数の鍵 → 型 (枠の `Send` の検査 (E2074) が使う)。
@@ -513,7 +515,19 @@ impl<'a> Walker<'a> {
         vec![Src::Loan(id), Src::Var(root.to_string())]
     }
 
+    /// 貸し出し `i` の持ち主。`&mut *p` (経路が `*` だけ) で `p` が `let p = &mut v` の別名なら `v`。
+    fn deref_root(&self, i: usize) -> String {
+        let l = &self.cfg.loans[i];
+        match self.mut_alias.get(&l.root) {
+            Some(r) if l.path.len() == 1 && l.path[0] == "*" => r.clone(),
+            _ => l.root.clone(),
+        }
+    }
+
     fn bind(&mut self, var: String, srcs: Vec<Src>, replace: bool) {
+        if replace {
+            self.mut_alias.remove(&var);
+        }
         self.slot_unsafe.insert(var.clone());
         self.cfg.emit(Ev::Bind { var, srcs, replace });
     }
@@ -707,6 +721,13 @@ impl<'a> Walker<'a> {
                     let arr = if matches!(init, Some(TExpr { kind: TKind::Other { name: "ArrayE", .. }, .. })) { self.last_array.take() } else { None };
                     let before: BTreeSet<String> = self.slot_unsafe.clone();
                     self.bind_pat(pat, &srcs);
+                    if let (Some(Src::Loan(i)), true, Some(n)) = (srcs.first(), pat.kind == "PBind", &pat.name) {
+                        let l = &self.cfg.loans[*i];
+                        if l.mutable && l.path.is_empty() && matches!(init, Some(TExpr { kind: TKind::Unary { op, .. }, .. }) if op == "&mut") {
+                            let root = l.root.clone();
+                            self.mut_alias.insert(key(n, pat.id), root);
+                        }
+                    }
                     if let (Some(a), true, Some(n)) = (arr, pat.kind == "PBind", &pat.name) {
                         let k = key(n, pat.id);
                         if !before.contains(&k) {
@@ -1219,8 +1240,8 @@ impl<'a> Walker<'a> {
                 continue;
             }
             let target = srcs_per[j].iter().find_map(|s| match s {
-                Src::Loan(i) => Some(self.cfg.loans[*i].root.clone()),
-                Src::Var(v) => Some(v.clone()),
+                Src::Loan(i) => Some(self.deref_root(*i)),
+                Src::Var(v) => Some(self.mut_alias.get(v).unwrap_or(v).clone()),
             });
             let Some(t) = target else { continue };
             let mut inflow = vec![];
@@ -1233,7 +1254,9 @@ impl<'a> Walker<'a> {
                     Ty::Ref(true, inner, _) if holds_field(self.p, inner) => {
                         for x in s {
                             if let Src::Loan(i) = x {
-                                inflow.push(Src::Var(self.cfg.loans[*i].root.clone()));
+                                inflow.push(Src::Var(self.deref_root(*i)));
+                            } else if let Src::Var(v) = x {
+                                inflow.push(Src::Var(self.mut_alias.get(v).unwrap_or(v).clone()));
                             }
                         }
                     }
