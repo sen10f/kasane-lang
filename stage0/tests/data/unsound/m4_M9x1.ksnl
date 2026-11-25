@@ -1,0 +1,11 @@
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut v = std.vec.Vec.new()
+    v.push(7u64).unwrap()
+    let f = fn(_d: &u64) -> &u64 capture [move v] {
+        v.first().unwrap()
+    }
+    let a = 1u64
+    let r = f(&a)
+    std.io.print_line("x").unwrap()
+    core.mem.drop(r)
+end t.main
