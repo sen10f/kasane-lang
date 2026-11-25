@@ -139,6 +139,8 @@ pub(crate) struct CollCx {
     pub(crate) hint: Option<Src>,
     /// いま下ろしている `match` の対象の (KIR の型, 型表の型)。`Some(x)` の `x` の種類の手がかりを取るため。
     pub(crate) scrut_src: Option<(Ty, Src)>,
+    /// `for (i, x) in core.iter.enumerate(IT)` の添字の名前 (`Some(None)` は `_`)。`counted` が最初の 1 回で使う。
+    pub(crate) for_index: Option<Option<String>>,
     /// いま判定している `match` の腕のパターンの束縛名 → 型 (`scrut_src` をパターンに沿って分解したもの)。
     /// `&str` などの借用の束縛に種類 (`str` など) を結び付けるため。腕の判定の間だけ入れ、済んだら空にする。
     pub(crate) pat_srcs: BTreeMap<String, Src>,
@@ -3141,6 +3143,31 @@ pub(super) fn unhex(s: &str) -> Vec<u8> {
 pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let f = nf(e);
     let line = nline(e);
+    // `for (i, x) in core.iter.enumerate(IT) BODY`: 添字 `i` は数え上げの添字そのもの (0 から 1 ずつ)。`for x in IT` として下ろし、
+    // `counted` が先頭の添字を `i` にも束縛する。
+    if nname(&f[0]) == "PTuple" && nname(&f[1]) == "Call" {
+        let subs = items(&nf(&f[0])[0]);
+        let cf = nf(&f[1]);
+        let is_enum = nname(&cf[0]) == "Path" && strs(&nf(&cf[0])[0]) == ["core", "iter", "enumerate"] && items(&cf[1]).len() == 1;
+        if is_enum && subs.len() == 2 && lw.coll.for_index.is_none() {
+            let idx = match nname(&subs[0]) {
+                "PBind" if !matches!(nf(&subs[0]).get(1), Some(V::B(true))) => Some(st(&nf(&subs[0])[0])),
+                "PWild" => None,
+                _ => return lw.err(line, "enumerate の添字はただの名前か _ だけ段階 1 の対象"),
+            };
+            let mut fs = f.to_vec();
+            fs[0] = subs[1].clone();
+            fs[1] = items(&cf[1])[0].clone();
+            let V::Node(nm, _, a, b) = e else { unreachable!() };
+            let e2 = V::Node(nm, fs, *a, *b);
+            lw.coll.for_index = Some(idx);
+            let r = for_expr(lw, &e2);
+            if lw.coll.for_index.take().is_some() && r.is_ok() {
+                return lw.err(line, "enumerate の対象は添字で数える for (Vec・スライス・配列) だけ段階 1 の対象");
+            }
+            return r;
+        }
+    }
     let name = match nname(&f[0]) {
         "PBind" if !matches!(nf(&f[0]).get(1), Some(V::B(true))) => Some(st(&nf(&f[0])[0])),
         "PWild" => None,
@@ -3618,6 +3645,9 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
     lw.cur = Some(bb);
     lw.scopes.push(vec![]);
     let depth = lw.scopes.len() - 1;
+    if let Some(Some(ix)) = lw.coll.for_index.take() {
+        lw.bind_let(&ix, hp[0], c.ity);
+    }
     if let Some(n) = &name {
         match c.elem {
             None => lw.bind_let(n, hp[0], c.ity),

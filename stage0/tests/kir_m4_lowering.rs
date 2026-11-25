@@ -154,3 +154,34 @@ end t.main
         "ok\n",
     );
 }
+
+/// 7a. `for (i, x) in core.iter.enumerate(v.iter())` (配列・Vec)。
+#[test]
+fn for_enumerate_destructuring() {
+    check_form(
+        "m4l_enumerate",
+        r#"fn t.weighted(v: &std.vec.Vec<u32>) -> usize uses [] panics never
+    let mut total = 0usize
+    for (i, x) in core.iter.enumerate(v.iter()) {
+        total = total.wrapping_add(i.wrapping_mul(usize.from_u32(*x)))
+    }
+    total
+end t.weighted
+
+fn t.main() -> () uses [io.console] panics may
+    let a = [10u32, 20u32, 30u32]
+    let mut total = 0usize
+    for (i, x) in core.iter.enumerate(a.iter()) {
+        total = total.wrapping_add(i.wrapping_mul(usize.from_u32(*x)))
+    }
+    core.check.eq(total, 80usize)
+    let mut v = std.vec.Vec.new()
+    core.mem.drop(v.push(1u32))
+    core.mem.drop(v.push(5u32))
+    core.check.eq(t.weighted(&v), 5usize)
+    std.io.print_line("ok")
+end t.main
+"#,
+        "ok\n",
+    );
+}
