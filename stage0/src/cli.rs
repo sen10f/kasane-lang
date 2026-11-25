@@ -4673,11 +4673,12 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     }
     if let Err(why) = &native {
         // ライブラリ (entry なし) は実行ファイルを作らないものなので、退避の対象ではなく従来どおり扱う。
-        if release && !allow_bundle && entry.is_some() {
+        // 手書きの `Drop` があるパッケージは、バンドル (木走査) が `Drop` を呼ばないので、debug でも退避しない。
+        if entry.is_some() && (has_user_drop(&l, &prog, &user) || (release && !allow_bundle)) {
             // 3-2: リリースは退避しない。作りかけの target/release を残さず、理由と逃げ道を出して失敗する。
             let _ = fs::remove_dir_all(&out);
             eprintln!(
-                "ksn: E9040: `ksn build --release` cannot make a native executable: {}. Release builds do not fall back to the interpreter bundle. Fix the cause, build without `--release` (the bundle is then made), or pass `--allow-bundle` to accept the bundle",
+                "ksn: E9040: `ksn build --release` cannot make a native executable: {}. Release builds (and packages with a hand-written `core.ops.Drop`, which the interpreter bundle does not run) do not fall back to the interpreter bundle. Fix the cause, or (without a hand-written Drop) build without `--release` or pass `--allow-bundle` to accept the bundle",
                 why
             );
             return 1;

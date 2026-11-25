@@ -171,3 +171,32 @@ fn t.main()",
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("hand-written `core.ops.Drop`"), "{}", text(&o.stderr));
 }
+
+/// 手書きの `Drop` の値を取り込んだクロージャがスコープの外へ出る形 (関数の戻り値・`Vec` への格納・変数への代入・
+/// スレッドへ渡した `Fn` の取り込み) は、早い破棄 (解放後の使用) にせず、理由付きで `run` も `build` も失敗する。
+/// 構造体の欄に入れる形は検査 (E2023) が、`dyn Fn` は文法が受け付けない。
+#[test]
+fn user_drop_closure_that_escapes_its_scope_is_rejected_not_dropped_early() {
+    if cfg!(windows) {
+        return;
+    }
+    for name in ["escape_ret", "escape_vecs", "escape_assignout", "escape_thr"] {
+        let t = Tmp::new(&format!("user_drop_{}", name), &source(name));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}: {}", name, text(&o.stderr));
+        assert!(text(&o.stderr).contains("hand-written `core.ops.Drop`"), "{}: {}", name, text(&o.stderr));
+        for release in [false, true] {
+            let cache = scratch::Scratch::at(format!("ksn_cache_user_drop_esc_{}_{}_{}", std::process::id(), name, release));
+            let mut c = Command::new(exe());
+            c.arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
+            if release {
+                c.arg("--release");
+            }
+            let o = c.output().unwrap();
+            let out = text(&o.stdout) + &text(&o.stderr);
+            assert_ne!(o.status.code(), Some(0), "{} (release={}): {}", name, release, out);
+            assert!(!out.contains("interpreter bundle is used"), "{} (release={}): {}", name, release, out);
+            let _ = fs::remove_dir_all(&cache);
+        }
+    }
+}
