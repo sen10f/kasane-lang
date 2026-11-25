@@ -125,6 +125,12 @@ fn user_drop_ref_temporary_with_heap_owner_does_not_leak() {
     all_engines("ref_temp_heap");
 }
 
+/// `*r = v`・欄・添字の代入は古い値を (新しい値の評価のあと) 捨てる。`String` / `Vec` の要素も漏れない。
+#[test]
+fn user_drop_deref_field_index_assignment_drops_the_old_value() {
+    all_engines("deref_assign");
+}
+
 /// `ksn test` も同じ (VM で走る)。
 #[test]
 fn user_drop_ksn_test_runs_the_drop() {
