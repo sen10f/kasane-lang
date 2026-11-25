@@ -718,7 +718,16 @@ impl<'a> Lw<'a> {
             l.borrow_mut().insert(f.key.clone(), FnLines { file: d.file.clone(), lines: std::mem::take(&mut self.line_of) });
         });
         let mut out = std::mem::take(&mut self.coll.extra);
-        out.insert(0, (f, self.callees));
+        // 関数ポインタ (`FnPtr`) の指す先も呼び先に数える (遅延の下ろしが引き込むため)。
+        let mut callees = self.callees;
+        for b in &f.blocks {
+            for i in &b.insts {
+                if let Op::FnPtr { callee } = &i.op {
+                    callees.insert(callee.clone());
+                }
+            }
+        }
+        out.insert(0, (f, callees));
         Ok(out)
     }
 
@@ -2331,6 +2340,34 @@ fn lower_defs_with(p: &Program, user: &[usize], entry: Option<&str>, test_def: O
         }
     };
     pull(&mut ok, &mut bad, &mut tried);
+    // 遅延のとき: `dyn` の呼び出しが登録されたトレイトのメソッドは、登録された具体型 (vtable の相手) の実装も下ろす
+    // (補助関数 `dyn.call.*` が呼ぶ。増えなくなるまで)。
+    if lazy {
+        loop {
+            let reg = aggs.borrow().dynr.clone();
+            let mut want: Vec<usize> = vec![];
+            for (tr, m) in reg.calls.keys() {
+                for ent in reg.vts.iter().filter(|v| v.tr == *tr) {
+                    if let Some(&di) = p.funcs.get(&format!("{}.{}", ent.concrete_name, m)) {
+                        if user.contains(&di) && is_candidate(&p.defs[di]) && tried.insert(di) {
+                            want.push(di);
+                        }
+                    }
+                }
+            }
+            if want.is_empty() {
+                break;
+            }
+            for di in want {
+                let d = &p.defs[di];
+                match Lw::new(p, &tys, &aggs, d).lower() {
+                    Ok(x) => ok.extend(x),
+                    Err(why) => bad.push((d.name.clone(), why)),
+                }
+            }
+            pull(&mut ok, &mut bad, &mut tried);
+        }
+    }
     crate::s5_meter::set_active(false);
     crate::vm::tick("ll_fns");
     // スレッドの補助の関数 (`ksn.thr.*`) は、全部の入口 (クロージャ) が揃ってから作る。
