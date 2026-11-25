@@ -837,7 +837,10 @@ impl<'a> Walker<'a> {
         if had_caps {
             self.bind("$cap".into(), caps, true);
         }
+        // 本体の中の束縛が、外側の閉包の持つガード (`closure_held`) を横取りして空にしない。
+        let held_outer = std::mem::take(&mut self.closure_held);
         self.expr(body);
+        self.closure_held = held_outer;
         if had_caps {
             let (c, ex) = (self.cfg.cur, self.cfg.exit);
             self.cfg.edge(c, ex);
@@ -1101,12 +1104,12 @@ impl<'a> Walker<'a> {
         let first_arg = idx;
         // 参照の変数をそのまま渡す引数 (暗黙の再借用) は、ほかの引数の評価が終わってから借りる:
         // `f(cx, g(cx))` の入れ子の呼び出しは、外側の再借用が呼び出しの直前に起きるものとして競合させない。
-        let deferred: Vec<bool> = args.iter().map(|a| matches!(a.ty, Ty::Ref(true, ..)) && self.pl(a).is_some()).collect();
+        let deferred: Vec<bool> = args.iter().map(|a| matches!(a.ty, Ty::Ref(true, ..)) && self.pl(peel_block(a)).is_some()).collect();
         let order: Vec<usize> = (0..args.len()).filter(|j| !deferred[*j]).chain((0..args.len()).filter(|j| deferred[*j])).collect();
         let mut got: Vec<Option<Vec<Src>>> = vec![None; args.len()];
         let slot_target = if recv.is_none() && def.map_or(false, |i| self.p.defs[i].name == "core.mem.replace") { args.first().and_then(|a| self.const_slot(a)) } else { None };
         for (pos, &j) in order.iter().enumerate() {
-            let a = &args[j];
+            let a = peel_block(&args[j]);
             let pt = dparams.get(first_arg + j).cloned();
             if j == 0 {
                 self.slot_ok = slot_target.as_ref().map(|t| t.0.clone());
@@ -1148,7 +1151,7 @@ impl<'a> Walker<'a> {
             for r in mroots {
                 let hit = (first_arg..j).any(|k| {
                     srcs_per[k].iter().any(|x| matches!(x, Src::Var(v) if *v == r))
-                        && args.get(k - first_arg).map_or(true, |a| self.pl(a).map_or(true, |(_, p)| p.is_empty()))
+                        && args.get(k - first_arg).map_or(true, |a| self.pl(peel_block(a)).map_or(true, |(_, p)| p.is_empty()))
                 });
                 if hit {
                     self.diags.push((e.line, format!("cannot use `{}` while it is mutably borrowed by an earlier operand of the same expression", show_var(&r))));
@@ -1678,5 +1681,16 @@ impl<'a> Walker<'a> {
             }
         }
         let _ = show_place;
+    }
+}
+
+/// 文が式 1 つだけのブロック `{ e }` は `e` と同じ (引数の場所の判定は包みを見通す)。
+fn peel_block(e: &TExpr) -> &TExpr {
+    match &e.kind {
+        TKind::Block(st) if st.len() == 1 => match &st[0] {
+            TStmt::Expr(x) if x.ty == e.ty => peel_block(x),
+            _ => e,
+        },
+        _ => e,
     }
 }
