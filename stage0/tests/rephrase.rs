@@ -526,7 +526,7 @@ fn fold_variants(lines: &[String], funcs: &[Func], safe: &[bool]) -> Vec<String>
             let t = lines[i].trim();
             let Some(r) = t.strip_prefix("let ") else { continue };
             let Some((name, rhs)) = r.split_once(" = ") else { continue };
-            if name.contains(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) || name.is_empty() {
+            if name.contains(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) || name.is_empty() || name == "false" || name == "true" {
                 continue;
             }
             let m = mask(&lines[i]);
@@ -550,7 +550,15 @@ fn fold_variants(lines: &[String], funcs: &[Func], safe: &[bool]) -> Vec<String>
             if total != 2 || ps.len() != 1 {
                 continue;
             }
-            let rep = if mask(rhs).trim().contains(' ') { format!("({})", rhs) } else { rhs.to_string() };
+            // 道具のうそ (意味が変わるので飛ばす、2026-11-25 の仕分け): (1) `&x` / `&mut x` の `x` を式に替えると、
+            // 局所の借用が一時値・リテラルの昇格の借用になる。(2) `[e; n]` の長さを定数に替えると、局所の長さの誤りが消える。
+            // (3) `?` を含む初期化子を他の評価の後ろへ動かすと、評価の順が変わる。(4) `&&` / `||` の右辺へ動かすと、
+            // 評価が条件つきになり、線形値の消費の経路が変わる。
+            let before = lines[j][..ps[0]].trim_end();
+            if before.ends_with('&') || before.ends_with("&mut") || (before.contains(';') && lines[j][ps[0] + name.len()..].trim_start().starts_with(']')) || rhs.contains('?') || before.contains("&&") || before.contains("||") || (before.ends_with('*') && rhs.starts_with(['&', '*'])) {
+                continue;
+            }
+            let rep = if mask(rhs).trim().contains(' ') || rhs.starts_with(['&', '*', '-', '!']) { format!("({})", rhs) } else { rhs.to_string() };
             // `name` の直前が `&`/`*` で rep が `&`/`*` で始まるなど、`&&` や `**` といった
             // 文法エラー (E0002) を生む並びは作らない。
             if fold_insertion_unsafe(&lines[j], ps[0], name, &rep) {
@@ -677,6 +685,20 @@ fn rhs_borrows_temporary(rhs: &str) -> bool {
     if let Some(inner) = r.strip_prefix("&mut ").or_else(|| r.strip_prefix('&')) {
         if !is_plain_place(inner) {
             return true;
+        }
+    }
+    // (c) 引数の中の `&<呼び出し>` (`t.same(&t.mk())`): 一時値は `let` に束ねると文の終わりまで生きる (let は束縛の拡張) が、
+    // 折りたたんだ式の中では呼び出しの文だけ。意味が変わるので飛ばす。
+    let b = r.as_bytes();
+    for (i, c) in b.iter().enumerate() {
+        if *c == b'&' {
+            for &d in &b[i + 1..] {
+                match d {
+                    b'(' => return true,
+                    b')' | b',' => break,
+                    _ => {}
+                }
+            }
         }
     }
     // (b)
@@ -998,6 +1020,13 @@ struct Report {
     total: usize,
 }
 
+/// 言い換えると元の誤りが消える (言い換えのほうが正しい) 組。道具のうそなので、台帳に載せず飛ばす (2026-11-25 の仕分け)。
+/// - `match2iflet` は `else` を足すので、網羅しない `match` (E2021) は網羅する `if let .. else` になる。
+/// - `iflet2match` の `if let Some(l) = o { .. } else { .. }` (`o: Option<線形>`) は、`else` の腕で `o` は `None` と決まるので、
+///   `match` の `None` の腕には漏れが無い (`if let` の `else` は `o` を未消費で持つとして E3003 になる、保守側の検査)。
+const SOUND_REWRITES: &[(&str, &str)] =
+    &[("match2iflet", "exh_match_nested_nonexhaustive"), ("match2iflet", "exh_match_result_option_nonexhaustive"), ("iflet2match", "if_let_linear_else_leak")];
+
 fn max_sites() -> usize {
     std::env::var("REPHRASE_MAX_SITES").ok().and_then(|v| v.parse().ok()).unwrap_or(6)
 }
@@ -1026,6 +1055,9 @@ fn run_dir_mode(dir: &Path, unsound: bool, mode: Option<&str>) -> Report {
                 let want = expect_value(p, "expect");
                 let target = expect_value(p, "target");
                 for tf in TRANSFORMS {
+                    if unsound && SOUND_REWRITES.contains(&(*tf, stem.as_str())) {
+                        continue;
+                    }
                     let vs = variants(&src, tf, max);
                     let mut r = rep.lock().unwrap();
                     if vs.is_empty() {

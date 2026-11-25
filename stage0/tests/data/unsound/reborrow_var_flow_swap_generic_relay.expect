@@ -1,0 +1,2 @@
+expect: E3010
+note: `let p = &mut r` を `mem.swap(&mut a, p)` へ渡しても、`a` と `r` の指す先が入れ替わる (言い換えの台帳の hoist の穴から)。

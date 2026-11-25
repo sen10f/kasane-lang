@@ -31,6 +31,8 @@ enum Acc {
 enum Src {
     Loan(usize),
     Var(String),
+    /// 変数 `v` が (`&mut r` として) 指す持ち主 `r` が持つ貸し出し。`let p = &mut r` を介した `mem.swap(&mut a, p)` の流入に使う。
+    Pointee(String),
 }
 
 #[derive(Clone, Debug)]
@@ -41,6 +43,8 @@ enum Ev {
     /// その持ち主が移動・`drop`・スコープの終わりで落とされた。
     Release(String),
     Bind { var: String, srcs: Vec<Src>, replace: bool },
+    /// `holder` が (`&mut r` として) 指す持ち主 `r` へ `srcs` の貸し出しを足す。
+    BindThrough { holder: String, srcs: Vec<Src> },
     Acc { root: String, path: Path, kind: Acc, line: usize },
     /// 配列の定数の添字の要素への強い更新 (`core.mem.replace(&mut a[0], ..)`): 要素が持っていた貸し出しが終わる。
     Kill { var: String, ids: Vec<usize> },
@@ -51,6 +55,36 @@ enum Ev {
     Suspend { line: usize },
     /// 効果が変数 (`Fn<.., E, P>` の `E`) の呼び出し: `E` が `suspend` になりうる。ロックのガードだけが対象 (fail-closed)。
     SuspendGuard { line: usize },
+}
+
+/// `holder` の貸し出しのうち、持ち主そのものへの貸し出し (経路が空) の持ち主。
+fn pointee_owners(held: Option<&BTreeSet<usize>>, loans: &[Loan]) -> Vec<String> {
+    held.map(|h| h.iter().filter(|i| loans[**i].path.is_empty()).map(|i| loans[*i].root.clone()).collect()).unwrap_or_default()
+}
+
+/// 源の貸し出しの集合を、今の状態で引く。
+fn resolve_srcs(st: &HashMap<String, BTreeSet<usize>>, srcs: &[Src], loans: &[Loan]) -> BTreeSet<usize> {
+    let mut set = BTreeSet::new();
+    for s in srcs {
+        match s {
+            Src::Loan(i) => {
+                set.insert(*i);
+            }
+            Src::Var(v) => {
+                if let Some(x) = st.get(v) {
+                    set.extend(x.iter().copied());
+                }
+            }
+            Src::Pointee(v) => {
+                for o in pointee_owners(st.get(v), loans) {
+                    if let Some(x) = st.get(&o) {
+                        set.extend(x.iter().copied());
+                    }
+                }
+            }
+        }
+    }
+    set
 }
 
 struct Loan {
@@ -106,7 +140,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
         tk.susp_var_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
     for &di in user {
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut w = Walker { p, tk, susp: &susp, susp_var: &susp_var, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), closure_held: vec![], tail_reb: None, held_closures: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None, mut_alias: HashMap::new() };
+        let mut w = Walker { p, tk, susp: &susp, susp_var: &susp_var, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), closure_held: vec![], tail_reb: None, held_closures: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
         for q in &b.params {
             w.scopes[0].insert(q.name.clone(), (0, q.ty.clone()));
             if has_guard(p, &q.ty) {
@@ -365,8 +399,6 @@ struct Walker<'a> {
     closure_held: Vec<String>,
     /// 値を作る式 (`{..}` `if` `match` `with`) が `&mut` を引数へ渡すとき、その末尾の場所は再借用として読む (引数の型つき)。
     tail_reb: Option<Option<Ty>>,
-    /// `let p = &mut v` (`v` はそのままの局所) の `p` → `v`。`p` を `&mut` の入れ物として渡す呼び出し (`mem.swap(&mut a, p)`) で、流入の持ち主を `v` として扱う。
-    mut_alias: HashMap<String, String>,
     /// ガードを取り込んだ閉包の束縛 (値として渡すと移動で、ロックも渡る)。
     held_closures: BTreeSet<String>,
     /// 変数の鍵 → 型 (枠の `Send` の検査 (E2074) が使う)。
@@ -515,19 +547,7 @@ impl<'a> Walker<'a> {
         vec![Src::Loan(id), Src::Var(root.to_string())]
     }
 
-    /// 貸し出し `i` の持ち主。`&mut *p` (経路が `*` だけ) で `p` が `let p = &mut v` の別名なら `v`。
-    fn deref_root(&self, i: usize) -> String {
-        let l = &self.cfg.loans[i];
-        match self.mut_alias.get(&l.root) {
-            Some(r) if l.path.len() == 1 && l.path[0] == "*" => r.clone(),
-            _ => l.root.clone(),
-        }
-    }
-
     fn bind(&mut self, var: String, srcs: Vec<Src>, replace: bool) {
-        if replace {
-            self.mut_alias.remove(&var);
-        }
         self.slot_unsafe.insert(var.clone());
         self.cfg.emit(Ev::Bind { var, srcs, replace });
     }
@@ -721,13 +741,6 @@ impl<'a> Walker<'a> {
                     let arr = if matches!(init, Some(TExpr { kind: TKind::Other { name: "ArrayE", .. }, .. })) { self.last_array.take() } else { None };
                     let before: BTreeSet<String> = self.slot_unsafe.clone();
                     self.bind_pat(pat, &srcs);
-                    if let (Some(Src::Loan(i)), true, Some(n)) = (srcs.first(), pat.kind == "PBind", &pat.name) {
-                        let l = &self.cfg.loans[*i];
-                        if l.mutable && l.path.is_empty() && matches!(init, Some(TExpr { kind: TKind::Unary { op, .. }, .. }) if op == "&mut") {
-                            let root = l.root.clone();
-                            self.mut_alias.insert(key(n, pat.id), root);
-                        }
-                    }
                     if let (Some(a), true, Some(n)) = (arr, pat.kind == "PBind", &pat.name) {
                         let k = key(n, pat.id);
                         if !before.contains(&k) {
@@ -1240,8 +1253,8 @@ impl<'a> Walker<'a> {
                 continue;
             }
             let target = srcs_per[j].iter().find_map(|s| match s {
-                Src::Loan(i) => Some(self.deref_root(*i)),
-                Src::Var(v) => Some(self.mut_alias.get(v).unwrap_or(v).clone()),
+                Src::Loan(i) => Some(self.cfg.loans[*i].root.clone()),
+                Src::Var(v) | Src::Pointee(v) => Some(v.clone()),
             });
             let Some(t) = target else { continue };
             let mut inflow = vec![];
@@ -1254,16 +1267,29 @@ impl<'a> Walker<'a> {
                     Ty::Ref(true, inner, _) if holds_field(self.p, inner) => {
                         for x in s {
                             if let Src::Loan(i) = x {
-                                inflow.push(Src::Var(self.deref_root(*i)));
-                            } else if let Src::Var(v) = x {
-                                inflow.push(Src::Var(self.mut_alias.get(v).unwrap_or(v).clone()));
+                                let l = &self.cfg.loans[*i];
+                                inflow.push(Src::Var(l.root.clone()));
+                                if l.path.len() == 1 && l.path[0] == "*" {
+                                    inflow.push(Src::Pointee(l.root.clone()));
+                                }
                             }
                         }
                     }
                     _ => inflow.extend(s.iter().cloned()),
                 }
             }
+            // `&mut *p` の再借用 (引数に `&mut` の変数 `p` をそのまま渡す) の経由: `p` が指す持ち主へも流す。
+            let through: Vec<String> = srcs_per[j]
+                .iter()
+                .filter_map(|x| match x {
+                    Src::Loan(i) if self.cfg.loans[*i].path.len() == 1 && self.cfg.loans[*i].path[0] == "*" => Some(self.cfg.loans[*i].root.clone()),
+                    _ => None,
+                })
+                .collect();
             if !inflow.is_empty() {
+                for h in through {
+                    self.cfg.emit(Ev::BindThrough { holder: h, srcs: inflow.clone() });
+                }
                 // 定数添字の `replace` が `a` へ足す流入は、要素の持ち主を崩さない (古い要素の貸し出しは `Kill` で外す)。
                 let keep_slots = j == 0 && slot_target.as_ref().map_or(false, |x| x.0 == t) && !self.slot_unsafe.contains(&t);
                 self.bind(t.clone(), inflow, false);
@@ -1509,19 +1535,7 @@ impl<'a> Walker<'a> {
                     .map(|s| s.iter().copied().filter(|i| cfg.loans[*i].root.starts_with("$chan")).collect())
                     .unwrap_or_default();
                 if !chans.is_empty() {
-                    let mut add: BTreeSet<usize> = BTreeSet::new();
-                    for s in srcs {
-                        match s {
-                            Src::Loan(i) => {
-                                add.insert(*i);
-                            }
-                            Src::Var(v) => {
-                                if let Some(x) = st.get(v) {
-                                    add.extend(x.iter().copied());
-                                }
-                            }
-                        }
-                    }
+                    let add: BTreeSet<usize> = resolve_srcs(st, srcs, &cfg.loans);
                     if !add.is_empty() {
                         let from = from.clone();
                         for (v, set) in st.iter_mut() {
@@ -1535,20 +1549,17 @@ impl<'a> Walker<'a> {
                     }
                 }
             }
-            if let Ev::Bind { var, srcs, replace } = ev {
-                let mut set = BTreeSet::new();
-                for s in srcs {
-                    match s {
-                        Src::Loan(i) => {
-                            set.insert(*i);
-                        }
-                        Src::Var(v) => {
-                            if let Some(x) = st.get(v) {
-                                set.extend(x.iter().copied());
-                            }
-                        }
+            if let Ev::BindThrough { holder, srcs } = ev {
+                let owners: Vec<String> = pointee_owners(st.get(holder), &cfg.loans);
+                let set = resolve_srcs(&st, srcs, &cfg.loans);
+                for o in owners {
+                    if !set.is_empty() {
+                        st.entry(o).or_default().extend(set.iter().copied());
                     }
                 }
+            }
+            if let Ev::Bind { var, srcs, replace } = ev {
+                let set = resolve_srcs(&st, srcs, &cfg.loans);
                 if *replace {
                     if set.is_empty() {
                         st.remove(var);

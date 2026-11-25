@@ -23,8 +23,6 @@ fp closure with_nested_borrow_only#0
 fp extract effect_var_forwarded_ok#0
 fp extract elided_ok_write_named#1
 fp fold flow_default_ok#2
-fp fold temp_named_and_in_statement#0
-fp fold with_body_ref_let#0
 fp hoist move_near_misses#4
 fp hoist mutref_implicit_reborrow_concrete#3
 fp hoist mutref_implicit_reborrow_concrete#4
