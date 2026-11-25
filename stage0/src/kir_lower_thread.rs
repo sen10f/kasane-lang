@@ -194,32 +194,16 @@ pub(super) fn spawn_call(lw: &mut Lw, _e: &V, segs: &[String], args: &[V], line:
         let d1 = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: dv, b: one });
         lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: ent, off: DEPTH_OFF, v: d1 });
     }
-    let st = rt_call(lw, TSTART, vec![idx], Ty::U8);
+    // 作れなかったとき、ネイティブの `ksn.thr.start` が `spawn failed: <errno の文面>` を出して 101 で終わる (クロージャを返せないため)。
+    rt_call(lw, TSTART, vec![idx], Ty::U8);
 
     // アロケータの値は KIR では使わない。`std.alloc.System` は `{ id: u8 }` のゼロ埋めを代用する。
     let result_ty = Ty::Res(Pay::of(hty).expect("JoinHandle がペイロードになれない"), Pay::of(spawnerr_ty).expect("SpawnError がペイロードになれない"));
     let zero = lw.emit(Ty::U8, Op::Const(0));
-    let failed = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ne, ty: Ty::U8, a: st, b: zero });
-    let (bad, _) = lw.new_block(&[]);
-    let (good, _) = lw.new_block(&[]);
-    let (fin, fp) = lw.new_block(&[result_ty]);
-    lw.branch(failed, (bad, vec![]), (good, vec![]));
-    // スレッドを作れなかった (pthread_create の失敗): 表の項目を返し、`Err(SpawnError)` を返す (code = EAGAIN)。
-    // closure の欄は KIR では 1 バイトの代用 (取り込み値は項目に残っていて、ここから作り直す下ろしは未対応)。
-    lw.cur = Some(bad);
-    rt_call(lw, TREL, vec![idx], Ty::Unit);
-    let code = lw.emit(Ty::I32, Op::Const(11));
-    let se = lw.emit(spawnerr_ty, Op::Make { variant: None, fields: vec![code, zero] });
-    let er = lw.emit(result_ty, Op::Err(se));
-    lw.goto(fin, vec![er]);
-    lw.cur = Some(good);
     let alloc = lw.emit(alloc_ty, Op::Make { variant: None, fields: vec![zero] });
     let null = lw.emit(Ty::Ptr, Op::Const(0));
     let h = lw.emit(hty, Op::Make { variant: None, fields: vec![alloc, idx, null] });
-    let ok = lw.emit(result_ty, Op::Ok(h));
-    lw.goto(fin, vec![ok]);
-    lw.cur = Some(fin);
-    Some(Ok(Some(fp[0])))
+    Some(Ok(Some(lw.emit(result_ty, Op::Ok(h)))))
 }
 
 /// クロージャ `key` の入口 `ksn.thr.site.<key>(ent: ptr)`。
