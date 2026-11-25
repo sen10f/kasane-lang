@@ -1823,6 +1823,8 @@ struct Fe<'a> {
     body: String,
     /// 命令の途中で要る一時の `alloca` (ループの中で積み上がらないよう、入口のブロックに置く)。
     entry_allocas: String,
+    /// 純粋域の呼び先の (高さ, 枠) ごとの、入口で 1 度だけ求める「速い本体に入れるか」の旗。
+    pflags: BTreeSet<(u64, u64)>,
     cur: String,
     /// ブロックごとの入ってくる辺 (前のラベル、引数の値)。
     edges: BTreeMap<usize, Vec<(String, Vec<String>)>>,
@@ -1830,7 +1832,7 @@ struct Fe<'a> {
 
 impl<'a> Fe<'a> {
     fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, extern_dl: &'a HashMap<String, (String, String)>, funcs: &'a [Func], fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, extern_links, extern_dl, funcs, bare_fn: false, slow: false, dmode: false, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), entry_allocas: String::new(), cur: String::new(), edges: BTreeMap::new() }
+        Fe { cx, aggs, f, extern_links, extern_dl, funcs, bare_fn: false, slow: false, dmode: false, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), entry_allocas: String::new(), pflags: BTreeSet::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -2777,6 +2779,24 @@ impl<'a> Fe<'a> {
                             fname(&format!("{}.slow", callee))
                         } else if self.cx.pure_h.contains_key(&self.f.key) {
                             fname(callee)
+                        } else if !self.bare_fn {
+                            // 深さと残りのスタックはこの関数の中で変わらない (入口で求めた旗を使う)。速い本体か `.slow` かを旗で選ぶ。
+                            let (h, fr) = self.cx.pure_h[callee.as_str()];
+                            self.pflags.insert((h, fr));
+                            self.n += 1;
+                            let (lf, ls, lj) = (format!("pf{}", self.n), format!("ps{}", self.n), format!("pj{}", self.n));
+                            self.line(format!("br i1 %pf{}_{}, label %{}, label %{}", h, fr, lf, ls));
+                            self.label(&lf);
+                            let r1 = self.tmp();
+                            self.line(format!("{} = call {} {}({})", r1, rt, fname(callee), a.join(", ")));
+                            self.line(format!("br label %{}", lj));
+                            self.label(&ls);
+                            let r2 = self.tmp();
+                            self.line(format!("{} = call {} {}({})", r2, rt, fname(&format!("{}.slow", callee)), a.join(", ")));
+                            self.line(format!("br label %{}", lj));
+                            self.label(&lj);
+                            self.line(format!("{} = phi {} [ {}, %{} ], [ {}, %{} ]", d, rt, r1, lf, r2, ls));
+                            return Ok(());
                         } else {
                             fname(&format!("{}.w", callee))
                         }
@@ -3698,10 +3718,21 @@ impl<'a> Fe<'a> {
                 "  %dmax = load i64, ptr @ksn.dmax\n  %dov = icmp uge i64 %depth, %dmax\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl = load i64, ptr @ksn.floor\n  %low = icmp ult i64 %sp, %fl\n  %over = or i1 %dov, %low\n".to_string()
             };
             s.push_str(&format!(
-                "{}{}  br i1 %over, label %so, label %go\nso:\n  call void @ksn.overflow()\n  unreachable\ngo:\n  %depth1 = add i64 %depth, 1\n{}  br label %b0\n",
+                "{}{}  br i1 %over, label %so, label %go\nso:\n  call void @ksn.overflow()\n  unreachable\ngo:\n  %depth1 = add i64 %depth, 1\n{}{}  br label %b0\n",
                 ld,
                 check,
-                if self.dmode { "" } else { "  store i64 %depth1, ptr @ksn.depth\n" }
+                if self.dmode { "" } else { "  store i64 %depth1, ptr @ksn.depth\n" },
+                {
+                    let mut fl = String::new();
+                    for (h, fr) in &self.pflags {
+                        if crate::ptrwidth::bits() == 32 {
+                            fl.push_str(&format!("  %pe{h}_{fr} = add i64 %depth1, {h}\n  %pf{h}_{fr} = icmp ult i64 %pe{h}_{fr}, %dmax\n", h = h, fr = fr));
+                        } else {
+                            fl.push_str(&format!("  %pe{h}_{fr} = add i64 %depth1, {h}\n  %pk{h}_{fr} = icmp ult i64 %pe{h}_{fr}, %dmax\n  %pn{h}_{fr} = add i64 %fl, {fr}\n  %pm{h}_{fr} = icmp uge i64 %sp, %pn{h}_{fr}\n  %pf{h}_{fr} = and i1 %pk{h}_{fr}, %pm{h}_{fr}\n", h = h, fr = fr));
+                        }
+                    }
+                    fl
+                }
             ));
         }
         for (k, b) in f.blocks.iter().enumerate() {

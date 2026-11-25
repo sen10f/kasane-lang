@@ -50,7 +50,8 @@ fn small_call_chain_is_inlined_without_depth_guards() {
         let body = &ll[at..at + ll[at..].find("\n}\n").unwrap()];
         assert!(!body.contains("@ksn.depth"), "{} should have no depth guard:\n{}", f, body);
     }
-    assert!(ll.contains("call i64 @\"k.t.f1.w\"("), "caller should call the dispatching entry");
+    // 呼び出し側は、入口で 1 度だけ求めた旗で速い本体 (`k.t.f1`) か `.slow` かを選ぶ。
+    assert!(ll.contains("call i64 @\"k.t.f1\"(") && ll.contains("call i64 @\"k.t.f1.slow\"("), "caller should dispatch on the entry flag");
     // -O2 のあと、連鎖への呼び出しは残らない。
     let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
     let o2 = t.0.join("o2.ll");
