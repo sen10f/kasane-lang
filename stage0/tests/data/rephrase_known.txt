@@ -14,6 +14,7 @@ changed fold temp_let_field_ref#0
 changed fold temp_let_string_field#0
 changed fold temp_let_whole_ref#0
 changed fold temp_two_arg_elision_len#0
+changed hoist c4_bound_self_alias#0
 changed hoist closure_in_hashmap_used_later#1
 changed hoist closure_in_vec_used_later#1
 changed hoist flow_call_same_mut_ref_twice#1
@@ -30,9 +31,6 @@ changed id const_init_nested_fn_panic#0
 changed id const_init_step_limit#0
 changed id hunt_a13_assign_through_shared_ref_04#0
 changed iflet2match if_let_linear_no_else#0
-hole block flow_call_same_mut_ref_twice#2
-hole block flow_mem_swap_same_ref_twice#2
-hole block flow_reborrow_mut_arg_user_fn#1
 hole fold arr_repeat_len_local#0
 hole fold borrow_mut_immutable_generic_result#0
 hole fold dangling_static_field#0

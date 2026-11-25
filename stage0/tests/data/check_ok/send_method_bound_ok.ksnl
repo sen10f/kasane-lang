@@ -1,0 +1,16 @@
+trait t.Sy
+    fn s[T: core.marker.Send](self: &Self, x: T) -> () uses [] panics never
+end t.Sy
+
+type t.Z
+    n: u8
+end t.Z
+
+impl t.Sy for t.Z
+fn t.Z.s[T: core.marker.Send](self: &t.Z, x: T) -> () uses [] panics never impls t.Sy
+    core.mem.drop(x)
+end t.Z.s
+
+fn t.main() -> i32 uses [] panics never
+    0i32
+end t.main

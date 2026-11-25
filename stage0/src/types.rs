@@ -3457,6 +3457,7 @@ impl<'a> TypeCk<'a> {
             let mut map: HashMap<String, Ty> = HashMap::new();
             map.insert("Self".to_string(), deep.strip().clone());
             seed_effects(td, &mut map);
+            let mmarks = self.seed_method_generics(td, name, &mut gn, &mut map);
             if let Some(b) = base {
                 if matches!(from_v(&params[0].1, &gn), Ty::Ref(true, _, _)) {
                     self.need_mut(b, name, line);
@@ -3480,6 +3481,9 @@ impl<'a> TypeCk<'a> {
                 wants.push(pt);
             }
             self.wants_tmp = Some(wants);
+            for (mtr, v) in mmarks {
+                self.fn_value_markers.push((mtr, false, v, line));
+            }
             if let Some((u, p)) = eff {
                 self.check_trait_effects(format!("{}.{}", tr, name), u, p, line);
             }
@@ -3726,6 +3730,27 @@ impl<'a> TypeCk<'a> {
     /// `dyn Tr` のメソッド呼び出しを、トレイト (とそのスーパートレイト) のシグネチャで検査する (4.3 / 5.1)。
     /// 引数の個数 (E2022) と型 (E2023) を検査し、戻り値の型を式へ流す。`Self` は `dyn Tr` 自身。
     /// トレイトに無いメソッド名では黙る (名前の存在は名前ベースの従来の検査が見る)。
+    /// トレイトメソッド自身の型パラメータ (`fn m[T: core.marker.Send](..)`) を新しい型変数にして `map` へ入れ、
+    /// `Send` / `Sync` の境界を (トレイト名, 型変数) の列で返す。呼び出し側が実引数を決めたあと `fn_value_markers` で確かめる。
+    fn seed_method_generics(&mut self, td: &Def, name: &str, gn: &mut HashSet<String>, map: &mut HashMap<String, Ty>) -> Vec<(String, Ty)> {
+        let mut out = vec![];
+        let Some((_, gs)) = td.trait_method_generics.iter().find(|g| g.0 == name) else { return out };
+        for g in gs.iter().filter(|g| g.0 == "type") {
+            gn.insert(g.1.clone());
+            let v = self.fresh(0);
+            map.insert(g.1.clone(), v.clone());
+            for b in items(&g.2) {
+                if let V::L(bx) = b {
+                    let tr = st(&bx[0]);
+                    if tr == "core.marker.Send" || tr == "core.marker.Sync" {
+                        out.push((tr, v.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn dyn_method(&mut self, tr: &str, dargs: &TArgs, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize) -> Ty {
         let escape_all = |this: &mut Self| {
             for a in args {
@@ -3814,6 +3839,7 @@ impl<'a> TypeCk<'a> {
             let mut map: HashMap<String, Ty> = HashMap::new();
             map.insert("Self".to_string(), recv.clone());
             seed_effects(td, &mut map);
+            let mmarks = self.seed_method_generics(td, name, &mut gn, &mut map);
             if let Some(b) = base {
                 if matches!(from_v(&params[0].1, &gn), Ty::Ref(true, _, _)) {
                     self.need_mut(b, name, line);
@@ -3828,6 +3854,9 @@ impl<'a> TypeCk<'a> {
                 wants.push(pt);
             }
             self.wants_tmp = Some(wants);
+            for (tr, v) in mmarks {
+                self.fn_value_markers.push((tr, false, v, line));
+            }
             // 効果 (5.1): `dyn Tr` の型引数は `Ty::Dyn` が持たないので、トレイトの効果変数は束縛せず落とす (黙る)。
             // 具体名と `never` / `may` の宣言で検査する。
             let eff = Self::trait_effects_inst(td, name, &[]);

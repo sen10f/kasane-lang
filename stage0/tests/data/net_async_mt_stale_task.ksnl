@@ -1,0 +1,28 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, suspend, thread] panics may
+    let h = std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        4usize,
+        fn() -> std.task.Task<std.string.String> capture [] {
+            std.task.spawn(fn() -> std.string.String capture [] {
+                std.task.yield_now()
+                t.mk()
+            })
+        },
+    )
+    let s = std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        4usize,
+        fn() -> std.string.String capture [move h] {
+            h.join_task()
+        },
+    )
+    std.io.print_line(s.as_str())?
+    Ok(())
+end t.main
+
+fn t.mk() -> std.string.String uses [alloc] panics never
+    match std.string.String.from_str("hello") {
+        Ok(s) => s
+        Err(_) => std.string.String.new()
+    }
+end t.mk

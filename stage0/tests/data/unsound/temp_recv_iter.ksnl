@@ -1,0 +1,23 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let it = t.mkv().iter()
+    let other = t.mkv()
+    core.mem.drop(other)
+    for x in it {
+        core.mem.drop(*x)
+    }
+    Ok(())
+end t.main
+
+fn t.mko() -> Option<std.vec.Vec<u8>> uses [alloc] panics never
+    Some(t.mkv())
+end t.mko
+
+fn t.mkv() -> std.vec.Vec<u8> uses [alloc] panics never
+    let mut v = std.vec.Vec.new()
+    core.mem.drop(v.push(65u8))
+    v
+end t.mkv
+
+fn t.pick['a, T](a: &'a T, _b: &'a T) -> &'a T uses [] panics never
+    a
+end t.pick

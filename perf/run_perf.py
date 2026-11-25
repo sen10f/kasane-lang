@@ -49,7 +49,7 @@ DEFAULT_KSN = ROOT / "stage0" / "target" / "release" / ("ksn.exe" if os.name == 
 # Kasane 側の定数行: `const <pkg>.<KEY>: <型> = <値><接尾辞>`
 # KEY は入力（N, N_*）か期待値（EXPECT, EXPECT_*）。C 側の KEY=値 と名前を揃えてある。
 CONST_RE = re.compile(
-    r"^const (?P<pkg>\w+)\.(?P<key>N\w*|EXPECT\w*): (?P<ty>\w+) = (?P<val>-?\d+)(?P<suffix>\w+)$",
+    r"^const (?P<pkg>\w+)\.(?P<key>N\w*|EXPECT\w*): (?P<ty>\w+) = (?P<val>-?[\d_]+)(?P<suffix>\w+)$",
     re.M,
 )
 EXPECT_LINE_RE = re.compile(r"^(EXPECT\w*)=(-?\d+)$", re.M)
@@ -78,6 +78,14 @@ WORKLOADS = [
     Workload("closure", "クロージャ（Fn 境界の関数に渡す）", {"N": 300_000}, {"N": 30_000}),
 ]
 BASELINE = Workload("noop", "起動のみ（何もしない）", {}, {})
+
+
+def _lit(v: int) -> str:
+    """`ksn fmt` の整数リテラル: 5 桁以上は 3 桁ごとに `_`。"""
+    d = str(abs(v))
+    if len(d) >= 5:
+        d = f"{int(d):,}".replace(",", "_")
+    return ("-" if v < 0 else "") + d
 
 
 class HarnessError(RuntimeError):
@@ -122,7 +130,7 @@ def prepare_work(w: Workload, inputs: dict, expect: dict, size: str) -> Path:
     (dst / "src").mkdir()
     text = (src_dir / "src" / f"{w.name}.ksnl").read_text(encoding="utf-8")
     values = {**inputs, **expect}
-    originals = {m.group("key"): int(m.group("val")) for m in CONST_RE.finditer(text)}
+    originals = {m.group("key"): int(m.group("val").replace("_", "")) for m in CONST_RE.finditer(text)}
     for key in values:
         if key not in originals:
             raise HarnessError(f"{w.name}: src にない定数 {key}（入力か期待値の名前を確かめる）")
@@ -131,7 +139,7 @@ def prepare_work(w: Workload, inputs: dict, expect: dict, size: str) -> Path:
         key = m.group("key")
         if key not in values:
             raise HarnessError(f"{w.name}: 値のない定数 {key}")
-        return f"const {m.group('pkg')}.{key}: {m.group('ty')} = {values[key]}{m.group('suffix')}"
+        return f"const {m.group('pkg')}.{key}: {m.group('ty')} = {_lit(values[key])}{m.group('suffix')}"
 
     if size == "full":
         # 既定の入力のとき、ソースの定数は C 版の結果と一致していなければならない

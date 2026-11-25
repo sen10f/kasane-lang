@@ -1,0 +1,16 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, suspend, thread] panics may
+    let v = std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        4usize,
+        fn() -> usize capture [] {
+            let a = std.task.spawn_local(fn() -> usize capture [] {
+                std.task.yield_now()
+                3usize
+            })
+            a.join_task()
+        },
+    )
+    std.io.print_line("got")?
+    core.check.eq(v, 3usize)
+    Ok(())
+end t.main

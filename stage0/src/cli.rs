@@ -1179,7 +1179,8 @@ fn analyze_slice(mut l: Loaded, plan: SlicePlan, prev_items: &[Item]) -> Analysi
 fn kir_borrowck_union(rep: &mut Report, prog: Option<&Program>, user: &[usize]) {
     // 既定: AST の結果は残し、KIR の診断を足す (どちらかが拒めば拒む)。下ろせないときは AST の結果だけ。
     // すでに致命の診断があるなら足すものはない (誤りのあるプログラムは KIR に下ろす前提を満たさず、下ろす側が落ちることもある)。
-    if rep.items.iter().any(|i| i.fatal) {
+    // E0020 (書き方が `ksn fmt` の出力と違う) は意味に関わらないので、これだけなら KIR の検査も省かない (E0020 の道でも検査を落とさない)。
+    if rep.items.iter().any(|i| i.fatal && i.code != "E0020") {
         return;
     }
     let Some(p) = prog else { return };
@@ -4434,7 +4435,7 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
                 return 1;
             }
         };
-        let opt = if release { "-O2" } else { "-O1" };
+        let opt = if release { "-O3" } else { "-O1" };
         let triple = ll.lines().find_map(|l| l.strip_prefix("target triple = \"")).and_then(|r| r.split('"').next()).unwrap_or("");
         #[cfg(feature = "embedded-llvm")]
         let res = if crate::lld::enabled() {
@@ -4673,7 +4674,7 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
 /// 下ろせない関数が 1 つでもあれば、理由を `Err` で返す (呼び出し側が既定の経路へ退避する)。
 fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: bool, tg: Tgt, nat: &[String]) -> Result<(), String> {
     let lo = crate::kir_lower::lower_program(prog, user, Some(entry));
-    match llvm_exe(lo, entry, exe, if release { "-O2" } else { "-O1" }, tg, nat) {
+    match llvm_exe(lo, entry, exe, if release { "-O3" } else { "-O1" }, tg, nat) {
         Ok(()) => Ok(()),
         Err(BuildFail::Unsupported(unsupported)) => Err(format_reasons(prog, &unsupported, entry, if release { Some(20) } else { None })),
         Err(BuildFail::Tool(s)) => Err(s),

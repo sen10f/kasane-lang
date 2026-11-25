@@ -102,7 +102,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
         tk.susp_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
     for &di in user {
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
+        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), closure_held: vec![], tail_reb: None, held_closures: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
         for q in &b.params {
             w.scopes[0].insert(q.name.clone(), (0, q.ty.clone()));
             if has_guard(p, &q.ty) {
@@ -234,6 +234,15 @@ fn holds_field(p: &Program, t: &Ty) -> bool {
 const GUARD_TYPES: [&str; 3] = ["std.sync.MutexGuard", "std.sync.RwLockReadGuard", "std.sync.RwLockWriteGuard"];
 
 /// 型がロックのガードを (欄・タプル・`Option` などの中に) 所有するか。参照 `&Guard` は所有しない。
+fn has_closure_ty(t: &Ty) -> bool {
+    match t {
+        Ty::Closure { .. } => true,
+        Ty::Tuple(a) | Ty::Named(_, a, _) => a.iter().any(has_closure_ty),
+        Ty::Array(x, _) | Ty::Slice(x) => has_closure_ty(x),
+        _ => false,
+    }
+}
+
 fn has_guard(p: &Program, t: &Ty) -> bool {
     fn go(p: &Program, t: &Ty, seen: &mut Vec<String>) -> bool {
         match t {
@@ -347,6 +356,12 @@ struct Walker<'a> {
     susp_diags: Vec<(usize, String)>,
     /// ロックのガード (`MutexGuard` など) を持つ束縛の持ち主。中断点で生きていれば E3050。
     guards: BTreeSet<String>,
+    /// 直前の `move` の閉包が取り込んだロックのガード (束縛される閉包が、落とされるまでロックを持つ)。
+    closure_held: Vec<String>,
+    /// 値を作る式 (`{..}` `if` `match` `with`) が `&mut` を引数へ渡すとき、その末尾の場所は再借用として読む (引数の型つき)。
+    tail_reb: Option<Option<Ty>>,
+    /// ガードを取り込んだ閉包の束縛 (値として渡すと移動で、ロックも渡る)。
+    held_closures: BTreeSet<String>,
     /// 変数の鍵 → 型 (枠の `Send` の検査 (E2074) が使う)。
     vtys: HashMap<String, Ty>,
     /// 中断点をまたいで生きていて `Send` でない局所 (行, 名前, 閉包の中か)。
@@ -366,6 +381,17 @@ struct Walker<'a> {
 impl<'a> Walker<'a> {
     fn lookup(&self, n: &str) -> Option<(u32, &Ty)> {
         self.scopes.iter().rev().find_map(|s| s.get(n)).map(|(i, t)| (*i, t))
+    }
+
+    /// 先に評価した被演算子の値は、後の被演算子の評価の間、名前の無い一時値として生きる。中断点をまたいで `Send` かを見るため、型を持つ一時値 (`$snd`) を作る (E2074)。
+    fn snd_temp(&mut self, ty: &Ty) -> Option<String> {
+        if matches!(ty, Ty::Unknown | Ty::Unit) {
+            return None;
+        }
+        self.tmp += 1;
+        let t = format!("$snd{}", self.tmp);
+        self.vtys.insert(t.clone(), ty.clone());
+        Some(t)
     }
 
     fn fresh(&mut self) -> String {
@@ -465,7 +491,7 @@ impl<'a> Walker<'a> {
     }
 
     fn acc(&mut self, root: &str, path: &[String], kind: Acc, line: usize) {
-        if kind == Acc::Move && path.is_empty() && self.guards.contains(root) {
+        if (kind == Acc::Move || (kind == Acc::Read && self.held_closures.contains(root))) && path.is_empty() && self.guards.contains(root) {
             self.cfg.emit(Ev::Release(root.to_string()));
         }
         self.cfg.emit(Ev::Acc { root: root.to_string(), path: path.to_vec(), kind, line });
@@ -520,20 +546,21 @@ impl<'a> Walker<'a> {
             TKind::MCall { recv, args, .. } => self.call(e, None, Some(recv), args),
             TKind::Block(stmts) => self.block(stmts, &e.ty),
             TKind::If { cond, then, els } => {
+                let reb = self.tail_reb.take();
                 self.expr(cond);
                 let from = self.cfg.cur;
                 let join = self.cfg.node();
                 let t = self.cfg.node();
                 self.cfg.edge(from, t);
                 self.cfg.cur = t;
-                let mut srcs = self.expr(then);
+                let mut srcs = self.sub(then, &reb);
                 let c = self.cfg.cur;
                 self.cfg.edge(c, join);
                 if let Some(x) = els {
                     let n = self.cfg.node();
                     self.cfg.edge(from, n);
                     self.cfg.cur = n;
-                    srcs.extend(self.expr(x));
+                    srcs.extend(self.sub(x, &reb));
                     let c = self.cfg.cur;
                     self.cfg.edge(c, join);
                 } else {
@@ -543,6 +570,7 @@ impl<'a> Walker<'a> {
                 self.keep(&e.ty, srcs)
             }
             TKind::Match { scrut, arms } => {
+                let reb = self.tail_reb.take();
                 let ssrc = match self.place_scrut(scrut, arms) {
                     Some(s) => s,
                     None => self.expr(scrut),
@@ -559,7 +587,7 @@ impl<'a> Walker<'a> {
                     if let Some(g) = &a.guard {
                         self.expr(g);
                     }
-                    srcs.extend(self.expr(&a.body));
+                    srcs.extend(self.sub(&a.body, &reb));
                     self.pop_scope();
                     let c = self.cfg.cur;
                     self.cfg.edge(c, join);
@@ -627,9 +655,13 @@ impl<'a> Walker<'a> {
         let mut all = vec![];
         let mut temps = vec![];
         let mut guard_temps = vec![];
+        let mut snd = vec![];
         let n = es.len();
         for (i, x) in es.iter().enumerate() {
             let s = self.expr(x);
+            if i + 1 < n {
+                snd.extend(self.snd_temp(&x.ty));
+            }
             if i + 1 < n && has_guard(self.p, &x.ty) {
                 let t = self.fresh();
                 self.guards.insert(t.clone());
@@ -645,7 +677,7 @@ impl<'a> Walker<'a> {
                 }
             }
         }
-        for t in temps {
+        for t in temps.into_iter().chain(snd) {
             self.cfg.emit(Ev::Use(t));
         }
         for t in guard_temps {
@@ -655,6 +687,7 @@ impl<'a> Walker<'a> {
     }
 
     fn block(&mut self, stmts: &[TStmt], ty: &Ty) -> Vec<Src> {
+        let reb = self.tail_reb.take();
         self.scopes.push(HashMap::new());
         let mut tail = vec![];
         let n = stmts.len();
@@ -678,7 +711,7 @@ impl<'a> Walker<'a> {
                     }
                 }
                 TStmt::Expr(x) => {
-                    let s = self.expr(x);
+                    let s = if i + 1 == n { self.sub(x, &reb) } else { self.expr(x) };
                     if i + 1 == n {
                         tail = s;
                     }
@@ -696,9 +729,13 @@ impl<'a> Walker<'a> {
                 let ty = info.bind.as_ref().map(|b| b.1.clone()).unwrap_or_else(|| info.ty.clone());
                 self.scopes.last_mut().unwrap().insert(n.clone(), (q.id, ty.clone()));
                 let k = key(n, q.id);
-                if has_guard(self.p, &ty) {
+                if has_guard(self.p, &ty) || (has_closure_ty(&ty) && !self.closure_held.is_empty()) {
                     self.guards.insert(k.clone());
+                    if !self.closure_held.is_empty() {
+                        self.held_closures.insert(k.clone());
+                    }
                     self.cfg.emit(Ev::Hold(k.clone()));
+                    self.closure_held.clear();
                 }
                 self.vtys.insert(k.clone(), ty.clone());
                 let s = if holds_field(self.p, &ty) { srcs.to_vec() } else { vec![] };
@@ -761,6 +798,9 @@ impl<'a> Walker<'a> {
                 _ => {
                     let k = if not_copy(self.p, &c.ty) { Acc::Move } else { Acc::Read };
                     self.acc(&root, &[], k, e.line);
+                    if has_guard(self.p, &c.ty) {
+                        self.closure_held.push(root.clone());
+                    }
                     if holds(self.p, &c.ty) {
                         srcs.push(Src::Var(root));
                     }
@@ -802,7 +842,10 @@ impl<'a> Walker<'a> {
         if had_caps {
             self.bind("$cap".into(), caps, true);
         }
+        // 本体の中の束縛が、外側の閉包の持つガード (`closure_held`) を横取りして空にしない。
+        let held_outer = std::mem::take(&mut self.closure_held);
         self.expr(body);
+        self.closure_held = held_outer;
         if had_caps {
             let (c, ex) = (self.cfg.cur, self.cfg.exit);
             self.cfg.edge(c, ex);
@@ -890,13 +933,14 @@ impl<'a> Walker<'a> {
                 vec![]
             }
             "With" => {
+                let reb = self.tail_reb.take();
                 // 束縛は普通の局所 (`let`) と同じ。子は [初期化, (後始末), 本体]、実行順は 初期化 → 本体 → 後始末。
                 let srcs = ch.first().map(|x| self.expr(x)).unwrap_or_default();
                 self.scopes.push(HashMap::new());
                 for q in &e.pats {
                     self.bind_pat(q, &srcs);
                 }
-                let tail = ch.last().filter(|_| ch.len() > 1).map(|x| self.expr(x)).unwrap_or_default();
+                let tail = ch.last().filter(|_| ch.len() > 1).map(|x| self.sub(x, &reb)).unwrap_or_default();
                 if ch.len() > 2 {
                     self.expr(&ch[1]);
                 }
@@ -978,8 +1022,22 @@ impl<'a> Walker<'a> {
         let def = if cands.len() == 1 { Some(cands[0]) } else { None };
         let gn = def.map(|i| self.p.defs[i].gnames()).unwrap_or_default();
         let mut dparams: Vec<Ty> = def.map(|i| self.p.defs[i].params.iter().map(|(_, t)| from_v(t, &gn)).collect()).unwrap_or_default();
-        let is_method = !cands.is_empty() && cands.iter().all(|&i| self.p.defs[i].is_method());
-        if def.is_none() && is_method {
+        let mut is_method = !cands.is_empty() && cands.iter().all(|&i| self.p.defs[i].is_method());
+        // 型パラメータの受け手 `x.m(..)` (`T: Tr`): 境界のトレイトの宣言の署名で、具体型と同じに読む。
+        if cands.is_empty() {
+            let site: Option<(Ty, String)> = match (recv, callee.map(|c| &c.kind), &e.kind) {
+                (Some(r), _, TKind::MCall { name, .. }) => Some((r.ty.clone(), name.clone())),
+                (None, Some(TKind::Path(segs)), _) if segs.len() == 2 => self.lookup(&segs[0]).map(|(_, t)| (t.clone(), segs[1].clone())),
+                _ => None,
+            };
+            if let Some((rt, name)) = site {
+                if let Some((ps, _, _)) = super::lifetimes::bound_sig_of(self.p, self.di, &rt, &name) {
+                    dparams = ps.into_iter().map(|(_, t)| t).collect();
+                    is_method = true;
+                }
+            }
+        }
+        if def.is_none() && is_method && !cands.is_empty() {
             // 候補が複数: 受け手の宣言は、全員が参照ならそれ (1 つでも可変なら可変)、そろわなければ不明。
             let sh: Vec<Ty> = cands.iter().map(|&i| from_v(&self.p.defs[i].params[0].1, &self.p.defs[i].gnames())).collect();
             if sh.iter().all(|t| matches!(t, Ty::Ref(..))) {
@@ -1028,6 +1086,7 @@ impl<'a> Walker<'a> {
         let mut tys: Vec<Ty> = vec![];
         let mut temps = vec![];
         let mut call_guard_temps: Vec<String> = vec![];
+        let mut snd: Vec<String> = vec![];
         let mut idx = 0usize;
         // 受け手の可変借用は 2 段階借用 (`db.add(user.id)`、`v.push(v.len())`): 引数の評価が終わってから借りる。
         let has_recv = recv_place.is_some();
@@ -1063,6 +1122,9 @@ impl<'a> Walker<'a> {
             }
             let s = self.arg(a, pt.as_ref());
             self.slot_ok = None;
+            if pos + 1 < order.len() {
+                snd.extend(self.snd_temp(&a.ty));
+            }
             if pos + 1 < order.len() && has_guard(self.p, &a.ty) {
                 let t = self.fresh();
                 self.guards.insert(t.clone());
@@ -1105,7 +1167,7 @@ impl<'a> Walker<'a> {
         if let Some((pl, ty, decl, ex)) = late_recv {
             srcs_per[0] = self.receiver(pl, &ty, autoref, decl.as_ref(), ex, e.line);
         }
-        for t in temps {
+        for t in temps.into_iter().chain(snd) {
             self.cfg.emit(Ev::Use(t));
         }
         // 引数が運ぶ貸し出しの、戻り値への流れ。
@@ -1166,6 +1228,8 @@ impl<'a> Walker<'a> {
             }
         }
         if let Some(c) = local_callee {
+            // 呼び出しの瞬間にも閉包を使う: 取り込んだ借用は、引数の `&mut` の貸し出しと重なる間は生きている。
+            self.cfg.emit(Ev::Use(c.clone()));
             res.push(Src::Var(c));
         }
         // `Sender.send(v)`: 送った値の貸し出しを、同じチャネルを持つ他の変数 (`rx`) の側へも流す。
@@ -1295,7 +1359,30 @@ impl<'a> Walker<'a> {
                 }
             }
         }
-        self.expr(a)
+        if matches!(a.ty, Ty::Ref(true, ..)) && matches!(a.kind, TKind::Block(_) | TKind::If { .. } | TKind::Match { .. } | TKind::Other { name: "With", .. }) {
+            self.tail_reb = Some(pt.cloned());
+        }
+        let r = self.expr(a);
+        self.tail_reb = None;
+        r
+    }
+
+    /// 値を作る式の末尾: 引数へ渡す `&mut` の場所なら再借用、入れ子の値の式なら印を引き継ぐ。
+    fn sub(&mut self, x: &TExpr, reb: &Option<Option<Ty>>) -> Vec<Src> {
+        match reb {
+            Some(pt) if matches!(x.ty, Ty::Ref(true, ..)) => {
+                if self.pl(x).is_some() {
+                    return self.arg(x, pt.as_ref());
+                }
+                if matches!(x.kind, TKind::Block(_) | TKind::If { .. } | TKind::Match { .. } | TKind::Other { name: "With", .. }) {
+                    self.tail_reb = reb.clone();
+                }
+                let r = self.expr(x);
+                self.tail_reb = None;
+                r
+            }
+            _ => self.expr(x),
+        }
     }
 
     // -------------------------------------------------------- 解析
@@ -1546,7 +1633,7 @@ impl<'a> Walker<'a> {
                 if let Ev::Suspend { line } = ev {
                     // 枠の `Send` (E2074): 中断点をまたいで生きる局所が `Send` でないものを覚える。
                     for v in live_after[k].iter() {
-                        if v.starts_with('$') {
+                        if v.starts_with('$') && !v.starts_with("$snd") {
                             continue;
                         }
                         if let Some(t) = self.vtys.get(v) {
@@ -1555,7 +1642,7 @@ impl<'a> Walker<'a> {
                             }
                             let m = self.tk.marker_in(self.di, t, false);
                             if m != Some(true) {
-                                self.frame_bad.push((*line, show_var(v), self.cdepth > 0));
+                                self.frame_bad.push((*line, if v.starts_with("$snd") { "a temporary value".to_string() } else { show_var(v) }, self.cdepth > 0));
                             }
                         }
                     }
@@ -1625,3 +1712,4 @@ impl<'a> Walker<'a> {
         let _ = show_place;
     }
 }
+

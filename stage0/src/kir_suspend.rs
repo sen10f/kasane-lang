@@ -42,7 +42,7 @@ pub const IO: &str = "ksn.task.io";
 pub const WRAP_PEND: &str = "ksn.wrap.pend";
 /// 実行器の入口 (`block_on` の本体) と、生成 (`spawn_local`) と、後始末。
 pub const RUN: &str = "ksn.task.run";
-pub const SPAWN: &str = "ksn.task.spawn";
+pub const SPAWN: &str = "ksn.task.spawn_local";
 /// `std.task.spawn` (`Send` の要る方)。複数スレッドの実行器が動いているときは全体の注入列へ積み、そうでなければ `SPAWN` と同じ。
 pub const SPAWN_ANY: &str = "ksn.task.spawn_any";
 pub const MT_BEGIN: &str = "ksn.task.mt_begin";
@@ -918,7 +918,7 @@ fn dispatch_text(tasks: &[(u32, String)]) -> String {
     s
 }
 
-/// 実行器の KIR (テキスト)。`ksn.task.g` は大域の領域: `[0]` 表の番地、`[8]` 個数、`[16]` 容量、`[24]` 走っている番号、`[32]` 根が終わったか、`[40]` `run.poll` の再開の位置、`[48]` 世代 (`block_on` ごとに増やし、`finish` でも消さない。古い `Task` を拒む)。
+/// 実行器の KIR (テキスト)。`ksn.task.g` は大域の領域: `[0]` 表の番地、`[8]` 個数、`[16]` 容量、`[24]` 走っている番号、`[32]` 根が終わったか、`[40]` `run.poll` の再開の位置、`[48]` 世代 (`block_on` ごとに増やし、`finish` でも消さない。古い `Task` を拒む)、`[56]` 用意リスト (FIFO の輪) の番地 (容量は `[16]`)、`[64]` 先頭・`[72]` 末尾の通し番号、`[80]` / `[88]` join 待ち (状態 1) に入った数 / 出た数 (違えば待ちがいる)、`[96]` `pick` の回数。全体の大きさは 104。各タスクの枠 (48 バイト) の `+4` は輪に載っている印。
 /// 表の項目 (32 バイト): `[0]` 状態 (0 走れる / 1 待ち / 2 終わり)、`[8]` 待つ相手、`[16]` 本体の番号 (u32)、`[24]` 枠。
 const EXEC_TEXT: &str = include_str!("kir_suspend_exec.kir");
 /// 複数スレッドの実行器のワーカーの起動・合流 (`ksn.thr.*` を呼ぶので、`block_on_threads` を使うときだけ足す)。`@WTAG@` はワーカーの入口の tag。

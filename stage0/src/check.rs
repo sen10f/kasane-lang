@@ -1093,8 +1093,11 @@ impl<'a> Checker<'a> {
                 // 5.5 (H3): 実引数の位置の型パラメータは、`Send` なら `T: Send`、`Sync` なら `T: Sync` (`Mutex` のように `T: Send` でも可) の境界が要る。
                 if let crate::types::Ty::Named(_, iargs, _) = crate::types::from_v(&d.impl_for, &d.gnames()) {
                     let sync = tb == "core.marker.Sync";
+                    let mut nested: Vec<String> = Vec::new();
                     for ia in &iargs {
-                        let crate::types::Ty::Param(gp) = ia else { continue };
+                        collect_ty_params(ia, &mut nested);
+                    }
+                    for gp in &nested {
                         let Some(g) = d.generics.iter().find(|g| g.0 == "type" && g.1 == *gp) else { continue };
                         let ok = items(&g.2).iter().any(|b| matches!(b, V::L(bx) if { let n = st(&bx[0]); n == tb || (sync && n == "core.marker.Send") }));
                         if !ok {
@@ -6016,4 +6019,23 @@ pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
         prev = cur;
     }
     prev[b.len()]
+}
+
+/// 型に現れる全ての型パラメータを (重複なく、出現順に) 集める。
+fn collect_ty_params(t: &crate::types::Ty, out: &mut Vec<String>) {
+    use crate::types::Ty;
+    match t {
+        Ty::Param(p) => {
+            if !out.contains(p) {
+                out.push(p.clone());
+            }
+        }
+        Ty::Named(_, a, _) | Ty::Tuple(a) => a.iter().for_each(|x| collect_ty_params(x, out)),
+        Ty::Ref(_, x, _) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => collect_ty_params(x, out),
+        Ty::Closure { args, ret, .. } => {
+            args.iter().for_each(|x| collect_ty_params(x, out));
+            collect_ty_params(ret, out);
+        }
+        _ => {}
+    }
 }

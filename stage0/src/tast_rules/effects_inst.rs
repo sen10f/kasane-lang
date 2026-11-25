@@ -443,7 +443,8 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
         });
         let mut ck = Ck { p, c: Caller { d, uses: d.uses.clone(), panics: d.panics.clone().unwrap_or_else(|| "may".into()) }, found: vec![] };
         super::impl_sig::walk(&b.body, &mut |e| {
-            if in_closure.contains(&e.id) {
+            // クロージャの本体の中は、型パラメータの受け手の呼び出し (総称の効果・panic を持つ) だけを、囲む関数が負う (fail-closed)。
+            if in_closure.contains(&e.id) && !(matches!(&e.kind, TKind::MCall { .. } | TKind::Call { .. }) && bound_recv(e).is_some()) {
                 return;
             }
             match (&e.kind, &e.res) {
@@ -514,6 +515,12 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     }
                     for (tr, ta) in bounds {
                         if tr.starts_with("core.ops.Fn") {
+                            // `f.call(x)` の方法形 (`(*h).f.call(..)`・`self.f.call(..)`): 境界の効果の実引数をそのまま課す。
+                            if name.starts_with("call") {
+                                let uses = ta.get(2).and_then(targ_effs).unwrap_or_default();
+                                let panics = ta.get(3).and_then(targ_panic);
+                                ck.report(&format!("{}.{}", tr, name), &uses, panics.as_deref(), e.line);
+                            }
                             continue;
                         }
                         ck.trait_call(&tr, &ta, name, e.line, "");
