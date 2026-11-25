@@ -296,7 +296,7 @@ fn gen_assets(manifest: &Path, out: &Path) -> Vec<u8> {
     for (t, piece, c, args) in jobs {
         let bc = out.join(format!("rt_{}_{}.bc", t, piece));
         let _ = fs::remove_file(&bc);
-        let ok = Command::new(&clang).args(&args).args(["-c", "-emit-llvm", "-x", "c"]).arg(&c).arg("-o").arg(&bc).output().map(|o| {
+        let ok = Command::new(&clang).args(&args).args(["-Xclang", "-disable-O0-optnone", "-c", "-emit-llvm", "-x", "c"]).arg(&c).arg("-o").arg(&bc).output().map(|o| {
             if !o.status.success() {
                 println!("cargo:warning=実行時の C ({}/{}) をビットコードにできない: {}", t, piece, String::from_utf8_lossy(&o.stderr).lines().next().unwrap_or(""));
             }
