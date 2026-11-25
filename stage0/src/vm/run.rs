@@ -103,6 +103,8 @@ pub struct Vm<'a> {
     files: std::collections::HashMap<i128, std::fs::File>,
     /// `std.process` の未起動の `Command` (記述子 → 設定) と、起動した子 (pid → `Child`)。
     cmds: std::collections::HashMap<i32, std::process::Command>,
+    /// 不正な環境変数の鍵・値を渡された `Command` (起動で `InvalidInput`。`env_clear` で解除。木走査と同じ)。
+    bad_cmds: std::collections::HashSet<i32>,
     children: std::collections::HashMap<i32, std::process::Child>,
     next_fd: i128,
     /// `block_on_threads` (n > 1) の中か。
@@ -218,7 +220,7 @@ impl<'a> Vm<'a> {
         // C の関数を呼ぶプログラムは、C が返す番地も読むので、領域の外も通す (FFI は `[unsafe]` の許可の内側)。
         // 標準ライブラリ (`std.` / `core.`) の extern は数えない (安全なプログラムで網を切らない)。
         super::arena::set_permissive(prog.ext.iter().any(|f| !(f.fqn.starts_with("std.") || f.fqn.starts_with("core."))));
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), children: Default::default(), next_fd: 3, mt_on: false, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), bad_cmds: Default::default(), children: Default::default(), next_fd: 3, mt_on: false, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
     }
 
     /// 最後の panic の位置 (`in <関数> at <ファイル>:<行>`。デバッガと同じ形)。行表がない関数では `None`。
@@ -1514,7 +1516,9 @@ impl<'a> Vm<'a> {
                 }
                 P::EnvRemove => {
                     let s = fat(a[1])?;
-                    if let Some(c) = self.cmds.get_mut(&h(a[0])) {
+                    if s.is_empty() || s.contains('=') || s.contains('\0') {
+                        self.bad_cmds.insert(h(a[0]));
+                    } else if let Some(c) = self.cmds.get_mut(&h(a[0])) {
                         c.env_remove(s);
                     }
                     unit(rp, d);
@@ -1528,12 +1532,15 @@ impl<'a> Vm<'a> {
                 }
                 P::Env => {
                     let (k, v) = (fat(a[1])?, fat(a[2])?);
-                    if let Some(c) = self.cmds.get_mut(&h(a[0])) {
+                    if k.is_empty() || k.contains('=') || k.contains('\0') || v.contains('\0') {
+                        self.bad_cmds.insert(h(a[0]));
+                    } else if let Some(c) = self.cmds.get_mut(&h(a[0])) {
                         c.env(k, v);
                     }
                     unit(rp, d);
                 }
                 P::EnvClear => {
+                    self.bad_cmds.remove(&h(a[0]));
                     if let Some(c) = self.cmds.get_mut(&h(a[0])) {
                         c.env_clear();
                     }
@@ -1560,6 +1567,11 @@ impl<'a> Vm<'a> {
                 P::Spawn => {
                     // 子が継承した標準出力へ書く前に、ためた出力を流す (順序を保つ)。
                     self.flush();
+                    if self.bad_cmds.remove(&h(a[0])) {
+                        self.cmds.remove(&h(a[0]));
+                        let e = std::io::Error::new(std::io::ErrorKind::InvalidInput, "環境変数の鍵か値が不正");
+                        return fs_err(rp, aggs, d, &e);
+                    }
                     let Some(mut c) = self.cmds.remove(&h(a[0])) else { return Err("無効な Command の記述子".into()) };
                     match c.spawn() {
                         Ok(mut ch) => {
@@ -1582,6 +1594,11 @@ impl<'a> Vm<'a> {
                     }
                 }
                 P::Output => {
+                    if self.bad_cmds.remove(&h(a[0])) {
+                        self.cmds.remove(&h(a[0]));
+                        let e = std::io::Error::new(std::io::ErrorKind::InvalidInput, "環境変数の鍵か値が不正");
+                        return fs_err(rp, aggs, d, &e);
+                    }
                     let Some(mut c) = self.cmds.remove(&h(a[0])) else { return Err("無効な Command の記述子".into()) };
                     c.stdin(Stdio::null());
                     match c.output() {

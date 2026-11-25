@@ -2223,6 +2223,23 @@ pub fn lower_test_lazy(p: &Program, user: &[usize], test_def: usize) -> Lowered 
     lower_defs_with(p, user, Some(&p.defs[test_def].name), Some(test_def), true)
 }
 
+/// 全テストを入口にして 1 回で下ろす (VM の `ksn test`。テストごとに標準ライブラリの下ろしを繰り返さない)。
+/// 下ろせなかったテストは `unsupported` に名前で載り、モジュールに入らない。
+pub fn lower_tests_lazy(p: &Program, user: &[usize], tests: &[usize]) -> Lowered {
+    TEST_SET.with(|t| *t.borrow_mut() = tests.to_vec());
+    let r = lower_defs_with(p, user, tests.first().map(|&t| p.defs[t].name.as_str()), tests.first().copied(), true);
+    TEST_SET.with(|t| t.borrow_mut().clear());
+    r
+}
+
+thread_local! {
+    static TEST_SET: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+fn is_test_entry(i: usize, test_def: Option<usize>) -> bool {
+    test_def == Some(i) || TEST_SET.with(|t| t.borrow().contains(&i))
+}
+
 /// テストの入口が宣言として持つ効果 (`test` には uses の宣言がない)。`ksn check` は `test` の本体で効果を見ない
 /// (check.rs の `check_fn_sema` で `cur_uses = None`) ので、入口はこの全部の効果を持つ関数として下ろす。
 const ALL_EFFECTS: [&str; 9] = ["alloc", "env", "io.console", "io.fs", "io.net", "process", "rand", "thread", "time"];
@@ -2337,14 +2354,20 @@ fn lower_defs_with(p: &Program, user: &[usize], entry: Option<&str>, test_def: O
     let mut tried: HashSet<usize> = HashSet::new();
     // 入口を指定した遅延の下ろし (VM の `ksn run` / `ksn test`) は、入口から呼ばれる先だけを下ろす。
     let entry_only: Vec<usize> = match (lazy, test_def, entry) {
-        (true, Some(t), _) => vec![t],
+        (true, Some(t), _) => {
+            let mut v = TEST_SET.with(|s| s.borrow().clone());
+            if v.is_empty() {
+                v.push(t);
+            }
+            v
+        }
         (true, None, Some(e)) => p.funcs.get(e).copied().into_iter().collect(),
         _ => vec![],
     };
     let initial: &[usize] = if !entry_only.is_empty() { &entry_only } else if lazy { &first_user } else { user };
     for &i in initial {
         let d = &p.defs[i];
-        if !is_candidate(d) && test_def != Some(i) {
+        if !is_candidate(d) && !is_test_entry(i, test_def) {
             continue;
         }
         tried.insert(i);
@@ -2501,13 +2524,13 @@ fn lower_defs_with(p: &Program, user: &[usize], entry: Option<&str>, test_def: O
         let (mut total, mut low) = (0usize, 0usize);
         for &i in user {
             let d = &p.defs[i];
-            if !(d.kw == "fn" && d.body.is_some()) && test_def != Some(i) {
+            if !(d.kw == "fn" && d.body.is_some()) && !is_test_entry(i, test_def) {
                 continue;
             }
             // 標準ライブラリ (`spec/stdlib`) の関数は、被覆の数には入れず、理由だけ `origin: std` で出す。
             let std = crate::project::is_stdlib_file(&d.file);
             // 総称の関数は、定義そのものではなく、呼び出しごとの単相インスタンス (`名前<型>`) を数える (下ろしは呼び出し元が単相化する)。
-            if !is_candidate(d) && test_def != Some(i) {
+            if !is_candidate(d) && !is_test_entry(i, test_def) {
                 let pre = format!("{}<", d.name);
                 for k in keys.iter().filter(|k| k.starts_with(&pre)) {
                     if !std {

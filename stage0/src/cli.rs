@@ -1811,8 +1811,8 @@ fn unknown_flag(args: &[String], known: &[&str], sep_after_ok: bool) -> Option<S
 }
 
 /// `ksn run` / `ksn test` の既定の実行系 (出荷の既定をここ 1 か所で決める)。`true` = VM (KIR → バイトコード。下ろせない入口は黙って木走査へ退避)、
-/// `false` = 木走査。`--engine=` と `KSN_ENGINE` はこの既定より優先する。ベータで VM を既定にするかは検査の穴 (O-01 など) が閉じる状況で決める。
-const DEFAULT_ENGINE_VM: bool = false;
+/// `false` = 木走査。`--engine=` と `KSN_ENGINE` はこの既定より優先する。ベータから VM が既定 (`--engine=tree` / `KSN_ENGINE=tree` で戻す)。
+const DEFAULT_ENGINE_VM: bool = true;
 
 /// `--engine=vm|tree|both` を取り除く。返す値は (VM を使うか, `both` か, 明示したか, 残りの引数)。
 /// 既定は VM (KIR → バイトコード。下ろせない・VM が扱えない入口は黙って木走査へ退避する)。`KSN_ENGINE=tree|vm` でも選べる (引数が優先)。
@@ -2196,13 +2196,14 @@ fn cmd_test(args: &[String]) -> i32 {
     let mut outcomes: Vec<TestResult> = vec![];
     let (mut n_llvm, mut n_bundle) = (0, 0);
     let (mut n_vm, mut n_vm_skipped) = (0, 0);
+    let vm_lowered = if use_vm || drop_forced { Some(crate::vm::lower_tests(&prog, &user, &tests)) } else { None };
     for ti in &tests {
         let name = prog.defs[*ti].name.clone();
         let mut results: Vec<Option<String>> = vec![];
         let mut names: Vec<&str> = vec![];
         let mut vm_note = String::new();
         let vm_result = if use_vm || drop_forced {
-            match crate::vm::run_test(&prog, &user, *ti) {
+            match crate::vm::run_test(&prog, vm_lowered.as_ref().unwrap(), *ti) {
                 Ok(r) => Some(r),
                 Err(why) if drop_forced => {
                     failed += 1;
@@ -2226,15 +2227,7 @@ fn cmd_test(args: &[String]) -> i32 {
         };
         // 木走査は、VM を使わない・VM が退避した・`--engine=both` のときに走らせる (比べるときは木走査が先)。
         if vm_result.is_none() || cmp {
-            let mut it = Interp::new(prog.clone());
-            let r = it.call_body(*ti);
-            use std::io::Write;
-            let _ = it.out.flush();
-            results.push(match r {
-                Err(Ctl::Panic(m)) => Some(m),
-                Err(Ctl::Exit(c)) => Some(format!("exit({})", c)),
-                _ => None,
-            });
+            results.push(tree_test_result(&prog, *ti));
             names.push("tree");
         }
         if let Some(r) = vm_result {
@@ -2290,6 +2283,15 @@ fn cmd_test(args: &[String]) -> i32 {
             "bundle" => n_bundle += 1,
             _ => {}
         }
+        // VM・ネイティブは `?` が Err/None で終わったテストを目印の文言で失敗にする。理由 (Err の中身) は木走査で出す (3 つで同じ文言にする)。
+        if results.iter().flatten().any(|m| m.contains(TEST_TRY_MARK)) {
+            let exact = tree_test_result(&prog, *ti);
+            for r in results.iter_mut() {
+                if r.as_ref().is_some_and(|m| m.contains(TEST_TRY_MARK)) {
+                    *r = exact.clone();
+                }
+            }
+        }
         let disagree = results.len() > 1 && results[1..].iter().any(|r| backends_disagree(&results[0], r));
         let failed_here = disagree || !results.iter().all(|r| r.is_none());
         let failure: Option<String> = if disagree {
@@ -2329,6 +2331,27 @@ fn cmd_test(args: &[String]) -> i32 {
         }
     }
     if failed > 0 { 1 } else { 0 }
+}
+
+/// `?` が Err/None で本体を終えたテストの目印 (VM・ネイティブの下ろしが panic の文言に使う。表示は `tree_test_result` の文言に置き換える)。
+pub const TEST_TRY_MARK: &str = "ksn test body returned early with ?";
+
+/// 木走査でテスト `ti` を走らせた結果 (`None` = 成功)。本体の `?` が Err/None で終わったら失敗 (`returned Err(..)` / `returned None`)。
+fn tree_test_result(prog: &Rc<Program>, ti: usize) -> Option<String> {
+    let mut it = Interp::new(prog.clone());
+    let r = it.call_body(ti);
+    use std::io::Write;
+    let _ = it.out.flush();
+    match r {
+        Err(Ctl::Panic(m)) => Some(m),
+        Err(Ctl::Exit(c)) => Some(format!("exit({})", c)),
+        Ok(v) => match crate::value::dr(&v) {
+            crate::value::Val::Enum(e) if e.en == "Result" && e.var == "Err" => Some(format!("returned Err({})", it.debug_str(&e.pl[0]).unwrap_or_default())),
+            crate::value::Val::Enum(e) if e.en == "Option" && e.var == "None" => Some("returned None".to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// 理由の最初の行 (前後の空白を除く)。

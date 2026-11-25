@@ -431,3 +431,19 @@ Ok(())\nend t.main\n";
     assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
     assert_eq!(text(&r.stdout), "arena drop ok\n", "{}", text(&r.stdout));
 }
+
+/// テスト本体の `?` が Err/None で終わると、そのテストは失敗 (理由は `returned Err(..)`)。木走査・VM・`--both` で同じ。
+#[test]
+fn test_body_try_err_fails_the_test_on_every_engine() {
+    let src = "fn t.f() -> Result<i32, i32> uses [] panics never\n    Err(3i32)\nend t.f\n\ntest t.f.test_fails_q\n    let x = t.f()?\n    core.check.eq(x, 1i32)\nend t.f.test_fails_q\n\ntest t.f.test_passes\n    core.check.eq(1i32, 1i32)\nend t.f.test_passes\n";
+    let t = Tmp::new("test_try_err", &format!("{src}\nfn t.main() -> ()\nend t.main\n"));
+    for args in [&["test", "--engine=tree"][..], &["test", "--engine=vm"], &["test", "--both"]] {
+        let o = run(args, &t.0);
+        let out = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(1), "{args:?}: {out}{}", text(&o.stderr));
+        assert!(out.contains("test t.f.test_fails_q ... FAILED: returned Err(3)"), "{args:?}: {out}");
+        assert!(out.contains("test t.f.test_passes ... ok"), "{args:?}: {out}");
+    }
+    let o = run(&["test", "--json"], &t.0);
+    assert!(text(&o.stdout).contains("\"failure\":\"returned Err(3)\""), "{}", text(&o.stdout));
+}

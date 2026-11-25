@@ -1181,6 +1181,29 @@ impl<'a> Lw<'a> {
         let vt = self.vty(v);
         let rt = self.ret;
         match (vt, rt) {
+            // `test` の本体 (戻り値 `()`) の `?`: `Err` / `None` で本体を打ち切り、そのテストを失敗にする。
+            (Ty::Res(..) | Ty::Opt(_), Ty::Unit) if self.def.kw == "test" => {
+                let tag = self.emit(Ty::Bool, Op::Tag(v));
+                let (okb, _) = self.new_block(&[]);
+                let (stop, _) = self.new_block(&[]);
+                // `Result` は Err が真、`Option` は Some が真。
+                if matches!(vt, Ty::Res(..)) {
+                    self.branch(tag, (stop, vec![]), (okb, vec![]));
+                } else {
+                    self.branch(tag, (okb, vec![]), (stop, vec![]));
+                }
+                self.cur = Some(stop);
+                // 木走査は、この `?` で終わったテストを失敗にする (理由は呼び出し側が木走査で出す)。目印の panic にする。
+                let u = self.emit(Ty::Unit, Op::Panic { msg: crate::cli::TEST_TRY_MARK.to_string(), arg: None });
+                self.terminate(Term::Unreachable);
+                self.cur = Some(okb);
+                let pv = match vt {
+                    Ty::Res(t0, _) => self.emit(t0.ty(), Op::Payload(v)),
+                    Ty::Opt(p) => self.emit(p.ty(), Op::Payload(v)),
+                    _ => unreachable!(),
+                };
+                Ok(Some(self.bref_out(pv, &nf(e)[0], line)?))
+            }
             (Ty::Opt(p), Ty::Opt(_)) => {
                 let tag = self.emit(Ty::Bool, Op::Tag(v));
                 let (okb, _) = self.new_block(&[]);
