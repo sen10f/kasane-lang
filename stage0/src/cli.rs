@@ -469,6 +469,8 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
     for (s, srcroot, own_len) in all_srcs {
         let srcroot = srcroot.as_str();
         let fl = rel(&s.path);
+        let relpath = lint_rel(s, srcroot);
+        let mut memo = if use_cache && s.error.is_none() { crate::check_cache::load(&s.path, &relpath) } else { Default::default() };
         if s.path.ends_with(".ksnh") {
             // `.ksnh` が正。`strip(.ksnh)` が横の `.ksnl` とバイト一致しなければ E9050。
             match &s.ksnl {
@@ -477,9 +479,19 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
                     // `strip` の出力は、`.ksnh` が正規形なら必ず `ksn fmt` の正規形になる (設計_ksnhとロック.md 1.2)。破れていれば E0020。
                     let stripped = crate::ksnh::strip(&s.text);
                     let kp = format!("{}.ksnl", s.path.trim_end_matches(".ksnh"));
-                    if crate::fmt::format_source_prog(&s.text, &s.path, own_len) == s.text
-                        && crate::fmt::format_source_prog(&stripped, &kp, own_len) != stripped
-                    {
+                    // 整形 2 回分の結果は、文面が前回と同じなら再利用する (整形は 1 ファイルで数百 ms かかる)。
+                    let kk = if use_cache { Some(crate::check_cache::file_key(&relpath, &s.text, own_len)) } else { None };
+                    let bad = match (&kk, &memo.ksnh_old) {
+                        (Some(k), Some((ok, v))) if k == ok => *v,
+                        _ => {
+                            crate::fmt::format_source_prog(&s.text, &s.path, own_len) == s.text
+                                && crate::fmt::format_source_prog(&stripped, &kp, own_len) != stripped
+                        }
+                    };
+                    if let Some(k) = kk {
+                        memo.ksnh_new = Some((k, bad));
+                    }
+                    if bad {
                         rep.add("E0020", "the .ksnl made by stripping this .ksnh differs from its `ksn fmt` output; the comments are placed where stripping leaves a non-canonical file", Some(&fl), 1, 1, true);
                     }
                     if let Some(ln) = crate::ksnh::first_mismatch(&s.text, k) {
@@ -494,8 +506,6 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
         }
         // 文面だけで決まる検査 (文法・正規形・lint) は、キャッシュが有効ならファイル単位で再利用する
         // (check_cache.rs、設計_増分検査.md)。無効のときは従来どおり毎回計算する。
-        let relpath = lint_rel(s, srcroot);
-        let mut memo = if use_cache && s.error.is_none() { crate::check_cache::load(&s.path, &relpath) } else { Default::default() };
         let gram = if s.error.is_none() {
             Some(if use_cache { grammar.check_memo(&s.text, &mut memo.gram) } else { grammar.check(&s.text) })
         } else {
