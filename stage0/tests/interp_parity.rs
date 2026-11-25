@@ -12,7 +12,7 @@ use common::*;
 
 fn run_skipping_borrowck(name: &str, src: &str) -> (Option<i32>, String, String) {
     let t = Tmp::new(name, src);
-    let o = run_with_env(&["run"], &t.0, &[("KSN_SKIP_BORROW_DIAGS", "1")]);
+    let o = run_with_env(&["run", "--engine=tree"], &t.0, &[("KSN_SKIP_BORROW_DIAGS", "1")]);
     (o.status.code(), text(&o.stdout), text(&o.stderr))
 }
 

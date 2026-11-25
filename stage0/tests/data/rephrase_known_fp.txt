@@ -6,6 +6,7 @@ fp closure const_promotion_p10#0
 fp closure fnonce_call_once#0
 fp closure linear_destructure_by_ref_then_shut#0
 fp closure move_self_forms#0
+fp closure ok_spawn_err_consumes_closure#0
 fp closure p06#0
 fp closure p08#0
 fp closure p09#0
@@ -73,6 +74,7 @@ fp id ok_pair_match_both#0
 fp id ok_reassign_chain#2
 fp id ok_reassign_chain#3
 fp id ok_reassign_chain#4
+fp id ok_spawn_err_consumes_closure#0
 fp id ok_spawn_move_linear#0
 fp id ok_spawn_move_linear#2
 fp id ok_spawn_move_linear#4
