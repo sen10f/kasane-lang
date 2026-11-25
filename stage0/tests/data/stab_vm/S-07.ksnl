@@ -1,0 +1,17 @@
+fn t.main() -> () uses [alloc, env, io.console] panics may
+    let n = match std.env.arg(0usize) {
+        Some(s) => usize.parse(s).unwrap_or(0usize)
+        None => 1000usize
+    }
+    match std.vec.Vec.with_capacity(n) {
+        Ok(v) => {
+            let mut w: std.vec.Vec<u8> = v
+            w.push(1u8).unwrap()
+            let mut s = std.string.String.new()
+            s.push_str("ok cap>=").unwrap()
+            s.push_u64(u64.from_usize(n)).unwrap()
+            std.io.print_line(s.as_str()).unwrap()
+        }
+        Err(_e) => std.io.print_line("alloc error").unwrap()
+    }
+end t.main
