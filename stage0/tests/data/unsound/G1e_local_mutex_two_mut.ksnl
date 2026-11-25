@@ -1,0 +1,10 @@
+fn t.two(a: &mut u64, b: &mut u64) -> u64 uses [] panics never
+    *a = 1u64
+    *b = 2u64
+    *a
+end t.two
+
+fn t.main() -> () uses [thread] panics never
+    let m = std.sync.Mutex.new(0u64)
+    core.mem.drop(t.two(m.lock().get_mut(), m.lock().get_mut()))
+end t.main

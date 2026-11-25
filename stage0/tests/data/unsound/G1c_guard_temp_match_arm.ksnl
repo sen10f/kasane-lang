@@ -1,0 +1,14 @@
+static t.M: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64)
+
+fn t.opt(v: &u64) -> Option<&u64> uses [] panics never
+    Some(v)
+end t.opt
+
+fn t.main() -> () uses [thread] panics never
+    match t.opt(t.M.lock().get()) {
+        Some(x) => {
+            let _ = *x
+        }
+        None => ()
+    }
+end t.main
