@@ -547,6 +547,44 @@ pub fn raw_list(v: &Val) -> Option<Rc<RefCell<Vec<Val>>>> {
     }
 }
 
+/// `Vec<u8>` の値 (`target`) の末尾へ `data` を足す。`Vec` の容量 (`buf.capacity`) は長さ以上に保つ
+/// (push は容量を見て再確保するので、容量が長さより小さいと次の push が AllocError になる)。
+/// 列でなければ何もせず false。組み込みが `&mut Vec<u8>` へ書く全ての経路 (read_to_end・read_dir・process の output) はこれを通す。
+pub fn extend_vec_bytes(target: &Val, data: &[u8]) -> bool {
+    let Some(l) = raw_list(target) else { return false };
+    l.borrow_mut().extend(data.iter().map(|b| int(*b as i128, "u8")));
+    let len = l.borrow().len();
+    if let Val::Struct(v) = target {
+        if let Some(Val::Struct(b)) = v.get("buf") {
+            let cap = if let Some(Val::Int(c, _)) = b.get("capacity") { c as usize } else { 0 };
+            if len > cap {
+                b.set("capacity", usz(len));
+            }
+        }
+    }
+    debug_check_vec_cap(target);
+    true
+}
+
+/// 不変条件の検査 (デバッグ版だけ): `Vec` / `Buf` の容量は長さ以上。違えば panic (試験で見つける用)。
+pub fn debug_check_vec_cap(v: &Val) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    if let Val::Struct(s) = v {
+        if s.ty == VEC_TY {
+            if let Some(Val::Struct(b)) = s.get("buf") {
+                let cap = if let Some(Val::Int(c, _)) = b.get("capacity") { c as usize } else { 0 };
+                let len = match b.get("items") {
+                    Some(Val::Vec(l)) => l.borrow().len(),
+                    _ => 0,
+                };
+                assert!(cap >= len, "invariant: Vec の容量 {} が長さ {} より小さい", cap, len);
+            }
+        }
+    }
+}
+
 /// `Vec` の値なら、その格納の生の列 (`Val::Vec`) に置き換えた値を返す。それ以外は複製 (Rc の増分だけ)。
 /// 添字・反復・表示・比較など、列を直接読む経路が `Val::Vec` の形で扱えるようにする。
 pub fn as_raw(v: &Val) -> Val {
