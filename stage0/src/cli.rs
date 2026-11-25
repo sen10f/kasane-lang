@@ -1194,7 +1194,9 @@ fn kir_borrowck_union(rep: &mut Report, prog: Option<&Program>, user: &[usize]) 
         return;
     }
     let Some(p) = prog else { return };
+    crate::vm::tick("bc_pre");
     let lo = crate::kir_lower::lower_user(p, user);
+    crate::vm::tick("lower_user");
     if let crate::kir_borrowck::Outcome::Checked(ds) = crate::kir_borrowck::check(p, user, &lo, false) {
         for d in &ds {
             let line = d.line.max(1);
@@ -1283,6 +1285,7 @@ fn cmd_check_opts(json: bool, native: bool) -> i32 {
     let kir_own = bc_mode == "kir,own" || kir_only;
     match find_root().and_then(|r| {
         full_check(&r, &mut rep, false).map(|(_, prog, user)| {
+            crate::vm::tick("full_check_end");
             crate::kir_lower::dump_hidden(prog.as_ref(), &user);
             if native {
                 native_lowering_warnings(&mut rep, prog.as_ref(), &user);
@@ -1292,6 +1295,7 @@ fn cmd_check_opts(json: bool, native: bool) -> i32 {
             } else if bc_mode != "ast" {
                 kir_borrowck_union(&mut rep, prog.as_ref(), &user);
             }
+            crate::vm::tick("kir_bc");
         })
     }) {
         Ok(()) => {}

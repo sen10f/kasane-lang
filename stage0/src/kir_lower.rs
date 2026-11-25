@@ -2170,8 +2170,10 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
             }
         }
     }
+    crate::vm::tick("ll_setup");
     let user = &user_vec;
     let tys = type_table(p, user, test_def);
+    crate::vm::tick("ll_types");
     let aggs = RefCell::new(agg::AggTab::new(&agg_user));
     // `std.net.listen`/`connect`/`accept` が返すソケット集成体と、その失敗の `std.net.Error` を、誰も参照しなくても型表に入れる。
     for name in ["std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "std.net.Shutdown", "std.net.Error"] {
@@ -2196,6 +2198,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
         }
     }
     crate::s5_meter::set_active(false);
+    crate::vm::tick("ll_fns");
     // スレッドの補助の関数 (`ksn.thr.*`) は、全部の入口 (クロージャ) が揃ってから作る。
     task_lower::pre_finish(&mut ok);
     thread_lower::finish(&mut ok);
@@ -2238,6 +2241,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     // 同じ単相インスタンスを、別々の呼び出し元が下ろしていることがある (内容は同じ)。鍵の重複は先の一つだけ残す。
     let mut seen: HashSet<String> = HashSet::new();
     ok.retain(|(f, _)| seen.insert(f.key.clone()));
+    crate::vm::tick("ll_finish");
     let (funcs, all_aggs) = loop {
         let keys: HashSet<String> = ok.iter().map(|(f, _)| f.key.clone()).collect();
         let mut drop: Vec<(String, String)> = vec![];
@@ -2253,10 +2257,13 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
         if drop.is_empty() {
             let mut m = Module { funcs: ok.iter().map(|(f, _)| f.clone()).collect(), aggs: aggs.borrow().defs.clone(), depth: 0 };
             // 中断する関数と閉包の本体を、枠の形 (`.new` / `.poll`) にする (設計_KIR.md 26 章)。変換できなければ落とす。
+            crate::vm::tick("ll_mod");
             drop.extend(kir_suspend::transform(&mut m, &task_lower::task_keys()));
+            crate::vm::tick("ll_susp");
             for (key, msg) in kir::verify_module(&m) {
                 drop.push((key, format!("下ろしの検査に失敗: {}", msg)));
             }
+            crate::vm::tick("ll_verify");
             if drop.is_empty() {
                 break (m.funcs, m.aggs);
             }
