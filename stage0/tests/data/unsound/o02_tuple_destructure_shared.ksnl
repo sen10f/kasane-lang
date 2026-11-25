@@ -1,0 +1,10 @@
+fn t.main() -> () uses [] panics never
+    let mut a = 1u64
+    let tp = (&mut a, 3u64)
+    t.w(&tp)
+end t.main
+
+fn t.w(tp: &(&mut u64, u64)) -> () uses [] panics never
+    let (p, _n) = tp
+    **p = 5u64
+end t.w

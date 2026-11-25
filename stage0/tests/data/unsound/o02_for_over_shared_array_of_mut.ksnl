@@ -1,0 +1,11 @@
+fn t.main() -> () uses [] panics never
+    let mut a = 1u64
+    let arr = [&mut a]
+    t.w(&arr)
+end t.main
+
+fn t.w(arr: &[&mut u64; 1]) -> () uses [] panics never
+    for x in arr {
+        **x = 5u64
+    }
+end t.w

@@ -1,0 +1,9 @@
+fn t.main() -> () uses [] panics may
+    let mut a = 1u64
+    let arr = [&mut a]
+    t.w(&arr)
+end t.main
+
+fn t.w(s: &[&mut u64]) -> () uses [] panics may
+    *s[0usize] = 5u64
+end t.w

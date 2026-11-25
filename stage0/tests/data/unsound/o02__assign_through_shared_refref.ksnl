@@ -1,0 +1,16 @@
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut a = 1u64
+    let m = &mut a
+    t.w(&m)
+    t.pr(a)
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
+
+fn t.w(p: & &mut u64) -> () uses [] panics never
+    **p = 5u64
+end t.w
