@@ -285,6 +285,10 @@ pub enum Ins {
     EnvArg { d: S, i: S },
     EnvVar { d: S, name: S },
     TimeNowNs { d: S },
+    /// `std.task.block_on_threads` の中か (n > 1)。ワーカーは起こさない (決定的な協調実行) が、`spawn_local` の禁止などの意味を保つ。
+    MtOn { d: S },
+    MtBegin { d: S, n: S },
+    MtEnd,
 
     // ---- std.net (kir_exec と同じ意味。ソケット表は `Vm` が持つ)
     NetListen { d: S, addr: S },

@@ -3,6 +3,7 @@
 //! - `bc.rs`: 命令とスロット、`compile.rs`: KIR → バイトコード、`run.rs`: 実行ループと明示フレーム。
 //! - 入口から届く関数のどれかが KIR に下ろせない (または VM が扱えない命令を含む) ときは、理由を返して呼び出し側が木走査へ退避する。
 
+pub mod arena;
 pub mod bc;
 pub mod compile;
 pub mod reload;
@@ -51,6 +52,14 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
     }
     let m = lo.module.reachable_from(&[entry, kir_lower::debug::ENTRY_DEBUG]);
     tick("reachable");
+    // `std.tls` (OpenSSL) は実際の記述子を要るが、VM のソケットは仮想の記述子なので走らせない。
+    if m.funcs.iter().any(|f| f.link.as_deref().map_or(false, |l| l.starts_with("libssl.so") || l.starts_with("libcrypto.so"))) {
+        return Err("std.tls は VM 未対応".into());
+    }
+    // `std.task.block_on_threads` は複数のワーカーを前提にした意味 (取り消し・入れ子・panic の伝わり方) を持つ。VM の実行器は 1 本なので走らせない (木走査へ退避する)。
+    if m.find("ksn.task.mt_begin").is_some() {
+        return Err("std.task.block_on_threads は VM 未対応".into());
+    }
     let errs = crate::kir::verify_module(&m);
     tick("verify");
     if let Some(e) = errs.first() {
@@ -72,7 +81,7 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
 
 /// `ksn run --engine=vm`: 入口を VM で実行して終了コードを返す。実行を始める前に分かる理由 (下ろせない・VM が扱えない) は `Err`。
 pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String], watch: Option<Box<dyn FnOnce() -> reload::Reload + '_>>) -> Result<i32, String> {
-    let lo = kir_lower::lower_program(prog, user, Some(entry));
+    let lo = kir_lower::lower_program_lazy(prog, user, entry);
     tick("lower");
     let bc = prepare(lo, entry)?;
     // 戻り値の型は付け替え後の型表 (`bc.aggs`) の添字で読む。`lo.module` の型は型表を縮める前の添字なので使えない。
@@ -144,7 +153,7 @@ pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String], w
 /// 下ろせない・VM が扱えないときは `Err(理由)` (呼び出し側が木走査で実行する)。
 pub fn run_test(prog: &Program, user: &[usize], ti: usize) -> Result<Option<String>, String> {
     let name = prog.defs[ti].name.clone();
-    let lo = kir_lower::lower_test(prog, user, ti);
+    let lo = kir_lower::lower_test_lazy(prog, user, ti);
     let bc = prepare(lo, &name)?;
     let mut vm = run::Vm::new(&bc);
     vm.capture = Some(vec![]);

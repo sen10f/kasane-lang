@@ -105,6 +105,8 @@ pub struct Vm<'a> {
     cmds: std::collections::HashMap<i32, std::process::Command>,
     children: std::collections::HashMap<i32, std::process::Child>,
     next_fd: i128,
+    /// `block_on_threads` (n > 1) の中か。
+    mt_on: bool,
     /// コールバックのフレームを積む位置 (`CallExt` の呼び出し元のフレームの上)。
     top: usize,
     /// 最後の panic が起きた (版, 関数番号, 命令番号)。
@@ -134,10 +136,10 @@ fn bad_addr(a: u64, n: usize) -> String {
 
 #[inline(always)]
 fn addr(a: u64, n: usize) -> Result<*mut u8, String> {
-    if a < 0x1000 {
-        return Err(bad_addr(a, n));
+    match super::arena::check(a, n) {
+        Some(p) => Ok(p),
+        None => Err(bad_addr(a, n)),
     }
-    Ok(a as usize as *mut u8)
 }
 
 /// スロットの表現 → 参照実行器の `i128` の符号化 (型 `t`)。
@@ -212,7 +214,11 @@ fn io_error_bytes(aggs: &[crate::kir::AggDef], kind: &str, code: i32) -> Result<
 
 impl<'a> Vm<'a> {
     pub fn new(prog: &'a Prog) -> Vm<'a> {
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), children: Default::default(), next_fd: 0, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
+        super::arena::ensure();
+        // C の関数を呼ぶプログラムは、C が返す番地も読むので、領域の外も通す (FFI は `[unsafe]` の許可の内側)。
+        // 標準ライブラリ (`std.` / `core.`) の extern は数えない (安全なプログラムで網を切らない)。
+        super::arena::set_permissive(prog.ext.iter().any(|f| !(f.fqn.starts_with("std.") || f.fqn.starts_with("core."))));
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), children: Default::default(), next_fd: 3, mt_on: false, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
     }
 
     /// 最後の panic の位置 (`in <関数> at <ファイル>:<行>`。デバッガと同じ形)。行表がない関数では `None`。
@@ -334,9 +340,7 @@ impl<'a> Vm<'a> {
 
     /// `bytes` を複写した (解放しない) 領域を指す fat (`ptr`, `len`) を返す。
     fn leak_fat(bytes: &[u8]) -> (u64, u64) {
-        let p = unsafe { malloc(bytes.len().max(1)) } as *mut u8;
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len()) };
-        (p as u64, bytes.len() as u64)
+        (super::arena::leak(bytes) as u64, bytes.len() as u64)
     }
 
     fn new_file(&mut self, f: std::fs::File) -> i128 {
@@ -370,7 +374,11 @@ impl<'a> Vm<'a> {
         self.frames.clear();
         self.allocs.clear();
         self.top = 0;
-        self.exec(vi, entry as u32, args, false)
+        // 領域の外の番地を読もうとした (検査の抜けや偽の見出し) ときは、プロセスを壊さずに panic (101) で止める。
+        match self.exec(vi, entry as u32, args, false) {
+            Err(e) if e.starts_with("不正なメモリアクセス") => Ok(Outcome::Panic(e)),
+            r => r,
+        }
     }
 
     /// 版 `vi` の関数 `entry` を走らせる。`nested` は、C の関数 (`CallExt`) から呼び戻された (コールバック) とき。
@@ -743,7 +751,7 @@ impl<'a> Vm<'a> {
                     };
                     if self.allocs.len() > abase {
                         for p in self.allocs.drain(abase..) {
-                            unsafe { free(p) };
+                            super::arena::free(p as usize);
                         }
                     }
                     let n = f.ret_w as usize;
@@ -887,7 +895,7 @@ impl<'a> Vm<'a> {
                     std::ptr::copy(rp.add(*a as usize + 1), rp.add(*d as usize), *n as usize);
                 },
                 Ins::FrameBytes { d, size } => {
-                    let p = unsafe { calloc((*size as usize).max(1), 1) };
+                    let p = super::arena::alloc_zeroed(*size as usize) as *mut std::ffi::c_void;
                     self.allocs.push(p);
                     w!(*d, p as usize as u64);
                 }
@@ -991,19 +999,22 @@ impl<'a> Vm<'a> {
                 }
                 Ins::HeapAlloc { d, n } => {
                     let nn = (r!(*n) as usize).max(1);
-                    let p = unsafe { malloc(nn) };
-                    w!(*d, p as usize as u64);
+                    w!(*d, super::arena::alloc(nn) as u64);
                 }
                 Ins::HeapRealloc { d, p, n } => {
                     let old = r!(*p);
                     let nn = (r!(*n) as usize).max(1);
-                    let q = unsafe { realloc(old as usize as *mut std::ffi::c_void, nn) };
-                    w!(*d, q as usize as u64);
+                    match super::arena::realloc(old as usize, nn) {
+                        Ok(q) => w!(*d, q as u64),
+                        Err(()) => return Err(bad_addr(old, nn)),
+                    }
                 }
                 Ins::HeapFree { p } => {
                     let a = r!(*p);
                     if a != 0 {
-                        unsafe { free(a as usize as *mut std::ffi::c_void) };
+                        if !super::arena::free(a as usize) {
+                            return Err(bad_addr(a, 0));
+                        }
                     }
                 }
                 Ins::IndexCheck { i, len } => {
@@ -1073,6 +1084,12 @@ impl<'a> Vm<'a> {
                 Ins::EnvArgCount { d } => {
                     w!(*d, self.args.len() as u64);
                 }
+                Ins::MtOn { d } => w!(*d, self.mt_on as u64),
+                Ins::MtBegin { d, n } => {
+                    self.mt_on = r!(*n) as i64 > 1;
+                    w!(*d, 0);
+                }
+                Ins::MtEnd => self.mt_on = false,
                 Ins::TimeNowNs { d } => {
                     // 実時刻 (UNIX 時刻からのナノ秒)。`i64` の bit 列で書く。失敗したら 0。
                     let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|x| x.as_nanos() as i64).unwrap_or(0);
@@ -1320,6 +1337,28 @@ impl<'a> Vm<'a> {
                 Ins::FsRead { d, fd, buf, len } => {
                     use std::io::Read;
                     let (fd, p, n) = (r!(*fd) as i32 as i128, r!(*buf), r!(*len) as usize);
+                    if fd == 0 {
+                        // 記述子 0 は標準入力 (出力を先に流す。kir_exec と同じ)。
+                        self.flush();
+                        let mut tmp = vec![0u8; n];
+                        let res = loop {
+                            match std::io::stdin().lock().read(&mut tmp) {
+                                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                                r => break r,
+                            }
+                        };
+                        match res {
+                            Ok(nr) => {
+                                if nr > 0 {
+                                    unsafe { std::ptr::copy_nonoverlapping(tmp.as_ptr(), addr(p, nr)?, nr) };
+                                }
+                                w!(*d, 0);
+                                w!(*d + 1, nr as u64);
+                            }
+                            Err(e) => fs_err(rp, &prog.aggs, *d, &e)?,
+                        }
+                        continue;
+                    }
                     let Some(f) = self.files.get_mut(&fd) else { return Err(format!("無効なファイル記述子 {}", fd)) };
                     let mut tmp = vec![0u8; n];
                     // 中断 (EINTR) は読み直す (kir_exec と同じ)。
@@ -1345,7 +1384,11 @@ impl<'a> Vm<'a> {
                     let (fd, p, n) = (r!(*fd) as i32 as i128, r!(*buf), r!(*len) as usize);
                     let bytes: &[u8] = if n == 0 { &[] } else { unsafe { std::slice::from_raw_parts(addr(p, n)? as *const u8, n) } };
                     // 記述子 2 は標準エラー (`std.io.write_stderr`、kir_exec と同じ)。それ以外は開いているファイルだけ。
-                    if fd == 2 {
+                    if fd == 1 {
+                        let _ = self.out_write(1, bytes);
+                        w!(*d, 0);
+                        w!(*d + 1, n as u64);
+                    } else if fd == 2 {
                         self.err_write(bytes);
                         w!(*d, 0);
                         w!(*d + 1, n as u64);
@@ -1515,6 +1558,8 @@ impl<'a> Vm<'a> {
                     unit(rp, d);
                 }
                 P::Spawn => {
+                    // 子が継承した標準出力へ書く前に、ためた出力を流す (順序を保つ)。
+                    self.flush();
                     let Some(mut c) = self.cmds.remove(&h(a[0])) else { return Err("無効な Command の記述子".into()) };
                     match c.spawn() {
                         Ok(mut ch) => {

@@ -1810,25 +1810,45 @@ fn unknown_flag(args: &[String], known: &[&str], sep_after_ok: bool) -> Option<S
     None
 }
 
-/// `--engine=vm|tree|both` を取り除く。1 つ目は VM を使うか (`ksn run` / `ksn test`。既定は木走査)、
-/// 2 つ目は `both` (`ksn test` だけ: 木走査と VM の両方で走らせて結果を比べる)。
-fn take_engine(args: &[String]) -> Result<(bool, bool, Vec<String>), String> {
-    let mut vm = false;
+/// `ksn run` / `ksn test` の既定の実行系 (出荷の既定をここ 1 か所で決める)。`true` = VM (KIR → バイトコード。下ろせない入口は黙って木走査へ退避)、
+/// `false` = 木走査。`--engine=` と `KSN_ENGINE` はこの既定より優先する。ベータで VM を既定にするかは検査の穴 (O-01 など) が閉じる状況で決める。
+const DEFAULT_ENGINE_VM: bool = false;
+
+/// `--engine=vm|tree|both` を取り除く。返す値は (VM を使うか, `both` か, 明示したか, 残りの引数)。
+/// 既定は VM (KIR → バイトコード。下ろせない・VM が扱えない入口は黙って木走査へ退避する)。`KSN_ENGINE=tree|vm` でも選べる (引数が優先)。
+/// `both` (`ksn test` だけ) は木走査と VM の両方で走らせて結果を比べる。`vm` を明示したときだけ、退避の理由を stderr に出す。
+fn take_engine(args: &[String]) -> Result<(bool, bool, bool, Vec<String>), String> {
+    let mut vm = DEFAULT_ENGINE_VM;
+    let mut explicit = false;
     let mut cmp = false;
+    match std::env::var("KSN_ENGINE").ok().as_deref() {
+        None | Some("") => {}
+        Some("vm") => explicit = true,
+        Some("tree") => vm = false,
+        Some(o) => return Err(format!("KSN_ENGINE は vm か tree (指定: {})", o)),
+    }
     let mut rest = vec![];
     for a in args {
         match a.strip_prefix("--engine=") {
-            Some("vm") => vm = true,
-            Some("tree") => vm = false,
+            Some("vm") => {
+                vm = true;
+                explicit = true;
+            }
+            Some("tree") => {
+                vm = false;
+                explicit = false;
+                cmp = false;
+            }
             Some("both") => {
                 vm = true;
                 cmp = true;
+                explicit = true;
             }
-            Some(o) => return Err(format!("--engine は vm か tree (指定: {})", o)),
+            Some(o) => return Err(format!("--engine は vm か tree か both (指定: {})", o)),
             None => rest.push(a.clone()),
         }
     }
-    Ok((vm, cmp, rest))
+    Ok((vm, cmp, explicit, rest))
 }
 
 /// 利用者のパッケージ (依存を含む) に手書きの `impl core.ops.Drop` があるか。木走査は値の所有を追跡しないので、
@@ -1840,7 +1860,7 @@ fn has_user_drop(l: &Loaded, prog: &Program, user: &[usize]) -> bool {
 }
 
 fn cmd_run(args: &[String]) -> i32 {
-    let (use_vm, cmp, args) = match take_engine(args) {
+    let (use_vm, cmp, explicit, args) = match take_engine(args) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("ksn: {}", e);
@@ -1859,6 +1879,8 @@ fn cmd_run(args: &[String]) -> i32 {
             return 2;
         }
     };
+    // ホットリロード (`--watch`) は、VM を明示したときだけ VM で走らせる (既定は木走査)。
+    let use_vm = use_vm && (!watch || explicit);
     let mut rep = Report::new(json);
     crate::vm::tick("start");
     let root = match find_root() {
@@ -1924,7 +1946,11 @@ fn cmd_run(args: &[String]) -> i32 {
                 eprintln!("ksn: this package has a hand-written `core.ops.Drop`, which only the KIR engine runs (the tree walker does not track ownership), but the program does not lower to KIR: {}", first_line(&why));
                 return 1;
             }
-            Err(why) => eprintln!("vm engine skipped: {}; falling back to the tree walker", first_line(&why)),
+            Err(why) => {
+                if explicit {
+                    eprintln!("vm engine skipped: {}; falling back to the tree walker", first_line(&why));
+                }
+            }
         }
     }
     let prog = Rc::new(prog);
@@ -2096,7 +2122,7 @@ fn cmd_test(args: &[String]) -> i32 {
         dargs.extend(["--test".to_string(), name.clone()]);
         return crate::debug::cmd_debug(&dargs);
     }
-    let (use_vm, cmp, args) = match take_engine(args) {
+    let (use_vm, cmp, explicit, args) = match take_engine(args) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("ksn: {}", e);
@@ -2180,11 +2206,17 @@ fn cmd_test(args: &[String]) -> i32 {
                 Ok(r) => Some(r),
                 Err(why) if drop_forced => {
                     failed += 1;
-                    println!("test {} ... FAILED: this package has a hand-written `core.ops.Drop`, which only the KIR engine runs, but the test does not lower to KIR: {}", name, first_line(&why));
+                    let msg = format!("this package has a hand-written `core.ops.Drop`, which only the KIR engine runs, but the test does not lower to KIR: {}", first_line(&why));
+                    if !json {
+                        println!("test {} ... FAILED: {}", name, msg);
+                    }
+                    outcomes.push(TestResult { name: name.clone(), ok: false, failure: Some(msg) });
                     continue;
                 }
                 Err(why) => {
-                    eprintln!("test {}: vm engine skipped: {}; falling back to the tree walker", name, first_line(&why));
+                    if explicit {
+                        eprintln!("test {}: vm engine skipped: {}; falling back to the tree walker", name, first_line(&why));
+                    }
                     vm_note = format!("vm skipped: {}", first_line(&why));
                     None
                 }

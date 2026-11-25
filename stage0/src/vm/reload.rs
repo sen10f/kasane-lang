@@ -54,7 +54,7 @@ impl<'a> Vm<'a> {
         }
         let Some((p, user)) = last else { return };
         let entry = h.entry.clone();
-        let lo = kir_lower::lower_program(&p, &user, Some(&entry));
+        let lo = kir_lower::lower_program_lazy(&p, &user, &entry);
         let r = super::prepare(lo, &entry);
         self.flush();
         match r {

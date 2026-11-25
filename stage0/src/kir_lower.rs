@@ -177,7 +177,7 @@ impl TyIdx {
         if !self.inner.borrow_mut().done.insert(di) {
             return;
         }
-        if !((def.kw == "fn" && def.body.is_some()) || (def.kw == "const" && def.init.is_some())) {
+        if !((def.kw == "fn" && def.body.is_some()) || (def.kw == "test" && def.body.is_some()) || (def.kw == "const" && def.init.is_some())) {
             return;
         }
         let mut g = self.tk.borrow_mut();
@@ -746,7 +746,16 @@ impl<'a> Lw<'a> {
             l.borrow_mut().insert(f.key.clone(), FnLines { file: d.file.clone(), lines: std::mem::take(&mut self.line_of) });
         });
         let mut out = std::mem::take(&mut self.coll.extra);
-        out.insert(0, (f, self.callees));
+        // 関数ポインタ (`FnPtr`) の指す先も呼び先に数える (遅延の下ろしが引き込むため)。
+        let mut callees = self.callees;
+        for b in &f.blocks {
+            for i in &b.insts {
+                if let Op::FnPtr { callee } = &i.op {
+                    callees.insert(callee.clone());
+                }
+            }
+        }
+        out.insert(0, (f, callees));
         Ok(out)
     }
 
@@ -2204,6 +2213,16 @@ pub fn lower_program(p: &Program, user: &[usize], entry: Option<&str>) -> Lowere
     lower_defs(p, user, entry, None)
 }
 
+/// `lower_program` と同じ結果のうち、入口から呼ばれる先だけを下ろす (VM の `ksn run`。標準ライブラリの全関数を下ろさない。起動が数百 ms 速い)。
+pub fn lower_program_lazy(p: &Program, user: &[usize], entry: &str) -> Lowered {
+    lower_defs_with(p, user, Some(entry), None, true)
+}
+
+/// `lower_test` の遅延版 (VM の `ksn test`)。
+pub fn lower_test_lazy(p: &Program, user: &[usize], test_def: usize) -> Lowered {
+    lower_defs_with(p, user, Some(&p.defs[test_def].name), Some(test_def), true)
+}
+
 /// テストの入口が宣言として持つ効果 (`test` には uses の宣言がない)。`ksn check` は `test` の本体で効果を見ない
 /// (check.rs の `check_fn_sema` で `cur_uses = None`) ので、入口はこの全部の効果を持つ関数として下ろす。
 const ALL_EFFECTS: [&str; 9] = ["alloc", "env", "io.console", "io.fs", "io.net", "process", "rand", "thread", "time"];
@@ -2316,7 +2335,13 @@ fn lower_defs_with(p: &Program, user: &[usize], entry: Option<&str>, test_def: O
     let mut ext_bad: Vec<(String, String)> = vec![];
     crate::s5_meter::set_active(true);
     let mut tried: HashSet<usize> = HashSet::new();
-    let initial: &[usize] = if lazy { &first_user } else { user };
+    // 入口を指定した遅延の下ろし (VM の `ksn run` / `ksn test`) は、入口から呼ばれる先だけを下ろす。
+    let entry_only: Vec<usize> = match (lazy, test_def, entry) {
+        (true, Some(t), _) => vec![t],
+        (true, None, Some(e)) => p.funcs.get(e).copied().into_iter().collect(),
+        _ => vec![],
+    };
+    let initial: &[usize] = if !entry_only.is_empty() { &entry_only } else if lazy { &first_user } else { user };
     for &i in initial {
         let d = &p.defs[i];
         if !is_candidate(d) && test_def != Some(i) {
@@ -2363,6 +2388,34 @@ fn lower_defs_with(p: &Program, user: &[usize], entry: Option<&str>, test_def: O
         }
     };
     pull(&mut ok, &mut bad, &mut tried);
+    // 遅延のとき: `dyn` の呼び出しが登録されたトレイトのメソッドは、登録された具体型 (vtable の相手) の実装も下ろす
+    // (補助関数 `dyn.call.*` が呼ぶ。増えなくなるまで)。
+    if lazy {
+        loop {
+            let reg = aggs.borrow().dynr.clone();
+            let mut want: Vec<usize> = vec![];
+            for (tr, m) in reg.calls.keys() {
+                for ent in reg.vts.iter().filter(|v| v.tr == *tr) {
+                    if let Some(&di) = p.funcs.get(&format!("{}.{}", ent.concrete_name, m)) {
+                        if user.contains(&di) && is_candidate(&p.defs[di]) && tried.insert(di) {
+                            want.push(di);
+                        }
+                    }
+                }
+            }
+            if want.is_empty() {
+                break;
+            }
+            for di in want {
+                let d = &p.defs[di];
+                match Lw::new(p, &tys, &aggs, d).lower() {
+                    Ok(x) => ok.extend(x),
+                    Err(why) => bad.push((d.name.clone(), why)),
+                }
+            }
+            pull(&mut ok, &mut bad, &mut tried);
+        }
+    }
     crate::s5_meter::set_active(false);
     crate::vm::tick("ll_fns");
     // スレッドの補助の関数 (`ksn.thr.*`) は、全部の入口 (クロージャ) が揃ってから作る。
