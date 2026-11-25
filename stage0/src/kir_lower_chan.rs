@@ -62,6 +62,11 @@ fn ld(lw: &mut Lw, st: VId, off: u32) -> VId {
 }
 
 fn put(lw: &mut Lw, st: VId, off: u32, v: VId) {
+    if matches!(off, HEAD | LEN | SENDERS | RECEIVERS) {
+        // 待ちの前の回転がロックなしで読む欄: 原子的な release の書き込みにする (`kir_llvm.rs` の `ksn.chan.rt.st*`)。
+        rt_call(lw, &format!("ksn.chan.rt.st{off}"), vec![st, v], Ty::Unit);
+        return;
+    }
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: st, off, v });
 }
 
@@ -295,8 +300,8 @@ fn channel(lw: &mut Lw, e: &V, args: &[V], line: usize) -> LR<Option<VId>> {
         put(lw, st, off, z);
     }
     let one = us(lw, 1);
-    put(lw, st, SENDERS, one);
-    put(lw, st, RECEIVERS, one);
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: st, off: SENDERS, v: one });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: st, off: RECEIVERS, v: one });
     rt_call(lw, CINIT, vec![st], Ty::Unit);
     let tx = lw.emit(fields[0], Op::Make { variant: None, fields: vec![st] });
     let rx = lw.emit(fields[1], Op::Make { variant: None, fields: vec![st] });
@@ -490,6 +495,17 @@ pub(super) fn finish(ok: &mut Vec<(crate::kir::Func, std::collections::BTreeSet<
     // ロックと待ちの補助 (実行器では協調実行なので何もしない。ネイティブは `kir_llvm.rs` が本体に差し替える)。
     let all: Vec<String> = ["alloc", "env", "io.console", "io.fs", "io.net", "process", "rand", "thread", "time"].iter().map(|s| s.to_string()).collect();
     let wanted_rt: Vec<&str> = [CINIT, CLOCK, CUNLOCK, CUNLOCK1, CUNLOCKALL, CWAIT, CWAITS, CUNLOCKR].into_iter().filter(|n| called(n)).collect();
+    let want_st: Vec<u32> = [HEAD, LEN, SENDERS, RECEIVERS].into_iter().filter(|o| called(&format!("ksn.chan.rt.st{o}"))).collect();
+    for off in want_st {
+        let name = format!("ksn.chan.rt.st{off}");
+        let mut b = Fb::new(&[Ty::Ptr, Ty::Usize]);
+        b.store(Ty::Usize, 0, off as i128, 1);
+        let u = b.emit(Ty::Unit, Op::Const(0));
+        b.term(Term::Ret(u));
+        let mut f = b.build(&name, &[], Ty::Unit);
+        f.uses = all.clone();
+        ok.push((f, BTreeSet::new()));
+    }
     for name in wanted_rt {
         let mut b = Fb::new(&[Ty::Ptr]);
         let mut callees = BTreeSet::new();
