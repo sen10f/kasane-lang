@@ -105,6 +105,8 @@ pub(crate) struct CollCx {
     /// 固定長配列への参照のスロット → 要素数 N (`&[T; N]` / `&mut [T; N]` のパラメータと、
     /// アドレスを取られた配列の局所変数)。長さは型から分かるので定数として扱う。
     pub(crate) arr_len: BTreeMap<usize, u32>,
+    /// 要素がまた配列のスライス・配列のスロット (要素は `fat` で並ぶ。`&str` の要素と区別する)。
+    pub(crate) nested_arr: std::collections::BTreeSet<usize>,
     /// 文の終わりに寿命が尽きる一時値のヘッダ (借用検査の注釈 `scope.end` 用。設計_KIR.md 24 章)。
     pub(crate) temps: Vec<VId>,
     /// 追跡する局所変数 (名前, スロット番号) → 所有の注釈の識別子 (束縛の位置の unit 定数の値番号)。
@@ -268,6 +270,13 @@ pub(crate) fn bind_param_kind(lw: &mut Lw, name: &str, t: &Src) {
     if let (Some(s), Some(k)) = (lw.lookup(name), kind_of(lw, t)) {
         lw.coll.kinds.insert(s, k);
         lw.coll.borrowed.insert(s);
+        if let Src::Ref(_, i, _) = t {
+            if let Src::Slice(e) | Src::Array(e, _) = &**i {
+                if matches!(&**e, Src::Array(..)) {
+                    lw.coll.nested_arr.insert(s);
+                }
+            }
+        }
     }
 }
 
@@ -2792,7 +2801,7 @@ fn pick_elem(lw: &mut Lw, line: usize, slot: Option<usize>, kind: &Kind, h: VId,
     };
     let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
     // 要素がまた配列のとき、スロットは `fat` (`{ptr, len}`) で持つので、借用の番地はその `ptr` 欄にする。
-    let addr = if matches!(elem, Ty::Agg(ai) if lw.agg_def(ai).name == "fat") {
+    let addr = if slot.is_some_and(|s| lw.coll.nested_arr.contains(&s)) && matches!(elem, Ty::Agg(ai) if lw.agg_def(ai).name == "fat") {
         let fv = load_elem(lw, addr, elem);
         lw.emit(Ty::Ptr, Op::Field { a: fv, off: 0 })
     } else {
