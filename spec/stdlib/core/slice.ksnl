@@ -36,7 +36,7 @@ end core.slice.ct_eq
 
 fn core.slice.heap_s[T: core.cmp.Ord](s: &mut [T], lo: usize, hi: usize) -> () uses [] panics never
     let n = hi.wrapping_sub(lo)
-    let mut start = n / 2usize
+    let mut start = n.wrapping_shr(1u32)
     while start > 0usize {
         start = start.wrapping_sub(1usize)
         core.slice.sift_s(s, lo, start, n)
@@ -73,7 +73,7 @@ fn core.slice.insertion_s[T: core.cmp.Ord](s: &mut [T], from: usize, to: usize) 
     }
 end core.slice.insertion_s
 
-fn core.slice.intro_s[T: core.cmp.Ord](s: &mut [T], lo0: usize, hi0: usize, depth0: u32) -> () uses [] panics never
+fn core.slice.intro_s[T: core.cmp.Ord](s: &mut [T], lo0: usize, hi0: usize, depth0: u32) -> () uses [] panics never stack 512
     let mut lo = lo0
     let mut hi = hi0
     let mut depth = depth0
@@ -88,7 +88,7 @@ fn core.slice.intro_s[T: core.cmp.Ord](s: &mut [T], lo0: usize, hi0: usize, dept
         }
         depth = depth.wrapping_sub(1u32)
         let last = hi.wrapping_sub(1usize)
-        let mid = lo.wrapping_add(hi.wrapping_sub(lo) / 2usize)
+        let mid = lo.wrapping_add(hi.wrapping_sub(lo).wrapping_shr(1u32))
         if core.slice.lt_s(&*s, mid, lo) {
             core.slice.swap_s(s, mid, lo)
         }
@@ -265,7 +265,7 @@ fn core.slice.sort_scalar[T: core.cmp.Ord](self: &mut [T]) -> () uses [] panics 
     let mut depth = 0u32
     let mut k = n
     while k > 0usize {
-        k = k / 2usize
+        k = k.wrapping_shr(1u32)
         depth = depth.wrapping_add(2u32)
     }
     core.slice.intro_s(self, 0usize, n, depth)
@@ -279,7 +279,7 @@ end core.slice.sort_unstable
 
 fn core.slice.sort_unstable_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](self: &mut [T], compare: F) -> () uses [E] panics P pub
     let n = self.len()
-    let mut start = n / 2usize
+    let mut start = n.wrapping_shr(1u32)
     while start > 0usize {
         start = start.wrapping_sub(1usize)
         core.slice.sift_down_by(self, &compare, start, n)

@@ -651,22 +651,6 @@ fn std.http.has_bare_ctl(data: &[u8]) -> bool uses [] panics never
     false
 end std.http.has_bare_ctl
 
-fn std.http.has_bare_ctl(data: &[u8]) -> bool uses [] panics never
-    let len = data.len()
-    let mut i = 0usize
-    while i < len {
-        let b = std.http.byte_at(data, i)
-        if b == 0u8 {
-            return true
-        }
-        if b == b'\r' && !std.http.crlf_at(data, i) {
-            return true
-        }
-        i = i.saturating_add(1usize)
-    }
-    false
-end std.http.has_bare_ctl
-
 fn std.http.has_ctl(data: &[u8]) -> bool uses [] panics never
     let len = data.len()
     let mut i = 0usize
@@ -732,7 +716,6 @@ fn std.http.is_tchar(c: u8) -> bool uses [] panics never
 end std.http.is_tchar
 
 fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, std.http.Error> uses [alloc] panics never
-    // 行末は CRLF のみ (裸の LF / CR は request smuggling の元になる)。
     if std.http.has_bad_ctl(head) {
         return Err(std.http.Error.BadRequest)
     }
@@ -776,7 +759,6 @@ fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, st
                 Some(pair) => pair
                 None => return Err(std.http.Error.BadRequest)
             }
-            // 生の値（trim 前）に HTAB 以外の制御バイトを含めない（端の \x0c を escape させない）。
             std.http.check_header(key, raw_value)?
             let value = raw_value.trim()
             if key.eq_ignore_ascii_case("host") {
@@ -911,7 +893,6 @@ fn std.http.parse_response_head(head: &[u8]) -> Result<std.http.Response, std.ht
                 None => return Err(std.http.Error.BadRequest)
             }
             let value = raw_value.trim()
-            // 要求の解析と同じ検証 (is_tchar / check_header) を使う。
             std.http.check_header(key, value)?
             let name = std.string.String.from_str(key)?
             let text_value = std.string.String.from_str(value)?
@@ -968,12 +949,9 @@ fn std.http.reason(status: u16) -> &'static str uses [] panics never pub
 end std.http.reason
 
 fn std.http.render(status: u16, head: &str, body: &[u8], keep_alive: bool) -> Result<std.vec.Vec<u8>, std.http.Error> uses [alloc] panics never pub
-    // ステータスは HTTP の範囲 (100–599) に限る。
     if status < 100u16 || status > 599u16 {
         return Err(std.http.Error.BadRequest)
     }
-    // `head` の各見出し行を検証する。裸の LF / CR や CTL、トークン外の名前、
-    // render が自分で付ける Content-Length / Transfer-Encoding との衝突を拒む。
     for line in head.split("\r\n") {
         if line.is_empty() {
             continue
@@ -985,7 +963,6 @@ fn std.http.render(status: u16, head: &str, body: &[u8], keep_alive: bool) -> Re
         if key.eq_ignore_ascii_case("content-length") || key.eq_ignore_ascii_case("transfer-encoding") {
             return Err(std.http.Error.BadRequest)
         }
-        // 生の値（trim 前）に HTAB 以外の制御バイトを含めない。
         std.http.check_header(key, raw_value)?
     }
     let mut out = std.vec.Vec.new()
@@ -1091,7 +1068,6 @@ fn std.http.take_request(data: &[u8], max_head: usize, max_body: usize) -> Resul
     let head_end = match std.http.find_head_end(data) {
         Some(n) => n
         None => {
-            // 頭がまだ終わっていない。見た範囲に裸の LF / CR やその他の制御バイトがあれば誤り (RFC 9112)。
             if std.http.has_bad_ctl(data) {
                 return Err(std.http.Error.BadRequest)
             }

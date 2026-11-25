@@ -671,22 +671,6 @@ fn std.http.has_bare_ctl(data: &[u8]) -> bool uses [] panics never
     false
 end std.http.has_bare_ctl
 
-fn std.http.has_bare_ctl(data: &[u8]) -> bool uses [] panics never
-    let len = data.len()
-    let mut i = 0usize
-    while i < len {
-        let b = std.http.byte_at(data, i)
-        if b == 0u8 {
-            return true
-        }
-        if b == b'\r' && !std.http.crlf_at(data, i) {
-            return true
-        }
-        i = i.saturating_add(1usize)
-    }
-    false
-end std.http.has_bare_ctl
-
 fn std.http.has_ctl(data: &[u8]) -> bool uses [] panics never
     let len = data.len()
     let mut i = 0usize

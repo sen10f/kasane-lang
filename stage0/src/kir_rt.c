@@ -471,6 +471,24 @@ void *ksn_ext_resolve(const char *lib, const char *sym, void **slot) {
 #endif
 
 
+#if defined(__wasm__)
+/* wasm32 には libm が無い。LLVM は `llvm.minnum`/`maxnum` (`f64.min`/`max` は NaN の扱いが違う) を、
+ * 最適化の度合いや関数の印によって `fmin`/`fmax` の呼び出しに下ろすので、ここで IEEE の minNum/maxNum として定義する
+ * (片方が NaN なら他方。±0 は min が -0、max が +0)。 */
+double fmin(double a, double b) {
+    if (a != a) return b;
+    if (b != b) return a;
+    if (a == b) return __builtin_signbit(a) ? a : b;
+    return a < b ? a : b;
+}
+double fmax(double a, double b) {
+    if (a != a) return b;
+    if (b != b) return a;
+    if (a == b) return __builtin_signbit(a) ? b : a;
+    return a > b ? a : b;
+}
+#endif
+
 #if defined(__wasm__) && !defined(KSN_WASI)
 /* wasm には OS の乱数源が無い (WASI の random_get は未対応)。`sysrt.c` の `ksn_rt_sys_random` と同じ規約で、
  * 失敗 (ENOSYS = 38、ErrorKind の Other = 9) を返す。`std.rand.fill_secure` は Err になり、`Rng.from_entropy` は終了する。

@@ -7,6 +7,7 @@ changed fold flow_ref_field_borrow_inherits_loan#0
 changed fold hunt_a05_andmut_via_shared_ref_01#0
 changed fold hunt_a05_fnmut_call_through_shared_ref_01#0
 changed fold linear_array_len_discard#0
+changed fold o02__replace_vec_through_shared_dangling#0
 changed fold ref_of_ref_deref#0
 changed fold sec6_fnvalue_borrow#1
 changed fold sendbound_fn_value_let#0
@@ -41,8 +42,6 @@ hole fold borrow_mut_immutable_generic_result#0
 hole fold dangling_static_field#0
 hole fold dangling_via_let_struct#0
 hole fold escape_tuple_block_value#0
-hole fold flow_guard_temp_get#1
-hole fold flow_guard_temp_get_mut#1
 hole fold flow_region3_reborrow_index_store#1
 hole fold hunt_a13_assign_through_shared_ref_04#0
 hole fold hunt_a17_reserved_false_bind#0
@@ -60,8 +59,6 @@ hole fold return_local_tuple_tuple_let_ok#0
 hole fold return_local_tuple_tuple_let_some_bind#0
 hole fold return_local_tuple_via_wrap_fn#0
 hole fold sec6_fnvalue_genericvar_borrow#0
-hole fold temp_guard_get_len#0
-hole fold temp_guard_same_len#0
 hole fold temp_ref_str_len#0
 hole fold temp_ref_vec_len#0
 hole fold temp_string_same_len#0
