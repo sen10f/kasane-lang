@@ -27,6 +27,9 @@ pub struct Spec {
     /// 環境の編集 (`env` = Some(値)、`env_remove` = None)。`clear` の後に順に適用する。
     env: Vec<(String, Option<String>)>,
     clear: bool,
+    /// `env`/`env_remove` で不正な鍵・値 (空・`=` を含む鍵、NUL を含む鍵・値) が渡された。
+    /// `spawn`/`output` が `InvalidInput` で失敗する (O-07)。
+    bad: bool,
     dir: Option<String>,
     io: [Io; 3],
 }
@@ -110,7 +113,7 @@ impl Interp {
                 let program = str_of(&dr(args.first().unwrap_or(&Val::Unit))).unwrap_or_default();
                 let id = self.procs.next;
                 self.procs.next += 1;
-                self.procs.cmds.insert(id, Spec { program, args: vec![], env: vec![], clear: false, dir: None, io: [Io::Inherit; 3] });
+                self.procs.cmds.insert(id, Spec { program, args: vec![], env: vec![], clear: false, bad: false, dir: None, io: [Io::Inherit; 3] });
                 Ok(Val::Struct(Rc::new(StructV { ty: "std.process.Command".into(), f: RefCell::new(vec![("handle".into(), int(id, "i32"))]) })))
             }
             _ => panic(format!("unknown native {}", name)),
@@ -159,6 +162,7 @@ impl Interp {
             match name {
                 "spawn" | "output" => {
                     let Some(spec) = self.procs.cmds.remove(&id) else { return Ok(invalid()) };
+                    if spec.bad { return Ok(invalid()); }
                     let _ = std::io::Write::flush(&mut self.out);
                     let mut c = Self::build(&spec);
                     if name == "output" {
@@ -208,11 +212,27 @@ impl Interp {
             let Some(spec) = self.procs.cmds.get_mut(&id) else { return Ok(Val::Unit) };
             match name {
                 "arg" => spec.args.push(sarg(0)),
-                "env" => spec.env.push((sarg(0), Some(sarg(1)))),
-                "env_remove" => spec.env.push((sarg(0), None)),
+                "env" => {
+                    let k = sarg(0);
+                    let v = sarg(1);
+                    if k.is_empty() || k.contains('=') || k.contains('\0') || v.contains('\0') {
+                        spec.bad = true;
+                    } else {
+                        spec.env.push((k, Some(v)));
+                    }
+                }
+                "env_remove" => {
+                    let k = sarg(0);
+                    if k.is_empty() || k.contains('=') || k.contains('\0') {
+                        spec.bad = true;
+                    } else {
+                        spec.env.push((k, None));
+                    }
+                }
                 "env_clear" => {
                     spec.clear = true;
                     spec.env.clear();
+                    spec.bad = false;
                 }
                 "current_dir" => spec.dir = Some(sarg(0)),
                 "stdin_piped" => spec.io[0] = Io::Piped,

@@ -1969,6 +1969,7 @@ void ksn_rt_sys_proc_cmd(i32 id, i32 sel, const u8 *a, u64 an, const u8 *b, u64 
         x->set = sel == P_ENV;
         x->k = pdup(a, an, &c->bad);
         x->v = sel == P_ENV ? pdup(b, bn, &c->bad) : NULL;
+        if (x->k != NULL && (strlen(x->k) == 0 || memchr(x->k, '=', strlen(x->k)) != NULL)) c->bad = 1;
         break;
     }
     case P_ENV_CLEAR:

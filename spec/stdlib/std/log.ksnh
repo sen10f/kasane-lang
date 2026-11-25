@@ -2,7 +2,7 @@
 // 例: `std.log.info("started", &[("port", "8080"), ("mode", "dev")])?` は次の 1 行を書く (改行付き):
 //   {"ts":"2026-11-14T10:20:30.123456789Z","level":"info","msg":"started","port":"8080","mode":"dev"}
 // 時刻は UTC (`std.datetime` の RFC 3339。ナノ秒の小数は末尾の 0 を省く)。値はすべて JSON の文字列として書く
-// (数値への変換はしない)。フィールドのキーは `ts` `level` `msg` と重なっても検査しない (そのまま並ぶ)。
+// フィールドのキーが `ts` `level` `msg` と重なると `InvalidInput` になる。
 // 水準による絞り込みはしない (呼び出し側が選ぶ)。書けなかった (確保の失敗・標準エラーへの書き込みの失敗) ときは
 // `std.io.Error` を返す。確保の失敗は `OutOfMemory`。
 enum std.log.Level derive [Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord] pub
@@ -82,7 +82,21 @@ fn std.log.info(msg: &str, fields: &[(&str, &str)]) -> Result<(), std.io.Error> 
 end std.log.info
 
 // 1 行分の JSON (末尾に改行)。確保の失敗は `OutOfMemory` の `std.io.Error` に写す。
+// 欄の鍵が `ts` `level` `msg` と重なると `InvalidInput` になる。
 fn std.log.line(level: std.log.Level, msg: &str, fields: &[(&str, &str)]) -> Result<std.string.String, std.io.Error> uses [alloc, time] panics never pub
+    let mut i = 0usize
+    while i < fields.len() {
+        match fields.get(i) {
+            Some((key, _)) => if *key == "ts" || *key == "level" || *key == "msg" {
+                return Err(std.io.Error {
+                    kind: std.io.ErrorKind.InvalidInput
+                    code: 0i32
+                })
+            }
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
     match std.log.build_line(level, msg, fields) {
         Ok(text) => Ok(text)
         Err(_) => Err(std.log.oom())

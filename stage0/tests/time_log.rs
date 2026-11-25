@@ -253,6 +253,37 @@ end t.main
 }
 
 #[test]
+fn log_reserved_field_keys_are_rejected() {
+    // L-03: `ts`/`level`/`msg` を欄の鍵にすると `InvalidInput` (水準・時刻の偽装を防ぐ)。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, time] panics may
+    core.mem.drop(match std.log.info("started", &[("level", "error")]) {
+        Ok(()) => std.io.print_line("log: accepted")
+        Err(e) => {
+            core.check.eq(e.kind, std.io.ErrorKind.InvalidInput)
+            std.io.print_line("log: rejected")
+        }
+    })
+    core.mem.drop(match std.log.info("running", &[("port", "8080")]) {
+        Ok(()) => std.io.print_line("log: ok")
+        Err(_e) => std.io.print_line("log: failed")
+    })
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("log_reserved", src);
+    let r = run(&["run"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "log: rejected\nlog: ok\n");
+    for release in [false, true] {
+        let (bt, found, out) = build_native_strict(&format!("log_reserved_{}", release), src, release);
+        let p = found.unwrap_or_else(|| panic!("LLVM に下りない (release: {}): {}", release, out));
+        let o = Command::new(&p).current_dir(&bt.0).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout), "log: rejected\nlog: ok\n", "native 出力が異なる (release: {})", release);
+    }
+}
+
+#[test]
 fn system_time_and_date_time_now_are_in_range() {
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console, time] panics never
     let now = std.time.SystemTime.now()
