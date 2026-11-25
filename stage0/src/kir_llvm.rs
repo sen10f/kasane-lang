@@ -3660,11 +3660,21 @@ impl<'a> Fe<'a> {
         let ro = shared_ref_attrs_ok(f);
         // `&mut T` の `noalias`: 標準ライブラリの関数 (`split_at_mut` など、1 つの確保から 2 つの参照を作る unsafe を含みうる) には付けない。
         let mut_ok = ro && !(f.key.starts_with("std.") || f.key.starts_with("alloc.") || f.key.starts_with("core."));
+        let vrefs: Vec<u8> = {
+            let user = f.link.is_none() && !f.key.starts_with("std.") && !f.key.starts_with("alloc.") && !f.key.starts_with("core.") && !f.key.starts_with("ksn.") && f.ret != Ty::Ptr;
+            let v = if user { crate::kir::VEC_REFS.lock().unwrap().get(&f.key).cloned().unwrap_or_default() } else { vec![] };
+            // 生ポインタの引数 (印の無い `ptr`) や参照の引数が混じる関数、FFI・`core.ptr` を呼ぶ関数には付けない。
+            let plain = f.params().iter().enumerate().all(|(j, (_, t))| !matches!(t, Ty::Ptr | Ty::Ref(..)) || (*t == Ty::Ptr && v.get(j).copied().unwrap_or(0) != 0));
+            let calls_raw = f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(&i.op, Op::Call { callee, .. } if callee.starts_with("core.ptr") || callee.starts_with("std.ffi"))));
+            if plain && !calls_raw { v } else { vec![] }
+        };
         let params: Vec<String> = f
             .params()
             .iter()
             .enumerate()
             .map(|(j, (_, t))| match t {
+                Ty::Ptr if vrefs.get(j) == Some(&1) => format!("ptr noalias readonly nonnull %arg{}", j),
+                Ty::Ptr if vrefs.get(j) == Some(&2) => format!("ptr noalias nonnull %arg{}", j),
                 Ty::Ref(false, pt) if ro && !may_have_interior_mut(self.aggs, *pt) => match pointee_size(self.aggs, *pt) {
                     Some(n) => format!("ptr noalias readonly nonnull dereferenceable({}) %arg{}", n, j),
                     None => format!("ptr noalias readonly nonnull %arg{}", j),
