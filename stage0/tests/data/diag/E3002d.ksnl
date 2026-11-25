@@ -1,0 +1,17 @@
+type t.G
+    s: std.string.String
+end t.G
+
+impl core.ops.Drop for t.G
+fn t.G.drop(self: &mut t.G) -> () uses [] panics never impls core.ops.Drop
+    core.mem.drop(self.s.len())
+end t.G.drop
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let g = t.G {
+        s: std.string.String.new()
+    }
+    let s = g.s
+    core.mem.drop(s)
+    Ok(())
+end t.main

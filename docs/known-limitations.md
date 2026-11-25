@@ -24,6 +24,10 @@
 
 検査器は 1 つに一本化されました (`KSN_CHECKER=old|new|shadow` は非推奨で、同じ検査器が走ります)。
 
+## 手書きの `Drop` は実行されない
+
+手書きの `impl core.ops.Drop`（仕様 4.4）の `drop` は、現状は木走査（`ksn run`）でもネイティブでも、スコープの終わりなどで自動では呼ばれません（`実装計画.md` 4.2。`derive [Drop]` と標準の型の破棄は動きます）。`Drop` の本体の副作用（静的なカウンタへの加算など）に頼るコードは、ベータ版では期待どおりに動きません。資源の後始末は `with ... close` で明示してください。なお `Drop` を持つ型の欄を `let s = g.s` で取り出す形は E3002 で拒みます。
+
 ## 既知の検査の穴
 
 `stage0/tests/check_diag.rs` の `KNOWN_HOLES` は空（`const KNOWN_HOLES: &[&str] = &[]`）です。S4 統合（コミット `97178d39`）で旧い検査器は取り外され、`KNOWN_HOLES` への登録は残っていません（`KSN_CHECKER=old|new|shadow` も非推奨で、1 つの検査器だけが走ります）。通ってはいけないコードは `stage0/tests/data/unsound/` に1ファイル1ケースで置き、まだ塞げないものは `check_diag.rs` の `KNOWN_HOLES` に載せる慣習です。

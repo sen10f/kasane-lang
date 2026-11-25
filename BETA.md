@@ -111,6 +111,7 @@ ksn build --release
 - 中央パッケージレジストリと `ksn publish` はありません。依存は `kasane.toml` のローカルパスまたは Git URL + コミットハッシュで指定します。
 - `std.net` の非同期（`accept_async` / `read_async` / `write_async`）は Linux のみです。
 - ネイティブ生成に下ろせない機能（一部の `std.tls`・FFI など）はインタプリタ同梱バンドルに退避し、`ksn build --release` では E9040 で失敗します（`--release --allow-bundle` で退避を許可）。
+- 手書きの `impl core.ops.Drop` の `drop` は、まだ自動では呼ばれません（`ksn run`・ネイティブとも。`derive [Drop]` と標準の型の破棄は動く）。後始末は `with ... close` で明示してください。
 - `ksn fix` が自動修正できるのは一部の診断（E1108 / E1020 / E2041 / E2042）のみです。
 - `dyn` 型・クロージャの C 関数ポインタ渡し（`core.ffi.trampoline` が必要）など、一部は未対応または制限あり。
 
