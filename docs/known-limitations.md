@@ -14,7 +14,7 @@
 
 ## S4 の検査器移行
 
-S4（検査器を TAST（型付き AST）へ移し、KIR への下ろしを TAST から行う作業）は統合済みです（コミット `97178d39`）。`KSN_CHECKER` の既定は `s4`（新しい検査 TAST）。`KSN_CHECKER=old|new|shadow` は 1 リリースだけ受け付けますが、同じ検査器が走り非推奨の旨を出力します。旧い検査器は取り外され、`KNOWN_HOLES` は空です。
+S4（検査器を TAST（型付き AST）へ移し、KIR への下ろしを TAST から行う作業）は統合済みです（コミット `97178d39`）。`KSN_CHECKER` の既定は `s4`（新しい検査 TAST）。`KSN_CHECKER=old|new|shadow` は 1 リリースだけ受け付けますが、同じ検査器が走り非推奨の旨を出力します。旧い検査器は取り外されました。
 
 通ってはいけないコードは `stage0/tests/data/unsound/` に 1 ファイル 1 ケースで置き、まだ塞げないものは `stage0/tests/check_diag.rs` の `KNOWN_HOLES` に載せる慣習です。
 
@@ -24,7 +24,7 @@ S4（検査器を TAST（型付き AST）へ移し、KIR への下ろしを TAST
 
 ## 既知の検査の穴
 
-`stage0/tests/check_diag.rs` の `KNOWN_HOLES` は空（`const KNOWN_HOLES: &[&str] = &[]`）です。S4 統合（コミット `97178d39`）で旧い検査器は取り外され、`KNOWN_HOLES` への登録は残っていません（`KSN_CHECKER=old|new|shadow` も非推奨で、1 つの検査器だけが走ります）。通ってはいけないコードは `stage0/tests/data/unsound/` に1ファイル1ケースで置き、まだ塞げないものは `check_diag.rs` の `KNOWN_HOLES` に載せる慣習です。
+通ってはいけないコードは `stage0/tests/data/unsound/` に 1 ファイル 1 ケースで置き、まだ塞げないものは `stage0/tests/check_diag.rs` の `KNOWN_HOLES` に載せる慣習です（`KSN_CHECKER=old|new|shadow` も非推奨で、1 つの検査器だけが走ります）。
 
 ## インタプリタへの退避
 

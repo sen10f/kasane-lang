@@ -55,11 +55,15 @@ r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'test_harn
 step('bench/test_harness.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
 
 # 3c. ドキュメント内の ksnl ブロックが ksn check / fmt --check を通ること (docs/m4-examples)。
-#     事前に検証済みのビルド済み ksn を使う (stage0 のビルドとは別)。
-r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'doc_examples.py')],
-                   capture_output=True, text=True, encoding='utf-8', errors='replace',
-                   env=dict(os.environ, KSN='/home/kasane/kasane-verify/bin/current/ksn',
-                            KSN_CACHE_DIR='/home/kasane/coord_tmp/m4docs_cache'))
+#     ステージ0 でビルドした ksn を使う。キャッシュは一時ディレクトリ。
+_ksn = os.path.join(ROOT, 'stage0', 'target', 'release', 'ksn' + ('.exe' if os.name == 'nt' else ''))
+_cache3c = tempfile.mkdtemp(prefix='doc_examples_cache_')
+try:
+    r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'doc_examples.py')],
+                       capture_output=True, text=True, encoding='utf-8', errors='replace',
+                       env=dict(os.environ, KSN=_ksn, KSN_CACHE_DIR=_cache3c))
+finally:
+    shutil.rmtree(_cache3c, ignore_errors=True)
 step('docs: ksn check on doc examples', r.returncode == 0, (r.stdout + r.stderr)[-1500:])
 
 # 10. ネイティブになった割合 (速い段。cargo test より先に回す、2026-11-23)。
