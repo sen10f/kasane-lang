@@ -7,7 +7,7 @@ Kasane は「LLM が書き、機械が検証する、契約重視のシステム
 ## 2. 動作要件
 
 - ホスト OS: Linux（x86_64）。macOS は未対応です。Windows ホストでの開発も未対応ですが、Linux から Windows 向けへのクロスコンパイルは可能です。
-- このバイナリ版 (`ksn-<版>-x86_64-linux-gnu.tar.gz`): glibc 2.31 以上の x86_64 Linux で動きます (Debian 12・Debian 13・Arch の現行・Ubuntu 20.04 以降で確認する対象)。LLVM とリンカ (lld) は実行体に入っているので、clang・ld・LLVM は要りません。共有ライブラリは glibc の `libc` / `libm` / `libpthread` / `libdl` だけです。
+- このバイナリ版 (`ksn-<版>-x86_64-linux-gnu.tar.gz`): glibc 2.36 以上の x86_64 Linux で動きます (Debian 12・Debian 13・Arch の現行で確認する対象)。LLVM とリンカ (lld) は実行体に入っているので、clang・ld・LLVM は要りません。共有ライブラリは glibc の `libc` / `libm` / `libpthread` / `libdl` だけです。
 - `ksn build` (ネイティブ生成) が使う、利用者のマシン側の C の開発ファイル (crt 目的ファイルと libgcc):
   - Debian / Ubuntu: `sudo apt install libc6-dev libgcc-12-dev` (Debian 12。Debian 13 は `libgcc-14-dev`。`gcc` を入れれば一式入ります)
   - Arch: `sudo pacman -S gcc glibc` (`gcc` が `/usr/lib/gcc/x86_64-pc-linux-gnu/<版>/` の crtbeginS.o・libgcc を持ちます)
@@ -108,7 +108,7 @@ ksn build --release
 - macOS でのホスト実行・ビルドは未対応。Windows ホストでの開発も未対応（Linux からのクロスビルドは可能）。
 - 配布物は x86_64 Linux（Arch、Debian 12 以降）だけです。ライセンスは MIT または Apache-2.0（`LICENSE-MIT` / `LICENSE-APACHE`、同梱の LLVM などは `THIRD_PARTY_LICENSES`）。
 - 検査器（`ksn check`）は、通ってはいけないコードを拒むことを目指していますが、穴探しでまだ穴が見つかり続けています（直したものは `stage0/tests/data/unsound/` にあります）。安全性が要るコードでは、ネイティブのビルドを ASan などでも確かめてください。おかしな受理を見つけたら、ぜひ知らせてください。
-- 中央パッケージレジストリと `ksn publish` はありません。依存は `kasane.toml` のローカルパスまたは Git URL + コミットハッシュで指定します。
+- 中央の公共パッケージレジストリはありません。`ksn publish --registry <URL>` でレジストリ（またはパス）へ公開できます。依存は `kasane.toml` のローカルパスまたは Git URL + コミットハッシュで指定します。
 - `std.net` の非同期（`accept_async` / `read_async` / `write_async`）は Linux のみです。
 - ネイティブ生成に下ろせない機能（一部の `std.tls`・FFI など）はインタプリタ同梱バンドルに退避し、`ksn build --release` では E9040 で失敗します（`--release --allow-bundle` で退避を許可）。
 - 手書きの `impl core.ops.Drop` の `drop` は、まだ自動では呼ばれません（`ksn run`・ネイティブとも。`derive [Drop]` と標準の型の破棄は動く）。後始末は `with ... close` で明示してください。

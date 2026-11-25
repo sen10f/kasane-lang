@@ -54,6 +54,14 @@ r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'test_harn
                    capture_output=True, text=True, encoding='utf-8', errors='replace')
 step('bench/test_harness.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
 
+# 3c. ドキュメント内の ksnl ブロックが ksn check / fmt --check を通ること (docs/m4-examples)。
+#     事前に検証済みのビルド済み ksn を使う (stage0 のビルドとは別)。
+r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'doc_examples.py')],
+                   capture_output=True, text=True, encoding='utf-8', errors='replace',
+                   env=dict(os.environ, KSN='/home/kasane/kasane-verify/bin/current/ksn',
+                            KSN_CACHE_DIR='/home/kasane/coord_tmp/m4docs_cache'))
+step('docs: ksn check on doc examples', r.returncode == 0, (r.stdout + r.stderr)[-1500:])
+
 # 10. ネイティブになった割合 (速い段。cargo test より先に回す、2026-11-23)。
 r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'native_ratio.py')],
                    capture_output=True, text=True, encoding='utf-8', errors='replace')

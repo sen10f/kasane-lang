@@ -23,20 +23,20 @@
 **正しいプログラム** (`docs/borrow_rules/K1_ok.ksnl`):
 
 ```
-fn t.pair[T: core.ops.Copy](x: T) -> (T, T) uses [] panics never
-    (x, x)
-end t.pair
-
 fn t.main() -> () uses [] panics never
     core.mem.drop(t.pair(7u32))
 end t.main
+
+fn t.pair[T: core.ops.Copy](x: T) -> (T, T) uses [] panics never
+    (x, x)
+end t.pair
 ```
 
 `7u32` は `Copy` なので `x` を二回使える。
 
 **却下されるプログラム** (`docs/borrow_rules/K1_ng.ksnl`):
 
-```
+```ksnl fragment
 fn t.main() -> () uses [] panics never
     let s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s)
@@ -46,7 +46,7 @@ end t.main
 
 `String` は非 `Copy`（非線形）なので、`core.mem.drop(s)` で所有が移った後の二度目の `core.mem.drop(s)` は `ksn check` で：
 
-```
+```ksnl fragment
 E3002: use of moved value `s` (moved at line 3)
 ```
 
@@ -68,26 +68,30 @@ type t.L linear pub
 end t.L
 
 fn t.eat(l: t.L) -> () uses [] panics never
-    let t.L { v: v } = l
+    let t.L {
+        v: v
+    } = l
     core.mem.drop(v)
 end t.eat
+
+fn t.main() -> () uses [] panics never
+    let l = t.L {
+        v: 1u32
+    }
+    core.mem.drop(t.peek(&l))
+    t.eat(l)
+end t.main
 
 fn t.peek(l: &t.L) -> u32 uses [] panics never
     l.v
 end t.peek
-
-fn t.main() -> () uses [] panics never
-    let l = t.L { v: 1u32 }
-    core.mem.drop(t.peek(&l))
-    t.eat(l)
-end t.main
 ```
 
 `peek` で借用してから `eat` で消費し、全経路で 1 回ずつ処理される。
 
 **却下されるプログラム** (`docs/borrow_rules/K2_ng.ksnl`):
 
-```
+```ksnl fragment
 type t.L linear pub
     v: u32
 end t.L
@@ -104,7 +108,7 @@ end t.main
 
 `l` は借用のみで消費されずにスコープを抜けるため、`ksn check` で：
 
-```
+```ksnl fragment
 E3003: linear value `l` is never consumed when its scope ends
 ```
 
@@ -122,7 +126,7 @@ E3003: linear value `l` is never consumed when its scope ends
 
 ```
 fn t.main() -> () uses [] panics never
-    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let s = std.string.String.new()
     let n = s.len()
     core.mem.drop(n)
     core.mem.drop(s)
@@ -133,7 +137,7 @@ end t.main
 
 **却下されるプログラム** (`docs/borrow_rules/K3_ng.ksnl`):
 
-```
+```ksnl fragment
 fn t.main() -> () uses [] panics never
     let s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s)
@@ -144,7 +148,7 @@ end t.main
 
 `core.mem.drop(s)` の後の `s.len()` は移動済みの `s` に触れるため、`ksn check` で：
 
-```
+```ksnl fragment
 E3002: use of moved value `s` (moved at line 3)
 ```
 
@@ -165,6 +169,15 @@ type t.Parser
     pos: usize
 end t.Parser
 
+fn t.main() -> () uses [] panics never
+    let src = [72u8, 105u8]
+    let mut p = t.Parser {
+        pos: 0usize
+    }
+    let b = t.next(&mut p, &src)
+    core.mem.drop(b)
+end t.main
+
 fn t.next(p: &mut t.Parser, src: &[u8]) -> Option<u8> uses [] panics never
     match src.get(p.pos) {
         Some(b) => {
@@ -174,20 +187,13 @@ fn t.next(p: &mut t.Parser, src: &[u8]) -> Option<u8> uses [] panics never
         None => None
     }
 end t.next
-
-fn t.main() -> () uses [] panics never
-    let src = [72u8, 105u8]
-    let mut p = t.Parser { pos: 0usize }
-    let b = t.next(&mut p, &src)
-    core.mem.drop(b)
-end t.main
 ```
 
 参照を欄に持たず、`pos`（添字）だけを持ち、元データ `src` を毎回引数で渡す。`alloc.arena.Handle<T>` も同じ方針（インデックスベース）である。
 
 **却下されるプログラム** (`docs/borrow_rules/K4_ng.ksnl`):
 
-```
+```ksnl fragment
 type t.H['a]
     r: &'a alloc.string.String
 end t.H
@@ -198,7 +204,7 @@ end t.main
 
 `type` にライフタイム引付きで、欄が `&'a String` なので、`ksn check` で（2 件とも E3060）：
 
-```
+```ksnl fragment
 E3060: t.H: a type cannot declare a lifetime parameter (references are second-class values); hold a position index and pass the source data as an argument instead
 E3060: t.H: a field or variant payload cannot hold a reference (references are second-class values); hold an index or an owned value, and pass the source data as an argument
 ```
@@ -235,7 +241,7 @@ end t.main
 
 **却下されるプログラム** (`docs/borrow_rules/K5_ng.ksnl`):
 
-```
+```ksnl fragment
 fn t.a_two(a: &mut u32, b: &mut u32) -> () uses [] panics never
     *a = 1u32
     *b = 2u32
@@ -254,7 +260,7 @@ end t.main
 
 同じ `x` に二つの `&mut` を渡すため、`ksn check` で：
 
-```
+```ksnl fragment
 E3010: cannot use `x` while it is mutably borrowed by an earlier operand of the same expression
 ```
 
@@ -272,11 +278,11 @@ E3010: cannot use `x` while it is mutably borrowed by an earlier operand of the 
 
 ```
 type t.S
-    name: alloc.string.String
-    other: alloc.string.String
+    name: std.string.String
+    other: std.string.String
 end t.S
 
-fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
+fn t.consume(s: std.string.String) -> () uses [io.console] panics never
     core.mem.drop(std.io.print_line(s.as_str()))
     core.mem.drop(s)
 end t.consume
@@ -289,17 +295,20 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
     Ok(())
 end t.main
 
-fn t.mks() -> t.S uses [alloc] panics never
-    t.S { name: t.mk(), other: t.mk() }
-end t.mks
-
-fn t.mk() -> alloc.string.String uses [alloc] panics never
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+fn t.mk() -> std.string.String uses [alloc] panics never
+    let mut s = std.string.String.new()
     core.mem.drop(s.push_str("hello, this is a long heap string"))
     s
 end t.mk
 
-fn t.peek(s: &alloc.string.String) -> usize uses [io.console] panics never
+fn t.mks() -> t.S uses [alloc] panics never
+    t.S {
+        name: t.mk()
+        other: t.mk()
+    }
+end t.mks
+
+fn t.peek(s: &std.string.String) -> usize uses [io.console] panics never
     core.mem.drop(std.io.print_line(s.as_str()))
     s.len()
 end t.peek
@@ -309,7 +318,7 @@ end t.peek
 
 **却下されるプログラム** (`docs/borrow_rules/K6_ng.ksnl`):
 
-```
+```ksnl fragment
 fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
     core.mem.drop(std.io.print_line(s.as_str()))
     core.mem.drop(s)
@@ -336,7 +345,7 @@ end t.peek
 
 `r = &s` の後に `t.consume(s)` で `s` を move してしまい、その後 `r` を使うため、`ksn check` で：
 
-```
+```ksnl fragment
 E3010: cannot move `s` while it is borrowed by `r`
 ```
 
@@ -362,7 +371,9 @@ fn t.S.get(self: &t.S) -> &u32 uses [] panics never
 end t.S.get
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let s = t.S { v: 1u32 }
+    let s = t.S {
+        v: 1u32
+    }
     core.mem.drop(*s.get())
     Ok(())
 end t.main
@@ -372,7 +383,7 @@ end t.main
 
 **却下されるプログラム** (`docs/borrow_rules/K7_ng.ksnl`):
 
-```
+```ksnl fragment
 fn t.bad(x: &u32) -> &u32 uses [] panics never
     &((*x).wrapping_add(1u32))
 end t.bad
@@ -386,7 +397,7 @@ end t.main
 
 `(*x).wrapping_add(1u32)` は式の評価で生じる一時値であり、その参照を返すと一時値が文末で破棄された後に dangling となるため、`ksn check` で：
 
-```
+```ksnl fragment
 E3030: returns a reference to a temporary value, which does not live long enough
 ```
 
@@ -428,8 +439,14 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let pair = (1u32, 2u32)
     let (a, b) = &pair
     core.mem.drop(a.wrapping_add(*b))
-    let pt = t.Pt { x: 1u32, y: 2u32 }
-    let t.Pt { x: px, y: py } = &pt
+    let pt = t.Pt {
+        x: 1u32
+        y: 2u32
+    }
+    let t.Pt {
+        x: px
+        y: py
+    } = &pt
     core.mem.drop(px.wrapping_add(*py))
     let nested = Some((1u32, 2u32))
     if let Some((c, d)) = &nested {
@@ -446,7 +463,7 @@ end t.rd
 
 **却下されるプログラム** (`docs/borrow_rules/K8_ng.ksnl`):
 
-```
+```ksnl fragment
 type t.S
     v: alloc.string.String
 end t.S
@@ -465,7 +482,7 @@ end t.main
 
 `match &s { t.S { v: v } => .. }` では `v: &alloc.string.String` であり、`*v` は共有参照の背後からの移動になるため、`ksn check` で：
 
-```
+```ksnl fragment
 E3002: cannot move out of `*v`: it is behind a reference and its type is not Copy; borrow it with `&*v` or call `.clone()`
 ```
 
@@ -502,7 +519,7 @@ end t.main
 
 **却下されるプログラム** (`docs/borrow_rules/K9_ng.ksnl`):
 
-```
+```ksnl fragment
 type t.S
     n: u32
 end t.S
@@ -523,7 +540,7 @@ end t.main
 
 `capture [move s]` で `s` の所有がクロージャへ移り、その後の `s.n` は移動済みの `s` に触れるため、`ksn check` で：
 
-```
+```ksnl fragment
 E3002: use of moved value `s.n` (moved `s` at line 7)
 ```
 
@@ -540,10 +557,6 @@ E3002: use of moved value `s.n` (moved `s` at line 7)
 **正しいプログラム** (`docs/borrow_rules/K10_ok.ksnl`):
 
 ```
-fn t.worker() -> u32 uses [] panics never
-    40u32.wrapping_add(2u32)
-end t.worker
-
 fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
     let spawned = std.thread.spawn(
         std.alloc.SYSTEM,
@@ -559,13 +572,17 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
     core.check.eq(answer, 42u32)
     Ok(())
 end t.main
+
+fn t.worker() -> u32 uses [] panics never
+    40u32.wrapping_add(2u32)
+end t.worker
 ```
 
 `capture []` で外側の局所変数を取り込まず、`'static` な関数 `t.worker` だけを呼ぶ。
 
 **却下されるプログラム** (`docs/borrow_rules/K10_ng.ksnl`):
 
-```
+```ksnl fragment
 fn t.go[F: core.marker.Send + core.ops.FnOnce<(), usize, E, P> + 'static, E: uses, P: panics](f: F) -> Result<std.thread.JoinHandle<usize, std.alloc.System>, std.thread.SpawnError> uses [alloc, thread, E] panics P
     std.thread.spawn(std.alloc.SYSTEM, f)
 end t.go
@@ -593,7 +610,7 @@ end t.main
 
 `capture [&s]` でローカル `s` の借用を取り込んだが、`s` は `'static` ではないため、`ksn check` で：
 
-```
+```ksnl fragment
 E2037: the argument `f` of `t.go` (a `'static` bound) must be 'static, but the value may hold a borrow of a local (5.5)
 ```
 
@@ -623,7 +640,7 @@ end t.main
 
 **却下されるプログラム** (`docs/borrow_rules/K11_ng.ksnl`):
 
-```
+```ksnl fragment
 fn t.main() -> () uses [suspend] panics never
     let mut x = 1u32
     let r = &mut x
@@ -634,7 +651,7 @@ end t.main
 
 `yield_now()`（中断点）の後で `r`（`x` の借用）を使用するため、`ksn check` で：
 
-```
+```ksnl fragment
 E3050: cannot hold a borrow of `x` across a suspension point: `r` is used after the call that may suspend
 ```
 
@@ -668,7 +685,7 @@ end t.sum
 
 **却下されるプログラム** (`docs/borrow_rules/K12_ng.ksnl`):
 
-```
+```ksnl fragment
 fn t.main() -> () uses [] panics never
     let f = fn() -> () capture [] {
         t.say()
@@ -683,7 +700,7 @@ end t.say
 
 `t.say()` は `io.console` 効果を持つが、`t.main` は `uses []` と宣言しているため、`ksn check` で：
 
-```
+```ksnl fragment
 E4001: f uses effect `io.console` not declared by the caller
 ```
 
@@ -709,7 +726,7 @@ end t.main
 
 **却下されるプログラム** (`docs/borrow_rules/K13_ng.ksnl`):
 
-```
+```ksnl fragment
 extern t.getpid() -> i32 link "getpid"
 
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
@@ -719,7 +736,7 @@ end t.main
 
 `extern` 宣言が `[unsafe] modules` に列挙されていないモジュールにあるため、`ksn check` で：
 
-```
+```ksnl fragment
 E5001: extern function `t.getpid` (FFI) is only allowed in modules listed in [unsafe] modules
 ```
 
@@ -735,7 +752,7 @@ E5001: extern function `t.getpid` (FFI) is only allowed in modules listed in [un
 
 **正しいプログラム** (`docs/borrow_rules/K14_ok.ksnl`):
 
-```
+```ksnl fragment
 extern t.getpid() -> i32 link "getpid"
 
 fn t.main() -> i32 uses [] panics never
@@ -749,7 +766,7 @@ end t.main
 
 **却下されるプログラム** (`docs/borrow_rules/K14_ng.ksnl`):
 
-```
+```ksnl fragment
 extern t.getpid() -> i32 link "getpid"
 
 fn t.main() -> () uses [] panics never
@@ -760,7 +777,7 @@ end t.main
 
 `t.getpid` を値として束縛しようとしているため、`ksn check` で：
 
-```
+```ksnl fragment
 E5003: the external or raw-pointer function `t.getpid` cannot be used as a value (it can only be called directly, e.g. `t.getpid(..)`)
 ```
 
@@ -776,7 +793,7 @@ E5003: the external or raw-pointer function `t.getpid` cannot be used as a value
 
 **正しいプログラム** (`docs/borrow_rules/K15_ok.ksnl`):
 
-```
+```ksnl fragment
 enum t.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
     Io(std.io.Error)
     Alloc(alloc.alloc.AllocError)
@@ -793,7 +810,7 @@ end t.main
 
 **却下されるプログラム** (`docs/borrow_rules/K15_ng.ksnl`):
 
-```
+```ksnl fragment
 type t.Res linear
     id: u32
     tag: u32
@@ -818,7 +835,7 @@ end t.main
 
 `with` 本体で `r.shut()` とし `r` を move しているが、`close` 式 `r.shut()` が `r` を消費するため、`ksn check` で：
 
-```
+```ksnl fragment
 E3040: `r` cannot be moved or reassigned in the `with` body; the `close` expression consumes it (4.4)
 ```
 
@@ -836,14 +853,14 @@ E3040: `r` cannot be moved or reassigned in the `with` body; the `close` express
 
 ```
 fn t.main() -> () uses [] panics never
-    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let s = std.string.String.new()
     core.mem.drop(s)
 end t.main
 ```
 
 **却下されるプログラム** (`docs/borrow_rules/K16_ng.ksnl`):
 
-```
+```ksnl fragment
 type t.L derive [Copy] linear pub
     v: u32
 end t.L
@@ -854,7 +871,7 @@ end t.main
 
 `linear` 型に `derive [Copy]` を付けているため、`ksn check` で：
 
-```
+```ksnl fragment
 E2032: linear type t.L must not derive Copy
 ```
 
@@ -866,7 +883,7 @@ E2032: linear type t.L must not derive Copy
 
 `docs/borrow_rules/check.py` は Python 3 標準ライブラリのみを使用し、`python3 -I check.py` で動く。各 `<rule>_{ok,ng}.ksnl` に対して一時パッケージ（`kasane.toml` / `kasane.lock` / `src/t.ksnl`）を組み、`ksn check --json` を実行して、`.expect` の 1 行目（`ok` または診断コード）と一致するかをアサートする。K14（`unsafe` モジュールが必要）の場合は `.expect` の 2 行目に `unsafe` を置き、そのパッケージに `[unsafe] modules = ["t"]` を追加する。
 
-```
+```bash
 python3 -I check.py
 ```
 
