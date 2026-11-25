@@ -1320,6 +1320,28 @@ impl<'a> Vm<'a> {
                 Ins::FsRead { d, fd, buf, len } => {
                     use std::io::Read;
                     let (fd, p, n) = (r!(*fd) as i32 as i128, r!(*buf), r!(*len) as usize);
+                    if fd == 0 {
+                        // 記述子 0 は標準入力 (出力を先に流す。kir_exec と同じ)。
+                        self.flush();
+                        let mut tmp = vec![0u8; n];
+                        let res = loop {
+                            match std::io::stdin().lock().read(&mut tmp) {
+                                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                                r => break r,
+                            }
+                        };
+                        match res {
+                            Ok(nr) => {
+                                if nr > 0 {
+                                    unsafe { std::ptr::copy_nonoverlapping(tmp.as_ptr(), addr(p, nr)?, nr) };
+                                }
+                                w!(*d, 0);
+                                w!(*d + 1, nr as u64);
+                            }
+                            Err(e) => fs_err(rp, &prog.aggs, *d, &e)?,
+                        }
+                        continue;
+                    }
                     let Some(f) = self.files.get_mut(&fd) else { return Err(format!("無効なファイル記述子 {}", fd)) };
                     let mut tmp = vec![0u8; n];
                     // 中断 (EINTR) は読み直す (kir_exec と同じ)。
@@ -1345,7 +1367,11 @@ impl<'a> Vm<'a> {
                     let (fd, p, n) = (r!(*fd) as i32 as i128, r!(*buf), r!(*len) as usize);
                     let bytes: &[u8] = if n == 0 { &[] } else { unsafe { std::slice::from_raw_parts(addr(p, n)? as *const u8, n) } };
                     // 記述子 2 は標準エラー (`std.io.write_stderr`、kir_exec と同じ)。それ以外は開いているファイルだけ。
-                    if fd == 2 {
+                    if fd == 1 {
+                        let _ = self.out_write(1, bytes);
+                        w!(*d, 0);
+                        w!(*d + 1, n as u64);
+                    } else if fd == 2 {
                         self.err_write(bytes);
                         w!(*d, 0);
                         w!(*d + 1, n as u64);
@@ -1515,6 +1541,8 @@ impl<'a> Vm<'a> {
                     unit(rp, d);
                 }
                 P::Spawn => {
+                    // 子が継承した標準出力へ書く前に、ためた出力を流す (順序を保つ)。
+                    self.flush();
                     let Some(mut c) = self.cmds.remove(&h(a[0])) else { return Err("無効な Command の記述子".into()) };
                     match c.spawn() {
                         Ok(mut ch) => {

@@ -177,7 +177,7 @@ impl TyIdx {
         if !self.inner.borrow_mut().done.insert(di) {
             return;
         }
-        if !((def.kw == "fn" && def.body.is_some()) || (def.kw == "const" && def.init.is_some())) {
+        if !((def.kw == "fn" && def.body.is_some()) || (def.kw == "test" && def.body.is_some()) || (def.kw == "const" && def.init.is_some())) {
             return;
         }
         let mut g = self.tk.borrow_mut();

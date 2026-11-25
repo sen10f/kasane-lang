@@ -52,6 +52,10 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
     let m = lo.module.reachable_from(&[entry, kir_lower::debug::ENTRY_DEBUG]);
     tick("reachable");
     // `std.task.block_on_threads` は複数のワーカーで走る意味 (`spawn_local` の禁止など) を持つので、VM では走らせない (木走査へ退避する)。
+    // `std.tls` (OpenSSL) は実際の記述子を要るが、VM のソケットは仮想の記述子なので走らせない。
+    if m.funcs.iter().any(|f| f.link.as_deref().map_or(false, |l| l.starts_with("libssl.so") || l.starts_with("libcrypto.so"))) {
+        return Err("std.tls は VM 未対応".into());
+    }
     if m.find("ksn.task.mt_begin").is_some() {
         return Err("std.task.block_on_threads は VM 未対応".into());
     }
