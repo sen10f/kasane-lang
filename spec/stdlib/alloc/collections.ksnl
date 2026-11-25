@@ -2,6 +2,23 @@ fn alloc.collections.BtreeMap.contains_key[K: core.cmp.Ord, V, A: alloc.alloc.Al
     self.find(key) != core.num.usize.MAX
 end alloc.collections.BtreeMap.contains_key
 
+fn alloc.collections.BtreeMap.edge[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &alloc.collections.BtreeMap<K, V, A>, i: usize, which: u32) -> usize uses [] panics never
+    match self.nodes.get(i) {
+        Some(node) => if which == 0u32 {
+            node.left
+        } else if which == 1u32 {
+            node.right
+        } else if which == 2u32 {
+            node.parent
+        } else if which == 3u32 {
+            node.prev
+        } else {
+            node.next
+        }
+        None => core.num.usize.MAX
+    }
+end alloc.collections.BtreeMap.edge
+
 fn alloc.collections.BtreeMap.find[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &alloc.collections.BtreeMap<K, V, A>, key: &K) -> usize uses [] panics never
     let nil = core.num.usize.MAX
     let mut cur = self.root
@@ -15,11 +32,11 @@ fn alloc.collections.BtreeMap.find[K: core.cmp.Ord, V, A: alloc.alloc.Allocator]
         }
         match ord {
             core.cmp.Ordering.Less => {
-                cur = self.link(cur, 1u32)
+                cur = self.edge(cur, 1u32)
             }
             core.cmp.Ordering.Equal => return cur
             core.cmp.Ordering.Greater => {
-                cur = self.link(cur, 0u32)
+                cur = self.edge(cur, 0u32)
             }
         }
     }
@@ -71,7 +88,7 @@ fn alloc.collections.BtreeMap.insert[K: core.cmp.Ord, V, A: alloc.alloc.Allocato
             core.cmp.Ordering.Less => {
                 par = cur
                 went_left = false
-                cur = self.link(cur, 1u32)
+                cur = self.edge(cur, 1u32)
             }
             core.cmp.Ordering.Equal => match self.nodes.get_mut(cur) {
                 Some(node) => {
@@ -86,7 +103,7 @@ fn alloc.collections.BtreeMap.insert[K: core.cmp.Ord, V, A: alloc.alloc.Allocato
             core.cmp.Ordering.Greater => {
                 par = cur
                 went_left = true
-                cur = self.link(cur, 0u32)
+                cur = self.edge(cur, 0u32)
             }
         }
     }
@@ -96,10 +113,10 @@ fn alloc.collections.BtreeMap.insert[K: core.cmp.Ord, V, A: alloc.alloc.Allocato
     if par != nil {
         if went_left {
             after = par
-            before = self.link(par, 3u32)
+            before = self.edge(par, 3u32)
         } else {
             before = par
-            after = self.link(par, 4u32)
+            after = self.edge(par, 4u32)
         }
     }
     let mut state = self.seed
@@ -157,7 +174,7 @@ fn alloc.collections.BtreeMap.insert[K: core.cmp.Ord, V, A: alloc.alloc.Allocato
     }
     while par != nil && self.prio(fresh_index) > self.prio(par) {
         self.rotate_up(fresh_index)
-        par = self.link(fresh_index, 2u32)
+        par = self.edge(fresh_index, 2u32)
     }
     Ok(None)
 end alloc.collections.BtreeMap.insert
@@ -189,23 +206,6 @@ fn alloc.collections.BtreeMap.len[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](
     self.nodes.len()
 end alloc.collections.BtreeMap.len
 
-fn alloc.collections.BtreeMap.link[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &alloc.collections.BtreeMap<K, V, A>, i: usize, which: u32) -> usize uses [] panics never
-    match self.nodes.get(i) {
-        Some(node) => if which == 0u32 {
-            node.left
-        } else if which == 1u32 {
-            node.right
-        } else if which == 2u32 {
-            node.parent
-        } else if which == 3u32 {
-            node.prev
-        } else {
-            node.next
-        }
-        None => core.num.usize.MAX
-    }
-end alloc.collections.BtreeMap.link
-
 fn alloc.collections.BtreeMap.lower_bound[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &alloc.collections.BtreeMap<K, V, A>, key: &K) -> usize uses [] panics never
     let nil = core.num.usize.MAX
     let mut cur = self.root
@@ -220,15 +220,15 @@ fn alloc.collections.BtreeMap.lower_bound[K: core.cmp.Ord, V, A: alloc.alloc.All
         }
         match ord {
             core.cmp.Ordering.Less => {
-                cur = self.link(cur, 1u32)
+                cur = self.edge(cur, 1u32)
             }
             core.cmp.Ordering.Equal => {
                 found = cur
-                cur = self.link(cur, 0u32)
+                cur = self.edge(cur, 0u32)
             }
             core.cmp.Ordering.Greater => {
                 found = cur
-                cur = self.link(cur, 0u32)
+                cur = self.edge(cur, 0u32)
             }
         }
     }
@@ -282,8 +282,8 @@ fn alloc.collections.BtreeMap.remove[K: core.cmp.Ord, V, A: alloc.alloc.Allocato
         return None
     }
     loop {
-        let l = self.link(i, 0u32)
-        let r = self.link(i, 1u32)
+        let l = self.edge(i, 0u32)
+        let r = self.edge(i, 1u32)
         if l == nil && r == nil {
             break
         }
@@ -295,16 +295,16 @@ fn alloc.collections.BtreeMap.remove[K: core.cmp.Ord, V, A: alloc.alloc.Allocato
         }
         self.rotate_up(c)
     }
-    let p = self.link(i, 2u32)
+    let p = self.edge(i, 2u32)
     if p == nil {
         self.root = nil
-    } else if self.link(p, 0u32) == i {
+    } else if self.edge(p, 0u32) == i {
         self.set_link(p, 0u32, nil)
     } else {
         self.set_link(p, 1u32, nil)
     }
-    let before = self.link(i, 3u32)
-    let after = self.link(i, 4u32)
+    let before = self.edge(i, 3u32)
+    let after = self.edge(i, 4u32)
     if before == nil {
         self.head = after
     } else {
@@ -318,16 +318,16 @@ fn alloc.collections.BtreeMap.remove[K: core.cmp.Ord, V, A: alloc.alloc.Allocato
     let last = self.nodes.len().wrapping_sub(1usize)
     let taken = self.nodes.swap_remove(i)
     if i != last {
-        let l = self.link(i, 0u32)
-        let r = self.link(i, 1u32)
-        let q = self.link(i, 2u32)
-        let b = self.link(i, 3u32)
-        let a = self.link(i, 4u32)
+        let l = self.edge(i, 0u32)
+        let r = self.edge(i, 1u32)
+        let q = self.edge(i, 2u32)
+        let b = self.edge(i, 3u32)
+        let a = self.edge(i, 4u32)
         self.set_link(l, 2u32, i)
         self.set_link(r, 2u32, i)
         if q == nil {
             self.root = i
-        } else if self.link(q, 0u32) == last {
+        } else if self.edge(q, 0u32) == last {
             self.set_link(q, 0u32, i)
         } else {
             self.set_link(q, 1u32, i)
@@ -350,15 +350,15 @@ fn alloc.collections.BtreeMap.remove[K: core.cmp.Ord, V, A: alloc.alloc.Allocato
 end alloc.collections.BtreeMap.remove
 
 fn alloc.collections.BtreeMap.rotate_up[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.BtreeMap<K, V, A>, x: usize) -> () uses [] panics never
-    let p = self.link(x, 2u32)
-    let g = self.link(p, 2u32)
-    if self.link(p, 0u32) == x {
-        let b = self.link(x, 1u32)
+    let p = self.edge(x, 2u32)
+    let g = self.edge(p, 2u32)
+    if self.edge(p, 0u32) == x {
+        let b = self.edge(x, 1u32)
         self.set_link(p, 0u32, b)
         self.set_link(b, 2u32, p)
         self.set_link(x, 1u32, p)
     } else {
-        let b = self.link(x, 0u32)
+        let b = self.edge(x, 0u32)
         self.set_link(p, 1u32, b)
         self.set_link(b, 2u32, p)
         self.set_link(x, 0u32, p)
@@ -367,7 +367,7 @@ fn alloc.collections.BtreeMap.rotate_up[K: core.cmp.Ord, V, A: alloc.alloc.Alloc
     self.set_link(x, 2u32, g)
     if g == core.num.usize.MAX {
         self.root = x
-    } else if self.link(g, 0u32) == p {
+    } else if self.edge(g, 0u32) == p {
         self.set_link(g, 0u32, x)
     } else {
         self.set_link(g, 1u32, x)
