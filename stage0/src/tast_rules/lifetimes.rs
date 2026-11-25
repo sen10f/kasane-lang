@@ -1102,7 +1102,14 @@ impl<'a> W<'a> {
                 if op == "&" || op == "&mut" {
                     let v = self.borrow_of(operand, true);
                     let _ = self.ev(operand);
-                    v
+                    // `&mut` の定数は昇格しない (`&'static mut` を別名で量産できる): 一時値の借用。
+                    if op == "&mut" && Self::is_const(operand) && !matches!(operand.kind, TKind::Path(_) | TKind::Field { .. } | TKind::Index { .. }) {
+                        let mut w = v.clone();
+                        w.set = v.set.iter().map(|((l, k), ln)| ((if matches!(l, Loan::Promoted) { Loan::Temp } else { l.clone() }, *k), *ln)).collect();
+                        w
+                    } else {
+                        v
+                    }
                 } else if op == "*" {
                     let v = self.ev(operand);
                     if is_ref(&operand.ty) { v.down(1) } else { v.flat() }
@@ -1800,7 +1807,8 @@ impl<'a> W<'a> {
                 } else {
                     inner.clone()
                 };
-                let ty = if self_ref && !var.is_ref { Ty::Ref(false, Box::new(Ty::Unknown), Region::Unk) } else { Ty::Unknown };
+                let vt = if matches!(var.ty, Ty::Unknown | Ty::Var(_)) { Ty::Unknown } else { var.ty.clone() };
+                let ty = if self_ref && !var.is_ref { Ty::Ref(false, Box::new(vt), Region::Unk) } else { vt };
                 recv_arg = Some(Arg { ty, full, inner });
             }
         }
@@ -2094,6 +2102,8 @@ impl<'a> W<'a> {
             }
             if !stored.is_empty() {
                 let target = avs[k].full.clone();
+                let pointee = pointee.clone();
+                self.static_store(&stored, &pointee, line);
                 self.store_through(&target, &stored, line, via_region);
             }
         }

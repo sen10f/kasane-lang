@@ -1,0 +1,33 @@
+fn t.go(x: &u64) -> &'static u64 uses [] panics never
+    let mut s: &'static u64 = &7u64
+    core.mem.drop(core.mem.replace(&mut s, x))
+    s
+end t.go
+
+fn t.go2(x: &u64) -> &'static u64 uses [] panics never
+    let mut s: &'static u64 = &7u64
+    let mut y = x
+    core.mem.swap(&mut s, &mut y)
+    s
+end t.go2
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut v = std.vec.Vec.new()
+    v.push(42u64).unwrap()
+    let r = t.go(&v[0usize])
+    let q = t.go2(&v[0usize])
+    core.mem.drop(v)
+    t.pr(*r + *q)
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
+
+fn t.two(a: &mut u64, b: &mut u64) -> u64 uses [] panics never
+    *a = 1u64
+    *b = 2u64
+    *a
+end t.two

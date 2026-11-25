@@ -1,0 +1,35 @@
+static t.M: std.sync.Mutex<Option<&'static str>> = std.sync.Mutex.new(None)
+
+fn t.main() -> () uses [alloc, io.console, thread] panics may
+    let mut a = std.string.String.new()
+    a.push_str("secret heap string 0123456789").unwrap()
+    t.stash(a.as_str())
+    core.mem.drop(a)
+    let mut b = std.string.String.new()
+    b.push_str("XXXXXXXXXXXXXXXXXXXXXXXXXXXXX").unwrap()
+    let g = t.M.lock()
+    std.io.print_line(g.get().unwrap()).unwrap()
+    core.mem.drop(g)
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
+
+fn t.put[T](slot: &mut Option<T>, x: T) -> () uses [] panics never
+    *slot = Some(x)
+end t.put
+
+fn t.stash(x: &str) -> () uses [thread] panics never
+    let mut g = t.M.lock()
+    t.put(g.get_mut(), x)
+    core.mem.drop(g)
+end t.stash
+
+fn t.two(a: &mut u64, b: &mut u64) -> u64 uses [] panics never
+    *a = 1u64
+    *b = 2u64
+    *a
+end t.two
