@@ -191,7 +191,14 @@ fn fn_regions_ok(want: &Ty, got: &Ty) -> bool {
     }
     let named = |a: &[Ty]| a.iter().map(|t| ("_".to_string(), t.clone())).collect::<Vec<_>>();
     let (wa, wr) = crate::types::elide_sig(&named(wa), wr);
-    let (ga, gr) = crate::types::elide_sig(&named(ga), gr);
+    // 渡す側の先頭が参照なら `self` として省略規則に渡す (複数の参照で戻り値を省略できるのは `&self` のメソッドだけ)。
+    let mut gnamed = named(ga);
+    if let Some(f) = gnamed.first_mut() {
+        if matches!(f.1, Ty::Ref(..)) {
+            f.0 = "self".to_string();
+        }
+    }
+    let (ga, gr) = crate::types::elide_sig(&gnamed, gr);
     let mut ok = true;
     let mut pairs: Vec<(Region, Region, bool)> = vec![];
     for (w, g) in wa.iter().zip(&ga) {

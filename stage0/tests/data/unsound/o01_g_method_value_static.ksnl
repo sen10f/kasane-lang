@@ -1,0 +1,20 @@
+type t.H
+    n: u32
+end t.H
+
+fn t.H.m(self: &t.H, x: &u64) -> &u32 uses [] panics never
+    core.mem.drop(*x)
+    &self.n
+end t.H.m
+
+fn t.launder(f: fn(&t.H, &u64) -> &'static u32 uses [] panics never, h: &t.H, x: &u64) -> &'static u32 uses [] panics never
+    f(h, x)
+end t.launder
+
+fn t.main() -> () uses [] panics never
+    let h = t.H {
+        n: 1u32
+    }
+    let a = 5u64
+    core.mem.drop(*t.launder(t.H.m, &h, &a))
+end t.main

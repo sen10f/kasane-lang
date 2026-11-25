@@ -1,0 +1,21 @@
+type t.H
+    n: u32
+end t.H
+
+trait t.Tr
+    fn get(self: &Self, x: &u64) -> &'static u64 uses [] panics never
+end t.Tr
+
+impl t.Tr for t.H
+fn t.H.get(self: &t.H, x: &u64) -> &u64 uses [] panics never impls t.Tr
+    x
+end t.H.get
+
+fn t.main() -> () uses [] panics never
+    let h = t.H {
+        n: 1u32
+    }
+    let a = 5u64
+    let d: &dyn t.Tr = &h
+    core.mem.drop(*d.get(&a))
+end t.main
