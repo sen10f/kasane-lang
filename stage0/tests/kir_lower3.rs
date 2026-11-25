@@ -3320,3 +3320,23 @@ end t.main
         assert!(!checked || c.iter().any(|x| x == "E3010"), "{}: checked clean (codes {:?})", name, c);
     }
 }
+
+/// E1 (Mythos 3): `KSN_BORROWCK` / `--borrowck=` は検査を弱めない。KIR に下ろせない関数があっても、
+/// どの値でも素の `ksn check` と同じ診断 (E3010 など) が残る。
+#[test]
+fn borrowck_switch_never_drops_ast_diagnostics() {
+    let src = {
+        "type t.W\n    n: core.sync.AtomicU64\nend t.W\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never\n    let w = t.W {\n        n: core.sync.AtomicU64.new(0u64)\n    }\n    core.mem.drop(w.n.fetch_add(5u64, core.sync.Ordering.SeqCst))\n    let s = t.mk(\"aaaa\")\n    let r = s.as_str()\n    core.mem.drop(s)\n    core.mem.drop(std.io.print_line(r))\n    Ok(())\nend t.main\n\nfn t.mk(text: &str) -> std.string.String uses [alloc] panics never\n    let mut s = std.string.String.new()\n    core.mem.drop(s.push_str(text))\n    s\nend t.mk\n".to_string()
+    };
+    let t = Tmp::new("borrowck_switch", &src);
+    let cache = scratch::Scratch::at(format!("ksn_bcsw_cache_{}", std::process::id()));
+    let c = cache.to_str().unwrap();
+    let plain = run_with_env(&["check", "--json"], &t.0, &[("KSN_CACHE_DIR", c)]);
+    assert_eq!(plain.status.code(), Some(1), "{}", text(&plain.stdout));
+    for mode in ["kir", "kir,own", "kir-only", "ast"] {
+        let o = run_with_env(&["check", "--json"], &t.0, &[("KSN_BORROWCK", mode), ("KSN_CACHE_DIR", c)]);
+        assert_eq!(o.status.code(), Some(1), "env {}: {}", mode, text(&o.stdout));
+        let f = run_with_env(&["check", "--json", &format!("--borrowck={}", mode)], &t.0, &[("KSN_CACHE_DIR", c)]);
+        assert_eq!(f.status.code(), Some(1), "flag {}: {}", mode, text(&f.stdout));
+    }
+}

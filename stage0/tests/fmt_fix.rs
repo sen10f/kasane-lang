@@ -125,6 +125,19 @@ fn ksn_fix_removes_stack_from_non_recursive_function() {
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
 }
 
+/// 桁区切り `_` つきの `stack N` でも、数のトークン全体を外す (T1。`stack 600_000` が `never_000` に化けた)。
+/// 数の別の位置 (リテラル) に `_` があっても直しの後に読める。
+#[test]
+fn ksn_fix_removes_stack_with_digit_separators() {
+    let src = "fn t.f(n: u32) -> u32 uses [] panics never stack 600_000\n    n.wrapping_add(1_000u32)\nend t.f\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.f(10u32))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new_raw("fix_e4011_sep", src);
+    assert_eq!(run(&["fix"], &t.0).status.code(), Some(0));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(!fixed.contains("stack") && !fixed.contains("never_"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", fixed);
+}
+
 /// 構造体リテラルの丸括弧を波括弧に直す (E0048): `T(a: 1)` → `T { a: 1 }`。
 #[test]
 fn ksn_fix_converts_paren_struct_literal_to_braces() {
