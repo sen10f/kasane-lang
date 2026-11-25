@@ -643,6 +643,25 @@ impl AggTab {
         }
     }
 
+    /// 型 `t` の値が (入れ子を含めて) 手書きの `Drop` を持つ型を含むか。
+    pub fn has_user_drop_in(&self, t: Ty) -> bool {
+        match t {
+            Ty::Agg(i) => {
+                if self.user_drop.contains_key(&i) {
+                    return true;
+                }
+                match &self.defs[i as usize].kind {
+                    AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| self.has_user_drop_in(f.ty)),
+                    AggKind::Array(t, _) => self.has_user_drop_in(*t),
+                    AggKind::Enum(vs) => vs.iter().any(|v| v.fields.iter().any(|f| self.has_user_drop_in(f.ty))),
+                }
+            }
+            Ty::Opt(p) => self.has_user_drop_in(p.ty()),
+            Ty::Res(a, e) => self.has_user_drop_in(a.ty()) || self.has_user_drop_in(e.ty()),
+            _ => false,
+        }
+    }
+
     /// `Option<&T>` / `Option<&mut T>` を番地 1 つの `bref` にする型か: 所有物を持つ型、集成体 (名前・タプル)、`&mut` のスカラー。
     /// `&str` と `&[T]` (fat) と共有のスカラーは値のまま (`Option<&スカラー>` の決まり、設計_KIR.md 10.10)。
     fn bref_ref(&mut self, p: &Program, file: &str, m: bool, inner: &Src) -> bool {

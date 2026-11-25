@@ -1740,6 +1740,14 @@ fn take_engine(args: &[String]) -> Result<(bool, bool, Vec<String>), String> {
     Ok((vm, cmp, rest))
 }
 
+/// 利用者のパッケージ (依存を含む) に手書きの `impl core.ops.Drop` があるか。木走査は値の所有を追跡しないので、
+/// あるときは KIR (VM) で走らせる (退避して黙って Drop を飛ばさない)。
+fn has_user_drop(l: &Loaded, prog: &Program, user: &[usize]) -> bool {
+    let dep_files: std::collections::HashSet<&str> = l.deps.iter().flat_map(|dp| dp.sources.iter().map(|s| s.path.as_str())).collect();
+    let mine: std::collections::HashSet<usize> = user.iter().copied().collect();
+    prog.defs.iter().enumerate().any(|(i, d)| d.kw == "impl" && d.impl_trait == "core.ops.Drop" && (mine.contains(&i) || dep_files.contains(d.file.as_str())))
+}
+
 fn cmd_run(args: &[String]) -> i32 {
     let (use_vm, cmp, args) = match take_engine(args) {
         Ok(x) => x,
@@ -1791,7 +1799,8 @@ fn cmd_run(args: &[String]) -> i32 {
     if watch {
         eprintln!("hot reload: watching");
     }
-    if use_vm {
+    let drop_forced = has_user_drop(&l, &prog, &user);
+    if use_vm || drop_forced {
         let mk: Option<Box<dyn FnOnce() -> crate::vm::reload::Reload + '_>> = if watch {
             let (l, entry) = (&l, entry.clone());
             Some(Box::new(move || {
@@ -1813,6 +1822,10 @@ fn cmd_run(args: &[String]) -> i32 {
                 std::mem::forget(prog);
                 std::mem::forget(l);
                 return code;
+            }
+            Err(why) if drop_forced => {
+                eprintln!("ksn: this package has a hand-written `core.ops.Drop`, which only the KIR engine runs (the tree walker does not track ownership), but the program does not lower to KIR: {}", first_line(&why));
+                return 1;
             }
             Err(why) => eprintln!("vm engine skipped: {}; falling back to the tree walker", first_line(&why)),
         }
@@ -2030,6 +2043,7 @@ fn cmd_test(args: &[String]) -> i32 {
         // `--doc`: `src/` の `///` のコード例 (tests/ の仮想ファイル doc_<番号>.ksnl) だけを走らせる (3.2)。
         prefix = Some(format!("{}.tests.doc_", l.pkg.name));
     }
+    let drop_forced = has_user_drop(&l, prog.as_ref().unwrap(), &user);
     let prog = Rc::new(prog.unwrap());
     // `--both` のネイティブ側は依存パッケージの型・関数も下ろす (`build` と同じ。`user` だけだと依存の型が
     // 「段階 1 の対象外」になってバンドルへ退避する)。
@@ -2052,9 +2066,14 @@ fn cmd_test(args: &[String]) -> i32 {
         let mut results: Vec<Option<String>> = vec![];
         let mut names: Vec<&str> = vec![];
         let mut vm_note = String::new();
-        let vm_result = if use_vm {
+        let vm_result = if use_vm || drop_forced {
             match crate::vm::run_test(&prog, &user, *ti) {
                 Ok(r) => Some(r),
+                Err(why) if drop_forced => {
+                    failed += 1;
+                    println!("test {} ... FAILED: this package has a hand-written `core.ops.Drop`, which only the KIR engine runs, but the test does not lower to KIR: {}", name, first_line(&why));
+                    continue;
+                }
                 Err(why) => {
                     eprintln!("test {}: vm engine skipped: {}; falling back to the tree walker", name, first_line(&why));
                     vm_note = format!("vm skipped: {}", first_line(&why));

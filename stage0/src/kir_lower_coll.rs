@@ -3621,7 +3621,7 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         let (n, t) = (&c.name, c.tys[0]);
         match &c.how {
             // spawn のクロージャが取り込んだチャネルの端は、本体が所有して終わりで落とす (使わなかった端も)。
-            CapHow::Plain if lw.coll.spawn_arg && child.aggs.borrow().owns_heap(t) => bind_owned(&mut child, n, vs[0], t),
+            CapHow::Plain if (lw.coll.spawn_arg || fn_once) && child.aggs.borrow().owns_heap(t) => bind_owned(&mut child, n, vs[0], t),
             CapHow::Plain => child.bind_let(n, vs[0], t),
             // Vec / String / `&str` / スライスの借用 (または、呼び出しをまたいで取り込み側が所有する値の借用)。解放しない。
             CapHow::Borrow(k) => {
@@ -3771,6 +3771,8 @@ fn capture_values(lw: &mut Lw, caps: &V, body: &V, line: usize, fn_once: bool) -
         let t = lw.slots[s].1;
         // チャネルの端の `move` は取り込める (取り込み値を引き継いだ側が落とす。呼び出し元の印は `path_read` が下ろす)。
         let chan_move = kind == "move" && lw.coll.spawn_arg && lw.aggs.borrow().chan_kind(t).is_some();
+        // 手書きの `Drop` を持つ値 (を含む構造体) の `move`: spawn のクロージャと FnOnce のクロージャは、本体が所有して終わりで破棄する。
+        let chan_move = chan_move || (kind == "move" && (lw.coll.spawn_arg || fn_once) && lw.aggs.borrow().owns_heap(t) && !lw.aggs.borrow().is_vec(t) && lw.aggs.borrow().has_user_drop_in(t));
         if lw.aggs.borrow().owns_heap(t) && !chan_move {
             return lw.err(line, format!("capture の {} は解放の要る値を持つので段階 1 の対象外 (所有の移動と解放の規則が要る)", name));
         }
