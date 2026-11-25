@@ -1,0 +1,35 @@
+type t.It
+    buf: std.vec.Vec<u64>
+    cur: u64
+end t.It
+
+impl core.iter.Iterator<&u64, [alloc], may> for t.It
+fn t.It.next(self: &mut t.It) -> Option<&u64> uses [alloc] panics may impls core.iter.Iterator<&u64, [alloc], may>
+    self.cur = self.cur.wrapping_add(1u64)
+    for _i in core.iter.range(0u64, 1000u64) {
+        self.buf.push(self.cur).unwrap()
+    }
+    self.buf.first()
+end t.It.next
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut it = t.It {
+        buf: std.vec.Vec.new()
+        cur: 0u64
+    }
+    let (a, b) = t.pair(&mut it)
+    t.pr(*a)
+    t.pr(*b)
+end t.main
+
+fn t.pair[T, I: core.iter.Iterator<T, [alloc], may>](it: &mut I) -> (T, T) uses [alloc] panics may
+    let a = it.next().unwrap()
+    let b = it.next().unwrap()
+    (a, b)
+end t.pair
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr

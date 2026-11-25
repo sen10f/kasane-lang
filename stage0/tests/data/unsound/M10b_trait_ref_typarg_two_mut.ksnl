@@ -1,0 +1,38 @@
+trait t.Get[T] pub
+    fn get(self: &mut Self) -> T uses [] panics never
+end t.Get
+
+type t.S
+    x: u64
+end t.S
+
+impl t.Get<&mut u64> for t.S
+fn t.S.get(self: &mut t.S) -> &mut u64 uses [] panics never impls t.Get<&mut u64>
+    &mut self.x
+end t.S.get
+
+fn t.alias(a: &mut u64, b: &mut u64) -> u64 uses [] panics never
+    *a = 1u64
+    *b = 2u64
+    *a
+end t.alias
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut s = t.S {
+        x: 0u64
+    }
+    let (a, b) = t.two(&mut s)
+    t.pr(t.alias(a, b))
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
+
+fn t.two[T, G: t.Get<T>](g: &mut G) -> (T, T) uses [] panics never
+    let a = g.get()
+    let b = g.get()
+    (a, b)
+end t.two

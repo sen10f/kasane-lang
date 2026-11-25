@@ -1,0 +1,41 @@
+trait t.Get[T] pub
+    fn get(self: &Self) -> T uses [] panics never
+end t.Get
+
+type t.S
+    x: std.vec.Vec<u64>
+end t.S
+
+impl t.Get<&u64> for t.S
+fn t.S.get(self: &t.S) -> &u64 uses [] panics never impls t.Get<&u64>
+    match self.x.first() {
+        Some(r) => r
+        None => &0u64
+    }
+end t.S.get
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let r = t.out()
+    let mut w = std.vec.Vec.new()
+    w.push(7u64).unwrap()
+    t.pr(*r)
+    t.pr(w[0usize])
+end t.main
+
+fn t.one[T, G: t.Get<T>](g: G) -> T uses [] panics never
+    g.get()
+end t.one
+
+fn t.out() -> &'static u64 uses [alloc] panics may
+    let mut v = std.vec.Vec.new()
+    v.push(5u64).unwrap()
+    t.one(t.S {
+        x: v
+    })
+end t.out
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
