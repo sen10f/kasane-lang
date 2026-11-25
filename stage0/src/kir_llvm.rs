@@ -496,6 +496,8 @@ struct Ctx {
     mem_fx: HashMap<String, &'static str>,
     /// 呼び出しの輪に入らず、輪に入る関数も呼ばない関数 (「純粋域」) と、その呼び出し鎖の高さ (自分を含む)。深さの記録 (入口の検査と加算) を省き、呼び出し側が高さ分を先に検査する。
     pure_h: HashMap<String, (u64, u64)>,
+    /// 呼び出しの輪に入る関数 → 輪の番号。輪の中の呼び出しは、深さを隠れた引数 (`.d` の複製) で渡す。
+    dscc: HashMap<String, usize>,
     decls: BTreeSet<String>,
     globals: String,
     math: BTreeSet<Math>,
@@ -809,7 +811,8 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     };
     let pure_h0 = pure_region(m, entry);
     let mem_fx = mem_effects(m, &pure_h0);
-    let mut cx = Ctx { mem_fx, pure_h: pure_h0, decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int, arch };
+    let dscc0 = depth_sccs(m, &pure_h0);
+    let mut cx = Ctx { mem_fx, pure_h: pure_h0, dscc: dscc0, decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int, arch };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -931,6 +934,21 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
                 }
             }
             funcs.push_str(&text);
+            continue;
+        }
+        if cx.dscc.contains_key(&f.key) {
+            let mut fe = Fe::new(&mut cx, &m.aggs, f, &extern_links, &extern_dl, &m.funcs, fi);
+            fe.dmode = true;
+            funcs.push_str(&fe.emit().map_err(|e| format!("{}: {}", f.key, e))?);
+            // 外から入る入口: 今の深さを渡して呼び、戻ったら大域の深さを元に戻す (輪の中では大域を更新しない)。
+            let ps: Vec<String> = f.params().iter().enumerate().map(|(j, (_, t))| format!("{} %arg{}", lty(&m.aggs, *t), j)).collect();
+            let xs: Vec<String> = f.params().iter().enumerate().map(|(j, (_, t))| format!("{} %arg{}", lty(&m.aggs, *t), j)).collect();
+            let rt = lty(&m.aggs, f.ret);
+            let xs = if xs.is_empty() { "i64 %g".to_string() } else { format!("i64 %g, {}", xs.join(", ")) };
+            funcs.push_str(&format!(
+                "define internal {rt} {f}({ps}) nounwind null_pointer_is_valid {{\n  %g = load i64, ptr @ksn.depth\n  %r = call {rt} {d}({xs})\n  store i64 %g, ptr @ksn.depth\n  ret {rt} %r\n}}\n\n",
+                rt = rt, f = fname(&f.key), d = fname(&format!("{}.d", f.key)), ps = ps.join(", "), xs = xs
+            ));
             continue;
         }
         funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, &extern_dl, &m.funcs, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
@@ -1486,6 +1504,83 @@ fn pure_region(m: &Module, entry: &str) -> HashMap<String, (u64, u64)> {
     m.funcs.iter().enumerate().filter_map(|(k, f)| h[k].map(|x| (f.key.clone(), x))).collect()
 }
 
+/// 呼び出しの輪 (自己再帰・相互再帰) に入る、深さを引数で渡せる関数 → 輪の番号 (Tarjan。輪は候補どうしの辺だけで数える)。
+fn depth_sccs(m: &Module, pure_h: &HashMap<String, (u64, u64)>) -> HashMap<String, usize> {
+    let n = m.funcs.len();
+    let idx: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
+    let cand: Vec<bool> = m.funcs.iter().map(|f| f.link.is_none() && !f.key.starts_with("ksn.") && wasm_export_name(&f.key).is_none() && !kasane_base_inst(&f.key) && !pure_h.contains_key(&f.key)).collect();
+    let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
+    for (k, f) in m.funcs.iter().enumerate() {
+        if !cand[k] {
+            continue;
+        }
+        for b in &f.blocks {
+            for i in &b.insts {
+                if let Op::Call { callee, .. } = &i.op {
+                    if let Some(&c) = idx.get(callee.as_str()) {
+                        if cand[c] && !adj[k].contains(&c) {
+                            adj[k].push(c);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let (mut index, mut low, mut on) = (vec![usize::MAX; n], vec![0usize; n], vec![false; n]);
+    let (mut stack, mut counter, mut comp, mut ncomp) = (vec![], 0usize, vec![usize::MAX; n], 0usize);
+    let mut out = HashMap::new();
+    for root in 0..n {
+        if !cand[root] || index[root] != usize::MAX {
+            continue;
+        }
+        let mut work: Vec<(usize, usize)> = vec![(root, 0)];
+        index[root] = counter;
+        low[root] = counter;
+        counter += 1;
+        stack.push(root);
+        on[root] = true;
+        while let Some(&(v, e)) = work.last() {
+            if e < adj[v].len() {
+                work.last_mut().unwrap().1 += 1;
+                let w = adj[v][e];
+                if index[w] == usize::MAX {
+                    index[w] = counter;
+                    low[w] = counter;
+                    counter += 1;
+                    stack.push(w);
+                    on[w] = true;
+                    work.push((w, 0));
+                } else if on[w] {
+                    low[v] = low[v].min(index[w]);
+                }
+            } else {
+                work.pop();
+                if let Some(&(u, _)) = work.last() {
+                    low[u] = low[u].min(low[v]);
+                }
+                if low[v] == index[v] {
+                    let mut members = vec![];
+                    while let Some(w) = stack.pop() {
+                        on[w] = false;
+                        comp[w] = ncomp;
+                        members.push(w);
+                        if w == v {
+                            break;
+                        }
+                    }
+                    if members.len() > 1 || adj[v].contains(&v) {
+                        for w in members {
+                            out.insert(m.funcs[w].key.clone(), ncomp);
+                        }
+                    }
+                    ncomp += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// IR が C の実行時補助を要するか。
 pub fn needs_runtime(ll: &str) -> bool {
     ll.contains("@ksn_w_") || ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int") || ll.contains("@ksn_rt_sys_") || ll.contains("@ksn_ext_resolve")
@@ -1721,6 +1816,8 @@ struct Fe<'a> {
     bare_fn: bool,
     /// 純粋域の関数の「深さの記録つき」の複製を出している (名前は `.slow`)。
     slow: bool,
+    /// 輪の中の関数の、深さを引数で受ける複製 (`.d`) を出している。
+    dmode: bool,
     fi: usize,
     tys: HashMap<VId, Ty>,
     /// 定数と unit の値 (命令を作らずに、使う側へ直接書く)。
@@ -1734,7 +1831,7 @@ struct Fe<'a> {
 
 impl<'a> Fe<'a> {
     fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, extern_dl: &'a HashMap<String, (String, String)>, funcs: &'a [Func], fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, extern_links, extern_dl, funcs, bare_fn: false, slow: false, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
+        Fe { cx, aggs, f, extern_links, extern_dl, funcs, bare_fn: false, slow: false, dmode: false, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -2666,7 +2763,13 @@ impl<'a> Fe<'a> {
                         self.line(format!("{} = call {} {}({})", d, rt, target, a.join(", ")));
                     }
                 } else {
-                    let tgt = if self.cx.pure_h.contains_key(callee.as_str()) {
+                    let peer = self.dmode && matches!((self.cx.dscc.get(callee.as_str()), self.cx.dscc.get(&self.f.key)), (Some(a), Some(b)) if a == b);
+                    if peer {
+                        a.insert(0, "i64 %depth1".to_string());
+                    }
+                    let tgt = if peer {
+                        fname(&format!("{}.d", callee))
+                    } else if self.cx.pure_h.contains_key(callee.as_str()) {
                         if self.slow {
                             fname(&format!("{}.slow", callee))
                         } else if self.cx.pure_h.contains_key(&self.f.key) {
@@ -2677,7 +2780,7 @@ impl<'a> Fe<'a> {
                     } else {
                         fname(callee)
                     };
-                    self.line(format!("{} = call {} {}({})", d, rt, tgt, a.join(", ")));
+                    self.line(format!("{} = {}call {} {}({})", d, if peer { "notail " } else { "" }, rt, tgt, a.join(", ")));
                 }
             }
             // 関数のアドレスを `ptr` として取る (C のコールバック用)。
@@ -3503,6 +3606,15 @@ impl<'a> Fe<'a> {
                         _ => {}
                     }
                 }
+                if self.dmode {
+                    let peer = match &i.op {
+                        Op::Call { callee, .. } => matches!((self.cx.dscc.get(callee.as_str()), self.cx.dscc.get(&f.key)), (Some(a), Some(b)) if a == b),
+                        _ => false,
+                    };
+                    if !peer && matches!(&i.op, Op::Call { .. } | Op::Proc { .. }) {
+                        self.line("store i64 %depth1, ptr @ksn.depth".into());
+                    }
+                }
                 self.inst(i)?;
             }
             match &b.term {
@@ -3535,7 +3647,7 @@ impl<'a> Fe<'a> {
                 Term::Ret(v) => {
                     let t = self.lt(f.ret);
                     let rv = self.r(*v);
-                    if !bare {
+                    if !bare && !self.dmode {
                         self.line("store i64 %depth, ptr @ksn.depth".into());
                     }
                     self.line(format!("ret {} {}", t, rv));
@@ -3575,21 +3687,24 @@ impl<'a> Fe<'a> {
             Some(n) => ("define", format!(" \"wasm-export-name\"=\"{}\"", n)),
             None => ("define internal", String::new()),
         };
-        let mut s = format!("{} {} {}({}){} {}nounwind {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), if self.slow { fname(&format!("{}.slow", f.key)) } else { fname(&f.key) }, params.join(", "), exp, inline, memattr);
+        let mut s = format!("{} {} {}({}){} {}nounwind {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), if self.slow { fname(&format!("{}.slow", f.key)) } else if self.dmode { fname(&format!("{}.d", f.key)) } else { fname(&f.key) }, if self.dmode { std::iter::once("i64 %depth".to_string()).chain(params.iter().cloned()).collect::<Vec<_>>().join(", ") } else { params.join(", ") }, exp, inline, if self.dmode { String::new() } else { memattr.clone() });
         s.push_str(&hoisted);
         if bare {
             // `b0` の phi は `go` を前の辺として参照するので、空の `go` を残す (最適化で消える)。
             s.push_str("  br label %go\ngo:\n  br label %b0\n");
         } else {
             // 深さの上限 (`ksn.dmax`、スレッドごと) とスタックの残り (`ksn.floor` より低ければ尽きる前に止める。wasm32 は深さだけ)。
+            let ld = if self.dmode { "" } else { "  %depth = load i64, ptr @ksn.depth\n" };
             let check = if crate::ptrwidth::bits() == 32 {
-                "  %depth = load i64, ptr @ksn.depth\n  %dmax = load i64, ptr @ksn.dmax\n  %over = icmp uge i64 %depth, %dmax\n".to_string()
+                "  %dmax = load i64, ptr @ksn.dmax\n  %over = icmp uge i64 %depth, %dmax\n".to_string()
             } else {
-                "  %depth = load i64, ptr @ksn.depth\n  %dmax = load i64, ptr @ksn.dmax\n  %dov = icmp uge i64 %depth, %dmax\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl = load i64, ptr @ksn.floor\n  %low = icmp ult i64 %sp, %fl\n  %over = or i1 %dov, %low\n".to_string()
+                "  %dmax = load i64, ptr @ksn.dmax\n  %dov = icmp uge i64 %depth, %dmax\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl = load i64, ptr @ksn.floor\n  %low = icmp ult i64 %sp, %fl\n  %over = or i1 %dov, %low\n".to_string()
             };
             s.push_str(&format!(
-                "{}  br i1 %over, label %so, label %go\nso:\n  call void @ksn.overflow()\n  unreachable\ngo:\n  %depth1 = add i64 %depth, 1\n  store i64 %depth1, ptr @ksn.depth\n  br label %b0\n",
-                check
+                "{}{}  br i1 %over, label %so, label %go\nso:\n  call void @ksn.overflow()\n  unreachable\ngo:\n  %depth1 = add i64 %depth, 1\n{}  br label %b0\n",
+                ld,
+                check,
+                if self.dmode { "" } else { "  store i64 %depth1, ptr @ksn.depth\n" }
             ));
         }
         for (k, b) in f.blocks.iter().enumerate() {
@@ -3748,6 +3863,20 @@ fn mem_effects(m: &Module, pure_h: &HashMap<String, (u64, u64)>) -> HashMap<Stri
                         *cur = (*cur).max(l);
                     }
                 }
+            }
+        }
+        // `memory(argmem: ..)` は「引数のポインタから辿れる (GEP で得た) 所だけ」の約束。値で渡した組・構造体の中の参照や、
+        // 参照の指す先に入っている参照を読み込んで辿る読み書きは argmem に入らない (LLVM には「その他のメモリ」)。
+        // メモリに触る関数は、引数がスカラーか、中に参照・ポインタ・内部可変性を持たない値を指す参照だけのときに限る
+        // (Mythos 3 回目の L1: `(&u64, u8)` を値で受ける関数に argmem: read を付けて誤ったコードになった)。
+        if matches!(lvl, Some(l) if l > 0) {
+            let ok = f.params().iter().all(|(_, t)| match t {
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::I128 | Ty::Isize | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::U128 | Ty::Usize | Ty::F32 | Ty::F64 | Ty::Bool | Ty::Unit => true,
+                Ty::Ref(_, pt) => !may_have_interior_mut(&m.aggs, *pt),
+                _ => false,
+            });
+            if !ok {
+                lvl = None;
             }
         }
         memo[k] = Some(lvl);

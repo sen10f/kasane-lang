@@ -1,0 +1,283 @@
+fn t.get(p: (&u64, u8)) -> u64 uses [] panics never
+    let (a, _b) = p
+    let mut v = *a
+    v = v.wrapping_mul(31u64).wrapping_add(v.wrapping_shr(1u32)) ^ 7u64
+    v = v.wrapping_mul(33u64).wrapping_add(v.wrapping_shr(2u32)) ^ 8u64
+    v = v.wrapping_mul(35u64).wrapping_add(v.wrapping_shr(3u32)) ^ 9u64
+    v = v.wrapping_mul(37u64).wrapping_add(v.wrapping_shr(4u32)) ^ 10u64
+    v = v.wrapping_mul(39u64).wrapping_add(v.wrapping_shr(5u32)) ^ 11u64
+    v = v.wrapping_mul(41u64).wrapping_add(v.wrapping_shr(6u32)) ^ 12u64
+    v = v.wrapping_mul(43u64).wrapping_add(v.wrapping_shr(7u32)) ^ 13u64
+    v = v.wrapping_mul(45u64).wrapping_add(v.wrapping_shr(8u32)) ^ 14u64
+    v = v.wrapping_mul(47u64).wrapping_add(v.wrapping_shr(9u32)) ^ 15u64
+    v = v.wrapping_mul(49u64).wrapping_add(v.wrapping_shr(10u32)) ^ 16u64
+    v = v.wrapping_mul(51u64).wrapping_add(v.wrapping_shr(11u32)) ^ 17u64
+    v = v.wrapping_mul(53u64).wrapping_add(v.wrapping_shr(12u32)) ^ 18u64
+    v = v.wrapping_mul(55u64).wrapping_add(v.wrapping_shr(13u32)) ^ 19u64
+    v = v.wrapping_mul(57u64).wrapping_add(v.wrapping_shr(14u32)) ^ 20u64
+    v = v.wrapping_mul(59u64).wrapping_add(v.wrapping_shr(15u32)) ^ 21u64
+    v = v.wrapping_mul(61u64).wrapping_add(v.wrapping_shr(16u32)) ^ 22u64
+    v = v.wrapping_mul(63u64).wrapping_add(v.wrapping_shr(17u32)) ^ 23u64
+    v = v.wrapping_mul(65u64).wrapping_add(v.wrapping_shr(18u32)) ^ 24u64
+    v = v.wrapping_mul(67u64).wrapping_add(v.wrapping_shr(19u32)) ^ 25u64
+    v = v.wrapping_mul(69u64).wrapping_add(v.wrapping_shr(20u32)) ^ 26u64
+    v = v.wrapping_mul(71u64).wrapping_add(v.wrapping_shr(21u32)) ^ 27u64
+    v = v.wrapping_mul(73u64).wrapping_add(v.wrapping_shr(22u32)) ^ 28u64
+    v = v.wrapping_mul(75u64).wrapping_add(v.wrapping_shr(23u32)) ^ 29u64
+    v = v.wrapping_mul(77u64).wrapping_add(v.wrapping_shr(24u32)) ^ 30u64
+    v = v.wrapping_mul(79u64).wrapping_add(v.wrapping_shr(25u32)) ^ 31u64
+    v = v.wrapping_mul(81u64).wrapping_add(v.wrapping_shr(26u32)) ^ 32u64
+    v = v.wrapping_mul(83u64).wrapping_add(v.wrapping_shr(27u32)) ^ 33u64
+    v = v.wrapping_mul(85u64).wrapping_add(v.wrapping_shr(28u32)) ^ 34u64
+    v = v.wrapping_mul(87u64).wrapping_add(v.wrapping_shr(29u32)) ^ 35u64
+    v = v.wrapping_mul(89u64).wrapping_add(v.wrapping_shr(30u32)) ^ 36u64
+    v = v.wrapping_mul(91u64).wrapping_add(v.wrapping_shr(31u32)) ^ 37u64
+    v = v.wrapping_mul(93u64).wrapping_add(v.wrapping_shr(32u32)) ^ 38u64
+    v = v.wrapping_mul(95u64).wrapping_add(v.wrapping_shr(33u32)) ^ 39u64
+    v = v.wrapping_mul(97u64).wrapping_add(v.wrapping_shr(34u32)) ^ 40u64
+    v = v.wrapping_mul(99u64).wrapping_add(v.wrapping_shr(35u32)) ^ 41u64
+    v = v.wrapping_mul(101u64).wrapping_add(v.wrapping_shr(36u32)) ^ 42u64
+    v = v.wrapping_mul(103u64).wrapping_add(v.wrapping_shr(37u32)) ^ 43u64
+    v = v.wrapping_mul(105u64).wrapping_add(v.wrapping_shr(38u32)) ^ 44u64
+    v = v.wrapping_mul(107u64).wrapping_add(v.wrapping_shr(39u32)) ^ 45u64
+    v = v.wrapping_mul(109u64).wrapping_add(v.wrapping_shr(40u32)) ^ 46u64
+    v = v.wrapping_mul(111u64).wrapping_add(v.wrapping_shr(41u32)) ^ 47u64
+    v = v.wrapping_mul(113u64).wrapping_add(v.wrapping_shr(42u32)) ^ 48u64
+    v = v.wrapping_mul(115u64).wrapping_add(v.wrapping_shr(43u32)) ^ 49u64
+    v = v.wrapping_mul(117u64).wrapping_add(v.wrapping_shr(44u32)) ^ 50u64
+    v = v.wrapping_mul(119u64).wrapping_add(v.wrapping_shr(45u32)) ^ 51u64
+    v = v.wrapping_mul(121u64).wrapping_add(v.wrapping_shr(46u32)) ^ 52u64
+    v = v.wrapping_mul(123u64).wrapping_add(v.wrapping_shr(47u32)) ^ 53u64
+    v = v.wrapping_mul(125u64).wrapping_add(v.wrapping_shr(48u32)) ^ 54u64
+    v = v.wrapping_mul(127u64).wrapping_add(v.wrapping_shr(49u32)) ^ 55u64
+    v = v.wrapping_mul(129u64).wrapping_add(v.wrapping_shr(50u32)) ^ 56u64
+    v = v.wrapping_mul(131u64).wrapping_add(v.wrapping_shr(51u32)) ^ 57u64
+    v = v.wrapping_mul(133u64).wrapping_add(v.wrapping_shr(52u32)) ^ 58u64
+    v = v.wrapping_mul(135u64).wrapping_add(v.wrapping_shr(53u32)) ^ 59u64
+    v = v.wrapping_mul(137u64).wrapping_add(v.wrapping_shr(54u32)) ^ 60u64
+    v = v.wrapping_mul(139u64).wrapping_add(v.wrapping_shr(55u32)) ^ 61u64
+    v = v.wrapping_mul(141u64).wrapping_add(v.wrapping_shr(56u32)) ^ 62u64
+    v = v.wrapping_mul(143u64).wrapping_add(v.wrapping_shr(57u32)) ^ 63u64
+    v = v.wrapping_mul(145u64).wrapping_add(v.wrapping_shr(58u32)) ^ 64u64
+    v = v.wrapping_mul(147u64).wrapping_add(v.wrapping_shr(59u32)) ^ 65u64
+    v = v.wrapping_mul(149u64).wrapping_add(v.wrapping_shr(60u32)) ^ 66u64
+    v = v.wrapping_mul(151u64).wrapping_add(v.wrapping_shr(1u32)) ^ 67u64
+    v = v.wrapping_mul(153u64).wrapping_add(v.wrapping_shr(2u32)) ^ 68u64
+    v = v.wrapping_mul(155u64).wrapping_add(v.wrapping_shr(3u32)) ^ 69u64
+    v = v.wrapping_mul(157u64).wrapping_add(v.wrapping_shr(4u32)) ^ 70u64
+    v = v.wrapping_mul(159u64).wrapping_add(v.wrapping_shr(5u32)) ^ 71u64
+    v = v.wrapping_mul(161u64).wrapping_add(v.wrapping_shr(6u32)) ^ 72u64
+    v = v.wrapping_mul(163u64).wrapping_add(v.wrapping_shr(7u32)) ^ 73u64
+    v = v.wrapping_mul(165u64).wrapping_add(v.wrapping_shr(8u32)) ^ 74u64
+    v = v.wrapping_mul(167u64).wrapping_add(v.wrapping_shr(9u32)) ^ 75u64
+    v = v.wrapping_mul(169u64).wrapping_add(v.wrapping_shr(10u32)) ^ 76u64
+    v = v.wrapping_mul(171u64).wrapping_add(v.wrapping_shr(11u32)) ^ 77u64
+    v = v.wrapping_mul(173u64).wrapping_add(v.wrapping_shr(12u32)) ^ 78u64
+    v = v.wrapping_mul(175u64).wrapping_add(v.wrapping_shr(13u32)) ^ 79u64
+    v = v.wrapping_mul(177u64).wrapping_add(v.wrapping_shr(14u32)) ^ 80u64
+    v = v.wrapping_mul(179u64).wrapping_add(v.wrapping_shr(15u32)) ^ 81u64
+    v = v.wrapping_mul(181u64).wrapping_add(v.wrapping_shr(16u32)) ^ 82u64
+    v = v.wrapping_mul(183u64).wrapping_add(v.wrapping_shr(17u32)) ^ 83u64
+    v = v.wrapping_mul(185u64).wrapping_add(v.wrapping_shr(18u32)) ^ 84u64
+    v = v.wrapping_mul(187u64).wrapping_add(v.wrapping_shr(19u32)) ^ 85u64
+    v = v.wrapping_mul(189u64).wrapping_add(v.wrapping_shr(20u32)) ^ 86u64
+    v = v.wrapping_mul(191u64).wrapping_add(v.wrapping_shr(21u32)) ^ 87u64
+    v = v.wrapping_mul(193u64).wrapping_add(v.wrapping_shr(22u32)) ^ 88u64
+    v = v.wrapping_mul(195u64).wrapping_add(v.wrapping_shr(23u32)) ^ 89u64
+    v = v.wrapping_mul(197u64).wrapping_add(v.wrapping_shr(24u32)) ^ 90u64
+    v = v.wrapping_mul(199u64).wrapping_add(v.wrapping_shr(25u32)) ^ 91u64
+    v = v.wrapping_mul(201u64).wrapping_add(v.wrapping_shr(26u32)) ^ 92u64
+    v = v.wrapping_mul(203u64).wrapping_add(v.wrapping_shr(27u32)) ^ 93u64
+    v = v.wrapping_mul(205u64).wrapping_add(v.wrapping_shr(28u32)) ^ 94u64
+    v = v.wrapping_mul(207u64).wrapping_add(v.wrapping_shr(29u32)) ^ 95u64
+    v = v.wrapping_mul(209u64).wrapping_add(v.wrapping_shr(30u32)) ^ 96u64
+    v = v.wrapping_mul(211u64).wrapping_add(v.wrapping_shr(31u32)) ^ 97u64
+    v = v.wrapping_mul(213u64).wrapping_add(v.wrapping_shr(32u32)) ^ 98u64
+    v = v.wrapping_mul(215u64).wrapping_add(v.wrapping_shr(33u32)) ^ 99u64
+    v = v.wrapping_mul(217u64).wrapping_add(v.wrapping_shr(34u32)) ^ 100u64
+    v = v.wrapping_mul(219u64).wrapping_add(v.wrapping_shr(35u32)) ^ 101u64
+    v = v.wrapping_mul(221u64).wrapping_add(v.wrapping_shr(36u32)) ^ 102u64
+    v = v.wrapping_mul(223u64).wrapping_add(v.wrapping_shr(37u32)) ^ 103u64
+    v = v.wrapping_mul(225u64).wrapping_add(v.wrapping_shr(38u32)) ^ 104u64
+    v = v.wrapping_mul(227u64).wrapping_add(v.wrapping_shr(39u32)) ^ 105u64
+    v = v.wrapping_mul(229u64).wrapping_add(v.wrapping_shr(40u32)) ^ 106u64
+    v = v.wrapping_mul(231u64).wrapping_add(v.wrapping_shr(41u32)) ^ 107u64
+    v = v.wrapping_mul(233u64).wrapping_add(v.wrapping_shr(42u32)) ^ 108u64
+    v = v.wrapping_mul(235u64).wrapping_add(v.wrapping_shr(43u32)) ^ 109u64
+    v = v.wrapping_mul(237u64).wrapping_add(v.wrapping_shr(44u32)) ^ 110u64
+    v = v.wrapping_mul(239u64).wrapping_add(v.wrapping_shr(45u32)) ^ 111u64
+    v = v.wrapping_mul(241u64).wrapping_add(v.wrapping_shr(46u32)) ^ 112u64
+    v = v.wrapping_mul(243u64).wrapping_add(v.wrapping_shr(47u32)) ^ 113u64
+    v = v.wrapping_mul(245u64).wrapping_add(v.wrapping_shr(48u32)) ^ 114u64
+    v = v.wrapping_mul(247u64).wrapping_add(v.wrapping_shr(49u32)) ^ 115u64
+    v = v.wrapping_mul(249u64).wrapping_add(v.wrapping_shr(50u32)) ^ 116u64
+    v = v.wrapping_mul(251u64).wrapping_add(v.wrapping_shr(51u32)) ^ 117u64
+    v = v.wrapping_mul(253u64).wrapping_add(v.wrapping_shr(52u32)) ^ 118u64
+    v = v.wrapping_mul(255u64).wrapping_add(v.wrapping_shr(53u32)) ^ 119u64
+    v = v.wrapping_mul(257u64).wrapping_add(v.wrapping_shr(54u32)) ^ 120u64
+    v = v.wrapping_mul(259u64).wrapping_add(v.wrapping_shr(55u32)) ^ 121u64
+    v = v.wrapping_mul(261u64).wrapping_add(v.wrapping_shr(56u32)) ^ 122u64
+    v = v.wrapping_mul(263u64).wrapping_add(v.wrapping_shr(57u32)) ^ 123u64
+    v = v.wrapping_mul(265u64).wrapping_add(v.wrapping_shr(58u32)) ^ 124u64
+    v = v.wrapping_mul(267u64).wrapping_add(v.wrapping_shr(59u32)) ^ 125u64
+    v = v.wrapping_mul(269u64).wrapping_add(v.wrapping_shr(60u32)) ^ 126u64
+    v
+end t.get
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    t.show(t.work(5u64))
+    t.show(t.work2(1u64))
+    Ok(())
+end t.main
+
+fn t.set(p: (&mut u64, u8), w: u64) -> () uses [] panics never
+    let (a, _b) = p
+    let mut v = w
+    v = v.wrapping_mul(31u64).wrapping_add(v.wrapping_shr(1u32)) ^ 7u64
+    v = v.wrapping_mul(33u64).wrapping_add(v.wrapping_shr(2u32)) ^ 8u64
+    v = v.wrapping_mul(35u64).wrapping_add(v.wrapping_shr(3u32)) ^ 9u64
+    v = v.wrapping_mul(37u64).wrapping_add(v.wrapping_shr(4u32)) ^ 10u64
+    v = v.wrapping_mul(39u64).wrapping_add(v.wrapping_shr(5u32)) ^ 11u64
+    v = v.wrapping_mul(41u64).wrapping_add(v.wrapping_shr(6u32)) ^ 12u64
+    v = v.wrapping_mul(43u64).wrapping_add(v.wrapping_shr(7u32)) ^ 13u64
+    v = v.wrapping_mul(45u64).wrapping_add(v.wrapping_shr(8u32)) ^ 14u64
+    v = v.wrapping_mul(47u64).wrapping_add(v.wrapping_shr(9u32)) ^ 15u64
+    v = v.wrapping_mul(49u64).wrapping_add(v.wrapping_shr(10u32)) ^ 16u64
+    v = v.wrapping_mul(51u64).wrapping_add(v.wrapping_shr(11u32)) ^ 17u64
+    v = v.wrapping_mul(53u64).wrapping_add(v.wrapping_shr(12u32)) ^ 18u64
+    v = v.wrapping_mul(55u64).wrapping_add(v.wrapping_shr(13u32)) ^ 19u64
+    v = v.wrapping_mul(57u64).wrapping_add(v.wrapping_shr(14u32)) ^ 20u64
+    v = v.wrapping_mul(59u64).wrapping_add(v.wrapping_shr(15u32)) ^ 21u64
+    v = v.wrapping_mul(61u64).wrapping_add(v.wrapping_shr(16u32)) ^ 22u64
+    v = v.wrapping_mul(63u64).wrapping_add(v.wrapping_shr(17u32)) ^ 23u64
+    v = v.wrapping_mul(65u64).wrapping_add(v.wrapping_shr(18u32)) ^ 24u64
+    v = v.wrapping_mul(67u64).wrapping_add(v.wrapping_shr(19u32)) ^ 25u64
+    v = v.wrapping_mul(69u64).wrapping_add(v.wrapping_shr(20u32)) ^ 26u64
+    v = v.wrapping_mul(71u64).wrapping_add(v.wrapping_shr(21u32)) ^ 27u64
+    v = v.wrapping_mul(73u64).wrapping_add(v.wrapping_shr(22u32)) ^ 28u64
+    v = v.wrapping_mul(75u64).wrapping_add(v.wrapping_shr(23u32)) ^ 29u64
+    v = v.wrapping_mul(77u64).wrapping_add(v.wrapping_shr(24u32)) ^ 30u64
+    v = v.wrapping_mul(79u64).wrapping_add(v.wrapping_shr(25u32)) ^ 31u64
+    v = v.wrapping_mul(81u64).wrapping_add(v.wrapping_shr(26u32)) ^ 32u64
+    v = v.wrapping_mul(83u64).wrapping_add(v.wrapping_shr(27u32)) ^ 33u64
+    v = v.wrapping_mul(85u64).wrapping_add(v.wrapping_shr(28u32)) ^ 34u64
+    v = v.wrapping_mul(87u64).wrapping_add(v.wrapping_shr(29u32)) ^ 35u64
+    v = v.wrapping_mul(89u64).wrapping_add(v.wrapping_shr(30u32)) ^ 36u64
+    v = v.wrapping_mul(91u64).wrapping_add(v.wrapping_shr(31u32)) ^ 37u64
+    v = v.wrapping_mul(93u64).wrapping_add(v.wrapping_shr(32u32)) ^ 38u64
+    v = v.wrapping_mul(95u64).wrapping_add(v.wrapping_shr(33u32)) ^ 39u64
+    v = v.wrapping_mul(97u64).wrapping_add(v.wrapping_shr(34u32)) ^ 40u64
+    v = v.wrapping_mul(99u64).wrapping_add(v.wrapping_shr(35u32)) ^ 41u64
+    v = v.wrapping_mul(101u64).wrapping_add(v.wrapping_shr(36u32)) ^ 42u64
+    v = v.wrapping_mul(103u64).wrapping_add(v.wrapping_shr(37u32)) ^ 43u64
+    v = v.wrapping_mul(105u64).wrapping_add(v.wrapping_shr(38u32)) ^ 44u64
+    v = v.wrapping_mul(107u64).wrapping_add(v.wrapping_shr(39u32)) ^ 45u64
+    v = v.wrapping_mul(109u64).wrapping_add(v.wrapping_shr(40u32)) ^ 46u64
+    v = v.wrapping_mul(111u64).wrapping_add(v.wrapping_shr(41u32)) ^ 47u64
+    v = v.wrapping_mul(113u64).wrapping_add(v.wrapping_shr(42u32)) ^ 48u64
+    v = v.wrapping_mul(115u64).wrapping_add(v.wrapping_shr(43u32)) ^ 49u64
+    v = v.wrapping_mul(117u64).wrapping_add(v.wrapping_shr(44u32)) ^ 50u64
+    v = v.wrapping_mul(119u64).wrapping_add(v.wrapping_shr(45u32)) ^ 51u64
+    v = v.wrapping_mul(121u64).wrapping_add(v.wrapping_shr(46u32)) ^ 52u64
+    v = v.wrapping_mul(123u64).wrapping_add(v.wrapping_shr(47u32)) ^ 53u64
+    v = v.wrapping_mul(125u64).wrapping_add(v.wrapping_shr(48u32)) ^ 54u64
+    v = v.wrapping_mul(127u64).wrapping_add(v.wrapping_shr(49u32)) ^ 55u64
+    v = v.wrapping_mul(129u64).wrapping_add(v.wrapping_shr(50u32)) ^ 56u64
+    v = v.wrapping_mul(131u64).wrapping_add(v.wrapping_shr(51u32)) ^ 57u64
+    v = v.wrapping_mul(133u64).wrapping_add(v.wrapping_shr(52u32)) ^ 58u64
+    v = v.wrapping_mul(135u64).wrapping_add(v.wrapping_shr(53u32)) ^ 59u64
+    v = v.wrapping_mul(137u64).wrapping_add(v.wrapping_shr(54u32)) ^ 60u64
+    v = v.wrapping_mul(139u64).wrapping_add(v.wrapping_shr(55u32)) ^ 61u64
+    v = v.wrapping_mul(141u64).wrapping_add(v.wrapping_shr(56u32)) ^ 62u64
+    v = v.wrapping_mul(143u64).wrapping_add(v.wrapping_shr(57u32)) ^ 63u64
+    v = v.wrapping_mul(145u64).wrapping_add(v.wrapping_shr(58u32)) ^ 64u64
+    v = v.wrapping_mul(147u64).wrapping_add(v.wrapping_shr(59u32)) ^ 65u64
+    v = v.wrapping_mul(149u64).wrapping_add(v.wrapping_shr(60u32)) ^ 66u64
+    v = v.wrapping_mul(151u64).wrapping_add(v.wrapping_shr(1u32)) ^ 67u64
+    v = v.wrapping_mul(153u64).wrapping_add(v.wrapping_shr(2u32)) ^ 68u64
+    v = v.wrapping_mul(155u64).wrapping_add(v.wrapping_shr(3u32)) ^ 69u64
+    v = v.wrapping_mul(157u64).wrapping_add(v.wrapping_shr(4u32)) ^ 70u64
+    v = v.wrapping_mul(159u64).wrapping_add(v.wrapping_shr(5u32)) ^ 71u64
+    v = v.wrapping_mul(161u64).wrapping_add(v.wrapping_shr(6u32)) ^ 72u64
+    v = v.wrapping_mul(163u64).wrapping_add(v.wrapping_shr(7u32)) ^ 73u64
+    v = v.wrapping_mul(165u64).wrapping_add(v.wrapping_shr(8u32)) ^ 74u64
+    v = v.wrapping_mul(167u64).wrapping_add(v.wrapping_shr(9u32)) ^ 75u64
+    v = v.wrapping_mul(169u64).wrapping_add(v.wrapping_shr(10u32)) ^ 76u64
+    v = v.wrapping_mul(171u64).wrapping_add(v.wrapping_shr(11u32)) ^ 77u64
+    v = v.wrapping_mul(173u64).wrapping_add(v.wrapping_shr(12u32)) ^ 78u64
+    v = v.wrapping_mul(175u64).wrapping_add(v.wrapping_shr(13u32)) ^ 79u64
+    v = v.wrapping_mul(177u64).wrapping_add(v.wrapping_shr(14u32)) ^ 80u64
+    v = v.wrapping_mul(179u64).wrapping_add(v.wrapping_shr(15u32)) ^ 81u64
+    v = v.wrapping_mul(181u64).wrapping_add(v.wrapping_shr(16u32)) ^ 82u64
+    v = v.wrapping_mul(183u64).wrapping_add(v.wrapping_shr(17u32)) ^ 83u64
+    v = v.wrapping_mul(185u64).wrapping_add(v.wrapping_shr(18u32)) ^ 84u64
+    v = v.wrapping_mul(187u64).wrapping_add(v.wrapping_shr(19u32)) ^ 85u64
+    v = v.wrapping_mul(189u64).wrapping_add(v.wrapping_shr(20u32)) ^ 86u64
+    v = v.wrapping_mul(191u64).wrapping_add(v.wrapping_shr(21u32)) ^ 87u64
+    v = v.wrapping_mul(193u64).wrapping_add(v.wrapping_shr(22u32)) ^ 88u64
+    v = v.wrapping_mul(195u64).wrapping_add(v.wrapping_shr(23u32)) ^ 89u64
+    v = v.wrapping_mul(197u64).wrapping_add(v.wrapping_shr(24u32)) ^ 90u64
+    v = v.wrapping_mul(199u64).wrapping_add(v.wrapping_shr(25u32)) ^ 91u64
+    v = v.wrapping_mul(201u64).wrapping_add(v.wrapping_shr(26u32)) ^ 92u64
+    v = v.wrapping_mul(203u64).wrapping_add(v.wrapping_shr(27u32)) ^ 93u64
+    v = v.wrapping_mul(205u64).wrapping_add(v.wrapping_shr(28u32)) ^ 94u64
+    v = v.wrapping_mul(207u64).wrapping_add(v.wrapping_shr(29u32)) ^ 95u64
+    v = v.wrapping_mul(209u64).wrapping_add(v.wrapping_shr(30u32)) ^ 96u64
+    v = v.wrapping_mul(211u64).wrapping_add(v.wrapping_shr(31u32)) ^ 97u64
+    v = v.wrapping_mul(213u64).wrapping_add(v.wrapping_shr(32u32)) ^ 98u64
+    v = v.wrapping_mul(215u64).wrapping_add(v.wrapping_shr(33u32)) ^ 99u64
+    v = v.wrapping_mul(217u64).wrapping_add(v.wrapping_shr(34u32)) ^ 100u64
+    v = v.wrapping_mul(219u64).wrapping_add(v.wrapping_shr(35u32)) ^ 101u64
+    v = v.wrapping_mul(221u64).wrapping_add(v.wrapping_shr(36u32)) ^ 102u64
+    v = v.wrapping_mul(223u64).wrapping_add(v.wrapping_shr(37u32)) ^ 103u64
+    v = v.wrapping_mul(225u64).wrapping_add(v.wrapping_shr(38u32)) ^ 104u64
+    v = v.wrapping_mul(227u64).wrapping_add(v.wrapping_shr(39u32)) ^ 105u64
+    v = v.wrapping_mul(229u64).wrapping_add(v.wrapping_shr(40u32)) ^ 106u64
+    v = v.wrapping_mul(231u64).wrapping_add(v.wrapping_shr(41u32)) ^ 107u64
+    v = v.wrapping_mul(233u64).wrapping_add(v.wrapping_shr(42u32)) ^ 108u64
+    v = v.wrapping_mul(235u64).wrapping_add(v.wrapping_shr(43u32)) ^ 109u64
+    v = v.wrapping_mul(237u64).wrapping_add(v.wrapping_shr(44u32)) ^ 110u64
+    v = v.wrapping_mul(239u64).wrapping_add(v.wrapping_shr(45u32)) ^ 111u64
+    v = v.wrapping_mul(241u64).wrapping_add(v.wrapping_shr(46u32)) ^ 112u64
+    v = v.wrapping_mul(243u64).wrapping_add(v.wrapping_shr(47u32)) ^ 113u64
+    v = v.wrapping_mul(245u64).wrapping_add(v.wrapping_shr(48u32)) ^ 114u64
+    v = v.wrapping_mul(247u64).wrapping_add(v.wrapping_shr(49u32)) ^ 115u64
+    v = v.wrapping_mul(249u64).wrapping_add(v.wrapping_shr(50u32)) ^ 116u64
+    v = v.wrapping_mul(251u64).wrapping_add(v.wrapping_shr(51u32)) ^ 117u64
+    v = v.wrapping_mul(253u64).wrapping_add(v.wrapping_shr(52u32)) ^ 118u64
+    v = v.wrapping_mul(255u64).wrapping_add(v.wrapping_shr(53u32)) ^ 119u64
+    v = v.wrapping_mul(257u64).wrapping_add(v.wrapping_shr(54u32)) ^ 120u64
+    v = v.wrapping_mul(259u64).wrapping_add(v.wrapping_shr(55u32)) ^ 121u64
+    v = v.wrapping_mul(261u64).wrapping_add(v.wrapping_shr(56u32)) ^ 122u64
+    v = v.wrapping_mul(263u64).wrapping_add(v.wrapping_shr(57u32)) ^ 123u64
+    v = v.wrapping_mul(265u64).wrapping_add(v.wrapping_shr(58u32)) ^ 124u64
+    v = v.wrapping_mul(267u64).wrapping_add(v.wrapping_shr(59u32)) ^ 125u64
+    v = v.wrapping_mul(269u64).wrapping_add(v.wrapping_shr(60u32)) ^ 126u64
+    *a = v
+end t.set
+
+fn t.show(x: u64) -> () uses [alloc, io.console] panics never
+    let mut s = std.string.String.new()
+    core.mem.drop(s.push_u64(x))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show
+
+fn t.work(n: u64) -> u64 uses [] panics never
+    let mut x = 1u64
+    let mut acc = 0u64
+    for i in core.iter.range(0u64, n) {
+        x = i.wrapping_add(10u64)
+        acc = acc.wrapping_add(t.get((&x, 1u8)))
+        x = i.wrapping_add(20u64)
+        acc = acc.wrapping_add(t.get((&x, 1u8)))
+    }
+    acc
+end t.work
+
+fn t.work2(k: u64) -> u64 uses [] panics never
+    let mut y = 5u64
+    t.set((&mut y, 1u8), k)
+    let y1 = y
+    t.set((&mut y, 1u8), k.wrapping_add(1u64))
+    y1 ^ y
+end t.work2
