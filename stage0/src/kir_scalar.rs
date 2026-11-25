@@ -23,7 +23,7 @@ pub fn from_f64(ty: Ty, x: f64) -> i128 {
     }
 }
 
-/// ビットが見える所 (`to_bits`・メモリへの書き出し・FFI) で、NaN を正の quiet NaN にそろえる。NaN 以外と整数は変えない (17.8)。
+/// ビットが見える所 (`to_bits`・FFI。メモリへの書き出しでは行わない) で、NaN を正の quiet NaN にそろえる。NaN 以外と整数は変えない (17.8)。
 pub fn canon_bits(ty: Ty, bits: i128) -> i128 {
     match ty {
         Ty::F32 if f32::from_bits(bits as u32).is_nan() => 0x7FC0_0000,

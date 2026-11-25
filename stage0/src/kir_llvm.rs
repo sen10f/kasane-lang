@@ -2341,7 +2341,7 @@ impl<'a> Fe<'a> {
         }
     }
 
-    /// ビットが見える所 (`to_bits`・メモリへの書き出し・FFI の引数) で NaN を正の quiet NaN にそろえる (設計_KIR.md 17.8)。
+    /// ビットが見える所 (`to_bits`・FFI の引数。メモリへの書き出しでは行わない) で NaN を正の quiet NaN にそろえる (設計_KIR.md 17.8)。
     /// 演算ごとには行わない (ベクトル化を妨げるため)。NaN 以外は変えない。
     fn canon_f(&mut self, ty: Ty, v: &str) -> String {
         let (t, it) = match ty {
@@ -3548,7 +3548,6 @@ impl<'a> Fe<'a> {
             self.line(format!("store i8 {}, ptr {}{}", z, addr, align));
         } else {
             let lt = self.lt(t);
-            let v = self.canon_f(t, v);
             self.line(format!("store {} {}, ptr {}{}", lt, v, addr, align));
         }
         Ok(())
