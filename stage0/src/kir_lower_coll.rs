@@ -644,6 +644,36 @@ pub(crate) fn rec_drop_call(lw: &mut Lw, t: Ty, p: VId, skip: VId) {
     lw.emit(Ty::Unit, Op::Call { callee: name, args: vec![p, skip] });
 }
 
+/// 総称型 (集成体 `i`) の手書きの `drop` を、型引数で単相化したインスタンスの鍵にする。決まらなければ下ろしの失敗として記録する。
+fn generic_drop_fn(lw: &mut Lw, i: u32) -> String {
+    let ga = lw.aggs.borrow().generic_args.get(&i).cloned();
+    let fail = |lw: &mut Lw, why: String| {
+        if lw.coll.close_err.is_none() {
+            lw.coll.close_err = Some(why);
+        }
+        String::new()
+    };
+    let Some((tname, args)) = ga else { return fail(lw, "総称型の Drop の型引数が分からない".into()) };
+    let p = lw.p;
+    let Some(di) = p.defs.iter().position(|d| d.kw == "fn" && d.name == format!("{}.drop", tname) && d.impls_trait == "core.ops.Drop") else {
+        return fail(lw, format!("{} の drop の定義がない", tname));
+    };
+    let cd = &p.defs[di];
+    let tn = super::mono::tnames(cd);
+    let mut bind = std::collections::HashMap::new();
+    if let Some((_, pt)) = cd.params.first() {
+        let mut pat = from_v(pt, &tn);
+        while let Src::Ref(_, x, _) = pat {
+            pat = *x;
+        }
+        super::mono::unify(&pat, &Src::Named(tname.clone(), args, Default::default()), &mut bind);
+    }
+    match lw.mono_instance(di, &bind, 0) {
+        Ok(k) => k,
+        Err(e) => fail(lw, e),
+    }
+}
+
 /// 型 `t` の値 `v` (所有している) を解放する命令列を、現在のブロックに置く。所有物を持たない型は何もしない。
 /// 列挙型と `Option` / `Result` は、タグで枝を分けて、持っている変種のペイロードだけを解放する。
 pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
@@ -725,6 +755,7 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
                 let pt = Pointee::of(t).expect("集成体は参照できる");
                 let r = lw.emit(Ty::Ref(true, pt), Op::Bitcast { src: Ty::Ptr, a: slot });
                 lw.emit(Ty::Unit, Op::Store { ptr: r, val: v });
+                let fname = if fname == super::agg::GENERIC_DROP { generic_drop_fn(lw, i) } else { fname };
                 lw.callees.insert(fname.clone());
                 lw.emit(Ty::Unit, Op::Call { callee: fname, args: vec![r] });
                 v = lw.emit(t, Op::Load(r));

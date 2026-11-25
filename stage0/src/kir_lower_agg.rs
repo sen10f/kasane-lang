@@ -66,6 +66,9 @@ pub fn is_vec_name(n: &str) -> bool {
 }
 
 /// 手書きの `Drop` を持つ構造体が末尾に持つ隠しの欄 (生きている = 真)。値を移し出した後の「空」の値は偽で、破棄しても何も起きない。
+/// `user_drop` の値が総称型の印のとき (関数名は `drop_value` が `generic_args` から単相化して決める)。
+pub const GENERIC_DROP: &str = "<generic>";
+
 pub const LIVE: &str = "$live";
 
 /// 集成体の型表。`lower_user` が 1 つ作り、全関数で共有する。
@@ -854,13 +857,12 @@ impl AggTab {
             return Ok(Ty::Agg(i));
         }
         let has_user_drop = p.impls.contains(&("core.ops.Drop".to_string(), d.name.clone())) && !d.derive.iter().any(|x| x == "Drop");
-        if has_user_drop && !bind.is_empty() {
-            return Err(format!("手書きの Drop を持つ総称型 {} は未対応", d.name));
-        }
         let t = self.push(name, size, align, kind);
         if has_user_drop {
             if let Ty::Agg(i) = t {
-                self.user_drop.insert(i, format!("{}.drop", d.name));
+                // 総称型の `drop` は破棄の点で型引数ごとに単相化する (`GENERIC_DROP`)。
+                let f = if bind.is_empty() { format!("{}.drop", d.name) } else { GENERIC_DROP.to_string() };
+                self.user_drop.insert(i, f);
             }
         }
         Ok(t)

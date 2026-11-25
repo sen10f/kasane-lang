@@ -107,6 +107,12 @@ fn user_drop_derived_clone_and_eq_do_not_move() {
     all_engines("derive");
 }
 
+/// 型パラメータを持つ型の `Drop` (型引数ごとに単相化して呼ぶ。欄に `Drop` 型を持つ具体化も)。
+#[test]
+fn user_drop_generic_type_is_monomorphized_per_argument() {
+    all_engines("generic");
+}
+
 /// `ksn test` も同じ (VM で走る)。
 #[test]
 fn user_drop_ksn_test_runs_the_drop() {
