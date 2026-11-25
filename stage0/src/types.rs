@@ -1431,7 +1431,7 @@ impl<'a> TypeCk<'a> {
                 let shown = self.deep(&s.ty).show();
                 self.diag(
                     "E2044",
-                    format!("cannot determine the type of {} (inferred so far: `{}`): add a type annotation", s.what, shown),
+                    format!("cannot determine the type of {} (binding root; inferred so far: `{}`): add a type annotation (e.g. `let v: std.vec.Vec<u32> = std.vec.Vec.new(std.alloc.SYSTEM)`)", s.what, shown),
                     s.line,
                 );
             }
@@ -6591,9 +6591,7 @@ impl<'a> TypeCk<'a> {
                             let (w, g) = self.type_conflict(&err).unwrap_or_else(|| Self::raw_pair(&err));
                             self.diag(
                                 "E2020",
-                                format!(
-                                    "type mismatch in `?`: expected error type `{w}`, found `{g}`; add a variant `V({g})` to `{w}` (an enum that declares `derive [From]`), or write `map_err`",
-                                ),
+                                format!("type mismatch in `?`: expected error type `{w}`, found `{g}`; the function's error type must be `{g}` or implement `From<{g}>` (define your own error enum with `derive [From]`), or convert with `map_err` before `?`"),
                                 line,
                             );
                         }

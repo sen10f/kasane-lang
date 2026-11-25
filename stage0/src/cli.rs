@@ -7,9 +7,11 @@ use std::rc::Rc;
 
 use sha2::{Digest, Sha256};
 
-use crate::check::Checker;
+use crate::check::{Checker, header_is_pub, impl_target};
+use crate::doclink::Known;
 use crate::explain::EXPLAIN;
 use crate::fmt::{format_source_prog, mechanical_collapse};
+use crate::types::std_to_alloc;
 use crate::grammar::{py_repr, Grammar};
 use crate::interp::Interp;
 use crate::lint::Lint;
@@ -2583,6 +2585,9 @@ fn cmd_get(args: &[String]) -> i32 {
 
 /// `ksn context <FQN>`: 定義全体と、そこから参照される定義の署名 (型は全体) を出力する。
 /// 小さな文脈で 1 つの定義を読み書きするための表示。
+///
+/// 対象はそのままの FQN のほか、`std.*` の短縮名 (`std.vec.Vec` → `alloc.vec.Vec`) と、
+/// 末尾の名前が一意な短い名前 (`Vec` → `alloc.vec.Vec`) も受け付ける。
 fn cmd_context(args: &[String]) -> i32 {
     if let Some(msg) = unknown_flag(args, &[], false) {
         eprintln!("{}", msg);
@@ -2600,16 +2605,56 @@ fn cmd_context(args: &[String]) -> i32 {
         }
     };
     let srcs = ev.sources();
-    let Some(Found::Def(d, s)) = find_def(&srcs, fqn) else {
+    let known = Known::of(&srcs);
+    let resolved = context_target(&known, fqn);
+    let Some(resolved) = resolved else {
+        eprintln!("ksn: {} not found", fqn);
+        return 1;
+    };
+    let Some(Found::Def(d, s)) = find_def(&srcs, &resolved) else {
         eprintln!("ksn: {} not found", fqn);
         return 1;
     };
     let start = def_start(s, d);
     let end = if d.end_line > 0 { d.end_line } else { d.line };
-    let text = s.lines[start..end].join("
-");
+    let text = s.lines[start..end].join("\n");
     println!("// target: {}", d.name);
     println!("{}", crate::lexrules::visible(&text));
+
+    // この型の `pub` メソッドの署名と、この型を対象とする `impl` の署名。
+    let mut methods: Vec<String> = vec![];
+    let mut impls: Vec<String> = vec![];
+    let prefix = format!("{}.", resolved);
+    for s2 in &srcs {
+        for d2 in &s2.defs {
+            if d2.kw == "fn"
+                && d2.name.starts_with(&prefix)
+                && header_is_pub(&d2.header)
+            {
+                methods.push(d2.header.clone());
+            } else if d2.kw == "impl" && impl_target(&d2.impl_for) == d.name {
+                impls.push(d2.header.clone());
+            }
+        }
+    }
+    methods.sort();
+    methods.dedup();
+    impls.sort();
+    impls.dedup();
+    if !methods.is_empty() {
+        println!();
+        println!("// methods");
+        for m in methods {
+            println!("{}", m);
+        }
+    }
+    if !impls.is_empty() {
+        println!();
+        println!("// trait impls");
+        for i in impls {
+            println!("{}", i);
+        }
+    }
     let mut refs: Vec<(String, String)> = vec![];
     for s2 in &srcs {
         for d2 in &s2.defs {
@@ -2627,8 +2672,7 @@ fn cmd_context(args: &[String]) -> i32 {
             } else {
                 let st = def_start(s2, d2);
                 let en = if d2.end_line > 0 { d2.end_line } else { d2.line };
-                s2.lines[st..en].join("
-")
+                s2.lines[st..en].join("\n")
             };
             refs.push((d2.name.clone(), shown));
         }
@@ -2643,6 +2687,23 @@ fn cmd_context(args: &[String]) -> i32 {
         }
     }
     0
+}
+
+/// `ksn context` の対象名を FQN に解決する。
+/// そのままの FQN、`std.*` → `alloc.*` の短縮名、末尾の名前が一意な短い名前の順に試す。
+fn context_target(known: &Known, fqn: &str) -> Option<String> {
+    if known.fqns.contains(fqn) {
+        return Some(fqn.to_string());
+    }
+    if let Some(alloc) = std_to_alloc(fqn) {
+        if known.fqns.contains(alloc) {
+            return Some(alloc.to_string());
+        }
+    }
+    if !fqn.contains('.') {
+        return known.short.get(fqn).cloned();
+    }
+    None
 }
 
 fn cmd_sig(args: &[String]) -> i32 {

@@ -5869,7 +5869,7 @@ fn collect_ref_fqns(t: &V, out: &mut BTreeSet<String>) {
 }
 
 /// 定義ヘッダの末尾が `pub` か。
-fn header_is_pub(h: &str) -> bool {
+pub(crate) fn header_is_pub(h: &str) -> bool {
     h.split_whitespace().last() == Some("pub")
 }
 

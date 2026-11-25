@@ -60,6 +60,32 @@ fn context_prints_definition_and_referenced_signatures() {
     assert_ne!(run(&["context", "json.nothing"], &d).status.code(), Some(0));
 }
 
+#[test]
+fn context_resolves_std_and_short_names_and_lists_methods() {
+    let d = root().join("examples").join("json");
+    // `std.*` 短縮名は `alloc.*` に解決され、型定義・`pub` メソッド・trait impl が出る。
+    let o = run(&["context", "std.vec.Vec"], &d);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("// target: alloc.vec.Vec"), "{}", out);
+    assert!(out.contains("fn alloc.vec.Vec.new["), "{}", out);
+    assert!(out.contains("core.ops.Drop for alloc.vec.Vec"), "{}", out);
+    assert!(out.contains("// methods"), "{}", out);
+    assert!(out.contains("// trait impls"), "{}", out);
+    // 末尾の名前が一意な短い別名（`Vec` → `alloc.vec.Vec`）。
+    let s = run(&["context", "Vec"], &d);
+    assert_eq!(s.status.code(), Some(0), "{}", text(&s.stderr));
+    let sout = text(&s.stdout);
+    assert!(sout.contains("// target: alloc.vec.Vec"), "{}", sout);
+    // `std.string.String` も解決する。
+    let st = run(&["context", "std.string.String"], &d);
+    assert_eq!(st.status.code(), Some(0), "{}", text(&st.stderr));
+    let tout = text(&st.stdout);
+    assert!(tout.contains("fn alloc.string.String.new["), "{}", tout);
+    // 存在しない名前は rc=1。
+    assert_ne!(run(&["context", "std.nothing"], &d).status.code(), Some(0));
+}
+
 /// `File.sync` が通常ファイルで成功し、`with` の本体の `write` / `sync` のエラーが `?` で抜けても、後始末が1回走る
 /// (`/dev/full` は Linux のみ。ある環境だけ検査する)。インタプリタとネイティブの両方で通る。
 #[test]
