@@ -1058,9 +1058,7 @@ impl Interp {
                     raw.push(0);
                 }
                 if let Some(out) = args.get(1) {
-                    if let Some(l) = item_list(&dr(out)) {
-                        l.borrow_mut().extend(raw.iter().map(|b| int(*b as i128, "u8")));
-                    }
+                    crate::value::extend_vec_bytes(&dr(out), &raw);
                 }
                 Ok(ok(int(raw.len() as i128, "usize")))
             }
@@ -1075,9 +1073,7 @@ impl Interp {
                 match res {
                     Ok(n) => {
                         if let Some(out) = args.get(1) {
-                            if let Some(l) = item_list(&dr(out)) {
-                                l.borrow_mut().extend(buf.iter().map(|b| int(*b as i128, "u8")));
-                            }
+                            crate::value::extend_vec_bytes(&dr(out), &buf);
                         }
                         Ok(ok(int(n as i128, "usize")))
                     }

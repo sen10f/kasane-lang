@@ -169,9 +169,7 @@ impl Interp {
                             Ok(o) => {
                                 for (i, data) in [&o.stdout, &o.stderr].into_iter().enumerate() {
                                     if let Some(target) = args.get(i) {
-                                        if let Some(l) = crate::natives::item_list_pub(&dr(target)) {
-                                            l.borrow_mut().extend(data.iter().map(|b| int(*b as i128, "u8")));
-                                        }
+                                        crate::value::extend_vec_bytes(&dr(target), data);
                                     }
                                 }
                                 ok(status_val(o.status))
