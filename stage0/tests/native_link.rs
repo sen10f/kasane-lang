@@ -154,10 +154,16 @@ fn native_table_is_validated_strictly() {
         assert_eq!(o.status.code(), Some(1), "{}: {}", native, text(&o.stdout));
         assert_eq!(codes(&text(&o.stdout)), vec![code.to_string()], "{}: {}", native, text(&o.stdout));
     }
-    // `static = 1` のような配列でない指定は受けない。
+    // `[unsafe] native` は真偽値だけ (E9012)。
+    let t = Tmp::new("nat_unsafe_wrong", "");
+    fs::write(t.0.join("src/t.ksnl"), ADD_SRC).unwrap();
+    fs::write(t.0.join("kasane.toml"), manifest("").replacen("native = true", "native = 1", 1)).unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(codes(&text(&o.stdout)), vec!["E9012".to_string()], "{}", text(&o.stdout));
+    // 表でない `native = 1` (最上位) も受けない (E9012)。
     let t = Tmp::new("nat_not_table", "");
     fs::write(t.0.join("src/t.ksnl"), ADD_SRC).unwrap();
-    fs::write(t.0.join("kasane.toml"), manifest("").replacen("native = true\n\n[native]", "native = true\n\n[native]\nstatic = 1", 1)).unwrap();
+    fs::write(t.0.join("kasane.toml"), format!("native = 1\n{}", manifest("").replacen("[native]\n\n", "", 1))).unwrap();
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(codes(&text(&o.stdout)), vec!["E9012".to_string()], "{}", text(&o.stdout));
     // 正しい指定は通る (診断 0 件)。
@@ -371,9 +377,17 @@ fn a_dependency_native_needs_ack_and_static_is_hashed() {
     assert!(all(&o).contains("native static vendor/libx.a"), "{}", all(&o));
     write(&f.app.join("vendor/dep/vendor/libx.a"), "two");
     let o = f.check();
-    assert!(all(&o).contains("E9022"), "{}", all(&o));
-    // 認めていない依存は E9024。
-    write(&f.app.join("vendor/dep/kasane.toml"), &toml.replace("[unsafe]\nnative = true\n\n", ""));
-    let o = f.check();
-    assert!(all(&o).contains("E9024") || all(&o).contains("E9022"), "{}", all(&o));
+    assert!(all(&o).contains("E9022") && !all(&o).contains("E9024"), "{}", all(&o));
+    // 認めていない依存は E9024 だけ。
+    let bad = toml.replace("[unsafe]\nnative = true\n\n", "");
+    write(&f.repo.join("kasane.toml"), &bad);
+    git(&f.repo, &["add", "-A"]);
+    git(&f.repo, &["commit", "--quiet", "-m", "noack"]);
+    let rev = git(&f.repo, &["rev-parse", "HEAD"]);
+    write(
+        &f.app.join("kasane.toml"),
+        &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"app.main\"\n\n[dependencies]\ndep = {{ git = \"{}\", rev = \"{}\" }}\n", f.url, rev),
+    );
+    let o = f.w.ksn(&["update", "dep"], &f.app);
+    assert!(all(&o).contains("E9024") && !all(&o).contains("E9022"), "{}", all(&o));
 }
