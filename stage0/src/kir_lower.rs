@@ -2357,6 +2357,7 @@ fn lower_defs_with(p: &Program, user: &[usize], entry: Option<&str>, test_def: O
     let mut ext_bad: Vec<(String, String)> = vec![];
     crate::s5_meter::set_active(true);
     let mut tried: HashSet<usize> = HashSet::new();
+    let user_set: HashSet<usize> = user.iter().copied().collect();
     // 入口を指定した遅延の下ろし (VM の `ksn run` / `ksn test`) は、入口から呼ばれる先だけを下ろす。
     let entry_only: Vec<usize> = match (lazy, test_def, entry) {
         (true, Some(t), _) => {
@@ -2396,7 +2397,7 @@ fn lower_defs_with(p: &Program, user: &[usize], entry: Option<&str>, test_def: O
                         continue;
                     }
                     if let Some(&di) = p.funcs.get(c) {
-                        if user.contains(&di) && is_candidate(&p.defs[di]) && tried.insert(di) {
+                        if user_set.contains(&di) && is_candidate(&p.defs[di]) && tried.insert(di) {
                             want.push(di);
                         }
                     }
@@ -2425,7 +2426,7 @@ fn lower_defs_with(p: &Program, user: &[usize], entry: Option<&str>, test_def: O
             for (tr, m) in reg.calls.keys() {
                 for ent in reg.vts.iter().filter(|v| v.tr == *tr) {
                     if let Some(&di) = p.funcs.get(&format!("{}.{}", ent.concrete_name, m)) {
-                        if user.contains(&di) && is_candidate(&p.defs[di]) && tried.insert(di) {
+                        if user_set.contains(&di) && is_candidate(&p.defs[di]) && tried.insert(di) {
                             want.push(di);
                         }
                     }

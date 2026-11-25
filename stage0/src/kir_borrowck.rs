@@ -432,6 +432,8 @@ struct An<'a> {
     sfo: Vec<BTreeSet<u32>>,
     /// 引数ごとの、指す先の構造体の領域を持つ欄 (入れ子も) のオフセット → 欄の宣言の領域。
     freg: Vec<Freg>,
+    /// `load` / `memload` が作る値。
+    load_defs: HashSet<VId>,
 }
 
 /// 引数 `d.params` ごとに、指す先の構造体の欄のうち、宣言の上で領域が `'static` だけのもの (`&'static str` など) のオフセット。
@@ -635,7 +637,7 @@ impl<'a> An<'a> {
 
     /// 値 `v` を作る命令が、メモリからの読み (`load` / `memload`) か。
     fn is_load_def(&self, v: VId) -> bool {
-        self.f.blocks.iter().any(|b| b.insts.iter().any(|i| i.dst == v && matches!(i.op, Op::MemLoad { .. } | Op::Load(_))))
+        self.load_defs.contains(&v)
     }
 
     /// `p` が入口の引数 `j` の指す先の、`'static` だけの欄 (オフセット `off` を足した先) を指すか。
@@ -1122,7 +1124,14 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
     }
     // 集成体の move: `load p` (集成体) の後に、同じブロックで、所有の印 (`frame.bytes 1`) を false にするか、`p` へ全部 0 の値を書き戻す。
     let mut agg_moves: HashMap<(usize, usize), VId> = HashMap::new();
-    let def_of = |v: VId| f.blocks.iter().flat_map(|b| b.insts.iter()).find(|i| i.dst == v);
+    let def_map: HashMap<VId, &Inst> = {
+        let mut m = HashMap::new();
+        for i in f.blocks.iter().flat_map(|b| b.insts.iter()) {
+            m.entry(i.dst).or_insert(i);
+        }
+        m
+    };
+    let def_of = |v: VId| def_map.get(&v).copied();
     for (bi, b) in f.blocks.iter().enumerate() {
         let mut last_load: Option<VId> = None;
         let mut loaded: HashSet<VId> = HashSet::new();
@@ -1188,7 +1197,7 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
             }
         }
     }
-    let mut an = An { aggs, f, hdr, callee, n, ty, org: vec![Set::new(); n], place, parent, move_loads, owners, move_stores, pabs, sfo, freg };
+    let mut an = An { aggs, f, hdr, callee, n, ty, org: vec![Set::new(); n], place, parent, move_loads, owners, move_stores, pabs, sfo, freg, load_defs: f.blocks.iter().flat_map(|b| b.insts.iter()).filter(|i| matches!(i.op, Op::MemLoad { .. } | Op::Load(_))).map(|i| i.dst).collect() };
     let ins = an.run();
     let mut diags: Vec<Diag> = vec![];
     let mut cons: Vec<Cons> = vec![];
@@ -1640,6 +1649,10 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
         }
     }
     let is_mut = |v: VId| bmut.contains(&v) || (matches!(an.ty[v as usize], Ty::Ref(true, _)) && !bshared.contains(&v));
+    let mut reqs_at: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for (k, r) in reqs.iter().enumerate() {
+        reqs_at.entry((r.0, r.1)).or_default().push(k);
+    }
     for bi in 0..nb {
         let b = &f.blocks[bi];
         let mut live: HashSet<VId> = HashSet::new();
@@ -1659,7 +1672,7 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
         for ii in (0..b.insts.len()).rev() {
             let i = &b.insts[ii];
             // `live` はこの命令の直後に生きている値。
-            for (rb, ri, line, req) in reqs.iter().filter(|r| r.0 == bi && r.1 == ii) {
+            for (rb, ri, line, req) in reqs_at.get(&(bi, ii)).into_iter().flatten().map(|k| &reqs[*k]) {
                 let _ = (rb, ri);
                 match req {
                     Req::Inval { loans, skip, holders, why } => {
