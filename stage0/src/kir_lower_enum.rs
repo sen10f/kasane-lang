@@ -254,6 +254,15 @@ impl<'a> Lw<'a> {
                 }
             }
         }
+        if segs.len() == 2 && segs[1] == "ok_or" && items(&f[1]).len() == 1 {
+            if let Some(s) = self.lookup(&segs[0]) {
+                let recv = super::coll::path_peek(self, s);
+                if matches!(self.vty(recv), Ty::Opt(_)) {
+                    let args = items(&f[1]).to_vec();
+                    return Some(self.opt_ok_or(e, recv, &args));
+                }
+            }
+        }
         if segs.len() == 2 && segs[1] == "ok" && items(&f[1]).is_empty() {
             if let Some(s) = self.lookup(&segs[0]) {
                 let recv = super::coll::path_peek(self, s);
@@ -313,6 +322,17 @@ impl<'a> Lw<'a> {
             if (m == "ok") == args.is_empty() && self.ty_of(&f[0]).map_or(false, |t| matches!(t, Ty::Res(..))) {
                 return Some(match self.expr(&f[0]) {
                     Ok(Some(recv)) => self.res_map(e, recv, &m, &args),
+                    Ok(None) => Ok(None),
+                    Err(x) => Err(x),
+                });
+            }
+        }
+        if m == "ok_or" {
+            let f = nf(e);
+            let args = items(&f[2]).to_vec();
+            if args.len() == 1 && self.ty_of(&f[0]).map_or(false, |t| matches!(t, Ty::Opt(_))) {
+                return Some(match self.expr(&f[0]) {
+                    Ok(Some(recv)) => self.opt_ok_or(e, recv, &args),
                     Ok(None) => Ok(None),
                     Err(x) => Err(x),
                 });
@@ -518,6 +538,42 @@ impl<'a> Lw<'a> {
             }
         };
         self.goto(join, vec![out]);
+        self.cur = Some(join);
+        Ok(Some(jp[0]))
+    }
+
+    /// `opt.ok_or(e)`: `Some(x)` は `Ok(x)`、`None` は `Err(e)`。
+    pub(super) fn opt_ok_or(&mut self, e: &V, recv: VId, args: &[V]) -> LR<Option<VId>> {
+        let line = nline(e);
+        if args.len() != 1 {
+            return self.err(line, "ok_or の引数は 1 つのはず");
+        }
+        let rt = self.ty_of(e)?;
+        let (Ty::Opt(t0), Ty::Res(t1, e1)) = (self.vty(recv), rt) else {
+            return self.err(line, "ok_or の受け手が Option でない、または結果が Result でない");
+        };
+        if t0 != t1 {
+            return self.err(line, "ok_or で Ok の型が Option の型と合わない");
+        }
+        if super::coll::owns(self, self.vty(recv)) || super::coll::owns(self, rt) {
+            return self.err(line, "所有物を持つ ok_or は段階 1 の対象外");
+        }
+        let Some(ev) = self.expr(&args[0])? else { return Ok(None) };
+        if self.vty(ev) != e1.ty() {
+            return self.err(line, "ok_or の引数の型が Err の型と合わない");
+        }
+        let tag = self.emit(Ty::Bool, Op::Tag(recv));
+        let (some_b, _) = self.new_block(&[]);
+        let (none_b, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[rt]);
+        self.branch(tag, (some_b, vec![]), (none_b, vec![]));
+        self.cur = Some(some_b);
+        let pv = self.emit(t0.ty(), Op::Payload(recv));
+        let ok = self.emit(rt, Op::Ok(pv));
+        self.goto(join, vec![ok]);
+        self.cur = Some(none_b);
+        let er = self.emit(rt, Op::Err(ev));
+        self.goto(join, vec![er]);
         self.cur = Some(join);
         Ok(Some(jp[0]))
     }
