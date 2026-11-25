@@ -483,20 +483,29 @@ end ksn.task.wake_if
 fn ksn.task.release key=ksn.task.release uses=[alloc] panics=never stack=- ret=unit
   b0(%0: usize):
     %1: bool = call ksn.task.marked(%0)
-    br_if %1, b5(), b1(%0)
-  b1(%2: usize):
+    br_if %1, b1(%0), b3(%0)
+  b1(%30: usize):
+    %31: ptr = call ksn.mt.fp(%30)
+    %32: ptr = const.ptr 0
+    %33: bool = icmp.eq.ptr %31, %32
+    br_if %33, b7(), b2(%30, %31)
+  b2(%34: usize, %35: ptr):
+    %36: unit = heap.free %35
+    %37: unit = call ksn.mt.clear_fp(%34)
+    br b7()
+  b3(%2: usize):
     %3: bool = call ksn.task.running()
-    br_if %3, b2(%2), b5()
-  b2(%4: usize):
+    br_if %3, b4(%2), b7()
+  b4(%4: usize):
     %5: ptr = call ksn.task.entry(%4)
     %6: ptr = mem.load.ptr %5 +24
     %7: ptr = const.ptr 0
     %8: bool = icmp.eq.ptr %6, %7
-    br_if %8, b4(%4, %5), b3(%4, %5, %6)
-  b3(%9: usize, %10: ptr, %11: ptr):
+    br_if %8, b6(%4, %5), b5(%4, %5, %6)
+  b5(%9: usize, %10: ptr, %11: ptr):
     %12: unit = heap.free %11
-    br b4(%9, %10)
-  b4(%13: usize, %14: ptr):
+    br b6(%9, %10)
+  b6(%13: usize, %14: ptr):
     %15: unit = mem.store.ptr %14 +24, %7
     %16: ptr = global.bytes ksn.task.g 112
     %17: usize = mem.load.usize %16 +104
@@ -504,11 +513,26 @@ fn ksn.task.release key=ksn.task.release uses=[alloc] panics=never stack=- ret=u
     %19: usize = const.usize 1
     %20: usize = add.usize.wrap %13, %19
     %21: unit = mem.store.usize %16 +104, %20
-    br b5()
-  b5():
+    br b7()
+  b7():
     %22: unit = const.unit ()
     ret %22
 end ksn.task.release
+
+fn ksn.task.release_local key=ksn.task.release_local uses=[] panics=never stack=- ret=unit
+  b0(%0: usize):
+    %1: ptr = call ksn.task.entry(%0)
+    %2: ptr = const.ptr 0
+    %3: unit = mem.store.ptr %1 +24, %2
+    %4: ptr = global.bytes ksn.task.g 112
+    %5: usize = mem.load.usize %4 +104
+    %6: unit = mem.store.usize %1 +8, %5
+    %7: usize = const.usize 1
+    %8: usize = add.usize.wrap %0, %7
+    %9: unit = mem.store.usize %4 +104, %8
+    %10: unit = const.unit ()
+    ret %10
+end ksn.task.release_local
 
 fn ksn.task.wake_blocked key=ksn.task.wake_blocked uses=[] panics=never stack=- ret=unit
   b0():
@@ -1812,6 +1836,7 @@ fn ksn.task.mt_loop key=ksn.task.mt_loop uses=[alloc] panics=may stack=- ret=uni
   b8(%55: u32, %56: usize, %57: usize, %58: usize):
     %59: u32 = const.u32 0
     %60: unit = call ksn.mt.finish(%58, %59)
+    %906: unit = call ksn.task.release_local(%56)
     %61: usize = const.usize 0
     br b1(%55, %56, %57, %61)
   b9(%62: u32, %63: usize, %64: usize, %65: usize):
