@@ -1,0 +1,38 @@
+fn t.grow(a: &mut std.vec.Vec<u64>, b: &std.vec.Vec<u64>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    for i in core.iter.range(0usize, b.len()) {
+        a.push(b[i] + a[i])?
+        a[i] = a[i] * 3u64
+    }
+    Ok(())
+end t.grow
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut a = std.vec.Vec.new()
+    let mut b = std.vec.Vec.new()
+    for i in core.iter.range(0u64, 6u64) {
+        match a.push(i) {
+            Ok(_) => core.mem.drop(0u8)
+            Err(_e) => core.panic.panic("oom")
+        }
+        match b.push(i * 10u64) {
+            Ok(_) => core.mem.drop(0u8)
+            Err(_e) => core.panic.panic("oom")
+        }
+    }
+    match t.grow(&mut a, &b) {
+        Ok(_) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("oom")
+    }
+    let mut s = std.string.String.new()
+    for i in core.iter.range(0usize, a.len()) {
+        match s.push_u64(a[i]) {
+            Ok(_) => core.mem.drop(0u8)
+            Err(_e) => core.panic.panic("oom")
+        }
+        match s.push_str(" ") {
+            Ok(_) => core.mem.drop(0u8)
+            Err(_e) => core.panic.panic("oom")
+        }
+    }
+    std.io.print_line(s.as_str())
+end t.main

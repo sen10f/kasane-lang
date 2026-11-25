@@ -662,6 +662,20 @@ impl<'a> Lw<'a> {
             }
         };
         self.ret = ret;
+        {
+            // `&Vec<T>` / `&mut Vec<T>` の引数 (ヘッダのアドレス) は、LLVM で `noalias` にできる (kir_llvm の `VEC_REFS`)。
+            let codes: Vec<u8> = d
+                .params
+                .iter()
+                .map(|(_, pt)| match self.decl_ty(pt) {
+                    Src::Ref(m, inner, _) if matches!(&*inner, Src::Named(n, _, _) if n == "alloc.vec.Vec") => if m { 2 } else { 1 },
+                    _ => 0,
+                })
+                .collect();
+            let key = self.inst_key.clone().unwrap_or_else(|| d.name.clone());
+            let mut g = crate::kir::VEC_REFS.lock().unwrap();
+            if codes.iter().any(|c| *c != 0) { g.insert(key, codes); } else { g.remove(&key); }
+        }
         let (b0, pv) = self.new_block(&params);
         debug_assert_eq!(b0, 0);
         self.cur = Some(0);

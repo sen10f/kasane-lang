@@ -1118,6 +1118,9 @@ pub struct Func {
     pub blocks: Vec<Block>,
 }
 
+/// 関数の鍵 → 引数ごとの印 (1: `&Vec<T>`、2: `&mut Vec<T>`、0: それ以外)。下ろしが書き、LLVM への出力が読む (無ければ属性を付けないだけ)。
+pub static VEC_REFS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>> = std::sync::LazyLock::new(Default::default);
+
 impl Func {
     /// 関数の引数 (ブロック 0 の引数)。
     pub fn params(&self) -> &[(VId, Ty)] {
