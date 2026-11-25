@@ -1723,6 +1723,8 @@ struct Fe<'a> {
     lit: HashMap<VId, String>,
     n: u32,
     body: String,
+    /// 命令の途中で要る一時の `alloca` (ループの中で積み上がらないよう、入口のブロックに置く)。
+    entry_allocas: String,
     cur: String,
     /// ブロックごとの入ってくる辺 (前のラベル、引数の値)。
     edges: BTreeMap<usize, Vec<(String, Vec<String>)>>,
@@ -1730,7 +1732,7 @@ struct Fe<'a> {
 
 impl<'a> Fe<'a> {
     fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, extern_dl: &'a HashMap<String, (String, String)>, funcs: &'a [Func], fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, extern_links, extern_dl, funcs, bare_fn: false, slow: false, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
+        Fe { cx, aggs, f, extern_links, extern_dl, funcs, bare_fn: false, slow: false, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), entry_allocas: String::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -1780,6 +1782,10 @@ impl<'a> Fe<'a> {
     /// `rhs` の結果を一時変数に置いて返す。
     fn t(&mut self, rhs: String) -> String {
         let t = self.tmp();
+        if rhs.starts_with("alloca ") {
+            self.entry_allocas.push_str(&format!("  {} = {}\n", t, rhs));
+            return t;
+        }
         self.line(format!("{} = {}", t, rhs));
         t
     }
@@ -3566,6 +3572,7 @@ impl<'a> Fe<'a> {
         };
         let mut s = format!("{} {} {}({}){} {}nounwind null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), if self.slow { fname(&format!("{}.slow", f.key)) } else { fname(&f.key) }, params.join(", "), exp, inline);
         s.push_str(&hoisted);
+        s.push_str(&self.entry_allocas);
         if bare {
             // `b0` の phi は `go` を前の辺として参照するので、空の `go` を残す (最適化で消える)。
             s.push_str("  br label %go\ngo:\n  br label %b0\n");
