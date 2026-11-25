@@ -1539,9 +1539,9 @@ impl<'a> Walker<'a> {
         };
         let mut sin: Vec<Option<St>> = vec![None; n];
         sin[0] = Some(HashMap::new());
-        let mut work: Vec<usize> = vec![0];
+        let mut work: BTreeSet<usize> = BTreeSet::from([0]);
         let mut guard = 0usize;
-        while let Some(b) = work.pop() {
+        while let Some(b) = work.pop_first() {
             guard += 1;
             if guard > 200_000 {
                 return;
@@ -1568,35 +1568,69 @@ impl<'a> Walker<'a> {
                     }
                 };
                 if changed {
-                    work.push(s);
+                    work.insert(s);
                 }
             }
         }
-        // 後向き: 生きている変数。
-        let mut live_in: Vec<BTreeSet<String>> = vec![BTreeSet::new(); n];
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for b in (0..n).rev() {
-                let mut cur: BTreeSet<String> = BTreeSet::new();
-                for &s in &cfg.succ[b] {
-                    cur.extend(live_in[s].iter().cloned());
-                }
-                for ev in cfg.evs[b].iter().rev() {
-                    match ev {
-                        Ev::Use(v) => {
-                            cur.insert(v.clone());
-                        }
-                        Ev::Bind { var, replace: true, .. } => {
-                            cur.remove(var);
-                        }
-                        _ => {}
+        // 後向き: 生きている変数。変数名は (名前の順に) 番号にして、ビット集合で持つ。ブロックごとの (gen, kill) を先に求めて、
+        // 変化したブロックの前だけを見直す (最小不動点なので順序によらず結果は同じ)。
+        let mut names: BTreeSet<&String> = BTreeSet::new();
+        for evs in &cfg.evs {
+            for ev in evs {
+                match ev {
+                    Ev::Use(v) => {
+                        names.insert(v);
                     }
+                    Ev::Bind { var, replace: true, .. } => {
+                        names.insert(var);
+                    }
+                    _ => {}
                 }
-                if cur != live_in[b] {
-                    live_in[b] = cur;
-                    changed = true;
+            }
+        }
+        let vars: Vec<&String> = names.into_iter().collect();
+        let vid: HashMap<&String, usize> = vars.iter().enumerate().map(|(i, v)| (*v, i)).collect();
+        let nw = (vars.len() + 63) / 64;
+        let mut gens: Vec<Vec<u64>> = vec![vec![0; nw]; n];
+        let mut kills: Vec<Vec<u64>> = vec![vec![0; nw]; n];
+        for b in 0..n {
+            for ev in cfg.evs[b].iter().rev() {
+                match ev {
+                    Ev::Use(v) => {
+                        let i = vid[v];
+                        gens[b][i / 64] |= 1 << (i % 64);
+                        kills[b][i / 64] &= !(1 << (i % 64));
+                    }
+                    Ev::Bind { var, replace: true, .. } => {
+                        let i = vid[var];
+                        kills[b][i / 64] |= 1 << (i % 64);
+                        gens[b][i / 64] &= !(1 << (i % 64));
+                    }
+                    _ => {}
                 }
+            }
+        }
+        let mut preds: Vec<Vec<usize>> = vec![vec![]; n];
+        for b in 0..n {
+            for &s in &cfg.succ[b] {
+                preds[s].push(b);
+            }
+        }
+        let mut live_in: Vec<Vec<u64>> = vec![vec![0; nw]; n];
+        let mut wl: BTreeSet<usize> = (0..n).collect();
+        while let Some(b) = wl.pop_last() {
+            let mut cur = vec![0u64; nw];
+            for &s in &cfg.succ[b] {
+                for (c, x) in cur.iter_mut().zip(&live_in[s]) {
+                    *c |= *x;
+                }
+            }
+            for w in 0..nw {
+                cur[w] = (cur[w] & !kills[b][w]) | gens[b][w];
+            }
+            if cur != live_in[b] {
+                live_in[b] = cur;
+                wl.extend(preds[b].iter().copied());
             }
         }
         // ロックのガードを持ったまま中断点に着く (E3050): 落とされる (移動・`drop`・スコープの終わり) までロックを持つ。
@@ -1650,27 +1684,46 @@ impl<'a> Walker<'a> {
         for b in 0..n {
             let Some(mut st) = sin[b].clone() else { continue };
             let evs = &cfg.evs[b];
-            let mut live_after: Vec<BTreeSet<String>> = vec![BTreeSet::new(); evs.len()];
-            let mut cur: BTreeSet<String> = BTreeSet::new();
+            let mut live_after: Vec<Vec<u64>> = vec![vec![]; evs.len()];
+            let mut cur: Vec<u64> = vec![0; nw];
             for &s in &cfg.succ[b] {
-                cur.extend(live_in[s].iter().cloned());
+                for (c, x) in cur.iter_mut().zip(&live_in[s]) {
+                    *c |= *x;
+                }
             }
             for (k, ev) in evs.iter().enumerate().rev() {
-                live_after[k] = cur.clone();
+                if matches!(ev, Ev::Suspend { .. } | Ev::Acc { .. }) {
+                    live_after[k] = cur.clone();
+                }
                 match ev {
                     Ev::Use(v) => {
-                        cur.insert(v.clone());
+                        let i = vid[v];
+                        cur[i / 64] |= 1 << (i % 64);
                     }
                     Ev::Bind { var, replace: true, .. } => {
-                        cur.remove(var);
+                        let i = vid[var];
+                        cur[i / 64] &= !(1 << (i % 64));
                     }
                     _ => {}
                 }
             }
+            // 命令 k の直後に生きている変数 (名前の順)。
+            let live_names = |bits: &Vec<u64>| -> Vec<&String> {
+                let mut out = vec![];
+                for (w, x) in bits.iter().enumerate() {
+                    let mut x = *x;
+                    while x != 0 {
+                        let t = x.trailing_zeros() as usize;
+                        out.push(vars[w * 64 + t]);
+                        x &= x - 1;
+                    }
+                }
+                out
+            };
             for (k, ev) in evs.iter().enumerate() {
                 if let Ev::Suspend { line } = ev {
                     // 枠の `Send` (E2074): 中断点をまたいで生きる局所が `Send` でないものを覚える。
-                    for v in live_after[k].iter() {
+                    for v in live_names(&live_after[k]) {
                         if v.starts_with('$') && !v.starts_with("$snd") {
                             continue;
                         }
@@ -1685,12 +1738,8 @@ impl<'a> Walker<'a> {
                         }
                     }
                     // 中断点で生きている (この後使われる) 持ち主の貸し出しは E3050 (5.6)。
-                    let mut holders: Vec<(&String, &BTreeSet<usize>)> = st.iter().collect();
-                    holders.sort();
+                    let holders: Vec<(&String, &BTreeSet<usize>)> = live_names(&live_after[k]).into_iter().filter_map(|h| st.get_key_value(h)).collect();
                     for (h, ids) in holders {
-                        if !live_after[k].contains(h) {
-                            continue;
-                        }
                         for &id in ids {
                             let l = &cfg.loans[id];
                             let who = if h.starts_with("$iter") {
@@ -1707,12 +1756,8 @@ impl<'a> Walker<'a> {
                     }
                 }
                 if let Ev::Acc { root, path, kind, line } = ev {
-                    let mut holders: Vec<(&String, &BTreeSet<usize>)> = st.iter().collect();
-                    holders.sort();
+                    let holders: Vec<(&String, &BTreeSet<usize>)> = live_names(&live_after[k]).into_iter().filter_map(|h| st.get_key_value(h)).collect();
                     for (h, ids) in holders {
-                        if !live_after[k].contains(h) {
-                            continue;
-                        }
                         for &id in ids {
                             let l = &cfg.loans[id];
                             if &l.root != root || !overlaps(&l.path, path) {
