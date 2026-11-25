@@ -635,9 +635,47 @@ impl<'a> W<'a> {
                 );
                 return;
             }
+            if !pr.path.is_empty() {
+                let rt = self.tys.get(root).cloned().unwrap_or(Ty::Unknown);
+                if let Some(n) = self.drop_owner_on_path(rt, &pr.path) {
+                    self.diag(
+                        "E3002",
+                        format!("cannot move `{}` out of `{}`: it implements Drop, so its fields cannot be moved out (4.4); borrow it with `&{}` or call `.clone()`", pr.text, n, pr.text),
+                        line,
+                    );
+                    return;
+                }
+            }
             let root = root.clone();
             self.record_move(&root, &pr.path.clone(), line);
         }
+    }
+
+    fn drop_owner_in_place(&self, root: &Root, path: &[String]) -> Option<String> {
+        if path.is_empty() {
+            return None;
+        }
+        let rt = self.tys.get(root).cloned().unwrap_or(Ty::Unknown);
+        self.drop_owner_on_path(rt, path)
+    }
+
+    /// 欄の連なり `path` の途中の（最後の欄を含まない）所有値の型に `Drop` を実装したものがあれば、その型名。
+    fn drop_owner_on_path(&self, mut t: Ty, path: &[String]) -> Option<String> {
+        for f in path {
+            if let Ty::Named(n, _, _) = &t {
+                let drops = self.p.types.get(n).map_or(false, |&i| {
+                    self.p.impls.contains(&("core.ops.Drop".to_string(), n.clone())) || self.p.defs[i].derive.iter().any(|d| d == "Drop")
+                });
+                if drops {
+                    return Some(n.clone());
+                }
+            }
+            match self.struct_fields(&t).and_then(|fs| fs.into_iter().find(|x| &x.0 == f)) {
+                Some((_, ft)) => t = ft,
+                None => return None,
+            }
+        }
+        None
     }
 
     // ------------------------------------------------------------ 式
@@ -1447,6 +1485,12 @@ impl<'a> W<'a> {
                                     "cannot move out of `{}` in a pattern: it is behind a reference or an index and the pattern binds a value that is not Copy; borrow it with `&{}` or match on a reference instead",
                                     pr.text, pr.text
                                 ),
+                                line,
+                            );
+                        } else if let Some(n) = self.drop_owner_in_place(root, &pr.path) {
+                            self.diag(
+                                "E3002",
+                                format!("cannot move `{}` out of `{}`: it implements Drop, so its fields cannot be moved out (4.4); borrow it with `&{}` or call `.clone()`", pr.text, n, pr.text),
                                 line,
                             );
                         } else {
