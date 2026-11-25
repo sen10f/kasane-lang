@@ -8,6 +8,7 @@ changed fold hunt_a05_andmut_via_shared_ref_01#0
 changed fold hunt_a05_fnmut_call_through_shared_ref_01#0
 changed fold linear_array_len_discard#0
 changed fold ref_of_ref_deref#0
+changed fold sec6_fnvalue_borrow#1
 changed fold sendbound_fn_value_let#0
 changed fold temp_let_as_str_ref#0
 changed fold temp_let_field_ref#0
@@ -31,6 +32,10 @@ changed id const_init_nested_fn_panic#0
 changed id const_init_step_limit#0
 changed id hunt_a13_assign_through_shared_ref_04#0
 changed iflet2match if_let_linear_no_else#0
+hole block sec6_fnvalue_genericvar_borrow#0
+hole block sec6_fnvalue_genericvar_borrow#1
+hole extract sec6_fnvalue_genericvar_borrow#0
+hole extract sec6_fnvalue_genericvar_borrow#1
 hole fold arr_repeat_len_local#0
 hole fold borrow_mut_immutable_generic_result#0
 hole fold dangling_static_field#0
@@ -54,6 +59,7 @@ hole fold return_local_tuple_match_some_arm#0
 hole fold return_local_tuple_tuple_let_ok#0
 hole fold return_local_tuple_tuple_let_some_bind#0
 hole fold return_local_tuple_via_wrap_fn#0
+hole fold sec6_fnvalue_genericvar_borrow#0
 hole fold temp_guard_get_len#0
 hole fold temp_guard_same_len#0
 hole fold temp_ref_str_len#0
@@ -63,6 +69,10 @@ hole fold temp_vec_same_len#0
 hole hoist flow_swap_generic_relay#3
 hole hoist flow_swap_option_ref_vars#3
 hole hoist flow_swap_ref_vars#3
+hole hoist sec6_fnvalue_genericvar_borrow#0
+hole hoist sec6_fnvalue_genericvar_borrow#1
+hole id sec6_fnvalue_genericvar_borrow#0
+hole id sec6_fnvalue_genericvar_borrow#1
 hole iflet2match if_let_linear_else_leak#0
 hole match2iflet exh_match_nested_nonexhaustive#0
 hole match2iflet exh_match_result_option_nonexhaustive#0
