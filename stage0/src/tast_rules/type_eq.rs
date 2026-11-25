@@ -222,6 +222,7 @@ fn fn_regions_ok(want: &Ty, got: &Ty) -> bool {
         match (&rw, &rg) {
             (Region::Unk | Region::Var(_) | Region::Inst(..), _) | (_, Region::Unk | Region::Var(_) | Region::Inst(..)) => {}
             (_, Region::Static) => {}
+            (Region::Named(_), Region::Named(_)) if bound.is_empty() && rw.same(&rg) => {}
             (_, _) => {
                 if bound.is_empty() || !bound.iter().all(|b| matches!(b, Region::Static) || b.same(&rw)) {
                     ok = false;
