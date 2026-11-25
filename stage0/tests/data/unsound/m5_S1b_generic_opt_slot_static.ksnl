@@ -1,0 +1,34 @@
+fn t.go(x: &u64) -> &'static u64 uses [] panics never
+    let mut s: Option<&'static u64> = None
+    t.put(&mut s, x)
+    match s {
+        Some(r) => r
+        None => &7u64
+    }
+end t.go
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut v = std.vec.Vec.new()
+    v.push(42u64).unwrap()
+    let r = t.go(&v[0usize])
+    core.mem.drop(v)
+    let mut w = std.vec.Vec.new()
+    w.push(99u64).unwrap()
+    t.pr(*r)
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
+
+fn t.put[T](slot: &mut Option<T>, x: T) -> () uses [] panics never
+    *slot = Some(x)
+end t.put
+
+fn t.two(a: &mut u64, b: &mut u64) -> u64 uses [] panics never
+    *a = 1u64
+    *b = 2u64
+    *a
+end t.two

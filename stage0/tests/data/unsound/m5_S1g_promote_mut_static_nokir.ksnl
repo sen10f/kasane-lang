@@ -1,0 +1,25 @@
+fn t.k() -> &'static mut u32 uses [] panics never
+    let z = Some(1i128)
+    core.mem.drop(z)
+    &mut 10u32
+end t.k
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let a = t.k()
+    let b = t.k()
+    *a = 1u32
+    *b = 2u32
+    t.pr(u64.from_u32(t.two(a, b)))
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
+
+fn t.two(a: &mut u32, b: &mut u32) -> u32 uses [] panics never
+    *a = 1u32
+    *b = 2u32
+    *a
+end t.two
