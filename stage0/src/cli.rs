@@ -1734,6 +1734,9 @@ pub(crate) fn load_for_debug() -> Result<crate::debug::Target, String> {
         return Err(lines.join("\n"));
     }
     let prog = Rc::new(prog.unwrap());
+    if has_user_drop(&l, &prog, &user) {
+        return Err("ksn: E9031: ksn debug は木走査で動くため、手書きの `impl core.ops.Drop` があるパッケージはデバッグできない (Drop が黙って飛ばされる)。`ksn run` (VM) を使う".to_string());
+    }
     let entry_name = l.pkg.entry().unwrap_or_default();
     let entry = prog.funcs.get(&entry_name).copied();
     let tests: Vec<usize> = user.iter().copied().filter(|&i| prog.defs[i].kw == "test").collect();
@@ -1828,7 +1831,17 @@ fn take_engine(args: &[String]) -> Result<(bool, bool, bool, Vec<String>), Strin
         Some(o) => return Err(format!("KSN_ENGINE は vm か tree (指定: {})", o)),
     }
     let mut rest = vec![];
+    let mut after_sep = false;
     for a in args {
+        if after_sep {
+            rest.push(a.clone());
+            continue;
+        }
+        if a == "--" {
+            after_sep = true;
+            rest.push(a.clone());
+            continue;
+        }
         match a.strip_prefix("--engine=") {
             Some("vm") => {
                 vm = true;
