@@ -23,6 +23,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use crate::check::{is_nil, items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{AggKind, Aop, Block, BoolOp, Cc, Func, Inst, Mode, Op, Pay, Pointee, Term, Ty, VId};
 use super::{conv, Lw, St, LR};
+use super::agg::LIVE;
 use crate::parser::{nid, V};
 use crate::program::Target;
 use crate::types::{from_v, Ty as Src};
@@ -702,10 +703,21 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
                 rec_drop_call(lw, t, slot, slot);
                 return;
             }
-            // 手書きの `Drop`: 値を一時のスロットに置いて `T.drop(&mut スロット)` を呼び、そのあと (呼んだ後の値の) 欄を破棄する。
+            // 手書きの `Drop`: 生きている (`$live`) 値だけ、一時のスロットに置いて `T.drop(&mut スロット)` を呼び、そのあと
+            // (呼んだ後の値の) 欄を破棄する。移し出した後の「空」の値は `$live` が偽。
             let ud = lw.aggs.borrow().user_drop.get(&i).cloned();
             let mut v = v;
+            let mut ud_join = None;
             if let Some(fname) = ud {
+                if let AggKind::Struct(fs) = &d.kind {
+                    let lf = fs.iter().find(|f| f.name == LIVE).expect("手書きの Drop の型は $live を持つ");
+                    let live = lw.emit(Ty::Bool, Op::Field { a: v, off: lf.off });
+                    let (yes, _) = lw.new_block(&[]);
+                    let (join, _) = lw.new_block(&[]);
+                    lw.branch(live, (yes, vec![]), (join, vec![]));
+                    lw.cur = Some(yes);
+                    ud_join = Some(join);
+                }
                 let slot = emit_alloca(lw, d.size.max(8));
                 let pt = Pointee::of(t).expect("集成体は参照できる");
                 let r = lw.emit(Ty::Ref(true, pt), Op::Bitcast { src: Ty::Ptr, a: slot });
@@ -749,6 +761,10 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
                     lw.goto(join, vec![]);
                     lw.cur = Some(join);
                 }
+            }
+            if let Some(join) = ud_join {
+                lw.goto(join, vec![]);
+                lw.cur = Some(join);
             }
         }
         Ty::Opt(p) => {
@@ -1407,6 +1423,10 @@ fn null_value(lw: &mut Lw, old: VId, t: Ty, line: usize) -> LR<VId> {
             };
             let mut vals = vec![];
             for f in &fs {
+                if f.name == LIVE {
+                    vals.push(lw.emit(Ty::Bool, Op::Const(0)));
+                    continue;
+                }
                 let fv = lw.emit(f.ty, Op::Field { a: old, off: f.off });
                 vals.push(null_value(lw, fv, f.ty, line)?);
             }

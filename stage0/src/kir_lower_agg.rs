@@ -65,6 +65,9 @@ pub fn is_vec_name(n: &str) -> bool {
     n == "vec" || n.starts_with("vec<#")
 }
 
+/// 手書きの `Drop` を持つ構造体が末尾に持つ隠しの欄 (生きている = 真)。値を移し出した後の「空」の値は偽で、破棄しても何も起きない。
+pub const LIVE: &str = "$live";
+
 /// 集成体の型表。`lower_user` が 1 つ作り、全関数で共有する。
 #[derive(Default)]
 pub struct AggTab {
@@ -801,6 +804,9 @@ impl AggTab {
                 let t = self.field_ty(p, &d.file, &sub(fv))?;
                 fs.push((fname.clone(), t));
             }
+            if p.impls.contains(&("core.ops.Drop".to_string(), d.name.clone())) && !d.derive.iter().any(|x| x == "Drop") {
+                fs.push((LIVE.to_string(), Ty::Bool));
+            }
             let (size, align, fields) = layout_fields(&self.defs, &fs);
             (size, align, AggKind::Struct(fields))
         } else {
@@ -956,6 +962,9 @@ impl<'a> Lw<'a> {
         }
         let held: Vec<VId> = vals.iter().flatten().copied().collect();
         super::coll::tmp_release(self, &held);
+        if let Some(k) = decl.iter().position(|x| x.name == LIVE) {
+            vals[k] = Some(self.emit(Ty::Bool, Op::Const(1)));
+        }
         let Some(fields) = vals.into_iter().collect::<Option<Vec<VId>>>() else {
             return self.err(line, "構造体リテラルにフィールドが足りない");
         };
