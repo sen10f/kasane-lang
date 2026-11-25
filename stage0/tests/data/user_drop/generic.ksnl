@@ -1,0 +1,66 @@
+static t.LOG: core.sync.AtomicU64 = core.sync.AtomicU64.new(0u64) pub
+
+type t.D
+    id: u64
+end t.D
+
+type t.G[T]
+    v: T
+    tag: u64
+end t.G
+
+type t.W
+    x: t.D
+    y: t.D
+    id: u64
+end t.W
+
+impl core.ops.Drop for t.D
+fn t.D.drop(self: &mut t.D) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)
+end t.D.drop
+
+impl[T] core.ops.Drop for t.G<T>
+fn t.G.drop[T](self: &mut t.G<T>) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.tag), core.sync.Ordering.SeqCst)
+end t.G.drop
+
+impl core.ops.Drop for t.W
+fn t.W.drop(self: &mut t.W) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)
+end t.W.drop
+
+fn t.eat(d: t.D) -> u64 uses [] panics never
+    d.id
+end t.eat
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    t.s_gen()
+    core.check.eq(t.take(), 817u64)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main
+
+fn t.mk(id: u64) -> t.D uses [] panics never
+    t.D {
+        id: id
+    }
+end t.mk
+
+fn t.s_gen() -> () uses [] panics never
+    let _a = t.G {
+        v: 5u32
+        tag: 7u64
+    }
+    let _b = t.G {
+        v: t.mk(1u64)
+        tag: 8u64
+    }
+end t.s_gen
+
+fn t.take() -> u64 uses [] panics never
+    t.LOG.swap(0u64, core.sync.Ordering.SeqCst)
+end t.take

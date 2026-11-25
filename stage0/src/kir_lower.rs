@@ -471,6 +471,20 @@ impl<'a> Lw<'a> {
 
     /// 現在のブロックに命令を置く。`cur` が無いのは下ろしの不変条件の違反なので、ここでは止める。
     fn emit(&mut self, ty: Ty, op: Op) -> VId {
+        // 手書きの `Drop` を含む値を取り込んだ `FnOnce` のクロージャは、環境を取り込み側のスコープが持つ (呼ばれなければ終わりで破棄)。
+        // 取り込んだ値を渡す呼び出しの直前に印を落とし、以後は呼び先が所有する。
+        if !self.coll.once_flags.is_empty() {
+            if let Op::Call { args, .. } = &op {
+                let flags: Vec<VId> = args.iter().filter_map(|a| self.coll.once_flags.get(a).copied()).collect();
+                for f in flags {
+                    let b = self.new_val(Ty::Bool);
+                    let cur = self.cur.expect("到達しないブロックへ命令を置いた");
+                    self.blocks[cur].insts.push(Inst { dst: b, ty: Ty::Bool, op: Op::Const(0) });
+                    let u = self.new_val(Ty::Unit);
+                    self.blocks[cur].insts.push(Inst { dst: u, ty: Ty::Unit, op: Op::MemStore { ty: Ty::Bool, p: f, off: 0, v: b } });
+                }
+            }
+        }
         let v = self.new_val(ty);
         let cur = self.cur.expect("KIR 下ろしの内部不変条件: 到達しないブロックへ命令を置いた");
         self.blocks[cur].insts.push(Inst { dst: v, ty, op });
@@ -1106,8 +1120,10 @@ impl<'a> Lw<'a> {
                         return Ok(Some(r));
                     }
                 }
-                let Some(a) = self.expr(l)? else { return Ok(None) };
-                let Some(b) = self.expr(r)? else { return Ok(None) };
+                // 手書きの `Drop` を持つ型の `==` / `!=` は参照で比べる (所有を移さない): 場所の式は移さずに読む。
+                let drop_cmp = matches!(op.as_str(), "==" | "!=") && self.src_ty(l).ok().and_then(|t| self.conv_t(&t)).is_some_and(|t| self.aggs.borrow().has_user_drop_in(t));
+                let Some(a) = (if drop_cmp { self.expr_peek(l)? } else { self.expr(l)? }) else { return Ok(None) };
+                let Some(b) = (if drop_cmp { self.expr_peek(r)? } else { self.expr(r)? }) else { return Ok(None) };
                 // `Some(c) => c == &y` の `&y` は読んでから比べる。比べる型は emit した値の型で決める。
                 // `&str` どうしの `==` / `!=` は、バイト列の等しさ (`str.eq` と同じ)。
                 if matches!(op.as_str(), "==" | "!=") && self.is_str_ref(l) && self.is_str_ref(r) {
@@ -1120,7 +1136,16 @@ impl<'a> Lw<'a> {
                     return self.err(line, "比較の両辺の型が違う");
                 }
                 if matches!(op.as_str(), "==" | "!=") && (matches!(t, Ty::Opt(_) | Ty::Res(..) | Ty::Agg(_))) {
-                    return Ok(Some(self.eq_by_call(l, r, a, b, op == "!=", line)?));
+                    let res = self.eq_by_call(l, r, a, b, op == "!=", line)?;
+                    // 手書きの `Drop` を持つ一時値 (`f() == g()`) は、比べ終えたら破棄する。
+                    if drop_cmp {
+                        for (x, v) in [(l, a), (r, b)] {
+                            if !matches!(nname(x), "Path" | "Field") && self.cur.is_some() {
+                                coll::drop_temp(self, v);
+                            }
+                        }
+                    }
+                    return Ok(Some(res));
                 }
                 let cc = match op.as_str() {
                     "==" => Cc::Eq,
@@ -1746,11 +1771,16 @@ impl<'a> Lw<'a> {
             let last = i + 1 == stmts.len();
             let temp_mark = self.coll.temps.len();
             let guard_mark = coll::guard_mark(self);
+            let tmp_mark = coll::temps_mark(self);
             // `let r = &temp()` の一時値の寿命は束縛のスコープまで延びる (文の終わりでは尽きない)。
             let extended = nname(s) == "Let" && nf(s).get(3).map_or(false, |init| nname(init) == "Unary" && st(&nf(init)[0]).starts_with('&'));
             let r = self.stmt(s)?;
             // 文の終わりで、束縛されなかった `Mutex` のガードを外す (4.4: 一時の寿命は文の終わり)。
             coll::end_guards(self, guard_mark);
+            // `&式` の一時値の手書きの `Drop` も文の終わりに呼ぶ (延長される `let r = &式` はスコープの終わり)。
+            if !extended {
+                coll::end_stmt_temps(self, tmp_mark);
+            }
             // 文の終わりで一時値の寿命が尽きる (借用検査の注釈)。
             for h in self.coll.temps.split_off(temp_mark) {
                 if self.cur.is_some() && !extended {
@@ -1892,9 +1922,11 @@ impl<'a> Lw<'a> {
         let f = nf(e);
         let line = nline(e);
         let gm = coll::guard_mark(self);
+        let tm = coll::temps_mark(self);
         let Some(c) = self.expr(&f[0])? else { return Ok(None) };
         // 条件の中の一時のガードは、分岐の前に外す。
         coll::end_guards(self, gm);
+        coll::end_stmt_temps(self, tm);
         if self.vty(c) != Ty::Bool {
             return self.err(line, "if の条件が bool ではない");
         }
@@ -1997,9 +2029,11 @@ impl<'a> Lw<'a> {
         let mut body_start = hb;
         if let Some(c) = cond {
             let gm = coll::guard_mark(self);
+            let tm = coll::temps_mark(self);
             let Some(cv) = self.expr(c)? else { return Ok(None) };
             // 条件の中の一時のガードは、毎回の条件の評価の後で外す (ループの各回で対になる)。
             coll::end_guards(self, gm);
+            coll::end_stmt_temps(self, tm);
             if self.vty(cv) != Ty::Bool {
                 return self.err(nline(e), "while の条件が bool ではない");
             }

@@ -1,0 +1,37 @@
+static t.LOG: core.sync.AtomicU64 = core.sync.AtomicU64.new(0u64) pub
+
+type t.D
+    id: u64
+end t.D
+
+impl core.ops.Drop for t.D
+fn t.D.drop(self: &mut t.D) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)
+end t.D.drop
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let h = t.start()
+    core.check.eq(h.join(), 1u64)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main
+
+fn t.start() -> std.thread.JoinHandle<u64, std.alloc.System> uses [alloc, thread] panics may
+    let d = t.D {
+        id: 1u64
+    }
+    let f = fn() -> u64 capture [move d] {
+        d.id
+    }
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u64 capture [move f] {
+            f()
+        },
+    )
+    match spawned {
+        Ok(handle) => handle
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.start

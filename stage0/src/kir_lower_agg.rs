@@ -65,6 +65,12 @@ pub fn is_vec_name(n: &str) -> bool {
     n == "vec" || n.starts_with("vec<#")
 }
 
+/// 手書きの `Drop` を持つ構造体が末尾に持つ隠しの欄 (生きている = 真)。値を移し出した後の「空」の値は偽で、破棄しても何も起きない。
+/// `user_drop` の値が総称型の印のとき (関数名は `drop_value` が `generic_args` から単相化して決める)。
+pub const GENERIC_DROP: &str = "<generic>";
+
+pub const LIVE: &str = "$live";
+
 /// 集成体の型表。`lower_user` が 1 つ作り、全関数で共有する。
 #[derive(Default)]
 pub struct AggTab {
@@ -89,6 +95,8 @@ pub struct AggTab {
     pub rec_drop: HashSet<u32>,
     /// 解放の補助関数が要る `rec_drop` の型 (呼び出しを下ろしたもの)。
     pub drop_need: std::collections::BTreeSet<u32>,
+    /// 手書きの `impl core.ops.Drop` を持つ型 (添字) → その `drop` 関数の FQN (`<型>.drop`)。所有物として扱い、破棄の点で呼ぶ。
+    pub user_drop: HashMap<u32, String>,
 }
 
 /// `Box<dyn Tr>` の vtable の登録 (設計_KIR.md 21 章)。vtable の「番地」は、登録順の番号 (`usize`)。
@@ -191,7 +199,7 @@ fn canon_default_alloc(t: &Src) -> Src {
 impl AggTab {
     /// `user` は利用者のパッケージの定義の添字 (`lower_user` の引数と同じ)。
     pub fn new(user: &[usize]) -> AggTab {
-        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect(), box_elems: HashMap::new(), dynr: DynReg::default(), chan_elem: HashMap::new(), handle_elem: HashMap::new(), generic_args: HashMap::new(), rec_drop: HashSet::new(), drop_need: Default::default() }
+        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect(), box_elems: HashMap::new(), dynr: DynReg::default(), chan_elem: HashMap::new(), handle_elem: HashMap::new(), generic_args: HashMap::new(), rec_drop: HashSet::new(), drop_need: Default::default(), user_drop: HashMap::new() }
     }
 
     /// 推論済みの型 `t` を段階 1 の型にする。`file` は名前を解決するファイル。対象外なら理由付きで `Err`。
@@ -618,22 +626,50 @@ impl AggTab {
         }
     }
 
-    /// 型 `t` の値が (入れ子を含めて) ヒープの所有物 (Vec / String のヘッダ) を持つか。持つ値は移動と解放の対象になる。
+    /// 型 `t` の値が (入れ子を含めて) ヒープの所有物 (Vec / String のヘッダ) か手書きの `Drop` を持つか。持つ値は移動と解放の対象になる。
     pub fn owns_heap(&self, t: Ty) -> bool {
+        self.owns_inner(t, true)
+    }
+
+    /// `owns_heap` から、手書きの `Drop` だけで所有になるものを除いたもの (ヒープの所有物を持つか)。
+    pub fn owns_real_heap(&self, t: Ty) -> bool {
+        self.owns_inner(t, false)
+    }
+
+    fn owns_inner(&self, t: Ty, count_drop: bool) -> bool {
         match t {
             Ty::Agg(i) => {
                 let d = &self.defs[i as usize];
-                if is_vec_name(&d.name) || d.name.starts_with("dynbox<") || self.box_elems.contains_key(&i) || self.chan_kind(t).is_some() {
+                if is_vec_name(&d.name) || d.name.starts_with("dynbox<") || self.box_elems.contains_key(&i) || self.chan_kind(t).is_some() || (count_drop && self.user_drop.contains_key(&i)) {
                     return true;
                 }
                 match &d.kind {
-                    AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| self.owns_heap(f.ty)),
-                    AggKind::Array(t, _) => self.owns_heap(*t),
-                    AggKind::Enum(vs) => vs.iter().any(|v| v.fields.iter().any(|f| self.owns_heap(f.ty))),
+                    AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| self.owns_inner(f.ty, count_drop)),
+                    AggKind::Array(t, _) => self.owns_inner(*t, count_drop),
+                    AggKind::Enum(vs) => vs.iter().any(|v| v.fields.iter().any(|f| self.owns_inner(f.ty, count_drop))),
                 }
             }
-            Ty::Opt(p) => self.owns_heap(p.ty()),
-            Ty::Res(a, e) => self.owns_heap(a.ty()) || self.owns_heap(e.ty()),
+            Ty::Opt(p) => self.owns_inner(p.ty(), count_drop),
+            Ty::Res(a, e) => self.owns_inner(a.ty(), count_drop) || self.owns_inner(e.ty(), count_drop),
+            _ => false,
+        }
+    }
+
+    /// 型 `t` の値が (入れ子を含めて) 手書きの `Drop` を持つ型を含むか。
+    pub fn has_user_drop_in(&self, t: Ty) -> bool {
+        match t {
+            Ty::Agg(i) => {
+                if self.user_drop.contains_key(&i) {
+                    return true;
+                }
+                match &self.defs[i as usize].kind {
+                    AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| self.has_user_drop_in(f.ty)),
+                    AggKind::Array(t, _) => self.has_user_drop_in(*t),
+                    AggKind::Enum(vs) => vs.iter().any(|v| v.fields.iter().any(|f| self.has_user_drop_in(f.ty))),
+                }
+            }
+            Ty::Opt(p) => self.has_user_drop_in(p.ty()),
+            Ty::Res(a, e) => self.has_user_drop_in(a.ty()) || self.has_user_drop_in(e.ty()),
             _ => false,
         }
     }
@@ -799,6 +835,9 @@ impl AggTab {
                 let t = self.field_ty(p, &d.file, &sub(fv))?;
                 fs.push((fname.clone(), t));
             }
+            if p.impls.contains(&("core.ops.Drop".to_string(), d.name.clone())) && !d.derive.iter().any(|x| x == "Drop") {
+                fs.push((LIVE.to_string(), Ty::Bool));
+            }
             let (size, align, fields) = layout_fields(&self.defs, &fs);
             (size, align, AggKind::Struct(fields))
         } else {
@@ -817,7 +856,16 @@ impl AggTab {
             self.defs[i as usize] = AggDef { name: name.clone(), size, align, kind };
             return Ok(Ty::Agg(i));
         }
-        Ok(self.push(name, size, align, kind))
+        let has_user_drop = p.impls.contains(&("core.ops.Drop".to_string(), d.name.clone())) && !d.derive.iter().any(|x| x == "Drop");
+        let t = self.push(name, size, align, kind);
+        if has_user_drop {
+            if let Ty::Agg(i) = t {
+                // 総称型の `drop` は破棄の点で型引数ごとに単相化する (`GENERIC_DROP`)。
+                let f = if bind.is_empty() { format!("{}.drop", d.name) } else { GENERIC_DROP.to_string() };
+                self.user_drop.insert(i, f);
+            }
+        }
+        Ok(t)
     }
 }
 
@@ -944,6 +992,9 @@ impl<'a> Lw<'a> {
         }
         let held: Vec<VId> = vals.iter().flatten().copied().collect();
         super::coll::tmp_release(self, &held);
+        if let Some(k) = decl.iter().position(|x| x.name == LIVE) {
+            vals[k] = Some(self.emit(Ty::Bool, Op::Const(1)));
+        }
         let Some(fields) = vals.into_iter().collect::<Option<Vec<VId>>>() else {
             return self.err(line, "構造体リテラルにフィールドが足りない");
         };

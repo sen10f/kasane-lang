@@ -378,6 +378,7 @@ impl<'a> Lw<'a> {
         }
         let ptr = self.alloca(p);
         self.emit(Ty::Unit, Op::Store { ptr, val: v });
+        super::coll::hold_ref_temp(self, ptr, self.vty(v));
         Ok(Some(self.ref_value(ptr, p, shared)))
     }
 

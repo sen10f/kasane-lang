@@ -1,0 +1,59 @@
+static t.LOG: core.sync.AtomicU64 = core.sync.AtomicU64.new(0u64) pub
+
+type t.D
+    id: u64
+end t.D
+
+type t.W
+    x: t.D
+    y: t.D
+    id: u64
+end t.W
+
+impl core.ops.Drop for t.D
+fn t.D.drop(self: &mut t.D) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)
+end t.D.drop
+
+impl core.ops.Drop for t.W
+fn t.W.drop(self: &mut t.W) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)
+end t.W.drop
+
+fn t.eat(d: t.D) -> u64 uses [] panics never
+    d.id
+end t.eat
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    t.s_thread()
+    core.check.eq(t.take(), 56u64)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main
+
+fn t.mk(id: u64) -> t.D uses [] panics never
+    t.D {
+        id: id
+    }
+end t.mk
+
+fn t.s_thread() -> () uses [alloc, thread] panics may
+    let d = t.mk(5u64)
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move d] {
+            core.mem.drop(d.id)
+        },
+    )
+    match spawned {
+        Ok(handle) => handle.join()
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    core.mem.drop(t.mk(6u64).id)
+end t.s_thread
+
+fn t.take() -> u64 uses [] panics never
+    t.LOG.swap(0u64, core.sync.Ordering.SeqCst)
+end t.take

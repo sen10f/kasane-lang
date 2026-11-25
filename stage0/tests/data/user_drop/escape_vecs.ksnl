@@ -1,0 +1,26 @@
+static t.LOG: core.sync.AtomicU64 = core.sync.AtomicU64.new(0u64) pub
+
+type t.D
+    id: u64
+end t.D
+
+impl core.ops.Drop for t.D
+fn t.D.drop(self: &mut t.D) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)
+end t.D.drop
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut v = std.vec.Vec.new()
+    {
+        let d = t.D {
+            id: 1u64
+        }
+        core.mem.drop(v.push(fn() -> u64 capture [move d] {
+            d.id
+        }))
+    }
+    core.check.eq(v.len(), 1usize)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main

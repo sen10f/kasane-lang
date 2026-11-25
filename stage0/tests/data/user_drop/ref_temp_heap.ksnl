@@ -1,0 +1,40 @@
+type t.W
+    items: std.vec.Vec<u8>
+end t.W
+
+fn t.len(v: &std.vec.Vec<u8>) -> usize uses [] panics never
+    v.len()
+end t.len
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut i = 0usize
+    let mut total = 0usize
+    while i < 5usize {
+        total = total + t.len(&t.mk(3usize))
+        i = i + 1usize
+    }
+    core.check.eq(total, 15usize)
+    core.check.eq(t.second(), 4usize)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main
+
+fn t.mk(n: usize) -> std.vec.Vec<u8> uses [alloc] panics may
+    let mut v = std.vec.Vec.new()
+    let mut i = 0usize
+    while i < n {
+        core.mem.drop(v.push(1u8))
+        i = i + 1usize
+    }
+    v
+end t.mk
+
+fn t.second() -> usize uses [alloc] panics may
+    t.wlen(&t.W {
+        items: t.mk(4usize)
+    })
+end t.second
+
+fn t.wlen(w: &t.W) -> usize uses [] panics never
+    w.items.len()
+end t.wlen

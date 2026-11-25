@@ -1,0 +1,122 @@
+static t.LOG: core.sync.AtomicU64 = core.sync.AtomicU64.new(0u64) pub
+
+type t.D
+    id: u64
+end t.D
+
+type t.W
+    x: t.D
+    y: t.D
+    id: u64
+end t.W
+
+impl core.ops.Drop for t.D
+fn t.D.drop(self: &mut t.D) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)
+end t.D.drop
+
+impl core.ops.Drop for t.W
+fn t.W.drop(self: &mut t.W) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)
+end t.W.drop
+
+fn t.bump(d: &mut t.D) -> () uses [] panics never
+    d.id = d.id.wrapping_add(10u64)
+end t.bump
+
+fn t.eat(d: t.D) -> u64 uses [] panics never
+    d.id
+end t.eat
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    t.s_ref_temp()
+    core.check.eq(t.take(), 123u64)
+    t.s_mut_ref()
+    core.check.eq(t.take(), 11u64)
+    core.check.eq(t.s_with_return(true), 7u64)
+    core.check.eq(t.take(), 21u64)
+    core.check.eq(t.s_with_return(false), 8u64)
+    core.check.eq(t.take(), 21u64)
+    t.s_block_value()
+    core.check.eq(t.take(), 12u64)
+    t.s_match_ref()
+    core.check.eq(t.take(), 1u64)
+    t.s_vec_remove()
+    core.check.eq(t.take(), 123u64)
+    t.s_vec_for()
+    core.check.eq(t.take(), 12u64)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main
+
+fn t.mk(id: u64) -> t.D uses [] panics never
+    t.D {
+        id: id
+    }
+end t.mk
+
+fn t.peek(d: &t.D) -> u64 uses [] panics never
+    d.id
+end t.peek
+
+fn t.s_block_value() -> () uses [] panics never
+    let a = {
+        let _x = t.mk(1u64)
+        t.mk(2u64)
+    }
+    core.mem.drop(a.id)
+end t.s_block_value
+
+fn t.s_match_ref() -> () uses [] panics never
+    let o = Some(t.mk(1u64))
+    if let Some(d) = &o {
+        core.mem.drop(d.id)
+    }
+end t.s_match_ref
+
+fn t.s_mut_ref() -> () uses [] panics never
+    let mut a = t.mk(1u64)
+    t.bump(&mut a)
+end t.s_mut_ref
+
+fn t.s_ref_temp() -> () uses [] panics may
+    let n = t.peek(&t.mk(1u64))
+    core.mem.drop(t.mk(n + 1u64).id)
+    core.mem.drop(t.mk(3u64).id)
+end t.s_ref_temp
+
+fn t.s_vec_for() -> () uses [alloc] panics may
+    let mut v = std.vec.Vec.new()
+    core.mem.drop(v.push(t.mk(1u64)))
+    core.mem.drop(v.push(t.mk(2u64)))
+    for d in v {
+        core.mem.drop(d.id)
+    }
+end t.s_vec_for
+
+fn t.s_vec_remove() -> () uses [alloc] panics never
+    let mut v = std.vec.Vec.new()
+    core.mem.drop(v.push(t.mk(1u64)))
+    core.mem.drop(v.push(t.mk(2u64)))
+    core.mem.drop(v.push(t.mk(3u64)))
+    if let Some(r) = v.remove(0usize) {
+        core.mem.drop(r.id)
+    }
+end t.s_vec_remove
+
+fn t.s_with_return(c: bool) -> u64 uses [] panics never
+    let r = with d = t.mk(1u64) close core.mem.drop(d) {
+        let _e = t.mk(2u64)
+        if c {
+            return 7u64
+        }
+        8u64
+    }
+    r
+end t.s_with_return
+
+fn t.take() -> u64 uses [] panics never
+    t.LOG.swap(0u64, core.sync.Ordering.SeqCst)
+end t.take
