@@ -64,6 +64,10 @@ if r.returncode == 0:
         if ln.startswith('note: '):
             print('     ' + ln)
 
+# 10b. 属性の差分試験 (最適化の約束を全部外した版と出力が同じか。数百本、3 分以内)。
+r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'attr_diff.py'), '--fast'],
+                   capture_output=True, text=True, encoding='utf-8', errors='replace')
+step('tests/attr_diff.py --fast', r.returncode == 0, r.stdout + r.stderr)
 
 # 2. Rust 版の cargo test (試験のバイナリを並列に回す。ビルドは 0 で先に済ませる)
 # 2026-11-23: まず速いバイナリ (`--tier fast`) を回し、ここまでの段 (仕様・参照解・ハーネス・ネイティブ率・速い試験) が

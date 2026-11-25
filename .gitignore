@@ -14,3 +14,4 @@ perf/results/
 tools/fuzz/found/
 tools/fuzz/found_borrow/
 dist/
+stage0/target_hooks/
