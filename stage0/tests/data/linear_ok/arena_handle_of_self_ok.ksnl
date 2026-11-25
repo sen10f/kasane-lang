@@ -1,0 +1,8 @@
+type t.Node
+    value: u32
+    next: Option<alloc.arena.Handle<t.Node>>
+end t.Node
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

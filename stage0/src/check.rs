@@ -5961,13 +5961,24 @@ fn collect_struct_fields(t: &V, out: &mut Vec<(Vec<String>, String, usize)>) {
 }
 
 /// 型の中に現れる名前つき型を集める (`ty_mentions` と同じ辺をたどる)。
+/// `alloc.arena.Handle<T>` は `index: usize` と `generation: u32` だけの値で `T` を
+/// インラインに持たない（仕様 8.3）。間接的な取っ手なので再帰の辺にならず、
+/// `Handle<Self>` を持つ型も有限サイズ（E4013 の誤検出を防ぐ）。
+fn is_indirect_ty(name: &str) -> bool {
+    name == "alloc.arena.Handle"
+}
+
 fn collect_ty_names(t: &V, out: &mut HashSet<String>) {
     match tag(t).as_str() {
         "named" => {
-            out.insert(st(tel(t, 1)));
-            for a in items(tel(t, 2)) {
-                if matches!(a, V::L(_)) {
-                    collect_ty_names(a, out);
+            let nm = st(tel(t, 1));
+            let indirect = is_indirect_ty(&nm);
+            out.insert(nm);
+            if !indirect {
+                for a in items(tel(t, 2)) {
+                    if matches!(a, V::L(_)) {
+                        collect_ty_names(a, out);
+                    }
                 }
             }
         }
