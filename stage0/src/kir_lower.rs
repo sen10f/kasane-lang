@@ -2092,6 +2092,53 @@ pub fn lower_test(p: &Program, user: &[usize], test_def: usize) -> Lowered {
     lower_defs(p, user, Some(&p.defs[test_def].name), Some(test_def))
 }
 
+/// 下ろしの一回分の結果を `ok` と `bad` に反映する。`drop` の鍵のどれかが `ok` の関数に当たれば、その関数を外して `true` (次の回へ)。
+/// 当たるものが無いとき (変換で作った関数や集成体の型の検査の失敗) は、同じ検査を永久に繰り返すので、残りを全部下ろせない理由で `bad` に入れて `false` (止める)。
+/// `lower_defs` の下ろしの繰り返しが進むことを保つための判断 (2026-11-25、`panics never` の実行器に `rem.usize.trap` を入れた再現で見つけた)。
+fn settle_round(ok: &mut Vec<(Func, BTreeSet<String>)>, bad: &mut Vec<(String, String)>, drop: Vec<(String, String)>) -> bool {
+    let before = ok.len();
+    ok.retain(|(f, _)| !drop.iter().any(|(k, _)| *k == f.key));
+    let progressed = ok.len() != before;
+    bad.extend(drop);
+    if !progressed {
+        for (f, _) in ok.drain(..) {
+            bad.push((f.key.clone(), "下ろしの検査に失敗: 検査の失敗が関数に当たらない".to_string()));
+        }
+    }
+    progressed
+}
+
+#[cfg(test)]
+mod settle_tests {
+    use super::*;
+
+    fn func(key: &str) -> Func {
+        Func { fqn: key.into(), key: key.into(), uses: vec![], may_panic: false, stack: None, link: None, ret: Ty::Unit, blocks: vec![] }
+    }
+
+    /// 失敗が関数に当たれば、その関数だけ外れて次の回へ進む。
+    #[test]
+    fn matched_failure_drops_that_function_and_progresses() {
+        let mut ok = vec![(func("t.a"), BTreeSet::new()), (func("t.b"), BTreeSet::new())];
+        let mut bad = vec![];
+        assert!(settle_round(&mut ok, &mut bad, vec![("t.a".into(), "x".into())]));
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].0.key, "t.b");
+        assert_eq!(bad, vec![("t.a".to_string(), "x".to_string())]);
+    }
+
+    /// 失敗がどの関数にも当たらない (変換の作った関数や集成体の型) なら、永久に回さず止める。
+    #[test]
+    fn unmatched_failure_stops_instead_of_looping() {
+        let mut ok = vec![(func("t.a"), BTreeSet::new())];
+        let mut bad = vec![];
+        assert!(!settle_round(&mut ok, &mut bad, vec![("t.agg".into(), "agg が不正".into())]));
+        assert!(ok.is_empty());
+        assert!(bad.iter().any(|(k, _)| k == "t.agg"));
+        assert!(bad.iter().any(|(k, m)| k == "t.a" && m.contains("関数に当たらない")));
+    }
+}
+
 fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option<usize>) -> Lowered {
     LINES.with(|l| l.borrow_mut().clear());
     task_lower::reset();
@@ -2214,8 +2261,9 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
                 break (m.funcs, m.aggs);
             }
         }
-        ok.retain(|(f, _)| !drop.iter().any(|(k, _)| *k == f.key));
-        bad.extend(drop);
+        if !settle_round(&mut ok, &mut bad, drop) {
+            break (vec![], aggs.borrow().defs.clone());
+        }
     };
     let mut funcs = funcs;
     funcs.sort_by(|a, b| a.key.cmp(&b.key));
