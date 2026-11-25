@@ -45,7 +45,19 @@ fn is_int(t: &Ty) -> Option<bool> {
 
 pub fn actual(p: &Program, d: &Def, body: &TExpr) -> Actual {
     let mut a = Actual { uses: BTreeSet::new(), may: false, uncertain: false, why: String::new() };
-    super::impl_sig::walk(body, &mut |e| match &e.kind {
+    // `let` で束縛した名前の型 (関数の値の効果を引く)。
+    let mut lets: std::collections::HashMap<String, Ty> = Default::default();
+    super::impl_sig::walk(body, &mut |e| {
+        if let TKind::Block(ss) = &e.kind {
+            for st in ss {
+                if let crate::tast::TStmt::Let { pat, .. } = st {
+                    if let Some((n, t, _)) = pat.info.as_ref().and_then(|i| i.bind.clone()) {
+                        lets.insert(n, t);
+                    }
+                }
+            }
+        }
+        match &e.kind {
         TKind::Index { .. } => a.may = true,
         // `for x in it`: ユーザーの型の反復子は `next` の効果を持つ (暗黙の呼び出し)。型が決まらなければ決まらない。
         TKind::Other { name: "For", children } => match children.first().map(|c| c.ty.strip().clone()) {
@@ -83,6 +95,17 @@ pub fn actual(p: &Program, d: &Def, body: &TExpr) -> Actual {
             None => a.uncertain = true,
         },
         TKind::Call { args, .. } | TKind::MCall { args, .. } => {
+            // 束縛した関数の値 (`let f = m.g; f()`・フィールド・戻り値) の呼び出しは、値の型が持つ効果 (型検査の `call_closure` と同じ)。
+            if let (TKind::Call { .. }, Some(Callee::Local(n))) = (&e.kind, &e.res) {
+                if !n.is_empty() && crate::infer::fn_param_effects(d, n).is_none() && param_bound_effects(d, n).is_none() {
+                    if let Some(Ty::Closure { id: None, eff: crate::types::Eff(Some(info)), .. }) = lets.get(n).map(|t| t.strip()) {
+                        a.uses.extend(info.uses.iter().filter(|u| !is_effect_var(u)).cloned());
+                        if info.may == Some(true) {
+                            a.may = true;
+                        }
+                    }
+                }
+            }
             let name = if let TKind::MCall { name, .. } = &e.kind { name.as_str() } else { "" };
             let closure_arg = |args: &[TExpr]| args.iter().any(|x| matches!(x.ty.strip(), Ty::Closure { .. }) && !matches!(x.kind, TKind::Closure { .. }));
             match &e.res {
@@ -191,6 +214,7 @@ pub fn actual(p: &Program, d: &Def, body: &TExpr) -> Actual {
             }
         }
         _ => {}
+        }
     });
     a
 }

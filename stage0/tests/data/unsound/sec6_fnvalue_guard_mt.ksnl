@@ -1,0 +1,32 @@
+static t.M: std.sync.Mutex<u32> = std.sync.Mutex.new(0u32)
+
+fn t.main() -> () uses [alloc, suspend, thread] panics may
+    std.task.block_on_threads(std.alloc.SYSTEM, 4usize, fn() -> () capture [] {
+        let a = std.task.spawn(fn() -> () capture [] {
+            for _i in core.iter.range(0u32, 200u32) {
+                let mut g = t.M.lock()
+                let v = *g.get()
+                let sp = t.susp
+                sp()
+                *g.get_mut() = v.wrapping_add(1u32)
+                core.mem.drop(g)
+            }
+        })
+        let b = std.task.spawn(fn() -> () capture [] {
+            for _i in core.iter.range(0u32, 200u32) {
+                let mut g = t.M.lock()
+                let v = *g.get()
+                let sp = t.susp
+                sp()
+                *g.get_mut() = v.wrapping_add(1u32)
+                core.mem.drop(g)
+            }
+        })
+        a.join_task()
+        b.join_task()
+    })
+end t.main
+
+fn t.susp() -> () uses [suspend] panics never
+    std.task.yield_now()
+end t.susp

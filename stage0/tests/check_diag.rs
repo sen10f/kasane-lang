@@ -3095,6 +3095,13 @@ fn functions_returning_references_agree_between_interpreter_and_the_native_build
     assert_eq!(out, "one, and\n");
 }
 
+/// 関数の値 (`let sp = t.susp; sp()`) の呼び出しも中断点: 状態機械が枠 (`a`) を保存し、インタプリタと同じに動く。
+#[test]
+fn fn_value_suspension_agrees_between_interpreter_and_the_native_build() {
+    let out = agree_with_interpreter("native_fnvalue_susp", include_str!("data/check_ok/sec6_fnvalue_suspend_ok.ksnl"));
+    assert_eq!(out, "ok\n");
+}
+
 /// `defs` の関数を `main` から呼ぶ。`call` は呼び出しの文。LLVM のネイティブ (下ろせなければバンドル) で動かして、
 /// 正常終了して `unused` を出すことを確かめる。
 fn run_ref_return_case(name: &str, defs: &str, call: &str) {

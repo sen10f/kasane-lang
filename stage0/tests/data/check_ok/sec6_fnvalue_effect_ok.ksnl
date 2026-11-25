@@ -1,0 +1,14 @@
+fn t.main() -> () uses [suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.nosus()
+    })
+end t.main
+
+fn t.nosus() -> () uses [suspend] panics never
+    let sp = t.susp
+    sp()
+end t.nosus
+
+fn t.susp() -> () uses [suspend] panics never
+    std.task.yield_now()
+end t.susp

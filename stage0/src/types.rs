@@ -6181,8 +6181,9 @@ impl<'a> TypeCk<'a> {
         // 節 (`id` あり) は本体から推論した効果 (`closure_call_effects`) を使う。
         if id.is_none() {
             if let Eff(Some(info)) = &eff {
-                if info.decl {
-                    let uses = info.uses.clone();
+                {
+                    // 関数・メソッドを値にしたもの (`decl: false`) も同じ: 効果は定義の宣言のもの (効果変数は除く)。
+                    let uses: Vec<String> = info.uses.iter().filter(|u| info.decl || !crate::check::is_effect_var(u)).cloned().collect();
                     let panics = (info.may == Some(true)).then(|| "may".to_string());
                     let nm = eff_name.unwrap_or("the function value").to_string();
                     self.record_effects(line, vec![(nm, uses.clone(), panics.clone(), uses, panics)]);

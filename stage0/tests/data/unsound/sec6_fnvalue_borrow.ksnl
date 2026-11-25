@@ -1,0 +1,61 @@
+static t.M: std.sync.Mutex<u32> = std.sync.Mutex.new(0u32)
+
+static t.RW: std.sync.RwLock<u32> = std.sync.RwLock.new(0u32)
+
+type t.P
+    n: u32
+end t.P
+
+trait t.Sus
+    fn go(self: &Self) -> () uses [suspend] panics never
+end t.Sus
+
+impl t.Sus for t.P
+fn t.P.go(self: &t.P) -> () uses [suspend] panics never impls t.Sus
+    std.task.yield_now()
+end t.P.go
+
+fn t.P.sus(self: &t.P) -> () uses [suspend] panics never
+    std.task.yield_now()
+end t.P.sus
+
+fn t.callp(f: fn() -> () uses [suspend] panics never) -> () uses [suspend] panics never
+    f()
+end t.callp
+
+fn t.dynsus(d: &dyn t.Sus) -> () uses [suspend] panics never
+    d.go()
+end t.dynsus
+
+fn t.gs[F: core.ops.Fn<(), ()>](f: F) -> () uses [suspend] panics never
+    f.call(())
+end t.gs
+
+fn t.lk() -> std.sync.MutexGuard<'static, u32> uses [thread] panics never
+    t.M.lock()
+end t.lk
+
+fn t.main() -> () uses [suspend, thread] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let o = std.task.spawn_local(fn() -> () capture [] {
+            let g2 = t.M.lock()
+            core.mem.drop(g2)
+        })
+        let x = t.mkp()
+        let g = &x.n
+        let sp = t.susp
+        sp()
+        core.mem.drop(*g)
+        o.join_task()
+    })
+end t.main
+
+fn t.mkp() -> t.P uses [] panics never
+    t.P {
+        n: 1u32
+    }
+end t.mkp
+
+fn t.susp() -> () uses [suspend] panics never
+    std.task.yield_now()
+end t.susp
