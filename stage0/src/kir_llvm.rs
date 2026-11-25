@@ -321,6 +321,9 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
         "ksn.io.poll" => def("i32", "i32 %arg0", "  %r = call i32 @ksn_rt_sys_io_poll(i32 %arg0)\n  ret i32 %r\n"),
         "ksn.io.ready" => def("i32", "i32 %arg0", "  %r = call i32 @ksn_rt_sys_io_ready(i32 %arg0)\n  ret i32 %r\n"),
         "ksn.io.take" => def("i32", "i32 %arg0", "  %r = call i32 @ksn_rt_sys_io_take(i32 %arg0)\n  ret i32 %r\n"),
+        "ksn.io.bind" => def("i8", "i32 %arg0, i64 %arg1", "  call void @ksn_rt_sys_io_bind(i32 %arg0, i64 %arg1)\n  ret i8 0\n"),
+        "ksn.io.nfired" => def("i32", "", "  %r = call i32 @ksn_rt_sys_io_nfired()\n  ret i32 %r\n"),
+        "ksn.io.next" => def("i64", "", "  %r = call i64 @ksn_rt_sys_io_next()\n  ret i64 %r\n"),
         "ksn.io.pending" => def("i32", "", "  %r = call i32 @ksn_rt_sys_io_pending()\n  ret i32 %r\n"),
         // 複数スレッドの実行器の共有の核 (Linux、sysrt.c の `ksn_rt_sys_mt_*`)。Linux 以外は KIR の本体 (協調実行) のまま。
         "ksn.mt.marked" => def("i32", "i64 %arg0", "  %c = icmp uge i64 %arg0, 4611686018427387904\n  %r = zext i1 %c to i32\n  ret i32 %r\n"),
@@ -853,6 +856,9 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
                 cx.decl("declare i32 @ksn_rt_sys_io_ready(i32)");
                 cx.decl("declare i32 @ksn_rt_sys_io_take(i32)");
                 cx.decl("declare i32 @ksn_rt_sys_io_pending()");
+                cx.decl("declare void @ksn_rt_sys_io_bind(i32, i64)");
+                cx.decl("declare i32 @ksn_rt_sys_io_nfired()");
+                cx.decl("declare i64 @ksn_rt_sys_io_next()");
             } else if f.key.starts_with("ksn.mt.") {
                 for d in [
                     "declare i64 @ksn_rt_sys_mt_begin(i64)",
