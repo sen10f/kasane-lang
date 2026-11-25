@@ -56,6 +56,9 @@ pub struct FileMemo {
     /// 文面が前回と同じなら lint ごと省く (設計_KIR.md 18.11)。
     pub file_old: Option<(String, FileCheck)>,
     pub file_new: Option<(String, FileCheck)>,
+    /// `.ksnh` の「コメントを除いた形が正規形でない」(E0020) の判定の結果。キーは `file_key`。整形が 2 回かかるので文面ごとに持つ。
+    pub ksnh_old: Option<(String, bool)>,
+    pub ksnh_new: Option<(String, bool)>,
 }
 
 /// ファイル全体の結果のキー。文面・lint 用の相対パス・プログラムが `len` / `is_empty` を独自に定義するか (`own_len`) で決まる
@@ -197,6 +200,9 @@ fn data_of(m: &FileMemo) -> Value {
     if let Some((k, fc)) = &m.file_new {
         v["file"] = json!({ "k": k, "skip": fc.skip, "lint": errs_json(&fc.lint) });
     }
+    if let Some((k, b)) = &m.ksnh_new {
+        v["ksnh"] = json!({ "k": k, "bad": b });
+    }
     v
 }
 
@@ -243,6 +249,9 @@ fn parse(v: &Value) -> Option<FileMemo> {
     // ファイル全体の結果 (無くてもよい。形が違うものは捨てるだけ)。
     if let Some(f) = v.get("file") {
         m.file_old = (|| Some((f.get("k")?.as_str()?.to_string(), FileCheck { skip: f.get("skip")?.as_bool()?, lint: parse_errs(f.get("lint")?)? })))();
+    }
+    if let Some(f) = v.get("ksnh") {
+        m.ksnh_old = (|| Some((f.get("k")?.as_str()?.to_string(), f.get("bad")?.as_bool()?)))();
     }
     Some(m)
 }
@@ -297,6 +306,7 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 pub fn store(path: &str, rel: &str, m: &FileMemo) {
     let same = m.gram.new == m.gram.old
         && m.file_new == m.file_old
+        && m.ksnh_new == m.ksnh_old
         && m.lint.new.len() == m.lint.old.len()
         && m.lint.new.keys().all(|k| m.lint.old.contains_key(k));
     let p = slot(path, rel);

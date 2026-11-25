@@ -136,29 +136,97 @@ thread_local! {
 /// 下ろしが読む式の型の表 (S5-1)。入口は TAST (`TExpr::ty`) で、`tytab` は TAST に無い式のときだけの退避
 /// (退避は計器の `tyidx.fallback` に数える)。
 pub(super) struct TyIdx {
+    inner: RefCell<TyInner>,
+    /// 遅延の型表 (`type_table_lazy`) のときだけ。定義ごとに初めて下ろすときに、その定義だけを検査して `inner` へ足す。
+    /// `TypeCk` が借りる `Program` は呼び出し側 (`lower_defs`) が型表より長く持つ (寿命は消してある)。
+    tk: RefCell<Option<Box<crate::types::TypeCk<'static>>>>,
+}
+
+#[derive(Default)]
+struct TyInner {
     tast: HashMap<(String, u32), Src>,
     tab: BTreeMap<(String, u32), ExprTy>,
     /// 束縛の解決先の表 (設計 3.1、S5-2): (関数の FQN, パターン ID) → (束縛の型, 束縛モード)。TAST の `PatInfo::bind` から作る。
-    pub(super) binds: HashMap<(String, u32), (Src, crate::tast::BindMode)>,
+    binds: HashMap<(String, u32), (Src, crate::tast::BindMode)>,
     /// 経路の解決先の表 (S5-4): (関数の FQN, `Path` 節点の式 ID) → 解決先。TAST の `TExpr::pres` から作る。
-    pub(super) paths: HashMap<(String, u32), crate::tast::PathRes>,
+    paths: HashMap<(String, u32), crate::tast::PathRes>,
+    done: HashSet<usize>,
 }
 
 impl TyIdx {
+    pub(super) fn path(&self, key: &(String, u32)) -> Option<crate::tast::PathRes> {
+        self.inner.borrow().paths.get(key).cloned()
+    }
+
+    pub(super) fn bind(&self, key: &(String, u32)) -> Option<(Src, crate::tast::BindMode)> {
+        self.inner.borrow().binds.get(key).cloned()
+    }
+
+    /// 遅延の型表なら、定義 `def` (`p.defs` の中のもの) をまだ検査していなければ検査して表へ足す。
+    pub(super) fn ensure(&self, p: &Program, def: &Def) {
+        if self.tk.borrow().is_none() {
+            return;
+        }
+        let base = p.defs.as_ptr() as usize;
+        let at = def as *const Def as usize;
+        let sz = std::mem::size_of::<Def>();
+        if at < base || (at - base) % sz != 0 || (at - base) / sz >= p.defs.len() {
+            return;
+        }
+        let di = (at - base) / sz;
+        if !self.inner.borrow_mut().done.insert(di) {
+            return;
+        }
+        if !((def.kw == "fn" && def.body.is_some()) || (def.kw == "const" && def.init.is_some())) {
+            return;
+        }
+        let mut g = self.tk.borrow_mut();
+        let tk = g.as_mut().unwrap();
+        tk.check_def(di);
+        let t = crate::tast::build(p, &[di], &tk.tytab, &tk.side, &tk.let_tys);
+        let mut inn = self.inner.borrow_mut();
+        for ((d2, id), r) in &t.pres {
+            inn.paths.insert((p.defs[*d2].name.clone(), *id), r.clone());
+        }
+        for (d2, body) in &t.bodies {
+            let name = &p.defs[*d2].name;
+            crate::tast_rules::impl_sig::walk(&body.body, &mut |e| {
+                if e.id != 0 && e.ty != Src::Unknown {
+                    inn.tast.entry((name.clone(), e.id)).or_insert_with(|| e.ty.clone());
+                }
+            });
+        }
+        for ((d2, id), info) in tk.side.pat_tys.iter().filter(|(k, _)| k.0 == di) {
+            if let Some((_, ty, m)) = &info.bind {
+                if *ty != Src::Unknown {
+                    inn.binds.insert((p.defs[*d2].name.clone(), *id), (ty.clone(), *m));
+                }
+            }
+        }
+    }
+
     pub(super) fn get(&self, key: &(String, u32)) -> Option<Src> {
         // `KSN_S5_TYIDX_TAB=1` は旧い経路 (`tytab` だけ) へ強制する。KIR ダンプの前後比較 (`tests/kir_dump_diff.py`) の基準用。
         static TAB_ONLY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let tab_only = *TAB_ONLY.get_or_init(|| std::env::var_os("KSN_S5_TYIDX_TAB").is_some_and(|v| !v.is_empty() && v != "0"));
-        if let Some(t) = self.tast.get(key).filter(|_| !tab_only) {
+        let inn = self.inner.borrow();
+        if let Some(t) = inn.tast.get(key).filter(|_| !tab_only) {
             crate::s5_meter::count_active("tyidx.tast");
             return Some(t.clone());
         }
-        let r = self.tab.get(key).map(|x| x.ty.clone());
+        let r = inn.tab.get(key).map(|x| x.ty.clone()).or_else(|| self.tk.borrow().as_ref().and_then(|tk| tk.tytab.get(key).map(|x| x.ty.clone())));
         if r.is_some() {
             crate::s5_meter::count_active("tyidx.fallback");
         }
         r
     }
+}
+
+/// 遅延の型表: 定義は `Lw::new` が初めて下ろすときに検査する (`ksn check` の KIR の借用検査が使う)。
+fn type_table_lazy(p: &Program) -> TyIdx {
+    // SAFETY: `p` は `lower_defs` の間ずっと生きていて、この型表はその中でしか使わない。
+    let pp: &'static Program = unsafe { &*(p as *const Program) };
+    TyIdx { inner: RefCell::new(TyInner::default()), tk: RefCell::new(Some(Box::new(TypeCk::new(pp)))) }
 }
 
 /// 型表を作る。ユーザの関数だけを検査して TAST を組み、(FQN, 式 ID) → 型 を TAST から引ける表にする。
@@ -199,7 +267,7 @@ fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> TyIdx {
             }
         }
     }
-    TyIdx { tast, tab: tk.tytab, binds, paths }
+    TyIdx { inner: RefCell::new(TyInner { tast, tab: tk.tytab, binds, paths, done: HashSet::new() }), tk: RefCell::new(None) }
 }
 
 fn is_candidate(d: &Def) -> bool {
@@ -353,10 +421,11 @@ impl<'a> Lw<'a> {
     /// 経路節点 `v` の解決先を TAST から引く (S5-4)。
     pub(super) fn path_res(&self, v: &V) -> Option<crate::tast::PathRes> {
         let V::Node(_, _, _, id) = v else { return None };
-        self.tys.paths.get(&(self.def.name.clone(), *id)).cloned()
+        self.tys.path(&(self.def.name.clone(), *id))
     }
 
     fn new(p: &'a Program, tys: &'a TyIdx, aggs: &'a RefCell<agg::AggTab>, def: &'a Def) -> Lw<'a> {
+        tys.ensure(p, def);
         Lw {
             p,
             tys,
@@ -989,6 +1058,7 @@ impl<'a> Lw<'a> {
             // それ以外 (配列・タプル・非整数の欄の構造体など): 定数の式を使う場所で下ろす。
             // 定数はコンパイル時の値なので、式を複製しても意味は変わらない (`const` は値の置き換え)。
             Some(init) => {
+                self.tys.ensure(self.p, c);
                 let saved = self.const_scope.replace(c.name.clone());
                 let r = self.expr(&init.clone());
                 self.const_scope = saved;
@@ -2075,6 +2145,11 @@ pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
     lower_program(p, user, None)
 }
 
+/// `lower_user` と同じ結果のうち、`user` の関数から呼ばれる先だけを下ろす (`ksn check` の KIR の借用検査用。標準ライブラリの全関数を型検査・下ろしをしない)。
+pub fn lower_user_lazy(p: &Program, user: &[usize]) -> Lowered {
+    lower_defs_with(p, user, None, None, true)
+}
+
 /// `lower_user` に加えて、`entry` (入口の関数の FQN) が `Result<T, E>` を返すなら、`E` の Debug 表示の関数 (`<E>.$debug`) も作る。
 /// 作れない (`derive [Debug]` がない、未対応の型を含むなど) ときは、入口を未対応にする (理由付き)。
 pub fn lower_program(p: &Program, user: &[usize], entry: Option<&str>) -> Lowered {
@@ -2140,6 +2215,11 @@ mod settle_tests {
 }
 
 fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option<usize>) -> Lowered {
+    lower_defs_with(p, user, entry, test_def, false)
+}
+
+fn lower_defs_with(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option<usize>, lazy: bool) -> Lowered {
+    let first_user: Vec<usize> = user.to_vec();
     LINES.with(|l| l.borrow_mut().clear());
     task_lower::reset();
     // このパッケージから呼び出す依存パッケージ (別 module) の fn も下ろし対象にする。
@@ -2170,8 +2250,10 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
             }
         }
     }
+    crate::vm::tick("ll_setup");
     let user = &user_vec;
-    let tys = type_table(p, user, test_def);
+    let tys = if lazy { type_table_lazy(p) } else { type_table(p, user, test_def) };
+    crate::vm::tick("ll_types");
     let aggs = RefCell::new(agg::AggTab::new(&agg_user));
     // `std.net.listen`/`connect`/`accept` が返すソケット集成体と、その失敗の `std.net.Error` を、誰も参照しなくても型表に入れる。
     for name in ["std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "std.net.Shutdown", "std.net.Error"] {
@@ -2185,17 +2267,56 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     // (`core.panic.rt_panic` のように、どの利用者の関数からも呼ばれない宣言の理由が E9040 の一覧に混ざるのを防ぐ)。
     let mut ext_bad: Vec<(String, String)> = vec![];
     crate::s5_meter::set_active(true);
-    for &i in user {
+    let mut tried: HashSet<usize> = HashSet::new();
+    let initial: &[usize] = if lazy { &first_user } else { user };
+    for &i in initial {
         let d = &p.defs[i];
         if !is_candidate(d) && test_def != Some(i) {
             continue;
         }
+        tried.insert(i);
         match Lw::new(p, &tys, &aggs, d).lower() {
             Ok(x) => ok.extend(x),
             Err(why) => bad.push((d.name.clone(), why)),
         }
     }
+    // 遅延のとき: 呼び先 (標準ライブラリ・依存の関数) のうち、まだ下ろしていないものを、増えなくなるまで下ろす。
+    let pull = |ok: &mut Vec<(Func, BTreeSet<String>)>, bad: &mut Vec<(String, String)>, tried: &mut HashSet<usize>| {
+        if !lazy {
+            return;
+        }
+        let mut from = 0;
+        loop {
+            let have: HashSet<String> = ok.iter().map(|(f, _)| f.key.clone()).collect();
+            let mut want: Vec<usize> = vec![];
+            for (_, callees) in &ok[from..] {
+                for c in callees {
+                    if have.contains(c) {
+                        continue;
+                    }
+                    if let Some(&di) = p.funcs.get(c) {
+                        if user.contains(&di) && is_candidate(&p.defs[di]) && tried.insert(di) {
+                            want.push(di);
+                        }
+                    }
+                }
+            }
+            from = ok.len();
+            if want.is_empty() {
+                break;
+            }
+            for di in want {
+                let d = &p.defs[di];
+                match Lw::new(p, &tys, &aggs, d).lower() {
+                    Ok(x) => ok.extend(x),
+                    Err(why) => bad.push((d.name.clone(), why)),
+                }
+            }
+        }
+    };
+    pull(&mut ok, &mut bad, &mut tried);
     crate::s5_meter::set_active(false);
+    crate::vm::tick("ll_fns");
     // スレッドの補助の関数 (`ksn.thr.*`) は、全部の入口 (クロージャ) が揃ってから作る。
     task_lower::pre_finish(&mut ok);
     thread_lower::finish(&mut ok);
@@ -2235,9 +2356,11 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
         dyn_lower::synth(p, &tys, &aggs, &p.defs[i0], &mut ok);
         drop_lower::synth(p, &tys, &aggs, &p.defs[i0], &mut ok);
     }
+    pull(&mut ok, &mut bad, &mut tried);
     // 同じ単相インスタンスを、別々の呼び出し元が下ろしていることがある (内容は同じ)。鍵の重複は先の一つだけ残す。
     let mut seen: HashSet<String> = HashSet::new();
     ok.retain(|(f, _)| seen.insert(f.key.clone()));
+    crate::vm::tick("ll_finish");
     let (funcs, all_aggs) = loop {
         let keys: HashSet<String> = ok.iter().map(|(f, _)| f.key.clone()).collect();
         let mut drop: Vec<(String, String)> = vec![];
@@ -2253,10 +2376,13 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
         if drop.is_empty() {
             let mut m = Module { funcs: ok.iter().map(|(f, _)| f.clone()).collect(), aggs: aggs.borrow().defs.clone(), depth: 0 };
             // 中断する関数と閉包の本体を、枠の形 (`.new` / `.poll`) にする (設計_KIR.md 26 章)。変換できなければ落とす。
+            crate::vm::tick("ll_mod");
             drop.extend(kir_suspend::transform(&mut m, &task_lower::task_keys()));
+            crate::vm::tick("ll_susp");
             for (key, msg) in kir::verify_module(&m) {
                 drop.push((key, format!("下ろしの検査に失敗: {}", msg)));
             }
+            crate::vm::tick("ll_verify");
             if drop.is_empty() {
                 break (m.funcs, m.aggs);
             }
@@ -2390,7 +2516,7 @@ fn ufcs_rewrite(v: &V, p: &crate::program::Program, tys: &TyIdx, fname: &str) ->
                 let ty_ok = (segs.len() == 4 && segs[1] == "num" && Ty::parse(&segs[2]).is_some()) || (segs.len() == 3 && segs[1] == "slice");
                 let args = items(&fs2[1]).to_vec();
                 let pid = if let V::Node(_, _, _, i) = &fs2[0] { *i } else { 0 };
-                let bodiless = matches!(tys.paths.get(&(fname.to_string(), pid)).map(|r| &r.target), Some(Tgt::Sig(di) | Tgt::Fn(di)) if p.defs[*di].body.is_none());
+                let bodiless = matches!(tys.path(&(fname.to_string(), pid)).as_ref().map(|r| &r.target), Some(Tgt::Sig(di) | Tgt::Fn(di)) if p.defs[*di].body.is_none());
                 // `core.str.find(s, p)` なども受け手を第 1 引数にしたメソッド呼び出しへ (Kasane 版の本体を持つので bodiless は問わない)。
                 let str_ok = segs.len() == 3 && segs[1] == "str" && !assoc && !matches!(m, "from_utf8" | "from_utf8_unchecked");
                 if segs[0] == "core" && ((ty_ok && bodiless) || str_ok) && !assoc && !args.is_empty() {

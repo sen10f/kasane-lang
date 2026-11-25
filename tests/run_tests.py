@@ -85,7 +85,7 @@ if _tier == 'full':
     _cargo_tier('slow', 'stage0: cargo test (slow)')
 # 2a. feature `test-hooks` が要る試験 (隠しの環境変数で借用の診断を捨てる `KSN_SKIP_BORROW_DIAGS` は、配布の
 #     バイナリでは効かない。2026-11-21 の脆弱性の直し E1)。target を別にする。
-r = subprocess.run(['cargo', 'test', '--release', '--features', 'test-hooks', '--test', 'interp_parity'], cwd=os.path.join(ROOT, 'stage0'),
+r = subprocess.run(['cargo', 'test', '--release', '--features', 'test-hooks', '--test', 'interp_parity', '--test', 'kir_check_roots'], cwd=os.path.join(ROOT, 'stage0'),
                    capture_output=True, text=True, encoding='utf-8', errors='replace',
                    env=dict(os.environ, CARGO_TARGET_DIR=os.path.join(ROOT, 'stage0', 'target', 'hooks')))
 step('stage0: cargo test --features test-hooks (interp_parity)', r.returncode == 0, r.stdout[-1500:] + r.stderr[-500:])
