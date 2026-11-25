@@ -3039,7 +3039,7 @@ impl<'a> Fe<'a> {
             Op::StaticBytes(bytes) => {
                 let g = format!("ksn.s.{}.{}", self.fi, i.dst);
                 let esc: String = bytes.iter().map(|b| format!("\\{:02X}", b)).collect();
-                self.cx.globals.push_str(&format!("@{} = private unnamed_addr constant [{} x i8] c\"{}\"\n", g, bytes.len(), esc));
+                self.cx.globals.push_str(&format!("@{} = private unnamed_addr constant [{} x i8] c\"{}\", align 16\n", g, bytes.len(), esc));
                 self.line(format!("{} = getelementptr i8, ptr @{}, i64 0", d, g));
             }
             Op::PtrAdd { p, off } => {

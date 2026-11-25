@@ -697,6 +697,9 @@ pub struct TypeCk<'a> {
     pub susp_lines: HashSet<(usize, usize)>,
     /// 効果が変数の関数値・`Fn` 境界の呼び出し (`E` が `suspend` になりうる)。ロックのガードの検査だけが使う。
     pub susp_var_lines: HashSet<(usize, usize)>,
+    /// 宣言の効果が変数 (`uses [E]`) の関数のうち、呼び出し元が `suspend` を含む効果で実体化したもの (関数名)。
+    /// 借用検査はその本体の `E` の呼び出しを中断点として再検査する (E3050、sec6)。
+    pub susp_inst: HashSet<String>,
     let_pending: Vec<(usize, String, u32, Ty)>,
     /// 呼び出しの辺 (呼び出し元の関数名 -> 呼び出し先の関数名)。型で解決できたメソッド呼び出しを含む。
     pub edges: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
@@ -834,7 +837,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, marker_def: std::cell::Cell::new(None), scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), susp_var_lines: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, wants_tmp: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], task_roots: vec![], fn_value_markers: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], redundant_on: false, cur: 0, marker_def: std::cell::Cell::new(None), scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_tys_line: HashMap::new(), susp_lines: HashSet::new(), susp_var_lines: HashSet::new(), susp_inst: HashSet::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), side: Default::default(), targs_pending: vec![], recv_log: vec![], call_sites: vec![], bound_sites: HashMap::new(), bound_hit: None, wants_tmp: None, call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, sites: vec![], site_stack: vec![], last_site: None, pat_src: None, nest: 0, cap_refs: vec![], pat_mode: None, pat_exact: false, unsize: vec![], pat_line: 0, cur_line: 0, conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], task_roots: vec![], fn_value_markers: vec![], arg_static: vec![], static_checks: vec![], oneway_sites: vec![], static_nodes: HashSet::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -2570,7 +2573,28 @@ impl<'a> TypeCk<'a> {
             let (x, y) = ((**x).clone(), (**y).clone());
             return self.unify2(&x, &y);
         }
+        // レシーバの型引数の中の `String` と `str` / `&str` は別の型 (`HashMap<&str, V>` は `get_str` を持たない)。
+        // `unify` の `String` ≈ `str` の近似は、引数の渡し方のためで、レシーバの型引数には効かせない。
+        if self.string_str_args(&w, &g, false) {
+            return Err((w, g));
+        }
         self.unify2(self_ty, view)
+    }
+
+    /// 型引数の位置 (`top` が偽) で、一方が `String`、他方が `str` / `&str` なら真。構造をそろえて降りる。
+    fn string_str_args(&self, a: &Ty, b: &Ty, top: bool) -> bool {
+        let (a, b) = (self.resolve(a).strip().clone(), self.resolve(b).strip().clone());
+        let is_string = |t: &Ty| matches!(t, Ty::Named(n, _, _) if n == "alloc.string.String");
+        let is_str = |t: &Ty| matches!(t, Ty::Prim(p) if p == "str") || matches!(t, Ty::Ref(_, i, _) if matches!(&**i, Ty::Prim(p) if p == "str"));
+        if top && ((is_string(&a) && is_str(&b)) || (is_str(&a) && is_string(&b))) {
+            return true;
+        }
+        match (&a, &b) {
+            (Ty::Named(n, xs, _), Ty::Named(m, ys, _)) if n == m && xs.len() == ys.len() => xs.iter().zip(ys).any(|(x, y)| self.string_str_args(x, y, true)),
+            (Ty::Ref(_, x, _), Ty::Ref(_, y, _)) => self.string_str_args(x, y, top),
+            (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => xs.iter().zip(ys).any(|(x, y)| self.string_str_args(x, y, top)),
+            _ => false,
+        }
     }
 
     /// シグネチャの型パラメータを、呼び出しごとの新しい型変数に置き換える。
@@ -3180,6 +3204,11 @@ impl<'a> TypeCk<'a> {
             self.note_region_cstr(call_id, &self_inst, recv, "recv");
         }
         let view = self.view_for(recv, &owner);
+        // 型引数の `String` と `str` / `&str` は別の型: `HashMap<&str, V>` は `HashMap<String<B>, V, A>` だけの `get_str` を持たない。
+        if fit.len() == 1 && self.string_str_args(&self_ty, &view, false) {
+            let shown = self.deep(recv).strip().show();
+            self.diag("E1108", format!("type `{}` has no method `{}`: the method is declared only for a receiver with a different type argument (`String` vs `str`)", shown, name), line);
+        }
         let _ = self.unify_recv(&self_ty, &view);
         for (k, a) in args.iter().enumerate() {
             let pt = self.inst(&Self::inst_regions(call_id, &sig_ps[k + 1]), &mut map);
@@ -6147,6 +6176,11 @@ impl<'a> TypeCk<'a> {
         // 候補が複数あるときは 1 つでも含めば (fail-closed)。
         if cands.iter().any(|c| c.1.iter().any(|u| u == "suspend")) {
             self.susp_lines.insert((self.cur, line));
+            for c in cands.iter().filter(|c| c.1.iter().any(|u| u == "suspend")) {
+                if !self.susp_inst.contains(&c.0) && self.p.defs.iter().any(|d| d.name == c.0 && d.uses.iter().any(|u| crate::check::is_effect_var(u))) {
+                    self.susp_inst.insert(c.0.clone());
+                }
+            }
         }
         if !self.eff_acc.is_empty() {
             // クロージャの効果には、具体名と (囲む関数の) 効果変数の両方を数える。変数は呼び出しごとに

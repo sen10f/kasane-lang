@@ -1,0 +1,10 @@
+fn t.main() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let mut m = std.collections.HashMap.new()
+    core.mem.drop(m.insert("k", 7u32)?)
+    let add = match m.get_str("k") {
+        Some(x) => usize.from_u32(*x)
+        None => 0usize
+    }
+    core.mem.drop(add)
+    Ok(())
+end t.main

@@ -526,11 +526,18 @@ fn fold_variants(lines: &[String], funcs: &[Func], safe: &[bool]) -> Vec<String>
             let t = lines[i].trim();
             let Some(r) = t.strip_prefix("let ") else { continue };
             let Some((name, rhs)) = r.split_once(" = ") else { continue };
-            if name.contains(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) || name.is_empty() {
+            if name.contains(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) || name.is_empty() || name == "false" || name == "true" {
                 continue;
             }
             let m = mask(&lines[i]);
             if !safe[i] || m.trim_end().ends_with('{') || mask(rhs).trim().is_empty() || m.contains("capture") {
+                continue;
+            }
+            // 初期化子が一時オブジェクトを借用する形 (`&x` / `&mut x` など) や、メソッド
+            // 呼び出しの結果が借用される形 (`x.lock().get()` など) は、インライン展開すると
+            // 一時オブジェクトの生存期間が変わり意味が変わるため、fold を飛ばす。
+            let rhs = rhs.trim();
+            if rhs_borrows_temporary(rhs) {
                 continue;
             }
             let j = i + 1;
@@ -543,8 +550,20 @@ fn fold_variants(lines: &[String], funcs: &[Func], safe: &[bool]) -> Vec<String>
             if total != 2 || ps.len() != 1 {
                 continue;
             }
-            let rhs = rhs.trim();
-            let rep = if mask(rhs).trim().contains(' ') { format!("({})", rhs) } else { rhs.to_string() };
+            // 道具のうそ (意味が変わるので飛ばす、2026-11-25 の仕分け): (1) `&x` / `&mut x` の `x` を式に替えると、
+            // 局所の借用が一時値・リテラルの昇格の借用になる。(2) `[e; n]` の長さを定数に替えると、局所の長さの誤りが消える。
+            // (3) `?` を含む初期化子を他の評価の後ろへ動かすと、評価の順が変わる。(4) `&&` / `||` の右辺へ動かすと、
+            // 評価が条件つきになり、線形値の消費の経路が変わる。
+            let before = lines[j][..ps[0]].trim_end();
+            if before.ends_with('&') || before.ends_with("&mut") || (before.contains(';') && lines[j][ps[0] + name.len()..].trim_start().starts_with(']')) || rhs.contains('?') || before.contains("&&") || before.contains("||") || (before.ends_with('*') && rhs.starts_with(['&', '*'])) {
+                continue;
+            }
+            let rep = if mask(rhs).trim().contains(' ') || rhs.starts_with(['&', '*', '-', '!']) { format!("({})", rhs) } else { rhs.to_string() };
+            // `name` の直前が `&`/`*` で rep が `&`/`*` で始まるなど、`&&` や `**` といった
+            // 文法エラー (E0002) を生む並びは作らない。
+            if fold_insertion_unsafe(&lines[j], ps[0], name, &rep) {
+                continue;
+            }
             let mut nl: Vec<String> = lines[..i].to_vec();
             nl.push(format!("{}{}{}", &lines[j][..ps[0]], rep, &lines[j][ps[0] + name.len()..]));
             nl.extend(lines[j + 1..].iter().cloned());
@@ -552,6 +571,151 @@ fn fold_variants(lines: &[String], funcs: &[Func], safe: &[bool]) -> Vec<String>
         }
     }
     out
+}
+
+/// `expr` がプレーンなプレースか。
+/// プレーンなプレース = ローカル名、それに `.field`（複数可）と `[index]`（単純なインデックス:
+/// 整数リテラルまたはローカル名）を続けた形。`*x` や `f()`、`x.m()`、`a[i + j]` などは含まない。
+fn is_plain_place(expr: &str) -> bool {
+    let e = expr.trim();
+    if e.is_empty() {
+        return false;
+    }
+    let cs: Vec<char> = e.chars().collect();
+    let mut i = 0;
+    // 先頭: ローカル名
+    if !(cs[0].is_ascii_lowercase() || cs[0] == '_') {
+        return false;
+    }
+    while i < cs.len() && (cs[i].is_ascii_alphanumeric() || cs[i] == '_') {
+        i += 1;
+    }
+    while i < cs.len() {
+        if cs[i] == '.' {
+            i += 1;
+            while i < cs.len() && cs[i] == ' ' {
+                i += 1;
+            }
+            if i >= cs.len() || !(cs[i].is_ascii_lowercase() || cs[i] == '_') {
+                return false;
+            }
+            while i < cs.len() && (cs[i].is_ascii_alphanumeric() || cs[i] == '_') {
+                i += 1;
+            }
+        } else if cs[i] == '[' {
+            i += 1;
+            while i < cs.len() && cs[i] == ' ' {
+                i += 1;
+            }
+            let start = i;
+            while i < cs.len() && cs[i] != ']' {
+                i += 1;
+            }
+            if i >= cs.len() {
+                return false; // 閉じカッコが無い
+            }
+            let inner: String = cs[start..i].iter().collect();
+            let inner = inner.trim();
+            if inner.is_empty()
+                || !inner
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                return false;
+            }
+            i += 1; // `]` をスキップ
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+/// `s` の中に、レシーバ自身が呼び出し結果（一時オブジェクト）であるメソッド呼び出し
+/// (`x.lock().get()`、`v.iter().next()` のように `.<メソッド>(` の直前のレシーバが `)` で終わる形)
+/// が含まれるか。
+fn method_call_on_temporary(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => {
+                depth -= 1;
+                if depth < 0 {
+                    depth = 0;
+                }
+            }
+            b'.' => {
+                let k = i + 1;
+                if k < bytes.len() && (bytes[k].is_ascii_alphabetic() || bytes[k] == b'_') {
+                    let mut m = k;
+                    while m < bytes.len()
+                        && (bytes[m].is_ascii_alphanumeric() || bytes[m] == b'_')
+                    {
+                        m += 1;
+                    }
+                    if m < bytes.len() && bytes[m] == b'(' && depth == 0 {
+                        // レシーバは `.` の直前まで。末尾が `)` なら呼び出し結果（一時オブジェクト）。
+                        let mut p = i.saturating_sub(1);
+                        while p > 0 && bytes[p] == b' ' {
+                            p -= 1;
+                        }
+                        if p > 0 && bytes[p] == b')' {
+                            return true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// 初期化子が一時オブジェクトを借用する値を束ねる `let` なら真。
+/// (a) トップレベルが `&expr` / `&mut expr` で、`expr` がプレーンなプレースでない。
+/// (b) レシーバ自身が一時オブジェクトであるメソッド呼び出しを含み、その結果が参照を返す形。
+/// `&h`（ローカルへの借用）や `t.id(s.n)`（FQN 関数呼び出し）などは偽。
+fn rhs_borrows_temporary(rhs: &str) -> bool {
+    let r = rhs.trim();
+    // (a)
+    if let Some(inner) = r.strip_prefix("&mut ").or_else(|| r.strip_prefix('&')) {
+        if !is_plain_place(inner) {
+            return true;
+        }
+    }
+    // (c) 引数の中の `&<呼び出し>` (`t.same(&t.mk())`): 一時値は `let` に束ねると文の終わりまで生きる (let は束縛の拡張) が、
+    // 折りたたんだ式の中では呼び出しの文だけ。意味が変わるので飛ばす。
+    let b = r.as_bytes();
+    for (i, c) in b.iter().enumerate() {
+        if *c == b'&' {
+            for &d in &b[i + 1..] {
+                match d {
+                    b'(' => return true,
+                    b')' | b',' => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+    // (b)
+    method_call_on_temporary(r)
+}
+
+/// `lines[j]` の `pos` (名前 `name` の位置) に `rep` を差し替えたとき、`&&` や `**` などの
+/// 記号が並んで文法エラー (E0002) になる形なら真。
+fn fold_insertion_unsafe(line: &str, pos: usize, name: &str, rep: &str) -> bool {
+    let bytes = line.as_bytes();
+    let pre = pos.saturating_sub(1);
+    let post = pos + name.len();
+    let pre_sigil = pre < bytes.len() && matches!(bytes[pre], b'&' | b'*');
+    let post_sigil = post < bytes.len() && matches!(bytes[post], b'&' | b'*');
+    let rep_starts_sigil = !rep.is_empty() && matches!(rep.as_bytes()[0], b'&' | b'*');
+    let rep_ends_sigil = !rep.is_empty() && matches!(rep.as_bytes().last(), Some(b'&' | b'*'));
+    (pre_sigil && rep_starts_sigil) || (rep_ends_sigil && post_sigil)
 }
 
 fn block_end(lines: &[String], i: usize) -> Option<usize> {
@@ -856,6 +1020,13 @@ struct Report {
     total: usize,
 }
 
+/// 言い換えると元の誤りが消える (言い換えのほうが正しい) 組。道具のうそなので、台帳に載せず飛ばす (2026-11-25 の仕分け)。
+/// - `match2iflet` は `else` を足すので、網羅しない `match` (E2021) は網羅する `if let .. else` になる。
+/// - `iflet2match` の `if let Some(l) = o { .. } else { .. }` (`o: Option<線形>`) は、`else` の腕で `o` は `None` と決まるので、
+///   `match` の `None` の腕には漏れが無い (`if let` の `else` は `o` を未消費で持つとして E3003 になる、保守側の検査)。
+const SOUND_REWRITES: &[(&str, &str)] =
+    &[("match2iflet", "exh_match_nested_nonexhaustive"), ("match2iflet", "exh_match_result_option_nonexhaustive"), ("iflet2match", "if_let_linear_else_leak")];
+
 fn max_sites() -> usize {
     std::env::var("REPHRASE_MAX_SITES").ok().and_then(|v| v.parse().ok()).unwrap_or(6)
 }
@@ -884,6 +1055,9 @@ fn run_dir_mode(dir: &Path, unsound: bool, mode: Option<&str>) -> Report {
                 let want = expect_value(p, "expect");
                 let target = expect_value(p, "target");
                 for tf in TRANSFORMS {
+                    if unsound && SOUND_REWRITES.contains(&(*tf, stem.as_str())) {
+                        continue;
+                    }
                     let vs = variants(&src, tf, max);
                     let mut r = rep.lock().unwrap();
                     if vs.is_empty() {

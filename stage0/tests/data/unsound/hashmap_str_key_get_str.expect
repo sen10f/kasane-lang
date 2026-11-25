@@ -1,0 +1,2 @@
+expect: E1108
+note: `HashMap<&str, V>` に `get_str` (宣言は `HashMap<String<B>, V, A>` だけ) を呼ぶ。レシーバの型引数の `String` と `str` は別の型。

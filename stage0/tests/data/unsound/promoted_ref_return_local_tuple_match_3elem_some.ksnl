@@ -1,0 +1,12 @@
+fn t.bad(_p: &u32) -> Option<&u32> uses [] panics never
+    match (&7u32, 1u8, 2u8) {
+        (r, _, _) => Some(r)
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let z = 0u32
+    let o = t.bad(&z)
+    core.mem.drop(o)
+    Ok(())
+end t.main
