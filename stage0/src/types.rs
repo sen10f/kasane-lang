@@ -2570,7 +2570,28 @@ impl<'a> TypeCk<'a> {
             let (x, y) = ((**x).clone(), (**y).clone());
             return self.unify2(&x, &y);
         }
+        // レシーバの型引数の中の `String` と `str` / `&str` は別の型 (`HashMap<&str, V>` は `get_str` を持たない)。
+        // `unify` の `String` ≈ `str` の近似は、引数の渡し方のためで、レシーバの型引数には効かせない。
+        if self.string_str_args(&w, &g, false) {
+            return Err((w, g));
+        }
         self.unify2(self_ty, view)
+    }
+
+    /// 型引数の位置 (`top` が偽) で、一方が `String`、他方が `str` / `&str` なら真。構造をそろえて降りる。
+    fn string_str_args(&self, a: &Ty, b: &Ty, top: bool) -> bool {
+        let (a, b) = (self.resolve(a).strip().clone(), self.resolve(b).strip().clone());
+        let is_string = |t: &Ty| matches!(t, Ty::Named(n, _, _) if n == "alloc.string.String");
+        let is_str = |t: &Ty| matches!(t, Ty::Prim(p) if p == "str") || matches!(t, Ty::Ref(_, i, _) if matches!(&**i, Ty::Prim(p) if p == "str"));
+        if top && ((is_string(&a) && is_str(&b)) || (is_str(&a) && is_string(&b))) {
+            return true;
+        }
+        match (&a, &b) {
+            (Ty::Named(n, xs, _), Ty::Named(m, ys, _)) if n == m && xs.len() == ys.len() => xs.iter().zip(ys).any(|(x, y)| self.string_str_args(x, y, true)),
+            (Ty::Ref(_, x, _), Ty::Ref(_, y, _)) => self.string_str_args(x, y, top),
+            (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => xs.iter().zip(ys).any(|(x, y)| self.string_str_args(x, y, top)),
+            _ => false,
+        }
     }
 
     /// シグネチャの型パラメータを、呼び出しごとの新しい型変数に置き換える。
@@ -3180,6 +3201,11 @@ impl<'a> TypeCk<'a> {
             self.note_region_cstr(call_id, &self_inst, recv, "recv");
         }
         let view = self.view_for(recv, &owner);
+        // 型引数の `String` と `str` / `&str` は別の型: `HashMap<&str, V>` は `HashMap<String<B>, V, A>` だけの `get_str` を持たない。
+        if fit.len() == 1 && self.string_str_args(&self_ty, &view, false) {
+            let shown = self.deep(recv).strip().show();
+            self.diag("E1108", format!("type `{}` has no method `{}`: the method is declared only for a receiver with a different type argument (`String` vs `str`)", shown, name), line);
+        }
         let _ = self.unify_recv(&self_ty, &view);
         for (k, a) in args.iter().enumerate() {
             let pt = self.inst(&Self::inst_regions(call_id, &sig_ps[k + 1]), &mut map);
