@@ -765,6 +765,35 @@ fn c_decl_sig(arch: crate::kir_cabi::Arch, aggs: &[AggDef], f: &Func) -> R<(Vec<
 }
 
 fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> R<String> {
+    let ir = emit_with_attrs(m, entry, program, target)?;
+    // 試験用 (差分試験): 最適化への約束 (属性) をすべて外した IR にする。配布の release では効かない。
+    if cfg!(any(debug_assertions, feature = "test-hooks")) && std::env::var_os("KSN_LLVM_NO_ATTRS").is_some() {
+        return Ok(strip_attrs(&ir));
+    }
+    Ok(ir)
+}
+
+/// 差分試験用: `noalias` `readonly` `nonnull` `dereferenceable(n)` `memory(..)` `nounwind` `alwaysinline` と `align N` (N>1、定義の宣言の側) を外す。
+/// `load`/`store`/`alloca`/`global` の `align` は ABI の都合ではなく約束なので、1 に落とす (確保の `align` は保つ: スタックの整列に依存する物は無い)。
+fn strip_attrs(ir: &str) -> String {
+    use regex::Regex;
+    let attrs = Regex::new(r"\b(noalias|readonly|nonnull|nounwind|alwaysinline)\b ?|\bdereferenceable\(\d+\) ?|\bmemory\([^)]*\) ?").unwrap();
+    let al = Regex::new(r"(?m)^(\s*(?:%\S+ = )?(?:load|store)\b.*), align (?:[2-9]|\d\d+)\s*$").unwrap();
+    ir.lines()
+        .map(|l| {
+            if l.starts_with("define ") || l.starts_with("declare ") || l.contains(" call ") || l.contains("= call ") {
+                attrs.replace_all(l, "").into_owned()
+            } else {
+                l.to_string()
+            }
+        })
+        .map(|l| al.replace(&l, "$1, align 1").into_owned())
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+fn emit_with_attrs(m: &Module, entry: &str, program: bool, target: Option<Target>) -> R<String> {
     let errs = verify_module(m);
     if let Some((k, e)) = errs.first() {
         return Err(format!("KIR の検査に通らない ({}): {}", k, e));

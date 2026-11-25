@@ -99,3 +99,19 @@ taskset -c 0-9,12-31 python bench/run_bench.py --provider nim
 回帰用だけの課題 (テストも無く、回帰検査だけの参照解)は
 `{"id", "title", "level": "reference-only"}` の `task.json` と `reference.ksnl` のみ。
 `bench/tasks.py` は回帰用 id の一覧 `REFERENCE_ONLY` も出す。
+
+## 静かなマシンでの計測 (`bench/quiet_run.py`)
+
+他の作業で CPU が詰まっているときの数字は使えない。`python3 bench/quiet_run.py` は、1 分の負荷平均が閾値 (`--load`、既定 4) 未満の状態が
+`--quiet-min` 分 (既定 2) 続くまで待ち、`--give-up-hours` (既定 6) で諦める (終了コード 3)。静かになったら xlang の計算ベンチ
+(Kasane / Rust / C clang / Go (あれば) / Node) と `perf/` の Kasane の課題を、各 `--runs` 回 (既定 7) の最小値で測り、
+`bench/results/quiet_<日付>.md|json` に uptime・ksn の commit・CPU 機種つきで書く (測定中に負荷が閾値の 2 倍を超えた行には `~`)。
+前提: `cargo build --release` 済み (`--ksn` で別のバイナリも可)。例: `python3 bench/quiet_run.py --only nbody,vecsum --no-wait`。
+`bench/results/` は gitignore 済み。
+
+## 属性の差分試験 (`tests/attr_diff.py`)
+
+`kir_llvm.rs` が LLVM に渡す最適化の約束 (`noalias` `readonly` `nonnull` `dereferenceable` `memory(..)` `nounwind` `alwaysinline` `align`>1) を
+`KSN_LLVM_NO_ATTRS=1` で全部外せる (debug か feature `test-hooks` のビルドだけ。配布の release では効かない)。
+`python3 tests/attr_diff.py --ksn <test-hooks 付きの ksn> [--fast]` は同じプログラムを release で 2 回ビルドして標準出力と終了コードを比べる。
+差があれば約束が誤っている。`--fast` は数百本で 3 分以内 (`run_tests.py` に入っている)。
