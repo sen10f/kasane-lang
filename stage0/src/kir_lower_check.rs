@@ -151,7 +151,7 @@ impl<'a> Lw<'a> {
         let ta = self.vty(a);
         // 所有物 (String / Vec) を持つ型は値で `$eq` に渡すと所有が移る。派生の比較は所有物のフィールドを許さず
         // (E2036)、手書きの eq は下ろせないので、理由を付けて拒否する (設計_KIR.md 17.15)。
-        if super::coll::owns(self, ta) {
+        if self.aggs.borrow().owns_real_heap(ta) {
             return self.err(line, format!("型 {} の比較は段階 1 の対象外: 所有物を持つ型の == / != は値渡しで所有が移るため", ta.name()));
         }
         let mut why = String::new();

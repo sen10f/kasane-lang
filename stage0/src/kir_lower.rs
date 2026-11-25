@@ -1092,8 +1092,10 @@ impl<'a> Lw<'a> {
                         return Ok(Some(r));
                     }
                 }
-                let Some(a) = self.expr(l)? else { return Ok(None) };
-                let Some(b) = self.expr(r)? else { return Ok(None) };
+                // 手書きの `Drop` を持つ型の `==` / `!=` は参照で比べる (所有を移さない): 場所の式は移さずに読む。
+                let drop_cmp = matches!(op.as_str(), "==" | "!=") && self.src_ty(l).ok().and_then(|t| self.conv_t(&t)).is_some_and(|t| self.aggs.borrow().has_user_drop_in(t));
+                let Some(a) = (if drop_cmp { self.expr_peek(l)? } else { self.expr(l)? }) else { return Ok(None) };
+                let Some(b) = (if drop_cmp { self.expr_peek(r)? } else { self.expr(r)? }) else { return Ok(None) };
                 // `Some(c) => c == &y` の `&y` は読んでから比べる。比べる型は emit した値の型で決める。
                 // `&str` どうしの `==` / `!=` は、バイト列の等しさ (`str.eq` と同じ)。
                 if matches!(op.as_str(), "==" | "!=") && self.is_str_ref(l) && self.is_str_ref(r) {
@@ -1106,7 +1108,16 @@ impl<'a> Lw<'a> {
                     return self.err(line, "比較の両辺の型が違う");
                 }
                 if matches!(op.as_str(), "==" | "!=") && (matches!(t, Ty::Opt(_) | Ty::Res(..) | Ty::Agg(_))) {
-                    return Ok(Some(self.eq_by_call(l, r, a, b, op == "!=", line)?));
+                    let res = self.eq_by_call(l, r, a, b, op == "!=", line)?;
+                    // 手書きの `Drop` を持つ一時値 (`f() == g()`) は、比べ終えたら破棄する。
+                    if drop_cmp {
+                        for (x, v) in [(l, a), (r, b)] {
+                            if !matches!(nname(x), "Path" | "Field") && self.cur.is_some() {
+                                coll::drop_temp(self, v);
+                            }
+                        }
+                    }
+                    return Ok(Some(res));
                 }
                 let cc = match op.as_str() {
                     "==" => Cc::Eq,

@@ -623,22 +623,31 @@ impl AggTab {
         }
     }
 
-    /// 型 `t` の値が (入れ子を含めて) ヒープの所有物 (Vec / String のヘッダ) を持つか。持つ値は移動と解放の対象になる。
+    /// 型 `t` の値が (入れ子を含めて) ヒープの所有物 (Vec / String のヘッダ) か手書きの `Drop` を持つか。持つ値は移動と解放の対象になる。
     pub fn owns_heap(&self, t: Ty) -> bool {
+        self.owns_inner(t, true)
+    }
+
+    /// `owns_heap` から、手書きの `Drop` だけで所有になるものを除いたもの (ヒープの所有物を持つか)。
+    pub fn owns_real_heap(&self, t: Ty) -> bool {
+        self.owns_inner(t, false)
+    }
+
+    fn owns_inner(&self, t: Ty, count_drop: bool) -> bool {
         match t {
             Ty::Agg(i) => {
                 let d = &self.defs[i as usize];
-                if is_vec_name(&d.name) || d.name.starts_with("dynbox<") || self.box_elems.contains_key(&i) || self.chan_kind(t).is_some() || self.user_drop.contains_key(&i) {
+                if is_vec_name(&d.name) || d.name.starts_with("dynbox<") || self.box_elems.contains_key(&i) || self.chan_kind(t).is_some() || (count_drop && self.user_drop.contains_key(&i)) {
                     return true;
                 }
                 match &d.kind {
-                    AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| self.owns_heap(f.ty)),
-                    AggKind::Array(t, _) => self.owns_heap(*t),
-                    AggKind::Enum(vs) => vs.iter().any(|v| v.fields.iter().any(|f| self.owns_heap(f.ty))),
+                    AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| self.owns_inner(f.ty, count_drop)),
+                    AggKind::Array(t, _) => self.owns_inner(*t, count_drop),
+                    AggKind::Enum(vs) => vs.iter().any(|v| v.fields.iter().any(|f| self.owns_inner(f.ty, count_drop))),
                 }
             }
-            Ty::Opt(p) => self.owns_heap(p.ty()),
-            Ty::Res(a, e) => self.owns_heap(a.ty()) || self.owns_heap(e.ty()),
+            Ty::Opt(p) => self.owns_inner(p.ty(), count_drop),
+            Ty::Res(a, e) => self.owns_inner(a.ty(), count_drop) || self.owns_inner(e.ty(), count_drop),
             _ => false,
         }
     }

@@ -95,6 +95,18 @@ fn user_drop_ref_temporaries_with_return_block_value_vec_remove_for() {
     all_engines("temps");
 }
 
+/// `&` の取り込み・`FnOnce` への move の取り込み・`HashMap<K, D>` の値。
+#[test]
+fn user_drop_closure_captures_and_hashmap_values() {
+    all_engines("closures");
+}
+
+/// `derive [Clone, PartialEq]` の型: `==` は所有を移さず、一時値は比べ終えたら破棄する。
+#[test]
+fn user_drop_derived_clone_and_eq_do_not_move() {
+    all_engines("derive");
+}
+
 /// `ksn test` も同じ (VM で走る)。
 #[test]
 fn user_drop_ksn_test_runs_the_drop() {

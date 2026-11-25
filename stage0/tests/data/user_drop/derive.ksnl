@@ -1,0 +1,43 @@
+static t.LOG: core.sync.AtomicU64 = core.sync.AtomicU64.new(0u64) pub
+
+type t.D derive [Debug, Clone, PartialEq]
+    id: u64
+end t.D
+
+impl core.ops.Drop for t.D
+fn t.D.drop(self: &mut t.D) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)
+end t.D.drop
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    t.s_cmp()
+    core.check.eq(t.take(), 311u64)
+    core.check.is_true(t.s_cmp_temp())
+    core.check.eq(t.take(), 22u64)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main
+
+fn t.mk(id: u64) -> t.D uses [] panics never
+    t.D {
+        id: id
+    }
+end t.mk
+
+fn t.s_cmp() -> () uses [] panics may
+    let a = t.mk(1u64)
+    let b = a.clone()
+    let same = a == b
+    let other = a != t.mk(3u64)
+    core.check.is_true(same)
+    core.check.is_true(other)
+end t.s_cmp
+
+fn t.s_cmp_temp() -> bool uses [] panics never
+    t.mk(2u64) == t.mk(2u64)
+end t.s_cmp_temp
+
+fn t.take() -> u64 uses [] panics never
+    t.LOG.swap(0u64, core.sync.Ordering.SeqCst)
+end t.take
