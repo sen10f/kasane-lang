@@ -133,13 +133,22 @@ fn fast_lo_hi(t: u8) -> (i128, i128) {
 }
 
 fn bad_addr(a: u64, n: usize) -> String {
+    if a < 0x1000 {
+        // drop したスロットは番地を 0 にするので、ドロップ済みの値を借用越しに読むとここに来る。
+        return format!("不正なメモリアクセス {:#x} ({} バイト): 解放済みの値の可能性 (use after free)", a, n);
+    }
     format!("不正なメモリアクセス {:#x} ({} バイト)", a, n)
 }
 
 #[inline(always)]
 fn addr(a: u64, n: usize) -> Result<*mut u8, String> {
     match super::arena::check(a, n) {
-        Some(p) => Ok(p),
+        Some(p) => {
+            if super::arena::dead(a, n) {
+                return Err(format!("use after free: 解放済みの領域を読み書きした {:#x} ({} バイト)", a, n));
+            }
+            Ok(p)
+        }
         None => Err(bad_addr(a, n)),
     }
 }
@@ -378,7 +387,7 @@ impl<'a> Vm<'a> {
         self.top = 0;
         // 領域の外の番地を読もうとした (検査の抜けや偽の見出し) ときは、プロセスを壊さずに panic (101) で止める。
         match self.exec(vi, entry as u32, args, false) {
-            Err(e) if e.starts_with("不正なメモリアクセス") => Ok(Outcome::Panic(e)),
+            Err(e) if (e.starts_with("不正なメモリアクセス") || e.starts_with("use after free")) => Ok(Outcome::Panic(e)),
             r => r,
         }
     }

@@ -20,6 +20,12 @@ fn assert_dead_read(name: &str, src: &str) {
     let (code, out, err) = run_skipping_borrowck(name, src);
     assert_eq!(code, Some(101), "stdout: {} stderr: {}", out, err);
     assert!(err.contains("use after free"), "{}", err);
+    // 同じ試験を VM でも (木走査と同じ安全網)。
+    let t = Tmp::new(&format!("{}_vm", name), src);
+    let o = run_with_env(&["run", "--engine=vm"], &t.0, &[("KSN_SKIP_BORROW_DIAGS", "1")]);
+    let (code, err) = (o.status.code(), text(&o.stderr));
+    assert_eq!(code, Some(101), "vm stdout: {} stderr: {}", text(&o.stdout), err);
+    assert!(err.contains("use after free"), "vm: {}", err);
 }
 
 const B1: &str = r#"type t.Named
