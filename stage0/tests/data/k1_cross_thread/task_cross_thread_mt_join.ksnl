@@ -1,0 +1,24 @@
+fn t.main() -> () uses [alloc, suspend, thread] panics may
+    let h = std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        4usize,
+        fn() -> std.task.Task<u64> capture [] {
+            std.task.spawn(fn() -> u64 capture [] {
+                std.task.yield_now()
+                1u64
+            })
+        },
+    )
+    let th = std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [move h] {
+        std.task.block_on(fn() -> u64 capture [move h] {
+            let a = std.task.spawn_local(fn() -> u64 capture [] {
+                2u64
+            })
+            std.task.yield_now()
+            let v = h.join_task()
+            core.mem.drop(a)
+            v
+        })
+    }).unwrap()
+    core.mem.drop(th.join())
+end t.main

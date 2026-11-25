@@ -1480,6 +1480,13 @@ i32 ksn_rt_sys_io_take(i32 fd) { (void)fd; return 0; }
 i32 ksn_rt_sys_io_pending(void) { return 0; }
 #endif
 
+/* `std.task.block_on` / `block_on_threads` のセッション番号の源泉 (プロセス全体で一意)。
+   別スレッド・以前の `block_on` で作った `Task` の取っ手は、`join_task` / `cancel` でこの番号の不一致として必ず拒む。 */
+static uint64_t ksn_task_sess;
+static uint64_t ksn_task_sess_next(void) {
+    return __atomic_fetch_add(&ksn_task_sess, 1, __ATOMIC_SEQ_CST) + 1;
+}
+
 /* 複数スレッドの実行器 (`std.task.block_on_threads`、設計_多重化したネット.md 9〜17 章) の共有の核。
    ワーカーごとの実行器 (タスクの表・リアクター) はスレッドごとで、ここは「まだ始まっていないタスク」の注入列と、完了の印、眠りと全員待ちの検出だけを持つ。
    状態はすべて 1 本の mutex の下 (正しさを優先する)。`epoch` は「何か起きた」の世代で、ワーカーは走査の前に読み、眠るときに同じ値を渡す
@@ -1510,7 +1517,8 @@ static struct {
     i32 nefd;
     i64 qlen; /* 注入列の長さの目安 (ロック無しで空かを見る) */
     uint64_t gen; /* mt_begin ごとに増える (eventfd の登録の世代) */
-} ksn_mt = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0}, 0, {0}, 0, 0, 0};
+    uint64_t sess; /* この block_on_threads のセッション番号 (ksn_task_sess から取る) */
+} ksn_mt = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0}, 0, {0}, 0, 0, 0, 0};
 
 #define KSN_MT_MARK ((uint64_t)1 << 62)
 #define KSN_MT_IT(id) ((ksn_mt_item *)(uintptr_t)((uint64_t)(id) & ~KSN_MT_MARK))
@@ -1544,6 +1552,7 @@ i64 ksn_rt_sys_mt_begin(i64 n) {
     ksn_mt.qlen = 0;
     ksn_mt.nefd = 0;
     ksn_mt.gen++;
+    ksn_mt.sess = ksn_task_sess_next();
     ksn_mt.n = n;
     ksn_mt.on = n > 1;
     i64 r = ksn_mt.on ? n : 0;
@@ -1722,6 +1731,16 @@ void ksn_rt_sys_mt_end(void) {
     }
 }
 #endif
+
+/* 実行器 (`std.task.block_on` / `block_on_threads`) のセッション番号。プロセス全体で一意になる原子カウンタから取る。
+   `block_on_threads` の実行中は共有の核のセッション番号を返す (根もワーカーも同じ番号を取っ手に刻む)。
+   別スレッド・以前の `block_on` で作った `Task` の取っ手は、`join_task` / `cancel` でこの番号の不一致として必ず拒む。 */
+i64 ksn_rt_sys_task_session(void) {
+#if defined(__linux__)
+    if (__atomic_load_n(&ksn_mt.on, __ATOMIC_ACQUIRE)) return (i64)ksn_mt.sess;
+#endif
+    return (i64)ksn_task_sess_next();
+}
 
 /* `std.thread.sleep(ms)` / `std.thread.yield_now()` (スレッドが無くても使える) */
 void ksn_rt_sys_sleep_ms(u64 ms) {
