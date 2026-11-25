@@ -216,6 +216,10 @@ pub enum Ins {
     // ---- 呼び出し
     /// 関数のアドレス (`FnPtr`): C に渡すコールバックの入口 (`ffi::tramp`) を返す。`f` は `Prog::funcs` の添字。
     FnPtr { d: S, f: u32 },
+    /// 関数のアドレスを値として取る (`FnAddr`): `Prog::funcs` の添字 + 1 (`CallInd` が読む)。
+    FnAddr { d: S, f: u32 },
+    /// 間接呼び出し。`f` は関数値のスロット (`FnAddr` の値)。ほかは `Call` と同じ。
+    CallInd { f: u32, d: S, argp: u32, argn: u32 },
     /// 直接呼び出し。引数は `VFunc::pool[argp .. argp + argn]` (`pool_ent`)。
     Call { f: u32, d: S, argp: u32, argn: u32 },
     /// `extern` 宣言の C 関数 (`Prog::ext` の添字)。

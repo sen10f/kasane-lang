@@ -794,7 +794,13 @@ impl<'a> An<'a> {
                     }
                 }
             }
-            Op::Const(_) | Op::StaticBytes(_) | Op::GlobalBytes { .. } | Op::HeapAlloc(_) | Op::HeapRealloc { .. } | Op::FnPtr { .. } => {}
+            // 間接呼び出しは呼び先が分からない: 結果は引数の借用を運び得るものとして、引数の出どころの和を取る。
+            Op::CallIndirect { args, .. } => {
+                if carries_ty(t) {
+                    res = self.union_ops(args);
+                }
+            }
+            Op::Const(_) | Op::StaticBytes(_) | Op::GlobalBytes { .. } | Op::HeapAlloc(_) | Op::HeapRealloc { .. } | Op::FnPtr { .. } | Op::FnAddr { .. } => {}
             op @ (Op::Field { .. } | Op::SetField { .. } | Op::Make { .. } | Op::Some(_) | Op::Ok(_) | Op::Err(_) | Op::Payload(_) | Op::Bitcast { .. } | Op::Conv { .. }) => {
                 // `Err` の中身を取り出す (`?` の Err の経路) など、取り出した値の型が借用を持ち得ないなら、親の借用は運ばない。
                 if carries_ty(t) && !(matches!(op, Op::Payload(_) | Op::Field { .. }) && !may_hold(self.aggs, t)) {
@@ -1258,7 +1264,7 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
         for (ii, i) in b.insts.iter().enumerate() {
             let ops = operands(&i.op);
             let is_load = matches!(i.op, Op::MemLoad { .. } | Op::Load(_)) && used_non_free.contains(&i.dst);
-            let is_call = matches!(i.op, Op::Call { .. });
+            let is_call = matches!(i.op, Op::Call { .. } | Op::CallIndirect { .. });
             if !is_load && !is_call {
                 continue;
             }
@@ -1404,7 +1410,7 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                     reqs.push((bi, ii, line, Req::Scope { root: r, holders }));
                 }
             }
-            if matches!(i.op, Op::Reborrow(_) | Op::AsShared(_) | Op::Borrow { .. } | Op::FieldAddr { .. } | Op::Call { .. }) {
+            if matches!(i.op, Op::Reborrow(_) | Op::AsShared(_) | Op::Borrow { .. } | Op::FieldAddr { .. } | Op::Call { .. } | Op::CallIndirect { .. }) {
                 reqs.push((bi, ii, line, Req::Pairs));
             }
             let mut ch = false;

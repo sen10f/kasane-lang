@@ -750,7 +750,7 @@ impl<'a> Lw<'a> {
         let mut callees = self.callees;
         for b in &f.blocks {
             for i in &b.insts {
-                if let Op::FnPtr { callee } = &i.op {
+                if let Op::FnPtr { callee } | Op::FnAddr { callee } = &i.op {
                     callees.insert(callee.clone());
                 }
             }
@@ -1317,6 +1317,9 @@ impl<'a> Lw<'a> {
         if let Some(r) = coll::try_call(self, e) {
             return r;
         }
+        if let Some(r) = self.indirect_call(e) {
+            return r;
+        }
         if let Some(r) = self.check_call(e) {
             return r;
         }
@@ -1571,6 +1574,83 @@ impl<'a> Lw<'a> {
     }
 
     /// 関数の定義 `di` への呼び出し (総称関数は型引数を推論して単相インスタンスにする)。
+    /// 関数値 (`fn(A) -> R` 型の局所・欄・式) の呼び出し: `calli`。呼び先は実行時の値で決まり、効果は関数の型が宣言したもの。
+    /// 関数の項目 (`p.inc(..)`) と、静的に呼び先が分かる局所 (クロージャの種類を持つもの) は、今までの直接呼び出しの経路が扱う。
+    fn indirect_call(&mut self, e: &V) -> Option<LR<Option<VId>>> {
+        let f = nf(e);
+        let callee = &f[0];
+        if coll::is_fn_item(self, callee) {
+            return None;
+        }
+        let mut ft = None;
+        if nname(callee) == "Path" {
+            let segs = strs(&nf(callee)[0]);
+            let s = self.lookup(&segs[0])?;
+            if matches!(self.coll.kinds.get(&s), Some(coll::Kind::Closure { .. })) {
+                return None;
+            }
+            if segs.len() == 1 {
+                ft = self.coll.fnptr_tys.get(&s).cloned();
+            }
+        }
+        let t = ft.or_else(|| coll::table_ty(self, callee));
+        let Some(Src::Closure { args, ret, cap: crate::types::Cap::Fn, id: None, eff }) = t else { return None };
+        Some(self.indirect_call_with(e, &args, &ret, &eff))
+    }
+
+    fn indirect_call_with(&mut self, e: &V, targs: &[Src], tret: &Src, eff: &crate::types::Eff) -> LR<Option<VId>> {
+        let line = nline(e);
+        let f = nf(e);
+        let args = items(&f[1]).to_vec();
+        let mut pts = vec![];
+        for t in targs {
+            match coll::sig_ty(self, t) {
+                Some(x) => pts.push(x),
+                None => return self.err(line, "関数値の引数の型は段階 1 の対象外"),
+            }
+        }
+        let rt = match tret {
+            Src::Unit => Ty::Unit,
+            Src::Never => return self.err(line, "戻らない関数値の呼び出しは段階 1 の対象外"),
+            t => match coll::sig_ty(self, t) {
+                Some(x) => x,
+                None => return self.err(line, "関数値の戻り値の型は段階 1 の対象外"),
+            },
+        };
+        if pts.len() != args.len() {
+            return self.err(line, "関数値の引数の個数が違う");
+        }
+        let Some(fv) = self.expr(&f[0])? else { return Ok(None) };
+        if self.vty(fv) != Ty::Ptr {
+            return self.err(line, "関数値の呼び出し: 値が関数のアドレス (ptr) でない");
+        }
+        let mut vs = vec![];
+        for a in &args {
+            match self.expr(a)? {
+                Some(v) => {
+                    coll::tmp_hold(self, v);
+                    vs.push(v)
+                }
+                None => {
+                    coll::tmp_release(self, &vs);
+                    return Ok(None);
+                }
+            }
+        }
+        coll::tmp_release(self, &vs);
+        let vs = self.coerce_args(vs, &pts);
+        for (v, pt) in vs.iter().zip(pts.iter()) {
+            if self.vty(*v) != *pt {
+                return self.err(line, "関数値の引数の型が合わない");
+            }
+        }
+        let (uses, may) = match &eff.0 {
+            Some(i) => (i.uses.clone(), i.may.unwrap_or(true)),
+            None => (vec![], true),
+        };
+        Ok(Some(self.emit(rt, Op::CallIndirect { f: fv, args: vs, uses, may })))
+    }
+
     pub(super) fn call_def(&mut self, e: &V, di: usize, args: &[V], line: usize) -> LR<Option<VId>> {
         let cd = &self.p.defs[di];
         if cd.kw != "fn" || cd.body.is_none() {

@@ -1511,7 +1511,7 @@ fn pure_region(m: &Module, entry: &str) -> HashMap<String, (u64, u64)> {
     for f in &m.funcs {
         for b in &f.blocks {
             for i in &b.insts {
-                if let Op::FnPtr { callee } = &i.op {
+                if let Op::FnPtr { callee } | Op::FnAddr { callee } = &i.op {
                     taken.insert(callee.as_str());
                 }
             }
@@ -1534,7 +1534,7 @@ fn pure_region(m: &Module, entry: &str) -> HashMap<String, (u64, u64)> {
             'o: for b in &f.blocks {
                 for i in &b.insts {
                     match &i.op {
-                        Op::FnPtr { .. } => {
+                        Op::FnPtr { .. } | Op::FnAddr { .. } | Op::CallIndirect { .. } => {
                             ok = false;
                             break 'o;
                         }
@@ -2616,7 +2616,7 @@ impl<'a> Fe<'a> {
         let d = format!("%v{}", i.dst);
         let aggs = self.aggs;
         // unit の結果は値を持たない (使う側が 0 を書く)。副作用のある命令だけ出す。
-        if i.ty == Ty::Unit && !matches!(i.op, Op::Call { .. }) {
+        if i.ty == Ty::Unit && !matches!(i.op, Op::Call { .. } | Op::CallIndirect { .. }) {
             return match &i.op {
                 Op::Store { ptr, val } => self.store(*ptr, *val),
                 Op::MemStore { ty, p, off, v } => {
@@ -2884,6 +2884,20 @@ impl<'a> Fe<'a> {
                     };
                     self.line(format!("{} = {}call {} {}({})", d, if peer { "notail " } else { "" }, rt, tgt, a.join(", ")));
                 }
+            }
+            // 関数のアドレスを値として取る (`CallIndirect` で呼ぶ用)。関数は内部の呼び出し規約のまま (集成体の引数も渡せる)。
+            Op::FnAddr { callee } => {
+                if !self.funcs.iter().any(|f| f.key == *callee) {
+                    return Err(format!("fnaddr の呼び先 {} が見つからない", callee));
+                }
+                self.line(format!("{} = getelementptr i8, ptr {}, i64 0", d, fname(callee)));
+            }
+            // 間接呼び出し。基本の本体 (深さを `@ksn.depth` から読む入口) を呼ぶので、深さの上限は直接呼び出しと同じ深さで効く。
+            Op::CallIndirect { f: fv, args, .. } => {
+                let rt = self.lt(i.ty);
+                let a: Vec<String> = args.iter().map(|v| format!("{} {}", lty(aggs, self.ty(*v)), self.r(*v))).collect();
+                let fr = self.r(*fv);
+                self.line(format!("{} = call {} {}({})", d, rt, fr, a.join(", ")));
             }
             // 関数のアドレスを `ptr` として取る (C のコールバック用)。
             // `callee` の関数は C 呼び出し規約と互換のシグネチャ (`ptr`/`i32` など) で下ろされている。
@@ -3639,7 +3653,7 @@ impl<'a> Fe<'a> {
             }
             for i in &b.insts {
                 self.tys.insert(i.dst, i.ty);
-                if i.ty == Ty::Unit && !matches!(i.op, Op::Call { .. }) {
+                if i.ty == Ty::Unit && !matches!(i.op, Op::Call { .. } | Op::CallIndirect { .. }) {
                     self.lit.insert(i.dst, "0".into());
                     continue;
                 }
@@ -3712,7 +3726,7 @@ impl<'a> Fe<'a> {
                         Op::Call { callee, .. } => matches!((self.cx.dscc.get(callee.as_str()), self.cx.dscc.get(&f.key)), (Some(a), Some(b)) if a == b),
                         _ => false,
                     };
-                    if !peer && matches!(&i.op, Op::Call { .. } | Op::Proc { .. }) {
+                    if !peer && matches!(&i.op, Op::Call { .. } | Op::CallIndirect { .. } | Op::Proc { .. }) {
                         self.line("store i64 %depth1, ptr @ksn.depth".into());
                     }
                 }

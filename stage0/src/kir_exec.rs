@@ -1733,6 +1733,26 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     stack.push(enter(ci, &argv, Some(inst.dst), heap.len(), bm.mem.len()));
                     continue;
                 }
+                Op::CallIndirect { f, args, .. } => {
+                    if stack.len() >= max_depth {
+                        return Ok(Outcome::StackOverflow);
+                    }
+                    let fv = get(&stack[top], f);
+                    if fv < 1 || fv as usize > m.funcs.len() {
+                        return Err(format!("間接呼び出しの関数値 {} が不正", fv));
+                    }
+                    let ci = fv as usize - 1;
+                    if m.funcs[ci].link.is_some() {
+                        return Err("間接呼び出しは extern 関数を呼べない".to_string());
+                    }
+                    let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
+                    stack.push(enter(ci, &argv, Some(inst.dst), heap.len(), bm.mem.len()));
+                    continue;
+                }
+                Op::FnAddr { callee } => match index.get(callee.as_str()) {
+                    Some(&ci) => ci as i128 + 1,
+                    None => return Err(format!("fnaddr の呼び先 {} がない", callee)),
+                },
                 Op::Make { variant, fields } => {
                     let Ty::Agg(ai) = inst.ty else {
                         return Err("make の結果が集成体でない".to_string());

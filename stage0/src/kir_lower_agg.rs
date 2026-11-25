@@ -977,7 +977,10 @@ impl<'a> Lw<'a> {
             if vals[k].is_some() {
                 return self.err(line, format!("フィールド {} が二度書かれている", fname));
             }
-            let Some(v) = self.expr(&xs[1])? else {
+            // 関数ポインタの欄 (`fn(..)` 型 = `ptr`) に関数の項目を入れる: その関数のアドレスを値にする。
+            let fn_addr = if decl[k].ty == Ty::Ptr && super::coll::is_fn_item(self, &xs[1]) { super::coll::fn_item_kind(self, &xs[1]) } else { None };
+            let v = if let Some(super::coll::Kind::Closure { key, .. }) = fn_addr { Some(self.emit(Ty::Ptr, Op::FnAddr { callee: key })) } else { self.expr(&xs[1])? };
+            let Some(v) = v else {
                 let held: Vec<VId> = vals.iter().flatten().copied().collect();
                 super::coll::tmp_release(self, &held);
                 return Ok(None);
