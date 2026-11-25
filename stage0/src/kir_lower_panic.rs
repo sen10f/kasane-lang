@@ -133,6 +133,9 @@ impl<'a> Lw<'a> {
                     (t0.ty(), good, head.to_string(), Some(et))
                 } else if et == Ty::Unit {
                     (t0.ty(), good, format!("{}: ()", head), None)
+                } else if matches!(et, Ty::Agg(ai) if self.agg_def(ai).name.starts_with("std.thread.SpawnError<")) {
+                    // `SpawnError<F>` の Debug は閉包を含まない固定の文言 (KIR の spawn は失敗しないので、ここには来ない)。
+                    (t0.ty(), good, format!("{}: SpawnError {{ .. }}", head), None)
                 } else if let (Some(es), Ty::Agg(_)) = (err_src, et) {
                     // 集成体の E (派生の Debug を持つ型): 失敗の枝で `<E>.$debug` を呼んで表示する
                     dbg = Some((es, et));

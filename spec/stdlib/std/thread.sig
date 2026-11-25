@@ -9,6 +9,8 @@ type std.thread.SpawnError[F: linear] pub
     closure: F pub
 end std.thread.SpawnError
 
+impl[F: linear] core.fmt.Debug for std.thread.SpawnError<F>
+
 impl[T: linear + core.marker.Send, A: alloc.alloc.Allocator + core.marker.Send] core.marker.Send for std.thread.JoinHandle<T, A>
 
 fn std.thread.JoinHandle.join[T: linear, A: alloc.alloc.Allocator](self: std.thread.JoinHandle<T, A>) -> T uses [thread] panics never pub

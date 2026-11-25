@@ -583,29 +583,36 @@ end t.worker
 **却下されるプログラム** (`docs/borrow_rules/K10_ng.ksnl`):
 
 ```ksnl fragment
-fn t.go[F: core.marker.Send + core.ops.FnOnce<(), usize, E, P> + 'static, E: uses, P: panics](f: F) -> Result<std.thread.JoinHandle<usize, std.alloc.System>, std.thread.SpawnError> uses [alloc, thread, E] panics P
+fn t.go[F: core.marker.Send + core.ops.FnOnce<(), usize, E, P> + 'static, E: uses, P: panics](f: F) -> Result<std.thread.JoinHandle<usize, std.alloc.System>, std.thread.SpawnError<F>> uses [alloc, thread, E] panics P
     std.thread.spawn(std.alloc.SYSTEM, f)
 end t.go
 
-fn t.mk() -> alloc.string.String uses [] panics never
-    alloc.string.String.new(std.alloc.SYSTEM)
+fn t.main() -> () uses [alloc, thread] panics never
+    core.mem.drop(t.start())
+end t.main
+
+fn t.mk() -> std.string.String uses [] panics never
+    std.string.String.new()
 end t.mk
 
-fn t.start() -> Result<std.thread.JoinHandle<usize, std.alloc.System>, std.thread.SpawnError> uses [alloc, thread] panics never
+fn t.start() -> usize uses [alloc, thread] panics never
     let s = t.mk()
-    t.go(
+    let started = t.go(
         fn() -> usize capture [&s] {
             s.len()
         },
     )
-end t.start
-
-fn t.main() -> () uses [alloc, thread] panics never
-    match t.start() {
-        Ok(h) => core.mem.drop(h.join())
-        Err(_e) => core.mem.drop(0u8)
+    match started {
+        Ok(h) => h.join()
+        Err(failed) => {
+            let std.thread.SpawnError {
+                code: _code
+                closure: task
+            } = failed
+            task()
+        }
     }
-end t.main
+end t.start
 ```
 
 `capture [&s]` でローカル `s` の借用を取り込んだが、`s` は `'static` ではないため、`ksn check` で：

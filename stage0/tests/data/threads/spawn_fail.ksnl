@@ -1,0 +1,42 @@
+type t.L linear pub
+    n: u64
+end t.L
+
+fn t.L.close(self: t.L) -> u64 uses [] panics never
+    let t.L {
+        n: n
+    } = self
+    n
+end t.L.close
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let l = t.mk(7u64)
+    let h = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u64 capture [move l] {
+            l.close()
+        },
+    )
+    match h {
+        Ok(j) => {
+            core.check.eq(j.join(), 7u64)
+            core.mem.drop(std.io.print_line("spawned"))
+        }
+        Err(failed) => {
+            let std.thread.SpawnError {
+                code: code
+                closure: task
+            } = failed
+            core.check.eq(code, 11i32)
+            core.check.eq(task(), 7u64)
+            core.mem.drop(std.io.print_line("failed, closure run"))
+        }
+    }
+    Ok(())
+end t.main
+
+fn t.mk(n: u64) -> t.L uses [] panics never
+    t.L {
+        n: n
+    }
+end t.mk

@@ -39,7 +39,7 @@ fn t.open() -> t.Res uses [] panics never
     }
 end t.open
 
-fn t.pool(rx: std.sync.Receiver<t.Res>, tx: std.sync.Sender<t.Res>) -> u32 uses [alloc, thread] panics may
+fn t.pool(rx: std.sync.Receiver<t.Res>, tx: std.sync.Sender<t.Res>) -> u32 uses [alloc, thread] panics never
     let more = rx.clone()
     let spawned = std.thread.spawn(
         std.alloc.SYSTEM,
@@ -55,11 +55,17 @@ fn t.pool(rx: std.sync.Receiver<t.Res>, tx: std.sync.Sender<t.Res>) -> u32 uses 
     let own = t.drain(rx)
     match spawned {
         Ok(h) => own.wrapping_add(h.join())
-        Err(_e) => core.panic.panic("spawn failed")
+        Err(failed) => {
+            let std.thread.SpawnError {
+                code: _code
+                closure: task
+            } = failed
+            own.wrapping_add(task())
+        }
     }
 end t.pool
 
-fn t.return_resource() -> u32 uses [alloc, thread] panics may
+fn t.return_resource() -> u32 uses [alloc, thread] panics never
     let r = t.open()
     let spawned = std.thread.spawn(
         std.alloc.SYSTEM,
@@ -69,6 +75,12 @@ fn t.return_resource() -> u32 uses [alloc, thread] panics may
     )
     match spawned {
         Ok(h) => t.close(h.join())
-        Err(_e) => core.panic.panic("spawn failed")
+        Err(failed) => {
+            let std.thread.SpawnError {
+                code: _code
+                closure: task
+            } = failed
+            t.close(task())
+        }
     }
 end t.return_resource

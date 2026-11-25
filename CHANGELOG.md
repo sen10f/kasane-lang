@@ -6,6 +6,8 @@
 
 ### 実装計画 2.10系（新しい順）
 
+- 2.10dl `std.thread.spawn` / `spawn_deep` の失敗は閉包を返す: `Err(std.thread.SpawnError<F>)` (`code: i32`・`closure: F`)。線形の値を取り込んだ閉包を失敗で捨てて消費の義務が消える穴 (O-08) を塞ぐ。`Err(_)` で捨てると E3003。呼び出し側の `Err` の腕は `closure` を取り出して消費する (署名の変更)。試験用の旗 `KSN_TEST_SPAWN_FAIL` は木走査だけ。
+
 - 2.10dk 実行ファイルの名前を `<名前>` (Windows は `<名前>.exe`) にする。旧 `<名前>.native` は作り直しで消す。バンドルの起動スクリプトと同名のため、`target/<kind>/.ksn-artifact` (`native` / `bundle`) で区別する
 
 - 2.10dj 中断の穴: E4022 が閉包の中の束縛・一時値の型を見る (線形の局所・引数の位置の線形の一時値)、ロックのガードが中断点をまたぐ形は E3050 (hunt3 の D1・C1・A1・A2・E1)
