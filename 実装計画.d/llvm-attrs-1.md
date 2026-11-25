@@ -26,3 +26,20 @@
 | callchain (`&u64` 2 段、4 億回) | 0.56 | 0.58 |
 | sref (`&struct` 3 欄、3 億回) | 0.24 | 0.10 |
 perf/ の各パッケージは入力が小さく (数 ms) 差は出ない。Rust との比較は未実施。
+
+## 追加 (2026-11-25、統括者の依頼への対応)
+- `&T` 引数に `nonnull dereferenceable(<size>)` を追加 (大きさが分かるときだけ)。`align` は付けない: KIR の `load`/`store` が `align 1` で、参照の整列が型で保証されていない。
+- 正しさの照合 `tests/native_vs_interp.py` (`ksn run` と release のネイティブの標準出力・終了コードを比較): linear_ok 187 一致、check_ok 29 一致・21 skip (入口なし/ネイティブ不可)・1 不一致、examples 16 一致・3 skip、perf 8 一致。
+  不一致の 1 本 `check_ok/question_ok_fs_read_utf8_with` は元の ksn の `run` も `Alloc(AllocError)` で落ちる (インタプリタ側の既存の問題、属性とは無関係)。
+  ASan (`KSN_CLANG_ARGS=-fsanitize=address`) の examples 16 + perf 8 も不一致 0。`cargo test --release --test threads --test net_async_mt` (TSan) 通過 (16 / 26)。
+- `perf/run_perf.py` の EXPECT 不一致の原因は、定数の整数リテラルの `_` 区切り (`196_418u64`) を正規表現が読めなかったこと (実行ファイル名の件ではない)。直した。
+- micro 6 本は `~/kasane-verify/agents/perf-codegen/bench/` (Kasane + `rs/` の Rust、`run.py`)。
+| 課題 | dev/plan | 本ブランチ | Rust -O3 |
+|---|---|---|---|
+| vecsum | 0.20 | 0.20 | 0.21 |
+| strbuild | 0.11 | 0.10 | 0.11 |
+| hashmap | 0.26 | 0.25 | 0.22 |
+| soa | 0.21 | 0.18 | 0.17 |
+| callchain (値渡し) | 0.15 | 0.16 | 0.21 |
+| bytescan | 0.30 | 0.29 | 0.26 |
+(load 12 前後、3 回の中央値。値渡しの課題には `&T` の属性は効かない。`&T` 引数の sref は 0.24 → 0.10。)

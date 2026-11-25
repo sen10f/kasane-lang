@@ -3541,7 +3541,10 @@ impl<'a> Fe<'a> {
             .iter()
             .enumerate()
             .map(|(j, (_, t))| match t {
-                Ty::Ref(false, pt) if ro && !may_have_interior_mut(self.aggs, *pt) => format!("ptr noalias readonly %arg{}", j),
+                Ty::Ref(false, pt) if ro && !may_have_interior_mut(self.aggs, *pt) => match pointee_size(self.aggs, *pt) {
+                    Some(n) => format!("ptr noalias readonly nonnull dereferenceable({}) %arg{}", n, j),
+                    None => format!("ptr noalias readonly nonnull %arg{}", j),
+                },
                 _ => format!("{} %arg{}", lty(self.aggs, *t), j),
             })
             .collect();
@@ -3672,4 +3675,19 @@ fn may_have_interior_mut(aggs: &[AggDef], p: Pointee) -> bool {
         Pointee::Agg(i) => agg_may(aggs, i, 0),
         _ => true,
     }
+}
+
+/// `&T` の指す先の大きさ (バイト)。分かるときだけ `dereferenceable` に使う。
+/// `align` は付けない: KIR の `load`/`store` は `align 1` で、参照が整列している保証が型に無い。
+fn pointee_size(aggs: &[AggDef], p: Pointee) -> Option<u32> {
+    Some(match p {
+        Pointee::I8 | Pointee::U8 | Pointee::Bool => 1,
+        Pointee::I16 | Pointee::U16 => 2,
+        Pointee::I32 | Pointee::U32 | Pointee::F32 => 4,
+        Pointee::I64 | Pointee::U64 | Pointee::F64 => 8,
+        Pointee::Isize | Pointee::Usize => (crate::ptrwidth::bits() / 8) as u32,
+        Pointee::I128 | Pointee::U128 => 16,
+        Pointee::Agg(i) => aggs.get(i as usize)?.size,
+        _ => return None,
+    })
 }
