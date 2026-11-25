@@ -83,6 +83,14 @@ struct Refs {
     header: HashSet<String>,
 }
 
+/// 固定の正規表現は 1 回だけコンパイルする (行ごとに呼ばれる関数の中で毎回作らない)。
+macro_rules! cached_re {
+    ($p:expr) => {{
+        static R: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        R.get_or_init(|| Regex::new($p).unwrap())
+    }};
+}
+
 fn name_tok(t: &Tok) -> bool {
     matches!(t.kind, "ident" | "upper" | "prim") || (t.kind == "kw" && matches!(t.text.as_str(), "self" | "Self"))
 }
@@ -236,7 +244,7 @@ fn isolated_idents(lines: &[String]) -> HashSet<String> {
 }
 
 fn fix_derive(header: &str) -> String {
-    let re = Regex::new(r"derive \[([^\]]*)\]").unwrap();
+    let re = cached_re!(r"derive \[([^\]]*)\]");
     let Some(m) = re.captures(header) else { return header.to_string() };
     let mut names: Vec<String> = m[1].split(',').map(|x| x.trim().to_string()).collect();
     names.sort_by_key(|n| DERIVE_ORDER.iter().position(|x| x == n).unwrap_or(99));
@@ -315,7 +323,7 @@ fn fix_lists(line: &str) -> String {
     let gen_open = if l.starts_with("impl[") {
         Some(4)
     } else {
-        Regex::new(r"^(?:fn|type|enum|trait)\s+[A-Za-z0-9_.]+\[").unwrap().find(&l).map(|m| m.end() - 1)
+        cached_re!(r"^(?:fn|type|enum|trait)\s+[A-Za-z0-9_.]+\[").find(&l).map(|m| m.end() - 1)
     };
     if let Some(open) = gen_open {
         let gen = crate::lint::bracket(&l, open);
@@ -1181,7 +1189,7 @@ fn neg(c: &str) -> String {
 /// 1 行の形: `if C { true } else { false }` → `C` (値の位置・文の位置とも、行の終わりまでの式)、
 /// `if C { false } else { true }` → `!C`。`C` は波括弧を含まないものだけ。
 fn bool_if_line(l: &str) -> Option<String> {
-    let re = Regex::new(r"^(.*?)if ([^{}]+?) \{ (true|false) \} else \{ (true|false) \}$").unwrap();
+    let re = cached_re!(r"^(.*?)if ([^{}]+?) \{ (true|false) \} else \{ (true|false) \}$");
     let c = re.captures(l)?;
     let pre = c.get(1)?.as_str();
     // 前は行頭の字下げか、`let 名前 = ` / `return ` だけ (二項演算の中の `if` は書き換えない)。
@@ -1220,7 +1228,7 @@ fn noop_refs(l: &str) -> String {
         }
     }
     // `&*&x` → `&x` (共有から共有へ。`&mut` の形は変えない)。
-    let b = Regex::new(r"(^|[\s(,=\[{!:])&\*&([A-Za-z_]\w*)").unwrap();
+    let b = cached_re!(r"(^|[\s(,=\[{!:])&\*&([A-Za-z_]\w*)");
     b.replace_all(l, |caps: &regex::Captures| {
         if &caps[2] == "mut" {
             caps[0].to_string()
@@ -1378,7 +1386,7 @@ fn unused_arm_binding(l: &str) -> String {
     if bt.is_empty() || bt.ends_with(|c: char| "{([,".contains(c)) {
         return l.to_string();
     }
-    let re = Regex::new(r"\b_[A-Za-z0-9_]+\b").unwrap();
+    let re = cached_re!(r"\b_[A-Za-z0-9_]+\b");
     let mut out = pat.to_string();
     let names: Vec<String> = re.find_iter(pat).map(|m| m.as_str().to_string()).collect();
     for n in names {
@@ -1392,7 +1400,7 @@ fn unused_arm_binding(l: &str) -> String {
 
 /// `let 名前: &'static str = "文字列"` の `'static` は、文字列の値の型から同じ意味になる (`&str`)。
 fn static_str_let(l: &str) -> String {
-    let re = Regex::new(r#"^(\s*let \w+: )&'static str = ("[^"\\]*")$"#).unwrap();
+    let re = cached_re!(r#"^(\s*let \w+: )&'static str = ("[^"\\]*")$"#);
     match re.captures(l) {
         Some(c) => format!("{}&str = {}", &c[1], &c[2]),
         None => l.to_string(),
