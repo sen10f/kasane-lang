@@ -1195,7 +1195,7 @@ fn kir_borrowck_union(rep: &mut Report, prog: Option<&Program>, user: &[usize]) 
     }
     let Some(p) = prog else { return };
     crate::vm::tick("bc_pre");
-    let lo = crate::kir_lower::lower_user(p, user);
+    let lo = crate::kir_lower::lower_user_lazy(p, user);
     crate::vm::tick("lower_user");
     if let crate::kir_borrowck::Outcome::Checked(ds) = crate::kir_borrowck::check(p, user, &lo, false) {
         for d in &ds {

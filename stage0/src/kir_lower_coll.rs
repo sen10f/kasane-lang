@@ -395,8 +395,8 @@ pub(crate) fn elem_kind(lw: &Lw, src: Option<&Src>, elem: Ty) -> Option<Kind> {
 fn bound_kind(lw: &Lw, pat: &V, name: &str) -> Kind {
     if !kind_old() && nname(pat) == "PBind" && st(&nf(pat)[0]) == name {
         let scope = lw.const_scope.clone().unwrap_or_else(|| lw.def.name.clone());
-        if let Some((t, _)) = lw.tys.binds.get(&(scope, nid(pat))) {
-            let t = if lw.subst.is_empty() { t.clone() } else { super::mono::subst_ty(t, &lw.subst) };
+        if let Some((t, _)) = lw.tys.bind(&(scope, nid(pat))) {
+            let t = if lw.subst.is_empty() { t.clone() } else { super::mono::subst_ty(&t, &lw.subst) };
             if let Some(k) = kind_of(lw, &t) {
                 return k;
             }
@@ -1253,7 +1253,7 @@ fn pat_srcs_tast(lw: &Lw, p: &V, out: &mut BTreeMap<String, Src>) {
         "PBind" => {
             let scope = lw.const_scope.clone().unwrap_or_else(|| lw.def.name.clone());
             let id = nid(p);
-            match lw.tys.binds.get(&(scope, id)) {
+            match lw.tys.bind(&(scope, id)) {
                 Some((t, crate::tast::BindMode::Move)) if id != 0 => {
                     crate::s5_meter::count_active("pat.tast");
                     let t = t.clone();
