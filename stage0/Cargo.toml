@@ -27,6 +27,7 @@ sha2 = "0.10"
 default = ["embedded-llvm"]
 embedded-llvm = ["dep:llvm-sys"]
 test-hooks = []
+glibc-compat = []
 
 [build-dependencies]
 sha2 = "0.10"
