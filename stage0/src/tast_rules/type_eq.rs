@@ -14,7 +14,7 @@ use crate::check::Diag;
 use crate::parser::V;
 use crate::program::{Def, FromVariant, Program, Target};
 use crate::tast::*;
-use crate::types::{conv_hint, from_v, ref_hint, Ty, TypeCk};
+use crate::types::{conv_hint, from_v, ref_hint, Region, Ty, TypeCk};
 
 pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag> {
     let mut out = vec![];
@@ -163,7 +163,11 @@ fn unify(want: &Ty, got: &Ty, inv: bool, nest: u32) -> Result<(), (Ty, Ty)> {
             for (x, y) in xs.iter().zip(ys) {
                 unify(y, x, inv, nest + 1).map_err(|(p, q)| (q, p))?;
             }
-            unify(rx, ry, inv, nest + 1)
+            unify(rx, ry, inv, nest + 1)?;
+            if !fn_regions_ok(a, b) {
+                return err();
+            }
+            Ok(())
         }
         (Ty::Array(_, Some(m)), Ty::Array(_, Some(n))) if m != n => err(),
         (Ty::Slice(x), Ty::Slice(y)) | (Ty::Array(x, _), Ty::Array(y, _)) => unify(x, y, inv, nest + 1),
@@ -175,6 +179,95 @@ fn unify(want: &Ty, got: &Ty, inv: bool, nest: u32) -> Result<(), (Ty, Ty)> {
         (Ty::Named(n, _, _), Ty::Prim(p)) | (Ty::Prim(p), Ty::Named(n, _, _)) if n == "alloc.string.String" && p == "str" => Ok(()),
         (Ty::Dyn(..), _) | (_, Ty::Dyn(..)) => Ok(()),
         _ => err(),
+    }
+}
+
+/// 関数型の領域 (O-01): 引数は反変・戻り値は共変。受け側 (`want`) の領域は不透明な定数、渡す側 (`got`) の署名の
+/// `'a` / 省略した領域は量化された変数として、引数の位置で受け側の領域に結びつけ、戻り値の領域がそれで足りるかを見る。
+fn fn_regions_ok(want: &Ty, got: &Ty) -> bool {
+    let (Ty::Closure { args: wa, ret: wr, .. }, Ty::Closure { args: ga, ret: gr, .. }) = (want.strip(), got.strip()) else { return true };
+    if wa.len() != ga.len() {
+        return true;
+    }
+    let named = |a: &[Ty]| a.iter().map(|t| ("_".to_string(), t.clone())).collect::<Vec<_>>();
+    let (wa, wr) = crate::types::elide_sig(&named(wa), wr);
+    // 渡す側の先頭が参照なら `self` として省略規則に渡す (複数の参照で戻り値を省略できるのは `&self` のメソッドだけ)。
+    let mut gnamed = named(ga);
+    if let Some(f) = gnamed.first_mut() {
+        if matches!(f.1, Ty::Ref(..)) {
+            f.0 = "self".to_string();
+        }
+    }
+    let (ga, gr) = crate::types::elide_sig(&gnamed, gr);
+    let mut ok = true;
+    let mut pairs: Vec<(Region, Region, bool)> = vec![];
+    for (w, g) in wa.iter().zip(&ga) {
+        pair_regions(w, g, false, &mut pairs, &mut ok);
+    }
+    // 引数: 受け側の領域ごとに、渡す側の変数へ束縛する。
+    let mut binds: Vec<(Region, Region, bool)> = vec![];
+    for (rw, rg, inv) in pairs {
+        match rg {
+            Region::Static => {
+                if !matches!(rw, Region::Static) {
+                    ok = false;
+                }
+            }
+            Region::Named(_) | Region::Elided(_) => binds.push((rg, rw, inv)),
+            _ => {}
+        }
+    }
+    for (v, w, inv) in &binds {
+        if *inv && binds.iter().any(|(v2, w2, _)| v2.same(v) && !w2.same(w)) {
+            ok = false;
+        }
+    }
+    let mut rp: Vec<(Region, Region, bool)> = vec![];
+    pair_regions(&wr, &gr, false, &mut rp, &mut ok);
+    for (rw, rg, _) in rp {
+        let bound: Vec<&Region> = binds.iter().filter(|(v, _, _)| v.same(&rg)).map(|(_, w, _)| w).collect();
+        match (&rw, &rg) {
+            (Region::Unk | Region::Var(_) | Region::Inst(..), _) | (_, Region::Unk | Region::Var(_) | Region::Inst(..)) => {}
+            (_, Region::Static) => {}
+            (Region::Named(_), Region::Named(_)) if bound.is_empty() && rw.same(&rg) => {}
+            (_, _) => {
+                if bound.is_empty() || !bound.iter().all(|b| matches!(b, Region::Static) || b.same(&rw)) {
+                    ok = false;
+                }
+            }
+        }
+    }
+    ok
+}
+
+/// 2 つの型の領域を同じ位置どうしで組にする (`inv` = `&mut` の中)。入れ子の関数型は別に比べる。
+fn pair_regions(w: &Ty, g: &Ty, inv: bool, out: &mut Vec<(Region, Region, bool)>, ok: &mut bool) {
+    match (w, g) {
+        (Ty::Ref(m, x, r), Ty::Ref(_, y, s)) => {
+            out.push((r.clone(), s.clone(), inv));
+            pair_regions(x, y, inv || *m, out, ok);
+        }
+        (Ty::Named(_, xs, rs), Ty::Named(_, ys, ss)) => {
+            for (r, s) in rs.0.iter().zip(&ss.0) {
+                out.push((r.clone(), s.clone(), true));
+            }
+            for (x, y) in xs.iter().zip(ys) {
+                pair_regions(x, y, true, out, ok);
+            }
+        }
+        (Ty::Dyn(_, _, r), Ty::Dyn(_, _, s)) => out.push((r.clone(), s.clone(), true)),
+        (Ty::Ptr(_, x), Ty::Ptr(_, y)) | (Ty::Slice(x), Ty::Slice(y)) | (Ty::Array(x, _), Ty::Array(y, _)) => pair_regions(x, y, inv, out, ok),
+        (Ty::Tuple(xs), Ty::Tuple(ys)) => {
+            for (x, y) in xs.iter().zip(ys) {
+                pair_regions(x, y, inv, out, ok);
+            }
+        }
+        (Ty::Closure { .. }, Ty::Closure { .. }) => {
+            if !fn_regions_ok(w, g) {
+                *ok = false;
+            }
+        }
+        _ => {}
     }
 }
 
@@ -192,6 +285,7 @@ fn shown(want: &Ty, got: &Ty, err: &(Ty, Ty)) -> (String, String) {
         (Ty::Ref(true, _, _), Ty::Ref(false, _, _)) => (err.0.show(), err.1.show()),
         (Ty::Unit, x @ (Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_))) => ("()".into(), x.show()),
         (x @ (Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_)), Ty::Unit) => (x.show(), "()".into()),
+        (Ty::Closure { .. }, Ty::Closure { .. }) => (want.show_r(), got.show_r()),
         _ => (want.show(), got.show()),
     }
 }
@@ -199,8 +293,9 @@ fn shown(want: &Ty, got: &Ty, err: &(Ty, Ty)) -> (String, String) {
 fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
     match t {
         Ty::Param(p) => bind.get(p).cloned().unwrap_or(Ty::Unknown),
-        Ty::Named(n, a, _) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect(), crate::types::Rgs::default()),
-        Ty::Ref(m, x, _) => Ty::Ref(*m, Box::new(subst(x, bind)), crate::types::Region::Unk),
+        Ty::Named(n, a, rs) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect(), rs.clone()),
+        Ty::Ref(m, x, r) => Ty::Ref(*m, Box::new(subst(x, bind)), r.clone()),
+        Ty::Closure { args, ret, cap, id, eff } => Ty::Closure { args: args.iter().map(|x| subst(x, bind)).collect(), ret: Box::new(subst(ret, bind)), cap: cap.clone(), id: id.clone(), eff: eff.clone() },
         Ty::Ptr(m, x) => Ty::Ptr(*m, Box::new(subst(x, bind))),
         Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| subst(x, bind)).collect()),
         Ty::Array(x, n) => Ty::Array(Box::new(subst(x, bind)), *n),
@@ -278,6 +373,12 @@ impl<'a> W<'a> {
                     }
                 }
                 let want_ret = subst(&from_v(crate::check::tel(targs, 1), gn), bind);
+                if let Ty::Tuple(want_args) = subst(&from_v(crate::check::tel(targs, 0), gn), bind) {
+                    let want = Ty::Closure { args: want_args, ret: Box::new(want_ret.clone()), cap: crate::types::Cap::Fn, id: None, eff: Default::default() };
+                    if !fn_regions_ok(&want, got) {
+                        self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`: lifetimes of references in the function signature do not match", k + 1, name, want.show_r(), got.strip().show_r()), line);
+                    }
+                }
                 if let Err(err) = unify(&want_ret, ret, false, 0) {
                     let (w, g) = shown(&want_ret, ret, &err);
                     self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, w, g), line);

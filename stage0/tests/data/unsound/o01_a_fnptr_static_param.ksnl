@@ -1,0 +1,24 @@
+fn t.keep(x: &'static u64) -> &'static u64 uses [] panics never
+    x
+end t.keep
+
+fn t.launder(f: fn(&u64) -> &'static u64 uses [] panics never, x: &u64) -> &'static u64 uses [] panics never
+    f(x)
+end t.launder
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut v = std.vec.Vec.new()
+    v.push(42u64).unwrap()
+    let r = t.launder(t.keep, &v[0usize])
+    core.mem.drop(v)
+    let mut w = std.vec.Vec.new()
+    w.push(7u64).unwrap()
+    t.pr(*r)
+    core.mem.drop(w)
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
