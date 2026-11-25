@@ -1117,6 +1117,29 @@ impl<'a> Lw<'a> {
         let vt = self.vty(v);
         let rt = self.ret;
         match (vt, rt) {
+            // `test` の本体 (戻り値 `()`) の `?`: 木走査は `Err` / `None` で本体を打ち切り、テストは成功として扱う (値は捨てる)。同じにする。
+            (Ty::Res(..) | Ty::Opt(_), Ty::Unit) if self.def.kw == "test" => {
+                let tag = self.emit(Ty::Bool, Op::Tag(v));
+                let (okb, _) = self.new_block(&[]);
+                let (stop, _) = self.new_block(&[]);
+                // `Result` は Err が真、`Option` は Some が真。
+                if matches!(vt, Ty::Res(..)) {
+                    self.branch(tag, (stop, vec![]), (okb, vec![]));
+                } else {
+                    self.branch(tag, (okb, vec![]), (stop, vec![]));
+                }
+                self.cur = Some(stop);
+                let u = self.emit(rt, Op::Const(0));
+                super::coll::drop_from(self, 0);
+                self.terminate(Term::Ret(u));
+                self.cur = Some(okb);
+                let pv = match vt {
+                    Ty::Res(t0, _) => self.emit(t0.ty(), Op::Payload(v)),
+                    Ty::Opt(p) => self.emit(p.ty(), Op::Payload(v)),
+                    _ => unreachable!(),
+                };
+                Ok(Some(self.bref_out(pv, &nf(e)[0], line)?))
+            }
             (Ty::Opt(p), Ty::Opt(_)) => {
                 let tag = self.emit(Ty::Bool, Op::Tag(v));
                 let (okb, _) = self.new_block(&[]);
