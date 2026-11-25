@@ -1163,7 +1163,9 @@ fn on_big_stack(cx: &mut Ctx, main: String, depth: u64, target: Option<Target>) 
         None => cfg!(all(target_os = "linux", target_pointer_width = "64")),
         Some(t) => t.ptr_bits == 64 && t.triple.contains("linux-gnu"),
     };
-    let switch = switch && std::env::var_os("KSN_THREAD_MAIN").is_none();
+    // sanitizer (ASan / TSan) はスタックの入れ替えを注釈なしでは扱えない (偽の報告) ので、従来の別スレッドの経路にする。
+    let sanitized = std::env::var("KSN_CLANG_ARGS").is_ok_and(|a| a.split_whitespace().any(|x| x.starts_with("-fsanitize")));
+    let switch = switch && !sanitized && std::env::var_os("KSN_THREAD_MAIN").is_none();
     if switch {
         for d in [
             "declare ptr @mmap(ptr, i64, i32, i32, i32, i64)",
