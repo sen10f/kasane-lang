@@ -702,9 +702,21 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
                 rec_drop_call(lw, t, slot, slot);
                 return;
             }
+            // 手書きの `Drop`: 値を一時のスロットに置いて `T.drop(&mut スロット)` を呼び、そのあと (呼んだ後の値の) 欄を破棄する。
+            let ud = lw.aggs.borrow().user_drop.get(&i).cloned();
+            let mut v = v;
+            if let Some(fname) = ud {
+                let slot = emit_alloca(lw, d.size.max(8));
+                let pt = Pointee::of(t).expect("集成体は参照できる");
+                let r = lw.emit(Ty::Ref(true, pt), Op::Bitcast { src: Ty::Ptr, a: slot });
+                lw.emit(Ty::Unit, Op::Store { ptr: r, val: v });
+                lw.callees.insert(fname.clone());
+                lw.emit(Ty::Unit, Op::Call { callee: fname, args: vec![r] });
+                v = lw.emit(t, Op::Load(r));
+            }
             match d.kind {
                 AggKind::Struct(fs) | AggKind::Tuple(fs) => {
-                    for f in fs.iter().rev() {
+                    for f in fs.iter() {
                         if owns_heap(lw, f.ty) {
                             let fv = lw.emit(f.ty, Op::Field { a: v, off: f.off });
                             drop_value(lw, fv, f.ty);
@@ -725,7 +737,7 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
                         let (no, _) = lw.new_block(&[]);
                         lw.branch(c, (yes, vec![]), (no, vec![]));
                         lw.cur = Some(yes);
-                        for f in var.fields.iter().rev() {
+                        for f in var.fields.iter() {
                             if owns_heap(lw, f.ty) {
                                 let fv = lw.emit(f.ty, Op::Field { a: v, off: f.off });
                                 drop_value(lw, fv, f.ty);

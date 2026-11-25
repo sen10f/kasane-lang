@@ -89,6 +89,8 @@ pub struct AggTab {
     pub rec_drop: HashSet<u32>,
     /// 解放の補助関数が要る `rec_drop` の型 (呼び出しを下ろしたもの)。
     pub drop_need: std::collections::BTreeSet<u32>,
+    /// 手書きの `impl core.ops.Drop` を持つ型 (添字) → その `drop` 関数の FQN (`<型>.drop`)。所有物として扱い、破棄の点で呼ぶ。
+    pub user_drop: HashMap<u32, String>,
 }
 
 /// `Box<dyn Tr>` の vtable の登録 (設計_KIR.md 21 章)。vtable の「番地」は、登録順の番号 (`usize`)。
@@ -191,7 +193,7 @@ fn canon_default_alloc(t: &Src) -> Src {
 impl AggTab {
     /// `user` は利用者のパッケージの定義の添字 (`lower_user` の引数と同じ)。
     pub fn new(user: &[usize]) -> AggTab {
-        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect(), box_elems: HashMap::new(), dynr: DynReg::default(), chan_elem: HashMap::new(), handle_elem: HashMap::new(), generic_args: HashMap::new(), rec_drop: HashSet::new(), drop_need: Default::default() }
+        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect(), box_elems: HashMap::new(), dynr: DynReg::default(), chan_elem: HashMap::new(), handle_elem: HashMap::new(), generic_args: HashMap::new(), rec_drop: HashSet::new(), drop_need: Default::default(), user_drop: HashMap::new() }
     }
 
     /// 推論済みの型 `t` を段階 1 の型にする。`file` は名前を解決するファイル。対象外なら理由付きで `Err`。
@@ -623,7 +625,7 @@ impl AggTab {
         match t {
             Ty::Agg(i) => {
                 let d = &self.defs[i as usize];
-                if is_vec_name(&d.name) || d.name.starts_with("dynbox<") || self.box_elems.contains_key(&i) || self.chan_kind(t).is_some() {
+                if is_vec_name(&d.name) || d.name.starts_with("dynbox<") || self.box_elems.contains_key(&i) || self.chan_kind(t).is_some() || self.user_drop.contains_key(&i) {
                     return true;
                 }
                 match &d.kind {
@@ -817,7 +819,17 @@ impl AggTab {
             self.defs[i as usize] = AggDef { name: name.clone(), size, align, kind };
             return Ok(Ty::Agg(i));
         }
-        Ok(self.push(name, size, align, kind))
+        let has_user_drop = p.impls.contains(&("core.ops.Drop".to_string(), d.name.clone())) && !d.derive.iter().any(|x| x == "Drop");
+        if has_user_drop && !bind.is_empty() {
+            return Err(format!("手書きの Drop を持つ総称型 {} は未対応", d.name));
+        }
+        let t = self.push(name, size, align, kind);
+        if has_user_drop {
+            if let Ty::Agg(i) = t {
+                self.user_drop.insert(i, format!("{}.drop", d.name));
+            }
+        }
+        Ok(t)
     }
 }
 
