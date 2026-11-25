@@ -113,6 +113,18 @@ fn user_drop_generic_type_is_monomorphized_per_argument() {
     all_engines("generic");
 }
 
+/// `Fn` のクロージャへ `move` した値は取り込み側のスコープが持つ。呼ばれなかった `FnOnce` の環境も破棄される。
+#[test]
+fn user_drop_closure_environments_are_dropped_by_the_owner() {
+    all_engines("closure_env");
+}
+
+/// `&構造体{ Vec }` の一時値 (ヒープの所有物) も文の終わりで解放される (ASan の漏れ検査)。
+#[test]
+fn user_drop_ref_temporary_with_heap_owner_does_not_leak() {
+    all_engines("ref_temp_heap");
+}
+
 /// `ksn test` も同じ (VM で走る)。
 #[test]
 fn user_drop_ksn_test_runs_the_drop() {
@@ -138,19 +150,22 @@ fn user_drop_program_that_does_not_lower_fails_instead_of_skipping_drops() {
     if cfg!(windows) {
         return;
     }
-    // `Fn` のクロージャが Drop 型を move で取り込む形は (まだ) KIR に下ろせない。
+    // `Result` の欄を持つ構造体は (まだ) KIR に下ろせない。
     let src = source("scope").replace(
         "fn t.main()",
-        "fn t.s_closure() -> () uses [] panics never
-    let d = t.mk(1u64)
-    let f = fn() -> u64 capture [move d] {
-        d.id
+        "type t.N
+    r: Result<u8, u8>
+end t.N
+
+fn t.s_list() -> () uses [] panics never
+    let n = t.N {
+        r: Ok(1u8)
     }
-    core.mem.drop(f())
-end t.s_closure
+    core.mem.drop(n.r is Ok(_))
+end t.s_list
 
 fn t.main()",
-    ).replace("    t.s_reassign()\n", "    t.s_closure()\n    t.s_reassign()\n");
+    ).replace("    t.s_reassign()\n", "    t.s_list()\n    t.s_reassign()\n");
     let t = Tmp::new("user_drop_no_lower", &src);
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stderr));

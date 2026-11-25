@@ -471,6 +471,20 @@ impl<'a> Lw<'a> {
 
     /// 現在のブロックに命令を置く。`cur` が無いのは下ろしの不変条件の違反なので、ここでは止める。
     fn emit(&mut self, ty: Ty, op: Op) -> VId {
+        // 手書きの `Drop` を含む値を取り込んだ `FnOnce` のクロージャは、環境を取り込み側のスコープが持つ (呼ばれなければ終わりで破棄)。
+        // 取り込んだ値を渡す呼び出しの直前に印を落とし、以後は呼び先が所有する。
+        if !self.coll.once_flags.is_empty() {
+            if let Op::Call { args, .. } = &op {
+                let flags: Vec<VId> = args.iter().filter_map(|a| self.coll.once_flags.get(a).copied()).collect();
+                for f in flags {
+                    let b = self.new_val(Ty::Bool);
+                    let cur = self.cur.expect("到達しないブロックへ命令を置いた");
+                    self.blocks[cur].insts.push(Inst { dst: b, ty: Ty::Bool, op: Op::Const(0) });
+                    let u = self.new_val(Ty::Unit);
+                    self.blocks[cur].insts.push(Inst { dst: u, ty: Ty::Unit, op: Op::MemStore { ty: Ty::Bool, p: f, off: 0, v: b } });
+                }
+            }
+        }
         let v = self.new_val(ty);
         let cur = self.cur.expect("KIR 下ろしの内部不変条件: 到達しないブロックへ命令を置いた");
         self.blocks[cur].insts.push(Inst { dst: v, ty, op });

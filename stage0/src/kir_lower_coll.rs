@@ -92,7 +92,7 @@ pub(crate) enum Owned {
     Unlock { m: VId, flag: VId },
     /// `&式` の一時値 (所有物を持つもの) を置いたスロットと、入っているときの印。文の終わり (`end_stmt_temps`) か、
     /// 抜けるスコープの終わりで、印が立っていれば現在の値を破棄する (手書きの `Drop` は文の終わりに呼ぶ。4.4)。
-    TmpSlot { ptr: VId, t: Ty, flag: VId },
+    TmpSlot { ptr: VId, t: Ty, flag: VId, scoped: bool },
 }
 
 /// 下ろしの状態。`Lw` が 1 つ持つ。
@@ -123,6 +123,8 @@ pub(crate) struct CollCx {
     pub(crate) own_mute: Option<usize>,
     /// 後始末式を下ろしている間に起きた最初の下ろしの失敗 (`drop_from` は結果を返さないので持ち越す)。
     pub(crate) close_err: Option<String>,
+    /// 取り込んだ値 (`FnOnce` のクロージャの環境) → 取り込み側が持つ環境の印。その値を渡す呼び出しの前に印を落とす。
+    pub(crate) once_flags: std::collections::HashMap<VId, VId>,
     /// 関数の入口で確保する `alloca` (ブロック 0 の先頭に置く)。
     pub(crate) allocas: Vec<Inst>,
     /// 借用の (`&Vec` などの) 変数のスロット。所有しないので、移動の検査と解放の対象にしない。
@@ -847,7 +849,7 @@ fn drop_owned(lw: &mut Lw, o: Owned) {
         }
         Owned::With(i) => run_close(lw, i),
         Owned::Unlock { m, flag } => release_guard(lw, m, flag),
-        Owned::TmpSlot { ptr, t, flag } => {
+        Owned::TmpSlot { ptr, t, flag, .. } => {
             let on = lw.emit(Ty::Bool, Op::MemLoad { p: flag, off: 0 });
             let (yes, _) = lw.new_block(&[]);
             let (join, _) = lw.new_block(&[]);
@@ -1005,12 +1007,17 @@ pub(crate) fn block_end(lw: &mut Lw) {
     lw.coll.owned.retain(|(d, _)| *d < depth);
 }
 
-/// `&式` の一時値 `v` (型 `t`、置き場 `ptr`) が手書きの `Drop` を含むなら、スロットに置いた直後に呼び、文の終わりまで登録する。
+/// `&式` の一時値 `v` (型 `t`、置き場 `ptr`) が所有物 (ヒープ・手書きの `Drop`) を含むなら、スロットに置いた直後に呼び、文の終わりまで登録する。
 /// 印は入口で 0 にするので、条件付きで評価される式 (`a && f(&x())`) の一時値も、評価されたときだけ破棄される。
 pub(crate) fn hold_ref_temp(lw: &mut Lw, ptr: VId, t: Ty) {
-    if !lw.aggs.borrow().has_user_drop_in(t) {
+    if !owns_heap(lw, t) {
         return;
     }
+    hold_slot(lw, ptr, t, false);
+}
+
+/// スロット `ptr` の値 (型 `t`) を現在のスコープの所有に登録する。`scoped` なら文の終わりでなく、スコープの終わりで破棄する。
+fn hold_slot(lw: &mut Lw, ptr: VId, t: Ty, scoped: bool) -> VId {
     let flag = lw.new_val(Ty::Ptr);
     lw.coll.allocas.push(Inst { dst: flag, ty: Ty::Ptr, op: Op::FrameBytes { size: 1 } });
     let zero = lw.new_val(Ty::Bool);
@@ -1019,7 +1026,8 @@ pub(crate) fn hold_ref_temp(lw: &mut Lw, ptr: VId, t: Ty) {
     lw.coll.allocas.push(Inst { dst: u, ty: Ty::Unit, op: Op::MemStore { ty: Ty::Bool, p: flag, off: 0, v: zero } });
     set_flag(lw, flag, true);
     let scope = lw.scopes.len() - 1;
-    lw.coll.owned.push((scope, Owned::TmpSlot { ptr, t, flag }));
+    lw.coll.owned.push((scope, Owned::TmpSlot { ptr, t, flag, scoped }));
+    flag
 }
 
 /// 文 (または条件式) の始まりの所有の登録の数 (`end_stmt_temps` に渡す)。
@@ -1035,7 +1043,7 @@ pub(crate) fn end_stmt_temps(lw: &mut Lw, mark: usize) {
     let mut ended = vec![];
     let mut i = mark;
     while i < lw.coll.owned.len() {
-        if matches!(lw.coll.owned[i].1, Owned::TmpSlot { .. }) {
+        if matches!(lw.coll.owned[i].1, Owned::TmpSlot { scoped: false, .. }) {
             ended.push(lw.coll.owned.remove(i).1);
         } else {
             i += 1;
@@ -3865,6 +3873,33 @@ fn capture_values(lw: &mut Lw, caps: &V, body: &V, line: usize, fn_once: bool) -
         let chan_move = chan_move || (kind == "move" && (lw.coll.spawn_arg || fn_once) && lw.aggs.borrow().owns_heap(t) && !lw.aggs.borrow().is_vec(t) && lw.aggs.borrow().has_user_drop_in(t));
         // `&` / `&mut` の取り込みは参照を渡すだけで所有しない。手書きの `Drop` を含む値は、参照の取り込みなら許す。
         let ref_cap = kind != "move" && lw.aggs.borrow().has_user_drop_in(t) && !lw.aggs.borrow().is_vec(t);
+        // `Fn` / `FnMut` のクロージャへ `move` した手書きの `Drop` を含む値: 取り込み側のスコープが所有し (終わりで破棄)、
+        // クロージャには可変の参照を渡す (Vec / String の借用の取り込みと同じ。クロージャがスコープの外へ出る形は対象外)。
+        if kind == "move" && !chan_move && !fn_once && !lw.coll.spawn_arg && lw.aggs.borrow().has_user_drop_in(t) && !lw.aggs.borrow().is_vec(t) && matches!(t, Ty::Agg(_)) {
+            let v = path_read(lw, s);
+            let Some(pt) = Pointee::of(t) else { return lw.err(line, format!("capture の {} のアドレスを取れない", name)) };
+            let size = lw.aggs.borrow().defs[match t { Ty::Agg(i) => i, _ => 0 } as usize].size.max(8);
+            let buf = emit_alloca(lw, size);
+            let ptr = lw.emit(Ty::Ref(true, pt), Op::Bitcast { src: Ty::Ptr, a: buf });
+            lw.emit(Ty::Unit, Op::Store { ptr, val: v });
+            hold_slot(lw, ptr, t, true);
+            let r = lw.ref_value(ptr, pt, false);
+            out.push(CapItem { name, vals: vec![r], tys: vec![lw.vty(r)], how: CapHow::Plain });
+            continue;
+        }
+        // `FnOnce` のクロージャへ `move` した手書きの `Drop` を含む値: 本体が所有するが、呼ばれなければ取り込み側のスコープの終わりで破棄する。
+        if kind == "move" && fn_once && !lw.coll.spawn_arg && lw.aggs.borrow().has_user_drop_in(t) && !lw.aggs.borrow().is_vec(t) && matches!(t, Ty::Agg(_)) {
+            let v = path_read(lw, s);
+            let Some(pt) = Pointee::of(t) else { return lw.err(line, format!("capture の {} のアドレスを取れない", name)) };
+            let size = lw.aggs.borrow().defs[match t { Ty::Agg(i) => i, _ => 0 } as usize].size.max(8);
+            let buf = emit_alloca(lw, size);
+            let ptr = lw.emit(Ty::Ref(true, pt), Op::Bitcast { src: Ty::Ptr, a: buf });
+            lw.emit(Ty::Unit, Op::Store { ptr, val: v });
+            let flag = hold_slot(lw, ptr, t, true);
+            lw.coll.once_flags.insert(v, flag);
+            out.push(CapItem { name, vals: vec![v], tys: vec![lw.vty(v)], how: CapHow::Plain });
+            continue;
+        }
         if lw.aggs.borrow().owns_heap(t) && !chan_move && !ref_cap {
             return lw.err(line, format!("capture の {} は解放の要る値を持つので段階 1 の対象外 (所有の移動と解放の規則が要る)", name));
         }

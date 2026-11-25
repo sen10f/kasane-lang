@@ -38,3 +38,11 @@ Mythos3 D1 の直し。今は手書きの `impl core.ops.Drop` を呼ぶ実行�
   `ksn run` / `ksn test` は手書きの `Drop` があれば VM 固定で、下ろせなければ理由付きで失敗。spawn / FnOnce の move の取り込みと、`&` / `&mut` の取り込みは可。
 - 試験: `stage0/tests/user_drop.rs` (VM・LLVM debug / release・ASan で同じ)。
 - 未: 総称型の `Drop`、`Fn` のクロージャの `move` の取り込み (環境の破棄が要る)、呼ばれなかった `FnOnce` の環境の破棄、`Vec` ほか標準の型の一時値の破棄 (`&Vec` の一時値は今も漏れる)。
+
+## milestone 2 (2026-11-25)
+
+- 総称型: `user_drop` の値 `<generic>` を `generic_drop_fn` が `generic_args` から `mono_instance` で単相化 (`kir_lower_coll.rs`)。
+- クロージャ: `Fn` / `FnMut` への `move` は、取り込み側のスコープが持つスロット (`Owned::TmpSlot { scoped }`) に値を置き、クロージャへは `&mut` を渡す。
+  `FnOnce` は本体が所有し、環境のスロットの印を、取り込んだ値を渡す呼び出し (`Lw::emit` の `once_flags`) の直前に落とす (呼ばれなければスコープの終わりで破棄)。
+- `&式` の一時値は、ヒープの所有物 (`&構造体{ Vec }`) も文の終わりで解放する (ASan の漏れ検査を試験に入れた)。
+- 機関の選択 (`cli.rs` の `has_user_drop` と `drop_forced`) は小さく保つ: `use_vm || drop_forced` と、失敗時の 2 つの腕だけ。S6 (`vm/s6-kir-run`) が VM を既定にして退避を持つなら、`drop_forced` のとき退避を禁じる 1 条件に畳める。
