@@ -1,0 +1,22 @@
+fn t.eat(b: std.boxed.Box<u64>) -> () uses [] panics never
+    core.mem.drop(b)
+end t.eat
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let b = std.boxed.Box.new(5u64).unwrap()
+    let r = b.as_ref()
+    t.eat(b)
+    t.pr(*r)
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
+
+fn t.two(a: &mut u64, b: &mut u64) -> u64 uses [] panics never
+    *a = 1u64
+    *b = 2u64
+    *a
+end t.two
