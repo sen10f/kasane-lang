@@ -4136,6 +4136,21 @@ fn copy_distributed(src: &Path, dst: &Path) {
     let _ = fs::create_dir_all(dst);
     let _ = fs::copy(src.join("kasane.toml"), dst.join("kasane.toml"));
     go(&src.join("src"), &dst.join("src"));
+    // `[native] static` のアーカイブも配る単位 (`package_hash` の対象)。パッケージの外を指すものは複製しない。
+    if let Ok(m) = crate::project::read_manifest(src) {
+        for a in crate::project::native_libs(&m).archives {
+            let rel = a.replace('\\', "/");
+            let rel = rel.trim_start_matches("./");
+            if rel.starts_with('/') || rel.split('/').any(|c| c == ".." || c.is_empty()) || rel.contains(':') {
+                continue;
+            }
+            let to = dst.join(rel);
+            if let Some(par) = to.parent() {
+                let _ = fs::create_dir_all(par);
+            }
+            let _ = fs::copy(src.join(rel), to);
+        }
+    }
 }
 
 fn copy_tree(src: &Path, dst: &Path, skip: &[&str]) {

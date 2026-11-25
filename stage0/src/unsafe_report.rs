@@ -97,6 +97,16 @@ fn package_entry(p: &Package, root: bool) -> (String, Value, Vec<String>) {
         .collect();
     let mut text = vec![format!("package {} ({})", p.name, if root { "root" } else { "dependency" })];
     text.push(format!("  unsafe modules: {}", if mods.is_empty() { "(none)".to_string() } else { mods.join(", ") }));
+    let nat = crate::project::native_libs(&p.manifest);
+    let ack = crate::project::native_acknowledged(&p.manifest);
+    if !nat.is_empty() {
+        text.push(format!("  native libraries (acknowledged: {}):", ack));
+        for (k, v) in [("static", &nat.archives), ("dynamic", &nat.dynamic), ("search", &nat.search)] {
+            for x in v {
+                text.push(format!("    native {} {}", k, x));
+            }
+        }
+    }
     for i in &items {
         let what = match i.kind {
             "manual_impl" => format!("manual impl core.marker.{} for {}", i.detail, i.name),
@@ -106,7 +116,7 @@ fn package_entry(p: &Package, root: bool) -> (String, Value, Vec<String>) {
         };
         text.push(format!("  {}:{}: [{}] {}", i.file, i.line, i.module, what));
     }
-    let v = json!({"name": p.name, "root": root, "unsafe_modules": mods, "items": jitems});
+    let v = json!({"name": p.name, "root": root, "unsafe_modules": mods, "native": {"acknowledged": ack, "static": nat.archives, "dynamic": nat.dynamic, "search": nat.search}, "items": jitems});
     (p.name.clone(), v, text)
 }
 

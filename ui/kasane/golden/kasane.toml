@@ -6,6 +6,7 @@ entry = "golden.main"
 
 [unsafe]
 modules = ["golden"]
+native = true
 
 [native]
 static = ["../../native/libksnui.a"]

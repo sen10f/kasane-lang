@@ -41,7 +41,7 @@ end t.main
 
 fn manifest(native: &str) -> String {
     format!(
-        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[unsafe]\nmodules = [\"t\"]\n\n[native]\n{}\n\n[dependencies]\n",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[unsafe]\nmodules = [\"t\"]\nnative = true\n\n[native]\n{}\n\n[dependencies]\n",
         native
     )
 }
@@ -154,12 +154,18 @@ fn native_table_is_validated_strictly() {
         assert_eq!(o.status.code(), Some(1), "{}: {}", native, text(&o.stdout));
         assert_eq!(codes(&text(&o.stdout)), vec![code.to_string()], "{}: {}", native, text(&o.stdout));
     }
-    // `native = 1` のような表でない指定は受けない (`[unsafe]` の中に落ちても知らないキー)。
+    // `[unsafe] native` は真偽値だけ (E9012)。
+    let t = Tmp::new("nat_unsafe_wrong", "");
+    fs::write(t.0.join("src/t.ksnl"), ADD_SRC).unwrap();
+    fs::write(t.0.join("kasane.toml"), manifest("").replacen("native = true", "native = 1", 1)).unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(codes(&text(&o.stdout)), vec!["E9012".to_string()], "{}", text(&o.stdout));
+    // 表でない `native = 1` (最上位) も受けない (E9012)。
     let t = Tmp::new("nat_not_table", "");
     fs::write(t.0.join("src/t.ksnl"), ADD_SRC).unwrap();
-    fs::write(t.0.join("kasane.toml"), manifest("").replacen("[native]", "native = 1", 1)).unwrap();
+    fs::write(t.0.join("kasane.toml"), format!("native = 1\n{}", manifest("").replacen("[native]\n\n", "", 1))).unwrap();
     let o = run(&["check", "--json"], &t.0);
-    assert_eq!(codes(&text(&o.stdout)), vec!["E9007".to_string()], "{}", text(&o.stdout));
+    assert_eq!(codes(&text(&o.stdout)), vec!["E9012".to_string()], "{}", text(&o.stdout));
     // 正しい指定は通る (診断 0 件)。
     let t = Tmp::new("nat_ok", "");
     fs::write(t.0.join("src/t.ksnl"), ADD_SRC).unwrap();
@@ -224,7 +230,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-const DEP_LIB: &str = "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = 1\n\n[native]\ndynamic = [\"ext\"]\n\n[dependencies]\n";
+const DEP_LIB: &str = "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = 1\n\n[unsafe]\nnative = true\n\n[native]\ndynamic = [\"ext\"]\n\n[dependencies]\n";
 const DEP_SRC: &str = "fn dep.one() -> u32 uses [] panics never pub\n    1u32\nend dep.one\n";
 const APP: &str = "fn app.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(dep.one(), 1u32)\n    core.mem.drop(std.io.print_line(\"ok\"))\n    Ok(())\nend app.main\n";
 
@@ -260,7 +266,7 @@ fn setup(name: &str) -> Fx {
 impl Fx {
     /// 依存の `[native]` を書き換えて新しい版に上げる。
     fn bump(&self, native: &str) {
-        let toml = format!("[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = 1\n\n[native]\n{}\n\n[dependencies]\n", native);
+        let toml = format!("[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = 1\n\n[unsafe]\nnative = true\n\n[native]\n{}\n\n[dependencies]\n", native);
         write(&self.repo.join("kasane.toml"), &toml);
         git(&self.repo, &["add", "-A"]);
         git(&self.repo, &["commit", "--quiet", "-m", "v2"]);
@@ -324,4 +330,64 @@ fn a_native_library_removed_from_a_dependency_stops_with_e9062() {
     assert_eq!(f.w.ksn(&["lock", "--accept", "dep"], &f.app).status.code(), Some(0));
     assert_eq!(f.check().status.code(), Some(0), "{}", all(&f.check()));
     assert!(!f.lock().contains("native_libs"), "{}", f.lock());
+}
+// ---- `[native]` は `[unsafe] native = true` で認める (E9024) ----
+
+#[test]
+fn native_needs_unsafe_ack() {
+    let w = Work::new("ack_root");
+    let p = w.path("t");
+    write(&p.join("kasane.lock"), "version = 1\n");
+    write(&p.join("src/t.ksnl"), "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n");
+    write(&p.join("kasane.toml"), &manifest("dynamic = [\"m\"]").replace("native = true\n", ""));
+    let o = w.ksn(&["check"], &p);
+    let out = all(&o);
+    assert_eq!(o.status.code(), Some(1), "{}", out);
+    assert!(out.contains("E9024") && out.contains("native = true"), "{}", out);
+    write(&p.join("kasane.toml"), &manifest("dynamic = [\"m\"]"));
+    assert_eq!(w.ksn(&["check"], &p).status.code(), Some(0), "{}", all(&w.ksn(&["check"], &p)));
+    let o = w.ksn(&["unsafe"], &p);
+    assert!(all(&o).contains("native dynamic m"), "{}", all(&o));
+    let o = w.ksn(&["unsafe", "--json"], &p);
+    assert!(all(&o).contains("\"dynamic\": [\n          \"m\"") || all(&o).contains("\"m\""), "{}", all(&o));
+}
+
+#[test]
+fn a_dependency_native_needs_ack_and_static_is_hashed() {
+    let f = setup("dep_ack");
+    // 依存が認めていなければ E9024。
+    let rev_toml = fs::read_to_string(f.app.join("kasane.toml")).unwrap();
+    let _ = rev_toml;
+    // 認めた版 (setup) の静的アーカイブを足し、ハッシュが変わる (E9022) ことを見る。
+    let toml = "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = 1\n\n[unsafe]\nnative = true\n\n[native]\nstatic = [\"vendor/libx.a\"]\n\n[dependencies]\n";
+    write(&f.repo.join("kasane.toml"), toml);
+    write(&f.repo.join("vendor/libx.a"), "one");
+    git(&f.repo, &["add", "-A"]);
+    git(&f.repo, &["commit", "--quiet", "-m", "static"]);
+    let rev = git(&f.repo, &["rev-parse", "HEAD"]);
+    write(
+        &f.app.join("kasane.toml"),
+        &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"app.main\"\n\n[dependencies]\ndep = {{ git = \"{}\", rev = \"{}\" }}\n", f.url, rev),
+    );
+    assert_eq!(f.w.ksn(&["update", "dep"], &f.app).status.code(), Some(0));
+    assert_eq!(f.w.ksn(&["lock", "--accept", "dep"], &f.app).status.code(), Some(0));
+    assert_eq!(f.w.ksn(&["vendor"], &f.app).status.code(), Some(0));
+    assert_eq!(f.check().status.code(), Some(0), "{}", all(&f.check()));
+    let o = f.w.ksn(&["unsafe"], &f.app);
+    assert!(all(&o).contains("native static vendor/libx.a"), "{}", all(&o));
+    write(&f.app.join("vendor/dep/vendor/libx.a"), "two");
+    let o = f.check();
+    assert!(all(&o).contains("E9022") && !all(&o).contains("E9024"), "{}", all(&o));
+    // 認めていない依存は E9024 だけ。
+    let bad = toml.replace("[unsafe]\nnative = true\n\n", "");
+    write(&f.repo.join("kasane.toml"), &bad);
+    git(&f.repo, &["add", "-A"]);
+    git(&f.repo, &["commit", "--quiet", "-m", "noack"]);
+    let rev = git(&f.repo, &["rev-parse", "HEAD"]);
+    write(
+        &f.app.join("kasane.toml"),
+        &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"app.main\"\n\n[dependencies]\ndep = {{ git = \"{}\", rev = \"{}\" }}\n", f.url, rev),
+    );
+    let o = f.w.ksn(&["update", "dep"], &f.app);
+    assert!(all(&o).contains("E9024") && !all(&o).contains("E9022"), "{}", all(&o));
 }

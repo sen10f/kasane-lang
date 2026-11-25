@@ -7,6 +7,8 @@
 ### 実装計画 2.10系（新しい順）
 
 - 2.10dl テスト本体の `?` が Err / None を返したら、そのテストを失敗にする (理由は `returned Err(..)` / `returned None`。木走査・VM・`--both` と `--json` で同じ)。仕様 3.2 に追記。以前は黙って成功だった (`apps/notes` の 3 件が実は失敗)
+- 2.10dl `[native]` は `[unsafe] native = true` で認める (無ければ E9024。依存も同じ)。`ksn unsafe` が `[native]` を列挙し、`[native] static` のアーカイブをパッケージの hash に含める (O-10、`check/native-needs-unsafe-2`)
+
 - 2.10dk 実行ファイルの名前を `<名前>` (Windows は `<名前>.exe`) にする。旧 `<名前>.native` は作り直しで消す。バンドルの起動スクリプトと同名のため、`target/<kind>/.ksn-artifact` (`native` / `bundle`) で区別する
 
 - 2.10dj 中断の穴: E4022 が閉包の中の束縛・一時値の型を見る (線形の局所・引数の位置の線形の一時値)、ロックのガードが中断点をまたぐ形は E3050 (hunt3 の D1・C1・A1・A2・E1)

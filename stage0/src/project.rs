@@ -287,6 +287,11 @@ pub fn native_libs(m: &toml::Value) -> NativeLibs {
     NativeLibs { archives: get("static"), dynamic: get("dynamic"), search: get("search") }
 }
 
+/// `[unsafe] native = true` があるか。
+pub fn native_acknowledged(m: &toml::Value) -> bool {
+    m.get("unsafe").and_then(|u| u.get("native")).and_then(|b| b.as_bool()) == Some(true)
+}
+
 impl NativeLibs {
     pub fn is_empty(&self) -> bool {
         self.archives.is_empty() && self.dynamic.is_empty() && self.search.is_empty()
@@ -425,6 +430,12 @@ pub fn validate_manifest(m: &toml::Value) -> Vec<(String, String)> {
             None => errs.push(e("E9012", "[unsafe] must be a table".into())),
             Some(t) => {
                 for (k, v) in t {
+                    if k == "native" {
+                        if v.as_bool().is_none() {
+                            errs.push(e("E9012", "unsafe.native must be true or false".into()));
+                        }
+                        continue;
+                    }
                     if k != "modules" {
                         errs.push(e("E9007", format!("unknown key unsafe.{}", k)));
                         continue;
@@ -480,6 +491,10 @@ pub fn validate_manifest(m: &toml::Value) -> Vec<(String, String)> {
                 }
             }
         }
+    }
+    // [native] を持つパッケージ (依存を含む) は `[unsafe] native = true` で明示する (起動時に C のコードが走りうるため)。
+    if !native_libs(m).is_empty() && !native_acknowledged(m) {
+        errs.push(e("E9024", "[native] libraries are declared but not acknowledged: add `native = true` to the [unsafe] table in kasane.toml".into()));
     }
     if let Some(t) = m.as_table() {
         for k in t.keys() {
@@ -921,6 +936,16 @@ pub fn try_package_hash(root: &Path) -> Result<String, ProjectError> {
     let base = norm(root);
     for p in ps {
         files.push(norm(&p).strip_prefix(&format!("{}/", base)).unwrap_or("").to_string());
+    }
+    // `[native] static` のアーカイブも対象 (差し替えを検出する。`vendor/` などパッケージ内の相対パスだけ)。
+    if let Ok(m) = read_manifest(root) {
+        for a in native_libs(&m).archives {
+            let p = a.replace('\\', "/");
+            if p.starts_with('/') || p.split('/').any(|c| c == ".." || c.is_empty()) || p.contains(':') {
+                return perr("E9016", format!("native static library must be a relative path inside the package: {}", a));
+            }
+            files.push(p.trim_start_matches("./").to_string());
+        }
     }
     files.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
     files.dedup();
