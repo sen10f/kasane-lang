@@ -1620,7 +1620,7 @@ fn ksn.task.spawn_any key=ksn.task.spawn_any uses=[alloc] panics=may stack=- ret
     unreachable
   b4(%16: ptr, %17: usize):
     %18: unit = mem.store.usize %16 +0, %17
-    %21: ptr = global.bytes ksn.task.g 56
+    %21: ptr = global.bytes ksn.task.g 104
     %19: usize = mem.load.usize %21 +48
     %20: unit = mem.store.usize %16 +8, %19
     ret %16
