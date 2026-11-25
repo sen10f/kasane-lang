@@ -1,9 +1,23 @@
 type alloc.collections.BtreeMap[K: core.cmp.Ord, V, A: alloc.alloc.Allocator] pub
-    entries: alloc.raw.Buf<alloc.collections.MapEntry<K, V>, A>
+    nodes: alloc.raw.Buf<alloc.collections.BtreeNode<K, V>, A>
+    root: usize
+    head: usize
+    tail: usize
+    seed: u64
 end alloc.collections.BtreeMap
 
+type alloc.collections.BtreeNode[K, V] pub
+    entry: alloc.collections.MapEntry<K, V>
+    left: usize
+    right: usize
+    parent: usize
+    prev: usize
+    next: usize
+    prio: u64
+end alloc.collections.BtreeNode
+
 type alloc.collections.BtreeMapIter['a, K, V] pub
-    entries: &'a [alloc.collections.MapEntry<K, V>]
+    nodes: &'a [alloc.collections.BtreeNode<K, V>]
     position: usize
     stop: usize
 end alloc.collections.BtreeMapIter
