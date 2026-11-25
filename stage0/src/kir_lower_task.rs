@@ -296,5 +296,8 @@ pub(super) fn join_call(lw: &mut Lw, recv: VId, recv_ty: Ty, line: usize) -> Opt
     lw.callees.insert(ks::WAIT.to_string());
     lw.emit(Ty::Unit, Op::Call { callee: ks::WAIT.to_string(), args: vec![id, gen] });
     let fp = rt_call(lw, ks::FP, vec![id], Ty::Ptr);
-    Some(result_of(lw, fp, elem, line).map(Some))
+    let r = result_of(lw, fp, elem, line);
+    // 結果を読み終えた枠は空き枠の連結へ戻す (`Task` は move で 1 回しか join できないので、この後に枠を見る者はいない)。
+    rt_call(lw, "ksn.task.release", vec![id], Ty::Unit);
+    Some(r.map(Some))
 }
