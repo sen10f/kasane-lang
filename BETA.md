@@ -84,10 +84,10 @@ ksn run        # インタプリタで実行
 
 ```bash
 ksn build --release
-./target/release/hello.native
+./target/release/hello
 ```
 
-出力: `double: 4`。ビルド後の実行ファイルは `hello.native`（拡張子 `.native` が付く）です。
+出力: `double: 4`。ビルド後の実行ファイルは `target/release/hello` です。
 
 ## 5. ドキュメントの場所
 

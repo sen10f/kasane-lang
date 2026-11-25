@@ -1,6 +1,8 @@
 //! 配布用 (`--features glibc-compat`、glibc 2.31 を対象にする cargo-zigbuild) のときだけ入る小さな互換層。
 //! 新しい glibc のヘッダでビルドされた静的 LLVM が参照する C23 版の `strto*` (glibc 2.38 の `__isoc23_*`) を、
 //! 古い glibc に在る `strto*` へ回す。Debian 12 (glibc 2.36) などで動かすために要る。
+//! `__isoc23_strto*` は C23 の `0b` 接頭辞 (基数 0 か 2) の解釈だけが `strto*` と違う。LLVM / libstdc++ の呼び出し点
+//! (JSON.cpp・TargetInstrInfo.cpp・rpmalloc・`std::stoi` 系) はすべて基数 10 なので、`strto*` に回して同じ結果になる。
 use std::os::raw::{c_char, c_int, c_long, c_longlong, c_ulong, c_ulonglong};
 
 #[no_mangle]
@@ -37,14 +39,22 @@ pub extern "C" fn mallinfo2() -> Mallinfo2 {
     Mallinfo2 { f: [0; 10] }
 }
 
+/// 呼び出し元は libstdc++ の `std::random_device` と LLVM Support の `llvm::sys::Process::GetRandom` 系。
+/// glibc の arc4random と同じく、失敗も縮退も許さない: EINTR は繰り返し、それ以外の失敗は abort する (弱い値は返さない)。
 #[no_mangle]
 pub unsafe extern "C" fn arc4random() -> u32 {
     let mut v: u32 = 0;
     let mut got = 0usize;
     while got < 4 {
         let n = libc::getrandom((&mut v as *mut u32 as *mut u8).add(got) as *mut libc::c_void, 4 - got, 0);
-        if n <= 0 {
-            break;
+        if n < 0 {
+            if *libc::__errno_location() == libc::EINTR {
+                continue;
+            }
+            libc::abort();
+        }
+        if n == 0 {
+            libc::abort();
         }
         got += n as usize;
     }
