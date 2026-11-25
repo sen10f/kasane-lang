@@ -2777,7 +2777,7 @@ impl<'a> Fe<'a> {
                     } else {
                         fname(callee)
                     };
-                    self.line(format!("{} = call {} {}({})", d, rt, tgt, a.join(", ")));
+                    self.line(format!("{} = {}call {} {}({})", d, if peer { "notail " } else { "" }, rt, tgt, a.join(", ")));
                 }
             }
             // 関数のアドレスを `ptr` として取る (C のコールバック用)。
