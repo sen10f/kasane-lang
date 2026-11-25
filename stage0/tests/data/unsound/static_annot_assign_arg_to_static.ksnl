@@ -1,0 +1,16 @@
+fn t.f(x: &str) -> &'static str uses [] panics never
+    let z = Some(1i128)
+    core.mem.drop(z)
+    let mut r: &'static str = "lit"
+    r = x
+    r
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut a = std.string.String.new()
+    a.push_str("hello world, this is heap").unwrap()
+    let r = t.f(a.as_str())
+    core.mem.drop(a)
+    std.io.print_line(r).unwrap()
+    Ok(())
+end t.main

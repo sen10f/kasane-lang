@@ -1,0 +1,17 @@
+fn t.f() -> &'static u64 uses [alloc] panics may
+    let z = Some(1i128)
+    core.mem.drop(z)
+    let mut v = std.vec.Vec.new()
+    v.push(42u64).unwrap()
+    let mut r: &'static u64 = &7u64
+    r = &v[0usize]
+    r
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let r = t.f()
+    let mut s = std.string.String.new()
+    s.push_u64(*r).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+    Ok(())
+end t.main

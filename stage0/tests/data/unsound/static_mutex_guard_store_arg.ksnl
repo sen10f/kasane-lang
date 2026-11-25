@@ -1,0 +1,22 @@
+static t.M: std.sync.Mutex<&'static u64> = std.sync.Mutex.new(&7u64)
+
+fn t.stash(x: &u64) -> () uses [] panics never
+    let mut g = t.M.lock()
+    *g.get_mut() = x
+    core.mem.drop(g)
+end t.stash
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let mut v = std.vec.Vec.new()
+    v.push(42u64).unwrap()
+    t.stash(&v[0usize])
+    core.mem.drop(v)
+    let h = std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [] {
+        let g = t.M.lock()
+        **g.get()
+    }).unwrap()
+    let mut s = std.string.String.new()
+    s.push_u64(h.join()).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+    Ok(())
+end t.main

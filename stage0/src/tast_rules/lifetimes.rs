@@ -321,6 +321,8 @@ struct W<'a> {
     cap_names: HashSet<String>,
     /// 閉包の本体を解く W だけ: 取り込み A から得た借用を取り込み B の指す先へ書いた組 (A, B, 行)。
     cap_stores: Vec<(String, String, usize)>,
+    /// `let` 文の束縛の検査中だけ `Some(報告行)`: 注釈の型が `'static` の欄へ借用を運ぶ値を入れる (O-04)。
+    let_check: Option<usize>,
 }
 
 /// 閉包を擬似の関数として見たときの署名と、外側の局所 (本体の中の局所と区別する)。
@@ -356,6 +358,25 @@ fn slots_of(t: &Ty) -> Vec<Ty> {
         Ty::Tuple(ts) => ts.clone(),
         Ty::Named(n, a, _) if matches!(n.as_str(), "Option" | "Result") => a.clone(),
         _ => vec![],
+    }
+}
+
+/// 型 `t` の `k` 層目の参照の領域が `'static` か。`k` 段参照を外した所が参照ならその領域、
+/// そうでなければ (`dyn T + 'static` など) その中の `'static` を見る (未決の領域がある欄は見ない)。
+fn layer_static(t: &Ty, k: u8) -> bool {
+    let mut t = t;
+    for _ in 0..k {
+        match t {
+            Ty::Ref(_, x, _) => t = x,
+            _ => break,
+        }
+    }
+    match t {
+        Ty::Ref(_, _, r) => matches!(r, Region::Static),
+        _ => {
+            let rs = t.regions();
+            !rs.is_empty() && !rs.iter().any(|r| matches!(r, Region::Unk)) && rs.iter().any(|r| matches!(r, Region::Static))
+        }
     }
 }
 
@@ -482,7 +503,7 @@ impl<'a> W<'a> {
             }
         });
         let gn = p.defs[di].gnames();
-        W { p, di, env: Env::default(), scopes: vec![vec![]], vals: HashMap::new(), uses, loops: vec![], ret, diags: vec![], seen: HashSet::new(), gn, cl: None, arm_vars: vec![], cap_names: HashSet::new(), cap_stores: vec![] }
+        W { p, di, env: Env::default(), scopes: vec![vec![]], vals: HashMap::new(), uses, loops: vec![], ret, diags: vec![], seen: HashSet::new(), gn, cl: None, arm_vars: vec![], cap_names: HashSet::new(), cap_stores: vec![], let_check: None }
     }
 
     fn diag(&mut self, code: &str, msg: String, line: usize) {
@@ -570,6 +591,9 @@ impl<'a> W<'a> {
         match pat.kind {
             "PBind" => {
                 let t = pat.info.as_ref().and_then(|i| i.bind.as_ref().map(|b| b.1.clone())).or_else(|| ty.filter(|t| !matches!(t, Ty::Unknown | Ty::Var(_))).cloned()).unwrap_or(Ty::Unknown);
+                if let Some(line) = self.let_check {
+                    self.static_store(&v, &t, line);
+                }
                 if let Some(n) = &pat.name {
                     self.define(n, pat.id, v, &t);
                 }
@@ -1165,6 +1189,58 @@ impl<'a> W<'a> {
         }
     }
 
+    /// 値 `v` を型 `tt` の場所 (let の注釈・代入先) へ入れるとき、`tt` の `'static` を要求する欄に借用を運ぶなら E2037。
+    /// 組・`Option` / `Result` は欄ごとに分ける (`slots_of`)。借用を運ばない値 (`&'static` の値・リテラル昇格) は通す。
+    /// 層ごとに見る: 値の `k` 層目の借用は場所の型の `k` 層目の参照の領域が決める
+    /// (`&'e mut dyn T + 'static` の外側は省略なので、中の `'static` だけでは誤検出しない)。
+    fn static_store(&mut self, v: &Val, tt: &Ty, line: usize) {
+        if v.is_empty() {
+            return;
+        }
+        let slots = slots_of(tt);
+        if !v.parts.is_empty() && v.parts.len() == slots.len() {
+            for (p, t) in v.parts.iter().zip(&slots) {
+                self.static_store(p, t, line);
+            }
+            return;
+        }
+        let mut seen: BTreeSet<&Loan> = BTreeSet::new();
+        for ((l, k), ln) in &v.set {
+            if !seen.insert(l) || self.loan_is_static(l) || !layer_static(tt, *k) {
+                continue;
+            }
+            let what = match l {
+                Loan::Local(n, _) | Loan::Dead(n) => format!("a borrow of the local variable `{}`", n),
+                Loan::Temp => "a borrow of a temporary value".to_string(),
+                Loan::Arg(n) => format!("a borrow of the argument `{}`", n),
+                Loan::ArgIn(n, _) => format!("a borrow of the inner reference of the argument `{}`", n),
+            };
+            let at = if *ln == LEAF || *ln == 0 { line } else { *ln };
+            self.diag(
+                "E2037",
+                format!("cannot store {} into a place of type `{}` that requires `'static` (5.5)", what, tt.show_r().replace("'_ ", "")),
+                at,
+            );
+        }
+    }
+
+    /// 借用が本物の `'static` か: 引数の参照の `lvl` 層目の領域が `'static` と宣言されている (`ret_position` と同じ判定)。
+    fn loan_is_static(&self, l: &Loan) -> bool {
+        let Loan::ArgIn(q, lvl) = l else { return false };
+        let ps0: Vec<(String, Ty)> = match &self.cl {
+            Some(c) => c.params.clone(),
+            None => self.p.defs[self.di].params.iter().map(|(n, t)| (n.clone(), from_v(t, &self.gn))).collect(),
+        };
+        let Some((_, mut t)) = ps0.iter().find(|(n, _)| n == q).map(|(n, t)| (n.clone(), t.clone())) else { return false };
+        for _ in 0..*lvl {
+            match &t {
+                Ty::Ref(_, x, _) => t = (**x).clone(),
+                _ => return false,
+            }
+        }
+        matches!(&t, Ty::Ref(_, _, r) if matches!(r, Region::Static))
+    }
+
     /// 構造体の欄が `'static` の領域・`'static` 境界の型パラメータを持つとき、局所の借用を入れたら誤り。
     fn static_field(&mut self, td: &Def, fq: &str, fname: &str, v: &Val, line: usize) {
         if v.is_empty() {
@@ -1361,7 +1437,9 @@ impl<'a> W<'a> {
                         None => v,
                     };
                     let ity = init.as_ref().map(|x| x.ty.clone());
+                    self.let_check = Some(init.as_ref().map(|x| x.line).unwrap_or(pat.line));
                     self.bind_pat_ty(pat, v, false, ity.as_ref());
+                    self.let_check = None;
                 }
                 TStmt::Expr(x) => {
                     let v = self.ev(x);
@@ -1429,6 +1507,8 @@ impl<'a> W<'a> {
 
     /// 代入 `place = v`。
     fn assign(&mut self, place: &TExpr, v: Val, line: usize) {
+        // 書き込み先の型が `'static` を要求する欄へ借用を運ぶ値を入れる (O-04/O-05: `r = x`・`*guard.get_mut() = x` など)。
+        self.static_store(&v, &place.ty, line);
         // 場所の根になる局所と、参照を通ったか。
         let mut cur = place;
         let mut through_ref = false;

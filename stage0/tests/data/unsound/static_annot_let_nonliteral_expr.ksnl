@@ -1,0 +1,16 @@
+fn t.g(n: u64) -> u64 uses [] panics never
+    n.wrapping_add(1u64)
+end t.g
+
+fn t.f(n: u64) -> &'static u64 uses [] panics never
+    let r: &'static u64 = &t.g(n)
+    r
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let r = t.f(41u64)
+    let mut s = std.string.String.new()
+    s.push_u64(*r).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+    Ok(())
+end t.main
