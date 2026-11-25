@@ -2227,15 +2227,7 @@ fn cmd_test(args: &[String]) -> i32 {
         };
         // 木走査は、VM を使わない・VM が退避した・`--engine=both` のときに走らせる (比べるときは木走査が先)。
         if vm_result.is_none() || cmp {
-            let mut it = Interp::new(prog.clone());
-            let r = it.call_body(*ti);
-            use std::io::Write;
-            let _ = it.out.flush();
-            results.push(match r {
-                Err(Ctl::Panic(m)) => Some(m),
-                Err(Ctl::Exit(c)) => Some(format!("exit({})", c)),
-                _ => None,
-            });
+            results.push(tree_test_result(&prog, *ti));
             names.push("tree");
         }
         if let Some(r) = vm_result {
@@ -2291,6 +2283,15 @@ fn cmd_test(args: &[String]) -> i32 {
             "bundle" => n_bundle += 1,
             _ => {}
         }
+        // VM・ネイティブは `?` が Err/None で終わったテストを目印の文言で失敗にする。理由 (Err の中身) は木走査で出す (3 つで同じ文言にする)。
+        if results.iter().flatten().any(|m| m.contains(TEST_TRY_MARK)) {
+            let exact = tree_test_result(&prog, *ti);
+            for r in results.iter_mut() {
+                if r.as_ref().is_some_and(|m| m.contains(TEST_TRY_MARK)) {
+                    *r = exact.clone();
+                }
+            }
+        }
         let disagree = results.len() > 1 && results[1..].iter().any(|r| backends_disagree(&results[0], r));
         let failed_here = disagree || !results.iter().all(|r| r.is_none());
         let failure: Option<String> = if disagree {
@@ -2330,6 +2331,27 @@ fn cmd_test(args: &[String]) -> i32 {
         }
     }
     if failed > 0 { 1 } else { 0 }
+}
+
+/// `?` が Err/None で本体を終えたテストの目印 (VM・ネイティブの下ろしが panic の文言に使う。表示は `tree_test_result` の文言に置き換える)。
+pub const TEST_TRY_MARK: &str = "ksn test body returned early with ?";
+
+/// 木走査でテスト `ti` を走らせた結果 (`None` = 成功)。本体の `?` が Err/None で終わったら失敗 (`returned Err(..)` / `returned None`)。
+fn tree_test_result(prog: &Rc<Program>, ti: usize) -> Option<String> {
+    let mut it = Interp::new(prog.clone());
+    let r = it.call_body(ti);
+    use std::io::Write;
+    let _ = it.out.flush();
+    match r {
+        Err(Ctl::Panic(m)) => Some(m),
+        Err(Ctl::Exit(c)) => Some(format!("exit({})", c)),
+        Ok(v) => match crate::value::dr(&v) {
+            crate::value::Val::Enum(e) if e.en == "Result" && e.var == "Err" => Some(format!("returned Err({})", it.debug_str(&e.pl[0]).unwrap_or_default())),
+            crate::value::Val::Enum(e) if e.en == "Option" && e.var == "None" => Some("returned None".to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// 理由の最初の行 (前後の空白を除く)。

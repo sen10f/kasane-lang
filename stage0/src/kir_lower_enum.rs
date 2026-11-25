@@ -1117,7 +1117,7 @@ impl<'a> Lw<'a> {
         let vt = self.vty(v);
         let rt = self.ret;
         match (vt, rt) {
-            // `test` の本体 (戻り値 `()`) の `?`: 木走査は `Err` / `None` で本体を打ち切り、テストは成功として扱う (値は捨てる)。同じにする。
+            // `test` の本体 (戻り値 `()`) の `?`: `Err` / `None` で本体を打ち切り、そのテストを失敗にする。
             (Ty::Res(..) | Ty::Opt(_), Ty::Unit) if self.def.kw == "test" => {
                 let tag = self.emit(Ty::Bool, Op::Tag(v));
                 let (okb, _) = self.new_block(&[]);
@@ -1129,9 +1129,9 @@ impl<'a> Lw<'a> {
                     self.branch(tag, (okb, vec![]), (stop, vec![]));
                 }
                 self.cur = Some(stop);
-                let u = self.emit(rt, Op::Const(0));
-                super::coll::drop_from(self, 0);
-                self.terminate(Term::Ret(u));
+                // 木走査は、この `?` で終わったテストを失敗にする (理由は呼び出し側が木走査で出す)。目印の panic にする。
+                let u = self.emit(Ty::Unit, Op::Panic { msg: crate::cli::TEST_TRY_MARK.to_string(), arg: None });
+                self.terminate(Term::Unreachable);
                 self.cur = Some(okb);
                 let pv = match vt {
                     Ty::Res(t0, _) => self.emit(t0.ty(), Op::Payload(v)),
