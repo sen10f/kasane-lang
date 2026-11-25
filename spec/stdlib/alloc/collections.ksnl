@@ -245,11 +245,17 @@ fn alloc.collections.HashMap.find_hashed[K: core.cmp.Eq + core.hash.Hash, V, A: 
     }
     let mask = slots.wrapping_sub(1usize)
     let base = self.base()
+    let himask = 4_294_967_295usize ^ mask
     let mut i = h & mask
     for _ in core.iter.range(0usize, slots) {
-        let e = self.lane_get(i)
+        let w = self.lane_get(i)
+        let e = w & mask
         if e == 0usize {
             return None
+        }
+        if (w ^ h) & himask != 0usize {
+            i = i.wrapping_add(1usize) & mask
+            continue
         }
         let p = base.wrapping_add(e).wrapping_sub(1usize)
         if let Some(found) = self.cells.get(p) {
@@ -279,11 +285,17 @@ fn alloc.collections.HashMap.find_str[V, A: alloc.alloc.Allocator, B: alloc.allo
     }
     let mask = slots.wrapping_sub(1usize)
     let base = self.base()
+    let himask = 4_294_967_295usize ^ mask
     let mut i = h & mask
     for _ in core.iter.range(0usize, slots) {
-        let e = self.lane_get(i)
+        let w = self.lane_get(i)
+        let e = w & mask
         if e == 0usize {
             return None
+        }
+        if (w ^ h) & himask != 0usize {
+            i = i.wrapping_add(1usize) & mask
+            continue
         }
         let p = base.wrapping_add(e).wrapping_sub(1usize)
         if let Some(found) = self.cells.get(p) {
@@ -541,7 +553,7 @@ fn alloc.collections.HashMap.place[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.
         return
     }
     let mask = slots.wrapping_sub(1usize)
-    let v = pos.wrapping_sub(self.base()).wrapping_add(1usize)
+    let v = h & (4_294_967_295usize ^ mask) | pos.wrapping_sub(self.base()).wrapping_add(1usize)
     let mut i = h & mask
     for _ in core.iter.range(0usize, slots) {
         if self.lane_get(i) == 0usize {
