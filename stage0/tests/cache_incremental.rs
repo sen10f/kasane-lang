@@ -840,6 +840,32 @@ fn bundle_is_rebuilt_when_sources_change() {
 }
 
 #[test]
+fn the_bundle_fallback_builds_the_bundle_only_once_for_many_fallback_tests() {
+    // `ksn test --both` でバンドルへ退避するテストが複数あっても、バンドルのビルドは 1 回だけ。
+    // 以前は `run_in_bundle` が backend "c" の鍵で調べていたため `cmd_build` の鍵 (llvm) とずれて毎回作り直していた。
+    let src = format!(
+        "{}\ntest t.one.test_wide\n    core.check.eq(5i128.checked_add(0i128), Some(5i128))\nend t.one.test_wide\n\ntest t.one.test_div\n    let m = core.num.i128.MIN\n    core.check.eq(m.checked_rem(-1i128), None)\nend t.one.test_div\n",
+        CACHE_SRC
+    );
+    let t = Tmp::new("bundle_reuse", &src);
+    let cache = scratch::Scratch::at(format!("ksn_cache_bundle_reuse_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let o = Command::new(exe())
+        .args(["test", "--both"])
+        .current_dir(&t.0)
+        .env("KSN_CACHE_DIR", &cache)
+        .env("KSN_STDLIB", root().join("spec").join("stdlib"))
+        .output()
+        .unwrap();
+    let out = text(&o.stdout) + &text(&o.stderr);
+    assert_eq!(o.status.code(), Some(0), "{}", out);
+    let n_bundle = out.matches("(both: bundle").count();
+    assert!(n_bundle >= 2, "バンドルへ退避するテストが 2 本以上必要: {}", out);
+    assert_eq!(out.matches("built target").count(), 1, "バンドルのビルドは 1 回だけ (退避 {} 本): {}", n_bundle, out);
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[test]
 fn fmath_functions_agree_across_backends_and_match_known_values() {
     // 数学関数 (`fmath`) は、インタプリタと LLVM で同じビット列を返し、既知の値に近い。
     // `tests/data/fmath_both.ksnl`: 既知値 (f32 は 2〜3 ulp 以内)、特殊値 (atan2 の ±∞ / NaN 組を含む)、9 関数の総和 (ビット列の突き合わせ)。
@@ -1883,7 +1909,12 @@ fn cache_stays_under_the_cap_and_stores_ksn_once() {
         assert!(o.status.success(), "{}", text(&o.stderr));
         dirs.push(t);
     }
-    let ksn_copies = fs::read_dir(&cache).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ksn-")).count();
+    // `ksn-<識別子>.used` (使用の印) は共有実体ではないので除く。
+    let is_shared = |e: &fs::DirEntry| {
+        let n = e.file_name().to_string_lossy().into_owned();
+        n.starts_with("ksn-") && !n.ends_with(".used")
+    };
+    let ksn_copies = fs::read_dir(&cache).unwrap().flatten().filter(|e| is_shared(e)).count();
     assert_eq!(ksn_copies, 1, "同梱の ksn の共有実体は 1 本");
     // 上限は共有の ksn も数える。ksn だけで上限を超えるので、残るのは「作ったばかりの最新のエントリ 1 本」だけ (それは消さない)。
     let entries: Vec<PathBuf> = fs::read_dir(&cache).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir() && p.file_name().unwrap() != "check" && p.file_name().unwrap() != "hashes" && !p.file_name().unwrap().to_string_lossy().contains(".tmp")).collect();
@@ -1891,7 +1922,7 @@ fn cache_stays_under_the_cap_and_stores_ksn_once() {
     let mut seen = std::collections::HashSet::new();
     let ksn_len = fs::metadata(exe()).unwrap().len();
     let entry_len = tree_size(&entries[0], &mut seen);
-    let total = entry_len + fs::read_dir(&cache).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ksn-")).map(|e| tree_size(&e.path(), &mut seen)).sum::<u64>();
+    let total = entry_len + fs::read_dir(&cache).unwrap().flatten().filter(|e| is_shared(e)).map(|e| tree_size(&e.path(), &mut seen)).sum::<u64>();
     assert!(total <= ksn_len + entry_len, "キャッシュ {} B が ksn {} B + 最新のエントリ {} B を超えた", total, ksn_len, entry_len);
     let _ = fs::remove_dir_all(&cache);
 }
@@ -1981,7 +2012,12 @@ mod cache_integrity {
         let _ = fs::remove_dir_all(&cache);
         let o = build_with_cache(exe(), &d, &cache, &[], &[]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
-        let shared: Vec<_> = fs::read_dir(&cache).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ksn-")).collect();
+        // `ksn-<識別子>.used` (使用の印) は共有実体ではないので除く。
+        let is_shared = |e: &fs::DirEntry| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.starts_with("ksn-") && !n.ends_with(".used")
+        };
+        let shared: Vec<_> = fs::read_dir(&cache).unwrap().flatten().filter(|e| is_shared(e)).collect();
         assert_eq!(shared.len(), 1);
         let mut f = fs::OpenOptions::new().append(true).open(shared[0].path()).unwrap();
         use std::io::Write;
@@ -1990,7 +2026,7 @@ mod cache_integrity {
         let o = build_with_cache(exe(), &d, &cache, &[], &[]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         assert!(text(&o.stderr).contains("integrity check") || text(&o.stderr).contains("does not match"), "{}", text(&o.stderr));
-        let s = fs::read_dir(&cache).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("ksn-")).unwrap();
+        let s = fs::read_dir(&cache).unwrap().flatten().find(|e| is_shared(e)).unwrap();
         assert_eq!(fs::metadata(s.path()).unwrap().len(), fs::metadata(exe()).unwrap().len());
         let _ = fs::remove_dir_all(&cache);
     }

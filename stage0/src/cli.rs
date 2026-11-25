@@ -2202,7 +2202,8 @@ fn run_in_bundle(root: &Path, fqn: &str, l: &Loaded) -> Option<String> {
     let bdir = root.join("target").join("debug");
     // 既存のバンドルは、今のキー (ksn 本体・ソース) で作られたものだけ使う。
     // 存在だけで判定すると、ソースや ksn を変えても古いバンドルで走ってしまう。
-    let want = build_key(l, false, "host", "c");
+    // 鍵は `cmd_build(&[])` が `BUILD_STAMP` に書くものと同じ (既定の backend は llvm)。
+    let want = build_key(l, false, "host", "llvm");
     let fresh = fs::read_to_string(bdir.join(BUILD_STAMP)).map_or(false, |s| s.trim() == want);
     if !(fresh && bdir.join(exe_name()).exists()) && cmd_build(&[], Some(l)) != 0 {
         return Some("build failed".into());
@@ -3912,15 +3913,17 @@ fn sha_file(p: &Path) -> Option<String> {
     Some(h.finalize().iter().map(|b| format!("{:02x}", b)).collect())
 }
 
-/// 大きい実行体のハッシュを、ファイルの同一性 (dev・inode・サイズ・mtime・ctime) が 5 つとも同じ間だけ使い回す。
-/// ctime は一般のユーザが戻せないので、書き換え・置き換えは必ず外れて数え直しになる。
+/// 大きい実行体のハッシュを、ファイルの同一性 (dev・inode・サイズ・mtime) が同じ間だけ使い回す。
+/// ctime は鍵に入れない: ハードリンクを張るたびに変わってしまうため。書き換えは mtime とサイズが
+/// 変わるので外れて数え直しになり、置き換えは inode が変わる。mtime を戻せるのはファイルの持ち主
+/// だけで、それは 0700 のキャッシュ置き場も書ける人と同じなので、これで検査は弱まらない。
 /// 置き場は 0700 のキャッシュ直下の `hashes/<dev>-<inode>` (ハードリンクは inode が同じなので 1 度で足りる)。unix 以外は毎回数える。
 fn sha_file_memo(p: &Path) -> Option<String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let m = fs::metadata(p).ok()?;
-        let id = format!("{} {} {} {} {} {} {}", m.dev(), m.ino(), m.len(), m.mtime(), m.mtime_nsec(), m.ctime(), m.ctime_nsec());
+        let id = format!("{} {} {} {} {}", m.dev(), m.ino(), m.len(), m.mtime(), m.mtime_nsec());
         let dir = cache_dir().join("hashes");
         let f = dir.join(format!("{}-{}", m.dev(), m.ino()));
         if let Ok(t) = fs::read_to_string(&f) {
@@ -3933,7 +3936,7 @@ fn sha_file_memo(p: &Path) -> Option<String> {
         let h = sha_file(p)?;
         // 数えている間に書き換わったら、記録しない。
         let m2 = fs::metadata(p).ok()?;
-        if (m2.ino(), m2.len(), m2.mtime(), m2.mtime_nsec(), m2.ctime(), m2.ctime_nsec()) == (m.ino(), m.len(), m.mtime(), m.mtime_nsec(), m.ctime(), m.ctime_nsec()) {
+        if (m2.ino(), m2.len(), m2.mtime(), m2.mtime_nsec()) == (m.ino(), m.len(), m.mtime(), m.mtime_nsec()) {
             let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
             let t = dir.join(format!("{}-{}.{}.tmp", m.dev(), m.ino(), std::process::id()));
             if fs::write(&t, format!("{} {}\n", id, h)).is_ok() && fs::rename(&t, &f).is_err() {
@@ -3954,8 +3957,33 @@ fn self_hash() -> Option<&'static str> {
     H.get_or_init(|| std::env::current_exe().ok().and_then(|e| sha_file_memo(&e))).as_deref()
 }
 
+/// 走っている ksn 自身の同一性 (dev・inode・サイズ・mtime)。プロセスごとに 1 度だけ記録する。
+/// ctime は記録しない (ハードリンクを張るたびに変わるため)。書き換えは mtime が変わるので、
+/// これと一致する間は同じファイルとみなせる。
+#[cfg(unix)]
+fn self_id() -> Option<(u64, u64, u64, i64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+    static S: std::sync::OnceLock<Option<(u64, u64, u64, i64, i64)>> = std::sync::OnceLock::new();
+    *S.get_or_init(|| {
+        let e = std::env::current_exe().ok()?;
+        let m = fs::metadata(&e).ok()?;
+        Some((m.dev(), m.ino(), m.len(), m.mtime(), m.mtime_nsec()))
+    })
+}
+
 /// 共有の `ksn-<識別子>` などが、走っている ksn と同じ中身か。
 fn is_self(p: &Path) -> bool {
+    // 同じ inode なら同じファイルなので、記録済みのメタデータ (サイズ・mtime) が一致するだけでハッシュを省く。
+    // 置き換えは新しい inode になるので必ずハッシュ比較に落ち、改竄はそちらで検出される。
+    #[cfg(unix)]
+    if let Some(id) = self_id() {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(m) = fs::metadata(p) {
+            if (m.dev(), m.ino(), m.len(), m.mtime(), m.mtime_nsec()) == id {
+                return true;
+            }
+        }
+    }
     match (self_hash(), sha_file_memo(p)) {
         (Some(a), Some(b)) => a == b,
         _ => false,
@@ -4190,14 +4218,16 @@ fn prune_shared(cdir: &Path, cur: &str) {
     let mut others: Vec<(std::time::SystemTime, PathBuf, u64)> = Vec::new();
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("ksn-") || name == cur_name || name.ends_with(".tmp") {
+        if !name.starts_with("ksn-") || name == cur_name || name.ends_with(".tmp") || name.ends_with(".used") {
             continue;
         }
         let Ok(m) = e.metadata() else { continue };
         if !m.is_file() {
             continue;
         }
-        let t = m.modified().unwrap_or(std::time::UNIX_EPOCH);
+        // 最後に使った時刻は実体の mtime ではなく `ksn-<識別子>.used` に書く (実体は触らない)。
+        let used = cdir.join(format!("{}.used", name));
+        let t = fs::metadata(&used).and_then(|m| m.modified()).or_else(|_| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
         others.push((t, e.path(), link_count(&m)));
     }
     others.sort_by(|a, b| b.0.cmp(&a.0));
@@ -4272,7 +4302,10 @@ fn build_key(l: &Loaded, release: bool, target: &str, backend: &str) -> String {
     for s in &l.std {
         h.update(s.text.as_bytes());
     }
-    if let Ok(exe) = std::env::current_exe() {
+    // 走っている ksn 自体のハッシュ (メモ付き)。136 MB を呼び出しのたびに読んで数えるのは数秒かかる。
+    if let Some(sh) = self_hash() {
+        h.update(sh.as_bytes());
+    } else if let Ok(exe) = std::env::current_exe() {
         h.update(fs::read(exe).unwrap_or_default());
     }
     h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
@@ -4513,10 +4546,10 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
                     let _ = fs::remove_file(&t);
                 }
             }
-            // 使った時刻を新しくして、古い識別子の掃除で後回しにする (最近使ったものを残す)。
-            if let Ok(f) = fs::File::open(&shared) {
-                let _ = f.set_modified(std::time::SystemTime::now());
-            }
+            // 使った印は `ksn-<識別子>.used` に書く (古い識別子の掃除で最近使ったものを残すため)。
+            // 共有実体の mtime は触らない: ハードリンクの ksn は走っている ksn と同じ inode なので、
+            // 触ると実行体のメタデータが変わり、ハッシュのメモが毎回外れて 136 MB を数え直していた。
+            let _ = fs::write(cdir.join(format!("ksn-{}.used", env!("KSN_BUILD_ID"))), "");
             link_or_copy(if shared.exists() { &shared } else { &exe }, &tmp.join(exe_name()));
         }
         copy_tree(&stdlib_dir(), &tmp.join("stdlib"), &[]);
