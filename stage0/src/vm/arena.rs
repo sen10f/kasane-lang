@@ -15,6 +15,10 @@ extern "C" {
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static LIMIT: AtomicUsize = AtomicUsize::new(0);
+static SHADOW: AtomicUsize = AtomicUsize::new(0);
+static DEAD_ANY: AtomicBool = AtomicBool::new(false);
+/// 解放した領域を寝かせる上限 (バイト)。
+const QUARANTINE_MAX: usize = 4 << 20;
 static PERMISSIVE: AtomicBool = AtomicBool::new(false);
 
 const HDR: usize = 16;
@@ -22,6 +26,8 @@ const NCLASS: usize = 48;
 
 struct Arena {
     top: usize,
+    quarantine: std::collections::VecDeque<(usize, usize, usize)>,
+    qbytes: usize,
     free: [Vec<usize>; NCLASS],
 }
 
@@ -38,6 +44,12 @@ fn init() -> bool {
         if p as isize != -1 && !p.is_null() {
             BASE.store(p as usize, Ordering::Relaxed);
             LIMIT.store(len, Ordering::Relaxed);
+            // 16 バイトごとに 1 ビットの「解放済み」の影 (遅延確保)。
+            let sh = unsafe { mmap(std::ptr::null_mut(), len / 128 + 4096, 3, 0x4022, -1, 0) };
+            if sh as isize == -1 || sh.is_null() {
+                return false;
+            }
+            SHADOW.store(sh as usize, Ordering::Relaxed);
             return true;
         }
         len >>= 1;
@@ -70,7 +82,7 @@ pub fn alloc(n: usize) -> usize {
         return 0;
     }
     let mut g = ARENA.lock().unwrap_or_else(|e| e.into_inner());
-    let a = g.get_or_insert_with(|| Arena { top: 64, free: std::array::from_fn(|_| Vec::new()) });
+    let a = g.get_or_insert_with(|| Arena { top: 64, quarantine: Default::default(), qbytes: 0, free: std::array::from_fn(|_| Vec::new()) });
     if let Some(p) = a.free[c].pop() {
         return p;
     }
@@ -111,12 +123,74 @@ fn class_at(p: usize) -> Option<usize> {
     Some(c)
 }
 
-/// 解放。領域の外・見出しが壊れた番地は `false` (呼び出し側が panic にする)。
+fn shadow_set(p: usize, size: usize, on: bool) {
+    let base = BASE.load(Ordering::Relaxed);
+    let sh = SHADOW.load(Ordering::Relaxed) as *const std::sync::atomic::AtomicU8;
+    let (g0, g1) = ((p - base) >> 4, (p - base + size) >> 4);
+    let mut g = g0;
+    while g < g1 {
+        let b = unsafe { &*sh.add(g >> 3) };
+        if g & 7 == 0 && g + 8 <= g1 {
+            b.store(if on { 0xff } else { 0 }, Ordering::Relaxed);
+            g += 8;
+        } else {
+            if on { b.fetch_or(1 << (g & 7), Ordering::Relaxed) } else { b.fetch_and(!(1 << (g & 7)), Ordering::Relaxed) };
+            g += 1;
+        }
+    }
+}
+
+/// `[a, a + n)` が解放済み (寝かせ中を含む) の領域に触れるか。
+#[inline(always)]
+pub fn dead(a: u64, n: usize) -> bool {
+    if !DEAD_ANY.load(Ordering::Relaxed) || n == 0 {
+        return false;
+    }
+    let base = BASE.load(Ordering::Relaxed) as u64;
+    let off = a.wrapping_sub(base);
+    if off >= LIMIT.load(Ordering::Relaxed) as u64 {
+        return false;
+    }
+    let sh = SHADOW.load(Ordering::Relaxed) as *const std::sync::atomic::AtomicU8;
+    let (g0, g1) = ((off >> 4) as usize, ((off as usize).saturating_add(n - 1)) >> 4);
+    let mut g = g0;
+    while g <= g1 {
+        let b = unsafe { (*sh.add(g >> 3)).load(Ordering::Relaxed) };
+        if g & 7 == 0 && g + 7 <= g1 {
+            if b != 0 {
+                return true;
+            }
+            g += 8;
+        } else {
+            if b & (1 << (g & 7)) != 0 {
+                return true;
+            }
+            g += 1;
+        }
+    }
+    false
+}
+
+/// 解放。領域の外・見出しが壊れた番地・解放済みの番地は `false` (呼び出し側が panic にする)。
+/// 解放した領域は影に印を付け、上限までは再利用せず寝かせる。
 pub fn free(p: usize) -> bool {
     let Some(c) = class_at(p) else { return false };
+    if dead(p as u64, 1) {
+        return false;
+    }
     let mut g = ARENA.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(a) = g.as_mut() {
-        a.free[c].push(p);
+        let size = 1usize << c;
+        shadow_set(p, size, true);
+        DEAD_ANY.store(true, Ordering::Relaxed);
+        a.quarantine.push_back((p, size, c));
+        a.qbytes += size;
+        while a.qbytes > QUARANTINE_MAX {
+            let Some((q, sz, qc)) = a.quarantine.pop_front() else { break };
+            a.qbytes -= sz;
+            shadow_set(q, sz, false);
+            a.free[qc].push(q);
+        }
     }
     true
 }
@@ -127,6 +201,9 @@ pub fn realloc(p: usize, n: usize) -> Result<usize, ()> {
         return Ok(alloc(n));
     }
     let Some(c) = class_at(p) else { return Err(()) };
+    if dead(p as u64, 1) {
+        return Err(());
+    }
     if class_of(n) == c {
         return Ok(p);
     }
