@@ -35,6 +35,14 @@ fn t.main() -> Result<(), std.http.Error> uses [alloc, io.console] panics never
     t.one("crlfbad", b"GET /x HTTP/1.1\r\nHost: x\r\nA: 1\r\n\r\nPOSTX", 8192usize, 1024usize)?
     t.one("barecr", b"GET /x HTTP/1.1\r\nHost: x\r\nA: 1\rB\r\n\r\n", 8192usize, 1024usize)?
     t.one("nul", b"GET /x HTTP/1.1\r\nHost: x\r\nA: 1\0\r\n\r\n", 8192usize, 1024usize)?
+    t.one("barelf", b"GET /x HTTP/1.1\nHost: x\n\n", 8192usize, 1024usize)?
+    t.one("barelfhdr", b"GET /x HTTP/1.1\r\nHost: x\n\r\n", 8192usize, 1024usize)?
+    t.one("barelfcr", b"GET /x HTTP/1.1\rHost: x\r\n\r\n", 8192usize, 1024usize)?
+    t.one("hdrctlname", b"GET /x HTTP/1.1\r\nHost\x01: x\r\n\r\n", 8192usize, 1024usize)?
+    t.one("hdrctlval", b"GET /x HTTP/1.1\r\nHost: x\x01\r\n\r\n", 8192usize, 1024usize)?
+    t.one("hdrspace", b"GET /x HTTP/1.1\r\nHost : x\r\n\r\n", 8192usize, 1024usize)?
+    t.one("fold", b"GET /x HTTP/1.1\r\nHost: x\r\n Y: z\r\n\r\n", 8192usize, 1024usize)?
+    t.one("oktchar", b"GET /x HTTP/1.1\r\nHost: x\r\nX-Custom-Id: 7\r\n\r\n", 8192usize, 1024usize)?
     t.one("nohost", b"GET /x HTTP/1.1\r\nA: 1\r\n\r\n", 8192usize, 1024usize)?
     t.one("twohost", b"GET /x HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n", 8192usize, 1024usize)?
     t.one("twote", b"POST /x HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", 8192usize, 1024usize)?

@@ -486,6 +486,30 @@ fn std.http.byte_at(data: &[u8], i: usize) -> u8 uses [] panics never
     }
 end std.http.byte_at
 
+fn std.http.check_header(name: &str, value: &str) -> Result<(), std.http.Error> uses [] panics never
+    if name.is_empty() {
+        return Err(std.http.Error.BadRequest)
+    }
+    let nb = name.as_bytes()
+    let mut i = 0usize
+    while i < nb.len() {
+        if !std.http.is_tchar(std.http.byte_at(nb, i)) {
+            return Err(std.http.Error.BadRequest)
+        }
+        i = i.saturating_add(1usize)
+    }
+    let vb = value.as_bytes()
+    let mut j = 0usize
+    while j < vb.len() {
+        let c = std.http.byte_at(vb, j)
+        if c != b'\t' && std.http.is_ctl(c) {
+            return Err(std.http.Error.BadRequest)
+        }
+        j = j.saturating_add(1usize)
+    }
+    Ok(())
+end std.http.check_header
+
 fn std.http.chunk_size(data: &[u8], from: usize, to: usize, max_body: usize) -> Result<usize, std.http.Error> uses [] panics never
     let mut n = 0usize
     let mut digits = 0usize
@@ -627,6 +651,22 @@ fn std.http.has_bare_ctl(data: &[u8]) -> bool uses [] panics never
     false
 end std.http.has_bare_ctl
 
+fn std.http.has_bare_ctl(data: &[u8]) -> bool uses [] panics never
+    let len = data.len()
+    let mut i = 0usize
+    while i < len {
+        let b = std.http.byte_at(data, i)
+        if b == 0u8 {
+            return true
+        }
+        if b == b'\r' && !std.http.crlf_at(data, i) {
+            return true
+        }
+        i = i.saturating_add(1usize)
+    }
+    false
+end std.http.has_bare_ctl
+
 fn std.http.has_ctl(data: &[u8]) -> bool uses [] panics never
     let len = data.len()
     let mut i = 0usize
@@ -669,8 +709,31 @@ fn std.http.is_method(text: &str) -> bool uses [] panics never
     true
 end std.http.is_method
 
+fn std.http.is_tchar(c: u8) -> bool uses [] panics never
+    if c >= b'A' && c <= b'Z' {
+        return true
+    }
+    if c >= b'a' && c <= b'z' {
+        return true
+    }
+    if c >= b'0' && c <= b'9' {
+        return true
+    }
+    if c == b'!' || c == b'#' || c == b'$' || c == b'%' || c == b'&' || c == b'\'' {
+        return true
+    }
+    if c == b'*' || c == b'+' || c == b'-' || c == b'.' || c == b'^' || c == b'_' {
+        return true
+    }
+    if c == b'`' || c == b'|' || c == b'~' {
+        return true
+    }
+    false
+end std.http.is_tchar
+
 fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, std.http.Error> uses [alloc] panics never
-    if std.http.has_bare_ctl(head) {
+    // 行末は CRLF のみ (裸の LF / CR は request smuggling の元になる)。
+    if std.http.has_bad_ctl(head) {
         return Err(std.http.Error.BadRequest)
     }
     let text = match core.str.from_utf8(head) {
@@ -713,9 +776,8 @@ fn std.http.parse_head(head: &[u8], max_body: usize) -> Result<std.http.Head, st
                 Some(pair) => pair
                 None => return Err(std.http.Error.BadRequest)
             }
-            if key.is_empty() || key.contains(" ") || key.contains("\t") {
-                return Err(std.http.Error.BadRequest)
-            }
+            // 生の値（trim 前）に HTAB 以外の制御バイトを含めない（端の \x0c を escape させない）。
+            std.http.check_header(key, raw_value)?
             let value = raw_value.trim()
             if key.eq_ignore_ascii_case("host") {
                 if has_host {
@@ -844,17 +906,13 @@ fn std.http.parse_response_head(head: &[u8]) -> Result<std.http.Response, std.ht
     let mut headers = std.vec.Vec.new()
     for field in rest.split("\r\n") {
         if !field.is_empty() {
-            if field.starts_with(" ") || field.starts_with("\t") {
-                return Err(std.http.Error.BadRequest)
-            }
             let (key, raw_value) = match field.split_once(":") {
                 Some(pair) => pair
                 None => return Err(std.http.Error.BadRequest)
             }
-            if key.is_empty() || key.contains(" ") || key.contains("\t") {
-                return Err(std.http.Error.BadRequest)
-            }
             let value = raw_value.trim()
+            // 要求の解析と同じ検証 (is_tchar / check_header) を使う。
+            std.http.check_header(key, value)?
             let name = std.string.String.from_str(key)?
             let text_value = std.string.String.from_str(value)?
             headers.push(std.http.Header {
@@ -910,6 +968,26 @@ fn std.http.reason(status: u16) -> &'static str uses [] panics never pub
 end std.http.reason
 
 fn std.http.render(status: u16, head: &str, body: &[u8], keep_alive: bool) -> Result<std.vec.Vec<u8>, std.http.Error> uses [alloc] panics never pub
+    // ステータスは HTTP の範囲 (100–599) に限る。
+    if status < 100u16 || status > 599u16 {
+        return Err(std.http.Error.BadRequest)
+    }
+    // `head` の各見出し行を検証する。裸の LF / CR や CTL、トークン外の名前、
+    // render が自分で付ける Content-Length / Transfer-Encoding との衝突を拒む。
+    for line in head.split("\r\n") {
+        if line.is_empty() {
+            continue
+        }
+        let (key, raw_value) = match line.split_once(":") {
+            Some(pair) => pair
+            None => return Err(std.http.Error.BadRequest)
+        }
+        if key.eq_ignore_ascii_case("content-length") || key.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(std.http.Error.BadRequest)
+        }
+        // 生の値（trim 前）に HTAB 以外の制御バイトを含めない。
+        std.http.check_header(key, raw_value)?
+    }
     let mut out = std.vec.Vec.new()
     let mut line = std.string.String.new()
     line.push_str("HTTP/1.1 ")?
@@ -1013,6 +1091,10 @@ fn std.http.take_request(data: &[u8], max_head: usize, max_body: usize) -> Resul
     let head_end = match std.http.find_head_end(data) {
         Some(n) => n
         None => {
+            // 頭がまだ終わっていない。見た範囲に裸の LF / CR やその他の制御バイトがあれば誤り (RFC 9112)。
+            if std.http.has_bad_ctl(data) {
+                return Err(std.http.Error.BadRequest)
+            }
             if data.len() > max_head {
                 return Err(std.http.Error.HeadTooLarge)
             }

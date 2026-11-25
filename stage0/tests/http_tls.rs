@@ -53,6 +53,21 @@ barecr
 BadRequest
 nul
 BadRequest
+barelf
+BadRequest
+barelfhdr
+BadRequest
+barelfcr
+BadRequest
+hdrctlname
+BadRequest
+hdrctlval
+BadRequest
+hdrspace
+BadRequest
+fold
+BadRequest
+oktchar GET /x body=0 keep=1
 nohost
 BadRequest
 twohost
