@@ -4,6 +4,7 @@
 
 mod common;
 
+use serde_json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -980,3 +981,63 @@ fn nocache_fallback_is_unpredictable_and_private() {
         panic!("leftover in TMPDIR: {:?}", e.path());
     }
 }
+
+/// Bug #3: `ksn run -- A B` は `--` の後ろの引数をプログラムにそのまま渡す。
+/// `run_args` は `--` 区切りを正しく処理し、プログラム名を args に含めない。
+#[test]
+fn run_passes_args_after_dash_dash_to_program() {
+    // `ksn run -- A B` → args = ["A", "B"] → arg_count = 2 → exit 0
+    // `ksn run --` → args = [] → arg_count = 0 → exit 0
+    // `ksn run A B` → args = ["A", "B"] → arg_count = 2 → exit 0
+    let src = "fn t.main() -> () uses [env, process] panics never\n    let c = std.env.arg_count()\n    if c == 2usize {\n        std.process.exit(0i32)\n    } else if c == 0usize {\n        std.process.exit(0i32)\n    } else {\n        std.process.exit(1i32)\n    }\nend t.main\n";
+    let t = Tmp::new("run_argv", src);
+    let o = run(&["run", "--", "A", "B"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "run -- A B: stdout={} stderr={}", text(&o.stdout), text(&o.stderr));
+    let o = run(&["run", "--"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "run --: stdout={} stderr={}", text(&o.stdout), text(&o.stderr));
+    let o = run(&["run", "A", "B"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "run A B: stdout={} stderr={}", text(&o.stdout), text(&o.stderr));
+}
+
+/// Bug #2: 未知のフラグは終了コード 2 で止まり、did you mean を出す。
+#[test]
+fn unknown_flag_is_rejected_with_exit_2_and_did_you_mean() {
+    let t = Tmp::new("run_unknown_flag", "fn t.main() -> ()\nend t.main\n");
+
+    // 完全に未知のフラグは終了コード 2 で止まる
+    let o = run(&["run", "--bogus"], &t.0);
+    assert_eq!(o.status.code(), Some(2));
+    let err = text(&o.stderr);
+    assert!(err.contains("unknown flag `--bogus`"), "{}", err);
+
+    // 編集距離 2 以内の既知フラグは did you mean を付ける
+    let o = run(&["run", "--watc"], &t.0);
+    assert_eq!(o.status.code(), Some(2));
+    let err = text(&o.stderr);
+    assert!(err.contains("unknown flag `--watc`"), "{}", err);
+    assert!(err.contains("did you mean `--watch`?"), "{}", err);
+
+    // `ksn test` でも同様
+    let o = run(&["test", "--bogus"], &t.0);
+    assert_eq!(o.status.code(), Some(2));
+    let err = text(&o.stderr);
+    assert!(err.contains("unknown flag `--bogus`"), "{}", err);
+}
+
+/// Bug #1: `ksn test --json` は JSON 行を出力して終了コード 0 にする。
+#[test]
+fn test_json_outputs_json_line() {
+    let src = "fn t.main() -> ()\nend t.main\n";
+    let t = Tmp::new("test_json", src);
+    let o = run(&["test", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "test --json: {}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("\"passed\""), "{}", out);
+    assert!(out.contains("\"failed\""), "{}", out);
+    assert!(out.contains("\"tests\""), "{}", out);
+    // JSON 行は 1 行
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 1, "{}", out);
+}
+
+

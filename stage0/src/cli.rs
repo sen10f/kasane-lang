@@ -918,7 +918,15 @@ fn const_init_cycles(prog: &Program, idx: &[usize]) -> (Vec<crate::check::Diag>,
 }
 
 // ------------------------------------------------------------ コマンド
-fn cmd_new(name: &str) -> i32 {
+fn cmd_new(args: &[String]) -> i32 {
+    if let Some(msg) = unknown_flag(args, &[], false) {
+        eprintln!("{}", msg);
+        return 2;
+    }
+    let Some(name) = args.first().map(|s| s.as_str()) else {
+        eprintln!("usage: ksn new <name>");
+        return 2;
+    };
     if !is_pkg_name(name) || RESERVED_NAMES.contains(&name) {
         eprintln!("ksn: invalid package name {}", py_repr(name));
         return 1;
@@ -1679,18 +1687,30 @@ fn cmd_fix() -> i32 {
     cmd_check(false)
 }
 
-fn run_args(args: &[String]) -> (bool, bool, Vec<String>) {
+/// `--json`/`--watch` を取り出し、残りをプログラムへの引数とする。
+/// `--` を見たときより後ろはすべてプログラムへの引数 (`--` 自体は入れない)。
+/// それより前の知らない `--...` フラグは誤り (exit 2)。
+fn run_args(args: &[String]) -> Result<(bool, bool, Vec<String>), String> {
+    if let Some(msg) = unknown_flag(args, &["--json", "--watch"], true) {
+        return Err(msg);
+    }
     let mut json = false;
     let mut watch = false;
     let mut rest = vec![];
+    let mut after_sep = false;
     for a in args {
+        if after_sep {
+            rest.push(a.clone());
+            continue;
+        }
         match a.as_str() {
             "--json" => json = true,
             "--watch" => watch = true,
+            "--" => after_sep = true,
             _ => rest.push(a.clone()),
         }
     }
-    (json, watch, rest)
+    Ok((json, watch, rest))
 }
 
 /// デバッガ用の読み込み: 検査して Program を作る。致命的な診断があれば、その本文を Err で返す。
@@ -1717,6 +1737,75 @@ pub(crate) fn load_for_debug() -> Result<crate::debug::Target, String> {
     let tests: Vec<usize> = user.iter().copied().filter(|&i| prog.defs[i].kw == "test").collect();
     let user_files = user.iter().map(|&i| prog.defs[i].file.clone()).collect();
     Ok(crate::debug::Target { prog, entry, entry_name, tests, user_files })
+}
+
+/// レーベンシュタイン距離。既知フラグへの "did you mean" 候補を探すのに使う。
+fn edit_distance(a: &str, b: &str) -> usize {
+    let m = a.len();
+    let n = b.len();
+    let mut dp: Vec<Vec<usize>> = vec![vec![0; n + 1]; m + 1];
+    for i in 0..=m {
+        dp[i][0] = i;
+    }
+    for j in 0..=n {
+        dp[0][j] = j;
+    }
+    let ac: Vec<char> = a.chars().collect();
+    let bc: Vec<char> = b.chars().collect();
+    for i in 1..=m {
+        for j in 1..=n {
+            let cost = if ac[i - 1] == bc[j - 1] { 0 } else { 1 };
+            dp[i][j] = (dp[i - 1][j] + 1).min(dp[i][j - 1] + 1).min(dp[i - 1][j - 1] + cost);
+        }
+    }
+    dp[m][n]
+}
+
+/// `args` の中で `known` にない `--` 始まりのフラグを最初の 1 つだけ見つけて誤りメッセージを返す。
+/// `known` は `--json` の完全一致か、`--engine=` のような `=` 終わりの接頭辞。
+/// 編集距離 2 以内の既知フラグがあれば `did you mean` を付ける。
+/// `sep_after_ok` が真のとき、`--` 区切りより後ろはプログラムへの引数として無視する。
+/// `--` 自体は無視する (呼び出し側が区切りとして扱う)。
+fn unknown_flag(args: &[String], known: &[&str], sep_after_ok: bool) -> Option<String> {
+    let mut after_sep = false;
+    for a in args {
+        if a == "--" {
+            after_sep = true;
+            continue;
+        }
+        if after_sep && sep_after_ok {
+            continue;
+        }
+        let Some(rest) = a.strip_prefix("--") else { continue };
+        if rest.is_empty() {
+            continue;
+        }
+        let full = format!("--{}", rest);
+        if known.iter().any(|k| *k == full || *k == rest) {
+            continue;
+        }
+        if known.iter().any(|k| k.ends_with('=') && rest.starts_with(k.trim_end_matches('='))) {
+            continue;
+        }
+        let mut msg = format!("ksn: unknown flag `{}`", a);
+        let suggest = known
+            .iter()
+            .filter_map(|k| {
+                let name = k.trim_start_matches('-').trim_end_matches('=');
+                let d = edit_distance(rest, name);
+                if d <= 2 {
+                    Some((d, k.to_string()))
+                } else {
+                    None
+                }
+            })
+            .min_by_key(|(d, _)| *d);
+        if let Some(s) = suggest {
+            msg.push_str(&format!(" (did you mean `{}`?)", s.1));
+        }
+        return Some(msg);
+    }
+    None
 }
 
 /// `--engine=vm|tree|both` を取り除く。1 つ目は VM を使うか (`ksn run` / `ksn test`。既定は木走査)、
@@ -1753,7 +1842,13 @@ fn cmd_run(args: &[String]) -> i32 {
         return 2;
     }
     let args = &args[..];
-    let (json, watch, rest) = run_args(args);
+    let (json, watch, rest) = match run_args(args) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{}", e);
+            return 2;
+        }
+    };
     let mut rep = Report::new(json);
     crate::vm::tick("start");
     let root = match find_root() {
@@ -1966,6 +2061,14 @@ fn spawn_watcher_with(l: &Loaded, allow_add: bool, send: impl Fn(Program, Vec<us
     });
 }
 
+/// 1 テストの実行結果。`--json` 時に JSON 化して出力する。
+#[derive(Clone)]
+struct TestResult {
+    name: String,
+    ok: bool,
+    failure: Option<String>,
+}
+
 fn cmd_test(args: &[String]) -> i32 {
     // `ksn test --debug [--json] <テスト名>`: そのテスト 1 つをデバッガの下で走らせる (debug.rs)
     if args.iter().any(|a| a == "--debug") {
@@ -1985,19 +2088,22 @@ fn cmd_test(args: &[String]) -> i32 {
             return 2;
         }
     };
+    if let Some(msg) = unknown_flag(&args, &["--both", "--json", "--native-required", "--doc"], false) {
+        eprintln!("{}", msg);
+        return 2;
+    }
     let mut both = false;
     let mut doc_only = false;
     let mut native_required = false;
+    let mut json = false;
     let mut prefix: Option<String> = None;
     for a in &args {
-        if a == "--both" {
-            both = true;
-        } else if a == "--native-required" {
-            native_required = true;
-        } else if a == "--doc" {
-            doc_only = true;
-        } else {
-            prefix = Some(a.clone());
+        match a.as_str() {
+            "--both" => both = true,
+            "--native-required" => native_required = true,
+            "--doc" => doc_only = true,
+            "--json" => json = true,
+            _ => prefix = Some(a.clone()),
         }
     }
     let mut rep = Report::new(false);
@@ -2045,6 +2151,7 @@ fn cmd_test(args: &[String]) -> i32 {
         .collect();
     tests.sort_by(|&a, &b| prog.defs[a].name.cmp(&prog.defs[b].name));
     let mut failed = 0;
+    let mut outcomes: Vec<TestResult> = vec![];
     let (mut n_llvm, mut n_bundle) = (0, 0);
     let (mut n_vm, mut n_vm_skipped) = (0, 0);
     for ti in &tests {
@@ -2112,7 +2219,7 @@ fn cmd_test(args: &[String]) -> i32 {
         }
         if let Some(msg) = strict_fail {
             failed += 1;
-            println!("test {} ... FAILED: {}", name, msg);
+            outcomes.push(TestResult { name: name.clone(), ok: false, failure: Some(msg) });
             continue;
         }
         if !other.is_empty() {
@@ -2128,23 +2235,42 @@ fn cmd_test(args: &[String]) -> i32 {
             _ => {}
         }
         let disagree = results.len() > 1 && results[1..].iter().any(|r| backends_disagree(&results[0], r));
-        if disagree {
-            failed += 1;
+        let failed_here = disagree || !results.iter().all(|r| r.is_none());
+        let failure: Option<String> = if disagree {
             let who = if cmp { names.join(", ") } else { format!("interpreter and {}", other) };
-            println!("test {} ... FAILED: {} disagree: {}{}", name, who, py_opt_list(&results), suffix);
-        } else if results.iter().all(|r| r.is_none()) {
-            println!("test {} ... ok{}", name, suffix);
+            Some(format!("{} disagree: {}", who, py_opt_list(&results)))
         } else {
+            results.iter().flatten().next().cloned()
+        };
+        if failed_here {
             failed += 1;
-            println!("test {} ... FAILED: {}{}", name, results.iter().flatten().next().unwrap(), suffix);
+        }
+        outcomes.push(TestResult { name: name.clone(), ok: !failed_here, failure: failure.clone() });
+        if !json {
+            match &failure {
+                None => println!("test {} ... ok{}", name, suffix),
+                Some(m) => println!("test {} ... FAILED: {}{}", name, m, suffix),
+            }
         }
     }
-    println!("\n{} passed; {} failed", tests.len() - failed, failed);
-    if both {
-        println!("compared with: llvm {}, bundle fallback {}", n_llvm, n_bundle);
-    }
-    if cmp {
-        println!("compared tree walker with vm: {} (vm skipped {})", n_vm, n_vm_skipped);
+    if json {
+        let jr = serde_json::json!({
+            "passed": tests.len() - failed,
+            "failed": failed,
+            "tests": outcomes
+                .iter()
+                .map(|o| serde_json::json!({ "name": o.name.clone(), "ok": o.ok, "failure": o.failure.as_deref() }))
+                .collect::<Vec<_>>()
+        });
+        println!("{}", serde_json::to_string(&jr).unwrap());
+    } else {
+        println!("\n{} passed; {} failed", tests.len() - failed, failed);
+        if both {
+            println!("compared with: llvm {}, bundle fallback {}", n_llvm, n_bundle);
+        }
+        if cmp {
+            println!("compared tree walker with vm: {} (vm skipped {})", n_vm, n_vm_skipped);
+        }
     }
     if failed > 0 { 1 } else { 0 }
 }
@@ -2401,6 +2527,10 @@ fn derived_impls(d: &Def) -> Option<String> {
 }
 
 fn cmd_get(args: &[String]) -> i32 {
+    if let Some(msg) = unknown_flag(args, &["--derived"], false) {
+        eprintln!("{}", msg);
+        return 2;
+    }
     let derived = args.iter().any(|a| a == "--derived");
     let Some(fqn) = args.iter().find(|a| !a.starts_with("--")) else {
         eprintln!("ksn: usage: ksn get [--derived] <FQN>");
@@ -2454,6 +2584,10 @@ fn cmd_get(args: &[String]) -> i32 {
 /// `ksn context <FQN>`: 定義全体と、そこから参照される定義の署名 (型は全体) を出力する。
 /// 小さな文脈で 1 つの定義を読み書きするための表示。
 fn cmd_context(args: &[String]) -> i32 {
+    if let Some(msg) = unknown_flag(args, &[], false) {
+        eprintln!("{}", msg);
+        return 2;
+    }
     let Some(fqn) = args.first() else {
         eprintln!("ksn: usage: ksn context <FQN>");
         return 2;
@@ -2512,6 +2646,10 @@ fn cmd_context(args: &[String]) -> i32 {
 }
 
 fn cmd_sig(args: &[String]) -> i32 {
+    if let Some(msg) = unknown_flag(args, &[], false) {
+        eprintln!("{}", msg);
+        return 2;
+    }
     let Some(fqn) = args.first() else {
         eprintln!("ksn: usage: ksn sig <FQN>");
         return 2;
@@ -2775,6 +2913,10 @@ pub(crate) fn check_error_lines(root: &Path) -> Vec<String> {
 }
 
 fn cmd_rename(args: &[String]) -> i32 {
+    if let Some(msg) = unknown_flag(args, &["--dry-run"], false) {
+        eprintln!("{}", msg);
+        return 2;
+    }
     let dry = args.iter().any(|a| a == "--dry-run");
     let pos: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
     if pos.len() < 2 {
@@ -2840,6 +2982,10 @@ fn cmd_rename(args: &[String]) -> i32 {
 
 /// `ksn strip [--check]`: `.ksnh` からコメントの行を外して、横の `.ksnl` を書く (`--check` は書かず食い違いだけ報告)。
 fn cmd_strip(args: &[String]) -> i32 {
+    if let Some(msg) = unknown_flag(args, &["--check"], false) {
+        eprintln!("{}", msg);
+        return 2;
+    }
     let check = args.iter().any(|a| a == "--check");
     let pkg = match find_root().and_then(|r| load_package(&r)) {
         Ok(p) => p,
@@ -3021,6 +3167,10 @@ fn fmt_diag(s: &crate::project::Source, text: &str, relpath: &str, grammar: &Gra
 }
 
 fn cmd_fmt(args: &[String]) -> i32 {
+    if let Some(msg) = unknown_flag(args, &["--check"], false) {
+        eprintln!("{}", msg);
+        return 2;
+    }
     let check = args.iter().any(|a| a == "--check");
     let targets: Vec<&str> = args.iter().filter(|a| a.as_str() != "--check").map(|s| s.as_str()).collect();
     if !targets.is_empty() {
@@ -3262,6 +3412,10 @@ fn fmt_one_file(path: &Path, check: bool) -> bool {
 }
 
 fn cmd_explain(args: &[String]) -> i32 {
+    if let Some(msg) = unknown_flag(args, &[], false) {
+        eprintln!("{}", msg);
+        return 2;
+    }
     let code = args.first().map(|s| s.as_str()).unwrap_or("");
     match EXPLAIN.iter().find(|(k, _)| *k == code) {
         Some((k, v)) => {
@@ -4301,6 +4455,14 @@ fn set_exec(p: &Path) {
 fn set_exec(_p: &Path) {}
 
 fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
+    if let Some(msg) = unknown_flag(
+        &args,
+        &["--release", "--allow-bundle", "--backend", "--target", "--emit-llvm", "--emit"],
+        false,
+    ) {
+        eprintln!("{}", msg);
+        return 2;
+    }
     let release = args.iter().any(|a| a == "--release");
     // 3-2: リリースのネイティブ生成が失敗したとき、インタプリタ同梱のバンドルへ退避するのを明示的に許す。
     // デバッグ (`--release` なし) は常に退避する (理由を出す) ので、このフラグは効かない。
@@ -5355,13 +5517,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         CHECK_CMD.with(|c| c.set(true));
     }
     match args[0].as_str() {
-        "new" => match rest.first() {
-            Some(n) => cmd_new(n),
-            None => {
-                eprintln!("usage: ksn new <name>");
-                2
-            }
-        },
+        "new" => cmd_new(&rest),
         "check" => match target_bits_arg(&rest) {
             _ if rest.iter().any(|a| a == "--signatures-only") => {
                 SIGNATURES_ONLY.with(|c| c.set(true));
