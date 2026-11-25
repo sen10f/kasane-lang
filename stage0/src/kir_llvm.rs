@@ -801,7 +801,8 @@ fn strip_attrs(ir: &str) -> String {
                 l.to_string()
             }
         })
-        .map(|l| al.replace(&l, "$1, align 1").into_owned())
+        // アトミックの読み書きは、整列が意味の一部 (LLVM は大きさ未満の整列を受け付けない) なので落とさない。
+        .map(|l| if l.contains(" atomic ") { l } else { al.replace(&l, "$1, align 1").into_owned() })
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"
