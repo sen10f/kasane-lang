@@ -1,0 +1,14 @@
+fn t.gs[F: core.ops.Fn<(), (), E, P>, E: uses, P: panics](f: F) -> u32 uses [E] panics P
+    let x = 5u32
+    let r = &x
+    f()
+    *r
+end t.gs
+
+fn t.main() -> () uses [suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        core.mem.drop(t.gs(fn() -> () capture [] {
+            std.task.yield_now()
+        }))
+    })
+end t.main

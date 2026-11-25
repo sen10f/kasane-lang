@@ -1,0 +1,22 @@
+static t.M: std.sync.Mutex<u32> = std.sync.Mutex.new(0u32)
+
+type t.H
+    f: fn() -> () uses [suspend] panics never
+end t.H
+
+fn t.main() -> () uses [suspend, thread] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let h = t.H {
+            f: t.susp
+        }
+        let g = t.M.lock()
+        core.mem.drop(*g.get())
+        core.mem.drop(g)
+        let f = h.f
+        f()
+    })
+end t.main
+
+fn t.susp() -> () uses [suspend] panics never
+    std.task.yield_now()
+end t.susp

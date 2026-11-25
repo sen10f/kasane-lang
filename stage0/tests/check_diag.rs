@@ -45,7 +45,7 @@ fn diagnostics_each_case_reports_its_code() {
 /// 失敗しなければならない。横の `<名前>.expect` に `expect: Exxxx` があるケースは、そのコードの診断で落ちることも確かめる
 /// (別の診断で落ちているだけのケースを許さない)。まだ検査できない穴は `KNOWN_HOLES` に名前を載せる (その間は「通ること」を
 /// 確かめるので、塞いだら一覧から外さないとテストが落ちる = 一覧は減る方向にしか変わらない)。
-const KNOWN_HOLES: &[&str] = &[];
+const KNOWN_HOLES: &[&str] = &["sec6_fnvalue_genericvar_borrow"];
 
 #[test]
 fn unsound_programs_are_rejected() {
@@ -3093,6 +3093,13 @@ fn std_net_is_skipped_by_the_native_backend_on_windows() {
 fn functions_returning_references_agree_between_interpreter_and_the_native_build() {
     let out = agree_with_interpreter("native_ref", include_str!("data/native_ref.ksnl"));
     assert_eq!(out, "one, and\n");
+}
+
+/// 関数の値 (`let sp = t.susp; sp()`) の呼び出しも中断点: 状態機械が枠 (`a`) を保存し、インタプリタと同じに動く。
+#[test]
+fn fn_value_suspension_agrees_between_interpreter_and_the_native_build() {
+    let out = agree_with_interpreter("native_fnvalue_susp", include_str!("data/check_ok/sec6_fnvalue_suspend_ok.ksnl"));
+    assert_eq!(out, "ok\n");
 }
 
 /// `defs` の関数を `main` から呼ぶ。`call` は呼び出しの文。LLVM のネイティブ (下ろせなければバンドル) で動かして、

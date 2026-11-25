@@ -1,0 +1,25 @@
+static t.M: std.sync.Mutex<u32> = std.sync.Mutex.new(0u32)
+
+fn t.main() -> () uses [io.console, suspend, thread] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let o = std.task.spawn_local(fn() -> () capture [] {
+            core.mem.drop(std.io.print_line("other: locking"))
+            let mut g2 = t.M.lock()
+            let v = g2.get_mut()
+            *v = 99u32
+            core.mem.drop(std.io.print_line("other: GOT LOCK while root holds it"))
+            core.mem.drop(g2)
+        })
+        let g = t.M.lock()
+        core.mem.drop(std.io.print_line("root: holds lock"))
+        let sp = t.susp
+        sp()
+        core.mem.drop(*g.get())
+        core.mem.drop(g)
+        o.join_task()
+    })
+end t.main
+
+fn t.susp() -> () uses [suspend] panics never
+    std.task.yield_now()
+end t.susp

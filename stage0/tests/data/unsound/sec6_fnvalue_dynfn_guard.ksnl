@@ -1,0 +1,30 @@
+static t.M: std.sync.Mutex<u32> = std.sync.Mutex.new(0u32)
+
+type t.P
+    n: u32
+end t.P
+
+trait t.Sus
+    fn go(self: &Self) -> () uses [suspend] panics never
+end t.Sus
+
+impl t.Sus for t.P
+fn t.P.go(self: &t.P) -> () uses [suspend] panics never impls t.Sus
+    std.task.yield_now()
+end t.P.go
+
+fn t.gs(d: &dyn t.Sus) -> () uses [suspend, thread] panics never
+    let g = t.M.lock()
+    d.go()
+    core.mem.drop(*g.get())
+    core.mem.drop(g)
+end t.gs
+
+fn t.main() -> () uses [suspend, thread] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let p = t.P {
+            n: 1u32
+        }
+        t.gs(&p)
+    })
+end t.main

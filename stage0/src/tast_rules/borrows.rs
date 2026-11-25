@@ -49,6 +49,8 @@ enum Ev {
     /// 中断点 (`uses [suspend]` の呼び出し・クロージャや `Fn` 境界越しの呼び出しを含む、5.6)。
     /// ここで生きている借用は中断をまたぐので E3050。
     Suspend { line: usize },
+    /// 効果が変数 (`Fn<.., E, P>` の `E`) の呼び出し: `E` が `suspend` になりうる。ロックのガードだけが対象 (fail-closed)。
+    SuspendGuard { line: usize },
 }
 
 struct Loan {
@@ -100,9 +102,11 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
     // susp_lines は (定義, Pack した位置) なので行だけにほどく。
     let susp: std::collections::HashSet<(usize, usize)> =
         tk.susp_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
+    let susp_var: std::collections::HashSet<(usize, usize)> =
+        tk.susp_var_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
     for &di in user {
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), closure_held: vec![], tail_reb: None, held_closures: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
+        let mut w = Walker { p, tk, susp: &susp, susp_var: &susp_var, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), closure_held: vec![], tail_reb: None, held_closures: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
         for q in &b.params {
             w.scopes[0].insert(q.name.clone(), (0, q.ty.clone()));
             if has_guard(p, &q.ty) {
@@ -346,6 +350,7 @@ struct Walker<'a> {
     tk: &'a TypeCk<'a>,
     /// 型検査が中断点と決めた呼び出し (定義, 行)。(クロージャ・`Fn` 境界越しの呼び出しを含む)
     susp: &'a std::collections::HashSet<(usize, usize)>,
+    susp_var: &'a std::collections::HashSet<(usize, usize)>,
     di: DefId,
     /// 名前 → (束縛の ID, 型)。
     scopes: Vec<HashMap<String, (u32, Ty)>>,
@@ -1245,6 +1250,8 @@ impl<'a> Walker<'a> {
             || cands.iter().any(|&i| self.p.defs[i].uses.iter().any(|u| u == "suspend"));
         if may_suspend {
             self.cfg.emit(Ev::Suspend { line: e.line });
+        } else if self.susp_var.contains(&(self.di, e.line)) {
+            self.cfg.emit(Ev::SuspendGuard { line: e.line });
         }
         for t in call_guard_temps {
             self.cfg.emit(Ev::Release(t));
@@ -1602,6 +1609,12 @@ impl<'a> Walker<'a> {
                         for g in cur.iter().filter(|g| self.guards.contains(*g)) {
                             let who = if g.starts_with("$") { "a temporary".to_string() } else { format!("`{}`", show_var(g)) };
                             self.susp_diags.push((*line, format!("cannot hold a lock guard across a suspension point: {} still holds the lock (drop it with `core.mem.drop` before the call that may suspend)", who)));
+                        }
+                    }
+                    if let Ev::SuspendGuard { line } = ev {
+                        for g in cur.iter().filter(|g| self.guards.contains(*g)) {
+                            let who = if g.starts_with("$") { "a temporary".to_string() } else { format!("`{}`", show_var(g)) };
+                            self.susp_diags.push((*line, format!("cannot hold a lock guard across a call to a callback that may suspend (its effects `E` are generic): {} still holds the lock (drop it with `core.mem.drop` before the call)", who)));
                         }
                     }
                     step(ev, &mut cur);

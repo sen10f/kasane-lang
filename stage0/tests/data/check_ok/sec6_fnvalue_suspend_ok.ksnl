@@ -1,0 +1,20 @@
+fn t.main() -> () uses [io.console, suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.run()
+    })
+end t.main
+
+fn t.run() -> () uses [io.console, suspend] panics may
+    let sp = t.susp
+    let a = 41u32
+    sp()
+    let b = a + 1u32
+    sp()
+    if b == 42u32 {
+        core.mem.drop(std.io.print_line("ok"))
+    }
+end t.run
+
+fn t.susp() -> () uses [suspend] panics never
+    std.task.yield_now()
+end t.susp

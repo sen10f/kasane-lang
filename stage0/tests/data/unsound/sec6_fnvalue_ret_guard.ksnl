@@ -1,0 +1,18 @@
+static t.M: std.sync.Mutex<u32> = std.sync.Mutex.new(0u32)
+
+fn t.main() -> () uses [suspend, thread] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let g = t.M.lock()
+        t.mk()()
+        core.mem.drop(*g.get())
+        core.mem.drop(g)
+    })
+end t.main
+
+fn t.mk() -> fn() -> () uses [suspend] panics never uses [] panics never
+    t.susp
+end t.mk
+
+fn t.susp() -> () uses [suspend] panics never
+    std.task.yield_now()
+end t.susp
