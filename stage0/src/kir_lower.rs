@@ -1566,8 +1566,6 @@ impl<'a> Lw<'a> {
         }
         // `SpawnError<F>` から取り出したクロージャの呼び出し。KIR の `spawn` は失敗しない (クロージャの値は KIR に無い) ので、ここには来ない。
         if target.is_none() && segs.len() == 1 && self.lookup(&segs[0]).is_some() {
-            let msg = "std.thread.spawn failed: the closure handed back by SpawnError cannot be run here".to_string();
-            self.emit(Ty::Unit, Op::Panic { msg, arg: None });
             self.terminate(Term::Unreachable);
             return Ok(None);
         }

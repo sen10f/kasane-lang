@@ -4,12 +4,10 @@ type std.thread.JoinHandle[T: linear, A: alloc.alloc.Allocator] linear pub
     result: *mut T
 end std.thread.JoinHandle
 
-type std.thread.SpawnError[F: linear] pub
+type std.thread.SpawnError[F: linear] derive [Debug] pub
     code: i32 pub
     closure: F pub
 end std.thread.SpawnError
-
-impl[F: linear] core.fmt.Debug for std.thread.SpawnError<F>
 
 impl[T: linear + core.marker.Send, A: alloc.alloc.Allocator + core.marker.Send] core.marker.Send for std.thread.JoinHandle<T, A>
 
