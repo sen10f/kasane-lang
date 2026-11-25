@@ -130,6 +130,8 @@ enum Loan {
     Dead(String),
     /// 一時値への借用。
     Temp,
+    /// リテラルの静的な昇格 (`&10u32`)。文の終わりでは尽きない (局所では使える)。関数の外へ出る形 (戻り値・`&'static` の欄・外へ生きる場所への保存) は仕様どおり誤り。`let r: &'static T = &10u32` では静的な領域として通る。
+    Promoted,
     /// 引数 (名前) から来た借用・型パラメータの値。
     Arg(String),
     /// 参照の参照の引数 (`&'a &u32`) の、内側の参照 (層) が持つ借用。
@@ -729,7 +731,7 @@ impl<'a> W<'a> {
                 // 本体の局所 (外側の局所ではないもの) への借用だけが、戻り値で外へ出る。
                 let inside = |loan: &Loan| match loan {
                     Loan::Local(n, id) => (*id == 0 && pnames.contains(n)) || (!outer.contains(&(n.clone(), *id)) && !(*id == 0 && capn.contains(n))),
-                    Loan::Temp => true,
+                    Loan::Temp | Loan::Promoted => true,
                     _ => false,
                 };
                 let inside = |loan: &Loan| {
@@ -830,7 +832,7 @@ impl<'a> W<'a> {
                 Loan::Local(n, _) | Loan::Dead(n) => {
                     format!("returns a reference to the local variable `{}`, which does not live long enough", n)
                 }
-                Loan::Temp => "returns a reference to a temporary value, which does not live long enough".to_string(),
+                Loan::Temp | Loan::Promoted => "returns a reference to a temporary value, which does not live long enough".to_string(),
                 Loan::Arg(n) | Loan::ArgIn(n, _) if self.cap_names.contains(n) => {
                     format!("returns a reference into the captured variable `{}`, which does not outlive the closure's call", n)
                 }
@@ -1033,7 +1035,7 @@ impl<'a> W<'a> {
             _ => {
                 let v = self.ev(e).flat().up();
                 if Self::is_const(e) {
-                    v
+                    v.union(&Val::loan(Loan::Promoted, ln))
                 } else {
                     v.union(&Val::loan(Loan::Temp, ln))
                 }
@@ -1211,7 +1213,7 @@ impl<'a> W<'a> {
             }
             let what = match l {
                 Loan::Local(n, _) | Loan::Dead(n) => format!("a borrow of the local variable `{}`", n),
-                Loan::Temp => "a borrow of a temporary value".to_string(),
+                Loan::Temp | Loan::Promoted => "a borrow of a temporary value".to_string(),
                 Loan::Arg(n) => format!("a borrow of the argument `{}`", n),
                 Loan::ArgIn(n, _) => format!("a borrow of the inner reference of the argument `{}`", n),
             };
@@ -1226,6 +1228,9 @@ impl<'a> W<'a> {
 
     /// 借用が本物の `'static` か: 引数の参照の `lvl` 層目の領域が `'static` と宣言されている (`ret_position` と同じ判定)。
     fn loan_is_static(&self, l: &Loan) -> bool {
+        if matches!(l, Loan::Promoted) {
+            return true;
+        }
         let Loan::ArgIn(q, lvl) = l else { return false };
         let ps0: Vec<(String, Ty)> = match &self.cl {
             Some(c) => c.params.clone(),
@@ -1253,7 +1258,7 @@ impl<'a> W<'a> {
             for (l, _) in &v.loans() {
                 let (code, msg) = match l {
                     Loan::Local(n, _) | Loan::Dead(n) => ("E3030", format!("returns a reference to the local variable `{}`, which does not live long enough", n)),
-                    Loan::Temp => ("E3030", "returns a reference to a temporary value, which does not live long enough".to_string()),
+                    Loan::Temp | Loan::Promoted => ("E3030", "returns a reference to a temporary value, which does not live long enough".to_string()),
                     Loan::Arg(_) | Loan::ArgIn(..) => continue,
                 };
                 self.diag(code, msg, line);
@@ -1413,7 +1418,7 @@ impl<'a> W<'a> {
         for (l, _) in &v.loans() {
             let msg = match l {
                 Loan::Local(n, _) | Loan::Dead(n) => format!("returns a reference to the local variable `{}`, which does not live long enough", n),
-                Loan::Temp => "returns a reference to a temporary value, which does not live long enough".to_string(),
+                Loan::Temp | Loan::Promoted => "returns a reference to a temporary value, which does not live long enough".to_string(),
                 Loan::Arg(_) | Loan::ArgIn(..) => continue,
             };
             self.diag("E3030", msg, line);
@@ -1647,7 +1652,7 @@ impl<'a> W<'a> {
                         let k = &k;
                         let msg = match k {
                             Loan::Local(n, _) | Loan::Dead(n) => format!("stores a reference to the local variable `{}` into a place that outlives it", n),
-                            Loan::Temp => "stores a reference to a temporary value into a place that outlives it".to_string(),
+                            Loan::Temp | Loan::Promoted => "stores a reference to a temporary value into a place that outlives it".to_string(),
                             Loan::Arg(qn) => {
                                 self.unrelated_store(pn, qn, line);
                                 continue;
@@ -1657,7 +1662,7 @@ impl<'a> W<'a> {
                         self.diag("E3030", msg, line);
                     }
                 }
-                Loan::Temp | Loan::Dead(_) | Loan::ArgIn(..) => {}
+                Loan::Temp | Loan::Promoted | Loan::Dead(_) | Loan::ArgIn(..) => {}
             }
         }
     }
