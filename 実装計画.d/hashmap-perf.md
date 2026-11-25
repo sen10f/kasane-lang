@@ -33,3 +33,7 @@
 - 最適化後の IR/機械語: `HashMapIter.next` は `for` の本体へ inline 済みで、1 要素あたりは「タグの比較 1 回 + 32 バイト進める」の 5 命令ほど (Option のタプルはレジスタ、境界検査なし)。直す所なし。
 - 以前の差は負荷 60〜100 の壁時計の雑音。user+sys の CPU 時間の中央値 (7 回、秒): ins dev 0.310 / new 0.250 / rust 0.235、hit 0.359 / 0.315 / 0.470、miss 0.375 / 0.348 / 0.326、iter 0.383 / 0.331 / 0.343、rem 0.401 / 0.304 / 0.350。insert の残りは倍々の再索引 (キャッシュミス) で Rust も同じ形。コードは変えていない。
 - 試験 `stage0/tests/kir_map_edge.rs` (木走査 == ネイティブ): 成長 (4 万件)、削除して再挿入 (末尾へ移る)、削除後の反復順、乱数の出し入れ 6 万手を模型と比較 (密な表の衝突を含む)。
+
+## wasm32 対応 (2026-11-25)
+- 原因: 索引のレーンの変換に `usize.from_u64` / `u64.from_usize` を使っていたが、wasm32 の下ろしはこの 2 つの呼び出しを持たない (`呼び出し usize.from_u64 is not supported by native code yet`。呼び出しの型が Unknown になり、外側の `match の型 Unknown` として出た)。x86_64 / aarch64 では通っていたので、wasm の 2 試験 (`static_infer_*` の `&str` 鍵のもの) だけが落ちた。
+- 直し: 索引の項を `Index(u64, u64)` (どの幅でも 4 レーン) にし、変換は `hash_key` と同じ `u32.try_from_u64` / `usize.from_u32` / `u32.try_from_usize` / `u64.from_u32` だけを使う。`lane_get` は早期 return の形にした。

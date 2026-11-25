@@ -467,25 +467,25 @@ fn alloc.collections.HashMap.iter['a, K: core.cmp.Eq + core.hash.Hash, V, A: all
 end alloc.collections.HashMap.iter
 
 fn alloc.collections.HashMap.lane_get[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>, i: usize) -> usize uses [] panics never
-    match self.cells.get(i.wrapping_shr(2u32)) {
-        Some(cell) => match cell {
-            alloc.collections.HashCell.Index(a, b) => {
-                let word = if i & 3usize < 2usize {
-                    *a
-                } else {
-                    *b
-                }
-                if i & 1usize == 1usize {
-                    word.wrapping_shr(32u32) & 4_294_967_295usize
-                } else {
-                    word & 4_294_967_295usize
-                }
+    if let Some(cell) = self.cells.get(i.wrapping_shr(2u32)) {
+        if let alloc.collections.HashCell.Index(a, b) = cell {
+            let word = if i & 3usize < 2usize {
+                *a
+            } else {
+                *b
             }
-            alloc.collections.HashCell.Empty => 0usize
-            alloc.collections.HashCell.Entry(_, _, _) => 0usize
+            let lane = if i & 1usize == 1usize {
+                word.wrapping_shr(32u32)
+            } else {
+                word
+            }
+            match u32.try_from_u64(lane & 4_294_967_295u64) {
+                Ok(low) => return usize.from_u32(low)
+                Err(_) => return 0usize
+            }
         }
-        None => 0usize
     }
+    0usize
 end alloc.collections.HashMap.lane_get
 
 fn alloc.collections.HashMap.lane_set[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, i: usize, v: usize) -> () uses [] panics never
@@ -494,14 +494,19 @@ fn alloc.collections.HashMap.lane_set[K: core.cmp.Eq + core.hash.Hash, V, A: all
             alloc.collections.HashCell.Index(a, b) => {
                 let odd = i & 1usize == 1usize
                 let keep = if odd {
-                    4_294_967_295usize
+                    4_294_967_295u64
                 } else {
-                    18_446_744_069_414_584_320usize
+                    18_446_744_069_414_584_320u64
                 }
+                let narrow = match u32.try_from_usize(v) {
+                    Ok(low) => low
+                    Err(_) => 0u32
+                }
+                let wide = u64.from_u32(narrow)
                 let put = if odd {
-                    v.wrapping_shl(32u32)
+                    wide.wrapping_shl(32u32)
                 } else {
-                    v
+                    wide
                 }
                 if i & 3usize < 2usize {
                     *a = *a & keep | put
@@ -581,7 +586,7 @@ fn alloc.collections.HashMap.reindex[K: core.cmp.Eq + core.hash.Hash, V, A: allo
     let total = self.cells.len()
     for i in core.iter.range(0usize, base) {
         if let Some(slot) = self.cells.get_mut(i) {
-            *slot = alloc.collections.HashCell.Index(0usize, 0usize)
+            *slot = alloc.collections.HashCell.Index(0u64, 0u64)
         }
     }
     for p in core.iter.range(base, total) {
