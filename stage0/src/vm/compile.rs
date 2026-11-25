@@ -98,7 +98,7 @@ fn lk(t: Ty) -> Option<LK> {
         Ty::I32 => LK::I32,
         Ty::U32 | Ty::F32 => LK::U32,
         Ty::I64 | Ty::Isize => LK::I64,
-        Ty::U64 | Ty::Usize | Ty::F64 | Ty::Ptr => LK::U64,
+        Ty::U64 | Ty::Usize | Ty::F64 | Ty::Ptr | Ty::Ref(..) => LK::U64,
         Ty::I128 | Ty::U128 => LK::I128,
         _ => return None,
     })
@@ -110,7 +110,7 @@ fn width(t: Ty) -> Option<u8> {
         Ty::Bool | Ty::I8 | Ty::U8 => 1,
         Ty::I16 | Ty::U16 => 2,
         Ty::I32 | Ty::U32 | Ty::F32 => 4,
-        Ty::I64 | Ty::U64 | Ty::Isize | Ty::Usize | Ty::F64 | Ty::Ptr => 8,
+        Ty::I64 | Ty::U64 | Ty::Isize | Ty::Usize | Ty::F64 | Ty::Ptr | Ty::Ref(..) => 8,
         Ty::I128 | Ty::U128 => 16,
         _ => return None,
     })
@@ -594,6 +594,22 @@ impl<'a> Fc<'a> {
             Op::BitCount { k, src, a } => Ins::BitCount { d, a: self.s(*a), k: *k, src: self.ty_of(*src) },
             Op::Checked { op, a, b } => Ins::Checked { d, a: self.s(*a), b: self.s(*b), op: *op, ty: self.ty_of(ty) },
             Op::Call { callee, args } => {
+                match (callee.as_str(), args.len()) {
+                    ("ksn.mt.on", 0) => {
+                        self.push(Ins::MtOn { d });
+                        return Ok(());
+                    }
+                    ("ksn.mt.begin", 1) => {
+                        let n = self.s(args[0]);
+                        self.push(Ins::MtBegin { d, n });
+                        return Ok(());
+                    }
+                    ("ksn.mt.end", 0) => {
+                        self.push(Ins::MtEnd);
+                        return Ok(());
+                    }
+                    _ => {}
+                }
                 let Some(&ci) = self.index.get(callee.as_str()) else {
                     return Err(format!("呼び先 {} がない", callee));
                 };
@@ -695,7 +711,10 @@ impl<'a> Fc<'a> {
                 let p = match self.prog.globals.get(name) {
                     Some(p) => *p,
                     None => {
-                        let p = Box::leak(vec![0u8; (*size as usize).max(1)].into_boxed_slice()).as_ptr() as usize;
+                        let p = super::arena::alloc_zeroed((*size as usize).max(1));
+                        if p == 0 {
+                            return Err("VM の領域が足りない".into());
+                        }
                         self.prog.globals.insert(name.clone(), p);
                         p
                     }
@@ -709,7 +728,10 @@ impl<'a> Fc<'a> {
                 if v.is_empty() {
                     v.push(0);
                 }
-                let p = Box::leak(v.into_boxed_slice()).as_ptr() as usize as i128;
+                let p = super::arena::leak(&v) as i128;
+                if p == 0 {
+                    return Err("VM の領域が足りない".into());
+                }
                 self.prog.wide.push(p);
                 Ins::ConstW { d, k: (self.prog.wide.len() - 1) as u32 }
             }

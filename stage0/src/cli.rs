@@ -1719,11 +1719,15 @@ pub(crate) fn load_for_debug() -> Result<crate::debug::Target, String> {
     Ok(crate::debug::Target { prog, entry, entry_name, tests, user_files })
 }
 
+/// `ksn run` / `ksn test` の既定の実行系 (出荷の既定をここ 1 か所で決める)。`true` = VM (KIR → バイトコード。下ろせない入口は黙って木走査へ退避)、
+/// `false` = 木走査。`--engine=` と `KSN_ENGINE` はこの既定より優先する。ベータで VM を既定にするかは検査の穴 (O-01 など) が閉じる状況で決める。
+const DEFAULT_ENGINE_VM: bool = true;
+
 /// `--engine=vm|tree|both` を取り除く。返す値は (VM を使うか, `both` か, 明示したか, 残りの引数)。
 /// 既定は VM (KIR → バイトコード。下ろせない・VM が扱えない入口は黙って木走査へ退避する)。`KSN_ENGINE=tree|vm` でも選べる (引数が優先)。
 /// `both` (`ksn test` だけ) は木走査と VM の両方で走らせて結果を比べる。`vm` を明示したときだけ、退避の理由を stderr に出す。
 fn take_engine(args: &[String]) -> Result<(bool, bool, bool, Vec<String>), String> {
-    let mut vm = true;
+    let mut vm = DEFAULT_ENGINE_VM;
     let mut explicit = false;
     let mut cmp = false;
     match std::env::var("KSN_ENGINE").ok().as_deref() {

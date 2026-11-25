@@ -3,6 +3,7 @@
 //! - `bc.rs`: 命令とスロット、`compile.rs`: KIR → バイトコード、`run.rs`: 実行ループと明示フレーム。
 //! - 入口から届く関数のどれかが KIR に下ろせない (または VM が扱えない命令を含む) ときは、理由を返して呼び出し側が木走査へ退避する。
 
+pub mod arena;
 pub mod bc;
 pub mod compile;
 pub mod reload;
@@ -51,7 +52,6 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
     }
     let m = lo.module.reachable_from(&[entry, kir_lower::debug::ENTRY_DEBUG]);
     tick("reachable");
-    // `std.task.block_on_threads` は複数のワーカーで走る意味 (`spawn_local` の禁止など) を持つので、VM では走らせない (木走査へ退避する)。
     // `std.tls` (OpenSSL) は実際の記述子を要るが、VM のソケットは仮想の記述子なので走らせない。
     if m.funcs.iter().any(|f| f.link.as_deref().map_or(false, |l| l.starts_with("libssl.so") || l.starts_with("libcrypto.so"))) {
         return Err("std.tls は VM 未対応".into());
