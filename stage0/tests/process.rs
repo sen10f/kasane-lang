@@ -239,6 +239,42 @@ end t.main
 }
 
 #[test]
+fn env_rejects_bad_keys_and_keeps_good_ones() {
+    // O-07: `=` を含む鍵や空の鍵は `spawn`/`output` が `InvalidInput` で拒む (interp もネイティブも同じ)。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, process] panics may
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut er = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut c = std.process.Command.new("/bin/echo")
+    c.env("LD_PRELOAD=/evil/x.so:", "1")
+    core.mem.drop(match c.output(&mut out, &mut er) {
+        Ok(_st) => std.io.print_line("env: accepted")
+        Err(e) => {
+            core.check.eq(e.kind, std.io.ErrorKind.InvalidInput)
+            std.io.print_line("env: rejected")
+        }
+    })
+    let mut d = std.process.Command.new("/bin/echo")
+    d.env("", "empty")
+    core.mem.drop(match d.output(&mut out, &mut er) {
+        Ok(_st) => std.io.print_line("env: accepted")
+        Err(e) => {
+            core.check.eq(e.kind, std.io.ErrorKind.InvalidInput)
+            std.io.print_line("env: rejected")
+        }
+    })
+    let mut e = std.process.Command.new("/bin/echo")
+    e.env("HOME", "/h")
+    core.mem.drop(match e.output(&mut out, &mut er) {
+        Ok(_st) => std.io.print_line("env: ok")
+        Err(_e) => std.io.print_line("env: failed")
+    })
+    Ok(())
+end t.main
+"#;
+    both("proc_env_bad_keys", src, "env: rejected\nenv: rejected\nenv: ok\n");
+}
+
+#[test]
 fn inherited_stdout_reaches_the_parent_in_order() {
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console, process] panics may
     core.mem.drop(std.io.print_line("before"))
