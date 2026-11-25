@@ -631,15 +631,21 @@ mod tests {
     fn native_section_is_canonical() {
         let toml = concat!(
             "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n",
-            "[native]\nstatic = [\"libfoo.a\"]\ndynamic = [\"m\", \"SDL3\"]\nsearch = [\"vendor\"]\n\n[dependencies]\n"
+            "[unsafe]\nnative = true\n\n[native]\nstatic = [\"libfoo.a\"]\ndynamic = [\"m\", \"SDL3\"]\nsearch = [\"vendor\"]\n\n[dependencies]\n"
         );
+        // 認めの無い `[native]` は意味の誤りで、ここでは整形せず (canon なし・findings なし)、読み込み側が E9024 を報告する。
+        let noack = toml.replace("[unsafe]\nnative = true\n\n", "");
+        let an = analyze(Kind::Manifest, &noack);
+        assert!(an.findings.is_empty() && an.canon.is_none(), "{:?}", an.findings.iter().map(|f| (&f.code, &f.msg)).collect::<Vec<_>>());
+        let v: Value = noack.parse().unwrap();
+        assert_eq!(crate::project::validate_manifest(&v).into_iter().map(|e| e.0).collect::<Vec<_>>(), vec!["E9024".to_string()]);
         let an = analyze(Kind::Manifest, toml);
         assert!(an.findings.is_empty(), "{:?}", an.findings.iter().map(|f| (&f.code, &f.msg)).collect::<Vec<_>>());
         assert_eq!(an.canon.as_deref(), Some(toml));
         // 逆順・節の入れ替えは E0020 (整形する)。
         for bad in [
-            "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[native]\nsearch = [\"v\"]\nstatic = [\"a.a\"]\ndynamic = [\"m\"]\n\n[dependencies]\n",
-            "[native]\nstatic = [\"libfoo.a\"]\ndynamic = [\"m\"]\n\n[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[dependencies]\n",
+            "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[unsafe]\nnative = true\n\n[native]\nsearch = [\"v\"]\nstatic = [\"a.a\"]\ndynamic = [\"m\"]\n\n[dependencies]\n",
+            "[unsafe]\nnative = true\n\n[native]\nstatic = [\"libfoo.a\"]\ndynamic = [\"m\"]\n\n[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[dependencies]\n",
         ] {
             let an = analyze(Kind::Manifest, bad);
             assert!(find(&an, "E0020"), "{}: {:?}", bad, an.findings.iter().map(|f| (&f.code, &f.msg)).collect::<Vec<_>>());
