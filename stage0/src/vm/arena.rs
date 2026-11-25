@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 extern "C" {
+    fn munmap(addr: *mut std::ffi::c_void, len: usize) -> i32;
     fn mmap(addr: *mut std::ffi::c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut std::ffi::c_void;
 }
 
@@ -38,21 +39,24 @@ fn init() -> bool {
         return true;
     }
     // PROT_READ|PROT_WRITE = 3、MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE = 0x2 | 0x20 | 0x4000。
-    let mut len: usize = 1 << 34;
+    // 既定は 1 TiB (遅延確保なので実メモリは使わない)。仮想メモリの上限 (`ulimit -v`) などで取れなければ 1/8 ずつ縮めて取れる最大を探す。
+    let mut len: usize = 1 << 40;
     while len >= 1 << 28 {
         let p = unsafe { mmap(std::ptr::null_mut(), len, 3, 0x4022, -1, 0) };
         if p as isize != -1 && !p.is_null() {
-            BASE.store(p as usize, Ordering::Relaxed);
-            LIMIT.store(len, Ordering::Relaxed);
             // 16 バイトごとに 1 ビットの「解放済み」の影 (遅延確保)。
             let sh = unsafe { mmap(std::ptr::null_mut(), len / 128 + 4096, 3, 0x4022, -1, 0) };
             if sh as isize == -1 || sh.is_null() {
-                return false;
+                unsafe { munmap(p, len) };
+                len -= len / 8;
+                continue;
             }
+            BASE.store(p as usize, Ordering::Relaxed);
+            LIMIT.store(len, Ordering::Relaxed);
             SHADOW.store(sh as usize, Ordering::Relaxed);
             return true;
         }
-        len >>= 1;
+        len -= len / 8;
     }
     false
 }
