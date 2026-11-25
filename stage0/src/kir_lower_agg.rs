@@ -47,6 +47,7 @@ pub fn is_kasane_std_generic(name: &str) -> bool {
             | "alloc.collections.MapEntry"
             | "alloc.collections.HashMapIter"
             | "alloc.collections.BtreeMapIter"
+            | "alloc.collections.BtreeNode"
             | "alloc.collections.HashSet"
             | "alloc.collections.HashSetIter"
             | "alloc.arena.Arena"

@@ -33,6 +33,7 @@ fn scratch_source() -> String {
     let ksnl = fs::read_to_string(root.join("collections.ksnl")).unwrap();
     let types = [
         block(&sig, "type alloc.collections.BtreeMap", "end alloc.collections.BtreeMap"),
+        block(&sig, "type alloc.collections.BtreeNode", "end alloc.collections.BtreeNode"),
         block(&sig, "type alloc.collections.MapEntry", "end alloc.collections.MapEntry"),
         block(&sig, "type alloc.collections.HashMap[", "end alloc.collections.HashMap"),
         block(&sig, "enum alloc.collections.HashCell", "end alloc.collections.HashCell"),
@@ -86,8 +87,7 @@ fn scr.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     let cells0 = alloc.raw.Buf.new(std.alloc.SYSTEM)
     let slots0 = 0usize
     let mut m = scr.HashMap { cells: cells0, slots: slots0, dead: 0usize }
-    let bcells = alloc.raw.Buf.new(std.alloc.SYSTEM)
-    let mut b = scr.BtreeMap { entries: bcells }
+    let mut b = scr.BtreeMap.new_empty(std.alloc.SYSTEM)
     let mut keys: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut vals: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut seed = 7u32
