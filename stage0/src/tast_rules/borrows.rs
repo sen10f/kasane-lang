@@ -138,9 +138,20 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
         tk.susp_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
     let susp_var: std::collections::HashSet<(usize, usize)> =
         tk.susp_var_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
+    // `suspend` を渡して実体化した総称関数が、効果変数のまま呼ぶ総称関数 (`gs` → `rp_gs`) も、同じ実体化で再検査する。
+    let mut inst: std::collections::HashSet<String> = tk.susp_inst.clone();
+    let mut work: Vec<String> = inst.iter().cloned().collect();
+    while let Some(c) = work.pop() {
+        for callee in tk.edges.get(&c).into_iter().flatten() {
+            if !inst.contains(callee) && p.defs.iter().any(|d| &d.name == callee && d.uses.iter().any(|u| crate::check::is_effect_var(u))) {
+                inst.insert(callee.clone());
+                work.push(callee.clone());
+            }
+        }
+    }
     for &di in user {
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut w = Walker { p, tk, susp: &susp, susp_var: &susp_var, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), closure_held: vec![], tail_reb: None, held_closures: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
+        let mut w = Walker { p, tk, inst: &inst, susp: &susp, susp_var: &susp_var, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), closure_held: vec![], tail_reb: None, held_closures: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
         for q in &b.params {
             w.scopes[0].insert(q.name.clone(), (0, q.ty.clone()));
             if has_guard(p, &q.ty) {
@@ -383,6 +394,7 @@ struct Walker<'a> {
     p: &'a Program,
     tk: &'a TypeCk<'a>,
     /// 型検査が中断点と決めた呼び出し (定義, 行)。(クロージャ・`Fn` 境界越しの呼び出しを含む)
+    inst: &'a std::collections::HashSet<String>,
     susp: &'a std::collections::HashSet<(usize, usize)>,
     susp_var: &'a std::collections::HashSet<(usize, usize)>,
     di: DefId,
@@ -1325,7 +1337,13 @@ impl<'a> Walker<'a> {
         if may_suspend {
             self.cfg.emit(Ev::Suspend { line: e.line });
         } else if self.susp_var.contains(&(self.di, e.line)) {
-            self.cfg.emit(Ev::SuspendGuard { line: e.line });
+            // 効果変数 `E` の呼び出し: どこかの呼び出し元が `E` に `suspend` を渡して実体化するなら、この本体はその実体化でも
+            // 検査する (案 B)。借用を持ったままの呼び出しは中断をまたぐ (E3050)。
+            if self.inst.contains(&self.p.defs[self.di].name) {
+                self.cfg.emit(Ev::Suspend { line: e.line });
+            } else {
+                self.cfg.emit(Ev::SuspendGuard { line: e.line });
+            }
         }
         for t in call_guard_temps {
             self.cfg.emit(Ev::Release(t));

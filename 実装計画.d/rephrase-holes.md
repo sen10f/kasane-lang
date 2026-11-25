@@ -21,3 +21,9 @@
 
 - sec6 (E3050 の総称の効果): 案 A: `Fn<.., E, P>` の `E` の呼び出しを、借用 (ガード以外) を持つ間は fail-closed で E3050 にする (コールバックを取る総称関数の多くが誤検出になるはず)。案 B: 関数ごとに実体化した呼び出し元から再検査する (単相化後の検査、コストが大きい)。案 C: `E` に `suspend` を含みうる関数は借用を持って呼ばない、と仕様に書き、`gs` の側で `E: uses` に `suspend` を含まないことを求める境界を足す。
 - 仕様どおりだが、`let r: &'static u32 = &10u32` の後に `r` を返す形は昇格を静的として通す (ネイティブは今 `alloca` のまま: 静的な置き場に出す下ろしが要る)。
+
+## 続き (2026-11-25 夜)
+
+- 昇格した定数の参照 (`&10u32`) は、KIR で `Op::StaticBytes` (LLVM は `private unnamed_addr constant ... align 16`) に置く。`stage0/tests/promoted_static.rs` で木走査・VM・release ネイティブが一致、ASan (`clang -fsanitize=address`) も通る。
+- `HashMap<&str, V>` の `get_str` は E1108 (`types.rs` のレシーバの型引数で `String` と `str` を区別)。`unsound/hashmap_str_key_get_str`。
+- sec6 は案 B: `suspend` を渡して実体化した総称関数 (`TypeCk::susp_inst`、効果変数のまま呼ぶ先へ `edges` でひろげる) は、本体の `E` の呼び出しを中断点にして借用検査をやり直す (E3050)。`KNOWN_HOLES` は空、台帳の hole は 0。`tests/check_diff.py` で 1783 件、差は期待した 28 件 (新しい unsound の拒否・get_str の 8 本・sec6 の 2 本ほか) だけ。

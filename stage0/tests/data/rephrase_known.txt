@@ -24,11 +24,3 @@ changed id const_init_nested_fn_panic#0
 changed id const_init_step_limit#0
 changed id hunt_a13_assign_through_shared_ref_04#0
 changed iflet2match if_let_linear_no_else#0
-hole block sec6_fnvalue_genericvar_borrow#0
-hole block sec6_fnvalue_genericvar_borrow#1
-hole extract sec6_fnvalue_genericvar_borrow#0
-hole extract sec6_fnvalue_genericvar_borrow#1
-hole hoist sec6_fnvalue_genericvar_borrow#0
-hole hoist sec6_fnvalue_genericvar_borrow#1
-hole id sec6_fnvalue_genericvar_borrow#0
-hole id sec6_fnvalue_genericvar_borrow#1
