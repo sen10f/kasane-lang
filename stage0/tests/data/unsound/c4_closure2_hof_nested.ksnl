@@ -1,0 +1,22 @@
+fn t.hi[F: core.ops.Fn<(&str, &mut Option<&str>), (), E, P>, E: uses, P: panics](f: F, a: &str, b: &mut Option<&str>) -> () uses [E] panics P
+    f.call((a, b))
+end t.hi
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let mut slot: Option<&str> = None
+    t.hi(fn(a: &str, b: &mut Option<&str>) -> () capture [] {
+        *b = Some(a)
+    }, "x", {
+        {
+            &mut slot
+        }
+    })
+    core.mem.drop(slot)
+    Ok(())
+end t.main
+
+fn t.mk(text: &str) -> std.string.String uses [alloc] panics never
+    let mut s = std.string.String.new()
+    core.mem.drop(s.push_str(text))
+    s
+end t.mk
