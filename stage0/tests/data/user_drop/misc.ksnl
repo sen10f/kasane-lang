@@ -1,0 +1,153 @@
+static t.LOG: core.sync.AtomicU64 = core.sync.AtomicU64.new(0u64) pub
+
+type t.D
+    id: u64
+end t.D
+
+enum t.E
+    A(t.D)
+    B(u64)
+end t.E
+
+type t.V
+    items: std.vec.Vec<t.D>
+    tail: Option<t.D>
+end t.V
+
+type t.W
+    x: t.D
+    y: t.D
+    id: u64
+end t.W
+
+impl core.ops.Drop for t.D
+fn t.D.drop(self: &mut t.D) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)
+end t.D.drop
+
+impl core.ops.Drop for t.E
+fn t.E.drop(self: &mut t.E) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(8u64), core.sync.Ordering.SeqCst)
+end t.E.drop
+
+impl core.ops.Drop for t.W
+fn t.W.drop(self: &mut t.W) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)
+end t.W.drop
+
+fn t.eat(d: t.D) -> u64 uses [] panics never
+    d.id
+end t.eat
+
+fn t.ignore(_d: t.D) -> () uses [] panics never
+end t.ignore
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    t.s_enum(true)
+    core.check.eq(t.take(), 81u64)
+    t.s_enum(false)
+    core.check.eq(t.take(), 8u64)
+    t.s_pass()
+    core.check.eq(t.take(), 213u64)
+    t.s_assign_loop()
+    core.check.eq(t.take(), 123u64)
+    t.s_continue()
+    core.check.eq(t.take(), 6_128_394u64)
+    t.s_tuple()
+    core.check.eq(t.take(), 12u64)
+    t.s_struct_vec()
+    core.check.eq(t.take(), 123u64)
+    t.s_cond_loop()
+    core.check.eq(t.take(), 123u64)
+    t.s_destructure()
+    core.check.eq(t.take(), 21u64)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main
+
+fn t.mk(id: u64) -> t.D uses [] panics never
+    t.D {
+        id: id
+    }
+end t.mk
+
+fn t.pass(d: t.D) -> t.D uses [] panics never
+    d
+end t.pass
+
+fn t.s_assign_loop() -> () uses [] panics may
+    let mut x = t.mk(0u64)
+    let mut i = 1u64
+    while i < 4u64 {
+        x = t.mk(i)
+        i = i + 1u64
+    }
+    core.mem.drop(x.id)
+end t.s_assign_loop
+
+fn t.s_cond_loop() -> () uses [] panics may
+    let mut i = 0u64
+    while i < 3u64 {
+        let d = t.mk(i + 1u64)
+        if i == 1u64 {
+            t.ignore(d)
+        }
+        i = i + 1u64
+    }
+end t.s_cond_loop
+
+fn t.s_continue() -> () uses [] panics may
+    let mut i = 0u64
+    while i < 4u64 {
+        i = i + 1u64
+        let _d = t.mk(i)
+        if i == 2u64 {
+            continue
+        }
+        let _e = t.mk(i + 5u64)
+    }
+end t.s_continue
+
+fn t.s_destructure() -> () uses [] panics never
+    let o = (t.mk(1u64), t.mk(2u64))
+    let (a, b) = o
+    core.mem.drop(b)
+    core.mem.drop(a.id)
+end t.s_destructure
+
+fn t.s_enum(c: bool) -> () uses [] panics never
+    let _e = if c {
+        t.E.A(t.mk(1u64))
+    } else {
+        t.E.B(2u64)
+    }
+end t.s_enum
+
+fn t.s_pass() -> () uses [] panics never
+    let a = t.pass(t.pass(t.mk(1u64)))
+    t.ignore(t.mk(2u64))
+    t.ignore(a)
+    core.mem.drop(t.mk(3u64).id)
+end t.s_pass
+
+fn t.s_struct_vec() -> () uses [alloc] panics never
+    let mut items = std.vec.Vec.new()
+    core.mem.drop(items.push(t.mk(1u64)))
+    core.mem.drop(items.push(t.mk(2u64)))
+    let _v = t.V {
+        items: items
+        tail: Some(t.mk(3u64))
+    }
+end t.s_struct_vec
+
+fn t.s_tuple() -> () uses [] panics never
+    let p = (t.mk(1u64), t.mk(2u64))
+    core.mem.drop(p)
+end t.s_tuple
+
+fn t.take() -> u64 uses [] panics never
+    t.LOG.swap(0u64, core.sync.Ordering.SeqCst)
+end t.take
