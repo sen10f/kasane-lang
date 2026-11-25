@@ -492,6 +492,8 @@ const PANICS: [(&str, &str); 8] = [
 ];
 
 struct Ctx {
+    /// 純粋域の関数のうち、メモリへの効果が引数の指す先だけと言い切れるもの → `memory(...)` の属性 (手順 4)。
+    mem_fx: HashMap<String, &'static str>,
     /// 呼び出しの輪に入らず、輪に入る関数も呼ばない関数 (「純粋域」) と、その呼び出し鎖の高さ (自分を含む)。深さの記録 (入口の検査と加算) を省き、呼び出し側が高さ分を先に検査する。
     pure_h: HashMap<String, (u64, u64)>,
     decls: BTreeSet<String>,
@@ -805,7 +807,9 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     } else {
         crate::kir_cabi::Arch::X86_64
     };
-    let mut cx = Ctx { pure_h: pure_region(m, entry), decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int, arch };
+    let pure_h0 = pure_region(m, entry);
+    let mem_fx = mem_effects(m, &pure_h0);
+    let mut cx = Ctx { mem_fx, pure_h: pure_h0, decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int, arch };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -3542,6 +3546,8 @@ impl<'a> Fe<'a> {
         }
         // 先頭 (静的な確保と深さの検査) と本体。
         let ro = shared_ref_attrs_ok(f);
+        // `&mut T` の `noalias`: 標準ライブラリの関数 (`split_at_mut` など、1 つの確保から 2 つの参照を作る unsafe を含みうる) には付けない。
+        let mut_ok = ro && !(f.key.starts_with("std.") || f.key.starts_with("alloc.") || f.key.starts_with("core."));
         let params: Vec<String> = f
             .params()
             .iter()
@@ -3551,9 +3557,14 @@ impl<'a> Fe<'a> {
                     Some(n) => format!("ptr noalias readonly nonnull dereferenceable({}) %arg{}", n, j),
                     None => format!("ptr noalias readonly nonnull %arg{}", j),
                 },
+                Ty::Ref(true, pt) if mut_ok && !may_have_interior_mut(self.aggs, *pt) => match pointee_size(self.aggs, *pt) {
+                    Some(n) => format!("ptr noalias nonnull dereferenceable({}) %arg{}", n, j),
+                    None => format!("ptr noalias nonnull %arg{}", j),
+                },
                 _ => format!("{} %arg{}", lty(self.aggs, *t), j),
             })
             .collect();
+        let memattr = if bare && !self.slow && !kasane_base_inst(&f.key) { self.cx.mem_fx.get(&f.key).map(|a| format!("{} ", a)).unwrap_or_default() } else { String::new() };
         // `null-pointer-is-valid`: `core.ptr.read(null)` などの null 参照を、最適化で消える未定義動作にせず、実際の fault (SIGSEGV) にする。
         // Kasane で書いた基本メソッド (`alloc/vec.ksnl` / `alloc/string.ksnl` の単相インスタンス) は、組み込みの下ろしと同じく呼び出しを残さない。
         // 再帰せず、呼び先も有界なので、呼び出しの深さの記録 (`ksn.depth`) を省いて、LLVM が展開できるようにする
@@ -3564,7 +3575,7 @@ impl<'a> Fe<'a> {
             Some(n) => ("define", format!(" \"wasm-export-name\"=\"{}\"", n)),
             None => ("define internal", String::new()),
         };
-        let mut s = format!("{} {} {}({}){} {}nounwind null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), if self.slow { fname(&format!("{}.slow", f.key)) } else { fname(&f.key) }, params.join(", "), exp, inline);
+        let mut s = format!("{} {} {}({}){} {}nounwind {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), if self.slow { fname(&format!("{}.slow", f.key)) } else { fname(&f.key) }, params.join(", "), exp, inline, memattr);
         s.push_str(&hoisted);
         if bare {
             // `b0` の phi は `go` を前の辺として参照するので、空の `go` を残す (最適化で消える)。
@@ -3696,4 +3707,59 @@ fn pointee_size(aggs: &[AggDef], p: Pointee) -> Option<u32> {
         Pointee::Agg(i) => aggs.get(i as usize)?.size,
         _ => return None,
     })
+}
+
+
+/// 手順 4: 純粋域で `uses` が空・`panics never` の関数のうち、メモリへの効果が引数 (と自分の alloca) の指す先だけと言い切れるものに
+/// `memory(...)` の属性を返す。確保・静的領域・生ポインタ・IO・数学関数 (errno)・除算 (panic 経路) などが 1 つでもあれば載せない (迷えば付けない)。
+fn mem_effects(m: &Module, pure_h: &HashMap<String, (u64, u64)>) -> HashMap<String, &'static str> {
+    fn go(m: &Module, idx: &HashMap<&str, usize>, pure_h: &HashMap<String, (u64, u64)>, k: usize, memo: &mut Vec<Option<Option<u8>>>) -> Option<u8> {
+        if let Some(r) = memo[k] {
+            return r;
+        }
+        memo[k] = Some(None);
+        let f = &m.funcs[k];
+        let mut lvl = Some(0u8);
+        if !pure_h.contains_key(&f.key) || !f.uses.is_empty() || f.may_panic || f.link.is_some() || kasane_base_inst(&f.key) || !shared_ref_attrs_ok(f) {
+            lvl = None;
+        }
+        if lvl.is_some() {
+            'o: for b in &f.blocks {
+                for i in &b.insts {
+                    let l = match &i.op {
+                        Op::Const(_) | Op::Cmp { .. } | Op::FArith { .. } | Op::Shift { .. } | Op::MinMax { .. } | Op::Conv { .. } | Op::Bitcast { .. } | Op::Not(_) | Op::Bool(..) | Op::BitCount { .. } | Op::Make { .. } | Op::Field { .. } | Op::SetField { .. } | Op::Tag(_) | Op::Alloca | Op::FieldAddr { .. } | Op::AsShared(_) | Op::Borrow { .. } | Op::ScopeEnd(_) | Op::Carry { .. } | Op::Own { .. } | Op::Reborrow(_) | Op::Some(_) | Op::Ok(_) | Op::Err(_) | Op::Payload(_) | Op::Checked { .. } => 0,
+                        Op::Arith { op, mode, .. } if *mode != Mode::Trap && !matches!(op, Aop::Div | Aop::Rem) => 0,
+                        Op::Neg { mode: Mode::Wrap, .. } => 0,
+                        Op::Load(_) => 1,
+                        Op::Store { .. } => 2,
+                        Op::Call { callee, .. } => match idx.get(callee.as_str()).and_then(|&c| go(m, idx, pure_h, c, memo)) {
+                            Some(x) => x,
+                            None => {
+                                lvl = None;
+                                break 'o;
+                            }
+                        },
+                        _ => {
+                            lvl = None;
+                            break 'o;
+                        }
+                    };
+                    if let Some(cur) = lvl.as_mut() {
+                        *cur = (*cur).max(l);
+                    }
+                }
+            }
+        }
+        memo[k] = Some(lvl);
+        lvl
+    }
+    let idx: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
+    let mut memo = vec![None; m.funcs.len()];
+    let mut out = HashMap::new();
+    for (k, f) in m.funcs.iter().enumerate() {
+        if let Some(l) = go(m, &idx, pure_h, k, &mut memo) {
+            out.insert(f.key.clone(), match l { 0 => "memory(none)", 1 => "memory(argmem: read)", _ => "memory(argmem: readwrite)" });
+        }
+    }
+    out
 }
