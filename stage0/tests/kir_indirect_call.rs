@@ -109,25 +109,31 @@ fn deep_recursion_through_a_fn_pointer_stops_with_102_at_the_same_depth() {
     assert_eq!(out, "start\n");
 }
 
-#[test]
-fn the_llvm_ir_runs_clean_under_asan() {
+/// clang と ASan のランタイムが使えるか (無ければ飛ばす。あるのにビルドが落ちたら失敗)。
+fn asan_available() -> bool {
     if !clang_available() || cfg!(windows) {
+        return false;
+    }
+    let d = std::env::temp_dir().join(format!("icall_asan_probe_{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("a.c"), "int main(void){return 0;}\n").unwrap();
+    let ok = Command::new("clang").args(["-fsanitize=address", "a.c", "-o", "a"]).current_dir(&d).output().is_ok_and(|o| o.status.success());
+    let _ = std::fs::remove_dir_all(&d);
+    ok
+}
+
+#[test]
+fn the_native_build_runs_clean_under_asan() {
+    if !asan_available() {
+        eprintln!("asan skipped: clang or the ASan runtime is absent");
         return;
     }
     let t = Tmp::new("icall_asan", BASIC);
-    let ll = run(&["kir", "t.calc", "--llvm"], &t.0);
-    assert!(ll.status.success(), "{}", text(&ll.stderr));
-    let path = t.0.join("x.ll");
-    std::fs::write(&path, &ll.stdout).unwrap();
-    let bin = t.0.join("x_asan");
-    let c = Command::new("clang").args(["-fsanitize=address", "-O1", "-w"]).arg(&path).arg("-o").arg(&bin).output().unwrap();
-    if !c.status.success() {
-        // ASan のランタイムが無い clang では飛ばす。
-        eprintln!("asan skipped: {}", text(&c.stderr));
-        return;
-    }
-    let r = Command::new(&bin).env("ASAN_OPTIONS", "detect_leaks=0").output().unwrap();
-    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
-    assert!(text(&r.stdout).contains("1e"), "{}", text(&r.stdout));
+    let o = run_with_env(&["build", "--release", "--backend", "llvm"], &t.0, &[("KSN_CLANG_ARGS", "-fsanitize=address")]);
+    let out = text(&o.stdout) + &text(&o.stderr);
+    assert!(o.status.success() && !out.contains("skipped"), "{}", out);
+    let r = Command::new(t.0.join("target/release/t")).env("ASAN_OPTIONS", "detect_leaks=0").output().unwrap();
+    assert_eq!(r.status.code(), Some(30), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), "applied\n");
     assert!(!text(&r.stderr).contains("AddressSanitizer"), "{}", text(&r.stderr));
 }
