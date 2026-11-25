@@ -5488,7 +5488,11 @@ end t.W
 
 impl[T: core.marker.Send] core.marker.Send for t.W<Option<T>>
 
-impl[T: core.marker.Send] core.marker.Send for t.W<(T, u8)>
+type t.V[X]
+    v: X
+end t.V
+
+impl[T: core.marker.Send] core.marker.Send for t.V<(T, u8)>
 
 fn t.main() -> i32 uses [] panics never
     0i32
