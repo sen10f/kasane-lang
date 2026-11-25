@@ -376,6 +376,26 @@ impl<'a> Lw<'a> {
         if Pointee::of(self.vty(v)) != Some(p) {
             return self.err(line, "参照の指す先の型が合わない");
         }
+        // 定数のスカラーへの共有参照 (`&10u32`、仕様の静的な昇格) は、静的な領域に置く。関数の枠 (`alloca`) に置くと、
+        // `let r: &'static u32 = &10u32` を返した後にぶら下がる。
+        if shared {
+            if let Some(Inst { op: Op::Const(c), ty, .. }) = self.cur.and_then(|b| self.blocks[b].insts.last()).filter(|i| i.dst == v) {
+                let w = match ty {
+                    Ty::I8 | Ty::U8 | Ty::Bool => 1,
+                    Ty::I16 | Ty::U16 => 2,
+                    Ty::I32 | Ty::U32 | Ty::F32 => 4,
+                    Ty::I64 | Ty::U64 | Ty::F64 => 8,
+                    Ty::I128 | Ty::U128 => 16,
+                    _ => 0,
+                };
+                if w > 0 {
+                    let bytes = c.to_le_bytes()[..w].to_vec();
+                    let sp = self.emit(Ty::Ptr, Op::StaticBytes(bytes));
+                    let mr = self.emit(Ty::Ref(true, p), Op::Bitcast { src: Ty::Ptr, a: sp });
+                    return Ok(Some(self.ref_value(mr, p, true)));
+                }
+            }
+        }
         let ptr = self.alloca(p);
         self.emit(Ty::Unit, Op::Store { ptr, val: v });
         super::coll::hold_ref_temp(self, ptr, self.vty(v));
