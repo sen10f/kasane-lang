@@ -696,12 +696,25 @@ impl<'a> W<'a> {
             let pnames: HashSet<String> = ps.iter().map(|(n, _)| n.clone()).collect();
             let outer = sub.cl.as_ref().map(|c| c.outer.clone()).unwrap_or_default();
             let capn = sub.cap_names.clone();
+            // 取り込み (`&mut` / `move`) の中への参照は戻り値で外へ出せない (M9)。共有の `&` の取り込みだけが外側の借用として残る。
+            let ret_static = ret.regions().iter().any(|r| matches!(r, Region::Static));
+            let mut_caps: HashSet<String> = captures.iter().filter(|c| c.kind == "&mut").map(|c| c.name.clone()).collect();
+            let move_caps: HashSet<(String, u32)> =
+                captures.iter().filter(|c| c.kind != "&" && c.kind != "&mut").filter_map(|c| self.env.vars.get(&c.name).map(|v| (c.name.clone(), v.decl))).collect();
             for l in leaves {
                 // 本体の局所 (外側の局所ではないもの) への借用だけが、戻り値で外へ出る。
                 let inside = |loan: &Loan| match loan {
                     Loan::Local(n, id) => (*id == 0 && pnames.contains(n)) || (!outer.contains(&(n.clone(), *id)) && !(*id == 0 && capn.contains(n))),
                     Loan::Temp => true,
                     _ => false,
+                };
+                let inside = |loan: &Loan| {
+                    inside(loan)
+                        || match loan {
+                            Loan::Arg(n) | Loan::ArgIn(n, _) => mut_caps.contains(n) || (ret_static && capn.contains(n)),
+                            Loan::Local(n, id) => move_caps.contains(&(n.clone(), *id)) || (*id == 0 && mut_caps.contains(n)),
+                            _ => false,
+                        }
                 };
                 sub.escape_leaf(l, &inside, true);
                 sub.ret_position(l);
@@ -794,6 +807,9 @@ impl<'a> W<'a> {
                     format!("returns a reference to the local variable `{}`, which does not live long enough", n)
                 }
                 Loan::Temp => "returns a reference to a temporary value, which does not live long enough".to_string(),
+                Loan::Arg(n) | Loan::ArgIn(n, _) if self.cap_names.contains(n) => {
+                    format!("returns a reference into the captured variable `{}`, which does not outlive the closure's call", n)
+                }
                 Loan::Arg(_) | Loan::ArgIn(..) => continue,
             };
             let at = if !ret || *line == 0 || *line == LEAF { leaf.line } else { *line };

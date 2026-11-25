@@ -1,0 +1,24 @@
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut x = 5u64
+    let mut d1 = 0u64
+    let mut d2 = 0u64
+    let mut f = fn(d: &mut u64) -> &mut u64 capture [&mut x] {
+        *d = 1u64
+        x
+    }
+    t.pr(t.twice(&mut f, &mut d1, &mut d2))
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
+
+fn t.twice[F: core.ops.FnMut<(&mut u64,), &mut u64>](f: &mut F, d1: &mut u64, d2: &mut u64) -> u64 uses [] panics never
+    let a = f(d1)
+    let b = f(d2)
+    *a = 1u64
+    *b = 2u64
+    *a
+end t.twice

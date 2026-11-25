@@ -1,0 +1,16 @@
+fn t.eat[F: core.ops.FnOnce<(&str,), &str>](f: F, k: &str) -> &str uses [] panics never
+    f(k)
+end t.eat
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_str("hello hello hello hello hello").unwrap()
+    let f = fn(_d: &str) -> &str capture [move s] {
+        s.as_str()
+    }
+    let r = t.eat(f, "k")
+    let mut z = std.string.String.new()
+    z.push_str("zzzzzzzzzzzzzzzzzzzzzzzzzzzzz").unwrap()
+    std.io.print_line(r).unwrap()
+    std.io.print_line(z.as_str()).unwrap()
+end t.main

@@ -1,0 +1,17 @@
+fn t.get() -> &'static str uses [alloc] panics may
+    let mut s = std.string.String.new()
+    s.push_str("hello hello hello hello hello").unwrap()
+    let k = "k"
+    let f = fn(d: &'static str) -> &'static str capture [&s] {
+        if d.is_empty() {
+            d
+        } else {
+            s.as_str()
+        }
+    }
+    f(k)
+end t.get
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    std.io.print_line(t.get()).unwrap()
+end t.main
