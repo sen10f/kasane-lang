@@ -565,29 +565,98 @@ fn fold_variants(lines: &[String], funcs: &[Func], safe: &[bool]) -> Vec<String>
     out
 }
 
-/// 初期化子が一時オブジェクトを借用する形 (`&` / `&mut` で始まる) か、メソッド呼び出し
-/// (`x.m(...)`) を含むか。真なら `fold` でのインライン展開を飛ばす。
-fn rhs_borrows_temporary(rhs: &str) -> bool {
-    let r = rhs.trim();
-    if r.starts_with('&') {
-        return true;
+/// `expr` がプレーンなプレースか。
+/// プレーンなプレース = ローカル名、それに `.field`（複数可）と `[index]`（単純なインデックス:
+/// 整数リテラルまたはローカル名）を続けた形。`*x` や `f()`、`x.m()`、`a[i + j]` などは含まない。
+fn is_plain_place(expr: &str) -> bool {
+    let e = expr.trim();
+    if e.is_empty() {
+        return false;
     }
-    let bytes = r.as_bytes();
+    let cs: Vec<char> = e.chars().collect();
+    let mut i = 0;
+    // 先頭: ローカル名
+    if !(cs[0].is_ascii_lowercase() || cs[0] == '_') {
+        return false;
+    }
+    while i < cs.len() && (cs[i].is_ascii_alphanumeric() || cs[i] == '_') {
+        i += 1;
+    }
+    while i < cs.len() {
+        if cs[i] == '.' {
+            i += 1;
+            while i < cs.len() && cs[i] == ' ' {
+                i += 1;
+            }
+            if i >= cs.len() || !(cs[i].is_ascii_lowercase() || cs[i] == '_') {
+                return false;
+            }
+            while i < cs.len() && (cs[i].is_ascii_alphanumeric() || cs[i] == '_') {
+                i += 1;
+            }
+        } else if cs[i] == '[' {
+            i += 1;
+            while i < cs.len() && cs[i] == ' ' {
+                i += 1;
+            }
+            let start = i;
+            while i < cs.len() && cs[i] != ']' {
+                i += 1;
+            }
+            if i >= cs.len() {
+                return false; // 閉じカッコが無い
+            }
+            let inner: String = cs[start..i].iter().collect();
+            let inner = inner.trim();
+            if inner.is_empty()
+                || !inner
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                return false;
+            }
+            i += 1; // `]` をスキップ
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+/// `s` の中に、レシーバ自身が呼び出し結果（一時オブジェクト）であるメソッド呼び出し
+/// (`x.lock().get()`、`v.iter().next()` のように `.<メソッド>(` の直前のレシーバが `)` で終わる形)
+/// が含まれるか。
+fn method_call_on_temporary(s: &str) -> bool {
+    let bytes = s.as_bytes();
     let mut depth = 0i32;
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'(' | b'[' | b'{' => depth += 1,
-            b')' | b']' | b'}' => depth -= 1,
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => {
+                depth -= 1;
+                if depth < 0 {
+                    depth = 0;
+                }
+            }
             b'.' => {
                 let k = i + 1;
                 if k < bytes.len() && (bytes[k].is_ascii_alphabetic() || bytes[k] == b'_') {
                     let mut m = k;
-                    while m < bytes.len() && (bytes[m].is_ascii_alphanumeric() || bytes[m] == b'_') {
+                    while m < bytes.len()
+                        && (bytes[m].is_ascii_alphanumeric() || bytes[m] == b'_')
+                    {
                         m += 1;
                     }
                     if m < bytes.len() && bytes[m] == b'(' && depth == 0 {
-                        return true;
+                        // レシーバは `.` の直前まで。末尾が `)` なら呼び出し結果（一時オブジェクト）。
+                        let mut p = i.saturating_sub(1);
+                        while p > 0 && bytes[p] == b' ' {
+                            p -= 1;
+                        }
+                        if p > 0 && bytes[p] == b')' {
+                            return true;
+                        }
                     }
                 }
             }
@@ -596,6 +665,22 @@ fn rhs_borrows_temporary(rhs: &str) -> bool {
         i += 1;
     }
     false
+}
+
+/// 初期化子が一時オブジェクトを借用する値を束ねる `let` なら真。
+/// (a) トップレベルが `&expr` / `&mut expr` で、`expr` がプレーンなプレースでない。
+/// (b) レシーバ自身が一時オブジェクトであるメソッド呼び出しを含み、その結果が参照を返す形。
+/// `&h`（ローカルへの借用）や `t.id(s.n)`（FQN 関数呼び出し）などは偽。
+fn rhs_borrows_temporary(rhs: &str) -> bool {
+    let r = rhs.trim();
+    // (a)
+    if let Some(inner) = r.strip_prefix("&mut ").or_else(|| r.strip_prefix('&')) {
+        if !is_plain_place(inner) {
+            return true;
+        }
+    }
+    // (b)
+    method_call_on_temporary(r)
 }
 
 /// `lines[j]` の `pos` (名前 `name` の位置) に `rep` を差し替えたとき、`&&` や `**` などの
