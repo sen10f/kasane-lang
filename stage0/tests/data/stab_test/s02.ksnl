@@ -1,0 +1,16 @@
+fn t.f() -> u32 uses [] panics never
+    1u32
+end t.f
+
+fn t.main() -> () uses [] panics never
+end t.main
+
+test t.f.test_fail_after_stderr
+    core.mem.drop(std.io.write_stderr(b"debug info line\n"))
+    core.check.eq(t.f(), 2u32)
+end t.f.test_fail_after_stderr
+
+test t.f.test_pass_writes_stderr
+    core.mem.drop(std.io.write_stderr(b"stderr from passing test\n"))
+    core.check.eq(t.f(), 1u32)
+end t.f.test_pass_writes_stderr

@@ -1,0 +1,95 @@
+fn t.grab(n: usize, fail: bool) -> usize uses [alloc] panics may
+    let mut v: std.vec.Vec<u8> = std.vec.Vec.with_capacity(n).unwrap()
+    v.push(1u8).unwrap()
+    if fail {
+        core.panic.panic("leave it")
+    }
+    v.len()
+end t.grab
+
+fn t.main() -> () uses [] panics never
+end t.main
+
+test t.grab.test_a00
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a00
+
+test t.grab.test_a01
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a01
+
+test t.grab.test_a02
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a02
+
+test t.grab.test_a03
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a03
+
+test t.grab.test_a04
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a04
+
+test t.grab.test_a05
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a05
+
+test t.grab.test_a06
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a06
+
+test t.grab.test_a07
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a07
+
+test t.grab.test_a08
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a08
+
+test t.grab.test_a09
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a09
+
+test t.grab.test_a10
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a10
+
+test t.grab.test_a11
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a11
+
+test t.grab.test_a12
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a12
+
+test t.grab.test_a13
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a13
+
+test t.grab.test_a14
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a14
+
+test t.grab.test_a15
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a15
+
+test t.grab.test_a16
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a16
+
+test t.grab.test_a17
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a17
+
+test t.grab.test_a18
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a18
+
+test t.grab.test_a19
+    core.check.eq(t.grab(1_000_000_000usize, true), 1usize)
+end t.grab.test_a19
+
+test t.grab.test_z_last
+    core.check.eq(t.grab(1_000_000_000usize, false), 1usize)
+end t.grab.test_z_last

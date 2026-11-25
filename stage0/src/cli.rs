@@ -2202,7 +2202,8 @@ fn cmd_test(args: &[String]) -> i32 {
         let mut results: Vec<Option<String>> = vec![];
         let mut names: Vec<&str> = vec![];
         let mut vm_note = String::new();
-        let vm_result = if use_vm || drop_forced {
+        let try_test = vm_lowered.as_ref().is_some_and(|su| crate::vm::test_uses_try(su, &prog, *ti));
+        let vm_result = if (use_vm || drop_forced) && !try_test {
             match crate::vm::run_test(&prog, vm_lowered.as_ref().unwrap(), *ti) {
                 Ok(r) => Some(r),
                 Err(why) if drop_forced => {
@@ -2284,8 +2285,9 @@ fn cmd_test(args: &[String]) -> i32 {
             _ => {}
         }
         // VM・ネイティブは `?` が Err/None で終わったテストを目印の文言で失敗にする。理由 (Err の中身) は木走査で出す (3 つで同じ文言にする)。
-        if results.iter().flatten().any(|m| m.contains(TEST_TRY_MARK)) {
-            let exact = tree_test_result(&prog, *ti);
+        if results.iter().flatten().any(|m| m.contains(TEST_TRY_MARK)) && names.first() == Some(&"tree") {
+            // 木走査の結果 (先頭) が理由を持つ。もう一度走らせず、それを使う。
+            let exact = results[0].clone();
             for r in results.iter_mut() {
                 if r.as_ref().is_some_and(|m| m.contains(TEST_TRY_MARK)) {
                     *r = exact.clone();
@@ -2339,6 +2341,8 @@ pub const TEST_TRY_MARK: &str = "ksn test body returned early with ?";
 /// 木走査でテスト `ti` を走らせた結果 (`None` = 成功)。本体の `?` が Err/None で終わったら失敗 (`returned Err(..)` / `returned None`)。
 fn tree_test_result(prog: &Rc<Program>, ti: usize) -> Option<String> {
     let mut it = Interp::new(prog.clone());
+    // 試験の本体も 1 回目の呼び出しと数える (VM・ネイティブと同じ深さで 102 になる)。
+    it.depth = 1;
     let r = it.call_body(ti);
     use std::io::Write;
     let _ = it.out.flush();

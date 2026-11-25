@@ -174,6 +174,8 @@ pub struct Suite {
     unsafe_pkg: bool,
     lo: Lowered,
     shared: Option<Result<bc::Prog, String>>,
+    /// コンパイル直後の確保領域 (試験ごとに戻す。`static` の状態・回収されない確保を持ち越さない)。
+    snap: Option<arena::Snapshot>,
 }
 
 pub fn lower_tests(prog: &Program, user: &[usize], tests: &[usize]) -> Suite {
@@ -184,7 +186,8 @@ pub fn lower_tests(prog: &Program, user: &[usize], tests: &[usize]) -> Suite {
     let m = lo.module.reachable_from(&roots);
     let special = m.funcs.iter().any(|f| f.link.as_deref().map_or(false, |l| l.starts_with("libssl.so") || l.starts_with("libcrypto.so"))) || m.find("ksn.task.mt_begin").is_some();
     let shared = if names.is_empty() || special || !crate::kir::verify_module(&m).is_empty() { None } else { Some(compile::compile(&m, &lo.lines)) };
-    Suite { unsafe_pkg: has_unsafe_block(prog), lo, shared }
+    let snap = arena::snapshot();
+    Suite { unsafe_pkg: has_unsafe_block(prog), lo, shared, snap }
 }
 
 pub fn run_test(prog: &Program, suite: &Suite, ti: usize) -> Result<Option<String>, String> {
@@ -204,11 +207,32 @@ pub fn run_test(prog: &Program, suite: &Suite, ti: usize) -> Result<Option<Strin
             &own
         }
     };
+    if let Some(sn) = &suite.snap {
+        arena::restore(sn);
+    }
     let mut vm = run::Vm::new(bc);
     vm.capture = Some(vec![]);
     let out = vm.run(&name, &[]);
     vm.flush();
-    let captured = vm.capture.take().unwrap_or_default();
+    let mut captured = vm.capture.take().unwrap_or_default();
+    // 木走査と同じに、試験が書いた stderr はそのまま流し、失敗の理由には最後の `panic: ` 以降だけを使う。
+    let mut tail = Vec::new();
+    if matches!(out, Ok(Outcome::Abort)) {
+        let pat = b"panic: ";
+        if let Some(i) = (0..captured.len()).rev().find(|&i| captured[i..].starts_with(pat)) {
+            tail = captured.split_off(i);
+        } else {
+            tail = std::mem::take(&mut captured);
+        }
+    }
+    if !captured.is_empty() {
+        let _ = crate::kir_exec::write_fd(2, &captured);
+    }
+    let captured = tail;
+    drop(vm);
+    if let Some(sn) = &suite.snap {
+        arena::restore(sn);
+    }
     Ok(match out {
         Ok(Outcome::Value(_)) => None,
         Ok(Outcome::Panic(m)) => Some(m),
@@ -225,4 +249,11 @@ pub fn run_test(prog: &Program, suite: &Suite, ti: usize) -> Result<Option<Strin
         }
         Err(e) => return Err(format!("実行中の内部エラー: {}", e)),
     })
+}
+
+/// `?` が `Err`/`None` で本体を打ち切る形を持つ試験か (理由の `Err` の中身は木走査で出すので、走らせる前にこの試験は木走査へ回す)。
+pub fn test_uses_try(suite: &Suite, prog: &Program, ti: usize) -> bool {
+    let name = &prog.defs[ti].name;
+    let Some(f) = suite.lo.module.find(name) else { return false };
+    f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(&i.op, crate::kir::Op::Panic { msg, .. } if msg == crate::cli::TEST_TRY_MARK)))
 }
