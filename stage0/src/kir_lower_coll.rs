@@ -3832,7 +3832,9 @@ fn capture_values(lw: &mut Lw, caps: &V, body: &V, line: usize, fn_once: bool) -
         let chan_move = kind == "move" && lw.coll.spawn_arg && lw.aggs.borrow().chan_kind(t).is_some();
         // 手書きの `Drop` を持つ値 (を含む構造体) の `move`: spawn のクロージャと FnOnce のクロージャは、本体が所有して終わりで破棄する。
         let chan_move = chan_move || (kind == "move" && (lw.coll.spawn_arg || fn_once) && lw.aggs.borrow().owns_heap(t) && !lw.aggs.borrow().is_vec(t) && lw.aggs.borrow().has_user_drop_in(t));
-        if lw.aggs.borrow().owns_heap(t) && !chan_move {
+        // `&` / `&mut` の取り込みは参照を渡すだけで所有しない。手書きの `Drop` を含む値は、参照の取り込みなら許す。
+        let ref_cap = kind != "move" && lw.aggs.borrow().has_user_drop_in(t) && !lw.aggs.borrow().is_vec(t);
+        if lw.aggs.borrow().owns_heap(t) && !chan_move && !ref_cap {
             return lw.err(line, format!("capture の {} は解放の要る値を持つので段階 1 の対象外 (所有の移動と解放の規則が要る)", name));
         }
         if t.is_ref() {

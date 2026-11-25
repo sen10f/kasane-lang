@@ -30,3 +30,11 @@ Mythos3 D1 の直し。今は手書きの `impl core.ops.Drop` を呼ぶ実行�
 ## 試験
 
 `stage0/tests/user_drop.rs` + `tests/data/user_drop/*.ksnl`: VM と LLVM (debug / release) の出力が同じ。観測は `static` の `AtomicU64` の履歴 (`log * 10 + id`)。
+
+## 状況 (2026-11-25)
+
+- 済: KIR の `drop_value` が手書きの `Drop` を呼ぶ (`AggTab.user_drop`、隠しの欄 `$live` で、移し出した後の「空」の値と部分的な move の二重呼びを防ぐ)。
+  欄の破棄は宣言順に直した。`&式` の一時値は `Owned::TmpSlot` (入口で 0 にする印) で文の終わり (`if` / `while` の条件の終わり) に破棄。
+  `ksn run` / `ksn test` は手書きの `Drop` があれば VM 固定で、下ろせなければ理由付きで失敗。spawn / FnOnce の move の取り込みと、`&` / `&mut` の取り込みは可。
+- 試験: `stage0/tests/user_drop.rs` (VM・LLVM debug / release・ASan で同じ)。
+- 未: 総称型の `Drop`、`Fn` のクロージャの `move` の取り込み (環境の破棄が要る)、呼ばれなかった `FnOnce` の環境の破棄、`Vec` ほか標準の型の一時値の破棄 (`&Vec` の一時値は今も漏れる)。
