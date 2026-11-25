@@ -62,6 +62,42 @@ fn core.slice.less_at[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: u
     }
 end core.slice.less_at
 
+/// `[a, m)` と `[m, b)` を安定に原位置で併合する (`s[j] < s[i]` のときだけ右側のブロックを左側の前に回転する)。
+/// 等しい要素は左側を優先するので安定。再帰を使わず追加の記憶は O(1)。
+fn core.slice.merge_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](s: &mut [T], f: &F, a: usize, m: usize, b: usize) -> () uses [E] panics P
+    if a >= m || m >= b {
+        return
+    }
+    // 既に整列済み ([a, m) の末尾 <= [m, b) の先頭)
+    if !core.slice.less_at(&*s, f, m, m.wrapping_sub(1usize)) {
+        return
+    }
+    let mut i = a
+    let mut j = m
+    while i < m && j < b {
+        if core.slice.less_at(&*s, f, j, i) {
+            // s[j..k) は s[i] より小さいので、[i, k) を回転して s[m..k) を [i, j) の前に出す
+            let mut lo = j
+            let mut hi = b
+            while lo < hi {
+                let mid = lo.wrapping_add(hi.wrapping_sub(lo).wrapping_shr(1u32))
+                if core.slice.less_at(&*s, f, mid, i) {
+                    lo = mid.wrapping_add(1usize)
+                } else {
+                    hi = mid
+                }
+            }
+            let k = lo
+            core.slice.rotate_range(s, i, m, k)
+            i = i.wrapping_add(k.wrapping_sub(m))
+            m = k
+            j = k
+        } else {
+            i = i.wrapping_add(1usize)
+        }
+    }
+end core.slice.merge_by
+
 fn core.slice.min_usize(a: usize, b: usize) -> usize uses [] panics never
     if a < b {
         a
@@ -139,7 +175,7 @@ fn core.slice.sort_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: u
         while a < n {
             let m = core.slice.min_usize(a.wrapping_add(width), n)
             let b = core.slice.min_usize(m.wrapping_add(width), n)
-            core.slice.symmerge_by(self, &compare, a, m, b)
+            core.slice.merge_by(self, &compare, a, m, b)
             a = b
         }
         width = width.wrapping_mul(2usize)
@@ -170,67 +206,3 @@ fn core.slice.sort_unstable_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E,
         core.slice.sift_down_by(self, &compare, 0usize, stop)
     }
 end core.slice.sort_unstable_by
-
-fn core.slice.symmerge_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](s: &mut [T], f: &F, a: usize, m: usize, b: usize) -> () uses [E] panics P
-    if a >= m || m >= b {
-        return
-    }
-    if m.wrapping_sub(a) == 1usize {
-        let mut i = m
-        let mut j = b
-        while i < j {
-            let h = i.wrapping_add(j.wrapping_sub(i) / 2usize)
-            if core.slice.less_at(&*s, f, h, a) {
-                i = h.wrapping_add(1usize)
-            } else {
-                j = h
-            }
-        }
-        core.slice.rotate_range(s, a, m, i)
-        return
-    }
-    if b.wrapping_sub(m) == 1usize {
-        let mut i = a
-        let mut j = m
-        while i < j {
-            let h = i.wrapping_add(j.wrapping_sub(i) / 2usize)
-            if core.slice.less_at(&*s, f, m, h) {
-                j = h
-            } else {
-                i = h.wrapping_add(1usize)
-            }
-        }
-        core.slice.rotate_range(s, i, m, b)
-        return
-    }
-    let mid = a.wrapping_add(b) / 2usize
-    let n = mid.wrapping_add(m)
-    let mut start = 0usize
-    let mut r = 0usize
-    if m > mid {
-        start = n.wrapping_sub(b)
-        r = mid
-    } else {
-        start = a
-        r = m
-    }
-    let p = n.wrapping_sub(1usize)
-    while start < r {
-        let c = start.wrapping_add(r.wrapping_sub(start) / 2usize)
-        if core.slice.less_at(&*s, f, p.wrapping_sub(c), c) {
-            r = c
-        } else {
-            start = c.wrapping_add(1usize)
-        }
-    }
-    let stop = n.wrapping_sub(start)
-    if start < m && m < stop {
-        core.slice.rotate_range(s, start, m, stop)
-    }
-    if a < start && start < mid {
-        core.slice.symmerge_by(s, f, a, start, mid)
-    }
-    if mid < stop && stop < b {
-        core.slice.symmerge_by(s, f, mid, stop, b)
-    }
-end core.slice.symmerge_by
