@@ -1502,6 +1502,7 @@ static struct {
     uint64_t epoch;
     int stop, on;
     i64 n, idle;
+    i64 idle_ep; /* idle を数えた世代 (mu の下)。世代が進んだら数え直す */
     i64 nthr;
     i64 thr[64];
     i64 nsleep; /* cond で眠っている (眠ろうとしている) ワーカーの数 */
@@ -1509,7 +1510,7 @@ static struct {
     i32 nefd;
     i64 qlen; /* 注入列の長さの目安 (ロック無しで空かを見る) */
     uint64_t gen; /* mt_begin ごとに増える (eventfd の登録の世代) */
-} ksn_mt = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0}, 0, {0}, 0, 0, 0};
+} ksn_mt = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0}, 0, {0}, 0, 0, 0};
 
 #define KSN_MT_MARK ((uint64_t)1 << 62)
 #define KSN_MT_IT(id) ((ksn_mt_item *)(uintptr_t)((uint64_t)(id) & ~KSN_MT_MARK))
@@ -1519,7 +1520,6 @@ static void ksn_mt_bump(void) {
     __atomic_fetch_add(&ksn_mt.epoch, 1, __ATOMIC_SEQ_CST);
     if (__atomic_load_n(&ksn_mt.nsleep, __ATOMIC_SEQ_CST) > 0) {
         pthread_mutex_lock(&ksn_mt.mu);
-        ksn_mt.idle = 0;
         pthread_cond_broadcast(&ksn_mt.cv);
         pthread_mutex_unlock(&ksn_mt.mu);
     }
@@ -1538,6 +1538,7 @@ i64 ksn_rt_sys_mt_begin(i64 n) {
     ksn_mt.unfinished = 0;
     ksn_mt.stop = 0;
     ksn_mt.idle = 0;
+    ksn_mt.idle_ep = 0;
     ksn_mt.nthr = 0;
     ksn_mt.nsleep = 0;
     ksn_mt.qlen = 0;
@@ -1647,6 +1648,11 @@ uint32_t ksn_rt_sys_mt_sleep(i64 seen) {
     pthread_mutex_lock(&ksn_mt.mu);
     __atomic_fetch_add(&ksn_mt.nsleep, 1, __ATOMIC_SEQ_CST); /* 先に眠る印を立ててから世代を見直す (起こす側と取りこぼさない) */
     if (KSN_MT_EP() == seen && !ksn_mt.stop) {
+        /* 数えるのは「今の世代を読んでから探し直して何も無かった」者だけ。世代が進んでいたら数え直す (古い世代の眠りを混ぜない) */
+        if (ksn_mt.idle_ep != seen) {
+            ksn_mt.idle = 0;
+            ksn_mt.idle_ep = seen;
+        }
         ksn_mt.idle++;
         if (ksn_mt.idle >= ksn_mt.n) {
             r = 3;

@@ -316,3 +316,53 @@ fn nested_block_on_threads_reports_already_running_everywhere() {
 fn spawn_local_inside_block_on_threads_panics_everywhere() {
     both_panic("net_async_mt_spl", include_str!("data/net_async_mt_spawn_local.ksnl"), "spawn_local: not allowed inside std.task.block_on_threads");
 }
+
+const SPAWN_JOIN_LOOP: &str = include_str!("data/net_async_mt_spawn_join_loop.ksnl");
+const SEQ_SPAWN_JOIN: &str = include_str!("data/task_seq_spawn_join.ksnl");
+
+/// R1: spawn → join の繰り返しが、全員待ちの判定の競合で偽の deadlock の panic にならない (4 本のワーカー、200 回)。
+#[test]
+fn native_spawn_join_loop_never_reports_false_deadlock() {
+    let (t, bin, log) = build_native_strict("net_async_mt_spawn_join_loop", SPAWN_JOIN_LOOP, false);
+    let Some(bin) = bin else {
+        if cfg!(target_os = "linux") {
+            panic!("ネイティブが作れない: {}", log);
+        }
+        return;
+    };
+    for k in 0..200 {
+        let o = std::process::Command::new(&bin).current_dir(&t.0).output().unwrap();
+        let out = text(&o.stdout) + &text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "run {}: {}", k, out);
+        assert_eq!(text(&o.stdout).trim(), "124750", "run {}: {}", k, out);
+    }
+}
+
+/// P1: 順に spawn_local → join_task を 20 万回。空き枠を再利用し、完了ごとの全表走査をしないので、すぐ終わる。
+#[test]
+fn native_sequential_spawn_join_200k_is_linear() {
+    let (t, bin, log) = build_native_strict("task_seq_spawn_join", SEQ_SPAWN_JOIN, false);
+    let Some(bin) = bin else {
+        if cfg!(target_os = "linux") {
+            panic!("ネイティブが作れない: {}", log);
+        }
+        return;
+    };
+    let start = std::time::Instant::now();
+    let o = std::process::Command::new(&bin).current_dir(&t.0).output().unwrap();
+    let el = start.elapsed();
+    let out = text(&o.stdout) + &text(&o.stderr);
+    assert_eq!(o.status.code(), Some(0), "{}", out);
+    assert_eq!(text(&o.stdout).trim(), "19999900000", "{}", out);
+    assert!(el.as_secs_f64() < 5.0, "遅すぎる (二乗の伸びに戻った?): {:?}", el);
+}
+
+#[test]
+fn interp_sequential_spawn_join_small_matches() {
+    let src = SEQ_SPAWN_JOIN.replace("200_000u64", "300u64");
+    let t = Tmp::new("task_seq_spawn_join_interp", &src);
+    let o = run(&["run"], &t.0);
+    let out = text(&o.stdout) + &text(&o.stderr);
+    assert_eq!(o.status.code(), Some(0), "{}", out);
+    assert_eq!(text(&o.stdout).trim(), "44850", "{}", out);
+}
