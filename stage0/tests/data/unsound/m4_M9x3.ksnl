@@ -1,0 +1,8 @@
+fn t.main() -> () uses [io.console] panics may
+    let o = Some(std.string.String.new())
+    let f = fn(_d: &str) -> &str capture [move o] {
+        o.as_ref().unwrap().as_str()
+    }
+    let r = f("k")
+    std.io.print_line(r).unwrap()
+end t.main

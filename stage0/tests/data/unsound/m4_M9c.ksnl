@@ -1,0 +1,11 @@
+fn t.main() -> () uses [alloc, io.console, thread] panics may
+    let mut s = std.string.String.new()
+    s.push_str("hello hello hello hello hello").unwrap()
+    let r = std.thread.spawn(std.alloc.SYSTEM, fn() -> &'static str capture [move s] {
+        s.as_str()
+    }).unwrap().join()
+    let mut z = std.string.String.new()
+    z.push_str("zzzzzzzzzzzzzzzzzzzzzzzzzzzzz").unwrap()
+    std.io.print_line(r).unwrap()
+    std.io.print_line(z.as_str()).unwrap()
+end t.main
