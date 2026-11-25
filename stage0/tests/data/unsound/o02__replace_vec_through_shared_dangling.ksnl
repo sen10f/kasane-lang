@@ -1,0 +1,20 @@
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut v = std.vec.Vec.new()
+    v.push(42u64).unwrap()
+    let arr = [&mut v]
+    let r = &arr
+    let s = &arr
+    let e: &u64 = &s[0usize][0usize]
+    let old = core.mem.replace(r[0usize], std.vec.Vec.new())
+    core.mem.drop(old)
+    let mut w = std.vec.Vec.new()
+    w.push(7u64).unwrap()
+    t.pr(*e)
+    core.mem.drop(w)
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr

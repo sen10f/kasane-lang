@@ -160,7 +160,39 @@ impl<'a> W<'a> {
         }
     }
 
+    /// 場所式の経路 (欄・添字・参照外し) の途中に共有参照 `&T` があれば真 (その先は読み取り専用)。
+    fn shared_path(e: &TExpr) -> bool {
+        let mut cur = e;
+        loop {
+            match &cur.kind {
+                TKind::Field { base, .. } | TKind::Index { base, .. } => {
+                    if matches!(&base.ty, Ty::Ref(false, _, _)) {
+                        return true;
+                    }
+                    cur = base;
+                }
+                TKind::Unary { op, operand } if op == "*" => {
+                    if matches!(&operand.ty, Ty::Ref(false, _, _)) {
+                        return true;
+                    }
+                    cur = operand;
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    /// `&mut` の値を共有の経路の場所から取り出す (値の位置: 引数・`let` の初期化・受け手)。
+    fn take_mut_value(&mut self, e: &TExpr, line: usize) {
+        if matches!(&e.ty, Ty::Ref(true, _, _)) && matches!(&e.kind, TKind::Field { .. } | TKind::Index { .. } | TKind::Unary { .. }) && !matches!(&e.kind, TKind::Unary { op, .. } if op != "*") && W::shared_path(e) {
+            self.found.push(("cannot use a `&mut` reached through a shared reference as mutable".to_string(), line));
+        }
+    }
+
     fn assign(&mut self, place: &TExpr) {
+        if W::shared_path(place) {
+            self.found.push(("cannot assign through a shared reference on the place path".to_string(), place.line));
+        }
         match &place.kind {
             TKind::Index { .. } => self.need_mut_place(place, "assign to", place.line),
             TKind::Field { .. } | TKind::Path(_) | TKind::Unary { .. } => {
@@ -280,6 +312,9 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
         super::impl_sig::walk(&b.body, &mut |e| {
             if let TKind::Block(ss) = &e.kind {
                 for s in ss {
+                    if let TStmt::Let { init: Some(i), .. } = s {
+                        w.take_mut_value(i, i.line);
+                    }
                     if let TStmt::Assign { place, .. } = s {
                         w.assign(place);
                     }
@@ -289,6 +324,9 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
         super::impl_sig::walk(&b.body, &mut |e| match &e.kind {
             TKind::Unary { op, operand } if op == "&mut" => {
                 w.need_mut_place(operand, "borrow", e.line);
+                if W::shared_path(operand) {
+                    w.found.push(("cannot borrow as mutable through a shared reference on the place path".to_string(), e.line));
+                }
                 {
                     // `&mut` を、共有参照 `&T` の逆参照を通る場所に作らない (`&mut *r`・`&mut **rr`・`&mut (*r).f`)。
                     let mut cur: &TExpr = operand;
@@ -321,7 +359,11 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     }
                 }
             }
-            TKind::Call { callee, .. } => match (&e.res, &callee.kind) {
+            TKind::Call { callee, args } => {
+                for a in args {
+                    w.take_mut_value(a, e.line);
+                }
+                match (&e.res, &callee.kind) {
                 // 局所の関数値・閉包 `f()`。
                 (Some(Callee::Local(f)), _) => {
                     let id = None;
@@ -350,11 +392,17 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast) -> Vec<Diag> {
                     }
                 }
                 _ => {}
-            },
-            TKind::MCall { recv, name, .. } => {
+            }},
+            TKind::MCall { recv, name, args } => {
+                for a in args {
+                    w.take_mut_value(a, e.line);
+                }
                 if let Some(Callee::Def(ci)) = &e.res {
                     let c = &p.defs[*ci];
                     if matches!(c.params.first().map(|q| from_v(&q.1, &c.gnames())), Some(Ty::Ref(true, _, _))) {
+                        if W::shared_path(recv) || (matches!(&recv.ty, Ty::Ref(true, _, _)) && W::shared_path(recv)) {
+                            w.found.push((format!("cannot call the `&mut self` method `{}` through a shared reference on the receiver path", name), e.line));
+                        }
                         if let Some((root, id)) = W::root(recv) {
                             w.need_mut(&root, id, name, e.line);
                         }

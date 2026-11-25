@@ -1,0 +1,26 @@
+fn t.f(q: &u64, o: &Option<&mut u64>) -> u64 uses [] panics never
+    let x = *q
+    match o {
+        Some(p) => {
+            **p = 5u64
+        }
+        None => core.mem.drop(0u8)
+    }
+    x.wrapping_add(*q)
+end t.f
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut a = 1u64
+    let o = Some(&mut a)
+    let q = match &o {
+        Some(z) => &**z
+        None => &0u64
+    }
+    t.pr(t.f(q, &o))
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
