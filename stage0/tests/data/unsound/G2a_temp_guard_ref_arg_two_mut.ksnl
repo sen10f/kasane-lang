@@ -1,0 +1,23 @@
+static t.M: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64)
+
+static t.RW: std.sync.RwLock<u64> = std.sync.RwLock.new(0u64)
+
+fn t.gm(g: &mut std.sync.MutexGuard<'static, u64>) -> &mut u64 uses [] panics never
+    g.get_mut()
+end t.gm
+
+fn t.main() -> () uses [alloc, io.console, thread] panics may
+    t.pr(t.two(t.gm(&mut t.M.lock()), t.gm(&mut t.M.lock())))
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
+
+fn t.two(a: &mut u64, b: &mut u64) -> u64 uses [] panics never
+    *a = 1u64
+    *b = 2u64
+    *a
+end t.two

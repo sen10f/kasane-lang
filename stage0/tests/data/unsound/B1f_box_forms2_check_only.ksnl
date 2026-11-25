@@ -1,0 +1,68 @@
+type t.S
+    n: u64
+end t.S
+
+fn t.S.get(self: &t.S) -> &u64 uses [] panics never
+    &self.n
+end t.S.get
+
+fn t.a(b: std.boxed.Box<u64>) -> u64 uses [] panics never
+    let r = &*b
+    core.mem.drop(b)
+    *r
+end t.a
+
+fn t.b(b: std.boxed.Box<t.S>) -> u64 uses [] panics never
+    let r = b.get()
+    core.mem.drop(b)
+    *r
+end t.b
+
+fn t.c(b: std.boxed.Box<t.S>) -> u64 uses [] panics never
+    let r = &b.n
+    core.mem.drop(b)
+    *r
+end t.c
+
+fn t.d(b: std.boxed.Box<t.S>) -> u64 uses [] panics never
+    let r = b.as_ref().get()
+    core.mem.drop(b)
+    *r
+end t.d
+
+fn t.e(b: std.boxed.Box<u64>) -> u64 uses [] panics never
+    t.rd(b.as_ref(), b)
+end t.e
+
+fn t.f(b: &mut std.boxed.Box<u64>) -> u64 uses [alloc] panics may
+    let r = b.as_ref()
+    *b = std.boxed.Box.new(1u64).unwrap()
+    *r
+end t.f
+
+fn t.g(v: std.vec.Vec<std.boxed.Box<u64>>) -> u64 uses [] panics may
+    let r = v[0usize].as_ref()
+    core.mem.drop(v)
+    *r
+end t.g
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    t.pr(t.a(std.boxed.Box.new(1u64).unwrap()))
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
+
+fn t.rd(r: &u64, b: std.boxed.Box<u64>) -> u64 uses [] panics never
+    core.mem.drop(b)
+    *r
+end t.rd
+
+fn t.two(a: &mut u64, b: &mut u64) -> u64 uses [] panics never
+    *a = 1u64
+    *b = 2u64
+    *a
+end t.two

@@ -1248,6 +1248,14 @@ impl<'a> Walker<'a> {
                 ),
             ));
         }
+        // 実引数が一時のガードへの参照 (`f(&mut t.M.lock())`、タプルや `RwLock` の中も) で、結果が参照を運ぶ形:
+        // ガードは文の終わりで放されるので、返った参照は文の外に出せない (G1 と同じ規則を引数の借用へ広げる)。
+        if has_ref(&e.ty) && args.iter().any(|a| matches!(&a.kind, TKind::Unary { op, operand } if (op == "&" || op == "&mut") && self.pl(operand).is_none() && has_guard(self.p, &operand.ty))) {
+            self.diags.push((
+                e.line,
+                "a reference to a temporary lock guard is passed to a call that returns a reference; the guard is dropped at the end of the statement, so bind the guard with `let` first".to_string(),
+            ));
+        }
         let mut res = vec![];
         for (j, s) in srcs_per.iter().enumerate() {
             if flow[j] {
