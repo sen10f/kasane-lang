@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""selfhost/resolve の突き合わせ。Kasane 版 (resolve.native / ksn run) と Rust 版 (ksn defs / ksn check --json) を比べる。
+"""selfhost/resolve の突き合わせ。Kasane 版 (resolve / ksn run) と Rust 版 (ksn defs / ksn check --json) を比べる。
 
   python3 -I compare.py [--mine native|interp] [--group examples|apps|parse|broken|stdlib|all] [-v]
 
@@ -21,7 +21,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 KSN = os.path.join(ROOT, "stage0", "target", "release", "ksn")
-NATIVE = os.path.join(HERE, "target", "release", "resolve.native")
+NATIVE = os.path.join(HERE, "target", "release", "resolve")
 STDLIB = os.path.join(ROOT, "spec", "stdlib")
 RESOLVE_CODES = {"E1101", "E1102", "E1103", "E1104", "E1109", "E1119"}
 
@@ -191,7 +191,7 @@ def main():
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
     if a.mine == "native" and not os.path.exists(NATIVE):
-        print("resolve.native がない: cd selfhost/resolve && ksn build --release", file=sys.stderr)
+        print("resolve がない: cd selfhost/resolve && ksn build --release", file=sys.stderr)
         return 2
     empty = tempfile.mkdtemp(prefix="resolve-empty-")
     rows = []

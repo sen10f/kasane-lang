@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 借用・線形性の段の比較: セルフホストの borrow.native と Rust 版 `ksn check --json` を並べる。
+# 借用・線形性の段の比較: セルフホストの borrow と Rust 版 `ksn check --json` を並べる。
 #
 #   python3 -I compare.py [--group examples|apps|self|linear_ok|unsound|diag|all]
 #                         [--mine PATH] [--ksn PATH] [--keep]
@@ -13,7 +13,7 @@
 #     一致: 自分の E30xx の (コード) の多重集合が Rust 版と同じ件数。
 #     余分: Rust 版が E30xx を出さないのに自分が出した件数 (誤検出の目安)。
 # 単一ファイルの例は一時パッケージ (kasane.toml + src/t.ksnl) にして両方で検査する。
-# 自分の検査器は `ksn build --release` の成果物 (target/release/borrow.native) を使う。
+# 自分の検査器は `ksn build --release` の成果物 (target/release/borrow) を使う。
 import json
 import os
 import re
@@ -27,7 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 STD = os.path.join(ROOT, "spec", "stdlib")
 TOML = '[package]\nname = "t"\nversion = "0.1.0"\nedition = 1\nentry = "t.main"\n'
-MINE_DEFAULT = os.path.join(HERE, "target", "release", "borrow.native")
+MINE_DEFAULT = os.path.join(HERE, "target", "release", "borrow")
 KSN_DEFAULT = os.path.join(ROOT, "stage0", "target", "release", "ksn")
 SUM_RE = re.compile(r"^summary errors (\d+) undec (\d+) files (\d+)")
 DIAG_RE = re.compile(r"^error (E\d+) (.+?):(\d+): ")

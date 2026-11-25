@@ -54,7 +54,7 @@ const CASES: &[Case] = &[
 ];
 
 fn native_bin(drv_dir: &Path, kind: &str, drv_name: &str) -> PathBuf {
-    drv_dir.join("target").join(kind).join(format!("{}.native", drv_name))
+    drv_dir.join("target").join(kind).join(format!("{}{}", drv_name, if cfg!(windows) { ".exe" } else { "" }))
 }
 
 fn has_bundle_fallback(out: &str) -> bool {

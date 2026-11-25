@@ -35,7 +35,7 @@ end ksnc.build.fmt
 fn ksnc.build.make(ksn: &str, root: &str, dir: &str, release: bool, target: &str) -> Result<(), ksnc.Failure> uses [alloc, env, io.console, process] panics never pub
     let me = ksnc.tool.env_or("KSNC_SELF")
     let self_exe = if me == "" {
-        std.path.join(root, "selfhost/driver/target/release/ksnc.native")?
+        std.path.join(root, "selfhost/driver/target/release/ksnc")?
     } else {
         std.string.String.from_str(me)?
     }

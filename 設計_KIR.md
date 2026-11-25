@@ -1051,7 +1051,7 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 ### 16.3 検証
 
 - `stage0/tests/cli.rs` の `kir_map_values_match_tree_walker` (20 ケース: 挿入・上書き・削除・再挿入・成長 (1 万件)・反復順・存在しないキー・墓標と作り直し・符号付きと `&str` のキー・`&mut` の借用と値の戻り)。木走査の `core.check.eq` で期待値を確かめ、`--run` と `--native` の両方で同じ値。参照実行器は漏れ・二重解放・範囲外を内部エラーにするので、解放の規則も確かめている。`kir_map_reports_unsupported_methods_with_a_reason` は `get_mut` の理由。
-- `perf/hashmap`: `ksn build --backend llvm` が作れ (`target/debug/hashmap.native`)、`ksn run` と stdout・stderr・終了コードが一致する。
+- `perf/hashmap`: `ksn build --backend llvm` が作れ (`target/debug/hashmap`)、`ksn run` と stdout・stderr・終了コードが一致する。
 
 ### 16.4 `String` のキーと文字列の順序 (kir/string-keys、2026-11-14)
 

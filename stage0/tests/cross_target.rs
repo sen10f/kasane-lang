@@ -156,7 +156,7 @@ fn explicit_host_triple_builds_under_its_own_directory() {
     let o = run(&["build", "--target", "x86_64-linux-gnu"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    assert!(out.contains("target/x86_64-linux-gnu/debug/t.native"), "{}", out);
-    let n = Command::new(t.0.join("target").join("x86_64-linux-gnu").join("debug").join("t.native")).current_dir(&t.0).output().expect("run");
+    assert!(out.contains("target/x86_64-linux-gnu/debug/t"), "{}", out);
+    let n = Command::new(t.0.join("target").join("x86_64-linux-gnu").join("debug").join("t")).current_dir(&t.0).output().expect("run");
     assert_eq!(n.status.code(), Some(0));
 }

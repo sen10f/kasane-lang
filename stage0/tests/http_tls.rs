@@ -394,8 +394,8 @@ fn https_app_native_serves_the_same_replies() {
     let log = text(&build.stdout) + &text(&build.stderr);
     assert_eq!(build.status.code(), Some(0), "{}", log);
     assert!(!log.contains("skipped"), "ネイティブに下ろせず退避した: {}", log);
-    let bin = pkg.join("target").join("release").join("shortener_https.native");
-    assert!(bin.exists(), "ネイティブの実行ファイルがない: {}", log);
+    let bin = pkg.join("target").join("release").join("shortener_https");
+    assert!(crate::common::artifact_is_native(&bin), "ネイティブの実行ファイルがない: {}", log);
     let mut child = Command::new(&bin)
         .args(["127.0.0.1:0", "0", db.to_str().unwrap(), cert.to_str().unwrap(), key.to_str().unwrap()])
         .stdout(Stdio::null())
@@ -454,8 +454,8 @@ fn ffi_dynamic_load_failure_is_a_panic_101() {
     let b = run(&["build", "--release"], &n.0);
     let log = text(&b.stdout) + &text(&b.stderr);
     assert_eq!(b.status.code(), Some(0), "{}", log);
-    let p = n.0.join("target").join("release").join("t.native");
-    assert!(p.exists(), "ネイティブの実行ファイルがない: {}", log);
+    let p = n.0.join("target").join("release").join("t");
+    assert!(crate::common::artifact_is_native(&p), "ネイティブの実行ファイルがない: {}", log);
     let o = Command::new(&p).current_dir(&n.0).output().unwrap();
     assert_eq!(o.status.code(), Some(101), "ネイティブ: {}{}", text(&o.stdout), text(&o.stderr));
     assert!(text(&o.stderr).contains("cannot load the shared library `libksn-no-such.so.9`"), "{}", text(&o.stderr));

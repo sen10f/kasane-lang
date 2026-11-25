@@ -62,7 +62,7 @@ fn host_release_build_is_native_without_clang() {
     assert_eq!(b.status.code(), Some(0), "{}{}", out, text(&b.stderr));
     assert!(!out.contains("native backend skipped"), "バンドルに退避した: {}", out);
     let native = exe_line(&out, &t.0);
-    assert!(native.extension().map_or(false, |e| e == "native") && native.exists(), "{}", out);
+    assert!(crate::common::artifact_is_native(&native), "{}", out);
     let r = Command::new(&native).output().unwrap();
     let want = run(&["run"], &t.0);
     assert_eq!(r.status.code(), want.status.code());

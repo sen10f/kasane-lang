@@ -35,7 +35,7 @@ fn same_output(name: &str, want: &str) {
         }
         assert_eq!(o.status.code(), Some(0), "{} (release={}): {}", name, release, out);
         let kind = if release { "release" } else { "debug" };
-        let p = t.0.join("target").join(kind).join("t.native");
+        let p = t.0.join("target").join(kind).join("t");
         assert!(p.exists(), "{}: ネイティブの実行ファイルがない: {}", name, out);
         let r = Command::new(&p).output().unwrap();
         assert_eq!(r.status.code(), Some(0), "{} (release={}): {}", name, release, text(&r.stderr));
@@ -94,7 +94,7 @@ fn rt_sync_same_thread_relock_is_a_deadlock_101_everywhere() {
         }
         let o = c.output().unwrap();
         assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
-        let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t.native");
+        let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t");
         let p = if p.exists() { p } else { p.with_extension("") };
         let r = Command::new(&p).output().unwrap();
         assert_eq!(r.status.code(), Some(101), "release={}: {}", release, text(&r.stderr));
@@ -121,7 +121,7 @@ fn rt_sync_contended_relock_is_a_deadlock_101_native() {
         }
         let o = c.output().unwrap();
         assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
-        let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t.native");
+        let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t");
         let p = if p.exists() { p } else { p.with_extension("") };
         let r = Command::new(&p).output().unwrap();
         assert_eq!(r.status.code(), Some(101), "release={}: {}{}", release, text(&r.stdout), text(&r.stderr));
@@ -160,7 +160,7 @@ fn rt_sync_relock_with_busy_second_thread_is_a_deadlock_101_everywhere() {
         }
         let o = c.output().unwrap();
         assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
-        let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t.native");
+        let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t");
         let p = if p.exists() { p } else { p.with_extension("") };
         let r = Command::new("timeout").arg("10").arg(&p).output().unwrap();
         assert_eq!(r.status.code(), Some(101), "native release={}: {}{}", release, text(&r.stdout), text(&r.stderr));

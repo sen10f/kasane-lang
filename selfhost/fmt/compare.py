@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""selfhost/fmt の突き合わせ。Kasane 版 (fmt.native) の整形出力と、Rust 版 (ksn fmt) で
+"""selfhost/fmt の突き合わせ。Kasane 版 (fmt) の整形出力と、Rust 版 (ksn fmt) で
 整形済みの元ファイルをバイト単位で比べる。
 
   python3 -I compare.py [--group examples|apps|selfhost|linear_ok|unsound|all] [--files F...] [-v]
 
-- 各ファイルについて、`fmt.native` (Kasane 版、ネイティブ) の stdout と元ファイルの
+- 各ファイルについて、`fmt` (Kasane 版、ネイティブ) の stdout と元ファイルの
   内容をバイト単位で比べる。元ファイルは `ksn fmt --check` で整形済みであることが
   前提 (Rust 版と同等の出力)。
 - 結果を 4 行で出力: コミットハッシュ、総行数、一致数/総数、native か否か。
@@ -18,7 +18,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 KSN = os.path.join(ROOT, "stage0", "target", "release", "ksn")
-NATIVE = os.path.join(HERE, "target", "release", "fmt.native")
+NATIVE = os.path.join(HERE, "target", "release", "fmt")
 
 
 def run(cmd, cwd=None):
@@ -68,7 +68,7 @@ def main():
     a = ap.parse_args()
 
     if not os.path.exists(NATIVE):
-        print(f"fmt.native がない: cd selfhost/fmt && ksn build --release", file=sys.stderr)
+        print(f"fmt がない: cd selfhost/fmt && ksn build --release", file=sys.stderr)
         return 2
 
     if a.files:

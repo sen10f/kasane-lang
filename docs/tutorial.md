@@ -490,7 +490,7 @@ ksn build --target wasm32-wasi
 ```text
 native executable: target/x86_64-windows-gnu/debug/tutorial_cross.exe
 built target/x86_64-windows-gnu/debug (debug, target x86_64-windows-gnu; cross-compiled, not run here)
-native executable: target/aarch64-linux-gnu/debug/tutorial_cross.native
+native executable: target/aarch64-linux-gnu/debug/tutorial_cross
 built target/aarch64-linux-gnu/debug (debug, target aarch64-linux-gnu; cross-compiled, not run here)
 native executable: target/wasm32-wasi/debug/tutorial_cross.wasm
 built target/wasm32-wasi/debug (debug, target wasm32-wasi; cross-compiled, not run here)
@@ -501,7 +501,7 @@ built target/wasm32-wasi/debug (debug, target wasm32-wasi; cross-compiled, not r
 - `aarch64-linux-gnu`: `/usr/aarch64-linux-gnu` の sysroot と `qemu-aarch64` があれば実行できます。
 
   ```bash
-  qemu-aarch64 -L /usr/aarch64-linux-gnu target/aarch64-linux-gnu/debug/tutorial_cross.native
+  qemu-aarch64 -L /usr/aarch64-linux-gnu target/aarch64-linux-gnu/debug/tutorial_cross
   # 出力: tutorial_cross ok（終了コード 0）
   ```
 

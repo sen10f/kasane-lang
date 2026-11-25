@@ -216,8 +216,9 @@ fn tsan_run(name: &str, src: &str, want: &str) {
         .output()
         .unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
-    let bin = t.0.join("target").join("debug").join("t.native");
-    assert!(bin.exists(), "TSan 付きのネイティブが作れない: {}", out);
+    let bin = t.0.join("target").join("debug").join("t");
+    let kind = std::fs::read_to_string(t.0.join("target").join("debug").join(".ksn-artifact")).unwrap_or_default();
+    assert!(bin.exists() && kind.trim() == "native", "TSan 付きのネイティブが作れない: {}", out);
     let r = std::process::Command::new(&bin).current_dir(&t.0).env("TSAN_OPTIONS", "halt_on_error=0").output().unwrap();
     let _ = std::fs::remove_dir_all(&cache);
     let err = text(&r.stderr);

@@ -284,13 +284,20 @@ pub fn assert_native_or_reasoned_skip(out: &str) {
 }
 
 /// ネイティブの実行ファイル `p` があればそれ、無ければ (理由付きの退避を確かめたうえで) 同じ名前のバンドルの起動スクリプト。
+/// 判定は存在ではなく、ビルドが書く目印 `target/<kind>/.ksn-artifact` (`native` か `bundle`) で行う。
+pub fn artifact_is_native(p: &Path) -> bool {
+    let mark = p.parent().map(|d| d.join(".ksn-artifact"));
+    let kind = mark.and_then(|m| fs::read_to_string(m).ok()).unwrap_or_default();
+    p.exists() && kind.trim() == "native"
+}
+
 pub fn native_or_launcher(p: PathBuf, out: &str) -> PathBuf {
-    if p.exists() {
+    if artifact_is_native(&p) {
         return p;
     }
     assert!(out.contains("skipped"), "ネイティブもバンドルの退避の表示もない: {}", out);
     assert_native_or_reasoned_skip(out);
-    p.with_extension(if cfg!(windows) { "cmd" } else { "" })
+    if cfg!(windows) { p.with_extension("cmd") } else { p }
 }
 
 /// `ksn build` (既定の LLVM) で作る。ネイティブの実行ファイルが作れなければ、`ksn build` が理由を出して
@@ -324,9 +331,9 @@ pub fn build_native_strict(name: &str, src: &str, release: bool) -> (Tmp, Option
     let o = c.output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
     let kind = if release { "release" } else { "debug" };
-    let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t" });
     drop(cache);
-    let found = if p.exists() { Some(p) } else { None };
+    let found = if artifact_is_native(&p) { Some(p) } else { None };
     (t, found, out)
 }
 
@@ -1694,8 +1701,8 @@ pub fn ffi_native(t: &Tmp, name: &str) -> (String, Option<Output>) {
     let b = Command::new(exe()).args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     let out = text(&b.stdout) + &text(&b.stderr);
-    let bin = t.0.join("target").join("debug").join("t.native");
-    if !bin.exists() {
+    let bin = t.0.join("target").join("debug").join("t");
+    if !artifact_is_native(&bin) {
         return (out, None);
     }
     (out, Some(Command::new(&bin).current_dir(&t.0).output().unwrap()))
@@ -2147,8 +2154,8 @@ pub fn llvm_build_and_run(t: &Tmp) -> Option<(Output, Output)> {
     if !clang_available() {
         return None;
     }
-    let exe = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
-    assert!(exe.exists(), "{}", out);
+    let exe = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
+    assert!(artifact_is_native(&exe), "{}", out);
     let n = Command::new(&exe).current_dir(&t.0).output().expect("native");
     Some((run(&["run"], &t.0), n))
 }

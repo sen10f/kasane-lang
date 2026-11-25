@@ -19,7 +19,7 @@ for f in "$SRC"/*.ksnl; do
   if echo "$out" | grep -q "native backend skipped"; then
     bad=$((bad+1)); echo "BUNDLE $s: $(echo "$out" | grep "native backend skipped" | head -1 | sed 's/.*skipped: //')"
   else
-    exe=$(ls "$d"/target/debug/t.native 2>/dev/null)
+    exe=$(ls "$d"/target/debug/t 2>/dev/null)
     if [ -z "$exe" ]; then bad=$((bad+1)); echo "NONATIVE $s: $out"; continue; fi
     a=$("$exe" 2>&1; echo "rc=$?"); b=$(cd "$d" && "$KSN" run 2>&1; echo "rc=$?")
     if [ "$a" != "$b" ]; then mism=$((mism+1)); echo "MISMATCH $s"; echo "  native: $a" | head -3; echo "  run:    $b" | head -3; fi

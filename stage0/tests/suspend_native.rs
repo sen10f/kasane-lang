@@ -40,7 +40,7 @@ fn native(name: &str, src: &str) -> (String, Option<i32>) {
     let t = Tmp::new(name, src);
     let b = run(&["build", "--release"], &t.0);
     assert!(b.status.success(), "build: {}{}", text(&b.stdout), text(&b.stderr));
-    let exe: PathBuf = t.0.join("target").join("release").join("t.native");
+    let exe: PathBuf = t.0.join("target").join("release").join("t");
     let o = Command::new(&exe).output().expect("run the native executable");
     (text(&o.stdout), o.status.code())
 }

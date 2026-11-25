@@ -26,7 +26,7 @@ fn native_runs(t: &Tmp) -> Vec<(Option<i32>, String, String)> {
             let o = c.output().unwrap();
             let out = text(&o.stdout) + &text(&o.stderr);
             assert_native_or_reasoned_skip(&out);
-            let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t.native");
+            let p = t.0.join("target").join(if release { "release" } else { "debug" }).join("t");
             let p = native_or_launcher(p, &out);
             let r = Command::new(&p).output().unwrap();
             v.push((r.status.code(), text(&r.stdout), text(&r.stderr)));

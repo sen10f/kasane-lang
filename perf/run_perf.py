@@ -177,7 +177,7 @@ def native_build(ksn: Path, work: Path, name: str, timeout: float) -> tuple:
         timeout=timeout,
     )
     out = p.stdout + p.stderr
-    binary = work / "target" / "release" / f"{name}.native"
+    binary = work / "target" / "release" / f"{name}"
     if p.returncode != 0:
         lines = [l for l in out.splitlines() if l.strip()]
         return None, (lines[-1][:120] if lines else f"build exit {p.returncode}")

@@ -238,7 +238,7 @@ end t.fill
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains("native executable:"), "{}", out);
-    let bin = t.0.join("target/debug/t.native");
+    let bin = t.0.join("target/debug/t");
     let n = Command::new(&bin).output().expect("spawn native");
     assert_eq!(text(&n.stdout), expect);
 }

@@ -5,7 +5,7 @@
 #   python3 -I compare.py fmt   [--pkgs ...]                          整形: 書き換えの要否と出力の一致 (--check で、書き換えはしない)
 #   python3 -I compare.py build [--work DIR]                          下ろし・LLVM・clang: linear_ok の各ファイルを作り、実行の出力を Rust 版と比べる
 #
-# 前提: `KSNC_KSN` (既定 stage0/target/release/ksn) と、ksnc の実行ファイル (既定 selfhost/driver/target/release/ksnc.native)。
+# 前提: `KSNC_KSN` (既定 stage0/target/release/ksn) と、ksnc の実行ファイル (既定 selfhost/driver/target/release/ksnc)。
 # 作る前に: cd selfhost/driver && ksn build --release
 # 一時の作業場所は既定で /tmp/ksnc_stages_work (--work で変える)。リポジトリの中は書かない (fmt も --check のみ)。
 import argparse
@@ -22,7 +22,7 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 KSN = os.environ.get("KSNC_KSN", str(ROOT / "stage0" / "target" / "release" / "ksn"))
-KSNC = os.environ.get("KSNC", str(HERE / "target" / "release" / "ksnc.native"))
+KSNC = os.environ.get("KSNC", str(HERE / "target" / "release" / "ksnc"))
 LINEAR_OK = ROOT / "stage0" / "tests" / "data" / "linear_ok"
 TOML = ('[package]\nname = "t"\nversion = "0.1.0"\nedition = 1\nentry = "t.main"\n\n[dependencies]\n')
 ENV = dict(os.environ, KSNC_KSN=KSN, KSNC_ROOT=str(ROOT))
@@ -193,7 +193,7 @@ def one_build(work, src):
     pkg = make_pkg(work, src)
     # Rust 版 (基準)。
     rc, out, err = run([KSN, "build", "--release"], cwd=pkg, timeout=900)
-    ref_exe = pkg / "target" / "release" / "t.native"
+    ref_exe = pkg / "target" / "release" / "t"
     if rc != 0 or not ref_exe.exists():
         return (src.stem, "ref-fail", None, None)
     ref = run_exe(ref_exe)

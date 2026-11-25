@@ -35,8 +35,8 @@ fn native_bin(name: &str) -> (Tmp, std::path::PathBuf) {
     let _ = fs::remove_dir_all(&cache);
     assert_eq!(o.status.code(), Some(0), "ksn build が失敗:\n{}", log);
     assert!(!log.contains("skipped"), "ネイティブに下ろせず退避した:\n{}", log);
-    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
-    assert!(p.exists(), "ネイティブの実行ファイルがない:\n{}", log);
+    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t" });
+    assert!(crate::common::artifact_is_native(&p), "ネイティブの実行ファイルがない:\n{}", log);
     (t, p)
 }
 
