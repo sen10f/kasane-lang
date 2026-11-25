@@ -1209,30 +1209,23 @@ fn kir_borrowck_union(rep: &mut Report, prog: Option<&Program>, user: &[usize]) 
 }
 
 fn kir_borrowck_hidden(rep: &mut Report, prog: Option<&Program>, user: &[usize], own: bool, only: bool) {
-    let drop_ast = |rep: &mut Report| rep.items.retain(|i| !matches!(i.code.as_str(), "E3010" | "E3030" | "E3002" | "E3003"));
+    // 環境変数・旗は検査を弱めない: どの切り替えでも AST の診断は捨てず、KIR の診断は足すだけ (上位集合)。
+    let _ = only;
     let Some(p) = prog else {
-        if only {
-            drop_ast(rep);
-        }
         eprintln!("kir-borrowck: unknown (no program)");
         return;
     };
     let lo = crate::kir_lower::lower_user(p, user);
     match crate::kir_borrowck::check(p, user, &lo, own) {
-        crate::kir_borrowck::Outcome::Unknown(why) => {
-            if only {
-                drop_ast(rep);
-            }
-            eprintln!("kir-borrowck: unknown ({})", why)
-        }
+        crate::kir_borrowck::Outcome::Unknown(why) => eprintln!("kir-borrowck: unknown ({})", why),
         crate::kir_borrowck::Outcome::Checked(ds) => {
-            if only {
-                drop_ast(rep);
-            }
-            rep.items.retain(|i| i.code != "E3010" && !(own && (i.code == "E3002" || i.code == "E3003")));
             let codes: Vec<&str> = ds.iter().map(|d| d.code).collect();
             for d in &ds {
-                rep.add(d.code, &format!("[kir] {}", d.msg), Some(&d.file), d.line.max(1), 1, true);
+                let line = d.line.max(1);
+                if rep.items.iter().any(|i| i.code == d.code && i.file.as_deref() == Some(d.file.as_str()) && i.line == line) {
+                    continue;
+                }
+                rep.add(d.code, &format!("[kir] {}", d.msg), Some(&d.file), line, 1, true);
             }
             eprintln!("kir-borrowck: checked {}", codes.join(","));
         }
@@ -4034,6 +4027,7 @@ fn safe_cache_dir() -> (PathBuf, Option<NoCache>) {
     let c = cache_dir();
     #[cfg(unix)]
     {
+        use std::os::unix::ffi::{OsStrExt as _, OsStringExt};
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(&c);
         let uid = unsafe { libc::geteuid() };
@@ -4043,9 +4037,23 @@ fn safe_cache_dir() -> (PathBuf, Option<NoCache>) {
         };
         if bad {
             eprintln!("ksn: cache dir {} is not owned by you or is group/world-writable; the build cache is disabled", c.display());
-            let t = std::env::temp_dir().join(format!("ksn-nocache-{}-{}", uid, std::process::id()));
-            let _ = fs::remove_dir_all(&t);
-            let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(&t);
+            // mkdtemp: 乱数の名前を排他的に 0700 で作る。作れない・所有者かモードが違うなら使わない。
+            let mut tpl = std::env::temp_dir().join(format!("ksn-nocache-{}-XXXXXX", uid)).into_os_string().into_vec();
+            tpl.push(0);
+            let made = unsafe { libc::mkdtemp(tpl.as_mut_ptr() as *mut libc::c_char) };
+            if made.is_null() {
+                eprintln!("ksn: cannot create a private temporary cache dir; refusing to build");
+                std::process::exit(2);
+            }
+            tpl.pop();
+            let t = PathBuf::from(std::ffi::OsString::from_vec(tpl));
+            match fs::symlink_metadata(&t) {
+                Ok(m) if m.is_dir() && m.uid() == uid && m.mode() & 0o077 == 0 => {}
+                _ => {
+                    eprintln!("ksn: private cache dir {} has the wrong owner or mode; refusing to build", t.display());
+                    std::process::exit(2);
+                }
+            }
             std::env::set_var("KSN_CACHE_DIR", &t);
             return (t.clone(), Some(NoCache(t)));
         }

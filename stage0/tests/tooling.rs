@@ -957,3 +957,26 @@ fn build_ends_with_the_produced_path_line() {
     let last = out.lines().last().unwrap_or("");
     assert!(last.starts_with("built: target/debug/") || last.starts_with("built: target/"), "{}", out);
 }
+
+/// T2 (Mythos 3): キャッシュ置き場が安全でないときの退避先は乱数の名前で排他的に作る。
+/// 先回りで置かれた `ksn-nocache-<uid>-<pid>` (0777) の中には何も書かない。
+#[cfg(unix)]
+#[test]
+fn nocache_fallback_is_unpredictable_and_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = Tmp::new_raw("nocache_t2", "fn t.main() -> () uses [] panics never\nend t.main\n");
+    let tmp = t.0.join("tmpdir");
+    let bad = t.0.join("badcache");
+    fs::create_dir_all(&tmp).unwrap();
+    fs::create_dir_all(&bad).unwrap();
+    fs::set_permissions(&bad, fs::Permissions::from_mode(0o777)).unwrap();
+    let uid = unsafe { libc::geteuid() };
+    let o = run_with_env(&["build"], &t.0, &[("TMPDIR", tmp.to_str().unwrap()), ("KSN_CACHE_DIR", bad.to_str().unwrap())]);
+    assert!(text(&o.stderr).contains("build cache is disabled"), "{}", text(&o.stderr));
+    // 実行中に作られた物は終了時に消える。固定の名前は使わない (推測できる名前の先回りの物は空のまま)。
+    let pre = tmp.join(format!("ksn-nocache-{}-{}", uid, 1));
+    assert!(!pre.exists());
+    for e in fs::read_dir(&tmp).unwrap().flatten() {
+        panic!("leftover in TMPDIR: {:?}", e.path());
+    }
+}

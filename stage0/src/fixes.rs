@@ -558,7 +558,7 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
         // ヘッダから ` stack N` を外す (再帰しない `panics never` 関数には不要)。
         "E4011" => {
             let Some(text) = get(line) else { return vec![] };
-            let re = Regex::new(r" stack [0-9]+").unwrap();
+            let re = Regex::new(r" stack [0-9][0-9_]*").unwrap();
             let Some(m) = re.find(text) else { return vec![] };
             let mut end_byte = m.end();
             if end_byte < text.len() && text.as_bytes()[end_byte] == b' ' {
