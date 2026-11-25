@@ -2220,6 +2220,9 @@ fn cmd_test(args: &[String]) -> i32 {
             }
         }
         if let Some(msg) = strict_fail {
+            if !json {
+                println!("test {} ... FAILED: {}", name, msg);
+            }
             failed += 1;
             outcomes.push(TestResult { name: name.clone(), ok: false, failure: Some(msg) });
             continue;
