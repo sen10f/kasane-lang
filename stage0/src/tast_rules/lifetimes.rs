@@ -655,8 +655,10 @@ impl<'a> W<'a> {
             Self::leaves(r, &mut leaves);
         }
         if self.carries(&b.ret) {
+            // 昇格した定数の参照は、戻り値の型が `'static` なら静的な領域に置かれるので通す (それ以外は E3030)。
+            let ret_static = b.ret.regions().iter().any(|r| matches!(r, Region::Static));
             for l in leaves {
-                self.escape_leaf(l, &|loan| !matches!(loan, Loan::Dead(_)), true);
+                self.escape_leaf(l, &|loan| !matches!(loan, Loan::Dead(_)) && !(ret_static && matches!(loan, Loan::Promoted)), true);
                 self.ret_position(l);
             }
         }
@@ -731,7 +733,8 @@ impl<'a> W<'a> {
                 // 本体の局所 (外側の局所ではないもの) への借用だけが、戻り値で外へ出る。
                 let inside = |loan: &Loan| match loan {
                     Loan::Local(n, id) => (*id == 0 && pnames.contains(n)) || (!outer.contains(&(n.clone(), *id)) && !(*id == 0 && capn.contains(n))),
-                    Loan::Temp | Loan::Promoted => true,
+                    Loan::Temp => true,
+                    Loan::Promoted => !ret_static,
                     _ => false,
                 };
                 let inside = |loan: &Loan| {
@@ -1258,7 +1261,8 @@ impl<'a> W<'a> {
             for (l, _) in &v.loans() {
                 let (code, msg) = match l {
                     Loan::Local(n, _) | Loan::Dead(n) => ("E3030", format!("returns a reference to the local variable `{}`, which does not live long enough", n)),
-                    Loan::Temp | Loan::Promoted => ("E3030", "returns a reference to a temporary value, which does not live long enough".to_string()),
+                    Loan::Temp => ("E3030", "returns a reference to a temporary value, which does not live long enough".to_string()),
+                    Loan::Promoted => continue,
                     Loan::Arg(_) | Loan::ArgIn(..) => continue,
                 };
                 self.diag(code, msg, line);
