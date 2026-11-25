@@ -102,6 +102,8 @@ pub(crate) struct CollCx {
     pub(crate) spawn_arg: bool,
     /// スロット番号 → 種類。
     pub(crate) kinds: BTreeMap<usize, Kind>,
+    /// スロット番号 → 関数値 (`fn(..)` 型、実行時は `ptr`) の型。`let f = b.on_click` の `f` を `f(x)` と呼ぶ間接呼び出しに使う。
+    pub(crate) fnptr_tys: BTreeMap<usize, Src>,
     /// 固定長配列への参照のスロット → 要素数 N (`&[T; N]` / `&mut [T; N]` のパラメータと、
     /// アドレスを取られた配列の局所変数)。長さは型から分かるので定数として扱う。
     pub(crate) arr_len: BTreeMap<usize, u32>,
@@ -1616,6 +1618,9 @@ pub(crate) fn after_let(lw: &mut Lw, name: &str, init: &V) -> LR<()> {
         }
         return Ok(());
     }
+    if let Some(t @ Src::Closure { cap: crate::types::Cap::Fn, id: None, .. }) = table_ty(lw, init) {
+        lw.coll.fnptr_tys.insert(slot, t);
+    }
     if let Some(t) = table_ty(lw, init) {
         if let Some(k) = kind_of(lw, &t) {
             lw.coll.kinds.insert(slot, k);
@@ -1908,7 +1913,7 @@ fn cnames(cd: &crate::program::Def, tnames: &HashSet<String>) -> Vec<String> {
 }
 
 /// 関数の項目の名前か (`fn_item_kind` が種類を返す形。副作用なしの判定)。
-fn is_fn_item(lw: &Lw, e: &V) -> bool {
+pub(crate) fn is_fn_item(lw: &Lw, e: &V) -> bool {
     if nname(e) != "Path" {
         return false;
     }

@@ -630,6 +630,19 @@ impl<'a> Fc<'a> {
                     Ins::Call { f: ci as u32, d, argp, argn }
                 }
             }
+            Op::FnAddr { callee } => {
+                let Some(&ci) = self.index.get(callee.as_str()) else {
+                    return Err(format!("fnaddr の呼び先 {} がない", callee));
+                };
+                if self.m.funcs[ci].link.is_some() {
+                    return Err(format!("extern 関数 {} のアドレスは VM 未対応", callee));
+                }
+                Ins::FnAddr { d, f: ci as u32 }
+            }
+            Op::CallIndirect { f, args, .. } => {
+                let (argp, argn) = self.pool_slots(args);
+                Ins::CallInd { f: self.s(*f) as u32, d, argp, argn }
+            }
             Op::Make { variant, fields } => {
                 let Ty::Agg(ai) = ty else { return Err("make の結果が集成体でない".into()) };
                 let dd = &self.m.aggs[ai as usize];

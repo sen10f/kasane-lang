@@ -81,6 +81,7 @@ fn side_effecting(op: &Op) -> bool {
         // 乱数は呼ぶたびに値が変わり、バッファへ書く (結果が未使用でも除かない)。
         Op::RandFill { .. } => true,
         Op::Call { .. }
+        | Op::CallIndirect { .. }
         | Op::Write { .. }
         | Op::Eprint { .. }
         | Op::FmtFloat { .. }
@@ -149,6 +150,7 @@ fn side_effecting(op: &Op) -> bool {
         | Op::AsShared(_)
         | Op::ParseInt { .. }
         | Op::FnPtr { .. }
+        | Op::FnAddr { .. }
         | Op::EnvArgCount
         | Op::EnvArg { .. }
         | Op::EnvVar { .. } => false,
@@ -279,7 +281,7 @@ fn copy_prop(m: &Module) -> Result<Module, String> {
 /// 命令の被演算子を可変に参照する `Vec` を返す。
 pub(crate) fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
     match op {
-        Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) | Op::GlobalBytes { .. } | Op::FnPtr { .. } => vec![],
+        Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) | Op::GlobalBytes { .. } | Op::FnPtr { .. } | Op::FnAddr { .. } => vec![],
         Op::Carry { a, b } => vec![a, b],
         Op::PtrAdd { p, off } => vec![p, off],
         Op::MemLoad { p, .. } | Op::HeapFree(p) => vec![p],
@@ -336,6 +338,7 @@ pub(crate) fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         | Op::Tag(a)
         | Op::Payload(a) => vec![a],
         Op::Call { args, .. } => args.iter_mut().collect(),
+        Op::CallIndirect { f, args, .. } => std::iter::once(f).chain(args.iter_mut()).collect(),
         Op::Make { fields, .. } => fields.iter_mut().collect(),
         Op::Field { a, .. } | Op::FieldAddr { a, .. } => vec![a],
         Op::SetField { a, v, .. } => vec![a, v],

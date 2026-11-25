@@ -687,11 +687,21 @@ impl<'a> Vm<'a> {
                         w!(*d + 1, 0);
                     }
                 }
-                Ins::Call { f: ci, d, argp, argn } => {
+                Ins::FnAddr { d, f: ci } => w!(*d, *ci as u64 + 1),
+                Ins::Call { f: ci, d, argp, argn } | Ins::CallInd { f: ci, d, argp, argn } => {
                     if self.frames.len() + 1 >= crate::kir_exec::depth_limit(self.prog.depth) {
                         self.flush();
                         return Ok(Outcome::StackOverflow);
                     }
+                    let ci = &(if matches!(ins, Ins::CallInd { .. }) {
+                        let fv = r!(*ci);
+                        if fv == 0 || fv as usize > prog.funcs.len() {
+                            return Err(format!("間接呼び出しの関数値 {} が不正", fv));
+                        }
+                        (fv - 1) as u32
+                    } else {
+                        *ci
+                    });
                     // 安全点 (関数の入口): `--watch` なら新しい版を取り込み、呼び先を最新の版へ解決する。
                     let (cvi, ci) = if self.hook.is_some() { self.resolve_call(vi, *ci) } else { (vi, *ci) };
                     let cprog: &Prog = if cvi == vi { prog } else { unsafe { &*self.vers[cvi as usize] } };

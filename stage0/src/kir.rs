@@ -881,6 +881,11 @@ pub enum Op {
     /// 関数のアドレス (`ptr`)。C のコールバックとして関数を渡すときに使う。
     /// `callee` は関数の鍵。取り込みの無い `fn` のみ (段階 1)。
     FnPtr { callee: String },
+    /// 関数のアドレスを値として取る (`ptr`)。`FnPtr` と違い C の呼び出し規約への包みは付けず、`CallIndirect` で呼ぶための値 (集成体の引数も渡せる)。
+    FnAddr { callee: String },
+    /// 関数の値 `f` (`ptr`、`FnAddr` で取ったもの) を通した間接呼び出し。呼び先は分からない不透明な呼び出しで、
+    /// 効果は関数の型が宣言したもの (`uses` / `may`) とみなす。結果の型は `Inst::ty`、深さの数え方は直接呼び出しと同じ。
+    CallIndirect { f: VId, args: Vec<VId>, uses: Vec<String>, may: bool },
     /// 集成体の構築。`variant` が `Some(k)` なら列挙型のバリアント k (先頭にタグを置く)、`None` なら構造体・タプル。
     /// `fields` は宣言の順 (列挙型ではそのバリアントのペイロードの順)。
     Make { variant: Option<u32>, fields: Vec<VId> },
@@ -1210,7 +1215,7 @@ impl Module {
                         if let Op::Call { callee, .. } = &i.op {
                             todo.push(callee.clone());
                         }
-                        if let Op::FnPtr { callee } = &i.op {
+                        if let Op::FnPtr { callee } | Op::FnAddr { callee } = &i.op {
                             todo.push(callee.clone());
                         }
                     }
@@ -1498,6 +1503,8 @@ fn fmt_inst(i: &Inst) -> String {
         Op::BitCount { k, src, a } => format!("{}.{} {}", k.name(), src.name(), fmt_val(*a)),
         Op::Call { callee, args } => format!("call {}({})", callee, fmt_vals(args)),
         Op::FnPtr { callee } => format!("fnptr {}", callee),
+        Op::FnAddr { callee } => format!("fnaddr {}", callee),
+        Op::CallIndirect { f, args, uses, may } => format!("calli %{}({}) uses[{}] {}", f, fmt_vals(args), uses.join(","), if *may { "may" } else { "never" }),
         Op::Make { variant, fields } => {
             let head = match variant {
                 Some(k) => format!("make.v{}", k),
@@ -1777,6 +1784,26 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         let open = r.find('(').ok_or_else(|| perr(line, "call に ( がない"))?;
         let close = r.rfind(')').ok_or_else(|| perr(line, "call に ) がない"))?;
         return Ok(Op::Call { callee: r[..open].to_string(), args: parse_vals(&r[open + 1..close], line)? });
+    }
+    if let Some(r) = rhs.strip_prefix("calli ") {
+        let open = r.find('(').ok_or_else(|| perr(line, "calli に ( がない"))?;
+        let close = r.find(") uses[").ok_or_else(|| perr(line, "calli に ) uses[ がない"))?;
+        let f: VId = r[..open].trim().trim_start_matches('%').parse().map_err(|_| perr(line, "calli の関数値が不正"))?;
+        let tail = &r[close + 7..];
+        let rb = tail.find(']').ok_or_else(|| perr(line, "calli の uses に ] がない"))?;
+        let uses: Vec<String> = tail[..rb].split(',').filter(|x| !x.is_empty()).map(String::from).collect();
+        let may = match tail[rb + 1..].trim() {
+            "may" => true,
+            "never" => false,
+            x => return Err(perr(line, format!("calli の panics が不正: {}", x))),
+        };
+        return Ok(Op::CallIndirect { f, args: parse_vals(&r[open + 1..close], line)?, uses, may });
+    }
+    if let Some(r) = rhs.strip_prefix("fnaddr ") {
+        if ty != Ty::Ptr {
+            return Err(perr(line, "fnaddr の結果は ptr ではない"));
+        }
+        return Ok(Op::FnAddr { callee: r.to_string() });
     }
     if let Some(r) = rhs.strip_prefix("fnptr ") {
         if ty != Ty::Ptr {
@@ -3247,6 +3274,28 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             }
                         }
                     }
+                    Op::CallIndirect { f: fv, args, uses, may } => {
+                        if ty_of(*fv)? != Ty::Ptr {
+                            return Err("calli の関数値は ptr のはず".into());
+                        }
+                        for a in args {
+                            ty_of(*a)?;
+                        }
+                        if *may && !f.may_panic {
+                            return Err("panics never の関数が panics may の関数値を呼ぶ".into());
+                        }
+                        if let Some(u) = uses.iter().find(|u| !fu.contains(u.as_str())) {
+                            return Err(format!("関数値の uses {} が呼び出し元にない", u));
+                        }
+                    }
+                    Op::FnAddr { callee } => {
+                        if i.ty != Ty::Ptr {
+                            return Err("fnaddr の結果は ptr のはず".into());
+                        }
+                        if callees.get(callee.as_str()).is_none() {
+                            return Err(format!("fnaddr の呼び先 {} がモジュールにない", callee));
+                        }
+                    }
                     Op::FnPtr { callee } => {
                         if i.ty != Ty::Ptr {
                             return Err("fnptr の結果は ptr のはず".into());
@@ -3392,7 +3441,8 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         | Op::Tag(a)
         | Op::Payload(a) => vec![*a],
         Op::Call { args, .. } => args.clone(),
-        Op::FnPtr { .. } => vec![],
+        Op::CallIndirect { f, args, .. } => std::iter::once(*f).chain(args.iter().copied()).collect(),
+        Op::FnPtr { .. } | Op::FnAddr { .. } => vec![],
         Op::Make { fields, .. } => fields.clone(),
         Op::Field { a, .. } | Op::FieldAddr { a, .. } => vec![*a],
         Op::SetField { a, v, .. } => vec![*a, *v],
