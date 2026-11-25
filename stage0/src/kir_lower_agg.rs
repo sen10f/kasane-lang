@@ -274,6 +274,8 @@ impl AggTab {
                 }
                 Ok(if name == "std.sync.SendError" { self.send_err(elem) } else { self.chan_end(name == "std.sync.Sender", elem) })
             }
+            // `SpawnError<F>` = `{ code: i32, closure: () }` (KIR ではクロージャの値は `()`。失敗は組み込みの試験用の旗でだけ作られる)。
+            Src::Named(name, args, _) if name == "std.thread.SpawnError" && args.len() == 1 => Ok(self.spawn_err()),
             Src::Named(name, args, _) => {
                 match p.lookup_fqn(name) {
                     // ソケットの型 (`std.net.TcpListener` / `TcpStream`) は `&` の形でも現れるので、型表に入れる (設計_KIR.md 12 章)。
@@ -601,6 +603,16 @@ impl AggTab {
             self.chan_elem.insert(i, elem);
         }
         t
+    }
+
+    /// `std.thread.SpawnError<F>` = `{ code: i32, closure: () }`。
+    pub fn spawn_err(&mut self) -> Ty {
+        let name = "std.thread.SpawnError<fn>".to_string();
+        if let Some(&i) = self.by_name.get(&name) {
+            return Ty::Agg(i);
+        }
+        let (size, align, fields) = layout_fields(&self.defs, &[("code".to_string(), Ty::I32), ("closure".to_string(), Ty::U8)]);
+        self.push(name, size, align, AggKind::Struct(fields))
     }
 
     /// `std.sync.SendError<T>` = `{ value: T }`。

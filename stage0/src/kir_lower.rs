@@ -1564,6 +1564,13 @@ impl<'a> Lw<'a> {
                 return self.optres_on(e, recv, false, "unwrap_or", &args[1..]);
             }
         }
+        // `SpawnError<F>` から取り出したクロージャの呼び出し。KIR の `spawn` は失敗しない (クロージャの値は KIR に無い) ので、ここには来ない。
+        if target.is_none() && segs.len() == 1 && self.lookup(&segs[0]).is_some() {
+            let msg = "std.thread.spawn failed: the closure handed back by SpawnError cannot be run here".to_string();
+            self.emit(Ty::Unit, Op::Panic { msg, arg: None });
+            self.terminate(Term::Unreachable);
+            return Ok(None);
+        }
         let Some(Tgt::Fn(di)) = target else {
             return self.err(line, format!("呼び出し {} は段階 1 の対象外", segs.join(".")));
         };
