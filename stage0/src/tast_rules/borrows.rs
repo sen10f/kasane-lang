@@ -102,7 +102,7 @@ pub fn check(p: &Program, user: &[usize], tast: &Tast, tk: &TypeCk) -> Vec<Diag>
         tk.susp_lines.iter().map(|(d, l)| (*d, crate::parser::unpack_pos(*l).0)).collect();
     for &di in user {
         let Some(b) = tast.bodies.get(&di) else { continue };
-        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), closure_held: vec![], held_closures: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
+        let mut w = Walker { p, tk, susp: &susp, di, scopes: vec![HashMap::new()], cfg: Cfg::new(), tmp: 0, diags: vec![], susp_diags: vec![], vtys: HashMap::new(), frame_bad: vec![], cdepth: 0, guards: BTreeSet::new(), closure_held: vec![], tail_reb: None, held_closures: BTreeSet::new(), slots: HashMap::new(), slot_unsafe: BTreeSet::new(), last_array: None, slot_ok: None };
         for q in &b.params {
             w.scopes[0].insert(q.name.clone(), (0, q.ty.clone()));
             if has_guard(p, &q.ty) {
@@ -358,6 +358,8 @@ struct Walker<'a> {
     guards: BTreeSet<String>,
     /// 直前の `move` の閉包が取り込んだロックのガード (束縛される閉包が、落とされるまでロックを持つ)。
     closure_held: Vec<String>,
+    /// 値を作る式 (`{..}` `if` `match` `with`) が `&mut` を引数へ渡すとき、その末尾の場所は再借用として読む (引数の型つき)。
+    tail_reb: Option<Option<Ty>>,
     /// ガードを取り込んだ閉包の束縛 (値として渡すと移動で、ロックも渡る)。
     held_closures: BTreeSet<String>,
     /// 変数の鍵 → 型 (枠の `Send` の検査 (E2074) が使う)。
@@ -544,20 +546,21 @@ impl<'a> Walker<'a> {
             TKind::MCall { recv, args, .. } => self.call(e, None, Some(recv), args),
             TKind::Block(stmts) => self.block(stmts, &e.ty),
             TKind::If { cond, then, els } => {
+                let reb = self.tail_reb.take();
                 self.expr(cond);
                 let from = self.cfg.cur;
                 let join = self.cfg.node();
                 let t = self.cfg.node();
                 self.cfg.edge(from, t);
                 self.cfg.cur = t;
-                let mut srcs = self.expr(then);
+                let mut srcs = self.sub(then, &reb);
                 let c = self.cfg.cur;
                 self.cfg.edge(c, join);
                 if let Some(x) = els {
                     let n = self.cfg.node();
                     self.cfg.edge(from, n);
                     self.cfg.cur = n;
-                    srcs.extend(self.expr(x));
+                    srcs.extend(self.sub(x, &reb));
                     let c = self.cfg.cur;
                     self.cfg.edge(c, join);
                 } else {
@@ -567,6 +570,7 @@ impl<'a> Walker<'a> {
                 self.keep(&e.ty, srcs)
             }
             TKind::Match { scrut, arms } => {
+                let reb = self.tail_reb.take();
                 let ssrc = match self.place_scrut(scrut, arms) {
                     Some(s) => s,
                     None => self.expr(scrut),
@@ -583,7 +587,7 @@ impl<'a> Walker<'a> {
                     if let Some(g) = &a.guard {
                         self.expr(g);
                     }
-                    srcs.extend(self.expr(&a.body));
+                    srcs.extend(self.sub(&a.body, &reb));
                     self.pop_scope();
                     let c = self.cfg.cur;
                     self.cfg.edge(c, join);
@@ -683,6 +687,7 @@ impl<'a> Walker<'a> {
     }
 
     fn block(&mut self, stmts: &[TStmt], ty: &Ty) -> Vec<Src> {
+        let reb = self.tail_reb.take();
         self.scopes.push(HashMap::new());
         let mut tail = vec![];
         let n = stmts.len();
@@ -706,7 +711,7 @@ impl<'a> Walker<'a> {
                     }
                 }
                 TStmt::Expr(x) => {
-                    let s = self.expr(x);
+                    let s = if i + 1 == n { self.sub(x, &reb) } else { self.expr(x) };
                     if i + 1 == n {
                         tail = s;
                     }
@@ -928,13 +933,14 @@ impl<'a> Walker<'a> {
                 vec![]
             }
             "With" => {
+                let reb = self.tail_reb.take();
                 // 束縛は普通の局所 (`let`) と同じ。子は [初期化, (後始末), 本体]、実行順は 初期化 → 本体 → 後始末。
                 let srcs = ch.first().map(|x| self.expr(x)).unwrap_or_default();
                 self.scopes.push(HashMap::new());
                 for q in &e.pats {
                     self.bind_pat(q, &srcs);
                 }
-                let tail = ch.last().filter(|_| ch.len() > 1).map(|x| self.expr(x)).unwrap_or_default();
+                let tail = ch.last().filter(|_| ch.len() > 1).map(|x| self.sub(x, &reb)).unwrap_or_default();
                 if ch.len() > 2 {
                     self.expr(&ch[1]);
                 }
@@ -1104,12 +1110,12 @@ impl<'a> Walker<'a> {
         let first_arg = idx;
         // 参照の変数をそのまま渡す引数 (暗黙の再借用) は、ほかの引数の評価が終わってから借りる:
         // `f(cx, g(cx))` の入れ子の呼び出しは、外側の再借用が呼び出しの直前に起きるものとして競合させない。
-        let deferred: Vec<bool> = args.iter().map(|a| matches!(a.ty, Ty::Ref(true, ..)) && self.pl(peel_block(a)).is_some()).collect();
+        let deferred: Vec<bool> = args.iter().map(|a| matches!(a.ty, Ty::Ref(true, ..)) && self.pl(a).is_some()).collect();
         let order: Vec<usize> = (0..args.len()).filter(|j| !deferred[*j]).chain((0..args.len()).filter(|j| deferred[*j])).collect();
         let mut got: Vec<Option<Vec<Src>>> = vec![None; args.len()];
         let slot_target = if recv.is_none() && def.map_or(false, |i| self.p.defs[i].name == "core.mem.replace") { args.first().and_then(|a| self.const_slot(a)) } else { None };
         for (pos, &j) in order.iter().enumerate() {
-            let a = peel_block(&args[j]);
+            let a = &args[j];
             let pt = dparams.get(first_arg + j).cloned();
             if j == 0 {
                 self.slot_ok = slot_target.as_ref().map(|t| t.0.clone());
@@ -1151,7 +1157,7 @@ impl<'a> Walker<'a> {
             for r in mroots {
                 let hit = (first_arg..j).any(|k| {
                     srcs_per[k].iter().any(|x| matches!(x, Src::Var(v) if *v == r))
-                        && args.get(k - first_arg).map_or(true, |a| self.pl(peel_block(a)).map_or(true, |(_, p)| p.is_empty()))
+                        && args.get(k - first_arg).map_or(true, |a| self.pl(a).map_or(true, |(_, p)| p.is_empty()))
                 });
                 if hit {
                     self.diags.push((e.line, format!("cannot use `{}` while it is mutably borrowed by an earlier operand of the same expression", show_var(&r))));
@@ -1353,7 +1359,30 @@ impl<'a> Walker<'a> {
                 }
             }
         }
-        self.expr(a)
+        if matches!(a.ty, Ty::Ref(true, ..)) && matches!(a.kind, TKind::Block(_) | TKind::If { .. } | TKind::Match { .. } | TKind::Other { name: "With", .. }) {
+            self.tail_reb = Some(pt.cloned());
+        }
+        let r = self.expr(a);
+        self.tail_reb = None;
+        r
+    }
+
+    /// 値を作る式の末尾: 引数へ渡す `&mut` の場所なら再借用、入れ子の値の式なら印を引き継ぐ。
+    fn sub(&mut self, x: &TExpr, reb: &Option<Option<Ty>>) -> Vec<Src> {
+        match reb {
+            Some(pt) if matches!(x.ty, Ty::Ref(true, ..)) => {
+                if self.pl(x).is_some() {
+                    return self.arg(x, pt.as_ref());
+                }
+                if matches!(x.kind, TKind::Block(_) | TKind::If { .. } | TKind::Match { .. } | TKind::Other { name: "With", .. }) {
+                    self.tail_reb = reb.clone();
+                }
+                let r = self.expr(x);
+                self.tail_reb = None;
+                r
+            }
+            _ => self.expr(x),
+        }
     }
 
     // -------------------------------------------------------- 解析
@@ -1684,13 +1713,3 @@ impl<'a> Walker<'a> {
     }
 }
 
-/// 文が式 1 つだけのブロック `{ e }` は `e` と同じ (引数の場所の判定は包みを見通す)。
-fn peel_block(e: &TExpr) -> &TExpr {
-    match &e.kind {
-        TKind::Block(st) if st.len() == 1 => match &st[0] {
-            TStmt::Expr(x) if x.ty == e.ty => peel_block(x),
-            _ => e,
-        },
-        _ => e,
-    }
-}
