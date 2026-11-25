@@ -230,6 +230,34 @@ int ksn_parse_int(const unsigned char *p, long len, unsigned radix,
     int has_sign = is_minus || is_plus;
     long start = has_sign ? 1 : 0;
     if (start == len) return 1;
+    if (bits <= 64) {
+        /* 速い経路: 64 ビットの累積。溢れ・不正文字は下の 128 ビットの経路に任せる (結果と種類の優先順を変えない)。 */
+        uint64_t w = 0;
+        long i = start;
+        for (; i < len; i++) {
+            unsigned c = p[i];
+            unsigned d;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if ((c | 0x20) >= 'a' && (c | 0x20) <= 'z') d = (c | 0x20) - 'a' + 10;
+            else break;
+            if (d >= radix) break;
+            if (__builtin_mul_overflow(w, (uint64_t)radix, &w) || __builtin_add_overflow(w, (uint64_t)d, &w)) break;
+        }
+        if (i == len) {
+            uint64_t bound;
+            if (is_signed) {
+                uint64_t half = (uint64_t)1 << (bits - 1);
+                bound = is_minus ? half : half - 1;
+            } else {
+                bound = bits == 64 ? ~(uint64_t)0 : (((uint64_t)1 << bits) - 1);
+            }
+            if (w > bound) return 2;
+            if (is_minus && is_signed) w = 0 - w;
+            *out_lo = (unsigned long long)w;
+            *out_hi = (is_minus && is_signed && w != 0) ? ~0ULL : 0ULL;
+            return 0;
+        }
+    }
     unsigned __int128 v = 0;
     unsigned __int128 lim = ~(unsigned __int128)0;
     for (long i = start; i < len; i++) {
