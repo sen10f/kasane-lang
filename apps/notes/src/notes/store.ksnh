@@ -1,7 +1,7 @@
 import notes.error
 import notes.note
 
-const notes.store.TEST_DIR: &str = "/home/kasane-wt/notes-cli/.notes-test-data"
+const notes.store.TEST_DIR: &str = "/tmp/ksn-notes-test-data"
 
 type notes.store.Store pub
     dir: std.string.String
