@@ -1,0 +1,18 @@
+type t.P
+    x: i32
+end t.P
+
+fn t.add(a: t.P, b: t.P) -> t.P uses [] panics never
+    a + b
+end t.add
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    let a = t.P {
+        x: 1i32
+    }
+    let b = t.P {
+        x: 2i32
+    }
+    let p = t.add(a, b)
+    std.io.print_line("ok")
+end t.main

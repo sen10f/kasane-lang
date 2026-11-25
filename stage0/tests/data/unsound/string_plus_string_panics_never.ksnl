@@ -1,0 +1,10 @@
+fn t.g(a: std.string.String, b: std.string.String) -> std.string.String uses [alloc] panics never
+    a + b
+end t.g
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let a = std.string.String.new()
+    let b = std.string.String.new()
+    let s = t.g(a, b)
+    std.io.print_line(s.as_str())
+end t.main

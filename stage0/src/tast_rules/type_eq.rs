@@ -348,16 +348,21 @@ impl<'a> W<'a> {
                         self.diag("E2024", format!("operands of `{}` have different types: `{}` and `{}`", op, l, r), e.line);
                     }
                     if matches!(op.as_str(), "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^") {
-                        if let Ty::Prim(p) = lhs.ty.strip() {
-                            let p = p.as_str();
-                            let bad = match op.as_str() {
-                                "%" => matches!(p, "bool" | "char" | "str" | "f32" | "f64"),
-                                "&" | "|" | "^" => matches!(p, "char" | "str" | "f32" | "f64"),
-                                _ => matches!(p, "bool" | "char"),
-                            };
-                            if bad {
-                                self.diag("E2020", format!("type mismatch: operator `{}` cannot be applied to `{}`", op, p), e.line);
+                        // 4.1: `+ - * /` は整数と浮動小数だけ、`%` は整数だけ、`& | ^` は整数と `bool` だけ。
+                        // `str`・`String`・構造体などそれ以外は型の誤り (実行系は `bad operands` で panic する)。
+                        let t = lhs.ty.strip();
+                        let int = |n: &String| crate::check::INT_PRIMS.contains(&n.as_str());
+                        let ok = match op.as_str() {
+                            "%" => matches!(t, Ty::Prim(n) if int(n)),
+                            "&" | "|" | "^" => matches!(t, Ty::Prim(n) if int(n) || n == "bool"),
+                            _ => matches!(t, Ty::Prim(n) if int(n) || n == "f32" || n == "f64"),
+                        };
+                        if !ok {
+                            let mut msg = format!("type mismatch: operator `{}` cannot be applied to `{}`", op, t.show());
+                            if matches!(t, Ty::Prim(n) if n == "str") || matches!(t, Ty::Named(n, ..) if n.contains("string.String")) {
+                                msg.push_str(": this operator is only for integers and floats; to concatenate strings use `alloc.string.String.join` or `push_str` on a `String`");
                             }
+                            self.diag("E2020", msg, e.line);
                         }
                     }
                 }

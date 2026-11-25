@@ -4420,17 +4420,22 @@ impl<'a> TypeCk<'a> {
                 }
                 // 算術 `+ - * / %` は整数・浮動小数だけ (`true + false`、`'a' * 2` は型の誤り)。
                 // `%` は整数だけ (浮動小数は `rem` メソッド)、`& | ^` は整数と `bool` だけ (4.1)。
+                // `str`・`String`・構造体などそれ以外も型の誤り (実行系は `bad operands` で panic する)。
                 if matches!(op.as_str(), "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^") {
-                    if let Ty::Prim(p) = self.deep(&a).strip() {
-                        let p = p.as_str();
-                        let bad = match op.as_str() {
-                            "%" => matches!(p, "bool" | "char" | "str" | "f32" | "f64"),
-                            "&" | "|" | "^" => matches!(p, "char" | "str" | "f32" | "f64"),
-                            _ => matches!(p, "bool" | "char"),
-                        };
-                        if bad {
-                            self.diag("E2020", format!("type mismatch: operator `{}` cannot be applied to `{}`", op, p), nline(e));
+                    let t = self.deep(&a);
+                    let t = t.strip();
+                    let int = |n: &String| crate::check::INT_PRIMS.contains(&n.as_str());
+                    let ok = match op.as_str() {
+                        "%" => matches!(t, Ty::Prim(n) if int(n)),
+                        "&" | "|" | "^" => matches!(t, Ty::Prim(n) if int(n) || n == "bool"),
+                        _ => matches!(t, Ty::Prim(n) if int(n) || n == "f32" || n == "f64"),
+                    };
+                    if !ok {
+                        let mut msg = format!("type mismatch: operator `{}` cannot be applied to `{}`", op, t.show());
+                        if matches!(t, Ty::Prim(n) if n == "str") || matches!(t, Ty::Named(n, ..) if n.contains("string.String")) {
+                            msg.push_str(": this operator is only for integers and floats; to concatenate strings use `alloc.string.String.join` or `push_str` on a `String`");
                         }
+                        self.diag("E2020", msg, nline(e));
                     }
                 }
                 // 整数の算術はオーバーフロー・0 除算で panic しうる (クロージャの本体では `panics may` の根拠にする)。
