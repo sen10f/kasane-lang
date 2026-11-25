@@ -1099,6 +1099,9 @@ impl<'a> Walker<'a> {
         let def_name = def.map(|i| self.p.defs[i].name.clone()).unwrap_or_default();
         let _ = &local_callee;
         let mut late_recv = None;
+        // 受け手が束縛されていない式の値 (一時値、例: `t.M.lock()`) なら真。
+        let recv_is_temp = recv_place.as_ref().map_or(true, |(pl, _, _)| pl.is_none());
+        let recv_ty = recv_place.as_ref().map(|(_, t, _)| t.clone());
         if let Some((pl, ty, ex)) = recv_place.take() {
             let decl = dparams.first().cloned();
             if autoref == Some(true) || matches!(ty, Ty::Ref(true, ..)) {
@@ -1177,6 +1180,28 @@ impl<'a> Walker<'a> {
         }
         // 引数が運ぶ貸し出しの、戻り値への流れ。
         let flow = self.flows(def, &srcs_per, &tys, &e.ty, first_arg);
+        // 受け手が一時のロックガード (`t.M.lock()` の結果など) で、その結果がガードから借りた
+        // 参照を返す形 (`g.get()` の `&T`、`g.get_mut()` の `&mut T` など)。ガードは式の終わりで
+        // 放される (仕様 4.2：一時値は文の終端) ので、その参照を呼び出しの引数や `match`/`for`
+        // の対象など式の外に出せない。ガードを `let g = ...` で束縛すればスコープの終わりまで
+        // 生きるので、それで書き直す。
+        if recv.is_some()
+            && recv_is_temp
+            && recv_ty.as_ref().map_or(false, |t| has_guard(self.p, t))
+            && has_ref(&e.ty)
+        {
+            let mname = match &e.kind {
+                TKind::MCall { name, .. } => name.clone(),
+                _ => String::new(),
+            };
+            self.diags.push((
+                e.line,
+                format!(
+                    "`{}` borrows from a temporary lock guard that is dropped at the end of the expression; bind the guard with `let` first",
+                    mname
+                ),
+            ));
+        }
         let mut res = vec![];
         for (j, s) in srcs_per.iter().enumerate() {
             if flow[j] {

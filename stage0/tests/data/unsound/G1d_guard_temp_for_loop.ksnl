@@ -1,0 +1,9 @@
+static t.M: std.sync.Mutex<std.vec.Vec<u64>> = std.sync.Mutex.new(std.vec.Vec.new())
+
+fn t.main() -> () uses [thread] panics never
+    let mut total = 0u64
+    for x in t.M.lock().get().iter() {
+        total = total.wrapping_add(*x)
+    }
+    core.mem.drop(total)
+end t.main
