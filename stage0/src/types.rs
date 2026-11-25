@@ -3181,7 +3181,9 @@ impl<'a> TypeCk<'a> {
             })
             .collect();
         self.record_effects(line, effs);
-        if complete {
+        // `Box` 自身のメソッド (表に名前がある) は、持ち主が Box だけなので解決先は確定 (`dyn` 越しは上で分岐済み)。
+        let box_own = fit.iter().all(|(_, o)| o == "alloc.boxed.Box");
+        if complete || box_own {
             self.last_fit = Some(fit.iter().map(|(i, _)| *i).collect());
         }
         let (di, owner) = fit[0].clone();
