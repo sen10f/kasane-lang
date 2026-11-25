@@ -56,6 +56,7 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
     if m.funcs.iter().any(|f| f.link.as_deref().map_or(false, |l| l.starts_with("libssl.so") || l.starts_with("libcrypto.so"))) {
         return Err("std.tls は VM 未対応".into());
     }
+    // `std.task.block_on_threads` は複数のワーカーを前提にした意味 (取り消し・入れ子・panic の伝わり方) を持つ。VM の実行器は 1 本なので走らせない (木走査へ退避する)。
     if m.find("ksn.task.mt_begin").is_some() {
         return Err("std.task.block_on_threads は VM 未対応".into());
     }
