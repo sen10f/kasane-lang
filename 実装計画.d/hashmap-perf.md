@@ -23,3 +23,8 @@
 - u32 の索引表への分離 (メモリ 1/2 以下): 索引用に 2 つ目の `Buf<u32, A>` が要るが、`Allocator` は複製できず (`A` の値は `cells` が持つ)、`Clone` 境界を足すと型の公開の API が変わる。生ポインタで `cells` の allocator を借りる案は unsafe を標準の外へ広げる。決定が要る。
 - get 外れは Rust の約 2 倍: Fnv64 の下位 32 ビットを使う線形探索の群れ (ハッシュを変えない決定)。
 - 呼び出しの inline (`kasane_base_inst` に HashMap の関数を足す) は効果なし (0.27 → 0.29 s)。足していない。
+
+## 1 割り当て化 (std/hashmap-onealloc, 2026-11-25)
+- 索引を `Index(usize, usize)` 1 セルに u32 の 4 レーン (= 実体の相対位置 + 1、0 は空) で詰めた。スロット数 `slots` (2 のべき、8 以上) の索引は先頭の `slots/4` セル、実体はその後ろ。割り当ては今までどおり `cells` の 1 本 (2 つ目の allocator も unsafe も不要)。
+- 墓石・`compact`・挿入順・Fnv64 (下位 32 ビット)・API は変更なし。索引にハッシュは持たない (実体の `Entry` のハッシュで先に比べる)。実体は 2^32-2 件まで (超えると AllocError)。
+- 測定 (秒、負荷約 60 で雑音大。各行は 1M 挿入を含む。Rust は -C opt-level=3 の SipHash): ins dev 0.48 / new 0.39 / rust 0.25、hit 0.62 / 0.56 / 0.71、miss 0.95 / 0.86 / 0.81、iter 1.09 / 1.15 / 0.67、remove 半分 1.11 / 0.61 / 0.83。常駐 98 → 49 MB (Rust 55 MB)。
