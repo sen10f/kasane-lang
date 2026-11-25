@@ -2196,13 +2196,14 @@ fn cmd_test(args: &[String]) -> i32 {
     let mut outcomes: Vec<TestResult> = vec![];
     let (mut n_llvm, mut n_bundle) = (0, 0);
     let (mut n_vm, mut n_vm_skipped) = (0, 0);
+    let vm_lowered = if use_vm || drop_forced { Some(crate::vm::lower_tests(&prog, &user, &tests)) } else { None };
     for ti in &tests {
         let name = prog.defs[*ti].name.clone();
         let mut results: Vec<Option<String>> = vec![];
         let mut names: Vec<&str> = vec![];
         let mut vm_note = String::new();
         let vm_result = if use_vm || drop_forced {
-            match crate::vm::run_test(&prog, &user, *ti) {
+            match crate::vm::run_test(&prog, vm_lowered.as_ref().unwrap(), *ti) {
                 Ok(r) => Some(r),
                 Err(why) if drop_forced => {
                     failed += 1;
