@@ -3320,7 +3320,7 @@ fn try_into_an_enum_without_derive_from_reports_both_remedies() {
     let o = run(&["check", "--json"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(codes(&out), vec!["E2020".to_string()], "{}", out);
-    assert!(out.contains("add a variant `V(t.Inner)` to `t.Error` (an enum that declares `derive [From]`), or write `map_err`"), "{}", out);
+    assert!(out.contains("type mismatch in `?`: expected error type `t.Error`, found `t.Inner`; the function's error type must be `t.Inner` or implement `From<t.Inner>`"), "{}", out);
 }
 
 /// `derive [From]` があっても、`E1` を唯一のペイロードに持つバリアントがなければ E2020 (別の型のバリアントでは包まない)。

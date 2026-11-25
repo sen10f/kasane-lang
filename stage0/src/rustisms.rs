@@ -358,7 +358,7 @@ pub fn scan(text: &str) -> Vec<Hit> {
                     line: ln,
                     col: pos + 1,
                     msg: format!(
-                        "`{}` must be written with its full path in Kasane: `alloc.vec.Vec<T, std.alloc.System>`, `alloc.string.String<std.alloc.System>`, `alloc.collections.HashMap<K, V, std.alloc.System>`, `alloc.boxed.Box<T, std.alloc.System>`; constructors take the allocator: `alloc.vec.Vec.new(std.alloc.SYSTEM)`",
+                        "`{}` must be written with its full path in Kasane: `std.vec.Vec<T>`, `std.string.String`, `std.collections.HashMap<K, V>`, `std.boxed.Box<T>`; constructors take the default allocator: `std.vec.Vec.new()`",
                         w
                     ),
                 });

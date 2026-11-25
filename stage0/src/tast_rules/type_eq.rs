@@ -584,7 +584,7 @@ impl<'a> W<'a> {
             };
             self.diag(
                 "E2020",
-                format!("type mismatch in `?`: expected error type `{w}`, found `{g}`; add a variant `V({g})` to `{w}` (an enum that declares `derive [From]`), or write `map_err`"),
+                format!("type mismatch in `?`: expected error type `{w}`, found `{g}`; the function's error type must be `{g}` or implement `From<{g}>` (define your own error enum with `derive [From]`), or convert with `map_err` before `?`"),
                 e.line,
             );
         }
