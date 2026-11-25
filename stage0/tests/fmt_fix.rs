@@ -1357,3 +1357,13 @@ fn fix_surface_arm_deref_assignment_opens_a_block() {
     let src = "fn t.set(flag: &mut bool) -> () uses [] panics never\n    match Some(flag) {\n        Some(f) => *f = true\n        None => {}\n    }\nend t.set\n";
     surface_round("sf_deref_arm", src, "E0002", "*f = true\n");
 }
+
+#[test]
+fn ksn_fix_unused_let_mut_with_later_assignment_is_left_alone() {
+    let src = "fn t.main() -> () uses [] panics never\n    let mut o = Some(1u64)\n    o = None\n    o = Some(2u64)\nend t.main\n";
+    let t = Tmp::new("fix_unused_assigned", src);
+    let _ = run(&["fix"], &t.0);
+    let o = run(&["check"], &t.0);
+    assert!(!text(&o.stderr).contains("panicked"), "{}", text(&o.stderr));
+    assert!(!text(&o.stdout).contains("E1101") && !text(&o.stderr).contains("E1101"), "{}{}", text(&o.stdout), text(&o.stderr));
+}
