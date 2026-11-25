@@ -6221,13 +6221,27 @@ impl<'a> TypeCk<'a> {
                 }
                 let ta = items(tel(b, 1));
                 let (Some(a0), Some(r)) = (ta.first(), ta.get(1)) else { continue };
+                // 境界の効果 `Fn<A, R, E, P>`: 呼び出しの効果に使う (具体名はそのまま、変数は中断しうるものとして `call_closure` が扱う)。
+                let beff = Eff(Some(EffInfo {
+                    decl: true,
+                    uses: match ta.get(2) {
+                        Some(v) if tag(v) == "effects" => items(tel(v, 1)).iter().map(|x| st(x)).collect(),
+                        Some(v) if tag(v) == "named" => vec![st(tel(v, 1))],
+                        _ => vec![],
+                    },
+                    may: match ta.get(3) {
+                        Some(v) if tag(v) == "panic" => Some(st(tel(v, 1)) == "may"),
+                        _ => None,
+                    },
+                    name: format!("the `{}` bound", pn),
+                }));
                 let Ty::Tuple(args) = bound_targ(a0, &gn) else {
                     if bound_targ(a0, &gn) == Ty::Unit {
-                        return Some(Ty::Closure { args: vec![], ret: Box::new(bound_targ(r, &gn)), cap: Cap::Fn, id: None, eff: Eff::default() });
+                        return Some(Ty::Closure { args: vec![], ret: Box::new(bound_targ(r, &gn)), cap: Cap::Fn, id: None, eff: beff.clone() });
                     }
                     continue;
                 };
-                return Some(Ty::Closure { args, ret: Box::new(bound_targ(r, &gn)), cap: Cap::Fn, id: None, eff: Eff::default() });
+                return Some(Ty::Closure { args, ret: Box::new(bound_targ(r, &gn)), cap: Cap::Fn, id: None, eff: beff.clone() });
             }
         }
         None
