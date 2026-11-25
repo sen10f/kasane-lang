@@ -46,3 +46,7 @@ Mythos3 D1 の直し。今は手書きの `impl core.ops.Drop` を呼ぶ実行�
   `FnOnce` は本体が所有し、環境のスロットの印を、取り込んだ値を渡す呼び出し (`Lw::emit` の `once_flags`) の直前に落とす (呼ばれなければスコープの終わりで破棄)。
 - `&式` の一時値は、ヒープの所有物 (`&構造体{ Vec }`) も文の終わりで解放する (ASan の漏れ検査を試験に入れた)。
 - 機関の選択 (`cli.rs` の `has_user_drop` と `drop_forced`) は小さく保つ: `use_vm || drop_forced` と、失敗時の 2 つの腕だけ。S6 (`vm/s6-kir-run`) が VM を既定にして退避を持つなら、`drop_forced` のとき退避を禁じる 1 条件に畳める。
+
+## DR1: `*r = v` の古い値の破棄 (2026-11-26)
+
+`store_deref` (`kir_lower_refs.rs`) が、所有物 (手書き Drop・Vec・Box ほか) の指す先なら、新しい値の評価後・書き込み前に古い値を `drop_value` する (欄・添字の代入と同じ)。試験: `user_drop/deref_assign.ksnl`。未: `*r = String` (`r: &mut String`) は KIR に下ろせず、手書き Drop が無ければ木走査へ退避する。

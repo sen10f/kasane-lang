@@ -466,6 +466,11 @@ impl<'a> Lw<'a> {
         };
         match self.vty(r) {
             Ty::Ref(true, p) if p.ty() == self.vty(v) => {
+                // 所有物 (手書きの Drop・Vec・Box ほか) の古い値は、新しい値を評価したあと、書く前に解放する。
+                if super::coll::owns(self, p.ty()) {
+                    let old = self.emit(p.ty(), Op::Load(r));
+                    super::coll::drop_value(self, old, p.ty());
+                }
                 self.emit(Ty::Unit, Op::Store { ptr: r, val: v });
                 Ok(St::Unit)
             }

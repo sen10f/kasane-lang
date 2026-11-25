@@ -1,0 +1,75 @@
+static t.LOG: core.sync.AtomicU64 = core.sync.AtomicU64.new(0u64) pub
+
+type t.D
+    id: u64
+end t.D
+
+type t.H
+    d: t.D
+    names: std.vec.Vec<std.string.String>
+end t.H
+
+impl core.ops.Drop for t.D
+fn t.D.drop(self: &mut t.D) -> () uses [] panics never impls core.ops.Drop
+    let old = t.LOG.load(core.sync.Ordering.SeqCst)
+    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)
+end t.D.drop
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut x = t.D {
+        id: 1u64
+    }
+    t.put(&mut x, 2u64)
+    core.check.eq(t.take(), 1u64)
+    let r = &mut x
+    *r = t.D {
+        id: 3u64
+    }
+    core.check.eq(t.take(), 2u64)
+    let mut o = Some(t.D {
+        id: 4u64
+    })
+    let q = &mut o
+    *q = None
+    core.check.eq(t.take(), 4u64)
+    let mut h = t.H {
+        d: t.D {
+            id: 5u64
+        }
+        names: std.vec.Vec.new()
+    }
+    core.mem.drop(h.names.push(t.s("a")))
+    h.d = t.D {
+        id: 6u64
+    }
+    core.check.eq(t.take(), 5u64)
+    let mut v = std.vec.Vec.new()
+    core.mem.drop(v.push(t.D {
+        id: 7u64
+    }))
+    v[0usize] = t.D {
+        id: 8u64
+    }
+    core.check.eq(t.take(), 7u64)
+    let mut names: std.vec.Vec<std.string.String> = std.vec.Vec.new()
+    core.mem.drop(names.push(t.s("x")))
+    core.mem.drop(names.push(t.s("y")))
+    names[1usize] = t.s("z")
+    core.check.eq(names.len(), 2usize)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main
+
+fn t.put(r: &mut t.D, id: u64) -> () uses [] panics never
+    *r = t.D {
+        id: id
+    }
+end t.put
+
+fn t.s(text: &str) -> std.string.String uses [alloc] panics may
+    std.string.String.from_str(text).unwrap()
+end t.s
+
+fn t.take() -> u64 uses [] panics never
+    t.LOG.swap(0u64, core.sync.Ordering.SeqCst)
+end t.take
