@@ -1072,8 +1072,20 @@ impl Interp {
                 match res {
                     Ok(n) => {
                         if let Some(out) = args.get(1) {
-                            if let Some(l) = item_list(&dr(out)) {
+                            let out = dr(out);
+                            if let Some(l) = item_list(&out) {
                                 l.borrow_mut().extend(buf.iter().map(|b| int(*b as i128, "u8")));
+                                // `Vec` の容量も長さに追いつかせる。push は容量を見て再確保するので、
+                                // 容量が長さより小さいままだと、次の push が AllocError になる。
+                                let len = l.borrow().len();
+                                if let Val::Struct(v) = &out {
+                                    if let Some(Val::Struct(b)) = v.get("buf") {
+                                        let cap = if let Some(Val::Int(c, _)) = b.get("capacity") { c as usize } else { 0 };
+                                        if len > cap {
+                                            b.set("capacity", usz(len));
+                                        }
+                                    }
+                                }
                             }
                         }
                         Ok(ok(int(n as i128, "usize")))
