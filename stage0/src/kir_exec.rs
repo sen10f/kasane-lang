@@ -908,7 +908,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     // 期限 (`set_read_deadline` / `set_write_deadline`) の絶対時刻。fd ごとに読みと書き。
     let mut deadlines: HashMap<i128, (Option<Instant>, Option<Instant>)> = HashMap::new();
     let mut files: HashMap<i128, File> = HashMap::new();
-    let mut next_fd: i128 = 0;
+    let mut next_fd: i128 = 3;
     let mut stack = vec![enter(entry, args, None, 0, 0)];
     loop {
         let top = stack.len() - 1;

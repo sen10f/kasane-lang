@@ -1719,29 +1719,45 @@ pub(crate) fn load_for_debug() -> Result<crate::debug::Target, String> {
     Ok(crate::debug::Target { prog, entry, entry_name, tests, user_files })
 }
 
-/// `--engine=vm|tree|both` を取り除く。1 つ目は VM を使うか (`ksn run` / `ksn test`。既定は木走査)、
-/// 2 つ目は `both` (`ksn test` だけ: 木走査と VM の両方で走らせて結果を比べる)。
-fn take_engine(args: &[String]) -> Result<(bool, bool, Vec<String>), String> {
-    let mut vm = false;
+/// `--engine=vm|tree|both` を取り除く。返す値は (VM を使うか, `both` か, 明示したか, 残りの引数)。
+/// 既定は VM (KIR → バイトコード。下ろせない・VM が扱えない入口は黙って木走査へ退避する)。`KSN_ENGINE=tree|vm` でも選べる (引数が優先)。
+/// `both` (`ksn test` だけ) は木走査と VM の両方で走らせて結果を比べる。`vm` を明示したときだけ、退避の理由を stderr に出す。
+fn take_engine(args: &[String]) -> Result<(bool, bool, bool, Vec<String>), String> {
+    let mut vm = true;
+    let mut explicit = false;
     let mut cmp = false;
+    match std::env::var("KSN_ENGINE").ok().as_deref() {
+        None | Some("") => {}
+        Some("vm") => explicit = true,
+        Some("tree") => vm = false,
+        Some(o) => return Err(format!("KSN_ENGINE は vm か tree (指定: {})", o)),
+    }
     let mut rest = vec![];
     for a in args {
         match a.strip_prefix("--engine=") {
-            Some("vm") => vm = true,
-            Some("tree") => vm = false,
+            Some("vm") => {
+                vm = true;
+                explicit = true;
+            }
+            Some("tree") => {
+                vm = false;
+                explicit = false;
+                cmp = false;
+            }
             Some("both") => {
                 vm = true;
                 cmp = true;
+                explicit = true;
             }
-            Some(o) => return Err(format!("--engine は vm か tree (指定: {})", o)),
+            Some(o) => return Err(format!("--engine は vm か tree か both (指定: {})", o)),
             None => rest.push(a.clone()),
         }
     }
-    Ok((vm, cmp, rest))
+    Ok((vm, cmp, explicit, rest))
 }
 
 fn cmd_run(args: &[String]) -> i32 {
-    let (use_vm, cmp, args) = match take_engine(args) {
+    let (use_vm, cmp, explicit, args) = match take_engine(args) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("ksn: {}", e);
@@ -1754,6 +1770,8 @@ fn cmd_run(args: &[String]) -> i32 {
     }
     let args = &args[..];
     let (json, watch, rest) = run_args(args);
+    // ホットリロード (`--watch`) は、VM を明示したときだけ VM で走らせる (既定は木走査)。
+    let use_vm = use_vm && (!watch || explicit);
     let mut rep = Report::new(json);
     crate::vm::tick("start");
     let root = match find_root() {
@@ -1814,7 +1832,11 @@ fn cmd_run(args: &[String]) -> i32 {
                 std::mem::forget(l);
                 return code;
             }
-            Err(why) => eprintln!("vm engine skipped: {}; falling back to the tree walker", first_line(&why)),
+            Err(why) => {
+                if explicit {
+                    eprintln!("vm engine skipped: {}; falling back to the tree walker", first_line(&why));
+                }
+            }
         }
     }
     let prog = Rc::new(prog);
@@ -1978,7 +2000,7 @@ fn cmd_test(args: &[String]) -> i32 {
         dargs.extend(["--test".to_string(), name.clone()]);
         return crate::debug::cmd_debug(&dargs);
     }
-    let (use_vm, cmp, args) = match take_engine(args) {
+    let (use_vm, cmp, explicit, args) = match take_engine(args) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("ksn: {}", e);
@@ -2056,7 +2078,9 @@ fn cmd_test(args: &[String]) -> i32 {
             match crate::vm::run_test(&prog, &user, *ti) {
                 Ok(r) => Some(r),
                 Err(why) => {
-                    eprintln!("test {}: vm engine skipped: {}; falling back to the tree walker", name, first_line(&why));
+                    if explicit {
+                        eprintln!("test {}: vm engine skipped: {}; falling back to the tree walker", name, first_line(&why));
+                    }
                     vm_note = format!("vm skipped: {}", first_line(&why));
                     None
                 }

@@ -51,6 +51,10 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
     }
     let m = lo.module.reachable_from(&[entry, kir_lower::debug::ENTRY_DEBUG]);
     tick("reachable");
+    // `std.task.block_on_threads` は複数のワーカーで走る意味 (`spawn_local` の禁止など) を持つので、VM では走らせない (木走査へ退避する)。
+    if m.find("ksn.task.mt_begin").is_some() {
+        return Err("std.task.block_on_threads は VM 未対応".into());
+    }
     let errs = crate::kir::verify_module(&m);
     tick("verify");
     if let Some(e) = errs.first() {
@@ -72,7 +76,7 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
 
 /// `ksn run --engine=vm`: 入口を VM で実行して終了コードを返す。実行を始める前に分かる理由 (下ろせない・VM が扱えない) は `Err`。
 pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String], watch: Option<Box<dyn FnOnce() -> reload::Reload + '_>>) -> Result<i32, String> {
-    let lo = kir_lower::lower_program(prog, user, Some(entry));
+    let lo = kir_lower::lower_program_lazy(prog, user, entry);
     tick("lower");
     let bc = prepare(lo, entry)?;
     // 戻り値の型は付け替え後の型表 (`bc.aggs`) の添字で読む。`lo.module` の型は型表を縮める前の添字なので使えない。
@@ -144,7 +148,7 @@ pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String], w
 /// 下ろせない・VM が扱えないときは `Err(理由)` (呼び出し側が木走査で実行する)。
 pub fn run_test(prog: &Program, user: &[usize], ti: usize) -> Result<Option<String>, String> {
     let name = prog.defs[ti].name.clone();
-    let lo = kir_lower::lower_test(prog, user, ti);
+    let lo = kir_lower::lower_test_lazy(prog, user, ti);
     let bc = prepare(lo, &name)?;
     let mut vm = run::Vm::new(&bc);
     vm.capture = Some(vec![]);

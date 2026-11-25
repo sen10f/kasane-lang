@@ -212,7 +212,7 @@ fn io_error_bytes(aggs: &[crate::kir::AggDef], kind: &str, code: i32) -> Result<
 
 impl<'a> Vm<'a> {
     pub fn new(prog: &'a Prog) -> Vm<'a> {
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), children: Default::default(), next_fd: 0, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), children: Default::default(), next_fd: 3, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
     }
 
     /// 最後の panic の位置 (`in <関数> at <ファイル>:<行>`。デバッガと同じ形)。行表がない関数では `None`。

@@ -2156,6 +2156,16 @@ pub fn lower_program(p: &Program, user: &[usize], entry: Option<&str>) -> Lowere
     lower_defs(p, user, entry, None)
 }
 
+/// `lower_program` と同じ結果のうち、入口から呼ばれる先だけを下ろす (VM の `ksn run`。標準ライブラリの全関数を下ろさない。起動が数百 ms 速い)。
+pub fn lower_program_lazy(p: &Program, user: &[usize], entry: &str) -> Lowered {
+    lower_defs_with(p, user, Some(entry), None, true)
+}
+
+/// `lower_test` の遅延版 (VM の `ksn test`)。
+pub fn lower_test_lazy(p: &Program, user: &[usize], test_def: usize) -> Lowered {
+    lower_defs_with(p, user, Some(&p.defs[test_def].name), Some(test_def), true)
+}
+
 /// テストの入口が宣言として持つ効果 (`test` には uses の宣言がない)。`ksn check` は `test` の本体で効果を見ない
 /// (check.rs の `check_fn_sema` で `cur_uses = None`) ので、入口はこの全部の効果を持つ関数として下ろす。
 const ALL_EFFECTS: [&str; 9] = ["alloc", "env", "io.console", "io.fs", "io.net", "process", "rand", "thread", "time"];
@@ -2268,7 +2278,13 @@ fn lower_defs_with(p: &Program, user: &[usize], entry: Option<&str>, test_def: O
     let mut ext_bad: Vec<(String, String)> = vec![];
     crate::s5_meter::set_active(true);
     let mut tried: HashSet<usize> = HashSet::new();
-    let initial: &[usize] = if lazy { &first_user } else { user };
+    // 入口を指定した遅延の下ろし (VM の `ksn run` / `ksn test`) は、入口から呼ばれる先だけを下ろす。
+    let entry_only: Vec<usize> = match (lazy, test_def, entry) {
+        (true, Some(t), _) => vec![t],
+        (true, None, Some(e)) => p.funcs.get(e).copied().into_iter().collect(),
+        _ => vec![],
+    };
+    let initial: &[usize] = if !entry_only.is_empty() { &entry_only } else if lazy { &first_user } else { user };
     for &i in initial {
         let d = &p.defs[i];
         if !is_candidate(d) && test_def != Some(i) {
