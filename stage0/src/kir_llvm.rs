@@ -1008,7 +1008,7 @@ fn emit_with_attrs(m: &Module, entry: &str, program: bool, target: Option<Target
                 format!("  %ok1 = icmp ult i64 %e, %dmax\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl = load i64, ptr @ksn.floor\n  %need = add i64 %fl, {}\n  %ok2 = icmp uge i64 %sp, %need\n  %fits = and i1 %ok1, %ok2\n", fr)
             };
             funcs.push_str(&format!(
-                "define internal {rt} {w}({ps}) alwaysinline nounwind null_pointer_is_valid {{\n  %d = load i64, ptr @ksn.depth\n  %dmax = load i64, ptr @ksn.dmax\n  %e = add i64 %d, {h1}\n{fl}  br i1 %fits, label %fast, label %slow\nfast:\n  %rf = call {rt} {f}({xs})\n  ret {rt} %rf\nslow:\n  %rs = call {rt} {s}({xs})\n  ret {rt} %rs\n}}\n\n",
+                "define internal {rt} {w}({ps}) alwaysinline nounwind null_pointer_is_valid {{\n  %d = load i64, ptr @ksn.depth\n  %dmax = load i64, ptr @ksn.dmax\n  %e = add i64 %d, {h1}\n{fl}  br i1 %fits, label %fast, label %slow, !prof !{{!\"branch_weights\", i32 1000, i32 1}}\nfast:\n  %rf = call {rt} {f}({xs})\n  ret {rt} %rf\nslow:\n  %rs = call {rt} {s}({xs})\n  ret {rt} %rs\n}}\n\n",
                 rt = rt, w = fname(&format!("{}.w", f.key)), ps = ps.join(", "), h1 = h, fl = fl, f = fname(&f.key), s = fname(&format!("{}.slow", f.key)), xs = xs.join(", ")
             ));
         }
@@ -3788,12 +3788,14 @@ impl<'a> Fe<'a> {
         // 再帰せず、呼び先も有界なので、呼び出しの深さの記録 (`ksn.depth`) を省いて、LLVM が展開できるようにする
         // (組み込みは呼び出しなしで展開されていたので、深さの記録の分だけ遅くなるのを防ぐ。深さの上限の検査は呼び出し側が行う)。
         let inline = if kasane_base_inst(&f.key) { "alwaysinline " } else { "" };
+        // `.slow` 複製は深さの上限付近でしか呼ばれない: コンパイル時間を減らすため cold/min サイズにし、インライン展開もしない。
+        let slow_attrs = if self.slow { "cold minsize optsize noinline " } else { "" };
         // wasm32 で公開する関数は外部リンケージの `define` にして、`wasm-export-name` で export の名前を決める (WASM ABI)。
         let (head, exp) = match wasm_export_name(&f.key) {
             Some(n) => ("define", format!(" \"wasm-export-name\"=\"{}\"", n)),
             None => ("define internal", String::new()),
         };
-        let mut s = format!("{} {} {}({}){} {}nounwind {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), if self.slow { fname(&format!("{}.slow", f.key)) } else if self.dmode { fname(&format!("{}.d", f.key)) } else { fname(&f.key) }, if self.dmode { std::iter::once("i64 %depth".to_string()).chain(params.iter().cloned()).collect::<Vec<_>>().join(", ") } else { params.join(", ") }, exp, inline, if self.dmode { String::new() } else { memattr.clone() });
+        let mut s = format!("{} {} {}({}){} {} {}nounwind {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), if self.slow { fname(&format!("{}.slow", f.key)) } else if self.dmode { fname(&format!("{}.d", f.key)) } else { fname(&f.key) }, if self.dmode { std::iter::once("i64 %depth".to_string()).chain(params.iter().cloned()).collect::<Vec<_>>().join(", ") } else { params.join(", ") }, exp, inline, slow_attrs, if self.dmode { String::new() } else { memattr.clone() });
         s.push_str(&hoisted);
         s.push_str(&self.entry_allocas);
         if bare {
