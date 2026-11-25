@@ -222,6 +222,7 @@ impl Ty {
             Ty::Slice(t) => format!("[{}]", t.show_r()),
             Ty::Array(t, _) => format!("[{}; _]", t.show_r()),
             Ty::Ptr(m, t) => format!("{} {}", if *m { "*mut" } else { "*const" }, t.show_r()),
+            Ty::Closure { args, ret, .. } => format!("fn({}) -> {}", args.iter().map(|x| x.show_r()).collect::<Vec<_>>().join(", "), ret.show_r()),
             other => other.show(),
         }
     }

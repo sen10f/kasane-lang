@@ -1,0 +1,27 @@
+fn t.launder(f: fn(&mut Option<&'static str>, &str) -> () uses [] panics never, x: &str) -> &'static str uses [] panics never
+    let mut s: Option<&'static str> = Some("k")
+    f(&mut s, x)
+    match s {
+        Some(r) => r
+        None => ""
+    }
+end t.launder
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut a = std.string.String.new()
+    a.push_str("hello world, this is heap").unwrap()
+    let r = t.launder(t.put, a.as_str())
+    core.mem.drop(a)
+    let mut b = std.string.String.new()
+    b.push_str("XXXXXXXXXXXXXXXXXXXXXXXXX").unwrap()
+    t.pr(r)
+    core.mem.drop(b)
+end t.main
+
+fn t.pr(x: &str) -> () uses [io.console] panics may
+    std.io.print_line(x).unwrap()
+end t.pr
+
+fn t.put['a](slot: &mut Option<&'a str>, x: &'a str) -> () uses [] panics never
+    *slot = Some(x)
+end t.put

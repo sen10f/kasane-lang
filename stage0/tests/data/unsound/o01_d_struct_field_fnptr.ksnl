@@ -1,0 +1,29 @@
+type t.H pub
+    f: fn(&u64) -> &'static u64 uses [] panics never
+end t.H
+
+fn t.go(h: &t.H, x: &u64) -> &'static u64 uses [] panics never
+    let g = h.f
+    g(x)
+end t.go
+
+fn t.id(x: &u64) -> &u64 uses [] panics never
+    x
+end t.id
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let h = t.H {
+        f: t.id
+    }
+    let mut v = std.vec.Vec.new()
+    v.push(42u64).unwrap()
+    let r = t.go(&h, &v[0usize])
+    core.mem.drop(v)
+    t.pr(*r)
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr

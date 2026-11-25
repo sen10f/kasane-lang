@@ -1,0 +1,25 @@
+fn t.id(x: &u64) -> &u64 uses [] panics never
+    x
+end t.id
+
+fn t.launder[F: core.ops.Fn<(&u64,), &'static u64>](f: F, x: &u64) -> &'static u64 uses [] panics never
+    f(x)
+end t.launder
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let mut v = std.vec.Vec.new()
+    v.push(42u64).unwrap()
+    let r = t.launder(t.id, &v[0usize])
+    v.push(43u64).unwrap()
+    v.push(44u64).unwrap()
+    v.push(45u64).unwrap()
+    v.push(46u64).unwrap()
+    v.push(47u64).unwrap()
+    t.pr(*r)
+end t.main
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr
