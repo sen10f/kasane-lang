@@ -5,7 +5,7 @@ pub const HELP: &[(&str, &str, &str, &str)] = &[
     ("new", "ksn new <name>", "Create a new package directory <name> with kasane.toml and a hello-world entry.", "ksn new hello"),
     ("check", "ksn check [--json] [--native] [--signatures-only] [--target <triple>]", "Type-check the package (run in the package or any subdirectory).", "ksn check"),
     ("check-stdlib", "ksn check-stdlib [--json]", "Check the standard library sources.", "ksn check-stdlib"),
-    ("run", "ksn run [-- <program args>...]", "Check and run the package entry with the interpreter.", "ksn run -- 1 2"),
+    ("run", "ksn run [-- <program args>...]", "Check and run the package entry (VM by default; falls back to the tree walker; --engine=tree|vm).", "ksn run -- 1 2"),
     ("test", "ksn test [--both] [--json] [--debug <FQN>] [<filter>]", "Run the package tests (--both: also compare with the native backend).", "ksn test --both"),
     ("build", "ksn build [--release] [--allow-bundle] [--target <triple>] [--backend llvm|c]", "Build target/<debug|release>/<name>.native; the last line says which file was made.", "ksn build --release"),
     ("fmt", "ksn fmt [--check]", "Rewrite sources to the one canonical format (--check: only report).", "ksn fmt"),

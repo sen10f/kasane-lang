@@ -105,6 +105,7 @@ ksn build --release
 
 ## 6. 既知の制限（ベータ時点）
 
+- `ksn run` / `ksn test` の既定の実行系は VM（KIR → バイトコード）です。VM に下ろせない形は黙って木走査へ退避します。出力がおかしいときは `--engine=tree`（または `KSN_ENGINE=tree`）と比べて知らせてください。`--watch` は木走査です。
 - macOS でのホスト実行・ビルドは未対応。Windows ホストでの開発も未対応（Linux からのクロスビルドは可能）。
 - 配布物は x86_64 Linux（Arch、Debian 12 以降）だけです。ライセンスは MIT または Apache-2.0（`LICENSE-MIT` / `LICENSE-APACHE`、同梱の LLVM などは `THIRD_PARTY_LICENSES`）。
 - 検査器（`ksn check`）は、通ってはいけないコードを拒むことを目指していますが、穴探しでまだ穴が見つかり続けています（直したものは `stage0/tests/data/unsound/` にあります）。安全性が要るコードでは、ネイティブのビルドを ASan などでも確かめてください。おかしな受理を見つけたら、ぜひ知らせてください。
