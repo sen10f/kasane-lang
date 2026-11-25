@@ -108,6 +108,7 @@ ksn build --release
 - macOS でのホスト実行・ビルドは未対応。Windows ホストでの開発も未対応（Linux からのクロスビルドは可能）。
 - 配布物は x86_64 Linux（Arch、Debian 12 以降）だけです。ライセンスは MIT または Apache-2.0（`LICENSE-MIT` / `LICENSE-APACHE`、同梱の LLVM などは `THIRD_PARTY_LICENSES`）。
 - 検査器（`ksn check`）は、通ってはいけないコードを拒むことを目指していますが、穴探しでまだ穴が見つかり続けています（直したものは `stage0/tests/data/unsound/` にあります）。安全性が要るコードでは、ネイティブのビルドを ASan などでも確かめてください。おかしな受理を見つけたら、ぜひ知らせてください。
+- `kasane.toml` の `[native]`（C のライブラリのリンク）を使うパッケージは、依存も含めて `[unsafe]` に `native = true` を書く必要があります（無ければ E9024）。C のライブラリは起動時にコードを実行できるためで、`ksn unsafe` で一覧できます。
 - 中央の公共パッケージレジストリはありません。`ksn publish --registry <URL>` でレジストリ（またはパス）へ公開できます。依存は `kasane.toml` のローカルパスまたは Git URL + コミットハッシュで指定します。
 - `std.net` の非同期（`accept_async` / `read_async` / `write_async`）は Linux のみです。
 - ネイティブ生成に下ろせない機能（一部の `std.tls`・FFI など）はインタプリタ同梱バンドルに退避し、`ksn build --release` では E9040 で失敗します（`--release --allow-bundle` で退避を許可）。

@@ -6,6 +6,7 @@ entry = "smoke.main"
 
 [unsafe]
 modules = ["smoke"]
+native = true
 
 [native]
 static = ["../../native/libksnui.a"]

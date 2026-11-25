@@ -6,6 +6,7 @@ entry = "ui.main"
 
 [unsafe]
 modules = ["ui.gpu", "ui.plat", "ui.platform", "ui.platform_test", "ui.render", "ui.text"]
+native = true
 
 [native]
 static = ["../native/libksnui.a"]

@@ -180,7 +180,7 @@ fn anchors_manifest(v: &Value, raw: &str) -> Anchors {
         if let Some(k) = bare_key(t) {
             let known = match section {
                 "package" => matches!(k, "name" | "version" | "edition" | "entry"),
-                "unsafe" => k == "modules",
+                "unsafe" => matches!(k, "modules" | "native"),
                 "native" => matches!(k, "static" | "dynamic" | "search"),
                 "dependencies" => deps.contains(k),
                 _ => false,
@@ -213,6 +213,10 @@ fn emit_manifest(v: &Value, a: &Anchors) -> String {
         if let Some(m) = u.get("modules") {
             put(&mut lines, a, "unsafe.modules");
             lines.push(format!("modules = {}", emit_array(m)));
+        }
+        if let Some(b) = u.get("native") {
+            put(&mut lines, a, "unsafe.native");
+            lines.push(format!("native = {}", emit_value(b)));
         }
     }
     if let Some(n) = v.get("native") {
