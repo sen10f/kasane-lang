@@ -270,7 +270,7 @@ impl ByteMem {
     fn write(&mut self, addr: i128, ty: Ty, v: i128) -> Result<(), String> {
         let n = width(&self.aggs, ty);
         let at = self.locate(addr, n)?;
-        let bytes = (kir_scalar::canon_bits(ty, v) as u128).to_le_bytes();
+        let bytes = (v as u128).to_le_bytes();
         self.mem[at..at + n].copy_from_slice(&bytes[..n]);
         self.init[at..at + n].iter_mut().for_each(|b| *b = true);
         Ok(())
@@ -517,7 +517,7 @@ pub(crate) fn write_val(buf: &mut [u8], off: usize, aggs: &[AggDef], t: Ty, v: i
         buf[off..off + src.len()].copy_from_slice(src);
     } else {
         let n = size_of(aggs, t) as usize;
-        let bytes = (kir_scalar::canon_bits(t, v) as u128).to_le_bytes();
+        let bytes = (v as u128).to_le_bytes();
         buf[off..off + n].copy_from_slice(&bytes[..n]);
     }
 }
