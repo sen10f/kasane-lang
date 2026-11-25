@@ -37,3 +37,8 @@
 ## wasm32 対応 (2026-11-25)
 - 原因: 索引のレーンの変換に `usize.from_u64` / `u64.from_usize` を使っていたが、wasm32 の下ろしはこの 2 つの呼び出しを持たない (`呼び出し usize.from_u64 is not supported by native code yet`。呼び出しの型が Unknown になり、外側の `match の型 Unknown` として出た)。x86_64 / aarch64 では通っていたので、wasm の 2 試験 (`static_infer_*` の `&str` 鍵のもの) だけが落ちた。
 - 直し: 索引の項を `Index(u64, u64)` (どの幅でも 4 レーン) にし、変換は `hash_key` と同じ `u32.try_from_u64` / `usize.from_u32` / `u32.try_from_usize` / `u64.from_u32` だけを使う。`lane_get` は早期 return の形にした。
+
+## 索引の lane に上位ハッシュの印 (std/hashmap-ctrl, 2026-11-25)
+- lane (u32) = `(h & !mask) | (位置+1)`。`mask` = slots-1、位置+1 は mask に収まる。h の上位 (32-log2(slots) ビット) が印になり、外れ・衝突の探索で実体 (別のキャッシュ行) を読まずに済む。空は `lane & mask == 0`。メモリ・API・Fnv64・挿入順は不変。
+- 試して捨てた案: 索引を u64 (ハッシュ32 + 位置32) にする (insert/hit/iter/remove が遅くなった、メモリ増)。最大負荷 3/8 (差が雑音内)。
+- CPU 秒 (中央値、負荷 30 前後): ins 0.154 (Rust 0.167)、hit 0.257 (0.424)、miss 0.267 (0.254)、iter 0.191 (0.233)、rem 0.216 (0.243)。miss は Rust と同等 (最小値 0.246 対 0.240)。
