@@ -743,6 +743,9 @@ i64 ksn_rt_sys_accept(i32 lfd, i32 *e) {
 #define KSN_DL_MAX 256
 typedef struct { i32 fd; int used; int has_rd; int has_wr; i64 rd_at; i64 wr_at; } ksn_dl;
 static ksn_dl ksn_dls[KSN_DL_MAX];
+/* 使用中の枠の数。0 の間は読み書きが表の錠も走査も飛ばす (期限を使わない普通の接続を全スレッドで錠に並ばせない)。 */
+static int ksn_dl_live;
+#define KSN_DL_ANY() (__atomic_load_n(&ksn_dl_live, __ATOMIC_ACQUIRE) > 0)
 #ifndef _WIN32
 static pthread_mutex_t ksn_dl_mu = PTHREAD_MUTEX_INITIALIZER;
 #define KSN_DL_LOCK() pthread_mutex_lock(&ksn_dl_mu)
@@ -786,6 +789,7 @@ static ksn_dl *ksn_dl_find(i32 fd, int create) {
     }
     if (!create || !free_slot) return NULL;
     free_slot->used = 1;
+    __atomic_add_fetch(&ksn_dl_live, 1, __ATOMIC_RELEASE);
     free_slot->fd = fd;
     free_slot->has_rd = 0;
     free_slot->has_wr = 0;
@@ -806,9 +810,10 @@ i64 ksn_rt_sys_net_deadline(i32 fd, i32 write_side, u64 ms, i32 *e) {
 
 i64 ksn_rt_sys_net_clear_deadlines(i32 fd, i32 *e) {
     (void)e;
+    if (!KSN_DL_ANY()) return 0;
     KSN_DL_LOCK();
     ksn_dl *d = ksn_dl_find(fd, 0);
-    if (d) d->used = 0;
+    if (d) { d->used = 0; __atomic_sub_fetch(&ksn_dl_live, 1, __ATOMIC_RELEASE); }
     KSN_DL_UNLOCK();
     return 0;
 }
@@ -852,11 +857,15 @@ static int ksn_is_wait_timeout(void) {
 
 /* 期限つきの読み (write_side = 0) か書き (1)。期限が無ければ普通の recv / send。期限を過ぎたら ETIMEDOUT。 */
 i64 ksn_rt_sys_net_rw(i32 fd, i32 write_side, u8 *p, u64 n, i32 *e) {
-    KSN_DL_LOCK();
-    ksn_dl *d = ksn_dl_find(fd, 0);
-    int has = d && (write_side ? d->has_wr : d->has_rd);
-    i64 at = d ? (write_side ? d->wr_at : d->rd_at) : 0;
-    KSN_DL_UNLOCK();
+    int has = 0;
+    i64 at = 0;
+    if (KSN_DL_ANY()) {
+        KSN_DL_LOCK();
+        ksn_dl *d = ksn_dl_find(fd, 0);
+        has = d && (write_side ? d->has_wr : d->has_rd);
+        at = d ? (write_side ? d->wr_at : d->rd_at) : 0;
+        KSN_DL_UNLOCK();
+    }
     for (;;) {
         if (has) {
             i64 rem = ksn_remain(at);
@@ -1282,10 +1291,12 @@ static ksn_io_slot *ksn_io_slot_of(i32 fd) {
 /* fd の読み / 書きの期限 (単調時計のミリ秒の絶対時刻、無ければ -1)。set_*_deadline の表と、SO_RCVTIMEO / SO_SNDTIMEO を見る。 */
 static i64 ksn_io_deadline(i32 fd, int write_side) {
     i64 at = -1;
-    KSN_DL_LOCK();
-    ksn_dl *d = ksn_dl_find(fd, 0);
-    if (d && (write_side ? d->has_wr : d->has_rd)) at = write_side ? d->wr_at : d->rd_at;
-    KSN_DL_UNLOCK();
+    if (KSN_DL_ANY()) {
+        KSN_DL_LOCK();
+        ksn_dl *d = ksn_dl_find(fd, 0);
+        if (d && (write_side ? d->has_wr : d->has_rd)) at = write_side ? d->wr_at : d->rd_at;
+        KSN_DL_UNLOCK();
+    }
     struct timeval tv;
     socklen_t l = sizeof tv;
     if (KSN_TO_SET(write_side ? 1 : 0) > 0 && getsockopt(fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, &l) == 0 && (tv.tv_sec || tv.tv_usec)) {
