@@ -139,6 +139,11 @@ pub(super) fn ext_call(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, m: 
         Kind::Slice(Some(t)) => (*t, false),
         _ => return None,
     };
+    // 整数・bool (`char` は u32) の `sort()` は等しい要素が見分けられないので、結果は安定でも不安定でも 1 通り:
+    // 確保なしの不安定なソート (`sort_scalar`、イントロソート) に差し替える。
+    let scalar = matches!(elem, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::I128 | Ty::Isize | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::U128 | Ty::Usize | Ty::Bool);
+    let sort_name = if m == "sort" && scalar && args.is_empty() { "sort_scalar" } else { m };
+    let m = sort_name;
     let (di, on_vec) = if is_vec {
         // 基本メソッドの Kasane 版は、切り替え (`force`) のときだけ使う。
         let base = crate::interp::KASANE_VEC_BASE.contains(&m);

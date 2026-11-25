@@ -269,6 +269,314 @@ fn vec_and_slice_helpers_run_vm_build_agree() {
     assert_eq!(out, "");
 }
 
+/// 挿入整列を基準として、`sort`/`sort_by` が random/sorted/重複多数/逆順の入力で
+/// 基準と一致すること、`sort_by` のレコード整列が安定 (同じキーは元の添字順) であることを、
+/// 木走査・VM・ネイティブビルドの 3 経路で見る。
+#[test]
+fn sort_matches_reference() {
+    let out = run_all("sort_ref", SORT_REF);
+    let mut expected = String::new();
+    for n in [0usize, 1, 2, 7, 1000] {
+        for shape in ["random", "sorted", "reversed", "dups"] {
+            let mut state = 12345u64.wrapping_add(n as u64);
+            let mut keys = Vec::new();
+            for i in 0..n {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let x = ((state >> 33) % 50) as u32;
+                let key = match shape {
+                    "random" => x,
+                    "sorted" => i as u32,
+                    "reversed" => (n - 1 - i) as u32,
+                    "dups" => 7,
+                    _ => unreachable!(),
+                };
+                keys.push(key);
+            }
+            let mut refs = keys.clone();
+            insertion_sort_u32(&mut refs);
+            let d: u64 = refs
+                .iter()
+                .fold(0u64, |d, &k| d.wrapping_mul(31).wrapping_add(k as u64));
+            expected.push_str(&format!("u32 {} {} {} ok\n", shape, n, d));
+            let mut recs: Vec<(u32, u32)> = keys
+                .iter()
+                .enumerate()
+                .map(|(i, &k)| (k, i as u32))
+                .collect();
+            recs.sort_by(|a, b| a.0.cmp(&b.0));
+            let d: u64 = recs
+                .iter()
+                .fold(0u64, |d, &(k, _)| d.wrapping_mul(31).wrapping_add(k as u64));
+            expected.push_str(&format!("rec {} {} {} ok\n", shape, n, d));
+        }
+    }
+    assert_eq!(out, expected);
+}
+
+fn insertion_sort_u32(keys: &mut [u32]) {
+    for i in 1..keys.len() {
+        let x = keys[i];
+        let mut j = i;
+        while j > 0 && keys[j - 1] > x {
+            keys[j] = keys[j - 1];
+            j -= 1;
+        }
+        keys[j] = x;
+    }
+}
+
+/// `sort`/`sort_by` の擬似乱数 (1000 件) を含む各種入力の実行テスト (従来)。
+const SORT_REF: &str = r#"enum t.Error derive [Debug, From] pub
+    Io(std.io.Error)
+    Alloc(alloc.alloc.AllocError)
+end t.Error
+
+type t.Rec derive [Debug, Clone, Copy] pub
+    key: u32
+    idx: u32
+end t.Rec
+
+fn t.insertion_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](s: &mut [T], f: &F) -> () uses [E] panics P
+    for i in core.iter.range(1usize, s.len()) {
+        let mut j = i
+        while j > 0usize {
+            match s.get(j) {
+                Some(x) => match s.get(j.wrapping_sub(1usize)) {
+                    Some(y) => match f.call((y, x)) {
+                        core.cmp.Ordering.Greater => {
+                            match s.swap(j, j.wrapping_sub(1usize)) {
+                                Ok(_done) => {
+                                }
+                                Err(_err) => core.panic.panic("swap")
+                            }
+                            j = j.wrapping_sub(1usize)
+                        }
+                        core.cmp.Ordering.Less => {
+                            break
+                        }
+                        core.cmp.Ordering.Equal => {
+                            break
+                        }
+                    }
+                    None => {
+                        break
+                    }
+                }
+                None => {
+                    break
+                }
+            }
+        }
+    }
+end t.insertion_by
+
+fn t.main() -> Result<(), t.Error> uses [alloc, io.console] panics may
+    let sizes = [0usize, 1usize, 2usize, 7usize, 1000usize]
+    t.sizes(&sizes)?
+    Ok(())
+end t.main
+
+fn t.sizes(sizes: &[usize]) -> Result<(), t.Error> uses [alloc, io.console] panics may
+    for si in core.iter.range(0usize, sizes.len()) {
+        let n = match sizes.get(si) {
+            Some(x) => *x
+            None => 0usize
+        }
+        t.shapes(n)?
+    }
+    Ok(())
+end t.sizes
+
+fn t.shapes(n: usize) -> Result<(), t.Error> uses [alloc, io.console] panics may
+    for shape in core.iter.range(0u32, 4u32) {
+        t.u32_case(n, shape)?
+        t.rec_case(n, shape)?
+    }
+    Ok(())
+end t.shapes
+
+fn t.u32_case(n: usize, shape: u32) -> Result<(), t.Error> uses [alloc, io.console] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut r = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut state = 12345u64.wrapping_add(u64.from_usize(n))
+    for i in core.iter.range(0usize, n) {
+        let mixed = state.wrapping_mul(6364136223846793005u64)
+        state = mixed.wrapping_add(1442695040888963407u64)
+        let x = u32.try_from_u64(state.wrapping_shr(33u32) % 50u64).unwrap_or(0u32)
+        let key = if shape == 0u32 {
+            x
+        } else if shape == 1u32 {
+            u32.try_from_usize(i).unwrap_or(0u32)
+        } else if shape == 2u32 {
+            u32.try_from_usize(n.wrapping_sub(i.wrapping_add(1usize))).unwrap_or(0u32)
+        } else {
+            7u32
+        }
+        match v.push(key) {
+            Ok(_done) => {
+            }
+            Err(_err) => core.panic.panic("oom")
+        }
+        match r.push(key) {
+            Ok(_done) => {
+            }
+            Err(_err) => core.panic.panic("oom")
+        }
+    }
+    let cmp_u32 = fn(a: &u32, b: &u32) -> core.cmp.Ordering capture [] {
+        a.cmp(b)
+    }
+    t.insertion_by(r.as_mut_slice(), &cmp_u32)
+    v.as_mut_slice().sort()
+    let vs = v.as_slice()
+    let rs = r.as_slice()
+    let mut ok = true
+    for j in core.iter.range(0usize, n) {
+        match rs.get(j) {
+            Some(rk) => match vs.get(j) {
+                Some(vk) => {
+                    if *rk != *vk {
+                        ok = false
+                    }
+                }
+                None => {
+                    ok = false
+                }
+            }
+            None => {
+                ok = false
+            }
+        }
+    }
+    let mut d = 0u64
+    for j in core.iter.range(0usize, n) {
+        match vs.get(j) {
+            Some(vk) => {
+                d = d.wrapping_mul(31u64).wrapping_add(u64.from_u32(*vk))
+            }
+            None => core.panic.panic("short")
+        }
+    }
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("u32 ")?
+    out.push_str(if shape == 0u32 {
+        "random"
+    } else if shape == 1u32 {
+        "sorted"
+    } else if shape == 2u32 {
+        "reversed"
+    } else {
+        "dups"
+    })?
+    out.push_str(" ")?
+    out.push_u64(u64.from_usize(n))?
+    out.push_str(" ")?
+    out.push_u64(d)?
+    out.push_str(" ")?
+    out.push_str(if ok {
+        "ok"
+    } else {
+        "FAIL"
+    })?
+    std.io.print_line(out.as_str())?
+    Ok(())
+end t.u32_case
+
+fn t.rec_case(n: usize, shape: u32) -> Result<(), t.Error> uses [alloc, io.console] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut r = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut state = 12345u64.wrapping_add(u64.from_usize(n))
+    for i in core.iter.range(0usize, n) {
+        let mixed = state.wrapping_mul(6364136223846793005u64)
+        state = mixed.wrapping_add(1442695040888963407u64)
+        let x = u32.try_from_u64(state.wrapping_shr(33u32) % 50u64).unwrap_or(0u32)
+        let key = if shape == 0u32 {
+            x
+        } else if shape == 1u32 {
+            u32.try_from_usize(i).unwrap_or(0u32)
+        } else if shape == 2u32 {
+            u32.try_from_usize(n.wrapping_sub(i.wrapping_add(1usize))).unwrap_or(0u32)
+        } else {
+            7u32
+        }
+        let idx = u32.try_from_usize(i).unwrap_or(0u32)
+        match v.push(t.Rec { key: key, idx: idx }) {
+            Ok(_done) => {
+            }
+            Err(_err) => core.panic.panic("oom")
+        }
+        match r.push(t.Rec { key: key, idx: idx }) {
+            Ok(_done) => {
+            }
+            Err(_err) => core.panic.panic("oom")
+        }
+    }
+    let cmp_rec = fn(a: &t.Rec, b: &t.Rec) -> core.cmp.Ordering capture [] {
+        a.key.cmp(&b.key)
+    }
+    t.insertion_by(r.as_mut_slice(), &cmp_rec)
+    v.as_mut_slice().sort_by(fn(a: &t.Rec, b: &t.Rec) -> core.cmp.Ordering capture [] {
+        a.key.cmp(&b.key)
+    })
+    let vs = v.as_slice()
+    let rs = r.as_slice()
+    let mut ok = true
+    for j in core.iter.range(0usize, n) {
+        match rs.get(j) {
+            Some(rp) => match vs.get(j) {
+                Some(vp) => {
+                    if rp.key != vp.key || rp.idx != vp.idx {
+                        ok = false
+                    }
+                }
+                None => {
+                    ok = false
+                }
+            }
+            None => {
+                ok = false
+            }
+        }
+    }
+    let mut d = 0u64
+    for j in core.iter.range(0usize, n) {
+        match vs.get(j) {
+            Some(vp) => {
+                d = d.wrapping_mul(31u64).wrapping_add(u64.from_u32(vp.key))
+            }
+            None => core.panic.panic("short")
+        }
+    }
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("rec ")?
+    out.push_str(if shape == 0u32 {
+        "random"
+    } else if shape == 1u32 {
+        "sorted"
+    } else if shape == 2u32 {
+        "reversed"
+    } else {
+        "dups"
+    })?
+    out.push_str(" ")?
+    out.push_u64(u64.from_usize(n))?
+    out.push_str(" ")?
+    out.push_u64(d)?
+    out.push_str(" ")?
+    out.push_str(if ok {
+        "ok"
+    } else {
+        "FAIL"
+    })?
+    std.io.print_line(out.as_str())?
+    Ok(())
+end t.rec_case
+"#;
+
+/// `sort` / `sort_by` / `sort_unstable` の 3 つの整列の結果が一致する従来の家族テスト。
+
 /// `ksn build` がバンドルへ退避せずネイティブ (LLVM) の実行体を作り、その出力が木走査と一致することを見る
 /// (要素型 `T` と `F: Fn` を取る総称関数の単相化)。
 fn build_native_and_compare(name: &str, src: &str) {
