@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """`ksn run` (インタプリタ) と `ksn build --release` の実行ファイルの、標準出力と終了コードを比べる (属性の誤コンパイル検出用)。
-使い方: python3 tests/native_vs_interp.py [--ksn PATH] [--clang-args=-fsanitize=address] [--groups linear_ok,check_ok,examples,perf]
-対象: stage0/tests/data/{linear_ok,check_ok}/*.ksnl (入口 t.main があるものだけ)、examples/*、perf/* (kasane.toml の入口を持つもの)。
+使い方: python3 tests/native_vs_interp.py [--ksn PATH] [--clang-args=-fsanitize=address] [--groups linear_ok,check_ok,examples,perf,k1_cross_thread]
+対象: stage0/tests/data/{linear_ok,check_ok,任意のデータ dir}/*.ksnl (入口 t.main があるものだけ)、examples/*、perf/* (kasane.toml の入口を持つもの)。
 """
 import concurrent.futures as cf, glob, os, shutil, subprocess, sys, tempfile, argparse
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -52,8 +52,9 @@ def job(j):
 
 jobs = []
 for g in a.groups.split(','):
-    if g in ('linear_ok', 'check_ok'):
-        for f in sorted(glob.glob(f'{ROOT}/stage0/tests/data/{g}/*.ksnl')):
+    d = f'{ROOT}/stage0/tests/data/{g}'
+    if os.path.isdir(d):
+        for f in sorted(glob.glob(d + '/*.ksnl')):
             if 'fn t.main' in open(f).read():
                 jobs.append((g, os.path.basename(f), f))
     else:

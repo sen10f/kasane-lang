@@ -1,0 +1,33 @@
+fn t.main() -> () uses [alloc, io.console, suspend, thread] panics may
+    let h = std.task.block_on(fn() -> std.task.Task<(u64, u64, u64)> capture [] {
+        std.task.spawn_local(fn() -> (u64, u64, u64) capture [] {
+            (1u64, 2u64, 3u64)
+        })
+    })
+    let th = std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [move h] {
+        std.task.block_on(fn() -> u64 capture [move h] {
+            let a = std.task.spawn_local(fn() -> std.vec.Vec<u64> capture [] {
+                t.mk()
+            })
+            std.task.yield_now()
+            let (p, n, c) = h.join_task()
+            core.mem.drop(a)
+            t.pr(n)
+            t.pr(c)
+            p
+        })
+    }).unwrap()
+    t.pr(th.join())
+end t.main
+
+fn t.mk() -> std.vec.Vec<u64> uses [alloc] panics may
+    let mut v = std.vec.Vec.new()
+    v.push(5u64).unwrap()
+    v
+end t.mk
+
+fn t.pr(x: u64) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_u64(x).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.pr

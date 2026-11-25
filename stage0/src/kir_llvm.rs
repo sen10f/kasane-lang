@@ -308,6 +308,14 @@ fn io_reactor_target(t: Option<Target>) -> bool {
     }
 }
 
+/// `sysrt.c` の実行時をリンクする対象か (wasm32 は単一スレッドなので `kir_rt.c` だけで、KIR の本体のまま使う)。
+fn sysrt_target(t: Option<Target>) -> bool {
+    match t {
+        Some(t) => !t.triple.starts_with("wasm32"),
+        None => !cfg!(target_arch = "wasm32"),
+    }
+}
+
 fn thread_override(key: &str, m: &Module) -> Option<String> {
     if let Some(rest) = key.strip_prefix("ksn.atm.") {
         return atm_override(rest);
@@ -348,6 +356,8 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
         "ksn.mt.thr" => def("i64", "i64 %arg0", "  %r = call i64 @ksn_rt_sys_mt_thr(i64 %arg0)\n  ret i64 %r\n"),
         "ksn.mt.end" => def("i8", "", "  call void @ksn_rt_sys_mt_end()\n  ret i8 0\n"),
         "ksn.time.mono" => def("i64", "", "  %r = call i64 @ksn_rt_sys_now_ns()\n  ret i64 %r\n"),
+        // 実行器のセッション番号 (プロセス全体で一意。sysrt.c の原子カウンタ。別スレッドの `block_on` の `Task` を拒む)。
+        "ksn.task.session" => def("i64", "", "  %r = call i64 @ksn_rt_sys_task_session()\n  ret i64 %r\n"),
         "ksn.time.sleep" => def("i8", "i64 %arg0", "  call void @ksn_rt_sys_sleep_ms(i64 %arg0)\n  ret i8 0\n"),
         "ksn.thr.lock" => def("i8", "", "  %r = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  ret i8 0\n"),
         "ksn.thr.unlock" => def("i8", "", "  %g = load atomic i64, ptr @ksn.rt.gen seq_cst, align 8\n  %g1 = add i64 %g, 1\n  store atomic i64 %g1, ptr @ksn.rt.gen seq_cst, align 8\n  store atomic i64 0, ptr @ksn.rt.blocked seq_cst, align 8\n  %a = call i32 @pthread_cond_broadcast(ptr @ksn.rt.cv)\n  %r = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  ret i8 0\n"),
@@ -885,7 +895,8 @@ fn emit_with_attrs(m: &Module, entry: &str, program: bool, target: Option<Target
         }
         funcs.push('\n');
         let io_native = !(f.key.starts_with("ksn.io.") || f.key.starts_with("ksn.mt.")) || io_reactor_target(target);
-        if let Some(text) = thread_override(&f.key, m).filter(|_| io_native) {
+        let sess_native = f.key != "ksn.task.session" || sysrt_target(target);
+        if let Some(text) = thread_override(&f.key, m).filter(|_| io_native && sess_native) {
             if f.key.starts_with("ksn.io.") {
                 cx.decl("declare i32 @ksn_rt_sys_io_park(i32, i32)");
                 cx.decl("declare i32 @ksn_rt_sys_io_poll(i32)");
@@ -923,6 +934,8 @@ fn emit_with_attrs(m: &Module, entry: &str, program: bool, target: Option<Target
             } else if f.key.starts_with("ksn.time.") {
                 cx.decl("declare i64 @ksn_rt_sys_now_ns()");
                 cx.decl("declare void @ksn_rt_sys_sleep_ms(i64)");
+            } else if f.key == "ksn.task.session" {
+                cx.decl("declare i64 @ksn_rt_sys_task_session()");
             } else if !pthread_used {
                 pthread_used = true;
                 cx.globals.push_str("@ksn.rt.mu = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.cv = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.live = internal global i64 1\n@ksn.rt.blocked = internal global i64 0\n@ksn.rt.gen = internal global i64 0\n@ksn.rt.mwait = internal global i64 0, align 8\n@ksn.rw.held = internal thread_local global [16 x i64] zeroinitializer, align 8\n@ksn.rt.cblk = internal global i64 0\n");

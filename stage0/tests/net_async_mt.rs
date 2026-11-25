@@ -307,6 +307,31 @@ fn stale_task_join_across_block_on_threads_panics_everywhere() {
     both_panic("net_async_mt_stale", include_str!("data/net_async_mt_stale_task.ksnl"), "generation mismatch");
 }
 
+// ------------------------------------------------------------ K1: 別スレッドの実行器へ持ち込んだ Task (セッション番号はプロセス全体で一意)
+
+fn k1_src(name: &str) -> String {
+    std::fs::read_to_string(root().join("stage0/tests/data/k1_cross_thread").join(name)).unwrap()
+}
+
+/// K1a: 主スレッドの `block_on` が返した `Task<Vec<u64>>` を別スレッドの `block_on` で join すると、
+/// 別のタスクの結果を Vec として読んていた (型の取り違え)。木走査とネイティブで同じ panic・終了コード。
+#[test]
+fn cross_thread_join_of_vec_task_panics_everywhere() {
+    both_panic("k1_join_a", &k1_src("task_cross_thread_join_a.ksnl"), "join_task: task from a different block_on (generation mismatch)");
+}
+
+/// K1b: 逆向き (`Task<(u64, u64, u64)>` の取っ手で Vec の結果を読む)。ヒープの番地が数として漏れる形。
+#[test]
+fn cross_thread_join_of_tuple_task_panics_everywhere() {
+    both_panic("k1_join_b", &k1_src("task_cross_thread_join_b.ksnl"), "join_task: task from a different block_on (generation mismatch)");
+}
+
+/// `block_on_threads` で作った取っ手を別スレッドの `block_on` で join する形 (複数スレッドの実行器の側)。
+#[test]
+fn cross_thread_join_of_mt_task_panics_everywhere() {
+    both_panic("k1_mt_join", &k1_src("task_cross_thread_mt_join.ksnl"), "join_task: task from a different block_on (generation mismatch)");
+}
+
 #[test]
 fn nested_block_on_threads_reports_already_running_everywhere() {
     both_panic("net_async_mt_nested", include_str!("data/net_async_mt_nested.ksnl"), "already running");
