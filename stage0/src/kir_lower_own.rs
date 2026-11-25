@@ -758,6 +758,17 @@ pub(super) fn bind_elem_ref(lw: &mut Lw, line: usize, name: &str, addr: VId, ele
     let Ty::Agg(ai) = elem else {
         return lw.err(line, "要素の借用は集成体だけ段階 1 の対象");
     };
+    // `&[T; N]` の束縛 (`match opt { Some(row) => .. }` の `row: &[u8; 3]` など): 生ポインタで持ち、
+    // 種類 `Slice` と長さ N を記録する (`row.get(j)` が `Seq::Ptr` で下ろせるように)。
+    // 長さは型表の `Src::Array` には載らないことがあるので、集成体の定義から取る。
+    if let AggKind::Array(et, n) = lw.agg_def(ai).kind {
+        lw.bind(name, addr, Ty::Ptr);
+        let s = lw.lookup(name).expect("束縛した名前");
+        lw.coll.kinds.insert(s, Kind::Slice(Some(et)));
+        lw.coll.arr_len.insert(s, n);
+        lw.coll.borrowed.insert(s);
+        return Ok(());
+    }
     if super::agg::is_vec_name(&lw.agg_def(ai).name) {
         let kind = coll::elem_kind(lw, src, elem);
         let Some(kind) = kind else {
