@@ -812,6 +812,11 @@ impl Interp {
                 })))
             }
             "std.thread.spawn" | "std.thread.spawn_deep" => {
+                // 試験用の旗: スレッドを作れなかったことにして、クロージャを `SpawnError` で返す。
+                if std::env::var_os("KSN_TEST_SPAWN_FAIL").is_some() {
+                    let e = StructV { ty: "std.thread.SpawnError".into(), f: RefCell::new(vec![("code".into(), int(11, "i32")), ("closure".into(), args[1].clone())]) };
+                    return Ok(err(Val::Struct(Rc::new(e))));
+                }
                 let body = snapshot_closure(&dr(&args[1]));
                 // `spawn_deep` の深さは 1..=MAX_DEPTH_LIMIT に丸める。`spawn` は既定 (`kir_exec::MAX_DEPTH`)。
                 let depth = match args.get(2).map(dr) {

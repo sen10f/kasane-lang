@@ -171,10 +171,7 @@ pub(super) fn spawn_call(lw: &mut Lw, _e: &V, segs: &[String], args: &[V], line:
     lw.coll.extra.push(site);
 
     let hty = lw.aggs.borrow_mut().join_handle(ret, alloc_ty);
-    let spawnerr_ty = match lw.conv_t(&Src::Named("std.thread.SpawnError".into(), vec![], crate::types::Rgs::default())) {
-        Some(t) => t,
-        None => return Some(lw.err(line, "std.thread.SpawnError は段階 1 の対象外")),
-    };
+    let spawnerr_ty = lw.aggs.borrow_mut().spawn_err();
     let idx = rt_call(lw, TNEW, vec![], Ty::Usize);
     let tag = lw.emit(Ty::U64, Op::Const(tag_of(&key) as i128));
     let ent = entry_at(lw, idx, 0);

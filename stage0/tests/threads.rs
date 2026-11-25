@@ -1185,3 +1185,16 @@ fn threads_native_channel_stress_16_producers_keep_exact_sum_and_per_producer_or
         assert_eq!(text(&r.stdout), "channel stress ok\n");
     }
 }
+
+/// `KSN_TEST_SPAWN_FAIL` (試験用の旗。木走査だけ): `spawn` の失敗はクロージャを `SpawnError` で返し、`Err` の腕がそれを走らせて取り込んだ線形値を消費する。
+/// KIR の実行系 (VM・ネイティブ) の `spawn` は失敗しない (表が満杯なら panic) ので、旗は木走査だけが見る。
+#[test]
+fn threads_spawn_failure_hands_the_closure_back() {
+    let t = threads_pkg("spawn_fail", "fail");
+    let fmt = run(&["fmt", "--check"], &t.0);
+    assert_eq!(fmt.status.code(), Some(0), "{}", text(&fmt.stdout));
+    let ok = run(&["run", "--engine=tree"], &t.0);
+    assert_eq!(text(&ok.stdout).trim(), "spawned", "{}", text(&ok.stderr));
+    let failed = Command::new(exe()).args(["run", "--engine=tree"]).current_dir(&t.0).env("KSN_TEST_SPAWN_FAIL", "1").output().unwrap();
+    assert_eq!(text(&failed.stdout).trim(), "failed, closure run", "{}", text(&failed.stderr));
+}

@@ -107,7 +107,14 @@ fn t.session(listener: &std.net.TcpListener) -> Result<(), std.io.Error> uses [a
     )
     let handle = match spawned {
         Ok(h) => h
-        Err(_e) => core.panic.panic("spawn failed")
+        Err(failed) => {
+            let std.thread.SpawnError {
+                code: _code
+                closure: task
+            } = failed
+            core.mem.drop(task().close())
+            core.panic.panic("spawn failed")
+        }
     }
     let returned = handle.join()
     core.mem.drop(returned.close())
@@ -132,11 +139,25 @@ fn t.session(listener: &std.net.TcpListener) -> Result<(), std.io.Error> uses [a
     )
     let w1 = match first {
         Ok(h) => h
-        Err(_e) => core.panic.panic("spawn failed")
+        Err(failed) => {
+            let std.thread.SpawnError {
+                code: _code
+                closure: task
+            } = failed
+            core.mem.drop(task())
+            core.panic.panic("spawn failed")
+        }
     }
     let w2 = match second {
         Ok(h) => h
-        Err(_e) => core.panic.panic("spawn failed")
+        Err(failed) => {
+            let std.thread.SpawnError {
+                code: _code
+                closure: task
+            } = failed
+            core.mem.drop(task())
+            core.panic.panic("spawn failed")
+        }
     }
     let mut i = 0u32
     while i < 12u32 {
@@ -185,11 +206,25 @@ fn t.session(listener: &std.net.TcpListener) -> Result<(), std.io.Error> uses [a
     )
     let ha = match bump_a {
         Ok(h) => h
-        Err(_e) => core.panic.panic("spawn failed")
+        Err(failed) => {
+            let std.thread.SpawnError {
+                code: _code
+                closure: task
+            } = failed
+            task()
+            core.panic.panic("spawn failed")
+        }
     }
     let hb = match bump_b {
         Ok(h) => h
-        Err(_e) => core.panic.panic("spawn failed")
+        Err(failed) => {
+            let std.thread.SpawnError {
+                code: _code
+                closure: task
+            } = failed
+            task()
+            core.panic.panic("spawn failed")
+        }
     }
     core.mem.drop(match state_tx.send(0u64) {
         Ok(_) => 0u32

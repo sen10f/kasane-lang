@@ -8,6 +8,7 @@
 
 - 2.10dl テスト本体の `?` が Err / None を返したら、そのテストを失敗にする (理由は `returned Err(..)` / `returned None`。木走査・VM・`--both` と `--json` で同じ)。仕様 3.2 に追記。以前は黙って成功だった (`apps/notes` の 3 件が実は失敗)
 - 2.10dl `[native]` は `[unsafe] native = true` で認める (無ければ E9024。依存も同じ)。`ksn unsafe` が `[native]` を列挙し、`[native] static` のアーカイブをパッケージの hash に含める (O-10、`check/native-needs-unsafe-2`)
+- 2.10dl `std.thread.spawn` / `spawn_deep` の失敗は閉包を返す: `Err(std.thread.SpawnError<F>)` (`code: i32`・`closure: F`)。線形の値を取り込んだ閉包を失敗で捨てて消費の義務が消える穴 (O-08) を塞ぐ。`Err(_)` で捨てると E3003。呼び出し側の `Err` の腕は `closure` を取り出して消費する (署名の変更)。試験用の旗 `KSN_TEST_SPAWN_FAIL` は木走査だけ。
 
 - 2.10dk 実行ファイルの名前を `<名前>` (Windows は `<名前>.exe`) にする。旧 `<名前>.native` は作り直しで消す。バンドルの起動スクリプトと同名のため、`target/<kind>/.ksn-artifact` (`native` / `bundle`) で区別する
 

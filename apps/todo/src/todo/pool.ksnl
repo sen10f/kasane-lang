@@ -57,7 +57,12 @@ fn todo.pool.run(left: usize, listener: &std.net.TcpListener, count: usize, jobs
     let inner = todo.pool.run(rest, listener, count, jobs, queue, give, take)
     match spawned {
         Ok(handle) => core.mem.drop(handle.join())
-        Err(_e) => {
+        Err(failed) => {
+            let std.thread.SpawnError {
+                code: _code
+                closure: task
+            } = failed
+            core.mem.drop(task())
         }
     }
     inner
