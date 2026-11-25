@@ -308,6 +308,42 @@ impl<'a> Scan<'a> {
         }
     }
 
+    /// `impl Trait<&T, ..> for X`: トレイトの型引数に入れた参照は impl 全体で 1 つの領域になり、
+    /// メソッドが `self` の借用を返して総称の側の `T` に隠れて流れる (M10)。`&'static` だけ通す。
+    fn impl_header(&mut self) {
+        let n = self.toks.len();
+        // 自分の型が寿命の引数を持つ (`for BtreeMapIter<'a, K, V>`) なら、参照はその寿命に結ばれる。
+        let mut j = 0;
+        let mut after_for = false;
+        while j < n && self.toks[j].kind != "nl" {
+            if self.toks[j].kind == "kw" && self.toks[j].text == "for" {
+                after_for = true;
+            } else if after_for && self.toks[j].kind == "life" && self.toks[j].text != "'static" {
+                return;
+            }
+            j += 1;
+        }
+        let mut i = 0;
+        while i < n && self.toks[i].kind != "nl" {
+            if self.toks[i].kind == "kw" && self.toks[i].text == "for" {
+                break;
+            }
+            if is_op(&self.toks[i], "<") {
+                let close = skip_group(&self.toks, i);
+                if let Some(k) = rc_in(&self.toks, i + 1, close.saturating_sub(1)) {
+                    self.hit(
+                        "impl_targ",
+                        k,
+                        "a trait impl cannot take a reference as a trait type argument (references are second-class values; the method could return a borrow of `self` through it); use an owned value or an index (`&'static T` is allowed)".to_string(),
+                    );
+                }
+                i = close;
+                continue;
+            }
+            i += 1;
+        }
+    }
+
     /// 参照を取り込んだクロージャを欄・容れ物・チャネルへ渡す形。
     fn closures(&mut self) {
         let n = self.toks.len();
@@ -836,6 +872,9 @@ pub fn check(p: &Program, user: &[usize], let_tys: &HashMap<(usize, usize, Strin
         match d.kw.as_str() {
             "type" | "enum" => sc.type_decl(&d.name),
             "fn" | "test" | "impl" | "const" | "static" | "trait" => {
+                if d.kw == "impl" {
+                    sc.impl_header();
+                }
                 sc.containers();
                 sc.closures();
                 sc.literal_refs(p, let_tys, &d.params);
