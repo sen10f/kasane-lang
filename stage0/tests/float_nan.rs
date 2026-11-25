@@ -112,3 +112,47 @@ fn nan_bits_match_on_the_vm_engine() {
     assert_eq!(text(&vm.stdout), text(&tree.stdout), "{}", text(&vm.stderr));
     assert!(text(&vm.stdout).contains("div=9221120237041090560\n"), "{}", text(&vm.stdout));
 }
+
+const STORE_SRC: &str = "type t.P
+    x: f64
+    y: f32
+end t.P
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    let p = t.P {
+        x: f64.from_bits(0xFFF8000000000123u64)
+        y: f32.from_bits(0xFFC00042u32)
+    }
+    let mut v = std.vec.Vec.new()
+    v.push(f64.from_bits(0x7FF0000000000001u64)).unwrap()
+    s.push_u64(p.x.to_bits()).unwrap()
+    s.push_str(\" \").unwrap()
+    s.push_u64(u64.from_u32(p.y.to_bits())).unwrap()
+    s.push_str(\" \").unwrap()
+    match v.get(0usize) {
+        Some(e) => s.push_u64(e.to_bits()).unwrap()
+        None => core.mem.drop(0u8)
+    }
+    std.io.print_line(s.as_str())
+end t.main
+";
+
+/// 非正規のペイロードの NaN をそのまま `Vec` と構造体の欄へ入れて読み戻しても、`to_bits` は正の quiet NaN (メモリへの書き出しでは正規化しない)。
+/// 木走査・VM・ネイティブ (release) で同じ。
+#[test]
+fn stored_noncanonical_nan_reads_back_canonical_via_to_bits() {
+    let want = format!("{} {} {}\n", 0x7FF8000000000000u64, 0x7FC00000u32, 0x7FF8000000000000u64);
+    let t = Tmp::new("float_nan_store", STORE_SRC);
+    let tree = run(&["run"], &t.0);
+    assert_eq!(text(&tree.stdout), want, "{}", text(&tree.stderr));
+    let vm = run(&["run", "--engine=vm"], &t.0);
+    assert_eq!(text(&vm.stdout), want, "{}", text(&vm.stderr));
+    let (_t2, exe_path, out) = build_native_strict("float_nan_store_n", STORE_SRC, true);
+    let Some(exe_path) = exe_path else {
+        assert!(out.contains("native backend skipped"), "{}", out);
+        return;
+    };
+    let n = Command::new(&exe_path).output().unwrap();
+    assert_eq!(text(&n.stdout), want, "{}", text(&n.stderr));
+}
