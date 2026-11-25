@@ -972,7 +972,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         }
     }
     let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
-    let main = if is_wasm(target) { main } else { on_big_stack(&mut cx, main, m.depth) };
+    let main = if is_wasm(target) { main } else { on_big_stack(&mut cx, main, m.depth, target) };
     let mut math = String::new();
     for mf in cx.math.clone() {
         math.push('\n');
@@ -1144,7 +1144,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
 
 /// 入口 `main` を `NATIVE_STACK_BYTES` のスタックの別スレッドで動かす形にする (呼び出し深さの上限 `MAX_DEPTH` まで OS のスタックが足りるように。
 /// 主スレッドのスタックは通常 8 MiB)。元の `main` は `@ksn.rt.entry0(argc, argv)` に改名して残す。スレッドを作れなければ主スレッドのまま走らせる。
-fn on_big_stack(cx: &mut Ctx, main: String, depth: u64) -> String {
+fn on_big_stack(cx: &mut Ctx, main: String, depth: u64, target: Option<Target>) -> String {
     let head = "define i32 @main(i32 %argc, ptr %argv) nounwind null_pointer_is_valid {\nentry:\n";
     let Some(rest) = main.strip_prefix(head) else { return main };
     for d in [
@@ -1157,6 +1157,33 @@ fn on_big_stack(cx: &mut Ctx, main: String, depth: u64) -> String {
         cx.decl(d);
     }
     cx.globals.push_str("@ksn.rt.main_argc = internal global i32 0\n@ksn.rt.main_argv = internal global ptr null\n");
+    // 64 ビットの Linux (glibc) では、別スレッドではなく主スレッドのままスタックだけ入れ替える。
+    // 別スレッドで動かすと glibc の malloc が非主アリーナ (確保のたびに原子操作の錠) を使い、確保の多いプログラムが 1.4 倍ほど遅い。
+    let switch = match target {
+        None => cfg!(all(target_os = "linux", target_pointer_width = "64")),
+        Some(t) => t.ptr_bits == 64 && t.triple.contains("linux-gnu"),
+    };
+    let switch = switch && std::env::var_os("KSN_THREAD_MAIN").is_none();
+    if switch {
+        for d in [
+            "declare ptr @mmap(ptr, i64, i32, i32, i32, i64)",
+            "declare i32 @mprotect(ptr, i64, i32)",
+            "declare i32 @getcontext(ptr)",
+            "declare void @makecontext(ptr, ptr, i32, ...)",
+            "declare i32 @swapcontext(ptr, ptr)",
+        ] {
+            cx.decl(d);
+        }
+        cx.globals.push_str("@ksn.rt.mctx = internal global [8192 x i8] zeroinitializer, align 16\n@ksn.rt.nctx = internal global [8192 x i8] zeroinitializer, align 16\n@ksn.rt.code = internal global i32 0\n");
+        let size = main_stack_bytes(depth);
+        return format!(
+            "define internal ptr @ksn.rt.entry(ptr %p) nounwind null_pointer_is_valid {{\nentry:\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl0 = sub i64 %sp, {fl}\n  store i64 %fl0, ptr @ksn.floor\n  store i64 {dm}, ptr @ksn.dmax\n  %a = load i32, ptr @ksn.rt.main_argc\n  %v = load ptr, ptr @ksn.rt.main_argv\n  %c = call i32 @ksn.rt.entry0(i32 %a, ptr %v)\n  store i32 %c, ptr @ksn.rt.code\n  ret ptr null\n}}\n\n\
+             define internal void @ksn.rt.entryc() nounwind null_pointer_is_valid {{\nentry:\n  %r = call ptr @ksn.rt.entry(ptr null)\n  ret void\n}}\n\n\
+             define i32 @main(i32 %argc, ptr %argv) nounwind null_pointer_is_valid {{\nentry:\n  store i32 %argc, ptr @ksn.rt.main_argc\n  store ptr %argv, ptr @ksn.rt.main_argv\n  %stk = call ptr @mmap(ptr null, i64 {sz}, i32 3, i32 148514, i32 -1, i64 0)\n  %si = ptrtoint ptr %stk to i64\n  %bad = icmp eq i64 %si, -1\n  br i1 %bad, label %direct, label %sw\nsw:\n  %g = call i32 @mprotect(ptr %stk, i64 4096, i32 0)\n  %g0 = call i32 @getcontext(ptr @ksn.rt.nctx)\n  %l = getelementptr i8, ptr @ksn.rt.nctx, i64 8\n  store ptr @ksn.rt.mctx, ptr %l\n  %ssp = getelementptr i8, ptr @ksn.rt.nctx, i64 16\n  store ptr %stk, ptr %ssp\n  %ssf = getelementptr i8, ptr @ksn.rt.nctx, i64 24\n  store i32 0, ptr %ssf\n  %sss = getelementptr i8, ptr @ksn.rt.nctx, i64 32\n  store i64 {sz}, ptr %sss\n  call void (ptr, ptr, i32, ...) @makecontext(ptr @ksn.rt.nctx, ptr @ksn.rt.entryc, i32 0)\n  %sc = call i32 @swapcontext(ptr @ksn.rt.mctx, ptr @ksn.rt.nctx)\n  %code = load i32, ptr @ksn.rt.code\n  ret i32 %code\ndirect:\n  %spp2 = call ptr @llvm.stacksave.p0()\n  %sp2 = ptrtoint ptr %spp2 to i64\n  %fl2 = sub i64 %sp2, 6291456\n  store i64 %fl2, ptr @ksn.floor\n  store i64 {dm}, ptr @ksn.dmax\n  %d = call i32 @ksn.rt.entry0(i32 %argc, ptr %argv)\n  ret i32 %d\n}}\n\n\
+             define internal i32 @ksn.rt.entry0(i32 %argc, ptr %argv) nounwind null_pointer_is_valid {{\nentry:\n{rest}",
+            sz = size, fl = size - STACK_MARGIN, dm = crate::kir_exec::depth_limit(depth), rest = rest
+        );
+    }
     format!(
         "define internal ptr @ksn.rt.entry(ptr %p) nounwind null_pointer_is_valid {{\nentry:\n  %spp = call ptr @llvm.stacksave.p0()\n  %sp = ptrtoint ptr %spp to i64\n  %fl0 = sub i64 %sp, {fl}\n  store i64 %fl0, ptr @ksn.floor\n  store i64 {dm}, ptr @ksn.dmax\n  %a = load i32, ptr @ksn.rt.main_argc\n  %v = load ptr, ptr @ksn.rt.main_argv\n  %c = call i32 @ksn.rt.entry0(i32 %a, ptr %v)\n  %w = zext i32 %c to i64\n  %q = inttoptr i64 %w to ptr\n  ret ptr %q\n}}\n\n\
          define i32 @main(i32 %argc, ptr %argv) nounwind null_pointer_is_valid {{\nentry:\n  store i32 %argc, ptr @ksn.rt.main_argc\n  store ptr %argv, ptr @ksn.rt.main_argv\n  %attr = alloca [64 x i8], align 16\n  %tid = alloca i64\n  %res = alloca ptr\n  store ptr null, ptr %res\n  %a0 = call i32 @pthread_attr_init(ptr %attr)\n  %a1 = call i32 @pthread_attr_setstacksize(ptr %attr, i64 {})\n  %r = call i32 @pthread_create(ptr %tid, ptr %attr, ptr @ksn.rt.entry, ptr null)\n  %a2 = call i32 @pthread_attr_destroy(ptr %attr)\n  %bad = icmp ne i32 %r, 0\n  br i1 %bad, label %direct, label %joined\ndirect:\n  %spp2 = call ptr @llvm.stacksave.p0()\n  %sp2 = ptrtoint ptr %spp2 to i64\n  %fl2 = sub i64 %sp2, 6291456\n  store i64 %fl2, ptr @ksn.floor\n  store i64 {dm}, ptr @ksn.dmax\n  %d = call i32 @ksn.rt.entry0(i32 %argc, ptr %argv)\n  ret i32 %d\njoined:\n  %t = load i64, ptr %tid\n  %j = call i32 @pthread_join(i64 %t, ptr %res)\n  %pv = load ptr, ptr %res\n  %iv = ptrtoint ptr %pv to i64\n  %code = trunc i64 %iv to i32\n  ret i32 %code\n}}\n\n\
