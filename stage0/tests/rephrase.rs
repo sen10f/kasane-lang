@@ -533,6 +533,13 @@ fn fold_variants(lines: &[String], funcs: &[Func], safe: &[bool]) -> Vec<String>
             if !safe[i] || m.trim_end().ends_with('{') || mask(rhs).trim().is_empty() || m.contains("capture") {
                 continue;
             }
+            // 初期化子が一時オブジェクトを借用する形 (`&x` / `&mut x` など) や、メソッド
+            // 呼び出しの結果が借用される形 (`x.lock().get()` など) は、インライン展開すると
+            // 一時オブジェクトの生存期間が変わり意味が変わるため、fold を飛ばす。
+            let rhs = rhs.trim();
+            if rhs_borrows_temporary(rhs) {
+                continue;
+            }
             let j = i + 1;
             if !safe[j] {
                 continue;
@@ -543,8 +550,12 @@ fn fold_variants(lines: &[String], funcs: &[Func], safe: &[bool]) -> Vec<String>
             if total != 2 || ps.len() != 1 {
                 continue;
             }
-            let rhs = rhs.trim();
             let rep = if mask(rhs).trim().contains(' ') { format!("({})", rhs) } else { rhs.to_string() };
+            // `name` の直前が `&`/`*` で rep が `&`/`*` で始まるなど、`&&` や `**` といった
+            // 文法エラー (E0002) を生む並びは作らない。
+            if fold_insertion_unsafe(&lines[j], ps[0], name, &rep) {
+                continue;
+            }
             let mut nl: Vec<String> = lines[..i].to_vec();
             nl.push(format!("{}{}{}", &lines[j][..ps[0]], rep, &lines[j][ps[0] + name.len()..]));
             nl.extend(lines[j + 1..].iter().cloned());
@@ -552,6 +563,52 @@ fn fold_variants(lines: &[String], funcs: &[Func], safe: &[bool]) -> Vec<String>
         }
     }
     out
+}
+
+/// 初期化子が一時オブジェクトを借用する形 (`&` / `&mut` で始まる) か、メソッド呼び出し
+/// (`x.m(...)`) を含むか。真なら `fold` でのインライン展開を飛ばす。
+fn rhs_borrows_temporary(rhs: &str) -> bool {
+    let r = rhs.trim();
+    if r.starts_with('&') {
+        return true;
+    }
+    let bytes = r.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'.' => {
+                let k = i + 1;
+                if k < bytes.len() && (bytes[k].is_ascii_alphabetic() || bytes[k] == b'_') {
+                    let mut m = k;
+                    while m < bytes.len() && (bytes[m].is_ascii_alphanumeric() || bytes[m] == b'_') {
+                        m += 1;
+                    }
+                    if m < bytes.len() && bytes[m] == b'(' && depth == 0 {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// `lines[j]` の `pos` (名前 `name` の位置) に `rep` を差し替えたとき、`&&` や `**` などの
+/// 記号が並んで文法エラー (E0002) になる形なら真。
+fn fold_insertion_unsafe(line: &str, pos: usize, name: &str, rep: &str) -> bool {
+    let bytes = line.as_bytes();
+    let pre = pos.saturating_sub(1);
+    let post = pos + name.len();
+    let pre_sigil = pre < bytes.len() && matches!(bytes[pre], b'&' | b'*');
+    let post_sigil = post < bytes.len() && matches!(bytes[post], b'&' | b'*');
+    let rep_starts_sigil = !rep.is_empty() && matches!(rep.as_bytes()[0], b'&' | b'*');
+    let rep_ends_sigil = !rep.is_empty() && matches!(rep.as_bytes().last(), Some(b'&' | b'*'));
+    (pre_sigil && rep_starts_sigil) || (rep_ends_sigil && post_sigil)
 }
 
 fn block_end(lines: &[String], i: usize) -> Option<usize> {
