@@ -6,3 +6,5 @@
 - スカラー型の高速パスは既存の `sort_unstable()`（ヒープソート、不安定・等しい要素が見分けられない型では結果が同一）でカバー。
 - テスト: `stage0/tests/slice_sort.rs` に `sort`/`sort_by` を挿入ソートの基準と比較する試験 (random/sorted/reversed/多数重複、レコードの `sort_by` で安定性) を追加。測定は前後で ksn 対 Rust (200 万 u64)。
 - 文書: `Kasane 簡易仕様書.md` の整列の節で SymMerge の記述を回転併合に差し替え。
+
+- 回転併合は撤回 (SymMerge に戻した)。整数・bool の `sort()` はネイティブへの下ろし (`kir_lower_ext.rs` の `ext_call`) で `core.slice.sort_scalar` (確保なしのイントロソート。等しい要素が見分けられないので安定でも結果は同じ) に差し替える。u64 200 万件: 1.56 → 0.35 s (生成と検証を含む)。一般の `sort_by` は SymMerge のまま、整列済みの併合を飛ばすだけ (乱数入力では差なし)。
