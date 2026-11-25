@@ -81,6 +81,9 @@ fn prepare(lo: &Lowered, entry: &str) -> Result<bc::Prog, String> {
 
 /// `ksn run --engine=vm`: 入口を VM で実行して終了コードを返す。実行を始める前に分かる理由 (下ろせない・VM が扱えない) は `Err`。
 pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String], watch: Option<Box<dyn FnOnce() -> reload::Reload + '_>>) -> Result<i32, String> {
+    if has_unsafe_block(prog) {
+        return Err(UNSAFE_REASON.into());
+    }
     let lo = kir_lower::lower_program_lazy(prog, user, entry);
     tick("lower");
     let bc = prepare(&lo, entry)?;
@@ -151,8 +154,24 @@ pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String], w
 
 /// `ksn test --engine=vm`: テスト `ti` を VM で実行する。結果は木走査と同じ形 (`None` = 成功、`Some(文言)` = 失敗)。
 /// 下ろせない・VM が扱えないときは `Err(理由)` (呼び出し側が木走査で実行する)。
+fn has_unsafe(v: &crate::parser::V) -> bool {
+    match v {
+        crate::parser::V::Node(n, fs, _, _) => (*n == "Unsafe" && { let d = v.dump(); ["core ptr null", "core ptr cast", "core ptr add"].iter().any(|k| d.contains(k)) }) || fs.iter().any(has_unsafe),
+        crate::parser::V::L(xs) => xs.iter().any(has_unsafe),
+        _ => false,
+    }
+}
+
+/// 利用者 (依存を含む) の `unsafe` ブロックがあるか。生ポインタの境界・null の検査は木走査が持つので、そのパッケージは木走査で走らせる。
+fn has_unsafe_block(prog: &Program) -> bool {
+    prog.defs.iter().any(|d| !crate::project::is_stdlib_file(&d.file) && d.body.as_ref().is_some_and(has_unsafe))
+}
+
+const UNSAFE_REASON: &str = "unsafe ブロックを含むパッケージは木走査で走らせる (null・cast・add の生ポインタの検査)";
+
 /// 全テストを 1 回だけ下ろし、(`std.tls`・複数スレッドの実行器を含まなければ) バイトコードも 1 回だけ作る。
 pub struct Suite {
+    unsafe_pkg: bool,
     lo: Lowered,
     shared: Option<Result<bc::Prog, String>>,
 }
@@ -165,10 +184,13 @@ pub fn lower_tests(prog: &Program, user: &[usize], tests: &[usize]) -> Suite {
     let m = lo.module.reachable_from(&roots);
     let special = m.funcs.iter().any(|f| f.link.as_deref().map_or(false, |l| l.starts_with("libssl.so") || l.starts_with("libcrypto.so"))) || m.find("ksn.task.mt_begin").is_some();
     let shared = if names.is_empty() || special || !crate::kir::verify_module(&m).is_empty() { None } else { Some(compile::compile(&m, &lo.lines)) };
-    Suite { lo, shared }
+    Suite { unsafe_pkg: has_unsafe_block(prog), lo, shared }
 }
 
 pub fn run_test(prog: &Program, suite: &Suite, ti: usize) -> Result<Option<String>, String> {
+    if suite.unsafe_pkg {
+        return Err(UNSAFE_REASON.into());
+    }
     let name = prog.defs[ti].name.clone();
     let lo = &suite.lo;
     let own;
