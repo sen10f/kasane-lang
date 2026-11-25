@@ -1,0 +1,7 @@
+fn t.g(name: &str) -> &str uses [] panics never
+    name - "x"
+end t.g
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line(t.g("a"))
+end t.main

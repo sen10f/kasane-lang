@@ -1,0 +1,9 @@
+fn t.greet(name: &str) -> std.string.String uses [] panics never
+    let s = "hello, " + name
+    s
+end t.greet
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    let g = t.greet("x")
+    std.io.print_line(g.as_str())
+end t.main
