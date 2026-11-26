@@ -129,3 +129,10 @@ ksn build --release
 - ホスト OS とアーキテクチャ（`uname -a`）
 - 再現する最小の `.ksnl` ソースと `kasane.toml`
 - `ksn check` / `ksn run` / `ksn build` のエラーメッセージ（コピー＆ペースト可）
+
+## 8. Edition 1 の範囲（何が入る / 何が実験的か）
+
+Edition 1 は処理系の核だけを凍結する。
+
+- 凍結するもの（言語・コア標準ライブラリ・ツール）：検査器（`ksn check`）、実行系（VM + LLVM ネイティブ）、`check` / `run` / `test` / `build` / `fmt` / `fix`、LSP、およびこれらが使う言語仕様とコア標準ライブラリ（`core` / `alloc` / `std` のうち Edition 1 で確定した範囲）。
+- 実験的で Edition 1 の範囲外：`ui/`（UI）、WASM SPA、パッケージレジストリ / `publish`、セルフホスト（stage1/stage2）、bindgen。これらは Edition 1 の契約には含まず、v1 以降で検討する。
