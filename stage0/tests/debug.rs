@@ -568,3 +568,29 @@ fn dap_launch_failure_is_reported() {
     d.request("disconnect", json!({}));
     let _ = d.p.finish();
 }
+
+/// VM のデバッガ: `String` の中身を出し、`len()` などのメソッド呼び出しと添字を式に書ける。
+#[test]
+fn print_string_contents_and_methods() {
+    let src = "\
+fn t.main() -> () uses [alloc] panics never
+    let mut s = std.string.String.new()
+    core.mem.drop(s.push_str(\"hello\"))
+    core.mem.drop(t.show(&s))
+end t.main
+
+fn t.show(s: &std.string.String) -> usize uses [] panics never
+    s.len()
+end t.show
+";
+    let pkg = Pkg::new("printstr", src);
+    let (evs, _) = session(&pkg, &[], &["break t.show", "run", "print s", "print s.len()", "print s.is_empty()", "print s.starts_with(\"he\")", "print s.nope()", "quit"]);
+    let vals: Vec<String> = of(&evs, "value").iter().map(|v| v["value"].as_str().unwrap().into()).collect();
+    assert!(vals.len() >= 4, "{:?} {:?}", vals, of(&evs, "error"));
+    assert_eq!(vals[0], "\"hello\"");
+    assert_eq!(vals[1], "5", "{:?} {:?}", vals, of(&evs, "error"));
+    assert_eq!(vals[2], "false");
+    assert_eq!(vals[3], "true");
+    let errs: Vec<String> = of(&evs, "error").iter().map(|e| e["message"].as_str().unwrap().to_string()).collect();
+    assert!(errs.iter().any(|e| e.contains("nope")), "{:?}", errs);
+}
