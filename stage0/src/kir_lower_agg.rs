@@ -1789,7 +1789,7 @@ impl<'a> Lw<'a> {
             } else {
                 super::coll::block_end(self);
             }
-            self.scopes.pop();
+            self.pop_scope();
             self.cur = Some(next);
         }
         // 網羅されていれば、最後の試験は到達しない。

@@ -577,7 +577,7 @@ pub fn children_of(v: &Val) -> Vec<(String, Val)> {
     }
 }
 
-fn pure_def(d: &crate::program::Def) -> bool {
+pub(crate) fn pure_def(d: &crate::program::Def) -> bool {
     d.uses.is_empty()
         && d.panics.as_deref() == Some("never")
         && d.params.iter().all(|(_, t)| {
@@ -806,6 +806,7 @@ pub struct Target {
     pub entry_name: String,
     pub tests: Vec<usize>,
     pub user_files: HashSet<String>,
+    pub user: Vec<usize>,
 }
 
 impl Target {
@@ -1136,12 +1137,15 @@ impl Frontend for Term {
 /// `ksn debug [--json] [--test <FQN>] [-- <プログラムへの引数>]` / `ksn test --debug [--json] <FQN>`
 pub fn cmd_debug(args: &[String]) -> i32 {
     let mut json_mode = false;
+    let mut tree = false;
     let mut test: Option<String> = None;
     let mut prog_args: Vec<String> = vec![];
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--json" => json_mode = true,
+            "--engine=tree" => tree = true,
+            "--engine=vm" => tree = false,
             "--test" => {
                 i += 1;
                 test = args.get(i).cloned();
@@ -1154,7 +1158,7 @@ pub fn cmd_debug(args: &[String]) -> i32 {
         }
         i += 1;
     }
-    let tgt = match crate::cli::load_for_debug() {
+    let tgt = match crate::cli::load_for_debug(tree) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("{}", e);
@@ -1177,6 +1181,19 @@ pub fn cmd_debug(args: &[String]) -> i32 {
             }
         },
     };
+    if !tree {
+        let target = match &run {
+            Run::Entry(_) => crate::vm::DebugTarget::Entry(tgt.entry_name.clone()),
+            Run::Test(ti) => crate::vm::DebugTarget::Test(*ti),
+        };
+        return match crate::vm::debug(&tgt.prog, &tgt.user, target, &prog_args, json_mode, tgt.user_files.clone(), None) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("ksn: debug on the VM is not available for this package: {} (use `--engine=tree`)", e);
+                1
+            }
+        };
+    }
     let mut it = Interp::new(tgt.prog.clone());
     it.args = prog_args;
     if json_mode {
@@ -1505,7 +1522,7 @@ impl Frontend for Dap {
 }
 
 /// `ksn dap`: stdin/stdout で Debug Adapter Protocol を話す。
-pub fn cmd_dap() -> i32 {
+pub fn cmd_dap(tree: bool) -> i32 {
     let mut dap = Dap { lines1: true, cols1: true, refs: vec![], stopped_now: false, tgt_tests: vec![] };
     let mut launched: Option<(Interp, Debugger, Run)> = None;
     let mut stop_on_entry = false;
@@ -1534,11 +1551,37 @@ pub fn cmd_dap() -> i32 {
                 if let Some(cwd) = a["cwd"].as_str() {
                     let _ = std::env::set_current_dir(cwd);
                 }
-                match crate::cli::load_for_debug() {
+                match crate::cli::load_for_debug(tree) {
                     Err(e) => {
                         Dap::respond(&req, false, json!({}), Some(&e));
                         dap_event("terminated", json!({}));
                         continue;
+                    }
+                    Ok(tgt) if !tree => {
+                        let target = match a["test"].as_str() {
+                            Some(name) => tgt.find_test(name).map(crate::vm::DebugTarget::Test),
+                            None if tgt.entry.is_some() => Ok(crate::vm::DebugTarget::Entry(tgt.entry_name.clone())),
+                            None => Err("this package is a library (no `entry` in kasane.toml)".to_string()),
+                        };
+                        let target = match target {
+                            Ok(t) => t,
+                            Err(e) => {
+                                Dap::respond(&req, false, json!({}), Some(&e));
+                                continue;
+                            }
+                        };
+                        let args: Vec<String> = a["args"].as_array().map(|x| x.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default();
+                        Dap::respond(&req, true, json!({}), None);
+                        dap_event("initialized", json!({}));
+                        let st = crate::vm::run_dap_state(dap.lines1, dap.cols1, a["stopOnEntry"].as_bool().unwrap_or(false));
+                        return match crate::vm::debug(&tgt.prog, &tgt.user, target, &args, false, tgt.user_files.clone(), Some(st)) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                dap_event("output", json!({"category": "stderr", "output": format!("ksn: debug on the VM is not available for this package: {} (use `--engine=tree`)\n", e)}));
+                                dap_event("terminated", json!({}));
+                                1
+                            }
+                        };
                     }
                     Ok(tgt) => {
                         let run = match a["test"].as_str() {

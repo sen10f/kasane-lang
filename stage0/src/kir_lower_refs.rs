@@ -158,6 +158,7 @@ impl<'a> Lw<'a> {
             self.emit(Ty::Unit, Op::Store { ptr: p, val: v });
         } else {
             self.slots[s].0 = v;
+            self.dbg_slot_changed(s);
         }
     }
 

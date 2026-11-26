@@ -1699,7 +1699,7 @@ fn run_args(args: &[String]) -> Result<(bool, bool, Vec<String>), String> {
 }
 
 /// デバッガ用の読み込み: 検査して Program を作る。致命的な診断があれば、その本文を Err で返す。
-pub(crate) fn load_for_debug() -> Result<crate::debug::Target, String> {
+pub(crate) fn load_for_debug(tree: bool) -> Result<crate::debug::Target, String> {
     let mut rep = Report::new(false);
     let root = find_root().map_err(|e| format!("ksn: {}: {}", e.code, e.msg))?;
     let (l, prog, user) = full_check(&root, &mut rep, true).map_err(|e| format!("ksn: {}: {}", e.code, e.msg))?;
@@ -1717,14 +1717,14 @@ pub(crate) fn load_for_debug() -> Result<crate::debug::Target, String> {
         return Err(lines.join("\n"));
     }
     let prog = Rc::new(prog.unwrap());
-    if has_user_drop(&l, &prog, &user) {
-        return Err("ksn: E9031: ksn debug は木走査で動くため、手書きの `impl core.ops.Drop` があるパッケージはデバッグできない (Drop が黙って飛ばされる)。`ksn run` (VM) を使う".to_string());
+    if tree && has_user_drop(&l, &prog, &user) {
+        return Err("ksn: `--engine=tree` のデバッガは木走査で動くため、手書きの `impl core.ops.Drop` があるパッケージはデバッグできない (Drop が黙って飛ばされる)。`--engine=tree` を外して VM のデバッガを使う".to_string());
     }
     let entry_name = l.pkg.entry().unwrap_or_default();
     let entry = prog.funcs.get(&entry_name).copied();
     let tests: Vec<usize> = user.iter().copied().filter(|&i| prog.defs[i].kw == "test").collect();
     let user_files = user.iter().map(|&i| prog.defs[i].file.clone()).collect();
-    Ok(crate::debug::Target { prog, entry, entry_name, tests, user_files })
+    Ok(crate::debug::Target { prog, entry, entry_name, tests, user_files, user: user.clone() })
 }
 
 /// レーベンシュタイン距離。既知フラグへの "did you mean" 候補を探すのに使う。
@@ -1875,8 +1875,6 @@ fn cmd_run(args: &[String]) -> i32 {
             return 2;
         }
     };
-    // ホットリロード (`--watch`) は、VM を明示したときだけ VM で走らせる (既定は木走査)。
-    let use_vm = use_vm && (!watch || explicit);
     let mut rep = Report::new(json);
     crate::vm::tick("start");
     let root = match find_root() {
@@ -2114,7 +2112,7 @@ fn cmd_test(args: &[String]) -> i32 {
             eprintln!("usage: ksn test --debug [--json] <test FQN>");
             return 2;
         };
-        let mut dargs: Vec<String> = args.iter().filter(|a| *a == "--json").cloned().collect();
+        let mut dargs: Vec<String> = args.iter().filter(|a| *a == "--json" || *a == "--engine=tree" || *a == "--engine=vm").cloned().collect();
         dargs.extend(["--test".to_string(), name.clone()]);
         return crate::debug::cmd_debug(&dargs);
     }
@@ -5740,7 +5738,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         }
         "lsp" => crate::lsp::run(),
         "debug" => crate::debug::cmd_debug(&rest),
-        "dap" => crate::debug::cmd_dap(),
+        "dap" => crate::debug::cmd_dap(rest.iter().any(|a| a == "--engine=tree")),
         "kir" => cmd_kir(&rest),
         "s5-meter" => cmd_s5_meter(&rest),
         "build" => cmd_build(&rest, None),

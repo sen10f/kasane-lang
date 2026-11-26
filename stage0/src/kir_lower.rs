@@ -126,6 +126,30 @@ pub struct Lowered {
 pub struct FnLines {
     pub file: String,
     pub lines: Vec<u32>,
+    /// デバッガ用: 局所変数の束縛・再束縛・スコープの終わりの記録 (`set_debug_vars(true)` のときだけ)。
+    pub evs: Vec<DbgEv>,
+}
+
+/// 局所変数の履歴の 1 件。`at` は記録した時点の値の数 (命令の値番号がこれ以上なら、この記録が効いている)。
+#[derive(Clone, Debug)]
+pub struct DbgEv {
+    pub bid: u32,
+    pub name: String,
+    pub vid: VId,
+    pub ty: Ty,
+    /// スタックスロット (`vid` は番地で、値はそこにある)。
+    pub mem: bool,
+    pub kill: bool,
+    pub at: u32,
+}
+
+thread_local! {
+    static DBG_VARS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 局所変数の履歴を `FnLines::evs` に記録するか (`ksn debug` の VM だけ)。
+pub fn set_debug_vars(on: bool) {
+    DBG_VARS.with(|c| c.set(on));
 }
 
 thread_local! {
@@ -411,6 +435,10 @@ struct Lw<'a> {
     cur_line: u32,
     /// 値番号 → その命令を作った式の行。
     line_of: Vec<u32>,
+    dbg_on: bool,
+    dbg_evs: Vec<DbgEv>,
+    dbg_bid: HashMap<usize, u32>,
+    dbg_next: u32,
     /// 参照の下ろしの状態 (kir_lower_refs.rs)。
     rf: RefCx,
     /// コレクション・文字列・クロージャの下ろし (kir_lower_coll.rs) の状態。
@@ -445,6 +473,10 @@ impl<'a> Lw<'a> {
             ret: Ty::Unit,
             cur_line: 0,
             line_of: vec![],
+            dbg_on: DBG_VARS.with(|c| c.get()),
+            dbg_evs: vec![],
+            dbg_bid: HashMap::new(),
+            dbg_next: 0,
             rf: RefCx::default(),
             coll: CollCx::default(),
         }
@@ -531,6 +563,42 @@ impl<'a> Lw<'a> {
     fn bind(&mut self, name: &str, v: VId, t: Ty) {
         let s = self.new_slot(v, t);
         self.scopes.last_mut().expect("スコープ").push((name.to_string(), s));
+        if self.dbg_on {
+            let bid = self.dbg_next;
+            self.dbg_next += 1;
+            self.dbg_bid.insert(s, bid);
+            self.dbg_ev(s, name);
+        }
+    }
+
+    /// デバッガ用: スロット `s` の今の値を履歴に足す。
+    pub(super) fn dbg_ev(&mut self, s: usize, name: &str) {
+        let Some(&bid) = self.dbg_bid.get(&s) else { return };
+        let (vid, ty) = self.slots[s];
+        let mem = self.rf.is_mem(vid);
+        let at = self.vty.len() as u32;
+        self.dbg_evs.push(DbgEv { bid, name: name.to_string(), vid, ty, mem, kill: false, at });
+    }
+
+    pub(super) fn dbg_slot_changed(&mut self, s: usize) {
+        if !self.dbg_on {
+            return;
+        }
+        let Some(name) = self.scopes.iter().flatten().rev().find(|(_, x)| *x == s).map(|(n, _)| n.clone()) else { return };
+        self.dbg_ev(s, &name);
+    }
+
+    pub(super) fn pop_scope(&mut self) {
+        if let Some(sc) = self.scopes.pop() {
+            if self.dbg_on {
+                let at = self.vty.len() as u32;
+                for (name, s) in sc {
+                    if let Some(bid) = self.dbg_bid.remove(&s) {
+                        self.dbg_evs.push(DbgEv { bid, name, vid: 0, ty: Ty::Unit, mem: false, kill: true, at });
+                    }
+                }
+            }
+        }
     }
 
     /// `match` の振り分け: 対象が `Option` / `Result` なら `match_` (タグの判定)、それ以外は `match_e` (集成体・スカラーの腕)。
@@ -743,7 +811,7 @@ impl<'a> Lw<'a> {
             blocks,
         };
         LINES.with(|l| {
-            l.borrow_mut().insert(f.key.clone(), FnLines { file: d.file.clone(), lines: std::mem::take(&mut self.line_of) });
+            l.borrow_mut().insert(f.key.clone(), FnLines { file: d.file.clone(), lines: std::mem::take(&mut self.line_of), evs: std::mem::take(&mut self.dbg_evs) });
         });
         let mut out = std::mem::take(&mut self.coll.extra);
         // 関数ポインタ (`FnPtr`) の指す先も呼び先に数える (遅延の下ろしが引き込むため)。
@@ -1863,6 +1931,15 @@ impl<'a> Lw<'a> {
         let mut diverged = false;
         for (i, s) in stmts.iter().enumerate() {
             let last = i + 1 == stmts.len();
+            // デバッガ: 文ごとに、その行の印になる何もしない命令を置く (命令を作らない文 (`s` だけの式など) にも止まれるように)。
+            if self.dbg_on && self.cur.is_some() {
+                let l = nline(s);
+                if l != 0 {
+                    let saved = std::mem::replace(&mut self.cur_line, l as u32);
+                    self.unit();
+                    self.cur_line = saved;
+                }
+            }
             let temp_mark = self.coll.temps.len();
             let guard_mark = coll::guard_mark(self);
             let tmp_mark = coll::temps_mark(self);
@@ -1915,7 +1992,7 @@ impl<'a> Lw<'a> {
                 }
             }
         }
-        self.scopes.pop();
+        self.pop_scope();
         if diverged {
             return Ok(None);
         }
@@ -2095,6 +2172,7 @@ impl<'a> Lw<'a> {
             self.coll.hdr_ty.entry(v).or_insert(h);
         }
         self.slots[s] = (v, t);
+        self.dbg_slot_changed(s);
     }
 
     fn while_(&mut self, e: &V) -> LR<Option<VId>> {
@@ -2237,7 +2315,7 @@ impl<'a> Lw<'a> {
         let r = match r {
             Ok(r) => r,
             Err(e) => {
-                self.scopes.pop();
+                self.pop_scope();
                 return Err(e);
             }
         };
@@ -2249,7 +2327,7 @@ impl<'a> Lw<'a> {
             let depth = self.scopes.len() - 1;
             self.coll.owned.retain(|(d, _)| *d < depth);
         }
-        self.scopes.pop();
+        self.pop_scope();
         if let Some(e) = self.coll.close_err.take() {
             return Err(e);
         }

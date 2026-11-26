@@ -113,12 +113,12 @@ pub const DEADLOCK_SEND: &str = "deadlock: send() on a full channel whose Receiv
 (native threads would block here forever; or the program needs a back-and-forth with a thread that is waiting on this one, which the \
 single-threaded interpreter cannot schedule. Receive before sending more, or give the channel a larger capacity)";
 
-fn unhex(s: &str) -> String {
+pub(crate) fn unhex(s: &str) -> String {
     let bytes: Vec<u8> = (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap_or(0)).collect();
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-fn parse_int(s: &str) -> i128 {
+pub(crate) fn parse_int(s: &str) -> i128 {
     s.parse::<i128>().unwrap_or_else(|_| s.parse::<u128>().map(|u| u as i128).unwrap_or(0))
 }
 
