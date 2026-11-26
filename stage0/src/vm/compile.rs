@@ -779,12 +779,22 @@ impl<'a> Fc<'a> {
                 self.last_pa = Some((inst.dst, self.code.len()));
                 Ins::PtrAdd { d, p: self.s(*p), off: self.s(*off) }
             }
+            Op::MemLoad { p, off } if opt_shape(&self.m.aggs, ty).is_some() => {
+                let (sb, pw) = opt_shape(&self.m.aggs, ty).unwrap_or_default();
+                let (pp, o2) = self.addr_of(*p);
+                Ins::LoadOpt { d, p: pp, off: o2 + *off, sb, pw }
+            }
             Op::MemLoad { p, off } => {
                 let Some(k) = lk(ty) else { return Err(format!("mem.load の型 {} が読めない", ty.name())) };
                 match fuse_pa(self, *p) {
                     Some((p, x)) => Ins::LoadX { d, p, x, off: *off, k },
                     None => load_ins(d, self.s(*p), *off, k),
                 }
+            }
+            Op::MemStore { ty: sty, p, off, v } if opt_shape(&self.m.aggs, *sty).is_some() => {
+                let (sb, pw) = opt_shape(&self.m.aggs, *sty).unwrap_or_default();
+                let (pp, o2) = self.addr_of(*p);
+                Ins::StoreOpt { p: pp, off: o2 + *off, v: self.s(*v), sb, pw }
             }
             Op::MemStore { ty: sty, p, off, v } => {
                 self.canon_val(*sty, *v);
@@ -921,7 +931,10 @@ impl<'a> Fc<'a> {
             // OS の乱数 (`std.rand.fill_secure` / `from_entropy`) は VM 未対応 (木走査か参照実行器へ退避する)。
             Op::RandFill { buf, len, fatal } => Ins::RandFill { d, buf: self.s(*buf), len: self.s(*len), fatal: *fatal },
             // std.net の追加分 (タイムアウト・shutdown・アドレス・resolve・UDP) も VM 未対応 (木走査へ退避する)。
-            Op::NetSys { .. } => return Err("std.net の追加分は VM 未対応".into()),
+            Op::NetSys { kind, args } => {
+                let (argp, argn) = self.pool_slots(args);
+                Ins::NetSys { d, kind: *kind, argp, argn }
+            }
         };
         self.push(i);
         Ok(())

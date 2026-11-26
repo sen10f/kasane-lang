@@ -45,6 +45,13 @@ fn root_reason(lo: &Lowered, entry: &str) -> String {
     format!("{} を KIR に下ろせない ({})", entry, why)
 }
 
+const NET_ASYNC_REASON: &str = "std.net の非同期 (accept_async / read_async / write_async) は VM 未対応 (実行器にリアクターが無い)";
+
+/// `std.net` の非同期の関数 (`*_async`) を含むか。VM の実行器は I/O の待ちを持たないので、走らせない (木走査へ退避する)。
+fn uses_net_async(m: &crate::kir::Module) -> bool {
+    m.funcs.iter().any(|f| f.key.starts_with("std.net.") && f.key.contains("_async"))
+}
+
 /// 入口 `entry` から届く関数を KIR に下ろしてバイトコードにする。
 fn prepare(lo: &Lowered, entry: &str) -> Result<bc::Prog, String> {
     if lo.module.find(entry).is_none() {
@@ -59,6 +66,9 @@ fn prepare(lo: &Lowered, entry: &str) -> Result<bc::Prog, String> {
     // `std.task.block_on_threads` は複数のワーカーを前提にした意味 (取り消し・入れ子・panic の伝わり方) を持つ。VM の実行器は 1 本なので走らせない (木走査へ退避する)。
     if m.find("ksn.task.mt_begin").is_some() {
         return Err("std.task.block_on_threads は VM 未対応".into());
+    }
+    if uses_net_async(&m) {
+        return Err(NET_ASYNC_REASON.into());
     }
     let errs = crate::kir::verify_module(&m);
     tick("verify");
@@ -184,7 +194,7 @@ pub fn lower_tests(prog: &Program, user: &[usize], tests: &[usize]) -> Suite {
     let mut roots = names.clone();
     roots.push(kir_lower::debug::ENTRY_DEBUG);
     let m = lo.module.reachable_from(&roots);
-    let special = m.funcs.iter().any(|f| f.link.as_deref().map_or(false, |l| l.starts_with("libssl.so") || l.starts_with("libcrypto.so"))) || m.find("ksn.task.mt_begin").is_some();
+    let special = m.funcs.iter().any(|f| f.link.as_deref().map_or(false, |l| l.starts_with("libssl.so") || l.starts_with("libcrypto.so"))) || m.find("ksn.task.mt_begin").is_some() || uses_net_async(&m);
     let shared = if names.is_empty() || special || !crate::kir::verify_module(&m).is_empty() { None } else { Some(compile::compile(&m, &lo.lines)) };
     let snap = arena::snapshot();
     Suite { unsafe_pkg: has_unsafe_block(prog), lo, shared, snap }
