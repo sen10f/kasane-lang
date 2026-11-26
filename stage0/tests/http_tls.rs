@@ -376,6 +376,12 @@ fn std_tls_client_interpreter_and_native_agree() {
     assert_eq!(o.status.code(), Some(0), "木走査: {}{}", text(&o.stdout), text(&o.stderr));
     assert_eq!(text(&o.stdout), CLIENT_OUT, "木走査の出力");
 
+    // バイトコード VM (`--engine=vm`): 退避せず、木走査と同じ出力。
+    let o = run(&["run", "--engine=vm", args[0], args[1]], &t.0);
+    assert!(!text(&o.stderr).contains("vm engine skipped"), "VM が退避した: {}", text(&o.stderr));
+    assert_eq!(o.status.code(), Some(0), "VM: {}{}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&o.stdout), CLIENT_OUT, "VM の出力");
+
     let (nt, found, out) = build_native_strict("tls_client_n", CLIENT_SRC, true);
     let Some(p) = found else { panic!("クライアントのネイティブがない: {}", out) };
     assert!(!out.contains("skipped"), "ネイティブに下ろせず退避した: {}", out);

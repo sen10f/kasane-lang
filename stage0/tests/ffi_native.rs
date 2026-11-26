@@ -325,6 +325,15 @@ fn abi_pkg(name: &str, cc_cmd: &str) -> Tmp {
     t
 }
 
+/// `ksn run --engine=vm` (バイトコード VM) が、木走査 (`ksn run --engine=tree`) と同じ出力・終了コードで、退避せずに走ること。
+fn vm_same(dir: &Path) {
+    let tr = run(&["run", "--engine=tree"], dir);
+    let vm = run(&["run", "--engine=vm"], dir);
+    assert!(!text(&vm.stderr).contains("vm engine skipped"), "VM が退避した: {}", text(&vm.stderr));
+    assert_eq!(vm.status.code(), tr.status.code(), "vm: {}{}", text(&vm.stdout), text(&vm.stderr));
+    assert_eq!(text(&vm.stdout), text(&tr.stdout));
+}
+
 fn native_exe(out: &str, dir: &Path) -> PathBuf {
     let rel = out.lines().find_map(|l| l.strip_prefix("native executable: ")).unwrap_or_else(|| panic!("no native executable in:\n{}", out));
     dir.join(rel.trim())
@@ -341,6 +350,7 @@ fn structs_of_many_shapes_cross_the_c_boundary_natively_on_x86_64() {
     assert_eq!(c.status.code(), Some(0), "{}{}", text(&c.stdout), text(&c.stderr));
     // インタプリタも構造体を引数・戻り値に持つコールバックをサポートしたので、`ksn run` との比較は下の試験で行う。
     // ネイティブ (LLVM)。退避は許さない。
+    vm_same(&t.0);
     let b = run(&["build", "--backend", "llvm"], &t.0);
     let out = text(&b.stdout) + &text(&b.stderr);
     assert_eq!(b.status.code(), Some(0), "{}", out);
@@ -430,6 +440,7 @@ end t.main
     assert_eq!(ck.status.code(), Some(0), "check: {}{}", text(&ck.stdout), text(&ck.stderr));
 
     // `ksn run` (インタプリタ): 構造体を値渡しするコールバックが動くこと。
+    vm_same(&t.0);
     let ir = run(&["run"], &t.0);
     assert_eq!(ir.status.code(), Some(0), "run: {}{}", text(&ir.stdout), text(&ir.stderr));
     assert_eq!(text(&ir.stdout), "cb ok\n");
@@ -505,6 +516,7 @@ end t.main
     t.fmt();
     let ck = run(&["check"], &t.0);
     assert_eq!(ck.status.code(), Some(0), "check: {}{}", text(&ck.stdout), text(&ck.stderr));
+    vm_same(&t.0);
     let ir = run(&["run"], &t.0);
     assert_eq!(ir.status.code(), Some(0), "run: {}{}", text(&ir.stdout), text(&ir.stderr));
     assert_eq!(text(&ir.stdout), "cb24 ok\n");
@@ -584,6 +596,7 @@ end t.main
     t.fmt();
     let ck = run(&["check"], &t.0);
     assert_eq!(ck.status.code(), Some(0), "check: {}{}", text(&ck.stdout), text(&ck.stderr));
+    vm_same(&t.0);
     let ir = run(&["run"], &t.0);
     assert_eq!(ir.status.code(), Some(0), "run: {}{}", text(&ir.stdout), text(&ir.stderr));
     assert_eq!(text(&ir.stdout), "cb32 ok\n");
@@ -656,6 +669,7 @@ end t.main
     t.fmt();
     let ck = run(&["check"], &t.0);
     assert_eq!(ck.status.code(), Some(0), "check: {}{}", text(&ck.stdout), text(&ck.stderr));
+    vm_same(&t.0);
     let ir = run(&["run"], &t.0);
     assert_eq!(ir.status.code(), Some(0), "run: {}{}", text(&ir.stdout), text(&ir.stderr));
     assert_eq!(text(&ir.stdout), "cb24i ok\n");
@@ -725,6 +739,7 @@ end t.main
     t.fmt();
     let ck = run(&["check"], &t.0);
     assert_eq!(ck.status.code(), Some(0), "check: {}{}", text(&ck.stdout), text(&ck.stderr));
+    vm_same(&t.0);
     let ir = run(&["run"], &t.0);
     assert_eq!(ir.status.code(), Some(0), "run: {}{}", text(&ir.stdout), text(&ir.stderr));
     assert_eq!(text(&ir.stdout), "cb24ret ok\n");
@@ -814,6 +829,7 @@ end t.main
     assert_eq!(c.status.code(), Some(0), "{}{}", text(&c.stdout), text(&c.stderr));
     // インタプリタ (`ksn run`) は正しいはず。
     let want = "ptr ok\n";
+    vm_same(&t.0);
     let i = run(&["run"], &t.0);
     assert_eq!(i.status.code(), Some(0), "interpreter: {}{}", text(&i.stdout), text(&i.stderr));
     assert_eq!(text(&i.stdout), want, "interpreter: {}", text(&i.stderr));
@@ -850,6 +866,7 @@ fn a_trampoline_carries_user_data_to_a_c_callback_natively() {
     assert!(o.status.success(), "{}", text(&o.stderr));
     let src = include_str!("data/ffi_userdata/main.ksnl").replace("LIB:", &format!("{}:", lib.to_str().unwrap()));
     fs::write(t.0.join("src").join("t.ksnl"), src).unwrap();
+    vm_same(&t.0);
     let i = run(&["run"], &t.0);
     assert_eq!(i.status.code(), Some(0), "{}{}", text(&i.stdout), text(&i.stderr));
     assert_eq!(text(&i.stdout), "userdata ok\n");
