@@ -552,6 +552,9 @@ pub fn raw_list(v: &Val) -> Option<Rc<RefCell<Vec<Val>>>> {
 /// 列でなければ何もせず false。組み込みが `&mut Vec<u8>` へ書く全ての経路 (read_to_end・read_dir・process の output) はこれを通す。
 pub fn extend_vec_bytes(target: &Val, data: &[u8]) -> bool {
     let Some(l) = raw_list(target) else { return false };
+    if l.borrow_mut().try_reserve(data.len()).is_err() {
+        return false;
+    }
     l.borrow_mut().extend(data.iter().map(|b| int(*b as i128, "u8")));
     let len = l.borrow().len();
     if let Val::Struct(v) = target {

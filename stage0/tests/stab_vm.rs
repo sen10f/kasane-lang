@@ -70,3 +70,32 @@ fn s07_vm_big_allocation_matches_tree() {
         assert!(o.contains("ok cap>=9000000000"), "{}: {}", e, o);
     }
 }
+
+#[test]
+fn s14_reads_big_file_under_ulimit_v() {
+    if !std::path::Path::new("/bin/sh").exists() {
+        return;
+    }
+    let d = pkg("S-14", false);
+    let big = d.join("big.bin");
+    std::fs::write(&big, vec![0u8; 300_000_000]).unwrap();
+    for (lim, must_succeed) in [(16_000_000, true), (5_000_000, false)] {
+        let cmd = format!(
+            "ulimit -v {} 2>/dev/null || exit 77; KSN_CACHE_DIR={} {} run -- big.bin",
+            lim,
+            d.join("cache").display(),
+            common::exe()
+        );
+        let o = std::process::Command::new("/bin/sh").arg("-c").arg(cmd).current_dir(&d).output().unwrap();
+        if o.status.code() == Some(77) {
+            break;
+        }
+        let (out, err) = (common::text(&o.stdout), common::text(&o.stderr));
+        // SIGABRT (134) や信号死は不可。
+        assert!(o.status.code().is_some_and(|c| c < 128), "limit {}: {:?} {}{}", lim, o.status, out, err);
+        if must_succeed {
+            assert!(o.status.code() == Some(0) && out.contains("len=300000000"), "{:?} {}{}", o.status, out, err);
+        }
+    }
+    let _ = std::fs::remove_file(&big);
+}

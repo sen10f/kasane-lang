@@ -1,0 +1,20 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, env, io.console, io.fs] panics may
+    let path = match std.env.arg(0usize) {
+        Some(p) => p
+        None => "x"
+    }
+    let mut f = std.fs.open(path)?
+    let mut buf: std.vec.Vec<u8> = std.vec.Vec.new()
+    let r = std.fs.read_to_end(&mut f, &mut buf)
+    core.mem.drop(f.close())
+    let mut s = std.string.String.new()
+    if r is Ok(_) {
+        s.push_str("ok").unwrap()
+    } else {
+        s.push_str("err").unwrap()
+    }
+    s.push_str(" len=").unwrap()
+    s.push_u64(u64.from_usize(buf.len())).unwrap()
+    std.io.print_line(s.as_str())?
+    Ok(())
+end t.main
