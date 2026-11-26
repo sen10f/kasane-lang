@@ -21,7 +21,7 @@ use crate::git_tags::SemVer;
 use crate::project::*;
 use crate::value::Ctl;
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.1.0-alpha.1";
 
 fn lint_code(c: &str) -> &'static str {
     match c {

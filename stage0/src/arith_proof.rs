@@ -18,6 +18,10 @@ use crate::program::Def;
 /// 今は false (check は通し、`ksn fix` が `+` / `-` に直す)。書き換えが終わったら true にする。
 pub const PROVEN_WRAPPING_IS_ERROR: bool = false;
 
+/// 範囲の証明を使うか。公開アルファ (0.1.0-alpha.1) では切る: 証明の取りこぼし (Mythos6 AR1/AR2) と、
+/// 証明した `+`/`-` を KIR が下ろせない件 (AR4) が残るため。切っている間は E4004 がいつも出て、`ksn fix` も書き換えない。
+pub const ENABLED: bool = false;
+
 /// 証明できた節点。
 #[derive(Clone, Debug)]
 pub struct Site {
@@ -572,6 +576,9 @@ fn poisoned(body: &V, out: &mut HashSet<String>) {
 
 /// 関数 `d` の本体で証明できた `+` / `-` (と `wrapping_*`) の節点。
 pub fn prove(d: &Def) -> HashMap<u32, Site> {
+    if !ENABLED {
+        return HashMap::new();
+    }
     let Some(body) = &d.body else { return HashMap::new() };
     let mut poison = HashSet::new();
     poisoned(body, &mut poison);

@@ -3407,7 +3407,7 @@ impl<'a> Checker<'a> {
                 _ => (
                     "on overflow",
                     format!(
-                        "to stop on overflow write `a.checked_{n}(b).ok_or(..)?`, to clamp write `a.saturating_{n}(b)`, `a.wrapping_{n}(b)` only for an intended wrap-around (hash, PRNG), or add a guard the checker understands (`if i < n` before `i + 1`, `if x >= k` before `x - k`, `!v.is_empty()` before `v.len() - 1`; an assignment in between voids it)",
+                        "to stop on overflow write `a.checked_{n}(b).ok_or(..)?`, to clamp write `a.saturating_{n}(b)`, `a.wrapping_{n}(b)` only for an intended wrap-around (hash, PRNG)",
                         n = name
                     ),
                     String::new(),

@@ -36,6 +36,7 @@ end t.main
 ";
 
 #[test]
+#[ignore = "範囲の証明はアルファでは切っている (arith_proof::ENABLED)"]
 fn fix_rewrites_only_proven_wrapping() {
     let t = Tmp::new_strict("arith_fix", SRC);
     // 移行の間は、証明できる `wrapping_*` も check を通る。
@@ -54,6 +55,7 @@ fn fix_rewrites_only_proven_wrapping() {
 }
 
 #[test]
+#[ignore = "範囲の証明はアルファでは切っている (arith_proof::ENABLED)"]
 fn proven_shapes_run_the_same_in_vm_and_native() {
     let src = "fn t.pred(x: u32) -> u32 uses [] panics never
     if x >= 3u32 {

@@ -121,6 +121,7 @@ ksn build --release
 - `ksn fix` が自動修正できるのは一部の診断（E1108 / E1020 / E2041 / E2042）のみです。
 - スレッドを作れずに `std.thread.spawn` が失敗したとき、ネイティブと VM は `Err(SpawnError)` を返さず、`spawn failed: ...` の panic でプログラムを止めます (終了コード 101)。クロージャを返せるのは木走査 (`--engine=tree`) だけです。
 - `std.task.block_on_threads` の VM は、本物の並列ではなく 1 本のスレッドの協調で動きます（`sleep`・空の `recv`・満杯の `send`・ロックの待ち・`join` で切り替わります）。タスクの閉包がチャネルの端 (`Sender` / `Receiver`) を取り込む形は、まだ木走査へ退避し、他のタスクを待つと deadlock（101）になることがあります。また、ロックや時刻・`sleep` を呼ばない空回りの `loop` は、他のタスクに切り替わりません。こうした形は `ksn build` のネイティブでは動きます。
+- VM の `block_on_threads` で、ロックを持ったまま `std.thread.sleep` するタスクがあると、ほかのタスクがそのロックを待つ間に誤って deadlock（101）と判断されることがあります。ネイティブ（`ksn build`）では正しく動きます。
 - `dyn` 型・クロージャの C 関数ポインタ渡し（`core.ffi.trampoline` が必要）など、一部は未対応または制限あり。
 
 ## 7. 問題の報告方法

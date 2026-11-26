@@ -125,6 +125,7 @@ Output: `double: 4`. At the end of the build, `built: target/release/hello (nati
 - `ksn fix` can automatically fix only some diagnostics (E1108 / E1020 / E2041 / E2042).
 - When `std.thread.spawn` fails because a thread cannot be created, native and the VM do not return `Err(SpawnError)`; they stop the program with a `spawn failed: ...` panic (exit code 101). Only the tree walker (`--engine=tree`) can return the closure.
 - On the VM, `std.task.block_on_threads` runs cooperatively on one thread rather than in parallel (it switches at `sleep`, an empty `recv`, a full `send`, lock waits and `join`). Programs whose task closures capture a channel end (`Sender` / `Receiver`) still fall back to the tree walker and may report a deadlock (101) when one task waits for another, and a busy `loop` that never calls a lock, the clock or `sleep` does not yield to other tasks. Such programs work in native builds (`ksn build`).
+- On the VM, `block_on_threads` may wrongly report a deadlock (101) when a task sleeps (`std.thread.sleep`) while holding a lock that another task is waiting for. Native builds (`ksn build`) behave correctly.
 - Some features are unsupported or limited, such as `dyn` types and passing closures as C function pointers (which needs `core.ffi.trampoline`).
 
 ## 7. How to report problems

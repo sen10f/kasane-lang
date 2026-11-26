@@ -1651,9 +1651,16 @@ impl<'a> Lw<'a> {
             }
         }
         // `SpawnError<F>` から取り出したクロージャの呼び出し。KIR の `spawn` は失敗しない (クロージャの値は KIR に無い) ので、ここには来ない。
-        if target.is_none() && segs.len() == 1 && self.lookup(&segs[0]).is_some() {
-            self.terminate(Term::Unreachable);
-            return Ok(None);
+        if target.is_none() && segs.len() == 1 {
+            if let Some(s) = self.lookup(&segs[0]) {
+                // `SpawnError<F>` の `closure` の欄は KIR では `u8` の置き場 (spawn_err。失敗しないので来ない)。それ以外 (パターンで得た関数値など) は
+                // `unreachable` にすると誤った機械語になる (Mythos6 FV1)。下ろせないとして退避させる。
+                if matches!(self.slots[s].1, Ty::U8 | Ty::Unit) {
+                    self.terminate(Term::Unreachable);
+                    return Ok(None);
+                }
+                return self.err(line, format!("局所 {} の関数値の呼び出しは段階 1 の対象外", segs[0]));
+            }
         }
         let Some(Tgt::Fn(di)) = target else {
             return self.err(line, format!("呼び出し {} は段階 1 の対象外", segs.join(".")));
