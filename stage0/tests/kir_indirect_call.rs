@@ -137,3 +137,14 @@ fn the_native_build_runs_clean_under_asan() {
     assert_eq!(text(&r.stdout), "applied\n");
     assert!(!text(&r.stderr).contains("AddressSanitizer"), "{}", text(&r.stderr));
 }
+
+/// 関数値が総称の型引数・戻り値・閉包の引数と戻り値・代入できる局所に出る形 (以前は VM が木走査へ退避した)。
+#[test]
+fn fn_values_in_generics_returns_closures_and_assigned_locals_run_on_every_engine() {
+    for n in ["call_fn_value_declared_effect_ok", "call_fn_value_pure_ok", "closure_ret_fn_effect_ok", "fn_eff_values_ok", "sec6_fnvalue_ret_ok"] {
+        let src = std::fs::read_to_string(format!("{}/tests/data/check_ok/{}.ksnl", env!("CARGO_MANIFEST_DIR"), n)).unwrap();
+        let (code, _, err) = run_everywhere(&format!("fnv_{}", n), &src);
+        assert_eq!(code, Some(0), "{}: {}", n, err);
+        assert!(!err.contains("skipped"), "{}: {}", n, err);
+    }
+}
