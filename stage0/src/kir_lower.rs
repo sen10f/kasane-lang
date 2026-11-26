@@ -2302,7 +2302,9 @@ impl<'a> Lw<'a> {
         //    `continue`) は `drop_from` が登録の逆順に解放するので、後始末式 → 束縛の解放の順になり、
         //    出口の終端を置く前に後始末式が下ろされる (木走査と同じ)。
         self.scopes.push(vec![]);
+        self.coll.hint = self.src_ty(init).ok();
         coll::bind_owned(self, &name, v, t);
+        self.coll.hint = None;
         // 束縛した資源の move・線形の義務を追う (注釈)。後始末式の中の消費 (`r.close()` / `t.close(r)`) が義務を果たす。
         let own_slot = self.lookup(&name);
         if let (Ok(it), Some(s)) = (self.src_ty(init), own_slot) {
