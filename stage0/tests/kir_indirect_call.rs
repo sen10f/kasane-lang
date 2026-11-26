@@ -159,3 +159,48 @@ fn box_into_dyn_in_method_form_runs_on_every_engine() {
         let _ = code;
     }
 }
+
+const FN_IN_AGGREGATES: &str = r#"enum t.Op
+    Fun(fn(i32) -> i32 uses [] panics never)
+    Nop
+end t.Op
+
+fn t.add(x: i32) -> i32 uses [] panics never
+    x.wrapping_add(7i32)
+end t.add
+
+fn t.main() -> () uses [] panics may
+    let o = t.Op.Fun(t.add)
+    let mut r = 0i32
+    match o {
+        t.Op.Fun(f) => {
+            r = f(1i32)
+        }
+        t.Op.Nop => {
+            r = 0i32
+        }
+    }
+    if let Some(g) = t.pick() {
+        r = r.wrapping_add(g(2i32))
+    }
+    let (h, n) = t.pair()
+    r = r.wrapping_add(h(n))
+    core.check.eq(r, 29i32)
+end t.main
+
+fn t.pair() -> (fn(i32) -> i32 uses [] panics never, i32) uses [] panics never
+    (t.add, 5i32)
+end t.pair
+
+fn t.pick() -> Option<fn(i32) -> i32 uses [] panics never> uses [] panics never
+    Some(t.add)
+end t.pick
+"#;
+
+/// 列挙子のペイロード・Option の戻り値・タプルに入れた関数値 (以前は VM が木走査へ退避した)。
+#[test]
+fn fn_values_inside_enums_options_and_tuples_run_on_every_engine() {
+    let (code, _, err) = run_everywhere("icall_aggs", FN_IN_AGGREGATES);
+    assert_eq!(code, Some(0), "{}", err);
+    assert!(!err.contains("skipped"), "{}", err);
+}

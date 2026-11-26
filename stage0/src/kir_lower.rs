@@ -1010,6 +1010,10 @@ impl<'a> Lw<'a> {
 
     /// 局所変数 `name` (スロット `s`) を所有の注釈で追う。束縛の位置に識別子 (unit 定数) を作る。Copy でも線形でもない型だけ。
     fn own_declare(&mut self, name: &str, s: usize, t: &Src) {
+        // 関数値の束縛 (引数・パターンの束縛): 呼び出しの型 (引数・戻り値・効果) を宣言の型から引く。
+        if matches!(t, Src::Closure { cap: crate::types::Cap::Fn, id: None, .. }) && !self.coll.fnptr_tys.contains_key(&s) {
+            self.coll.fnptr_tys.insert(s, t.clone());
+        }
         let linear = self.src_is_linear(t, &mut HashSet::new());
         if self.cur.is_none() || (self.src_is_copy(t) && !linear) {
             return;

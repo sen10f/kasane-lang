@@ -1111,6 +1111,14 @@ pub(crate) fn drop_temp(lw: &mut Lw, v: VId) {
 pub(crate) fn bind_owned(lw: &mut Lw, name: &str, v: VId, t: Ty) {
     if !owns_heap(lw, t) {
         lw.bind_let(name, v, t);
+        // パターンの束縛が関数値 (`fn(..)` 型): 呼び出しの型を手がかりから引けるようにする。
+        if t == Ty::Ptr {
+            if let Some(h @ Src::Closure { cap: crate::types::Cap::Fn, id: None, .. }) = lw.coll.hint.clone() {
+                if let Some(sl) = lw.lookup(name) {
+                    lw.coll.fnptr_tys.insert(sl, h);
+                }
+            }
+        }
         return;
     }
     if lw.aggs.borrow().is_vec(t) {
