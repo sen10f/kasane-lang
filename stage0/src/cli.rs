@@ -5640,16 +5640,20 @@ fn cmd_exec(args: &[String]) -> i32 {
             eprintln!("ksn: no such test {}", name);
             return 2;
         };
-        let mut it = Interp::new(prog.clone());
-        let r = it.call_body(ti);
-        use std::io::Write;
-        let _ = it.out.flush();
-        return match r {
-            Err(Ctl::Panic(m)) => {
+        return match tree_test_result(&prog, ti) {
+            None => 0,
+            Some(m) if m.starts_with("returned ") => {
+                eprintln!("{}", m);
+                101
+            }
+            Some(m) if m.starts_with("exit(") => {
+                eprintln!("{}", m);
+                m[5..m.len() - 1].parse().unwrap_or(1)
+            }
+            Some(m) => {
                 eprintln!("panic: {}", m);
                 101
             }
-            _ => 0,
         };
     }
     let Some(entry) = l.pkg.entry() else { return 2 };

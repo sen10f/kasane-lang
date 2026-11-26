@@ -1080,7 +1080,9 @@ impl Interp {
                 match res {
                     Ok(n) => {
                         if let Some(out) = args.get(1) {
-                            crate::value::extend_vec_bytes(&dr(out), &buf);
+                            if !crate::value::extend_vec_bytes(&dr(out), &buf) {
+                                return panic("out of memory (AllocError)");
+                            }
                         }
                         Ok(ok(int(n as i128, "usize")))
                     }

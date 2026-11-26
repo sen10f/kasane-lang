@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 extern "C" {
+    fn getrlimit(res: i32, rlim: *mut u64) -> i32;
     fn munmap(addr: *mut std::ffi::c_void, len: usize) -> i32;
     fn madvise(addr: *mut std::ffi::c_void, len: usize, advice: i32) -> i32;
     fn mmap(addr: *mut std::ffi::c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut std::ffi::c_void;
@@ -42,6 +43,17 @@ fn init() -> bool {
     // PROT_READ|PROT_WRITE = 3、MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE = 0x2 | 0x20 | 0x4000。
     // 既定は 1 TiB (遅延確保なので実メモリは使わない)。仮想メモリの上限 (`ulimit -v`) などで取れなければ 1/8 ずつ縮めて取れる最大を探す。
     let mut len: usize = 1 << 40;
+    // `ulimit -v` が有限なら、ksn 自身の確保の余地を残すため上限の半分までにする。
+    let mut rl = [0u64; 2];
+    if unsafe { getrlimit(9, rl.as_mut_ptr()) } == 0 && rl[0] != u64::MAX {
+        // 既に使っている仮想メモリ (大きなスタックなど) を引いた残りの半分。
+        let used = std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse::<u64>().ok()))
+            .map_or(0, |p| p * 4096);
+        let rem = rl[0].saturating_sub(used);
+        len = len.min((if rem > 2 << 30 { rem - (1 << 30) } else { rem / 2 }) as usize);
+    }
     while len >= 1 << 28 {
         let p = unsafe { mmap(std::ptr::null_mut(), len, 3, 0x4022, -1, 0) };
         if p as isize != -1 && !p.is_null() {
