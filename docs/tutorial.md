@@ -1,3 +1,5 @@
+日本語 | [English](en/tutorial.md)
+
 # Kasane チュートリアル
 
 このチュートリアルでは、Kasane の基本的なプログラムを3つ作ります。
