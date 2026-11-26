@@ -208,6 +208,10 @@ impl AggTab {
         if let Some(x) = conv(t) {
             return Ok(x);
         }
+        // 関数値 `fn(..)` (取り込みなし) は関数のアドレス。Option・タプル・列挙子のペイロードにも載る。
+        if matches!(t, Src::Closure { cap: crate::types::Cap::Fn, id: None, .. }) {
+            return Ok(Ty::Ptr);
+        }
         // `String` と `String<std.alloc.System>` は同じ型 (末尾のアロケータ引数は省ける。仕様 8.2)。集成体の名前を 1 つにそろえる。
         let canon = canon_default_alloc(t);
         let t = &canon;

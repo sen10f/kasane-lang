@@ -235,6 +235,9 @@ pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     if let Some(x) = lw.conv_t(t) {
         return Some(x);
     }
+    if matches!(t, Src::Closure { cap: crate::types::Cap::Fn, id: None, .. }) {
+        return Some(Ty::Ptr);
+    }
     // 生ポインタ `*const T` / `*mut T` は `ptr`。
     if let Src::Ptr(_, inner) = t {
         if matches!(&**inner, Src::Prim(_)) {
@@ -1116,6 +1119,14 @@ pub(crate) fn drop_temp(lw: &mut Lw, v: VId) {
 pub(crate) fn bind_owned(lw: &mut Lw, name: &str, v: VId, t: Ty) {
     if !owns_heap(lw, t) {
         lw.bind_let(name, v, t);
+        // パターンの束縛が関数値 (`fn(..)` 型): 呼び出しの型を手がかりから引けるようにする。
+        if t == Ty::Ptr {
+            if let Some(h @ Src::Closure { cap: crate::types::Cap::Fn, id: None, .. }) = lw.coll.hint.clone() {
+                if let Some(sl) = lw.lookup(name) {
+                    lw.coll.fnptr_tys.insert(sl, h);
+                }
+            }
+        }
         return;
     }
     if lw.aggs.borrow().is_vec(t) {
@@ -1646,7 +1657,7 @@ pub(crate) fn after_let(lw: &mut Lw, name: &str, init: &V) -> LR<()> {
 fn closure_kind_from_table(lw: &Lw, e: &V) -> Option<Kind> {
     let Some(Src::Closure { args, ret, .. }) = table_ty(lw, e) else { return None };
     let ats: Option<Vec<Ty>> = args.iter().map(|a| sig_ty(lw, a)).collect();
-    let (args, ret) = (ats?, lw.conv_t(&ret)?);
+    let (args, ret) = (ats?, lw.conv_t(&ret).or_else(|| sig_ty(lw, &ret).filter(|_| matches!(*ret, Src::Closure { .. })))?);
     let (caps, cap_tys) = lw.coll.caps.get(&nid(e)).cloned().unwrap_or_default();
     Some(Kind::Closure { key: closure_key(lw, nid(e)), args, ret, caps, cap_tys })
 }
@@ -3818,7 +3829,7 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         return lw.err(line, "クロージャの型が決まらない");
     };
     let ats: Option<Vec<Ty>> = args.iter().map(|a| sig_ty(lw, a)).collect();
-    let (Some(ats), Some(rt)) = (ats, lw.conv_t(&ret)) else {
+    let (Some(ats), Some(rt)) = (ats, lw.conv_t(&ret).or_else(|| if matches!(*ret, Src::Closure { .. }) { sig_ty(lw, &ret) } else { None })) else {
         return lw.err(line, "クロージャの引数か戻り値の型は段階 1 の対象外");
     };
     let names: Vec<String> = items(&f[0])
@@ -3900,8 +3911,13 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             }
         }
     }
-    for ((n, v), t) in names.iter().zip(pv[nc..].iter()).zip(ats.iter()) {
+    for (((n, v), t), st_) in names.iter().zip(pv[nc..].iter()).zip(ats.iter()).zip(args.iter()) {
         child.bind_let(n, *v, *t);
+        if matches!(st_, Src::Closure { cap: crate::types::Cap::Fn, id: None, .. }) {
+            if let Some(sl) = child.lookup(n) {
+                child.coll.fnptr_tys.insert(sl, st_.clone());
+            }
+        }
     }
     if let Some(v) = child.expr(&f[3])? {
         if child.vty(v) != rt {

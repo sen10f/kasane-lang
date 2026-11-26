@@ -99,6 +99,16 @@ pub(super) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             Ok(v) => v,
             Err(x) => return Some(Err(x)),
         };
+        if m == "into_dyn" && args.is_empty() {
+            // `b.into_dyn()` / `x.f.into_dyn()`: 受け手を消費する (局所そのものなら移動、欄なら部分移動)。
+            let consumed = if segs.len() == 2 {
+                lw.own_emit(&segs[0], s, crate::kir::OwnKind::Consume);
+                coll::path_read(lw, s)
+            } else {
+                recv
+            };
+            return Some(into_dyn_val(lw, e, consumed));
+        }
         let _ = bt;
         return Some(method(lw, e, recv, &m, &args));
     }
@@ -126,6 +136,10 @@ pub(super) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     box_kind(lw, rt)?;
     let m = st(&f[1]);
     let args = items(&f[2]).to_vec();
+    // `b.into_dyn()` は `Box.into_dyn(b)` と同じ (受け手を消費する)。
+    if m == "into_dyn" && args.is_empty() {
+        return Some(into_dyn(lw, e, std::slice::from_ref(&f[0])));
+    }
     let recv = if m == "into_inner" { lw.expr(&f[0]) } else { lw.expr_peek(&f[0]) };
     match recv {
         Ok(Some(v)) => Some(method(lw, e, v, &m, &args)),
@@ -196,6 +210,42 @@ fn into_dyn(lw: &mut Lw, e: &V, args: &[V]) -> LR<Option<VId>> {
     };
     let Some(b) = lw.expr(&args[0])? else { return Ok(None) };
     let b = unref(lw, b);
+    let p = lw.emit(Ty::Ptr, Op::Field { a: b, off: 0 });
+    let k = lw.emit(Ty::Usize, Op::Const(vt as i128));
+    Ok(Some(lw.emit(dt, Op::Make { variant: None, fields: vec![p, k] })))
+}
+
+/// `b.into_dyn()` (受け手 `b` は評価済みの `Box<T>`): 具体型は KIR の型 (`box<T>` の `T`) から決める。
+fn into_dyn_val(lw: &mut Lw, e: &V, b: VId) -> LR<Option<VId>> {
+    let line = nline(e);
+    let b = unref(lw, b);
+    let dst = lw.src_ty(e)?;
+    let Some(elem) = lw.aggs.borrow().box_elem(lw.vty(b)) else {
+        return lw.err(line, "Box.into_dyn の型が Box でない");
+    };
+    let Src::Named(_, da, _) = &dst else { return lw.err(line, "Box.into_dyn の型が Box でない") };
+    let Some(Src::Dyn(trw, _, _)) = da.first() else {
+        return lw.err(line, "Box.into_dyn の変換先が dyn でない");
+    };
+    let tr = trait_fqn(lw.p, &lw.def.file, trw);
+    let concrete_name = match elem {
+        Ty::Agg(i) => lw.aggs.borrow().defs[i as usize].name.clone(),
+        t => t.name().to_string(),
+    };
+    if concrete_name.contains('<') {
+        return lw.err(line, format!("dyn にする型 {} は対象外 (型引数付きなど)", concrete_name));
+    }
+    let dt = lw.conv_t_why(&dst).or_else(|w| lw.err(line, format!("Box<dyn> の型の下ろしに失敗: {}", w)))?;
+    let vt = {
+        let mut a = lw.aggs.borrow_mut();
+        match a.dynr.vts.iter().position(|v| v.tr == tr && v.concrete_name == concrete_name) {
+            Some(k) => k,
+            None => {
+                a.dynr.vts.push(VtEntry { tr, concrete_name, concrete: elem, file: lw.def.file.clone() });
+                a.dynr.vts.len() - 1
+            }
+        }
+    };
     let p = lw.emit(Ty::Ptr, Op::Field { a: b, off: 0 });
     let k = lw.emit(Ty::Usize, Op::Const(vt as i128));
     Ok(Some(lw.emit(dt, Op::Make { variant: None, fields: vec![p, k] })))

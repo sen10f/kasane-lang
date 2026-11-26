@@ -137,3 +137,70 @@ fn the_native_build_runs_clean_under_asan() {
     assert_eq!(text(&r.stdout), "applied\n");
     assert!(!text(&r.stderr).contains("AddressSanitizer"), "{}", text(&r.stderr));
 }
+
+/// 関数値が総称の型引数・戻り値・閉包の引数と戻り値・代入できる局所に出る形 (以前は VM が木走査へ退避した)。
+#[test]
+fn fn_values_in_generics_returns_closures_and_assigned_locals_run_on_every_engine() {
+    for n in ["call_fn_value_declared_effect_ok", "call_fn_value_pure_ok", "closure_ret_fn_effect_ok", "fn_eff_values_ok", "sec6_fnvalue_ret_ok"] {
+        let src = std::fs::read_to_string(format!("{}/tests/data/check_ok/{}.ksnl", env!("CARGO_MANIFEST_DIR"), n)).unwrap();
+        let (code, _, err) = run_everywhere(&format!("fnv_{}", n), &src);
+        assert_eq!(code, Some(0), "{}: {}", n, err);
+        assert!(!err.contains("skipped"), "{}: {}", n, err);
+    }
+}
+
+/// `b.into_dyn()` (メソッドの形) も `Box.into_dyn(b)` と同じに下りる (以前は VM が木走査へ退避した)。
+#[test]
+fn box_into_dyn_in_method_form_runs_on_every_engine() {
+    for p in ["check_ok/bounds_ok", "check_ok/dyn_box_supertrait_effect_args"] {
+        let src = std::fs::read_to_string(format!("{}/tests/data/{}.ksnl", env!("CARGO_MANIFEST_DIR"), p)).unwrap();
+        let (code, _, err) = run_everywhere(&format!("dyn_{}", p.replace('/', "_")), &src);
+        assert!(!err.contains("skipped"), "{}: {}", p, err);
+        let _ = code;
+    }
+}
+
+const FN_IN_AGGREGATES: &str = r#"enum t.Op
+    Fun(fn(i32) -> i32 uses [] panics never)
+    Nop
+end t.Op
+
+fn t.add(x: i32) -> i32 uses [] panics never
+    x.wrapping_add(7i32)
+end t.add
+
+fn t.main() -> () uses [] panics may
+    let o = t.Op.Fun(t.add)
+    let mut r = 0i32
+    match o {
+        t.Op.Fun(f) => {
+            r = f(1i32)
+        }
+        t.Op.Nop => {
+            r = 0i32
+        }
+    }
+    if let Some(g) = t.pick() {
+        r = r.wrapping_add(g(2i32))
+    }
+    let (h, n) = t.pair()
+    r = r.wrapping_add(h(n))
+    core.check.eq(r, 29i32)
+end t.main
+
+fn t.pair() -> (fn(i32) -> i32 uses [] panics never, i32) uses [] panics never
+    (t.add, 5i32)
+end t.pair
+
+fn t.pick() -> Option<fn(i32) -> i32 uses [] panics never> uses [] panics never
+    Some(t.add)
+end t.pick
+"#;
+
+/// 列挙子のペイロード・Option の戻り値・タプルに入れた関数値 (以前は VM が木走査へ退避した)。
+#[test]
+fn fn_values_inside_enums_options_and_tuples_run_on_every_engine() {
+    let (code, _, err) = run_everywhere("icall_aggs", FN_IN_AGGREGATES);
+    assert_eq!(code, Some(0), "{}", err);
+    assert!(!err.contains("skipped"), "{}", err);
+}

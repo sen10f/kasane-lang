@@ -1010,6 +1010,10 @@ impl<'a> Lw<'a> {
 
     /// 局所変数 `name` (スロット `s`) を所有の注釈で追う。束縛の位置に識別子 (unit 定数) を作る。Copy でも線形でもない型だけ。
     fn own_declare(&mut self, name: &str, s: usize, t: &Src) {
+        // 関数値の束縛 (引数・パターンの束縛): 呼び出しの型 (引数・戻り値・効果) を宣言の型から引く。
+        if matches!(t, Src::Closure { cap: crate::types::Cap::Fn, id: None, .. }) && !self.coll.fnptr_tys.contains_key(&s) {
+            self.coll.fnptr_tys.insert(s, t.clone());
+        }
         let linear = self.src_is_linear(t, &mut HashSet::new());
         if self.cur.is_none() || (self.src_is_copy(t) && !linear) {
             return;
@@ -1042,6 +1046,12 @@ impl<'a> Lw<'a> {
     fn path_val(&mut self, e: &V) -> LR<VId> {
         let segs = strs(&nf(e)[0]);
         let line = nline(e);
+        // 関数の項目を値として使う (`fn(..)` 型の位置): その関数のアドレス。
+        if coll::is_fn_item(self, e) && matches!(coll::table_ty(self, e), Some(Src::Closure { cap: crate::types::Cap::Fn, id: None, .. })) {
+            if let Some(coll::Kind::Closure { key, .. }) = coll::fn_item_kind(self, e) {
+                return Ok(self.emit(Ty::Ptr, Op::FnAddr { callee: key }));
+            }
+        }
         if segs.len() == 1 {
             if let Some(s) = self.lookup(&segs[0]) {
                 let v = coll::path_read(self, s);
@@ -2045,6 +2055,13 @@ impl<'a> Lw<'a> {
                 coll::bind_owned(self, &name, v, t);
                 coll::bind_guard(self, &name, v);
                 coll::after_let(self, &name, &f[3])?;
+                // `let mut g = t.f`: 代入されうる関数値は、静的な種類ではなくアドレスを持つ局所にする。
+                if matches!(f.get(1), Some(V::B(true))) && t == Ty::Ptr && coll::is_fn_item(self, &f[3]) {
+                    if let (Some(sl), Some(ft @ Src::Closure { .. })) = (self.lookup(&name), coll::table_ty(self, &f[3])) {
+                        self.coll.kinds.remove(&sl);
+                        self.coll.fnptr_tys.insert(sl, ft);
+                    }
+                }
                 // 局所変数の move・線形な値の消費の義務を追う (注釈)。
                 if let (Ok(it), Some(s)) = (self.src_ty(&f[3]), self.lookup(&name)) {
                     self.own_declare(&name, s, &it);
