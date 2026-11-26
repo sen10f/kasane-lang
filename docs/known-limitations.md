@@ -1,6 +1,6 @@
 # 既知の制限
 
-この文書は、ベータ版 `0.1.0-beta.1` の使用时と実装上の制約をまとめます。
+この文書は、ベータ版 `0.1.0-beta.1` の使用と実装上の制約をまとめます。
 
 ## ホストと配布対象
 
@@ -16,8 +16,6 @@
 
 S4（検査器を TAST（型付き AST）へ移し、KIR への下ろしを TAST から行う作業）は統合済みです（コミット `97178d39`）。`KSN_CHECKER` の既定は `s4`（新しい検査 TAST）。`KSN_CHECKER=old|new|shadow` は 1 リリースだけ受け付けますが、同じ検査器が走り非推奨の旨を出力します。旧い検査器は取り外されました。
 
-通ってはいけないコードは `stage0/tests/data/unsound/` に 1 ファイル 1 ケースで置き、まだ塞げないものは `stage0/tests/check_diag.rs` の `KNOWN_HOLES` に載せる慣習です。
-
 ## 手書きの `Drop` の実行の範囲
 
 手書きの `impl core.ops.Drop`（仕様 4.4）の `drop` は、スコープの終わり（宣言の逆順。外側の `drop` のあとに欄を宣言順）・再代入で捨てる古い値・`core.mem.drop`・文の終わりの一時値で呼ばれます。`return` / `?` / `break` / `continue` と、`with` の本体の出口でも、抜けるスコープの分が呼ばれます。panic とプロセスの終了では呼ばれません。move 済みの値は呼びません（条件付きの move は実行時の印で判断します）。値を `spawn` のクロージャへ move すると、スレッドの中で破棄されます。
@@ -28,7 +26,7 @@ S4（検査器を TAST（型付き AST）へ移し、KIR への下ろしを TAST
 
 ## 既知の検査の穴
 
-通ってはいけないコードは `stage0/tests/data/unsound/` に 1 ファイル 1 ケースで置き、まだ塞げないものは `stage0/tests/check_diag.rs` の `KNOWN_HOLES` に載せる慣習です（`KSN_CHECKER=old|new|shadow` も非推奨で、1 つの検査器だけが走ります）。
+通ってはいけないコードは `stage0/tests/data/unsound/` に 1 ファイル 1 ケースで置き、まだ塞げないものは `stage0/tests/check_diag.rs` の `KNOWN_HOLES` に載せる慣習です。
 
 ## インタプリタへの退避
 
