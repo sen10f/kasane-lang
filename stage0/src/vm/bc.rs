@@ -291,10 +291,10 @@ pub enum Ins {
     EnvArg { d: S, i: S },
     EnvVar { d: S, name: S },
     TimeNowNs { d: S },
-    /// `std.task.block_on_threads` の中か (n > 1)。ワーカーは起こさない (決定的な協調実行) が、`spawn_local` の禁止などの意味を保つ。
-    MtOn { d: S },
-    MtBegin { d: S, n: S },
-    MtEnd,
+    /// 実行器の実行時の核 (`ksn.mt.*` / `ksn.io.*` / `ksn.task.session`。`run/rtsys.rs`)。引数は `a` `b` のスロット。
+    Rt { d: S, op: Rt, a: S, b: S },
+    /// 協調ワーカー (`run/cosched.rs`) の切り替え点。直後の `Call` を実行する前に走り、切り替え・飛ばしを決める。
+    Sched { k: SchedK, a: S },
 
     // ---- std.net (kir_exec と同じ意味。ソケット表は `Vm` が持つ)
     NetListen { d: S, addr: S },
@@ -322,6 +322,114 @@ pub enum Ins {
     FsWrite { d: S, fd: S, buf: S, len: S },
     /// `std.rand` の OS の乱数 (`fatal`: `Rng.from_entropy` の致命的な形)。
     RandFill { d: S, buf: S, len: S, fatal: bool },
+}
+
+/// 協調ワーカーの切り替え点の種類 (直後の呼び出しの名前で決まる)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedK {
+    Sleep,
+    MLock,
+    RwRd,
+    RwWr,
+    Wait,
+    Join,
+    Start,
+    /// 状態が変わった印 (unlock・send など): 待っている者が見直す契機。
+    Prog,
+    /// 取りこぼしを防ぐ回転 (原子操作・時計): 一定回数ごとに他へ譲る。
+    Pre,
+}
+
+impl SchedK {
+    pub fn of(name: &str) -> Option<SchedK> {
+        Some(match name {
+            "ksn.time.sleep" => SchedK::Sleep,
+            "ksn.thr.mlock" => SchedK::MLock,
+            "ksn.thr.rwrd" => SchedK::RwRd,
+            "ksn.thr.rwwr" => SchedK::RwWr,
+            "ksn.chan.rt.wait" | "ksn.chan.rt.waitsend" => SchedK::Wait,
+            "ksn.thr.join" => SchedK::Join,
+            "ksn.thr.start" => SchedK::Start,
+            "ksn.thr.munlock" | "ksn.thr.rwunlock" | "ksn.chan.rt.unlock" | "ksn.chan.rt.unlock1" | "ksn.chan.rt.unlockall" | "ksn.chan.rt.unlockrecv" => SchedK::Prog,
+            "ksn.time.mono" => SchedK::Pre,
+            n if n.starts_with("ksn.atm.") => SchedK::Pre,
+            _ => return None,
+        })
+    }
+}
+
+/// 実行器の実行時の核の操作 (`sysrt.c` の `ksn_rt_sys_*` と対応)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rt {
+    MtMarked,
+    MtBegin,
+    MtOn,
+    MtPush,
+    MtTake,
+    MtFinish,
+    MtState,
+    MtFp,
+    MtTag,
+    MtCancelled,
+    MtCancel,
+    MtClearFp,
+    MtEpoch,
+    MtSleep,
+    MtStop,
+    MtStopped,
+    MtUnfinished,
+    MtReg,
+    MtNthr,
+    MtThr,
+    MtEnd,
+    Session,
+    IoPark,
+    IoPoll,
+    IoReady,
+    IoTake,
+    IoBind,
+    IoNfired,
+    IoNext,
+    IoPending,
+}
+
+impl Rt {
+    /// 呼び先の名前 → (操作, 引数の数)。
+    pub fn of(name: &str) -> Option<(Rt, usize)> {
+        Some(match name {
+            "ksn.mt.marked" => (Rt::MtMarked, 1),
+            "ksn.mt.begin" => (Rt::MtBegin, 1),
+            "ksn.mt.on" => (Rt::MtOn, 0),
+            "ksn.mt.push" => (Rt::MtPush, 2),
+            "ksn.mt.take" => (Rt::MtTake, 0),
+            "ksn.mt.finish" => (Rt::MtFinish, 2),
+            "ksn.mt.state" => (Rt::MtState, 1),
+            "ksn.mt.fp" => (Rt::MtFp, 1),
+            "ksn.mt.tag" => (Rt::MtTag, 1),
+            "ksn.mt.cancelled" => (Rt::MtCancelled, 1),
+            "ksn.mt.cancel" => (Rt::MtCancel, 1),
+            "ksn.mt.clear_fp" => (Rt::MtClearFp, 1),
+            "ksn.mt.epoch" => (Rt::MtEpoch, 0),
+            "ksn.mt.sleep" => (Rt::MtSleep, 1),
+            "ksn.mt.stop" => (Rt::MtStop, 0),
+            "ksn.mt.stopped" => (Rt::MtStopped, 0),
+            "ksn.mt.unfinished" => (Rt::MtUnfinished, 0),
+            "ksn.mt.reg" => (Rt::MtReg, 1),
+            "ksn.mt.nthr" => (Rt::MtNthr, 0),
+            "ksn.mt.thr" => (Rt::MtThr, 1),
+            "ksn.mt.end" => (Rt::MtEnd, 0),
+            "ksn.task.session" => (Rt::Session, 0),
+            "ksn.io.park" => (Rt::IoPark, 2),
+            "ksn.io.poll" => (Rt::IoPoll, 1),
+            "ksn.io.ready" => (Rt::IoReady, 1),
+            "ksn.io.take" => (Rt::IoTake, 1),
+            "ksn.io.bind" => (Rt::IoBind, 2),
+            "ksn.io.nfired" => (Rt::IoNfired, 0),
+            "ksn.io.next" => (Rt::IoNext, 0),
+            "ksn.io.pending" => (Rt::IoPending, 0),
+            _ => return None,
+        })
+    }
 }
 
 const _: () = assert!(std::mem::size_of::<Ins>() <= 16);
@@ -372,6 +480,8 @@ pub struct Prog {
     pub by_key: std::collections::HashMap<String, u32>,
     /// `global.bytes` の領域 (名前 → アドレス。プログラムごとに 1 つ、解放しない)。
     pub globals: std::collections::HashMap<String, usize>,
+    /// スレッドごとの大域 (`ksn.task.*`・`ksn.wrap.pend`) の (アドレス, 大きさ)。協調ワーカーの切り替えで入れ替える。
+    pub tls: Vec<(usize, usize)>,
     /// 呼び出しの深さの上限 (`Module::depth` から。0 は既定)。
     pub depth: u64,
 }

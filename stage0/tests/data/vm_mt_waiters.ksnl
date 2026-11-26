@@ -1,0 +1,58 @@
+static t.A: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
+
+static t.B: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
+
+fn t.waiter(k: u64) -> u64 uses [thread, time] panics may
+    loop {
+        let g = t.A.lock()
+        let v = *g.get()
+        core.mem.drop(g)
+        if v >= k {
+            let mut h = t.B.lock()
+            *h.get_mut() = *h.get() + 1u64
+            core.mem.drop(h)
+            return k
+        }
+        std.thread.sleep(1u64)
+    }
+end t.waiter
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, suspend, thread, time] panics may
+    let r = std.task.block_on_threads(
+        std.alloc.SYSTEM,
+        4usize,
+        fn() -> u64 capture [] {
+            let w1 = std.task.spawn(fn() -> u64 capture [] {
+                t.waiter(1u64)
+            })
+            let w2 = std.task.spawn(fn() -> u64 capture [] {
+                t.waiter(2u64)
+            })
+            let w3 = std.task.spawn(fn() -> u64 capture [] {
+                t.waiter(3u64)
+            })
+            let src = std.task.spawn(fn() -> u64 capture [] {
+                let mut i = 0u64
+                while i < 3u64 {
+                    std.thread.sleep(10u64)
+                    let mut g = t.A.lock()
+                    *g.get_mut() = *g.get() + 1u64
+                    core.mem.drop(g)
+                    i = i + 1u64
+                }
+                0u64
+            })
+            let s = w1.join_task() + w2.join_task() + w3.join_task() + src.join_task()
+            let g = t.B.lock()
+            s * 10u64 + *g.get()
+        },
+    )
+    t.show(r)
+    Ok(())
+end t.main
+
+fn t.show(x: u64) -> () uses [alloc, io.console] panics never
+    let mut s = std.string.String.new()
+    core.mem.drop(s.push_u64(x))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show
