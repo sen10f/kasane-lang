@@ -3873,7 +3873,11 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     for c in &cap_items {
         let vs = &pv[at..at + c.vals.len()];
         at += c.vals.len();
-        let (n, t) = (&c.name, c.tys[0]);
+        let Some(&t) = c.tys.first() else {
+            // 下ろした型を持たない取り込み (関数の値など) は、この経路の対象外。
+            return lw.err(line, format!("取り込み {} の型を下ろせない (段階 1 の対象外)", c.name));
+        };
+        let n = &c.name;
         match &c.how {
             // spawn のクロージャが取り込んだチャネルの端は、本体が所有して終わりで落とす (使わなかった端も)。
             CapHow::Plain if (lw.coll.spawn_arg || fn_once) && child.aggs.borrow().owns_heap(t) => bind_owned(&mut child, n, vs[0], t),
