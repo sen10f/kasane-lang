@@ -7,15 +7,15 @@ xlang の計算ベンチ (Kasane / Rust / C clang / Go / Node) と perf/ の Kas
 結果: <out>/quiet_YYYY-MM-DD_HHMM.md と .json (uptime・ksn の commit・CPU 機種つき)。既定の out は bench/results/ (gitignore 済み)。
 測っている最中に負荷が閾値の 2 倍を超えたら、その結果に `noisy` と印を付ける (捨てずに残す)。
 """
-import argparse, datetime, json, os, re, shutil, subprocess, sys, time
+import argparse, datetime, json, os, re, shutil, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-XB = '/home/kasane/kasane-verify/agents/xlang-bench'
+XB = os.environ.get('KSN_XLANG_BENCH', '')
 SRC = f'{XB}/src'
 GOBIN = f'{XB}/toolchains/go-x/go/bin'
-BIN = '/home/kasane/coord_tmp/quiet_bin'
+BIN = os.environ.get('KSN_QUIET_BIN', os.path.join(tempfile.gettempdir(), 'ksn_quiet_bin'))
 COMPUTE = "vecsum strbuild hashmap soa callchain bytescan mutref itchain closurehot dyncall smallalloc fmtparse enummatch binarytrees nbody fannkuch".split()
-ENV = dict(os.environ, KSN_CACHE_DIR='/home/kasane/coord_tmp/quiet_cache', GOCACHE='/home/kasane/coord_tmp/quiet_gocache', GO111MODULE='off',
+ENV = dict(os.environ, KSN_CACHE_DIR=os.path.join(tempfile.gettempdir(), 'ksn_quiet_cache'), GOCACHE=os.path.join(tempfile.gettempdir(), 'ksn_quiet_gocache'), GO111MODULE='off',
            PATH=f'{GOBIN}:{os.path.expanduser("~/.cargo/bin")}:' + os.environ['PATH'])
 
 

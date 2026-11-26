@@ -11,12 +11,12 @@
 #   GOLDEN_UPDATE=1 ui/tools/run_golden.sh  # 金色画像を現在のネイティブ描画で更新
 #
 # 環境変数:
-#   KSN             ksn バイナリのパス (既定: /home/kasane/kasane-verify/bin/current/ksn)
+#   KSN             ksn バイナリのパス (既定: リポジトリの stage0/target/release/ksn)
 #   GOLDEN_TMP      一時ディレクトリ (既定: mktemp)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-KSNS="${KSN:-/home/kasane/kasane-verify/bin/current/ksn}"
+KSNS="${KSN:-$(cd "$(dirname "$0")/../.." && pwd)/stage0/target/release/ksn}"
 NATIVE="$ROOT/ui/native"
 THIRD_PARTY="$NATIVE/third_party"
 GOLDEN_DIR="$ROOT/ui/golden/linux-llvmpipe"

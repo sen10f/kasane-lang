@@ -93,8 +93,8 @@ npm install && npm run compile
 - [既知の制限](docs/known-limitations.md)
 - [変更履歴](CHANGELOG.md)
 - [言語仕様](<Kasane 簡易仕様書.md>)
-- [実装計画](実装計画.md)
-- [設計プラン](設計プラン.md)
+- [実装計画](docs/plan/実装計画.md)
+- [設計プラン](docs/archive/設計プラン.md)
 - [チートシート](チートシート.md)
 
 ## 開発時の検証

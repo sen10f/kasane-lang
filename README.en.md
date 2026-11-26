@@ -93,8 +93,8 @@ For the concrete connection steps on the editor side, follow the documentation o
 - [Known limitations](docs/en/known-limitations.md)
 - [Changelog](CHANGELOG.md)
 - [Language specification](<Kasane 簡易仕様書.md>)
-- [Implementation plan](実装計画.md)
-- [Design plan](設計プラン.md)
+- [Implementation plan](docs/plan/実装計画.md)
+- [Design plan](docs/archive/設計プラン.md)
 - [Cheat sheet](docs/en/cheatsheet.md)
 
 ## Verification during development

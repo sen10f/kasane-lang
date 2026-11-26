@@ -105,7 +105,7 @@ ksn build --release
 - 既知の制限: `docs/known-limitations.md`
 - 診断コードの説明: `ksn explain <コード>`（例 `ksn explain E0042`）
 - パッケージの API 文書: `ksn doc`（`target/doc/index.html`）、標準ライブラリ: `ksn doc --std`
-- 実装の現状・制限: `実装計画.md`
+- 実装の現状・制限: `docs/plan/実装計画.md`
 
 ## 6. 既知の制限（アルファ時点）
 

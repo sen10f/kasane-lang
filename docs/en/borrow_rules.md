@@ -12,9 +12,9 @@ Each rule has the following structure.
 4. **Rejected program** — an example that `ksn check` rejects, with the exact diagnostic code and message it prints (file `docs/borrow_rules/K#_ng.ksnl`).
 5. **Fix** — how to repair the rejected example.
 
-Every example was verified with `ksn check` using `/home/kasane/kasane-verify/bin/current/ksn` (stage0 is not built). Each example and its expected diagnostic is verified automatically by `docs/borrow_rules/check.py`, and `python3 -I check.py` passes in full. Comments cannot be written in `.ksnl`, so notes are placed in the text.
+Every example was verified with `ksn check` using the `ksn` of that time (`stage0/target/release/ksn`). Each example and its expected diagnostic is verified automatically by `docs/borrow_rules/check.py`, and `python3 -I check.py` passes in full. Comments cannot be written in `.ksnl`, so notes are placed in the text.
 
-Note: `alloc.arena.Arena<T, A>` / `alloc.arena.Handle<T>` (an arena plus generation-tagged handles, D1 of `設計_共有の取っ手.md`) are implemented in the stdlib (`spec/stdlib/alloc/arena.ksnl` + `.sig`). In the verified samples of this document, the form "hold an index (a position) and pass the source data as a function argument" is used as the alternative to putting references in fields. An arena plus handles can be used with the same style (`Handle<T>` is `Copy` and can go in fields and in a `Vec`).
+Note: `alloc.arena.Arena<T, A>` / `alloc.arena.Handle<T>` (an arena plus generation-tagged handles, D1 of `docs/design/設計_共有の取っ手.md`) are implemented in the stdlib (`spec/stdlib/alloc/arena.ksnl` + `.sig`). In the verified samples of this document, the form "hold an index (a position) and pass the source data as a function argument" is used as the alternative to putting references in fields. An arena plus handles can be used with the same style (`Handle<T>` is `Copy` and can go in fields and in a `Vec`).
 
 ## K1 Distinguishing `Copy`, move and linear
 
@@ -357,7 +357,7 @@ E3010: cannot move `s` while it is borrowed by `r`
 
 ## K7 Returning references: the two elision rules, E3030, temporaries are dropped at the end of the statement (2.10aa)
 
-**Statement.** The lifetime of a returned reference can be elided only when (a) there is exactly one reference parameter, or (b) the first parameter is `self: &...` / `&mut ...` and the return value derives from `self`; otherwise it must be stated explicitly in the header (stating it when it could be elided gives E3021). Returning a reference to a temporary value is E3030. A temporary is dropped at the end of the statement, and the lifetime is not extended by `let` (実装計画.md 2.10aa).
+**Statement.** The lifetime of a returned reference can be elided only when (a) there is exactly one reference parameter, or (b) the first parameter is `self: &...` / `&mut ...` and the return value derives from `self`; otherwise it must be stated explicitly in the header (stating it when it could be elided gives E3021). Returning a reference to a temporary value is E3030. A temporary is dropped at the end of the statement, and the lifetime is not extended by `let` (docs/plan/実装計画.md 2.10aa).
 
 **Why.** The region of an elided reference is "fresh for every call and unrelated to the others", so returning one carelessly would return a reference that is invalid after the call ends.
 

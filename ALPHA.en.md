@@ -109,7 +109,7 @@ Output: `double: 4`. At the end of the build, `built: target/release/hello (nati
 - Known limitations: `docs/en/known-limitations.md`
 - Explanation of diagnostic codes: `ksn explain <code>` (for example `ksn explain E0042`)
 - API documentation of a package: `ksn doc` (`target/doc/index.html`); standard library: `ksn doc --std`
-- Current state and limits of the implementation: `実装計画.md`
+- Current state and limits of the implementation: `docs/plan/実装計画.md`
 
 ## 6. Known limitations (as of the alpha)
 

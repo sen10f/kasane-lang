@@ -111,7 +111,7 @@ Rust 版に「全体を構文解析して要約を出す」コマンドはない
 | 3 | `for n in p.ast.nodes.as_slice().iter()` (構造体の Vec を、フィールド経由で) | `for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数 ... だけ` | 添字: `for at in core.iter.range(0usize, n)` → `parse.ast.get(&p.ast, at)`。(同じ書き方でも要素が `usize` の `p.ast.defs.as_slice().iter()` は下りた) |
 | 4 | `text.as_str().starts_with(..)` (`match` の束縛 `text: String` に対して、テスト内) | `メソッド as_str は段階 1 の対象外` | 本体ではなくテストだけ。バンドル退避のまま (本体では使っていない) |
 
-以上の 4 つを直した後は、154 関数すべてが下りた。なお、次は**書かなくて済ませた**ので、下りるかは未確認 (1 件は 6 章): `&'a str` を持つ構造体 (トークンの文字列は `start`/`stop` のバイト位置で持った。`修正プラン.md` C が「退避する形」に挙げている)、文字列リテラルの `match` (6 章 2)、`String` をキーにした `HashMap` (6 章 1)。エラーの文字列を持つ `enum` (`Msg(usize, &'static str)`) は小さな試験でネイティブに下りたが、本体では符号 (`u32`) と `message(code)` の `match` にした。
+以上の 4 つを直した後は、154 関数すべてが下りた。なお、次は**書かなくて済ませた**ので、下りるかは未確認 (1 件は 6 章): `&'a str` を持つ構造体 (トークンの文字列は `start`/`stop` のバイト位置で持った。`docs/archive/修正プラン.md` C が「退避する形」に挙げている)、文字列リテラルの `match` (6 章 2)、`String` をキーにした `HashMap` (6 章 1)。エラーの文字列を持つ `enum` (`Msg(usize, &'static str)`) は小さな試験でネイティブに下りたが、本体では符号 (`u32`) と `message(code)` の `match` にした。
 
 ## 6. セルフホストに向けて処理系に必要なこと (重要度順)
 
@@ -120,7 +120,7 @@ Rust 版に「全体を構文解析して要約を出す」コマンドはない
 1. **外部コマンドの実行がない** (署名: `std.process` は `exit` と `abort` だけ)。コンパイラが生成した IR を `clang`/`ld` に渡せないので、ドライバを Kasane で書けない。子プロセスの起動・待機・標準入出力のパイプ・環境変数の受け渡しが要る。(未試験: 署名から)
 2. **`HashMap<String, V>` がネイティブに下りない** (試験 `probes/hashmap`: `HashMap のキーの型 agg#5 は段階 1 の対象外 (整数・bool・char・&str だけ)`)。記号表・名前解決・文字列の内部化に必須。`BtreeMap<u32, u32>` は下りた (`probes/btree`)。`String` の `<` / `cmp` もネイティブ非対応 (`チートシート.md` の記載どおり) なので `BtreeMap<String, _>` も同様のはず (未試験)。`&str` キーの `HashMap` は署名上は対象だが、`&'a str` の寿命を持ち回る構造体が退避するため使いにくい。
 3. **文字列リテラルの `match` がネイティブに下りない** (試験 `probes/strmatch`: `リテラルのパターン str は段階 1 の対象外`)。キーワード・組み込み名の分岐が書けず、この予行では語表の文字列を `split` して位置を数える形にした (関数 1 本 8 行。数十個の名前を持つコンパイラでは遅く、読みにくい)。
-4. **ファイルシステムが足りない** (署名: `std.fs` は `open create exists read_to_end remove_file` だけ)。ディレクトリの列挙 (`src/**/*.ksnl` を集める)、`create_dir`、`rename`、メタデータ、パス操作 (結合・拡張子・親) がない。`修正プラン.md` D の「`std.fs` に追記・リネーム・ディレクトリ操作がない」と同じ。
+4. **ファイルシステムが足りない** (署名: `std.fs` は `open create exists read_to_end remove_file` だけ)。ディレクトリの列挙 (`src/**/*.ksnl` を集める)、`create_dir`、`rename`、メタデータ、パス操作 (結合・拡張子・親) がない。`docs/archive/修正プラン.md` D の「`std.fs` に追記・リネーム・ディレクトリ操作がない」と同じ。
 5. **整列・検索がない** (署名に `sort` / `sort_by` / `binary_search` / `dedup` なし。`Vec` に `extend` / `append` / `contains` / `iter().collect()` もない)。`ksn fmt` が定義を UTF-8 バイト順に並べ直すので、コンパイラには整列が必須。自前で書くと `swap` (`core.slice.swap` はある) とループになる。(未試験: 署名から)
 6. **`enum` の `match` に `_` が使えない** (言語の決定。`E2021`)。トークンや AST の種別が 79 あると、`kind_name` `kind_index` のような全列挙の関数を 1 つ書くたびに 79 行になる (ここでは `ast.ksnl` 335 行のうち `kind_name` と `kind_index` で約 160 行。スクリプトで生成した)。種別の分岐は `u32` の符号と `==` の連鎖で書いたが、型の安全を捨てている。`matches!` 相当か、ある値だけ見る `if let` / `Kind.X == k` の下ろしがあると楽 (`==` は下りた)。
 7. **再帰する型に `Drop` の明示実装が要る** (試験 `probes/boxtree`: `E4013 recursive type requires an explicit core.ops.Drop impl`)。AST は配列と添字で書けたが、`Box` の木を書く道が重い。派生 (`derive [Drop]` 相当) があると、セルフホストする検査器の型・IR を素直に書ける。この予行は添字方式なので影響を受けなかった。

@@ -21,7 +21,7 @@ import subprocess
 import sys
 import tempfile
 
-DEFAULT_KSN = "/home/kasane/kasane-verify/bin/current/ksn"
+DEFAULT_KSN = os.environ.get("KSN", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "stage0", "target", "release", "ksn"))
 
 CHECKABLE_INFO = {"", "kasane", "ksnl"}
 

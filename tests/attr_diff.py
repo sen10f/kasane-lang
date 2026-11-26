@@ -15,8 +15,8 @@ nonnull・dereferenceable・align>1・nounwind・alwaysinline を持たない IR
 import argparse, concurrent.futures as cf, glob, hashlib, os, re, shutil, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-XL = '/home/kasane/kasane-verify/agents/xlang-bench/src'
-GEN = '/home/kasane/kasane-verify/agents/hunt3/native/gen.py'
+XL = os.environ.get('KSN_XLANG_SRC', '')
+GEN = os.environ.get('KSN_HUNT_GEN', '')
 NL = '\n'
 TOML = NL.join(['[package]', 'name = "t"', 'version = "0.1.0"', 'edition = 1', 'entry = "t.main"', '', '[dependencies]', ''])
 ENTRY_RE = re.compile(r'^entry\s*=', re.M)

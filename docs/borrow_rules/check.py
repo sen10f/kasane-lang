@@ -17,7 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-KSN = os.environ.get("KSN", "/home/kasane/kasane-verify/bin/current/ksn")
+KSN = os.environ.get("KSN", str(__import__("pathlib").Path(__file__).resolve().parents[2] / "stage0/target/release/ksn"))
 
 BASE = Path(__file__).resolve().parent
 

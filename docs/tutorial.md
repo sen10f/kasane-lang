@@ -464,7 +464,7 @@ tutorial_bindgen ok
 
 - 出力パスはモジュール名に対応する `src/<モジュール>.ksnh` に置く（違えば注意メッセージが出る）。
 - 生成物は `ksn fmt` の形なので、`ksn fmt --check` はそのまま通ります。`--link` でリンクするライブラリ名を指定し、`build.sh` でその共有ライブラリを用意します（`ksn run` / `ksn test` で `dlopen` するためカレントディレクトリに置く）。
-- `ksn bindgen` は C++ の見出し、`long double` / `_Complex`、入れ子の無名 struct/union は未対応です（実装計画.md の 2.10dj 節 "残り" 参照）。
+- `ksn bindgen` は C++ の見出し、`long double` / `_Complex`、入れ子の無名 struct/union は未対応です（docs/plan/実装計画.md の 2.10dj 節 "残り" 参照）。
 
 ## 6. クロスビルド（`x86_64-windows-gnu` / `aarch64-linux-gnu` / `wasm32-wasi`）
 
@@ -516,7 +516,7 @@ built target/wasm32-wasi/debug (debug, target wasm32-wasi; cross-compiled, not r
 - `aarch64-linux-gnu` は C の開発ファイル（`/usr/aarch64-linux-gnu`）を使い、`KSN_SYSROOT` で上書きできます。
 - `x86_64-windows-gnu` は `gcc-mingw-w64-x86-64-posix` と `mingw-w64-x86-64-dev` が必要です（ここでは導入済み）。
 - `wasm32` と `--backend c` は C のライブラリを持てないので、`[native]` を指定すると E9040 になります。
-- `ffi` の例（`libc.so.6` を引く）は Windows では動きません（実装計画.md の 2.10dg 節 "未対応" 参照）。
+- `ffi` の例（`libc.so.6` を引く）は Windows では動きません（docs/plan/実装計画.md の 2.10dg 節 "未対応" 参照）。
 
 ## 7. UI パッケージの第一歩（layout + tree + event、GPU は使わない）
 

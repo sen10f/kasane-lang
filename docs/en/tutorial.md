@@ -466,7 +466,7 @@ tutorial_bindgen ok
 
 - Put the output path at `src/<module>.ksnh`, which corresponds to the module name (a notice is shown if it differs).
 - The generated output is in the form of `ksn fmt`, so `ksn fmt --check` passes as it is. Specify the library name to link with `--link`, and prepare that shared library with `build.sh` (place it in the current directory, because `ksn run` / `ksn test` `dlopen` it).
-- `ksn bindgen` does not support C++ headers, `long double` / `_Complex`, or nested anonymous struct/union (see "remaining" in section 2.10dj of 実装計画.md).
+- `ksn bindgen` does not support C++ headers, `long double` / `_Complex`, or nested anonymous struct/union (see "remaining" in section 2.10dj of docs/plan/実装計画.md).
 
 ## 6. Cross builds (`x86_64-windows-gnu` / `aarch64-linux-gnu` / `wasm32-wasi`)
 
@@ -518,7 +518,7 @@ built target/wasm32-wasi/debug (debug, target wasm32-wasi; cross-compiled, not r
 - `aarch64-linux-gnu` uses the C development files (`/usr/aarch64-linux-gnu`), which can be overridden with `KSN_SYSROOT`.
 - `x86_64-windows-gnu` needs `gcc-mingw-w64-x86-64-posix` and `mingw-w64-x86-64-dev` (already installed here).
 - `wasm32` and `--backend c` cannot have C libraries, so specifying `[native]` gives E9040.
-- The `ffi` example (which looks up `libc.so.6`) does not work on Windows (see "unsupported" in section 2.10dg of 実装計画.md).
+- The `ffi` example (which looks up `libc.so.6`) does not work on Windows (see "unsupported" in section 2.10dg of docs/plan/実装計画.md).
 
 ## 7. A first step with the UI packages (layout + tree + event, no GPU)
 
