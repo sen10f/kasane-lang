@@ -1,3 +1,5 @@
+日本語 | [English](en/borrow_rules.md)
+
 # Kasane 所有・移動・借用・線形・効果の決まり
 
 この文書は Kasane（v0.10）の「所有権・移動・借用・線形型・効果（`uses`/`panics`）」、「参照は二級の値」、「`with`・`unsafe`・`suspend`」などの言語規則を、番号付きルール K1–K16 としてまとめたものである。
