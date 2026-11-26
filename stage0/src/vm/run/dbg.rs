@@ -221,7 +221,18 @@ fn from_bytes(aggs: &[crate::kir::AggDef], t: Ty, b: &[u8], depth: usize) -> DV 
         Ty::Bool => DV::Bool(b.first().copied().unwrap_or(0) & 1 != 0),
         Ty::F64 => DV::F64(f64::from_bits(le(b, 8) as u64)),
         Ty::F32 => DV::F32(f32::from_bits(le(b, 4) as u32)),
-        Ty::Ptr => DV::Opaque(format!("ptr {:#x}", le(b, 8))),
+        Ty::Ptr => {
+            // 局所の `Vec` / `String` はフレームのヘッダを指す `ptr` で持つ (型は配置に無い)。
+            // 指す先が {ptr, len, cap} の形 (len <= cap、中身が読める) ならヘッダとして中身を出す。
+            let a = le(b, 8) as u64;
+            if let Some(h) = read_mem(a, 24) {
+                let (p, len, cap) = (le(&h, 8) as u64, le(&h[8..], 8), le(&h[16..], 8));
+                if len <= cap && cap < (1 << 40) && p != 0 && read_mem(p, (len as usize).min(4096)).is_some() {
+                    return vec_value(aggs, "vec", &h);
+                }
+            }
+            DV::Opaque(format!("ptr {:#x}", a))
+        }
         Ty::Ref(_, p) => {
             let a = le(b, 8) as u64;
             let pt = p.ty();
@@ -257,7 +268,7 @@ fn from_bytes(aggs: &[crate::kir::AggDef], t: Ty, b: &[u8], depth: usize) -> DV 
             match &d.kind {
                 AggKind::Struct(fs) => {
                     if d.name == "vec" || d.name.starts_with("vec<#") {
-                        return DV::Opaque(format!("<{}>", short(&d.name)));
+                        return vec_value(aggs, &d.name, b);
                     }
                     DV::Struct(short(&d.name).to_string(), fs.iter().filter(|f| !f.name.starts_with('$')).map(|f| (f.name.clone(), fld(f))).collect())
                 }
@@ -277,6 +288,52 @@ fn from_bytes(aggs: &[crate::kir::AggDef], t: Ty, b: &[u8], depth: usize) -> DV 
         }
         _ => int(t),
     }
+}
+
+/// `Vec` / `String` のヘッダ {ptr, len, cap} から中身を出す。要素が所有物 (`vec<#N>`) なら要素の型 N で最大 64 個、
+/// 要素がスカラーの `vec` は型が配置に無いので、読める印字可能な UTF-8 なら `String` / `Vec<u8>` として文字列、それ以外は `<vec len=N>`。
+fn vec_value(aggs: &[crate::kir::AggDef], name: &str, b: &[u8]) -> DV {
+    let (p, n) = (le(b, 8) as u64, le(b.get(8..).unwrap_or(&[]), 8) as usize);
+    if let Some(ai) = name.strip_prefix("vec<#").and_then(|x| x.strip_suffix('>')).and_then(|x| x.parse::<u32>().ok()) {
+        let et = Ty::Agg(ai);
+        let w = size_of(aggs, et).max(1);
+        let k = n.min(64);
+        return match read_mem(p, k * w) {
+            Some(m) if k > 0 => DV::Array((0..k).map(|i| from_bytes(aggs, et, &m[i * w..], 2)).collect()),
+            Some(_) => DV::Array(vec![]),
+            None => DV::Opaque(format!("<vec len={}>", n)),
+        };
+    }
+    if n == 0 {
+        return DV::Str(String::new());
+    }
+    match read_mem(p, n.min(4096)) {
+        Some(m) => match std::str::from_utf8(&m) {
+            Ok(t) if n <= 4096 && t.chars().all(|c| !c.is_control() || c == '\n' || c == '\t') => DV::Str(t.to_string()),
+            _ => DV::Opaque(format!("<vec len={}>", n)),
+        },
+        None => DV::Opaque(format!("<vec len={}>", n)),
+    }
+}
+
+fn dbg_method(recv: DV, name: &str, args: &[DV]) -> Result<DV, String> {
+    let opaque_len = |s: &str| s.strip_prefix("<vec len=").and_then(|x| x.strip_suffix('>')).and_then(|x| x.parse::<i128>().ok());
+    match (name, &recv, args) {
+        ("len", DV::Str(s), []) => Ok(DV::Int(s.len() as i128, Some(Ty::Usize))),
+        ("len", DV::Array(xs), []) => Ok(DV::Int(xs.len() as i128, Some(Ty::Usize))),
+        ("len", DV::Opaque(s), []) if opaque_len(s).is_some() => Ok(DV::Int(opaque_len(s).unwrap_or(0), Some(Ty::Usize))),
+        ("is_empty", DV::Str(s), []) => Ok(DV::Bool(s.is_empty())),
+        ("is_empty", DV::Array(xs), []) => Ok(DV::Bool(xs.is_empty())),
+        ("as_str", DV::Str(_), []) => Ok(recv),
+        ("contains", DV::Str(s), [DV::Str(t)]) => Ok(DV::Bool(s.contains(t.as_str()))),
+        ("starts_with", DV::Str(s), [DV::Str(t)]) => Ok(DV::Bool(s.starts_with(t.as_str()))),
+        ("ends_with", DV::Str(s), [DV::Str(t)]) => Ok(DV::Bool(s.ends_with(t.as_str()))),
+        _ => Err(format!("method `{}` is not supported on this value in a debugger expression", name)),
+    }
+}
+
+fn is_dbg_method(m: &str) -> bool {
+    matches!(m, "len" | "is_empty" | "as_str" | "contains" | "starts_with" | "ends_with")
 }
 
 fn words_to_bytes(w: &[u64]) -> Vec<u8> {
@@ -464,11 +521,16 @@ impl Dbg {
         match nname(e) {
             "Call" if nname(&nf(e)[0]) == "Path" => {
                 let segs = strs(&nf(&nf(e)[0])[0]);
-                if segs.len() >= 2 && !self.pure.contains(&segs.join(".")) {
+                if segs.len() >= 2 && !self.pure.contains(&segs.join(".")) && !(segs.len() == 2 && is_dbg_method(&segs[1]) && !segs[0].contains('.')) {
                     return Err(format!("`{}` is not allowed in a debugger expression: it is not `uses [] panics never` (or takes `&mut`)", segs.join(".")));
                 }
             }
-            "MCall" => return Err("method calls are not supported in a debugger expression on the VM engine yet".into()),
+            "MCall" => {
+                let m = crate::check::st(&nf(e)[1]);
+                if !matches!(m.as_str(), "len" | "is_empty" | "as_str" | "contains" | "starts_with" | "ends_with") {
+                    return Err(format!("method `{}` is not supported in a debugger expression (len is_empty as_str contains starts_with ends_with)", m));
+                }
+            }
             _ => {}
         }
         for c in children(e) {
@@ -550,9 +612,30 @@ impl Dbg {
                 if nname(tgt) != "Path" {
                     return Err("only calls of named functions are supported in a debugger expression".into());
                 }
-                let key = strs(&nf(tgt)[0]).join(".");
+                let segs = strs(&nf(tgt)[0]);
+                let key = segs.join(".");
                 let args: Vec<DV> = crate::check::items(&fs[1]).iter().map(|a| self.eval(vm, f, a)).collect::<Result<_, _>>()?;
+                // `s.len()` は `s` と `len` の 2 部のパスの呼び出しとして読まれる。`s` が局所変数なら受け手 `s` の組み込みメソッド。
+                if segs.len() == 2 && !self.pure.contains(&key) {
+                    if let Some(recv) = self.lookup(vm, f, &segs[0]) {
+                        return dbg_method(recv, &segs[1], &args);
+                    }
+                }
                 self.call(vm, f, &key, &args)
+            }
+            "MCall" => {
+                let recv = self.eval(vm, f, &fs[0])?;
+                let name = st(&fs[1]);
+                let args: Vec<DV> = crate::check::items(&fs[2]).iter().map(|a| self.eval(vm, f, a)).collect::<Result<_, _>>()?;
+                dbg_method(recv, &name, &args)
+            }
+            "Index" => {
+                let b = self.eval(vm, f, &fs[0])?;
+                let i = self.eval(vm, f, &fs[1])?;
+                match (b, i) {
+                    (DV::Array(xs), DV::Int(i, _)) => usize::try_from(i).ok().and_then(|i| xs.get(i).cloned()).ok_or_else(|| "index out of range".to_string()),
+                    _ => Err("only an integer index into an array or Vec is supported in a debugger expression".into()),
+                }
             }
             n => Err(format!("`{}` is not allowed in a debugger expression", n)),
         }
