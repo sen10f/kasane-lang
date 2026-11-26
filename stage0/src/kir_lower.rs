@@ -1488,6 +1488,11 @@ impl<'a> Lw<'a> {
                 }
                 let meth = segs[segs.len() - 1].clone();
                 if meth == "clone" {
+                    if let Ok(src) = self.src_ty(e) {
+                        if let Some(v) = self.clone_copy_opt(&src, recv, rt) {
+                            return Ok(Some(v));
+                        }
+                    }
                     return self.lower_clone(line, recv, rt);
                 }
                 // `task.join_task()`: 実行器のタスクの結果を取り出す (中断点、仕様 5.6)。

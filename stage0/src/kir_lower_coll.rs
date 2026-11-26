@@ -2408,6 +2408,13 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     if (m == "push_display" || m == "push_debug") && matches!(kind, Kind::String) {
         return lw.string_push_fmt(e, line, h, args, m == "push_debug");
     }
+    if m == "clone" && args.is_empty() && matches!(kind, Kind::String) {
+        let t = match lw.vty(h) {
+            t @ Ty::Agg(_) => t,
+            _ => lw.coll.hdr_ty.get(&h).copied().unwrap_or_else(|| lw.aggs.borrow_mut().vec_hdr()),
+        };
+        return Ok(Some(clone_bytes_hdr(lw, h, t)));
+    }
     if m == "get" {
         return get_elem(lw, line, slot, &kind, h, args);
     }
@@ -2522,6 +2529,33 @@ fn clone_elem_val(lw: &mut Lw, v: VId, t: Ty, line: usize) -> LR<VId> {
     lw.goto(hd, vec![ni]);
     lw.cur = Some(done);
     Ok(lw.emit(lw.vty(v), Op::Make { variant: None, fields: vec![buf, len, len] }))
+}
+
+/// `String` のヘッダ `v` (値かアドレス) のバイト列を新しく確保して複製し、型 `t` のヘッダを返す。
+fn clone_bytes_hdr(lw: &mut Lw, v: VId, t: Ty) -> VId {
+    let fat = hdr_view(lw, v);
+    let ptr = lw.emit(Ty::Ptr, Op::Field { a: fat, off: 0 });
+    let len = lw.emit(Ty::Usize, Op::Field { a: fat, off: 8 });
+    let buf = lw.emit(Ty::Ptr, Op::HeapAlloc(len));
+    let zero = lw.emit(Ty::Usize, Op::Const(0));
+    let one = lw.emit(Ty::Usize, Op::Const(1));
+    let (hd, hpi) = lw.new_block(&[Ty::Usize]);
+    let (body, _) = lw.new_block(&[]);
+    let (done, _) = lw.new_block(&[]);
+    lw.goto(hd, vec![zero]);
+    lw.cur = Some(hd);
+    let i = hpi[0];
+    let dc = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: i, b: len });
+    lw.branch(dc, (done, vec![]), (body, vec![]));
+    lw.cur = Some(body);
+    let sp = lw.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: i });
+    let bc = lw.emit(Ty::U8, Op::MemLoad { p: sp, off: 0 });
+    let dp = lw.emit(Ty::Ptr, Op::PtrAdd { p: buf, off: i });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: dp, off: 0, v: bc });
+    let ni = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
+    lw.goto(hd, vec![ni]);
+    lw.cur = Some(done);
+    lw.emit(t, Op::Make { variant: None, fields: vec![buf, len, len] })
 }
 
 pub(super) fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str, nargs: usize) -> LR<Option<VId>> {
