@@ -63,3 +63,27 @@ VM 版デバッガ (M1) は次を後回しにしている。木走査版を消�
 - `unsafe` ブロックを含むパッケージは VM でデバッグできない (`vm::has_unsafe_block` の退避と同じ理由。生ポインタの検査を VM に移すとき一緒に解く)。
 - スレッドは main だけ (`threads` は 1 本)。複数スレッドの実行器・`std.thread.spawn` の停止は未対応。
 - DAP の `column` は字下げ幅 + 1 の近似 (1 行 1 文の正規形に依存)。
+
+## 6. 複数スレッドの実行器と非同期の入出力を VM に (線 5、2026-11-26)
+
+対象: `std.task.block_on_threads` + `spawn` と、`std.net` の `accept_async` / `read_async` / `write_async` (`std.task.wait_io`)。これまで VM は退避していた (実行器の核 `ksn.mt.*` が KIR では空の殻で、`ksn.io.*` はリアクターがなく、止まった)。
+
+### 6.1 選択肢
+
+- 案 R (実スレッド): ワーカーごとに別の `Vm` を持ち、アリーナを共有して走らせる。`kir_llvm.rs` の `thread_override` が持つ約 40 個の補助 (mutex の futex・チャネルごとの cond・全員待ちの数え上げ・rwlock・原子操作) を Rust で書き直す必要があり、TSan で確かめる範囲も広い。アリーナの確保・`dead` 印の検査・`static` の領域など VM の共有状態に同期を足すことになる。
+- 案 C (協調、1 本のスレッド): VM は今の 1 本のスレッドのまま、`sysrt.c` の `ksn_rt_sys_mt_*` と `ksn_rt_sys_io_*` を Rust に移植して VM の組み込み (`Ins::Rt`) にする。ワーカーは呼び出しスレッド 1 本だけ (補助のワーカーは起こさない)。実行器の KIR (`kir_suspend_exec*.kir`、LLVM と共有) はそのまま走る。
+
+選ぶのは案 C。理由: (1) 取り消し (次の中断点で止まる)・panic の伝わり方・入れ子の拒否・`Send` の要求・セッション番号は実行器の KIR と核の状態機械 (注入列・state 0/1/2/3・cancel の印) が決めており、案 C はそれを同じ規則で動かす。(2) 順序が決定的 (注入列の先頭から)。(3) 同期が要らない。
+
+### 6.2 意味
+
+- `ksn.mt.begin(n)`: `n > 1` なら `on` を立てて 1 を返す (呼び出し側の「補助ワーカーを足す個数」は 0)。核の全員待ちの数は 1。`n <= 1` は `block_on` と同じ (on しない)。
+- `ksn.mt.sleep(seen)`: 世代が進んでいなければ「二度と起きない」ので 3 (全員待ち = deadlock、実行器の KIR が `deadlock: every std.task task is waiting ...` で panic、終了 101)。止めの旗なら 2。
+- `ksn.task.session`: `on` の間は核のセッション番号 (根もタスクも同じ)。それ以外は KIR の本体と同じ。
+- `ksn.io.*`: `sysrt.c` と同じ状態機械 (park → epoll 端起こし ONESHOT ではなく EPOLLET で読み書きを両方載せる・`rdy` で端の取りこぼしを防ぐ・期限は `set_*_deadline` と `set_*_timeout`)。`poll(block)` は block != 0 のとき最も近い期限まで `epoll_wait` で待つ (他のワーカーがいないので、待っても他の仕事を止めない)。VM のソケットは仮想の記述子なので、`socks` から実際の fd を引いて登録する。`close` は `forget` で記録を消す。
+- `listen` の待ち行列は 1024 (ネイティブと同じ。標準の 128 だと 256 本の同時接続で `connect` が詰まる)。
+
+### 6.3 既知の差 (ネイティブとの)
+
+- 本物の並列はしない。ワーカーが 2 本以上いることに頼る書き方 (あるタスクが同期のチャネルの `recv` / `Mutex` で別のワーカーのタスクを待つ) は、VM では全員待ちの deadlock (101) になる。`async` の `join_task` / `spawn` / `cancel` は問題ない。
+- 順序は注入列の順で決まる (ネイティブは非決定)。比べる試験は順序に依存しない出力だけを比べる。

@@ -621,21 +621,12 @@ impl<'a> Fc<'a> {
             Op::BitCount { k, src, a } => Ins::BitCount { d, a: self.s(*a), k: *k, src: self.ty_of(*src) },
             Op::Checked { op, a, b } => Ins::Checked { d, a: self.s(*a), b: self.s(*b), op: *op, ty: self.ty_of(ty) },
             Op::Call { callee, args } => {
-                match (callee.as_str(), args.len()) {
-                    ("ksn.mt.on", 0) => {
-                        self.push(Ins::MtOn { d });
+                if let Some((op, n)) = Rt::of(callee) {
+                    if n == args.len() {
+                        let at = |i: usize| -> S { args.get(i).map_or(0, |v| self.s(*v)) };
+                        self.push(Ins::Rt { d, op, a: at(0), b: at(1) });
                         return Ok(());
                     }
-                    ("ksn.mt.begin", 1) => {
-                        let n = self.s(args[0]);
-                        self.push(Ins::MtBegin { d, n });
-                        return Ok(());
-                    }
-                    ("ksn.mt.end", 0) => {
-                        self.push(Ins::MtEnd);
-                        return Ok(());
-                    }
-                    _ => {}
                 }
                 let Some(&ci) = self.index.get(callee.as_str()) else {
                     return Err(format!("呼び先 {} がない", callee));

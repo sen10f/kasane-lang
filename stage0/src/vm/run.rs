@@ -11,6 +11,7 @@
 
 pub mod dbg;
 mod netsys;
+mod rtsys;
 
 use super::bc::*;
 use crate::interp::{py_float, py_float32};
@@ -110,8 +111,10 @@ pub struct Vm<'a> {
     bad_cmds: std::collections::HashSet<i32>,
     children: std::collections::HashMap<i32, std::process::Child>,
     next_fd: i128,
-    /// `block_on_threads` (n > 1) の中か。
-    mt_on: bool,
+    /// `block_on_threads` の共有の核 (注入列・完了の印。`run/rtsys.rs`)。
+    mt: rtsys::MtCore,
+    /// 非同期ソケットのリアクター (epoll)。
+    io: rtsys::IoCore,
     /// コールバックのフレームを積む位置 (`CallExt` の呼び出し元のフレームの上)。
     top: usize,
     /// 最後の panic が起きた (版, 関数番号, 命令番号)。
@@ -241,7 +244,7 @@ impl<'a> Vm<'a> {
         // C の関数を呼ぶプログラムは、C が返す番地も読むので、領域の外も通す (FFI は `[unsafe]` の許可の内側)。
         // 標準ライブラリ (`std.` / `core.`) の extern は数えない (安全なプログラムで網を切らない)。
         super::arena::set_permissive(prog.ext.iter().any(|f| !(f.fqn.starts_with("std.") || f.fqn.starts_with("core."))));
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), bad_cmds: Default::default(), children: Default::default(), next_fd: 3, mt_on: false, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None, dbg: None, out_hook: None, panic_base: 0, deadlines: Default::default() }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), bad_cmds: Default::default(), children: Default::default(), next_fd: 3, mt: Default::default(), io: Default::default(), top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None, dbg: None, out_hook: None, panic_base: 0, deadlines: Default::default() }
     }
 
     /// 最後の panic の位置 (`in <関数> at <ファイル>:<行>`。デバッガと同じ形)。行表がない関数では `None`。
@@ -1141,12 +1144,7 @@ impl<'a> Vm<'a> {
                 Ins::EnvArgCount { d } => {
                     w!(*d, self.args.len() as u64);
                 }
-                Ins::MtOn { d } => w!(*d, self.mt_on as u64),
-                Ins::MtBegin { d, n } => {
-                    self.mt_on = r!(*n) as i64 > 1;
-                    w!(*d, 0);
-                }
-                Ins::MtEnd => self.mt_on = false,
+                Ins::Rt { d, op, a, b } => self.rt(rp, *op, *d, *a, *b)?,
                 Ins::TimeNowNs { d } => {
                     // 実時刻 (UNIX 時刻からのナノ秒)。`i64` の bit 列で書く。失敗したら 0。
                     let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|x| x.as_nanos() as i64).unwrap_or(0);
@@ -1179,7 +1177,13 @@ impl<'a> Vm<'a> {
                     let bytes = Self::fat_bytes(rp, *addr as usize)?;
                     let a = std::str::from_utf8(bytes).unwrap_or("");
                     let is_listen = matches!(ins, Ins::NetListen { .. });
-                    let res = if is_listen { std::net::TcpListener::bind(a).map(NetSock::Listener) } else { std::net::TcpStream::connect(a).map(NetSock::Stream) };
+                    let res = if is_listen {
+                        std::net::TcpListener::bind(a).map(|l| {
+                            // 待ち行列を大きくする (ネイティブの `listen(s, 1024)` と同じ。多数の接続が先に来る非同期サーバのため)。
+                            unsafe { libc::listen(std::os::fd::AsRawFd::as_raw_fd(&l), 1024) };
+                            NetSock::Listener(l)
+                        })
+                    } else { std::net::TcpStream::connect(a).map(NetSock::Stream) };
                     match res {
                         Ok(sock) => {
                             let fd = self.new_fd(sock);
@@ -1257,6 +1261,7 @@ impl<'a> Vm<'a> {
                 }
                 Ins::NetClose { d, sock } => {
                     let fd = r!(*sock) as i32 as i128;
+                    self.io.forget(fd as i32);
                     self.socks.remove(&fd);
                     w!(*d, 0);
                 }

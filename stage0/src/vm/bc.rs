@@ -291,10 +291,8 @@ pub enum Ins {
     EnvArg { d: S, i: S },
     EnvVar { d: S, name: S },
     TimeNowNs { d: S },
-    /// `std.task.block_on_threads` の中か (n > 1)。ワーカーは起こさない (決定的な協調実行) が、`spawn_local` の禁止などの意味を保つ。
-    MtOn { d: S },
-    MtBegin { d: S, n: S },
-    MtEnd,
+    /// 実行器の実行時の核 (`ksn.mt.*` / `ksn.io.*` / `ksn.task.session`。`run/rtsys.rs`)。引数は `a` `b` のスロット。
+    Rt { d: S, op: Rt, a: S, b: S },
 
     // ---- std.net (kir_exec と同じ意味。ソケット表は `Vm` が持つ)
     NetListen { d: S, addr: S },
@@ -322,6 +320,80 @@ pub enum Ins {
     FsWrite { d: S, fd: S, buf: S, len: S },
     /// `std.rand` の OS の乱数 (`fatal`: `Rng.from_entropy` の致命的な形)。
     RandFill { d: S, buf: S, len: S, fatal: bool },
+}
+
+/// 実行器の実行時の核の操作 (`sysrt.c` の `ksn_rt_sys_*` と対応)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rt {
+    MtMarked,
+    MtBegin,
+    MtOn,
+    MtPush,
+    MtTake,
+    MtFinish,
+    MtState,
+    MtFp,
+    MtTag,
+    MtCancelled,
+    MtCancel,
+    MtClearFp,
+    MtEpoch,
+    MtSleep,
+    MtStop,
+    MtStopped,
+    MtUnfinished,
+    MtReg,
+    MtNthr,
+    MtThr,
+    MtEnd,
+    Session,
+    IoPark,
+    IoPoll,
+    IoReady,
+    IoTake,
+    IoBind,
+    IoNfired,
+    IoNext,
+    IoPending,
+}
+
+impl Rt {
+    /// 呼び先の名前 → (操作, 引数の数)。
+    pub fn of(name: &str) -> Option<(Rt, usize)> {
+        Some(match name {
+            "ksn.mt.marked" => (Rt::MtMarked, 1),
+            "ksn.mt.begin" => (Rt::MtBegin, 1),
+            "ksn.mt.on" => (Rt::MtOn, 0),
+            "ksn.mt.push" => (Rt::MtPush, 2),
+            "ksn.mt.take" => (Rt::MtTake, 0),
+            "ksn.mt.finish" => (Rt::MtFinish, 2),
+            "ksn.mt.state" => (Rt::MtState, 1),
+            "ksn.mt.fp" => (Rt::MtFp, 1),
+            "ksn.mt.tag" => (Rt::MtTag, 1),
+            "ksn.mt.cancelled" => (Rt::MtCancelled, 1),
+            "ksn.mt.cancel" => (Rt::MtCancel, 1),
+            "ksn.mt.clear_fp" => (Rt::MtClearFp, 1),
+            "ksn.mt.epoch" => (Rt::MtEpoch, 0),
+            "ksn.mt.sleep" => (Rt::MtSleep, 1),
+            "ksn.mt.stop" => (Rt::MtStop, 0),
+            "ksn.mt.stopped" => (Rt::MtStopped, 0),
+            "ksn.mt.unfinished" => (Rt::MtUnfinished, 0),
+            "ksn.mt.reg" => (Rt::MtReg, 1),
+            "ksn.mt.nthr" => (Rt::MtNthr, 0),
+            "ksn.mt.thr" => (Rt::MtThr, 1),
+            "ksn.mt.end" => (Rt::MtEnd, 0),
+            "ksn.task.session" => (Rt::Session, 0),
+            "ksn.io.park" => (Rt::IoPark, 2),
+            "ksn.io.poll" => (Rt::IoPoll, 1),
+            "ksn.io.ready" => (Rt::IoReady, 1),
+            "ksn.io.take" => (Rt::IoTake, 1),
+            "ksn.io.bind" => (Rt::IoBind, 2),
+            "ksn.io.nfired" => (Rt::IoNfired, 0),
+            "ksn.io.next" => (Rt::IoNext, 0),
+            "ksn.io.pending" => (Rt::IoPending, 0),
+            _ => return None,
+        })
+    }
 }
 
 const _: () = assert!(std::mem::size_of::<Ins>() <= 16);
