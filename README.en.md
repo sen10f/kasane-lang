@@ -2,7 +2,19 @@
 
 # Kasane (`ksn`)
 
-Kasane is a strict systems language, and its toolchain, designed to be hard to get wrong for both humans and LLMs. Effect tracking (`uses` / `panics`), linear types, second-class references, a grammar with one canonical form, and a lock that stops the build when a dependency's effects or a public signature grow: together they stop wrong code and risky dependencies at the check stage. There is one canonical way to write things, diagnostics tell you how to fix them, and `ksn fix` / `ksn fmt` repair code mechanically, so the language also suits a workflow where an LLM writes and a machine verifies. The toolchain is written in Rust. A single `ksn` binary with LLVM and lld built in produces native output for Linux (x86_64, aarch64), Windows and WASM. The source extension is `.ksnl`; the format in which humans write comments is `.ksnh`. The first alpha is planned for distribution as `0.1.0-alpha.1`.
+Kasane is an experimental systems language, and its toolchain, aimed at letting weak LLMs write code that actually works.
+It takes Rust's syntax as a base and borrows (well, steals) an effect system from Koka and a type system from Ada.
+
+There is basically one way to write anything, diagnostics tell you how to fix the problem, and `ksn fix` / `ksn fmt` repair code mechanically. The main use is an LLM writing the code and a machine verifying it.
+
+Honestly, it isn't designed for humans to write by hand, so it is absurdly verbose and hard to read.
+
+The toolchain is written in Rust. A single `ksn` binary with LLVM and lld built in produces native output for Linux (x86_64, aarch64), Windows and WASM (experimental). The source extension is `.ksnl`; the format in which humans write comments is `.ksnh`.
+
+This split puts verifiability of future libraries and packages first: it keeps unintended code from slipping into modules an LLM generated, and keeps third parties from sneaking in malware.
+As a rule, only `.ksnl` files can be distributed as packages.
+
+The first alpha is out as `0.1.0-alpha.1`.
 
 ## Requirements
 
@@ -28,8 +40,8 @@ Download the prebuilt binary `ksn-<version>-x86_64-linux-gnu.tar.gz` from the Gi
 ### Build from source
 
 ```bash
-git clone https://github.com/sen10f/kasane.git
-cd kasane
+git clone https://github.com/sen10f/kasane-lang.git
+cd kasane-lang
 bash scripts/setup.sh
 ```
 
@@ -72,7 +84,7 @@ Three worked examples and detailed explanations are in the [tutorial](docs/en/tu
 
 ## Editor support
 
-The official VS Code extension is in `editors/vscode/`. Run
+An official VS Code extension, for what it's worth, is in `editors/vscode/`. Run
 
 ```sh
 npm install && npm run compile
@@ -83,7 +95,7 @@ in `editors/vscode/` to build a `.vsix`, then install it from VS Code with "Exte
 In other editors, you can use the LSP and DAP servers built into the toolchain from any LSP-capable or DAP-capable client.
 
 - `ksn lsp` speaks LSP over standard input/output. It supports diagnostics, hover, go to definition, references, rename, formatting, symbols and quick fixes.
-- `ksn dap` speaks DAP over standard input/output. It offers source-level debugging on top of the tree walker, with breakpoints, stepping, call stacks and local variables. It is not DWARF debugging of native machine code.
+- `ksn dap` speaks DAP over standard input/output. It offers source-level debugging on top of the VM, with breakpoints, stepping, call stacks and local variables. It is not DWARF debugging of native machine code.
 
 For the concrete connection steps on the editor side, follow the documentation of the client you use.
 
@@ -94,7 +106,6 @@ For the concrete connection steps on the editor side, follow the documentation o
 - [Changelog](CHANGELOG.md)
 - [Language specification](<Kasane 簡易仕様書.md>)
 - [Implementation plan](docs/plan/実装計画.md)
-- [Design plan](docs/archive/設計プラン.md)
 - [Cheat sheet](docs/en/cheatsheet.md)
 
 ## Verification during development
