@@ -1,3 +1,5 @@
+日本語 | [English](en/known-limitations.md)
+
 # 既知の制限
 
 この文書は、アルファ版 `0.1.0-alpha.1` の使用と実装上の制約をまとめます。
