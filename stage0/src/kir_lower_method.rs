@@ -592,10 +592,28 @@ impl<'a> Lw<'a> {
     /// すべてスカラーの欄を持つ構造体・enum・タプルなら値の写しを返す。
     /// String / Vec<スカラー> の欄を持つ構造体なら新規確保して中身を複写する。
     /// それ以外は `None` を返し、未対応とする。
-    fn lower_clone_mcall(&mut self, _e: &V, line: usize, _rt: &Src, recv_expr: &V) -> LR<Option<VId>> {
+    fn lower_clone_mcall(&mut self, _e: &V, line: usize, rt: &Src, recv_expr: &V) -> LR<Option<VId>> {
         let Some(recv) = self.expr_peek(recv_expr)? else { return Ok(None) };
         let recv_ty = self.vty(recv);
+        if let Some(v) = self.clone_copy_opt(rt, recv, recv_ty) {
+            return Ok(Some(v));
+        }
         self.lower_clone(line, recv, recv_ty)
+    }
+
+    /// `Option<&T>` / `Option<スカラー>` / `Result<..>` (中身が共有参照かスカラーだけ): 値の写しが clone。
+    pub(super) fn clone_copy_opt(&mut self, rt: &Src, recv: VId, recv_ty: Ty) -> Option<VId> {
+        if !matches!(recv_ty, Ty::Opt(_) | Ty::Res(..)) {
+            return None;
+        }
+        let Src::Named(n, a, _) = rt else { return None };
+        let copy = |t: &Src| match t {
+            Src::Prim(s) => s != "str",
+            Src::Unit => true,
+            Src::Ref(m, _, _) => !*m,
+            _ => false,
+        };
+        ((n.ends_with("Option") || n.ends_with("Result")) && a.iter().all(copy)).then_some(recv)
     }
 
     /// `recv` (型 `recv_ty`: `Ty::Agg` または `Ty::Ref<_, Pointee::Agg>`) の clone を下ろす。
