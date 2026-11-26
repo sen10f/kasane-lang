@@ -1,0 +1,33 @@
+static t.CACHE: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64)
+
+static t.COUNT: core.sync.AtomicU64 = core.sync.AtomicU64.new(0u64) pub
+
+fn t.bump() -> u64 uses [] panics never
+    t.COUNT.fetch_add(1u64, core.sync.Ordering.SeqCst).wrapping_add(1u64)
+end t.bump
+
+fn t.main() -> () uses [] panics never
+end t.main
+
+fn t.set_cache(v: u64) -> u64 uses [thread] panics never
+    let mut g = t.CACHE.lock()
+    let old = *g.get()
+    *g.get_mut() = v
+    old
+end t.set_cache
+
+test t.bump.test_a
+    core.check.eq(t.bump(), 1u64)
+end t.bump.test_a
+
+test t.bump.test_b
+    core.check.eq(t.bump(), 1u64)
+end t.bump.test_b
+
+test t.set_cache.test_a
+    core.check.eq(t.set_cache(7u64), 0u64)
+end t.set_cache.test_a
+
+test t.set_cache.test_b
+    core.check.eq(t.set_cache(9u64), 0u64)
+end t.set_cache.test_b

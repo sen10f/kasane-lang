@@ -11,6 +11,7 @@ use std::sync::Mutex;
 
 extern "C" {
     fn munmap(addr: *mut std::ffi::c_void, len: usize) -> i32;
+    fn madvise(addr: *mut std::ffi::c_void, len: usize, advice: i32) -> i32;
     fn mmap(addr: *mut std::ffi::c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut std::ffi::c_void;
 }
 
@@ -265,4 +266,64 @@ mod tests {
         assert!(realloc(0x4141_4141_4141_4140, 8).is_err());
         assert!(free(p));
     }
+}
+
+/// 確保領域の写し (`snapshot`)。`ksn test` が、コンパイル直後の状態を試験ごとに取り戻すのに使う。
+pub struct Snapshot {
+    top: usize,
+    mem: Vec<u8>,
+    shadow: Vec<u8>,
+    quarantine: std::collections::VecDeque<(usize, usize, usize)>,
+    qbytes: usize,
+    free: Vec<Vec<usize>>,
+    dead_any: bool,
+}
+
+/// 今の領域の状態を写す (`static` の領域・リテラル・空きの一覧・影)。
+pub fn snapshot() -> Option<Snapshot> {
+    if !init() {
+        return None;
+    }
+    let g = ARENA.lock().unwrap_or_else(|e| e.into_inner());
+    let a = g.as_ref()?;
+    let base = BASE.load(Ordering::Relaxed);
+    let sh = SHADOW.load(Ordering::Relaxed);
+    let mem = unsafe { std::slice::from_raw_parts(base as *const u8, a.top) }.to_vec();
+    let shadow = unsafe { std::slice::from_raw_parts(sh as *const u8, (a.top >> 7) + 1) }.to_vec();
+    Some(Snapshot { top: a.top, mem, shadow, quarantine: a.quarantine.clone(), qbytes: a.qbytes, free: a.free.to_vec(), dead_any: DEAD_ANY.load(Ordering::Relaxed) })
+}
+
+/// 写しの状態へ戻す。写しより後に使った領域は OS へ返して (0 に戻る) 回収する。
+pub fn restore(s: &Snapshot) {
+    let mut g = ARENA.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(a) = g.as_mut() else { return };
+    let base = BASE.load(Ordering::Relaxed);
+    let sh = SHADOW.load(Ordering::Relaxed);
+    let page = 4096usize;
+    let cur_top = a.top.max(s.top);
+    // 写しの先は丸ごと捨てる (ページ単位。匿名の私的な領域なので 0 に戻る)。写しの末尾のページの残りは下で書き戻す。
+    let from = (s.top + page - 1) & !(page - 1);
+    if cur_top > from {
+        unsafe { madvise((base + from) as *mut _, ((cur_top + page - 1) & !(page - 1)) - from, 4) };
+    }
+    let sfrom = ((s.top >> 7) + 1 + page - 1) & !(page - 1);
+    let scur = ((cur_top >> 7) + 1 + page - 1) & !(page - 1);
+    if scur > sfrom {
+        unsafe { madvise((sh + sfrom) as *mut _, scur - sfrom, 4) };
+    }
+    unsafe {
+        let tail = (from.min(cur_top)).saturating_sub(s.top);
+        std::ptr::write_bytes((base + s.top) as *mut u8, 0, tail);
+        std::ptr::copy_nonoverlapping(s.mem.as_ptr(), base as *mut u8, s.mem.len());
+        let stail = sfrom.saturating_sub(s.shadow.len());
+        std::ptr::write_bytes((sh + s.shadow.len()) as *mut u8, 0, stail.min(scur.saturating_sub(s.shadow.len())));
+        std::ptr::copy_nonoverlapping(s.shadow.as_ptr(), sh as *mut u8, s.shadow.len());
+    }
+    a.top = s.top;
+    a.quarantine = s.quarantine.clone();
+    a.qbytes = s.qbytes;
+    for (d, f) in a.free.iter_mut().zip(s.free.iter()) {
+        *d = f.clone();
+    }
+    DEAD_ANY.store(s.dead_any, Ordering::Relaxed);
 }

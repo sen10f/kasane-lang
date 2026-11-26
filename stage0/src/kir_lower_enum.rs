@@ -1193,8 +1193,31 @@ impl<'a> Lw<'a> {
                     self.branch(tag, (okb, vec![]), (stop, vec![]));
                 }
                 self.cur = Some(stop);
-                // 木走査は、この `?` で終わったテストを失敗にする (理由は呼び出し側が木走査で出す)。目印の panic にする。
-                let u = self.emit(Ty::Unit, Op::Panic { msg: crate::cli::TEST_TRY_MARK.to_string(), arg: None });
+                // この `?` で終わったテストは失敗。理由 (`returned Err(..)` / `returned None`、木走査と同じ文言) を stderr に書いて終わる。
+                let fat = self.aggs.borrow_mut().stderr_fat(self.p)?;
+                if let Ty::Res(_, ep) = vt {
+                    let file = self.def.file.clone();
+                    let esrc = match self.src_ty(&nf(e)[0])? {
+                        crate::types::Ty::Named(_, a, _) if a.len() == 2 => Some(a[1].clone()),
+                        _ => None,
+                    };
+                    let mut g = super::debug::Gen::new(self.p, self.aggs);
+                    let dbg = match &esrc {
+                        Some(es) => g.need(es, ep.ty(), &file).map_err(|w| format!("行 {}: `?` の Err の表示を下ろせない: {}", line, w))?,
+                        None => return self.err(line, "`?` の Err の型が分からない"),
+                    };
+                    for (f, c) in std::mem::take(&mut g.out) {
+                        self.coll.extra.push((f, c));
+                    }
+                    self.callees.insert(dbg.clone());
+                    let ev = self.emit(ep.ty(), Op::Payload(v));
+                    self.put_static(fat, "panic: returned Err(");
+                    self.call_debug(&dbg, ev);
+                    self.put_static(fat, ")\n");
+                } else {
+                    self.put_static(fat, "panic: returned None\n");
+                }
+                self.emit(Ty::Unit, Op::Abort);
                 self.terminate(Term::Unreachable);
                 self.cur = Some(okb);
                 let pv = match vt {

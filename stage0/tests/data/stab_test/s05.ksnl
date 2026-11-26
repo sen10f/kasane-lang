@@ -1,0 +1,21 @@
+fn t.d(n: u64) -> u64 uses [] panics may
+    if n == 0u64 {
+        return 0u64
+    }
+    t.d(n - 1u64) + 1u64
+end t.d
+
+fn t.main() -> () uses [alloc, env, io.console] panics may
+    let n = match std.env.arg(0usize) {
+        Some(s) => u64.parse(s).unwrap_or(0u64)
+        None => 0u64
+    }
+    let r = t.d(n)
+    let mut s = std.string.String.new()
+    s.push_u64(r).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.main
+
+test t.d.test_99999
+    core.check.eq(t.d(99_999u64), 99_999u64)
+end t.d.test_99999
