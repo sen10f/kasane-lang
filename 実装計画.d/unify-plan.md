@@ -18,3 +18,4 @@
 - 配列の要素・長さ (所有物を持つ要素、リテラルでない長さ) 5、クロージャ・関数値 (戻り値・引数・変数への代入) 6、`clone` 3、`Box::into_dyn` 2、`std.net` の追加分 2、構造体を値で渡す extern 2、そのほか 1 件ずつ 10 件。
 - 閉じた: `std.net` の追加分 (`NetSys` の全種類: タイムアウト・期限・shutdown・アドレス・resolve・UDP・read_try / write_try) を VM に足した (`vm/run/netsys.rs`)。`net_more` が VM で走る。
 - 退避にした: `std.net` の `*_async` は VM で止まる (実行器にリアクターが無い。`net_async` が 256 クライアントで止まった) ので、VM が理由つきで退避する。
+- `block_on_threads` の調べ (閉じていない): 守りを外して VM で走らせると、(1) 自分への `cancel` を拒まない (木走査は panic)、(2) 子タスクの `join_task` / panic / 入れ子 / `spawn_join_loop` で止まる。VM は 1 本のスレッドで、`ksn.thr.start` したワーカーは join まで走らない (協調) ので、`mt_begin` の後に呼び出し側が子タスクの完了を待つとき、ワーカーの代わりに自分が子タスクを回さないと進まない。実行器の KIR (`kir_suspend_exec*.kir`) は LLVM と共有なので、VM の `WAIT` / join の待ちで保留中のワーカーを 1 回回す形 (または MT のときの待ちを協調の `pick` に替える) が要る。設計してから別の束で行う。
