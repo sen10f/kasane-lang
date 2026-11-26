@@ -68,18 +68,30 @@ fn threads_semantics_vm_matches_native() {
     }
 }
 
-/// ワーカーが複数いることに頼る形 (あるタスクが `std.thread.sleep` で待つ間、別のタスクが進まねばならない)。ネイティブは動く。
-#[test]
-fn blocking_sleep_native_progresses() {
-    let (o, code) = native_run("vmmt_blk_nat", &data("vm_mt_blocking_sleep.ksnl"));
-    assert_eq!((o.trim(), code), ("8", Some(0)));
+/// ワーカーが複数いることに頼る形 (あるタスクが待つ・回る間、別のタスクが進まねばならない)。VM は協調ワーカーで切り替えるので、
+/// ネイティブと同じ出力・終了コードになる (木走査は 1 本のワーカーなので止まる)。
+fn vm_blocking(name: &str, file: &str, want: &str) {
+    let src = data(file);
+    let (o, code) = native_run(&format!("vmmt_{}_nat", name), &src);
+    assert_eq!((o.trim(), code), (want, Some(0)), "ネイティブ");
+    let t = Tmp::new(&format!("vmmt_{}_vm", name), &src);
+    let o = Command::new("timeout").arg("30").arg(exe()).args(["run", "--engine=vm"]).current_dir(&t.0).output().unwrap();
+    let err = text(&o.stderr);
+    assert!(!err.contains("vm engine skipped"), "VM が退避した: {}", err);
+    assert_eq!((text(&o.stdout).trim().to_string(), o.status.code()), (want.to_string(), Some(0)), "VM: {}", err);
 }
 
-/// 既知の差 (設計_VM一本化.md 6.3): VM (と木走査) は 1 本のワーカーなので、この形は止まる。本物のワーカースレッドを VM に足したら `--ignored` を外す。
 #[test]
-#[ignore = "VM はワーカー 1 本 (設計_VM一本化.md 6.3)。本物のワーカースレッドが要る"]
 fn blocking_sleep_vm_matches_native() {
-    let t = Tmp::new("vmmt_blk_vm", &data("vm_mt_blocking_sleep.ksnl"));
-    let o = Command::new("timeout").arg("20").arg(exe()).args(["run", "--engine=vm"]).current_dir(&t.0).output().unwrap();
-    assert_eq!((text(&o.stdout).trim().to_string(), o.status.code()), ("8".to_string(), Some(0)));
+    vm_blocking("blk_sleep", "vm_mt_blocking_sleep.ksnl", "8");
+}
+
+#[test]
+fn mutex_spin_poll_vm_matches_native() {
+    vm_blocking("blk_spin", "vm_mt_spin_poll.ksnl", "8");
+}
+
+#[test]
+fn many_waiters_on_a_mutex_flag_vm_matches_native() {
+    vm_blocking("blk_waiters", "vm_mt_waiters.ksnl", "63");
 }

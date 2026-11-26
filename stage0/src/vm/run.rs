@@ -12,6 +12,7 @@
 pub mod dbg;
 mod netsys;
 mod rtsys;
+mod cosched;
 
 use super::bc::*;
 use crate::interp::{py_float, py_float32};
@@ -115,6 +116,19 @@ pub struct Vm<'a> {
     mt: rtsys::MtCore,
     /// 非同期ソケットのリアクター (epoll)。
     io: rtsys::IoCore,
+    /// 協調ワーカー (`run/cosched.rs`)。`cos[0]` は呼び出しスレッド。実行中のワーカーの中身 (`regs` など) は `Vm` 自身が持つ。
+    cos: Vec<cosched::Co>,
+    cur_co: usize,
+    /// 状態が変わった回数 (unlock・send・眠りの起床・ワーカーの終わり)。待っている者が見直す契機。
+    progress: u64,
+    /// deadlock のとき、待っている者に本来の呼び出し (panic する) を実行させる印。
+    giveup: bool,
+    /// 回転 (原子操作・時計・Mutex) の回数。
+    pre: u64,
+    /// C のコールバックの入れ子の深さ (中では切り替えない)。
+    nested: u32,
+    /// `rt` の中で決まった切り替え。
+    sw: Option<(cosched::CoSt, cosched::Res)>,
     /// コールバックのフレームを積む位置 (`CallExt` の呼び出し元のフレームの上)。
     top: usize,
     /// 最後の panic が起きた (版, 関数番号, 命令番号)。
@@ -244,7 +258,7 @@ impl<'a> Vm<'a> {
         // C の関数を呼ぶプログラムは、C が返す番地も読むので、領域の外も通す (FFI は `[unsafe]` の許可の内側)。
         // 標準ライブラリ (`std.` / `core.`) の extern は数えない (安全なプログラムで網を切らない)。
         super::arena::set_permissive(prog.ext.iter().any(|f| !(f.fqn.starts_with("std.") || f.fqn.starts_with("core."))));
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), bad_cmds: Default::default(), children: Default::default(), next_fd: 3, mt: Default::default(), io: Default::default(), top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None, dbg: None, out_hook: None, panic_base: 0, deadlines: Default::default() }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), bad_cmds: Default::default(), children: Default::default(), next_fd: 3, mt: Default::default(), io: Default::default(), cos: vec![], cur_co: 0, progress: 0, giveup: false, pre: 0, nested: 0, sw: None, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None, dbg: None, out_hook: None, panic_base: 0, deadlines: Default::default() }
     }
 
     /// 最後の panic の位置 (`in <関数> at <ファイル>:<行>`。デバッガと同じ形)。行表がない関数では `None`。
@@ -424,7 +438,9 @@ impl<'a> Vm<'a> {
     /// その場合は、呼び出し元のフレームの上 (`self.top`) にフレームを積み、呼び出し元のフレーム列・領域には触らない。
     fn exec(&mut self, vi: u32, entry: u32, args: &[u64], nested: bool) -> Result<Outcome, String> {
         let saved = if nested { Some(std::mem::take(&mut self.frames)) } else { None };
+        self.nested += nested as u32;
         let r = self.exec_inner(vi, entry, args, nested);
+        self.nested -= nested as u32;
         if let Some(fr) = saved {
             self.frames = fr;
         }
@@ -467,6 +483,19 @@ impl<'a> Vm<'a> {
             ($t:expr, $s:expr, $v:expr) => {
                 wr(rp, $t, $s as usize, $v)
             };
+        }
+        macro_rules! switch {
+            ($st:expr, $at:expr) => {{
+                let at = $at as u32;
+                let (nv, nf, npc, nbase) = self.co_switch($st, (vi, fi, at, base as u32))?;
+                vi = nv;
+                prog = unsafe { &*self.vers[vi as usize] };
+                fi = nf;
+                f = &prog.funcs[fi as usize];
+                pc = npc as usize;
+                base = nbase as usize;
+                rp = unsafe { self.regs.as_mut_ptr().add(base) };
+            }};
         }
         macro_rules! tyof {
             ($i:expr) => {
@@ -797,6 +826,7 @@ impl<'a> Vm<'a> {
                 Ins::Ret { v } => {
                     let abase = match self.frames.last() {
                         Some(fr) => fr.abase,
+                        None if self.cur_co != 0 => 0,
                         None => top_abase,
                     };
                     if self.allocs.len() > abase {
@@ -807,6 +837,17 @@ impl<'a> Vm<'a> {
                     let n = f.ret_w as usize;
                     let src = unsafe { rp.add(*v as usize) };
                     match self.frames.pop() {
+                        None if self.cur_co != 0 => {
+                            // 協調ワーカーの入口が戻った: 終わりにして次へ。
+                            let (nv, nf, npc, nbase) = self.co_finish((vi, fi, pc as u32, base as u32))?;
+                            vi = nv;
+                            prog = unsafe { &*self.vers[vi as usize] };
+                            fi = nf;
+                            f = &prog.funcs[fi as usize];
+                            pc = npc as usize;
+                            base = nbase as usize;
+                            rp = unsafe { self.regs.as_mut_ptr().add(base) };
+                        }
                         None => {
                             self.result.clear();
                             self.result.extend_from_slice(unsafe { std::slice::from_raw_parts(src, n) });
@@ -1144,7 +1185,25 @@ impl<'a> Vm<'a> {
                 Ins::EnvArgCount { d } => {
                     w!(*d, self.args.len() as u64);
                 }
-                Ins::Rt { d, op, a, b } => self.rt(rp, *op, *d, *a, *b)?,
+                Ins::Rt { d, op, a, b } => {
+                    self.rt(rp, *op, *d, *a, *b)?;
+                    if let Some((st, res)) = self.sw.take() {
+                        match res {
+                            cosched::Res::Rewind => switch!(st, pc - 1),
+                            cosched::Res::Here => switch!(st, pc),
+                            cosched::Res::After => switch!(st, pc + 1),
+                        }
+                    }
+                }
+                Ins::Sched { k, a } => match self.sched(rp, *k, *a)? {
+                    cosched::SchedOut::Go => {}
+                    cosched::SchedOut::Skip => pc += 1,
+                    cosched::SchedOut::Sw(st, res) => match res {
+                        cosched::Res::Rewind => switch!(st, pc - 1),
+                        cosched::Res::Here => switch!(st, pc),
+                        cosched::Res::After => switch!(st, pc + 1),
+                    },
+                },
                 Ins::TimeNowNs { d } => {
                     // 実時刻 (UNIX 時刻からのナノ秒)。`i64` の bit 列で書く。失敗したら 0。
                     let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|x| x.as_nanos() as i64).unwrap_or(0);

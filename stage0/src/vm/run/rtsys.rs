@@ -4,6 +4,7 @@
 //! (設計_VM一本化.md 6 章)。
 
 use super::*;
+use super::cosched;
 use std::collections::VecDeque;
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
@@ -32,6 +33,27 @@ pub(in crate::vm) struct MtCore {
     idle: i64,
     idle_ep: u64,
     sess: u64,
+    /// `ksn.mt.reg` された協調ワーカーのスレッド項目の番号。
+    thr: Vec<usize>,
+}
+
+impl MtCore {
+    pub(in crate::vm) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    pub(in crate::vm) fn stopped(&self) -> bool {
+        self.stop
+    }
+    pub(in crate::vm) fn count_idle(&mut self, seen: u64) {
+        if self.idle_ep != seen {
+            self.idle = 0;
+            self.idle_ep = seen;
+        }
+        self.idle += 1;
+    }
+    pub(in crate::vm) fn idle_all(&self) -> bool {
+        self.idle >= self.n
+    }
 }
 
 static SESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -49,6 +71,8 @@ struct IoSlot {
     reg: bool,
     dir: usize,
     rdy: [bool; 2],
+    /// 待ちを置いた協調ワーカー (その者の実行器の表の番号 `task` が `fq` に積まれる)。
+    owner: usize,
 }
 
 /// 非同期ソケットのリアクター (epoll)。
@@ -57,14 +81,17 @@ pub(in crate::vm) struct IoCore {
     slots: std::collections::HashMap<i32, IoSlot>,
     nparked: i64,
     nfired: i64,
-    fq: VecDeque<i64>,
+    /// 協調ワーカーごとの、印が付いた待ちのタスク番号の列。
+    fq: Vec<VecDeque<i64>>,
+    /// 協調ワーカーごとの、待っている fd の数。
+    owned: Vec<i64>,
     tickn: u32,
     dl: Vec<i32>,
 }
 
 impl Default for IoCore {
     fn default() -> Self {
-        IoCore { ep: -1, slots: Default::default(), nparked: 0, nfired: 0, fq: VecDeque::new(), tickn: 0, dl: vec![] }
+        IoCore { ep: -1, slots: Default::default(), nparked: 0, nfired: 0, fq: vec![], owned: vec![], tickn: 0, dl: vec![] }
     }
 }
 
@@ -82,18 +109,44 @@ impl IoCore {
         if let Some(s) = self.slots.remove(&fd) {
             if s.st == 1 {
                 self.nparked -= 1;
+                self.dec_owned(s.owner);
             }
             if s.st >= 2 {
                 self.nparked -= 1;
                 self.nfired -= 1;
+                self.dec_owned(s.owner);
             }
         }
+    }
+
+    fn dec_owned(&mut self, o: usize) {
+        if let Some(c) = self.owned.get_mut(o) {
+            *c -= 1;
+        }
+    }
+
+    fn inc_owned(&mut self, o: usize) {
+        if self.owned.len() <= o {
+            self.owned.resize(o + 1, 0);
+        }
+        self.owned[o] += 1;
+    }
+
+    fn push_fq(&mut self, o: usize, task: i64) {
+        if task < 0 {
+            return;
+        }
+        if self.fq.len() <= o {
+            self.fq.resize_with(o + 1, VecDeque::new);
+        }
+        self.fq[o].push_back(task);
     }
 
     fn scan_dl(&mut self, now: Instant, best: &mut Option<Instant>) -> i64 {
         let mut got = 0;
         let list = std::mem::take(&mut self.dl);
         let mut keep = vec![];
+        let mut pushes = vec![];
         for fd in list {
             let Some(s) = self.slots.get_mut(&fd) else { continue };
             let Some(at) = s.at else { continue };
@@ -103,10 +156,8 @@ impl IoCore {
             if at <= now {
                 s.st = 3;
                 got += 1;
+                pushes.push((s.owner, s.task));
                 self.nfired += 1;
-                if s.task >= 0 {
-                    self.fq.push_back(s.task);
-                }
                 continue;
             }
             if best.map_or(true, |b| at < b) {
@@ -115,6 +166,9 @@ impl IoCore {
             keep.push(fd);
         }
         self.dl = keep;
+        for (o, t) in pushes {
+            self.push_fq(o, t);
+        }
         got
     }
 }
@@ -160,6 +214,7 @@ impl<'a> Vm<'a> {
         let d = write as usize;
         let at = self.io_deadline(vfd, write);
         let ep = self.io.ep;
+        let me = self.cur_co;
         let s = self.io.slots.entry(vfd).or_default();
         if !s.reg {
             let mut ev = libc::epoll_event { events: (libc::EPOLLIN | libc::EPOLLOUT | libc::EPOLLRDHUP | libc::EPOLLET) as u32, u64: vfd as u32 as u64 };
@@ -172,23 +227,80 @@ impl<'a> Vm<'a> {
             s.rdy[d] = false;
             return 0;
         }
-        if s.st == 0 {
-            self.io.nparked += 1;
-        }
+        let was = s.st;
         s.st = 1;
         s.dir = d;
         s.at = at;
+        s.owner = me;
+        if was == 0 {
+            self.io.nparked += 1;
+            self.io.inc_owned(me);
+        }
         if at.is_some() {
             self.io.dl.push(vfd);
         }
         1
     }
 
+    pub(super) fn io_pending_any(&self) -> bool {
+        self.io.nparked > 0
+    }
+
+    /// 最大 `d` だけ epoll で待つ (協調ワーカーの全員が待つとき)。
+    pub(super) fn io_poll_timeout(&mut self, d: Duration) {
+        self.io_wait(((d.as_millis() as i32) + 1).max(1));
+    }
+
+    /// `timeout` ミリ秒 (-1 は無限、0 は待たない) で epoll_wait して、印を付ける。新しく印が付いた数を返す。
+    fn io_wait(&mut self, timeout: i32) -> i64 {
+        if self.io.ep < 0 {
+            return 0;
+        }
+        let mut got = 0i64;
+        let mut evs = [libc::epoll_event { events: 0, u64: 0 }; 256];
+        let n = unsafe { libc::epoll_wait(self.io.ep, evs.as_mut_ptr(), 256, timeout) };
+        let mut pushes = vec![];
+        for k in 0..n.max(0) as usize {
+            let (e, id) = (evs[k].events, evs[k].u64);
+            let fd = id as u32 as i32;
+            let Some(s) = self.io.slots.get_mut(&fd) else { continue };
+            let hit = [(e & (libc::EPOLLIN | libc::EPOLLRDHUP | libc::EPOLLHUP | libc::EPOLLERR) as u32) != 0, (e & (libc::EPOLLOUT | libc::EPOLLHUP | libc::EPOLLERR) as u32) != 0];
+            for d in 0..2 {
+                if !hit[d] {
+                    continue;
+                }
+                if s.st == 1 && s.dir == d {
+                    s.st = 2;
+                    got += 1;
+                    pushes.push((s.owner, s.task));
+                } else {
+                    s.rdy[d] = true;
+                }
+            }
+        }
+        self.io.nfired += pushes.len() as i64;
+        for (o, t) in pushes {
+            self.io.push_fq(o, t);
+        }
+        if !self.io.dl.is_empty() && self.io.nparked > self.io.nfired {
+            let mut none = None;
+            got += self.io.scan_dl(Instant::now(), &mut none);
+        }
+        got
+    }
+
     fn io_poll(&mut self, block: u32) -> u64 {
         if self.io.ep < 0 || self.io.nparked == 0 {
             return 0;
         }
-        if block == 0 {
+        // 協調ワーカーが 2 本以上いるとき: ほかに走れる者がいれば待たずに見るだけにして、何も無ければ譲る。
+        let coop = self.coop();
+        let mut block = block;
+        let mut yield_after = false;
+        if coop && block != 0 && self.others_runnable() {
+            block = 0;
+            yield_after = true;
+        } else if block == 0 {
             self.io.tickn = self.io.tickn.wrapping_add(1);
             if self.io.tickn & 7 != 0 {
                 return 0;
@@ -197,9 +309,15 @@ impl<'a> Vm<'a> {
         let mut got = 0i64;
         let mut timeout: i32 = 0;
         if block != 0 {
-            let mut best = None;
+            let mut best = self.earliest_sleep();
             if !self.io.dl.is_empty() {
-                got += self.io.scan_dl(Instant::now(), &mut best);
+                let mut b2 = None;
+                got += self.io.scan_dl(Instant::now(), &mut b2);
+                if let Some(b) = b2 {
+                    if best.map_or(true, |x| b < x) {
+                        best = Some(b);
+                    }
+                }
             }
             if got == 0 {
                 timeout = match best {
@@ -215,32 +333,9 @@ impl<'a> Vm<'a> {
                 };
             }
         }
-        let mut evs = [libc::epoll_event { events: 0, u64: 0 }; 256];
-        let n = unsafe { libc::epoll_wait(self.io.ep, evs.as_mut_ptr(), 256, timeout) };
-        for k in 0..n.max(0) as usize {
-            let (e, id) = (evs[k].events, evs[k].u64);
-            let fd = id as u32 as i32;
-            let Some(s) = self.io.slots.get_mut(&fd) else { continue };
-            let hit = [(e & (libc::EPOLLIN | libc::EPOLLRDHUP | libc::EPOLLHUP | libc::EPOLLERR) as u32) != 0, (e & (libc::EPOLLOUT | libc::EPOLLHUP | libc::EPOLLERR) as u32) != 0];
-            for d in 0..2 {
-                if !hit[d] {
-                    continue;
-                }
-                if s.st == 1 && s.dir == d {
-                    s.st = 2;
-                    got += 1;
-                    self.io.nfired += 1;
-                    if s.task >= 0 {
-                        self.io.fq.push_back(s.task);
-                    }
-                } else {
-                    s.rdy[d] = true;
-                }
-            }
-        }
-        if !self.io.dl.is_empty() && self.io.nparked > self.io.nfired {
-            let mut none = None;
-            got += self.io.scan_dl(Instant::now(), &mut none);
+        got += self.io_wait(timeout);
+        if got == 0 && yield_after {
+            self.sw = Some((cosched::CoSt::Run, cosched::Res::Here));
         }
         got as u64
     }
@@ -269,10 +364,10 @@ impl<'a> Vm<'a> {
                 m.idle = 0;
                 m.idle_ep = 0;
                 m.sess = next_sess();
-                // VM のワーカーは呼び出しスレッド 1 本だけ (補助のワーカーは起こさない): 全員待ちの数 `n` は 1。
-                m.n = 1;
+                m.thr.clear();
+                m.n = n.max(1);
                 m.on = n > 1;
-                res = Some(if m.on { 1 } else { 0 });
+                res = Some(if m.on { n as u64 } else { 0 });
             }
             Rt::MtOn => res = Some(self.mt.on as u64),
             Rt::MtPush => {
@@ -344,37 +439,26 @@ impl<'a> Vm<'a> {
                 self.mt.items[i].fp = 0;
             }
             Rt::MtEpoch => res = Some(self.mt.epoch + 1),
-            Rt::MtSleep => {
-                let seen = ra();
-                let m = &mut self.mt;
-                let mut r = 0u64;
-                if m.epoch + 1 == seen && !m.stop {
-                    if m.idle_ep != seen {
-                        m.idle = 0;
-                        m.idle_ep = seen;
-                    }
-                    m.idle += 1;
-                    // 呼び出しスレッドが唯一のワーカー: 出来事が起きないまま眠れば、二度と起きない (全員待ち)。
-                    r = 3;
-                }
-                if r == 0 && m.stop {
-                    r = 2;
-                }
-                res = Some(r);
-            }
+            Rt::MtSleep => match self.mt_sleep(ra()) {
+                Some(r) => res = Some(r),
+                None => self.sw = Some((cosched::CoSt::MtIdle(ra()), cosched::Res::Rewind)),
+            },
             Rt::MtStop => {
                 self.mt.stop = true;
                 self.mt.epoch += 1;
             }
             Rt::MtStopped => res = Some(self.mt.stop as u64),
             Rt::MtUnfinished => res = Some(self.mt.unfinished as u64),
-            Rt::MtReg => {}
-            Rt::MtNthr => res = Some(0),
-            Rt::MtThr => res = Some(0),
+            Rt::MtReg => self.mt.thr.push(ra() as usize),
+            Rt::MtNthr => res = Some(self.mt.thr.len() as u64),
+            Rt::MtThr => res = Some(self.mt.thr.get(ra() as usize).copied().unwrap_or(0) as u64),
             Rt::MtEnd => {
                 self.mt.items.clear();
                 self.mt.q.clear();
                 self.mt.on = false;
+                if self.cur_co == 0 {
+                    self.cos.truncate(1);
+                }
             }
             Rt::Session => {
                 if self.mt.on {
@@ -395,15 +479,21 @@ impl<'a> Vm<'a> {
             Rt::IoTake => {
                 let fd = ra() as u32 as i32;
                 let mut r = 0;
+                let mut dec = None;
                 if let Some(s) = self.io.slots.get_mut(&fd) {
                     if s.st != 0 {
                         r = (s.st == 3) as u64;
-                        if s.st >= 2 {
-                            self.io.nfired -= 1;
-                        }
-                        self.io.nparked -= 1;
+                        let fired = s.st >= 2;
                         s.st = 0;
+                        dec = Some((s.owner, fired));
                     }
+                }
+                if let Some((o, fired)) = dec {
+                    if fired {
+                        self.io.nfired -= 1;
+                    }
+                    self.io.nparked -= 1;
+                    self.io.dec_owned(o);
                 }
                 res = Some(r);
             }
@@ -413,9 +503,9 @@ impl<'a> Vm<'a> {
                     s.task = rb() as i64;
                 }
             }
-            Rt::IoNfired => res = Some(!self.io.fq.is_empty() as u64),
-            Rt::IoNext => res = Some(self.io.fq.pop_front().unwrap_or(0) as u64),
-            Rt::IoPending => res = Some((self.io.nparked > 0) as u64),
+            Rt::IoNfired => res = Some(self.io.fq.get(self.cur_co).map_or(false, |q| !q.is_empty()) as u64),
+            Rt::IoNext => res = Some(self.io.fq.get_mut(self.cur_co).and_then(|q| q.pop_front()).unwrap_or(0) as u64),
+            Rt::IoPending => res = Some((self.io.owned.get(self.cur_co).copied().unwrap_or(0) > 0) as u64),
         }
         if let Some(v) = res {
             unsafe { *rp.add(d as usize) = v };

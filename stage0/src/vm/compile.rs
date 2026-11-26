@@ -628,6 +628,10 @@ impl<'a> Fc<'a> {
                         return Ok(());
                     }
                 }
+                if let Some(k) = SchedK::of(callee) {
+                    let a = args.first().map_or(0, |v| self.s(*v));
+                    self.push(Ins::Sched { k, a });
+                }
                 let Some(&ci) = self.index.get(callee.as_str()) else {
                     return Err(format!("呼び先 {} がない", callee));
                 };
@@ -747,6 +751,9 @@ impl<'a> Fc<'a> {
                             return Err("VM の領域が足りない".into());
                         }
                         self.prog.globals.insert(name.clone(), p);
+                        if name.starts_with("ksn.task.") || name == "ksn.wrap.pend" {
+                            self.prog.tls.push((p, (*size as usize).max(1)));
+                        }
                         p
                     }
                 };

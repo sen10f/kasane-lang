@@ -293,6 +293,8 @@ pub enum Ins {
     TimeNowNs { d: S },
     /// 実行器の実行時の核 (`ksn.mt.*` / `ksn.io.*` / `ksn.task.session`。`run/rtsys.rs`)。引数は `a` `b` のスロット。
     Rt { d: S, op: Rt, a: S, b: S },
+    /// 協調ワーカー (`run/cosched.rs`) の切り替え点。直後の `Call` を実行する前に走り、切り替え・飛ばしを決める。
+    Sched { k: SchedK, a: S },
 
     // ---- std.net (kir_exec と同じ意味。ソケット表は `Vm` が持つ)
     NetListen { d: S, addr: S },
@@ -320,6 +322,40 @@ pub enum Ins {
     FsWrite { d: S, fd: S, buf: S, len: S },
     /// `std.rand` の OS の乱数 (`fatal`: `Rng.from_entropy` の致命的な形)。
     RandFill { d: S, buf: S, len: S, fatal: bool },
+}
+
+/// 協調ワーカーの切り替え点の種類 (直後の呼び出しの名前で決まる)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedK {
+    Sleep,
+    MLock,
+    RwRd,
+    RwWr,
+    Wait,
+    Join,
+    Start,
+    /// 状態が変わった印 (unlock・send など): 待っている者が見直す契機。
+    Prog,
+    /// 取りこぼしを防ぐ回転 (原子操作・時計): 一定回数ごとに他へ譲る。
+    Pre,
+}
+
+impl SchedK {
+    pub fn of(name: &str) -> Option<SchedK> {
+        Some(match name {
+            "ksn.time.sleep" => SchedK::Sleep,
+            "ksn.thr.mlock" => SchedK::MLock,
+            "ksn.thr.rwrd" => SchedK::RwRd,
+            "ksn.thr.rwwr" => SchedK::RwWr,
+            "ksn.chan.rt.wait" | "ksn.chan.rt.waitsend" => SchedK::Wait,
+            "ksn.thr.join" => SchedK::Join,
+            "ksn.thr.start" => SchedK::Start,
+            "ksn.thr.munlock" | "ksn.thr.rwunlock" | "ksn.chan.rt.unlock" | "ksn.chan.rt.unlock1" | "ksn.chan.rt.unlockall" | "ksn.chan.rt.unlockrecv" => SchedK::Prog,
+            "ksn.time.mono" => SchedK::Pre,
+            n if n.starts_with("ksn.atm.") => SchedK::Pre,
+            _ => return None,
+        })
+    }
 }
 
 /// 実行器の実行時の核の操作 (`sysrt.c` の `ksn_rt_sys_*` と対応)。
@@ -444,6 +480,8 @@ pub struct Prog {
     pub by_key: std::collections::HashMap<String, u32>,
     /// `global.bytes` の領域 (名前 → アドレス。プログラムごとに 1 つ、解放しない)。
     pub globals: std::collections::HashMap<String, usize>,
+    /// スレッドごとの大域 (`ksn.task.*`・`ksn.wrap.pend`) の (アドレス, 大きさ)。協調ワーカーの切り替えで入れ替える。
+    pub tls: Vec<(usize, usize)>,
     /// 呼び出しの深さの上限 (`Module::depth` から。0 は既定)。
     pub depth: u64,
 }
