@@ -151,7 +151,7 @@ fn inline_blocks(lines: Vec<String>) -> Vec<String> {
             rest = rc[b2 + 1..].iter().collect();
         }
         // 構造体リテラル・構造体パターン (直前の語が大文字始まり) と、`{ }` の後ろに続きがある形は触らない。
-        if last_ident(ptrim).chars().next().map_or(false, |c| c.is_uppercase()) || !matches!(rest.trim(), "" | ",") || ptrim.is_empty() {
+        if last_ident(ptrim).chars().next().map_or(false, |c| c.is_uppercase()) || !(matches!(rest.trim(), "" | ",") || (rest.trim_start().starts_with(')') && ptrim.ends_with("capture []"))) || ptrim.is_empty() {
             out.push(l);
             continue;
         }
@@ -795,6 +795,59 @@ fn unit_return(lines: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// E0052: 裸の `Vec` `String` `HashMap` `BTreeMap` `VecDeque` `Box` を完全な道筋へ (直し方は 1 つ。文字列・コメント・`.` の後は触らない)。
+fn bare_std_types(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|l| {
+            let t = l.trim_start();
+            if t.starts_with("//") || t.is_empty() {
+                return l;
+            }
+            let cs: Vec<char> = l.chars().collect();
+            let mut out = String::new();
+            let mut i = 0;
+            while i < cs.len() {
+                let c = cs[i];
+                if c == '"' || c == '\'' {
+                    let j = skip_lit(&cs, i);
+                    out.extend(&cs[i..j]);
+                    i = j;
+                } else if c == '/' && i + 1 < cs.len() && cs[i + 1] == '/' {
+                    out.extend(&cs[i..]);
+                    break;
+                } else if c.is_alphabetic() || c == '_' {
+                    let mut j = i;
+                    while j < cs.len() && (cs[j].is_alphanumeric() || cs[j] == '_') {
+                        j += 1;
+                    }
+                    let w: String = cs[i..j].iter().collect();
+                    let dotted = i > 0 && cs[i - 1] == '.';
+                    let full = if dotted {
+                        None
+                    } else {
+                        match w.as_str() {
+                            "Vec" => Some("std.vec.Vec"),
+                            "String" => Some("std.string.String"),
+                            "HashMap" => Some("std.collections.HashMap"),
+                            "BTreeMap" | "BtreeMap" => Some("std.collections.BtreeMap"),
+                            "VecDeque" => Some("std.collections.VecDeque"),
+                            "Box" => Some("std.boxed.Box"),
+                            _ => None,
+                        }
+                    };
+                    out.push_str(full.unwrap_or(&w));
+                    i = j;
+                } else {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+            out
+        })
+        .collect()
+}
+
 /// 生の文面にすべての表面の書き換えを、動かなくなるまで当てる。
 pub fn rewrite(text: &str) -> String {
     let mut cur = text.to_string();
@@ -813,6 +866,7 @@ pub fn rewrite(text: &str) -> String {
         lines = unit_return(lines);
         lines = arm_assign(lines);
         lines = inline_blocks(lines);
+        lines = bare_std_types(lines);
         lines = ensure_end(lines);
         let next = lines.join("\n");
         if next == cur {

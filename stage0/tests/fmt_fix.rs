@@ -1367,3 +1367,26 @@ fn ksn_fix_unused_let_mut_with_later_assignment_is_left_alone() {
     assert!(!text(&o.stderr).contains("panicked"), "{}", text(&o.stderr));
     assert!(!text(&o.stdout).contains("E1101") && !text(&o.stderr).contains("E1101"), "{}{}", text(&o.stdout), text(&o.stderr));
 }
+
+#[test]
+fn ksn_fix_writes_bare_std_type_names_with_full_paths() {
+    let src = "fn t.main() -> usize uses [alloc] panics never\n    let mut v: Vec<u32> = Vec.new()\n    let s = String.new()\n    v.len() + s.len()\nend t.main\n";
+    let t = Tmp::new("fix_bare_std", src);
+    let o = run(&["fix"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("std.vec.Vec<u32>") && fixed.contains("std.string.String.new()"), "{}", fixed);
+    let c = run(&["check"], &t.0);
+    assert!(!text(&c.stdout).contains("E0052") && !text(&c.stderr).contains("E0052"), "{}{}", text(&c.stdout), text(&c.stderr));
+}
+
+#[test]
+fn ksn_fix_splits_a_one_line_closure_body() {
+    let src = "fn t.main() -> u32 uses [alloc] panics never\n    let mut v = std.vec.Vec.new()\n    v.push(1u32)\n    v.sort_by(fn(a: &u32, b: &u32) -> core.cmp.Ordering capture [] { b.cmp(a) })\n    0u32\nend t.main\n";
+    let t = Tmp::new("fix_closure_inline", src);
+    let o = run(&["fix"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let c = run(&["check"], &t.0);
+    let all = format!("{}{}", text(&c.stdout), text(&c.stderr));
+    assert!(!all.contains("E0056") && !all.contains("E0052"), "{}", all);
+}
