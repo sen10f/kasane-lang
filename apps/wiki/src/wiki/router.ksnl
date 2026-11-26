@@ -11,8 +11,8 @@ type wiki.router.Reply pub
     status: u16 pub
 end wiki.router.Reply
 
-fn wiki.router.edit_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mut std.vec.Vec<std.string.String>, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand] panics never
-    let token = csrf.generate_token(csrf_tokens)?
+fn wiki.router.edit_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mut wiki.csrf.CsrfManager, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand] panics never
+    let token = csrf_tokens.generate_token()?
     let content = match page_store.load_latest(name) {
         Some(c) => c
         None => std.string.String.from_str("")?
@@ -65,8 +65,8 @@ fn wiki.router.list_pages(page_store: &mut wiki.store.PageStore) -> Result<wiki.
     })
 end wiki.router.list_pages
 
-fn wiki.router.new_page(csrf_tokens: &mut std.vec.Vec<std.string.String>) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, rand] panics never
-    let token = csrf.generate_token(csrf_tokens)?
+fn wiki.router.new_page(csrf_tokens: &mut wiki.csrf.CsrfManager) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, rand] panics never
+    let token = csrf_tokens.generate_token()?
     let body = html.edit_form("New Page", "", token.as_str())?
     let location = wiki.router.empty()
     Ok(wiki.router.Reply {
@@ -145,7 +145,7 @@ fn wiki.router.reply(status: u16, body: std.string.String, location: std.string.
     }
 end wiki.router.reply
 
-fn wiki.router.route(page_store: &mut wiki.store.PageStore, method: &str, path: &str, body: &str, csrf_tokens: &mut std.vec.Vec<std.string.String>) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand] panics never pub
+fn wiki.router.route(page_store: &mut wiki.store.PageStore, method: &str, path: &str, body: &str, csrf_tokens: &mut wiki.csrf.CsrfManager) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand] panics never pub
     let path_heap = std.string.String.from_str(path)?
     let (path_part, query) = match path_heap.as_str().split_once("?") {
         Some(pair) => pair
@@ -255,12 +255,12 @@ fn wiki.router.route(page_store: &mut wiki.store.PageStore, method: &str, path: 
     wiki.router.error_reply(405u16, "method not allowed")
 end wiki.router.route
 
-fn wiki.router.save_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mut std.vec.Vec<std.string.String>, name: &str, body: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
+fn wiki.router.save_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mut wiki.csrf.CsrfManager, name: &str, body: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
     let token = match wiki.router.query_param(body, "csrf") {
         Some(t) => t
         None => return wiki.router.error_reply(403u16, "csrf token missing")
     }
-    if !csrf.verify_token(csrf_tokens, token.as_str()) {
+    if !csrf_tokens.verify_token(token.as_str()) {
         return wiki.router.error_reply(403u16, "csrf token invalid")
     }
     let content = match wiki.router.query_param(body, "content") {
@@ -346,11 +346,14 @@ fn wiki.router.show_version(page_store: &mut wiki.store.PageStore, name: &str, v
     })
 end wiki.router.show_version
 
-fn wiki.router.test_csrf() -> std.vec.Vec<std.string.String> uses [] panics never pub
-    std.vec.Vec.new()
+fn wiki.router.test_csrf() -> wiki.csrf.CsrfManager uses [] panics may pub
+    match csrf.CsrfManager.new() {
+        Ok(m) => m
+        Err(_e) => core.panic.panic("csrf")
+    }
 end wiki.router.test_csrf
 
-fn wiki.router.test_route(page_store: &mut wiki.store.PageStore, csrf_tokens: &mut std.vec.Vec<std.string.String>, method: &str, path: &str, body: &str) -> wiki.router.Reply uses [alloc, io.fs, rand] panics may pub
+fn wiki.router.test_route(page_store: &mut wiki.store.PageStore, csrf_tokens: &mut wiki.csrf.CsrfManager, method: &str, path: &str, body: &str) -> wiki.router.Reply uses [alloc, io.fs, rand] panics may pub
     match wiki.router.route(page_store, method, path, body, csrf_tokens) {
         Ok(r) => r
         Err(_e) => core.panic.panic("route failed")
@@ -533,7 +536,7 @@ test wiki.router.route.test_save_page
     let mut csrf_tokens = wiki.router.test_csrf()
     let form_resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/new", "")
     core.check.eq(form_resp.status, 200u16)
-    let token = csrf.generate_token(&mut csrf_tokens)?
+    let token = csrf_tokens.generate_token()?
     let mut body = std.string.String.from_str("csrf=")?
     core.mem.drop(body.push_str(token.as_str())?)
     core.mem.drop(body.push_str("&content=Hello+World")?)
@@ -570,7 +573,7 @@ end wiki.router.route.test_save_page_missing_csrf
 test wiki.router.route.test_save_page_then_show
     let mut page_store = wiki.router.test_store()
     let mut csrf_tokens = wiki.router.test_csrf()
-    let token = csrf.generate_token(&mut csrf_tokens)?
+    let token = csrf_tokens.generate_token()?
     let mut body = std.string.String.from_str("csrf=")?
     core.mem.drop(body.push_str(token.as_str())?)
     core.mem.drop(body.push_str("&content=# New Page\n")?)

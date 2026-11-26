@@ -1,5 +1,7 @@
 # apps/notes 摩擦記録
 
+> **再確認 (2026-11-26、dev/plan `0cec620a`)**: 2 件とも解消 (derive の `to_json`、`&self.notes` を返す形が通る)。`note_to_json` を `to_json` に、`get`/`next_id` を `iter` に戻した。`ksn test --both` 9 件 llvm 一致。 詳細は `apps/FRICTION_recheck.md`。
+
 本パッケージ (`apps/notes`, CLI ノート帳) を実装する上で、想定通りに動作しなかった点や回避策を要した点を記録する。
 
 ## 摩擦の件数: 2 件 (処理系の不足)
