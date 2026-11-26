@@ -192,4 +192,5 @@
 | E9022 | ○ | — | ○ | 未作成: パッケージ・依存・ツールのエラーで、`ksn check` の 1 ファイルの diag ハーネスからは出せない |
 | E9024 | ○ | — | ○ | 未作成: パッケージ・依存・ツールのエラーで、`ksn check` の 1 ファイルの diag ハーネスからは出せない (`tests/native_link.rs` の `native_needs_unsafe_ack` で検査) |
 | E9030 | ○ | — | × | 未作成: パッケージ・依存・ツールのエラーで、`ksn check` の 1 ファイルの diag ハーネスからは出せない |
+| E9031 | ○ | — | × | 未作成: パッケージ・依存・ツールのエラーで、`ksn check` の 1 ファイルの diag ハーネスからは出せない (`tests/stab_cli_io.rs` の `debug_refuses_hand_written_drop` で検査) |
 | E9040 | ○ | — | ○ | 未作成: パッケージ・依存・ツールのエラーで、`ksn check` の 1 ファイルの diag ハーネスからは出せない |
