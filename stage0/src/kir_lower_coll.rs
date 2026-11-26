@@ -145,6 +145,8 @@ pub(crate) struct CollCx {
     pub(crate) scrut_src: Option<(Ty, Src)>,
     /// `for (i, x) in core.iter.enumerate(IT)` の添字の名前 (`Some(None)` は `_`)。`counted` が最初の 1 回で使う。
     pub(crate) for_index: Option<Option<String>>,
+    /// `for (a, b) in v`: 要素に当てる組のパターン (`counted` が束縛する)。
+    pub(crate) for_pat: Option<V>,
     /// いま判定している `match` の腕のパターンの束縛名 → 型 (`scrut_src` をパターンに沿って分解したもの)。
     /// `&str` などの借用の束縛に種類 (`str` など) を結び付けるため。腕の判定の間だけ入れ、済んだら空にする。
     pub(crate) pat_srcs: BTreeMap<String, Src>,
@@ -3155,6 +3157,14 @@ pub(super) fn unhex(s: &str) -> Vec<u8> {
 
 /// `for PAT in IT BODY`。`IT` は `core.iter.range(a, b)` か、要素型の分かる Vec の変数。
 pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
+    let r = for_expr_in(lw, e);
+    if lw.coll.for_pat.take().is_some() && r.is_ok() {
+        return lw.err(nline(e), "for の組のパターンは、要素が所有物でない配列・スライス・Vec を回す形だけ段階 1 の対象");
+    }
+    r
+}
+
+fn for_expr_in(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let f = nf(e);
     let line = nline(e);
     // `for (i, x) in core.iter.enumerate(IT) BODY`: 添字 `i` は数え上げの添字そのもの (0 から 1 ずつ)。`for x in IT` として下ろし、
@@ -3188,6 +3198,10 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         // 組などの形のパターン (`for (k, v) in m.iter()`): 反復子の `next` の結果を分解する。
         _ => match user_iter_for(lw, e, &f[0], &f[1], &f[2]) {
             Some(r) => return r,
+            None if nname(&f[0]) == "PTuple" && lw.coll.for_pat.is_none() => {
+                lw.coll.for_pat = Some(f[0].clone());
+                None
+            }
             None => return lw.err(line, "for の変数はただの名前か _ だけ段階 1 の対象"),
         },
     };
@@ -3661,6 +3675,17 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
     let depth = lw.scopes.len() - 1;
     if let Some(Some(ix)) = lw.coll.for_index.take() {
         lw.bind_let(&ix, hp[0], c.ity);
+    }
+    if let Some(p) = lw.coll.for_pat.take() {
+        let Some((base, ety)) = c.elem else { return lw.err(_line, "for の組のパターンの対象が範囲 (range) でない") };
+        if owns_heap(lw, ety) || c.by_mut {
+            return lw.err(_line, "for の組のパターンは、要素が所有物でない値か共有の借用だけ段階 1 の対象");
+        }
+        let addr = elem_addr_from_base(lw, base, hp[0], ety)?;
+        let v = load_elem(lw, addr, ety);
+        for (n, bv, bt) in lw.pat(&p, v, ety, None)? {
+            lw.bind_let(&n, bv, bt);
+        }
     }
     if let Some(n) = &name {
         match c.elem {
