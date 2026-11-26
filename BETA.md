@@ -115,6 +115,7 @@ ksn build --release
 - ネイティブ生成に下ろせない機能（一部の `std.tls`・FFI など）はインタプリタ同梱バンドルに退避し、`ksn build --release` では E9040 で失敗します（`--release --allow-bundle` で退避を許可）。
 - 手書きの `impl core.ops.Drop` の `drop` は、スコープの終わり（宣言の逆順）・再代入・`core.mem.drop`・文の終わりの一時値で呼ばれます（`ksn run` / `ksn test` / ネイティブで同じ。実行は KIR で、手書きの `Drop` を持つパッケージは木走査へ退避せず、KIR に下ろせなければ理由付きで失敗します）。KIR に下ろせない形が含まれる場合の失敗は `docs/known-limitations.md` を参照してください。
 - `ksn fix` が自動修正できるのは一部の診断（E1108 / E1020 / E2041 / E2042）のみです。
+- スレッドを作れずに `std.thread.spawn` が失敗したとき、ネイティブと VM は `Err(SpawnError)` を返さず、`spawn failed: ...` の panic でプログラムを止めます (終了コード 101)。クロージャを返せるのは木走査 (`--engine=tree`) だけです。
 - `dyn` 型・クロージャの C 関数ポインタ渡し（`core.ffi.trampoline` が必要）など、一部は未対応または制限あり。
 
 ## 7. 問題の報告方法

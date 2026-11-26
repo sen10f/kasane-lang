@@ -194,7 +194,8 @@ pub(super) fn spawn_call(lw: &mut Lw, _e: &V, segs: &[String], args: &[V], line:
         let d1 = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: dv, b: one });
         lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: ent, off: DEPTH_OFF, v: d1 });
     }
-    rt_call(lw, TSTART, vec![idx], Ty::Unit);
+    // 作れなかったとき、ネイティブの `ksn.thr.start` が `spawn failed: <errno の文面>` を出して 101 で終わる (クロージャを返せないため)。
+    rt_call(lw, TSTART, vec![idx], Ty::U8);
 
     // アロケータの値は KIR では使わない。`std.alloc.System` は `{ id: u8 }` のゼロ埋めを代用する。
     let result_ty = Ty::Res(Pay::of(hty).expect("JoinHandle がペイロードになれない"), Pay::of(spawnerr_ty).expect("SpawnError がペイロードになれない"));
@@ -418,7 +419,13 @@ pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
         ok.push((mk(b.build(TENT, &[], Ty::Ptr)), none()));
     }
     // start(i) / release(i) / lock() / unlock(): 協調実行では何もしない。
-    for (name, params) in [(TSTART, vec![Ty::Usize]), (TREL, vec![Ty::Usize]), (LOCK, vec![]), (UNLOCK, vec![]), (MINIT, vec![Ty::Ptr])] {
+    {
+        let mut b = Fb::new(&[Ty::Usize]);
+        let z = b.emit(Ty::U8, Op::Const(0));
+        b.term(Term::Ret(z));
+        ok.push((mk(b.build(TSTART, &[], Ty::U8)), none()));
+    }
+    for (name, params) in [(TREL, vec![Ty::Usize]), (LOCK, vec![]), (UNLOCK, vec![]), (MINIT, vec![Ty::Ptr])] {
         let mut b = Fb::new(&params);
         let u = b.emit(Ty::Unit, Op::Const(0));
         b.term(Term::Ret(u));

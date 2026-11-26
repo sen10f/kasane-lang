@@ -90,7 +90,14 @@ fn main() {
         let child = std::thread::Builder::new().stack_size(MAIN_STACK).spawn(move || {
             interp::set_stack_floor(MAIN_STACK);
             cli::main_cli(rest)
-        }).unwrap();
+        });
+        let child = match child {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("ksn: cannot create the runner thread: {}", e);
+                std::process::exit(2);
+            }
+        };
         std::process::exit(child.join().unwrap_or(2));
     }
     dev_main(args);

@@ -20,7 +20,7 @@ fn ksn.task.mt_begin key=ksn.task.mt_begin uses=[alloc] panics=may stack=- ret=u
     %12: u64 = const.u64 @WTAG@
     %13: unit = mem.store.u64 %11 +8, %12
     %14: unit = call ksn.mt.reg(%10)
-    %15: unit = call ksn.thr.start(%10)
+    %15: u8 = call ksn.thr.start(%10)
     %16: usize = const.usize 1
     %17: usize = add.usize.wrap %8, %16
     br b3(%17, %9)

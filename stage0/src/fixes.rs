@@ -481,6 +481,18 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
                 }
                 if let Some(c) = re.captures(text) {
                     let m = c.get(2).unwrap();
+                    // 後ろに代入 (`name = ..`) があると `_name` への改名だけでは通らない (E1101)。直さない。
+                    let asg = Regex::new(&format!(r"\b{}(\.[a-z0-9_]+)*\s*=[^=]", regex::escape(name))).unwrap();
+                    let mut k = n + 1;
+                    while let Some(t) = get(k) {
+                        if t.starts_with("end ") {
+                            break;
+                        }
+                        if asg.is_match(t) {
+                            return vec![];
+                        }
+                        k += 1;
+                    }
                     return vec![span(file, n, text, m.start(), m.end(), format!("_{}", name))];
                 }
                 n += 1;
