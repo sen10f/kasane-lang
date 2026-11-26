@@ -462,7 +462,7 @@ fn ksnh_pair_check_strip_and_line_numbers() {
 /// 依存の `.ksnh` はコードとして読まない (動くのは `.ksnl` だけ)。コメントを除いて `.ksnl` と食い違えば E9050 で止める
 /// (利用者の決定 S1c、2026-11-21)。`.ksnl` だけの依存は問題ない。
 #[test]
-fn ksnh_in_a_dependency_is_only_compared_never_read() {
+fn ksnh_in_a_dependency_is_ignored() {
     let t = Tmp::new("ksnh_dep", &main_wrap("", ""));
     let dep = t.0.join("dep");
     fs::create_dir_all(dep.join("src")).unwrap();
@@ -474,20 +474,11 @@ fn ksnh_in_a_dependency_is_only_compared_never_read() {
     // `.ksnl` だけの依存は通る。
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
-    // (b) 食い違う `.ksnh` は E9050 (依存名とファイルを示す)。check も run も止まる。
+    // 依存の `.ksnh` は食い違っていても (`.ksnh` だけでも) 読まれず検査されない (2026-11-26)。
     fs::write(dep.join("src/dep.ksnh"), "// broken: not matching\nfn dep.one() -> u32 uses [] panics never pub\n    2u32\nend dep.one\n").unwrap();
-    let o = run(&["check", "--json"], &t.0);
-    let out = text(&o.stdout);
-    assert_eq!(o.status.code(), Some(1), "{}", out);
-    assert!(codes(&out).iter().any(|c| c == "E9050") && out.contains("dependency `dep`") && out.contains("dep/src/dep.ksn"), "{}", out);
-    assert_ne!(run(&["run"], &t.0).status.code(), Some(0));
-    // (a) コメントだけが違う `.ksnh` は通る。`.ksnh` は読まれず、走るのは `.ksnl` (`.ksnh` だけの定義は存在しない)。
-    fs::write(dep.join("src/dep.ksnh"), "// a comment\nfn dep.one() -> u32 uses [] panics never pub\n    1u32\nend dep.one\n").unwrap();
-    let o = run(&["check", "--json"], &t.0);
-    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
     fs::write(dep.join("src/extra.ksnh"), "// only a .ksnh\nfn dep.extra() -> u32 uses [] panics never pub\n    3u32\nend dep.extra\n").unwrap();
     let o = run(&["check", "--json"], &t.0);
-    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E9050"), "{}", text(&o.stdout));
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
 }
 
 #[test]
