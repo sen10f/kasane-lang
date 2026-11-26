@@ -1,4 +1,6 @@
-# BETA.md — Kasane (ksn) 閉じたベータ版 0.1.0-beta.1 向け案内
+# ALPHA.md — Kasane (ksn) 公開アルファ版 0.1.0-alpha.1 向け案内
+
+> これはアルファ版です。言語の仕様・標準ライブラリ・道具は、アルファの間に互換性の無い形で変わることがあります（版が `0.x` の間の決まり、仕様 10 章の互換性の行）。Edition 1 の凍結（5.4.1「Edition 1 の範囲」）は、アルファで寄せられた声を受けてから行います。
 
 ## 1. Kasane とは
 
@@ -41,7 +43,7 @@ ksn --version   # ksn 0.1.0
 ### 4.1 パッケージを作る
 
 ```bash
-mkdir -p /tmp/beta_try && cd /tmp/beta_try
+mkdir -p /tmp/alpha_try && cd /tmp/alpha_try
 ksn new hello && cd hello
 ```
 
@@ -103,7 +105,7 @@ ksn build --release
 - パッケージの API 文書: `ksn doc`（`target/doc/index.html`）、標準ライブラリ: `ksn doc --std`
 - 実装の現状・制限: `実装計画.md`
 
-## 6. 既知の制限（ベータ時点）
+## 6. 既知の制限（アルファ時点）
 
 - `ksn run` / `ksn test` の既定の実行系は VM（KIR → バイトコード）です。VM に下ろせない形は黙って木走査へ退避します。出力がおかしいときは `--engine=tree`（または `KSN_ENGINE=tree`）と比べて知らせてください。`--watch` は木走査です。VM は起動時に大きな仮想領域を予約するので、`ulimit -v` を付けるなら 8 GB 以上にしてください（それより小さいと、大きな入出力で `AllocError` の panic や木走査への退避になります）。標準出力は木走査・VM・ネイティブのどれも、1 行ごとに書き出します（大量に出すときは文字列にまとめてから 1 回で出すと速い）。
 - macOS でのホスト実行・ビルドは未対応。Windows ホストでの開発も未対応（Linux からのクロスビルドは可能）。

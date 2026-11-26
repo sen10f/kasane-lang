@@ -4,7 +4,7 @@
 # リリースアーカイブをダウンロードし、同じ場所にある SHA256SUMS で SHA-256 を検証して
 # ~/.local/bin/ksn にインストールする (sudo 不要)。
 #
-#   bash scripts/install.sh https://example.com/ksn-0.1.0-beta.1-x86_64-linux-gnu.tar.gz
+#   bash scripts/install.sh https://example.com/ksn-0.1.0-alpha.1-x86_64-linux-gnu.tar.gz
 set -euo pipefail
 
 [ "$#" -eq 1 ] || { echo "usage: $0 URL" >&2; exit 2; }

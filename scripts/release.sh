@@ -3,9 +3,9 @@
 #
 # リリース用のビルド済み ksn を dist/ に作成する。
 #
-#   bash scripts/release.sh 0.1.0-beta.1
-#   bash scripts/release.sh --target aarch64-unknown-linux-gnu 0.1.0-beta.1
-#   bash scripts/release.sh --target x86_64-pc-windows-gnu 0.1.0-beta.1
+#   bash scripts/release.sh 0.1.0-alpha.1
+#   bash scripts/release.sh --target aarch64-unknown-linux-gnu 0.1.0-alpha.1
+#   bash scripts/release.sh --target x86_64-pc-windows-gnu 0.1.0-alpha.1
 #
 # 作られるもの:
 #   dist/ksn-VERSION-<トリプル>.tar.gz   (Linux / macOS)

@@ -3,7 +3,7 @@
 
 Usage: python3 tests/doc_examples.py [--ksn /path/to/ksn] [file ...]
 
-Scans the given markdown files (default: BETA.md, README.md, チートシート.md,
+Scans the given markdown files (default: ALPHA.md, README.md, チートシート.md,
 docs/*.md). Every code fence whose info string is empty, `kasane` or `ksnl` and is
 not `ksnl fragment` is treated as a complete ksnl example: it is copied into a
 scratch package and `ksn check` (and `ksn fmt --check`) is run. Failures are
@@ -127,7 +127,7 @@ def main():
 
     files = args.files
     if not files:
-        files = ["BETA.md", "README.md", "チートシート.md"] + sorted(
+        files = ["ALPHA.md", "README.md", "チートシート.md"] + sorted(
             glob.glob("docs/*.md")
         )
 

@@ -12,7 +12,7 @@
 - 検査器（`ksn check`）、実行系（VM + LLVM ネイティブ）、`check` / `run` / `test` / `build` / `fmt` / `fix`、LSP
 - 言語仕様（構文・型・所有権・効果・正規形など）
 - コア標準ライブラリ（`core` / `alloc` / `std` のうち Edition 1 で確定した範囲）
-- 仕様書中「Edition 1 の範囲」節（`Kasane 簡易仕様書.md` 5.4.1）および `BETA.md` 第 8 節に記載の範囲
+- 仕様書中「Edition 1 の範囲」節（`Kasane 簡易仕様書.md` 5.4.1）および `ALPHA.md` 第 8 節に記載の範囲
 
 **実験的で Edition 1 の範囲外（凍結の対象外）：**
 - `ui/`（UI）、WASM SPA、パッケージレジストリ / `publish`、セルフホスト（stage1/stage2）、bindgen
@@ -26,7 +26,7 @@
 | 番 | 節 | 内容 | 状態 | 理由 |
 |---|---|---|---|---|
 | 1 | 8 章方針表 | 表の「状態」が「暫定」の 15 行。14 行は「確定してよい」（実装済み・オーナー決定済み）、1 行（ホットリロード）は未確定 | ほぼ done | 暫定のままでは契約として不完全。`docs/spec-provisional.md` に各行の検討メモを残す |
-| 2 | 5.4.1 Edition 1 の範囲 | 凍結対象・実験的対象を仕様に明記 | done | 5.4.1 を新設、`BETA.md` 第 8 節に追記 |
+| 2 | 5.4.1 Edition 1 の範囲 | 凍結対象・実験的対象を仕様に明記 | done | 5.4.1 を新設、`ALPHA.md` 第 8 節に追記 |
 | 3 | 5.1 副作用とpanic | `impl` のメソッド効果はトレイト宣言を超えてはならない。効果変数の「黙る」が健全か | open | 「黙る」を「エラー」に変えるか検討（段階 1-6 の成果待ち） |
 | 4 | 4.5 基本型 | `usize.MAX` / `BITS` 等の関数名は `core.num.usize` の規範シグネチャで固定済みか | done | 0.10.30 でターゲットの値に、`spec/stdlib/core/num.sig` に反映 |
 | 5 | 4.5 基本型 | `f32.rem` / `f64.rem` の丸め方（`remainder` か `fmod` か） | open | `spec/stdlib/core/num.sig` の実装で固定必須 |
@@ -171,4 +171,4 @@
 - `Edition1_凍結の点検.md` を v0.10.25 向けから v0.10.45 向けに書き直し。
 - 範囲を「検査器 + VM + LLVM（言語、コア std、check/run/test/build/fmt/fix/LSP）」に限定。ui/・WASM SPA・レジストリ/publish・セルフホスト・bindgen は実験的で範囲外。
 - 8 章方針表の 15 暫定行を `docs/spec-provisional.md` で検討。14 行を「確定してよい」、1 行（ホットリロード）を未確定（blocked）。
-- 仕様に 5.4.1「Edition 1 の範囲」を新設、`BETA.md` に第 8 節を追加。
+- 仕様に 5.4.1「Edition 1 の範囲」を新設、`ALPHA.md` に第 8 節を追加。

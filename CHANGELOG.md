@@ -2,7 +2,7 @@
 
 このファイルは Kasane のリリースごとの変更を記録します。形式は Keep a Changelog と Semantic Versioning に基づきます。
 
-## [0.1.0-beta.1] - 未リリース
+## [0.1.0-alpha.1] - 未リリース
 
 ### 実装計画 2.10系（新しい順）
 

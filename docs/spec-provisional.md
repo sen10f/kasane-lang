@@ -87,7 +87,7 @@ Kasane 簡易仕様書 v0.10.45（2026-11-26）の 8 章「各項目の方針」
 > スレッド＋チャネルのみ。Send/Sync（5.5）。非同期はv1後に再検討
 
 **実装の現状：**
-スレッド（`std.thread.spawn` / `join`）・チャネル（`channel` / `send` / `recv`）・`Send`/`Sync` は実装済み。非同期は `async`/`await` の構文ではなく、効果 `suspend`（`uses [suspend]`）として導入済み（5.6）。`async`/`await` は予約語のまま、構文として導入しない（5.6、決定ログ 8）。`std.thread.spawn` の失敗は現在 `spawn failed: ...` の panic で止まり、`Err(SpawnError<F>)` を返すのは木走査（`--engine=tree`）だけ（BETA.md 既知の制限）。
+スレッド（`std.thread.spawn` / `join`）・チャネル（`channel` / `send` / `recv`）・`Send`/`Sync` は実装済み。非同期は `async`/`await` の構文ではなく、効果 `suspend`（`uses [suspend]`）として導入済み（5.6）。`async`/`await` は予約語のまま、構文として導入しない（5.6、決定ログ 8）。`std.thread.spawn` の失敗は現在 `spawn failed: ...` の panic で止まり、`Err(SpawnError<F>)` を返すのは木走査（`--engine=tree`）だけ（ALPHA.md 既知の制限）。
 
 **オーナー決定（AGENTS.md）：**
 - 2026-11-20 夕方：非同期実行器の 2 段目はタスクを全スレッドで分け合う形（tokio 型、仕事の横取り。`Send` を求める）。
@@ -215,7 +215,7 @@ Kasane 簡易仕様書 v0.10.45（2026-11-26）の 8 章「各項目の方針」
 > `kasane.toml` と `kasane.lock`、内容ハッシュ、依存の版と最小レジストリ、ベンダリング標準（8.1）
 
 **実装の現状：**
-`kasane.toml`（`entry`、`edition`）と `kasane.lock`（版 2 / 3）は実装済み。`ksn new` / `ksn lock` / `ksn update` / `ksn vendor` が動作。内容ハッシュと依存の版（semver タグ、Git URL + コミットハッシュ）は検査対象。最小レジストリは `ksn publish --registry <URL>` でレジストリまたはパスへ公開。中央の公共パッケージレジストリはない（BETA.md）。
+`kasane.toml`（`entry`、`edition`）と `kasane.lock`（版 2 / 3）は実装済み。`ksn new` / `ksn lock` / `ksn update` / `ksn vendor` が動作。内容ハッシュと依存の版（semver タグ、Git URL + コミットハッシュ）は検査対象。最小レジストリは `ksn publish --registry <URL>` でレジストリまたはパスへ公開。中央の公共パッケージレジストリはない（ALPHA.md）。
 
 **オーナー決定（AGENTS.md）：**
 - 2026-11-26（S1c 置き換え）：公開するパッケージは `.ksnl` だけを持つ。依存の `.ksnh` は読まず E9050 の検査もしない。根のパッケージだけ E9050 を検査する。
@@ -371,7 +371,7 @@ Kasane 簡易仕様書 v0.10.45（2026-11-26）の 8 章「各項目の方針」
 > 外部面不変の関数本体変更のみ実行中に差し替え。ヘッダ・型定義・ジェネリック関数の変更は再起動
 
 **実装の現状：**
-`--watch` は木走査（BETA.md 既知の制限）。ホットリロードの実際の実装状況は不明（`ksn run --watch` や差し替えの動作確認が取れていない）。`ksn debug` / `ksn dap` はインタプリタ上のソースレベルデバッガで、手書きの `Drop` を持つパッケージは拒む（E9031）。
+`--watch` は木走査（ALPHA.md 既知の制限）。ホットリロードの実際の実装状況は不明（`ksn run --watch` や差し替えの動作確認が取れていない）。`ksn debug` / `ksn dap` はインタプリタ上のソースレベルデバッガで、手書きの `Drop` を持つパッケージは拒む（E9031）。
 
 **オーナー決定（AGENTS.md）：**
 - 2026-11-26 昼：木走査を捨てて VM に一本化。デバッガ・ホットリロードを VM へ。VM に下ろせない形を潰してから木走査を外す。

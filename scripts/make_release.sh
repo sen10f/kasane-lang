@@ -20,7 +20,7 @@ if [ -z "${KSN:-}" ]; then
   KSN="$REPO/stage0/target/x86_64-unknown-linux-gnu/release/ksn"
 fi
 KSN=$(readlink -f "$KSN")
-for f in "$KSN" "$REPO/LICENSE-APACHE" "$REPO/LICENSE-MIT" "$REPO/README.md" "$REPO/BETA.md"; do [ -e "$f" ] || { echo "無い: $f" >&2; exit 1; }; done
+for f in "$KSN" "$REPO/LICENSE-APACHE" "$REPO/LICENSE-MIT" "$REPO/README.md" "$REPO/ALPHA.md"; do [ -e "$f" ] || { echo "無い: $f" >&2; exit 1; }; done
 bad=$(ldd "$KSN" | grep -vE 'linux-vdso|libm\.so|libc\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s|ld-linux' || true)
 [ -z "$bad" ] || { echo "想定外の共有ライブラリ: $bad" >&2; exit 1; }
 need=$(objdump -T "$KSN" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1)
@@ -29,7 +29,7 @@ echo "必要な glibc: $need"
 name="ksn-$VER-x86_64-linux-gnu"; stage=$(mktemp -d /tmp/ksn_release_stage.XXXXXX)
 mkdir -p "$stage/$name" "$OUT"
 install -m 0755 "$KSN" "$stage/$name/ksn"
-cp "$REPO/LICENSE-APACHE" "$REPO/LICENSE-MIT" "$REPO/README.md" "$REPO/BETA.md" "$stage/$name/"
+cp "$REPO/LICENSE-APACHE" "$REPO/LICENSE-MIT" "$REPO/README.md" "$REPO/ALPHA.md" "$stage/$name/"
 [ -f "$REPO/INSTALL.txt" ] && cp "$REPO/INSTALL.txt" "$stage/$name/"
 python3 -I "$REPO/scripts/gen_third_party.py" "$stage/$name/THIRD_PARTY_LICENSES" ${LLVM_SRC:+"$LLVM_SRC"}
 echo "glibc $need" > "$stage/$name/REQUIRES.txt"
