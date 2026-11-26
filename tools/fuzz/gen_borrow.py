@@ -43,8 +43,6 @@ def helpers(k):
         f"fn t.id(x: {T('')}) -> {T('')} uses [] panics never\n    x\nend t.id",
         f"fn t.fst['a, 'b](x: {T(chr(39)+'a')}, _y: {T(chr(39)+'b')}) -> {T(chr(39)+'a')} uses [] panics never\n    x\nend t.fst",
         f"fn t.snd['a, 'b](_x: {T(chr(39)+'a')}, y: {T(chr(39)+'b')}) -> {T(chr(39)+'b')} uses [] panics never\n    y\nend t.snd",
-        f"type t.H['a]\n    r: {T(chr(39)+'a')}\nend t.H",
-        f"fn t.H.set['a](self: &mut t.H<'a>, r: {T(chr(39)+'a')}) -> () uses [] panics never\n    self.r = r\nend t.H.set",
         f"fn t.put['a](o: &mut {T(chr(39)+'a')}, r: {T(chr(39)+'a')}) -> () uses [] panics never\n    *o = r\nend t.put",
     ]
     return out
@@ -105,8 +103,8 @@ def escape(rng, k, inner):
     K = KINDS[k]
     pre, e, tied, wname = wrap_borrow(rng, k, inner)
     sink = rng.choice([
-        "assign", "blockval", "field", "ctor", "option", "tuple", "vecpush", "put", "setter", "closure",
-        "retfn", "retstruct", "loopassign", "ifassign", "nested2",
+        "assign", "blockval", "option", "tuple", "vecpush", "put", "closure",
+        "retfn", "loopassign", "ifassign", "nested2",
     ])
     decl = K["decl"]
     odecl = OUTER_DECL[k]
@@ -163,6 +161,7 @@ def escape(rng, k, inner):
                 f"{indent(blk([f'core.mem.drop(v.push({e}))']))}\n}}\ncore.mem.drop(v.len())\n"
                 f"core.mem.drop(v)")
         tags.append("vec-last-use=drop")
+        bad = True  # 0.11: Vec<&T> は E3060 (参照は 2 級の値) で常に拒む
     elif sink == "put":
         body = f"let mut r = {dflt}\n{{\n{indent(blk([f't.put(&mut r, {e})']))}\n}}\ncore.mem.drop({use('r')})"
     elif sink == "setter":
@@ -220,7 +219,7 @@ def header_lifetime(rng, k):
     T = lambda lt: ty(k, lt)
     if k == "string":
         k = "u32"
-    ret = rng.choice(["plain", "struct", "option", "tuple", "static"])
+    ret = rng.choice(["plain", "option", "tuple", "static"])
     which = rng.choice(["x", "y"])
     ok_name = "x"
     if ret == "static":
