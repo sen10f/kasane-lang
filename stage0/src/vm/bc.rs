@@ -170,6 +170,8 @@ pub enum Ins {
     /// 関数の戻り値 (`VFunc::ret_w` スロット) を呼び出し元へ返す。
     Ret { v: S },
     Unreachable,
+    /// デバッグ用: ここから新しい行 (`vid` は行の最初の命令の値番号)。デバッガが付いていなければ何もしない。
+    Line { line: u32, vid: u32 },
 
     // ---- 整数の算術 (64 ビット以下。`t` は `FAST_TYS` の添字)
     AddN { d: S, a: S, b: S, t: u8 },
@@ -332,6 +334,8 @@ pub struct VFunc {
     pub nparams: u32,
     /// 命令ごとの行表 (設計_KIR.md 7 章 13): `(命令番号, 行)` の昇順。命令 `pc` の行は、番号が `pc` 以下の最後の項目の行。
     pub marks: Vec<(u32, u32)>,
+    /// デバッグ用: 局所変数の履歴 (`ksn debug` の VM だけ)。
+    pub evs: Vec<VEv>,
     /// 行表のソースファイル (合成した関数は空)。
     pub file: String,
     /// 引数の型 (コールバックの引数をレジスタから読むのに使う)。
@@ -440,4 +444,16 @@ pub fn opt_shape(aggs: &[AggDef], t: Ty) -> Option<(u8, u8)> {
     let sb = crate::kir::opt_slot_bits(aggs, t) / 8;
     let pw = slots_of(aggs, t) - 1;
     Some((sb.min(255) as u8, pw.min(255) as u8))
+}
+
+/// 局所変数の履歴の 1 件 (`kir_lower::DbgEv` のスロット版)。
+#[derive(Clone, Debug)]
+pub struct VEv {
+    pub bid: u32,
+    pub name: String,
+    pub slot: u32,
+    pub ty: Ty,
+    pub mem: bool,
+    pub kill: bool,
+    pub at: u32,
 }

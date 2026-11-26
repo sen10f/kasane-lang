@@ -723,7 +723,7 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
         } else {
             coll::block_end(lw);
         }
-        lw.scopes.pop();
+        lw.pop_scope();
     }
     lw.slots = saved;
     if lw.blocks[jb].preds == 0 {

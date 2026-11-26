@@ -250,3 +250,133 @@ pub fn run_test(prog: &Program, suite: &Suite, ti: usize) -> Result<Option<Strin
         Err(e) => return Err(format!("実行中の内部エラー: {}", e)),
     })
 }
+
+/// `ksn debug` / `ksn test --debug` の対象。
+pub enum DebugTarget {
+    Entry(String),
+    /// テスト (定義の添字)。
+    Test(usize),
+}
+
+/// `ksn debug` (VM 版): デバッグ用にコンパイルしたバイトコードを、デバッガをつけて走らせる。
+pub fn debug(prog: &Program, user: &[usize], target: DebugTarget, args: &[String], json: bool, user_files: std::collections::HashSet<String>) -> Result<i32, String> {
+    use std::collections::{BTreeSet, HashMap, HashSet};
+    if has_unsafe_block(prog) {
+        return Err(UNSAFE_REASON.into());
+    }
+    kir_lower::set_debug_vars(true);
+    compile::set_debug(true);
+    let (lo, name) = match &target {
+        DebugTarget::Entry(e) => (kir_lower::lower_program_lazy(prog, user, e), e.clone()),
+        DebugTarget::Test(ti) => (kir_lower::lower_test_lazy(prog, user, *ti), prog.defs[*ti].name.clone()),
+    };
+    let r = prepare(&lo, &name);
+    kir_lower::set_debug_vars(false);
+    compile::set_debug(false);
+    let bc = r?;
+    let ret = bc.by_key.get(&name).map(|&i| bc.funcs[i as usize].ret);
+    let pure: HashSet<String> = prog.defs.iter().filter(|d| d.kw == "fn" && crate::debug::pure_def(d)).map(|d| d.name.clone()).collect();
+    let mut d = run::dbg::Dbg::new(json, user_files, pure);
+    let mut code_lines: HashMap<String, BTreeSet<usize>> = HashMap::new();
+    for f in &bc.funcs {
+        for i in &f.code {
+            if let bc::Ins::Line { line, .. } = i {
+                code_lines.entry(f.file.clone()).or_default().insert(*line as usize);
+            }
+        }
+    }
+    d.code_lines = code_lines;
+    for def in prog.defs.iter().filter(|x| matches!(x.kw.as_str(), "fn" | "test") && x.body.is_some()) {
+        d.func_at.insert(def.name.clone(), (def.file.clone(), def.line));
+    }
+    let kind = if matches!(target, DebugTarget::Test(_)) { "test" } else { "entry" };
+    d.emit(serde_json::json!({"event": "ready", "target": name, "kind": kind}), format!("ready: {} (commands: break run continue step next finish bt locals print quit)", name));
+    match d.prompt_before_run() {
+        None => return Ok(0),
+        Some(false) => {
+            d.emit(serde_json::json!({"event": "terminated", "reason": "quit"}), "quit".into());
+            return Ok(0);
+        }
+        Some(true) => {}
+    }
+    let last_err = d.last_err.clone();
+    let mut vm = run::Vm::new(&bc);
+    vm.args = args.to_vec();
+    let mut base_hook = run::dbg::flush_json_out(json);
+    vm.out_hook = Some(Box::new(move |fd, b| {
+        if fd == 2 {
+            let mut e = last_err.borrow_mut();
+            e.clear();
+            e.extend_from_slice(b);
+        }
+        base_hook(fd, b)
+    }));
+    vm.dbg = Some(Box::new(d));
+    let out = vm.run(&name, &[]);
+    vm.flush();
+    let mut code = 0;
+    let mut panic_msg: Option<String> = None;
+    let mut err_msg: Option<String> = None;
+    let mut quit = false;
+    match out {
+        Ok(Outcome::Value(_)) => {
+            if let Some(Ty::Res(_, e)) = ret {
+                if vm.result.first().copied().unwrap_or(0) != 0 {
+                    let n = bc::slots_of(&bc.aggs, e.ty()) as usize;
+                    let payload: Vec<u64> = vm.result[1..1 + n].to_vec();
+                    // `Error:` の表示 (入口の `Err` の Debug 表示) は出力の事件にする。
+                    let mut buf: Vec<u8> = vec![];
+                    let saved = vm.out_hook.take();
+                    vm.capture = Some(vec![]);
+                    let _ = vm.run(kir_lower::debug::ENTRY_DEBUG, &payload);
+                    vm.flush();
+                    if let Some(c) = vm.capture.take() {
+                        buf.extend_from_slice(&c);
+                    }
+                    vm.out_hook = saved;
+                    err_msg = Some(String::from_utf8_lossy(&buf).trim_end().to_string());
+                    code = 1;
+                }
+            }
+        }
+        Ok(Outcome::Panic(m)) => {
+            vm.dbg_panic_stop(&m);
+            panic_msg = Some(m);
+            code = 101;
+        }
+        Ok(Outcome::Abort) => {
+            let m = vm.dbg.as_ref().map(|d| String::from_utf8_lossy(&d.last_err.borrow()).trim_end().to_string()).unwrap_or_default();
+            let m = m.strip_prefix("panic: ").unwrap_or(&m).to_string();
+            vm.dbg_panic_stop(&m);
+            code = 101;
+        }
+        Ok(Outcome::Exit(c)) => {
+            quit = vm.dbg.as_ref().map_or(false, |d| d.quit);
+            code = if quit { 0 } else { c };
+        }
+        Ok(Outcome::StackOverflow) => {
+            eprintln!("stack overflow");
+            code = 102;
+        }
+        Err(e) => {
+            eprintln!("ksn: vm: 内部エラー: {}", e);
+            code = 3;
+        }
+    }
+    let d = vm.dbg.take();
+    if let Some(d) = d {
+        if quit {
+            d.emit(serde_json::json!({"event": "terminated", "reason": "quit"}), "quit".into());
+        } else {
+            if let Some(m) = panic_msg {
+                d.emit(serde_json::json!({"event": "output", "stream": "stderr", "text": format!("panic: {}\n", m)}), format!("panic: {}", m));
+            }
+            if let Some(m) = err_msg {
+                let m = m.trim_start_matches("Error: ").to_string();
+                d.emit(serde_json::json!({"event": "output", "stream": "stderr", "text": format!("Error: {}\n", m)}), format!("Error: {}", m));
+            }
+            d.emit(serde_json::json!({"event": "exited", "code": code}), format!("exited with code {}", code));
+        }
+    }
+    Ok(code)
+}

@@ -179,7 +179,7 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
     lw.loops.push(super::LoopCx { header: aft, exit: xb, slots: slots.clone(), depth, cont: vec![bend] });
     let r = lw.expr(body)?;
     lw.loops.pop();
-    lw.scopes.pop();
+    lw.pop_scope();
     if r.is_some() {
         let mut args = vec![bend];
         args.extend(lw.vals_of(&slots));
@@ -322,7 +322,7 @@ fn chars_for(lw: &mut Lw, _line: usize, s: VId, name: Option<String>, body: &V) 
     lw.loops.push(super::LoopCx { header: hb, exit: xb, slots: slots.clone(), depth, cont: vec![next_i] });
     let r = lw.expr(body)?;
     lw.loops.pop();
-    lw.scopes.pop();
+    lw.pop_scope();
     if r.is_some() {
         lw.goto(hb, next_from_args(lw, next_i, &slots));
     }

@@ -67,7 +67,7 @@ pub fn compile(m: &Module, lines: &HashMap<String, crate::kir_lower::FnLines>) -
     for f in &m.funcs {
         let vf = if f.link.is_some() {
             // `extern` 宣言 (本体なし)。呼び出しは `CallExt` になる。
-            VFunc { key: f.key.clone(), code: vec![], pool: vec![], marks: vec![], file: String::new(), nslots: 0, nparams: f.params().iter().map(|(_, t)| slots_of(&m.aggs, *t)).sum(), ptys: f.params().iter().map(|(_, t)| *t).collect(), ret: f.ret, ret_w: slots_of(&m.aggs, f.ret) }
+            VFunc { key: f.key.clone(), code: vec![], pool: vec![], marks: vec![], evs: vec![], file: String::new(), nslots: 0, nparams: f.params().iter().map(|(_, t)| slots_of(&m.aggs, *t)).sum(), ptys: f.params().iter().map(|(_, t)| *t).collect(), ret: f.ret, ret_w: slots_of(&m.aggs, f.ret) }
         } else {
             compile_func(m, &index, &mut prog, f, lines.get(&f.key)).map_err(|e| format!("{}: {}", f.key, e))?
         };
@@ -136,13 +136,24 @@ fn store_ins(p: S, off: u32, v: S, w: u8) -> Ins {
     }
 }
 
+thread_local! {
+    static DEBUG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// デバッグ用のバイトコードを作るか (行の命令 `Line` を足し、値を畳み込まない)。`ksn debug` だけ。
+pub fn set_debug(on: bool) {
+    DEBUG.with(|c| c.set(on));
+}
+
 struct Fc<'a> {
+    debug: bool,
     m: &'a Module,
     index: &'a HashMap<&'a str, usize>,
     prog: &'a mut Prog,
     /// 値番号 → 行 (行表の元)。
     fl: Option<&'a crate::kir_lower::FnLines>,
     marks: Vec<(u32, u32)>,
+    last_mark_line: u32,
     slot: Vec<u32>,
     /// `i32` に収まる定数の値 (即値にできる)。
     cv: HashMap<VId, i32>,
@@ -248,7 +259,8 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
             }
         }
     }
-    let skip_const: std::collections::HashSet<VId> = nfold.into_iter().filter(|(v, n)| uses[*v as usize] == *n).map(|(v, _)| v).collect();
+    let debug = DEBUG.with(|c| c.get());
+    let skip_const: std::collections::HashSet<VId> = if debug { Default::default() } else { nfold.into_iter().filter(|(v, n)| uses[*v as usize] == *n).map(|(v, _)| v).collect() };
     // ループの中の定数は、関数の入口で 1 回だけ作る (後ろ辺 `to <= from` の範囲のブロックをループとみなす)。
     let mut in_loop = vec![false; f.blocks.len()];
     for (bi, b) in f.blocks.iter().enumerate() {
@@ -274,7 +286,7 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
             continue;
         }
         for i in &b.insts {
-            if matches!(i.op, Op::Const(_)) && !skip_const.contains(&i.dst) && slots_of(&m.aggs, i.ty) == 1 && !matches!(i.ty, Ty::Opt(_) | Ty::Res(..)) && slot_users[&slot[i.dst as usize]] == 1 {
+            if !debug && matches!(i.op, Op::Const(_)) && !skip_const.contains(&i.dst) && slots_of(&m.aggs, i.ty) == 1 && !matches!(i.ty, Ty::Opt(_) | Ty::Res(..)) && slot_users[&slot[i.dst as usize]] == 1 {
                 hoisted.push(i.dst);
             }
         }
@@ -298,7 +310,7 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
         }
     }
     let hoisted_set: std::collections::HashSet<VId> = hoisted.iter().copied().collect();
-    let mut fc = Fc { m, index, prog, fl, marks: vec![], slot, cv, skip_const, hoisted: hoisted_set, vty, uses, nslots: next, temps: 0, code: vec![], pool: vec![], last_cmp: None, last_pa: None, folded: HashMap::new(), pending: HashMap::new() };
+    let mut fc = Fc { debug, m, index, prog, fl, marks: vec![], last_mark_line: 0, slot, cv, skip_const, hoisted: hoisted_set, vty, uses, nslots: next, temps: 0, code: vec![], pool: vec![], last_cmp: None, last_pa: None, folded: HashMap::new(), pending: HashMap::new() };
     for (s, v) in prologue {
         let d = s as S;
         match i64::try_from(v) {
@@ -318,7 +330,10 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
         fc.last_pa = None;
         fc.folded.clear();
         fc.pending.clear();
-        fc.find_folds(&b.insts);
+        if !debug {
+            fc.find_folds(&b.insts);
+        }
+        fc.last_mark_line = 0;
         for inst in &b.insts {
             fc.inst(inst)?;
         }
@@ -339,6 +354,7 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
         code: fc.code,
         pool: fc.pool,
         marks: fc.marks,
+        evs: fl.map(|x| x.evs.iter().map(|e| VEv { bid: e.bid, name: e.name.clone(), slot: if e.kill { 0 } else { fc.slot[e.vid as usize] }, ty: if e.kill { e.ty } else { match (e.mem, fc.vty[e.vid as usize]) { (true, Ty::Ref(_, p)) => p.ty(), (_, t) => t } }, mem: e.mem, kill: e.kill, at: e.at }).collect()).unwrap_or_default(),
         file: fl.map(|x| x.file.clone()).unwrap_or_default(),
         nslots: fc.nslots + fc.temps,
         nparams: f.params().iter().map(|(_, t)| slots_of(&m.aggs, *t)).sum(),
@@ -350,10 +366,21 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
 
 impl<'a> Fc<'a> {
     /// これから出す命令の行を行表に記す (同じ行が続くときは足さない)。
+    /// 終端命令の行表。デバッグ用の `Line` は出さない (値の行は別の文の行のことがある)。
+    fn mark_nl(&mut self, v: VId) {
+        let d = std::mem::replace(&mut self.debug, false);
+        self.mark(v);
+        self.debug = d;
+    }
+
     fn mark(&mut self, v: VId) {
         let line = self.fl.and_then(|f| f.lines.get(v as usize).copied()).unwrap_or(0);
         if line != 0 && self.marks.last().map(|m| m.1) != Some(line) {
             self.marks.push((self.code.len() as u32, line));
+        }
+        if self.debug && line != 0 && line != self.last_mark_line {
+            self.last_mark_line = line;
+            self.code.push(Ins::Line { line, vid: v });
         }
     }
 
@@ -442,7 +469,7 @@ impl<'a> Fc<'a> {
         // 直前の `ptr.add` の結果 `p` を 1 回だけ使う `load` / `store` なら、その加算を取り込む (基底と添字のスロット)。
         let fuse_pa = |fc: &mut Fc, p: VId| -> Option<(S, S)> {
             match prev_pa {
-                Some((v, at)) if v == p && fc.uses[p as usize] == 1 && at + 1 == fc.code.len() => match fc.code[at] {
+                Some((v, at)) if !fc.debug && v == p && fc.uses[p as usize] == 1 && at + 1 == fc.code.len() => match fc.code[at] {
                     Ins::PtrAdd { p: b, off: x, .. } => {
                         fc.code.pop();
                         Some((b, x))
@@ -995,10 +1022,10 @@ impl<'a> Fc<'a> {
         match &b.term {
             Term::Br((t, args)) => self.jump_to(f, bi, *t, args, true, patches),
             Term::BrIf(c, (t1, a1), (t2, a2)) => {
-                self.mark(*c);
+                self.mark_nl(*c);
                 // 直前の比較を融合できるか (結果がこの分岐だけで使われる)。
                 let fused = match self.last_cmp {
-                    Some((v, at)) if v == *c && self.uses[*c as usize] == 1 && at + 1 == self.code.len() => {
+                    Some((v, at)) if !self.debug && v == *c && self.uses[*c as usize] == 1 && at + 1 == self.code.len() => {
                         match self.code[at].clone() {
                             Ins::CmpI { cx, a, b, .. } => {
                                 self.code.pop();
@@ -1061,7 +1088,7 @@ impl<'a> Fc<'a> {
                 }
             }
             Term::Ret(v) => {
-                self.mark(*v);
+                self.mark_nl(*v);
                 let v = self.s(*v);
                 self.push(Ins::Ret { v });
             }

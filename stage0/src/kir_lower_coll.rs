@@ -3288,7 +3288,7 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
                 if r.is_ok() {
                     block_end(lw);
                 }
-                lw.scopes.pop();
+                lw.pop_scope();
                 return r;
             }
             let (len, base) = seq.len_and_base(lw, None);
@@ -3607,7 +3607,7 @@ fn user_iter(lw: &mut Lw, e: &V, it: &V, s: usize, di: usize, name: Option<Strin
         lw.goto(hb, args);
     }
     lw.loops.pop();
-    lw.scopes.pop();
+    lw.pop_scope();
 
     lw.cur = Some(xb);
     for (k, x) in slots.iter().enumerate() {
@@ -3712,7 +3712,7 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
     }
     lw.loops.pop();
     block_end(lw);
-    lw.scopes.pop();
+    lw.pop_scope();
 
     // incr: 添字を 1 進めて先頭へ戻る (添字は body の中で変わらないので、先頭の値をそのまま使う)
     lw.cur = Some(ib);
@@ -4139,7 +4139,7 @@ fn user_iter_loop(lw: &mut Lw, e: &V, pat: &V, it_e: &V, body: &V, di: usize, li
     }
     lw.loops.pop();
     block_end(lw);
-    lw.scopes.pop();
+    lw.pop_scope();
 
     lw.cur = Some(xb);
     for (k, s) in slots.iter().enumerate() {

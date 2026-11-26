@@ -873,7 +873,7 @@ impl<'a> Lw<'a> {
             } else {
                 super::coll::block_end(self);
             }
-            self.scopes.pop();
+            self.pop_scope();
         }
         self.coll.scrut_src = saved_src;
         if self.blocks[join].preds == 0 {

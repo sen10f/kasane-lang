@@ -9,6 +9,8 @@
 
 #![allow(unused_unsafe)]
 
+pub mod dbg;
+
 use super::bc::*;
 use crate::interp::{py_float, py_float32};
 use crate::kir::{payload_of, Aop, Mode, Ty, TAG_BIT};
@@ -120,6 +122,12 @@ pub struct Vm<'a> {
     pub(super) owned: Vec<Box<Prog>>,
     /// `--watch` のとき。安全点 (呼び出しの入口) でエポック (`flag`) を見て、新しい版を取り込む。
     pub(super) hook: Option<super::reload::Reload>,
+    /// `ksn debug`: デバッガ (`Ins::Line` で呼ぶ)。付いていなければ何もしない。
+    pub(super) dbg: Option<Box<dbg::Dbg>>,
+    /// `ksn debug`: 出力の横取り (1 = stdout、2 = stderr)。
+    pub(super) out_hook: Option<Box<dyn FnMut(u8, &[u8])>>,
+    /// 最後の panic が起きたフレームの底。
+    panic_base: usize,
 }
 
 enum NetSock {
@@ -229,7 +237,7 @@ impl<'a> Vm<'a> {
         // C の関数を呼ぶプログラムは、C が返す番地も読むので、領域の外も通す (FFI は `[unsafe]` の許可の内側)。
         // 標準ライブラリ (`std.` / `core.`) の extern は数えない (安全なプログラムで網を切らない)。
         super::arena::set_permissive(prog.ext.iter().any(|f| !(f.fqn.starts_with("std.") || f.fqn.starts_with("core."))));
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), bad_cmds: Default::default(), children: Default::default(), next_fd: 3, mt_on: false, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), bad_cmds: Default::default(), children: Default::default(), next_fd: 3, mt_on: false, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None, dbg: None, out_hook: None, panic_base: 0 }
     }
 
     /// 最後の panic の位置 (`in <関数> at <ファイル>:<行>`。デバッガと同じ形)。行表がない関数では `None`。
@@ -248,6 +256,11 @@ impl<'a> Vm<'a> {
     pub fn flush(&mut self) {
         use std::io::Write;
         if !self.out.is_empty() {
+            if let Some(h) = &mut self.out_hook {
+                h(1, &self.out);
+                self.out.clear();
+                return;
+            }
             let mut o = std::io::stdout().lock();
             let _ = o.write_all(&self.out);
             let _ = o.flush();
@@ -257,6 +270,13 @@ impl<'a> Vm<'a> {
 
     /// stderr へ書く (stdout を先に流す。`capture` があればためる)。
     pub fn err_write(&mut self, bytes: &[u8]) {
+        if self.out_hook.is_some() {
+            self.flush();
+            if let Some(h) = &mut self.out_hook {
+                h(2, bytes);
+            }
+            return;
+        }
         if let Some(c) = &mut self.capture {
             c.extend_from_slice(bytes);
             return;
@@ -449,6 +469,7 @@ impl<'a> Vm<'a> {
         macro_rules! panic_out {
             ($m:expr) => {{
                 self.panic_at = Some((vi, fi, pc as u32 - 1));
+                self.panic_base = base;
                 self.flush();
                 return Ok(Outcome::Panic($m));
             }};
@@ -841,6 +862,15 @@ impl<'a> Vm<'a> {
                     };
                     w!(*d, a as u64);
                 }
+                Ins::Line { line, vid } => {
+                    if self.dbg.is_some() {
+                        if let Some(o) = self.dbg_line(vi, fi, pc - 1, base, *line, *vid) {
+                            return Ok(o);
+                        }
+                        // 停止中の式の評価が `regs` を伸ばしたかもしれない。
+                        rp = unsafe { self.regs.as_mut_ptr().add(base) };
+                    }
+                }
                 Ins::Unreachable => return Err("到達しないブロックに入った".to_string()),
                 Ins::Make { d, info, argp } => {
                     let mi = &prog.makes[*info as usize];
@@ -1061,6 +1091,7 @@ impl<'a> Vm<'a> {
                 }
                 Ins::Abort => {
                     self.panic_at = Some((vi, fi, pc as u32 - 1));
+                    self.panic_base = base;
                     self.flush();
                     return Ok(Outcome::Abort);
                 }
