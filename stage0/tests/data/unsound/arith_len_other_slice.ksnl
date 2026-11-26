@@ -1,0 +1,11 @@
+fn t.f(xs: &[u8], ys: &[u8]) -> usize uses [] panics never
+    if xs.is_empty() {
+        0usize
+    } else {
+        ys.len() - 1usize
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

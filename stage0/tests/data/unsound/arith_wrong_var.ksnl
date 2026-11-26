@@ -1,0 +1,11 @@
+fn t.f(i: usize, j: usize, n: usize) -> usize uses [] panics never
+    if i < n {
+        j + 1usize
+    } else {
+        0usize
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

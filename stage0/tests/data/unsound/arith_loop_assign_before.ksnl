@@ -1,0 +1,12 @@
+fn t.f(n: u8) -> u8 uses [] panics never
+    let mut i = 0u8
+    while i < n {
+        i = 255u8
+        let _k = i + 1u8
+    }
+    0u8
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

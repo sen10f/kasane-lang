@@ -15,6 +15,7 @@ mod lexer;
 mod ksnh;
 mod ksnh_sync;
 mod lexrules;
+mod arith_proof;
 mod check;
 mod check_cache;
 mod cli;

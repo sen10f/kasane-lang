@@ -1,0 +1,13 @@
+fn t.f(i: usize, n: usize) -> usize uses [] panics never
+    let mut j = i
+    if j < n {
+        j = n
+        j + 1usize
+    } else {
+        0usize
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

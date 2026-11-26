@@ -1,0 +1,13 @@
+fn t.f(x: u32) -> u32 uses [] panics never
+    let mut y = x
+    if y > 0u32 {
+        y = 0u32
+        y - 1u32
+    } else {
+        0u32
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

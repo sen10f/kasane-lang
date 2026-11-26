@@ -581,6 +581,8 @@ pub struct Checker<'a> {
     mut_ref_lets: HashSet<String>,
     /// `let` で束縛した名前 (仮引数と区別する。関数ごと)。
     let_names: HashSet<String>,
+    /// 関数ごとの、溢れないと証明できた `+` / `-` の節点 (arith_proof.rs)。
+    arith: HashMap<usize, HashMap<u32, crate::arith_proof::Site>>,
     /// `a[i].f` (添字の先のフィールド) を値として使った (関数名, Field 式の ID, 文言, 位置)。
     /// フィールドの型を型表で引き、Copy でなければ E3002 (配列・Vec の要素の先からは move できない、4.1)。
     /// 型表 (`TypeCk::tytab`) の写し。`tc_fn` より前に作り、注釈のない `let` の型を引くのに使う (4.1)。
@@ -663,6 +665,7 @@ impl<'a> Checker<'a> {
             shared_lets: HashSet::new(),
             mut_ref_lets: HashSet::new(),
             let_names: HashSet::new(),
+            arith: HashMap::new(),
             mv_types: BTreeMap::new(),
             call_res: Default::default(),
             susp_lines: Default::default(),
@@ -3355,6 +3358,28 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn arith_ensure(&mut self, d: usize) {
+        if !self.arith.contains_key(&d) {
+            let m = crate::arith_proof::prove(self.def(d));
+            self.arith.insert(d, m);
+        }
+    }
+
+    /// `+` / `-` が溢れないと証明できているか (arith_proof.rs)。符号なしだけで成り立つ証明は、型が符号なしのときだけ。
+    fn arith_proven(&mut self, e: &V, env: &Env) -> bool {
+        if !matches!(st(&nf(e)[0]).as_str(), "+" | "-") {
+            return false;
+        }
+        let d = self.d;
+        self.arith_ensure(d);
+        let Some(site) = self.arith[&d].get(&nid(e)) else { return false };
+        if !site.unsigned_only {
+            return true;
+        }
+        let t = self.strip(&self.ty_of(&nf(e)[1], env)).clone();
+        tag(&t) == "prim" && st(tel(&t, 1)).starts_with('u')
+    }
+
     /// 整数の算術演算子はオーバーフローで panic する。`panics never` の関数では使えない (4.1)。
     fn int_op_may_panic(&mut self, what: &str, line: usize) {
         if self.def(self.d).panics.as_deref() == Some("never") {
@@ -3382,7 +3407,7 @@ impl<'a> Checker<'a> {
                 _ => (
                     "on overflow",
                     format!(
-                        "write `a.checked_{n}(b)` (Option: handle None with `match`), `a.wrapping_{n}(b)` or `a.saturating_{n}(b)` (return the integer)",
+                        "to stop on overflow write `a.checked_{n}(b).ok_or(..)?`, to clamp write `a.saturating_{n}(b)`, `a.wrapping_{n}(b)` only for an intended wrap-around (hash, PRNG), or add a guard the checker understands (`if i < n` before `i + 1`, `if x >= k` before `x - k`, `!v.is_empty()` before `v.len() - 1`; an assignment in between voids it)",
                         n = name
                     ),
                     String::new(),
@@ -3892,6 +3917,10 @@ impl<'a> Checker<'a> {
     fn tc_fn(&mut self, di: usize) {
         let d = self.def(di);
         self.d = di;
+        // 証明できる `wrapping_*` を `ksn fix` が直せるよう、`panics never` の関数は先に証明を回す。
+        if d.panics.as_deref() == Some("never") {
+            self.arith_ensure(di);
+        }
         self.names = d.gnames();
         let mut env: Env = d.params.iter().cloned().collect();
         self.graph.entry(d.name.clone()).or_default();
@@ -4829,7 +4858,9 @@ impl<'a> Checker<'a> {
             "Bin" if matches!(st(&f[0]).as_str(), "+" | "-" | "*" | "/" | "%") => {
                 if self.is_int_ty(&self.ty_of(&f[1], env)) || self.is_int_ty(&self.ty_of(&f[2], env)) {
                     let what = format!("operator `{}`", st(&f[0]));
-                    self.int_op_may_panic(&what, nline(e));
+                    if !self.arith_proven(e, env) {
+                        self.int_op_may_panic(&what, nline(e));
+                    }
                 }
                 self.tc_expr(&f[1], env, muts, false);
                 self.tc_expr(&f[2], env, muts, false);

@@ -1624,6 +1624,8 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
 /// `ksn fix`: `check` の修正案をすべて適用し、`fmt` で整える。
 fn cmd_fix() -> i32 {
     let mut total = 0usize;
+    // 証明できる `wrapping_*` の場所は検査が数える。差分検査の再利用で検査が飛ばされないよう、この間は切る。
+    std::env::set_var("KSN_CHECK_CACHE", "0");
     // 前段: 構文として読めなくても当てられる、Rust 風の表面の形の文面の書き換え (surface_fix.rs)。
     if let (Ok(root), true) = (find_root(), std::env::var("KSN_FIX_ONLY").is_err()) {
         let mut files: Vec<PathBuf> = vec![];
@@ -1656,6 +1658,13 @@ fn cmd_fix() -> i32 {
         let mut by_file: HashMap<String, Vec<crate::fixes::Fix>> = HashMap::new();
         // 隠しの絞り込み (試験用): `KSN_FIX_ONLY=E4020,E4025` はそのコードの直しだけを当てる。
         let only: Option<Vec<String>> = std::env::var("KSN_FIX_ONLY").ok().map(|v| v.split(',').map(|x| x.trim().to_string()).collect());
+        // 溢れないと証明できる `wrapping_add(c)` / `wrapping_sub(k)` は `+` / `-` に直す (arith_proof.rs)。診断は出ない形なので別に集める。
+        let wrap_fixes = crate::arith_proof::wrap_fixes();
+        if only.is_none() {
+            for f in wrap_fixes {
+                by_file.entry(f.file.clone()).or_default().push(f);
+            }
+        }
         for it in &rep.items {
             if only.as_ref().map_or(false, |o| !o.contains(&it.code)) {
                 continue;

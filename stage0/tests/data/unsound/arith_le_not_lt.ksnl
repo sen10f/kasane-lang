@@ -1,0 +1,11 @@
+fn t.f(i: u8, n: u8) -> u8 uses [] panics never
+    if i <= n {
+        i + 1u8
+    } else {
+        0u8
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

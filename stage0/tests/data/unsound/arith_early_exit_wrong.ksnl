@@ -1,0 +1,10 @@
+fn t.f(x: u64) -> u64 uses [] panics never
+    if x == 0u64 {
+        let _k = 0u64
+    }
+    x - 1u64
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
