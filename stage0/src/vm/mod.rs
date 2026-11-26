@@ -250,10 +250,3 @@ pub fn run_test(prog: &Program, suite: &Suite, ti: usize) -> Result<Option<Strin
         Err(e) => return Err(format!("実行中の内部エラー: {}", e)),
     })
 }
-
-/// `?` が `Err`/`None` で本体を打ち切る形を持つ試験か (理由の `Err` の中身は木走査で出すので、走らせる前にこの試験は木走査へ回す)。
-pub fn test_uses_try(suite: &Suite, prog: &Program, ti: usize) -> bool {
-    let name = &prog.defs[ti].name;
-    let Some(f) = suite.lo.module.find(name) else { return false };
-    f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(&i.op, crate::kir::Op::Panic { msg, .. } if msg == crate::cli::TEST_TRY_MARK)))
-}

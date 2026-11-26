@@ -81,3 +81,22 @@ fn s03_try_failure_both_agrees() {
     assert_eq!(both.0, Some(1), "{:?}", both);
     assert_eq!(lines(&tree.1), lines(&both.1), "{:?}", both);
 }
+
+#[test]
+fn s03_try_side_effect_runs_once_and_both_compares() {
+    let src = "fn t.main() -> () uses [] panics never\nend t.main\n\ntest t.main.test_try\n    std.io.print_line(\"once\").unwrap()\n    std.fs.write_atomic(\"count\", b\"x\").unwrap()\n    let n = u32.parse(\"zz\")?\n    core.check.eq(n, 1u32)\nend t.main.test_try\n";
+    let vm = go("stab03e", src, &["test", "--engine=vm"]);
+    assert_eq!(vm.0, Some(1), "{:?}", vm);
+    assert_eq!(vm.1.matches("once").count(), 1, "{:?}", vm);
+    assert!(vm.1.contains("FAILED: returned Err(ParseIntError { kind: 0 })"), "{:?}", vm);
+    assert!(!vm.2.contains("falling back"), "{:?}", vm);
+}
+
+#[test]
+fn s03_drop_package_try_test_runs_on_vm() {
+    let src = "static t.LOG: core.sync.AtomicU64 = core.sync.AtomicU64.new(0u64) pub\n\ntype t.D\n    id: u64\nend t.D\n\nimpl core.ops.Drop for t.D\nfn t.D.drop(self: &mut t.D) -> () uses [] panics never impls core.ops.Drop\n    let old = t.LOG.load(core.sync.Ordering.SeqCst)\n    t.LOG.store(old.wrapping_mul(10u64).wrapping_add(self.id), core.sync.Ordering.SeqCst)\nend t.D.drop\n\nfn t.main() -> () uses [] panics never\nend t.main\n\ntest t.main.test_a_drop\n    let d = t.D {\n        id: 3u64\n    }\n    core.mem.drop(d)\n    core.check.eq(t.LOG.load(core.sync.Ordering.SeqCst), 3u64)\nend t.main.test_a_drop\n\ntest t.main.test_b_try\n    let d = t.D {\n        id: 4u64\n    }\n    let n = u64.parse(\"zz\")?\n    core.check.eq(n, d.id)\nend t.main.test_b_try\n";
+    let o = go("stab03f", src, &["test"]);
+    assert_eq!(o.0, Some(1), "{:?}", o);
+    assert!(o.1.contains("test t.main.test_a_drop ... ok"), "{:?}", o);
+    assert!(o.1.contains("test t.main.test_b_try ... FAILED: returned Err(ParseIntError { kind: 0 })"), "{:?}", o);
+}
