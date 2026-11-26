@@ -62,9 +62,9 @@ ksn run
 | --- | --- |
 | `new` / `check` / `fix` | パッケージの作成、型・借用・効果などの検査、自動修正 |
 | `fmt` / `fmt --check` | 正規形への整形、整形済みかの検査 |
-| `run` / `test` / `test --both` | インタプリタでの実行、テスト、LLVM との結果比較 |
+| `run` / `test` / `test --both` | 実行とテスト（既定は VM。`--engine=tree` で木走査）、LLVM のネイティブとの結果比較 |
 | `build` | LLVM によるネイティブ実行ファイルと可搬バンドルの作成 |
-| `debug` / `dap` | インタプリタ上のデバッガ、Debug Adapter Protocol サーバ |
+| `debug` / `dap` | 木走査の上のデバッガ、Debug Adapter Protocol サーバ（手書きの `Drop` を持つパッケージは E9031） |
 | `lsp` | Language Server Protocol サーバ |
 | `doc` / `index` / `context` / `explain` | API 文書、索引、定義の文脈、診断の説明 |
 | `refs` / `rename` | 参照の列挙、定義と参照の改名 |
