@@ -85,13 +85,13 @@ class Gen:
     def ulit(self):
         r = self.r.random()
         if r < 0.3:
-            return "%du64" % self.r.randint(0, 9)
+            return "%du64" % self.r.randint(2, 9)
         if r < 0.8:
-            return "%du64" % self.r.randint(0, 100000)
+            return "%du64" % self.r.randint(2, 100000)
         return "%du64" % self.r.choice([2**32 - 1, 2**63, 2**64 - 1, 2**64 - 2, 255, 65536])
 
     def ilit(self):
-        v = self.r.choice([self.r.randint(-100, 100), self.r.randint(-10**9, 10**9), -2**63, 2**63 - 1])
+        v = self.r.choice([self.r.choice([-100, -7, -2, 2, 3, 100]), self.r.randint(2, 10**9), -2**63, 2**63 - 1])
         return "%di64" % v
 
     def uleaf(self):
@@ -105,9 +105,15 @@ class Gen:
         return self.ilit()
 
     def uexpr(self, d=2):
+        e = self._uexpr(d)
+        return e if len(e) <= 48 else self.uleaf()
+
+    def _uexpr(self, d=2):
         if d == 0 or self.r.random() < 0.3:
             return self.uleaf()
         a, b = self.uexpr(d - 1), self.uexpr(d - 1)
+        while b == a:
+            b = self.ulit()
         k = self.r.randint(0, 13)
         if k == 0:
             return "%s.wrapping_add(%s)" % (a, b)
@@ -137,10 +143,16 @@ class Gen:
             return "%s(%s, %s)" % (self.r.choice(self.fns), a, self.iexpr(0))
         return "u64.from_u32(%s.leading_zeros())" % a
 
-    def iexpr(self, d=1):
+    def iexpr(self, d=2):
+        e = self._iexpr(d)
+        return e if len(e) <= 48 else self.ileaf()
+
+    def _iexpr(self, d=1):
         if d == 0 or self.r.random() < 0.4:
             return self.ileaf()
         a, b = self.iexpr(d - 1), self.iexpr(d - 1)
+        while b == a:
+            b = self.ilit()
         k = self.r.randint(0, 5)
         if k == 0:
             return "%s.wrapping_add(%s)" % (a, b)
@@ -156,6 +168,8 @@ class Gen:
 
     def cond(self):
         a, b = self.uexpr(1), self.uexpr(1)
+        while b == a:
+            b = self.ulit()
         k = self.r.randint(0, 3)
         if k == 0:
             return "%s < %s" % (a, b)

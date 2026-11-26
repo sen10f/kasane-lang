@@ -29,6 +29,13 @@ def check(ksn, src):
         open(os.path.join(d, "kasane.toml"), "w").write(TOML)
         open(os.path.join(d, "kasane.lock"), "w").write("version = 1\n")
         open(os.path.join(d, "src", "t.ksnl"), "w").write(src)
+        # 生成器の出力を正規形にそろえる (fmt → fix を変化が無くなるまで)。fmt 後の E0020 は生成器の誤り。
+        subprocess.run([ksn, "fmt"], cwd=d, capture_output=True, text=True, timeout=60)
+        for _ in range(6):
+            q = subprocess.run([ksn, "fix"], cwd=d, capture_output=True, text=True, timeout=60)
+            subprocess.run([ksn, "fmt"], cwd=d, capture_output=True, text=True, timeout=60)
+            if "applied" not in q.stdout + q.stderr:
+                break
         p = subprocess.run([ksn, "check", "--json"], cwd=d, capture_output=True, text=True, timeout=60)
         codes = []
         for l in p.stdout.splitlines():
