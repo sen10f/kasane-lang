@@ -520,7 +520,18 @@ def make_pkg(tmpdir, seed, pid):
     return root, params, ret, src, main_args_vals
 
 
+def canonicalize(ksn, root):
+    """生成器の出力を正規形にそろえる (fmt → fix → fmt)。fmt 後の E0020 は生成器の誤りとして check が報告する。"""
+    sh([ksn, "fmt"], cwd=root, timeout=120)
+    for _ in range(6):  # fix は 1 回で全部は直さない (連鎖する) ので、変化が無くなるまで繰り返す
+        rc, out, err = sh([ksn, "fix"], cwd=root, timeout=120)
+        sh([ksn, "fmt"], cwd=root, timeout=120)
+        if b"applied" not in out + err:
+            break
+
+
 def check_pkg(ksn, root):
+    canonicalize(ksn, root)
     rc, out, err = sh([ksn, "check"], cwd=root, timeout=120)
     return rc == 0, out.decode(errors="replace"), err.decode(errors="replace")
 
