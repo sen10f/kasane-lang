@@ -1,3 +1,4 @@
+import wiki.csrf
 import wiki.router
 import wiki.store
 
@@ -6,7 +7,7 @@ const wiki.server.MAX_BODY: usize = 65_536usize
 const wiki.server.MAX_HEAD: usize = 8192usize
 
 // 要求 1 件に答える。返すのは接続を保つか (`Connection` の判定)。
-fn wiki.server.answer(stream: &mut std.net.TcpStream, page_store: &mut wiki.store.PageStore, csrf_tokens: &mut std.vec.Vec<std.string.String>, request: &std.http.Request) -> Result<bool, wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never
+fn wiki.server.answer(stream: &mut std.net.TcpStream, page_store: &mut wiki.store.PageStore, csrf_tokens: &mut wiki.csrf.CsrfManager, request: &std.http.Request) -> Result<bool, wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never
     let keep = request.keep_alive()
     let method = request.method.as_str()
     let path = request.path.as_str()
@@ -28,7 +29,7 @@ end wiki.server.close_stream
 // 1 本の TCP 接続の中で、要求を順に処理する (keep-alive)。返すのは処理した要求の数。
 // 要求の解析と応答の組み立ては `std.http`、ログは `std.log` (1 行 1 件の JSON)。
 // 途中で失敗しても、接続は必ず閉じる (線形な値の消費)。
-fn wiki.server.connection(conn: std.net.TcpStream, page_store: &mut wiki.store.PageStore, csrf_tokens: &mut std.vec.Vec<std.string.String>) -> Result<usize, wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never pub
+fn wiki.server.connection(conn: std.net.TcpStream, page_store: &mut wiki.store.PageStore, csrf_tokens: &mut wiki.csrf.CsrfManager) -> Result<usize, wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never pub
     let mut stream = conn
     let max_head = wiki.server.MAX_HEAD
     let max_body = wiki.server.MAX_BODY
@@ -97,7 +98,7 @@ end wiki.server.send
 fn wiki.server.serve(address: &str, data_dir: &str) -> Result<(), wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never pub
     with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
         let mut page_store = store.PageStore.new(data_dir)?
-        let mut csrf_tokens = std.vec.Vec.new()
+        let mut csrf_tokens = csrf.CsrfManager.new()?
         let port = listener.local_port()?
         let mut text = std.string.String.new()
         text.push_u64(u64.from_u16(port))?
@@ -111,42 +112,30 @@ fn wiki.server.serve(address: &str, data_dir: &str) -> Result<(), wiki.error.Err
 end wiki.server.serve
 
 // 要求を読んで答える。接続が閉じるか、接続を保たない要求まで続ける。返すのは処理した要求の数。
-// `Decoder.feed_part` で読んだバイトを蓄え、`Decoder.next` で 1 件ずつ取り出す。
-fn wiki.server.serve_all(stream: &mut std.net.TcpStream, page_store: &mut wiki.store.PageStore, csrf_tokens: &mut std.vec.Vec<std.string.String>, decoder: &mut std.http.Decoder) -> Result<usize, wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never
+// `std.http.read_request` で 1 件ずつ読む。
+fn wiki.server.serve_all(stream: &mut std.net.TcpStream, page_store: &mut wiki.store.PageStore, csrf_tokens: &mut wiki.csrf.CsrfManager, decoder: &mut std.http.Decoder) -> Result<usize, wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never
     let mut served = 0usize
     let mut more = true
     while more {
-        let mut chunk = [0u8; 1024]
-        let n = stream.read(&mut chunk)?
-        if n > 0usize {
-            decoder.feed_part(&chunk, n)?
-        }
-        loop {
-            match decoder.next() {
-                Ok(Some(request)) => {
-                    served = served.saturating_add(1usize)
-                    more = wiki.server.answer(stream, page_store, csrf_tokens, &request)?
-                    if !more {
-                        break
-                    }
-                }
-                Ok(None) => break
-                Err(failure) => {
-                    wiki.server.refuse(stream, failure)?
-                    more = false
-                    break
-                }
+        match std.http.read_request(stream, decoder) {
+            Ok(Some(request)) => {
+                served = served.saturating_add(1usize)
+                more = wiki.server.answer(stream, page_store, csrf_tokens, &request)?
             }
-        }
-        if n == 0usize {
-            more = false
+            Ok(None) => {
+                more = false
+            }
+            Err(failure) => {
+                wiki.server.refuse(stream, failure)?
+                more = false
+            }
         }
     }
     Ok(served)
 end wiki.server.serve_all
 
 // 1 件の要求を読んで答える。`connections == 0` なら止まらずに待つ。
-fn wiki.server.serve_listener(listener: &std.net.TcpListener, page_store: &mut wiki.store.PageStore, csrf_tokens: &mut std.vec.Vec<std.string.String>, connections: usize) -> Result<usize, wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never pub
+fn wiki.server.serve_listener(listener: &std.net.TcpListener, page_store: &mut wiki.store.PageStore, csrf_tokens: &mut wiki.csrf.CsrfManager, connections: usize) -> Result<usize, wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never pub
     let mut accepted = 0usize
     let mut served = 0usize
     while connections == 0usize || accepted < connections {

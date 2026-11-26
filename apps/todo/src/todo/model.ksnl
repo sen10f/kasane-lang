@@ -28,7 +28,7 @@ type todo.model.UpdateFields pub
     title: Option<std.string.String> pub
     done: Option<bool> pub
     deadline: Option<std.string.String> pub
-    tags: std.vec.Vec<std.string.String> pub
+    tags: Option<std.vec.Vec<std.string.String>> pub
 end todo.model.UpdateFields
 
 type todo.model.User derive [Debug, PartialEq, Eq] pub
@@ -207,8 +207,8 @@ fn todo.model.from_update_value(doc: &std.json.Doc, value: std.json.Value) -> Re
         Err(_) => None
     }
     let tags = match std.json.decode_field(doc, value, "tags", 3usize) {
-        Ok(tags_v) => todo.model.decode_string_array(doc, tags_v)?
-        Err(_) => std.vec.Vec.new()
+        Ok(tags_v) => Some(todo.model.decode_string_array(doc, tags_v)?)
+        Err(_) => None
     }
     Ok(todo.model.UpdateFields {
         title: title

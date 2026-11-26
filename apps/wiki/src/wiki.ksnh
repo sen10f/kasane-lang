@@ -1,3 +1,4 @@
+import wiki.csrf
 import wiki.server
 import wiki.store
 
@@ -5,7 +6,7 @@ const wiki.DEMO_ADDR: &str = "127.0.0.1:0"
 
 // デモ: ローカルでサーバを立ち上げ、いくつかのリクエストを送って応答を確認する。
 fn wiki.demo() -> Result<(), wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never
-    let mut csrf_tokens = std.vec.Vec.new()
+    let mut csrf_tokens = csrf.CsrfManager.new()?
     with listener = std.net.listen(wiki.DEMO_ADDR)? close core.mem.drop(listener.close()) {
         let mut page_store = store.PageStore.new("/tmp/wiki-test-demo")?
         let n = server.serve_listener(&listener, &mut page_store, &mut csrf_tokens, 3usize)?

@@ -1,5 +1,7 @@
 Friction records for apps/wiki (Markdown wiki HTTP server for ksn).
 
+> **再確認 (2026-11-26、dev/plan `0cec620a`)**: 処理系の不足は残っていない。1〜9・11・12 は解消済み (10 は仕様どおり)。7 (`find`)・11 (`read_request`)・12 (`CsrfManager`) は自然な形に戻した。1・2・3 は並びが変わる・設計の作り直しになるため戻していない。`ksn test --both` 108 件 llvm 一致。 詳細は `apps/FRICTION_recheck.md`。
+
 環境 (2026-11): Xeon E5-2620 v4, rustup + ~/.cargo/env, stage0/target/release/ksn ビルド済み。KSN_AVOID_CPUS / taskset 不要。/home/kasane/kasane-wt/wiki/apps/wiki で ksn コマンドを実行。並列ビルド時は stage0/target が worktree ごとに別。
 
 1. KIR 段階 1 の制約: `Vec.dedup()` は `String::eq` を使うため未対応。`link.ksnl` と `store.ksnl` で手動 O(n^2) 重複除去に置き換えた。
