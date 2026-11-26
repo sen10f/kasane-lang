@@ -17,7 +17,7 @@ use super::{Lw, LR};
 
 /// 配列の要素にできる型: 整数・浮動小数・bool・ptr、と所有物を持たない集成体 (値の写しで並べる)。
 fn elem_ok(lw: &Lw, t: Ty) -> bool {
-    t.is_int() || t.is_float() || matches!(t, Ty::Bool | Ty::Ptr | Ty::Ref(..)) || (matches!(t, Ty::Agg(_) | Ty::Opt(_) | Ty::Res(..)) && !owns_heap_pub(lw, t))
+    t.is_int() || t.is_float() || matches!(t, Ty::Bool | Ty::Ptr) || (matches!(t, Ty::Agg(_) | Ty::Opt(_) | Ty::Res(..)) && !owns_heap_pub(lw, t))
 }
 
 /// 要素 `size` バイトを `n` 個並べた領域の大きさ。`FrameBytes` の幅 (u32) に入らないときは `None` (溢れで panic させない)。
