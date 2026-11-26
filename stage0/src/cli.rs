@@ -1892,8 +1892,6 @@ fn cmd_run(args: &[String]) -> i32 {
             return 2;
         }
     };
-    // ホットリロード (`--watch`) は、VM を明示したときだけ VM で走らせる (既定は木走査)。
-    let use_vm = use_vm && (!watch || explicit);
     let mut rep = Report::new(json);
     crate::vm::tick("start");
     let root = match find_root() {

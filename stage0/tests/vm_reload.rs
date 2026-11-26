@@ -66,9 +66,14 @@ struct Out {
 // 書き換え後はウォッチャが検出してリロードし、新版（v2）が走る。子プロセスは 60 回反復して
 // 自然に終了するので、終了を待つ。
 fn run_watch(d: &Path, edited: &str) -> Out {
+    run_watch_args(d, edited, &["--engine=vm"])
+}
+
+fn run_watch_args(d: &Path, edited: &str, extra: &[&str]) -> Out {
     let cache = d.join(".cache");
     let mut child = Command::new(exe())
-        .args(["run", "--watch", "--engine=vm"])
+        .args(["run", "--watch"])
+        .args(extra)
         .current_dir(d)
         .env("KSN_CACHE_DIR", &cache)
         .stdin(Stdio::null())
@@ -200,4 +205,16 @@ fn vm_hot_reload_keeps_old_code_when_the_new_body_cannot_be_lowered() {
     // 旧版のままなので v2 は出ず、v1 が少なくとも 1 回出る。
     assert_eq!(count(&r.out, "v2"), 0, "{}", r.out);
     assert!(count(&r.out, "v1") >= 1, "{}", r.out);
+}
+
+/// `--engine=vm` を付けなくても (既定の VM で) ホットリロードが効く。
+#[test]
+fn hot_reload_runs_on_the_vm_by_default() {
+    let d = package(HR);
+    let r = run_watch_args(&d, &HR.replace("v1", "v2"), &[]);
+    let _ = fs::remove_dir_all(&d);
+    assert_eq!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(r.err.contains("hot reload: function bodies updated"), "{}", r.err);
+    let (v1, v2) = (count(&r.out, "v1"), count(&r.out, "v2"));
+    assert!(v1 >= 1 && v2 >= 1, "v1={} v2={}\n{}", v1, v2, r.out);
 }
