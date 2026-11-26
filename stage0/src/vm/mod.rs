@@ -259,7 +259,7 @@ pub enum DebugTarget {
 }
 
 /// `ksn debug` (VM 版): デバッグ用にコンパイルしたバイトコードを、デバッガをつけて走らせる。
-pub fn debug(prog: &Program, user: &[usize], target: DebugTarget, args: &[String], json: bool, user_files: std::collections::HashSet<String>) -> Result<i32, String> {
+pub fn debug(prog: &Program, user: &[usize], target: DebugTarget, args: &[String], json: bool, user_files: std::collections::HashSet<String>, dap: Option<run::dbg::DapSt>) -> Result<i32, String> {
     use std::collections::{BTreeSet, HashMap, HashSet};
     if has_unsafe_block(prog) {
         return Err(UNSAFE_REASON.into());
@@ -277,6 +277,9 @@ pub fn debug(prog: &Program, user: &[usize], target: DebugTarget, args: &[String
     let ret = bc.by_key.get(&name).map(|&i| bc.funcs[i as usize].ret);
     let pure: HashSet<String> = prog.defs.iter().filter(|d| d.kw == "fn" && crate::debug::pure_def(d)).map(|d| d.name.clone()).collect();
     let mut d = run::dbg::Dbg::new(json, user_files, pure);
+    let is_dap = dap.is_some();
+    let stop_entry = dap.as_ref().is_some_and(|x| x.stop_on_entry);
+    d.dap = dap;
     let mut code_lines: HashMap<String, BTreeSet<usize>> = HashMap::new();
     for f in &bc.funcs {
         for i in &f.code {
@@ -289,20 +292,30 @@ pub fn debug(prog: &Program, user: &[usize], target: DebugTarget, args: &[String
     for def in prog.defs.iter().filter(|x| matches!(x.kw.as_str(), "fn" | "test") && x.body.is_some()) {
         d.func_at.insert(def.name.clone(), (def.file.clone(), def.line));
     }
-    let kind = if matches!(target, DebugTarget::Test(_)) { "test" } else { "entry" };
-    d.emit(serde_json::json!({"event": "ready", "target": name, "kind": kind}), format!("ready: {} (commands: break run continue step next finish bt locals print quit)", name));
-    match d.prompt_before_run() {
-        None => return Ok(0),
-        Some(false) => {
-            d.emit(serde_json::json!({"event": "terminated", "reason": "quit"}), "quit".into());
+    if is_dap {
+        if !d.dap_prelude() {
             return Ok(0);
         }
-        Some(true) => {}
+        run::dbg::dap_event("process", serde_json::json!({"name": "ksn", "isLocalProcess": true, "startMethod": "launch"}));
+        if stop_entry {
+            d.stop_on_entry();
+        }
+    } else {
+        let kind = if matches!(target, DebugTarget::Test(_)) { "test" } else { "entry" };
+        d.emit(serde_json::json!({"event": "ready", "target": name, "kind": kind}), format!("ready: {} (commands: break run continue step next finish bt locals print quit)", name));
+        match d.prompt_before_run() {
+            None => return Ok(0),
+            Some(false) => {
+                d.emit(serde_json::json!({"event": "terminated", "reason": "quit"}), "quit".into());
+                return Ok(0);
+            }
+            Some(true) => {}
+        }
     }
     let last_err = d.last_err.clone();
     let mut vm = run::Vm::new(&bc);
     vm.args = args.to_vec();
-    let mut base_hook = run::dbg::flush_json_out(json);
+    let mut base_hook = run::dbg::flush_json_out(json, is_dap);
     vm.out_hook = Some(Box::new(move |fd, b| {
         if fd == 2 {
             let mut e = last_err.borrow_mut();
@@ -364,8 +377,10 @@ pub fn debug(prog: &Program, user: &[usize], target: DebugTarget, args: &[String
         }
     }
     let d = vm.dbg.take();
-    if let Some(d) = d {
-        if quit {
+    if let Some(mut d) = d {
+        if is_dap {
+            d.dap_finished(code, panic_msg, err_msg, quit);
+        } else if quit {
             d.emit(serde_json::json!({"event": "terminated", "reason": "quit"}), "quit".into());
         } else {
             if let Some(m) = panic_msg {
@@ -379,4 +394,9 @@ pub fn debug(prog: &Program, user: &[usize], target: DebugTarget, args: &[String
         }
     }
     Ok(code)
+}
+
+/// DAP の状態 (`launch` のあとで `debug` に渡す)。
+pub fn run_dap_state(lines1: bool, cols1: bool, stop_on_entry: bool) -> run::dbg::DapSt {
+    run::dbg::DapSt::new(lines1, cols1, stop_on_entry)
 }

@@ -1735,7 +1735,7 @@ pub(crate) fn load_for_debug(tree: bool) -> Result<crate::debug::Target, String>
     }
     let prog = Rc::new(prog.unwrap());
     if tree && has_user_drop(&l, &prog, &user) {
-        return Err("ksn: E9031: ksn debug は木走査で動くため、手書きの `impl core.ops.Drop` があるパッケージはデバッグできない (Drop が黙って飛ばされる)。`ksn run` (VM) を使う".to_string());
+        return Err("ksn: `--engine=tree` のデバッガは木走査で動くため、手書きの `impl core.ops.Drop` があるパッケージはデバッグできない (Drop が黙って飛ばされる)。`--engine=tree` を外して VM のデバッガを使う".to_string());
     }
     let entry_name = l.pkg.entry().unwrap_or_default();
     let entry = prog.funcs.get(&entry_name).copied();
@@ -5757,7 +5757,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         }
         "lsp" => crate::lsp::run(),
         "debug" => crate::debug::cmd_debug(&rest),
-        "dap" => crate::debug::cmd_dap(),
+        "dap" => crate::debug::cmd_dap(rest.iter().any(|a| a == "--engine=tree")),
         "kir" => cmd_kir(&rest),
         "s5-meter" => cmd_s5_meter(&rest),
         "build" => cmd_build(&rest, None),

@@ -46,14 +46,17 @@ end t.main
     }
 }
 
+/// 手書きの `Drop` を持つパッケージも、VM のデバッガ (既定) では走る。`--engine=tree` のデバッガは `Drop` を走らせないので拒む。
 #[test]
-fn debug_refuses_hand_written_drop() {
+fn debug_runs_hand_written_drop_on_the_vm() {
     let src = r#"type t.D
     id: u64
 end t.D
 
 impl core.ops.Drop for t.D
 fn t.D.drop(self: &mut t.D) -> () uses [] panics never impls core.ops.Drop
+    let n = self.id
+    core.mem.drop(n)
 end t.D.drop
 
 fn t.main() -> () uses [] panics never
@@ -64,8 +67,14 @@ fn t.main() -> () uses [] panics never
 end t.main
 "#;
     let t = Tmp::new("stab_s06", src);
-    let o = run(&["debug", "--json"], &t.0);
-    let e = text(&o.stderr);
-    assert!(e.contains("Drop"), "{}", e);
+    let mut c = Command::new(exe()).args(["debug", "--json"]).current_dir(&t.0).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    use std::io::Write;
+    c.stdin.take().unwrap().write_all(b"break t.D.drop\nrun\nbt\ncontinue\n").unwrap();
+    let o = c.wait_with_output().unwrap();
+    let out = text(&o.stdout);
+    assert!(out.contains("\"reason\":\"function breakpoint\"") && out.contains("\"function\":\"t.D.drop\""), "{}\n{}", out, text(&o.stderr));
+    assert_eq!(o.status.code(), Some(0), "{}", out);
+    let o = run(&["debug", "--json", "--engine=tree"], &t.0);
+    assert!(text(&o.stderr).contains("Drop"), "{}", text(&o.stderr));
     assert_ne!(o.status.code(), Some(0));
 }

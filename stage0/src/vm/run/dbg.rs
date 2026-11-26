@@ -39,6 +39,17 @@ enum Mode {
     Out(usize),
 }
 
+pub struct BpRes {
+    id: u32,
+    kind: &'static str,
+    verified: bool,
+    file: String,
+    line: usize,
+    function: String,
+    cond: Option<String>,
+    message: String,
+}
+
 pub enum Resume {
     Continue,
     In,
@@ -77,6 +88,9 @@ pub struct Dbg {
     pub quit: bool,
     /// 直前の `Line` の (関数, 底, 行)。同じ行の途中のブロックの先頭で、続けて止まらないための印。
     last_ev: Option<(u32, usize, u32)>,
+    /// DAP のとき (端末のコマンドの代わりに DAP の要求を読む)。
+    pub dap: Option<DapSt>,
+    pub stop_on_panic: bool,
 }
 
 enum Flow {
@@ -416,6 +430,10 @@ impl<'a> Vm<'a> {
     /// panic で終わった直後に、panic の場所で止まる (`stopped: panic`)。
     pub fn dbg_panic_stop(&mut self, message: &str) {
         let Some(mut d) = self.dbg.take() else { return };
+        if !d.stop_on_panic {
+            self.dbg = Some(d);
+            return;
+        }
         if let Some((vi, fi, pc)) = self.panic_at {
             let cur = Fr { vi, fi, pc: pc as usize, base: self.panic_base };
             let frames = self.dbg_frames(cur, &d);
@@ -705,6 +723,8 @@ impl Dbg {
             last_err: Default::default(),
             quit: false,
             last_ev: None,
+            dap: None,
+            stop_on_panic: true,
         }
     }
 
@@ -732,61 +752,84 @@ impl Dbg {
         lines.get(line.wrapping_sub(1)).map(|l| l.trim().to_string()).unwrap_or_default()
     }
 
+    /// 文の桁 (1 始まり)。書き方は 1 通りなので、1 行に 1 文で、桁は字下げの幅 + 1。
+    fn col_of(&mut self, file: &str, line: usize) -> usize {
+        let lines = self.src_cache.entry(file.to_string()).or_insert_with(|| std::fs::read_to_string(file).unwrap_or_default().lines().map(String::from).collect());
+        lines.get(line.wrapping_sub(1)).map_or(1, |l| l.len() - l.trim_start().len() + 1)
+    }
+
     fn find_user_file(&self, pat: &str) -> Option<String> {
         let mut fs: Vec<&String> = self.user_files.iter().filter(|f| same_file(f, pat)).collect();
         fs.sort();
         fs.first().map(|s| s.to_string())
     }
 
-    fn show_bp(&self, id: u32, kind: &str, verified: bool, file: &str, line: usize, function: &str, cond: Option<&str>, message: &str) {
+    fn show_bp(&self, r: &BpRes) {
         let j = json!({
-            "event": "breakpoint", "id": id, "kind": kind, "verified": verified,
-            "file": if file.is_empty() { Value::Null } else { json!(rel(file)) },
-            "line": line, "function": function, "condition": cond, "message": message,
+            "event": "breakpoint", "id": r.id, "kind": r.kind, "verified": r.verified,
+            "file": if r.file.is_empty() { Value::Null } else { json!(rel(&r.file)) },
+            "line": r.line, "function": r.function, "condition": r.cond, "message": r.message,
         });
-        let t = if verified {
-            let at = if kind == "line" { format!("{}:{}", rel(file), line) } else { function.to_string() };
-            let c = cond.map_or(String::new(), |c| format!(" if {}", c));
-            format!("breakpoint {} at {}{}", id, at, c)
+        let t = if r.verified {
+            let at = if r.kind == "line" { format!("{}:{}", rel(&r.file), r.line) } else { r.function.clone() };
+            let c = r.cond.as_ref().map_or(String::new(), |c| format!(" if {}", c));
+            format!("breakpoint {} at {}{}", r.id, at, c)
         } else {
-            format!("breakpoint {} not set: {}", id, message)
+            format!("breakpoint {} not set: {}", r.id, r.message)
         };
         self.emit(j, t);
     }
 
-    fn set_bp(&mut self, kind_line: Option<(&str, usize)>, func: Option<&str>, cond: Option<&str>) {
+    fn make_bp(&mut self, kind_line: Option<(&str, usize)>, func: Option<&str>, cond: Option<&str>) -> BpRes {
         let id = self.next_id;
         self.next_id += 1;
+        let mut r = BpRes { id, kind: if kind_line.is_some() { "line" } else { "function" }, verified: false, file: String::new(), line: 0, function: String::new(), cond: cond.map(String::from), message: String::new() };
         let cond_ast = match cond.map(str::trim).filter(|c| !c.is_empty()) {
             None => None,
             Some(t) => match self.parse_cond(t) {
                 Ok(a) => Some((t.to_string(), a)),
                 Err(e) => {
-                    let (k, f) = if kind_line.is_some() { ("line", "") } else { ("function", func.unwrap_or("")) };
-                    self.show_bp(id, k, false, "", 0, f, cond, &e);
-                    return;
+                    r.function = func.unwrap_or("").to_string();
+                    r.message = e;
+                    return r;
                 }
             },
         };
-        let ctext = cond_ast.as_ref().map(|c| c.0.clone());
         if let Some((pat, line)) = kind_line {
+            r.file = pat.to_string();
+            r.line = line;
             let Some(file) = self.find_user_file(pat) else {
-                return self.show_bp(id, "line", false, pat, line, "", cond, &format!("no source file matches `{}` in this package", pat));
+                r.message = format!("no source file matches `{}` in this package", pat);
+                return r;
             };
             let Some(&actual) = self.code_lines.get(&file).and_then(|s| s.range(line..).next()) else {
-                return self.show_bp(id, "line", false, &file, line, "", cond, &format!("no code at or after line {}", line));
+                r.file = file;
+                r.message = format!("no code at or after line {}", line);
+                return r;
             };
-            self.show_bp(id, "line", true, &file, actual, "", ctext.as_deref(), "");
+            r.verified = true;
+            r.file = file.clone();
+            r.line = actual;
             self.bps.push(Bp { id, kind: BpKind::Line { file, line: actual }, cond: cond_ast, hits: 0 });
         } else if let Some(name) = func {
             let name = name.trim();
             let name = name.strip_prefix("fn ").unwrap_or(name).trim().to_string();
+            r.function = name.clone();
             let Some((file, line)) = self.func_at.get(&name).cloned() else {
-                return self.show_bp(id, "function", false, "", 0, &name, cond, &format!("no function `{}`", name));
+                r.message = format!("no function `{}`", name);
+                return r;
             };
-            self.show_bp(id, "function", true, &file, line, &name, ctext.as_deref(), "");
+            r.verified = true;
+            r.file = file;
+            r.line = line;
             self.bps.push(Bp { id, kind: BpKind::Func { name }, cond: cond_ast, hits: 0 });
         }
+        r
+    }
+
+    fn set_bp(&mut self, kind_line: Option<(&str, usize)>, func: Option<&str>, cond: Option<&str>) {
+        let r = self.make_bp(kind_line, func, cond);
+        self.show_bp(&r);
     }
 
     fn cmd_break(&mut self, sel_file: Option<String>, rest: &str) {
@@ -1018,27 +1061,7 @@ impl Dbg {
         vm.flush();
         let frames = vm.dbg_frames(cur, self);
         self.sel = 0;
-        if let Some(f0) = frames.first() {
-            let fj = self.frame_json(vm, 0, f0);
-            let (name, file, line) = (fj["function"].as_str().unwrap_or("").to_string(), fj["file"].as_str().unwrap_or("").to_string(), fj["line"].clone());
-            let src = fj["source"].as_str().unwrap_or("").to_string();
-            let mut t = match reason {
-                "panic" => format!("stopped: panic \"{}\" in {} at {}:{}", message, name, file, line),
-                r => format!("stopped: {}{} in {} at {}:{}", r, if bp_ids.is_empty() { String::new() } else { format!(" #{}", bp_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")) }, name, file, line),
-            };
-            if reason != "panic" && !message.is_empty() {
-                t.push_str(&format!(" ({})", message));
-            }
-            t.push_str(&format!("\n  {} | {}", line, src));
-            self.emit(json!({"event": "stopped", "reason": reason, "message": message, "breakpoints": bp_ids, "thread": 1, "frame": fj}), t);
-        }
-        let r = loop {
-            let Some(line) = Self::read_line() else { break Resume::Quit };
-            match self.handle(Some((vm, &frames)), &line) {
-                Flow::Resume(r) => break r,
-                Flow::Run | Flow::Stay => {}
-            }
-        };
+        let r = if self.dap.is_some() { self.dap_stopped(vm, &frames, reason, message, bp_ids) } else { self.term_stopped(vm, &frames, reason, message, bp_ids) };
         let depth = vm.frames.len();
         self.mode = match r {
             Resume::Continue => Mode::Run,
@@ -1053,11 +1076,37 @@ impl Dbg {
         };
         r
     }
+
+    fn term_stopped(&mut self, vm: &mut Vm, frames: &[Fr], reason: &str, message: &str, bp_ids: &[u32]) -> Resume {
+        if let Some(f0) = frames.first() {
+            let fj = self.frame_json(vm, 0, f0);
+            let (name, file, line) = (fj["function"].as_str().unwrap_or("").to_string(), fj["file"].as_str().unwrap_or("").to_string(), fj["line"].clone());
+            let src = fj["source"].as_str().unwrap_or("").to_string();
+            let mut t = match reason {
+                "panic" => format!("stopped: panic \"{}\" in {} at {}:{}", message, name, file, line),
+                r => format!("stopped: {}{} in {} at {}:{}", r, if bp_ids.is_empty() { String::new() } else { format!(" #{}", bp_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")) }, name, file, line),
+            };
+            if reason != "panic" && !message.is_empty() {
+                t.push_str(&format!(" ({})", message));
+            }
+            t.push_str(&format!("\n  {} | {}", line, src));
+            self.emit(json!({"event": "stopped", "reason": reason, "message": message, "breakpoints": bp_ids, "thread": 1, "frame": fj}), t);
+        }
+        loop {
+            let Some(line) = Self::read_line() else { break Resume::Quit };
+            match self.handle(Some((vm, frames)), &line) {
+                Flow::Resume(r) => break r,
+                Flow::Run | Flow::Stay => {}
+            }
+        }
+    }
 }
 
-pub fn flush_json_out(json: bool) -> Box<dyn FnMut(u8, &[u8])> {
+pub fn flush_json_out(json: bool, dap: bool) -> Box<dyn FnMut(u8, &[u8])> {
     Box::new(move |fd, b| {
-        if json {
+        if dap {
+            dap_event("output", json!({"category": if fd == 1 { "stdout" } else { "stderr" }, "output": String::from_utf8_lossy(b).to_string()}));
+        } else if json {
             let s = String::from_utf8_lossy(b).to_string();
             println!("{}", json!({"event": "output", "stream": if fd == 1 { "stdout" } else { "stderr" }, "text": s}));
             let _ = std::io::stdout().flush();
@@ -1069,4 +1118,340 @@ pub fn flush_json_out(json: bool) -> Box<dyn FnMut(u8, &[u8])> {
             let _ = crate::kir_exec::write_fd(2, b);
         }
     })
+}
+
+// ------------------------------------------------------------ DAP
+
+static SEQ: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+
+pub fn dap_write(mut v: Value) {
+    v["seq"] = json!(SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+    let body = v.to_string();
+    let out = std::io::stdout();
+    let mut o = out.lock();
+    let _ = write!(o, "Content-Length: {}\r\n\r\n{}", body.len(), body);
+    let _ = o.flush();
+}
+
+pub fn dap_event(name: &str, body: Value) {
+    dap_write(json!({"type": "event", "event": name, "body": body}));
+}
+
+enum VarRef {
+    Locals(usize),
+    Val(DV),
+}
+
+pub struct DapSt {
+    pub lines1: bool,
+    pub cols1: bool,
+    refs: Vec<VarRef>,
+    stopped_now: bool,
+    pub stop_on_entry: bool,
+}
+
+impl DapSt {
+    pub fn new(lines1: bool, cols1: bool, stop_on_entry: bool) -> DapSt {
+        DapSt { lines1, cols1, refs: vec![], stopped_now: false, stop_on_entry }
+    }
+}
+
+enum DFlow {
+    Stay,
+    Run,
+    Resume(Resume),
+    Disconnect,
+}
+
+fn children_of(v: &DV) -> Vec<(String, DV)> {
+    match v {
+        DV::Struct(_, fs) => fs.clone(),
+        DV::Tuple(xs) | DV::Array(xs) => xs.iter().enumerate().map(|(i, x)| (i.to_string(), x.clone())).collect(),
+        DV::Variant(_, xs) => xs.iter().enumerate().map(|(i, x)| (i.to_string(), x.clone())).collect(),
+        _ => vec![],
+    }
+}
+
+fn respond(req: &Value, ok: bool, body: Value, message: Option<&str>) {
+    let mut r = json!({"type": "response", "request_seq": req["seq"], "success": ok, "command": req["command"], "body": body});
+    if let Some(m) = message {
+        r["message"] = json!(m);
+    }
+    dap_write(r);
+}
+
+pub fn dap_read() -> Option<Value> {
+    use std::io::Read;
+    let stdin = std::io::stdin();
+    let mut lock = stdin.lock();
+    let mut len: Option<usize> = None;
+    loop {
+        let mut line = String::new();
+        if lock.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        let l = line.trim_end();
+        if l.is_empty() {
+            if len.is_some() {
+                break;
+            }
+            continue;
+        }
+        if let Some((k, v)) = l.split_once(':') {
+            if k.eq_ignore_ascii_case("content-length") {
+                len = v.trim().parse().ok();
+            }
+        }
+    }
+    let mut buf = vec![0u8; len?];
+    lock.read_exact(&mut buf).ok()?;
+    serde_json::from_slice(&buf).ok()
+}
+
+impl Dbg {
+    fn dl(&self) -> &DapSt {
+        self.dap.as_ref().unwrap()
+    }
+
+    fn line_out(&self, l: usize) -> usize {
+        if self.dl().lines1 { l } else { l.saturating_sub(1) }
+    }
+
+    fn col_out(&self, c: usize) -> usize {
+        if self.dl().cols1 { c } else { c.saturating_sub(1) }
+    }
+
+    fn line_in(&self, l: usize) -> usize {
+        if self.dl().lines1 { l } else { l + 1 }
+    }
+
+    fn bp_json(&self, r: &BpRes) -> Value {
+        let mut j = json!({"id": r.id, "verified": r.verified});
+        if r.verified && r.kind == "line" {
+            j["line"] = json!(self.line_out(r.line));
+        }
+        if !r.message.is_empty() {
+            j["message"] = json!(r.message);
+        }
+        j
+    }
+
+    fn new_ref(&mut self, r: VarRef) -> i64 {
+        let d = self.dap.as_mut().unwrap();
+        d.refs.push(r);
+        d.refs.len() as i64
+    }
+
+    fn var_json(&mut self, name: &str, v: &DV) -> Value {
+        let r = if children_of(v).is_empty() { 0 } else { self.new_ref(VarRef::Val(v.clone())) };
+        json!({"name": name, "value": v.show(), "variablesReference": r})
+    }
+
+    fn dap_handle(&mut self, mut stop: Option<(&mut Vm, &[Fr])>, req: &Value) -> DFlow {
+        let cmd = req["command"].as_str().unwrap_or("");
+        let a = &req["arguments"];
+        match cmd {
+            "setBreakpoints" => {
+                let path = a["source"]["path"].as_str().unwrap_or("").to_string();
+                self.bps.retain(|b| !matches!(&b.kind, BpKind::Line { file, .. } if same_file(file, &path)));
+                let mut out = vec![];
+                let reqs: Vec<(usize, Option<String>)> = match a["breakpoints"].as_array() {
+                    Some(bs) => bs.iter().map(|b| (b["line"].as_u64().unwrap_or(0) as usize, b["condition"].as_str().map(String::from))).collect(),
+                    None => a["lines"].as_array().map(|ls| ls.iter().map(|l| (l.as_u64().unwrap_or(0) as usize, None)).collect()).unwrap_or_default(),
+                };
+                for (l, c) in reqs {
+                    let r = self.make_bp(Some((&path, self.line_in(l))), None, c.as_deref());
+                    out.push(self.bp_json(&r));
+                }
+                respond(req, true, json!({"breakpoints": out}), None);
+            }
+            "setFunctionBreakpoints" => {
+                self.bps.retain(|b| !matches!(b.kind, BpKind::Func { .. }));
+                let mut out = vec![];
+                for b in a["breakpoints"].as_array().cloned().unwrap_or_default() {
+                    let r = self.make_bp(None, Some(b["name"].as_str().unwrap_or("")), b["condition"].as_str());
+                    out.push(self.bp_json(&r));
+                }
+                respond(req, true, json!({"breakpoints": out}), None);
+            }
+            "setExceptionBreakpoints" => {
+                self.stop_on_panic = a["filters"].as_array().map_or(true, |f| f.iter().any(|x| x == "panic"));
+                respond(req, true, json!({}), None);
+            }
+            "configurationDone" => {
+                respond(req, true, json!({}), None);
+                return DFlow::Run;
+            }
+            "threads" => respond(req, true, json!({"threads": [{"id": 1, "name": "main"}]}), None),
+            "stackTrace" => {
+                let Some((vm, frames)) = stop.as_ref() else {
+                    respond(req, true, json!({"stackFrames": [], "totalFrames": 0}), None);
+                    return DFlow::Stay;
+                };
+                let start = a["startFrame"].as_u64().unwrap_or(0) as usize;
+                let levels = a["levels"].as_u64().filter(|&n| n > 0).map_or(usize::MAX, |n| n as usize);
+                let mut out = vec![];
+                for (i, f) in frames.iter().enumerate().skip(start).take(levels) {
+                    let func = &vm.prog_of(f.vi).funcs[f.fi as usize];
+                    let (line, _) = vm.fr_pos(f);
+                    let col = self.col_of(&func.file, line);
+                    let name = std::path::Path::new(&func.file).file_name().map_or(String::new(), |n| n.to_string_lossy().to_string());
+                    out.push(json!({
+                        "id": i + 1, "name": func.key,
+                        "source": {"name": name, "path": func.file},
+                        "line": self.line_out(line), "column": self.col_out(col),
+                        "presentationHint": "normal",
+                    }));
+                }
+                respond(req, true, json!({"stackFrames": out, "totalFrames": frames.len()}), None);
+            }
+            "scopes" => {
+                let fid = a["frameId"].as_u64().unwrap_or(1) as usize - 1;
+                let r = self.new_ref(VarRef::Locals(fid));
+                respond(req, true, json!({"scopes": [{"name": "Locals", "variablesReference": r, "expensive": false}]}), None);
+            }
+            "variables" => {
+                let r = a["variablesReference"].as_i64().unwrap_or(0);
+                let kind = if r >= 1 {
+                    self.dl().refs.get(r as usize - 1).map(|k| match k {
+                        VarRef::Locals(i) => (Some(*i), None),
+                        VarRef::Val(v) => (None, Some(v.clone())),
+                    })
+                } else {
+                    None
+                };
+                let mut out = vec![];
+                match kind {
+                    Some((Some(idx), _)) => {
+                        if let Some((vm, frames)) = stop.as_ref() {
+                            if let Some(f) = frames.get(idx) {
+                                let vals: Vec<(String, DV)> = vm.fr_vars(f).into_iter().map(|(n, ty, slot, mem)| (n, vm.var_value(f, ty, slot, mem))).collect();
+                                for (k, v) in vals {
+                                    out.push(self.var_json(&k, &v));
+                                }
+                            }
+                        }
+                    }
+                    Some((_, Some(v))) => {
+                        for (k, c) in children_of(&v) {
+                            out.push(self.var_json(&k, &c));
+                        }
+                    }
+                    _ => {}
+                }
+                respond(req, true, json!({"variables": out}), None);
+            }
+            "evaluate" => {
+                let idx = match a["frameId"].as_u64() {
+                    Some(f) if f >= 1 => f as usize - 1,
+                    _ => 0,
+                };
+                let r = match stop.as_mut() {
+                    Some((vm, frames)) => match frames.get(idx).copied() {
+                        Some(f) => self.parse_cond(a["expression"].as_str().unwrap_or("")).and_then(|ast| self.eval(vm, &f, &ast)),
+                        None => Err("no frame (the program is not stopped)".to_string()),
+                    },
+                    None => Err("no frame (the program is not stopped)".to_string()),
+                };
+                match r {
+                    Ok(v) => {
+                        let r = if children_of(&v).is_empty() { 0 } else { self.new_ref(VarRef::Val(v.clone())) };
+                        respond(req, true, json!({"result": v.show(), "variablesReference": r}), None);
+                    }
+                    Err(e) => respond(req, false, json!({}), Some(&e)),
+                }
+            }
+            "continue" | "next" | "stepIn" | "stepOut" => {
+                if !self.dl().stopped_now {
+                    respond(req, false, json!({}), Some("the program is not stopped"));
+                    return DFlow::Stay;
+                }
+                let body = if cmd == "continue" { json!({"allThreadsContinued": true}) } else { json!({}) };
+                respond(req, true, body, None);
+                return DFlow::Resume(match cmd {
+                    "continue" => Resume::Continue,
+                    "next" => Resume::Next,
+                    "stepIn" => Resume::In,
+                    _ => Resume::Out,
+                });
+            }
+            "disconnect" | "terminate" => {
+                respond(req, true, json!({}), None);
+                return DFlow::Disconnect;
+            }
+            "exceptionInfo" => respond(req, true, json!({"exceptionId": "panic", "breakMode": "always"}), None),
+            other => respond(req, false, json!({}), Some(&format!("unsupported request `{}`", other))),
+        }
+        DFlow::Stay
+    }
+
+    /// 構成の要求 (ブレークポイントなど) を `configurationDone` まで受ける。`false` は切断。
+    pub fn dap_prelude(&mut self) -> bool {
+        loop {
+            let Some(req) = dap_read() else { return false };
+            match self.dap_handle(None, &req) {
+                DFlow::Run => return true,
+                DFlow::Disconnect => return false,
+                _ => {}
+            }
+        }
+    }
+
+    fn dap_stopped(&mut self, vm: &mut Vm, frames: &[Fr], reason: &str, message: &str, bp_ids: &[u32]) -> Resume {
+        let dap = self.dap.as_mut().unwrap();
+        dap.stopped_now = true;
+        dap.refs.clear();
+        let rs = if reason == "panic" { "exception" } else { reason };
+        let mut body = json!({"reason": rs, "threadId": 1, "allThreadsStopped": true});
+        if !message.is_empty() {
+            body["text"] = json!(message);
+            body["description"] = json!(if reason == "panic" { format!("panic: {}", message) } else { message.to_string() });
+        }
+        if !bp_ids.is_empty() {
+            body["hitBreakpointIds"] = json!(bp_ids);
+        }
+        if reason == "panic" {
+            dap_event("output", json!({"category": "stderr", "output": format!("panic: {}\n", message)}));
+        }
+        dap_event("stopped", body);
+        let r = loop {
+            let Some(req) = dap_read() else { break Resume::Quit };
+            match self.dap_handle(Some((vm, frames)), &req) {
+                DFlow::Resume(r) => break r,
+                DFlow::Disconnect => break Resume::Quit,
+                _ => {}
+            }
+        };
+        let dap = self.dap.as_mut().unwrap();
+        dap.stopped_now = false;
+        dap.refs.clear();
+        r
+    }
+
+    /// DAP の終わり: 出力 (panic・`Error:`)、`exited` / `terminated`、切断を待つ。
+    pub fn dap_finished(&mut self, code: i32, panic_msg: Option<String>, err_msg: Option<String>, quit: bool) {
+        if quit {
+            return;
+        }
+        if let Some(m) = panic_msg {
+            dap_event("output", json!({"category": "stderr", "output": format!("panic: {}\n", m)}));
+        }
+        if let Some(m) = err_msg {
+            dap_event("output", json!({"category": "stderr", "output": format!("Error: {}\n", m.trim_start_matches("Error: "))}));
+        }
+        dap_event("exited", json!({"exitCode": code}));
+        dap_event("terminated", json!({}));
+        while let Some(req) = dap_read() {
+            let cmd = req["command"].as_str().unwrap_or("");
+            if matches!(cmd, "disconnect" | "terminate") {
+                respond(&req, true, json!({}), None);
+                break;
+            }
+            if cmd == "threads" {
+                respond(&req, true, json!({"threads": []}), None);
+            } else {
+                respond(&req, false, json!({}), Some("the program has exited"));
+            }
+        }
+    }
 }
