@@ -518,7 +518,7 @@ pub(super) fn size_of(t: Ty) -> Option<u32> {
         Ty::I8 | Ty::U8 | Ty::Bool => 1,
         Ty::I16 | Ty::U16 => 2,
         Ty::I32 | Ty::U32 | Ty::F32 => 4,
-        Ty::I64 | Ty::U64 | Ty::F64 | Ty::Isize | Ty::Usize | Ty::Ptr => 8,
+        Ty::I64 | Ty::U64 | Ty::F64 | Ty::Isize | Ty::Usize | Ty::Ptr | Ty::Ref(..) => 8,
         Ty::I128 | Ty::U128 => 16,
         _ => return None,
     })

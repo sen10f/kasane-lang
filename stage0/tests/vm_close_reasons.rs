@@ -54,3 +54,23 @@ end t.main
         "ok\n",
     );
 }
+
+#[test]
+fn array_of_references() {
+    vm_runs(
+        "vmc_arr_ref",
+        r#"fn t.main() -> () uses [io.console] panics may
+    let mut x = 1u32
+    let mut y = 2u32
+    let mut r = &mut y
+    let mut a = [&mut x]
+    core.mem.swap(&mut a[0usize], &mut r)
+    *r = 5u32
+    core.mem.drop(a)
+    core.check.eq(x, 1u32)
+    core.mem.drop(std.io.print_line("ok"))
+end t.main
+"#,
+        "ok\n",
+    );
+}
