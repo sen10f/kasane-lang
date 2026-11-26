@@ -105,30 +105,18 @@ fn wiki.server.serve_all(stream: &mut std.net.TcpStream, page_store: &mut wiki.s
     let mut served = 0usize
     let mut more = true
     while more {
-        let mut chunk = [0u8; 1024]
-        let n = stream.read(&mut chunk)?
-        if n > 0usize {
-            decoder.feed_part(&chunk, n)?
-        }
-        loop {
-            match decoder.next() {
-                Ok(Some(request)) => {
-                    served = served.saturating_add(1usize)
-                    more = wiki.server.answer(stream, page_store, csrf_tokens, &request)?
-                    if !more {
-                        break
-                    }
-                }
-                Ok(None) => break
-                Err(failure) => {
-                    wiki.server.refuse(stream, failure)?
-                    more = false
-                    break
-                }
+        match std.http.read_request(stream, decoder) {
+            Ok(Some(request)) => {
+                served = served.saturating_add(1usize)
+                more = wiki.server.answer(stream, page_store, csrf_tokens, &request)?
             }
-        }
-        if n == 0usize {
-            more = false
+            Ok(None) => {
+                more = false
+            }
+            Err(failure) => {
+                wiki.server.refuse(stream, failure)?
+                more = false
+            }
         }
     }
     Ok(served)

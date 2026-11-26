@@ -111,35 +111,23 @@ fn wiki.server.serve(address: &str, data_dir: &str) -> Result<(), wiki.error.Err
 end wiki.server.serve
 
 // 要求を読んで答える。接続が閉じるか、接続を保たない要求まで続ける。返すのは処理した要求の数。
-// `Decoder.feed_part` で読んだバイトを蓄え、`Decoder.next` で 1 件ずつ取り出す。
+// `std.http.read_request` で 1 件ずつ読む。
 fn wiki.server.serve_all(stream: &mut std.net.TcpStream, page_store: &mut wiki.store.PageStore, csrf_tokens: &mut std.vec.Vec<std.string.String>, decoder: &mut std.http.Decoder) -> Result<usize, wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never
     let mut served = 0usize
     let mut more = true
     while more {
-        let mut chunk = [0u8; 1024]
-        let n = stream.read(&mut chunk)?
-        if n > 0usize {
-            decoder.feed_part(&chunk, n)?
-        }
-        loop {
-            match decoder.next() {
-                Ok(Some(request)) => {
-                    served = served.saturating_add(1usize)
-                    more = wiki.server.answer(stream, page_store, csrf_tokens, &request)?
-                    if !more {
-                        break
-                    }
-                }
-                Ok(None) => break
-                Err(failure) => {
-                    wiki.server.refuse(stream, failure)?
-                    more = false
-                    break
-                }
+        match std.http.read_request(stream, decoder) {
+            Ok(Some(request)) => {
+                served = served.saturating_add(1usize)
+                more = wiki.server.answer(stream, page_store, csrf_tokens, &request)?
             }
-        }
-        if n == 0usize {
-            more = false
+            Ok(None) => {
+                more = false
+            }
+            Err(failure) => {
+                wiki.server.refuse(stream, failure)?
+                more = false
+            }
         }
     }
     Ok(served)
