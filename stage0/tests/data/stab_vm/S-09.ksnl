@@ -1,0 +1,74 @@
+fn t.main() -> () uses [alloc, io.console] panics may
+    match char.try_from_u32(127u32) {
+        Some(ch) => {
+            let mut s = std.string.String.new()
+            s.push_str("U+007F ").unwrap()
+            alloc.fmt.debug(&mut s, &ch).unwrap()
+            std.io.print_line(s.as_str()).unwrap()
+        }
+        None => std.io.print_line("none").unwrap()
+    }
+    match char.try_from_u32(128u32) {
+        Some(ch) => {
+            let mut s = std.string.String.new()
+            s.push_str("U+0080 ").unwrap()
+            alloc.fmt.debug(&mut s, &ch).unwrap()
+            std.io.print_line(s.as_str()).unwrap()
+        }
+        None => std.io.print_line("none").unwrap()
+    }
+    match char.try_from_u32(160u32) {
+        Some(ch) => {
+            let mut s = std.string.String.new()
+            s.push_str("U+00A0 ").unwrap()
+            alloc.fmt.debug(&mut s, &ch).unwrap()
+            std.io.print_line(s.as_str()).unwrap()
+        }
+        None => std.io.print_line("none").unwrap()
+    }
+    match char.try_from_u32(173u32) {
+        Some(ch) => {
+            let mut s = std.string.String.new()
+            s.push_str("U+00AD ").unwrap()
+            alloc.fmt.debug(&mut s, &ch).unwrap()
+            std.io.print_line(s.as_str()).unwrap()
+        }
+        None => std.io.print_line("none").unwrap()
+    }
+    match char.try_from_u32(768u32) {
+        Some(ch) => {
+            let mut s = std.string.String.new()
+            s.push_str("U+0300 ").unwrap()
+            alloc.fmt.debug(&mut s, &ch).unwrap()
+            std.io.print_line(s.as_str()).unwrap()
+        }
+        None => std.io.print_line("none").unwrap()
+    }
+    match char.try_from_u32(8203u32) {
+        Some(ch) => {
+            let mut s = std.string.String.new()
+            s.push_str("U+200B ").unwrap()
+            alloc.fmt.debug(&mut s, &ch).unwrap()
+            std.io.print_line(s.as_str()).unwrap()
+        }
+        None => std.io.print_line("none").unwrap()
+    }
+    match char.try_from_u32(65_279u32) {
+        Some(ch) => {
+            let mut s = std.string.String.new()
+            s.push_str("U+FEFF ").unwrap()
+            alloc.fmt.debug(&mut s, &ch).unwrap()
+            std.io.print_line(s.as_str()).unwrap()
+        }
+        None => std.io.print_line("none").unwrap()
+    }
+    match char.try_from_u32(1_114_111u32) {
+        Some(ch) => {
+            let mut s = std.string.String.new()
+            s.push_str("U+10FFFF ").unwrap()
+            alloc.fmt.debug(&mut s, &ch).unwrap()
+            std.io.print_line(s.as_str()).unwrap()
+        }
+        None => std.io.print_line("none").unwrap()
+    }
+end t.main

@@ -353,6 +353,33 @@ fn hex_digit(b: &mut Fb, d: VId) {
     b.put(p, one);
 }
 
+/// Rust の `{:?}` が `\u{..}` に逃がす `char` の範囲 (昇順、`[lo, hi]` を u32 の小端で 2 つずつ)。
+fn char_escape_table() -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut cur: Option<(u32, u32)> = None;
+    for c in 0..=0x10ffffu32 {
+        let esc = match char::from_u32(c) {
+            Some(ch) => format!("{:?}", ch).starts_with("'\\u{"),
+            None => cur.is_some(),
+        };
+        match (esc, cur) {
+            (true, Some((lo, _))) => cur = Some((lo, c)),
+            (true, None) => cur = Some((c, c)),
+            (false, Some((lo, hi))) => {
+                out.extend_from_slice(&lo.to_le_bytes());
+                out.extend_from_slice(&hi.to_le_bytes());
+                cur = None;
+            }
+            (false, None) => {}
+        }
+    }
+    if let Some((lo, hi)) = cur {
+        out.extend_from_slice(&lo.to_le_bytes());
+        out.extend_from_slice(&hi.to_le_bytes());
+    }
+    out
+}
+
 fn char_fn(fat: Ty) -> Func {
     let mut b = Fb::new_d(&[Ty::U32], fat);
     let c = b.v;
@@ -371,29 +398,58 @@ fn char_fn(fat: Ty) -> Func {
         b.goto(close, vec![]);
         b.at(no);
     }
-    // 制御文字 (0x20 未満と 0x7f) は `\u{..}`
-    let k20 = b.c(Ty::U32, 0x20);
-    let lo = b.cmp(Cc::Lt, Ty::U32, c, k20);
-    let k7f = b.c(Ty::U32, 0x7f);
-    let del = b.cmp(Cc::Eq, Ty::U32, c, k7f);
-    let ctl = b.emit(Ty::Bool, Op::Bool(BoolOp::Or, lo, del));
+    // Rust の `{:?}` が `\u{..}` に逃がす文字 (表示できない文字・結合文字など) は、昇順の範囲の表 (u32 の組) を先頭から探す。
+    let tbytes = char_escape_table();
+    let nranges = (tbytes.len() / 8) as i128;
+    let table = b.emit(Ty::Ptr, Op::StaticBytes(tbytes));
+    let (scan, sv) = b.block(&[Ty::Usize]);
     let (esc, _) = b.block(&[]);
     let (not_ctl, _) = b.block(&[]);
-    b.br_if(ctl, esc, not_ctl);
+    let zero = b.c(Ty::Usize, 0);
+    b.goto(scan, vec![zero]);
+    b.at(scan);
+    let nr = b.c(Ty::Usize, nranges);
+    let end = b.cmp(Cc::Ge, Ty::Usize, sv[0], nr);
+    let (body, _) = b.block(&[]);
+    b.br_if(end, not_ctl, body);
+    b.at(body);
+    let eight = b.c(Ty::Usize, 8);
+    let off = b.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: sv[0], b: eight });
+    let rp = b.emit(Ty::Ptr, Op::PtrAdd { p: table, off });
+    let rlo = b.emit(Ty::U32, Op::MemLoad { p: rp, off: 0 });
+    let rhi = b.emit(Ty::U32, Op::MemLoad { p: rp, off: 4 });
+    let below = b.cmp(Cc::Lt, Ty::U32, c, rlo);
+    let (chk, _) = b.block(&[]);
+    b.br_if(below, not_ctl, chk);
+    b.at(chk);
+    let inside = b.cmp(Cc::Le, Ty::U32, c, rhi);
+    let (next, _) = b.block(&[]);
+    b.br_if(inside, esc, next);
+    b.at(next);
+    let one = b.c(Ty::Usize, 1);
+    let i1 = b.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: sv[0], b: one });
+    b.goto(scan, vec![i1]);
     b.at(esc);
     b.s("\\u{");
-    let k10 = b.c(Ty::U32, 16);
-    let big = b.cmp(Cc::Ge, Ty::U32, c, k10);
-    let (two, _) = b.block(&[]);
-    let (low, _) = b.block(&[]);
-    b.br_if(big, two, low);
-    b.at(two);
-    let hi = shr(&mut b, c, 4);
-    hex_digit(&mut b, hi);
-    b.goto(low, vec![]);
-    b.at(low);
-    let lo4 = bit(&mut b, BoolOp::And, c, 15);
-    hex_digit(&mut b, lo4);
+    for sh in [20i128, 16, 12, 8, 4, 0] {
+        let d = if sh == 0 {
+            bit(&mut b, BoolOp::And, c, 15)
+        } else {
+            let t = shr(&mut b, c, sh);
+            let (w, _) = b.block(&[]);
+            let (skip, _) = b.block(&[]);
+            let kz = b.c(Ty::U32, 0);
+            let nz = b.cmp(Cc::Ne, Ty::U32, t, kz);
+            b.br_if(nz, w, skip);
+            b.at(w);
+            let d = bit(&mut b, BoolOp::And, t, 15);
+            hex_digit(&mut b, d);
+            b.goto(skip, vec![]);
+            b.at(skip);
+            continue;
+        };
+        hex_digit(&mut b, d);
+    }
     b.s("}");
     b.goto(close, vec![]);
     b.at(not_ctl);

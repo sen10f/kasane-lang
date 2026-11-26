@@ -1,0 +1,423 @@
+extern t.qsort(base: *mut i32, n: usize, size: usize, cmp: fn(*const i32, *const i32) -> i32 uses [] panics never) -> () link "qsort"
+
+fn t.c0(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        -1i32
+    } else if x > y {
+        1i32
+    } else {
+        0i32
+    }
+end t.c0
+
+fn t.c1(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        1i32
+    } else if x > y {
+        -1i32
+    } else {
+        0i32
+    }
+end t.c1
+
+fn t.c10(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        -1i32
+    } else if x > y {
+        1i32
+    } else {
+        0i32
+    }
+end t.c10
+
+fn t.c11(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        1i32
+    } else if x > y {
+        -1i32
+    } else {
+        0i32
+    }
+end t.c11
+
+fn t.c12(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        -1i32
+    } else if x > y {
+        1i32
+    } else {
+        0i32
+    }
+end t.c12
+
+fn t.c13(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        1i32
+    } else if x > y {
+        -1i32
+    } else {
+        0i32
+    }
+end t.c13
+
+fn t.c14(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        -1i32
+    } else if x > y {
+        1i32
+    } else {
+        0i32
+    }
+end t.c14
+
+fn t.c15(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        1i32
+    } else if x > y {
+        -1i32
+    } else {
+        0i32
+    }
+end t.c15
+
+fn t.c16(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        -1i32
+    } else if x > y {
+        1i32
+    } else {
+        0i32
+    }
+end t.c16
+
+fn t.c17(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        1i32
+    } else if x > y {
+        -1i32
+    } else {
+        0i32
+    }
+end t.c17
+
+fn t.c18(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        -1i32
+    } else if x > y {
+        1i32
+    } else {
+        0i32
+    }
+end t.c18
+
+fn t.c19(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        1i32
+    } else if x > y {
+        -1i32
+    } else {
+        0i32
+    }
+end t.c19
+
+fn t.c2(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        -1i32
+    } else if x > y {
+        1i32
+    } else {
+        0i32
+    }
+end t.c2
+
+fn t.c3(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        1i32
+    } else if x > y {
+        -1i32
+    } else {
+        0i32
+    }
+end t.c3
+
+fn t.c4(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        -1i32
+    } else if x > y {
+        1i32
+    } else {
+        0i32
+    }
+end t.c4
+
+fn t.c5(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        1i32
+    } else if x > y {
+        -1i32
+    } else {
+        0i32
+    }
+end t.c5
+
+fn t.c6(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        -1i32
+    } else if x > y {
+        1i32
+    } else {
+        0i32
+    }
+end t.c6
+
+fn t.c7(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        1i32
+    } else if x > y {
+        -1i32
+    } else {
+        0i32
+    }
+end t.c7
+
+fn t.c8(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        -1i32
+    } else if x > y {
+        1i32
+    } else {
+        0i32
+    }
+end t.c8
+
+fn t.c9(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        1i32
+    } else if x > y {
+        -1i32
+    } else {
+        0i32
+    }
+end t.c9
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut v = [5i32, 3i32, 9i32, 1i32, 7i32, 2i32]
+    let p = unsafe "ptr" "raw" {
+        core.ptr.from_mut(&mut v)
+    }
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c0)
+    }
+    t.show(0u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c1)
+    }
+    t.show(1u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c2)
+    }
+    t.show(2u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c3)
+    }
+    t.show(3u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c4)
+    }
+    t.show(4u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c5)
+    }
+    t.show(5u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c6)
+    }
+    t.show(6u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c7)
+    }
+    t.show(7u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c8)
+    }
+    t.show(8u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c9)
+    }
+    t.show(9u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c10)
+    }
+    t.show(10u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c11)
+    }
+    t.show(11u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c12)
+    }
+    t.show(12u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c13)
+    }
+    t.show(13u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c14)
+    }
+    t.show(14u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c15)
+    }
+    t.show(15u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c16)
+    }
+    t.show(16u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c17)
+    }
+    t.show(17u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c18)
+    }
+    t.show(18u64, v[0usize])
+    unsafe "sort" "qsort" {
+        t.qsort(p, 6usize, 4usize, t.c19)
+    }
+    t.show(19u64, v[0usize])
+    Ok(())
+end t.main
+
+fn t.show(i: u64, first: i32) -> () uses [alloc, io.console] panics may
+    let mut s = std.string.String.new()
+    s.push_str("sort ").unwrap()
+    s.push_u64(i).unwrap()
+    s.push_str(" first=").unwrap()
+    s.push_i64(i64.from_i32(first)).unwrap()
+    std.io.print_line(s.as_str()).unwrap()
+end t.show
+
+test t.main.test_sorts
+    std.io.print_line("test body start").unwrap()
+    core.mem.drop(t.main())
+end t.main.test_sorts

@@ -761,7 +761,14 @@ impl Interp {
                     }
                     self.steps = new_steps;
                 }
-                let out: Vec<Val> = (0..n).map(|_| self.cp(v.clone())).collect();
+                // 巨大な配列は、確保に失敗したら `ksn` ごと落とさず panic (101) にする。
+                let mut out: Vec<Val> = Vec::new();
+                if n.checked_mul(std::mem::size_of::<Val>()).is_none_or(|b| b > (16usize << 30)) || out.try_reserve_exact(n).is_err() {
+                    return Err(Ctl::Panic("memory allocation failed: array too large".into()));
+                }
+                for _ in 0..n {
+                    out.push(self.cp(v.clone()));
+                }
                 Ok(Val::Arr(new_list(out)))
             }
             "StructLit" => {
