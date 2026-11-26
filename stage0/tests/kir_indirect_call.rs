@@ -148,3 +148,14 @@ fn fn_values_in_generics_returns_closures_and_assigned_locals_run_on_every_engin
         assert!(!err.contains("skipped"), "{}: {}", n, err);
     }
 }
+
+/// `b.into_dyn()` (メソッドの形) も `Box.into_dyn(b)` と同じに下りる (以前は VM が木走査へ退避した)。
+#[test]
+fn box_into_dyn_in_method_form_runs_on_every_engine() {
+    for p in ["check_ok/bounds_ok", "check_ok/dyn_box_supertrait_effect_args"] {
+        let src = std::fs::read_to_string(format!("{}/tests/data/{}.ksnl", env!("CARGO_MANIFEST_DIR"), p)).unwrap();
+        let (code, _, err) = run_everywhere(&format!("dyn_{}", p.replace('/', "_")), &src);
+        assert!(!err.contains("skipped"), "{}: {}", p, err);
+        let _ = code;
+    }
+}
