@@ -5,6 +5,7 @@
 
 pub mod arena;
 pub mod bc;
+pub mod cabi;
 pub mod compile;
 pub mod reload;
 pub mod run;
@@ -173,7 +174,12 @@ fn has_unsafe(v: &crate::parser::V) -> bool {
 }
 
 /// 利用者 (依存を含む) の `unsafe` ブロックがあるか。生ポインタの境界・null の検査は木走査が持つので、そのパッケージは木走査で走らせる。
+/// 利用者の `extern` (C の関数) を持つパッケージは VM で走らせる: C が返す番地を読むため VM は許容モード (領域の外を通す。`Vm::new`) になるが、
+/// 標準ライブラリの外の `extern` が無ければ許容モードにならず、領域の範囲検査と解放後の使用の検出が効く。
 fn has_unsafe_block(prog: &Program) -> bool {
+    if prog.defs.iter().any(|d| !d.link.is_empty() && !crate::project::is_stdlib_file(&d.file)) {
+        return false;
+    }
     prog.defs.iter().any(|d| !crate::project::is_stdlib_file(&d.file) && d.body.as_ref().is_some_and(has_unsafe))
 }
 

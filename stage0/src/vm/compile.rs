@@ -648,9 +648,6 @@ impl<'a> Fc<'a> {
                 let (argp, argn) = self.pool_slots(args);
                 let cf = &self.m.funcs[ci];
                 if cf.link.is_some() {
-                    if cf.blocks.first().map_or(false, |b| b.params.iter().any(|(_, t)| matches!(t, Ty::Agg(_)))) || matches!(cf.ret, Ty::Agg(_)) {
-                        return Err(format!("extern 関数 {} は構造体を値で受け渡す (VM 未対応)", callee));
-                    }
                     self.prog.ext.push(cf.clone());
                     Ins::CallExt { e: (self.prog.ext.len() - 1) as u32, d, argp, argn }
                 } else {
@@ -882,11 +879,6 @@ impl<'a> Fc<'a> {
                 };
                 if self.m.funcs[ci].link.is_some() {
                     return Err(format!("extern 関数 {} のアドレスは VM 未対応", callee));
-                }
-                // 構造体の値渡し・値返しは VM では扱えない (実行時の `FnPtr` と同じ条件。先に退避させる)。
-                let cf = &self.m.funcs[ci];
-                if cf.blocks.first().map_or(false, |b| b.params.iter().any(|(_, t)| matches!(t, Ty::Agg(_)))) || matches!(cf.ret, Ty::Agg(_)) {
-                    return Err(format!("関数ポインタ {} は構造体を値で受け渡す (VM 未対応)", callee));
                 }
                 Ins::FnPtr { d, f: ci as u32 }
             }

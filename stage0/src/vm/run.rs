@@ -313,15 +313,27 @@ impl<'a> Vm<'a> {
         slot: usize,
         gp: &[u64; 6],
         sse: &[u64; 8],
-        _stack: *const u64,
+        stack: *const u64,
         out: &mut crate::ffi::RetRegs,
     ) {
         let (vi, ci) = self.cbs[slot];
         let prog: &Prog = unsafe { &*self.vers[vi as usize] };
         let cf = &prog.funcs[ci as usize];
-        let (mut gi, mut si) = (0, 0);
+        let ret_ct = match cf.ret {
+            Ty::Agg(_) => super::cabi::cty_of(&prog.aggs, cf.ret).ok(),
+            _ => None,
+        };
+        let sret = matches!(&ret_ct, Some(ct) if crate::ffi::classify(ct) == crate::ffi::Pass::Memory);
+        let (mut gi, mut si) = (usize::from(sret), 0);
+        let mut so = 0usize;
         let mut args: Vec<u64> = vec![];
         for t in &cf.ptys {
+            if let Ty::Agg(ai) = t {
+                let ct = super::cabi::cty_of(&prog.aggs, *t).unwrap_or_else(|e| self.die(3, Some(format!("ksn: vm: {}", e))));
+                let n = slots_of(&prog.aggs, Ty::Agg(*ai)) as usize;
+                args.extend(super::cabi::cb_arg(&ct, gp, sse, stack, &mut gi, &mut si, &mut so, n));
+                continue;
+            }
             args.push(match t {
                 Ty::F32 | Ty::F64 => {
                     si += 1;
@@ -341,6 +353,10 @@ impl<'a> Vm<'a> {
         match self.exec(vi, ci, &args, true) {
             Ok(Outcome::Value(_)) => {
                 let v = self.result.first().copied().unwrap_or(0);
+                if let Some(ct) = &ret_ct {
+                    super::cabi::cb_ret(ct, &self.result, gp, out);
+                    return;
+                }
                 match ret {
                     Ty::F32 | Ty::F64 => out.x0 = v,
                     _ => out.rax = v,
@@ -771,6 +787,29 @@ impl<'a> Vm<'a> {
                 }
                 Ins::CallExt { e, d, argp, argn } => {
                     let func = &prog.ext[*e as usize];
+                    if super::cabi::has_agg(func) {
+                        let sl: Vec<(usize, usize)> = (0..*argn as usize)
+                            .map(|k| {
+                                let ent = f.pool[*argp as usize + k];
+                                ((ent & 0xffff) as usize, (ent >> 16) as usize)
+                            })
+                            .collect();
+                        self.top = base + f.nslots as usize;
+                        let prev = CUR_VM.with(|c| c.replace(self as *mut Vm<'a> as *mut Vm<'static>));
+                        let r = unsafe { super::cabi::call_ext(&prog.aggs, func, rp, &sl) };
+                        CUR_VM.with(|c| c.set(prev));
+                        rp = unsafe { self.regs.as_mut_ptr().add(base) };
+                        match r {
+                            Ok(w) => {
+                                if *d != NO_SLOT {
+                                    let n = w.len();
+                                    unsafe { std::ptr::copy_nonoverlapping(w.as_ptr(), rp.add(*d as usize), n) };
+                                }
+                            }
+                            Err(m) => return Ok(Outcome::Panic(m)),
+                        }
+                        continue;
+                    }
                     let ps = func.params();
                     let argv: Vec<i128> = (0..*argn as usize)
                         .map(|k| {
@@ -836,20 +875,37 @@ impl<'a> Vm<'a> {
                 Ins::FnPtr { d, f: ci } => {
                     let key = (vi, *ci);
                     let cf = &prog.funcs[*ci as usize];
-                    // 構造体の値渡し・値返しは、レジスタをまたぐため VM (レジスタ 1 個 = 1 引数) では扱えない。
-                    if cf.ptys.iter().any(|t| matches!(t, Ty::Agg(_))) || matches!(cf.ret, Ty::Agg(_)) {
-                        return Err("コールバックで構造体を値渡し・値返しするには木走査エンジンを使う (`ksn run`、または `--engine=tree`)".to_string());
-                    }
                     let rabi = match cf.ret {
                         Ty::F32 | Ty::F64 => crate::ffi::RetAbi::F64,
                         Ty::Unit => crate::ffi::RetAbi::Void,
+                        Ty::Agg(_) => match super::cabi::cty_of(&prog.aggs, cf.ret) {
+                            Ok(ct) => crate::ffi::ret_abi(&ct),
+                            Err(e) => return Err(e),
+                        },
                         _ => crate::ffi::RetAbi::Int,
                     };
                     let slot = match self.cbs.iter().position(|c| *c == key) {
                         Some(i) => i,
                         None => {
-                            let ng = cf.ptys.iter().filter(|t| !matches!(t, Ty::F32 | Ty::F64)).count();
-                            let nf = cf.ptys.len() - ng;
+                            let (mut ng, mut nf) = (0usize, 0usize);
+                            for t in &cf.ptys {
+                                match t {
+                                    Ty::F32 | Ty::F64 => nf += 1,
+                                    Ty::Agg(_) => match super::cabi::cty_of(&prog.aggs, *t) {
+                                        Ok(ct) => {
+                                            if let crate::ffi::Pass::Regs(c) = crate::ffi::classify(&ct) {
+                                                nf += c.iter().filter(|b| **b).count();
+                                                ng += c.iter().filter(|b| !**b).count();
+                                            }
+                                        }
+                                        Err(e) => return Err(e),
+                                    },
+                                    _ => ng += 1,
+                                }
+                            }
+                            if matches!(cf.ret, Ty::Agg(_)) {
+                                ng += 1;
+                            }
                             if ng > 6 || nf > 8 {
                                 return Err("コールバックの引数は整数・ポインタ 6 個、浮動小数 8 個まで".to_string());
                             }
